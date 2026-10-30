@@ -2,6 +2,7 @@
 
 pub mod auth;
 pub mod dto;
+pub mod saves;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
@@ -16,6 +17,10 @@ use crate::error::ApiError;
 
 /// The body limit of every `/api` route that sets none of its own (PP "HTTP API": saves raise theirs to 300 KB).
 pub const DEFAULT_BODY_LIMIT: usize = 16 * 1024;
+
+/// The body limit of `/api/saves/{slot}`: a save body of up to [`saves::MAX_SAVE_BODY_BYTES`] plus its JSON envelope
+/// and string escapes.
+pub const SAVE_REQUEST_LIMIT: usize = 300 * 1024;
 
 /// The `/api` router: bodies up to [`DEFAULT_BODY_LIMIT`] (axum's own default is 2 MB), and `Cache-Control:
 /// no-store` on every response unless a route set its own (paid content's `private, no-store`).
@@ -35,6 +40,14 @@ fn routes() -> Router<AppState> {
     Router::new()
         .route("/health", get(health))
         .route("/auth", post(auth::post_auth))
+        .route("/saves", get(saves::list_saves))
+        // A route's own limit runs inside the router-wide default and overrides it.
+        .route(
+            "/saves/{slot}",
+            get(saves::get_save)
+                .put(saves::put_save)
+                .layer(DefaultBodyLimit::max(SAVE_REQUEST_LIMIT)),
+        )
 }
 
 /// `GET /api/health`: no auth, no database; `ok` as `text/plain`.
