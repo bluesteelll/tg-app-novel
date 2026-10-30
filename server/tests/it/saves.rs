@@ -441,3 +441,234 @@ async fn saves_retry_same_write_id_ok() {
     ));
     report(&failures);
 }
+
+/// A JSON object of exactly `len` bytes: braces around spaces, so it needs no escape inside the request.
+fn body_of_len(len: usize) -> String {
+    format!("{{{}}}", " ".repeat(len - 2))
+}
+
+/// A `PutSaveRequest` of exactly `len` bytes carrying `body`: JSON whitespace before the closing brace, so the
+/// request size and the body size vary independently.
+fn padded_request(expected_rev: Option<i64>, write_id: &str, body: &str, len: usize) -> String {
+    let mut req = request_with(expected_rev, write_id, ENV1, body).to_string();
+    assert!(
+        req.len() <= len,
+        "the request without padding is over {len} bytes"
+    );
+    req.insert_str(req.len() - 1, &" ".repeat(len - req.len()));
+    assert_eq!(req.len(), len, "request length arithmetic");
+    req
+}
+
+/// `user`'s rows as (slot, rev, write_id, body length).
+async fn row_sizes(st: &AppState, user: i64) -> Vec<(String, i64, String, usize)> {
+    rows(st, user)
+        .await
+        .into_iter()
+        .map(|(slot, rev, write_id, body, _)| (slot, rev, write_id, body.len()))
+        .collect()
+}
+
+const PAYLOAD_TOO_LARGE: &str = r#"{"error":"payload_too_large"}"#;
+const BAD_REQUEST: &str = r#"{"error":"bad_request"}"#;
+const NOT_FOUND: &str = r#"{"error":"not_found"}"#;
+
+/// The body cap is 262 144 bytes (the CHECK's limit) and the save request limit 300 x 1024 bytes, over the 16 KB
+/// default of every other route; each boundary is exact.
+#[tokio::test]
+async fn saves_body_too_large_413() {
+    let (st, _dir) = saves_state(&[ANN]).await;
+    let mut failures = Vec::new();
+    let at_cap = body_of_len(262_144);
+
+    let body = request_with(None, "w1", ENV1, &at_cap).to_string();
+    let reply = put(&st, ANN, "auto", body).await;
+    failures.extend(expect_json(
+        "body of 262144 bytes (control)",
+        &reply,
+        200,
+        &written(1, T0),
+    ));
+    let body = request_with(Some(1), "w2", ENV1, &body_of_len(262_145)).to_string();
+    let reply = put(&st, ANN, "auto", body).await;
+    failures.extend(expect_text(
+        "body of 262145 bytes",
+        &reply,
+        413,
+        PAYLOAD_TOO_LARGE,
+    ));
+
+    let req = padded_request(None, "w3", &at_cap, 307_200);
+    let reply = put(&st, ANN, "s1", req).await;
+    failures.extend(expect_json(
+        "request of 307200 bytes",
+        &reply,
+        200,
+        &written(1, T0),
+    ));
+    let req = padded_request(None, "w4", &at_cap, 307_201);
+    let reply = put(&st, ANN, "s2", req).await;
+    failures.extend(expect_text(
+        "request of 307201 bytes",
+        &reply,
+        413,
+        PAYLOAD_TOO_LARGE,
+    ));
+
+    let got = row_sizes(&st, ANN).await;
+    let want = vec![
+        ("auto".to_owned(), 1, "w1".to_owned(), 262_144),
+        ("s1".to_owned(), 1, "w3".to_owned(), 262_144),
+    ];
+    if got != want {
+        failures.push(format!(
+            "rows (slot, rev, write_id, body length): expected {want:?}, got {got:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// The body must be one JSON document: checked at the edge (400), not left to the CHECK (500).
+#[tokio::test]
+async fn saves_body_not_json_400() {
+    let (st, _dir) = saves_state(&[ANN]).await;
+    let mut failures = Vec::new();
+    for (case, write_id, body) in [
+        ("body `not json`", "w1", "not json"),
+        ("body `{\"a\":1} x`", "w2", r#"{"a":1} x"#),
+    ] {
+        let req = request_with(None, write_id, ENV1, body).to_string();
+        let reply = put(&st, ANN, "auto", req).await;
+        failures.extend(expect_text(case, &reply, 400, BAD_REQUEST));
+    }
+    let req = request_with(None, "w3", ENV1, r#"{"a":1}"#).to_string();
+    let reply = put(&st, ANN, "auto", req).await;
+    failures.extend(expect_json(
+        "body `{\"a\":1}` (control)",
+        &reply,
+        200,
+        &written(1, T0),
+    ));
+    report(&failures);
+}
+
+/// A slot outside `auto, s1, s2, s3` is 400 on GET and PUT; the token is checked before the slot.
+#[tokio::test]
+async fn saves_bad_slot_400() {
+    let (st, _dir) = saves_state(&[ANN]).await;
+    let mut failures = Vec::new();
+    for path in ["/saves/s4", "/saves/AUTO"] {
+        let reply = get(&st, Some(ANN), path).await;
+        failures.extend(expect_text(
+            &format!("GET {path}"),
+            &reply,
+            400,
+            BAD_REQUEST,
+        ));
+    }
+    for slot in ["x", "s0"] {
+        let reply = put(&st, ANN, slot, request(None, "w1")).await;
+        failures.extend(expect_text(
+            &format!("PUT /saves/{slot}"),
+            &reply,
+            400,
+            BAD_REQUEST,
+        ));
+    }
+    let reply = get(&st, Some(ANN), "/saves/s1").await;
+    failures.extend(expect_text(
+        "GET /saves/s1, no row (control)",
+        &reply,
+        404,
+        NOT_FOUND,
+    ));
+    let reply = put(&st, ANN, "s3", request(None, "w2")).await;
+    failures.extend(expect_json(
+        "PUT /saves/s3 (control)",
+        &reply,
+        200,
+        &written(1, T0),
+    ));
+    let reply = get(&st, None, "/saves/x").await;
+    failures.extend(expect_text(
+        "GET /saves/x without a token",
+        &reply,
+        401,
+        r#"{"error":"token_missing"}"#,
+    ));
+    report(&failures);
+}
+
+/// Rows are keyed by the token's user: another user's slot is invisible to every read, and no write, conflict read
+/// or replay of one user ever touches or reveals another user's row.
+#[tokio::test]
+async fn saves_other_user_404() {
+    const BOB: i64 = 1002;
+    let (st, _dir) = saves_state(&[ANN, BOB]).await;
+    let mut failures = Vec::new();
+    let reply = put(&st, ANN, "s1", request(None, "w1")).await;
+    failures.extend(expect_json(
+        "1001 PUT s1 null/w1",
+        &reply,
+        200,
+        &written(1, T0),
+    ));
+
+    // Bob has no s1: a conflict with no `current`, whether his expectedRev and writeId match Ann's row or not.
+    for (case, write_id) in [
+        ("1002 PUT s1 1/w9 (Ann's rev)", "w9"),
+        ("1002 PUT s1 1/w1 (Ann's rev and writeId)", "w1"),
+    ] {
+        let reply = put(&st, BOB, "s1", request(Some(1), write_id)).await;
+        failures.extend(expect_text(
+            case,
+            &reply,
+            409,
+            r#"{"error":"save_conflict"}"#,
+        ));
+    }
+    failures.extend(expect_rows("after Bob's 409s", &st, ANN, &[row("s1", 1, "w1", T0)]).await);
+    let reply = get(&st, Some(BOB), "/saves/s1").await;
+    failures.extend(expect_text("1002 GET s1", &reply, 404, NOT_FOUND));
+    let reply = get(&st, Some(BOB), "/saves").await;
+    failures.extend(expect_json(
+        "1002 GET list",
+        &reply,
+        200,
+        &json!({ "slots": [] }),
+    ));
+
+    // Bob's own s1: created and updated beside Ann's, never over it.
+    let reply = put(&st, BOB, "s1", request(None, "w2")).await;
+    failures.extend(expect_json(
+        "1002 PUT s1 null/w2",
+        &reply,
+        200,
+        &written(1, T0),
+    ));
+    let reply = put(&st, BOB, "s1", request(Some(1), "w3")).await;
+    failures.extend(expect_json(
+        "1002 PUT s1 1/w3",
+        &reply,
+        200,
+        &written(2, T0),
+    ));
+    failures.extend(expect_rows("after Bob's writes", &st, ANN, &[row("s1", 1, "w1", T0)]).await);
+    failures.extend(expect_rows("after Bob's writes", &st, BOB, &[row("s1", 2, "w3", T0)]).await);
+
+    let reply = get(&st, Some(ANN), "/saves/s1").await;
+    failures.extend(expect_json(
+        "1001 GET s1",
+        &reply,
+        200,
+        &json!({ "summary": summary("s1", 1, T0, "w1"), "body": save_body("w1") }),
+    ));
+    let reply = put(&st, ANN, "s1", request(Some(5), "w4")).await;
+    failures.extend(expect_json(
+        "1001 PUT s1 5/w4: the conflict names Ann's row",
+        &reply,
+        409,
+        &conflict(summary("s1", 1, T0, "w1")),
+    ));
+    report(&failures);
+}
