@@ -179,3 +179,32 @@ test('dsl-doc: counter-example yields its listed codes', () => {
   const found = lintSources(input).map((f) => f.code);
   expect([...found].sort()).toEqual([...listed].sort());
 });
+
+test('dsl-doc: examples lint clean', () => {
+  const { assets, cast } = committed();
+  const blocks = inkBlocks().filter((b) => !b.invalid);
+  // The globals the examples read; the lint checks declarations, not uses, so this is only for realism.
+  const globals = 'VAR g_trust_ally = 0\nVAR g_lied_to_ally = false';
+  const errors: string[] = [];
+  let linted = 0;
+  for (const block of blocks) {
+    const ch = /#id:(ch[1-9][0-9]*)\./.exec(block.source)?.[1] ?? 'ch1';
+    const entry = `${ch}/main.ink`;
+    const files = new Map<string, string>([[GLOBALS_PATH, globals]]);
+    if (block.source.startsWith('INCLUDE ')) {
+      // §12 is a complete entry file: it is linted as the entry itself.
+      files.set(entry, block.source);
+    } else {
+      const first = /^=== (\w+) ===$/m.exec(block.source)?.[1] ?? '';
+      files.set(entry, `INCLUDE ../common/globals.ink\nINCLUDE example.ink\n-> ${first}`);
+      files.set(`${ch}/example.ink`, block.source);
+    }
+    const findings = lintSources({ files, chapters: [{ id: chapterId(ch), paid: false, entry }], assets, cast });
+    for (const f of findings.filter((x) => x.severity === 'E')) {
+      errors.push(`block at STAGING-DSL.md:${block.line} (${f.file}:${f.line}): ${f.code} ${f.message}`);
+    }
+    linted += 1;
+  }
+  expect(errors).toEqual([]);
+  expect(linted).toBeGreaterThanOrEqual(14);
+});

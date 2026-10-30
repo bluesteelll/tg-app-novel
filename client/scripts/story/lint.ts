@@ -1,7 +1,8 @@
 // The source lint of docs/STAGING-DSL.md §11: pure functions over ink sources already read from disk (L3b's story
 // tool reads the files and calls them). Every finding is reported, never only the first. No node:*: the app program
 // compiles this module too, through src/story/dsl-doc.test.ts.
-import type { Cast } from '../../src/story/catalog.ts';
+import { decodeAssetCatalog, decodeCast } from '../../src/story/catalog.ts';
+import type { AssetCatalog, Cast, CatalogIssue } from '../../src/story/catalog.ts';
 import type { AssetIndex, ChapterId, TagError } from '../../src/story/staging.ts';
 import { LINE_ID_RE, SPEAKER_RE, parseTags, tagKind } from '../../src/story/tags.ts';
 import { classify, findUnescaped, unescapeInk } from './classify.ts';
@@ -434,6 +435,179 @@ function duplicateIds(groups: ReadonlyArray<readonly string[]>, parsed: Readonly
   }
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// File- and chapter-level rules
+
+const NAME_RE = /^[a-z][a-z0-9_]*$/;
+const SCALAR_RE = /^(?:-?[0-9]+(?:\.[0-9]+)?|true|false|"(?:[^"\\]|\\.)*")$/;
+const COMMON_DIR = 'common';
+
+function divertsOf(cls: LineClass): Divert[] {
+  switch (cls.kind) {
+    case 'text':
+    case 'choice':
+    case 'gather':
+    case 'divert':
+    case 'block-open':
+    case 'block-branch':
+      return cls.diverts;
+    default:
+      return [];
+  }
+}
+
+function inside(path: string, dir: string): boolean {
+  return dir === '' ? !path.startsWith('../') : path.startsWith(`${dir}/`);
+}
+
+/** `tag/global`, `ink/forbidden`, `ink/name` and `vars/global-prefix`: rules over one file, wherever it is included. */
+function lintFile(file: string, lines: readonly SourceLine[], out: Finding[]): void {
+  const globals = file === GLOBALS_PATH;
+  let inFunction = false;
+  for (const l of lines) {
+    const cls = l.cls;
+    const tags = tagsOf(cls);
+    if (l.knot === null && tags.length > 0) {
+      const list = tags.map((t) => `'${t.text}'`).join(', ');
+      out.push(finding('tag/global', file, l.line, `${list} before the first knot: global tags are forbidden (§3.6)`));
+    }
+    switch (cls.kind) {
+      case 'decl':
+        if (cls.keyword === 'EXTERNAL' || cls.keyword === 'LIST') {
+          out.push(finding('ink/forbidden', file, l.line, `${cls.keyword} is not in the DSL v1 ink subset (§10)`));
+        }
+        if (globals && cls.keyword === 'VAR' && !cls.name.startsWith('g_')) {
+          out.push(finding('vars/global-prefix', file, l.line, `VAR '${cls.name}' in ${GLOBALS_PATH} is not g_-prefixed (§9)`));
+        }
+        if (globals && cls.keyword === 'VAR' && !SCALAR_RE.test(cls.value)) {
+          out.push(finding('vars/global-prefix', file, l.line, `VAR '${cls.name}' = ${cls.value} is not a scalar literal (§9)`));
+        }
+        if (!globals && (cls.keyword === 'VAR' || cls.keyword === 'CONST') && cls.name.startsWith('g_')) {
+          out.push(finding('vars/global-prefix', file, l.line, `'${cls.name}': the g_ prefix belongs to ${GLOBALS_PATH} only (§9)`));
+        }
+        break;
+      case 'thread':
+        out.push(finding('ink/forbidden', file, l.line, `thread '<- ${cls.target}' is not in the DSL v1 ink subset (§10)`));
+        break;
+      case 'knot':
+        inFunction = cls.fn;
+        if (cls.params !== null && !cls.fn) {
+          out.push(finding('ink/forbidden', file, l.line, `knot parameters '${cls.name}(${cls.params})' are forbidden (§10)`));
+        }
+        if (!NAME_RE.test(cls.name)) {
+          out.push(finding('ink/name', file, l.line, `knot name '${cls.name}' is not [a-z][a-z0-9_]* (§10)`));
+        }
+        if (globals && !cls.fn) {
+          out.push(finding('vars/global-prefix', file, l.line, `knot '${cls.name}' in ${GLOBALS_PATH}: only functions (§9)`));
+        }
+        break;
+      case 'stitch':
+        if (cls.params !== null) {
+          out.push(finding('ink/forbidden', file, l.line, `stitch parameters '${cls.name}(${cls.params})' are forbidden (§10)`));
+        }
+        if (!NAME_RE.test(cls.name)) {
+          out.push(finding('ink/name', file, l.line, `stitch name '${cls.name}' is not [a-z][a-z0-9_]* (§10)`));
+        }
+        if (globals) {
+          out.push(finding('vars/global-prefix', file, l.line, `stitch '${cls.name}' in ${GLOBALS_PATH}: only functions (§9)`));
+        }
+        break;
+      default:
+        break;
+    }
+    for (const d of divertsOf(cls)) {
+      if (d.target === 'DONE') {
+        out.push(finding('ink/forbidden', file, l.line, "'-> DONE': chapters end at '-> END' (§10)"));
+      }
+    }
+    if (divertsOf(cls).some((d) => d.tunnel)) {
+      out.push(finding('ink/forbidden', file, l.line, 'tunnels (-> k ->, ->->) are not in the DSL v1 ink subset (§10)'));
+    }
+    if (globals && (tags.length > 0 || said(cls) !== null || (cls.kind === 'choice' && choiceHasText(cls)))) {
+      const where = inFunction ? 'functions are pure: no output, no tags' : 'no text and no tags';
+      out.push(finding('vars/global-prefix', file, l.line, `${GLOBALS_PATH} holds declarations and functions only: ${where} (§9)`));
+    }
+  }
+}
+
+/** Top-level lines a chapter file may hold before its first knot (STAGING-DSL §9); tags are `tag/global`'s. */
+function topLevelAllowed(cls: LineClass): boolean {
+  switch (cls.kind) {
+    case 'blank':
+    case 'comment':
+    case 'todo':
+    case 'include':
+    case 'decl':
+    case 'tags':
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** `ink/entry`: the entry's first line and top level; an included file's top level joins the entry's root flow. */
+function lintEntry(w: Walk, parsed: ReadonlyMap<string, readonly SourceLine[]>, out: Finding[]): void {
+  const base = dirname(w.chapter.entry);
+  for (const file of w.files) {
+    if (file === GLOBALS_PATH) {
+      continue;
+    }
+    const entry = file === w.chapter.entry;
+    const top = (parsed.get(file) ?? []).filter((l) => l.knot === null && l.cls.kind !== 'knot');
+    if (entry) {
+      const first = top.find((l) => l.cls.kind !== 'blank' && l.cls.kind !== 'comment');
+      if (first?.cls.kind !== 'include' || resolvePath(base, first.cls.path) !== GLOBALS_PATH) {
+        out.push(finding('ink/entry', file, first?.line ?? 1, "the entry's first line is 'INCLUDE ../common/globals.ink' (§9)"));
+      }
+    }
+    let diverts = 0;
+    for (const l of top) {
+      if (entry && l.cls.kind === 'divert') {
+        diverts += 1;
+        if (diverts > 1) {
+          out.push(finding('ink/entry', file, l.line, 'the entry top level holds exactly one divert, to the first knot (§9)'));
+        }
+      } else if (!topLevelAllowed(l.cls)) {
+        const what = entry
+          ? 'the entry top level holds only INCLUDE, declarations and one divert (§9)'
+          : `an included file's top level joins ${w.chapter.entry}'s root flow: only INCLUDE and declarations (§9)`;
+        out.push(finding('ink/entry', file, l.line, what));
+      }
+    }
+    if (entry && diverts === 0) {
+      const knot = (parsed.get(file) ?? []).find((l) => l.cls.kind === 'knot');
+      out.push(finding('ink/entry', file, knot?.line ?? 1, 'the entry top level needs one divert to the first knot (§9)'));
+    }
+  }
+}
+
+/** `ink/include` (STAGING-DSL §9 isolation, principle 0). */
+function lintIncludes(walks: readonly Walk[], owners: ReadonlyMap<string, ReadonlySet<string>>, out: Finding[]): void {
+  const paid = walks.filter((w) => w.chapter.paid).map((w) => ({ id: w.chapter.id, dir: dirname(w.chapter.entry) }));
+  for (const w of walks) {
+    const base = dirname(w.chapter.entry);
+    for (const inc of w.includes) {
+      const target = `'${inc.path}' resolves to '${inc.resolved}'`;
+      if (!inside(inc.resolved, base) && !inside(inc.resolved, COMMON_DIR)) {
+        out.push(finding('ink/include', inc.file, inc.line, `${target}, outside ${base}/ and ${COMMON_DIR}/ (§9)`));
+      }
+      if (!w.chapter.paid) {
+        for (const p of paid) {
+          if (p.dir !== base && p.dir !== '' && inside(inc.resolved, p.dir)) {
+            const leak = `free chapter ${w.chapter.id} includes a file of paid chapter ${p.id}`;
+            out.push(finding('ink/include', inc.file, inc.line, `${target}: ${leak}; it would compile into the public JSON (principle 0)`));
+          }
+        }
+      }
+      const reach = owners.get(inc.resolved);
+      if (reach !== undefined && reach.size > 1 && !inside(inc.resolved, COMMON_DIR)) {
+        const chapters = [...reach].sort().join(', ');
+        out.push(finding('ink/include', inc.file, inc.line, `${target}, which chapters ${chapters} all include (§9)`));
+      }
+    }
+  }
+}
+
 function sortAndDedup(findings: readonly Finding[]): Finding[] {
   const seen = new Set<string>();
   const out: Finding[] = [];
@@ -450,7 +624,8 @@ function sortAndDedup(findings: readonly Finding[]): Finding[] {
 
 /**
  * Lints the ink sources: every finding, deduplicated by (file, line, code, message) and sorted by file, line and
- * code. Line rules run on every file; IDs are checked against the chapters whose INCLUDE walk reaches the file.
+ * code. Line and file rules run on every file; IDs, entries and INCLUDEs are checked per chapter, through the files
+ * its INCLUDE walk reaches.
  */
 export function lintSources(input: SourceLintInput): Finding[] {
   const parsed = new Map<string, readonly SourceLine[]>();
@@ -469,8 +644,39 @@ export function lintSources(input: SourceLintInput): Finding[] {
   const out: Finding[] = [];
   for (const [file, lines] of parsed) {
     lintLines(file, lines, { assets: input.assets, cast: input.cast, owners: owners.get(file) ?? new Set() }, out);
+    lintFile(file, lines, out);
   }
   const unowned = [...parsed.keys()].filter((file) => !owners.has(file)).map((file) => [file]);
   duplicateIds([...walks.map((w) => w.files), ...unowned], parsed, out);
+  for (const w of walks) {
+    lintEntry(w, parsed, out);
+  }
+  lintIncludes(walks, owners, out);
   return sortAndDedup(out);
+}
+
+/**
+ * `catalog/assets`: decodes assets/catalog.json, then story/cast.json against it. A cast is checked only against a
+ * catalog that decoded; its findings follow once the catalog is fixed. Line 0: the finding is about the whole file.
+ */
+export function lintCatalog(
+  catalog: unknown,
+  cast: unknown,
+): { catalog: AssetCatalog | null; cast: Cast | null; findings: Finding[] } {
+  const findings: Finding[] = [];
+  const report = (issues: readonly CatalogIssue[]): void => {
+    for (const i of issues) {
+      findings.push(finding('catalog/assets', i.file, 0, i.path === '' ? i.detail : `${i.path}: ${i.detail}`));
+    }
+  };
+  const decoded = decodeAssetCatalog(catalog);
+  if (!decoded.ok) {
+    report(decoded.error);
+    return { catalog: null, cast: null, findings };
+  }
+  const people = decodeCast(cast, decoded.value);
+  if (!people.ok) {
+    report(people.error);
+  }
+  return { catalog: decoded.value, cast: people.ok ? people.value : null, findings };
 }

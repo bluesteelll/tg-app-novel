@@ -5,7 +5,7 @@ import { expect, test } from 'vitest';
 import { assetIndex, decodeAssetCatalog, decodeCast } from '../../src/story/catalog.ts';
 import type { AssetCatalog, Cast } from '../../src/story/catalog.ts';
 import type { AssetIndex, ChapterId } from '../../src/story/staging.ts';
-import { GLOBALS_PATH, lintSources } from './lint.ts';
+import { GLOBALS_PATH, lintCatalog, lintSources } from './lint.ts';
 import type { Finding, LintCode, SourceChapter, SourceLintInput } from './lint.ts';
 
 // The committed catalog and cast, decoded (a later lane that adds required catalog fields updates both files and
@@ -249,4 +249,254 @@ test('lint: allowed line forms raise nothing', () => {
     ]),
   );
   expect(f).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// File- and chapter-level rules
+
+/** A story given file by file (story-relative path → lines), with ch1 as the only chapter unless told otherwise. */
+function files(sources: Record<string, readonly string[]>, chapters: readonly SourceChapter[] = [CH1]): SourceLintInput {
+  const map = new Map<string, string>([[GLOBALS_PATH, 'VAR g_trust = 0']]);
+  for (const [path, lines] of Object.entries(sources)) {
+    map.set(path, lines.join('\n'));
+  }
+  return { files: map, chapters, assets: COMMITTED.assets, cast: COMMITTED.cast };
+}
+
+/** An entry file's lines: the globals INCLUDE first, then `rest`. */
+function entry(...rest: string[]): string[] {
+  return ['INCLUDE ../common/globals.ink', ...rest];
+}
+
+/** `input` with common/globals.ink replaced by `lines`. */
+function withGlobals(input: SourceLintInput, lines: readonly string[]): SourceLintInput {
+  return { ...input, files: new Map(input.files).set(GLOBALS_PATH, lines.join('\n')) };
+}
+
+test('lint: tag/global red on fixture', () => {
+  const f = lintSources(
+    files({
+      'ch1/main.ink': entry('INCLUDE extra.ink', '# bgm: calm', '-> start', '=== start ===', 'Hi. #id:ch1.start.a001', '-> END'),
+      'ch1/extra.ink': ['# scene: cafe', '=== extra ===', '# scene: street', 'There. #id:ch1.extra.a001', '-> END'],
+    }),
+  );
+  expect(where(f, 'tag/global')).toEqual(['ch1/extra.ink:1', 'ch1/main.ink:3']);
+});
+
+// [case, top-level lines after the globals INCLUDE, knot body lines, line of the finding in ch1/main.ink]
+const FORBIDDEN: ReadonlyArray<readonly [string, readonly string[], readonly string[], number]> = [
+  ['external', ['EXTERNAL play_sound(name)'], [], 2],
+  ['thread', [], ['<- background', 'Hi. #id:ch1.start.a001'], 4],
+  ['done', [], ['Hi. #id:ch1.start.a001', '-> DONE'], 5],
+  ['tunnel call', [], ['-> start ->', 'Hi. #id:ch1.start.a001'], 4],
+  ['tunnel return', [], ['Hi. #id:ch1.start.a001', '->->'], 5],
+  ['knot parameter', [], ['Hi. #id:ch1.start.a001', '-> END', '=== other(x) ===', 'Bye. #id:ch1.other.a001'], 6],
+  ['stitch parameter', [], ['Hi. #id:ch1.start.a001', '-> END', '= part(x)', 'Bye. #id:ch1.start.a002'], 6],
+  ['list', ['LIST mood = calm, angry'], [], 2],
+];
+for (const [name, top, body, line] of FORBIDDEN) {
+  test(`lint: ink/forbidden red on fixture (${name})`, () => {
+    const knot = body.length > 0 ? body : ['Hi. #id:ch1.start.a001'];
+    const main = entry(...top, '-> start', '=== start ===', ...knot, '-> END');
+    expect(where(lintSources(files({ 'ch1/main.ink': main })), 'ink/forbidden')).toEqual([`ch1/main.ink:${line}`]);
+  });
+}
+
+test('lint: ink/name red on fixture', () => {
+  const main = entry('-> start', '=== start ===', '-> Big', '=== Big ===', '= Intro', '-> END', '=== café ===', '-> END');
+  const f = lintSources(files({ 'ch1/main.ink': [...main, '=== 1k ===', '-> END', '=== ok_2 ===', '= fine_1', '-> END'] }));
+  expect(where(f, 'ink/name')).toEqual(['ch1/main.ink:5', 'ch1/main.ink:6', 'ch1/main.ink:8', 'ch1/main.ink:10']);
+});
+
+test('lint: ink/include red on fixture (outside dirs)', () => {
+  const f = lintSources(
+    files({
+      'ch1/main.ink': entry('INCLUDE ../ch2/scene.ink', 'INCLUDE ../../outside.ink', 'INCLUDE ok.ink', '-> start', '=== start ===', '-> END'),
+      'ch1/ok.ink': ['=== ok ===', '-> END'],
+      'ch2/scene.ink': ['=== scene ===', '-> END'],
+    }),
+  );
+  expect(where(f, 'ink/include')).toEqual(['ch1/main.ink:2', 'ch1/main.ink:3']);
+});
+
+test('lint: ink/include red on fixture (paid file in a free chapter)', () => {
+  // The paid chapter's directory sits inside the free one's, so only the principle-0 branch can catch this include.
+  const ch2: SourceChapter = { id: chapterId('ch2'), paid: true, entry: 'ch1/paid/main.ink' };
+  const f = lintSources(
+    files(
+      {
+        'ch1/main.ink': entry('INCLUDE paid/scene.ink', 'INCLUDE own.ink', '-> start', '=== start ===', '-> END'),
+        'ch1/own.ink': ['=== own ===', '-> END'],
+        'ch1/paid/main.ink': ['INCLUDE ../../common/globals.ink', '-> paid_start', '=== paid_start ===', '-> END'],
+        'ch1/paid/scene.ink': ['=== secret ===', 'The secret. #id:ch1.secret.s001', '-> END'],
+      },
+      [CH1, ch2],
+    ),
+  );
+  const include = f.filter((x) => x.code === 'ink/include');
+  expect(include.map((x) => `${x.file}:${x.line}`)).toEqual(['ch1/main.ink:2']);
+  expect(include[0]?.message).toContain('free chapter ch1 includes a file of paid chapter ch2');
+});
+
+test('lint: ink/include red on fixture (two chapters)', () => {
+  const a: SourceChapter = { id: chapterId('ch1'), paid: false, entry: 'book/one.ink' };
+  const b: SourceChapter = { id: chapterId('ch2'), paid: false, entry: 'book/two.ink' };
+  const f = lintSources(
+    files(
+      {
+        'book/one.ink': ['INCLUDE ../common/globals.ink', 'INCLUDE shared.ink', '-> one', '=== one ===', '-> END'],
+        'book/two.ink': ['INCLUDE ../common/globals.ink', 'INCLUDE shared.ink', '-> two', '=== two ===', '-> END'],
+        'book/shared.ink': ['=== shared ===', '-> END'],
+      },
+      [a, b],
+    ),
+  );
+  expect(where(f, 'ink/include')).toEqual(['book/one.ink:2', 'book/two.ink:2']);
+});
+
+test('lint: ink/include red on fixture (nested include resolves from the entry dir)', () => {
+  // From the entry dir, sub/a.ink's `../ch2/x.ink` is ch2/x.ink (outside ch1/); from sub/ it would be ch1/ch2/x.ink.
+  const f = lintSources(
+    files({
+      'ch1/main.ink': entry('INCLUDE sub/a.ink', '-> start', '=== start ===', '-> END'),
+      'ch1/sub/a.ink': ['INCLUDE ../ch2/x.ink', 'INCLUDE sub/b.ink', '=== a ===', '-> END'],
+      'ch1/sub/b.ink': ['=== b ===', 'Reached. #id:ch2.b.0001', '-> END'],
+      'ch2/x.ink': ['=== x ===', '-> END'],
+    }),
+  );
+  expect(where(f, 'ink/include')).toEqual(['ch1/sub/a.ink:1']);
+  // sub/b.ink, resolved from the entry dir, is reached: its lines are checked as ch1's.
+  expect(where(f, 'id/chapter-prefix')).toEqual(['ch1/sub/b.ink:2']);
+});
+
+test('lint: ink/entry red on fixture (top-level text)', () => {
+  const main = entry('INCLUDE extra.ink', 'VAR ch1_seen = false', 'Hello there. #id:ch1.start.a001', '-> start', '-> start');
+  const f = lintSources(
+    files({
+      'ch1/main.ink': [...main, '~ ch1_seen = true', '=== start ===', '-> END'],
+      // An included file's top level is compiled into the entry's root flow, before the divert.
+      'ch1/extra.ink': ['CONST ch1_max = 3', 'Stray text. #id:ch1.extra.a001', '=== extra ===', '-> END'],
+    }),
+  );
+  expect(where(f, 'ink/entry')).toEqual(['ch1/extra.ink:2', 'ch1/main.ink:4', 'ch1/main.ink:6', 'ch1/main.ink:7']);
+  const none = lintSources(files({ 'ch1/main.ink': entry('=== start ===', '-> END') }));
+  expect(where(none, 'ink/entry')).toEqual(['ch1/main.ink:2']);
+});
+
+test('lint: ink/entry red on fixture (first line)', () => {
+  const late = ['// header comment', 'VAR ch1_x = 1', 'INCLUDE ../common/globals.ink', '-> start', '=== start ===', '-> END'];
+  expect(where(lintSources(files({ 'ch1/main.ink': late })), 'ink/entry')).toEqual(['ch1/main.ink:2']);
+  const wrong = ['INCLUDE globals.ink', '-> start', '=== start ===', '-> END'];
+  expect(where(lintSources(files({ 'ch1/main.ink': wrong })), 'ink/entry')).toEqual(['ch1/main.ink:1']);
+});
+
+test('lint: vars/global-prefix red on fixture (no prefix)', () => {
+  const input = files({ 'ch1/main.ink': entry('-> start', '=== start ===', '-> END') });
+  const f = lintSources(withGlobals(input, ['VAR g_ok = 1', 'VAR trust = 0']));
+  expect(where(f, 'vars/global-prefix')).toEqual([`${GLOBALS_PATH}:2`]);
+});
+
+test('lint: vars/global-prefix red on fixture (not scalar)', () => {
+  const input = files({ 'ch1/main.ink': entry('-> start', '=== start ===', '-> END') });
+  const quoted = 'VAR g_text = "say \\"hi\\""';
+  const globals = ['VAR g_int = -3', 'VAR g_float = 0.5', 'VAR g_bool = true', quoted, 'VAR g_ref = g_int', 'VAR g_sum = 1 + 2', 'VAR g_list = (a, b)'];
+  const f = lintSources(withGlobals(input, globals));
+  expect(where(f, 'vars/global-prefix')).toEqual([5, 6, 7].map((n) => `${GLOBALS_PATH}:${n}`));
+});
+
+test('lint: vars/global-prefix red on fixture (declared elsewhere)', () => {
+  const f = lintSources(
+    files({ 'ch1/main.ink': entry('VAR g_local = 1', 'CONST g_max = 2', 'VAR ch1_ok = 0', '-> start', '=== start ===', '-> END') }),
+  );
+  expect(where(f, 'vars/global-prefix')).toEqual(['ch1/main.ink:2', 'ch1/main.ink:3']);
+});
+
+test('lint: vars/global-prefix red on fixture (text in globals)', () => {
+  const input = files({ 'ch1/main.ink': entry('-> start', '=== start ===', '-> END') });
+  const globals = [
+    'VAR g_trust = 0', // 1
+    'Hello from globals.', // 2
+    '=== function twice(x) ===', // 3
+    '~ return x * 2', // 4
+    'Output in a function. #id:ch1.g.0001', // 5
+    '=== scene ===', // 6
+    '= part', // 7
+    '# bg: cafe', // 8
+  ];
+  const f = lintSources(withGlobals(input, globals));
+  expect(where(f, 'vars/global-prefix')).toEqual([2, 5, 6, 7, 8].map((n) => `${GLOBALS_PATH}:${n}`));
+});
+
+/** A fresh, mutable parse of the committed assets/catalog.json. */
+function rawCatalog(): { bg: Record<string, unknown>; [key: string]: unknown } {
+  return JSON.parse(readFileSync(new URL('../../../assets/catalog.json', import.meta.url), 'utf8'));
+}
+
+function catalogFindings(catalog: unknown, cast: unknown): string[] {
+  return lintCatalog(catalog, cast)
+    .findings.filter((x) => x.code === 'catalog/assets')
+    .map((x) => `${x.file}: ${x.message}`);
+}
+
+test('lint: catalog/assets red on fixture (reserved id)', () => {
+  const raw = rawCatalog();
+  raw.bg['all'] = {};
+  const found = catalogFindings(raw, readRepoJson('story/cast.json'));
+  expect(found.some((m) => m.startsWith('assets/catalog.json: bg.all:')), JSON.stringify(found)).toBe(true);
+  expect(lintCatalog(raw, readRepoJson('story/cast.json')).catalog).toBeNull();
+});
+
+test('lint: catalog/assets red on fixture (bad key)', () => {
+  const raw = rawCatalog();
+  raw.bg['Bad'] = {};
+  const found = catalogFindings(raw, readRepoJson('story/cast.json'));
+  expect(found.some((m) => m.startsWith('assets/catalog.json: bg.Bad:')), JSON.stringify(found)).toBe(true);
+});
+
+test('lint: catalog/assets red on fixture (cast char missing)', () => {
+  const found = catalogFindings(rawCatalog(), { ally: { char: 'ally' }, ghost: { char: 'ghost' } });
+  expect(found.some((m) => m.startsWith('story/cast.json: ghost.char:')), JSON.stringify(found)).toBe(true);
+  // The committed pair is clean: the control for the three catalog cases.
+  const clean = lintCatalog(rawCatalog(), readRepoJson('story/cast.json'));
+  expect(clean.findings).toEqual([]);
+  expect(clean.cast).toEqual({ ally: { char: 'ally' }, stranger: { char: 'stranger' }, voice: { char: null } });
+});
+
+test('lint: allowed structure raises nothing', () => {
+  const ch2: SourceChapter = { id: chapterId('ch2'), paid: true, entry: 'ch2/main.ink' };
+  const main = entry('INCLUDE scenes.ink', 'VAR ch1_asked = false', 'CONST ch1_max = 3', '-> start', '=== start ===');
+  const input = files(
+    {
+      'ch1/main.ink': [...main, 'Hi. #id:ch1.start.a001', '-> start.later', '= later', '~ g_trust = twice(g_trust)', '-> scenes', '=== ending ===', '-> END'],
+      'ch1/scenes.ink': ['=== scenes ===', '# scene: cafe', 'Cafe. #id:ch1.scenes.a001', '-> ending'],
+      // common/ is reached by both chapters: allowed, every chapter includes globals.ink.
+      'ch2/main.ink': ['INCLUDE ../common/globals.ink', '-> begin', '=== begin ===', 'Paid. #id:ch2.begin.a001', '-> END'],
+    },
+    [CH1, ch2],
+  );
+  const f = lintSources(withGlobals(input, ['VAR g_trust = 0', 'VAR g_name = "Ally"', '=== function twice(x) ===', '~ return x * 2']));
+  expect(f).toEqual([]);
+});
+
+test('lint: every finding is reported', () => {
+  const f = lintSources(
+    files({
+      'ch1/main.ink': entry(
+        '# bgm: calm', // 2: tag/global
+        '-> Start',
+        '=== Start ===', // 4: ink/name
+        'ghost: Hello. #id:ch1.start.ab12', // 5: speaker/unknown
+        'Hi <> there. #id:ch1.start.cd34', // 6: text/glue
+        'Bye. #id:ch2.start.ef56', // 7: id/chapter-prefix
+        '-> END',
+      ),
+    }),
+  );
+  expect(f.map((x) => `${x.line} ${x.code}`)).toEqual([
+    '2 tag/global',
+    '4 ink/name',
+    '5 speaker/unknown',
+    '6 text/glue',
+    '7 id/chapter-prefix',
+  ]);
 });
