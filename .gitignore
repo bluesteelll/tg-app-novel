@@ -18,3 +18,13 @@ target/
 # editors / OS
 .DS_Store
 Thumbs.db
+
+# generated outputs: story/asset tools, e2e build, test and check reports
+client/public/assets/
+client/src/story-gen/
+client/dist-e2e/
+client/.vitest/
+client/test-results/
+client/playwright-report/
+client/.svelte-check/
+server/content/
