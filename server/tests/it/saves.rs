@@ -528,6 +528,52 @@ async fn saves_body_too_large_413() {
     report(&failures);
 }
 
+/// The body cap counts UTF-8 bytes, not characters: a body of 2-byte characters over 262 144 bytes but under
+/// 262 144 characters is refused (413) and writes nothing; a body of exactly 262 144 bytes is admitted. The CHECK
+/// counts characters, so only the edge holds the byte cap the client measures with `TextEncoder`.
+#[tokio::test]
+async fn saves_body_cap_counts_utf8_bytes_413() {
+    let (st, _dir) = saves_state(&[ANN]).await;
+    let mut failures = Vec::new();
+    // `{"a":"` + n x U+0436 (Cyrillic, 2 bytes in UTF-8) + `"}` = 8 + 2n bytes, 8 + n characters.
+    let doc = |n: usize| format!("{{\"a\":\"{}\"}}", "\u{436}".repeat(n));
+    let at_cap = doc(131_068);
+    assert_eq!(at_cap.len(), 262_144, "body arithmetic: bytes at the cap");
+    let over = doc(131_069);
+    assert_eq!(over.len(), 262_146, "body arithmetic: bytes over the cap");
+    assert_eq!(
+        over.chars().count(),
+        131_077,
+        "body arithmetic: characters over the cap"
+    );
+
+    let body = request_with(None, "w1", ENV1, &at_cap).to_string();
+    let reply = put(&st, ANN, "auto", body).await;
+    failures.extend(expect_json(
+        "2-byte body of 262144 bytes (control)",
+        &reply,
+        200,
+        &written(1, T0),
+    ));
+    let body = request_with(Some(1), "w2", ENV1, &over).to_string();
+    let reply = put(&st, ANN, "auto", body).await;
+    failures.extend(expect_text(
+        "2-byte body of 262146 bytes, 131077 chars",
+        &reply,
+        413,
+        PAYLOAD_TOO_LARGE,
+    ));
+
+    let got = row_sizes(&st, ANN).await;
+    let want = vec![("auto".to_owned(), 1, "w1".to_owned(), 262_144)];
+    if got != want {
+        failures.push(format!(
+            "rows (slot, rev, write_id, body bytes): expected {want:?}, got {got:?}"
+        ));
+    }
+    report(&failures);
+}
+
 /// The body must be one JSON document: checked at the edge (400), not left to the CHECK (500).
 #[tokio::test]
 async fn saves_body_not_json_400() {
