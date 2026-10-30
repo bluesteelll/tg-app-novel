@@ -5,13 +5,25 @@ import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'n
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { decodeChapterList, decodeLineFingerprints, decodeStoryUsage } from './story/emit.ts';
+
 export type Section = { name: string; needles: readonly string[] };
 /** One file of dist/: path relative to dist with '/' separators. */
 export type ScanFile = { path: string; bytes: Uint8Array };
+/** Why the paid fingerprint sections cannot be trusted to be complete (PROTOTYPE-PLAN.md "Non-vacuous, per section"). */
+export type FingerprintReason =
+  | 'chapters-unreadable'
+  | 'lines-missing'
+  | 'line-ids-empty'
+  | 'texts-empty'
+  | 'chapter-ids-missing'
+  | 'usage-missing'
+  | 'paid-story-missing';
 export type Finding =
   | { kind: 'source-map'; file: string }
   | { kind: 'fingerprint'; file: string; section: string; needle: string; via: 'plain' | 'data-uri' }
-  | { kind: 'empty-dist'; reason: string };
+  | { kind: 'empty-dist'; reason: string }
+  | { kind: 'fingerprints'; reason: FingerprintReason; detail: string };
 
 /** Sections every build is scanned for, whatever the story holds. */
 export const FIXED_SECTIONS: readonly Section[] = [
@@ -98,12 +110,80 @@ export function scanFiles(files: readonly ScanFile[], sections: readonly Section
   return findings;
 }
 
+const LINES_FILE = 'server/content/build/fingerprints.lines.json';
+const USAGE_FILE = 'server/content/build/usage.json';
+
+/** A repo JSON file, parsed; else why not ('missing', 'not JSON: …'). */
+function readRepoJson(repo: string, rel: string): { ok: true; value: unknown } | { ok: false; why: string } {
+  const abs = path.join(repo, ...rel.split('/'));
+  if (!existsSync(abs)) {
+    return { ok: false, why: 'missing' };
+  }
+  try {
+    const text = readFileSync(abs, 'utf8');
+    return { ok: true, value: JSON.parse(text.startsWith('﻿') ? text.slice(1) : text) };
+  } catch (e) {
+    return { ok: false, why: `not JSON: ${e instanceof Error ? e.message : String(e)}` };
+  }
+}
+
 /**
- * The sections a build is scanned for. L1: the fixed sections. L3b adds the paid line fingerprints
- * (server/content/build/fingerprints.lines.json) with their non-vacuity checks, L5 the paid assets.
+ * The sections a build is scanned for: the fixed sections, and while story/chapters.json declares a paid chapter,
+ * its line fingerprints (`paid-lines`: every paid line ID; `paid-texts`: paid text samples) from the story tool.
+ * Fail closed: every reason the paid sections could be empty or stale is a finding, never a silent pass (an
+ * unreadable chapter list included). L5 adds the paid asset files.
  */
-export function loadSections(_clientRoot: string): Section[] {
-  return [...FIXED_SECTIONS];
+export function loadSections(clientRoot: string): { sections: Section[]; findings: Finding[] } {
+  const repo = path.resolve(clientRoot, '..');
+  const sections: Section[] = [...FIXED_SECTIONS];
+  const findings: Finding[] = [];
+  const fail = (reason: FingerprintReason, detail: string): void => {
+    findings.push({ kind: 'fingerprints', reason, detail });
+  };
+  const listed = readRepoJson(repo, 'story/chapters.json');
+  if (!listed.ok) {
+    fail('chapters-unreadable', `story/chapters.json: ${listed.why}`);
+    return { sections, findings };
+  }
+  const chapters = decodeChapterList(listed.value);
+  if (!chapters.ok) {
+    fail('chapters-unreadable', `story/chapters.json: ${chapters.error.map((i) => `${i.path}: ${i.detail}`).join('; ')}`);
+    return { sections, findings };
+  }
+  const paid = chapters.value.filter((c) => c.paid);
+  if (paid.length === 0) {
+    return { sections, findings };
+  }
+  const declared = `paid ${paid.map((c) => c.id).join(', ')} declared`;
+  const lines = readRepoJson(repo, LINES_FILE);
+  const fp = lines.ok ? decodeLineFingerprints(lines.value) : { ok: false as const, error: [lines.why] };
+  if (!fp.ok) {
+    fail('lines-missing', `${declared}; ${LINES_FILE}: ${fp.error.join('; ')}`);
+  } else {
+    sections.push({ name: 'paid-lines', needles: fp.value.lineIds }, { name: 'paid-texts', needles: fp.value.texts });
+    if (fp.value.lineIds.length === 0) {
+      fail('line-ids-empty', `${declared}; ${LINES_FILE} lineIds is empty`);
+    }
+    if (fp.value.texts.length === 0) {
+      fail('texts-empty', `${declared}; ${LINES_FILE} texts is empty`);
+    }
+    for (const c of paid.filter((ch) => !fp.value.lineIds.some((id) => id.startsWith(`${ch.id}.`)))) {
+      fail('chapter-ids-missing', `${c.id} has no line ID in ${LINES_FILE} (written before it became paid?)`);
+    }
+  }
+  const usage = readRepoJson(repo, USAGE_FILE);
+  const decodedUsage = usage.ok ? decodeStoryUsage(usage.value) : { ok: false as const, error: [usage.why] };
+  if (!decodedUsage.ok) {
+    fail('usage-missing', `${declared}; ${USAGE_FILE}: ${decodedUsage.error.join('; ')}`);
+  }
+  for (const c of paid) {
+    const rel = `server/content/chapters/${c.id}/story.json`;
+    const abs = path.join(repo, ...rel.split('/'));
+    if (!existsSync(abs) || statSync(abs).size === 0) {
+      fail('paid-story-missing', `${rel} is ${existsSync(abs) ? 'empty' : 'missing'}`);
+    }
+  }
+  return { sections, findings };
 }
 
 export function formatFinding(f: Finding): string {
@@ -114,6 +194,8 @@ export function formatFinding(f: Finding): string {
       return `scan: fingerprint ${f.section} ${JSON.stringify(f.needle)} in ${f.file} (via ${f.via})`;
     case 'empty-dist':
       return `scan: empty-dist ${f.reason}`;
+    case 'fingerprints':
+      return `scan: fingerprints ${f.reason} ${f.detail}`;
     default: {
       const unreachable: never = f;
       return unreachable;
@@ -160,9 +242,9 @@ export function main(argv: readonly string[], clientRoot: string): number {
     console.error(`scan: ${distDir} does not exist; run vite build first`);
     return 1;
   }
-  const sections = loadSections(clientRoot);
+  const { sections, findings: vacuity } = loadSections(clientRoot);
   const files = walkFiles(distDir).map((rel): ScanFile => ({ path: rel, bytes: readFileSync(path.join(distDir, rel)) }));
-  const findings = scanFiles(files, sections);
+  const findings = [...vacuity, ...scanFiles(files, sections)];
   const summary = sections.map((s) => `${s.name}(${s.needles.length})`).join(' ');
   console.log(`scan: ${files.length} files; sections ${summary}`);
   for (const finding of findings) {
