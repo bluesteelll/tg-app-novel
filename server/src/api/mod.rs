@@ -2,6 +2,7 @@
 
 pub mod auth;
 pub mod dto;
+pub mod saves;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
@@ -35,6 +36,8 @@ fn routes() -> Router<AppState> {
     Router::new()
         .route("/health", get(health))
         .route("/auth", post(auth::post_auth))
+        .route("/saves", get(saves::list_saves))
+        .route("/saves/{slot}", get(saves::get_save).put(saves::put_save))
 }
 
 /// `GET /api/health`: no auth, no database; `ok` as `text/plain`.

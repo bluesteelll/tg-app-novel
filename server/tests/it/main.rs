@@ -9,6 +9,7 @@
 
 mod auth;
 mod common;
+mod saves;
 mod schema;
 
 use std::path::Path;

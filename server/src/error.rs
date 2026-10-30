@@ -7,8 +7,10 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
-/// Every error a handler returns. L6a adds `SaveConflict(SaveSummary)`; the `match` in `into_response` has no
-/// wildcard, so a new variant does not compile until it is mapped.
+use crate::api::dto::SaveSummary;
+
+/// Every error a handler returns. The `match` in `into_response` has no wildcard, so a new variant does not compile
+/// until it is mapped.
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
     /// A malformed request; the text is for logs and tests, not the body.
@@ -41,6 +43,10 @@ pub enum ApiError {
     /// The user already owns the product.
     #[error("already owned")]
     AlreadyOwned,
+    /// A save write whose `expectedRev` does not match the slot: the stored row's envelope, or `None` when the slot
+    /// has no row (the body then carries no `current`).
+    #[error("save conflict")]
+    SaveConflict(Option<SaveSummary>),
     /// The request body exceeds the route's limit.
     #[error("payload too large")]
     PayloadTooLarge,
@@ -76,7 +82,7 @@ pub enum ErrorCode {
     UnknownProduct,
     /// `already_owned`
     AlreadyOwned,
-    /// `save_conflict` (its `ApiError` variant arrives with L6a)
+    /// `save_conflict`
     SaveConflict,
     /// `payload_too_large`
     PayloadTooLarge,
@@ -92,11 +98,16 @@ pub enum ErrorCode {
 pub struct ApiErrorBody {
     /// The error code.
     pub error: ErrorCode,
+    /// `save_conflict` only: the stored row the write conflicted with. Omitted, not `null`, when absent, so every
+    /// other error stays `{"error": "<code>"}`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current: Option<SaveSummary>,
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let (status, error) = match &self {
+        let mut current = None;
+        let (status, error) = match self {
             ApiError::BadRequest(_) => (StatusCode::BAD_REQUEST, ErrorCode::BadRequest),
             ApiError::InitDataInvalid => (StatusCode::UNAUTHORIZED, ErrorCode::InitdataInvalid),
             ApiError::InitDataExpired => (StatusCode::UNAUTHORIZED, ErrorCode::InitdataExpired),
@@ -107,6 +118,11 @@ impl IntoResponse for ApiError {
             ApiError::NotFound => (StatusCode::NOT_FOUND, ErrorCode::NotFound),
             ApiError::UnknownProduct => (StatusCode::NOT_FOUND, ErrorCode::UnknownProduct),
             ApiError::AlreadyOwned => (StatusCode::CONFLICT, ErrorCode::AlreadyOwned),
+            ApiError::SaveConflict(stored) => {
+                // The client resolves the conflict from the stored envelope (F3), so it travels in the body.
+                current = stored;
+                (StatusCode::CONFLICT, ErrorCode::SaveConflict)
+            }
             ApiError::PayloadTooLarge => {
                 (StatusCode::PAYLOAD_TOO_LARGE, ErrorCode::PayloadTooLarge)
             }
@@ -119,7 +135,7 @@ impl IntoResponse for ApiError {
                 (StatusCode::INTERNAL_SERVER_ERROR, ErrorCode::Internal)
             }
         };
-        (status, Json(ApiErrorBody { error })).into_response()
+        (status, Json(ApiErrorBody { error, current })).into_response()
     }
 }
 
@@ -287,6 +303,7 @@ mod tests {
         }
         let body = serde_json::to_string(&ApiErrorBody {
             error: ErrorCode::NotFound,
+            current: None,
         })
         .unwrap();
         if body != r#"{"error":"not_found"}"# {
