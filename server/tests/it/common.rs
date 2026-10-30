@@ -46,7 +46,7 @@ pub fn test_config(dir: &TempDir) -> Config {
 pub async fn test_state() -> (AppState, TempDir) {
     let dir = tempfile::Builder::new()
         .prefix("tg-novel-it-")
-        .tempdir()
+        .tempdir_in(env!("CARGO_TARGET_TMPDIR"))
         .unwrap();
     match AppState::new(test_config(&dir)).await {
         Ok(state) => (state, dir),
