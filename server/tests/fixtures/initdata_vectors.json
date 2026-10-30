@@ -1,0 +1,173 @@
+{
+  "generator": "server/tests/fixtures/sign_initdata.mjs",
+  "bot_token": "1000000001:placeholder-bot-token-not-a-real-one",
+  "max_age_secs": 86400,
+  "now": 1790000000,
+  "vectors": [
+    {
+      "name": "valid",
+      "init_data": "query_id=AAHdF6IQAAAAAN0XohDhrOrc&user=%7B%22id%22%3A1001%2C%22first_name%22%3A%22Ann%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22ann_test%22%2C%22language_code%22%3A%22ru%22%2C%22allows_write_to_pm%22%3Atrue%2C%22photo_url%22%3A%22https%3A%5C%2F%5C%2Ft.me%5C%2Fi%5C%2Fuserpic%5C%2F320%5C%2Fann_test.svg%22%7D&auth_date=1789999900&hash=57a60116fb322b0179a23d3ed2171f7d61ec005fc820b6f59167b076aaae9cd4",
+      "expect": "ok",
+      "user": {
+        "id": 1001,
+        "first_name": "Ann",
+        "language_code": "ru"
+      }
+    },
+    {
+      "name": "valid_no_language",
+      "init_data": "query_id=AAHdF6IQAAAAAN0XohDhrOrc&user=%7B%22id%22%3A1001%2C%22first_name%22%3A%22Ann%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22ann_test%22%2C%22allows_write_to_pm%22%3Atrue%2C%22photo_url%22%3A%22https%3A%5C%2F%5C%2Ft.me%5C%2Fi%5C%2Fuserpic%5C%2F320%5C%2Fann_test.svg%22%7D&auth_date=1789999900&hash=3ad9b12ec5d1d4046a4741bc7ec11cbf4582b9a2c0bb83ee2dae45444010832f",
+      "expect": "ok",
+      "user": {
+        "id": 1001,
+        "first_name": "Ann",
+        "language_code": null
+      }
+    },
+    {
+      "name": "tampered_user",
+      "init_data": "query_id=AAHdF6IQAAAAAN0XohDhrOrc&user=%7B%22id%22%3A1002%2C%22first_name%22%3A%22Ann%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22ann_test%22%2C%22language_code%22%3A%22ru%22%2C%22allows_write_to_pm%22%3Atrue%2C%22photo_url%22%3A%22https%3A%5C%2F%5C%2Ft.me%5C%2Fi%5C%2Fuserpic%5C%2F320%5C%2Fann_test.svg%22%7D&auth_date=1789999900&hash=57a60116fb322b0179a23d3ed2171f7d61ec005fc820b6f59167b076aaae9cd4",
+      "expect": "BadHash"
+    },
+    {
+      "name": "tampered_auth_date",
+      "init_data": "query_id=AAHdF6IQAAAAAN0XohDhrOrc&user=%7B%22id%22%3A1001%2C%22first_name%22%3A%22Ann%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22ann_test%22%2C%22language_code%22%3A%22ru%22%2C%22allows_write_to_pm%22%3Atrue%2C%22photo_url%22%3A%22https%3A%5C%2F%5C%2Ft.me%5C%2Fi%5C%2Fuserpic%5C%2F320%5C%2Fann_test.svg%22%7D&auth_date=1789999950&hash=57a60116fb322b0179a23d3ed2171f7d61ec005fc820b6f59167b076aaae9cd4",
+      "expect": "BadHash"
+    },
+    {
+      "name": "expired_tampered",
+      "init_data": "query_id=AAHdF6IQAAAAAN0XohDhrOrc&user=%7B%22id%22%3A1002%2C%22first_name%22%3A%22Ann%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22ann_test%22%2C%22language_code%22%3A%22ru%22%2C%22allows_write_to_pm%22%3Atrue%2C%22photo_url%22%3A%22https%3A%5C%2F%5C%2Ft.me%5C%2Fi%5C%2Fuserpic%5C%2F320%5C%2Fann_test.svg%22%7D&auth_date=1789913599&hash=33395c3f08520e45358762e8ceada31c6fe7efe34a807cef610e766b5251ade3",
+      "expect": "BadHash"
+    },
+    {
+      "name": "missing_hash",
+      "init_data": "query_id=AAHdF6IQAAAAAN0XohDhrOrc&user=%7B%22id%22%3A1001%2C%22first_name%22%3A%22Ann%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22ann_test%22%2C%22language_code%22%3A%22ru%22%2C%22allows_write_to_pm%22%3Atrue%2C%22photo_url%22%3A%22https%3A%5C%2F%5C%2Ft.me%5C%2Fi%5C%2Fuserpic%5C%2F320%5C%2Fann_test.svg%22%7D&auth_date=1789999900",
+      "expect": "MissingHash"
+    },
+    {
+      "name": "expired",
+      "init_data": "query_id=AAHdF6IQAAAAAN0XohDhrOrc&user=%7B%22id%22%3A1001%2C%22first_name%22%3A%22Ann%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22ann_test%22%2C%22language_code%22%3A%22ru%22%2C%22allows_write_to_pm%22%3Atrue%2C%22photo_url%22%3A%22https%3A%5C%2F%5C%2Ft.me%5C%2Fi%5C%2Fuserpic%5C%2F320%5C%2Fann_test.svg%22%7D&auth_date=1789913599&hash=33395c3f08520e45358762e8ceada31c6fe7efe34a807cef610e766b5251ade3",
+      "expect": "Expired"
+    },
+    {
+      "name": "age_at_limit",
+      "init_data": "query_id=AAHdF6IQAAAAAN0XohDhrOrc&user=%7B%22id%22%3A1001%2C%22first_name%22%3A%22Ann%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22ann_test%22%2C%22language_code%22%3A%22ru%22%2C%22allows_write_to_pm%22%3Atrue%2C%22photo_url%22%3A%22https%3A%5C%2F%5C%2Ft.me%5C%2Fi%5C%2Fuserpic%5C%2F320%5C%2Fann_test.svg%22%7D&auth_date=1789913600&hash=2dabf62f915b0d2c454101c5d6d2cc15835d33b42ed40c1cd91f583cc1c0006f",
+      "expect": "ok",
+      "user": {
+        "id": 1001,
+        "first_name": "Ann",
+        "language_code": "ru"
+      }
+    },
+    {
+      "name": "future",
+      "init_data": "query_id=AAHdF6IQAAAAAN0XohDhrOrc&user=%7B%22id%22%3A1001%2C%22first_name%22%3A%22Ann%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22ann_test%22%2C%22language_code%22%3A%22ru%22%2C%22allows_write_to_pm%22%3Atrue%2C%22photo_url%22%3A%22https%3A%5C%2F%5C%2Ft.me%5C%2Fi%5C%2Fuserpic%5C%2F320%5C%2Fann_test.svg%22%7D&auth_date=1790000061&hash=17b5050a66eda14bede677032e703010183a7218072526681b46c99e2fee04a8",
+      "expect": "FromFuture"
+    },
+    {
+      "name": "future_within_skew",
+      "init_data": "query_id=AAHdF6IQAAAAAN0XohDhrOrc&user=%7B%22id%22%3A1001%2C%22first_name%22%3A%22Ann%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22ann_test%22%2C%22language_code%22%3A%22ru%22%2C%22allows_write_to_pm%22%3Atrue%2C%22photo_url%22%3A%22https%3A%5C%2F%5C%2Ft.me%5C%2Fi%5C%2Fuserpic%5C%2F320%5C%2Fann_test.svg%22%7D&auth_date=1790000060&hash=dac8b308b538d18f6aaeb465ef4f876ed30114d04be57d5184e7de6a66268626",
+      "expect": "ok",
+      "user": {
+        "id": 1001,
+        "first_name": "Ann",
+        "language_code": "ru"
+      }
+    },
+    {
+      "name": "reordered",
+      "init_data": "hash=57a60116fb322b0179a23d3ed2171f7d61ec005fc820b6f59167b076aaae9cd4&auth_date=1789999900&query_id=AAHdF6IQAAAAAN0XohDhrOrc&user=%7B%22id%22%3A1001%2C%22first_name%22%3A%22Ann%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22ann_test%22%2C%22language_code%22%3A%22ru%22%2C%22allows_write_to_pm%22%3Atrue%2C%22photo_url%22%3A%22https%3A%5C%2F%5C%2Ft.me%5C%2Fi%5C%2Fuserpic%5C%2F320%5C%2Fann_test.svg%22%7D",
+      "expect": "ok",
+      "user": {
+        "id": 1001,
+        "first_name": "Ann",
+        "language_code": "ru"
+      }
+    },
+    {
+      "name": "encoded",
+      "init_data": "query_id=AAHdF6IQAAAAAN0XohDhrOrc&user=%7B%22id%22%3A1001%2C%22first_name%22%3A%22%D0%90%D0%BD%D0%BD%D0%B0-%D0%9C%D0%B0%D1%80%D0%B8%D1%8F%20%26%20Co%20%3D%201%2B1%20%3D%20100%25%22%2C%22last_name%22%3A%22O'Neil%20Smith%22%2C%22username%22%3A%22anna_test%22%2C%22language_code%22%3A%22en%22%2C%22allows_write_to_pm%22%3Atrue%2C%22photo_url%22%3A%22https%3A%5C%2F%5C%2Ft.me%5C%2Fi%5C%2Fuserpic%5C%2F320%5C%2Fanna_test.svg%22%7D&auth_date=1789999900&chat_instance=-3788475317572404878&chat_type=private&hash=09479a3eaadb1b2ef1dbe057b73fb37043ae7c20a7a2004e0f554dc75b89478e",
+      "expect": "ok",
+      "user": {
+        "id": 1001,
+        "first_name": "\u0410\u043d\u043d\u0430-\u041c\u0430\u0440\u0438\u044f & Co = 1+1 = 100%",
+        "language_code": "en"
+      }
+    },
+    {
+      "name": "plus_as_space",
+      "init_data": "query_id=AAHdF6IQAAAAAN0XohDhrOrc&user=%7B%22id%22%3A1001%2C%22first_name%22%3A%22Ann+Lee%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22ann_test%22%2C%22language_code%22%3A%22ru%22%2C%22allows_write_to_pm%22%3Atrue%2C%22photo_url%22%3A%22https%3A%5C%2F%5C%2Ft.me%5C%2Fi%5C%2Fuserpic%5C%2F320%5C%2Fann_test.svg%22%7D&auth_date=1789999900&hash=a49ab9e0a27ce226b2d5e3a18b590de8e6eaa8442a3633bab8a11554af722d7f",
+      "expect": "ok",
+      "user": {
+        "id": 1001,
+        "first_name": "Ann Lee",
+        "language_code": "ru"
+      }
+    },
+    {
+      "name": "duplicate_auth_date",
+      "init_data": "query_id=AAHdF6IQAAAAAN0XohDhrOrc&user=%7B%22id%22%3A1001%2C%22first_name%22%3A%22Ann%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22ann_test%22%2C%22language_code%22%3A%22ru%22%2C%22allows_write_to_pm%22%3Atrue%2C%22photo_url%22%3A%22https%3A%5C%2F%5C%2Ft.me%5C%2Fi%5C%2Fuserpic%5C%2F320%5C%2Fann_test.svg%22%7D&auth_date=1789999900&auth_date=1789999800&hash=68114953e5c3551f74031ff06330baec86b67a73fce9fa652fb0516fa5c12e86",
+      "expect": "DuplicateKey"
+    },
+    {
+      "name": "duplicate_hash",
+      "init_data": "query_id=AAHdF6IQAAAAAN0XohDhrOrc&user=%7B%22id%22%3A1001%2C%22first_name%22%3A%22Ann%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22ann_test%22%2C%22language_code%22%3A%22ru%22%2C%22allows_write_to_pm%22%3Atrue%2C%22photo_url%22%3A%22https%3A%5C%2F%5C%2Ft.me%5C%2Fi%5C%2Fuserpic%5C%2F320%5C%2Fann_test.svg%22%7D&auth_date=1789999900&hash=57a60116fb322b0179a23d3ed2171f7d61ec005fc820b6f59167b076aaae9cd4&hash=57a60116fb322b0179a23d3ed2171f7d61ec005fc820b6f59167b076aaae9cd4",
+      "expect": "DuplicateKey"
+    },
+    {
+      "name": "unknown_field",
+      "init_data": "query_id=AAHdF6IQAAAAAN0XohDhrOrc&user=%7B%22id%22%3A1001%2C%22first_name%22%3A%22Ann%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22ann_test%22%2C%22language_code%22%3A%22ru%22%2C%22allows_write_to_pm%22%3Atrue%2C%22photo_url%22%3A%22https%3A%5C%2F%5C%2Ft.me%5C%2Fi%5C%2Fuserpic%5C%2F320%5C%2Fann_test.svg%22%7D&auth_date=1789999900&chat_join_request_query_id=1234567&zz_future_field=any%20value&hash=e7fd083e9fcea6dfaf8efc21f6e727f32f206761ff966a7240c2af80de7a267d",
+      "expect": "ok",
+      "user": {
+        "id": 1001,
+        "first_name": "Ann",
+        "language_code": "ru"
+      }
+    },
+    {
+      "name": "unsigned_extra_field",
+      "init_data": "query_id=AAHdF6IQAAAAAN0XohDhrOrc&user=%7B%22id%22%3A1001%2C%22first_name%22%3A%22Ann%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22ann_test%22%2C%22language_code%22%3A%22ru%22%2C%22allows_write_to_pm%22%3Atrue%2C%22photo_url%22%3A%22https%3A%5C%2F%5C%2Ft.me%5C%2Fi%5C%2Fuserpic%5C%2F320%5C%2Fann_test.svg%22%7D&auth_date=1789999900&hash=57a60116fb322b0179a23d3ed2171f7d61ec005fc820b6f59167b076aaae9cd4&extra=1",
+      "expect": "BadHash"
+    },
+    {
+      "name": "with_signature",
+      "init_data": "query_id=AAHdF6IQAAAAAN0XohDhrOrc&user=%7B%22id%22%3A1001%2C%22first_name%22%3A%22Ann%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22ann_test%22%2C%22language_code%22%3A%22ru%22%2C%22allows_write_to_pm%22%3Atrue%2C%22photo_url%22%3A%22https%3A%5C%2F%5C%2Ft.me%5C%2Fi%5C%2Fuserpic%5C%2F320%5C%2Fann_test.svg%22%7D&auth_date=1789999900&signature=mtx2uEV_HzDPDSaRB4RAW4wG1iLl-IZWPvDozVUDM6Jz_BCbbKXmMf_Dtksyx2fNG9XXbORamdapl_yJq47QkA&hash=aa7f24fcb74e0133632879a3377436b538cd7ad465e9eed8139296fcf39f1656",
+      "expect": "ok",
+      "user": {
+        "id": 1001,
+        "first_name": "Ann",
+        "language_code": "ru"
+      }
+    },
+    {
+      "name": "signature_excluded_from_dcs",
+      "init_data": "query_id=AAHdF6IQAAAAAN0XohDhrOrc&user=%7B%22id%22%3A1001%2C%22first_name%22%3A%22Ann%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22ann_test%22%2C%22language_code%22%3A%22ru%22%2C%22allows_write_to_pm%22%3Atrue%2C%22photo_url%22%3A%22https%3A%5C%2F%5C%2Ft.me%5C%2Fi%5C%2Fuserpic%5C%2F320%5C%2Fann_test.svg%22%7D&auth_date=1789999900&hash=57a60116fb322b0179a23d3ed2171f7d61ec005fc820b6f59167b076aaae9cd4&signature=mtx2uEV_HzDPDSaRB4RAW4wG1iLl-IZWPvDozVUDM6Jz_BCbbKXmMf_Dtksyx2fNG9XXbORamdapl_yJq47QkA",
+      "expect": "BadHash"
+    },
+    {
+      "name": "no_user",
+      "init_data": "query_id=AAHdF6IQAAAAAN0XohDhrOrc&auth_date=1789999900&hash=872db2f5c9409537c15f0246f8295b018f37f7eeef84f9c1b02853a9c5ac648f",
+      "expect": "MissingUser"
+    },
+    {
+      "name": "no_auth_date",
+      "init_data": "query_id=AAHdF6IQAAAAAN0XohDhrOrc&user=%7B%22id%22%3A1001%2C%22first_name%22%3A%22Ann%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22ann_test%22%2C%22language_code%22%3A%22ru%22%2C%22allows_write_to_pm%22%3Atrue%2C%22photo_url%22%3A%22https%3A%5C%2F%5C%2Ft.me%5C%2Fi%5C%2Fuserpic%5C%2F320%5C%2Fann_test.svg%22%7D&hash=16bbf6641e50ac9673b25074d7b6c42726414f9fa8648974c062a7143c0f9d9d",
+      "expect": "Malformed"
+    },
+    {
+      "name": "auth_date_not_integer",
+      "init_data": "query_id=AAHdF6IQAAAAAN0XohDhrOrc&user=%7B%22id%22%3A1001%2C%22first_name%22%3A%22Ann%22%2C%22last_name%22%3A%22Test%22%2C%22username%22%3A%22ann_test%22%2C%22language_code%22%3A%22ru%22%2C%22allows_write_to_pm%22%3Atrue%2C%22photo_url%22%3A%22https%3A%5C%2F%5C%2Ft.me%5C%2Fi%5C%2Fuserpic%5C%2F320%5C%2Fann_test.svg%22%7D&auth_date=1789999900.5&hash=888440e275a3ec6d53a231afadf837a22283af79af639cd39e3a9b0ea779d1c2",
+      "expect": "Malformed"
+    },
+    {
+      "name": "user_not_json",
+      "init_data": "query_id=AAHdF6IQAAAAAN0XohDhrOrc&user=Ann&auth_date=1789999900&hash=82a398e89afe4f54e2f43184bc98348e682b87aa306837c8781f5f0f5b1ecc81",
+      "expect": "Malformed"
+    },
+    {
+      "name": "user_without_id",
+      "init_data": "query_id=AAHdF6IQAAAAAN0XohDhrOrc&user=%7B%22first_name%22%3A%22Ann%22%7D&auth_date=1789999900&hash=fa4f0f08b815a6bdbfca3c572a37f9d4758d428e488ae4953cb07ebbeb9d185d",
+      "expect": "Malformed"
+    }
+  ]
+}
