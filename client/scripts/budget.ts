@@ -1,5 +1,9 @@
 // Load budgets of the built client (principle 4): every row printed, exit 1 on any FAIL (the CLI, below).
 // Sizes are brotli quality 11 bytes; 1 KB = 1000 B, like the plan's MB.
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { brotliCompressSync, constants } from 'node:zlib';
 
 export type Status = 'PASS' | 'FAIL' | 'PENDING';
 export type Row = { name: string; valueBytes: number | null; limitBytes: number | null; status: Status; note: string };
@@ -216,4 +220,149 @@ export function formatRows(rows: Row[]): string {
   const count = (s: Status): number => rows.filter((r) => r.status === s).length;
   lines.push(`budget: ${rows.length} rows, ${count('PASS')} PASS, ${count('FAIL')} FAIL, ${count('PENDING')} PENDING`);
   return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// CLI: node scripts/budget.ts [--dist <dir>]   (cwd = client/; exit 1 iff a row FAILs or dist is missing)
+
+/** rolldown writes the files of one build in any order; only a manifest older than this is another build's. */
+const STALE_MS = 2_000;
+
+/** Every regular file under `root`, dot-directories included, symlinks not followed; '/' separators. */
+export function walkFiles(root: string): string[] {
+  const out: string[] = [];
+  const visit = (dir: string, rel: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const relPath = rel === '' ? entry.name : `${rel}/${entry.name}`;
+      if (entry.isDirectory()) {
+        visit(path.join(dir, entry.name), relPath);
+      } else if (entry.isFile()) {
+        out.push(relPath);
+      }
+    }
+  };
+  visit(root, '');
+  return out.sort();
+}
+
+function brotliBytes(data: Buffer): number {
+  return brotliCompressSync(data, {
+    params: { [constants.BROTLI_PARAM_QUALITY]: 11, [constants.BROTLI_PARAM_SIZE_HINT]: data.length },
+  }).length;
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+function stringArray(v: unknown, what: string): string[] | undefined {
+  if (v === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(v) || !v.every((s) => typeof s === 'string')) {
+    throw new Error(`${what} is not a string array`);
+  }
+  return v;
+}
+
+function optional<T>(v: unknown, kind: 'string' | 'boolean', what: string): T | undefined {
+  if (v === undefined) {
+    return undefined;
+  }
+  if (typeof v !== kind) {
+    throw new Error(`${what} is not a ${kind}`);
+  }
+  return v as T; // checked by typeof against `kind` on the line above
+}
+
+/** dist/.vite/manifest.json -> chunks; throws on a shape this script does not understand. */
+export function parseManifest(json: unknown): Record<string, ManifestChunk> {
+  if (!isRecord(json)) {
+    throw new Error('manifest is not an object');
+  }
+  const out: Record<string, ManifestChunk> = {};
+  for (const [key, raw] of Object.entries(json)) {
+    if (!isRecord(raw) || typeof raw.file !== 'string') {
+      throw new Error(`manifest entry ${key} has no file`);
+    }
+    out[key] = {
+      file: raw.file,
+      src: optional<string>(raw.src, 'string', `${key}.src`),
+      isEntry: optional<boolean>(raw.isEntry, 'boolean', `${key}.isEntry`),
+      isDynamicEntry: optional<boolean>(raw.isDynamicEntry, 'boolean', `${key}.isDynamicEntry`),
+      imports: stringArray(raw.imports, `${key}.imports`),
+      dynamicImports: stringArray(raw.dynamicImports, `${key}.dynamicImports`),
+      css: stringArray(raw.css, `${key}.css`),
+    };
+  }
+  return out;
+}
+
+/** Reads a built dist into evaluate()'s inputs; `problems` explains a manifest that could not be used. */
+export function readInputs(distDir: string, clientRoot: string): { inputs: BudgetInputs; problems: string[] } {
+  const problems: string[] = [];
+  const files = walkFiles(distDir).map((rel): DistFile => {
+    const data = readFileSync(path.join(distDir, rel));
+    return { path: rel, rawBytes: data.length, brBytes: brotliBytes(data) };
+  });
+  const manifestPath = path.join(distDir, '.vite', 'manifest.json');
+  const htmlPath = path.join(distDir, 'index.html');
+  let manifest: Record<string, ManifestChunk> | null = null;
+  if (existsSync(manifestPath)) {
+    try {
+      manifest = parseManifest(JSON.parse(readFileSync(manifestPath, 'utf8')));
+    } catch (e) {
+      problems.push(`dist/.vite/manifest.json unreadable: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  const indexHtml = existsSync(htmlPath) ? readFileSync(htmlPath, 'utf8') : null;
+  const manifestStale =
+    manifest !== null && indexHtml !== null && statSync(manifestPath).mtimeMs < statSync(htmlPath).mtimeMs - STALE_MS;
+  const engineSourceExists = existsSync(path.join(clientRoot, ...ENGINE_SRC.split('/')));
+  return { inputs: { manifest, manifestStale, indexHtml, files, engineSourceExists }, problems };
+}
+
+/** Runs the CLI; returns the exit code. */
+export function main(argv: readonly string[], clientRoot: string): number {
+  let dist = 'dist';
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    const value = argv[i + 1];
+    if (arg === '--dist' && value !== undefined) {
+      dist = value;
+      i++;
+    } else {
+      console.error(`budget: unknown argument ${arg ?? ''}; usage: node scripts/budget.ts [--dist <dir>]`);
+      return 2;
+    }
+  }
+  const distDir = path.resolve(dist);
+  if (!existsSync(distDir) || !statSync(distDir).isDirectory()) {
+    console.error(`budget: ${distDir} does not exist; run vite build first`);
+    return 1;
+  }
+  const { inputs, problems } = readInputs(distDir, clientRoot);
+  const rows = evaluate(inputs, LIMITS);
+  console.log(`budget: dist ${distDir}; ${inputs.files.length} files; brotli q11; KB = 1000 B`);
+  for (const problem of problems) {
+    console.log(`budget: ${problem}`);
+  }
+  console.log(formatRows(rows));
+  return rows.some((r) => r.status === 'FAIL') ? 1 : 0;
+}
+
+function invokedDirectly(moduleUrl: string): boolean {
+  const argv1 = process.argv[1];
+  if (argv1 === undefined) {
+    return false;
+  }
+  const self = fileURLToPath(moduleUrl);
+  const invoked = path.resolve(argv1);
+  // Windows paths compare case-insensitively (drive letters arrive as d: or D:).
+  return process.platform === 'win32' ? self.toLowerCase() === invoked.toLowerCase() : self === invoked;
+}
+
+if (invokedDirectly(import.meta.url)) {
+  const clientRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  process.exitCode = main(process.argv.slice(2), clientRoot);
 }

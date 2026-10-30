@@ -1,4 +1,10 @@
-import { describe, expect, test } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
 import { ENGINE_SRC, LIMITS, evaluate, formatRows } from './budget.ts';
 import type { BudgetInputs, DistFile, ManifestChunk, Row } from './budget.ts';
@@ -174,5 +180,89 @@ describe('budget evaluate', () => {
       const pass = rows.filter((r) => r.status === 'PASS').length;
       expect(text).toContain(`budget: ${rows.length} rows, ${pass} PASS, ${fail} FAIL, 1 PENDING`);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// CLI: spawned the way `npm run build` runs it (Node type stripping), on a synthetic dist in a temp dir.
+
+const CLIENT_DIR = fileURLToPath(new URL('..', import.meta.url));
+const SCRIPT = fileURLToPath(new URL('./budget.ts', import.meta.url));
+
+/** Deterministic, incompressible bytes (mulberry32): brotli cannot shrink them, so raw size = budget size. */
+function noise(length: number, seed: number): Uint8Array {
+  const out = new Uint8Array(length);
+  let a = seed >>> 0;
+  for (let i = 0; i < length; i++) {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    out[i] = (t ^ (t >>> 14)) & 0xff;
+  }
+  return out;
+}
+
+/**
+ * A dist the way vite writes it. The manifest carries the engine as a dynamic entry, so the engine row is
+ * PENDING while src/app/engine.ts does not exist and PASS once it does: either way this fixture cannot FAIL on
+ * repository state.
+ */
+function writeDist(dir: string, entry: Uint8Array | string): void {
+  mkdirSync(join(dir, 'assets'), { recursive: true });
+  mkdirSync(join(dir, '.vite'), { recursive: true });
+  writeFileSync(join(dir, 'assets', 'index-a.js'), entry);
+  writeFileSync(join(dir, 'assets', 'engine-b.js'), 'export const createGame = () => 1;\n');
+  writeFileSync(join(dir, 'assets', 'index-c.css'), 'body{margin:0}\n');
+  writeFileSync(
+    join(dir, 'index.html'),
+    '<!doctype html><html><head><script type="module" src="/assets/index-a.js"></script>' +
+      '<link rel="stylesheet" href="/assets/index-c.css"></head><body><div id="app"></div></body></html>\n',
+  );
+  const manifest = {
+    'index.html': {
+      file: 'assets/index-a.js',
+      src: 'index.html',
+      isEntry: true,
+      dynamicImports: [ENGINE_SRC],
+      css: ['assets/index-c.css'],
+    },
+    [ENGINE_SRC]: { file: 'assets/engine-b.js', src: ENGINE_SRC, isDynamicEntry: true },
+  };
+  writeFileSync(join(dir, '.vite', 'manifest.json'), JSON.stringify(manifest, null, 2));
+}
+
+function runCli(dist: string): { status: number | null; stdout: string; stderr: string } {
+  const r = spawnSync(process.execPath, [SCRIPT, '--dist', dist], { cwd: CLIENT_DIR, encoding: 'utf8' });
+  return { status: r.status, stdout: r.stdout, stderr: r.stderr };
+}
+
+describe('budget cli', () => {
+  let tmp = '';
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'budget-'));
+  });
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test('budget: cli exits 1 on oversize dist', () => {
+    writeDist(tmp, noise(300_000, 42));
+    const r = runCli(tmp);
+    expect(r.status, r.stdout + r.stderr).toBe(1);
+    expect(r.stdout).toMatch(/^entry closure JS \(br\) \| 300\.\d KB \| 40\.0 KB \| FAIL/m);
+    expect(r.stdout).toMatch(/^all JS \(br\) \| .* \| FAIL/m);
+    for (const name of ROW_NAMES) {
+      expect(r.stdout).toContain(`${name} |`);
+    }
+  });
+
+  test('budget: cli exits 0 on a small dist', () => {
+    writeDist(tmp, 'export const main = 1;\n');
+    const r = runCli(tmp);
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/^manifest \| — \| — \| PASS/m);
+    expect(r.stdout).toMatch(/^engine closure JS \(br\) \| .* \| (PENDING|PASS)/m);
+    expect(r.stdout).toMatch(/^budget: 6 rows, \d PASS, 0 FAIL, [01] PENDING$/m);
   });
 });
