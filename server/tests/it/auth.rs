@@ -1,16 +1,17 @@
 //! Auth: initData checked against vectors from an independent Node signer (`tests/fixtures/sign_initdata.mjs`),
-//! the server's own session token, and the `AuthUser` extractor.
+//! the server's own session token, the `AuthUser` extractor, and `POST /api/auth`.
 
 use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Body;
-use axum::http::header::AUTHORIZATION;
+use axum::http::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE};
 use axum::http::{Request, StatusCode};
 use axum::routing::get;
 use hmac::{Hmac, KeyInit, Mac};
 use http_body_util::BodyExt;
 use serde::Deserialize;
+use serde_json::{Value, json};
 use server::AppState;
 use server::auth::{
     AuthUser, InitData, InitDataError, TokenError, TokenKey, data_check_string, issue_token,
@@ -487,5 +488,276 @@ async fn token_expired_401() {
         )
         .await,
     );
+    report(&failures);
+}
+
+/// `POST /api/auth` through the production router.
+async fn post_auth(st: &AppState, content_type: &str, body: String) -> common::Reply {
+    let req = Request::post("/api/auth")
+        .header(CONTENT_TYPE, content_type)
+        .body(Body::from(body))
+        .unwrap();
+    common::call(st, req).await
+}
+
+fn auth_body(init_data: &str) -> String {
+    json!({ "initData": init_data }).to_string()
+}
+
+fn body_json(reply: &common::Reply) -> Value {
+    serde_json::from_slice(&reply.body).unwrap_or(Value::Null)
+}
+
+fn body_text(reply: &common::Reply) -> String {
+    String::from_utf8_lossy(&reply.body).into_owned()
+}
+
+/// A state whose clock is the vectors' `now`, so their initData is fresh.
+async fn auth_state(all: &Vectors) -> (AppState, TempDir) {
+    state_at(all.now).await
+}
+
+/// Every `users` row: (id, first_name, language_code, created_at, last_seen_at), by id.
+async fn user_rows(st: &AppState) -> Vec<(i64, String, Option<String>, i64, i64)> {
+    let mut db = common::raw_db(st).await;
+    sqlx::query_as(
+        "SELECT id, first_name, language_code, created_at, last_seen_at FROM users ORDER BY id",
+    )
+    .fetch_all(&mut db)
+    .await
+    .unwrap()
+}
+
+/// The mismatch of `reply` against an exact status and an exact body text.
+fn expect_reply(case: &str, reply: &common::Reply, status: u16, body: &str) -> Option<String> {
+    let got = body_text(reply);
+    (reply.status.as_u16() != status || got != body).then(|| {
+        format!(
+            "{case}: expected {status} {body}, got {} {got}",
+            reply.status.as_u16()
+        )
+    })
+}
+
+/// The token of a 200 reply verifies, under the state's key at `now`, to `user`.
+fn token_failure(st: &AppState, case: &str, json: &Value, now: i64, user: i64) -> Option<String> {
+    let token = json["token"].as_str().unwrap_or("");
+    let got = verify_token(&st.keys.token, token, now);
+    (got != Ok(UserId(user)))
+        .then(|| format!("{case}: token: expected Ok(UserId({user})), got {got:?} for {token:?}"))
+}
+
+const JSON: &str = "application/json";
+
+#[tokio::test]
+async fn auth_returns_token_for_valid_initdata() {
+    let all = vectors();
+    let (st, _dir) = auth_state(&all).await;
+    let mut failures = Vec::new();
+    let cases = [
+        (
+            "valid",
+            json!({ "id": 1001, "firstName": "Ann", "languageCode": "ru" }),
+        ),
+        (
+            "valid_no_language",
+            json!({ "id": 1001, "firstName": "Ann", "languageCode": null }),
+        ),
+    ];
+    for (name, user) in cases {
+        let reply = post_auth(&st, JSON, auth_body(&vector(&all, name).init_data)).await;
+        let json = body_json(&reply);
+        if reply.status != StatusCode::OK {
+            failures.push(format!(
+                "{name}: expected 200, got {} {}",
+                reply.status.as_u16(),
+                body_text(&reply)
+            ));
+            continue;
+        }
+        let cache = reply
+            .headers
+            .get(CACHE_CONTROL)
+            .map(|v| v.to_str().unwrap_or("<not text>"));
+        if cache != Some("no-store") {
+            failures.push(format!(
+                "{name}: cache-control: expected no-store, got {cache:?}"
+            ));
+        }
+        let exp = all.now + 1800;
+        let expires_at = json["expiresAt"].as_i64();
+        if expires_at != Some(exp) {
+            failures.push(format!(
+                "{name}: expiresAt: expected now+1800 = {exp}, got {expires_at:?}"
+            ));
+        }
+        let token = json["token"].as_str().unwrap_or("");
+        if !token.starts_with(&format!("v1.1001.{exp}.")) {
+            failures.push(format!(
+                "{name}: token: expected v1.1001.{exp}.<tag>, got {token:?}"
+            ));
+        }
+        failures.extend(token_failure(&st, name, &json, all.now, 1001));
+        if json["user"] != user {
+            failures.push(format!(
+                "{name}: user: expected {user}, got {}",
+                json["user"]
+            ));
+        }
+    }
+    report(&failures);
+}
+
+/// The user is the verified initData's: a `userId` or `user` in the body changes nothing.
+#[tokio::test]
+async fn auth_ignores_body_user_id() {
+    let all = vectors();
+    let (st, _dir) = auth_state(&all).await;
+    let body = json!({
+        "initData": vector(&all, "valid").init_data,
+        "userId": 666,
+        "user": { "id": 666 },
+    })
+    .to_string();
+    let reply = post_auth(&st, JSON, body).await;
+    let json = body_json(&reply);
+    let mut failures = Vec::new();
+    if reply.status != StatusCode::OK {
+        failures.push(format!(
+            "expected 200, got {} {}",
+            reply.status.as_u16(),
+            body_text(&reply)
+        ));
+    }
+    if json["user"]["id"] != 1001 {
+        failures.push(format!(
+            "user.id: expected 1001, got {}",
+            json["user"]["id"]
+        ));
+    }
+    failures.extend(token_failure(&st, "body userId 666", &json, all.now, 1001));
+    let ids: Vec<i64> = user_rows(&st).await.into_iter().map(|row| row.0).collect();
+    if ids != [1001] {
+        failures.push(format!("users rows: expected [1001] (no 666), got {ids:?}"));
+    }
+    report(&failures);
+}
+
+#[tokio::test]
+async fn auth_initdata_errors_401() {
+    let all = vectors();
+    let (st, _dir) = auth_state(&all).await;
+    let mut failures = Vec::new();
+    let cases = [
+        ("tampered_user", r#"{"error":"initdata_invalid"}"#),
+        ("missing_hash", r#"{"error":"initdata_invalid"}"#),
+        ("no_user", r#"{"error":"initdata_invalid"}"#),
+        ("expired", r#"{"error":"initdata_expired"}"#),
+        ("future", r#"{"error":"initdata_expired"}"#),
+    ];
+    for (name, body) in cases {
+        let reply = post_auth(&st, JSON, auth_body(&vector(&all, name).init_data)).await;
+        failures.extend(expect_reply(name, &reply, 401, body));
+    }
+    let rows = user_rows(&st).await;
+    if !rows.is_empty() {
+        failures.push(format!(
+            "users rows: expected none after refusals, got {rows:?}"
+        ));
+    }
+    report(&failures);
+}
+
+#[tokio::test]
+async fn auth_malformed_body_400() {
+    let all = vectors();
+    let (st, _dir) = auth_state(&all).await;
+    let valid = auth_body(&vector(&all, "valid").init_data);
+    let bad_request = r#"{"error":"bad_request"}"#;
+    let mut failures = Vec::new();
+    let cases = [
+        ("non-JSON body", JSON, "initData=abc".to_owned()),
+        ("empty object", JSON, "{}".to_owned()),
+        (
+            "initData not a string",
+            JSON,
+            r#"{"initData":5}"#.to_owned(),
+        ),
+        ("text/plain content type", "text/plain", valid.clone()),
+    ];
+    for (case, content_type, body) in cases {
+        let reply = post_auth(&st, content_type, body).await;
+        failures.extend(expect_reply(case, &reply, 400, bad_request));
+    }
+    let control = post_auth(&st, JSON, valid).await;
+    if control.status != StatusCode::OK {
+        failures.push(format!(
+            "valid body (control): expected 200, got {}",
+            control.status.as_u16()
+        ));
+    }
+    report(&failures);
+}
+
+/// More than 4096 bytes of initData is a bad request; exactly 4096 reaches the validator.
+#[tokio::test]
+async fn auth_initdata_over_4k_400() {
+    let all = vectors();
+    let (st, _dir) = auth_state(&all).await;
+    let valid = &vector(&all, "valid").init_data;
+    // An unsigned padding field: whatever its length, the validator answers initdata_invalid.
+    let padded = |len: usize| {
+        let fill = "a".repeat(len - valid.len() - "&pad=".len());
+        format!("{valid}&pad={fill}")
+    };
+    let mut failures = Vec::new();
+    for (case, len, status, body) in [
+        ("4097 bytes", 4097, 400, r#"{"error":"bad_request"}"#),
+        (
+            "4096 bytes (control)",
+            4096,
+            401,
+            r#"{"error":"initdata_invalid"}"#,
+        ),
+    ] {
+        let init_data = padded(len);
+        assert_eq!(init_data.len(), len, "{case}: padding arithmetic");
+        let reply = post_auth(&st, JSON, auth_body(&init_data)).await;
+        failures.extend(expect_reply(case, &reply, status, body));
+    }
+    report(&failures);
+}
+
+/// Two logins of one user: one row, `created_at` from the first, `last_seen_at` from the second.
+#[tokio::test]
+async fn auth_upserts_user_once() {
+    let all = vectors();
+    let (st, _dir) = auth_state(&all).await;
+    let body = auth_body(&vector(&all, "valid").init_data);
+    let later = st.clone().with_clock(Arc::new(FixedClock(all.now + 100)));
+    let mut failures = Vec::new();
+    for (case, state) in [("first login", &st), ("second login", &later)] {
+        let reply = post_auth(state, JSON, body.clone()).await;
+        if reply.status != StatusCode::OK {
+            failures.push(format!(
+                "{case}: expected 200, got {} {}",
+                reply.status.as_u16(),
+                body_text(&reply)
+            ));
+        }
+    }
+    let rows = user_rows(&st).await;
+    let want = vec![(
+        1001,
+        "Ann".to_owned(),
+        Some("ru".to_owned()),
+        all.now,
+        all.now + 100,
+    )];
+    if rows != want {
+        failures.push(format!(
+            "users rows for 1001: expected {want:?}, got {rows:?}"
+        ));
+    }
     report(&failures);
 }

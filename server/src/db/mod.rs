@@ -1,6 +1,8 @@
 //! The repository seam: every SQL statement lives under `db/`, and the only module that names sqlx pool types.
 //! Handlers see domain types, never sqlx.
 
+pub mod users;
+
 use std::path::Path;
 use std::time::Duration;
 
