@@ -1,7 +1,11 @@
 // The story build: compile (inkjs compiler), knot graph, emit and the `story` CLI (STAGING-DSL §8-§11,
 // PROTOTYPE-PLAN.md K9 and "Build outputs"). Fixtures are inline ink; the catalog and cast are the committed ones.
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { expect, test } from 'vitest';
 
@@ -629,3 +633,213 @@ test('catalog: malformed meta is an error value', () => {
   }
   expect(decodeChapterCatalog({ chapters: [{ id: 'ch1' }], cast: {} }).ok).toBe(false);
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// story.ts: spawned the way `npm run story` runs it, against a temporary repository (`--root`)
+
+const CLIENT_DIR = fileURLToPath(new URL('../..', import.meta.url));
+const STORY_SCRIPT = fileURLToPath(new URL('../story.ts', import.meta.url));
+/** A spawned Node loads inkjs/full and compiles: allow for a loaded machine instead of retrying. */
+const CLI_TIMEOUT_MS = 60_000;
+const CH1_LISTED = { id: 'ch1', entry: 'ch1/main.ink', paid: false, next: 'ch2' };
+const CH2_LISTED = { id: 'ch2', entry: 'ch2/main.ink', paid: true, productId: 'chapter:ch2', next: null };
+const CLIENT_OUTPUTS = ['client/src/story-gen/catalog.json', 'client/src/story-gen/free/ch1.meta.json', 'client/src/story-gen/free/ch1.story.json'];
+
+/** The committed catalog and cast, the given chapter list, and the emit fixture's ink under story/. */
+function repoFiles(chapters: unknown = [CH1_LISTED, CH2_LISTED]): Record<string, string> {
+  return {
+    'assets/catalog.json': readFileSync(new URL('../../../assets/catalog.json', import.meta.url), 'utf8'),
+    'story/cast.json': readFileSync(new URL('../../../story/cast.json', import.meta.url), 'utf8'),
+    'story/chapters.json': JSON.stringify(chapters),
+    ...Object.fromEntries([...EMIT_SOURCES].map(([key, text]) => [`story/${key}`, text])),
+  };
+}
+
+function put(root: string, rel: string, text: string): void {
+  const abs = join(root, ...rel.split('/'));
+  mkdirSync(dirname(abs), { recursive: true });
+  writeFileSync(abs, text);
+}
+
+function withRepo(files: Readonly<Record<string, string>>, body: (root: string) => void): void {
+  const root = mkdtempSync(join(tmpdir(), 'story-'));
+  try {
+    for (const [rel, text] of Object.entries(files)) {
+      put(root, rel, text);
+    }
+    body(root);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+/** Every file under `rel` of the repo, repo-relative posix, sorted; [] when `rel` does not exist. */
+function filesUnder(root: string, rel: string): string[] {
+  const abs = join(root, rel);
+  if (!existsSync(abs)) {
+    return [];
+  }
+  return readdirSync(abs, { recursive: true, withFileTypes: true })
+    .filter((e) => e.isFile())
+    .map((e) => join(e.parentPath, e.name).slice(root.length + 1).split('\\').join('/'))
+    .sort();
+}
+
+function runStory(root: string, args: readonly string[] = [], script = STORY_SCRIPT): { status: number | null; stdout: string; stderr: string } {
+  const r = spawnSync(process.execPath, [script, '--root', root, ...args], { cwd: CLIENT_DIR, encoding: 'utf8' });
+  return { status: r.status, stdout: r.stdout, stderr: r.stderr };
+}
+
+/** ch1 of the emit fixture with `line` inserted before its `-> END`, or `-> END` replaced by it. */
+function ch1With(line: string, replaceEnd = false): string {
+  const text = EMIT_SOURCES.get('ch1/main.ink') ?? '';
+  return text.replace('-> END\n', replaceEnd ? `${line}\n` : `${line}\n-> END\n`);
+}
+
+test(
+  'story: zero chapters is an error',
+  () => {
+    withRepo(repoFiles([]), (root) => {
+      const r = runStory(root);
+      expect(r.status, r.stdout + r.stderr).toBe(1);
+      expect(r.stdout).toMatch(/^E story\/chapters\.json:0 catalog\/chapters 0 chapters/m);
+      expect(r.stdout).toMatch(/^story: [1-9]\d* errors, \d+ warnings$/m);
+      expect([...filesUnder(root, 'client'), ...filesUnder(root, 'server')]).toEqual([]);
+    });
+  },
+  CLI_TIMEOUT_MS,
+);
+
+const CHAPTER_CASES: ReadonlyArray<readonly [name: string, chapters: unknown, expected: RegExp, omit?: string]> = [
+  ['duplicate id', [CH1_LISTED, { ...CH2_LISTED, id: 'ch1', entry: 'ch1/main.ink' }], /1\.id: duplicate id 'ch1'/],
+  ['bad id', [{ ...CH1_LISTED, id: 'chapter1', entry: 'chapter1/main.ink', next: null }], /0\.id: "chapter1" does not match/],
+  ['entry layout', [{ ...CH1_LISTED, entry: 'ch1/start.ink', next: null }], /0\.entry: "ch1\/start\.ink": the entry of ch1 is 'ch1\/main\.ink'/],
+  ['missing entry file', [CH1_LISTED, CH2_LISTED], /ch2: the entry file story\/ch2\/main\.ink is missing/, 'story/ch2/main.ink'],
+  ['paid without product', [CH1_LISTED, { ...CH2_LISTED, productId: undefined }], /1\.productId: a paid chapter needs a productId/],
+  ['product on free chapter', [{ ...CH1_LISTED, productId: 'chapter:ch1' }, CH2_LISTED], /0\.productId: a free chapter has no productId/],
+  [
+    'duplicate product',
+    [CH1_LISTED, { ...CH2_LISTED, next: 'ch3' }, { id: 'ch3', entry: 'ch3/main.ink', paid: true, productId: 'chapter:ch2', next: null }],
+    /2\.productId: duplicate product 'chapter:ch2'/,
+  ],
+  ['unknown next', [{ ...CH1_LISTED, next: 'ch9' }, CH2_LISTED], /0\.next: 'ch9' is not a listed chapter/],
+];
+
+for (const [name, chapters, expected, omit] of CHAPTER_CASES) {
+  test(
+    `lint: catalog/chapters red on fixture (${name})`,
+    () => {
+      const files = Object.fromEntries(Object.entries(repoFiles(chapters)).filter(([rel]) => rel !== omit));
+      withRepo(files, (root) => {
+        const r = runStory(root);
+        expect(r.status, r.stdout + r.stderr).toBe(1);
+        const lines = r.stdout.split('\n').filter((l) => l.startsWith('E story/chapters.json:0 catalog/chapters '));
+        expect(lines.filter((l) => expected.test(l)), r.stdout).toHaveLength(1);
+        expect([...filesUnder(root, 'client'), ...filesUnder(root, 'server')]).toEqual([]);
+      });
+    },
+    CLI_TIMEOUT_MS,
+  );
+}
+
+test(
+  'story: cli builds a free and a paid chapter',
+  () => {
+    withRepo(repoFiles(), (root) => {
+      const r = runStory(root);
+      expect(r.status, r.stdout + r.stderr).toBe(0);
+      expect(r.stdout).toMatch(/^story: ch1 free knots 1 lines 2 version [0-9a-f]{16}$/m);
+      expect(r.stdout).toMatch(/^story: ch2 paid knots 2 lines 16 version [0-9a-f]{16}$/m);
+      expect(r.stdout).toMatch(/^story: 0 errors, 0 warnings$/m);
+      expect(filesUnder(root, 'client')).toEqual(CLIENT_OUTPUTS);
+      expect(filesUnder(root, 'server')).toEqual([
+        'server/content/build/fingerprints.lines.json',
+        'server/content/build/usage.json',
+        'server/content/chapters/ch2/meta.json',
+        'server/content/chapters/ch2/story.json',
+      ]);
+      for (const rel of CLIENT_OUTPUTS) {
+        expect(readFileSync(join(root, rel), 'utf8'), rel).not.toContain('ch2.archive');
+      }
+      const paid = readFileSync(join(root, 'server/content/chapters/ch2/story.json'), 'utf8');
+      expect(paid.startsWith('{"inkVersion":21')).toBe(true); // the API's ToJson(): no BOM, no reformatting
+      expect(paid).toContain(LONGEST);
+    });
+  },
+  CLI_TIMEOUT_MS,
+);
+
+test(
+  'story: no outputs are written when an error remains',
+  () => {
+    const files = { ...repoFiles(), 'story/ch1/main.ink': ch1With('-> nowhere', true) };
+    // A stale public copy of the (now paid) ch2: deleting it belongs to a clean run only.
+    withRepo({ ...files, 'client/src/story-gen/free/ch2.story.json': 'stale' }, (root) => {
+      const r = runStory(root);
+      expect(r.status, r.stdout + r.stderr).toBe(1);
+      expect(r.stdout).toMatch(/^E story\/ch1\/main\.ink:\d+ ink\/compile Divert target not found/m);
+      expect(r.stdout).toMatch(/^story: ch1 failed$/m);
+      expect(filesUnder(root, 'client')).toEqual(['client/src/story-gen/free/ch2.story.json']);
+      expect(readFileSync(join(root, 'client/src/story-gen/free/ch2.story.json'), 'utf8')).toBe('stale');
+      expect(filesUnder(root, 'server')).toEqual([]);
+    });
+  },
+  CLI_TIMEOUT_MS,
+);
+
+test(
+  'story: a chapter flipped to paid leaves no free output',
+  () => {
+    withRepo(repoFiles([CH1_LISTED, { ...CH2_LISTED, paid: false, productId: undefined }]), (root) => {
+      const free = runStory(root);
+      expect(free.status, free.stdout + free.stderr).toBe(0);
+      expect(free.stdout).toMatch(/^story: ch2 free /m);
+      expect(existsSync(join(root, 'client/src/story-gen/free/ch2.story.json'))).toBe(true);
+      put(root, 'client/src/story-gen/free/ch2.assets.json', '{}'); // L5's asset manifest of the then-free chapter
+      put(root, 'story/chapters.json', JSON.stringify([CH1_LISTED, CH2_LISTED]));
+      const paid = runStory(root);
+      expect(paid.status, paid.stdout + paid.stderr).toBe(0);
+      expect(paid.stdout).toMatch(/^story: ch2 paid /m);
+      expect(filesUnder(root, 'client')).toEqual(CLIENT_OUTPUTS);
+      expect(existsSync(join(root, 'server/content/chapters/ch2/story.json'))).toBe(true);
+    });
+  },
+  CLI_TIMEOUT_MS,
+);
+
+test(
+  'story: --strict turns warnings into errors',
+  () => {
+    withRepo({ ...repoFiles(), 'story/ch1/main.ink': ch1With('TODO: polish this scene') }, (root) => {
+      const lax = runStory(root);
+      expect(lax.status, lax.stdout + lax.stderr).toBe(0);
+      expect(lax.stdout).toMatch(/^W story\/ch1\/main\.ink:\d+ ink\/todo polish this scene$/m);
+      expect(lax.stdout).toMatch(/^story: 0 errors, 1 warnings$/m);
+      const strict = runStory(root, ['--strict']);
+      expect(strict.status, strict.stdout + strict.stderr).toBe(1);
+      expect(strict.stdout).toMatch(/^E story\/ch1\/main\.ink:\d+ ink\/todo polish this scene$/m);
+      expect(strict.stdout).toMatch(/^story: 1 errors, 0 warnings$/m);
+    });
+  },
+  CLI_TIMEOUT_MS,
+);
+
+test(
+  'story: cli runs through a linked path',
+  () => {
+    // Node runs the main module from its realpath while argv[1] keeps the caller's spelling (a junction, macOS's
+    // symlinked /tmp): a guard that compares the two spellings skips main() and exits 0 having built nothing.
+    withRepo(repoFiles([]), (root) => {
+      const link = join(root, 'scripts');
+      symlinkSync(dirname(STORY_SCRIPT), link, process.platform === 'win32' ? 'junction' : 'dir');
+      try {
+        const r = runStory(root, [], join(link, 'story.ts'));
+        expect(r.status, r.stdout + r.stderr).toBe(1);
+        expect(r.stdout).toMatch(/^E story\/chapters\.json:0 catalog\/chapters 0 chapters/m);
+      } finally {
+        unlinkSync(link); // the link only: the recursive delete never meets a way into client/scripts
+      }
+    });
+  },
+  CLI_TIMEOUT_MS,
+);

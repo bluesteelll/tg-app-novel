@@ -1,0 +1,4 @@
+[
+  { "id": "ch1", "entry": "ch1/main.ink", "paid": false, "next": "ch2" },
+  { "id": "ch2", "entry": "ch2/main.ink", "paid": true, "productId": "chapter:ch2", "next": null }
+]

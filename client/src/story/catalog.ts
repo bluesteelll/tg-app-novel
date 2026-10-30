@@ -23,7 +23,7 @@ export type Result<T, E> = { ok: true; value: T } | { ok: false; error: E };
 
 /** One problem in a catalog or build-output file; `path` is the dotted JSON path ('' = the whole file). */
 export type CatalogIssue = {
-  file: 'assets/catalog.json' | 'story/cast.json' | 'story-gen/catalog.json' | 'meta.json';
+  file: 'assets/catalog.json' | 'story/cast.json' | 'story/chapters.json' | 'story-gen/catalog.json' | 'meta.json';
   path: string;
   detail: string;
 };
@@ -306,6 +306,79 @@ function names(value: unknown, path: string, report: Report): { ru: string; en: 
     return { ru: '', en: '' };
   }
   return { ru, en };
+}
+
+/**
+ * Decodes story/chapters.json (STAGING-DSL §9, §11 `catalog/chapters`): a non-empty array in play order; ids `ch<N>`,
+ * unique; `entry` is `<id>/main.ink` (the lint's paid-directory isolation keys on the entry's directory); `paid`
+ * requires a `productId`, a free chapter has none, and no two chapters share one (each product unlocks one chapter);
+ * `next` is a listed id or null. Whether the entry file exists is the story tool's check.
+ */
+export function decodeChapterList(raw: unknown): Result<readonly ChapterListEntry[], CatalogIssue[]> {
+  const issues: CatalogIssue[] = [];
+  const report: Report = (path, detail) => issues.push({ file: 'story/chapters.json', path, detail });
+  if (!Array.isArray(raw)) {
+    report('', 'not a JSON array of chapters');
+    return { ok: false, error: issues };
+  }
+  if (raw.length === 0) {
+    report('', '0 chapters: a run that compiles no chapter is an error, not a green');
+    return { ok: false, error: issues };
+  }
+  const out: ChapterListEntry[] = [];
+  const nexts: Array<readonly [path: string, next: string]> = [];
+  raw.forEach((entry: unknown, i) => {
+    const path = String(i);
+    if (!isObject(entry)) {
+      report(path, 'not an object');
+      return;
+    }
+    for (const key of Object.keys(entry).filter((k) => !['id', 'entry', 'paid', 'productId', 'next'].includes(k))) {
+      report(`${path}.${key}`, 'unknown key (expected id, entry, paid, productId, next)');
+    }
+    for (const key of ['id', 'entry', 'paid', 'next'].filter((k) => !Object.hasOwn(entry, k))) {
+      report(`${path}.${key}`, 'missing');
+    }
+    const id = matching(entry['id'], CHAPTER_ID_RE, `${path}.id`, report);
+    if (id !== null && out.some((c) => c.id === id)) {
+      report(`${path}.id`, `duplicate id '${id}'`);
+    }
+    if (id !== null && entry['entry'] !== `${id}/main.ink`) {
+      report(`${path}.entry`, `${JSON.stringify(entry['entry']) ?? 'undefined'}: the entry of ${id} is '${id}/main.ink' (§9 layout)`);
+    }
+    const paid = entry['paid'];
+    if (typeof paid !== 'boolean') {
+      report(`${path}.paid`, 'not a boolean');
+    }
+    const hasProduct = Object.hasOwn(entry, 'productId');
+    if (paid === true && !hasProduct) {
+      report(`${path}.productId`, 'a paid chapter needs a productId');
+    }
+    if (paid !== true && hasProduct) {
+      report(`${path}.productId`, 'a free chapter has no productId');
+    }
+    const productId = paid === true && hasProduct ? matching(entry['productId'], PRODUCT_ID_RE, `${path}.productId`, report) : null;
+    if (productId !== null && out.some((c) => c.productId === productId)) {
+      report(`${path}.productId`, `duplicate product '${productId}': one product unlocks one chapter`);
+    }
+    const next = Object.hasOwn(entry, 'next') ? matching(entry['next'], CHAPTER_ID_RE, `${path}.next`, report, true) : null;
+    if (next !== null) {
+      nexts.push([`${path}.next`, next]);
+    }
+    if (id !== null && typeof paid === 'boolean') {
+      // The brands are earned by the patterns above.
+      out.push({ id: id as ChapterId, entry: `${id}/main.ink`, paid, productId: productId as ProductId | null, next: next as ChapterId | null });
+    }
+  });
+  for (const [path, next] of nexts) {
+    if (!out.some((c) => c.id === next)) {
+      report(path, `'${next}' is not a listed chapter`);
+    }
+  }
+  if (issues.length > 0) {
+    return { ok: false, error: issues };
+  }
+  return { ok: true, value: out };
 }
 
 /** Decodes client/src/story-gen/catalog.json; every problem is reported. */
