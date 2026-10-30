@@ -53,6 +53,13 @@ pub enum PutOutcome {
         /// The stored `saved_at`.
         saved_at: i64,
     },
+    /// Nothing was written: the stored row already carries this `write_id` (a retry of a write that landed).
+    Replayed {
+        /// The stored revision.
+        rev: i64,
+        /// The stored `saved_at`.
+        saved_at: i64,
+    },
     /// Nothing was written: the slot's row as it stands, or `None` when the slot has no row.
     Conflict(Option<SaveMeta>),
 }
@@ -128,7 +135,8 @@ impl Repo {
     }
 
     /// Writes `s` into `user`'s `slot` if `s.expected_rev` matches: `None` creates the slot at rev 1, `Some(n)`
-    /// replaces rev `n` with rev `n + 1`. Each branch is ONE write statement with no explicit transaction (K19): it
+    /// replaces rev `n` with rev `n + 1`. A write whose `write_id` the stored row already carries writes nothing and
+    /// is [`PutOutcome::Replayed`], whatever its `expected_rev` (the one retry contract). Each branch is ONE write statement with no explicit transaction (K19): it
     /// takes SQLite's write lock at its start, so two concurrent writers serialize under `busy_timeout` and no
     /// read is upgraded to a write. The split matters: one UPSERT would create rev 1 for `Some(5)` on an empty slot.
     pub async fn put_save(
@@ -159,7 +167,7 @@ impl Repo {
                 sqlx::query_as(
                     "UPDATE saves SET rev = rev + 1, chapter_id = ?, story_version = ?, line_id = ?, \
                      write_id = ?, body = ?, saved_at = ? \
-                     WHERE user_id = ? AND slot = ? AND rev = ? RETURNING rev, saved_at",
+                     WHERE user_id = ? AND slot = ? AND rev = ? AND write_id <> ? RETURNING rev, saved_at",
                 )
                 .bind(s.chapter_id)
                 .bind(s.story_version)
@@ -170,6 +178,7 @@ impl Repo {
                 .bind(user.0)
                 .bind(slot.as_str())
                 .bind(expected)
+                .bind(s.write_id)
                 .fetch_optional(&self.pool)
                 .await?
             }
@@ -179,7 +188,13 @@ impl Repo {
         }
         // Nothing written. The read sees a state committed at or after the failed condition (revs only grow), so
         // the answer is the row as it stands now.
-        Ok(PutOutcome::Conflict(self.save_meta(user, slot).await?))
+        Ok(match self.save_meta(user, slot).await? {
+            Some(stored) if stored.write_id == s.write_id => PutOutcome::Replayed {
+                rev: stored.rev,
+                saved_at: stored.saved_at,
+            },
+            stored => PutOutcome::Conflict(stored),
+        })
     }
 
     /// The save of `user` in `slot` without its body.

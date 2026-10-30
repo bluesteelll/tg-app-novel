@@ -365,3 +365,79 @@ async fn saves_concurrent_writes_one_wins() {
     }
     report(&failures);
 }
+
+/// The one retry contract: a PUT whose `writeId` equals the stored row's gets 200 with the stored `rev` and `savedAt`
+/// and writes nothing, whatever its `expectedRev`. Only the stored row's `writeId` replays: an older one conflicts.
+#[tokio::test]
+async fn saves_retry_same_write_id_ok() {
+    let (st, _dir) = saves_state(&[ANN]).await;
+    let mut failures = Vec::new();
+
+    // (1) A create, then its retry later with another body: the stored answer, the stored row.
+    let reply = put(&st, ANN, "auto", request(None, "w1")).await;
+    failures.extend(expect_json(
+        "PUT auto null/w1",
+        &reply,
+        200,
+        &written(1, T0),
+    ));
+    let retry = request_with(None, "w1", ENV1, &save_body("w1 again")).to_string();
+    let reply = put(&at(&st, T0 + 5), ANN, "auto", retry).await;
+    failures.extend(expect_json(
+        "retry null/w1 at T0+5 with another body",
+        &reply,
+        200,
+        &written(1, T0),
+    ));
+    failures.extend(
+        expect_rows(
+            "after the retry of w1",
+            &st,
+            ANN,
+            &[row("auto", 1, "w1", T0)],
+        )
+        .await,
+    );
+
+    // (2) An update, then its retry.
+    let reply = put(&at(&st, T0 + 10), ANN, "auto", request(Some(1), "w2")).await;
+    failures.extend(expect_json(
+        "PUT auto 1/w2 at T0+10",
+        &reply,
+        200,
+        &written(2, T0 + 10),
+    ));
+    let reply = put(&at(&st, T0 + 15), ANN, "auto", request(Some(1), "w2")).await;
+    failures.extend(expect_json(
+        "retry 1/w2 at T0+15",
+        &reply,
+        200,
+        &written(2, T0 + 10),
+    ));
+
+    // (3) The stored writeId, whatever its expectedRev; (4) even the stored rev itself writes nothing.
+    for expected_rev in [Some(99), None, Some(2)] {
+        let case = format!("w2 with expectedRev {expected_rev:?} at T0+20");
+        let reply = put(&at(&st, T0 + 20), ANN, "auto", request(expected_rev, "w2")).await;
+        failures.extend(expect_json(&case, &reply, 200, &written(2, T0 + 10)));
+    }
+    failures.extend(
+        expect_rows(
+            "after the retries of w2",
+            &st,
+            ANN,
+            &[row("auto", 2, "w2", T0 + 10)],
+        )
+        .await,
+    );
+
+    // (5) Control: w1 is no longer the stored writeId, so it is a conflict naming w2.
+    let reply = put(&at(&st, T0 + 25), ANN, "auto", request(Some(1), "w1")).await;
+    failures.extend(expect_json(
+        "the older w1 with expectedRev 1",
+        &reply,
+        409,
+        &conflict(summary("auto", 2, T0 + 10, "w2")),
+    ));
+    report(&failures);
+}

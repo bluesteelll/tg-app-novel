@@ -62,7 +62,9 @@ pub async fn put_save(
         now: st.clock.now(),
     };
     match st.repo.put_save(user, slot, write).await? {
-        PutOutcome::Written { rev, saved_at } => Ok(Json(PutSaveResponse { rev, saved_at })),
+        PutOutcome::Written { rev, saved_at } | PutOutcome::Replayed { rev, saved_at } => {
+            Ok(Json(PutSaveResponse { rev, saved_at }))
+        }
         PutOutcome::Conflict(stored) => Err(ApiError::SaveConflict(stored.map(summary))),
     }
 }
