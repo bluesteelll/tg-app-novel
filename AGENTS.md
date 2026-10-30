@@ -15,12 +15,17 @@ section true to the tree:
 - **`client/`** — Svelte 5 (runes) + Vite + TypeScript `strict`. PixiJS v8 driven **imperatively** by one scene
   controller (no `svelte-pixi`); a Svelte **DOM overlay** owns text and UI; the **inkjs runtime only** (never
   `inkjs/full` in the bundle); GSAP for tweens; one Telegram client module wraps the Mini App API.
-- **`story/`** — Ink sources. Compiled at build time to **one JSON per chapter**; paid chapters never enter the
-  public bundle.
+- **`story/`** — Ink sources (`story/chapters.json` lists the chapters with their free/paid tier; `story/cast.json`
+  the speakers). Compiled at build time to **one JSON per chapter**; paid chapters never enter the public bundle.
 - **`server/`** — Rust 2024, axum 0.8: initData validation → own short-lived token; saves; entitlements; Stars
   invoices; the Telegram webhook on frankenstein types (no bot framework); paid-chapter delivery after an
   entitlement check. SQLite (WAL) behind a repository seam for the prototype, PostgreSQL in production.
-- **`assets/`** — art/audio sources; shipped as AVIF (+ WebP fallback) and AAC/M4A.
+- **`server/dev/`** — crate `server-dev`: the dev-only binary (`/dev/launch` with dev-signed initData, simulated
+  payments through the real webhook handler); never linked into the production `server`.
+- **`assets/`** — art/audio sources; shipped as AVIF (+ WebP fallback) and AAC/M4A. `assets/catalog.json` is the
+  asset catalog the story lint checks tags against.
+- **Generated, git-ignored:** `client/src/story-gen/` (free chapters), `server/content/` (paid chapters, served
+  only after an entitlement check), `client/public/assets/`, `client/dist/`, `client/dist-e2e/`, `target/e2e/`.
 - Later: **`worker/`** — Cloudflare Worker (TypeScript) serving paid assets from R2.
 
 Maps (created by the first lanes): [docs/FEATURE_MAP.md](docs/FEATURE_MAP.md) (first point of contact — "where is
