@@ -35,12 +35,14 @@ export const ENGINE_SRC = 'src/app/engine.ts';
 const JS = /\.m?js$/;
 
 type Closure = { keys: Set<string>; missing: string[] };
+/** `imports` load before a chunk runs; `dynamicImports` load when it calls them (Pixi's `init` always does). */
+type Edges = 'static' | 'static+dynamic';
 type Entry = { ok: true; key: string; chunk: ManifestChunk } | { ok: false; reason: string };
 
 export function evaluate(inputs: BudgetInputs, limits: Limits): Row[] {
   const sizes = new Map(inputs.files.map((f) => [f.path, f.brBytes]));
   const entry = findEntry(inputs.manifest);
-  const entryClosure = entry.ok && inputs.manifest !== null ? closure(inputs.manifest, entry.key) : null;
+  const entryClosure = entry.ok && inputs.manifest !== null ? closure(inputs.manifest, entry.key, 'static') : null;
   return [
     manifestRow(inputs, entry, sizes),
     entryRow(inputs, entry, entryClosure, sizes, limits),
@@ -63,8 +65,8 @@ function findEntry(manifest: Record<string, ManifestChunk> | null): Entry {
   return { ok: true, key: first[0], chunk: first[1] };
 }
 
-/** The chunk and everything it imports statically, transitively (what loads before it runs). */
-function closure(manifest: Record<string, ManifestChunk>, start: string): Closure {
+/** The chunk and everything it reaches through `edges`, transitively. */
+function closure(manifest: Record<string, ManifestChunk>, start: string, edges: Edges): Closure {
   const keys = new Set<string>();
   const missing: string[] = [];
   const queue = [start];
@@ -79,6 +81,9 @@ function closure(manifest: Record<string, ManifestChunk>, start: string): Closur
     }
     keys.add(key);
     queue.push(...(chunk.imports ?? []));
+    if (edges === 'static+dynamic') {
+      queue.push(...(chunk.dynamicImports ?? []));
+    }
   }
   return { keys, missing };
 }
@@ -178,8 +183,10 @@ function engineRow(
   }
   const keys = new Set<string>();
   const absent: string[] = [];
+  // Application.init() always imports Pixi's environment chunk (browserAll) dynamically, and the 230 KB basis
+  // (P:1739, R4 145.1 K) counts it: the engine row follows dynamic imports too; the entry row stays static (P:1738).
   for (const root of roots) {
-    const c = closure(manifest, root);
+    const c = closure(manifest, root, 'static+dynamic');
     c.keys.forEach((k) => keys.add(k));
     absent.push(...c.missing);
   }

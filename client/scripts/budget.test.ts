@@ -123,6 +123,33 @@ describe('budget evaluate', () => {
     expect(rowOf(rows, 'entry closure JS (br)').valueBytes).toBe(12_000);
   });
 
+  test("budget: engine row counts the engine's dynamic imports", () => {
+    // Pixi's default Application.init() downloads its environment chunk through a dynamic import (browserAll,
+    // which pulls more): the engine's real boot download, and the 230 KB basis, include it.
+    const base = withEngine(inputs(), 20_000, 180_000);
+    const manifest = { ...base.manifest };
+    const engine = manifest[ENGINE_SRC];
+    if (engine === undefined) {
+      throw new Error('invariant: withEngine adds the engine chunk');
+    }
+    manifest[ENGINE_SRC] = { ...engine, dynamicImports: ['_browserAll-f.js'] };
+    manifest['_browserAll-f.js'] = {
+      file: 'assets/browserAll-f.js',
+      imports: ['_shared-b.js', '_pixi-e.js'],
+      dynamicImports: ['_init-g.js'],
+    };
+    manifest['_init-g.js'] = { file: 'assets/init-g.js', imports: ['_pixi-e.js'], dynamicImports: [ENGINE_SRC] };
+    const files = [...base.files, file('assets/browserAll-f.js', 30_000), file('assets/init-g.js', 10_000)];
+    const rows = evaluate({ ...base, manifest, files }, LIMITS);
+    const row = rowOf(rows, 'engine closure JS (br)');
+    // 20 000 + 180 000 static, 30 000 + 10 000 dynamic; the entry's shared chunk (2 000) is still excluded.
+    expect(row.status).toBe('FAIL');
+    expect(row.valueBytes).toBe(240_000);
+    expect(row.note).toContain('4 chunks');
+    // The entry row stays static: the entry's dynamic import of the engine is not part of its first download.
+    expect(rowOf(rows, 'entry closure JS (br)').valueBytes).toBe(12_000);
+  });
+
   test('budget: all js over limit fails', () => {
     const base = inputs();
     const lazy = Array.from({ length: 10 }, (_, i) => file(`assets/lazy-${i}.js`, 27_000));
