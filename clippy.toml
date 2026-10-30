@@ -1,0 +1,7 @@
+allow-unwrap-in-tests = true
+
+disallowed-methods = [
+    { path = "std::fs::read", reason = "blocking I/O; use tokio::fs in async code" },
+    { path = "std::fs::read_to_string", reason = "blocking I/O; use tokio::fs in async code" },
+    { path = "std::thread::sleep", reason = "blocks a runtime worker; use tokio::time::sleep" },
+]
