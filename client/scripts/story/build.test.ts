@@ -825,6 +825,21 @@ test(
 );
 
 test(
+  'lint: paid/leak red on fixture (story cli)',
+  () => {
+    // Lint, compile and graph see a clean free line; only the read-back of the written story-gen tree can tell that
+    // its text names a paid line ID, so this is the one net of the `story` gate for it.
+    withRepo({ ...repoFiles(), 'story/ch1/main.ink': ch1With('Здесь упомянут ch2.archive.p001. #id:ch1.cafe.f003') }, (root) => {
+      const r = runStory(root);
+      expect(r.status, r.stdout + r.stderr).toBe(1);
+      expect(r.stdout).toMatch(/^E client\/src\/story-gen\/free\/ch1\.story\.json:0 paid\/leak paid line ID 'ch2\.archive\.p001'/m);
+      expect(r.stdout).toMatch(/^story: 1 errors, 0 warnings$/m);
+    });
+  },
+  CLI_TIMEOUT_MS,
+);
+
+test(
   'story: cli runs through a linked path',
   () => {
     // Node runs the main module from its realpath while argv[1] keeps the caller's spelling (a junction, macOS's
