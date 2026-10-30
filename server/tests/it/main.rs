@@ -7,6 +7,7 @@
 // Every allowance in this crate states why (L2 review M2); `-D warnings` makes a bare `allow` a gate failure.
 #![warn(clippy::allow_attributes_without_reason)]
 
+mod auth;
 mod common;
 mod schema;
 
