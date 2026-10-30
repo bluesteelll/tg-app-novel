@@ -147,11 +147,18 @@ function choice<T extends string>(
   return hit ?? fail(tag, 'bad-arg', `${name}=${value} is not one of ${allowed.join(', ')}`);
 }
 
+function unknownAsset(tag: string, what: string): TagError {
+  return fail(tag, 'unknown-asset', `${what} is not in assets/catalog.json`);
+}
+
 const SLOTS: readonly Slot[] = ['left', 'center', 'right'];
 const FADE_CUT = ['fade', 'cut'] as const;
 
-/** One command tag after its kind is known; arg shape first, then values, then the catalog (§6). */
-function command(tag: string, kind: CommandKind, rawArgs: string | undefined, _assets: AssetIndex): One | TagError {
+/**
+ * One command tag after its kind is known: arg shape first, then values, then the catalog (§6, §8). Reserved words
+ * are only valid in their own slot; elsewhere they are unknown assets, since the catalog never lists them.
+ */
+function command(tag: string, kind: CommandKind, rawArgs: string | undefined, assets: AssetIndex): One | TagError {
   switch (kind) {
     case 'bg': {
       const a = readArgs(tag, kind, rawArgs, 1, ['t', 'ms']);
@@ -161,6 +168,7 @@ function command(tag: string, kind: CommandKind, rawArgs: string | undefined, _a
       const ms = intOption(tag, a.options, 'ms', 500, MS_MAX);
       if (typeof ms === 'object') return ms;
       const [bg] = a.positional as [string];
+      if (!assets.hasBg(bg)) return unknownAsset(tag, `bg '${bg}'`);
       return { kind: 'command', command: { kind, bg: bg as BgId, t, ms } };
     }
     case 'scene': {
@@ -171,6 +179,7 @@ function command(tag: string, kind: CommandKind, rawArgs: string | undefined, _a
       const ms = intOption(tag, a.options, 'ms', 800, MS_MAX);
       if (typeof ms === 'object') return ms;
       const [bg] = a.positional as [string];
+      if (!assets.hasBg(bg)) return unknownAsset(tag, `bg '${bg}'`);
       return { kind: 'command', command: { kind, bg: bg as BgId, t, ms } };
     }
     case 'show': {
@@ -183,6 +192,8 @@ function command(tag: string, kind: CommandKind, rawArgs: string | undefined, _a
       const ms = a.options.has('ms') ? intOption(tag, a.options, 'ms', 0, MS_MAX) : null;
       if (typeof ms === 'object' && ms !== null) return ms;
       const [char, expr] = a.positional as [string, string];
+      if (!assets.hasChar(char)) return unknownAsset(tag, `character '${char}'`);
+      if (!assets.hasExpr(char, expr)) return unknownAsset(tag, `expression '${expr}' of '${char}'`);
       return { kind: 'command', command: { kind, char: char as CharId, expr: expr as ExprId, at, t, ms } };
     }
     case 'hide': {
@@ -193,6 +204,7 @@ function command(tag: string, kind: CommandKind, rawArgs: string | undefined, _a
       const ms = intOption(tag, a.options, 'ms', 300, MS_MAX);
       if (typeof ms === 'object') return ms;
       const [char] = a.positional as [string];
+      if (char !== 'all' && !assets.hasChar(char)) return unknownAsset(tag, `character '${char}'`);
       return { kind: 'command', command: { kind, char: char === 'all' ? 'all' : (char as CharId), t, ms } };
     }
     case 'cg': {
@@ -203,6 +215,7 @@ function command(tag: string, kind: CommandKind, rawArgs: string | undefined, _a
       const ms = intOption(tag, a.options, 'ms', 500, MS_MAX);
       if (typeof ms === 'object') return ms;
       const [cg] = a.positional as [string];
+      if (cg !== 'off' && !assets.hasCg(cg)) return unknownAsset(tag, `cg '${cg}'`);
       return { kind: 'command', command: { kind, cg: cg === 'off' ? null : (cg as CgId), t, ms } };
     }
     case 'bgm': {
@@ -213,6 +226,7 @@ function command(tag: string, kind: CommandKind, rawArgs: string | undefined, _a
       const vol = intOption(tag, a.options, 'vol', 100, 100);
       if (typeof vol === 'object') return vol;
       const [track] = a.positional as [string];
+      if (track !== 'stop' && !assets.hasTrack(track)) return unknownAsset(tag, `bgm '${track}'`);
       return { kind: 'command', command: { kind, track: track === 'stop' ? null : (track as TrackId), fadeMs, vol } };
     }
     case 'sfx': {
@@ -221,6 +235,7 @@ function command(tag: string, kind: CommandKind, rawArgs: string | undefined, _a
       const vol = intOption(tag, a.options, 'vol', 100, 100);
       if (typeof vol === 'object') return vol;
       const [sfx] = a.positional as [string];
+      if (!assets.hasSfx(sfx)) return unknownAsset(tag, `sfx '${sfx}'`);
       return { kind: 'command', command: { kind, sfx: sfx as SfxId, vol } };
     }
     case 'wait': {

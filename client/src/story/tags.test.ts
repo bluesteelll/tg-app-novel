@@ -1,5 +1,9 @@
 import { expect, test } from 'vitest';
 
+import catalogText from '../../../assets/catalog.json?raw';
+import castText from '../../../story/cast.json?raw';
+import { assetIndex, decodeAssetCatalog, decodeCast } from './catalog.ts';
+import type { AssetCatalog, CatalogIssue } from './catalog.ts';
 import type { AssetIndex, ParsedTags } from './staging.ts';
 import { LINE_ID_RE, SPEAKER_RE, parseTags, splitSpeaker } from './tags.ts';
 
@@ -272,4 +276,190 @@ test('tags: speaker prefix splits per the §5 grammar', () => {
     expect(splitSpeaker(line), line).toEqual({ speaker, text });
   }
   expect(SPEAKER_RE.source).toBe('^([a-z][a-z0-9_]*): (.+)$');
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Catalog and cast. Positive cases read the committed files (a later lane that adds required entry fields updates
+// those files and the decoder together); negative cases assert that one specific issue is present, never the
+// exact list, so new required fields do not break them.
+
+type RawCatalog = {
+  bg: Record<string, unknown>;
+  chars: Record<string, unknown>;
+  cg: Record<string, unknown>;
+  bgm: Record<string, unknown>;
+  sfx: Record<string, unknown>;
+  [key: string]: unknown;
+};
+
+const BOM = String.fromCharCode(0xfeff);
+
+function stripBom(text: string): string {
+  return text.startsWith(BOM) ? text.slice(1) : text;
+}
+
+function parseJson(text: string): unknown {
+  return JSON.parse(stripBom(text));
+}
+
+/** A fresh, mutable parse of the committed assets/catalog.json. */
+function rawCatalog(): RawCatalog {
+  return JSON.parse(stripBom(catalogText));
+}
+
+function committedCatalog(): AssetCatalog {
+  const r = decodeAssetCatalog(rawCatalog());
+  if (!r.ok) {
+    throw new Error(`invariant: the committed catalog decodes: ${JSON.stringify(r.error)}`);
+  }
+  return r.value;
+}
+
+function issues(r: { ok: true } | { ok: false; error: CatalogIssue[] }): CatalogIssue[] {
+  return r.ok ? [] : r.error;
+}
+
+test('tags: unknown asset is an error value', () => {
+  const unknown = [
+    'bg: nowhere',
+    'scene: nowhere',
+    'show: nobody smile',
+    'show: ally grin',
+    'show: stranger worried',
+    'show: voice neutral',
+    'hide: nobody',
+    'hide: voice',
+    'cg: nothing',
+    'bgm: silence',
+    'sfx: bang',
+    // Reserved words are valid only in their own slot.
+    'bg: all',
+    'scene: off',
+    'cg: all',
+    'cg: stop',
+    'bgm: off',
+    'bgm: all',
+    'sfx: stop',
+    'hide: off',
+    'hide: stop',
+    'show: all smile',
+    'show: ally off',
+  ];
+  for (const index of [DEMO, assetIndex(committedCatalog())]) {
+    for (const tag of unknown) {
+      const r = parseTags([tag], index);
+      expect(r.errors, tag).toEqual([{ tag, reason: 'unknown-asset', detail: expect.any(String) }]);
+      expect(r.commands, tag).toEqual([]);
+    }
+    for (const tag of ['hide: all', 'cg: off', 'bgm: stop', 'show: stranger serious', 'bg: archive', 'sfx: steps']) {
+      expect(parseTags([tag], index).errors, tag).toEqual([]);
+    }
+  }
+});
+
+test('catalog: demo catalog and cast decode', () => {
+  const catalog = committedCatalog();
+  const keys = (o: object): string[] => Object.keys(o).sort();
+  expect(keys(catalog.bg)).toEqual(['archive', 'cafe', 'room', 'street']);
+  expect(keys(catalog.chars)).toEqual(['ally', 'stranger']);
+  expect(Object.fromEntries(Object.entries(catalog.chars).map(([c, v]) => [c, keys(v.exprs)]))).toEqual({
+    ally: ['angry', 'neutral', 'smile', 'worried'],
+    stranger: ['neutral', 'serious', 'smile'],
+  });
+  expect(keys(catalog.cg)).toEqual(['letter', 'reveal']);
+  expect(keys(catalog.bgm)).toEqual(['calm', 'mystery', 'tension']);
+  expect(keys(catalog.sfx)).toEqual(['door', 'phone', 'steps']);
+  expect(decodeCast(parseJson(castText), catalog)).toEqual({
+    ok: true,
+    value: { ally: { char: 'ally' }, stranger: { char: 'stranger' }, voice: { char: null } },
+  });
+});
+
+test('catalog: malformed catalog is an error value', () => {
+  const ownProto = (o: object): void => {
+    // An own `__proto__` key, as JSON.parse creates it (an assignment would set the prototype instead).
+    Object.defineProperty(o, '__proto__', { value: {}, enumerable: true, configurable: true, writable: true });
+  };
+  const cases: ReadonlyArray<readonly [string, (c: RawCatalog) => void, string]> = [
+    ['reserved bg', (c) => (c.bg['all'] = {}), 'bg.all'],
+    ['reserved cg', (c) => (c.cg['off'] = {}), 'cg.off'],
+    ['reserved bgm', (c) => (c.bgm['stop'] = {}), 'bgm.stop'],
+    ['reserved char', (c) => (c.chars['all'] = { exprs: { neutral: {} } }), 'chars.all'],
+    ['reserved expr', (c) => (c.chars['ally'] = { exprs: { off: {} } }), 'chars.ally.exprs.off'],
+    ['Bad key', (c) => (c.bg['Bad'] = {}), 'bg.Bad'],
+    ['bad char key', (c) => (c.chars['Ally'] = { exprs: { neutral: {} } }), 'chars.Ally'],
+    ['digit-first key', (c) => (c.sfx['1door'] = {}), 'sfx.1door'],
+    ['unknown top-level key', (c) => (c['bgms'] = {}), 'bgms'],
+    ['missing namespace', (c) => Reflect.deleteProperty(c, 'cg'), 'cg'],
+    ['character without exprs', (c) => (c.chars['ghost'] = {}), 'chars.ghost.exprs'],
+    ['character with no expressions', (c) => (c.chars['ghost'] = { exprs: {} }), 'chars.ghost.exprs'],
+    ['unknown character key', (c) => (c.chars['ghost'] = { exprs: { neutral: {} }, size: 1 }), 'chars.ghost.size'],
+    ['namespace not an object', (c) => Reflect.set(c, 'bg', []), 'bg'],
+    ['entry not an object', (c) => (c.bg['cafe'] = 5), 'bg.cafe'],
+    ['__proto__ key', (c) => ownProto(c.bg), 'bg.__proto__'],
+  ];
+  for (const [name, mutate, path] of cases) {
+    const raw = rawCatalog();
+    mutate(raw);
+    const r = decodeAssetCatalog(raw);
+    expect(r.ok, name).toBe(false);
+    expect(issues(r), name).toContainEqual({ file: 'assets/catalog.json', path, detail: expect.any(String) });
+  }
+  for (const raw of [42, 'catalog', null, [], undefined]) {
+    expect(issues(decodeAssetCatalog(raw)), String(raw)).toContainEqual({
+      file: 'assets/catalog.json',
+      path: '',
+      detail: expect.any(String),
+    });
+  }
+});
+
+test('catalog: cast char must exist in the catalog', () => {
+  const catalog = committedCatalog();
+  // Positive control: the committed cast decodes against the committed catalog.
+  expect(decodeCast(parseJson(castText), catalog).ok).toBe(true);
+  const cases: ReadonlyArray<readonly [unknown, string]> = [
+    [{ ghost: { char: 'ghost' } }, 'ghost.char'],
+    [{ ally: { char: 'voice' } }, 'ally.char'],
+    [{ ally: { char: 'constructor' } }, 'ally.char'],
+    [{ ally: { char: 'archive' } }, 'ally.char'],
+    [{ ally: { char: 5 } }, 'ally.char'],
+    [{ ally: {} }, 'ally.char'],
+    [{ ally: { char: 'ally', name: 'Ally' } }, 'ally.name'],
+    [{ Ally: { char: 'ally' } }, 'Ally'],
+    [{ ally: 'ally' }, 'ally'],
+    [[], ''],
+  ];
+  for (const [raw, path] of cases) {
+    const r = decodeCast(raw, catalog);
+    expect(r.ok, path).toBe(false);
+    expect(issues(r), JSON.stringify(raw)).toContainEqual({ file: 'story/cast.json', path, detail: expect.any(String) });
+  }
+});
+
+test('catalog: lookups ignore inherited properties', () => {
+  const index = assetIndex(committedCatalog());
+  const tags = [
+    'bg: constructor',
+    'scene: constructor',
+    'show: constructor smile',
+    'show: ally constructor',
+    'hide: constructor',
+    'cg: constructor',
+    'bgm: constructor',
+    'sfx: constructor',
+  ];
+  for (const tag of tags) {
+    expect(reasons(parseTags([tag], index)), tag).toEqual(['unknown-asset']);
+  }
+  for (const name of ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf']) {
+    expect(index.hasBg(name), name).toBe(false);
+    expect(index.hasChar(name), name).toBe(false);
+    expect(index.hasExpr('ally', name), name).toBe(false);
+    expect(index.hasExpr(name, 'smile'), name).toBe(false);
+    expect(index.hasCg(name), name).toBe(false);
+    expect(index.hasTrack(name), name).toBe(false);
+    expect(index.hasSfx(name), name).toBe(false);
+  }
+  expect(index.hasExpr('ally', 'smile')).toBe(true);
 });
