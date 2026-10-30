@@ -1,14 +1,26 @@
 //! Auth: initData checked against vectors from an independent Node signer (`tests/fixtures/sign_initdata.mjs`),
-//! and the server's own session token.
+//! the server's own session token, and the `AuthUser` extractor.
 
+use std::sync::Arc;
+
+use axum::Router;
+use axum::body::Body;
+use axum::http::header::AUTHORIZATION;
+use axum::http::{Request, StatusCode};
+use axum::routing::get;
 use hmac::{Hmac, KeyInit, Mac};
+use http_body_util::BodyExt;
 use serde::Deserialize;
+use server::AppState;
 use server::auth::{
-    InitData, InitDataError, TokenError, TokenKey, data_check_string, issue_token,
+    AuthUser, InitData, InitDataError, TokenError, TokenKey, data_check_string, issue_token,
     validate_init_data, verify_token,
 };
+use server::clock::FixedClock;
 use server::ids::UserId;
 use sha2::Sha256;
+use tempfile::TempDir;
+use tower::ServiceExt;
 
 use crate::common;
 
@@ -334,5 +346,146 @@ fn token_rejects_tampered_parts() {
             "key B on a key-A token: expected Err(BadMac), got {got:?}"
         ));
     }
+    report(&failures);
+}
+
+/// A test-only router: the extractor is exercised without a production route that needs a token.
+fn probe_router(st: AppState) -> Router {
+    Router::new()
+        .route(
+            "/probe",
+            get(|AuthUser(user): AuthUser| async move { user.0.to_string() }),
+        )
+        .with_state(st)
+}
+
+/// `GET /probe` with an optional `Authorization` header: the status and the body text.
+async fn probe(st: &AppState, authorization: Option<&str>) -> (StatusCode, String) {
+    let mut req = Request::get("/probe");
+    if let Some(value) = authorization {
+        req = req.header(AUTHORIZATION, value);
+    }
+    let response = probe_router(st.clone())
+        .oneshot(req.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8_lossy(&body).into_owned())
+}
+
+/// Probes every case and collects the mismatches; `want` is (status, exact body).
+async fn probe_cases(st: &AppState, cases: &[(&str, Option<String>, u16, &str)]) -> Vec<String> {
+    let mut failures = Vec::new();
+    for (case, authorization, status, body) in cases {
+        let got = probe(st, authorization.as_deref()).await;
+        if got.0.as_u16() != *status || got.1 != *body {
+            failures.push(format!(
+                "{case}: expected {status} {body}, got {} {}",
+                got.0.as_u16(),
+                got.1
+            ));
+        }
+    }
+    failures
+}
+
+/// A migrated state whose clock reads `now`.
+async fn state_at(now: i64) -> (AppState, TempDir) {
+    let (st, dir) = common::test_state().await;
+    (st.with_clock(Arc::new(FixedClock(now))), dir)
+}
+
+const TOKEN_MISSING: &str = r#"{"error":"token_missing"}"#;
+const TOKEN_INVALID: &str = r#"{"error":"token_invalid"}"#;
+const TOKEN_EXPIRED: &str = r#"{"error":"token_expired"}"#;
+
+#[tokio::test]
+async fn token_missing_401() {
+    let (st, _dir) = state_at(T0).await;
+    let (good, _) = issue_token(&st.keys.token, UserId(1001), T0, st.cfg.token_ttl_secs);
+    let failures = probe_cases(
+        &st,
+        &[
+            ("no header", None, 401, TOKEN_MISSING),
+            (
+                "Basic scheme",
+                Some("Basic dXNlcjpwYXNz".to_owned()),
+                401,
+                TOKEN_MISSING,
+            ),
+            ("scheme only", Some("Bearer".to_owned()), 401, TOKEN_MISSING),
+            (
+                "valid token (control)",
+                Some(format!("Bearer {good}")),
+                200,
+                "1001",
+            ),
+            (
+                "lowercase scheme (control)",
+                Some(format!("bearer {good}")),
+                200,
+                "1001",
+            ),
+        ],
+    )
+    .await;
+    report(&failures);
+}
+
+#[tokio::test]
+async fn token_wrong_key_401() {
+    let (st, _dir) = state_at(T0).await;
+    let ttl = st.cfg.token_ttl_secs;
+    let (other_key, _) = issue_token(&TokenKey::new([8; 32]), UserId(1001), T0, ttl);
+    let (good, _) = issue_token(&st.keys.token, UserId(1001), T0, ttl);
+    let failures = probe_cases(
+        &st,
+        &[
+            (
+                "token of another key",
+                Some(format!("Bearer {other_key}")),
+                401,
+                TOKEN_INVALID,
+            ),
+            (
+                "not a token",
+                Some("Bearer abc".to_owned()),
+                401,
+                TOKEN_INVALID,
+            ),
+            (
+                "valid token (control)",
+                Some(format!("Bearer {good}")),
+                200,
+                "1001",
+            ),
+        ],
+    )
+    .await;
+    report(&failures);
+}
+
+/// `exp > now`: the token is good one second before `exp` and expired at `exp`.
+#[tokio::test]
+async fn token_expired_401() {
+    let (st, _dir) = state_at(T0).await;
+    let ttl = st.cfg.token_ttl_secs;
+    let (token, exp) = issue_token(&st.keys.token, UserId(1001), T0, ttl);
+    let bearer = Some(format!("Bearer {token}"));
+    let mut failures = Vec::new();
+    if exp != T0 + ttl {
+        failures.push(format!("exp: expected {}, got {exp}", T0 + ttl));
+    }
+    let at_exp = st.clone().with_clock(Arc::new(FixedClock(T0 + ttl)));
+    failures.extend(probe_cases(&at_exp, &[("at exp", bearer.clone(), 401, TOKEN_EXPIRED)]).await);
+    let before = st.clone().with_clock(Arc::new(FixedClock(T0 + ttl - 1)));
+    failures.extend(
+        probe_cases(
+            &before,
+            &[("1 s before exp (control)", bearer, 200, "1001")],
+        )
+        .await,
+    );
     report(&failures);
 }

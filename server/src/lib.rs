@@ -5,6 +5,7 @@
 
 pub mod api;
 pub mod auth;
+pub mod clock;
 pub mod config;
 pub mod db;
 pub mod error;
@@ -14,6 +15,8 @@ use std::sync::Arc;
 
 use axum::Router;
 
+use crate::auth::Keys;
+use crate::clock::{Clock, SystemClock};
 use crate::config::Config;
 use crate::db::Repo;
 
@@ -26,6 +29,10 @@ pub struct AppState {
     pub repo: Repo,
     /// The configuration the state was built from.
     pub cfg: Arc<Config>,
+    /// The MAC keys derived from `cfg`.
+    pub keys: Arc<Keys>,
+    /// The time source: the system clock, or a fixed one set by [`AppState::with_clock`] in tests.
+    pub clock: Arc<dyn Clock>,
 }
 
 impl AppState {
@@ -40,8 +47,15 @@ impl AppState {
         }
         Ok(AppState {
             repo,
+            keys: Arc::new(Keys::from_config(&cfg)),
             cfg: Arc::new(cfg),
+            clock: Arc::new(SystemClock),
         })
+    }
+
+    /// The same state reading its time from `clock` (tests pin the time; a later time is a new state).
+    pub fn with_clock(self, clock: Arc<dyn Clock>) -> AppState {
+        AppState { clock, ..self }
     }
 }
 
