@@ -322,14 +322,17 @@ test('lint: ink/name red on fixture', () => {
 });
 
 test('lint: ink/include red on fixture (outside dirs)', () => {
+  // Lines 5-7: inkjs keeps a backslash in an INCLUDE path, and the build's file handler (path.resolve on Windows)
+  // reads `..\ch2\…` and an absolute path from anywhere, so a path the lint cannot place is never inside ch1/.
+  const unplaceable = ['INCLUDE ..\\ch2\\scene.ink', 'INCLUDE /story/ch2/scene.ink', 'INCLUDE D:/story/ch2/scene.ink'];
   const f = lintSources(
     files({
-      'ch1/main.ink': entry('INCLUDE ../ch2/scene.ink', 'INCLUDE ../../outside.ink', 'INCLUDE ok.ink', '-> start', '=== start ===', '-> END'),
+      'ch1/main.ink': entry('INCLUDE ../ch2/scene.ink', 'INCLUDE ../../outside.ink', 'INCLUDE ok.ink', ...unplaceable, '-> start', '=== start ===', '-> END'),
       'ch1/ok.ink': ['=== ok ===', '-> END'],
       'ch2/scene.ink': ['=== scene ===', '-> END'],
     }),
   );
-  expect(where(f, 'ink/include')).toEqual(['ch1/main.ink:2', 'ch1/main.ink:3']);
+  expect(where(f, 'ink/include')).toEqual(['ch1/main.ink:2', 'ch1/main.ink:3', 'ch1/main.ink:5', 'ch1/main.ink:6', 'ch1/main.ink:7']);
 });
 
 test('lint: ink/include red on fixture (paid file in a free chapter)', () => {
@@ -338,7 +341,8 @@ test('lint: ink/include red on fixture (paid file in a free chapter)', () => {
   const f = lintSources(
     files(
       {
-        'ch1/main.ink': entry('INCLUDE paid/scene.ink', 'INCLUDE own.ink', '-> start', '=== start ===', '-> END'),
+        // Line 3: on Windows the build reads `paid\scene.ink` as the paid file too.
+        'ch1/main.ink': entry('INCLUDE paid/scene.ink', 'INCLUDE paid\\scene.ink', 'INCLUDE own.ink', '-> start', '=== start ===', '-> END'),
         'ch1/own.ink': ['=== own ===', '-> END'],
         'ch1/paid/main.ink': ['INCLUDE ../../common/globals.ink', '-> paid_start', '=== paid_start ===', '-> END'],
         'ch1/paid/scene.ink': ['=== secret ===', 'The secret. #id:ch1.secret.s001', '-> END'],
@@ -347,7 +351,7 @@ test('lint: ink/include red on fixture (paid file in a free chapter)', () => {
     ),
   );
   const include = f.filter((x) => x.code === 'ink/include');
-  expect(include.map((x) => `${x.file}:${x.line}`)).toEqual(['ch1/main.ink:2']);
+  expect(include.map((x) => `${x.file}:${x.line}`)).toEqual(['ch1/main.ink:2', 'ch1/main.ink:3']);
   expect(include[0]?.message).toContain('free chapter ch1 includes a file of paid chapter ch2');
 });
 

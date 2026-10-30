@@ -188,8 +188,20 @@ function dirname(path: string): string {
   return slash < 0 ? '' : path.slice(0, slash);
 }
 
-/** Joins and normalizes posix segments; a result above the story root keeps its leading `..` segments. */
-function resolvePath(dir: string, path: string): string {
+/**
+ * A drive (`X:`), a leading `/`, or any `\`. inkjs keeps a backslash in an INCLUDE path, and the build's file handler
+ * (`path.resolve` against the entry dir) reads such a path on Windows from anywhere, a paid chapter's file included.
+ */
+const UNPLACEABLE_INCLUDE_RE = /^[A-Za-z]:|^\/|\\/;
+
+/**
+ * Joins and normalizes posix segments; a result above the story root keeps its leading `..` segments. Null when the
+ * path is not story-relative posix (`UNPLACEABLE_INCLUDE_RE`): the lint cannot say which file the build would read.
+ */
+function resolvePath(dir: string, path: string): string | null {
+  if (UNPLACEABLE_INCLUDE_RE.test(path)) {
+    return null;
+  }
   const out: string[] = [];
   for (const segment of `${dir}/${path}`.split('/')) {
     if (segment === '' || segment === '.') {
@@ -204,13 +216,14 @@ function resolvePath(dir: string, path: string): string {
   return out.join('/');
 }
 
-type Include = { file: string; line: number; path: string; resolved: string };
+/** `resolved` is null for a path the lint cannot place (`ink/include`, never inside a chapter). */
+type Include = { file: string; line: number; path: string; resolved: string | null };
 type Walk = { chapter: SourceChapter; files: string[]; includes: Include[] };
 
 /**
  * The files a chapter reaches from its entry. Every INCLUDE resolves against the entry's directory, as the story
  * build's file handler does (R4 §INCLUDE: Inky semantics), never against the including file's. A path with no file
- * is skipped here: it is the compiler's error (`ink/compile`), not the lint's.
+ * is skipped here: it is the compiler's error (`ink/compile`), not the lint's. An unplaceable path is not followed.
  */
 function walk(chapter: SourceChapter, parsed: ReadonlyMap<string, readonly SourceLine[]>): Walk {
   const base = dirname(chapter.entry);
@@ -230,7 +243,7 @@ function walk(chapter: SourceChapter, parsed: ReadonlyMap<string, readonly Sourc
       }
       const resolved = resolvePath(base, l.cls.path);
       includes.push({ file, line: l.line, path: l.cls.path, resolved });
-      if (!seen.has(resolved)) {
+      if (resolved !== null && !seen.has(resolved)) {
         seen.add(resolved);
         queue.push(resolved);
       }
@@ -593,6 +606,11 @@ function lintIncludes(walks: readonly Walk[], owners: ReadonlyMap<string, Readon
   for (const w of walks) {
     const base = dirname(w.chapter.entry);
     for (const inc of w.includes) {
+      if (inc.resolved === null) {
+        const why = `a drive, a leading '/' or a '\\' can reach any file, a paid chapter's included`;
+        out.push(finding('ink/include', inc.file, inc.line, `'${inc.path}' is not a story-relative posix path: ${why} (§9, principle 0)`));
+        continue;
+      }
       const target = `'${inc.path}' resolves to '${inc.resolved}'`;
       if (!inside(inc.resolved, base) && !inside(inc.resolved, COMMON_DIR)) {
         out.push(finding('ink/include', inc.file, inc.line, `${target}, outside ${base}/ and ${COMMON_DIR}/ (§9)`));
