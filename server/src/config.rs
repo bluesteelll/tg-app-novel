@@ -701,7 +701,7 @@ mod tests {
         }
 
         // Refused: prod, or a URL that others can reach.
-        let refused: [(&str, &str); 7] = [
+        let refused: [(&str, &str); 8] = [
             ("prod", "https://example.invalid/"),
             ("test", "https://novel.trycloudflare.com/"),
             ("test", "http://192.168.1.10:8787/"),
@@ -711,6 +711,8 @@ mod tests {
             // `localhost:80` is userinfo and evil.example the host; without the `@` rule the text before the
             // colon would pass for the host.
             ("test", "http://localhost:80@evil.example/"),
+            // An unclosed IPv6 bracket is malformed, not loopback, even though `::1` follows it.
+            ("test", "http://[::1/"),
         ];
         for (env, url) in refused {
             let got = problems(&placeholders(&[
