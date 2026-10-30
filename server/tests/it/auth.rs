@@ -761,3 +761,37 @@ async fn auth_upserts_user_once() {
     }
     report(&failures);
 }
+
+/// A JSON body of exactly `len` bytes whose initData is long enough to be refused by the 4 KB rule.
+fn body_of_len(len: usize) -> String {
+    let empty = auth_body("");
+    let body = auth_body(&"a".repeat(len - empty.len()));
+    assert_eq!(body.len(), len, "body length arithmetic");
+    body
+}
+
+/// The 16 KB default body limit: 17 408 bytes is 413; 16 000 bytes passes the limit and is refused later (400).
+#[tokio::test]
+async fn auth_body_over_16k_413() {
+    let all = vectors();
+    let (st, _dir) = auth_state(&all).await;
+    let mut failures = Vec::new();
+    for (case, len, status, body) in [
+        (
+            "17 408-byte body",
+            17_408,
+            413,
+            r#"{"error":"payload_too_large"}"#,
+        ),
+        (
+            "16 000-byte body (control)",
+            16_000,
+            400,
+            r#"{"error":"bad_request"}"#,
+        ),
+    ] {
+        let reply = post_auth(&st, JSON, body_of_len(len)).await;
+        failures.extend(expect_reply(case, &reply, status, body));
+    }
+    report(&failures);
+}

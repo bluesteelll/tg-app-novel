@@ -4,6 +4,7 @@ pub mod auth;
 pub mod dto;
 
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::extract::rejection::JsonRejection;
 use axum::http::header::CACHE_CONTROL;
 use axum::http::{HeaderValue, StatusCode};
@@ -13,15 +14,20 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use crate::AppState;
 use crate::error::ApiError;
 
-/// The `/api` router: `Cache-Control: no-store` on every response unless a route set its own (paid content's
-/// `private, no-store`).
+/// The body limit of every `/api` route that sets none of its own (PP "HTTP API": saves raise theirs to 300 KB).
+pub const DEFAULT_BODY_LIMIT: usize = 16 * 1024;
+
+/// The `/api` router: bodies up to [`DEFAULT_BODY_LIMIT`] (axum's own default is 2 MB), and `Cache-Control:
+/// no-store` on every response unless a route set its own (paid content's `private, no-store`).
 pub fn router() -> Router<AppState> {
     // `Router::layer` wraps only the routes that exist when it is called, so routes are added in `routes()` and the
-    // layer is applied here, after all of them.
-    routes().layer(SetResponseHeaderLayer::if_not_present(
-        CACHE_CONTROL,
-        HeaderValue::from_static("no-store"),
-    ))
+    // layers are applied here, after all of them.
+    routes()
+        .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            CACHE_CONTROL,
+            HeaderValue::from_static("no-store"),
+        ))
 }
 
 /// Every `/api` route. Add new routes here, never after the layer in `router()`.
