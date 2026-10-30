@@ -104,7 +104,10 @@ function finding(code: LintCode, file: string, line: number, message: string): F
 // ---------------------------------------------------------------------------------------------------------------
 // Line shapes
 
-/** The displayed content of a text-bearing line that is not a choice (text, gather, block branch), or null. */
+/**
+ * The displayed content of a text-bearing line that is not a choice (text, gather, a block's open, branch or close
+ * line), or null.
+ */
 type Said = { speaker: string | null; text: string; tags: RawTag[]; diverts: Divert[] };
 
 function said(cls: LineClass): Said | null {
@@ -113,6 +116,7 @@ function said(cls: LineClass): Said | null {
     case 'gather':
     case 'block-open':
     case 'block-branch':
+    case 'block-close':
       return cls.text !== '' || cls.speaker !== null ? cls : null;
     default:
       return null;
@@ -138,6 +142,7 @@ export function tagsOf(cls: LineClass): RawTag[] {
     case 'logic':
     case 'block-open':
     case 'block-branch':
+    case 'block-close':
       return cls.tags;
     case 'choice':
       return [...(cls.bracket?.tags ?? []), ...cls.afterTags];
@@ -450,6 +455,7 @@ function divertsOf(cls: LineClass): Divert[] {
     case 'divert':
     case 'block-open':
     case 'block-branch':
+    case 'block-close':
       return cls.diverts;
     default:
       return [];

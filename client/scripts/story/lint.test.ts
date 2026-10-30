@@ -62,7 +62,9 @@ test('lint: tag/syntax red on fixture', () => {
 });
 
 test('lint: tag/unknown-kind red on fixture', () => {
-  expectAt(lintSources(story(['# fx: boom', 'Text. #id:ch1.start.a001'])), 'tag/unknown-kind', [0]);
+  // Line 4: a tag after a closing `}` is a tag of the compiled story too.
+  const f = lintSources(story(['# fx: boom', 'Text. #id:ch1.start.a001', '{ g_trust:', '    In. #id:ch1.start.a002', '} # fx: boom']));
+  expectAt(f, 'tag/unknown-kind', [0, 4]);
 });
 
 test('lint: tag/missing-arg red on fixture', () => {
@@ -117,8 +119,19 @@ test('lint: batch/conflict red on fixture', () => {
 });
 
 test('lint: id/missing red on fixture', () => {
-  const f = lintSources(story(['Text without an id.', 'ally: Hi.', '* [Go]', '  -> END', '- A gather line.']));
-  expectAt(f, 'id/missing', [0, 1, 2, 4]);
+  const f = lintSources(
+    story([
+      'Text without an id.', // 0
+      'ally: Hi.', // 1
+      '* [Go]', // 2
+      '  -> END', // 3
+      '- A gather line.', // 4
+      '{ g_trust:', // 5
+      '    In. #id:ch1.start.a001', // 6
+      '} Text without an id.', // 7: ink prints the text after a closing `}`
+    ]),
+  );
+  expectAt(f, 'id/missing', [0, 1, 2, 4, 7]);
 });
 
 test('lint: id/format red on fixture', () => {
@@ -488,6 +501,9 @@ test('lint: every finding is reported', () => {
         'ghost: Hello. #id:ch1.start.ab12', // 5: speaker/unknown
         'Hi <> there. #id:ch1.start.cd34', // 6: text/glue
         'Bye. #id:ch2.start.ef56', // 7: id/chapter-prefix
+        '{ g_trust:',
+        '    In. #id:ch1.start.gh78',
+        '} -> DONE', // 10: ink/forbidden, a divert after a closing `}`
         '-> END',
       ),
     }),
@@ -498,5 +514,6 @@ test('lint: every finding is reported', () => {
     '5 speaker/unknown',
     '6 text/glue',
     '7 id/chapter-prefix',
+    '10 ink/forbidden',
   ]);
 });

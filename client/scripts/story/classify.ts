@@ -72,7 +72,14 @@ export type LineClass =
       tags: RawTag[];
       diverts: Divert[];
     }
-  | { kind: 'block-close' };
+  | {
+      kind: 'block-close';
+      /** Content after the `}` on the same line: ink prints it as an ordinary line; usually empty. */
+      speaker: string | null;
+      text: string;
+      tags: RawTag[];
+      diverts: Divert[];
+    };
 
 /** One source line: `raw` as written, `code` after comment removal, the knot and stitch it sits in. */
 export type SourceLine = {
@@ -355,7 +362,7 @@ function classifyLine(raw: string, code: string, state: State): LineClass {
   const block = state.blocks[state.blocks.length - 1];
   if (t.startsWith('}')) {
     state.blocks.pop();
-    return { kind: 'block-close' };
+    return { kind: 'block-close', ...spoken(code, from + 1, to) };
   }
   if (block !== undefined && t.startsWith('-') && !t.startsWith('->')) {
     const dash = from + 1;
