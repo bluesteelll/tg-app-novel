@@ -1,7 +1,14 @@
-//! Auth: initData checked against vectors from an independent Node signer (`tests/fixtures/sign_initdata.mjs`).
+//! Auth: initData checked against vectors from an independent Node signer (`tests/fixtures/sign_initdata.mjs`),
+//! and the server's own session token.
 
+use hmac::{Hmac, KeyInit, Mac};
 use serde::Deserialize;
-use server::auth::{InitData, InitDataError, data_check_string, validate_init_data};
+use server::auth::{
+    InitData, InitDataError, TokenError, TokenKey, data_check_string, issue_token,
+    validate_init_data, verify_token,
+};
+use server::ids::UserId;
+use sha2::Sha256;
 
 use crate::common;
 
@@ -211,4 +218,121 @@ fn initdata_dcs_sorts_and_drops_only_hash() {
         .map(|(k, v)| (k.to_owned(), v.to_owned()));
     let got = data_check_string(&pairs);
     assert_eq!(got, "a=1\nb=2\nsignature=s", "data_check_string");
+}
+
+/// A fixed issue time for the token tests (unix seconds).
+const T0: i64 = 1_790_000_000;
+/// The token TTL of the test config (`TOKEN_TTL_SECS`).
+const TTL: i64 = 1800;
+/// The token key of the token tests.
+const KEY_A: [u8; 32] = [7; 32];
+
+/// The token format of PP "Token format", computed here with hmac directly, independent of `issue_token`:
+/// `v1.<uid>.<exp>.<hex HMAC-SHA256(key, "v1.<uid>.<exp>")>`.
+fn reference_token(key: &[u8; 32], uid: &str, exp: &str) -> String {
+    let signed = format!("v1.{uid}.{exp}");
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).unwrap();
+    mac.update(signed.as_bytes());
+    format!("{signed}.{}", hex::encode(mac.finalize().into_bytes()))
+}
+
+#[test]
+fn token_roundtrip() {
+    let key = TokenKey::new(KEY_A);
+    let (token, exp) = issue_token(&key, UserId(1001), T0, TTL);
+    let mut failures = Vec::new();
+    if exp != T0 + TTL {
+        failures.push(format!("exp: expected now+{TTL} = {}, got {exp}", T0 + TTL));
+    }
+    let want = reference_token(&KEY_A, "1001", &(T0 + TTL).to_string());
+    if token != want {
+        failures.push(format!("token: expected {want:?}, got {token:?}"));
+    }
+    for (case, now) in [("at issue", T0), ("one second before exp", T0 + TTL - 1)] {
+        let got = verify_token(&key, &want, now);
+        if got != Ok(UserId(1001)) {
+            failures.push(format!(
+                "verify {case}: expected Ok(UserId(1001)), got {got:?}"
+            ));
+        }
+    }
+    report(&failures);
+}
+
+#[test]
+fn token_rejects_tampered_parts() {
+    let key = TokenKey::new(KEY_A);
+    let exp = T0 + TTL;
+    let token = reference_token(&KEY_A, "1001", &exp.to_string());
+    let tag = token.rsplit('.').next().unwrap().to_owned();
+    // Flip the first hex digit: still 64 hex chars, a different MAC.
+    let flipped = format!(
+        "{}{}",
+        if tag.starts_with('0') { '1' } else { '0' },
+        &tag[1..]
+    );
+    let cases: Vec<(&str, String, Result<UserId, TokenError>)> = vec![
+        ("untampered control", token.clone(), Ok(UserId(1001))),
+        (
+            "uid 1001 -> 1002",
+            format!("v1.1002.{exp}.{tag}"),
+            Err(TokenError::BadMac),
+        ),
+        (
+            "uid written +1001",
+            format!("v1.+1001.{exp}.{tag}"),
+            Err(TokenError::BadMac),
+        ),
+        (
+            "exp changed",
+            format!("v1.1001.{}.{tag}", exp + 3600),
+            Err(TokenError::BadMac),
+        ),
+        (
+            "tag flipped",
+            format!("v1.1001.{exp}.{flipped}"),
+            Err(TokenError::BadMac),
+        ),
+        (
+            "v2 prefix",
+            format!("v2.1001.{exp}.{tag}"),
+            Err(TokenError::Malformed),
+        ),
+        (
+            "3 parts",
+            format!("v1.1001.{tag}"),
+            Err(TokenError::Malformed),
+        ),
+        (
+            "5 parts",
+            format!("v1.1001.{exp}.0.{tag}"),
+            Err(TokenError::Malformed),
+        ),
+        (
+            "non-hex tag",
+            format!("v1.1001.{exp}.{}", "z".repeat(64)),
+            Err(TokenError::Malformed),
+        ),
+        (
+            "short tag",
+            format!("v1.1001.{exp}.{}", &tag[..62]),
+            Err(TokenError::Malformed),
+        ),
+        ("empty", String::new(), Err(TokenError::Malformed)),
+    ];
+    let mut failures = Vec::new();
+    for (case, t, want) in cases {
+        let got = verify_token(&key, &t, T0);
+        if got != want {
+            failures.push(format!("{case}: expected {want:?}, got {got:?}"));
+        }
+    }
+    let other = TokenKey::new([8; 32]);
+    let got = verify_token(&other, &token, T0);
+    if got != Err(TokenError::BadMac) {
+        failures.push(format!(
+            "key B on a key-A token: expected Err(BadMac), got {got:?}"
+        ));
+    }
+    report(&failures);
 }

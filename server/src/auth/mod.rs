@@ -1,10 +1,12 @@
 //! Authentication: Telegram initData validation, then the server's own short-lived session token.
 
 pub mod initdata;
+pub mod token;
 
 pub use initdata::{
     InitData, InitDataError, TgUser, data_check_string, secret_key, validate_init_data,
 };
+pub use token::{TokenError, TokenKey, issue_token, verify_token};
 
 use hmac::{Hmac, KeyInit};
 use sha2::Sha256;
