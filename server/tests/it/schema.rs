@@ -350,9 +350,11 @@ const SQL_CALLS: [&str; 8] = [
     "execute",
 ];
 
-/// sqlx 0.9 runs only `SqlSafeStr` SQL, and the ways to hand it text built at run time are exactly these: wrapping
-/// it in `AssertSqlSafe`, pushing it into a `QueryBuilder` (`push` does not sanitize), or leaking a `String` / `Box`
-/// into a `&'static str` (`leak`). Each is banned outright in `server/src`; bind parameters need none of them.
+/// sqlx 0.9 runs only `SqlSafeStr` SQL (`&'static str` or `AssertSqlSafe`). Text built at run time gets in by
+/// wrapping it in `AssertSqlSafe`, pushing it into a `QueryBuilder` (`push` does not sanitize), or leaking a
+/// `String` / `Box` into a `&'static str` (`leak`): each is banned outright in `server/src`, and bind parameters need
+/// none of them. Not caught by name: a `String` kept in a `static` (`LazyLock` / `OnceLock`) also derefs to a
+/// `&'static str`; only the `format!` rule sees it, and only when the `format!` is within two lines of the call.
 const ESCAPE_HATCHES: [&str; 3] = ["AssertSqlSafe", "QueryBuilder", "leak"];
 
 fn identifiers(line: &str) -> impl Iterator<Item = &str> {
