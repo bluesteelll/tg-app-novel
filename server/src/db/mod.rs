@@ -1,6 +1,8 @@
 //! The repository seam: every SQL statement lives under `db/`, and the only module that names sqlx pool types.
 //! Handlers see domain types, never sqlx.
 
+pub mod users;
+
 use std::path::Path;
 use std::time::Duration;
 
@@ -16,7 +18,9 @@ pub struct Repo {
 
 impl Repo {
     /// Opens a pool of 4 connections to the SQLite file at `path`, creating the file (never its directory), in WAL
-    /// mode with `synchronous=NORMAL`. Foreign keys are enforced and a locked database is waited on for up to 5 s.
+    /// mode with `synchronous=FULL`: the WAL is synced at every commit, so a grant committed and answered 200 to
+    /// Telegram survives an OS crash or power loss (NORMAL may lose the last commits). Foreign keys are enforced and
+    /// a locked database is waited on for up to 5 s.
     pub async fn open(path: &Path) -> Result<Repo, sqlx::Error> {
         // WAL is a connection option, not a migration statement: sqlx runs a migration inside a transaction, where
         // `journal_mode` cannot change.
@@ -24,7 +28,7 @@ impl Repo {
             .filename(path)
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
-            .synchronous(SqliteSynchronous::Normal)
+            .synchronous(SqliteSynchronous::Full)
             .foreign_keys(true)
             .busy_timeout(Duration::from_secs(5));
         let pool = SqlitePoolOptions::new()
