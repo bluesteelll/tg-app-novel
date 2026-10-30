@@ -197,7 +197,8 @@ prompts and an `embed/` script cannot be launched. Lane worktrees live under the
   3. The full suites once on the lane's final HEAD (CLAUDE.md gate list), if the last round was delta-scoped.
   4. `git merge --no-ff <branch>` in the main checkout.
   5. `git rev-parse main^{tree}` must equal the lane's verified tree; otherwise stop and investigate.
-  6. No remote yet; once one exists, confirm the first push with the owner (CLAUDE.md Git).
+  6. `git push origin main` (private GitHub repository, approved by the owner 2026-10-30); before each push,
+     `git log origin/main..main --format=%B` must not mention Claude/Anthropic (the `commit-msg` hook already rejects it).
   7. `git worktree remove`, delete the lane's `target/` and `node_modules`, close the lane in `RESUME.md`, update
      `baseline.tsv` if the lane added tests, commit ORCH.
 
