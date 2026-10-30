@@ -1,0 +1,5 @@
+{
+  "ally": { "char": "ally" },
+  "stranger": { "char": "stranger" },
+  "voice": { "char": null }
+}

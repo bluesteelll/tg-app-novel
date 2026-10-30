@@ -6,7 +6,7 @@ Version: **DSL v1** (prototype). Status: designed in [PROTOTYPE-PLAN.md](PROTOTY
 - **One parser.** `client/src/story/tags.ts` (`parseTags`) is used by the story gate (`npm --prefix client run
   story`) and by the runtime. Nothing else parses tags (CLAUDE.md principle 7; enforced by `client/src/arch.test.ts`).
 - **Two-way check.** `client/src/story/dsl-doc.test.ts` reads this file: the `### \`<kind>\`` headings under
-  [§6](#6-tags) must equal the parser's command kinds, and every tag inside an ` ```ink ` block must parse against
+  [§6](#6-tags) must equal the parser's tag kinds (`TAG_KINDS` in `tags.ts`), and every tag inside an ` ```ink ` block must parse against
   `assets/catalog.json` — except a block preceded by the comment `<!-- dsl: invalid -->` (counter-examples). Change
   the parser and this file in the same commit, or the test is red.
 - **Who reads this:** the narrative-designer and writers (what to type), the developer (what to implement), the

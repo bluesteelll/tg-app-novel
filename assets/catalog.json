@@ -1,0 +1,10 @@
+{
+  "bg": { "room": {}, "street": {}, "cafe": {}, "archive": {} },
+  "chars": {
+    "ally": { "exprs": { "neutral": {}, "smile": {}, "worried": {}, "angry": {} } },
+    "stranger": { "exprs": { "neutral": {}, "smile": {}, "serious": {} } }
+  },
+  "cg": { "letter": {}, "reveal": {} },
+  "bgm": { "calm": {}, "tension": {}, "mystery": {} },
+  "sfx": { "door": {}, "phone": {}, "steps": {} }
+}
