@@ -171,7 +171,10 @@ Cost ≈ turns × context: most spend is re-reading context that grows inside ON
 - Commit completed, verified units of work automatically, in English, atomically, with an explicit path list after
   reading `git diff --cached --stat`. Every feature on its own branch (`feat/<name>`, `fix/<name>`), merged by the
   orchestrator.
-- No remote exists yet. Once one does, a push to a public branch is outward-facing — confirm the first time.
+- **Commit messages never mention Claude or Anthropic** (owner rule, 2026-10-30) — call this file "the project
+  rules". A `commit-msg` hook in `.git/hooks` rejects such messages; never bypass it.
+- Remote: `origin` = github.com/bluesteelll/tg-app-novel (private, the owner's account). The orchestrator pushes
+  `main` after each verified merge; lane branches stay local; agents never push.
 - Never `--force`, `--no-verify`, `-c core.hooksPath=`, `checkout --`, `restore`, `reset --hard`, `stash`, `clean`,
   `--amend` in agent work.
 
