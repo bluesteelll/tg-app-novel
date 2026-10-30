@@ -2,6 +2,8 @@
 //! Every rejected case sits next to a control insert that must succeed on the same parent rows, so a red names the
 //! constraint, not a missing parent or a typo.
 
+use std::path::{Path, PathBuf};
+
 use sqlx::sqlite::{SqliteConnection, SqliteQueryResult};
 
 use crate::common;
@@ -334,4 +336,109 @@ async fn schema_save_body_json_valid() {
     }
 
     report(&failures);
+}
+
+/// sqlx calls that take SQL text.
+const SQL_CALLS: [&str; 8] = [
+    "query",
+    "query_as",
+    "query_scalar",
+    "query_with",
+    "query_as_with",
+    "query_scalar_with",
+    "raw_sql",
+    "execute",
+];
+
+/// sqlx 0.9 runs only `SqlSafeStr` SQL, and the ways to hand it text built at run time are exactly these: wrapping
+/// it in `AssertSqlSafe`, pushing it into a `QueryBuilder` (`push` does not sanitize), or leaking a `String` / `Box`
+/// into a `&'static str` (`leak`). Each is banned outright in `server/src`; bind parameters need none of them.
+const ESCAPE_HATCHES: [&str; 3] = ["AssertSqlSafe", "QueryBuilder", "leak"];
+
+fn identifiers(line: &str) -> impl Iterator<Item = &str> {
+    line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|t| !t.is_empty())
+}
+
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a sync test may read files; the lint guards async handlers"
+)]
+fn rust_files(dir: &Path, files: &mut Vec<(PathBuf, String)>, problems: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        problems.push(format!("cannot read {}", dir.display()));
+        return;
+    };
+    for entry in entries {
+        let path = match entry {
+            Ok(entry) => entry.path(),
+            Err(e) => {
+                problems.push(format!("cannot list {}: {e}", dir.display()));
+                continue;
+            }
+        };
+        if path.is_dir() {
+            rust_files(&path, files, problems);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            match std::fs::read_to_string(&path) {
+                Ok(text) => files.push((path, text)),
+                Err(e) => problems.push(format!("cannot read {}: {e}", path.display())),
+            }
+        }
+    }
+}
+
+/// SQL is never built from strings in `server/src`: no escape hatch around sqlx's `SqlSafeStr`, and no `format!`
+/// within two lines of an sqlx call (the intent caught early). Comment lines are skipped, so a why-comment may name
+/// a banned item.
+#[test]
+fn no_dynamic_sql() {
+    let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+    let mut files = Vec::new();
+    let mut violations = Vec::new();
+    rust_files(root, &mut files, &mut violations);
+
+    let scanned: Vec<String> = files
+        .iter()
+        .map(|(path, _)| {
+            let rel = path.strip_prefix(root).unwrap_or(path);
+            rel.to_string_lossy().replace('\\', "/")
+        })
+        .collect();
+    if !(scanned.iter().any(|p| p == "lib.rs") && scanned.iter().any(|p| p == "db/mod.rs")) {
+        violations.push(format!("scan root wrong: {}", root.display()));
+    }
+
+    for (rel, (_, text)) in scanned.iter().zip(&files) {
+        let code: Vec<&str> = text
+            .lines()
+            .map(|line| {
+                if line.trim_start().starts_with("//") {
+                    ""
+                } else {
+                    line
+                }
+            })
+            .collect();
+        let calls_sql: Vec<bool> = code
+            .iter()
+            .map(|line| identifiers(line).any(|id| SQL_CALLS.contains(&id)))
+            .collect();
+        for (i, line) in code.iter().enumerate() {
+            for id in identifiers(line).filter(|id| ESCAPE_HATCHES.contains(id)) {
+                violations.push(format!("src/{rel}:{}: {id}", i + 1));
+            }
+            let near = i.saturating_sub(2)..(i + 3).min(code.len());
+            if line.contains("format!") && calls_sql[near].iter().any(|&c| c) {
+                violations.push(format!("src/{rel}:{}: format! next to query", i + 1));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "{} dynamic SQL violations:\n{}",
+        violations.len(),
+        violations.join("\n")
+    );
 }
