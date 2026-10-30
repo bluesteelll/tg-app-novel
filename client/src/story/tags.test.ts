@@ -1,0 +1,275 @@
+import { expect, test } from 'vitest';
+
+import type { AssetIndex, ParsedTags } from './staging.ts';
+import { LINE_ID_RE, SPEAKER_RE, parseTags, splitSpeaker } from './tags.ts';
+
+// A hand-built index of the demo ids (docs/PROTOTYPE-PLAN.md L3a). It does not go through the catalog decoder, so
+// these tests stay valid when a later lane adds required fields to the catalog entries.
+const CHARS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ['ally', new Set(['neutral', 'smile', 'worried', 'angry'])],
+  ['stranger', new Set(['neutral', 'smile', 'serious'])],
+]);
+const IDS = {
+  bg: new Set(['room', 'street', 'cafe', 'archive']),
+  cg: new Set(['letter', 'reveal']),
+  bgm: new Set(['calm', 'tension', 'mystery']),
+  sfx: new Set(['door', 'phone', 'steps']),
+};
+const DEMO: AssetIndex = {
+  hasBg: (id) => IDS.bg.has(id),
+  hasChar: (id) => CHARS.has(id),
+  hasExpr: (char, expr) => CHARS.get(char)?.has(expr) ?? false,
+  hasCg: (id) => IDS.cg.has(id),
+  hasTrack: (id) => IDS.bgm.has(id),
+  hasSfx: (id) => IDS.sfx.has(id),
+};
+
+function parse(...tags: string[]): ParsedTags {
+  return parseTags(tags, DEMO);
+}
+
+function reasons(r: ParsedTags): string[] {
+  return r.errors.map((e) => e.reason);
+}
+
+test('tags: every form from STAGING-DSL parses', () => {
+  const forms: ReadonlyArray<readonly [string, unknown]> = [
+    ['bg: cafe', { kind: 'bg', bg: 'cafe', t: 'crossfade', ms: 500 }],
+    ['bg:cafe', { kind: 'bg', bg: 'cafe', t: 'crossfade', ms: 500 }],
+    ['bg : cafe', { kind: 'bg', bg: 'cafe', t: 'crossfade', ms: 500 }],
+    ['  bg:\tcafe  ', { kind: 'bg', bg: 'cafe', t: 'crossfade', ms: 500 }],
+    ['bg: room t=fade ms=900', { kind: 'bg', bg: 'room', t: 'fade', ms: 900 }],
+    ['bg: street ms=0 t=cut', { kind: 'bg', bg: 'street', t: 'cut', ms: 0 }],
+    ['scene: cafe', { kind: 'scene', bg: 'cafe', t: 'fade', ms: 800 }],
+    ['scene: archive t=cut ms=10000', { kind: 'scene', bg: 'archive', t: 'cut', ms: 10000 }],
+    ['show: ally neutral', { kind: 'show', char: 'ally', expr: 'neutral', at: null, t: 'fade', ms: null }],
+    ['show: ally neutral at=left', { kind: 'show', char: 'ally', expr: 'neutral', at: 'left', t: 'fade', ms: null }],
+    [
+      'show: stranger serious ms=400 t=cut at=right',
+      { kind: 'show', char: 'stranger', expr: 'serious', at: 'right', t: 'cut', ms: 400 },
+    ],
+    ['show: ally smile at=center', { kind: 'show', char: 'ally', expr: 'smile', at: 'center', t: 'fade', ms: null }],
+    ['hide: stranger', { kind: 'hide', char: 'stranger', t: 'fade', ms: 300 }],
+    ['hide: all', { kind: 'hide', char: 'all', t: 'fade', ms: 300 }],
+    ['hide: ally t=cut ms=0', { kind: 'hide', char: 'ally', t: 'cut', ms: 0 }],
+    ['cg: letter', { kind: 'cg', cg: 'letter', t: 'fade', ms: 500 }],
+    ['cg: off', { kind: 'cg', cg: null, t: 'fade', ms: 500 }],
+    ['cg: reveal t=cut ms=250', { kind: 'cg', cg: 'reveal', t: 'cut', ms: 250 }],
+    ['bgm: calm', { kind: 'bgm', track: 'calm', fadeMs: 1000, vol: 100 }],
+    ['bgm: tension fade=2000 vol=80', { kind: 'bgm', track: 'tension', fadeMs: 2000, vol: 80 }],
+    ['bgm: stop', { kind: 'bgm', track: null, fadeMs: 1000, vol: 100 }],
+    ['bgm: stop fade=1500', { kind: 'bgm', track: null, fadeMs: 1500, vol: 100 }],
+    ['bgm: mystery vol=0 fade=0', { kind: 'bgm', track: 'mystery', fadeMs: 0, vol: 0 }],
+    ['sfx: door', { kind: 'sfx', sfx: 'door', vol: 100 }],
+    ['sfx: phone vol=60', { kind: 'sfx', sfx: 'phone', vol: 60 }],
+    ['wait: 1200', { kind: 'wait', ms: 1200 }],
+    ['wait: 50', { kind: 'wait', ms: 50 }],
+    ['wait: 10000', { kind: 'wait', ms: 10000 }],
+  ];
+  for (const [tag, command] of forms) {
+    expect(parse(tag), tag).toEqual({ lineId: null, commands: [command], errors: [] });
+  }
+  expect(parse('id:ch1.cafe.k3x9')).toEqual({ lineId: 'ch1.cafe.k3x9', commands: [], errors: [] });
+  // One line with a staging tag and its ID, in either order (§2 "Several tags").
+  const line = { lineId: 'ch1.cafe.k3x9', commands: [{ kind: 'sfx', sfx: 'door', vol: 100 }], errors: [] };
+  expect(parse('sfx: door', 'id:ch1.cafe.k3x9')).toEqual(line);
+  expect(parse('id:ch1.cafe.k3x9', 'sfx: door')).toEqual(line);
+});
+
+test('tags: unknown kind is an error value', () => {
+  for (const tag of ['fx: boom', 'speaker: ally', 'music: calm', 'wait2: 100', 'bgx', 'idd: ch1.cafe.k3x9']) {
+    const r = parse(tag);
+    expect(r.errors, tag).toEqual([{ tag, reason: 'unknown-kind', detail: expect.any(String) }]);
+    expect(r.commands, tag).toEqual([]);
+  }
+});
+
+test('tags: grammar violations are syntax errors', () => {
+  const tags = [
+    'BG: Cafe',
+    'Bg: cafe',
+    'bg: Cafe',
+    'bg: cafe ms=1.5',
+    'bg: cafe t = fade',
+    'bg: cafe t= fade',
+    '__x',
+    '1bg: cafe',
+    'bg: café',
+    'bg; cafe',
+    'bg cafe',
+    'bg: cafe,',
+    'show: ally smile at=Left',
+    'show: ally smile AT=left',
+    '#bg: cafe',
+    'bg: {place}',
+    'bg: cafe ms=5',
+  ];
+  for (const tag of tags) {
+    expect(reasons(parse(tag)), tag).toEqual(['syntax']);
+    expect(parse(tag).commands, tag).toEqual([]);
+  }
+});
+
+test('tags: argument count and options are checked', () => {
+  const cases: ReadonlyArray<readonly [string, string]> = [
+    ['bg', 'missing-arg'],
+    ['bg:', 'missing-arg'],
+    ['bg:   ', 'missing-arg'],
+    ['wait:', 'missing-arg'],
+    ['show: ally', 'missing-arg'],
+    ['show: ally at=left', 'missing-arg'],
+    ['bg: cafe street', 'bad-arg'],
+    ['sfx: door phone', 'bad-arg'],
+    ['show: ally smile left', 'bad-arg'],
+    ['bg: cafe x=1', 'bad-arg'],
+    ['sfx: door fade=100', 'bad-arg'],
+    ['wait: 100 ms=100', 'bad-arg'],
+    ['bg: cafe ms=100 ms=200', 'bad-arg'],
+    ['bg: cafe ms=10001', 'bad-arg'],
+    ['bgm: calm vol=101', 'bad-arg'],
+    ['bgm: calm fade=10001', 'bad-arg'],
+    ['sfx: door vol=101', 'bad-arg'],
+    ['wait: 49', 'bad-arg'],
+    ['wait: 0', 'bad-arg'],
+    ['wait: 10001', 'bad-arg'],
+    ['bg: cafe ms=abc', 'bad-arg'],
+    ['wait: abc', 'bad-arg'],
+    ['bg: cafe ms=99999999999999999999999', 'bad-arg'],
+    ['scene: cafe t=crossfade', 'bad-arg'],
+    ['bg: cafe t=dissolve', 'bad-arg'],
+    ['show: ally smile at=top', 'bad-arg'],
+    ['show: ally smile t=crossfade', 'bad-arg'],
+  ];
+  for (const [tag, reason] of cases) {
+    const r = parse(tag);
+    expect(reasons(r), tag).toEqual([reason]);
+    expect(r.commands, tag).toEqual([]);
+  }
+  for (const tag of ['bg: cafe ms=0', 'bg: cafe ms=10000', 'bgm: calm vol=0', 'sfx: door vol=100', 'show: ally smile ms=0']) {
+    expect(parse(tag).errors, tag).toEqual([]);
+  }
+});
+
+test('tags: line id is extracted and validated', () => {
+  expect(LINE_ID_RE.source).toBe('^ch[1-9][0-9]*\\.[a-z][a-z0-9_]*\\.[0-9a-z]{4}$');
+  expect(parse('id:ch1.cafe.k3x9').lineId).toBe('ch1.cafe.k3x9');
+  expect(parse('id : ch10.street_2.0a9z').lineId).toBe('ch10.street_2.0a9z');
+  const bad = [
+    'id:ch0.cafe.k3x9',
+    'id:ch01.cafe.k3x9',
+    'id:CH1.cafe.k3x9',
+    'id:ch1.Cafe.k3x9',
+    'id:ch1.1cafe.k3x9',
+    'id:ch1.cafe.k3x',
+    'id:ch1.cafe.k3x9x',
+    'id:ch1.cafe.K3X9',
+    'id:cafe.k3x9',
+    'id:ch1.cafe.k3_9',
+    'id:ch1..k3x9',
+  ];
+  for (const tag of bad) {
+    const r = parse(tag);
+    expect(reasons(r), tag).toEqual(['bad-id']);
+    expect(r.lineId, tag).toBeNull();
+  }
+  expect(reasons(parse('id:'))).toEqual(['missing-arg']);
+  expect(reasons(parse('id: ch1.cafe.k3x9 ch1.cafe.k3x8'))).toEqual(['bad-arg']);
+  const two = parse('id:ch1.cafe.k3x9', 'sfx: door', 'id:ch1.cafe.k3x8');
+  expect(two.lineId).toBe('ch1.cafe.k3x9');
+  expect(two.errors).toEqual([{ tag: 'id:ch1.cafe.k3x8', reason: 'multiple-id', detail: expect.any(String) }]);
+  expect(two.commands).toHaveLength(1);
+});
+
+test('tags: batch conflicts are error values', () => {
+  const conflicting: ReadonlyArray<readonly [string, string]> = [
+    ['bg: cafe', 'bg: room'],
+    ['bg: cafe', 'scene: room'],
+    ['scene: room', 'bg: cafe'],
+    ['scene: cafe', 'scene: room'],
+    ['scene: cafe', 'hide: ally'],
+    ['scene: cafe', 'hide: all'],
+    ['scene: cafe', 'cg: letter'],
+    ['cg: off', 'scene: cafe'],
+    ['show: ally smile', 'show: ally angry'],
+    ['show: ally smile', 'hide: ally'],
+    ['hide: ally', 'show: ally smile'],
+    ['cg: letter', 'cg: off'],
+    ['bgm: calm', 'bgm: stop'],
+    ['wait: 100', 'wait: 200'],
+    // D5: `all` names every character, so it conflicts with any show in the batch.
+    ['hide: all', 'show: ally smile'],
+    ['show: stranger neutral', 'hide: all'],
+  ];
+  for (const [first, second] of conflicting) {
+    const r = parse(first, second);
+    expect(r.errors, `${first} + ${second}`).toEqual([{ tag: second, reason: 'conflict', detail: expect.any(String) }]);
+    expect(r.commands, `${first} + ${second}`).toHaveLength(2);
+  }
+  const allowed: ReadonlyArray<readonly string[]> = [
+    ['scene: cafe', 'show: ally neutral at=left', 'show: stranger neutral', 'bgm: calm', 'sfx: door', 'wait: 500'],
+    ['sfx: door', 'sfx: steps', 'sfx: door'],
+    ['show: ally smile', 'show: stranger neutral'],
+    ['hide: ally', 'hide: ally'],
+    ['hide: all', 'hide: ally'],
+    ['bg: cafe', 'cg: letter', 'show: ally smile', 'hide: stranger', 'bgm: stop'],
+    ['hide: ally', 'show: stranger smile'],
+  ];
+  for (const tags of allowed) {
+    expect(parse(...tags).errors, tags.join(' + ')).toEqual([]);
+  }
+});
+
+test('tags: never throws on arbitrary input', () => {
+  const inputs = [
+    '',
+    '#',
+    ':',
+    ' ',
+    '\t',
+    '\n',
+    '::',
+    '=',
+    'bg:',
+    'bg: =',
+    'bg: a=',
+    'показать: анна',
+    'bg: кафе',
+    'x'.repeat(10000),
+    `bg: ${'a'.repeat(10000)}`,
+    `id:${'c'.repeat(10000)}`,
+    `bg: cafe ms=${'9'.repeat(400)}`,
+    '\u0000',
+    '\ud800',
+    'show: ally smile at=left at=left',
+    'constructor: x',
+    '__proto__: x',
+    'toString',
+  ];
+  for (const input of inputs) {
+    expect(() => parseTags([input], DEMO), JSON.stringify(input.slice(0, 40))).not.toThrow();
+  }
+  expect(() => parseTags(inputs, DEMO)).not.toThrow();
+});
+
+test('tags: speaker prefix splits per the §5 grammar', () => {
+  const cases: ReadonlyArray<readonly [string, string | null, string]> = [
+    ['ally: You came after all.', 'ally', 'You came after all.'],
+    ['voice: Is anyone there?', 'voice', 'Is anyone there?'],
+    ['x_1: hi', 'x_1', 'hi'],
+    ['ally: a: b', 'ally', 'a: b'],
+    ['ally:  two spaces', 'ally', ' two spaces'],
+    ['The rain had not stopped since noon.', null, 'The rain had not stopped since noon.'],
+    ['Note: the door was open.', null, 'Note: the door was open.'],
+    ['Mr ally: hi', null, 'Mr ally: hi'],
+    ['ally:no space', null, 'ally:no space'],
+    ['ally:', null, 'ally:'],
+    ['ally: ', null, 'ally: '],
+    ['1ally: hi', null, '1ally: hi'],
+    ['Анна: привет', null, 'Анна: привет'],
+    ['', null, ''],
+  ];
+  for (const [line, speaker, text] of cases) {
+    expect(splitSpeaker(line), line).toEqual({ speaker, text });
+  }
+  expect(SPEAKER_RE.source).toBe('^([a-z][a-z0-9_]*): (.+)$');
+});
