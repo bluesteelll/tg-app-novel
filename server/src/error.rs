@@ -6,6 +6,7 @@ use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
+use ts_rs::TS;
 
 use crate::api::dto::SaveSummary;
 
@@ -59,7 +60,7 @@ pub enum ApiError {
 }
 
 /// The stable wire codes of every error, consumed by the client's decoders.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
     /// `bad_request`
@@ -93,7 +94,7 @@ pub enum ErrorCode {
 }
 
 /// The JSON body of every error response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiErrorBody {
     /// The error code.
@@ -101,6 +102,7 @@ pub struct ApiErrorBody {
     /// `save_conflict` only: the stored row the write conflicted with. Omitted, not `null`, when absent, so every
     /// other error stays `{"error": "<code>"}`.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub current: Option<SaveSummary>,
 }
 

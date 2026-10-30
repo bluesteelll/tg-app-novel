@@ -8,6 +8,7 @@
 #![warn(clippy::allow_attributes_without_reason)]
 
 mod auth;
+mod bindings;
 mod common;
 mod saves;
 mod schema;
