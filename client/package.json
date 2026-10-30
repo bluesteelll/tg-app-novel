@@ -8,9 +8,10 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "vite build && node scripts/budget.ts && node scripts/scan-dist.ts",
+    "build": "npm run story && vite build && node scripts/budget.ts && node scripts/scan-dist.ts",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings && tsc -p tsconfig.node.json --noEmit",
+    "story": "node scripts/story.ts",
     "test": "vitest run"
   },
   "dependencies": {
