@@ -353,6 +353,9 @@ test('classify: multi-line conditionals and sequences', () => {
         '} ally: Tail. #id:ch1.a.t002',
         '{ g_x:',
         '} -> next #bg: cafe',
+        // Glued to the `}` (inkjs 2.4.0 prints `Tail.`): the remainder starts right after the brace.
+        '{ g_x:',
+        '}Tail. #id:ch1.a.t003',
         '{g_x: inline|text} #id:ch1.a.i001',
         '- A gather again.',
       ),
@@ -407,6 +410,8 @@ test('classify: multi-line conditionals and sequences', () => {
     { kind: 'block-close', speaker: 'ally', text: 'Tail.', tags: [{ text: 'id:ch1.a.t002', col: 15 }], diverts: [] },
     { kind: 'block-open', block: 'conditional', head: 'g_x', ...none },
     { kind: 'block-close', ...none, tags: [{ text: 'bg: cafe', col: 11 }], diverts: [{ target: 'next', col: 3, tunnel: false }] },
+    { kind: 'block-open', block: 'conditional', head: 'g_x', ...none },
+    { kind: 'block-close', speaker: null, text: 'Tail.', tags: [{ text: 'id:ch1.a.t003', col: 8 }], diverts: [] },
     { kind: 'text', speaker: null, text: '{g_x: inline|text}', tags: [{ text: 'id:ch1.a.i001', col: 20 }], diverts: [] },
     { kind: 'gather', depth: 1, label: null, ...none, text: 'A gather again.' },
   ]);
