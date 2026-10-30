@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use axum::Router;
 use axum::body::{Body, Bytes};
-use axum::http::header::{CONTENT_TYPE, HeaderName, LOCATION};
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, HeaderName, LOCATION};
 use axum::http::{HeaderMap, Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -145,6 +145,47 @@ fn with_user_id(init_data: &str, from: i64, to: i64) -> String {
         .finish()
 }
 
+/// The value of `key` in `pairs`.
+fn value<'a>(pairs: &'a [(String, String)], key: &str) -> Option<&'a str> {
+    pairs
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.as_str())
+}
+
+/// The keys of `pairs`, sorted, as `{a, b}` (a repeated key shows twice).
+fn key_set(pairs: &[(String, String)]) -> String {
+    let mut keys: Vec<&str> = pairs.iter().map(|(k, _)| k.as_str()).collect();
+    keys.sort_unstable();
+    format!("{{{}}}", keys.join(", "))
+}
+
+/// The theme keys `/dev/launch` sends, sorted.
+const THEME_KEYS: [&str; 7] = [
+    "bg_color",
+    "button_color",
+    "button_text_color",
+    "hint_color",
+    "link_color",
+    "secondary_bg_color",
+    "text_color",
+];
+
+/// A JSON object with exactly [`THEME_KEYS`], each value `#` and 6 hex digits.
+fn theme_ok(json: &str) -> bool {
+    let Ok(Value::Object(map)) = serde_json::from_str::<Value>(json) else {
+        return false;
+    };
+    let mut keys: Vec<&str> = map.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    keys == THEME_KEYS
+        && map.values().all(|v| {
+            v.as_str()
+                .and_then(|s| s.strip_prefix('#'))
+                .is_some_and(|hex| hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+        })
+}
+
 fn report(failures: &[String]) {
     assert!(
         failures.is_empty(),
@@ -257,6 +298,106 @@ async fn launch_signs_valid_initdata() {
                 reply.status
             ));
         }
+    }
+    report(&failures);
+}
+
+/// The redirect is a cache-free `302` to a relative `/#` hash with exactly Telegram's launch keys, in a shape
+/// Telegram's script parses (one `=` per `&` segment).
+#[tokio::test]
+async fn launch_hash_carries_launch_params() {
+    let dev = dev_app().await;
+    let reply = get(&dev, "/dev/launch").await;
+    let mut failures = Vec::new();
+    if reply.status != StatusCode::FOUND {
+        failures.push(format!("status: expected 302 Found, got {}", reply.status));
+    }
+    let cache = header(&reply, CACHE_CONTROL);
+    if cache != Some("no-store") {
+        failures.push(format!("cache-control: expected no-store, got {cache:?}"));
+    }
+    let location = header(&reply, LOCATION).unwrap_or("");
+    let hash = location.strip_prefix("/#").unwrap_or_else(|| {
+        failures.push(format!(
+            "Location: expected a relative /#<hash>, got {location:?}"
+        ));
+        ""
+    });
+    // Telegram's script keeps only the text between a segment's first and second `=`.
+    for segment in hash.split('&') {
+        if segment.matches('=').count() != 1 {
+            failures.push(format!(
+                "hash segment {segment:?}: expected exactly one '='"
+            ));
+        }
+    }
+    let pairs: Vec<(String, String)> = form_urlencoded::parse(hash.as_bytes())
+        .into_owned()
+        .collect();
+    let keys = key_set(&pairs);
+    let expected = "{tgWebAppData, tgWebAppPlatform, tgWebAppThemeParams, tgWebAppVersion}";
+    if keys != expected {
+        failures.push(format!("hash keys: expected {expected}, got {keys}"));
+    }
+    let version = value(&pairs, "tgWebAppVersion");
+    if version != Some("9.6") {
+        failures.push(format!(
+            "tgWebAppVersion: expected \"9.6\", got {version:?}"
+        ));
+    }
+    let platform = value(&pairs, "tgWebAppPlatform");
+    if platform != Some("android") {
+        failures.push(format!(
+            "tgWebAppPlatform: expected \"android\", got {platform:?}"
+        ));
+    }
+    let theme = value(&pairs, "tgWebAppThemeParams");
+    if !theme.is_some_and(theme_ok) {
+        failures.push(format!(
+            "tgWebAppThemeParams: expected a JSON object with 7 #rrggbb keys, got {theme:?}"
+        ));
+    }
+    let init_data = value(&pairs, "tgWebAppData").unwrap_or("");
+    let init_pairs: Vec<(String, String)> = form_urlencoded::parse(init_data.as_bytes())
+        .into_owned()
+        .collect();
+    let init_keys = key_set(&init_pairs);
+    if init_keys != "{auth_date, hash, user}" {
+        failures.push(format!(
+            "initData keys: expected {{auth_date, hash, user}}, got {init_keys}"
+        ));
+    }
+    report(&failures);
+}
+
+/// `?uid=&lang=&name=` choose the signed user. The name holds Cyrillic, spaces and `& = + %`, so it reaches
+/// `POST /api/auth` intact only if both layers (initData, and the hash around it) are encoded exactly once.
+#[tokio::test]
+async fn launch_query_sets_user() {
+    let dev = dev_app().await;
+    let reply = get(
+        &dev,
+        "/dev/launch?uid=2002&lang=en&name=%D0%90%D0%BD%D1%8F%20%26%20Co%20%3D%201%2B1%20%3D%20100%25",
+    )
+    .await;
+    assert!(
+        reply.status == StatusCode::FOUND,
+        "GET /dev/launch?uid=2002&lang=en&name=…: expected 302 Found, got {}",
+        reply.status
+    );
+    let auth = post_auth(&dev, &launch_init_data(&reply)).await;
+    let json = body_json(&auth);
+    let mut failures = Vec::new();
+    if auth.status != StatusCode::OK {
+        failures.push(format!(
+            "POST /api/auth: expected 200, got {} {}",
+            auth.status,
+            body_text(&auth)
+        ));
+    }
+    let user = json!({ "id": 2002, "firstName": "Аня & Co = 1+1 = 100%", "languageCode": "en" });
+    if json["user"] != user {
+        failures.push(format!("user: expected {user}, got {}", json["user"]));
     }
     report(&failures);
 }
