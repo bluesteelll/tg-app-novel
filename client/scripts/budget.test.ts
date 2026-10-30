@@ -150,6 +150,31 @@ describe('budget evaluate', () => {
     expect(rowOf(rows, 'entry closure JS (br)').valueBytes).toBe(12_000);
   });
 
+  // The CLI reads whatever dist/ is on disk (hand-edited, interrupted, partly deleted): an edge or a file the engine
+  // reaches but cannot measure would undercount its real download, so it fails instead of passing on fewer bytes.
+  test('budget: engine row fails on a dangling dynamic import key', () => {
+    const base = withEngine(inputs(), 20_000, 100_000);
+    expect(rowOf(evaluate(base, LIMITS), 'engine closure JS (br)').status).toBe('PASS'); // control: 120 000 fits
+    const manifest = { ...base.manifest };
+    const engine = manifest[ENGINE_SRC];
+    if (engine === undefined) {
+      throw new Error('invariant: withEngine adds the engine chunk');
+    }
+    manifest[ENGINE_SRC] = { ...engine, dynamicImports: ['_ghost-z.js'] };
+    const row = rowOf(evaluate({ ...base, manifest }, LIMITS), 'engine closure JS (br)');
+    expect(row.status).toBe('FAIL');
+    expect(row.note).toContain('_ghost-z.js');
+  });
+
+  test('budget: engine row fails when a reached chunk has no file in dist', () => {
+    const base = withEngine(inputs(), 20_000, 100_000);
+    expect(rowOf(evaluate(base, LIMITS), 'engine closure JS (br)').status).toBe('PASS'); // control: 120 000 fits
+    const files = base.files.filter((f) => f.path !== 'assets/pixi-e.js');
+    const row = rowOf(evaluate({ ...base, files }, LIMITS), 'engine closure JS (br)');
+    expect(row.status).toBe('FAIL');
+    expect(row.note).toContain('assets/pixi-e.js');
+  });
+
   test('budget: all js over limit fails', () => {
     const base = inputs();
     const lazy = Array.from({ length: 10 }, (_, i) => file(`assets/lazy-${i}.js`, 27_000));
