@@ -445,7 +445,7 @@ fn no_dynamic_sql() {
     );
 }
 
-/// The app pool's connections run a file database in WAL with synchronous=NORMAL, foreign keys and a 5 s busy
+/// The app pool's connections run a file database in WAL with synchronous=FULL, foreign keys and a 5 s busy
 /// timeout. (The -wal file itself is not asserted: SQLite deletes it when the last connection closes.)
 #[tokio::test]
 async fn wal_mode_on_file_db() {
@@ -458,9 +458,9 @@ async fn wal_mode_on_file_db() {
             got.journal_mode
         ));
     }
-    if got.synchronous != 1 {
+    if got.synchronous != 2 {
         failures.push(format!(
-            "synchronous: expected 1 (NORMAL), got {}",
+            "synchronous: expected 2 (FULL), got {}",
             got.synchronous
         ));
     }
