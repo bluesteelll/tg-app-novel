@@ -1,6 +1,11 @@
 //! The server's one integration-test binary: every server test module links into it.
 
-#![allow(clippy::unwrap_used)]
+#![allow(
+    clippy::unwrap_used,
+    reason = "clippy.toml's allow-unwrap-in-tests covers #[test] fns only, not the shared helpers; a test fails loudly"
+)]
+// Every allowance in this crate states why (L2 review M2); `-D warnings` makes a bare `allow` a gate failure.
+#![warn(clippy::allow_attributes_without_reason)]
 
 mod common;
 mod schema;
