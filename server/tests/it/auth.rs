@@ -668,6 +668,65 @@ async fn auth_initdata_errors_401() {
     report(&failures);
 }
 
+/// The handler takes the token TTL and the initData max age from the state's config. `test_config` holds the
+/// built-in defaults (1800 / 86 400), so only a state with other values can tell a read field from a literal.
+#[tokio::test]
+async fn auth_honours_configured_ttl_and_max_age() {
+    let all = vectors();
+    let (ttl, max_age) = (900, 3600);
+    let dir = tempfile::Builder::new()
+        .prefix("tg-novel-it-")
+        .tempdir_in(env!("CARGO_TARGET_TMPDIR"))
+        .unwrap();
+    let mut cfg = common::test_config(&dir);
+    cfg.token_ttl_secs = ttl;
+    cfg.initdata_max_age_secs = max_age;
+    let st = match AppState::new(cfg).await {
+        Ok(st) => st.with_clock(Arc::new(FixedClock(all.now))),
+        Err(e) => panic!("state with TTL {ttl} / max age {max_age}: {e}"),
+    };
+    let mut failures = Vec::new();
+    // `valid` is 100 s old: fresh under a 3600 s max age.
+    let reply = post_auth(&st, JSON, auth_body(&vector(&all, "valid").init_data)).await;
+    if reply.status == StatusCode::OK {
+        let json = body_json(&reply);
+        let exp = all.now + ttl;
+        let expires_at = json["expiresAt"].as_i64();
+        if expires_at != Some(exp) {
+            failures.push(format!(
+                "valid: expiresAt: expected now+{ttl} = {exp}, got {expires_at:?}"
+            ));
+        }
+        let token = json["token"].as_str().unwrap_or("");
+        if !token.starts_with(&format!("v1.1001.{exp}.")) {
+            failures.push(format!(
+                "valid: token: expected v1.1001.{exp}.<tag>, got {token:?}"
+            ));
+        }
+        failures.extend(token_failure(&st, "valid", &json, all.now, 1001));
+    } else {
+        failures.push(format!(
+            "valid: expected 200, got {} {}",
+            reply.status.as_u16(),
+            body_text(&reply)
+        ));
+    }
+    // `age_at_limit` is 86 400 s old: accepted under the default, expired under 3600.
+    let reply = post_auth(
+        &st,
+        JSON,
+        auth_body(&vector(&all, "age_at_limit").init_data),
+    )
+    .await;
+    failures.extend(expect_reply(
+        "age_at_limit",
+        &reply,
+        401,
+        r#"{"error":"initdata_expired"}"#,
+    ));
+    report(&failures);
+}
+
 #[tokio::test]
 async fn auth_malformed_body_400() {
     let all = vectors();
