@@ -15,7 +15,8 @@ localization pipeline can translate, and the paywall can split - without a progr
 **Deliverable:** the first line of your answer is your verdict - `DONE` or `STOPPED: <reason>`; save the full
 report where your brief names and return verdict + path + a summary of ≤ 8 lines, never the report text.
 
-**Bash** is for the story gate (`npm --prefix client run story`, `npm --prefix client ci` if dependencies are
+**Bash** is for the story gate (`npm --prefix client run story`, its ID tools `npm --prefix client run story -- --fix-ids`
+and `-- --sync-locales`, `npm --prefix client ci` if dependencies are
 missing), `rg`, `git status/diff/log`, and, only when the brief says so, `git add <paths>` /
 `git diff --cached --stat` / `git commit`. Nothing else.
 

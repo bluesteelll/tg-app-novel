@@ -34,18 +34,19 @@ it lives in `D:/tmp/novel-orch/RESUME.md`.
   is absent there. Until a runner exists the gates are build + type-check + lint, and the cut says red-first is
   impossible for that commit.
 
-### Gate kit (not installed yet)
+### Gate kit (installed 2026-10-30)
 
-Every gate is expected to finish in under ~2 minutes, inside the shell tool's per-call timeout, so no kit exists.
-**Add `D:/tmp/novel-orch/kit/` the first time a gate can outlive that timeout** — the most likely first candidates
-are a cold `cargo test --workspace` on the laptop, the Playwright suite, or a texture/memory budget probe that
-boots a browser. Then, per long gate, one script that runs detached in its own console
-(`Start-Process … -WindowStyle Minimized`; never `run_in_background`/`&` — measured on boyko-engine, the harness
-reaps background shells after ~30 min and their children die with 0xC0000142), writes `PID`, `owner.txt` (lane,
-run id, start), `DONE`, exit codes and a per-row `summary.tsv`, under a time budget. Agents wait in bounded slices
-that check the PID is alive and within budget; past budget is a hang, stopped by its own PID tree — never by image
-name (`node.exe`, `cargo.exe` kill every lane). Red-prove each kit script once and stamp the kit's hash into each
-`summary.tsv`. Update the lane header's TOKEN ECONOMY line to point at the kit when it lands.
+`D:/tmp/novel-orch/kit/` — boyko-engine's proven kit copied byte-for-byte (kit_hash `d7401a58b1ae`), self-tested
+on this machine (10/10 cases). Its `README.md` is the contract: `launch.ps1` runs one gate detached in its own
+minimized console inside a Job object under a time budget (`-CmdFile` for any line with a double quote), writing
+`PID`, `owner.txt`, `log`, `exit_code`, `DONE` or `KILLED`; `wait.sh <out> [slice]` waits one bounded slice (exit 0
+= finished, which is not passed: read the `VERDICT` line); `summary.sh` folds several gates into one verdict.
+Never `run_in_background`/`&` for a multi-minute gate (measured on boyko-engine: the harness reaps background
+shells after ~30 min and their children die with 0xC0000142); never stop a gate by image name.
+
+**What goes through it:** every gate that can run past ~3 minutes — cargo `build`/`clippy`/`test` on a cold target
+(about 5 min alone on this laptop, more with a second lane building), the Playwright e2e, a cold `npm ci`. The
+README lists this project's gate lines and budgets. The lane header's TOKEN ECONOMY line points at it.
 
 ## Model routing
 

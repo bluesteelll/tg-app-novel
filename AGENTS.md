@@ -67,6 +67,7 @@ npm --prefix client run build        # vite build + the bundle/asset budget chec
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --all-targets --no-fail-fast --locked
+npm --prefix client run e2e          # from lane L7 on: Playwright smoke against server-dev + the mock (gate kit)
 ```
 
 ⚠️ **`--workspace` and `--no-fail-fast` are load-bearing**, and no runner may stop at its first failure (no
@@ -133,9 +134,9 @@ Cost ≈ turns × context: most spend is re-reading context that grows inside ON
 - **One owner per heavy gate per round** — developer: check/lint and the gates its diff touches; tester: the full
   suites, pins, budgets. **Rounds ≥ 2 are delta-scoped**, with ≥ 2 new tester mutations.
 - **Keep every checking arm** (critique, triage, tester mutations, review each round).
-- **Long gates** run detached in their own console (`Start-Process … -WindowStyle Minimized`; never
-  `run_in_background`/`&` for multi-minute gates — a reaped shell's children die), writing PID / DONE / exit codes;
-  wait in bounded slices; past budget is a hang — stop it by its own PID tree, never by image name.
+- **Long gates** (anything that can run past ~3 min: cold cargo builds, the e2e) run through the gate kit
+  `D:/tmp/novel-orch/kit/` (its README): detached in their own console under a budget, waited on in bounded slices;
+  never `run_in_background`/`&` for multi-minute gates — a reaped shell's children die; never kill by image name.
 - **Orchestrator:** workflows return verdicts + paths (≤ ~2k tokens), not full agent texts.
 
 ## Communication
