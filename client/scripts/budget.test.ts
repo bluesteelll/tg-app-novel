@@ -284,8 +284,12 @@ function writeDist(dir: string, entry: Uint8Array | string): void {
   writeFileSync(join(dir, '.vite', 'manifest.json'), JSON.stringify(manifest, null, 2));
 }
 
-function runCli(dist: string, script = SCRIPT): { status: number | null; stdout: string; stderr: string } {
-  const r = spawnSync(process.execPath, [script, '--dist', dist], { cwd: CLIENT_DIR, encoding: 'utf8' });
+function runCli(
+  dist: string,
+  script = SCRIPT,
+  nodeArgs: readonly string[] = [],
+): { status: number | null; stdout: string; stderr: string } {
+  const r = spawnSync(process.execPath, [...nodeArgs, script, '--dist', dist], { cwd: CLIENT_DIR, encoding: 'utf8' });
   return { status: r.status, stdout: r.stdout, stderr: r.stderr };
 }
 
@@ -325,6 +329,20 @@ describe('budget cli', () => {
     symlinkSync(dirname(SCRIPT), link, process.platform === 'win32' ? 'junction' : 'dir');
     try {
       const r = runCli(join(tmp, 'no-such-dist'), join(link, 'budget.ts'));
+      expect(r.status, r.stdout + r.stderr).toBe(1);
+      expect(r.stderr).toMatch(/does not exist/);
+    } finally {
+      unlinkSync(link); // the link only: afterEach's recursive delete never meets a way into client/scripts
+    }
+  });
+
+  test('budget: cli runs through a linked path under preserve-symlinks-main', () => {
+    // With the flag (also reachable through NODE_OPTIONS) Node keeps the link's spelling in import.meta.url while the
+    // guard canonicalises argv[1]: the guard must canonicalise its own side too, or main() is skipped and exits 0.
+    const link = join(tmp, 'scripts');
+    symlinkSync(dirname(SCRIPT), link, process.platform === 'win32' ? 'junction' : 'dir');
+    try {
+      const r = runCli(join(tmp, 'no-such-dist'), join(link, 'budget.ts'), ['--preserve-symlinks-main']);
       expect(r.status, r.stdout + r.stderr).toBe(1);
       expect(r.stderr).toMatch(/does not exist/);
     } finally {
