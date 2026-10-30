@@ -442,3 +442,34 @@ fn no_dynamic_sql() {
         violations.join("\n")
     );
 }
+
+/// The app pool's connections run a file database in WAL with synchronous=NORMAL, foreign keys and a 5 s busy
+/// timeout. (The -wal file itself is not asserted: SQLite deletes it when the last connection closes.)
+#[tokio::test]
+async fn wal_mode_on_file_db() {
+    let (st, _dir) = common::test_state().await;
+    let got = st.repo.pragmas().await.unwrap();
+    let mut failures = Vec::new();
+    if got.journal_mode != "wal" {
+        failures.push(format!(
+            "journal_mode: expected \"wal\", got {:?}",
+            got.journal_mode
+        ));
+    }
+    if got.synchronous != 1 {
+        failures.push(format!(
+            "synchronous: expected 1 (NORMAL), got {}",
+            got.synchronous
+        ));
+    }
+    if !got.foreign_keys {
+        failures.push("foreign_keys: expected true, got false".to_owned());
+    }
+    if got.busy_timeout_ms != 5000 {
+        failures.push(format!(
+            "busy_timeout_ms: expected 5000, got {}",
+            got.busy_timeout_ms
+        ));
+    }
+    report(&failures);
+}
