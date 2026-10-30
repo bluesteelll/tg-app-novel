@@ -1,6 +1,6 @@
 // Load budgets of the built client (principle 4): every row printed, exit 1 on any FAIL (the CLI, below).
 // Sizes are brotli quality 11 bytes; 1 KB = 1000 B, like the plan's MB.
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { brotliCompressSync, constants } from 'node:zlib';
@@ -358,13 +358,25 @@ export function main(argv: readonly string[], clientRoot: string): number {
   return rows.some((r) => r.status === 'FAIL') ? 1 : 0;
 }
 
+/** A path with its links resolved the way Node resolves the main module; as given when it does not exist. */
+function canonical(p: string): string {
+  const resolved = path.resolve(p);
+  try {
+    return realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
 function invokedDirectly(moduleUrl: string): boolean {
   const argv1 = process.argv[1];
   if (argv1 === undefined) {
     return false;
   }
-  const self = fileURLToPath(moduleUrl);
-  const invoked = path.resolve(argv1);
+  // Node loads the main module from its realpath while argv[1] keeps the caller's spelling (a junction, a symlinked
+  // /tmp): only canonical forms compare, or a linked path would skip main() and exit 0 without a word.
+  const self = canonical(fileURLToPath(moduleUrl));
+  const invoked = canonical(argv1);
   // Windows paths compare case-insensitively (drive letters arrive as d: or D:).
   return process.platform === 'win32' ? self.toLowerCase() === invoked.toLowerCase() : self === invoked;
 }

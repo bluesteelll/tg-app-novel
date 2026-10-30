@@ -1,7 +1,7 @@
 // Leak scan of the built client (principle 0): every file of dist/, its UTF-8 text plus every decoded data: URI
 // payload, against fingerprint sections. Fails on source maps, the ink compiler, dev canaries and (from L3b/L5)
 // paid fingerprints. Every finding is reported; exit 1 iff there is one or dist is missing (the CLI, below).
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -172,13 +172,25 @@ export function main(argv: readonly string[], clientRoot: string): number {
   return findings.length > 0 ? 1 : 0;
 }
 
+/** A path with its links resolved the way Node resolves the main module; as given when it does not exist. */
+function canonical(p: string): string {
+  const resolved = path.resolve(p);
+  try {
+    return realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
 function invokedDirectly(moduleUrl: string): boolean {
   const argv1 = process.argv[1];
   if (argv1 === undefined) {
     return false;
   }
-  const self = fileURLToPath(moduleUrl);
-  const invoked = path.resolve(argv1);
+  // Node loads the main module from its realpath while argv[1] keeps the caller's spelling (a junction, a symlinked
+  // /tmp): only canonical forms compare, or a linked path would skip the scan and exit 0 without a word.
+  const self = canonical(fileURLToPath(moduleUrl));
+  const invoked = canonical(argv1);
   // Windows paths compare case-insensitively (drive letters arrive as d: or D:).
   return process.platform === 'win32' ? self.toLowerCase() === invoked.toLowerCase() : self === invoked;
 }

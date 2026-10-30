@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
@@ -259,8 +259,8 @@ function writeDist(dir: string, entry: Uint8Array | string): void {
   writeFileSync(join(dir, '.vite', 'manifest.json'), JSON.stringify(manifest, null, 2));
 }
 
-function runCli(dist: string): { status: number | null; stdout: string; stderr: string } {
-  const r = spawnSync(process.execPath, [SCRIPT, '--dist', dist], { cwd: CLIENT_DIR, encoding: 'utf8' });
+function runCli(dist: string, script = SCRIPT): { status: number | null; stdout: string; stderr: string } {
+  const r = spawnSync(process.execPath, [script, '--dist', dist], { cwd: CLIENT_DIR, encoding: 'utf8' });
   return { status: r.status, stdout: r.stdout, stderr: r.stderr };
 }
 
@@ -291,5 +291,19 @@ describe('budget cli', () => {
     expect(r.stdout).toMatch(/^manifest \| — \| — \| PASS/m);
     expect(r.stdout).toMatch(/^engine closure JS \(br\) \| .* \| (PENDING|PASS)/m);
     expect(r.stdout).toMatch(/^budget: 6 rows, \d PASS, 0 FAIL, [01] PENDING$/m);
+  });
+
+  test('budget: cli runs through a linked path', () => {
+    // Node runs the main module from its realpath while argv[1] keeps the caller's spelling (a junction, macOS's
+    // symlinked /tmp): a guard that compares the two spellings skips main() and exits 0 without a word.
+    const link = join(tmp, 'scripts');
+    symlinkSync(dirname(SCRIPT), link, process.platform === 'win32' ? 'junction' : 'dir');
+    try {
+      const r = runCli(join(tmp, 'no-such-dist'), join(link, 'budget.ts'));
+      expect(r.status, r.stdout + r.stderr).toBe(1);
+      expect(r.stderr).toMatch(/does not exist/);
+    } finally {
+      unlinkSync(link); // the link only: afterEach's recursive delete never meets a way into client/scripts
+    }
   });
 });
