@@ -1,0 +1,61 @@
+{
+  "subagentPromptCacheTtl": "1h",
+  "permissions": {
+    "allow": [
+      "Workflow",
+      "Bash(npm --prefix client ci:*)",
+      "Bash(npm --prefix client run:*)",
+      "Bash(npm ci:*)",
+      "Bash(npm run:*)",
+      "Bash(npm view:*)",
+      "Bash(npx vitest:*)",
+      "Bash(npx svelte-check:*)",
+      "Bash(npx tsc:*)",
+      "Bash(cargo fmt:*)",
+      "Bash(cargo check:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo run:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git merge:*)",
+      "Bash(git merge-base:*)",
+      "Bash(git worktree:*)",
+      "Bash(git switch:*)",
+      "Bash(git branch:*)",
+      "Bash(git rev-parse:*)"
+    ],
+    "deny": [
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git push --force-with-lease:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(git checkout --:*)",
+      "Bash(git restore:*)",
+      "Bash(git stash:*)",
+      "Bash(git clean:*)",
+      "Bash(git commit --no-verify:*)",
+      "Bash(git commit -n:*)",
+      "Bash(git commit --amend:*)",
+      "Bash(git merge --no-verify:*)",
+      "Bash(git -c core.hooksPath=:*)"
+    ]
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/clarify_gate.py\""
+          }
+        ]
+      }
+    ]
+  }
+}
