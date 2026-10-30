@@ -405,6 +405,12 @@ test('lint: ink/entry red on fixture (first line)', () => {
   expect(where(lintSources(files({ 'ch1/main.ink': late })), 'ink/entry')).toEqual(['ch1/main.ink:2']);
   const wrong = ['INCLUDE globals.ink', '-> start', '=== start ===', '-> END'];
   expect(where(lintSources(files({ 'ch1/main.ink': wrong })), 'ink/entry')).toEqual(['ch1/main.ink:1']);
+  // A path the lint cannot place (a drive, a backslash, a leading '/') is not the globals INCLUDE either.
+  for (const path of ['D:/story/common/globals.ink', '..\\common\\globals.ink', '/story/common/globals.ink']) {
+    const f = lintSources(files({ 'ch1/main.ink': [`INCLUDE ${path}`, '-> start', '=== start ===', '-> END'] }));
+    expect(where(f, 'ink/entry'), path).toEqual(['ch1/main.ink:1']);
+    expect(where(f, 'ink/include'), path).toEqual(['ch1/main.ink:1']);
+  }
 });
 
 test('lint: vars/global-prefix red on fixture (no prefix)', () => {
