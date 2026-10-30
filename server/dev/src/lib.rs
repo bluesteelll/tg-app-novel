@@ -4,6 +4,8 @@
 // Also set by `[workspace.lints.rust]`; the attribute holds even for a member that forgets `[lints] workspace`.
 #![forbid(unsafe_code)]
 
+pub mod launch;
+
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -24,7 +26,7 @@ pub struct DevPaths {
 /// configuration. Opens and migrates `paths.db`: it creates the file, never its directory, and deletes nothing.
 pub async fn build_dev_app(paths: DevPaths) -> Result<Router, StartupError> {
     let state = AppState::new(dev_config(&paths)).await?;
-    Ok(build_router(state))
+    Ok(build_router(state.clone()).merge(launch::routes().with_state(state)))
 }
 
 /// The dev configuration: the public `.env.example` placeholder secrets, accepted only because the app stays local
