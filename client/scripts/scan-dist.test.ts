@@ -8,6 +8,8 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
 import { FIXED_SECTIONS, scanFiles } from './scan-dist.ts';
 import type { ScanFile, Section } from './scan-dist.ts';
+import { loadSections } from './scan-dist.ts';
+import type { Finding } from './scan-dist.ts';
 
 const enc = new TextEncoder();
 
@@ -218,5 +220,112 @@ describe('scan cli', () => {
     } finally {
       unlinkSync(link); // the link only: afterEach's recursive delete never meets a way into client/scripts
     }
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// L3b: the paid line fingerprints (server/content/build/fingerprints.lines.json) and their per-section non-vacuity,
+// read by loadSections from a temporary repository (story tool outputs written by hand).
+
+describe('scan fingerprints', () => {
+  const CH1 = { id: 'ch1', entry: 'ch1/main.ink', paid: false, next: 'ch2' };
+  const CH2 = { id: 'ch2', entry: 'ch2/main.ink', paid: true, productId: 'chapter:ch2', next: null };
+  const TEXT = 'Архив пахнет старой бумагой и пылью.';
+  const LINES = { lineIds: ['ch2.archive.r3t6', 'ch2.archive.v5c1'], texts: [TEXT] };
+  const USAGE = { chapters: { ch1: { assets: [], knots: {} }, ch2: { assets: [], knots: {} } } };
+  let repo = '';
+
+  function write(rel: string, text: string): void {
+    const abs = join(repo, ...rel.split('/'));
+    mkdirSync(dirname(abs), { recursive: true });
+    writeFileSync(abs, text);
+  }
+
+  /** A repository as a clean `npm run story` leaves it, minus what `omit` names, with `override` written over it. */
+  function setup(override: Readonly<Record<string, string>> = {}, omit: readonly string[] = []): Finding[] {
+    const files: Record<string, string> = {
+      'story/chapters.json': JSON.stringify([CH1, CH2]),
+      'server/content/build/fingerprints.lines.json': JSON.stringify(LINES),
+      'server/content/build/usage.json': JSON.stringify(USAGE),
+      'server/content/chapters/ch2/story.json': '{"inkVersion":21}',
+      ...override,
+    };
+    mkdirSync(join(repo, 'client'));
+    for (const [rel, text] of Object.entries(files).filter(([rel]) => !omit.includes(rel))) {
+      write(rel, text);
+    }
+    return loadSections(join(repo, 'client')).findings;
+  }
+
+  function reasons(findings: readonly Finding[]): string[] {
+    return findings.flatMap((f) => (f.kind === 'fingerprints' ? [f.reason] : []));
+  }
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'scan-fp-'));
+  });
+  afterEach(() => {
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  test('scan: paid chapter without line fingerprints fails', () => {
+    const findings = setup({}, ['server/content/build/fingerprints.lines.json']);
+    expect(findings).toContainEqual(expect.objectContaining({ kind: 'fingerprints', reason: 'lines-missing' }));
+  });
+
+  test('scan: paid chapter with empty line-ID section fails', () => {
+    // The asset fingerprints (L5's file) do not stand in for the line IDs: each section is checked on its own.
+    const findings = setup({
+      'server/content/build/fingerprints.assets.json': JSON.stringify({ files: ['bg-archive-0123abcd.avif'] }),
+      'server/content/build/fingerprints.lines.json': JSON.stringify({ lineIds: [], texts: [TEXT] }),
+    });
+    expect(findings).toContainEqual(expect.objectContaining({ kind: 'fingerprints', reason: 'line-ids-empty' }));
+  });
+
+  test('scan: paid chapter with empty text section fails', () => {
+    const findings = setup({ 'server/content/build/fingerprints.lines.json': JSON.stringify({ ...LINES, texts: [] }) });
+    expect(reasons(findings)).toEqual(['texts-empty']);
+  });
+
+  test('scan: paid chapter missing from line IDs fails', () => {
+    // A fingerprint file written before ch2 became paid holds no ch2 ID.
+    const findings = setup({ 'server/content/build/fingerprints.lines.json': JSON.stringify({ lineIds: ['ch3.vault.k2d4'], texts: [TEXT] }) });
+    expect(findings).toContainEqual(expect.objectContaining({ kind: 'fingerprints', reason: 'chapter-ids-missing', detail: expect.stringMatching(/^ch2 /) }));
+  });
+
+  test('scan: paid chapter without usage fails', () => {
+    expect(reasons(setup({}, ['server/content/build/usage.json']))).toEqual(['usage-missing']);
+  });
+
+  test('scan: paid chapter without story output fails', () => {
+    expect(reasons(setup({}, ['server/content/chapters/ch2/story.json']))).toEqual(['paid-story-missing']);
+    rmSync(repo, { recursive: true, force: true });
+    mkdirSync(repo);
+    const empty = setup({ 'server/content/chapters/ch2/story.json': '' });
+    expect(empty).toEqual([expect.objectContaining({ kind: 'fingerprints', reason: 'paid-story-missing', detail: expect.stringMatching(/empty$/) })]);
+  });
+
+  test('scan: unreadable chapters file fails', () => {
+    expect(reasons(setup({}, ['story/chapters.json']))).toEqual(['chapters-unreadable']);
+    write('story/chapters.json', '[{"id": "ch1",');
+    expect(reasons(loadSections(join(repo, 'client')).findings)).toEqual(['chapters-unreadable']);
+    write('story/chapters.json', '[]');
+    expect(reasons(loadSections(join(repo, 'client')).findings)).toEqual(['chapters-unreadable']);
+  });
+
+  test('scan: free-only story needs no line fingerprints', () => {
+    const files = ['server/content/build/fingerprints.lines.json', 'server/content/build/usage.json', 'server/content/chapters/ch2/story.json'];
+    expect(setup({ 'story/chapters.json': JSON.stringify([{ ...CH1, next: null }]) }, files)).toEqual([]);
+    expect(loadSections(join(repo, 'client')).sections).toEqual(FIXED_SECTIONS);
+  });
+
+  test('scan: paid line fingerprints are scanned in dist', () => {
+    expect(setup()).toEqual([]);
+    const { sections } = loadSections(join(repo, 'client'));
+    expect(sections.map((s) => `${s.name}(${s.needles.length})`)).toEqual(['compiler(2)', 'dev-canary(4)', 'paid-lines(2)', 'paid-texts(1)']);
+    const js = text('assets/index-a.js', `const a=${JSON.stringify(`ch2.archive.v5c1 ${TEXT}`)};export{a};`);
+    const findings = scanFiles([INDEX, js], sections);
+    expect(findings).toContainEqual({ kind: 'fingerprint', file: 'assets/index-a.js', section: 'paid-lines', needle: 'ch2.archive.v5c1', via: 'plain' });
+    expect(findings).toContainEqual({ kind: 'fingerprint', file: 'assets/index-a.js', section: 'paid-texts', needle: TEXT, via: 'plain' });
   });
 });

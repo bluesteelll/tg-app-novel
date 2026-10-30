@@ -204,6 +204,11 @@ export function paidLeak(storyGen: ReadonlyMap<string, string>, fp: LineFingerpr
 // ---------------------------------------------------------------------------------------------------------------
 // Decoders of the two build files other tools read (scan-dist; L5's asset tool and budget)
 
+// scan-dist reads story/chapters.json with the story tool's own decoder, through this module: the main module's
+// relative imports must stay under scripts/, which is all a junction to scripts/ reaches when Node keeps the link's
+// spelling (`--preserve-symlinks-main`, scan-dist.test.ts).
+export { decodeChapterList } from '../../src/story/catalog.ts';
+
 type Raw = Readonly<Record<string, unknown>>;
 
 function isObject(v: unknown): v is Raw {
