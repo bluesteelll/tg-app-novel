@@ -563,6 +563,12 @@ async fn auth_returns_token_for_valid_initdata() {
             "valid_no_language",
             json!({ "id": 1001, "firstName": "Ann", "languageCode": null }),
         ),
+        // 86 400 s old: fresh at the default max age only if the handler reads the configured value - the same
+        // vector is 401 under a 3600 s max age in `auth_honours_configured_ttl_and_max_age`.
+        (
+            "age_at_limit",
+            json!({ "id": 1001, "firstName": "Ann", "languageCode": "ru" }),
+        ),
     ];
     for (name, user) in cases {
         let reply = post_auth(&st, JSON, auth_body(&vector(&all, name).init_data)).await;
@@ -711,7 +717,8 @@ async fn auth_honours_configured_ttl_and_max_age() {
             body_text(&reply)
         ));
     }
-    // `age_at_limit` is 86 400 s old: accepted under the default, expired under 3600.
+    // `age_at_limit` is 86 400 s old: expired under 3600 here, accepted under the default 86 400 in
+    // `auth_returns_token_for_valid_initdata`; the pair leaves no literal max age that passes both.
     let reply = post_auth(
         &st,
         JSON,
