@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 import { expect, test } from 'vitest';
 
-import { assetIndex, decodeAssetCatalog, decodeCast } from '../../src/story/catalog.ts';
+import { assetIndex, decodeAssetCatalog, decodeCast, decodeChapterCatalog } from '../../src/story/catalog.ts';
 import type { Cast, ChapterListEntry } from '../../src/story/catalog.ts';
 import type { AssetIndex, ChapterId, LineId, ProductId } from '../../src/story/staging.ts';
 import { LINE_ID_RE } from '../../src/story/tags.ts';
@@ -375,7 +375,18 @@ const CH2_INK = [
   '',
 ].join('\n');
 
-/** The committed catalog and cast, a free ch1 and a paid ch2. */
+/** The en tables of `repoFiles()`: ru is each line's displayed text. */
+const REPO_EN_CH1 = {
+  'ch1.cafe.a001': { ru: 'Привет.', en: 'Hi.' },
+  'ch1.cafe.a002': { ru: 'Остаться.', en: 'Stay.' },
+  'ch1.cafe.a003': { ru: 'Уйти.', en: 'Leave.' },
+  'ch1.street.a004': { ru: 'Улица.', en: 'The street.' },
+};
+const REPO_EN_CH2 = { 'ch2.archive.b001': { ru: 'Спасибо.', en: 'Thanks.' }, 'ch2.archive.b002': { ru: 'Посмотрим.', en: "We'll see." } };
+/** `REPO_EN_CH1` without the street line's entry. */
+const EN_NO_STREET = Object.fromEntries(Object.entries(REPO_EN_CH1).filter(([id]) => id !== 'ch1.street.a004'));
+
+/** The committed catalog and cast, a free ch1 and a paid ch2, and their locale tables: a clean, emitting repo. */
 function repoFiles(): Record<string, string> {
   return {
     'assets/catalog.json': readFileSync(new URL('../../../assets/catalog.json', import.meta.url), 'utf8'),
@@ -387,6 +398,10 @@ function repoFiles(): Record<string, string> {
     'story/common/globals.ink': 'VAR g_trust = 0\n',
     'story/ch1/main.ink': CH1_INK,
     'story/ch2/main.ink': CH2_INK,
+    'story/locales/en/ch1.json': table(REPO_EN_CH1),
+    'story/locales/en/ch2.json': table(REPO_EN_CH2),
+    'story/locales/ru/story.json': table(NAMES_RU),
+    'story/locales/en/story.json': table(NAMES_EN),
   };
 }
 
@@ -456,6 +471,64 @@ test(
       expect(r.stdout).toMatch(/^E story\/ch1\/main\.ink:13 id\/missing /m);
       expect(r.stdout).not.toMatch(/^fix-ids:/m);
       expect(treeOf(root, 'story')).toEqual(before);
+    });
+  },
+  CLI_TIMEOUT_MS,
+);
+
+test(
+  'story: locale errors fail the gate',
+  () => {
+    withRepo({ ...repoFiles(), 'story/locales/en/ch1.json': table(EN_NO_STREET) }, (root) => {
+      const r = runStory(root);
+      expect(r.status, r.stdout + r.stderr).toBe(1);
+      expect(r.stdout).toMatch(/^E story\/ch1\/main\.ink:13 loc\/missing-en 'ch1\.street\.a004' has no entry in story\/locales\/en\/ch1\.json/m);
+      expect(r.stdout).toMatch(/^story: 1 errors, 0 warnings$/m);
+    });
+  },
+  CLI_TIMEOUT_MS,
+);
+
+test(
+  'story: --sync-locales adds entries then lints',
+  () => {
+    withRepo({ ...repoFiles(), 'story/locales/en/ch1.json': table(EN_NO_STREET) }, (root) => {
+      const before = treeOf(root, 'story');
+      const r = runStory(root, ['--sync-locales']);
+      expect(r.status, r.stdout + r.stderr).toBe(1);
+      expect(r.stdout).toMatch(/^sync-locales: ch1 \+1 entries$/m);
+      expect(r.stdout).toMatch(/^sync-locales: ch2 \+0 entries$/m);
+      expect(readFileSync(join(root, 'story/locales/en/ch1.json'), 'utf8')).toBe(table({ ...EN_NO_STREET, 'ch1.street.a004': { ru: 'Улица.', en: '' } }));
+      // The new entry is the one finding: its en is empty, and nothing else moved.
+      expect(r.stdout).toMatch(/^E story\/locales\/en\/ch1\.json:14 loc\/empty-en 'ch1\.street\.a004'/m);
+      expect(r.stdout).not.toMatch(/ loc\/missing-en /);
+      expect(r.stdout).toMatch(/^story: 1 errors, 0 warnings$/m);
+      const after = treeOf(root, 'story');
+      expect(Object.keys(after).filter((rel) => after[rel] !== before[rel])).toEqual(['story/locales/en/ch1.json']);
+    });
+  },
+  CLI_TIMEOUT_MS,
+);
+
+test(
+  'story: catalog names come from the locale tables',
+  () => {
+    withRepo(repoFiles(), (root) => {
+      const r = runStory(root);
+      expect(r.status, r.stdout + r.stderr).toBe(0);
+      const catalog = decodeChapterCatalog(JSON.parse(readFileSync(join(root, 'client/src/story-gen/catalog.json'), 'utf8')));
+      if (!catalog.ok) {
+        throw new Error(`invariant: the emitted catalog decodes: ${JSON.stringify(catalog.error)}`);
+      }
+      expect(catalog.value.chapters.map((c) => [c.id, c.title])).toEqual([
+        ['ch1', { ru: NAMES_RU.chapters.ch1, en: NAMES_EN.chapters.ch1 }],
+        ['ch2', { ru: NAMES_RU.chapters.ch2, en: NAMES_EN.chapters.ch2 }],
+      ]);
+      expect(Object.fromEntries(Object.entries(catalog.value.cast).map(([speaker, entry]) => [speaker, entry.name]))).toEqual({
+        ally: { ru: NAMES_RU.names.ally, en: NAMES_EN.names.ally },
+        stranger: { ru: NAMES_RU.names.stranger, en: NAMES_EN.names.stranger },
+        voice: { ru: NAMES_RU.names.voice, en: NAMES_EN.names.voice },
+      });
     });
   },
   CLI_TIMEOUT_MS,

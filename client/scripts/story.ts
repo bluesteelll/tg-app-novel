@@ -1,9 +1,10 @@
-// The story tool (STAGING-DSL §11): catalog checks → source lint → compile → knot graph → emit. Every finding is
-// printed, never only the first; outputs are written (and stale ones deleted) only when no error remains, then
-// story-gen is read back for paid leaks. Exit 1 iff an error remains. The story sources are rewritten only on request:
-// `--fix-ids` writes the missing line IDs into the ink files before the lint (STAGING-DSL §4).
-// Usage: node scripts/story.ts [--strict] [--fix-ids] [--root <repo>]   (`--strict`: every warning is an error; the
-// repo root defaults to two levels above this script, never the cwd)
+// The story tool (STAGING-DSL §11): catalog checks → source lint → compile → knot graph → localization → emit. Every
+// finding is printed, never only the first; outputs are written (and stale ones deleted) only when no error remains,
+// then story-gen is read back for paid leaks. Exit 1 iff an error remains. The story sources are rewritten only on
+// request (STAGING-DSL §4): `--fix-ids` writes the missing line IDs into the ink files before the lint,
+// `--sync-locales` appends the new IDs to the en tables before the localization checks.
+// Usage: node scripts/story.ts [--strict] [--fix-ids] [--sync-locales] [--root <repo>]   (`--strict`: every warning is
+// an error; the repo root defaults to two levels above this script, never the cwd)
 import { randomInt } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -11,18 +12,23 @@ import { fileURLToPath } from 'node:url';
 
 import { assetIndex, decodeChapterList } from '../src/story/catalog.ts';
 import type { Cast, CatalogIssue, ChapterListEntry } from '../src/story/catalog.ts';
-import type { AssetIndex, ChapterId, SpeakerId } from '../src/story/staging.ts';
+import type { AssetIndex, ChapterId } from '../src/story/staging.ts';
 import { compileChapter } from './story/compile.ts';
 import type { CompiledChapter } from './story/compile.ts';
 import { OUT, decodeLineFingerprints, paidLeak, planEmit, storyVersion } from './story/emit.ts';
 import type { StoryNames } from './story/emit.ts';
-import { ID_SHAPED_RE, fixIds } from './story/fix.ts';
+import { ID_SHAPED_RE, fixIds, syncLocales } from './story/fix.ts';
 import { buildGraph } from './story/graph.ts';
 import type { ChapterGraph } from './story/graph.ts';
 import { LINT_CODES, lintCatalog, lintSources } from './story/lint.ts';
 import type { Finding, LintCode, SourceChapter, SourceLintInput } from './story/lint.ts';
+import { RETIRED_FILE, checkLocales, decodeEnTable, decodeNameTable, decodeRetired } from './story/locales.ts';
+import type { EnTable } from './story/locales.ts';
 
-const USAGE = 'usage: node scripts/story.ts [--strict] [--fix-ids] [--root <repo>]';
+const USAGE = 'usage: node scripts/story.ts [--strict] [--fix-ids] [--sync-locales] [--root <repo>]';
+/** The en tables (STAGING-DSL §4): `<ch>.json` per chapter, beside the names and titles of `story.json`. */
+const EN_DIR = 'story/locales/en';
+const NAME_TABLE = 'story.json';
 const BOM = String.fromCharCode(0xfeff);
 const SUFFIX_CHARS = '0123456789abcdefghijklmnopqrstuvwxyz';
 
@@ -110,13 +116,76 @@ function write(root: string, plan: ReadonlyMap<string, string>): void {
   }
 }
 
-/** L3b placeholders (cut Q1): titles and names are the ids until L3c reads the locale tables. */
-function placeholderNames(chapters: readonly ChapterListEntry[], cast: Cast): StoryNames {
-  const id = (s: string): { ru: string; en: string } => ({ ru: s, en: s });
-  return {
-    chapters: Object.fromEntries(chapters.map((c) => [c.id, id(c.id)])) as Record<ChapterId, { ru: string; en: string }>,
-    speakers: Object.fromEntries(Object.keys(cast).map((s) => [s, id(s)])) as Record<SpeakerId, { ru: string; en: string }>,
-  };
+/** A repo file's text as stored (a BOM is the locale decoders' to strip), or null when it does not exist. */
+function readRaw(root: string, rel: string): string | null {
+  const abs = path.join(root, ...rel.split('/'));
+  return existsSync(abs) ? readFileSync(abs, 'utf8') : null;
+}
+
+/** Every story/locales/en/<name>.json except story.json, as stored, keyed by <name> in name order. */
+function readEnTables(root: string): Map<string, string> {
+  const dir = path.join(root, ...EN_DIR.split('/'));
+  if (!existsSync(dir)) {
+    return new Map();
+  }
+  const names = readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isFile() && e.name.endsWith('.json') && e.name !== NAME_TABLE)
+    .map((e) => e.name)
+    .sort();
+  return new Map(names.map((name) => [name.slice(0, -'.json'.length), readFileSync(path.join(dir, name), 'utf8')]));
+}
+
+/**
+ * `--sync-locales` (STAGING-DSL §4): per compiled chapter, in list order, its en table with an entry appended for each
+ * new line ID, written only when the text changed; `tables` (<ch> → text) then holds the new text. Returns the report
+ * lines.
+ */
+function syncPass(root: string, chapters: readonly ChapterListEntry[], graphs: ReadonlyMap<ChapterId, ChapterGraph>, tables: Map<string, string>): string[] {
+  const notes: string[] = [];
+  for (const ch of chapters) {
+    const graph = graphs.get(ch.id);
+    if (graph === undefined) {
+      continue;
+    }
+    const rel = `${EN_DIR}/${ch.id}.json`;
+    const before = tables.get(ch.id) ?? null;
+    const r = syncLocales({ text: before }, graph.lines);
+    if ('error' in r) {
+      notes.push(`sync-locales: ${rel} is not a valid table; not rewritten`);
+      continue;
+    }
+    if (r.text !== before) {
+      write(root, new Map([[rel, r.text]]));
+      tables.set(ch.id, r.text);
+    }
+    notes.push(`sync-locales: ${ch.id} +${r.added.length} entries`);
+  }
+  return notes;
+}
+
+/**
+ * Stage 5 (STAGING-DSL §4, §11): the en tables (`texts`, <ch> → text), story/locales/{ru,en}/story.json and
+ * story/retired-ids.txt decoded and checked; their findings go to `out`. Returns the decoded en tables and the
+ * catalog's names and titles (null iff one is missing).
+ */
+function localeStage(
+  root: string,
+  input: { chapters: readonly ChapterListEntry[] | null; graphs: ReadonlyMap<ChapterId, ChapterGraph>; cast: Cast; texts: ReadonlyMap<string, string> },
+  out: Finding[],
+): { en: ReadonlyMap<string, EnTable>; names: StoryNames | null } {
+  const en = new Map<string, EnTable>();
+  for (const [name, text] of input.texts) {
+    const d = decodeEnTable(`locales/en/${name}.json`, text);
+    out.push(...inStory(d.findings));
+    en.set(name, d.table);
+  }
+  const ru = decodeNameTable('locales/ru/story.json', readRaw(root, 'story/locales/ru/story.json'));
+  const enNames = decodeNameTable('locales/en/story.json', readRaw(root, `${EN_DIR}/${NAME_TABLE}`));
+  const retired = decodeRetired(readRaw(root, `story/${RETIRED_FILE}`));
+  out.push(...inStory([...ru.findings, ...enNames.findings, ...retired.findings]));
+  const r = checkLocales({ chapters: input.chapters, graphs: input.graphs, en, names: { ru: ru.table, en: enNames.table }, cast: input.cast, retired: retired.ids });
+  out.push(...inStory(r.findings));
+  return { en, names: r.names };
 }
 
 /**
@@ -161,6 +230,7 @@ function issueFindings(code: LintCode, issues: readonly CatalogIssue[]): Finding
 export function main(argv: readonly string[], repoRoot: string): number {
   let strict = false;
   let fix = false;
+  let sync = false;
   let root = repoRoot;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -169,6 +239,8 @@ export function main(argv: readonly string[], repoRoot: string): number {
       strict = true;
     } else if (arg === '--fix-ids') {
       fix = true;
+    } else if (arg === '--sync-locales') {
+      sync = true;
     } else if (arg === '--root' && value !== undefined) {
       root = path.resolve(value);
       i++;
@@ -231,13 +303,26 @@ export function main(argv: readonly string[], repoRoot: string): number {
     notes.push(`fix-ids: skipped (${assets === null ? 'assets/catalog.json' : 'story/cast.json'} has errors)`);
   }
 
+  // 5. Localization (after `--sync-locales` appended the new IDs): the en tables of the compiled chapters, the names
+  // and titles, and the ID rules no single chapter can see. Without the cast no name can be checked.
+  const enTexts = readEnTables(root);
+  if (sync) {
+    notes.push(...syncPass(root, chapters, graphs, enTexts));
+  }
+  const localized = cast === null ? null : localeStage(root, { chapters: decoded?.ok === true ? decoded.value : null, graphs, cast, texts: enTexts }, found);
+
   const findings = strict ? found.map((f): Finding => (f.severity === 'W' ? { ...f, severity: 'E' } : f)) : found;
-  // 5. Emit only from a clean run: a failed run writes and deletes nothing.
+  // 6. Emit only from a clean run: a failed run writes and deletes nothing.
   if (!findings.some((f) => f.severity === 'E')) {
     if (cast === null) {
       throw new Error('invariant: a run with no error decoded the cast');
     }
-    const plan = planEmit({ chapters, compiled, graphs, cast, names: placeholderNames(chapters, cast) });
+    // `loc/missing-name` is an error, so a run without one has every name and title.
+    const names = localized?.names ?? null;
+    if (names === null) {
+      throw new Error('invariant: a run with no error has names');
+    }
+    const plan = planEmit({ chapters, compiled, graphs, cast, names });
     deleteStale(root, chapters);
     write(root, plan);
     const fp = decodeLineFingerprints(JSON.parse(plan.get(`${OUT.build}/fingerprints.lines.json`) ?? 'null'));
@@ -247,7 +332,7 @@ export function main(argv: readonly string[], repoRoot: string): number {
     findings.push(...paidLeak(readTree(root, OUT.storyGen, () => true), fp.value));
   }
 
-  // 6. Report.
+  // 7. Report.
   for (const note of notes) {
     console.log(note);
   }
