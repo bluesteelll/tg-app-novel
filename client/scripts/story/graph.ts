@@ -1,13 +1,18 @@
 // The knot graph of one compiled chapter (STAGING-DSL §8, §10; PROTOTYPE-PLAN.md K9): per knot the assets its
 // literal tags name, its successor knots, whether it writes `-> END`, and the clears of its opening tag lines; then
 // reachability (`graph/*`), variable diverts (`ink/forbidden`), the carried stage per knot (the `budget/knot-set`
-// input) and the chapter's ID'd lines. Pure: no node:*, no inkjs; tags are read only through `parseTags`.
-import type { AssetId, AssetIndex, ChapterId, CharId, KnotName, LineId, StagingCommand, VarName } from '../../src/story/staging.ts';
+// input) and the chapter's ID'd lines. From LW3 the yield edges (STAGING-DSL §8 "Yield edges"; PUZZLES-PLAN §8 knot
+// index) and the yield codes against the chapter's world (`puzzle/*`, `explore/*`), and the VARs each chapter assigns
+// and reads (`vars/write-only` across the chapters). Pure: no node:*, no inkjs; tags are read only through `parseTags`.
+import { lockOf, worldIndex } from '../../src/explore/reduce.ts';
+import type { AssetId, AssetIndex, ChapterId, CharId, KnotName, LineId, SectionId, StagingCommand, VarName, YieldCommand } from '../../src/story/staging.ts';
 import { parseTags, tagKind } from '../../src/story/tags.ts';
+import type { Room, WorldPublicBody } from '../../src/world/types.ts';
 import { classify, openingTagLines, unescapeInk } from './classify.ts';
 import type { Divert, LineClass, RawTag, SourceLine } from './classify.ts';
 import { GLOBALS_PATH, LINT_CODES, tagsOf } from './lint.ts';
 import type { Finding, LintCode, SourceChapter } from './lint.ts';
+import type { VarLiteral } from './world.ts';
 
 /** A player-facing line with its ID: `text` is as displayed (speaker prefix stripped, ink escapes resolved). */
 export type StoryLine = { id: LineId; text: string; file: string; line: number };
@@ -20,7 +25,7 @@ export type KnotNode = {
   line: number;
   /** Every asset its literal tags name (sorted); `hide`, `wait`, `cg: off` and `bgm: stop` name none. */
   assets: readonly AssetId[];
-  /** Successor knots (sorted): every other or same knot a divert written inside it names. */
+  /** Successor knots (sorted): every other or same knot a divert written inside it names, and a `then=` knot. */
   next: readonly KnotName[];
   /** A `-> END` is written inside it (STAGING-DSL §8). */
   ending: boolean;
@@ -41,6 +46,29 @@ export type ChapterGraph = {
   /** Per knot, the images a predecessor may leave on stage that the knot does not clear or name (sorted). */
   carried: ReadonlyMap<KnotName, readonly AssetId[]>;
 };
+/**
+ * The chapter's world as the graph sees it: none (no world.json), invalid (it failed `world/schema`: the
+ * world-dependent codes are skipped, so one broken file is not also one finding per tag), or its public body.
+ */
+export type WorldRef = { kind: 'none' } | { kind: 'invalid' } | { kind: 'ok'; body: WorldPublicBody };
+/** A VAR's first assignment site in a chapter (story-relative); `global` marks a g_ VAR of common/globals.ink. */
+export type VarAssignment = { file: string; line: number; global: boolean };
+/** What the world lint and `vars/write-only` need of a compiled chapter beyond its graph. */
+export type GraphFacts = {
+  /** Per knot, the yields its tags write, in source order. */
+  yields: ReadonlyMap<KnotName, readonly YieldCommand[]>;
+  /** Every VAR the chapter's files declare, with its declared value's literal type (`world/var-type`). */
+  declared: ReadonlyMap<VarName, VarLiteral>;
+  /** Per declared VAR the chapter assigns (`~ x =`, `+=`, `-=`, `++`, `--`), its first site in file order. */
+  assigned: ReadonlyMap<VarName, VarAssignment>;
+  /**
+   * Every identifier the chapter's files read (D15): an assignment's right side (its own target included), any other
+   * logic line, a choice condition, a block head, an inline `{…}`, and every line of a function body.
+   */
+  read: ReadonlySet<string>;
+};
+/** An explore yield's section knots: reachability edges from the yielding knot, and their entry stage. */
+type SectionEdges = { edges: ReadonlyMap<KnotName, readonly KnotName[]>; seeds: ReadonlyMap<KnotName, readonly AssetId[]> };
 
 function finding(code: LintCode, file: string, line: number, message: string): Finding {
   return { code, severity: LINT_CODES[code], file, line, message };
@@ -94,9 +122,9 @@ function assetOf(c: StagingCommand): AssetId | null {
   }
 }
 
-/** The images a stage can hold: backgrounds, CGs and character sprites (never audio). */
+/** The images a stage can hold: backgrounds, CGs, character sprites and a room's props (never audio). */
 function isImage(a: AssetId): boolean {
-  return a.startsWith('bg/') || a.startsWith('cg/') || a.startsWith('char/');
+  return a.startsWith('bg/') || a.startsWith('cg/') || a.startsWith('char/') || a.startsWith('prop/');
 }
 
 function clearsOf(opening: readonly SourceLine[], assets: AssetIndex): Clears {
@@ -134,8 +162,8 @@ function cleared(stage: ReadonlySet<AssetId>, c: Clears): Set<AssetId> {
   }
   return new Set(
     [...stage].filter((a) => {
-      if (a.startsWith('bg/')) {
-        return !c.bg;
+      if (a.startsWith('bg/') || a.startsWith('prop/')) {
+        return !c.bg; // a `bg` or `scene` clears the props too (STAGING-DSL §8)
       }
       if (a.startsWith('cg/')) {
         return !c.cg;
@@ -149,8 +177,8 @@ function cleared(stage: ReadonlySet<AssetId>, c: Clears): Set<AssetId> {
   );
 }
 
-/** Knots reachable from `first` over `next`, in breadth-first order. */
-function reachable(knots: ReadonlyMap<KnotName, KnotNode>, first: KnotName): Set<KnotName> {
+/** Knots reachable from `first` over `next` and the section edges, in breadth-first order. */
+function reachable(knots: ReadonlyMap<KnotName, KnotNode>, first: KnotName, edges?: ReadonlyMap<KnotName, readonly KnotName[]>): Set<KnotName> {
   const seen = new Set<KnotName>();
   const queue: KnotName[] = knots.has(first) ? [first] : [];
   for (let k = queue.shift(); k !== undefined; k = queue.shift()) {
@@ -158,7 +186,7 @@ function reachable(knots: ReadonlyMap<KnotName, KnotNode>, first: KnotName): Set
       continue;
     }
     seen.add(k);
-    queue.push(...(knots.get(k)?.next ?? []).filter((n) => knots.has(n) && !seen.has(n)));
+    queue.push(...[...(knots.get(k)?.next ?? []), ...(edges?.get(k) ?? [])].filter((n) => knots.has(n) && !seen.has(n)));
   }
   return seen;
 }
@@ -169,16 +197,19 @@ function reachable(knots: ReadonlyMap<KnotName, KnotNode>, first: KnotName): Set
  * predecessors. The first knot is SEEDED with the empty stage, not pinned to it: a path back into it (a hub, a loop)
  * brings its predecessors' images along. `carried(K) = (entry(K) − clear(K)) − assets(K) − ∪ assets(next(K))`.
  * Only opening tag lines clear; every other tag only adds. Unreachable knots carry nothing.
+ * A section knot (an event or leave knot of an explore yield) is reached over a section edge (`extra.edges`) and
+ * SEEDED with the stage of the rooms that name it (`extra.seeds`): it runs over its room, whose batch opens with a
+ * scene fade (PUZZLES-PLAN F7 step 1), so the yielding knot's stage never flows along that edge.
  */
-export function carriedStage(knots: ReadonlyMap<KnotName, KnotNode>, first: KnotName): Map<KnotName, AssetId[]> {
-  const live = reachable(knots, first);
+export function carriedStage(knots: ReadonlyMap<KnotName, KnotNode>, first: KnotName, extra?: SectionEdges): Map<KnotName, AssetId[]> {
+  const live = reachable(knots, first, extra?.edges);
   const preds = new Map<KnotName, KnotName[]>([...live].map((k) => [k, []]));
   for (const k of live) {
     for (const n of knots.get(k)?.next ?? []) {
       preds.get(n)?.push(k);
     }
   }
-  const entry = new Map<KnotName, Set<AssetId>>([...live].map((k) => [k, new Set()]));
+  const entry = new Map<KnotName, Set<AssetId>>([...live].map((k) => [k, new Set(extra?.seeds.get(k) ?? [])]));
   const exit = (k: KnotName): Set<AssetId> => {
     const node = knots.get(k);
     if (node === undefined) {
@@ -273,18 +304,168 @@ function resolveDivert(
 
 type Parsed = { file: string; lines: readonly SourceLine[] };
 
+/** The literal type of a VAR declaration's value (classify.ts `decl.value`). */
+function varLiteral(value: string): VarLiteral {
+  if (/^-?[0-9]+$/.test(value)) {
+    return 'int';
+  }
+  if (/^-?[0-9]+\.[0-9]+$/.test(value)) {
+    return 'float';
+  }
+  if (value === 'true' || value === 'false') {
+    return 'bool';
+  }
+  return /^"(?:[^"\\]|\\.)*"$/.test(value) ? 'string' : 'other';
+}
+
+const IDENT_RE = /[\p{L}_][\p{L}\p{N}_]*/gu;
+/** `x = …`, `x += …`, `x -= …` (never `x == …`), and `x++` / `x--`: the target, and the right side read. */
+const ASSIGN_RE = /^([\p{L}_][\p{L}\p{N}_]*)\s*(?:(?:\+|-)?=(?!=)\s*(.*)|\+\+|--)$/u;
+
+function identifiers(code: string): string[] {
+  return code.match(IDENT_RE) ?? [];
+}
+
+/**
+ * The VARs the files assign (first site per VAR) and every identifier they read (D15). A read set by identifiers is
+ * a heuristic, and `vars/write-only` is a W: a name that only looks read keeps it quiet, never the other way round.
+ */
+function varUse(parsed: readonly Parsed[], vars: ReadonlySet<VarName>, globals: ReadonlySet<VarName>): Pick<GraphFacts, 'assigned' | 'read'> {
+  const assigned = new Map<VarName, VarAssignment>();
+  const read = new Set<string>();
+  const readAll = (code: string): void => {
+    for (const id of identifiers(code)) {
+      read.add(id);
+    }
+  };
+  for (const { file, lines } of parsed) {
+    let inFunction = false;
+    for (const l of lines) {
+      const cls = l.cls;
+      if (cls.kind === 'knot') {
+        inFunction = cls.fn;
+        continue;
+      }
+      if (cls.kind === 'decl' || cls.kind === 'include' || cls.kind === 'comment' || cls.kind === 'blank') {
+        continue;
+      }
+      if (cls.kind === 'logic') {
+        const temp = /^temp\s+[\p{L}_][\p{L}\p{N}_]*\s*=(.*)$/u.exec(cls.code);
+        const m = temp === null ? ASSIGN_RE.exec(cls.code) : null;
+        const target = m?.[1];
+        if (temp !== null) {
+          readAll(temp[1] ?? '');
+        } else if (target === undefined) {
+          readAll(cls.code);
+        } else {
+          readAll(m?.[2] ?? '');
+          const name = target as VarName; // a lookup key: only a declared VAR counts
+          if (vars.has(name) && !assigned.has(name)) {
+            assigned.set(name, { file, line: l.line, global: globals.has(name) });
+          }
+        }
+        continue;
+      }
+      if (inFunction) {
+        readAll(l.code);
+        continue;
+      }
+      if (cls.kind === 'choice' && cls.condition !== null) {
+        readAll(cls.condition);
+      }
+      if (cls.kind === 'block-open' || cls.kind === 'block-branch') {
+        readAll(cls.head);
+      }
+      for (const m of l.code.matchAll(/\{([^{}]*)\}/g)) {
+        readAll(m[1] ?? '');
+      }
+    }
+  }
+  return { assigned, read };
+}
+
+/**
+ * `vars/write-only` (D15) over the facts of every listed chapter, in list order: the first assignment site of each VAR
+ * nothing reads, deduped by file and line. A g_ VAR of common/globals.ink is read when any chapter reads it (the
+ * carry set crosses chapters, STAGING-DSL §9); a chapter's own VAR only when that chapter does. The caller passes
+ * every listed chapter, compiled: a partial list would report a global its missing chapter reads.
+ */
+export function writeOnly(chapters: readonly GraphFacts[]): Finding[] {
+  const anyRead = new Set(chapters.flatMap((f) => [...f.read]));
+  const out: Finding[] = [];
+  const sites = new Set<string>();
+  const reported = new Set<VarName>();
+  for (const facts of chapters) {
+    for (const [name, site] of facts.assigned) {
+      const isRead = site.global ? anyRead.has(name) : facts.read.has(name);
+      const key = `${site.file}:${site.line}`;
+      if (isRead || sites.has(key) || (site.global && reported.has(name))) {
+        continue;
+      }
+      sites.add(key);
+      if (site.global) {
+        reported.add(name);
+      }
+      const where = site.global ? 'no listed chapter reads it' : 'its chapter never reads it';
+      out.push(finding('vars/write-only', site.file, site.line, `VAR ${name} is assigned, but ${where} (§11)`));
+    }
+  }
+  return out;
+}
+
+/** A section's knots: its event knots (named by a `story` effect of its rooms) and its leave knots, each with its rooms. */
+type SectionKnots = { events: Map<KnotName, Room[]>; leaves: Map<KnotName, Room[]> };
+
+function sectionKnots(body: WorldPublicBody, section: SectionId): SectionKnots {
+  const out: SectionKnots = { events: new Map(), leaves: new Map() };
+  const name = (into: Map<KnotName, Room[]>, knot: KnotName, room: Room): void => {
+    const rooms = into.get(knot) ?? [];
+    into.set(knot, rooms.includes(room) ? rooms : [...rooms, room]);
+  };
+  const s = Object.hasOwn(body.sections, section) ? body.sections[section] : undefined;
+  for (const room of Object.values(s?.rooms ?? {})) {
+    const effects = [...room.onEnter];
+    for (const h of room.hotspots) {
+      if (h.kind !== 'exit') {
+        effects.push(...h.then);
+      } else if ('story' in h.to) {
+        name(out.leaves, h.to.story, room);
+      }
+      const lock = lockOf(h);
+      effects.push(...(lock?.onOpen ?? []), ...(lock?.onFail ?? []));
+    }
+    for (const e of effects) {
+      if ('story' in e) {
+        name(out.events, e.story, room);
+      }
+    }
+  }
+  return out;
+}
+
+/** The images on stage over a room: its background and the props of its hotspots (taken ones included). */
+function roomStage(room: Room): AssetId[] {
+  const props = room.hotspots.flatMap((h) => ((h.kind === 'take' || h.kind === 'object') && h.prop !== null ? [`prop/${h.prop}` as AssetId] : []));
+  return [`bg/${room.bg}` as AssetId, ...props]; // ids the world decoder checked; the catalog is world/unknown-asset's
+}
+
 /**
  * The knot graph of one chapter from the files its compile loaded (`CompiledChapter.files`, entry first). Reports
- * `graph/unreachable-knot`, `graph/no-end`, `graph/entry-below-top`, `ink/forbidden` (a divert to a variable) and
- * `ink/entry` (the entry divert names no knot).
+ * `graph/unreachable-knot`, `graph/no-end`, `graph/entry-below-top`, `ink/forbidden` (a divert to a variable),
+ * `ink/entry` (the entry divert names no knot), and the yield codes against `world` (default none): `puzzle/unknown`,
+ * `puzzle/then-unknown`, `puzzle/in-section`, `explore/unknown-section`, `explore/event-return`,
+ * `explore/event-escape`. A `then=` knot is a successor; an explore yield's section knots are reachability edges only
+ * (never in the preload `next`, PUZZLES-PLAN §8), seeded with their rooms' stage.
  */
 export function buildGraph(input: {
   chapter: SourceChapter;
   files: readonly string[];
   sources: ReadonlyMap<string, string>;
   assets: AssetIndex;
-}): { graph: ChapterGraph; findings: Finding[] } {
+  world?: WorldRef;
+}): { graph: ChapterGraph; findings: Finding[]; facts: GraphFacts } {
   const { chapter, assets } = input;
+  const world: WorldRef = input.world ?? { kind: 'none' };
   const parsed: Parsed[] = input.files.map((file) => ({ file, lines: classify(input.sources.get(file) ?? '') }));
   const findings: Finding[] = [];
 
@@ -293,6 +474,7 @@ export function buildGraph(input: {
   const scopes = new Map<string, Scope>();
   const variables = new Set<string>();
   const vars = new Set<VarName>();
+  const declared = new Map<VarName, VarLiteral>();
   const globals = new Set<VarName>();
   for (const { file, lines } of parsed) {
     let scope: Scope | null = null;
@@ -313,6 +495,9 @@ export function buildGraph(input: {
         variables.add(cls.name);
         if (cls.keyword === 'VAR') {
           vars.add(cls.name as VarName); // a declared name: the compile accepted it
+          if (!declared.has(cls.name as VarName)) {
+            declared.set(cls.name as VarName, varLiteral(cls.value)); // the same declared name
+          }
           if (file === GLOBALS_PATH && cls.name.startsWith('g_')) {
             globals.add(cls.name as VarName);
           }
@@ -331,6 +516,7 @@ export function buildGraph(input: {
     [...scopes.keys()].map((k) => [k, { assets: new Set(), next: new Set(), ending: false }]),
   );
   const lines: StoryLine[] = [];
+  const sites: { knot: KnotName | null; file: string; line: number; cmd: YieldCommand }[] = [];
   let entryDivert: { line: number; target: string; resolved: Target } | null = null;
   for (const { file, lines: source } of parsed) {
     // The knot whose body this line is in: null at top level, inside a function, and inside a repeated definition.
@@ -342,13 +528,19 @@ export function buildGraph(input: {
         knot = !cls.fn && scope?.file === file && scope.line === l.line ? cls.name : null;
       }
       const node = knot === null ? undefined : built.get(knot);
-      for (const a of commandsOf(tagsOf(cls), assets).map(assetOf)) {
+      const commands = commandsOf(tagsOf(cls), assets);
+      for (const a of commands.map(assetOf)) {
         if (a !== null) {
           node?.assets.add(a);
         }
       }
       if (node === undefined && l.knot !== null) {
         continue; // a function body or a repeated definition: no successors, no ID'd lines of a knot
+      }
+      for (const c of commands) {
+        if (c.kind === 'puzzle' || c.kind === 'explore') {
+          sites.push({ knot: knot as KnotName | null, file, line: l.line, cmd: c }); // a compiled knot name, as above
+        }
       }
       for (const d of divertsOf(cls)) {
         const resolved = resolveDivert(d.target, knot, l.stitch, scopes, variables);
@@ -375,6 +567,66 @@ export function buildGraph(input: {
     }
   }
 
+  // The yields (STAGING-DSL §6, §8 "Yield edges"). A `then=` knot is a successor whatever the world; the
+  // world-dependent codes are skipped for a world that failed `world/schema` (D6).
+  const worldFile = `story/${chapter.id}/world.json`;
+  const body = world.kind === 'ok' ? world.body : null;
+  const index = body === null ? null : worldIndex(body);
+  const yields = new Map<KnotName, YieldCommand[]>();
+  const sectionsOf = new Map<SectionId, SectionKnots>();
+  const knotsOf = (section: SectionId): SectionKnots => {
+    const known = sectionsOf.get(section);
+    const out = known ?? (body === null ? { events: new Map(), leaves: new Map() } : sectionKnots(body, section));
+    sectionsOf.set(section, out);
+    return out;
+  };
+  const edges = new Map<KnotName, Set<KnotName>>();
+  const seeds = new Map<KnotName, Set<AssetId>>();
+  for (const { knot, file, line, cmd } of sites) {
+    if (knot !== null) {
+      yields.set(knot, [...(yields.get(knot) ?? []), cmd]);
+    }
+    if (cmd.kind === 'puzzle') {
+      if (scopes.has(cmd.then)) {
+        if (knot !== null) {
+          built.get(knot)?.next.add(cmd.then);
+        }
+      } else {
+        findings.push(finding('puzzle/then-unknown', file, line, `'then=${cmd.then}' names no knot of ${chapter.id}`));
+      }
+      if (world.kind === 'none') {
+        findings.push(finding('puzzle/unknown', file, line, `puzzle '${cmd.puzzle}': ${chapter.id} has no world (${worldFile})`));
+      } else if (index !== null && !index.puzzles.has(cmd.puzzle)) {
+        findings.push(finding('puzzle/unknown', file, line, `puzzle '${cmd.puzzle}' is not in ${worldFile}`));
+      } else {
+        const lock = index?.puzzleLock.get(cmd.puzzle);
+        if (lock !== undefined) {
+          const why = `is yielded here and is the puzzle of lock ${lock}: a lock's puzzle opens from its room (PUZZLES-PLAN §8)`;
+          findings.push(finding('puzzle/in-section', file, line, `puzzle '${cmd.puzzle}' ${why}`));
+        }
+      }
+      continue;
+    }
+    if (world.kind === 'none') {
+      findings.push(finding('explore/unknown-section', file, line, `explore '${cmd.section}': ${chapter.id} has no world (${worldFile})`));
+    } else if (index !== null && !index.sections.has(cmd.section)) {
+      findings.push(finding('explore/unknown-section', file, line, `section '${cmd.section}' is not in ${worldFile}`));
+    } else if (index !== null && knot !== null) {
+      const { events, leaves } = knotsOf(cmd.section);
+      for (const [k, rooms] of [...events, ...leaves]) {
+        if (!scopes.has(k)) {
+          continue; // a knot the chapter lacks: `world/unknown-ref`
+        }
+        edges.set(knot, (edges.get(knot) ?? new Set()).add(k));
+        const seed = seeds.get(k) ?? new Set<AssetId>();
+        for (const a of rooms.flatMap(roomStage)) {
+          seed.add(a);
+        }
+        seeds.set(k, seed);
+      }
+    }
+  }
+
   const knots = new Map<KnotName, KnotNode>();
   for (const [name, scope] of scopes) {
     const b = built.get(name);
@@ -396,9 +648,39 @@ export function buildGraph(input: {
   if (ed !== null && firstKnot === null) {
     findings.push(finding('ink/entry', chapter.entry, ed.line, `'-> ${ed.target}' names no knot: the entry diverts to the first knot (§9)`));
   }
-  const carried = firstKnot === null ? new Map<KnotName, AssetId[]>([...knots.keys()].map((k) => [k, []])) : carriedStage(knots, firstKnot);
+
+  // Event knots (D7): every event knot of every section, judged against its section's other event knots.
+  for (const s of body === null ? [] : Object.keys(body.sections)) {
+    const section = s as SectionId; // a decoded section id
+    const events = knotsOf(section).events;
+    for (const e of events.keys()) {
+      const node = knots.get(e);
+      if (node === undefined) {
+        continue; // `world/unknown-ref`
+      }
+      const where = `event knot '${e}' of section ${section}`;
+      if (node.ending) {
+        findings.push(finding('explore/event-escape', node.file, node.line, `${where} writes '-> END': it returns with '# explore: ${section}' (§6)`));
+      }
+      for (const n of node.next.filter((k) => !events.has(k))) {
+        findings.push(finding('explore/event-escape', node.file, node.line, `${where} leads to '${n}', which is not an event knot of ${section} (§6)`));
+      }
+      const closure = reachable(new Map([...knots].filter(([k]) => events.has(k))), e);
+      const returns = [...closure].some((k) => (yields.get(k) ?? []).some((y) => y.kind === 'explore' && y.section === section));
+      if (!returns) {
+        findings.push(finding('explore/event-return', node.file, node.line, `${where} never yields '# explore: ${section}' back to the rooms (§6)`));
+      }
+    }
+  }
+
+  const sectionEdges: SectionEdges = {
+    edges: new Map([...edges].map(([k, v]) => [k, [...v].sort()])),
+    seeds: new Map([...seeds].map(([k, v]) => [k, [...v].sort()])),
+  };
+  const carried =
+    firstKnot === null ? new Map<KnotName, AssetId[]>([...knots.keys()].map((k) => [k, []])) : carriedStage(knots, firstKnot, sectionEdges);
   if (firstKnot !== null && ed !== null) {
-    const live = reachable(knots, firstKnot);
+    const live = reachable(knots, firstKnot, sectionEdges.edges);
     for (const node of knots.values()) {
       if (!live.has(node.name)) {
         findings.push(finding('graph/unreachable-knot', node.file, node.line, `knot '${node.name}' is not reachable from '-> ${firstKnot}'`));
@@ -422,5 +704,6 @@ export function buildGraph(input: {
       carried,
     },
     findings,
+    facts: { yields, declared, ...varUse(parsed, vars, globals) },
   };
 }

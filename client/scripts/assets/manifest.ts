@@ -66,15 +66,15 @@ export type AssetUsage = {
 };
 
 /**
- * The asset usage of a decoded usage.json. usage.json has no `worldAssets` / `rooms` before LW3, which maps them here
- * (cut Q2): until then world-only art stays unused (never public) and budget's room-set row fails on a sectioned world.
+ * The asset usage of a decoded usage.json: a chapter's `worldAssets` and the top-level `rooms`, which the story tool
+ * writes only for a chapter with a world (LW3, D4). A pre-LW3 usage.json has neither: no world art, no rooms.
  */
 export function assetUsage(u: StoryUsage): AssetUsage {
   const chapters: Record<string, { ink: readonly AssetId[]; world: readonly AssetId[] }> = {};
   for (const [ch, c] of Object.entries(u.chapters)) {
-    chapters[ch] = { ink: c.assets, world: [] };
+    chapters[ch] = { ink: c.assets, world: c.worldAssets ?? [] };
   }
-  return { chapters: chapters as AssetUsage['chapters'], rooms: {} }; // keys are usage.json's chapter ids
+  return { chapters: chapters as AssetUsage['chapters'], rooms: u.rooms ?? {} }; // keys are usage.json's chapter ids
 }
 
 /**

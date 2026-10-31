@@ -1,7 +1,7 @@
 // Source fixers of the story tool (STAGING-DSL §4): `--fix-ids` writes a fresh line ID into each line the source lint
-// reports as `id/missing`; `--sync-locales` adds the missing entries of an en table. Pure, no node:*: story.ts reads
-// the files, injects the random suffixes and writes what changed. Every ID patch is checked by the one line
-// classifier; a line it cannot place is skipped, never guessed.
+// reports as `id/missing`, and into each world text that lacks one (`fixWorldIds`); `--sync-locales` adds the missing
+// entries of an en table. Pure, no node:*: story.ts reads the files, injects the random suffixes and writes what
+// changed. Every ID patch is checked by the one line classifier; a line it cannot place is skipped, never guessed.
 import type { ChapterId, LineId } from '../../src/story/staging.ts';
 import { LINE_ID_RE } from '../../src/story/tags.ts';
 import { classify, findUnescaped } from './classify.ts';
@@ -183,6 +183,90 @@ export function fixIds(input: FixIdsInput): FixIdsResult {
     }
   }
   return { files, added, skipped };
+}
+
+export type FixWorldIdsInput = {
+  /** story/<ch>/world.json's RAW text (a BOM kept). */
+  text: string;
+  chapter: ChapterId;
+  /** Every ID-shaped string of the ink sources, the worlds, retired-ids.txt and the en tables. */
+  taken: ReadonlySet<string>;
+  /** Four characters of [0-9a-z]; the CLI draws them at random, tests inject a sequence. */
+  suffix: () => string;
+};
+export type FixWorldIdsResult =
+  | {
+      /** The new raw text; the input text itself when nothing was added. */
+      text: string;
+      added: ReadonlyArray<{ path: string; id: LineId }>;
+      /** World texts that got no ID, each with why (the world lint still reports them). */
+      skipped: ReadonlyArray<{ path: string; reason: string }>;
+    }
+  | { error: string };
+
+/** The world maps whose entry ids own the texts under them: the knot part of their IDs (PUZZLES-PLAN "Texts"). */
+const WORLD_OWNERS = ['items', 'docs', 'puzzles', 'sections'];
+
+/** A world text without its ID: a plain object whose keys are exactly `ru` (a string), PUZZLES-PLAN "Texts". */
+function lacksId(v: unknown): v is { ru: string } {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) {
+    return false;
+  }
+  const keys = Object.keys(v);
+  return keys.length === 1 && keys[0] === 'ru' && typeof (v as { ru: unknown }).ru === 'string';
+}
+
+/**
+ * `--fix-ids` for a world (D13): an `id` written first into each world text that has none, with the owning item, doc,
+ * puzzle or section id as its knot part. Works on the raw JSON, since a world that lacks IDs does not decode. The
+ * output is two-space JSON plus a newline, the BOM kept and the key order otherwise unchanged (world keys are never
+ * integer-like); a file with nothing to add comes back as it was.
+ */
+export function fixWorldIds(input: FixWorldIdsInput): FixWorldIdsResult {
+  const bom = input.text.startsWith(BOM) ? BOM : '';
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(input.text.slice(bom.length));
+  } catch (e) {
+    return { error: `not JSON: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return { error: 'not a JSON object' };
+  }
+  const used = new Set<string>([...input.taken, ...(input.text.match(ID_SHAPED_RE) ?? [])]);
+  const added: Array<{ path: string; id: LineId }> = [];
+  const skipped: Array<{ path: string; reason: string }> = [];
+  const walk = (v: unknown, path: string, owner: string | null): unknown => {
+    if (lacksId(v)) {
+      if (owner === null || !KNOT_PART_RE.test(owner)) {
+        const why = owner === null ? 'the text is under no item, doc, puzzle or section' : `owner '${owner}' is not [a-z][a-z0-9_]*`;
+        skipped.push({ path, reason: `${why}, so the ID would have no knot part (§4)` });
+        return v;
+      }
+      const id = freshId(`${input.chapter}.${owner}`, used, input.suffix);
+      used.add(id);
+      added.push({ path, id });
+      return { id, ...v };
+    }
+    if (Array.isArray(v)) {
+      return v.map((e: unknown, i) => walk(e, `${path}.${i}`, owner));
+    }
+    if (typeof v !== 'object' || v === null) {
+      return v;
+    }
+    const top = path === '';
+    return Object.fromEntries(
+      Object.entries(v).map(([k, e]) => {
+        const at = top ? k : `${path}.${k}`;
+        // `<map>.<id>`: the entry's id owns everything below it.
+        const parent = top ? null : path;
+        const own = parent !== null && WORLD_OWNERS.includes(parent) ? k : owner;
+        return [k, walk(e, at, own)];
+      }),
+    );
+  };
+  const out = walk(parsed, '', null);
+  return { text: added.length === 0 ? input.text : `${bom}${JSON.stringify(out, null, 2)}\n`, added, skipped };
 }
 
 /**

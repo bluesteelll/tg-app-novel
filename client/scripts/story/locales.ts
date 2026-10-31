@@ -3,7 +3,8 @@
 // rules no single chapter can see: `id/duplicate` across chapters and `id/retired`. Pure, no node:*: story.ts reads the
 // files.
 // Findings name story-relative files (`locales/en/ch1.json`, `retired-ids.txt`) and the 1-based line of a key, or 0
-// for the whole file; ink lines come from the chapter graphs, so the static extractor is graph.ts's alone.
+// for the whole file; ink lines come from the chapter graphs, so the static extractor is graph.ts's alone. A
+// chapter's world texts (world.ts `worldLines`, hints included) join its lines from LW3 (PUZZLES-PLAN "Texts").
 import type { Cast, ChapterListEntry, StoryId } from '../../src/story/catalog.ts';
 import type { ChapterId, SpeakerId } from '../../src/story/staging.ts';
 import { LINE_ID_RE } from '../../src/story/tags.ts';
@@ -11,6 +12,7 @@ import type { StoryNames } from './emit.ts';
 import type { ChapterGraph, StoryLine } from './graph.ts';
 import { LINT_CODES } from './lint.ts';
 import type { Finding, LintCode } from './lint.ts';
+import type { WorldLine } from './world.ts';
 
 export type EnEntry = { ru: string; en: string };
 /** story/locales/en/<ch>.json decoded: the well-formed entries, and where each key is written. */
@@ -39,6 +41,11 @@ export type LocaleInput = {
   retired: ReadonlySet<string>;
   /** The decoded stories: each needs a title and a teaser in both languages ([] when stories.json did not decode). */
   stories: readonly StoryId[];
+  /**
+   * Per chapter with a decoded world, its texts (default none): they join the chapter's en checks and both ID rules,
+   * judged with the chapter's compiled graph (D9).
+   */
+  worlds?: ReadonlyMap<ChapterId, readonly WorldLine[]>;
 };
 
 export const RETIRED_FILE = 'retired-ids.txt';
@@ -229,7 +236,8 @@ export function checkLocales(input: LocaleInput): { findings: Finding[]; names: 
   const order = input.chapters === null ? [...input.graphs.keys()] : input.chapters.map((c) => c.id);
   const played = order.flatMap((ch) => {
     const g = input.graphs.get(ch);
-    return g === undefined ? [] : [{ ch, lines: g.lines }];
+    const lines: ReadonlyArray<StoryLine | WorldLine> = g === undefined ? [] : [...g.lines, ...(input.worlds?.get(ch) ?? [])];
+    return g === undefined ? [] : [{ ch, lines }];
   });
   for (const { ch, lines } of played) {
     const table = input.en.get(ch) ?? decodeEnTable(`locales/en/${ch}.json`, null).table;
@@ -243,12 +251,14 @@ export function checkLocales(input: LocaleInput): { findings: Finding[]; names: 
       }
     }
   }
-  // One occurrence per source line: a file two chapters reach is `ink/include`'s, not a duplicate.
+  // One occurrence per source line: a file two chapters reach is `ink/include`'s, not a duplicate. A world text is
+  // one occurrence per JSON path: compact JSON writes several texts on one line, and a line can be 0 (D9).
   const seen = new Set<string>();
-  const firstUse = new Map<string, { at: string; ch: ChapterId }>();
+  const firstUse = new Map<string, { at: string; ch: ChapterId; world: boolean }>();
   for (const { ch, lines } of played) {
     for (const l of lines) {
-      const at = `${l.file}:${l.line}`;
+      const world = 'path' in l;
+      const at = world ? `${l.file}#${l.path}` : `${l.file}:${l.line}`;
       if (seen.has(at)) {
         continue;
       }
@@ -258,8 +268,9 @@ export function checkLocales(input: LocaleInput): { findings: Finding[]; names: 
       }
       const used = firstUse.get(l.id);
       if (used === undefined) {
-        firstUse.set(l.id, { at, ch });
-      } else if (used.ch !== ch) {
+        firstUse.set(l.id, { at, ch, world });
+      } else if (used.ch !== ch || used.world || world) {
+        // An ink-only repeat inside one chapter is the source lint's; any repeat a world text takes part in is here.
         out.push(finding('id/duplicate', l.file, l.line, `'${l.id}' is already used at ${used.at} (chapter ${used.ch}) (§4)`));
       }
     }
