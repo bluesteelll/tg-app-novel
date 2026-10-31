@@ -1,0 +1,732 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="policy-version" content="2026-10-31">
+<title>Политика конфиденциальности / Privacy Policy</title>
+<style>
+  :root { color-scheme: light dark; --fg: #1d1d1f; --bg: #ffffff; --muted: #5f6368; --line: #d9d9de; --warn-bg: #fff4d6; --warn-fg: #6b4e00; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg: #ececf0; --bg: #17171a; --muted: #a0a3aa; --line: #3a3a40; --warn-bg: #3d3214; --warn-fg: #ffd98a; }
+  }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 720px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 1.5rem; line-height: 1.25; margin: 1.2em 0 0.4em; }
+  h2 { font-size: 1.15rem; margin: 1.6em 0 0.4em; }
+  h3 { font-size: 1rem; margin: 1.2em 0 0.3em; }
+  p, li { margin: 0.35em 0; }
+  ul { padding-left: 1.2em; }
+  .draft { background: var(--warn-bg); color: var(--warn-fg); border-radius: 8px; padding: 12px 14px; font-weight: 600; }
+  span.draft { display: inline; padding: 1px 6px; border-radius: 4px; font-weight: 600; }
+  .muted { color: var(--muted); }
+  .table { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.95rem; }
+  th, td { border: 1px solid var(--line); padding: 6px 8px; text-align: left; vertical-align: top; }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 2.5em 0; }
+  a { color: inherit; }
+</style>
+</head>
+<body>
+<main>
+
+<p class="draft">ЧЕРНОВИК (тестовая редакция). Текст ещё не проверен юристом и будет изменён перед запуском игры.
+Значения в фигурных скобках будут заполнены. Пометки в квадратных скобках — вопросы, которые нужно решить до
+запуска.<br>
+DRAFT (test version). This text has not been reviewed by a lawyer yet and will change before the game launches.
+Values in curly braces are placeholders. Notes in square brackets are questions to settle before launch.</p>
+
+<p class="muted"><a href="#ru">Русский</a> · <a href="#en">English</a></p>
+
+<section id="ru" lang="ru">
+
+<h1>Политика конфиденциальности</h1>
+
+<h2 id="ru-0">0. Версия</h2>
+<p>Версия и дата вступления в силу: {POLICY_VERSION}. Актуальный текст всегда доступен по адресу {POLICY_URL}.</p>
+<p>Коротко: мы храним только то, что нужно для игры, — ваш Telegram id, имя и язык, сохранения, покупки,
+игровой прогресс и друзей, которых вы сами добавили. Мы не продаём данные, не показываем рекламу и не подключаем
+сторонние системы аналитики. Друзья видят ваш прогресс, только если вы сами это включили.</p>
+
+<h2 id="ru-1">1. Кто мы и как с нами связаться</h2>
+<p>Оператор персональных данных: {OPERATOR_NAME} ({OPERATOR_FORM}), ОГРН/ОГРНИП {OGRN}, ИНН {INN}, адрес:
+{OPERATOR_ADDRESS}.</p>
+<p>По вопросам о данных пишите на {PRIVACY_CONTACT_EMAIL}. Команда <code>/support</code> в боте игры показывает,
+как связаться с поддержкой. Ответственный за организацию обработки персональных данных: {RESPONSIBLE_PERSON}.</p>
+
+<h2 id="ru-2">2. Какие данные мы собираем</h2>
+<h3>Чьи данные</h3>
+<p>Политика касается игроков — пользователей Telegram, которые открыли игру, в том числе тех, кто отправляет и
+получает запросы в друзья, приходит по приглашению, покупает и дарит. И тех, кто пишет нам о своих данных
+(например, родителей, раздел 10).</p>
+<h3>От Telegram при входе в игру</h3>
+<ul>
+  <li>Ваш идентификатор Telegram (Telegram id), имя (поле «имя» в Telegram) и язык интерфейса Telegram.
+    Имя и язык обновляются при каждом входе.</li>
+  <li>Когда вы впервые и в последний раз открывали игру.</li>
+</ul>
+<p>При каждом входе Telegram передаёт нам вместе с подписью и другие поля о вас и о запуске: фамилию, имя
+пользователя (@username), ссылку на фото профиля, статус Telegram Premium, разрешение писать вам в личные
+сообщения, сведения о чате, из которого открыта игра, и параметр запуска. Мы получаем их, чтобы проверить подпись
+Telegram, и не сохраняем. Исключение — параметр запуска: если вы впервые открыли игру по ссылке-приглашению, мы
+записываем, кто вас пригласил (раздел 4).</p>
+<p>Когда вы отправляете боту команду, Telegram передаёт нам сообщение вместе с данными вашего аккаунта. Мы отвечаем
+на команду и не храним сообщение.</p>
+<h3>Когда вы играете</h3>
+<ul>
+  <li><b>Сохранения:</b> история, слот, глава, место в тексте и состояние игры, время сохранения.</li>
+  <li><b>Игровая статистика:</b> что вы начали или прошли главу, дошли до концовки, решили, провалили или бросили
+    головоломку, и какой вариант выбрали в каждом выборе. Вариант записывается его внутренним кодом, а не текстом.
+    К каждому событию добавляются версия истории и время, когда оно произошло и когда дошло до сервера.</li>
+  <li><b>Головоломки:</b> число попыток, когда головоломка решена, и какие подсказки вы открыли.</li>
+  <li><b>Достижения:</b> какие достижения вы открыли и когда.</li>
+</ul>
+<h3>Покупки и игровые ресурсы</h3>
+<ul>
+  <li><b>Заказы и платежи:</b> что вы купили, цена в Telegram Stars, статус и время заказа, ссылка на счёт,
+    идентификаторы платежа от Telegram, сумма, валюта, время оплаты и время возврата, если он был.</li>
+  <li><b>Открытые главы:</b> какие платные главы вам доступны.</li>
+  <li><b>Ресурсы</b> (например, подсказки): баланс, долг после возврата и история операций — покупки, траты,
+    подарки (с указанием второй стороны) и бонусы за приглашения.</li>
+</ul>
+<h3>Друзья и приглашения</h3>
+<ul>
+  <li>Ваша ссылка-приглашение (её код) и случайный идентификатор игрока, по которому вас видят другие игроки
+    вместо Telegram id.</li>
+  <li>Запросы в друзья, список друзей и отметки «запрос отклонён или друг удалён».</li>
+  <li>Ваши согласия: на что, когда, к какой версии политики и какому тексту согласия.</li>
+  <li>Приглашения: кто кого пригласил, когда и начислен ли бонус.</li>
+</ul>
+<h3>Технические данные</h3>
+<ul>
+  <li>Журналы сервера: при ошибке в них может попасть ваш Telegram id.</li>
+  <li>Счётчик отправок «Поделиться» за последний час — только в памяти сервера.</li>
+  <li><b>IP-адрес.</b> Ваше устройство обращается к нашему серверу через интернет, поэтому сервер и сетевая
+    инфраструктура перед ним (раздел 8) получают IP-адрес при каждом запросе. Сервер игры не записывает IP-адреса
+    ни в базу данных, ни в свои журналы.
+    <span class="draft">[До запуска, хостинг: записывают ли IP-адреса в журналы хостинг-провайдер и сетевой узел
+    перед сервером (прокси, CDN, туннель) и сколько их хранят.]</span></li>
+</ul>
+<h3>Обращения к нам</h3>
+<ul>
+  <li>Если вы пишете на {PRIVACY_CONTACT_EMAIL}: ваш адрес электронной почты, текст письма и то, что нужно, чтобы
+    подтвердить, что запрос идёт от владельца аккаунта Telegram (раздел 9).</li>
+</ul>
+<h3>Данные в Telegram и на устройстве</h3>
+<ul>
+  <li><b>В облачном хранилище Telegram (CloudStorage):</b> ваши настройки и отметки о прочитанных строках
+    (короткие числовые коды строк) — чтобы пропуск прочитанного работал на всех ваших устройствах.</li>
+  <li><b>На устройстве (DeviceStorage):</b> сохранения и события статистики, которые ещё не дошли до сервера.</li>
+</ul>
+<h3>Чего мы не получаем</h3>
+<p>Номер телефона, ваши контакты и данные банковских карт: Telegram Stars покупаются у Telegram.</p>
+
+<h2 id="ru-3">3. Зачем и на каком основании</h2>
+<ul>
+  <li><b>Аккаунт и проверка входа, сохранения, головоломки, достижения, карточка прохождения, ресурсы, друзья,
+    подарки и приглашения</b>, а также <b>настройки, отметки о прочитанном и данные на устройстве</b> — чтобы игра
+    работала так, как вы ею пользуетесь. Основание: исполнение договора с вами (п. 5 ч. 1 ст. 6 152-ФЗ;
+    ст. 6(1)(b) GDPR).</li>
+  <li><b>Покупки и возвраты</b> — исполнение договора и обязанности по учёту (пп. 5 и 2 ч. 1 ст. 6 152-ФЗ;
+    ст. 6(1)(b) и (c) GDPR).</li>
+  <li><b>Показ вашего прогресса друзьям</b> — только по вашему отдельному согласию (п. 1 ч. 1 ст. 6 152-ФЗ;
+    ст. 6(1)(a) GDPR).</li>
+  <li><b>Запись согласий</b> — чтобы доказать, что согласие было дано (ч. 3 ст. 9 152-ФЗ; ст. 7(1) и 6(1)(c)
+    GDPR). Записи хранятся, пока хранятся остальные ваши данные (раздел 9).</li>
+  <li><b>Ответы на обращения о данных</b> — обязанность, которую на нас возлагает закон (п. 2 ч. 1 ст. 6 152-ФЗ;
+    ст. 6(1)(c) GDPR).</li>
+  <li><b>Общая статистика по всем игрокам</b> (например, «столько-то процентов игроков выбрали этот вариант») —
+    наш законный интерес сделать игру лучше (п. 7 ч. 1 ст. 6 152-ФЗ; ст. 6(1)(f) GDPR). Такой статистики пока нет.
+    Вы вправе возразить (раздел 9).</li>
+  <li><b>Защита от злоупотреблений</b> (лимиты подарков и бонусов, проверка приглашений, отказы других игроков вам,
+    которые остаются и после удаления ваших данных), <b>журналы сервера</b>
+    и <b>лимит на «Поделиться»</b> — наш законный интерес в безопасной и честной работе игры (п. 7 ч. 1 ст. 6
+    152-ФЗ; ст. 6(1)(f) GDPR).</li>
+</ul>
+<p>Без Telegram id игра не может работать: по нему мы узнаём вас и храним ваш прогресс и покупки.</p>
+
+<h2 id="ru-4">4. Друзья и «Поделиться»</h2>
+<ul>
+  <li><b>Кто может стать вашим другом.</b> Только тот, чей запрос вы приняли, или тот, кто принял ваш запрос.
+    Больше никто не попадает в этот круг.</li>
+  <li><b>Ссылка-приглашение ничего о вас не раскрывает.</b> Тот, у кого она есть, может только отправить вам
+    запрос. Вы увидите его имя из Telegram и решите, принимать ли запрос.</li>
+  <li><b>Что видно при запросе.</b> Когда вы отправляете запрос, человек, которому вы его отправили, видит ваше
+    имя. Другие игроки никогда не получают ваш Telegram id: вас обозначает случайный идентификатор.</li>
+  <li><b>Друзья видят друг друга.</b> Когда запрос принят, вы и друг видите в списке друзей имена друг друга из
+    Telegram (имя обновляется при каждом входе). Это часть функции друзей и не зависит от согласия на показ
+    прогресса (раздел 5).</li>
+  <li><b>«Нет» окончательно.</b> Если вы отклонили запрос или удалили друга, этот человек не сможет снова
+    отправить вам запрос, пока вы сами не отправите запрос ему. Он не узнает, что запрос отклонён.</li>
+  <li><b>Новая ссылка.</b> Вы можете заменить ссылку-приглашение: старая перестанет работать.</li>
+  <li><b>Что видят друзья</b> (только если вы включили показ, раздел 5): по каждой истории, которую вы начали,
+    — сколько концовок вы нашли и сколько достижений открыли, а также названия тех концовок и достижений, которые
+    друг нашёл сам. Сохранения, выборы и покупки друзья не видят.</li>
+  <li><b>Что содержит сообщение «Поделиться».</b> Название истории, сколько концовок вы нашли и сколько
+    достижений открыли, и вашу ссылку-приглашение. Названий концовок и достижений и платного содержимого
+    в сообщении нет. Сообщение отправляете вы сами из своего аккаунта Telegram, в выбранный вами чат.</li>
+  <li><b>Приглашения.</b> Если человек впервые открывает игру по вашей ссылке, мы записываем, что его пригласили
+    вы. Когда он пройдёт первую главу любой истории, он получит бонус, и вы тоже — в пределах дневного и общего
+    лимита бонусов за приглашения. Для проверки мы используем время, которое сервер сам зафиксировал между началом
+    главы и её завершением. Мы не сообщаем пригласившему, кто именно пришёл по ссылке.</li>
+  <li>Поиска игроков и публичных профилей нет.</li>
+</ul>
+
+<h2 id="ru-5">5. Согласия и как их отозвать</h2>
+<ul>
+  <li>Единственное согласие в игре — <b>показ вашего прогресса друзьям</b>. По умолчанию показ выключен.</li>
+  <li>Согласие даётся на отдельном экране с собственным текстом, а не вместе с правилами игры.</li>
+  <li>Выключить показ можно одним нажатием там же, где вы его включили. После этого друзья сразу видят только
+    «прогресс скрыт». Отзыв согласия не влияет на законность показа до отзыва.</li>
+  <li>Отзыв прекращает только показ. Сами концовки, достижения и статистика остаются у вас в игре: их мы храним
+    для работы игры (раздел 3), а не по согласию.</li>
+  <li>Мы храним каждую запись «включено/выключено» с датой, версией этой политики и версией текста согласия.</li>
+</ul>
+
+<h2 id="ru-6">6. Покупки, ресурсы и возвраты</h2>
+<ul>
+  <li>Платные главы и наборы ресурсов оплачиваются только в Telegram Stars. Оплату проводит Telegram; мы
+    получаем сведения о платеже, но не данные карты.</li>
+  <li>Покупка засчитывается только после того, как Telegram подтвердит оплату.</li>
+  <li>Ресурсы (например, подсказки) можно дарить только друзьям, с дневным лимитом. Подарок записывается
+    в историю операций у обоих — у отправителя и у получателя.</li>
+  <li>Помощь с оплатой и возвраты — команда <code>/paysupport</code> в боте. Если набор ресурсов вернули,
+    мы списываем оставшиеся от него ресурсы. То, что уже потрачено или подарено, становится долгом: его гасят
+    следующие начисления. Подарки, полученные друзьями, не отзываются.</li>
+  <li>Записи о платежах и заказах мы храним и после удаления остальных данных — для учёта и споров о возвратах,
+    в течение срока из раздела 7.</li>
+</ul>
+
+<h2 id="ru-7">7. Где и сколько хранятся данные</h2>
+<ul>
+  <li><b>Наш сервер.</b> База данных игры находится в {DB_LOCATION_COUNTRY}, у хостинг-провайдера из
+    раздела 8.</li>
+  <li><b>Telegram.</b> Настройки и отметки о прочитанном лежат в облачном хранилище Telegram, на серверах
+    Telegram.</li>
+  <li><b>Ваше устройство.</b> Сохранения и события, ещё не отправленные на сервер, хранятся на устройстве, пока
+    сервер не подтвердит их получение.</li>
+  <li><b>Передача за границу:</b> {CROSS_BORDER_TRANSFER}.</li>
+  <li><b>Сроки.</b> Мы храним данные, пока вы не попросите их удалить (раздел 9). Автоматического удаления нет,
+    в том числе если вы давно не заходили в игру. Цель — чтобы ваши сохранения, достижения, покупки и друзья были
+    на месте, когда бы вы ни вернулись.
+    <span class="draft">[До запуска, юрист: критерий пересмотра этого срока (ч. 7 ст. 5 152-ФЗ, ст. 5(1)(e) GDPR,
+    §4.2(b) правил Telegram для разработчиков).]</span></li>
+  <li><b>Исключения.</b> Записи о платежах и заказах и связанные с платежом операции с ресурсами —
+    {RETENTION_PERIOD}, в том числе после удаления остальных данных. Запись аккаунта и другие записи, которые
+    остаются после удаления (раздел 9), автоматически не удаляются. Журналы сервера — в пределах их ротации
+    у хостинг-провайдера. Счётчик «Поделиться» — не дольше часа. Данные в хранилище Telegram — пока их не
+    перезапишут, дальше действуют правила Telegram.
+    <span class="draft">[До запуска, юрист и оператор: срок хранения обращений о данных.]</span></li>
+</ul>
+
+<h2 id="ru-8">8. Роль Telegram и кто ещё получает данные</h2>
+<p>Игра работает внутри Telegram. Telegram передаёт нам данные для входа, проводит оплату в Stars, доставляет
+сообщения, которые вы отправляете через «Поделиться», и хранит облачное хранилище. Эту обработку Telegram ведёт
+по своим правилам: <a href="https://telegram.org/privacy">политика конфиденциальности Telegram</a>.</p>
+<p>Кроме Telegram, данные получают только те, кто помогает нам вести игру, и только для этого:</p>
+<ul>
+  <li><b>хостинг и сетевая инфраструктура</b> ({HOSTING_PROVIDER}) — все данные, которые проходят через наш сервер
+    и хранятся в нём;</li>
+  <li><b>почтовый сервис</b>, через который мы получаем письма на {PRIVACY_CONTACT_EMAIL}, — ваши письма.</li>
+</ul>
+<p>Другие игроки получают только то, что описано в разделе 4. Больше мы никому не передаём ваши данные, если этого
+не требует закон.</p>
+
+<h2 id="ru-9">9. Ваши права и как ими воспользоваться</h2>
+<ul>
+  <li><b>Узнать и получить копию</b> данных о вас, в том числе в машиночитаемом виде.
+    <span class="draft">[До запуска, дизайн: правило для копии — Telegram id других игроков (друзей, отправителей
+    запросов и подарков, пригласивших) в неё не попадает (раздел 4). Ручной порядок такого правила пока не
+    содержит.]</span></li>
+  <li><b>Исправить данные.</b> Имя и язык приходят из Telegram: измените их в Telegram, и при следующем входе они
+    обновятся у нас.</li>
+  <li><b>Удалить данные.</b> По запросу мы удаляем: сохранения, статистику и выборы, прогресс головоломок и
+    открытые подсказки, достижения, доступ к купленным главам, баланс ресурсов и операции с ними, кроме связанных
+    с платежом, вашу ссылку-приглашение и идентификатор игрока, запросы в друзья, друзей, отметки отказа, которые
+    поставили вы, записи о том, что вас пригласили, и записи согласий.</li>
+  <li><b>Записи других игроков о вас.</b> Отметки отказа, которые поставили другие игроки, отклонив ваш запрос
+    или удалив вас из друзей, остаются: это их решение, и удаление ваших данных его не отменяет (раздел 4).
+    В приглашениях, которые сделали вы, и в операциях других игроков (подарки, бонусы за приглашение) мы стираем
+    ссылку на вашу запись. Если вы дарили другому игроку ресурсы или пришли в игру по его ссылке, технический ключ
+    этой операции в его истории по-прежнему содержит ваш Telegram id.
+    <span class="draft">[До запуска, дизайн: (1) порядок удаления сейчас удаляет и отметки отказа, которые другие
+    игроки поставили вам; он должен их сохранять, иначе обещание раздела 4 не выполняется. (2) Обезличить
+    Telegram id в ключах чужих операций при удалении или выбрать ключи, которые его не содержат; тогда
+    последняя фраза уходит.]</span></li>
+  <li><b>Что остаётся после удаления.</b> Записи о заказах (в том числе неоплаченных) и платежах и связанные
+    с платежом операции с ресурсами — для учёта и споров о возвратах (раздел 7). Запись аккаунта: Telegram id и
+    даты первого и последнего входа; имя и язык мы стираем. На неё ссылаются записи о заказах и платежах и отметки
+    отказа других игроков. Сейчас она остаётся у каждого игрока, в том числе у того, у кого нет ни заказов, ни
+    платежей, и автоматически не удаляется (раздел 7).
+    <span class="draft">[До запуска, дизайн и юрист: у игрока без платежей и без отметок отказа от других игроков
+    у записи аккаунта и у неоплаченных заказов нет ни цели, ни срока. Либо удалять их при удалении данных, либо
+    назвать цель (например, защита от повторного получения бонуса за приглашение), основание и срок — здесь,
+    в разделе 7 и в приложении A.]</span>
+    <b>Купленные главы после удаления снова закрыты.</b> Если вы снова откроете игру, мы снова начнём хранить
+    ваше имя и язык (раздел 2).</li>
+  <li><b>Данные в Telegram и на устройстве.</b> Настройки и отметки о прочитанном в хранилище Telegram и
+    неотправленные данные на вашем устройстве мы с сервера удалить не можем.
+    <span class="draft">[До запуска, дизайн: как игрок их очищает — кнопка в игре или инструкция.]</span></li>
+  <li><b>Ограничить обработку</b> и <b>возразить</b> против обработки на основании нашего законного интереса
+    (раздел 3).
+    <span class="draft">[До запуска, дизайн и юрист: где записывается возражение или ограничение и как его
+    учитывают защита от злоупотреблений, журналы и будущая общая статистика выборов. Сейчас такого места нет, а
+    ручной порядок описан только для доступа и удаления.]</span></li>
+  <li><b>Отозвать согласие</b> в любой момент (раздел 5).</li>
+  <li><b>Пожаловаться</b> в надзорный орган (раздел 13).</li>
+</ul>
+<p><b>Как обратиться.</b> Напишите на {PRIVACY_CONTACT_EMAIL}; команда <code>/support</code> в боте показывает,
+как связаться с поддержкой. Адрес этой политики показывает команда <code>/privacy</code>. Мы можем попросить
+подтвердить, что запрос идёт от владельца аккаунта Telegram. Это бесплатно.</p>
+<p><b>Сроки ответа.</b> По 152-ФЗ — 10 рабочих дней, с продлением не более чем на 5 рабочих дней с объяснением
+причин. По GDPR — один месяц, с продлением до двух месяцев с объяснением причин.</p>
+
+<h2 id="ru-10">10. Дети</h2>
+<p>Игра предназначена для лиц не моложе {MIN_AGE}. По правилам Telegram пользователям из ЕС, Великобритании и
+Австралии должно быть не меньше 18 лет. Если вы родитель и считаете, что ваш ребёнок младше этого возраста
+передал нам данные, напишите нам (раздел 1), и мы их удалим.</p>
+
+<h2 id="ru-11">11. Безопасность</h2>
+<ul>
+  <li>Вход проверяется на сервере по подписи Telegram; дальше приложение работает с нашим кратковременным
+    токеном.</li>
+  <li>Другие игроки никогда не получают ваш Telegram id (раздел 4).</li>
+  <li>Оплату проводит Telegram: данных банковских карт у нас нет.</li>
+  <li><span class="draft">[До запуска, хостинг: шифрование данных на носителях и хранение ключа отдельно от данных
+    (§4.4(a) правил Telegram для разработчиков), кто имеет доступ к базе данных, резервные копии и сколько в них
+    остаются удалённые данные. Описывается по итогам выбора хостинга и порядка развёртывания; сейчас не
+    построено.]</span></li>
+  <li><span class="draft">[До запуска, юрист и оператор: порядок при утечке — уведомить Роскомнадзор в течение 24 и
+    72 часов (ч. 3.1 ст. 21 152-ФЗ), надзорный орган ЕС не позднее 72 часов (ст. 33 GDPR), игроков — без
+    неоправданной задержки при высоком риске (ст. 34 GDPR; §4.4(b) правил Telegram). Канал, по которому игроки
+    узнают об утечке, не спроектирован.]</span></li>
+</ul>
+
+<h2 id="ru-12">12. Изменения политики</h2>
+<p>Новая редакция публикуется по тому же адресу с новой версией и датой (раздел 0). Ваше согласие на показ
+прогресса друзьям записывается вместе с версией политики, действовавшей в момент согласия.</p>
+
+<h2 id="ru-13">13. Контакты и надзорный орган</h2>
+<p>Вопросы о данных: {PRIVACY_CONTACT_EMAIL}; команда <code>/support</code> в боте показывает контакт поддержки.
+Вопросы об оплате: <code>/paysupport</code>.</p>
+<p>Надзорный орган, в который можно подать жалобу: {SUPERVISORY_AUTHORITY}.</p>
+
+<h2 id="ru-a">Приложение A. Для пользователей из России (152-ФЗ)</h2>
+<ul>
+  <li>Запись, систематизация, накопление, хранение, уточнение и извлечение персональных данных граждан России на
+    нашем сервере ведутся с использованием базы данных, находящейся в {DB_LOCATION_COUNTRY} (ч. 5 ст. 18).
+    Настройки и отметки о прочитанном игра записывает только в облачное хранилище Telegram (раздел 7).
+    <span class="draft">[До запуска, юрист: являются ли эти данные персональными. Если да — нужна их первичная
+    запись на нашем сервере в России.]</span></li>
+  <li>Оператор уведомляет Роскомнадзор об обработке персональных данных до её начала (ст. 22).</li>
+  <li>Ответственный за организацию обработки: {RESPONSIBLE_PERSON}.</li>
+  <li>Мы не делаем ваши данные общедоступными: показ друзьям — это предоставление данных определённому кругу лиц,
+    который вы выбрали сами.</li>
+  <li><b>Категории субъектов:</b> игроки (в том числе отправители и получатели запросов в друзья, пригласившие и
+    приглашённые, покупатели, отправители и получатели подарков); лица, обратившиеся к нам с запросом о данных.</li>
+  <li><b>Действия с данными:</b> сбор (получение от Telegram и от вас), запись, систематизация, накопление,
+    хранение, уточнение (обновление), извлечение, использование, передача (предоставление: ваше имя — тому, кому
+    вы отправили запрос, и друзьям, раздел 4; ваш прогресс — друзьям по вашему согласию, раздел 5; доступ тем, кто
+    помогает нам вести игру, раздел 8), удаление и уничтожение.</li>
+  <li><b>Способ обработки:</b> автоматизированная обработка с передачей по интернету. Запросы о данных и удаление
+    по запросу администратор оператора выполняет вручную.</li>
+  <li><b>Уничтожение.</b> Отзыв согласия сразу прекращает показ прогресса друзьям (раздел 5); данные, которые мы
+    обрабатываем на другом основании (раздел 3), при этом остаются. Данные уничтожаются по вашему запросу на
+    удаление (раздел 9), кроме записей, которые раздел 9 называет остающимися (записи о платежах и заказах —
+    по закону, раздел 7).
+    <span class="draft">[До запуска, юрист: срок уничтожения по запросу и после достижения цели (ст. 21);
+    как подтверждается уничтожение (проверить: приказ Роскомнадзора № 179 от 28.10.2022); удалять ли записи
+    согласий при удалении данных.]</span></li>
+</ul>
+<h3>Цели, данные, субъекты и сроки</h3>
+<div class="table">
+<table>
+  <tr><th>Цель</th><th>Данные (раздел 2)</th><th>Субъекты</th><th>Срок (раздел 7)</th></tr>
+  <tr><td>Работа игры</td><td>аккаунт, сохранения, статистика и выборы, головоломки, достижения, настройки, отметки
+    о прочитанном, данные на устройстве</td><td>игроки</td><td>до запроса на удаление; запись аккаунта без имени
+    и языка остаётся и после него (раздел 9)</td></tr>
+  <tr><td>Покупки, ресурсы, подарки, возвраты</td><td>заказы, платежи, открытые главы, ресурсы и операции</td>
+    <td>покупатели, отправители и получатели подарков</td><td>платежи и связанные с ними операции —
+    {RETENTION_PERIOD}; остальное — до запроса на удаление</td></tr>
+  <tr><td>Друзья и приглашения</td><td>ссылка-приглашение, идентификатор игрока, запросы, друзья, отметки отказа,
+    приглашения</td><td>отправители и получатели запросов, пригласившие и приглашённые</td><td>до запроса на
+    удаление; отметки отказа, которые другие игроки поставили вам, — пока их не снимет тот, кто поставил
+    (раздел 9)</td></tr>
+  <tr><td>Показ прогресса друзьям (согласие)</td><td>число концовок и достижений, общие названия</td><td>игроки,
+    давшие согласие</td><td>показ — до отзыва согласия</td></tr>
+  <tr><td>Запись согласий</td><td>записи согласий</td><td>игроки, давшие или отозвавшие согласие</td><td>до запроса
+    на удаление</td></tr>
+  <tr><td>Защита от злоупотреблений, журналы, лимит «Поделиться»</td><td>операции и приглашения, Telegram id
+    в журналах, счётчик «Поделиться»</td><td>игроки</td><td>журналы — в пределах ротации; счётчик — не дольше
+    часа</td></tr>
+  <tr><td>Ответы на обращения</td><td>адрес электронной почты, текст обращения</td><td>лица, обратившиеся
+    с запросом</td><td><span class="draft">[до запуска]</span></td></tr>
+</table>
+</div>
+
+<h2 id="ru-b">Приложение B. Для пользователей из ЕС (GDPR)</h2>
+<ul>
+  <li>Контролёр: {OPERATOR_NAME}, {OPERATOR_ADDRESS}. Представитель в ЕС (ст. 27): {EU_REPRESENTATIVE}.
+    Ответственный за защиту данных: {DPO_CONTACT}.</li>
+  <li>Наши законные интересы (ст. 6(1)(f)): общая статистика выборов, защита от злоупотреблений, безопасность
+    сервера, защита лимитов Telegram при «Поделиться».</li>
+  <li>Получатели: Telegram; хостинг и сетевая инфраструктура ({HOSTING_PROVIDER}); почтовый сервис для писем
+    на {PRIVACY_CONTACT_EMAIL}; другие игроки — в пределах раздела 4. Передача в третьи страны:
+    {CROSS_BORDER_TRANSFER}.</li>
+  <li>Сроки хранения: раздел 7. Права, включая переносимость данных: раздел 9. Утечки: раздел 11. Жалоба:
+    {SUPERVISORY_AUTHORITY}.</li>
+  <li>Мы не принимаем решений, которые порождают для вас юридические или сходные значимые последствия только на
+    основе автоматической обработки. Автоматически действуют только игровые правила: начисление бонусов и лимиты
+    подарков и бонусов.</li>
+</ul>
+
+</section>
+
+<hr>
+
+<section id="en" lang="en">
+
+<h1>Privacy Policy</h1>
+
+<h2 id="en-0">0. Version</h2>
+<p>Version and effective date: {POLICY_VERSION}. The current text is always available at {POLICY_URL}.</p>
+<p>In short: we keep only what the game needs: your Telegram id, first name and language, your saves, purchases,
+game progress and the friends you added yourself. We do not sell data, show ads or use third-party analytics.
+Friends see your progress only if you turn that on.</p>
+
+<h2 id="en-1">1. Who we are and how to reach us</h2>
+<p>Personal data operator (controller): {OPERATOR_NAME} ({OPERATOR_FORM}), OGRN/OGRNIP {OGRN}, INN {INN}, address:
+{OPERATOR_ADDRESS}.</p>
+<p>For questions about your data, write to {PRIVACY_CONTACT_EMAIL}. The <code>/support</code> command in the game's
+bot shows how to reach support. The person responsible for organising personal data processing:
+{RESPONSIBLE_PERSON}.</p>
+
+<h2 id="en-2">2. What we collect</h2>
+<h3>Whose data</h3>
+<p>This policy covers players: Telegram users who opened the game, including those who send and receive friend
+requests, come through an invitation, buy and gift. It also covers people who write to us about their data (for
+example, parents, section 10).</p>
+<h3>From Telegram when you open the game</h3>
+<ul>
+  <li>Your Telegram user id, your first name (the "first name" field in Telegram) and your Telegram interface
+    language. The first name and language are refreshed at every launch.</li>
+  <li>When you first and last opened the game.</li>
+</ul>
+<p>At every launch Telegram also passes us, together with its signature, other fields about you and the launch: your
+last name, your @username, a link to your profile photo, your Telegram Premium status, permission to message you,
+the chat the game was opened from, and the launch parameter. We receive them to check Telegram's signature and do not
+keep them. One exception is the launch parameter: if you open the game for the first time through an invite link, we
+record who invited you (section 4).</p>
+<p>When you send the bot a command, Telegram passes us the message together with your account data. We answer the
+command and do not keep the message.</p>
+<h3>While you play</h3>
+<ul>
+  <li><b>Saves:</b> the story, the slot, the chapter, your place in the text and the game state, and the save
+    time.</li>
+  <li><b>Game statistics:</b> that you started or finished a chapter, reached an ending, solved, failed or abandoned
+    a puzzle, and which option you picked at each choice. An option is recorded by its internal code, never by its
+    text. Each event also carries the story version, when it happened and when it reached the server.</li>
+  <li><b>Puzzles:</b> the number of attempts, when a puzzle was solved and which hints you opened.</li>
+  <li><b>Achievements:</b> which achievements you unlocked and when.</li>
+</ul>
+<h3>Purchases and in-game resources</h3>
+<ul>
+  <li><b>Orders and payments:</b> what you bought, the price in Telegram Stars, the order status and times, the
+    invoice link, Telegram's payment ids, the amount, the currency, the payment time and the refund time, if
+    any.</li>
+  <li><b>Unlocked chapters:</b> which paid chapters you have access to.</li>
+  <li><b>Resources</b> (for example, hints): your balance, any debt after a refund, and the history of operations:
+    purchases, spending, gifts (with the other party) and invitation bonuses.</li>
+</ul>
+<h3>Friends and invitations</h3>
+<ul>
+  <li>Your invite link (its code) and a random player id that other players see instead of your Telegram id.</li>
+  <li>Friend requests, your friend list, and "request declined or friend removed" marks.</li>
+  <li>Your consents: to what, when, under which version of this policy and which consent text.</li>
+  <li>Invitations: who invited whom, when, and whether the bonus was granted.</li>
+</ul>
+<h3>Technical data</h3>
+<ul>
+  <li>Server logs: on an error, your Telegram id may appear in them.</li>
+  <li>A count of your "Share" actions in the last hour, held in the server's memory only.</li>
+  <li><b>IP address.</b> Your device reaches our server over the internet, so the server and the network
+    infrastructure in front of it (section 8) receive your IP address with every request. The game's server writes
+    no IP address to its database or to its logs.
+    <span class="draft">[Before launch, hosting: whether the hosting provider and the network node in front of the
+    server (proxy, CDN, tunnel) log IP addresses, and for how long.]</span></li>
+</ul>
+<h3>When you write to us</h3>
+<ul>
+  <li>If you write to {PRIVACY_CONTACT_EMAIL}: your e-mail address, the text of your message, and what we need to
+    confirm that the request comes from the owner of the Telegram account (section 9).</li>
+</ul>
+<h3>Data kept by Telegram and on your device</h3>
+<ul>
+  <li><b>In Telegram's cloud storage (CloudStorage):</b> your settings and marks of the lines you have read (short
+    numeric codes of the lines), so that skipping read text works on all your devices.</li>
+  <li><b>On your device (DeviceStorage):</b> saves and statistics events that have not reached the server yet.</li>
+</ul>
+<h3>What we never receive</h3>
+<p>Your phone number, your contacts and card details: Telegram Stars are bought from Telegram.</p>
+
+<h2 id="en-3">3. Why, and on what legal basis</h2>
+<ul>
+  <li><b>The account and the sign-in check, saves, puzzles, achievements, the completion card, resources, friends,
+    gifts and invitations</b>, and also <b>settings, read marks and the data on your device</b>: to run the game the
+    way you use it. Basis: performance of our contract with you (152-FZ art. 6 p. 1 item 5; GDPR art. 6(1)(b)).</li>
+  <li><b>Purchases and refunds</b>: the contract and our accounting obligations (152-FZ art. 6 p. 1 items 5 and 2;
+    GDPR art. 6(1)(b) and (c)).</li>
+  <li><b>Showing your progress to friends</b>: only with your separate consent (152-FZ art. 6 p. 1 item 1; GDPR
+    art. 6(1)(a)).</li>
+  <li><b>Recording consents</b>: to prove that a consent was given (152-FZ art. 9 p. 3; GDPR art. 7(1) and
+    6(1)(c)). The records are kept as long as the rest of your data (section 9).</li>
+  <li><b>Answering requests about your data</b>: a duty the law places on us (152-FZ art. 6 p. 1 item 2; GDPR
+    art. 6(1)(c)).</li>
+  <li><b>Statistics across all players</b> (for example, "this share of players picked this option"): our
+    legitimate interest in improving the game (152-FZ art. 6 p. 1 item 7; GDPR art. 6(1)(f)). There are no such
+    statistics yet. You have the right to object (section 9).</li>
+  <li><b>Abuse prevention</b> (gift and bonus limits, invitation checks, other players' declines of you, which stay
+    after your data is deleted), <b>server logs</b> and the <b>"Share"
+    limit</b>: our legitimate interest in running the game safely and fairly (152-FZ art. 6 p. 1 item 7; GDPR
+    art. 6(1)(f)).</li>
+</ul>
+<p>The game cannot work without your Telegram id: it is how we recognise you and keep your progress and
+purchases.</p>
+
+<h2 id="en-4">4. Friends and sharing</h2>
+<ul>
+  <li><b>Who can become your friend.</b> Only someone whose request you accepted, or who accepted your request.
+    Nobody else enters that circle.</li>
+  <li><b>Your invite link reveals nothing about you.</b> Whoever has it can only send you a request. You will see
+    their first name from Telegram and decide whether to accept.</li>
+  <li><b>What a request shows.</b> When you send a request, the person you sent it to sees your first name. Other
+    players never receive your Telegram id: a random id stands for you.</li>
+  <li><b>Friends see each other.</b> Once a request is accepted, you and your friend see each other's Telegram first
+    name in the friend list (refreshed at every launch). This is part of the friends feature and does not depend on
+    the consent to show progress (section 5).</li>
+  <li><b>"No" is final.</b> If you decline a request or remove a friend, that person cannot send you a request
+    again until you send one to them. They are not told that their request was declined.</li>
+  <li><b>A new link.</b> You can replace your invite link; the old one stops working.</li>
+  <li><b>What friends see</b> (only if you turned it on, section 5): for each story you have started, how many
+    endings you found and how many achievements you unlocked, plus the titles of the endings and achievements that
+    the friend has found too. Friends never see your saves, choices or purchases.</li>
+  <li><b>What a shared message contains.</b> The story title, how many endings you found and how many achievements
+    you unlocked, and your invite link. It holds no ending or achievement titles and no paid content. You send the
+    message yourself, from your own Telegram account, to a chat you choose.</li>
+  <li><b>Invitations.</b> If someone opens the game for the first time through your link, we record that you
+    invited them. When they finish the first chapter of any story, they get a bonus, and so do you, within the daily
+    and total limits on invitation bonuses. To check this, we use the time the server itself recorded between the
+    start of the chapter and its completion. We do not tell the inviter who came through the link.</li>
+  <li>There is no player search and there are no public profiles.</li>
+</ul>
+
+<h2 id="en-5">5. Consents and how to withdraw them</h2>
+<ul>
+  <li>The game asks for one consent only: <b>showing your progress to friends</b>. It is off by default.</li>
+  <li>You give it on its own screen with its own text, never together with the game's terms.</li>
+  <li>One tap turns it off, in the same place where you turned it on. From then on your friends see only
+    "progress hidden". Withdrawing does not affect what was shown lawfully before.</li>
+  <li>Withdrawing stops only the showing. Your endings, achievements and statistics stay in your game: we keep them
+    to run the game (section 3), not on the basis of the consent.</li>
+  <li>We keep every "on/off" record with its date, the version of this policy and the version of the consent
+    text.</li>
+</ul>
+
+<h2 id="en-6">6. Purchases, resources and refunds</h2>
+<ul>
+  <li>Paid chapters and resource packs are paid in Telegram Stars only. Telegram processes the payment; we receive
+    the payment details, never your card.</li>
+  <li>A purchase counts only after Telegram confirms the payment.</li>
+  <li>Resources (for example, hints) can be gifted to friends only, within a daily limit. A gift is recorded in the
+    history of both the sender and the recipient.</li>
+  <li>Payment help and refunds: the <code>/paysupport</code> command in the bot. If a resource pack is refunded, we
+    remove what is left of it. Whatever was already spent or gifted becomes a debt that your next credits pay off.
+    Gifts your friends received are never taken back.</li>
+  <li>We keep payment and order records even after your other data is deleted, for accounting and refund disputes,
+    for the period in section 7.</li>
+</ul>
+
+<h2 id="en-7">7. Where data is kept, and for how long</h2>
+<ul>
+  <li><b>Our server.</b> The game's database is located in {DB_LOCATION_COUNTRY}, with the hosting provider named
+    in section 8.</li>
+  <li><b>Telegram.</b> Settings and read marks are in Telegram's cloud storage, on Telegram's servers.</li>
+  <li><b>Your device.</b> Saves and events not yet sent to the server stay on the device until the server confirms
+    them.</li>
+  <li><b>Transfers abroad:</b> {CROSS_BORDER_TRANSFER}.</li>
+  <li><b>Retention.</b> We keep your data until you ask us to delete it (section 9). There is no automatic deletion,
+    also when you have not played for a long time. The purpose: your saves, achievements, purchases and friends are
+    there whenever you come back.
+    <span class="draft">[Before launch, lawyer: the criterion for reviewing this period (152-FZ art. 5 p. 7, GDPR
+    art. 5(1)(e), Telegram Bot Developer Terms §4.2(b)).]</span></li>
+  <li><b>Exceptions.</b> Payment and order records and the resource operations tied to a payment:
+    {RETENTION_PERIOD}, also after your other data is deleted. The account record and the other records that stay
+    after deletion (section 9) are not deleted automatically. Server logs: within the hosting provider's log
+    rotation. The "Share" count: at most one hour. Data in Telegram's cloud storage: until it is overwritten, and
+    after that Telegram's rules apply.
+    <span class="draft">[Before launch, lawyer and operator: how long requests about data are kept.]</span></li>
+</ul>
+
+<h2 id="en-8">8. Telegram's role, and who else receives data</h2>
+<p>The game runs inside Telegram. Telegram passes us your sign-in data, processes Stars payments, delivers the
+messages you send with "Share" and hosts the cloud storage. Telegram does this under its own rules:
+<a href="https://telegram.org/privacy">Telegram Privacy Policy</a>.</p>
+<p>Apart from Telegram, only those who help us run the game receive data, and only for that purpose:</p>
+<ul>
+  <li><b>hosting and network infrastructure</b> ({HOSTING_PROVIDER}): all data that passes through and is stored on
+    our server;</li>
+  <li><b>the e-mail service</b> through which we receive messages sent to {PRIVACY_CONTACT_EMAIL}: your
+    messages.</li>
+</ul>
+<p>Other players receive only what section 4 describes. We do not pass your data to anyone else unless the law
+requires it.</p>
+
+<h2 id="en-9">9. Your rights and how to use them</h2>
+<ul>
+  <li><b>Access</b> your data and get a copy, including in a machine-readable form.
+    <span class="draft">[Before launch, design: a rule for the copy: other players' Telegram ids (friends, senders
+    of requests and gifts, inviters) never go into it (section 4). The manual procedure has no such rule
+    yet.]</span></li>
+  <li><b>Correct</b> your data. Your first name and language come from Telegram: change them in Telegram and they
+    update here at your next launch.</li>
+  <li><b>Delete</b> your data. On request we delete: your saves, statistics and choices, puzzle progress and opened
+    hints, achievements, access to the chapters you bought, your resource balance and the operations on it except
+    those tied to a payment, your invite link and player id, friend requests, friends, the decline marks you set,
+    the record that you were invited, and your consent records.</li>
+  <li><b>Other players' records about you.</b> The decline marks other players set when they declined your request
+    or removed you as a friend stay: the decision is theirs, and deleting your data does not undo it (section 4).
+    In invitations you made and in other players' operations (gifts, invitation bonuses), we erase the link to your
+    record. If you gifted resources to another player or joined the game through their link, the technical key of
+    that operation in their history still contains your Telegram id.
+    <span class="draft">[Before launch, design: (1) the erasure order currently also deletes the decline marks other
+    players set on you; it must keep them, or the promise of section 4 fails. (2) Neutralise the Telegram id in the
+    keys of other players' operations at erasure, or choose keys that never hold it; then the last sentence
+    goes.]</span></li>
+  <li><b>What stays after deletion.</b> Order records (unpaid ones included) and payment records, and the resource
+    operations tied to a payment, for accounting and refund disputes (section 7). The account record: your Telegram
+    id and the dates of your first and last launch; we erase your first name and language. Order and payment
+    records and other players' decline marks refer to it. Currently it stays for every player, also for one with no
+    orders and no payments, and it is not deleted automatically (section 7).
+    <span class="draft">[Before launch, design and lawyer: for a player with no payments and no decline marks from
+    other players, the account record and the unpaid orders have no purpose and no period. Either delete them at
+    erasure, or state a purpose (for example, preventing a second invitation bonus), a basis and a period here, in
+    section 7 and in annex A.]</span>
+    <b>Chapters you bought are locked again after deletion.</b> If you open the game again, we start keeping your
+    first name and language again (section 2).</li>
+  <li><b>Data in Telegram and on your device.</b> We cannot delete your settings and read marks in Telegram's
+    storage, or the unsent data on your device, from our server.
+    <span class="draft">[Before launch, design: how a player clears them, by a button in the game or by
+    instructions.]</span></li>
+  <li><b>Restrict</b> processing and <b>object</b> to processing based on our legitimate interest (section 3).
+    <span class="draft">[Before launch, design and lawyer: where an objection or a restriction is recorded, and how
+    abuse prevention, the logs and the future statistics of choices honour it. No such record exists yet, and the
+    manual procedure covers only access and deletion.]</span></li>
+  <li><b>Withdraw consent</b> at any time (section 5).</li>
+  <li><b>Complain</b> to a supervisory authority (section 13).</li>
+</ul>
+<p><b>How.</b> Write to {PRIVACY_CONTACT_EMAIL}; the <code>/support</code> command in the bot shows how to reach
+support. The <code>/privacy</code> command shows the address of this policy. We may ask you to confirm that the
+request comes from the owner of the Telegram account. This is free of charge.</p>
+<p><b>Response time.</b> Under 152-FZ: 10 working days, extendable by at most 5 working days with a reasoned
+notice. Under the GDPR: one month, extendable by up to two months with reasons.</p>
+
+<h2 id="en-10">10. Children</h2>
+<p>The game is meant for people aged {MIN_AGE} or older. Under Telegram's terms, users in the EU, the United Kingdom
+and Australia must be at least 18. If you are a parent and believe that your child below that age has given us data,
+write to us (section 1) and we will delete it.</p>
+
+<h2 id="en-11">11. Security</h2>
+<ul>
+  <li>The server verifies your sign-in by Telegram's signature; after that the app uses our own short-lived
+    token.</li>
+  <li>Other players never receive your Telegram id (section 4).</li>
+  <li>Telegram processes payments: we hold no card details.</li>
+  <li><span class="draft">[Before launch, hosting: encryption at rest with the key kept apart from the data
+    (Telegram Bot Developer Terms §4.4(a)), who can access the database, the backups and how long deleted data
+    stays in them. Described once the hosting and the deployment procedure are chosen; not built yet.]</span></li>
+  <li><span class="draft">[Before launch, lawyer and operator: the breach procedure: notify Roskomnadzor within 24 and
+    72 hours (152-FZ art. 21 p. 3.1), an EU supervisory authority within 72 hours (GDPR art. 33), players without
+    undue delay when the risk is high (GDPR art. 34; Telegram §4.4(b)). No channel for telling players about a breach
+    is designed.]</span></li>
+</ul>
+
+<h2 id="en-12">12. Changes to this policy</h2>
+<p>A new version is published at the same address with a new version and date (section 0). Your consent to show
+progress to friends is recorded together with the policy version in force when you gave it.</p>
+
+<h2 id="en-13">13. Contact and supervisory authority</h2>
+<p>Data questions: {PRIVACY_CONTACT_EMAIL}; the <code>/support</code> command in the bot shows the support contact.
+Payment questions: <code>/paysupport</code>.</p>
+<p>Supervisory authority you may complain to: {SUPERVISORY_AUTHORITY}.</p>
+
+<h2 id="en-a">Annex A. Users in Russia (152-FZ)</h2>
+<ul>
+  <li>Recording, systematisation, accumulation, storage, updating and retrieval of Russian citizens' personal data on
+    our server use a database located in {DB_LOCATION_COUNTRY} (art. 18 p. 5). The game writes settings and read
+    marks only to Telegram's cloud storage (section 7).
+    <span class="draft">[Before launch, lawyer: are these personal data? If they are, their primary recording must
+    be on our server in Russia.]</span></li>
+  <li>The operator notifies Roskomnadzor of the processing before it starts (art. 22).</li>
+  <li>The person responsible for organising the processing: {RESPONSIBLE_PERSON}.</li>
+  <li>We do not make your data publicly available: showing progress to friends is provision of data to a defined
+    circle of people that you chose yourself.</li>
+  <li><b>Categories of data subjects:</b> players (including senders and recipients of friend requests, inviters and
+    invitees, buyers, senders and recipients of gifts); people who send us a request about their data.</li>
+  <li><b>Actions with the data:</b> collection (receipt from Telegram and from you), recording, systematisation,
+    accumulation, storage, updating, retrieval, use, transfer (provision: your first name to the person you sent a
+    request to and to friends, section 4; your progress to friends with your consent, section 5; access for those
+    who help us run the game, section 8), deletion and destruction.</li>
+  <li><b>Method:</b> automated processing with transmission over the internet. The operator's administrator handles
+    requests about data and deletion on request by hand.</li>
+  <li><b>Destruction.</b> Withdrawing the consent stops showing your progress to friends at once (section 5); data we
+    process on another basis (section 3) stays. Data is destroyed on your deletion request (section 9), except the
+    records section 9 lists as staying (payment and order records: by law, section 7).
+    <span class="draft">[Before launch, lawyer: the destruction deadline on request and once a purpose is achieved
+    (art. 21); how a destruction is confirmed (verify: Roskomnadzor order No. 179 of 2022-10-28); whether consent
+    records are deleted with the rest.]</span></li>
+</ul>
+<h3>Purposes, data, subjects and periods</h3>
+<div class="table">
+<table>
+  <tr><th>Purpose</th><th>Data (section 2)</th><th>Subjects</th><th>Period (section 7)</th></tr>
+  <tr><td>Running the game</td><td>the account, saves, statistics and choices, puzzles, achievements, settings, read
+    marks, data on the device</td><td>players</td><td>until a deletion request; the account record without the
+    first name and language stays after it too (section 9)</td></tr>
+  <tr><td>Purchases, resources, gifts, refunds</td><td>orders, payments, unlocked chapters, resources and
+    operations</td><td>buyers, senders and recipients of gifts</td><td>payments and the operations tied to them:
+    {RETENTION_PERIOD}; the rest: until a deletion request</td></tr>
+  <tr><td>Friends and invitations</td><td>the invite link, the player id, requests, friends, decline marks,
+    invitations</td><td>senders and recipients of requests, inviters and invitees</td><td>until a deletion
+    request; decline marks other players set on you: until the player who set them lifts them
+    (section 9)</td></tr>
+  <tr><td>Showing progress to friends (consent)</td><td>counts of endings and achievements, shared titles</td>
+    <td>players who gave the consent</td><td>the showing: until the consent is withdrawn</td></tr>
+  <tr><td>Recording consents</td><td>consent records</td><td>players who gave or withdrew the consent</td><td>until a
+    deletion request</td></tr>
+  <tr><td>Abuse prevention, logs, the "Share" limit</td><td>operations and invitations, the Telegram id in logs, the
+    "Share" count</td><td>players</td><td>logs: within the rotation; the count: at most one hour</td></tr>
+  <tr><td>Answering requests</td><td>the e-mail address, the request text</td><td>people who send a request</td>
+    <td><span class="draft">[before launch]</span></td></tr>
+</table>
+</div>
+
+<h2 id="en-b">Annex B. Users in the EU (GDPR)</h2>
+<ul>
+  <li>Controller: {OPERATOR_NAME}, {OPERATOR_ADDRESS}. EU representative (art. 27): {EU_REPRESENTATIVE}. Data
+    protection officer: {DPO_CONTACT}.</li>
+  <li>Our legitimate interests (art. 6(1)(f)): statistics of choices across players, abuse prevention, server
+    security, protecting Telegram's limits on "Share".</li>
+  <li>Recipients: Telegram; hosting and network infrastructure ({HOSTING_PROVIDER}); the e-mail service for messages
+    to {PRIVACY_CONTACT_EMAIL}; other players, within section 4. Transfers to third countries:
+    {CROSS_BORDER_TRANSFER}.</li>
+  <li>Retention: section 7. Rights, including data portability: section 9. Breaches: section 11. Complaints:
+    {SUPERVISORY_AUTHORITY}.</li>
+  <li>We make no decision that has legal or similarly significant effects on you based solely on automated
+    processing. Only game rules run automatically: granting bonuses, and the gift and bonus limits.</li>
+</ul>
+
+</section>
+
+</main>
+</body>
+</html>
