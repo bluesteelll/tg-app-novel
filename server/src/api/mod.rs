@@ -1,7 +1,9 @@
 //! The `/api` routes.
 
 pub mod auth;
+pub mod content;
 pub mod dto;
+pub mod entitlements;
 pub mod saves;
 
 use axum::Router;
@@ -40,6 +42,9 @@ fn routes() -> Router<AppState> {
     Router::new()
         .route("/health", get(health))
         .route("/auth", post(auth::post_auth))
+        .route("/entitlements", get(entitlements::get_entitlements))
+        .route("/chapters/{chapter_id}", get(content::get_chapter))
+        .route("/assets/{file}", get(content::get_asset))
         .route("/saves", get(saves::list_saves))
         // A route's own limit runs inside the router-wide default and overrides it.
         .route(

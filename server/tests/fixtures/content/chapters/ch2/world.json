@@ -1,0 +1,19 @@
+{
+  "format": 1,
+  "version": "f2f2f2f2f2f2f2f2",
+  "items": {},
+  "docs": {},
+  "puzzles": {
+    "cabinet": {
+      "type": "order",
+      "params": { "pieces": ["red_folder", "green_folder", "blue_folder"] },
+      "title": { "id": "ch2.cabinet.t1a2", "ru": "Шкаф в архиве" },
+      "prompt": { "id": "ch2.cabinet.p3b4", "ru": "FIXTURE-CH2-WORLD" },
+      "closeup": null,
+      "maxAttempts": null,
+      "giveUp": false,
+      "hintTiers": 3
+    }
+  },
+  "sections": {}
+}
