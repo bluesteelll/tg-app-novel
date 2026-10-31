@@ -2,6 +2,7 @@
 //! types. Handlers see domain types, never sqlx.
 
 pub mod entitlements;
+pub mod puzzles;
 pub mod saves;
 pub mod users;
 

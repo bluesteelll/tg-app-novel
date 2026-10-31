@@ -4,10 +4,18 @@
 //!
 //! Hint unlock rows are inserted by raw SQL: the server has no writer for them in this lane.
 
-use sqlx::PgConnection;
-use sqlx::postgres::PgQueryResult;
+use std::time::{Duration, Instant};
 
-use crate::catalog::{ANN, T0};
+use server::AppState;
+use server::db::POOL_MAX_CONNECTIONS;
+use server::db::puzzles::AttemptRecord;
+use server::ids::{PuzzleId, UserId};
+use server::puzzles::ATTEMPT_WINDOW_SECS;
+use sqlx::postgres::PgQueryResult;
+use sqlx::{Connection, PgConnection};
+use tokio::task::JoinSet;
+
+use crate::catalog::{ANN, T0, state_with_users};
 use crate::common;
 
 /// A second player.
@@ -119,8 +127,8 @@ async fn insert_unlock(
 }
 
 /// A migrated database with the `users` rows of ANN and BEN, and a raw connection to it.
-async fn schema_db() -> (server::AppState, common::TestDb, PgConnection) {
-    let (st, db) = crate::catalog::state_with_users(&[ANN, BEN]).await;
+async fn schema_db() -> (AppState, common::TestDb, PgConnection) {
+    let (st, db) = state_with_users(&[ANN, BEN]).await;
     let c = common::raw_db(&st).await;
     (st, db, c)
 }
@@ -357,5 +365,271 @@ async fn schema_hint_unlocks_tier_range() {
         ),
     ];
     failures.extend(results.into_iter().filter_map(Result::err));
+    report(&failures);
+}
+
+/// `puzzle_progress`'s counters of (user, puzzle), read on a raw connection: (attempts, window_attempts,
+/// window_start, solved_at), or `None` without a row.
+async fn progress_row(
+    st: &AppState,
+    user: i64,
+    puzzle: &str,
+) -> Option<(i64, i64, i64, Option<i64>)> {
+    let mut c = common::raw_db(st).await;
+    let row = sqlx::query_as(
+        "SELECT attempts, window_attempts, window_start, solved_at FROM puzzle_progress \
+         WHERE user_id = $1 AND puzzle_id = $2",
+    )
+    .bind(user)
+    .bind(puzzle)
+    .fetch_optional(&mut c)
+    .await
+    .unwrap();
+    c.close().await.unwrap();
+    row
+}
+
+fn pid(id: &str) -> PuzzleId {
+    PuzzleId::parse(id).unwrap()
+}
+
+/// An attempt in the window, answered: not limited, no retry time.
+const OPEN: AttemptRecord = AttemptRecord {
+    limited: false,
+    retry_after_secs: 0,
+    solved: false,
+};
+
+/// The 21st attempt in a window is limited until the window ends; the count is per (user, puzzle).
+#[tokio::test]
+async fn attempt_rate_limited_after_20_in_window() {
+    let (st, _db) = state_with_users(&[ANN, BEN]).await;
+    let drawer = pid("ch1.drawer");
+    let mut failures = Vec::new();
+    for call in 1..=20 {
+        let got = st
+            .repo
+            .record_attempt(UserId(ANN), &drawer, false, T0)
+            .await
+            .unwrap();
+        if got != OPEN {
+            failures.push(format!("call {call}: expected {OPEN:?}, got {got:?}"));
+        }
+    }
+    let got = st
+        .repo
+        .record_attempt(UserId(ANN), &drawer, false, T0)
+        .await
+        .unwrap();
+    let want = AttemptRecord {
+        limited: true,
+        retry_after_secs: ATTEMPT_WINDOW_SECS,
+        solved: false,
+    };
+    if got != want {
+        failures.push(format!("call 21: expected {want:?}, got {got:?}"));
+    }
+    let row = progress_row(&st, ANN, "ch1.drawer").await;
+    if row != Some((21, 21, T0, None)) {
+        failures.push(format!(
+            "row after 21: expected (attempts 21, window 21, start T0, unsolved), got {row:?}"
+        ));
+    }
+    for (case, user, puzzle) in [
+        ("ANN on ch2.cabinet", ANN, "ch2.cabinet"),
+        ("BEN on ch1.drawer", BEN, "ch1.drawer"),
+    ] {
+        let got = st
+            .repo
+            .record_attempt(UserId(user), &pid(puzzle), false, T0)
+            .await
+            .unwrap();
+        if got != OPEN {
+            failures.push(format!("{case}: expected {OPEN:?}, got {got:?}"));
+        }
+    }
+    report(&failures);
+}
+
+/// The window ends 600 s after it began: one second before, the attempt is still limited (retry in 1 s); at 600 s a
+/// new window starts with this attempt.
+#[tokio::test]
+async fn attempt_window_resets_after_600s() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    let drawer = pid("ch1.drawer");
+    let mut failures = Vec::new();
+    for _ in 0..20 {
+        st.repo
+            .record_attempt(UserId(ANN), &drawer, false, T0)
+            .await
+            .unwrap();
+    }
+    let got = st
+        .repo
+        .record_attempt(UserId(ANN), &drawer, false, T0 + 599)
+        .await
+        .unwrap();
+    let want = AttemptRecord {
+        limited: true,
+        retry_after_secs: 1,
+        solved: false,
+    };
+    if got != want {
+        failures.push(format!("T0+599: expected {want:?}, got {got:?}"));
+    }
+    let got = st
+        .repo
+        .record_attempt(UserId(ANN), &drawer, false, T0 + 600)
+        .await
+        .unwrap();
+    if got != OPEN {
+        failures.push(format!("T0+600: expected {OPEN:?}, got {got:?}"));
+    }
+    let row = progress_row(&st, ANN, "ch1.drawer").await;
+    if row != Some((22, 1, T0 + 600, None)) {
+        failures.push(format!(
+            "row at T0+600: expected (attempts 22, window 1, start T0+600, unsolved), got {row:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// Polls on `c` (autocommit, every 10 ms) until `want` app-pool sessions wait for a lock, or `within` passes; returns
+/// the count seen last. `pg_stat_activity` is a snapshot per transaction, so each poll is its own.
+async fn lock_waiters(c: &mut PgConnection, want: i64, within: Duration) -> i64 {
+    let deadline = Instant::now() + within;
+    loop {
+        let seen: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' \
+             AND datname = current_database() AND application_name = 'tg-novel-server'",
+        )
+        .fetch_one(&mut *c)
+        .await
+        .unwrap();
+        if seen >= want || Instant::now() >= deadline {
+            return seen;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// 25 attempts of (`user`, ch1.drawer) at `T0`, all started while `held` blocks the pair's row on a raw transaction,
+/// then `release` (`COMMIT` or `ROLLBACK`) once the app's sessions wait on it. Returns the (open, limited) counts, the
+/// lock waiters seen at the release, and the failures of single calls.
+async fn collide(
+    st: &AppState,
+    user: i64,
+    held: &'static str,
+    release: &'static str,
+) -> (usize, usize, i64, Vec<String>) {
+    let mut holder = common::raw_db(st).await;
+    let mut poll = common::raw_db(st).await;
+    sqlx::raw_sql("BEGIN ISOLATION LEVEL READ COMMITTED")
+        .execute(&mut holder)
+        .await
+        .unwrap();
+    sqlx::query(held)
+        .bind(user)
+        .bind(T0)
+        .execute(&mut holder)
+        .await
+        .unwrap();
+    let mut tasks = JoinSet::new();
+    for _ in 0..25 {
+        let repo = st.repo.clone();
+        tasks.spawn(async move {
+            repo.record_attempt(UserId(user), &pid("ch1.drawer"), false, T0)
+                .await
+        });
+    }
+    // Every pool connection blocked on the held row, well inside the app's 2 s `lock_timeout`.
+    let pool = i64::from(POOL_MAX_CONNECTIONS);
+    let waiters = lock_waiters(&mut poll, pool, Duration::from_millis(1500)).await;
+    sqlx::raw_sql(release).execute(&mut holder).await.unwrap();
+    let (mut open, mut limited, mut errors) = (0, 0, Vec::new());
+    while let Some(joined) = tasks.join_next().await {
+        match joined.unwrap() {
+            Ok(record) if record.limited => {
+                limited += 1;
+                if record.retry_after_secs != ATTEMPT_WINDOW_SECS {
+                    errors.push(format!(
+                        "limited record: expected retry 600, got {record:?}"
+                    ));
+                }
+            }
+            Ok(_) => open += 1,
+            Err(e) => errors.push(format!("record_attempt: {}", describe(&e))),
+        }
+    }
+    holder.close().await.unwrap();
+    poll.close().await.unwrap();
+    (open, limited, waiters, errors)
+}
+
+/// Concurrent attempts count exactly (PUZZLES-PLAN "Two concurrent attempts serialize"), forced to collide: the
+/// app's sessions all wait on a raw transaction, then race at once. First on a fresh pair (the held row is an
+/// uncommitted insert, rolled back: the first-ever-pair insert race), then on an existing row (held `FOR UPDATE`, then
+/// committed). A read-then-write count without the row lock loses updates here and admits more than 20.
+#[tokio::test]
+async fn attempt_concurrent_window_exact() {
+    let (st, _db) = state_with_users(&[ANN, BEN]).await;
+    let mut failures = Vec::new();
+
+    let (open, limited, waiters, errors) = collide(
+        &st,
+        ANN,
+        "INSERT INTO puzzle_progress (user_id, puzzle_id, attempts, window_start, window_attempts, first_at, \
+         solved_at) VALUES ($1, 'ch1.drawer', 1, $2, 1, $2, NULL)",
+        "ROLLBACK",
+    )
+    .await;
+    failures.extend(errors);
+    if waiters < 2 {
+        failures.push(format!(
+            "fresh pair: expected at least 2 attempts waiting on the held insert, got {waiters}"
+        ));
+    }
+    if (open, limited) != (20, 5) {
+        failures.push(format!(
+            "fresh pair: expected 20 open and 5 limited, got {open} and {limited} ({waiters} waited)"
+        ));
+    }
+    let row = progress_row(&st, ANN, "ch1.drawer").await;
+    if row != Some((25, 25, T0, None)) {
+        failures.push(format!(
+            "fresh pair row: expected (attempts 25, window 25, start T0, unsolved), got {row:?}"
+        ));
+    }
+
+    // BEN's pair exists with one attempt in the window before the collision.
+    st.repo
+        .record_attempt(UserId(BEN), &pid("ch1.drawer"), false, T0)
+        .await
+        .unwrap();
+    let (open, limited, waiters, errors) = collide(
+        &st,
+        BEN,
+        "SELECT 1 FROM puzzle_progress WHERE user_id = $1 AND puzzle_id = 'ch1.drawer' AND window_start = $2 \
+         FOR UPDATE",
+        "COMMIT",
+    )
+    .await;
+    failures.extend(errors);
+    if waiters < 2 {
+        failures.push(format!(
+            "existing row: expected at least 2 attempts waiting on the held row, got {waiters}"
+        ));
+    }
+    if (open, limited) != (19, 6) {
+        failures.push(format!(
+            "existing row: expected 19 open and 6 limited, got {open} and {limited} ({waiters} waited)"
+        ));
+    }
+    let row = progress_row(&st, BEN, "ch1.drawer").await;
+    if row != Some((26, 26, T0, None)) {
+        failures.push(format!(
+            "existing row: expected (attempts 26, window 26, start T0, unsolved), got {row:?}"
+        ));
+    }
     report(&failures);
 }
