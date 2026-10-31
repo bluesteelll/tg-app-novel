@@ -12,10 +12,12 @@ mod bindings;
 mod catalog;
 mod common;
 mod content;
+mod dto_samples;
 mod payments;
 mod puzzles;
 mod saves;
 mod schema;
+mod webhook;
 
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Command, Stdio};
