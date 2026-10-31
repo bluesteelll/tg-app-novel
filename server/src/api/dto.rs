@@ -171,7 +171,7 @@ pub struct ChapterPayload<'a> {
 }
 
 /// `POST /api/puzzles/{puzzleId}/attempts` request. Unknown fields are ignored.
-#[derive(Deserialize)]
+#[derive(Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AttemptRequest {
     /// The answer: the puzzle's `answerLen` values, each at most its `answerMax` (at most 16, each at most 65535).
@@ -179,7 +179,7 @@ pub struct AttemptRequest {
 }
 
 /// `POST /api/puzzles/{puzzleId}/attempts` response.
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AttemptResponse {
     /// Whether this answer is the solution.
@@ -190,7 +190,7 @@ pub struct AttemptResponse {
 
 /// `GET /api/puzzles/{puzzleId}?lang=ru|en` response: whether the user solved the puzzle, and its hint ladder.
 // No `Debug`: an unlocked hint's text is sold content, never logged.
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct PuzzleStatus {
     /// The puzzle id, `<chapter>.<local>`.
@@ -203,7 +203,7 @@ pub struct PuzzleStatus {
 
 /// A hint tier as the user sees it.
 // No `Debug`: `text` is sold content.
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct HintView {
     /// The tier, 1 to 3.
@@ -239,6 +239,10 @@ pub fn ts_bindings() -> String {
         export::<ProductDto>(&cfg),
         export::<EntitlementsResponse>(&cfg),
         export::<ChapterPayload<'static>>(&cfg),
+        export::<AttemptRequest>(&cfg),
+        export::<AttemptResponse>(&cfg),
+        export::<HintView>(&cfg),
+        export::<PuzzleStatus>(&cfg),
     ];
     format!("{BINDINGS_HEADER}\n\n{}", decls.join("\n"))
 }

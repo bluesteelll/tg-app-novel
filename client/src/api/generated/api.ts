@@ -237,3 +237,59 @@ en: unknown,
  * The chapter's public world, or `null` (serialized, not omitted) when it has none.
  */
 world: unknown, };
+
+/**
+ * `POST /api/puzzles/{puzzleId}/attempts` request. Unknown fields are ignored.
+ */
+export type AttemptRequest = { 
+/**
+ * The answer: the puzzle's `answerLen` values, each at most its `answerMax` (at most 16, each at most 65535).
+ */
+answer: Array<number>, };
+
+/**
+ * `POST /api/puzzles/{puzzleId}/attempts` response.
+ */
+export type AttemptResponse = { 
+/**
+ * Whether this answer is the solution.
+ */
+correct: boolean, 
+/**
+ * Whether the puzzle is solved, by this answer or an earlier one.
+ */
+solved: boolean, };
+
+/**
+ * A hint tier as the user sees it.
+ */
+export type HintView = { 
+/**
+ * The tier, 1 to 3.
+ */
+tier: number, 
+/**
+ * Whether the user unlocked this tier.
+ */
+unlocked: boolean, 
+/**
+ * The hint in the requested language when `unlocked`, else `null` (serialized, not omitted).
+ */
+text: string | null, };
+
+/**
+ * `GET /api/puzzles/{puzzleId}?lang=ru|en` response: whether the user solved the puzzle, and its hint ladder.
+ */
+export type PuzzleStatus = { 
+/**
+ * The puzzle id, `<chapter>.<local>`.
+ */
+puzzleId: string, 
+/**
+ * Whether the user solved the puzzle: a server row, never client state.
+ */
+solved: boolean, 
+/**
+ * Every tier of the puzzle's hint ladder, tier 1 first; empty for a puzzle without hints.
+ */
+hints: Array<HintView>, };
