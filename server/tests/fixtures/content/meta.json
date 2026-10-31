@@ -1,0 +1,51 @@
+{
+  "format": 1,
+  "choices": {
+    "ch1": { "ch1.hall.c001": "ch1.hall.c001", "ch1.hall.c002": "ch1.hall.c001", "ch1.study.c003": "ch1.study.c003" },
+    "ch2": { "ch2.archive.k001": "ch2.archive.k001", "ch2.archive.k002": "ch2.archive.k001" },
+    "ch3": { "ch3.shore.s001": "ch3.shore.s001", "ch3.shore.s002": "ch3.shore.s001" },
+    "ch4": {}
+  },
+  "stories": {
+    "manor": {
+      "endings": {
+        "truth": { "ru": "Фикстура: правда", "en": "Fixture: the truth" },
+        "ashes": { "ru": "Фикстура: пепел", "en": "Fixture: ashes" }
+      },
+      "achievements": [
+        { "id": "truth_found", "hidden": false, "when": { "ending": "truth" },
+          "name": { "ru": "Фикстура: правда найдена", "en": "Fixture: truth found" },
+          "desc": { "ru": "Фикстура: дойти до концовки «Правда».", "en": "Fixture: reach the ending The Truth." } },
+        { "id": "both_endings", "hidden": false, "when": { "endings": 2 },
+          "name": { "ru": "Фикстура: две концовки", "en": "Fixture: two endings" },
+          "desc": { "ru": "Фикстура: найти две разные концовки.", "en": "Fixture: find two different endings." } },
+        { "id": "every_ending", "hidden": true, "when": { "allEndings": true },
+          "name": { "ru": "Фикстура: все концовки", "en": "Fixture: every ending" },
+          "desc": { "ru": "Фикстура: найти все концовки усадьбы.", "en": "Fixture: find every ending of the manor." } },
+        { "id": "drawer_no_hints", "hidden": false, "when": { "puzzle": "ch1.drawer", "hints": 0 },
+          "name": { "ru": "Фикстура: ящик без подсказок", "en": "Fixture: drawer, no hints" },
+          "desc": { "ru": "Фикстура: открыть ящик стола без подсказок.", "en": "Fixture: open the desk drawer without hints." } },
+        { "id": "cabinet_open", "hidden": false, "when": { "puzzle": "ch2.cabinet" },
+          "name": { "ru": "Фикстура: шкаф открыт", "en": "Fixture: cabinet open" },
+          "desc": { "ru": "Фикстура: открыть шкаф в архиве.", "en": "Fixture: open the archive cabinet." } },
+        { "id": "kind_word", "hidden": false, "when": { "choice": "ch1.hall.c002" },
+          "name": { "ru": "Фикстура: доброе слово", "en": "Fixture: a kind word" },
+          "desc": { "ru": "Фикстура: выбрать второй ответ в прихожей.", "en": "Fixture: pick the second answer in the hall." } }
+      ]
+    },
+    "tide": {
+      "endings": {
+        "drowned": { "ru": "Фикстура: утонувший", "en": "Fixture: drowned" },
+        "dawn": { "ru": "Фикстура: рассвет", "en": "Fixture: dawn" }
+      },
+      "achievements": [
+        { "id": "lighthouse", "hidden": false, "when": { "chapter": "ch4" },
+          "name": { "ru": "Фикстура: маяк", "en": "Fixture: the lighthouse" },
+          "desc": { "ru": "Фикстура: пройти главу о маяке.", "en": "Fixture: complete the lighthouse chapter." } },
+        { "id": "dawn_walk", "hidden": false, "when": { "all": [{ "ending": "dawn" }, { "choice": "ch3.shore.s002" }] },
+          "name": { "ru": "Фикстура: прогулка на рассвете", "en": "Fixture: a walk at dawn" },
+          "desc": { "ru": "Фикстура: уйти с берега и встретить рассвет.", "en": "Fixture: leave the shore and reach the dawn." } }
+      ]
+    }
+  }
+}

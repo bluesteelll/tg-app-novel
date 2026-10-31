@@ -20,11 +20,13 @@ import { assetUsage } from '../assets/manifest.ts';
 import { compileChapter, resolveInclude } from './compile.ts';
 import type { CompiledChapter, ReadInk } from './compile.ts';
 import { decodeLineFingerprints, decodeStoryUsage, paidLeak, planEmit, worldVersion } from './emit.ts';
-import type { LineFingerprints, ServerStoryIndex, StoryNames, WorldNeedles } from './emit.ts';
+import type { LineFingerprints, ServerMeta, ServerStoryIndex, StoryNames, WorldNeedles } from './emit.ts';
 import { buildGraph, writeOnly } from './graph.ts';
 import type { ChapterGraph, GraphFacts } from './graph.ts';
 import { GLOBALS_PATH, lintSources } from './lint.ts';
 import type { Finding, LintCode, SourceChapter } from './lint.ts';
+import { choicePoints } from './meta.ts';
+import type { ChoiceMap, MetaSource } from './meta.ts';
 import type { StoryPlan } from './stories.ts';
 
 function readRepoJson(path: string): unknown {
@@ -460,17 +462,72 @@ const MANOR: StoryPlan = {
   chapters: [chapterId('ch1'), chapterId('ch2')],
 }; // fixture ids match their grammars
 
-type EmitFixture = { plan: ReadonlyMap<string, string>; compiled: Map<ChapterId, CompiledChapter>; graphs: Map<ChapterId, ChapterGraph> };
+/** The fixture's meta texts: server-only, so each is distinct from every public text of the fixture. */
+const META_TEXTS = {
+  title: { ru: 'Запечатанное хранилище открыто', en: 'The sealed vault stands open' },
+  foundName: { ru: 'Хранитель тайны', en: 'Keeper of the secret' },
+  foundDesc: { ru: 'Дойти до концовки за запечатанной дверью.', en: 'Reach the ending behind the sealed door.' },
+  oneName: { ru: 'Первая развязка', en: 'A first resolution' },
+  oneDesc: { ru: 'Найти хотя бы одну концовку истории.', en: 'Find at least one ending of the story.' },
+  allName: { ru: 'Все пути пройдены', en: 'Every road travelled' },
+  allDesc: { ru: 'Найти каждую концовку этой истории.', en: 'Find every ending of this story.' },
+  drawerName: { ru: 'Ящик без подсказок', en: 'A drawer without help' },
+  drawerDesc: { ru: 'Открыть ящик стола, не взяв ни одной подсказки.', en: 'Open the desk drawer without taking a hint.' },
+  cabinetName: { ru: 'Шкаф поддался', en: 'The cabinet gave way' },
+  cabinetDesc: { ru: 'Подобрать код к шкафу в кабинете.', en: 'Find the code of the study cabinet.' },
+  choiceName: { ru: 'Любопытная рука', en: 'A curious hand' },
+  choiceDesc: { ru: 'Самой открыть ящик в архиве.', en: 'Open the archive drawer yourself.' },
+  chapterName: { ru: 'Архив пройден', en: 'Through the archive' },
+  chapterDesc: { ru: 'Дочитать главу в архиве до конца.', en: 'Read the archive chapter to its end.' },
+  allOfName: { ru: 'Ключ и замок', en: 'The key and the lock' },
+  allOfDesc: { ru: 'Открыть ящик и дойти до хранилища.', en: 'Open the drawer and reach the vault.' },
+} as const;
+/**
+ * The fixture's story meta as `catalog/meta` decodes it: the paid ending's title and one achievement of every condition
+ * kind (the server fixture's kinds), naming the puzzles of ch1's fixture world (`worldSource`) and ch2's one option.
+ */
+const EMIT_ACHIEVEMENTS = {
+  vault_found: { hidden: false, when: { ending: 'q7_sealed_vault' }, name: META_TEXTS.foundName, desc: META_TEXTS.foundDesc },
+  one_ending: { hidden: false, when: { endings: 1 }, name: META_TEXTS.oneName, desc: META_TEXTS.oneDesc },
+  every_ending: { hidden: true, when: { allEndings: true }, name: META_TEXTS.allName, desc: META_TEXTS.allDesc },
+  drawer_no_hints: { hidden: false, when: { puzzle: 'ch1.drawer', hints: 0 }, name: META_TEXTS.drawerName, desc: META_TEXTS.drawerDesc },
+  cabinet_open: { hidden: false, when: { puzzle: 'ch1.cabinet' }, name: META_TEXTS.cabinetName, desc: META_TEXTS.cabinetDesc },
+  archive_drawer: { hidden: false, when: { choice: 'ch2.archive.p004' }, name: META_TEXTS.choiceName, desc: META_TEXTS.choiceDesc },
+  archive_done: { hidden: false, when: { chapter: 'ch2' }, name: META_TEXTS.chapterName, desc: META_TEXTS.chapterDesc },
+  key_and_lock: {
+    hidden: false,
+    when: { all: [{ ending: 'q7_sealed_vault' }, { choice: 'ch2.archive.p004' }] },
+    name: META_TEXTS.allOfName,
+    desc: META_TEXTS.allOfDesc,
+  },
+};
+const EMIT_META = { manor: { endings: { q7_sealed_vault: META_TEXTS.title }, achievements: EMIT_ACHIEVEMENTS } } as MetaSource; // fixture ids match their grammars
+/** Every text of EMIT_META, ru and en. */
+const EMIT_META_TEXTS: readonly string[] = Object.values(META_TEXTS).flatMap((t) => [t.ru, t.en]);
+
+type EmitFixture = {
+  plan: ReadonlyMap<string, string>;
+  compiled: Map<ChapterId, CompiledChapter>;
+  graphs: Map<ChapterId, ChapterGraph>;
+  choices: Map<ChapterId, ChoiceMap>;
+};
 
 /**
  * Compiles and graphs the two-chapter fixture (both lint-clean) and plans its outputs for `stories`, with `worlds`
- * (default none) as the chapters' decoded world sources.
+ * (default none) as the chapters' decoded world sources and `meta` (default EMIT_META) beside the chapters' choice
+ * points, computed as story.ts computes them.
  */
-function emitFixture(list: readonly ChapterListEntry[] = LIST, stories: readonly StoryPlan[] = [MANOR], worlds?: ReadonlyMap<ChapterId, WorldSource>): EmitFixture {
+function emitFixture(
+  list: readonly ChapterListEntry[] = LIST,
+  stories: readonly StoryPlan[] = [MANOR],
+  worlds?: ReadonlyMap<ChapterId, WorldSource>,
+  meta: MetaSource = EMIT_META,
+): EmitFixture {
   const chapters = list.map((ch): SourceChapter => ({ id: ch.id, paid: ch.paid, entry: ch.entry }));
   expect(lintSources({ files: EMIT_SOURCES, chapters, assets: COMMITTED.assets, cast: COMMITTED.cast }), 'lint-clean').toEqual([]);
   const compiled = new Map<ChapterId, CompiledChapter>();
   const graphs = new Map<ChapterId, ChapterGraph>();
+  const choices = new Map<ChapterId, ChoiceMap>();
   for (const ch of list) {
     const source: SourceChapter = { id: ch.id, paid: ch.paid, entry: ch.entry };
     const r = compileChapter(source, reader(EMIT_SOURCES));
@@ -478,13 +535,15 @@ function emitFixture(list: readonly ChapterListEntry[] = LIST, stories: readonly
       throw new Error(`invariant: fixture ${ch.id} compiles: ${JSON.stringify(r.findings)}`);
     }
     compiled.set(ch.id, r.compiled);
-    graphs.set(ch.id, buildGraph({ chapter: source, files: r.compiled.files, sources: EMIT_SOURCES, assets: COMMITTED.assets }).graph);
+    const graph = buildGraph({ chapter: source, files: r.compiled.files, sources: EMIT_SOURCES, assets: COMMITTED.assets }).graph;
+    graphs.set(ch.id, graph);
+    choices.set(ch.id, choicePoints({ files: r.compiled.files, sources: EMIT_SOURCES, lines: graph.lines }));
   }
   // The en text of each line is `en <id>`, as localeFiles() writes it; a world's texts (its hints included) too.
   const idsOf = (ch: ChapterId): string[] => [...(graphs.get(ch)?.lines ?? []).map((l) => l.id), ...worldTexts(worlds?.get(ch)).map((x) => x.id)];
   const en = new Map(list.map((ch) => [ch.id, Object.fromEntries(idsOf(ch.id).map((id) => [id, `en ${id}`]))]));
-  const input = { chapters: list, compiled, graphs, cast: COMMITTED.cast, names: NAMES, en, stories };
-  return { plan: planEmit(worlds === undefined ? input : { ...input, worlds }), compiled, graphs };
+  const input = { chapters: list, compiled, graphs, cast: COMMITTED.cast, names: NAMES, en, stories, meta: { source: meta, choices } };
+  return { plan: planEmit(worlds === undefined ? input : { ...input, worlds }), compiled, graphs, choices };
 }
 
 function planned(plan: ReadonlyMap<string, string>, path: string): string {
@@ -534,6 +593,7 @@ test('emit: free and paid outputs are routed apart', () => {
     'server/content/chapters/ch2/en.json',
     'server/content/chapters/ch2/meta.json',
     'server/content/chapters/ch2/story.json',
+    'server/content/meta.json',
     'server/content/puzzles/ch1.json',
     'server/content/puzzles/ch2.json',
     'server/content/stories.json',
@@ -679,11 +739,16 @@ test('catalog: malformed meta is an error value', () => {
 const STORY_INDEX = 'server/content/stories.json';
 const PAID_ENDING = 'q7_sealed_vault';
 
+/** The story index's and the puzzle file's key wildcards: an ending name, a puzzle id. */
+function indexWild(path: string): boolean {
+  return path.endsWith('.endings') || path === '.puzzles';
+}
+
 /**
- * Per object path, the union of its keys (an array element is `[]`, an ending name or a puzzle id `*`); per leaf
- * path, its types.
+ * Per object path, the union of its keys (an array element is `[]`, a key of an object whose path is `wild` `*`); per
+ * leaf path, its types.
  */
-function shapeOf(value: unknown): { keys: Record<string, string[]>; leaves: Record<string, string[]> } {
+function shapeOf(value: unknown, wild: (path: string) => boolean = indexWild): { keys: Record<string, string[]>; leaves: Record<string, string[]> } {
   const keys = new Map<string, Set<string>>();
   const leaves = new Map<string, Set<string>>();
   const add = (m: Map<string, Set<string>>, path: string, x: string | null): void => {
@@ -699,7 +764,7 @@ function shapeOf(value: unknown): { keys: Record<string, string[]>; leaves: Reco
     } else if (typeof x === 'object' && x !== null) {
       add(keys, path, null);
       for (const [k, e] of Object.entries(x)) {
-        const key = path.endsWith('.endings') || path === '.puzzles' ? '*' : k;
+        const key = wild(path) ? '*' : k;
         add(keys, path, key);
         walk(e, `${path}.${key}`);
       }
@@ -1177,6 +1242,171 @@ test('emit: a paid world is routed to the server only', () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------
+// emit.ts: the server meta (META-PLAN "Server formats", M2, M7)
+
+const SERVER_META = 'server/content/meta.json';
+
+/** The server meta's key wildcards: chapter ids, option IDs, story ids and ending names. */
+function metaWild(path: string): boolean {
+  return path === '.choices' || path === '.choices.*' || path === '.stories' || path.endsWith('.endings');
+}
+
+/** A puzzle file's local puzzle ids. */
+function puzzleIds(raw: unknown): ReadonlySet<string> {
+  return new Set(Object.keys((raw as { puzzles: Readonly<Record<string, unknown>> }).puzzles)); // the puzzle file shape test pins the key
+}
+
+/** A text of 1-`max` code points in ru and in en, non-blank (META-PLAN M4). */
+function textProblems(t: unknown, at: string, max: number): string[] {
+  const o = typeof t === 'object' && t !== null ? (t as Readonly<Record<string, unknown>>) : {}; // a JSON object, or none
+  return (['ru', 'en'] as const).flatMap((lang) => {
+    const v = o[lang];
+    return typeof v === 'string' && v.trim() !== '' && [...v].length <= max ? [] : [`${at}.${lang}: not 1-${max} code points`];
+  });
+}
+
+type MetaJson = {
+  format: unknown;
+  choices: Readonly<Record<string, Readonly<Record<string, string>>>>;
+  stories: Readonly<
+    Record<string, { endings: Readonly<Record<string, unknown>>; achievements: ReadonlyArray<{ id: string; hidden: unknown; when: unknown; name: unknown; desc: unknown }> }>
+  >;
+};
+
+/**
+ * The startup checks LM2's ContentStore applies to server/content/meta.json (META-PLAN "Server formats"), given the
+ * story index and each chapter's puzzle ids; [] when it loads.
+ */
+function metaProblems(text: string, index: ServerStoryIndex, puzzles: ReadonlyMap<string, ReadonlySet<string>>): string[] {
+  const out: string[] = [];
+  if (new TextEncoder().encode(text).length > 256 * 1024) {
+    out.push('over 256 KB');
+  }
+  const meta = JSON.parse(text) as MetaJson; // the shape test compares the keys
+  const same = (a: readonly string[], b: readonly string[]): boolean => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
+  if (meta.format !== 1) {
+    out.push(`format ${String(meta.format)}, expected 1`);
+  }
+  const chapters: string[] = index.stories.flatMap((s) => s.chapters.map((c) => c.id));
+  if (!same(Object.keys(meta.choices), chapters)) {
+    out.push(`choices for ${Object.keys(meta.choices).join(', ')}, the index lists ${chapters.join(', ')}`);
+  }
+  for (const [ch, map] of Object.entries(meta.choices)) {
+    for (const [option, point] of Object.entries(map)) {
+      if (!/^ch[1-9][0-9]*\.[a-z][a-z0-9_]*\.[0-9a-z]{4}$/.test(option) || !option.startsWith(`${ch}.`)) {
+        out.push(`${ch}: option ${option}`);
+      }
+      if (!Object.hasOwn(map, point)) {
+        out.push(`${ch}: point ${point} is no option of ${ch}`);
+      }
+    }
+  }
+  if (!same(Object.keys(meta.stories), index.stories.map((s) => s.id))) {
+    out.push(`stories ${Object.keys(meta.stories).join(', ')} are not the index's`);
+  }
+  for (const s of index.stories) {
+    const m = Object.hasOwn(meta.stories, s.id) ? meta.stories[s.id] : undefined;
+    if (m === undefined) {
+      continue;
+    }
+    const endings = Object.keys(s.endings);
+    const own: string[] = s.chapters.map((c) => c.id);
+    if (!same(Object.keys(m.endings), endings)) {
+      out.push(`${s.id}: endings ${Object.keys(m.endings).join(', ')}, the index declares ${endings.join(', ')}`);
+    }
+    for (const [name, t] of Object.entries(m.endings)) {
+      out.push(...textProblems(t, `${s.id}.endings.${name}`, 40));
+    }
+    const ids = m.achievements.map((a) => a.id);
+    if (ids.length > 50 || new Set(ids).size !== ids.length) {
+      out.push(`${s.id}: achievement ids ${ids.join(', ')}`);
+    }
+    const cond = (c: unknown, at: string, nested: boolean): void => {
+      const o = typeof c === 'object' && c !== null ? (c as Readonly<Record<string, unknown>>) : {}; // a JSON object, or none
+      const kinds = Object.keys(o).filter((k) => k !== 'hints');
+      const kind = kinds.length === 1 ? kinds[0] : undefined;
+      const v = kind === undefined ? undefined : o[kind];
+      if (Object.hasOwn(o, 'hints') && (kind !== 'puzzle' || o['hints'] !== 0)) {
+        out.push(`${at}: hints beside ${String(kind)}`);
+      }
+      const [pch = '', local = ''] = kind === 'puzzle' && typeof v === 'string' ? v.split('.') : [];
+      const ok =
+        (kind === 'ending' && typeof v === 'string' && endings.includes(v)) ||
+        (kind === 'endings' && typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= endings.length) ||
+        (kind === 'allEndings' && v === true && endings.length > 0) ||
+        (kind === 'choice' && typeof v === 'string' && own.some((ch) => Object.hasOwn(meta.choices[ch] ?? {}, v))) ||
+        (kind === 'chapter' && typeof v === 'string' && own.includes(v)) ||
+        (kind === 'puzzle' && own.includes(pch) && puzzles.get(pch)?.has(local) === true) ||
+        (kind === 'all' && !nested && Array.isArray(v) && v.length >= 2 && v.length <= 4);
+      if (!ok) {
+        out.push(`${at}: ${JSON.stringify(c)} names nothing of ${s.id}`);
+      } else if (kind === 'all' && Array.isArray(v)) {
+        v.forEach((x: unknown, i) => cond(x, `${at}.all.${i}`, true));
+      }
+    };
+    for (const a of m.achievements) {
+      const at = `${s.id}.achievements.${a.id}`;
+      if (!/^[a-z][a-z0-9_]{0,31}$/.test(a.id) || typeof a.hidden !== 'boolean') {
+        out.push(`${at}: id or hidden`);
+      }
+      out.push(...textProblems(a.name, `${at}.name`, 40), ...textProblems(a.desc, `${at}.desc`, 140));
+      cond(a.when, `${at}.when`, false);
+    }
+  }
+  return out;
+}
+
+test('emit: meta texts only in server outputs', () => {
+  const { plan } = emitFixture(LIST, [MANOR], new Map([[CH1_ENTRY.id, decodedWorld(worldSource('ch1', 'cafe'))]]));
+  // The control: every meta text is planned, in the server meta.
+  const server = planned(plan, SERVER_META);
+  expect(EMIT_META_TEXTS.filter((t) => !server.includes(t))).toEqual([]);
+  // No other output holds one: no story-gen file (the free en table and the public world included), no file of the
+  // paid chapter, no other server file.
+  const holding = [...plan].filter(([, text]) => EMIT_META_TEXTS.some((t) => text.includes(t))).map(([path]) => path);
+  expect(holding.sort()).toEqual([SERVER_META]);
+});
+
+test('emit: server meta matches the server fixture shape', () => {
+  const { plan } = emitFixture(LIST, [MANOR], new Map([[CH1_ENTRY.id, decodedWorld(worldSource('ch1', 'cafe'))]]));
+  const text = planned(plan, SERVER_META);
+  const emitted: unknown = JSON.parse(text);
+  const fixtureText = readFileSync(new URL('../../../server/tests/fixtures/content/meta.json', import.meta.url), 'utf8');
+  const fixture: unknown = JSON.parse(fixtureText);
+  const want = shapeOf(fixture, metaWild);
+  const got = shapeOf(emitted, metaWild);
+  // The same keys at every object path, every condition kind included; every emitted leaf a type the fixture has there.
+  expect(got.keys).toEqual(want.keys);
+  expect(want.keys['.stories.*.achievements[].when']).toEqual(['all', 'allEndings', 'chapter', 'choice', 'ending', 'endings', 'hints', 'puzzle']);
+  expect(Object.keys(got.leaves)).toEqual(Object.keys(want.leaves));
+  for (const [path, types] of Object.entries(got.leaves)) {
+    expect(types.filter((t) => !(want.leaves[path] ?? []).includes(t)), path).toEqual([]);
+  }
+  // The shapes match, so the startup checks read the typed fields: the committed fixture against the committed content
+  // index and puzzle files (four chapters, two stories), the emitted meta against the planned ones.
+  const fixtureIndex = readRepoJson('server/tests/fixtures/content/stories.json') as ServerStoryIndex; // indexProblems' fixture
+  const fixturePuzzles = new Map(['ch1', 'ch2', 'ch3', 'ch4'].map((ch) => [ch, puzzleIds(readRepoJson(`server/tests/fixtures/content/puzzles/${ch}.json`))]));
+  expect(metaProblems(fixtureText, fixtureIndex, fixturePuzzles)).toEqual([]);
+  const index = JSON.parse(planned(plan, STORY_INDEX)) as ServerStoryIndex; // the story index shape test pins it
+  const puzzles = new Map(LIST.map((ch) => [ch.id as string, puzzleIds(JSON.parse(planned(plan, `server/content/puzzles/${ch.id}.json`)))]));
+  expect(metaProblems(text, index, puzzles)).toEqual([]);
+  // The checks are not vacuous: a wrong format and a puzzle of no world are refused.
+  const broken = text.replace('"format": 1', '"format": 2').replace('"ch1.cabinet"', '"ch2.cabinet"');
+  expect(metaProblems(broken, index, puzzles)).toEqual([
+    'format 2, expected 1',
+    'manor.achievements.cabinet_open.when: {"puzzle":"ch2.cabinet"} names nothing of manor',
+  ]);
+  const expected: ServerMeta = {
+    format: 1,
+    choices: { ch1: {}, ch2: { 'ch2.archive.p004': 'ch2.archive.p004' } } as ServerMeta['choices'], // fixture ids
+    stories: {
+      manor: { endings: { q7_sealed_vault: META_TEXTS.title }, achievements: Object.entries(EMIT_ACHIEVEMENTS).map(([id, a]) => ({ id, ...a })) },
+    } as ServerMeta['stories'], // the fixture's literal ids and conditions
+  };
+  expect(emitted).toEqual(expected);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
 // story.ts: spawned the way `npm run story` runs it, against a temporary repository (`--root`)
 
 const CLIENT_DIR = fileURLToPath(new URL('../..', import.meta.url));
@@ -1227,9 +1457,17 @@ function localeFiles(): Readonly<Record<string, string>> {
   return localeTables;
 }
 
+/** The CLI fixture's story meta (STAGING-DSL §9 "Story meta"): the paid ending's title and one choice achievement. */
+const REPO_META = {
+  manor: {
+    endings: { q7_sealed_vault: META_TEXTS.title },
+    achievements: { vault_drawer: { hidden: false, when: { choice: 'ch2.archive.p004' }, name: META_TEXTS.choiceName, desc: META_TEXTS.choiceDesc } },
+  },
+};
+
 /**
- * The committed catalog, the inline cast, the given chapter list, the fixture's story list, and the emit fixture's ink
- * and locale tables under story/.
+ * The committed catalog, the inline cast, the given chapter list, the fixture's story list and story meta, and the emit
+ * fixture's ink and locale tables under story/.
  */
 function repoFiles(chapters: unknown = [CH1_LISTED, CH2_LISTED]): Record<string, string> {
   return {
@@ -1237,6 +1475,7 @@ function repoFiles(chapters: unknown = [CH1_LISTED, CH2_LISTED]): Record<string,
     'story/cast.json': JSON.stringify(CAST_RAW),
     'story/chapters.json': JSON.stringify(chapters),
     'story/stories.json': JSON.stringify(STORIES_SOURCE),
+    'story/meta.json': JSON.stringify(REPO_META),
     ...Object.fromEntries([...EMIT_SOURCES].map(([key, text]) => [`story/${key}`, text])),
     ...localeFiles(),
   };
@@ -1345,6 +1584,7 @@ test(
         'server/content/chapters/ch2/en.json',
         'server/content/chapters/ch2/meta.json',
         'server/content/chapters/ch2/story.json',
+        'server/content/meta.json',
         'server/content/puzzles/ch1.json',
         'server/content/puzzles/ch2.json',
         'server/content/stories.json',
@@ -1355,6 +1595,38 @@ test(
       const paid = readFileSync(join(root, 'server/content/chapters/ch2/story.json'), 'utf8');
       expect(paid.startsWith('{"inkVersion":21')).toBe(true); // the API's ToJson(): no BOM, no reformatting
       expect(paid).toContain(LONGEST);
+    });
+  },
+  CLI_TIMEOUT_MS,
+);
+
+test(
+  'story: cli writes server meta',
+  () => {
+    const texts = [META_TEXTS.title, META_TEXTS.choiceName, META_TEXTS.choiceDesc].flatMap((t) => [t.ru, t.en]);
+    withRepo(repoFiles(), (root) => {
+      const r = runStory(root);
+      expect(r.status, r.stdout + r.stderr).toBe(0);
+      expect(r.stdout).toMatch(/^stories: manor \(ch1 → ch2\), endings 1\nmeta: manor endings 1, achievements 1; choices ch1 0\/0, ch2 1\/1$/m);
+      expect(JSON.parse(readFileSync(join(root, SERVER_META), 'utf8'))).toEqual({
+        format: 1,
+        choices: { ch1: {}, ch2: { 'ch2.archive.p004': 'ch2.archive.p004' } },
+        stories: { manor: { endings: REPO_META.manor.endings, achievements: [{ id: 'vault_drawer', ...REPO_META.manor.achievements.vault_drawer }] } },
+      });
+      // No meta text in any file under client/ (principle 0, M7).
+      const client = filesUnder(root, 'client');
+      expect(client).toEqual(CLIENT_OUTPUTS);
+      expect(client.flatMap((rel) => texts.filter((t) => readFileSync(join(root, rel), 'utf8').includes(t)).map((t) => `${rel}: ${t}`))).toEqual([]);
+    });
+    // The gate seen failing through the CLI: the paid ending's title without its English writes nothing.
+    const untranslated = { manor: { ...REPO_META.manor, endings: { q7_sealed_vault: { ru: META_TEXTS.title.ru } } } };
+    withRepo({ ...repoFiles(), 'story/meta.json': JSON.stringify(untranslated) }, (root) => {
+      const r = runStory(root);
+      expect(r.status, r.stdout + r.stderr).toBe(1);
+      expect(r.stdout).toMatch(/^E story\/meta\.json:0 catalog\/meta manor\.endings\.q7_sealed_vault\.en: missing$/m);
+      expect(r.stdout).toMatch(/^meta: invalid \(catalog\/meta\)$/m);
+      expect(r.stdout).toMatch(/^story: 1 errors, 0 warnings$/m);
+      expect([...filesUnder(root, 'client'), ...filesUnder(root, 'server')]).toEqual([]);
     });
   },
   CLI_TIMEOUT_MS,
@@ -1500,6 +1772,7 @@ test(
       'story/ch1/main.ink': CARRY_CH1,
       'story/ch2/main.ink': CARRY_CH2,
       'story/stories.json': JSON.stringify([{ id: 'manor', first: 'ch1', cover: 'cover/manor', endings: { bad_end: { chapter: 'ch1', knot: 'bad' } } }]),
+      'story/meta.json': JSON.stringify({ manor: { endings: { bad_end: { ru: 'Плохая развязка', en: 'A bad resolution' } }, achievements: {} } }),
       'story/lint-allow.json': JSON.stringify({ 'play/knot-not-visited': { 'ch2.leak': 'reached only after the story ending bad_end, which carries nothing' } }),
       [EN_CH1_TABLE]: table({
         'ch1.cafe.d001': 'Куда идти?',
@@ -1699,6 +1972,7 @@ test(
         'server/content/chapters/ch2/en.json',
         'server/content/chapters/ch2/meta.json',
         'server/content/chapters/ch2/story.json',
+        'server/content/meta.json',
         'server/content/puzzles/ch1.json',
         'server/content/puzzles/ch2.json',
         'server/content/stories.json',

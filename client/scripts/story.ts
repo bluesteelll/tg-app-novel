@@ -1,6 +1,7 @@
 // The story tool (STAGING-DSL §11): catalog checks (chapters, assets, cast, the story list) → the worlds decoded →
 // source lint → compile → knot graph (given the world) and story endings → the world lint and the soft-lock check →
-// localization and invoice titles → seeded playthroughs (through the worlds' yields) → emit. Every finding is
+// the story meta against the choice points and the worlds' puzzles → localization and invoice titles → seeded
+// playthroughs (through the worlds' yields) → emit. Every finding is
 // printed, never only the first; outputs are written (and stale ones deleted)
 // only when no error remains, then story-gen is read back for paid leaks. Exit 1 iff an error remains. The story
 // sources are rewritten only on request (STAGING-DSL §4): `--fix-ids` writes the missing line IDs into the ink files
@@ -28,6 +29,8 @@ import { LINT_CODES, lintCatalog, lintSources } from './story/lint.ts';
 import type { Finding, LintCode, SourceChapter, SourceLintInput } from './story/lint.ts';
 import { RETIRED_FILE, checkLocales, decodeEnTable, decodeNameTable, decodeRetired } from './story/locales.ts';
 import type { EnTable } from './story/locales.ts';
+import { META_FILE, choicePoints, lintMeta } from './story/meta.ts';
+import type { ChoiceMap, MetaSource, StoryMeta } from './story/meta.ts';
 import { ALLOW_FILE, coverageLine, decodeAllow, playChapter } from './story/playthrough.ts';
 import type { CarrySnapshot, ChapterPlay } from './story/playthrough.ts';
 import { STORIES_FILE, checkEndings, checkInvoiceTitles, decodeStories, endingKnots } from './story/stories.ts';
@@ -326,6 +329,47 @@ function worldRef(w: ChapterWorld | undefined): WorldRef {
   return w.kind === 'invalid' ? { kind: 'invalid' } : { kind: 'ok', body: toPublic(w.source) };
 }
 
+/**
+ * Per listed chapter, the puzzle ids its world defines, for `catalog/meta` rule 5: an empty set without a world, null
+ * for a world that did not decode (its `world/schema` finding already fails the run, so nothing is judged against it).
+ */
+function puzzleSets(chapters: readonly ChapterListEntry[], worlds: ReadonlyMap<ChapterId, ChapterWorld>): Map<ChapterId, ReadonlySet<PuzzleLocalId> | null> {
+  return new Map(
+    chapters.map((ch) => {
+      const w = worlds.get(ch.id);
+      const set = w?.kind === 'invalid' ? null : new Set(w?.kind === 'ok' ? (Object.keys(w.source.puzzles) as PuzzleLocalId[]) : []); // keys of a decoded world
+      return [ch.id, set] as const;
+    }),
+  );
+}
+
+/**
+ * The `meta:` report line (D9): per story its titled endings and achievements, then per listed chapter its options and
+ * points (`-` when it did not compile); why the meta was not judged, or that it failed, instead.
+ */
+function metaReport(
+  plans: readonly StoryPlan[] | null,
+  meta: MetaSource | null,
+  chapters: readonly ChapterListEntry[],
+  choices: ReadonlyMap<ChapterId, ChoiceMap>,
+): string {
+  if (plans === null) {
+    return 'meta: not checked (catalog/stories)';
+  }
+  if (meta === null) {
+    return 'meta: invalid (catalog/meta)';
+  }
+  const stories = plans.map((p) => {
+    const m: StoryMeta | undefined = Object.hasOwn(meta, p.id) ? meta[p.id] : undefined;
+    return `${p.id} endings ${Object.keys(m?.endings ?? {}).length}, achievements ${Object.keys(m?.achievements ?? {}).length}`;
+  });
+  const points = chapters.map((ch) => {
+    const map = choices.get(ch.id);
+    return map === undefined ? `${ch.id} -` : `${ch.id} ${map.size}/${new Set(map.values()).size}`;
+  });
+  return `meta: ${stories.join('; ')}; choices ${points.join(', ')}`;
+}
+
 /** The puzzles the chapter's `puzzle` tags yield (`world/unreachable` of a lock-less puzzle). */
 function yieldedPuzzles(facts: GraphFacts): Set<PuzzleLocalId> {
   return new Set([...facts.yields.values()].flatMap((ys) => ys.flatMap((y) => (y.kind === 'puzzle' ? [y.puzzle] : []))));
@@ -619,6 +663,24 @@ export function main(argv: readonly string[], repoRoot: string): number {
   if (plans !== null) {
     found.push(...checkEndings(plans, graphs, files));
   }
+  // The story meta (`catalog/meta`, STAGING-DSL §9 "Story meta"), judged only on a decoded story list (D3), against
+  // the choice points of every compiled chapter and the puzzles of every listed chapter's world. Its findings name
+  // story/meta.json, never a chapter's file, so they never keep a chapter from being played.
+  const choices = new Map<ChapterId, ChoiceMap>();
+  let meta: MetaSource | null = null;
+  if (plans !== null) {
+    for (const ch of chapters) {
+      const c = compiled.get(ch.id);
+      const g = graphs.get(ch.id);
+      if (c !== undefined && g !== undefined) {
+        choices.set(ch.id, choicePoints({ files: c.files, sources: files, lines: g.lines }));
+      }
+    }
+    const text = readRaw(root, META_FILE);
+    const r = lintMeta({ text: text === null ? null : stripBom(text), stories: plans, choices, puzzles: puzzleSets(chapters, worlds) });
+    found.push(...r.findings);
+    meta = r.meta;
+  }
 
   // The files an error of stages 1-4 names: such a chapter is not played (stage 6). Localization errors do not gate play.
   const sourceErrors = new Set(found.filter((f) => f.severity === 'E').map((f) => f.file));
@@ -681,7 +743,11 @@ export function main(argv: readonly string[], repoRoot: string): number {
     if (plans === null) {
       throw new Error('invariant: a run with no error decoded the stories');
     }
-    const plan = planEmit({ chapters, compiled, graphs, cast, names, en, stories: plans, worlds: sourceWorlds });
+    // The meta is judged whenever the stories decoded, and its findings are errors.
+    if (meta === null) {
+      throw new Error('invariant: a run with no error decoded the story meta');
+    }
+    const plan = planEmit({ chapters, compiled, graphs, cast, names, en, stories: plans, worlds: sourceWorlds, meta: { source: meta, choices } });
     deleteStale(root, chapters, new Set(sourceWorlds.keys()));
     write(root, plan);
     const fp = decodeLineFingerprints(JSON.parse(plan.get(`${OUT.build}/fingerprints.lines.json`) ?? 'null'));
@@ -722,6 +788,7 @@ export function main(argv: readonly string[], repoRoot: string): number {
   for (const p of plans ?? []) {
     console.log(`stories: ${p.id} (${p.chapters.join(' → ')}), endings ${Object.keys(p.endings).length}`);
   }
+  console.log(metaReport(plans, meta, chapters, choices));
   for (const line of played.lines) {
     console.log(line);
   }

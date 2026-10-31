@@ -3,8 +3,9 @@
 Version: **DSL v2** (prototype). Status: DSL v1 was designed in [PROTOTYPE-PLAN.md](PROTOTYPE-PLAN.md) and
 implemented by lanes L3a (parser + lint) and L3b (story build). DSL v2 adds the `puzzle` / `explore` yield tags and
 the narrowed `-> DONE` ([PUZZLES-PLAN.md](PUZZLES-PLAN.md), lane LW1). §9 also describes the story list
-`story/stories.json` ([STORIES-PLAN.md](STORIES-PLAN.md), lane LS1); the tag language is unchanged. The rules marked
-"from LW3" in §8 and §11 are the contract lane LW3 implements.
+`story/stories.json` ([STORIES-PLAN.md](STORIES-PLAN.md), lane LS1); the tag language is unchanged. §9 also describes
+the story meta file `story/meta.json` ([META-PLAN.md](META-PLAN.md), lane LM1); the tag language is unchanged. The
+rules marked "from LW3" in §8 and §11 are the contract lane LW3 implements.
 
 - **One parser.** `client/src/story/tags.ts` (`parseTags`) is used by the story gate (`npm --prefix client run
   story`) and by the runtime. Nothing else parses tags (CLAUDE.md principle 7; enforced by `client/src/arch.test.ts`).
@@ -571,6 +572,49 @@ fixed:
   - keep knots as the unit of structure;
   - never rename a knot that shipped — renaming forces players back to the chapter start.
 
+### Story meta
+
+`story/meta.json` (hand-written; checked by `catalog/meta`, §11) holds, per story, the titles of its declared endings
+and its achievements, with their texts inline in ru and en ([META-PLAN.md](META-PLAN.md) M4, M5). No ink tag carries
+meta.
+
+```jsonc
+// the object order of "achievements" is the display order
+{ "manor": {
+    "endings": { "truth": { "ru": "…", "en": "…" } },
+    "achievements": {
+      "drawer_no_hints": { "hidden": false, "when": { "puzzle": "ch1.drawer", "hints": 0 },
+                           "name": { "ru": "…", "en": "…" }, "desc": { "ru": "…", "en": "…" } } } } }
+```
+
+- **Stories.** The keys are story ids of `story/stories.json`; each value has exactly `endings` and `achievements`. A
+  story that declares no ending may be absent (it then has no achievements). A missing file counts as `{}`.
+- **Every declared ending needs a title.** `endings` has exactly the ending names `story/stories.json` declares for
+  that story.
+- **Achievements.** Ids match `^[a-z][a-z0-9_]{0,31}$`, at most 50 per story. Each value has exactly `hidden` (a
+  boolean, reserved for a later list of every achievement), `when` (one condition, below), `name` and `desc`. **An
+  achievement id is never reused for a different achievement**: a player's unlock stays stored under its id.
+- **Text limits.** Every text is `{ "ru": …, "en": … }`, both present and non-blank: ending titles and achievement
+  names 1–40 code points, descriptions 1–140 code points.
+- **Conditions** (`when`): an object with exactly one key; `hints` appears only beside `puzzle`, and only as `0`.
+
+  | Condition | Met when |
+  |---|---|
+  | `{ "ending": "<name>" }` | that ending of this story was reached |
+  | `{ "endings": n }` | n distinct endings of this story were reached (1 ≤ n ≤ the story's ending count) |
+  | `{ "allEndings": true }` | every ending the story declares was reached (it declares at least one) |
+  | `{ "choice": "<line ID>" }` | that option was picked at least once: the ID of a choice with text in a chapter of the story's chain |
+  | `{ "chapter": "<ch>" }` | that chapter of the story's chain was completed |
+  | `{ "puzzle": "<ch>.<puzzle>" }`, optionally with `"hints": 0` | that puzzle of a chapter of the chain (its world) was solved; with `hints: 0`, without unlocking a hint tier |
+  | `{ "all": [ … ] }` | 2–4 conditions of the kinds above, no nested `all`, all hold |
+
+- **Meta texts are server-only: never put a meta text into ink or a locale table.** The story tool writes them only to
+  `server/content/meta.json`, and the build fails if a meta text of 12 or more code points appears in `dist/`.
+- **A choice's line ID is also its statistics identity** ([META-PLAN.md](META-PLAN.md) M1): keep it when you edit the
+  text, retire it when you remove the option (§4). A choice point is the options of one weave level of one knot or
+  stitch, up to a gather of that depth or less, a knot header or a stitch header; deeper options form their own
+  points, and fallback choices are not options.
+
 ---
 
 ## 10. The ink subset
@@ -607,6 +651,7 @@ check (the second table below).
 | `catalog/chapters` | E | `story/chapters.json`: ids `ch<N>` unique; `entry` exists; `paid` ⇒ `productId`; `next` names a later listed chapter or `null` (the list is in play order, §9); at least one chapter compiled (a run with 0 chapters is an error, not a green) |
 | `catalog/assets` | E | `assets/catalog.json` keys well-formed; reserved words (`all`, `off`, `stop`) not used as ids; every `cast.json` `char` exists |
 | `catalog/stories` | E | `story/stories.json` (§9), judged once `chapters.json` decoded in play order and `assets/catalog.json` decoded: (1) it exists and is a non-empty array whose entries have exactly `id`, `first`, `cover`, `endings`; (2) each `id` matches `^[a-z][a-z0-9_]{0,23}$` and is unique; (3) `first` is a listed free chapter that no `next` names; (4) the chain from `first` along `next` visits no chapter twice; (5) every listed chapter lies on exactly one story's chain; (6) `cover` is a `cover/<name>` that `assets/catalog.json` lists; (7) each ending name matches `^[a-z][a-z0-9_]{0,31}$` and its `chapter` lies on the story's chain; (8) its `knot` is in that chapter's graph with `-> END`, no successor knot and no `puzzle` / `explore` tag, no two endings name one knot, and a chapter with a `next` keeps a `-> END` knot that is no story ending; (9) a paid chapter's title in `story.json` is 1–32 code points in `ru` and in `en` (it is the invoice title) |
+| `catalog/meta` | E | `story/meta.json` (§9 "Story meta"), judged once `story/stories.json` decoded: (1) it is an object (a missing file counts as `{}`) whose keys are story ids of `story/stories.json`, each value with exactly `endings` and `achievements`; (2) `endings` has exactly the ending names the story declares, each a `{ ru, en }` title of 1–40 code points, non-blank, and a story that declares an ending is present; (3) each achievement id matches `^[a-z][a-z0-9_]{0,31}$`, at most 50 per story, and each value has exactly `hidden` (a boolean), `when`, `name` (1–40 code points) and `desc` (1–140), each in `ru` and `en`, non-blank; (4) `when` is one condition of §9 with exactly one key (`hints: 0` only beside `puzzle`), and `all` holds 2–4 conditions and no `all`; (5) `ending` names an ending of the story, `endings: n` has 1 ≤ n ≤ its ending count, `choice` is the ID of a choice with text in a chapter of its chain, `chapter` is on the chain, `puzzle` is a puzzle of a chapter of the chain, and `allEndings` is `true` on a story that declares an ending — a reference into a chapter that did not compile or a world that did not decode is not judged |
 | `tag/syntax` | E | tag does not match the grammar (§2) |
 | `tag/unknown-kind` | E | kind not in §6 |
 | `tag/missing-arg` / `tag/bad-arg` | E | positional count, unknown/duplicate option, value out of range or not an integer; a `puzzle` without `then=`; a puzzle or section id or a knot name not `[a-z][a-z0-9_]*` (§6) |

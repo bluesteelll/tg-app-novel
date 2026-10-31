@@ -15,6 +15,7 @@ export const LINT_CODES = {
   'catalog/chapters': 'E',
   'catalog/assets': 'E',
   'catalog/stories': 'E',
+  'catalog/meta': 'E',
   'tag/syntax': 'E',
   'tag/unknown-kind': 'E',
   'tag/missing-arg': 'E',
