@@ -643,3 +643,118 @@ describe('scan worlds', () => {
     expect(found).toEqual(expect.arrayContaining([`hint-texts ${HINT_RU}`, `hint-texts ${HINT_EN}`, `paid-world-texts ${PAID_TEXT}`, `paid-world-ids ${PAID_ID}`]));
   });
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// LM1: the meta texts (META-PLAN "Paid-content protection", M7): every text of story/meta.json of 12+ code points,
+// ru and en, built by loadSections from the source of a temporary repository, and run through main().
+
+describe('scan meta', () => {
+  const CH1 = { id: 'ch1', entry: 'ch1/main.ink', paid: false, next: null };
+  const STORIES = [{ id: 'manor', first: 'ch1', cover: 'cover/manor', endings: { quiet: { chapter: 'ch1', knot: 'finale' } } }];
+  /** Exactly 12 code points each: the shortest text the section holds. */
+  const TITLE = { ru: 'Тихий финал.', en: 'A quiet end.' };
+  /** 11 code points each: below the needle floor. */
+  const SHORT = { ru: 'Одиннадцать', en: 'Eleven char' };
+  const DESC = { ru: 'Дойти до тихого финала этой истории.', en: 'Reach the quiet end of this story.' };
+  const META = {
+    manor: { endings: { quiet: TITLE }, achievements: { quiet_end: { hidden: false, when: { ending: 'quiet' }, name: SHORT, desc: DESC } } },
+  };
+  let repo = '';
+
+  function put(rel: string, content: string): void {
+    const abs = join(repo, ...rel.split('/'));
+    mkdirSync(dirname(abs), { recursive: true });
+    writeFileSync(abs, content);
+  }
+
+  /** A free-only repository: ch1, the story list declaring `quiet`, and the meta source, with `override` over it. */
+  function setup(override: Readonly<Record<string, string>> = {}, omit: readonly string[] = []): { sections: Section[]; findings: Finding[] } {
+    const files: Record<string, string> = {
+      'story/chapters.json': JSON.stringify([CH1]),
+      'story/stories.json': JSON.stringify(STORIES),
+      'story/meta.json': JSON.stringify(META),
+      ...override,
+    };
+    mkdirSync(join(repo, 'client'), { recursive: true });
+    for (const [rel, content] of Object.entries(files).filter(([rel]) => !omit.includes(rel))) {
+      put(rel, content);
+    }
+    const { sections, findings } = loadSections(join(repo, 'client'));
+    return { sections, findings };
+  }
+
+  function reasons(findings: readonly Finding[]): string[] {
+    return findings.flatMap((f) => (f.kind === 'fingerprints' ? [f.reason] : []));
+  }
+
+  /** A dist holding index.html and `files`; main() on it: the exit code and the printed lines. */
+  function scanDist(name: string, files: Readonly<Record<string, string>>): { code: number; lines: string[] } {
+    const dist = join(repo, name);
+    mkdirSync(dist);
+    writeFileSync(join(dist, 'index.html'), new TextDecoder().decode(INDEX.bytes));
+    for (const [rel, content] of Object.entries(files)) {
+      mkdirSync(dirname(join(dist, rel)), { recursive: true });
+      writeFileSync(join(dist, rel), content);
+    }
+    const lines: string[] = [];
+    const log = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => void lines.push(args.map(String).join(' ')));
+    try {
+      return { code: main(['--dist', dist], join(repo, 'client')), lines };
+    } finally {
+      log.mockRestore();
+    }
+  }
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'scan-meta-'));
+  });
+  afterEach(() => {
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  test('scan: meta text in dist fails', () => {
+    const { sections, findings } = setup();
+    expect(findings).toEqual([]);
+    // The title and the description in both languages; the 11-code-point name is too short to fingerprint.
+    const meta = sections.find((s) => s.name === 'meta-texts');
+    expect(meta?.needles).toEqual([TITLE.en, DESC.en, DESC.ru, TITLE.ru].sort());
+    // The description in a chunk, the title plainly, and the description inside a base64 data: URI.
+    const plain = text('assets/index-a.js', `const d=${JSON.stringify(DESC.ru)},t=${JSON.stringify(TITLE.en)};export{d,t};`);
+    const inlined = text('assets/index-b.js', `const u="data:application/json;base64,${b64(JSON.stringify({ d: DESC.en }))}";export{u};`);
+    expect(rawIncludes(inlined, DESC.en)).toBe(false); // only decoding can find it
+    expect(scanFiles([INDEX, plain, inlined], sections)).toEqual([
+      { kind: 'fingerprint', file: 'assets/index-a.js', section: 'meta-texts', needle: TITLE.en, via: 'plain' },
+      { kind: 'fingerprint', file: 'assets/index-a.js', section: 'meta-texts', needle: DESC.ru, via: 'plain' },
+      { kind: 'fingerprint', file: 'assets/index-b.js', section: 'meta-texts', needle: DESC.en, via: 'data-uri' },
+    ]);
+    // Through main(): a dirty dist exits 1 and names the needle; a clean one exits 0 and counts the section.
+    const dirty = scanDist('dist-dirty', { 'assets/index-a.js': `const t=${JSON.stringify(TITLE.ru)};export{t};` });
+    expect(dirty.code, dirty.lines.join('\n')).toBe(1);
+    expect(dirty.lines).toContainEqual(`scan: fingerprint meta-texts ${JSON.stringify(TITLE.ru)} in assets/index-a.js (via plain)`);
+    const clean = scanDist('dist-clean', { 'assets/index-a.js': `const s=${JSON.stringify(SHORT.ru)};export{s};` });
+    expect(clean.code, clean.lines.join('\n')).toBe(0);
+    expect(clean.lines).toContainEqual(expect.stringMatching(/ sections compiler\(2\) dev-canary\(4\) meta-texts\(4\)$/));
+  });
+
+  test('scan: empty meta fingerprint set fails', () => {
+    // story/meta.json missing while a story declares an ending.
+    expect(reasons(setup({}, ['story/meta.json']).findings)).toEqual(['meta-empty']);
+    rmSync(repo, { recursive: true, force: true });
+    mkdirSync(repo);
+    // Every meta text under 12 code points.
+    const short = { manor: { endings: { quiet: SHORT }, achievements: {} } };
+    expect(reasons(setup({ 'story/meta.json': JSON.stringify(short) }).findings)).toEqual(['meta-empty']);
+    // A meta file or a story list that does not parse.
+    put('story/meta.json', '{ "manor": ');
+    expect(reasons(loadSections(join(repo, 'client')).findings)).toEqual(['meta-unreadable', 'meta-empty']);
+    put('story/meta.json', JSON.stringify(META));
+    put('story/stories.json', '[{ "id": "manor",');
+    expect(reasons(loadSections(join(repo, 'client')).findings)).toEqual(['meta-unreadable']);
+    // Control: no story declares an ending and no meta file exists: no finding, no meta section.
+    rmSync(repo, { recursive: true, force: true });
+    mkdirSync(repo);
+    const quiet = setup({ 'story/stories.json': JSON.stringify([{ ...STORIES[0], endings: {} }]) }, ['story/meta.json']);
+    expect(quiet.findings).toEqual([]);
+    expect(quiet.sections).toEqual(FIXED_SECTIONS);
+  });
+});
