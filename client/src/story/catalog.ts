@@ -1,6 +1,7 @@
 // The asset catalog (assets/catalog.json) and the cast (story/cast.json): types, decoders and the AssetIndex that
 // parseTags reads. Decoded at the edge, never trusted blindly; every lookup is an own-property lookup, so a tag
 // naming `constructor` is an unknown asset, not Object.prototype's. L3b and L5 append their parts of this module.
+// Pure (PUZZLES-PLAN X4, the arch test's pure-world rule): no clock, randomness, DOM, network or storage.
 import type {
   AssetId,
   AssetIndex,
@@ -11,6 +12,7 @@ import type {
   ExprId,
   KnotName,
   ProductId,
+  PropId,
   SfxId,
   SpeakerId,
   StoryVersion,
@@ -27,15 +29,33 @@ export type CatalogIssue = {
   path: string;
   detail: string;
 };
-/** Opaque here; L5 defines the source / placeholder / size fields and makes them required. */
-export type CatalogEntry = Readonly<Record<string, unknown>>;
+/** A generated image's parameter (PROTOTYPE-PLAN K23): its hue; the label drawn is the asset id. */
+export type ImagePlaceholder = { readonly hue: number };
+/** A synthesized clip's parameter (K23): the sine tone in Hz. */
+export type AudioPlaceholder = { readonly hz: number };
+/** An image entry (bg, a character expression, cg, prop, cover); its canonical size is its namespace's. */
+export type CatalogImage = { readonly placeholder: ImagePlaceholder };
+/**
+ * An audio entry (bgm, sfx). The decoder accepts only the placeholder form: real audio is PP "Later". The `src` form
+ * is typed so budget's K23 rule (WAV only for a placeholder) is reachable on a typed input and is seen failing before
+ * that lane, which makes it decodable.
+ */
+export type CatalogAudio = { readonly placeholder: AudioPlaceholder } | { readonly src: string };
+/** Any catalog entry. */
+export type CatalogEntry = CatalogImage | CatalogAudio;
+/** `cover/<id>` (STORIES-PLAN Y15): a story's Home cover. A local brand: staging.ts names no cover. */
+export type CoverId = string & { readonly __brand: 'CoverId' };
 /** STAGING-DSL §8: one namespace per kind; a character's expressions are a map, one asset each. */
 export type AssetCatalog = {
-  bg: Readonly<Record<BgId, CatalogEntry>>;
-  chars: Readonly<Record<CharId, { exprs: Readonly<Record<ExprId, CatalogEntry>> }>>;
-  cg: Readonly<Record<CgId, CatalogEntry>>;
-  bgm: Readonly<Record<TrackId, CatalogEntry>>;
-  sfx: Readonly<Record<SfxId, CatalogEntry>>;
+  bg: Readonly<Record<BgId, CatalogImage>>;
+  chars: Readonly<Record<CharId, { exprs: Readonly<Record<ExprId, CatalogImage>> }>>;
+  cg: Readonly<Record<CgId, CatalogImage>>;
+  bgm: Readonly<Record<TrackId, CatalogAudio>>;
+  sfx: Readonly<Record<SfxId, CatalogAudio>>;
+  /** PUZZLES-PLAN X11: named by world data, never by a tag; ≤ 512×512. */
+  prop: Readonly<Record<PropId, CatalogImage>>;
+  /** STORIES-PLAN Y15: always public, exactly 360×640. */
+  cover: Readonly<Record<CoverId, CatalogImage>>;
 };
 /** STAGING-DSL §5: speaker → sprite character (or none). */
 export type Cast = Readonly<Record<SpeakerId, { char: CharId | null }>>;
@@ -46,8 +66,11 @@ export const RESERVED_IDS = ['all', 'off', 'stop'] as const;
 // §8 asset names and §5 speaker ids share one shape. It also rules out `__proto__`, the one key whose assignment
 // would set a prototype instead of an own property.
 const ID_RE = /^[a-z][a-z0-9_]*$/;
-const NAMESPACES = ['bg', 'chars', 'cg', 'bgm', 'sfx'] as const;
+const NAMESPACES = ['bg', 'chars', 'cg', 'bgm', 'sfx', 'prop', 'cover'] as const;
 type Namespace = (typeof NAMESPACES)[number];
+/** Placeholder parameter ranges: a hue in degrees; a tone from A1 to A6, audible on a phone speaker. */
+const HUE = { min: 0, max: 359 } as const;
+const HZ = { min: 55, max: 1760 } as const;
 
 type Raw = Readonly<Record<string, unknown>>;
 type Report = (path: string, detail: string) => void;
@@ -66,9 +89,57 @@ function idProblem(id: string): string | null {
   return null;
 }
 
+/** One entry's decoder: the typed entry, or null after reporting why not. */
+type EntryDecoder<E> = (entry: Raw, path: string, report: Report) => E | null;
+
+/** Exactly `{ placeholder: { <key>: <integer in range> } }`; every problem is reported. */
+function placeholderParam(
+  entry: Raw,
+  path: string,
+  key: 'hue' | 'hz',
+  range: { readonly min: number; readonly max: number },
+  report: Report,
+): number | null {
+  for (const k of Object.keys(entry).filter((name) => name !== 'placeholder')) {
+    report(`${path}.${k}`, "unknown key (an entry holds only 'placeholder')");
+  }
+  if (!Object.hasOwn(entry, 'placeholder')) {
+    report(`${path}.placeholder`, 'missing');
+    return null;
+  }
+  const params = entry['placeholder'];
+  if (!isObject(params)) {
+    report(`${path}.placeholder`, 'not an object');
+    return null;
+  }
+  for (const k of Object.keys(params).filter((name) => name !== key)) {
+    report(`${path}.placeholder.${k}`, `unknown key (expected ${key})`);
+  }
+  if (!Object.hasOwn(params, key)) {
+    report(`${path}.placeholder.${key}`, 'missing');
+    return null;
+  }
+  const value = params[key];
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < range.min || value > range.max) {
+    report(`${path}.placeholder.${key}`, `${JSON.stringify(value) ?? 'undefined'} is not an integer ${range.min}..${range.max}`);
+    return null;
+  }
+  return value;
+}
+
+const imageEntry: EntryDecoder<CatalogImage> = (entry, path, report) => {
+  const hue = placeholderParam(entry, path, 'hue', HUE, report);
+  return hue === null ? null : { placeholder: { hue } };
+};
+
+const audioEntry: EntryDecoder<CatalogAudio> = (entry, path, report) => {
+  const hz = placeholderParam(entry, path, 'hz', HZ, report);
+  return hz === null ? null : { placeholder: { hz } };
+};
+
 /** The well-formed `id → entry` pairs of one object; every other key is reported. */
-function entries(value: unknown, path: string, report: Report): Record<string, CatalogEntry> {
-  const out: Record<string, CatalogEntry> = {};
+function entries<E>(value: unknown, path: string, report: Report, decode: EntryDecoder<E>): Record<string, E> {
+  const out: Record<string, E> = {};
   if (!isObject(value)) {
     report(path, 'not an object');
     return out;
@@ -80,14 +151,37 @@ function entries(value: unknown, path: string, report: Report): Record<string, C
     } else if (!isObject(entry)) {
       report(`${path}.${id}`, 'entry is not an object');
     } else {
-      out[id] = entry;
+      const decoded = decode(entry, `${path}.${id}`, report);
+      if (decoded !== null) {
+        out[id] = decoded;
+      }
     }
   }
   return out;
 }
 
-function characters(value: unknown, report: Report): Record<string, { exprs: Record<string, CatalogEntry> }> {
-  const out: Record<string, { exprs: Record<string, CatalogEntry> }> = {};
+/**
+ * Two placeholders of one role with one tone synthesize the same bytes, so a public clip and a paid-only one would
+ * share a content hash and the dist scan would flag the public one as the paid file (critique O5).
+ */
+function distinctTones(ns: 'bgm' | 'sfx', clips: Readonly<Record<string, CatalogAudio>>, report: Report): void {
+  const first = new Map<number, string>();
+  for (const [id, clip] of Object.entries(clips)) {
+    if (!('placeholder' in clip)) {
+      continue;
+    }
+    const hz = clip.placeholder.hz;
+    const owner = first.get(hz);
+    if (owner === undefined) {
+      first.set(hz, id);
+    } else {
+      report(`${ns}.${id}.placeholder.hz`, `${hz} Hz is also ${ns}/${owner}'s: two placeholders of one role would be the same bytes`);
+    }
+  }
+}
+
+function characters(value: unknown, report: Report): Record<string, { exprs: Record<string, CatalogImage> }> {
+  const out: Record<string, { exprs: Record<string, CatalogImage> }> = {};
   if (!isObject(value)) {
     report('chars', 'not an object');
     return out;
@@ -112,7 +206,7 @@ function characters(value: unknown, report: Report): Record<string, { exprs: Rec
       report(`${path}.exprs`, 'missing: a character needs at least one expression');
       continue;
     }
-    const exprs = entries(entry['exprs'], `${path}.exprs`, report);
+    const exprs = entries(entry['exprs'], `${path}.exprs`, report, imageEntry);
     if (isObject(entry['exprs']) && Object.keys(entry['exprs']).length === 0) {
       report(`${path}.exprs`, 'empty: a character needs at least one expression');
     }
@@ -141,16 +235,20 @@ export function decodeAssetCatalog(raw: unknown): Result<AssetCatalog, CatalogIs
     }
     return raw[ns];
   };
-  const bg = entries(field('bg'), 'bg', report);
+  const bg = entries(field('bg'), 'bg', report, imageEntry);
   const chars = characters(field('chars'), report);
-  const cg = entries(field('cg'), 'cg', report);
-  const bgm = entries(field('bgm'), 'bgm', report);
-  const sfx = entries(field('sfx'), 'sfx', report);
+  const cg = entries(field('cg'), 'cg', report, imageEntry);
+  const bgm = entries(field('bgm'), 'bgm', report, audioEntry);
+  const sfx = entries(field('sfx'), 'sfx', report, audioEntry);
+  const prop = entries(field('prop'), 'prop', report, imageEntry);
+  const cover = entries(field('cover'), 'cover', report, imageEntry);
+  distinctTones('bgm', bgm, report);
+  distinctTones('sfx', sfx, report);
   if (issues.length > 0) {
     return { ok: false, error: issues };
   }
   // The brands are earned here: every key passed ID_RE and the reserved-word check above.
-  const value = { bg, chars, cg, bgm, sfx } as AssetCatalog;
+  const value = { bg, chars, cg, bgm, sfx, prop, cover } as AssetCatalog;
   return { ok: true, value };
 }
 
@@ -254,8 +352,11 @@ const PRODUCT_ID_RE = /^[a-z][a-z0-9_]*:[a-z0-9_]+$/;
 /** STAGING-DSL §10 `ink/name`. */
 export const KNOT_NAME_RE = /^[a-z][a-z0-9_]*$/;
 const VAR_NAME_RE = /^[\p{L}_][\p{L}\p{N}_]*$/u;
-/** STAGING-DSL §8: `bg/<bg>`, `char/<char>/<expr>`, `cg/<cg>`, `bgm/<track>`, `sfx/<sfx>`. */
-export const ASSET_ID_RE = /^(?:(?:bg|cg|bgm|sfx)\/[a-z][a-z0-9_]*|char\/[a-z][a-z0-9_]*\/[a-z][a-z0-9_]*)$/;
+/**
+ * STAGING-DSL §8: `bg/<bg>`, `char/<char>/<expr>`, `cg/<cg>`, `bgm/<track>`, `sfx/<sfx>`, `prop/<prop>` (PUZZLES-PLAN
+ * X11), `cover/<cover>` (STORIES-PLAN Y15).
+ */
+export const ASSET_ID_RE = /^(?:(?:bg|cg|bgm|sfx|prop|cover)\/[a-z][a-z0-9_]*|char\/[a-z][a-z0-9_]*\/[a-z][a-z0-9_]*)$/;
 const STORY_VERSION_RE = /^[0-9a-f]{16}$/;
 
 /** Reports every key of `value` that is not in `keys`, and every key of `keys` that is missing. */
