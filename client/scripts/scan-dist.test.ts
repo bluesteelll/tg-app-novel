@@ -627,6 +627,37 @@ describe('scan worlds', () => {
     expect(found).toContainEqual({ kind: 'fingerprint', file: 'assets/index-a.js', section: 'paid-en', needle: paidEn, via: 'plain' });
   });
 
+  test('scan: a stale free ru copy hides no paid needle', () => {
+    // ch1's en entry keeps a ru the ink no longer says: the build ships only the en, so the stale ru is no public text.
+    const ch1En = (ru: string): Record<string, string> => ({
+      'story/locales/en/ch1.json': JSON.stringify({ 'ch1.start.a001': { ru, en: 'Welcome to the manor on the hill.' } }),
+    });
+    const stale = setup({ ...ch1En(PAID_TEXT), 'story/ch2/world.json': world('ch2', { id: PAID_ID, ru: PAID_TEXT }, []) });
+    expect(stale.findings).toEqual([]);
+    expect(section(stale.sections, 'paid-world-texts')).toEqual([PAID_TEXT]);
+    // The same for a paid en value.
+    rmSync(repo, { recursive: true, force: true });
+    mkdirSync(repo);
+    const paidEn = 'The lighthouse goes dark at midnight.';
+    const table = { 'ch2.archive.r3t6': { ru: 'Архив пахнет старой бумагой и пылью.', en: paidEn } };
+    const en = setup({ ...ch1En(paidEn), 'story/locales/en/ch2.json': JSON.stringify(table) });
+    expect(en.findings).toEqual([]);
+    expect(section(en.sections, 'paid-en')).toEqual([paidEn]);
+    // Parity with the gate's set: a free ink line written with an ink escape ships as displayed, so a paid world text
+    // repeating the displayed line is public; its en entry's ru (the displayed text) no longer stands in for it.
+    rmSync(repo, { recursive: true, force: true });
+    mkdirSync(repo);
+    const shown = 'Номер #12 на двери архива стёрся.';
+    const parity = setup({
+      'story/ch1/main.ink': '=== start ===\nНомер \\#12 на двери архива стёрся. #id:ch1.start.a001\n-> END\n',
+      'story/locales/en/ch1.json': JSON.stringify({ 'ch1.start.a001': { ru: shown, en: 'Number 12 on the archive door has worn off.' } }),
+      'story/ch2/world.json': world('ch2', { id: PAID_ID, ru: shown }, []),
+    });
+    expect(parity.findings).toEqual([]);
+    expect(section(parity.sections, 'paid-world-ids')).toContain(PAID_ID);
+    expect(section(parity.sections, 'paid-world-texts')).toEqual([]);
+  });
+
   test('scan: a leaked story-gen copy launders no fingerprint', () => {
     // A mis-routed copy of the paid world and the free hints sits in story-gen: the needles come from the sources
     // only, so the copy neither drops them nor stands in for them (D12, critique W1).

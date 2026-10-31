@@ -16,6 +16,7 @@ import { decodeAssetFingerprints } from './assets/manifest.ts';
 import type { AssetFingerprint } from './assets/manifest.ts';
 import { decodeChapterList, decodeLineFingerprints, decodeStoryUsage } from './story/emit.ts';
 import type { StoryUsage } from './story/emit.ts';
+import { unescapeInk } from './story/classify.ts';
 import { decodeEnTable } from './story/locales.ts';
 import { META_FILE } from './story/meta.ts';
 import { STORIES_FILE } from './story/stories.ts';
@@ -311,8 +312,10 @@ type WorldRead = { dir: string; rel: string; raw: unknown; parsed: boolean; worl
  * The world sections, built from the sources only (PUZZLES-PLAN X7, D12, critique C1): `hint-ids` and `hint-texts`
  * from every story/<dir>/world.json (a listed chapter or not, Q16), `paid-world-ids` and `paid-world-texts` from
  * the paid chapters' worlds, `paid-en` from the paid chapters' en tables; each pushed only when it has needles. A
- * text that is public is dropped: the free ink sources, the free worlds' non-hint texts, the free en values of
- * non-hint IDs, and the names tables. A world's hint sources never count as public. Fail closed per world.
+ * text that is public is dropped: the free ink sources (as written and as displayed, ink escapes resolved, as the gate
+ * reads their lines), the free worlds' non-hint texts, the shipped `en` values of the free non-hint IDs (never their
+ * `ru` copies, which the build does not ship and which can be stale, as the gate's set holds), and the names tables.
+ * A world's hint sources never count as public. Fail closed per world.
  */
 function worldSections(repo: string, chapters: readonly ChapterListEntry[], fail: (reason: FingerprintReason, detail: string) => void): { world: Section[]; paidEn: Section[] } {
   const free = new Set<string>(chapters.filter((c) => !c.paid).map((c) => c.id));
@@ -350,7 +353,8 @@ function worldSections(repo: string, chapters: readonly ChapterListEntry[], fail
   const publicTexts: string[] = [];
   for (const dir of [...free, 'common']) {
     for (const rel of filesUnder(repo, `story/${dir}`, '.ink')) {
-      publicTexts.push(readRepoText(repo, rel) ?? '');
+      const ink = readRepoText(repo, rel) ?? '';
+      publicTexts.push(ink, unescapeInk(ink));
     }
   }
   for (const ch of free) {
@@ -369,7 +373,7 @@ function worldSections(repo: string, chapters: readonly ChapterListEntry[], fail
     const table = decodeEnTable(`locales/en/${ch}.json`, readRepoText(repo, `story/locales/en/${ch}.json`)).table;
     for (const [id, e] of table.entries) {
       if (!hintIds.has(id)) {
-        publicTexts.push(e.ru, e.en);
+        publicTexts.push(e.en);
       }
     }
   }
