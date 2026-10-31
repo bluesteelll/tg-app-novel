@@ -1,6 +1,7 @@
 // The story build's outputs (PROTOTYPE-PLAN.md "Build outputs", principle 0): free chapters to the public story-gen
-// directory, paid chapters to server/content; the public chapter catalog, each chapter's meta, the usage file and the
-// paid line fingerprints; the `paid/leak` check over story-gen. Builds a plan (path → text); IO stays in story.ts.
+// directory, paid chapters to server/content; the public chapter catalog, each chapter's meta and en table, the usage
+// file and the paid line fingerprints; the `paid/leak` check over story-gen. Builds a plan (path → text); IO stays in
+// story.ts.
 // compile.ts and graph.ts come in as types only, so scan-dist.ts, which imports the decoders below, never loads
 // inkjs/full or the graph code.
 import { createHash } from 'node:crypto';
@@ -22,7 +23,7 @@ export const OUT = {
   build: 'server/content/build',
 } as const;
 
-/** Chapter titles and speaker names for the public catalog (L3b: the ids as placeholders; L3c: the locale tables). */
+/** Chapter titles and speaker names for the public catalog, from story/locales/{ru,en}/story.json (STAGING-DSL §4). */
 export type StoryNames = {
   chapters: Record<ChapterId, { ru: string; en: string }>;
   speakers: Record<SpeakerId, { ru: string; en: string }>;
@@ -57,10 +58,10 @@ function codePoints(text: string): number {
   return [...text].length;
 }
 
-function chapterPaths(ch: ChapterListEntry): { story: string; meta: string } {
+function chapterPaths(ch: ChapterListEntry): { story: string; meta: string; en: string } {
   return ch.paid
-    ? { story: `${OUT.paid}/${ch.id}/story.json`, meta: `${OUT.paid}/${ch.id}/meta.json` }
-    : { story: `${OUT.free}/${ch.id}.story.json`, meta: `${OUT.free}/${ch.id}.meta.json` };
+    ? { story: `${OUT.paid}/${ch.id}/story.json`, meta: `${OUT.paid}/${ch.id}/meta.json`, en: `${OUT.paid}/${ch.id}/en.json` }
+    : { story: `${OUT.free}/${ch.id}.story.json`, meta: `${OUT.free}/${ch.id}.meta.json`, en: `${OUT.free}/${ch.id}.en.json` };
 }
 
 type EmitInput = {
@@ -69,6 +70,8 @@ type EmitInput = {
   graphs: ReadonlyMap<ChapterId, ChapterGraph>;
   cast: Cast;
   names: StoryNames;
+  /** Per chapter, the English text of each of its line IDs (STAGING-DSL §4): shipped as `{ id: en }` beside it. */
+  en: ReadonlyMap<ChapterId, Readonly<Record<LineId, string>>>;
 };
 type Built = { ch: ChapterListEntry; compiled: CompiledChapter; graph: ChapterGraph; firstKnot: KnotName };
 
@@ -150,8 +153,8 @@ function fingerprints(built: readonly Built[]): LineFingerprints {
 
 /**
  * The output plan: repo-relative posix path → exact file text, for every chapter of the list (each compiled, with a
- * graph whose first knot is known: the CLI emits only when no error remains). Deterministic: the same inputs give
- * the same bytes.
+ * graph whose first knot is known and an en table: the CLI emits only when no error remains). Deterministic: the same
+ * inputs give the same bytes.
  */
 export function planEmit(input: EmitInput): ReadonlyMap<string, string> {
   const built: Built[] = input.chapters.map((ch) => {
@@ -172,11 +175,16 @@ export function planEmit(input: EmitInput): ReadonlyMap<string, string> {
   };
   for (const b of built) {
     const paths = chapterPaths(b.ch);
-    if (b.ch.paid && [paths.story, paths.meta].some((p) => p.startsWith('client/'))) {
+    if (b.ch.paid && [paths.story, paths.meta, paths.en].some((p) => p.startsWith('client/'))) {
       throw new Error(`invariant: paid chapter ${b.ch.id} is never routed under client/ (principle 0)`);
+    }
+    const en = input.en.get(b.ch.id);
+    if (en === undefined) {
+      throw new Error(`invariant: chapter ${b.ch.id} has its en table before emit`);
     }
     put(paths.story, b.compiled.json);
     put(paths.meta, pretty(meta(b)));
+    put(paths.en, pretty(en));
   }
   put(`${OUT.storyGen}/catalog.json`, pretty(catalog(built, input)));
   put(`${OUT.build}/usage.json`, pretty(usage(built)));
