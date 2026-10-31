@@ -80,6 +80,20 @@ pub enum PgDevError {
     Io(#[from] std::io::Error),
 }
 
+/// What [`DevCluster::ensure_up`] did, so a test can assert it without timing it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpOutcome {
+    /// A ready server of [`REQUIRED_MAJOR`] already served the port: nothing was spawned.
+    AlreadyUp,
+    /// This call started the server; `initdb` says whether this call's initdb created the data directory.
+    Started {
+        /// Whether this call's initdb result became the data directory.
+        initdb: bool,
+    },
+    /// A peer was bringing the server up; this call waited until it was ready.
+    JoinedPeer,
+}
+
 /// A database name pgdev may put into DDL: `^tgn_[a-z0-9_]{1,59}$` (at most 63 bytes, PostgreSQL's identifier
 /// limit). Identifiers cannot be bound as parameters, so this type is what keeps the DDL text injection-free.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,11 +107,7 @@ static NAME_COUNTER: AtomicU32 = AtomicU32::new(0);
 impl DbName {
     /// A fresh test database name, `tgn_t_<unix secs>_<8 hex>`. The epoch lets a sweep drop leftovers by age.
     pub fn for_test() -> DbName {
-        let salt = *PROCESS_SALT.get_or_init(|| {
-            getrandom::u32().expect(
-                "invariant: the OS random source works (ProcessPrng on Windows 10+ is documented never to fail)",
-            )
-        });
+        let salt = *PROCESS_SALT.get_or_init(random_u32);
         let suffix = salt.wrapping_add(NAME_COUNTER.fetch_add(1, Ordering::Relaxed));
         DbName(format!("tgn_t_{}_{suffix:08x}", unix_secs()))
     }
@@ -126,6 +136,13 @@ impl std::fmt::Display for DbName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }
+}
+
+/// 32 bits from the OS random source.
+fn random_u32() -> u32 {
+    getrandom::u32().expect(
+        "invariant: the OS random source works (ProcessPrng on Windows 10+ is documented never to fail)",
+    )
 }
 
 /// Seconds since the Unix epoch; 0 on a clock set before 1970.
