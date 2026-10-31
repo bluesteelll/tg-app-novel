@@ -450,7 +450,9 @@ function emitFixture(list: readonly ChapterListEntry[] = LIST): EmitFixture {
     compiled.set(ch.id, r.compiled);
     graphs.set(ch.id, buildGraph({ chapter: source, files: r.compiled.files, sources: EMIT_SOURCES, assets: COMMITTED.assets }).graph);
   }
-  return { plan: planEmit({ chapters: list, compiled, graphs, cast: COMMITTED.cast, names: NAMES }), compiled, graphs };
+  // The en text of each line is `en <id>`, as localeFiles() writes it.
+  const en = new Map(list.map((ch) => [ch.id, Object.fromEntries((graphs.get(ch.id)?.lines ?? []).map((l) => [l.id, `en ${l.id}`]))]));
+  return { plan: planEmit({ chapters: list, compiled, graphs, cast: COMMITTED.cast, names: NAMES, en }), compiled, graphs };
 }
 
 function planned(plan: ReadonlyMap<string, string>, path: string): string {
@@ -492,10 +494,12 @@ test('emit: free and paid outputs are routed apart', () => {
   const { plan, compiled } = emitFixture();
   expect([...plan.keys()].sort()).toEqual([
     'client/src/story-gen/catalog.json',
+    'client/src/story-gen/free/ch1.en.json',
     'client/src/story-gen/free/ch1.meta.json',
     'client/src/story-gen/free/ch1.story.json',
     'server/content/build/fingerprints.lines.json',
     'server/content/build/usage.json',
+    'server/content/chapters/ch2/en.json',
     'server/content/chapters/ch2/meta.json',
     'server/content/chapters/ch2/story.json',
   ]);
@@ -643,7 +647,12 @@ const STORY_SCRIPT = fileURLToPath(new URL('../story.ts', import.meta.url));
 const CLI_TIMEOUT_MS = 60_000;
 const CH1_LISTED = { id: 'ch1', entry: 'ch1/main.ink', paid: false, next: 'ch2' };
 const CH2_LISTED = { id: 'ch2', entry: 'ch2/main.ink', paid: true, productId: 'chapter:ch2', next: null };
-const CLIENT_OUTPUTS = ['client/src/story-gen/catalog.json', 'client/src/story-gen/free/ch1.meta.json', 'client/src/story-gen/free/ch1.story.json'];
+const CLIENT_OUTPUTS = [
+  'client/src/story-gen/catalog.json',
+  'client/src/story-gen/free/ch1.en.json',
+  'client/src/story-gen/free/ch1.meta.json',
+  'client/src/story-gen/free/ch1.story.json',
+];
 
 const EN_CH1_TABLE = 'story/locales/en/ch1.json';
 let localeTables: Readonly<Record<string, string>> | null = null;
@@ -785,6 +794,7 @@ test(
       expect(filesUnder(root, 'server')).toEqual([
         'server/content/build/fingerprints.lines.json',
         'server/content/build/usage.json',
+        'server/content/chapters/ch2/en.json',
         'server/content/chapters/ch2/meta.json',
         'server/content/chapters/ch2/story.json',
       ]);

@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 
 import { assetIndex, decodeChapterList } from '../src/story/catalog.ts';
 import type { Cast, CatalogIssue, ChapterListEntry } from '../src/story/catalog.ts';
-import type { AssetIndex, ChapterId } from '../src/story/staging.ts';
+import type { AssetIndex, ChapterId, LineId } from '../src/story/staging.ts';
 import { compileChapter } from './story/compile.ts';
 import type { CompiledChapter } from './story/compile.ts';
 import { OUT, decodeLineFingerprints, paidLeak, planEmit, storyVersion } from './story/emit.ts';
@@ -225,6 +225,22 @@ function fixPass(root: string, files: Map<string, string>, input: Omit<SourceLin
 }
 
 /**
+ * A chapter's shipped en table (STAGING-DSL §4): `{ id: en }` for each of its line IDs, in source order. Emit runs only
+ * without an error, and `loc/missing-en` / `loc/empty-en` are errors, so every ID has a non-empty text.
+ */
+function shippedEn(graph: ChapterGraph, table: EnTable | undefined): Record<LineId, string> {
+  const out: Record<LineId, string> = {};
+  for (const l of graph.lines) {
+    const text = table?.entries.get(l.id)?.en;
+    if (text === undefined || text.trim() === '') {
+      throw new Error(`invariant: a run with no error has an en text for ${l.id}`);
+    }
+    out[l.id] = text;
+  }
+  return out;
+}
+
+/**
  * Stage 6 (STAGING-DSL §11 "Seeded playthroughs"): every listed chapter in list order, seeded from its predecessor's
  * carries. A chapter is played only if it compiled with a first knot, no error of the lint, compile or graph stage
  * names one of its files (`sourceErrors`, read before `--strict`), and its predecessor, if any, was played: a play
@@ -408,7 +424,11 @@ export function main(argv: readonly string[], repoRoot: string): number {
     if (names === null) {
       throw new Error('invariant: a run with no error has names');
     }
-    const plan = planEmit({ chapters, compiled, graphs, cast, names });
+    const en = new Map(chapters.flatMap((ch) => {
+      const g = graphs.get(ch.id);
+      return g === undefined ? [] : [[ch.id, shippedEn(g, localized?.en.get(ch.id))] as const];
+    }));
+    const plan = planEmit({ chapters, compiled, graphs, cast, names, en });
     deleteStale(root, chapters);
     write(root, plan);
     const fp = decodeLineFingerprints(JSON.parse(plan.get(`${OUT.build}/fingerprints.lines.json`) ?? 'null'));

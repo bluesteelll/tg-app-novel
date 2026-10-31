@@ -13,9 +13,13 @@ import { assetIndex, decodeAssetCatalog, decodeCast, decodeChapterCatalog } from
 import type { Cast, ChapterListEntry } from '../../src/story/catalog.ts';
 import type { AssetIndex, ChapterId, LineId, ProductId } from '../../src/story/staging.ts';
 import { LINE_ID_RE } from '../../src/story/tags.ts';
+import { compileChapter } from './compile.ts';
+import type { CompiledChapter } from './compile.ts';
+import { decodeLineFingerprints, paidLeak, planEmit } from './emit.ts';
 import type { StoryNames } from './emit.ts';
 import { fixIds, syncLocales } from './fix.ts';
 import type { FixIdsInput, IdTarget } from './fix.ts';
+import { buildGraph } from './graph.ts';
 import type { ChapterGraph, StoryLine } from './graph.ts';
 import { GLOBALS_PATH, lintSources } from './lint.ts';
 import type { Finding, LintCode, SourceChapter } from './lint.ts';
@@ -533,6 +537,55 @@ test(
   },
   CLI_TIMEOUT_MS,
 );
+
+test('emit: en tables routed with their chapters', () => {
+  const files = new Map([
+    [GLOBALS_PATH, 'VAR g_trust = 0\n'],
+    ['ch1/main.ink', CH1_INK],
+    ['ch2/main.ink', CH2_INK],
+  ]);
+  const compiled = new Map<ChapterId, CompiledChapter>();
+  const graphs = new Map<ChapterId, ChapterGraph>();
+  for (const ch of [CH1_ENTRY, CH2_ENTRY]) {
+    const source: SourceChapter = { id: ch.id, paid: ch.paid, entry: ch.entry };
+    const r = compileChapter(source, (key) => files.get(key) ?? null);
+    if (r.compiled === null) {
+      throw new Error(`invariant: the repo fixture compiles: ${JSON.stringify(r.findings)}`);
+    }
+    compiled.set(ch.id, r.compiled);
+    graphs.set(ch.id, buildGraph({ chapter: source, files: r.compiled.files, sources: files, assets: COMMITTED.assets }).graph);
+  }
+  const names = locales().names;
+  if (names === null) {
+    throw new Error('invariant: the default locale fixture has names');
+  }
+  const shipped = (t: Readonly<Record<string, { ru: string; en: string }>>): Record<LineId, string> =>
+    Object.fromEntries(Object.entries(t).map(([id, e]) => [id, e.en])) as Record<LineId, string>; // the keys are line IDs
+  const en = new Map([
+    [CH1_ENTRY.id, shipped(REPO_EN_CH1)],
+    [CH2_ENTRY.id, shipped(REPO_EN_CH2)],
+  ]);
+  const input = { chapters: [CH1_ENTRY, CH2_ENTRY], compiled, graphs, cast: COMMITTED.cast, names, en };
+  const plan = planEmit(input);
+  expect([...plan.keys()]).toContain('client/src/story-gen/free/ch1.en.json');
+  expect([...plan.keys()]).toContain('server/content/chapters/ch2/en.json');
+  expect([...plan.keys()].filter((p) => p.startsWith('client/') && p.includes('ch2'))).toEqual([]);
+  // The shipped shape is { id: en }, keyed by the chapter's own line IDs.
+  const free = JSON.parse(plan.get('client/src/story-gen/free/ch1.en.json') ?? '{}') as Record<string, unknown>; // checked just below
+  expect(free).toEqual({ 'ch1.cafe.a001': 'Hi.', 'ch1.cafe.a002': 'Stay.', 'ch1.cafe.a003': 'Leave.', 'ch1.street.a004': 'The street.' });
+  const ch1Ids = new Set<string>((graphs.get(CH1_ENTRY.id)?.lines ?? []).map((l) => l.id));
+  expect(Object.keys(free).filter((id) => !ch1Ids.has(id))).toEqual([]);
+  expect(plan.get('server/content/chapters/ch2/en.json')).toBe(`${JSON.stringify({ 'ch2.archive.b001': 'Thanks.', 'ch2.archive.b002': "We'll see." }, null, 2)}\n`);
+  // A paid table routed into story-gen is a paid leak.
+  const fp = decodeLineFingerprints(JSON.parse(plan.get('server/content/build/fingerprints.lines.json') ?? 'null'));
+  if (!fp.ok) {
+    throw new Error(`invariant: the planned fingerprints decode: ${fp.error.join('; ')}`);
+  }
+  const leaked = new Map([['client/src/story-gen/free/ch2.en.json', plan.get('server/content/chapters/ch2/en.json') ?? '']]);
+  expect(paidLeak(leaked, fp.value)).toContainEqual(expect.objectContaining({ code: 'paid/leak', file: 'client/src/story-gen/free/ch2.en.json', message: expect.stringContaining("'ch2.archive.b001'") }));
+  // Every chapter of the list has a table on an emitting run.
+  expect(() => planEmit({ ...input, en: new Map([[CH1_ENTRY.id, shipped(REPO_EN_CH1)]]) })).toThrow(/^invariant: /);
+});
 
 test(
   'story: coverage report lists seeds and endings per chapter',
