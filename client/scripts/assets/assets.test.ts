@@ -6,6 +6,7 @@ import type { CatalogImage, CatalogIssue } from '../../src/story/catalog.ts';
 import type { AssetId } from '../../src/story/staging.ts';
 import { encodeImage } from './encode.ts';
 import { renderPlaceholder } from './placeholder.ts';
+import { synthWav } from './synth.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
 // The catalog entry schema (assets/catalog.json): seven namespaces, every entry a placeholder's parameters.
@@ -208,5 +209,55 @@ describe('encode', () => {
       h: 640,
     });
     expect(await dims(e.webp)).toEqual({ w: 360, h: 640, format: 'webp' });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Synth (synth.ts): placeholder WAV, 22.05 kHz mono 16-bit PCM.
+
+describe('synth', () => {
+  test('synth: wav header bytes', () => {
+    const { wav } = synthWav('sfx', { hz: 440 });
+    const header = wav.subarray(0, 44);
+    expect(header.length).toBe(44);
+    const view = new DataView(wav.buffer, wav.byteOffset, wav.byteLength);
+    const ascii = (offset: number): string => String.fromCharCode(...wav.subarray(offset, offset + 4));
+    const dataLen = wav.length - 44;
+    expect(dataLen).toBe(26_460);
+    expect(ascii(0)).toBe('RIFF');
+    expect(view.getUint32(4, true)).toBe(36 + dataLen);
+    expect(ascii(8)).toBe('WAVE');
+    expect(ascii(12)).toBe('fmt ');
+    expect(view.getUint32(16, true)).toBe(16); // PCM fmt chunk size
+    expect(view.getUint16(20, true)).toBe(1); // PCM
+    expect(view.getUint16(22, true)).toBe(1); // mono
+    expect(view.getUint32(24, true)).toBe(22_050); // sample rate
+    expect(view.getUint32(28, true)).toBe(44_100); // byte rate = rate × block align
+    expect(view.getUint16(32, true)).toBe(2); // block align
+    expect(view.getUint16(34, true)).toBe(16); // bits per sample
+    expect(ascii(36)).toBe('data');
+    expect(view.getUint32(40, true)).toBe(dataLen);
+  });
+
+  test('synth: placeholder sizes and durations', () => {
+    const bgm = synthWav('bgm', { hz: 220 });
+    expect({ bytes: bgm.wav.length, durationMs: bgm.durationMs }).toEqual({ bytes: 352_844, durationMs: 8_000 });
+    expect(bgm.wav.length).toBeLessThanOrEqual(400_000); // K23: a placeholder BGM WAV fits the 400 KB rule
+    const sfx = synthWav('sfx', { hz: 440 });
+    expect({ bytes: sfx.wav.length, durationMs: sfx.durationMs }).toEqual({ bytes: 26_504, durationMs: 600 });
+    // The tone fades in and out (no click on a loop) and stays inside 16-bit range; it is deterministic per tone.
+    const view = new DataView(bgm.wav.buffer, bgm.wav.byteOffset, bgm.wav.byteLength);
+    const sample = (i: number): number => view.getInt16(44 + 2 * i, true);
+    const last = (bgm.wav.length - 44) / 2 - 1;
+    expect([sample(0), sample(last)]).toEqual([0, 0]);
+    let peak = 0;
+    for (let i = 0; i <= last; i++) {
+      peak = Math.max(peak, Math.abs(sample(i)));
+    }
+    expect(peak).toBeGreaterThan(8_000);
+    expect(peak).toBeLessThan(32_767);
+    // Buffer.compare: a deep toEqual over 352,844 elements takes seconds.
+    expect(Buffer.compare(synthWav('bgm', { hz: 220 }).wav, bgm.wav)).toBe(0);
+    expect(Buffer.compare(synthWav('bgm', { hz: 247 }).wav, bgm.wav)).not.toBe(0);
   });
 });
