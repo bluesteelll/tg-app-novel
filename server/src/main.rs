@@ -5,7 +5,7 @@
 use std::process::ExitCode;
 
 use server::config::Config;
-use server::{AppState, build_router};
+use server::{AppState, build_router, db};
 use tokio::net::TcpListener;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
@@ -32,11 +32,8 @@ async fn serve() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    // A relative DATABASE_PATH resolves against the working directory; the absolute path in the log shows which
-    // file a start from the wrong directory created.
-    let database =
-        std::path::absolute(&cfg.database_path).unwrap_or_else(|_| cfg.database_path.clone());
-    info!(database = %database.display(), "opening database");
+    // The target only (host:port/database): DATABASE_URL may hold a password, so it is never logged.
+    info!(database = %db::database_target(&cfg.database_url), "opening database");
     let listen_addr = cfg.listen_addr;
     let state = match AppState::new(cfg).await {
         Ok(state) => state,
@@ -47,7 +44,7 @@ async fn serve() -> ExitCode {
     };
     let repo = state.repo.clone();
     let result = run(listen_addr, state).await;
-    // The pool lives until the server has stopped; close it so WAL is checkpointed and the files released.
+    // The pool lives until the server has stopped; close it so the pool closes its connections.
     repo.close().await;
     match result {
         Ok(()) => ExitCode::SUCCESS,

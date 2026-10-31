@@ -1,15 +1,17 @@
-//! The `server-dev` binary: the dev app on `127.0.0.1:$DEV_API_PORT` (default 8787), on a fresh database per launch
-//! at `<workspace root>/target/e2e/dev.db`. Dev only: it runs on the public placeholder secrets.
+//! The `server-dev` binary: the dev app on `127.0.0.1:$DEV_API_PORT` (default 8787), on a fresh database
+//! `tgn_dev_<port>` per launch on the pgdev cluster (`DEV_PG_PORT`, `DEV_PG_ROOT`, `PG_BIN`). Dev only: it runs on the
+//! public placeholder secrets.
 
 #![forbid(unsafe_code)]
 
 use std::env::VarError;
-use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use server_dev::{DevPaths, build_dev_app};
+use pgdev::{DbName, DevCluster, PgDevError};
+use server::db::database_target;
+use server_dev::{DevPaths, build_dev_app, launch_database};
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -35,8 +37,8 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    // Bind before touching the database: a second instance on the same port exits here, before it deletes the
-    // files of the instance already serving them.
+    // Bind before touching the database: a second instance on the same port exits here, before it recreates the
+    // database the serving instance uses.
     let listener = match TcpListener::bind(addr).await {
         Ok(listener) => listener,
         Err(e) => {
@@ -44,13 +46,19 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let paths = default_paths();
-    if let Err(e) = fresh_db(&paths.db).await {
-        error!("cannot reset the dev database: {e}");
-        return ExitCode::FAILURE;
-    }
+    let database_url = match fresh_database(&dev_database(addr)).await {
+        Ok(url) => url,
+        Err(e) => {
+            error!("cannot reset the dev database: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     warn!("dev only: public placeholder secrets, loopback only");
-    info!(database = %paths.db.display(), "opening database");
+    info!(database = %database_target(&database_url), "opening database");
+    let paths = DevPaths {
+        database_url,
+        content: content_dir(),
+    };
     let app = match build_dev_app(paths).await {
         Ok(app) => app,
         Err(e) => {
@@ -86,6 +94,19 @@ fn dev_addr(port: Option<&str>) -> Result<SocketAddr, &'static str> {
     Ok(SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
 }
 
+/// The database of the dev server listening on `addr`, `tgn_dev_<port>`: two dev servers on one cluster never share
+/// one.
+fn dev_database(addr: SocketAddr) -> DbName {
+    DbName::for_dev(addr.port())
+}
+
+/// Brings the cluster the environment names up (if it is down) and recreates `name` on it empty; returns its URL.
+async fn fresh_database(name: &DbName) -> Result<String, PgDevError> {
+    let cluster = DevCluster::from_env()?;
+    cluster.ensure_up().await?;
+    launch_database(&cluster, name).await
+}
+
 /// The workspace root, fixed at compile time (two levels above `server/dev`), so no path depends on the working
 /// directory the binary was started from.
 fn workspace_root() -> PathBuf {
@@ -96,36 +117,9 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// `target/e2e/dev.db` and the generated `server/content`, both under the workspace root.
-fn default_paths() -> DevPaths {
-    let root = workspace_root();
-    DevPaths {
-        db: root.join("target").join("e2e").join("dev.db"),
-        content: root.join("server").join("content"),
-    }
-}
-
-/// Creates `db`'s directory and removes the database with its `-wal` and `-shm` files, so every launch starts on an
-/// empty database. A file that is already absent is fine; any other failure names the file.
-async fn fresh_db(db: &Path) -> io::Result<()> {
-    if let Some(dir) = db.parent() {
-        tokio::fs::create_dir_all(dir)
-            .await
-            .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", dir.display())))?;
-    }
-    for suffix in ["", "-wal", "-shm"] {
-        let mut file = db.as_os_str().to_owned();
-        file.push(suffix);
-        match tokio::fs::remove_file(&file).await {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => {
-                let file = Path::new(&file).display();
-                return Err(io::Error::new(e.kind(), format!("{file}: {e}")));
-            }
-        }
-    }
-    Ok(())
+/// The generated `server/content` under the workspace root.
+fn content_dir() -> PathBuf {
+    workspace_root().join("server").join("content")
 }
 
 async fn shutdown_signal() {
@@ -168,41 +162,20 @@ mod tests {
         report(&failures);
     }
 
-    #[tokio::test]
-    async fn fresh_db_creates_dir_and_removes_files() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("e2e");
-        let db = dir.join("dev.db");
+    /// The database follows the port the binary actually listens on, through `main`'s own mapping.
+    #[test]
+    fn dev_database_name_follows_api_port() {
         let mut failures = Vec::new();
-        if let Err(e) = fresh_db(&db).await {
-            failures.push(format!("missing directory: expected Ok, got {e}"));
-        }
-        if !dir.is_dir() {
-            failures.push(format!(
-                "{}: expected a directory after fresh_db, absent",
-                dir.display()
-            ));
-        }
-        // The removal checks below stand on their own even when the directory step failed.
-        tokio::fs::create_dir_all(&dir).await.unwrap();
-        for name in ["dev.db", "dev.db-wal", "dev.db-shm", "keep.txt"] {
-            tokio::fs::write(dir.join(name), b"not a database\n")
-                .await
-                .unwrap();
-        }
-        if let Err(e) = fresh_db(&db).await {
-            failures.push(format!("files present: expected Ok, got {e}"));
-        }
-        for name in ["dev.db", "dev.db-wal", "dev.db-shm"] {
-            if dir.join(name).exists() {
-                failures.push(format!("{name}: expected removed, still present"));
+        for (port, want) in [(Some("8797"), "tgn_dev_8797"), (None, "tgn_dev_8787")] {
+            match dev_addr(port) {
+                Ok(addr) => {
+                    let got = dev_database(addr);
+                    if got.as_str() != want {
+                        failures.push(format!("DEV_API_PORT {port:?}: expected {want}, got {got}"));
+                    }
+                }
+                Err(e) => failures.push(format!("DEV_API_PORT {port:?}: expected Ok, got {e}")),
             }
-        }
-        if !dir.join("keep.txt").is_file() {
-            failures.push("keep.txt: expected kept, removed".to_owned());
-        }
-        if let Err(e) = fresh_db(&db).await {
-            failures.push(format!("already emptied: expected Ok, got {e}"));
         }
         report(&failures);
     }
@@ -224,21 +197,12 @@ mod tests {
                 failures.push(format!("{}: expected a file", path.display()));
             }
         }
-        let paths = default_paths();
-        let db = root.join("target").join("e2e").join("dev.db");
-        if paths.db != db {
-            failures.push(format!(
-                "db: expected {}, got {}",
-                db.display(),
-                paths.db.display()
-            ));
-        }
         let content = root.join("server").join("content");
-        if paths.content != content {
+        if content_dir() != content {
             failures.push(format!(
                 "content: expected {}, got {}",
                 content.display(),
-                paths.content.display()
+                content_dir().display()
             ));
         }
         report(&failures);

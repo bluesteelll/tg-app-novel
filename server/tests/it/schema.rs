@@ -4,20 +4,34 @@
 
 use std::path::{Path, PathBuf};
 
-use sqlx::sqlite::{SqliteConnection, SqliteQueryResult};
+use sqlx::PgConnection;
+use sqlx::postgres::PgQueryResult;
 
 use crate::common;
 
-type Res = Result<SqliteQueryResult, sqlx::Error>;
+type Res = Result<PgQueryResult, sqlx::Error>;
 
-/// `Ok` when `res` is a database error whose message contains `needle`.
-fn expect_err(case: &str, res: Res, needle: &str) -> Result<(), String> {
+/// `Ok` when `res` is a database error with SQLSTATE `want.0` on the constraint named `want.1`. Never the message
+/// text: the server's locale decides it.
+fn expect_err(case: &str, res: Res, want: (&str, &str)) -> Result<(), String> {
+    let (code, constraint) = want;
     match res {
-        Err(sqlx::Error::Database(e)) if e.message().contains(needle) => Ok(()),
-        Err(e) => Err(format!(
-            "case {case}: expected an error containing {needle:?}, got {e}"
+        Err(sqlx::Error::Database(e))
+            if e.code().as_deref() == Some(code) && e.constraint() == Some(constraint) =>
+        {
+            Ok(())
+        }
+        Err(sqlx::Error::Database(e)) => Err(format!(
+            "case {case}: expected ({code}, {constraint}), got ({}, {}) {e}",
+            e.code().as_deref().unwrap_or("no code"),
+            e.constraint().unwrap_or("no constraint")
         )),
-        Ok(_) => Err(format!("case {case}: expected {needle:?}, got Ok")),
+        Err(e) => Err(format!(
+            "case {case}: expected ({code}, {constraint}), got {e}"
+        )),
+        Ok(_) => Err(format!(
+            "case {case}: expected ({code}, {constraint}), got Ok"
+        )),
     }
 }
 
@@ -35,15 +49,15 @@ fn report(failures: &[String]) {
     );
 }
 
-async fn user(c: &mut SqliteConnection, id: i64) -> Res {
-    sqlx::query("INSERT INTO users (id, first_name, language_code, created_at, last_seen_at) VALUES (?, 'U', NULL, 0, 0)")
+async fn user(c: &mut PgConnection, id: i64) -> Res {
+    sqlx::query("INSERT INTO users (id, first_name, language_code, created_at, last_seen_at) VALUES ($1, 'U', NULL, 0, 0)")
         .bind(id)
         .execute(&mut *c)
         .await
 }
 
 async fn payment(
-    c: &mut SqliteConnection,
+    c: &mut PgConnection,
     charge: &str,
     amount: i64,
     paid_at: i64,
@@ -51,7 +65,7 @@ async fn payment(
 ) -> Res {
     sqlx::query(
         "INSERT INTO payments (telegram_payment_charge_id, invoice_payload, user_id, amount, currency, \
-         provider_payment_charge_id, paid_at, refunded_at) VALUES (?, 'payload', 1, ?, 'XTR', '', ?, ?)",
+         provider_payment_charge_id, paid_at, refunded_at) VALUES ($1, 'payload', 1, $2, 'XTR', '', $3, $4)",
     )
     .bind(charge)
     .bind(amount)
@@ -84,10 +98,10 @@ fn created(id: &str) -> Order<'_> {
     }
 }
 
-async fn order(c: &mut SqliteConnection, o: Order<'_>) -> Res {
+async fn order(c: &mut PgConnection, o: Order<'_>) -> Res {
     sqlx::query(
         "INSERT INTO orders (id, user_id, product_id, amount, currency, status, invoice_url, created_at, \
-         checkout_at, paid_at, charge_id) VALUES (?, 1, 'p1', ?, ?, ?, NULL, 0, ?, ?, ?)",
+         checkout_at, paid_at, charge_id) VALUES ($1, 1, 'p1', $2, $3, $4, NULL, 0, $5, $6, $7)",
     )
     .bind(o.id)
     .bind(o.amount)
@@ -100,9 +114,9 @@ async fn order(c: &mut SqliteConnection, o: Order<'_>) -> Res {
     .await
 }
 
-async fn entitlement(c: &mut SqliteConnection, product: &str, charge: &str) -> Res {
+async fn entitlement(c: &mut PgConnection, product: &str, charge: &str) -> Res {
     sqlx::query(
-        "INSERT INTO entitlements (user_id, product_id, charge_id, granted_at) VALUES (1, ?, ?, 0)",
+        "INSERT INTO entitlements (user_id, product_id, charge_id, granted_at) VALUES (1, $1, $2, 0)",
     )
     .bind(product)
     .bind(charge)
@@ -110,10 +124,10 @@ async fn entitlement(c: &mut SqliteConnection, product: &str, charge: &str) -> R
     .await
 }
 
-async fn save(c: &mut SqliteConnection, slot: &str, rev: i64, body: &str) -> Res {
+async fn save(c: &mut PgConnection, slot: &str, rev: i64, body: &str) -> Res {
     sqlx::query(
         "INSERT INTO saves (user_id, slot, rev, chapter_id, story_version, line_id, write_id, body, saved_at) \
-         VALUES (1, ?, ?, 'ch1', 'v1', NULL, 'w1', ?, 0)",
+         VALUES (1, $1, $2, 'ch1', 'v1', NULL, 'w1', $3, 0)",
     )
     .bind(slot)
     .bind(rev)
@@ -122,14 +136,14 @@ async fn save(c: &mut SqliteConnection, slot: &str, rev: i64, body: &str) -> Res
     .await
 }
 
-/// A JSON string literal of exactly `len` ASCII characters (SQLite's `length()` counts characters).
+/// A JSON string literal of exactly `len` ASCII characters, so `len` bytes (`octet_length()` counts bytes).
 fn json_string_of_len(len: usize) -> String {
     format!("\"{}\"", "a".repeat(len - 2))
 }
 
 #[tokio::test]
 async fn schema_charge_id_unique() {
-    let (st, _dir) = common::test_state().await;
+    let (st, _db) = common::test_state().await;
     let mut c = common::raw_db(&st).await;
     let mut failures = Vec::new();
     failures.extend(expect_ok("setup user", user(&mut c, 1).await).err());
@@ -137,14 +151,7 @@ async fn schema_charge_id_unique() {
     failures.extend(expect_ok("payment c1", payment(&mut c, "c1", 50, 100, None).await).err());
     failures.extend(expect_ok("payment c2", payment(&mut c, "c2", 50, 100, None).await).err());
     let res = payment(&mut c, "c1", 50, 100, None).await;
-    failures.extend(
-        expect_err(
-            "payments_pk",
-            res,
-            "UNIQUE constraint failed: payments.telegram_payment_charge_id",
-        )
-        .err(),
-    );
+    failures.extend(expect_err("payments_pk", res, ("23505", "payments_pkey")).err());
 
     failures.extend(expect_ok("entitlement p1 c1", entitlement(&mut c, "p1", "c1").await).err());
     let res = entitlement(&mut c, "p2", "c1").await;
@@ -152,7 +159,7 @@ async fn schema_charge_id_unique() {
         expect_err(
             "entitlements_charge",
             res,
-            "UNIQUE constraint failed: entitlements.charge_id",
+            ("23505", "entitlements_charge_key"),
         )
         .err(),
     );
@@ -169,14 +176,7 @@ async fn schema_charge_id_unique() {
     }
     failures.extend(expect_ok("order o1 c1", order(&mut c, paid("o1", "c1")).await).err());
     let res = order(&mut c, paid("o2", "c1")).await;
-    failures.extend(
-        expect_err(
-            "orders_charge",
-            res,
-            "UNIQUE constraint failed: orders.charge_id",
-        )
-        .err(),
-    );
+    failures.extend(expect_err("orders_charge", res, ("23505", "orders_charge_key")).err());
     failures.extend(expect_ok("order o2 c2", order(&mut c, paid("o2", "c2")).await).err());
 
     report(&failures);
@@ -184,7 +184,7 @@ async fn schema_charge_id_unique() {
 
 #[tokio::test]
 async fn schema_order_status_check() {
-    let (st, _dir) = common::test_state().await;
+    let (st, _db) = common::test_state().await;
     let mut c = common::raw_db(&st).await;
     let mut failures = Vec::new();
     failures.extend(expect_ok("setup user", user(&mut c, 1).await).err());
@@ -204,6 +204,7 @@ async fn schema_order_status_check() {
                 status: "bogus",
                 ..created("o3")
             },
+            "orders_status_known",
         ),
         (
             "checkout without checkout_at",
@@ -211,6 +212,7 @@ async fn schema_order_status_check() {
                 status: "checkout",
                 ..created("o4")
             },
+            "orders_checkout_has_time",
         ),
         (
             "currency USD",
@@ -218,6 +220,7 @@ async fn schema_order_status_check() {
                 currency: "USD",
                 ..created("o5")
             },
+            "orders_currency_xtr",
         ),
         (
             "amount 0",
@@ -225,11 +228,12 @@ async fn schema_order_status_check() {
                 amount: 0,
                 ..created("o6")
             },
+            "orders_amount_positive",
         ),
     ];
-    for (case, o) in cases {
+    for (case, o, constraint) in cases {
         let res = order(&mut c, o).await;
-        failures.extend(expect_err(case, res, "CHECK constraint failed").err());
+        failures.extend(expect_err(case, res, ("23514", constraint)).err());
     }
 
     report(&failures);
@@ -237,7 +241,7 @@ async fn schema_order_status_check() {
 
 #[tokio::test]
 async fn schema_paid_requires_charge() {
-    let (st, _dir) = common::test_state().await;
+    let (st, _db) = common::test_state().await;
     let mut c = common::raw_db(&st).await;
     let mut failures = Vec::new();
     failures.extend(expect_ok("setup user", user(&mut c, 1).await).err());
@@ -288,7 +292,7 @@ async fn schema_paid_requires_charge() {
     ];
     for (case, o) in cases {
         let res = order(&mut c, o).await;
-        failures.extend(expect_err(case, res, "CHECK constraint failed").err());
+        failures.extend(expect_err(case, res, ("23514", "orders_paid_has_charge")).err());
     }
 
     failures.extend(
@@ -299,16 +303,30 @@ async fn schema_paid_requires_charge() {
         .err(),
     );
     let res = payment(&mut c, "c5", 0, 100, None).await;
-    failures.extend(expect_err("payment amount 0", res, "CHECK constraint failed").err());
+    failures.extend(
+        expect_err(
+            "payment amount 0",
+            res,
+            ("23514", "payments_amount_positive"),
+        )
+        .err(),
+    );
     let res = payment(&mut c, "c6", 50, 100, Some(99)).await;
-    failures.extend(expect_err("refunded_at before paid_at", res, "CHECK constraint failed").err());
+    failures.extend(
+        expect_err(
+            "refunded_at before paid_at",
+            res,
+            ("23514", "payments_refunded_after_paid"),
+        )
+        .err(),
+    );
 
     report(&failures);
 }
 
 #[tokio::test]
 async fn schema_save_body_json_valid() {
-    let (st, _dir) = common::test_state().await;
+    let (st, _db) = common::test_state().await;
     let mut c = common::raw_db(&st).await;
     let mut failures = Vec::new();
     failures.extend(expect_ok("setup user", user(&mut c, 1).await).err());
@@ -317,7 +335,7 @@ async fn schema_save_body_json_valid() {
     let at_limit = json_string_of_len(262_144);
     failures.extend(
         expect_ok(
-            "body of 262144 characters",
+            "body of 262144 bytes",
             save(&mut c, "s1", 1, &at_limit).await,
         )
         .err(),
@@ -325,14 +343,20 @@ async fn schema_save_body_json_valid() {
 
     let over_limit = json_string_of_len(262_145);
     let cases = [
-        ("body not json", "s2", 1, "not json"),
-        ("body of 262145 characters", "s3", 1, over_limit.as_str()),
-        ("slot x", "x", 1, "{}"),
-        ("rev 0", "s2", 0, "{}"),
+        ("body not json", "s2", 1, "not json", "saves_body_json"),
+        (
+            "body of 262145 bytes",
+            "s3",
+            1,
+            over_limit.as_str(),
+            "saves_body_size",
+        ),
+        ("slot x", "x", 1, "{}", "saves_slot_known"),
+        ("rev 0", "s2", 0, "{}", "saves_rev_positive"),
     ];
-    for (case, slot, rev, body) in cases {
+    for (case, slot, rev, body, constraint) in cases {
         let res = save(&mut c, slot, rev, body).await;
-        failures.extend(expect_err(case, res, "CHECK constraint failed").err());
+        failures.extend(expect_err(case, res, ("23514", constraint)).err());
     }
 
     report(&failures);
@@ -445,32 +469,47 @@ fn no_dynamic_sql() {
     );
 }
 
-/// The app pool's connections run a file database in WAL with synchronous=FULL, foreign keys and a 5 s busy
-/// timeout. (The -wal file itself is not asserted: SQLite deletes it when the last connection closes.)
+/// The app pool's sessions run on the pinned settings, on a test database whose own defaults are hostile
+/// (`synchronous_commit = off`, `default_transaction_isolation = 'repeatable read'`): each pinned value differs from
+/// the database's effective default, so dropping any pin reds its line here.
 #[tokio::test]
-async fn wal_mode_on_file_db() {
-    let (st, _dir) = common::test_state().await;
-    let got = st.repo.pragmas().await.unwrap();
+async fn pool_session_settings() {
+    let (st, _db) = common::test_state().await;
+    let got = st.repo.session_settings().await.unwrap();
     let mut failures = Vec::new();
-    if got.journal_mode != "wal" {
-        failures.push(format!(
-            "journal_mode: expected \"wal\", got {:?}",
-            got.journal_mode
-        ));
+    for (setting, want, value) in [
+        ("synchronous_commit", "on", got.synchronous_commit.as_str()),
+        (
+            "default_transaction_isolation",
+            "read committed",
+            got.default_transaction_isolation.as_str(),
+        ),
+        (
+            "transaction_isolation",
+            "read committed",
+            got.transaction_isolation.as_str(),
+        ),
+        ("lock_timeout", "2s", got.lock_timeout.as_str()),
+        ("statement_timeout", "15s", got.statement_timeout.as_str()),
+        (
+            "idle_in_transaction_session_timeout",
+            "30s",
+            got.idle_in_transaction_session_timeout.as_str(),
+        ),
+        (
+            "application_name",
+            "tg-novel-server",
+            got.application_name.as_str(),
+        ),
+    ] {
+        if value != want {
+            failures.push(format!("{setting}: expected {want}, got {value}"));
+        }
     }
-    if got.synchronous != 2 {
+    if got.server_version_num / 10_000 != 18 {
         failures.push(format!(
-            "synchronous: expected 2 (FULL), got {}",
-            got.synchronous
-        ));
-    }
-    if !got.foreign_keys {
-        failures.push("foreign_keys: expected true, got false".to_owned());
-    }
-    if got.busy_timeout_ms != 5000 {
-        failures.push(format!(
-            "busy_timeout_ms: expected 5000, got {}",
-            got.busy_timeout_ms
+            "server_version_num: expected major 18, got {}",
+            got.server_version_num
         ));
     }
     report(&failures);

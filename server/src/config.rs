@@ -8,6 +8,8 @@ use std::net::{IpAddr, SocketAddr};
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
 
+use crate::db;
+
 /// `BOT_TOKEN` as committed in `.env.example`; the integration tests sign with it too.
 pub const PLACEHOLDER_BOT_TOKEN: &str = "1000000001:placeholder-bot-token-not-a-real-one";
 /// `WEBHOOK_SECRET` as committed in `.env.example`.
@@ -46,8 +48,8 @@ pub struct Config {
     pub static_dir: Option<PathBuf>,
     /// `CONTENT_DIR`: the paid content loaded at startup.
     pub content_dir: PathBuf,
-    /// `DATABASE_PATH`: the SQLite database file.
-    pub database_path: PathBuf,
+    /// `DATABASE_URL`: the PostgreSQL database, checked by [`db::check_database_url`]. Secret: it may hold a password.
+    pub database_url: String,
     /// `TELEGRAM_ENV`: `prod` or `test`.
     pub telegram_env: TelegramEnv,
     /// `LISTEN_ADDR`: the HTTP listen address (default `127.0.0.1:8787`).
@@ -75,7 +77,7 @@ impl fmt::Debug for Config {
             .field("admin_telegram_ids", &self.admin_telegram_ids)
             .field("static_dir", &self.static_dir)
             .field("content_dir", &self.content_dir)
-            .field("database_path", &self.database_path)
+            .field("database_url", &Redacted)
             .field("telegram_env", &self.telegram_env)
             .field("listen_addr", &self.listen_addr)
             .finish()
@@ -157,7 +159,9 @@ impl Config {
         let admin_telegram_ids = scan.optional("ADMIN_TELEGRAM_IDS", Vec::new(), parse_admin_ids);
         let static_dir = scan.optional("STATIC_DIR", None, |v| Ok(Some(PathBuf::from(v))));
         let content_dir = scan.required("CONTENT_DIR", |v| Ok(PathBuf::from(v)));
-        let database_path = scan.required("DATABASE_PATH", |v| Ok(PathBuf::from(v)));
+        let database_url = scan.required("DATABASE_URL", |v| {
+            db::check_database_url(v).map(|()| v.to_owned())
+        });
         let listen_addr = scan.optional(
             "LISTEN_ADDR",
             SocketAddr::from(([127, 0, 0, 1], 8787)),
@@ -194,7 +198,7 @@ impl Config {
             Some(admin_telegram_ids),
             Some(static_dir),
             Some(content_dir),
-            Some(database_path),
+            Some(database_url),
             Some(listen_addr),
         ) = (
             bot_token,
@@ -207,7 +211,7 @@ impl Config {
             admin_telegram_ids,
             static_dir,
             content_dir,
-            database_path,
+            database_url,
             listen_addr,
         )
         else {
@@ -231,7 +235,7 @@ impl Config {
             admin_telegram_ids,
             static_dir,
             content_dir,
-            database_path,
+            database_url,
             telegram_env,
             listen_addr,
         })
@@ -430,7 +434,7 @@ mod tests {
             ("TOKEN_KEY", "ab".repeat(32)),
             ("PUBLIC_APP_URL", "https://example.invalid/".to_owned()),
             ("CONTENT_DIR", "content".to_owned()),
-            ("DATABASE_PATH", "server.db".to_owned()),
+            ("DATABASE_URL", "postgres://u@127.0.0.1:5487/x".to_owned()),
             ("TELEGRAM_ENV", "test".to_owned()),
         ]
         .into_iter()
@@ -576,7 +580,7 @@ mod tests {
             "TOKEN_KEY",
             "PUBLIC_APP_URL",
             "CONTENT_DIR",
-            "DATABASE_PATH",
+            "DATABASE_URL",
             "TELEGRAM_ENV",
         ]);
         if got.len() != 7
@@ -591,7 +595,7 @@ mod tests {
 
         // (b) One fault on a valid base: exactly one Invalid problem naming that variable.
         let long_secret = "s".repeat(257);
-        let single: [(&str, &[(&str, &str)]); 13] = [
+        let single: [(&str, &[(&str, &str)]); 15] = [
             ("TOKEN_TTL_SECS", &[("TOKEN_TTL_SECS", "899")]),
             ("TOKEN_TTL_SECS", &[("TOKEN_TTL_SECS", "3601")]),
             ("INITDATA_MAX_AGE_SECS", &[("INITDATA_MAX_AGE_SECS", "0")]),
@@ -626,6 +630,8 @@ mod tests {
             ),
             ("ADMIN_TELEGRAM_IDS", &[("ADMIN_TELEGRAM_IDS", "1,x")]),
             ("LISTEN_ADDR", &[("LISTEN_ADDR", "nope")]),
+            ("DATABASE_URL", &[("DATABASE_URL", "not a url")]),
+            ("DATABASE_URL", &[("DATABASE_URL", "mysql://u@127.0.0.1/x")]),
         ];
         for (var, changes) in single {
             let got = problems(&with(changes));
@@ -769,6 +775,52 @@ mod tests {
         );
     }
 
+    /// Off loopback the URL itself must say `sslmode=verify-full`, judged on the values sqlx connects with: the query
+    /// decoded, a later `host` / `hostaddr` / `sslmode` / `ssl-mode` overriding the authority and earlier pairs, and
+    /// a URL without a host (sqlx would take `PGHOST`) counted as off loopback.
+    #[test]
+    fn config_database_url_tls_rule() {
+        let mut failures = Vec::new();
+        for url in [
+            "postgres://u@127.0.0.1:5487/tgn_local",
+            "postgres://u@localhost/x",
+            "postgres://u@[::1]/x",
+            "postgres://u:p@db.example/x?sslmode=verify-full",
+        ] {
+            if let Some(got) = not_loaded(&with(&[("DATABASE_URL", url)])) {
+                failures.push(format!("{url}: expected Ok, got {got}"));
+            }
+        }
+        for url in [
+            "postgres://u@db.example/x",
+            "postgres://u@db.example/x?sslmode=require",
+            "postgres://u@db.example/x?sslmode=verify-ca",
+            "postgres://u@db.example/x?sslmode=disable",
+            "postgres://u@127.0.0.1.evil.example/x?sslmode=disable",
+            "postgres://u@127.0.0.1/x?host=db.example",
+            "postgres://u@db.example/x?sslmode=verify-full&ssl-mode=disable",
+            "postgres://u@db.example/x?sslmode=verify-full&sslmode=require",
+            "postgres://u@db.example/x?sslmode=verify-full&ssl%6Dode=disable",
+            "postgres:///x",
+        ] {
+            let got = problems(&with(&[("DATABASE_URL", url)]));
+            let one = got.len() == 1
+                && got[0].var == "DATABASE_URL"
+                && matches!(got[0].kind, ProblemKind::Invalid(_));
+            if !one {
+                failures.push(format!(
+                    "{url}: expected one Invalid problem naming DATABASE_URL, got {got:?}"
+                ));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} failures:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
     #[test]
     fn config_secrets_never_printed() {
         let mut failures = Vec::new();
@@ -782,7 +834,7 @@ mod tests {
             admin_telegram_ids: vec![1],
             static_dir: None,
             content_dir: PathBuf::from("content"),
-            database_path: PathBuf::from("server.db"),
+            database_url: "postgres://u:DBPASS-SENTINEL-3@127.0.0.1/x".to_owned(),
             telegram_env: TelegramEnv::Test,
             listen_addr: SocketAddr::from(([127, 0, 0, 1], 8787)),
         };
@@ -794,6 +846,7 @@ mod tests {
             "WEBHOOK-SENTINEL-2",
             key_hex.as_str(),
             key_bytes.as_str(),
+            "DBPASS-SENTINEL-3",
         ] {
             if printed.contains(secret) {
                 failures.push(format!("Debug of Config prints a secret: {secret}"));
@@ -816,6 +869,41 @@ mod tests {
                     failures.push("ConfigError echoes the bad TOKEN_KEY value".to_owned());
                 }
             }
+        }
+
+        // A refused DATABASE_URL is named, never echoed: the password inside it stays out of the error.
+        match load(&with(&[(
+            "DATABASE_URL",
+            "mysql://u:DBPASS-SENTINEL-3@h/x",
+        )])) {
+            Ok(_) => failures
+                .push("bad DATABASE_URL: expected a DATABASE_URL problem, got Ok".to_owned()),
+            Err(e) => {
+                if !e.problems.iter().any(|p| p.var == "DATABASE_URL") {
+                    failures.push(format!(
+                        "bad DATABASE_URL: expected a DATABASE_URL problem, got {:?}",
+                        e.problems
+                    ));
+                }
+                if e.to_string().contains("DBPASS-SENTINEL-3")
+                    || format!("{e:?}").contains("DBPASS-SENTINEL-3")
+                {
+                    failures
+                        .push("ConfigError echoes the password of a bad DATABASE_URL".to_owned());
+                }
+            }
+        }
+
+        // The startup log line names the database target: never the user or the password, whether the URL carries
+        // them in its userinfo or in `?user=` / `?password=`.
+        let target = db::database_target(concat!(
+            "postgres://USER-SENTINEL-5:DBPASS-SENTINEL-3@db.example:6543/novel",
+            "?sslmode=verify-full&user=USER-SENTINEL-6&password=DBPASS-SENTINEL-4",
+        ));
+        if target != "db.example:6543/novel" {
+            failures.push(format!(
+                "database_target: expected db.example:6543/novel (no user, no password), got {target}"
+            ));
         }
 
         assert!(

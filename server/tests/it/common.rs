@@ -1,17 +1,19 @@
-//! Shared test helpers. Every state comes from `AppState::new`, with a fresh temp-file database per test.
+//! Shared test helpers. Every state comes from `AppState::new`, on a fresh PostgreSQL database per test
+//! ([`TestDb`]) on the dev cluster the environment names (`DEV_PG_PORT`, `DEV_PG_ROOT`, `PG_BIN`).
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use axum::body::{Body, Bytes};
 use axum::http::{HeaderMap, Request, StatusCode};
 use http_body_util::BodyExt;
 use server::config::{Config, PLACEHOLDER_BOT_TOKEN, TelegramEnv};
 use server::{AppState, build_router};
-use sqlx::ConnectOptions;
-use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection};
-use tempfile::TempDir;
+use sqlx::{Connection, PgConnection};
 use tower::ServiceExt;
+
+pub use pgdev::TestDb;
 
 /// The bot token of every test state: the `.env.example` placeholder, so initData signed by the test vectors'
 /// signer verifies here and against a server started from `.env.example`.
@@ -20,8 +22,8 @@ pub const TEST_BOT_TOKEN: &str = PLACEHOLDER_BOT_TOKEN;
 /// The one admin of every test state.
 pub const TEST_ADMIN_ID: i64 = 900_000_001;
 
-/// A complete test configuration: the database is `dir/test.db`, the content the committed fixture.
-pub fn test_config(dir: &TempDir) -> Config {
+/// A complete test configuration: the database is `db`, the content the committed fixture.
+pub fn test_config(db: &TestDb) -> Config {
     Config {
         bot_token: TEST_BOT_TOKEN.to_owned(),
         webhook_secret: "test-webhook-secret".to_owned(),
@@ -35,35 +37,58 @@ pub fn test_config(dir: &TempDir) -> Config {
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/content"
         )),
-        database_path: dir.path().join("test.db"),
+        database_url: db.url(),
         telegram_env: TelegramEnv::Test,
         listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
     }
 }
 
-/// A migrated state on a fresh temp-file database. Bind the directory (`let (st, _dir) = ...`), never `_`, which
-/// drops the directory and the database at once.
-pub async fn test_state() -> (AppState, TempDir) {
-    let dir = tempfile::Builder::new()
-        .prefix("tg-novel-it-")
-        .tempdir_in(env!("CARGO_TARGET_TMPDIR"))
-        .unwrap();
-    match AppState::new(test_config(&dir)).await {
-        Ok(state) => (state, dir),
-        Err(e) => panic!("test_state: {e}"),
+/// A migrated state on a fresh database. Bind the guard (`let (st, _db) = ...`), never `_`, which drops the
+/// database at once.
+pub async fn test_state() -> (AppState, TestDb) {
+    let db = TestDb::create().await;
+    match AppState::new(test_config(&db)).await {
+        Ok(state) => (state, db),
+        Err(e) => panic!("test_state: {}: {e}", db.name()),
     }
 }
 
-/// A connection of its own to the state's database file, outside the app pool. It never creates a file: a wrong
-/// path fails instead of yielding an empty database.
-pub async fn raw_db(st: &AppState) -> SqliteConnection {
-    SqliteConnectOptions::new()
-        .filename(&st.cfg.database_path)
-        .create_if_missing(false)
-        .foreign_keys(true)
-        .connect()
+/// A connection of its own to the state's database, outside the app pool. It carries none of the app's session
+/// settings, so it runs under the test database's hostile defaults (`repeatable read`, `synchronous_commit = off`):
+/// a raw stand-in for an app transaction opens it with `BEGIN ISOLATION LEVEL READ COMMITTED`.
+pub async fn raw_db(st: &AppState) -> PgConnection {
+    PgConnection::connect(&st.cfg.database_url).await.unwrap()
+}
+
+/// The app pool's `application_name` (`db/mod.rs`): raw connections set none, so only an app session matches.
+const APP_SESSION: &str = "tg-novel-server";
+
+/// Returns once an app-pool session on `st`'s database waits for a lock; panics after 5 s. It polls every 10 ms on
+/// an autocommit connection of its own: `pg_stat_activity` is a snapshot taken once per transaction, so a poll
+/// inside one would never see the wait begin. The caller then has the rest of the app's 2 s `lock_timeout` to
+/// release the lock.
+pub async fn wait_for_lock_waiter(st: &AppState) {
+    let mut conn = raw_db(st).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let waiters: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' \
+             AND datname = current_database() AND application_name = $1",
+        )
+        .bind(APP_SESSION)
+        .fetch_one(&mut conn)
         .await
-        .unwrap()
+        .unwrap();
+        if waiters > 0 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no lock waiter after 5 s: the app's statement never blocked on the held row"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    conn.close().await.unwrap();
 }
 
 /// A collected response.

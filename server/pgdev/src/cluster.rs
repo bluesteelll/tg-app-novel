@@ -178,10 +178,13 @@ impl DevCluster {
     async fn bring_up(&self) -> Result<UpOutcome, PgDevError> {
         match self.probe().await? {
             Probe::Ready => return Ok(UpOutcome::AlreadyUp),
-            // Starting, recovering or stopping: a server owns the data directory, so neither initdb nor start.
+            // Starting, recovering, stopping or out of connection slots: a server owns the data directory, so
+            // neither initdb nor start.
             Probe::Wait => {
-                self.wait_ready("a server was starting or stopping".to_owned())
-                    .await?;
+                self.wait_ready(
+                    "a server was starting, stopping or out of connection slots".to_owned(),
+                )
+                .await?;
                 return Ok(UpOutcome::JoinedPeer);
             }
             Probe::Down => {}
@@ -356,7 +359,7 @@ impl DevCluster {
 enum Probe {
     /// A server of the required major answered.
     Ready,
-    /// `57P03`: a server is starting, recovering or stopping.
+    /// `57P03`: a server is starting, recovering or stopping; `53300`: every connection slot is taken.
     Wait,
     /// Nothing answered.
     Down,
@@ -374,7 +377,8 @@ enum ConnectFailure {
 /// What a failed connection attempt means for `ensure_up`.
 #[derive(Debug, PartialEq, Eq)]
 enum ConnectClass {
-    /// A server owns the data directory and is starting, recovering or stopping: wait, never start.
+    /// A server owns the data directory and is starting, recovering, stopping or out of connection slots: wait,
+    /// never start.
     Wait,
     /// Nothing listens, or nothing answers in time: start the cluster.
     Down,
@@ -471,7 +475,11 @@ fn pg_major(stdout: &str) -> Result<u32, PgDevError> {
 fn classify(failure: &ConnectFailure) -> ConnectClass {
     match failure {
         ConnectFailure::TimedOut => ConnectClass::Down,
-        ConnectFailure::Sqlx(sqlx::Error::Database(e)) if e.code().as_deref() == Some("57P03") => {
+        // Exact codes, never class 53: `53300` (every connection slot taken, as when several suites share a slot
+        // cluster) ends when a consumer disconnects; its neighbours (disk full, out of memory) need a fix, not a wait.
+        ConnectFailure::Sqlx(sqlx::Error::Database(e))
+            if matches!(e.code().as_deref(), Some("57P03" | "53300")) =>
+        {
             ConnectClass::Wait
         }
         ConnectFailure::Sqlx(sqlx::Error::Io(e))
@@ -503,11 +511,13 @@ async fn check_server(conn: &mut PgConnection) -> Result<(), PgDevError> {
     }
 }
 
-/// The server settings, passed at every start.
+/// The server settings, passed at every start. `lc_messages=C`: initdb copies the host locale into
+/// `postgresql.conf` (`English_United States.1252` on the gate host), and the server's texts - every message, the
+/// log tail a `Start` error quotes - must not depend on which host made the cluster.
 fn server_options(port: u16) -> String {
     format!(
         "-p {port} -c listen_addresses=127.0.0.1 -c max_connections=150 -c shared_buffers=32MB \
-         -c max_wal_size=512MB -c timezone=UTC"
+         -c max_wal_size=512MB -c timezone=UTC -c lc_messages=C"
     )
 }
 
@@ -634,7 +644,7 @@ fn server_runs(bin: &Path, data: &Path) -> Result<bool, PgDevError> {
 }
 
 /// The last [`LOG_TAIL_LINES`] lines of the server log, from its last [`LOG_TAIL_BYTES`]. Decoded lossily: the cut
-/// may split a character, and the server writes in its message locale's encoding.
+/// may split a character, and logged statement or identifier text is whatever bytes the client sent.
 fn log_tail(log: &Path) -> String {
     let read = || -> io::Result<String> {
         let mut file = File::open(log)?;
@@ -692,10 +702,9 @@ fn launch_start(
         ps_literal(&args),
         ps_literal(unicode(cwd)?)
     );
-    let utf16le: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
     let status = Command::new("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-EncodedCommand"])
-        .arg(base64(&utf16le))
+        .arg(encoded_command(&script))
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -767,6 +776,14 @@ fn ps_literal(text: &str) -> String {
     }
     literal.push('\'');
     literal
+}
+
+/// `script` as PowerShell's `-EncodedCommand` takes it: the base64 of its UTF-16LE bytes. One function, so the unit
+/// test pins the composition the launcher runs.
+#[cfg(windows)]
+fn encoded_command(script: &str) -> String {
+    let utf16le: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    base64(&utf16le)
 }
 
 /// Standard base64 with padding (RFC 4648 section 4), for `-EncodedCommand`.
@@ -1002,6 +1019,9 @@ mod tests {
         let io = |kind| ConnectFailure::Sqlx(sqlx::Error::Io(io::Error::from(kind)));
         let cases = [
             ("57P03 cannot_connect_now", server("57P03"), "wait"),
+            ("53300 too_many_connections", server("53300"), "wait"),
+            // Its neighbour in class 53: the wait takes exact codes, never the class.
+            ("53000 insufficient_resources", server("53000"), "refused"),
             ("28P01 invalid_password", server("28P01"), "refused"),
             ("28000 invalid_authorization", server("28000"), "refused"),
             ("3D000 no such database", server("3D000"), "refused"),
@@ -1049,6 +1069,67 @@ mod tests {
             if got != expected {
                 failures.push(format!("{case}: expected {expected}, got {got}"));
             }
+        }
+        report(&failures);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn encoded_command_base64_vectors() {
+        // The first 254, 255 and 256 bytes of 0..=255 (one length per residue mod 3), encoded by an independent
+        // encoder: PowerShell's `[Convert]::ToBase64String([byte[]](0..253))`, `(0..254)`, `(0..255)`.
+        const BYTES_254: &str = concat!(
+            "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4",
+            "OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3Bx",
+            "cnN0dXZ3eHl6e3x9fn+AgYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmq",
+            "q6ytrq+wsbKztLW2t7i5uru8vb6/wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t/g4eLj",
+            "5OXm5+jp6uvs7e7v8PHy8/T19vf4+fr7/P0=",
+        );
+        const BYTES_255: &str = concat!(
+            "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4",
+            "OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3Bx",
+            "cnN0dXZ3eHl6e3x9fn+AgYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmq",
+            "q6ytrq+wsbKztLW2t7i5uru8vb6/wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t/g4eLj",
+            "5OXm5+jp6uvs7e7v8PHy8/T19vf4+fr7/P3+",
+        );
+        const BYTES_256: &str = concat!(
+            "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4",
+            "OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3Bx",
+            "cnN0dXZ3eHl6e3x9fn+AgYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmq",
+            "q6ytrq+wsbKztLW2t7i5uru8vb6/wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t/g4eLj",
+            "5OXm5+jp6uvs7e7v8PHy8/T19vf4+fr7/P3+/w==",
+        );
+        let mut failures = Vec::new();
+        // RFC 4648 section 10.
+        for (input, expected) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            let got = base64(input.as_bytes());
+            if got != expected {
+                failures.push(format!("{input:?}: expected {expected}, got {got}"));
+            }
+        }
+        let bytes: Vec<u8> = (0..=255).collect();
+        for (len, expected) in [(254, BYTES_254), (255, BYTES_255), (256, BYTES_256)] {
+            let got = base64(&bytes[..len]);
+            if got != expected {
+                failures.push(format!(
+                    "{len} bytes of 0..=255: expected {expected}, got {got}"
+                ));
+            }
+        }
+        // What `launch_start` hands to `-EncodedCommand`: UTF-16LE, then base64.
+        let got = encoded_command("exit 7");
+        if got != "ZQB4AGkAdAAgADcA" {
+            failures.push(format!(
+                "encoded_command(\"exit 7\"): expected ZQB4AGkAdAAgADcA, got {got}"
+            ));
         }
         report(&failures);
     }
