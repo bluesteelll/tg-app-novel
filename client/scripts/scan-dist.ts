@@ -1,17 +1,22 @@
 // Leak scan of the built client (principle 0): every file of dist/, its UTF-8 text plus every decoded data: URI
 // payload, against fingerprint sections. Fails on source maps, the ink compiler, dev canaries and (from L3b/L5)
 // paid fingerprints: paid line IDs and texts, paid asset file names, and paid asset bytes by content hash (a renamed
-// copy, or one inlined as a base64 data: URI). Every finding is reported; exit 1 iff there is one or dist is missing.
+// copy, or one inlined as a base64 data: URI); from LW3 the hint IDs and texts of every world, the paid worlds' IDs
+// and texts and the paid en values, all built from the sources (PUZZLES-PLAN X7). Every finding is reported; exit 1
+// iff there is one or dist is missing.
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { ChapterListEntry } from '../src/story/catalog.ts';
+import type { WorldSource } from '../src/world/types.ts';
 import { decodeAssetFingerprints } from './assets/manifest.ts';
 import type { AssetFingerprint } from './assets/manifest.ts';
 import { decodeChapterList, decodeLineFingerprints, decodeStoryUsage } from './story/emit.ts';
 import type { StoryUsage } from './story/emit.ts';
+import { decodeEnTable } from './story/locales.ts';
+import { TEXT_NEEDLE_MIN_CODE_POINTS, WORLD_FILE, decodeWorldFile, textNeedles, worldFingerprints, worldLines } from './story/world.ts';
 
 export type Section = { name: string; needles: readonly string[] };
 /** One file of dist/: path relative to dist with '/' separators. */
@@ -27,7 +32,15 @@ export type FingerprintReason =
   | 'paid-story-missing'
   | 'assets-missing'
   | 'files-empty'
-  | 'asset-files-missing';
+  | 'asset-files-missing'
+  /** A story/<dir>/world.json that does not parse or decode: none of its needles can be built. */
+  | 'world-unreadable'
+  /** A world.json whose raw `puzzles.*.hints` are not empty, and no hint ID was derived from it. */
+  | 'hints-empty'
+  /** A decoded world with a hint text of >= 12 code points (ru, or its en), and no hint-text needle derived. */
+  | 'hint-texts-empty'
+  /** A paid chapter's world.json from which no paid world needle was derived. */
+  | 'paid-world-empty';
 export type Finding =
   | { kind: 'source-map'; file: string }
   | { kind: 'fingerprint'; file: string; section: string; needle: string; via: 'plain' | 'data-uri' }
@@ -174,7 +187,7 @@ const AUDIO_ID = /^(?:bgm|sfx)\//;
  */
 function paidOnlyAssets(usage: StoryUsage, chapters: readonly ChapterListEntry[]): string[] {
   const named = (paid: boolean): Set<string> =>
-    new Set(chapters.filter((c) => c.paid === paid).flatMap((c) => usage.chapters[c.id]?.assets ?? []));
+    new Set(chapters.filter((c) => c.paid === paid).flatMap((c) => [...(usage.chapters[c.id]?.assets ?? []), ...(usage.chapters[c.id]?.worldAssets ?? [])]));
   const free = named(false);
   return [...named(true)].filter((id) => !free.has(id)).sort();
 }
@@ -191,6 +204,173 @@ function readRepoJson(repo: string, rel: string): { ok: true; value: unknown } |
   } catch (e) {
     return { ok: false, why: `not JSON: ${e instanceof Error ? e.message : String(e)}` };
   }
+}
+
+/** A repo file's text, its BOM stripped; null when it is missing or unreadable. */
+function readRepoText(repo: string, rel: string): string | null {
+  const abs = path.join(repo, ...rel.split('/'));
+  try {
+    const text = readFileSync(abs, 'utf8');
+    return text.startsWith('\ufeff') ? text.slice(1) : text;
+  } catch {
+    return null;
+  }
+}
+
+/** Every file under the repo-relative `rel` whose name ends in `ext`, repo-relative, sorted; none when it is absent. */
+function filesUnder(repo: string, rel: string, ext: string): string[] {
+  const abs = path.join(repo, ...rel.split('/'));
+  return existsSync(abs) && statSync(abs).isDirectory() ? walkFiles(abs).filter((f) => f.endsWith(ext)).map((f) => `${rel}/${f}`) : [];
+}
+
+/** Every string a JSON value holds (a story.json names table's values). */
+function stringsOf(v: unknown): string[] {
+  if (typeof v === 'string') {
+    return [v];
+  }
+  if (Array.isArray(v)) {
+    return v.flatMap(stringsOf);
+  }
+  return typeof v === 'object' && v !== null ? Object.values(v).flatMap(stringsOf) : [];
+}
+
+/** The raw hints of a parsed world.json, whatever else it holds: the probe the decoder cannot switch off (D12). */
+function rawHints(raw: unknown): Array<{ id: string | null; ru: string | null }> {
+  const puzzles = typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? (raw as Record<string, unknown>)['puzzles'] : undefined;
+  if (typeof puzzles !== 'object' || puzzles === null || Array.isArray(puzzles)) {
+    return [];
+  }
+  return Object.values(puzzles).flatMap((p: unknown) => {
+    const hints = typeof p === 'object' && p !== null ? (p as Record<string, unknown>)['hints'] : undefined;
+    return Array.isArray(hints)
+      ? hints.map((h: unknown) => {
+          const o = typeof h === 'object' && h !== null ? (h as Record<string, unknown>) : {};
+          return { id: typeof o['id'] === 'string' ? o['id'] : null, ru: typeof o['ru'] === 'string' ? o['ru'] : null };
+        })
+      : [];
+  });
+}
+
+type WorldRead = { dir: string; rel: string; raw: unknown; parsed: boolean; world: WorldSource | null; why: string };
+
+/**
+ * The world sections, built from the sources only (PUZZLES-PLAN X7, D12, critique C1): `hint-ids` and `hint-texts`
+ * from every story/<dir>/world.json (a listed chapter or not, Q16), `paid-world-ids` and `paid-world-texts` from
+ * the paid chapters' worlds, `paid-en` from the paid chapters' en tables; each pushed only when it has needles. A
+ * text that is public is dropped: the free ink sources, the free worlds' non-hint texts, the free en values of
+ * non-hint IDs, and the names tables. A world's hint sources never count as public. Fail closed per world.
+ */
+function worldSections(repo: string, chapters: readonly ChapterListEntry[], fail: (reason: FingerprintReason, detail: string) => void): { world: Section[]; paidEn: Section[] } {
+  const free = new Set<string>(chapters.filter((c) => !c.paid).map((c) => c.id));
+  const paid = new Set<string>(chapters.filter((c) => c.paid).map((c) => c.id));
+  const storyDir = path.join(repo, 'story');
+  const dirs = existsSync(storyDir) ? readdirSync(storyDir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort() : [];
+  const reads: WorldRead[] = dirs.flatMap((dir): WorldRead[] => {
+    const rel = `story/${dir}/${WORLD_FILE}`;
+    const text = readRepoText(repo, rel);
+    if (text === null) {
+      return [];
+    }
+    let raw: unknown = null;
+    try {
+      raw = JSON.parse(text);
+    } catch (e) {
+      return [{ dir, rel, raw, parsed: false, world: null, why: `not JSON: ${e instanceof Error ? e.message : String(e)}` }];
+    }
+    const decoded = decodeWorldFile({ file: rel, text });
+    const why = decoded.findings.slice(0, 3).map((f) => f.message).join('; ');
+    return [{ dir, rel, raw, parsed: true, world: decoded.world, why }];
+  });
+  // Line ID → en, per chapter dir; never story.json, the names table (O7).
+  const enOf = new Map<string, ReadonlyMap<string, string>>();
+  const en = (dir: string): ReadonlyMap<string, string> => {
+    const known = enOf.get(dir);
+    if (known !== undefined) {
+      return known;
+    }
+    const table = decodeEnTable(`locales/en/${dir}.json`, readRepoText(repo, `story/locales/en/${dir}.json`)).table;
+    const map = new Map([...table.entries].map(([id, e]) => [id, e.en]));
+    enOf.set(dir, map);
+    return map;
+  };
+  const publicTexts: string[] = [];
+  for (const dir of [...free, 'common']) {
+    for (const rel of filesUnder(repo, `story/${dir}`, '.ink')) {
+      publicTexts.push(readRepoText(repo, rel) ?? '');
+    }
+  }
+  for (const ch of free) {
+    const r = reads.find((x) => x.dir === ch);
+    if (r !== undefined && !r.parsed) {
+      continue; // its hint IDs are unknown, so none of its en values can count as public
+    }
+    const hintIds = new Set<string>([...rawHints(r?.raw).flatMap((h) => (h.id === null ? [] : [h.id]))]);
+    if (r?.world !== null && r?.world !== undefined) {
+      const lines = worldLines(r.world, r.rel, '');
+      publicTexts.push(...lines.filter((l) => !l.hint).map((l) => l.text));
+      for (const l of lines.filter((x) => x.hint)) {
+        hintIds.add(l.id);
+      }
+    }
+    const table = decodeEnTable(`locales/en/${ch}.json`, readRepoText(repo, `story/locales/en/${ch}.json`)).table;
+    for (const [id, e] of table.entries) {
+      if (!hintIds.has(id)) {
+        publicTexts.push(e.ru, e.en);
+      }
+    }
+  }
+  for (const lang of ['ru', 'en']) {
+    const text = readRepoText(repo, `story/locales/${lang}/story.json`);
+    try {
+      publicTexts.push(...(text === null ? [] : stringsOf(JSON.parse(text))));
+    } catch {
+      // A names table that does not parse is the story gate's `loc/missing-name`; it adds no public text here.
+    }
+  }
+
+  const needles = { hintIds: new Set<string>(), hintTexts: new Set<string>(), paidIds: new Set<string>(), paidTexts: new Set<string>() };
+  for (const r of reads) {
+    const isPaid = paid.has(r.dir);
+    if (r.world === null) {
+      fail('world-unreadable', `${r.rel}: ${r.why}`);
+    }
+    const fp = r.world === null ? null : worldFingerprints({ world: r.world, paid: isPaid, en: en(r.dir) }, publicTexts);
+    const raws = rawHints(r.raw);
+    if (raws.length > 0 && (fp?.hintIds.length ?? 0) === 0) {
+      fail('hints-empty', `${r.rel} has ${raws.length} hint(s) in its source and no hint ID was derived`);
+    }
+    const long = (t: string | null | undefined): boolean => t !== null && t !== undefined && [...t].length >= TEXT_NEEDLE_MIN_CODE_POINTS;
+    if (fp !== null && fp.hintTexts.length === 0 && raws.some((h) => long(h.ru) || (h.id !== null && long(en(r.dir).get(h.id))))) {
+      fail('hint-texts-empty', `${r.rel} has a hint text of ${TEXT_NEEDLE_MIN_CODE_POINTS}+ code points and no hint-text needle was derived`);
+    }
+    if (isPaid && (fp === null || fp.paidIds.length + fp.paidTexts.length === 0)) {
+      fail('paid-world-empty', `${r.rel} of paid ${r.dir}: no paid world needle was derived`);
+    }
+    for (const [key, list] of Object.entries(fp ?? {})) {
+      for (const n of list as readonly string[]) {
+        needles[key as keyof typeof needles].add(n); // the four keys of WorldNeedles
+      }
+    }
+  }
+  // L3c Q4: the paid chapters' en values, whether or not they have a world.
+  const paidEn = textNeedles(
+    [...paid].flatMap((ch) => [...en(ch).values()]),
+    publicTexts,
+  );
+  const sections = (list: ReadonlyArray<readonly [string, Iterable<string>]>): Section[] =>
+    list.flatMap(([name, set]) => {
+      const sorted = [...set].sort();
+      return sorted.length === 0 ? [] : [{ name, needles: sorted }];
+    });
+  return {
+    world: sections([
+      ['hint-ids', needles.hintIds],
+      ['hint-texts', needles.hintTexts],
+      ['paid-world-ids', needles.paidIds],
+      ['paid-world-texts', needles.paidTexts],
+    ]),
+    paidEn: sections([['paid-en', paidEn]]),
+  };
 }
 
 /**
@@ -219,6 +399,9 @@ export function loadSections(clientRoot: string): { sections: Section[]; finding
     fail('chapters-unreadable', `story/chapters.json: ${chapters.error.map((i) => `${i.path}: ${i.detail}`).join('; ')}`);
     return { sections, findings, paidFiles };
   }
+  // The world sections first: a free-only story's hints are paid content too (X7, M21).
+  const worlds = worldSections(repo, chapters.value, fail);
+  sections.push(...worlds.world);
   const paid = chapters.value.filter((c) => c.paid);
   if (paid.length === 0) {
     return { sections, findings, paidFiles };
@@ -240,6 +423,7 @@ export function loadSections(clientRoot: string): { sections: Section[]; finding
       fail('chapter-ids-missing', `${c.id} has no line ID in ${LINES_FILE} (written before it became paid?)`);
     }
   }
+  sections.push(...worlds.paidEn);
   const usage = readRepoJson(repo, USAGE_FILE);
   const decodedUsage = usage.ok ? decodeStoryUsage(usage.value) : { ok: false as const, error: [usage.why] };
   if (!decodedUsage.ok) {

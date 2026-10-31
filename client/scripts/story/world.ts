@@ -1,8 +1,9 @@
 // The world side of the story gate (docs/PUZZLES-PLAN.md "Lint codes", STAGING-DSL §11 "Enforced from LW3"): a
 // chapter's story/<ch>/world.json decoded (`world/schema` and the line-ID codes of its texts), every `world/*` rule
 // over the decoded world (given the knot names, the yielded puzzles and the VAR types of the compiled chapter), and
-// the per-section soft-lock check; plus the world texts as lines for the locale checks. Pure, no node:*: scan-dist.ts
-// imports this module, so it never loads inkjs; compile.ts and graph.ts come in as types only.
+// the per-section soft-lock check; plus the world texts as lines for the locale checks, and the world needles of
+// `paid/leak` and scan-dist (D12). Pure, no node:*: scan-dist.ts imports this module, so it never loads inkjs;
+// compile.ts, emit.ts and graph.ts come in as types only.
 import { searchSection, sectionEntry } from '../../src/explore/reconcile.ts';
 import { RESUME_STATE_CAP, hotspotKey, lockOf } from '../../src/explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../../src/explore/state.ts';
@@ -26,6 +27,7 @@ import type {
   WorldSource,
   WorldText,
 } from '../../src/world/types.ts';
+import type { WorldNeedles } from './emit.ts';
 import type { StoryLine } from './graph.ts';
 import { LINT_CODES } from './lint.ts';
 import type { Finding, LintCode, SourceChapter } from './lint.ts';
@@ -355,6 +357,50 @@ export function worldLines(w: WorldSource, file: string, text: string): WorldLin
     });
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The world needles (PUZZLES-PLAN X7, D12)
+
+/** A text needle's minimum length in code points: a shorter text is too common to fingerprint (D12). */
+export const TEXT_NEEDLE_MIN_CODE_POINTS = 12;
+
+/**
+ * The text needles of `texts`: each of at least 12 code points that occurs inside no public text, plus its
+ * JSON-escaped form when that differs (a JSON chunk escapes `"` and `\`); sorted, once each.
+ */
+export function textNeedles(texts: Iterable<string>, publicTexts: readonly string[]): string[] {
+  const out = new Set<string>();
+  for (const t of texts) {
+    if ([...t].length < TEXT_NEEDLE_MIN_CODE_POINTS || publicTexts.some((p) => p.includes(t))) {
+      continue;
+    }
+    out.add(t);
+    const escaped = JSON.stringify(t).slice(1, -1);
+    if (escaped !== t) {
+      out.add(escaped);
+    }
+  }
+  return [...out].sort();
+}
+
+/**
+ * The needles of one chapter's world, built from its source and its en table (`en`: line ID → English): every hint's
+ * ID and its texts (ru, and the en), free and paid chapters alike; for a paid world also every other text's ID and
+ * texts. A text inside a public text is dropped (a chapter's inventory may repeat a public name), an ID never is.
+ * `publicTexts` is what a free build legitimately ships, never a hint source (critique C1): the caller builds it.
+ */
+export function worldFingerprints(w: { world: WorldSource; paid: boolean; en: ReadonlyMap<string, string> }, publicTexts: readonly string[]): WorldNeedles {
+  const lines = worldLines(w.world, '', '');
+  const hints = lines.filter((l) => l.hint);
+  const others = w.paid ? lines.filter((l) => !l.hint) : [];
+  const texts = (of: readonly WorldLine[]): string[] => textNeedles(of.flatMap((l) => [l.text, w.en.get(l.id) ?? '']), publicTexts);
+  return {
+    hintIds: [...new Set(hints.map((l) => l.id))].sort(),
+    hintTexts: texts(hints),
+    paidIds: [...new Set(others.map((l) => l.id))].sort(),
+    paidTexts: texts(others),
+  };
 }
 
 // ---------------------------------------------------------------------------------------------------------------
