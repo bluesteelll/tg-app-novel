@@ -1,7 +1,9 @@
 //! `POST /api/invoices`: Stars invoices priced and titled from the catalog, the order committed before the gateway
 //! call, and a recent order with a link handed out again. `GET /api/orders/{orderId}`: the status of the user's own
 //! order, read from its row. The pre-checkout (P5) through `POST /telegram/webhook`: the payer-row lock, the
-//! conditional order UPDATE, the classified refusals in the payer's language, and the 2 s / 5 s deadlines.
+//! conditional order UPDATE, the classified refusals in the payer's language, and the 2 s / 5 s deadlines. The
+//! grant (P6): write-first and idempotent on the charge id, every money fact recorded, applied only to the payer's
+//! own payable order at its amount in `XTR`.
 //!
 //! [`RecordingGateway`] is this crate's Bot API fake: every state here installs it through `with_gateway`, so no test
 //! reaches the production gateway (whose placeholder token would answer `Disabled`, a 502, anyway). It records all
@@ -24,13 +26,15 @@ use server::puzzles::Lang;
 use server::telegram::gateway::{
     BotGateway, BoxFut, CommandSet, GatewayError, InvoiceSpec, OutMessage, SetupSpec, WebAppButton,
 };
-use server::telegram::payments::{RejectReason, reject_text};
+use server::telegram::payments::{
+    GrantOutcome, PaymentFact, RejectReason, on_successful_payment, reject_text,
+};
 use sqlx::{Connection, PgConnection};
 
 use crate::catalog::{ANN, T0, own};
 use crate::common;
 use crate::webhook::{
-    new_order, order_status, payment_rows, post_update, pre_checkout_update, rows,
+    new_order, order_status, payment_rows, payment_update, post_update, pre_checkout_update, rows,
 };
 
 /// A second player.
@@ -1404,5 +1408,447 @@ async fn precheckout_concurrent_same_order_one_passes() {
         &got,
         &refusal(RejectReason::InProgress, Lang::Ru),
     ));
+    report(&failures);
+}
+
+/// A third player.
+const CAT: i64 = 1003;
+
+/// A `successful_payment` fact from `payer`: `amount` of `currency` for `payload`, charge `charge`, no provider id.
+fn fact(payer: i64, currency: &str, amount: u32, payload: &str, charge: &str) -> PaymentFact {
+    PaymentFact {
+        payer: UserId(payer),
+        currency: currency.to_owned(),
+        total_amount: amount,
+        invoice_payload: payload.to_owned(),
+        charge: ChargeId(charge.to_owned()),
+        provider_charge: String::new(),
+    }
+}
+
+/// A payments row: (charge, payload, user_id, amount, currency, provider charge, paid_at, refunded_at).
+type PaymentRow = (String, String, i64, i64, String, String, i64, Option<i64>);
+
+/// The payments row of `charge`, read outside the app pool.
+async fn payment_row(st: &AppState, charge: &str) -> Option<PaymentRow> {
+    let mut conn = common::raw_db(st).await;
+    let row = sqlx::query_as(
+        "SELECT telegram_payment_charge_id, invoice_payload, user_id, amount, currency, \
+         provider_payment_charge_id, paid_at, refunded_at FROM payments WHERE telegram_payment_charge_id = $1",
+    )
+    .bind(charge)
+    .fetch_optional(&mut conn)
+    .await
+    .unwrap();
+    conn.close().await.unwrap();
+    row
+}
+
+/// An entitlements row: (user_id, product_id, charge_id, granted_at).
+type EntitlementRow = (i64, String, String, i64);
+
+/// Every entitlements row, by user and product.
+async fn entitlement_rows(st: &AppState) -> Vec<EntitlementRow> {
+    let mut conn = common::raw_db(st).await;
+    let rows = sqlx::query_as(
+        "SELECT user_id, product_id, charge_id, granted_at FROM entitlements ORDER BY user_id, product_id",
+    )
+    .fetch_all(&mut conn)
+    .await
+    .unwrap();
+    conn.close().await.unwrap();
+    rows
+}
+
+/// The (status, charge_id, paid_at) of order `order`.
+async fn paid_state(st: &AppState, order: &str) -> (String, Option<String>, Option<i64>) {
+    let mut conn = common::raw_db(st).await;
+    let row = sqlx::query_as("SELECT status, charge_id, paid_at FROM orders WHERE id = $1")
+        .bind(order)
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+    conn.close().await.unwrap();
+    row
+}
+
+/// The mismatch of the grant of `fact` against `Ok(want)`.
+async fn expect_grant(
+    st: &AppState,
+    case: &str,
+    fact: &PaymentFact,
+    want: GrantOutcome,
+) -> Option<String> {
+    let outcome = on_successful_payment(st, fact).await;
+    (outcome.as_ref().ok() != Some(&want))
+        .then(|| format!("{case}: expected Ok({want:?}), got {outcome:?}"))
+}
+
+/// P5 then P6 through the webhook: an accepted pre-checkout, then the payment, received at `T0 + 10` in a message
+/// dated `T0`. One payment row with every field as received and the server's receipt time, the order `paid` with the
+/// charge, the entitlement; the API shows the product owned and the order paid. The same update again is 200 and
+/// changes nothing.
+#[tokio::test]
+async fn successful_payment_grants_once() {
+    let mut failures = Vec::new();
+    let (st, _db, gateway, Some((order, amount))) = order_for_ann(Some("ru"), &mut failures).await
+    else {
+        return report(&failures);
+    };
+    let update = pre_checkout_update("q-1", ANN, Some("ru"), "XTR", amount, &order);
+    let got = answered(&st, &gateway, &update).await;
+    failures.extend(expect_answer("pre-checkout", &got, &Ok(())));
+    let paying = at(&st, T0 + 10);
+    let payment = payment_update(ANN, "XTR", amount, &order, "charge-1", "prov-1");
+    for delivery in ["the first delivery", "the redelivery"] {
+        let reply = post_update(&paying, &payment).await;
+        if reply.status.as_u16() != 200 {
+            failures.push(format!(
+                "{delivery}: expected 200, got {}",
+                reply.status.as_u16()
+            ));
+        }
+    }
+    let payments = payment_rows(&st).await;
+    let row = payment_row(&st, "charge-1").await;
+    let want = (
+        "charge-1".to_owned(),
+        order.clone(),
+        ANN,
+        i64::from(amount),
+        "XTR".to_owned(),
+        "prov-1".to_owned(),
+        T0 + 10,
+        None,
+    );
+    if payments != 1 || row.as_ref() != Some(&want) {
+        failures.push(format!(
+            "payments: expected the one row {want:?}, got {payments} rows, charge-1: {row:?}"
+        ));
+    }
+    let state = paid_state(&st, &order).await;
+    if state
+        != (
+            "paid".to_owned(),
+            Some("charge-1".to_owned()),
+            Some(T0 + 10),
+        )
+    {
+        failures.push(format!(
+            "order: expected (paid, charge-1, {}), got {state:?}",
+            T0 + 10
+        ));
+    }
+    let entitlements = entitlement_rows(&st).await;
+    let want = vec![(
+        ANN,
+        "chapter:ch2".to_owned(),
+        "charge-1".to_owned(),
+        T0 + 10,
+    )];
+    if entitlements != want {
+        failures.push(format!(
+            "entitlements: expected {want:?}, got {entitlements:?}"
+        ));
+    }
+    let owned = owned(&st, ANN, "chapter:ch2").await;
+    if owned != Some(true) {
+        failures.push(format!(
+            "GET /api/entitlements chapter:ch2 owned: expected Some(true), got {owned:?}"
+        ));
+    }
+    let reply = get_order(&st, Some(ANN), &order).await;
+    failures.extend(expect_order("GET /api/orders", &reply, &order, "paid"));
+    report(&failures);
+}
+
+/// RULINGS 14, two deliveries of one charge at once: A (raw) holds the three grant statements of charge X
+/// uncommitted; B's grant of X waits on A's uncommitted `payments_pkey` key, then skips it: `Duplicate`, not an
+/// error. One payment, one entitlement, the order paid with X.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn successful_payment_duplicate_concurrent() {
+    let mut failures = Vec::new();
+    let (st, _db, _gateway, Some((order, amount))) = order_for_ann(Some("ru"), &mut failures).await
+    else {
+        return report(&failures);
+    };
+    let mut a = common::raw_db(&st).await;
+    sqlx::raw_sql("BEGIN ISOLATION LEVEL READ COMMITTED")
+        .execute(&mut a)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO payments (telegram_payment_charge_id, invoice_payload, user_id, amount, currency, \
+         provider_payment_charge_id, paid_at) VALUES ('charge-x', $1, $2, $3, 'XTR', '', $4)",
+    )
+    .bind(&order)
+    .bind(ANN)
+    .bind(i64::from(amount))
+    .bind(T0)
+    .execute(&mut a)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE orders SET status = 'paid', paid_at = $2, charge_id = 'charge-x' WHERE id = $1",
+    )
+    .bind(&order)
+    .bind(T0)
+    .execute(&mut a)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO entitlements (user_id, product_id, charge_id, granted_at) \
+         VALUES ($1, 'chapter:ch2', 'charge-x', $2)",
+    )
+    .bind(ANN)
+    .bind(T0)
+    .execute(&mut a)
+    .await
+    .unwrap();
+    let app = st.clone();
+    let twin = fact(ANN, "XTR", amount, &order, "charge-x");
+    let mut b = tokio::spawn(async move { on_successful_payment(&app, &twin).await });
+    let early = tokio::select! {
+        biased;
+        outcome = &mut b => Some(outcome.unwrap()),
+        () = common::wait_for_lock_waiter(&st) => None,
+    };
+    if early.is_some() {
+        failures.push("B never waited: it finished while A held its transaction open".to_owned());
+    }
+    sqlx::raw_sql("COMMIT").execute(&mut a).await.unwrap();
+    a.close().await.unwrap();
+    let outcome = match early {
+        Some(outcome) => outcome,
+        None => b.await.unwrap(),
+    };
+    if !matches!(outcome, Ok(GrantOutcome::Duplicate)) {
+        failures.push(format!("B: expected Ok(Duplicate), got {outcome:?}"));
+    }
+    let counts = (
+        payment_rows(&st).await,
+        rows(&st, "SELECT count(*) FROM entitlements").await,
+    );
+    if counts != (1, 1) {
+        failures.push(format!(
+            "payments / entitlements rows: expected 1 / 1, got {} / {}",
+            counts.0, counts.1
+        ));
+    }
+    let state = paid_state(&st, &order).await;
+    if state != ("paid".to_owned(), Some("charge-x".to_owned()), Some(T0)) {
+        failures.push(format!(
+            "order: expected (paid, charge-x, {T0}), got {state:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// A payment whose payload names no order is recorded and grants nothing (K19 "never lose money facts"): a
+/// grammar-valid unknown id and a junk payload, each 200 through the webhook with its row; the grant's outcome for
+/// such a payload is `OrderMismatch`.
+#[tokio::test]
+async fn successful_payment_unknown_order_recorded_no_grant() {
+    let (st, _db, _gateway) = invoice_state(&[(ANN, Some("ru"))]).await;
+    let mut failures = Vec::new();
+    for (case, payload) in [
+        ("an unknown order", "o_00000000000000000000000000000000"),
+        ("a junk payload", "junk"),
+    ] {
+        let charge = format!("charge {case}");
+        let reply = post_update(&st, &payment_update(ANN, "XTR", 1, payload, &charge, "")).await;
+        if reply.status.as_u16() != 200 {
+            failures.push(format!(
+                "{case}: expected 200, got {}",
+                reply.status.as_u16()
+            ));
+        }
+        if payment_row(&st, &charge).await.is_none() {
+            failures.push(format!("{case}: expected the payment recorded, got no row"));
+        }
+        let charge = format!("direct {case}");
+        let outcome = on_successful_payment(&st, &fact(ANN, "XTR", 1, payload, &charge)).await;
+        if !matches!(outcome, Ok(GrantOutcome::OrderMismatch)) {
+            failures.push(format!(
+                "{case}: expected Ok(OrderMismatch), got {outcome:?}"
+            ));
+        }
+    }
+    let entitlements = entitlement_rows(&st).await;
+    if !entitlements.is_empty() {
+        failures.push(format!("entitlements: expected none, got {entitlements:?}"));
+    }
+    report(&failures);
+}
+
+/// Every payment that cannot be applied is still recorded, and grants nothing it should not: a currency other than
+/// `XTR`, another amount, another payer's order and a second charge for a paid order are `OrderMismatch`; an order
+/// whose product id no product grammar knows is `UnknownProduct` (the order paid, no entitlement); an order for a
+/// product the payer already owns is `AlreadyEntitled`.
+#[tokio::test]
+async fn successful_payment_unapplied_recorded_no_grant() {
+    let (st, _db, _gateway) =
+        invoice_state(&[(ANN, Some("ru")), (BEN, Some("en")), (CAT, Some("ru"))]).await;
+    let mut failures = Vec::new();
+    let Some((order, amount)) = new_order(&st, ANN, &mut failures).await else {
+        return report(&failures);
+    };
+    for (case, fact, want) in [
+        (
+            "currency USD",
+            fact(ANN, "USD", amount, &order, "c-usd"),
+            GrantOutcome::OrderMismatch,
+        ),
+        (
+            "amount + 1",
+            fact(ANN, "XTR", amount + 1, &order, "c-amount"),
+            GrantOutcome::OrderMismatch,
+        ),
+        (
+            "another payer's order",
+            fact(BEN, "XTR", amount, &order, "c-ben"),
+            GrantOutcome::OrderMismatch,
+        ),
+        (
+            "the order's own payment",
+            fact(ANN, "XTR", amount, &order, "c-paid"),
+            GrantOutcome::Granted,
+        ),
+        (
+            "a second charge for the paid order",
+            fact(ANN, "XTR", amount, &order, "c-second"),
+            GrantOutcome::OrderMismatch,
+        ),
+    ] {
+        failures.extend(expect_grant(&st, case, &fact, want).await);
+    }
+
+    // A product id outside every product grammar (neither `chapter:` nor `pack:`), set behind the API's back.
+    let Some((retired, retired_amount)) = new_order(&st, BEN, &mut failures).await else {
+        return report(&failures);
+    };
+    let mut conn = common::raw_db(&st).await;
+    sqlx::query("UPDATE orders SET product_id = 'retired:hint_s' WHERE id = $1")
+        .bind(&retired)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    conn.close().await.unwrap();
+    failures.extend(
+        expect_grant(
+            &st,
+            "an unknown product",
+            &fact(BEN, "XTR", retired_amount, &retired, "c-retired"),
+            GrantOutcome::UnknownProduct,
+        )
+        .await,
+    );
+
+    let Some((owned_order, owned_amount)) = new_order(&st, CAT, &mut failures).await else {
+        return report(&failures);
+    };
+    own(&st, CAT, "chapter:ch2").await;
+    failures.extend(
+        expect_grant(
+            &st,
+            "an owned product",
+            &fact(CAT, "XTR", owned_amount, &owned_order, "c-owned"),
+            GrantOutcome::AlreadyEntitled,
+        )
+        .await,
+    );
+
+    let charges = [
+        "c-usd",
+        "c-amount",
+        "c-ben",
+        "c-paid",
+        "c-second",
+        "c-retired",
+        "c-owned",
+    ];
+    for charge in charges {
+        if payment_row(&st, charge).await.is_none() {
+            failures.push(format!(
+                "{charge}: expected the payment recorded, got no row"
+            ));
+        }
+    }
+    for (case, id, want) in [
+        ("ANN's order", &order, ("paid", Some("c-paid"))),
+        (
+            "the unknown product's order",
+            &retired,
+            ("paid", Some("c-retired")),
+        ),
+        (
+            "the owned product's order",
+            &owned_order,
+            ("paid", Some("c-owned")),
+        ),
+    ] {
+        let (status, charge, _) = paid_state(&st, id).await;
+        if (status.as_str(), charge.as_deref()) != want {
+            failures.push(format!(
+                "{case}: expected {want:?}, got ({status}, {charge:?})"
+            ));
+        }
+    }
+    let entitlements = entitlement_rows(&st).await;
+    let want = vec![
+        (ANN, "chapter:ch2".to_owned(), "c-paid".to_owned(), T0),
+        (
+            CAT,
+            "chapter:ch2".to_owned(),
+            format!("charge-{CAT}-chapter:ch2"),
+            T0,
+        ),
+    ];
+    if entitlements != want {
+        failures.push(format!(
+            "entitlements: expected {want:?}, got {entitlements:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// U+0000 in the charge id, the payload and the provider id (PostgreSQL `text` cannot hold it) is stored as U+FFFD:
+/// 200 and one row; the same update again is 200 and still one row (the replaced charge id is the same key).
+#[tokio::test]
+async fn successful_payment_nul_in_strings_recorded_replaced() {
+    let mut failures = Vec::new();
+    let (st, _db, _gateway, Some((order, amount))) = order_for_ann(Some("ru"), &mut failures).await
+    else {
+        return report(&failures);
+    };
+    let payload = format!("{order}\u{0}");
+    let update = payment_update(ANN, "XTR", amount, &payload, "charge\u{0}1", "prov\u{0}1");
+    for delivery in ["the first delivery", "the redelivery"] {
+        let reply = post_update(&st, &update).await;
+        if reply.status.as_u16() != 200 {
+            failures.push(format!(
+                "{delivery}: expected 200, got {}",
+                reply.status.as_u16()
+            ));
+        }
+    }
+    let payments = payment_rows(&st).await;
+    let row = payment_row(&st, "charge\u{FFFD}1").await;
+    let want = (
+        "charge\u{FFFD}1".to_owned(),
+        format!("{order}\u{FFFD}"),
+        ANN,
+        i64::from(amount),
+        "XTR".to_owned(),
+        "prov\u{FFFD}1".to_owned(),
+        T0,
+        None,
+    );
+    if payments != 1 || row.as_ref() != Some(&want) {
+        failures.push(format!(
+            "payments: expected the one row {want:?}, got {payments} rows, the replaced charge: {row:?}"
+        ));
+    }
+    failures.extend(expect_status("the payload with U+0000", &st, &order, "created").await);
     report(&failures);
 }

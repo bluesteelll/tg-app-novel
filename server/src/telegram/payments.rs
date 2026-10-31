@@ -1,9 +1,11 @@
-//! The payment path's Telegram half (K18): the pre-checkout decision under its deadline, its answer under the Bot
-//! API deadline, and the reject texts in the payer's language (PE4: a `match` here until the bot texts move to
-//! `bot.*.json`). The decision types are `db::payments`'s, re-exported here.
+//! The payment path's Telegram half: the pre-checkout decision under its deadline, its answer under the Bot API
+//! deadline, and the reject texts in the payer's language (K18; PE4: a `match` here until the bot texts move to
+//! `bot.*.json`); the grant on `successful_payment` (K19). The fact, decision and outcome types are
+//! `db::payments`'s, re-exported here.
 //!
-//! Principle 2: Telegram must receive the answer within 10 s of the query. The database step is bounded by
-//! [`PRECHECKOUT_DB_DEADLINE`] and the answer by [`CALL_DEADLINE`], and nothing else runs on the path.
+//! Principle 2: Telegram must receive the pre-checkout answer within 10 s of the query. The database step is bounded
+//! by [`PRECHECKOUT_DB_DEADLINE`] and the answer by [`CALL_DEADLINE`], and nothing else runs on the path. The grant
+//! runs only on `successful_payment`, never here in the pre-checkout.
 
 use std::time::Duration;
 
@@ -15,7 +17,7 @@ use crate::ids::UserId;
 use crate::puzzles::Lang;
 use crate::telegram::gateway::CALL_DEADLINE;
 
-pub use crate::db::payments::{PreCheckoutVerdict, RejectReason};
+pub use crate::db::payments::{GrantOutcome, PaymentFact, PreCheckoutVerdict, RejectReason};
 
 /// The deadline of the pre-checkout's database step (K18).
 pub const PRECHECKOUT_DB_DEADLINE: Duration = Duration::from_secs(2);
@@ -74,6 +76,33 @@ pub async fn answer_pre_checkout(st: &AppState, q: &PreCheckoutQuery, verdict: P
         Ok(Err(e)) => tracing::warn!(?verdict, error = %e, "answerPreCheckoutQuery failed"),
         Err(_) => tracing::warn!(?verdict, "answerPreCheckoutQuery timed out"),
     }
+}
+
+/// P6: the grant for `fact` at the state's clock (the server's receipt time). Every outcome is committed and logged
+/// with the charge id (not a secret): an applied one at `info`, `AlreadyEntitled` at `warn`, the other unapplied
+/// ones at `error`. Only a database error is `Err`: the webhook answers 500, and Telegram redelivers.
+pub async fn on_successful_payment(
+    st: &AppState,
+    fact: &PaymentFact,
+) -> Result<GrantOutcome, sqlx::Error> {
+    let outcome = st.repo.grant(fact, st.clock.now()).await?;
+    let charge = fact.charge.0.as_str();
+    match outcome {
+        GrantOutcome::Granted | GrantOutcome::Duplicate => {
+            tracing::info!(charge, ?outcome, "payment recorded");
+        }
+        GrantOutcome::AlreadyEntitled => {
+            tracing::warn!(
+                charge,
+                ?outcome,
+                "payment recorded, product already owned: not applied"
+            );
+        }
+        GrantOutcome::OrderMismatch | GrantOutcome::UnknownProduct => {
+            tracing::error!(charge, ?outcome, "payment recorded, not applied");
+        }
+    }
+    Ok(outcome)
 }
 
 /// The language of a Telegram language tag (K29, the rule of the invoice texts): its primary subtag, ASCII

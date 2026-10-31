@@ -9,11 +9,13 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use frankenstein::payments::PreCheckoutQuery;
+use frankenstein::types::Message;
 use frankenstein::updates::{Update, UpdateContent};
 use subtle::ConstantTimeEq;
 
 use crate::AppState;
-use crate::telegram::payments::{self, PreCheckoutVerdict, RejectReason};
+use crate::ids::{ChargeId, UserId};
+use crate::telegram::payments::{self, PaymentFact, PreCheckoutVerdict, RejectReason};
 
 /// The webhook's body limit (PP "HTTP API": 1 MB): far above any update, and applied by the route before the handler.
 pub const WEBHOOK_BODY_LIMIT: usize = 1024 * 1024;
@@ -68,19 +70,59 @@ async fn handle(st: &AppState, body: &[u8]) -> Handled {
     }
 }
 
-/// One decoded update: a pre-checkout is decided and answered. A payment cannot be recorded in this build yet, so it
-/// is never acknowledged.
+/// One decoded update: a pre-checkout is decided and answered, a message is read for a payment; every other kind is
+/// acknowledged.
 async fn dispatch(st: &AppState, update: Update) -> Handled {
     match update.content {
         UpdateContent::PreCheckoutQuery(q) => {
             pre_checkout(st, &q).await;
             Handled::Ack
         }
-        UpdateContent::Message(m) if m.successful_payment.is_some() => {
-            tracing::error!("webhook: successful_payment not recorded; Telegram redelivers");
+        UpdateContent::Message(m) => message(st, &m).await,
+        _ => Handled::Ack,
+    }
+}
+
+/// P6: a `successful_payment` is granted, and acknowledged only after the commit; one whose payer cannot be recorded
+/// (no `from`, an id beyond `i64`) is retried, never acknowledged away. A `refunded_payment` is acknowledged and
+/// logged: refunds are handled by a later lane, and no refund can be issued before it. Any other message is
+/// acknowledged.
+async fn message(st: &AppState, m: &Message) -> Handled {
+    if let Some(sp) = &m.successful_payment {
+        let Some(payer) = m.from.as_ref().and_then(|from| i64::try_from(from.id).ok()) else {
+            tracing::error!(
+                charge = %sp.telegram_payment_charge_id,
+                "successful_payment without a payer the server can record; Telegram redelivers"
+            );
+            return Handled::Retry;
+        };
+        let fact = PaymentFact {
+            payer: UserId(payer),
+            currency: sp.currency.clone(),
+            total_amount: sp.total_amount,
+            invoice_payload: sp.invoice_payload.clone(),
+            charge: ChargeId(sp.telegram_payment_charge_id.clone()),
+            provider_charge: sp.provider_payment_charge_id.clone(),
+        };
+        return grant(st, &fact).await;
+    }
+    if m.refunded_payment.is_some() {
+        tracing::warn!(
+            "refunded_payment acknowledged unhandled: refund handling is a later lane's"
+        );
+    }
+    Handled::Ack
+}
+
+/// The grant for `fact`: 200 after the commit, whatever the outcome; 500 on a database error, so Telegram
+/// redelivers and the idempotent grant runs again.
+async fn grant(st: &AppState, fact: &PaymentFact) -> Handled {
+    match payments::on_successful_payment(st, fact).await {
+        Ok(_) => Handled::Ack,
+        Err(e) => {
+            tracing::error!(charge = %fact.charge.0, error = %e, "grant failed; Telegram redelivers");
             Handled::Retry
         }
-        _ => Handled::Ack,
     }
 }
 
