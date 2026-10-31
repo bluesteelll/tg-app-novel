@@ -14,6 +14,7 @@ export type Severity = 'E' | 'W';
 export const LINT_CODES = {
   'catalog/chapters': 'E',
   'catalog/assets': 'E',
+  'catalog/stories': 'E',
   'tag/syntax': 'E',
   'tag/unknown-kind': 'E',
   'tag/missing-arg': 'E',

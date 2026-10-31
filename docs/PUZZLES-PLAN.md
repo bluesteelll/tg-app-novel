@@ -235,7 +235,7 @@ to end, locally against the mock Telegram environment:
   solutions and hint texts are protected. Per-player randomized answers are Later (they need server-generated
   clues).
 
-**X6. A hint is one Stars invoice per tier, recorded as an `entitlements` row `hint:<puzzleId>:<tier>`.**
+**X6. A hint is one Stars invoice per tier, recorded as an `entitlements` row `hint:<puzzleId>:<tier>`.** (Changed by META-PLAN: superseded by META-PLAN M17–M21 — hints are bought in packs and a tier is unlocked by spending one; see "Changed by META-PLAN" below.)
 - **What.**
   - **Products.** `hint:ch1.drawer:1..3`.
   - **Order and grant.** `POST /api/invoices { productId }` and the existing order, pre-checkout, K19 grant and K20
@@ -264,7 +264,7 @@ to end, locally against the mock Telegram environment:
   - Pre-checkout reads the order's product between the payer-row lock (DB-4, RULINGS 14) and its UPDATE: one more
     indexed statement, three instead of two; still within K18's 2 s DB timeout.
 
-**X7. Hint text and solutions are server-only build output.**
+**X7. Hint text and solutions are server-only build output.** (Changed by META-PLAN: kept; a tier's text is served once a `hint_unlocks` row exists, META-PLAN M21.)
 - **What:**
   - The story tool splits `world.json`:
     - **public part** (no `solution`, no `hints`; `hintTiers` only) → `client/src/story-gen/free/<ch>.world.json`
@@ -739,7 +739,7 @@ load.**
   ("find three items, insert them, then solve a puzzle").
 - **Alternatives.** Symbol dials, clock hands (Later: new `PuzzleRules` modules, no framework change).
 
-**X18. Hint ladder shape and the free path.**
+**X18. Hint ladder shape and the free path.** (Changed by META-PLAN: the shape and the free path are kept; prices per tier are gone, one tier costs `economy.spend.hintTier` hints, META-PLAN M21.)
 - **What:**
   - One to three tiers per puzzle (data). The authored convention is nudge → direction → solution [P1 §2b].
   - Prices by tier from `server/catalog.json` `hints.priceStars`. The placeholders are `[1, 1, 2]`, marked
@@ -763,7 +763,7 @@ load.**
 | `SectionId`, `RoomId`, `HotspotId`, `ItemId`, `DocId`, `PuzzleLocalId`, `PropId` | `[a-z][a-z0-9_]*` | unique per chapter (rooms across all sections of the chapter; `world/duplicate-id`) | `manor`, `hall`, `gate`, `medal_sun` |
 | `HotspotKey` | `<room>.<hotspot>` | chapter | `hall.gate` |
 | `PuzzleId` | `<chapter>.<local>` | global (server, products); changed by STORIES-PLAN (Y1, Y17): no change — chapter ids are unique across all stories | `ch1.drawer` |
-| hint product id | `hint:<PuzzleId>:<tier>`, tier 1–3 | global | `hint:ch1.drawer:2` |
+| hint product id | `hint:<PuzzleId>:<tier>`, tier 1–3 | global | `hint:ch1.drawer:2` (changed by META-PLAN: removed, M21; a tier unlock is a `hint_unlocks` row) |
 | world text line ID | STAGING-DSL §4 format; the knot part is the owning section, puzzle, item or doc id | global (`id/duplicate` spans ink and world) | `ch1.drawer.h2x9` |
 
 Reserved:
@@ -1386,7 +1386,7 @@ No dev route is added: the fake Stars sheet and `/dev/simulate-payment` work for
 // server/catalog.json — hand-written (L6b); prices are server-only; `chapters` changed by STORIES-PLAN Y6: { defaultPriceStars, priceStars, title, description } over the story index
 { "chapters": [ { "productId": "chapter:ch2", "chapterId": "ch2", "priceStars": 1,          // PLACEHOLDER (Q3)
                   "title": { "ru": "Глава 2", "en": "Chapter 2" }, "description": { "ru": "…", "en": "…" } } ],
-  "hints": { "priceStars": [1, 1, 2],                                                     // PLACEHOLDER (Q14), by tier
+  "hints": { "priceStars": [1, 1, 2],                                                     // PLACEHOLDER (Q14), by tier. Changed by META-PLAN: not built (RULINGS 25); `economy` replaces it (M17)
              "title": { "ru": "Подсказка {tier}: {puzzle}", "en": "Hint {tier}: {puzzle}" },
              "description": { "ru": "Подсказка к головоломке «{puzzle}».", "en": "A hint for “{puzzle}”." } } }
 ```
@@ -2005,6 +2005,30 @@ lines after it, so they are now found by their quoted text):
 
 ---
 
+## Changed by META-PLAN
+
+[META-PLAN.md](META-PLAN.md) (with RULINGS 25) replaces the per-tier hint purchase by a resource economy: hint packs
+are bought with Stars (`pack:<id>`, credited inside the K19 grant), and a tier is unlocked by spending hints from the
+balance (`POST /api/puzzles/{puzzleId}/hints/{tier}`, `hint_unlocks`). The in-place marks above are same-line appends,
+so no line moved. What it means for this design:
+
+| PZ item | Change |
+|---|---|
+| X6 | superseded: no `hint:` products, no `entitlements` rows for hints, no hint invoice; META-PLAN M17–M21 |
+| X7 | kept: hint texts and solutions stay server-only; a text is served when its tier is unlocked |
+| X18 | kept: 1–3 tiers, nudge → direction → solution, the free hotspot reveal; one tier costs `economy.spend.hintTier` hints (META-PLAN MV19) instead of a price per tier |
+| Identifiers | the hint product id is removed; `PuzzleId` is unchanged |
+| SQL `0002_puzzles` | + `hint_unlocks (user_id, puzzle_id, tier, unlocked_at)`, PK (user, puzzle, tier), tier 1–3 (L6c re-cut) |
+| Server formats | `catalog.json` `hints` not built; `economy` (LE1) |
+| HTTP additions | `GET /api/puzzles/{id}` returns `hints: [{ tier, unlocked, text }]` (was `owned`); `POST /api/invoices` takes `chapter:` and `pack:` products only (`hint_unavailable` stays, now from the hint use route); the pre-checkout hint predicates (`$6`–`$8`) and `Unavailable` are removed |
+| Module API | `PuzzleSession.buyHint` → `useHint(tier)` over a `HintPort | null` (LP2 re-cut); the hint `PurchaseFlow` row of "Resource lifetime" is gone |
+| Critical flows H2–H7 | replaced by META-PLAN F23 (buy a pack), F24 (use a hint), F27 (a pack refund: clawback, then debt); H1 stays (the ladder from `GET /api/puzzles`) |
+| Q14, Q15 | Q14 resolved by META-PLAN M17 and MV4, MV19 (packs and the tier cost, placeholders); Q15 resolved by M20 and MV8 (a spent pack's refund leaves debt) |
+| Tests | `hints: next tier buyable only after previous owned` → `hints: next tier usable only after previous unlocked`; `hint ladder: locked tiers not buyable` → `hint ladder: no port shows no use button`; `flow: hint product confirms through puzzle status` → `flow: pack product confirms through order status`; `refund_revokes_hint` dropped; `puzzle_hint_text_only_when_owned` → `…_when_unlocked`; the e2e `explore: search item puzzle buy hint solve` → `explore: search item puzzle solve` (L15) and `meta: hint from a pack shows its text` (LMI) |
+| Lanes | L6c (`hint_unlocks`, `HintView`, the error variants), L8a (no hint invoices), L8b (the two-statement pre-checkout; the grant without a hint arm), L9, LP2, L15 re-cut; LE1 builds the use route (PP "Lanes") |
+
+---
+
 ## Revision log
 
 | Rev | Date | Source | Summary |
@@ -2020,6 +2044,7 @@ lines after it, so they are now found by their quoted text):
 | 7 | 2026-10-31 | `D:/tmp/novel-orch/design/stories/spec.md` (RULINGS 20), with PROTOTYPE-PLAN revision 11 | Extended by [STORIES-PLAN.md](STORIES-PLAN.md): the section "Changed by STORIES-PLAN" (no X decision changes; `PuzzleId` stays game-unique; `server/catalog.json` chapters over the story index; ch1–ch2 are story `manor` with two declared endings). In-place single-line marks only before line 1878 (status, Identifiers, Server formats, Implementation plan, Demo content outline), so the line references of RULINGS 21's errata stay valid. The errata themselves are not applied here |
 | 8 | 2026-10-31 | `D:/tmp/novel-orch/design/stories/triage_r1.md` (STORIES-PLAN revision 1, W5) | Two single-line in-place edits in "Resource lifetime" (the `PuzzleSession` and `ExploreController` rows: also destroyed by `exitToStories()`, with its test) and one row in "Changed by STORIES-PLAN"; no X decision changes; the line numbers before line 1878 are unchanged. Pre-revision copy: `D:/tmp/novel-orch/design/stories/PUZZLES-PLAN.r1.before.md`. Detail: `D:/tmp/novel-orch/design/stories/revision_r1.md` |
 | 9 | 2026-10-31 | RULINGS 21 + `D:/tmp/novel-orch/lw2-world-model/cut.md` §6 (Q1-Q8) and its addendum (C1, W1, developer decisions), as merged: LW2 `38bc717` | Docs lane `docs-errata`, group B (the LW2 errata, not a triage round): X15 `world/linear-requires` by construction (Q6); "World data" schema strictness (Q5/D3: required and nullable keys, repeated hotspot ids); the state API signatures take `WorldPublicBody`, only `reconcile` `WorldPublic` (Q3), `sectionKey` sets (W1), `RULES_VERSION` (Q2); "The points the rules leave open" (D7 with C1's restated no-change rule and the developer decisions); `WorldIssue` (D4); `worldVersion` hashes `{ rules: RULES_VERSION, body }` (Q2); the `world/softlock` message; the `pure-world` arch rule as merged (Q4); the X9 cost and the budget row carry the provisional timing (Q7); Test strategy: the LW2 names beside the list (Q8) and LW3's `emit: world version changes on a RULES_VERSION bump` in the emit list (Q2); PE7 resolved; the "Changed by STORIES-PLAN" line-number note says this revision moved the lines (review round 1). Each place is marked "erratum (RULINGS 21 …)" or "as merged". Ledger: `D:/tmp/novel-orch/docs-errata/ledger.md` |
+| 10 | 2026-10-31 | the META-PLAN campaign spec + RULINGS 25 | Hint purchases superseded by the META-PLAN economy: X6, X7, X18 headers, the Identifiers hint row and the `catalog.json` `hints` comment marked by same-line appends; a new section "Changed by META-PLAN" lists every superseded item (HTTP, Module API, H2–H7, Q14, Q15, tests, lanes). Design log: `D:/tmp/novel-orch/design/choices/design_log.md` |
 
 **Revision 1 (2026-10-30)** — what changed, by triage item:
 - **W1** (a fully slotted lock's puzzle cannot be reopened after Back or a reload): "Lock" (the tap rule: every slot
