@@ -1,12 +1,14 @@
 //! `POST /api/invoices`: Stars invoices priced and titled from the catalog, the order committed before the gateway
 //! call, and a recent order with a link handed out again. `GET /api/orders/{orderId}`: the status of the user's own
-//! order, read from its row.
+//! order, read from its row. The pre-checkout (P5) through `POST /telegram/webhook`: the payer-row lock, the
+//! conditional order UPDATE, the classified refusals in the payer's language, and the 2 s / 5 s deadlines.
 //!
 //! [`RecordingGateway`] is this crate's Bot API fake: every state here installs it through `with_gateway`, so no test
 //! reaches the production gateway (whose placeholder token would answer `Disabled`, a 502, anyway). It records all
 //! five gateway methods for the later payment, refund, bot, pack and share tests that import it from here.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::http::Request;
@@ -18,13 +20,18 @@ use server::catalog::{CATALOG_JSON, Catalog};
 use server::clock::FixedClock;
 use server::db::orders::parse_order_id;
 use server::ids::{ChargeId, OrderId, UserId};
+use server::puzzles::Lang;
 use server::telegram::gateway::{
     BotGateway, BoxFut, CommandSet, GatewayError, InvoiceSpec, OutMessage, SetupSpec, WebAppButton,
 };
+use server::telegram::payments::{RejectReason, reject_text};
 use sqlx::{Connection, PgConnection};
 
 use crate::catalog::{ANN, T0, own};
 use crate::common;
+use crate::webhook::{
+    new_order, order_status, payment_rows, post_update, pre_checkout_update, rows,
+};
 
 /// A second player.
 const BEN: i64 = 1002;
@@ -123,6 +130,17 @@ impl RecordingGateway {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The latest answer given to pre-checkout query `query_id` (`None`: never answered).
+    pub(crate) fn answer(&self, query_id: &str) -> Option<Result<(), String>> {
+        self.log().calls.iter().rev().find_map(|call| match call {
+            GatewayCall::PreCheckout {
+                query_id: id,
+                verdict,
+            } if id == query_id => Some(verdict.clone()),
+            _ => None,
+        })
     }
 
     /// What the probe read at each `createInvoiceLink`: the order row's (`status`, `invoice_url`), or `None` when no
@@ -871,5 +889,520 @@ async fn order_unknown_or_malformed_404() {
     }
     let reply = get_order(&st, None, "o_00000000000000000000000000000000").await;
     failures.extend(expect_error("no bearer", &reply, 401, "token_missing"));
+    report(&failures);
+}
+
+/// A Bot API whose `answerPreCheckoutQuery` never returns; every other call answers `Ok` at once (an invoice link in
+/// the recorder's form).
+struct HungAnswerGateway;
+
+impl BotGateway for HungAnswerGateway {
+    fn create_invoice_link(&self, spec: InvoiceSpec) -> BoxFut<'_, Result<String, GatewayError>> {
+        Box::pin(async move {
+            let mut link = String::from(TEST_LINK_PREFIX);
+            link.push_str(&spec.payload.0);
+            Ok(link)
+        })
+    }
+
+    fn answer_pre_checkout(
+        &self,
+        _query_id: String,
+        _verdict: Result<(), String>,
+    ) -> BoxFut<'_, Result<(), GatewayError>> {
+        Box::pin(std::future::pending())
+    }
+
+    fn refund_star_payment(
+        &self,
+        _user: UserId,
+        _charge: ChargeId,
+    ) -> BoxFut<'_, Result<(), GatewayError>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn send_message(&self, _msg: OutMessage) -> BoxFut<'_, Result<(), GatewayError>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn setup(&self, _s: SetupSpec) -> BoxFut<'_, Result<(), GatewayError>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// A pre-checkout through the webhook: its HTTP status and the answer the recorder got (`None`: unanswered).
+type Answered = (u16, Option<Result<(), String>>);
+
+/// `update` (a `pre_checkout_query`) through the webhook, and what `gateway` answered to its query id.
+async fn answered(st: &AppState, gateway: &RecordingGateway, update: &Value) -> Answered {
+    let reply = post_update(st, update).await;
+    let query_id = update["pre_checkout_query"]["id"]
+        .as_str()
+        .unwrap_or_default();
+    (reply.status.as_u16(), gateway.answer(query_id))
+}
+
+/// The refusal the payer sees for `reason` in `lang`. Each test names the language literally, never through the
+/// rule under test.
+fn refusal(reason: RejectReason, lang: Lang) -> Result<(), String> {
+    Err(reject_text(reason, lang).to_owned())
+}
+
+/// The mismatch of `got` against 200 with the answer `want`.
+fn expect_answer(case: &str, got: &Answered, want: &Result<(), String>) -> Option<String> {
+    (got.0 != 200 || got.1.as_ref() != Some(want))
+        .then(|| format!("{case}: expected 200 {want:?}, got {} {:?}", got.0, got.1))
+}
+
+/// The (status, checkout_at) of order `order`, read outside the app pool.
+async fn checkout_state(st: &AppState, order: &str) -> (String, Option<i64>) {
+    let mut conn = common::raw_db(st).await;
+    let row = sqlx::query_as("SELECT status, checkout_at FROM orders WHERE id = $1")
+        .bind(order)
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+    conn.close().await.unwrap();
+    row
+}
+
+/// The mismatch of order `order`'s status against `want`.
+async fn expect_status(case: &str, st: &AppState, order: &str, want: &str) -> Option<String> {
+    let got = order_status(st, order).await;
+    (got != want).then(|| format!("{case}: order status: expected {want}, got {got}"))
+}
+
+/// `owned` of `product` in `GET /api/entitlements` for `user` (a token issued at `T0`).
+pub(crate) async fn owned(st: &AppState, user: i64, product: &str) -> Option<bool> {
+    let reply = crate::catalog::get(st, Some(user), "/api/entitlements").await;
+    let body: Value = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
+    body["products"]
+        .as_array()?
+        .iter()
+        .find(|p| p["productId"] == product)?
+        .get("owned")?
+        .as_bool()
+}
+
+/// A state with `ANN` (Telegram language `language`) and a `created` order of `chapter:ch2` for `ANN` at `T0`:
+/// (state, guard, recorder, order, amount). A refused invoice is a failure line and `None`.
+async fn order_for_ann(
+    language: Option<&str>,
+    failures: &mut Vec<String>,
+) -> (
+    AppState,
+    common::TestDb,
+    Arc<RecordingGateway>,
+    Option<(String, u32)>,
+) {
+    let (st, db, gateway) = invoice_state(&[(ANN, language)]).await;
+    let order = new_order(&st, ANN, failures).await;
+    (st, db, gateway, order)
+}
+
+/// An accepted pre-checkout moves the order to `checkout` at the state's clock and answers `ok`.
+#[tokio::test]
+async fn precheckout_ok() {
+    let mut failures = Vec::new();
+    let (st, _db, gateway, Some((order, amount))) = order_for_ann(Some("ru"), &mut failures).await
+    else {
+        return report(&failures);
+    };
+    let update = pre_checkout_update("q-ok", ANN, Some("ru"), "XTR", amount, &order);
+    let got = answered(&st, &gateway, &update).await;
+    failures.extend(expect_answer("ok", &got, &Ok(())));
+    let state = checkout_state(&st, &order).await;
+    if state != ("checkout".to_owned(), Some(T0)) {
+        failures.push(format!(
+            "order: expected (checkout, Some({T0})), got {state:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// An amount other than the order's is refused `Mismatch` (Russian payer) and leaves the order `created`.
+#[tokio::test]
+async fn precheckout_wrong_amount() {
+    let mut failures = Vec::new();
+    let (st, _db, gateway, Some((order, amount))) = order_for_ann(Some("ru"), &mut failures).await
+    else {
+        return report(&failures);
+    };
+    for (case, asked) in [("amount + 1", amount + 1), ("amount - 1", amount - 1)] {
+        let update = pre_checkout_update(case, ANN, Some("ru"), "XTR", asked, &order);
+        let got = answered(&st, &gateway, &update).await;
+        failures.extend(expect_answer(
+            case,
+            &got,
+            &refusal(RejectReason::Mismatch, Lang::Ru),
+        ));
+    }
+    failures.extend(expect_status("after the refusals", &st, &order, "created").await);
+    report(&failures);
+}
+
+/// Any currency but exactly `XTR` is refused `Mismatch` (English payer, English text), never a 500: `USD`, `xtr`,
+/// and `XTR` + U+0000 (bound as U+FFFD, so no `22021`).
+#[tokio::test]
+async fn precheckout_wrong_currency() {
+    let mut failures = Vec::new();
+    let (st, _db, gateway, Some((order, amount))) = order_for_ann(Some("en"), &mut failures).await
+    else {
+        return report(&failures);
+    };
+    for (case, currency) in [("USD", "USD"), ("xtr", "xtr"), ("XTR + U+0000", "XTR\u{0}")] {
+        let update = pre_checkout_update(case, ANN, Some("en"), currency, amount, &order);
+        let got = answered(&st, &gateway, &update).await;
+        failures.extend(expect_answer(
+            case,
+            &got,
+            &refusal(RejectReason::Mismatch, Lang::En),
+        ));
+    }
+    failures.extend(expect_status("after the refusals", &st, &order, "created").await);
+    report(&failures);
+}
+
+/// A payload that names no order is refused `UnknownOrder`: an unknown id in the grammar, a junk one, one with
+/// U+0000 and an empty one (the last three never reach SQL). The real order is untouched.
+#[tokio::test]
+async fn precheckout_unknown_payload() {
+    let mut failures = Vec::new();
+    let (st, _db, gateway, Some((order, amount))) = order_for_ann(Some("ru"), &mut failures).await
+    else {
+        return report(&failures);
+    };
+    for (case, payload) in [
+        ("an unknown order", "o_00000000000000000000000000000000"),
+        ("not the grammar", "nope"),
+        ("U+0000", "o_\u{0}0123456789abcdef0123456789abcde"),
+        ("empty", ""),
+    ] {
+        let update = pre_checkout_update(case, ANN, Some("ru"), "XTR", amount, payload);
+        let got = answered(&st, &gateway, &update).await;
+        failures.extend(expect_answer(
+            case,
+            &got,
+            &refusal(RejectReason::UnknownOrder, Lang::Ru),
+        ));
+    }
+    failures.extend(expect_status("after the refusals", &st, &order, "created").await);
+    report(&failures);
+}
+
+/// A payer who owns the product by the time of the pre-checkout is refused `AlreadyOwned`.
+#[tokio::test]
+async fn precheckout_already_owned() {
+    let mut failures = Vec::new();
+    let (st, _db, gateway, Some((order, amount))) = order_for_ann(Some("ru"), &mut failures).await
+    else {
+        return report(&failures);
+    };
+    own(&st, ANN, "chapter:ch2").await;
+    let update = pre_checkout_update("q-owned", ANN, Some("ru"), "XTR", amount, &order);
+    let got = answered(&st, &gateway, &update).await;
+    failures.extend(expect_answer(
+        "owned",
+        &got,
+        &refusal(RejectReason::AlreadyOwned, Lang::Ru),
+    ));
+    failures.extend(expect_status("after the refusal", &st, &order, "created").await);
+    report(&failures);
+}
+
+/// Two orders of one payer for one product: the first enters `checkout`, and the second, a second later, is refused
+/// `InProgress` (K18's "two orders, two charges", one after the other). The second order is made once the first is
+/// an hour old, so the first is not handed out again.
+#[tokio::test]
+async fn precheckout_other_order_in_checkout() {
+    let mut failures = Vec::new();
+    let (st, _db, gateway, Some((first, first_amount))) =
+        order_for_ann(Some("ru"), &mut failures).await
+    else {
+        return report(&failures);
+    };
+    let later = at(&st, T0 + 3601);
+    let Some((second, second_amount)) = new_order(&later, ANN, &mut failures).await else {
+        return report(&failures);
+    };
+    let update = pre_checkout_update("q-first", ANN, Some("ru"), "XTR", first_amount, &first);
+    let got = answered(&later, &gateway, &update).await;
+    failures.extend(expect_answer("the first order", &got, &Ok(())));
+    let update = pre_checkout_update("q-second", ANN, Some("ru"), "XTR", second_amount, &second);
+    let got = answered(&at(&st, T0 + 3602), &gateway, &update).await;
+    failures.extend(expect_answer(
+        "the second order",
+        &got,
+        &refusal(RejectReason::InProgress, Lang::Ru),
+    ));
+    failures.extend(expect_status("the second order", &st, &second, "created").await);
+    report(&failures);
+}
+
+/// One order paid from two devices: a second pre-checkout 5 s after the first is refused `InProgress`; after the
+/// 120 s window the same order passes again (a retry after a failed payment).
+#[tokio::test]
+async fn precheckout_same_order_twice_refused() {
+    let mut failures = Vec::new();
+    let (st, _db, gateway, Some((order, amount))) = order_for_ann(Some("ru"), &mut failures).await
+    else {
+        return report(&failures);
+    };
+    for (case, t, want) in [
+        ("T0", T0, Ok(())),
+        (
+            "T0 + 5",
+            T0 + 5,
+            refusal(RejectReason::InProgress, Lang::Ru),
+        ),
+        ("T0 + 121", T0 + 121, Ok(())),
+    ] {
+        let update = pre_checkout_update(case, ANN, Some("ru"), "XTR", amount, &order);
+        let got = answered(&at(&st, t), &gateway, &update).await;
+        failures.extend(expect_answer(case, &got, &want));
+    }
+    let state = checkout_state(&st, &order).await;
+    if state != ("checkout".to_owned(), Some(T0 + 121)) {
+        failures.push(format!(
+            "order: expected (checkout, Some({})), got {state:?}",
+            T0 + 121
+        ));
+    }
+    report(&failures);
+}
+
+/// An order older than 24 h is refused `Expired`; two seconds younger it still passes (the control, asked after the
+/// refusal, which changed nothing).
+#[tokio::test]
+async fn precheckout_expired_order() {
+    let mut failures = Vec::new();
+    let (st, _db, gateway, Some((order, amount))) = order_for_ann(Some("ru"), &mut failures).await
+    else {
+        return report(&failures);
+    };
+    for (case, t, want) in [
+        (
+            "created + 86401 s",
+            T0 + 86_401,
+            refusal(RejectReason::Expired, Lang::Ru),
+        ),
+        ("created + 86399 s", T0 + 86_399, Ok(())),
+    ] {
+        let update = pre_checkout_update(case, ANN, Some("ru"), "XTR", amount, &order);
+        let got = answered(&at(&st, t), &gateway, &update).await;
+        failures.extend(expect_answer(case, &got, &want));
+    }
+    report(&failures);
+}
+
+/// Principle 2: an accepted pre-checkout grants nothing: no payment, no entitlement, and the product is not owned.
+#[tokio::test]
+async fn precheckout_grants_nothing() {
+    let mut failures = Vec::new();
+    let (st, _db, gateway, Some((order, amount))) = order_for_ann(Some("ru"), &mut failures).await
+    else {
+        return report(&failures);
+    };
+    let update = pre_checkout_update("q-ok", ANN, Some("ru"), "XTR", amount, &order);
+    let got = answered(&st, &gateway, &update).await;
+    failures.extend(expect_answer("ok", &got, &Ok(())));
+    let payments = payment_rows(&st).await;
+    if payments != 0 {
+        failures.push(format!("payments rows: expected 0, got {payments}"));
+    }
+    let entitlements = rows(&st, "SELECT count(*) FROM entitlements").await;
+    if entitlements != 0 {
+        failures.push(format!("entitlements rows: expected 0, got {entitlements}"));
+    }
+    let owned = owned(&st, ANN, "chapter:ch2").await;
+    if owned != Some(false) {
+        failures.push(format!(
+            "GET /api/entitlements chapter:ch2 owned: expected Some(false), got {owned:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// A Bot API that never answers is cut at 5 s: the webhook answers 200 after 5-7.5 s (real time), inside Telegram's
+/// 10 s, and the decision committed before the call stays (`checkout`).
+#[tokio::test]
+async fn precheckout_answer_times_out_at_5s() {
+    let mut failures = Vec::new();
+    let (st, _db, _gateway, Some((order, amount))) = order_for_ann(Some("ru"), &mut failures).await
+    else {
+        return report(&failures);
+    };
+    let hung = st.clone().with_gateway(Arc::new(HungAnswerGateway));
+    let update = pre_checkout_update("q-hung", ANN, Some("ru"), "XTR", amount, &order);
+    let started = Instant::now();
+    let reply = tokio::time::timeout(Duration::from_secs(9), post_update(&hung, &update)).await;
+    let elapsed = started.elapsed().as_secs_f64();
+    match reply {
+        Err(_) => failures.push("no answer within 9 s".to_owned()),
+        Ok(reply) => {
+            if reply.status.as_u16() != 200 {
+                failures.push(format!(
+                    "status: expected 200, got {}",
+                    reply.status.as_u16()
+                ));
+            }
+            if !(5.0..7.5).contains(&elapsed) {
+                failures.push(format!(
+                    "elapsed: expected 5.0 s <= t < 7.5 s, got {elapsed:.2} s"
+                ));
+            }
+        }
+    }
+    failures.extend(expect_status("after the hung answer", &st, &order, "checkout").await);
+    report(&failures);
+}
+
+/// The database step under contention: a raw transaction holds the payer's row `FOR UPDATE` through the call, so the
+/// payer-row lock cannot be taken. The 2 s budget ends it (`lock_timeout` or the deadline): refused `Temporary`
+/// after 2-4 s with 200, and the order stays `created`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn precheckout_lock_timeout_temporary() {
+    let mut failures = Vec::new();
+    let (st, _db, gateway, Some((order, amount))) = order_for_ann(Some("ru"), &mut failures).await
+    else {
+        return report(&failures);
+    };
+    let mut a = common::raw_db(&st).await;
+    sqlx::raw_sql("BEGIN ISOLATION LEVEL READ COMMITTED")
+        .execute(&mut a)
+        .await
+        .unwrap();
+    sqlx::query("SELECT 1 FROM users WHERE id = $1 FOR UPDATE")
+        .bind(ANN)
+        .execute(&mut a)
+        .await
+        .unwrap();
+    let update = pre_checkout_update("q-locked", ANN, Some("ru"), "XTR", amount, &order);
+    let started = Instant::now();
+    let got = answered(&st, &gateway, &update).await;
+    let elapsed = started.elapsed().as_secs_f64();
+    sqlx::raw_sql("ROLLBACK").execute(&mut a).await.unwrap();
+    a.close().await.unwrap();
+    failures.extend(expect_answer(
+        "locked payer",
+        &got,
+        &refusal(RejectReason::Temporary, Lang::Ru),
+    ));
+    if !(2.0..4.0).contains(&elapsed) {
+        failures.push(format!(
+            "elapsed: expected 2.0 s <= t < 4.0 s, got {elapsed:.2} s"
+        ));
+    }
+    failures.extend(expect_status("after the timeout", &st, &order, "created").await);
+    report(&failures);
+}
+
+/// A raw READ COMMITTED transaction A that takes `ANN`'s payer-row lock and moves `order` to `checkout` at `t`,
+/// uncommitted: the stand-in for a concurrent pre-checkout of the app (a raw connection otherwise runs under the
+/// test database's hostile `repeatable read` default).
+async fn hold_checkout(st: &AppState, order: &str, t: i64) -> PgConnection {
+    let mut a = common::raw_db(st).await;
+    sqlx::raw_sql("BEGIN ISOLATION LEVEL READ COMMITTED")
+        .execute(&mut a)
+        .await
+        .unwrap();
+    sqlx::query("SELECT 1 FROM users WHERE id = $1 FOR NO KEY UPDATE")
+        .bind(ANN)
+        .execute(&mut a)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE orders SET status = 'checkout', checkout_at = $2 WHERE id = $1")
+        .bind(order)
+        .bind(t)
+        .execute(&mut a)
+        .await
+        .unwrap();
+    a
+}
+
+/// B, `update` through the webhook on `st`, against A's open transaction: B must be seen waiting for a lock before A
+/// commits, and finishing first is a failure line ("B never waited"). Then A commits, and B's status and answer
+/// return.
+async fn race_pre_checkout(
+    st: &AppState,
+    gateway: &RecordingGateway,
+    mut a: PgConnection,
+    update: Value,
+    failures: &mut Vec<String>,
+) -> Answered {
+    let query_id = update["pre_checkout_query"]["id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    let app = st.clone();
+    let mut b = tokio::spawn(async move { post_update(&app, &update).await.status.as_u16() });
+    let early = tokio::select! {
+        biased;
+        status = &mut b => Some(status.unwrap()),
+        () = common::wait_for_lock_waiter(st) => None,
+    };
+    if early.is_some() {
+        failures.push("B never waited: it finished while A held its transaction open".to_owned());
+    }
+    sqlx::raw_sql("COMMIT").execute(&mut a).await.unwrap();
+    a.close().await.unwrap();
+    let status = match early {
+        Some(status) => status,
+        None => b.await.unwrap(),
+    };
+    (status, gateway.answer(&query_id))
+}
+
+/// RULINGS 14, "two orders, two charges": A holds its pre-checkout of order 1 uncommitted; B's pre-checkout of
+/// order 2 waits on the payer-row lock, then sees A's `checkout` and is refused `InProgress`. Only order 1 is in
+/// `checkout`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn precheckout_concurrent_two_orders_one_passes() {
+    let mut failures = Vec::new();
+    let (st, _db, gateway, Some((first, _))) = order_for_ann(Some("ru"), &mut failures).await
+    else {
+        return report(&failures);
+    };
+    let later = at(&st, T0 + 3601);
+    let Some((second, second_amount)) = new_order(&later, ANN, &mut failures).await else {
+        return report(&failures);
+    };
+    let a = hold_checkout(&st, &first, T0 + 3601).await;
+    let update = pre_checkout_update("q-b", ANN, Some("ru"), "XTR", second_amount, &second);
+    let got = race_pre_checkout(&later, &gateway, a, update, &mut failures).await;
+    failures.extend(expect_answer(
+        "B (order 2)",
+        &got,
+        &refusal(RejectReason::InProgress, Lang::Ru),
+    ));
+    let statuses = (
+        order_status(&st, &first).await,
+        order_status(&st, &second).await,
+    );
+    if statuses != ("checkout".to_owned(), "created".to_owned()) {
+        failures.push(format!(
+            "statuses (order 1, order 2): expected (checkout, created), got {statuses:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// RULINGS 14, "one order on two devices": A holds its pre-checkout of the order uncommitted; B's pre-checkout of
+/// the same order waits on the payer-row lock, then sees A's committed `checkout` and is refused `InProgress`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn precheckout_concurrent_same_order_one_passes() {
+    let mut failures = Vec::new();
+    let (st, _db, gateway, Some((order, amount))) = order_for_ann(Some("ru"), &mut failures).await
+    else {
+        return report(&failures);
+    };
+    let a = hold_checkout(&st, &order, T0).await;
+    let update = pre_checkout_update("q-b", ANN, Some("ru"), "XTR", amount, &order);
+    let got = race_pre_checkout(&st, &gateway, a, update, &mut failures).await;
+    failures.extend(expect_answer(
+        "B (the same order)",
+        &got,
+        &refusal(RejectReason::InProgress, Lang::Ru),
+    ));
     report(&failures);
 }

@@ -8,10 +8,12 @@
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
+use frankenstein::payments::PreCheckoutQuery;
 use frankenstein::updates::{Update, UpdateContent};
 use subtle::ConstantTimeEq;
 
 use crate::AppState;
+use crate::telegram::payments::{self, PreCheckoutVerdict, RejectReason};
 
 /// The webhook's body limit (PP "HTTP API": 1 MB): far above any update, and applied by the route before the handler.
 pub const WEBHOOK_BODY_LIMIT: usize = 1024 * 1024;
@@ -33,7 +35,7 @@ pub async fn webhook(State(st): State<AppState>, headers: HeaderMap, body: Bytes
     if !secret_ok(&headers, st.cfg.webhook_secret.as_bytes()) {
         return StatusCode::UNAUTHORIZED;
     }
-    match handle(&body) {
+    match handle(&st, &body).await {
         Handled::Ack => StatusCode::OK,
         Handled::Retry => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -51,9 +53,9 @@ fn secret_ok(headers: &HeaderMap, secret: &[u8]) -> bool {
 }
 
 /// Decodes the body and dispatches the update.
-fn handle(body: &[u8]) -> Handled {
+async fn handle(st: &AppState, body: &[u8]) -> Handled {
     match serde_json::from_slice::<Update>(body) {
-        Ok(update) => dispatch(update),
+        Ok(update) => dispatch(st, update).await,
         Err(e) => {
             tracing::warn!(
                 class = ?e.classify(),
@@ -66,13 +68,31 @@ fn handle(body: &[u8]) -> Handled {
     }
 }
 
-/// One decoded update. A payment cannot be recorded in this build yet, so it is never acknowledged.
-fn dispatch(update: Update) -> Handled {
+/// One decoded update: a pre-checkout is decided and answered. A payment cannot be recorded in this build yet, so it
+/// is never acknowledged.
+async fn dispatch(st: &AppState, update: Update) -> Handled {
     match update.content {
+        UpdateContent::PreCheckoutQuery(q) => {
+            pre_checkout(st, &q).await;
+            Handled::Ack
+        }
         UpdateContent::Message(m) if m.successful_payment.is_some() => {
             tracing::error!("webhook: successful_payment not recorded; Telegram redelivers");
             Handled::Retry
         }
         _ => Handled::Ack,
     }
+}
+
+/// P5: the decision, then its answer. A database error is logged and answered `Temporary`; Telegram is answered either
+/// way, and the update is acknowledged.
+async fn pre_checkout(st: &AppState, q: &PreCheckoutQuery) {
+    let verdict = match payments::on_pre_checkout(st, q).await {
+        Ok(verdict) => verdict,
+        Err(e) => {
+            tracing::error!(error = %e, "pre-checkout database step failed; answered as temporary");
+            PreCheckoutVerdict::Reject(RejectReason::Temporary)
+        }
+    };
+    payments::answer_pre_checkout(st, q, verdict).await;
 }
