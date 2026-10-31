@@ -6,6 +6,7 @@
 //! it names.
 
 use serde::Serialize;
+use ts_rs::TS;
 
 use crate::db::Repo;
 use crate::ids::{OrderId, ProductId, UserId};
@@ -20,7 +21,7 @@ const ORDER_PREFIX: &str = "o_";
 const ORDER_HEX_LEN: usize = 32;
 
 /// An order's status: the `orders.status` values (`orders_status_known`), and their wire form in `OrderResponse`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum OrderStatus {
     /// Invoiced, not paid.

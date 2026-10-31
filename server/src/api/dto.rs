@@ -217,7 +217,7 @@ pub struct HintView {
 }
 
 /// `POST /api/invoices` request. Unknown fields (a client-sent price, amount or currency) are ignored, never trusted.
-#[derive(Deserialize)]
+#[derive(Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateInvoiceRequest {
     /// The catalog product to buy, e.g. `chapter:ch2`.
@@ -225,7 +225,7 @@ pub struct CreateInvoiceRequest {
 }
 
 /// `POST /api/invoices` response.
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateInvoiceResponse {
     /// The order the invoice pays for: `GET /api/orders/{orderId}` reports its status after `openInvoice`.
@@ -235,7 +235,7 @@ pub struct CreateInvoiceResponse {
 }
 
 /// `GET /api/orders/{orderId}` response: the order's row, never client state.
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct OrderResponse {
     /// The order id.
@@ -275,6 +275,10 @@ pub fn ts_bindings() -> String {
         export::<AttemptResponse>(&cfg),
         export::<HintView>(&cfg),
         export::<PuzzleStatus>(&cfg),
+        export::<OrderStatus>(&cfg),
+        export::<CreateInvoiceRequest>(&cfg),
+        export::<CreateInvoiceResponse>(&cfg),
+        export::<OrderResponse>(&cfg),
     ];
     format!("{BINDINGS_HEADER}\n\n{}", decls.join("\n"))
 }
