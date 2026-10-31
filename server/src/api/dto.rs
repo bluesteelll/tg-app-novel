@@ -142,7 +142,8 @@ pub struct EntitlementsResponse {
 }
 
 /// `GET /api/chapters/{chapterId}` response: a paid chapter's files as the build wrote them, composed raw (no
-/// re-encoding). No `Debug`: it is the sold content.
+/// re-encoding).
+// No `Debug`: it is the sold content, never logged.
 #[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ChapterPayload<'a> {
@@ -188,6 +189,9 @@ pub fn ts_bindings() -> String {
         export::<SaveFull>(&cfg),
         export::<PutSaveRequest>(&cfg),
         export::<PutSaveResponse>(&cfg),
+        export::<ProductDto>(&cfg),
+        export::<EntitlementsResponse>(&cfg),
+        export::<ChapterPayload<'static>>(&cfg),
     ];
     format!("{BINDINGS_HEADER}\n\n{}", decls.join("\n"))
 }
