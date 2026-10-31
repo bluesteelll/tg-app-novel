@@ -8,6 +8,21 @@ through VPN-mediated Telegram use (owner, 2026-10-31); English comes second. Cov
 channels, channels outside Telegram, funnel economics, law, a phased plan, product asks and owner questions. Not
 covered: hosting design (Q5/Q21), story and art (Q1/Q2).
 
+**Owner rulings applied (2026-10-31, verbatim):**
+
+| # | Ruling | Reading applied in this report |
+|---|---|---|
+| R1 | «Обрати внимание что это романтические новеллы для девочек это основная» | The main line is romance VNs for a female audience |
+| R2 | «В россии все равно все используют vpn и телеграмом все пользуются» | Russia stays the primary market; VPN-mediated Telegram use is assumed |
+| R3 | «Про запрет на рекламу и так далее не обращай внимание это допустимо» | The ad-law risk (38-FZ art. 5 p. 10.7 and the related marking rules) is **accepted by the owner**. Russian in-Telegram paid channels are planned as usable; the legal rows stay in §8 as facts, marked "(R3: accepted)", and no phase waits on a FAS position |
+| R4 | «Возраст женщины 14-25 лет» | Audience: women aged 14-25 — a dual audience with a 14-17 part |
+| R5 | «Возможен эротический и софт порно контент при подтверждении возраста 18+» | An 18+ track with erotic content exists behind an age confirmation; everything a 14-17 user or an unverified user can reach stays minors-safe (§8.5) |
+
+What R3 does not change (they are not ad law): Telegram's own ad moderation (Ads guidelines §5.1/§5.4 reject
+suggestive or scary creatives regardless of law), exchanges and channel admins that demand an ERID before posting
+(a practical gate), buying Stars from Russia, our host's reach without VPN (Q21/Q5), and the content law on the
+product itself (§8.5).
+
 ## 1. How to read this
 
 - **Labels:** **MEASURED** = data with a stated method or sample (panel data relayed by press = "MEASURED-secondary");
@@ -41,6 +56,8 @@ covered: hosting design (Q5/Q21), story and art (Q1/Q2).
 | `V2-verify-virality-platforms-cases.md` | Adversarial check of 03/04/05 (CONFIRMED 40, CORRECTED 5, STALE 3) |
 | `V3-verify-legal-status.md` | Adversarial check of 06 and of the Telegram-in-Russia claims (CONFIRMED 25, CORRECTED 8) |
 | `V4-verify-markets-access-minors.md` | Adversarial check of 08/09 (CONFIRMED 31, CORRECTED 12, UNSUPPORTED 5, MISLABELLED 1) |
+| `10-adult-content-age-gate-dual-audience.md` | The 18+ track: art. 242 / 242.1, Telegram and store rules, age-gate options, promotion of 18+, dual-audience precedent |
+| `V5-verify-adult-content.md` | Adversarial check of 10 (CONFIRMED 23, CORRECTED 11, STALE 1, MISLABELLED 1, UNSUPPORTED 2); applied in §8.5 |
 | `C1-completeness-critique.md` | Coverage matrix, contradictions K1-K3 / W1-W8, the test-bot list |
 
 ## 2. Executive summary
@@ -54,11 +71,12 @@ covered: hosting design (Q5/Q21), story and art (Q1/Q2).
    75.7 M (Jun 2026, 12+); daily reach roughly halved to 33.8-35.4 M (Jun-Aug); MAX (86.3 M) passed Telegram in June;
    Telegram is listed in the RU App Store (2026-10-31). Romance Club's official channel (732 K subscribers, 20.1 K
    average post reach) shows the audience is reachable inside Telegram (09 §2).
-3. **What VPN does not fix, 1/3 — the ad law (Shows, INTERPRETATION):** per FAS, ads placed in Telegram aimed at
-   Russia show "signs" of a 38-FZ art. 5 p. 10.7 violation; liability is deferred only to 2026-12-31 inclusive; no 2027
-   position found; exposure KoAP 14.3 p. 1 = 100-500 k RUB per violation (legal entity); disputed by lawyers, no court
-   practice (V3 #1, #4, #6, #20). Launch is realistically 2027, so **no part of the plan depends on paid placements
-   inside Telegram aimed at Russia** (Recommend).
+3. **The ad law — an owner-accepted risk (R3):** per FAS, ads placed in Telegram aimed at Russia show "signs" of a
+   38-FZ art. 5 p. 10.7 violation; liability is deferred only to 2026-12-31 inclusive; no 2027 position found;
+   exposure KoAP 14.3 p. 1 = 100-500 k RUB per violation (legal entity); disputed by lawyers, no court practice (V3 #1,
+   #4, #6, #20; INTERPRETATION). The owner accepts this risk, so Russian in-Telegram paid channels — above all posts in
+   Romance Club / otome fan channels, the best-evidenced audience match (09 §2) — are part of the plan from the soft
+   launch.
 4. **2/3 — buying Stars (Shows):** degraded, not closed: App Store carrier funding ended 2026-04-01 and Apple's
    payment-methods page lists no Russia entry, but App Store gift cards still work at a markup; Google Play billing
    paused since 2022-03-10 (DOCUMENTED); @PremiumBot takes cards / SBP / SberPay per the one 2026 source opened (it
@@ -78,22 +96,32 @@ covered: hosting design (Q5/Q21), story and art (Q1/Q2).
    enough to read D1 (≈ 900 starts), not one paywall A/B (≈ 7,400 starts ≈ €1,850-4,370); the medium tier
    ($3,000-10,000) runs 1-2 paywall tests a month. Organic volume is unsourced, so **plan a small lawful paid tranche
    at soft launch** (C1 W5).
-8. **Lawful paid channels for a 2027 RU launch (Recommend):** VK Ads to our own landing page (t.me acceptance
-   unverified — one test ad decides); VK and marketplace bloggers with ERID; Telegram Ads aimed at non-RU geos
-   (Russian-language creatives there are a grey zone); Telegram Ads bought with earned Stars for EN/CIS. RU Telegram
-   posts and RU Telegram Ads only if FAS states a 2027 position.
-9. **Do not (Recommend, §8):** point users to Stars resellers; mention VPN in any ad (p. 10.8); buy incentivized TMA
-   traffic, tapps/findmini slots or Stars giveaways; run suggestive, dating-framed, gruesome or scare creatives
-   (Telegram Ads §5.1/§5.4); use "ask your parents" or peer-shame hooks (38-FZ art. 6); run per-user random price
-   tests in Russia (Civil Code art. 426); ship same-sex routes in the RU build (risk reading, V3 #29); buy RU Telegram
-   placements that stay live into 2027.
-10. **Three biggest risks:** (1) the 2027 RU ad law removes the cheapest in-Telegram paid channels; (2) RU clicks that
-    cannot pay (Stars friction) or cannot load (host reach); (3) organic volume too small to pass the measurement
-    gates (cross-industry K ≈ 0.05, no TMA figure). Behind them: content law (same-sex content, minors).
-11. **Owner decisions waiting (§9):** age bracket and content category; real chapter prices; budget tier and ceiling;
-    advertiser of record / jurisdiction (Q21); brand/persona; English timing and regions; launch timing vs
-    2026-12-31; Affiliate Program; referral split; premium choices; influencer funding.
-12. **Verify on the test bot before relying (§10):** Telegram Ads accepting `startapp`; `?ref=` opening the app;
+8. **Paid channels for the RU launch (Recommend, with R3):** posts in Romance Club / otome fan channels on Telegram
+   and VK (exchanges, Suggested Posts, direct admin deals); Telegram Ads via RU resellers with minors-safe creatives;
+   VK Ads to our own landing page (t.me acceptance unverified — one test ad decides); VK and marketplace bloggers;
+   Telegram Ads bought with earned Stars. Each still passes the platform's own moderation, and most exchanges demand
+   an ERID before posting (a practical gate, not a legal choice).
+9. **Do not (Recommend, §8):** point users to Stars resellers (Stars ToS); buy incentivized TMA traffic,
+   tapps/findmini slots or Stars giveaways; run suggestive, dating-framed, gruesome or scare creatives on Telegram
+   Ads (§5.1/§5.4 — moderation rejects them); show any 18+ material in public or 14-17-reachable places (§8.5); use
+   "ask your parents" or peer-shame hooks on a 14-25 audience; run per-user random price tests in Russia (Civil Code
+   art. 426); ship same-sex routes in the RU build (content law, risk reading, V3 #29).
+10. **Three biggest risks:** (1) RU clicks that cannot pay (Stars friction) or cannot load (host reach); (2) organic
+    volume too small to pass the measurement gates (cross-industry K ≈ 0.05, no TMA figure); (3) the 18+ track: the
+    content law on the product itself and platform rules on sexual content (§8.5) — not covered by R3. Accepted, not
+    managed: the RU ad law (R3).
+11. **Owner decisions waiting (§9):** the age-gate method and the 18+ track's scope and brand; real chapter prices;
+    budget tier and ceiling; advertiser of record / jurisdiction (Q21); brand/persona; English timing and regions;
+    Affiliate Program; referral split; premium choices; influencer funding. Decided: audience 14-25 (R4), the
+    ad-law risk (R3).
+12. **The 18+ track (R5, §8.5; INTERPRETATION):** Russian criminal law (UK RF art. 242) has no lawful channel for
+    pornography — giving access to even one person is "distribution", so no age-gate or paywall exemption exists, and
+    "soft porn" has no legal meaning; an expert decides. Text alone and drawn characters (judged as minors) have been
+    convicted. The closest-to-practice RU level is non-naturalistic 18+ erotica, still an expert call. Selling 18+
+    products to under-18s is banned (436-FZ art. 16). No age signal a bot can read exists, so the gate is our own
+    server flag. Telegram imports Apple/Google rules, judges the promoted product in ads, and may withhold Stars. The
+    18+ track lives in a separate bot, never shown in public or 14-17-reachable places, with almost no paid channel.
+13. **Verify on the test bot before relying (§10):** Telegram Ads accepting `startapp`; `?ref=` opening the app;
     `start_param` lengths per platform; preview formats; gift prices; @PremiumBot with Russian cards.
 
 ## 3. The 2026 landscape
@@ -208,16 +236,16 @@ measurement covers Sep-Oct 2026 (V1 #14).
 
 | Channel | Cost (value, date, label) | Effort | Fit | Legal (RU 2026 / 2027+) | Ev. | Priority |
 |---|---|---|---|---|---|---|
-| Official Ads via RU resellers (EUR cabinet) | Floors €0.75 / €0.60 (2026-08-28, CLAIMED). Broad-topic average CPM €0.97, CPC €0.12 (Aug 2026, CLAIMED; wording ambiguous). Entry €100-500 + ≥ 20 % fee + 22 % VAT. **≈ €0.25-1.04 per start all-in** (ANALYSIS, V1) | M | Medium (hyp.): topic/channel targeting; no age or gender targeting; Premium users never see the ads | Ban in force per FAS, un-fined to 2026-12-31 / exposure | B | Avoid for RU from 2027, unless FAS states a position |
+| Official Ads via RU resellers (EUR cabinet) | Floors €0.75 / €0.60 (2026-08-28, CLAIMED). Broad-topic average CPM €0.97, CPC €0.12 (Aug 2026, CLAIMED; wording ambiguous). Entry €100-500 + ≥ 20 % fee + 22 % VAT. **≈ €0.25-1.04 per start all-in** (ANALYSIS, V1) | M | Medium (hyp.): topic/channel targeting; no age or gender targeting; Premium users never see the ads | Ban in force per FAS, un-fined to 2026-12-31 / exposure (R3: accepted) | B | Soft launch (R3; minors-safe creatives) |
 | Official Ads, Gram cabinet (self-serve) | Minimum CPM 0.1 Gram (DOCUMENTED); first deposit ~20 Gram (CLAIMED). Reportedly not shown in RU (single CLAIMED source, 2025-12) | M (crypto wallet; Fragment states no KYC, V4) | Low for RU; possible for EN/CIS via channel lists | Not aimed at RU if not shown there / same | B/C | Growth (EN) |
-| Official Ads paid with earned Stars | $0.02 credit per Star, "30 % discount", only for the bot that earned it, "may fluctuate"; 21-day hold (DOCUMENTED). ~1,000-Star entry (CLAIMED) | S | Medium-high once revenue exists: each Star buys 1.54× its cash value in ads | Aimed at RU: same p. 10.7 reading (06 over 02's practitioner) / same | A/B | Growth (EN/CIS first) |
+| Official Ads paid with earned Stars | $0.02 credit per Star, "30 % discount", only for the bot that earned it, "may fluctuate"; 21-day hold (DOCUMENTED). ~1,000-Star entry (CLAIMED) | S | Medium-high once revenue exists: each Star buys 1.54× its cash value in ads | Aimed at RU: same p. 10.7 reading (06 over 02's practitioner) / same (R3: accepted) | A/B | Growth (RU and EN/CIS) |
 | Official Ads aimed at CIS (KZ / BY / UZ) | CPM KZ €0.93 (CTR 1.35 %), BY €1.04, UZ €0.16 (Aug 2026, CLAIMED). KZ launch month disputed (2025-10 vendor / 2025-12 AdIndex). ≈ €0.11-0.34 per start (ANALYSIS) | M | KZ/BY medium: 84 % of Kazakhstan speaks Russian; in Belarus Russian is an official ad language. UZ low | Grey zone: a Russian-language creative leading to a bot that RU users can open may be read as aimed at RU. No safe harbour: RKN letter 03-72707 concerns tax accounting of ad spend, not 38-FZ (V4; N29) | B | Soft launch test, after a lawyer |
 | Official Ads aimed at EN | Floors €0.15-0.20 (reseller EUR cabinets only, date unstated, CLAIMED); average ~€0.49 (Jun 2026, no named source — weak). ≈ €0.12-0.23 per start (ANALYSIS) | M | Unknown: no EN romance audience evidence on Telegram | Outside 38-FZ if not aimed at RU (INTERPRETATION) | C | Growth (after the EN tables) |
 | Search ads | Minimum bid €1 (2025-04, CLAIMED) | S | Intent keywords such as «новелла» ("novel") and «отомэ» ("otome") (hyp.) | As official Ads RU | B/C | Avoid: no `start` parameter, so no attribution |
-| Ads inside bots | €1 minimum at launch (2025-05, CLAIMED) | M | Only if fitting bots exist (hyp.) | As official Ads RU | C | Avoid for RU from 2027 |
-| Suggested Posts (native paid posts) | Price set per deal in Stars or Toncoin; paid 24 h after posting; automatic refund if removed earlier (DOCUMENTED) | M | Medium-high for small fandom channels (hyp.) | A paid post in Telegram aimed at RU: p. 10.7 + ERID / exposure | A (mechanism) | Conditional on FAS 2027 |
-| Channel posts via exchanges or admins («посевы», "seeding") | CPM 150-300 ₽ in entertainment (Q1 2026) up to 2,412-4,175 ₽ (n = 3 non-game channels, 2026-09). Anime/manga posts ≈ 840 ₽ (one listing opened; the 280-420 ₽ listings unconfirmed, V4). RC fan channels: ~1.4 K views per post, prices not published. **≈ 15-420 ₽ per start** (ANALYSIS, §5.4). ~30 % of channels cheat (CLAIMED) | L (vetting, ERID) | **Highest evidenced match**: RC fan channels of 57-81 K subscribers sell ads (09 §2) | p. 10.7 time box; ERID; RKN list above 10 k subscribers; foreign-agent check / exposure | A (reach) / C (price) | Conditional on FAS 2027 |
-| Yandex Direct → Telegram channels | CPC cap 30-300 ₽ (2023, CLAIMED); post forecast 700-7,200 ₽ (2026-09, CLAIMED); 18,000+ channels in the network (2026-01) | M | Medium; channel landings only, bot / Mini App landings unknown | Placement inside Telegram channels: same p. 10.7 reading (INTERPRETATION) | C | Conditional |
+| Ads inside bots | €1 minimum at launch (2025-05, CLAIMED) | M | Only if fitting bots exist (hyp.) | As official Ads RU (R3: accepted) | C | Growth (if fitting bots exist) |
+| Suggested Posts (native paid posts) | Price set per deal in Stars or Toncoin; paid 24 h after posting; automatic refund if removed earlier (DOCUMENTED) | M | Medium-high for small fandom channels (hyp.) | A paid post in Telegram aimed at RU: p. 10.7 + ERID / exposure (R3: accepted) | A (mechanism) | Soft launch (R3) |
+| Channel posts via exchanges or admins («посевы», "seeding") | CPM 150-300 ₽ in entertainment (Q1 2026) up to 2,412-4,175 ₽ (n = 3 non-game channels, 2026-09). Anime/manga posts ≈ 840 ₽ (one listing opened; the 280-420 ₽ listings unconfirmed, V4). RC fan channels: ~1.4 K views per post, prices not published. **≈ 15-420 ₽ per start** (ANALYSIS, §5.4). ~30 % of channels cheat (CLAIMED) | L (vetting, ERID) | **Highest evidenced match**: RC fan channels of 57-81 K subscribers sell ads (09 §2) | p. 10.7 time box; ERID; RKN list above 10 k subscribers; foreign-agent check / exposure (R3: accepted; exchanges still demand an ERID) | A (reach) / C (price) | **Soft launch** (R3) |
+| Yandex Direct → Telegram channels | CPC cap 30-300 ₽ (2023, CLAIMED); post forecast 700-7,200 ₽ (2026-09, CLAIMED); 18,000+ channels in the network (2026-01) | M | Medium; channel landings only, bot / Mini App landings unknown | Placement inside Telegram channels: same p. 10.7 reading (INTERPRETATION; R3: accepted) | C | Launch (R3) |
 | TMA ad networks (AdsGram, RichAds, TADS, Monetag) | AdsGram CPM from 2 USDT, $100 minimum. RichAds push CPC $0.015, $150 deposit. TADS CPC $0.01, $50 test (CLAIMED) | S | Low: rewarded tap-to-earn and crypto skew; "up to 80 %" bot farms (CLAIMED) | Telegram-hosted, aimed at RU: same reading | B/C | Avoid |
 
 ### 4.3 Telegram viral mechanics and owned channels
@@ -234,7 +262,7 @@ measurement covers Sep-Oct 2026 (V1 #14).
 | `shareToStory` | 0 | S-M | Story culture fits, but links are Premium-only and there is no callback | — | A/C | Growth (image with the bot name only) |
 | Inline teaser cards / "what would you choose?" | 0 | M | Fan debate (CLAIMED) | — | A/C | Growth |
 | Guest mode (10.0) | 0 | M | A new surface; no outcome data; whether buttons are allowed is unknown | Spam, §5.2(b) | A | Growth |
-| Telegram Affiliate Program (MV11) | 1-800 ‰ of referred revenue (defaults), from our revenue; raise-only | XS (no code) | Pays promoters who bring payers; no VN uptake data | Every affiliate post in an RU channel is our ad, and we cannot enforce ERID: + p. 10.7 (INTERPRETATION) | A (mechanism) / C (uptake) | Growth (EN first) |
+| Telegram Affiliate Program (MV11) | 1-800 ‰ of referred revenue (defaults), from our revenue; raise-only | XS (no code) | Pays promoters who bring payers; no VN uptake data | Every affiliate post in an RU channel is our ad, and we cannot enforce ERID: + p. 10.7 (INTERPRETATION; R3: accepted) | A (mechanism) / C (uptake) | Growth |
 | Telegram gifts / Premium as prizes | Premium 3 / 6 / 12 months = 1,000 / 1,500 / 2,500 Stars (DOCUMENTED); gift prices: gap | S | A status prize (hyp.) | Giveaway law with minors: gap (C1 M2) | A/C | Avoid in the foundation |
 | Channel Stars giveaways with partner channels | A prepaid Stars pool | S | Co-promotion (hyp.) | `only_new_members` sits close to §5.2(d)(ii); art. 9 disclosure; minors gap | A/C | Avoid for now |
 
@@ -266,6 +294,19 @@ measurement covers Sep-Oct 2026 (V1 #14).
 | TikTok / BookTok / Reels | 0 organic | L | EN only, via non-RU accounts. RU accounts cannot upload since early Mar 2022, and there is no RU ad cabinet (CLAIMED, still so in 2026-07) | — | C | Growth (EN) |
 | Discord server | 0 | M | EN only (blocked in RU since 2024-10-08) | — | A | Growth (EN) |
 | EN influencers | Not priced | M | Unknown | FTC / ASA disclosure (#ad; an affiliate reward is a material connection) | A/B | Growth |
+
+### 4.6 The 18+ track (R5; 10 channel rows, §8.5)
+
+| Channel | Cost | Fit | Constraint (not ad law) | Ev. | Priority |
+|---|---|---|---|---|---|
+| In-product, to users with the 18+ flag (Home shelf, end-of-chapter teaser) | 0 | High: the only audience known to be confirmed adults | Never shown without the flag (F23) | A | Launch of the 18+ track |
+| Own 18+ channel, separate from the public one, erotica-only and 18+-marked | 0 + time | Medium (hyp.) | Telegram ToS (no illegal porn on public channels); art. 242 if explicit; 2025 prosecutions of explicit channels | B | Launch of the 18+ track |
+| Telegram Ads naming the 18+ track | — | None | Ads §5.1 bans sexually suggestive ads | A | Avoid |
+| Otome / Romance Club fan channels with an 18+ angle | Per §4.2 | High genre fit | Their audiences include minors: only a minors-safe creative fits (art. 242 part 2 risk) | C | Avoid (18+ angle); use them for the public track |
+| VK Ads for the 18+ track | Per §4.4 | Low | Linked communities must have no sexually explicit images | B | Avoid |
+| Adult ad networks (ExoClick, TrafficJunky, JuicyAds) | Deposits $25-€500; CPM $0.1-8 (CLAIMED) | Low: explicit, male-skewed traffic | For RU: art. 242 "advertising"; `t.me` landing acceptance unknown | C | Avoid |
+| Litnet / Author.Today erotic-romance readers (RU) | Unknown | High topical fit for adult women (hyp.) | Promotion rules not read | C | Growth (read the rules first) |
+| EN adult stores and communities (Nutaku, itch.io NSFW, F95zone, Patreon/Boosty 18+) | Varies; not researched | Low-medium for EN | Need a non-Telegram build or leave our gate (principle 0); processor volatility (2025) | C | Not for the TMA |
 
 ## 5. Funnel and metrics
 
@@ -430,8 +471,8 @@ Reseller minimums are €100-500 (V1 #20). Price tests in Russia must be sequent
 **Product readiness sets the calendar:** 14 of ~47 lanes are merged and there is no public bot (the owner has a test
 bot); the social/growth features (M10-M23) are a draft on the unmerged `design/choices` branch, their lanes queued
 after LS3 (LE1 → LF1 → LM2 → LF2 → LE2 → LPO); story/art (Q1/Q2), prices (Q3) and jurisdiction/hosting (Q21/Q5) are
-open. The FAS window closing 2026-12-31 therefore falls before any product exists to advertise: **no phase relies on
-it.** In the gates, "sourced" = a cited practitioner or arithmetic figure; "ASSUMPTION" = no source.
+open. The FAS window closes 2026-12-31, before any product exists to advertise; under R3 that date is **not a planning
+constraint** (the owner accepts the RU ad-law risk). In the gates, "sourced" = a cited practitioner or arithmetic figure; "ASSUMPTION" = no source.
 
 ### 6.1 Phase 0: Pre-launch (now → public bot)
 
@@ -460,8 +501,9 @@ gives a pre-launch growth rate, 04 gaps).
 |---|---|---|
 | Everything above | Creative production (preview art, channel content); one VK Ads test ad (top-up 500-600 ₽) to settle t.me / landing acceptance (C1 K3); VK Ads to grow the VK community (ERID) | Not recommended (nothing to measure yet); at most one creative wave (6-10 variants at ≈ $150-350 each, CLAIMED app-store practice, 07) |
 
-**Legal checkpoints:** an ORD account and ERID for any paid VK post; the age label on every creative; no RU Telegram
-paid placement live after 2026-12-31; RKN-list and foreign-agent checks for any partner channel above 10 k.
+**Checkpoints:** an ORD account and ERID wherever a platform or exchange demands one before posting (VK, telega.in-type
+exchanges); the age label on every creative, and only minors-safe material in it (§8.5); RKN-list and foreign-agent
+checks where an exchange demands them. The RU ad-law exposure itself is accepted (R3).
 
 ### 6.2 Phase 1: Soft launch (production bot, cohort-coded links)
 
@@ -471,10 +513,12 @@ paid placement live after 2026-12-31; RKN-list and foreign-agent checks for any 
 1. **Production-bot beta via `startapp` cohort links** (07 §4); the Telegram test environment is for payment QA only
    (testers need separate accounts).
 2. **Invite the waitlist and channel first;** invites and shares once LF1/LF2 have merged.
-3. **A lawful paid measurement tranche** sized to reach ≈ 900 starts (C1 W5), in this order: (a) VK Ads → our
-   landing page → t.me, if the test ad was accepted; (b) ERID-marked posts in Romance Club / otome VK groups and via
-   marketplace bloggers; (c) Telegram Ads aimed at KZ/BY after the lawyer reviews Russian-language targeting (08);
-   (d) EN Telegram Ads, only with complete EN chapter-1 tables.
+3. **A paid measurement tranche** sized to reach ≈ 900 starts (C1 W5), in this order: (a) posts in Romance Club /
+   otome fan channels on Telegram (exchanges, Suggested Posts, admin deals) and in the matching VK groups — the best
+   evidenced audience match (09 §2; R3); (b) VK Ads → our landing page → t.me, if the test ad was accepted; (c)
+   Telegram Ads via RU resellers with minors-safe creatives (R3); (d) marketplace bloggers (CPA); (e) Telegram Ads
+   aimed at KZ/BY; (f) EN Telegram Ads, only with complete EN chapter-1 tables. Every creative shows the public
+   (minors-safe) track only (§8.5).
 4. **"How to buy Stars" help page** naming official routes only (09); read the invoice-friction event weekly.
 5. **Sequential price periods** if price is tested at all (Civil Code art. 426).
 
@@ -487,9 +531,9 @@ invoice-friction and load-failure rates known (no threshold sourced); no open pa
 |---|---|---|
 | Waitlist, channel, invites; may not reach 900 starts (organic volume unsourced) | ≈ 250-3,600 starts at Telegram-Ads-type costs; via VK Ads ≈ 160-5,900, via KZ Telegram Ads ≈ 770-7,900 (ANALYSIS). D1 and funnel shape, not a paywall A/B | ≈ 2,400-36,000 starts: 1-2 paywall tests a month (€1,850-4,370 each), per-channel CAC |
 
-**Legal checkpoints:** ERID + «Реклама» ("Advertisement") + advertiser identity on every paid creative; the age label;
-art. 6 hooks if minors are in the audience; the lawyer's sign-off on KZ/BY Russian-language campaigns; re-check FAS if
-the soft launch starts before 2026-12-31. **Product dependency:** M11 attribution + campaign prefixes (F1), paywall
+**Checkpoints:** ERID + «Реклама» ("Advertisement") + advertiser identity where the platform or exchange demands it;
+the age label; no "ask your parents" or peer-shame hooks (the audience starts at 14); no 18+ material in any creative
+or landing page (§8.5). The RU ad-law exposure is accepted (R3). **Product dependency:** M11 attribution + campaign prefixes (F1), paywall
 and invoice events (F2), the activity fact (F4), live Stars payments, the landing page (F17).
 
 ### 6.3 Phase 2: Launch
@@ -505,22 +549,21 @@ and invoice events (F2), the activity fact (F4), live Stars payments, the landin
 4. **Spend only on channels that passed;** Telegram Ads bought with earned Stars for EN/CIS ($0.02 per Star).
 
 **Gate to growth:** LTV : CAC ≥ 1.4× per channel at D30-D90 (sourced practitioner rule: CPI at 30-70 % of LTV); CPI
-rises < 30 % when spend triples (sourced, CLAIMED); K measured (no benchmark; K ≈ 0.05 as the floor reference); a FAS
-2027 position before any RU in-Telegram spend.
+rises < 30 % when spend triples (sourced, CLAIMED); K measured (no benchmark; K ≈ 0.05 as the floor reference).
 
 | Zero | Small | Medium |
 |---|---|---|
 | Featuring, shares, referral, VNDB, Reddit, owned channels | The best measured channel at its measured CAC; Stars recycled into Telegram Ads | Scale only channels that pass; CPA bloggers (Perfluence model); creative waves |
 
-**Legal checkpoints:** the Affiliate Program decision (RU affiliate posts are our ads); EN influencer disclosure
-(FTC / ASA); the FAS 2027 status.
+**Checkpoints:** the Affiliate Program decision (affiliates promote with their own creatives: they must not show the
+18+ track in public); EN influencer disclosure (FTC / ASA).
 
 ### 6.4 Phase 3: Growth
 
 **Goal:** repeatable acquisition without breaking principles 0-2. **Actions:** the Affiliate Program — EN first, low
 commission, finite duration (both can only be raised); influencers at scale; the EN market; guest mode, Communities,
 inline teaser cards; live-ops windows (a free chapter or hint weekend, the Diamond Fever analogue, 05); RU Telegram
-channel posts only under a stated FAS 2027 position. **Gate:** the same LTV : CAC rule per channel and market.
+channel posts at scale on the measured CAC (R3). **Gate:** the same LTV : CAC rule per channel and market.
 **Budget:** medium, sized to the measured CAC; never spend on unmeasured channels.
 
 ## 7. Product feature asks (listed, not designed)
@@ -546,20 +589,29 @@ channel posts only under a stated FAS 2027 position. **Gate:** the same LTV : CA
 | F17 | Public landing page per story on our domain: art, age sign, a t.me button | VK Ads requires a browser page with no redirects (09 §5); VNDB, press and itch need a URL | The privacy-policy host (MV14) | Free art only; must be reachable from RU (Q21) | Soft launch | Engineering |
 | F18 | Locale hint in the campaign code | An ad, its channel and its destination must share a language (Ads §4.7) | F1, Q8 | — | Soft launch | Engineering |
 | F19 | How a Stars debit after an Apple refund reaches the bot; revoke entitlements | Telegram may debit Stars (09 §1.3) | L9 refunds | Principle 2 | Soft launch | Engineering (test bot) |
+| F20 | Server-side 18+ flag per user (method, time, policy version), separate from purchases and entitlements | R5; no Telegram age signal (§8.5 A8) | Auth/users, privacy inventory (M25), MV12 | Principle 1: never from `initDataUnsafe`, `birthdate` alone or client storage; 152-FZ data minimisation | Before the 18+ track | Engineering + owner (P21) |
+| F21 | 18+ chapters and art served only after entitlement AND the 18+ flag; never in the public bundle, even if free | §8.5 A1, A5-A6 | Principle 0's delivery path (L6b), the asset pipeline | Extends principle 0; no conflict | Before the 18+ track | Engineering |
+| F22 | Age category per story and per chapter (0+/6+/12+/16+/18+) in the story index, enforced by the server and the story gate | 436-FZ marking; §8.5 | `story/chapters.json`, F12 | Story DSL / index change (a lane owns it) | Before the 18+ track | Engineering + narrative |
+| F23 | Minors-safe defaults: no 18+ titles, covers, teasers or locked hints for a user without the flag; separate covers, previews and share texts for 18+ | §8.5 Recommend; A2 (complaints start cases) | M14 shares, M12-M13 friend views, Home, store previews | Friend views and shares must not reveal 18+ titles to a minor friend | Before the 18+ track | Engineering |
+| F24 | Story-gate lint for the 18+ track: explicitly adult characters in text and art metadata, no school setting | §8.5 A3 (art. 242.1) | Story lint (L3b/L3c) | Lint cannot judge art; a review step stays | Before the 18+ track | Engineering + narrative |
+| F25 | A kill and refund path for the 18+ track (disable, refund, revoke) | Stars withholding risk, Bot Developer Terms §6.2.4 (A5) | L9 refunds, catalog | Principle 2 | Before the 18+ track | Engineering |
 
 ## 8. Legal do / don't checklist (INTERPRETATION, not legal advice)
 
 ### 8.1 Russia
 
+**R3 (owner, 2026-10-31):** the ad-law risk is accepted. The rows marked "(R3: accepted)" are kept as facts — what the
+exposure is — not as plan constraints. Rows on content, minors and Telegram's own terms are not ad law and stand.
+
 | Do / Don't | Rule | Source |
 |---|---|---|
 | **Do** mark every paid RU internet ad: «Реклама» ("Advertisement"), the advertiser's name or site, an ERID token from an ORD, and ERIR reporting. The ERID cannot be added after publication | 38-FZ art. 18.1; KoAP 14.3 p. 15-16 (legal entity 200-500 k RUB) | 06 §1.2-1.3; V3 #18 |
 | **Do** decide the advertiser of record first. ERID needs its details; the 3 % self-withholding binds only a Russian entity, IP or citizen | 38-FZ art. 18.2 p. 5 | V3 #23; Q21 |
-| **Don't** run paid placements inside Telegram aimed at RU from 2027 without a FAS position. Per FAS, the violation exists now; liability is deferred to 2026-12-31 inclusive. Exposure: KoAP 14.3 p. 1, 100-500 k RUB per violation (legal entity). The reading of "restricted" is contested and untested in court | 38-FZ art. 5 p. 10.7 | V3 #1-#6, #20 |
-| **Don't** buy a pinned or long-running Telegram placement that stays live into 2027 | Same | 06 pitfalls |
+| (R3: accepted) **Don't** run paid placements inside Telegram aimed at RU from 2027 without a FAS position. Per FAS, the violation exists now; liability is deferred to 2026-12-31 inclusive. Exposure: KoAP 14.3 p. 1, 100-500 k RUB per violation (legal entity). The reading of "restricted" is contested and untested in court | 38-FZ art. 5 p. 10.7 | V3 #1-#6, #20 |
+| (R3: accepted) **Don't** buy a pinned or long-running Telegram placement that stays live into 2027 | Same | 06 pitfalls |
 | **Don't** advertise on Instagram or Facebook (no transition) | p. 10.7; FAS 2026-03-25 | V3 #4 |
-| **Don't** place ads in an unlisted channel above 10 k subscribers. Telegram is on RKN's social-network register (2021-10). Don't place in foreign-agent channels | 38-FZ art. 5 p. 10.6, p. 10.5 | V3 #25-#26; 06 |
-| **Don't** mention VPN in any ad or partnership | 38-FZ art. 5 p. 10.8; KoAP 14.3 p. 18 | V3 #38 |
+| (R3: accepted; exchanges may still refuse) **Don't** place ads in an unlisted channel above 10 k subscribers. Telegram is on RKN's social-network register (2021-10). Don't place in foreign-agent channels | 38-FZ art. 5 p. 10.6, p. 10.5 | V3 #25-#26; 06 |
+| (R3: accepted) **Don't** mention VPN in any ad or partnership | 38-FZ art. 5 p. 10.8; KoAP 14.3 p. 18 | V3 #38 |
 | **Do** state the age category (0+/6+/12+/16+/18+) in every ad | 38-FZ art. 5 p. 10.1; 436-FZ arts. 2, 6, 11 | V3 #27 |
 | **Do** keep romance within the category: 12+ is "episodic, non-naturalistic" depiction between a man and a woman with no sexual acts; 16+ allows depiction without "exploiting interest in sex" | 436-FZ arts. 9-10 | V3 #28 |
 | **Don't** include same-sex routes in the RU build (the risk reading). For minors, depiction is barred; for adults, "propaganda" is banned at every age (KoAP 6.21; legal entity from 800 k RUB). Romance Club's RU app cut those routes | 436-FZ art. 5 p. 2 item 4.1; KoAP 6.21 | V3 #29; V2 #28 |
@@ -594,7 +646,7 @@ channel posts only under a stated FAS 2027 position. **Gate:** the same LTV : CA
 | **Do** disclose influencer and affiliate ties (#ad up front; an affiliate reward is a material connection) | FTC Endorsement Guides; ASA / CAP | 06 §5 |
 | **Don't** collect data from under-13s with actual knowledge | COPPA | 06 §5 |
 
-### 8.4 Teens (13-17) vs adults (18+): what changes
+### 8.4 The dual audience (R4: women 14-25): what differs for 14-17 and 18+
 
 | Dimension | 13-17 | 18+ | Source |
 |---|---|---|---|
@@ -610,9 +662,52 @@ channel posts only under a stated FAS 2027 position. **Gate:** the same LTV : CA
 | Platform reach | Mediascope 2024, before the restrictions: 12-17 daily reach Telegram 80.6 %, VK 64.9 %, TikTok 62.2 % | — | 09 §2 (stale) |
 | Case evidence | Top-3 story apps combined (2018): 78 % female, 80 % aged 10-21. Episode was criticised for sexualised marketing | Romance Club RU 18+; Lore 18+; short-drama audiences adult women (ReelShort ~75 % female) | V2 #45, #50; 05 |
 
-**Planning default (not a decision):**
-- a 16+ content category with MV12's 14+ user minimum, the two kept separate;
-- every creative written child-safe, because Telegram cannot exclude minors.
+**Planning default after R4/R5 (the owner decided the audience; the category split is the plan's reading):**
+- the user minimum stays 14 (MV12 matches R4); the **public track** — free chapters, covers, previews, shares,
+  creatives, landing pages, the channel — is at most 16+ and safe for 14-17;
+- the **18+ track** (R5) is a separate category per story or chapter, reachable only after the age gate (§8.5);
+- every creative is written minors-safe, because Telegram Ads cannot exclude minors and the audience starts at 14.
+
+### 8.5 The 18+ track (R5): content law, platform rules, the age gate (INTERPRETATION, not legal advice)
+
+Source: `10-adult-content-age-gate-dual-audience.md` (10), checked by `V5-verify-adult-content.md` (V5). R3 waives the
+**ad-law** risk only; the rows below are criminal law on the content itself and the platforms' own terms.
+
+**Shows:**
+
+| # | Rule | What it means for an 18+ romance track | Label | Source |
+|---|---|---|---|---|
+| A1 | UK RF art. 242: making, distributing, publicly showing or **advertising** pornographic materials is a crime; no exemption, licence, age gate or paid-access carve-out. Internet: part 3 "б", 2-6 years. "Among minors": part 2, 2-5 years | "Soft porn" has no legal meaning: an expert decides per item whether it is pornography or lawful erotica. Giving access even to one person is "distribution" (Supreme Court Plenum No. 37 of 2022, p. 22), so neither a paywall nor an age gate makes it lawful. Advertising pornography is an element of art. 242 itself, separate from 38-FZ (R3 does not cover it) | DOCUMENTED (law, ed. 2026-08-04; Plenum) | 10 [19]; V5 |
+| A2 | Practice: drawn anime erotica convicted (Tomsk, part 3 "б", 2024-12, started by a classmate's complaint); **text alone** convicted (fan-fiction texts, a language expert, part 3 "б", 1.5 years of forced labour, 2026-05); paid closed Telegram channels with explicit content prosecuted (2025) | Drawing, text-only form and paid closed access do not protect; one complaint from a teen who passed a self-declaration can start a case | CLAIMED (press reports of verdicts) | 10 [27][28]; V5 |
+| A3 | UK RF art. 242.1 (sexual depictions of minors), "any depiction". Drawn characters **have** been treated as minors: Bryansk 2019-2020, an expert assigned an under-14 age to drawings, conviction under 242.1. The artistic-value exemption covers depictions of genitals only, not sexual acts | Every sexual scene: characters explicitly adult in text and art, no school setting, no youthful styling — the highest exposure next to a 14-17 audience | DOCUMENTED (law) / CLAIMED (case) / INTERPRETATION | 10 [20]; V5 (corrects 10's "no drawn case") |
+| A4 | Precedent: Romance Club ships a separate 18+ RU app with same-sex routes removed (the source says nothing about its erotica level); Litnet runs an «Эротика» ("Erotica") genre behind an account (snippet) | Non-naturalistic, 18+-marked erotica is the lane closest to practice, but no source shows it is tolerated — it stays an expert call (A1-A2) | CLAIMED (practice) | 10 [33][34]; V5 |
+| A5 | Telegram ToS: no "illegal pornographic content" on publicly viewable bots and channels; Bot Developer Terms §9: comply with the Apple and Google store guidelines; Bot Developer Terms §6.2.2 (Stars on a bot's balance are owned by Telegram), §6.2.4 (withholding) and §10 (no compensation on termination) | Stars earned from content that breaks RU law or store rules are at risk | DOCUMENTED | 10 [1][4]; V5 (the clause is not Stars ToS §5, which covers a user's own balance) |
+| A12 | 436-FZ art. 16 part 6: selling 18+ information products to under-18s is banned (no statutory duty to verify age); the MAX law (569-FZ) amended it to let a seller check age via MAX | Our own gate is the only barrier between a 14-17 user and the 18+ track; MAX age checks need a MAX integration (principle 6) | DOCUMENTED (law) | V5 |
+| A6 | Apple 1.1.4 bans "overtly sexual or pornographic material"; 4.7.5 makes a host app (Telegram, rated 13+) identify and restrict mini apps above its rating; Google Play bans content "intended to be sexually gratifying" | Anything visible to iOS/Android users without Telegram's own gate stays within a 13+ host's limits | DOCUMENTED | 10 [15][16][18] |
+| A7 | Telegram's `restriction_reason` (`sensitive`, `porno`, platform `ios`) applies to a whole bot | A flag on a shared bot puts the 14-17 track behind an 18+ spoiler too: one bot or two is a real fork | DOCUMENTED | 10 [7][8] |
+| A8 | No age signal a bot can read (Bot API 10.3): @TelegramAge (face scan, UK since 2025-07, not in Russia) is not exposed to bots; `birthdate` (Bot API 7.2) is user-entered and optional | The gate must be our own, server-side (principle 1) | DOCUMENTED | 10 [7][9][10][11] |
+| A9 | Russia has no age-check law or service a game can use in 2026: Mintsifry calls it "the nearest agenda" (2026-06-08); the MAX ID law covers alcohol, tobacco, lotteries and events (and 436-FZ art. 16, A12); ESIA login is open only where a law or government act requires it or a government commission approves — no path for a game (V5) | Options: self-declaration (free, weak), a vendor check (Didit ≈ $0.10 per check, CLAIMED; camera in the WebView untested), or no 18+ track in RU | CLAIMED (press) / CLAIMED (vendor) | 10 [31][32][36] |
+| A10 | Promotion: Telegram Ads §5.1 bans sexually suggestive ads, and the ad rules cover the **promoted product**, not only the creative (V5); VK requires linked communities without sexually explicit images; adult networks (ExoClick, TrafficJunky, JuicyAds; deposits $25-€500, CLAIMED) serve explicit, male-skewed traffic | The 18+ track has almost no compliant paid channel; a bot that also carries a sexual 18+ track risks rejection even with a clean ad — another reason for a separate 18+ bot (P20) | DOCUMENTED / CLAIMED | 10 [14][37] |
+| A11 | Dual-audience precedent = separate apps or builds: Romance Club's separate 18+ RU app (2026-05-19); Everlasting Summer's adult version on Nutaku (2015-08) | Separation is the norm, not one mixed catalogue | CLAIMED | 10 [34][38] |
+
+**Recommend (a planning reading — the owner decides, a lawyer confirms):**
+- **RU content level:** at most non-naturalistic 18+ erotica (A4); no explicit ("soft porn") material in anything
+  served to Russia (A1-A2) — text included, since text alone has been convicted. A lawyer reviews sample 18+ scenes
+  (text and art) before production. Explicit material, if ever, only for non-RU audiences after a separate legal
+  review there.
+- **Separation:** every public and 14-17-reachable surface stays minors-safe (≤ 16+): free chapters, Home, covers,
+  previews, shares, creatives, landing pages, the public channel, referral and gift flows. A user without the 18+ flag
+  never sees 18+ titles, teasers or "locked" hints.
+- **The gate:** a server-side 18+ flag per user (method, time, policy version), separate from purchases; 18+ chapter
+  JSON and art served only after both the entitlement and the flag, never in the public bundle (principle 0's path).
+  Minimum method: a logged self-declaration — acceptable only while the RU line stays non-pornographic (A1).
+- **One bot or two:** a platform flag on a shared bot would hit the 14-17 funnel (A7), and Telegram Ads judge the
+  promoted product, not only the ad (A10). Since the public track is the one advertised, a **separate 18+ bot** keeps
+  the advertised bot clean (P20).
+- **Money:** treat 18+ Stars revenue as at risk until a payout cycle clears (A5: Bot Developer Terms §6.2.2, §6.2.4,
+  §10).
+- **Promotion of the 18+ track:** inside the product to confirmed adults, and an own 18+-marked, erotica-only channel;
+  never in paid creatives, never in fan channels whose audience includes minors (A10; 10 channel rows).
 
 ## 9. Owner value questions
 
@@ -621,15 +716,15 @@ Numbered P1-P18 so they do not collide with the `docs/OPEN-QUESTIONS.md` numbers
 | # | Question | Why it matters | Options | Default the plan assumes |
 |---|---|---|---|---|
 | P1 | Budget tier and monthly ceiling | It decides whether the gates are reachable (§5.7) | Zero / small $300-1,000 / medium $3,000-10,000 | Zero pre-launch; small at soft launch (to reach about 900 starts); medium only after the gates |
-| P2 | Audience age bracket and content category | It fixes the scenes, every ad's label, the ad copy and the payment capacity (§8.4) | 13-17 / 16+ / 18+ | 16+ category, MV12 14+ user minimum, kept separate |
-| P3 | Positioning: "otome romance" or "romantic mystery / horror" (C1 M8) | Creatives: §5.1/§5.4 ban gruesome and scare imagery; fear content is age-restricted; VNDB's 50 % reading rule | Romance-led / mystery-led / both | Romance-led creatives; puzzles shown without gore |
+| P2 | ~~Audience age bracket~~ **DECIDED (R4, R5):** women 14-25; 18+ erotic content behind an age confirmation. Open part: the age-gate method and what counts as "confirmed" (§8.5) | It fixes the gate, its cost and its legal weight | Self-declaration / document or bank-ID check / Telegram-side signal if one exists (§8.5) | §8.5 |
+| P3 | Positioning: "otome romance" or "romantic mystery / horror" (C1 M8); how the 18+ track is presented | Creatives: §5.1/§5.4 ban suggestive, gruesome and scare imagery; fear content is age-restricted; VNDB's 50 % reading rule | Romance-led / mystery-led / both; one brand or a separate 18+ brand | Romance-led, minors-safe public brand; the 18+ track never shown in public material (§8.5) |
 | P4 | Content policy for the RU build (V3) | Same-sex content and sexual-content levels; Romance Club's precedent | RU = EN / RU-specific cut / none anywhere | No same-sex routes in RU builds; EN differences are a values call |
 | P5 | When to target English, and which regions | EN channels need complete EN tables; EU/UK users are 18+ | At launch / after RU soft launch / later | After the RU soft launch; no EU/UK teens |
-| P6 | Launch timing vs 2026-12-31 | The FAS window closes before any product exists | Rush a pre-2027 launch / launch when ready | Launch when ready (2027); re-check FAS before any RU in-Telegram spend |
+| P6 | ~~Launch timing vs 2026-12-31~~ **DECIDED (R3):** the ad-law risk is accepted, so the date does not bind | — | — | Launch when ready |
 | P7 | CIS test geos; Ukraine | Cheap Russian-language reach, but a grey "aimed at RU" zone | KZ/BY yes / no; Ukraine | KZ/BY after the lawyer; Ukraine excluded (08: language rules, politics) |
 | P8 | Brand / persona (C1 M3: not researched) | Channel voice; the legal operator details are needed anyway | Studio voice / character persona / both | A studio voice as operator (bot, `/support`, legal); character-led posts as content (Romance Club memes, CLAIMED) |
 | P9 | Bot username (permanent) | Every link and creative carries it | — | Decided before any public link; readable in Latin-script search and in Russian |
-| P10 | Affiliate Program on/off, commission and duration (MV11) | Raise-only commission out of our revenue; RU marking risk | Off / EN-only pilot / on | Off for RU until FAS 2027; an EN pilot at a low commission with a finite duration in Growth |
+| P10 | Affiliate Program on/off, commission and duration (MV11) | Raise-only commission out of our revenue; RU marking risk | Off / EN-only pilot / on | A low-commission, finite-duration pilot in Growth (R3 removes the RU legal block); affiliates' creatives are outside our control, so the 18+ track must not be promotable through it (§8.5) |
 | P11 | Referral split and size (MV5) | The evidence leans invitee-side; the reward is ≈ $0.02 of value | 5/2 / invitee ≥ inviter / larger rewards | 5/2 (MV5); revisit with launch data |
 | P12 | Premium choices | The leaders' main lever vs principle-0 branch gating | No / later / yes | No (chapters-only, Lore positioning) |
 | P13 | Real chapter prices (Q3) | Break-even is linear in price; 1 Star cannot fund any paid traffic (§5.5) | 50-150 Stars modelled; higher | Model 50-150 Stars; decide before the paid tranche. A teen line keeps prices "minor everyday" |
@@ -638,6 +733,10 @@ Numbered P1-P18 so they do not collide with the `docs/OPEN-QUESTIONS.md` numbers
 | P16 | Which RU network conditions the app supports (09, with Q5/Q21) | Whitelist mode needs RU-hosted servers | Fixed broadband only / plus mobile whitelist | Fixed broadband and Wi-Fi; whitelist mode unsupported unless hosted in Russia |
 | P17 | Release cadence promise | The owned channel needs news; cadence kept the cases alive | None / every N weeks | No public cadence until two stories are complete (05) |
 | P18 | Giveaways, gifts as prizes, live-ops free windows | The minors / giveaway law is a gap | None / later | None in the foundation |
+| P19 | How explicit the RU 18+ line may be (R5's "soft porn") | Art. 242 has no lawful channel for pornography; an expert draws the line (§8.5 A1-A2) | Non-naturalistic 18+ erotica / more explicit / explicit only outside RU | Non-naturalistic erotica in RU; a lawyer reviews sample scenes |
+| P20 | One bot for both tracks, or a separate 18+ bot/brand | A platform flag applies per bot (§8.5 A7); Telegram Ads judge the promoted product (A10); separate apps are the precedent (A11) | One bot / two bots / two brands | A separate 18+ bot, so the advertised public bot stays clean |
+| P21 | Strength of the age confirmation | No readable Telegram or state signal (A8-A9) | Self-declaration / vendor check (≈ $0.10, CLAIMED) / no 18+ in RU | Logged self-declaration at the non-naturalistic level |
+| P22 | Accept the iOS reach and Stars-forfeiture risks of the 18+ track | Apple 1.1.4 / 4.7.5 via Telegram's 13+ rating; Bot Developer Terms §6.2.2 / §6.2.4 / §10 (A5-A6) | Accept / keep 18+ off iOS / no 18+ track | Accept, with 18+ revenue treated as at risk until a payout clears |
 
 ## 10. Verify before relying (test-bot and live checks)
 
@@ -658,6 +757,8 @@ Numbered P1-P18 so they do not collide with the `docs/OPEN-QUESTIONS.md` numbers
 | T13 | Mini App load from RU without VPN: fixed broadband, mobile whitelist, in-app proxy, on the chosen host | Every RU row; Q21/Q5 | A load test from Russia | Owner / tester |
 | T14 | The live affiliate commission bounds and duration choices (only defaults were read) | P10 | The BotFather / profile UI | Owner |
 | T15 | The live r/otomegames and r/visualnovels self-promotion rules | EN posting | Read the wiki before posting | Owner |
+| T16 | Whether an age-estimation vendor's camera flow works in the Telegram WebView (iOS, Android, Desktop) without `window.open` | P21, F20 | A vendor sandbox page opened as a Mini App | Developer, test bot |
+| T17 | A lawyer's reading of sample 18+ scenes (text + art) against art. 242 / 242.1 and 436-FZ 18+ | P19, the RU 18+ line | Legal review before production | Owner + lawyer |
 
 ## 11. Gaps and evidence quality
 
@@ -669,6 +770,9 @@ Numbered P1-P18 so they do not collide with the `docs/OPEN-QUESTIONS.md` numbers
   niche ad prices for romance, fandom and teen channels; the share of RU users able to buy Stars; the FAS 2027
   position; VK Ads t.me acceptance and VK's minimum target age; Yandex bot / Mini App landings; iOS/Android WebView vs
   the in-app proxy; 2026 OONI data on foreign hosts; our revenue when Telegram debits Stars already spent.
+- **18+ track gaps (10):** whether adult ad networks accept `t.me` landings; Nutaku's revenue share; whether a vendor
+  face check produces biometric personal data under 152-FZ; settled practice on drawn characters under art. 242.1;
+  the size of the RU adult-female erotic-romance audience on Telegram.
 - **Smaller gaps:** seasonality (M4: do not invent a launch season); brand/persona (M3); giveaway law with minors
   (M2); the Premium share of payers (M9 — Premium users never see Telegram Ads); MAX as a promotion surface; Pikabu
   and Lemma Soft rules; the EU Digital Fairness Act status; Google Play Stars prices.
@@ -747,6 +851,13 @@ the area and verify reports.**
 - **Platforms outside Telegram:** https://dev.max.ru/docs ; https://dev.vk.ru/ru/mini-apps-rules ;
   https://vndb.org/d2 ; https://itch.io/docs/creators/quality-guidelines ; https://itch.io/jam/otome-jam-2026 ;
   https://itch.io/jam/yuri-jam-2026 ; https://habr.com/en/docs/help/rules/
+- **18+ track:** UK RF art. 242
+  https://www.consultant.ru/document/cons_doc_LAW_10699/ad5d9196ef8584bf342b4c10c1eb39fed4ae8745/ ; art. 242.1
+  https://www.consultant.ru/document/cons_doc_LAW_10699/23ac064057d5bca235050872f65b23a1a1db092a/ ;
+  https://telegram.org/tos ; https://telegram.org/tos/stars ; https://core.telegram.org/api/age-verification ;
+  https://core.telegram.org/constructor/restrictionReason ; https://developer.apple.com/app-store/review/guidelines/ ;
+  https://support.google.com/googleplay/android-developer/answer/9878810 ; https://www.currenttime.tv/a/33223807.html
+  (Tomsk verdict) ; https://esports.ru/igrovaya-industriya/news/klub-romantiki-vernulsya-v-rossiyu-posle-czezury-kontenta/
 - **EU (law-firm summaries):**
   https://www.reedsmith.com/de/perspectives/2025/03/qas-on-the-eu-consumer-protection-authorities-joint-guidance-paper ;
   https://www.gleisslutz.com/en/know-how/new-guidelines-game-currencies-digital-consumer-protection-and-expanding-taboo-dark-patterns
