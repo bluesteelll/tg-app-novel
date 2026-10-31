@@ -67,13 +67,15 @@ async fn cluster_ensure_up_idempotent() {
     }
 
     let mut conn = PgConnection::connect(&cluster.admin_url()).await.unwrap();
-    let (major, listen, checksums, port): (i32, String, String, String) = sqlx::query_as(
-        "SELECT current_setting('server_version_num')::int4 / 10000, \
-         current_setting('listen_addresses'), current_setting('data_checksums'), current_setting('port')",
-    )
-    .fetch_one(&mut conn)
-    .await
-    .unwrap();
+    let (major, listen, checksums, port, messages): (i32, String, String, String, String) =
+        sqlx::query_as(
+            "SELECT current_setting('server_version_num')::int4 / 10000, \
+             current_setting('listen_addresses'), current_setting('data_checksums'), current_setting('port'), \
+             current_setting('lc_messages')",
+        )
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
     // Read as text over the `postgres` admin connection: a session on template1 would make a concurrent
     // CREATE DATABASE fail (55006), and `"char"` does not decode as a string.
     let provider: String = sqlx::query_scalar(
@@ -92,6 +94,7 @@ async fn cluster_ensure_up_idempotent() {
         ("listen_addresses", "127.0.0.1".to_owned(), listen),
         ("data_checksums", "on".to_owned(), checksums),
         ("port", cluster.port().to_string(), port),
+        ("lc_messages", "C".to_owned(), messages),
         ("template1.datlocprovider", "b".to_owned(), provider),
     ] {
         if got != expected {
@@ -299,17 +302,27 @@ fn ensure_up_concurrent_cold_start() {
         }
     }
 
-    // Both pipes are closed and both callers are gone: the cluster must still be serving.
-    let connected = tokio::runtime::Builder::new_current_thread()
+    // Both pipes are closed and both callers are gone: the cluster must still be serving. This build's `pgdev up`
+    // always started this cluster, so its settings are the code's: a slot cluster keeps those of whichever build
+    // started it.
+    let messages = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap()
         .block_on(async {
-            let conn = PgConnection::connect(&cluster.admin_url()).await?;
-            conn.close().await
+            let mut conn = PgConnection::connect(&cluster.admin_url()).await?;
+            let messages: String = sqlx::query_scalar("SELECT current_setting('lc_messages')")
+                .fetch_one(&mut conn)
+                .await?;
+            conn.close().await?;
+            Ok::<_, sqlx::Error>(messages)
         });
-    if let Err(e) = connected {
-        failures.push(format!("connect after both callers ended: {e}"));
+    match messages {
+        Ok(messages) if messages == "C" => {}
+        Ok(messages) => failures.push(format!(
+            "lc_messages on the private cluster: expected C, got {messages}"
+        )),
+        Err(e) => failures.push(format!("connect after both callers ended: {e}")),
     }
 
     let cluster_dir = cluster.data_dir().parent().unwrap().to_path_buf();
