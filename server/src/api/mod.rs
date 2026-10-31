@@ -4,6 +4,7 @@ pub mod auth;
 pub mod content;
 pub mod dto;
 pub mod entitlements;
+pub mod orders;
 pub mod puzzles;
 pub mod saves;
 
@@ -56,6 +57,7 @@ fn routes() -> Router<AppState> {
         )
         .route("/puzzles/{puzzle_id}", get(puzzles::get_status))
         .route("/puzzles/{puzzle_id}/attempts", post(puzzles::post_attempt))
+        .route("/invoices", post(orders::post_invoice))
 }
 
 /// `GET /api/health`: no auth, no database; `ok` as `text/plain`.

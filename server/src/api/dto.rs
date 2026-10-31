@@ -215,6 +215,24 @@ pub struct HintView {
     pub text: Option<String>,
 }
 
+/// `POST /api/invoices` request. Unknown fields (a client-sent price, amount or currency) are ignored, never trusted.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateInvoiceRequest {
+    /// The catalog product to buy, e.g. `chapter:ch2`.
+    pub product_id: String,
+}
+
+/// `POST /api/invoices` response.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateInvoiceResponse {
+    /// The order the invoice pays for: `GET /api/orders/{orderId}` reports its status after `openInvoice`.
+    pub order_id: String,
+    /// The invoice link for `Telegram.WebApp.openInvoice`.
+    pub invoice_url: String,
+}
+
 /// The first line of the generated file: what it is and how to rewrite it.
 const BINDINGS_HEADER: &str = "// Built from server/src/api/dto.rs and error.rs by ts-rs; do not edit. Regenerate: \
                                cargo test -p server --test it bindings::write_bindings -- --ignored --exact";
