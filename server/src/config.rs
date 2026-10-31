@@ -775,6 +775,52 @@ mod tests {
         );
     }
 
+    /// Off loopback the URL itself must say `sslmode=verify-full`, judged on the values sqlx connects with: the query
+    /// decoded, a later `host` / `hostaddr` / `sslmode` / `ssl-mode` overriding the authority and earlier pairs, and
+    /// a URL without a host (sqlx would take `PGHOST`) counted as off loopback.
+    #[test]
+    fn config_database_url_tls_rule() {
+        let mut failures = Vec::new();
+        for url in [
+            "postgres://u@127.0.0.1:5487/tgn_local",
+            "postgres://u@localhost/x",
+            "postgres://u@[::1]/x",
+            "postgres://u:p@db.example/x?sslmode=verify-full",
+        ] {
+            if let Some(got) = not_loaded(&with(&[("DATABASE_URL", url)])) {
+                failures.push(format!("{url}: expected Ok, got {got}"));
+            }
+        }
+        for url in [
+            "postgres://u@db.example/x",
+            "postgres://u@db.example/x?sslmode=require",
+            "postgres://u@db.example/x?sslmode=verify-ca",
+            "postgres://u@db.example/x?sslmode=disable",
+            "postgres://u@127.0.0.1.evil.example/x?sslmode=disable",
+            "postgres://u@127.0.0.1/x?host=db.example",
+            "postgres://u@db.example/x?sslmode=verify-full&ssl-mode=disable",
+            "postgres://u@db.example/x?sslmode=verify-full&sslmode=require",
+            "postgres://u@db.example/x?sslmode=verify-full&ssl%6Dode=disable",
+            "postgres:///x",
+        ] {
+            let got = problems(&with(&[("DATABASE_URL", url)]));
+            let one = got.len() == 1
+                && got[0].var == "DATABASE_URL"
+                && matches!(got[0].kind, ProblemKind::Invalid(_));
+            if !one {
+                failures.push(format!(
+                    "{url}: expected one Invalid problem naming DATABASE_URL, got {got:?}"
+                ));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} failures:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
     #[test]
     fn config_secrets_never_printed() {
         let mut failures = Vec::new();

@@ -4,10 +4,11 @@
 pub mod saves;
 pub mod users;
 
+use std::net::IpAddr;
 use std::str::FromStr;
 use std::time::Duration;
 
-use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
+use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgSslMode};
 
 /// The pool size: about 10 MB per backend on the database host, far above this load's request concurrency.
 pub const POOL_MAX_CONNECTIONS: u32 = 8;
@@ -130,14 +131,47 @@ pub struct SessionSettings {
 /// Why a `DATABASE_URL` is refused. A static text: the URL (which may hold a password) is never echoed.
 const DATABASE_URL_RULE: &str = "must be a postgres:// or postgresql:// URL naming a database";
 
+/// Why a `DATABASE_URL` off loopback is refused.
+const DATABASE_URL_TLS_RULE: &str = "off loopback (localhost, 127.0.0.0/8, ::1, a socket path) the URL must say \
+     sslmode=verify-full";
+
 /// Checks a `DATABASE_URL`: the `postgres` or `postgresql` scheme (sqlx itself parses any scheme), a URL sqlx
-/// parses, and a database path (an absent one would fall back to `PGDATABASE` or the user name).
+/// parses, and a database path (an absent one would fall back to `PGDATABASE` or the user name). Off loopback the
+/// URL itself must say `sslmode=verify-full`: the database password and every money fact cross the network.
+///
+/// The TLS rule judges the values sqlx connects with: the query decoded as sqlx decodes it, a later `host` /
+/// `hostaddr` or `sslmode` / `ssl-mode` pair overriding the authority and the earlier pairs. Only the URL's own
+/// values count, so the environment (`PGHOST`, `PGSSLMODE`) cannot decide: a URL that names no host is off loopback,
+/// and one that names no sslmode is refused there.
 pub fn check_database_url(url: &str) -> Result<(), &'static str> {
     let parts = UrlParts::split(url).ok_or(DATABASE_URL_RULE)?;
-    if parts.path.is_empty() || PgConnectOptions::from_str(url).is_err() {
+    if parts.path.is_empty() {
         return Err(DATABASE_URL_RULE);
     }
-    Ok(())
+    let options = PgConnectOptions::from_str(url).map_err(|_| DATABASE_URL_RULE)?;
+    let names_any = |keys: [&str; 2]| {
+        form_urlencoded::parse(parts.query.as_bytes()).any(|(key, _)| keys.contains(&&*key))
+    };
+    let names_host = !parts.host.is_empty() || names_any(["host", "hostaddr"]);
+    // A socket takes precedence over a host in sqlx's connect, and a Unix socket is local by construction.
+    let local = names_host && (options.get_socket().is_some() || is_loopback(options.get_host()));
+    let verify_full = names_any(["sslmode", "ssl-mode"])
+        && matches!(options.get_ssl_mode(), PgSslMode::VerifyFull);
+    if local || verify_full {
+        Ok(())
+    } else {
+        Err(DATABASE_URL_TLS_RULE)
+    }
+}
+
+/// `localhost`, a `127.0.0.0/8` address or `::1` (brackets allowed). Exact: any other spelling counts as remote,
+/// the direction that asks for TLS.
+fn is_loopback(host: &str) -> bool {
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    host == "localhost" || bare.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 /// The database a URL connects to, as `host:port/dbname` for logs: never the user or the password, wherever the
@@ -160,8 +194,12 @@ pub fn database_target(url: &str) -> String {
 /// The text parts of a `postgres://` / `postgresql://` URL that the checks read. The authority ends at the first
 /// `/`, `?` or `#`, as the URL standard reads a non-special scheme.
 struct UrlParts<'a> {
+    /// The authority's host, without userinfo and port; empty when the URL names none.
+    host: &'a str,
     /// The path after the authority's `/`, without the query: the database name.
     path: &'a str,
+    /// The text after the first `?`, still percent-encoded.
+    query: &'a str,
 }
 
 impl<'a> UrlParts<'a> {
@@ -170,10 +208,14 @@ impl<'a> UrlParts<'a> {
             .strip_prefix("postgres://")
             .or_else(|| url.strip_prefix("postgresql://"))?;
         let rest = rest.split('#').next().unwrap_or_default();
-        let before_query = rest.split('?').next().unwrap_or_default();
-        let path = before_query
-            .split_once('/')
-            .map_or("", |(_authority, path)| path);
-        Some(UrlParts { path })
+        let (before_query, query) = rest.split_once('?').unwrap_or((rest, ""));
+        let (authority, path) = before_query.split_once('/').unwrap_or((before_query, ""));
+        // Userinfo ends at the last `@`; a bracketed IPv6 host keeps its colons.
+        let host_port = authority.rsplit('@').next().unwrap_or_default();
+        let host = match host_port.find(']') {
+            Some(end) if host_port.starts_with('[') => &host_port[..=end],
+            _ => host_port.split(':').next().unwrap_or_default(),
+        };
+        Some(UrlParts { host, path, query })
     }
 }
