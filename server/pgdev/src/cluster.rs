@@ -503,11 +503,13 @@ async fn check_server(conn: &mut PgConnection) -> Result<(), PgDevError> {
     }
 }
 
-/// The server settings, passed at every start.
+/// The server settings, passed at every start. `lc_messages=C`: initdb copies the host locale into
+/// `postgresql.conf` (`English_United States.1252` on the gate host), and the server's texts - every message, the
+/// log tail a `Start` error quotes - must not depend on which host made the cluster.
 fn server_options(port: u16) -> String {
     format!(
         "-p {port} -c listen_addresses=127.0.0.1 -c max_connections=150 -c shared_buffers=32MB \
-         -c max_wal_size=512MB -c timezone=UTC"
+         -c max_wal_size=512MB -c timezone=UTC -c lc_messages=C"
     )
 }
 
@@ -634,7 +636,7 @@ fn server_runs(bin: &Path, data: &Path) -> Result<bool, PgDevError> {
 }
 
 /// The last [`LOG_TAIL_LINES`] lines of the server log, from its last [`LOG_TAIL_BYTES`]. Decoded lossily: the cut
-/// may split a character, and the server writes in its message locale's encoding.
+/// may split a character, and logged statement or identifier text is whatever bytes the client sent.
 fn log_tail(log: &Path) -> String {
     let read = || -> io::Result<String> {
         let mut file = File::open(log)?;
