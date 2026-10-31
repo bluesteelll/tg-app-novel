@@ -1,0 +1,23 @@
+{
+  "format": 1,
+  "stories": [
+    {
+      "id": "manor",
+      "title": { "ru": "Усадьба", "en": "The Manor" },
+      "chapters": [
+        { "id": "ch1", "paid": false, "productId": null, "title": { "ru": "Прихожая", "en": "The Hall" } },
+        { "id": "ch2", "paid": true, "productId": "chapter:ch2", "title": { "ru": "Архив", "en": "The Archive" } }
+      ],
+      "endings": { "truth": { "chapter": "ch2" }, "ashes": { "chapter": "ch2" } }
+    },
+    {
+      "id": "tide",
+      "title": { "ru": "Прилив", "en": "The Tide" },
+      "chapters": [
+        { "id": "ch3", "paid": false, "productId": null, "title": { "ru": "Берег", "en": "The Shore" } },
+        { "id": "ch4", "paid": true, "productId": "chapter:ch4", "title": { "ru": "Маяк", "en": "The Lighthouse" } }
+      ],
+      "endings": { "drowned": { "chapter": "ch3" }, "dawn": { "chapter": "ch4" } }
+    }
+  ]
+}

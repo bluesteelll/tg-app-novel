@@ -1,0 +1,27 @@
+{
+  "chapterId": "ch2",
+  "assets": {
+    "bg/archive": {
+      "kind": "image",
+      "w": 1920,
+      "h": 1080,
+      "decodedBytes": 8294400,
+      "avif": { "url": "/api/assets/bg-archive-0a1b2c3d.avif", "bytes": 24 },
+      "webp": { "url": "/api/assets/bg-archive-0a1b2c3d.webp", "bytes": 24 }
+    },
+    "sfx/door": {
+      "kind": "audio",
+      "role": "sfx",
+      "durationMs": 800,
+      "file": { "url": "/api/assets/sfx-door-2a3b4c5d.m4a", "bytes": 21 },
+      "codec": "m4a"
+    },
+    "bgm/hall": {
+      "kind": "audio",
+      "role": "bgm",
+      "durationMs": 60000,
+      "file": { "url": "/assets/bgm-hall-0e0e0e0e.m4a", "bytes": 48000 },
+      "codec": "m4a"
+    }
+  }
+}

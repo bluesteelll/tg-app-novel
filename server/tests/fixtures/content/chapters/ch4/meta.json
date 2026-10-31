@@ -1,0 +1,12 @@
+{
+  "chapterId": "ch4",
+  "storyVersion": "c4c4c4c4c4c4c4c4",
+  "firstKnot": "lamp",
+  "globals": ["g_key"],
+  "vars": ["g_key", "lit"],
+  "knots": {
+    "lamp": { "assets": ["bg/lamp_room", "bgm/storm", "sfx/door"], "next": ["dawn"], "ending": false },
+    "dawn": { "assets": [], "next": [], "ending": true }
+  },
+  "endings": { "dawn": "dawn" }
+}

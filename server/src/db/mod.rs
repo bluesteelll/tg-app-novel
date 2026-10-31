@@ -1,6 +1,7 @@
 //! The repository seam: every SQL statement lives under `db/`, and the only module that names sqlx pool and connect
 //! types. Handlers see domain types, never sqlx.
 
+pub mod entitlements;
 pub mod saves;
 pub mod users;
 

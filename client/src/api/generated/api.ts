@@ -164,3 +164,67 @@ rev: number,
  * When the server stored it, in unix seconds.
  */
 savedAt: number, };
+
+/**
+ * A chapter product as `GET /api/entitlements` lists it.
+ */
+export type ProductDto = { 
+/**
+ * The product id, `chapter:<chapterId>`.
+ */
+productId: string, 
+/**
+ * The chapter it unlocks.
+ */
+chapterId: string, 
+/**
+ * The price in Telegram Stars, from the server's catalog.
+ */
+priceStars: number, 
+/**
+ * Whether the user owns it, from the server's entitlement rows.
+ */
+owned: boolean, };
+
+/**
+ * `GET /api/entitlements` response.
+ */
+export type EntitlementsResponse = { 
+/**
+ * Every chapter product: story order, then chain order.
+ */
+products: Array<ProductDto>, };
+
+/**
+ * `GET /api/chapters/{chapterId}` response: a paid chapter's files as the build wrote them, composed raw (no
+ * re-encoding).
+ */
+export type ChapterPayload = { 
+/**
+ * The chapter id.
+ */
+chapterId: string, 
+/**
+ * The story version the chapter was built at (`meta.json`'s `storyVersion`).
+ */
+storyVersion: string, 
+/**
+ * The compiled ink (`story.json`).
+ */
+story: unknown, 
+/**
+ * The chapter meta (`meta.json`).
+ */
+meta: unknown, 
+/**
+ * The chapter's asset manifest (`assets.json`).
+ */
+assets: unknown, 
+/**
+ * The English line table (`en.json`).
+ */
+en: unknown, 
+/**
+ * The chapter's public world, or `null` (serialized, not omitted) when it has none.
+ */
+world: unknown, };
