@@ -617,8 +617,15 @@ export function successors(w: WorldPublicBody, s: WorldState): Successor[] {
   return out;
 }
 
-function sortedIn<T extends string>(list: readonly T[], keep: ReadonlySet<T>): T[] {
-  return list.filter((x) => keep.has(x)).sort();
+/** The members of `list` in `keep`, sorted and joined: a set's encoding, whatever order play added them in. */
+function setPart(list: readonly string[], keep: ReadonlySet<string>): string {
+  const members: string[] = [];
+  for (const x of list) {
+    if (keep.has(x)) {
+      members.push(x);
+    }
+  }
+  return members.length > 1 ? members.sort().join(',') : (members[0] ?? '');
 }
 
 /**
@@ -626,27 +633,27 @@ function sortedIn<T extends string>(list: readonly T[], keep: ReadonlySet<T>): T
  * ordered queue), S's keys in taken / open / slots / fired, the outcomes of S's lock puzzles, the items and docs S
  * gives in held / used / docs. The set-valued fields are sorted, so the order play added them in never splits one
  * state into two. Abstracted (read by no rule): examined, visited, attempts, hints opened; ignored: section,
- * lastRoom, unproved, everything outside S (X15).
+ * lastRoom, unproved, everything outside S (X15). Ids never hold `|`, `;`, `=` or `,`, so the joins are unambiguous.
  */
 export function sectionKey(w: WorldPublicBody, s: WorldState, section: SectionId): string {
   const scope = sectionScope(w, section);
-  const slots: Array<[HotspotKey, Array<ItemId | null>]> = [];
+  const slots: string[] = [];
   for (const { key, lock } of scope.locks) {
-    const cells = cellsOf(s, key, lock);
-    if (cells.some((c) => c !== null)) {
-      slots.push([key, cells]);
+    const stored = own(s.slots, key);
+    if (stored !== undefined && stored.some((c) => c !== null)) {
+      slots.push(`${key}=${lock.slots.map((_, i) => stored[i] ?? '').join(',')}`);
     }
   }
-  return JSON.stringify([
-    s.room,
-    s.pendingStory,
-    sortedIn(s.taken, scope.hotspots),
-    sortedIn(s.open, scope.hotspots),
-    slots,
-    sortedIn(s.fired, scope.fired),
-    scope.puzzles.map((p) => runOf(s, p).outcome),
-    sortedIn(s.held, scope.items),
-    sortedIn(s.used, scope.items),
-    sortedIn(s.docs, scope.docs),
-  ]);
+  return [
+    s.room ?? '',
+    s.pendingStory.join(','),
+    setPart(s.taken, scope.hotspots),
+    setPart(s.open, scope.hotspots),
+    slots.join(';'),
+    setPart(s.fired, scope.fired),
+    scope.puzzles.map((p) => runOf(s, p).outcome ?? '').join(','),
+    setPart(s.held, scope.items),
+    setPart(s.used, scope.items),
+    setPart(s.docs, scope.docs),
+  ].join('|');
 }
