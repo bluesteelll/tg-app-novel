@@ -7,6 +7,7 @@
 //! `i64` is `#[ts(type = "number")]`: ids and timestamps stay below 2^53, and ts-rs would otherwise say `bigint`.
 
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 use ts_rs::TS;
 
 use crate::error::{ApiErrorBody, ErrorCode};
@@ -138,6 +139,32 @@ pub struct ProductDto {
 pub struct EntitlementsResponse {
     /// Every chapter product: story order, then chain order.
     pub products: Vec<ProductDto>,
+}
+
+/// `GET /api/chapters/{chapterId}` response: a paid chapter's files as the build wrote them, composed raw (no
+/// re-encoding). No `Debug`: it is the sold content.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ChapterPayload<'a> {
+    /// The chapter id.
+    pub chapter_id: &'a str,
+    /// The story version the chapter was built at (`meta.json`'s `storyVersion`).
+    pub story_version: &'a str,
+    /// The compiled ink (`story.json`).
+    #[ts(type = "unknown")]
+    pub story: &'a RawValue,
+    /// The chapter meta (`meta.json`).
+    #[ts(type = "unknown")]
+    pub meta: &'a RawValue,
+    /// The chapter's asset manifest (`assets.json`).
+    #[ts(type = "unknown")]
+    pub assets: &'a RawValue,
+    /// The English line table (`en.json`).
+    #[ts(type = "unknown")]
+    pub en: &'a RawValue,
+    /// The chapter's public world, or `null` (serialized, not omitted) when it has none.
+    #[ts(type = "unknown")]
+    pub world: Option<&'a RawValue>,
 }
 
 /// The first line of the generated file: what it is and how to rewrite it.

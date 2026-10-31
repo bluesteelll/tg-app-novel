@@ -1,18 +1,22 @@
 //! The server's content (`ContentStore`, loaded by `AppState::new` from `CONTENT_DIR`): the story index, the paid
-//! chapters, the puzzle index and the gated asset index of the committed fixture, and the startup refusals on
-//! mutated copies of it.
+//! chapters, the puzzle index and the gated asset index of the committed fixture, the startup refusals on mutated
+//! copies of it, and the paid routes that serve it only after the entitlement check (principle 0).
 
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use axum::body::Body;
+use axum::http::Request;
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, HeaderName, X_CONTENT_TYPE_OPTIONS};
 use serde_json::{Value, json};
 use server::config::Config;
 use server::content::ContentError;
 use server::ids::{ChapterId, ProductId, PuzzleId, StoryId};
 use server::{AppState, StartupError};
 
+use crate::catalog::{ANN, get, own, state_with_users};
 use crate::common::{self, TestDb};
 
 /// The committed content fixture every test state loads.
@@ -534,6 +538,324 @@ async fn startup_fails_when_world_carries_solution() {
             )),
             Err(failure) => failures.push(failure),
         }
+    }
+    report(&failures);
+}
+
+/// A second player.
+const BEN: i64 = 1002;
+
+fn body_text(reply: &common::Reply) -> String {
+    String::from_utf8_lossy(&reply.body).into_owned()
+}
+
+/// The mismatch of `reply` against a status and the error body `{"error": <code>}`.
+fn expect_error(case: &str, reply: &common::Reply, status: u16, code: &str) -> Option<String> {
+    let got: Value = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
+    (reply.status.as_u16() != status || got != json!({ "error": code })).then(|| {
+        format!(
+            "{case}: expected {status} {code}, got {} {:?}",
+            reply.status.as_u16(),
+            body_text(reply)
+        )
+    })
+}
+
+/// The header `name` of `reply` as text.
+fn header(reply: &common::Reply, name: HeaderName) -> Option<&str> {
+    reply.headers.get(name).and_then(|v| v.to_str().ok())
+}
+
+/// A paid chapter or a gated asset without its entitlement is a 403 that carries no content; without a token every id
+/// is the same 401, so an anonymous caller learns no chapter or file name.
+#[tokio::test]
+async fn paid_chapter_403_without_entitlement() {
+    let (st, _db) = state_with_users(&[ANN, BEN]).await;
+    own(&st, BEN, "chapter:ch2").await;
+    let mut failures = Vec::new();
+    for ch in ["ch2", "ch4"] {
+        let reply = get(&st, Some(ANN), &format!("/api/chapters/{ch}")).await;
+        failures.extend(expect_error(
+            &format!("no rows: {ch}"),
+            &reply,
+            403,
+            "not_entitled",
+        ));
+    }
+    let reply = get(&st, Some(BEN), "/api/chapters/ch4").await;
+    failures.extend(expect_error(
+        "chapter:ch2 owner: ch4 (another story)",
+        &reply,
+        403,
+        "not_entitled",
+    ));
+    for (user, file) in [
+        (BEN, "bg-lamp_room-4e5f6a7b.avif"),
+        (BEN, "bgm-storm-8c9d0e1f.m4a"),
+        (ANN, "bg-archive-0a1b2c3d.avif"),
+    ] {
+        let reply = get(&st, Some(user), &format!("/api/assets/{file}")).await;
+        failures.extend(expect_error(
+            &format!("user {user}: {file}"),
+            &reply,
+            403,
+            "not_entitled",
+        ));
+    }
+    for path in [
+        "/api/chapters/ch2",
+        "/api/chapters/ch1",
+        "/api/chapters/ch9",
+        "/api/assets/bg-archive-0a1b2c3d.avif",
+        "/api/assets/bg-orphan-6e7f8a9b.avif",
+    ] {
+        let reply = get(&st, None, path).await;
+        failures.extend(expect_error(
+            &format!("no token: {path}"),
+            &reply,
+            401,
+            "token_missing",
+        ));
+    }
+    report(&failures);
+}
+
+/// The owner of a chapter gets its files exactly as the build wrote them (`world` is `null` when it has none), and
+/// the gated files its manifest names; a file two chapters share opens with either chapter.
+#[tokio::test]
+async fn paid_chapter_200_with_entitlement() {
+    let (st, _db) = state_with_users(&[ANN, BEN]).await;
+    own(&st, ANN, "chapter:ch2").await;
+    own(&st, BEN, "chapter:ch4").await;
+    let mut failures = Vec::new();
+    for (user, ch, version, has_world) in [
+        (ANN, "ch2", "c2c2c2c2c2c2c2c2", true),
+        (BEN, "ch4", "c4c4c4c4c4c4c4c4", false),
+    ] {
+        let case = format!("chapter:{ch} owner: {ch}");
+        let reply = get(&st, Some(user), &format!("/api/chapters/{ch}")).await;
+        if reply.status.as_u16() != 200 {
+            failures.push(format!(
+                "{case}: expected 200, got {} {:?}",
+                reply.status.as_u16(),
+                body_text(&reply)
+            ));
+            continue;
+        }
+        let got: Value = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
+        let dir = Path::new(FIXTURE).join("chapters").join(ch);
+        let mut want = json!({ "chapterId": ch, "storyVersion": version, "world": null });
+        for key in ["story", "meta", "assets", "en"] {
+            want[key] = read_json(&dir.join(format!("{key}.json"))).await;
+        }
+        if has_world {
+            want["world"] = read_json(&dir.join("world.json")).await;
+        }
+        for key in [
+            "chapterId",
+            "storyVersion",
+            "story",
+            "meta",
+            "assets",
+            "en",
+            "world",
+        ] {
+            if got.get(key) != want.get(key) {
+                failures.push(format!(
+                    "{case}: {key}: expected {:?}, got {:?}",
+                    want.get(key),
+                    got.get(key)
+                ));
+            }
+        }
+        if got.as_object().map(|o| o.len()) != Some(7) {
+            failures.push(format!("{case}: expected exactly the 7 payload keys"));
+        }
+    }
+    for (user, file, content_type) in [
+        (ANN, "bg-archive-0a1b2c3d.avif", "image/avif"),
+        (ANN, "bg-archive-0a1b2c3d.webp", "image/webp"),
+        (ANN, "sfx-door-2a3b4c5d.m4a", "audio/mp4"),
+        (BEN, "sfx-door-2a3b4c5d.m4a", "audio/mp4"),
+        (BEN, "bg-lamp_room-4e5f6a7b.webp", "image/webp"),
+        (BEN, "bgm-storm-8c9d0e1f.m4a", "audio/mp4"),
+    ] {
+        let reply = get(&st, Some(user), &format!("/api/assets/{file}")).await;
+        let want = tokio::fs::read(Path::new(FIXTURE).join("assets").join(file))
+            .await
+            .unwrap();
+        let got_type = header(&reply, CONTENT_TYPE);
+        if reply.status.as_u16() != 200
+            || reply.body.as_ref() != want.as_slice()
+            || got_type != Some(content_type)
+        {
+            failures.push(format!(
+                "user {user}: {file}: expected 200 {content_type} with the fixture bytes, got {} {got_type:?} {:?}",
+                reply.status.as_u16(),
+                body_text(&reply)
+            ));
+        }
+    }
+    report(&failures);
+}
+
+/// Free chapters are static files of the client build: the API answers them, unknown ids and malformed ids alike
+/// with 404, even to a player who owns every paid chapter.
+#[tokio::test]
+async fn free_chapter_not_served_by_api() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    own(&st, ANN, "chapter:ch2").await;
+    own(&st, ANN, "chapter:ch4").await;
+    let mut failures = Vec::new();
+    for id in ["ch1", "ch3", "ch9", "Ch2", "ch02", "..%2Fstories.json"] {
+        let reply = get(&st, Some(ANN), &format!("/api/chapters/{id}")).await;
+        failures.extend(expect_error(
+            &format!("chapter {id}"),
+            &reply,
+            404,
+            "not_found",
+        ));
+    }
+    for ch in ["ch2", "ch4"] {
+        let reply = get(&st, Some(ANN), &format!("/api/chapters/{ch}")).await;
+        if reply.status.as_u16() != 200 {
+            failures.push(format!(
+                "control {ch}: expected 200, got {}",
+                reply.status.as_u16()
+            ));
+        }
+    }
+    report(&failures);
+}
+
+/// An asset name is a key of the index built at startup, never a path: every traversal, case or encoding form, a
+/// file no manifest names, a public asset and the server's own files are 404 with no content.
+#[tokio::test]
+async fn asset_path_traversal_404() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    own(&st, ANN, "chapter:ch2").await;
+    own(&st, ANN, "chapter:ch4").await;
+    let mut failures = Vec::new();
+    for name in [
+        "..%2Fstories.json",
+        "%2e%2e%2fstories.json",
+        "..%5Cstories.json",
+        "chapters%2Fch2%2Fstory.json",
+        "puzzles%2Fch1.json",
+        "..%2F..%2Fcatalog.json",
+        "%2Fetc%2Fpasswd",
+        "stories.json",
+        "bg-orphan-6e7f8a9b.avif",
+        "BG-ARCHIVE-0A1B2C3D.AVIF",
+        "bgm-hall-0e0e0e0e.m4a",
+    ] {
+        let reply = get(&st, Some(ANN), &format!("/api/assets/{name}")).await;
+        failures.extend(expect_error(
+            &format!("asset {name}"),
+            &reply,
+            404,
+            "not_found",
+        ));
+    }
+    // Two segments never match the one-segment route: the router's own 404.
+    let reply = get(&st, Some(ANN), "/api/assets/../stories.json").await;
+    if reply.status.as_u16() != 404 || body_text(&reply).contains("FIXTURE") {
+        failures.push(format!(
+            "raw /api/assets/../stories.json: expected 404 without content, got {} {:?}",
+            reply.status.as_u16(),
+            body_text(&reply)
+        ));
+    }
+    let reply = get(&st, Some(ANN), "/api/assets/bg-archive-0a1b2c3d.avif").await;
+    if reply.status.as_u16() != 200 {
+        failures.push(format!(
+            "control bg-archive-0a1b2c3d.avif: expected 200, got {}",
+            reply.status.as_u16()
+        ));
+    }
+    report(&failures);
+}
+
+/// Paid 200s say `private, no-store` and `nosniff` themselves; the 403 and 404 answers keep the api layer's
+/// `no-store`.
+#[tokio::test]
+async fn paid_responses_private_no_store() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    own(&st, ANN, "chapter:ch2").await;
+    let mut failures = Vec::new();
+    for (path, content_type) in [
+        ("/api/chapters/ch2", "application/json"),
+        ("/api/assets/bg-archive-0a1b2c3d.avif", "image/avif"),
+    ] {
+        let reply = get(&st, Some(ANN), path).await;
+        let got = (
+            reply.status.as_u16(),
+            header(&reply, CACHE_CONTROL),
+            header(&reply, X_CONTENT_TYPE_OPTIONS),
+            header(&reply, CONTENT_TYPE),
+        );
+        let want = (
+            200,
+            Some("private, no-store"),
+            Some("nosniff"),
+            Some(content_type),
+        );
+        if got != want {
+            failures.push(format!("{path}: expected {want:?}, got {got:?}"));
+        }
+    }
+    for (path, status) in [
+        ("/api/chapters/ch4", 403),
+        ("/api/assets/bg-lamp_room-4e5f6a7b.avif", 403),
+        ("/api/chapters/ch1", 404),
+        ("/api/assets/bg-orphan-6e7f8a9b.avif", 404),
+    ] {
+        let reply = get(&st, Some(ANN), path).await;
+        let got = (reply.status.as_u16(), header(&reply, CACHE_CONTROL));
+        if got != (status, Some("no-store")) {
+            failures.push(format!(
+                "{path}: expected ({status}, no-store), got {got:?}"
+            ));
+        }
+    }
+    report(&failures);
+}
+
+/// The production router has no dev route: `server-dev`'s routes (launch, simulated payments) answer 404 here.
+#[tokio::test]
+async fn server_has_no_dev_routes() {
+    let (st, _db) = common::test_state().await;
+    let mut failures = Vec::new();
+    for (method, path) in [
+        ("GET", "/dev/launch?uid=1001"),
+        ("GET", "/dev/invoices/x"),
+        ("POST", "/dev/simulate-payment"),
+        ("POST", "/dev/refund"),
+        ("POST", "/dev/refunded-update"),
+    ] {
+        let req = Request::builder()
+            .method(method)
+            .uri(path)
+            .body(Body::empty())
+            .unwrap();
+        let reply = common::call(&st, req).await;
+        if reply.status.as_u16() != 404 {
+            failures.push(format!(
+                "{method} {path}: expected 404, got {}",
+                reply.status.as_u16()
+            ));
+        }
+    }
+    let reply = common::call(
+        &st,
+        Request::get("/api/health").body(Body::empty()).unwrap(),
+    )
+    .await;
+    if reply.status.as_u16() != 200 || body_text(&reply) != "ok" {
+        failures.push(format!(
+            "control GET /api/health: expected 200 ok, got {}",
+            reply.status.as_u16()
+        ));
     }
     report(&failures);
 }
