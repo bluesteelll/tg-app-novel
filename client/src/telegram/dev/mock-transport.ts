@@ -3,6 +3,14 @@
 // vite-plugins/tg-dev-mock.ts) and this transport behind it run TWA's real code path in the dev server and the e2e.
 // DEV / e2e only: main.ts imports it under `if (__TG_MOCK__)`, which production compiles out (scan-dist's
 // dev-canary proves it). No top-level side effects: the Vite config loader imports this module in Node.
+import type { InvoiceStatus } from '../index.ts';
+import {
+  domSheetRender,
+  pressButton,
+  presetButton,
+  runInvoiceSheet,
+  type SheetRender,
+} from './invoice-sheet.ts';
 
 /** One recorded `postEvent`, its JSON parsed; `mock_app_closed` marks a back press the client would not deliver. */
 export type MockEvent = { type: string; data: unknown };
@@ -23,6 +31,8 @@ export type MockControls = {
   pressBack(): void;
   setSafeArea(safe: Insets, content?: Insets): void;
   setViewport(height: number): void;
+  /** Answers the next invoices without the sheet: 'paid' / 'pending' POST as their buttons do; `null` shows it. */
+  setInvoiceOutcome(outcome: InvoiceStatus | null): void;
   setShareOutcome(outcome: 'sent' | ShareFailure): void;
   /** Reloads the page with `tgWebAppVersion=<v>` in the hash (hash params override TWA's stored ones). */
   setVersion(v: string): void;
@@ -44,6 +54,8 @@ export type MockDeps = {
   /** The launch theme, parsed from TWA's own `initParams.tgWebAppThemeParams` (the `/dev/launch` hash). */
   themeParams(): unknown;
   setVersion(v: string): void;
+  /** The fake Stars sheet's dev-route fetch and a fresh overlay per invoice. */
+  sheet: { fetch: typeof fetch; render(): SheetRender };
 };
 
 /** The inline script's own window: only what `bootstrapMock` touches. */
@@ -83,6 +95,8 @@ export function createMockTransport(d: MockDeps): {
   let content = NO_INSETS;
   let backVisible = false;
   let shareOutcome: 'sent' | ShareFailure = 'sent';
+  let invoiceOutcome: InvoiceStatus | null = null;
+  let invoiceOpen = false;
 
   const answer = (type: string, data: unknown): void => d.defer(() => d.receive(type, data));
   const viewport = (): void =>
@@ -140,6 +154,27 @@ export function createMockTransport(d: MockDeps): {
     }
   };
 
+  // One invoice at a time: a second one while the sheet (or a preset outcome's POST) runs is closed 'failed' at once.
+  const openInvoice = (slug: unknown): void => {
+    if (typeof slug !== 'string') {
+      return;
+    }
+    if (invoiceOpen) {
+      answer('invoice_closed', { slug, status: 'failed' });
+      return;
+    }
+    invoiceOpen = true;
+    const run =
+      invoiceOutcome === null
+        ? runInvoiceSheet(slug, { fetch: d.sheet.fetch, render: d.sheet.render() })
+        : pressButton(slug, presetButton(invoiceOutcome), d.sheet.fetch);
+    // Neither rejects: every failure of the dev routes closes the invoice 'failed'.
+    void run.then((status) => {
+      invoiceOpen = false;
+      answer('invoice_closed', { slug, status });
+    });
+  };
+
   const postEvent = (type: string, json: string): void => {
     let data: unknown;
     try {
@@ -173,6 +208,9 @@ export function createMockTransport(d: MockDeps): {
       case 'web_app_device_storage_get_key':
       case 'web_app_device_storage_clear':
         deviceStorage(type, f);
+        return;
+      case 'web_app_open_invoice':
+        openInvoice(f['slug']);
         return;
       case 'web_app_send_prepared_message':
         if (shareOutcome === 'sent') {
@@ -209,6 +247,9 @@ export function createMockTransport(d: MockDeps): {
     setViewport: (height) => {
       viewportHeight = height;
       viewport();
+    },
+    setInvoiceOutcome: (outcome) => {
+      invoiceOutcome = outcome;
     },
     setShareOutcome: (outcome) => {
       shareOutcome = outcome;
@@ -311,6 +352,11 @@ export function installMockTransport(): MockControls {
       // A hash-only replace navigates within the document; the reload makes TWA read the new version.
       win.location.replace(withLaunchVersion(win.location.href, v));
       win.location.reload();
+    },
+    sheet: {
+      // Same origin: the dev and preview servers proxy /dev/ to server-dev.
+      fetch: (input, init) => win.fetch(input, init),
+      render: () => domSheetRender(win.document),
     },
   });
   const queued = win.__tgMockQueue ?? [];

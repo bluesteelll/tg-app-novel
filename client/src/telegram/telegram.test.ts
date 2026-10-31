@@ -4,6 +4,7 @@
 import { expect, test, vi } from 'vitest';
 
 import { bootstrapScript, tgDevMock } from '../../vite-plugins/tg-dev-mock.ts';
+import { runInvoiceSheet, type SheetButton, type SheetDetails, type SheetRender } from './dev/invoice-sheet.ts';
 import {
   createMockTransport,
   installMockTransport,
@@ -680,6 +681,7 @@ function harness(over: Partial<MockDeps> = {}) {
     setVersion: (v) => {
       versions.push(v);
     },
+    sheet: { fetch: fakeFetch().fetch, render: () => fakeRender().render },
     ...over,
   });
   // TWA posts JSON.stringify(eventData), with '' for an event without data.
@@ -974,4 +976,184 @@ test('plugin: bootstrap injected as a classic head-prepend script', () => {
   const win = bootWindow('#tgWebAppData=a', null);
   expect(() => runInjected(text, win)).not.toThrow();
   expect([win.__TG_DEV_MOCK__, typeof win.TelegramWebviewProxy?.postEvent]).toEqual([true, 'function']);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Fake Stars sheet (C5). The request bodies are L8b's live contract (l8b-webhook-grant cut D8: `outcome` is
+// required, `webhookDelayMs` 0..=60000) and its Q12 reading of "Pending": the paid POST with the delay.
+
+function json(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+}
+
+const INVOICE_BODY = { orderId: 'o1', title: 'Chapter 2', description: 'The archive', amount: 50 };
+const SIMULATED = { precheckoutOk: true, chargeId: 'dev_0123' };
+
+/** `fetch` over the two dev routes; each answer is made per call (a Response body reads once). */
+function fakeFetch(answer: (method: string, url: string) => Response | Error = defaultAnswer): {
+  fetch: typeof fetch;
+  log: string[][];
+} {
+  const log: string[][] = [];
+  const fetchFake = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = String(input);
+    const method = init?.method ?? 'GET';
+    log.push(typeof init?.body === 'string' ? [method, url, init.body] : [method, url]);
+    const result = answer(method, url);
+    if (result instanceof Error) {
+      throw result;
+    }
+    return result;
+  };
+  return { fetch: fetchFake, log };
+}
+
+function defaultAnswer(method: string): Response {
+  return method === 'GET' ? json(200, INVOICE_BODY) : json(200, SIMULATED);
+}
+
+/** The overlay as calls: one mount and one remove per run, the details it was shown, and a tap. */
+function fakeRender(): {
+  render: SheetRender;
+  press(button: SheetButton): void;
+  views: SheetDetails[];
+  counts: { mounts: number; removes: number };
+} {
+  const views: SheetDetails[] = [];
+  const counts = { mounts: 0, removes: 0 };
+  let press: ((button: SheetButton) => void) | null = null;
+  return {
+    render: {
+      mount: (onPress) => {
+        counts.mounts++;
+        press = onPress;
+      },
+      details: (view) => {
+        views.push(view);
+      },
+      remove: () => {
+        counts.removes++;
+      },
+    },
+    press: (button) => press?.(button),
+    views,
+    counts,
+  };
+}
+
+const GET_INVOICE = ['GET', '/dev/invoices/s1'];
+
+test('sheet: pay posts simulate-payment then closes paid', async () => {
+  const net = fakeFetch();
+  const sheet = fakeRender();
+  const status = runInvoiceSheet('s1', { fetch: net.fetch, render: sheet.render });
+  sheet.press('pay');
+  expect(await status).toBe('paid');
+  expect(net.log).toEqual([GET_INVOICE, ['POST', '/dev/simulate-payment', '{"slug":"s1","outcome":"paid"}']]);
+});
+
+test('sheet: each button sends its table row', async () => {
+  const rows = [
+    ['pay', '{"slug":"s1","outcome":"paid"}', 'paid'],
+    ['pay-delayed', '{"slug":"s1","outcome":"paid","webhookDelayMs":3000}', 'paid'],
+    ['pay-twice', '{"slug":"s1","outcome":"paid_twice"}', 'paid'],
+    ['pending', '{"slug":"s1","outcome":"paid","webhookDelayMs":3000}', 'pending'],
+    ['cancel', null, 'cancelled'],
+    ['fail', null, 'failed'],
+  ] as const;
+  for (const [button, body, status] of rows) {
+    const net = fakeFetch();
+    const sheet = fakeRender();
+    const result = runInvoiceSheet('s1', { fetch: net.fetch, render: sheet.render });
+    await vi.waitFor(() => expect(sheet.views).toEqual([{ title: 'Chapter 2', amount: 50 }]));
+    sheet.press(button);
+    // A second tap on a closing sheet changes nothing.
+    sheet.press('fail');
+    expect({ button, status: await result }).toEqual({ button, status });
+    const log = body === null ? [GET_INVOICE] : [GET_INVOICE, ['POST', '/dev/simulate-payment', body]];
+    expect({ button, log: net.log, counts: sheet.counts }).toEqual({ button, log, counts: { mounts: 1, removes: 1 } });
+  }
+});
+
+test('sheet: refused or failed simulate closes failed', async () => {
+  const refusals: Array<() => Response | Error> = [
+    () => json(400, { error: 'bad_request' }),
+    () => json(404, { error: 'not_found' }),
+    () => json(500, { error: 'internal' }),
+    () => json(200, { precheckoutOk: false }),
+    () => json(200, 'not an object'),
+    () => new Response('not json', { status: 200 }),
+    () => new TypeError('Failed to fetch'),
+  ];
+  for (const [index, refusal] of refusals.entries()) {
+    const net = fakeFetch((method) => (method === 'POST' ? refusal() : json(200, INVOICE_BODY)));
+    const sheet = fakeRender();
+    const result = runInvoiceSheet('s1', { fetch: net.fetch, render: sheet.render });
+    sheet.press('pay');
+    expect({ index, status: await result }).toEqual({ index, status: 'failed' });
+  }
+  // The invoice route's 404, a malformed body or a network error is shown; the buttons stay usable.
+  const unreadable: Array<() => Response | Error> = [
+    () => json(404, { error: 'not_found' }),
+    () => json(200, { title: 'no amount' }),
+    () => new TypeError('Failed to fetch'),
+  ];
+  for (const [index, invoice] of unreadable.entries()) {
+    const net = fakeFetch((method) => (method === 'GET' ? invoice() : json(200, SIMULATED)));
+    const sheet = fakeRender();
+    const result = runInvoiceSheet('s1', { fetch: net.fetch, render: sheet.render });
+    await vi.waitFor(() => expect(sheet.views).toHaveLength(1));
+    expect({ index, error: sheet.views.every((v) => 'error' in v) }).toEqual({ index, error: true });
+    sheet.press('pay');
+    expect({ index, status: await result }).toEqual({ index, status: 'paid' });
+  }
+});
+
+test('mock: invoice outcome set skips the sheet', async () => {
+  const net = fakeFetch();
+  const sheet = fakeRender();
+  let renders = 0;
+  const m = harness({
+    sheet: {
+      fetch: net.fetch,
+      render: () => {
+        renders++;
+        return sheet.render;
+      },
+    },
+  });
+  const closed = (slug: string, status: string): [string, unknown] => ['invoice_closed', { slug, status }];
+  m.controls.setInvoiceOutcome('paid');
+  m.post('web_app_open_invoice', { slug: 'dev-a' });
+  await vi.waitFor(() => expect(m.received).toEqual([closed('dev-a', 'paid')]));
+  m.controls.setInvoiceOutcome('pending');
+  m.post('web_app_open_invoice', { slug: 'dev-b' });
+  await vi.waitFor(() => expect(m.received).toHaveLength(2));
+  m.controls.setInvoiceOutcome('cancelled');
+  m.post('web_app_open_invoice', { slug: 'dev-c' });
+  await vi.waitFor(() => expect(m.received).toHaveLength(3));
+  m.controls.setInvoiceOutcome('failed');
+  m.post('web_app_open_invoice', { slug: 'dev-d' });
+  await vi.waitFor(() => expect(m.received).toHaveLength(4));
+  expect(m.received).toEqual([
+    closed('dev-a', 'paid'),
+    closed('dev-b', 'pending'),
+    closed('dev-c', 'cancelled'),
+    closed('dev-d', 'failed'),
+  ]);
+  expect(net.log).toEqual([
+    ['POST', '/dev/simulate-payment', '{"slug":"dev-a","outcome":"paid"}'],
+    ['POST', '/dev/simulate-payment', '{"slug":"dev-b","outcome":"paid","webhookDelayMs":3000}'],
+  ]);
+  expect(renders).toBe(0);
+
+  // `null` shows the sheet again; a second invoice while it is open is closed 'failed' at once.
+  m.controls.setInvoiceOutcome(null);
+  m.received.length = 0;
+  m.post('web_app_open_invoice', { slug: 'dev-e' });
+  expect(renders).toBe(1);
+  m.post('web_app_open_invoice', { slug: 'dev-f' });
+  expect([renders, m.received]).toEqual([1, [closed('dev-f', 'failed')]]);
+  sheet.press('cancel');
+  await vi.waitFor(() => expect(m.received).toEqual([closed('dev-f', 'failed'), closed('dev-e', 'cancelled')]));
 });
