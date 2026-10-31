@@ -4,6 +4,7 @@
 import { expect, test } from 'vitest';
 
 import type { Lifecycle } from './index.ts';
+import { perfClassFromUa } from './perf.ts';
 import { createTelegramClient, type TgEnv, type TwaHandler, type TwaWebApp, type VisibilitySource } from './webapp.ts';
 
 type Call = readonly [method: string, ...args: unknown[]];
@@ -591,4 +592,24 @@ test('start param: read from the raw initData, envelope only', () => {
   expect(at('start_param=a%20b')).toBeNull();
   expect(at('start_param=a%2Fb')).toBeNull();
   expect(at('')).toBeNull();
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Performance class (C2)
+
+test('perf: performance class from UA vectors', () => {
+  const vectors = [
+    // R1 §6's example.
+    ['Mozilla/5.0 (Linux; Android 14) Telegram-Android/11.3.3 (Google sdk_gphone64_arm64; Android 14; SDK 34; LOW)', 'LOW'],
+    // A model name with spaces: the class is the last `;` token, never a space-split word.
+    ['Mozilla/5.0 Telegram-Android/12.1.1 (Samsung SM-S918B Galaxy S23 Ultra; Android 15; SDK 35; HIGH)', 'HIGH'],
+    ['Mozilla/5.0 Telegram-Android/12.1.1 (Xiaomi 2201117TG; Android 13; SDK 33; AVERAGE)', 'AVERAGE'],
+    ['Mozilla/5.0 Telegram-Android/12.1.1 (Xiaomi 2201117TG; Android 13; SDK 33)', 'AVERAGE'],
+    ['Mozilla/5.0 Telegram-Android/12.1.1 (Xiaomi 2201117TG; Android 13; SDK 33; low)', 'AVERAGE'],
+    ['Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148', 'AVERAGE'],
+    ['', 'AVERAGE'],
+  ] as const;
+  expect(vectors.map(([ua]) => perfClassFromUa(ua))).toEqual(vectors.map(([, cls]) => cls));
+  expect(createTelegramClient(new FakeTwa('9.6'), fakeEnv(vectors[0][0]).env).perfClass).toBe('LOW');
+  expect(createTelegramClient(null, fakeEnv(vectors[1][0]).env).perfClass).toBe('HIGH');
 });

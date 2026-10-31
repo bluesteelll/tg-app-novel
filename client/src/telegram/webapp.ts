@@ -10,6 +10,7 @@ import type {
   TgError,
   Unsubscribe,
 } from './index.ts';
+import { perfClassFromUa } from './perf.ts';
 
 /** A TWA event handler; TWA passes the event's data object, or nothing. */
 export type TwaHandler = (data?: unknown) => void;
@@ -201,7 +202,7 @@ function inertClient(env: TgEnv): TelegramClient {
     initData: '',
     version: '',
     platform: 'unknown',
-    perfClass: 'AVERAGE',
+    perfClass: perfClassFromUa(env.userAgent),
     isVersionAtLeast: () => false,
     ready: none,
     expand: none,
@@ -290,7 +291,7 @@ function webAppClient(w: TwaWebApp, env: TgEnv): TelegramClient {
     initData,
     version: w.version,
     platform: w.platform,
-    perfClass: 'AVERAGE',
+    perfClass: perfClassFromUa(env.userAgent),
     isVersionAtLeast: at,
     ready: () => attempt(() => w.ready()),
     expand: () => attempt(() => w.expand()),
