@@ -431,6 +431,10 @@ throw.**
     - verify: LW2 seen working times the full search of a 5,000-state fixture section on a quiet machine. L15
       times it on a LOW Android if one is available. Over budget → lower the constant, and the story gate re-checks
       every section against it.
+    - Measured, provisional (RULINGS 21 Q7; LW2 merged `38bc717`): one full `inSectionReach` enumeration took
+      50-58 ms in quiet-like runs and 130-158 ms beside LDB1's cargo, against 75 ms unthrottled (≤ 300 ms at CPU
+      4×). `RESUME_STATE_CAP` stays 5,000. Re-measure on a quiet machine before LX / L13 rely on it:
+      `cd client && npx vitest run scripts/story/softlock -t "just under" --reporter=verbose`.
     - Each search runs on the main thread with no input pending. Step 4 runs behind the resume loading state. Step
       5 runs inside the explore yield, before the room batch starts, so no hotspot is on screen yet; it delays that
       section's door fade by at most the same 300 ms.
@@ -649,7 +653,9 @@ load.**
   - A room→room exit leads only to a room of its own section (`world/cross-section-exit`, revision 6): an `exit`
     whose `to` is `{ room }` names a room of the section that holds the exit. Sections join only through the story:
     a `leave` exit into a knot that yields `explore: <other>`.
-  - A linear puzzle has no `requires` (`world/linear-requires`).
+  - A linear puzzle has no `requires` (`world/linear-requires`). Erratum (RULINGS 21 Q6; LW2 merged `38bc717`): by
+    construction, puzzles have no item field; only locks have slots. The decoder refuses a `requires` key as
+    unknown, so LW3 keeps the code registered without an emitter.
   - Item→slot acceptance is public data: a medallion-shaped indentation is not a secret.
 - **Why.** It makes T9 checkable per section, with no cross-section path analysis. Gilbert's "no unretrievable item"
   rule holds by construction [P4 §3a]. 999 uses self-contained escape segments [P4 §2a].
@@ -822,6 +828,16 @@ Reserved:
 }
 ```
 
+**Schema strictness** (erratum, RULINGS 21 Q5 / LW2 cut D3; as merged, `38bc717`, `client/src/world/decode.ts:1-5`):
+- Every key the example writes out is required, and so are the keys it elides behind `…`: room `title` and room
+  `onEnter` (`[]` when empty, as in `hall`). The only optional keys are `take.then` and `lock.onOpen` (default `[]`).
+- Unknown keys are issues, so a typo such as `onenter` is an issue, not a silently empty trigger.
+- `Effect`, `to` and `gives` are objects with exactly one key; `rect` is 4 integers with x, y ≥ 0 and w, h > 0.
+- Nullable keys, each still required: exit `lock`, exit `sfx` (a silent door is `"sfx": null`), section `bgm`,
+  take / object `prop`, object `lock`, object `look`, lock `puzzle`, puzzle `closeup`, puzzle `maxAttempts`.
+- References are not resolved by the decoder: an undefined room or item is `world/unknown-ref` (LW3). A hotspot id
+  repeated within one room is an `'id'` issue: a `HotspotKey` names one hotspot.
+
 **Hotspot kinds:**
 
 | Kind | Fields | Tap |
@@ -901,6 +917,9 @@ export type WorldState = {
 export const EMPTY_WORLD_STATE: WorldState;           // frozen
 
 // explore/reduce.ts — pure; the ONLY writer of WorldState during play (admitSection composes it with resetSection, X9)
+// erratum (RULINGS 21 Q3; as merged, 38bc717): every pure function below takes WorldPublicBody, the body without
+// version (the build checker runs on toPublic(source), which has none); only reconcile takes
+// WorldPublic, because it compares w.version. WorldPublic is assignable to WorldPublicBody.
 export type ExploreAction =
   | { kind: 'enter-section'; section: SectionId }               // an explore yield with an empty pendingStory
   | { kind: 'event-returned'; section: SectionId }              // an explore yield with a non-empty pendingStory
@@ -920,33 +939,37 @@ export type ExploreEffect =
   | { kind: 'refused'; reason: 'no-fit' }
   | { kind: 'reset'; section: SectionId }               // admitSection restarted the section (toast); never from reduce
   | { kind: 'dirty' };                                  // the state changed → debounced autosave
-export function reduce(w: WorldPublic, s: WorldState, a: ExploreAction): { state: WorldState; effects: ExploreEffect[] };
-export function actions(w: WorldPublic, s: WorldState): ExploreAction[];
+export function reduce(w: WorldPublicBody, s: WorldState, a: ExploreAction): { state: WorldState; effects: ExploreEffect[] };
+export function actions(w: WorldPublicBody, s: WorldState): ExploreAction[];
   // every enabled player action: taps on the current room's hotspots and inserts of held items while pendingStory is
   // empty; only 'event-returned' while it is not. Puzzle outcomes are not listed here: see successors. The current
   // room is always a room of s.section (every move stays inside its section, world/cross-section-exit).
 export type Successor = { step: ExploreAction | { kind: 'closed'; puzzle: PuzzleLocalId }; state: WorldState; leaves: boolean };
-export function successors(w: WorldPublic, s: WorldState): Successor[];
+export function successors(w: WorldPublicBody, s: WorldState): Successor[];
   // THE successor relation of the soft-lock checker, the seeded playthroughs and reconcile (rules below)
-export function sectionKey(w: WorldPublic, s: WorldState, section: SectionId): string;
+export function sectionKey(w: WorldPublicBody, s: WorldState, section: SectionId): string;
   // canonical key of s restricted to section S: room, pendingStory, S's keys in taken / open / slots / fired, the
   // outcomes of S's lock puzzles (each puzzle has one lock, world/puzzle-multi-lock, so its run is a key of one
   // section), the items and docs S gives in held / used / docs. Abstracted (read by no rule):
   // examined, visited, attempts, hints opened; ignored: section, lastRoom, unproved, everything outside S (X15)
+  // erratum (RULINGS 21, LW2 addendum W1): held / used / docs / taken / open / fired are sets in the key (each part
+  // sorted), pendingStory stays an ordered queue; actions lists held items sorted, so one key lists one action set
 export const RESUME_STATE_CAP = 5_000;   // THE section cap: world/state-cap (build) = the resume search (runtime), X9
+export const RULES_VERSION = 1;          // erratum (RULINGS 21 Q2, PE7): hand-bumped on any edit that can change
+                                         // actions, successors, sectionKey or the section search (rules golden)
 // explore/project.ts
-export function project(w: WorldPublic, s: WorldState, declared: ReadonlySet<VarName>): Record<VarName, InkScalar>;
+export function project(w: WorldPublicBody, s: WorldState, declared: ReadonlySet<VarName>): Record<VarName, InkScalar>;
 // explore/reconcile.ts — X9; same version → identity; otherwise normalize, then the membership guarantee for the
 // current section (step 4) and `unproved` = every other section (step 5)
 export function reconcile(w: WorldPublic, s: WorldState, knots: ReadonlySet<KnotName>, savedVersion: string | null):
   { state: WorldState; dropped: string[]; reset: SectionId | null };   // reset: the current section restarted (toast)
-export function admitSection(w: WorldPublic, s: WorldState, section: SectionId): { state: WorldState; effects: ExploreEffect[] };
+export function admitSection(w: WorldPublicBody, s: WorldState, section: SectionId): { state: WorldState; effects: ExploreEffect[] };
   // X9 step 5; the explore controller's only way to enter a section. S ∉ unproved → reduce(w, s, enter-section S).
   // Otherwise enter with reduce, then inSectionReach on the entered state: 'yes' → kept; 'no' | 'cap' → a reset effect,
   // then sectionEntry(w, s, S) and its entry effects. S leaves unproved either way.
-export function sectionEntry(w: WorldPublic, s: WorldState, section: SectionId): WorldState;
+export function sectionEntry(w: WorldPublicBody, s: WorldState, section: SectionId): WorldState;
   // reduce(w, resetSection(w, s, S), enter-section S).state — the start of both searches (build: s = EMPTY_WORLD_STATE)
-export function inSectionReach(w: WorldPublic, s: WorldState, section: SectionId, cap: number): 'yes' | 'no' | 'cap';
+export function inSectionReach(w: WorldPublicBody, s: WorldState, section: SectionId, cap: number): 'yes' | 'no' | 'cap';
   // BFS over successors from sectionEntry(w, s, S), deduplicated by sectionKey; 'yes' on meeting sectionKey(s)
 ```
 
@@ -987,6 +1010,30 @@ export function inSectionReach(w: WorldPublic, s: WorldState, section: SectionId
 - `event-returned` pops the head. More pending → `story(next head)`; otherwise the `room` effect.
 - `give` adds to `held` (+ `got`); `unlock` adds to `open`.
 - `attempt-failed`, `hint-opened` → counters, `dirty`.
+
+**The points the rules leave open** (erratum, RULINGS 21 Q5 / LW2 cut D7 with the addendum's C1 and developer
+decisions; as merged, `38bc717`, `client/src/explore/reduce.ts:1-8`):
+- **No-change actions** (D7(a) as restated by C1). An action that changes no state returns the same state object and
+  no `dirty`, but keeps every effect its rule emits: the `lock` panel (a lock with a free slot, or a failed lock), the
+  `puzzle` effect of a reopened puzzle (zero-slot locks included), the `look` text of a re-read, the resume `room` of
+  `enter-section` on the current section, and `refused`. A change ends with exactly one `dirty`. A tap while
+  `pendingStory` is non-empty emits nothing. Test: `reduce: an action that changes no state keeps its effects`.
+- **`actions`** (D7(b)): a tap on every hotspot of the current room except a taken `take`, plus only the inserts
+  `reduce` would accept (one slot-fit rule decides both); held items in sorted order; `[]` when `section` is null;
+  only `event-returned` while `pendingStory` is non-empty.
+- **An `unlock` effect** (D7(c)) opens the key and runs `onOpen` once. An object's `then` runs at once only when the
+  opening action happens at that hotspot (its last insert, its puzzle solved); after a remote `unlock` it runs at
+  the next tap.
+- **`hint-opened`** (D7(d)) sets `hintsOpened = max(hintsOpened, tier)` and accepts tiers 1..`hintTiers` only.
+- **A `leave` tap** (D7(e)) sets only `section = null` and emits `leave`.
+- **An insert** (D7(f)) fills the first free slot whose `accepts` is the item; an absent `slots` entry counts as
+  all-null, and `sectionKey` canonicalises it.
+- **A dangling reference** (D7(g); only on worlds LW3 rejects) makes the action a no-op, never a throw.
+- **Empty triggers** (an empty `then` / `onEnter` / `onOpen` / `onFail`) are never recorded in `fired`.
+- **An open object's tap** emits its `look` text when it has one, then runs `then` once; only the `look` kind marks
+  `examined`.
+- **`puzzle-ended`**: a lock puzzle's outcome is final and `abandoned` is refused for it (X8); a linear puzzle (no
+  lock) records the latest outcome, so a story that loops back for a retry projects the new one (L13 owns retries).
 
 **The successor relation** (`successors`; the one model of what the player can reach):
 - every action of `actions(w, s)`, through `reduce`;
@@ -1085,7 +1132,7 @@ Staging tag lines above it merge into the yield step's batch (§3.5) and run bef
 | `world/cross-section-exit` | E | a room→room exit whose `to.room` is a defined room of another section than the exit's own; prints every such exit, so a crossing pair is two findings. A room that is not defined stays `world/unknown-ref`. X15, X12, X9 step 5's premise, reducer move rule (revision 6) | LW3 |
 | `world/fail-without-effect` | E | a lock puzzle with `maxAttempts` and an empty `onFail` | LW3 |
 | `world/var-type` | E | a declared projection VAR with the wrong type (`pz_*` int, `it_*` / `dc_*` bool) | LW3 |
-| `world/softlock` | E | the model checker found a reachable state (over `successors`, closed puzzles included) with no path to a `leave` effect; prints the action path | LW3 |
+| `world/softlock` | E | the model checker found a reachable state (over `successors`, closed puzzles included) with no path to a `leave` effect; prints the action path (as merged, LW2 `38bc717`: the shortest path from entry in BFS order, e.g. `tap hall.gate → insert hall.gate medal_sun → …`; a `closed` / `puzzle-ended` step prints as the action that opened the puzzle plus the outcome, `tap hall.gate → gate failed`) | LW3 |
 | `world/unreachable` | W | an item, doc, room or puzzle no reachable state touches | LW3 |
 | `world/state-cap` | E | the checker exceeded `RESUME_STATE_CAP` (5,000) states: the section is too large to prove at resume (X9); split it | LW3 |
 | `play/event-no-return` | E | a seeded run entered an event knot and stopped without its explore yield | LW3 |
@@ -1137,6 +1184,10 @@ world: WorldPublic | null;          // free: story-gen/free/<ch>.world.json; pai
 export type WorldPublic = WorldPublicBody & { readonly version: string };   // worldVersion(body), stamped by emit (LW3)
 export function decodeWorldSource(raw: unknown): Result<WorldSource, WorldIssue[]>;
 export function decodeWorldPublic(raw: unknown): Result<WorldPublic, WorldIssue[]>;   // refuses `solution` / `hints`; requires `version`
+export type WorldIssue = { path: string; reason: 'shape' | 'id' | 'line-id' | 'range' | 'hint-count' | 'secret'; detail: string };
+  // erratum (RULINGS 21 Q5, LW2 cut D4; as merged, decode.ts:56-65): `path` dotted ('' = the file); LW3 maps
+  // 'line-id' → id/missing / id/format, 'hint-count' → world/hint-count, every other reason → world/schema;
+  // 'secret' = solution / hints in a public world; `version` must match /^[0-9a-f]{16}$/ ('shape' otherwise)
 export function toPublic(w: WorldSource): WorldPublicBody;
 export function toServer(w: WorldSource, en: Readonly<Record<LineId, string>>, chapter: ChapterId): ServerPuzzleContent;
 export type ServerPuzzleContent = { format: 1; chapterId: ChapterId; puzzles: Record<PuzzleLocalId, {
@@ -1146,6 +1197,9 @@ export type ServerPuzzleContent = { format: 1; chapterId: ChapterId; puzzles: Re
 // scripts/story/emit.ts (LW3; build only, so 0 bytes in the bundle)
 export function worldVersion(body: WorldPublicBody): string;
   // sha256(emitted body JSON with every WorldText { id, ru } replaced by 1)[0..16] (X9 World version)
+  // erratum (RULINGS 21 Q2, PE7 final shape): the hashed input is { rules: RULES_VERSION, body: <textless body> },
+  // so a rules edit with no world edit changes every world's version (LW3 test `emit: world version changes on a
+  // RULES_VERSION bump`, beside `emit: world version changes on a rules edit`)
 
 // geom/cover.ts (L11)
 export type Size = { w: number; h: number };
@@ -1594,7 +1648,12 @@ postAttempt(id: PuzzleId, answer: readonly number[]): Promise<Result<AttemptResp
 
 **Arch rules added** (`client/src/arch.test.ts`):
 - `arch: pure world modules` (LW2) — no `document`, `window`, `fetch(`, `localStorage`, `svelte` import in
-  `src/world/`, `src/explore/{state,reduce,project,reconcile}.ts`, `src/puzzles/rules/`.
+  `src/world/`, `src/explore/{state,reduce,project,reconcile}.ts`, `src/puzzles/rules/`. As merged (RULINGS 21 Q4,
+  rule id `pure-world`, `38bc717`): transitive over those files plus their pure dependencies
+  `story/{staging,catalog,tags}.ts`; it also bans `globalThis`, `self`, `navigator`, `location`, `XMLHttpRequest`,
+  `WebSocket`, `sessionStorage`, `indexedDB`, `performance`, `crypto`, `Date`, `setTimeout`, `setInterval`,
+  `queueMicrotask`, `requestAnimationFrame` and `Math.random`, and any value import outside that set (a bare package
+  included). It binds L5 and any later editor of `catalog.ts` / `tags.ts`.
 - `arch: lazy ui only by dynamic import` (LP2) — files under `src/puzzles/ui/`, `src/ui/puzzles/` and
   `src/ui/explore/` are statically imported only from their own directory; elsewhere only through `import()`.
 - `arch: only yields.ts enters the runner` (LP2) — `.enter(` on the runner appears only in `src/app/yields.ts`.
@@ -1655,7 +1714,7 @@ The lanes are cut in PROTOTYPE-PLAN.md "THE LANE CUT" (dependency order, locks, 
 | Live textures while exploring | ≤ 32 MiB steady: 29.3 MiB with two neighbours; 20.9 MiB with a close-up open | X13 | registry caps + e2e `explore: live texture bytes stay under the steady cap` |
 | Steady memory | PP's 135.5 MiB total holds: textures stay cap-bounded; world data and sessions < 0.5 MB heap | | e2e `heap under budget` (PP) |
 | Attempt latency | one request per Try; no budget gate | verify the p95 on device (L15) | — |
-| Resume search after a rules update | ≤ 300 ms at CPU 4× (the LOW proxy) per search, worst case a full enumeration of `RESUME_STATE_CAP` = 5,000 states; one search at the load (the current section) and one at the first entry of each other section, never two at one point | X9: estimate ≈ 60 µs per state at 4× | `world/state-cap` bounds the states at build (LW3; `softlock: section above RESUME_STATE_CAP fails the build`, LW2); the time is verified in LW2 seen working (quiet machine) and on a LOW Android in L15 if available |
+| Resume search after a rules update | ≤ 300 ms at CPU 4× (the LOW proxy) per search, worst case a full enumeration of `RESUME_STATE_CAP` = 5,000 states; one search at the load (the current section) and one at the first entry of each other section, never two at one point | X9: estimate ≈ 60 µs per state at 4× | `world/state-cap` bounds the states at build (LW3; `softlock: section above RESUME_STATE_CAP fails the build`, LW2); the time is verified in LW2 seen working (quiet machine) and on a LOW Android in L15 if available; LW2's measurement is provisional (RULINGS 21 Q7: 50-58 ms quiet-like, 130-158 ms under load, budget 75 ms unthrottled), re-measured on a quiet machine before LX / L13 rely on it |
 
 **Red once:** budget.test.ts feeds:
 - a manifest with `CodeLock.svelte` in the engine's static closure;
@@ -1694,6 +1753,12 @@ The lanes are cut in PROTOTYPE-PLAN.md "THE LANE CUT" (dependency order, locks, 
 - **softlock** — `softlock: lock needing an unreachable item fails`, `softlock: fail branch without unlock fails`,
   `softlock: solvable section passes`, `softlock: state cap is an error`, `softlock: counterexample path printed`,
   `softlock: section above RESUME_STATE_CAP fails the build`.
+- **As merged (LW2 `38bc717`, RULINGS 21 Q8 and the addendum):** the 50 LW2 names joined `baseline.tsv`; beside the
+  names above: `decode: public requires version`, `decode: take then and lock onOpen default to empty`,
+  `reduce: an action that changes no state keeps its effects` (C1), `reduce: rules golden pinned to RULES_VERSION`
+  (PE7), `sectionKey: ignores section, lastRoom, unproved and other sections` (W1: equal sets in two orders give one
+  key), `softlock: section just under RESUME_STATE_CAP passes` (the Q7 timing); arch: `arch: pure-world red on
+  fixture`, `arch: pure-world allows fixtures`.
 - **cover** — `cover: hotspot rect follows the bg cover transform`, `cover: small target expanded to 44 px`.
 - **executor** — `executor: scene clears props`, `executor: props survive restore`.
 - **runner** — `runner: puzzle yield stops at DONE` (verifies `canContinue === false` after DONE),
@@ -1718,7 +1783,8 @@ The lanes are cut in PROTOTYPE-PLAN.md "THE LANE CUT" (dependency order, locks, 
 - **scan** — `scan: hint text in dist fails`, `scan: hint sources present but no fingerprints fails`,
   `scan: paid world text in dist fails`, `scan: paid world sources present but no fingerprints fails`.
 - **emit** — `emit: public world has no solution or hint fields`, `emit: server puzzle content matches the server fixture shape`,
-  `emit: world version ignores texts`, `emit: world version changes on a rules edit`.
+  `emit: world version ignores texts`, `emit: world version changes on a rules edit`,
+  `emit: world version changes on a RULES_VERSION bump` (LW3; erratum, RULINGS 21 Q2).
 
 **Client DOM** (vitest `dom`):
 - `code: dials wrap and emit answer`, `order: tap two slots swaps`, `puzzle host: linear has give up and no back`,
@@ -1874,7 +1940,7 @@ The cabinet has three dials and a dusty label. #id:ch2.archive_cabinet.c001
 | PE4 | PP L8b leaves the pre-checkout reject texts unplaced; `Unavailable` needs one | L8b keeps the ru/en reason texts as a `match` in `telegram/payments.rs`; L9 moves them into `bot.*.json` under `bot_texts_complete_and_within_limits` |
 | PE5 | The lane count grows from 24 to 30 | Accept; the critical path grows by LP2 only (dependency order in PP) |
 | PE6 | verify (L13): `canContinue === false` after `-> DONE` and `ChoosePathString` from that stop | The red-first `runner: puzzle yield stops at DONE` decides it; if it fails, STOP: X1 needs a redesign |
-| PE7 (r2) | `worldVersion` covers the world body, not the `reduce` rules: a rules change shipped with no world edit keeps `version`, so reconcile is skipped and invariant I-W (X9) rests on T9 run under the old rules | A hand-bumped `RULES_VERSION` constant in `explore/reduce.ts`, folded into `worldVersion`'s input; a golden test pins the demo fixture's per-section state count together with the `RULES_VERSION` it was taken under, so a rules edit without a bump fails. Decide in the LW2 cut |
+| PE7 (r2) | `worldVersion` covers the world body, not the `reduce` rules: a rules change shipped with no world edit keeps `version`, so reconcile is skipped and invariant I-W (X9) rests on T9 run under the old rules | A hand-bumped `RULES_VERSION` constant in `explore/reduce.ts`, folded into `worldVersion`'s input; a golden test pins the demo fixture's per-section state count together with the `RULES_VERSION` it was taken under, so a rules edit without a bump fails. Decide in the LW2 cut. **RESOLVED (RULINGS 21 Q2; as merged, `38bc717`):** `export const RULES_VERSION = 1` in `explore/reduce.ts`, hand-bumped on any edit that can change `actions`, `successors`, `sectionKey` or the section search. The golden `reduce: rules golden pinned to RULES_VERSION` (`explore.test.ts`) runs the section search with an edge callback over a demo-shaped fixture (the manor plus an `onOpen` and a `then` story on the drawer, a `take` with `then` and a remote `unlock` of an object) and pins `{ rulesVersion, states, digest }` in an append-only table keyed by version (row `1: { states: 1637, digest: 'd7c827dd' }`), the digest an FNV-1a-32 hex of the sorted edge lines; a mismatch fails with "rules changed: bump RULES_VERSION and add a row". A state count alone misses an order-only edit, the edge digest catches it. LW3 hashes `{ rules: RULES_VERSION, body }` and adds `emit: world version changes on a RULES_VERSION bump`; once N1's `story/ch1/world.json` exists, LW3 may add a second golden row over the real demo |
 
 ### VALUES / SCOPE (for the owner; the orchestrator records them in docs/OPEN-QUESTIONS.md)
 
@@ -1923,7 +1989,8 @@ The cabinet has three dials and a dusty label. #id:ch2.archive_cabinet.c001
 
 [STORIES-PLAN.md](STORIES-PLAN.md) (RULINGS 20) adds several stories, saves per story and the statistics
 foundation. What it means for this design (the in-place marks above are single-line edits, so the line numbers that
-RULINGS 21's errata cite, up to line 1877, are unchanged):
+RULINGS 21's errata cite, up to line 1877, are unchanged; revision 9 applied those errata and moved PZ:652 and the
+lines after it, so they are now found by their quoted text):
 
 | PZ item | Change |
 |---|---|
@@ -1952,6 +2019,7 @@ RULINGS 21's errata cite, up to line 1877, are unchanged):
 | 6 | 2026-10-31 | `D:/tmp/novel-orch/design/puzzles/triage_r6.md` (critique `design/puzzles/critique_r6.md`) | The 1 confirmed item W1 resolved: a room→room exit into a room of another section fails the story gate (`world/cross-section-exit`, X15), so every move stays inside its section and the current room is always a room of the current section; step 5's premise, the writer list, I-W's first entry, the successor paragraph and the reducer's move rule now name it as the fourth guarantee. Reconcile and its cap are unchanged; 0 runtime bytes. Optional O1, O2 and critique-r6 OQ1 noted, not folded in (OQ1 stays a detail for the LW3 cut); OQ2 / PE7 (`RULES_VERSION`) stays with the LW2 cut. Pre-revision copies: `design/puzzles/PUZZLES-PLAN.r6.before.md`, `PROTOTYPE-PLAN.r6.before.md`. Per-item detail: `D:/tmp/novel-orch/design/puzzles/revision_r6.md` |
 | 7 | 2026-10-31 | `D:/tmp/novel-orch/design/stories/spec.md` (RULINGS 20), with PROTOTYPE-PLAN revision 11 | Extended by [STORIES-PLAN.md](STORIES-PLAN.md): the section "Changed by STORIES-PLAN" (no X decision changes; `PuzzleId` stays game-unique; `server/catalog.json` chapters over the story index; ch1–ch2 are story `manor` with two declared endings). In-place single-line marks only before line 1878 (status, Identifiers, Server formats, Implementation plan, Demo content outline), so the line references of RULINGS 21's errata stay valid. The errata themselves are not applied here |
 | 8 | 2026-10-31 | `D:/tmp/novel-orch/design/stories/triage_r1.md` (STORIES-PLAN revision 1, W5) | Two single-line in-place edits in "Resource lifetime" (the `PuzzleSession` and `ExploreController` rows: also destroyed by `exitToStories()`, with its test) and one row in "Changed by STORIES-PLAN"; no X decision changes; the line numbers before line 1878 are unchanged. Pre-revision copy: `D:/tmp/novel-orch/design/stories/PUZZLES-PLAN.r1.before.md`. Detail: `D:/tmp/novel-orch/design/stories/revision_r1.md` |
+| 9 | 2026-10-31 | RULINGS 21 + `D:/tmp/novel-orch/lw2-world-model/cut.md` §6 (Q1-Q8) and its addendum (C1, W1, developer decisions), as merged: LW2 `38bc717` | Docs lane `docs-errata`, group B (the LW2 errata, not a triage round): X15 `world/linear-requires` by construction (Q6); "World data" schema strictness (Q5/D3: required and nullable keys, repeated hotspot ids); the state API signatures take `WorldPublicBody`, only `reconcile` `WorldPublic` (Q3), `sectionKey` sets (W1), `RULES_VERSION` (Q2); "The points the rules leave open" (D7 with C1's restated no-change rule and the developer decisions); `WorldIssue` (D4); `worldVersion` hashes `{ rules: RULES_VERSION, body }` (Q2); the `world/softlock` message; the `pure-world` arch rule as merged (Q4); the X9 cost and the budget row carry the provisional timing (Q7); Test strategy: the LW2 names beside the list (Q8) and LW3's `emit: world version changes on a RULES_VERSION bump` in the emit list (Q2); PE7 resolved; the "Changed by STORIES-PLAN" line-number note says this revision moved the lines (review round 1). Each place is marked "erratum (RULINGS 21 …)" or "as merged". Ledger: `D:/tmp/novel-orch/docs-errata/ledger.md` |
 
 **Revision 1 (2026-10-30)** — what changed, by triage item:
 - **W1** (a fully slotted lock's puzzle cannot be reopened after Back or a reload): "Lock" (the tap rule: every slot
