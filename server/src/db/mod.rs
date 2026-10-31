@@ -60,7 +60,8 @@ impl Repo {
     }
 
     /// Applies `server/migrations/` (embedded at compile time). `migrate!` emits an `include_str!` per file, so an
-    /// edit to an existing migration rebuilds the crate; a NEW file needs a build script (sqlx docs).
+    /// edit to an existing migration rebuilds the crate; a NEW file is seen through `server/build.rs`
+    /// (`cargo:rerun-if-changed=migrations`), without which an incremental build keeps the old set.
     pub async fn migrate(&self) -> Result<(), sqlx::migrate::MigrateError> {
         sqlx::migrate!("./migrations").run(&self.pool).await
     }
