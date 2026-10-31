@@ -3,7 +3,7 @@
 **Date:** 2026-10-31. **Status:** research, not a decision. The owner decides; nothing here changes the design docs.
 
 **Scope:** how to promote a Telegram Mini App visual novel sold for Telegram Stars. The main line is romance VNs for
-girls and young women (owner, 2026-10-31); the age bracket is not decided. Russia is the primary market, reached
+girls and young women aged 14-25 (R4), with an 18+ track behind an age confirmation (R5). Russia is the primary market, reached
 through VPN-mediated Telegram use (owner, 2026-10-31); English comes second. Covered: Telegram surfaces, paid and viral
 channels, channels outside Telegram, funnel economics, law, a phased plan, product asks and owner questions. Not
 covered: hosting design (Q5/Q21), story and art (Q1/Q2).
