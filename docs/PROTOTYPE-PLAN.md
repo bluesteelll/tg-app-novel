@@ -2470,6 +2470,10 @@ Changed by STORIES-PLAN (revision 11): the table below is the state at main `38b
 them) with the stories lanes LS1–LS4 and N2 and the tuning lane LDB2 (RULINGS 17) added; up to 3 lanes run (RULINGS
 18). "Re-cut" names the revision that last changed a lane's scope or gate.
 
+Changed by RULINGS 22, 23 (as merged; docs lane `docs-errata`): the State column is the state at main `d9ca9f1`. LDB1
+merged `fee9da7`; LDB2 merged `a7e4a04` (it ran early in an idle server slot, SQ4); STORIES-PLAN merged `66c92c4`;
+L3c resumed (trunk-synced `f1a46ea`, re-cut v3 per its STORIES-PLAN bullet); L6b runs in the server slot.
+
 | Lane | Slot | State | Gate to start (merged) | Re-cut |
 |---|---|---|---|---|
 | L1 client-shell | client | merged `f6e2624` | — | — |
@@ -2482,10 +2486,10 @@ them) with the stories lanes LS1–LS4 and N2 and the tuning lane LDB2 (RULINGS 
 | L6a server-saves | server | merged `a6beebe` (`63ab7a1` after the rewrite) | L4a | — |
 | **LDB0 pg-dev-cluster** | server | merged `857f7d6` | L6a | — |
 | **LW2 world-model** | client | merged `38bc717` | L3a, LW1 | — (errata after this design, RULINGS 21) |
-| **LDB1 db-port** | server | running | LDB0 | — (no mid-flight change; LS2 follows) |
-| L3c story-locales | client | paused at `5d12aa3` (C1, C2) | L3b | STORIES-PLAN: C4 tags carries; resumes when this design merges |
+| **LDB1 db-port** | server | merged `fee9da7` | LDB0 | — (no mid-flight change; LS2 follows) |
+| L3c story-locales | client | running (resumed on `f1a46ea`; C1 `87ee7cf`, C2 `5d12aa3` kept) | L3b | STORIES-PLAN: C4 tags carries (re-cut v3, RULINGS 23) |
 | L5 asset-pipeline | client | | L3c | PUZZLES-PLAN, STORIES-PLAN (covers, story B assets, first-load per story; revision 3: the `tags.test.ts` catalog-key pins) |
-| L6b server-content | server | | L6a, LDB1 | PUZZLES-PLAN, STORIES-PLAN (story index, chapter prices from it) |
+| L6b server-content | server | running | L6a, LDB1 | PUZZLES-PLAN, STORIES-PLAN (story index, chapter prices from it) |
 | **LS2 server-story-saves** | server | new (STORIES-PLAN) | L6b | new |
 | **L6c server-puzzles** | server | | LS2 (serialized server files; needs L6b) | STORIES-PLAN: gate only |
 | **LS1 story-catalog** | client | new (STORIES-PLAN) | L3c, L5, L6b | new |
@@ -2497,7 +2501,7 @@ them) with the stories lanes LS1–LS4 and N2 and the tuning lane LDB2 (RULINGS 
 | L8b webhook-grant | server | | L8a | PUZZLES-PLAN |
 | **LS3 server-stats** | server | new (STORIES-PLAN) | L8b (after L6c's `build.rs`; serialized server files) | new |
 | L9 refunds-bot | server | | LS3 (serialized server files; needs L8b) | STORIES-PLAN: gate only |
-| **LDB2 pgdev-tune** | server | (RULINGS 17) | LDB1; launched after L9 unless the server slot idles earlier (SQ4) | cut in RULINGS 17 / `design/db/decision.md` |
+| **LDB2 pgdev-tune** | server | merged `a7e4a04` (ran early, SQ4) | LDB1; launched after L9 unless the server slot idles earlier (SQ4) | cut in RULINGS 17 / `design/db/decision.md` |
 | L10 client-data | client | | L7, L8b, LS2 | PUZZLES-PLAN, STORIES-PLAN (saves per story) |
 | L13 story-runtime | client | | L3c, L5, L10, LW2, LS1 | STORIES-PLAN: gate + LS1 (`catalog.ts`) |
 | L14a overlay-core | client | | L7, L11 | PUZZLES-PLAN, STORIES-PLAN (Home) |
@@ -2511,17 +2515,20 @@ them) with the stories lanes LS1–LS4 and N2 and the tuning lane LDB2 (RULINGS 
 | L15 integration | client | | every lane above (N1 and N2 included: the e2e plays both stories) | PUZZLES-PLAN, STORIES-PLAN (stories wiring, `stories.spec.ts`) |
 | D2 docs-final | doc | | L15 | PUZZLES-PLAN, STORIES-PLAN |
 
-There are 38 lanes: 10 merged, 1 running, 1 paused, 26 to go; 6 are new from PUZZLES-PLAN, 3 (LDB0, LDB1, LDB2) from
-RULINGS 14/17 and 5 (LS1–LS4, N2) from STORIES-PLAN.
+There are 38 lanes: 12 merged, 2 running, 24 to go (changed by RULINGS 22, 23; it read "10 merged, 1 running, 1
+paused, 26 to go"); 6 are new from PUZZLES-PLAN, 3 (LDB0, LDB1, LDB2) from RULINGS 14/17 and 5 (LS1–LS4, N2) from
+STORIES-PLAN.
 
 **Launch preference** when several lanes are ready (critical path first; changed by STORIES-PLAN):
-- client (two slots): L3c, L5, L11, LS1, L7, L12, LW3, L14a, L10, L13, L14b, LP2 ∥ LX, LS4, D1, N1, N2, L15, D2;
-- server: LDB1 (running), L6b, LS2, L6c, L8a, L8b, LS3, L9, LDB2.
+- client (two slots): L3c (running), L5, L11, LS1, L7, L12, LW3, L14a, L10, L13, L14b, LP2 ∥ LX, LS4, D1, N1, N2, L15,
+  D2;
+- server: L6b (running), LS2, L6c, L8a, L8b, LS3, L9 (changed by RULINGS 22, 23: LDB1 and LDB2 merged).
 
-After LDB2 the server slot takes doc / narrative / client lanes with disjoint locks.
+After L9 the server slot takes doc / narrative / client lanes with disjoint locks.
 
 **Critical path** (changed by STORIES-PLAN):
-- The server chain LDB1 → L6b → **LS2** → L6c → L8a → L8b, then L10 → L14b → LP2 → L15 → D2. LS2 adds one lane.
+- The server chain L6b (running) → **LS2** → L6c → L8a → L8b, then L10 → L14b → LP2 → L15 → D2 (changed by RULINGS
+  22, 23: LDB1 merged, so the chain starts at L6b). LS2 adds one lane.
 - The client chain L3c → L5 → L11 ∥ (LS1 → L7) → L14a reaches L14b long before L10 does, so L14b waits for the server
   chain.
 - LS4 (← LS3 ← L8b, and ← L10) runs beside L14b → LP2: LS3 sits before L9 so that LS4 needs two lanes after L8b
@@ -4445,6 +4452,7 @@ live in [STORIES-PLAN.md](STORIES-PLAN.md), section "Open questions". None block
 | 15 | 2026-10-31 | `D:/tmp/novel-orch/design/stories/triage_r4.md` (critique `design/stories/critique_r4.md`) | STORIES-PLAN revision 4: the 1 confirmed item resolved. W1: `StoryNames` gains `stories` and `teasers` (`Record<StoryId, { ru; en }>`) in LS1 commit 7, where `emit.ts` first reads them, filled by `locales.ts` `nameChecks` for the `LocaleInput.stories` ids (commit 4 only requires them); L3c's pin `locales: matching tables raise nothing` (`locales.test.ts:291-298`) moves on purpose (`r.names` gains `stories: {}`, `teasers: {}`), with a red-first keyed on the diff lines; the inputs `NAMES` (`build.test.ts`), test 35's names and the `stories.test.ts` literals gain the keys; commit 4's red `loc: story title and teaser required` lives in `stories.test.ts`; the lock note (commit 7: two `locales.test.ts` hunks), the moved list (six pins) and the Gates line. Each PP edit is marked "STORIES-PLAN revision 4". Optional O1–O4 and the critique's open question 1 noted, not folded in. Per-item list: [STORIES-PLAN.md](STORIES-PLAN.md), section "Revision log"; detail: `D:/tmp/novel-orch/design/stories/revision_r4.md`. Pre-revision copy: `D:/tmp/novel-orch/design/stories/PROTOTYPE-PLAN.r4.before.md` |
 | 16 | 2026-10-31 | RULINGS 12, 14, 22 + `D:/tmp/novel-orch/design/db/decision.md` §6 (PP bullets; replacement texts §1.3, §3.5, §4.1, §4.3, §4.4, §4.7, §4.8), as merged: LDB0 `857f7d6`, LDB1 `fee9da7`, LDB2 `a7e4a04` | RULINGS 12: PostgreSQL 18 from day one (design/db/decision.md). Docs lane `docs-errata`, group A: T2; K12 storage; K14 rewritten to DB-1/DB-2; K18 (payer-row lock, DB-4); K19 (why); the Deviations and Later PostgreSQL rows deleted; the layout and module map (`server/pgdev/`, the server-dev `lib.rs`/`main.rs` rows, `DevPaths`, `launch_database`); the `0001` section (heading LDB1, the merged schema byte for byte, connection = the session pins, isolation = DB-4); the shared-types save-body row; the pre-checkout, grant and refund SQL in the PostgreSQL dialect; the concurrency table (renamed and new test names, `lock_timeout`, the §4.7 rows with `53300`); resource lifetime (§4.8); test strategy (server row, schema / pre-checkout / grant / dev-crate names, a pgdev bullet); seen-red rename; dependencies (sqlx features, `pgdev` for `tempfile`); gate mapping (cargo + e2e env, `pgdev` targets); L2/L4a/L4b "superseded by LDB1" lines; L8b commits 2-3. Each place is marked "changed by RULINGS 14". Ledger: `D:/tmp/novel-orch/docs-errata/ledger.md` |
 | 17 | 2026-10-31 | RULINGS 21 + `D:/tmp/novel-orch/lw2-world-model/cut.md` §6 (Q1-Q8) and its addendum, as merged: LW2 `38bc717` | Docs lane `docs-errata`, group B: the LW2 entry gains an "As merged" bullet (Q1 commit order rules → decode and the merged SHAs, Q2 PE7, Q3 signatures, Q4 the transitive `pure-world` rule, Q5 / C1 / W1 pointers to PUZZLES-PLAN, Q6, Q7 provisional timing, Q8 names); LW3 commit 3 gains the `RULES_VERSION` hash input and its red (Q2) and an erratum line (Q4, Q6); L5 gains the `catalog.ts` purity line (Q4). PUZZLES-PLAN revision 9 holds the PZ errata. Ledger: `D:/tmp/novel-orch/docs-errata/ledger.md` |
+| 18 | 2026-10-31 | RULINGS 22, 23 (as merged: LDB1 `fee9da7`, LDB2 `a7e4a04`, STORIES-PLAN `66c92c4`; L3c resumed, L6b running) | Docs lane `docs-errata`, group C: "Dependency order" — the State column at main `d9ca9f1` (LDB1, LDB2 merged; L3c, L6b running; a marker paragraph under the revision-11 note), the count (12 merged, 2 running, 24 to go), the server launch preference without LDB1 and LDB2 (the slot frees after L9), the critical path from L6b. The planned order is otherwise unchanged. STORIES-PLAN revision 5 holds the SP lines. Ledger: `D:/tmp/novel-orch/docs-errata/ledger.md` |
 
 **Revision 1 (2026-10-30)** — what changed, by triage item:
 - **W1** (undecodable payment ACKed and lost): K17 (lenient `PaymentProbe` for the payment subset, 500 only when the
