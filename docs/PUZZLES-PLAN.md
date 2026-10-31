@@ -1,7 +1,7 @@
 # Architecture: puzzles, exploration, inventory and paid hints
 
 Status: design extension of [PROTOTYPE-PLAN.md](PROTOTYPE-PLAN.md) (architect round 1, 2026-10-30; RULINGS 10;
-revision 6 — see [Revision log](#revision-log)).
+revision 8 — see [Revision log](#revision-log); extended by [STORIES-PLAN.md](STORIES-PLAN.md): see "Changed by STORIES-PLAN").
 Scope: `D:/tmp/novel-orch/design/puzzles/spec.md`. Inputs: RULINGS 1–10; research P1–P4
 (`D:/tmp/novel-orch/design/puzzles/research_P*.md`) and R1–R4; the tree at `0aef72e` (L1, L2, L4a merged) plus the
 running L3a worktree (`client/src/story/{staging,catalog}.ts`).
@@ -756,7 +756,7 @@ load.**
 |---|---|---|---|
 | `SectionId`, `RoomId`, `HotspotId`, `ItemId`, `DocId`, `PuzzleLocalId`, `PropId` | `[a-z][a-z0-9_]*` | unique per chapter (rooms across all sections of the chapter; `world/duplicate-id`) | `manor`, `hall`, `gate`, `medal_sun` |
 | `HotspotKey` | `<room>.<hotspot>` | chapter | `hall.gate` |
-| `PuzzleId` | `<chapter>.<local>` | global (server, products) | `ch1.drawer` |
+| `PuzzleId` | `<chapter>.<local>` | global (server, products); changed by STORIES-PLAN (Y1, Y17): no change — chapter ids are unique across all stories | `ch1.drawer` |
 | hint product id | `hint:<PuzzleId>:<tier>`, tier 1–3 | global | `hint:ch1.drawer:2` |
 | world text line ID | STAGING-DSL §4 format; the knot part is the owning section, puzzle, item or doc id | global (`id/duplicate` spans ink and world) | `ch1.drawer.h2x9` |
 
@@ -1329,7 +1329,7 @@ No dev route is added: the fake Stars sheet and `/dev/simulate-payment` work for
                            "title": { "ru": "Ящик стола", "en": "Desk drawer" },
                            "hints": [ { "ru": "…", "en": "…" }, { "ru": "…", "en": "…" }, { "ru": "…", "en": "…" } ] } } }
 
-// server/catalog.json — hand-written (L6b); prices are server-only
+// server/catalog.json — hand-written (L6b); prices are server-only; `chapters` changed by STORIES-PLAN Y6: { defaultPriceStars, priceStars, title, description } over the story index
 { "chapters": [ { "productId": "chapter:ch2", "chapterId": "ch2", "priceStars": 1,          // PLACEHOLDER (Q3)
                   "title": { "ru": "Глава 2", "en": "Chapter 2" }, "description": { "ru": "…", "en": "…" } } ],
   "hints": { "priceStars": [1, 1, 2],                                                     // PLACEHOLDER (Q14), by tier
@@ -1562,10 +1562,10 @@ postAttempt(id: PuzzleId, answer: readonly number[]): Promise<Result<AttemptResp
 
 | Resource | Owner | Created | Destroyed | Leak detected by |
 |---|---|---|---|---|
-| `PuzzleSession` (+ its `AbortController`, hint texts) | `app/yields.ts` | puzzle effect / yield | end, close, chapter change, `dispose()` | `session: dispose aborts the attempt`, `game_holds_at_most_one_puzzle_session` |
+| `PuzzleSession` (+ its `AbortController`, hint texts) | `app/yields.ts` | puzzle effect / yield | end, close, chapter change, `dispose()`; changed by STORIES-PLAN (revision 1): also `exitToStories()`, before its autosave | `session: dispose aborts the attempt`, `game_holds_at_most_one_puzzle_session`, `game: exit to stories disposes explore, puzzle and purchase sessions` |
 | Puzzle UI component | `PuzzleHost.svelte` | session open | session end | `puzzle host: unmount on end` (dom) |
 | Lazy chunk modules | browser module cache | first `import()` | app lifetime (code, not data) | budget rows |
-| `ExploreController` (+ `ResizeObserver` on the stage host, `deps.stageHost`) | GameSession | first explore yield of the chapter | chapter change, new game, `dispose()` (disconnects the observer) | `game_holds_one_explore_controller`, `controller: dispose releases room holders` |
+| `ExploreController` (+ `ResizeObserver` on the stage host, `deps.stageHost`) | GameSession | first explore yield of the chapter | chapter change, new game, `dispose()` (disconnects the observer); changed by STORIES-PLAN (revision 1): also `exitToStories()`, after its autosave | `game_holds_one_explore_controller`, `controller: dispose releases room holders`, `game: exit to stories disposes explore, puzzle and purchase sessions` |
 | `room:<id>` preload holders | `ExploreController` | room entry | move away (non-neighbour), puzzle with a close-up opens, section exit, `dispose()` | `controller: puzzle open releases neighbour preloads`; e2e `explore: live texture bytes stay under the steady cap` |
 | Prop sprites (`scene:prop:<id>` holders) | executor (props layer) | `props` command / `restore` | any `bg`/`scene`, `restore` diff, `destroy()` | `executor: scene clears props` |
 | Close-up texture (cg) | executor (cg slot) | puzzle open | puzzle end (`cg: null`) | `yields: puzzle end clears the close-up` |
@@ -1627,7 +1627,7 @@ postAttempt(id: PuzzleId, answer: readonly number[]): Promise<Result<AttemptResp
 
 The lanes are cut in PROTOTYPE-PLAN.md "THE LANE CUT" (dependency order, locks, commits, red-firsts, seen working):
 - **New:** LW1 puzzle-dsl, LW2 world-model, LW3 story-world, L6c server-puzzles, LP2 puzzle-ui, LX explore-ui.
-- **Re-cut:** L5, L6b, L8a, L8b, L9, L10, L11, L13, L14a, L14b, D1, N1, L15, D2.
+- **Re-cut:** L5, L6b, L8a, L8b, L9, L10, L11, L13, L14a, L14b, D1, N1, L15, D2 (changed by STORIES-PLAN: re-cut again, and L6c's gate is LS2; PP "Dependency order").
 - **Unchanged:** L3b, L3c, L4b, L6a, L7, L12.
 - **Port lanes before the puzzle server lanes (RULINGS 14; cut in `D:/tmp/novel-orch/design/db/decision.md` §5,
   not here):** LDB0 pg-dev-cluster → LDB1 db-port run in the server slot after L6a and before L6b. L6b's gate to
@@ -1789,7 +1789,7 @@ The lanes are cut in PROTOTYPE-PLAN.md "THE LANE CUT" (dependency order, locks, 
 
 ---
 
-## Demo content outline (for the narrative-designer, lane N1)
+## Demo content outline (for the narrative-designer, lane N1; ch1–ch2 are story `manor`, changed by STORIES-PLAN)
 
 **Chapter 1 (free)** — the exploration section `manor`, three rooms. The `ally` speaker narrates.
 
@@ -1849,7 +1849,7 @@ The cabinet has three dials and a dusty label. #id:ch2.archive_cabinet.c001
 ```
 
 - `cabinet`: code, 3 dials, `maxAttempts: 3`, `giveUp: true`, 3 hint tiers, close-up `cg/cabinet` (paid only).
-- `archive_after` branches on `pz_cabinet` (1 / 2 / 3) and reacts to `g_gate_forced`, then `-> END`.
+- `archive_after` branches on `pz_cabinet` (1 / 2 / 3) and reacts to `g_gate_forced`, then `-> END` (changed by STORIES-PLAN: it diverts to `archive_truth` (1) or `archive_ashes` (2, 3), each `-> END`, declared in `story/stories.json` as the endings `truth` and `ashes`).
 - The world of ch2 holds only the puzzle: no sections.
 - It proves a paid world through the payload, a paid close-up asset, and a hint gated by the chapter entitlement.
 
@@ -1919,6 +1919,25 @@ The cabinet has three dials and a dusty label. #id:ch2.archive_cabinet.c001
 
 ---
 
+## Changed by STORIES-PLAN
+
+[STORIES-PLAN.md](STORIES-PLAN.md) (RULINGS 20) adds several stories, saves per story and the statistics
+foundation. What it means for this design (the in-place marks above are single-line edits, so the line numbers that
+RULINGS 21's errata cite, up to line 1877, are unchanged):
+
+| PZ item | Change |
+|---|---|
+| X1–X18 | unchanged (STORIES-PLAN Y17): worlds stay per chapter |
+| Identifiers | `PuzzleId = <chapter>.<local>`, hint products `hint:<PuzzleId>:<tier>` and world text IDs stay game-unique: chapter ids are unique across all stories (Y1); a story is a chain of chapters |
+| SQL `0002_puzzles` | unchanged (`puzzle_progress` PK and id CHECK); `0003_stats.sql` (LS3) follows it and relies on L6c's `server/build.rs` |
+| Server formats | `server/content/puzzles/<ch>.json` unchanged; `server/catalog.json` `chapters` becomes a default price + overrides + templates over the generated story index (Y6); `hints` unchanged |
+| HTTP additions | unchanged; a puzzle outcome is also reported as a `puzzle_ended` statistics event (subject = `PuzzleId`, outcome `solved` / `failed` / `abandoned`, from `app/yields.ts`) — display data only, never an input to attempts or hints |
+| Lanes | L6c: gate LS2 (serialized server files), scope unchanged; LW3: gate + LS1 (serialized story-tool files), scope unchanged; N1: story `manor` with two declared endings; LP2, LX: unchanged |
+| Demo content outline | ch1–ch2 are story `manor`; ch2 ends in the declared endings `truth` / `ashes`; story B (`tide`, ch3–ch4, lane N2) has no world |
+| Resource lifetime (STORIES-PLAN revision 1) | `PuzzleSession` and `ExploreController` are also destroyed by `exitToStories()` (STORIES-PLAN "Module API"): the session before the exit's autosave, so a late attempt result is dropped; the controller after it, so the save still reads the world state. Both rows are single-line in-place edits |
+
+---
+
 ## Revision log
 
 | Rev | Date | Source | Summary |
@@ -1931,6 +1950,8 @@ The cabinet has three dials and a dusty label. #id:ch2.archive_cabinet.c001
 | 4b | 2026-10-31 | RULINGS 14 (database decision adopted) + `D:/tmp/novel-orch/design/db/decision.md` §4.6 | Database errata, not a triage round: the puzzle SQL in the PostgreSQL 18 dialect (named constraints, `BIGINT`, the qualified `ON CONFLICT` upsert, `starts_with`, the payer-row lock before the pre-checkout predicates, the `42P01` red text); the id CHECK aligned with the `PuzzleId` grammar; the port lanes LDB0 → LDB1 before L6b in the order. Removed/added text verbatim: `D:/tmp/novel-orch/design/puzzles/errata_db.md` |
 | 5 | 2026-10-31 | `D:/tmp/novel-orch/design/puzzles/triage_r5.md` (critique `design/puzzles/critique_r5.md`) | The 1 confirmed item W1 (narrowed) resolved: a puzzle attached to more than one lock fails the story gate (`world/puzzle-multi-lock`, X15), so `puzzle-ended p` opens exactly one lock and every puzzle run is a key of exactly one section; step 5's writer list, I-W's first entry and the reducer rule now name the run and its one lock. Reconcile and its cap are unchanged; 0 runtime bytes. Optional O1–O3 noted, not folded in; critique-r5 OQ1 (a room→room exit across sections) noted, not folded in; OQ2 / PE7 (`RULES_VERSION`) stays with the LW2 cut. Pre-revision copies: `design/puzzles/PUZZLES-PLAN.r5.before.md`, `PROTOTYPE-PLAN.r5.before.md`. Per-item detail: `D:/tmp/novel-orch/design/puzzles/revision_r5.md` |
 | 6 | 2026-10-31 | `D:/tmp/novel-orch/design/puzzles/triage_r6.md` (critique `design/puzzles/critique_r6.md`) | The 1 confirmed item W1 resolved: a room→room exit into a room of another section fails the story gate (`world/cross-section-exit`, X15), so every move stays inside its section and the current room is always a room of the current section; step 5's premise, the writer list, I-W's first entry, the successor paragraph and the reducer's move rule now name it as the fourth guarantee. Reconcile and its cap are unchanged; 0 runtime bytes. Optional O1, O2 and critique-r6 OQ1 noted, not folded in (OQ1 stays a detail for the LW3 cut); OQ2 / PE7 (`RULES_VERSION`) stays with the LW2 cut. Pre-revision copies: `design/puzzles/PUZZLES-PLAN.r6.before.md`, `PROTOTYPE-PLAN.r6.before.md`. Per-item detail: `D:/tmp/novel-orch/design/puzzles/revision_r6.md` |
+| 7 | 2026-10-31 | `D:/tmp/novel-orch/design/stories/spec.md` (RULINGS 20), with PROTOTYPE-PLAN revision 11 | Extended by [STORIES-PLAN.md](STORIES-PLAN.md): the section "Changed by STORIES-PLAN" (no X decision changes; `PuzzleId` stays game-unique; `server/catalog.json` chapters over the story index; ch1–ch2 are story `manor` with two declared endings). In-place single-line marks only before line 1878 (status, Identifiers, Server formats, Implementation plan, Demo content outline), so the line references of RULINGS 21's errata stay valid. The errata themselves are not applied here |
+| 8 | 2026-10-31 | `D:/tmp/novel-orch/design/stories/triage_r1.md` (STORIES-PLAN revision 1, W5) | Two single-line in-place edits in "Resource lifetime" (the `PuzzleSession` and `ExploreController` rows: also destroyed by `exitToStories()`, with its test) and one row in "Changed by STORIES-PLAN"; no X decision changes; the line numbers before line 1878 are unchanged. Pre-revision copy: `D:/tmp/novel-orch/design/stories/PUZZLES-PLAN.r1.before.md`. Detail: `D:/tmp/novel-orch/design/stories/revision_r1.md` |
 
 **Revision 1 (2026-10-30)** — what changed, by triage item:
 - **W1** (a fully slotted lock's puzzle cannot be reopened after Back or a reload): "Lock" (the tap rule: every slot

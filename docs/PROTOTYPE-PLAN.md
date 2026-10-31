@@ -1,9 +1,12 @@
 # Architecture: prototype vertical slice
 
-Status: design (campaign deliverable, architect round 1, 2026-10-30; revision 10 — see [Revision log](#revision-log)).
+Status: design (campaign deliverable, architect round 1, 2026-10-30; revision 15 — see [Revision log](#revision-log)).
 Extended by [PUZZLES-PLAN.md](PUZZLES-PLAN.md) (RULINGS 10: puzzles, exploration, inventory, paid hints). Every
 decision that extension changes is marked "changed by PUZZLES-PLAN" here, and the lane cut below is re-cut for it
 (revision 3).
+Extended by [STORIES-PLAN.md](STORIES-PLAN.md) (RULINGS 20: several stories with their own casts, the first chapter
+of each free, saves per story, the player-statistics foundation). Every item that extension changes is marked
+"changed by STORIES-PLAN" here, and the lane cut below is re-cut for it (revision 11).
 Inputs:
 - spec `D:/tmp/novel-orch/design/spec.md`;
 - RULINGS 1–5 (`D:/tmp/novel-orch/RULINGS.md`);
@@ -36,6 +39,11 @@ The player:
 5. buys chapter 2 with (mock) Stars;
 6. plays chapter 2, which reacts to chapter-1 choices.
 
+Changed by STORIES-PLAN: the game holds several stories with their own casts. Boot lands on Home (Continue + one
+card per story); steps 2–6 are story A, `manor`; the player also plays story B, `tide` (its first chapter free, its
+second bought), meets a story ending ("The End") and returns to Home, and each story keeps its own saves. The server
+records chapter, ending and puzzle facts per story ([STORIES-PLAN "Goal"](STORIES-PLAN.md#goal)).
+
 **Correctness targets** — each is a gate, not a review item:
 
 | # | Target | Proved by |
@@ -47,12 +55,15 @@ The player:
 | T5 | A save from an older story version resumes (exact → knot checkpoint → chapter start), never throws; an ink error after a resume steps the next resume down a level, never loops | `resume_*` vitest tests on edited fixture chapters, incl. `resume: ink error after checkpoint resume falls back to chapter start` |
 | T6 | Every player line and choice has a unique, stable line ID; English complete for the demo | `npm run story` |
 | T7–T11 | Changed by PUZZLES-PLAN: no hint text, solution or paid world text in `dist/`; a hint tier granted once per charge, never out of order or after a solve, revoked on refund; no exploration soft-lock; the host writes ink only at a yield; a save restores the open puzzle's start and the exact exploration state, and a story update never strands the player | [PUZZLES-PLAN "Goal"](PUZZLES-PLAN.md#goal) |
+| ST1–ST8 | Changed by STORIES-PLAN: no paid ending vocabulary or paid meta in client outputs; the first chapter of every story free, every chapter in one story, carry within a story; saves per story; statistics never unlock; one row per client event, a fact counted once; X ≤ Y; paid-chapter events need the entitlement, the story derived by the server; capture never blocks play | [STORIES-PLAN "Goal"](STORIES-PLAN.md#goal) |
 
 **Budget targets** (numbers and gates in [Budgets](#budgets-and-validation)):
 - initial JS ≤ 40 KB brotli; all JS before the first line ≤ 270 KB brotli; first-load ≤ 800 KB;
 - time to first line ≤ 6 s at 4× CPU and 1.6 Mbps;
 - live texture bytes ≤ 32 MiB steady (hard cap 48 MiB); steady memory ≤ 135.5 MiB (142.1 MB) at the gated limits
   (principle 4: < 150 MB). All memory figures are MiB (2^20 B) unless marked MB.
+- Changed by STORIES-PLAN: the first-load row holds for **every story** (one row per story's first chapter, with
+  the Home covers); Home is unmounted during play (≤ 2.6 MiB of cover bitmaps worst case → 138.1 MiB).
 
 ---
 
@@ -97,7 +108,10 @@ The player:
   - every gate prints every failure (no bail);
   - (changed by PUZZLES-PLAN) the host writes ink variables only through `StoryRunner.enter()` at a yield, and only
     declared projection variables; no puzzle solution or hint text exists in any client build output; the world
-    reducer is pure and shared by the runtime, the soft-lock checker and the playthroughs.
+    reducer is pure and shared by the runtime, the soft-lock checker and the playthroughs;
+  - (changed by STORIES-PLAN) chapter ids are unique across all stories and a shipped chapter never changes story;
+    carry never crosses stories; no unlock or content path reads the statistics log; a stat row's story comes from
+    the server's story index; paid ending names exist only under `server/content/` and in entitled payloads.
 
 ---
 
@@ -149,6 +163,9 @@ research is newer and verified (brief), so it wins, and the deviation is recorde
   The pure world, rules and session code (about 7 KB br) stays in the engine chunk. Every lazy `import()` lives in
   `app/yields.ts` (L15), so the lazy rows stay PENDING until that importer exists, as the engine row waits for
   `app/engine.ts`.
+- **Changed by STORIES-PLAN (Y13, Y14).** Home (the story cards, L14b's `StoryPicker`) and the statistics reporter
+  (`stats/reporter.ts`, created by `boot.ts` after auth) are in the entry chunk: about +3.2 KB br inside the 40 KB
+  row. The card buttons are the gesture that unlocks audio, so no tap is added before the first line.
 
 **K4. Own image loader, not Pixi `Assets`.**
 - **What.** `scene/loader.ts`: the injected `FetchAsset` (implemented by `api/http.ts`: bearer and the single-flight
@@ -219,6 +236,10 @@ research is newer and verified (brief), so it wins, and the deviation is recorde
   - Server-side ink (bladeink) [O] — unneeded: the anti-cheat value is low and it adds risk.
 - **Trade-off.** Cross-chapter state is limited to declared scalars; DSL v1 has no `LIST` at all (STAGING-DSL §10:
   checkpoint and carry state hold scalars only).
+- **Changed by STORIES-PLAN (Y1–Y3).** A story is the `next` chain from its first chapter (`story/stories.json`);
+  chapter ids stay `ch<N>`, unique across stories. Carry flows only along a story's chain; a story's first chapter
+  starts from the defaults. `cast.json` and `globals.ink` stay shared (new globals named `g_<story>_<name>`). The story
+  tool's playthroughs drop runs that ended in a declared story ending from the next chapter's carry.
 
 **K9. Build-time knot index for preloading, instead of runtime `TagsForContentAtPath`.** (Deviation: [O] and the
 architect baseline preload from `TagsForContentAtPath` of the next node.)
@@ -261,6 +282,9 @@ architect baseline preload from `TagsForContentAtPath` of the next node.)
     preload `next`: the explore controller preloads per room, so a hub never preloads every event knot.
   - An event knot's carried stage is seeded with the background and props of every room that triggers it.
   - `-> DONE` is legal only directly after a yield line.
+- **Changed by STORIES-PLAN (Y4, Y5).** The meta gains `endings: { <knot>: <ending name> }`, the chapter's declared
+  story endings (`story/stories.json`; a paid chapter's endings travel only in its paid meta). Entering a declared
+  ending knot reports `ending_reached` and does **not** trigger F5: the story ends there.
 
 **K10. Speaker as a text prefix `ally: …`, not a `#speaker` tag.**
 - **Why.**
@@ -318,6 +342,9 @@ checkpoint + chapter-start fallback** [R3 §2.4 option B].
   - the chapter-start level resets the world;
   - an open puzzle restarts from its beginning, with the attempts used kept: a linear one at its yield, an
     exploration one (an overlay) on the next tap of its lock.
+- **Changed by STORIES-PLAN (Y7).** Saves are per story: the row key is `(user_id, story_id, slot)`, each story has
+  its own `auto` and `s1`–`s3`, the routes are `/api/saves/{storyId}/{slot}`, and `GET /api/saves` lists every story.
+  `SaveBodyV1` is unchanged. LS2 rewrites the `saves` table in `0001` (nothing is deployed).
 
 **K13. Client caches.** (Deviation: [O] suggests the autosave cache in CloudStorage and DeviceStorage for manifests.)
 - **What:**
@@ -332,6 +359,9 @@ checkpoint + chapter-start fallback** [R3 §2.4 option B].
   never an error. Settings and the read-set are tiny and benefit from Telegram's cross-device sync. None of them
   unlocks anything (principle 1); on conflict, the server wins.
 - **Trade-off.** Older clients (< 9.0) have no offline autosave cache; the server copy still exists.
+- **Changed by STORIES-PLAN (Y7, Y13).** The pending autosave is one DeviceStorage entry per story,
+  `pending_<storyId>`. The statistics queue is DeviceStorage `stats_queue` (≤ 64 events, about 14 KB; memory only
+  below 9.0). Neither unlocks anything.
 
 **K14. Server: axum 0.8.9 + sqlx 0.9.0 runtime queries (no `query!` macros) behind a `db/` module seam; SQLite WAL;
 the whole schema in one migration** [R2 §4].
@@ -511,6 +541,9 @@ server.**
 
   The overlay kinds gain `inventory`, `document`, `lock`, `puzzle` (exploration puzzles) and `hints`. A linear
   puzzle is a mode, not an overlay, so Back cannot abandon it by accident.
+- **Changed by STORIES-PLAN (Y14).** The root after boot is Home (`TapToStart` with Continue + the story cards); it
+  has no BackButton, like the game root. ChapterSelect is an overlay of one story (BackButton closes it to Home). The
+  menu gains "Back to stories" (`Game.exitToStories()`); a declared story ending shows the `Notice` kind `the_end`.
 
 **K27. Same origin everywhere.**
 - **Dev / e2e.** Vite (`server.proxy` / `preview.proxy`) forwards `/api`, `/dev`, `/telegram` to `server-dev` on
@@ -577,6 +610,10 @@ story/                     ink sources and story data
 assets/                    catalog.json (+ src/ for real art later)
 docs/                      PROTOTYPE-PLAN.md  STAGING-DSL.md  (+ FEATURE_MAP, ARCHITECTURE, AUTHORING, runbooks)
 ```
+
+Changed by STORIES-PLAN: `story/stories.json` (the story list, LS1) joins `story/`; story B's chapters are
+`story/ch3/`, `story/ch4/` (flat, game-unique ids); `server/migrations/0003_stats.sql` (LS3); the generated
+`server/content/stories.json` and `client/src/story-gen/covers.json`. New modules: STORIES-PLAN "Integration".
 
 Gitignore additions (L1):
 ```text
@@ -647,6 +684,17 @@ source files under `client/src/`; `*.test.ts` files may use fakes and fixtures f
   - `arch: pure world modules` (LW2);
   - `arch: lazy ui only by dynamic import` (LP2);
   - `arch: only yields.ts enters the runner` (LP2).
+- **Changed by STORIES-PLAN (revision 1, LS1):** `import-outside-src` — a non-test module of `src/` references no
+  file outside `src/`: a relative or `/`-rooted specifier of a static or dynamic import, an export-from, an
+  `import.meta.glob` pattern or a `new URL(…, import.meta.url)` literal resolves under `src/` (type-only imports are
+  erased and exempt), so `story/` sources and `server/content/` never enter the bundle (STORIES-PLAN ST1).
+  Changed by STORIES-PLAN revision 2 (W2): every form is judged by the files Vite can pull in from it, or refused. A
+  template-literal (or `+`-joined) `import()` and a template-literal `new URL(…, import.meta.url)` are judged by the
+  glob Vite derives from them (each substitution becomes `*`): the static head up to its last `/` resolves under
+  `src/`, and no `..` segment follows the first `*`. An `import.meta.glob` pattern resolves against its `base` option
+  as Vite's `toAbsoluteGlob` does. A `#`-headed specifier or pattern is flagged (a package `imports` map could point
+  it anywhere). A form the rule cannot read statically (a non-literal argument, pattern, options object or `base`;
+  an empty or `/`-less head; a glob pattern not headed `./`, `../` or `/`) is flagged. Detail: lane LS1 commit 5.
 
 ### `server/src`
 
@@ -779,6 +827,10 @@ export type LoadedChapter = { id: ChapterId; story: unknown /* raw ink JSON, nev
 // Changed by PUZZLES-PLAN (L13): LoadedChapter gains `world: WorldPublic | null`
 // (free: story-gen/free/<ch>.world.json; paid: ChapterPayload.world).
 // AssetCatalog gains the `prop` namespace (L5); AssetId gains 'prop/<id>'.
+// Changed by STORIES-PLAN (LS1, L5): ChapterCatalog gains `stories: StoryEntry[]` (id, chapters in chain order,
+// cover, title, teaser; no endings) and the exact keys become stories / chapters / cast; ChapterMeta gains
+// `endings: Record<KnotName, EndingName>`; StoryId, EndingName, storyOf() live in catalog.ts; the `cover`
+// namespace and CoverManifest (story-gen/covers.json) come from L5. Types: STORIES-PLAN "TS types".
 ```
 
 ```ts
@@ -888,6 +940,10 @@ pub struct InvoiceSpec { pub title: String /*1-32*/, pub description: String /*1
 
 ### SQL schema — `server/migrations/0001_init.sql` (whole schema, L2)
 
+Changed by STORIES-PLAN: the `saves` primary key becomes `(user_id, story_id, slot)` with `saves_story_id_shape`
+(LS2 rewrites the table in the PostgreSQL `0001` that LDB1 writes); the statistics log is a new migration,
+`0003_stats.sql` (LS3). Both are in [STORIES-PLAN "SQL schema"](STORIES-PLAN.md#sql-schema).
+
 One constraint per invariant. All timestamps are unix seconds. `STRICT` tables.
 
 ```sql
@@ -978,15 +1034,17 @@ CREATE TABLE saves (
 | `GET /api/health` | — | — | `"ok"` | — | — |
 | `POST /api/auth` | — | `AuthRequest { initData: string }` (≤ 4 KB) | `AuthResponse { token, expiresAt: number, user: UserDto { id, firstName, languageCode: string\|null } }` | 400 `bad_request`, 401 `initdata_invalid`, 401 `initdata_expired` | naturally (same initData → new token) |
 | `GET /api/entitlements` | bearer | — | `EntitlementsResponse { products: ProductDto[] }`, `ProductDto { productId, chapterId, priceStars, owned }` (chapter products only; hint tiers are listed by `GET /api/puzzles/{id}`, changed by PUZZLES-PLAN) | 401 `token_*` | read |
-| `GET /api/saves` | bearer | — | `SaveListResponse { slots: SaveSummary[] }`, `SaveSummary { slot, rev, chapterId, storyVersion, lineId, savedAt, writeId }` | 401 | read |
-| `GET /api/saves/{slot}` | bearer | — | `SaveFull { summary: SaveSummary, body: string }` | 400 bad slot, 404 `not_found` (also for another user's slot: rows are keyed by the token's user) | read |
-| `PUT /api/saves/{slot}` | bearer | `PutSaveRequest { expectedRev: number\|null, writeId: string, chapterId, storyVersion, lineId: string\|null, body: string }` | `PutSaveResponse { rev, savedAt }` | 400, 409 `save_conflict` + `current`, 413 `payload_too_large` | `expectedRev` (optimistic) + `writeId`. **The one statement of the retry contract:** a PUT whose `writeId` equals the stored row's `write_id` returns 200 with the stored `rev` / `savedAt` and writes nothing, whatever its `expectedRev`. Any other `expectedRev` mismatch → 409 + `current` (F3 handles an earlier write of ours in `current`) |
+| `GET /api/saves` | bearer | — | `SaveListResponse { slots: SaveSummary[] }`, `SaveSummary { slot, rev, chapterId, storyVersion, lineId, savedAt, writeId }` (changed by STORIES-PLAN: `SaveSummary` gains `storyId`; every story's slots) | 401 | read |
+| `GET /api/saves/{slot}` (changed by STORIES-PLAN: `/api/saves/{storyId}/{slot}`; unknown story 404, bad story id 400) | bearer | — | `SaveFull { summary: SaveSummary, body: string }` | 400 bad slot, 404 `not_found` (also for another user's slot: rows are keyed by the token's user) | read |
+| `PUT /api/saves/{slot}` (changed by STORIES-PLAN: `/api/saves/{storyId}/{slot}`; a `chapterId` outside the story 400, unknown story 404; the contract below holds per (user, story, slot)) | bearer | `PutSaveRequest { expectedRev: number\|null, writeId: string, chapterId, storyVersion, lineId: string\|null, body: string }` | `PutSaveResponse { rev, savedAt }` | 400, 409 `save_conflict` + `current`, 413 `payload_too_large` | `expectedRev` (optimistic) + `writeId`. **The one statement of the retry contract:** a PUT whose `writeId` equals the stored row's `write_id` returns 200 with the stored `rev` / `savedAt` and writes nothing, whatever its `expectedRev`. Any other `expectedRev` mismatch → 409 + `current` (F3 handles an earlier write of ours in `current`) |
 | `POST /api/invoices` | bearer | `CreateInvoiceRequest { productId }` (`chapter:<ch>`, or `hint:<puzzleId>:<tier>`, changed by PUZZLES-PLAN) | `CreateInvoiceResponse { orderId, invoiceUrl }` | 404 `unknown_product`, 409 `already_owned`, 409 `hint_unavailable` (tier order, solved, paid chapter not owned; changed by PUZZLES-PLAN), 502 `telegram_unavailable` | reuses this user's `created` order for the product younger than 1 h |
 | `GET /api/orders/{orderId}` | bearer | — | `OrderResponse { orderId, productId, status: 'created'\|'checkout'\|'paid'\|'refunded' }` | 404 (unknown, or not this user's) | read |
 | `GET /api/chapters/{chapterId}` | bearer | — | `ChapterPayload { chapterId, storyVersion, story: unknown, meta: unknown, assets: unknown, en: unknown, world: unknown }` (raw JSON composed from `ContentStore` via `RawValue`; `world`, the paid public world or `null`, changed by PUZZLES-PLAN) | 403 `not_entitled`, 404 (unknown or free chapter: free chapters are static files) | read; `private, no-store` |
 | `GET /api/assets/{file}` | bearer | — | bytes (`image/avif`, `image/webp`, `audio/mp4`, `audio/wav`) | 403, 404 (file not in the content index — a map lookup, never a path join) | read; `private, no-store` |
 | `GET /api/puzzles/{puzzleId}?lang=ru\|en` (changed by PUZZLES-PLAN, L6c) | bearer | — | `PuzzleStatus { puzzleId, solved, hints: HintTier[] }`; `text` only for owned tiers | 400, 403 `not_entitled` (paid chapter), 404 | read; `private, no-store` |
 | `POST /api/puzzles/{puzzleId}/attempts` (changed by PUZZLES-PLAN, L6c) | bearer | `AttemptRequest { answer: number[] }` | `AttemptResponse { correct, solved }` | 400 shape, 403, 404, 429 `rate_limited` + `Retry-After` (20 per 600 s per user and puzzle) | the result is a function of the answer; a retry counts once more toward the window |
+| `POST /api/stats/events` (changed by STORIES-PLAN, LS3) | bearer | `PostStatsRequest { events: StatEventDto[] }` (1–32) | `PostStatsResponse { recorded, duplicates, rejected }` | 400, 429 `rate_limited` + `Retry-After` (600 events per user per hour) | (user, `eventId`) UNIQUE: a replay is a duplicate |
+| `GET /api/stats` (changed by STORIES-PLAN, LS3) | bearer | — | `StatsResponse` (endings and chapters X of Y per story and for the game) | 401 | read |
 | `POST /telegram/webhook` | header `X-Telegram-Bot-Api-Secret-Token` (constant-time) | Telegram `Update` (bytes) | 200 (also on undecodable input without a payment, logged; an undecodable payment goes through the K17 probe first) | 401 bad/missing secret (before parsing); 500 when a `successful_payment` / `refunded_payment` transaction failed, or when a payment-bearing update's money fields are unreadable even by the probe (Telegram redelivers; grant and revoke are idempotent) | `telegram_payment_charge_id` |
 
 **Dev routes** (`server-dev` only; not routable on the `server` binary, test `server_has_no_dev_routes`):
@@ -1035,9 +1093,16 @@ Shared outputs:
     their content hashes.
 - `server/content/build/asset-owners.json` — paid file → products allowed to read it.
 
+Changed by STORIES-PLAN (Y5, Y15):
+- `catalog.json` gains `stories` (no endings); every meta gains `endings` (free metas public, paid metas server-only);
+- `server/content/stories.json` — the server story index (titles, chapters with tier and product, endings), story
+  tool, never under `client/`;
+- `client/src/story-gen/covers.json` + `client/public/assets/cover-*` — the Home covers, asset tool, always public.
+
 The client imports free outputs only by URL:
 - `import.meta.glob('../story-gen/free/*.json', { query: '?url', import: 'default', eager: true })`;
-- `import catalogUrl from '../story-gen/catalog.json?url'`, fetched at boot.
+- `import catalogUrl from '../story-gen/catalog.json?url'`, fetched at boot (changed by STORIES-PLAN: with
+  `covers.json?url`, in parallel).
 
 Consequences:
 - `check` needs no generated files: `?url` imports type-check through `vite/client` ambient modules (verify: L3b).
@@ -1111,7 +1176,8 @@ from the menu.
 | Telegram webhook JSON | frankenstein 0.52.1 types; for the payment subset, our own lenient `PaymentProbe` when the full decode fails (K17) | serde | webhook decode tests with recorded update shapes, incl. a payment update the pinned types reject |
 | Save body | TS `SaveBodyV1` (client-owned; opaque to the server) | `save-codec.ts` | codec tests; the server checks only `json_valid` + size |
 | Build outputs (catalog, meta, manifest) | TS types in `story/catalog.ts` (both producer and consumer are TS) | decoders | story/asset tool tests |
-| Chapters ↔ products | `story/chapters.json` (`productId`) + `server/catalog.json` (prices) | — | `catalog_matches_story_chapters` (Rust reads `../story/chapters.json`); the server refuses to start if a catalog product has no content |
+| Chapters ↔ products | `story/chapters.json` (`productId`) + `server/catalog.json` (prices) (changed by STORIES-PLAN: chapter products = the paid chapters of the generated story index; `server/catalog.json` holds a default price, overrides and templates) | — | `catalog_matches_story_chapters` (Rust reads `../story/chapters.json`); the server refuses to start if a catalog product has no content (changed by STORIES-PLAN: or if the story index is missing, a story's first chapter is paid, or a rendered chapter invoice text is out of limits) |
+| Stories (changed by STORIES-PLAN) | `story/stories.json` + `story/chapters.json` | the story tool emits the public `stories`, the metas' `endings` and `server/content/stories.json` | `catalog/stories` lint; `emit: server story index matches the server fixture shape` (TS) against `server/tests/fixtures/content/stories.json`, which the L6b content tests (Rust) load |
 | Staging tags | `story/tags.ts` | one parser for gate + runtime | `dsl-doc.test.ts` two-way check against STAGING-DSL.md |
 | World data (changed by PUZZLES-PLAN) | `client/src/world/types.ts` (producer and consumer are TS) | `decodeWorldSource` (story tool) / `decodeWorldPublic` (runtime; refuses `solution` / `hints`) | `decode: *`, `emit: public world has no solution or hint fields` |
 | Server puzzle content (changed by PUZZLES-PLAN) | the committed fixture `server/tests/fixtures/content/puzzles/ch1.json` | TS `toServer` emits it; Rust `ContentStore` loads it | `emit: server puzzle content matches the server fixture shape` (TS) + the L6b/L6c content tests (Rust) |
@@ -1221,6 +1287,11 @@ export interface Game {
   buy(product: ProductId): void;
   dispose(): void;
 }
+// Changed by STORIES-PLAN (Y14): start() takes the story — { kind: 'new'; story: StoryId; chapter } |
+// { kind: 'slot'; story: StoryId; slot } — and Game gains exitToStories() (the open PuzzleSession and PurchaseFlow
+// disposed, autosave, ExploreController dispose, runner dispose, scene restore to EMPTY_SNAPSHOT + releasePreload,
+// audio release, SaveService dispose, stats flush; the Pixi Application stays; the order: STORIES-PLAN "Module API",
+// revision 1). One SaveService per session (story); the StatsReporter is injected (STORIES-PLAN "Module API").
 
 // purchase/flow.ts
 export type PurchaseState =
@@ -1383,6 +1454,10 @@ pub async fn build_dev_app(paths: DevPaths) -> Result<Router, StartupError>;   /
 | 8 | client | load chapter (free: `fetch` story/meta/assets [+ en]); create runner (fresh or resume); `scene.mount` | paid chapter 403 → paywall |
 | 9 | client | `runner.next()` → first batch → `scene.ensure(first-batch assets)` → `scene.apply` → typewriter; preload `next(firstKnot)` | an asset 404 → that sprite is skipped, error logged, the story continues |
 
+Changed by STORIES-PLAN (F1′): step 3 also fetches `covers.json`, lists every story's saves and creates the stats
+reporter after auth; step 5 shows Home (Continue = the newest `auto` across stories, plus one card per story); the
+tap of step 5 is a Home button (Continue, a card's Start / Continue, Chapters) and step 7 starts that story.
+
 ### F2. Play loop
 
 - **Tap:**
@@ -1464,6 +1539,13 @@ pub async fn build_dev_app(paths: DevPaths) -> Result<Router, StartupError>;   /
    plus `next:<new id>`) plus its preloads. Asserted by the `textures released on chapter change` e2e test and the
    `chapter_change_releases` unit test.
 
+Changed by STORIES-PLAN (F4′, revision 1): step 1 records `chapter_completed` only when the last entered knot is not
+a declared story ending (`meta.endings`). Before step 3: if it is one, the story is over — no `chapter_completed` (the
+knot's `ending_reached` marks it), no new autosave, the `the_end` notice, its action `exitToStories()`. Otherwise
+steps 2–5 run as above; `next` is on the same story's chain by construction, and the new runner (a `fresh` start
+point) records `chapter_started`, as resume steps 2 and 5 ("Save format and resume") do; exact and checkpoint resumes
+(steps 3, 4) record none.
+
 ### F5. Next-chapter preload
 
 **Trigger** (the one definition; STAGING-DSL §8 states the same): entering a knot K with `meta.knots[K].ending`, that
@@ -1482,6 +1564,10 @@ fetched again, while the kept `LoadedChapter` is reused. It is cancelled (`relea
 `LoadedChapter` dropped) if the player loads another save.
 Tests: `preload: next-chapter id resident after setChapter`;
 `game: next-chapter holder released on non-ending branch`.
+
+Changed by STORIES-PLAN (Y4): a knot that is a declared story ending (`meta.endings`) does not trigger F5, although
+it has `ending: true`; entering it records `ending_reached`. Test: `game: ending knot reports the ending and skips
+next-chapter preload`.
 
 ---
 
@@ -1913,6 +1999,7 @@ All budgets are enforced by `client/scripts/budget.ts` inside `npm run build` un
 | Story JSON per chapter | ≤ 160 KB raw and ≤ 35 KB br | ink JSON is verbose, compresses well [R4 §4.3] | `budget.ts` (free from `story-gen`, paid from `server/content`) |
 | en table per chapter | ≤ 48 KB raw | | `budget.ts` |
 | First-load to first line (static estimate) | ≤ 800 KB transfer | the entry + engine closures (changed by PUZZLES-PLAN: lazy chunks excluded; was "all JS") + CSS + html + TWA 16.2 KB [R1] + ch1 story/meta/manifest + first knot's images (AVIF); audio excluded (it streams, never blocks the first line) | `budget.ts` |
+| First-load per story, covers (changed by STORIES-PLAN) | the row above for every story's first chapter (a free chapter no `next` names), plus `catalog.json`, `covers.json` and the 3 largest cover AVIFs, ≤ 800 KB; cover exactly 360×640, AVIF ≤ 24 KB, WebP ≤ 36 KB | [STORIES-PLAN.md](STORIES-PLAN.md), section "Budgets and validation" | `budget.ts` (L5): `budget: first-load row per story`, `budget: cover over 24 KB fails` |
 | First knot images | ≤ 450 KB | | `budget.ts` |
 | Image dimensions | ≤ 2048 px each side; bg/cg exactly 1080×2048; sprites ≤ 768×1536 | principle 4 | `assets.ts` writes dims from sharp metadata; `budget.ts` checks |
 | Image file | AVIF ≤ 300 KB, WebP ≤ 450 KB | | `budget.ts` |
@@ -1989,12 +2076,17 @@ All budgets are enforced by `client/scripts/budget.ts` inside `npm run build` un
 | `smoke.spec.ts` (L15) | `tap-to-start unlocks audio only after the gesture`, `play choose save reload load resumes at same line` (asserts `data-line-id`), `autosave resume after reload`, `back button closes overlays without history` (`history.length` unchanged, `web_app_setup_back_button` events recorded), `deactivated pauses audio, activated resumes` (the dev-server `/@fs` check is a vitest test, not e2e: see Paid-content protection) |
 | `purchase.spec.ts` | `purchase unlocks chapter 2` (403 before, sheet shows the server price, 200 after, ch2 first line reacts to a ch1 choice), `cancelled purchase keeps paywall`, `failed purchase keeps paywall`, `delayed webhook unlocks after polling`, `paid twice grants once` |
 | `perf.spec.ts` | `time to first line under throttling`, `textures released on chapter change`, `heap under budget`, `context loss recovers` (debug hook calls Pixi's `forceContextLoss()`, then a pixel sample of the stage is not black) |
+| `stories.spec.ts` (L15; changed by STORIES-PLAN) | `stories: picker lists both stories with covers`, `stories: saves are per story`, `stories: second story first chapter free then paywall`, `stories: story ending shows the end and records the ending`, `stories: back button closes chapter select to the picker`, `stories: picker unmounted during play` |
 | `puzzles.spec.ts` (L15; changed by PUZZLES-PLAN) | `explore: search item puzzle buy hint solve`, `explore: gate fail branch`, `explore: reload resumes in the same room with items`, `puzzle: hint text absent until bought`, `puzzle: paid chapter puzzle needs entitlement`, `explore: back button walks rooms then hides`, `explore: live texture bytes stay under the steady cap`, `explore: hotspot buttons align with props under safe area and landscape` |
 
 **Changed by PUZZLES-PLAN.** The unit, DOM, story and server test names of the puzzle extension (world, rules,
 reduce, softlock, cover, runner yields, session, controller, yields, arch, budget, scan, emit; schema, attempts,
 status, catalog, invoices, pre-checkout, refunds) are listed in [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section
 "Test strategy". Each lane's commits name the ones it adds.
+
+**Changed by STORIES-PLAN.** The story-tool, asset, server (story index, saves per story, statistics), client
+(saves, reporter, game), DOM and e2e names of the stories extension are listed in [STORIES-PLAN.md](STORIES-PLAN.md),
+section "Test strategy". The existing `saves_*` names are kept, on the per-story paths.
 
 ### Gates that must be seen red once (each lane quotes the failing run)
 
@@ -2012,6 +2104,7 @@ status, catalog, invoices, pre-checkout, refunds) are listed in [PUZZLES-PLAN.md
 | idempotency | mutation: the PK on `payments` removed / check-then-insert → `successful_payment_duplicate_concurrent_wal` red | L8b (tester mutation) |
 | e2e | L7: `main.ts` not calling the facade → `boot records ready, expand and swipe events` red; `$DEV_API_PORT` already bound by another process → the webServer "is already used" error (`reuseExistingServer: false`), never a run against the foreign server. L15: mock invoice forced to `failed` → `purchase unlocks chapter 2` red; BackButton binding removed → `back button closes overlays without history` red | L7, L15 |
 | puzzle extension | changed by PUZZLES-PLAN: yield lint and the `dsl-doc` heading (LW1); the soft-lock stub, the `successors` stub without `closed`, the checker capped at 200,000 instead of `RESUME_STATE_CAP`, the path-only reconcile step 4, the `resetSection` that keeps `section`, the current-section-only reconcile with no `unproved` (revision 3), and the pure-module arch rule (LW2); every `world/*` / `puzzle/*` / `explore/*` code (the cross-section-unlock world for `world/cross-section-effect`, revision 4; the multi-lock puzzle world for `world/puzzle-multi-lock`, revision 5; the cross-section arch world for `world/cross-section-exit`, revision 6), `paid/leak` for hints, the scan of hint text and of paid world text in dist, the whole-body world version (LW3); room-set and prop budget rows (L5); puzzle UI in the engine closure, the lazy rows without their importer, and the lazy-import arch rule (LP2); the controller that enters a section through `reduce` instead of `admitSection` (LX, revision 3); `0002` absent and the never-limiting stub (L6c); the pre-checkout without hint predicates (L8b); the wrong gate order, the failed mock invoice and the hotspot layer in the padded overlay in `puzzles.spec.ts` (L15) | [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section "Gates that must be seen red once" |
+| stories extension | changed by STORIES-PLAN: the `catalog/stories` code without its §11 row and every `catalog/stories` rule on a fixture, a missing `stories.json`, a paid ending name planted in the public catalog (LS1); a 30 KB cover and an oversize first-load row of one story (L5); a paid first chapter and a missing story index at startup (L6b); the dropped story-id CHECK (LS2); the dropped event key, the missing entitlement check, a read counting rows (LS3); regenerated event ids (LS4); saves keyed without the story (L15) | [STORIES-PLAN.md](STORIES-PLAN.md), section "Gates that must be seen red once" |
 
 ---
 
@@ -2116,11 +2209,15 @@ See the lane cut.
 - **CLAUDE.md "Stack and layout".** Add `server/dev/` (crate `server-dev`, dev-only), `assets/catalog.json`, the
   generated dirs (`client/src/story-gen/`, `client/public/assets/`, `server/content/`) and the e2e gate.
   Orchestrator's call (E4).
+- **Changed by STORIES-PLAN.** CLAUDE.md "Stack and layout" gains `story/stories.json` (the story list: one story =
+  a chain of chapters) and the statistics foundation; `docs/OPEN-QUESTIONS.md` gains Q23–Q25 (STORIES-PLAN "Open
+  questions"). Orchestrator's call, at the design merge.
 
 ### docs/FEATURE_MAP.md entries
 
 Created by D1, completed by D2. Each implementation lane lists its rows in `impl.md`. The doc lanes own the file:
-parallel lanes would collide on it.
+parallel lanes would collide on it. Changed by STORIES-PLAN: the rows Stories, Saves per story and Player statistics
+are in [STORIES-PLAN.md](STORIES-PLAN.md), section "Integration".
 
 | Feature | Rows |
 |---|---|
@@ -2147,7 +2244,8 @@ parallel lanes would collide on it.
 **Rules:**
 - Each lane is ≤ ~10 commits and ≤ ~15 files, one subsystem.
 - **At most 2 lanes in parallel**, always one client lane ∥ one server lane, or two client lanes with disjoint lock
-  sets.
+  sets. Changed by RULINGS 18 (recorded by STORIES-PLAN, SQ8): at most **3** lanes — one server lane and two client
+  / doc / narrative lanes whose locks are disjoint.
 - Lock sets are paths. A file outside a lane's set is a STOP (lane.js).
 - **Parent files.** Every lane's lock holds the parent module file (`mod.rs` / `lib.rs`) of each `.rs` file it
   creates. Shared files no later lane needs to touch are pre-declared by L2 in full: `server/src/config.rs` and
@@ -2174,30 +2272,48 @@ parallel lanes would collide on it.
 
 **Collision locks** (WORKFLOW.md) are serialized by the order below (changed by PUZZLES-PLAN: the puzzle lanes
 are in):
-- `client/package.json` + lock: L1, L3b, L5, L7. The puzzle lanes add no dependency.
+- `client/package.json` + lock: L1, L3b, L5, L7. The puzzle lanes add no dependency (changed by STORIES-PLAN: nor
+  do the stories lanes).
 - `Cargo.toml` + `Cargo.lock`: L2, L4b.
-- `server/migrations/`: L2 (`0001`), then L6c (`0002`, plus `server/build.rs`).
+- `server/migrations/`: L2 (`0001`), then L6c (`0002`, plus `server/build.rs`). Changed by STORIES-PLAN: `0001`
+  L2 → LDB1 → LS2 (the `saves` rewrite); `0003_stats.sql` LS3.
 - `server/src/{lib.rs, main.rs, api/mod.rs, api/dto.rs, db/mod.rs, telegram/mod.rs, error.rs}` and
-  `client/src/api/generated/api.ts`: L4a → L6a → L6b → L6c → L8a → L8b → L9, sequential.
+  `client/src/api/generated/api.ts`: L4a → L6a → L6b → L6c → L8a → L8b → L9, sequential. Changed by STORIES-PLAN:
+  L4a → L6a → LDB1 → L6b → LS2 → L6c → L8a → L8b → LS3 → L9.
 - `server/dev/src/lib.rs`: L4b → L8a → L8b.
-- `server/src/ids.rs`: L4a → L6b (adds `PuzzleId`).
+- `server/src/ids.rs`: L4a → L6b (adds `PuzzleId`; changed by STORIES-PLAN: and `StoryId`).
 - `server/src/{catalog.rs,content.rs}` and `server/catalog.json`: L6b only (later lanes consume their API).
+- `server/src/{db/saves.rs, api/saves.rs}`, `server/tests/it/saves.rs` (changed by STORIES-PLAN): L6a → LDB1 → LS2.
+- `server/tests/it/dto_samples.rs`, `client/src/api/fixtures/dto-samples.json` (changed by STORIES-PLAN): L8b → LS3.
 - One server lane runs at a time, so none of the server files is held by two live lanes.
 - `server/tests/it/main.rs`: server lanes only, sequential.
 - `client/src/story/{staging.ts,tags.ts,tags.test.ts,dsl-doc.test.ts}`, `client/scripts/story/{lint.ts,lint.test.ts}`:
-  L3a → LW1, then frozen.
-- `client/src/story/catalog.ts`: L3a → L3b → L5 → L13.
-- `client/scripts/story.ts`: L3b → L3c → LW3.
-- `client/scripts/story/{emit.ts,build.test.ts}`: L3b → LW3; `graph.ts`: L3b → LW1 → LW3 (RULINGS 16 Q1).
-- `client/scripts/story/{fix.ts,locales.ts,playthrough.ts,play.test.ts,locales.test.ts}`: L3c → LW3.
+  L3a → LW1, then frozen. Changed by STORIES-PLAN (SQ2): `lint.ts` (one `LINT_CODES` line) and `dsl-doc.test.ts`
+  (the row count) reopen for LS1 only, then frozen again. Changed by STORIES-PLAN revision 2 (W1, SQ2): `tags.test.ts`
+  (the cast assertion of `catalog: demo catalog and cast decode`) and `lint.test.ts` (the clean control of
+  `lint: catalog/assets red on fixture (cast char missing)`) reopen for LS1 commit 8 only, one hunk each, then frozen
+  again. Changed by STORIES-PLAN revision 3 (W2, SQ9): `tags.test.ts` also reopens for L5, one hunk, before LS1's:
+  the catalog-key pins of `catalog: demo catalog and cast decode` (:450-458 at main `a7e4a04`) become subset pins
+  (L5 entry), then frozen again. LS1 commit 8's cast hunk (:459-462) stays disjoint from it, and the line both read,
+  `const catalog = committedCatalog()` (:448), is touched by neither.
+- `client/src/story/catalog.ts`: L3a → L3b → L5 → L13. Changed by STORIES-PLAN: L5 → LS1 → L13.
+- `client/scripts/story.ts`: L3b → L3c → LW3. Changed by STORIES-PLAN: L3c → LS1 → LW3.
+- `client/scripts/story/{emit.ts,build.test.ts}`: L3b → LW3; `graph.ts`: L3b → LW1 → LW3 (RULINGS 16 Q1). Changed by
+  STORIES-PLAN: `emit.ts`, `build.test.ts` L3b → LS1 → LW3.
+- `client/scripts/story/{fix.ts,locales.ts,playthrough.ts,play.test.ts,locales.test.ts}`: L3c → LW3. Changed by
+  STORIES-PLAN: `locales.ts` L3c → LS1 → LW3; revision 2 (W1): `locales.test.ts` L3c → LS1 → LW3.
+- `story/stories.json`, `story/locales/{ru,en}/story.json` (changed by STORIES-PLAN): LS1 → N1 → N2;
+  `story/chapters.json`, `story/cast.json`: N2 (after L3b).
+- `client/src/api/{endpoints.ts,decode.ts,decode.test.ts}` (changed by STORIES-PLAN): L10 → LS4.
 - `client/scripts/scan-dist.ts`: L1 → L3b → L5 → LW3. `client/scripts/scan-dist.test.ts`: L1 → L5 → LW3.
 - `client/scripts/{budget.ts,budget.test.ts}`: L1 → L5 → LP2.
-- `client/src/arch.test.ts`: L1 → LW2 → LP2.
+- `client/src/arch.test.ts`: L1 → LW2 → LP2. Changed by STORIES-PLAN (revision 1): L1 → LW2 → LS1 → LP2.
 - `client/src/i18n/{ru.ts,en.ts}`: L14a → L14b (which pre-declares the puzzle and explore keys), then frozen.
 - `client/src/ui/screens.ts`: L14a only.
 - `client/src/main.ts`: L1 → L7 → L15. `client/src/ui/App.svelte`: L1 → L15.
 - `docs/FEATURE_MAP.md`, `docs/ARCHITECTURE.md`: D1, D2 only.
-- `docs/STAGING-DSL.md`: L3a (doc-test fixes only), then LW1 (DSL v2), then frozen.
+- `docs/STAGING-DSL.md`: L3a (doc-test fixes only), then LW1 (DSL v2), then frozen. Changed by STORIES-PLAN (Y18,
+  SQ2): reopened for LS1 (§4 wording, §8, §9, one §11 row; no tag change), then frozen again.
 
 **Dependencies:**
 - All client dependencies are installed by L1 (one lockfile change); later client lanes change only `scripts`.
@@ -2212,61 +2328,73 @@ Changed by PUZZLES-PLAN revision 4b (RULINGS 14): the database port lanes LDB0 �
 L6a and before L6b, so the puzzle server lanes write their SQL once, in the PostgreSQL dialect. Their cut is
 `D:/tmp/novel-orch/design/db/decision.md` §5, not this file.
 
+Changed by STORIES-PLAN (revision 11): the table below is the state at main `38bc717` (SHAs as `RESUME.md` lists
+them) with the stories lanes LS1–LS4 and N2 and the tuning lane LDB2 (RULINGS 17) added; up to 3 lanes run (RULINGS
+18). "Re-cut" names the revision that last changed a lane's scope or gate.
+
 | Lane | Slot | State | Gate to start (merged) | Re-cut |
 |---|---|---|---|---|
 | L1 client-shell | client | merged `f6e2624` | — | — |
 | L2 server-skeleton | server | merged `e005dc6` | — | — |
 | L4a server-auth | server | merged `0aef72e` | L2 | — (errata below) |
-| L3a staging-dsl | client | running | L1 | — |
-| L3b story-compile | client | | L3a | no |
-| **LW1 puzzle-dsl** | client | new | L3a | new |
-| L4b server-dev | server | | L4a | no |
-| L6a server-saves | server | | L4a | no |
-| **LDB0 pg-dev-cluster** | server | new (RULINGS 14) | L6a | new; cut in `design/db/decision.md` §5.1 |
-| **LDB1 db-port** | server | new (RULINGS 14) | LDB0 | new; cut in `design/db/decision.md` §5.2 |
-| L3c story-locales | client | | L3b | no |
-| L5 asset-pipeline | client | | L3c | yes |
-| L6b server-content | server | | L6a, LDB1 | yes |
-| **LW2 world-model** | client | new | L3a, LW1 | new |
-| **L6c server-puzzles** | server | new | L6b (which waits for LDB1) | new |
-| L7 telegram-client | client | | L1, L4b, L5 | no |
-| L11 scene | client | | L3a, L5, LW1 | yes |
-| L8a invoices | server | | L4b, L6c | yes |
-| **LW3 story-world** | client | new | L3c, L5, L6b, LW1, LW2 | new |
-| L8b webhook-grant | server | | L8a | yes |
-| L12 audio | client | | L5 | no |
-| L9 refunds-bot | server | | L8b | yes |
-| L10 client-data | client | | L7, L8b | yes |
-| L13 story-runtime | client | | L3c, L5, L10, LW2 | yes |
-| L14a overlay-core | client | | L7, L11 | yes |
-| D1 docs-authoring | doc | | L3c, L5, LW3 | yes |
-| L14b overlay-menus | client | | L10, L14a | yes |
-| N1 demo-story | narrative | | D1, LW3 | yes |
-| **LP2 puzzle-ui** | client | new | L10, L14b, LW2 | new |
-| **LX explore-ui** | client | new | L11, L14b, LW2 | new (∥ LP2: disjoint locks) |
-| L15 integration | client | | every lane above (N1 included: the e2e plays the demo) | yes |
-| D2 docs-final | doc | | L15 | yes |
+| L3a staging-dsl | client | merged `2856495` | L1 | — |
+| L3b story-compile | client | merged `c8d6e24` | L3a | — |
+| **LW1 puzzle-dsl** | client | merged `86d0a90` | L3a | — |
+| L4b server-dev | server | merged `2610e23` | L4a | — |
+| L6a server-saves | server | merged `a6beebe` (`63ab7a1` after the rewrite) | L4a | — |
+| **LDB0 pg-dev-cluster** | server | merged `857f7d6` | L6a | — |
+| **LW2 world-model** | client | merged `38bc717` | L3a, LW1 | — (errata after this design, RULINGS 21) |
+| **LDB1 db-port** | server | running | LDB0 | — (no mid-flight change; LS2 follows) |
+| L3c story-locales | client | paused at `5d12aa3` (C1, C2) | L3b | STORIES-PLAN: C4 tags carries; resumes when this design merges |
+| L5 asset-pipeline | client | | L3c | PUZZLES-PLAN, STORIES-PLAN (covers, story B assets, first-load per story; revision 3: the `tags.test.ts` catalog-key pins) |
+| L6b server-content | server | | L6a, LDB1 | PUZZLES-PLAN, STORIES-PLAN (story index, chapter prices from it) |
+| **LS2 server-story-saves** | server | new (STORIES-PLAN) | L6b | new |
+| **L6c server-puzzles** | server | | LS2 (serialized server files; needs L6b) | STORIES-PLAN: gate only |
+| **LS1 story-catalog** | client | new (STORIES-PLAN) | L3c, L5, L6b | new |
+| L11 scene | client | | L3a, L5, LW1 | PUZZLES-PLAN |
+| L12 audio | client | | L5 | — |
+| L7 telegram-client | client | | L1, L4b, L5, LS1 | STORIES-PLAN: gate + LS1 (its e2e starts `server-dev`, which needs the story index, SQ1) |
+| **LW3 story-world** | client | | L3c, L5, L6b, LW1, LW2, LS1 | STORIES-PLAN: gate + LS1 (serialized story-tool files) |
+| L8a invoices | server | | L4b, L6c | PUZZLES-PLAN |
+| L8b webhook-grant | server | | L8a | PUZZLES-PLAN |
+| **LS3 server-stats** | server | new (STORIES-PLAN) | L8b (after L6c's `build.rs`; serialized server files) | new |
+| L9 refunds-bot | server | | LS3 (serialized server files; needs L8b) | STORIES-PLAN: gate only |
+| **LDB2 pgdev-tune** | server | (RULINGS 17) | LDB1; launched after L9 unless the server slot idles earlier (SQ4) | cut in RULINGS 17 / `design/db/decision.md` |
+| L10 client-data | client | | L7, L8b, LS2 | PUZZLES-PLAN, STORIES-PLAN (saves per story) |
+| L13 story-runtime | client | | L3c, L5, L10, LW2, LS1 | STORIES-PLAN: gate + LS1 (`catalog.ts`) |
+| L14a overlay-core | client | | L7, L11 | PUZZLES-PLAN, STORIES-PLAN (Home) |
+| D1 docs-authoring | doc | | L3c, L5, LW3, LS1 | PUZZLES-PLAN, STORIES-PLAN (stories authoring) |
+| L14b overlay-menus | client | | L10, L14a | PUZZLES-PLAN, STORIES-PLAN (picker, the end) |
+| **LS4 stats-client** | client | new (STORIES-PLAN) | L10, LS3 | new |
+| N1 demo-story | narrative | | D1, LW3, LS1 | PUZZLES-PLAN, STORIES-PLAN (story `manor`, two endings) |
+| **N2 story-tide** | narrative | new (STORIES-PLAN) | N1 (shared story files), LS1, L5 | new |
+| **LP2 puzzle-ui** | client | | L10, L14b, LW2 | PUZZLES-PLAN |
+| **LX explore-ui** | client | | L11, L14b, LW2 | PUZZLES-PLAN (∥ LP2: disjoint locks) |
+| L15 integration | client | | every lane above (N1 and N2 included: the e2e plays both stories) | PUZZLES-PLAN, STORIES-PLAN (stories wiring, `stories.spec.ts`) |
+| D2 docs-final | doc | | L15 | PUZZLES-PLAN, STORIES-PLAN |
 
-There are 32 lanes: 3 merged, 1 running, 28 to go; 6 are new from PUZZLES-PLAN and 2 (LDB0, LDB1) from RULINGS 14.
+There are 38 lanes: 10 merged, 1 running, 1 paused, 26 to go; 6 are new from PUZZLES-PLAN, 3 (LDB0, LDB1, LDB2) from
+RULINGS 14/17 and 5 (LS1–LS4, N2) from STORIES-PLAN.
 
-**Launch preference** when several lanes are ready (critical path first):
-- client: L3b, LW1, L3c, L5, L7, L11, LW2, LW3, L12, L10, L14a, L13, L14b, LP2 ∥ LX, D1, N1, L15, D2;
-- server: L4b, L6a, LDB0, LDB1, L6b, L6c, L8a, L8b, L9.
+**Launch preference** when several lanes are ready (critical path first; changed by STORIES-PLAN):
+- client (two slots): L3c, L5, L11, LS1, L7, L12, LW3, L14a, L10, L13, L14b, LP2 ∥ LX, LS4, D1, N1, N2, L15, D2;
+- server: LDB1 (running), L6b, LS2, L6c, L8a, L8b, LS3, L9, LDB2.
 
-After L9 the server slot takes D1 / N1 / LX.
+After LDB2 the server slot takes doc / narrative / client lanes with disjoint locks.
 
-**Critical path:**
-- The client chain: L3a → L3b → L3c → L5 → L7 → L11 → L14a → L14b → LP2 → L15 → D2.
-- L14b also waits for L10, which waits for the server chain L4b → L6a → LDB0 → LDB1 → L6b → L6c → L8a → L8b. That
-  chain must merge L8b before L11 merges, or it becomes the critical path.
-- N1 (← D1 ← LW3 ← LW2 ← LW1) must merge before L15. It runs in the second slot after L9 and stays off the critical
-  path while LW1 / LW2 / LW3 are launched early.
-- LW3 also waits for L6b (its commit 3 red reads L6b's `server/tests/fixtures/content/puzzles/ch1.json`; changed by
-  PUZZLES-PLAN revision 1). L6b is fifth in the server launch order (L4b, L6a, LDB0, LDB1, L6b; PUZZLES-PLAN
-  revision 4b) while LW3 is eighth in the client order. If L6b is late, LW3 waits (its red would otherwise be ENOENT,
-  not the predicted one).
+**Critical path** (changed by STORIES-PLAN):
+- The server chain LDB1 → L6b → **LS2** → L6c → L8a → L8b, then L10 → L14b → LP2 → L15 → D2. LS2 adds one lane.
+- The client chain L3c → L5 → L11 ∥ (LS1 → L7) → L14a reaches L14b long before L10 does, so L14b waits for the server
+  chain.
+- LS4 (← LS3 ← L8b, and ← L10) runs beside L14b → LP2: LS3 sits before L9 so that LS4 needs two lanes after L8b
+  against the three of L10 → L14b → LP2 (SQ4).
+- The narrative chain L6b → LS1 → LW3 → D1 → N1 → N2 → L15 is six lanes against the eight of the server chain from
+  L6b, if LS1 and LW3 start as soon as their gates merge.
+- LW3 also waits for L6b (its commit 3 red reads L6b's `server/tests/fixtures/content/puzzles/ch1.json`), and LS1 for
+  the same reason (`server/tests/fixtures/content/stories.json`). L6b is the first server lane after LDB1.
 
-The puzzle work adds one lane to the critical path (LP2); everything else runs beside it.
+The puzzle work adds one lane to the critical path (LP2), the stories work one more (LS2); everything else runs
+beside them.
 
 ### Lanes
 
@@ -2461,6 +2589,17 @@ Notation:
   4. Skeleton en tables + story.json (names, titles).
 - **Gates:** `test`, `story` (the coverage report lists seeds and endings per chapter).
 - **Seen working:** `npm --prefix client run story` reports `ch1: 200 runs, knots 3/3, endings 1/1`.
+- **Changed by STORIES-PLAN (re-cut; paused at `5d12aa3`, RULINGS 20).** The lane's own cut
+  (`D:/tmp/novel-orch/l3c-story-locales/cut.md`, v2, 14 files, C1–C5) stays the plan, with one change:
+  - **C1** (`fix.ts`) and **C2** (`locales.ts`) are committed and survive verbatim: chapter ids stay `ch<N>` and
+    game-unique (STORIES-PLAN Y1), so the owner rule, the ID shape and the per-chapter tables are unchanged.
+  - **C3** (skeleton tables, stage 5, names, `--sync-locales`) and **C5** (the en-table emission): as cut. The
+    `stories` / `teasers` sections of `story.json` arrive with LS1.
+  - **C4** (`playthrough.ts`): `ChapterPlay.carries` holds one `{ knot, vars }` per ended run, where `knot` is the
+    knot whose `-> END` ended the run, so LS1 can drop runs that ended in a declared story ending from the next
+    chapter's carry. `story.ts` reads `.vars`. Red (with the C4 tests, against the C4 stub that returns bare
+    snapshots): `play: carries name the knot each run ended in` — predicted red: the carry entry has no `knot`.
+  - Seen working unchanged (RULINGS 19): `ch1: 200 runs, knots 2/2, endings 1/1`.
 
 #### LW1 puzzle-dsl (client; new, PUZZLES-PLAN)
 - **Goal:** DSL v2 — the `puzzle` and `explore` yield tags in the one parser, the yield-block lint, the narrowed
@@ -2654,12 +2793,74 @@ Notation:
 - **Gates:** fmt, clippy, test; client `check`.
 - **Seen working:** `cargo test -p server --test it content_ catalog_` by name; `curl` with a dev token → 403 for
   `GET /api/chapters/ch2`.
+- **Changed by STORIES-PLAN (re-cut; same lock, 15 files + fixtures).** STORIES-PLAN Y6:
+  - `ids.rs` adds `StoryId` beside `PuzzleId` (same derives as `ChapterId`, plus `TS`; `parse` checks
+    `^[a-z][a-z0-9_]{0,23}$`).
+  - `ContentStore` loads `content/stories.json` (`ServerStoryIndex`, STORIES-PLAN "Server formats") into `stories()`,
+    `story(id)`, `story_of(chapter)`; a missing or invalid index is `StartupError::Content`.
+  - `server/catalog.json` `chapters` becomes `{ defaultPriceStars, priceStars, title, description }` (templates
+    `{chapter}`, `{story}`; PLACEHOLDER price 1, Q3); chapter products = every paid chapter of the index with its
+    `productId`; `/api/entitlements` lists them (`ProductDto` unchanged). This replaces the PZ per-chapter entries.
+  - Fixtures: `server/tests/fixtures/content/stories.json` (two stories: `manor` ch1 free / ch2 paid with endings
+    `truth`, `ashes`; `tide` ch3 free / ch4 paid with `drowned`, `dawn`), paid content for ch2 and ch4, puzzle
+    indexes for ch1–ch4 (ch3, ch4 empty). LS1's emit test reads `stories.json`, so its shape is the contract.
+  - **Commit 1's red** adds `entitlements_lists_every_paid_chapter_of_every_story` (predicted red: only `chapter:ch2`
+    listed, from the per-chapter catalog entry).
+  - **New commit 4b** (after 4a): the story index and its startup checks.
+    - Red: `startup_fails_without_story_index` (fixture dir copy without `stories.json`) — predicted red: startup
+      succeeds.
+    - Red: `startup_fails_when_first_chapter_paid` (the index with ch3 paid) — predicted red: startup succeeds.
+    - Red: `chapter_invoice_titles_within_limits` (a 33-character chapter title) — predicted red: no
+      `StartupError::Content`.
+    - Also: `story_index_loaded` (`story_of(ch4)` = `tide`), `catalog_default_price_applies_to_every_paid_chapter`,
+      `catalog_price_override_must_be_paid_chapter` (an override for `ch3` → `StartupError::Content`).
+  - **Seen working** (SQ1): by test names only. Until LS1 merges no tool emits `server/content/stories.json`, so
+    `server-dev` does not start on generated content; the live 403 check moves to L7's e2e (and L15).
+
+#### LS2 server-story-saves (server; new, STORIES-PLAN)
+- **Goal:** saves keyed by story (STORIES-PLAN Y7): the `saves` table of `0001` rewritten with `story_id`, the routes
+  `/api/saves/{storyId}/{slot}`, the story checked against the `ContentStore` index, `SaveSummary.storyId`.
+- **Gate to start:** L6b merged (the story index, `StoryId`). LDB1 is merged before L6b, so the `0001` this lane
+  rewrites is LDB1's PostgreSQL file (collision lock `0001`: L2 → LDB1 → LS2).
+- **Lock:** `server/migrations/0001_init.sql`, `server/src/db/{mod.rs,saves.rs}`,
+  `server/src/api/{mod.rs,dto.rs,saves.rs}`, `server/tests/it/{main.rs,saves.rs,schema.rs}`,
+  `client/src/api/generated/api.ts` (10). `server/dev` has no saves code (no dev file in the lock); no new `.rs` file.
+  The edit to an existing migration rebuilds the crate through `migrate!`'s `include_str!`; `server/build.rs` is not
+  needed yet (L6c adds it for the new `0002`).
+- **Commits:**
+  1. `0001` saves rewrite (`story_id`, `saves_pkey (user_id, story_id, slot)`, `saves_story_id_shape`) + every
+     `db/saves.rs` function keyed by story + the routes `/saves/{storyId}/{slot}` (the 300 KB body limit moves with
+     them) + every existing `it/saves.rs` test on the new paths (names kept).
+     - Red: `schema_saves_story_id_shape` (an insert with `story_id = 'Manor'` expects `("23514",
+       "saves_story_id_shape")`) and `schema_saves_pk_per_story` (two stories, one slot → both rows; the same story
+       twice → `("23505", "saves_pkey")`) — predicted red before the rewrite: `42703 undefined_column` (quoted).
+     - Red: `saves_story_slots_independent` (`PUT /api/saves/manor/auto` then `PUT /api/saves/tide/auto`, both
+       `expectedRev: null` → both 200, rev 1) — predicted red: 404 (no such route).
+  2. Story validation through `ContentStore`.
+     - Red: `saves_unknown_story_404` (`/api/saves/nope/auto`) — predicted red: 200 (stored under a shape-valid
+       unknown story).
+     - Red: `saves_chapter_outside_story_400` (`chapterId: ch3` under `manor`) — predicted red: 200.
+     - Red: `saves_bad_story_id_400` (`/api/saves/Manor/auto`) — predicted red: 500 `internal` (the CHECK fires in
+       the database instead of a 400 at the edge).
+  3. `GET /api/saves` lists every story; `SaveSummary.story_id`.
+     - Red: `saves_list_spans_stories` (rows of `manor` and `tide` → two summaries with `storyId`) — predicted red:
+       the `storyId` key missing.
+  4. `#[derive(TS)]` + regenerated `api.ts`. Red: `bindings_are_fresh` before regenerating.
+- **Gates:** fmt, clippy, test (the names above plus every `saves_*` / `schema_save*` name of L6a and LDB1, counted);
+  client `check` (no client code consumes `SaveSummary` yet: L10 is later).
+- **Tester mutations:** the PK without `story_id`; the story check skipped; `chapterId` accepted from any story.
+- **Seen working:** `cargo test -p server --test it saves_ schema_saves` lists every name. Live `server-dev` + `curl
+  PUT /api/saves/manor/auto` only if LS1 has merged (SQ1); a local `tgn_local` that applied the old `0001` is reset
+  with `pgdev reset`, and the lane quotes sqlx's refusal first (verify: the 0.9 message for a modified applied
+  migration).
 
 #### L6c server-puzzles (server; new, PUZZLES-PLAN)
 - **Goal:** server-checked puzzle attempts with a per-(user, puzzle) rate limit; puzzle status with hint tiers and
   owner-only hint texts; migration `0002`; the two new error codes (X5, X6, X7).
 - **Gate to start:** L6b merged (ContentStore puzzle index, catalog hint products, `PuzzleId`). L6b itself waits for
-  LDB1, so `0002` and every L6c statement are PostgreSQL (changed by PUZZLES-PLAN revision 4b, RULINGS 14).
+  LDB1, so `0002` and every L6c statement are PostgreSQL (changed by PUZZLES-PLAN revision 4b, RULINGS 14). Changed by
+  STORIES-PLAN: LS2 merged too (the serialized server files `api/mod.rs`, `api/dto.rs`, `db/mod.rs`, `api.ts`,
+  `it/main.rs`); the scope is unchanged (STORIES-PLAN Y17).
 - **Lock:** `server/migrations/0002_puzzles.sql`, `server/build.rs`, `server/src/{lib.rs,error.rs}`,
   `server/src/puzzles/mod.rs`, `server/src/db/{mod.rs,puzzles.rs}`, `server/src/api/{mod.rs,dto.rs,puzzles.rs}`,
   `server/tests/it/{main.rs,puzzles.rs}`, `client/src/api/generated/api.ts` (13). `AppState` gains no field.
@@ -2705,6 +2906,8 @@ Notation:
   `client/scripts/assets/{placeholder.ts,synth.ts,encode.ts,manifest.ts,assets.test.ts}`,
   `client/scripts/{budget.ts,budget.test.ts,scan-dist.ts,scan-dist.test.ts}`, `client/src/story/catalog.ts`,
   `client/package.json` (scripts), `assets/catalog.json` (13; `scan-dist.test.ts` is L1's file, serialized after L1).
+  Changed by STORIES-PLAN revision 3 (W2, SQ9): + `client/src/story/tags.test.ts` → 14, a frozen file reopened for
+  one hunk (the catalog-key pins; the last bullet of this entry), then frozen again.
 - **Commits:**
   1. `placeholder.ts` (deterministic SVG: label, hue, silhouette for characters, canonical sizes). Red: snapshot of
      dimensions.
@@ -2756,8 +2959,330 @@ Notation:
       `rooms` for it.
   - **Reds** (commit 5): `budget: room-set counts props and close-up` (bg 8.4 + close-up 8.4 + 16 props of 1 MiB =
     32.9 MiB; predicted red: a PASS row); a 1024 px prop; a world with sections and no `rooms` in usage.
+- **Changed by STORIES-PLAN (re-cut; same lock, 13 files; revision 3 adds `tags.test.ts`, 14).** STORIES-PLAN Y15 and "Demo content outline":
+  - **Catalog.** The `cover` namespace in `ASSET_ID_RE` and `decodeAssetCatalog` (`cover/<id>`, exactly 360×640);
+    `CoverManifest` + `decodeCoverManifest` in `catalog.ts`; placeholder covers (label + hue, 9:16). Additions: covers
+    `manor`, `tide`; story B's bg `shore`, `lighthouse`, `lamp_room`; char `keeper` (`neutral`, `worried`, `smile`);
+    bgm `waves`, `storm`.
+  - **Tiering.** Every `cover/*` asset is public whatever `usage.json` says (it is never "unused": Home shows it
+    before any purchase), written to `client/public/assets/` with `client/src/story-gen/covers.json`. Story B's art
+    follows the usual rule (unused until N2; `lamp_room`, `storm` paid-only then).
+  - **Commit 1's red** adds `catalog: cover namespace decodes` (predicted red: `cover/manor` refused as an unknown
+    namespace). **Commit 4's red** adds `assets: covers always public` (a cover no chapter uses; predicted red:
+    `asset unused: cover/manor`, not emitted).
+  - **Budget rows (commit 5):** cover exactly 360×640, AVIF ≤ 24 KB, WebP ≤ 36 KB; the first-load row becomes one
+    row per story's first chapter — every free chapter that no `next` names, read from `story/chapters.json` (LS1's
+    rule 3 makes these exactly the stories' first chapters) — each adding `catalog.json`, `covers.json` and the 3
+    largest cover AVIFs. Reds: `budget: cover over 24 KB fails` (predicted red: no cover row); `budget: first-load row
+    per story` (two chain heads, the second one's first knot over the limit; predicted red: one PASS row for ch1
+    only).
+- **Changed by STORIES-PLAN revision 3 (W2, SQ9): the catalog-key pins of `tags.test.ts`.**
+  - **Why.** `catalog: demo catalog and cast decode` (`tags.test.ts:447-463` at main `a7e4a04`) decodes the committed
+    `assets/catalog.json` (`?raw`, :3) and pins its keys exactly with `toEqual` on sorted keys (:450-458): bg
+    `archive, cafe, room, street`; chars `ally, stranger` and their exprs; cg `letter, reveal`; bgm
+    `calm, mystery, tension`; sfx `door, phone, steps`. Both re-cuts above add keys to that file (PZ: bg `hall`,
+    `study`, `cellar`, cg `drawer`, `cabinet`; STORIES: bg `shore`, `lighthouse`, `lamp_room`, char `keeper`, bgm
+    `waves`, `storm`), so the first L5 commit that adds a key turns `test` red. The file is frozen after LW1, and L5
+    runs before LS1, so only L5 can take it.
+  - **The hunk** (:450-458 only; in the L5 commit that first adds a key to `assets/catalog.json`, so that commit is
+    green). Each of the six pins becomes a subset pin: the decoded keys, restricted to the pinned L3a list, `toEqual`
+    that list. bg, chars, cg, bgm and sfx are restricted to their L3a keys; the exprs pin is restricted to `ally` and
+    `stranger`, and each one's exprs to its L3a exprs. The expected values stay the L3a lists verbatim, and `toEqual`
+    stays the matcher. No catalog addition, in L5 or in a later lane (N1, N2), can reopen the file. A removed or
+    renamed L3a demo id still fails by name. Line 448 (`committedCatalog()`) and the cast assertion (:459-462, LS1
+    commit 8's hunk) are not touched.
+  - **Rejected:** an inline catalog fixture. It would change the `catalog` const of :448, which is also the input of
+    LS1's cast hunk, so the two hunks would overlap. It would also drop the check that the committed catalog still
+    holds the demo ids. **Trade-off:** an unintended extra key no longer fails this test. Each added key is still
+    judged by L5's asset rows, and an asset no chapter uses prints `asset unused: <id>`.
+  - **Red-first:** that catalog commit on the unchanged `tags.test.ts`. Predicted red: `catalog: demo catalog and
+    cast decode` at :450, `expected [ 'archive', 'cafe', 'cellar', 'hall', 'lamp_room', 'lighthouse', 'room', 'shore',
+    'street', 'study' ] to deeply equal [ 'archive', 'cafe', 'room', 'street' ]` (the received list is that commit's
+    sorted bg keys; this one has both re-cuts' bg additions). The first failing `expect` ends the test, so the chars,
+    exprs, cg and bgm pins fail only after the bg pin passes. Green after the hunk. A decode error from
+    `committedCatalog()` instead means the catalog edit is malformed.
+  - **The subset pin seen failing:** on a scratch copy of the hunk's tree, delete `bg.room` from
+    `assets/catalog.json`. Predicted red: `expected [ 'archive', 'cafe', 'street' ] to deeply equal [ 'archive',
+    'cafe', 'room', 'street' ]`. A green there means the restriction is vacuous.
+  - **Gates:** `check`, `test` (`catalog: demo catalog and cast decode` green, by name).
+
+#### LS1 story-catalog (client; new, STORIES-PLAN)
+- **Goal:** the story list and its outputs (STORIES-PLAN Y2, Y4, Y5, Y18): `story/stories.json` and the
+  `catalog/stories` lint; endings checked against the compiled graphs; `stories` in the public catalog, `endings` in
+  every meta, the server story index; story titles and teasers in the locale tables; story-ending runs kept out of the
+  next chapter's carry; the STAGING-DSL contract (no tag change).
+- **Gate to start:** L3c (`story.ts`, `locales.ts`), L5 (`catalog.ts`, the `cover` namespace), L6b
+  (`server/tests/fixtures/content/stories.json`, which commit 7's red reads) merged.
+- **Lock:** `story/stories.json` (new), `client/scripts/story/{stories.ts,stories.test.ts}` (new),
+  `client/scripts/story.ts`, `client/scripts/story/{emit.ts,build.test.ts,locales.ts,lint.ts}`,
+  `client/src/story/{catalog.ts,dsl-doc.test.ts}`, `client/src/arch.test.ts` (STORIES-PLAN revision 1),
+  `docs/STAGING-DSL.md`, `story/locales/{ru,en}/story.json` (14).
+  `lint.ts` changes by one `LINT_CODES` line and `dsl-doc.test.ts` by its row count (SQ2: reopened for this lane,
+  then frozen again). Fixtures are inline in the tests; `story/ch*/` is untouched.
+  Changed by STORIES-PLAN revision 2 (W1): + `client/src/story/tags.test.ts`,
+  `client/scripts/story/{lint.test.ts,locales.test.ts}` → 17. `tags.test.ts` and `lint.test.ts` are touched by
+  commit 8 only: frozen files reopened for one hunk each (SQ2), then frozen again; `locales.test.ts` (L3c's) passes
+  L3c → LS1 → LW3. Changed by STORIES-PLAN revision 3 (W1): `locales.test.ts` is touched by commits 4, 6, 7 and 8,
+  one hunk each, except commit 7 (two hunks; changed by STORIES-PLAN revision 4, W1):
+  - commit 4: the `stories` argument of the `locales()` helper's `checkLocales` call;
+  - commit 6: the inline `story/stories.json`, plus the story's title and teaser, in its own `repoFiles()` temp repo;
+  - commit 7: the story input and the story names of C5 test 35's `planEmit` call; and the moved pin
+    `locales: matching tables raise nothing` (:291-298 at `5d12aa3`), whose `names` gains the two story sections;
+  - commit 8: the inline cast.
+
+  Commits 4 and 7 touch it because both new inputs are required fields. Every `LocaleInput` and `EmitInput` field
+  is required today (`locales.ts:25-34`, `emit.ts:66-72` at L3c `5d12aa3`; `chapters` is required and nullable), and
+  L3c C5 adds its `en` input the same way (L3c cut.md:545-559). An optional field would be the only one on either
+  seam, and a caller that left it out would drop the story-title check or the story index with no compile error. The
+  lock does not grow, because `story.ts` and `locales.test.ts` are already in it.
+
+  The count is 2 over the ~15 guideline: the three files are fixture-input edits with no new behaviour, and a
+  lane of their own would still serialize behind LS1 on `build.test.ts` and pay a full lane cycle for four hunks.
+  LW3 (13 files, holding `build.test.ts` and `locales.test.ts`) would reach 15, but both plans state its scope as
+  unchanged by stories, and the scratch proof would then wait for a puzzles lane.
+- **Commits** (changed by STORIES-PLAN revision 1: reordered so that every commit is green on the real tree; each
+  commit quotes `check`, `test`, `story` and `build` exit 0 on its own tree):
+  1. `catalog/stories` registered + STAGING-DSL (header note, §4, §8, §9 "Chapters and stories", the §11 row;
+     STORIES-PLAN "Staging DSL change").
+     - Red: `LINT_CODES` and the count (85) changed first, the doc not yet — `dsl-doc: lint table equals lint codes`
+       predicted red: `notInDoc: ['catalog/stories']` and "expected length 85, received 84" (quoted).
+  2. `stories.ts` `decodeStories` (rules 1–7 of STORIES-PLAN "Source file").
+     - Red, against a stub that returns `ok` with no findings: `stories: chapter in two stories fails`,
+       `stories: chapter in no story fails`, `stories: paid first chapter fails`, `stories: next cycle fails`,
+       `stories: first named by a next fails`, `stories: unknown cover fails`, `stories: bad story id fails`,
+       `stories: unknown key fails` — predicted red: no finding for each.
+  3. `checkEndings` (rule 8) and `checkInvoiceTitles` (rule 9).
+     - Red: `stories: ending knot must end the chapter`, `stories: ending knot with successors fails`,
+       `stories: ending knot with a yield fails`, `stories: ending chapter outside the story fails`,
+       `stories: two endings on one knot fail`, `stories: paid chapter title over 32 characters fails` — predicted
+       red: no finding.
+  4. `locales.ts`: `NAME_SECTIONS` + `stories`, `teasers`; the committed `story.json` tables gain both sections empty
+     (`{}`, ru and en): the real tree lists no story until commit 6, so no key is required yet.
+     - Red: `loc: story title and teaser required` (a story without a `stories` entry) — predicted red: no
+       `loc/missing-name`. Changed by STORIES-PLAN revision 4 (W1): the test lives in `stories.test.ts` and builds
+       its own `LocaleInput` (no chapters, an empty cast, `stories: ['manor']`, name tables whose `stories` /
+       `teasers` sections lack `manor`). Green is four `loc/missing-name` (title and teaser, ru and en) and `names`
+       null. `locales.test.ts` gains no test here, so its commit-4 hunk stays the one helper argument.
+     - Changed by STORIES-PLAN revision 3 (W1): `LocaleInput` gains the story ids as a required field
+       (`stories: readonly StoryId[]`, the ids whose title and teaser are required; see the lock note). In this
+       commit its two callers on the post-L3c tree pass `[]`:
+       - `story.ts`'s locale stage, because no story is listed until commit 6, which passes the decoded ids;
+       - the `locales()` helper of `locales.test.ts` (:212 at `5d12aa3`).
+
+       With no story id, no story key is required, so no `locales()` case moves. The cut greps for any other
+       `checkLocales(` caller.
+
+       Changed by STORIES-PLAN revision 4 (W1): this commit only requires the titles and teasers. The output of
+       `nameChecks` keeps its two keys (`chapters`, `speakers`) here; the story sections enter `StoryNames` in
+       commit 7, where `emit.ts` first reads them.
+  5. `arch.test.ts`: the rule `import-outside-src` (group `boundary`; "Arch test rules"; STORIES-PLAN ST1). Every
+     relative or `/`-rooted specifier of a non-test `src/` module — a static or dynamic import, an export-from, an
+     `import.meta.glob` pattern, a `new URL(…, import.meta.url)` literal — resolved as `ui-imports` resolves it
+     (`new URL(spec, 'file:///src/<file>')`) must stay under `/src/`; `import type` and `import('x').T` type queries
+     are exempt (erased). Bare package specifiers are out of scope (they resolve into `node_modules`).
+     - Changed by STORIES-PLAN revision 2 (W2): the rule judges every form by the files Vite 8.3.5 can pull in from
+       it, or refuses it. Its reader is its own (`moduleReference`, :540-543 at main `a7e4a04`, keeps a dynamic
+       `import()` argument only when `ts.isStringLiteralLike`, and stays as it is for the other rules):
+       `importOrigins(node): readonly Origin[]`, with `Origin = { form: 'path'; spec: string } | { form: 'glob';
+       pattern: string; base: string | null } | { form: 'opaque' }`.
+       - `path` (a string literal or a substitution-free template): resolved as above; a `#`-headed spec is flagged.
+       - `glob` from an `import()` whose argument is a template literal or a `+` join: the pattern Vite's
+         `vite:dynamic-import-vars` derives (`templateLiteralToGlob` / `expressionToGlob`, `node.js:32847-32872`:
+         quasis kept, each substitution `*`); from a template-literal `new URL(…, import.meta.url)`: the pattern of
+         `vite:asset-import-meta-url` (`buildGlobPattern`, :27479; the rewrite to an eager `import.meta.glob`,
+         :27423-27437); from `import.meta.glob(p, o)`: each element of `p` (a string or an array of strings; a
+         `!`-headed pattern only excludes, so it is skipped) with `o.base`.
+       - A glob resolves as `toAbsoluteGlob` (:28041-28060) resolves it: a `/`-headed pattern from the project root,
+         ignoring `base`; a `./` or `../` pattern from `base` (a `/`-rooted base from the project root, a relative
+         one from the importer's directory) or, without `base`, from the importer's directory. Its static head (the
+         text before the first `*`, `?`, `[` or `{`) up to its last `/` must resolve under `/src/`, and no `..`
+         segment may follow the first wildcard. A pattern headed otherwise (`**`, `#`, a bare name, which Vite hands
+         to `resolveId`) is flagged, and so is an empty or `/`-less head.
+       - `opaque`, always flagged: an `import()` argument that is neither a string, a template nor a `+` join; a
+         `new URL` first argument that is neither a string nor a template; a non-literal `import.meta.glob` pattern;
+         an options object that is not an object literal, has a spread or has a non-string `base`.
+       - Out of scope, as before: bare package specifiers. `client/` has no `resolve.alias`, tsconfig `paths` or
+         package `imports` today (triage r2 W2); an `imports` map is covered by the `#` refusal, an alias would be a
+         `vite.config.ts` change outside this rule.
+     - Red fixtures: `story/catalog.ts` importing `../../../story/stories.json`; an `app/` dynamic `import()` and an
+       export-from of `../../../server/content/chapters/ch2/meta.json`; a `ui/` `.svelte` script importing
+       `/story/stories.json?raw`; `import.meta.glob('../../../story/*/main.ink')`; `new
+       URL('../../../server/content/stories.json', import.meta.url)`. Allow fixtures: `../story-gen/catalog.json`; an
+       `import type` from `../../scripts/story/stories.ts`; a glob of `../story-gen/free/*.story.json`; `new
+       URL('./x.ts', import.meta.url)`.
+     - Red fixtures added by revision 2 (W2), each in an `app/` module:
+       `` import(`../../../server/content/chapters/${id}/meta.json`) ``;
+       `` new URL(`../../../server/content/${f}.json`, import.meta.url) ``;
+       `import.meta.glob('./*.json', { base: '../../../server/content' })`; `import s from '#content/stories.json'`;
+       `import(spec)` with a non-literal `spec`; `` import(`../story-gen/${x}/../../../server/a.json`) ``.
+       Allow fixtures added, each in `story/catalog.ts`: `` import(`../story-gen/free/${id}.story.json`) ``;
+       `import.meta.glob('./*.json', { base: '../story-gen/free' })`.
+     - Red: the id in `RULE_IDS` / `GROUP` with its fixtures and no detector → `arch: import-outside-src red on
+       fixture` — predicted red: "expected [] to include 'import-outside-src'" for the `story/catalog.ts` fixture. A
+       compile error instead means a fixture table (`GROUP`, `RED`) was not extended.
+     - Red (revision 2, W2): the detector reading string literals only (`moduleReference`'s reading) → `arch:
+       import-outside-src red on fixture` — predicted red: "expected [] to include 'import-outside-src'" for each of
+       the six revision-2 red fixtures, while the revision-1 red fixtures pass. An allow fixture flagged instead
+       (`arch: import-outside-src allows fixtures` red) means the head or `base` resolution is wrong.
+     - Real tree: `arch: import boundaries` stays green (at main `b6458c1` only `*.test.ts` files reference
+       `../../../`, and the scan excludes them). Changed by STORIES-PLAN revision 2 (W2): at main `a7e4a04` no
+       non-test `client/src` module contains `import(`, `new URL(` or `import.meta.glob` (only `arch.test.ts` does), so
+       refusing the forms the rule cannot judge moves nothing; the cut repeats that search on its tree.
+  6. `story.ts` and the skeleton, in the commit that makes `story/stories.json` mandatory: `stories.json` read after
+     the catalog stage; endings checked after the graph; the story ids passed to the locale check; the report line
+     `stories: manor (ch1 → ch2), endings 1`; the carry of chapter p into `p.next` drops the runs whose ended knot
+     (L3c C4's `knot`) is a declared ending of p. The same commit adds the skeleton `story/stories.json` (one story
+     `manor`: first `ch1`, cover `cover/manor`, ending `end` on ch2's knot `archive`), `manor`'s title and teaser in
+     both committed `story.json` tables, and, in `repoFiles()` (build.test.ts:649-656), an inline `story/stories.json`
+     (one story `manor`: first `ch1`, cover `cover/manor`, ending `q7_sealed_vault` on the fixture ch2's knot
+     `drawer`; changed by STORIES-PLAN revision 2, W3: a name no free output can contain, see commit 7) with the
+     fixture's title and teaser. Changed by STORIES-PLAN revision 2 (W1): only the stories fixture is inline here; the
+     asset catalog is still read from the tree, and the cast is read from the tree until commit 8 makes it inline.
+     Changed by STORIES-PLAN revision 3 (W1): `locales.test.ts` has its own temp-repo helper, `repoFiles()`
+     (:378-391 at L3c `5d12aa3`), where L3c's CLI cases live (L3c cut D5). It gets an inline `story/stories.json` too:
+     one story `manor`, first `ch1`, cover `cover/manor`, `endings: {}`.
+     - The cover check passes because the helper copies the committed `assets/catalog.json` (:381), which holds
+       `cover/manor` from L5 on.
+     - The empty endings name no knot of L3c's `CH2_INK`.
+     - `manor`'s title and teaser join the `stories` / `teasers` sections of the ru and en name tables in that
+       helper's temp repo. They do not go into the `NAMES_RU` / `NAMES_EN` constants (:181-182), which the
+       `locales()` unit helper also reads with `stories: []`.
+     - Red: `story: missing stories.json fails the gate` — predicted red: exit 0.
+     - Red (revision 3, W1; the proof for the `locales.test.ts` hunk): this commit without that hunk.
+       - Predicted red: `story: catalog names come from the locale tables` (L3c C3 test 19, cut.md:366-367) fails
+         reading the temp repo's `client/src/story-gen/catalog.json` (ENOENT).
+       - The cause: the CLI run exits 1 on the missing-`stories.json` E, and emission runs only when there is no E
+         (`story.ts:182` at main). No other CLI case of that file needs an emitting run.
+       - Green with the hunk. If the CLI run's stdout also shows a `loc/missing-name` for `manor`, the stories file
+         was added without the title and teaser.
+     - Red: `story: a story-ending run does not carry into the next chapter` (fixture: ch1 has a declared ending knot
+       `bad` that sets `g_x = 9` and a plain END; ch2 branches on `g_x`) — predicted red: ch2's playthrough reports
+       runs carried from `bad` (`carriedFrom` counts them; the `g_x == 9` branch visited).
+     - Real tree: `story` exit 0, printing the stories line. Every CLI case of both temp-repo helpers keeps its
+       expectation: `repoFiles()` in `build.test.ts` (:649-656) and `repoFiles()` in `locales.test.ts` (:378-391 at
+       `5d12aa3`; changed by STORIES-PLAN revision 3, W1).
+  7. `emit.ts` + `catalog.ts`: meta `endings`; catalog `stories` (exact keys `stories`, `chapters`, `cast`);
+     `server/content/stories.json`; `storyOf`; `story.ts` passes the story plans of commit 6 to `planEmit`.
+     - Changed by STORIES-PLAN revision 3 (W1): the story-plans input of `EmitInput` is a required field, like every
+       `EmitInput` field (see the lock note). It has three callers:
+       - `story.ts` (above);
+       - `emitFixture()`, which takes the one-story fixture of commit 6 (the moved pins below);
+       - C5 test 35 `emit: en tables routed with their chapters` in `locales.test.ts` (L3c cut.md:565-569). Its call
+         passes the one-story plan of its two chapters (`manor`, `ch1 → ch2`, `endings: {}`), with the title and
+         teaser in its names.
+
+       Test 35 asserts the en paths with `toContain`, the en keys as a subset and the en shape (cut.md:566-568).
+       None of these reads the catalog or the story index, so no value of test 35 moves. Changed by STORIES-PLAN
+       revision 4 (W1): one `locales.test.ts` pin does move, by the names input below.
+     - Changed by STORIES-PLAN revision 4 (W1): the names input. `StoryNames` (`emit.ts:26-29` at L3c `5d12aa3`)
+       gains `stories` and `teasers`, each `Record<StoryId, { ru: string; en: string }>` (STORIES-PLAN "TS types"),
+       in this commit, where `emit.ts` first reads them: the catalog's `StoryEntry.title` / `teaser` and the server
+       index's story `title`. A story without either throws `invariant: story <id> has a title` (or `… a teaser`),
+       as `catalog()` does for a chapter title (`emit.ts:88-93`).
+       - `nameChecks` (`locales.ts:188-208`) fills both sections for the `LocaleInput.stories` ids with the `pair()`
+         lookups commit 4 added for the check. `checkLocales` stays the one reader of the name tables, and
+         `story.ts` passes its `names` to `planEmit` unchanged.
+       - Inputs that gain the keys (no assertion): `NAMES` in `build.test.ts` (:431-434) gets `manor`'s title and
+         teaser. It is an `as StoryNames` cast, so a missing key is no compile error. Test 35's names input gets
+         `manor`'s entries in `stories` / `teasers`, whatever C5 builds it from; the `locales()` helper itself keeps
+         `stories: []`. Every `StoryNames` literal in `stories.test.ts` (commit 3's rule-9 cases) gains
+         `stories: {}` and `teasers: {}`, and `check` names a missed typed literal.
+       - Moved on purpose (`locales.test.ts`, L3c C2): `locales: matching tables raise nothing` (:291-298).
+         - Old: `expect(r.names).toEqual({ chapters: …, speakers: … })`.
+         - New: the same `chapters` and `speakers` values plus `stories: {}` and `teasers: {}` (the helper passes
+           `stories: []`). `expect(r.findings).toEqual([])` stays.
+       - Red-first: this commit without the pin's hunk. Predicted red: `locales: matching tables raise nothing`
+         fails at :294 with the diff lines `+   "stories": {},` and `+   "teasers": {},`. vitest truncates the
+         message line, so the prediction is keyed on the diff lines.
+         - A diff line inside `chapters` or `speakers` instead means `nameChecks` changed the existing sections.
+         - A `nameChecks` that does not fill the titles makes the emitting CLI cases of both `repoFiles()` helpers,
+           and the real-tree `story` gate, fail on `invariant: story manor has a title`.
+         - A `NAMES` without `manor` makes every `emitFixture()` caller fail on the same invariant.
+       - Rejected: a separate `checkLocales` result field for the titles, merged into `EmitInput.names` in
+         `story.ts`. It would hold one fact in two values with a second null rule, and `story.ts` would assemble an
+         emit input from two halves. Also rejected: filling the sections in commit 4, because `StoryNames` would
+         carry two sections that no reader uses for three commits, and commit 4's "no `locales()` case moves" would
+         become false.
+       - The cut greps for other exact pins on `checkLocales(…).names` (at `5d12aa3` only :294) and for other
+         `StoryNames` literals.
+     - Red: `emit: server story index matches the server fixture shape` (reads L6b's fixture) — predicted red: no
+       `server/content/stories.json` planned.
+     - Red: `emit: public catalog lists stories without endings`, `emit: meta carries endings`,
+       `emit: paid endings only in server outputs` (a paid chapter's ending name must occur in no `story-gen` file)
+       — predicted red: no `stories` key / no `endings` key.
+     - Changed by STORIES-PLAN revision 2 (W3): the fixture's paid ending is `q7_sealed_vault`, because `end` already
+       occurs in every free output (the meta key `"ending"`, from this commit `"endings"`, and ink's `"end"` control
+       string in `ch1.story.json`, the fixture knot `cafe` ending `-> END`). `q7_sealed_vault` is valid under
+       `EndingName`, holds a digit and `_`, so it is no ink control string, meta or catalog key, `storyVersion` hex
+       or fixture word, and it occurs in no fixture source but `stories.json`. `emit: paid endings only in server
+       outputs` asserts that the name is a substring of no planned `client/src/story-gen/` text and, as its control,
+       that it occurs in the planned `server/content/chapters/ch2/meta.json`; the tester checks the test against the
+       declared name.
+     - Red: `catalog: meta without endings is malformed` (predicted red: accepted) and `catalog: catalog with stories
+       decodes` (predicted red: `stories` reported as an unknown key).
+     - Moved on purpose (build.test.ts at main `b6458c1`; the cut re-locates them by name on the post-L3c tree; the
+       sixth, changed by STORIES-PLAN revision 4, W1, is in L3c's `locales.test.ts`). No assertion is dropped; the
+       tester diffs these six against this list:
+       - `emit: free and paid outputs are routed apart` (:491-501): the sorted plan keys gain
+         `server/content/stories.json` (8 paths, last);
+       - `emit: meta holds the knot index and the story version` (:513-535): the ch1 meta gains `endings: {}`, the ch2
+         meta `endings: { drawer: 'q7_sealed_vault' }` (`emitFixture()` takes the one-story fixture of commit 6;
+         the name changed by STORIES-PLAN revision 2, W3);
+       - `catalog: emitted chapter catalog and meta decode` (:591-606): the decoded value gains `stories: [{ id:
+         'manor', chapters: ['ch1', 'ch2'], cover: 'cover/manor', title, teaser }]` (the fixture's title and teaser);
+       - `catalog: malformed meta is an error value` (:613-615): `good` gains `endings: {}` and still decodes; every
+         malformed case keeps its path;
+       - `story: cli builds a free and a paid chapter` (:746-760): the exact `server/` list gains
+         `server/content/stories.json` (5 files, last); `CLIENT_OUTPUTS` stays the 3 files;
+       - `locales: matching tables raise nothing` (`locales.test.ts:291-298` at L3c `5d12aa3`): `r.names` gains
+         `stories: {}` and `teasers: {}` (the revision-4 names bullet above).
+  8. Changed by STORIES-PLAN revision 2 (W1): the tool tests stop reading the committed cast, so N2's speakers move
+     no test. Each file gets one inline raw cast, `{ ally: { char: 'ally' }, stranger: { char: 'stranger' }, voice:
+     { char: null } }` (the cast the fixtures were written against), decoded against the committed asset catalog,
+     which is still read from the tree. No assertion value moves; only inputs change. Lines are at main `a7e4a04` /
+     L3c `5d12aa3` and re-located by name at the cut:
+     - `build.test.ts`: `committed()` (:29-41) keeps the catalog, and every `COMMITTED.cast` use (:198, :237, :441,
+       the `planEmit` of `emitFixture()` :453) takes the inline cast. `NAMES` (:431-434) already names exactly these
+       three speakers, so `catalog: emitted chapter catalog and meta decode` keeps its cast pin (:600-604), now
+       derived from the inline cast. `repoFiles()` (:649-656) writes the inline cast as `story/cast.json` instead of
+       copying the committed file; L3c's `localeFiles()` names the same three speakers (L3c cut, "`build.test.ts`,
+       fixture only"), so no CLI case gains a `loc/missing-name`.
+     - `locales.test.ts` (L3c's; not traced by the triage, same defect): its `committed()` (:30-42), used by the
+       `locales()` helper's `checkLocales` (:212) against the inline `NAMES_RU` / `NAMES_EN` (:181-182), and its
+       `repoFiles()` (:379-391) take the inline cast in the same way.
+     - `tags.test.ts` (frozen; reopened for this hunk, SQ2): the cast assertion of `catalog: demo catalog and cast
+       decode` (:459-462) decodes the inline raw cast against the committed catalog, with the same expected value.
+       The positive control `catalog: cast char must exist in the catalog` (:507, `.ok`) keeps the committed cast:
+       it holds for any cast whose chars the catalog has. The catalog-key pins (:450-458) are not touched: L5 made
+       them subset pins (changed by STORIES-PLAN revision 3, W2).
+     - `lint.test.ts` (frozen; reopened for this hunk, SQ2): the clean control of `lint: catalog/assets red on fixture
+       (cast char missing)` (:532-534) lints the committed catalog with the inline raw cast, with the same expected
+       `clean.cast`. The other committed-cast reads (:516, :518, :524) are `some` / `toBeNull` checks that hold for
+       any valid cast.
+     - Red (the triage's proof): on a scratch copy of commit 7's tree, add `"keeper": { "char": "keeper" }` to
+       `story/cast.json` and `keeper`'s names to both committed `story/locales/{ru,en}/story.json` (L5 has added the
+       char `keeper` to the catalog), then run `npm --prefix client run test`. Predicted red: every `emitFixture()`
+       caller fails with `invariant: speaker keeper has a name` (`emit.ts:95-100`); the `locales()` cases of
+       `locales.test.ts` gain one `loc/missing-name` per name table for `keeper` (e.g. the exact location list of
+       `lint: loc/missing-name red on fixture` gains two entries); the `build.test.ts` `repoFiles()` CLI cases that
+       expect exit 0 exit 1 on `loc/missing-name` for `keeper`; the two exact cast pins (`tags.test.ts`,
+       `lint.test.ts`) show `keeper` in the received value. The same probe on commit 8's
+       tree: `test` exit 0 (quoted). A `catalog/assets` finding on `keeper.char` instead means the probe ran without
+       L5's catalog: the probe is malformed, not the fix.
+- **Gates:** `check`, `test` (every name above, plus every L3a/L3b/L3c `lint:` / `emit:` / `story:` name and every
+  `arch:` name still green; the six pins of commit 7 moved exactly as listed), `story` (prints the stories line),
+  `build`. Changed by STORIES-PLAN revision 2 (W1): `test` also exits 0 on commit 8's scratch probe (quoted).
+  Changed by STORIES-PLAN revision 4 (W1): the sixth pin is `locales.test.ts`'s; the other five are in
+  `build.test.ts`.
+- **Seen working:** `npm --prefix client run story` prints `stories: manor (ch1 → ch2), endings 1`;
+  `client/src/story-gen/catalog.json` has `stories` and no `endings` key (`rg '"endings"'
+  client/src/story-gen/catalog.json` finds nothing); `server/content/chapters/ch2/meta.json` holds
+  `"endings": { "archive": "end" }`; `server/content/stories.json` exists.
 
 #### LW3 story-world (client; new, PUZZLES-PLAN)
+- **Changed by STORIES-PLAN:** gate to start + LS1 (`story.ts`, `emit.ts`, `build.test.ts`, `locales.ts` and, from
+  revision 2, `locales.test.ts` are serialized L3c → LS1 → LW3); the scope is unchanged (worlds stay per chapter,
+  STORIES-PLAN Y17). LW3's world texts join the same `locales.ts` checks LS1 extended.
 - **Goal:** the story gate understands worlds:
   - the yield edges in the graph;
   - the world lint (`world/*`, `puzzle/*`, `explore/*`) and the soft-lock check;
@@ -2934,6 +3459,11 @@ Notation:
 - **Gates:** `check`, `test`, `build` (scan proves the mock absent), `e2e` (`boot.spec.ts`).
 - **Seen working:** `npm run dev` + `cargo run -p server-dev` (both on the lane's `DEV_API_PORT`) →
   http://localhost:5173 redirects through `/dev/launch`; the devtools console shows TWA events.
+- **Changed by STORIES-PLAN (gate only).** Gate to start + LS1: from L6b on, `server-dev` refuses to start without
+  the generated `server/content/stories.json`, which the story tool emits from LS1 on (SQ1). The e2e's `npm run
+  build` step regenerates it. L7 also runs the live checks the server lanes before LS1 deferred: `GET
+  /api/chapters/ch2` → 403 with a dev token (L6b) and, if those lanes have merged, `PUT /api/saves/manor/auto` → 200
+  (LS2).
 
 #### L8b webhook-grant (server)
 - **Goal:** the webhook route; pre-checkout; the idempotent grant; the simulate routes; the DTO samples for the client
@@ -2969,6 +3499,62 @@ Notation:
 - **Gates:** fmt, clippy, test. The tester mutations from the catalogue: no PK, grant in pre-checkout, non-XTR
   accepted.
 - **Seen working:** `curl POST /dev/simulate-payment` → `GET /api/entitlements` shows `owned: true`.
+- **Changed by STORIES-PLAN:** no scope change. If LS1 has not merged, the live `server-dev` checks of L8a and L8b
+  move to L7 / L15 and these lanes prove seen-working by test names (SQ1).
+
+#### LS3 server-stats (server; new, STORIES-PLAN)
+- **Goal:** the statistics foundation on the server (STORIES-PLAN Y8–Y12): `0003_stats.sql`, `POST
+  /api/stats/events` (validated against the story and puzzle indexes and the entitlements, idempotent, capped) and
+  `GET /api/stats` (X of Y per story and for the game); the DTOs, their bindings and samples.
+- **Gate to start:** L8b merged (`dto_samples.rs` + `dto-samples.json` exist; L6c's `server/build.rs`, so cargo sees
+  a new migration file; L6c's `RateLimited`). Runs before L9 (SQ4).
+- **Lock:** `server/migrations/0003_stats.sql` (new), `server/src/db/{mod.rs,stats.rs}`,
+  `server/src/api/{mod.rs,dto.rs,stats.rs}`, `server/tests/it/{main.rs,stats.rs,dto_samples.rs}`,
+  `client/src/api/fixtures/dto-samples.json`, `client/src/api/generated/api.ts` (11; `db/stats.rs`, `api/stats.rs`,
+  `it/stats.rs` are new, their parents `db/mod.rs`, `api/mod.rs`, `it/main.rs` are in the lock). `error.rs` is
+  untouched (`RateLimited` from L6c; no new `ErrorCode`). Schema tests live in `it/stats.rs` (the L6c precedent).
+- **Commits:**
+  1. `0003_stats.sql` (STORIES-PLAN "SQL schema").
+     - Red: `schema_stat_events_event_key` before the file → `42P01` `relation "stat_events" does not exist`
+       (quoted); after: a second row with the same (user, event id) → `("23505", "stat_events_event_key")`.
+     - Also: `schema_stat_events_subject_by_kind` (an `ending_reached` without a subject, a `chapter_started` with
+       one, a `puzzle_ended` without an outcome → `("23514", "stat_events_subject_by_kind")`),
+       `schema_stat_events_event_id_shape` (an upper-case UUID and a v1 UUID refused),
+       `schema_stat_events_story_id_shape`.
+  2. `db/stats.rs`: `record_events` (the rolling-hour count, then one `INSERT … SELECT … FROM UNNEST(…) ON CONFLICT
+     ON CONSTRAINT stat_events_event_key DO NOTHING RETURNING event_id`), `stat_facts`.
+     - Red: `stats_event_replay_counts_once` at the repository level, against a stub that inserts without `ON
+       CONFLICT` — predicted red: the second call fails with `("23505", "stat_events_event_key")` instead of
+       returning 0 inserted.
+     - Red: `stats_rate_limited_after_600_per_hour` (fixed clock; 600 accepted, the next batch refused) — predicted
+       red on a stub without the count: `Recorded`. The test also proves the array binding with NULLs (SQ7).
+  3. `api/stats.rs` `POST /api/stats/events` (decode, structural checks, `classify`, the cap → 429 + `Retry-After:
+     600`).
+     - Red: `stats_unknown_ending_rejected` (`dawn` reported for ch3) — predicted red: 404 before the route.
+     - Red: `stats_paid_ending_needs_entitlement` (`dawn` for ch4 without, then with, an entitlement row inserted
+       through `db/`) — predicted red on a `classify` that skips the entitlement: `recorded: 1` without it.
+     - Red: `stats_not_entitled_hides_ending_check` (an unknown ending name in unowned ch4 → `not_entitled`, never
+       `unknown_ending`) — predicted red on the subject-first order: `unknown_ending`.
+     - Also: `stats_story_derived_by_server` (the stored `story_id` is `tide` for ch3; a request with a `storyId`
+       field → 400), `stats_batch_over_32_400`, `stats_puzzle_of_other_chapter_rejected`.
+  4. `GET /api/stats`.
+     - Red: `stats_endings_x_of_y` (`drowned` reported twice under two event ids, `dawn` never → `tide`
+       `endingsReached: ["drowned"]`, `endingsTotal: 2`; game totals 1 of 4) — predicted red: 404 before the route,
+       then on a stub that counts rows: 2 reached.
+     - Red (changed by STORIES-PLAN revision 1, F12): `stats_ending_completes_its_chapter` (an `ending_reached`
+       `drowned` for ch3 and no `chapter_completed` → `tide` `chaptersCompleted: ["ch3"]`) — predicted red on a read
+       that counts only `chapter_completed` facts: `chaptersCompleted: []`.
+     - Also: `stats_retired_ending_not_counted` (a row with an ending absent from the index, inserted through `db/`),
+       `stats_do_not_unlock_paid_chapter` (stat rows for ch4 → `GET /api/chapters/ch4` still 403),
+       `stats_private_no_store`.
+  5. `#[derive(TS)]` + regenerated `api.ts`; the stats DTO samples in `dto_samples.rs` + `dto-samples.json`. Red:
+     `bindings_are_fresh` and `dto_samples_are_fresh` before regenerating.
+- **Gates:** fmt, clippy, test (the names above, counted); client `check`.
+- **Tester mutations:** drop `ON CONFLICT`; count rows instead of distinct facts; skip the entitlement; read the
+  story from the request; drop `stat_events_subject_by_kind`.
+- **Seen working:** `cargo test -p server --test it stats_ schema_stat` lists every name. Live (LS1 is merged by
+  then): `server-dev`, a token from `/dev/launch` + `POST /api/auth`, the same `POST /api/stats/events` twice →
+  `{"recorded":1,"duplicates":0,…}` then `{"recorded":0,"duplicates":1,…}`; `GET /api/stats` shows the ending.
 
 #### L10 client-data (client)
 - **Goal:** the API client with single-flight re-auth; the saves service (rev, writeId, pending cache, conflict
@@ -2996,6 +3582,15 @@ Notation:
   - **Commit 5:** `createPurchaseFlow` takes `isOwned: (p) => Promise<Result<boolean, ApiError>>` (chapters:
     entitlements; hints: `getPuzzle` tier owned). Red: `flow: hint product confirms through puzzle status` (predicted
     red: the flow polls entitlements and never reaches `unlocked` for a `hint:` product).
+- **Changed by STORIES-PLAN (re-cut; same lock, 11 files).** STORIES-PLAN Y7:
+  - **Gate to start:** + LS2 (`SaveSummary.storyId` and the per-story routes in `api.ts`).
+  - **Commit 2:** `listSaves()` (every story), `getSave(story, slot)`, `putSave(story, slot, req)`; the
+    `SaveSummary` decoder with `storyId`.
+  - **Commit 3:** `createSaveService({ …, story })`, one per game session.
+  - **Commit 4:** the pending entry is `pending_<storyId>`; F3 step 5 runs per story against that story's `auto`
+    summary. Red: `saves: pending entry is per story` (a `manor` pending body and a `tide` server summary of the same
+    rev) — predicted red on one global key: the `manor` body uploaded into `tide`'s slot. Also `saves: list spans
+    stories`.
 - **Gates:** `check`, `test`.
 - **Seen working:** `npx vitest run src/api src/saves src/purchase --reporter=verbose`.
 
@@ -3027,6 +3622,9 @@ Notation:
     under `bot_texts_complete_and_within_limits`.
   - `/paysupport` lists hint charges like any other (no code change; covered by `paysupport_flags_unapplied_charge`
     on a hint order).
+- **Changed by STORIES-PLAN (gate only).** Gate to start: LS3 merged (the serialized server files; LS3 runs before
+  L9, SQ4). Refunds revoke entitlements only; statistics rows of a refunded chapter stay as history and grant
+  nothing (STORIES-PLAN ST4).
 - **Gates:** fmt, clippy, test.
 - **Seen working:** `curl POST /dev/refund` → `GET /api/chapters/ch2` → 403.
 
@@ -3124,6 +3722,10 @@ Notation:
     F9). Red: `resume: exact at a yield re-yields` (predicted red: the resumed runner reports `end`).
   - **Commit 5:** the chapter loader reads `<ch>.world.json` (free, by URL) or `ChapterPayload.world`, through
     `decodeWorldPublic`.
+- **Changed by STORIES-PLAN (gate only; same lock).** Gate to start + LS1 (`catalog.ts` is serialized L5 → LS1 →
+  L13). `LoadedChapter.meta.endings` arrives through LS1's `decodeChapterMeta`; the runner is unchanged (ending
+  detection is GameSession's, from `enteredKnot`, L15). `carry.ts` needs no story check: `next` stays on the story's
+  chain by `catalog/stories`.
 - **Gates:** `check`, `test`.
 - **Seen working:** unit tests by name.
 
@@ -3144,6 +3746,16 @@ Notation:
     - writing a hint ladder (nudge → direction → solution; titles ≤ 18 graphemes);
     - the `world/*` lint codes and reading a soft-lock counterexample.
   - **FEATURE_MAP / ARCHITECTURE** get the PUZZLES-PLAN rows for whatever has merged.
+- **Changed by STORIES-PLAN (re-cut; same lock).**
+  - **Gate to start:** + LS1.
+  - **AUTHORING.md** gains a stories part: `story/stories.json` (the format; the Home order); a story = the `next`
+    chain from `first`; the first chapter is free; chapter ids are game-unique (story B starts at the next free
+    `ch<N>`); declaring an ending (a knot with `-> END`, no successors, no yield; the name in `stories.json`; the
+    ending knot and the gate's findings); "The End" vs "To be continued"; shared cast and globals, `g_<story>_<name>`;
+    titles and teasers in `story.json`; a paid chapter's title is the invoice title (≤ 32 characters); never move a
+    shipped chapter to another story; cover requests go to the asset catalog.
+  - **FEATURE_MAP / ARCHITECTURE** get the STORIES-PLAN rows (Stories, Saves per story, Player statistics) for
+    whatever has merged.
 - **Gates:** the link check (every link target exists); the two-way DSL check is in `test`.
 - **Seen working:** N1 starts from it without STOP.
 
@@ -3167,6 +3779,15 @@ Notation:
     Red-first impossible in this lane: the misplacement it prevents is an offset by the overlay inset, which only a
     real layout shows; the gate is the L15 e2e `explore: hotspot buttons align with props under safe area and
     landscape`.
+- **Changed by STORIES-PLAN (re-cut; same lock, 15 files).** STORIES-PLAN Y14:
+  - `TapToStart.svelte` becomes Home's frame: an optional Continue (`continueLabel: string | null`, rendered with
+    `tap.continue_story` "{story}") and a `children` snippet where L15 mounts L14b's `StoryPicker`. Every button's
+    handler is synchronous up to the caller's `unlockAudio()` (the gesture; no `await` before it).
+  - `screens.ts`: Home is a root view, not an overlay — no BackButton (unchanged rule: visible iff an overlay or a
+    root-back); the `chapters` overlay carries its story (`{ kind: 'chapters'; story: StoryId }`).
+  - `ru.ts` / `en.ts`: `tap.continue_story`.
+  - Red (dom, in `screens.svelte.test.ts`): `tap: continue names the story` — predicted red: the label renders without
+    the story title. `screens: back button visible iff overlay` gains the case "Home shown, no overlay → hidden".
 - **Gates:** `check`, `test` (the `dom` project names present).
 - **Seen working:** inside the lock (`ui/App.svelte` is L1's and L15's): `npx vitest run --project dom src/ui
   --reporter=verbose` lists `screens: *`, `typewriter: *`, `choices: *` by name; the components render in happy-dom.
@@ -3186,9 +3807,44 @@ Notation:
     - `globals.ink` `g_gate_forced`;
     - every world text and hint with an ID and an en entry.
   - **Hint prices** are not written here: they are server values (Q14). Hint texts follow the ladder convention.
+- **Changed by STORIES-PLAN (re-cut).**
+  - **Gate to start:** + LS1 (`story/stories.json` exists).
+  - **Lock:** + `story/stories.json` (the globs already hold `story/locales/**`).
+  - **Content:** ch1–ch2 are story `manor`. ch2's `archive_after` diverts on `pz_cabinet` to `archive_truth` (solved)
+    or `archive_ashes` (failed or abandoned), each `-> END`; `stories.json` declares them as the endings `truth` and
+    `ashes` (replacing LS1's skeleton ending `end`); `manor`'s title and teaser in `story.json` (STORIES-PLAN "Demo
+    content outline").
 - **Gates:** `story` green, naming both chapters, with the world line `softlock OK` for ch1; `build` green (budgets
   incl. `budget/room-set`, scan incl. hint fingerprints).
 - **Seen working:** the story gate's coverage report (incl. `pz_*` outcomes seen); the L15 e2e plays it.
+
+#### N2 story-tide (narrative-designer; new, STORIES-PLAN)
+- **Goal:** story B, `tide` (STORIES-PLAN "Demo content outline"): a different cast (`keeper`, `radio`), ch3 free
+  with a mid-story bad end (`drowned`) and a chapter end into the paywall, ch4 paid with the ending `dawn`; ru + en;
+  no world. The premise stays a placeholder (Q1).
+- **Gate to start:** N1 merged (they share `stories.json`, `story/locales/**`, `globals.ink`), LS1, L5 (story B's
+  catalog additions).
+- **Lock:** `story/ch3/**`, `story/ch4/**`, `story/chapters.json`, `story/stories.json`, `story/cast.json`,
+  `story/common/globals.ink`, `story/locales/en/{ch3.json,ch4.json}`, `story/locales/{ru,en}/story.json`.
+- **Commits** (narrative lanes have no red-first; the story gate is the check). Changed by STORIES-PLAN revision 1:
+  each commit carries the cast, names and titles its chapters and story need, because `speaker/unknown` (E,
+  `lint.ts`), L3c's `loc/missing-name` (E) and `catalog/stories` rule 9 fail a commit that lists a chapter or a story
+  before them; each commit quotes `npm --prefix client run story`, `build` and (changed by STORIES-PLAN revision 2,
+  W1: `build` runs no vitest, so only `test` shows a tool test that a new speaker moves) `test` exit 0 on its own
+  tree.
+  1. Story B up to the end of ch3: cast `keeper` (sprite) and its names (`story.json` `names`, ru and en);
+     `chapters.json` + ch3 (`shore`, `shore_drowned`, `lighthouse`, `lighthouse_stairs`; free, `next: null` until
+     commit 2) and its title (`chapters`, ru and en); `g_tide_trust_keeper`; the `tide` entry in `stories.json` (first
+     `ch3`, cover `cover/tide`, ending `drowned`) with its title and teaser (`stories`, `teasers`, ru and en); IDs; the
+     en table `ch3.json`. The stories line reads `…; tide (ch3), endings 1`.
+  2. ch4: cast `radio` (no sprite) and its names; ch3's `next: ch4` and ch4 (`lamp`, `lamp_dawn`; paid, `productId:
+     chapter:ch4`) with its title (ru and en, ≤ 32 characters: rule 9); ending `dawn`; IDs; the en table `ch4.json`.
+     The stories line reads `…; tide (ch3 → ch4), endings 2`.
+- **Gates:** `story` green (prints both stories; `ch3: 200 runs, … endings 2/2`; `ch4` carried from the ch3 runs
+  that did not end in `drowned`); `build` green (two first-load rows, scan with ch4's fingerprints and its paid-only
+  assets `bg/lamp_room`, `bgm/storm`); `test`.
+- **Seen working:** `npm --prefix client run story` prints `stories: manor (ch1 → ch2), endings 2; tide (ch3 → ch4),
+  endings 2`; the L15 e2e `stories.spec.ts` plays it.
 
 #### L14b overlay-menus (client)
 - **Goal:** Menu, Backlog, Settings (text speed, per-bus volume, language), Save/Load, ChapterSelect, Paywall (terms
@@ -3227,6 +3883,21 @@ Notation:
 
   Red: `i18n: puzzle and explore keys declared` (it reads the key list above from a constant in the test; predicted
   red: the keys are missing from `ru`).
+- **Changed by STORIES-PLAN (re-cut).** STORIES-PLAN Y14, Y15:
+  - **Lock:** + `client/src/ui/StoryPicker.svelte` → 14.
+  - `StoryPicker.svelte` (presentational): `cards: StoryCardView[]` (`{ id, title, teaser, cover: { avif, webp } |
+    null, continue: boolean, eager: boolean }`), callbacks `onStart(id)`, `onContinue(id)`, `onChapters(id)`; covers
+    as `<picture>` with `width` / `height`, `decoding="async"`, `loading="lazy"` unless `eager`.
+  - `ChapterSelect.svelte` lists one story's chapters (props carry the story's chapters only); `Notice` gains the
+    kind `the_end` (action "Back to stories"); `Menu` gains "Back to stories".
+  - Keys: `stories.start`, `stories.continue`, `stories.chapters`, `notice.the_end_title`, `notice.the_end_action`,
+    `menu.back_to_stories`.
+  - Reds (dom, in `menus.svelte.test.ts`): `menus: story picker shows start or continue per story` (predicted red:
+    the component is missing → import error, then Continue shown for a story without a save on a stub);
+    `menus: chapter select lists only its story`; `menus: notice kinds show their actions` extended with `the_end`
+    (predicted red: no `the_end` kind); `menus: menu has back to stories`.
+  - Screen map rows: "Home (Continue + story cards)" → `TapToStart` + `StoryPicker`, `tap.*` + `stories.*`, L14a +
+    L14b; "The End" → `Notice`, `notice.*`, L14b.
 - **Gates:** `check`, `test`.
 - **Seen working:** in L15.
 
@@ -3319,6 +3990,31 @@ Notation:
 - **Seen working:** `npx vitest run src/explore src/ui/explore --reporter=verbose`; the components render in
   happy-dom.
 
+#### LS4 stats-client (client; new, STORIES-PLAN)
+- **Goal:** the client half of the statistics foundation (STORIES-PLAN Y13): the stats endpoints and decoders, and
+  the reporter (ids, queue, DeviceStorage mirror, flush policy). No UI.
+- **Gate to start:** L10 (`http.ts`, `endpoints.ts`, `decode.ts`), LS3 (the stats DTOs in `api.ts` and their
+  samples) merged.
+- **Lock:** `client/src/stats/{reporter.ts,reporter.test.ts}` (new), `client/src/api/{endpoints.ts,decode.ts,
+  decode.test.ts}` (5).
+- **Commits:**
+  1. `postStatEvents(events, { keepalive })` and `getStats()` + decoders for `PostStatsResponse` and `StatsResponse`.
+     - Red: `decode: stats samples decode` (LS3's samples) — predicted red: the decoders are missing (the test
+       names them; a type error before the code exists).
+  2. `reporter.ts` queue, ids, single-flight flush, retry policy (fake clock, fake endpoints).
+     - Red: `reporter: retried batch keeps event ids` (a network failure, then a retry) — predicted red on a stub that
+       builds the batch per attempt with fresh ids: different ids.
+     - Also: `reporter: ending flushes at once`, `reporter: 429 waits retry-after`, `reporter: 400 drops the batch`,
+       `reporter: rejected events are dropped`, `reporter: failure never throws`, `reporter: dispose clears timers`.
+  3. DeviceStorage mirror (`stats_queue`, ≤ 64, oldest dropped; none below 9.0), the age limit, keepalive flushes.
+     - Red: `reporter: queue survives reload through device storage` (a second reporter on the same fake storage
+       sends the first one's events) — predicted red: nothing sent.
+     - Also: `reporter: queue capped at 64 drops oldest`, `reporter: events older than 30 days are dropped`.
+- **Gates:** `check`, `test` (every name above).
+- **Tester mutation:** fresh ids per attempt; flush without single-flight (two concurrent POSTs of one batch).
+- **Seen working:** `npx vitest run src/stats src/api --reporter=verbose`; live in L15 (`stories: story ending shows
+  the end and records the ending`).
+
 #### L15 integration (client)
 - **Goal:** GameSession wiring, boot, the full e2e (smoke, purchase, perf).
 - **Lock:** `client/src/app/{boot.ts,engine.ts,game.ts,game.test.ts}`, `client/src/main.ts`, `client/src/ui/App.svelte`,
@@ -3382,9 +4078,47 @@ Notation:
     it also gains the resume search after a rules update (a save on the demo section, a world with one changed
     `accepts`, then a reload), timed on a LOW Android if one is available and scaled per state to 5,000 states
     (X9 cost: ≤ 300 ms).
+- **Changed by STORIES-PLAN (re-cut).** STORIES-PLAN Y4, Y7, Y13, Y14:
+  - **Gate to start:** + LS1, LS2, LS3, LS4, N2 (and every re-cut lane above).
+  - **Lock:** + `client/e2e/stories.spec.ts` → 14.
+  - **Commit 1** (`game.ts`): `start({ new | slot, story, … })` (a chapter outside the story → `chapter-outside-story`);
+    one `SaveService` per session; `exitToStories()` in the order of STORIES-PLAN "Module API" (revision 1: the open
+    `PuzzleSession` and `PurchaseFlow` disposed first, then the autosave, then the `ExploreController`, then runner,
+    scene, audio, saves, flush); F4′ (the declared ending → `the_end`; `next` within the story); F2's ending knot
+    (`ending_reached`, no F5); the reporter calls (changed by STORIES-PLAN revision 1: `chapter_started` for every
+    runner created from a `fresh` start point — a new game, a chapter change, resume step 2 "pending chapter start" and
+    step 5 "chapter start" — never for an `exact` or `checkpoint` one; `chapter_completed` at an END whose last entered
+    knot is not a declared ending, while a declared ending's END records only its `ending_reached`; `puzzle_ended`
+    from `yields.ts` with the outcome). Reds:
+    `game: chapter start and end are reported`, `game: exact or checkpoint resume does not report chapter start`,
+    `game: ending knot reports the ending and skips next-chapter preload` (predicted red: a `next:` holder requested
+    at the ending knot), `game: story end shows the end`, `game: exit to stories returns the registry to baseline`
+    (predicted red: `scene:` holders still live after exit), `game: exit to stories disposes the save service`,
+    `game: start rejects a chapter outside the story`; and (revision 1):
+    - `game: declared ending end is distinguishable from chapter end` (fixture: a chapter with a declared ending knot
+      `bad` and a plain END knot `stairs`, one run into each) — predicted red on the revision-0 order: two identical
+      `chapter_completed` events;
+    - `game: pending chapter start reports chapter start` (a slot whose body has `ink: null`) — predicted red: no
+      `chapter_started`;
+    - `game: exit to stories disposes explore, puzzle and purchase sessions` (fixture: in a room, with a puzzle attempt
+      in flight and a chapter purchase `confirming`; after exit: no `room:*` holder in the fake registry, the fake
+      `ResizeObserver` disconnected, the attempt's late response dispatches nothing, the flow disposed once) —
+      predicted red: `room:*` holders live and the observer still connected after exit.
+  - **Commit 2** (`boot.ts`, `main.ts`): `covers.json` beside the catalog; `listSaves()`; the reporter after auth,
+    its two flush subscriptions; Home's Continue = the newest `auto`; `unlockAudio()` in every Home button handler.
+  - **Commit 3** (`App.svelte`): Home (`TapToStart` + `StoryPicker` in its snippet, mounted only while no game runs);
+    ChapterSelect per story; `the_end`; "Back to stories".
+  - **New commit 6b — `stories.spec.ts`:** the six tests of STORIES-PLAN "Test strategy" (e2e). The stats check
+    obtains its own token through `/dev/launch` + `POST /api/auth` for the same dev user and reads `GET /api/stats`.
+    Red: before the Home wiring, `stories: picker lists both stories with covers` fails at "story card visible"; with
+    the saves keyed without the story in a scratch tree, `stories: saves are per story` fails (quoted).
+  - `perf.spec.ts`: `time to first line under throttling` taps the first card's Start (still one tap).
+  - **Seen working** gains: Home with both covers; `tide` to `drowned` → "The End" → Home → `manor` Continue resumes
+    its own line; `curl GET /api/stats` with the dev token shows `tide` `endingsReached: ["drowned"]`.
 - **Gates:** every client gate + `e2e` (all five specs, counted by name); `build` shows the engine row measured, no
   longer PENDING (quoted), and the three lazy chunk rows measured. Red: the BackButton binding removed from
-  `ui/screens.ts` in a scratch tree → `back button closes overlays without history` fails.
+  `ui/screens.ts` in a scratch tree → `back button closes overlays without history` fails. Changed by STORIES-PLAN:
+  all six specs (`boot`, `smoke`, `purchase`, `perf`, `puzzles`, `stories`).
 - **Seen working:** `npm run dev` + `cargo run -p server-dev`, play to the paywall, buy, ch2. `npm --prefix client run
   e2e`.
 
@@ -3404,6 +4138,12 @@ Notation:
 - **Changed by PUZZLES-PLAN.** The FEATURE_MAP rows Puzzles / Exploration / Hints / World tooling. The
   `payments-ops` runbook covers hint products (refund = revoke; consumed-hint policy per Q15). The `bot-setup` runbook
   adds host time sync (NTP; the `initdata_expired` from-future erratum).
+- **Changed by STORIES-PLAN.** The FEATURE_MAP rows Stories / Saves per story / Player statistics (STORIES-PLAN
+  "Integration"). README: Home and the two demo stories. `local-dev`: `pgdev reset` after a rewritten migration (the
+  LS2 rule: migrations are rewritten until the first deployment, append-only after it); the dev path of a save is
+  `/api/saves/<story>/<slot>`. `payments-ops`: chapter prices are `defaultPriceStars` + overrides in
+  `server/catalog.json`; a new paid chapter needs no catalog edit. A privacy note: what `stat_events` holds (user id,
+  closed vocabulary), and that retention and deletion are open (Q23).
 - **Gates:** the link check; env var names grep-matched against `config.rs`.
 
 ---
@@ -3425,6 +4165,11 @@ Notation:
 | Ed25519 third-party validation | only if a token-less service must validate initData |
 | Rate limiting, request IDs, metrics/analytics | before public launch |
 | Token key rotation (`v2`) | — |
+| Statistics screen and metrics (changed by STORIES-PLAN) | the owner's Q22; reads `GET /api/stats`; projections (`story_endings`, rebuilt from `stat_events` by one `INSERT … SELECT`) when a screen needs them |
+| Community percentages ("5 % found this ending") (changed by STORIES-PLAN) | `GROUP BY story_id, subject` over `stat_events` + an index `(kind, story_id, subject, user_id)`; a minimum-count rule at display (unresearched) |
+| Choice events (changed by STORIES-PLAN) | only if the owner wants them (Q24); a new `kind` + a choice-ID vocabulary per build |
+| Statistics retention and erasure (changed by STORIES-PLAN) | Q23: an admin erasure command (`DELETE … WHERE user_id`), an age cut-off job |
+| Per-story globals, "Start over" on a finished story, story deep links (`startapp`) (changed by STORIES-PLAN) | past ~50 globals; UX polish; when the bot is real |
 
 ---
 
@@ -3462,6 +4207,13 @@ The engineering forks PE1–PE6 and the owner questions Q14–Q20 (hint prices, 
 attempt limits, exploration scope and others) live in [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section "Open
 questions". The orchestrator copies Q14–Q20 into docs/OPEN-QUESTIONS.md. None blocks a lane: each has a placeholder
 default there.
+
+### Stories extension (changed by STORIES-PLAN)
+
+The engineering forks SQ1–SQ8 (the story index at startup and the L7 gate, the reopened DSL files, the `0001`
+rewrite rule, the LS3 / L9 / LDB2 order, the errata line drift, L3c's C4, the array binding, the 3-lane rule) and the
+owner questions Q22–Q25 (statistics metrics, retention and lawful basis, choice events, ending counts before purchase)
+live in [STORIES-PLAN.md](STORIES-PLAN.md), section "Open questions". None blocks a lane: each has a default there.
 
 ---
 
@@ -3501,6 +4253,11 @@ default there.
 | 8 | 2026-10-31 | RULINGS 14 + `D:/tmp/novel-orch/design/db/decision.md` §4.6, §5.3 | PUZZLES-PLAN revision 4b (database errata): the dependency order gains the port lanes LDB0 → LDB1 before L6b (table rows, L6b's gate + LDB1, L6c's gate = L6b which waits for LDB1, the lane count, the server launch order, the critical path's server chain and the LW3 note); lane L6c gets the PostgreSQL red text (`42P01`), the named-constraint assertions, `schema_puzzle_id_shape` and its tester mutation. The dependency order edits are marked by one sentence under that heading, the L6c edits each by "changed by PUZZLES-PLAN revision 4b". K14, K18, K19, the `0001` schema section and the other decision §6 edits are not touched: they land with LDB0/LDB1. Per-item list: [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section "Revision log"; removed/added text verbatim: `D:/tmp/novel-orch/design/puzzles/errata_db.md` |
 | 9 | 2026-10-31 | `D:/tmp/novel-orch/design/puzzles/triage_r5.md` (critique `design/puzzles/critique_r5.md`) | PUZZLES-PLAN revision 5: the 1 confirmed item W1 (a puzzle attached to locks in two sections wrote another section's state: a courtyard solve left the tower gate on its lock panel, a strand the per-section soft-lock check never reaches, and after a version change `admitSection` reverted a run the current version wrote) resolved by a new LW3 story-gate error, `world/puzzle-multi-lock` (a puzzle is attached to at most one lock); reconcile is unchanged. The PP edits are LW3 commit 1 and the seen-red "puzzle extension" row, each marked "changed by PUZZLES-PLAN revision 5". Optional O1–O3 noted, not folded in. Per-item list: [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section "Revision log"; detail: `D:/tmp/novel-orch/design/puzzles/revision_r5.md`. Pre-revision copy: `D:/tmp/novel-orch/design/puzzles/PROTOTYPE-PLAN.r5.before.md` |
 | 10 | 2026-10-31 | `D:/tmp/novel-orch/design/puzzles/triage_r6.md` (critique `design/puzzles/critique_r6.md`) | PUZZLES-PLAN revision 6: the 1 confirmed item W1 (a room→room exit into another section's room let the player act in that section while another was current: a courtyard arch into a tower room let a tower lever drop the player into a pit that neither per-section soft-lock search expands, and after a version change `admitSection` reverted the lever the current version pulled) resolved by a new LW3 story-gate error, `world/cross-section-exit` (every room→room exit leads to a room of its own section; sections join through a `leave` and an `explore` yield); reconcile is unchanged. The PP edits are LW3 commit 1 and the seen-red "puzzle extension" row, each marked "changed by PUZZLES-PLAN revision 6". Optional O1, O2 noted, not folded in. Per-item list: [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section "Revision log"; detail: `D:/tmp/novel-orch/design/puzzles/revision_r6.md`. Pre-revision copy: `D:/tmp/novel-orch/design/puzzles/PROTOTYPE-PLAN.r6.before.md` |
+| 11 | 2026-10-31 | `D:/tmp/novel-orch/design/stories/spec.md` (RULINGS 20) | Extended by [STORIES-PLAN.md](STORIES-PLAN.md): several stories (a story = a chain of game-unique chapters, `story/stories.json`), the first chapter of each free, endings declared per story, saves per story, the statistics foundation. Changed items marked "changed by STORIES-PLAN": Goal, invariants, K3, K8, K9, K12, K13, K26, layout, TS types, SQL, HTTP API, Build outputs, Shared types, `Game`, F1, F4, F5, Budgets, Test strategy, seen-red, Integration, Later, Open questions. The lane cut: the 3-lane rule (RULINGS 18), collision locks, the dependency order (38 lanes; LS2 on the critical path); new lanes LS1, LS2, LS3, LS4, N2; re-cut L3c, L5, L6b, L6c, L7, L8a/L8b (seen-working note), L9, L10, L13, L14a, L14b, LW3, D1, N1, L15, D2. The RULINGS 21 errata are not applied here; the PP lines they cite moved (design log). Design log: `D:/tmp/novel-orch/design/stories/design_log.md` |
+| 12 | 2026-10-31 | `D:/tmp/novel-orch/design/stories/triage_r1.md` (critique `design/stories/critique_r1.md`) | STORIES-PLAN revision 1: the 5 confirmed items resolved (W3 part 2 as narrowed). W1: the LS1 commits reordered (locales, the arch rule, `story.ts` with the skeleton `stories.json`, then emit) and the five moved `build.test.ts` pins named old → new; W2: the N2 commits carry their cast, names and titles (2 commits); W3: no `chapter_completed` at a declared ending's END, `chapter_started` for every `fresh` runner start (resume steps 2 and 5 included), L15 reds, LS3's `stats_ending_completes_its_chapter`; W4: the arch rule `import-outside-src` in LS1 (lock + `arch.test.ts`, collision chain L1 → LW2 → LS1 → LP2, the arch rules list); W5: `exitToStories()` disposes the puzzle session, the purchase flow and the explore controller (`Game` comment, L15 red). Each PP edit is marked "STORIES-PLAN revision 1". Optional O1–O8 noted, not folded in. Per-item list: [STORIES-PLAN.md](STORIES-PLAN.md), section "Revision log"; detail: `D:/tmp/novel-orch/design/stories/revision_r1.md`. Pre-revision copy: `D:/tmp/novel-orch/design/stories/PROTOTYPE-PLAN.r1.before.md` |
+| 13 | 2026-10-31 | `D:/tmp/novel-orch/design/stories/triage_r2.md` (critique `design/stories/critique_r2.md`) | STORIES-PLAN revision 2: the 3 confirmed items resolved. W1: LS1 commit 8 makes the tool tests read an inline cast (`build.test.ts`, L3c's `locales.test.ts`, and one hunk each in the frozen `tags.test.ts` / `lint.test.ts`, reopened SQ2-style), proved by a scratch speaker `keeper` with `test` green; the LS1 lock 14 → 17; the collision locks; commit 6's "inline" sentence restated (the asset catalog is still read from the tree); N2's per-commit proof gains `test`. W2: `import-outside-src` judges template-literal `import()` / `new URL` heads, `+` joins and the glob `base` option as Vite does, flags `#` specifiers and refuses forms it cannot read; six red and two allow fixtures and a literal-only red ("Arch test rules", LS1 commit 5). W3: the fixture's paid ending is `q7_sealed_vault` (commit 6 fixture, commit 7 pin and test). Each PP edit is marked "STORIES-PLAN revision 2". Optional O1–O3 noted, not folded in. Per-item list: [STORIES-PLAN.md](STORIES-PLAN.md), section "Revision log"; detail: `D:/tmp/novel-orch/design/stories/revision_r2.md`. Pre-revision copy: `D:/tmp/novel-orch/design/stories/PROTOTYPE-PLAN.r2.before.md` |
+| 14 | 2026-10-31 | `D:/tmp/novel-orch/design/stories/triage_r3.md` (critique `design/stories/critique_r3.md`) | STORIES-PLAN revision 3: the 2 confirmed items resolved. W1: LS1 commit 6 also gives `locales.test.ts`'s own `repoFiles()` an inline `story/stories.json` (`manor`, `endings: {}`) with the story's title and teaser in its temp-repo name tables, with a red (`story: catalog names come from the locale tables`, ENOENT on the temp repo's `catalog.json`); the new `LocaleInput` story ids (commit 4) and `planEmit` story input (commit 7) are required fields, so the lock note names commits 4, 6, 7 and 8 for `locales.test.ts`, and commits 4 and 7 state their one-argument hunks; commit 6's real-tree line names both helpers. W2: `tags.test.ts` reopens for L5 (SQ9), one hunk: the catalog-key pins of `catalog: demo catalog and cast decode` (:450-458) become subset pins of the L3a keys, with a red-first and a seen-failing scratch; the L5 lock 13 → 14; the frozen-file bullet; LS1 commit 8 notes that L5 owns those pins. Each PP edit is marked "STORIES-PLAN revision 3". Optional O1–O3 noted, not folded in. Per-item list: [STORIES-PLAN.md](STORIES-PLAN.md), section "Revision log"; detail: `D:/tmp/novel-orch/design/stories/revision_r3.md`. Pre-revision copy: `D:/tmp/novel-orch/design/stories/PROTOTYPE-PLAN.r3.before.md` |
+| 15 | 2026-10-31 | `D:/tmp/novel-orch/design/stories/triage_r4.md` (critique `design/stories/critique_r4.md`) | STORIES-PLAN revision 4: the 1 confirmed item resolved. W1: `StoryNames` gains `stories` and `teasers` (`Record<StoryId, { ru; en }>`) in LS1 commit 7, where `emit.ts` first reads them, filled by `locales.ts` `nameChecks` for the `LocaleInput.stories` ids (commit 4 only requires them); L3c's pin `locales: matching tables raise nothing` (`locales.test.ts:291-298`) moves on purpose (`r.names` gains `stories: {}`, `teasers: {}`), with a red-first keyed on the diff lines; the inputs `NAMES` (`build.test.ts`), test 35's names and the `stories.test.ts` literals gain the keys; commit 4's red `loc: story title and teaser required` lives in `stories.test.ts`; the lock note (commit 7: two `locales.test.ts` hunks), the moved list (six pins) and the Gates line. Each PP edit is marked "STORIES-PLAN revision 4". Optional O1–O4 and the critique's open question 1 noted, not folded in. Per-item list: [STORIES-PLAN.md](STORIES-PLAN.md), section "Revision log"; detail: `D:/tmp/novel-orch/design/stories/revision_r4.md`. Pre-revision copy: `D:/tmp/novel-orch/design/stories/PROTOTYPE-PLAN.r4.before.md` |
 
 **Revision 1 (2026-10-30)** — what changed, by triage item:
 - **W1** (undecodable payment ACKed and lost): K17 (lenient `PaymentProbe` for the payment subset, 500 only when the

@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 server = { path = ".." }
+pgdev = { path = "../pgdev" }
 axum = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -23,6 +24,6 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
-tempfile = { workspace = true }
+sqlx = { workspace = true }
 http-body-util = { workspace = true }
 tower = { workspace = true, features = ["util"] }

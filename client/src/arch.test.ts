@@ -1,6 +1,6 @@
-// Architecture rules over the raw sources of src/ (and index.html). No later lane owns this file, so every rule
-// has a red fixture, every exemption has an allow fixture, and detection is AST-based for TypeScript: a comment
-// such as `// never 100vh` or a method named `confirm` must not trip a rule.
+// Architecture rules over the raw sources of src/ (and index.html). The lanes that add a rule (LW2, LP2) keep this
+// file's contract: every rule has a red fixture, every exemption has an allow fixture, and detection is AST-based for
+// TypeScript: a comment such as `// never 100vh` or a method named `confirm` must not trip a rule.
 import ts from 'typescript';
 import { expect, test } from 'vitest';
 
@@ -28,14 +28,15 @@ const RULE_IDS = [
   'authorization',
   'node-builtin',
   'texture-create',
+  'pure-world',
 ] as const;
 
 type RuleId = (typeof RULE_IDS)[number];
-type Group = 'pattern' | 'boundary';
+type Group = 'pattern' | 'boundary' | 'pure';
 type Violation = { rule: RuleId; file: string; line: number; excerpt: string };
 type Fixture = readonly [file: string, source: string];
 
-/** "Forbidden anywhere in src/" vs "import boundaries" of the plan's module map. */
+/** "Forbidden anywhere in src/", "import boundaries" of the plan's module map, and the pure world layer (X4). */
 const GROUP: Record<RuleId, Group> = {
   'vh-unit': 'pattern',
   'window-open': 'pattern',
@@ -58,6 +59,7 @@ const GROUP: Record<RuleId, Group> = {
   authorization: 'boundary',
   'node-builtin': 'boundary',
   'texture-create': 'boundary',
+  'pure-world': 'pure',
 };
 
 /** Paths are relative to src/; index.html sits one level up. */
@@ -78,6 +80,52 @@ const VH_LENGTH = /(?<![\w-])\d*\.?\d+[dsl]?vh\b/g;
 // `${h}vh` in a template, `{h}vh` in Svelte markup: the number is an expression, the unit is still vh.
 const VH_AFTER_TEMPLATE_SPAN = /^[dsl]?vh\b/;
 const VH_AFTER_MUSTACHE = /\}\s*[dsl]?vh\b/g;
+
+// PUZZLES-PLAN X3/X4: the world layer the runtime and the story tool share. The build proves the rules the player
+// runs only while these modules read nothing but their arguments: no DOM, network, storage, Svelte, clock or
+// randomness. Their value imports stay inside the layer and its pure dependencies, so purity is transitive.
+const PURE_WORLD_FILES = [
+  'world/types.ts',
+  'world/decode.ts',
+  'puzzles/rules/index.ts',
+  'puzzles/rules/code.ts',
+  'puzzles/rules/order.ts',
+  'explore/state.ts',
+  'explore/reduce.ts',
+  'explore/project.ts',
+  'explore/reconcile.ts',
+] as const;
+const PURE_WORLD_DEPS = new Set(['story/staging.ts', 'story/catalog.ts', 'story/tags.ts']);
+const PURE_WORLD_GLOBALS = new Set([
+  'document',
+  'window',
+  'globalThis',
+  'self',
+  'navigator',
+  'location',
+  'fetch',
+  'XMLHttpRequest',
+  'WebSocket',
+  'localStorage',
+  'sessionStorage',
+  'indexedDB',
+  'performance',
+  'crypto',
+  'Date',
+  'setTimeout',
+  'setInterval',
+  'queueMicrotask',
+  'requestAnimationFrame',
+]);
+
+function isPureWorld(file: string): boolean {
+  return (
+    file.startsWith('world/') ||
+    file.startsWith('puzzles/rules/') ||
+    (PURE_WORLD_FILES as readonly string[]).includes(file) ||
+    PURE_WORLD_DEPS.has(file)
+  );
+}
 
 /** Where a rule applies; everything outside is the rule's exemption. */
 function applies(rule: RuleId, file: string): boolean {
@@ -102,6 +150,8 @@ function applies(rule: RuleId, file: string): boolean {
       return !file.startsWith('api/');
     case 'texture-create':
       return file !== 'scene/loader.ts' && file !== 'scene/registry.ts';
+    case 'pure-world':
+      return isPureWorld(file);
     default:
       return true;
   }
@@ -384,6 +434,25 @@ function checkIdentifier(ctx: Ctx, node: ts.Identifier): void {
   if (AUTHORIZATION.test(text) && isPropertyName(node)) {
     report(ctx, 'authorization', node);
   }
+  if (PURE_WORLD_GLOBALS.has(text) && !isMemberName(node)) {
+    report(ctx, 'pure-world', node);
+  }
+}
+
+/** A name that is a member, not a reference: `o.document`, `{ document: 1 }`, a method or a qualified type name. */
+function isMemberName(node: ts.Identifier): boolean {
+  const p = node.parent;
+  const named =
+    ts.isPropertyAccessExpression(p) ||
+    ts.isPropertyAssignment(p) ||
+    ts.isPropertySignature(p) ||
+    ts.isPropertyDeclaration(p) ||
+    ts.isMethodDeclaration(p) ||
+    ts.isMethodSignature(p) ||
+    ts.isGetAccessorDeclaration(p) ||
+    ts.isSetAccessorDeclaration(p);
+  // A shorthand `{ document }` reads the global, so here it is a reference (unlike isPropertyName).
+  return (named && p.name === node) || (ts.isQualifiedName(p) && p.right === node) || (ts.isBindingElement(p) && p.propertyName === node);
 }
 
 function checkMember(ctx: Ctx, node: ts.Node, obj: ts.Expression, name: string): void {
@@ -410,6 +479,9 @@ function checkMember(ctx: Ctx, node: ts.Node, obj: ts.Expression, name: string):
   }
   if (name === 'createImageBitmap' && isGlobalObject(obj)) {
     report(ctx, 'texture-create', node);
+  }
+  if (name === 'random' && ts.isIdentifier(obj) && obj.text === 'Math') {
+    report(ctx, 'pure-world', node);
   }
   const owner = rightName(ctx, obj);
   if ((name === 'from' && (owner === 'Texture' || owner === 'Sprite')) || (ASSETS_LOADS.has(name) && owner === 'Assets')) {
@@ -504,6 +576,20 @@ function checkImport(ctx: Ctx, node: ts.Node): void {
       report(ctx, 'ui-imports', node);
     }
   }
+  if (spec === 'svelte' || spec.startsWith('svelte/') || /\.svelte(?:\.ts)?$/.test(spec)) {
+    report(ctx, 'pure-world', node); // type-only too: the pure layer knows no component or store
+  } else if (!typeOnly && !isPureWorldTarget(ctx.file, spec)) {
+    report(ctx, 'pure-world', node);
+  }
+}
+
+/** A relative or /src/ import that resolves into the pure world layer or its pure dependencies; never a package. */
+function isPureWorldTarget(file: string, spec: string): boolean {
+  if (!spec.startsWith('.') && !spec.startsWith('/')) {
+    return false;
+  }
+  const target = new URL(spec, `file:///src/${file}`).pathname;
+  return target.startsWith('/src/') && isPureWorld(target.slice('/src/'.length));
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -543,6 +629,15 @@ test('arch: forbidden patterns', () => {
 
 test('arch: import boundaries', () => {
   expect(violations(TREE).filter((v) => GROUP[v.rule] === 'boundary')).toEqual([]);
+});
+
+test('arch: pure world modules', () => {
+  // Non-vacuous: the layer's files are scanned, so an empty or renamed tree cannot pass.
+  const keys = Object.keys(SOURCES);
+  for (const file of PURE_WORLD_FILES) {
+    expect(keys, file).toContain(file);
+  }
+  expect(violations(TREE).filter((v) => GROUP[v.rule] === 'pure')).toEqual([]);
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -703,6 +798,20 @@ const RED: Record<RuleId, readonly Fixture[]> = {
     ['scene/preload.ts', "import { Texture as T } from 'pixi.js';\nconst t = T.from(u);"],
     ['scene/layout.ts', 'const t = PIXI.Texture.from(u);'],
   ],
+  'pure-world': [
+    ['explore/reduce.ts', 'document.title = s;'],
+    ['world/decode.ts', 'const r = fetch(u);'],
+    ['explore/state.ts', "localStorage.getItem('k');"],
+    ['world/types.ts', 'const w = window.innerWidth;'],
+    ['puzzles/rules/code.ts', "import { mount } from 'svelte';"],
+    ['explore/project.ts', "import V from '../ui/View.svelte';"],
+    ['explore/reconcile.ts', "import { tg } from '../telegram/webapp.ts';"],
+    ['explore/reduce.ts', 'const r = Math.random();'],
+    ['explore/reduce.ts', 'const t = Date.now();'],
+    ['story/catalog.ts', 'const d = document;'],
+    ['explore/reduce.ts', 'const o = { document };'],
+    ['world/decode.ts', "import { z } from 'zod';"],
+  ],
 };
 
 for (const rule of RULE_IDS) {
@@ -768,6 +877,16 @@ const ALLOW: ReadonlyArray<readonly [RuleId, readonly Fixture[]]> = [
       ['scene/executor.ts', "import { Sprite, Texture } from 'pixi.js';\nconst s = new Sprite(texture);\nconst w = Texture.WHITE;"],
       ['scene/loader.ts', "import { Texture } from 'pixi.js';\nconst b = await createImageBitmap(blob);\nconst t = Texture.from(b);"],
       ['scene/registry.ts', "import { Assets } from 'pixi.js';\nconst t = await Assets.load(url);"],
+    ],
+  ],
+  [
+    'pure-world',
+    [
+      ['explore/controller.ts', 'document.title = s;'],
+      ['explore/reduce.ts', "import { parseTags } from '../story/tags.ts';"],
+      ['explore/reduce.ts', "import type { View } from '../ui/view.ts';"],
+      ['world/decode.ts', 'const o = { document: 1 }; const d = w.docs;'],
+      ['explore/reconcile.ts', "import { reduce } from './reduce.ts';\nconst n = s.date + o.random();"],
     ],
   ],
 ];

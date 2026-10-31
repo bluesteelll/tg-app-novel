@@ -181,11 +181,11 @@ on any failure; the client re-runs the initData exchange once on 401.
 let mut tx = pool.begin().await?;
 let fresh = sqlx::query(
     "INSERT INTO payments (telegram_payment_charge_id, user_id, product_id, amount_xtr, payload)
-     VALUES (?, ?, ?, ?, ?) ON CONFLICT (telegram_payment_charge_id) DO NOTHING")
+     VALUES ($1, $2, $3, $4, $5) ON CONFLICT (telegram_payment_charge_id) DO NOTHING")
     .bind(&p.charge_id).bind(p.user_id).bind(&p.product_id).bind(p.amount).bind(&p.payload)
     .execute(&mut *tx).await?.rows_affected() == 1;
 if fresh {
-    sqlx::query("INSERT INTO entitlements (user_id, product_id, charge_id) VALUES (?, ?, ?)
+    sqlx::query("INSERT INTO entitlements (user_id, product_id, charge_id) VALUES ($1, $2, $3)
                  ON CONFLICT (user_id, product_id) DO NOTHING")
         .bind(p.user_id).bind(&p.product_id).bind(&p.charge_id).execute(&mut *tx).await?;
 }

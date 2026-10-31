@@ -19,7 +19,8 @@ section true to the tree:
   the speakers). Compiled at build time to **one JSON per chapter**; paid chapters never enter the public bundle.
 - **`server/`** — Rust 2024, axum 0.8: initData validation → own short-lived token; saves; entitlements; Stars
   invoices; the Telegram webhook on frankenstein types (no bot framework); paid-chapter delivery after an
-  entitlement check. SQLite (WAL) behind a repository seam for the prototype, PostgreSQL in production.
+  entitlement check. PostgreSQL 18 behind the `db/` repository seam (sqlx 0.9 `postgres`, runtime queries), in
+  development, the gates and production alike (RULINGS 12, 14).
 - **`server/dev/`** — crate `server-dev`: the dev-only binary (`/dev/launch` with dev-signed initData, simulated
   payments through the real webhook handler); never linked into the production `server`.
 - **`server/pgdev/`** — dev/test-only crate: starts the local PostgreSQL 18 cluster per port on demand
@@ -168,6 +169,9 @@ Cost ≈ turns × context: most spend is re-reading context that grows inside ON
 - **Server:** `unsafe` (`#![forbid(unsafe_code)]`); `unwrap()` on request paths (`expect("invariant: …")` only for
   true invariants); blocking calls inside async handlers; SQL built by string concatenation; secrets outside env /
   config; a grant path that does not go through the idempotent `charge_id` insert.
+  SQL written for SQLite semantics (unqualified `ON CONFLICT … SET` columns, `GLOB`, `json_valid`, a single-writer
+  assumption); `jsonb` for a body that must round-trip byte for byte; a pre-checkout decision without the payer-row
+  lock.
 
 ### Separation of duties
 - `developer` writes code and runs the gates its diff touches, but **does not issue the test verdict** — that is the

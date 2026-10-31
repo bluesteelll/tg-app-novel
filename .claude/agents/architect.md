@@ -77,7 +77,8 @@ Study the code with Glob/Grep and LSP. You have no shell: read git facts (branch
 - async races: double submit, two devices, preload vs scene exit, response after unmount
 - webhook vs client: which is authoritative, what the client polls, timeouts/backoff
 - retries + idempotency keys; duplicate delivery; offline/resume/deactivated; token expiry mid-session
-- server: no blocking in async (spawn_blocking), transaction boundaries, SQLite WAL single writer
+- server: no blocking in async (spawn_blocking), transaction boundaries, READ COMMITTED snapshot per statement,
+  row-lock order (PostgreSQL 18)
 ## Resource lifetime         resource -> owner -> created -> destroyed -> how a leak is detected
 ## Integration               modules, API changes, new files (repo paths), docs/FEATURE_MAP.md entries
 ## Implementation plan       commits in order: files, red-first test + predicted red, gates

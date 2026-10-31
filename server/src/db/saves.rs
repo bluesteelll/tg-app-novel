@@ -1,7 +1,7 @@
 //! The `saves` table: one row per (user, slot), replaced only through an optimistic `rev`.
 //!
 //! Every statement binds the token's user, so a slot of another user is never read or written. The body is opaque
-//! here: the table's CHECK (`json_valid`, length) is the backstop of the edge checks in `api/saves.rs`.
+//! here: the table's CHECKs (`IS JSON`, `octet_length`) are the backstop of the edge checks in `api/saves.rs`.
 
 use crate::db::Repo;
 use crate::ids::{SaveSlot, UserId};
@@ -108,7 +108,7 @@ impl Repo {
     pub async fn list_saves(&self, user: UserId) -> Result<Vec<SaveMeta>, sqlx::Error> {
         let rows: Vec<SaveRow> = sqlx::query_as(
             "SELECT slot, rev, chapter_id, story_version, line_id, write_id, saved_at FROM saves \
-             WHERE user_id = ? ORDER BY slot",
+             WHERE user_id = $1 ORDER BY slot",
         )
         .bind(user.0)
         .fetch_all(&self.pool)
@@ -124,7 +124,7 @@ impl Repo {
     ) -> Result<Option<(SaveMeta, String)>, sqlx::Error> {
         let row: Option<SaveBodyRow> = sqlx::query_as(
             "SELECT slot, rev, chapter_id, story_version, line_id, write_id, saved_at, body FROM saves \
-             WHERE user_id = ? AND slot = ?",
+             WHERE user_id = $1 AND slot = $2",
         )
         .bind(user.0)
         .bind(slot.as_str())
@@ -136,9 +136,10 @@ impl Repo {
 
     /// Writes `s` into `user`'s `slot` if `s.expected_rev` matches: `None` creates the slot at rev 1, `Some(n)`
     /// replaces rev `n` with rev `n + 1`. A write whose `write_id` the stored row already carries writes nothing and
-    /// is [`PutOutcome::Replayed`], whatever its `expected_rev` (the one retry contract). Each branch is ONE write statement with no explicit transaction (K19): it
-    /// takes SQLite's write lock at its start, so two concurrent writers serialize under `busy_timeout` and no
-    /// read is upgraded to a write. The split matters: one UPSERT would create rev 1 for `Some(5)` on an empty slot.
+    /// is [`PutOutcome::Replayed`], whatever its `expected_rev` (the one retry contract). Each branch is ONE write
+    /// statement with no explicit transaction (K19): the INSERT's arbiter or the UPDATE's row lock serializes two
+    /// writers; READ COMMITTED re-checks `rev = $n` on the winner's row version, so the loser gets no row and reads
+    /// the winner (`Conflict`). The split matters: one UPSERT would create rev 1 for `Some(5)` on an empty slot.
     pub async fn put_save(
         &self,
         user: UserId,
@@ -149,7 +150,7 @@ impl Repo {
             None => {
                 sqlx::query_as(
                     "INSERT INTO saves (user_id, slot, rev, chapter_id, story_version, line_id, write_id, body, \
-                     saved_at) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?) \
+                     saved_at) VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8) \
                      ON CONFLICT (user_id, slot) DO NOTHING RETURNING rev, saved_at",
                 )
                 .bind(user.0)
@@ -165,9 +166,9 @@ impl Repo {
             }
             Some(expected) => {
                 sqlx::query_as(
-                    "UPDATE saves SET rev = rev + 1, chapter_id = ?, story_version = ?, line_id = ?, \
-                     write_id = ?, body = ?, saved_at = ? \
-                     WHERE user_id = ? AND slot = ? AND rev = ? AND write_id <> ? RETURNING rev, saved_at",
+                    "UPDATE saves SET rev = rev + 1, chapter_id = $1, story_version = $2, line_id = $3, \
+                     write_id = $4, body = $5, saved_at = $6 \
+                     WHERE user_id = $7 AND slot = $8 AND rev = $9 AND write_id <> $10 RETURNING rev, saved_at",
                 )
                 .bind(s.chapter_id)
                 .bind(s.story_version)
@@ -205,7 +206,7 @@ impl Repo {
     ) -> Result<Option<SaveMeta>, sqlx::Error> {
         let row: Option<SaveRow> = sqlx::query_as(
             "SELECT slot, rev, chapter_id, story_version, line_id, write_id, saved_at FROM saves \
-             WHERE user_id = ? AND slot = ?",
+             WHERE user_id = $1 AND slot = $2",
         )
         .bind(user.0)
         .bind(slot.as_str())

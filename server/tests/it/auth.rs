@@ -15,12 +15,11 @@ use serde_json::{Value, json};
 use server::AppState;
 use server::auth::{
     AuthUser, InitData, InitDataError, TokenError, TokenKey, data_check_string, issue_token,
-    validate_init_data, verify_token,
+    secret_key, validate_init_data, verify_token,
 };
 use server::clock::FixedClock;
 use server::ids::UserId;
 use sha2::Sha256;
-use tempfile::TempDir;
 use tower::ServiceExt;
 
 use crate::common;
@@ -392,9 +391,9 @@ async fn probe_cases(st: &AppState, cases: &[(&str, Option<String>, u16, &str)])
 }
 
 /// A migrated state whose clock reads `now`.
-async fn state_at(now: i64) -> (AppState, TempDir) {
-    let (st, dir) = common::test_state().await;
-    (st.with_clock(Arc::new(FixedClock(now))), dir)
+async fn state_at(now: i64) -> (AppState, common::TestDb) {
+    let (st, db) = common::test_state().await;
+    (st.with_clock(Arc::new(FixedClock(now))), db)
 }
 
 const TOKEN_MISSING: &str = r#"{"error":"token_missing"}"#;
@@ -403,7 +402,7 @@ const TOKEN_EXPIRED: &str = r#"{"error":"token_expired"}"#;
 
 #[tokio::test]
 async fn token_missing_401() {
-    let (st, _dir) = state_at(T0).await;
+    let (st, _db) = state_at(T0).await;
     let (good, _) = issue_token(&st.keys.token, UserId(1001), T0, st.cfg.token_ttl_secs);
     let failures = probe_cases(
         &st,
@@ -436,7 +435,7 @@ async fn token_missing_401() {
 
 #[tokio::test]
 async fn token_wrong_key_401() {
-    let (st, _dir) = state_at(T0).await;
+    let (st, _db) = state_at(T0).await;
     let ttl = st.cfg.token_ttl_secs;
     let (other_key, _) = issue_token(&TokenKey::new([8; 32]), UserId(1001), T0, ttl);
     let (good, _) = issue_token(&st.keys.token, UserId(1001), T0, ttl);
@@ -470,7 +469,7 @@ async fn token_wrong_key_401() {
 /// `exp > now`: the token is good one second before `exp` and expired at `exp`.
 #[tokio::test]
 async fn token_expired_401() {
-    let (st, _dir) = state_at(T0).await;
+    let (st, _db) = state_at(T0).await;
     let ttl = st.cfg.token_ttl_secs;
     let (token, exp) = issue_token(&st.keys.token, UserId(1001), T0, ttl);
     let bearer = Some(format!("Bearer {token}"));
@@ -513,7 +512,7 @@ fn body_text(reply: &common::Reply) -> String {
 }
 
 /// A state whose clock is the vectors' `now`, so their initData is fresh.
-async fn auth_state(all: &Vectors) -> (AppState, TempDir) {
+async fn auth_state(all: &Vectors) -> (AppState, common::TestDb) {
     state_at(all.now).await
 }
 
@@ -552,7 +551,7 @@ const JSON: &str = "application/json";
 #[tokio::test]
 async fn auth_returns_token_for_valid_initdata() {
     let all = vectors();
-    let (st, _dir) = auth_state(&all).await;
+    let (st, _db) = auth_state(&all).await;
     let mut failures = Vec::new();
     let cases = [
         (
@@ -618,7 +617,7 @@ async fn auth_returns_token_for_valid_initdata() {
 #[tokio::test]
 async fn auth_ignores_body_user_id() {
     let all = vectors();
-    let (st, _dir) = auth_state(&all).await;
+    let (st, _db) = auth_state(&all).await;
     let body = json!({
         "initData": vector(&all, "valid").init_data,
         "userId": 666,
@@ -652,7 +651,7 @@ async fn auth_ignores_body_user_id() {
 #[tokio::test]
 async fn auth_initdata_errors_401() {
     let all = vectors();
-    let (st, _dir) = auth_state(&all).await;
+    let (st, _db) = auth_state(&all).await;
     let mut failures = Vec::new();
     let cases = [
         ("tampered_user", r#"{"error":"initdata_invalid"}"#),
@@ -680,11 +679,8 @@ async fn auth_initdata_errors_401() {
 async fn auth_honours_configured_ttl_and_max_age() {
     let all = vectors();
     let (ttl, max_age) = (900, 3600);
-    let dir = tempfile::Builder::new()
-        .prefix("tg-novel-it-")
-        .tempdir_in(env!("CARGO_TARGET_TMPDIR"))
-        .unwrap();
-    let mut cfg = common::test_config(&dir);
+    let db = common::TestDb::create().await;
+    let mut cfg = common::test_config(&db);
     cfg.token_ttl_secs = ttl;
     cfg.initdata_max_age_secs = max_age;
     let st = match AppState::new(cfg).await {
@@ -737,7 +733,7 @@ async fn auth_honours_configured_ttl_and_max_age() {
 #[tokio::test]
 async fn auth_malformed_body_400() {
     let all = vectors();
-    let (st, _dir) = auth_state(&all).await;
+    let (st, _db) = auth_state(&all).await;
     let valid = auth_body(&vector(&all, "valid").init_data);
     let bad_request = r#"{"error":"bad_request"}"#;
     let mut failures = Vec::new();
@@ -769,7 +765,7 @@ async fn auth_malformed_body_400() {
 #[tokio::test]
 async fn auth_initdata_over_4k_400() {
     let all = vectors();
-    let (st, _dir) = auth_state(&all).await;
+    let (st, _db) = auth_state(&all).await;
     let valid = &vector(&all, "valid").init_data;
     // An unsigned padding field: whatever its length, the validator answers initdata_invalid.
     let padded = |len: usize| {
@@ -798,7 +794,7 @@ async fn auth_initdata_over_4k_400() {
 #[tokio::test]
 async fn auth_upserts_user_once() {
     let all = vectors();
-    let (st, _dir) = auth_state(&all).await;
+    let (st, _db) = auth_state(&all).await;
     let body = auth_body(&vector(&all, "valid").init_data);
     let later = st.clone().with_clock(Arc::new(FixedClock(all.now + 100)));
     let mut failures = Vec::new();
@@ -828,6 +824,48 @@ async fn auth_upserts_user_once() {
     report(&failures);
 }
 
+/// initData signed here with the validator's own data-check-string and key, for a user whose name and language
+/// carry U+0000: PostgreSQL `text` cannot store it, so the login succeeds (200) and the row holds U+FFFD instead.
+#[tokio::test]
+async fn auth_nul_in_first_name_stored_replaced() {
+    let now = 1_800_000_000;
+    let (st, _db) = state_at(now).await;
+    let user =
+        json!({ "id": 3003, "first_name": "A\u{0}B", "language_code": "r\u{0}u" }).to_string();
+    let mut pairs = vec![
+        ("auth_date".to_owned(), now.to_string()),
+        ("user".to_owned(), user),
+    ];
+    let mut mac = Hmac::<Sha256>::new_from_slice(&secret_key(common::TEST_BOT_TOKEN)).unwrap();
+    mac.update(data_check_string(&pairs).as_bytes());
+    pairs.push(("hash".to_owned(), hex::encode(mac.finalize().into_bytes())));
+    let init_data = form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(&pairs)
+        .finish();
+
+    let reply = post_auth(&st, JSON, auth_body(&init_data)).await;
+    let mut failures = Vec::new();
+    if reply.status != StatusCode::OK {
+        failures.push(format!(
+            "expected 200, got {} {}",
+            reply.status.as_u16(),
+            body_text(&reply)
+        ));
+    }
+    let rows = user_rows(&st).await;
+    let want = vec![(
+        3003,
+        "A\u{FFFD}B".to_owned(),
+        Some("r\u{FFFD}u".to_owned()),
+        now,
+        now,
+    )];
+    if rows != want {
+        failures.push(format!("users rows: expected {want:?}, got {rows:?}"));
+    }
+    report(&failures);
+}
+
 /// A JSON body of exactly `len` bytes whose initData is long enough to be refused by the 4 KB rule.
 fn body_of_len(len: usize) -> String {
     let empty = auth_body("");
@@ -840,7 +878,7 @@ fn body_of_len(len: usize) -> String {
 #[tokio::test]
 async fn auth_body_over_16k_413() {
     let all = vectors();
-    let (st, _dir) = auth_state(&all).await;
+    let (st, _db) = auth_state(&all).await;
     let mut failures = Vec::new();
     for (case, len, status, body) in [
         (
