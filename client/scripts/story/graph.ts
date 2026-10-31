@@ -84,6 +84,8 @@ function assetOf(c: StagingCommand): AssetId | null {
       return `sfx/${c.sfx}` as AssetId;
     case 'hide':
     case 'wait':
+    case 'puzzle':
+    case 'explore':
       return null;
     default: {
       const unhandled: never = c;

@@ -4,6 +4,7 @@ import catalogText from '../../../assets/catalog.json?raw';
 import castText from '../../../story/cast.json?raw';
 import { assetIndex, decodeAssetCatalog, decodeCast } from './catalog.ts';
 import type { AssetCatalog, CatalogIssue } from './catalog.ts';
+import { EMPTY_SNAPSHOT } from './staging.ts';
 import type { AssetIndex, ParsedTags } from './staging.ts';
 import { LINE_ID_RE, SPEAKER_RE, parseTags, splitSpeaker } from './tags.ts';
 
@@ -355,6 +356,92 @@ test('tags: unknown asset is an error value', () => {
       expect(parseTags([tag], index).errors, tag).toEqual([]);
     }
   }
+});
+
+test('tags: puzzle and explore parse', () => {
+  const forms: ReadonlyArray<readonly [string, unknown]> = [
+    ['puzzle: cabinet then=archive_after', { kind: 'puzzle', puzzle: 'cabinet', then: 'archive_after' }],
+    ['puzzle:cabinet then=archive_after', { kind: 'puzzle', puzzle: 'cabinet', then: 'archive_after' }],
+    ['puzzle : drawer_2 then=after2', { kind: 'puzzle', puzzle: 'drawer_2', then: 'after2' }],
+    ['explore: manor', { kind: 'explore', section: 'manor' }],
+    ['explore:manor', { kind: 'explore', section: 'manor' }],
+    ['  explore:\tmanor  ', { kind: 'explore', section: 'manor' }],
+  ];
+  for (const [tag, command] of forms) {
+    expect(parse(tag), tag).toEqual({ lineId: null, commands: [command], errors: [] });
+  }
+  // A staging tag line above the yield line joins the yield step's batch (§3.5).
+  expect(parse('sfx: door', 'puzzle: cabinet then=after')).toEqual({
+    lineId: null,
+    commands: [
+      { kind: 'sfx', sfx: 'door', vol: 100 },
+      { kind: 'puzzle', puzzle: 'cabinet', then: 'after' },
+    ],
+    errors: [],
+  });
+});
+
+test('tags: puzzle without then is missing-arg', () => {
+  for (const tag of ['puzzle: cabinet', 'puzzle: then=after', 'puzzle:', 'puzzle', 'explore:']) {
+    const r = parse(tag);
+    expect(reasons(r), tag).toEqual(['missing-arg']);
+    expect(r.commands, tag).toEqual([]);
+  }
+});
+
+test('tags: yield ids and options are checked', () => {
+  const cases: ReadonlyArray<readonly [string, string]> = [
+    // §2's grammar admits these tokens; the id and knot-name shape [a-z][a-z0-9_]* does not.
+    ['puzzle: 1cabinet then=after', 'bad-arg'],
+    ['puzzle: cabinet then=1after', 'bad-arg'],
+    ['puzzle: cabinet then=_after', 'bad-arg'],
+    ['puzzle: a b then=c', 'bad-arg'],
+    ['puzzle: cabinet then=a then=b', 'bad-arg'],
+    ['puzzle: cabinet then=after t=cut', 'bad-arg'],
+    ['explore: manor hall', 'bad-arg'],
+    ['explore: 9manor', 'bad-arg'],
+    ['explore: manor then=after', 'bad-arg'],
+    ['puzzle: Cabinet then=after', 'syntax'],
+    ['puzzle: cabinet then=a.b', 'syntax'],
+    ['puzzle: cabinet then = after', 'syntax'],
+    ['explore: Manor', 'syntax'],
+  ];
+  for (const [tag, reason] of cases) {
+    const r = parse(tag);
+    expect(reasons(r), tag).toEqual([reason]);
+    expect(r.commands, tag).toEqual([]);
+  }
+  // The reserved `_hints` suffix is the world lint's (`world/id-reserved`), not the parser's.
+  expect(parse('puzzle: cabinet_hints then=after').errors).toEqual([]);
+});
+
+test('tags: two yields in one batch conflict', () => {
+  const conflicting: ReadonlyArray<readonly [string, string]> = [
+    ['puzzle: cabinet then=after', 'explore: manor'],
+    ['explore: manor', 'puzzle: cabinet then=after'],
+    ['puzzle: cabinet then=after', 'puzzle: drawer then=after'],
+    ['explore: manor', 'explore: garden'],
+  ];
+  for (const [first, second] of conflicting) {
+    const r = parse(first, second);
+    expect(r.errors, `${first} + ${second}`).toEqual([{ tag: second, reason: 'conflict', detail: expect.any(String) }]);
+    expect(r.commands, `${first} + ${second}`).toHaveLength(2);
+  }
+  const allowed: ReadonlyArray<readonly string[]> = [
+    ['scene: archive', 'show: ally worried', 'bgm: tension', 'sfx: door', 'wait: 500', 'puzzle: cabinet then=after'],
+    ['bg: cafe', 'cg: letter', 'explore: manor'],
+    ['hide: all', 'explore: manor'],
+  ];
+  for (const tags of allowed) {
+    expect(parse(...tags).errors, tags.join(' + ')).toEqual([]);
+  }
+});
+
+test('staging: empty snapshot is frozen and holds no props', () => {
+  // The value first: Object.isFrozen(undefined) is true, so the freeze checks alone would pass with no `props`.
+  expect(EMPTY_SNAPSHOT.props).toEqual([]);
+  expect(Object.isFrozen(EMPTY_SNAPSHOT)).toBe(true);
+  expect(Object.isFrozen(EMPTY_SNAPSHOT.props)).toBe(true);
 });
 
 test('catalog: demo catalog and cast decode', () => {

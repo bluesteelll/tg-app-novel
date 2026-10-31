@@ -342,6 +342,28 @@ test('lint: yield/shape red on fixture', () => {
   expectAt(f, 'ink/forbidden', [4, 6, 11, 14]);
 });
 
+test('lint: yield block raises nothing', () => {
+  // Staging tag lines above a yield line join its batch; a yield block may sit under a choice, indented.
+  const f = lintSources(
+    story([
+      '# scene: archive',
+      'The drawer has four brass dials. #id:ch1.start.a001',
+      '# sfx: door',
+      '# puzzle: cabinet then=after',
+      '-> DONE',
+      '=== after ===',
+      'ally: It opened. #id:ch1.after.a001',
+      '* [Try again #id:ch1.after.c001]',
+      '    # puzzle: cabinet then=after',
+      '    -> DONE',
+      '* [Look around #id:ch1.after.c002]',
+      '    # explore: manor',
+      '    -> DONE',
+    ]),
+  );
+  expect(f).toEqual([]);
+});
+
 test('lint: ink/name red on fixture', () => {
   const main = entry('-> start', '=== start ===', '-> Big', '=== Big ===', '= Intro', '-> END', '=== café ===', '-> END');
   const f = lintSources(files({ 'ch1/main.ink': [...main, '=== 1k ===', '-> END', '=== ok_2 ===', '= fine_1', '-> END'] }));
