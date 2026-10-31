@@ -440,6 +440,26 @@ describe('scan assets', () => {
     expect(clean.lines).toContainEqual(expect.stringMatching(/ sections compiler\(2\) dev-canary\(4\) paid-lines\(1\) paid-texts\(1\) paid-asset-files\(3\)$/));
   });
 
+  test('scan: an old-hash copy of a paid-only asset fails', () => {
+    setup();
+    // A public copy of a paid-only asset left from an older build: the asset tool's name shape with another hash, bytes
+    // that match no paid file (L5 review M1).
+    const other = Uint8Array.from([9, 9, 9]);
+    const image = scanDist('dist-a', { 'assets/bg-archive-0123abcd.avif': other });
+    expect(image.code, image.lines.join('\n')).toBe(1);
+    expect(image.lines).toContainEqual('scan: paid-asset bg/archive in assets/bg-archive-0123abcd.avif (via prefix)');
+    const audio = scanDist('dist-b', { 'assets/bgm-mystery-89abcdef.m4a': other });
+    expect(audio.code, audio.lines.join('\n')).toBe(1);
+    expect(audio.lines).toContainEqual('scan: paid-asset bgm/mystery in assets/bgm-mystery-89abcdef.m4a (via prefix)');
+    // The current paid name is a name finding, not also a prefix one.
+    const current = scanDist('dist-c', { [`assets/${AVIF_NAME}`]: other });
+    expect(current.lines).toContainEqual(`scan: paid-asset ${AVIF_NAME} in assets/${AVIF_NAME} (via name)`);
+    expect(current.lines.filter((l) => l.includes('(via prefix)'))).toEqual([]);
+    // Controls: a Vite-hashed file of the same base and a public asset's file are no copy.
+    const clean = scanDist('dist-d', { 'assets/bg-archive-AbC1_2xY.svg': other, 'assets/bg-cafe-0a1b2c3d.avif': other });
+    expect(clean.code, clean.lines.join('\n')).toBe(0);
+  });
+
   test('scan: paid-only asset with empty files section fails', () => {
     setup({ 'server/content/build/fingerprints.assets.json': JSON.stringify({ files: [] }) });
     expect(reasons()).toEqual(['files-empty']);

@@ -54,8 +54,12 @@ export type Finding =
   | { kind: 'fingerprint'; file: string; section: string; needle: string; via: 'plain' | 'data-uri' }
   | { kind: 'empty-dist'; reason: string }
   | { kind: 'fingerprints'; reason: FingerprintReason; detail: string }
-  /** A paid asset file in dist: under its own name, as the same bytes under another name, or inlined as a data: URI. */
-  | { kind: 'paid-asset'; file: string; name: string; via: 'name' | 'hash' | 'data-uri' };
+  /**
+   * A paid asset file in dist: under its own name, as the same bytes under another name, inlined as a data: URI, or
+   * (`prefix`) under its asset's file-name shape with another hash, an older build's copy; `name` is the paid file's
+   * name, except for `prefix`, where it is the asset id.
+   */
+  | { kind: 'paid-asset'; file: string; name: string; via: 'name' | 'hash' | 'data-uri' | 'prefix' };
 
 /** Sections every build is scanned for, whatever the story holds. */
 export const FIXED_SECTIONS: readonly Section[] = [
@@ -154,8 +158,10 @@ function sha256(bytes: Uint8Array): string {
 
 /**
  * Every dist file that is a paid asset file: by its basename, by the sha256 of its bytes (the same file renamed), or
- * by the sha256 of a base64 data: URI payload inside it (inlined, up to the data-URI depth). A file can match more
- * than one way; each way is a finding.
+ * by the sha256 of a base64 data: URI payload inside it (inlined, up to the data-URI depth); and a basename of the
+ * asset tool's shape `<asset id, '/' as '-'>-<hash8>.<ext>` (manifest.ts `assetFileName`) for a paid asset under
+ * another hash, an older build's public copy (L5 review M1). Ids hold no '-', so the shape names one asset. A file can
+ * match more than one way; each way is a finding.
  */
 export function scanPaidFiles(files: readonly ScanFile[], paid: readonly AssetFingerprint[]): Finding[] {
   if (paid.length === 0) {
@@ -163,11 +169,17 @@ export function scanPaidFiles(files: readonly ScanFile[], paid: readonly AssetFi
   }
   const byName = new Map(paid.map((f) => [f.name, f.name]));
   const byHash = new Map(paid.map((f) => [f.sha256, f.name]));
+  const byPrefix = new Map<string, string>(paid.map((f) => [f.asset.replaceAll('/', '-'), f.asset]));
   const findings: Finding[] = [];
   for (const file of files) {
-    const named = byName.get(file.path.slice(file.path.lastIndexOf('/') + 1));
+    const base = file.path.slice(file.path.lastIndexOf('/') + 1);
+    const named = byName.get(base);
+    const prefix = named === undefined ? /^(.+)-[0-9a-f]{8}\.(?:avif|webp|m4a|wav)$/.exec(base)?.[1] : undefined;
+    const copied = prefix === undefined ? undefined : byPrefix.get(prefix);
     if (named !== undefined) {
       findings.push({ kind: 'paid-asset', file: file.path, name: named, via: 'name' });
+    } else if (copied !== undefined) {
+      findings.push({ kind: 'paid-asset', file: file.path, name: copied, via: 'prefix' });
     }
     const hashed = byHash.get(sha256(file.bytes));
     if (hashed !== undefined) {
