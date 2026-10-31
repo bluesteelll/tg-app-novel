@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use ts_rs::TS;
 
+use crate::db::orders::OrderStatus;
 use crate::error::{ApiErrorBody, ErrorCode};
 use crate::ids::{SaveSlot, StoryId};
 
@@ -215,6 +216,36 @@ pub struct HintView {
     pub text: Option<String>,
 }
 
+/// `POST /api/invoices` request. Unknown fields (a client-sent price, amount or currency) are ignored, never trusted.
+#[derive(Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateInvoiceRequest {
+    /// The catalog product to buy, e.g. `chapter:ch2`.
+    pub product_id: String,
+}
+
+/// `POST /api/invoices` response.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateInvoiceResponse {
+    /// The order the invoice pays for: `GET /api/orders/{orderId}` reports its status after `openInvoice`.
+    pub order_id: String,
+    /// The invoice link for `Telegram.WebApp.openInvoice`.
+    pub invoice_url: String,
+}
+
+/// `GET /api/orders/{orderId}` response: the order's row, never client state.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderResponse {
+    /// The order id.
+    pub order_id: String,
+    /// The product the order is for.
+    pub product_id: String,
+    /// The order's status.
+    pub status: OrderStatus,
+}
+
 /// The first line of the generated file: what it is and how to rewrite it.
 const BINDINGS_HEADER: &str = "// Built from server/src/api/dto.rs and error.rs by ts-rs; do not edit. Regenerate: \
                                cargo test -p server --test it bindings::write_bindings -- --ignored --exact";
@@ -244,6 +275,10 @@ pub fn ts_bindings() -> String {
         export::<AttemptResponse>(&cfg),
         export::<HintView>(&cfg),
         export::<PuzzleStatus>(&cfg),
+        export::<OrderStatus>(&cfg),
+        export::<CreateInvoiceRequest>(&cfg),
+        export::<CreateInvoiceResponse>(&cfg),
+        export::<OrderResponse>(&cfg),
     ];
     format!("{BINDINGS_HEADER}\n\n{}", decls.join("\n"))
 }

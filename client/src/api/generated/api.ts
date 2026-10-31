@@ -294,3 +294,47 @@ solved: boolean,
  * Every tier of the puzzle's hint ladder, tier 1 first; empty for a puzzle without hints.
  */
 hints: Array<HintView>, };
+
+/**
+ * An order's status: the `orders.status` values (`orders_status_known`), and their wire form in `OrderResponse`.
+ */
+export type OrderStatus = "created" | "checkout" | "paid" | "refunded";
+
+/**
+ * `POST /api/invoices` request. Unknown fields (a client-sent price, amount or currency) are ignored, never trusted.
+ */
+export type CreateInvoiceRequest = { 
+/**
+ * The catalog product to buy, e.g. `chapter:ch2`.
+ */
+productId: string, };
+
+/**
+ * `POST /api/invoices` response.
+ */
+export type CreateInvoiceResponse = { 
+/**
+ * The order the invoice pays for: `GET /api/orders/{orderId}` reports its status after `openInvoice`.
+ */
+orderId: string, 
+/**
+ * The invoice link for `Telegram.WebApp.openInvoice`.
+ */
+invoiceUrl: string, };
+
+/**
+ * `GET /api/orders/{orderId}` response: the order's row, never client state.
+ */
+export type OrderResponse = { 
+/**
+ * The order id.
+ */
+orderId: string, 
+/**
+ * The product the order is for.
+ */
+productId: string, 
+/**
+ * The order's status.
+ */
+status: OrderStatus, };

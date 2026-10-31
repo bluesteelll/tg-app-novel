@@ -13,6 +13,7 @@ pub mod db;
 pub mod error;
 pub mod ids;
 pub mod puzzles;
+pub mod telegram;
 
 use std::sync::Arc;
 
@@ -24,6 +25,7 @@ use crate::clock::{Clock, SystemClock};
 use crate::config::Config;
 use crate::content::{ContentError, ContentStore};
 use crate::db::Repo;
+use crate::telegram::gateway::{BotGateway, FrankensteinGateway, GatewayError};
 
 /// Everything a handler can reach. Built only by [`AppState::new`]: `#[non_exhaustive]` makes a struct literal (or a
 /// functional update) outside this crate a compile error, so every caller gets the production wiring.
@@ -43,16 +45,21 @@ pub struct AppState {
     pub content: Arc<ContentStore>,
     /// The products for sale: every paid chapter of `content`'s index, priced by `server/catalog.json`.
     pub catalog: Arc<Catalog>,
+    /// The Bot API: frankenstein's client on `cfg`'s token and environment, or a fake set by
+    /// [`AppState::with_gateway`] (tests, the dev app).
+    pub gateway: Arc<dyn BotGateway>,
 }
 
 impl AppState {
-    /// Loads the content from `CONTENT_DIR`, builds the catalog from it and the compiled-in `server/catalog.json`,
-    /// then connects the database pool to `DATABASE_URL` and applies the migrations. Content and catalog come first:
-    /// a refusal ([`StartupError::Content`]) opens no pool. Creates no database: a missing or unreachable one is a
+    /// Loads the content from `CONTENT_DIR`, builds the catalog from it and the compiled-in `server/catalog.json`, and
+    /// the Bot API gateway from `BOT_TOKEN` and `TELEGRAM_ENV`, then connects the database pool to `DATABASE_URL` and
+    /// applies the migrations. Content, catalog and gateway come first: a refusal ([`StartupError::Content`],
+    /// [`StartupError::Gateway`]) opens no pool. Creates no database: a missing or unreachable one is a
     /// [`StartupError::Db`].
     pub async fn new(cfg: Config) -> Result<AppState, StartupError> {
         let content = ContentStore::load(&cfg.content_dir).await?;
         let catalog = Catalog::build(CATALOG_JSON, &content)?;
+        let gateway = FrankensteinGateway::new(&cfg.bot_token, cfg.telegram_env)?;
         let repo = Repo::open(&cfg.database_url).await?;
         if let Err(e) = repo.migrate().await {
             // Close at once: the pool's connections end now, not whenever the last clone of the pool is dropped.
@@ -66,6 +73,7 @@ impl AppState {
             clock: Arc::new(SystemClock),
             content: Arc::new(content),
             catalog: Arc::new(catalog),
+            gateway: Arc::new(gateway),
         })
     }
 
@@ -77,6 +85,11 @@ impl AppState {
     /// The same state selling from `catalog` (tests prove a route reads the catalog, not a constant).
     pub fn with_catalog(self, catalog: Arc<Catalog>) -> AppState {
         AppState { catalog, ..self }
+    }
+
+    /// The same state calling the Bot API through `gateway` (tests and the dev app install a fake).
+    pub fn with_gateway(self, gateway: Arc<dyn BotGateway>) -> AppState {
+        AppState { gateway, ..self }
     }
 }
 
@@ -92,6 +105,9 @@ pub enum StartupError {
     /// The content directory is missing, incomplete or invalid, or `server/catalog.json` does not fit it.
     #[error("content: {0}")]
     Content(#[from] ContentError),
+    /// The Bot API client could not be built.
+    #[error("bot api client: {0}")]
+    Gateway(#[from] GatewayError),
 }
 
 /// The production routes. Dev-only routes live in `server-dev` and are never routable here.
