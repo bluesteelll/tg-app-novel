@@ -952,19 +952,24 @@ The lanes are cut in PP "THE LANE CUT" (dependency order, locks, commits, red-fi
 | **N2 story-tide** (new) | narrative | N1, LS1, L5 | 10 paths | 2 | story B (ch3 free, ch4 paid), cast, titles, endings; each commit carries the cast, names and titles its chapters and story need |
 | Re-cut | — | — | — | — | L3c (C4 tags carries), L5 (covers, story B assets, rows; revision 3: the `tags.test.ts` catalog-key pins, 14 files), L6b (story index, prices), L6c / L9 / LW3 / L13 (gates), L7 (gate LS1), L10 (saves per story), L14a (Home), L14b (picker, the end), L15 (wiring, `stories.spec.ts`), D1, N1, D2 |
 
-**Running and merged lanes:**
-- **LDB1** (running): no scope change mid-flight. After it merges, LS2 rewrites the `saves` table of the `0001` it
+**Running and merged lanes** (as of `66c92c4`, this design's merge; changed by RULINGS 22, 23: this list was written
+while LDB1 ran; LDB1 and LDB2 had merged before the design landed, and the merge released L3c and L6b):
+- **LDB1** (merged `fee9da7`): no scope change mid-flight. LS2 rewrites the `saves` table of the `0001` it
   wrote (collision lock `0001`: L2 → LDB1 → LS2); its seen-working path `PUT /api/saves/auto` becomes
   `/api/saves/manor/auto` in the docs (D2).
+- **LDB2** (merged `a7e4a04`): it ran early in an idle server slot (SQ4), so it no longer follows L9.
 - **LW2** (merged `38bc717`): no follow-up from stories (worlds stay per chapter, Y17); its queued errata (RULINGS 21)
   are applied after this design merges.
-- **L3c** (paused at `5d12aa3`, C1 + C2 committed): C1 (`fix.ts`) and C2 (`locales.ts`) survive verbatim; C3 and C5
+- **L3c** (paused at `5d12aa3`, C1 + C2 committed; resumed after the merge, trunk-synced `f1a46ea`, re-cut v3 with C1
+  `87ee7cf` + C2 `5d12aa3` kept): C1 (`fix.ts`) and C2 (`locales.ts`) survive verbatim; C3 and C5
   as cut; C4 tags each carry with the knot its run ended in, so LS1 can drop story-ending runs from the next chapter's
   carry. Its RULINGS 19 seen-working line stays.
+- **L6b** (running since the merge, server slot, base `d9ca9f1`): the first server lane of the chain.
 
-**Order** (RULINGS 8 rolling, RULINGS 18 three slots): server LDB1 → L6b → LS2 → L6c → L8a → L8b → LS3 → L9 →
-LDB2; client (two slots) L3c → L5 → {L11, LS1 (after L6b), L12} → {L7, LW3} → L14a, D1 → N1 → N2, and L10 (after
-L8b) → L13, L14b → LP2 ∥ LX, LS4 → L15 → D2. Critical path: LDB1 → L6b → **LS2** → L6c → L8a → L8b → L10 → L14b →
+**Order** (RULINGS 8 rolling, RULINGS 18 three slots; as of `66c92c4`, changed by RULINGS 22, 23: LDB1 and LDB2
+merged, so the server chain starts at L6b): server L6b → LS2 → L6c → L8a → L8b → LS3 → L9; client (two slots)
+L3c → L5 → {L11, LS1 (after L6b), L12} → {L7, LW3} → L14a, D1 → N1 → N2, and L10 (after
+L8b) → L13, L14b → LP2 ∥ LX, LS4 → L15 → D2. Critical path: L6b → **LS2** → L6c → L8a → L8b → L10 → L14b →
 LP2 → L15 → D2 (+1 lane). The PP lane entries hold the locks, commits, red-firsts, gates and seen-working.
 
 **Collision locks added** (PP "Collision locks"): `0001` L2 → LDB1 → LS2; `0003` LS3; the serialized server files
@@ -1072,7 +1077,7 @@ Totals: 2 stories, 4 chapters (2 free, 2 paid), 4 endings (`truth`, `ashes`, `dr
 | SQ2 | LS1 reopens frozen files: `lint.ts` (one `LINT_CODES` line), `dsl-doc.test.ts` (the count), STAGING-DSL §4/§8/§9/§11 (RULINGS 13 PE3); revision 2 (W1): also `tags.test.ts` (the cast assertion of `catalog: demo catalog and cast decode`) and `lint.test.ts` (the clean control of `lint: catalog/assets red on fixture (cast char missing)`), one hunk each in LS1 commit 8, which brings the LS1 lock to 17 files | Approve for LS1 only, then frozen again; the DSL version line stays v2 (Y18). The two test hunks change inputs only (an inline cast), no expected value. Revision 3: decided together with SQ9 (L5's `tags.test.ts` hunk) |
 | SQ3 | LS2 rewrites `0001` after LDB1; a local `tgn_local` that applied the old file must be reset | Approve the rule "rewrite until the first deployment, append-only after" (Y7); LS2 quotes the sqlx refusal and the `pgdev reset` remedy; D2's `local-dev` runbook records it |
 | SQ4 | LS3 runs before L9 (PP's server order L8b → L9 changes), and LDB2 (RULINGS 17) at the end of the server chain | Approve: LS3 then L9 keeps LS4 off the critical path; LDB2 has no dependant, so it takes the server slot after L9 unless the slot idles earlier |
-| SQ5 | RULINGS 21's errata cite PP and PZ by line | PZ: every PZ edit of this revision before line 1878 is an in-place single-line edit, so PZ:652–1877 are unchanged. PP lines move: re-locate the PP errata by their quoted text (the LW2 entry offset is in the design log) |
+| SQ5 | RULINGS 21's errata cite PP and PZ by line | PZ: every PZ edit of this revision before line 1878 is an in-place single-line edit, so PZ:652–1877 are unchanged (as of `66c92c4`; PUZZLES-PLAN revision 9 applied the errata and moved them). PP lines move: re-locate the PP errata by their quoted text (the LW2 entry offset is in the design log) |
 | SQ6 | L3c's C4 changes shape (`carries` tagged with the ended knot) | Approve as a C4 detail (one field, one test); C1 and C2 stand |
 | SQ7 | verify: sqlx 0.9 binds `Vec<Option<String>>` as a nullable `text[]` for `UNNEST` | LS3 commit 2's red proves it; if it does not, the insert becomes ≤ 32 statements in one transaction (≤ 32 round trips; the batch max drops to 8 on a remote DB) |
 | SQ8 | PP's lane rule text says "at most 2 lanes"; RULINGS 18 made it 3 | Updated in PP in this revision |
@@ -1130,6 +1135,7 @@ Totals: 2 stories, 4 chapters (2 free, 2 paid), 4 endings (`truth`, `ashes`, `dr
 | 2 | 2026-10-31 | `D:/tmp/novel-orch/design/stories/triage_r2.md` (critique `design/stories/critique_r2.md`) | The 3 confirmed items W1–W3 resolved, with PROTOTYPE-PLAN revision 13; PUZZLES-PLAN unchanged. Optional O1–O3, the critique's open questions and the triage's side observation (the catalog-key pins of `tags.test.ts`) noted, not folded in. Pre-revision copies: `design/stories/STORIES-PLAN.r2.before.md`, `PROTOTYPE-PLAN.r2.before.md`, `PUZZLES-PLAN.r2.before.md`. Per-item detail with the removed and added text: `D:/tmp/novel-orch/design/stories/revision_r2.md` |
 | 3 | 2026-10-31 | `D:/tmp/novel-orch/design/stories/triage_r3.md` (critique `design/stories/critique_r3.md`) | The 2 confirmed items W1 and W2 resolved, with PROTOTYPE-PLAN revision 14; PUZZLES-PLAN unchanged. Optional O1–O3 and the critique's open question 1 noted, not folded in. Pre-revision copies: `design/stories/STORIES-PLAN.r3.before.md`, `PROTOTYPE-PLAN.r3.before.md`, `PUZZLES-PLAN.r3.before.md`. Per-item detail with the removed and added text: `D:/tmp/novel-orch/design/stories/revision_r3.md` |
 | 4 | 2026-10-31 | `D:/tmp/novel-orch/design/stories/triage_r4.md` (critique `design/stories/critique_r4.md`) | The 1 confirmed item W1 resolved, with PROTOTYPE-PLAN revision 15; PUZZLES-PLAN unchanged. Optional O1–O4 and the critique's open question 1 noted, not folded in. Pre-revision copies: `design/stories/STORIES-PLAN.r4.before.md`, `PROTOTYPE-PLAN.r4.before.md`, `PUZZLES-PLAN.r4.before.md`. Per-item detail with the removed and added text: `D:/tmp/novel-orch/design/stories/revision_r4.md` |
+| 5 | 2026-10-31 | RULINGS 22, 23 (as merged: LDB1 `fee9da7`, LDB2 `a7e4a04`, this design `66c92c4`) | Docs lane `docs-errata`, group C (not a triage round): "Implementation plan" — "Running and merged lanes" marked as of `66c92c4` (LDB1 and LDB2 merged, L3c resumed on `f1a46ea`, L6b running) and "Order" without LDB1 and LDB2, the critical path from L6b; with PROTOTYPE-PLAN revision 18. Review round 1: SQ5's "PZ:652–1877 are unchanged" marked as of `66c92c4` (PUZZLES-PLAN revision 9 moved them). Ledger: `D:/tmp/novel-orch/docs-errata/ledger.md` |
 
 **Revision 1 (2026-10-31)** — what changed, by triage item:
 - **W1** (LS1 moved merged test pins it did not declare; commit 6 left the real-tree `story` gate red): PP "LS1" —
