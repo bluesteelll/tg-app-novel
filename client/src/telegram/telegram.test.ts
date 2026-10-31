@@ -1,8 +1,17 @@
 // L7: the Telegram facade, the performance class, the inset variables, the dev mock and its plugin, and the fake
 // Stars sheet, over fakes: the unit project runs in node, which has no WebView. The real telegram-web-app.js runs
 // only in the e2e (e2e/boot.spec.ts), against the pinned fixture.
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 
+import { bootstrapScript, tgDevMock } from '../../vite-plugins/tg-dev-mock.ts';
+import {
+  createMockTransport,
+  installMockTransport,
+  withLaunchVersion,
+  type BootstrapWindow,
+  type KeyValueStore,
+  type MockDeps,
+} from './dev/mock-transport.ts';
 import type { Lifecycle } from './index.ts';
 import { perfClassFromUa } from './perf.ts';
 import { applyInsetVars } from './viewport.ts';
@@ -629,4 +638,338 @@ test('viewport: inset vars sum safe and content areas', () => {
     ['--app-inset-left', sum('left')],
     ['--app-inset-right', sum('right')],
   ]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Dev mock transport, bootstrap and plugin (C4)
+
+const THEME = { bg_color: '#17212b', text_color: '#f5f5f5' };
+const ZERO = { top: 0, bottom: 0, left: 0, right: 0 };
+
+function memoryStore(): KeyValueStore & { items: Record<string, string> } {
+  const store = {
+    items: {} as Record<string, string>,
+    load: (): Record<string, string> => ({ ...store.items }),
+    save: (items: Record<string, string>): void => {
+      store.items = { ...items };
+    },
+  };
+  return store;
+}
+
+/** A transport over recording fakes; `defer` is synchronous unless a test passes its own. */
+function harness(over: Partial<MockDeps> = {}) {
+  const received: Array<[string, unknown]> = [];
+  const versions: string[] = [];
+  const cloud = memoryStore();
+  const device = memoryStore();
+  const transport = createMockTransport({
+    receive: (type, data) => {
+      received.push([type, data]);
+    },
+    defer: (fn) => fn(),
+    cloud,
+    device,
+    innerHeight: () => 812,
+    themeParams: () => THEME,
+    setVersion: (v) => {
+      versions.push(v);
+    },
+    ...over,
+  });
+  // TWA posts JSON.stringify(eventData), with '' for an event without data.
+  const post = (type: string, data: unknown = ''): void => transport.postEvent(type, JSON.stringify(data));
+  return { transport, controls: transport.controls, post, received, versions, cloud, device };
+}
+
+type BootWindow = BootstrapWindow & { __TG_DEV_MOCK__?: boolean; replaced: string[] };
+
+function bootWindow(hash: string, stored: string | null): BootWindow {
+  const replaced: string[] = [];
+  return {
+    replaced,
+    location: {
+      hash,
+      replace: (url) => {
+        replaced.push(url);
+      },
+    },
+    sessionStorage: {
+      getItem: (key) => {
+        if (stored === 'throws') {
+          throw new Error('SecurityError');
+        }
+        return key === '__telegram__initParams' ? stored : null;
+      },
+    },
+  };
+}
+
+/** The plugin's text, run as the browser runs an inline classic script: with only `window` in scope. */
+function runInjected(text: string, win: object): void {
+  new Function('window', text)(win);
+}
+
+test('mock: prepared message sent event', () => {
+  const m = harness();
+  m.post('web_app_send_prepared_message', { id: 'm1' });
+  expect(m.received).toEqual([['prepared_message_sent', {}]]);
+});
+
+test('mock: share outcome failure answers prepared_message_failed', () => {
+  const m = harness();
+  m.controls.setShareOutcome('USER_DECLINED');
+  m.post('web_app_send_prepared_message', { id: 'm1' });
+  m.controls.setShareOutcome('MESSAGE_EXPIRED');
+  m.post('web_app_send_prepared_message', { id: 'm2' });
+  m.controls.setShareOutcome('sent');
+  m.post('web_app_send_prepared_message', { id: 'm3' });
+  expect(m.received).toEqual([
+    ['prepared_message_failed', { error: 'USER_DECLINED' }],
+    ['prepared_message_failed', { error: 'MESSAGE_EXPIRED' }],
+    ['prepared_message_sent', {}],
+  ]);
+});
+
+test('mock: answers the TWA load requests', () => {
+  const deferred: Array<() => void> = [];
+  const m = harness({ defer: (fn) => void deferred.push(fn) });
+  for (const type of [
+    'web_app_request_theme',
+    'web_app_request_viewport',
+    'web_app_request_safe_area',
+    'web_app_request_content_safe_area',
+  ]) {
+    m.post(type);
+  }
+  // A native client answers asynchronously, never inside postEvent.
+  expect(m.received).toEqual([]);
+  for (const fn of deferred.splice(0)) {
+    fn();
+  }
+  const viewport = ['viewport_changed', { height: 812, is_expanded: true, is_state_stable: true }];
+  expect(m.received).toEqual([
+    ['theme_changed', { theme_params: THEME }],
+    viewport,
+    ['safe_area_changed', ZERO],
+    ['content_safe_area_changed', ZERO],
+  ]);
+  m.post('web_app_expand');
+  for (const fn of deferred.splice(0)) {
+    fn();
+  }
+  expect(m.received.at(-1)).toEqual(viewport);
+  // Without parseable launch theme params, theme_changed still carries an object for TWA's check.
+  const bare = harness({ themeParams: () => null });
+  bare.post('web_app_request_theme');
+  expect(bare.received).toEqual([['theme_changed', { theme_params: {} }]]);
+});
+
+test('mock: records every postEvent in order', () => {
+  const m = harness();
+  m.transport.postEvent('web_app_ready', '""');
+  m.post('web_app_setup_swipe_behavior', { allow_vertical_swipe: false });
+  m.transport.postEvent('web_app_odd', 'not json');
+  m.post('web_app_expand');
+  expect(m.controls.events).toEqual([
+    { type: 'web_app_ready', data: '' },
+    { type: 'web_app_setup_swipe_behavior', data: { allow_vertical_swipe: false } },
+    { type: 'web_app_odd', data: 'not json' },
+    { type: 'web_app_expand', data: '' },
+  ]);
+  // One answer per request, and none for a plain setting.
+  expect(m.received).toEqual([['viewport_changed', { height: 812, is_expanded: true, is_state_stable: true }]]);
+
+  // The page install: drains what TWA queued at load through one transport, in order, and is idempotent.
+  const received: Array<[string, unknown]> = [];
+  const queue: Array<readonly [string, string]> = [
+    ['web_app_request_viewport', '""'],
+    ['web_app_ready', '""'],
+  ];
+  const win = {
+    __tgMockQueue: queue,
+    TelegramWebviewProxy: { postEvent: (type: string, json: string): void => void queue.push([type, json]) },
+    Telegram: {
+      WebView: {
+        receiveEvent: (type: string, data: unknown): void => void received.push([type, data]),
+        initParams: { tgWebAppThemeParams: JSON.stringify(THEME) },
+      },
+    },
+    setTimeout: (fn: () => void): number => {
+      fn();
+      return 0;
+    },
+    innerHeight: 700,
+  };
+  vi.stubGlobal('window', win);
+  try {
+    const controls = installMockTransport();
+    expect(installMockTransport()).toBe(controls);
+    expect(controls.events.map((e) => e.type)).toEqual(['web_app_request_viewport', 'web_app_ready']);
+    expect(queue).toEqual([]);
+    win.TelegramWebviewProxy.postEvent('web_app_request_theme', '""');
+    expect(queue).toEqual([]);
+    expect(received).toEqual([
+      ['viewport_changed', { height: 700, is_expanded: true, is_state_stable: true }],
+      ['theme_changed', { theme_params: THEME }],
+    ]);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+test('mock: cloud and device storage round trip', () => {
+  const m = harness();
+  const cloud = (reqId: string, method: string, params: object): void =>
+    m.post('web_app_invoke_custom_method', { req_id: reqId, method, params });
+  cloud('c1', 'saveStorageValue', { key: 'k', value: 'v' });
+  cloud('c2', 'getStorageValues', { keys: ['k', 'absent'] });
+  cloud('c3', 'getStorageKeys', {});
+  cloud('c4', 'deleteStorageValues', { keys: ['k'] });
+  cloud('c5', 'getStorageValues', { keys: ['k'] });
+  cloud('c6', 'nope', {});
+  expect(m.received.splice(0)).toEqual([
+    ['custom_method_invoked', { req_id: 'c1', result: true }],
+    ['custom_method_invoked', { req_id: 'c2', result: { k: 'v', absent: '' } }],
+    ['custom_method_invoked', { req_id: 'c3', result: ['k'] }],
+    ['custom_method_invoked', { req_id: 'c4', result: true }],
+    ['custom_method_invoked', { req_id: 'c5', result: { k: '' } }],
+    ['custom_method_invoked', { req_id: 'c6', error: 'UNKNOWN_METHOD' }],
+  ]);
+  expect(m.cloud.items).toEqual({});
+
+  m.post('web_app_device_storage_save_key', { req_id: 'd1', key: 'k', value: 'v' });
+  expect(m.device.items).toEqual({ k: 'v' });
+  m.post('web_app_device_storage_get_key', { req_id: 'd2', key: 'k' });
+  m.post('web_app_device_storage_save_key', { req_id: 'd3', key: 'k', value: null });
+  m.post('web_app_device_storage_get_key', { req_id: 'd4', key: 'k' });
+  m.post('web_app_device_storage_save_key', { req_id: 'd5', key: 'a', value: '1' });
+  m.post('web_app_device_storage_clear', { req_id: 'd6' });
+  m.post('web_app_device_storage_get_key', { req_id: 'd7', key: 'a' });
+  expect(m.received).toEqual([
+    ['device_storage_key_saved', { req_id: 'd1' }],
+    ['device_storage_key_received', { req_id: 'd2', value: 'v' }],
+    ['device_storage_key_saved', { req_id: 'd3' }],
+    ['device_storage_key_received', { req_id: 'd4', value: null }],
+    ['device_storage_key_saved', { req_id: 'd5' }],
+    ['device_storage_cleared', { req_id: 'd6' }],
+    ['device_storage_key_received', { req_id: 'd7', value: null }],
+  ]);
+  expect(m.device.items).toEqual({});
+});
+
+test('mock: controls send their native events', () => {
+  const m = harness();
+  m.controls.minimize();
+  m.controls.restore();
+  // Hidden BackButton: Android back would close the app, so no event reaches TWA.
+  m.controls.pressBack();
+  m.post('web_app_setup_back_button', { is_visible: true });
+  m.controls.pressBack();
+  m.post('web_app_setup_back_button', { is_visible: false });
+  m.controls.pressBack();
+  m.controls.setSafeArea({ top: 24, bottom: 34, left: 0, right: 0 }, { top: 46, bottom: 0, left: 0, right: 0 });
+  m.controls.setSafeArea({ top: 20, bottom: 0, left: 0, right: 0 });
+  m.controls.setViewport(700);
+  m.post('web_app_request_viewport');
+  m.post('web_app_request_safe_area');
+  m.post('web_app_request_content_safe_area');
+  m.controls.setVersion('7.0');
+  const viewport = ['viewport_changed', { height: 700, is_expanded: true, is_state_stable: true }];
+  expect(m.received).toEqual([
+    ['visibility_changed', { is_visible: false }],
+    ['visibility_changed', { is_visible: true }],
+    ['back_button_pressed', null],
+    ['safe_area_changed', { top: 24, bottom: 34, left: 0, right: 0 }],
+    ['content_safe_area_changed', { top: 46, bottom: 0, left: 0, right: 0 }],
+    ['safe_area_changed', { top: 20, bottom: 0, left: 0, right: 0 }],
+    viewport,
+    viewport,
+    ['safe_area_changed', { top: 20, bottom: 0, left: 0, right: 0 }],
+    ['content_safe_area_changed', { top: 46, bottom: 0, left: 0, right: 0 }],
+  ]);
+  expect(m.controls.events.filter((e) => e.type === 'mock_app_closed')).toEqual([
+    { type: 'mock_app_closed', data: null },
+    { type: 'mock_app_closed', data: null },
+  ]);
+  expect(m.versions).toEqual(['7.0']);
+  // setVersion's reload target: only tgWebAppVersion changes, the signed tgWebAppData stays byte for byte.
+  expect(
+    withLaunchVersion(
+      'http://127.0.0.1:4173/#tgWebAppData=a%3D1%26b%3D%2B&tgWebAppVersion=9.6&tgWebAppPlatform=android',
+      '7.0',
+    ),
+  ).toBe('http://127.0.0.1:4173/#tgWebAppData=a%3D1%26b%3D%2B&tgWebAppVersion=7.0&tgWebAppPlatform=android');
+  expect(withLaunchVersion('http://h/#tgWebAppVersion=9.6', '8.0')).toBe('http://h/#tgWebAppVersion=8.0');
+  expect(withLaunchVersion('http://h/#a=1', '8.0')).toBe('http://h/#a=1&tgWebAppVersion=8.0');
+  expect(withLaunchVersion('http://h/', '8.0')).toBe('http://h/#tgWebAppVersion=8.0');
+});
+
+test('mock: link opens recorded without navigating', () => {
+  const m = harness();
+  m.post('web_app_open_link', { url: 'https://example.com/' });
+  m.post('web_app_open_tg_link', { path_full: '/share/url?url=x' });
+  expect(m.controls.events).toEqual([
+    { type: 'web_app_open_link', data: { url: 'https://example.com/' } },
+    { type: 'web_app_open_tg_link', data: { path_full: '/share/url?url=x' } },
+  ]);
+  expect([m.received, m.versions]).toEqual([[], []]);
+});
+
+test('bootstrap: redirects to /dev/launch without signed launch params', () => {
+  const cases = [
+    ['', null],
+    ['#tgWebAppVersion=9.6&tgWebAppPlatform=android', null],
+    ['#tgWebAppData=&tgWebAppVersion=9.6', null],
+    // TWA stores its init params even on a load without any: `{}` alone is no launch.
+    ['', '{}'],
+    ['', '{"tgWebAppData":""}'],
+    ['', '{"tgWebAppData":7}'],
+    ['', 'not json'],
+    ['', 'throws'],
+  ] as const;
+  for (const [hash, stored] of cases) {
+    const win = bootWindow(hash, stored);
+    runInjected(bootstrapScript(), win);
+    expect({ hash, stored, replaced: win.replaced }).toEqual({ hash, stored, replaced: ['/dev/launch'] });
+    expect(win.__TG_DEV_MOCK__).toBe(true);
+  }
+});
+
+test('bootstrap: stays with launch params in the hash or the session', () => {
+  const cases = [
+    ['#tgWebAppData=auth_date%3D1%26hash%3D00&tgWebAppVersion=9.6', null],
+    ['', '{"tgWebAppData":"auth_date=1&hash=00","tgWebAppVersion":"9.6"}'],
+  ] as const;
+  for (const [hash, stored] of cases) {
+    const win = bootWindow(hash, stored);
+    runInjected(bootstrapScript(), win);
+    expect({ hash, stored, replaced: win.replaced }).toEqual({ hash, stored, replaced: [] });
+  }
+  // The proxy TWA posts through queues every call until the transport drains it.
+  const win = bootWindow(cases[0][0], null);
+  runInjected(bootstrapScript(), win);
+  win.TelegramWebviewProxy?.postEvent('web_app_request_theme', '""');
+  win.TelegramWebviewProxy?.postEvent('web_app_ready', '""');
+  expect(win.__tgMockQueue).toEqual([
+    ['web_app_request_theme', '""'],
+    ['web_app_ready', '""'],
+  ]);
+});
+
+test('plugin: bootstrap injected as a classic head-prepend script', async () => {
+  const hook = tgDevMock().transformIndexHtml;
+  const handler = typeof hook === 'function' ? hook : hook?.handler;
+  expect(typeof handler).toBe('function');
+  // The hook reads neither its plugin context nor the page, so the test passes neither.
+  const tags = await handler?.call({} as never, '<!doctype html><html><head></head></html>', {} as never);
+  // No attrs: no type="module", so it runs synchronously, in document order, before the TWA tag it precedes.
+  expect(tags).toEqual([{ tag: 'script', children: bootstrapScript(), injectTo: 'head-prepend' }]);
+  const text = bootstrapScript();
+  expect(text.startsWith('window.__TG_DEV_MOCK__=true;(')).toBe(true);
+  expect(text.endsWith(')(window)')).toBe(true);
+  // Self-contained: run alone, a closure over a module binding would throw a ReferenceError here.
+  const win = bootWindow('#tgWebAppData=a', null);
+  expect(() => runInjected(text, win)).not.toThrow();
+  expect([win.__TG_DEV_MOCK__, typeof win.TelegramWebviewProxy?.postEvent]).toEqual([true, 'function']);
 });
