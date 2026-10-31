@@ -286,6 +286,51 @@ test('executor: scene t=fade applies shows while black', async () => {
   h.ex.destroy();
 });
 
+test('executor: fade through black changes the stage only at black', async () => {
+  const h = harness();
+  const isChange = (x: string): boolean => /^(create|destroy|group|drop):/.test(x);
+  /** The last black-rect write before the first stage change. */
+  const fxBeforeChange = (): string | undefined =>
+    h.log
+      .slice(0, h.log.findIndex(isChange))
+      .filter((x) => x.startsWith('fx:'))
+      .pop();
+  await h.ex.apply([bg('street', 'cut'), show('stranger', 'serious', 'right', 'cut')], NOW);
+
+  // `scene t=fade ms=800`: black fades in over 400 ms; nothing is hidden, shown or swapped before that.
+  h.log.length = 0;
+  const dip = h.ex.apply([scene('cafe', 'fade', 800), show('ally', 'neutral', 'left')], NOW);
+  await flush();
+  advance(100);
+  advance(250);
+  expect(h.log.some(isChange)).toBe(false);
+  advance(100);
+  expect(fxBeforeChange()).toBe('fx:1');
+  expect(h.log.filter(isChange)).toEqual([
+    'destroy:chars:stranger',
+    'drop:stranger',
+    'destroy:bg:street',
+    'create:bg:cafe',
+    'group:ally',
+    'create:chars:ally',
+  ]);
+  h.ex.complete();
+  await dip;
+
+  // `bg t=fade ms=600` dips the same way: the swap waits for black at 300 ms.
+  h.log.length = 0;
+  const fade = h.ex.apply([bg('room', 'fade', 600)], NOW);
+  await flush();
+  advance(250);
+  expect(h.log.some(isChange)).toBe(false);
+  advance(100);
+  expect(fxBeforeChange()).toBe('fx:1');
+  expect(h.log.filter(isChange)).toEqual(['destroy:bg:cafe', 'create:bg:room']);
+  h.ex.complete();
+  await fade;
+  h.ex.destroy();
+});
+
 test('executor: complete jumps to the end state and ends the wait', async () => {
   const h = harness();
   let settled = false;
