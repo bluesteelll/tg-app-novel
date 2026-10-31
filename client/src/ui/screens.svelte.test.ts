@@ -483,3 +483,79 @@ test('stage: children render inside the host element', async () => {
   expect(hosts).toEqual([host, null]);
   expect(other).not.toHaveBeenCalled();
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// No literal player-facing text in this lane's components (C8, principle 8)
+
+/** The six components of this lane; App.svelte (L1/L15) is not one of them. */
+const LANE_COMPONENTS = [
+  'Choices.svelte',
+  'DialogueBox.svelte',
+  'QuickBar.svelte',
+  'Stage.svelte',
+  'TapToStart.svelte',
+  'Toast.svelte',
+] as const;
+
+const COMPONENT_SOURCES = import.meta.glob<string>('./*.svelte', { query: '?raw', import: 'default', eager: true });
+
+/** The markup with every `{…}` (expressions, blocks, tags) blanked; braces nest, as in an inline handler body. */
+function withoutMustaches(text: string): string {
+  let out = '';
+  let depth = 0;
+  for (const ch of text) {
+    if (ch === '{') {
+      depth++;
+    } else if (ch === '}' && depth > 0) {
+      depth--;
+    } else if (depth === 0) {
+      out += ch;
+      continue;
+    }
+    out += ' ';
+  }
+  return out;
+}
+
+/** Where a component shows a literal string: text nodes and the text attributes, outside scripts and styles. */
+function literalText(source: string): string[] {
+  const markup = withoutMustaches(
+    source.replace(/<!--[\s\S]*?-->/g, ' ').replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, ' '),
+  );
+  const found: string[] = [];
+  for (const m of markup.matchAll(/\b(aria-label|title|alt|placeholder)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) {
+    const value = m[2] ?? m[3] ?? '';
+    if (/\p{L}/u.test(value)) {
+      found.push(`${m[1]}="${value}"`);
+    }
+  }
+  for (const m of markup.replace(/<[^>]*>/g, ' ').matchAll(/\S*\p{L}\S*/gu)) {
+    found.push(`text "${m[0]}"`);
+  }
+  return found;
+}
+
+test('i18n: lane components hold no literal text', () => {
+  const names = Object.keys(COMPONENT_SOURCES).map((key) => key.replace(/^\.\//, ''));
+  // Non-vacuous: every lane component is read, so a renamed or missing file cannot pass.
+  expect(names.filter((n) => (LANE_COMPONENTS as readonly string[]).includes(n)).sort()).toEqual([...LANE_COMPONENTS]);
+  const offenders: string[] = [];
+  for (const name of LANE_COMPONENTS) {
+    const source = COMPONENT_SOURCES[`./${name}`] ?? '';
+    expect(source, name).toContain('</');
+    for (const literal of literalText(source)) {
+      offenders.push(`${name}: ${literal}`);
+    }
+    // Russian belongs in ru.ts only: no Cyrillic in a component, in its script or inside `{…}` either.
+    if (/\p{Script=Cyrillic}/u.test(source)) {
+      offenders.push(`${name}: Cyrillic in the source`);
+    }
+  }
+  expect(offenders).toEqual([]);
+
+  // The reader itself: a text node and a text attribute are found, an expression and a glyph are not.
+  expect(literalText('<p>Меню</p><b aria-label="Close">×</b><i title={t(lang, "k")}>{label}</i>')).toEqual([
+    'aria-label="Close"',
+    'text "Меню"',
+  ]);
+});
