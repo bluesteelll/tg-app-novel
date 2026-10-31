@@ -395,8 +395,15 @@ function shipped(t: Readonly<Record<string, { ru: string; en: string }>>): Recor
   return Object.fromEntries(Object.entries(t).map(([id, e]) => [id, e.en])) as Record<LineId, string>; // the keys are line IDs
 }
 
-/** The committed catalog and cast, a free ch1 and a paid ch2, and their locale tables: a clean, emitting repo. */
+/**
+ * The committed catalog and cast, a free ch1 and a paid ch2 in one story without endings, and their locale tables
+ * (the story's title and teaser included): a clean, emitting repo.
+ */
 function repoFiles(): Record<string, string> {
+  const manor = (title: string, teaser: string): { stories: Record<string, string>; teasers: Record<string, string> } => ({
+    stories: { manor: title },
+    teasers: { manor: teaser },
+  });
   return {
     'assets/catalog.json': readFileSync(new URL('../../../assets/catalog.json', import.meta.url), 'utf8'),
     'story/cast.json': readFileSync(new URL('../../../story/cast.json', import.meta.url), 'utf8'),
@@ -404,13 +411,14 @@ function repoFiles(): Record<string, string> {
       { id: 'ch1', entry: 'ch1/main.ink', paid: false, next: 'ch2' },
       { id: 'ch2', entry: 'ch2/main.ink', paid: true, productId: 'chapter:ch2', next: null },
     ]),
+    'story/stories.json': JSON.stringify([{ id: 'manor', first: 'ch1', cover: 'cover/manor', endings: {} }]),
     'story/common/globals.ink': 'VAR g_trust = 0\n',
     'story/ch1/main.ink': CH1_INK,
     'story/ch2/main.ink': CH2_INK,
     'story/locales/en/ch1.json': table(REPO_EN_CH1),
     'story/locales/en/ch2.json': table(REPO_EN_CH2),
-    'story/locales/ru/story.json': table(NAMES_RU),
-    'story/locales/en/story.json': table(NAMES_EN),
+    'story/locales/ru/story.json': table({ ...NAMES_RU, ...manor('Усадьба', 'Черновик истории для проверки сборки.') }),
+    'story/locales/en/story.json': table({ ...NAMES_EN, ...manor('The Manor', 'A draft story for the build check.') }),
   };
 }
 

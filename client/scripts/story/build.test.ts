@@ -428,6 +428,11 @@ const EMIT_SOURCES = new Map([
     ].join('\n'),
   ],
 ]);
+/** The fixture story's title and teaser (STAGING-DSL §4): public text, so it names nothing of the paid chapter. */
+const MANOR_NAMES = {
+  stories: { manor: { ru: 'Усадьба', en: 'The Manor' } },
+  teasers: { manor: { ru: 'Черновик истории для проверки сборки.', en: 'A draft story for the build check.' } },
+};
 const NAMES = {
   chapters: { ch1: { ru: 'ch1', en: 'ch1' }, ch2: { ru: 'ch2', en: 'ch2' } },
   speakers: { ally: { ru: 'ally', en: 'ally' }, stranger: { ru: 'stranger', en: 'stranger' }, voice: { ru: 'voice', en: 'voice' } },
@@ -647,6 +652,11 @@ const STORY_SCRIPT = fileURLToPath(new URL('../story.ts', import.meta.url));
 const CLI_TIMEOUT_MS = 60_000;
 const CH1_LISTED = { id: 'ch1', entry: 'ch1/main.ink', paid: false, next: 'ch2' };
 const CH2_LISTED = { id: 'ch2', entry: 'ch2/main.ink', paid: true, productId: 'chapter:ch2', next: null };
+/**
+ * The fixture's story list: `manor`, ch1 → ch2, its one ending on ch2's `drawer`. The name is one no free output can
+ * hold: no ink control string, meta or catalog key, version hex or fixture word.
+ */
+const STORIES_SOURCE = [{ id: 'manor', first: 'ch1', cover: 'cover/manor', endings: { q7_sealed_vault: { chapter: 'ch2', knot: 'drawer' } } }];
 const CLIENT_OUTPUTS = [
   'client/src/story-gen/catalog.json',
   'client/src/story-gen/free/ch1.en.json',
@@ -671,7 +681,8 @@ function localeFiles(): Readonly<Record<string, string>> {
     const names = (lang: 'ru' | 'en'): string => {
       const pick = (section: Readonly<Record<string, { ru: string; en: string }>>): Record<string, string> =>
         Object.fromEntries(Object.entries(section).map(([id, name]) => [id, name[lang]]));
-      return `${JSON.stringify({ names: pick(NAMES.speakers), chapters: pick(NAMES.chapters) }, null, 2)}\n`;
+      const sections = { names: pick(NAMES.speakers), chapters: pick(NAMES.chapters), stories: pick(MANOR_NAMES.stories), teasers: pick(MANOR_NAMES.teasers) };
+      return `${JSON.stringify(sections, null, 2)}\n`;
     };
     localeTables = {
       [EN_CH1_TABLE]: en('ch1'),
@@ -683,12 +694,16 @@ function localeFiles(): Readonly<Record<string, string>> {
   return localeTables;
 }
 
-/** The committed catalog and cast, the given chapter list, and the emit fixture's ink and locale tables under story/. */
+/**
+ * The committed catalog and cast, the given chapter list, the fixture's story list, and the emit fixture's ink and
+ * locale tables under story/.
+ */
 function repoFiles(chapters: unknown = [CH1_LISTED, CH2_LISTED]): Record<string, string> {
   return {
     'assets/catalog.json': readFileSync(new URL('../../../assets/catalog.json', import.meta.url), 'utf8'),
     'story/cast.json': readFileSync(new URL('../../../story/cast.json', import.meta.url), 'utf8'),
     'story/chapters.json': JSON.stringify(chapters),
+    'story/stories.json': JSON.stringify(STORIES_SOURCE),
     ...Object.fromEntries([...EMIT_SOURCES].map(([key, text]) => [`story/${key}`, text])),
     ...localeFiles(),
   };
@@ -877,6 +892,96 @@ test(
       expect(r.status, r.stdout + r.stderr).toBe(1);
       expect(r.stdout).toMatch(/^E client\/src\/story-gen\/free\/ch1\.story\.json:0 paid\/leak paid line ID 'ch2\.archive\.p001'/m);
       expect(r.stdout).toMatch(/^story: 1 errors, 0 warnings$/m);
+    });
+  },
+  CLI_TIMEOUT_MS,
+);
+
+test(
+  'story: missing stories.json fails the gate',
+  () => {
+    // Every chapter lies on one story (§9): without the story list no story is defined, so the gate fails.
+    const files = Object.fromEntries(Object.entries(repoFiles()).filter(([rel]) => rel !== 'story/stories.json'));
+    withRepo(files, (root) => {
+      const r = runStory(root);
+      expect(r.status, r.stdout + r.stderr).toBe(1);
+      expect(r.stdout).toMatch(/^E story\/stories\.json:0 catalog\/stories missing$/m);
+      expect(r.stdout).toMatch(/^story: 1 errors, 0 warnings$/m);
+      expect([...filesUnder(root, 'client'), ...filesUnder(root, 'server')]).toEqual([]);
+    });
+  },
+  CLI_TIMEOUT_MS,
+);
+
+/** ch1 of the carry fixture: a choice between `bad`, a declared story ending that sets g_x, and `good`. */
+const CARRY_CH1 = [
+  'INCLUDE ../common/globals.ink',
+  '-> cafe',
+  '=== cafe ===',
+  '# scene: cafe',
+  'Куда идти? #id:ch1.cafe.d001',
+  '* [Налево. #id:ch1.cafe.d002]',
+  '    -> bad',
+  '* [Направо. #id:ch1.cafe.d003]',
+  '    -> good',
+  '=== bad ===',
+  '~ g_x = 9',
+  'Плохой конец. #id:ch1.bad.d004',
+  '-> END',
+  '=== good ===',
+  'Дальше. #id:ch1.good.d005',
+  '-> END',
+  '',
+].join('\n');
+/** ch2 of the carry fixture: `leak` is entered only from g_x == 9 and writes no `-> END` of its own. */
+const CARRY_CH2 = [
+  'INCLUDE ../common/globals.ink',
+  '-> start',
+  '=== start ===',
+  '# scene: archive',
+  'Архив. #id:ch2.start.d006',
+  '{ g_x == 9:',
+  '    -> leak',
+  '}',
+  '-> safe',
+  '=== leak ===',
+  'Утечка. #id:ch2.leak.d007',
+  '-> safe',
+  '=== safe ===',
+  'Тихо. #id:ch2.safe.d008',
+  '-> END',
+  '',
+].join('\n');
+
+test(
+  'story: a story-ending run does not carry into the next chapter',
+  () => {
+    const table = (entries: Readonly<Record<string, string>>): string =>
+      `${JSON.stringify(Object.fromEntries(Object.entries(entries).map(([id, ru]) => [id, { ru, en: `en ${id}` }])), null, 2)}\n`;
+    const files = {
+      ...repoFiles(),
+      'story/common/globals.ink': 'VAR g_trust = 0\nVAR g_x = 0\n',
+      'story/ch1/main.ink': CARRY_CH1,
+      'story/ch2/main.ink': CARRY_CH2,
+      'story/stories.json': JSON.stringify([{ id: 'manor', first: 'ch1', cover: 'cover/manor', endings: { bad_end: { chapter: 'ch1', knot: 'bad' } } }]),
+      'story/lint-allow.json': JSON.stringify({ 'play/knot-not-visited': { 'ch2.leak': 'reached only after the story ending bad_end, which carries nothing' } }),
+      [EN_CH1_TABLE]: table({
+        'ch1.cafe.d001': 'Куда идти?',
+        'ch1.cafe.d002': 'Налево.',
+        'ch1.cafe.d003': 'Направо.',
+        'ch1.bad.d004': 'Плохой конец.',
+        'ch1.good.d005': 'Дальше.',
+      }),
+      'story/locales/en/ch2.json': table({ 'ch2.start.d006': 'Архив.', 'ch2.leak.d007': 'Утечка.', 'ch2.safe.d008': 'Тихо.' }),
+    };
+    withRepo(files, (root) => {
+      const r = runStory(root);
+      // Only the runs that ended in `good` seed ch2, so none of them sets g_x and `leak` stays unvisited.
+      expect(r.stdout).toMatch(/^play: ch2: 200 runs, knots 2\/3, endings 1\/1 \(seeds 1-200, ch1 carries; /m);
+      expect(r.status, r.stdout + r.stderr).toBe(0);
+      expect(r.stdout).toMatch(/^play: ch1: 200 runs, knots 3\/3, endings 2\/2 /m);
+      expect(r.stdout).toMatch(/^stories: manor \(ch1 → ch2\), endings 1$/m);
+      expect(r.stdout).toMatch(/^story: 0 errors, 0 warnings$/m);
     });
   },
   CLI_TIMEOUT_MS,

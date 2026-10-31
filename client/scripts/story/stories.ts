@@ -292,3 +292,19 @@ export function checkInvoiceTitles(stories: readonly StoryPlan[], chapters: read
   }
   return out;
 }
+
+/**
+ * Per chapter, its declared story endings, knot → ending name: the meta's `endings` (STAGING-DSL §8) and the knots
+ * whose runs carry nothing into the next chapter (§11).
+ */
+export function endingKnots(stories: readonly StoryPlan[]): ReadonlyMap<ChapterId, ReadonlyMap<KnotName, EndingName>> {
+  const out = new Map<ChapterId, Map<KnotName, EndingName>>();
+  for (const story of stories) {
+    for (const [name, e] of Object.entries(story.endings)) {
+      const knots = out.get(e.chapter) ?? new Map<KnotName, EndingName>();
+      knots.set(e.knot, name as EndingName); // a key of the decoded endings
+      out.set(e.chapter, knots);
+    }
+  }
+  return out;
+}
