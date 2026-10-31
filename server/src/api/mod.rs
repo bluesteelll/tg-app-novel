@@ -67,8 +67,9 @@ async fn health() -> &'static str {
 }
 
 /// A JSON body the extractor refused: over the body limit is 413 `payload_too_large`; anything else (not JSON, a
-/// missing field, a wrong content type) is 400 `bad_request`, not axum's own 415 / 422 text.
-pub(crate) fn body_rejection(e: JsonRejection) -> ApiError {
+/// missing field, a wrong content type) is 400 `bad_request`, not axum's own 415 / 422 text. Public so `server-dev`'s
+/// JSON routes answer a bad body the same way.
+pub fn body_rejection(e: JsonRejection) -> ApiError {
     if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
         ApiError::PayloadTooLarge
     } else {

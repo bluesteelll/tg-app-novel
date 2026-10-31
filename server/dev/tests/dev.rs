@@ -9,10 +9,11 @@
 #![warn(clippy::allow_attributes_without_reason)]
 
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use axum::Router;
 use axum::body::{Body, Bytes};
-use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, HeaderName, LOCATION};
+use axum::http::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, HeaderName, LOCATION};
 use axum::http::{HeaderMap, Request, StatusCode};
 use http_body_util::BodyExt;
 use pgdev::{DbName, DevCluster, TestDb};
@@ -455,6 +456,304 @@ async fn launch_query_sets_user() {
     let user = json!({ "id": 2002, "firstName": "Аня & Co = 1+1 = 100%", "languageCode": "en" });
     if json["user"] != user {
         failures.push(format!("user: expected {user}, got {}", json["user"]));
+    }
+    report(&failures);
+}
+
+/// A session for dev user `uid`: `/dev/launch?uid=<uid>&lang=ru`, then `POST /api/auth`; the `Authorization` value.
+async fn session(dev: &DevApp, uid: i64) -> String {
+    let launch = get(dev, &format!("/dev/launch?uid={uid}&lang=ru")).await;
+    let auth = post_auth(dev, &launch_init_data(&launch)).await;
+    let json = body_json(&auth);
+    let Some(token) = json["token"].as_str() else {
+        panic!(
+            "POST /api/auth for {uid}: expected a token, got {} {}",
+            auth.status,
+            body_text(&auth)
+        );
+    };
+    format!("Bearer {token}")
+}
+
+/// `method uri` through the dev app, with `Authorization: bearer` when given and a JSON body when given.
+async fn send(
+    dev: &DevApp,
+    method: &str,
+    uri: &str,
+    bearer: Option<&str>,
+    body: Option<Value>,
+) -> Reply {
+    let mut req = Request::builder().method(method).uri(uri);
+    if let Some(bearer) = bearer {
+        req = req.header(AUTHORIZATION, bearer);
+    }
+    let body = match body {
+        Some(json) => {
+            req = req.header(CONTENT_TYPE, "application/json");
+            Body::from(json.to_string())
+        }
+        None => Body::empty(),
+    };
+    call(dev, req.body(body).unwrap()).await
+}
+
+/// The invoice link prefix of the dev fake gateway: `https://t.me/$` + the slug.
+const DEV_LINK_PREFIX: &str = "https://t.me/$";
+
+/// A `chapter:ch2` invoice for `bearer` through `POST /api/invoices`: the order id and the link's slug.
+async fn invoice(dev: &DevApp, bearer: &str) -> (String, String) {
+    let reply = send(
+        dev,
+        "POST",
+        "/api/invoices",
+        Some(bearer),
+        Some(json!({ "productId": "chapter:ch2" })),
+    )
+    .await;
+    let json = body_json(&reply);
+    let order = json["orderId"].as_str();
+    let slug = json["invoiceUrl"]
+        .as_str()
+        .and_then(|url| url.strip_prefix(DEV_LINK_PREFIX));
+    match (order, slug) {
+        (Some(order), Some(slug)) => (order.to_owned(), slug.to_owned()),
+        _ => panic!(
+            "POST /api/invoices: expected an orderId and a dev link, got {} {}",
+            reply.status,
+            body_text(&reply)
+        ),
+    }
+}
+
+/// `POST /dev/simulate-payment` with `body`.
+async fn simulate(dev: &DevApp, body: Value) -> Reply {
+    send(dev, "POST", "/dev/simulate-payment", None, Some(body)).await
+}
+
+/// The mismatch of a simulate reply against 200 `{precheckoutOk: true, chargeId: dev_<32 hex>}`, `no-store`; the
+/// charge id when it matches.
+fn paid_reply(case: &str, reply: &Reply, failures: &mut Vec<String>) -> Option<String> {
+    let json = body_json(reply);
+    let charge = json["chargeId"].as_str().filter(|charge| {
+        charge.strip_prefix("dev_").is_some_and(|hex| {
+            hex.len() == 32 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        })
+    });
+    let keys = json.as_object().map_or(0, |o| o.len());
+    if reply.status != StatusCode::OK
+        || json["precheckoutOk"] != json!(true)
+        || keys != 2
+        || charge.is_none()
+    {
+        failures.push(format!(
+            "{case}: expected 200 {{precheckoutOk: true, chargeId: dev_<32 hex>}}, got {} {}",
+            reply.status,
+            body_text(reply)
+        ));
+    }
+    if header(reply, CACHE_CONTROL) != Some("no-store") {
+        failures.push(format!(
+            "{case}: cache-control: expected no-store, got {:?}",
+            header(reply, CACHE_CONTROL)
+        ));
+    }
+    charge.map(str::to_owned)
+}
+
+/// The status of order `order` through `GET /api/orders/{order}` as `bearer`.
+async fn order_status(dev: &DevApp, bearer: &str, order: &str) -> Option<String> {
+    let reply = send(
+        dev,
+        "GET",
+        &format!("/api/orders/{order}"),
+        Some(bearer),
+        None,
+    )
+    .await;
+    body_json(&reply)["status"].as_str().map(str::to_owned)
+}
+
+/// `owned` of `chapter:ch2` in `GET /api/entitlements` as `bearer`.
+async fn ch2_owned(dev: &DevApp, bearer: &str) -> Option<bool> {
+    let reply = send(dev, "GET", "/api/entitlements", Some(bearer), None).await;
+    body_json(&reply)["products"]
+        .as_array()?
+        .iter()
+        .find(|p| p["productId"] == "chapter:ch2")?
+        .get("owned")?
+        .as_bool()
+}
+
+/// K21: a simulated payment goes through the production webhook handler. Before it ch2 is locked; after it the order
+/// is `paid`, ch2 is owned and served, and the database shows what only the real path writes: the pre-checkout's
+/// `checkout_at`, and the payment with provider `''` for the order. An unknown slug is 404; an unknown outcome or a
+/// delay over a minute is 400; every answer is `no-store`.
+#[tokio::test]
+async fn simulate_payment_goes_through_webhook_handler() {
+    let dev = dev_app().await;
+    let bearer = session(&dev, 1001).await;
+    let (order, slug) = invoice(&dev, &bearer).await;
+    let mut failures = Vec::new();
+    if slug != format!("dev-{order}") {
+        failures.push(format!("slug: expected dev-{order}, got {slug}"));
+    }
+    let before = send(&dev, "GET", "/api/chapters/ch2", Some(&bearer), None).await;
+    if before.status != StatusCode::FORBIDDEN {
+        failures.push(format!(
+            "GET /api/chapters/ch2 before paying: expected 403, got {}",
+            before.status
+        ));
+    }
+    let reply = simulate(&dev, json!({ "slug": slug, "outcome": "paid" })).await;
+    let charge = paid_reply("simulate paid", &reply, &mut failures);
+    let status = order_status(&dev, &bearer, &order).await;
+    if status.as_deref() != Some("paid") {
+        failures.push(format!("GET /api/orders: expected paid, got {status:?}"));
+    }
+    let owned = ch2_owned(&dev, &bearer).await;
+    if owned != Some(true) {
+        failures.push(format!(
+            "GET /api/entitlements chapter:ch2 owned: expected Some(true), got {owned:?}"
+        ));
+    }
+    let after = send(&dev, "GET", "/api/chapters/ch2", Some(&bearer), None).await;
+    if after.status != StatusCode::OK {
+        failures.push(format!(
+            "GET /api/chapters/ch2 after paying: expected 200, got {}",
+            after.status
+        ));
+    }
+    let mut conn = PgConnection::connect(&dev.db.url()).await.unwrap();
+    let checkout_at: Option<i64> =
+        sqlx::query_scalar("SELECT checkout_at FROM orders WHERE id = $1")
+            .bind(&order)
+            .fetch_one(&mut conn)
+            .await
+            .unwrap();
+    let payments: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT telegram_payment_charge_id, invoice_payload, provider_payment_charge_id FROM payments",
+    )
+    .fetch_all(&mut conn)
+    .await
+    .unwrap();
+    conn.close().await.unwrap();
+    if checkout_at.is_none() {
+        failures.push("orders.checkout_at: expected the pre-checkout's time, got NULL".to_owned());
+    }
+    let want = charge
+        .clone()
+        .map(|charge| vec![(charge, order.clone(), String::new())]);
+    if Some(&payments) != want.as_ref() {
+        failures.push(format!(
+            "payments rows: expected {want:?}, got {payments:?}"
+        ));
+    }
+    for (case, body, status, code) in [
+        (
+            "an unknown slug",
+            json!({ "slug": "dev-o_00000000000000000000000000000000", "outcome": "paid" }),
+            StatusCode::NOT_FOUND,
+            "not_found",
+        ),
+        (
+            "outcome nope",
+            json!({ "slug": slug, "outcome": "nope" }),
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+        ),
+        (
+            "webhookDelayMs 60001",
+            json!({ "slug": slug, "outcome": "paid", "webhookDelayMs": 60_001 }),
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+        ),
+    ] {
+        let reply = simulate(&dev, body).await;
+        if reply.status != status || body_json(&reply) != json!({ "error": code }) {
+            failures.push(format!(
+                "{case}: expected {status} {{\"error\":\"{code}\"}}, got {} {}",
+                reply.status,
+                body_text(&reply)
+            ));
+        }
+        if header(&reply, CACHE_CONTROL) != Some("no-store") {
+            failures.push(format!(
+                "{case}: cache-control: expected no-store, got {:?}",
+                header(&reply, CACHE_CONTROL)
+            ));
+        }
+    }
+    report(&failures);
+}
+
+/// `paid_twice` delivers the same payment update twice: one payment, one entitlement. A second simulation of the
+/// now paid invoice is refused at pre-checkout: `{precheckoutOk: false}` with no charge.
+#[tokio::test]
+async fn simulate_paid_twice_grants_once() {
+    let dev = dev_app().await;
+    let bearer = session(&dev, 1002).await;
+    let (_, slug) = invoice(&dev, &bearer).await;
+    let mut failures = Vec::new();
+    let reply = simulate(&dev, json!({ "slug": slug, "outcome": "paid_twice" })).await;
+    paid_reply("simulate paid_twice", &reply, &mut failures);
+    let mut conn = PgConnection::connect(&dev.db.url()).await.unwrap();
+    let counts: (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM payments), (SELECT count(*) FROM entitlements)",
+    )
+    .fetch_one(&mut conn)
+    .await
+    .unwrap();
+    conn.close().await.unwrap();
+    if counts != (1, 1) {
+        failures.push(format!(
+            "payments / entitlements rows: expected 1 / 1, got {} / {}",
+            counts.0, counts.1
+        ));
+    }
+    let again = simulate(&dev, json!({ "slug": slug, "outcome": "paid" })).await;
+    if again.status != StatusCode::OK || body_json(&again) != json!({ "precheckoutOk": false }) {
+        failures.push(format!(
+            "simulate the paid invoice again: expected 200 {{\"precheckoutOk\":false}}, got {} {}",
+            again.status,
+            body_text(&again)
+        ));
+    }
+    report(&failures);
+}
+
+/// With `webhookDelayMs` the route answers once the pre-checkout is answered, with the order still `checkout`; the
+/// payment arrives after the delay, and the order turns `paid` (polled every 50 ms for up to 5 s).
+#[tokio::test]
+async fn simulate_payment_delay_answers_first() {
+    let dev = dev_app().await;
+    let bearer = session(&dev, 1003).await;
+    let (order, slug) = invoice(&dev, &bearer).await;
+    let mut failures = Vec::new();
+    let reply = simulate(
+        &dev,
+        json!({ "slug": slug, "outcome": "paid", "webhookDelayMs": 300 }),
+    )
+    .await;
+    paid_reply("simulate paid +300 ms", &reply, &mut failures);
+    let status = order_status(&dev, &bearer, &order).await;
+    if status.as_deref() != Some("checkout") {
+        failures.push(format!(
+            "GET /api/orders at once: expected checkout, got {status:?}"
+        ));
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut status = None;
+    while Instant::now() < deadline {
+        status = order_status(&dev, &bearer, &order).await;
+        if status.as_deref() == Some("paid") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    if status.as_deref() != Some("paid") {
+        failures.push(format!(
+            "GET /api/orders within 5 s: expected paid, got {status:?}"
+        ));
     }
     report(&failures);
 }
