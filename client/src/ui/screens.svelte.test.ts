@@ -1,8 +1,8 @@
 // L14a in happy-dom: the UI string tables and t(), the screen stack that owns the BackButton, the view model's
-// toasts, the tap screen and the stage host. Components render through @testing-library/svelte (auto-cleanup by
-// svelteTesting() in vite.config.ts).
-import { render } from '@testing-library/svelte';
-import { expect, onTestFinished, test } from 'vitest';
+// toasts, the tap screen and the stage host. Components render through @testing-library/svelte.
+import { cleanup, render } from '@testing-library/svelte';
+import { createRawSnippet } from 'svelte';
+import { afterEach, expect, onTestFinished, test, vi } from 'vitest';
 
 import { en } from '../i18n/en.ts';
 import { t, type UiKey } from '../i18n/index.ts';
@@ -10,9 +10,15 @@ import { ru } from '../i18n/ru.ts';
 import type { StoryId } from '../story/catalog.ts';
 import type { Unsubscribe } from '../telegram/index.ts';
 import { createScreens, type BackButtonPort, type RootView, type Screen, type ScreensView } from './screens.ts';
+import Stage from './Stage.svelte';
 import { createViewModel, TOAST_MAX, TOAST_MS, type Timers, type ToastEntry } from './state.svelte.ts';
+import TapToStart from './TapToStart.svelte';
 import Toast, { visibleToasts } from './Toast.svelte';
 import toastSource from './Toast.svelte?raw';
+
+// svelteTesting()'s auto-cleanup does not reach the `dom` project (a component of one test stayed mounted into the
+// next), so each test unmounts what it rendered here.
+afterEach(() => cleanup());
 
 /** The `{name}` placeholders of a template, sorted. */
 function placeholders(text: string): string[] {
@@ -409,4 +415,71 @@ test('toast: dev variant renders only with the mock', () => {
   // The one call site passes the build's flag, so a production build (__TG_MOCK__ false) drops the banner.
   const calls = [...toastSource.matchAll(/(?<!function\s+)\bvisibleToasts\s*\(([^)]*)\)/g)].map((m) => m[1]);
   expect(calls).toEqual(['toasts, __TG_MOCK__']);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Home's frame and the stage host (C5)
+
+/** A child the way L14b's cards or the exploration layer arrive: a snippet the component renders in place. */
+const child = (testId: string) =>
+  createRawSnippet(() => ({ render: () => `<div data-testid="${testId}"></div>` }));
+
+test('tap: continue names the story', () => {
+  const ruHome = render(TapToStart, { lang: 'ru', continueLabel: 'Прилив', oncontinue: () => {} });
+  const ruLabel = ruHome.getByRole('button').textContent ?? '';
+  expect(ruLabel).toContain('Прилив');
+  expect(ruLabel.trim()).toBe('Продолжить: Прилив');
+  ruHome.unmount();
+
+  const enHome = render(TapToStart, { lang: 'en', continueLabel: 'The Tide', oncontinue: () => {} });
+  expect(enHome.getByRole('button').textContent?.trim()).toBe('Continue: The Tide');
+  enHome.unmount();
+
+  // No autosave: no Continue at all.
+  const fresh = render(TapToStart, { lang: 'ru', continueLabel: null, oncontinue: () => {} });
+  expect(fresh.queryByRole('button')).toBeNull();
+});
+
+test('tap: continue calls back inside the click', () => {
+  const { target, escaped } = outerTarget();
+  const oncontinue = vi.fn();
+  const { getByRole } = render(TapToStart, { target, props: { lang: 'en', continueLabel: 'The Tide', oncontinue } });
+  getByRole('button').click();
+  // Read before any await: the caller's unlockAudio() runs inside this same gesture (principle 5).
+  expect(oncontinue).toHaveBeenCalledTimes(1);
+  // Home is a root: its tap is not swallowed for anything above it.
+  expect(escaped()).toBe(1);
+});
+
+test('tap: home frame renders its children', () => {
+  const { getByTestId, getByRole, container } = render(TapToStart, {
+    lang: 'ru',
+    continueLabel: 'Прилив',
+    oncontinue: () => {},
+    children: child('cards'),
+  });
+  const frame = container.firstElementChild;
+  expect(frame?.contains(getByTestId('cards'))).toBe(true);
+  expect(frame?.contains(getByRole('button'))).toBe(true);
+  render(TapToStart, { lang: 'en', continueLabel: null, oncontinue: () => {}, children: child('cards-only') });
+  expect(getByTestId('cards-only')).toBeTruthy();
+});
+
+test('stage: children render inside the host element', async () => {
+  const hosts: (HTMLElement | null)[] = [];
+  const onhost = (el: HTMLElement | null): void => {
+    hosts.push(el);
+  };
+  const { getByTestId, rerender, unmount } = render(Stage, { onhost, children: child('hotspots') });
+  expect(hosts).toHaveLength(1);
+  const host = hosts[0];
+  expect(host).toBeInstanceOf(HTMLElement);
+  expect(host?.contains(getByTestId('hotspots'))).toBe(true);
+  // A parent passing a new callback must not tear the scene down and mount it again.
+  const other = vi.fn();
+  await rerender({ onhost: other });
+  expect([hosts.length, other.mock.calls.length]).toEqual([1, 0]);
+  unmount();
+  expect(hosts).toEqual([host, null]);
+  expect(other).not.toHaveBeenCalled();
 });
