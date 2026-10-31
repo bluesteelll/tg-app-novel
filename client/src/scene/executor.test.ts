@@ -29,6 +29,14 @@ const flush = async (): Promise<void> => {
     await Promise.resolve();
   }
 };
+/** Watches a promise: `done` turns true once it settles. */
+const track = (p: Promise<void>): { done: boolean } => {
+  const s = { done: false };
+  void p.then(() => {
+    s.done = true;
+  });
+  return s;
+};
 
 // ---------------------------------------------------------------------------------------------------------------
 // A recording stage: live sprites per layer and per character group, an event log, and a throw on any write to a
@@ -344,6 +352,45 @@ test('executor: complete jumps to the end state and ends the wait', async () => 
   await Promise.resolve();
   expect(settled).toBe(true);
   expect(h.live('bg').map((x) => x.p.alpha)).toEqual([1]);
+  expect(h.ex.stats().activeTimelines).toBe(0);
+  h.ex.destroy();
+});
+
+test('executor: a wait holds the batch after its transitions', async () => {
+  const h = harness();
+  // No transition: the batch holds for the wait alone.
+  const held = track(h.ex.apply([bg('cafe', 'cut'), wait(1200)], NOW));
+  await flush();
+  advance(600);
+  await flush();
+  expect(held.done).toBe(false);
+  advance(700);
+  await flush();
+  expect(held.done).toBe(true);
+  // STAGING-DSL §7 step 4: the wait starts when the transitions end (500 ms crossfade, then 1200 ms).
+  const after = track(h.ex.apply([bg('street', 'crossfade', 500), wait(1200)], NOW));
+  await flush();
+  advance(1600);
+  await flush();
+  expect(after.done).toBe(false);
+  advance(200);
+  await flush();
+  expect(after.done).toBe(true);
+  expect(h.ex.stats().activeTimelines).toBe(0);
+  h.ex.destroy();
+});
+
+test('executor: skip mode and an early complete ignore the wait', async () => {
+  const h = harness();
+  const skipped = track(h.ex.apply([bg('cafe', 'cut'), wait(1200)], { instant: true }));
+  await flush();
+  expect(skipped.done).toBe(true);
+  // complete() while the batch still waits for its texture: it builds instant, and its wait is skipped too.
+  const early = track(h.ex.apply([bg('street', 'crossfade', 500), wait(1200)], NOW));
+  h.ex.complete();
+  await flush();
+  expect(early.done).toBe(true);
+  expect(h.live('bg').map((x) => ({ key: x.key, alpha: x.p.alpha }))).toEqual([{ key: 'street', alpha: 1 }]);
   expect(h.ex.stats().activeTimelines).toBe(0);
   h.ex.destroy();
 });
