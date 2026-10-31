@@ -12,6 +12,7 @@ mod bindings;
 mod catalog;
 mod common;
 mod content;
+mod dto_samples;
 mod payments;
 mod puzzles;
 mod saves;

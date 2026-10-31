@@ -1,0 +1,275 @@
+{
+  "ApiErrorBody": [
+    {
+      "error": "bad_request"
+    },
+    {
+      "error": "initdata_invalid"
+    },
+    {
+      "error": "initdata_expired"
+    },
+    {
+      "error": "token_missing"
+    },
+    {
+      "error": "token_invalid"
+    },
+    {
+      "error": "token_expired"
+    },
+    {
+      "error": "not_entitled"
+    },
+    {
+      "error": "not_found"
+    },
+    {
+      "error": "unknown_product"
+    },
+    {
+      "error": "already_owned"
+    },
+    {
+      "error": "save_conflict"
+    },
+    {
+      "error": "payload_too_large"
+    },
+    {
+      "error": "telegram_unavailable"
+    },
+    {
+      "error": "rate_limited"
+    },
+    {
+      "error": "hint_unavailable"
+    },
+    {
+      "error": "insufficient_balance"
+    },
+    {
+      "error": "limit_reached"
+    },
+    {
+      "error": "internal"
+    },
+    {
+      "current": {
+        "chapterId": "ch1",
+        "lineId": "ch1.k2.l4",
+        "rev": 2,
+        "savedAt": 1800000000,
+        "slot": "s1",
+        "storyId": "manor",
+        "storyVersion": "v1",
+        "writeId": "w-s1"
+      },
+      "error": "save_conflict"
+    }
+  ],
+  "AttemptResponse": [
+    {
+      "correct": true,
+      "solved": true
+    },
+    {
+      "correct": false,
+      "solved": false
+    }
+  ],
+  "AuthResponse": [
+    {
+      "expiresAt": 1800001800,
+      "token": "sample-session-token",
+      "user": {
+        "firstName": "Аня",
+        "id": 1001,
+        "languageCode": "ru"
+      }
+    },
+    {
+      "expiresAt": 1800001800,
+      "token": "sample-session-token-2",
+      "user": {
+        "firstName": "Ben",
+        "id": 1002,
+        "languageCode": null
+      }
+    }
+  ],
+  "ChapterPayload": [
+    {
+      "assets": {
+        "assets": []
+      },
+      "chapterId": "ch2",
+      "en": {
+        "ch2.k1.l1": "The door is locked."
+      },
+      "meta": {
+        "storyVersion": "v1"
+      },
+      "story": {
+        "inkVersion": 21,
+        "root": []
+      },
+      "storyVersion": "v1",
+      "world": {
+        "rooms": []
+      }
+    },
+    {
+      "assets": {
+        "assets": []
+      },
+      "chapterId": "ch2",
+      "en": {
+        "ch2.k1.l1": "The door is locked."
+      },
+      "meta": {
+        "storyVersion": "v1"
+      },
+      "story": {
+        "inkVersion": 21,
+        "root": []
+      },
+      "storyVersion": "v1",
+      "world": null
+    }
+  ],
+  "CreateInvoiceResponse": [
+    {
+      "invoiceUrl": "https://t.me/$sample-invoice",
+      "orderId": "o_0123456789abcdef0123456789abcdef"
+    }
+  ],
+  "EntitlementsResponse": [
+    {
+      "products": [
+        {
+          "chapterId": "ch2",
+          "owned": true,
+          "priceStars": 1,
+          "productId": "chapter:ch2"
+        },
+        {
+          "chapterId": "ch4",
+          "owned": false,
+          "priceStars": 50,
+          "productId": "chapter:ch4"
+        }
+      ]
+    }
+  ],
+  "OrderResponse": [
+    {
+      "orderId": "o_0123456789abcdef0123456789abcdef",
+      "productId": "chapter:ch2",
+      "status": "created"
+    },
+    {
+      "orderId": "o_0123456789abcdef0123456789abcdef",
+      "productId": "chapter:ch2",
+      "status": "checkout"
+    },
+    {
+      "orderId": "o_0123456789abcdef0123456789abcdef",
+      "productId": "chapter:ch2",
+      "status": "paid"
+    },
+    {
+      "orderId": "o_0123456789abcdef0123456789abcdef",
+      "productId": "chapter:ch2",
+      "status": "refunded"
+    }
+  ],
+  "PutSaveResponse": [
+    {
+      "rev": 4,
+      "savedAt": 1800000000
+    }
+  ],
+  "PuzzleStatus": [
+    {
+      "hints": [
+        {
+          "text": "Look under the rug.",
+          "tier": 1,
+          "unlocked": true
+        },
+        {
+          "text": null,
+          "tier": 2,
+          "unlocked": false
+        }
+      ],
+      "puzzleId": "ch1.drawer",
+      "solved": false
+    }
+  ],
+  "SaveFull": [
+    {
+      "body": "{\"inkState\":{},\"rev\":3}",
+      "summary": {
+        "chapterId": "ch1",
+        "lineId": "ch1.k1.l3",
+        "rev": 3,
+        "savedAt": 1800000000,
+        "slot": "auto",
+        "storyId": "manor",
+        "storyVersion": "v1",
+        "writeId": "w-auto"
+      }
+    }
+  ],
+  "SaveListResponse": [
+    {
+      "slots": [
+        {
+          "chapterId": "ch1",
+          "lineId": "ch1.k1.l3",
+          "rev": 3,
+          "savedAt": 1800000000,
+          "slot": "auto",
+          "storyId": "manor",
+          "storyVersion": "v1",
+          "writeId": "w-auto"
+        },
+        {
+          "chapterId": "ch1",
+          "lineId": null,
+          "rev": 1,
+          "savedAt": 1800000000,
+          "slot": "s1",
+          "storyId": "manor",
+          "storyVersion": "v1",
+          "writeId": "w-s1"
+        },
+        {
+          "chapterId": "ch1",
+          "lineId": "ch1.k2.l1",
+          "rev": 2,
+          "savedAt": 1800000000,
+          "slot": "s2",
+          "storyId": "manor",
+          "storyVersion": "v1",
+          "writeId": "w-s2"
+        },
+        {
+          "chapterId": "ch1",
+          "lineId": "ch1.k1.l1",
+          "rev": 1,
+          "savedAt": 1800000000,
+          "slot": "s3",
+          "storyId": "manor",
+          "storyVersion": "v1",
+          "writeId": "w-s3"
+        }
+      ]
+    },
+    {
+      "slots": []
+    }
+  ]
+}
