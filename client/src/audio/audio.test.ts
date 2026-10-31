@@ -1300,3 +1300,20 @@ test('audio: a resume cut short by suspend() still ends its need when the contex
   expect(back.value).toBe('running');
   expect(chip).toBe(false);
 });
+
+test("audio: a resume whose deck's play() is refused ends needs-gesture though the context runs", async () => {
+  vi.useFakeTimers();
+  const { ctx, audio } = setup();
+  audio.setChapter(CH1);
+  const a = deck(ctx, 0);
+  audio.apply([bgm('calm', 0)], { instant: false });
+  await flush();
+  audio.suspend(); // deactivated
+  // Activated with no gesture: the context runs again, yet the element refuses play() (Android's
+  // setMediaPlaybackRequiresUserGesture), so a caller wired to the return alone must still show the chip.
+  a.el.refusals.push(notAllowed());
+  const r = await audio.resume();
+  expect(ctx.state).toBe('running');
+  expect(a.el.refusals).toHaveLength(0); // the resume's own retry met the refusal
+  expect(r).toBe('needs-gesture');
+});
