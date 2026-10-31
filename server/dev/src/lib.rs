@@ -4,15 +4,19 @@
 // Also set by `[workspace.lints.rust]`; the attribute holds even for a member that forgets `[lints] workspace`.
 #![forbid(unsafe_code)]
 
+pub mod fake_gateway;
 pub mod launch;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use axum::Router;
 use pgdev::{DbName, DevCluster, PgDevError};
 use server::config::{Config, PLACEHOLDER_BOT_TOKEN, PLACEHOLDER_WEBHOOK_SECRET, TelegramEnv};
 use server::{AppState, StartupError, build_router};
+
+use crate::fake_gateway::FakeBotGateway;
 
 /// Where the dev app keeps its database and finds its content.
 #[derive(Debug, Clone)]
@@ -24,10 +28,29 @@ pub struct DevPaths {
 }
 
 /// The production router plus every dev module's routes, on a state built by [`AppState::new`] from the dev
-/// configuration. Connects to and migrates `paths.database_url`: it creates no database and drops nothing.
+/// configuration with the Bot API faked ([`FakeBotGateway`]). Connects to and migrates `paths.database_url`: it
+/// creates no database and drops nothing.
 pub async fn build_dev_app(paths: DevPaths) -> Result<Router, StartupError> {
-    let state = AppState::new(dev_config(&paths)).await?;
-    Ok(build_router(state.clone()).merge(launch::routes().with_state(state)))
+    let (state, fake) = dev_state(&paths).await?;
+    Ok(dev_router(state, fake))
+}
+
+/// The dev state: [`AppState::new`] on the dev configuration, calling the Bot API through a fresh [`FakeBotGateway`]
+/// (returned too, for the routes that read it). Without the fake the placeholder token would answer every call
+/// with `Disabled`.
+async fn dev_state(paths: &DevPaths) -> Result<(AppState, Arc<FakeBotGateway>), StartupError> {
+    let fake = Arc::new(FakeBotGateway::default());
+    let state = AppState::new(dev_config(paths))
+        .await?
+        .with_gateway(fake.clone());
+    Ok((state, fake))
+}
+
+/// The production router on `state`, plus the launch routes and the routes that read `fake`.
+fn dev_router(state: AppState, fake: Arc<FakeBotGateway>) -> Router {
+    build_router(state.clone())
+        .merge(launch::routes().with_state(state))
+        .merge(fake_gateway::routes(fake))
 }
 
 /// Recreates database `name` on `cluster` empty (`DROP … WITH (FORCE)`, which ends a previous instance's
