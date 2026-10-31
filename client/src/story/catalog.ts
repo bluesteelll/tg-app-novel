@@ -325,6 +325,10 @@ export function assetIndex(c: AssetCatalog): AssetIndex {
 
 /** One chapter of story/chapters.json (STAGING-DSL §9), in play order; `entry` is story-relative posix. */
 export type ChapterListEntry = { id: ChapterId; entry: string; paid: boolean; productId: ProductId | null; next: ChapterId | null };
+/** A story of story/stories.json (STORIES-PLAN Y2), game-unique. A local brand, as `CoverId`: staging.ts names none. */
+export type StoryId = string & { readonly __brand: 'StoryId' };
+/** A declared story ending (STORIES-PLAN Y4), unique within its story. */
+export type EndingName = string & { readonly __brand: 'EndingName' };
 /** client/src/story-gen/catalog.json (public): chapters, titles and cast names; no paid content. */
 export type ChapterCatalog = {
   chapters: ReadonlyArray<{
@@ -358,6 +362,10 @@ export const CHAPTER_ID_RE = /^ch[1-9][0-9]*$/;
 const PRODUCT_ID_RE = /^[a-z][a-z0-9_]*:[a-z0-9_]+$/;
 /** STAGING-DSL §10 `ink/name`. */
 export const KNOT_NAME_RE = /^[a-z][a-z0-9_]*$/;
+/** STORIES-PLAN "Ids" `StoryId`: 24 characters fit every key the id enters (DeviceStorage, a URL segment). */
+export const STORY_ID_RE = /^[a-z][a-z0-9_]{0,23}$/;
+/** STORIES-PLAN "Ids" `EndingName` (server/src/content.rs checks the same grammar). */
+export const ENDING_NAME_RE = /^[a-z][a-z0-9_]{0,31}$/;
 const VAR_NAME_RE = /^[\p{L}_][\p{L}\p{N}_]*$/u;
 /**
  * STAGING-DSL §8: `bg/<bg>`, `char/<char>/<expr>`, `cg/<cg>`, `bgm/<track>`, `sfx/<sfx>`, `prop/<prop>` (PUZZLES-PLAN
