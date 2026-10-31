@@ -331,3 +331,97 @@ async fn webhook_body_over_1mb_413() {
     }
     report(&failures);
 }
+
+/// K17: a `successful_payment` without `provider_payment_charge_id` fails the pinned frankenstein decode, and the
+/// lenient probe still records it through the same grant: 200, the payment with provider `''`, the order paid, the
+/// entitlement. A redelivery is 200 with still one row.
+#[tokio::test]
+async fn webhook_payment_undecodable_by_frankenstein_still_recorded() {
+    let (st, _db, _gateway) = invoice_state(&[(ANN, Some("ru"))]).await;
+    let mut failures = Vec::new();
+    let Some((order, amount)) = new_order(&st, ANN, &mut failures).await else {
+        report(&failures);
+        return;
+    };
+    let mut update = payment_update(ANN, "XTR", amount, &order, "charge-probe", "");
+    update["message"]["successful_payment"]
+        .as_object_mut()
+        .unwrap()
+        .remove("provider_payment_charge_id");
+    let mut statuses = Vec::new();
+    for _ in ["the first delivery", "the redelivery"] {
+        statuses.push(post_update(&st, &update).await.status.as_u16());
+    }
+    let payments = payment_rows(&st).await;
+    if statuses != [200, 200] || payments != 1 {
+        failures.push(format!(
+            "expected 200, 200 with 1 payments row, got {statuses:?} with {payments} rows"
+        ));
+    }
+    let mut conn = common::raw_db(&st).await;
+    let provider: Option<String> = sqlx::query_scalar(
+        "SELECT provider_payment_charge_id FROM payments WHERE telegram_payment_charge_id = 'charge-probe'",
+    )
+    .fetch_optional(&mut conn)
+    .await
+    .unwrap();
+    sqlx::Connection::close(conn).await.unwrap();
+    if provider.as_deref() != Some("") {
+        failures.push(format!(
+            "provider_payment_charge_id: expected Some(\"\"), got {provider:?}"
+        ));
+    }
+    let status = order_status(&st, &order).await;
+    if status != "paid" {
+        failures.push(format!("order status: expected paid, got {status}"));
+    }
+    let entitlements = rows(&st, "SELECT count(*) FROM entitlements").await;
+    if entitlements != 1 {
+        failures.push(format!("entitlements rows: expected 1, got {entitlements}"));
+    }
+    report(&failures);
+}
+
+/// K17: a payment-bearing update whose money fields or payer cannot be read is answered 500, so Telegram redelivers
+/// it and the fact is never acknowledged away: `total_amount` as a string, no `telegram_payment_charge_id`, no
+/// `message.from`, a negative `from.id`. Nothing is recorded.
+#[tokio::test]
+async fn webhook_payment_fields_unreadable_500() {
+    let (st, _db, _gateway) = invoice_state(&[(ANN, Some("ru"))]).await;
+    let mut failures = Vec::new();
+    let Some((order, amount)) = new_order(&st, ANN, &mut failures).await else {
+        report(&failures);
+        return;
+    };
+    let base = payment_update(ANN, "XTR", amount, &order, "charge-unreadable", "");
+    let mut amount_text = base.clone();
+    amount_text["message"]["successful_payment"]["total_amount"] = json!(amount.to_string());
+    let mut no_charge = base.clone();
+    no_charge["message"]["successful_payment"]
+        .as_object_mut()
+        .unwrap()
+        .remove("telegram_payment_charge_id");
+    let mut no_from = base.clone();
+    no_from["message"].as_object_mut().unwrap().remove("from");
+    let mut negative_payer = base;
+    negative_payer["message"]["from"]["id"] = json!(-5);
+    for (case, update) in [
+        ("total_amount as a string", amount_text),
+        ("no telegram_payment_charge_id", no_charge),
+        ("no message.from", no_from),
+        ("a negative from.id", negative_payer),
+    ] {
+        let reply = post_update(&st, &update).await;
+        if reply.status.as_u16() != 500 {
+            failures.push(format!(
+                "{case}: expected 500, got {}",
+                reply.status.as_u16()
+            ));
+        }
+    }
+    let payments = payment_rows(&st).await;
+    if payments != 0 {
+        failures.push(format!("payments rows: expected 0, got {payments}"));
+    }
+    report(&failures);
+}

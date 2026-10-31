@@ -1,6 +1,7 @@
 //! `POST /telegram/webhook` (K17): the one door for Telegram's updates. The secret header is compared in constant
-//! time before anything is parsed; the body is read as bytes and decoded as frankenstein's `Update`, and an update
-//! the server cannot decode is acknowledged unless a money fact would be lost.
+//! time before anything is parsed; the body is read as bytes and decoded as frankenstein's `Update`. A body that
+//! decode refuses is read again by a lenient payment probe, so a payment the pinned types cannot decode still reaches
+//! the same grant; anything else undecodable is acknowledged, and an unreadable payment is retried.
 //!
 //! Logs never carry the body, the headers or the secret: a decode error is logged by its class and position only,
 //! because its text can quote a field value.
@@ -11,6 +12,8 @@ use axum::http::{HeaderMap, StatusCode};
 use frankenstein::payments::PreCheckoutQuery;
 use frankenstein::types::Message;
 use frankenstein::updates::{Update, UpdateContent};
+use serde::Deserialize;
+use serde_json::Value;
 use subtle::ConstantTimeEq;
 
 use crate::AppState;
@@ -22,6 +25,17 @@ pub const WEBHOOK_BODY_LIMIT: usize = 1024 * 1024;
 
 /// The header Telegram sends `setWebhook`'s `secret_token` in.
 const SECRET_HEADER: &str = "x-telegram-bot-api-secret-token";
+
+/// The `successful_payment` fields the grant reads, decoded leniently (K17): unknown fields are ignored and
+/// `provider_payment_charge_id` may be absent. Refunds are not probed: they are a later lane's.
+#[derive(Deserialize)]
+struct ProbeSuccessful {
+    currency: String,
+    total_amount: u32,
+    invoice_payload: String,
+    telegram_payment_charge_id: String,
+    provider_payment_charge_id: Option<String>,
+}
 
 /// What the handler made of an update: acknowledged (200, Telegram forgets it) or to be redelivered (500).
 enum Handled {
@@ -58,16 +72,68 @@ fn secret_ok(headers: &HeaderMap, secret: &[u8]) -> bool {
 async fn handle(st: &AppState, body: &[u8]) -> Handled {
     match serde_json::from_slice::<Update>(body) {
         Ok(update) => dispatch(st, update).await,
-        Err(e) => {
-            tracing::warn!(
-                class = ?e.classify(),
-                line = e.line(),
-                column = e.column(),
-                "webhook: undecodable update acknowledged"
-            );
-            Handled::Ack
-        }
+        Err(e) => probe(st, body, &e).await,
     }
+}
+
+/// K17: a body the full decode refused, navigated as plain JSON, so a malformed sibling field cannot hide a payment.
+/// An update whose `message.successful_payment` is present and not null is payment-bearing: with its money fields
+/// and a payer id in `i64` readable it goes through the same grant, else it is retried (500), never acknowledged
+/// away. Anything else (not JSON, an unknown update kind, a changed non-payment type) is acknowledged; an
+/// undecodable pre-checkout stays unanswered, so Telegram cancels it and no money moves.
+async fn probe(st: &AppState, body: &[u8], decode: &serde_json::Error) -> Handled {
+    let (class, line, column) = (decode.classify(), decode.line(), decode.column());
+    let Ok(update) = serde_json::from_slice::<Value>(body) else {
+        tracing::warn!(
+            ?class,
+            line,
+            column,
+            "webhook: body is not JSON; acknowledged"
+        );
+        return Handled::Ack;
+    };
+    let Some(payment) = update
+        .pointer("/message/successful_payment")
+        .filter(|v| !v.is_null())
+    else {
+        tracing::warn!(
+            ?class,
+            line,
+            column,
+            "webhook: undecodable update without a payment; acknowledged"
+        );
+        return Handled::Ack;
+    };
+    let payer = update
+        .pointer("/message/from/id")
+        .and_then(Value::as_u64)
+        .and_then(|id| i64::try_from(id).ok());
+    // The probe's own error is not logged: its text can quote a field value.
+    let (Ok(fields), Some(payer)) = (ProbeSuccessful::deserialize(payment), payer) else {
+        tracing::error!(
+            ?class,
+            line,
+            column,
+            "webhook: payment update unreadable; Telegram redelivers"
+        );
+        return Handled::Retry;
+    };
+    tracing::warn!(
+        ?class,
+        line,
+        column,
+        charge = %fields.telegram_payment_charge_id,
+        "webhook: payment read by the lenient probe"
+    );
+    let fact = PaymentFact {
+        payer: UserId(payer),
+        currency: fields.currency,
+        total_amount: fields.total_amount,
+        invoice_payload: fields.invoice_payload,
+        charge: ChargeId(fields.telegram_payment_charge_id),
+        provider_charge: fields.provider_payment_charge_id.unwrap_or_default(),
+    };
+    grant(st, &fact).await
 }
 
 /// One decoded update: a pre-checkout is decided and answered, a message is read for a payment; every other kind is
