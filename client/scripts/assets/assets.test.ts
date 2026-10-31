@@ -1,14 +1,26 @@
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import sharp from 'sharp';
-import { describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { ASSET_ID_RE, decodeAssetCatalog, decodeAssetManifest, decodeCoverManifest } from '../../src/story/catalog.ts';
-import type { CatalogImage, CatalogIssue } from '../../src/story/catalog.ts';
+import type { CatalogImage, CatalogIssue, ChapterListEntry } from '../../src/story/catalog.ts';
 import type { AssetId } from '../../src/story/staging.ts';
+import { main } from '../assets.ts';
+import type { Encoders } from '../assets.ts';
+import { decodeChapterList, decodeStoryUsage } from '../story/emit.ts';
 import { encodeImage } from './encode.ts';
+import { assetUsage, decodeAssetFingerprints, sha256Hex, tierOf } from './manifest.ts';
+import type { AssetUsage } from './manifest.ts';
 import { renderPlaceholder } from './placeholder.ts';
 import { synthWav } from './synth.ts';
+
+const CLIENT_DIR = fileURLToPath(new URL('../..', import.meta.url));
+const ASSETS_SCRIPT = fileURLToPath(new URL('../assets.ts', import.meta.url));
 
 // ---------------------------------------------------------------------------------------------------------------
 // The catalog entry schema (assets/catalog.json): seven namespaces, every entry a placeholder's parameters.
@@ -380,4 +392,260 @@ describe('catalog manifests', () => {
     expect(refused({ assets: { 'cover/manor': audio('sfx', 'cover-manor-1a2b3c4d') } })).toContainEqual(at('assets.cover/manor.kind'));
     expect(refused({ assets: {}, chapterId: 'ch1' })).toEqual([at('chapterId')]);
   });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The asset tool (manifest.ts + assets.ts) on temporary repositories: tiering, the manifests, covers, the paid
+// fingerprints, the sweep, and the CLI. In-process runs take fast stand-in encoders; one spawned run takes sharp.
+
+const CH1 = { id: 'ch1', entry: 'ch1/main.ink', paid: false, next: 'ch2' };
+const CH2 = { id: 'ch2', entry: 'ch2/main.ink', paid: true, productId: 'chapter:ch2', next: null };
+const REPO_CATALOG = {
+  bg: { cafe: { placeholder: { hue: 18 } }, archive: { placeholder: { hue: 45 } }, room: { placeholder: { hue: 30 } } },
+  chars: { ally: { exprs: { neutral: { placeholder: { hue: 200 } } } } },
+  cg: { letter: { placeholder: { hue: 40 } } },
+  bgm: { calm: { placeholder: { hz: 220 } }, mystery: { placeholder: { hz: 196 } } },
+  sfx: { door: { placeholder: { hz: 440 } } },
+  prop: { note: { placeholder: { hue: 85 } } },
+  cover: { manor: { placeholder: { hue: 35 } } },
+};
+/** ch1 (free) names bg/cafe; ch2 (paid) names bg/cafe too, and bg/archive and bgm/mystery only it names. */
+const REPO_USAGE = {
+  chapters: {
+    ch1: { assets: ['bg/cafe', 'bgm/calm', 'char/ally/neutral'], knots: {} },
+    ch2: { assets: ['bg/archive', 'bg/cafe', 'bgm/mystery'], knots: {} },
+  },
+};
+
+function writeRepo(root: string, files: Readonly<Record<string, unknown>> = {}): void {
+  const all: Record<string, unknown> = {
+    'story/chapters.json': [CH1, CH2],
+    'assets/catalog.json': REPO_CATALOG,
+    'server/content/build/usage.json': REPO_USAGE,
+    ...files,
+  };
+  for (const [rel, value] of Object.entries(all)) {
+    plant(root, rel, typeof value === 'string' ? value : JSON.stringify(value));
+  }
+}
+
+function plant(root: string, rel: string, content: string | Uint8Array): void {
+  const abs = join(root, ...rel.split('/'));
+  mkdirSync(dirname(abs), { recursive: true });
+  writeFileSync(abs, content);
+}
+
+function readRel(root: string, rel: string): string {
+  return readFileSync(join(root, ...rel.split('/')), 'utf8');
+}
+
+function listDir(root: string, rel: string): string[] {
+  const abs = join(root, ...rel.split('/'));
+  return existsSync(abs) ? readdirSync(abs).sort() : [];
+}
+
+/** Stand-ins for sharp: distinct bytes per SVG, the dimensions of its root (as sharp reports them for an SVG). */
+const FAKE_ENCODERS: Encoders = {
+  encodeImage: (svg) => {
+    const text = new TextDecoder().decode(svg);
+    const size = (attr: string): number => Number(new RegExp(String.raw`^<svg\b[^>]*\s${attr}="(\d+)"`).exec(text)?.[1]);
+    const tag = sha256Hex(svg).slice(0, 16);
+    return Promise.resolve({ avif: utf8.encode(`avif ${tag}`), webp: utf8.encode(`webp ${tag}`), w: size('width'), h: size('height') });
+  },
+  synthWav,
+};
+
+async function runTool(root: string, encoders = FAKE_ENCODERS): Promise<{ code: number; out: string[]; err: string[] }> {
+  const out: string[] = [];
+  const err: string[] = [];
+  const log = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => void out.push(args.map(String).join(' ')));
+  const error = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => void err.push(args.map(String).join(' ')));
+  try {
+    return { code: await main([], root, encoders), out, err };
+  } finally {
+    log.mockRestore();
+    error.mockRestore();
+  }
+}
+
+function decodedUsage(): AssetUsage {
+  const u = decodeStoryUsage(REPO_USAGE);
+  if (!u.ok) {
+    throw new Error(`invariant: the fixture usage decodes: ${u.error.join('; ')}`);
+  }
+  return assetUsage(u.value);
+}
+
+function decodedChapters(): readonly ChapterListEntry[] {
+  const c = decodeChapterList([CH1, CH2]);
+  if (!c.ok) {
+    throw new Error('invariant: the fixture chapter list decodes');
+  }
+  return c.value;
+}
+
+describe('assets', () => {
+  let repo = '';
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'assets-'));
+  });
+  afterEach(() => {
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  test('assets: paid-only asset is never routed public', async () => {
+    expect(tierOf('bg/archive' as AssetId, decodedUsage(), decodedChapters())).toBe('paid');
+    expect(tierOf('bg/cafe' as AssetId, decodedUsage(), decodedChapters())).toBe('public');
+    writeRepo(repo);
+    const r = await runTool(repo);
+    expect(r.code, r.err.join('\n')).toBe(0);
+    const paid = listDir(repo, 'server/content/assets');
+    expect(paid.filter((n) => /^bg-archive-[0-9a-f]{8}\.(avif|webp)$/.test(n))).toHaveLength(2);
+    expect(listDir(repo, 'client/public/assets').filter((n) => n.startsWith('bg-archive-') || n.startsWith('bgm-mystery-'))).toEqual([]);
+    const ch2 = JSON.parse(readRel(repo, 'server/content/chapters/ch2/assets.json')) as { assets: Record<string, RawEntry> };
+    expect(ch2.assets['bg/archive']?.['avif']).toEqual({ url: expect.stringMatching(/^\/api\/assets\/bg-archive-[0-9a-f]{8}\.avif$/) as string, bytes: expect.any(Number) as number });
+    // The shared asset is public in both manifests: one entry, one public file.
+    const ch1 = JSON.parse(readRel(repo, 'client/src/story-gen/free/ch1.assets.json')) as { assets: Record<string, RawEntry> };
+    expect(ch2.assets['bg/cafe']).toEqual(ch1.assets['bg/cafe']);
+    expect(ch1.assets['bg/cafe']?.['avif']).toEqual({ url: expect.stringMatching(/^\/assets\/bg-cafe-[0-9a-f]{8}\.avif$/) as string, bytes: expect.any(Number) as number });
+    expect(readRel(repo, 'client/src/story-gen/free/ch1.assets.json')).not.toContain('/api/');
+  });
+
+  test('assets: covers always public', async () => {
+    expect(tierOf('cover/manor' as AssetId, decodedUsage(), decodedChapters())).toBe('public'); // no chapter names it
+    writeRepo(repo);
+    const r = await runTool(repo);
+    expect(r.code, r.err.join('\n')).toBe(0);
+    expect(r.out).not.toContain('asset unused: cover/manor');
+    expect(listDir(repo, 'client/public/assets').filter((n) => n.startsWith('cover-manor-'))).toHaveLength(2);
+    const covers = decodeCoverManifest(JSON.parse(readRel(repo, 'client/src/story-gen/covers.json')));
+    expect(covers.ok && Object.entries(covers.value.assets).map(([id, e]) => [id, e.w, e.h])).toEqual([['cover/manor', 360, 640]]);
+    // A cover belongs to no chapter manifest.
+    expect(readRel(repo, 'client/src/story-gen/free/ch1.assets.json')).not.toContain('cover/');
+  });
+
+  test('assets: unused asset is skipped and reported', async () => {
+    writeRepo(repo);
+    const r = await runTool(repo);
+    expect(r.code, r.err.join('\n')).toBe(0);
+    expect(r.out.filter((l) => l.startsWith('asset unused: '))).toEqual([
+      'asset unused: bg/room',
+      'asset unused: cg/letter',
+      'asset unused: prop/note',
+      'asset unused: sfx/door',
+    ]);
+    expect(r.out).toContainEqual(expect.stringMatching(/^assets: 3 public, 2 paid, 4 unused, 1 covers; /));
+    const everything = [...listDir(repo, 'client/public/assets'), ...listDir(repo, 'server/content/assets')];
+    expect(everything.filter((n) => /^(bg-room|cg-letter|prop-note|sfx-door)-/.test(n))).toEqual([]);
+  });
+
+  test('assets: paid manifest keeps the server fixture keys', async () => {
+    writeRepo(repo);
+    expect((await runTool(repo)).code).toBe(0);
+    const planned = JSON.parse(readRel(repo, 'server/content/chapters/ch2/assets.json')) as { assets: Record<string, RawEntry> };
+    expect(decodeAssetManifest(planned)).toEqual({ ok: true, value: planned });
+    const committed = fixture('ch2') as { assets: Record<string, RawEntry> };
+    // Per kind, the entry keys and each URL slot's keys equal the committed fixture's: what AssetProbe reads.
+    const shape = (m: { assets: Record<string, RawEntry> }): Record<string, string> => {
+      const out: Record<string, string> = {};
+      for (const e of Object.values(m.assets)) {
+        const slots = Object.entries(e).filter(([, v]) => typeof v === 'object' && v !== null);
+        out[String(e['kind'])] = JSON.stringify([Object.keys(e).sort(), slots.map(([k, v]) => [k, Object.keys(v as object).sort()])]);
+      }
+      return out;
+    };
+    expect(shape(planned)).toEqual(shape(committed));
+    const gated = Object.values(planned.assets).flatMap((e) =>
+      Object.values(e).flatMap((v) => (typeof v === 'object' && v !== null && 'url' in v ? [String(v.url)] : [])),
+    );
+    expect(gated.filter((u) => u.startsWith('/api/assets/'))).toHaveLength(3);
+    for (const url of gated.filter((u) => u.startsWith('/api/assets/'))) {
+      const name = url.slice('/api/assets/'.length);
+      expect(name).toMatch(/^[a-z0-9][a-z0-9_-]*\.(avif|webp|m4a|wav)$/); // server/src/content.rs gated_asset_type
+      expect(existsSync(join(repo, 'server', 'content', 'assets', name)), name).toBe(true);
+    }
+  });
+
+  test('assets: fingerprints list every paid file with its hash', async () => {
+    writeRepo(repo);
+    expect((await runTool(repo)).code).toBe(0);
+    const fp = decodeAssetFingerprints(JSON.parse(readRel(repo, 'server/content/build/fingerprints.assets.json')));
+    expect(fp.ok).toBe(true);
+    const files = fp.ok ? fp.value.files : [];
+    const onDisk = listDir(repo, 'server/content/assets');
+    expect(files.map((f) => f.name)).toEqual(onDisk); // every paid file, sorted by name, and nothing else
+    expect(files.map((f) => [f.asset, f.name.slice(f.name.lastIndexOf('.'))]).sort()).toEqual([
+      ['bg/archive', '.avif'],
+      ['bg/archive', '.webp'],
+      ['bgm/mystery', '.wav'],
+    ]);
+    for (const f of files) {
+      expect(f.sha256, f.name).toBe(sha256Hex(readFileSync(join(repo, 'server', 'content', 'assets', f.name))));
+    }
+    // The decoder refuses what is not this format (L3b's placeholder fixture held bare names).
+    for (const bad of [{ files: ['bg-archive-0123abcd.avif'] }, { files: [{ asset: 'bg/archive', name: 'x.avif', sha256: 'abc' }] }, { files: [] , extra: 1 }]) {
+      expect(decodeAssetFingerprints(bad).ok, JSON.stringify(bad)).toBe(false);
+    }
+  });
+
+  test('assets: stale outputs are swept', async () => {
+    writeRepo(repo);
+    // An old public copy of an asset that is paid-only now, and an old paid file no plan names.
+    plant(repo, 'client/public/assets/bg-archive-deadbeef.avif', 'old public copy');
+    plant(repo, 'server/content/assets/old-00000000.wav', 'old paid file');
+    const r = await runTool(repo);
+    expect(r.code, r.err.join('\n')).toBe(0);
+    expect(existsSync(join(repo, 'client', 'public', 'assets', 'bg-archive-deadbeef.avif'))).toBe(false);
+    expect(existsSync(join(repo, 'server', 'content', 'assets', 'old-00000000.wav'))).toBe(false);
+    expect(listDir(repo, 'client/public/assets').filter((n) => n.startsWith('bg-cafe-'))).toHaveLength(2);
+    expect(listDir(repo, 'server/content/assets')).toHaveLength(3);
+    expect(r.out).toContainEqual(expect.stringMatching(/; \d+ files written, 2 stale removed$/));
+  });
+
+  test('assets: failed run writes nothing', async () => {
+    const ghost = { chapters: { ...REPO_USAGE.chapters, ch1: { assets: ['bg/cafe', 'bg/ghost'], knots: {} } } };
+    writeRepo(repo, { 'server/content/build/usage.json': ghost });
+    plant(repo, 'client/public/assets/bg-archive-deadbeef.avif', 'old public copy');
+    const r = await runTool(repo);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('assets: ch1 uses bg/ghost, which assets/catalog.json does not define');
+    expect(listDir(repo, 'client/public/assets')).toEqual(['bg-archive-deadbeef.avif']); // nothing swept, nothing new
+    expect(listDir(repo, 'server/content/assets')).toEqual([]);
+    expect(existsSync(join(repo, 'client', 'src', 'story-gen'))).toBe(false);
+    // An unreadable input is the same: reported, nothing written.
+    rmSync(join(repo, 'assets', 'catalog.json'));
+    const missing = await runTool(repo);
+    expect(missing.code).toBe(1);
+    expect(missing.err).toContain('assets: assets/catalog.json: missing');
+    expect(listDir(repo, 'client/public/assets')).toEqual(['bg-archive-deadbeef.avif']);
+  });
+
+  test('assets: cli runs through a linked path under preserve-symlinks-main', async () => {
+    // Node keeps the link's spelling for the main module under the flag; the guard canonicalises both sides, and the
+    // main module's relative imports stay under scripts/, so the run happens. The real encoders (sharp) run here.
+    const one = { bg: { cafe: { placeholder: { hue: 18 } } }, chars: {}, cg: {}, bgm: {}, sfx: {}, prop: {}, cover: {} };
+    writeRepo(repo, {
+      'story/chapters.json': [{ ...CH1, next: null }],
+      'assets/catalog.json': one,
+      'server/content/build/usage.json': { chapters: { ch1: { assets: ['bg/cafe'], knots: {} } } },
+    });
+    const link = join(repo, 'scripts');
+    symlinkSync(dirname(ASSETS_SCRIPT), link, process.platform === 'win32' ? 'junction' : 'dir');
+    try {
+      const r = spawnSync(process.execPath, ['--preserve-symlinks-main', join(link, 'assets.ts'), '--root', repo], {
+        cwd: CLIENT_DIR,
+        encoding: 'utf8',
+      });
+      expect(r.status, r.stdout + r.stderr).toBe(0);
+      expect(r.stdout).toMatch(/^assets: 1 public, 0 paid, 0 unused, 0 covers; 5 files written, 0 stale removed$/m);
+    } finally {
+      unlinkSync(link); // the link only: afterEach's recursive delete never meets a way into client/scripts
+    }
+    // sharp's output: the manifest's dimensions are the canonical size, and the AVIF reads back at them.
+    const ch1 = decodeAssetManifest(JSON.parse(readRel(repo, 'client/src/story-gen/free/ch1.assets.json')));
+    const cafe = ch1.ok ? ch1.value.assets['bg/cafe' as AssetId] : undefined;
+    expect(cafe?.kind === 'image' && [cafe.w, cafe.h, cafe.decodedBytes]).toEqual([1080, 2048, 1080 * 2048 * 4]);
+    const name = cafe?.kind === 'image' ? cafe.avif.url.slice('/assets/'.length) : '';
+    expect(await dims(readFileSync(join(repo, 'client', 'public', 'assets', name)))).toEqual({ w: 1080, h: 2048, format: 'heif' });
+  }, 30_000);
 });
