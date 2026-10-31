@@ -177,6 +177,12 @@ const cg = (c: string | null, t: 'fade' | 'cut' = 'fade', ms = 500): VisualComma
   ms,
 });
 const wait = (ms: number): VisualCommand => ({ kind: 'wait', ms });
+const hide = (c: string, t: 'fade' | 'cut' = 'fade', ms = 300): VisualCommand => ({
+  kind: 'hide',
+  char: c === 'all' ? 'all' : (c as CharId),
+  t,
+  ms,
+});
 const props = (...ps: ReadonlyArray<readonly [string, Rect]>): VisualCommand => ({
   kind: 'props',
   props: ps.map(([prop, rect]) => ({ prop: prop as PropId, rect })),
@@ -432,4 +438,52 @@ test('render_loop_idles', async () => {
   expect(listeners.size).toBe(0);
   h.ex.destroy();
   loop.destroy();
+});
+
+test('executor: rebind re-creates the stage on a new adapter', async () => {
+  const h = harness();
+  await h.ex.apply([bg('room', 'cut'), show('ally', 'neutral', 'left', 'cut'), props(['lamp', LAMP])], NOW);
+  const box = (x: { p: Placement }): Placement => ({ x: x.p.x, y: x.p.y, w: x.p.w, h: x.p.h });
+  const before = [...h.live('bg'), ...h.inGroup('ally'), ...h.live('props')].map(box);
+  const loaded = ['bg/room', 'char/ally/neutral', 'prop/lamp'].map(h.loadsOf);
+  // The old stage died with its Application (context loss): nothing is destroyed on it, everything is made anew.
+  const fresh = recordingStage(S390);
+  h.ex.rebind(fresh.adapter);
+  const after = [...fresh.live('bg'), ...fresh.inGroup('ally'), ...fresh.live('props')];
+  expect(after.length).toBe(3);
+  expect(after.map(box)).toEqual(before);
+  expect(after.map((x) => x.p.alpha)).toEqual([1, 1, 1]);
+  expect(fresh.log.filter((e) => e.startsWith('destroy:'))).toEqual([]);
+  // Every holder is kept: no load, no release.
+  expect(['bg/room', 'char/ally/neutral', 'prop/lamp'].map(h.loadsOf)).toEqual(loaded);
+  expect(['bg/room', 'char/ally/neutral', 'prop/lamp'].map(h.releasedOf)).toEqual([0, 0, 0]);
+  expect(h.registry.stats().live).toBe(3);
+  // From now on the executor drives the new stage.
+  await h.ex.apply([hide('ally', 'cut')], NOW);
+  expect(fresh.inGroup('ally').length).toBe(0);
+  expect(h.releasedOf('char/ally/neutral')).toBe(1);
+  h.ex.destroy();
+  expect(fresh.live('bg').length + fresh.live('props').length).toBe(0);
+});
+
+test('executor: prop rects in stage px', async () => {
+  const h = harness();
+  await h.ex.apply([bg('room', 'cut'), props(['lamp', LAMP], ['key', KEY])], NOW);
+  expect(h.ex.propRects()).toEqual([
+    { prop: 'lamp', ...propPlacement(S390, LAMP) },
+    { prop: 'key', ...propPlacement(S390, KEY) },
+  ]);
+  const small = { w: 320, h: 568 };
+  h.stage.size = small;
+  h.ex.relayout();
+  expect(h.ex.propRects()).toEqual([
+    { prop: 'lamp', ...propPlacement(small, LAMP) },
+    { prop: 'key', ...propPlacement(small, KEY) },
+  ]);
+  // The sprites moved with them.
+  expect(h.live('props').map((x) => ({ x: x.p.x, y: x.p.y, w: x.p.w, h: x.p.h }))).toEqual([
+    propPlacement(small, LAMP),
+    propPlacement(small, KEY),
+  ]);
+  h.ex.destroy();
 });

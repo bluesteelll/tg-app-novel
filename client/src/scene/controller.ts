@@ -6,7 +6,7 @@ import { Application, Container, Graphics, Sprite } from 'pixi.js';
 import type { ApplicationOptions, Texture } from 'pixi.js';
 
 import type { AssetManifest, FetchAsset, Result } from '../story/catalog.ts';
-import type { AssetId } from '../story/staging.ts';
+import type { AssetId, PropId } from '../story/staging.ts';
 import { createExecutor, gsapTicker, pauseAll, resumeAll } from './executor.ts';
 import type { Executor, GroupRef, Layer, SceneSnapshot, SpriteRef, StageAdapter, VisualCommand } from './executor.ts';
 import { renderResolution } from './layout.ts';
@@ -34,20 +34,31 @@ export interface SceneController {
   releasePreload(tag: string): void;
   /** The blocking load of a batch's assets. */
   ensure(ids: readonly AssetId[], signal: AbortSignal): Promise<Result<void, SceneError>>;
+  /** Context-loss check + rebuild. */
+  onActivated(): Promise<void>;
   pause(): void;
   resume(): void;
   stats(): { liveTextures: number; liveBytes: number; pendingLoads: number; activeTimelines: number; overCap: number };
+  /** Wired to __novelDebug only under __TG_MOCK__ (perf e2e). */
+  debugForceContextLoss(): void;
+  /** Page CSS px of the live prop sprites (PUZZLES-PLAN X10); __novelDebug only under __TG_MOCK__ (puzzles e2e). */
+  debugPropRects(): ReadonlyArray<{ prop: PropId; x: number; y: number; w: number; h: number }>;
   destroy(): void;
 }
+
+/** PROTOTYPE-PLAN concurrency table: a context still lost this long after `activated` is rebuilt. */
+export const CONTEXT_GRACE_MS = 2000;
 
 type Layers = { readonly bg: Container; readonly props: Container; readonly chars: Container; readonly cg: Container; readonly fx: Graphics };
 type Mounted = {
   readonly host: HTMLElement;
-  readonly app: Application;
+  readonly resolution: number;
+  /** Replaced once by the rebuild after an unrecoverable context loss. */
+  app: Application;
   readonly registry: AssetRegistry<Texture>;
   readonly scheduler: AssetScheduler;
   readonly loop: RenderLoop;
-  readonly executor: Executor;
+  readonly executor: Executor<Texture>;
   readonly observer: ResizeObserver;
 };
 
@@ -156,6 +167,10 @@ export function createSceneController(): SceneController {
   let core: Mounted | null = null;
   let pendingManifest: AssetManifest | null = null;
   let paused = false;
+  /** The canvas reported webglcontextlost and no webglcontextrestored since. */
+  let lost = false;
+  let activating: Promise<void> | null = null;
+  let grace: { timer: ReturnType<typeof setTimeout>; wake: () => void } | null = null;
 
   const onResize = (): void => {
     const c = core;
@@ -163,7 +178,82 @@ export function createSceneController(): SceneController {
       return;
     }
     c.app.renderer.resize(c.host.clientWidth, c.host.clientHeight);
+    c.executor.relayout();
     c.loop.requestRender();
+  };
+  const onLost = (): void => {
+    lost = true;
+  };
+  // Critique W3: Pixi restores the context itself and re-uploads lazily, but a restored drawing buffer is cleared and
+  // nothing renders on demand unless asked; the stage would stay black until the next visual batch.
+  const onRestored = (): void => {
+    lost = false;
+    core?.loop.requestRender();
+  };
+  const watch = (canvas: HTMLCanvasElement): void => {
+    canvas.addEventListener('webglcontextlost', onLost);
+    canvas.addEventListener('webglcontextrestored', onRestored);
+  };
+  const unwatch = (canvas: HTMLCanvasElement): void => {
+    canvas.removeEventListener('webglcontextlost', onLost);
+    canvas.removeEventListener('webglcontextrestored', onRestored);
+  };
+  const isLost = (app: Application): boolean => {
+    const r = app.renderer;
+    return lost || ('gl' in r && r.context.isLost);
+  };
+  /** Resolves after CONTEXT_GRACE_MS, or at once when the controller is destroyed. */
+  const waitGrace = (): Promise<void> =>
+    new Promise((resolve) => {
+      const wake = (): void => {
+        grace = null;
+        resolve();
+      };
+      grace = { timer: setTimeout(wake, CONTEXT_GRACE_MS), wake };
+    });
+
+  /**
+   * D13: a new Application on the same host. The registry's textures stay: their sources keep the ImageBitmaps, and GPU
+   * copies are per renderer, so the new one uploads them on first use. The executor re-creates the stage on it.
+   */
+  const rebuild = async (c: Mounted): Promise<void> => {
+    const app = new Application();
+    try {
+      await app.init(appOptions(c.host, c.resolution));
+    } catch (e) {
+      console.error('scene: rebuild after context loss failed', e);
+      return;
+    }
+    if (core !== c) {
+      app.destroy({ removeView: true }, { children: true });
+      return;
+    }
+    const old = c.app;
+    unwatch(old.canvas);
+    c.host.appendChild(app.canvas);
+    c.executor.rebind(pixiAdapter(app, createLayers(app)));
+    c.app = app;
+    lost = false;
+    watch(app.canvas);
+    // Sprites and layers go with the old stage; textures and their sources are the registry's and are kept.
+    old.destroy({ removeView: true }, { children: true, texture: false, textureSource: false });
+    c.loop.requestRender();
+  };
+
+  const activated = async (c: Mounted): Promise<void> => {
+    if (!isLost(c.app)) {
+      c.loop.requestRender();
+      return;
+    }
+    await waitGrace();
+    if (core !== c) {
+      return;
+    }
+    if (isLost(c.app)) {
+      await rebuild(c);
+    } else {
+      c.loop.requestRender();
+    }
   };
 
   return {
@@ -194,7 +284,8 @@ export function createSceneController(): SceneController {
         variant: avif ? 'avif' : 'webp',
       });
       const scheduler = createAssetScheduler({ registry, onError: report });
-      const loop = createRenderLoop({ ticker: gsapTicker, render: () => app.render() });
+      // The current Application: the rebuild replaces it.
+      const loop = createRenderLoop({ ticker: gsapTicker, render: () => core?.app.render() });
       const executor = createExecutor<Texture>({
         adapter: pixiAdapter(app, layers),
         registry,
@@ -205,8 +296,9 @@ export function createSceneController(): SceneController {
       });
       // Telegram changes the host's height without a window resize; Pixi's resizeTo listens to window only.
       const observer = new ResizeObserver(onResize);
-      core = { host, app, registry, scheduler, loop, executor, observer };
+      core = { host, resolution, app, registry, scheduler, loop, executor, observer };
       observer.observe(host);
+      watch(app.canvas);
       if (pendingManifest !== null) {
         scheduler.setChapter(pendingManifest);
         pendingManifest = null;
@@ -254,6 +346,17 @@ export function createSceneController(): SceneController {
     ensure(ids, signal) {
       return core === null ? Promise.resolve(fail(`ensure while ${state}`)) : core.scheduler.ensure(ids, signal);
     },
+    onActivated() {
+      const c = core;
+      if (c === null) {
+        return Promise.resolve();
+      }
+      // One check at a time: a second activated during the grace period joins the first.
+      activating ??= activated(c).finally(() => {
+        activating = null;
+      });
+      return activating;
+    },
     pause() {
       if (core === null || paused) {
         return;
@@ -283,6 +386,24 @@ export function createSceneController(): SceneController {
         overCap: r.overCap,
       };
     },
+    debugForceContextLoss() {
+      const r = core?.app.renderer;
+      // Pixi restores a forced loss on the next tick (GlContextSystem.handleContextLost); webglcontextrestored follows.
+      if (r !== undefined && 'gl' in r) {
+        r.context.forceContextLoss();
+      }
+    },
+    debugPropRects() {
+      const c = core;
+      if (c === null) {
+        return [];
+      }
+      // Sprites are drawn in the canvas box; page px = the canvas origin in the page + stage px.
+      const box = c.app.canvas.getBoundingClientRect();
+      const x0 = box.left + window.scrollX;
+      const y0 = box.top + window.scrollY;
+      return c.executor.propRects().map((r) => ({ prop: r.prop, x: x0 + r.x, y: y0 + r.y, w: r.w, h: r.h }));
+    },
     destroy() {
       if (state === 'destroyed') {
         return;
@@ -295,9 +416,14 @@ export function createSceneController(): SceneController {
         paused = false;
         resumeAll();
       }
+      if (grace !== null) {
+        clearTimeout(grace.timer);
+        grace.wake();
+      }
       if (c === null) {
         return;
       }
+      unwatch(c.app.canvas);
       // Executor (timelines, sprites, scene:*), scheduler (preloads, ensure), registry (every texture and bitmap),
       // render loop, observer, then the Application with its layers.
       c.executor.destroy();

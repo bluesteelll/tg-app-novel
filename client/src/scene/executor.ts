@@ -6,7 +6,7 @@
 import { gsap } from 'gsap/gsap-core';
 
 import { ROOM_SOURCE } from '../geom/cover.ts';
-import type { Size } from '../geom/cover.ts';
+import type { Box, Size } from '../geom/cover.ts';
 import type { ImageEntry, Result } from '../story/catalog.ts';
 import type { AssetId, CharId, PropId, PropsCommand, Rect, Slot, StagingCommand, StagingSnapshot } from '../story/staging.ts';
 import { backdropPlacement, charPlacement, propPlacement } from './layout.ts';
@@ -59,7 +59,7 @@ export interface StageAdapter<T> {
   fx(alpha: number): void;
 }
 
-export interface Executor {
+export interface Executor<T> {
   /** Resolves when the batch's transitions and wait have ended (or it was completed, or the executor destroyed). */
   apply(b: readonly VisualCommand[], o: { instant: boolean }): Promise<void>;
   /** A tap during a transition: every running batch jumps to its end state. */
@@ -68,6 +68,15 @@ export interface Executor {
   restore(s: SceneSnapshot): Promise<void>;
   /** The logical stage: the end state of the last batch, from the moment it started. */
   snapshot(): SceneSnapshot;
+  /** The stage size changed: a running batch completes, then every visual is placed for the new size. */
+  relayout(): void;
+  /**
+   * A new stage after an unrecoverable context loss: a running batch completes on the old one, whose display objects
+   * die with their Application; what the stage showed is re-created instantly on `a`, every holder kept (no load).
+   */
+  rebind(a: StageAdapter<T>): void;
+  /** Stage px boxes of the live prop sprites, in the props command's order (debugPropRects adds the page offset). */
+  propRects(): ReadonlyArray<{ prop: PropId } & Box>;
   stats(): { activeTimelines: number };
   /** Kills every timeline, settles every pending apply, destroys every sprite and releases every `scene:*` holder. */
   destroy(): void;
@@ -176,7 +185,8 @@ const sameRect = (a: Rect, b: Rect): boolean => a.every((v, i) => v === b[i]);
 type Hold<T> = Promise<Result<TextureHandle<T>, AssetError>>;
 type View<T> = { readonly slot: string; readonly handle: TextureHandle<T>; readonly sprite: SpriteRef };
 type CharView<T> = { readonly char: CharId; readonly group: GroupRef; at: Slot; view: View<T> };
-type PropView<T> = View<T> & { readonly prop: PropId; rect: Rect };
+/** `box`: where the sprite was last placed, in stage px (propRects). */
+type PropView<T> = View<T> & { readonly prop: PropId; rect: Rect; box: Box };
 /** A visual on its way out: destroyed when its transition ends, when its batch finishes, or by destroy(). */
 type Retiree<T> = { readonly views: readonly View<T>[]; readonly group: GroupRef | null };
 type Timeline = ReturnType<typeof gsap.timeline>;
@@ -192,9 +202,9 @@ type Batch<T> = {
   readonly settle: () => void;
 };
 
-export function createExecutor<T>(deps: ExecutorDeps<T>): Executor {
+export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
   const { registry, resolve, loop, resolution, onSkip } = deps;
-  const adapter = deps.adapter;
+  let adapter = deps.adapter;
   let logical: SceneSnapshot = EMPTY;
   /** holder → asset id → the acquire, for every texture the executor holds (one release per (holder, id)). */
   const holds = new Map<string, Map<AssetId, Hold<T>>>();
@@ -308,7 +318,8 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor {
     adapter.set(v.sprite, { x: c.offsetX, y: c.offsetY, w: ROOM_SOURCE.w * c.scale, h: ROOM_SOURCE.h * c.scale });
   };
   const placeProp = (v: PropView<T>): void => {
-    adapter.set(v.sprite, propPlacement(adapter.size(), v.rect));
+    v.box = propPlacement(adapter.size(), v.rect);
+    adapter.set(v.sprite, v.box);
   };
   const groupAt = (at: Slot, v: View<T>): { x: number; y: number } => {
     const p = charPlacement(adapter.size(), at, v.handle, resolution);
@@ -322,6 +333,15 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor {
     chars.delete(cv.char);
     destroyView(cv.view);
     adapter.dropGroup(cv.group);
+  };
+  /** Character groups in the snapshot's z-order (array order). */
+  const orderChars = (s: SceneSnapshot): void => {
+    s.chars.forEach((c, z) => {
+      const cv = chars.get(c.char);
+      if (cv !== undefined) {
+        adapter.set(cv.group, { z });
+      }
+    });
   };
 
   const finish = (b: Batch<T>): void => {
@@ -400,7 +420,14 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor {
       return v;
     };
     const newProp = (p: { prop: PropId; rect: Rect }, h: TextureHandle<T>, alpha: number): void => {
-      const v: PropView<T> = { slot: propSlot(p.prop), handle: h, sprite: adapter.sprite('props', h), prop: p.prop, rect: p.rect };
+      const v: PropView<T> = {
+        slot: propSlot(p.prop),
+        handle: h,
+        sprite: adapter.sprite('props', h),
+        prop: p.prop,
+        rect: p.rect,
+        box: { x: 0, y: 0, w: 0, h: 0 },
+      };
       props.set(p.prop, v);
       placeProp(v);
       adapter.set(v.sprite, { alpha });
@@ -457,14 +484,6 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor {
         }
       }
     };
-    const orderChars = (): void => {
-      target.chars.forEach((c, z) => {
-        const cv = chars.get(c.char);
-        if (cv !== undefined) {
-          adapter.set(cv.group, { z });
-        }
-      });
-    };
 
     const scene = find(b.cmds, 'scene');
     if (scene !== undefined) {
@@ -498,7 +517,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor {
           }
         }
         syncProps(0);
-        orderChars();
+        orderChars(target);
       });
     } else {
       // §7 step 3: bg, show, hide, cg (and props) start together.
@@ -558,7 +577,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor {
           move(cv.group, from, groupAt(c.at, cv.view), d);
         }
       }
-      orderChars();
+      orderChars(target);
 
       const cgId = want.get('cg') ?? null;
       if ((cg?.handle.id ?? null) !== cgId) {
@@ -666,6 +685,65 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor {
     },
     snapshot() {
       return copy(logical);
+    },
+    relayout() {
+      if (destroyed) {
+        return;
+      }
+      // A running move tweens toward the old stage's coordinates: end it first.
+      complete();
+      for (const v of [bg, cg]) {
+        if (v !== null) {
+          placeBackdrop(v);
+        }
+      }
+      for (const cv of chars.values()) {
+        placeCharSprite(cv.view);
+        adapter.set(cv.group, groupAt(cv.at, cv.view));
+      }
+      for (const v of props.values()) {
+        placeProp(v);
+      }
+      loop.requestRender();
+    },
+    rebind(a) {
+      if (destroyed) {
+        return;
+      }
+      complete();
+      adapter = a;
+      fxAlpha = 0;
+      // After complete() every visual is at its end state: opaque, at its slot.
+      const again = <V extends View<T>>(v: V, layer: Layer, group?: GroupRef): V => {
+        const sprite = adapter.sprite(layer, v.handle, group);
+        adapter.set(sprite, { alpha: 1 });
+        return { ...v, sprite };
+      };
+      if (bg !== null) {
+        bg = again(bg, 'bg');
+        placeBackdrop(bg);
+      }
+      if (cg !== null) {
+        cg = again(cg, 'cg');
+        placeBackdrop(cg);
+      }
+      for (const cv of [...chars.values()]) {
+        const group = adapter.group(cv.char);
+        const view = again(cv.view, 'chars', group);
+        chars.set(cv.char, { char: cv.char, group, at: cv.at, view });
+        placeCharSprite(view);
+        adapter.set(group, { ...groupAt(cv.at, view), alpha: 1 });
+      }
+      orderChars(logical);
+      for (const v of [...props.values()]) {
+        const next = again(v, 'props');
+        props.set(v.prop, next);
+        placeProp(next);
+      }
+      loop.requestRender();
+    },
+    propRects() {
+      return [...props.values()].map((v) => ({ prop: v.prop, ...v.box }));
     },
     stats() {
       return { activeTimelines: active.size };
