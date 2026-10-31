@@ -6,22 +6,35 @@ import type {
   CgId,
   CharId,
   ExprId,
+  KnotName,
   LineId,
   ParsedTags,
+  PuzzleLocalId,
+  SectionId,
   SfxId,
   Slot,
   StagingCommand,
   TagError,
   TrackId,
+  YieldCommand,
 } from './staging.ts';
 
+/** The tag kinds that hand control to the host (STAGING-DSL §6 yield block); the lint learns them only from here. */
+export const YIELD_KINDS = ['puzzle', 'explore'] as const;
+export type YieldKind = (typeof YIELD_KINDS)[number];
+
 /** Every tag kind of STAGING-DSL §6, in table order: `id` is the line ID, the rest are the command kinds. */
-export const TAG_KINDS = ['id', 'bg', 'scene', 'show', 'hide', 'cg', 'bgm', 'sfx', 'wait'] as const;
+export const TAG_KINDS = ['id', 'bg', 'scene', 'show', 'hide', 'cg', 'bgm', 'sfx', 'wait', ...YIELD_KINDS] as const;
 export type TagKind = (typeof TAG_KINDS)[number];
 
 type SameUnion<A, B> = [A] extends [B] ? ([B] extends [A] ? A : never) : never;
 /** `never` when TAG_KINDS and StagingCommand['kind'] drift apart, which fails `check` at every `case` below. */
 type CommandKind = SameUnion<Exclude<TagKind, 'id'>, StagingCommand['kind']>;
+/**
+ * `never` when YIELD_KINDS and YieldCommand['kind'] drift apart (a yield kind listed among the other kinds of
+ * TAG_KINDS, which CommandKind cannot see), which fails `check` where `command` hands a yield to `yieldCommand`.
+ */
+type YieldKindTie = SameUnion<YieldKind, YieldCommand['kind']>;
 
 /** STAGING-DSL §4, exact. */
 export const LINE_ID_RE = /^ch[1-9][0-9]*\.[a-z][a-z0-9_]*\.[0-9a-z]{4}$/;
@@ -33,6 +46,8 @@ const TAG_RE = /^([a-z][a-z0-9_]*)(?:[ \t]*:[ \t]*(.*))?$/;
 const POSITIONAL_RE = /^[a-z0-9][a-z0-9_]*$/;
 const OPTION_RE = /^([a-z]+)=([a-z0-9_]+)$/;
 const INTEGER_RE = /^[0-9]+$/;
+// A puzzle id, a section id or a knot name: stricter than §2's positional and value (PUZZLES-PLAN ids; §10 ink/name).
+const NAME_RE = /^[a-z][a-z0-9_]*$/;
 const MS_MAX = 10000;
 
 /**
@@ -151,6 +166,41 @@ function unknownAsset(tag: string, what: string): TagError {
   return fail(tag, 'unknown-asset', `${what} is not in assets/catalog.json`);
 }
 
+function badName(tag: string, what: string, value: string): TagError {
+  return fail(tag, 'bad-arg', `${what} '${value}' is not [a-z][a-z0-9_]* (§6)`);
+}
+
+/**
+ * A yield tag after its kind is known (§6 `puzzle`, `explore`): arg shape first, then the id shape. Whether the ids
+ * name a puzzle, a section or a knot of the chapter is the story lint's check against the chapter's world.
+ */
+function yieldCommand(tag: string, kind: YieldKindTie, rawArgs: string | undefined): One | TagError {
+  switch (kind) {
+    case 'puzzle': {
+      const a = readArgs(tag, kind, rawArgs, 1, ['then']);
+      if ('reason' in a) return a;
+      const then = a.options.get('then');
+      if (then === undefined) return fail(tag, 'missing-arg', "'puzzle' requires then=<knot> (§6)");
+      const [puzzle] = a.positional as [string];
+      if (!NAME_RE.test(puzzle)) return badName(tag, 'puzzle id', puzzle);
+      if (!NAME_RE.test(then)) return badName(tag, 'then knot', then);
+      // The brands are earned by NAME_RE, as the asset ids' are earned by the catalog.
+      return { kind: 'command', command: { kind, puzzle: puzzle as PuzzleLocalId, then: then as KnotName } };
+    }
+    case 'explore': {
+      const a = readArgs(tag, kind, rawArgs, 1, []);
+      if ('reason' in a) return a;
+      const [section] = a.positional as [string];
+      if (!NAME_RE.test(section)) return badName(tag, 'section id', section);
+      return { kind: 'command', command: { kind, section: section as SectionId } };
+    }
+    default: {
+      const unhandled: never = kind;
+      throw new Error(`invariant: unhandled yield kind ${String(unhandled)}`);
+    }
+  }
+}
+
 const SLOTS: readonly Slot[] = ['left', 'center', 'right'];
 const FADE_CUT = ['fade', 'cut'] as const;
 
@@ -246,6 +296,9 @@ function command(tag: string, kind: CommandKind, rawArgs: string | undefined, as
       if (typeof ms === 'object') return ms;
       return { kind: 'command', command: { kind, ms } };
     }
+    case 'puzzle':
+    case 'explore':
+      return yieldCommand(tag, kind, rawArgs);
     default: {
       const unhandled: never = kind;
       throw new Error(`invariant: unhandled tag kind ${String(unhandled)}`);
@@ -274,7 +327,7 @@ function one(raw: string, assets: AssetIndex): One | TagError {
   return command(tag, kind, m[2], assets);
 }
 
-/** §7: two commands for the same target in one batch (and D5: `hide: all` names every character). */
+/** §7: two commands for the same target in one batch (and D5: `hide: all` names every character); one yield at most. */
 function conflictsOneWay(a: StagingCommand, b: StagingCommand): boolean {
   switch (a.kind) {
     case 'bg':
@@ -290,6 +343,9 @@ function conflictsOneWay(a: StagingCommand, b: StagingCommand): boolean {
     case 'hide':
     case 'sfx':
       return false;
+    case 'puzzle':
+    case 'explore':
+      return b.kind === 'puzzle' || b.kind === 'explore';
     default: {
       const unhandled: never = a;
       throw new Error(`invariant: unhandled command ${String(unhandled)}`);
