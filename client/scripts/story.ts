@@ -185,7 +185,7 @@ function localeStage(
   const enNames = decodeNameTable('locales/en/story.json', readRaw(root, `${EN_DIR}/${NAME_TABLE}`));
   const retired = decodeRetired(readRaw(root, `story/${RETIRED_FILE}`));
   out.push(...inStory([...ru.findings, ...enNames.findings, ...retired.findings]));
-  const r = checkLocales({ chapters: input.chapters, graphs: input.graphs, en, names: { ru: ru.table, en: enNames.table }, cast: input.cast, retired: retired.ids });
+  const r = checkLocales({ chapters: input.chapters, graphs: input.graphs, en, names: { ru: ru.table, en: enNames.table }, cast: input.cast, retired: retired.ids, stories: [] });
   out.push(...inStory(r.findings));
   return { en, names: r.names };
 }

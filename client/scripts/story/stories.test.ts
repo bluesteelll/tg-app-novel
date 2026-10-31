@@ -1,7 +1,8 @@
 // The story list (STAGING-DSL §9, §11 `catalog/stories`; STORIES-PLAN Y2, Y4): the decoder's rules 1-7, the ending
-// checks of rule 8 and the invoice titles of rule 9. Fixtures are inline: chapter-list literals, hand-built graphs with
-// their ink sources, and the decoded committed asset catalog (its covers); the committed cast is never read here. Each
-// case asserts the defect first, then its control: the same input without the defect passes.
+// checks of rule 8, the invoice titles of rule 9, and the story titles and teasers the locale check requires
+// (`loc/missing-name`). Fixtures are inline: chapter-list literals, hand-built graphs with their ink sources, and the
+// decoded committed asset catalog (its covers); the committed cast is never read here. Each case asserts the defect
+// first, then its control: the same input without the defect passes.
 import { readFileSync } from 'node:fs';
 
 import { expect, test } from 'vitest';
@@ -12,6 +13,7 @@ import type { AssetId, ChapterId, KnotName, ProductId } from '../../src/story/st
 import type { StoryNames } from './emit.ts';
 import type { ChapterGraph, KnotNode } from './graph.ts';
 import type { Finding } from './lint.ts';
+import { checkLocales, decodeNameTable } from './locales.ts';
 import { checkEndings, checkInvoiceTitles, decodeStories } from './stories.ts';
 import type { StoryPlan } from './stories.ts';
 
@@ -299,4 +301,30 @@ test('stories: paid chapter title over 32 characters fails', () => {
   ]);
   // The control: exactly 32 code points of two UTF-16 units each; a free chapter's title is no invoice title.
   expect(checkInvoiceTitles(manor({}), LIST, titles({ ru: 'Глава 2', en: '𝔸'.repeat(32) }))).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// locales.ts: a listed story's title and teaser (STAGING-DSL §4)
+
+test('loc: story title and teaser required', () => {
+  // No chapter, an empty cast, one story: only the story's two entries can be missing.
+  const run = (sections: Readonly<Record<string, unknown>>): { findings: string[]; names: StoryNames | null } => {
+    const text = `${JSON.stringify({ names: {}, chapters: {}, ...sections }, null, 2)}
+`;
+    const ru = decodeNameTable('locales/ru/story.json', text);
+    const en = decodeNameTable('locales/en/story.json', text);
+    const names = { ru: ru.table, en: en.table };
+    const r = checkLocales({ chapters: [], graphs: new Map(), en: new Map(), names, cast: {}, retired: new Set(), stories: ['manor' as StoryId] });
+    return { findings: lines([...ru.findings, ...en.findings, ...r.findings]), names: r.names };
+  };
+  const missing = (lang: 'ru' | 'en', what: 'title' | 'teaser'): string =>
+    `E locales/${lang}/story.json:0 loc/missing-name story 'manor' has no ${what} in story/locales/${lang}/story.json (§4)`;
+  const four = [missing('ru', 'title'), missing('en', 'title'), missing('ru', 'teaser'), missing('en', 'teaser')];
+  // Tables without the two sections, then with both sections empty.
+  expect(run({})).toEqual({ findings: four, names: null });
+  expect(run({ stories: {}, teasers: {} })).toEqual({ findings: four, names: null });
+  // The control: the title and the teaser in both tables.
+  const named = run({ stories: { manor: 'Усадьба' }, teasers: { manor: 'Черновик истории.' } });
+  expect(named.findings).toEqual([]);
+  expect(named.names).not.toBeNull();
 });

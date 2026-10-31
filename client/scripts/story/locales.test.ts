@@ -213,7 +213,7 @@ function locales(texts: LocaleTexts = {}): { findings: Finding[]; names: StoryNa
     [CH2_ENTRY.id, linesGraph(CH2_ENTRY.id, lines.ch2)],
   ]);
   const chapters = texts.chapters === undefined ? [CH1_ENTRY, CH2_ENTRY] : texts.chapters;
-  const r = checkLocales({ chapters, graphs, en, names: { ru: ru.table, en: enNames.table }, cast: COMMITTED.cast, retired: retired.ids });
+  const r = checkLocales({ chapters, graphs, en, names: { ru: ru.table, en: enNames.table }, cast: COMMITTED.cast, retired: retired.ids, stories: [] });
   return { findings: [...decoded, ...r.findings], names: r.names };
 }
 
