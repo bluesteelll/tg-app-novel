@@ -1329,3 +1329,20 @@ test("audio: a resume whose deck's play() is refused ends needs-gesture though t
   expect(a.el.refusals).toHaveLength(0); // the resume's own retry met the refusal
   expect(r).toBe('needs-gesture');
 });
+
+test('audio: a tap resume after an element refusal waits for the play() that then succeeds', async () => {
+  vi.useFakeTimers();
+  const { ctx, audio } = setup(); // the context runs (Android: sticky activation), yet the element refuses
+  audio.setChapter(CH1);
+  const a = deck(ctx, 0);
+  a.el.refusals.push(notAllowed());
+  audio.apply([bgm('calm', 0)], { instant: false });
+  await flush();
+  expect(a.el.refusals).toHaveLength(0);
+  // The tap: play() is allowed now but resolves a task later (HTML: on 'playing'), after ctx.resume() has, so a
+  // result read before the play settles would still see the refusal and show the chip for a tap that worked.
+  a.el.play = () => new Promise<void>((done) => setTimeout(done, 20));
+  const r = outcome(audio);
+  await vi.advanceTimersByTimeAsync(20);
+  expect(r.value).toBe('running');
+});
