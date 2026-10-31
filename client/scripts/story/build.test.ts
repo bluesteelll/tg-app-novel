@@ -1,5 +1,6 @@
 // The story build: compile (inkjs compiler), knot graph, emit and the `story` CLI (STAGING-DSL §8-§11,
-// PROTOTYPE-PLAN.md K9 and "Build outputs"). Fixtures are inline ink; the catalog and cast are the committed ones.
+// PROTOTYPE-PLAN.md K9 and "Build outputs"). Fixtures are inline ink and an inline cast; the catalog is the committed
+// one.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -27,14 +28,21 @@ function readRepoJson(path: string): unknown {
   return JSON.parse(text.startsWith(String.fromCharCode(0xfeff)) ? text.slice(1) : text);
 }
 
+/**
+ * The cast the fixtures were written against (STORIES-PLAN revision 2, W1): inline, so a speaker added to
+ * story/cast.json moves no test of the tool.
+ */
+const CAST_RAW = { ally: { char: 'ally' }, stranger: { char: 'stranger' }, voice: { char: null } };
+
+/** The committed catalog and the inline cast, decoded against it. */
 function committed(): { assets: AssetIndex; cast: Cast } {
   const catalog = decodeAssetCatalog(readRepoJson('assets/catalog.json'));
   if (!catalog.ok) {
     throw new Error('invariant: the committed catalog decodes');
   }
-  const cast = decodeCast(readRepoJson('story/cast.json'), catalog.value);
+  const cast = decodeCast(CAST_RAW, catalog.value);
   if (!cast.ok) {
-    throw new Error('invariant: the committed cast decodes');
+    throw new Error('invariant: the inline cast decodes against the committed catalog');
   }
   return { assets: assetIndex(catalog.value), cast: cast.value };
 }
@@ -884,13 +892,13 @@ function localeFiles(): Readonly<Record<string, string>> {
 }
 
 /**
- * The committed catalog and cast, the given chapter list, the fixture's story list, and the emit fixture's ink and
- * locale tables under story/.
+ * The committed catalog, the inline cast, the given chapter list, the fixture's story list, and the emit fixture's ink
+ * and locale tables under story/.
  */
 function repoFiles(chapters: unknown = [CH1_LISTED, CH2_LISTED]): Record<string, string> {
   return {
     'assets/catalog.json': readFileSync(new URL('../../../assets/catalog.json', import.meta.url), 'utf8'),
-    'story/cast.json': readFileSync(new URL('../../../story/cast.json', import.meta.url), 'utf8'),
+    'story/cast.json': JSON.stringify(CAST_RAW),
     'story/chapters.json': JSON.stringify(chapters),
     'story/stories.json': JSON.stringify(STORIES_SOURCE),
     ...Object.fromEntries([...EMIT_SOURCES].map(([key, text]) => [`story/${key}`, text])),

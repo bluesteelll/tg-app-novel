@@ -1,6 +1,6 @@
 // The story tool's localization side (STAGING-DSL §4, §11): `--fix-ids`, `--sync-locales`, the locale checks, and the
-// `story` CLI runs of this lane against a temporary repository (`--root`). Fixtures are inline; the catalog and cast
-// are the committed ones.
+// `story` CLI runs of this lane against a temporary repository (`--root`). Fixtures and the cast are inline; the catalog
+// is the committed one.
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -32,14 +32,21 @@ function readRepoJson(path: string): unknown {
   return JSON.parse(text.startsWith(String.fromCharCode(0xfeff)) ? text.slice(1) : text);
 }
 
+/**
+ * The cast the fixtures were written against (STORIES-PLAN revision 2, W1): inline, so a speaker added to
+ * story/cast.json moves no test of the tool.
+ */
+const CAST_RAW = { ally: { char: 'ally' }, stranger: { char: 'stranger' }, voice: { char: null } };
+
+/** The committed catalog and the inline cast, decoded against it. */
 function committed(): { assets: AssetIndex; cast: Cast } {
   const catalog = decodeAssetCatalog(readRepoJson('assets/catalog.json'));
   if (!catalog.ok) {
     throw new Error('invariant: the committed catalog decodes');
   }
-  const cast = decodeCast(readRepoJson('story/cast.json'), catalog.value);
+  const cast = decodeCast(CAST_RAW, catalog.value);
   if (!cast.ok) {
-    throw new Error('invariant: the committed cast decodes');
+    throw new Error('invariant: the inline cast decodes against the committed catalog');
   }
   return { assets: assetIndex(catalog.value), cast: cast.value };
 }
@@ -399,8 +406,8 @@ function shipped(t: Readonly<Record<string, { ru: string; en: string }>>): Recor
 }
 
 /**
- * The committed catalog and cast, a free ch1 and a paid ch2 in one story without endings, and their locale tables
- * (the story's title and teaser included): a clean, emitting repo.
+ * The committed catalog, the inline cast, a free ch1 and a paid ch2 in one story without endings, and their locale
+ * tables (the story's title and teaser included): a clean, emitting repo.
  */
 function repoFiles(): Record<string, string> {
   const manor = (title: string, teaser: string): { stories: Record<string, string>; teasers: Record<string, string> } => ({
@@ -409,7 +416,7 @@ function repoFiles(): Record<string, string> {
   });
   return {
     'assets/catalog.json': readFileSync(new URL('../../../assets/catalog.json', import.meta.url), 'utf8'),
-    'story/cast.json': readFileSync(new URL('../../../story/cast.json', import.meta.url), 'utf8'),
+    'story/cast.json': JSON.stringify(CAST_RAW),
     'story/chapters.json': JSON.stringify([
       { id: 'ch1', entry: 'ch1/main.ink', paid: false, next: 'ch2' },
       { id: 'ch2', entry: 'ch2/main.ink', paid: true, productId: 'chapter:ch2', next: null },
