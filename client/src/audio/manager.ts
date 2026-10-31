@@ -22,7 +22,8 @@ export const RESUME_GRACE_MS = 500;
 export interface AudioManager {
   /**
    * One batch: `bgm` first, then `sfx` (STAGING-DSL §7); `instant` (skip mode) turns every fade into a cut. While
-   * suspended the music changes deck without playing and one-shots are dropped.
+   * suspended the music changes deck without playing and one-shots are dropped. A batch on a context that is not
+   * running stops the one-shots earlier batches left on it, so none sounds under a later line.
    */
   apply(cmds: readonly AudioCommand[], o: { instant: boolean }): void;
   /** A snapshot's bgm, at once; the track already sounding is never restarted. An id the manifest lacks stops it. */
@@ -138,6 +139,11 @@ export function createAudioManager(ctx: AudioContext, deps: { fetchAsset: FetchA
   return {
     apply(cmds, o) {
       sfx.nextBatch(); // every apply is a batch, an empty one included
+      if (ctx.state !== 'running') {
+        // A one-shot an earlier batch started on a stopped clock would sound only once the context runs, together with
+        // the rest, under this line or a later one; this batch's own may still sound if the context starts in time.
+        sfx.stopAll();
+      }
       const m = manifest;
       if (m === null) {
         return; // no chapter: nothing resolves

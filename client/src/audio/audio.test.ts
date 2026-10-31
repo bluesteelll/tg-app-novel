@@ -1181,3 +1181,30 @@ test('audio: resume leaves no timer behind when the context runs at once', async
   expect(await audio.resume()).toBe('running');
   expect(vi.getTimerCount()).toBe(0);
 });
+
+test('sfx: one-shots queued on a stopped context never sound under a later batch', async () => {
+  const { ctx, fetch, audio } = setup();
+  audio.setChapter(CH1);
+  audio.preload(sfxIds('door', 'phone'));
+  for (const c of fetch.calls) {
+    c.settle(ok(sfxBlob()));
+  }
+  await flush();
+  // The Start tap's resume is still in flight: a one-shot of the first batch sounds once the context runs.
+  ctx.state = 'suspended';
+  audio.apply([sfx('door')], { instant: false });
+  ctx.setState('running');
+  const first = at(ctx.sources, 0);
+  expect(first.stops).toBe(0);
+  expect(first.edges.size).toBe(1);
+  first.onended?.();
+  // Off without our suspend() (the resume did not take, or iOS 'interrupted'): a voice started on the stopped clock
+  // would sound only when it runs, under a later line, so the next batch stops it.
+  ctx.setState('suspended');
+  audio.apply([sfx('door')], { instant: false });
+  audio.apply([sfx('phone')], { instant: false });
+  ctx.setState('running');
+  const queued = ctx.sources.slice(1);
+  expect(queued.map((s) => s.stops)).toEqual([1, 0]);
+  expect(queued.map((s) => s.edges.size)).toEqual([0, 1]);
+});
