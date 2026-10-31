@@ -1,5 +1,6 @@
-//! `/api/saves`: the player's save slots. The server is the source of truth (principle 1): a write replaces a slot
-//! only through its `rev`, and every row is keyed by the token's user, never by anything the client sends.
+//! `/api/saves`: the player's save slots, per story. The server is the source of truth (principle 1): a write
+//! replaces a slot only through its `rev`, and every row is keyed by the token's user and the path's story, never by
+//! a user the client names.
 
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection};
@@ -11,13 +12,13 @@ use crate::api::dto::{PutSaveRequest, PutSaveResponse, SaveFull, SaveListRespons
 use crate::auth::AuthUser;
 use crate::db::saves::{NewSave, PutOutcome, SaveMeta};
 use crate::error::ApiError;
-use crate::ids::SaveSlot;
+use crate::ids::{SaveSlot, StoryId};
 
 /// The largest save body, in UTF-8 bytes: the `saves.body` CHECK counts the same UTF-8 bytes (`octet_length`), so the
 /// edge never admits what the CHECK refuses. The client measures the same bytes (`TextEncoder`).
 pub const MAX_SAVE_BODY_BYTES: usize = 262_144;
 
-/// `GET /api/saves`: the user's saves without their bodies, in slot order.
+/// `GET /api/saves`: the user's saves without their bodies, by story then slot.
 pub async fn list_saves(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
@@ -28,16 +29,16 @@ pub async fn list_saves(
     }))
 }
 
-/// `GET /api/saves/{slot}`: the save with its body; 404 for an empty slot, including another user's.
+/// `GET /api/saves/{storyId}/{slot}`: the save with its body; 404 for an empty slot, including another user's.
 pub async fn get_save(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
-    slot: Result<Path<String>, PathRejection>,
+    target: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Json<SaveFull>, ApiError> {
-    let slot = parse_slot(slot)?;
+    let (story, slot) = parse_target(target)?;
     let (meta, body) = st
         .repo
-        .get_save(user, slot)
+        .get_save(user, &story, slot)
         .await?
         .ok_or(ApiError::NotFound)?;
     Ok(Json(SaveFull {
@@ -46,16 +47,16 @@ pub async fn get_save(
     }))
 }
 
-/// `PUT /api/saves/{slot}`: writes the save if `expectedRev` matches the slot, else 409 with the stored envelope.
-/// The checks run in a fixed order (token, slot, request, text fields, body size, body JSON), so a request with
-/// several faults gets one known answer.
+/// `PUT /api/saves/{storyId}/{slot}`: writes the save if `expectedRev` matches the slot, else 409 with the stored
+/// envelope. The checks run in a fixed order (token, slot, request, text fields, body size, body JSON), so a request
+/// with several faults gets one known answer.
 pub async fn put_save(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
-    slot: Result<Path<String>, PathRejection>,
+    target: Result<Path<(String, String)>, PathRejection>,
     req: Result<Json<PutSaveRequest>, JsonRejection>,
 ) -> Result<Json<PutSaveResponse>, ApiError> {
-    let slot = parse_slot(slot)?;
+    let (story, slot) = parse_target(target)?;
     let Json(req) = req.map_err(body_rejection)?;
     // PostgreSQL `text` cannot hold U+0000 (`22021`): a client string carrying it is a 400 here, not a 500 there.
     let texts = [
@@ -86,7 +87,7 @@ pub async fn put_save(
         body: &req.body,
         now: st.clock.now(),
     };
-    match st.repo.put_save(user, slot, write).await? {
+    match st.repo.put_save(user, &story, slot, write).await? {
         PutOutcome::Written { rev, saved_at } | PutOutcome::Replayed { rev, saved_at } => {
             Ok(Json(PutSaveResponse { rev, saved_at }))
         }
@@ -94,12 +95,16 @@ pub async fn put_save(
     }
 }
 
-/// The slot of a `/api/saves/{slot}` path: 400 for anything but `auto`, `s1`, `s2`, `s3`.
-fn parse_slot(path: Result<Path<String>, PathRejection>) -> Result<SaveSlot, ApiError> {
-    let Ok(Path(raw)) = path else {
-        return Err(ApiError::BadRequest("save slot path unreadable"));
+/// The story and slot of a `/api/saves/{storyId}/{slot}` path: 400 for a slot other than `auto`, `s1`, `s2`, `s3`.
+/// The story segment is taken as sent; the `saves_story_id_shape` CHECK is its only guard here.
+fn parse_target(
+    path: Result<Path<(String, String)>, PathRejection>,
+) -> Result<(StoryId, SaveSlot), ApiError> {
+    let Ok(Path((story, slot))) = path else {
+        return Err(ApiError::BadRequest("save path unreadable"));
     };
-    SaveSlot::parse(&raw).ok_or(ApiError::BadRequest("unknown save slot"))
+    let slot = SaveSlot::parse(&slot).ok_or(ApiError::BadRequest("unknown save slot"))?;
+    Ok((StoryId(story), slot))
 }
 
 /// The wire envelope of a stored save.

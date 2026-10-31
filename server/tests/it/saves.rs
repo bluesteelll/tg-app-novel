@@ -1,5 +1,5 @@
-//! Saves: one row per (user, slot) behind an optimistic `rev`, the one retry contract (`writeId`), the size and JSON
-//! checks at the edge, and rows keyed by the token's user. Every request goes through the production router.
+//! Saves: one row per (user, story, slot) behind an optimistic `rev`, the one retry contract (`writeId`), the size
+//! and JSON checks at the edge, and rows keyed by the token's user. Every request goes through the production router.
 
 use std::sync::Arc;
 
@@ -60,8 +60,11 @@ fn save_body(write_id: &str) -> String {
 /// The envelope of a write: chapter, story version, line.
 type Envelope<'a> = (&'a str, &'a str, Option<&'a str>);
 
-/// The envelope of most writes here.
+/// The envelope of most writes here: a chapter of `manor`.
 const ENV1: Envelope<'static> = ("ch1", "v1", Some("ch1.k1.l3"));
+
+/// The envelope of the `tide` writes: a chapter of `tide`.
+const ENV_TIDE: Envelope<'static> = ("ch3", "v1", Some("ch3.k1.l1"));
 
 /// A `PutSaveRequest` with the envelope `env` and the body `body`.
 fn request_with(expected_rev: Option<i64>, write_id: &str, env: Envelope<'_>, body: &str) -> Value {
@@ -98,14 +101,24 @@ fn summary(slot: &str, rev: i64, saved_at: i64, write_id: &str) -> Value {
     summary_with(slot, rev, ENV1, saved_at, write_id)
 }
 
-/// `PUT /api/saves/{slot}` as `user`, with `body` sent as JSON.
-async fn put(st: &AppState, user: i64, slot: &str, body: String) -> common::Reply {
-    let req = Request::put(format!("/api/saves/{slot}"))
+/// `PUT /api{path}` as `user`, with `body` sent as JSON.
+async fn put_path(st: &AppState, user: i64, path: &str, body: String) -> common::Reply {
+    let req = Request::put(format!("/api{path}"))
         .header(AUTHORIZATION, bearer(st, user))
         .header(CONTENT_TYPE, "application/json")
         .body(Body::from(body))
         .unwrap();
     common::call(st, req).await
+}
+
+/// `PUT /api/saves/{story}/{slot}` as `user`, with `body` sent as JSON.
+async fn put_in(st: &AppState, user: i64, story: &str, slot: &str, body: String) -> common::Reply {
+    put_path(st, user, &format!("/saves/{story}/{slot}"), body).await
+}
+
+/// `PUT /api/saves/manor/{slot}` as `user`, with `body` sent as JSON.
+async fn put(st: &AppState, user: i64, slot: &str, body: String) -> common::Reply {
+    put_in(st, user, "manor", slot, body).await
 }
 
 /// `GET /api{path}`, as `user` or without an `Authorization` header.
@@ -164,12 +177,13 @@ fn conflict(current: Value) -> Value {
     json!({ "error": "save_conflict", "current": current })
 }
 
-/// A `saves` row as the database holds it: (slot, rev, write_id, body, saved_at).
-type Row = (String, i64, String, String, i64);
+/// A `saves` row as the database holds it: (story_id, slot, rev, write_id, body, saved_at).
+type Row = (String, String, i64, String, String, i64);
 
-/// The row a write with [`ENV1`] and the body of `write_id` leaves.
-fn row(slot: &str, rev: i64, write_id: &str, saved_at: i64) -> Row {
+/// The row a write to `story` with the body of `write_id` leaves.
+fn row_in(story: &str, slot: &str, rev: i64, write_id: &str, saved_at: i64) -> Row {
     (
+        story.to_owned(),
         slot.to_owned(),
         rev,
         write_id.to_owned(),
@@ -178,11 +192,17 @@ fn row(slot: &str, rev: i64, write_id: &str, saved_at: i64) -> Row {
     )
 }
 
-/// Every `saves` row of `user`, read outside the app pool, by slot.
+/// The row a write to `manor` with the body of `write_id` leaves.
+fn row(slot: &str, rev: i64, write_id: &str, saved_at: i64) -> Row {
+    row_in("manor", slot, rev, write_id, saved_at)
+}
+
+/// Every `saves` row of `user`, read outside the app pool, by story then slot.
 async fn rows(st: &AppState, user: i64) -> Vec<Row> {
     let mut db = common::raw_db(st).await;
     sqlx::query_as(
-        "SELECT slot, rev, write_id, body, saved_at FROM saves WHERE user_id = $1 ORDER BY slot",
+        "SELECT story_id, slot, rev, write_id, body, saved_at FROM saves WHERE user_id = $1 \
+         ORDER BY story_id, slot",
     )
     .bind(user)
     .fetch_all(&mut db)
@@ -238,7 +258,7 @@ async fn saves_create_then_conflict() {
         r#"{"error":"save_conflict"}"#,
     ));
 
-    let reply = get(&st, Some(ANN), "/saves/auto").await;
+    let reply = get(&st, Some(ANN), "/saves/manor/auto").await;
     failures.extend(expect_json(
         "GET auto",
         &reply,
@@ -289,7 +309,7 @@ async fn saves_rev_increments() {
     ));
 
     let s2 = summary_with("s2", 3, env3, T0 + 20, "w3");
-    let reply = get(&st, Some(ANN), "/saves/s2").await;
+    let reply = get(&st, Some(ANN), "/saves/manor/s2").await;
     failures.extend(expect_json(
         "GET s2",
         &reply,
@@ -407,7 +427,7 @@ async fn saves_update_waits_for_winner_then_conflicts() {
     let a = hold_row(
         &st,
         "UPDATE saves SET rev = 2, write_id = 'wA', body = $2, saved_at = $3 \
-         WHERE user_id = $1 AND slot = 'auto'",
+         WHERE user_id = $1 AND story_id = 'manor' AND slot = 'auto'",
     )
     .await;
     let app = st.clone();
@@ -441,8 +461,8 @@ async fn saves_create_waits_for_winner_then_conflicts() {
     let mut failures = Vec::new();
     let a = hold_row(
         &st,
-        "INSERT INTO saves (user_id, slot, rev, chapter_id, story_version, line_id, write_id, body, saved_at) \
-         VALUES ($1, 'auto', 1, 'ch1', 'v1', 'ch1.k1.l3', 'wA', $2, $3)",
+        "INSERT INTO saves (user_id, story_id, slot, rev, chapter_id, story_version, line_id, write_id, body, \
+         saved_at) VALUES ($1, 'manor', 'auto', 1, 'ch1', 'v1', 'ch1.k1.l3', 'wA', $2, $3)",
     )
     .await;
     let app = st.clone();
@@ -567,7 +587,7 @@ async fn row_sizes(st: &AppState, user: i64) -> Vec<(String, i64, String, usize)
     rows(st, user)
         .await
         .into_iter()
-        .map(|(slot, rev, write_id, body, _)| (slot, rev, write_id, body.len()))
+        .map(|(_, slot, rev, write_id, body, _)| (slot, rev, write_id, body.len()))
         .collect()
 }
 
@@ -721,7 +741,7 @@ async fn saves_body_round_trips_bytes() {
             200,
             &written(1, T0),
         ));
-        let reply = get(&st, Some(ANN), &format!("/saves/{slot}")).await;
+        let reply = get(&st, Some(ANN), &format!("/saves/manor/{slot}")).await;
         let got: Value = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
         if reply.status.as_u16() != 200 || got["body"].as_str() != Some(body) {
             failures.push(format!(
@@ -735,6 +755,7 @@ async fn saves_body_round_trips_bytes() {
         .iter()
         .map(|(slot, write_id, body)| {
             (
+                "manor".to_owned(),
                 (*slot).to_owned(),
                 1,
                 (*write_id).to_owned(),
@@ -822,7 +843,7 @@ async fn saves_body_too_deep_400() {
 async fn saves_bad_slot_400() {
     let (st, _db) = saves_state(&[ANN]).await;
     let mut failures = Vec::new();
-    for path in ["/saves/s4", "/saves/AUTO"] {
+    for path in ["/saves/manor/s4", "/saves/manor/AUTO"] {
         let reply = get(&st, Some(ANN), path).await;
         failures.extend(expect_text(
             &format!("GET {path}"),
@@ -834,29 +855,29 @@ async fn saves_bad_slot_400() {
     for slot in ["x", "s0"] {
         let reply = put(&st, ANN, slot, request(None, "w1")).await;
         failures.extend(expect_text(
-            &format!("PUT /saves/{slot}"),
+            &format!("PUT /saves/manor/{slot}"),
             &reply,
             400,
             BAD_REQUEST,
         ));
     }
-    let reply = get(&st, Some(ANN), "/saves/s1").await;
+    let reply = get(&st, Some(ANN), "/saves/manor/s1").await;
     failures.extend(expect_text(
-        "GET /saves/s1, no row (control)",
+        "GET /saves/manor/s1, no row (control)",
         &reply,
         404,
         NOT_FOUND,
     ));
     let reply = put(&st, ANN, "s3", request(None, "w2")).await;
     failures.extend(expect_json(
-        "PUT /saves/s3 (control)",
+        "PUT /saves/manor/s3 (control)",
         &reply,
         200,
         &written(1, T0),
     ));
-    let reply = get(&st, None, "/saves/x").await;
+    let reply = get(&st, None, "/saves/manor/x").await;
     failures.extend(expect_text(
-        "GET /saves/x without a token",
+        "GET /saves/manor/x without a token",
         &reply,
         401,
         r#"{"error":"token_missing"}"#,
@@ -893,7 +914,7 @@ async fn saves_other_user_404() {
         ));
     }
     failures.extend(expect_rows("after Bob's 409s", &st, ANN, &[row("s1", 1, "w1", T0)]).await);
-    let reply = get(&st, Some(BOB), "/saves/s1").await;
+    let reply = get(&st, Some(BOB), "/saves/manor/s1").await;
     failures.extend(expect_text("1002 GET s1", &reply, 404, NOT_FOUND));
     let reply = get(&st, Some(BOB), "/saves").await;
     failures.extend(expect_json(
@@ -921,7 +942,7 @@ async fn saves_other_user_404() {
     failures.extend(expect_rows("after Bob's writes", &st, ANN, &[row("s1", 1, "w1", T0)]).await);
     failures.extend(expect_rows("after Bob's writes", &st, BOB, &[row("s1", 2, "w3", T0)]).await);
 
-    let reply = get(&st, Some(ANN), "/saves/s1").await;
+    let reply = get(&st, Some(ANN), "/saves/manor/s1").await;
     failures.extend(expect_json(
         "1001 GET s1",
         &reply,
@@ -935,5 +956,107 @@ async fn saves_other_user_404() {
         409,
         &conflict(summary("s1", 1, T0, "w1")),
     ));
+    report(&failures);
+}
+
+/// Each story has its own slots: a write, a conflict read or a replay in one story never touches or reveals the same
+/// slot of another story. Both `auto` rows sit at rev 1 when manor's is updated, so an UPDATE that ignores the story
+/// moves tide's too; tide's `s1` is empty while manor's holds `w5`, so a conflict read that ignores the story shows
+/// manor's row (a `current`) or replays manor's `w5` (a 200).
+#[tokio::test]
+async fn saves_story_slots_independent() {
+    let (st, _db) = saves_state(&[ANN]).await;
+    let mut failures = Vec::new();
+    let tide = |expected_rev, write_id: &str| {
+        request_with(expected_rev, write_id, ENV_TIDE, &save_body(write_id)).to_string()
+    };
+
+    // (1) The same slot of two stories: two creates.
+    let reply = put_in(&st, ANN, "manor", "auto", request(None, "w1")).await;
+    failures.extend(expect_json(
+        "PUT manor/auto null/w1",
+        &reply,
+        200,
+        &written(1, T0),
+    ));
+    let reply = put_in(&st, ANN, "tide", "auto", tide(None, "w2")).await;
+    failures.extend(expect_json(
+        "PUT tide/auto null/w2",
+        &reply,
+        200,
+        &written(1, T0),
+    ));
+
+    // (2) An update of manor's auto leaves tide's auto at rev 1.
+    let reply = put_in(&st, ANN, "manor", "auto", request(Some(1), "w3")).await;
+    failures.extend(expect_json(
+        "PUT manor/auto 1/w3",
+        &reply,
+        200,
+        &written(2, T0),
+    ));
+    let both_auto = [
+        row_in("manor", "auto", 2, "w3", T0),
+        row_in("tide", "auto", 1, "w2", T0),
+    ];
+    failures.extend(expect_rows("after manor's update", &st, ANN, &both_auto).await);
+
+    // (3) Manor's s1 holds w5; tide's s1 is empty: a conflict with no `current`, never a replay of manor's w5.
+    let reply = put_in(&st, ANN, "manor", "s1", request(None, "w5")).await;
+    failures.extend(expect_json(
+        "PUT manor/s1 null/w5 (setup)",
+        &reply,
+        200,
+        &written(1, T0),
+    ));
+    for (case, write_id) in [
+        ("PUT tide/s1 1/w6 (manor's rev)", "w6"),
+        ("PUT tide/s1 1/w5 (manor's rev and writeId)", "w5"),
+    ] {
+        let reply = put_in(&st, ANN, "tide", "s1", tide(Some(1), write_id)).await;
+        failures.extend(expect_text(
+            case,
+            &reply,
+            409,
+            r#"{"error":"save_conflict"}"#,
+        ));
+    }
+
+    // (4) Every read is per story.
+    let reply = get(&st, Some(ANN), "/saves/tide/s1").await;
+    failures.extend(expect_text("GET tide/s1", &reply, 404, NOT_FOUND));
+    let reply = get(&st, Some(ANN), "/saves/manor/auto").await;
+    failures.extend(expect_json(
+        "GET manor/auto",
+        &reply,
+        200,
+        &json!({ "summary": summary("auto", 2, T0, "w3"), "body": save_body("w3") }),
+    ));
+    let reply = get(&st, Some(ANN), "/saves/tide/auto").await;
+    failures.extend(expect_json(
+        "GET tide/auto",
+        &reply,
+        200,
+        &json!({
+            "summary": summary_with("auto", 1, ENV_TIDE, T0, "w2"),
+            "body": save_body("w2"),
+        }),
+    ));
+
+    // (5) The one-segment path of before is no route; the rows are exactly the three writes.
+    let reply = put_path(&st, ANN, "/saves/auto", request(None, "w7")).await;
+    if reply.status.as_u16() != 404 {
+        failures.push(format!(
+            "PUT /saves/auto (old path): expected 404, got {} {:?}",
+            reply.status.as_u16(),
+            text(&reply)
+        ));
+    }
+    let want = [
+        row_in("manor", "auto", 2, "w3", T0),
+        row_in("manor", "s1", 1, "w5", T0),
+        row_in("tide", "auto", 1, "w2", T0),
+    ];
+    failures.extend(expect_rows("at the end", &st, ANN, &want).await);
     report(&failures);
 }
