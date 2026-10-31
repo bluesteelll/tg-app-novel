@@ -54,6 +54,7 @@ fn routes() -> Router<AppState> {
                 .put(saves::put_save)
                 .layer(DefaultBodyLimit::max(SAVE_REQUEST_LIMIT)),
         )
+        .route("/puzzles/{puzzle_id}", get(puzzles::get_status))
         .route("/puzzles/{puzzle_id}/attempts", post(puzzles::post_attempt))
 }
 

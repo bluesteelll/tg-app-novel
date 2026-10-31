@@ -188,6 +188,32 @@ pub struct AttemptResponse {
     pub solved: bool,
 }
 
+/// `GET /api/puzzles/{puzzleId}?lang=ru|en` response: whether the user solved the puzzle, and its hint ladder.
+// No `Debug`: an unlocked hint's text is sold content, never logged.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PuzzleStatus {
+    /// The puzzle id, `<chapter>.<local>`.
+    pub puzzle_id: String,
+    /// Whether the user solved the puzzle: a server row, never client state.
+    pub solved: bool,
+    /// Every tier of the puzzle's hint ladder, tier 1 first; empty for a puzzle without hints.
+    pub hints: Vec<HintView>,
+}
+
+/// A hint tier as the user sees it.
+// No `Debug`: `text` is sold content.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HintView {
+    /// The tier, 1 to 3.
+    pub tier: u8,
+    /// Whether the user unlocked this tier.
+    pub unlocked: bool,
+    /// The hint in the requested language when `unlocked`, else `null` (serialized, not omitted).
+    pub text: Option<String>,
+}
+
 /// The first line of the generated file: what it is and how to rewrite it.
 const BINDINGS_HEADER: &str = "// Built from server/src/api/dto.rs and error.rs by ts-rs; do not edit. Regenerate: \
                                cargo test -p server --test it bindings::write_bindings -- --ignored --exact";

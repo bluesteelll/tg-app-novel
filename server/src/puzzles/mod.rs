@@ -5,7 +5,8 @@
 //! through [`entitled_puzzle`], so a paid chapter's puzzle answers 403 to a user without the chapter.
 
 use crate::AppState;
-use crate::content::PuzzleDef;
+use crate::api::dto::{HintView, PuzzleStatus};
+use crate::content::{Localized, PuzzleDef};
 use crate::error::ApiError;
 use crate::ids::{PuzzleId, UserId};
 
@@ -36,6 +37,14 @@ impl Lang {
             "en" => Some(Lang::En),
             _ => None,
         }
+    }
+}
+
+/// `localized` in `lang`.
+fn text(localized: &Localized, lang: Lang) -> &str {
+    match lang {
+        Lang::Ru => &localized.ru,
+        Lang::En => &localized.en,
     }
 }
 
@@ -121,5 +130,35 @@ pub async fn attempt(
             correct,
             solved: record.solved,
         }
+    })
+}
+
+/// The status of the gated `def` for `user`: solved or not, and every tier of the puzzle's hint ladder, with the
+/// text in `lang` only for a tier the user unlocked. An unlock row past the current ladder is ignored.
+pub async fn status(
+    st: &AppState,
+    user: UserId,
+    def: &PuzzleDef,
+    lang: Lang,
+) -> Result<PuzzleStatus, ApiError> {
+    let solved = st.repo.is_solved(user, &def.id).await?;
+    let unlocked = st.repo.unlocked_tiers(user, &def.id).await?;
+    let hints = def
+        .hints
+        .iter()
+        .zip(1u8..)
+        .map(|(hint, tier)| {
+            let open = unlocked.contains(&tier);
+            HintView {
+                tier,
+                unlocked: open,
+                text: open.then(|| text(hint, lang).to_owned()),
+            }
+        })
+        .collect();
+    Ok(PuzzleStatus {
+        puzzle_id: def.id.0.clone(),
+        solved,
+        hints,
     })
 }

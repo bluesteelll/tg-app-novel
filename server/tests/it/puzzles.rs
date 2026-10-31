@@ -9,7 +9,9 @@ use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::http::Request;
-use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, HeaderName, RETRY_AFTER};
+use axum::http::header::{
+    AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, HeaderName, RETRY_AFTER, X_CONTENT_TYPE_OPTIONS,
+};
 use server::AppState;
 use server::clock::FixedClock;
 use server::db::POOL_MAX_CONNECTIONS;
@@ -20,7 +22,7 @@ use sqlx::postgres::PgQueryResult;
 use sqlx::{Connection, PgConnection};
 use tokio::task::JoinSet;
 
-use crate::catalog::{ANN, T0, bearer, own, state_with_users};
+use crate::catalog::{ANN, T0, bearer, get, own, state_with_users};
 use crate::common;
 
 /// A second player.
@@ -881,5 +883,184 @@ async fn attempt_limited_correct_answer_429_not_solved() {
             "row: expected (attempts 21, window 21, start T0, unsolved), got {row:?}"
         ));
     }
+    report(&failures);
+}
+
+/// Inserts `user`'s unlock of `puzzle`'s `tier` as a raw row: the server's only writer is a later lane's spend.
+async fn unlock(st: &AppState, user: i64, puzzle: &str, tier: i64) {
+    let mut c = common::raw_db(st).await;
+    insert_unlock(&mut c, user, puzzle, tier, T0).await.unwrap();
+    c.close().await.unwrap();
+}
+
+/// The exact wire text of a status: `puzzleId`, `solved`, then one hint per tier (tier 1 first) that is unlocked
+/// with its text when `tiers` holds one, locked with `null` otherwise.
+fn status_body(id: &str, solved: bool, tiers: &[Option<&str>]) -> String {
+    let hints: Vec<String> = tiers
+        .iter()
+        .zip(1..)
+        .map(|(text, tier): (&Option<&str>, u8)| {
+            let wire = text.map_or("null".to_owned(), |t| serde_json::to_string(t).unwrap());
+            format!(
+                r#"{{"tier":{tier},"unlocked":{},"text":{wire}}}"#,
+                text.is_some()
+            )
+        })
+        .collect();
+    format!(
+        r#"{{"puzzleId":"{id}","solved":{solved},"hints":[{}]}}"#,
+        hints.join(",")
+    )
+}
+
+/// The fixture's ch1.drawer hint texts: (ru, en) per tier.
+const DRAWER_HINTS: [(&str, &str); 3] = [
+    (
+        "Цифры спрятаны в комнате.",
+        "The digits are hidden in the room.",
+    ),
+    (
+        "Посмотрите на часы и календарь.",
+        "Look at the clock and the calendar.",
+    ),
+    (
+        "Код начинается с года на портрете.",
+        "The code starts with the year on the portrait.",
+    ),
+];
+
+/// A hint's text is served only for a tier with an unlock row, in the language asked for; the status carries every
+/// tier of the ladder and never the solution. `lang` is required and is `ru` or `en`.
+#[tokio::test]
+async fn puzzle_hint_text_only_when_unlocked() {
+    let (st, _db) = state_with_users(&[ANN, BEN]).await;
+    unlock(&st, ANN, "ch1.drawer", 1).await;
+    let mut failures = Vec::new();
+    for (lang, text) in [("en", DRAWER_HINTS[0].1), ("ru", DRAWER_HINTS[0].0)] {
+        let reply = get(
+            &st,
+            Some(ANN),
+            &format!("/api/puzzles/ch1.drawer?lang={lang}"),
+        )
+        .await;
+        failures.extend(expect_reply(
+            &format!("ANN, tier 1 unlocked, lang {lang}"),
+            &reply,
+            200,
+            &status_body("ch1.drawer", false, &[Some(text), None, None]),
+        ));
+        let body = body_text(&reply);
+        let sealed = DRAWER_HINTS[1..]
+            .iter()
+            .flat_map(|(ru, en)| [*ru, *en])
+            .chain(["1,8,4,7", "solution"]);
+        for secret in sealed {
+            if body.contains(secret) {
+                failures.push(format!("lang {lang}: the body carries {secret:?}"));
+            }
+        }
+    }
+    let reply = get(&st, Some(BEN), "/api/puzzles/ch1.drawer?lang=en").await;
+    failures.extend(expect_reply(
+        "BEN, nothing unlocked",
+        &reply,
+        200,
+        &status_body("ch1.drawer", false, &[None, None, None]),
+    ));
+    let reply = post_attempt(&st, ANN, "ch1.drawer", SOLUTION).await;
+    failures.extend(expect_reply(
+        "ANN solves",
+        &reply,
+        200,
+        r#"{"correct":true,"solved":true}"#,
+    ));
+    let reply = get(&st, Some(ANN), "/api/puzzles/ch1.drawer?lang=en").await;
+    failures.extend(expect_reply(
+        "ANN after the solve",
+        &reply,
+        200,
+        &status_body("ch1.drawer", true, &[Some(DRAWER_HINTS[0].1), None, None]),
+    ));
+    for query in ["?lang=de", "", "?lang=EN", "?lang=ru&lang=en"] {
+        let reply = get(&st, Some(ANN), &format!("/api/puzzles/ch1.drawer{query}")).await;
+        failures.extend(expect_error(
+            &format!("lang {query:?}"),
+            &reply,
+            400,
+            "bad_request",
+        ));
+    }
+    report(&failures);
+}
+
+/// The status 200 is `private, no-store` + `nosniff` (sold text); every error and the attempt's 200 keep the
+/// router's `no-store`. The GET's error bodies are exact: a malformed id or `lang` is 400 (not the chapters' 404), an
+/// unknown id 404, a paid chapter's puzzle 403.
+#[tokio::test]
+async fn puzzle_status_private_no_store() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    let mut failures = Vec::new();
+    let reply = get(&st, Some(ANN), "/api/puzzles/ch1.drawer?lang=en").await;
+    let got = (
+        reply.status.as_u16(),
+        header(&reply, CACHE_CONTROL),
+        header(&reply, X_CONTENT_TYPE_OPTIONS),
+    );
+    if got != (200, Some("private, no-store"), Some("nosniff")) {
+        failures.push(format!(
+            "status 200: expected (200, private, no-store, nosniff), got {got:?}"
+        ));
+    }
+    for (path, status, code) in [
+        ("/api/puzzles/Ch1.drawer?lang=en", 400, "bad_request"),
+        ("/api/puzzles/ch1.a-b?lang=en", 400, "bad_request"),
+        ("/api/puzzles/ch1.drawer?lang=de", 400, "bad_request"),
+        ("/api/puzzles/ch1.drawer", 400, "bad_request"),
+        ("/api/puzzles/ch1.nothing?lang=en", 404, "not_found"),
+        ("/api/puzzles/ch2.cabinet?lang=en", 403, "not_entitled"),
+    ] {
+        let reply = get(&st, Some(ANN), path).await;
+        failures.extend(expect_error(path, &reply, status, code));
+        let cache = header(&reply, CACHE_CONTROL);
+        if cache != Some("no-store") {
+            failures.push(format!("{path}: expected no-store, got {cache:?}"));
+        }
+    }
+    let reply = post_attempt(&st, ANN, "ch1.drawer", WRONG).await;
+    let got = (reply.status.as_u16(), header(&reply, CACHE_CONTROL));
+    if got != (200, Some("no-store")) {
+        failures.push(format!(
+            "attempt 200: expected (200, no-store), got {got:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// An unlock row does not open a paid chapter's hint: without the chapter the status is a 403 that carries no text;
+/// with it, the unlocked tier's text.
+#[tokio::test]
+async fn hint_text_403_for_unowned_paid_chapter() {
+    let (st, _db) = state_with_users(&[BEN]).await;
+    unlock(&st, BEN, "ch2.cabinet", 1).await;
+    let mut failures = Vec::new();
+    let reply = get(&st, Some(BEN), "/api/puzzles/ch2.cabinet?lang=en").await;
+    failures.extend(expect_error(
+        "BEN without chapter:ch2",
+        &reply,
+        403,
+        "not_entitled",
+    ));
+    own(&st, BEN, "chapter:ch2").await;
+    let reply = get(&st, Some(BEN), "/api/puzzles/ch2.cabinet?lang=en").await;
+    failures.extend(expect_reply(
+        "BEN with chapter:ch2",
+        &reply,
+        200,
+        &status_body(
+            "ch2.cabinet",
+            false,
+            &[Some("The folders are not sorted by colour."), None, None],
+        ),
+    ));
     report(&failures);
 }
