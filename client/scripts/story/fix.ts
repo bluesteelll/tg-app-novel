@@ -1,10 +1,12 @@
 // Source fixers of the story tool (STAGING-DSL §4): `--fix-ids` writes a fresh line ID into each line the source lint
-// reports as `id/missing`. Pure, no node:*: story.ts reads the files, injects the random suffixes and writes what
-// changed. Every patch is checked by the one line classifier; a line it cannot place is skipped, never guessed.
+// reports as `id/missing`; `--sync-locales` adds the missing entries of an en table. Pure, no node:*: story.ts reads
+// the files, injects the random suffixes and writes what changed. Every ID patch is checked by the one line
+// classifier; a line it cannot place is skipped, never guessed.
 import type { ChapterId, LineId } from '../../src/story/staging.ts';
 import { LINE_ID_RE } from '../../src/story/tags.ts';
 import { classify, findUnescaped } from './classify.ts';
 import type { LineClass, SourceLine } from './classify.ts';
+import type { StoryLine } from './graph.ts';
 import { tagsOf } from './lint.ts';
 
 /** An `id/missing` finding of `lintSources`: a story-relative file and its 1-based line. */
@@ -181,4 +183,36 @@ export function fixIds(input: FixIdsInput): FixIdsResult {
     }
   }
   return { files, added, skipped };
+}
+
+/**
+ * `--sync-locales` (STAGING-DSL §4): the en table with `{ "ru": <text>, "en": "" }` appended for each ID of `lines`
+ * (source order) that has no entry. Existing entries keep their order and values: `ru` is never rewritten and an
+ * orphan is never removed (it is the reminder to retire its ID). A table that is not a JSON object is an error and is
+ * left as it is. Line IDs are non-integer keys, so `JSON.stringify` keeps the insertion order.
+ */
+export function syncLocales(table: { text: string | null }, lines: readonly StoryLine[]): { text: string; added: LineId[] } | { error: string } {
+  let entries: Record<string, unknown> = {};
+  if (table.text !== null) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(table.text.startsWith(BOM) ? table.text.slice(1) : table.text);
+    } catch (e) {
+      return { error: `not JSON: ${e instanceof Error ? e.message : String(e)}` };
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      return { error: 'not a JSON object of line IDs' };
+    }
+    entries = { ...parsed };
+  }
+  const added: LineId[] = [];
+  for (const l of lines) {
+    if (!Object.hasOwn(entries, l.id)) {
+      entries[l.id] = { ru: l.text, en: '' };
+      added.push(l.id);
+    }
+  }
+  // Nothing to add: the table's bytes stay as they are, so the CLI writes nothing.
+  const text = added.length === 0 && table.text !== null ? table.text : `${JSON.stringify(entries, null, 2)}\n`;
+  return { text, added };
 }
