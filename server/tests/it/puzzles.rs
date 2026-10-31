@@ -4,9 +4,14 @@
 //!
 //! Hint unlock rows are inserted by raw SQL: the server has no writer for them in this lane.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use axum::body::Body;
+use axum::http::Request;
+use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, HeaderName, RETRY_AFTER};
 use server::AppState;
+use server::clock::FixedClock;
 use server::db::POOL_MAX_CONNECTIONS;
 use server::db::puzzles::AttemptRecord;
 use server::ids::{PuzzleId, UserId};
@@ -15,7 +20,7 @@ use sqlx::postgres::PgQueryResult;
 use sqlx::{Connection, PgConnection};
 use tokio::task::JoinSet;
 
-use crate::catalog::{ANN, T0, state_with_users};
+use crate::catalog::{ANN, T0, bearer, own, state_with_users};
 use crate::common;
 
 /// A second player.
@@ -629,6 +634,251 @@ async fn attempt_concurrent_window_exact() {
     if row != Some((26, 26, T0, None)) {
         failures.push(format!(
             "existing row: expected (attempts 26, window 26, start T0, unsolved), got {row:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// `POST /api/puzzles/{id}/attempts` as `user` with `body` sent as `application/json`.
+async fn post_attempt(st: &AppState, user: i64, id: &str, body: &str) -> common::Reply {
+    let req = Request::post(format!("/api/puzzles/{id}/attempts"))
+        .header(AUTHORIZATION, bearer(st, user))
+        .header(CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_owned()))
+        .unwrap();
+    common::call(st, req).await
+}
+
+fn body_text(reply: &common::Reply) -> String {
+    String::from_utf8_lossy(&reply.body).into_owned()
+}
+
+/// The mismatch of `reply` against `status` with exactly the body `body`.
+fn expect_reply(case: &str, reply: &common::Reply, status: u16, body: &str) -> Option<String> {
+    let got = body_text(reply);
+    (reply.status.as_u16() != status || got != body).then(|| {
+        format!(
+            "{case}: expected {status} {body}, got {} {got:?}",
+            reply.status.as_u16()
+        )
+    })
+}
+
+/// The mismatch of `reply` against `status` with exactly the error body of `code`.
+fn expect_error(case: &str, reply: &common::Reply, status: u16, code: &str) -> Option<String> {
+    expect_reply(case, reply, status, &format!(r#"{{"error":"{code}"}}"#))
+}
+
+/// The header `name` of `reply` as text.
+fn header(reply: &common::Reply, name: HeaderName) -> Option<&str> {
+    reply.headers.get(name).and_then(|v| v.to_str().ok())
+}
+
+const SOLUTION: &str = r#"{"answer":[1,8,4,7]}"#;
+const WRONG: &str = r#"{"answer":[0,0,0,0]}"#;
+
+/// A correct answer solves the puzzle once: a second correct answer keeps the first solve's time, and a wrong one
+/// after it is wrong but solved.
+#[tokio::test]
+async fn attempt_correct_marks_solved() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    let mut failures = Vec::new();
+    let reply = post_attempt(&st, ANN, "ch1.drawer", SOLUTION).await;
+    failures.extend(expect_reply(
+        "correct at T0",
+        &reply,
+        200,
+        r#"{"correct":true,"solved":true}"#,
+    ));
+    let solved_at = progress_row(&st, ANN, "ch1.drawer").await.map(|r| r.3);
+    if solved_at != Some(Some(T0)) {
+        failures.push(format!(
+            "after T0: expected solved_at T0, got {solved_at:?}"
+        ));
+    }
+    let later = st.clone().with_clock(Arc::new(FixedClock(T0 + 10)));
+    let reply = post_attempt(&later, ANN, "ch1.drawer", SOLUTION).await;
+    failures.extend(expect_reply(
+        "correct again at T0+10",
+        &reply,
+        200,
+        r#"{"correct":true,"solved":true}"#,
+    ));
+    let solved_at = progress_row(&st, ANN, "ch1.drawer").await.map(|r| r.3);
+    if solved_at != Some(Some(T0)) {
+        failures.push(format!(
+            "after T0+10: expected solved_at still T0, got {solved_at:?}"
+        ));
+    }
+    let later = st.clone().with_clock(Arc::new(FixedClock(T0 + 20)));
+    let reply = post_attempt(&later, ANN, "ch1.drawer", WRONG).await;
+    failures.extend(expect_reply(
+        "wrong at T0+20",
+        &reply,
+        200,
+        r#"{"correct":false,"solved":true}"#,
+    ));
+    report(&failures);
+}
+
+/// A wrong answer is counted and leaves the puzzle unsolved.
+#[tokio::test]
+async fn attempt_wrong_returns_false() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    let mut failures = Vec::new();
+    let reply = post_attempt(&st, ANN, "ch1.drawer", WRONG).await;
+    failures.extend(expect_reply(
+        "wrong",
+        &reply,
+        200,
+        r#"{"correct":false,"solved":false}"#,
+    ));
+    let row = progress_row(&st, ANN, "ch1.drawer").await;
+    if row != Some((1, 1, T0, None)) {
+        failures.push(format!(
+            "row: expected (attempts 1, window 1, start T0, unsolved), got {row:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// A malformed id, a body that is not an answer, and an answer outside the puzzle's shape (`answerLen` 4,
+/// `answerMax` 9, at most 16 entries) are each 400 `bad_request`, and none is counted.
+#[tokio::test]
+async fn attempt_wrong_shape_400() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    let mut failures = Vec::new();
+    for id in ["Ch1.drawer", "ch1.Drawer", "ch1.a-b"] {
+        let reply = post_attempt(&st, ANN, id, WRONG).await;
+        failures.extend(expect_error(
+            &format!("id {id}"),
+            &reply,
+            400,
+            "bad_request",
+        ));
+    }
+    let seventeen = format!(r#"{{"answer":[{}]}}"#, ["0"; 17].join(","));
+    for body in [
+        r#"{"answer":[1,8,4]}"#,
+        r#"{"answer":[1,8,4,7,0]}"#,
+        r#"{"answer":[1,8,4,10]}"#,
+        r#"{"answer":[1,8,4,-1]}"#,
+        r#"{"answer":[1,8,4,65536]}"#,
+        r#"{"answer":[1.5,8,4,7]}"#,
+        seventeen.as_str(),
+        "{}",
+        "not json",
+    ] {
+        let reply = post_attempt(&st, ANN, "ch1.drawer", body).await;
+        failures.extend(expect_error(
+            &format!("body {body}"),
+            &reply,
+            400,
+            "bad_request",
+        ));
+    }
+    let row = progress_row(&st, ANN, "ch1.drawer").await;
+    if row.is_some() {
+        failures.push(format!("after the 400s: expected no row, got {row:?}"));
+    }
+    let reply = post_attempt(&st, ANN, "ch1.drawer", WRONG).await;
+    failures.extend(expect_reply(
+        "control: a well-formed wrong answer",
+        &reply,
+        200,
+        r#"{"correct":false,"solved":false}"#,
+    ));
+    let row = progress_row(&st, ANN, "ch1.drawer").await.map(|r| r.0);
+    if row != Some(1) {
+        failures.push(format!("control: expected attempts 1, got {row:?}"));
+    }
+    report(&failures);
+}
+
+/// A paid chapter's puzzle answers 403 to a user without the chapter, before the body is read and without a row;
+/// the chapter's owner gets the check, and every user gets a free chapter's puzzle.
+#[tokio::test]
+async fn attempt_paid_chapter_403_without_entitlement() {
+    let (st, _db) = state_with_users(&[ANN, BEN]).await;
+    own(&st, BEN, "chapter:ch2").await;
+    let mut failures = Vec::new();
+    let reply = post_attempt(&st, ANN, "ch2.cabinet", r#"{"answer":[2,0,1]}"#).await;
+    failures.extend(expect_error(
+        "ANN, ch2.cabinet, the solution",
+        &reply,
+        403,
+        "not_entitled",
+    ));
+    let reply = post_attempt(&st, ANN, "ch2.cabinet", "not json").await;
+    failures.extend(expect_error(
+        "ANN, ch2.cabinet, a malformed body",
+        &reply,
+        403,
+        "not_entitled",
+    ));
+    let row = progress_row(&st, ANN, "ch2.cabinet").await;
+    if row.is_some() {
+        failures.push(format!("ANN on ch2.cabinet: expected no row, got {row:?}"));
+    }
+    let reply = post_attempt(&st, BEN, "ch2.cabinet", r#"{"answer":[2,0,1]}"#).await;
+    failures.extend(expect_reply(
+        "BEN owns chapter:ch2",
+        &reply,
+        200,
+        r#"{"correct":true,"solved":true}"#,
+    ));
+    let reply = post_attempt(&st, ANN, "ch1.drawer", WRONG).await;
+    failures.extend(expect_reply(
+        "ANN, free ch1.drawer",
+        &reply,
+        200,
+        r#"{"correct":false,"solved":false}"#,
+    ));
+    report(&failures);
+}
+
+/// An id of the grammar that the content does not hold is 404 with the error body, never the router's empty 404.
+#[tokio::test]
+async fn attempt_unknown_puzzle_404() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    let mut failures = Vec::new();
+    for id in ["ch1.nothing", "ch3.drawer", "ch9.drawer"] {
+        let reply = post_attempt(&st, ANN, id, WRONG).await;
+        failures.extend(expect_error(id, &reply, 404, "not_found"));
+    }
+    report(&failures);
+}
+
+/// Past the window's 20 attempts even the solution is 429 with `Retry-After`, and the puzzle stays unsolved: the
+/// answer is used only after the window.
+#[tokio::test]
+async fn attempt_limited_correct_answer_429_not_solved() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    let mut failures = Vec::new();
+    for call in 1..=20 {
+        let reply = post_attempt(&st, ANN, "ch1.drawer", WRONG).await;
+        failures.extend(expect_reply(
+            &format!("wrong {call}"),
+            &reply,
+            200,
+            r#"{"correct":false,"solved":false}"#,
+        ));
+    }
+    let reply = post_attempt(&st, ANN, "ch1.drawer", SOLUTION).await;
+    failures.extend(expect_error(
+        "the solution as attempt 21",
+        &reply,
+        429,
+        "rate_limited",
+    ));
+    let retry = header(&reply, RETRY_AFTER);
+    if retry != Some("600") {
+        failures.push(format!("Retry-After: expected 600, got {retry:?}"));
+    }
+    let row = progress_row(&st, ANN, "ch1.drawer").await;
+    if row != Some((21, 21, T0, None)) {
+        failures.push(format!(
+            "row: expected (attempts 21, window 21, start T0, unsolved), got {row:?}"
         ));
     }
     report(&failures);

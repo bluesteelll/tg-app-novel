@@ -170,6 +170,24 @@ pub struct ChapterPayload<'a> {
     pub world: Option<&'a RawValue>,
 }
 
+/// `POST /api/puzzles/{puzzleId}/attempts` request. Unknown fields are ignored.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttemptRequest {
+    /// The answer: the puzzle's `answerLen` values, each at most its `answerMax` (at most 16, each at most 65535).
+    pub answer: Vec<u16>,
+}
+
+/// `POST /api/puzzles/{puzzleId}/attempts` response.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttemptResponse {
+    /// Whether this answer is the solution.
+    pub correct: bool,
+    /// Whether the puzzle is solved, by this answer or an earlier one.
+    pub solved: bool,
+}
+
 /// The first line of the generated file: what it is and how to rewrite it.
 const BINDINGS_HEADER: &str = "// Built from server/src/api/dto.rs and error.rs by ts-rs; do not edit. Regenerate: \
                                cargo test -p server --test it bindings::write_bindings -- --ignored --exact";
