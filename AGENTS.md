@@ -22,6 +22,9 @@ section true to the tree:
   entitlement check. SQLite (WAL) behind a repository seam for the prototype, PostgreSQL in production.
 - **`server/dev/`** — crate `server-dev`: the dev-only binary (`/dev/launch` with dev-signed initData, simulated
   payments through the real webhook handler); never linked into the production `server`.
+- **`server/pgdev/`** — dev/test-only crate: starts the local PostgreSQL 18 cluster per port on demand
+  (`DEV_PG_PORT`, default 5487; binaries from `PG_BIN` or PATH; clusters under `DEV_PG_ROOT`), creates and drops test
+  databases and the per-launch dev database; never a dependency of the `server` binary.
 - **`assets/`** — art/audio sources; shipped as AVIF (+ WebP fallback) and AAC/M4A. `assets/catalog.json` is the
   asset catalog the story lint checks tags against.
 - **Generated, git-ignored:** `client/src/story-gen/` (free chapters), `server/content/` (paid chapters, served
@@ -74,6 +77,10 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --all-targets --no-fail-fast --locked
 npm --prefix client run e2e          # from lane L7 on: Playwright smoke against server-dev + the mock (gate kit)
 ```
+
+The server gates need PostgreSQL 18 binaries (`PG_BIN` or `pg_ctl` on PATH; on this machine
+`D:/tools/pgsql/18.6/bin`). The first database test starts the slot's cluster itself; lanes set `DEV_PG_PORT` /
+`DEV_PG_ROOT` like `DEV_API_PORT`.
 
 ⚠️ **`--workspace` and `--no-fail-fast` are load-bearing**, and no runner may stop at its first failure (no
 `--bail`): one known red otherwise hides every target behind it. **Vacuous greens:** vitest "No test files found",
