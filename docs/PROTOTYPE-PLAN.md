@@ -1,6 +1,9 @@
 # Architecture: prototype vertical slice
 
-Status: design (campaign deliverable, architect round 1, 2026-10-30; revision 2 — see [Revision log](#revision-log)).
+Status: design (campaign deliverable, architect round 1, 2026-10-30; revision 10 — see [Revision log](#revision-log)).
+Extended by [PUZZLES-PLAN.md](PUZZLES-PLAN.md) (RULINGS 10: puzzles, exploration, inventory, paid hints). Every
+decision that extension changes is marked "changed by PUZZLES-PLAN" here, and the lane cut below is re-cut for it
+(revision 3).
 Inputs:
 - spec `D:/tmp/novel-orch/design/spec.md`;
 - RULINGS 1–5 (`D:/tmp/novel-orch/RULINGS.md`);
@@ -25,6 +28,9 @@ environment (RULINGS 5), deployable to a real bot later by the owner (bot token 
 The player:
 1. taps to start;
 2. plays free chapter 1 (choices, state, staging, music);
+   - explores a few rooms (changed by PUZZLES-PLAN): taps doors, picks up items and documents, inserts three found
+     items into a gate, solves a code lock and an order puzzle, buys a hint with (mock) Stars; the outcomes branch
+     the story;
 3. saves, reloads and resumes;
 4. reaches the paywall;
 5. buys chapter 2 with (mock) Stars;
@@ -40,6 +46,7 @@ The player:
 | T4 | Identity only from server-verified initData (HMAC, constant time, `auth_date` window) | initData vector tests (independently signed fixtures) |
 | T5 | A save from an older story version resumes (exact → knot checkpoint → chapter start), never throws; an ink error after a resume steps the next resume down a level, never loops | `resume_*` vitest tests on edited fixture chapters, incl. `resume: ink error after checkpoint resume falls back to chapter start` |
 | T6 | Every player line and choice has a unique, stable line ID; English complete for the demo | `npm run story` |
+| T7–T11 | Changed by PUZZLES-PLAN: no hint text, solution or paid world text in `dist/`; a hint tier granted once per charge, never out of order or after a solve, revoked on refund; no exploration soft-lock; the host writes ink only at a yield; a save restores the open puzzle's start and the exact exploration state, and a story update never strands the player | [PUZZLES-PLAN "Goal"](PUZZLES-PLAN.md#goal) |
 
 **Budget targets** (numbers and gates in [Budgets](#budgets-and-validation)):
 - initial JS ≤ 40 KB brotli; all JS before the first line ≤ 270 KB brotli; first-load ≤ 800 KB;
@@ -87,7 +94,10 @@ The player:
   - nothing on the client unlocks content;
   - `server/content/` is never under the Vite root, never under a static route;
   - the dev mock and the dev routes are never in a production artifact;
-  - every gate prints every failure (no bail).
+  - every gate prints every failure (no bail);
+  - (changed by PUZZLES-PLAN) the host writes ink variables only through `StoryRunner.enter()` at a yield, and only
+    declared projection variables; no puzzle solution or hint text exists in any client build output; the world
+    reducer is pure and shared by the runtime, the soft-lock checker and the playthroughs.
 
 ---
 
@@ -130,6 +140,15 @@ research is newer and verified (brief), so it wins, and the deviation is recorde
   1.5 s after the tap).
 - **Trade-off.** Two budget rows, and one rule: the tap handler must not await the engine for the audio unlock
   (`audio/unlock.ts` lives in the entry, about 0.5 KB).
+- **Changed by PUZZLES-PLAN (X14).** Beyond the two stages, four lazy chunk families are dynamic entries outside the
+  entry and engine static closures, each with its own budget row:
+  - one per puzzle type (`puzzles/ui/*.svelte`);
+  - the puzzle host (`ui/puzzles/*`);
+  - the explore UI (`explore/controller.ts` + `ui/explore/*`).
+
+  The pure world, rules and session code (about 7 KB br) stays in the engine chunk. Every lazy `import()` lives in
+  `app/yields.ts` (L15), so the lazy rows stay PENDING until that importer exists, as the engine row waits for
+  `app/engine.ts`.
 
 **K4. Own image loader, not Pixi `Assets`.**
 - **What.** `scene/loader.ts`: the injected `FetchAsset` (implemented by `api/http.ts`: bearer and the single-flight
@@ -164,6 +183,14 @@ research is newer and verified (brief), so it wins, and the deviation is recorde
 - **Trade-off.** Preload can be refused on art-heavy knots; the budget gate catches that statically, carried stage
   included (K9, `budget/knot-set`). An over-cap visible load drops a visual instead of growing memory; a gated story
   never reaches it.
+- **Changed by PUZZLES-PLAN (X11, X13).** Two more holder families:
+  - `room:<roomId>` — neighbour room backgrounds + props, requested in exit order by the explore controller and
+    refused by the same 32 MiB rule. Released on moving to a non-neighbour, on opening a puzzle with a close-up, on
+    section exit and on chapter change.
+  - `scene:prop:<id>` — prop sprites, released by any `bg` / `scene`.
+
+  Exploration steady state: 12.4 MiB room + 16.9 MiB for two neighbours = 29.3 MiB; with a close-up open,
+  20.9 MiB.
 
 **K6. On-demand rendering.**
 - **What.** `Application.init({ autoStart: false })`. `scene/render-loop.ts` renders on the GSAP ticker only while
@@ -228,6 +255,12 @@ architect baseline preload from `TagsForContentAtPath` of the next node.)
   knot below its top: a writer who wants to enter a scene in the middle splits it into its own knot. A clear written
   anywhere but the opening tag lines (for example a `scene` at the end of the first line) is not credited by the
   budget, so a knot may read as fuller than it is.
+- **Changed by PUZZLES-PLAN (X1, DSL v2).** The yield tags add edges:
+  - `puzzle: <id> then=<K>` → K is a successor (preload and reachability).
+  - `explore: <S>` → every knot named by section S's effects and exits is a reachability edge, but not in the
+    preload `next`: the explore controller preloads per room, so a hub never preloads every event knot.
+  - An event knot's carried stage is seeded with the background and props of every room that triggers it.
+  - `-> DONE` is legal only directly after a yield line.
 
 **K10. Speaker as a text prefix `ally: …`, not a `#speaker` tag.**
 - **Why.**
@@ -268,6 +301,23 @@ checkpoint + chapter-start fallback** [R3 §2.4 option B].
   - Refuse mismatched saves: loses progress on every patch.
 - **Trade-off.** A checkpoint fallback loses visit counts inside the knot, so once-only choices of that knot can
   reappear. Accepted.
+- **Changed by PUZZLES-PLAN (X9).** `SaveBodyV1` is born with:
+  - `world: WorldState` — rooms, inventory, slots, triggers, puzzle runs;
+  - `worldVersion` — the public world's version stamp at save time (changed by PUZZLES-PLAN revision 2: the stamp
+    excludes world texts and line IDs, so a text-only edit keeps it);
+  - `at.yield` — the yield the story is stopped at.
+
+  On load:
+  - `reconcile(world, …, worldVersion)` never throws. With the same version it returns the state unchanged. After
+    a world change it drops ids the current world lacks, resizes slots and re-arms gifts held nowhere. It then keeps
+    the current section's state only if the current world can produce it from section entry (a search bounded by
+    the build's `RESUME_STATE_CAP`); otherwise the section restarts from its entry (changed by PUZZLES-PLAN revision
+    2). Every other section is marked `unproved` and gets the same check at its next entry, before the player can act
+    in it (changed by PUZZLES-PLAN revision 3);
+  - an exact resume at a yield rebuilds the yield step from `at.yield`;
+  - the chapter-start level resets the world;
+  - an open puzzle restarts from its beginning, with the attempts used kept: a linear one at its yield, an
+    exploration one (an overlay) on the next tap of its lock.
 
 **K13. Client caches.** (Deviation: [O] suggests the autosave cache in CloudStorage and DeviceStorage for manifests.)
 - **What:**
@@ -289,6 +339,9 @@ the whole schema in one migration** [R2 §4].
   - Runtime `query_as` + `FromRow` needs no `.sqlx/` offline data under `--locked` gates and causes no lane friction.
   - sqlx 0.9 refuses non-`'static` SQL unless wrapped in `AssertSqlSafe`, so string concatenation is impossible by
     type. A grep test bans `AssertSqlSafe` entirely.
+  - Erratum (RULINGS 7 f): `no_dynamic_sql` cannot see SQL built into a `String` held in a `static`
+    (`LazyLock` / `OnceLock`): such a string is `'static`, so sqlx accepts it. Reviewers of every `db/` change check
+    for such statics.
   - One migration up front: the schema is fully designed here, so no two lanes fight over `server/migrations/`.
 - **Alternatives:**
   - The `query!` macros (compile-time checks; `.sqlx` refresh per lane).
@@ -355,6 +408,16 @@ ACK 200 unless a money fact would be lost; explicit `allowed_updates = [message,
   - The worst case is 7.5 s < 10 s.
 - **Alternatives.** Answer in the webhook response body (faster, blind) [R2 §1.2]; a pure read (leaves the
   double-pay race open).
+- **Changed by PUZZLES-PLAN (X6).** Products are chapters and hint tiers (`hint:<puzzleId>:<tier>`). Pre-checkout
+  becomes two indexed statements, both inside the same 2 s DB timeout (worst case still about 7.5 s):
+  1. a PK read of the order's `product_id`;
+  2. the conditional UPDATE above, plus three nullable predicates computed in Rust from the catalog:
+     - tier n−1 owned;
+     - the paid chapter owned;
+     - the puzzle not solved.
+
+  A failed predicate → `RejectReason::Unavailable`. For a chapter product all three parameters are NULL, so the
+  effect is unchanged.
 
 **K19. Grant: one transaction, write-first.**
 - **Steps.**
@@ -438,6 +501,16 @@ server.**
   `enableClosingConfirmation` (6.2+, verified on core.telegram.org/bots/webapps) during play.
 - **Why.** TWA keeps launch params in the URL hash, which a hash router clobbers [R1 §4]. Principle 5 (no
   `history`).
+- **Changed by PUZZLES-PLAN (X12).** `ui/screens.ts` stays the only owner of the BackButton and gains a root-back
+  slot, `setRootBack(fn | null)`:
+  - Visible = overlay stack non-empty, or a root-back is set.
+  - A press pops the top overlay; with no overlay, it calls the root-back.
+  - While exploring with a non-empty room path, the root-back walks one room back. `yields.ts` sets and clears it at
+    the path's empty ↔ non-empty edges (the controller's `onPath`). It is cleared while an event knot runs and
+    restored at the event's return.
+
+  The overlay kinds gain `inventory`, `document`, `lock`, `puzzle` (exploration puzzles) and `hints`. A linear
+  puzzle is a mode, not an overlay, so Back cannot abandon it by accident.
 
 **K27. Same origin everywhere.**
 - **Dev / e2e.** Vite (`server.proxy` / `preview.proxy`) forwards `/api`, `/dev`, `/telegram` to `server-dev` on
@@ -546,6 +619,7 @@ client/playwright-report/  client/.svelte-check/  server/content/  target/
 | `i18n/ru.ts`, `en.ts`, `index.ts` | UI tables (`en: Record<keyof typeof ru, string>`), `t()` | |
 | `i18n/lines.ts` | line text: ru = ink text, en = table, fallback + counter | |
 | `ui/*` | Svelte 5 components (presentational) + `state.svelte.ts` (view model, `$state.raw`) + `screens.ts` (overlay stack ↔ BackButton) | components never import story/scene/audio/inkjs/pixi |
+| `world/*`, `explore/*`, `puzzles/*`, `geom/cover.ts`, `app/yields.ts`, `ui/explore/*`, `ui/puzzles/*` | changed by PUZZLES-PLAN: world data and decoders, the pure exploration reducer, puzzle rules / sessions / lazy UIs, the shared cover transform, the yield router ([PUZZLES-PLAN "Integration"](PUZZLES-PLAN.md#integration)) | pure modules stay DOM-free; lazy UIs only by dynamic import; only `yields.ts` calls `runner.enter` |
 
 **Arch test rules** (`client/src/arch.test.ts`, vitest unit project; each rule seen red once). They scan non-test
 source files under `client/src/`; `*.test.ts` files may use fakes and fixtures freely:
@@ -569,6 +643,10 @@ source files under `client/src/`; `*.test.ts` files may use fakes and fixtures f
   - `history.pushState` / `back`;
   - `localStorage` / `sessionStorage` outside `src/telegram/dev/`;
   - `initDataUnsafe` (except the facade's type declaration).
+- **Changed by PUZZLES-PLAN:**
+  - `arch: pure world modules` (LW2);
+  - `arch: lazy ui only by dynamic import` (LP2);
+  - `arch: only yields.ts enters the runner` (LP2).
 
 ### `server/src`
 
@@ -583,8 +661,9 @@ source files under `client/src/`; `*.test.ts` files may use fakes and fixtures f
 | `auth/token.rs`, `auth/extract.rs` | issue/verify token; `AuthUser` extractor |
 | `db/*` | the repository seam: every SQL statement lives here; handlers see domain types, never `sqlx` |
 | `api/*` | HTTP handlers + `dto.rs` (ts-rs DTOs) + `static_files.rs` |
-| `catalog.rs` | products from `server/catalog.json` (prices are server-only) |
-| `content.rs` | `ContentStore`: loads `CONTENT_DIR` at startup (paid chapters, paid en tables, manifests, the asset file index) |
+| `catalog.rs` | products from `server/catalog.json` (prices are server-only); changed by PUZZLES-PLAN: hint-tier products derived from the puzzle index + `hints.priceStars`, `prereqs()` |
+| `content.rs` | `ContentStore`: loads `CONTENT_DIR` at startup (paid chapters, paid en tables, manifests, the asset file index); changed by PUZZLES-PLAN: paid worlds and the puzzle index (`content/puzzles/<ch>.json`: solutions, hint texts) |
+| `puzzles/mod.rs` (+ `api/puzzles.rs`, `db/puzzles.rs`) | changed by PUZZLES-PLAN: answer check, attempt rate limit, puzzle status + hint texts (L6c) |
 | `telegram/gateway.rs` | `BotGateway` trait + `FrankensteinGateway` (frankenstein 0.52.1, short-timeout reqwest client) |
 | `telegram/webhook.rs` | the `/telegram/webhook` handler: secret check → decode → `process_update` |
 | `telegram/payments.rs` | pre-checkout validation, grant, revoke |
@@ -661,6 +740,11 @@ export type StagingSnapshot = {                       // "commands in effect" pe
   bgm: { track: TrackId; vol: number } | null;
 };
 export const EMPTY_SNAPSHOT: StagingSnapshot = { bg: null, cg: null, chars: [], bgm: null };
+// Changed by PUZZLES-PLAN (LW1, DSL v2):
+// - StagingCommand gains { kind: 'puzzle'; puzzle; then } and { kind: 'explore'; section } (YieldCommand);
+// - PropsCommand { kind: 'props'; props } is built by GameSession, never parsed;
+// - StagingSnapshot gains `props: readonly PropPlacement[]` (EMPTY_SNAPSHOT.props = []);
+// - PropId, Rect and PropPlacement live here too.
 ```
 
 ```ts
@@ -692,6 +776,9 @@ export type AssetFetchError = { kind: 'http'; status: number } | { kind: 'networ
 export type FetchAsset = (url: string, signal: AbortSignal) => Promise<Result<Blob, AssetFetchError>>;
 export type LoadedChapter = { id: ChapterId; story: unknown /* raw ink JSON, never in $state */; meta: ChapterMeta;
   assets: AssetManifest; en: Readonly<Record<LineId, string>> | null };
+// Changed by PUZZLES-PLAN (L13): LoadedChapter gains `world: WorldPublic | null`
+// (free: story-gen/free/<ch>.world.json; paid: ChapterPayload.world).
+// AssetCatalog gains the `prop` namespace (L5); AssetId gains 'prop/<id>'.
 ```
 
 ```ts
@@ -706,6 +793,10 @@ export type SaveBodyV1 = {
   checkpoint: { knot: KnotName; vars: Record<VarName, InkScalar>; staging: StagingSnapshot } | null;  // last knot entry
   chapterStart: { carry: Record<VarName, InkScalar> };     // values carried INTO this chapter
   backlog: ReadonlyArray<BacklogEntry>;                    // last 50
+  // Changed by PUZZLES-PLAN (X9):
+  // - `at` also carries `yield: YieldCommand | null` (the yield the story is stopped at);
+  // - `world: WorldState` holds the chapter's exploration and puzzle-run state (EMPTY_WORLD_STATE when there is none);
+  // - `worldVersion: string | null` is the public world's `version` at save time (reconcile compares it).
 };
 export type BacklogEntry = { lineId: LineId; speaker: SpeakerId | null; ru: string; chosen?: LineId };
 export function encodeSave(b: SaveBodyV1): string;
@@ -744,7 +835,10 @@ pub enum ApiError {
     #[error(transparent)] Db(#[from] sqlx::Error),
 }
 // L2 writes every variant and every ErrorCode above except SaveConflict(SaveSummary) and ApiErrorBody.current,
-// which L6a adds with the saves DTOs (and the TS derive); no other lane edits error.rs.
+// which L6a adds with the saves DTOs (and the TS derive).
+// Changed by PUZZLES-PLAN: L6c adds RateLimited { retry_after_secs } (429 rate_limited + Retry-After) and
+// HintUnavailable (409 hint_unavailable). No other lane edits error.rs.
+// ids.rs: L6b adds PuzzleId ("ch1.drawer"); an addition, RULINGS 9 Q2.
 #[derive(Serialize, TS)] #[serde(rename_all = "snake_case")]
 pub enum ErrorCode { BadRequest, InitdataInvalid, InitdataExpired, TokenMissing, TokenInvalid, TokenExpired,
                      NotEntitled, NotFound, UnknownProduct, AlreadyOwned, SaveConflict, PayloadTooLarge,
@@ -772,7 +866,8 @@ pub struct RefundFact { pub payer: UserId, pub charge: ChargeId, pub total_amoun
 #[derive(Deserialize)] struct ProbeRefunded { total_amount: u32, telegram_payment_charge_id: String }
 
 pub enum PreCheckoutVerdict { Ok, Reject(RejectReason) }
-pub enum RejectReason { UnknownOrder, Mismatch, AlreadyOwned, InProgress, Expired, Temporary }
+pub enum RejectReason { UnknownOrder, Mismatch, AlreadyOwned, InProgress, Expired, Temporary,
+                        Unavailable /* changed by PUZZLES-PLAN: a hint's tier, chapter or solved predicate */ }
 pub enum GrantOutcome { Granted, Duplicate, AlreadyEntitled, OrderMismatch }
 pub enum RevokeOutcome { Revoked, AlreadyRefunded, UnknownCharge }
 
@@ -856,8 +951,14 @@ CREATE TABLE saves (
 ) STRICT;
 ```
 
-- **Connection.** WAL, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout=5s`, pool of 4 connections
+- **Connection.** WAL, `synchronous=FULL`, `foreign_keys=ON`, `busy_timeout=5s`, pool of 4 connections
   [R2 §4.2].
+  - Erratum (RULINGS 7 b, supersedes NORMAL): a grant committed and answered 200 to Telegram must survive an OS crash
+    or power loss (principle 2), and one fsync per commit costs nothing at this load. L4a made the change.
+- **Changed by PUZZLES-PLAN.** `server/migrations/0002_puzzles.sql` (L6c) adds `puzzle_progress` (attempt window +
+  `solved_at` per user and puzzle). `server/build.rs` (`cargo:rerun-if-changed=migrations`) makes `migrate!` pick up
+  a new migration file in incremental builds. A hint unlock is an `entitlements` row: no new unlock table.
+  [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section "SQL".
 - **Transactions start with a write** (K19): no read-then-write upgrade inside a DEFERRED transaction.
 - **PostgreSQL later.** The same statements work with `$n` placeholders and `jsonb` for `body`, behind `db/`.
 
@@ -868,21 +969,24 @@ CREATE TABLE saves (
 - **Bodies.** JSON, camelCase, DTO types from `generated/api.ts`. Error body `ApiErrorBody`.
 - **Caching.** `Cache-Control: no-store` on every `/api/*` response. Paid content: `private, no-store` +
   `X-Content-Type-Options: nosniff`.
-- **Limits.** Default body limit 16 KB; saves 300 KB; webhook 1 MB.
+- **Limits.** Default body limit 16 KB (erratum, RULINGS 7 e: L4a owns it, as `DefaultBodyLimit::max(16 * 1024)`
+  on `api::router()`, with a 413 test); saves 300 KB; webhook 1 MB.
 - **Routing.** axum 0.8 `/{param}` syntax.
 
 | Method + path | Auth | Request | 200 response | Errors | Idempotency |
 |---|---|---|---|---|---|
 | `GET /api/health` | — | — | `"ok"` | — | — |
 | `POST /api/auth` | — | `AuthRequest { initData: string }` (≤ 4 KB) | `AuthResponse { token, expiresAt: number, user: UserDto { id, firstName, languageCode: string\|null } }` | 400 `bad_request`, 401 `initdata_invalid`, 401 `initdata_expired` | naturally (same initData → new token) |
-| `GET /api/entitlements` | bearer | — | `EntitlementsResponse { products: ProductDto[] }`, `ProductDto { productId, chapterId, priceStars, owned }` | 401 `token_*` | read |
+| `GET /api/entitlements` | bearer | — | `EntitlementsResponse { products: ProductDto[] }`, `ProductDto { productId, chapterId, priceStars, owned }` (chapter products only; hint tiers are listed by `GET /api/puzzles/{id}`, changed by PUZZLES-PLAN) | 401 `token_*` | read |
 | `GET /api/saves` | bearer | — | `SaveListResponse { slots: SaveSummary[] }`, `SaveSummary { slot, rev, chapterId, storyVersion, lineId, savedAt, writeId }` | 401 | read |
 | `GET /api/saves/{slot}` | bearer | — | `SaveFull { summary: SaveSummary, body: string }` | 400 bad slot, 404 `not_found` (also for another user's slot: rows are keyed by the token's user) | read |
 | `PUT /api/saves/{slot}` | bearer | `PutSaveRequest { expectedRev: number\|null, writeId: string, chapterId, storyVersion, lineId: string\|null, body: string }` | `PutSaveResponse { rev, savedAt }` | 400, 409 `save_conflict` + `current`, 413 `payload_too_large` | `expectedRev` (optimistic) + `writeId`. **The one statement of the retry contract:** a PUT whose `writeId` equals the stored row's `write_id` returns 200 with the stored `rev` / `savedAt` and writes nothing, whatever its `expectedRev`. Any other `expectedRev` mismatch → 409 + `current` (F3 handles an earlier write of ours in `current`) |
-| `POST /api/invoices` | bearer | `CreateInvoiceRequest { productId }` | `CreateInvoiceResponse { orderId, invoiceUrl }` | 404 `unknown_product`, 409 `already_owned`, 502 `telegram_unavailable` | reuses this user's `created` order for the product younger than 1 h |
+| `POST /api/invoices` | bearer | `CreateInvoiceRequest { productId }` (`chapter:<ch>`, or `hint:<puzzleId>:<tier>`, changed by PUZZLES-PLAN) | `CreateInvoiceResponse { orderId, invoiceUrl }` | 404 `unknown_product`, 409 `already_owned`, 409 `hint_unavailable` (tier order, solved, paid chapter not owned; changed by PUZZLES-PLAN), 502 `telegram_unavailable` | reuses this user's `created` order for the product younger than 1 h |
 | `GET /api/orders/{orderId}` | bearer | — | `OrderResponse { orderId, productId, status: 'created'\|'checkout'\|'paid'\|'refunded' }` | 404 (unknown, or not this user's) | read |
-| `GET /api/chapters/{chapterId}` | bearer | — | `ChapterPayload { chapterId, storyVersion, story: unknown, meta: unknown, assets: unknown, en: unknown }` (raw JSON composed from `ContentStore` via `RawValue`) | 403 `not_entitled`, 404 (unknown or free chapter: free chapters are static files) | read; `private, no-store` |
+| `GET /api/chapters/{chapterId}` | bearer | — | `ChapterPayload { chapterId, storyVersion, story: unknown, meta: unknown, assets: unknown, en: unknown, world: unknown }` (raw JSON composed from `ContentStore` via `RawValue`; `world`, the paid public world or `null`, changed by PUZZLES-PLAN) | 403 `not_entitled`, 404 (unknown or free chapter: free chapters are static files) | read; `private, no-store` |
 | `GET /api/assets/{file}` | bearer | — | bytes (`image/avif`, `image/webp`, `audio/mp4`, `audio/wav`) | 403, 404 (file not in the content index — a map lookup, never a path join) | read; `private, no-store` |
+| `GET /api/puzzles/{puzzleId}?lang=ru\|en` (changed by PUZZLES-PLAN, L6c) | bearer | — | `PuzzleStatus { puzzleId, solved, hints: HintTier[] }`; `text` only for owned tiers | 400, 403 `not_entitled` (paid chapter), 404 | read; `private, no-store` |
+| `POST /api/puzzles/{puzzleId}/attempts` (changed by PUZZLES-PLAN, L6c) | bearer | `AttemptRequest { answer: number[] }` | `AttemptResponse { correct, solved }` | 400 shape, 403, 404, 429 `rate_limited` + `Retry-After` (20 per 600 s per user and puzzle) | the result is a function of the answer; a retry counts once more toward the window |
 | `POST /telegram/webhook` | header `X-Telegram-Bot-Api-Secret-Token` (constant-time) | Telegram `Update` (bytes) | 200 (also on undecodable input without a payment, logged; an undecodable payment goes through the K17 probe first) | 401 bad/missing secret (before parsing); 500 when a `successful_payment` / `refunded_payment` transaction failed, or when a payment-bearing update's money fields are unreadable even by the probe (Telegram redelivers; grant and revoke are idempotent) | `telegram_payment_charge_id` |
 
 **Dev routes** (`server-dev` only; not routable on the `server` binary, test `server_has_no_dev_routes`):
@@ -984,6 +1088,21 @@ Consequences:
 **Write policy.** At most one PUT in flight; the latest pending write supersedes queued ones. Manual slots s1–s3 come
 from the menu.
 
+**Changed by PUZZLES-PLAN (F9).**
+- **More autosave triggers:**
+  - every `yield` step;
+  - an exploration `dirty` effect (debounced 2 s);
+  - a wrong puzzle attempt;
+  - a hint opened.
+- **Exact resume at a yield** rebuilds the yield step from `body.at.yield`.
+- **Every level** passes `body.world` through `reconcile` with `body.worldVersion`. After a world change (texts
+  excluded), every section is checked: the current one at this load, every other one at its next entry (changed by
+  PUZZLES-PLAN revision 3). A section whose saved state the current world cannot produce from section entry restarts
+  from that entry, with a toast; its start room's `onEnter` runs again (changed by PUZZLES-PLAN revision 2). The
+  chapter-start level uses `EMPTY_WORLD_STATE`.
+- **An open puzzle** reopens at its start: a linear puzzle at its yield; an exploration puzzle (an overlay, not a
+  yield) on the next tap of its lock.
+
 ### Shared types strategy
 
 | Seam | Source of truth | Mechanism | Staleness gate |
@@ -994,6 +1113,8 @@ from the menu.
 | Build outputs (catalog, meta, manifest) | TS types in `story/catalog.ts` (both producer and consumer are TS) | decoders | story/asset tool tests |
 | Chapters ↔ products | `story/chapters.json` (`productId`) + `server/catalog.json` (prices) | — | `catalog_matches_story_chapters` (Rust reads `../story/chapters.json`); the server refuses to start if a catalog product has no content |
 | Staging tags | `story/tags.ts` | one parser for gate + runtime | `dsl-doc.test.ts` two-way check against STAGING-DSL.md |
+| World data (changed by PUZZLES-PLAN) | `client/src/world/types.ts` (producer and consumer are TS) | `decodeWorldSource` (story tool) / `decodeWorldPublic` (runtime; refuses `solution` / `hints`) | `decode: *`, `emit: public world has no solution or hint fields` |
+| Server puzzle content (changed by PUZZLES-PLAN) | the committed fixture `server/tests/fixtures/content/puzzles/ch1.json` | TS `toServer` emits it; Rust `ContentStore` loads it | `emit: server puzzle content matches the server fixture shape` (TS) + the L6b/L6c content tests (Rust) |
 
 ---
 
@@ -1030,6 +1151,12 @@ export type RunnerStep =
   | { kind: 'end'; commands: StagingCommand[] };
 export type RunnerError = { kind: 'ink'; message: string } | { kind: 'tags'; errors: TagError[]; lineId: LineId | null }
                         | { kind: 'no-id'; path: string } | { kind: 'load'; message: string };
+// Changed by PUZZLES-PLAN (L13):
+// - RunnerStep gains { kind: 'yield'; yield: YieldCommand; commands; knot; enteredKnot };
+// - StoryRunner gains enter(knot, projection): Result<void, RunnerError>, valid only at a yield; it writes the
+//   declared projection VARs, then calls ChoosePathString(knot);
+// - RunnerError gains 'not-at-yield' | 'unknown-knot' | 'bad-projection'.
+// Full signatures: PUZZLES-PLAN "Module API".
 export type StartPoint = { kind: 'fresh'; carry: Record<VarName, InkScalar> } | { kind: 'exact'; ink: string }
                        | { kind: 'checkpoint'; knot: KnotName; vars: Record<VarName, InkScalar> };
 export class StoryRunner {
@@ -1059,6 +1186,9 @@ export interface SceneController {
   pause(): void; resume(): void;
   stats(): { liveTextures: number; liveBytes: number; pendingLoads: number; activeTimelines: number; overCap: number };
   debugForceContextLoss(): void;                 // wired to __novelDebug only under __TG_MOCK__ (perf e2e)
+  debugPropRects(): ReadonlyArray<{ prop: PropId; x: number; y: number; w: number; h: number }>;
+                                                 // changed by PUZZLES-PLAN (X10): page CSS px of live prop sprites;
+                                                 // __novelDebug only under __TG_MOCK__ (puzzles e2e)
   destroy(): void;
 }
 // scene/registry.ts
@@ -1104,9 +1234,10 @@ export function createPurchaseFlow(deps: { api: Endpoints; tg: TelegramClient; c
 
 ```rust
 // server lib
+#[non_exhaustive]   // erratum (RULINGS 7 d): not a private `_built: ()` (clippy `manual_non_exhaustive` rejects it);
+                    // a struct literal or functional update outside the `server` crate still does not compile (W19)
 pub struct AppState { pub repo: Repo, pub gateway: Arc<dyn BotGateway>, pub keys: Arc<Keys>, pub cfg: Arc<Config>,
-                      pub content: Arc<ContentStore>, pub catalog: Arc<Catalog>, pub clock: Arc<dyn Clock>,
-                      _built: () }   // private: a struct literal outside the `server` lib does not compile (W19)
+                      pub content: Arc<ContentStore>, pub catalog: Arc<Catalog>, pub clock: Arc<dyn Clock> }
 impl AppState {
     pub async fn new(cfg: Config) -> Result<AppState, StartupError>;  // THE constructor: every field derived from cfg
                                                    // with the production seam (system clock, FrankensteinGateway)
@@ -1155,6 +1286,8 @@ pub async fn build_dev_app(paths: DevPaths) -> Result<Router, StartupError>;   /
 - The overlay pads by `--app-inset-top|bottom|left|right = calc(var(--tg-safe-area-inset-X, 0px) +
   var(--tg-content-safe-area-inset-X, 0px))`, set once by `viewport.ts` in CSS.
 - The stage canvas is full-bleed under the insets.
+- Changed by PUZZLES-PLAN (X10): the exploration hotspot layer is positioned inside the stage host (the box Pixi's
+  `resizeTo` reads), never in the padded overlay box, so its buttons and the canvas share one coordinate box.
 
 **Portrait-first:**
 - The stage is a column with `aspect-ratio: 9 / 16` max, centered.
@@ -1170,6 +1303,8 @@ pub async fn build_dev_app(paths: DevPaths) -> Result<Router, StartupError>;   /
 - `backButton.setVisible(stack.length > 0)`; press → pop.
 - The game root has no BackButton: Android back then closes the app [R1 §2], guarded by closing confirmation during
   play.
+- Changed by PUZZLES-PLAN (K26, X12): while exploring with a non-empty room path, `setRootBack` makes the button walk
+  one room back; with an empty path, and while an event knot runs, it stays hidden.
 - Never `history`.
 
 **Lifecycle (`activated` / `deactivated`, 8.0; `visibilitychange` as fallback):**
@@ -1364,6 +1499,11 @@ Tests: `preload: next-chapter id resident after setChapter`;
 | P8 | client | order `paid` → `GET /api/entitlements` → `owned` → state `unlocked` | order `refunded` → toast; the entitlement says no |
 | P9 | client | `GET /api/chapters/ch2` → F4 step 4 with the pending autosave's carry | 403 (refunded in between) → paywall |
 
+**Hint tiers** (changed by PUZZLES-PLAN, flow H1–H7) run the same P2–P9 steps with `productId =
+hint:<puzzleId>:<tier>`. P3 refuses with 409 `hint_unavailable`; pre-checkout refuses with `Unavailable`. Ownership is
+confirmed through `GET /api/puzzles/{id}` (the purchase flow's `isOwned` dependency), not through the entitlements
+list.
+
 **The client never grants.** `paid` from `invoiceClosed` only starts polling [R1 §2]. The UI unlocks only when
 `GET /api/entitlements` says `owned` (principle 1). The `purchase_unlocks_only_from_server` unit test forges a
 CloudStorage/DeviceStorage "owned" value and expects nothing to unlock.
@@ -1396,6 +1536,14 @@ again (a retry after a failed payment).
 | `InProgress` | an order for this product — this one or another — entered `checkout` less than 120 s ago |
 | `Expired` | order older than 24 h |
 | `Temporary` | the DB step exceeded 2 s |
+
+**Hint products** (changed by PUZZLES-PLAN, K18):
+- A PK read of the order's `product_id` comes first.
+- The statement above gains three nullable predicates: the previous tier owned; the paid chapter owned; the puzzle not
+  solved in `puzzle_progress`.
+- A failure classifies as `Unavailable`.
+- For chapter products the three parameters are NULL.
+- The SQL text: [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section "SQL".
 
 **Timing.** DB ≤ 2 s (`timeout`), answer ≤ 5 s (`timeout` + reqwest 2 s connect / 5 s total) → worst case about 7.5 s
 < 10 s (principle 2). No other work happens on this path. The answer gateway error is logged; we still return 200,
@@ -1480,6 +1628,8 @@ Texts come from `server/locales/bot.{ru,en}.json` by `from.language_code`. `serv
 | Reload mid-chapter | server `auto` save | resume at the last autosave (choice point, knot entry, `deactivated`, `pagehide`) |
 | Story updated between sessions | `storyVersion` | knot checkpoint, then chapter start; never a throw (T5) |
 | Token expired mid-session | server | 401 → one single-flight re-auth → retry once; initData > 24 h → "Reopen the app". The same path serves gated images, SFX and paid BGM: they load through `FetchAsset` (`api/http.ts`) — `loader: expired token re-auths once then loads` |
+| Server clock behind Telegram's (initData `auth_date` more than 60 s in the server's future) | server clock | erratum (RULINGS 9 Q3): `FromFuture` → 401 `initdata_expired` → "Reopen the app", which cannot help while the clock is wrong. The remedy is operational: NTP time sync on the host (runbook item in D2) |
+| Puzzles, exploration, hint purchases | — | changed by PUZZLES-PLAN: the rows in [PUZZLES-PLAN "Concurrency and failure model"](PUZZLES-PLAN.md#concurrency-and-failure-model-additions-to-pps-table) |
 | `deactivated` during a transition | client | GSAP global timeline paused, render loop stopped, audio suspended; resume continues the same timeline |
 | WebGL context lost (on `activated` or any time) | client | Pixi handles `webglcontextlost`/`restored` and re-uploads from live sources [R3 §4.4]; we keep the `ImageBitmap`s alive while textures live, so restore works. If `renderer.context.isLost` is still true 2 s after `activated`, the controller destroys the `Application`, builds a new one, re-creates textures from the registry's bitmaps, and `restore(snapshot)` instantly. Pixi ≥ 8.21 is required (the Text restore fix); we pin 8.22.0 |
 | Preload vs knot exit | client | preload holders are released on the next knot entry, `next:*` holders on the next entry into a knot without `-> END` (F2); in-flight fetches aborted (`AbortController`); a load completing after abort is destroyed at once (the registry checks the holder still exists) |
@@ -1546,6 +1696,17 @@ Texts come from `server/locales/bot.{ru,en}.json` by `from.language_code`. `serv
    - **Server tests.** `paid_chapter_403_without_entitlement`, `paid_chapter_200_with_entitlement`,
      `paid_chapter_403_after_refund`, `paid_responses_private_no_store`, `asset_path_traversal_404`,
      `free_chapter_not_served_by_api`.
+   - **Changed by PUZZLES-PLAN.** Hint texts and puzzle solutions are paid content:
+     - server-only build output (`server/content/puzzles/`);
+     - `paid/leak` extended;
+     - `scan-dist` hint fingerprints rebuilt from `story/*/world.json` + the en sources (non-vacuous when any hint
+       exists);
+     - `scan-dist` paid-world fingerprints from the same sources: every world line ID and world text (≥ 12 chars, ru
+       and en) of a paid chapter's `world.json` (non-vacuous when a paid chapter has a world);
+     - `decodeWorldPublic` refuses `solution` / `hints`;
+     - `GET /api/puzzles/{id}` serves a text only to its unlock owner, `private, no-store`.
+
+     Details: [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section "Paid-content protection".
 
 ---
 
@@ -1556,8 +1717,12 @@ Texts come from `server/locales/bot.{ru,en}.json` by `from.language_code`. `serv
 - `chars` (one container per character, ≤ 2 sprites during an expression swap);
 - `cg`;
 - `fx` (a black `Graphics` rect for fade-through-black).
+- Changed by PUZZLES-PLAN (X11): `props` sits between `bg` and `chars`. Its sprites take the background's cover
+  transform (`geom/cover.ts`), are set by a `props` command, and are cleared by any `bg` / `scene`. They are part of
+  the snapshot.
 
-`stage.eventMode = 'none'`: the DOM overlay owns input.
+`stage.eventMode = 'none'`: the DOM overlay owns input. Exploration hotspots are DOM buttons positioned with the same
+`geom/cover.ts` inside the stage host element (changed by PUZZLES-PLAN, X10), so this stays.
 
 **Init.** `{ preference: 'webgl', resolution: perfClass === 'LOW' ? 1 : Math.min(devicePixelRatio, 2), autoDensity:
 true, antialias: false, background: '#000', resizeTo: host, autoStart: false }` [R3 §4.3]:
@@ -1721,6 +1886,7 @@ only while a transition runs; the gate keeps every planned working set at or bel
 | Save write queue | `saves/service.ts` | first write | idle (one in flight max) | `saves_one_in_flight` |
 | SQLite pool | `AppState` | startup | shutdown | — |
 | Delayed simulate tasks | `server-dev` | `simulate-payment` with delay | task completion | — |
+| Puzzle sessions, the explore controller, `room:*` / `scene:prop:*` holders, close-ups, lazy chunks | — | — | — | changed by PUZZLES-PLAN: [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section "Resource lifetime" |
 
 ---
 
@@ -1729,7 +1895,9 @@ only while a transition runs; the gate keeps every planned working set at or bel
 All budgets are enforced by `client/scripts/budget.ts` inside `npm run build` unless marked e2e/unit.
 - **Output.** It prints every row (`name | value | limit | PASS/FAIL`) and exits 1 if any row fails (no bail).
 - **Inputs.** `dist/.vite/manifest.json` (initial closure), the asset manifests, `ChapterMeta` files,
-  `server/content/build/usage.json` (carried stage per knot), and whether `client/src/app/engine.ts` exists.
+  `server/content/build/usage.json` (carried stage per knot), and whether `client/src/app/engine.ts` exists (changed
+  by PUZZLES-PLAN: also whether `client/src/app/yields.ts`, the lazy chunks' importer, and each lazy family's
+  sources exist).
 - **States.** PASS, FAIL, or PENDING (a row whose subject does not exist yet; printed, never counted as a pass).
 - **Compression.** Brotli quality 11 via `node:zlib`.
 
@@ -1737,12 +1905,14 @@ All budgets are enforced by `client/scripts/budget.ts` inside `npm run build` un
 |---|---|---|---|
 | Entry closure JS (entry + static imports) | ≤ 40 KB br | Svelte 11.2 KB [R4] + shell | `budget.ts` |
 | Engine closure JS (`app/engine.ts` dynamic entry + imports) | ≤ 230 KB br | Pixi 145.1 + inkjs 26.6 + GSAP 24.3 = 196 KB [R4] + our scene/story/audio | `budget.ts`: PENDING while `src/app/engine.ts` does not exist (before L15); once it exists, FAIL if the manifest has no `isDynamicEntry` chunk for it (never a 0 KB PASS) — `budget: engine row fails when dynamic entry missing` |
-| All JS in `dist/` | ≤ 270 KB br | R4 recommends ≤ 260 KB for one bundle; +10 for the split overhead | `budget.ts` |
+| All JS in `dist/` | ≤ 290 KB br (changed by PUZZLES-PLAN: was 270; + about 20 KB of lazy puzzle and explore chunks that never load before the first line) | R4 recommends ≤ 260 KB for one bundle; +10 for the split overhead | `budget.ts` |
+| JS before the first line (entry + engine closures) | ≤ 270 KB br (changed by PUZZLES-PLAN: the old all-JS limit, now scoped to what loads before the first line) | as above | `budget.ts` (L5) |
+| Lazy chunks, world JSON, props, `budget/room-set` | changed by PUZZLES-PLAN: puzzle type ≤ 8 KB br each, puzzle host ≤ 10, explore UI ≤ 16 (dynamic entries, never in a static closure; PENDING until `src/app/yields.ts` exists, then FAIL without a dynamic entry); world ≤ 32 KB raw / 8 KB br; prop ≤ 512 px; room-set ≤ 32 MiB | [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section "Budgets and validation" | `budget.ts` (L5, LP2) |
 | CSS total | ≤ 12 KB br | | `budget.ts` |
 | `index.html` | ≤ 2 KB br | | `budget.ts` |
 | Story JSON per chapter | ≤ 160 KB raw and ≤ 35 KB br | ink JSON is verbose, compresses well [R4 §4.3] | `budget.ts` (free from `story-gen`, paid from `server/content`) |
 | en table per chapter | ≤ 48 KB raw | | `budget.ts` |
-| First-load to first line (static estimate) | ≤ 800 KB transfer | all JS + CSS + html + TWA 16.2 KB [R1] + ch1 story/meta/manifest + first knot's images (AVIF); audio excluded (it streams, never blocks the first line) | `budget.ts` |
+| First-load to first line (static estimate) | ≤ 800 KB transfer | the entry + engine closures (changed by PUZZLES-PLAN: lazy chunks excluded; was "all JS") + CSS + html + TWA 16.2 KB [R1] + ch1 story/meta/manifest + first knot's images (AVIF); audio excluded (it streams, never blocks the first line) | `budget.ts` |
 | First knot images | ≤ 450 KB | | `budget.ts` |
 | Image dimensions | ≤ 2048 px each side; bg/cg exactly 1080×2048; sprites ≤ 768×1536 | principle 4 | `assets.ts` writes dims from sharp metadata; `budget.ts` checks |
 | Image file | AVIF ≤ 300 KB, WebP ≤ 450 KB | | `budget.ts` |
@@ -1819,6 +1989,12 @@ All budgets are enforced by `client/scripts/budget.ts` inside `npm run build` un
 | `smoke.spec.ts` (L15) | `tap-to-start unlocks audio only after the gesture`, `play choose save reload load resumes at same line` (asserts `data-line-id`), `autosave resume after reload`, `back button closes overlays without history` (`history.length` unchanged, `web_app_setup_back_button` events recorded), `deactivated pauses audio, activated resumes` (the dev-server `/@fs` check is a vitest test, not e2e: see Paid-content protection) |
 | `purchase.spec.ts` | `purchase unlocks chapter 2` (403 before, sheet shows the server price, 200 after, ch2 first line reacts to a ch1 choice), `cancelled purchase keeps paywall`, `failed purchase keeps paywall`, `delayed webhook unlocks after polling`, `paid twice grants once` |
 | `perf.spec.ts` | `time to first line under throttling`, `textures released on chapter change`, `heap under budget`, `context loss recovers` (debug hook calls Pixi's `forceContextLoss()`, then a pixel sample of the stage is not black) |
+| `puzzles.spec.ts` (L15; changed by PUZZLES-PLAN) | `explore: search item puzzle buy hint solve`, `explore: gate fail branch`, `explore: reload resumes in the same room with items`, `puzzle: hint text absent until bought`, `puzzle: paid chapter puzzle needs entitlement`, `explore: back button walks rooms then hides`, `explore: live texture bytes stay under the steady cap`, `explore: hotspot buttons align with props under safe area and landscape` |
+
+**Changed by PUZZLES-PLAN.** The unit, DOM, story and server test names of the puzzle extension (world, rules,
+reduce, softlock, cover, runner yields, session, controller, yields, arch, budget, scan, emit; schema, attempts,
+status, catalog, invoices, pre-checkout, refunds) are listed in [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section
+"Test strategy". Each lane's commits name the ones it adds.
 
 ### Gates that must be seen red once (each lane quotes the failing run)
 
@@ -1835,6 +2011,7 @@ All budgets are enforced by `client/scripts/budget.ts` inside `npm run build` un
 | `bindings_are_fresh` | a DTO field added without regenerating | L6a |
 | idempotency | mutation: the PK on `payments` removed / check-then-insert → `successful_payment_duplicate_concurrent_wal` red | L8b (tester mutation) |
 | e2e | L7: `main.ts` not calling the facade → `boot records ready, expand and swipe events` red; `$DEV_API_PORT` already bound by another process → the webServer "is already used" error (`reuseExistingServer: false`), never a run against the foreign server. L15: mock invoice forced to `failed` → `purchase unlocks chapter 2` red; BackButton binding removed → `back button closes overlays without history` red | L7, L15 |
+| puzzle extension | changed by PUZZLES-PLAN: yield lint and the `dsl-doc` heading (LW1); the soft-lock stub, the `successors` stub without `closed`, the checker capped at 200,000 instead of `RESUME_STATE_CAP`, the path-only reconcile step 4, the `resetSection` that keeps `section`, the current-section-only reconcile with no `unproved` (revision 3), and the pure-module arch rule (LW2); every `world/*` / `puzzle/*` / `explore/*` code (the cross-section-unlock world for `world/cross-section-effect`, revision 4; the multi-lock puzzle world for `world/puzzle-multi-lock`, revision 5; the cross-section arch world for `world/cross-section-exit`, revision 6), `paid/leak` for hints, the scan of hint text and of paid world text in dist, the whole-body world version (LW3); room-set and prop budget rows (L5); puzzle UI in the engine closure, the lazy rows without their importer, and the lazy-import arch rule (LP2); the controller that enters a section through `reduce` instead of `admitSection` (LX, revision 3); `0002` absent and the never-limiting stub (L6c); the pre-checkout without hint predicates (L8b); the wrong gate order, the failed mock invoice and the hotspot layer in the padded overlay in `puzzles.spec.ts` (L15) | [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section "Gates that must be seen red once" |
 
 ---
 
@@ -1916,6 +2093,9 @@ set on the `[workspace.dependencies]` entries [R4 §6.1]:
 - `budget.ts` fails if `dist/.vite/manifest.json` is missing or older than `dist/index.html`;
 - the engine row is PENDING (never PASS) while `src/app/engine.ts` does not exist, and FAILs if the file exists but
   the manifest has no dynamic entry for it;
+- (changed by PUZZLES-PLAN) the lazy chunk rows follow the same rule, keyed on their importer
+  `src/app/yields.ts`: PENDING while it does not exist; once it exists, FAIL for a family whose sources exist with no
+  dynamic entry;
 - `scan-dist.ts` fails on a missing or empty fingerprint section (`lineIds`, `texts`, `files`) when a paid chapter or a
   paid-only asset exists (paid-only computed from `usage.json` + `story/chapters.json`, never from the asset tool's
   outputs);
@@ -1958,6 +2138,7 @@ parallel lanes would collide on it.
 | Refunds + bot | `server/src/telegram/{commands,setup,texts}.rs` |
 | Paid delivery | `server/src/content.rs`, `api/content.rs`; `scripts/scan-dist.ts` |
 | Budgets | `scripts/budget*.ts`; perf e2e |
+| Puzzles, Exploration, Hints, World tooling | changed by PUZZLES-PLAN: [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section "docs/FEATURE_MAP.md entries" |
 
 ---
 
@@ -1971,9 +2152,12 @@ parallel lanes would collide on it.
 - **Parent files.** Every lane's lock holds the parent module file (`mod.rs` / `lib.rs`) of each `.rs` file it
   creates. Shared files no later lane needs to touch are pre-declared by L2 in full: `server/src/config.rs` and
   `.env.example` (every variable of the plan, L2 commit 1) and `server/src/error.rs` (every variant except what L6a
-  adds). Acceptance check for each cut: every new `.rs` file's parent is in that lane's lock.
-- **AppState construction.** `AppState` is built only by `AppState::new(cfg)` in `server/src/lib.rs` (Module API). A
-  private field makes a struct literal outside the `server` lib a compile error.
+  adds and, changed by PUZZLES-PLAN, what L6c adds). Acceptance check for each cut: every new `.rs` file's parent is
+  in that lane's lock.
+- **AppState construction.** `AppState` is built only by `AppState::new(cfg)` in `server/src/lib.rs` (Module API).
+  `#[non_exhaustive]` makes a struct literal or functional update outside the `server` crate a compile error (erratum,
+  RULINGS 7 d: not a private `_built` field). A field-adding lane writes `AppState { repo, cfg, … }` inside
+  `AppState::new`.
   - **Callers.** Each passes a complete `Config` (every field pre-declared by L2):
     - `server/src/main.rs` with `Config::from_env()`;
     - `build_dev_app` in `server/dev/src/lib.rs` with a dev `Config` from `DevPaths`;
@@ -1988,43 +2172,101 @@ parallel lanes would collide on it.
   - **Acceptance check for each cut.** For every lane that adds an `AppState` field, every file that constructs
     `AppState` is in that lane's lock, or constructs it only through `AppState::new`.
 
-**Collision locks** (WORKFLOW.md) are serialized by the order below:
-- `client/package.json` + lock: L1, L3b, L5, L7.
+**Collision locks** (WORKFLOW.md) are serialized by the order below (changed by PUZZLES-PLAN: the puzzle lanes
+are in):
+- `client/package.json` + lock: L1, L3b, L5, L7. The puzzle lanes add no dependency.
 - `Cargo.toml` + `Cargo.lock`: L2, L4b.
-- `server/migrations/`: L2 only.
+- `server/migrations/`: L2 (`0001`), then L6c (`0002`, plus `server/build.rs`).
 - `server/src/{lib.rs, main.rs, api/mod.rs, api/dto.rs, db/mod.rs, telegram/mod.rs, error.rs}` and
-  `client/src/api/generated/api.ts`: L4a → L6a → L6b → L8a → L8b → L9, sequential; `server/dev/src/lib.rs`: L4b → L8a
-  → L8b. One server lane runs per wave, so none of these is held by two live lanes.
+  `client/src/api/generated/api.ts`: L4a → L6a → L6b → L6c → L8a → L8b → L9, sequential.
+- `server/dev/src/lib.rs`: L4b → L8a → L8b.
+- `server/src/ids.rs`: L4a → L6b (adds `PuzzleId`).
+- `server/src/{catalog.rs,content.rs}` and `server/catalog.json`: L6b only (later lanes consume their API).
+- One server lane runs at a time, so none of the server files is held by two live lanes.
 - `server/tests/it/main.rs`: server lanes only, sequential.
-- `client/src/story/catalog.ts`: L3a → L3b → L5.
-- `client/scripts/scan-dist.ts`: L1 → L3b → L5; `client/scripts/scan-dist.test.ts`: L1 → L5.
+- `client/src/story/{staging.ts,tags.ts,tags.test.ts,dsl-doc.test.ts}`, `client/scripts/story/{lint.ts,lint.test.ts}`:
+  L3a → LW1, then frozen.
+- `client/src/story/catalog.ts`: L3a → L3b → L5 → L13.
+- `client/scripts/story.ts`: L3b → L3c → LW3.
+- `client/scripts/story/{graph.ts,emit.ts,build.test.ts}`: L3b → LW3.
+- `client/scripts/story/{fix.ts,locales.ts,playthrough.ts,play.test.ts,locales.test.ts}`: L3c → LW3.
+- `client/scripts/scan-dist.ts`: L1 → L3b → L5 → LW3. `client/scripts/scan-dist.test.ts`: L1 → L5 → LW3.
+- `client/scripts/{budget.ts,budget.test.ts}`: L1 → L5 → LP2.
+- `client/src/arch.test.ts`: L1 → LW2 → LP2.
+- `client/src/i18n/{ru.ts,en.ts}`: L14a → L14b (which pre-declares the puzzle and explore keys), then frozen.
+- `client/src/ui/screens.ts`: L14a only.
+- `client/src/main.ts`: L1 → L7 → L15. `client/src/ui/App.svelte`: L1 → L15.
 - `docs/FEATURE_MAP.md`, `docs/ARCHITECTURE.md`: D1, D2 only.
-- `docs/STAGING-DSL.md`: L3a (doc-test fixes only), then frozen.
+- `docs/STAGING-DSL.md`: L3a (doc-test fixes only), then LW1 (DSL v2), then frozen.
 
 **Dependencies:**
 - All client dependencies are installed by L1 (one lockfile change); later client lanes change only `scripts`.
 - All server dependencies are added by L2; L4b adds only the `server-dev` package entry.
 
-### Order and waves (≤ 2 lanes at a time)
+### Dependency order (RULINGS 8: no wave barriers; changed by PUZZLES-PLAN)
 
-| Wave | Lane A | Lane B | Gate to start the wave |
-|---|---|---|---|
-| W1 | **L1 client-shell** | **L2 server-skeleton** | — (E1: the gate kit before L2) |
-| W2 | **L3a staging-dsl** | **L4a server-auth** | W1 merged |
-| W3 | **L3b story-compile** | **L4b server-dev** | L3a; L4a |
-| W4 | **L3c story-locales** | **L6a server-saves** | L3b; L4a |
-| W5 | **L5 asset-pipeline** | **L6b server-content** | L3c (catalog + usage); L6a |
-| W6 | **L7 telegram-client** | **L8a invoices** | L1 + L4b + L5; L6b + L4b |
-| W7 | **L11 scene** | **L8b webhook-grant** | L3a + L5; L8a |
-| W8 | **L10 client-data** | **L9 refunds-bot** | L7 + L8b; L8b |
-| W9 | **L12 audio** | **L13 story-runtime** | L5; L3c + L10 (disjoint client locks) |
-| W10 | **L14a overlay-core** | **D1 docs-authoring** | L7 + L11; L3c + L5 |
-| W11 | **L14b overlay-menus** | **N1 demo-story** | L14a + L10; D1 |
-| W12 | **L15 integration** | — | everything above (N1 included: the e2e plays the demo) |
-| W13 | **D2 docs-final** | — | L15 |
+A lane starts as soon as every lane in its "Gate to start" is merged and a slot is free. The slots are one client
+slot and one server slot, or two client / doc / narrative lanes with disjoint locks once the server chain has ended;
+never more than 2 lanes. "Re-cut" marks a lane whose scope this revision changes (its entry below says how).
+Changed by PUZZLES-PLAN revision 4b (RULINGS 14): the database port lanes LDB0 → LDB1 run in the server slot after
+L6a and before L6b, so the puzzle server lanes write their SQL once, in the PostgreSQL dialect. Their cut is
+`D:/tmp/novel-orch/design/db/decision.md` §5, not this file.
 
-24 lanes, 13 waves. The critical path is the client chain L1 → L3a → L3b → L3c → L5 → L7 → L11 → L10 → L13 →
-L14a → L14b → L15. The server finishes at W8 and leaves its slot to client lanes, docs and the narrative.
+| Lane | Slot | State | Gate to start (merged) | Re-cut |
+|---|---|---|---|---|
+| L1 client-shell | client | merged `f6e2624` | — | — |
+| L2 server-skeleton | server | merged `e005dc6` | — | — |
+| L4a server-auth | server | merged `0aef72e` | L2 | — (errata below) |
+| L3a staging-dsl | client | running | L1 | — |
+| L3b story-compile | client | | L3a | no |
+| **LW1 puzzle-dsl** | client | new | L3a | new |
+| L4b server-dev | server | | L4a | no |
+| L6a server-saves | server | | L4a | no |
+| **LDB0 pg-dev-cluster** | server | new (RULINGS 14) | L6a | new; cut in `design/db/decision.md` §5.1 |
+| **LDB1 db-port** | server | new (RULINGS 14) | LDB0 | new; cut in `design/db/decision.md` §5.2 |
+| L3c story-locales | client | | L3b | no |
+| L5 asset-pipeline | client | | L3c | yes |
+| L6b server-content | server | | L6a, LDB1 | yes |
+| **LW2 world-model** | client | new | L3a, LW1 | new |
+| **L6c server-puzzles** | server | new | L6b (which waits for LDB1) | new |
+| L7 telegram-client | client | | L1, L4b, L5 | no |
+| L11 scene | client | | L3a, L5, LW1 | yes |
+| L8a invoices | server | | L4b, L6c | yes |
+| **LW3 story-world** | client | new | L3c, L5, L6b, LW1, LW2 | new |
+| L8b webhook-grant | server | | L8a | yes |
+| L12 audio | client | | L5 | no |
+| L9 refunds-bot | server | | L8b | yes |
+| L10 client-data | client | | L7, L8b | yes |
+| L13 story-runtime | client | | L3c, L5, L10, LW2 | yes |
+| L14a overlay-core | client | | L7, L11 | yes |
+| D1 docs-authoring | doc | | L3c, L5, LW3 | yes |
+| L14b overlay-menus | client | | L10, L14a | yes |
+| N1 demo-story | narrative | | D1, LW3 | yes |
+| **LP2 puzzle-ui** | client | new | L10, L14b, LW2 | new |
+| **LX explore-ui** | client | new | L11, L14b, LW2 | new (∥ LP2: disjoint locks) |
+| L15 integration | client | | every lane above (N1 included: the e2e plays the demo) | yes |
+| D2 docs-final | doc | | L15 | yes |
+
+There are 32 lanes: 3 merged, 1 running, 28 to go; 6 are new from PUZZLES-PLAN and 2 (LDB0, LDB1) from RULINGS 14.
+
+**Launch preference** when several lanes are ready (critical path first):
+- client: L3b, LW1, L3c, L5, L7, L11, LW2, LW3, L12, L10, L14a, L13, L14b, LP2 ∥ LX, D1, N1, L15, D2;
+- server: L4b, L6a, LDB0, LDB1, L6b, L6c, L8a, L8b, L9.
+
+After L9 the server slot takes D1 / N1 / LX.
+
+**Critical path:**
+- The client chain: L3a → L3b → L3c → L5 → L7 → L11 → L14a → L14b → LP2 → L15 → D2.
+- L14b also waits for L10, which waits for the server chain L4b → L6a → LDB0 → LDB1 → L6b → L6c → L8a → L8b. That
+  chain must merge L8b before L11 merges, or it becomes the critical path.
+- N1 (← D1 ← LW3 ← LW2 ← LW1) must merge before L15. It runs in the second slot after L9 and stays off the critical
+  path while LW1 / LW2 / LW3 are launched early.
+- LW3 also waits for L6b (its commit 3 red reads L6b's `server/tests/fixtures/content/puzzles/ch1.json`; changed by
+  PUZZLES-PLAN revision 1). L6b is fifth in the server launch order (L4b, L6a, LDB0, LDB1, L6b; PUZZLES-PLAN
+  revision 4b) while LW3 is eighth in the client order. If L6b is late, LW3 waits (its red would otherwise be ENOENT,
+  not the predicted one).
+
+The puzzle work adds one lane to the critical path (LP2); everything else runs beside it.
 
 ### Lanes
 
@@ -2121,8 +2363,10 @@ Notation:
 - **Goal:** `POST /api/auth`; the token and the `AuthUser` extractor.
 - **Lock:** `server/src/{ids.rs,clock.rs,lib.rs}`, `server/src/auth/{mod.rs,initdata.rs,token.rs,extract.rs}`,
   `server/src/db/{mod.rs,users.rs}`, `server/src/api/{mod.rs,auth.rs,dto.rs}`, `server/tests/it/{main.rs,auth.rs}`,
-  `server/tests/fixtures/{sign_initdata.mjs,initdata_vectors.json}` (16; two are fixtures, `db/mod.rs` is the one-line
-  `pub mod users;`). Config fields and error variants come pre-declared from L2. `keys` and `clock` are added inside
+  `server/tests/fixtures/{sign_initdata.mjs,initdata_vectors.json}` (16; two are fixtures). Erratum (RULINGS 9 Q5):
+  `db/mod.rs` is not a one-liner — it gains `pub mod users;` and the RULINGS 7 b `synchronous=FULL` change (with the
+  `wal_mode_on_file_db` expectation in `it/schema.rs`). Per RULINGS 7 c, `it/common.rs` joins the lock for the
+  `CARGO_TARGET_TMPDIR` change. Config fields and error variants come pre-declared from L2. `keys` and `clock` are added inside
   `AppState::new` in `lib.rs` (lane rules), so `main.rs` and `it/common.rs` stay untouched.
 - **Commits:**
   1. Fixtures from an independent Node `crypto` signer (`sign_initdata.mjs`, run once and committed): valid, with
@@ -2131,7 +2375,10 @@ Notation:
   3. `token.rs`. Red: `token_roundtrip` on a stub.
   4. Extractor + `/api/auth` + users upsert + `dto.rs` (serde DTOs; the `TS` derive arrives in L6a); `AppState`
      gains `keys` (from `TOKEN_KEY`) and `clock` (the system clock) inside `AppState::new`, plus `with_clock`, which
-     the token-expiry tests call in `it/auth.rs`. Red: `token_missing_401` gets 404 before the route exists.
+     the token-expiry tests call in `it/auth.rs`. Erratum (RULINGS 9 Q1/Q5): L4a has no bearer-protected production
+     route, so the extractor's red runs on a **test-only router** in `it/auth.rs`, against an accept-all stub
+     extractor. "404 before the route" applies only to `POST /api/auth`. The 16 KB default body limit
+     (`DefaultBodyLimit::max(16 * 1024)` on `api::router()`, with a 413 test) is L4a's (RULINGS 7 e).
 - **Gates:** fmt, clippy, test.
 - **Seen working:** `curl -X POST /api/auth` with a vector from the fixtures → a token; a tampered one → 401
   `initdata_invalid`.
@@ -2215,6 +2462,134 @@ Notation:
 - **Gates:** `test`, `story` (the coverage report lists seeds and endings per chapter).
 - **Seen working:** `npm --prefix client run story` reports `ch1: 200 runs, knots 3/3, endings 1/1`.
 
+#### LW1 puzzle-dsl (client; new, PUZZLES-PLAN)
+- **Goal:** DSL v2 — the `puzzle` and `explore` yield tags in the one parser, the yield-block lint, the narrowed
+  `-> DONE` ban, `props` in the staging snapshot; STAGING-DSL.md updated and two-way checked. PUZZLES-PLAN X1, "Staging
+  DSL additions".
+- **Gate to start:** L3a merged. It may run beside L3b (disjoint locks).
+- **Lock:** `client/src/story/{staging.ts,tags.ts,tags.test.ts,dsl-doc.test.ts}`,
+  `client/scripts/story/{lint.ts,lint.test.ts}`, `docs/STAGING-DSL.md` (7).
+- **Commits:**
+  1. `staging.ts`: `PuzzleLocalId`, `SectionId`, `PropId`, `Rect`, `PropPlacement`, the two command kinds,
+     `YieldCommand`, `PropsCommand`, `StagingSnapshot.props` and the frozen `EMPTY_SNAPSHOT.props = []`. `tags.ts`
+     parses `puzzle:<id> then=<knot>` (`then` required) and `explore:<section>`, with the §7 conflicts (one yield per
+     batch).
+     - Red: `tags: puzzle and explore parse`, `tags: puzzle without then is missing-arg`,
+       `tags: two yields in one batch conflict` — against the L3a parser, predicted red: `unknown-kind` errors.
+  2. STAGING-DSL.md: the version line → DSL v2; §6 headings `puzzle` and `explore` (syntax, placement, validation,
+     typed result, an example yield block); §7 conflicts; §8 knot index (yield edges; section knots excluded from the
+     preload `next`); §10 (`-> DONE` only after a yield line); §11 codes (`yield/shape`, plus the LW3 codes listed as
+     "enforced from LW3").
+     - Red: `dsl-doc: headings equal parser kinds` with the parser kinds added and the doc not yet edited — predicted
+       red: "doc lacks: puzzle, explore".
+  3. `lint.ts`: `yield/shape` — the tag alone on a tag-only line, next source line `-> DONE`; `-> DONE` elsewhere stays
+     `ink/forbidden`.
+     - Red: `lint: yield/shape red on fixture` — fixtures: a yield tag on a text line; a yield line followed by text; a
+       `-> DONE` with no yield above. Plus the control: a valid yield block passes, where the L3a lint reports
+       `ink/forbidden`.
+- **Gates:** `check`, `test` (names above, plus every L3a `lint: *` still green).
+- **Seen working:** `npx vitest run src/story scripts/story --reporter=verbose` lists the new names; STAGING-DSL §6
+  renders both headings.
+
+#### LW2 world-model (client; new, PUZZLES-PLAN)
+- **Goal:** the pure world layer that the runtime and the story tool share (X3, X4):
+  - world types and decoders;
+  - the two puzzle rules modules;
+  - `WorldState` + `reduce` / `actions` + `project` + `reconcile`;
+  - the soft-lock model checker;
+  - the pure-module arch rule.
+- **Gate to start:** L3a, LW1 merged (it uses `PropId`, `Rect` and the branded ids in `staging.ts`).
+- **Lock:** `client/src/world/{types.ts,decode.ts,decode.test.ts}`,
+  `client/src/puzzles/rules/{code.ts,order.ts,index.ts,rules.test.ts}`,
+  `client/src/explore/{state.ts,reduce.ts,project.ts,reconcile.ts,explore.test.ts}`,
+  `client/scripts/story/{softlock.ts,softlock.test.ts}`, `client/src/arch.test.ts` (15).
+- **Commits:**
+  1. `world/types.ts` + `decode.ts`: `decodeWorldSource`, `decodeWorldPublic` (which refuses `solution` / `hints`
+     and requires `version`), `toPublic` (returns the body without `version`; LW3's emit stamps it), `toServer`. The
+     types carry `take.then` and `lock.onOpen` (optional, default `[]`) (changed by PUZZLES-PLAN revision 1: W2, W5).
+     - Red: `decode: every schema issue reported` — a fixture with 4 faults expects 4 issues; predicted red against a
+       first-error stub: 1 issue.
+     - Red: `decode: public refuses solution and hints`.
+  2. `puzzles/rules/*` (`PUZZLE_RULES.code`, `.order`).
+     - Red: `rules: code validateSolution rejects out-of-range`, `rules: order solution must be a permutation`,
+       `rules: solution equal to initial rejected`.
+  3. `explore/state.ts` + `reduce.ts` (`reduce`, `actions`, `successors`, `sectionKey`, `RESUME_STATE_CAP` = 5,000).
+     Changed by PUZZLES-PLAN revision 1: the tap rule (a fully slotted lock with no outcome reopens its puzzle, W1),
+     `take.then` and `onOpen` once (W2), a `tap` refused while `pendingStory` is non-empty (W4), and the successor
+     relation (a `puzzle` effect expands to `closed` plus its outcomes, W1). Changed by PUZZLES-PLAN revision 2:
+     `sectionKey` (the one dedup key of both searches; abstracts `examined` / `visited` / attempts / hints, ignores
+     `section` / `lastRoom` and other sections) replaces `reachesLeave`, and `RESUME_STATE_CAP` is the one section
+     cap of the build and the runtime (W1). Changed by PUZZLES-PLAN revision 3 (W1): `WorldState.unproved` (a set of
+     section ids, `[]` in `EMPTY_WORLD_STATE`); no reducer rule reads or writes it, and `sectionKey` ignores it.
+     - Red, the reducer-rule names of PUZZLES-PLAN "Test strategy" (`reduce: take moves item to held once` …
+       `reduce: tap on a filled unsolved lock reopens its puzzle`, `reduce: take runs its then once`,
+       `reduce: lock opening runs onOpen once`, `reduce: tap while an event is pending is refused`,
+       `actions: enumerates enabled taps and inserts`) — against a reducer stub that returns the state unchanged.
+     - Red: `successors: puzzle effect expands to closed and outcomes` — predicted red on a `successors` stub that
+       expands a `puzzle` effect into its outcomes only: no `closed` successor. A different red (a missing outcome)
+       means the stub is not the seeded one.
+  4. `project.ts` + `reconcile.ts` (`reconcile(w, s, knots, savedVersion)` → `{ state, dropped, reset }`, with
+     `resetSection`, `sectionEntry`, `inSectionReach`, and `admitSection` (changed by PUZZLES-PLAN revision 3, W1);
+     PUZZLES-PLAN X9).
+     - Red: `project: writes only declared vars`, `project: puzzle outcome codes`, `reconcile: unknown ids dropped`,
+       `reconcile: missing room falls back to section start`, `reconcile: missing pending knot dropped`.
+     - Red (changed by PUZZLES-PLAN revision 1, W5): `reconcile: same world version returns the state unchanged`,
+       `reconcile: changed slot shape returns the items to held`, `reconcile: unprovable state restarts the section`,
+       and `reconcile: renamed held item keeps the section exitable` — predicted red against a drop-only reconcile
+       (step 1 alone): the returned state is not in the section's entry-reachable set (`inSectionReach` → `'no'`)
+       and `reset` is null.
+     - Red (changed by PUZZLES-PLAN revision 2, W2): step 4 is membership, `inSectionReach` from `sectionEntry`;
+       `resetSection` sets `section` = null, `room` = null, removes `lastRoom[S]`.
+       - `reconcile: a dead end reachable from the reconciled state restarts the section` — the lever / altar /
+         shrine fixture, a v1 save reconciled against v2. Predicted red against a step 4 that asks only for a path to
+         a `leave` from the reconciled state: `reset` is null. A different red (the section restarts, but the kept
+         fields are wrong) means steps 1–3 are off, not step 4.
+       - `reconcile: reset section fires the start room's onEnter on resume` — a start room whose `onEnter` gives
+         the item its only exit needs; a reconcile that resets; then `reduce(enter-section S)`. Predicted red against
+         a `resetSection` that keeps `section` = S: no `got` effect, and the item is not held. A different red (no
+         `room` effect) means the `enter-section` entry branch is broken.
+     - Red (changed by PUZZLES-PLAN revision 3, W1): step 5 and `admitSection(w, s, S)`. After a version change
+       every section other than the current one joins `unproved`; `admitSection` enters it with `reduce`, runs
+       `inSectionReach` on the entered state, and on `'no'` / `'cap'` emits a `reset` effect and returns
+       `sectionEntry`. `resetSection` also removes S from `unproved`. The fixture world is the round-3 triage's: one
+       section `house` with rooms `hall` (start) and `vault`; `hall.to_vault` a zero-slot lock with no puzzle;
+       `hall.to_garden` a `leave` into knot `garden`, which yields `# explore: house` again. In v1 the object
+       `hall.lever` has `then: [unlock hall.to_vault]`, `hall.k` takes `K`, and `vault.to_hall` has no lock. In v2
+       the lever is gone, `hall.k`'s `then` is `[unlock hall.to_vault]`, and `vault.to_hall` has a one-slot lock
+       that accepts `K`. Both versions pass `world/softlock`.
+       - `reconcile: a section left through a leave restarts on re-entry after a version change` — the v1 state
+         after the lever and the `leave` (`section` = null, K untaken), reconciled to v2, then
+         `admitSection(v2, …, house)`. Expected: a `reset` effect and the `sectionEntry` state (`hall.to_vault`
+         not open). Predicted red against the current-section-only reconcile (no step 5, so the entry is plain
+         `reduce`): no `reset` effect; the entered state keeps `hall.to_vault` in `open` with K untaken, so
+         `inSectionReach(v2, …, house)` answers `'no'`, and a BFS from it reaches the vault dead end. A different
+         red (the reset happens but `hall.to_vault` stays open) means `resetSection` does not clear S's keys.
+       - `reconcile: a version change marks every other section unproved and keeps the current section and room` —
+         the same house progress saved from inside a second section `yard` (current, in its room), reconciled to
+         v2. Expected: `reset` null, `section` = `yard` and `room` unchanged, `unproved` = [`house`]. Predicted red
+         against the current-section-only reconcile: `unproved` empty. Against a load-time loop over every section
+         with the current `resetSection` (the rejected alternative): `section` and `room` null.
+  5. `scripts/story/softlock.ts`: BFS over `successors` (closed puzzles included) from `sectionEntry(w,
+     EMPTY_WORLD_STATE, S)`, deduplicated by `sectionKey`; the property is "every reachable state reaches a `leave`
+     effect"; the counterexample path is printed; capped at the imported `RESUME_STATE_CAP` (changed by
+     PUZZLES-PLAN revision 2, W1: the same start, key and cap as the resume search; the 200,000 cap is gone).
+     - Red: `softlock: lock needing an unreachable item fails` — predicted red on a stub with no findings: PASS.
+     - Also red: `softlock: fail branch without unlock fails`, `softlock: state cap is an error`.
+     - Red (changed by PUZZLES-PLAN revision 2, W1): `softlock: section above RESUME_STATE_CAP fails the build` — a
+       fixture section whose state count lies above 5,000 and below 200,000 (the triage's hub: a hall with exits to
+       5 rooms, 8 `take` items, one 8-slot gate as the only `leave`; 83,200 states in the triage model). Predicted
+       red on a checker capped at 200,000: PASS (no `world/state-cap`). A different red (a `world/softlock`
+       finding) means the fixture is not solvable, not that the cap is wrong.
+     - Control: `softlock: solvable section passes`.
+  6. `arch.test.ts`: `arch: pure world modules` (no `document`, `window`, `fetch(`, `localStorage` or `svelte`
+     imports in `src/world/`, `src/explore/{state,reduce,project,reconcile}.ts`, `src/puzzles/rules/`).
+     - Red: a seeded `document.title` in `reduce.ts` in a scratch tree; the failing file is quoted.
+- **Gates:** `check`, `test` (every name above).
+- **Seen working:** `npx vitest run src/world src/explore src/puzzles scripts/story/softlock --reporter=verbose`.
+  Plus (changed by PUZZLES-PLAN revision 2, W1) the time of one full `inSectionReach` enumeration of a fixture
+  section with about 5,000 states, recorded on a quiet machine (X9 cost estimate: ≈ 75 ms unthrottled, so
+  ≤ 300 ms at CPU 4×). Over that → lower `RESUME_STATE_CAP` in this lane.
+
 #### L6a server-saves (server)
 - **Goal:** saves with `rev` and `writeId`; ts-rs bindings with the staleness test (auth + saves DTOs).
 - **Lock:** `server/src/db/{mod.rs,saves.rs}`, `server/src/api/{mod.rs,dto.rs,saves.rs}`,
@@ -2253,9 +2628,71 @@ Notation:
   4. `catalog_matches_story_chapters`; `startup_fails_when_product_has_no_content`. Red: a fixture catalog with an
      extra product.
   5. Regenerate `api.ts`.
+- **Changed by PUZZLES-PLAN (re-cut).** The lock gains `server/src/ids.rs` (adds `PuzzleId` only, PE1) → 15 files +
+  fixtures. The scope gains:
+  - the `server/catalog.json` format of PUZZLES-PLAN "Server formats": `chapters[]` + `hints.priceStars` / title /
+    description templates, PLACEHOLDER prices;
+  - `ContentStore` loads `content/puzzles/<ch>.json` (`PuzzleDef`) and paid worlds
+    (`content/chapters/<ch>/world.json`);
+  - `ChapterPayload.world`;
+  - `Catalog::{product, chapters, prereqs}` with hint-tier products derived from the puzzle index;
+  - `/api/entitlements` lists chapter products only;
+  - the fixtures `server/tests/fixtures/content/puzzles/{ch1,ch2}.json` (ch1 free, ch2 paid; 3 tiers each) and a ch2
+    `world.json`.
+
+  Commit 1's red adds `entitlements_lists_chapters_only` (a fixture with hint tiers; predicted red: hint products
+  listed). A new commit, between 4 and 5:
+
+  4a. Puzzle index + hint products + startup checks.
+     - Red: `catalog_prices_every_hint_tier` (fixture `priceStars: [1, 1]` against a 3-tier puzzle) — predicted red:
+       startup succeeds.
+     - Red: `hint_invoice_titles_within_limits` (a 30-char puzzle title) — predicted red: no `StartupError::Content`.
 - **Gates:** fmt, clippy, test; client `check`.
 - **Seen working:** `cargo test -p server --test it content_ catalog_` by name; `curl` with a dev token → 403 for
   `GET /api/chapters/ch2`.
+
+#### L6c server-puzzles (server; new, PUZZLES-PLAN)
+- **Goal:** server-checked puzzle attempts with a per-(user, puzzle) rate limit; puzzle status with hint tiers and
+  owner-only hint texts; migration `0002`; the two new error codes (X5, X6, X7).
+- **Gate to start:** L6b merged (ContentStore puzzle index, catalog hint products, `PuzzleId`). L6b itself waits for
+  LDB1, so `0002` and every L6c statement are PostgreSQL (changed by PUZZLES-PLAN revision 4b, RULINGS 14).
+- **Lock:** `server/migrations/0002_puzzles.sql`, `server/build.rs`, `server/src/{lib.rs,error.rs}`,
+  `server/src/puzzles/mod.rs`, `server/src/db/{mod.rs,puzzles.rs}`, `server/src/api/{mod.rs,dto.rs,puzzles.rs}`,
+  `server/tests/it/{main.rs,puzzles.rs}`, `client/src/api/generated/api.ts` (13). `AppState` gains no field.
+  `error.rs` is a lock addition (PE2).
+- **Commits:**
+  1. `0002_puzzles.sql` + `server/build.rs` (`cargo:rerun-if-changed=migrations`).
+     - Red: `schema_puzzle_progress_pk` before the file → `relation "puzzle_progress" does not exist` (SQLSTATE
+       `42P01`, quoted; changed by PUZZLES-PLAN revision 4b).
+     - Also: `schema_puzzle_window_check` (`window_attempts > attempts` refused with
+       `("23514", "puzzle_progress_window_bounded")`); `schema_puzzle_id_shape` (`ch1.drawer`, `ch12.medal_sun`
+       accepted; `ch0.a`, `ch1x.a`, `ch1.a.b`, `ch1.a-b`, `ch1.Drawer`, `ch1.1a`, `ch1.`, `ch1.é` refused with
+       `("23514", "puzzle_progress_id_shape")`; changed by PUZZLES-PLAN revision 4b).
+  2. `error.rs`: `RateLimited { retry_after_secs }` → 429 `rate_limited` + `Retry-After`; `HintUnavailable` → 409
+     `hint_unavailable`. `api_error_maps_status_and_code` and `error_codes_serialize_snake_case` are extended.
+     - Red: the new cases against a temporary mapping to 500 `internal` — predicted red:
+       "expected (429 Too Many Requests, {"error":"rate_limited"}), got (500 …)".
+  3. `db/puzzles.rs` (`record_attempt`: the write-first upsert + the guarded `solved_at`, one transaction; `is_solved`;
+     `owned_products`).
+     - Red: `attempt_rate_limited_after_20_in_window` on a stub that never limits — predicted red: the 21st call is not
+       limited.
+     - Also: `attempt_window_resets_after_600s` (fixed clock).
+  4. `puzzles/mod.rs` (`check_answer`, `attempt`) + `POST /api/puzzles/{puzzleId}/attempts`.
+     - Red: `attempt_correct_marks_solved` (404 before the route), `attempt_wrong_shape_400`,
+       `attempt_paid_chapter_403_without_entitlement`, `attempt_unknown_puzzle_404`, `attempt_wrong_returns_false`.
+  5. `GET /api/puzzles/{puzzleId}?lang`.
+     - Red: `puzzle_hint_text_only_when_owned` (an entitlement row for tier 1 inserted through `db/`; tiers 2–3 must
+       have `text: null`) — predicted red: 404 before the route, then texts for every tier on a stub that ignores
+       ownership.
+     - Also: `puzzle_status_private_no_store`, `hint_text_403_for_unowned_paid_chapter`.
+  6. `#[derive(TS)]` on the DTOs + regenerated `api.ts`. Red: `bindings_are_fresh` before regenerating.
+- **Gates:** fmt, clippy, test (names above); client `check`. Tester mutations: drop the `solved_at IS NULL` guard;
+  check the answer before the window; serve `text` for unowned tiers; the old GLOB's translation
+  `^ch[1-9].*[.][a-z]` as the id CHECK (predicted red: `schema_puzzle_id_shape` accepts `ch1x.a`, `ch1.a.b`,
+  `ch1.a-b`; changed by PUZZLES-PLAN revision 4b).
+- **Seen working:** `cargo test -p server --test it puzzle attempt schema_puzzle` lists every name above. Generated
+  `server/content/puzzles/` exists only from LW3 on, so the live `curl` check (`POST /api/puzzles/ch1.drawer/attempts`
+  → `{"correct":false,…}`; 21 quick calls → 429 + `Retry-After`) moves to L15's seen-working.
 
 #### L5 asset-pipeline (client)
 - **Goal:** `npm run assets` renders the placeholders, encodes AVIF + WebP with sharp, synthesizes WAV, writes the
@@ -2293,6 +2730,147 @@ Notation:
   fails`), `build` (prints the asset rows).
 - **Seen working:** `npm --prefix client run build`; open `client/public/assets/bg-cafe-*.avif`;
   `server/content/assets/bg-archive-*.avif` exists, absent from `dist/`.
+- **Changed by PUZZLES-PLAN (re-cut; same lock, 13 files):**
+  - **Catalog.**
+    - The `prop` namespace in `decodeAssetCatalog` (`catalog.ts`), with an `AssetId` `prop/<id>`, ≤ 512×512.
+    - Placeholder props: label + hue disc on transparent, 512×512.
+    - The demo catalog additions of PUZZLES-PLAN "Demo content outline":
+      - bg `hall`, `study`, `cellar`;
+      - props `medal_sun`, `medal_star`, `note`;
+      - cg `drawer` and `cabinet`, the latter used only by ch2 → paid tier.
+  - **Tiering.**
+    - `manifest.ts` tiers by `usage.json` ink assets ∪ `worldAssets` (the `worldAssets` section arrives with LW3).
+    - A catalog asset that no chapter uses is skipped with a printed `asset unused: <id>`. It is never routed public,
+      so the room art waits for N1's world.
+  - **Budget rows (commit 5):**
+    - "JS before the first line" ≤ 270 KB br (entry + engine closures), with "all JS" raised to ≤ 290 KB br.
+    - The first-load row counts the two closures, not all JS.
+    - World JSON per chapter ≤ 32 KB raw / 8 KB br.
+    - Prop image ≤ 512 px, AVIF ≤ 60 KB, WebP ≤ 90 KB.
+    - `budget/room-set`: per room, bg + props + max(largest neighbour bg, largest close-up) ≤ 32 MiB, from
+      `usage.json` `rooms`. It FAILs when a chapter's `story/<ch>/world.json` has sections and `usage.json` has no
+      `rooms` for it.
+  - **Reds** (commit 5): `budget: room-set counts props and close-up` (bg 8.4 + close-up 8.4 + 16 props of 1 MiB =
+    32.9 MiB; predicted red: a PASS row); a 1024 px prop; a world with sections and no `rooms` in usage.
+
+#### LW3 story-world (client; new, PUZZLES-PLAN)
+- **Goal:** the story gate understands worlds:
+  - the yield edges in the graph;
+  - the world lint (`world/*`, `puzzle/*`, `explore/*`) and the soft-lock check;
+  - the public/server split of `world.json` (`server/content/puzzles/<ch>.json`; hint text server-only);
+  - world texts in IDs and locales;
+  - seeded playthroughs through yields;
+  - `scan-dist` hint and paid-world fingerprints from the sources (X4, X7, T7, T9).
+- **Gate to start:** L3c, L5, L6b, LW1, LW2 merged (L5 for the `scan-dist.ts` serialization; L6b for
+  `server/tests/fixtures/content/puzzles/ch1.json`, which commit 3's red reads — changed by PUZZLES-PLAN revision 1,
+  W9).
+- **Lock:** `client/scripts/story.ts`,
+  `client/scripts/story/{graph.ts,emit.ts,locales.ts,fix.ts,playthrough.ts,world.ts,build.test.ts,play.test.ts,locales.test.ts,world.test.ts}`,
+  `client/scripts/{scan-dist.ts,scan-dist.test.ts}` (13). Fixtures are inline in the tests; `story/` is untouched
+  (N1 writes the real worlds).
+- **Commits:**
+  1. `world.ts`: loads `story/<ch>/world.json` (`decodeWorldSource` → `world/schema`) and runs every `world/*` code of
+     PUZZLES-PLAN "Lint codes" that needs no compiled story (catalog refs, frame, one-way exits, solution, title,
+     cross-section, var types against the chapter's declared VARs). The soft-lock check runs per section
+     (`world/softlock`, `world/unreachable`, `world/state-cap`).
+     - Red: `lint: <code> red on fixture` per code — one inline fixture world each; the soft-lock fixture is a lock
+       whose third medallion sits behind that same lock.
+     - Red (changed by PUZZLES-PLAN revision 4, W1): `lint: world/cross-section-effect red on fixture`. Two fixture
+       cases, each must be reported:
+       - an unlock: the round-4 triage's world. Section `courtyard` has `yard.lever` (object, `then: [unlock
+         hall.gate]`) and `yard.to_tower` (a `leave` into a knot that yields `explore: tower`). Section `tower` has
+         `hall.gate` → `vault` (a zero-slot lock with no puzzle), `hall.out` (a `leave` back to courtyard),
+         `vault.to_hall` and `vault.exit` (a `leave` into `ending`). Predicted red against the lint set without the
+         code: exit 0, with only a `world/unreachable` warning on `vault`;
+       - a give: one doc given by `take` hotspots in two sections. Predicted red: exit 0, no finding.
+
+       A different red (`world/softlock` or `world/unknown-ref` on the unlock world) means the fixture is malformed,
+       not that the code is missing.
+     - Control (changed by PUZZLES-PLAN revision 4): `lint: world/cross-section-effect allows a cross-room unlock
+       inside a section` — the same lever and gate in two rooms of one section: no `world/cross-section-effect`
+       finding. It guards against a lint keyed by room instead of section.
+     - Red (changed by PUZZLES-PLAN revision 5, W1): `lint: world/puzzle-multi-lock red on fixture`. Two fixture
+       cases, each must be reported:
+       - across sections: the round-5 triage's world. `keypad` (a `code` puzzle, `maxAttempts` null) is the
+         `puzzle` of zero-slot `yard.shed` (object) in section `courtyard` and of zero-slot `hall.gate` → `vault`
+         in section `tower`; the rest is the round-4 shape (`yard.to_tower`, `hall.out`, `vault.to_hall`,
+         `vault.exit`). Predicted red against the revision-4 `world.ts`: no error-level finding (per-section
+         `world/softlock` green, `world/cross-section-item` and `world/cross-section-effect` silent);
+       - within one section: `keypad` on two zero-slot object locks of one section that also has a lock-free
+         `leave`. Predicted red: no error-level finding.
+
+       A different red: the same world run through the seeded playthroughs would likely fail `play/step-cap`
+       (the courtyard solve leaves the tower gate on its lock panel). That is the random walk, not the code; the
+       prediction is stated at the `world.ts` level.
+     - Control (changed by PUZZLES-PLAN revision 5): `lint: world/puzzle-multi-lock allows one puzzle on one lock`
+       — the demo shape (`drawer` on `study.drawer`, `gate` on `hall.gate`): no `world/puzzle-multi-lock` finding.
+       It guards against a lint that counts puzzle references (the `puzzles` map entry plus one lock) instead of
+       locks. The lock is unchanged: `world.ts` and `world.test.ts` are already in it.
+     - Red (changed by PUZZLES-PLAN revision 6, W1): `lint: world/cross-section-exit red on fixture`. The round-6
+       triage's arch world:
+       - section `courtyard`: start `yard`; `yard.arch` → `{room: hall}`, lock-free; `yard.leave` → a knot;
+       - section `tower`: start `foyer` with a lock-free `foyer.out` leave; rooms `hall` and `pit`. In `hall`:
+         `hall.to_yard` (the arch's reverse), `hall.coil` (take, gives `rope`), `hall.lever` (object,
+         `then: [{unlock: hall.down}]`), `hall.down` → `{room: pit}` (a zero-slot lock with no puzzle). In `pit`:
+         `pit.up` → `{room: hall}` with one slot that accepts `rope`.
+
+       The test asserts two findings, `yard.arch` and `hall.to_yard`, and that `world.ts` returns them as values
+       without throwing (the move's room lookup is chapter-wide, so the soft-lock check stays defined on this
+       world). Predicted red against the revision-5 `world.ts`, at the `world.ts` level and without `--strict`: no
+       error-level finding; per-section `world/softlock` green; the only output a `world/unreachable` W on `pit`.
+       A different red: a seeded-playthrough `play/step-cap` is the random walk, not the code; a
+       `world/unknown-ref` means the fixture is malformed.
+     - Control (changed by PUZZLES-PLAN revision 6): `lint: world/cross-section-exit allows a room→room exit inside
+       one section` — two rooms of one section joined by an exit pair, in a chapter that also holds a second
+       section: no `world/cross-section-exit` finding. It guards against a rule keyed by room existence instead of
+       by section. The lock is unchanged: `world.ts` and `world.test.ts` are already in it.
+  2. `graph.ts`:
+     - edges: `then=` knots; section knots as reachability edges, excluded from the preload `next`;
+     - the codes `puzzle/unknown`, `puzzle/then-unknown`, `puzzle/in-section`, `explore/unknown-section`,
+       `explore/event-return`, `explore/event-escape`;
+     - event knots' carried stage seeded with their rooms' bg + props.
+     - Reds: each code on a fixture; `graph: event knot carries the room stage` — predicted red: an empty `carried`.
+  3. `emit.ts`:
+     - `toPublic` → `story-gen/free/<ch>.world.json` (or the paid chapter dir), stamped with `version` =
+       `worldVersion(body)`: sha256 of the emitted public world JSON without that field and with every world text
+       `{ id, ru }` replaced by `1`, first 16 hex (changed by PUZZLES-PLAN revision 2, W1: a text or line-ID edit
+       keeps the version; PUZZLES-PLAN X9);
+     - `toServer` → `server/content/puzzles/<ch>.json` for every chapter;
+     - `usage.json` `worldAssets` + `rooms`;
+     - en tables without hint IDs;
+     - `paid/leak` extended to hint IDs and texts.
+     - Red: `emit: public world has no solution or hint fields`; `emit: server puzzle content matches the server
+       fixture shape` (reads `server/tests/fixtures/content/puzzles/ch1.json`; predicted red: a missing `answerLen`);
+       a fixture with the hint text written into story-gen → `paid/leak`.
+     - Red (changed by PUZZLES-PLAN revision 2, W1): `emit: world version ignores texts` — two fixture worlds that
+       differ in one `ru` string (and a second pair that differs in one text `id`). Predicted red against the
+       whole-body hash: two different versions. Control: `emit: world version changes on a rules edit` — two worlds
+       that differ in one slot's `accepts`; it must stay green on both hashes (a red means texts were not the only
+       thing removed).
+  4. `locales.ts` + `fix.ts`: world texts join `id/*` (global uniqueness across ink and world) and `loc/*`;
+     `--sync-locales` adds world IDs; `--fix-ids` fills missing world IDs (two-space JSON, key order kept).
+     - Red: `lint: id/duplicate red on fixture` with one ID in ink and in a world doc; `fix: world ids written once`.
+  5. `playthrough.ts`: yields per PUZZLES-PLAN "Seeded playthroughs" (random outcomes, the explore random walk through
+     `reduce`, events run until their yield).
+     - Red: `play: event knot without return fails` (`play/event-no-return`);
+       `play: puzzle then-knot outcomes covered` (the coverage report lists `pz_*` values seen).
+  6. `scan-dist.ts`: hint fingerprints from `story/*/world.json` + `story/locales/en/*.json` (every hint line ID; every
+     hint text ≥ 12 chars, ru and en), non-vacuous.
+     - Red: `scan: hint text in dist fails` (the text, and the line ID in a base64 `data:` URI) — predicted red: exit 0;
+       `scan: hint sources present but no fingerprints fails`.
+     - Paid-world fingerprints (changed by PUZZLES-PLAN revision 1, W6): for every paid chapter of
+       `story/chapters.json` with a `story/<ch>/world.json`, every world line ID and every world text ≥ 12 chars (ru,
+       and en from `story/locales/en/<ch>.json`); non-vacuous.
+     - Red: `scan: paid world text in dist fails` (a synthetic dist holding a ch2 world text, and one holding its line
+       ID in a base64 `data:` URI) — predicted red on the hint-only scan: exit 0;
+       `scan: paid world sources present but no fingerprints fails`.
+  7. `story.ts`: wiring and the report (`ch1: world 1 section, 3 rooms, 2 puzzles, softlock OK (n states)`).
+     - Red: `story: world softlock fails the gate` (a fixture chapter through the CLI exits 1 and prints the
+       counterexample path).
+- **Gates:** `check`, `test`, `story` (the current skeleton has no world, so the gate stays green and prints
+  `world: none` per chapter), `build`.
+- **Seen working:** `npx vitest run scripts/story scripts/scan-dist --reporter=verbose` lists every LW3 name;
+  `npm --prefix client run story` prints the world line per chapter.
 
 #### L8a invoices (server)
 - **Goal:** the `BotGateway` trait + the frankenstein implementation; orders; `POST /api/invoices`,
@@ -2312,6 +2890,16 @@ Notation:
   3. Orders route (user-scoped). Red: another user's order → 404.
   4. Fake gateway + `/dev/invoices/{slug}` (`build_dev_app` adds `.with_gateway(FakeBotGateway)` to its
      `AppState::new` call); `api.ts`.
+- **Changed by PUZZLES-PLAN (re-cut; same lock).**
+  - **Gate to start:** + L6c.
+  - **Commit 2** handles hint products through `Catalog::{product, prereqs}`:
+    - 409 `already_owned`;
+    - 409 `hint_unavailable` when the previous tier is not owned, the puzzle is solved (`Repo::is_solved`), or a paid
+      chapter's hint is asked without the chapter;
+    - price and invoice title/description from the catalog (the hint templates rendered with the puzzle title).
+  - **Reds:** `invoice_hint_tier_order_409` (tier 2 first; predicted red: 200 with a link),
+    `invoice_hint_after_solve_409`, `invoice_hint_paid_chapter_needs_entitlement_409`,
+    `invoice_hint_price_from_catalog`.
 - **Gates:** fmt, clippy, test; client `check`.
 - **Seen working:** `server-dev` on the lane's `DEV_API_PORT` + `curl POST /api/invoices` → `https://t.me/$dev-o_…`.
 
@@ -2364,6 +2952,16 @@ Notation:
      (`total_amount` as a string) — predicted red: 200.
   5. Simulate routes (`paid`, `paid_twice`, delay). Red: `simulate_payment_goes_through_webhook_handler`.
   6. `dto_samples.rs` (writer + freshness) + `dto-samples.json`.
+- **Changed by PUZZLES-PLAN (re-cut; same lock).**
+  - **Commit 2** becomes a PK read of the order's `product_id`, then the conditional UPDATE with the three nullable
+    hint predicates (prerequisite tier, chapter, unsolved). The classification gains `RejectReason::Unavailable`; its
+    ru/en `error_message` sits with the other reasons' texts as a `match` in `telegram/payments.rs` (PE4; L9 moves
+    them to `bot.*.json`).
+  - **Reds:** `precheckout_hint_prereq_refused` (predicted red: `Ok` from the chapter-only statement),
+    `precheckout_hint_solved_refused`, `precheckout_hint_chapter_not_owned_refused`.
+  - **Commit 3** adds `hint_purchase_duplicate_concurrent_grants_once` (the WAL `tokio::join!` race on a hint order:
+    one payment, one `hint:` entitlement).
+  - **Tester mutation:** drop the `?prev` predicate.
 - **Gates:** fmt, clippy, test. The tester mutations from the catalogue: no PK, grant in pre-checkout, non-XTR
   accepted.
 - **Seen working:** `curl POST /dev/simulate-payment` → `GET /api/entitlements` shows `owned: true`.
@@ -2386,6 +2984,14 @@ Notation:
      discarded against server rev 4.
   5. Purchase flow (fake timers): paid → poll backoff → unlocked; pending window; cancelled; failed; delayed; activated
      re-poll; `purchase_unlocks_only_from_server`.
+- **Changed by PUZZLES-PLAN (re-cut; same lock).**
+  - **Commit 1:** a 429 becomes an `ApiError` carrying `retryAfter` from the `Retry-After` header. Red:
+    `http: 429 carries retryAfter`.
+  - **Commit 2:** decoders + endpoints for `PuzzleStatus`, `HintTier`, `AttemptResponse` (`getPuzzle(id, lang)`,
+    `postAttempt(id, answer)`), and the `world` field of `ChapterPayload`.
+  - **Commit 5:** `createPurchaseFlow` takes `isOwned: (p) => Promise<Result<boolean, ApiError>>` (chapters:
+    entitlements; hints: `getPuzzle` tier owned). Red: `flow: hint product confirms through puzzle status` (predicted
+    red: the flow polls entitlements and never reaches `unlocked` for a `hint:` product).
 - **Gates:** `check`, `test`.
 - **Seen working:** `npx vitest run src/api src/saves src/purchase --reporter=verbose`.
 
@@ -2410,6 +3016,13 @@ Notation:
      the fake gateway records 0 messages; `paysupport_flags_unapplied_charge`.
   6. `setup` subcommand (fake gateway records the calls).
   7. `STATIC_DIR` + `static_dir_must_not_contain_content_dir` + `paid_chapter_403_after_refund`.
+- **Changed by PUZZLES-PLAN (re-cut; same lock).**
+  - **Commit 1** adds `refund_revokes_hint` (after the revoke, `GET /api/puzzles/{id}` shows `owned: false`,
+    `text: null`; predicted red against a revoke stub: the text still served).
+  - **Commit 4** moves the pre-checkout reject texts (incl. `Unavailable`) from L8b's `match` into `bot.*.json`
+    under `bot_texts_complete_and_within_limits`.
+  - `/paysupport` lists hint charges like any other (no code change; covered by `paysupport_flags_unapplied_charge`
+    on a hint order).
 - **Gates:** fmt, clippy, test.
 - **Seen working:** `curl POST /dev/refund` → `GET /api/chapters/ch2` → 403.
 
@@ -2431,6 +3044,21 @@ Notation:
      in the next manifest) — predicted red: a "missing id" error value, or a second fetch of the id.
   6. Pixi controller + loader over the injected `FetchAsset` (a fake in tests; no `fetch` in `scene/`) (verify:
      `Texture` from `ImageBitmap`, the 8.22 accessibility option) + context-loss rebuild.
+- **Changed by PUZZLES-PLAN (re-cut).**
+  - **Gate to start:** + LW1 (props types in `staging.ts`).
+  - **Lock:** + `client/src/geom/{cover.ts,cover.test.ts}` → 13.
+  - **Commit 1:** `layout.ts` uses `geom/cover.ts` (`cover`, `toStage`, `minTarget`, `ROOM_SOURCE`,
+    `HOTSPOT_SAFE_FRAME`). Red: `cover: hotspot rect follows the bg cover transform` (an identity stub fails at a
+    390×844 stage) and `cover: small target expanded to 44 px`.
+  - **Commit 3:** the executor gets the `props` layer and the `props` command; any `bg` / `scene` clears props;
+    `snapshot()` / `restore()` carry `props`; holders `scene:prop:<id>`. Red: `executor: scene clears props`,
+    `executor: props survive restore`.
+  - **Commit 5:** `room:<id>` preload holders need no new API (`preload(tag, ids)` / `releasePreload(tag)` serve
+    them); `registry_caps` gains a case of three neighbour backgrounds where the third is refused.
+  - **Commit 6** (changed by PUZZLES-PLAN revision 1, W3): `debugPropRects()` — the page CSS px rects of the live
+    prop sprites, next to `debugForceContextLoss()` and wired to `__novelDebug` only under `__TG_MOCK__` (by L15).
+    Red-first impossible in this lane: the rects need a real canvas layout, which happy-dom has not; the accessor is
+    proved by the L15 e2e `explore: hotspot buttons align with props under safe area and landscape`.
 - **Gates:** `check`, `test`; `build` stays green with the engine row PENDING (this lane creates no `app/engine.ts`).
 - **Seen working:** a dev-only scene harness is not added. In this lane: the unit tests by name (`npx vitest run
   src/scene --reporter=verbose`). The engine closure is first measured in L15, when `app/engine.ts` lands and the
@@ -2467,12 +3095,51 @@ Notation:
      checkpoint and the same `RunnerError { kind: 'ink' }`.
   5. Carry + chapter loader (paid via `endpoints`, generation numbers). Red: `carry: g_ vars carried`.
   6. `lines.ts`. Red: `en missing falls back to ru and counts`.
+- **Changed by PUZZLES-PLAN (re-cut).**
+  - **Gate to start:** + LW2.
+  - **Lock:** + `client/src/story/catalog.ts` (`LoadedChapter.world`) → 10.
+  - **Commit 1** adds the `yield` step: the story stops (`!canContinue`, no choices) with a yield command in the last
+    batch. Red: `runner: puzzle yield stops at DONE` — this verifies `canContinue === false` after `-> DONE` (PE6; a
+    different red, e.g. a `ran out of content` error, is a STOP).
+  - **New commit 1a:** `enter(knot, projection)`.
+    - Red: `runner: then-knot choices see the outcome`. Fixture: the then-knot starts with `* {pz_x == 1} [Open …]`
+      followed by the fallback `* [Leave …]`, and the projection sets `pz_x = 1`. The stub calls
+      `ChoosePathString(then)`, then the first `Continue()`, and writes the projection only after it. Predicted red:
+      the choices are `[Leave …]` only (no `Open` choice). Why this stub (changed by PUZZLES-PLAN revision 1, W8):
+      inkjs 2.4.0 evaluates a choice condition in `ProcessChoice` during `Continue()`, while `ChoosePathString` only
+      moves the pointer (PUZZLES-PLAN "Platform facts"), so a stub that writes between `ChoosePathString` and
+      `Continue()` is already correct and cannot be red. A different red (no choices at all, or an ink error) means
+      the fixture is wrong: STOP.
+    - Red: `runner: enter rejects undeclared projection var`, `runner: enter outside a yield is an error`.
+  - **Commit 3:** `SaveBodyV1` with `at.yield`, `world` (`EMPTY_WORLD_STATE` default) and `worldVersion` (`null`
+    default; changed by PUZZLES-PLAN revision 1, W5). Red: `save-codec: world round trip` (the version included).
+  - **Commit 4:** the exact level rebuilds a stored yield, and every level passes `world` through
+    `reconcile(world, state, knots, body.worldVersion)` (chapter start → `EMPTY_WORLD_STATE`); a non-null `reset`
+    is returned to the caller, which shows the toast `explore.area_reset` (L15). An exploration puzzle is not
+    reopened by resume: the room resumes with the puzzle closed and a tap on the lock reopens it (PUZZLES-PLAN X8,
+    F9). Red: `resume: exact at a yield re-yields` (predicted red: the resumed runner reports `end`).
+  - **Commit 5:** the chapter loader reads `<ch>.world.json` (free, by URL) or `ChapterPayload.world`, through
+    `decodeWorldPublic`.
 - **Gates:** `check`, `test`.
 - **Seen working:** unit tests by name.
 
 #### D1 docs-authoring (doc-writer)
 - **Goal:** AUTHORING.md for writers; FEATURE_MAP.md and ARCHITECTURE.md first versions from the merged tree.
 - **Lock:** `docs/AUTHORING.md`, `docs/FEATURE_MAP.md`, `docs/ARCHITECTURE.md` (3).
+- **Changed by PUZZLES-PLAN (re-cut; same lock).**
+  - **Gate to start:** + LW3.
+  - **AUTHORING.md** gains a world-authoring part:
+    - the `world.json` format with the source example;
+    - hotspot kinds;
+    - locks and slots;
+    - effects and the once rule;
+    - the safe frame and target sizes;
+    - the yield block (`# puzzle: … then=…` / `# explore: …` + `-> DONE`);
+    - event knots ending in their section's yield;
+    - projection VARs (`pz_*`, `it_*`, `dc_*`) and declaring them;
+    - writing a hint ladder (nudge → direction → solution; titles ≤ 18 graphemes);
+    - the `world/*` lint codes and reading a soft-lock counterexample.
+  - **FEATURE_MAP / ARCHITECTURE** get the PUZZLES-PLAN rows for whatever has merged.
 - **Gates:** the link check (every link target exists); the two-way DSL check is in `test`.
 - **Seen working:** N1 starts from it without STOP.
 
@@ -2486,6 +3153,16 @@ Notation:
   `client/src/ui/{typewriter.svelte.test.ts,screens.svelte.test.ts,choices.svelte.test.ts}` (15).
 - **Commits:** red-first per component behaviour test. `screens: back button visible iff overlay`, `typewriter: *`,
   `choices: no tap-through`.
+- **Changed by PUZZLES-PLAN (re-cut; same lock).**
+  - `screens.ts`: the `Screen` union includes `inventory | document | lock | puzzle | hints`, plus
+    `setRootBack(fn | null)`; visible = stack non-empty or a root-back set; a press pops the overlay first.
+  - Red: `screens: back walks the room path when no overlay` (predicted red: the button hidden with a root-back set).
+  - `Stage.svelte` (changed by PUZZLES-PLAN revision 1, W3) renders an optional `children` snippet inside the stage
+    host element, the box Pixi's `resizeTo` reads; L15 mounts the hotspot layer there (PUZZLES-PLAN X10 "The box").
+    It also exposes the host element to its parent (L15 passes it to `createExploreController` as `deps.stageHost`).
+    Red-first impossible in this lane: the misplacement it prevents is an offset by the overlay inset, which only a
+    real layout shows; the gate is the L15 e2e `explore: hotspot buttons align with props under safe area and
+    landscape`.
 - **Gates:** `check`, `test` (the `dom` project names present).
 - **Seen working:** inside the lock (`ui/App.svelte` is L1's and L15's): `npx vitest run --project dom src/ui
   --reporter=verbose` lists `screens: *`, `typewriter: *`, `choices: *` by name; the components render in happy-dom.
@@ -2495,8 +3172,19 @@ Notation:
   en, within the L3a catalog. The genre stays a placeholder (Q1).
 - **Lock:** `story/ch1/**`, `story/ch2/**`, `story/common/globals.ink`, `story/locales/**`, `story/retired-ids.txt`,
   `story/lint-allow.json`.
-- **Gates:** `story` green, naming both chapters; `build` green (budgets, scan).
-- **Seen working:** the story gate's coverage report; the L15 e2e plays it.
+- **Changed by PUZZLES-PLAN (re-cut; same globs).**
+  - **Gate to start:** + LW3 (and L5's catalog additions).
+  - **Content** per PUZZLES-PLAN "Demo content outline":
+    - `story/ch1/world.json`: the `manor` section — rooms `hall`, `study`, `cellar`; the 3-slot gate with the `gate`
+      order puzzle and its fail branch; the `drawer` code lock with 3 hint tiers; documents `letter`, `diary`;
+    - the ch1 ink yields and event knots (`manor_arrive`, `manor_cellar_voice`, `manor_gate_forced`, `manor_out`);
+    - `story/ch2/world.json`: the `cabinet` linear puzzle, `giveUp`, `maxAttempts: 3`, 3 tiers;
+    - `globals.ink` `g_gate_forced`;
+    - every world text and hint with an ID and an en entry.
+  - **Hint prices** are not written here: they are server values (Q14). Hint texts follow the ladder convention.
+- **Gates:** `story` green, naming both chapters, with the world line `softlock OK` for ch1; `build` green (budgets
+  incl. `budget/room-set`, scan incl. hint fingerprints).
+- **Seen working:** the story gate's coverage report (incl. `pz_*` outcomes seen); the L15 e2e plays it.
 
 #### L14b overlay-menus (client)
 - **Goal:** Menu, Backlog, Settings (text speed, per-bus volume, language), Save/Load, ChapterSelect, Paywall (terms
@@ -2519,8 +3207,113 @@ Notation:
   | Open in Telegram, Reopen the app, error + Retry, story error + Return to last save, To be continued | `Notice` (one full-screen component, kind-driven) | `notice.*` | L14b |
   | Menu overlay | `Menu` | `menu.*` | L14b |
   | Backlog, Settings, Save/Load (+ "Overwrite?"), Chapter select, Paywall (+ `delayed` / Check again), Terms | as named | `backlog.*`, `settings.*`, `saves.*`, `chapters.*`, `paywall.*`, `terms.*` | L14b |
+  | Explore bar, hotspot layer, inventory (items / files), document reader, lock panel (changed by PUZZLES-PLAN) | `ExploreView`, `Inventory`, `DocumentReader`, `LockPanel` | `explore.*`, `inv.*`, `doc.*`, `lock.*` (keys in L14b) | LX |
+  | Puzzle frame, code lock, order puzzle, hint ladder, give-up confirmation (changed by PUZZLES-PLAN) | `PuzzleHost`, `CodeLock`, `OrderPuzzle`, `HintLadder` | `puzzle.*`, `hint.*` (keys in L14b) | LP2 |
+- **Changed by PUZZLES-PLAN (re-cut; same lock).** L14b pre-declares in `ru.ts` / `en.ts` every key the puzzle and
+  explore UIs use, so LP2 and LX never touch the tables:
+
+  | Group | Keys |
+  |---|---|
+  | `explore` | `bar_inventory`, `bar_reveal`, `room_back`, `area_reset` (changed by PUZZLES-PLAN revision 1: the toast after a section restart, X9) |
+  | `inv` | `items`, `files`, `empty`, `got_item` ("{name}"), `got_doc` ("{title}") |
+  | `doc` | `close` |
+  | `lock` | `slot_empty`, `no_fit`, `examine`, `locked` |
+  | `puzzle` | `try`, `checking`, `wrong`, `solved`, `failed`, `attempts_left` ("{n}"), `give_up`, `give_up_confirm`, `give_up_yes`, `hint`, `offline`, `rate_limited` ("{s}"), `load_failed`, `retry`, `dial_up`, `dial_down`, `swap` |
+  | `hint` | `title`, `tier` ("{n}"), `buy` ("{n} ⭐"), `locked` ("{n}"), `owned`, `unavailable`, `terms`, `confirming`, `failed` |
+
+  Red: `i18n: puzzle and explore keys declared` (it reads the key list above from a constant in the test; predicted
+  red: the keys are missing from `ru`).
 - **Gates:** `check`, `test`.
 - **Seen working:** in L15.
+
+#### LP2 puzzle-ui (client; new, PUZZLES-PLAN)
+- **Goal:** the puzzle sessions (attempts against the server, attempt limits, hint ladder, hint purchase), the lazy
+  type UIs (`code`, `order`), the puzzle host and the hint ladder; the lazy-chunk budget rows; the lazy-import and
+  runner-entry arch rules (X5, X6, X8, X14, X17, X18).
+- **Gate to start:** L10, L14b, LW2 merged.
+- **Lock:** `client/src/puzzles/{registry.ts,session.ts,session.test.ts}`,
+  `client/src/puzzles/ui/{CodeLock.svelte,OrderPuzzle.svelte,puzzle-types.svelte.test.ts}`,
+  `client/src/ui/puzzles/{PuzzleHost.svelte,HintLadder.svelte,puzzle-host.svelte.test.ts}`,
+  `client/src/ui/puzzle-view.svelte.ts`, `client/scripts/{budget.ts,budget.test.ts}`, `client/src/arch.test.ts` (13).
+- **Commits:**
+  1. `registry.ts` (`loadPuzzleUi(type)` → a `Result`; one dynamic `import()` per type) + `arch.test.ts`:
+     `arch: lazy ui only by dynamic import` and `arch: only yields.ts enters the runner`.
+     - Red: a static `import` of `CodeLock.svelte` from `src/app/` in a scratch tree, and a `.enter(` in a scratch
+       file — both fail naming the file (quoted).
+  2. `session.ts` (single-flight attempt; a wrong answer dispatches `attempt-failed`; `maxAttempts` → `failed`;
+     generation + `AbortController`; deferred close; hints via `getPuzzle`, texts in memory only; `openHint`;
+     `buyHint` through `createPurchaseFlow` with `isOwned`; `giveUp` for linear puzzles).
+     - Red: `session: double try sends one attempt`, `session: max attempts yields failed`,
+       `session: stale attempt response after dispose is dropped`, `session: dispose aborts the attempt`,
+       `hints: texts never written to storage` (the facade's cloud / device fakes record zero writes),
+       `hints: next tier buyable only after previous owned`.
+  3. `CodeLock.svelte` (presentational: `params`, `answer`, `busy`, `onChange`; ▲/▼ ≥ 48 CSS px; the digits wrap).
+     - Red (dom): `code: dials wrap and emit answer`.
+  4. `OrderPuzzle.svelte` (tap-to-select, tap-to-swap; a border + check glyph, not colour alone).
+     - Red (dom): `order: tap two slots swaps`.
+  5. `PuzzleHost.svelte` + `HintLadder.svelte` + `puzzle-view.svelte.ts` (a plain `$state.raw` store that GameSession
+     writes).
+     - Red (dom): `puzzle host: linear has give up and no back`, `puzzle host: unmount on end`,
+       `hint ladder: locked tiers not buyable`.
+  6. `budget.ts`: the puzzle type, puzzle-host and explore-ui chunk rows, keyed on their importer like the engine row
+     on `app/engine.ts` (changed by PUZZLES-PLAN revision 1, W7): PENDING while `src/app/yields.ts` (L15) does not
+     exist; once it exists, a family whose sources exist FAILs with no dynamic entry, or inside a static closure.
+     Until L15 nothing reachable from `index.html` imports the lazy families, so Vite emits no chunk for them.
+     - Red: `budget: puzzle ui in engine closure fails` (a synthetic manifest with `CodeLock.svelte` statically
+       imported by `app/engine.ts`; predicted red: a PASS row).
+     - Red: `budget: lazy row pending until its importer exists` (lazy sources present, no `app/yields.ts`, a manifest
+       without dynamic entries) — predicted red on a sources-keyed row: FAIL instead of PENDING.
+     - Red: `budget: lazy row fails without dynamic entry once its importer exists` (the same with `app/yields.ts`
+       present) — predicted red on an importer-blind stub that always reports PENDING: PENDING instead of FAIL.
+     - Also red: a 9 KB br type chunk.
+- **Gates:** `check`, `test` (every name above); `build` green with the three lazy rows PENDING (`app/yields.ts` is
+  L15's), quoted.
+- **Seen working:** `npx vitest run src/puzzles src/ui/puzzles scripts/budget --reporter=verbose`; `build` prints the
+  three chunk rows as PENDING (measured from L15 on).
+
+#### LX explore-ui (client; new, PUZZLES-PLAN)
+- **Goal:** the runtime explore controller (hotspot views through `geom/cover`, min targets, the room path for
+  BackButton, the neighbour preload policy, effects out) and the explore UI (hotspot layer + bar, inventory, document
+  reader, lock panel) as one lazy chunk (X10, X12, X13, X16).
+- **Gate to start:** L11, L14b, LW2 merged. It may run beside LP2: the locks are disjoint.
+- **Lock:** `client/src/explore/{controller.ts,controller.test.ts}`,
+  `client/src/ui/explore/{ExploreView.svelte,Inventory.svelte,DocumentReader.svelte,LockPanel.svelte,explore.svelte.test.ts}`,
+  `client/src/ui/explore-view.svelte.ts` (8).
+- **Commits:**
+  1. `controller.ts`: `enter` / `dispatch` through `reduce`; hotspot views (`toStage` + `minTarget(44)`); `resize`.
+     Changed by PUZZLES-PLAN revision 1 (W3): `createExploreController` takes `deps.stageHost` (the `Stage.svelte`
+     host element, L14a); its `ResizeObserver` observes that element and feeds `resize()` its content box, and
+     `dispose()` disconnects it. Changed by PUZZLES-PLAN revision 3 (W1): `enter` dispatches `enter-section` only
+     through `admitSection` (LW2), never straight to `reduce`; a `reset` effect from it goes out with the room batch.
+     - Red: `controller: hotspot rect follows cover on resize` (390×844, then 844×390; predicted red on a stub using
+       source px), `controller: small hotspot expanded to 44 px`.
+     - Red: `controller: enter admits an unproved section` (the revision-3 hall/vault/garden fixture of LW2 commit
+       4, with `house` in `unproved`) — predicted red on a controller that dispatches `enter-section` straight to
+       `reduce`: no `reset` effect, and `hall.to_vault` is still open.
+  2. The room path + `back()` + `onPath` (changed by PUZZLES-PLAN revision 1, W4, X12): `back()` dispatches a `tap`
+     on the first open exit of the current room that leads to the previous path room; a move whose reverse exit is
+     locked clears the path instead of pushing; `onPath` reports the empty ↔ non-empty edges (once on subscribe).
+     - Red: `controller: back walks the path, cycles truncate` (hall → study → hall → cellar: back → hall → empty).
+     - Red: `controller: path state reported on change` — predicted red on a stub that reports only on subscribe: no
+       `true` after the first move.
+     - Red: `controller: locked reverse exit clears the path` (a world whose return exit from the new room is
+       locked) — predicted red on a push-always path: the path stays non-empty (`onPath` reports `true`, `back()`
+       does not return false).
+  3. Preload policy:
+     - `room:<N>` holders in exit order;
+     - release of non-neighbours on a move;
+     - release of every `room:*` before a puzzle with a close-up;
+     - `dispose()` releases all.
+     - Red: `controller: neighbours preloaded in exit order`, `controller: puzzle open releases neighbour preloads`,
+       `controller: dispose releases room holders` (a fake scene records the holder calls).
+  4. `explore-view.svelte.ts` + `ExploreView.svelte`: `<button>`s with localized `aria-label`; exits marked with an
+     arrow glyph; reveal for 2 s; examined / taken state; `-webkit-user-select: none`, `touch-action: manipulation`.
+     - Red (dom): `explore view: reveal shows outlines`, `explore view: hotspot buttons have labels`.
+  5. `Inventory.svelte` + `DocumentReader.svelte` + `LockPanel.svelte`.
+     - Red (dom): `inventory: documents re-readable`, `lock panel: wrong item refused right item inserts`.
+- **Gates:** `check`, `test` (every name above).
+- **Seen working:** `npx vitest run src/explore src/ui/explore --reporter=verbose`; the components render in
+  happy-dom.
 
 #### L15 integration (client)
 - **Goal:** GameSession wiring, boot, the full e2e (smoke, purchase, perf).
@@ -2542,9 +3335,52 @@ Notation:
   6. `perf.spec.ts` (TTFL, heap, textures after chapter change, context loss). The `__novelDebug` hook (stats, the
      current `lineId`, `forceContextLoss`) is installed by `game.ts` only under `__TG_MOCK__`; `scan-dist` proves it
      absent from `dist/`.
-- **Gates:** every client gate + `e2e` (all four specs, counted by name); `build` shows the engine row measured, no
-  longer PENDING (quoted). Red: the BackButton binding removed from `ui/screens.ts` in a scratch tree → `back button
-  closes overlays without history` fails.
+- **Changed by PUZZLES-PLAN (re-cut).**
+  - **Gate to start:** + LW3, LP2, LX, N1.
+  - **Lock:** + `client/src/app/{yields.ts,yields.test.ts}`, `client/e2e/puzzles.spec.ts` → 13.
+  - **Commit 1 → 1a:** `yields.ts` — the only caller of `runner.enter`:
+    - `yield` steps → `PuzzleSession` (linear) or `ExploreController` (`enter-section` / `event-returned`);
+    - effects → room batches (scene fade + `props` + section bgm + exit sfx; skipped if the stage already matches),
+      `story` / `leave` → `project` + `runner.enter`, the lock panel, the puzzle overlay;
+    - `dirty` → the 2 s debounced autosave;
+    - the close-up shown on puzzle open and cleared on puzzle end;
+    - lazy chunks prefetched when a chapter's world has sections or `next(K)` holds a puzzle yield;
+    - (changed by PUZZLES-PLAN revision 1) every `import()` of the lazy families lives here (the puzzle types through
+      `puzzles/registry.ts`), so the lazy budget rows turn from PENDING to measured with this file (W7);
+    - the root-back: set and cleared from `ExploreController.onPath` edges, cleared when an event knot starts (a
+      `story` effect) and restored from the path state at the `room` effect after `event-returned` (W4, X12);
+    - a non-null `reset` from resume → the toast `explore.area_reset` (W5, X9); a `reset` effect from the explore
+      controller (a section restarted at its entry) → the same toast (changed by PUZZLES-PLAN revision 3, W1).
+    - Red: `yields: puzzle end projects then enters`, `yields: event return restores the room`,
+      `yields: puzzle end clears the close-up`, `game_holds_one_explore_controller`,
+      `game_holds_at_most_one_puzzle_session`.
+    - Red: `yields: back during an event knot does not move rooms` (a fake controller whose `back()` always emits a
+      `room` effect; a Back press between the `story` effect and `event-returned`) — predicted red on a wiring that
+      keeps the root-back set during events: a `room` effect while `pendingStory` is non-empty.
+  - **Commit 3:** `App.svelte` renders the explore UI and the puzzle host as dynamic components from their view stores
+    (loaded by `yields.ts`); the hotspot layer mounts inside the `Stage.svelte` host element through its `children`
+    snippet, never in the inset-padded overlay, and the host element goes to `createExploreController` as
+    `deps.stageHost` (W3, X10 "The box").
+  - **New commit 6a — `puzzles.spec.ts`:** it reads the demo solutions from `story/ch1/world.json` in the Node test
+    process; they are never in the bundle. The tests are the eight of PUZZLES-PLAN "Test strategy": search → item →
+    drawer → buy hint 1 (mock Pay) → solve; the gate fail branch; reload in a room; hint text absent until bought;
+    the paid chapter's puzzle needs the entitlement; back walks rooms; live texture bytes ≤ 32 MiB while exploring;
+    and (changed by PUZZLES-PLAN revision 1, W3) `explore: hotspot buttons align with props under safe area and
+    landscape` — under `__tgMock.setSafeArea()` and a landscape viewport, each prop hotspot button's page rect is
+    compared with `__novelDebug.propRects()` (L11 `debugPropRects()`; `__novelDebug` gains `propRects`, mock only):
+    centres within 1 CSS px, sizes equal unless min-target expanded.
+    - Red: before the `yields.ts` wiring, `explore: search item puzzle buy hint solve` fails at "hotspot layer
+      visible"; with the mock invoice forced `failed`, the hint text never appears.
+    - Red: the hotspot layer mounted in the padded overlay (scratch) → the alignment test fails; predicted red: the
+      rects differ by the safe-area inset (or the landscape pillar-box margin).
+  - **Seen working** gains the live attempt check moved from L6c (21 quick attempts → 429 + `Retry-After`) and an
+    attempt round trip timed on a device if one is available (X5 verify). Changed by PUZZLES-PLAN revision 2 (W1):
+    it also gains the resume search after a rules update (a save on the demo section, a world with one changed
+    `accepts`, then a reload), timed on a LOW Android if one is available and scaled per state to 5,000 states
+    (X9 cost: ≤ 300 ms).
+- **Gates:** every client gate + `e2e` (all five specs, counted by name); `build` shows the engine row measured, no
+  longer PENDING (quoted), and the three lazy chunk rows measured. Red: the BackButton binding removed from
+  `ui/screens.ts` in a scratch tree → `back button closes overlays without history` fails.
 - **Seen working:** `npm run dev` + `cargo run -p server-dev`, play to the paywall, buy, ch2. `npm --prefix client run
   e2e`.
 
@@ -2561,6 +3397,9 @@ Notation:
   6. Register the URL in BotFather (Main Mini App + menu button).
   7. `server setup`.
   8. 2-step verification on the owner account [R2 §1.5].
+- **Changed by PUZZLES-PLAN.** The FEATURE_MAP rows Puzzles / Exploration / Hints / World tooling. The
+  `payments-ops` runbook covers hint products (refund = revoke; consumed-hint policy per Q15). The `bot-setup` runbook
+  adds host time sync (NTP; the `initdata_expired` from-future erratum).
 - **Gates:** the link check; env var names grep-matched against `config.rs`.
 
 ---
@@ -2613,6 +3452,13 @@ Notation:
 | V7 | May ch2 be started from chapter select without finishing ch1 (default carry values)? | Allowed |
 | V8 | Story genre/setting, character names (Q1), art direction (Q2) | Placeholder ids `ally`, `stranger`, `voice`; names chosen by the narrative-designer as placeholders |
 
+### Puzzles extension (changed by PUZZLES-PLAN)
+
+The engineering forks PE1–PE6 and the owner questions Q14–Q20 (hint prices, the consumed-hint refund policy, the
+attempt limits, exploration scope and others) live in [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section "Open
+questions". The orchestrator copies Q14–Q20 into docs/OPEN-QUESTIONS.md. None blocks a lane: each has a placeholder
+default there.
+
 ---
 
 ## Readiness checklist
@@ -2643,6 +3489,14 @@ Notation:
 | 0 | 2026-10-30 | architect round 1 | Initial design |
 | 1 | 2026-10-30 | `D:/tmp/novel-orch/design/triage_r1.md` (critique `design/critique_r1.md`) | The 13 confirmed items W1–W7 and W9–W14 resolved. W8 (refuted) not touched. Optional O1–O13 noted, not folded in. Per-item detail: `D:/tmp/novel-orch/design/revision_r1.md` |
 | 2 | 2026-10-30 | `D:/tmp/novel-orch/design/triage_r2.md` (critique `design/critique_r2.md`) | The 5 confirmed items W15–W19 resolved (none refuted or deferred). Optional O14–O18 noted, not folded in; the critique's open questions pass through. Per-item detail and verbatim patches: `D:/tmp/novel-orch/design/revision_r2.md` |
+| 3 | 2026-10-30 | `D:/tmp/novel-orch/design/puzzles/spec.md` (RULINGS 10) + errata RULINGS 7 b/d/e/f, 8, 9 Q3/Q5 | Extended by [PUZZLES-PLAN.md](PUZZLES-PLAN.md); the changed decisions are marked "changed by PUZZLES-PLAN"; errata applied; the waves table replaced by a dependency order; lanes not yet started re-cut; new lanes LW1, LW2, LW3, L6c, LP2, LX. Design log: `D:/tmp/novel-orch/design/puzzles/design_log.md` |
+| 4 | 2026-10-30 | `D:/tmp/novel-orch/design/puzzles/triage_r1.md` (critique `design/puzzles/critique_r1.md`) | PUZZLES-PLAN revision 1: the 9 confirmed items W1–W9 of the puzzles triage resolved in both documents; each PP edit is marked "changed by PUZZLES-PLAN". Per-item list: [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section "Revision log"; detail: `D:/tmp/novel-orch/design/puzzles/revision_r1.md`. Pre-revision copy: `D:/tmp/novel-orch/design/puzzles/PROTOTYPE-PLAN.r1.before.md` |
+| 5 | 2026-10-31 | `D:/tmp/novel-orch/design/puzzles/triage_r2.md` (critique `design/puzzles/critique_r2.md`) | PUZZLES-PLAN revision 2: the 2 confirmed items W1 (one section cap `RESUME_STATE_CAP` = 5,000 for build and resume, ≤ 300 ms at CPU 4×; a world version that ignores texts) and W2 (membership resume proof from section entry; `resetSection` re-enters through the start room's `onEnter`) resolved in both documents; each PP edit is marked "changed by PUZZLES-PLAN revision 2". Per-item list: [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section "Revision log"; detail: `D:/tmp/novel-orch/design/puzzles/revision_r2.md`. Pre-revision copy: `D:/tmp/novel-orch/design/puzzles/PROTOTYPE-PLAN.r2.before.md` |
+| 6 | 2026-10-31 | `D:/tmp/novel-orch/design/puzzles/triage_r3.md` (critique `design/puzzles/critique_r3.md`) | PUZZLES-PLAN revision 3: the 1 confirmed item W1 (the membership resume proof covers every section, not only the current one: after a version change every other section joins `WorldState.unproved` and is proved at its next entry by `admitSection`, the explore controller's only way in; ≤ 300 ms at CPU 4× per search, one search per load and per entry) resolved in both documents; each PP edit is marked "changed by PUZZLES-PLAN revision 3". Optional O1–O5 noted, not folded in. Per-item list: [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section "Revision log"; detail: `D:/tmp/novel-orch/design/puzzles/revision_r3.md`. Pre-revision copy: `D:/tmp/novel-orch/design/puzzles/PROTOTYPE-PLAN.r3.before.md` |
+| 7 | 2026-10-31 | `D:/tmp/novel-orch/design/puzzles/triage_r4.md` (critique `design/puzzles/critique_r4.md`) | PUZZLES-PLAN revision 4: the 1 confirmed item W1 (a cross-section `unlock` was reverted by `admitSection` after any version change while its trigger stayed fired, so the chapter could not be finished) resolved by a new LW3 story-gate error, `world/cross-section-effect` (a trigger's `unlock` stays in its own section; an item or doc is given in one section); reconcile is unchanged. The PP edits are LW3 commit 1 and the seen-red "puzzle extension" row, each marked "changed by PUZZLES-PLAN revision 4". Optional O1, O2 noted, not folded in. Per-item list: [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section "Revision log"; detail: `D:/tmp/novel-orch/design/puzzles/revision_r4.md`. Pre-revision copy: `D:/tmp/novel-orch/design/puzzles/PROTOTYPE-PLAN.r4.before.md` |
+| 8 | 2026-10-31 | RULINGS 14 + `D:/tmp/novel-orch/design/db/decision.md` §4.6, §5.3 | PUZZLES-PLAN revision 4b (database errata): the dependency order gains the port lanes LDB0 → LDB1 before L6b (table rows, L6b's gate + LDB1, L6c's gate = L6b which waits for LDB1, the lane count, the server launch order, the critical path's server chain and the LW3 note); lane L6c gets the PostgreSQL red text (`42P01`), the named-constraint assertions, `schema_puzzle_id_shape` and its tester mutation. The dependency order edits are marked by one sentence under that heading, the L6c edits each by "changed by PUZZLES-PLAN revision 4b". K14, K18, K19, the `0001` schema section and the other decision §6 edits are not touched: they land with LDB0/LDB1. Per-item list: [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section "Revision log"; removed/added text verbatim: `D:/tmp/novel-orch/design/puzzles/errata_db.md` |
+| 9 | 2026-10-31 | `D:/tmp/novel-orch/design/puzzles/triage_r5.md` (critique `design/puzzles/critique_r5.md`) | PUZZLES-PLAN revision 5: the 1 confirmed item W1 (a puzzle attached to locks in two sections wrote another section's state: a courtyard solve left the tower gate on its lock panel, a strand the per-section soft-lock check never reaches, and after a version change `admitSection` reverted a run the current version wrote) resolved by a new LW3 story-gate error, `world/puzzle-multi-lock` (a puzzle is attached to at most one lock); reconcile is unchanged. The PP edits are LW3 commit 1 and the seen-red "puzzle extension" row, each marked "changed by PUZZLES-PLAN revision 5". Optional O1–O3 noted, not folded in. Per-item list: [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section "Revision log"; detail: `D:/tmp/novel-orch/design/puzzles/revision_r5.md`. Pre-revision copy: `D:/tmp/novel-orch/design/puzzles/PROTOTYPE-PLAN.r5.before.md` |
+| 10 | 2026-10-31 | `D:/tmp/novel-orch/design/puzzles/triage_r6.md` (critique `design/puzzles/critique_r6.md`) | PUZZLES-PLAN revision 6: the 1 confirmed item W1 (a room→room exit into another section's room let the player act in that section while another was current: a courtyard arch into a tower room let a tower lever drop the player into a pit that neither per-section soft-lock search expands, and after a version change `admitSection` reverted the lever the current version pulled) resolved by a new LW3 story-gate error, `world/cross-section-exit` (every room→room exit leads to a room of its own section; sections join through a `leave` and an `explore` yield); reconcile is unchanged. The PP edits are LW3 commit 1 and the seen-red "puzzle extension" row, each marked "changed by PUZZLES-PLAN revision 6". Optional O1, O2 noted, not folded in. Per-item list: [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section "Revision log"; detail: `D:/tmp/novel-orch/design/puzzles/revision_r6.md`. Pre-revision copy: `D:/tmp/novel-orch/design/puzzles/PROTOTYPE-PLAN.r6.before.md` |
 
 **Revision 1 (2026-10-30)** — what changed, by triage item:
 - **W1** (undecodable payment ACKed and lost): K17 (lenient `PaymentProbe` for the payment subset, 500 only when the
@@ -2715,3 +3569,32 @@ Notation:
   `server/tests/fixtures/content/`, which L6b fills; `DevPaths` gains `content`. A lane rule carries the acceptance
   check. Also changed: the `lib.rs` and server-dev rows; the Module API; the test-strategy server row; L2 commit 2,
   L4a (lock note, commit 4), L4b commit 1, L6b (lock + fixtures, commit 2), L8a commits 1 and 4.
+
+**Revision 3 (2026-10-30)** — the puzzles extension (RULINGS 10) and the errata:
+- **Extension.** The subsystem design is [PUZZLES-PLAN.md](PUZZLES-PLAN.md). Here only the decisions it changes are
+  marked "changed by PUZZLES-PLAN":
+  - Goal: the exploration step and T7–T11;
+  - the yield-channel invariant;
+  - K3 (lazy chunks); K5 (`room:` and `scene:prop:` holders); K9 (yield edges); K12 (world + `at.yield`);
+    K14 (residual); K18 (hint products); K26 (root-back);
+  - the module map rows; three arch rules; the TS and Rust type notes;
+  - the SQL `0002` note; the HTTP API rows; the concurrency, payment, paid-content, scene and resource-lifetime
+    pointers;
+  - the budget rows (all JS 290, before the first line 270, the lazy chunks, world, props, room set);
+  - the test-strategy rows; the Open-questions pointer.
+- **Errata:**
+  - RULINGS 7b: `synchronous=FULL`.
+  - RULINGS 7d: `AppState` is `#[non_exhaustive]`; the private-field wording is replaced.
+  - RULINGS 7e: the 16 KB body limit is owned by L4a.
+  - RULINGS 7f: the K14 residual is stated.
+  - RULINGS 9 Q3: host clock sync (concurrency row; D2 runbook).
+  - RULINGS 9 Q5: the L4a `db/mod.rs` and `it/common.rs` notes.
+  - RULINGS 8: the waves table is replaced by "Dependency order" (critical path
+    L3a → L3b → L3c → L5 → L7 → L11 → L14a → L14b → LP2 → L15 → D2).
+- **Lane cut:**
+  - New lanes: LW1 puzzle-dsl, LW2 world-model, LW3 story-world, L6c server-puzzles, LP2 puzzle-ui,
+    LX explore-ui.
+  - Re-cut: L5, L6b, L8a, L8b, L9, L10, L11, L13, L14a, L14b, L15, D1, N1, D2 (each block marked "Changed by
+    PUZZLES-PLAN").
+  - Collision locks rewritten.
+  - L1, L2, L3a, L4a keep their scope.
