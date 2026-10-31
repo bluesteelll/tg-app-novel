@@ -1,0 +1,364 @@
+import { gsap } from 'gsap/gsap-core';
+import { expect, test, vi } from 'vitest';
+
+import type { Size } from '../geom/cover.ts';
+import type { ImageEntry, Result } from '../story/catalog.ts';
+import type { AssetId, BgId, CgId, CharId, ExprId, PropId, Rect, Slot } from '../story/staging.ts';
+import { createExecutor } from './executor.ts';
+import type { Layer, Placement, StageAdapter, VisualCommand } from './executor.ts';
+import { propPlacement } from './layout.ts';
+import { createAssetRegistry } from './registry.ts';
+import type { AssetError, LoadImage } from './registry.ts';
+
+// GSAP reads the clock through `Date.now`, captured when its module loads: fake timers installed before every import
+// (vi.hoisted runs first) make its ticker deterministic. advance() moves the fake clock and runs one manual tick (V6).
+vi.hoisted(() => {
+  vi.useFakeTimers();
+});
+gsap.ticker.lagSmoothing(0);
+
+const advance = (ms: number): void => {
+  vi.setSystemTime(Date.now() + ms);
+  gsap.ticker.tick();
+};
+/** Lets the registry's and the executor's promise chains run (no timers involved). */
+const flush = async (): Promise<void> => {
+  for (let i = 0; i < 50; i += 1) {
+    await Promise.resolve();
+  }
+};
+
+// ---------------------------------------------------------------------------------------------------------------
+// A recording stage: live sprites per layer and per character group, an event log, and a throw on any write to a
+// destroyed object (Pixi would crash there).
+
+type Tex = { readonly url: string };
+type Node = { kind: 'sprite' | 'group'; layer: Layer | 'group'; key: string; group: number | null; alive: boolean; p: Placement };
+
+const S390: Size = { w: 390, h: 844 };
+
+function recordingStage(size: Size) {
+  let n = 0;
+  const log: string[] = [];
+  const nodes = new Map<number, Node>();
+  const stage = { size };
+  const node = (k: number): Node => {
+    const x = nodes.get(k);
+    if (x === undefined || !x.alive) {
+      throw new Error(`stage: node ${k} is not alive`);
+    }
+    return x;
+  };
+  // chars sprites log their character, every other sprite its asset name.
+  const keyOf = (layer: Layer, id: AssetId): string => (layer === 'chars' ? (id.split('/')[1] ?? id) : (id.split('/').pop() ?? id));
+  const adapter: StageAdapter<Tex> = {
+    size: () => stage.size,
+    group(char) {
+      n += 1;
+      nodes.set(n, { kind: 'group', layer: 'group', key: char, group: null, alive: true, p: {} });
+      log.push(`group:${char}`);
+      return { group: n };
+    },
+    dropGroup(g) {
+      const x = node(g.group);
+      x.alive = false;
+      log.push(`drop:${x.key}`);
+    },
+    sprite(layer, tex, g) {
+      if (g !== undefined) {
+        node(g.group);
+      }
+      n += 1;
+      const key = keyOf(layer, tex.id);
+      nodes.set(n, { kind: 'sprite', layer, key, group: g?.group ?? null, alive: true, p: {} });
+      log.push(`create:${layer}:${key}`);
+      return { sprite: n };
+    },
+    destroy(s) {
+      const x = node(s.sprite);
+      x.alive = false;
+      log.push(`destroy:${x.layer}:${x.key}`);
+    },
+    set(target, p) {
+      Object.assign(node('sprite' in target ? target.sprite : target.group).p, p);
+    },
+    fx(alpha) {
+      log.push(`fx:${alpha}`);
+    },
+  };
+  const live = (layer: Layer): Node[] => [...nodes.values()].filter((x) => x.kind === 'sprite' && x.alive && x.layer === layer);
+  const inGroup = (char: string): Node[] => {
+    const groups = [...nodes.entries()].filter(([, x]) => x.kind === 'group' && x.alive && x.key === char).map(([k]) => k);
+    return [...nodes.values()].filter((x) => x.kind === 'sprite' && x.alive && x.group !== null && groups.includes(x.group));
+  };
+  return { adapter, log, live, inGroup, stage };
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Assets: a fixture manifest, the real registry and a loader that decodes at once, counting loads and releases.
+
+const image = (file: string, w: number, h: number): ImageEntry => ({
+  kind: 'image',
+  w,
+  h,
+  decodedBytes: w * h * 4,
+  avif: { url: `/assets/${file}.avif`, bytes: 100 },
+  webp: { url: `/assets/${file}.webp`, bytes: 120 },
+});
+const ENTRIES: Readonly<Record<string, ImageEntry>> = {
+  'bg/cafe': image('bg_cafe', 1080, 2048),
+  'bg/street': image('bg_street', 1080, 2048),
+  'bg/room': image('bg_room', 1080, 2048),
+  'char/ally/neutral': image('char_ally_neutral', 768, 1536),
+  'char/ally/worried': image('char_ally_worried', 768, 1536),
+  'char/stranger/serious': image('char_stranger_serious', 768, 1536),
+  'cg/letter': image('cg_letter', 1080, 2048),
+  'prop/lamp': image('prop_lamp', 512, 512),
+  'prop/key': image('prop_key', 256, 256),
+};
+const urlOf = (id: string): string => ENTRIES[id]?.avif.url ?? `missing:${id}`;
+
+function harness(size: Size = S390) {
+  const stage = recordingStage(size);
+  const loads = new Map<string, number>();
+  const released = new Map<string, number>();
+  const byUrl = new Map(Object.values(ENTRIES).map((e) => [e.avif.url, e]));
+  const load: LoadImage<Tex> = (ref) => {
+    loads.set(ref.url, (loads.get(ref.url) ?? 0) + 1);
+    const e = byUrl.get(ref.url);
+    if (e === undefined) {
+      return Promise.resolve({ ok: false, error: { kind: 'decode', detail: 'no such fixture' } });
+    }
+    return Promise.resolve({
+      ok: true,
+      value: { texture: { url: ref.url }, w: e.w, h: e.h, release: () => released.set(ref.url, (released.get(ref.url) ?? 0) + 1) },
+    });
+  };
+  const registry = createAssetRegistry<Tex>({ load, variant: 'avif' });
+  const resolve = (id: AssetId): Result<ImageEntry, AssetError> => {
+    const e = Object.hasOwn(ENTRIES, id) ? ENTRIES[id] : undefined;
+    return e === undefined ? { ok: false, error: { kind: 'missing-id', id } } : { ok: true, value: e };
+  };
+  const skipped: AssetError[] = [];
+  const ex = createExecutor<Tex>({ adapter: stage.adapter, registry, resolve, resolution: 2, onSkip: (e) => skipped.push(e) });
+  return {
+    ...stage,
+    registry,
+    ex,
+    skipped,
+    loadsOf: (id: string): number => loads.get(urlOf(id)) ?? 0,
+    releasedOf: (id: string): number => released.get(urlOf(id)) ?? 0,
+  };
+}
+
+// Commands as parseTags types them; the brands are earned by the parser in production.
+const bg = (b: string, t: 'crossfade' | 'fade' | 'cut' = 'crossfade', ms = 500): VisualCommand => ({ kind: 'bg', bg: b as BgId, t, ms });
+const scene = (b: string, t: 'fade' | 'cut' = 'fade', ms = 800): VisualCommand => ({ kind: 'scene', bg: b as BgId, t, ms });
+const show = (c: string, e: string, at: Slot | null = null, t: 'fade' | 'cut' = 'fade', ms: number | null = null): VisualCommand => ({
+  kind: 'show',
+  char: c as CharId,
+  expr: e as ExprId,
+  at,
+  t,
+  ms,
+});
+const cg = (c: string | null, t: 'fade' | 'cut' = 'fade', ms = 500): VisualCommand => ({
+  kind: 'cg',
+  cg: c === null ? null : (c as CgId),
+  t,
+  ms,
+});
+const wait = (ms: number): VisualCommand => ({ kind: 'wait', ms });
+const props = (...ps: ReadonlyArray<readonly [string, Rect]>): VisualCommand => ({
+  kind: 'props',
+  props: ps.map(([prop, rect]) => ({ prop: prop as PropId, rect })),
+});
+const LAMP: Rect = [500, 900, 100, 100];
+const KEY: Rect = [200, 1200, 120, 80];
+const NOW = { instant: false };
+
+// ---------------------------------------------------------------------------------------------------------------
+
+test('executor_kills_timelines', async () => {
+  const h = harness();
+  const first = h.ex.apply([bg('cafe', 'crossfade', 500)], NOW);
+  await flush();
+  expect(h.ex.stats().activeTimelines).toBe(1);
+  h.ex.complete();
+  expect(h.ex.stats().activeTimelines).toBe(0);
+  await first;
+
+  // A batch left to run completes on its own and is killed.
+  let secondDone = false;
+  void h.ex.apply([bg('street', 'crossfade', 500)], NOW).then(() => {
+    secondDone = true;
+  });
+  await flush();
+  expect(h.ex.stats().activeTimelines).toBe(1);
+  advance(600);
+  await flush();
+  expect(h.ex.stats().activeTimelines).toBe(0);
+  expect(secondDone).toBe(true);
+
+  // destroy() mid-transition kills it and settles its apply.
+  let thirdDone = false;
+  void h.ex.apply([bg('room', 'fade', 800), show('ally', 'neutral')], NOW).then(() => {
+    thirdDone = true;
+  });
+  await flush();
+  expect(h.ex.stats().activeTimelines).toBe(1);
+  h.ex.destroy();
+  expect(h.ex.stats().activeTimelines).toBe(0);
+  await flush();
+  expect(thirdDone).toBe(true);
+  expect(gsap.globalTimeline.getChildren(true, true, true)).toEqual([]);
+  expect(h.registry.stats()).toEqual({ live: 0, bytes: 0, pending: 0, overCap: 0 });
+});
+
+test('executor_sprite_count_per_slot', async () => {
+  const h = harness();
+  await h.ex.apply([show('ally', 'neutral', 'left', 'cut')], NOW);
+  expect(h.inGroup('ally').length).toBe(1);
+  const swap = h.ex.apply([show('ally', 'worried')], NOW);
+  await flush();
+  // The new expression fades in over the old one: two sprites in the character's group during the swap.
+  expect(h.inGroup('ally').length).toBe(2);
+  h.ex.complete();
+  await swap;
+  expect(h.inGroup('ally').length).toBe(1);
+  expect(h.releasedOf('char/ally/neutral')).toBe(1);
+  expect(h.releasedOf('char/ally/worried')).toBe(0);
+  expect(h.registry.stats().live).toBe(1);
+  h.ex.destroy();
+  expect(h.releasedOf('char/ally/worried')).toBe(1);
+});
+
+test('executor: snapshot at batch start', async () => {
+  const h = harness();
+  const batch = h.ex.apply([scene('cafe'), show('ally', 'neutral', 'left')], NOW);
+  // Before any time passes (and before any texture arrived) the snapshot is the batch's end state.
+  const s = h.ex.snapshot();
+  expect(s.bg).toBe('cafe');
+  expect(s.chars).toEqual([{ char: 'ally', expr: 'neutral', at: 'left' }]);
+  expect(s.cg).toBe(null);
+  expect(s.props).toEqual([]);
+  await flush();
+  h.ex.complete();
+  await batch;
+  expect(h.ex.snapshot()).toEqual(s);
+  h.ex.destroy();
+});
+
+test('executor: scene t=fade applies shows while black', async () => {
+  const h = harness();
+  await h.ex.apply([bg('street', 'cut'), show('stranger', 'serious', 'right', 'cut'), cg('letter', 'cut'), props(['lamp', LAMP])], NOW);
+  h.log.length = 0;
+  const batch = h.ex.apply([scene('cafe'), show('ally', 'neutral')], NOW);
+  await flush();
+  h.ex.complete();
+  await batch;
+  expect(h.log).toEqual([
+    'fx:1',
+    'destroy:chars:stranger',
+    'drop:stranger',
+    'destroy:cg:letter',
+    'destroy:props:lamp',
+    'destroy:bg:street',
+    'create:bg:cafe',
+    'group:ally',
+    'create:chars:ally',
+    'fx:0',
+  ]);
+  h.ex.destroy();
+});
+
+test('executor: complete jumps to the end state and ends the wait', async () => {
+  const h = harness();
+  let settled = false;
+  void h.ex.apply([bg('cafe', 'crossfade', 500), wait(1200)], NOW).then(() => {
+    settled = true;
+  });
+  await flush();
+  expect(h.ex.stats().activeTimelines).toBe(1);
+  expect(h.live('bg')[0]?.p.alpha).toBe(0);
+  h.ex.complete();
+  await Promise.resolve();
+  expect(settled).toBe(true);
+  expect(h.live('bg').map((x) => x.p.alpha)).toEqual([1]);
+  expect(h.ex.stats().activeTimelines).toBe(0);
+  h.ex.destroy();
+});
+
+test('executor: scene clears props', async () => {
+  const h = harness();
+  await h.ex.apply([bg('room', 'cut'), props(['lamp', LAMP], ['key', KEY])], NOW);
+  expect(h.live('props').length).toBe(2);
+  const batch = h.ex.apply([scene('cafe')], NOW);
+  await flush();
+  h.ex.complete();
+  await batch;
+  expect(h.live('props').length).toBe(0);
+  expect(h.releasedOf('prop/lamp')).toBe(1);
+  expect(h.releasedOf('prop/key')).toBe(1);
+  expect(h.ex.snapshot().props).toEqual([]);
+  h.ex.destroy();
+});
+
+test('executor: props survive restore', async () => {
+  const h = harness();
+  const saved = {
+    bg: 'room' as BgId,
+    cg: null,
+    chars: [{ char: 'ally' as CharId, expr: 'neutral' as ExprId, at: 'right' as const }],
+    props: [{ prop: 'lamp' as PropId, rect: LAMP }],
+  };
+  await h.ex.restore(saved);
+  const lamp = h.live('props');
+  expect(lamp.length).toBe(1);
+  expect(lamp[0]?.p).toMatchObject({ ...propPlacement(S390, LAMP), alpha: 1 });
+  expect(h.ex.snapshot().props).toEqual(saved.props);
+  expect(h.ex.snapshot()).toEqual(saved);
+  expect(h.live('bg').length).toBe(1);
+  expect(h.inGroup('ally').length).toBe(1);
+  expect(h.ex.stats().activeTimelines).toBe(0);
+  h.ex.destroy();
+});
+
+test('executor: scene onto the same bg keeps its texture', async () => {
+  const h = harness();
+  await h.ex.apply([bg('cafe', 'cut'), show('ally', 'neutral', 'left', 'cut'), cg('letter', 'cut')], NOW);
+  const [bgSprite] = h.live('bg');
+  // `scene` onto the background already shown, re-showing the same expression at another slot.
+  const batch = h.ex.apply([scene('cafe'), show('ally', 'neutral', 'right')], NOW);
+  await flush();
+  h.ex.complete();
+  await batch;
+  expect(h.releasedOf('bg/cafe')).toBe(0);
+  expect(h.releasedOf('char/ally/neutral')).toBe(0);
+  expect(h.releasedOf('cg/letter')).toBe(1);
+  expect(h.live('bg')).toEqual([bgSprite]);
+  expect(h.inGroup('ally').length).toBe(1);
+  expect(h.registry.stats().live).toBe(2);
+  // The same CG over itself, the same expression at its own slot: nothing is reloaded or released.
+  await h.ex.apply([cg('letter', 'cut')], NOW);
+  await h.ex.apply([cg('letter'), show('ally', 'neutral')], NOW);
+  expect(h.releasedOf('cg/letter')).toBe(1);
+  expect(h.live('cg').length).toBe(1);
+  expect(h.loadsOf('bg/cafe')).toBe(1);
+  expect(h.loadsOf('char/ally/neutral')).toBe(1);
+  expect(h.ex.stats().activeTimelines).toBe(0);
+  h.ex.destroy();
+});
+
+test('executor: props batch keeps the ids it names', async () => {
+  const h = harness();
+  await h.ex.apply([bg('room', 'cut'), props(['lamp', LAMP], ['key', KEY])], NOW);
+  const lamp = h.live('props').find((x) => x.key === 'lamp');
+  // A take: the room's props without the key.
+  await h.ex.apply([props(['lamp', LAMP])], NOW);
+  expect(h.releasedOf('prop/lamp')).toBe(0);
+  expect(h.releasedOf('prop/key')).toBe(1);
+  expect(h.live('props')).toEqual([lamp]);
+  expect(h.loadsOf('prop/lamp')).toBe(1);
+  h.ex.destroy();
+});
