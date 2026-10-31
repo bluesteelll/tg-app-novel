@@ -16,6 +16,7 @@ mod payments;
 mod puzzles;
 mod saves;
 mod schema;
+mod webhook;
 
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Command, Stdio};
