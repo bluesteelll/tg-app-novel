@@ -295,6 +295,8 @@ test('stories: paid chapter title over 32 characters fails', () => {
   const titles = (ch2: { ru: string; en: string }): StoryNames => ({
     chapters: { ch1: { ru: 'Глава 1 — очень длинное название бесплатной главы', en: 'Chapter 1' }, ch2 } as StoryNames['chapters'],
     speakers: {},
+    stories: {},
+    teasers: {},
   });
   expect(lines(checkInvoiceTitles(manor({}), LIST, titles({ ru: 'Я'.repeat(33), en: 'Chapter 2' })))).toEqual([
     "E story/locales/ru/story.json:0 catalog/stories chapters.ch2: paid chapter ch2's title is 33 characters; it is the invoice title, 1-32 code points",

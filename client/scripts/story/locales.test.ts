@@ -10,8 +10,8 @@ import { fileURLToPath } from 'node:url';
 import { expect, test } from 'vitest';
 
 import { assetIndex, decodeAssetCatalog, decodeCast, decodeChapterCatalog } from '../../src/story/catalog.ts';
-import type { Cast, ChapterListEntry } from '../../src/story/catalog.ts';
-import type { AssetIndex, ChapterId, LineId, ProductId } from '../../src/story/staging.ts';
+import type { Cast, ChapterListEntry, StoryId } from '../../src/story/catalog.ts';
+import type { AssetId, AssetIndex, ChapterId, LineId, ProductId } from '../../src/story/staging.ts';
 import { LINE_ID_RE } from '../../src/story/tags.ts';
 import { compileChapter } from './compile.ts';
 import type { CompiledChapter } from './compile.ts';
@@ -25,6 +25,7 @@ import { GLOBALS_PATH, lintSources } from './lint.ts';
 import type { Finding, LintCode, SourceChapter } from './lint.ts';
 import { checkLocales, decodeEnTable, decodeNameTable, decodeRetired } from './locales.ts';
 import type { EnTable } from './locales.ts';
+import type { StoryPlan } from './stories.ts';
 
 function readRepoJson(path: string): unknown {
   const text = readFileSync(new URL(`../../../${path}`, import.meta.url), 'utf8');
@@ -298,6 +299,8 @@ test('locales: matching tables raise nothing', () => {
   expect(r.names).toEqual({
     chapters: { ch1: { ru: 'Глава 1', en: 'Chapter 1' }, ch2: { ru: 'Глава 2', en: 'Chapter 2' } },
     speakers: { ally: { ru: 'Подруга', en: 'Ally' }, stranger: { ru: 'Незнакомец', en: 'Stranger' }, voice: { ru: 'Голос', en: 'Voice' } },
+    stories: {},
+    teasers: {},
   });
 });
 
@@ -571,15 +574,22 @@ test('emit: en tables routed with their chapters', () => {
     compiled.set(ch.id, r.compiled);
     graphs.set(ch.id, buildGraph({ chapter: source, files: r.compiled.files, sources: files, assets: COMMITTED.assets }).graph);
   }
-  const names = locales().names;
-  if (names === null) {
+  const helperNames = locales().names;
+  if (helperNames === null) {
     throw new Error('invariant: the default locale fixture has names');
   }
+  // One story of the two chapters; the helper requires no story, so its title and teaser join here.
+  const manor: StoryPlan = { id: 'manor' as StoryId, first: CH1_ENTRY.id, cover: 'cover/manor' as AssetId, endings: {}, chapters: [CH1_ENTRY.id, CH2_ENTRY.id] };
+  const names: StoryNames = {
+    ...helperNames,
+    stories: { manor: { ru: 'Усадьба', en: 'The Manor' } } as StoryNames['stories'],
+    teasers: { manor: { ru: 'Черновик истории для проверки сборки.', en: 'A draft story for the build check.' } } as StoryNames['teasers'],
+  };
   const en = new Map([
     [CH1_ENTRY.id, shipped(REPO_EN_CH1)],
     [CH2_ENTRY.id, shipped(REPO_EN_CH2)],
   ]);
-  const input = { chapters: [CH1_ENTRY, CH2_ENTRY], compiled, graphs, cast: COMMITTED.cast, names, en };
+  const input = { chapters: [CH1_ENTRY, CH2_ENTRY], compiled, graphs, cast: COMMITTED.cast, names, en, stories: [manor] };
   const plan = planEmit(input);
   expect([...plan.keys()]).toContain('client/src/story-gen/free/ch1.en.json');
   expect([...plan.keys()]).toContain('server/content/chapters/ch2/en.json');

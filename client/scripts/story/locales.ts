@@ -193,7 +193,7 @@ function enChecks(ch: ChapterId, lines: readonly StoryLine[], table: EnTable, ou
   }
 }
 
-/** `loc/missing-name` over both languages; the names and titles when none is missing. */
+/** `loc/missing-name` over both languages; the names, titles and teasers when none is missing. */
 function nameChecks(input: LocaleInput, out: Finding[]): StoryNames | null {
   const speakers = Object.keys(input.cast) as SpeakerId[]; // the decoded cast's keys
   const chapters = (input.chapters ?? []).map((c) => c.id);
@@ -213,12 +213,11 @@ function nameChecks(input: LocaleInput, out: Finding[]): StoryNames | null {
   const named = {
     chapters: Object.fromEntries(chapters.map((id) => [id, pair('chapters', id, 'chapter')])),
     speakers: Object.fromEntries(speakers.map((id) => [id, pair('names', id, 'speaker')])),
+    stories: Object.fromEntries(input.stories.map((id) => [id, pair('stories', id, 'story')])),
+    teasers: Object.fromEntries(input.stories.map((id) => [id, pair('teasers', id, 'story')])),
   };
-  for (const id of input.stories) {
-    pair('stories', id, 'story');
-    pair('teasers', id, 'story');
-  }
-  return out.length > before ? null : (named as StoryNames); // keys are the listed chapters and the cast's speakers
+  // Keys: the listed chapters, the cast's speakers and the decoded story ids.
+  return out.length > before ? null : (named as StoryNames);
 }
 
 /**

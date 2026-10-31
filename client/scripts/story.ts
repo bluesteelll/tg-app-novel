@@ -467,7 +467,7 @@ export function main(argv: readonly string[], repoRoot: string): number {
     if (cast === null) {
       throw new Error('invariant: a run with no error decoded the cast');
     }
-    // `loc/missing-name` is an error, so a run without one has every name and title.
+    // `loc/missing-name` is an error, so a run without one has every name, title and teaser.
     const names = localized?.names ?? null;
     if (names === null) {
       throw new Error('invariant: a run with no error has names');
@@ -476,7 +476,11 @@ export function main(argv: readonly string[], repoRoot: string): number {
       const g = graphs.get(ch.id);
       return g === undefined ? [] : [[ch.id, shippedEn(g, localized?.en.get(ch.id))] as const];
     }));
-    const plan = planEmit({ chapters, compiled, graphs, cast, names, en });
+    // The story list is read on every run whose chapter list decoded, and its errors are errors.
+    if (plans === null) {
+      throw new Error('invariant: a run with no error decoded the stories');
+    }
+    const plan = planEmit({ chapters, compiled, graphs, cast, names, en, stories: plans });
     deleteStale(root, chapters);
     write(root, plan);
     const fp = decodeLineFingerprints(JSON.parse(plan.get(`${OUT.build}/fingerprints.lines.json`) ?? 'null'));
