@@ -13,7 +13,7 @@ export type StoryId = string;
 /**
  * The stable wire codes of every error, consumed by the client's decoders.
  */
-export type ErrorCode = "bad_request" | "initdata_invalid" | "initdata_expired" | "token_missing" | "token_invalid" | "token_expired" | "not_entitled" | "not_found" | "unknown_product" | "already_owned" | "save_conflict" | "payload_too_large" | "telegram_unavailable" | "internal";
+export type ErrorCode = "bad_request" | "initdata_invalid" | "initdata_expired" | "token_missing" | "token_invalid" | "token_expired" | "not_entitled" | "not_found" | "unknown_product" | "already_owned" | "save_conflict" | "payload_too_large" | "telegram_unavailable" | "rate_limited" | "hint_unavailable" | "insufficient_balance" | "limit_reached" | "internal";
 
 /**
  * The JSON body of every error response.
@@ -115,7 +115,8 @@ writeId: string, };
  */
 export type SaveListResponse = { 
 /**
- * Every story's saves, by story id then slot (`auto`, `s1`, `s2`, `s3`); an empty slot is absent.
+ * Every story's saves without their bodies; an empty slot is absent. The order (story id, then slot) is the
+ * database collation's: the client must not rely on it.
  */
 slots: Array<SaveSummary>, };
 
@@ -237,3 +238,59 @@ en: unknown,
  * The chapter's public world, or `null` (serialized, not omitted) when it has none.
  */
 world: unknown, };
+
+/**
+ * `POST /api/puzzles/{puzzleId}/attempts` request. Unknown fields are ignored.
+ */
+export type AttemptRequest = { 
+/**
+ * The answer: the puzzle's `answerLen` values, each at most its `answerMax` (at most 16, each at most 65535).
+ */
+answer: Array<number>, };
+
+/**
+ * `POST /api/puzzles/{puzzleId}/attempts` response.
+ */
+export type AttemptResponse = { 
+/**
+ * Whether this answer is the solution.
+ */
+correct: boolean, 
+/**
+ * Whether the puzzle is solved, by this answer or an earlier one.
+ */
+solved: boolean, };
+
+/**
+ * A hint tier as the user sees it.
+ */
+export type HintView = { 
+/**
+ * The tier, 1 to 3.
+ */
+tier: number, 
+/**
+ * Whether the user unlocked this tier.
+ */
+unlocked: boolean, 
+/**
+ * The hint in the requested language when `unlocked`, else `null` (serialized, not omitted).
+ */
+text: string | null, };
+
+/**
+ * `GET /api/puzzles/{puzzleId}?lang=ru|en` response: whether the user solved the puzzle, and its hint ladder.
+ */
+export type PuzzleStatus = { 
+/**
+ * The puzzle id, `<chapter>.<local>`.
+ */
+puzzleId: string, 
+/**
+ * Whether the user solved the puzzle: a server row, never client state.
+ */
+solved: boolean, 
+/**
+ * Every tier of the puzzle's hint ladder, tier 1 first; empty for a puzzle without hints.
+ */
+hints: Array<HintView>, };
