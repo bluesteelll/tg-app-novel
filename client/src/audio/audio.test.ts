@@ -1208,3 +1208,70 @@ test('sfx: one-shots queued on a stopped context never sound under a later batch
   expect(queued.map((s) => s.stops)).toEqual([1, 0]);
   expect(queued.map((s) => s.edges.size)).toEqual([0, 1]);
 });
+
+/** A context off in `state` without our suspend(), with a one-shot of the last batch queued on its stopped clock. */
+async function queuedOnStoppedClock(
+  state: AudioContextState,
+): Promise<{ ctx: FakeAudioContext; audio: ReturnType<typeof createAudioManager> }> {
+  const { ctx, fetch, audio } = setup();
+  audio.setChapter(CH1);
+  audio.preload(sfxIds('door', 'phone'));
+  for (const c of fetch.calls) {
+    c.settle(ok(sfxBlob()));
+  }
+  await flush();
+  ctx.setState(state);
+  audio.apply([sfx('door')], { instant: false }); // source 0
+  return { ctx, audio };
+}
+
+test("sfx: an iOS 'interrupted' context stops the one-shot queued on it at the next batch", async () => {
+  const { ctx, audio } = await queuedOnStoppedClock('interrupted');
+  audio.apply([sfx('phone')], { instant: false });
+  ctx.setState('running');
+  expect(ctx.sources.map((s) => s.stops)).toEqual([1, 0]);
+});
+
+test('sfx: a bgm-only batch on a stopped context stops the one-shot queued on it', async () => {
+  const { ctx, audio } = await queuedOnStoppedClock('suspended');
+  audio.apply([bgm('calm', 1000)], { instant: false });
+  ctx.setState('running');
+  expect(at(ctx.sources, 0).stops).toBe(1);
+});
+
+test('sfx: an empty batch on a stopped context stops the one-shot queued on it', async () => {
+  const { ctx, audio } = await queuedOnStoppedClock('suspended');
+  audio.apply([], { instant: false });
+  ctx.setState('running');
+  expect(at(ctx.sources, 0).stops).toBe(1);
+});
+
+test('sfx: a batch with no chapter on a stopped context stops the one-shot queued on it', async () => {
+  const { ctx, audio } = await queuedOnStoppedClock('suspended');
+  audio.setChapter(null); // releases the cached entries, not the voices
+  audio.apply([], { instant: false });
+  ctx.setState('running');
+  expect(at(ctx.sources, 0).stops).toBe(1);
+});
+
+test('audio: instant (skip mode) turns a bgm stop into a cut', () => {
+  vi.useFakeTimers();
+  const { ctx, audio } = setup();
+  audio.setChapter(CH1);
+  audio.apply([bgm('calm', 0)], { instant: false });
+  const a = deck(ctx, 0);
+  audio.apply([bgm(null, 2000)], { instant: true });
+  expect(a.el.attr).toBeNull();
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+test('sfx: entries that total exactly the cap all stay', async () => {
+  const { fetch, audio } = setup();
+  audio.setChapter(CH1);
+  audio.preload(sfxIds('s1', 's2'));
+  // 1,048,576 mono float32 frames: 4 MiB each, 8 MiB together.
+  at(fetch.calls, 0).settle(ok(sfxBlob('1048576x1')));
+  at(fetch.calls, 1).settle(ok(sfxBlob('1048576x1')));
+  await flush();
+  expect(audio.stats().decodedBytes).toBe(8_388_608);
+});
