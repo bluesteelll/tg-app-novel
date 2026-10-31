@@ -348,6 +348,24 @@ test('executor: fade through black changes the stage only at black', async () =>
   h.ex.destroy();
 });
 
+test('executor: a fade through black ends after its whole duration', async () => {
+  const h = harness();
+  await h.ex.apply([bg('cafe', 'cut')], NOW);
+  // `bg t=fade ms=600`: black in over 300 ms, black out over 300 ms; GameSession waits on this batch before the text,
+  // so its end is pinned from both sides (a black-out that is longer or shorter moves the text and every `wait`).
+  const fade = track(h.ex.apply([bg('room', 'fade', 600)], NOW));
+  await flush();
+  advance(550);
+  await flush();
+  expect(fade.done).toBe(false);
+  expect(h.ex.stats().activeTimelines).toBe(1);
+  advance(100);
+  await flush();
+  expect(fade.done).toBe(true);
+  expect(h.ex.stats().activeTimelines).toBe(0);
+  h.ex.destroy();
+});
+
 test('executor: complete jumps to the end state and ends the wait', async () => {
   const h = harness();
   let settled = false;
