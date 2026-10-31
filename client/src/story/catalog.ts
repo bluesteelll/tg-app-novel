@@ -325,8 +325,24 @@ export function assetIndex(c: AssetCatalog): AssetIndex {
 
 /** One chapter of story/chapters.json (STAGING-DSL §9), in play order; `entry` is story-relative posix. */
 export type ChapterListEntry = { id: ChapterId; entry: string; paid: boolean; productId: ProductId | null; next: ChapterId | null };
-/** client/src/story-gen/catalog.json (public): chapters, titles and cast names; no paid content. */
+/** A story of story/stories.json (STORIES-PLAN Y2), game-unique. A local brand, as `CoverId`: staging.ts names none. */
+export type StoryId = string & { readonly __brand: 'StoryId' };
+/** A declared story ending (STORIES-PLAN Y4), unique within its story. */
+export type EndingName = string & { readonly __brand: 'EndingName' };
+/** One story of the public catalog (STORIES-PLAN Y5): its chain, cover, title and teaser; never an ending. */
+export type StoryEntry = {
+  id: StoryId;
+  /** Chain order; `chapters[0]` is free. */
+  chapters: readonly ChapterId[];
+  /** `cover/<name>`. */
+  cover: AssetId;
+  title: { ru: string; en: string };
+  teaser: { ru: string; en: string };
+};
+/** client/src/story-gen/catalog.json (public): stories, chapters, titles and cast names; no paid content. */
 export type ChapterCatalog = {
+  /** Home order. */
+  stories: readonly StoryEntry[];
   chapters: ReadonlyArray<{
     id: ChapterId;
     paid: boolean;
@@ -350,6 +366,8 @@ export type ChapterMeta = {
   vars: readonly VarName[];
   /** ending: a `-> END` divert is written in the knot. */
   knots: Record<KnotName, { assets: readonly AssetId[]; next: readonly KnotName[]; ending: boolean }>;
+  /** The chapter's declared story endings (STAGING-DSL §8, §9): knot → name; such a knot never preloads the next chapter. */
+  endings: Readonly<Record<KnotName, EndingName>>;
 };
 
 /** STAGING-DSL §9: `ch<N>`. */
@@ -358,6 +376,10 @@ export const CHAPTER_ID_RE = /^ch[1-9][0-9]*$/;
 const PRODUCT_ID_RE = /^[a-z][a-z0-9_]*:[a-z0-9_]+$/;
 /** STAGING-DSL §10 `ink/name`. */
 export const KNOT_NAME_RE = /^[a-z][a-z0-9_]*$/;
+/** STORIES-PLAN "Ids" `StoryId`: 24 characters fit every key the id enters (DeviceStorage, a URL segment). */
+export const STORY_ID_RE = /^[a-z][a-z0-9_]{0,23}$/;
+/** STORIES-PLAN "Ids" `EndingName` (server/src/content.rs checks the same grammar). */
+export const ENDING_NAME_RE = /^[a-z][a-z0-9_]{0,31}$/;
 const VAR_NAME_RE = /^[\p{L}_][\p{L}\p{N}_]*$/u;
 /**
  * STAGING-DSL §8: `bg/<bg>`, `char/<char>/<expr>`, `cg/<cg>`, `bgm/<track>`, `sfx/<sfx>`, `prop/<prop>` (PUZZLES-PLAN
@@ -489,6 +511,47 @@ export function decodeChapterList(raw: unknown): Result<readonly ChapterListEntr
   return { ok: true, value: out };
 }
 
+/** `cover/<name>` (STORIES-PLAN Y15). */
+const COVER_ASSET_RE = /^cover\/[a-z][a-z0-9_]*$/;
+
+/** The catalog's stories: exact keys, the id grammar, a non-empty chain of catalog chapters from a free one. */
+function catalogStories(value: unknown, chapters: ChapterCatalog['chapters'], report: Report): StoryEntry[] {
+  const out: StoryEntry[] = [];
+  if (!Array.isArray(value)) {
+    report('stories', 'not an array');
+    return out;
+  }
+  value.forEach((entry: unknown, i) => {
+    const path = `stories.${i}`;
+    if (!isObject(entry)) {
+      report(path, 'not an object');
+      return;
+    }
+    exactKeys(entry, ['id', 'chapters', 'cover', 'title', 'teaser'], path, report);
+    const id = matching(entry['id'], STORY_ID_RE, `${path}.id`, report);
+    const chain = stringList(entry['chapters'], CHAPTER_ID_RE, `${path}.chapters`, report);
+    if (Array.isArray(entry['chapters']) && chain.length === 0) {
+      report(`${path}.chapters`, 'empty: a story has at least its first chapter');
+    }
+    chain.forEach((ch, k) => {
+      const listed = chapters.find((c) => c.id === ch);
+      if (listed === undefined) {
+        report(`${path}.chapters.${k}`, `'${ch}' is not a chapter of the catalog`);
+      } else if (k === 0 && listed.paid) {
+        report(`${path}.chapters.0`, `'${ch}' is paid: the first chapter of a story is free`);
+      }
+    });
+    const cover = matching(entry['cover'], COVER_ASSET_RE, `${path}.cover`, report);
+    const title = names(entry['title'], `${path}.title`, report);
+    const teaser = names(entry['teaser'], `${path}.teaser`, report);
+    if (id !== null && cover !== null) {
+      // The brands are earned by the patterns above.
+      out.push({ id: id as StoryId, chapters: chain as ChapterId[], cover: cover as AssetId, title, teaser });
+    }
+  });
+  return out;
+}
+
 /** Decodes client/src/story-gen/catalog.json; every problem is reported. */
 export function decodeChapterCatalog(raw: unknown): Result<ChapterCatalog, CatalogIssue[]> {
   const issues: CatalogIssue[] = [];
@@ -497,7 +560,7 @@ export function decodeChapterCatalog(raw: unknown): Result<ChapterCatalog, Catal
     report('', 'not a JSON object');
     return { ok: false, error: issues };
   }
-  exactKeys(raw, ['chapters', 'cast'], '', report);
+  exactKeys(raw, ['stories', 'chapters', 'cast'], '', report);
   const chapters: Array<ChapterCatalog['chapters'][number]> = [];
   const list = raw['chapters'];
   if (!Array.isArray(list)) {
@@ -542,13 +605,22 @@ export function decodeChapterCatalog(raw: unknown): Result<ChapterCatalog, Catal
       }
     }
   }
+  const stories = catalogStories(raw['stories'], chapters, report);
   if (issues.length > 0) {
     return { ok: false, error: issues };
   }
-  return { ok: true, value: { chapters, cast } }; // every speaker key passed ID_RE above
+  return { ok: true, value: { stories, chapters, cast } }; // every speaker key passed ID_RE above
 }
 
-/** Decodes a `<ch>.meta.json`; also checks that `firstKnot` and every `next` name a knot of the index. */
+/** The story whose chain holds `ch`, or null. */
+export function storyOf(c: ChapterCatalog, ch: ChapterId): StoryEntry | null {
+  return c.stories.find((s) => s.chapters.includes(ch)) ?? null;
+}
+
+/**
+ * Decodes a `<ch>.meta.json`; also checks that `firstKnot`, every `next` and every `endings` key name a knot of the
+ * index, and that each ending name is an `EndingName`.
+ */
 export function decodeChapterMeta(raw: unknown): Result<ChapterMeta, CatalogIssue[]> {
   const issues: CatalogIssue[] = [];
   const report: Report = (path, detail) => issues.push({ file: 'meta.json', path, detail });
@@ -556,7 +628,7 @@ export function decodeChapterMeta(raw: unknown): Result<ChapterMeta, CatalogIssu
     report('', 'not a JSON object');
     return { ok: false, error: issues };
   }
-  exactKeys(raw, ['chapterId', 'storyVersion', 'firstKnot', 'globals', 'vars', 'knots'], '', report);
+  exactKeys(raw, ['chapterId', 'storyVersion', 'firstKnot', 'globals', 'vars', 'knots', 'endings'], '', report);
   const chapterId = matching(raw['chapterId'], CHAPTER_ID_RE, 'chapterId', report);
   const storyVersion = matching(raw['storyVersion'], STORY_VERSION_RE, 'storyVersion', report);
   const firstKnot = matching(raw['firstKnot'], KNOT_NAME_RE, 'firstKnot', report);
@@ -599,6 +671,21 @@ export function decodeChapterMeta(raw: unknown): Result<ChapterMeta, CatalogIssu
       report('firstKnot', `'${firstKnot}' is not a knot of this index`);
     }
   }
+  const endings: Record<string, EndingName> = {};
+  const rawEndings = raw['endings'];
+  if (Object.hasOwn(raw, 'endings') && !isObject(rawEndings)) {
+    report('endings', 'not an object');
+  }
+  for (const [knot, name] of Object.entries(isObject(rawEndings) ? rawEndings : {})) {
+    if (!Object.hasOwn(knots, knot)) {
+      report(`endings.${knot}`, `'${knot}' is not a knot of this index`);
+    } else {
+      const ending = matching(name, ENDING_NAME_RE, `endings.${knot}`, report);
+      if (ending !== null) {
+        endings[knot] = ending as EndingName; // the brand is earned by the pattern
+      }
+    }
+  }
   if (issues.length > 0 || chapterId === null || storyVersion === null || firstKnot === null) {
     return { ok: false, error: issues };
   }
@@ -612,6 +699,7 @@ export function decodeChapterMeta(raw: unknown): Result<ChapterMeta, CatalogIssu
       globals: globals as VarName[],
       vars: vars as VarName[],
       knots,
+      endings, // every key is a knot of the index
     },
   };
 }

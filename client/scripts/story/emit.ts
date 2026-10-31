@@ -1,32 +1,51 @@
-// The story build's outputs (PROTOTYPE-PLAN.md "Build outputs", principle 0): free chapters to the public story-gen
-// directory, paid chapters to server/content; the public chapter catalog, each chapter's meta and en table, the usage
-// file and the paid line fingerprints; the `paid/leak` check over story-gen. Builds a plan (path → text); IO stays in
-// story.ts.
+// The story build's outputs (PROTOTYPE-PLAN.md "Build outputs", STORIES-PLAN Y5, principle 0): free chapters to the
+// public story-gen directory, paid chapters to server/content; the public chapter catalog with its story list (no
+// ending), each chapter's meta (its story endings) and en table, the server story index, the usage file and the paid
+// line fingerprints; the `paid/leak` check over story-gen. Builds a plan (path → text); IO stays in story.ts.
 // compile.ts and graph.ts come in as types only, so scan-dist.ts, which imports the decoders below, never loads
-// inkjs/full or the graph code.
+// inkjs/full or the graph code; stories.ts adds no module lint.ts does not already load.
 import { createHash } from 'node:crypto';
 
 import { ASSET_ID_RE, CHAPTER_ID_RE, KNOT_NAME_RE } from '../../src/story/catalog.ts';
-import type { Cast, ChapterCatalog, ChapterListEntry, ChapterMeta, Result } from '../../src/story/catalog.ts';
-import type { AssetId, ChapterId, KnotName, LineId, SpeakerId, StoryVersion } from '../../src/story/staging.ts';
+import type { Cast, ChapterCatalog, ChapterListEntry, ChapterMeta, EndingName, Result, StoryId } from '../../src/story/catalog.ts';
+import type { AssetId, ChapterId, KnotName, LineId, ProductId, SpeakerId, StoryVersion } from '../../src/story/staging.ts';
 import { LINE_ID_RE } from '../../src/story/tags.ts';
 import type { CompiledChapter } from './compile.ts';
 import type { ChapterGraph } from './graph.ts';
 import { LINT_CODES } from './lint.ts';
 import type { Finding } from './lint.ts';
+import { endingKnots } from './stories.ts';
+import type { StoryPlan } from './stories.ts';
 
-/** Output roots, repo-relative posix. Paid chapters never go under `client/`. */
+/** Output roots, repo-relative posix. Paid chapters and the story index never go under `client/`. */
 export const OUT = {
   storyGen: 'client/src/story-gen',
   free: 'client/src/story-gen/free',
   paid: 'server/content/chapters',
   build: 'server/content/build',
+  /** The server story index (STORIES-PLAN "Server formats"): it names every ending, paid ones included. */
+  stories: 'server/content/stories.json',
 } as const;
 
-/** Chapter titles and speaker names for the public catalog, from story/locales/{ru,en}/story.json (STAGING-DSL §4). */
+/**
+ * Chapter titles, speaker names, story titles and teasers for the public catalog and the server story index, from
+ * story/locales/{ru,en}/story.json (STAGING-DSL §4).
+ */
 export type StoryNames = {
   chapters: Record<ChapterId, { ru: string; en: string }>;
   speakers: Record<SpeakerId, { ru: string; en: string }>;
+  stories: Record<StoryId, { ru: string; en: string }>;
+  teasers: Record<StoryId, { ru: string; en: string }>;
+};
+/** server/content/stories.json (L6b's `ContentStore` reads it; the committed fixture is the contract). */
+export type ServerStoryIndex = {
+  format: 1;
+  stories: ReadonlyArray<{
+    id: StoryId;
+    title: { ru: string; en: string };
+    chapters: ReadonlyArray<{ id: ChapterId; paid: boolean; productId: ProductId | null; title: { ru: string; en: string } }>;
+    endings: Readonly<Record<EndingName, { chapter: ChapterId }>>;
+  }>;
 };
 /** server/content/build/usage.json: per chapter, the union of its knots' assets and per knot the K9 index. */
 export type StoryUsage = {
@@ -72,10 +91,12 @@ type EmitInput = {
   names: StoryNames;
   /** Per chapter, the English text of each of its line IDs (STAGING-DSL §4): shipped as `{ id: en }` beside it. */
   en: ReadonlyMap<ChapterId, Readonly<Record<LineId, string>>>;
+  /** The decoded story list (STAGING-DSL §9), in Home order: every listed chapter is on one chain. */
+  stories: readonly StoryPlan[];
 };
 type Built = { ch: ChapterListEntry; compiled: CompiledChapter; graph: ChapterGraph; firstKnot: KnotName };
 
-function meta(b: Built): ChapterMeta {
+function meta(b: Built, endings: ReadonlyMap<KnotName, EndingName> | undefined): ChapterMeta {
   const knots = Object.fromEntries([...b.graph.knots].map(([k, n]) => [k, { assets: n.assets, next: n.next, ending: n.ending }]));
   return {
     chapterId: b.ch.id,
@@ -84,17 +105,28 @@ function meta(b: Built): ChapterMeta {
     globals: b.graph.globals,
     vars: b.graph.vars,
     knots: knots as ChapterMeta['knots'], // keys are the graph's knot names
+    endings: Object.fromEntries(endings ?? []) as ChapterMeta['endings'], // keys are knots `catalog/stories` checked
   };
 }
 
+/** A story's title or teaser; the locale check reports a missing one, so an emitting run has both. */
+function storyText(section: Record<StoryId, { ru: string; en: string }>, id: StoryId, what: 'title' | 'teaser'): { ru: string; en: string } {
+  const text = section[id];
+  if (text === undefined) {
+    throw new Error(`invariant: story ${id} has a ${what}`);
+  }
+  return text;
+}
+
+function chapterTitle(input: EmitInput, id: ChapterId): { ru: string; en: string } {
+  const t = input.names.chapters[id];
+  if (t === undefined) {
+    throw new Error(`invariant: chapter ${id} has a title`);
+  }
+  return t;
+}
+
 function catalog(built: readonly Built[], input: EmitInput): ChapterCatalog {
-  const title = (id: ChapterId): { ru: string; en: string } => {
-    const t = input.names.chapters[id];
-    if (t === undefined) {
-      throw new Error(`invariant: chapter ${id} has a title`);
-    }
-    return t;
-  };
   const cast = Object.fromEntries(
     Object.entries(input.cast).map(([speaker, entry]) => {
       const name = input.names.speakers[speaker as SpeakerId]; // a key of the decoded cast
@@ -105,8 +137,36 @@ function catalog(built: readonly Built[], input: EmitInput): ChapterCatalog {
     }),
   );
   return {
-    chapters: built.map(({ ch }) => ({ id: ch.id, paid: ch.paid, productId: ch.productId, next: ch.next, title: title(ch.id) })),
+    // No ending: the public catalog never names one, paid or free (principle 0, STORIES-PLAN Y5).
+    stories: input.stories.map((s) => ({
+      id: s.id,
+      chapters: s.chapters,
+      cover: s.cover,
+      title: storyText(input.names.stories, s.id, 'title'),
+      teaser: storyText(input.names.teasers, s.id, 'teaser'),
+    })),
+    chapters: built.map(({ ch }) => ({ id: ch.id, paid: ch.paid, productId: ch.productId, next: ch.next, title: chapterTitle(input, ch.id) })),
     cast: cast as ChapterCatalog['cast'], // keys are the decoded cast's speakers
+  };
+}
+
+/** The server story index: per story its title, its chapters in chain order and its endings with their chapter. */
+function storyIndex(input: EmitInput): ServerStoryIndex {
+  const listed = new Map(input.chapters.map((c) => [c.id, c]));
+  return {
+    format: 1,
+    stories: input.stories.map((s) => ({
+      id: s.id,
+      title: storyText(input.names.stories, s.id, 'title'),
+      chapters: s.chapters.map((id) => {
+        const ch = listed.get(id);
+        if (ch === undefined) {
+          throw new Error(`invariant: story ${s.id}'s chapter ${id} is listed`);
+        }
+        return { id, paid: ch.paid, productId: ch.productId, title: chapterTitle(input, id) };
+      }),
+      endings: Object.fromEntries(Object.entries(s.endings).map(([name, e]) => [name, { chapter: e.chapter }])) as ServerStoryIndex['stories'][number]['endings'], // keys are the decoded ending names
+    })),
   };
 }
 
@@ -173,6 +233,7 @@ export function planEmit(input: EmitInput): ReadonlyMap<string, string> {
     }
     out.set(path, text);
   };
+  const endings = endingKnots(input.stories);
   for (const b of built) {
     const paths = chapterPaths(b.ch);
     if (b.ch.paid && [paths.story, paths.meta, paths.en].some((p) => p.startsWith('client/'))) {
@@ -183,10 +244,14 @@ export function planEmit(input: EmitInput): ReadonlyMap<string, string> {
       throw new Error(`invariant: chapter ${b.ch.id} has its en table before emit`);
     }
     put(paths.story, b.compiled.json);
-    put(paths.meta, pretty(meta(b)));
+    put(paths.meta, pretty(meta(b, endings.get(b.ch.id))));
     put(paths.en, pretty(en));
   }
   put(`${OUT.storyGen}/catalog.json`, pretty(catalog(built, input)));
+  if (OUT.stories.startsWith('client/')) {
+    throw new Error('invariant: the story index, which names paid endings, is never routed under client/ (principle 0)');
+  }
+  put(OUT.stories, pretty(storyIndex(input)));
   put(`${OUT.build}/usage.json`, pretty(usage(built)));
   put(`${OUT.build}/fingerprints.lines.json`, pretty(fingerprints(built)));
   return out;

@@ -488,6 +488,7 @@ function assetInputs(specs: readonly ChapterSpec[] = baseSpecs(), covers: Record
         globals: [],
         vars: [],
         knots: Object.fromEntries(Object.entries(s.knots).map(([k, v]) => [k, { assets: v.assets, next: v.next, ending: v.next.length === 0 }])),
+        endings: {},
       }),
       'meta',
     );
@@ -876,6 +877,7 @@ const REPO_META = {
   globals: [],
   vars: [],
   knots: { start: { assets: ['bg/cafe', 'bgm/calm'], next: [], ending: true } },
+  endings: {},
 };
 
 function repoCafe(width: number): Record<string, unknown> {

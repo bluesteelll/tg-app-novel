@@ -28,6 +28,7 @@ const RULE_IDS = [
   'authorization',
   'node-builtin',
   'texture-create',
+  'import-outside-src',
   'pure-world',
 ] as const;
 
@@ -59,6 +60,7 @@ const GROUP: Record<RuleId, Group> = {
   authorization: 'boundary',
   'node-builtin': 'boundary',
   'texture-create': 'boundary',
+  'import-outside-src': 'boundary',
   'pure-world': 'pure',
 };
 
@@ -383,6 +385,9 @@ function checkNode(ctx: Ctx, node: ts.Node): void {
     }
   }
   checkImport(ctx, node);
+  if (importOrigins(node).some((o) => reachesOutsideSrc(ctx.file, o))) {
+    report(ctx, 'import-outside-src', node);
+  }
 }
 
 function checkLiteral(ctx: Ctx, node: ts.Node, text: string): void {
@@ -593,6 +598,172 @@ function isPureWorldTarget(file: string, spec: string): boolean {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// import-outside-src (STORIES-PLAN ST1; PROTOTYPE-PLAN LS1 commit 5): every file a non-test src/ module can pull into
+// the bundle stays under src/, so story/stories.json, server/content/ or any other repo file never enters it by a
+// relative path. Each reference is read for the files Vite 8.3.5 can load from it, or refused when no static reading
+// can bound them. Type-only imports and `import('x').T` are erased; bare package specifiers resolve into node_modules.
+
+/** One reference by what it can load: a path, a glob (with `import.meta.glob`'s `base`), or nothing provable. */
+type Origin = { form: 'path'; spec: string } | { form: 'glob'; pattern: string; base: string | null } | { form: 'opaque' };
+
+/** `import.meta.<name>`. */
+function isImportMeta(e: ts.Expression, name: string): boolean {
+  return (
+    ts.isPropertyAccessExpression(e) &&
+    ts.isMetaProperty(e.expression) &&
+    e.expression.keywordToken === ts.SyntaxKind.ImportKeyword &&
+    e.name.text === name
+  );
+}
+
+function isPlus(e: ts.Expression): e is ts.BinaryExpression {
+  return ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.PlusToken;
+}
+
+/**
+ * The glob Vite derives from a dynamic argument (`vite:dynamic-import-vars` `templateLiteralToGlob` /
+ * `expressionToGlob`; `vite:asset-import-meta-url` `buildGlobPattern`): string parts kept, every other part `*`.
+ */
+function expressionGlob(e: ts.Expression): string {
+  if (ts.isStringLiteralLike(e)) {
+    return e.text;
+  }
+  if (ts.isTemplateExpression(e)) {
+    return e.head.text + e.templateSpans.map((span) => `*${span.literal.text}`).join('');
+  }
+  if (ts.isParenthesizedExpression(e)) {
+    return expressionGlob(e.expression);
+  }
+  return isPlus(e) ? expressionGlob(e.left) + expressionGlob(e.right) : '*';
+}
+
+/** A dynamic `import()` argument: a literal is a path; a template or a `+` join is a glob; anything else is opaque. */
+function dynamicOrigin(arg: ts.Expression | undefined): Origin {
+  if (arg !== undefined && ts.isStringLiteralLike(arg)) {
+    return { form: 'path', spec: arg.text };
+  }
+  if (arg !== undefined && (ts.isTemplateExpression(arg) || isPlus(arg))) {
+    return { form: 'glob', pattern: expressionGlob(arg), base: null };
+  }
+  return { form: 'opaque' };
+}
+
+/** The literal name of an object-literal member; null for a spread, a computed or a private name. */
+function memberName(name: ts.PropertyName | undefined): string | null {
+  return name !== undefined && (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) ? name.text : null;
+}
+
+/**
+ * `import.meta.glob(p, o)`: each pattern of `p` (a string or an array of strings) with `o.base`; a `!` pattern only
+ * excludes. Opaque when a pattern is not a literal, or the options are not an object literal of literally named
+ * members with a string `base`.
+ */
+function globOrigins(call: ts.CallExpression): Origin[] {
+  const [patterns, options] = call.arguments;
+  let base: string | null = null;
+  if (options !== undefined) {
+    if (!ts.isObjectLiteralExpression(options) || options.properties.some((p) => memberName(p.name) === null)) {
+      return [{ form: 'opaque' }];
+    }
+    const prop = options.properties.find((p) => memberName(p.name) === 'base');
+    if (prop !== undefined) {
+      if (!ts.isPropertyAssignment(prop) || !ts.isStringLiteralLike(prop.initializer)) {
+        return [{ form: 'opaque' }];
+      }
+      base = prop.initializer.text;
+    }
+  }
+  const list = patterns === undefined ? [] : ts.isArrayLiteralExpression(patterns) ? [...patterns.elements] : [patterns];
+  const texts = list.flatMap((e) => (ts.isStringLiteralLike(e) ? [e.text] : []));
+  if (list.length === 0 || texts.length !== list.length) {
+    return [{ form: 'opaque' }];
+  }
+  return texts.filter((t) => !t.startsWith('!')).map((pattern) => ({ form: 'glob', pattern, base }));
+}
+
+/**
+ * What a node can make Vite load: a static import (not `import type`), an export-from (not `export type`), a dynamic
+ * `import()`, `import.meta.glob`, or `new URL(…, import.meta.url)`; nothing for any other node.
+ */
+function importOrigins(node: ts.Node): readonly Origin[] {
+  if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
+    const typeOnly = node.importClause?.phaseModifier === ts.SyntaxKind.TypeKeyword;
+    return typeOnly ? [] : [{ form: 'path', spec: node.moduleSpecifier.text }];
+  }
+  if (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined && ts.isStringLiteral(node.moduleSpecifier)) {
+    return node.isTypeOnly ? [] : [{ form: 'path', spec: node.moduleSpecifier.text }];
+  }
+  if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+    return [dynamicOrigin(node.arguments[0])];
+  }
+  if (ts.isCallExpression(node) && isImportMeta(node.expression, 'glob')) {
+    return globOrigins(node);
+  }
+  if (ts.isNewExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'URL') {
+    const [spec, base] = node.arguments ?? [];
+    if (base === undefined || !isImportMeta(base, 'url')) {
+      return []; // a URL against another base is no asset reference
+    }
+    if (spec !== undefined && ts.isStringLiteralLike(spec)) {
+      return [{ form: 'path', spec: spec.text }];
+    }
+    if (spec !== undefined && ts.isTemplateExpression(spec)) {
+      return [{ form: 'glob', pattern: expressionGlob(spec), base: null }];
+    }
+    return [{ form: 'opaque' }];
+  }
+  return [];
+}
+
+/** Under /src/ once resolved against `from` (a file: URL), as `ui-imports` resolves a specifier. */
+function underSrc(spec: string, from: string): boolean {
+  return new URL(spec, from).pathname.startsWith('/src/');
+}
+
+/**
+ * Whether an origin can load a file outside src/. A path resolves from the importer (a `#` head is a package import
+ * map, refused); a bare specifier is a package. A glob resolves as Vite's `toAbsoluteGlob`: `/` from the project
+ * root, `./` or `../` from `base` (a `/` base from the root, a relative one from the importer) or the importer. Its
+ * static directory (the head before the first `*`, `?`, `[` or `{`, up to its last `/`) must lie under src/, and no
+ * `..` may follow the first wildcard; any other head is refused. An opaque reference is refused.
+ */
+function reachesOutsideSrc(file: string, o: Origin): boolean {
+  const from = `file:///src/${file}`;
+  switch (o.form) {
+    case 'opaque':
+      return true;
+    case 'path':
+      if (o.spec.startsWith('#')) {
+        return true;
+      }
+      return (o.spec.startsWith('.') || o.spec.startsWith('/')) && !underSrc(o.spec, from);
+    case 'glob': {
+      const wild = o.pattern.search(/[*?[{]/);
+      const head = wild < 0 ? o.pattern : o.pattern.slice(0, wild);
+      const dir = head.slice(0, head.lastIndexOf('/') + 1);
+      if (o.pattern.slice(dir.length).split('/').includes('..')) {
+        return true;
+      }
+      if (dir.startsWith('/')) {
+        return !underSrc(dir, 'file:///');
+      }
+      if (!dir.startsWith('./') && !dir.startsWith('../')) {
+        return true; // empty, `**`, `#` or a bare name: Vite hands it to resolveId
+      }
+      if (o.base === null) {
+        return !underSrc(dir, from);
+      }
+      const base = o.base.endsWith('/') ? o.base : `${o.base}/`;
+      return !underSrc(dir, new URL(base, base.startsWith('/') ? 'file:///' : from).href);
+    }
+    default: {
+      const unhandled: never = o;
+      throw new Error(`invariant: unhandled origin ${String(unhandled)}`);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // The real tree
 
 function loadSources(): Record<string, string> {
@@ -798,6 +969,22 @@ const RED: Record<RuleId, readonly Fixture[]> = {
     ['scene/preload.ts', "import { Texture as T } from 'pixi.js';\nconst t = T.from(u);"],
     ['scene/layout.ts', 'const t = PIXI.Texture.from(u);'],
   ],
+  'import-outside-src': [
+    // Each form with a literal argument.
+    ['story/catalog.ts', "import stories from '../../../story/stories.json';"],
+    ['app/content.ts', "const m = import('../../../server/content/chapters/ch2/meta.json');"],
+    ['app/content.ts', "export { default } from '../../../server/content/chapters/ch2/meta.json';"],
+    ['ui/A.svelte', "<script lang=\"ts\">\n  import s from '/story/stories.json?raw';\n</script>\n<p>{s}</p>"],
+    ['app/content.ts', "const inks = import.meta.glob('../../../story/*/main.ink');"],
+    ['app/content.ts', "const u = new URL('../../../server/content/stories.json', import.meta.url);"],
+    // The forms only a glob reading, the `base` option or a refusal can judge.
+    ['app/content.ts', 'const m = import(`../../../server/content/chapters/${id}/meta.json`);'],
+    ['app/content.ts', 'const u = new URL(`../../../server/content/${f}.json`, import.meta.url);'],
+    ['app/content.ts', "const g = import.meta.glob('./*.json', { base: '../../../server/content' });"],
+    ['app/content.ts', "import s from '#content/stories.json';"],
+    ['app/content.ts', 'const m = import(spec);'],
+    ['app/content.ts', 'const m = import(`../story-gen/${x}/../../../server/a.json`);'],
+  ],
   'pure-world': [
     ['explore/reduce.ts', 'document.title = s;'],
     ['world/decode.ts', 'const r = fetch(u);'],
@@ -877,6 +1064,18 @@ const ALLOW: ReadonlyArray<readonly [RuleId, readonly Fixture[]]> = [
       ['scene/executor.ts', "import { Sprite, Texture } from 'pixi.js';\nconst s = new Sprite(texture);\nconst w = Texture.WHITE;"],
       ['scene/loader.ts', "import { Texture } from 'pixi.js';\nconst b = await createImageBitmap(blob);\nconst t = Texture.from(b);"],
       ['scene/registry.ts', "import { Assets } from 'pixi.js';\nconst t = await Assets.load(url);"],
+    ],
+  ],
+  [
+    'import-outside-src',
+    [
+      // A value import of the public build output, from a module no other rule judges for it.
+      ['app/boot.ts', "import catalog from '../story-gen/catalog.json';"],
+      ['story/catalog.ts', "import type { StoryPlan } from '../../scripts/story/stories.ts';"],
+      ['story/catalog.ts', "const free = import.meta.glob('../story-gen/free/*.story.json');"],
+      ['story/catalog.ts', "const u = new URL('./x.ts', import.meta.url);"],
+      ['story/catalog.ts', 'const m = import(`../story-gen/free/${id}.story.json`);'],
+      ['story/catalog.ts', "const g = import.meta.glob('./*.json', { base: '../story-gen/free' });"],
     ],
   ],
   [

@@ -1,9 +1,10 @@
 // The localization checks of the story gate (STAGING-DSL §4, §11): the en tables (`loc/missing-en`, `loc/empty-en`,
-// `loc/stale-en`, `loc/orphan-en`), the names and titles of story.json (`loc/missing-name`), and the two ID rules no
-// single chapter can see: `id/duplicate` across chapters and `id/retired`. Pure, no node:*: story.ts reads the files.
+// `loc/stale-en`, `loc/orphan-en`), the names, titles and teasers of story.json (`loc/missing-name`), and the two ID
+// rules no single chapter can see: `id/duplicate` across chapters and `id/retired`. Pure, no node:*: story.ts reads the
+// files.
 // Findings name story-relative files (`locales/en/ch1.json`, `retired-ids.txt`) and the 1-based line of a key, or 0
 // for the whole file; ink lines come from the chapter graphs, so the static extractor is graph.ts's alone.
-import type { Cast, ChapterListEntry } from '../../src/story/catalog.ts';
+import type { Cast, ChapterListEntry, StoryId } from '../../src/story/catalog.ts';
 import type { ChapterId, SpeakerId } from '../../src/story/staging.ts';
 import { LINE_ID_RE } from '../../src/story/tags.ts';
 import type { StoryNames } from './emit.ts';
@@ -14,12 +15,16 @@ import type { Finding, LintCode } from './lint.ts';
 export type EnEntry = { ru: string; en: string };
 /** story/locales/en/<ch>.json decoded: the well-formed entries, and where each key is written. */
 export type EnTable = { file: string; entries: ReadonlyMap<string, EnEntry>; keyLine: (key: string) => number };
-export type NameSection = 'names' | 'chapters';
-/** story/locales/<lang>/story.json decoded: the string values of `names` and `chapters`, and where each key is. */
+export type NameSection = 'names' | 'chapters' | 'stories' | 'teasers';
+/** story/locales/<lang>/story.json decoded: the string values of each section, and where each key is. */
 export type NameTable = {
   file: string;
   names: ReadonlyMap<string, string>;
   chapters: ReadonlyMap<string, string>;
+  /** Story titles (STAGING-DSL §4, §9). */
+  stories: ReadonlyMap<string, string>;
+  /** Story teasers: one sentence for the story's card. */
+  teasers: ReadonlyMap<string, string>;
   keyLine: (section: NameSection, key: string) => number;
 };
 export type LocaleInput = {
@@ -32,11 +37,15 @@ export type LocaleInput = {
   names: { ru: NameTable; en: NameTable };
   cast: Cast;
   retired: ReadonlySet<string>;
+  /** The decoded stories: each needs a title and a teaser in both languages ([] when stories.json did not decode). */
+  stories: readonly StoryId[];
 };
 
 export const RETIRED_FILE = 'retired-ids.txt';
 const BOM = String.fromCharCode(0xfeff);
-const NAME_SECTIONS: readonly NameSection[] = ['names', 'chapters'];
+const NAME_SECTIONS: readonly NameSection[] = ['names', 'chapters', 'stories', 'teasers'];
+/** What a missing entry of each section is called in a finding. */
+const NAME_WHAT: Readonly<Record<NameSection, string>> = { names: 'name', chapters: 'title', stories: 'title', teasers: 'teaser' };
 
 type Raw = Readonly<Record<string, unknown>>;
 
@@ -102,7 +111,7 @@ export function decodeEnTable(file: string, text: string | null): { table: EnTab
 
 /** Decodes a story.json of names and titles. A missing file is empty with no finding: each name it lacks is. */
 export function decodeNameTable(file: string, text: string | null): { table: NameTable; findings: Finding[] } {
-  const sections = { names: new Map<string, string>(), chapters: new Map<string, string>() };
+  const sections = { names: new Map<string, string>(), chapters: new Map<string, string>(), stories: new Map<string, string>(), teasers: new Map<string, string>() };
   const keyLine = (section: NameSection, key: string): number => {
     if (text === null) {
       return 0;
@@ -110,13 +119,13 @@ export function decodeNameTable(file: string, text: string | null): { table: Nam
     const at = keyLineIn(text, section);
     return at === 0 ? 0 : keyLineIn(text, key, lineStart(text, at));
   };
-  const table: NameTable = { file, names: sections.names, chapters: sections.chapters, keyLine };
+  const table: NameTable = { file, ...sections, keyLine };
   if (text === null) {
     return { table, findings: [] };
   }
   const parsed = parse(text);
   if (!parsed.ok || !isObject(parsed.value)) {
-    const why = parsed.ok ? 'not a JSON object { "names": …, "chapters": … }' : `not JSON: ${parsed.error}`;
+    const why = parsed.ok ? `not a JSON object of the sections ${NAME_SECTIONS.join(', ')}` : `not JSON: ${parsed.error}`;
     return { table, findings: [finding('loc/missing-name', file, 0, `${why}; nothing in it is read`)] };
   }
   const findings: Finding[] = [];
@@ -184,15 +193,15 @@ function enChecks(ch: ChapterId, lines: readonly StoryLine[], table: EnTable, ou
   }
 }
 
-/** `loc/missing-name` over both languages; the names and titles when none is missing. */
+/** `loc/missing-name` over both languages; the names, titles and teasers when none is missing. */
 function nameChecks(input: LocaleInput, out: Finding[]): StoryNames | null {
   const speakers = Object.keys(input.cast) as SpeakerId[]; // the decoded cast's keys
   const chapters = (input.chapters ?? []).map((c) => c.id);
   const before = out.length;
   const get = (t: NameTable, section: NameSection, id: string, what: string): string => {
-    const value = (section === 'names' ? t.names : t.chapters).get(id);
+    const value = t[section].get(id);
     if (value === undefined || value.trim() === '') {
-      out.push(finding('loc/missing-name', t.file, t.keyLine(section, id), `${what} '${id}' has no ${section === 'names' ? 'name' : 'title'} in story/${t.file} (§4)`));
+      out.push(finding('loc/missing-name', t.file, t.keyLine(section, id), `${what} '${id}' has no ${NAME_WHAT[section]} in story/${t.file} (§4)`));
       return '';
     }
     return value;
@@ -204,8 +213,11 @@ function nameChecks(input: LocaleInput, out: Finding[]): StoryNames | null {
   const named = {
     chapters: Object.fromEntries(chapters.map((id) => [id, pair('chapters', id, 'chapter')])),
     speakers: Object.fromEntries(speakers.map((id) => [id, pair('names', id, 'speaker')])),
+    stories: Object.fromEntries(input.stories.map((id) => [id, pair('stories', id, 'story')])),
+    teasers: Object.fromEntries(input.stories.map((id) => [id, pair('teasers', id, 'story')])),
   };
-  return out.length > before ? null : (named as StoryNames); // keys are the listed chapters and the cast's speakers
+  // Keys: the listed chapters, the cast's speakers and the decoded story ids.
+  return out.length > before ? null : (named as StoryNames);
 }
 
 /**

@@ -1,5 +1,6 @@
 // The story build: compile (inkjs compiler), knot graph, emit and the `story` CLI (STAGING-DSL §8-§11,
-// PROTOTYPE-PLAN.md K9 and "Build outputs"). Fixtures are inline ink; the catalog and cast are the committed ones.
+// PROTOTYPE-PLAN.md K9 and "Build outputs"). Fixtures are inline ink and an inline cast; the catalog is the committed
+// one.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -9,31 +10,39 @@ import { fileURLToPath } from 'node:url';
 
 import { expect, test } from 'vitest';
 
-import { assetIndex, decodeAssetCatalog, decodeCast, decodeChapterCatalog, decodeChapterMeta } from '../../src/story/catalog.ts';
-import type { Cast, ChapterListEntry } from '../../src/story/catalog.ts';
-import type { AssetIndex, ChapterId, KnotName, ProductId } from '../../src/story/staging.ts';
+import { assetIndex, decodeAssetCatalog, decodeCast, decodeChapterCatalog, decodeChapterMeta, storyOf } from '../../src/story/catalog.ts';
+import type { Cast, ChapterListEntry, StoryId } from '../../src/story/catalog.ts';
+import type { AssetId, AssetIndex, ChapterId, KnotName, ProductId } from '../../src/story/staging.ts';
 import { compileChapter, resolveInclude } from './compile.ts';
 import type { CompiledChapter, ReadInk } from './compile.ts';
 import { decodeLineFingerprints, decodeStoryUsage, paidLeak, planEmit } from './emit.ts';
-import type { LineFingerprints, StoryNames } from './emit.ts';
+import type { LineFingerprints, ServerStoryIndex, StoryNames } from './emit.ts';
 import { buildGraph } from './graph.ts';
 import type { ChapterGraph } from './graph.ts';
 import { GLOBALS_PATH, lintSources } from './lint.ts';
 import type { Finding, LintCode, SourceChapter } from './lint.ts';
+import type { StoryPlan } from './stories.ts';
 
 function readRepoJson(path: string): unknown {
   const text = readFileSync(new URL(`../../../${path}`, import.meta.url), 'utf8');
   return JSON.parse(text.startsWith(String.fromCharCode(0xfeff)) ? text.slice(1) : text);
 }
 
+/**
+ * The cast the fixtures were written against (STORIES-PLAN revision 2, W1): inline, so a speaker added to
+ * story/cast.json moves no test of the tool.
+ */
+const CAST_RAW = { ally: { char: 'ally' }, stranger: { char: 'stranger' }, voice: { char: null } };
+
+/** The committed catalog and the inline cast, decoded against it. */
 function committed(): { assets: AssetIndex; cast: Cast } {
   const catalog = decodeAssetCatalog(readRepoJson('assets/catalog.json'));
   if (!catalog.ok) {
     throw new Error('invariant: the committed catalog decodes');
   }
-  const cast = decodeCast(readRepoJson('story/cast.json'), catalog.value);
+  const cast = decodeCast(CAST_RAW, catalog.value);
   if (!cast.ok) {
-    throw new Error('invariant: the committed cast decodes');
+    throw new Error('invariant: the inline cast decodes against the committed catalog');
   }
   return { assets: assetIndex(catalog.value), cast: cast.value };
 }
@@ -428,15 +437,29 @@ const EMIT_SOURCES = new Map([
     ].join('\n'),
   ],
 ]);
+/** The fixture story's title and teaser (STAGING-DSL §4): public text, so it names nothing of the paid chapter. */
+const MANOR_NAMES = {
+  stories: { manor: { ru: 'Усадьба', en: 'The Manor' } },
+  teasers: { manor: { ru: 'Черновик истории для проверки сборки.', en: 'A draft story for the build check.' } },
+};
 const NAMES = {
   chapters: { ch1: { ru: 'ch1', en: 'ch1' }, ch2: { ru: 'ch2', en: 'ch2' } },
   speakers: { ally: { ru: 'ally', en: 'ally' }, stranger: { ru: 'stranger', en: 'stranger' }, voice: { ru: 'voice', en: 'voice' } },
+  ...MANOR_NAMES,
 } as StoryNames; // placeholder names keyed by the fixture's ids
+/** The fixture's story as decodeStories plans it (STORIES_SOURCE below): ch1 → ch2, the paid ending on `drawer`. */
+const MANOR: StoryPlan = {
+  id: 'manor' as StoryId,
+  first: chapterId('ch1'),
+  cover: 'cover/manor' as AssetId,
+  endings: { q7_sealed_vault: { chapter: chapterId('ch2'), knot: 'drawer' as KnotName } } as StoryPlan['endings'],
+  chapters: [chapterId('ch1'), chapterId('ch2')],
+}; // fixture ids match their grammars
 
 type EmitFixture = { plan: ReadonlyMap<string, string>; compiled: Map<ChapterId, CompiledChapter>; graphs: Map<ChapterId, ChapterGraph> };
 
-/** Compiles and graphs the two-chapter fixture (both lint-clean) and plans its outputs. */
-function emitFixture(list: readonly ChapterListEntry[] = LIST): EmitFixture {
+/** Compiles and graphs the two-chapter fixture (both lint-clean) and plans its outputs for `stories`. */
+function emitFixture(list: readonly ChapterListEntry[] = LIST, stories: readonly StoryPlan[] = [MANOR]): EmitFixture {
   const chapters = list.map((ch): SourceChapter => ({ id: ch.id, paid: ch.paid, entry: ch.entry }));
   expect(lintSources({ files: EMIT_SOURCES, chapters, assets: COMMITTED.assets, cast: COMMITTED.cast }), 'lint-clean').toEqual([]);
   const compiled = new Map<ChapterId, CompiledChapter>();
@@ -452,7 +475,7 @@ function emitFixture(list: readonly ChapterListEntry[] = LIST): EmitFixture {
   }
   // The en text of each line is `en <id>`, as localeFiles() writes it.
   const en = new Map(list.map((ch) => [ch.id, Object.fromEntries((graphs.get(ch.id)?.lines ?? []).map((l) => [l.id, `en ${l.id}`]))]));
-  return { plan: planEmit({ chapters: list, compiled, graphs, cast: COMMITTED.cast, names: NAMES, en }), compiled, graphs };
+  return { plan: planEmit({ chapters: list, compiled, graphs, cast: COMMITTED.cast, names: NAMES, en, stories }), compiled, graphs };
 }
 
 function planned(plan: ReadonlyMap<string, string>, path: string): string {
@@ -502,6 +525,7 @@ test('emit: free and paid outputs are routed apart', () => {
     'server/content/chapters/ch2/en.json',
     'server/content/chapters/ch2/meta.json',
     'server/content/chapters/ch2/story.json',
+    'server/content/stories.json',
   ]);
   // The exact ToJson() text, not a re-serialization.
   expect(plan.get('client/src/story-gen/free/ch1.story.json')).toBe(compiled.get(chapterId('ch1'))?.json);
@@ -524,6 +548,7 @@ test('emit: meta holds the knot index and the story version', () => {
     globals: ['g_trust'],
     vars: ['g_trust'],
     knots: { cafe: { assets: ['bg/cafe', 'char/ally/neutral'], next: [], ending: true } },
+    endings: {},
   });
   expect(JSON.parse(planned(plan, 'server/content/chapters/ch2/meta.json'))).toEqual({
     chapterId: 'ch2',
@@ -535,6 +560,7 @@ test('emit: meta holds the knot index and the story version', () => {
       archive: { assets: ['bg/archive', 'bgm/mystery'], next: ['drawer'], ending: false },
       drawer: { assets: ['cg/reveal'], next: [], ending: true },
     },
+    endings: { drawer: 'q7_sealed_vault' },
   });
 });
 
@@ -578,7 +604,7 @@ test('emit: line fingerprints cover every paid line', () => {
   }
   expect(paid.includes(QUOTED)).toBe(false);
   // A free-only story has no needles at all.
-  const freeOnly = fingerprintsOf(emitFixture([{ ...CH1_ENTRY, next: null }]).plan);
+  const freeOnly = fingerprintsOf(emitFixture([{ ...CH1_ENTRY, next: null }], [{ ...MANOR, endings: {}, chapters: [CH1_ENTRY.id] }]).plan);
   expect(freeOnly).toEqual({ lineIds: [], texts: [] });
   expect(decodeLineFingerprints({ lineIds: [], texts: [''] }).ok).toBe(false);
 });
@@ -597,6 +623,7 @@ test('catalog: emitted chapter catalog and meta decode', () => {
   expect(decodeChapterCatalog(JSON.parse(planned(plan, 'client/src/story-gen/catalog.json')))).toEqual({
     ok: true,
     value: {
+      stories: [{ id: 'manor', chapters: ['ch1', 'ch2'], cover: 'cover/manor', title: MANOR_NAMES.stories.manor, teaser: MANOR_NAMES.teasers.manor }],
       chapters: [
         { id: 'ch1', paid: false, productId: null, next: 'ch2', title: { ru: 'ch1', en: 'ch1' } },
         { id: 'ch2', paid: true, productId: 'chapter:ch2', next: null, title: { ru: 'ch2', en: 'ch2' } },
@@ -615,7 +642,7 @@ test('catalog: emitted chapter catalog and meta decode', () => {
 });
 
 test('catalog: malformed meta is an error value', () => {
-  const good = { chapterId: 'ch1', storyVersion: '0123456789abcdef', firstKnot: 'a', globals: [], vars: [], knots: { a: { assets: [], next: [], ending: true } } };
+  const good = { chapterId: 'ch1', storyVersion: '0123456789abcdef', firstKnot: 'a', globals: [], vars: [], knots: { a: { assets: [], next: [], ending: true } }, endings: {} };
   expect(decodeChapterMeta(good).ok).toBe(true);
   const cases: Array<readonly [string, unknown]> = [
     ['not an object', [good]],
@@ -638,6 +665,181 @@ test('catalog: malformed meta is an error value', () => {
   expect(decodeChapterCatalog({ chapters: [{ id: 'ch1' }], cast: {} }).ok).toBe(false);
 });
 
+const STORY_INDEX = 'server/content/stories.json';
+const PAID_ENDING = 'q7_sealed_vault';
+
+/** Per object path, the union of its keys (an array element is `[]`, an ending name `*`); per leaf path, its types. */
+function shapeOf(value: unknown): { keys: Record<string, string[]>; leaves: Record<string, string[]> } {
+  const keys = new Map<string, Set<string>>();
+  const leaves = new Map<string, Set<string>>();
+  const add = (m: Map<string, Set<string>>, path: string, x: string | null): void => {
+    const set = m.get(path) ?? new Set<string>();
+    if (x !== null) {
+      set.add(x);
+    }
+    m.set(path, set);
+  };
+  const walk = (x: unknown, path: string): void => {
+    if (Array.isArray(x)) {
+      x.forEach((e: unknown) => walk(e, `${path}[]`));
+    } else if (typeof x === 'object' && x !== null) {
+      add(keys, path, null);
+      for (const [k, e] of Object.entries(x)) {
+        const key = path.endsWith('.endings') ? '*' : k;
+        add(keys, path, key);
+        walk(e, `${path}.${key}`);
+      }
+    } else {
+      add(leaves, path, x === null ? 'null' : typeof x);
+    }
+  };
+  walk(value, '');
+  const sorted = (m: Map<string, Set<string>>): Record<string, string[]> => Object.fromEntries([...m].map(([k, v]) => [k, [...v].sort()]).sort());
+  return { keys: sorted(keys), leaves: sorted(leaves) };
+}
+
+/** The rules server/src/content.rs `load_index` refuses a story index for; [] when it loads. */
+function indexProblems(index: ServerStoryIndex): string[] {
+  const out: string[] = [];
+  if (index.format !== 1 || index.stories.length === 0) {
+    out.push('format 1 with at least one story');
+  }
+  const storyIds = new Set<string>();
+  const chapterIds = new Set<string>();
+  for (const s of index.stories) {
+    if (storyIds.has(s.id)) {
+      out.push(`story ${s.id} twice`);
+    }
+    storyIds.add(s.id);
+    if (s.chapters[0]?.paid !== false) {
+      out.push(`story ${s.id}: no free first chapter`);
+    }
+    for (const c of s.chapters) {
+      if (chapterIds.has(c.id)) {
+        out.push(`chapter ${c.id} twice`);
+      }
+      chapterIds.add(c.id);
+      if (c.productId !== (c.paid ? `chapter:${c.id}` : null)) {
+        out.push(`chapter ${c.id}: paid ${String(c.paid)} with productId ${String(c.productId)}`);
+      }
+    }
+    for (const [name, e] of Object.entries(s.endings)) {
+      if (!/^[a-z][a-z0-9_]{0,31}$/.test(name)) {
+        out.push(`story ${s.id}: ending name ${name}`);
+      }
+      if (!s.chapters.some((c) => c.id === e.chapter)) {
+        out.push(`story ${s.id}: ending ${name} off the chain`);
+      }
+    }
+  }
+  return out;
+}
+
+test('emit: server story index matches the server fixture shape', () => {
+  const { plan } = emitFixture();
+  const emitted: unknown = JSON.parse(planned(plan, STORY_INDEX));
+  const fixture: unknown = readRepoJson('server/tests/fixtures/content/stories.json');
+  const want = shapeOf(fixture);
+  const got = shapeOf(emitted);
+  // The same keys at every object path; every emitted leaf a type the fixture has there (productId: null or string).
+  expect(got.keys).toEqual(want.keys);
+  expect(Object.keys(got.leaves)).toEqual(Object.keys(want.leaves));
+  for (const [path, types] of Object.entries(got.leaves)) {
+    expect(types.filter((t) => !(want.leaves[path] ?? []).includes(t)), path).toEqual([]);
+  }
+  expect(want.leaves['.stories[].chapters[].productId']).toEqual(['null', 'string']);
+  // The shapes match, so the rules load_index applies read the typed fields; the fixture is their control.
+  expect(indexProblems(fixture as ServerStoryIndex)).toEqual([]);
+  expect(indexProblems(emitted as ServerStoryIndex)).toEqual([]);
+  expect(emitted).toEqual({
+    format: 1,
+    stories: [
+      {
+        id: 'manor',
+        title: MANOR_NAMES.stories.manor,
+        chapters: [
+          { id: 'ch1', paid: false, productId: null, title: { ru: 'ch1', en: 'ch1' } },
+          { id: 'ch2', paid: true, productId: 'chapter:ch2', title: { ru: 'ch2', en: 'ch2' } },
+        ],
+        endings: { [PAID_ENDING]: { chapter: 'ch2' } },
+      },
+    ],
+  });
+});
+
+test('emit: public catalog lists stories without endings', () => {
+  const { plan } = emitFixture();
+  const text = planned(plan, 'client/src/story-gen/catalog.json');
+  const stories = (JSON.parse(text) as Record<string, unknown>)['stories']; // the decoder's own test reads the rest
+  expect(stories).toEqual([{ id: 'manor', chapters: ['ch1', 'ch2'], cover: 'cover/manor', title: MANOR_NAMES.stories.manor, teaser: MANOR_NAMES.teasers.manor }]);
+  expect((stories as ReadonlyArray<Readonly<Record<string, unknown>>>).map((s) => Object.keys(s).sort())).toEqual([['chapters', 'cover', 'id', 'teaser', 'title']]);
+  expect(text).not.toContain('"endings"');
+  expect(text).not.toContain(PAID_ENDING);
+});
+
+test('emit: meta carries endings', () => {
+  const { plan } = emitFixture();
+  const paid = JSON.parse(planned(plan, 'server/content/chapters/ch2/meta.json')) as Record<string, unknown>; // a JSON object
+  expect(paid['endings']).toEqual({ drawer: PAID_ENDING });
+  expect(decodeChapterMeta(paid)).toMatchObject({ ok: true, value: { endings: { drawer: PAID_ENDING } } });
+  const free = JSON.parse(planned(plan, 'client/src/story-gen/free/ch1.meta.json')) as Record<string, unknown>; // a JSON object
+  expect(free['endings']).toEqual({});
+});
+
+test('emit: paid endings only in server outputs', () => {
+  const { plan } = emitFixture();
+  // The control: the paid chapter's ending name is planned, in its meta and in the server story index.
+  expect(planned(plan, 'server/content/chapters/ch2/meta.json')).toContain(PAID_ENDING);
+  expect(planned(plan, STORY_INDEX)).toContain(PAID_ENDING);
+  // It is a substring of no public build input.
+  expect([...plan].filter(([path, text]) => path.startsWith('client/src/story-gen/') && text.includes(PAID_ENDING)).map(([path]) => path)).toEqual([]);
+});
+
+test('catalog: meta without endings is malformed', () => {
+  const knots = { a: { assets: [], next: [], ending: true } };
+  const without = { chapterId: 'ch1', storyVersion: '0123456789abcdef', firstKnot: 'a', globals: [], vars: [], knots };
+  expect(decodeChapterMeta(without).ok).toBe(false);
+  expect(decodeChapterMeta(without)).toEqual({ ok: false, error: [{ file: 'meta.json', path: 'endings', detail: 'missing' }] });
+  // An ending names a knot of the index, by an EndingName.
+  expect(decodeChapterMeta({ ...without, endings: { b: 'end' } })).toEqual({
+    ok: false,
+    error: [{ file: 'meta.json', path: 'endings.b', detail: "'b' is not a knot of this index" }],
+  });
+  expect(decodeChapterMeta({ ...without, endings: { a: 'End' } }).ok).toBe(false);
+  expect(decodeChapterMeta({ ...without, endings: [] }).ok).toBe(false);
+  expect(decodeChapterMeta({ ...without, endings: { a: 'end' } })).toMatchObject({ ok: true, value: { endings: { a: 'end' } } });
+});
+
+test('catalog: catalog with stories decodes', () => {
+  const story = { id: 'manor', chapters: ['ch1', 'ch2'], cover: 'cover/manor', title: { ru: 'Усадьба', en: 'The Manor' }, teaser: { ru: 'Тизер.', en: 'Teaser.' } };
+  const chapters = [
+    { id: 'ch1', paid: false, productId: null, next: 'ch2', title: { ru: 'Глава 1', en: 'Chapter 1' } },
+    { id: 'ch2', paid: true, productId: 'chapter:ch2', next: null, title: { ru: 'Глава 2', en: 'Chapter 2' } },
+  ];
+  const raw = { stories: [story], chapters, cast: {} };
+  const r = decodeChapterCatalog(raw);
+  expect(r).toEqual({ ok: true, value: raw });
+  if (!r.ok) {
+    throw new Error('invariant: asserted just above');
+  }
+  expect(storyOf(r.value, chapterId('ch2'))?.id).toBe('manor');
+  expect(storyOf(r.value, chapterId('ch9'))).toBeNull();
+  const refused: Array<readonly [string, unknown]> = [
+    ['stories', { chapters, cast: {} }],
+    ['stories.0.chapters.0', { ...raw, stories: [{ ...story, chapters: ['ch2'] }] }],
+    ['stories.0.chapters.1', { ...raw, stories: [{ ...story, chapters: ['ch1', 'ch9'] }] }],
+    ['stories.0.chapters', { ...raw, stories: [{ ...story, chapters: [] }] }],
+    ['stories.0.cover', { ...raw, stories: [{ ...story, cover: 'bg/cafe' }] }],
+    ['stories.0.id', { ...raw, stories: [{ ...story, id: 'Manor' }] }],
+    ['stories.0.endings', { ...raw, stories: [{ ...story, endings: {} }] }],
+    ['stories.0.teaser', { ...raw, stories: [{ ...story, teaser: 'Тизер.' }] }],
+  ];
+  for (const [path, bad] of refused) {
+    const d = decodeChapterCatalog(bad);
+    expect(d.ok ? [] : d.error.map((i) => i.path), path).toContain(path);
+  }
+});
+
 // ---------------------------------------------------------------------------------------------------------------
 // story.ts: spawned the way `npm run story` runs it, against a temporary repository (`--root`)
 
@@ -647,6 +849,11 @@ const STORY_SCRIPT = fileURLToPath(new URL('../story.ts', import.meta.url));
 const CLI_TIMEOUT_MS = 60_000;
 const CH1_LISTED = { id: 'ch1', entry: 'ch1/main.ink', paid: false, next: 'ch2' };
 const CH2_LISTED = { id: 'ch2', entry: 'ch2/main.ink', paid: true, productId: 'chapter:ch2', next: null };
+/**
+ * The fixture's story list: `manor`, ch1 → ch2, its one ending on ch2's `drawer`. The name is one no free output can
+ * hold: no ink control string, meta or catalog key, version hex or fixture word.
+ */
+const STORIES_SOURCE = [{ id: 'manor', first: 'ch1', cover: 'cover/manor', endings: { q7_sealed_vault: { chapter: 'ch2', knot: 'drawer' } } }];
 const CLIENT_OUTPUTS = [
   'client/src/story-gen/catalog.json',
   'client/src/story-gen/free/ch1.en.json',
@@ -671,7 +878,8 @@ function localeFiles(): Readonly<Record<string, string>> {
     const names = (lang: 'ru' | 'en'): string => {
       const pick = (section: Readonly<Record<string, { ru: string; en: string }>>): Record<string, string> =>
         Object.fromEntries(Object.entries(section).map(([id, name]) => [id, name[lang]]));
-      return `${JSON.stringify({ names: pick(NAMES.speakers), chapters: pick(NAMES.chapters) }, null, 2)}\n`;
+      const sections = { names: pick(NAMES.speakers), chapters: pick(NAMES.chapters), stories: pick(MANOR_NAMES.stories), teasers: pick(MANOR_NAMES.teasers) };
+      return `${JSON.stringify(sections, null, 2)}\n`;
     };
     localeTables = {
       [EN_CH1_TABLE]: en('ch1'),
@@ -683,12 +891,16 @@ function localeFiles(): Readonly<Record<string, string>> {
   return localeTables;
 }
 
-/** The committed catalog and cast, the given chapter list, and the emit fixture's ink and locale tables under story/. */
+/**
+ * The committed catalog, the inline cast, the given chapter list, the fixture's story list, and the emit fixture's ink
+ * and locale tables under story/.
+ */
 function repoFiles(chapters: unknown = [CH1_LISTED, CH2_LISTED]): Record<string, string> {
   return {
     'assets/catalog.json': readFileSync(new URL('../../../assets/catalog.json', import.meta.url), 'utf8'),
-    'story/cast.json': readFileSync(new URL('../../../story/cast.json', import.meta.url), 'utf8'),
+    'story/cast.json': JSON.stringify(CAST_RAW),
     'story/chapters.json': JSON.stringify(chapters),
+    'story/stories.json': JSON.stringify(STORIES_SOURCE),
     ...Object.fromEntries([...EMIT_SOURCES].map(([key, text]) => [`story/${key}`, text])),
     ...localeFiles(),
   };
@@ -797,6 +1009,7 @@ test(
         'server/content/chapters/ch2/en.json',
         'server/content/chapters/ch2/meta.json',
         'server/content/chapters/ch2/story.json',
+        'server/content/stories.json',
       ]);
       for (const rel of CLIENT_OUTPUTS) {
         expect(readFileSync(join(root, rel), 'utf8'), rel).not.toContain('ch2.archive');
@@ -877,6 +1090,96 @@ test(
       expect(r.status, r.stdout + r.stderr).toBe(1);
       expect(r.stdout).toMatch(/^E client\/src\/story-gen\/free\/ch1\.story\.json:0 paid\/leak paid line ID 'ch2\.archive\.p001'/m);
       expect(r.stdout).toMatch(/^story: 1 errors, 0 warnings$/m);
+    });
+  },
+  CLI_TIMEOUT_MS,
+);
+
+test(
+  'story: missing stories.json fails the gate',
+  () => {
+    // Every chapter lies on one story (§9): without the story list no story is defined, so the gate fails.
+    const files = Object.fromEntries(Object.entries(repoFiles()).filter(([rel]) => rel !== 'story/stories.json'));
+    withRepo(files, (root) => {
+      const r = runStory(root);
+      expect(r.status, r.stdout + r.stderr).toBe(1);
+      expect(r.stdout).toMatch(/^E story\/stories\.json:0 catalog\/stories missing$/m);
+      expect(r.stdout).toMatch(/^story: 1 errors, 0 warnings$/m);
+      expect([...filesUnder(root, 'client'), ...filesUnder(root, 'server')]).toEqual([]);
+    });
+  },
+  CLI_TIMEOUT_MS,
+);
+
+/** ch1 of the carry fixture: a choice between `bad`, a declared story ending that sets g_x, and `good`. */
+const CARRY_CH1 = [
+  'INCLUDE ../common/globals.ink',
+  '-> cafe',
+  '=== cafe ===',
+  '# scene: cafe',
+  'Куда идти? #id:ch1.cafe.d001',
+  '* [Налево. #id:ch1.cafe.d002]',
+  '    -> bad',
+  '* [Направо. #id:ch1.cafe.d003]',
+  '    -> good',
+  '=== bad ===',
+  '~ g_x = 9',
+  'Плохой конец. #id:ch1.bad.d004',
+  '-> END',
+  '=== good ===',
+  'Дальше. #id:ch1.good.d005',
+  '-> END',
+  '',
+].join('\n');
+/** ch2 of the carry fixture: `leak` is entered only from g_x == 9 and writes no `-> END` of its own. */
+const CARRY_CH2 = [
+  'INCLUDE ../common/globals.ink',
+  '-> start',
+  '=== start ===',
+  '# scene: archive',
+  'Архив. #id:ch2.start.d006',
+  '{ g_x == 9:',
+  '    -> leak',
+  '}',
+  '-> safe',
+  '=== leak ===',
+  'Утечка. #id:ch2.leak.d007',
+  '-> safe',
+  '=== safe ===',
+  'Тихо. #id:ch2.safe.d008',
+  '-> END',
+  '',
+].join('\n');
+
+test(
+  'story: a story-ending run does not carry into the next chapter',
+  () => {
+    const table = (entries: Readonly<Record<string, string>>): string =>
+      `${JSON.stringify(Object.fromEntries(Object.entries(entries).map(([id, ru]) => [id, { ru, en: `en ${id}` }])), null, 2)}\n`;
+    const files = {
+      ...repoFiles(),
+      'story/common/globals.ink': 'VAR g_trust = 0\nVAR g_x = 0\n',
+      'story/ch1/main.ink': CARRY_CH1,
+      'story/ch2/main.ink': CARRY_CH2,
+      'story/stories.json': JSON.stringify([{ id: 'manor', first: 'ch1', cover: 'cover/manor', endings: { bad_end: { chapter: 'ch1', knot: 'bad' } } }]),
+      'story/lint-allow.json': JSON.stringify({ 'play/knot-not-visited': { 'ch2.leak': 'reached only after the story ending bad_end, which carries nothing' } }),
+      [EN_CH1_TABLE]: table({
+        'ch1.cafe.d001': 'Куда идти?',
+        'ch1.cafe.d002': 'Налево.',
+        'ch1.cafe.d003': 'Направо.',
+        'ch1.bad.d004': 'Плохой конец.',
+        'ch1.good.d005': 'Дальше.',
+      }),
+      'story/locales/en/ch2.json': table({ 'ch2.start.d006': 'Архив.', 'ch2.leak.d007': 'Утечка.', 'ch2.safe.d008': 'Тихо.' }),
+    };
+    withRepo(files, (root) => {
+      const r = runStory(root);
+      // Only the runs that ended in `good` seed ch2, so none of them sets g_x and `leak` stays unvisited.
+      expect(r.stdout).toMatch(/^play: ch2: 200 runs, knots 2\/3, endings 1\/1 \(seeds 1-200, ch1 carries; /m);
+      expect(r.status, r.stdout + r.stderr).toBe(0);
+      expect(r.stdout).toMatch(/^play: ch1: 200 runs, knots 3\/3, endings 2\/2 /m);
+      expect(r.stdout).toMatch(/^stories: manor \(ch1 → ch2\), endings 1$/m);
+      expect(r.stdout).toMatch(/^story: 0 errors, 0 warnings$/m);
     });
   },
   CLI_TIMEOUT_MS,
