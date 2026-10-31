@@ -76,7 +76,8 @@ pub struct SaveSummary {
 #[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveListResponse {
-    /// Every story's saves, by story id then slot (`auto`, `s1`, `s2`, `s3`); an empty slot is absent.
+    /// Every story's saves without their bodies; an empty slot is absent. The order (story id, then slot) is the
+    /// database collation's: the client must not rely on it.
     pub slots: Vec<SaveSummary>,
 }
 
