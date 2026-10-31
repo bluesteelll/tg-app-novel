@@ -566,7 +566,9 @@ fixed:
 
 `npm --prefix client run story` runs, in order: catalog checks → source lint → compile (inkjs compiler, build time
 only) → knot graph → localization → seeded playthroughs → emit. It prints every finding (it never stops at the first)
-and exits non-zero if any **E** remains. `--strict` turns every **W** into an **E** (release builds).
+and exits non-zero if any **E** remains. `--strict` turns every **W** into an **E** (release builds). From LW3 the knot
+graph also checks the yield edges, and each chapter's `world.json` is checked by the world lint and the soft-lock
+check (the second table below).
 
 | Code | Sev | Rule |
 |---|---|---|
@@ -618,7 +620,41 @@ and exits non-zero if any **E** remains. `--strict` turns every **W** into an **
 | `loc/stale-en` | W | the entry's `ru` differs from the current Russian text |
 | `loc/missing-name` | E | a cast speaker or a chapter without a name/title in `ru` and `en` |
 | `budget/knot-set` | E | knot working set over budget (§8). Needs decoded sizes, so it is enforced by `npm --prefix client run build` (`budget.ts`), not by `story` |
-| `paid/leak` | E | a paid chapter's ID or text fingerprint found under `client/src/story-gen/` (the build's input) |
+| `paid/leak` | E | a paid chapter's ID or text fingerprint found under `client/src/story-gen/` (the build's input); from LW3 also a hint line ID or hint text |
+
+**Enforced from LW3** (puzzle worlds and yield edges; [PUZZLES-PLAN.md](PUZZLES-PLAN.md) "Staging DSL additions"):
+
+| Code | Sev | Rule |
+|---|---|---|
+| `puzzle/unknown`, `explore/unknown-section` | E | the id is not in the chapter's world |
+| `puzzle/then-unknown` | E | `then=` names no knot of the chapter |
+| `puzzle/in-section` | E | a puzzle both yielded and attached to a lock |
+| `explore/event-return` | E | an event knot (named by a `story` effect of S) has no `explore: S` yield |
+| `explore/event-escape` | E | an event knot contains `-> END` or diverts to a knot that is not an event knot of S |
+| `world/schema` | E | `decodeWorldSource` issues (unknown key, missing field, bad id, wrong type) — every issue, never the first only |
+| `world/duplicate-id`, `world/id-reserved` | E | rooms collide across sections; a puzzle id ends in `_hints` |
+| `world/unknown-asset` | E | room `bg`, `prop`, `closeup` (cg), section `bgm`, exit `sfx` not in the catalog |
+| `world/unknown-ref` | E | an item, doc, puzzle, room or hotspot key referenced but not defined; an effect knot not in the chapter |
+| `world/one-way-exit` | E | a room→room exit without a reverse exit |
+| `world/hotspot-frame` | E | a rect outside the safe frame `x 80–1000, y 160–1760` |
+| `world/hotspot-small` / `world/hotspot-overlap` | W | a rect under 150×150 source px (44 CSS px at a 0.296 scale, 320×568); overlapping rects |
+| `world/props-per-room` | E | more than 8 props in a room |
+| `world/solution`, `world/solution-initial` | E | `PUZZLE_RULES[type].validateSolution` fails; the solution equals the initial state |
+| `world/order-pieces` | E | an `order` puzzle in a lock whose `pieces` differ from the lock's slot items |
+| `world/hint-count` | E | more than 3 hint tiers; a hint without an `id` |
+| `world/title-long` | E | a puzzle title over 18 graphemes (the invoice title `Подсказка 3: <title>` must fit 32 chars) |
+| `world/giveup-in-section`, `world/linear-requires`, `world/cross-section-item` | E | `giveUp` on a puzzle attached to a lock (Give up is for linear puzzles only); a linear puzzle with `requires`; an item obtained in one section and required (by a slot or a puzzle) in another |
+| `world/cross-section-effect` | E | an `{ unlock: key }` in a room's `onEnter` or a hotspot's `then` / `onOpen` / `onFail` whose key is a hotspot of another section; an item or doc given (`gives`, `{ give }`) in more than one section |
+| `world/puzzle-multi-lock` | E | a puzzle named by the `puzzle` field of more than one lock, in one section or in several; prints every lock that names it |
+| `world/cross-section-exit` | E | a room→room exit whose `to.room` is a defined room of another section than the exit's own; prints every such exit, so a crossing pair is two findings. A room that is not defined stays `world/unknown-ref` |
+| `world/fail-without-effect` | E | a lock puzzle with `maxAttempts` and an empty `onFail` |
+| `world/var-type` | E | a declared projection VAR with the wrong type (`pz_*` int, `it_*` / `dc_*` bool) |
+| `world/softlock` | E | the model checker found a reachable state (over `successors`, closed puzzles included) with no path to a `leave` effect; prints the action path |
+| `world/unreachable` | W | an item, doc, room or puzzle no reachable state touches |
+| `world/state-cap` | E | the checker exceeded `RESUME_STATE_CAP` (5,000) states: the section is too large to prove at resume (PUZZLES-PLAN X9); split it |
+| `play/event-no-return` | E | a seeded run entered an event knot and stopped without its explore yield |
+
+From LW3, world texts follow §4: `id/*` and `loc/*` apply to them, and IDs are unique across ink and world.
 
 **Seeded playthroughs:**
 - **Runs** — 200 runs per chapter (seeds 1–200, mulberry32), random choice index, step cap 5,000.
@@ -626,6 +662,11 @@ and exits non-zero if any **E** remains. `--strict` turns every **W** into an **
   ch1 can produce.
 - **Each step** — tags parse, the line has an ID, the ID has an English entry, and the speaker is in the cast.
 - **Report** — the seeds and the visited/ending coverage per chapter.
+- **At a `puzzle` yield** (from LW3) — an outcome uniformly from {solved; failed if `maxAttempts`; abandoned if
+  `giveUp`} and 0..tiers hints; then the outcome variables are written and the run enters the `then` knot.
+- **At an `explore` yield** (from LW3) — a random walk over the section's `successors` (a closed puzzle included),
+  with puzzle outcomes random as above. A `story` effect runs the event knot until its yield; a `leave` effect
+  continues the story. The step cap stays 5,000.
 
 ---
 
