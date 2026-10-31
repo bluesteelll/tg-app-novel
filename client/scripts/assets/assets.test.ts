@@ -1,7 +1,9 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 
 import { ASSET_ID_RE, decodeAssetCatalog } from '../../src/story/catalog.ts';
-import type { CatalogIssue } from '../../src/story/catalog.ts';
+import type { CatalogImage, CatalogIssue } from '../../src/story/catalog.ts';
+import type { AssetId } from '../../src/story/staging.ts';
+import { renderPlaceholder } from './placeholder.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
 // The catalog entry schema (assets/catalog.json): seven namespaces, every entry a placeholder's parameters.
@@ -94,5 +96,70 @@ describe('catalog', () => {
     const crossRole = rawCatalog();
     crossRole.sfx = { door: { placeholder: { hz: 220 } } };
     expect(issues(decodeAssetCatalog(crossRole))).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Placeholder SVG (placeholder.ts): canonical size per namespace, hue, label, transparency.
+
+/** The root element's width, height and viewBox attributes. */
+function rootAttrs(svg: string): { width: string; height: string; viewBox: string } {
+  const open = /^<svg\b[^>]*>/.exec(svg)?.[0] ?? '';
+  const attr = (name: string): string => new RegExp(String.raw`\s${name}="([^"]*)"`).exec(open)?.[1] ?? '';
+  return { width: attr('width'), height: attr('height'), viewBox: attr('viewBox') };
+}
+
+describe('placeholder', () => {
+  const HUE30: CatalogImage = { placeholder: { hue: 30 } };
+
+  test('placeholder: canonical sizes per namespace', () => {
+    const cases: ReadonlyArray<readonly [string, number, number]> = [
+      ['bg/cafe', 1080, 2048],
+      ['cg/letter', 1080, 2048],
+      ['char/ally/smile', 768, 1536],
+      ['prop/note', 512, 512],
+      ['cover/manor', 360, 640],
+    ];
+    for (const [id, w, h] of cases) {
+      const p = renderPlaceholder(id as AssetId, HUE30); // a literal asset id of the demo catalog
+      expect({ w: p.w, h: p.h }, id).toEqual({ w, h });
+      expect(rootAttrs(p.svg), id).toEqual({ width: String(w), height: String(h), viewBox: `0 0 ${w} ${h}` });
+    }
+    // Audio has no picture: asking for one is a caller bug.
+    expect(() => renderPlaceholder('bgm/calm' as AssetId, HUE30)).toThrow(/invariant/);
+  });
+
+  test('placeholder: deterministic and hue-specific', () => {
+    const random = vi.spyOn(Math, 'random');
+    vi.useFakeTimers({ now: new Date('2026-01-01T00:00:00Z') });
+    try {
+      const first = renderPlaceholder('bg/cafe' as AssetId, HUE30).svg;
+      vi.setSystemTime(new Date('2031-06-15T12:34:56Z'));
+      expect(renderPlaceholder('bg/cafe' as AssetId, HUE30).svg).toBe(first);
+      expect(random).not.toHaveBeenCalled();
+      const other = renderPlaceholder('bg/cafe' as AssetId, { placeholder: { hue: 200 } }).svg;
+      expect(other).not.toBe(first);
+      expect(first).toContain('hsl(30 ');
+      expect(other).toContain('hsl(200 ');
+      expect(other).not.toContain('hsl(30 ');
+      // The label is the asset id: two ids with one hue are two different pictures.
+      expect(first).toMatch(/<text\b[^>]*>bg\/cafe<\/text>/);
+      expect(renderPlaceholder('bg/room' as AssetId, HUE30).svg).not.toBe(first);
+    } finally {
+      vi.useRealTimers();
+      random.mockRestore();
+    }
+  });
+
+  test('placeholder: character and prop are transparent', () => {
+    const char = renderPlaceholder('char/ally/smile' as AssetId, HUE30).svg;
+    const prop = renderPlaceholder('prop/note' as AssetId, HUE30).svg;
+    for (const svg of [char, prop]) {
+      expect(svg).not.toMatch(/<rect\b/); // nothing paints the full canvas: the background shows through
+      expect(svg).toMatch(/<circle\b/);
+    }
+    expect(char).toMatch(/<path\b[^>]*\sd="M[^"]+Z"/); // the body under the head circle
+    // Control: a background is opaque edge to edge.
+    expect(renderPlaceholder('bg/cafe' as AssetId, HUE30).svg).toMatch(/<rect x="0" y="0" width="1080" height="2048"/);
   });
 });
