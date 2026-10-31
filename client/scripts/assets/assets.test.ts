@@ -1,8 +1,10 @@
+import sharp from 'sharp';
 import { describe, expect, test, vi } from 'vitest';
 
 import { ASSET_ID_RE, decodeAssetCatalog } from '../../src/story/catalog.ts';
 import type { CatalogImage, CatalogIssue } from '../../src/story/catalog.ts';
 import type { AssetId } from '../../src/story/staging.ts';
+import { encodeImage } from './encode.ts';
 import { renderPlaceholder } from './placeholder.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -161,5 +163,50 @@ describe('placeholder', () => {
     expect(char).toMatch(/<path\b[^>]*\sd="M[^"]+Z"/); // the body under the head circle
     // Control: a background is opaque edge to edge.
     expect(renderPlaceholder('bg/cafe' as AssetId, HUE30).svg).toMatch(/<rect x="0" y="0" width="1080" height="2048"/);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Encode (encode.ts): sharp, AVIF + WebP, the 2048 px clamp, dimensions from sharp's output info.
+
+const utf8 = new TextEncoder();
+
+function strip(w: number, h: number): Uint8Array {
+  return utf8.encode(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">` +
+      `<rect x="0" y="0" width="${w}" height="${h}" fill="hsl(10 50% 50%)"/></svg>`,
+  );
+}
+
+async function dims(bytes: Uint8Array): Promise<{ w: number | undefined; h: number | undefined; format: string | undefined }> {
+  const m = await sharp(bytes).metadata();
+  return { w: m.width, h: m.height, format: m.format };
+}
+
+describe('encode', () => {
+  test('encode: input over 2048 px is clamped', async () => {
+    const e = await encodeImage(strip(4096, 64));
+    expect(e.w).toBe(2048);
+    expect(e.h).toBe(32);
+    expect(await dims(e.avif)).toEqual({ w: 2048, h: 32, format: 'heif' });
+    expect(await dims(e.webp)).toEqual({ w: 2048, h: 32, format: 'webp' });
+    // Never enlarged: a small input keeps its size.
+    const small = await encodeImage(strip(100, 50));
+    expect({ w: small.w, h: small.h }).toEqual({ w: 100, h: 50 });
+  });
+
+  test('encode: avif and webp carry the reported dims', async () => {
+    const p = renderPlaceholder('cover/manor' as AssetId, { placeholder: { hue: 35 } });
+    const e = await encodeImage(utf8.encode(p.svg));
+    expect({ w: e.w, h: e.h }).toEqual({ w: p.w, h: p.h });
+    const avif = await sharp(e.avif).metadata();
+    // libheif reports AVIF as format 'heif' with AV1 compression (verified on sharp 0.35.5).
+    expect({ format: avif.format, compression: avif.compression, w: avif.width, h: avif.height }).toEqual({
+      format: 'heif',
+      compression: 'av1',
+      w: 360,
+      h: 640,
+    });
+    expect(await dims(e.webp)).toEqual({ w: 360, h: 640, format: 'webp' });
   });
 });
