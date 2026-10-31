@@ -1,11 +1,17 @@
 // The story meta (STAGING-DSL §9 "Story meta", §11 `catalog/meta`; META-PLAN M2, M4, M5, "Source file"): the five
 // rules of the lint over hand-written story plans, choice maps and puzzle sets, and the choice points of classified
-// ink. Each refused case is paired with its control: the same input without the defect passes.
+// ink (through the gate's own classifier and graph, against the committed catalog). Each refused case is paired with
+// its control: the same input without the defect passes.
+import { readFileSync } from 'node:fs';
+
 import { expect, test } from 'vitest';
 
+import { assetIndex, decodeAssetCatalog } from '../../src/story/catalog.ts';
 import type { EndingName, StoryId } from '../../src/story/catalog.ts';
-import type { AssetId, ChapterId, KnotName, LineId, PuzzleLocalId } from '../../src/story/staging.ts';
-import { lintMeta } from './meta.ts';
+import type { AssetId, AssetIndex, ChapterId, KnotName, LineId, PuzzleLocalId } from '../../src/story/staging.ts';
+import { buildGraph } from './graph.ts';
+import { GLOBALS_PATH } from './lint.ts';
+import { choicePoints, lintMeta } from './meta.ts';
 import type { ChoiceMap } from './meta.ts';
 import type { StoryPlan } from './stories.ts';
 
@@ -254,4 +260,127 @@ test('meta: conditions name existing endings, choices, chapters and puzzles', ()
   expect(tide({ endings: 1 })).toEqual([]);
   expect(tide({ allEndings: true })).toEqual([]);
   expect(tide({ ending: 'drowned' })).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// choicePoints: one weave level of one knot or stitch (M2)
+
+function committedAssets(): AssetIndex {
+  const text = readFileSync(new URL('../../../assets/catalog.json', import.meta.url), 'utf8');
+  const catalog = decodeAssetCatalog(JSON.parse(text.startsWith(String.fromCharCode(0xfeff)) ? text.slice(1) : text));
+  if (!catalog.ok) {
+    throw new Error('invariant: the committed catalog decodes');
+  }
+  return assetIndex(catalog.value);
+}
+
+const ASSETS = committedAssets();
+
+/** ch1's choice map as the gate builds it: the graph's lines over `ch1/main.ink` (from `body`) and the globals. */
+function pointsOf(body: readonly string[], extra: Readonly<Record<string, string>> = {}): Record<string, string> {
+  const files = ['ch1/main.ink', GLOBALS_PATH, ...Object.keys(extra)];
+  const main = ['INCLUDE ../common/globals.ink', ...Object.keys(extra).map((f) => `INCLUDE ${f.slice('ch1/'.length)}`), '-> start', ...body].join('\n');
+  const sources = new Map([['ch1/main.ink', `${main}\n`], [GLOBALS_PATH, 'VAR g_trust = 0\n'], ...Object.entries(extra)]);
+  const chapter = { id: 'ch1' as ChapterId, paid: false, entry: 'ch1/main.ink' }; // a fixture id
+  const { graph } = buildGraph({ chapter, files, sources, assets: ASSETS });
+  return Object.fromEntries(choicePoints({ files, sources, lines: graph.lines }));
+}
+
+test('meta: choice points split by gathers and knots', () => {
+  const body = [
+    '=== start ===',
+    'Start. #id:ch1.start.t001',
+    '* [Block one, first #id:ch1.start.a001]',
+    '* [Block one, second #id:ch1.start.a002]',
+    '- Gathered. #id:ch1.start.t002',
+    '* [Block two, first #id:ch1.start.a003]',
+    '* [Block two, second #id:ch1.start.a004]',
+    '  -> start_more',
+    '= start_more',
+    '* [After the stitch, first #id:ch1.start.a005]',
+    '  -> b',
+    '* [After the stitch, second #id:ch1.start.a006]',
+    '  -> c',
+    '=== b ===',
+    '* [B one #id:ch1.b.b001]',
+    '* [B two #id:ch1.b.b002]',
+    '- -> END',
+    '=== c ===',
+    '* [C only #id:ch1.c.c001]',
+    '  -> END',
+  ];
+  expect(pointsOf(body)).toEqual({
+    'ch1.start.a001': 'ch1.start.a001',
+    'ch1.start.a002': 'ch1.start.a001',
+    'ch1.start.a003': 'ch1.start.a003',
+    'ch1.start.a004': 'ch1.start.a003',
+    'ch1.start.a005': 'ch1.start.a005',
+    'ch1.start.a006': 'ch1.start.a005',
+    'ch1.b.b001': 'ch1.b.b001',
+    'ch1.b.b002': 'ch1.b.b001',
+    'ch1.c.c001': 'ch1.c.c001',
+  });
+  // An included file starts clean, and its options keep their own points (source order: main, then the include).
+  const extra = { 'ch1/more.ink': '=== more ===\n* [More one #id:ch1.more.m001]\n* [More two #id:ch1.more.m002]\n- -> END\n' };
+  expect(Object.entries(pointsOf(['=== start ===', '* [Go #id:ch1.start.g001]', '  -> more'], extra))).toEqual([
+    ['ch1.start.g001', 'ch1.start.g001'],
+    ['ch1.more.m001', 'ch1.more.m001'],
+    ['ch1.more.m002', 'ch1.more.m001'],
+  ]);
+});
+
+test('meta: deeper weave is transparent', () => {
+  const body = [
+    '=== start ===',
+    '* [A #id:ch1.start.a000]',
+    '  ** [A1 #id:ch1.start.a100]',
+    '  ** [A2 #id:ch1.start.a200]',
+    '  - - Deeper gather. #id:ch1.start.g200',
+    '  ** [A3 #id:ch1.start.a300]',
+    '     {',
+    '       - g_trust > 0:',
+    '         Trusted. #id:ch1.start.t300',
+    '       - else:',
+    '         Not yet. #id:ch1.start.t301',
+    '     }',
+    '  ** [A4 #id:ch1.start.a400]',
+    '* [B #id:ch1.start.b000]',
+    '- -> END',
+  ];
+  expect(pointsOf(body)).toEqual({
+    'ch1.start.a000': 'ch1.start.a000',
+    'ch1.start.b000': 'ch1.start.a000',
+    'ch1.start.a100': 'ch1.start.a100',
+    'ch1.start.a200': 'ch1.start.a100',
+    'ch1.start.a300': 'ch1.start.a300',
+    'ch1.start.a400': 'ch1.start.a300',
+  });
+});
+
+test('meta: fallback choices are not options', () => {
+  const body = [
+    '=== start ===',
+    '* [One #id:ch1.start.o001]',
+    '  -> END',
+    '* [Two #id:ch1.start.o002]',
+    '  -> END',
+    '* -> fallback_knot',
+    '=== fallback_knot ===',
+    'Nothing left. #id:ch1.fallback_knot.f001',
+    '* [Has an ID #id:ch1.fallback_knot.x002]',
+    '  -> END',
+  ];
+  expect(pointsOf(body)).toEqual({ 'ch1.start.o001': 'ch1.start.o001', 'ch1.start.o002': 'ch1.start.o001', 'ch1.fallback_knot.x002': 'ch1.fallback_knot.x002' });
+  // A choice with text but no ID (before --fix-ids) or a malformed one has no graph line: its id/* finding fails the
+  // run, and it is no option here and opens no point, so the walk neither throws nor groups the next option under it.
+  const unidentified = [
+    '=== start ===',
+    '* [No ID yet]',
+    '  -> END',
+    '* [Malformed #id:ch1.start.BAD]',
+    '  -> END',
+    '* [Has an ID #id:ch1.start.x001]',
+    '  -> END',
+  ];
+  expect(pointsOf(unidentified)).toEqual({ 'ch1.start.x001': 'ch1.start.x001' });
 });

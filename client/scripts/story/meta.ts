@@ -1,12 +1,15 @@
-// The story meta of STAGING-DSL §9 "Story meta" (META-PLAN M4, M5, "Source file"): story/meta.json decoded against
-// the story list, the compiled chapters' choice points and the worlds' puzzles, every finding under `catalog/meta`
-// (§11), none stopping the run. Pure, no node:*, no inkjs: story.ts reads the files. The meta texts are server-only
+// The story meta of STAGING-DSL §9 "Story meta" (META-PLAN M2, M4, M5, "Source file"): the choice points of a
+// compiled chapter's classified sources, and story/meta.json decoded against the story list, those choice points and
+// the worlds' puzzles, every finding under `catalog/meta` (§11), none stopping the run. Pure, no node:*, no inkjs:
+// story.ts reads the files; the graph comes in as a type only. The meta texts are server-only
 // (M7): emit.ts routes them to server/content/meta.json alone, so emit.ts, which scan-dist.ts reaches, imports this
 // module as types only.
 import { CHAPTER_ID_RE } from '../../src/story/catalog.ts';
 import type { EndingName, StoryId } from '../../src/story/catalog.ts';
 import type { ChapterId, LineId, PuzzleLocalId } from '../../src/story/staging.ts';
 import { LINE_ID_RE } from '../../src/story/tags.ts';
+import { classify } from './classify.ts';
+import type { StoryLine } from './graph.ts';
 import { LINT_CODES } from './lint.ts';
 import type { Finding } from './lint.ts';
 import type { StoryPlan } from './stories.ts';
@@ -316,6 +319,47 @@ function storyMeta(raw: unknown, ctx: Context): StoryMeta | null {
   }
   // Every key was judged above: the brands are earned by the declared names and ACHIEVEMENT_ID_RE.
   return ok ? { endings: endings as StoryMeta['endings'], achievements: achievements as StoryMeta['achievements'] } : null;
+}
+
+/**
+ * The choice points of one chapter (M2): its files (`CompiledChapter.files`, story-relative) walked in order through
+ * the classifier, each file from a clean state. The options at depth d of one knot or stitch form one point until a
+ * knot or stitch header (which closes every point) or a gather of depth <= d; a choice of depth d first closes every
+ * deeper point, then joins the open point of depth d or opens one. Text, logic, divert and block lines are
+ * transparent. An option's ID is the graph's (`lines`, joined by file and line: the gate's own ID rule), so a choice
+ * without one is no option and changes nothing: a fallback (no text), or a choice whose ID is missing or malformed,
+ * whose `id/*` finding already fails the run. A point's id is its first option's ID; the map is in source order.
+ */
+export function choicePoints(input: { files: readonly string[]; sources: ReadonlyMap<string, string>; lines: readonly StoryLine[] }): ChoiceMap {
+  const ids = new Map(input.lines.map((l) => [`${l.file}:${l.line}`, l.id] as const));
+  const out = new Map<LineId, LineId>();
+  for (const file of input.files) {
+    /** Depth → the id of the point open at that depth. */
+    const open = new Map<number, LineId>();
+    const closeFrom = (depth: number): void => {
+      for (const d of [...open.keys()].filter((k) => k >= depth)) {
+        open.delete(d);
+      }
+    };
+    for (const l of classify(input.sources.get(file) ?? '')) {
+      const cls = l.cls;
+      if (cls.kind === 'knot' || cls.kind === 'stitch') {
+        open.clear();
+      } else if (cls.kind === 'gather') {
+        closeFrom(cls.depth);
+      } else if (cls.kind === 'choice') {
+        const id = ids.get(`${file}:${l.line}`);
+        if (id === undefined) {
+          continue;
+        }
+        closeFrom(cls.depth + 1);
+        const point = open.get(cls.depth) ?? id;
+        open.set(cls.depth, point);
+        out.set(id, point);
+      }
+    }
+  }
+  return out;
 }
 
 /**
