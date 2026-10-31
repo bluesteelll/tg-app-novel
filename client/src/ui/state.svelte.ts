@@ -4,6 +4,7 @@
 import type { Lang } from '../i18n/index.ts';
 import type { LineId } from '../story/staging.ts';
 import type { ScreensView } from './screens.ts';
+import type { TextSpeed } from './typewriter.ts';
 
 /** The current line: the speaker's name and the text, both already in the UI language. */
 export type LineView = { lineId: LineId; speaker: string | null; text: string };
@@ -46,6 +47,7 @@ export interface ViewModel {
   line: LineView | null;
   choices: ChoiceSet | null;
   mode: PlayMode;
+  speed: TextSpeed;
   reducedMotion: boolean;
   readonly toasts: readonly ToastEntry[];
   /** Adds `e`; an entry with the same key is replaced in place (its timer restarted). Above TOAST_MAX the oldest
@@ -68,6 +70,7 @@ class OverlayState implements ViewModel {
   line: LineView | null = $state.raw(null);
   choices: ChoiceSet | null = $state.raw(null);
   mode: PlayMode = $state.raw('normal');
+  speed: TextSpeed = $state.raw('normal');
   reducedMotion: boolean = $state.raw(false);
   #toasts: readonly ToastEntry[] = $state.raw([]);
   readonly #timers: Timers;
