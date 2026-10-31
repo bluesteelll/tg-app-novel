@@ -216,6 +216,28 @@ async fn expect_rows(case: &str, st: &AppState, user: i64, want: &[Row]) -> Opti
     (got != want).then(|| format!("{case}: rows of {user}: expected {want:?}, got {got:?}"))
 }
 
+/// Inserts `user`'s row `row_in(story, slot, 1, write_id, T0)` outside the app, with [`ENV1`]: a row of a story the
+/// index may not hold (a story removed by a later build).
+async fn insert_raw(st: &AppState, user: i64, story: &str, slot: &str, write_id: &str) {
+    let mut db = common::raw_db(st).await;
+    sqlx::query(
+        "INSERT INTO saves (user_id, story_id, slot, rev, chapter_id, story_version, line_id, write_id, body, \
+         saved_at) VALUES ($1, $2, $3, 1, $4, $5, $6, $7, $8, $9)",
+    )
+    .bind(user)
+    .bind(story)
+    .bind(slot)
+    .bind(ENV1.0)
+    .bind(ENV1.1)
+    .bind(ENV1.2)
+    .bind(write_id)
+    .bind(save_body(write_id))
+    .bind(T0)
+    .execute(&mut db)
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn saves_create_then_conflict() {
     let (st, _db) = saves_state(&[ANN]).await;
@@ -1058,5 +1080,114 @@ async fn saves_story_slots_independent() {
         row_in("tide", "auto", 1, "w2", T0),
     ];
     failures.extend(expect_rows("at the end", &st, ANN, &want).await);
+    report(&failures);
+}
+
+/// A story the index does not hold is 404 `not_found` on GET and PUT and writes nothing, even when a row of it is
+/// stored (a story a later build dropped: the index is checked before the row, and the row stays); the shapes are
+/// checked before the index (400).
+#[tokio::test]
+async fn saves_unknown_story_404() {
+    let (st, _db) = saves_state(&[ANN]).await;
+    let mut failures = Vec::new();
+
+    let reply = put_in(&st, ANN, "nope", "auto", request(None, "w1")).await;
+    failures.extend(expect_text("PUT nope/auto", &reply, 404, NOT_FOUND));
+    failures.extend(expect_no_store("PUT nope/auto", &reply));
+    failures.extend(expect_rows("after PUT nope/auto", &st, ANN, &[]).await);
+    let reply = get(&st, Some(ANN), "/saves/nope/auto").await;
+    failures.extend(expect_text("GET nope/auto", &reply, 404, NOT_FOUND));
+    failures.extend(expect_no_store("GET nope/auto", &reply));
+
+    insert_raw(&st, ANN, "gone", "auto", "wG").await;
+    let reply = get(&st, Some(ANN), "/saves/gone/auto").await;
+    failures.extend(expect_text(
+        "GET gone/auto with a stored row",
+        &reply,
+        404,
+        NOT_FOUND,
+    ));
+    let gone = [row_in("gone", "auto", 1, "wG", T0)];
+    failures.extend(expect_rows("after GET gone/auto", &st, ANN, &gone).await);
+
+    let reply = get(&st, Some(ANN), "/saves/nope/x").await;
+    failures.extend(expect_text(
+        "GET nope/x (slot shape before the index)",
+        &reply,
+        400,
+        BAD_REQUEST,
+    ));
+    report(&failures);
+}
+
+/// A save names a chapter of its own story: another story's chapter, an unknown chapter or a malformed id is 400
+/// and writes nothing.
+#[tokio::test]
+async fn saves_chapter_outside_story_400() {
+    let (st, _db) = saves_state(&[ANN]).await;
+    let mut failures = Vec::new();
+    // A slot per case, so each refusal stands on its own (an admitted case writes a row no later case meets).
+    for (case, slot, write_id, env) in [
+        ("tide's ch3", "auto", "w1", ENV_TIDE),
+        ("ch9 of no story", "s1", "w2", ("ch9", "v1", None)),
+        ("x, no chapter shape", "s2", "w3", ("x", "v1", None)),
+    ] {
+        let req = request_with(None, write_id, env, &save_body(write_id)).to_string();
+        let reply = put_in(&st, ANN, "manor", slot, req).await;
+        failures.extend(expect_text(
+            &format!("PUT manor/{slot} with {case}"),
+            &reply,
+            400,
+            BAD_REQUEST,
+        ));
+    }
+    failures.extend(expect_rows("after the refusals", &st, ANN, &[]).await);
+
+    let req = request_with(None, "w4", ENV_TIDE, &save_body("w4")).to_string();
+    let reply = put_in(&st, ANN, "tide", "auto", req).await;
+    failures.extend(expect_json(
+        "PUT tide/auto with ch3 (control)",
+        &reply,
+        200,
+        &written(1, T0),
+    ));
+    let tide = [row_in("tide", "auto", 1, "w4", T0)];
+    failures.extend(expect_rows("after the control", &st, ANN, &tide).await);
+    report(&failures);
+}
+
+/// A story id outside `^[a-z][a-z0-9_]{0,23}$` is 400 on GET and PUT (checked at the edge, not left to the CHECK's
+/// 500) and writes nothing; the token is checked before the story.
+#[tokio::test]
+async fn saves_bad_story_id_400() {
+    let (st, _db) = saves_state(&[ANN]).await;
+    let mut failures = Vec::new();
+    let too_long = format!("a{}", "b".repeat(24));
+    // `%C3%A9` is `é` once the path segment is decoded.
+    for story in ["Manor", "a-b", too_long.as_str(), "%C3%A9"] {
+        let reply = get(&st, Some(ANN), &format!("/saves/{story}/auto")).await;
+        failures.extend(expect_text(
+            &format!("GET {story}/auto"),
+            &reply,
+            400,
+            BAD_REQUEST,
+        ));
+        let reply = put_in(&st, ANN, story, "auto", request(None, "w1")).await;
+        failures.extend(expect_text(
+            &format!("PUT {story}/auto"),
+            &reply,
+            400,
+            BAD_REQUEST,
+        ));
+    }
+    failures.extend(expect_rows("after the refusals", &st, ANN, &[]).await);
+
+    let reply = get(&st, None, "/saves/Manor/auto").await;
+    failures.extend(expect_text(
+        "GET Manor/auto without a token",
+        &reply,
+        401,
+        r#"{"error":"token_missing"}"#,
+    ));
     report(&failures);
 }
