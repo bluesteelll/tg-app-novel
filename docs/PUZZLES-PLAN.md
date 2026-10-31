@@ -1061,7 +1061,7 @@ Staging tag lines above it merge into the yield step's batch (§3.5) and run bef
 
 | Code | Sev | Rule | Lane |
 |---|---|---|---|
-| `yield/shape` | E | a `puzzle`/`explore` tag not alone on a tag-only line, or not followed by `-> DONE`; `-> DONE` not directly after a yield line (narrows `ink/forbidden`) | LW1 |
+| `yield/shape` | E | a `puzzle`/`explore` tag not alone on a tag-only line, or not followed by `-> DONE`. A `-> DONE` not directly after a yield line stays `ink/forbidden` (erratum at the LW1 merge, RULINGS 16 Q4: L3a's `lint: every finding is reported` pins it) | LW1 |
 | `puzzle/unknown`, `explore/unknown-section` | E | the id is not in the chapter's world | LW3 |
 | `puzzle/then-unknown` | E | `then=` names no knot of the chapter | LW3 |
 | `puzzle/in-section` | E | a puzzle both yielded and attached to a lock | LW3 |

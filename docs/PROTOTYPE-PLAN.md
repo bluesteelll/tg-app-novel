@@ -2188,7 +2188,7 @@ are in):
   L3a → LW1, then frozen.
 - `client/src/story/catalog.ts`: L3a → L3b → L5 → L13.
 - `client/scripts/story.ts`: L3b → L3c → LW3.
-- `client/scripts/story/{graph.ts,emit.ts,build.test.ts}`: L3b → LW3.
+- `client/scripts/story/{emit.ts,build.test.ts}`: L3b → LW3; `graph.ts`: L3b → LW1 → LW3 (RULINGS 16 Q1).
 - `client/scripts/story/{fix.ts,locales.ts,playthrough.ts,play.test.ts,locales.test.ts}`: L3c → LW3.
 - `client/scripts/scan-dist.ts`: L1 → L3b → L5 → LW3. `client/scripts/scan-dist.test.ts`: L1 → L5 → LW3.
 - `client/scripts/{budget.ts,budget.test.ts}`: L1 → L5 → LP2.
@@ -2468,7 +2468,11 @@ Notation:
   DSL additions".
 - **Gate to start:** L3a merged. It may run beside L3b (disjoint locks).
 - **Lock:** `client/src/story/{staging.ts,tags.ts,tags.test.ts,dsl-doc.test.ts}`,
-  `client/scripts/story/{lint.ts,lint.test.ts}`, `docs/STAGING-DSL.md` (7).
+  `client/scripts/story/{lint.ts,lint.test.ts,graph.ts}`, `docs/STAGING-DSL.md` (8; `graph.ts` for the two
+  `assetOf` case labels its exhaustive switch needs, RULINGS 16 Q1).
+- **As merged (`86d0a90`, RULINGS 16):** the commits ran in the order lint → parser + doc → the LW3 code registry
+  (the order below would leave red commits); every red-first below was still observed. The LW3 codes are registered in
+  `LINT_CODES` without an emitter.
 - **Commits:**
   1. `staging.ts`: `PuzzleLocalId`, `SectionId`, `PropId`, `Rect`, `PropPlacement`, the two command kinds,
      `YieldCommand`, `PropsCommand`, `StagingSnapshot.props` and the frozen `EMPTY_SNAPSHOT.props = []`. `tags.ts`
