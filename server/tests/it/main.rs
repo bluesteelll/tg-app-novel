@@ -13,6 +13,9 @@ mod common;
 mod saves;
 mod schema;
 
+use std::io::{BufRead, BufReader, Read};
+use std::process::{Command, Stdio};
+use std::sync::mpsc::{self, Sender};
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
@@ -20,6 +23,9 @@ use axum::http::header::CACHE_CONTROL;
 use axum::http::{Request, StatusCode};
 use pgdev::{DevCluster, TestDb};
 use server::AppState;
+use server::config::{
+    PLACEHOLDER_BOT_TOKEN, PLACEHOLDER_TOKEN_KEY_HEX, PLACEHOLDER_WEBHOOK_SECRET,
+};
 use server::ids::UserId;
 use sqlx::{Connection, PgConnection};
 
@@ -200,6 +206,119 @@ async fn state_reopens_migrated_database() {
                 ));
             }
         }
+    }
+    report(&failures);
+}
+
+/// Sends each line of `out` to `lines` from a thread of its own, until EOF (the process exited or was killed).
+fn forward_lines(out: impl Read + Send + 'static, lines: Sender<String>) {
+    std::thread::spawn(move || {
+        for line in BufReader::new(out).lines() {
+            let Ok(line) = line else { break };
+            if lines.send(line).is_err() {
+                break;
+            }
+        }
+    });
+}
+
+/// The real `server serve` binary, with a password in `DATABASE_URL`'s userinfo: the startup log names the
+/// database as `host:port/dbname` and never carries the password (`main.rs` logs `db::database_target`, never the
+/// URL). The `listening` line proves the server came up, so an early exit cannot pass on the password's absence.
+#[test]
+fn serve_log_names_database_target_not_password() {
+    const PASSWORD: &str = "PWSENT-SERVE-91";
+    let db = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(TestDb::create());
+    let url = db
+        .url()
+        .replacen("postgres@", &format!("postgres:{PASSWORD}@"), 1);
+    // The trust cluster ignores the password; the URL must still carry it, or the test proves nothing.
+    assert!(
+        url.contains(&format!(":{PASSWORD}@127.0.0.1:")),
+        "no password in {url}"
+    );
+    let target = format!(
+        "127.0.0.1:{}/{}",
+        DevCluster::from_env().unwrap().port(),
+        db.name()
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_server"))
+        .arg("serve")
+        // Every variable `Config` reads, so none comes from the caller's environment; an empty value is unset.
+        .envs([
+            ("BOT_TOKEN", PLACEHOLDER_BOT_TOKEN),
+            ("WEBHOOK_SECRET", PLACEHOLDER_WEBHOOK_SECRET),
+            ("TOKEN_KEY", PLACEHOLDER_TOKEN_KEY_HEX),
+            ("TOKEN_TTL_SECS", "1800"),
+            ("INITDATA_MAX_AGE_SECS", "86400"),
+            ("PUBLIC_APP_URL", "http://127.0.0.1/"),
+            ("ADMIN_TELEGRAM_IDS", ""),
+            ("STATIC_DIR", ""),
+            (
+                "CONTENT_DIR",
+                concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/content"),
+            ),
+            ("DATABASE_URL", url.as_str()),
+            ("TELEGRAM_ENV", "test"),
+            ("LISTEN_ADDR", "127.0.0.1:0"),
+            // The production default filter, as plain text: ANSI escapes would split `field=value`.
+            ("RUST_LOG", "info"),
+            ("NO_COLOR", "1"),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (lines, received) = mpsc::channel();
+    forward_lines(child.stdout.take().unwrap(), lines.clone());
+    forward_lines(child.stderr.take().unwrap(), lines);
+
+    // A hang bound, not a timing verdict: both pipes closing (the server exited) ends the wait at once.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut log = Vec::new();
+    let mut listening = false;
+    while !listening {
+        match received.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(line) => {
+                listening = line.contains("listening");
+                log.push(line);
+            }
+            Err(_) => break,
+        }
+    }
+    let mut failures = Vec::new();
+    if let Err(e) = child.kill() {
+        failures.push(format!("kill server: expected Ok, got {e}"));
+    }
+    let status = child.wait().unwrap();
+    // The rest of the output: the readers reach EOF once the killed server's pipes close.
+    while let Ok(line) = received.recv_timeout(Duration::from_secs(5)) {
+        log.push(line);
+    }
+
+    failures.extend(
+        log.iter()
+            .filter(|line| line.contains(PASSWORD))
+            .map(|line| format!("the log carries the DATABASE_URL password: {line}")),
+    );
+    let text = log.join("\n");
+    if !listening {
+        failures.push(format!(
+            "expected a `listening` line within 60 s, got {status} and the log:\n{text}"
+        ));
+    }
+    if !log
+        .iter()
+        .any(|line| line.contains("opening database") && line.contains(&target))
+    {
+        failures.push(format!(
+            "expected an `opening database` line naming {target}, got the log:\n{text}"
+        ));
     }
     report(&failures);
 }
