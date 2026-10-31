@@ -40,14 +40,15 @@ const track = (p: Promise<void>): { done: boolean } => {
 
 // ---------------------------------------------------------------------------------------------------------------
 // A recording stage: live sprites per layer and per character group, an event log, and a throw on any write to a
-// destroyed object (Pixi would crash there).
+// destroyed object or on a sprite over a released texture (Pixi would crash, or draw a dead texture, there).
 
 type Tex = { readonly url: string };
 type Node = { kind: 'sprite' | 'group'; layer: Layer | 'group'; key: string; group: number | null; alive: boolean; p: Placement };
 
 const S390: Size = { w: 390, h: 844 };
 
-function recordingStage(size: Size) {
+/** `freed`: the textures whose Decoded.release() ran (by identity: every load decodes a new texture object). */
+function recordingStage(size: Size, freed: ReadonlySet<Tex> = new Set()) {
   let n = 0;
   const log: string[] = [];
   const nodes = new Map<number, Node>();
@@ -75,6 +76,9 @@ function recordingStage(size: Size) {
       log.push(`drop:${x.key}`);
     },
     sprite(layer, tex, g) {
+      if (freed.has(tex.texture)) {
+        throw new Error(`stage: sprite on the released texture ${tex.texture.url}`);
+      }
       if (g !== undefined) {
         node(g.group);
       }
@@ -132,7 +136,8 @@ const urlOf = (id: string): string => ENTRIES[id]?.avif.url ?? `missing:${id}`;
 const quietLoop = (): RenderLoop => createRenderLoop({ ticker: { add: () => {}, remove: () => {} }, render: () => {} });
 
 function harness(size: Size = S390, loop: RenderLoop = quietLoop()) {
-  const stage = recordingStage(size);
+  const freed = new Set<Tex>();
+  const stage = recordingStage(size, freed);
   const loads = new Map<string, number>();
   const released = new Map<string, number>();
   const byUrl = new Map(Object.values(ENTRIES).map((e) => [e.avif.url, e]));
@@ -142,10 +147,12 @@ function harness(size: Size = S390, loop: RenderLoop = quietLoop()) {
     if (e === undefined) {
       return Promise.resolve({ ok: false, error: { kind: 'decode', detail: 'no such fixture' } });
     }
-    return Promise.resolve({
-      ok: true,
-      value: { texture: { url: ref.url }, w: e.w, h: e.h, release: () => released.set(ref.url, (released.get(ref.url) ?? 0) + 1) },
-    });
+    const texture: Tex = { url: ref.url };
+    const release = (): void => {
+      released.set(ref.url, (released.get(ref.url) ?? 0) + 1);
+      freed.add(texture);
+    };
+    return Promise.resolve({ ok: true, value: { texture, w: e.w, h: e.h, release } });
   };
   const registry = createAssetRegistry<Tex>({ load, variant: 'avif' });
   const resolve = (id: AssetId): Result<ImageEntry, AssetError> => {
@@ -159,6 +166,7 @@ function harness(size: Size = S390, loop: RenderLoop = quietLoop()) {
   const ex = createExecutor<Tex>({ adapter: stage.adapter, registry, resolve, loop, resolution: 2, onSkip });
   return {
     ...stage,
+    freed,
     registry,
     ex,
     skipped,
@@ -469,6 +477,25 @@ test('executor: props batch keeps the ids it names', async () => {
   h.ex.destroy();
 });
 
+test('executor: queued batches keep the textures they target', async () => {
+  const h = harness();
+  const errors: unknown[] = [];
+  const spy = vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => {
+    errors.push(a);
+  });
+  // Three batches before any texture arrived: each apply complete()s the earlier ones, which only marks an unbuilt
+  // batch instant, so the first finishes (and sweeps) while the other two still wait in the queue.
+  const batches = [bg('cafe', 'cut'), bg('street', 'cut'), bg('room', 'cut')].map((c) => h.ex.apply([c], NOW));
+  await Promise.all(batches);
+  spy.mockRestore();
+  expect(errors).toEqual([]);
+  expect(h.log.filter((x) => x.startsWith('create:bg:'))).toEqual(['create:bg:cafe', 'create:bg:street', 'create:bg:room']);
+  expect(h.live('bg').map((x) => x.key)).toEqual(['room']);
+  expect(['bg/cafe', 'bg/street', 'bg/room'].map(h.releasedOf)).toEqual([1, 1, 0]);
+  expect(h.registry.stats().live).toBe(1);
+  h.ex.destroy();
+});
+
 test('render_loop_idles', async () => {
   const listeners = new Set<() => void>();
   const ticker: Ticker = {
@@ -539,7 +566,7 @@ test('executor: rebind re-creates the stage on a new adapter', async () => {
   const before = [...h.live('bg'), ...h.inGroup('ally'), ...h.live('props')].map(box);
   const loaded = ['bg/room', 'char/ally/neutral', 'prop/lamp'].map(h.loadsOf);
   // The old stage died with its Application (context loss): nothing is destroyed on it, everything is made anew.
-  const fresh = recordingStage(S390);
+  const fresh = recordingStage(S390, h.freed);
   h.ex.rebind(fresh.adapter);
   const after = [...fresh.live('bg'), ...fresh.inGroup('ally'), ...fresh.live('props')];
   expect(after.length).toBe(3);
