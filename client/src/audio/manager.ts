@@ -47,9 +47,10 @@ export interface AudioManager {
    */
   resume(): Promise<'running' | 'needs-gesture'>;
   /**
-   * `fn(true)` when sound needs a user gesture (a play() refused for want of one, or a context still not running 500 ms
-   * after a command wanted sound), `fn(false)` when that ends (the context runs, by itself or by resume(), and no
-   * sounding deck stays refused). Returns the unsubscribe.
+   * `fn(true)` when sound needs a user gesture (a play() refused for want of one, a context still not running 500 ms
+   * after a command wanted sound, or a resume() that ends 'needs-gesture', one a suspend() overtook included),
+   * `fn(false)` when that ends (the context runs, by itself or by resume(), and no sounding deck stays refused).
+   * Returns the unsubscribe.
    */
   onNeedsGesture(fn: (needed: boolean) => void): () => void;
   /** Decoded SFX bytes held and the context state. */
@@ -231,7 +232,9 @@ export function createAudioManager(ctx: AudioContext, deps: { fetchAsset: FetchA
       if (running) {
         clearSoundGrace();
       }
-      stuck = !running && !suspended;
+      // A suspend() during the wait does not exempt it: the caller shows the chip from a 'needs-gesture' result, and
+      // only the need this leaves reported hides it again (fn(false)) once the context runs.
+      stuck = !running;
       notify();
       return running && !bgm.blocked() ? 'running' : 'needs-gesture';
     },

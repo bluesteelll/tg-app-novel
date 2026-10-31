@@ -1275,3 +1275,28 @@ test('sfx: entries that total exactly the cap all stay', async () => {
   await flush();
   expect(audio.stats().decodedBytes).toBe(8_388_608);
 });
+
+test('audio: a resume cut short by suspend() still ends its need when the context runs', async () => {
+  vi.useFakeTimers();
+  const { ctx, audio } = setup();
+  // The panel's chip as L15 drives it: shown on fn(true) or a 'needs-gesture' resume, hidden on fn(false).
+  let chip = false;
+  audio.onNeedsGesture((needed) => {
+    chip = needed;
+  });
+  ctx.state = 'suspended';
+  ctx.resumeImpl = () => new Promise<void>(() => undefined);
+  const hung = outcome(audio); // activated: the context does not run
+  audio.suspend(); // deactivated inside the grace
+  await vi.advanceTimersByTimeAsync(500);
+  expect(hung.value).toBe('needs-gesture');
+  chip = true;
+  ctx.resumeImpl = () => {
+    ctx.setState('running');
+    return Promise.resolve();
+  };
+  const back = outcome(audio); // activated again: the context runs
+  await vi.advanceTimersByTimeAsync(0);
+  expect(back.value).toBe('running');
+  expect(chip).toBe(false);
+});
