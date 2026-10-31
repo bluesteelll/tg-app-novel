@@ -92,7 +92,8 @@ takes a `user_id` from the body or path for another user.
 `import.meta.env` values that Vite inlines (`VITE_*`), in `dist`, in logs or in panic messages.
 
 **Server robustness.** No `unsafe` (`#![forbid(unsafe_code)]` present); no `unwrap()` on request paths; no blocking
-(`std::fs`, `std::thread::sleep`, sync SQLite, CPU-heavy work) inside async handlers without `spawn_blocking`;
+(`std::fs`, `std::thread::sleep`, blocking `std::process`, CPU-heavy work) inside async handlers without
+`spawn_blocking`;
 request body size limits; timeouts on outbound Bot API calls.
 
 ```markdown
@@ -122,8 +123,8 @@ afterwards. Domain hot spots:
   asset not preloaded; a save from an older story version loaded without migration; a line without a line ID.
 - Viewport: `100vh`, missing safe-area insets, layout not reacting to `viewportChanged`; BackButton handler stack
   not restored.
-- Server: transaction boundaries around grant + save; time zones / `auth_date` units (seconds); SQLite busy errors
-  under WAL not handled.
+- Server: transaction boundaries around grant + save; time zones / `auth_date` units (seconds); PostgreSQL
+  `55P03` (lock timeout) / `40P01` (deadlock) not handled.
 
 Cross-check each bug against tests: uncovered = double flag. Template as V-xxx, ids `B-001`, with **What happens /
 What should happen / Trigger / Root cause / Covered by a test**.
@@ -235,7 +236,7 @@ Read the diff with `git diff`/`git show`, ranged reads <= ~200 lines; never past
 | Payments | `XTR`, `provider_token`, `pre_checkout`, `successful_payment`, `telegram_payment_charge_id`, `refund` |
 | SQL injection | `format!\(` near `query`/`execute`, `push_str` building SQL |
 | Panics on request paths | `\.unwrap\(\)`, `\.expect\(`, `panic!`, `\[[a-z_]+\]` indexing on input |
-| Blocking in async | `std::fs::`, `std::thread::sleep`, `block_on`, sync rusqlite calls in `async fn` |
+| Blocking in async | `std::fs::`, `std::thread::sleep`, `block_on`, blocking `std::process` outside `spawn_blocking` in `async fn` |
 | Pixi lifetime | `new (Sprite\|Texture\|Container\|Graphics\|RenderTexture)`, `Assets\.load` vs `destroy\(`, `Assets\.unload` |
 | Event leaks | `ticker\.add`, `onEvent\(`, `addEventListener` vs their removal |
 | Line IDs | player lines in `story/**/*.ink` without the line-ID tag (the story gate's rule) |

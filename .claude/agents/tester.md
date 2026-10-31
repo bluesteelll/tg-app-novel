@@ -56,8 +56,8 @@ still no commits.
 
 ## 3. Server tests (`cargo test --workspace --all-targets --no-fail-fast --locked`)
 - Router tests through `tower::ServiceExt::oneshot` against the real `Router`, migrations applied, a fixed test
-  bot token. In-memory SQLite trap: each pooled connection to `sqlite::memory:` may be its own empty database — pin
-  the pool to one connection or use a temp-file DB, and verify which the harness does.
+  bot token. A database per test on the slot's PostgreSQL cluster (`pgdev::TestDb`); verify the harness really
+  isolates per test and does not share one database across tests.
 - **initData HMAC vectors**: valid; one field tampered; `hash` missing; `auth_date` past the freshness window; keys
   reordered (must still verify — the check string is sorted); URL-encoded values. The expected `hash` must be
   produced **independently** of the code under test (a fixture signed once by a reference script), or the test is
@@ -65,9 +65,10 @@ still no commits.
 - **Token**: expired / wrong-signature / missing token → 401; `initDataUnsafe`-style user IDs in a body are ignored.
 - **pre_checkout_query**: wrong currency (not `XTR`), wrong amount, unknown payload, already-owned item → `ok=false`
   with a message; valid → `ok=true`; **zero entitlements after pre_checkout** (grant only on successful_payment).
-- **Idempotent grant**: the same `successful_payment` delivered twice concurrently (`tokio::join!`, temp-file
-  SQLite in WAL so connections really race) → both webhook calls 2xx, exactly one payment row, exactly one
-  entitlement. A single-connection pool serializes and proves nothing about the race — say which you ran.
+- **Idempotent grant**: the same `successful_payment` delivered twice concurrently (two connections; the
+  second is observed waiting with `wait_for_lock_waiter`, not `tokio::join!` luck) → both webhook calls 2xx, exactly
+  one payment row, exactly one entitlement. A single-connection pool serializes and proves nothing about the race —
+  say which you ran.
 - **Webhook auth**: a request without the configured secret-token header is rejected before parsing.
 - **Entitlement-gated route**: paid chapter JSON → 403 without purchase, 200 with, 403 after refund.
 - Request paths: malformed JSON / oversized body → 4xx, never a panic (a panic is an `unwrap` on a request path).
@@ -182,7 +183,7 @@ async fn paid_chapter_is_forbidden_without_entitlement() {
 
 #[tokio::test]
 async fn duplicate_successful_payment_grants_once() {
-    let app = test_app_file_db().await; // WAL temp file: connections really race
+    let app = test_app().await; // own TestDb; the pool has >= 2 connections, so the calls really race
     let upd = successful_payment_update(USER_A, "ch02", "charge-1");
     let (a, b) = tokio::join!(post_webhook(&app, &upd), post_webhook(&app, &upd));
     assert!(a.status().is_success() && b.status().is_success(), "a non-2xx makes Telegram redeliver");

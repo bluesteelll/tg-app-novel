@@ -158,7 +158,7 @@ Claims with only one or a secondary source, behaviour that differs by client/OS 
 |---|---|
 | axum (docs.rs, releases) | https://docs.rs/axum and https://github.com/tokio-rs/axum/releases |
 | tokio (blocking in async: spawn_blocking) | https://docs.rs/tokio |
-| sqlx (SQLite/Postgres, migrations, compile-time queries) | https://docs.rs/sqlx |
+| sqlx (Postgres, migrations, runtime queries) | https://docs.rs/sqlx |
 | frankenstein (Bot API types + client; supported Bot API version in its README) | https://github.com/ayrat555/frankenstein |
 | bladeink (optional server-side ink) | https://docs.rs/crate/bladeink/latest |
 | Cloudflare R2 (pricing, presigned URLs limits, bindings) | https://developers.cloudflare.com/r2/ |
@@ -226,7 +226,7 @@ Fill the cells from sources; leave "?" rather than guess.
 
 ## Server (Rust)
 - `axum 0.8 "<topic>"` (extractor, middleware, state, graceful shutdown) site:docs.rs OR site:github.com/tokio-rs
-- `sqlx sqlite "<topic>"` (WAL, unique constraint violation, migrations)
+- `sqlx postgres "<topic>"` (unique constraint violation, row locks, migrations)
 - `frankenstein "<Bot API type>"` site:github.com/ayrat555 or docs.rs
 
 ## Load budget / assets

@@ -65,8 +65,9 @@ the domain source; `docs/STAGING-DSL.md` defines valid tags; `docs/ARCHITECTURE.
 - [ ] No `unwrap()` / unjustified `expect()` / `panic!` / slice indexing reachable from a request.
 - [ ] Nothing blocking in async (`std::fs`, `thread::sleep`, sync HTTP/DB, heavy CPU without `spawn_blocking`); no
       `std::sync::Mutex` guard across `.await`.
-- [ ] SQL parameterized; migrations carry the UNIQUE constraints; SQLite write transactions short, `SQLITE_BUSY`
-      handled per the cut.
+- [ ] SQL parameterized (`$n`); migrations carry named UNIQUE/CHECK constraints; transactions short, no outbound
+      call inside; pre-checkout takes the payer-row lock first; `ON CONFLICT ... SET` columns qualified; `55P03` /
+      `40P01` handled per the cut.
 - [ ] Errors leak no internals; 401 / 403 / 404 per the cut; `#![forbid(unsafe_code)]`; no bot framework.
 
 ## 6. Svelte 5 rune pitfalls

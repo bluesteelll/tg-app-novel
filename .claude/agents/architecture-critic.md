@@ -91,7 +91,8 @@ the brief names, and the code under `client/`, `server/`, `story/`. You do not d
 
 ## 9. Server (Rust)
 - Blocking work in async handlers; `unwrap()` on request paths; SQL by concatenation; internals in error bodies
-- SQLite without WAL / busy timeout, long transactions, a schema the PostgreSQL move cannot carry behind the seam
+- a money decision from a subquery under READ COMMITTED without the payer-row lock; a transaction across an outbound
+  call; `jsonb` for an opaque body that must round-trip; INT4 columns read as i64; long transactions
 
 ## 10. The cut and its gates (lane stage)
 - Re-location errors: a cited `file:line` that does not say what the cut claims; a "new file" that exists
