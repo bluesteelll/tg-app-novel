@@ -1,10 +1,65 @@
 {
-  "bg": { "room": {}, "street": {}, "cafe": {}, "archive": {} },
-  "chars": {
-    "ally": { "exprs": { "neutral": {}, "smile": {}, "worried": {}, "angry": {} } },
-    "stranger": { "exprs": { "neutral": {}, "smile": {}, "serious": {} } }
+  "bg": {
+    "room": { "placeholder": { "hue": 30 } },
+    "street": { "placeholder": { "hue": 215 } },
+    "cafe": { "placeholder": { "hue": 18 } },
+    "archive": { "placeholder": { "hue": 45 } },
+    "hall": { "placeholder": { "hue": 0 } },
+    "study": { "placeholder": { "hue": 95 } },
+    "cellar": { "placeholder": { "hue": 265 } },
+    "shore": { "placeholder": { "hue": 190 } },
+    "lighthouse": { "placeholder": { "hue": 345 } },
+    "lamp_room": { "placeholder": { "hue": 55 } }
   },
-  "cg": { "letter": {}, "reveal": {} },
-  "bgm": { "calm": {}, "tension": {}, "mystery": {} },
-  "sfx": { "door": {}, "phone": {}, "steps": {} }
+  "chars": {
+    "ally": {
+      "exprs": {
+        "neutral": { "placeholder": { "hue": 200 } },
+        "smile": { "placeholder": { "hue": 160 } },
+        "worried": { "placeholder": { "hue": 240 } },
+        "angry": { "placeholder": { "hue": 5 } }
+      }
+    },
+    "stranger": {
+      "exprs": {
+        "neutral": { "placeholder": { "hue": 285 } },
+        "smile": { "placeholder": { "hue": 310 } },
+        "serious": { "placeholder": { "hue": 270 } }
+      }
+    },
+    "keeper": {
+      "exprs": {
+        "neutral": { "placeholder": { "hue": 175 } },
+        "worried": { "placeholder": { "hue": 225 } },
+        "smile": { "placeholder": { "hue": 140 } }
+      }
+    }
+  },
+  "cg": {
+    "letter": { "placeholder": { "hue": 40 } },
+    "reveal": { "placeholder": { "hue": 330 } },
+    "drawer": { "placeholder": { "hue": 70 } },
+    "cabinet": { "placeholder": { "hue": 25 } }
+  },
+  "bgm": {
+    "calm": { "placeholder": { "hz": 220 } },
+    "tension": { "placeholder": { "hz": 247 } },
+    "mystery": { "placeholder": { "hz": 196 } },
+    "waves": { "placeholder": { "hz": 165 } },
+    "storm": { "placeholder": { "hz": 131 } }
+  },
+  "sfx": {
+    "door": { "placeholder": { "hz": 440 } },
+    "phone": { "placeholder": { "hz": 880 } },
+    "steps": { "placeholder": { "hz": 330 } }
+  },
+  "prop": {
+    "medal_sun": { "placeholder": { "hue": 50 } },
+    "medal_star": { "placeholder": { "hue": 220 } },
+    "note": { "placeholder": { "hue": 85 } }
+  },
+  "cover": {
+    "manor": { "placeholder": { "hue": 35 } },
+    "tide": { "placeholder": { "hue": 200 } }
+  }
 }

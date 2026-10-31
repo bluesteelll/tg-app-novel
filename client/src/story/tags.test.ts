@@ -447,15 +447,30 @@ test('staging: empty snapshot is frozen and holds no props', () => {
 test('catalog: demo catalog and cast decode', () => {
   const catalog = committedCatalog();
   const keys = (o: object): string[] => Object.keys(o).sort();
-  expect(keys(catalog.bg)).toEqual(['archive', 'cafe', 'room', 'street']);
-  expect(keys(catalog.chars)).toEqual(['ally', 'stranger']);
-  expect(Object.fromEntries(Object.entries(catalog.chars).map(([c, v]) => [c, keys(v.exprs)]))).toEqual({
+  // Subset pins (STORIES-PLAN SQ9): the decoded keys restricted to the L3a demo ids equal those ids, so a later
+  // catalog addition cannot reopen this file while a removed or renamed demo id still fails by name.
+  const pinned = (o: object, ids: readonly string[]): string[] => keys(o).filter((k) => ids.includes(k));
+  const L3A_BG = ['archive', 'cafe', 'room', 'street'];
+  expect(pinned(catalog.bg, L3A_BG)).toEqual(L3A_BG);
+  const L3A_CHARS = ['ally', 'stranger'];
+  expect(pinned(catalog.chars, L3A_CHARS)).toEqual(L3A_CHARS);
+  const L3A_EXPRS: Readonly<Record<string, readonly string[]>> = {
     ally: ['angry', 'neutral', 'smile', 'worried'],
     stranger: ['neutral', 'serious', 'smile'],
-  });
-  expect(keys(catalog.cg)).toEqual(['letter', 'reveal']);
-  expect(keys(catalog.bgm)).toEqual(['calm', 'mystery', 'tension']);
-  expect(keys(catalog.sfx)).toEqual(['door', 'phone', 'steps']);
+  };
+  expect(
+    Object.fromEntries(
+      Object.entries(catalog.chars)
+        .filter(([c]) => L3A_CHARS.includes(c))
+        .map(([c, v]) => [c, pinned(v.exprs, L3A_EXPRS[c] ?? [])]),
+    ),
+  ).toEqual(L3A_EXPRS);
+  const L3A_CG = ['letter', 'reveal'];
+  expect(pinned(catalog.cg, L3A_CG)).toEqual(L3A_CG);
+  const L3A_BGM = ['calm', 'mystery', 'tension'];
+  expect(pinned(catalog.bgm, L3A_BGM)).toEqual(L3A_BGM);
+  const L3A_SFX = ['door', 'phone', 'steps'];
+  expect(pinned(catalog.sfx, L3A_SFX)).toEqual(L3A_SFX);
   expect(decodeCast(parseJson(castText), catalog)).toEqual({
     ok: true,
     value: { ally: { char: 'ally' }, stranger: { char: 'stranger' }, voice: { char: null } },
