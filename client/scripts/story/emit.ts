@@ -3,9 +3,10 @@
 // ending), each chapter's meta (its story endings) and en table, the server story index, the usage file and the paid
 // line fingerprints; the `paid/leak` check over story-gen. From LW3 a chapter's world (PUZZLES-PLAN "Build outputs"):
 // its public projection stamped with `worldVersion`, routed like the chapter, and the server puzzle content of every
-// chapter; the hint texts never leave server/content. Builds a plan (path → text); IO stays in story.ts.
-// compile.ts and graph.ts come in as types only, so scan-dist.ts, which imports the decoders below, never loads
-// inkjs/full or the graph code; stories.ts adds no module lint.ts does not already load.
+// chapter; the hint texts never leave server/content. From LM1 the server meta (META-PLAN "Server formats"): the
+// choice vocabulary, the ending titles and the achievements, server-only (M7). Builds a plan (path → text); IO stays in
+// story.ts. compile.ts, graph.ts and meta.ts come in as types only, so scan-dist.ts, which imports the decoders below,
+// never loads inkjs/full or the graph code; stories.ts adds no module lint.ts does not already load.
 import { createHash } from 'node:crypto';
 
 import { RULES_VERSION, lockOf } from '../../src/explore/reduce.ts';
@@ -19,6 +20,7 @@ import type { CompiledChapter } from './compile.ts';
 import type { ChapterGraph } from './graph.ts';
 import { LINT_CODES } from './lint.ts';
 import type { Finding } from './lint.ts';
+import type { AchievementId, ChoiceMap, LangText, MetaCondition, MetaSource, StoryMeta } from './meta.ts';
 import { endingKnots } from './stories.ts';
 import type { StoryPlan } from './stories.ts';
 
@@ -32,6 +34,8 @@ export const OUT = {
   stories: 'server/content/stories.json',
   /** `<ch>.json` per listed chapter (PUZZLES-PLAN "Server formats"): solutions and hint texts, server-only (X7). */
   puzzles: 'server/content/puzzles',
+  /** The server meta (META-PLAN "Server formats"): ending titles, achievements, the choice vocabulary (M7). */
+  meta: 'server/content/meta.json',
 } as const;
 
 /**
@@ -53,6 +57,24 @@ export type ServerStoryIndex = {
     chapters: ReadonlyArray<{ id: ChapterId; paid: boolean; productId: ProductId | null; title: { ru: string; en: string } }>;
     endings: Readonly<Record<EndingName, { chapter: ChapterId }>>;
   }>;
+};
+/**
+ * server/content/meta.json (LM2's `ContentStore` reads it; the committed fixture server/tests/fixtures/content/meta.json
+ * is the contract): per listed chapter its option → point map (M2), and per story of the index, in Home order, its
+ * ending titles and its achievements in display order (a story absent from story/meta.json has none of either).
+ */
+export type ServerMeta = {
+  format: 1;
+  choices: Readonly<Record<ChapterId, Readonly<Record<LineId, LineId>>>>;
+  stories: Readonly<
+    Record<
+      StoryId,
+      {
+        endings: Readonly<Record<EndingName, LangText>>;
+        achievements: ReadonlyArray<{ id: AchievementId; hidden: boolean; when: MetaCondition; name: LangText; desc: LangText }>;
+      }
+    >
+  >;
 };
 /** A room's images (PUZZLES-PLAN `budget/room-set`): its bg, its props, its locks' closeups, its neighbours' bgs. */
 export type StoryRoomUsage = {
@@ -161,6 +183,11 @@ type EmitInput = {
   stories: readonly StoryPlan[];
   /** Per chapter with a `story/<ch>/world.json`, its decoded source world (default none). */
   worlds?: ReadonlyMap<ChapterId, WorldSource>;
+  /**
+   * The decoded story meta and every listed chapter's choice points (STAGING-DSL §9 "Story meta"): planned as the
+   * server meta when given (story.ts always gives it; default none).
+   */
+  meta?: { source: MetaSource; choices: ReadonlyMap<ChapterId, ChoiceMap> };
 };
 type Built = { ch: ChapterListEntry; compiled: CompiledChapter; graph: ChapterGraph; firstKnot: KnotName; world: WorldPublicBody | null };
 
@@ -236,6 +263,30 @@ function storyIndex(input: EmitInput): ServerStoryIndex {
       endings: Object.fromEntries(Object.entries(s.endings).map(([name, e]) => [name, { chapter: e.chapter }])) as ServerStoryIndex['stories'][number]['endings'], // keys are the decoded ending names
     })),
   };
+}
+
+/**
+ * The server meta: every listed chapter's choice map (each must be given) and every story of the index, its titles and
+ * achievements from the meta source (`catalog/meta` rule 1: the source names no other story).
+ */
+function serverMeta(input: EmitInput, meta: NonNullable<EmitInput['meta']>): ServerMeta {
+  const choices = input.chapters.map((ch) => {
+    const points = meta.choices.get(ch.id);
+    if (points === undefined) {
+      throw new Error(`invariant: chapter ${ch.id} has its choice points before emit`);
+    }
+    return [ch.id, Object.fromEntries(points)] as const;
+  });
+  const listed = new Set<string>(input.stories.map((s) => s.id));
+  for (const id of Object.keys(meta.source).filter((k) => !listed.has(k))) {
+    throw new Error(`invariant: the meta story ${id} is a story of the index`);
+  }
+  const stories = input.stories.map((s) => {
+    const m: StoryMeta | undefined = Object.hasOwn(meta.source, s.id) ? meta.source[s.id] : undefined;
+    const achievements = Object.entries(m?.achievements ?? {}).map(([id, a]) => ({ id: id as AchievementId, hidden: a.hidden, when: a.when, name: a.name, desc: a.desc })); // keys of the decoded source
+    return [s.id, { endings: m?.endings ?? {}, achievements }] as const;
+  });
+  return { format: 1, choices: Object.fromEntries(choices) as ServerMeta['choices'], stories: Object.fromEntries(stories) as ServerMeta['stories'] }; // keys are listed chapter and story ids
 }
 
 /** Sorted, once each; the ids come from a decoded world, whose decoder checked every id's shape. */
@@ -382,6 +433,12 @@ export function planEmit(input: EmitInput): ReadonlyMap<string, string> {
     throw new Error('invariant: the story index, which names paid endings, is never routed under client/ (principle 0)');
   }
   put(OUT.stories, pretty(storyIndex(input)));
+  if (input.meta !== undefined) {
+    if (OUT.meta.startsWith('client/')) {
+      throw new Error('invariant: the server meta, which holds the ending titles, the achievements and the choice vocabulary, is never routed under client/ (principle 0, M7)');
+    }
+    put(OUT.meta, pretty(serverMeta(input, input.meta)));
+  }
   put(`${OUT.build}/usage.json`, pretty(usage(built)));
   put(`${OUT.build}/fingerprints.lines.json`, pretty(fingerprints(built)));
   return out;
