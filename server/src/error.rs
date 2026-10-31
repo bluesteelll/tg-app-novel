@@ -3,7 +3,8 @@
 //! A 5xx is logged here with its cause; the body only ever carries the code, never SQL, paths or tokens.
 
 use axum::Json;
-use axum::http::StatusCode;
+use axum::http::header::RETRY_AFTER;
+use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use ts_rs::TS;
@@ -54,6 +55,21 @@ pub enum ApiError {
     /// The Bot API call failed; the gateway error is logged where it is mapped.
     #[error("telegram unavailable")]
     TelegramUnavailable,
+    /// Too many puzzle attempts in the current window; the answer was not applied.
+    #[error("rate limited")]
+    RateLimited {
+        /// Seconds until the window ends, sent as `Retry-After`.
+        retry_after_secs: i64,
+    },
+    /// A hint tier that cannot be unlocked now (tier order, a solved puzzle, a paid chapter not owned).
+    #[error("hint unavailable")]
+    HintUnavailable,
+    /// The balance does not cover a spend.
+    #[error("insufficient balance")]
+    InsufficientBalance,
+    /// A count limit is reached (the friend cap).
+    #[error("limit reached")]
+    LimitReached,
     /// A database failure: logged, answered with a generic 500.
     #[error(transparent)]
     Db(#[from] sqlx::Error),
@@ -89,6 +105,14 @@ pub enum ErrorCode {
     PayloadTooLarge,
     /// `telegram_unavailable`
     TelegramUnavailable,
+    /// `rate_limited`
+    RateLimited,
+    /// `hint_unavailable`
+    HintUnavailable,
+    /// `insufficient_balance`
+    InsufficientBalance,
+    /// `limit_reached`
+    LimitReached,
     /// `internal`
     Internal,
 }
@@ -109,6 +133,7 @@ pub struct ApiErrorBody {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let mut current = None;
+        let mut retry_after: Option<i64> = None;
         let (status, error) = match self {
             ApiError::BadRequest(_) => (StatusCode::BAD_REQUEST, ErrorCode::BadRequest),
             ApiError::InitDataInvalid => (StatusCode::UNAUTHORIZED, ErrorCode::InitdataInvalid),
@@ -131,13 +156,27 @@ impl IntoResponse for ApiError {
             ApiError::TelegramUnavailable => {
                 (StatusCode::BAD_GATEWAY, ErrorCode::TelegramUnavailable)
             }
+            ApiError::RateLimited { retry_after_secs } => {
+                // The one header an error sets: when the window ends, in decimal seconds (RFC 9110 Retry-After).
+                retry_after = Some(retry_after_secs);
+                (StatusCode::TOO_MANY_REQUESTS, ErrorCode::RateLimited)
+            }
+            ApiError::HintUnavailable => (StatusCode::CONFLICT, ErrorCode::HintUnavailable),
+            ApiError::InsufficientBalance => (StatusCode::CONFLICT, ErrorCode::InsufficientBalance),
+            ApiError::LimitReached => (StatusCode::CONFLICT, ErrorCode::LimitReached),
             ApiError::Db(e) => {
                 // The cause goes to the log only: SQL errors can name tables, paths and values.
                 tracing::error!(error = %e, "database error");
                 (StatusCode::INTERNAL_SERVER_ERROR, ErrorCode::Internal)
             }
         };
-        (status, Json(ApiErrorBody { error, current })).into_response()
+        let mut response = (status, Json(ApiErrorBody { error, current })).into_response();
+        if let Some(secs) = retry_after {
+            response
+                .headers_mut()
+                .insert(RETRY_AFTER, HeaderValue::from(secs));
+        }
+        response
     }
 }
 
@@ -149,90 +188,138 @@ mod tests {
 
     #[tokio::test]
     async fn api_error_maps_status_and_code() {
-        let cases: Vec<(&str, ApiError, StatusCode, &str)> = vec![
+        // (variant, error, status, code, Retry-After): only `RateLimited` sets the header.
+        let cases: Vec<(&str, ApiError, StatusCode, &str, Option<&str>)> = vec![
             (
                 "BadRequest",
                 ApiError::BadRequest("why"),
                 StatusCode::BAD_REQUEST,
                 "bad_request",
+                None,
             ),
             (
                 "InitDataInvalid",
                 ApiError::InitDataInvalid,
                 StatusCode::UNAUTHORIZED,
                 "initdata_invalid",
+                None,
             ),
             (
                 "InitDataExpired",
                 ApiError::InitDataExpired,
                 StatusCode::UNAUTHORIZED,
                 "initdata_expired",
+                None,
             ),
             (
                 "TokenMissing",
                 ApiError::TokenMissing,
                 StatusCode::UNAUTHORIZED,
                 "token_missing",
+                None,
             ),
             (
                 "TokenInvalid",
                 ApiError::TokenInvalid,
                 StatusCode::UNAUTHORIZED,
                 "token_invalid",
+                None,
             ),
             (
                 "TokenExpired",
                 ApiError::TokenExpired,
                 StatusCode::UNAUTHORIZED,
                 "token_expired",
+                None,
             ),
             (
                 "NotEntitled",
                 ApiError::NotEntitled,
                 StatusCode::FORBIDDEN,
                 "not_entitled",
+                None,
             ),
             (
                 "NotFound",
                 ApiError::NotFound,
                 StatusCode::NOT_FOUND,
                 "not_found",
+                None,
             ),
             (
                 "UnknownProduct",
                 ApiError::UnknownProduct,
                 StatusCode::NOT_FOUND,
                 "unknown_product",
+                None,
             ),
             (
                 "AlreadyOwned",
                 ApiError::AlreadyOwned,
                 StatusCode::CONFLICT,
                 "already_owned",
+                None,
             ),
             (
                 "PayloadTooLarge",
                 ApiError::PayloadTooLarge,
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "payload_too_large",
+                None,
             ),
             (
                 "TelegramUnavailable",
                 ApiError::TelegramUnavailable,
                 StatusCode::BAD_GATEWAY,
                 "telegram_unavailable",
+                None,
+            ),
+            (
+                "RateLimited",
+                ApiError::RateLimited {
+                    retry_after_secs: 42,
+                },
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate_limited",
+                Some("42"),
+            ),
+            (
+                "HintUnavailable",
+                ApiError::HintUnavailable,
+                StatusCode::CONFLICT,
+                "hint_unavailable",
+                None,
+            ),
+            (
+                "InsufficientBalance",
+                ApiError::InsufficientBalance,
+                StatusCode::CONFLICT,
+                "insufficient_balance",
+                None,
+            ),
+            (
+                "LimitReached",
+                ApiError::LimitReached,
+                StatusCode::CONFLICT,
+                "limit_reached",
+                None,
             ),
             (
                 "Db",
                 ApiError::Db(sqlx::Error::Protocol("secret detail".to_owned())),
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal",
+                None,
             ),
         ];
         let mut failures = Vec::new();
-        for (name, err, status, code) in cases {
+        for (name, err, status, code, retry_after) in cases {
             let response = err.into_response();
             let got_status = response.status();
+            let got_retry = response
+                .headers()
+                .get(RETRY_AFTER)
+                .map(|v| v.to_str().unwrap_or("<not text>").to_owned());
             let body = match response.into_body().collect().await {
                 Ok(collected) => String::from_utf8_lossy(&collected.to_bytes()).into_owned(),
                 Err(e) => {
@@ -244,6 +331,11 @@ mod tests {
             if got_status != status || body != want {
                 failures.push(format!(
                     "{name}: expected ({status}, {want}), got ({got_status}, {body})"
+                ));
+            }
+            if got_retry.as_deref() != retry_after {
+                failures.push(format!(
+                    "{name}: Retry-After expected {retry_after:?}, got {got_retry:?}"
                 ));
             }
             if body.contains("secret detail") {
@@ -276,6 +368,10 @@ mod tests {
                 ErrorCode::SaveConflict => "save_conflict",
                 ErrorCode::PayloadTooLarge => "payload_too_large",
                 ErrorCode::TelegramUnavailable => "telegram_unavailable",
+                ErrorCode::RateLimited => "rate_limited",
+                ErrorCode::HintUnavailable => "hint_unavailable",
+                ErrorCode::InsufficientBalance => "insufficient_balance",
+                ErrorCode::LimitReached => "limit_reached",
                 ErrorCode::Internal => "internal",
             }
         }
@@ -293,6 +389,10 @@ mod tests {
             ErrorCode::SaveConflict,
             ErrorCode::PayloadTooLarge,
             ErrorCode::TelegramUnavailable,
+            ErrorCode::RateLimited,
+            ErrorCode::HintUnavailable,
+            ErrorCode::InsufficientBalance,
+            ErrorCode::LimitReached,
             ErrorCode::Internal,
         ];
         let mut failures = Vec::new();

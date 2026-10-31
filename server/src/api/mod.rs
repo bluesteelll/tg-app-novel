@@ -4,6 +4,7 @@ pub mod auth;
 pub mod content;
 pub mod dto;
 pub mod entitlements;
+pub mod puzzles;
 pub mod saves;
 
 use axum::Router;
@@ -53,6 +54,8 @@ fn routes() -> Router<AppState> {
                 .put(saves::put_save)
                 .layer(DefaultBodyLimit::max(SAVE_REQUEST_LIMIT)),
         )
+        .route("/puzzles/{puzzle_id}", get(puzzles::get_status))
+        .route("/puzzles/{puzzle_id}/attempts", post(puzzles::post_attempt))
 }
 
 /// `GET /api/health`: no auth, no database; `ok` as `text/plain`.
