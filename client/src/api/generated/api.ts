@@ -6,6 +6,11 @@
 export type SaveSlot = "auto" | "s1" | "s2" | "s3";
 
 /**
+ * A story id (STORIES-PLAN Y2): `^[a-z][a-z0-9_]{0,23}$`.
+ */
+export type StoryId = string;
+
+/**
  * The stable wire codes of every error, consumed by the client's decoders.
  */
 export type ErrorCode = "bad_request" | "initdata_invalid" | "initdata_expired" | "token_missing" | "token_invalid" | "token_expired" | "not_entitled" | "not_found" | "unknown_product" | "already_owned" | "save_conflict" | "payload_too_large" | "telegram_unavailable" | "internal";
@@ -68,10 +73,14 @@ firstName: string,
 languageCode: string | null, };
 
 /**
- * A stored save without its body: an entry of `GET /api/saves`, the head of `GET /api/saves/{slot}`, and the
- * `current` of a 409.
+ * A stored save without its body: an entry of `GET /api/saves`, the head of `GET /api/saves/{storyId}/{slot}`, and
+ * the `current` of a 409.
  */
 export type SaveSummary = { 
+/**
+ * The story the save belongs to.
+ */
+storyId: StoryId, 
 /**
  * The slot.
  */
@@ -106,12 +115,12 @@ writeId: string, };
  */
 export type SaveListResponse = { 
 /**
- * The user's saves in slot order (`auto`, `s1`, `s2`, `s3`); an empty slot is absent.
+ * Every story's saves, by story id then slot (`auto`, `s1`, `s2`, `s3`); an empty slot is absent.
  */
 slots: Array<SaveSummary>, };
 
 /**
- * `GET /api/saves/{slot}` response.
+ * `GET /api/saves/{storyId}/{slot}` response.
  */
 export type SaveFull = { 
 /**
@@ -124,7 +133,7 @@ summary: SaveSummary,
 body: string, };
 
 /**
- * `PUT /api/saves/{slot}` request. Unknown fields are ignored.
+ * `PUT /api/saves/{storyId}/{slot}` request. Unknown fields are ignored.
  */
 export type PutSaveRequest = { 
 /**
@@ -153,7 +162,7 @@ lineId: string | null,
 body: string, };
 
 /**
- * `PUT /api/saves/{slot}` response.
+ * `PUT /api/saves/{storyId}/{slot}` response.
  */
 export type PutSaveResponse = { 
 /**

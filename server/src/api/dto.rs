@@ -11,7 +11,7 @@ use serde_json::value::RawValue;
 use ts_rs::TS;
 
 use crate::error::{ApiErrorBody, ErrorCode};
-use crate::ids::SaveSlot;
+use crate::ids::{SaveSlot, StoryId};
 
 /// `POST /api/auth` request. Unknown fields (a client-sent `userId`, say) are ignored, never trusted.
 #[derive(Deserialize, TS)]
@@ -47,11 +47,13 @@ pub struct UserDto {
     pub language_code: Option<String>,
 }
 
-/// A stored save without its body: an entry of `GET /api/saves`, the head of `GET /api/saves/{slot}`, and the
-/// `current` of a 409.
+/// A stored save without its body: an entry of `GET /api/saves`, the head of `GET /api/saves/{storyId}/{slot}`, and
+/// the `current` of a 409.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveSummary {
+    /// The story the save belongs to.
+    pub story_id: StoryId,
     /// The slot.
     pub slot: SaveSlot,
     /// The revision: 1 when the slot is created, one more per accepted write.
@@ -74,11 +76,11 @@ pub struct SaveSummary {
 #[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveListResponse {
-    /// The user's saves in slot order (`auto`, `s1`, `s2`, `s3`); an empty slot is absent.
+    /// Every story's saves, by story id then slot (`auto`, `s1`, `s2`, `s3`); an empty slot is absent.
     pub slots: Vec<SaveSummary>,
 }
 
-/// `GET /api/saves/{slot}` response.
+/// `GET /api/saves/{storyId}/{slot}` response.
 #[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveFull {
@@ -88,7 +90,7 @@ pub struct SaveFull {
     pub body: String,
 }
 
-/// `PUT /api/saves/{slot}` request. Unknown fields are ignored.
+/// `PUT /api/saves/{storyId}/{slot}` request. Unknown fields are ignored.
 #[derive(Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct PutSaveRequest {
@@ -107,7 +109,7 @@ pub struct PutSaveRequest {
     pub body: String,
 }
 
-/// `PUT /api/saves/{slot}` response.
+/// `PUT /api/saves/{storyId}/{slot}` response.
 #[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct PutSaveResponse {
@@ -179,6 +181,7 @@ pub fn ts_bindings() -> String {
     let cfg = ts_rs::Config::new();
     let decls = [
         export::<SaveSlot>(&cfg),
+        export::<StoryId>(&cfg),
         export::<ErrorCode>(&cfg),
         export::<ApiErrorBody>(&cfg),
         export::<AuthRequest>(&cfg),
