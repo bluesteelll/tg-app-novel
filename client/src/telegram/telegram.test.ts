@@ -5,6 +5,7 @@ import { expect, test } from 'vitest';
 
 import type { Lifecycle } from './index.ts';
 import { perfClassFromUa } from './perf.ts';
+import { applyInsetVars } from './viewport.ts';
 import { createTelegramClient, type TgEnv, type TwaHandler, type TwaWebApp, type VisibilitySource } from './webapp.ts';
 
 type Call = readonly [method: string, ...args: unknown[]];
@@ -612,4 +613,20 @@ test('perf: performance class from UA vectors', () => {
   expect(vectors.map(([ua]) => perfClassFromUa(ua))).toEqual(vectors.map(([, cls]) => cls));
   expect(createTelegramClient(new FakeTwa('9.6'), fakeEnv(vectors[0][0]).env).perfClass).toBe('LOW');
   expect(createTelegramClient(null, fakeEnv(vectors[1][0]).env).perfClass).toBe('HIGH');
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Inset variables (C3)
+
+test('viewport: inset vars sum safe and content areas', () => {
+  const written: Array<[string, string]> = [];
+  applyInsetVars({ setProperty: (name, value) => written.push([name, value]) });
+  const sum = (side: string): string =>
+    `calc(var(--tg-safe-area-inset-${side}, 0px) + var(--tg-content-safe-area-inset-${side}, 0px))`;
+  expect(written).toEqual([
+    ['--app-inset-top', sum('top')],
+    ['--app-inset-bottom', sum('bottom')],
+    ['--app-inset-left', sum('left')],
+    ['--app-inset-right', sum('right')],
+  ]);
 });
