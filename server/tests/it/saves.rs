@@ -747,6 +747,76 @@ async fn saves_body_round_trips_bytes() {
     report(&failures);
 }
 
+/// PostgreSQL `text` cannot hold U+0000, so a text field carrying it is refused at the edge (400), never left to the
+/// database (`22021`, a 500), and writes nothing. In the body a raw U+0000 is not JSON (400); the `\u0000` escape is
+/// JSON text without a NUL byte and is stored (the control).
+#[tokio::test]
+async fn saves_nul_in_text_field_400() {
+    let (st, _db) = saves_state(&[ANN]).await;
+    let mut failures = Vec::new();
+    let nul = "a\u{0}b";
+    let body = save_body("w1");
+    let cases = [
+        (
+            "chapterId",
+            request_with(None, "w1", (nul, "v1", Some("ch1.k1.l3")), &body),
+        ),
+        (
+            "storyVersion",
+            request_with(None, "w1", ("ch1", nul, Some("ch1.k1.l3")), &body),
+        ),
+        (
+            "lineId",
+            request_with(None, "w1", ("ch1", "v1", Some(nul)), &body),
+        ),
+        ("writeId", request_with(None, nul, ENV1, &body)),
+        (
+            "body (raw, inside a JSON string)",
+            request_with(None, "w1", ENV1, "{\"a\":\"a\u{0}b\"}"),
+        ),
+    ];
+    for (field, req) in cases {
+        let reply = put(&st, ANN, "auto", req.to_string()).await;
+        failures.extend(expect_text(
+            &format!("{field} with U+0000"),
+            &reply,
+            400,
+            BAD_REQUEST,
+        ));
+    }
+    failures.extend(expect_rows("after the refusals", &st, ANN, &[]).await);
+    let escaped = request_with(None, "w2", ENV1, r#"{"a":"a\u0000b"}"#).to_string();
+    let reply = put(&st, ANN, "auto", escaped).await;
+    failures.extend(expect_json(
+        "body with the \\u0000 escape (control)",
+        &reply,
+        200,
+        &written(1, T0),
+    ));
+    report(&failures);
+}
+
+/// The edge parses the body with serde_json's recursion limit, so it is stricter than `IS JSON` on depth: 127 nested
+/// arrays are stored, 128 are refused (400) although the CHECK would admit them.
+#[tokio::test]
+async fn saves_body_too_deep_400() {
+    let (st, _db) = saves_state(&[ANN]).await;
+    let mut failures = Vec::new();
+    let nested = |depth: usize| format!("{}{}", "[".repeat(depth), "]".repeat(depth));
+    let req = request_with(None, "w1", ENV1, &nested(127)).to_string();
+    let reply = put(&st, ANN, "auto", req).await;
+    failures.extend(expect_json(
+        "depth 127 (control)",
+        &reply,
+        200,
+        &written(1, T0),
+    ));
+    let req = request_with(None, "w2", ENV1, &nested(128)).to_string();
+    let reply = put(&st, ANN, "s1", req).await;
+    failures.extend(expect_text("depth 128", &reply, 400, BAD_REQUEST));
+    report(&failures);
+}
+
 /// A slot outside `auto, s1, s2, s3` is 400 on GET and PUT; the token is checked before the slot.
 #[tokio::test]
 async fn saves_bad_slot_400() {

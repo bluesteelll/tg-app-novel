@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use server::AppState;
 use server::auth::{
     AuthUser, InitData, InitDataError, TokenError, TokenKey, data_check_string, issue_token,
-    validate_init_data, verify_token,
+    secret_key, validate_init_data, verify_token,
 };
 use server::clock::FixedClock;
 use server::ids::UserId;
@@ -820,6 +820,48 @@ async fn auth_upserts_user_once() {
         failures.push(format!(
             "users rows for 1001: expected {want:?}, got {rows:?}"
         ));
+    }
+    report(&failures);
+}
+
+/// initData signed here with the validator's own data-check-string and key, for a user whose name and language
+/// carry U+0000: PostgreSQL `text` cannot store it, so the login succeeds (200) and the row holds U+FFFD instead.
+#[tokio::test]
+async fn auth_nul_in_first_name_stored_replaced() {
+    let now = 1_800_000_000;
+    let (st, _db) = state_at(now).await;
+    let user =
+        json!({ "id": 3003, "first_name": "A\u{0}B", "language_code": "r\u{0}u" }).to_string();
+    let mut pairs = vec![
+        ("auth_date".to_owned(), now.to_string()),
+        ("user".to_owned(), user),
+    ];
+    let mut mac = Hmac::<Sha256>::new_from_slice(&secret_key(common::TEST_BOT_TOKEN)).unwrap();
+    mac.update(data_check_string(&pairs).as_bytes());
+    pairs.push(("hash".to_owned(), hex::encode(mac.finalize().into_bytes())));
+    let init_data = form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(&pairs)
+        .finish();
+
+    let reply = post_auth(&st, JSON, auth_body(&init_data)).await;
+    let mut failures = Vec::new();
+    if reply.status != StatusCode::OK {
+        failures.push(format!(
+            "expected 200, got {} {}",
+            reply.status.as_u16(),
+            body_text(&reply)
+        ));
+    }
+    let rows = user_rows(&st).await;
+    let want = vec![(
+        3003,
+        "A\u{FFFD}B".to_owned(),
+        Some("r\u{FFFD}u".to_owned()),
+        now,
+        now,
+    )];
+    if rows != want {
+        failures.push(format!("users rows: expected {want:?}, got {rows:?}"));
     }
     report(&failures);
 }
