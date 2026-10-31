@@ -175,6 +175,26 @@ test('registry: visible load over hard cap after eviction is refused', async () 
   expect(h.callsOf('/assets/v6.avif').length).toBe(0);
 });
 
+test('registry: a visible load over the hard cap evicts room and next preloads', async () => {
+  // Eviction goes by priority, not by holder name: preload.ts takes `room:*` and `next:*` at preload priority too.
+  for (const holder of ['room:a', 'next:ch2']) {
+    const h = harness();
+    const pre = h.acquire('bg/r', bg('r'), holder, 'preload');
+    const four = ['v1', 'v2', 'v3', 'v4'].map((n) => h.acquire(`bg/${n}`, bg(n), `scene:${n}`, 'visible'));
+    h.succeedAll();
+    expect((await pre).ok).toBe(true);
+    for (const r of await Promise.all(four)) {
+      expect(r.ok).toBe(true);
+    }
+    // 5 BG live = 44,236,800; a fifth visible BG needs 53,084,160 > 50,331,648 unless the preload goes.
+    const fifth = h.acquire('bg/v5', bg('v5'), 'scene:v5', 'visible');
+    h.succeedAll();
+    expect({ holder, ok: (await fifth).ok }).toEqual({ holder, ok: true });
+    expect(releasedOf(h.released, 'r')).toBe(1);
+    expect(h.registry.stats()).toEqual({ live: 5, bytes: 5 * BG, pending: 0, overCap: 0 });
+  }
+});
+
 test('registry: releaseHolder of preload:k1 keeps preload:k10', async () => {
   const h = harness();
   const k1 = h.acquire('bg/k1', bg('k1'), 'preload:k1', 'preload');
