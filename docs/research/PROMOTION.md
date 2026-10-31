@@ -690,6 +690,21 @@ Source: `10-adult-content-age-gate-dual-audience.md` (10), checked by `V5-verify
 | A10 | Promotion: Telegram Ads §5.1 bans sexually suggestive ads, and the ad rules cover the **promoted product**, not only the creative (V5); VK requires linked communities without sexually explicit images; adult networks (ExoClick, TrafficJunky, JuicyAds; deposits $25-€500, CLAIMED) serve explicit, male-skewed traffic | The 18+ track has almost no compliant paid channel; a bot that also carries a sexual 18+ track risks rejection even with a clean ad — another reason for a separate 18+ bot (P20) | DOCUMENTED / CLAIMED | 10 [14][37] |
 | A11 | Dual-audience precedent = separate apps or builds: Romance Club's separate 18+ RU app (2026-05-19); Everlasting Summer's adult version on Nutaku (2015-08) | Separation is the norm, not one mixed catalogue | CLAIMED | 10 [34][38] |
 
+**What each content level means under Telegram's rules and Russian law (INTERPRETATION; A1, A5-A7, A10, A12):**
+Telegram's own ToS bans only "illegal pornographic content" on public bots; the limits come from the imported store
+rules (Apple 1.1.4: "explicit descriptions or displays of sexual organs or activities intended to stimulate erotic
+rather than aesthetic or emotional feelings"; Google: "intended to be sexually gratifying"), from Apple 4.7.5 (Telegram
+must age-restrict mini apps above its 13+ rating, so a bot may be flagged `sensitive` as a whole), and from the Ads
+guidelines (suggestive ads banned; the rule reaches the promoted product).
+
+| Level | Telegram and the stores | Russian law |
+|---|---|---|
+| Romance, kisses, implication, fade to black (≤ 16+) | Allowed; the main, advertised bot | Allowed with the 16+ sign |
+| 18+ erotica without explicit depiction of sexual organs or acts | Allowed; best in a separate bot that may carry an 18+ flag, behind our own age confirmation; not advertised through Telegram Ads | Allowed with the 18+ sign, sold only to adults (436-FZ art. 16 part 6); the "non-naturalistic" line is an expert call |
+| Explicit scenes ("soft porn") | Breaches Apple 1.1.4 (iOS) and Google's policy; Stars at risk (§6.2.4) | Art. 242 risk; no gate or paywall exemption |
+
+Gap: no source states how Telegram decides to flag a bot (10 "Must verify" V1).
+
 **Recommend (a planning reading — the owner decides, a lawyer confirms):**
 - **RU content level:** at most non-naturalistic 18+ erotica (A4); no explicit ("soft porn") material in anything
   served to Russia (A1-A2) — text included, since text alone has been convicted. A lawyer reviews sample 18+ scenes
