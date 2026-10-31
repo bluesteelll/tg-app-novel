@@ -62,6 +62,7 @@ CREATE TABLE entitlements (                     -- the ONLY unlock fact
 
 CREATE TABLE saves (
   user_id       BIGINT NOT NULL,
+  story_id      TEXT   NOT NULL,                -- STORIES-PLAN Y7; validated against the story index at the edge
   slot          TEXT   NOT NULL,
   rev           BIGINT NOT NULL,
   chapter_id    TEXT   NOT NULL,
@@ -70,10 +71,12 @@ CREATE TABLE saves (
   write_id      TEXT   NOT NULL,                -- client idempotency key of the last successful write
   body          TEXT   NOT NULL,                -- opaque JSON, byte-exact: never jsonb (it rewrites the bytes)
   saved_at      BIGINT NOT NULL,
-  CONSTRAINT saves_pkey         PRIMARY KEY (user_id, slot),
-  CONSTRAINT saves_user_fk      FOREIGN KEY (user_id) REFERENCES users (id),
-  CONSTRAINT saves_slot_known   CHECK (slot IN ('auto', 's1', 's2', 's3')),
-  CONSTRAINT saves_rev_positive CHECK (rev >= 1),
-  CONSTRAINT saves_body_json    CHECK (body IS JSON),
-  CONSTRAINT saves_body_size    CHECK (octet_length(body) <= 262144)
+  CONSTRAINT saves_pkey           PRIMARY KEY (user_id, story_id, slot),
+  CONSTRAINT saves_user_fk        FOREIGN KEY (user_id) REFERENCES users (id),
+  CONSTRAINT saves_story_id_shape CHECK (story_id ~ '^[a-z][a-z0-9_]{0,23}$'),
+  CONSTRAINT saves_slot_known     CHECK (slot IN ('auto', 's1', 's2', 's3')),
+  CONSTRAINT saves_rev_positive   CHECK (rev >= 1),
+  CONSTRAINT saves_body_json      CHECK (body IS JSON),
+  CONSTRAINT saves_body_size      CHECK (octet_length(body) <= 262144)
 );
+-- saves.user_id is still the PK's leading column: the FK stays indexed.
