@@ -668,10 +668,10 @@ async fn invoice_already_owned_409() {
 }
 
 /// The invoice texts follow the user's Telegram language (K29): Russian for `ru`, `uk`, `be` and `kk` (primary
-/// subtag), English for anything else and for no tag.
+/// subtag, ASCII case-insensitive), English for anything else and for no tag.
 #[tokio::test]
 async fn invoice_title_in_user_language() {
-    let users: [(i64, Option<&str>, bool); 7] = [
+    let users: [(i64, Option<&str>, bool); 9] = [
         (2001, Some("ru"), true),
         (2002, Some("uk"), true),
         (2003, Some("be"), true),
@@ -679,6 +679,8 @@ async fn invoice_title_in_user_language() {
         (2005, Some("en"), false),
         (2006, Some("de"), false),
         (2007, None, false),
+        (2008, Some("RU"), true),
+        (2009, Some("Kk-KZ"), true),
     ];
     let with_tags: Vec<(i64, Option<&str>)> = users.iter().map(|&(id, tag, _)| (id, tag)).collect();
     let (st, _db, gateway) = invoice_state(&with_tags).await;
