@@ -13,7 +13,7 @@ export type StoryId = string;
 /**
  * The stable wire codes of every error, consumed by the client's decoders.
  */
-export type ErrorCode = "bad_request" | "initdata_invalid" | "initdata_expired" | "token_missing" | "token_invalid" | "token_expired" | "not_entitled" | "not_found" | "unknown_product" | "already_owned" | "save_conflict" | "payload_too_large" | "telegram_unavailable" | "internal";
+export type ErrorCode = "bad_request" | "initdata_invalid" | "initdata_expired" | "token_missing" | "token_invalid" | "token_expired" | "not_entitled" | "not_found" | "unknown_product" | "already_owned" | "save_conflict" | "payload_too_large" | "telegram_unavailable" | "rate_limited" | "hint_unavailable" | "insufficient_balance" | "limit_reached" | "internal";
 
 /**
  * The JSON body of every error response.
