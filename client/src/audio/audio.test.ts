@@ -220,6 +220,7 @@ const STORM = '/api/assets/bgm-storm-9f8e7d6c.m4a';
 const WAVES = '/api/assets/bgm-waves-5e6f7a8b.m4a';
 const DOOR = '/assets/sfx-door-aa11bb22.wav';
 const PHONE = '/assets/sfx-phone-cc33dd44.wav';
+const PHONE_ALT = '/assets/sfx-phone-99887766.wav'; // the same id under another content hash: other bytes
 const STEPS = '/api/assets/sfx-steps-ee55ff66.wav';
 const NUMBERED = (n: number): string => `/assets/sfx-s${n}-0000a00${n}.wav`;
 
@@ -252,6 +253,7 @@ const CH1 = manifest('ch1', {
 });
 const CH2 = manifest('ch2', { 'bgm/calm': bgmEntry(CALM), 'sfx/phone': sfxEntry(PHONE), 'sfx/steps': sfxEntry(STEPS) });
 const CH3 = manifest('ch3', { 'bgm/tension': bgmEntry(TENSION) });
+const CH4 = manifest('ch4', { 'sfx/phone': sfxEntry(PHONE_ALT) });
 
 function bgm(track: string | null, fadeMs = 1000, vol = 100): AudioCommand {
   // A fixture id: the manifests above hold it.
@@ -960,4 +962,222 @@ test('audio: needs-gesture ends when the context runs on its own', async () => {
   audio.apply([bgm('tension')], { instant: false });
   await flush();
   expect(calls).toEqual([true, false, true]);
+});
+
+test('bgm: a failed gated load stays silent, keeps the logical track and lets go of its deck', async () => {
+  vi.useFakeTimers();
+  const { ctx, fetch, audio } = setup();
+  audio.setChapter(CH1);
+  audio.apply([bgm('calm', 0)], { instant: false });
+  ctx.currentTime = 5;
+  audio.apply([bgm('storm', 1000)], { instant: false });
+  const a = deck(ctx, 0);
+  const b = deck(ctx, 1);
+  at(fetch.calls, 0).settle({ ok: false, error: { kind: 'http', status: 403 } });
+  await flush();
+  expect(audio.currentBgm()).toEqual({ track: 'storm', vol: 100 });
+  expect(b.el.srcWrites).toEqual([]); // silent: nothing ever played on it
+  // The track that waited for it fades out over the command's fade.
+  expect(a.gain.ops.slice(-2)).toEqual([
+    { op: 'set', v: 1, t: 5 },
+    { op: 'ramp', v: 0, t: 6 },
+  ]);
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(a.el.attr).toBeNull();
+  expect(vi.getTimerCount()).toBe(0);
+  // Nothing is stuck loading: the same command fetches again.
+  audio.apply([bgm('storm', 1000)], { instant: false });
+  expect(fetch.calls.length).toBe(2);
+});
+
+test('audio: instant (skip mode) turns every bgm fade into a cut', () => {
+  vi.useFakeTimers();
+  const { ctx, audio } = setup();
+  audio.setChapter(CH1);
+  ctx.currentTime = 3;
+  audio.apply([bgm('calm', 1000)], { instant: true });
+  const a = deck(ctx, 0);
+  expect(a.gain.ops.slice(-2)).toEqual([
+    { op: 'cancel', t: 3 },
+    { op: 'set', v: 1, t: 3 },
+  ]);
+  audio.apply([bgm('tension', 2000)], { instant: true });
+  expect(a.el.attr).toBeNull(); // the old track is released at once
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+test('bgm: a refusal that arrives after its deck was released is not a need', async () => {
+  const { ctx, audio } = setup();
+  audio.setChapter(CH1);
+  const calls: boolean[] = [];
+  audio.onNeedsGesture((needed) => calls.push(needed));
+  const b = deck(ctx, 1);
+  deck(ctx, 0).el.refusals.push(notAllowed());
+  audio.apply([bgm('calm', 0)], { instant: false });
+  audio.apply([bgm('tension', 0)], { instant: false }); // the same turn: deck A is released, B plays
+  await flush();
+  expect(calls).toEqual([]);
+  expect(b.el.plays).toBe(1);
+});
+
+test('bgm: a file the element cannot play is released while the logical track stays', async () => {
+  const { ctx, audio } = setup();
+  audio.setChapter(CH1);
+  const a = deck(ctx, 0);
+  a.el.refusals.push(new DOMException('no decoder', 'NotSupportedError'));
+  audio.apply([bgm('calm', 0)], { instant: false });
+  await flush();
+  expect(a.el.attr).toBeNull();
+  expect(audio.currentBgm()).toEqual({ track: 'calm', vol: 100 });
+});
+
+test('bgm: restore ends a fade in flight at once', () => {
+  vi.useFakeTimers();
+  const { ctx, audio } = setup();
+  audio.setChapter(CH1);
+  audio.apply([bgm('calm', 0)], { instant: false });
+  audio.apply([bgm('tension', 2000)], { instant: false });
+  expect(vi.getTimerCount()).toBe(1);
+  audio.restore({ track: 'tension' as TrackId, vol: 50 }); // a fixture id
+  expect(deck(ctx, 0).el.attr).toBeNull();
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+test('sfx: a failed fetch or an undecodable file is forgotten so that a later play tries again', async () => {
+  const { ctx, fetch, audio } = setup();
+  audio.setChapter(CH1);
+  audio.apply([sfx('door')], { instant: false });
+  at(fetch.calls, 0).settle({ ok: false, error: { kind: 'network', detail: 'offline' } });
+  await flush();
+  audio.apply([sfx('door')], { instant: false });
+  expect(fetch.calls.length).toBe(2);
+  vi.spyOn(ctx, 'decodeAudioData').mockRejectedValueOnce(new DOMException('bad data', 'EncodingError'));
+  at(fetch.calls, 1).settle(ok(sfxBlob()));
+  await flush();
+  expect(ctx.sources.length).toBe(0);
+  audio.apply([sfx('door')], { instant: false });
+  expect(fetch.calls.length).toBe(3);
+  at(fetch.calls, 2).settle(ok(sfxBlob()));
+  await flush();
+  expect(ctx.sources.length).toBe(1);
+  expect(audio.stats().decodedBytes).toBe(1_058_400);
+});
+
+test('audio: preload ignores music ids', () => {
+  const { fetch, audio } = setup();
+  audio.setChapter(CH1);
+  audio.preload(['bgm/storm', 'bgm/calm', 'sfx/door'] as AssetId[]); // fixture ids
+  expect(fetch.calls.map((c) => c.url)).toEqual([DOOR]);
+});
+
+test('sfx: a one-shot still loading when suspend() lands never plays', async () => {
+  const { ctx, fetch, audio } = setup();
+  audio.setChapter(CH1);
+  audio.apply([sfx('door')], { instant: false });
+  audio.suspend();
+  at(fetch.calls, 0).settle(ok(sfxBlob()));
+  await flush();
+  expect(ctx.sources.length).toBe(0);
+  expect(audio.stats().decodedBytes).toBe(1_058_400); // cached for later
+});
+
+test('sfx: the same id from another URL replaces the cached bytes', async () => {
+  const { fetch, audio } = setup();
+  audio.setChapter(CH1);
+  audio.preload(sfxIds('phone'));
+  at(fetch.calls, 0).settle(ok(sfxBlob()));
+  await flush();
+  audio.preload(sfxIds('phone'), CH4);
+  expect(fetch.calls.map((c) => c.url)).toEqual([PHONE, PHONE_ALT]);
+  at(fetch.calls, 1).settle(ok(sfxBlob()));
+  await flush();
+  expect(audio.stats().decodedBytes).toBe(1_058_400); // the old bytes were dropped, not kept beside the new
+});
+
+test('sfx: a cache hit refreshes the entry so that the least recently used goes first', async () => {
+  const { fetch, audio } = setup();
+  audio.setChapter(CH1);
+  audio.preload(sfxIds('s1', 's2', 's3', 's4', 's5', 's6', 's7'));
+  for (const c of fetch.calls) {
+    c.settle(ok(sfxBlob()));
+  }
+  await flush();
+  audio.apply([sfx('s1')], { instant: false }); // a hit: s1 is now the most recently used
+  audio.preload(sfxIds('s8'));
+  at(fetch.calls, 7).settle(ok(sfxBlob()));
+  await flush();
+  expect(audio.stats().decodedBytes).toBe(7_408_800); // one entry went: s2
+  audio.apply([sfx('s1')], { instant: false });
+  expect(fetch.calls.length).toBe(8); // s1 still cached
+  audio.apply([sfx('s2')], { instant: false });
+  expect(fetch.calls.length).toBe(9); // s2 was the one evicted
+});
+
+test('sfx: the entry that just decoded is never the one evicted', async () => {
+  const { ctx, fetch, audio } = setup();
+  audio.setChapter(CH1);
+  audio.preload(sfxIds('s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8'));
+  for (const c of fetch.calls.slice(1)) {
+    c.settle(ok(sfxBlob()));
+  }
+  await flush();
+  at(fetch.calls, 0).settle(ok(sfxBlob())); // s1, the least recently used, decodes last and tips the cache over the cap
+  await flush();
+  expect(audio.stats().decodedBytes).toBe(7_408_800);
+  audio.apply([sfx('s1')], { instant: false });
+  expect(fetch.calls.length).toBe(8);
+  expect(ctx.sources.length).toBe(1);
+});
+
+test('sfx: an aborted load that reports after its id was reloaded does not drop the reload', async () => {
+  const { ctx, fetch, audio } = setup();
+  audio.setChapter(CH1);
+  audio.preload(sfxIds('phone')); // in flight
+  audio.setChapter(CH2); // CH2 names phone, but it was not preloaded for CH2: released, its request aborted
+  expect(at(fetch.calls, 0).signal.aborted).toBe(true);
+  audio.apply([sfx('phone')], { instant: false }); // CH2's first batch loads it again, from the same URL
+  at(fetch.calls, 0).settle({ ok: false, error: { kind: 'aborted' } }); // fetchAsset reports the abort as a value
+  await flush();
+  at(fetch.calls, 1).settle(ok(sfxBlob()));
+  await flush();
+  expect(ctx.sources.length).toBe(1);
+  expect(audio.stats().decodedBytes).toBe(1_058_400);
+});
+
+test('sfx: an entry released while it decodes is never counted', async () => {
+  const { ctx, fetch, audio } = setup();
+  audio.setChapter(CH1);
+  let finish: (b: FakeBuffer) => void = () => undefined;
+  vi.spyOn(ctx, 'decodeAudioData').mockReturnValueOnce(
+    new Promise<FakeBuffer>((done) => {
+      finish = done;
+    }),
+  );
+  audio.preload(sfxIds('door'));
+  at(fetch.calls, 0).settle(ok(sfxBlob()));
+  await flush(); // fetched; the decode is pending
+  audio.setChapter(CH3); // released mid-decode
+  finish({ numberOfChannels: 2, length: 132_300, sampleRate: 44_100 });
+  await flush();
+  expect(audio.stats().decodedBytes).toBe(0);
+});
+
+test('audio: a resume that ends needs-gesture also tells the listener', async () => {
+  vi.useFakeTimers();
+  const { ctx, audio } = setup();
+  const calls: boolean[] = [];
+  audio.onNeedsGesture((needed) => calls.push(needed));
+  ctx.state = 'suspended';
+  ctx.resumeImpl = () => new Promise<void>(() => undefined);
+  const hung = outcome(audio);
+  await vi.advanceTimersByTimeAsync(500);
+  expect(hung.value).toBe('needs-gesture');
+  expect(calls).toEqual([true]);
+});
+
+test('audio: resume leaves no timer behind when the context runs at once', async () => {
+  vi.useFakeTimers();
+  const { audio } = setup();
+  expect(await audio.resume()).toBe('running');
+  expect(vi.getTimerCount()).toBe(0);
 });
