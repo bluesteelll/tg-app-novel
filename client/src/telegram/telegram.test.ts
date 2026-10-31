@@ -17,6 +17,11 @@ import { perfClassFromUa } from './perf.ts';
 import { applyInsetVars } from './viewport.ts';
 import { createTelegramClient, type TgEnv, type TwaHandler, type TwaWebApp, type VisibilitySource } from './webapp.ts';
 
+// The browser program declares no Node globals. This file imports the Vite plugin, so a plugin that imported
+// 'vite' (whose types reference @types/node) would bring them in; svelte-check then fails on an unused directive.
+// @ts-expect-error `process` is not declared in the browser program.
+void (null as unknown as typeof process);
+
 type Call = readonly [method: string, ...args: unknown[]];
 
 /** TWA's `versionCompare`: numeric per dot-separated part, a missing part is 0 (so 7.10 is above 7.7). */
@@ -957,14 +962,11 @@ test('bootstrap: stays with launch params in the hash or the session', () => {
   ]);
 });
 
-test('plugin: bootstrap injected as a classic head-prepend script', async () => {
-  const hook = tgDevMock().transformIndexHtml;
-  const handler = typeof hook === 'function' ? hook : hook?.handler;
-  expect(typeof handler).toBe('function');
-  // The hook reads neither its plugin context nor the page, so the test passes neither.
-  const tags = await handler?.call({} as never, '<!doctype html><html><head></head></html>', {} as never);
+test('plugin: bootstrap injected as a classic head-prepend script', () => {
+  const plugin = tgDevMock();
+  expect(plugin.name).toBe('tg-dev-mock');
   // No attrs: no type="module", so it runs synchronously, in document order, before the TWA tag it precedes.
-  expect(tags).toEqual([{ tag: 'script', children: bootstrapScript(), injectTo: 'head-prepend' }]);
+  expect(plugin.transformIndexHtml()).toEqual([{ tag: 'script', children: bootstrapScript(), injectTo: 'head-prepend' }]);
   const text = bootstrapScript();
   expect(text.startsWith('window.__TG_DEV_MOCK__=true;(')).toBe(true);
   expect(text.endsWith(')(window)')).toBe(true);
