@@ -1,7 +1,9 @@
+import { readFileSync } from 'node:fs';
+
 import sharp from 'sharp';
 import { describe, expect, test, vi } from 'vitest';
 
-import { ASSET_ID_RE, decodeAssetCatalog } from '../../src/story/catalog.ts';
+import { ASSET_ID_RE, decodeAssetCatalog, decodeAssetManifest, decodeCoverManifest } from '../../src/story/catalog.ts';
 import type { CatalogImage, CatalogIssue } from '../../src/story/catalog.ts';
 import type { AssetId } from '../../src/story/staging.ts';
 import { encodeImage } from './encode.ts';
@@ -259,5 +261,123 @@ describe('synth', () => {
     // Buffer.compare: a deep toEqual over 352,844 elements takes seconds.
     expect(Buffer.compare(synthWav('bgm', { hz: 220 }).wav, bgm.wav)).toBe(0);
     expect(Buffer.compare(synthWav('bgm', { hz: 247 }).wav, bgm.wav)).not.toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Asset and cover manifests (catalog.ts): one parser for the asset tool's tests, budget and the later loaders. The
+// server's committed fixtures (L6b, server/src/content.rs reads avif / webp / file URLs) are the contract.
+
+function fixture(ch: string): unknown {
+  const url = new URL(`../../../server/tests/fixtures/content/chapters/${ch}/assets.json`, import.meta.url);
+  return JSON.parse(readFileSync(url, 'utf8'));
+}
+
+type RawEntry = Record<string, unknown>;
+
+function image(name: string, over: RawEntry = {}): RawEntry {
+  return {
+    kind: 'image',
+    w: 1080,
+    h: 2048,
+    decodedBytes: 1080 * 2048 * 4,
+    avif: { url: `/api/assets/${name}.avif`, bytes: 120_000 },
+    webp: { url: `/api/assets/${name}.webp`, bytes: 200_000 },
+    ...over,
+  };
+}
+
+function audio(role: 'bgm' | 'sfx', name: string, over: RawEntry = {}): RawEntry {
+  return { kind: 'audio', role, durationMs: 8_000, file: { url: `/api/assets/${name}.wav`, bytes: 352_844 }, codec: 'wav', ...over };
+}
+
+function manifestIssues(raw: unknown): CatalogIssue[] {
+  const r = decodeAssetManifest(raw);
+  return r.ok ? [] : r.error;
+}
+
+describe('catalog manifests', () => {
+  test('catalog: asset manifest decodes the server fixtures', () => {
+    for (const ch of ['ch2', 'ch4']) {
+      const raw = fixture(ch);
+      // The decoded value is the file's content: every key known, nothing dropped or renamed.
+      expect(decodeAssetManifest(raw), ch).toEqual({ ok: true, value: raw });
+    }
+    const ch2 = decodeAssetManifest(fixture('ch2'));
+    const entries = ch2.ok ? ch2.value.assets : {};
+    expect(Object.entries(entries).map(([id, e]) => [id, e.kind])).toEqual([
+      ['bg/archive', 'image'],
+      ['sfx/door', 'audio'],
+      ['bgm/hall', 'audio'],
+    ]);
+    const hall = entries['bgm/hall' as AssetId];
+    expect(hall?.kind === 'audio' && hall.file.url).toBe('/assets/bgm-hall-0e0e0e0e.m4a'); // a public file in a paid manifest
+  });
+
+  test('catalog: malformed asset manifest is an error value', () => {
+    type RawManifest = { chapterId: string; assets: Record<string, RawEntry> };
+    const valid = (): RawManifest => ({
+      chapterId: 'ch2',
+      assets: { 'bg/archive': image('bg-archive-0a1b2c3d'), 'bgm/mystery': audio('bgm', 'bgm-mystery-1a2b3c4d') },
+    });
+    expect(manifestIssues(valid())).toEqual([]); // control
+    const named = 'bg-archive-0a1b2c3d';
+    const cases: ReadonlyArray<readonly [string, (m: RawManifest) => void, readonly string[]]> = [
+      ['url outside both prefixes', (m) => (m.assets['bg/archive'] = image(named, { avif: { url: `/static/${named}.avif`, bytes: 1 } })), ['assets.bg/archive.avif.url']],
+      ['dot-dot in a name', (m) => (m.assets['bg/archive'] = image(named, { avif: { url: '/api/assets/../secret.avif', bytes: 1 } })), ['assets.bg/archive.avif.url']],
+      ['avif url on webp', (m) => (m.assets['bg/archive'] = image(named, { webp: { url: `/api/assets/${named}.avif`, bytes: 1 } })), ['assets.bg/archive.webp.url']],
+      ['codec is not the extension', (m) => (m.assets['bgm/mystery'] = audio('bgm', 'bgm-mystery-1a2b3c4d', { codec: 'm4a' })), ['assets.bgm/mystery.file.url']],
+      ['decodedBytes is not w*h*4', (m) => (m.assets['bg/archive'] = image(named, { decodedBytes: 1080 * 2048 * 3 })), ['assets.bg/archive.decodedBytes']],
+      // PP:2049 erratum: the manifest carries no placeholder flag (budget reads it from the catalog).
+      ['unknown key', (m) => (m.assets['bgm/mystery'] = audio('bgm', 'bgm-mystery-1a2b3c4d', { placeholder: true })), ['assets.bgm/mystery.placeholder']],
+      ['prop id with an audio entry', (m) => (m.assets['prop/note'] = audio('sfx', 'prop-note-1a2b3c4d')), ['assets.prop/note.kind']],
+      ['bgm id with the sfx role', (m) => (m.assets['bgm/mystery'] = audio('sfx', 'bgm-mystery-1a2b3c4d')), ['assets.bgm/mystery.role']],
+      ['image entry without webp', (m) => (m.assets['bg/archive'] = image(named, { webp: undefined })), ['assets.bg/archive.webp']],
+      ['zero bytes', (m) => (m.assets['bg/archive'] = image(named, { avif: { url: `/api/assets/${named}.avif`, bytes: 0 } })), ['assets.bg/archive.avif.bytes']],
+      ['fractional width', (m) => (m.assets['bg/archive'] = image(named, { w: 1080.5 })), ['assets.bg/archive.w']],
+      ['unknown kind', (m) => (m.assets['bg/archive'] = image(named, { kind: 'video' })), ['assets.bg/archive.kind']],
+      ['not an asset id', (m) => (m.assets['bg/Archive'] = image(named)), ['assets.bg/Archive']],
+      ['a cover in a chapter manifest', (m) => (m.assets['cover/manor'] = image('cover-manor-1a2b3c4d')), ['assets.cover/manor']],
+      ['bad chapter id', (m) => (m.chapterId = 'chapter2'), ['chapterId']],
+      ['unknown top-level key', (m) => Reflect.set(m, 'version', 1), ['version']],
+    ];
+    for (const [name, mutate, paths] of cases) {
+      const m = valid();
+      mutate(m);
+      // JSON round trip: an `undefined` override drops the key, as a file would not have it.
+      const found = manifestIssues(JSON.parse(JSON.stringify(m)));
+      for (const path of paths) {
+        expect(found, name).toContainEqual({ file: 'assets.json', path, detail: expect.any(String) as string });
+      }
+      expect(found.length, `${name}: ${JSON.stringify(found)}`).toBe(paths.length);
+    }
+    for (const raw of [null, [], 'manifest', { chapterId: 'ch2' }]) {
+      expect(decodeAssetManifest(raw).ok, JSON.stringify(raw)).toBe(false);
+    }
+  });
+
+  test('catalog: cover manifest decodes', () => {
+    const cover = (over: RawEntry = {}): RawEntry =>
+      image('x', {
+        w: 360,
+        h: 640,
+        decodedBytes: 360 * 640 * 4,
+        avif: { url: '/assets/cover-manor-1a2b3c4d.avif', bytes: 9_000 },
+        webp: { url: '/assets/cover-manor-1a2b3c4d.webp', bytes: 12_000 },
+        ...over,
+      });
+    const raw = { assets: { 'cover/manor': cover() } };
+    expect(decodeCoverManifest(raw)).toEqual({ ok: true, value: raw });
+    const at = (path: string): CatalogIssue => ({ file: 'story-gen/covers.json', path, detail: expect.any(String) as string });
+    const refused = (value: unknown): CatalogIssue[] => {
+      const r = decodeCoverManifest(value);
+      return r.ok ? [] : r.error;
+    };
+    // Only covers, only images, only public URLs: a cover is shown before any purchase.
+    expect(refused({ assets: { 'bg/cafe': cover() } })).toEqual([at('assets.bg/cafe')]);
+    const gated = cover({ avif: { url: '/api/assets/cover-manor-1a2b3c4d.avif', bytes: 9_000 } });
+    expect(refused({ assets: { 'cover/manor': gated } })).toEqual([at('assets.cover/manor.avif.url')]);
+    expect(refused({ assets: { 'cover/manor': audio('sfx', 'cover-manor-1a2b3c4d') } })).toContainEqual(at('assets.cover/manor.kind'));
+    expect(refused({ assets: {}, chapterId: 'ch1' })).toEqual([at('chapterId')]);
   });
 });

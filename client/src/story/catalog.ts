@@ -25,7 +25,14 @@ export type Result<T, E> = { ok: true; value: T } | { ok: false; error: E };
 
 /** One problem in a catalog or build-output file; `path` is the dotted JSON path ('' = the whole file). */
 export type CatalogIssue = {
-  file: 'assets/catalog.json' | 'story/cast.json' | 'story/chapters.json' | 'story-gen/catalog.json' | 'meta.json';
+  file:
+    | 'assets/catalog.json'
+    | 'story/cast.json'
+    | 'story/chapters.json'
+    | 'story-gen/catalog.json'
+    | 'meta.json'
+    | 'assets.json'
+    | 'story-gen/covers.json';
   path: string;
   detail: string;
 };
@@ -607,4 +614,198 @@ export function decodeChapterMeta(raw: unknown): Result<ChapterMeta, CatalogIssu
       knots,
     },
   };
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Asset tool outputs (L5): the per-chapter asset manifest (PROTOTYPE-PLAN "TS types"), the Home covers' manifest
+// (STORIES-PLAN Y15) and the one fetch seam the asset loaders use (L10-L12). One parser serves the asset tool's tests,
+// budget.ts and the loaders; the server reads the same files through its own probe (server/src/content.rs).
+
+/** '/assets/<file>' (public, a static file of the client build) or '/api/assets/<file>' (gated by entitlement). */
+export type AssetRef = { url: string; bytes: number };
+export type AssetEntry =
+  | { kind: 'image'; w: number; h: number; decodedBytes: number; avif: AssetRef; webp: AssetRef }
+  | { kind: 'audio'; role: 'bgm' | 'sfx'; durationMs: number; file: AssetRef; codec: 'm4a' | 'wav' };
+export type ImageEntry = Extract<AssetEntry, { kind: 'image' }>;
+/** `<ch>.assets.json`: every asset the chapter names, at the tier of its file. */
+export type AssetManifest = { chapterId: ChapterId; assets: Record<AssetId, AssetEntry> };
+/** client/src/story-gen/covers.json: every cover, always public (Home shows them before any purchase). */
+export type CoverManifest = { assets: Readonly<Record<AssetId, ImageEntry>> };
+/**
+ * The one way scene/ and audio/ load asset bytes; implemented by api/http.ts (bearer + single-flight re-auth + retry
+ * once for '/api/' URLs, a plain GET for '/assets/'); injected by GameSession.
+ */
+export type AssetFetchError =
+  | { kind: 'http'; status: number }
+  | { kind: 'network'; detail: string }
+  | { kind: 'session-expired' }
+  | { kind: 'aborted' };
+export type FetchAsset = (url: string, signal: AbortSignal) => Promise<Result<Blob, AssetFetchError>>;
+
+/** server/src/content.rs `gated_asset_type`: no '/', '\' or '.' before the extension, so a URL cannot leave assets/. */
+const ASSET_FILE_RE = /^[a-z0-9][a-z0-9_-]*\.(?:avif|webp|m4a|wav)$/;
+const PUBLIC_PREFIX = '/assets/';
+const GATED_PREFIX = '/api/assets/';
+const IMAGE_NAMESPACES: readonly string[] = ['bg', 'cg', 'char', 'prop', 'cover'];
+
+function positiveInt(value: unknown, path: string, report: Report): number | null {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    report(path, `${JSON.stringify(value) ?? 'undefined'} is not a positive integer`);
+    return null;
+  }
+  return value;
+}
+
+/** A file reference under one of `prefixes`, its name in the server's pattern, ending `.<ext>` (null: any). */
+function assetRef(value: unknown, path: string, ext: string | null, prefixes: readonly string[], report: Report): AssetRef | null {
+  if (!isObject(value)) {
+    report(path, 'not an object');
+    return null;
+  }
+  exactKeys(value, ['url', 'bytes'], path, report);
+  const bytes = Object.hasOwn(value, 'bytes') ? positiveInt(value['bytes'], `${path}.bytes`, report) : null;
+  if (!Object.hasOwn(value, 'url')) {
+    return null;
+  }
+  const url = value['url'];
+  const prefix = typeof url === 'string' ? prefixes.find((p) => url.startsWith(p)) : undefined;
+  const file = typeof url === 'string' && prefix !== undefined ? url.slice(prefix.length) : null;
+  if (typeof url !== 'string' || file === null || !ASSET_FILE_RE.test(file)) {
+    const where = prefixes.map((p) => `${p}<file>`).join(' or ');
+    report(`${path}.url`, `${JSON.stringify(url) ?? 'undefined'} is not ${where} with a file name ${ASSET_FILE_RE.source}`);
+    return null;
+  }
+  if (ext !== null && !file.endsWith(`.${ext}`)) {
+    report(`${path}.url`, `${JSON.stringify(url)} does not end .${ext}`);
+    return null;
+  }
+  return bytes === null ? null : { url, bytes };
+}
+
+/** One manifest entry; its kind (and an audio entry's role) must be its id's namespace's. */
+function assetEntry(id: string, value: unknown, path: string, prefixes: readonly string[], report: Report): AssetEntry | null {
+  if (!isObject(value)) {
+    report(path, 'not an object');
+    return null;
+  }
+  const ns = id.slice(0, id.indexOf('/'));
+  const isImage = IMAGE_NAMESPACES.includes(ns);
+  const kind = value['kind'];
+  if (kind !== 'image' && kind !== 'audio') {
+    report(`${path}.kind`, `${JSON.stringify(kind) ?? 'undefined'} is not 'image' or 'audio'`);
+    return null;
+  }
+  if ((kind === 'image') !== isImage) {
+    report(`${path}.kind`, `'${kind}': ${id} is ${isImage ? 'an image' : 'audio'}`);
+    return null;
+  }
+  const field = <T>(key: string, decode: (v: unknown, p: string) => T | null): T | null =>
+    Object.hasOwn(value, key) ? decode(value[key], `${path}.${key}`) : null;
+  const int = (v: unknown, p: string): number | null => positiveInt(v, p, report);
+  if (kind === 'image') {
+    exactKeys(value, ['kind', 'w', 'h', 'decodedBytes', 'avif', 'webp'], path, report);
+    const w = field('w', int);
+    const h = field('h', int);
+    const decodedBytes = field('decodedBytes', int);
+    if (w !== null && h !== null && decodedBytes !== null && decodedBytes !== w * h * 4) {
+      report(`${path}.decodedBytes`, `${decodedBytes} is not w × h × 4 = ${w * h * 4} (RGBA)`);
+    }
+    const avif = field('avif', (v, p) => assetRef(v, p, 'avif', prefixes, report));
+    const webp = field('webp', (v, p) => assetRef(v, p, 'webp', prefixes, report));
+    if (w === null || h === null || decodedBytes === null || avif === null || webp === null) {
+      return null;
+    }
+    return { kind, w, h, decodedBytes, avif, webp };
+  }
+  exactKeys(value, ['kind', 'role', 'durationMs', 'file', 'codec'], path, report);
+  const role = value['role'];
+  if (Object.hasOwn(value, 'role') && role !== ns) {
+    report(`${path}.role`, `${JSON.stringify(role) ?? 'undefined'}: ${id} is a ${ns}`);
+  }
+  const durationMs = field('durationMs', int);
+  const rawCodec = value['codec'];
+  const codec = rawCodec === 'm4a' || rawCodec === 'wav' ? rawCodec : null;
+  if (Object.hasOwn(value, 'codec') && codec === null) {
+    report(`${path}.codec`, `${JSON.stringify(rawCodec) ?? 'undefined'} is not 'm4a' or 'wav'`);
+  }
+  const file = field('file', (v, p) => assetRef(v, p, codec, prefixes, report));
+  if ((role !== 'bgm' && role !== 'sfx') || role !== ns || durationMs === null || codec === null || file === null) {
+    return null;
+  }
+  return { kind, role, durationMs, file, codec };
+}
+
+/** The `assets` map of a manifest: asset ids, each entry decoded; `refuse` names ids this file may not hold. */
+function manifestEntries(
+  value: unknown,
+  prefixes: readonly string[],
+  refuse: (id: string) => string | null,
+  report: Report,
+): Record<string, AssetEntry> {
+  const out: Record<string, AssetEntry> = {};
+  if (!isObject(value)) {
+    report('assets', 'not an object');
+    return out;
+  }
+  for (const [id, entry] of Object.entries(value)) {
+    const path = `assets.${id}`;
+    const refusal = ASSET_ID_RE.test(id) ? refuse(id) : `'${id}' is not an asset id (${ASSET_ID_RE.source})`;
+    if (refusal !== null) {
+      report(path, refusal);
+      continue;
+    }
+    const decoded = assetEntry(id, entry, path, prefixes, report);
+    if (decoded !== null) {
+      out[id] = decoded;
+    }
+  }
+  return out;
+}
+
+/**
+ * Decodes a chapter's `assets.json` (free: story-gen/free/<ch>.assets.json; paid: server/content/chapters/<ch>/):
+ * exact keys per kind, URLs `/assets/<file>` or `/api/assets/<file>` with the server's file-name rule and the slot's
+ * extension (`avif`, `webp`, `file` = `.<codec>`), `decodedBytes = w × h × 4`, kinds and roles per namespace. A cover
+ * belongs to no chapter (covers.json). Every problem is reported.
+ */
+export function decodeAssetManifest(raw: unknown): Result<AssetManifest, CatalogIssue[]> {
+  const issues: CatalogIssue[] = [];
+  const report: Report = (path, detail) => issues.push({ file: 'assets.json', path, detail });
+  if (!isObject(raw)) {
+    report('', 'not a JSON object');
+    return { ok: false, error: issues };
+  }
+  exactKeys(raw, ['chapterId', 'assets'], '', report);
+  const chapterId = Object.hasOwn(raw, 'chapterId') ? matching(raw['chapterId'], CHAPTER_ID_RE, 'chapterId', report) : null;
+  const refuseCover = (id: string): string | null =>
+    id.startsWith('cover/') ? 'a cover belongs to no chapter: it is in story-gen/covers.json' : null;
+  const assets = Object.hasOwn(raw, 'assets') ? manifestEntries(raw['assets'], [PUBLIC_PREFIX, GATED_PREFIX], refuseCover, report) : {};
+  if (issues.length > 0 || chapterId === null) {
+    return { ok: false, error: issues };
+  }
+  // The brands are earned above: the chapter id and every asset id matched their patterns.
+  return { ok: true, value: { chapterId: chapterId as ChapterId, assets: assets as Record<AssetId, AssetEntry> } };
+}
+
+/** Decodes client/src/story-gen/covers.json: `cover/<id>` images only, public URLs only. */
+export function decodeCoverManifest(raw: unknown): Result<CoverManifest, CatalogIssue[]> {
+  const issues: CatalogIssue[] = [];
+  const report: Report = (path, detail) => issues.push({ file: 'story-gen/covers.json', path, detail });
+  if (!isObject(raw)) {
+    report('', 'not a JSON object');
+    return { ok: false, error: issues };
+  }
+  exactKeys(raw, ['assets'], '', report);
+  const onlyCovers = (id: string): string | null => (id.startsWith('cover/') ? null : `'${id}' is not a cover (cover/<id>)`);
+  const assets = Object.hasOwn(raw, 'assets') ? manifestEntries(raw['assets'], [PUBLIC_PREFIX], onlyCovers, report) : {};
+  if (issues.length > 0) {
+    return { ok: false, error: issues };
+  }
+  const images: Record<string, ImageEntry> = {};
+  for (const [id, entry] of Object.entries(assets)) {
+    if (entry.kind === 'image') {
+      images[id] = entry; // always: the cover namespace admits image entries only
+    }
+  }
+  return { ok: true, value: { assets: images as Record<AssetId, ImageEntry> } }; // every key matched ASSET_ID_RE
 }
