@@ -533,3 +533,63 @@ test(
   },
   CLI_TIMEOUT_MS,
 );
+
+test(
+  'story: coverage report lists seeds and endings per chapter',
+  () => {
+    withRepo(repoFiles(), (root) => {
+      const r = runStory(root);
+      expect(r.status, r.stdout + r.stderr).toBe(0);
+      expect(r.stdout).toMatch(/^play: ch1: 200 runs, knots 2\/2, endings 1\/1 \(seeds 1-200, defaults; ended 200, yielded 0, failed 0\)$/m);
+      expect(r.stdout).toMatch(/^play: ch2: 200 runs, knots 1\/1, endings 1\/1 \(seeds 1-200, ch1 carries; ended 200, yielded 0, failed 0\)$/m);
+      // After the chapter lines, in list order.
+      const lines = r.stdout.split('\n').filter((l) => /^(?:story|play): ch\d/.test(l));
+      expect(lines.map((l) => l.split(':')[0] + ' ' + (/ch\d/.exec(l)?.[0] ?? ''))).toEqual(['story ch1', 'story ch2', 'play ch1', 'play ch2']);
+    });
+  },
+  CLI_TIMEOUT_MS,
+);
+
+test(
+  'story: a chapter with source errors is not played',
+  () => {
+    // `bg` and `scene` in one batch is a §7 conflict: the source lint reports it, and the playthrough does not again.
+    const lines = CH1_INK.split('\n');
+    lines.splice(4, 0, '# bg: room');
+    withRepo({ ...repoFiles(), 'story/ch1/main.ink': lines.join('\n') }, (root) => {
+      const r = runStory(root);
+      expect(r.status, r.stdout + r.stderr).toBe(1);
+      expect(r.stdout.split('\n').filter((l) => l.includes(' batch/conflict ')), r.stdout).toEqual([expect.stringMatching(/^E story\/ch1\/main\.ink:5 batch\/conflict /)]);
+      expect(r.stdout).toMatch(/^play: ch1: not played \(errors in its sources\)$/m);
+      expect(r.stdout).toMatch(/^play: ch2: not played \(ch1 was not played\)$/m);
+      expect(r.stdout).not.toMatch(/^play: ch\d: \d+ runs/m);
+    });
+  },
+  CLI_TIMEOUT_MS,
+);
+
+test(
+  'story: a next that is not a later chapter fails the gate',
+  () => {
+    // The list is in play order (§9; decodeChapterList): a successor is judged after its predecessor, so a `next`
+    // that names the same or an earlier chapter is the list's error, never a crash or a silently unplayed chapter.
+    const ch1 = { id: 'ch1', entry: 'ch1/main.ink', paid: false };
+    const ch2 = { id: 'ch2', entry: 'ch2/main.ink', paid: true, productId: 'chapter:ch2' };
+    const cases: ReadonlyArray<readonly [name: string, list: unknown, expected: readonly RegExp[]]> = [
+      ['self', [{ ...ch1, next: 'ch1' }, { ...ch2, next: null }], [/^E story\/chapters\.json:0 catalog\/chapters ch1: next 'ch1' is not a later chapter/m, /^play: ch1: not played \(ch1 was not played\)$/m]],
+      ['reversed', [{ ...ch2, next: null }, { ...ch1, next: 'ch2' }], [/^E story\/chapters\.json:0 catalog\/chapters ch1: next 'ch2' is not a later chapter/m, /^play: ch2: not played \(ch1 was not played\)$/m]],
+    ];
+    for (const [name, list, expected] of cases) {
+      withRepo({ ...repoFiles(), 'story/chapters.json': JSON.stringify(list) }, (root) => {
+        const r = runStory(root);
+        expect(r.stderr, name).toBe('');
+        expect(r.status, `${name}: ${r.stdout}`).toBe(1);
+        for (const re of expected) {
+          expect(r.stdout, name).toMatch(re);
+        }
+        expect(r.stdout, name).toMatch(/^story: 1 errors, 0 warnings$/m);
+      });
+    }
+  },
+  2 * CLI_TIMEOUT_MS,
+);

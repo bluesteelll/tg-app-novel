@@ -1,8 +1,8 @@
-// The story tool (STAGING-DSL §11): catalog checks → source lint → compile → knot graph → localization → emit. Every
-// finding is printed, never only the first; outputs are written (and stale ones deleted) only when no error remains,
-// then story-gen is read back for paid leaks. Exit 1 iff an error remains. The story sources are rewritten only on
-// request (STAGING-DSL §4): `--fix-ids` writes the missing line IDs into the ink files before the lint,
-// `--sync-locales` appends the new IDs to the en tables before the localization checks.
+// The story tool (STAGING-DSL §11): catalog checks → source lint → compile → knot graph → localization → seeded
+// playthroughs → emit. Every finding is printed, never only the first; outputs are written (and stale ones deleted)
+// only when no error remains, then story-gen is read back for paid leaks. Exit 1 iff an error remains. The story
+// sources are rewritten only on request (STAGING-DSL §4): `--fix-ids` writes the missing line IDs into the ink files
+// before the lint, `--sync-locales` appends the new IDs to the en tables before the localization checks.
 // Usage: node scripts/story.ts [--strict] [--fix-ids] [--sync-locales] [--root <repo>]   (`--strict`: every warning is
 // an error; the repo root defaults to two levels above this script, never the cwd)
 import { randomInt } from 'node:crypto';
@@ -24,6 +24,8 @@ import { LINT_CODES, lintCatalog, lintSources } from './story/lint.ts';
 import type { Finding, LintCode, SourceChapter, SourceLintInput } from './story/lint.ts';
 import { RETIRED_FILE, checkLocales, decodeEnTable, decodeNameTable, decodeRetired } from './story/locales.ts';
 import type { EnTable } from './story/locales.ts';
+import { ALLOW_FILE, coverageLine, decodeAllow, playChapter } from './story/playthrough.ts';
+import type { ChapterPlay } from './story/playthrough.ts';
 
 const USAGE = 'usage: node scripts/story.ts [--strict] [--fix-ids] [--sync-locales] [--root <repo>]';
 /** The en tables (STAGING-DSL §4): `<ch>.json` per chapter, beside the names and titles of `story.json`. */
@@ -222,6 +224,73 @@ function fixPass(root: string, files: Map<string, string>, input: Omit<SourceLin
   ];
 }
 
+/**
+ * Stage 6 (STAGING-DSL §11 "Seeded playthroughs"): every listed chapter in list order, seeded from its predecessor's
+ * carries. A chapter is played only if it compiled with a first knot, no error of the lint, compile or graph stage
+ * names one of its files (`sourceErrors`, read before `--strict`), and its predecessor, if any, was played: a play
+ * finding then always means a runtime-only defect, never a second report of a source finding, and a successor never
+ * runs on defaults the game would not give it. Each reason not to play implies an error. Its findings go to `out`;
+ * returns one report line per listed chapter and how many were not played.
+ */
+function playStage(
+  root: string,
+  input: {
+    chapters: readonly ChapterListEntry[];
+    /** The decoded list, or null: then no allowlist entry can be judged unlisted. */
+    list: readonly ChapterListEntry[] | null;
+    compiled: ReadonlyMap<ChapterId, CompiledChapter>;
+    graphs: ReadonlyMap<ChapterId, ChapterGraph>;
+    assets: AssetIndex | null;
+    cast: Cast | null;
+    en: ReadonlyMap<string, EnTable>;
+    sourceErrors: ReadonlySet<string>;
+  },
+  out: Finding[],
+): { lines: string[]; skipped: number } {
+  const allow = decodeAllow(readRaw(root, `story/${ALLOW_FILE}`), input.list, input.graphs);
+  out.push(...inStory(allow.findings));
+  const plays = new Map<ChapterId, ChapterPlay>();
+  const lines: string[] = [];
+  let skipped = 0;
+  const skip = (ch: ChapterId, why: string): void => {
+    lines.push(`play: ${ch}: not played (${why})`);
+    skipped += 1;
+  };
+  for (const ch of input.chapters) {
+    const c = input.compiled.get(ch.id);
+    const g = input.graphs.get(ch.id);
+    if (c === undefined || g === undefined || input.assets === null || input.cast === null) {
+      skip(ch.id, 'not compiled');
+      continue;
+    }
+    if (g.firstKnot === null || c.files.some((key) => input.sourceErrors.has(`story/${key}`))) {
+      skip(ch.id, 'errors in its sources');
+      continue;
+    }
+    const pred = input.chapters.find((p) => p.next === ch.id);
+    const prior = pred === undefined ? undefined : plays.get(pred.id);
+    if (pred !== undefined && prior === undefined) {
+      skip(ch.id, `${pred.id} was not played`);
+      continue;
+    }
+    const r = playChapter({
+      chapter: { id: ch.id, paid: ch.paid, entry: ch.entry },
+      json: c.json,
+      graph: g,
+      assets: input.assets,
+      cast: input.cast,
+      en: input.en.get(ch.id)?.entries ?? new Map(),
+      staticIds: new Set(g.lines.map((l) => l.id)),
+      allow: allow.allow,
+      carry: pred === undefined || prior === undefined ? null : { from: pred.id, snapshots: prior.carries.map((x) => x.vars) },
+    });
+    out.push(...inStory(r.findings));
+    plays.set(ch.id, r.play);
+    lines.push(coverageLine(r.play, g));
+  }
+  return { lines, skipped };
+}
+
 function issueFindings(code: LintCode, issues: readonly CatalogIssue[]): Finding[] {
   return issues.map((i) => finding(code, i.file, i.path === '' ? i.detail : `${i.path}: ${i.detail}`));
 }
@@ -265,6 +334,13 @@ export function main(argv: readonly string[], repoRoot: string): number {
   for (const c of chapters.filter((ch) => !files.has(ch.entry))) {
     found.push(finding('catalog/chapters', 'story/chapters.json', `${c.id}: the entry file story/${c.entry} is missing`));
   }
+  // The list is in play order (§9): a chapter's successor comes after it, so a playthrough always has its
+  // predecessor's carries (stage 6) and a chain cannot loop.
+  chapters.forEach((c, i) => {
+    if (c.next !== null && chapters.findIndex((n) => n.id === c.next) <= i) {
+      found.push(finding('catalog/chapters', 'story/chapters.json', `${c.id}: next '${c.next}' is not a later chapter: the list is in play order (§9)`));
+    }
+  });
 
   // 2. The asset catalog and the cast: without both, no tag can be checked, so nothing below runs.
   const catalogJson = readJson(root, 'assets/catalog.json', 'catalog/assets', found);
@@ -303,6 +379,9 @@ export function main(argv: readonly string[], repoRoot: string): number {
     notes.push(`fix-ids: skipped (${assets === null ? 'assets/catalog.json' : 'story/cast.json'} has errors)`);
   }
 
+  // The files an error of stages 1-4 names: such a chapter is not played (stage 6). Localization errors do not gate play.
+  const sourceErrors = new Set(found.filter((f) => f.severity === 'E').map((f) => f.file));
+
   // 5. Localization (after `--sync-locales` appended the new IDs): the en tables of the compiled chapters, the names
   // and titles, and the ID rules no single chapter can see. Without the cast no name can be checked.
   const enTexts = readEnTables(root);
@@ -311,8 +390,15 @@ export function main(argv: readonly string[], repoRoot: string): number {
   }
   const localized = cast === null ? null : localeStage(root, { chapters: decoded?.ok === true ? decoded.value : null, graphs, cast, texts: enTexts }, found);
 
+  // 6. Seeded playthroughs of the chapters, in list order.
+  const played = playStage(root, { chapters, list: decoded?.ok === true ? decoded.value : null, compiled, graphs, assets, cast, en: localized?.en ?? new Map(), sourceErrors }, found);
+  // Each reason not to play implies an error: a slip here would be a chapter silently unchecked on a green run.
+  if (played.skipped > 0 && !found.some((f) => f.severity === 'E')) {
+    throw new Error('invariant: a listed chapter not played implies an error');
+  }
+
   const findings = strict ? found.map((f): Finding => (f.severity === 'W' ? { ...f, severity: 'E' } : f)) : found;
-  // 6. Emit only from a clean run: a failed run writes and deletes nothing.
+  // 7. Emit only from a clean run: a failed run writes and deletes nothing.
   if (!findings.some((f) => f.severity === 'E')) {
     if (cast === null) {
       throw new Error('invariant: a run with no error decoded the cast');
@@ -332,7 +418,7 @@ export function main(argv: readonly string[], repoRoot: string): number {
     findings.push(...paidLeak(readTree(root, OUT.storyGen, () => true), fp.value));
   }
 
-  // 7. Report.
+  // 8. Report.
   for (const note of notes) {
     console.log(note);
   }
@@ -345,6 +431,9 @@ export function main(argv: readonly string[], repoRoot: string): number {
         ? `story: ${ch.id} failed`
         : `story: ${ch.id} ${tier} knots ${g.knots.size} lines ${g.lines.length} version ${storyVersion(c.json)}`,
     );
+  }
+  for (const line of played.lines) {
+    console.log(line);
   }
   for (const f of findings) {
     console.log(`${f.severity} ${f.file}:${f.line} ${f.code} ${f.message}`);
