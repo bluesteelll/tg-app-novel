@@ -51,8 +51,8 @@ pub enum PgDevError {
         /// pg_ctl's exit code and the tail of `postgres.log`.
         detail: String,
     },
-    /// A server runs but is not ready (starting, recovering, or a peer is starting it): never `reset` advice, since
-    /// it may be serving the slot's other consumers.
+    /// A server runs but is not ready (starting, recovering, a peer is starting it, or at max_connections): never
+    /// `reset` advice, since it may be serving the slot's other consumers.
     #[error("cluster on port {port} not ready after {waited_secs} s; see {log}")]
     NotReady {
         /// The cluster port.
@@ -90,7 +90,8 @@ pub enum UpOutcome {
         /// Whether this call's initdb result became the data directory.
         initdb: bool,
     },
-    /// A peer was bringing the server up; this call waited until it was ready.
+    /// A peer was bringing the server up, or a connection slot freed after `53300`; this call waited until it was
+    /// ready.
     JoinedPeer,
 }
 

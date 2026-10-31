@@ -178,10 +178,13 @@ impl DevCluster {
     async fn bring_up(&self) -> Result<UpOutcome, PgDevError> {
         match self.probe().await? {
             Probe::Ready => return Ok(UpOutcome::AlreadyUp),
-            // Starting, recovering or stopping: a server owns the data directory, so neither initdb nor start.
+            // Starting, recovering, stopping or out of connection slots: a server owns the data directory, so
+            // neither initdb nor start.
             Probe::Wait => {
-                self.wait_ready("a server was starting or stopping".to_owned())
-                    .await?;
+                self.wait_ready(
+                    "a server was starting, stopping or out of connection slots".to_owned(),
+                )
+                .await?;
                 return Ok(UpOutcome::JoinedPeer);
             }
             Probe::Down => {}
@@ -356,7 +359,7 @@ impl DevCluster {
 enum Probe {
     /// A server of the required major answered.
     Ready,
-    /// `57P03`: a server is starting, recovering or stopping.
+    /// `57P03`: a server is starting, recovering or stopping; `53300`: every connection slot is taken.
     Wait,
     /// Nothing answered.
     Down,
@@ -374,7 +377,8 @@ enum ConnectFailure {
 /// What a failed connection attempt means for `ensure_up`.
 #[derive(Debug, PartialEq, Eq)]
 enum ConnectClass {
-    /// A server owns the data directory and is starting, recovering or stopping: wait, never start.
+    /// A server owns the data directory and is starting, recovering, stopping or out of connection slots: wait,
+    /// never start.
     Wait,
     /// Nothing listens, or nothing answers in time: start the cluster.
     Down,
@@ -471,7 +475,11 @@ fn pg_major(stdout: &str) -> Result<u32, PgDevError> {
 fn classify(failure: &ConnectFailure) -> ConnectClass {
     match failure {
         ConnectFailure::TimedOut => ConnectClass::Down,
-        ConnectFailure::Sqlx(sqlx::Error::Database(e)) if e.code().as_deref() == Some("57P03") => {
+        // Exact codes, never class 53: `53300` (every connection slot taken, as when several suites share a slot
+        // cluster) ends when a consumer disconnects; its neighbours (disk full, out of memory) need a fix, not a wait.
+        ConnectFailure::Sqlx(sqlx::Error::Database(e))
+            if matches!(e.code().as_deref(), Some("57P03" | "53300")) =>
+        {
             ConnectClass::Wait
         }
         ConnectFailure::Sqlx(sqlx::Error::Io(e))
@@ -1004,6 +1012,9 @@ mod tests {
         let io = |kind| ConnectFailure::Sqlx(sqlx::Error::Io(io::Error::from(kind)));
         let cases = [
             ("57P03 cannot_connect_now", server("57P03"), "wait"),
+            ("53300 too_many_connections", server("53300"), "wait"),
+            // Its neighbour in class 53: the wait takes exact codes, never the class.
+            ("53000 insufficient_resources", server("53000"), "refused"),
             ("28P01 invalid_password", server("28P01"), "refused"),
             ("28000 invalid_authorization", server("28000"), "refused"),
             ("3D000 no such database", server("3D000"), "refused"),
