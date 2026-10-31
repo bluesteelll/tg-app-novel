@@ -1067,6 +1067,30 @@ async fn precheckout_wrong_currency() {
     report(&failures);
 }
 
+/// A pre-checkout from anyone but the order's owner is refused `Mismatch` in the sender's language: `BEN`, a user of
+/// the app too (English), opens `ANN`'s forwarded invoice at its amount in `XTR`. The order stays `created`, and
+/// `ANN`'s own pre-checkout of it then passes.
+#[tokio::test]
+async fn precheckout_wrong_payer() {
+    let mut failures = Vec::new();
+    let (st, _db, gateway) = invoice_state(&[(ANN, Some("ru")), (BEN, Some("en"))]).await;
+    let Some((order, amount)) = new_order(&st, ANN, &mut failures).await else {
+        return report(&failures);
+    };
+    let update = pre_checkout_update("q-ben", BEN, Some("en"), "XTR", amount, &order);
+    let got = answered(&st, &gateway, &update).await;
+    failures.extend(expect_answer(
+        "BEN, ANN's order",
+        &got,
+        &refusal(RejectReason::Mismatch, Lang::En),
+    ));
+    failures.extend(expect_status("after BEN's refusal", &st, &order, "created").await);
+    let update = pre_checkout_update("q-ann", ANN, Some("ru"), "XTR", amount, &order);
+    let got = answered(&st, &gateway, &update).await;
+    failures.extend(expect_answer("ANN, her own order", &got, &Ok(())));
+    report(&failures);
+}
+
 /// A payload that names no order is refused `UnknownOrder`: an unknown id in the grammar, a junk one, one with
 /// U+0000 and an empty one (the last three never reach SQL). The real order is untouched.
 #[tokio::test]
