@@ -948,7 +948,7 @@ async fn answered(st: &AppState, gateway: &RecordingGateway, update: &Value) -> 
 
 /// The refusal the payer sees for `reason` in `lang`. Each test names the language literally, never through the
 /// rule under test.
-fn refusal(reason: RejectReason, lang: Lang) -> Result<(), String> {
+pub(crate) fn refusal(reason: RejectReason, lang: Lang) -> Result<(), String> {
     Err(reject_text(reason, lang).to_owned())
 }
 

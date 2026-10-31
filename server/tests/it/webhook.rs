@@ -1,6 +1,7 @@
 //! `POST /telegram/webhook`: the one door for Telegram's updates. The secret header is checked in constant time
 //! before anything is parsed (401), the body is limited to 1 MiB (413), and an update the server cannot decode is
-//! acknowledged (200) unless it carries a payment it cannot read (500, so Telegram redelivers it).
+//! acknowledged (200) unless it carries a payment it cannot read (500, so Telegram redelivers it). A payment the
+//! database fails to record is 500 too, and a pre-checkout it fails to decide is refused, never approved.
 //!
 //! The wire helpers here ([`post_webhook`], [`post_update`], [`pre_checkout_update`], [`payment_update`]) build the
 //! JSON Telegram sends; the pre-checkout and grant tests in `payments.rs` import them.
@@ -10,10 +11,12 @@ use axum::http::header::CONTENT_TYPE;
 use axum::http::{HeaderValue, Request};
 use serde_json::{Value, json};
 use server::AppState;
+use server::puzzles::Lang;
+use server::telegram::payments::RejectReason;
 
 use crate::catalog::{ANN, T0};
 use crate::common;
-use crate::payments::{GatewayCall, invoice_state, post_invoice};
+use crate::payments::{GatewayCall, invoice_state, post_invoice, refusal};
 
 /// The header Telegram sends `setWebhook`'s `secret_token` in.
 const SECRET_HEADER: &str = "x-telegram-bot-api-secret-token";
@@ -422,6 +425,58 @@ async fn webhook_payment_fields_unreadable_500() {
     let payments = payment_rows(&st).await;
     if payments != 0 {
         failures.push(format!("payments rows: expected 0, got {payments}"));
+    }
+    report(&failures);
+}
+
+/// D6 / D7.2: a database that fails never acknowledges a payment away and never approves a checkout. With the app
+/// pool closed, a decodable `successful_payment` for a real order, and the same payment read by the lenient probe,
+/// are answered 500 (Telegram redelivers, and the idempotent grant runs again); a pre-checkout whose payload is in
+/// the order id grammar, so it reaches the repository, is answered 200 and refused `Temporary`. Nothing is recorded.
+#[tokio::test]
+async fn webhook_database_error_retries_payment_and_refuses_precheckout() {
+    let (st, _db, gateway) = invoice_state(&[(ANN, Some("ru"))]).await;
+    let mut failures = Vec::new();
+    let Some((order, amount)) = new_order(&st, ANN, &mut failures).await else {
+        report(&failures);
+        return;
+    };
+    st.repo.close().await;
+    let decodable = payment_update(ANN, "XTR", amount, &order, "charge-dberr", "");
+    let mut probed = decodable.clone();
+    probed["message"]["successful_payment"]
+        .as_object_mut()
+        .unwrap()
+        .remove("provider_payment_charge_id");
+    for (case, update) in [
+        ("a decodable successful_payment", decodable),
+        ("a payment the lenient probe reads", probed),
+    ] {
+        let reply = post_update(&st, &update).await;
+        if reply.status.as_u16() != 500 {
+            failures.push(format!(
+                "{case}: a grant that failed must be redelivered: expected 500, got {}",
+                reply.status.as_u16()
+            ));
+        }
+    }
+    let update = pre_checkout_update("q-dberr", ANN, Some("ru"), "XTR", amount, &order);
+    let reply = post_update(&st, &update).await;
+    let answer = gateway.answer("q-dberr");
+    let want = refusal(RejectReason::Temporary, Lang::Ru);
+    if reply.status.as_u16() != 200 || answer.as_ref() != Some(&want) {
+        failures.push(format!(
+            "pre-checkout: a failed database step must be refused: expected 200 {want:?}, got {} {answer:?}",
+            reply.status.as_u16()
+        ));
+    }
+    let payments = payment_rows(&st).await;
+    if payments != 0 {
+        failures.push(format!("payments rows: expected 0, got {payments}"));
+    }
+    let status = order_status(&st, &order).await;
+    if status != "created" {
+        failures.push(format!("order status: expected created, got {status}"));
     }
     report(&failures);
 }
