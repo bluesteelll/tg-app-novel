@@ -702,10 +702,9 @@ fn launch_start(
         ps_literal(&args),
         ps_literal(unicode(cwd)?)
     );
-    let utf16le: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
     let status = Command::new("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-EncodedCommand"])
-        .arg(base64(&utf16le))
+        .arg(encoded_command(&script))
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -777,6 +776,14 @@ fn ps_literal(text: &str) -> String {
     }
     literal.push('\'');
     literal
+}
+
+/// `script` as PowerShell's `-EncodedCommand` takes it: the base64 of its UTF-16LE bytes. One function, so the unit
+/// test pins the composition the launcher runs.
+#[cfg(windows)]
+fn encoded_command(script: &str) -> String {
+    let utf16le: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    base64(&utf16le)
 }
 
 /// Standard base64 with padding (RFC 4648 section 4), for `-EncodedCommand`.
@@ -1062,6 +1069,67 @@ mod tests {
             if got != expected {
                 failures.push(format!("{case}: expected {expected}, got {got}"));
             }
+        }
+        report(&failures);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn encoded_command_base64_vectors() {
+        // The first 254, 255 and 256 bytes of 0..=255 (one length per residue mod 3), encoded by an independent
+        // encoder: PowerShell's `[Convert]::ToBase64String([byte[]](0..253))`, `(0..254)`, `(0..255)`.
+        const BYTES_254: &str = concat!(
+            "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4",
+            "OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3Bx",
+            "cnN0dXZ3eHl6e3x9fn+AgYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmq",
+            "q6ytrq+wsbKztLW2t7i5uru8vb6/wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t/g4eLj",
+            "5OXm5+jp6uvs7e7v8PHy8/T19vf4+fr7/P0=",
+        );
+        const BYTES_255: &str = concat!(
+            "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4",
+            "OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3Bx",
+            "cnN0dXZ3eHl6e3x9fn+AgYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmq",
+            "q6ytrq+wsbKztLW2t7i5uru8vb6/wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t/g4eLj",
+            "5OXm5+jp6uvs7e7v8PHy8/T19vf4+fr7/P3+",
+        );
+        const BYTES_256: &str = concat!(
+            "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4",
+            "OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3Bx",
+            "cnN0dXZ3eHl6e3x9fn+AgYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmq",
+            "q6ytrq+wsbKztLW2t7i5uru8vb6/wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t/g4eLj",
+            "5OXm5+jp6uvs7e7v8PHy8/T19vf4+fr7/P3+/w==",
+        );
+        let mut failures = Vec::new();
+        // RFC 4648 section 10.
+        for (input, expected) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            let got = base64(input.as_bytes());
+            if got != expected {
+                failures.push(format!("{input:?}: expected {expected}, got {got}"));
+            }
+        }
+        let bytes: Vec<u8> = (0..=255).collect();
+        for (len, expected) in [(254, BYTES_254), (255, BYTES_255), (256, BYTES_256)] {
+            let got = base64(&bytes[..len]);
+            if got != expected {
+                failures.push(format!(
+                    "{len} bytes of 0..=255: expected {expected}, got {got}"
+                ));
+            }
+        }
+        // What `launch_start` hands to `-EncodedCommand`: UTF-16LE, then base64.
+        let got = encoded_command("exit 7");
+        if got != "ZQB4AGkAdAAgADcA" {
+            failures.push(format!(
+                "encoded_command(\"exit 7\"): expected ZQB4AGkAdAAgADcA, got {got}"
+            ));
         }
         report(&failures);
     }
