@@ -470,9 +470,176 @@ describe('scan assets', () => {
     expect(scanDist('dist', {}).code).toBe(1);
   });
 
+  test('scan: paid-only world asset with empty files section fails', () => {
+    // bg/lamp_room is named only by ch2's world (usage.json worldAssets), never by an ink tag: still paid-only.
+    const usage = { chapters: { ch1: { assets: ['bg/cafe'], knots: {} }, ch2: { assets: ['bg/cafe'], knots: {}, worldAssets: ['bg/lamp_room'] } } };
+    setup({ 'server/content/build/usage.json': JSON.stringify(usage), 'server/content/build/fingerprints.assets.json': JSON.stringify({ files: [] }) });
+    expect(reasons()).toEqual(['files-empty']);
+    expect(loadSections(join(repo, 'client')).findings).toEqual([expect.objectContaining({ detail: expect.stringContaining('paid-only bg/lamp_room;') as string })]);
+    expect(scanDist('dist', {}).code).toBe(1);
+    // The control: the same art in ch1's world too is public.
+    put('server/content/build/usage.json', JSON.stringify({ chapters: { ...usage.chapters, ch1: { assets: ['bg/cafe'], knots: {}, worldAssets: ['bg/lamp_room'] } } }));
+    expect(reasons()).toEqual([]);
+  });
+
   test('scan: asset fingerprints do not stand in for line ids', () => {
     // A valid asset fingerprint file next to an empty line-ID section: each section is checked on its own.
     setup({ 'server/content/build/fingerprints.lines.json': JSON.stringify({ ...LINES, lineIds: [] }) });
     expect(reasons()).toEqual(['line-ids-empty', 'chapter-ids-missing']);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// LW3: the world needles (PUZZLES-PLAN X7, D12): hint IDs and texts of every world, the paid worlds' IDs and texts,
+// the paid en values, built by loadSections from the sources of a temporary repository.
+
+describe('scan worlds', () => {
+  const CH1 = { id: 'ch1', entry: 'ch1/main.ink', paid: false, next: 'ch2' };
+  const CH2 = { id: 'ch2', entry: 'ch2/main.ink', paid: true, productId: 'chapter:ch2', next: null };
+  const LINES = { lineIds: ['ch2.archive.r3t6'], texts: ['Архив пахнет старой бумагой и пылью.'] };
+  const USAGE = { chapters: { ch1: { assets: [], knots: {} }, ch2: { assets: [], knots: {} } } };
+  const HINT_RU = 'Год постройки написан на письме из кабинета.';
+  const HINT_EN = 'The year the house was built is on the letter.';
+  const HINT_ID = 'ch1.drawer.h001';
+  const PAID_TEXT = 'Маяк гаснет каждую ночь ровно в полночь.';
+  const PAID_ID = 'ch2.log.p002';
+  const PUBLIC_INK = '=== start ===\nДобро пожаловать в усадьбу на холме. #id:ch1.start.a001\n-> END\n';
+  let repo = '';
+
+  type Text = { id: string; ru: string };
+  /** A world source of one room with one exit, one doc and one code puzzle with `hints`; it decodes. */
+  function world(ch: string, body: Text, hints: readonly Text[], extra: Record<string, unknown> = {}): string {
+    const t = (owner: string, n: number, ru: string): Text => ({ id: `${ch}.${owner}.t${String(n).padStart(3, '0')}`, ru });
+    const exit = { id: 'out', kind: 'exit', rect: [100, 300, 200, 200], label: t('s', 1, 'Выход'), to: { story: 'k' }, lock: null, sfx: null };
+    const puzzle = { type: 'code', title: t('drawer', 2, 'Ящик'), prompt: t('drawer', 3, 'Три диска.'), closeup: null, params: { dials: 3 }, maxAttempts: null, giveUp: false, solution: [1, 2, 3], hints };
+    return JSON.stringify({
+      format: 1,
+      items: {},
+      docs: { log: { title: t('log', 4, 'Журнал'), body: [body] } },
+      puzzles: { drawer: puzzle },
+      sections: { s: { start: 'hall', bgm: null, rooms: { hall: { bg: 'hall', title: t('s', 5, 'Холл'), onEnter: [], hotspots: [exit] } } } },
+      ...extra,
+    });
+  }
+
+  function write(rel: string, text: string): void {
+    const abs = join(repo, ...rel.split('/'));
+    mkdirSync(dirname(abs), { recursive: true });
+    writeFileSync(abs, text);
+  }
+
+  /** A clean story-tool repository (ch1 free, ch2 paid, no world), `override` written over it; loadSections on it. */
+  function setup(override: Readonly<Record<string, string>> = {}): { sections: Section[]; findings: Finding[] } {
+    const files: Record<string, string> = {
+      'story/chapters.json': JSON.stringify([CH1, CH2]),
+      'story/ch1/main.ink': PUBLIC_INK,
+      'server/content/build/fingerprints.lines.json': JSON.stringify(LINES),
+      'server/content/build/usage.json': JSON.stringify(USAGE),
+      'server/content/chapters/ch2/story.json': '{"inkVersion":21}',
+      ...override,
+    };
+    mkdirSync(join(repo, 'client'), { recursive: true });
+    for (const [rel, text] of Object.entries(files)) {
+      write(rel, text);
+    }
+    return loadSections(join(repo, 'client'));
+  }
+
+  function reasons(findings: readonly Finding[]): string[] {
+    return findings.flatMap((f) => (f.kind === 'fingerprints' ? [f.reason] : []));
+  }
+
+  function section(sections: readonly Section[], name: string): readonly string[] {
+    return sections.find((x) => x.name === name)?.needles ?? [];
+  }
+
+  const FREE_HINT_WORLD = { 'story/ch1/world.json': world('ch1', { id: 'ch1.log.b001', ru: 'Короткая записка.' }, [{ id: HINT_ID, ru: HINT_RU }]) };
+  const FREE_HINT_EN = { 'story/locales/en/ch1.json': JSON.stringify({ [HINT_ID]: { ru: HINT_RU, en: HINT_EN }, 'ch1.start.a001': { ru: 'Добро пожаловать в усадьбу на холме.', en: 'Welcome to the manor on the hill.' } }) };
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'scan-world-'));
+  });
+  afterEach(() => {
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  test('scan: hint text in dist fails', () => {
+    // A FREE chapter's hint, ru and en of 12+ code points: its world file and en table never count as public (C1).
+    const { sections, findings } = setup({ ...FREE_HINT_WORLD, ...FREE_HINT_EN });
+    expect(findings).toEqual([]);
+    expect(section(sections, 'hint-ids')).toEqual([HINT_ID]);
+    expect(section(sections, 'hint-texts')).toEqual([HINT_EN, HINT_RU].sort());
+    // The server puzzle shape (no ID) in a chunk, and the hint's ID inside a base64 data: URI.
+    const js = text('assets/index-a.js', `const h=${JSON.stringify({ ru: HINT_RU, en: HINT_EN })};const u="data:text/plain;base64,${b64(HINT_ID)}";export{h,u};`);
+    const found = scanFiles([INDEX, js], sections);
+    expect(found).toContainEqual({ kind: 'fingerprint', file: 'assets/index-a.js', section: 'hint-texts', needle: HINT_RU, via: 'plain' });
+    expect(found).toContainEqual({ kind: 'fingerprint', file: 'assets/index-a.js', section: 'hint-texts', needle: HINT_EN, via: 'plain' });
+    expect(found).toContainEqual({ kind: 'fingerprint', file: 'assets/index-a.js', section: 'hint-ids', needle: HINT_ID, via: 'data-uri' });
+    // The public ink and the public en value are no needle.
+    expect(scanFiles([INDEX, text('assets/index-b.js', JSON.stringify(PUBLIC_INK))], sections)).toEqual([]);
+  });
+
+  test('scan: hint sources present but no fingerprints fails', () => {
+    // A world with hints that does not decode (an unknown key): no hint ID is derived, the raw probe still counts them.
+    const broken = world('ch1', { id: 'ch1.log.b001', ru: 'Записка.' }, [{ id: HINT_ID, ru: HINT_RU }], { extra: 1 });
+    expect(reasons(setup({ 'story/ch1/world.json': broken }).findings)).toEqual(['world-unreadable', 'hints-empty']);
+    // Not JSON at all: unreadable, and nothing to count.
+    write('story/ch1/world.json', '{"format": 1,');
+    expect(reasons(loadSections(join(repo, 'client')).findings)).toEqual(['world-unreadable']);
+    // It decodes and its one long hint text is also public ink: the IDs derive, the texts come out empty.
+    write('story/ch1/world.json', world('ch1', { id: 'ch1.log.b001', ru: 'Записка.' }, [{ id: HINT_ID, ru: 'Добро пожаловать в усадьбу на холме.' }]));
+    expect(reasons(loadSections(join(repo, 'client')).findings)).toEqual(['hint-texts-empty']);
+  });
+
+  test('scan: paid world text in dist fails', () => {
+    const { sections, findings } = setup({ 'story/ch2/world.json': world('ch2', { id: PAID_ID, ru: PAID_TEXT }, []) });
+    expect(findings).toEqual([]);
+    expect(section(sections, 'paid-world-ids')).toContain(PAID_ID);
+    expect(section(sections, 'paid-world-texts')).toEqual([PAID_TEXT]); // the other texts are under 12 code points
+    expect(section(sections, 'hint-ids')).toEqual([]);
+    const js = text('assets/index-a.js', `const p=${JSON.stringify(PAID_TEXT)};const u="data:application/json;base64,${b64(JSON.stringify({ id: PAID_ID }))}";export{p,u};`);
+    const found = scanFiles([INDEX, js], sections);
+    expect(found).toContainEqual({ kind: 'fingerprint', file: 'assets/index-a.js', section: 'paid-world-texts', needle: PAID_TEXT, via: 'plain' });
+    expect(found).toContainEqual({ kind: 'fingerprint', file: 'assets/index-a.js', section: 'paid-world-ids', needle: PAID_ID, via: 'data-uri' });
+    // A free world's texts are no needle: only its hints are.
+    rmSync(join(repo, 'story', 'ch2'), { recursive: true, force: true });
+    const free = setup({ 'story/ch1/world.json': world('ch1', { id: 'ch1.log.b001', ru: PAID_TEXT }, []) }).sections;
+    expect(free.filter((x) => x.name.startsWith('paid-world') || x.name.startsWith('hint'))).toEqual([]);
+  });
+
+  test('scan: paid world sources present but no fingerprints fails', () => {
+    const broken = world('ch2', { id: PAID_ID, ru: PAID_TEXT }, [], { extra: 1 });
+    expect(reasons(setup({ 'story/ch2/world.json': broken }).findings)).toEqual(['world-unreadable', 'paid-world-empty']);
+    // A paid world that decodes and holds no text at all derives no needle either.
+    write('story/ch2/world.json', JSON.stringify({ format: 1, items: {}, docs: {}, puzzles: {}, sections: {} }));
+    expect(reasons(loadSections(join(repo, 'client')).findings)).toEqual(['paid-world-empty']);
+  });
+
+  test('scan: paid en text in dist fails', () => {
+    const paidEn = 'The archive smells of old paper and dust.';
+    const shared = 'Welcome to the manor on the hill.';
+    const table = { 'ch2.archive.r3t6': { ru: 'Архив пахнет старой бумагой и пылью.', en: paidEn }, 'ch2.archive.v5c1': { ru: 'Да.', en: 'Yes.' }, 'ch2.archive.w7x2': { ru: 'Привет.', en: shared } };
+    const { sections, findings } = setup({ 'story/locales/en/ch2.json': JSON.stringify(table), ...FREE_HINT_EN });
+    expect(findings).toEqual([]);
+    // 'Yes.' is under 12 code points; the shared line is public (ch1's en table) and dropped.
+    expect(section(sections, 'paid-en')).toEqual([paidEn]);
+    const found = scanFiles([INDEX, text('assets/index-a.js', `const t=${JSON.stringify(paidEn)};export{t};`)], sections);
+    expect(found).toContainEqual({ kind: 'fingerprint', file: 'assets/index-a.js', section: 'paid-en', needle: paidEn, via: 'plain' });
+  });
+
+  test('scan: a leaked story-gen copy launders no fingerprint', () => {
+    // A mis-routed copy of the paid world and the free hints sits in story-gen: the needles come from the sources
+    // only, so the copy neither drops them nor stands in for them (D12, critique W1).
+    const leak = JSON.stringify({ hint: { ru: HINT_RU, en: HINT_EN }, paid: PAID_TEXT, id: PAID_ID });
+    const { sections, findings } = setup({
+      ...FREE_HINT_WORLD,
+      ...FREE_HINT_EN,
+      'story/ch2/world.json': world('ch2', { id: PAID_ID, ru: PAID_TEXT }, []),
+      'client/src/story-gen/free/ch1.world.json': leak,
+      'client/src/story-gen/free/ch1.en.json': leak,
+    });
+    expect(findings).toEqual([]);
+    const found = scanFiles([INDEX, text('assets/index-a.js', `const l=${leak};export{l};`)], sections).flatMap((f) => (f.kind === 'fingerprint' ? [`${f.section} ${f.needle}`] : []));
+    expect(found).toEqual(expect.arrayContaining([`hint-texts ${HINT_RU}`, `hint-texts ${HINT_EN}`, `paid-world-texts ${PAID_TEXT}`, `paid-world-ids ${PAID_ID}`]));
   });
 });

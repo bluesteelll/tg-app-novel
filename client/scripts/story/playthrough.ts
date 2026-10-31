@@ -1,18 +1,27 @@
 // The seeded playthroughs of the story gate (STAGING-DSL §11 "Seeded playthroughs", PROTOTYPE-PLAN.md K8): per
 // chapter 200 runs (seeds 1-200; mulberry32 picks each choice), each on its own inkjs Story. A run checks every
 // displayed step (tags parse as one batch, the line has an ID, a runtime-only ID has an en entry and a cast speaker),
-// and ends at `-> END` (ended: it credits its last knot and leaves a carry), at a yield (yielded: no ending, no carry,
-// until LW3 plays through yields) or on an error or a step cap (failed). Per chapter: the knots no run entered and the
-// endings no run reached. Pure, no node:*: the story tool's only importer of the inkjs RUNTIME ('inkjs').
+// and ends at `-> END` (ended: it credits its last knot and leaves a carry), at a yield (yielded: no ending, no carry)
+// or on an error or a step cap (failed). With the chapter's world (LW3, PUZZLES-PLAN "Seeded playthroughs") a run
+// plays through its yields instead: a random puzzle outcome, or a random walk over the section's `successors`, then
+// `project` and the next knot, on one WorldState per run. Per chapter: the knots no run entered, the endings no run
+// reached, and the puzzle outcomes the runs saw. Pure, no node:*: the story tool's only importer of the inkjs
+// RUNTIME ('inkjs').
 import { Story as UntypedStory } from 'inkjs';
 import type { InkObject } from 'inkjs/engine/Object';
 import type { Story as InkStory } from 'inkjs/engine/Story';
 import type { AbstractValue } from 'inkjs/engine/Value';
 
+import { project } from '../../src/explore/project.ts';
+import { reduce, successors } from '../../src/explore/reduce.ts';
+import type { ExploreAction } from '../../src/explore/reduce.ts';
+import { EMPTY_WORLD_STATE } from '../../src/explore/state.ts';
+import type { PuzzleOutcome, WorldState } from '../../src/explore/state.ts';
 import { CHAPTER_ID_RE, KNOT_NAME_RE } from '../../src/story/catalog.ts';
 import type { Cast, ChapterListEntry, InkScalar } from '../../src/story/catalog.ts';
-import type { AssetIndex, ChapterId, KnotName, ParsedTags, StagingCommand, VarName, YieldCommand } from '../../src/story/staging.ts';
+import type { AssetIndex, ChapterId, KnotName, ParsedTags, PuzzleLocalId, SectionId, StagingCommand, VarName, YieldCommand } from '../../src/story/staging.ts';
 import { YIELD_KINDS, parseTags, splitSpeaker } from '../../src/story/tags.ts';
+import type { WorldPublicBody } from '../../src/world/types.ts';
 import type { ChapterGraph, StoryLine } from './graph.ts';
 import { LINT_CODES } from './lint.ts';
 import type { Finding, LintCode, SourceChapter } from './lint.ts';
@@ -74,6 +83,8 @@ export type ChapterPlay = {
   carriedFrom: ChapterId | null;
   /** How many snapshots that chapter offered: 0 means it left none, so the runs used the declared defaults. */
   carrySnapshots: number;
+  /** Per puzzle some run ended (a yield or a lock in a walk), the `pz_<puzzle>` codes seen: 1 solved, 2 failed, 3 abandoned. */
+  outcomes: ReadonlyMap<PuzzleLocalId, ReadonlySet<number>>;
 };
 export type PlayInput = {
   chapter: SourceChapter;
@@ -90,6 +101,8 @@ export type PlayInput = {
   carry: { from: ChapterId; snapshots: readonly CarrySnapshot[] } | null;
   /** Tests only; the CLI plays PLAY_RUNS. */
   runs?: number;
+  /** The chapter's public world (default none: a yield ends the run as `yielded`). */
+  world?: WorldPublicBody;
 };
 
 export const ALLOW_FILE = 'lint-allow.json';
@@ -181,7 +194,17 @@ export function decodeAllow(
 
 /** A finding of one run, before the runs are aggregated. */
 type RunFinding = { code: LintCode; file: string; line: number; detail: string };
-type Run = { outcome: 'ended' | 'yielded' | 'failed'; visited: ReadonlySet<KnotName>; carry: Carry | null; findings: RunFinding[]; choices: readonly number[] };
+type Run = {
+  outcome: 'ended' | 'yielded' | 'failed';
+  visited: ReadonlySet<KnotName>;
+  carry: Carry | null;
+  findings: RunFinding[];
+  choices: readonly number[];
+  /** The puzzle outcomes this run saw, in order. */
+  puzzles: ReadonlyArray<{ puzzle: PuzzleLocalId; outcome: PuzzleOutcome }>;
+};
+/** `pz_<puzzle>`'s value per outcome (project.ts, PUZZLES-PLAN X2). */
+const OUTCOME_CODE: Readonly<Record<PuzzleOutcome, number>> = { solved: 1, failed: 2, abandoned: 3 };
 type Context = { input: PlayInput; knots: ReadonlyMap<string, KnotName>; lines: ReadonlyMap<string, StoryLine> };
 
 /** The object as an ink value: a variable's slot holds a Value (engine/Value.js), never another InkObject. */
@@ -294,11 +317,12 @@ function playRun(ctx: Context, seed: number, snapshot: CarrySnapshot | null): Ru
 
   const findings: RunFinding[] = [];
   const choices: number[] = [];
+  const puzzles: Array<{ puzzle: PuzzleLocalId; outcome: PuzzleOutcome }> = [];
   let lastLine: StoryLine | null = null;
   const here = (): { file: string; line: number } => (lastLine === null ? entry : { file: lastLine.file, line: lastLine.line });
   const failed = (code: LintCode, at: { file: string; line: number }, detail: string): Run => {
     findings.push({ code, ...at, detail });
-    return { outcome: 'failed', visited: trail.visited, carry: null, findings, choices };
+    return { outcome: 'failed', visited: trail.visited, carry: null, findings, choices, puzzles };
   };
   const capped = (detail: string): Run => {
     const knot = trail.last === null ? undefined : input.graph.knots.get(trail.last);
@@ -314,7 +338,18 @@ function playRun(ctx: Context, seed: number, snapshot: CarrySnapshot | null): Ru
   }
   let pending: string[] = [];
   let continues = 0;
-  try {
+  /** Runs ink until it stops (no line left, no choice offered); a failed Run, or null when it stopped. */
+  const runInk = (): Run | null => {
+    try {
+      return inkLoop();
+    } catch (e) {
+      if (e === INK_STEP_CAP_HIT) {
+        return capped(`one step ran ${INK_STEPS_PER_CONTINUE_CAP} ink steps without a line: a loop with no text`);
+      }
+      return failed('play/runtime-error', here(), e instanceof Error ? e.message : String(e));
+    }
+  };
+  const inkLoop = (): Run | null => {
     for (;;) {
       while (story.canContinue) {
         inkSteps = 0;
@@ -365,24 +400,143 @@ function playRun(ctx: Context, seed: number, snapshot: CarrySnapshot | null): Ru
       choices.push(pick);
       story.ChooseChoiceIndex(pick);
     }
-  } catch (e) {
-    if (e === INK_STEP_CAP_HIT) {
-      return capped(`one step ran ${INK_STEPS_PER_CONTINUE_CAP} ink steps without a line: a loop with no text`);
+    return null;
+  };
+
+  // Through the yields, with the chapter's world (D14): one WorldState per run, the event knot running now.
+  let ws: WorldState = EMPTY_WORLD_STATE;
+  let event: { knot: KnotName; section: SectionId } | null = null;
+  const declared = new Set(input.graph.vars);
+  const header = (knot: KnotName): { file: string; line: number } => {
+    const node = input.graph.knots.get(knot);
+    return node === undefined ? entry : { file: node.file, line: node.line };
+  };
+  /** Writes the projection (only the chapter's declared VARs) and enters `knot` at its top. */
+  const enter = (world: WorldPublicBody, knot: KnotName): Run | null => {
+    if (!ctx.knots.has(knot)) {
+      return failed('play/runtime-error', here(), `knot '${knot}' that the world enters is not in ${input.chapter.id}`);
     }
-    return failed('play/runtime-error', here(), e instanceof Error ? e.message : String(e));
-  }
-  // The stop: what is left of the batch is the yield step's (§3.5), or tags after the last line.
-  const rest = parseTags(pending, input.assets);
-  batchErrors(rest, here(), findings);
-  if (rest.commands.some(isYield)) {
-    return { outcome: 'yielded', visited: trail.visited, carry: null, findings, choices };
+    try {
+      for (const [name, value] of Object.entries(project(world, ws, declared))) {
+        story.variablesState.$(name, value);
+      }
+      story.ChoosePathString(knot);
+    } catch (e) {
+      return failed('play/runtime-error', here(), `entering '${knot}': ${e instanceof Error ? e.message : String(e)}`);
+    }
+    // No count here: ChoosePathString diverts through VisitChangedContainersDueToDivert, so the VisitContainer
+    // wrapper above credits `knot` (the walk test's visited list pins it).
+    return null;
+  };
+  const tierOf = (world: WorldPublicBody, puzzle: PuzzleLocalId): number => {
+    const tiers = Object.hasOwn(world.puzzles, puzzle) ? (world.puzzles[puzzle]?.hintTiers ?? 0) : 0;
+    return Math.floor(rng() * (tiers + 1)); // 0..tiers, uniform
+  };
+  const hinted = (world: WorldPublicBody, puzzle: PuzzleLocalId): void => {
+    const tier = tierOf(world, puzzle);
+    if (tier > 0) {
+      ws = reduce(world, ws, { kind: 'hint-opened', puzzle, tier }).state;
+    }
+  };
+  /** A random walk over the section's successors until an event knot or a leave knot runs; that knot, or a failed Run. */
+  const walk = (world: WorldPublicBody): { knot: KnotName; event: boolean } | Run => {
+    for (;;) {
+      const head = ws.pendingStory[0];
+      if (head !== undefined) {
+        return { knot: head, event: true };
+      }
+      const next = successors(world, ws);
+      if (next.length === 0) {
+        return failed('play/runtime-error', here(), `explore walk stuck in ${ws.room ?? 'no room'}`);
+      }
+      continues += 1;
+      if (continues > STEP_CAP) {
+        return capped(`the run passed ${STEP_CAP} steps: a loop`);
+      }
+      const pick = next[Math.floor(rng() * next.length)];
+      if (pick === undefined) {
+        throw new Error('invariant: a pick indexes the successors');
+      }
+      const before = ws;
+      ws = pick.state;
+      const step = pick.step;
+      if (step.kind === 'puzzle-ended') {
+        hinted(world, step.puzzle); // hints and the outcome touch different fields of the run, so the order is free
+        puzzles.push({ puzzle: step.puzzle, outcome: step.outcome });
+      }
+      if (pick.leaves) {
+        // successors keeps the state, not the effects: the step again, for the knot it leaves into.
+        const leave = step.kind === 'closed' ? undefined : reduce(world, before, step).effects.find((e) => e.kind === 'leave');
+        if (leave?.kind !== 'leave') {
+          throw new Error('invariant: a leaving successor re-reduces to a leave effect');
+        }
+        return { knot: leave.knot, event: false };
+      }
+    }
+  };
+
+  for (;;) {
+    const stopped = runInk();
+    if (stopped !== null) {
+      return stopped;
+    }
+    // The stop: what is left of the batch is the yield step's (§3.5), or tags after the last line.
+    const rest = parseTags(pending, input.assets);
+    pending = [];
+    batchErrors(rest, here(), findings);
+    const y = rest.commands.find(isYield);
+    const world = input.world;
+    if (world === undefined) {
+      if (y !== undefined) {
+        return { outcome: 'yielded', visited: trail.visited, carry: null, findings, choices, puzzles };
+      }
+      break;
+    }
+    if (event !== null && !(y?.kind === 'explore' && y.section === event.section)) {
+      const how = y === undefined ? 'it ended' : `it yields '${y.kind}'`;
+      return failed('play/event-no-return', header(event.knot), `event knot '${event.knot}' of section ${event.section} stopped without '# explore: ${event.section}' (${how})`);
+    }
+    if (y === undefined) {
+      break;
+    }
+    if (y.kind === 'puzzle') {
+      const pz = Object.hasOwn(world.puzzles, y.puzzle) ? world.puzzles[y.puzzle] : undefined;
+      if (pz === undefined) {
+        return failed('play/runtime-error', here(), `puzzle '${y.puzzle}' is not in ${input.chapter.id}'s world`);
+      }
+      const open: PuzzleOutcome[] = ['solved', ...(pz.maxAttempts === null ? [] : ['failed' as const]), ...(pz.giveUp ? ['abandoned' as const] : [])];
+      const outcome = open[Math.floor(rng() * open.length)] ?? 'solved';
+      hinted(world, y.puzzle);
+      ws = reduce(world, ws, { kind: 'puzzle-ended', puzzle: y.puzzle, outcome }).state;
+      puzzles.push({ puzzle: y.puzzle, outcome });
+      const entered = enter(world, y.then);
+      if (entered !== null) {
+        return entered;
+      }
+      continue;
+    }
+    const pendingStory = ws.pendingStory.length > 0;
+    const action: ExploreAction = pendingStory ? { kind: 'event-returned', section: y.section } : { kind: 'enter-section', section: y.section };
+    ws = reduce(world, ws, action).state;
+    event = null;
+    const next = walk(world);
+    if ('outcome' in next) {
+      return next;
+    }
+    if (next.event) {
+      event = { knot: next.knot, section: y.section };
+    }
+    const entered = enter(world, next.knot);
+    if (entered !== null) {
+      return entered;
+    }
   }
   // `-> END` clears the pointer (StoryState.ForceEnd), so the run's knot is the last one it entered.
   const knot = trail.last;
   if (knot === null) {
     throw new Error('invariant: an ended run entered a knot');
   }
-  return { outcome: 'ended', visited: trail.visited, carry: { knot, vars: carryOf(story, input.graph.globals) }, findings, choices };
+  return { outcome: 'ended', visited: trail.visited, carry: { knot, vars: carryOf(story, input.graph.globals) }, findings, choices, puzzles };
 }
 
 /**
@@ -401,6 +555,7 @@ export function playChapter(input: PlayInput): { play: ChapterPlay; findings: Fi
   const visited = new Set<KnotName>();
   const endings = new Set<KnotName>();
   const carries: Carry[] = [];
+  const outcomes = new Map<PuzzleLocalId, Set<number>>();
   const counts = { ended: 0, yielded: 0, failed: 0 };
   for (let seed = 1; seed <= runs; seed += 1) {
     const snapshot = snapshots.length === 0 ? null : (snapshots[(seed - 1) % snapshots.length] ?? null);
@@ -408,6 +563,9 @@ export function playChapter(input: PlayInput): { play: ChapterPlay; findings: Fi
     counts[run.outcome] += 1;
     for (const k of run.visited) {
       visited.add(k);
+    }
+    for (const { puzzle, outcome } of run.puzzles) {
+      outcomes.set(puzzle, (outcomes.get(puzzle) ?? new Set()).add(OUTCOME_CODE[outcome]));
     }
     if (run.carry !== null) {
       carries.push(run.carry);
@@ -452,13 +610,21 @@ export function playChapter(input: PlayInput): { play: ChapterPlay; findings: Fi
     carries,
     carriedFrom: input.carry?.from ?? null,
     carrySnapshots: snapshots.length,
+    outcomes,
   };
   return { play, findings };
 }
 
-/** The coverage report line of one played chapter (STAGING-DSL §11 "Report"). */
+/**
+ * The coverage report line of one played chapter (STAGING-DSL §11 "Report"); when some puzzle ran, `; pz_<p> <codes>`
+ * per puzzle, sorted, so a world-less chapter's line is unchanged.
+ */
 export function coverageLine(p: ChapterPlay, graph: ChapterGraph): string {
   const endings = [...graph.knots.values()].filter((k) => k.ending).length;
   const start = p.carriedFrom === null ? 'defaults' : p.carrySnapshots === 0 ? `defaults: ${p.carriedFrom} left no carry` : `${p.carriedFrom} carries`;
-  return `play: ${p.chapter}: ${p.runs} runs, knots ${p.visited.size}/${graph.knots.size}, endings ${p.endings.size}/${endings} (seeds 1-${p.runs}, ${start}; ended ${p.ended}, yielded ${p.yielded}, failed ${p.failed})`;
+  const pz = [...p.outcomes]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([id, codes]) => `; pz_${id} ${[...codes].sort((a, b) => a - b).join(',')}`)
+    .join('');
+  return `play: ${p.chapter}: ${p.runs} runs, knots ${p.visited.size}/${graph.knots.size}, endings ${p.endings.size}/${endings} (seeds 1-${p.runs}, ${start}; ended ${p.ended}, yielded ${p.yielded}, failed ${p.failed}${pz})`;
 }

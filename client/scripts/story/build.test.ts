@@ -10,15 +10,19 @@ import { fileURLToPath } from 'node:url';
 
 import { expect, test } from 'vitest';
 
+import { RULES_VERSION } from '../../src/explore/reduce.ts';
 import { assetIndex, decodeAssetCatalog, decodeCast, decodeChapterCatalog, decodeChapterMeta, storyOf } from '../../src/story/catalog.ts';
 import type { Cast, ChapterListEntry, StoryId } from '../../src/story/catalog.ts';
-import type { AssetId, AssetIndex, ChapterId, KnotName, ProductId } from '../../src/story/staging.ts';
+import type { AssetId, AssetIndex, ChapterId, KnotName, LineId, ProductId } from '../../src/story/staging.ts';
+import { decodeWorldPublic, decodeWorldSource, toPublic } from '../../src/world/decode.ts';
+import type { WorldSource } from '../../src/world/types.ts';
+import { assetUsage } from '../assets/manifest.ts';
 import { compileChapter, resolveInclude } from './compile.ts';
 import type { CompiledChapter, ReadInk } from './compile.ts';
-import { decodeLineFingerprints, decodeStoryUsage, paidLeak, planEmit } from './emit.ts';
-import type { LineFingerprints, ServerStoryIndex, StoryNames } from './emit.ts';
-import { buildGraph } from './graph.ts';
-import type { ChapterGraph } from './graph.ts';
+import { decodeLineFingerprints, decodeStoryUsage, paidLeak, planEmit, worldVersion } from './emit.ts';
+import type { LineFingerprints, ServerStoryIndex, StoryNames, WorldNeedles } from './emit.ts';
+import { buildGraph, writeOnly } from './graph.ts';
+import type { ChapterGraph, GraphFacts } from './graph.ts';
 import { GLOBALS_PATH, lintSources } from './lint.ts';
 import type { Finding, LintCode, SourceChapter } from './lint.ts';
 import type { StoryPlan } from './stories.ts';
@@ -152,7 +156,7 @@ test('compile: a clean chapter compiles with no findings', () => {
 // graph.ts
 
 /** Compiles `files` as chapter `ch` (the fixture must compile cleanly) and builds its graph. */
-function graphOf(files: ReadonlyMap<string, string>, ch: SourceChapter = CH1): { graph: ChapterGraph; findings: Finding[] } {
+function graphOf(files: ReadonlyMap<string, string>, ch: SourceChapter = CH1): { graph: ChapterGraph; findings: Finding[]; facts: GraphFacts } {
   const r = compileChapter(ch, reader(files));
   expect(r.findings, `fixture compiles: ${JSON.stringify(r.findings)}`).toEqual([]);
   if (r.compiled === null) {
@@ -458,8 +462,11 @@ const MANOR: StoryPlan = {
 
 type EmitFixture = { plan: ReadonlyMap<string, string>; compiled: Map<ChapterId, CompiledChapter>; graphs: Map<ChapterId, ChapterGraph> };
 
-/** Compiles and graphs the two-chapter fixture (both lint-clean) and plans its outputs for `stories`. */
-function emitFixture(list: readonly ChapterListEntry[] = LIST, stories: readonly StoryPlan[] = [MANOR]): EmitFixture {
+/**
+ * Compiles and graphs the two-chapter fixture (both lint-clean) and plans its outputs for `stories`, with `worlds`
+ * (default none) as the chapters' decoded world sources.
+ */
+function emitFixture(list: readonly ChapterListEntry[] = LIST, stories: readonly StoryPlan[] = [MANOR], worlds?: ReadonlyMap<ChapterId, WorldSource>): EmitFixture {
   const chapters = list.map((ch): SourceChapter => ({ id: ch.id, paid: ch.paid, entry: ch.entry }));
   expect(lintSources({ files: EMIT_SOURCES, chapters, assets: COMMITTED.assets, cast: COMMITTED.cast }), 'lint-clean').toEqual([]);
   const compiled = new Map<ChapterId, CompiledChapter>();
@@ -473,9 +480,11 @@ function emitFixture(list: readonly ChapterListEntry[] = LIST, stories: readonly
     compiled.set(ch.id, r.compiled);
     graphs.set(ch.id, buildGraph({ chapter: source, files: r.compiled.files, sources: EMIT_SOURCES, assets: COMMITTED.assets }).graph);
   }
-  // The en text of each line is `en <id>`, as localeFiles() writes it.
-  const en = new Map(list.map((ch) => [ch.id, Object.fromEntries((graphs.get(ch.id)?.lines ?? []).map((l) => [l.id, `en ${l.id}`]))]));
-  return { plan: planEmit({ chapters: list, compiled, graphs, cast: COMMITTED.cast, names: NAMES, en, stories }), compiled, graphs };
+  // The en text of each line is `en <id>`, as localeFiles() writes it; a world's texts (its hints included) too.
+  const idsOf = (ch: ChapterId): string[] => [...(graphs.get(ch)?.lines ?? []).map((l) => l.id), ...worldTexts(worlds?.get(ch)).map((x) => x.id)];
+  const en = new Map(list.map((ch) => [ch.id, Object.fromEntries(idsOf(ch.id).map((id) => [id, `en ${id}`]))]));
+  const input = { chapters: list, compiled, graphs, cast: COMMITTED.cast, names: NAMES, en, stories };
+  return { plan: planEmit(worlds === undefined ? input : { ...input, worlds }), compiled, graphs };
 }
 
 function planned(plan: ReadonlyMap<string, string>, path: string): string {
@@ -525,6 +534,8 @@ test('emit: free and paid outputs are routed apart', () => {
     'server/content/chapters/ch2/en.json',
     'server/content/chapters/ch2/meta.json',
     'server/content/chapters/ch2/story.json',
+    'server/content/puzzles/ch1.json',
+    'server/content/puzzles/ch2.json',
     'server/content/stories.json',
   ]);
   // The exact ToJson() text, not a re-serialization.
@@ -668,7 +679,10 @@ test('catalog: malformed meta is an error value', () => {
 const STORY_INDEX = 'server/content/stories.json';
 const PAID_ENDING = 'q7_sealed_vault';
 
-/** Per object path, the union of its keys (an array element is `[]`, an ending name `*`); per leaf path, its types. */
+/**
+ * Per object path, the union of its keys (an array element is `[]`, an ending name or a puzzle id `*`); per leaf
+ * path, its types.
+ */
 function shapeOf(value: unknown): { keys: Record<string, string[]>; leaves: Record<string, string[]> } {
   const keys = new Map<string, Set<string>>();
   const leaves = new Map<string, Set<string>>();
@@ -685,7 +699,7 @@ function shapeOf(value: unknown): { keys: Record<string, string[]>; leaves: Reco
     } else if (typeof x === 'object' && x !== null) {
       add(keys, path, null);
       for (const [k, e] of Object.entries(x)) {
-        const key = path.endsWith('.endings') ? '*' : k;
+        const key = path.endsWith('.endings') || path === '.puzzles' ? '*' : k;
         add(keys, path, key);
         walk(e, `${path}.${key}`);
       }
@@ -838,6 +852,328 @@ test('catalog: catalog with stories decodes', () => {
     const d = decodeChapterCatalog(bad);
     expect(d.ok ? [] : d.error.map((i) => i.path), path).toContain(path);
   }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// emit.ts: worlds (PUZZLES-PLAN "Build outputs", "Server formats", X7, X9)
+
+type WorldJson = Record<string, unknown>;
+
+/**
+ * A world source for chapter `ch` (PUZZLES-PLAN "World data"): the hall (a key with a prop, a door to the study, the
+ * way out into the `leave` knot) and the study (the drawer: a code puzzle with a closeup and two hints on a keyed
+ * lock; the letter). `cabinet` is a yielded code puzzle on no lock, with a closeup. Every text names its chapter, so
+ * no two chapters share one.
+ */
+function worldSource(ch: string, leave: string): WorldJson {
+  let n = 0;
+  const t = (owner: string, ru: string): { id: string; ru: string } => ({ id: `${ch}.${owner}.w${(n++).toString(36).padStart(3, '0')}`, ru: `${ru} (${ch})` });
+  const exit = (id: string, rect: number[], to: WorldJson, sfx: string | null): WorldJson => ({ id, kind: 'exit', rect, label: t('manor', `Дверь ${id}`), to, lock: null, sfx });
+  return {
+    format: 1,
+    items: {
+      key: { name: t('key', 'Латунный ключ'), desc: t('key', 'Тяжёлый ключ от кабинета.'), glyph: 'key' },
+      lamp: { name: t('lamp', 'Лампа'), desc: t('lamp', 'Старая масляная лампа.'), glyph: 'coin' },
+    },
+    docs: { letter: { title: t('letter', 'Письмо'), body: [t('letter', 'Дом построили в 1847 году.')] } },
+    puzzles: {
+      drawer: {
+        type: 'code',
+        title: t('drawer', 'Ящик стола'),
+        prompt: t('drawer', 'Четыре латунных диска.'),
+        closeup: 'drawer',
+        params: { dials: 4 },
+        maxAttempts: null,
+        giveUp: false,
+        solution: [1, 8, 4, 7],
+        hints: [t('drawer', 'Год упоминается в письме из кабинета.'), t('drawer', 'Код: один, восемь, четыре, семь.')],
+      },
+      cabinet: {
+        type: 'code',
+        title: t('cabinet', 'Шкаф'),
+        prompt: t('cabinet', 'Три диска.'),
+        closeup: 'cabinet',
+        params: { dials: 3 },
+        maxAttempts: 3,
+        giveUp: true,
+        solution: [3, 1, 4],
+        hints: [],
+      },
+    },
+    sections: {
+      manor: {
+        start: 'hall',
+        bgm: 'tension',
+        rooms: {
+          hall: {
+            bg: 'hall',
+            title: t('manor', 'Холл'),
+            onEnter: [],
+            hotspots: [
+              { id: 'key', kind: 'take', rect: [100, 300, 200, 200], label: t('manor', 'Ключ'), gives: { item: 'key' }, prop: 'medal_sun', then: [] },
+              exit('to_study', [400, 300, 200, 200], { room: 'study' }, 'door'),
+              exit('out', [700, 300, 200, 200], { story: leave }, null),
+            ],
+          },
+          study: {
+            bg: 'study',
+            title: t('manor', 'Кабинет'),
+            onEnter: [],
+            hotspots: [
+              {
+                id: 'drawer',
+                kind: 'object',
+                rect: [100, 300, 200, 200],
+                label: t('manor', 'Ящик'),
+                lock: { slots: [{ accepts: 'key' }], puzzle: 'drawer', locked: t('manor', 'Ящик заперт.'), onOpen: [], onFail: [] },
+                then: [],
+                look: null,
+                prop: 'note',
+              },
+              { id: 'letter', kind: 'take', rect: [400, 300, 200, 200], label: t('manor', 'Письмо'), gives: { doc: 'letter' }, prop: null, then: [] },
+              exit('to_hall', [700, 300, 200, 200], { room: 'hall' }, 'steps'),
+            ],
+          },
+        },
+      },
+    },
+  };
+}
+
+function decodedWorld(raw: WorldJson): WorldSource {
+  const r = decodeWorldSource(raw);
+  if (!r.ok) {
+    throw new Error(`invariant: the fixture world decodes: ${JSON.stringify(r.error)}`);
+  }
+  return r.value;
+}
+
+/** Every world text (`{ id, ru }`) of a world, in document order; none without a world. */
+function worldTexts(w: unknown): Array<{ id: string; ru: string }> {
+  if (Array.isArray(w)) {
+    return w.flatMap(worldTexts);
+  }
+  if (typeof w !== 'object' || w === null) {
+    return [];
+  }
+  const o = w as Readonly<Record<string, unknown>>; // a JSON object
+  const id = o['id'];
+  const ru = o['ru'];
+  if (Object.keys(o).length === 2 && typeof id === 'string' && typeof ru === 'string') {
+    return [{ id, ru }];
+  }
+  return Object.values(o).flatMap(worldTexts);
+}
+
+function hintsOf(w: WorldSource): Array<{ id: LineId; ru: string }> {
+  return Object.values(w.puzzles).flatMap((p) => p.hints.map((h) => ({ id: h.id, ru: h.ru })));
+}
+
+/** One dotted path of a fixture world's objects. */
+function objectAt(w: WorldJson, path: string): WorldJson {
+  return path.split('.').reduce<WorldJson>((o, key) => {
+    const v = o[key];
+    if (typeof v !== 'object' || v === null) {
+      throw new Error(`invariant: the fixture has an object at ${path}`);
+    }
+    return v as WorldJson; // checked just above: a fixture JSON object (an array index is a key too)
+  }, w);
+}
+
+/** The rules server/src/content.rs `load_puzzle_file` refuses a puzzle file for (:735-770); [] when it loads. */
+function puzzleProblems(raw: unknown, chapter: string): string[] {
+  type Text = { ru: string; en: string };
+  type Entry = { type: string; answerLen: number; answerMax: number; solution: number[]; title: Text; hints: Text[] };
+  const file = raw as { format: number; chapterId: string; puzzles: Record<string, Entry> }; // the shape test compares the keys
+  const out: string[] = [];
+  if (file.format !== 1) {
+    out.push(`format ${file.format}, expected 1`);
+  }
+  if (file.chapterId !== chapter) {
+    out.push(`chapterId is not ${chapter}`);
+  }
+  for (const [local, p] of Object.entries(file.puzzles)) {
+    if (!/^[a-z][a-z0-9_]*$/.test(local)) {
+      out.push(`${local}: not a puzzle id`);
+    }
+    if (p.type !== 'code' && p.type !== 'order') {
+      out.push(`${local}: type ${p.type}`);
+    }
+    if (p.answerLen === 0 || p.solution.length !== p.answerLen) {
+      out.push(`${local}: the solution's length must be answerLen, at least 1`);
+    } else if (p.solution.some((v) => v > p.answerMax)) {
+      out.push(`${local}: a solution value is above answerMax`);
+    } else if (p.hints.length > 3) {
+      out.push(`${local}: more than 3 hints`);
+    } else if ([p.title, ...p.hints].some((x) => x.ru === '' || x.en === '')) {
+      out.push(`${local}: an empty title or hint text`);
+    }
+  }
+  return out;
+}
+
+const CH1_WORLD = 'client/src/story-gen/free/ch1.world.json';
+const CH2_WORLD = 'server/content/chapters/ch2/world.json';
+
+test('emit: public world has no solution or hint fields', () => {
+  const source = decodedWorld(worldSource('ch1', 'cafe'));
+  const { plan } = emitFixture(LIST, [MANOR], new Map([[CH1_ENTRY.id, source]]));
+  const text = planned(plan, CH1_WORLD);
+  const decoded = decodeWorldPublic(JSON.parse(text));
+  expect(decoded.ok, JSON.stringify(decoded)).toBe(true);
+  expect(text).not.toMatch(/"(?:solution|hints)"/);
+  expect(decoded.ok && decoded.value.version).toBe(worldVersion(toPublic(source)));
+  // No hint ID or text in any public output, the free en table included (D10); a non-hint world text is shipped.
+  const hints = hintsOf(source);
+  expect(hints).toHaveLength(2);
+  for (const [path, out] of [...plan].filter(([p]) => p.startsWith('client/'))) {
+    expect(hints.filter((h) => out.includes(h.id) || out.includes(h.ru)), path).toEqual([]);
+  }
+  const en = JSON.parse(planned(plan, 'client/src/story-gen/free/ch1.en.json')) as Record<string, string>; // the en table
+  const title = source.puzzles['drawer' as keyof WorldSource['puzzles']]?.title.id ?? '';
+  expect(en[title]).toBe(`en ${title}`);
+  // The control: both hints are planned, in the server puzzle content.
+  const server = planned(plan, 'server/content/puzzles/ch1.json');
+  expect(hints.filter((h) => !server.includes(h.ru) || !server.includes(`en ${h.id}`))).toEqual([]);
+});
+
+test('emit: server puzzle content matches the server fixture shape', () => {
+  const source = decodedWorld(worldSource('ch1', 'cafe'));
+  const { plan } = emitFixture(LIST, [MANOR], new Map([[CH1_ENTRY.id, source]]));
+  const emitted: unknown = JSON.parse(planned(plan, 'server/content/puzzles/ch1.json'));
+  const fixture: unknown = readRepoJson('server/tests/fixtures/content/puzzles/ch1.json');
+  expect(shapeOf(emitted)).toEqual(shapeOf(fixture));
+  // The shapes match, so the rules load_puzzle_file applies read the typed fields; the fixture is their control.
+  expect(puzzleProblems(fixture, 'ch1')).toEqual([]);
+  expect(puzzleProblems(emitted, 'ch1')).toEqual([]);
+  const [first, second] = hintsOf(source);
+  expect((emitted as { puzzles: Record<string, unknown> }).puzzles['drawer']).toEqual({
+    type: 'code',
+    answerLen: 4,
+    answerMax: 9,
+    solution: [1, 8, 4, 7],
+    title: { ru: 'Ящик стола (ch1)', en: `en ${source.puzzles['drawer' as keyof WorldSource['puzzles']]?.title.id ?? ''}` },
+    hints: [first, second].map((h) => ({ ru: h?.ru, en: `en ${h?.id ?? ''}` })),
+  });
+});
+
+test('lint: paid/leak red on fixture (hint text)', () => {
+  const source = decodedWorld(worldSource('ch1', 'cafe'));
+  const { plan } = emitFixture(LIST, [MANOR], new Map([[CH1_ENTRY.id, source]]));
+  const fp = fingerprintsOf(plan);
+  const hints = hintsOf(source);
+  const needles: WorldNeedles = { hintIds: hints.map((h) => h.id), hintTexts: hints.map((h) => h.ru), paidIds: [], paidTexts: [] };
+  const [first, second] = hints;
+  // One hint's ID and another's text copied into story-gen beside the (clean) public catalog.
+  const leaked = 'client/src/story-gen/free/ch1.hints.json';
+  const storyGen = new Map([
+    [leaked, JSON.stringify({ id: first?.id, ru: second?.ru })],
+    ['client/src/story-gen/catalog.json', planned(plan, 'client/src/story-gen/catalog.json')],
+  ]);
+  const findings = paidLeak(storyGen, fp, needles);
+  expect(findings).toContainEqual(expect.objectContaining({ code: 'paid/leak', severity: 'E', file: leaked, line: 0, message: `hint ID '${first?.id ?? ''}' in the public build input (principle 0)` }));
+  expect(findings).toContainEqual(expect.objectContaining({ code: 'paid/leak', file: leaked, message: `hint text ${JSON.stringify(second?.ru)} in the public build input (principle 0)` }));
+  expect(findings.filter((f) => f.file !== leaked)).toEqual([]);
+  // Every public output of the plan, the public world included, is clean; without the world needles the copy is
+  // not looked for.
+  const outputs = new Map([...plan].filter(([p]) => p.startsWith('client/')));
+  expect([...outputs.keys()]).toContain(CH1_WORLD);
+  expect(paidLeak(outputs, fp, needles)).toEqual([]);
+  expect(paidLeak(storyGen, fp)).toEqual([]);
+});
+
+test('emit: world version ignores texts', () => {
+  const version = (w: WorldJson): string => worldVersion(toPublic(decodedWorld(w)));
+  const base = worldSource('ch1', 'cafe');
+  expect(version(base)).toMatch(/^[0-9a-f]{16}$/);
+  const retold = worldSource('ch1', 'cafe');
+  objectAt(retold, 'sections.manor.rooms.hall.title')['ru'] = 'Парадный холл';
+  expect(version(retold)).toBe(version(base));
+  const renumbered = worldSource('ch1', 'cafe');
+  objectAt(renumbered, 'sections.manor.rooms.hall.title')['id'] = 'ch1.manor.zzzz';
+  expect(version(renumbered)).toBe(version(base));
+});
+
+test('emit: world version changes on a rules edit', () => {
+  const version = (w: WorldJson): string => worldVersion(toPublic(decodedWorld(w)));
+  const edited = worldSource('ch1', 'cafe');
+  objectAt(edited, 'sections.manor.rooms.study.hotspots.0.lock.slots.0')['accepts'] = 'lamp';
+  expect(version(edited)).not.toBe(version(worldSource('ch1', 'cafe')));
+});
+
+test('emit: world version changes on a RULES_VERSION bump', () => {
+  const body = toPublic(decodedWorld(worldSource('ch1', 'cafe')));
+  expect(worldVersion(body, RULES_VERSION)).toBe(worldVersion(body));
+  expect(worldVersion(body, RULES_VERSION + 1)).not.toBe(worldVersion(body));
+});
+
+test('emit: usage holds world assets and rooms', () => {
+  const { plan } = emitFixture(LIST, [MANOR], new Map([[CH1_ENTRY.id, decodedWorld(worldSource('ch1', 'cafe'))]]));
+  const raw = JSON.parse(planned(plan, 'server/content/build/usage.json')) as Record<string, unknown>; // a JSON object
+  const usage = decodeStoryUsage(raw);
+  if (!usage.ok) {
+    throw new Error(`invariant: the planned usage decodes: ${usage.error.join('; ')}`);
+  }
+  const world = ['bg/hall', 'bg/study', 'bgm/tension', 'cg/cabinet', 'cg/drawer', 'prop/medal_sun', 'prop/note', 'sfx/door', 'sfx/steps'];
+  expect(usage.value.chapters[CH1_ENTRY.id]?.worldAssets).toEqual(world);
+  expect(usage.value.chapters[CH2_ENTRY.id]).not.toHaveProperty('worldAssets');
+  const rooms = {
+    'ch1/manor/hall': { bg: 'bg/hall', props: ['prop/medal_sun'], closeups: [], neighbours: ['bg/study'] },
+    'ch1/manor/study': { bg: 'bg/study', props: ['prop/note'], closeups: ['cg/drawer'], neighbours: ['bg/hall'] },
+  };
+  expect(usage.value.rooms).toEqual(rooms);
+  expect(assetUsage(usage.value)).toEqual({
+    chapters: {
+      ch1: { ink: ['bg/cafe', 'char/ally/neutral'], world },
+      ch2: { ink: ['bg/archive', 'bgm/mystery', 'cg/reveal'], world: [] },
+    },
+    rooms,
+  });
+  // A pre-LW3 usage.json still decodes (L5 O7): no world art, no rooms.
+  const pre = decodeStoryUsage({ chapters: { ch1: { assets: ['bg/cafe'], knots: {} } } });
+  expect(pre.ok && assetUsage(pre.value)).toEqual({ chapters: { ch1: { ink: ['bg/cafe'], world: [] } }, rooms: {} });
+  // A bad room key, a room of a chapter usage.json lacks, a value of the wrong namespace: each refused.
+  const hall = rooms['ch1/manor/hall'];
+  const refused: Array<readonly [string, unknown]> = [
+    ['rooms.ch1/hall', { 'ch1/hall': hall }],
+    ['rooms.ch9/manor/hall', { 'ch9/manor/hall': hall }],
+    ['rooms.ch1/manor/hall.props.0', { 'ch1/manor/hall': { ...hall, props: ['bg/hall'] } }],
+    ['rooms.ch1/manor/hall.extra', { 'ch1/manor/hall': { ...hall, extra: [] } }],
+  ];
+  for (const [path, bad] of refused) {
+    const d = decodeStoryUsage({ ...raw, rooms: bad });
+    expect(d.ok ? [] : d.error.join('; '), path).toContain(path);
+  }
+});
+
+test('emit: a paid world is routed to the server only', () => {
+  const ch1 = worldSource('ch1', 'cafe');
+  const ch2 = worldSource('ch2', 'archive');
+  const worlds = new Map([
+    [CH1_ENTRY.id, decodedWorld(ch1)],
+    [CH2_ENTRY.id, decodedWorld(ch2)],
+  ]);
+  const { plan } = emitFixture(LIST, [MANOR], worlds);
+  expect([...plan.keys()].filter((p) => p.endsWith('world.json') || p.startsWith('server/content/puzzles/')).sort()).toEqual([
+    CH1_WORLD,
+    CH2_WORLD,
+    'server/content/puzzles/ch1.json',
+    'server/content/puzzles/ch2.json',
+  ]);
+  // No ch2 world ID or text under client/; the control: the paid world holds its non-hint texts.
+  const paid = worldTexts(ch2);
+  for (const [path, out] of [...plan].filter(([p]) => p.startsWith('client/'))) {
+    expect(paid.filter((x) => out.includes(x.id) || out.includes(x.ru)), path).toEqual([]);
+  }
+  const hintIds = new Set<string>(hintsOf(decodedWorld(ch2)).map((h) => h.id));
+  const paidWorld = planned(plan, CH2_WORLD);
+  expect(paid.filter((x) => !hintIds.has(x.id) && !paidWorld.includes(x.id))).toEqual([]);
+  // The paid en table has no hint ID either (Q13): a chapter's owner gets a hint only through its tier.
+  const paidEn = Object.keys(JSON.parse(planned(plan, 'server/content/chapters/ch2/en.json')) as Record<string, string>); // the en table
+  expect(paidEn.filter((id) => hintIds.has(id))).toEqual([]);
+  expect(paidEn.filter((id) => id.startsWith('ch2.manor.'))).not.toEqual([]);
+  // A world-less chapter still gets its puzzle file, empty (D5).
+  expect(JSON.parse(planned(emitFixture().plan, 'server/content/puzzles/ch2.json'))).toEqual({ format: 1, chapterId: 'ch2', puzzles: {} });
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1009,6 +1345,8 @@ test(
         'server/content/chapters/ch2/en.json',
         'server/content/chapters/ch2/meta.json',
         'server/content/chapters/ch2/story.json',
+        'server/content/puzzles/ch1.json',
+        'server/content/puzzles/ch2.json',
         'server/content/stories.json',
       ]);
       for (const rel of CLIENT_OUTPUTS) {
@@ -1204,3 +1542,240 @@ test(
   },
   CLI_TIMEOUT_MS,
 );
+
+// ---------------------------------------------------------------------------------------------------------------
+// story.ts: worlds (PUZZLES-PLAN "World data", "Build outputs"; D16, D17)
+
+/** ch1 as a world chapter: its lines, then the ink (the cabinet is yielded into `manor_in`, which explores the manor). */
+const WORLD_INK_LINES: ReadonlyArray<readonly [id: string, ru: string]> = [
+  ['ch1.cafe.f001', 'За углом стоит старая усадьба.'],
+  ['ch1.manor_in.f002', 'Дверь усадьбы не заперта.'],
+  ['ch1.manor_out.f003', 'Мы вышли из усадьбы.'],
+];
+const WORLD_CH1 = [
+  'INCLUDE ../common/globals.ink',
+  '-> cafe',
+  '=== cafe ===',
+  '# scene: cafe',
+  'За углом стоит старая усадьба. #id:ch1.cafe.f001',
+  '# puzzle: cabinet then=manor_in',
+  '-> DONE',
+  '=== manor_in ===',
+  'Дверь усадьбы не заперта. #id:ch1.manor_in.f002',
+  '# explore: manor',
+  '-> DONE',
+  '=== manor_out ===',
+  'Мы вышли из усадьбы. #id:ch1.manor_out.f003',
+  '-> END',
+  '',
+].join('\n');
+
+/**
+ * The CLI fixture with ch1 as a world chapter: WORLD_CH1 and, as story/ch1/world.json, the build world whose way out
+ * is `manor_out`, without `lamp` (no state of the manor holds it: `world/unreachable`), after `edit`. ch1's en table
+ * holds every ink line and every world text that has an ID as `en <id>`, the hints included.
+ */
+function worldRepo(edit: (w: WorldJson) => void = () => undefined): { files: Record<string, string>; world: WorldJson } {
+  const w = worldSource('ch1', 'manor_out');
+  delete objectAt(w, 'items')['lamp'];
+  edit(w);
+  const texts = [...WORLD_INK_LINES.map(([id, ru]) => ({ id, ru })), ...worldTexts(w)];
+  const table = Object.fromEntries(texts.map((x) => [x.id, { ru: x.ru, en: `en ${x.id}` }]));
+  const files = {
+    ...repoFiles(),
+    'story/ch1/main.ink': WORLD_CH1,
+    'story/ch1/world.json': `${JSON.stringify(w, null, 2)}\n`,
+    [EN_CH1_TABLE]: `${JSON.stringify(table, null, 2)}\n`,
+  };
+  return { files, world: w };
+}
+
+test(
+  'story: world softlock fails the gate',
+  () => {
+    // The way out takes the key, and so does the study's drawer: once the key is spent in the drawer, no leave is left.
+    const { files } = worldRepo((w) => {
+      objectAt(w, 'sections.manor.rooms.hall.hotspots.2')['lock'] = {
+        slots: [{ accepts: 'key' }],
+        puzzle: null,
+        locked: { id: 'ch1.manor.wz01', ru: 'Дверь на улицу заперта.' },
+        onOpen: [],
+        onFail: [],
+      };
+    });
+    withRepo(files, (root) => {
+      const r = runStory(root);
+      expect(r.stdout, r.stdout + r.stderr).toMatch(/^E story\/ch1\/world\.json:\d+ world\/softlock section manor: .* tap /m);
+      expect(r.stdout).toMatch(/^world: ch1: 1 section, 2 rooms, 2 puzzles, softlock FAIL \(1 of 1 sections\)$/m);
+      expect(r.stdout).toMatch(/^play: ch1: not played \(errors in its sources\)$/m);
+      expect(r.status).toBe(1);
+      expect([...filesUnder(root, 'client'), ...filesUnder(root, 'server')]).toEqual([]);
+    });
+  },
+  CLI_TIMEOUT_MS,
+);
+
+test(
+  'story: cli builds a world chapter',
+  () => {
+    const { files, world } = worldRepo();
+    const source = decodedWorld(world);
+    const hints = hintsOf(source);
+    withRepo(files, (root) => {
+      const r = runStory(root);
+      expect(r.status, r.stdout + r.stderr).toBe(0);
+      expect(r.stdout).toMatch(/^story: 0 errors, 0 warnings$/m);
+      expect(r.stdout).toMatch(/^world: ch1: 1 section, 2 rooms, 2 puzzles, softlock OK \(\d+ states\)$/m);
+      expect(r.stdout).toMatch(/^world: ch2: none$/m);
+      // The runs play through the cabinet's yield and the manor's rooms into `manor_out`.
+      expect(r.stdout).toMatch(/^play: ch1: 200 runs, knots 3\/3, endings 1\/1 \(seeds 1-200, defaults; ended 200, yielded 0, failed 0; pz_cabinet /m);
+      expect(filesUnder(root, 'client')).toEqual([...CLIENT_OUTPUTS, CH1_WORLD]);
+      const pub = readFileSync(join(root, CH1_WORLD), 'utf8');
+      expect(decodeWorldPublic(JSON.parse(pub)).ok).toBe(true);
+      expect(pub).not.toMatch(/"(?:solution|hints)"/);
+      const server: unknown = JSON.parse(readFileSync(join(root, 'server/content/puzzles/ch1.json'), 'utf8'));
+      expect(puzzleProblems(server, 'ch1')).toEqual([]);
+      const drawer = (server as { puzzles: Record<string, { hints: unknown }> }).puzzles['drawer']; // checked by puzzleProblems
+      expect(drawer?.hints).toEqual(hints.map((h) => ({ ru: h.ru, en: `en ${h.id}` })));
+      expect(JSON.parse(readFileSync(join(root, 'server/content/puzzles/ch2.json'), 'utf8'))).toEqual({ format: 1, chapterId: 'ch2', puzzles: {} });
+      // The shipped en table: every ink line and world text, no hint (D10).
+      const shipped = Object.keys(JSON.parse(readFileSync(join(root, 'client/src/story-gen/free/ch1.en.json'), 'utf8')) as Record<string, string>).sort(); // the en table
+      const hintIds = new Set<string>(hints.map((h) => h.id));
+      const expected = [...WORLD_INK_LINES.map(([id]) => id), ...worldTexts(world).map((x) => x.id).filter((id) => !hintIds.has(id))].sort();
+      expect(shipped).toEqual(expected);
+      // The world needles reach the gate's read-back: a hint's ID and another's text in a story-gen file the sweep
+      // keeps (L5's asset manifest of ch1) fail the next run.
+      const [first, second] = hints;
+      put(root, 'client/src/story-gen/free/ch1.assets.json', JSON.stringify({ id: first?.id, ru: second?.ru }));
+      const leak = runStory(root);
+      expect(leak.status, leak.stdout + leak.stderr).toBe(1);
+      expect(leak.stdout).toMatch(new RegExp(`^E client/src/story-gen/free/ch1\\.assets\\.json:0 paid/leak hint ID '${(first?.id ?? '-').replaceAll('.', '\\.')}' `, 'm'));
+      expect(leak.stdout).toContain(`paid/leak hint text ${JSON.stringify(second?.ru)} in the public build input (principle 0)`);
+    });
+  },
+  CLI_TIMEOUT_MS,
+);
+
+test(
+  'story: --fix-ids and --sync-locales cover world texts',
+  () => {
+    // The hall's title without its ID, so it has no en entry either.
+    let ru = '';
+    const { files } = worldRepo((w) => {
+      const title = objectAt(w, 'sections.manor.rooms.hall.title');
+      ru = String(title['ru']);
+      delete title['id'];
+    });
+    withRepo(files, (root) => {
+      const r = runStory(root, ['--fix-ids', '--sync-locales']);
+      const fixed = JSON.parse(readFileSync(join(root, 'story/ch1/world.json'), 'utf8')) as WorldJson; // fixWorldIds writes an object
+      const id = String(objectAt(fixed, 'sections.manor.rooms.hall.title')['id']);
+      expect(id, r.stdout + r.stderr).toMatch(/^ch1\.manor\.[0-9a-z]{4}$/);
+      expect(r.stdout).toMatch(/^fix-ids: 1 ids added in 1 files$/m);
+      const table = JSON.parse(readFileSync(join(root, EN_CH1_TABLE), 'utf8')) as Record<string, unknown>; // the en table
+      expect(table[id]).toEqual({ ru, en: '' });
+      expect(r.stdout).toMatch(/^sync-locales: ch1 \+1 entries$/m);
+      // What is left is the author's: the new entry's English.
+      const findings = r.stdout.split('\n').filter((l) => /^[EW] /.test(l));
+      expect(findings).toEqual([expect.stringMatching(new RegExp(`^E story/locales/en/ch1\\.json:\\d+ loc/empty-en '${id.replaceAll('.', '\\.')}': en is empty \\(§4\\)$`))]);
+      expect(r.status).toBe(1);
+    });
+  },
+  CLI_TIMEOUT_MS,
+);
+
+test(
+  'story: a removed world leaves no world output',
+  () => {
+    // Stale world outputs of a free and a paid chapter, and the puzzle file of a chapter no longer listed.
+    const stale = { [CH1_WORLD]: '{}', [CH2_WORLD]: '{}', 'server/content/puzzles/ch9.json': '{}' };
+    withRepo({ ...repoFiles(), ...stale }, (root) => {
+      const r = runStory(root);
+      expect(r.status, r.stdout + r.stderr).toBe(0);
+      expect(filesUnder(root, 'client')).toEqual(CLIENT_OUTPUTS);
+      expect(filesUnder(root, 'server')).toEqual([
+        'server/content/build/fingerprints.lines.json',
+        'server/content/build/usage.json',
+        'server/content/chapters/ch2/en.json',
+        'server/content/chapters/ch2/meta.json',
+        'server/content/chapters/ch2/story.json',
+        'server/content/puzzles/ch1.json',
+        'server/content/puzzles/ch2.json',
+        'server/content/stories.json',
+      ]);
+      expect(r.stdout).toMatch(/^world: ch1: none$/m);
+    });
+  },
+  CLI_TIMEOUT_MS,
+);
+
+// ---------------------------------------------------------------------------------------------------------------
+// graph.ts and story.ts: `vars/write-only` across the chapters (STAGING-DSL §11, D15)
+
+const CH2_SOURCE: SourceChapter = { id: chapterId('ch2'), paid: true, entry: 'ch2/main.ink' };
+const WRITE_GLOBALS = 'VAR g_trust = 0\nVAR g_flag = 0\n';
+/** ch1 sets g_flag, bumps its own `count` and never reads either; `x` reads itself. */
+const WRITE_CH1 = [
+  'INCLUDE ../common/globals.ink',
+  'VAR count = 0',
+  'VAR x = 0',
+  '-> start',
+  '=== start ===',
+  'Привет. #id:ch1.start.k1m2',
+  '~ g_flag = 1',
+  '~ count += 1',
+  '~ x = x + 1',
+  '-> END',
+];
+const WRITE_CH2 = ['INCLUDE ../common/globals.ink', '-> start', '=== start ===', 'Там. #id:ch2.start.k1m2', '-> END'];
+
+/** The graph facts of ch1 and ch2, in list order, over WRITE_GLOBALS. */
+function writeFacts(ch1: readonly string[], ch2: readonly string[]): GraphFacts[] {
+  const files = new Map([
+    [GLOBALS_PATH, WRITE_GLOBALS],
+    ['ch1/main.ink', `${ch1.join('\n')}\n`],
+    ['ch2/main.ink', `${ch2.join('\n')}\n`],
+  ]);
+  return [graphOf(files, CH1).facts, graphOf(files, CH2_SOURCE).facts];
+}
+
+test(
+  'lint: vars/write-only red on fixture',
+  () => {
+    const found = writeOnly(writeFacts(WRITE_CH1, WRITE_CH2));
+    // g_flag and count; `~ x = x + 1` reads x.
+    expect(where(found, 'vars/write-only')).toEqual([`ch1/main.ink:${lineOf(WRITE_CH1, '~ g_flag = 1')}`, `ch1/main.ink:${lineOf(WRITE_CH1, '~ count += 1')}`]);
+    expect(found.every((f) => f.severity === 'W')).toBe(true);
+    // Through the CLI: the same three writes in the emit fixture's ch1.
+    const ch1 = (EMIT_SOURCES.get('ch1/main.ink') ?? '')
+      .replace('INCLUDE ../common/globals.ink\n', 'INCLUDE ../common/globals.ink\nVAR count = 0\nVAR x = 0\n')
+      .replace('-> END\n', '~ g_flag = 1\n~ count += 1\n~ x = x + 1\n-> END\n');
+    const lines = ch1.split('\n');
+    const files = { ...repoFiles(), 'story/common/globals.ink': WRITE_GLOBALS, 'story/ch1/main.ink': ch1 };
+    const writes = (stdout: string): string[] => stdout.split('\n').filter((l) => l.includes(' vars/write-only '));
+    withRepo(files, (root) => {
+      const r = runStory(root);
+      expect(r.status, r.stdout + r.stderr).toBe(0);
+      expect(writes(r.stdout)).toEqual([
+        `W story/ch1/main.ink:${lineOf(lines, '~ g_flag = 1')} vars/write-only VAR g_flag is assigned, but no listed chapter reads it (§11)`,
+        `W story/ch1/main.ink:${lineOf(lines, '~ count += 1')} vars/write-only VAR count is assigned, but its chapter never reads it (§11)`,
+      ]);
+      expect(r.stdout).toMatch(/^story: 0 errors, 2 warnings$/m);
+    });
+    // The error-run control: ch2 does not compile, so its reads are unknown and nothing is judged.
+    const broken = (EMIT_SOURCES.get('ch2/main.ink') ?? '').replace('    -> drawer\n', '    -> nowhere\n');
+    withRepo({ ...files, 'story/ch2/main.ink': broken }, (root) => {
+      const r = runStory(root);
+      expect(r.stdout, r.stdout + r.stderr).toMatch(/^story: ch2 failed$/m);
+      expect(writes(r.stdout)).toEqual([]);
+      expect(r.status).toBe(1);
+    });
+  },
+  CLI_TIMEOUT_MS,
+);
+
+test('lint: vars/write-only allows a global read in a later chapter', () => {
+  const ch1 = ['INCLUDE ../common/globals.ink', '-> start', '=== start ===', 'Привет. #id:ch1.start.k1m2', '~ g_flag = 1', '-> END'];
+  const ch2 = ['INCLUDE ../common/globals.ink', '-> start', '=== start ===', '{ g_flag > 0:', '    Флаг поднят. #id:ch2.start.k3m4', '}', 'Там. #id:ch2.start.k1m2', '-> END'];
+  expect(where(writeOnly(writeFacts(ch1, ch2)), 'vars/write-only')).toEqual([]);
+});

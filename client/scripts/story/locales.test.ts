@@ -17,7 +17,7 @@ import { compileChapter } from './compile.ts';
 import type { CompiledChapter } from './compile.ts';
 import { decodeLineFingerprints, paidLeak, planEmit } from './emit.ts';
 import type { StoryNames } from './emit.ts';
-import { fixIds, syncLocales } from './fix.ts';
+import { fixIds, fixWorldIds, syncLocales } from './fix.ts';
 import type { FixIdsInput, IdTarget } from './fix.ts';
 import { buildGraph } from './graph.ts';
 import type { ChapterGraph, StoryLine } from './graph.ts';
@@ -26,6 +26,7 @@ import type { Finding, LintCode, SourceChapter } from './lint.ts';
 import { checkLocales, decodeEnTable, decodeNameTable, decodeRetired } from './locales.ts';
 import type { EnTable } from './locales.ts';
 import type { StoryPlan } from './stories.ts';
+import type { WorldLine } from './world.ts';
 
 function readRepoJson(path: string): unknown {
   const text = readFileSync(new URL(`../../../${path}`, import.meta.url), 'utf8');
@@ -200,6 +201,8 @@ type LocaleTexts = {
   retired?: string | null;
   chapters?: readonly ChapterListEntry[] | null;
   lines?: { ch1: readonly StoryLine[]; ch2: readonly StoryLine[] };
+  /** The chapters' world texts (default: no world). */
+  worlds?: { ch1?: readonly WorldLine[]; ch2?: readonly WorldLine[] };
 };
 
 /** Decodes the texts as story.ts does and checks them; every decode and check finding together. */
@@ -221,8 +224,19 @@ function locales(texts: LocaleTexts = {}): { findings: Finding[]; names: StoryNa
     [CH2_ENTRY.id, linesGraph(CH2_ENTRY.id, lines.ch2)],
   ]);
   const chapters = texts.chapters === undefined ? [CH1_ENTRY, CH2_ENTRY] : texts.chapters;
-  const r = checkLocales({ chapters, graphs, en, names: { ru: ru.table, en: enNames.table }, cast: COMMITTED.cast, retired: retired.ids, stories: [] });
+  const input = { chapters, graphs, en, names: { ru: ru.table, en: enNames.table }, cast: COMMITTED.cast, retired: retired.ids, stories: [] };
+  const w = texts.worlds;
+  const worlds = new Map<ChapterId, readonly WorldLine[]>([
+    ...(w?.ch1 === undefined ? [] : [[CH1_ENTRY.id, w.ch1] as const]),
+    ...(w?.ch2 === undefined ? [] : [[CH2_ENTRY.id, w.ch2] as const]),
+  ]);
+  const r = checkLocales(w === undefined ? input : { ...input, worlds });
   return { findings: [...decoded, ...r.findings], names: r.names };
+}
+
+/** A world text of ch1's world (world.ts `worldLines`), story-relative as the locale findings are. */
+function worldLine(id: string, text: string, path: string, line: number, hint = false): WorldLine {
+  return { id: id as LineId, text, file: 'ch1/world.json', line, hint, path }; // fixture IDs match LINE_ID_RE
 }
 
 function at(findings: readonly Finding[], code: LintCode): string[] {
@@ -293,6 +307,38 @@ test('lint: id/duplicate red on fixture (across chapters)', () => {
   expect(at(within.findings, 'id/duplicate')).toEqual([]);
 });
 
+test('lint: id/duplicate red on fixture (ink and world)', () => {
+  // ch1.start.a001 is an ink line and a world doc's title; ch1.letter.w001 is two texts on one line of compact JSON.
+  const doc = worldLine('ch1.start.a001', 'Письмо', 'docs.letter.title', 3);
+  const body0 = worldLine('ch1.letter.w001', 'Дом построили давно.', 'docs.letter.body.0', 3);
+  const body1 = worldLine('ch1.letter.w001', 'Дом построили давно.', 'docs.letter.body.1', 3);
+  const en = table({ ...EN_CH1, 'ch1.letter.w001': { ru: 'Дом построили давно.', en: 'The house is old.' } });
+  const r = locales({ en: { ch1: en, ch2: table(EN_CH2) }, worlds: { ch1: [doc, body0, body1] } });
+  const found = r.findings.filter((f) => f.code === 'id/duplicate');
+  expect(found, JSON.stringify(r.findings)).toHaveLength(2);
+  expect(found.map((f) => `${f.file}:${f.line} ${f.message}`)).toEqual([
+    "ch1/world.json:3 'ch1.start.a001' is already used at ch1/main.ink:4 (chapter ch1) (§4)",
+    "ch1/world.json:3 'ch1.letter.w001' is already used at ch1/world.json#docs.letter.body.0 (chapter ch1) (§4)",
+  ]);
+  // The table fixture is right: the world IDs are lines of ch1, not orphans.
+  expect(r.findings.filter((f) => f.code !== 'id/duplicate')).toEqual([]);
+  // An ink-only repeat inside one chapter stays the source lint's.
+  const inkOnly = locales({ lines: { ch1: [LOC_A001, { ...LOC_A001, line: 9 }, LOC_A002], ch2: LOC_CH2 } });
+  expect(at(inkOnly.findings, 'id/duplicate')).toEqual([]);
+});
+
+test('lint: loc/missing-en red on fixture (world)', () => {
+  const title = worldLine('ch1.manor.w001', 'Холл', 'sections.manor.rooms.hall.title', 7);
+  const hint = worldLine('ch1.drawer.w002', 'Год упоминается в письме.', 'puzzles.drawer.hints.0', 12, true);
+  const r = locales({ worlds: { ch1: [title, hint] } });
+  expect(at(r.findings, 'loc/missing-en'), JSON.stringify(r.findings)).toEqual(['ch1/world.json:7', 'ch1/world.json:12']);
+  expect(r.findings.find((f) => f.code === 'loc/missing-en')?.message).toBe("'ch1.manor.w001' has no entry in story/locales/en/ch1.json (run --sync-locales)");
+  // With both entries nothing is reported; without the world they are orphans.
+  const en = table({ ...EN_CH1, [title.id]: { ru: 'Холл', en: 'Hall' }, [hint.id]: { ru: hint.text, en: 'The year is in the letter.' } });
+  expect(locales({ en: { ch1: en, ch2: table(EN_CH2) }, worlds: { ch1: [title, hint] } }).findings).toEqual([]);
+  expect(at(locales({ en: { ch1: en, ch2: table(EN_CH2) } }).findings, 'loc/orphan-en')).toHaveLength(2);
+});
+
 test('lint: id/retired red on fixture', () => {
   const r = locales({ retired: 'ch1.start.a002\n\n  ch1.old.q001  \nnot an id\n' });
   expect(at(r.findings, 'id/retired'), JSON.stringify(r.findings)).toEqual(['ch1/main.ink:5']);
@@ -348,6 +394,44 @@ test('fix: sync-locales adds new ids only', () => {
   });
   expect(syncLocales({ text: '[1]' }, LOC_CH1)).toHaveProperty('error');
   expect(syncLocales({ text: '{' }, LOC_CH1)).toHaveProperty('error');
+});
+
+test('fix: world ids written once', () => {
+  const world = (ids: Readonly<Record<string, string>>): Record<string, unknown> => {
+    const text = (path: string, ru: string): Record<string, string> => (ids[path] === undefined ? { ru } : { id: ids[path], ru });
+    return {
+      format: 1,
+      items: { key: { name: text('items.key.name', 'Ключ'), desc: { id: 'ch1.key.e001', ru: 'Тяжёлый.' }, glyph: 'key' } },
+      docs: {},
+      puzzles: { drawer: { type: 'code', title: text('puzzles.drawer.title', 'Ящик'), hints: [text('puzzles.drawer.hints.0', 'Год в письме.')], solution: [1] } },
+      sections: { manor: { start: 'hall', bgm: null, rooms: { hall: { bg: 'hall', title: text('sections.manor.rooms.hall.title', 'Холл'), onEnter: [], hotspots: [] } } } },
+    };
+  };
+  const before = `${BOM}${JSON.stringify(world({}), null, 2)}\n`;
+  // 'aaaa' is taken before the run, 'e001' by the file's own existing ID: neither is reused.
+  const r = fixWorldIds({ text: before, chapter: CH1.id, taken: new Set(['ch1.key.aaaa']), suffix: suffixes('aaaa', 'e001', 'k001', 'k002', 'k003', 'k004') });
+  if (!('text' in r)) {
+    throw new Error(`invariant: a JSON world is fixed: ${r.error}`);
+  }
+  expect(r.text).toContain('"id": "ch1.manor.');
+  expect(r.text).toContain('"id": "ch1.drawer.');
+  const written = {
+    'items.key.name': 'ch1.key.k001',
+    'puzzles.drawer.title': 'ch1.drawer.k002',
+    'puzzles.drawer.hints.0': 'ch1.drawer.k003',
+    'sections.manor.rooms.hall.title': 'ch1.manor.k004',
+  };
+  expect(r.added).toEqual(Object.entries(written).map(([path, id]) => ({ path, id })));
+  expect(r.skipped).toEqual([]);
+  // The id goes first, the existing one and every key order stay, the BOM survives.
+  expect(r.text).toBe(`${BOM}${JSON.stringify(world(written), null, 2)}\n`);
+  // A second run adds nothing and returns the same text; so does a file with nothing to add, whatever its layout.
+  const again = fixWorldIds({ text: r.text, chapter: CH1.id, taken: new Set(), suffix: suffixes() });
+  expect(again).toEqual({ text: r.text, added: [], skipped: [] });
+  const compact = '{"format":1,"items":{}}';
+  expect(fixWorldIds({ text: compact, chapter: CH1.id, taken: new Set(), suffix: suffixes() })).toEqual({ text: compact, added: [], skipped: [] });
+  expect(fixWorldIds({ text: '[1]', chapter: CH1.id, taken: new Set(), suffix: suffixes() })).toHaveProperty('error');
+  expect(fixWorldIds({ text: '{', chapter: CH1.id, taken: new Set(), suffix: suffixes() })).toHaveProperty('error');
 });
 
 // ---------------------------------------------------------------------------------------------------------------

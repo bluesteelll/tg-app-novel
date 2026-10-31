@@ -8,6 +8,8 @@ import { expect, test } from 'vitest';
 import { assetIndex, decodeAssetCatalog, decodeCast } from '../../src/story/catalog.ts';
 import type { Cast, ChapterListEntry } from '../../src/story/catalog.ts';
 import type { AssetIndex, ChapterId, VarName } from '../../src/story/staging.ts';
+import { decodeWorldSource, toPublic } from '../../src/world/decode.ts';
+import type { WorldPublicBody } from '../../src/world/types.ts';
 import { compileChapter } from './compile.ts';
 import { buildGraph } from './graph.ts';
 import type { ChapterGraph } from './graph.ts';
@@ -361,4 +363,144 @@ test('play: a float global is carried as a float', () => {
   const r = play(f, { carry: { from: CH1.id, snapshots: ch1.play.carries.map((c) => c.vars) } });
   expect([...r.play.visited], JSON.stringify(r.findings)).toEqual(['start', 'half']);
   expect(at(r.findings, 'play/knot-not-visited')).toEqual(['ch2/main.ink:12']);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Through the yields, with the chapter's world (LW3, PUZZLES-PLAN "Seeded playthroughs")
+
+type Json = Record<string, unknown>;
+let textCount = 0;
+
+/** A world text with an ID unique in the run of tests. */
+function text(owner: string): Json {
+  textCount += 1;
+  return { id: `ch1.${owner}.w${textCount.toString(36).padStart(3, '0')}`, ru: 'Текст' };
+}
+
+/** A source world with one section `s` and its one room `hall`, decoded and made public as the story gate does. */
+function world(spec: { hotspots: readonly Json[]; onEnter?: readonly Json[]; items?: readonly string[]; puzzles?: Json; sections?: boolean }): WorldPublicBody {
+  const hotspots = spec.hotspots.map((h, i) => ({ label: text('s'), ...h, rect: [100 + i * 300, 300, 200, 200] }));
+  const room = { bg: 'hall', title: text('s'), onEnter: spec.onEnter ?? [], hotspots };
+  const raw = {
+    format: 1,
+    items: Object.fromEntries((spec.items ?? []).map((i) => [i, { name: text(i), desc: text(i), glyph: 'key' }])),
+    docs: {},
+    puzzles: spec.puzzles ?? {},
+    sections: spec.sections === false ? {} : { s: { start: 'hall', bgm: null, rooms: { hall: room } } },
+  };
+  const r = decodeWorldSource(raw);
+  if (!r.ok) {
+    throw new Error(`invariant: the fixture world decodes: ${JSON.stringify(r.error)}`);
+  }
+  return toPublic(r.value);
+}
+
+const LEAVE_OUT: Json = { id: 'out', kind: 'exit', to: { story: 'out' }, lock: null, sfx: null };
+
+test('play: event knot without return fails', () => {
+  const body = [
+    '-> start',
+    '=== start ===',
+    'Холл. #id:ch1.start.a001',
+    '# explore: s',
+    '-> DONE',
+    '=== ev ===',
+    'Голос. #id:ch1.ev.a002',
+    '-> END',
+    '=== out ===',
+    'Ушли. #id:ch1.out.a003',
+    '-> END',
+  ];
+  const w = world({ hotspots: [LEAVE_OUT], onEnter: [{ story: 'ev' }] });
+  const r = play(fixture(body), { world: w });
+  // The entry's INCLUDE is line 1, so the header `=== ev ===` (body index 5) is line 7.
+  expect(at(r.findings, 'play/event-no-return'), JSON.stringify(r.findings)).toEqual(['ch1/main.ink:7']);
+  expect(r.findings.find((f) => f.code === 'play/event-no-return')?.message).toContain("event knot 'ev' of section s stopped without '# explore: s' (it ended)");
+  expect(r.play).toMatchObject({ ended: 0, yielded: 0, failed: 200 });
+  // The control: the event knot handing control back to the rooms ends every run in `out`.
+  const back = [...body.slice(0, 7), '# explore: s', '-> DONE', ...body.slice(8)];
+  const ok = play(fixture(back), { world: w });
+  expect(ok.findings, JSON.stringify(ok.findings)).toEqual([]);
+  expect(ok.play).toMatchObject({ ended: 200, failed: 0 });
+});
+
+test('play: puzzle then-knot outcomes covered', () => {
+  const lock = {
+    type: 'code',
+    title: text('lock'),
+    prompt: text('lock'),
+    closeup: null,
+    params: { dials: 3 },
+    maxAttempts: 3,
+    giveUp: true,
+    solution: [1, 2, 3],
+    hints: [text('lock'), text('lock')],
+  };
+  const body = [
+    'VAR pz_lock = 0',
+    'VAR pz_lock_hints = 0',
+    '-> start',
+    '=== start ===',
+    'Ящик. #id:ch1.start.a001',
+    '# puzzle: lock then=after',
+    '-> DONE',
+    '=== after ===',
+    'Подсказок: {pz_lock_hints}. #id:ch1.after.a002',
+    '{ pz_lock:',
+    '    - 1: -> solved',
+    '    - 2: -> failed',
+    '    - else: -> gave_up',
+    '}',
+    '=== solved ===',
+    'Открыто. #id:ch1.solved.a003',
+    '-> END',
+    '=== failed ===',
+    'Сломано. #id:ch1.failed.a004',
+    '-> END',
+    '=== gave_up ===',
+    'Ушли. #id:ch1.gave_up.a005',
+    '-> END',
+  ];
+  const f = fixture(body);
+  const r = play(f, { world: world({ hotspots: [], puzzles: { lock }, sections: false }) });
+  expect(coverageLine(r.play, f.graph)).toMatch(/pz_lock 1,2,3/);
+  expect(coverageLine(r.play, f.graph)).toBe('play: ch1: 200 runs, knots 5/5, endings 3/3 (seeds 1-200, defaults; ended 200, yielded 0, failed 0; pz_lock 1,2,3)');
+  expect(r.findings, JSON.stringify(r.findings)).toEqual([]);
+  expect([...r.play.visited].sort()).toEqual(['after', 'failed', 'gave_up', 'solved', 'start']);
+  expect([...r.play.outcomes]).toEqual([['lock', new Set([1, 2, 3])]]);
+  // A world-less chapter's line has no puzzle part.
+  expect(coverageLine(play(fixture(['-> start', '=== start ===', 'Текст. #id:ch1.start.a001', '-> END'])).play, f.graph)).toMatch(/failed 0\)$/);
+});
+
+test('play: explore yield walks the section and leaves into the story', () => {
+  // The hall's voice runs on entry and hands control back; the key opens the gate's one-slot lock, the gate leaves.
+  const gate = {
+    id: 'gate',
+    kind: 'exit',
+    to: { story: 'out' },
+    lock: { slots: [{ accepts: 'key' }], puzzle: null, locked: text('s'), onOpen: [], onFail: [] },
+    sfx: null,
+  };
+  const take = { id: 'key', kind: 'take', gives: { item: 'key' }, prop: null, then: [] };
+  const w = world({ hotspots: [take, gate], onEnter: [{ story: 'voice' }], items: ['key'] });
+  const body = [
+    '-> start',
+    '=== start ===',
+    'Холл. #id:ch1.start.a001',
+    '# explore: s',
+    '-> DONE',
+    '=== voice ===',
+    'Кто здесь? #id:ch1.voice.a002',
+    '# explore: s',
+    '-> DONE',
+    '=== out ===',
+    'Ушли. #id:ch1.out.a003',
+    '-> END',
+  ];
+  const r = play(fixture(body), { world: w });
+  expect(r.play, JSON.stringify(r.findings)).toMatchObject({ ended: 200, yielded: 0, failed: 0 });
+  expect(r.findings).toEqual([]);
+  expect([...r.play.visited]).toEqual(['start', 'voice', 'out']);
+  expect(new Set(r.play.carries.map((c) => c.knot))).toEqual(new Set(['out']));
+  expect([...r.play.endings]).toEqual(['out']);
 });
