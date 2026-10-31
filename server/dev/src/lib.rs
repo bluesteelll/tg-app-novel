@@ -10,23 +10,31 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use axum::Router;
+use pgdev::{DbName, DevCluster, PgDevError};
 use server::config::{Config, PLACEHOLDER_BOT_TOKEN, PLACEHOLDER_WEBHOOK_SECRET, TelegramEnv};
 use server::{AppState, StartupError, build_router};
 
 /// Where the dev app keeps its database and finds its content.
 #[derive(Debug, Clone)]
 pub struct DevPaths {
-    /// The SQLite database file (`DATABASE_PATH`).
-    pub db: PathBuf,
+    /// The PostgreSQL database URL (`DATABASE_URL`); a dev cluster's URL holds no password (trust auth).
+    pub database_url: String,
     /// The content directory (`CONTENT_DIR`).
     pub content: PathBuf,
 }
 
 /// The production router plus every dev module's routes, on a state built by [`AppState::new`] from the dev
-/// configuration. Opens and migrates `paths.db`: it creates the file, never its directory, and deletes nothing.
+/// configuration. Connects to and migrates `paths.database_url`: it creates no database and drops nothing.
 pub async fn build_dev_app(paths: DevPaths) -> Result<Router, StartupError> {
     let state = AppState::new(dev_config(&paths)).await?;
     Ok(build_router(state.clone()).merge(launch::routes().with_state(state)))
+}
+
+/// Recreates database `name` on `cluster` empty (`DROP … WITH (FORCE)`, which ends a previous instance's
+/// connections, then `CREATE`) and returns its URL: every launch starts on a fresh database.
+pub async fn launch_database(cluster: &DevCluster, name: &DbName) -> Result<String, PgDevError> {
+    cluster.recreate(name).await?;
+    Ok(cluster.database_url(name))
 }
 
 /// The dev configuration: the public `.env.example` placeholder secrets, accepted only because the app stays local
@@ -46,7 +54,7 @@ fn dev_config(paths: &DevPaths) -> Config {
         // Vite serves the client in development.
         static_dir: None,
         content_dir: paths.content.clone(),
-        database_path: paths.db.clone(),
+        database_url: paths.database_url.clone(),
         telegram_env: TelegramEnv::Test,
         // Unused: `main.rs` binds `DEV_API_PORT` itself.
         listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),

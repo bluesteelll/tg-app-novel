@@ -11,7 +11,6 @@ use server::AppState;
 use server::auth::issue_token;
 use server::clock::FixedClock;
 use server::ids::UserId;
-use tempfile::TempDir;
 
 use crate::common;
 
@@ -30,8 +29,8 @@ fn report(failures: &[String]) {
 }
 
 /// A migrated state at `T0` whose `users` table holds `users` (`saves.user_id` is a foreign key).
-async fn saves_state(users: &[i64]) -> (AppState, TempDir) {
-    let (st, dir) = common::test_state().await;
+async fn saves_state(users: &[i64]) -> (AppState, common::TestDb) {
+    let (st, db) = common::test_state().await;
     let st = st.with_clock(Arc::new(FixedClock(T0)));
     for &id in users {
         st.repo
@@ -39,7 +38,7 @@ async fn saves_state(users: &[i64]) -> (AppState, TempDir) {
             .await
             .unwrap();
     }
-    (st, dir)
+    (st, db)
 }
 
 /// The same state with its clock at `now`.
@@ -183,7 +182,7 @@ fn row(slot: &str, rev: i64, write_id: &str, saved_at: i64) -> Row {
 async fn rows(st: &AppState, user: i64) -> Vec<Row> {
     let mut db = common::raw_db(st).await;
     sqlx::query_as(
-        "SELECT slot, rev, write_id, body, saved_at FROM saves WHERE user_id = ? ORDER BY slot",
+        "SELECT slot, rev, write_id, body, saved_at FROM saves WHERE user_id = $1 ORDER BY slot",
     )
     .bind(user)
     .fetch_all(&mut db)
@@ -199,7 +198,7 @@ async fn expect_rows(case: &str, st: &AppState, user: i64, want: &[Row]) -> Opti
 
 #[tokio::test]
 async fn saves_create_then_conflict() {
-    let (st, _dir) = saves_state(&[ANN]).await;
+    let (st, _db) = saves_state(&[ANN]).await;
     let mut failures = Vec::new();
 
     let reply = put(&st, ANN, "auto", request(None, "w1")).await;
@@ -260,7 +259,7 @@ async fn saves_create_then_conflict() {
 
 #[tokio::test]
 async fn saves_rev_increments() {
-    let (st, _dir) = saves_state(&[ANN]).await;
+    let (st, _db) = saves_state(&[ANN]).await;
     let mut failures = Vec::new();
     let env3 = ("ch2", "v2", None);
 
@@ -343,7 +342,7 @@ fn race_failure(
 /// 200s. A regression guard: a single atomic statement has no deterministic red.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn saves_concurrent_writes_one_wins() {
-    let (st, _dir) = saves_state(&[ANN]).await;
+    let (st, _db) = saves_state(&[ANN]).await;
     let mut failures = Vec::new();
     let rounds = [
         ("race null/w1 vs null/w2", None, ["w1", "w2"], 1),
@@ -370,7 +369,7 @@ async fn saves_concurrent_writes_one_wins() {
 /// and writes nothing, whatever its `expectedRev`. Only the stored row's `writeId` replays: an older one conflicts.
 #[tokio::test]
 async fn saves_retry_same_write_id_ok() {
-    let (st, _dir) = saves_state(&[ANN]).await;
+    let (st, _db) = saves_state(&[ANN]).await;
     let mut failures = Vec::new();
 
     // (1) A create, then its retry later with another body: the stored answer, the stored row.
@@ -477,7 +476,7 @@ const NOT_FOUND: &str = r#"{"error":"not_found"}"#;
 /// default of every other route; each boundary is exact.
 #[tokio::test]
 async fn saves_body_too_large_413() {
-    let (st, _dir) = saves_state(&[ANN]).await;
+    let (st, _db) = saves_state(&[ANN]).await;
     let mut failures = Vec::new();
     let at_cap = body_of_len(262_144);
 
@@ -529,11 +528,11 @@ async fn saves_body_too_large_413() {
 }
 
 /// The body cap counts UTF-8 bytes, not characters: a body of 2-byte characters over 262 144 bytes but under
-/// 262 144 characters is refused (413) and writes nothing; a body of exactly 262 144 bytes is admitted. The CHECK
-/// counts characters, so only the edge holds the byte cap the client measures with `TextEncoder`.
+/// 262 144 characters is refused (413) and writes nothing; a body of exactly 262 144 bytes is admitted. The edge
+/// and the CHECK (`octet_length`) both count the bytes the client measures with `TextEncoder`.
 #[tokio::test]
 async fn saves_body_cap_counts_utf8_bytes_413() {
-    let (st, _dir) = saves_state(&[ANN]).await;
+    let (st, _db) = saves_state(&[ANN]).await;
     let mut failures = Vec::new();
     // `{"a":"` + n x U+0436 (Cyrillic, 2 bytes in UTF-8) + `"}` = 8 + 2n bytes, 8 + n characters.
     let doc = |n: usize| format!("{{\"a\":\"{}\"}}", "\u{436}".repeat(n));
@@ -577,7 +576,7 @@ async fn saves_body_cap_counts_utf8_bytes_413() {
 /// The body must be one JSON document: checked at the edge (400), not left to the CHECK (500).
 #[tokio::test]
 async fn saves_body_not_json_400() {
-    let (st, _dir) = saves_state(&[ANN]).await;
+    let (st, _db) = saves_state(&[ANN]).await;
     let mut failures = Vec::new();
     for (case, write_id, body) in [
         ("body `not json`", "w1", "not json"),
@@ -598,10 +597,57 @@ async fn saves_body_not_json_400() {
     report(&failures);
 }
 
+/// The body is stored byte for byte (`TEXT`, never `jsonb`): whitespace, key order, a duplicate key and a number's
+/// spelling come back as sent, through GET and in the row. `s1` holds only what `jsonb` would rewrite but accept, so
+/// a `jsonb` store shows its rewrite there; `s2` adds the `\u0000` escape, which `IS JSON` admits and `jsonb` refuses.
+#[tokio::test]
+async fn saves_body_round_trips_bytes() {
+    let (st, _db) = saves_state(&[ANN]).await;
+    let mut failures = Vec::new();
+    let rewritable = r#"{ "b" : 1,  "a" : [ 1.230e-5 , true ],
+ "b" : 2 }"#;
+    let with_nul_escape = r#"{ "b" : 1,  "a" : [ 1.230e-5 , "\u0000" ],
+ "b" : 2 }"#;
+    let bodies = [("s1", "w1", rewritable), ("s2", "w2", with_nul_escape)];
+    for (slot, write_id, body) in bodies {
+        let req = request_with(None, write_id, ENV1, body).to_string();
+        let reply = put(&st, ANN, slot, req).await;
+        failures.extend(expect_json(
+            &format!("PUT {slot}"),
+            &reply,
+            200,
+            &written(1, T0),
+        ));
+        let reply = get(&st, Some(ANN), &format!("/saves/{slot}")).await;
+        let got: Value = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
+        if reply.status.as_u16() != 200 || got["body"].as_str() != Some(body) {
+            failures.push(format!(
+                "GET {slot}: expected 200 with the body {body:?} byte for byte, got {} {:?}",
+                reply.status.as_u16(),
+                got["body"]
+            ));
+        }
+    }
+    let want: Vec<Row> = bodies
+        .iter()
+        .map(|(slot, write_id, body)| {
+            (
+                (*slot).to_owned(),
+                1,
+                (*write_id).to_owned(),
+                (*body).to_owned(),
+                T0,
+            )
+        })
+        .collect();
+    failures.extend(expect_rows("the stored bodies", &st, ANN, &want).await);
+    report(&failures);
+}
+
 /// A slot outside `auto, s1, s2, s3` is 400 on GET and PUT; the token is checked before the slot.
 #[tokio::test]
 async fn saves_bad_slot_400() {
-    let (st, _dir) = saves_state(&[ANN]).await;
+    let (st, _db) = saves_state(&[ANN]).await;
     let mut failures = Vec::new();
     for path in ["/saves/s4", "/saves/AUTO"] {
         let reply = get(&st, Some(ANN), path).await;
@@ -650,7 +696,7 @@ async fn saves_bad_slot_400() {
 #[tokio::test]
 async fn saves_other_user_404() {
     const BOB: i64 = 1002;
-    let (st, _dir) = saves_state(&[ANN, BOB]).await;
+    let (st, _db) = saves_state(&[ANN, BOB]).await;
     let mut failures = Vec::new();
     let reply = put(&st, ANN, "s1", request(None, "w1")).await;
     failures.extend(expect_json(

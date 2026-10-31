@@ -1,4 +1,5 @@
-//! Shared test helpers. Every state comes from `AppState::new`, with a fresh temp-file database per test.
+//! Shared test helpers. Every state comes from `AppState::new`, on a fresh PostgreSQL database per test
+//! ([`TestDb`]) on the dev cluster the environment names (`DEV_PG_PORT`, `DEV_PG_ROOT`, `PG_BIN`).
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -8,10 +9,10 @@ use axum::http::{HeaderMap, Request, StatusCode};
 use http_body_util::BodyExt;
 use server::config::{Config, PLACEHOLDER_BOT_TOKEN, TelegramEnv};
 use server::{AppState, build_router};
-use sqlx::ConnectOptions;
-use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection};
-use tempfile::TempDir;
+use sqlx::{Connection, PgConnection};
 use tower::ServiceExt;
+
+pub use pgdev::TestDb;
 
 /// The bot token of every test state: the `.env.example` placeholder, so initData signed by the test vectors'
 /// signer verifies here and against a server started from `.env.example`.
@@ -20,8 +21,8 @@ pub const TEST_BOT_TOKEN: &str = PLACEHOLDER_BOT_TOKEN;
 /// The one admin of every test state.
 pub const TEST_ADMIN_ID: i64 = 900_000_001;
 
-/// A complete test configuration: the database is `dir/test.db`, the content the committed fixture.
-pub fn test_config(dir: &TempDir) -> Config {
+/// A complete test configuration: the database is `db`, the content the committed fixture.
+pub fn test_config(db: &TestDb) -> Config {
     Config {
         bot_token: TEST_BOT_TOKEN.to_owned(),
         webhook_secret: "test-webhook-secret".to_owned(),
@@ -35,35 +36,27 @@ pub fn test_config(dir: &TempDir) -> Config {
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/content"
         )),
-        database_path: dir.path().join("test.db"),
+        database_url: db.url(),
         telegram_env: TelegramEnv::Test,
         listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
     }
 }
 
-/// A migrated state on a fresh temp-file database. Bind the directory (`let (st, _dir) = ...`), never `_`, which
-/// drops the directory and the database at once.
-pub async fn test_state() -> (AppState, TempDir) {
-    let dir = tempfile::Builder::new()
-        .prefix("tg-novel-it-")
-        .tempdir_in(env!("CARGO_TARGET_TMPDIR"))
-        .unwrap();
-    match AppState::new(test_config(&dir)).await {
-        Ok(state) => (state, dir),
-        Err(e) => panic!("test_state: {e}"),
+/// A migrated state on a fresh database. Bind the guard (`let (st, _db) = ...`), never `_`, which drops the
+/// database at once.
+pub async fn test_state() -> (AppState, TestDb) {
+    let db = TestDb::create().await;
+    match AppState::new(test_config(&db)).await {
+        Ok(state) => (state, db),
+        Err(e) => panic!("test_state: {}: {e}", db.name()),
     }
 }
 
-/// A connection of its own to the state's database file, outside the app pool. It never creates a file: a wrong
-/// path fails instead of yielding an empty database.
-pub async fn raw_db(st: &AppState) -> SqliteConnection {
-    SqliteConnectOptions::new()
-        .filename(&st.cfg.database_path)
-        .create_if_missing(false)
-        .foreign_keys(true)
-        .connect()
-        .await
-        .unwrap()
+/// A connection of its own to the state's database, outside the app pool. It carries none of the app's session
+/// settings, so it runs under the test database's hostile defaults (`repeatable read`, `synchronous_commit = off`):
+/// a raw stand-in for an app transaction opens it with `BEGIN ISOLATION LEVEL READ COMMITTED`.
+pub async fn raw_db(st: &AppState) -> PgConnection {
+    PgConnection::connect(&st.cfg.database_url).await.unwrap()
 }
 
 /// A collected response.

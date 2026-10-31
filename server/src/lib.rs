@@ -36,12 +36,12 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Opens the database pool and applies the migrations. Creates no directory and deletes no file: a missing
-    /// parent directory of `DATABASE_PATH` is a [`StartupError::Db`].
+    /// Connects the database pool to `DATABASE_URL` and applies the migrations. Connects and migrates; creates no
+    /// database: a missing or unreachable one is a [`StartupError::Db`].
     pub async fn new(cfg: Config) -> Result<AppState, StartupError> {
-        let repo = Repo::open(&cfg.database_path).await?;
+        let repo = Repo::open(&cfg.database_url).await?;
         if let Err(e) = repo.migrate().await {
-            // Close at once: on Windows an open SQLite file cannot be removed by the caller.
+            // Close at once: the pool's connections end now, not whenever the last clone of the pool is dropped.
             repo.close().await;
             return Err(e.into());
         }

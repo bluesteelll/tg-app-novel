@@ -29,6 +29,7 @@ getrandom = { workspace = true }
 ts-rs = { workspace = true }
 
 [dev-dependencies]
-tempfile = { workspace = true }
+# Dev only: the production `server` never links pgdev (its clusters trust every loopback connection).
+pgdev = { path = "pgdev" }
 http-body-util = { workspace = true }
 tower = { workspace = true, features = ["util"] }

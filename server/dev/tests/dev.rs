@@ -1,5 +1,5 @@
-//! The dev app through its lib target: every app comes from the one `dev_app()` helper, on its own temp-file
-//! database, and is driven with `oneshot` (no port is bound).
+//! The dev app through its lib target: every app comes from the one `dev_app()` helper, on its own test database
+//! (`pgdev::TestDb`), and is driven with `oneshot` (no port is bound).
 
 #![allow(
     clippy::unwrap_used,
@@ -8,51 +8,59 @@
 // Every allowance in this crate states why; `-D warnings` makes a bare `allow` a gate failure.
 #![warn(clippy::allow_attributes_without_reason)]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, HeaderName, LOCATION};
 use axum::http::{HeaderMap, Request, StatusCode};
 use http_body_util::BodyExt;
+use pgdev::{DbName, DevCluster, TestDb};
 use serde_json::{Value, json};
 use server::auth::{TgUser, validate_init_data};
 use server::clock::{Clock, SystemClock};
 use server::config::PLACEHOLDER_BOT_TOKEN;
 use server::ids::UserId;
-use server_dev::{DevPaths, build_dev_app};
-use tempfile::TempDir;
+use server_dev::{DevPaths, build_dev_app, launch_database};
+use sqlx::{Connection, PgConnection};
 use tower::ServiceExt;
 
-/// A dev app on its own database. `app` is declared first, so the app and its pool drop before the directory.
+/// A dev app on its own database. `app` is declared first, so the app and its pool drop before the database.
 struct DevApp {
     app: Router,
-    db: PathBuf,
-    dir: TempDir,
+    db: TestDb,
 }
 
-/// A dev app on `<temp dir>/dev.db` under cargo's `target/tmp` (RULINGS 7c), with the test content fixture. A failed
-/// build panics with the error and whether the given database exists, so it never hides the path fact.
+/// The server's committed content fixture.
+fn fixture_content() -> PathBuf {
+    PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../tests/fixtures/content"
+    ))
+}
+
+/// A dev app on a fresh test database, with the test content fixture. A failed build panics naming the database.
 async fn dev_app() -> DevApp {
-    let dir = tempfile::Builder::new()
-        .prefix("tg-novel-dev-")
-        .tempdir_in(env!("CARGO_TARGET_TMPDIR"))
-        .unwrap();
-    let db = dir.path().join("dev.db");
+    let db = TestDb::create().await;
     let paths = DevPaths {
-        db: db.clone(),
-        content: PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../tests/fixtures/content"
-        )),
+        database_url: db.url(),
+        content: fixture_content(),
     };
     match build_dev_app(paths).await {
-        Ok(app) => DevApp { app, db, dir },
-        Err(e) => panic!(
-            "dev_app: build_dev_app failed: {e} (given db exists: {})",
-            db.exists()
-        ),
+        Ok(app) => DevApp { app, db },
+        Err(e) => panic!("dev_app: build_dev_app on {} failed: {e}", db.name()),
     }
+}
+
+/// The ids of the `users` rows of the database `url` names, read outside any app pool.
+async fn user_ids(url: &str) -> Vec<i64> {
+    let mut conn = PgConnection::connect(url).await.unwrap();
+    let ids = sqlx::query_scalar("SELECT id FROM users ORDER BY id")
+        .fetch_all(&mut conn)
+        .await
+        .unwrap();
+    conn.close().await.unwrap();
+    ids
 }
 
 /// A collected response.
@@ -195,44 +203,93 @@ fn report(failures: &[String]) {
     );
 }
 
-/// The app opens the database it is given (not `target/e2e/dev.db`) and serves the production routes.
+/// The app uses the database it is given (not a fixed dev database) and serves the production routes: the `users`
+/// row of a `/dev/launch` login lands in THAT database, read outside the app.
 #[tokio::test]
-async fn dev_app_uses_given_db_path() {
+async fn dev_app_uses_given_database() {
     let dev = dev_app().await;
     let mut failures = Vec::new();
-    if !dev.db.is_file() {
-        failures.push(format!(
-            "given database {}: expected to exist, absent (build: Ok)",
-            dev.db.display()
-        ));
-    }
-    let root = Path::new(env!("CARGO_TARGET_TMPDIR"));
-    if !dev.dir.path().starts_with(root) {
-        failures.push(format!(
-            "temp dir: expected a dir under {}, got {}",
-            root.display(),
-            dev.dir.path().display()
-        ));
-    }
-    let name = dev
-        .dir
-        .path()
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned());
-    if !name
-        .as_deref()
-        .is_some_and(|n| n.starts_with("tg-novel-dev-"))
-    {
-        failures.push(format!(
-            "temp dir name: expected the prefix tg-novel-dev-, got {name:?}"
-        ));
-    }
     let health = get(&dev, "/api/health").await;
     if health.status != StatusCode::OK || health.body.as_ref() != b"ok" {
         failures.push(format!(
             "GET /api/health: expected 200 ok, got {} {:?}",
             health.status,
             body_text(&health)
+        ));
+    }
+    let launch = get(&dev, "/dev/launch").await;
+    let auth = post_auth(&dev, &launch_init_data(&launch)).await;
+    if auth.status != StatusCode::OK {
+        failures.push(format!(
+            "POST /api/auth: expected 200, got {} {}",
+            auth.status,
+            body_text(&auth)
+        ));
+    }
+    let ids = user_ids(&dev.db.url()).await;
+    if ids != [1001] {
+        failures.push(format!(
+            "users rows in the given database {}: expected [1001], got {ids:?}",
+            dev.db.name()
+        ));
+    }
+    report(&failures);
+}
+
+/// Every launch starts on an empty database: `launch_database` twice on one name, and a row written after the first
+/// is gone after the second. The name comes from a `TestDb` guard, which drops the database at the end, on panic too.
+#[tokio::test]
+async fn dev_database_reset_per_launch() {
+    let guard = TestDb::create().await;
+    let name = DbName::parse(guard.name()).unwrap();
+    let cluster = DevCluster::from_env().unwrap();
+    let launch = |round: &'static str| {
+        let (cluster, name) = (cluster.clone(), name.clone());
+        async move {
+            let url = launch_database(&cluster, &name)
+                .await
+                .unwrap_or_else(|e| panic!("{round}: launch_database: {e}"));
+            let paths = DevPaths {
+                database_url: url.clone(),
+                content: fixture_content(),
+            };
+            // The app migrates the database, as server-dev does after each launch.
+            let app = build_dev_app(paths)
+                .await
+                .unwrap_or_else(|e| panic!("{round}: build_dev_app: {e}"));
+            (url, app)
+        }
+    };
+    let mut failures = Vec::new();
+
+    let (url, first) = launch("launch 1").await;
+    if url != guard.url() {
+        failures.push(format!(
+            "launch 1: expected the URL of {}, got {url}",
+            guard.name()
+        ));
+    }
+    let mut conn = PgConnection::connect(&url).await.unwrap();
+    sqlx::query(
+        "INSERT INTO users (id, first_name, language_code, created_at, last_seen_at) VALUES (1001, 'Ann', NULL, 0, 0)",
+    )
+    .execute(&mut conn)
+    .await
+    .unwrap();
+    conn.close().await.unwrap();
+    let ids = user_ids(&url).await;
+    if ids != [1001] {
+        failures.push(format!(
+            "after launch 1 (control): expected the row written, got {ids:?}"
+        ));
+    }
+    drop(first);
+
+    let (url, _second) = launch("launch 2").await;
+    let ids = user_ids(&url).await;
+    if !ids.is_empty() {
+        failures.push(format!(
+            "after launch 2: expected no users rows, but the row from launch 1 survived: {ids:?}"
         ));
     }
     report(&failures);

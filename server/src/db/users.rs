@@ -14,14 +14,13 @@ impl Repo {
         now: i64,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "INSERT INTO users (id, first_name, language_code, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?) \
+            "INSERT INTO users (id, first_name, language_code, created_at, last_seen_at) VALUES ($1, $2, $3, $4, $4) \
              ON CONFLICT (id) DO UPDATE SET first_name = excluded.first_name, \
              language_code = excluded.language_code, last_seen_at = excluded.last_seen_at",
         )
         .bind(id.0)
         .bind(first_name)
         .bind(language_code)
-        .bind(now)
         .bind(now)
         .execute(&self.pool)
         .await?;

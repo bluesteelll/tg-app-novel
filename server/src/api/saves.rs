@@ -13,9 +13,8 @@ use crate::db::saves::{NewSave, PutOutcome, SaveMeta};
 use crate::error::ApiError;
 use crate::ids::SaveSlot;
 
-/// The largest save body, in UTF-8 bytes: the `saves.body` CHECK allows 262 144 characters, and a string never has
-/// more characters than bytes, so the edge never admits what the CHECK refuses. The client measures the same bytes
-/// (`TextEncoder`).
+/// The largest save body, in UTF-8 bytes: the `saves.body` CHECK counts the same UTF-8 bytes (`octet_length`), so the
+/// edge never admits what the CHECK refuses. The client measures the same bytes (`TextEncoder`).
 pub const MAX_SAVE_BODY_BYTES: usize = 262_144;
 
 /// `GET /api/saves`: the user's saves without their bodies, in slot order.
@@ -61,7 +60,7 @@ pub async fn put_save(
     if req.body.len() > MAX_SAVE_BODY_BYTES {
         return Err(ApiError::PayloadTooLarge);
     }
-    // `json_valid` at the edge: a client bug is a 400 here instead of the CHECK's 500. The body stays opaque: only its
+    // `IS JSON` at the edge: a client bug is a 400 here instead of the CHECK's 500. The body stays opaque: only its
     // being one JSON document is checked, and the CHECK remains the backstop.
     if serde_json::from_str::<serde::de::IgnoredAny>(&req.body).is_err() {
         return Err(ApiError::BadRequest("save body is not one JSON document"));
