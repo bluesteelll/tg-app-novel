@@ -1,0 +1,5 @@
+{
+  "inkVersion": 21,
+  "root": [["^FIXTURE-CH2-STORY", "\n", "#", "^id: ch2.archive.a1b2", "/#", "done", null], "done", { "archive": [["^FIXTURE-CH2-STORY archive", "\n", "end", null]] }],
+  "listDefs": {}
+}

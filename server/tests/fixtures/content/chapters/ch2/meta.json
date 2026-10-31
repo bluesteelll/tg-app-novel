@@ -1,0 +1,12 @@
+{
+  "chapterId": "ch2",
+  "storyVersion": "c2c2c2c2c2c2c2c2",
+  "firstKnot": "archive",
+  "globals": ["g_key"],
+  "vars": ["g_key", "seen_cabinet"],
+  "knots": {
+    "archive": { "assets": ["bg/archive", "sfx/door", "bgm/hall"], "next": ["finale"], "ending": false },
+    "finale": { "assets": [], "next": [], "ending": true }
+  },
+  "endings": { "finale": "truth" }
+}

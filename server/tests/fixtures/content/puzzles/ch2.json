@@ -1,0 +1,18 @@
+{
+  "format": 1,
+  "chapterId": "ch2",
+  "puzzles": {
+    "cabinet": {
+      "type": "order",
+      "answerLen": 3,
+      "answerMax": 2,
+      "solution": [2, 0, 1],
+      "title": { "ru": "Шкаф в архиве", "en": "Archive cabinet" },
+      "hints": [
+        { "ru": "Папки разложены не по цвету.", "en": "The folders are not sorted by colour." },
+        { "ru": "Начните с папки, которая лежит выше всех.", "en": "Start with the folder that lies highest." },
+        { "ru": "Последней идёт красная папка.", "en": "The red folder goes last." }
+      ]
+    }
+  }
+}

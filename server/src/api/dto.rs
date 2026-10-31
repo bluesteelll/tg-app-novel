@@ -7,10 +7,11 @@
 //! `i64` is `#[ts(type = "number")]`: ids and timestamps stay below 2^53, and ts-rs would otherwise say `bigint`.
 
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 use ts_rs::TS;
 
 use crate::error::{ApiErrorBody, ErrorCode};
-use crate::ids::SaveSlot;
+use crate::ids::{SaveSlot, StoryId};
 
 /// `POST /api/auth` request. Unknown fields (a client-sent `userId`, say) are ignored, never trusted.
 #[derive(Deserialize, TS)]
@@ -46,11 +47,13 @@ pub struct UserDto {
     pub language_code: Option<String>,
 }
 
-/// A stored save without its body: an entry of `GET /api/saves`, the head of `GET /api/saves/{slot}`, and the
-/// `current` of a 409.
+/// A stored save without its body: an entry of `GET /api/saves`, the head of `GET /api/saves/{storyId}/{slot}`, and
+/// the `current` of a 409.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveSummary {
+    /// The story the save belongs to.
+    pub story_id: StoryId,
     /// The slot.
     pub slot: SaveSlot,
     /// The revision: 1 when the slot is created, one more per accepted write.
@@ -73,11 +76,11 @@ pub struct SaveSummary {
 #[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveListResponse {
-    /// The user's saves in slot order (`auto`, `s1`, `s2`, `s3`); an empty slot is absent.
+    /// Every story's saves, by story id then slot (`auto`, `s1`, `s2`, `s3`); an empty slot is absent.
     pub slots: Vec<SaveSummary>,
 }
 
-/// `GET /api/saves/{slot}` response.
+/// `GET /api/saves/{storyId}/{slot}` response.
 #[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveFull {
@@ -87,7 +90,7 @@ pub struct SaveFull {
     pub body: String,
 }
 
-/// `PUT /api/saves/{slot}` request. Unknown fields are ignored.
+/// `PUT /api/saves/{storyId}/{slot}` request. Unknown fields are ignored.
 #[derive(Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct PutSaveRequest {
@@ -106,7 +109,7 @@ pub struct PutSaveRequest {
     pub body: String,
 }
 
-/// `PUT /api/saves/{slot}` response.
+/// `PUT /api/saves/{storyId}/{slot}` response.
 #[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct PutSaveResponse {
@@ -116,6 +119,55 @@ pub struct PutSaveResponse {
     /// When the server stored it, in unix seconds.
     #[ts(type = "number")]
     pub saved_at: i64,
+}
+
+/// A chapter product as `GET /api/entitlements` lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductDto {
+    /// The product id, `chapter:<chapterId>`.
+    pub product_id: String,
+    /// The chapter it unlocks.
+    pub chapter_id: String,
+    /// The price in Telegram Stars, from the server's catalog.
+    pub price_stars: u32,
+    /// Whether the user owns it, from the server's entitlement rows.
+    pub owned: bool,
+}
+
+/// `GET /api/entitlements` response.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct EntitlementsResponse {
+    /// Every chapter product: story order, then chain order.
+    pub products: Vec<ProductDto>,
+}
+
+/// `GET /api/chapters/{chapterId}` response: a paid chapter's files as the build wrote them, composed raw (no
+/// re-encoding).
+// No `Debug`: it is the sold content, never logged.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ChapterPayload<'a> {
+    /// The chapter id.
+    pub chapter_id: &'a str,
+    /// The story version the chapter was built at (`meta.json`'s `storyVersion`).
+    pub story_version: &'a str,
+    /// The compiled ink (`story.json`).
+    #[ts(type = "unknown")]
+    pub story: &'a RawValue,
+    /// The chapter meta (`meta.json`).
+    #[ts(type = "unknown")]
+    pub meta: &'a RawValue,
+    /// The chapter's asset manifest (`assets.json`).
+    #[ts(type = "unknown")]
+    pub assets: &'a RawValue,
+    /// The English line table (`en.json`).
+    #[ts(type = "unknown")]
+    pub en: &'a RawValue,
+    /// The chapter's public world, or `null` (serialized, not omitted) when it has none.
+    #[ts(type = "unknown")]
+    pub world: Option<&'a RawValue>,
 }
 
 /// The first line of the generated file: what it is and how to rewrite it.
@@ -129,6 +181,7 @@ pub fn ts_bindings() -> String {
     let cfg = ts_rs::Config::new();
     let decls = [
         export::<SaveSlot>(&cfg),
+        export::<StoryId>(&cfg),
         export::<ErrorCode>(&cfg),
         export::<ApiErrorBody>(&cfg),
         export::<AuthRequest>(&cfg),
@@ -139,6 +192,9 @@ pub fn ts_bindings() -> String {
         export::<SaveFull>(&cfg),
         export::<PutSaveRequest>(&cfg),
         export::<PutSaveResponse>(&cfg),
+        export::<ProductDto>(&cfg),
+        export::<EntitlementsResponse>(&cfg),
+        export::<ChapterPayload<'static>>(&cfg),
     ];
     format!("{BINDINGS_HEADER}\n\n{}", decls.join("\n"))
 }

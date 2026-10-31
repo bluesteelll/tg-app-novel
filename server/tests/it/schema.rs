@@ -124,10 +124,24 @@ async fn entitlement(c: &mut PgConnection, product: &str, charge: &str) -> Res {
     .await
 }
 
+/// A `saves` row of `user` in `story`'s `slot`.
+async fn save_in(c: &mut PgConnection, user: i64, story: &str, slot: &str) -> Res {
+    sqlx::query(
+        "INSERT INTO saves (user_id, story_id, slot, rev, chapter_id, story_version, line_id, write_id, body, \
+         saved_at) VALUES ($1, $2, $3, 1, 'ch1', 'v1', NULL, 'w1', '{}', 0)",
+    )
+    .bind(user)
+    .bind(story)
+    .bind(slot)
+    .execute(&mut *c)
+    .await
+}
+
+/// A `saves` row of user 1 in `manor`.
 async fn save(c: &mut PgConnection, slot: &str, rev: i64, body: &str) -> Res {
     sqlx::query(
-        "INSERT INTO saves (user_id, slot, rev, chapter_id, story_version, line_id, write_id, body, saved_at) \
-         VALUES (1, $1, $2, 'ch1', 'v1', NULL, 'w1', $3, 0)",
+        "INSERT INTO saves (user_id, story_id, slot, rev, chapter_id, story_version, line_id, write_id, body, \
+         saved_at) VALUES (1, 'manor', $1, $2, 'ch1', 'v1', NULL, 'w1', $3, 0)",
     )
     .bind(slot)
     .bind(rev)
@@ -358,6 +372,71 @@ async fn schema_save_body_json_valid() {
         let res = save(&mut c, slot, rev, body).await;
         failures.extend(expect_err(case, res, ("23514", constraint)).err());
     }
+
+    report(&failures);
+}
+
+/// `saves_story_id_shape` is `StoryId::parse`'s grammar `^[a-z][a-z0-9_]{0,23}$` (the cases of `story_id_grammar`
+/// plus an upper-case tail and a trailing newline): ASCII ranges by code point, `$` only at the end of the text.
+#[tokio::test]
+async fn schema_saves_story_id_shape() {
+    let (st, _db) = common::test_state().await;
+    let mut c = common::raw_db(&st).await;
+    let mut failures = Vec::new();
+    failures.extend(expect_ok("setup user", user(&mut c, 1).await).err());
+
+    let longest = format!("a{}", "b".repeat(23));
+    let too_long = format!("a{}", "b".repeat(24));
+    for story in ["manor", "a", "a_1", "a9", longest.as_str()] {
+        let res = save_in(&mut c, 1, story, "auto").await;
+        failures.extend(expect_ok(&format!("story {story:?}"), res).err());
+    }
+    for story in [
+        "Manor",
+        "aB",
+        "",
+        "1a",
+        "_a",
+        "a-b",
+        "a.b",
+        "a b",
+        too_long.as_str(),
+        "\u{e9}",
+        "a\u{e9}",
+        "manor\n",
+    ] {
+        let res = save_in(&mut c, 1, story, "auto").await;
+        failures.extend(
+            expect_err(
+                &format!("story {story:?}"),
+                res,
+                ("23514", "saves_story_id_shape"),
+            )
+            .err(),
+        );
+    }
+
+    report(&failures);
+}
+
+/// The key is (user, story, slot): one slot name in two stories is two rows, the same (user, story, slot) twice is
+/// refused, and another user's same (story, slot) is a row of its own.
+#[tokio::test]
+async fn schema_saves_pk_per_story() {
+    let (st, _db) = common::test_state().await;
+    let mut c = common::raw_db(&st).await;
+    let mut failures = Vec::new();
+    failures.extend(expect_ok("setup user 1", user(&mut c, 1).await).err());
+    failures.extend(expect_ok("setup user 2", user(&mut c, 2).await).err());
+
+    let res = save_in(&mut c, 1, "manor", "auto").await;
+    failures.extend(expect_ok("user 1 manor/auto", res).err());
+    let res = save_in(&mut c, 1, "tide", "auto").await;
+    failures.extend(expect_ok("user 1 tide/auto", res).err());
+    let res = save_in(&mut c, 1, "manor", "auto").await;
+    failures.extend(expect_err("user 1 manor/auto again", res, ("23505", "saves_pkey")).err());
+    let res = save_in(&mut c, 2, "manor", "auto").await;
+    failures.extend(expect_ok("user 2 manor/auto", res).err());
 
     report(&failures);
 }

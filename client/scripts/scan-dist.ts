@@ -1,11 +1,17 @@
 // Leak scan of the built client (principle 0): every file of dist/, its UTF-8 text plus every decoded data: URI
 // payload, against fingerprint sections. Fails on source maps, the ink compiler, dev canaries and (from L3b/L5)
-// paid fingerprints. Every finding is reported; exit 1 iff there is one or dist is missing (the CLI, below).
+// paid fingerprints: paid line IDs and texts, paid asset file names, and paid asset bytes by content hash (a renamed
+// copy, or one inlined as a base64 data: URI). Every finding is reported; exit 1 iff there is one or dist is missing.
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import type { ChapterListEntry } from '../src/story/catalog.ts';
+import { decodeAssetFingerprints } from './assets/manifest.ts';
+import type { AssetFingerprint } from './assets/manifest.ts';
 import { decodeChapterList, decodeLineFingerprints, decodeStoryUsage } from './story/emit.ts';
+import type { StoryUsage } from './story/emit.ts';
 
 export type Section = { name: string; needles: readonly string[] };
 /** One file of dist/: path relative to dist with '/' separators. */
@@ -18,12 +24,17 @@ export type FingerprintReason =
   | 'texts-empty'
   | 'chapter-ids-missing'
   | 'usage-missing'
-  | 'paid-story-missing';
+  | 'paid-story-missing'
+  | 'assets-missing'
+  | 'files-empty'
+  | 'asset-files-missing';
 export type Finding =
   | { kind: 'source-map'; file: string }
   | { kind: 'fingerprint'; file: string; section: string; needle: string; via: 'plain' | 'data-uri' }
   | { kind: 'empty-dist'; reason: string }
-  | { kind: 'fingerprints'; reason: FingerprintReason; detail: string };
+  | { kind: 'fingerprints'; reason: FingerprintReason; detail: string }
+  /** A paid asset file in dist: under its own name, as the same bytes under another name, or inlined as a data: URI. */
+  | { kind: 'paid-asset'; file: string; name: string; via: 'name' | 'hash' | 'data-uri' };
 
 /** Sections every build is scanned for, whatever the story holds. */
 export const FIXED_SECTIONS: readonly Section[] = [
@@ -55,9 +66,11 @@ function percentDecode(text: string): string {
   });
 }
 
-/** The decoded payload of every data: URI in `text` (base64 in both alphabets, or URL-encoded), recursively. */
-export function decodeDataUris(text: string, depth = 1): string[] {
-  const out: string[] = [];
+/** One decoded data: URI payload: its text, and its bytes when it was base64 (a binary file can only be base64). */
+type DataUri = { text: string; bytes: Uint8Array | null };
+
+function dataUris(text: string, depth: number): DataUri[] {
+  const out: DataUri[] = [];
   for (const m of text.matchAll(DATA_URI)) {
     const isBase64 = /;base64$/i.test(m[1] ?? '');
     const rest = text.slice(m.index + m[0].length);
@@ -66,15 +79,19 @@ export function decodeDataUris(text: string, depth = 1): string[] {
       continue;
     }
     // Node's base64 decoder accepts the standard and the URL-safe alphabet, with or without padding.
-    const decoded = isBase64
-      ? Buffer.from(payload.replace(/%3d/gi, '='), 'base64').toString('utf8')
-      : percentDecode(payload);
-    out.push(decoded);
+    const bytes = isBase64 ? Buffer.from(payload.replace(/%3d/gi, '='), 'base64') : null;
+    const decoded = bytes !== null ? bytes.toString('utf8') : percentDecode(payload);
+    out.push({ text: decoded, bytes });
     if (depth < MAX_DEPTH) {
-      out.push(...decodeDataUris(decoded, depth + 1));
+      out.push(...dataUris(decoded, depth + 1));
     }
   }
   return out;
+}
+
+/** The decoded payload of every data: URI in `text` (base64 in both alphabets, or URL-encoded), recursively. */
+export function decodeDataUris(text: string, depth = 1): string[] {
+  return dataUris(text, depth).map((d) => d.text);
 }
 
 /** Scans every file for every needle of every section; never stops at the first finding. */
@@ -110,8 +127,57 @@ export function scanFiles(files: readonly ScanFile[], sections: readonly Section
   return findings;
 }
 
+function sha256(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+/**
+ * Every dist file that is a paid asset file: by its basename, by the sha256 of its bytes (the same file renamed), or
+ * by the sha256 of a base64 data: URI payload inside it (inlined, up to the data-URI depth). A file can match more
+ * than one way; each way is a finding.
+ */
+export function scanPaidFiles(files: readonly ScanFile[], paid: readonly AssetFingerprint[]): Finding[] {
+  if (paid.length === 0) {
+    return [];
+  }
+  const byName = new Map(paid.map((f) => [f.name, f.name]));
+  const byHash = new Map(paid.map((f) => [f.sha256, f.name]));
+  const findings: Finding[] = [];
+  for (const file of files) {
+    const named = byName.get(file.path.slice(file.path.lastIndexOf('/') + 1));
+    if (named !== undefined) {
+      findings.push({ kind: 'paid-asset', file: file.path, name: named, via: 'name' });
+    }
+    const hashed = byHash.get(sha256(file.bytes));
+    if (hashed !== undefined) {
+      findings.push({ kind: 'paid-asset', file: file.path, name: hashed, via: 'hash' });
+    }
+    for (const uri of dataUris(utf8.decode(file.bytes), 1)) {
+      const inlined = uri.bytes === null ? undefined : byHash.get(sha256(uri.bytes));
+      if (inlined !== undefined) {
+        findings.push({ kind: 'paid-asset', file: file.path, name: inlined, via: 'data-uri' });
+      }
+    }
+  }
+  return findings;
+}
+
 const LINES_FILE = 'server/content/build/fingerprints.lines.json';
 const USAGE_FILE = 'server/content/build/usage.json';
+const ASSETS_FILE = 'server/content/build/fingerprints.assets.json';
+const AUDIO_ID = /^(?:bgm|sfx)\//;
+
+/**
+ * Asset ids a paid chapter names and no free chapter names, from the story tool's usage.json and the chapter list:
+ * computed here, never through the asset tool's own tiering or files, so a tiering fault there cannot also switch
+ * this check off (PROTOTYPE-PLAN "Paid-content protection").
+ */
+function paidOnlyAssets(usage: StoryUsage, chapters: readonly ChapterListEntry[]): string[] {
+  const named = (paid: boolean): Set<string> =>
+    new Set(chapters.filter((c) => c.paid === paid).flatMap((c) => usage.chapters[c.id]?.assets ?? []));
+  const free = named(false);
+  return [...named(true)].filter((id) => !free.has(id)).sort();
+}
 
 /** A repo JSON file, parsed; else why not ('missing', 'not JSON: …'). */
 function readRepoJson(repo: string, rel: string): { ok: true; value: unknown } | { ok: false; why: string } {
@@ -131,28 +197,31 @@ function readRepoJson(repo: string, rel: string): { ok: true; value: unknown } |
  * The sections a build is scanned for: the fixed sections, and while story/chapters.json declares a paid chapter,
  * its line fingerprints (`paid-lines`: every paid line ID; `paid-texts`: paid text samples) from the story tool.
  * Fail closed: every reason the paid sections could be empty or stale is a finding, never a silent pass (an
- * unreadable chapter list included). L5 adds the paid asset files.
+ * unreadable chapter list included). L5: while a paid-only asset exists (or the asset fingerprint file is present),
+ * `fingerprints.assets.json` must decode, list files, and cover every paid-only asset's files (an image: its AVIF and
+ * WebP); its names become the `paid-asset-files` section and its entries `paidFiles`, for `scanPaidFiles`.
  */
-export function loadSections(clientRoot: string): { sections: Section[]; findings: Finding[] } {
+export function loadSections(clientRoot: string): { sections: Section[]; findings: Finding[]; paidFiles: AssetFingerprint[] } {
   const repo = path.resolve(clientRoot, '..');
   const sections: Section[] = [...FIXED_SECTIONS];
   const findings: Finding[] = [];
+  const paidFiles: AssetFingerprint[] = [];
   const fail = (reason: FingerprintReason, detail: string): void => {
     findings.push({ kind: 'fingerprints', reason, detail });
   };
   const listed = readRepoJson(repo, 'story/chapters.json');
   if (!listed.ok) {
     fail('chapters-unreadable', `story/chapters.json: ${listed.why}`);
-    return { sections, findings };
+    return { sections, findings, paidFiles };
   }
   const chapters = decodeChapterList(listed.value);
   if (!chapters.ok) {
     fail('chapters-unreadable', `story/chapters.json: ${chapters.error.map((i) => `${i.path}: ${i.detail}`).join('; ')}`);
-    return { sections, findings };
+    return { sections, findings, paidFiles };
   }
   const paid = chapters.value.filter((c) => c.paid);
   if (paid.length === 0) {
-    return { sections, findings };
+    return { sections, findings, paidFiles };
   }
   const declared = `paid ${paid.map((c) => c.id).join(', ')} declared`;
   const lines = readRepoJson(repo, LINES_FILE);
@@ -183,7 +252,33 @@ export function loadSections(clientRoot: string): { sections: Section[]; finding
       fail('paid-story-missing', `${rel} is ${existsSync(abs) ? 'empty' : 'missing'}`);
     }
   }
-  return { sections, findings };
+  const paidOnly = decodedUsage.ok ? paidOnlyAssets(decodedUsage.value, chapters.value) : [];
+  const assets = readRepoJson(repo, ASSETS_FILE);
+  // Read while it is needed, or whenever it is there: a present file that does not decode is never ignored.
+  if (paidOnly.length > 0 || assets.ok || assets.why !== 'missing') {
+    const owed = paidOnly.length > 0 ? `paid-only ${paidOnly.join(', ')}; ` : '';
+    const fpa = assets.ok ? decodeAssetFingerprints(assets.value) : { ok: false as const, error: [assets.why] };
+    if (!fpa.ok) {
+      fail('assets-missing', `${owed}${ASSETS_FILE}: ${fpa.error.join('; ')}`);
+    } else {
+      paidFiles.push(...fpa.value.files);
+      if (paidFiles.length > 0) {
+        sections.push({ name: 'paid-asset-files', needles: paidFiles.map((f) => f.name) });
+      }
+      if (paidOnly.length > 0 && paidFiles.length === 0) {
+        fail('files-empty', `${owed}${ASSETS_FILE} files is empty`);
+      } else {
+        for (const id of paidOnly) {
+          const exts = paidFiles.filter((f) => f.asset === id).map((f) => f.name.slice(f.name.lastIndexOf('.')));
+          const owedExts = AUDIO_ID.test(id) ? (exts.length > 0 ? [] : ['audio']) : ['.avif', '.webp'].filter((e) => !exts.includes(e));
+          if (owedExts.length > 0) {
+            fail('asset-files-missing', `${id} has no ${owedExts.join(', ')} file in ${ASSETS_FILE} (written before it became paid-only?)`);
+          }
+        }
+      }
+    }
+  }
+  return { sections, findings, paidFiles };
 }
 
 export function formatFinding(f: Finding): string {
@@ -196,6 +291,8 @@ export function formatFinding(f: Finding): string {
       return `scan: empty-dist ${f.reason}`;
     case 'fingerprints':
       return `scan: fingerprints ${f.reason} ${f.detail}`;
+    case 'paid-asset':
+      return `scan: paid-asset ${f.name} in ${f.file} (via ${f.via})`;
     default: {
       const unreachable: never = f;
       return unreachable;
@@ -242,9 +339,9 @@ export function main(argv: readonly string[], clientRoot: string): number {
     console.error(`scan: ${distDir} does not exist; run vite build first`);
     return 1;
   }
-  const { sections, findings: vacuity } = loadSections(clientRoot);
+  const { sections, findings: vacuity, paidFiles } = loadSections(clientRoot);
   const files = walkFiles(distDir).map((rel): ScanFile => ({ path: rel, bytes: readFileSync(path.join(distDir, rel)) }));
-  const findings = [...vacuity, ...scanFiles(files, sections)];
+  const findings = [...vacuity, ...scanFiles(files, sections), ...scanPaidFiles(files, paidFiles)];
   const summary = sections.map((s) => `${s.name}(${s.needles.length})`).join(' ');
   console.log(`scan: ${files.length} files; sections ${summary}`);
   for (const finding of findings) {
