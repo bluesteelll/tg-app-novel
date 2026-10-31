@@ -770,7 +770,7 @@ Gap: no source states how Telegram decides to flag a bot (10 "Must verify" V1).
 
 ## 9. Owner value questions
 
-Numbered P1-P18 so they do not collide with the `docs/OPEN-QUESTIONS.md` numbers (Q3, Q5, Q21 …) cited elsewhere.
+Numbered P1-P33 so they do not collide with the `docs/OPEN-QUESTIONS.md` numbers (Q3, Q5, Q21 …) cited elsewhere.
 
 | # | Question | Why it matters | Options | Default the plan assumes |
 |---|---|---|---|---|
