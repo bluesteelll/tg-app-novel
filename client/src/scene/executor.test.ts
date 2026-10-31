@@ -9,6 +9,8 @@ import type { Layer, Placement, StageAdapter, VisualCommand } from './executor.t
 import { propPlacement } from './layout.ts';
 import { createAssetRegistry } from './registry.ts';
 import type { AssetError, LoadImage } from './registry.ts';
+import { createRenderLoop } from './render-loop.ts';
+import type { RenderLoop, Ticker } from './render-loop.ts';
 
 // GSAP reads the clock through `Date.now`, captured when its module loads: fake timers installed before every import
 // (vi.hoisted runs first) make its ticker deterministic. advance() moves the fake clock and runs one manual tick (V6).
@@ -118,7 +120,10 @@ const ENTRIES: Readonly<Record<string, ImageEntry>> = {
 };
 const urlOf = (id: string): string => ENTRIES[id]?.avif.url ?? `missing:${id}`;
 
-function harness(size: Size = S390) {
+/** A loop on a ticker that never ticks: these tests watch the stage, not the frames. */
+const quietLoop = (): RenderLoop => createRenderLoop({ ticker: { add: () => {}, remove: () => {} }, render: () => {} });
+
+function harness(size: Size = S390, loop: RenderLoop = quietLoop()) {
   const stage = recordingStage(size);
   const loads = new Map<string, number>();
   const released = new Map<string, number>();
@@ -140,7 +145,10 @@ function harness(size: Size = S390) {
     return e === undefined ? { ok: false, error: { kind: 'missing-id', id } } : { ok: true, value: e };
   };
   const skipped: AssetError[] = [];
-  const ex = createExecutor<Tex>({ adapter: stage.adapter, registry, resolve, resolution: 2, onSkip: (e) => skipped.push(e) });
+  const onSkip = (e: AssetError): void => {
+    skipped.push(e);
+  };
+  const ex = createExecutor<Tex>({ adapter: stage.adapter, registry, resolve, loop, resolution: 2, onSkip });
   return {
     ...stage,
     registry,
@@ -361,4 +369,67 @@ test('executor: props batch keeps the ids it names', async () => {
   expect(h.live('props')).toEqual([lamp]);
   expect(h.loadsOf('prop/lamp')).toBe(1);
   h.ex.destroy();
+});
+
+test('render_loop_idles', async () => {
+  const listeners = new Set<() => void>();
+  const ticker: Ticker = {
+    add: (fn) => {
+      listeners.add(fn);
+    },
+    remove: (fn) => {
+      listeners.delete(fn);
+    },
+  };
+  const tick = (): void => {
+    for (const fn of [...listeners]) {
+      fn();
+    }
+  };
+  let drawn = 0;
+  const loop = createRenderLoop({
+    ticker,
+    render: () => {
+      drawn += 1;
+    },
+  });
+  const h = harness(S390, loop);
+  expect(loop.stats().listening).toBe(false);
+
+  const batch = h.ex.apply([bg('cafe', 'crossfade', 500)], NOW);
+  await flush();
+  // A timeline runs: a frame every tick.
+  expect(loop.stats().listening).toBe(true);
+  tick();
+  tick();
+  expect(loop.stats().frames).toBe(2);
+  h.ex.complete();
+  await batch;
+  // One more frame shows the end state, then the listener goes.
+  tick();
+  expect(loop.stats().frames).toBe(3);
+  expect(loop.stats().listening).toBe(false);
+  tick();
+  tick();
+  tick();
+  expect(loop.stats().frames).toBe(3);
+  expect(listeners.size).toBe(0);
+
+  // A change outside a timeline: exactly one frame, then idle again.
+  loop.requestRender();
+  expect(loop.stats().listening).toBe(true);
+  tick();
+  tick();
+  expect(loop.stats().frames).toBe(4);
+  expect(loop.stats().listening).toBe(false);
+  expect(drawn).toBe(4);
+
+  // An instant batch (no timeline) draws one frame too.
+  await h.ex.apply([bg('street', 'cut')], NOW);
+  tick();
+  tick();
+  expect(loop.stats().frames).toBe(5);
+  expect(listeners.size).toBe(0);
+  h.ex.destroy();
+  loop.destroy();
 });

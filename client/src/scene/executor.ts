@@ -11,6 +11,25 @@ import type { ImageEntry, Result } from '../story/catalog.ts';
 import type { AssetId, CharId, PropId, PropsCommand, Rect, Slot, StagingCommand, StagingSnapshot } from '../story/staging.ts';
 import { backdropPlacement, charPlacement, propPlacement } from './layout.ts';
 import type { AssetError, AssetRegistry, TextureHandle } from './registry.ts';
+import type { RenderLoop, Ticker } from './render-loop.ts';
+
+/** GSAP's ticker for the render loop: one clock for tweens and frames (K6); tweens update before the frame draws. */
+export const gsapTicker: Ticker = {
+  add: (fn) => {
+    gsap.ticker.add(fn);
+  },
+  remove: (fn) => {
+    gsap.ticker.remove(fn);
+  },
+};
+/** `deactivated` mid-transition: every timeline halts where it is (PP concurrency table). */
+export function pauseAll(): void {
+  gsap.globalTimeline.pause();
+}
+/** `activated`: the same timelines continue. */
+export function resumeAll(): void {
+  gsap.globalTimeline.resume();
+}
 
 /** The commands the scene executes; audio and yields stay with GameSession (§7 steps 1 and 5). */
 export type VisualCommand =
@@ -59,6 +78,8 @@ export type ExecutorDeps<T> = {
   registry: AssetRegistry<T>;
   /** An asset id in the current chapter's manifest. */
   resolve(id: AssetId): Result<ImageEntry, AssetError>;
+  /** Frames on demand: begin / end around every timeline, requestRender after every instant change. */
+  loop: RenderLoop;
   /** The render resolution (characters are never upscaled above source px). */
   resolution: number;
   /** A visual skipped because its texture could not be had: logged by the caller, the story continues. */
@@ -172,7 +193,7 @@ type Batch<T> = {
 };
 
 export function createExecutor<T>(deps: ExecutorDeps<T>): Executor {
-  const { registry, resolve, resolution, onSkip } = deps;
+  const { registry, resolve, loop, resolution, onSkip } = deps;
   const adapter = deps.adapter;
   let logical: SceneSnapshot = EMPTY;
   /** holder → asset id → the acquire, for every texture the executor holds (one release per (holder, id)). */
@@ -312,6 +333,9 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor {
       active.delete(b.tl);
       b.tl.kill();
       b.tl = null;
+      loop.end();
+    } else {
+      loop.requestRender();
     }
     // Batches build one at a time, so whatever still retires belongs to this one.
     for (const r of [...retiring]) {
@@ -565,6 +589,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor {
     }
     b.tl = tl;
     active.add(tl);
+    loop.begin();
     tl.eventCallback('onComplete', () => finish(b));
     tl.play();
   };
@@ -651,8 +676,11 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor {
       }
       destroyed = true;
       for (const b of unfinished) {
-        b.tl?.kill();
-        b.tl = null;
+        if (b.tl !== null) {
+          b.tl.kill();
+          b.tl = null;
+          loop.end();
+        }
         b.finished = true;
         b.settle();
       }
