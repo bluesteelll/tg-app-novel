@@ -12,6 +12,8 @@ mod bindings;
 mod catalog;
 mod common;
 mod content;
+mod payments;
+mod puzzles;
 mod saves;
 mod schema;
 
@@ -187,9 +189,14 @@ async fn state_reopens_migrated_database() {
         .unwrap();
     let (first_migrations, first_users) = applied(st).await;
     let mut failures = Vec::new();
-    if first_migrations.len() != 1 {
+    // The applied set by version, not a count: the next migration lane moves this pin on purpose.
+    let versions: Vec<i64> = first_migrations
+        .iter()
+        .map(|(version, _)| *version)
+        .collect();
+    if versions != [1, 2] {
         failures.push(format!(
-            "first start: expected one applied migration, got {first_migrations:?}"
+            "first start: expected versions [1, 2], got {versions:?}"
         ));
     }
     match AppState::new(common::test_config(&db)).await {

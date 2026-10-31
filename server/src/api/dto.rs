@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use ts_rs::TS;
 
+use crate::db::orders::OrderStatus;
 use crate::error::{ApiErrorBody, ErrorCode};
 use crate::ids::{SaveSlot, StoryId};
 
@@ -76,7 +77,8 @@ pub struct SaveSummary {
 #[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveListResponse {
-    /// Every story's saves, by story id then slot (`auto`, `s1`, `s2`, `s3`); an empty slot is absent.
+    /// Every story's saves without their bodies; an empty slot is absent. The order (story id, then slot) is the
+    /// database collation's: the client must not rely on it.
     pub slots: Vec<SaveSummary>,
 }
 
@@ -170,6 +172,80 @@ pub struct ChapterPayload<'a> {
     pub world: Option<&'a RawValue>,
 }
 
+/// `POST /api/puzzles/{puzzleId}/attempts` request. Unknown fields are ignored.
+#[derive(Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct AttemptRequest {
+    /// The answer: the puzzle's `answerLen` values, each at most its `answerMax` (at most 16, each at most 65535).
+    pub answer: Vec<u16>,
+}
+
+/// `POST /api/puzzles/{puzzleId}/attempts` response.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct AttemptResponse {
+    /// Whether this answer is the solution.
+    pub correct: bool,
+    /// Whether the puzzle is solved, by this answer or an earlier one.
+    pub solved: bool,
+}
+
+/// `GET /api/puzzles/{puzzleId}?lang=ru|en` response: whether the user solved the puzzle, and its hint ladder.
+// No `Debug`: an unlocked hint's text is sold content, never logged.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PuzzleStatus {
+    /// The puzzle id, `<chapter>.<local>`.
+    pub puzzle_id: String,
+    /// Whether the user solved the puzzle: a server row, never client state.
+    pub solved: bool,
+    /// Every tier of the puzzle's hint ladder, tier 1 first; empty for a puzzle without hints.
+    pub hints: Vec<HintView>,
+}
+
+/// A hint tier as the user sees it.
+// No `Debug`: `text` is sold content.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct HintView {
+    /// The tier, 1 to 3.
+    pub tier: u8,
+    /// Whether the user unlocked this tier.
+    pub unlocked: bool,
+    /// The hint in the requested language when `unlocked`, else `null` (serialized, not omitted).
+    pub text: Option<String>,
+}
+
+/// `POST /api/invoices` request. Unknown fields (a client-sent price, amount or currency) are ignored, never trusted.
+#[derive(Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateInvoiceRequest {
+    /// The catalog product to buy, e.g. `chapter:ch2`.
+    pub product_id: String,
+}
+
+/// `POST /api/invoices` response.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateInvoiceResponse {
+    /// The order the invoice pays for: `GET /api/orders/{orderId}` reports its status after `openInvoice`.
+    pub order_id: String,
+    /// The invoice link for `Telegram.WebApp.openInvoice`.
+    pub invoice_url: String,
+}
+
+/// `GET /api/orders/{orderId}` response: the order's row, never client state.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderResponse {
+    /// The order id.
+    pub order_id: String,
+    /// The product the order is for.
+    pub product_id: String,
+    /// The order's status.
+    pub status: OrderStatus,
+}
+
 /// The first line of the generated file: what it is and how to rewrite it.
 const BINDINGS_HEADER: &str = "// Built from server/src/api/dto.rs and error.rs by ts-rs; do not edit. Regenerate: \
                                cargo test -p server --test it bindings::write_bindings -- --ignored --exact";
@@ -195,6 +271,14 @@ pub fn ts_bindings() -> String {
         export::<ProductDto>(&cfg),
         export::<EntitlementsResponse>(&cfg),
         export::<ChapterPayload<'static>>(&cfg),
+        export::<AttemptRequest>(&cfg),
+        export::<AttemptResponse>(&cfg),
+        export::<HintView>(&cfg),
+        export::<PuzzleStatus>(&cfg),
+        export::<OrderStatus>(&cfg),
+        export::<CreateInvoiceRequest>(&cfg),
+        export::<CreateInvoiceResponse>(&cfg),
+        export::<OrderResponse>(&cfg),
     ];
     format!("{BINDINGS_HEADER}\n\n{}", decls.join("\n"))
 }
