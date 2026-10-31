@@ -1,14 +1,15 @@
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { FIXED_SECTIONS, scanFiles } from './scan-dist.ts';
 import type { ScanFile, Section } from './scan-dist.ts';
-import { loadSections } from './scan-dist.ts';
+import { loadSections, main } from './scan-dist.ts';
 import type { Finding } from './scan-dist.ts';
 
 const enc = new TextEncoder();
@@ -327,5 +328,151 @@ describe('scan fingerprints', () => {
     const findings = scanFiles([INDEX, js], sections);
     expect(findings).toContainEqual({ kind: 'fingerprint', file: 'assets/index-a.js', section: 'paid-lines', needle: 'ch2.archive.v5c1', via: 'plain' });
     expect(findings).toContainEqual({ kind: 'fingerprint', file: 'assets/index-a.js', section: 'paid-texts', needle: TEXT, via: 'plain' });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// L5: paid asset files (server/content/build/fingerprints.assets.json, the asset tool's file) by name and by content
+// hash, and the per-id non-vacuity of that file, run through main() on a temporary repository.
+
+describe('scan assets', () => {
+  const CH1 = { id: 'ch1', entry: 'ch1/main.ink', paid: false, next: 'ch2' };
+  const CH2 = { id: 'ch2', entry: 'ch2/main.ink', paid: true, productId: 'chapter:ch2', next: null };
+  const LINES = { lineIds: ['ch2.archive.r3t6'], texts: ['Архив пахнет старой бумагой и пылью.'] };
+  /** ch2 alone names bg/archive and bgm/mystery: two paid-only assets; bg/cafe is shared, so public. */
+  const USAGE = {
+    chapters: {
+      ch1: { assets: ['bg/cafe'], knots: {} },
+      ch2: { assets: ['bg/archive', 'bg/cafe', 'bgm/mystery'], knots: {} },
+    },
+  };
+  /** Incompressible, binary-looking stand-ins for the encoded paid files. */
+  const AVIF = Uint8Array.from({ length: 4096 }, (_, i) => (i * 7919 + 13) % 251);
+  const WEBP = Uint8Array.from({ length: 2048 }, (_, i) => (i * 104_729 + 7) % 241);
+  const WAV = Uint8Array.from({ length: 1024 }, (_, i) => (i * 31 + 5) % 199);
+  const hex = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
+  const AVIF_NAME = `bg-archive-${hex(AVIF).slice(0, 8)}.avif`;
+  const FILES = [
+    { asset: 'bg/archive', name: AVIF_NAME, sha256: hex(AVIF) },
+    { asset: 'bg/archive', name: `bg-archive-${hex(WEBP).slice(0, 8)}.webp`, sha256: hex(WEBP) },
+    { asset: 'bgm/mystery', name: `bgm-mystery-${hex(WAV).slice(0, 8)}.wav`, sha256: hex(WAV) },
+  ];
+  let repo = '';
+
+  function put(rel: string, content: string | Uint8Array): void {
+    const abs = join(repo, ...rel.split('/'));
+    mkdirSync(dirname(abs), { recursive: true });
+    writeFileSync(abs, content);
+  }
+
+  /** A repository as `npm run story && npm run assets` leaves it, with `override` written over it, minus `omit`. */
+  function setup(override: Readonly<Record<string, string>> = {}, omit: readonly string[] = []): void {
+    const files: Record<string, string> = {
+      'story/chapters.json': JSON.stringify([CH1, CH2]),
+      'server/content/build/fingerprints.lines.json': JSON.stringify(LINES),
+      'server/content/build/usage.json': JSON.stringify(USAGE),
+      'server/content/build/fingerprints.assets.json': JSON.stringify({ files: FILES }),
+      'server/content/chapters/ch2/story.json': '{"inkVersion":21}',
+      ...override,
+    };
+    mkdirSync(join(repo, 'client'), { recursive: true });
+    for (const [rel, text] of Object.entries(files).filter(([rel]) => !omit.includes(rel))) {
+      put(rel, text);
+    }
+  }
+
+  /** A dist holding index.html and `files`; main() on it: the exit code and the printed lines. */
+  function scanDist(name: string, files: Readonly<Record<string, string | Uint8Array>>): { code: number; lines: string[] } {
+    const dist = join(repo, name);
+    mkdirSync(dist);
+    writeFileSync(join(dist, 'index.html'), new TextDecoder().decode(INDEX.bytes));
+    for (const [rel, content] of Object.entries(files)) {
+      mkdirSync(dirname(join(dist, rel)), { recursive: true });
+      writeFileSync(join(dist, rel), content);
+    }
+    const lines: string[] = [];
+    const log = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => void lines.push(args.map(String).join(' ')));
+    try {
+      return { code: main(['--dist', dist], join(repo, 'client')), lines };
+    } finally {
+      log.mockRestore();
+    }
+  }
+
+  function reasons(): string[] {
+    return loadSections(join(repo, 'client')).findings.flatMap((f) => (f.kind === 'fingerprints' ? [f.reason] : []));
+  }
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'scan-assets-'));
+  });
+  afterEach(() => {
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  test('scan: paid asset bytes in dist fail', () => {
+    setup();
+    expect(reasons()).toEqual([]); // the repository itself is complete
+    const paidLine = (via: string, file: string): RegExp => new RegExp(`^scan: paid-asset ${AVIF_NAME.replace('.', '\\.')} in ${file} \\(via ${via}\\)$`);
+    // (a) The paid file under its own name.
+    const own = scanDist('dist-a', { [`assets/${AVIF_NAME}`]: AVIF });
+    expect(own.code, own.lines.join('\n')).toBe(1);
+    expect(own.lines).toContainEqual(expect.stringMatching(paidLine('name', `assets/${AVIF_NAME}`)));
+    expect(own.lines).toContainEqual(expect.stringMatching(paidLine('hash', `assets/${AVIF_NAME}`)));
+    // (b) The same bytes renamed: only the content hash can tell.
+    const renamed = scanDist('dist-b', { 'assets/hero-0000.avif': AVIF });
+    expect(renamed.code, renamed.lines.join('\n')).toBe(1);
+    expect(renamed.lines).toContainEqual(expect.stringMatching(paidLine('hash', 'assets/hero-0000.avif')));
+    expect(renamed.lines.filter((l) => l.includes('(via name)'))).toEqual([]);
+    // (c) Inlined into a chunk as a base64 data: URI.
+    const inlined = `const u="data:image/avif;base64,${Buffer.from(AVIF).toString('base64')}";export{u};`;
+    const uri = scanDist('dist-c', { 'assets/index-a.js': inlined });
+    expect(uri.code, uri.lines.join('\n')).toBe(1);
+    expect(uri.lines).toContainEqual(expect.stringMatching(paidLine('data-uri', 'assets/index-a.js')));
+    // (d) No paid bytes, only the paid file's name in a chunk: the paid-asset-files section finds it.
+    const named = scanDist('dist-d', { 'assets/index-a.js': `const u="/api/assets/${AVIF_NAME}";export{u};` });
+    expect(named.code, named.lines.join('\n')).toBe(1);
+    expect(named.lines).toContainEqual(`scan: fingerprint paid-asset-files ${JSON.stringify(AVIF_NAME)} in assets/index-a.js (via plain)`);
+    expect(named.lines.filter((l) => l.startsWith('scan: paid-asset '))).toEqual([]);
+    // Control: a dist with public art only passes, and every section is counted.
+    const clean = scanDist('dist-e', { 'assets/bg-cafe-0a1b2c3d.avif': Uint8Array.from([1, 2, 3]) });
+    expect(clean.code, clean.lines.join('\n')).toBe(0);
+    expect(clean.lines).toContainEqual(expect.stringMatching(/ sections compiler\(2\) dev-canary\(4\) paid-lines\(1\) paid-texts\(1\) paid-asset-files\(3\)$/));
+  });
+
+  test('scan: paid-only asset with empty files section fails', () => {
+    setup({ 'server/content/build/fingerprints.assets.json': JSON.stringify({ files: [] }) });
+    expect(reasons()).toEqual(['files-empty']);
+    expect(scanDist('dist', {}).code).toBe(1);
+    rmSync(join(repo, 'server', 'content', 'build', 'fingerprints.assets.json'));
+    expect(reasons()).toEqual(['assets-missing']);
+    // Present but not this format: never ignored, even while no paid-only asset exists.
+    put('server/content/build/fingerprints.assets.json', JSON.stringify({ files: ['bg-archive-0123abcd.avif'] }));
+    put('server/content/build/usage.json', JSON.stringify({ chapters: { ch1: { assets: [], knots: {} }, ch2: { assets: [], knots: {} } } }));
+    expect(reasons()).toEqual(['assets-missing']);
+  });
+
+  test('scan: paid-only asset missing from files fails', () => {
+    // Only the audio is listed: the paid-only image has no file entry at all.
+    setup({ 'server/content/build/fingerprints.assets.json': JSON.stringify({ files: FILES.slice(2) }) });
+    const missing = loadSections(join(repo, 'client')).findings;
+    expect(missing).toEqual([expect.objectContaining({ kind: 'fingerprints', reason: 'asset-files-missing', detail: expect.stringMatching(/^bg\/archive has no \.avif, \.webp file /) as string })]);
+    // The AVIF without its WebP: that WebP would leak unhashed.
+    put('server/content/build/fingerprints.assets.json', JSON.stringify({ files: [FILES[0], FILES[2]] }));
+    expect(loadSections(join(repo, 'client')).findings).toEqual([
+      expect.objectContaining({ reason: 'asset-files-missing', detail: expect.stringMatching(/^bg\/archive has no \.webp file /) as string }),
+    ]);
+    // The image without the clip.
+    put('server/content/build/fingerprints.assets.json', JSON.stringify({ files: FILES.slice(0, 2) }));
+    expect(loadSections(join(repo, 'client')).findings).toEqual([
+      expect.objectContaining({ reason: 'asset-files-missing', detail: expect.stringMatching(/^bgm\/mystery has no audio file /) as string }),
+    ]);
+    expect(scanDist('dist', {}).code).toBe(1);
+  });
+
+  test('scan: asset fingerprints do not stand in for line ids', () => {
+    // A valid asset fingerprint file next to an empty line-ID section: each section is checked on its own.
+    setup({ 'server/content/build/fingerprints.lines.json': JSON.stringify({ ...LINES, lineIds: [] }) });
+    expect(reasons()).toEqual(['line-ids-empty', 'chapter-ids-missing']);
   });
 });
