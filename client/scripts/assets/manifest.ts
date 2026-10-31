@@ -17,6 +17,7 @@ import type {
   Result,
 } from '../../src/story/catalog.ts';
 import type { AssetId, ChapterId } from '../../src/story/staging.ts';
+import { decodeWorldSource } from '../../src/world/decode.ts';
 import type { StoryUsage } from '../story/emit.ts';
 import { imageKind } from './placeholder.ts';
 
@@ -74,6 +75,18 @@ export function assetUsage(u: StoryUsage): AssetUsage {
     chapters[ch] = { ink: c.assets, world: [] };
   }
   return { chapters: chapters as AssetUsage['chapters'], rooms: {} }; // keys are usage.json's chapter ids
+}
+
+/**
+ * Whether a `story/<ch>/world.json` source has sections (budget's room-set rule: a sectioned world needs usage.json
+ * `rooms` for its chapter); its decode issues otherwise.
+ */
+export function worldHasSections(raw: unknown): Result<boolean, string[]> {
+  const world = decodeWorldSource(raw);
+  if (!world.ok) {
+    return { ok: false, error: world.error.map((i) => `${i.path}: ${i.detail}`) };
+  }
+  return { ok: true, value: Object.keys(world.value.sections).length > 0 };
 }
 
 /** Every asset a chapter names (ink ∪ world), sorted, once each. */
