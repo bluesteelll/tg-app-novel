@@ -182,7 +182,9 @@ prompts and an `embed/` script cannot be launched. Lane worktrees live under the
   2. Estimate the lock set from the spec; the cut STOPs if its touch set leaves it or hits another lane's set — rule
      and relaunch.
   3. `git worktree add D:/claude/tg-app-novel/.claude/worktrees/<lane> -b <branch> <trunk-sha>`; `npm ci` in its
-     `client/` once the client exists.
+     `client/` once the client exists. A lane that runs cargo starts its slot's PostgreSQL cluster with
+     `cargo run -p pgdev --locked -- up` and the slot env (`PG_BIN`, `DEV_PG_PORT`, `DEV_PG_ROOT`) from a plain Bash
+     call before its first kit gate and after a reboot, so no kit job owns the postmaster.
   4. Copy `.claude/workflows/lane.js` to `ORCH/embed/<lane>.js` (LF endings) and the args to
      `ORCH/embed/args_<lane>.json`; launch the workflow by name (`lane`) with those args; record lane / branch /
      base / run id / script / lock set in `RESUME.md`; commit ORCH.
@@ -199,7 +201,8 @@ prompts and an `embed/` script cannot be launched. Lane worktrees live under the
   5. `git rev-parse main^{tree}` must equal the lane's verified tree; otherwise stop and investigate.
   6. `git push origin main` (private GitHub repository, approved by the owner 2026-10-30); before each push,
      `git log origin/main..main --format=%B` must not mention Claude/Anthropic (the `commit-msg` hook already rejects it).
-  7. `git worktree remove`, delete the lane's `target/` and `node_modules`, close the lane in `RESUME.md`, update
+  7. `cargo run -p pgdev -- down` with the slot env (a running cluster pins `<root>/<port>`), then
+     `git worktree remove`, delete the lane's `target/` and `node_modules`, close the lane in `RESUME.md`, update
      `baseline.tsv` if the lane added tests, commit ORCH.
 
 ## The lane workflow
