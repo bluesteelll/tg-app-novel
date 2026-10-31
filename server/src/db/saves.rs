@@ -10,6 +10,8 @@ use crate::ids::{SaveSlot, StoryId, UserId};
 /// A stored save without its body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SaveMeta {
+    /// The story the save belongs to.
+    pub story_id: StoryId,
     /// The slot.
     pub slot: SaveSlot,
     /// The revision: 1 on create, one more per accepted write.
@@ -65,9 +67,11 @@ pub enum PutOutcome {
     Conflict(Option<SaveMeta>),
 }
 
-/// A `saves` row without its body. `slot` is checked into a [`SaveSlot`] by [`SaveMeta::try_from`].
+/// A `saves` row without its body. `story_id` and `slot` are checked into a [`StoryId`] and a [`SaveSlot`] by
+/// [`SaveMeta::try_from`].
 #[derive(sqlx::FromRow)]
 struct SaveRow {
+    story_id: String,
     slot: String,
     rev: i64,
     chapter_id: String,
@@ -89,10 +93,15 @@ impl TryFrom<SaveRow> for SaveMeta {
     type Error = sqlx::Error;
 
     fn try_from(row: SaveRow) -> Result<SaveMeta, sqlx::Error> {
-        // The CHECK on `saves.slot` makes this unreachable; a 500 beats a panic if the schema ever drifts.
+        // The CHECKs on `saves.story_id` and `saves.slot` make these unreachable; a 500 beats a panic if the schema
+        // ever drifts.
+        let story_id = StoryId::parse(&row.story_id).ok_or_else(|| {
+            sqlx::Error::Decode("saves.story_id outside the StoryId grammar".into())
+        })?;
         let slot = SaveSlot::parse(&row.slot)
             .ok_or_else(|| sqlx::Error::Decode("saves.slot outside the SaveSlot union".into()))?;
         Ok(SaveMeta {
+            story_id,
             slot,
             rev: row.rev,
             chapter_id: row.chapter_id,
@@ -109,7 +118,7 @@ impl Repo {
     /// `s3` as text).
     pub async fn list_saves(&self, user: UserId) -> Result<Vec<SaveMeta>, sqlx::Error> {
         let rows: Vec<SaveRow> = sqlx::query_as(
-            "SELECT slot, rev, chapter_id, story_version, line_id, write_id, saved_at FROM saves \
+            "SELECT story_id, slot, rev, chapter_id, story_version, line_id, write_id, saved_at FROM saves \
              WHERE user_id = $1 ORDER BY story_id, slot",
         )
         .bind(user.0)
@@ -126,7 +135,7 @@ impl Repo {
         slot: SaveSlot,
     ) -> Result<Option<(SaveMeta, String)>, sqlx::Error> {
         let row: Option<SaveBodyRow> = sqlx::query_as(
-            "SELECT slot, rev, chapter_id, story_version, line_id, write_id, saved_at, body FROM saves \
+            "SELECT story_id, slot, rev, chapter_id, story_version, line_id, write_id, saved_at, body FROM saves \
              WHERE user_id = $1 AND story_id = $2 AND slot = $3",
         )
         .bind(user.0)
@@ -214,7 +223,7 @@ impl Repo {
         slot: SaveSlot,
     ) -> Result<Option<SaveMeta>, sqlx::Error> {
         let row: Option<SaveRow> = sqlx::query_as(
-            "SELECT slot, rev, chapter_id, story_version, line_id, write_id, saved_at FROM saves \
+            "SELECT story_id, slot, rev, chapter_id, story_version, line_id, write_id, saved_at FROM saves \
              WHERE user_id = $1 AND story_id = $2 AND slot = $3",
         )
         .bind(user.0)

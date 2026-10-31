@@ -83,9 +83,17 @@ fn request(expected_rev: Option<i64>, write_id: &str) -> String {
     request_with(expected_rev, write_id, ENV1, &save_body(write_id)).to_string()
 }
 
-/// A `SaveSummary` as a JSON value.
-fn summary_with(slot: &str, rev: i64, env: Envelope<'_>, saved_at: i64, write_id: &str) -> Value {
+/// A `SaveSummary` of `story` as a JSON value.
+fn summary_in(
+    story: &str,
+    slot: &str,
+    rev: i64,
+    env: Envelope<'_>,
+    saved_at: i64,
+    write_id: &str,
+) -> Value {
     json!({
+        "storyId": story,
         "slot": slot,
         "rev": rev,
         "chapterId": env.0,
@@ -96,7 +104,12 @@ fn summary_with(slot: &str, rev: i64, env: Envelope<'_>, saved_at: i64, write_id
     })
 }
 
-/// A `SaveSummary` of a write with [`ENV1`].
+/// A `SaveSummary` of `manor` as a JSON value.
+fn summary_with(slot: &str, rev: i64, env: Envelope<'_>, saved_at: i64, write_id: &str) -> Value {
+    summary_in("manor", slot, rev, env, saved_at, write_id)
+}
+
+/// A `SaveSummary` of a `manor` write with [`ENV1`].
 fn summary(slot: &str, rev: i64, saved_at: i64, write_id: &str) -> Value {
     summary_with(slot, rev, ENV1, saved_at, write_id)
 }
@@ -254,7 +267,7 @@ async fn saves_create_then_conflict() {
 
     // The exact wire form of a 409 that carries the stored row.
     let current = format!(
-        r#"{{"error":"save_conflict","current":{{"slot":"auto","rev":1,"chapterId":"ch1","storyVersion":"v1","lineId":"ch1.k1.l3","savedAt":{T0},"writeId":"w1"}}}}"#
+        r#"{{"error":"save_conflict","current":{{"storyId":"manor","slot":"auto","rev":1,"chapterId":"ch1","storyVersion":"v1","lineId":"ch1.k1.l3","savedAt":{T0},"writeId":"w1"}}}}"#
     );
     let reply = put(&st, ANN, "auto", request(None, "w2")).await;
     failures.extend(expect_text(
@@ -1060,7 +1073,7 @@ async fn saves_story_slots_independent() {
         &reply,
         200,
         &json!({
-            "summary": summary_with("auto", 1, ENV_TIDE, T0, "w2"),
+            "summary": summary_in("tide", "auto", 1, ENV_TIDE, T0, "w2"),
             "body": save_body("w2"),
         }),
     ));
@@ -1188,6 +1201,78 @@ async fn saves_bad_story_id_400() {
         &reply,
         401,
         r#"{"error":"token_missing"}"#,
+    ));
+    report(&failures);
+}
+
+/// `GET /api/saves` lists every story's saves, by story then slot, each naming its story first; a row of a story the
+/// index no longer holds is left out (its GET is 404) and kept. Every other envelope names its story too: the head
+/// of a GET and the `current` of a 409.
+#[tokio::test]
+async fn saves_list_spans_stories() {
+    let (st, _db) = saves_state(&[ANN]).await;
+    let mut failures = Vec::new();
+    let env_ch2 = ("ch2", "v1", None);
+    let writes = [
+        ("manor", "auto", "w1", ENV1),
+        ("manor", "s1", "w2", env_ch2),
+        ("tide", "auto", "w3", ENV_TIDE),
+    ];
+    for (story, slot, write_id, env) in writes {
+        let req = request_with(None, write_id, env, &save_body(write_id)).to_string();
+        let reply = put_in(&st, ANN, story, slot, req).await;
+        failures.extend(expect_json(
+            &format!("PUT {story}/{slot} null/{write_id}"),
+            &reply,
+            200,
+            &written(1, T0),
+        ));
+    }
+    insert_raw(&st, ANN, "gone", "auto", "wG").await;
+
+    let reply = get(&st, Some(ANN), "/saves").await;
+    let want = json!({
+        "slots": [
+            summary_in("manor", "auto", 1, ENV1, T0, "w1"),
+            summary_in("manor", "s1", 1, env_ch2, T0, "w2"),
+            summary_in("tide", "auto", 1, ENV_TIDE, T0, "w3"),
+        ]
+    });
+    failures.extend(expect_json("GET list", &reply, 200, &want));
+    failures.extend(expect_no_store("GET list", &reply));
+    // The wire form of the first entry: `storyId` leads the envelope.
+    let head = format!(
+        r#"{{"slots":[{{"storyId":"manor","slot":"auto","rev":1,"chapterId":"ch1","storyVersion":"v1","lineId":"ch1.k1.l3","savedAt":{T0},"writeId":"w1"}},"#
+    );
+    if !text(&reply).starts_with(&head) {
+        failures.push(format!(
+            "GET list: expected the text to start with {head}, got {:?}",
+            text(&reply)
+        ));
+    }
+    let kept = [
+        row_in("gone", "auto", 1, "wG", T0),
+        row_in("manor", "auto", 1, "w1", T0),
+        row_in("manor", "s1", 1, "w2", T0),
+        row_in("tide", "auto", 1, "w3", T0),
+    ];
+    failures.extend(expect_rows("after GET list", &st, ANN, &kept).await);
+
+    let tide = summary_in("tide", "auto", 1, ENV_TIDE, T0, "w3");
+    let reply = get(&st, Some(ANN), "/saves/tide/auto").await;
+    failures.extend(expect_json(
+        "GET tide/auto",
+        &reply,
+        200,
+        &json!({ "summary": tide, "body": save_body("w3") }),
+    ));
+    let req = request_with(None, "w4", ENV_TIDE, &save_body("w4")).to_string();
+    let reply = put_in(&st, ANN, "tide", "auto", req).await;
+    failures.extend(expect_json(
+        "PUT tide/auto null/w4 on a stored slot",
+        &reply,
+        409,
+        &conflict(tide),
     ));
     report(&failures);
 }

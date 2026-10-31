@@ -47,7 +47,7 @@ pub enum ApiError {
     /// A save write whose `expectedRev` does not match the slot: the stored row's envelope, or `None` when the slot
     /// has no row (the body then carries no `current`).
     #[error("save conflict")]
-    SaveConflict(Option<SaveSummary>),
+    SaveConflict(Option<Box<SaveSummary>>),
     /// The request body exceeds the route's limit.
     #[error("payload too large")]
     PayloadTooLarge,
@@ -122,7 +122,7 @@ impl IntoResponse for ApiError {
             ApiError::AlreadyOwned => (StatusCode::CONFLICT, ErrorCode::AlreadyOwned),
             ApiError::SaveConflict(stored) => {
                 // The client resolves the conflict from the stored envelope (F3), so it travels in the body.
-                current = stored;
+                current = stored.map(|summary| *summary);
                 (StatusCode::CONFLICT, ErrorCode::SaveConflict)
             }
             ApiError::PayloadTooLarge => {

@@ -19,14 +19,19 @@ use crate::ids::{SaveSlot, StoryId};
 /// edge never admits what the CHECK refuses. The client measures the same bytes (`TextEncoder`).
 pub const MAX_SAVE_BODY_BYTES: usize = 262_144;
 
-/// `GET /api/saves`: the user's saves without their bodies, by story then slot.
+/// `GET /api/saves`: the user's saves of every story without their bodies, by story then slot. A row of a story the
+/// index no longer holds is left out, never deleted: its GET is 404, so a listed save is always fetchable.
 pub async fn list_saves(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
 ) -> Result<Json<SaveListResponse>, ApiError> {
     let slots = st.repo.list_saves(user).await?;
     Ok(Json(SaveListResponse {
-        slots: slots.into_iter().map(summary).collect(),
+        slots: slots
+            .into_iter()
+            .filter(|meta| st.content.story(&meta.story_id).is_some())
+            .map(summary)
+            .collect(),
     }))
 }
 
@@ -98,7 +103,9 @@ pub async fn put_save(
         PutOutcome::Written { rev, saved_at } | PutOutcome::Replayed { rev, saved_at } => {
             Ok(Json(PutSaveResponse { rev, saved_at }))
         }
-        PutOutcome::Conflict(stored) => Err(ApiError::SaveConflict(stored.map(summary))),
+        PutOutcome::Conflict(stored) => {
+            Err(ApiError::SaveConflict(stored.map(|m| Box::new(summary(m)))))
+        }
     }
 }
 
@@ -121,6 +128,7 @@ fn parse_target(
 /// The wire envelope of a stored save.
 fn summary(meta: SaveMeta) -> SaveSummary {
     SaveSummary {
+        story_id: meta.story_id,
         slot: meta.slot,
         rev: meta.rev,
         chapter_id: meta.chapter_id,
