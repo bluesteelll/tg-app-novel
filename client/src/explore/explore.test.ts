@@ -1,9 +1,11 @@
 import { expect, test } from 'vitest';
 
-import type { KnotName, PuzzleLocalId, SectionId } from '../story/staging.ts';
+import type { KnotName, PuzzleLocalId, SectionId, VarName } from '../story/staging.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
-import type { HotspotKey, ItemId, RoomId, WorldPublicBody } from '../world/types.ts';
-import { actions, reduce, sectionKey, successors } from './reduce.ts';
+import type { DocId, HotspotKey, ItemId, RoomId, WorldPublic, WorldPublicBody } from '../world/types.ts';
+import { project } from './project.ts';
+import { admitSection, inSectionReach, reconcile, searchSection, sectionEntry } from './reconcile.ts';
+import { RESUME_STATE_CAP, RULES_VERSION, actions, reduce, sectionKey, successors } from './reduce.ts';
 import type { ExploreAction, ExploreEffect } from './reduce.ts';
 import { EMPTY_WORLD_STATE } from './state.ts';
 import type { WorldState } from './state.ts';
@@ -108,30 +110,55 @@ const kn = (s: string) => s as KnotName;
 
 const MEDALS = ['medal_sun', 'medal_moon', 'medal_star'];
 
-/** The demo section of PUZZLES-PLAN "Demo content outline" (ch1 `manor`). */
-function manor(): WorldPublicBody {
+type ManorVariant = {
+  /** The gate's slot order (the puzzle's pieces stay MEDALS). */
+  gate?: string[];
+  /** The id of the cellar's medallion (a v2 rename). */
+  star?: string;
+  /** v2: the cellar door is a zero-slot lock that a lever in the study unlocks. */
+  leverCellar?: boolean;
+  /** The golden fixture: the drawer's onOpen and then stories, a take's then, a remote unlock of an object. */
+  golden?: boolean;
+};
+
+/** The demo section of PUZZLES-PLAN "Demo content outline" (ch1 `manor`), and its v2 edits. */
+function manor(v: ManorVariant = {}): WorldPublicBody {
+  const star = v.star ?? 'medal_star';
+  const medals = ['medal_sun', 'medal_moon', star];
+  const golden = v.golden === true;
   return world({
-    items: MEDALS,
+    items: medals,
     docs: ['letter', 'diary'],
-    puzzles: { drawer: code(4), gate: order(MEDALS, 3) },
+    puzzles: { drawer: code(4), gate: order(medals, 3) },
     sections: {
       manor: {
         start: 'hall',
         rooms: {
           hall: room([
             exit('to_study', 'study', null, 'door'),
-            exit('to_cellar', 'cellar'),
-            exit('gate', { story: 'manor_out' }, lock(MEDALS, 'gate', [{ story: 'manor_gate_forced' }, { unlock: 'hall.gate' }])),
+            exit('to_cellar', 'cellar', v.leverCellar === true ? lock([]) : null),
+            exit('gate', { story: 'manor_out' }, lock(v.gate ?? medals, 'gate', [{ story: 'manor_gate_forced' }, { unlock: 'hall.gate' }])),
             look('inscription'),
           ]),
           study: room([
             take('medal', { item: 'medal_sun' }),
-            object('drawer', lock([], 'drawer'), [{ give: 'medal_moon' }]),
-            take('letter', { doc: 'letter' }),
+            object(
+              'drawer',
+              lock([], 'drawer', [], golden ? [{ story: 'drawer_open' }] : []),
+              golden ? [{ give: 'medal_moon' }, { story: 'drawer_then' }] : [{ give: 'medal_moon' }],
+            ),
+            take('letter', { doc: 'letter' }, golden ? [{ story: 'letter_read' }] : []),
+            ...(golden ? [object('cabinet', lock([]), [{ story: 'cabinet_then' }])] : []),
+            ...(v.leverCellar === true ? [object('lever', null, [{ unlock: 'hall.to_cellar' }])] : []),
             exit('to_hall', 'hall'),
           ]),
           cellar: room(
-            [take('star', { item: 'medal_star' }), take('diary', { doc: 'diary' }), exit('to_hall', 'hall')],
+            [
+              take('star', { item: star }),
+              take('diary', { doc: 'diary' }),
+              ...(golden ? [object('lever', null, [{ unlock: 'study.cabinet' }])] : []),
+              exit('to_hall', 'hall'),
+            ],
             [{ story: 'manor_cellar_voice' }],
           ),
         },
@@ -501,4 +528,366 @@ test('sectionKey: ignores section, lastRoom, unproved and other sections', () =>
   });
   const empty = at('r', {}, 'g');
   expect(sectionKey(gated, frozen({ ...empty, slots: { [k('r.door')]: [null, null] } }), sec('g'))).toBe(sectionKey(gated, empty, sec('g')));
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The projection
+
+const declared = (...names: string[]): ReadonlySet<VarName> => new Set(names as VarName[]); // fixture var names
+const dc = (s: string) => s as DocId; // a fixture doc id
+
+test('project: writes only declared vars', () => {
+  const w = manor();
+  const s = at('study', {
+    held: [it('medal_sun')],
+    used: [it('medal_moon')],
+    docs: [dc('diary')],
+    puzzles: { [pz('drawer')]: { outcome: 'solved', attempts: 3, hintsOpened: 2 } },
+  });
+  const names = ['pz_drawer', 'pz_drawer_hints', 'it_medal_sun', 'it_medal_moon', 'it_medal_star', 'dc_diary', 'dc_letter', 'g_trust'];
+  expect(project(w, s, declared(...names))).toEqual({
+    pz_drawer: 1,
+    pz_drawer_hints: 2,
+    it_medal_sun: true,
+    it_medal_moon: true,
+    it_medal_star: false,
+    dc_diary: true,
+    dc_letter: false,
+  });
+  expect(project(w, s, declared())).toEqual({});
+});
+
+test('project: puzzle outcome codes', () => {
+  const w = world({
+    puzzles: { a: code(2), b: code(2), c: code(2), d: code(2) },
+    sections: { s: { start: 'r', rooms: { r: room([exit('out', { story: 'end' })]) } } },
+  });
+  const s = at(
+    'r',
+    {
+      puzzles: {
+        [pz('a')]: { outcome: 'solved', attempts: 0, hintsOpened: 0 },
+        [pz('b')]: { outcome: 'failed', attempts: 3, hintsOpened: 1 },
+        [pz('c')]: { outcome: 'abandoned', attempts: 1, hintsOpened: 0 },
+      },
+    },
+    's',
+  );
+  const all = declared('pz_a', 'pz_b', 'pz_c', 'pz_d', 'pz_a_hints', 'pz_b_hints', 'pz_d_hints');
+  expect(project(w, s, all)).toEqual({ pz_a: 1, pz_b: 2, pz_c: 3, pz_d: 0, pz_a_hints: 0, pz_b_hints: 1, pz_d_hints: 0 });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Reconcile (X9)
+
+const stamped = (w: WorldPublicBody, version: string): WorldPublic => ({ ...w, version });
+const V1 = '1111111111111111';
+const V2 = '2222222222222222';
+const MANOR = sec('manor');
+const MANOR_KNOTS: ReadonlySet<KnotName> = new Set(['manor_out', 'manor_gate_forced', 'manor_cellar_voice'].map(kn));
+const enterAction = (section: string): ExploreAction => ({ kind: 'enter-section', section: sec(section) });
+const returned = (section: string): ExploreAction => ({ kind: 'event-returned', section: sec(section) });
+
+/** Whether some path from `s` leaves section S (the search kernel's goal edges). */
+function exitable(w: WorldPublicBody, s: WorldState, section: SectionId): boolean {
+  let leaves = 0;
+  searchSection(w, s, section, RESUME_STATE_CAP, {
+    onEdge: (_from, _succ, to) => {
+      leaves += to === null ? 1 : 0;
+    },
+  });
+  return leaves > 0;
+}
+
+test('reconcile: unknown ids dropped', () => {
+  const w = stamped(manor(), V2);
+  const s = at('hall', {
+    held: [it('medal_comet'), it('medal_sun')],
+    docs: [dc('map')],
+    taken: [k('attic.box'), k('study.medal')],
+    examined: [k('attic.sign')],
+    open: [k('attic.door')],
+    fired: ['enter:attic', 'then:attic.box'],
+    puzzles: { [pz('safe')]: { outcome: 'solved', attempts: 0, hintsOpened: 0 } },
+    lastRoom: { [MANOR]: rm('hall'), [sec('tower')]: rm('top') },
+    visited: [rm('hall'), rm('attic')],
+    slots: { [k('attic.door')]: [it('medal_comet')] },
+  });
+  const r = reconcile(w, s, MANOR_KNOTS, V1);
+  expect(r.state.held).toEqual(['medal_sun']);
+  expect([...r.dropped].sort()).toEqual(
+    [
+      'held:medal_comet',
+      'docs:map',
+      'taken:attic.box',
+      'examined:attic.sign',
+      'open:attic.door',
+      'fired:enter:attic',
+      'fired:then:attic.box',
+      'puzzles:safe',
+      'lastRoom:tower',
+      'visited:attic',
+      'slots:attic.door',
+    ].sort(),
+  );
+  expect(r.state.taken).toEqual(['study.medal']);
+  expect(r.state.docs).toEqual([]);
+  expect(r.state.open).toEqual([]);
+  expect(r.state.fired).toEqual([]);
+  expect(r.state.puzzles).toEqual({});
+  expect(r.state.slots).toEqual({});
+  expect(r.state.lastRoom).toEqual({ manor: 'hall' });
+  expect(r.state.room).toBe('hall');
+  expect(r.reset).toBeNull();
+});
+
+test('reconcile: missing room falls back to section start', () => {
+  const w = stamped(manor(), V2);
+  const r = reconcile(w, at('attic'), MANOR_KNOTS, V1);
+  expect(r.state.room).toBe('hall');
+  expect(r.state.section).toBe('manor');
+  expect(r.dropped).toContain('room:attic');
+  expect(r.reset).toBeNull();
+});
+
+test('reconcile: missing pending knot dropped', () => {
+  const w = stamped(manor(), V2);
+  const s = at('cellar', { fired: ['enter:cellar'], pendingStory: [kn('manor_cellar_voice'), kn('old_knot')] });
+  const r = reconcile(w, s, MANOR_KNOTS, V1);
+  expect(r.state.pendingStory).toEqual(['manor_cellar_voice']);
+  expect(r.dropped).toEqual(['pendingStory:old_knot']);
+  expect(r.reset).toBeNull();
+});
+
+test('reconcile: same world version returns the state unchanged', () => {
+  const w = stamped(manor(), V1);
+  const s = at('hall', { held: [it('medal_comet')], pendingStory: [kn('old_knot')] });
+  const r = reconcile(w, s, MANOR_KNOTS, V1);
+  expect(r.state).toBe(s);
+  expect(r.dropped).toEqual([]);
+  expect(r.reset).toBeNull();
+});
+
+test('reconcile: changed slot shape returns the items to held', () => {
+  const v1 = manor();
+  const v2 = stamped(manor({ gate: ['medal_moon', 'medal_sun', 'medal_star'] }), V2);
+  const s = run(
+    v1,
+    EMPTY_WORLD_STATE,
+    enterAction('manor'),
+    tap('hall.to_study'),
+    tap('study.medal'),
+    tap('study.drawer'),
+    ended('drawer', 'solved'),
+    tap('study.to_hall'),
+    insert('hall.gate', 'medal_sun'),
+    insert('hall.gate', 'medal_moon'),
+  ).state;
+  expect(s.slots).toEqual({ 'hall.gate': ['medal_sun', 'medal_moon', null] });
+  const r = reconcile(v2, s, MANOR_KNOTS, V1);
+  expect(inSectionReach(v2, r.state, MANOR, RESUME_STATE_CAP)).toBe('yes');
+  expect([...r.state.held].sort()).toEqual(['medal_moon', 'medal_sun']);
+  expect(r.state.used).toEqual([]);
+  expect(r.state.slots).toEqual({});
+  expect(r.reset).toBeNull();
+  // A slot that still accepts its item keeps it.
+  const kept = reconcile(stamped(manor({ gate: ['medal_sun', 'medal_star', 'medal_moon'] }), V2), s, MANOR_KNOTS, V1);
+  expect(kept.state.slots).toEqual({ 'hall.gate': ['medal_sun', null, null] });
+  expect(kept.state.held).toEqual(['medal_moon']);
+});
+
+test('reconcile: renamed held item keeps the section exitable', () => {
+  const v1 = manor();
+  const v2 = stamped(manor({ star: 'medal_comet' }), V2);
+  const s = run(v1, EMPTY_WORLD_STATE, enterAction('manor'), tap('hall.to_cellar'), returned('manor'), tap('cellar.star'), tap('cellar.to_hall')).state;
+  expect(s.held).toEqual(['medal_star']);
+  const r = reconcile(v2, s, MANOR_KNOTS, V1);
+  expect(inSectionReach(v2, r.state, MANOR, RESUME_STATE_CAP)).toBe('yes');
+  expect(r.dropped).toContain('held:medal_star');
+  expect(r.state.taken).toEqual([]);
+  expect(r.reset).toBeNull();
+  // The gift is re-armed under its new id, and a way out exists.
+  expect(run(v2, r.state, tap('hall.to_cellar'), returned('manor'), tap('cellar.star')).state.held).toEqual(['medal_comet']);
+  expect(exitable(v2, r.state, MANOR)).toBe(true);
+});
+
+test('reconcile: unprovable state restarts the section', () => {
+  const v1 = manor();
+  const v2 = stamped(manor({ leverCellar: true }), V2);
+  // In the cellar, which v2 reaches only through a lever-opened door this save never opened.
+  const s = run(v1, EMPTY_WORLD_STATE, enterAction('manor'), tap('hall.to_cellar'), returned('manor'), tap('cellar.star')).state;
+  expect(inSectionReach(v2, s, MANOR, RESUME_STATE_CAP)).toBe('no');
+  const r = reconcile(v2, s, MANOR_KNOTS, V1);
+  expect(r.reset).toBe('manor');
+  expect(r.state.section).toBeNull();
+  expect(r.state.room).toBeNull();
+  expect(r.state.held).toEqual([]);
+  expect(r.state.taken).toEqual([]);
+  expect(r.state.fired).toEqual([]);
+  expect(reduce(v2, frozen(r.state), enterAction('manor')).state).toEqual(sectionEntry(v2, EMPTY_WORLD_STATE, MANOR));
+});
+
+/** The round-2 triage world: a lever opens the vault in v1; in v2 the altar does, and the vault has a shrine. */
+function temple(version: 1 | 2): WorldPublicBody {
+  return world({
+    items: ['k', 'g'],
+    sections: {
+      temple: {
+        start: 'hall',
+        rooms: {
+          hall: room([
+            ...(version === 1 ? [object('lever', null, [{ unlock: 'hall.to_vault' }])] : []),
+            take('key', { item: 'k' }),
+            object('altar', lock(['k']), version === 1 ? [{ give: 'g' }] : [{ give: 'g' }, { unlock: 'hall.to_vault' }]),
+            exit('gate', { story: 'temple_out' }, lock(['g'])),
+            exit('to_vault', 'vault', lock([])),
+          ]),
+          vault: room([exit('to_hall', 'hall'), ...(version === 2 ? [object('shrine', lock(['k']))] : [])]),
+        },
+      },
+    },
+  });
+}
+
+test('reconcile: a dead end reachable from the reconciled state restarts the section', () => {
+  const TEMPLE = sec('temple');
+  const s = run(temple(1), EMPTY_WORLD_STATE, enterAction('temple'), tap('hall.lever')).state;
+  expect(s.open).toEqual(['hall.to_vault']);
+  const v2 = stamped(temple(2), V2);
+  const r = reconcile(v2, s, new Set([kn('temple_out')]), V1);
+  expect(r.reset).toBe('temple');
+  expect(r.dropped).toEqual(['fired:then:hall.lever']);
+  expect(r.state.section).toBeNull();
+  expect(r.state.open).toEqual([]);
+  expect(r.state.unproved).toEqual([]);
+  // The restart is the state the build proved.
+  expect(reduce(v2, frozen(r.state), enterAction('temple')).state).toEqual(sectionEntry(v2, EMPTY_WORLD_STATE, TEMPLE));
+});
+
+test("reconcile: reset section fires the start room's onEnter on resume", () => {
+  const crypt = (version: 1 | 2): WorldPublicBody =>
+    world({
+      items: ['torch'],
+      sections: {
+        crypt: {
+          start: 'tomb',
+          rooms: {
+            tomb: room(
+              [...(version === 1 ? [take('torch', { item: 'torch' })] : []), exit('out', { story: 'crypt_out' }, lock(['torch']))],
+              version === 2 ? [{ give: 'torch' }] : [],
+            ),
+          },
+        },
+      },
+    });
+  const s = run(crypt(1), EMPTY_WORLD_STATE, enterAction('crypt'), tap('tomb.torch')).state;
+  const v2 = stamped(crypt(2), V2);
+  const r = reconcile(v2, s, new Set([kn('crypt_out')]), V1);
+  expect(r.reset).toBe('crypt');
+  const resumed = reduce(v2, frozen(r.state), enterAction('crypt'));
+  expect(resumed.effects).toContainEqual({ kind: 'got', gift: { item: 'torch' } });
+  expect(resumed.state.held).toEqual(['torch']);
+  expect(resumed.effects[0]).toEqual({ kind: 'room', room: 'tomb', sfx: null });
+  expect(exitable(v2, resumed.state, sec('crypt'))).toBe(true);
+});
+
+/** The round-3 triage world: a lever (v1) or the key's own `then` (v2) opens the vault; v2 locks the way back. */
+function house(version: 1 | 2, withYard = false): WorldPublicBody {
+  return world({
+    items: ['k'],
+    sections: {
+      house: {
+        start: 'hall',
+        rooms: {
+          hall: room([
+            exit('to_vault', 'vault', lock([])),
+            exit('to_garden', { story: 'garden' }),
+            ...(version === 1 ? [object('lever', null, [{ unlock: 'hall.to_vault' }])] : []),
+            take('k', { item: 'k' }, version === 2 ? [{ unlock: 'hall.to_vault' }] : []),
+          ]),
+          vault: room([exit('to_hall', 'hall', version === 2 ? lock(['k']) : null)]),
+        },
+      },
+      ...(withYard ? { yard: { start: 'yard', rooms: { yard: room([exit('out', { story: 'yard_out' })]) } } } : {}),
+    },
+  });
+}
+const HOUSE_KNOTS: ReadonlySet<KnotName> = new Set(['garden', 'yard_out'].map(kn));
+
+test('reconcile: a section left through a leave restarts on re-entry after a version change', () => {
+  const HOUSE = sec('house');
+  const s = run(house(1), EMPTY_WORLD_STATE, enterAction('house'), tap('hall.lever'), tap('hall.to_garden')).state;
+  expect(s.section).toBeNull();
+  expect(s.open).toEqual(['hall.to_vault']);
+  const v2 = stamped(house(2), V2);
+  const r = reconcile(v2, s, HOUSE_KNOTS, V1);
+  expect(r.reset).toBeNull();
+  const admitted = admitSection(v2, frozen(r.state), HOUSE);
+  expect(admitted.effects[0]).toEqual({ kind: 'reset', section: 'house' });
+  expect(admitted.state.open).not.toContain('hall.to_vault');
+  expect(admitted.state).toEqual(sectionEntry(v2, EMPTY_WORLD_STATE, HOUSE));
+  expect(admitted.state.unproved).toEqual([]);
+  expect(r.state.unproved).toEqual(['house']);
+  // Once proved, the section is entered by reduce alone.
+  const again = admitSection(v2, frozen({ ...admitted.state, section: null }), HOUSE);
+  expect(again.effects).not.toContainEqual({ kind: 'reset', section: 'house' });
+});
+
+test('reconcile: a version change marks every other section unproved and keeps the current section and room', () => {
+  const s = run(house(1, true), EMPTY_WORLD_STATE, enterAction('house'), tap('hall.lever'), tap('hall.to_garden'), enterAction('yard')).state;
+  expect(s.section).toBe('yard');
+  const v2 = stamped(house(2, true), V2);
+  const r = reconcile(v2, s, HOUSE_KNOTS, V1);
+  expect(r.state.unproved).toEqual(['house']);
+  expect(r.reset).toBeNull();
+  expect(r.state.section).toBe('yard');
+  expect(r.state.room).toBe('yard');
+  // The house progress waits for its proof at the next entry.
+  expect(r.state.open).toEqual(['hall.to_vault']);
+  const admitted = admitSection(v2, frozen({ ...r.state, section: null }), sec('house'));
+  expect(admitted.effects[0]).toEqual({ kind: 'reset', section: 'house' });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// PE7: the rules golden. A rules edit that changes any edge of this fixture's section graph must bump RULES_VERSION
+// and add its row, so every world's version changes and old saves go through reconcile. Rows are append-only.
+
+const GOLDEN: Readonly<Record<number, { states: number; digest: string }>> = {
+  1: { states: 1637, digest: 'd7c827dd' },
+};
+
+/** FNV-1a, 32 bit, hex (test-local: the app program has no node types). */
+function fnv1a(text: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
+}
+
+test('reduce: rules golden pinned to RULES_VERSION', () => {
+  const w = manor({ golden: true });
+  const start = sectionEntry(w, EMPTY_WORLD_STATE, MANOR);
+  const keys: string[] = [sectionKey(w, start, MANOR)];
+  const reached: WorldState[] = [start];
+  const lines: string[] = [];
+  const r = searchSection(w, start, MANOR, RESUME_STATE_CAP, {
+    onEdge: (from, succ, to, isNew) => {
+      if (isNew && to !== null) {
+        keys[to] = sectionKey(w, succ.state, MANOR);
+        reached.push(succ.state);
+      }
+      lines.push(`${keys[from] ?? '?'}\t${JSON.stringify(succ.step)}\t${to === null ? 'LEAVE' : (keys[to] ?? '?')}`);
+    },
+  });
+  expect(r.result).toBe('exhausted');
+  const got = { states: r.states, digest: fnv1a(lines.sort().join('\n')) };
+  const pinned = GOLDEN[RULES_VERSION];
+  if (pinned?.states !== got.states || pinned.digest !== got.digest) {
+    expect.fail(`rules changed: bump RULES_VERSION and add a row (expected ${JSON.stringify(pinned)} got ${JSON.stringify(got)})`);
+  }
+  // X9's start premise: re-entering S from any state play reaches gives the state the build started from.
+  const off = reached.filter((s) => sectionKey(w, sectionEntry(w, s, MANOR), MANOR) !== keys[0]);
+  expect(off.length, `the first: ${off.slice(0, 2).map((s) => sectionKey(w, s, MANOR)).join(' / ')}`).toBe(0);
 });
