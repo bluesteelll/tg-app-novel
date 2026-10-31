@@ -1,0 +1,5 @@
+{
+  "inkVersion": 21,
+  "root": [["^FIXTURE-CH4-STORY", "\n", "#", "^id: ch4.lamp.c3d4", "/#", "done", null], "done", { "lamp": [["^FIXTURE-CH4-STORY lamp", "\n", "end", null]] }],
+  "listDefs": {}
+}

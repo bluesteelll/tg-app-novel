@@ -1,0 +1,27 @@
+{
+  "chapterId": "ch4",
+  "assets": {
+    "bg/lamp_room": {
+      "kind": "image",
+      "w": 1920,
+      "h": 1080,
+      "decodedBytes": 8294400,
+      "avif": { "url": "/api/assets/bg-lamp_room-4e5f6a7b.avif", "bytes": 26 },
+      "webp": { "url": "/api/assets/bg-lamp_room-4e5f6a7b.webp", "bytes": 26 }
+    },
+    "bgm/storm": {
+      "kind": "audio",
+      "role": "bgm",
+      "durationMs": 90000,
+      "file": { "url": "/api/assets/bgm-storm-8c9d0e1f.m4a", "bytes": 22 },
+      "codec": "m4a"
+    },
+    "sfx/door": {
+      "kind": "audio",
+      "role": "sfx",
+      "durationMs": 800,
+      "file": { "url": "/api/assets/sfx-door-2a3b4c5d.m4a", "bytes": 21 },
+      "codec": "m4a"
+    }
+  }
+}

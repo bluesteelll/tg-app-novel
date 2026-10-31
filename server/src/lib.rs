@@ -7,6 +7,7 @@ pub mod api;
 pub mod auth;
 pub mod clock;
 pub mod config;
+pub mod content;
 pub mod db;
 pub mod error;
 pub mod ids;
@@ -18,6 +19,7 @@ use axum::Router;
 use crate::auth::Keys;
 use crate::clock::{Clock, SystemClock};
 use crate::config::Config;
+use crate::content::{ContentError, ContentStore};
 use crate::db::Repo;
 
 /// Everything a handler can reach. Built only by [`AppState::new`]: `#[non_exhaustive]` makes a struct literal (or a
@@ -33,12 +35,17 @@ pub struct AppState {
     pub keys: Arc<Keys>,
     /// The time source: the system clock, or a fixed one set by [`AppState::with_clock`] in tests.
     pub clock: Arc<dyn Clock>,
+    /// The content loaded from `cfg.content_dir` at startup: the story index, the paid chapters, the puzzle index
+    /// and the gated asset index.
+    pub content: Arc<ContentStore>,
 }
 
 impl AppState {
-    /// Connects the database pool to `DATABASE_URL` and applies the migrations. Connects and migrates; creates no
-    /// database: a missing or unreachable one is a [`StartupError::Db`].
+    /// Loads the content from `CONTENT_DIR`, then connects the database pool to `DATABASE_URL` and applies the
+    /// migrations. Content comes first: a refusal ([`StartupError::Content`]) opens no pool. Creates no database: a
+    /// missing or unreachable one is a [`StartupError::Db`].
     pub async fn new(cfg: Config) -> Result<AppState, StartupError> {
+        let content = ContentStore::load(&cfg.content_dir).await?;
         let repo = Repo::open(&cfg.database_url).await?;
         if let Err(e) = repo.migrate().await {
             // Close at once: the pool's connections end now, not whenever the last clone of the pool is dropped.
@@ -50,6 +57,7 @@ impl AppState {
             keys: Arc::new(Keys::from_config(&cfg)),
             cfg: Arc::new(cfg),
             clock: Arc::new(SystemClock),
+            content: Arc::new(content),
         })
     }
 
@@ -68,6 +76,9 @@ pub enum StartupError {
     /// A migration failed or no longer matches the database's record of it.
     #[error("migrations: {0}")]
     Migrate(#[from] sqlx::migrate::MigrateError),
+    /// The content directory is missing, incomplete or invalid.
+    #[error("content: {0}")]
+    Content(#[from] ContentError),
 }
 
 /// The production routes. Dev-only routes live in `server-dev` and are never routable here.

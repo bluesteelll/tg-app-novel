@@ -1,0 +1,18 @@
+{
+  "format": 1,
+  "chapterId": "ch1",
+  "puzzles": {
+    "drawer": {
+      "type": "code",
+      "answerLen": 4,
+      "answerMax": 9,
+      "solution": [1, 8, 4, 7],
+      "title": { "ru": "Ящик стола", "en": "Desk drawer" },
+      "hints": [
+        { "ru": "Цифры спрятаны в комнате.", "en": "The digits are hidden in the room." },
+        { "ru": "Посмотрите на часы и календарь.", "en": "Look at the clock and the calendar." },
+        { "ru": "Код начинается с года на портрете.", "en": "The code starts with the year on the portrait." }
+      ]
+    }
+  }
+}

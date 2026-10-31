@@ -10,6 +10,7 @@
 mod auth;
 mod bindings;
 mod common;
+mod content;
 mod saves;
 mod schema;
 
