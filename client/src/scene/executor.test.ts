@@ -123,6 +123,7 @@ const ENTRIES: Readonly<Record<string, ImageEntry>> = {
   'bg/cafe': image('bg_cafe', 1080, 2048),
   'bg/street': image('bg_street', 1080, 2048),
   'bg/room': image('bg_room', 1080, 2048),
+  'bg/broken': image('bg_broken', 1080, 2048), // in the manifest, but its file fails to decode (harness load)
   'char/ally/neutral': image('char_ally_neutral', 768, 1536),
   'char/ally/worried': image('char_ally_worried', 768, 1536),
   'char/stranger/serious': image('char_stranger_serious', 768, 1536),
@@ -144,7 +145,7 @@ function harness(size: Size = S390, loop: RenderLoop = quietLoop()) {
   const load: LoadImage<Tex> = (ref) => {
     loads.set(ref.url, (loads.get(ref.url) ?? 0) + 1);
     const e = byUrl.get(ref.url);
-    if (e === undefined) {
+    if (e === undefined || ref.url === urlOf('bg/broken')) {
       return Promise.resolve({ ok: false, error: { kind: 'decode', detail: 'no such fixture' } });
     }
     const texture: Tex = { url: ref.url };
@@ -492,6 +493,27 @@ test('executor: queued batches keep the textures they target', async () => {
   expect(h.log.filter((x) => x.startsWith('create:bg:'))).toEqual(['create:bg:cafe', 'create:bg:street', 'create:bg:room']);
   expect(h.live('bg').map((x) => x.key)).toEqual(['room']);
   expect(['bg/cafe', 'bg/street', 'bg/room'].map(h.releasedOf)).toEqual([1, 1, 0]);
+  expect(h.registry.stats().live).toBe(1);
+  h.ex.destroy();
+});
+
+test('executor: a skipped replacement keeps the old visual and its texture', async () => {
+  const h = harness();
+  await h.ex.apply([bg('cafe', 'cut')], NOW);
+  const shown = h.live('bg');
+  // An id outside the manifest (cut), then a file that fails to decode (crossfade): the old background stays on
+  // screen while the logical stage names the missing one, so its texture stays held.
+  await h.ex.apply([bg('nope', 'cut')], NOW);
+  await h.ex.apply([bg('broken', 'crossfade', 500)], NOW);
+  expect(h.skipped.map((e) => e.kind)).toEqual(['missing-id', 'decode']);
+  expect(h.ex.snapshot().bg).toBe('broken');
+  expect(h.live('bg')).toEqual(shown);
+  expect(h.releasedOf('bg/cafe')).toBe(0);
+  expect(h.registry.stats().live).toBe(1);
+  // The next background that loads replaces it, and only then is it freed.
+  await h.ex.apply([bg('street', 'cut')], NOW);
+  expect(h.live('bg').map((x) => x.key)).toEqual(['street']);
+  expect(h.releasedOf('bg/cafe')).toBe(1);
   expect(h.registry.stats().live).toBe(1);
   h.ex.destroy();
 });
