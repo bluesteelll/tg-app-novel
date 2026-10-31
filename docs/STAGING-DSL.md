@@ -493,7 +493,7 @@ fixed:
 | Inline logic in a text line or choice: `{var}`, `{a\|b}`, `{flag: x}`, `{~a\|b}` | forbidden (`text/inline-logic`) — write whole alternative lines, each with its own ID |
 | Glue `<>` | forbidden (`text/glue`) — a line is one translatable unit |
 | Text and a divert on the same source line | forbidden (`text/divert-on-line`) — put `-> x` on its own line |
-| `-> DONE` | forbidden — chapters end at `-> END` |
+| `-> DONE` | allowed only directly after a `puzzle` / `explore` line (the yield block, §6): a hand-off to the host, not an ending; forbidden anywhere else (`ink/forbidden`), since chapters end at `-> END` |
 | Divert to a variable target, threads `<-`, `EXTERNAL` | forbidden (`ink/forbidden`) — they defeat the static knot index or bypass the DSL |
 | Global tags, dynamic tags | forbidden (§3.6, §2) |
 | Knot / stitch names | `[a-z][a-z0-9_]*` (`ink/name`) |
@@ -536,7 +536,8 @@ and exits non-zero if any **E** remains. `--strict` turns every **W** into an **
 | `text/long` | W | line longer than 160 graphemes (about four phone lines) |
 | `ink/compile` | E | inkjs compiler error **or warning** (warnings are errors in this project) |
 | `ink/todo` | W | ink `TODO:` author message |
-| `ink/forbidden` | E | `EXTERNAL`, `<-`, `-> DONE`, divert to a variable, a tunnel (`-> k ->` or `->->`), a knot or stitch parameter, `LIST` |
+| `ink/forbidden` | E | `EXTERNAL`, `<-`, `-> DONE` not directly after a yield line, divert to a variable, a tunnel (`-> k ->` or `->->`), a knot or stitch parameter, `LIST` |
+| `yield/shape` | E | a `puzzle` / `explore` tag not alone on a tag-only line, or the next source line not `-> DONE` (§6) |
 | `ink/include` | E | INCLUDE outside the chapter dir and `story/common/`; a free chapter including a paid chapter's file; a file included by two chapters |
 | `ink/entry` | E | entry top level holds anything but INCLUDE / declarations / one divert; first line not `INCLUDE ../common/globals.ink` |
 | `ink/name` | E | knot/stitch name not `[a-z][a-z0-9_]*` |

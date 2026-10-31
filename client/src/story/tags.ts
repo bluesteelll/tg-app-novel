@@ -15,6 +15,10 @@ import type {
   TrackId,
 } from './staging.ts';
 
+/** The tag kinds that hand control to the host (STAGING-DSL §6 yield block); the lint learns them only from here. */
+export const YIELD_KINDS = ['puzzle', 'explore'] as const;
+export type YieldKind = (typeof YIELD_KINDS)[number];
+
 /** Every tag kind of STAGING-DSL §6, in table order: `id` is the line ID, the rest are the command kinds. */
 export const TAG_KINDS = ['id', 'bg', 'scene', 'show', 'hide', 'cg', 'bgm', 'sfx', 'wait'] as const;
 export type TagKind = (typeof TAG_KINDS)[number];
