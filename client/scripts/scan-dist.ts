@@ -2,8 +2,9 @@
 // payload, against fingerprint sections. Fails on source maps, the ink compiler, dev canaries and (from L3b/L5)
 // paid fingerprints: paid line IDs and texts, paid asset file names, and paid asset bytes by content hash (a renamed
 // copy, or one inlined as a base64 data: URI); from LW3 the hint IDs and texts of every world, the paid worlds' IDs
-// and texts and the paid en values, all built from the sources (PUZZLES-PLAN X7). Every finding is reported; exit 1
-// iff there is one or dist is missing.
+// and texts and the paid en values, all built from the sources (PUZZLES-PLAN X7); from LM1 the meta texts of
+// story/meta.json (META-PLAN "Paid-content protection"). Every finding is reported; exit 1 iff there is one or dist
+// is missing.
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
@@ -15,7 +16,10 @@ import { decodeAssetFingerprints } from './assets/manifest.ts';
 import type { AssetFingerprint } from './assets/manifest.ts';
 import { decodeChapterList, decodeLineFingerprints, decodeStoryUsage } from './story/emit.ts';
 import type { StoryUsage } from './story/emit.ts';
+import { unescapeInk } from './story/classify.ts';
 import { decodeEnTable } from './story/locales.ts';
+import { META_FILE } from './story/meta.ts';
+import { STORIES_FILE } from './story/stories.ts';
 import { TEXT_NEEDLE_MIN_CODE_POINTS, WORLD_FILE, decodeWorldFile, textNeedles, worldFingerprints, worldLines } from './story/world.ts';
 
 export type Section = { name: string; needles: readonly string[] };
@@ -40,14 +44,22 @@ export type FingerprintReason =
   /** A decoded world with a hint text of >= 12 code points (ru, or its en), and no hint-text needle derived. */
   | 'hint-texts-empty'
   /** A paid chapter's world.json from which no paid world needle was derived. */
-  | 'paid-world-empty';
+  | 'paid-world-empty'
+  /** story/meta.json or story/stories.json present and not JSON: the meta needles cannot be built. */
+  | 'meta-unreadable'
+  /** A story of story/stories.json declares an ending, and no meta-text needle was derived from story/meta.json. */
+  | 'meta-empty';
 export type Finding =
   | { kind: 'source-map'; file: string }
   | { kind: 'fingerprint'; file: string; section: string; needle: string; via: 'plain' | 'data-uri' }
   | { kind: 'empty-dist'; reason: string }
   | { kind: 'fingerprints'; reason: FingerprintReason; detail: string }
-  /** A paid asset file in dist: under its own name, as the same bytes under another name, or inlined as a data: URI. */
-  | { kind: 'paid-asset'; file: string; name: string; via: 'name' | 'hash' | 'data-uri' };
+  /**
+   * A paid asset file in dist: under its own name, as the same bytes under another name, inlined as a data: URI, or
+   * (`prefix`) under its asset's file-name shape with another hash, an older build's copy; `name` is the paid file's
+   * name, except for `prefix`, where it is the asset id.
+   */
+  | { kind: 'paid-asset'; file: string; name: string; via: 'name' | 'hash' | 'data-uri' | 'prefix' };
 
 /** Sections every build is scanned for, whatever the story holds. */
 export const FIXED_SECTIONS: readonly Section[] = [
@@ -146,8 +158,10 @@ function sha256(bytes: Uint8Array): string {
 
 /**
  * Every dist file that is a paid asset file: by its basename, by the sha256 of its bytes (the same file renamed), or
- * by the sha256 of a base64 data: URI payload inside it (inlined, up to the data-URI depth). A file can match more
- * than one way; each way is a finding.
+ * by the sha256 of a base64 data: URI payload inside it (inlined, up to the data-URI depth); and a basename of the
+ * asset tool's shape `<asset id, '/' as '-'>-<hash8>.<ext>` (manifest.ts `assetFileName`) for a paid asset under
+ * another hash, an older build's public copy (L5 review M1). Ids hold no '-', so the shape names one asset. A file can
+ * match more than one way; each way is a finding.
  */
 export function scanPaidFiles(files: readonly ScanFile[], paid: readonly AssetFingerprint[]): Finding[] {
   if (paid.length === 0) {
@@ -155,11 +169,17 @@ export function scanPaidFiles(files: readonly ScanFile[], paid: readonly AssetFi
   }
   const byName = new Map(paid.map((f) => [f.name, f.name]));
   const byHash = new Map(paid.map((f) => [f.sha256, f.name]));
+  const byPrefix = new Map<string, string>(paid.map((f) => [f.asset.replaceAll('/', '-'), f.asset]));
   const findings: Finding[] = [];
   for (const file of files) {
-    const named = byName.get(file.path.slice(file.path.lastIndexOf('/') + 1));
+    const base = file.path.slice(file.path.lastIndexOf('/') + 1);
+    const named = byName.get(base);
+    const prefix = named === undefined ? /^(.+)-[0-9a-f]{8}\.(?:avif|webp|m4a|wav)$/.exec(base)?.[1] : undefined;
+    const copied = prefix === undefined ? undefined : byPrefix.get(prefix);
     if (named !== undefined) {
       findings.push({ kind: 'paid-asset', file: file.path, name: named, via: 'name' });
+    } else if (copied !== undefined) {
+      findings.push({ kind: 'paid-asset', file: file.path, name: copied, via: 'prefix' });
     }
     const hashed = byHash.get(sha256(file.bytes));
     if (hashed !== undefined) {
@@ -251,14 +271,63 @@ function rawHints(raw: unknown): Array<{ id: string | null; ru: string | null }>
   });
 }
 
+/** Every string under a `ru` or `en` key at any depth of a parsed JSON value: the meta texts, whatever else it holds. */
+function langStrings(v: unknown): string[] {
+  if (Array.isArray(v)) {
+    return v.flatMap(langStrings);
+  }
+  if (typeof v !== 'object' || v === null) {
+    return [];
+  }
+  return Object.entries(v).flatMap(([k, x]: [string, unknown]) => ((k === 'ru' || k === 'en') && typeof x === 'string' ? [x] : langStrings(x)));
+}
+
+/** The stories of a parsed story/stories.json whose raw `endings` is a non-empty object (an id, or `#<index>`). */
+function storiesWithEndings(raw: unknown): string[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw.flatMap((s: unknown, i) => {
+    const o = typeof s === 'object' && s !== null ? (s as Record<string, unknown>) : {};
+    const endings = o['endings'];
+    const some = typeof endings === 'object' && endings !== null && !Array.isArray(endings) && Object.keys(endings).length > 0;
+    return some ? [typeof o['id'] === 'string' ? o['id'] : `#${i}`] : [];
+  });
+}
+
+/**
+ * The `meta-texts` section (META-PLAN "Paid-content protection", M7): every text of story/meta.json of at least 12
+ * code points, ru and en, read by a raw probe the meta lint cannot switch off (D7). No text is dropped as public: a meta
+ * text never belongs in ink or a locale table (STAGING-DSL §9 "Story meta"). Fail closed: a meta file or story list
+ * that is present and not JSON; no needle while some story declares an ending (a missing meta file included).
+ */
+function metaSections(repo: string, fail: (reason: FingerprintReason, detail: string) => void): Section[] {
+  const meta = readRepoJson(repo, META_FILE);
+  const stories = readRepoJson(repo, STORIES_FILE);
+  for (const [rel, r] of [[META_FILE, meta], [STORIES_FILE, stories]] as const) {
+    if (!r.ok && r.why !== 'missing') {
+      fail('meta-unreadable', `${rel}: ${r.why}`);
+    }
+  }
+  const needles = textNeedles(meta.ok ? langStrings(meta.value) : [], []);
+  const declaring = stories.ok ? storiesWithEndings(stories.value) : [];
+  if (needles.length === 0 && declaring.length > 0) {
+    const why = meta.ok ? `has no text of ${TEXT_NEEDLE_MIN_CODE_POINTS}+ code points` : `is ${meta.why}`;
+    fail('meta-empty', `${declaring.join(', ')} declare endings and ${META_FILE} ${why}`);
+  }
+  return needles.length === 0 ? [] : [{ name: 'meta-texts', needles }];
+}
+
 type WorldRead = { dir: string; rel: string; raw: unknown; parsed: boolean; world: WorldSource | null; why: string };
 
 /**
  * The world sections, built from the sources only (PUZZLES-PLAN X7, D12, critique C1): `hint-ids` and `hint-texts`
  * from every story/<dir>/world.json (a listed chapter or not, Q16), `paid-world-ids` and `paid-world-texts` from
  * the paid chapters' worlds, `paid-en` from the paid chapters' en tables; each pushed only when it has needles. A
- * text that is public is dropped: the free ink sources, the free worlds' non-hint texts, the free en values of
- * non-hint IDs, and the names tables. A world's hint sources never count as public. Fail closed per world.
+ * text that is public is dropped: the free ink sources (as written and as displayed, ink escapes resolved, as the gate
+ * reads their lines), the free worlds' non-hint texts, the shipped `en` values of the free non-hint IDs (never their
+ * `ru` copies, which the build does not ship and which can be stale, as the gate's set holds), and the names tables.
+ * A world's hint sources never count as public. Fail closed per world.
  */
 function worldSections(repo: string, chapters: readonly ChapterListEntry[], fail: (reason: FingerprintReason, detail: string) => void): { world: Section[]; paidEn: Section[] } {
   const free = new Set<string>(chapters.filter((c) => !c.paid).map((c) => c.id));
@@ -296,7 +365,8 @@ function worldSections(repo: string, chapters: readonly ChapterListEntry[], fail
   const publicTexts: string[] = [];
   for (const dir of [...free, 'common']) {
     for (const rel of filesUnder(repo, `story/${dir}`, '.ink')) {
-      publicTexts.push(readRepoText(repo, rel) ?? '');
+      const ink = readRepoText(repo, rel) ?? '';
+      publicTexts.push(ink, unescapeInk(ink));
     }
   }
   for (const ch of free) {
@@ -315,7 +385,7 @@ function worldSections(repo: string, chapters: readonly ChapterListEntry[], fail
     const table = decodeEnTable(`locales/en/${ch}.json`, readRepoText(repo, `story/locales/en/${ch}.json`)).table;
     for (const [id, e] of table.entries) {
       if (!hintIds.has(id)) {
-        publicTexts.push(e.ru, e.en);
+        publicTexts.push(e.en);
       }
     }
   }
@@ -374,8 +444,8 @@ function worldSections(repo: string, chapters: readonly ChapterListEntry[], fail
 }
 
 /**
- * The sections a build is scanned for: the fixed sections, and while story/chapters.json declares a paid chapter,
- * its line fingerprints (`paid-lines`: every paid line ID; `paid-texts`: paid text samples) from the story tool.
+ * The sections a build is scanned for: the fixed sections, the world sections, the meta texts (whatever the tiers),
+ * and while story/chapters.json declares a paid chapter, its line fingerprints (`paid-lines`: every paid line ID; `paid-texts`: paid text samples) from the story tool.
  * Fail closed: every reason the paid sections could be empty or stale is a finding, never a silent pass (an
  * unreadable chapter list included). L5: while a paid-only asset exists (or the asset fingerprint file is present),
  * `fingerprints.assets.json` must decode, list files, and cover every paid-only asset's files (an image: its AVIF and
@@ -399,9 +469,10 @@ export function loadSections(clientRoot: string): { sections: Section[]; finding
     fail('chapters-unreadable', `story/chapters.json: ${chapters.error.map((i) => `${i.path}: ${i.detail}`).join('; ')}`);
     return { sections, findings, paidFiles };
   }
-  // The world sections first: a free-only story's hints are paid content too (X7, M21).
+  // The world sections first: a free-only story's hints are paid content too (X7, M21); so are its meta texts (M7).
   const worlds = worldSections(repo, chapters.value, fail);
   sections.push(...worlds.world);
+  sections.push(...metaSections(repo, fail));
   const paid = chapters.value.filter((c) => c.paid);
   if (paid.length === 0) {
     return { sections, findings, paidFiles };
