@@ -13,9 +13,8 @@ use crate::db::saves::{NewSave, PutOutcome, SaveMeta};
 use crate::error::ApiError;
 use crate::ids::SaveSlot;
 
-/// The largest save body, in UTF-8 bytes: the `saves.body` CHECK allows 262 144 characters, and a string never has
-/// more characters than bytes, so the edge never admits what the CHECK refuses. The client measures the same bytes
-/// (`TextEncoder`).
+/// The largest save body, in UTF-8 bytes: the `saves.body` CHECK counts the same UTF-8 bytes (`octet_length`), so the
+/// edge never admits what the CHECK refuses. The client measures the same bytes (`TextEncoder`).
 pub const MAX_SAVE_BODY_BYTES: usize = 262_144;
 
 /// `GET /api/saves`: the user's saves without their bodies, in slot order.
@@ -48,8 +47,8 @@ pub async fn get_save(
 }
 
 /// `PUT /api/saves/{slot}`: writes the save if `expectedRev` matches the slot, else 409 with the stored envelope.
-/// The checks run in a fixed order (token, slot, request, body size, body JSON), so a request with several faults
-/// gets one known answer.
+/// The checks run in a fixed order (token, slot, request, text fields, body size, body JSON), so a request with
+/// several faults gets one known answer.
 pub async fn put_save(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
@@ -58,12 +57,24 @@ pub async fn put_save(
 ) -> Result<Json<PutSaveResponse>, ApiError> {
     let slot = parse_slot(slot)?;
     let Json(req) = req.map_err(body_rejection)?;
+    // PostgreSQL `text` cannot hold U+0000 (`22021`): a client string carrying it is a 400 here, not a 500 there.
+    let texts = [
+        Some(req.write_id.as_str()),
+        Some(req.chapter_id.as_str()),
+        Some(req.story_version.as_str()),
+        req.line_id.as_deref(),
+    ];
+    if texts.into_iter().flatten().any(|text| text.contains('\0')) {
+        return Err(ApiError::BadRequest("save text field contains U+0000"));
+    }
     if req.body.len() > MAX_SAVE_BODY_BYTES {
         return Err(ApiError::PayloadTooLarge);
     }
-    // `json_valid` at the edge: a client bug is a 400 here instead of the CHECK's 500. The body stays opaque: only its
-    // being one JSON document is checked, and the CHECK remains the backstop.
-    if serde_json::from_str::<serde::de::IgnoredAny>(&req.body).is_err() {
+    // `IS JSON` at the edge: a client bug is a 400 here instead of the CHECK's 500. A full parse, not `IgnoredAny`
+    // (which has no depth limit): serde_json's recursion limit, lone surrogates and out-of-range numbers make the
+    // edge stricter than `IS JSON`, so it never admits what the CHECK refuses. Only a check: the stored body stays the
+    // request's bytes, and the CHECK remains the backstop.
+    if serde_json::from_str::<serde_json::Value>(&req.body).is_err() {
         return Err(ApiError::BadRequest("save body is not one JSON document"));
     }
     let write = NewSave {
