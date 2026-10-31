@@ -2790,6 +2790,30 @@ Notation:
   `client/src/puzzles/rules/{code.ts,order.ts,index.ts,rules.test.ts}`,
   `client/src/explore/{state.ts,reduce.ts,project.ts,reconcile.ts,explore.test.ts}`,
   `client/scripts/story/{softlock.ts,softlock.test.ts}`, `client/src/arch.test.ts` (15).
+- **As merged (`38bc717`, RULINGS 21; the cut `D:/tmp/novel-orch/lw2-world-model/cut.md` §6 Q1-Q8 and its addendum):**
+  - **Commit order (Q1).** The commits ran rules before decode: C1 `world/types.ts` + `puzzles/rules/*` (`bb40e12`),
+    C2 `decode.ts` (`ef8e943`), then state/reduce (`fcde8a7`), one refactor (`e85392e`: `sectionKey` as one joined
+    string, same semantics), project/reconcile with the rules golden (`ddbb270`), softlock (`5d3fa73`) and arch
+    (`0305000`). `decodeWorldSource` decodes `params` through `PUZZLE_RULES[type].decodeParams` and `toServer`
+    needs `answerShape`, so the order below would leave a red commit; every red-first below was still observed.
+  - **PE7 (Q2).** `RULES_VERSION = 1` in `explore/reduce.ts`; the golden `reduce: rules golden pinned to
+    RULES_VERSION` (edge digest over a demo-shaped fixture, an append-only table keyed by version). LW3 hashes
+    `{ rules: RULES_VERSION, body }` (PUZZLES-PLAN, Open questions PE7).
+  - **Signatures (Q3).** Every pure function takes `WorldPublicBody`; only `reconcile` takes `WorldPublic`.
+  - **The arch rule `pure-world` (Q4)** is transitive: the pure files P plus their pure dependencies
+    D = `story/{staging,catalog,tags}.ts`; it bans DOM, network, storage, clock and random globals, `svelte`
+    imports, and any value import outside P ∪ D. It binds L5 (which appends to `catalog.ts`) and any later editor of
+    `tags.ts`. Names: `arch: pure world modules`, `arch: pure-world red on fixture`, `arch: pure-world allows
+    fixtures`.
+  - **Fill-ins (Q5) and the addendum (C1, W1, developer decisions):** PUZZLES-PLAN "World data" (schema
+    strictness), "World state and the reducer contract" (`WorldIssue`, `sectionKey` sets) and "The points the rules
+    leave open". C1 added `reduce: an action that changes no state keeps its effects`.
+  - **`world/linear-requires` (Q6)** holds by construction (no item field on puzzles); LW3 keeps it registered
+    without an emitter.
+  - **Timing (Q7)** is provisional (50-58 ms quiet-like, 130-158 ms beside LDB1's cargo; budget 75 ms):
+    `RESUME_STATE_CAP` stays 5,000; re-measure on a quiet machine before LX / L13 rely on it (PUZZLES-PLAN X9 "The
+    cost").
+  - **Names (Q8).** 50 new names (client 202 → 252) joined `baseline.tsv`.
 - **Commits:**
   1. `world/types.ts` + `decode.ts`: `decodeWorldSource`, `decodeWorldPublic` (which refuses `solution` / `hints`
      and requires `version`), `toPublic` (returns the body without `version`; LW3's emit stamps it), `toServer`. The
@@ -3052,6 +3076,9 @@ Notation:
   `client/package.json` (scripts), `assets/catalog.json` (13; `scan-dist.test.ts` is L1's file, serialized after L1).
   Changed by STORIES-PLAN revision 3 (W2, SQ9): + `client/src/story/tags.test.ts` → 14, a frozen file reopened for
   one hunk (the catalog-key pins; the last bullet of this entry), then frozen again.
+- **Erratum (RULINGS 21 Q4; LW2 merged `38bc717`):** `client/src/story/catalog.ts` is a pure dependency of LW2's
+  `pure-world` arch rule: L5's appends stay pure (no DOM, network, storage, clock or random global, no `svelte`
+  import, no value import outside the pure set), or `arch: pure world modules` goes red.
 - **Commits:**
   1. `placeholder.ts` (deterministic SVG: label, hue, silhouette for characters, canonical sizes). Red: snapshot of
      dimensions.
@@ -3427,6 +3454,10 @@ Notation:
 - **Changed by STORIES-PLAN:** gate to start + LS1 (`story.ts`, `emit.ts`, `build.test.ts`, `locales.ts` and, from
   revision 2, `locales.test.ts` are serialized L3c → LS1 → LW3); the scope is unchanged (worlds stay per chapter,
   STORIES-PLAN Y17). LW3's world texts join the same `locales.ts` checks LS1 extended.
+- **Erratum (RULINGS 21 Q4, Q6; LW2 merged `38bc717`):** LW2's `pure-world` arch rule binds the pure modules LW3
+  imports or extends (`world/**`, `puzzles/rules/**`, `explore/{state,reduce,project,reconcile}.ts`,
+  `story/{staging,catalog,tags}.ts`): no clock, random, DOM or storage reads. `world/linear-requires` holds by
+  construction (the decoder refuses a `requires` key), so LW3 keeps the code registered without an emitter.
 - **Goal:** the story gate understands worlds:
   - the yield edges in the graph;
   - the world lint (`world/*`, `puzzle/*`, `explore/*`) and the soft-lock check;
@@ -3520,6 +3551,10 @@ Notation:
        whole-body hash: two different versions. Control: `emit: world version changes on a rules edit` — two worlds
        that differ in one slot's `accepts`; it must stay green on both hashes (a red means texts were not the only
        thing removed).
+     - Erratum (RULINGS 21 Q2): `worldVersion` hashes `{ rules: RULES_VERSION, body: <textless body> }`
+       (`RULES_VERSION` from `explore/reduce.ts`, LW2). Red: `emit: world version changes on a RULES_VERSION bump`,
+       beside the rules-edit control. Once N1's `story/ch1/world.json` exists, LW3 may add a second rules-golden
+       row over the real demo.
   4. `locales.ts` + `fix.ts`: world texts join `id/*` (global uniqueness across ink and world) and `loc/*`;
      `--sync-locales` adds world IDs; `--fix-ids` fills missing world IDs (two-space JSON, key order kept).
      - Red: `lint: id/duplicate red on fixture` with one ID in ink and in a world doc; `fix: world ids written once`.
@@ -4409,6 +4444,7 @@ live in [STORIES-PLAN.md](STORIES-PLAN.md), section "Open questions". None block
 | 14 | 2026-10-31 | `D:/tmp/novel-orch/design/stories/triage_r3.md` (critique `design/stories/critique_r3.md`) | STORIES-PLAN revision 3: the 2 confirmed items resolved. W1: LS1 commit 6 also gives `locales.test.ts`'s own `repoFiles()` an inline `story/stories.json` (`manor`, `endings: {}`) with the story's title and teaser in its temp-repo name tables, with a red (`story: catalog names come from the locale tables`, ENOENT on the temp repo's `catalog.json`); the new `LocaleInput` story ids (commit 4) and `planEmit` story input (commit 7) are required fields, so the lock note names commits 4, 6, 7 and 8 for `locales.test.ts`, and commits 4 and 7 state their one-argument hunks; commit 6's real-tree line names both helpers. W2: `tags.test.ts` reopens for L5 (SQ9), one hunk: the catalog-key pins of `catalog: demo catalog and cast decode` (:450-458) become subset pins of the L3a keys, with a red-first and a seen-failing scratch; the L5 lock 13 → 14; the frozen-file bullet; LS1 commit 8 notes that L5 owns those pins. Each PP edit is marked "STORIES-PLAN revision 3". Optional O1–O3 noted, not folded in. Per-item list: [STORIES-PLAN.md](STORIES-PLAN.md), section "Revision log"; detail: `D:/tmp/novel-orch/design/stories/revision_r3.md`. Pre-revision copy: `D:/tmp/novel-orch/design/stories/PROTOTYPE-PLAN.r3.before.md` |
 | 15 | 2026-10-31 | `D:/tmp/novel-orch/design/stories/triage_r4.md` (critique `design/stories/critique_r4.md`) | STORIES-PLAN revision 4: the 1 confirmed item resolved. W1: `StoryNames` gains `stories` and `teasers` (`Record<StoryId, { ru; en }>`) in LS1 commit 7, where `emit.ts` first reads them, filled by `locales.ts` `nameChecks` for the `LocaleInput.stories` ids (commit 4 only requires them); L3c's pin `locales: matching tables raise nothing` (`locales.test.ts:291-298`) moves on purpose (`r.names` gains `stories: {}`, `teasers: {}`), with a red-first keyed on the diff lines; the inputs `NAMES` (`build.test.ts`), test 35's names and the `stories.test.ts` literals gain the keys; commit 4's red `loc: story title and teaser required` lives in `stories.test.ts`; the lock note (commit 7: two `locales.test.ts` hunks), the moved list (six pins) and the Gates line. Each PP edit is marked "STORIES-PLAN revision 4". Optional O1–O4 and the critique's open question 1 noted, not folded in. Per-item list: [STORIES-PLAN.md](STORIES-PLAN.md), section "Revision log"; detail: `D:/tmp/novel-orch/design/stories/revision_r4.md`. Pre-revision copy: `D:/tmp/novel-orch/design/stories/PROTOTYPE-PLAN.r4.before.md` |
 | 16 | 2026-10-31 | RULINGS 12, 14, 22 + `D:/tmp/novel-orch/design/db/decision.md` §6 (PP bullets; replacement texts §1.3, §3.5, §4.1, §4.3, §4.4, §4.7, §4.8), as merged: LDB0 `857f7d6`, LDB1 `fee9da7`, LDB2 `a7e4a04` | RULINGS 12: PostgreSQL 18 from day one (design/db/decision.md). Docs lane `docs-errata`, group A: T2; K12 storage; K14 rewritten to DB-1/DB-2; K18 (payer-row lock, DB-4); K19 (why); the Deviations and Later PostgreSQL rows deleted; the layout and module map (`server/pgdev/`, the server-dev `lib.rs`/`main.rs` rows, `DevPaths`, `launch_database`); the `0001` section (heading LDB1, the merged schema byte for byte, connection = the session pins, isolation = DB-4); the shared-types save-body row; the pre-checkout, grant and refund SQL in the PostgreSQL dialect; the concurrency table (renamed and new test names, `lock_timeout`, the §4.7 rows with `53300`); resource lifetime (§4.8); test strategy (server row, schema / pre-checkout / grant / dev-crate names, a pgdev bullet); seen-red rename; dependencies (sqlx features, `pgdev` for `tempfile`); gate mapping (cargo + e2e env, `pgdev` targets); L2/L4a/L4b "superseded by LDB1" lines; L8b commits 2-3. Each place is marked "changed by RULINGS 14". Ledger: `D:/tmp/novel-orch/docs-errata/ledger.md` |
+| 17 | 2026-10-31 | RULINGS 21 + `D:/tmp/novel-orch/lw2-world-model/cut.md` §6 (Q1-Q8) and its addendum, as merged: LW2 `38bc717` | Docs lane `docs-errata`, group B: the LW2 entry gains an "As merged" bullet (Q1 commit order rules → decode and the merged SHAs, Q2 PE7, Q3 signatures, Q4 the transitive `pure-world` rule, Q5 / C1 / W1 pointers to PUZZLES-PLAN, Q6, Q7 provisional timing, Q8 names); LW3 commit 3 gains the `RULES_VERSION` hash input and its red (Q2) and an erratum line (Q4, Q6); L5 gains the `catalog.ts` purity line (Q4). PUZZLES-PLAN revision 9 holds the PZ errata. Ledger: `D:/tmp/novel-orch/docs-errata/ledger.md` |
 
 **Revision 1 (2026-10-30)** — what changed, by triage item:
 - **W1** (undecodable payment ACKed and lost): K17 (lenient `PaymentProbe` for the payment subset, 500 only when the
