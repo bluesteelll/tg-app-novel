@@ -1,6 +1,7 @@
-// The story list (STAGING-DSL §9, §11 `catalog/stories`; STORIES-PLAN Y2, Y4): the decoder's rules 1-7. Fixtures
-// are inline: chapter-list literals and the decoded committed asset catalog (its covers); the committed cast is never
-// read here. Each case asserts the defect first, then its control: the same source without the defect decodes.
+// The story list (STAGING-DSL §9, §11 `catalog/stories`; STORIES-PLAN Y2, Y4): the decoder's rules 1-7, the ending
+// checks of rule 8 and the invoice titles of rule 9. Fixtures are inline: chapter-list literals, hand-built graphs with
+// their ink sources, and the decoded committed asset catalog (its covers); the committed cast is never read here. Each
+// case asserts the defect first, then its control: the same input without the defect passes.
 import { readFileSync } from 'node:fs';
 
 import { expect, test } from 'vitest';
@@ -8,8 +9,10 @@ import { expect, test } from 'vitest';
 import { decodeAssetCatalog } from '../../src/story/catalog.ts';
 import type { AssetCatalog, ChapterListEntry, EndingName, Result, StoryId } from '../../src/story/catalog.ts';
 import type { AssetId, ChapterId, KnotName, ProductId } from '../../src/story/staging.ts';
+import type { StoryNames } from './emit.ts';
+import type { ChapterGraph, KnotNode } from './graph.ts';
 import type { Finding } from './lint.ts';
-import { decodeStories } from './stories.ts';
+import { checkEndings, checkInvoiceTitles, decodeStories } from './stories.ts';
 import type { StoryPlan } from './stories.ts';
 
 function readRepoJson(path: string): unknown {
@@ -185,4 +188,115 @@ test('stories: bad ending name fails', () => {
     ok: true,
     value: [plan('manor', ['ch1', 'ch2'], { truth: at, [max]: { chapter: 'ch1', knot: 'street' } })],
   });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// checkEndings (rule 8) and checkInvoiceTitles (rule 9)
+
+/** A knot of a hand-built graph: an ending without successors unless `over` says otherwise. */
+function knot(name: string, over: Partial<Omit<KnotNode, 'name'>> = {}): KnotNode {
+  const clears = { all: false, bg: false, cg: false, chars: [] };
+  return { name: name as KnotName, file: 'ch2/main.ink', line: 1, assets: [], next: [], ending: true, clears, ...over };
+}
+
+/** The part of a graph the ending checks read: its knots. */
+function graph(chapter: string, knots: readonly KnotNode[]): ChapterGraph {
+  return {
+    chapter: chapter as ChapterId,
+    firstKnot: knots[0]?.name ?? null,
+    knots: new Map(knots.map((k) => [k.name, k])),
+    globals: [],
+    vars: [],
+    lines: [],
+    carried: new Map(),
+  };
+}
+
+/** ch1 with the one ending `street`, ch2 with `ch2` (the skeleton's shape by default). */
+function graphs(ch2: readonly KnotNode[] = [knot('archive')], ch1: readonly KnotNode[] = [knot('street', { file: 'ch1/main.ink' })]): ReadonlyMap<ChapterId, ChapterGraph> {
+  return new Map([
+    ['ch1' as ChapterId, graph('ch1', ch1)],
+    ['ch2' as ChapterId, graph('ch2', ch2)],
+  ]);
+}
+
+const NO_SOURCES: ReadonlyMap<string, string> = new Map();
+const ARCHIVE_END = { end: { chapter: 'ch2', knot: 'archive' } };
+
+function manor(endings: Endings): StoryPlan[] {
+  return [plan('manor', ['ch1', 'ch2'], endings)];
+}
+
+function lines(findings: readonly Finding[]): string[] {
+  return findings.map((f) => `${f.severity} ${f.file}:${f.line} ${f.code} ${f.message}`);
+}
+
+test('stories: ending knot must end the chapter', () => {
+  expect(lines(checkEndings(manor({ end: { chapter: 'ch2', knot: 'vault' } }), graphs(), NO_SOURCES))).toEqual([
+    e("0.endings.end.knot: 'vault' is not a knot of ch2"),
+  ]);
+  const open = graphs([knot('archive', { ending: false }), knot('vault')]);
+  expect(lines(checkEndings(manor(ARCHIVE_END), open, NO_SOURCES))).toEqual([
+    e("0.endings.end.knot: ch2 knot 'archive' writes no -> END: an ending knot ends the chapter"),
+  ]);
+  expect(checkEndings(manor(ARCHIVE_END), graphs(), NO_SOURCES)).toEqual([]);
+});
+
+test('stories: ending knot with successors fails', () => {
+  const onward = graphs([knot('archive', { next: ['vault' as KnotName] }), knot('vault')]);
+  expect(lines(checkEndings(manor(ARCHIVE_END), onward, NO_SOURCES))).toEqual([
+    e("0.endings.end.knot: ch2 knot 'archive' leads on to vault: an ending knot has no successor"),
+  ]);
+  expect(checkEndings(manor(ARCHIVE_END), graphs([knot('archive'), knot('vault')]), NO_SOURCES)).toEqual([]);
+});
+
+test('stories: ending knot with a yield fails', () => {
+  // The clause in isolation: in its graph the knot ends the chapter and has no successor; only its source yields,
+  // inside a stitch, which still belongs to the knot.
+  const source = (archive: readonly string[], vault: readonly string[]): ReadonlyMap<string, string> => {
+    const text = ['INCLUDE ../common/globals.ink', '-> archive', '', '=== archive ===', 'Архив. #id:ch2.archive.a001', '-> END'];
+    return new Map([['ch2/main.ink', [...text, ...archive, '', '=== vault ===', ...vault, '-> END', ''].join('\n')]]);
+  };
+  const yieldLines = ['= drawer', '# puzzle: drawer then=archive', '-> DONE'];
+  const g = graphs([knot('archive', { line: 4 }), knot('vault', { line: 11 })]);
+  expect(lines(checkEndings(manor(ARCHIVE_END), g, source(yieldLines, [])))).toEqual([
+    e("0.endings.end.knot: ch2 knot 'archive' yields ('puzzle: drawer then=archive', story/ch2/main.ink:8): an ending knot carries no puzzle / explore tag"),
+  ]);
+  // The control: the same yield in the next knot is not the ending's.
+  const after = graphs([knot('archive', { line: 4 }), knot('vault', { line: 8 })]);
+  expect(checkEndings(manor(ARCHIVE_END), after, source([], yieldLines))).toEqual([]);
+});
+
+test('stories: two endings on one knot fail', () => {
+  const twice = { truth: { chapter: 'ch2', knot: 'archive' }, ashes: { chapter: 'ch2', knot: 'archive' } };
+  const two = graphs([knot('archive'), knot('vault')]);
+  expect(lines(checkEndings(manor(twice), two, NO_SOURCES))).toEqual([
+    e("0.endings.ashes.knot: ch2 knot 'archive' is already the ending manor.truth: one ending per knot"),
+  ]);
+  const apart = { truth: { chapter: 'ch2', knot: 'archive' }, ashes: { chapter: 'ch2', knot: 'vault' } };
+  expect(checkEndings(manor(apart), two, NO_SOURCES)).toEqual([]);
+});
+
+test('stories: chapter with a next and only story endings fails', () => {
+  // Every `-> END` knot of ch1 is a story ending: no run carries into ch2, which the story then never reaches.
+  const ends = graphs([knot('archive')], [knot('bad', { file: 'ch1/main.ink' }), knot('worse', { file: 'ch1/main.ink' })]);
+  const both = { bad_end: { chapter: 'ch1', knot: 'bad' }, worse_end: { chapter: 'ch1', knot: 'worse' } };
+  expect(lines(checkEndings(manor(both), ends, NO_SOURCES))).toEqual([
+    e('0.endings: every -> END knot of ch1 (bad, worse) is a story ending: no run could reach its next chapter ch2'),
+  ]);
+  // The control: one of ch1's ends goes on to ch2; the last chapter may end in story endings only.
+  const oneEach = { bad_end: { chapter: 'ch1', knot: 'bad' }, end: { chapter: 'ch2', knot: 'archive' } };
+  expect(checkEndings(manor(oneEach), ends, NO_SOURCES)).toEqual([]);
+});
+
+test('stories: paid chapter title over 32 characters fails', () => {
+  const titles = (ch2: { ru: string; en: string }): StoryNames => ({
+    chapters: { ch1: { ru: 'Глава 1 — очень длинное название бесплатной главы', en: 'Chapter 1' }, ch2 } as StoryNames['chapters'],
+    speakers: {},
+  });
+  expect(lines(checkInvoiceTitles(manor({}), LIST, titles({ ru: 'Я'.repeat(33), en: 'Chapter 2' })))).toEqual([
+    "E story/locales/ru/story.json:0 catalog/stories chapters.ch2: paid chapter ch2's title is 33 characters; it is the invoice title, 1-32 code points",
+  ]);
+  // The control: exactly 32 code points of two UTF-16 units each; a free chapter's title is no invoice title.
+  expect(checkInvoiceTitles(manor({}), LIST, titles({ ru: 'Глава 2', en: '𝔸'.repeat(32) }))).toEqual([]);
 });

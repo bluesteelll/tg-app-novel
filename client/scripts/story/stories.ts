@@ -1,10 +1,15 @@
 // The story list of STAGING-DSL §9 (STORIES-PLAN Y2, Y4): story/stories.json decoded against the chapter list and
-// the asset catalog, every finding under `catalog/stories` (§11). Pure, no node:*: story.ts reads the file. The graph
-// and emit modules come in as types only, so emit.ts, which scan-dist.ts reaches, loads no graph code through here.
+// the asset catalog, its endings checked against the compiled graphs and the paid chapters' invoice titles checked,
+// every finding under `catalog/stories` (§11). Pure, no node:*: story.ts reads the files. The graph and emit modules
+// come in as types only, so emit.ts, which scan-dist.ts reaches, loads no graph code through here.
 import { CHAPTER_ID_RE, ENDING_NAME_RE, KNOT_NAME_RE, STORY_ID_RE } from '../../src/story/catalog.ts';
 import type { AssetCatalog, ChapterListEntry, EndingName, Result, StoryId } from '../../src/story/catalog.ts';
 import type { AssetId, ChapterId, KnotName } from '../../src/story/staging.ts';
-import { LINT_CODES } from './lint.ts';
+import { YIELD_KINDS, tagKind } from '../../src/story/tags.ts';
+import { classify } from './classify.ts';
+import type { StoryNames } from './emit.ts';
+import type { ChapterGraph, KnotNode } from './graph.ts';
+import { LINT_CODES, tagsOf } from './lint.ts';
 import type { Finding } from './lint.ts';
 
 /** story/stories.json, one entry as written: the array order is the Home order. */
@@ -21,6 +26,9 @@ export const STORIES_FILE = 'story/stories.json';
 const STORY_KEYS = ['id', 'first', 'cover', 'endings'] as const;
 const ENDING_KEYS = ['chapter', 'knot'] as const;
 const COVER_RE = /^cover\/([a-z][a-z0-9_]*)$/;
+/** An invoice title's length in code points (server/src/catalog.rs `TITLE_CHARS`; the title template is `{chapter}`). */
+export const INVOICE_TITLE_CHARS = { min: 1, max: 32 } as const;
+const YIELDS: readonly string[] = YIELD_KINDS;
 
 type Raw = Readonly<Record<string, unknown>>;
 type Report = (path: string, detail: string) => void;
@@ -178,4 +186,109 @@ export function decodeStories(raw: unknown, chapters: readonly ChapterListEntry[
     return { ok: false, error: out };
   }
   return { ok: true, value: plans };
+}
+
+/**
+ * The first `puzzle` / `explore` tag written in the knot: from its header to the next knot header of its file, stitches
+ * included, as the classifier scopes lines and `tagKind` reads tags. `sources` holds the story-relative, BOM-stripped
+ * files story.ts lints.
+ */
+function yieldIn(node: KnotNode, sources: ReadonlyMap<string, string>): { tag: string; line: number } | null {
+  const text = sources.get(node.file);
+  if (text === undefined) {
+    return null;
+  }
+  for (const l of classify(text).slice(node.line)) {
+    if (l.cls.kind === 'knot') {
+      return null;
+    }
+    const tag = tagsOf(l.cls).find((t) => YIELDS.includes(tagKind(t.text) ?? ''));
+    if (tag !== undefined) {
+      return { tag: tag.text.trim(), line: l.line };
+    }
+  }
+  return null;
+}
+
+/**
+ * Rule 8 of `catalog/stories` (STAGING-DSL §11): each ending's knot is in its chapter's graph, writes `-> END`, has no
+ * successor knot and no yield tag, and no two endings name one knot; and a chapter with a `next` keeps a `-> END` knot
+ * that is no story ending, or no run could reach its successor. An ending in a chapter without a graph is skipped: its
+ * compile or list error already fails the run. Every finding names story/stories.json (line 0).
+ */
+export function checkEndings(stories: readonly StoryPlan[], graphs: ReadonlyMap<ChapterId, ChapterGraph>, sources: ReadonlyMap<string, string>): Finding[] {
+  const out: Finding[] = [];
+  const report = (path: string, detail: string): void => {
+    out.push(finding(STORIES_FILE, `${path}: ${detail}`));
+  };
+  /** `<chapter>.<knot>` → the ending that names it first, as `<story>.<ending>`. */
+  const claimed = new Map<string, string>();
+  stories.forEach((story, i) => {
+    for (const [name, e] of Object.entries(story.endings)) {
+      const at = `${i}.endings.${name}.knot`;
+      const key = `${e.chapter}.${e.knot}`;
+      const prior = claimed.get(key);
+      if (prior === undefined) {
+        claimed.set(key, `${story.id}.${name}`);
+      } else {
+        report(at, `${e.chapter} knot '${e.knot}' is already the ending ${prior}: one ending per knot`);
+      }
+      const graph = graphs.get(e.chapter);
+      if (graph === undefined) {
+        continue;
+      }
+      const node = graph.knots.get(e.knot);
+      if (node === undefined) {
+        report(at, `'${e.knot}' is not a knot of ${e.chapter}`);
+        continue;
+      }
+      if (!node.ending) {
+        report(at, `${e.chapter} knot '${e.knot}' writes no -> END: an ending knot ends the chapter`);
+      }
+      if (node.next.length > 0) {
+        report(at, `${e.chapter} knot '${e.knot}' leads on to ${node.next.join(', ')}: an ending knot has no successor`);
+      }
+      const y = yieldIn(node, sources);
+      if (y !== null) {
+        report(at, `${e.chapter} knot '${e.knot}' yields ('${y.tag}', story/${node.file}:${y.line}): an ending knot carries no puzzle / explore tag`);
+      }
+    }
+    story.chapters.forEach((ch, k) => {
+      const next = story.chapters[k + 1];
+      const graph = graphs.get(ch);
+      if (next === undefined || graph === undefined) {
+        return;
+      }
+      const ends = [...graph.knots.values()].filter((n) => n.ending).map((n) => n.name);
+      const declared = new Set(Object.values(story.endings).filter((e) => e.chapter === ch).map((e) => e.knot));
+      if (ends.length > 0 && ends.every((n) => declared.has(n))) {
+        report(`${i}.endings`, `every -> END knot of ${ch} (${ends.join(', ')}) is a story ending: no run could reach its next chapter ${next}`);
+      }
+    });
+  });
+  return out;
+}
+
+/**
+ * Rule 9 of `catalog/stories` (STAGING-DSL §11): a paid chapter's title is its invoice title, 1-32 code points in ru
+ * and in en, the unit server/src/catalog.rs counts. A missing title is `loc/missing-name`'s. Each finding names the
+ * locale table to fix (story/locales/<lang>/story.json, line 0).
+ */
+export function checkInvoiceTitles(stories: readonly StoryPlan[], chapters: readonly ChapterListEntry[], names: StoryNames): Finding[] {
+  const out: Finding[] = [];
+  const paid = new Set(chapters.filter((c) => c.paid).map((c) => c.id));
+  for (const id of stories.flatMap((s) => s.chapters).filter((c) => paid.has(c))) {
+    const title = names.chapters[id];
+    if (title === undefined) {
+      continue;
+    }
+    for (const lang of ['ru', 'en'] as const) {
+      const n = [...title[lang]].length;
+      if (n < INVOICE_TITLE_CHARS.min || n > INVOICE_TITLE_CHARS.max) {
+        const range = `${INVOICE_TITLE_CHARS.min}-${INVOICE_TITLE_CHARS.max}`;
+        out.push(finding(`story/locales/${lang}/story.json`, `chapters.${id}: paid chapter ${id}'s title is ${n} characters; it is the invoice title, ${range} code points`));
+      }
+    }
+  }
+  return out;
 }
