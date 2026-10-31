@@ -5,6 +5,7 @@
 
 pub mod api;
 pub mod auth;
+pub mod catalog;
 pub mod clock;
 pub mod config;
 pub mod content;
@@ -17,6 +18,7 @@ use std::sync::Arc;
 use axum::Router;
 
 use crate::auth::Keys;
+use crate::catalog::{CATALOG_JSON, Catalog};
 use crate::clock::{Clock, SystemClock};
 use crate::config::Config;
 use crate::content::{ContentError, ContentStore};
@@ -38,14 +40,18 @@ pub struct AppState {
     /// The content loaded from `cfg.content_dir` at startup: the story index, the paid chapters, the puzzle index
     /// and the gated asset index.
     pub content: Arc<ContentStore>,
+    /// The products for sale: every paid chapter of `content`'s index, priced by `server/catalog.json`.
+    pub catalog: Arc<Catalog>,
 }
 
 impl AppState {
-    /// Loads the content from `CONTENT_DIR`, then connects the database pool to `DATABASE_URL` and applies the
-    /// migrations. Content comes first: a refusal ([`StartupError::Content`]) opens no pool. Creates no database: a
-    /// missing or unreachable one is a [`StartupError::Db`].
+    /// Loads the content from `CONTENT_DIR`, builds the catalog from it and the compiled-in `server/catalog.json`,
+    /// then connects the database pool to `DATABASE_URL` and applies the migrations. Content and catalog come first:
+    /// a refusal ([`StartupError::Content`]) opens no pool. Creates no database: a missing or unreachable one is a
+    /// [`StartupError::Db`].
     pub async fn new(cfg: Config) -> Result<AppState, StartupError> {
         let content = ContentStore::load(&cfg.content_dir).await?;
+        let catalog = Catalog::build(CATALOG_JSON, &content)?;
         let repo = Repo::open(&cfg.database_url).await?;
         if let Err(e) = repo.migrate().await {
             // Close at once: the pool's connections end now, not whenever the last clone of the pool is dropped.
@@ -58,12 +64,18 @@ impl AppState {
             cfg: Arc::new(cfg),
             clock: Arc::new(SystemClock),
             content: Arc::new(content),
+            catalog: Arc::new(catalog),
         })
     }
 
     /// The same state reading its time from `clock` (tests pin the time; a later time is a new state).
     pub fn with_clock(self, clock: Arc<dyn Clock>) -> AppState {
         AppState { clock, ..self }
+    }
+
+    /// The same state selling from `catalog` (tests prove a route reads the catalog, not a constant).
+    pub fn with_catalog(self, catalog: Arc<Catalog>) -> AppState {
+        AppState { catalog, ..self }
     }
 }
 
@@ -76,7 +88,7 @@ pub enum StartupError {
     /// A migration failed or no longer matches the database's record of it.
     #[error("migrations: {0}")]
     Migrate(#[from] sqlx::migrate::MigrateError),
-    /// The content directory is missing, incomplete or invalid.
+    /// The content directory is missing, incomplete or invalid, or `server/catalog.json` does not fit it.
     #[error("content: {0}")]
     Content(#[from] ContentError),
 }

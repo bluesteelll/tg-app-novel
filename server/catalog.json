@@ -1,0 +1,9 @@
+{
+  "//": "PLACEHOLDER prices: the owner's values are Q3 (chapters), docs/OPEN-QUESTIONS.md. Hint packs come from META-PLAN (RULINGS 25).",
+  "chapters": {
+    "defaultPriceStars": 1,
+    "priceStars": {},
+    "title": { "ru": "{chapter}", "en": "{chapter}" },
+    "description": { "ru": "«{story}»: {chapter}", "en": "“{story}”: {chapter}" }
+  }
+}

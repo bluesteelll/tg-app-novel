@@ -9,6 +9,7 @@
 
 mod auth;
 mod bindings;
+mod catalog;
 mod common;
 mod content;
 mod saves;

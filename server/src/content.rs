@@ -21,7 +21,7 @@ use serde_json::value::RawValue;
 use crate::ids::{ChapterId, ProductId, PuzzleId, StoryId, is_local_id};
 
 /// The most hint tiers a puzzle has (PUZZLES-PLAN X18); a puzzle may have none (the producer's `HintTiers` is
-/// `0 | 1 | 2 | 3`), and then it has no hint products.
+/// `0 | 1 | 2 | 3`).
 pub const MAX_HINT_TIERS: usize = 3;
 
 /// Why the content could not be loaded. Each text names a path, an id or a count, never file contents.
@@ -75,21 +75,14 @@ pub enum ContentError {
         /// The largest length allowed.
         max: usize,
     },
-    /// A hint tier of the puzzle index without a price in `server/catalog.json`.
-    #[error("hint tier {tier} of {puzzle} has no price")]
-    HintTierUnpriced {
-        /// The puzzle id.
-        puzzle: String,
-        /// The tier, from 1.
-        tier: usize,
-    },
     /// A `priceStars` key of `server/catalog.json` that is not a paid chapter of the story index.
     #[error("price override for {chapter}: not a paid chapter of the story index")]
     PriceOverride {
         /// The key.
         chapter: String,
     },
-    /// `server/catalog.json` itself is not valid.
+    /// `server/catalog.json` itself is not valid. The text may quote the catalog, which is in git and holds no paid
+    /// content.
     #[error("server/catalog.json: {0}")]
     Catalog(String),
 }
@@ -181,7 +174,7 @@ pub struct PuzzleDef {
     pub answer_max: u16,
     /// The solution, `answer_len` values, each at most `answer_max`.
     pub solution: Vec<u16>,
-    /// The puzzle title (the hint invoice texts name it).
+    /// The puzzle title.
     pub title: Localized,
     /// The hint texts, tier 1 first; at most [`MAX_HINT_TIERS`].
     pub hints: Vec<Localized>,

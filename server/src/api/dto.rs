@@ -118,6 +118,28 @@ pub struct PutSaveResponse {
     pub saved_at: i64,
 }
 
+/// A chapter product as `GET /api/entitlements` lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductDto {
+    /// The product id, `chapter:<chapterId>`.
+    pub product_id: String,
+    /// The chapter it unlocks.
+    pub chapter_id: String,
+    /// The price in Telegram Stars, from the server's catalog.
+    pub price_stars: u32,
+    /// Whether the user owns it, from the server's entitlement rows.
+    pub owned: bool,
+}
+
+/// `GET /api/entitlements` response.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct EntitlementsResponse {
+    /// Every chapter product: story order, then chain order.
+    pub products: Vec<ProductDto>,
+}
+
 /// The first line of the generated file: what it is and how to rewrite it.
 const BINDINGS_HEADER: &str = "// Built from server/src/api/dto.rs and error.rs by ts-rs; do not edit. Regenerate: \
                                cargo test -p server --test it bindings::write_bindings -- --ignored --exact";
