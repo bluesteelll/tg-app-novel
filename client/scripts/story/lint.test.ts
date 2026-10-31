@@ -315,6 +315,55 @@ for (const [name, top, body, line] of FORBIDDEN) {
   });
 }
 
+test('lint: yield/shape red on fixture', () => {
+  const f = lintSources(
+    story([
+      'The drawer is locked. #id:ch1.start.a001 #puzzle: drawer then=after', // 0: a yield on a text line
+      '# puzzle: drawer then=after', // 1: followed by text
+      'Text. #id:ch1.start.a002', // 2
+      '# sfx: door #explore: manor', // 3: not alone
+      '-> DONE', // 4: ink/forbidden, line 3 is no yield line
+      'Text. #id:ch1.start.a003', // 5
+      '-> DONE', // 6: ink/forbidden, no yield above
+      '# explore: manor', // 7: a valid yield block
+      '-> DONE', // 8
+      '# explore: manor', // 9: a blank line before the DONE
+      '', // 10
+      '-> DONE', // 11: ink/forbidden
+      '# explore: manor', // 12: a comment line before the DONE
+      '// not adjacent', // 13
+      '-> DONE', // 14: ink/forbidden
+      '* [Look #id:ch1.start.c001 #explore: manor]', // 15: inside choice brackets (also tag/in-choice)
+      '    -> END', // 16
+      '# explore: manor', // 17: the end of the file
+    ]),
+  );
+  expectAt(f, 'yield/shape', [0, 1, 3, 9, 12, 15, 17]);
+  expectAt(f, 'ink/forbidden', [4, 6, 11, 14]);
+});
+
+test('lint: yield block raises nothing', () => {
+  // Staging tag lines above a yield line join its batch; a yield block may sit under a choice, indented.
+  const f = lintSources(
+    story([
+      '# scene: archive',
+      'The drawer has four brass dials. #id:ch1.start.a001',
+      '# sfx: door',
+      '# puzzle: cabinet then=after',
+      '-> DONE',
+      '=== after ===',
+      'ally: It opened. #id:ch1.after.a001',
+      '* [Try again #id:ch1.after.c001]',
+      '    # puzzle: cabinet then=after',
+      '    -> DONE',
+      '* [Look around #id:ch1.after.c002]',
+      '    # explore: manor',
+      '    -> DONE',
+    ]),
+  );
+  expect(f).toEqual([]);
+});
+
 test('lint: ink/name red on fixture', () => {
   const main = entry('-> start', '=== start ===', '-> Big', '=== Big ===', '= Intro', '-> END', '=== café ===', '-> END');
   const f = lintSources(files({ 'ch1/main.ink': [...main, '=== 1k ===', '-> END', '=== ok_2 ===', '= fine_1', '-> END'] }));

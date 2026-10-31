@@ -1,7 +1,9 @@
 # Staging DSL — the ink tag language
 
-Version: **DSL v1** (prototype). Status: designed in [PROTOTYPE-PLAN.md](PROTOTYPE-PLAN.md); implemented by lanes L3a
-(parser + lint) and L3b (story build). Until those lanes merge, this file is the contract they implement.
+Version: **DSL v2** (prototype). Status: DSL v1 was designed in [PROTOTYPE-PLAN.md](PROTOTYPE-PLAN.md) and
+implemented by lanes L3a (parser + lint) and L3b (story build). DSL v2 adds the `puzzle` / `explore` yield tags and
+the narrowed `-> DONE` ([PUZZLES-PLAN.md](PUZZLES-PLAN.md), lane LW1). The rules marked "from LW3" in §8 and §11 are
+the contract lane LW3 implements.
 
 - **One parser.** `client/src/story/tags.ts` (`parseTags`) is used by the story gate (`npm --prefix client run
   story`) and by the runtime. Nothing else parses tags (CLAUDE.md principle 7; enforced by `client/src/arch.test.ts`).
@@ -34,8 +36,11 @@ ink line + its tags ──parseTags──> { lineId, commands: StagingCommand[] 
   knot-level tags on a knot's first line, tag-only steps merged forward — §3.5) form one batch with one execution
   order (§7).
 - Every staging tag is **literal** (no `{...}` inside a tag) so the build can index every asset of every knot for
-  preloading (§8). There are no dynamic staging tags in DSL v1.
-- There are **no EXTERNAL functions** in DSL v1 (lint `ink/forbidden`). Effects are tags, never function calls.
+  preloading (§8). There are no dynamic staging tags in the DSL.
+- There are **no EXTERNAL functions** in the DSL (lint `ink/forbidden`). Effects are tags, never function calls.
+- **Yields hand control to the host.** A `puzzle` or `explore` tag line followed by `-> DONE` (§6) stops the story.
+  GameSession runs the puzzle or the rooms and re-enters ink only at the top of a knot (PUZZLES-PLAN X1). Yield
+  commands carry data only: the story still never touches Pixi.
 
 ---
 
@@ -63,7 +68,7 @@ Rules:
 | Case | Kinds, ids and option names are lowercase ASCII. `# BG: Cafe` → `tag/syntax`. |
 | Numbers | Integers only, no units, no decimals: `ms=500`, `vol=80`. Ranges are per tag (§6). |
 | Positional args | Exact count per tag; missing → `tag/missing-arg`, extra → `tag/bad-arg`. |
-| Options | Each at most once (`tag/bad-arg: duplicate option`); unknown option → `tag/bad-arg`. Order is free. |
+| Options | Each at most once (`tag/bad-arg: duplicate option`); unknown option → `tag/bad-arg`. Order is free. Options are optional, except `then` of `puzzle` (§6): missing → `tag/missing-arg`. |
 | Literal only | A `{` anywhere in a tag → `tag/dynamic` (source lint). |
 | Reserved words | `all` (hide), `off` (cg), `stop` (bgm) are not valid asset ids (catalog lint). |
 | Escaping | A literal `#` in story text is written `\#` (ink rule); tags never contain `#`. |
@@ -132,7 +137,8 @@ ally: Did you bring it? #id:ch1.cafe.a81c
 ### 3.5 Tag-only steps
 If ink yields a step with tags but no text (for example tag lines directly before a choice block or a divert), the
 runtime does not show an empty line: it **merges those commands into the next displayed step** (the next line or the
-next choice set) and executes them in that step's batch.
+next choice set) and executes them in that step's batch. A tag-only step that ends at a yield block's `-> DONE` (§6)
+is not merged forward: it is the yield step, and its staging commands run (§7 steps 1–4) before the host takes over.
 
 ### 3.6 Global tags
 Tags before the first knot (ink "global tags") are forbidden → `tag/global`. A chapter's identity comes from
@@ -219,6 +225,8 @@ preload-visible).
 | `bgm` | `bgm:<track>\|stop [fade=N] [vol=N]` | audio | `bgm/<track>` | `bgm` |
 | `sfx` | `sfx:<sfx> [vol=N]` | audio | `sfx/<sfx>` | `sfx` |
 | `wait` | `wait:<ms>` | scene (batch timing) | — | `wait` |
+| `puzzle` | `puzzle:<puzzle> then=<knot>` | GameSession → PuzzleSession | — (the close-up comes from world data) | `puzzle` |
+| `explore` | `explore:<section>` | GameSession → ExploreController | — (rooms come from world data) | `explore` |
 
 ### `id`
 
@@ -380,6 +388,50 @@ Someone knocked. #sfx: door #id:ch1.room.kn0c
 The archive was colder than I remembered. #id:ch2.archive.c0ld
 ```
 
+### `puzzle`
+
+- **Syntax:** `puzzle:<puzzle> then=<knot>` — `then` is required (`tag/missing-arg` without it).
+- **Arguments:** `<puzzle>` — a puzzle of the chapter's world (`story/<chapter>/world.json`); `then=<knot>` — a knot
+  of the chapter. Both have the id shape `[a-z][a-z0-9_]*`, stricter than §2's positional and value (no leading digit
+  or `_`): else `tag/bad-arg`. No other option.
+- **Placement (the yield block):** the tag stands alone on a tag-only line, and the next source line is `-> DONE`, with
+  no blank or comment line between them. Staging tag lines above it join the yield step's batch (§3.5).
+- **Effect:** the story stops at the `-> DONE`. GameSession runs the puzzle, then enters the `then` knot at its top.
+  Before that, it writes the puzzle's outcome variables, each only if the chapter declares it:
+  - `pz_<puzzle>` (int) — 0 none, 1 solved, 2 failed, 3 abandoned;
+  - `pz_<puzzle>_hints` (int) — the hint tiers opened in this run.
+- **Validation:** `tag/missing-arg`, `tag/bad-arg`, `tag/syntax`, `yield/shape`, `batch/conflict`; from LW3 also
+  `puzzle/unknown`, `puzzle/then-unknown`, `puzzle/in-section`.
+- **Typed:** `{ kind: 'puzzle'; puzzle: PuzzleLocalId; then: KnotName }`
+
+```ink
+=== archive ===
+The drawer has four brass dials. #id:ch2.archive.d1al
+# sfx: door
+# puzzle: cabinet then=archive_after
+-> DONE
+```
+
+### `explore`
+
+- **Syntax:** `explore:<section>`
+- **Arguments:** `<section>` — an exploration section of the chapter's world, id shape `[a-z][a-z0-9_]*` (else
+  `tag/bad-arg`). No options.
+- **Placement (the yield block):** as for `puzzle` — alone on a tag-only line, and the next source line is `-> DONE`.
+- **Effect:** the story stops at the `-> DONE`, and GameSession hands control to the section's rooms. Ink is
+  re-entered only at the top of a knot the section's data names (an event knot or an exit knot). An event knot ends
+  with its own `explore: <section>` yield block, which hands control back to the rooms.
+- **Validation:** `tag/missing-arg`, `tag/bad-arg`, `tag/syntax`, `yield/shape`, `batch/conflict`; from LW3 also
+  `explore/unknown-section`, `explore/event-return`, `explore/event-escape`.
+- **Typed:** `{ kind: 'explore'; section: SectionId }`
+
+```ink
+=== hall_return ===
+ally: Let us look around. #id:ch1.hall.l00k
+# explore: manor
+-> DONE
+```
+
 ---
 
 ## 7. Batches and execution order
@@ -393,14 +445,16 @@ fixed:
 3. **Visual commands** — `bg`, `show`, `hide`, `cg` start **together** (one GSAP timeline) and the batch waits for the
    longest one.
 4. **`wait`** — holds after step 3.
-5. **Text** — the overlay starts the typewriter (or shows the choices).
+5. **Text** — the overlay starts the typewriter (or shows the choices). A yield step (§6 `puzzle`, `explore`) has no
+   text: after steps 1–4, GameSession hands control to the puzzle or the rooms.
 
 - **Tap during steps 2–4** completes every active transition instantly (timelines jump to their end state); the next
   tap advances as usual.
 - **Skip mode and loading a save** run every transition with duration 0.
 - **The logical stage state changes at batch start**, so a save taken mid-transition records the end state.
 - **Conflicts** (`batch/conflict`, error) — two commands for the same target in one batch: two `bg`; `bg` + `scene`;
-  `scene` + `hide` or `cg`; two `show`, or `show` + `hide`, of one character; two `cg`; two `bgm`; two `wait`.
+  `scene` + `hide` or `cg`; two `show`, or `show` + `hide`, of one character; two `cg`; two `bgm`; two `wait`; two
+  yields (`puzzle` and `explore`, two `puzzle`, two `explore`).
 
 ---
 
@@ -412,15 +466,23 @@ fixed:
   - `cg/<cg>`
   - `bgm/<track>`
   - `sfx/<sfx>`
+  - `prop/<prop>` — named only by world data, never by a tag. The scene receives a room's props in a `props`
+    command built by GameSession, and a `bg` or `scene` clears them (PUZZLES-PLAN X11; a catalog namespace from L5).
 
   Each name is `[a-z][a-z0-9_]*`. A tag can only name an asset the catalog lists (`tag/unknown-asset`). Writers do
   not edit the catalog; a missing asset is an asset request in the narrative report.
 - **Knot index** — at build time the story tool records, per knot:
   - every asset its literal tags name;
-  - its successor knots: every `-> knot` written inside it. DSL v1 has no tunnels, and a divert into another knot's
+  - its successor knots: every `-> knot` written inside it. The DSL has no tunnels, and a divert into another knot's
     stitch or labelled gather is `graph/entry-below-top` (§10), so every knot is entered at its top. A `-> knot.stitch`
     inside the same knot is not a successor.
   - `ending`: whether a `-> END` divert is written inside it (the next-chapter trigger below).
+  - **Yield edges** (from LW3):
+    - `puzzle: … then=K` — K is a successor (preload and reachability).
+    - `explore: S` — every knot named by S's effects and exits is a reachability edge, but not in the preload
+      `next`: the room controller preloads per room, so a hub never preloads every event.
+    - An event knot's carried stage (the budget below) is seeded with the background and props of every room that
+      triggers it.
   - **Output:** `<chapter>.meta.json` → `knots.<name> = { assets, next, ending }`.
 - **Preload** — on entering knot K the runtime asks the scene and audio to load `assets(next(K))` in the background
   (cancellable; released if the story goes elsewhere). Knot K's own assets are already resident: they were preloaded
@@ -481,7 +543,7 @@ fixed:
 
 ## 10. The ink subset
 
-| Construct | DSL v1 |
+| Construct | DSL v2 |
 |---|---|
 | Knots, stitches, labelled gathers; diverts to a knot, and to a stitch or labelled gather of the same knot | allowed |
 | A divert from one knot to a stitch or labelled gather of another (`-> k.s`, `-> k.g`, `-> k.s.g`) | forbidden (`graph/entry-below-top`) — every knot is entered at its top, so its opening tag lines run on every entry (the carried-stage budget, §8), and a resume after a story update restarts the saved knot at its top, where the player entered it. Split a scene that must be entered in the middle into its own knot |
@@ -493,7 +555,7 @@ fixed:
 | Inline logic in a text line or choice: `{var}`, `{a\|b}`, `{flag: x}`, `{~a\|b}` | forbidden (`text/inline-logic`) — write whole alternative lines, each with its own ID |
 | Glue `<>` | forbidden (`text/glue`) — a line is one translatable unit |
 | Text and a divert on the same source line | forbidden (`text/divert-on-line`) — put `-> x` on its own line |
-| `-> DONE` | forbidden — chapters end at `-> END` |
+| `-> DONE` | allowed only directly after a `puzzle` / `explore` line (the yield block, §6): a hand-off to the host, not an ending; forbidden anywhere else (`ink/forbidden`), since chapters end at `-> END` |
 | Divert to a variable target, threads `<-`, `EXTERNAL` | forbidden (`ink/forbidden`) — they defeat the static knot index or bypass the DSL |
 | Global tags, dynamic tags | forbidden (§3.6, §2) |
 | Knot / stitch names | `[a-z][a-z0-9_]*` (`ink/name`) |
@@ -504,7 +566,9 @@ fixed:
 
 `npm --prefix client run story` runs, in order: catalog checks → source lint → compile (inkjs compiler, build time
 only) → knot graph → localization → seeded playthroughs → emit. It prints every finding (it never stops at the first)
-and exits non-zero if any **E** remains. `--strict` turns every **W** into an **E** (release builds).
+and exits non-zero if any **E** remains. `--strict` turns every **W** into an **E** (release builds). From LW3 the knot
+graph also checks the yield edges, and each chapter's `world.json` is checked by the world lint and the soft-lock
+check (the second table below).
 
 | Code | Sev | Rule |
 |---|---|---|
@@ -512,7 +576,7 @@ and exits non-zero if any **E** remains. `--strict` turns every **W** into an **
 | `catalog/assets` | E | `assets/catalog.json` keys well-formed; reserved words (`all`, `off`, `stop`) not used as ids; every `cast.json` `char` exists |
 | `tag/syntax` | E | tag does not match the grammar (§2) |
 | `tag/unknown-kind` | E | kind not in §6 |
-| `tag/missing-arg` / `tag/bad-arg` | E | positional count, unknown/duplicate option, value out of range or not an integer |
+| `tag/missing-arg` / `tag/bad-arg` | E | positional count, unknown/duplicate option, value out of range or not an integer; a `puzzle` without `then=`; a puzzle or section id or a knot name not `[a-z][a-z0-9_]*` (§6) |
 | `tag/unknown-asset` | E | asset id not in the catalog (or expression not in that character's list) |
 | `tag/dynamic` | E | `{` inside a tag |
 | `tag/global` | E | tag before the first knot |
@@ -536,7 +600,8 @@ and exits non-zero if any **E** remains. `--strict` turns every **W** into an **
 | `text/long` | W | line longer than 160 graphemes (about four phone lines) |
 | `ink/compile` | E | inkjs compiler error **or warning** (warnings are errors in this project) |
 | `ink/todo` | W | ink `TODO:` author message |
-| `ink/forbidden` | E | `EXTERNAL`, `<-`, `-> DONE`, divert to a variable, a tunnel (`-> k ->` or `->->`), a knot or stitch parameter, `LIST` |
+| `ink/forbidden` | E | `EXTERNAL`, `<-`, `-> DONE` not directly after a yield line, divert to a variable, a tunnel (`-> k ->` or `->->`), a knot or stitch parameter, `LIST` |
+| `yield/shape` | E | a `puzzle` / `explore` tag not alone on a tag-only line, or the next source line not `-> DONE` (§6) |
 | `ink/include` | E | INCLUDE outside the chapter dir and `story/common/`; a free chapter including a paid chapter's file; a file included by two chapters |
 | `ink/entry` | E | entry top level holds anything but INCLUDE / declarations / one divert; first line not `INCLUDE ../common/globals.ink` |
 | `ink/name` | E | knot/stitch name not `[a-z][a-z0-9_]*` |
@@ -555,7 +620,41 @@ and exits non-zero if any **E** remains. `--strict` turns every **W** into an **
 | `loc/stale-en` | W | the entry's `ru` differs from the current Russian text |
 | `loc/missing-name` | E | a cast speaker or a chapter without a name/title in `ru` and `en` |
 | `budget/knot-set` | E | knot working set over budget (§8). Needs decoded sizes, so it is enforced by `npm --prefix client run build` (`budget.ts`), not by `story` |
-| `paid/leak` | E | a paid chapter's ID or text fingerprint found under `client/src/story-gen/` (the build's input) |
+| `paid/leak` | E | a paid chapter's ID or text fingerprint found under `client/src/story-gen/` (the build's input); from LW3 also a hint line ID or hint text |
+
+**Enforced from LW3** (puzzle worlds and yield edges; [PUZZLES-PLAN.md](PUZZLES-PLAN.md) "Staging DSL additions"):
+
+| Code | Sev | Rule |
+|---|---|---|
+| `puzzle/unknown`, `explore/unknown-section` | E | the id is not in the chapter's world |
+| `puzzle/then-unknown` | E | `then=` names no knot of the chapter |
+| `puzzle/in-section` | E | a puzzle both yielded and attached to a lock |
+| `explore/event-return` | E | an event knot (named by a `story` effect of S) has no `explore: S` yield |
+| `explore/event-escape` | E | an event knot contains `-> END` or diverts to a knot that is not an event knot of S |
+| `world/schema` | E | `decodeWorldSource` issues (unknown key, missing field, bad id, wrong type) — every issue, never the first only |
+| `world/duplicate-id`, `world/id-reserved` | E | rooms collide across sections; a puzzle id ends in `_hints` |
+| `world/unknown-asset` | E | room `bg`, `prop`, `closeup` (cg), section `bgm`, exit `sfx` not in the catalog |
+| `world/unknown-ref` | E | an item, doc, puzzle, room or hotspot key referenced but not defined; an effect knot not in the chapter |
+| `world/one-way-exit` | E | a room→room exit without a reverse exit |
+| `world/hotspot-frame` | E | a rect outside the safe frame `x 80–1000, y 160–1760` |
+| `world/hotspot-small` / `world/hotspot-overlap` | W | a rect under 150×150 source px (44 CSS px at a 0.296 scale, 320×568); overlapping rects |
+| `world/props-per-room` | E | more than 8 props in a room |
+| `world/solution`, `world/solution-initial` | E | `PUZZLE_RULES[type].validateSolution` fails; the solution equals the initial state |
+| `world/order-pieces` | E | an `order` puzzle in a lock whose `pieces` differ from the lock's slot items |
+| `world/hint-count` | E | more than 3 hint tiers; a hint without an `id` |
+| `world/title-long` | E | a puzzle title over 18 graphemes (the invoice title `Подсказка 3: <title>` must fit 32 chars) |
+| `world/giveup-in-section`, `world/linear-requires`, `world/cross-section-item` | E | `giveUp` on a puzzle attached to a lock (Give up is for linear puzzles only); a linear puzzle with `requires`; an item obtained in one section and required (by a slot or a puzzle) in another |
+| `world/cross-section-effect` | E | an `{ unlock: key }` in a room's `onEnter` or a hotspot's `then` / `onOpen` / `onFail` whose key is a hotspot of another section; an item or doc given (`gives`, `{ give }`) in more than one section |
+| `world/puzzle-multi-lock` | E | a puzzle named by the `puzzle` field of more than one lock, in one section or in several; prints every lock that names it |
+| `world/cross-section-exit` | E | a room→room exit whose `to.room` is a defined room of another section than the exit's own; prints every such exit, so a crossing pair is two findings. A room that is not defined stays `world/unknown-ref` |
+| `world/fail-without-effect` | E | a lock puzzle with `maxAttempts` and an empty `onFail` |
+| `world/var-type` | E | a declared projection VAR with the wrong type (`pz_*` int, `it_*` / `dc_*` bool) |
+| `world/softlock` | E | the model checker found a reachable state (over `successors`, closed puzzles included) with no path to a `leave` effect; prints the action path |
+| `world/unreachable` | W | an item, doc, room or puzzle no reachable state touches |
+| `world/state-cap` | E | the checker exceeded `RESUME_STATE_CAP` (5,000) states: the section is too large to prove at resume (PUZZLES-PLAN X9); split it |
+| `play/event-no-return` | E | a seeded run entered an event knot and stopped without its explore yield |
+
+From LW3, world texts follow §4: `id/*` and `loc/*` apply to them, and IDs are unique across ink and world.
 
 **Seeded playthroughs:**
 - **Runs** — 200 runs per chapter (seeds 1–200, mulberry32), random choice index, step cap 5,000.
@@ -563,6 +662,11 @@ and exits non-zero if any **E** remains. `--strict` turns every **W** into an **
   ch1 can produce.
 - **Each step** — tags parse, the line has an ID, the ID has an English entry, and the speaker is in the cast.
 - **Report** — the seeds and the visited/ending coverage per chapter.
+- **At a `puzzle` yield** (from LW3) — an outcome uniformly from {solved; failed if `maxAttempts`; abandoned if
+  `giveUp`} and 0..tiers hints; then the outcome variables are written and the run enters the `then` knot.
+- **At an `explore` yield** (from LW3) — a random walk over the section's `successors` (a closed puzzle included),
+  with puzzle outcomes random as above. A `story` effect runs the event knot until its yield; a `leave` effect
+  continues the story. The step cap stays 5,000.
 
 ---
 

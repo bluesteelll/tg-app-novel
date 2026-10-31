@@ -4,7 +4,7 @@
 import { decodeAssetCatalog, decodeCast } from '../../src/story/catalog.ts';
 import type { AssetCatalog, Cast, CatalogIssue } from '../../src/story/catalog.ts';
 import type { AssetIndex, ChapterId, TagError } from '../../src/story/staging.ts';
-import { LINE_ID_RE, SPEAKER_RE, parseTags, tagKind } from '../../src/story/tags.ts';
+import { LINE_ID_RE, SPEAKER_RE, YIELD_KINDS, parseTags, tagKind } from '../../src/story/tags.ts';
 import { classify, findUnescaped, unescapeInk } from './classify.ts';
 import type { Divert, LineClass, RawTag, SourceLine } from './classify.ts';
 
@@ -42,6 +42,7 @@ export const LINT_CODES = {
   'ink/compile': 'E',
   'ink/todo': 'W',
   'ink/forbidden': 'E',
+  'yield/shape': 'E',
   'ink/include': 'E',
   'ink/entry': 'E',
   'ink/name': 'E',
@@ -62,6 +63,41 @@ export const LINT_CODES = {
   'loc/missing-name': 'E',
   'budget/knot-set': 'E',
   'paid/leak': 'E',
+  // Enforced from LW3 (§11 second table): registered here so its findings are typed `LintCode`; no rule in this
+  // module emits them.
+  'puzzle/unknown': 'E',
+  'explore/unknown-section': 'E',
+  'puzzle/then-unknown': 'E',
+  'puzzle/in-section': 'E',
+  'explore/event-return': 'E',
+  'explore/event-escape': 'E',
+  'world/schema': 'E',
+  'world/duplicate-id': 'E',
+  'world/id-reserved': 'E',
+  'world/unknown-asset': 'E',
+  'world/unknown-ref': 'E',
+  'world/one-way-exit': 'E',
+  'world/hotspot-frame': 'E',
+  'world/hotspot-small': 'W',
+  'world/hotspot-overlap': 'W',
+  'world/props-per-room': 'E',
+  'world/solution': 'E',
+  'world/solution-initial': 'E',
+  'world/order-pieces': 'E',
+  'world/hint-count': 'E',
+  'world/title-long': 'E',
+  'world/giveup-in-section': 'E',
+  'world/linear-requires': 'E',
+  'world/cross-section-item': 'E',
+  'world/cross-section-effect': 'E',
+  'world/puzzle-multi-lock': 'E',
+  'world/cross-section-exit': 'E',
+  'world/fail-without-effect': 'E',
+  'world/var-type': 'E',
+  'world/softlock': 'E',
+  'world/unreachable': 'W',
+  'world/state-cap': 'E',
+  'play/event-no-return': 'E',
 } as const satisfies Readonly<Record<string, Severity>>;
 export type LintCode = keyof typeof LINT_CODES;
 
@@ -479,11 +515,30 @@ function inside(path: string, dir: string): boolean {
   return dir === '' ? !path.startsWith('../') : path.startsWith(`${dir}/`);
 }
 
-/** `tag/global`, `ink/forbidden`, `ink/name` and `vars/global-prefix`: rules over one file, wherever it is included. */
+/** A `puzzle` or `explore` tag, whatever its arguments (those are the parser's `tag/*` findings). */
+function isYieldTag(tag: RawTag): boolean {
+  const kind = tagKind(tag.text);
+  return kind !== null && (YIELD_KINDS as readonly string[]).includes(kind);
+}
+
+/** The first line of a yield block (§6): a tag-only line whose one tag is a yield tag. */
+function isYieldLine(cls: LineClass | undefined): boolean {
+  return cls?.kind === 'tags' && cls.tags.length === 1 && cls.tags.every(isYieldTag);
+}
+
+/** A line that is `-> DONE` and nothing else; `classify` has already dropped indentation and a trailing comment. */
+function isPureDone(cls: LineClass | undefined): boolean {
+  return cls?.kind === 'divert' && !cls.tunnel && cls.tags.length === 0 && cls.diverts.length === 1 && cls.diverts[0]?.target === 'DONE';
+}
+
+/**
+ * `tag/global`, `ink/forbidden`, `yield/shape`, `ink/name` and `vars/global-prefix`: rules over one file, wherever it
+ * is included. A yield block is two adjacent source lines (§6): a blank or comment line between them breaks it.
+ */
 function lintFile(file: string, lines: readonly SourceLine[], out: Finding[]): void {
   const globals = file === GLOBALS_PATH;
   let inFunction = false;
-  for (const l of lines) {
+  for (const [i, l] of lines.entries()) {
     const cls = l.cls;
     const tags = tagsOf(cls);
     if (l.knot === null && tags.length > 0) {
@@ -493,7 +548,7 @@ function lintFile(file: string, lines: readonly SourceLine[], out: Finding[]): v
     switch (cls.kind) {
       case 'decl':
         if (cls.keyword === 'EXTERNAL' || cls.keyword === 'LIST') {
-          out.push(finding('ink/forbidden', file, l.line, `${cls.keyword} is not in the DSL v1 ink subset (§10)`));
+          out.push(finding('ink/forbidden', file, l.line, `${cls.keyword} is not in the DSL ink subset (§10)`));
         }
         if (globals && cls.keyword === 'VAR' && !cls.name.startsWith('g_')) {
           out.push(finding('vars/global-prefix', file, l.line, `VAR '${cls.name}' in ${GLOBALS_PATH} is not g_-prefixed (§9)`));
@@ -506,7 +561,7 @@ function lintFile(file: string, lines: readonly SourceLine[], out: Finding[]): v
         }
         break;
       case 'thread':
-        out.push(finding('ink/forbidden', file, l.line, `thread '<- ${cls.target}' is not in the DSL v1 ink subset (§10)`));
+        out.push(finding('ink/forbidden', file, l.line, `thread '<- ${cls.target}' is not in the DSL ink subset (§10)`));
         break;
       case 'knot':
         inFunction = cls.fn;
@@ -534,13 +589,25 @@ function lintFile(file: string, lines: readonly SourceLine[], out: Finding[]): v
       default:
         break;
     }
+    if (isYieldLine(cls)) {
+      if (!isPureDone(lines[i + 1]?.cls)) {
+        const tag = tags[0]?.text ?? '';
+        out.push(finding('yield/shape', file, l.line, `'${tag}': the next line must be '-> DONE' (§6)`));
+      }
+    } else {
+      for (const tag of tags.filter(isYieldTag)) {
+        out.push(finding('yield/shape', file, l.line, `'${tag.text}': a yield stands alone on a tag-only line (§6)`));
+      }
+    }
+    const yieldDone = isPureDone(cls) && isYieldLine(lines[i - 1]?.cls);
     for (const d of divertsOf(cls)) {
-      if (d.target === 'DONE') {
-        out.push(finding('ink/forbidden', file, l.line, "'-> DONE': chapters end at '-> END' (§10)"));
+      if (d.target === 'DONE' && !yieldDone) {
+        const why = "'-> DONE' only directly after a puzzle or explore line; chapters end at '-> END' (§10)";
+        out.push(finding('ink/forbidden', file, l.line, why));
       }
     }
     if (divertsOf(cls).some((d) => d.tunnel)) {
-      out.push(finding('ink/forbidden', file, l.line, 'tunnels (-> k ->, ->->) are not in the DSL v1 ink subset (§10)'));
+      out.push(finding('ink/forbidden', file, l.line, 'tunnels (-> k ->, ->->) are not in the DSL ink subset (§10)'));
     }
     if (globals && (tags.length > 0 || said(cls) !== null || (cls.kind === 'choice' && choiceHasText(cls)))) {
       const where = inFunction ? 'functions are pure: no output, no tags' : 'no text and no tags';
