@@ -2,7 +2,8 @@
 // MediaElementAudioSourceNode and its own gain into the bgm bus. Music stays compressed in the element (a decoded 3 MB
 // track would be about 60 MiB of float32), and every level change is a gain ramp: iOS ignores the element's volume.
 // A gated track arrives through the injected fetchAsset (an element cannot carry the session) and plays from an object
-// URL that the deck revokes when it lets the track go. Imported only by manager.ts, which also takes the gain helpers.
+// URL that the deck revokes when it lets the track go. While suspended nothing plays and every fade is a cut.
+// Imported only by manager.ts, which also takes the gain helpers.
 import type { AssetEntry, FetchAsset } from '../story/catalog.ts';
 import type { StagingSnapshot, TrackId } from '../story/staging.ts';
 
@@ -94,6 +95,8 @@ type Deck = {
   abort: AbortController | null;
   /** The level and fade the deck starts with once its src is set. */
   landing: { vol: number; fadeMs: number };
+  /** Bumped at every release, so a play() result for the previous holder is ignored. */
+  gen: number;
 };
 
 /** The two-deck player the manager drives; track ids arrive resolved to their manifest entries. */
@@ -106,7 +109,17 @@ export type Bgm = {
   restore(s: { track: TrackId; entry: AudioEntry; vol: number } | null): void;
   /** The logical bgm: set when a command is applied, also while its bytes load (STAGING-DSL §7). */
   current(): StagingSnapshot['bgm'];
+  /** Completes every fade and pauses the decks, keeping their tracks; until resume() nothing plays. */
+  suspend(): void;
+  /** Plays again every deck that has a src; one promise per play(), resolved once it settles. */
+  resume(): Promise<void>[];
+  /** The last play() was refused for want of a gesture, none succeeded since, and music is still meant to sound. */
+  blocked(): boolean;
 };
+
+function errorName(e: unknown): string {
+  return typeof e === 'object' && e !== null && 'name' in e && typeof e.name === 'string' ? e.name : '';
+}
 
 function createDeck(ctx: AudioContext, out: AudioNode): Deck {
   const el = new Audio();
@@ -125,13 +138,31 @@ function createDeck(ctx: AudioContext, out: AudioNode): Deck {
     timer: null,
     abort: null,
     landing: { vol: 0, fadeMs: 0 },
+    gen: 0,
   };
 }
 
-/** Creates both decks into `out` (the bgm bus); elements, source nodes and deck gains live as long as the app. */
-export function createBgm(ctx: AudioContext, out: AudioNode, deps: { fetchAsset: FetchAsset }): Bgm {
+/**
+ * Creates both decks into `out` (the bgm bus); elements, source nodes and deck gains live as long as the app.
+ * `changed` is called whenever `blocked()` may have changed.
+ */
+export function createBgm(ctx: AudioContext, out: AudioNode, deps: { fetchAsset: FetchAsset; changed: () => void }): Bgm {
   const decks: readonly [Deck, Deck] = [createDeck(ctx, out), createDeck(ctx, out)];
   let logical: { track: TrackId; vol: number } | null = null;
+  let suspended = false;
+  // One flag for both decks: a refusal holds until a play() succeeds, so a crossfade from a refused deck to one whose
+  // play() is still pending does not report the need ended and then begun again.
+  let refused = false;
+  const fade = (ms: number): number => (suspended ? 0 : ms);
+  const meant = (d: Deck): boolean => d.state === 'loading' || d.state === 'playing' || d.state === 'waiting';
+
+  /** A deck stopped sounding: with no music meant any more, nothing waits for a gesture. */
+  const quieted = (): void => {
+    if (!decks.some(meant)) {
+      refused = false;
+    }
+    deps.changed();
+  };
 
   const release = (d: Deck): void => {
     if (d.timer !== null) {
@@ -156,22 +187,26 @@ export function createBgm(ctx: AudioContext, out: AudioNode, deps: { fetchAsset:
     d.state = 'idle';
     d.track = null;
     d.url = null;
+    d.gen += 1;
+    quieted();
   };
 
   const fadeOut = (d: Deck, ms: number): void => {
-    if (ms <= 0) {
+    const length = fade(ms);
+    if (length <= 0) {
       release(d);
       return;
     }
     d.state = 'fading-out';
-    d.gain.to(0, ms);
+    d.gain.to(0, length);
     if (d.timer !== null) {
       clearTimeout(d.timer);
     }
     d.timer = setTimeout(() => {
       d.timer = null;
       release(d);
-    }, ms);
+    }, length);
+    quieted();
   };
 
   const fadeOutWaiting = (ms: number): void => {
@@ -203,14 +238,45 @@ export function createBgm(ctx: AudioContext, out: AudioNode, deps: { fetchAsset:
     return d;
   };
 
-  /** The deck has its src: it fades in, and the deck that waited for it fades out. */
+  /**
+   * play() with its refusal classified: for want of a gesture the deck stays as it is until a later play() (resume()
+   * inside a tap) succeeds; an abort (pause or a new src under it) is no failure; anything else is an unplayable file,
+   * released while the logical state keeps the track for a save.
+   */
+  const start = (d: Deck): Promise<void> => {
+    const gen = d.gen;
+    return d.el.play().then(
+      () => {
+        if (d.gen === gen) {
+          refused = false;
+          deps.changed();
+        }
+      },
+      (e: unknown) => {
+        if (d.gen !== gen) {
+          return;
+        }
+        const name = errorName(e);
+        if (name === 'NotAllowedError') {
+          refused = true;
+          deps.changed();
+        } else if (name !== 'AbortError') {
+          release(d);
+        }
+      },
+    );
+  };
+
+  /** The deck has its src: it fades in, and the deck that waited for it fades out. Suspended: it waits for resume(). */
   const land = (d: Deck, src: string): void => {
+    const ms = fade(d.landing.fadeMs);
     d.state = 'playing';
     d.el.src = src;
-    d.gain.to(toGain(d.landing.vol), d.landing.fadeMs, 0);
-    // A refused play() leaves the deck silent with its state kept.
-    void d.el.play().catch(() => undefined);
-    fadeOutWaiting(d.landing.fadeMs);
+    d.gain.to(toGain(d.landing.vol), ms, 0);
+    if (!suspended) {
+      void start(d); // settles into the deck's state; it never rejects
+    }
+    fadeOutWaiting(ms);
   };
 
   const take = (d: Deck, track: TrackId, url: string, vol: number, fadeMs: number): void => {
@@ -250,7 +316,7 @@ export function createBgm(ctx: AudioContext, out: AudioNode, deps: { fetchAsset:
     if (t !== undefined && holds(t)) {
       // Re-issuing the track does not restart it: only its level moves (STAGING-DSL `bgm`).
       if (t.state === 'playing') {
-        t.gain.to(toGain(vol), fadeMs);
+        t.gain.to(toGain(vol), fade(fadeMs));
       } else {
         t.landing = { vol, fadeMs };
       }
@@ -264,7 +330,7 @@ export function createBgm(ctx: AudioContext, out: AudioNode, deps: { fetchAsset:
         back.timer = null;
       }
       back.state = 'playing';
-      back.gain.to(toGain(vol), fadeMs);
+      back.gain.to(toGain(vol), fade(fadeMs));
       if (t?.state === 'loading') {
         release(t);
       } else if (t !== undefined) {
@@ -311,5 +377,22 @@ export function createBgm(ctx: AudioContext, out: AudioNode, deps: { fetchAsset:
       }
     },
     current: () => (logical === null ? null : { ...logical }),
+    suspend() {
+      suspended = true;
+      for (const d of decks) {
+        if (d.state === 'fading-out') {
+          release(d);
+        } else if (d.state === 'playing' || d.state === 'waiting') {
+          d.gain.to(d.gain.target, 0); // a fade in flight completes, as the scene's complete() does
+          d.el.pause();
+        }
+      }
+    },
+    resume() {
+      suspended = false;
+      // A loading deck has no src yet: its play() would wait for one, so it starts when its bytes land.
+      return decks.filter((d) => d.state === 'playing' || d.state === 'waiting').map((d) => start(d));
+    },
+    blocked: () => refused && decks.some(meant),
   };
 }

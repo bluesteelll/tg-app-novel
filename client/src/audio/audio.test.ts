@@ -76,6 +76,8 @@ class FakeAudio {
   readonly srcWrites: string[] = [];
   plays = 0;
   loads = 0;
+  /** Rejections the next play() calls return, in order. */
+  readonly refusals: DOMException[] = [];
   constructor() {
     FakeAudio.instances.push(this);
   }
@@ -98,6 +100,11 @@ class FakeAudio {
     this.plays += 1;
     if (this.attr === null) {
       return new Promise<void>(() => undefined); // no source: the resource selection algorithm waits
+    }
+    const refusal = this.refusals.shift();
+    if (refusal !== undefined) {
+      this.paused = true;
+      return Promise.reject(refusal);
     }
     this.paused = false;
     return Promise.resolve();
@@ -126,12 +133,42 @@ class FakeAudioContext {
   readonly sources: FakeBufferSource[] = [];
   readonly mediaSources: FakeMediaSource[] = [];
   resumeCalls = 0;
+  suspendCalls = 0;
+  readonly #listeners = new Set<() => void>();
+  /** What resume() does; by default the context runs at once. */
+  resumeImpl = (): Promise<void> => {
+    this.setState('running');
+    return Promise.resolve();
+  };
   constructor() {
     FakeAudioContext.instances.push(this);
   }
+  /** A state change the browser makes, with its `statechange` event. */
+  setState(state: AudioContextState): void {
+    if (this.state !== state) {
+      this.state = state;
+      for (const fn of [...this.#listeners]) {
+        fn();
+      }
+    }
+  }
+  addEventListener(type: string, fn: () => void): void {
+    if (type === 'statechange') {
+      this.#listeners.add(fn);
+    }
+  }
+  removeEventListener(type: string, fn: () => void): void {
+    if (type === 'statechange') {
+      this.#listeners.delete(fn);
+    }
+  }
   resume(): Promise<void> {
     this.resumeCalls += 1;
-    this.state = 'running';
+    return this.resumeImpl();
+  }
+  suspend(): Promise<void> {
+    this.suspendCalls += 1;
+    this.setState('suspended');
     return Promise.resolve();
   }
   createGain(): FakeGain {
@@ -746,4 +783,181 @@ test('audio: setChapter fades out bgm, null releases all sfx', async () => {
   audio.apply([bgm('calm'), sfx('door')], { instant: false });
   expect(fetch.calls.length).toBe(2);
   expect(audio.currentBgm()).toBeNull();
+});
+
+const notAllowed = (): DOMException => new DOMException('play() needs a user gesture', 'NotAllowedError');
+
+/** resume()'s result once it settles, read without awaiting it. */
+function outcome(audio: ReturnType<typeof createAudioManager>): { value?: string } {
+  const box: { value?: string } = {};
+  void audio.resume().then((r) => {
+    box.value = r;
+  });
+  return box;
+}
+
+test('audio: suspend pauses decks, stops voices, completes fades', async () => {
+  vi.useFakeTimers();
+  const { ctx, fetch, audio } = setup();
+  audio.setChapter(CH1);
+  audio.apply([bgm('calm', 0)], { instant: false });
+  ctx.currentTime = 10;
+  audio.apply([bgm('tension', 2000, 80)], { instant: false }); // mid-crossfade from here
+  audio.apply([sfx('door')], { instant: false });
+  at(fetch.calls, 0).settle(ok(sfxBlob()));
+  await flush();
+  const voice = at(ctx.sources, 0);
+  const a = deck(ctx, 0);
+  const b = deck(ctx, 1);
+  ctx.currentTime = 11;
+  audio.suspend();
+  expect(ctx.suspendCalls).toBe(1);
+  expect(b.el.paused).toBe(true);
+  expect(a.el.attr).toBeNull(); // the deck fading out is released
+  expect(b.gain.ops.slice(-2)).toEqual([
+    { op: 'cancel', t: 11 },
+    { op: 'set', v: 0.8, t: 11 },
+  ]);
+  expect(voice.stops).toBe(1);
+  expect(voice.edges.size).toBe(0);
+  expect(vi.getTimerCount()).toBe(0);
+  // While suspended: one-shots are dropped; music changes deck without playing, and its fades are cuts.
+  audio.apply([sfx('door')], { instant: false });
+  expect(ctx.sources.length).toBe(1);
+  const playsBefore = a.el.plays;
+  audio.apply([bgm('storm')], { instant: false });
+  at(fetch.calls, 1).settle(ok(new Blob(['storm'])));
+  await flush();
+  expect(a.el.attr).not.toBeNull(); // the gated track landed on A
+  expect(a.el.plays).toBe(playsBefore); // and was not played: the panel is hidden
+  expect(b.el.attr).toBeNull(); // the deck that waited for it is cut, not faded
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+test('audio: resume reports needs-gesture when the context stays suspended', async () => {
+  vi.useFakeTimers();
+  const { ctx, audio } = setup();
+  // resume() settles, yet the context stays suspended.
+  ctx.state = 'suspended';
+  ctx.resumeImpl = () => Promise.resolve();
+  const settledButOff = outcome(audio);
+  await flush();
+  expect(settledButOff.value).toBe('needs-gesture');
+  // resume() never settles: pending through the grace, needs-gesture at its end; the same for iOS 'interrupted'.
+  for (const state of ['suspended', 'interrupted'] as const) {
+    ctx.state = state;
+    ctx.resumeImpl = () => new Promise<void>(() => undefined);
+    const hung = outcome(audio);
+    await vi.advanceTimersByTimeAsync(499);
+    expect(hung.value).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(hung.value).toBe('needs-gesture');
+  }
+  // A context that runs: settled at once, with no time advanced.
+  ctx.resumeImpl = () => {
+    ctx.setState('running');
+    return Promise.resolve();
+  };
+  const runs = outcome(audio);
+  await flush();
+  expect(runs.value).toBe('running');
+});
+
+test('audio: resume plays the active deck inside the call', async () => {
+  vi.useFakeTimers();
+  const { ctx, fetch, audio } = setup();
+  audio.setChapter(CH1);
+  audio.apply([bgm('calm', 0)], { instant: false });
+  const a = deck(ctx, 0);
+  const b = deck(ctx, 1);
+  audio.suspend();
+  const resumes = ctx.resumeCalls;
+  const plays = a.el.plays;
+  void audio.resume(); // nothing awaited: both calls happened inside resume() itself
+  expect(ctx.resumeCalls).toBe(resumes + 1);
+  expect(a.el.plays).toBe(plays + 1);
+  await flush();
+  // A deck still loading has no src: resume() plays the deck that sounds, never the loading one, and reports running.
+  audio.apply([bgm('storm')], { instant: false });
+  expect(at(fetch.calls, 0).url).toBe(STORM);
+  audio.suspend();
+  const resumed = outcome(audio);
+  expect(a.el.plays).toBe(plays + 2);
+  expect(b.el.plays).toBe(0);
+  await flush();
+  expect(resumed.value).toBe('running');
+});
+
+test('bgm: rejected play reports needs-gesture', async () => {
+  vi.useFakeTimers();
+  const { ctx, audio } = setup();
+  audio.setChapter(CH1);
+  const calls: boolean[] = [];
+  const off = audio.onNeedsGesture((needed) => calls.push(needed));
+  const a = deck(ctx, 0);
+  const b = deck(ctx, 1);
+  // A play() refused for want of a gesture: reported once, a second refusal included.
+  a.el.refusals.push(notAllowed());
+  audio.apply([bgm('calm')], { instant: false });
+  await flush();
+  expect(calls).toEqual([true]);
+  b.el.refusals.push(notAllowed());
+  audio.apply([bgm('tension')], { instant: false });
+  await flush();
+  expect(calls).toEqual([true]);
+  // resume() inside a tap plays the decks: the need ends.
+  expect(await audio.resume()).toBe('running');
+  expect(calls).toEqual([true, false]);
+  // An abort (a pause or a new src under play()) is no refusal, and the deck keeps its track.
+  await vi.advanceTimersByTimeAsync(1000);
+  a.el.refusals.push(new DOMException('interrupted by a new load', 'AbortError'));
+  audio.apply([bgm('calm')], { instant: false });
+  await flush();
+  expect(calls).toEqual([true, false]);
+  expect(a.el.attr).toBe(CALM);
+  // A context left off outside our own suspend(): reported once the grace is over.
+  ctx.state = 'suspended';
+  audio.apply([bgm('tension')], { instant: false });
+  await vi.advanceTimersByTimeAsync(499);
+  expect(calls).toEqual([true, false]);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(calls).toEqual([true, false, true]);
+  expect(await audio.resume()).toBe('running');
+  expect(calls).toEqual([true, false, true, false]);
+  // Unsubscribed: a later refusal reaches no one.
+  off();
+  b.el.refusals.push(notAllowed());
+  audio.apply([bgm(null, 0)], { instant: false });
+  audio.apply([bgm('tension', 0)], { instant: false });
+  await flush();
+  expect(b.el.plays).toBeGreaterThan(0);
+  expect(b.el.refusals.length).toBe(0);
+  expect(calls).toEqual([true, false, true, false]);
+});
+
+test('audio: needs-gesture ends when the context runs on its own', async () => {
+  vi.useFakeTimers();
+  const { ctx, audio } = setup();
+  audio.setChapter(CH1);
+  const calls: boolean[] = [];
+  audio.onNeedsGesture((needed) => calls.push(needed));
+  // The Start tap's resume is still in flight when the first batch arrives; it lands within the grace: no report.
+  ctx.state = 'suspended';
+  audio.apply([bgm('calm')], { instant: false });
+  await vi.advanceTimersByTimeAsync(200);
+  ctx.setState('running');
+  await vi.advanceTimersByTimeAsync(500);
+  expect(calls).toEqual([]);
+  // Interrupted past the grace: reported; the browser lifts it and the need ends with no resume() call.
+  ctx.setState('interrupted');
+  audio.apply([sfx('door')], { instant: false });
+  await vi.advanceTimersByTimeAsync(500);
+  expect(calls).toEqual([true]);
+  ctx.setState('running');
+  expect(calls).toEqual([true, false]);
+  // So a later refusal is reported again.
+  deck(ctx, 1).el.refusals.push(notAllowed());
+  audio.apply([bgm('tension')], { instant: false });
+  await flush();
+  expect(calls).toEqual([true, false, true]);
 });

@@ -38,6 +38,8 @@ export type Sfx = {
   nextBatch(): void;
   /** Releases every entry not tagged `chapter` (all of them for null); the kept ones keep only that tag. */
   keepOnly(chapter: ChapterId | null): void;
+  /** Stops every voice; one-shots still loading never play. */
+  stopAll(): void;
   /** Decoded bytes held. */
   bytes(): number;
 };
@@ -193,6 +195,13 @@ export function createSfx(ctx: AudioContext, out: AudioNode, deps: { fetchAsset:
         } else {
           drop(id, e);
         }
+      }
+    },
+    stopAll() {
+      batch += 1;
+      for (const v of [...voices]) {
+        v.src.stop();
+        end(v);
       }
     },
     bytes: () => decoded,
