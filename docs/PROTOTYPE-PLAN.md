@@ -49,7 +49,7 @@ records chapter, ending and puzzle facts per story ([STORIES-PLAN "Goal"](STORIE
 | # | Target | Proved by |
 |---|---|---|
 | T1 | No paid chapter JSON, paid English table or paid art in `client/dist/` or under any public/static route | `scan-dist.ts` in `build`; `paid_chapter_403_without_entitlement` test |
-| T2 | Grant only on `successful_payment`, exactly once per `telegram_payment_charge_id`, even under concurrent redelivery; refund revokes | server integration tests (temp-file WAL DB) |
+| T2 | Grant only on `successful_payment`, exactly once per `telegram_payment_charge_id`, even under concurrent redelivery; refund revokes | server integration tests (per-test PG database; deterministic two-connection races; changed by RULINGS 14, decision section 6) |
 | T3 | `pre_checkout_query` answered < 7.5 s worst case, typically < 50 ms + one Bot API call | `precheckout_*` tests with a fake gateway and paused time |
 | T4 | Identity only from server-verified initData (HMAC, constant time, `auth_date` window) | initData vector tests (independently signed fixtures) |
 | T5 | A save from an older story version resumes (exact → knot checkpoint → chapter start), never throws; an ink error after a resume steps the next resume down a level, never loops | `resume_*` vitest tests on edited fixture chapters, incl. `resume: ink error after checkpoint resume falls back to chapter start` |
@@ -308,8 +308,8 @@ A].
 **K12. Saves: server-authoritative, opaque body, optimistic `rev`, write-id idempotency; story-version hash + knot
 checkpoint + chapter-start fallback** [R3 §2.4 option B].
 - **What.**
-  - **Storage.** The server stores the client's `SaveBodyV1` string (size-capped, `json_valid`) plus typed envelope
-    columns.
+  - **Storage.** The server stores the client's `SaveBodyV1` string (size-capped, `IS JSON`; changed by RULINGS 14,
+    decision DB-3: `TEXT`, never `jsonb`, so the bytes round-trip) plus typed envelope columns.
   - **On version mismatch** we do not call `LoadJson`: R3's probe shows a silent wrong resume when lines are removed.
     We restore the knot checkpoint (variables + staging snapshot + `ChoosePathString`).
   - **If the knot is gone,** we fall back to the chapter start + carry.
@@ -363,9 +363,19 @@ checkpoint + chapter-start fallback** [R3 §2.4 option B].
   `pending_<storyId>`. The statistics queue is DeviceStorage `stats_queue` (≤ 64 events, about 14 KB; memory only
   below 9.0). Neither unlocks anything.
 
-**K14. Server: axum 0.8.9 + sqlx 0.9.0 runtime queries (no `query!` macros) behind a `db/` module seam; SQLite WAL;
-the whole schema in one migration** [R2 §4].
+**K14. Server: axum 0.8.9 + sqlx 0.9.0 runtime queries (no `query!` macros) behind a `db/` module seam;
+PostgreSQL 18; the whole schema in one migration** [R2 §4].
+- **Changed by RULINGS 14 (decision section 6; DB-1, DB-2; as merged, `fee9da7`).** PostgreSQL 18 in development,
+  the gates and production alike, replacing "SQLite WAL" (RULINGS 1, superseded by RULINGS 12). sqlx carries
+  `postgres` in place of `sqlite-bundled`. Detail: `D:/tmp/novel-orch/design/db/decision.md` §1.3.
 - **Why:**
+  - PostgreSQL passes the money path natively: `INSERT … ON CONFLICT DO NOTHING RETURNING` returns no row for a
+    duplicate, and a concurrent twin waits for the first inserter, then skips. Single-row conditional UPDATEs re-check
+    their WHERE on the winner's row version under READ COMMITTED. CHECK, FK and UNIQUE constraints map 1:1.
+  - One PostgreSQL server serves several app instances later, which SQLite could not.
+  - The `db/` seam (`server/src/db/mod.rs:1-2`) confines the switch. sqlx is the only candidate with a migrator
+    already wired (`migrate!`) and `SqlSafeStr`, so `no_dynamic_sql` stays valid unchanged.
+  - Schema floor 16 (`IS JSON`); the gates and pgdev run 18 only, and `pool_session_settings` asserts major 18.
   - Runtime `query_as` + `FromRow` needs no `.sqlx/` offline data under `--locked` gates and causes no lane friction.
   - sqlx 0.9 refuses non-`'static` SQL unless wrapped in `AssertSqlSafe`, so string concatenation is impossible by
     type. A grep test bans `AssertSqlSafe` entirely.
@@ -373,12 +383,18 @@ the whole schema in one migration** [R2 §4].
     (`LazyLock` / `OnceLock`): such a string is `'static`, so sqlx accepts it. Reviewers of every `db/` change check
     for such statics.
   - One migration up front: the schema is fully designed here, so no two lanes fight over `server/migrations/`.
+  - The case for runtime queries holds harder on PostgreSQL: `query!` needs a live database or `.sqlx/` per lane,
+    and sqlx-cli can no longer be installed `--locked` in 0.9. Every statement runs in a repository test against
+    PostgreSQL 18 instead, the substitute for compile-time checks.
 - **Alternatives:**
-  - The `query!` macros (compile-time checks; `.sqlx` refresh per lane).
-  - rusqlite + `spawn_blocking`: cannot coexist with sqlx 0.9 (different `libsqlite3-sys` majors), and moving to
-    PostgreSQL would mean a rewrite [R2 §4.5].
-- **Trade-off.** Column errors surface in repository tests, not at compile time. Revisit `query!` with PostgreSQL
-  (Later).
+  - The `query!` macros + `.sqlx/` (compile-time checks; cross-lane merge conflicts and a cli that cannot be pinned).
+  - tokio-postgres + deadpool: no migrator, no `SqlSafeStr`, more code.
+  - Diesel / SeaORM: a DSL or ORM over 6 tables.
+  - SQLite WAL (the prototype's first choice): its single writer kept K18's single statement safe, it cannot serve
+    several app instances, and a later move would be a rewrite.
+- **Trade-off.** Column and type errors surface in repository tests, not at compile time. A server process runs
+  locally (`server/pgdev`, a cluster per slot port, started on demand) and in hosting, instead of a file.
+  `query!` with PostgreSQL: decided no (it was "Later").
 
 **K15. Own HMAC session token, not a JWT** [R2 §5.1].
 - **What.** `v1.<user_id>.<exp>.<hex HMAC-SHA256(TOKEN_KEY, "v1.<user_id>.<exp>")>`. TTL 30 min, in memory on the
@@ -438,6 +454,13 @@ ACK 200 unless a money fact would be lost; explicit `allowed_updates = [message,
   - The worst case is 7.5 s < 10 s.
 - **Alternatives.** Answer in the webhook response body (faster, blind) [R2 §1.2]; a pure read (leaves the
   double-pay race open).
+- **Changed by RULINGS 14 (decision section 6, DB-4).** The DB step is the payer-row lock, then the conditional
+  UPDATE, in one READ COMMITTED transaction (`SELECT 1 FROM users WHERE id = $1 FOR NO KEY UPDATE` first). On
+  PostgreSQL the single statement alone lets two concurrent pre-checkouts both pass, in both races above: each
+  `NOT EXISTS` reads a snapshot without the other's uncommitted `checkout`. After the lock wait the next statement
+  takes a fresh snapshot, sees the committed `checkout` and refuses (`InProgress`). `NO KEY UPDATE` does not conflict
+  with the `KEY SHARE` locks of FK checks, so saves, grants and puzzle attempts never wait on it. The worst case is
+  unchanged (≤ 2 s DB + ≤ 5 s answer).
 - **Changed by PUZZLES-PLAN (X6).** Products are chapters and hint tiers (`hint:<puzzleId>:<tier>`). Pre-checkout
   becomes two indexed statements, both inside the same 2 s DB timeout (worst case still about 7.5 s):
   1. a PK read of the order's `product_id`;
@@ -455,8 +478,8 @@ ACK 200 unless a money fact would be lost; explicit `allowed_updates = [message,
   2. Only if that inserted a row: the order → `paid`.
   3. `INSERT INTO entitlements … ON CONFLICT (user_id, product_id) DO NOTHING`.
   4. Commit, then 200.
-- **Why.** Principle 2; R2 MEASURED the RETURNING behaviour. Write-first avoids the SQLite DEFERRED
-  read→write upgrade `SQLITE_BUSY`.
+- **Why.** Principle 2; R2 MEASURED the RETURNING behaviour. Changed by RULINGS 14 (decision section 6, DB-4): the
+  steps rely on UNIQUE/PK arbiters and single-row conditions under READ COMMITTED; no payer lock.
 - **Never lose money facts.** A payment row is recorded even if the order is unknown, and even if the pinned
   frankenstein types cannot decode the update (K17 probe).
 - **Unapplied charges reach the payer.** A charge that ends `OrderMismatch` or `AlreadyEntitled` (recorded, no grant)
@@ -577,10 +600,12 @@ server.**
 | Preload from `TagsForContentAtPath` of the next node | build-time knot index (all literal tags + successors) | K9 |
 | Autosave cache in CloudStorage; DeviceStorage for manifests | CloudStorage: settings + read-set; DeviceStorage: one pending autosave | K13 |
 | AAC/M4A audio | AAC/M4A for real audio (Later); synthesized WAV for placeholders only, gate-capped | K23 |
-| PostgreSQL | SQLite WAL behind the `db/` seam for the prototype (RULINGS 1; [O] also names SQLite as a simplified start) | K14 |
 | WebGPU optional | WebGL only | K30 |
 | HMAC + "Ed25519 if needed" | HMAC only; a locally minted initData can never carry a valid Ed25519 signature [R1 §4] | K16 |
 | Narrat "last release Oct 2023" | not dormant (npm 4.1.18, 2026-09) [R3 §7]; no design effect | — |
+
+Changed by RULINGS 14 (decision section 6): the PostgreSQL row is deleted (it read "SQLite WAL behind the `db/` seam
+for the prototype"). The database now matches the owner's stack doc: PostgreSQL 18 (K14).
 
 ---
 
@@ -589,7 +614,7 @@ server.**
 ### Repository layout (the lanes create it; CLAUDE.md "Stack and layout" gets these additions — open question E4)
 
 ```text
-Cargo.toml                 virtual workspace: members ["server", "server/dev"], resolver "3"
+Cargo.toml                 virtual workspace: members ["server", "server/dev", "server/pgdev"], resolver "3"
 Cargo.lock  clippy.toml  .env.example
 client/                    Vite root (never contains paid content)
   index.html  package.json  package-lock.json  vite.config.ts  svelte.config.js  tsconfig.json  tsconfig.node.json
@@ -603,6 +628,7 @@ server/                    crate `server` (lib + bin)
   src/  migrations/0001_init.sql  catalog.json  locales/bot.{ru,en}.json  tests/it/  tests/fixtures/
   content/                 GENERATED paid chapters, paid assets, build fingerprints (gitignored)
 server/dev/                crate `server-dev` (dev-only lib + binary)
+server/pgdev/              crate `pgdev` (dev/test-only lib + binary: the local PostgreSQL 18 cluster per port, test DBs)
 story/                     ink sources and story data
   chapters.json  cast.json  retired-ids.txt  lint-allow.json
   common/globals.ink  ch1/main.ink  ch2/main.ink
@@ -614,6 +640,9 @@ docs/                      PROTOTYPE-PLAN.md  STAGING-DSL.md  (+ FEATURE_MAP, AR
 Changed by STORIES-PLAN: `story/stories.json` (the story list, LS1) joins `story/`; story B's chapters are
 `story/ch3/`, `story/ch4/` (flat, game-unique ids); `server/migrations/0003_stats.sql` (LS3); the generated
 `server/content/stories.json` and `client/src/story-gen/covers.json`. New modules: STORIES-PLAN "Integration".
+
+Changed by RULINGS 14 (decision section 6; as merged, LDB0 `857f7d6`): the crate `server/pgdev/` joins the workspace.
+It is a dev-dependency of `server` and a dependency of `server-dev`, never linked into the production `server` binary.
 
 Gitignore additions (L1):
 ```text
@@ -721,8 +750,8 @@ source files under `client/src/`; `*.test.ts` files may use fakes and fixtures f
 
 | Module | Responsibility |
 |---|---|
-| `lib.rs` | `build_dev_app(paths: DevPaths) -> Result<Router, server::StartupError>`: `server::build_router(state)` merged with the dev router (each dev module exposes `routes()`). The state comes from `server::AppState::new(<dev Config>)` + `.with_gateway(FakeBotGateway)` (L8a), never a struct literal; the dev `Config` holds the fixed dev bot token / webhook secret, a random token key, `DATABASE_PATH = paths.db` (opened and migrated; it never deletes a file) and `CONTENT_DIR = paths.content`; `pub mod`s. The lib target lets `server/dev/tests/dev.rs` drive the app through `oneshot` with no port; each of its tests passes its own `tempfile` DB path (one `dev_app()` helper in `dev.rs`), so parallel test threads never share a file |
-| `main.rs` | deletes `target/e2e/dev.db` and its `-wal` / `-shm` (a fresh DB per launch; the path is resolved from the workspace root, not the cwd), then binds `build_dev_app(DevPaths { db: <that path>, content: server/content })` (the generated content, also resolved from the workspace root) to `127.0.0.1:$DEV_API_PORT` (default 8787; loopback only) and serves it |
+| `lib.rs` | `build_dev_app(paths: DevPaths) -> Result<Router, server::StartupError>`: `server::build_router(state)` merged with the dev router (each dev module exposes `routes()`). The state comes from `server::AppState::new(<dev Config>)` + `.with_gateway(FakeBotGateway)` (L8a), never a struct literal; the dev `Config` holds the fixed dev bot token / webhook secret, a random token key, `DATABASE_URL = paths.database_url` (connected and migrated; it creates and drops no database) and `CONTENT_DIR = paths.content`; `launch_database(&DevCluster, &DbName)` recreates a database empty (`DROP … WITH (FORCE)` + `CREATE`) and returns its URL; `pub mod`s. The lib target lets `server/dev/tests/dev.rs` drive the app through `oneshot` with no port; each of its tests runs on its own `pgdev::TestDb` (one `dev_app()` helper in `dev.rs`), so parallel test threads never share a database. Changed by RULINGS 14 (decision §3.5; as merged, `fee9da7`) |
+| `main.rs` | binds `127.0.0.1:$DEV_API_PORT` first (default 8787; loopback only; a second instance exits here, before it touches the database), then `DevCluster::from_env()?.ensure_up()` and `launch_database(&cluster, &DbName::for_dev(port))`: a fresh database `tgn_dev_<port>` per launch on the slot's cluster (`DEV_PG_PORT`, `DEV_PG_ROOT`, `PG_BIN`), so two dev servers on one cluster never share one. It serves `build_dev_app(DevPaths { database_url, content: server/content })` (the generated content, resolved from the workspace root, not the cwd). Changed by RULINGS 14 (decision §3.5; as merged, `fee9da7`) |
 | `launch.rs` | `GET /dev/launch` — signs initData with the dev bot token (reusing `server::auth::initdata::{data_check_string, secret_key}`) and redirects into the app |
 | `fake_gateway.rs` | records invoices (slug → order), pre-checkout answers and refunds in memory |
 | `simulate.rs` | `POST /dev/simulate-payment`, `POST /dev/refund`, `POST /dev/refunded-update`, `GET /dev/invoices/{slug}` — each builds a frankenstein `Update` JSON and calls the real webhook handler |
@@ -938,85 +967,128 @@ pub struct InvoiceSpec { pub title: String /*1-32*/, pub description: String /*1
     #[error("api: {0}")] Api(String), #[error("transport: {0}")] Transport(String) }
 ```
 
-### SQL schema — `server/migrations/0001_init.sql` (whole schema, L2)
+### SQL schema — `server/migrations/0001_init.sql` (whole schema, LDB1)
 
 Changed by STORIES-PLAN: the `saves` primary key becomes `(user_id, story_id, slot)` with `saves_story_id_shape`
 (LS2 rewrites the table in the PostgreSQL `0001` that LDB1 writes); the statistics log is a new migration,
 `0003_stats.sql` (LS3). Both are in [STORIES-PLAN "SQL schema"](STORIES-PLAN.md#sql-schema).
 
-One constraint per invariant. All timestamps are unix seconds. `STRICT` tables.
+Changed by RULINGS 14 (decision section 6, §4.1, DB-3; as merged, LDB1 `fee9da7`): the schema below is the merged
+PostgreSQL file (`server/migrations/0001_init.sql:1-79`), which replaced the SQLite one; nothing was deployed, so
+`0001` was rewritten, not migrated.
+
+One constraint per invariant, each named (`CONSTRAINT <table>_<rule>`): tests assert `(SQLSTATE, constraint())`.
+All timestamps are unix seconds in `BIGINT`; every integer is `BIGINT` (Rust `i64`).
 
 ```sql
+-- PostgreSQL >= 16 (IS JSON); the gates run 18. Every integer is BIGINT (Rust i64); times are unix seconds.
+-- Every constraint is named: tests assert (SQLSTATE, constraint name).
 CREATE TABLE users (
-  id            INTEGER PRIMARY KEY,                    -- Telegram user id (from verified initData only)
-  first_name    TEXT    NOT NULL,
+  id            BIGINT NOT NULL,                -- Telegram user id (from verified initData only), <= 52 bits
+  first_name    TEXT   NOT NULL,
   language_code TEXT,
-  created_at    INTEGER NOT NULL,
-  last_seen_at  INTEGER NOT NULL
-) STRICT;
+  created_at    BIGINT NOT NULL,
+  last_seen_at  BIGINT NOT NULL,
+  CONSTRAINT users_pkey PRIMARY KEY (id)
+);
 
-CREATE TABLE payments (                                 -- money facts: never rejected, never deleted
-  telegram_payment_charge_id TEXT    PRIMARY KEY,       -- THE idempotency key (principle 2)
-  invoice_payload            TEXT    NOT NULL,          -- not an FK: an unknown payload is still recorded
-  user_id                    INTEGER NOT NULL,          -- payer (Message.from.id); no FK: a payment row is never refused
-  amount                     INTEGER NOT NULL CHECK (amount > 0),
-  currency                   TEXT    NOT NULL,          -- recorded as received; grant requires 'XTR' (orders CHECK)
-  provider_payment_charge_id TEXT    NOT NULL,          -- '' when Telegram omits it (K17 probe)
-  paid_at                    INTEGER NOT NULL,
-  refunded_at                INTEGER,
-  CHECK (refunded_at IS NULL OR refunded_at >= paid_at)
-) STRICT;
-CREATE INDEX payments_by_user ON payments(user_id);
+CREATE TABLE payments (                         -- money facts: never rejected, never deleted
+  telegram_payment_charge_id TEXT   NOT NULL,   -- THE idempotency key (principle 2)
+  invoice_payload            TEXT   NOT NULL,   -- not an FK: an unknown payload is still recorded
+  user_id                    BIGINT NOT NULL,   -- payer (Message.from.id); no FK: a payment row is never refused
+  amount                     BIGINT NOT NULL,
+  currency                   TEXT   NOT NULL,   -- recorded as received; grant requires 'XTR' (orders CHECK)
+  provider_payment_charge_id TEXT   NOT NULL,   -- '' when Telegram omits it (K17 probe)
+  paid_at                    BIGINT NOT NULL,
+  refunded_at                BIGINT,
+  CONSTRAINT payments_pkey               PRIMARY KEY (telegram_payment_charge_id),
+  CONSTRAINT payments_amount_positive    CHECK (amount > 0),
+  CONSTRAINT payments_refunded_after_paid CHECK (refunded_at IS NULL OR refunded_at >= paid_at)
+);
+CREATE INDEX payments_by_user ON payments (user_id);
 
 CREATE TABLE orders (
-  id           TEXT    PRIMARY KEY,                     -- OrderId = invoice payload
-  user_id      INTEGER NOT NULL REFERENCES users(id),
-  product_id   TEXT    NOT NULL,
-  amount       INTEGER NOT NULL CHECK (amount > 0),     -- from server/catalog.json at creation, never from the request
-  currency     TEXT    NOT NULL CHECK (currency = 'XTR'),
-  status       TEXT    NOT NULL CHECK (status IN ('created','checkout','paid','refunded')),
-  invoice_url  TEXT,
-  created_at   INTEGER NOT NULL,
-  checkout_at  INTEGER,
-  paid_at      INTEGER,
-  charge_id    TEXT    UNIQUE REFERENCES payments(telegram_payment_charge_id),
-  CHECK (status <> 'checkout' OR checkout_at IS NOT NULL),
-  CHECK (status NOT IN ('paid','refunded') OR (charge_id IS NOT NULL AND paid_at IS NOT NULL))
-) STRICT;
-CREATE INDEX orders_by_user_product ON orders(user_id, product_id, status, created_at);
+  id          TEXT   NOT NULL,                  -- OrderId = invoice payload
+  user_id     BIGINT NOT NULL,
+  product_id  TEXT   NOT NULL,
+  amount      BIGINT NOT NULL,                  -- from server/catalog.json at creation, never from the request
+  currency    TEXT   NOT NULL,
+  status      TEXT   NOT NULL,
+  invoice_url TEXT,
+  created_at  BIGINT NOT NULL,
+  checkout_at BIGINT,
+  paid_at     BIGINT,
+  charge_id   TEXT,
+  CONSTRAINT orders_pkey              PRIMARY KEY (id),
+  CONSTRAINT orders_user_fk           FOREIGN KEY (user_id) REFERENCES users (id),
+  CONSTRAINT orders_charge_key        UNIQUE (charge_id),
+  CONSTRAINT orders_charge_fk         FOREIGN KEY (charge_id) REFERENCES payments (telegram_payment_charge_id),
+  CONSTRAINT orders_amount_positive   CHECK (amount > 0),
+  CONSTRAINT orders_currency_xtr      CHECK (currency = 'XTR'),
+  CONSTRAINT orders_status_known      CHECK (status IN ('created', 'checkout', 'paid', 'refunded')),
+  CONSTRAINT orders_checkout_has_time CHECK (status <> 'checkout' OR checkout_at IS NOT NULL),
+  CONSTRAINT orders_paid_has_charge   CHECK (status NOT IN ('paid', 'refunded')
+                                             OR (charge_id IS NOT NULL AND paid_at IS NOT NULL))
+);
+CREATE INDEX orders_by_user_product ON orders (user_id, product_id, status, created_at);
 
-CREATE TABLE entitlements (                             -- the ONLY unlock fact
-  user_id    INTEGER NOT NULL REFERENCES users(id),
-  product_id TEXT    NOT NULL,
-  charge_id  TEXT    NOT NULL UNIQUE REFERENCES payments(telegram_payment_charge_id),
-  granted_at INTEGER NOT NULL,
-  PRIMARY KEY (user_id, product_id)                     -- one entitlement per product; revoke = DELETE
-) STRICT;
+CREATE TABLE entitlements (                     -- the ONLY unlock fact
+  user_id    BIGINT NOT NULL,
+  product_id TEXT   NOT NULL,
+  charge_id  TEXT   NOT NULL,
+  granted_at BIGINT NOT NULL,
+  CONSTRAINT entitlements_pkey       PRIMARY KEY (user_id, product_id),  -- one per product; revoke = DELETE
+  CONSTRAINT entitlements_user_fk    FOREIGN KEY (user_id) REFERENCES users (id),
+  CONSTRAINT entitlements_charge_key UNIQUE (charge_id),
+  CONSTRAINT entitlements_charge_fk  FOREIGN KEY (charge_id) REFERENCES payments (telegram_payment_charge_id)
+);
 
 CREATE TABLE saves (
-  user_id       INTEGER NOT NULL REFERENCES users(id),
-  slot          TEXT    NOT NULL CHECK (slot IN ('auto','s1','s2','s3')),
-  rev           INTEGER NOT NULL CHECK (rev >= 1),
-  chapter_id    TEXT    NOT NULL,
-  story_version TEXT    NOT NULL,
+  user_id       BIGINT NOT NULL,
+  slot          TEXT   NOT NULL,
+  rev           BIGINT NOT NULL,
+  chapter_id    TEXT   NOT NULL,
+  story_version TEXT   NOT NULL,
   line_id       TEXT,
-  write_id      TEXT    NOT NULL,                       -- client idempotency key of the last successful write
-  body          TEXT    NOT NULL CHECK (json_valid(body) AND length(body) <= 262144),
-  saved_at      INTEGER NOT NULL,
-  PRIMARY KEY (user_id, slot)
-) STRICT;
+  write_id      TEXT   NOT NULL,                -- client idempotency key of the last successful write
+  body          TEXT   NOT NULL,                -- opaque JSON, byte-exact: never jsonb (it rewrites the bytes)
+  saved_at      BIGINT NOT NULL,
+  CONSTRAINT saves_pkey         PRIMARY KEY (user_id, slot),
+  CONSTRAINT saves_user_fk      FOREIGN KEY (user_id) REFERENCES users (id),
+  CONSTRAINT saves_slot_known   CHECK (slot IN ('auto', 's1', 's2', 's3')),
+  CONSTRAINT saves_rev_positive CHECK (rev >= 1),
+  CONSTRAINT saves_body_json    CHECK (body IS JSON),
+  CONSTRAINT saves_body_size    CHECK (octet_length(body) <= 262144)
+);
 ```
 
-- **Connection.** WAL, `synchronous=FULL`, `foreign_keys=ON`, `busy_timeout=5s`, pool of 4 connections
-  [R2 §4.2].
-  - Erratum (RULINGS 7 b, supersedes NORMAL): a grant committed and answered 200 to Telegram must survive an OS crash
-    or power loss (principle 2), and one fsync per commit costs nothing at this load. L4a made the change.
+- **Every FK column is indexed** by a UNIQUE or a leading PK/index column: `orders.user_id` by
+  `orders_by_user_product`, `entitlements.user_id` and `saves.user_id` by their PKs, both `charge_id` columns by their
+  UNIQUEs. PostgreSQL does not index referencing columns by itself.
+- **`saves.body` is `TEXT` with `IS JSON` and `octet_length(body) <= 262144`.** `jsonb` would rewrite the bytes
+  (whitespace, key order, number forms), and the body is opaque (K12). `octet_length` counts the same UTF-8 bytes as
+  the edge rule (`MAX_SAVE_BODY_BYTES`). A bad body is a `23514` on `saves_body_json`, not a cast error.
+- **Connection** (`Repo::open`, `server/src/db/mod.rs:22-59`). Changed by RULINGS 14 (decision §4.3; as merged,
+  `fee9da7`): `PgConnectOptions::from_str(url)?.application_name("tg-novel-server").options(SESSION_OPTIONS)`, pool
+  `max_connections(8)`, `acquire_timeout(5s)`. Every session starts with:
+  - `synchronous_commit=on`: the RULINGS 7 b erratum restated (it superseded NORMAL, then `synchronous=FULL`): a grant
+    committed and answered 200 to Telegram survives an OS crash or power loss (principle 2);
+  - `default_transaction_isolation=read committed`: DB-4 holds only under READ COMMITTED, and the autocommit saves
+    writes re-check `rev` instead of failing with `40001`;
+  - `lock_timeout=2s` (= K18's DB budget; a blocked row lock errors with `55P03`), `statement_timeout=15s`,
+    `idle_in_transaction_session_timeout=30s` (a transaction leaked by a dropped future ends and frees its locks).
+
+  A client startup option outranks `postgresql.conf`, the server command line and every `ALTER DATABASE` /
+  `ALTER ROLE` default, so no provider console field can weaken a pin. `pool_session_settings` asserts all six on a
+  `TestDb` whose database defaults are hostile (`synchronous_commit = off`, `repeatable read`), and reads
+  `transaction_isolation` inside `pool.begin()`.
 - **Changed by PUZZLES-PLAN.** `server/migrations/0002_puzzles.sql` (L6c) adds `puzzle_progress` (attempt window +
   `solved_at` per user and puzzle). `server/build.rs` (`cargo:rerun-if-changed=migrations`) makes `migrate!` pick up
   a new migration file in incremental builds. A hint unlock is an `entitlements` row: no new unlock table.
   [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section "SQL".
-- **Transactions start with a write** (K19): no read-then-write upgrade inside a DEFERRED transaction.
-- **PostgreSQL later.** The same statements work with `$n` placeholders and `jsonb` for `body`, behind `db/`.
+- **Isolation: READ COMMITTED everywhere** (changed by RULINGS 14, decision DB-4; it replaces "transactions start
+  with a write"). The pre-checkout takes the payer's `users` row lock first (K18); the grant and the refund rely on
+  UNIQUE/PK arbiters and single-row conditions (K19, K20). No SERIALIZABLE anywhere.
 
 ### HTTP API
 
@@ -1174,7 +1246,7 @@ from the menu.
 |---|---|---|---|
 | HTTP JSON (client ↔ server) | Rust DTOs (`server/src/api/dto.rs`) | ts-rs 12.0.1 → `client/src/api/generated/api.ts` (one file, `decl()` of each DTO) | `bindings_are_fresh` (Rust); `decode.test.ts` decodes Rust-written `client/src/api/fixtures/dto-samples.json` (writer `write_dto_samples` `#[ignore]`, freshness `dto_samples_are_fresh`) |
 | Telegram webhook JSON | frankenstein 0.52.1 types; for the payment subset, our own lenient `PaymentProbe` when the full decode fails (K17) | serde | webhook decode tests with recorded update shapes, incl. a payment update the pinned types reject |
-| Save body | TS `SaveBodyV1` (client-owned; opaque to the server) | `save-codec.ts` | codec tests; the server checks only `json_valid` + size |
+| Save body | TS `SaveBodyV1` (client-owned; opaque to the server) | `save-codec.ts` | codec tests; the server checks only JSON validity + size (changed by RULINGS 14, as merged `fee9da7`: the edge parses `serde_json::Value` under serde_json's recursion limit, the DB checks `IS JSON` + `octet_length`) |
 | Build outputs (catalog, meta, manifest) | TS types in `story/catalog.ts` (both producer and consumer are TS) | decoders | story/asset tool tests |
 | Chapters ↔ products | `story/chapters.json` (`productId`) + `server/catalog.json` (prices) (changed by STORIES-PLAN: chapter products = the paid chapters of the generated story index; `server/catalog.json` holds a default price, overrides and templates) | — | `catalog_matches_story_chapters` (Rust reads `../story/chapters.json`); the server refuses to start if a catalog product has no content (changed by STORIES-PLAN: or if the story index is missing, a story's first chapter is paid, or a rendered chapter invoice text is out of limits) |
 | Stories (changed by STORIES-PLAN) | `story/stories.json` + `story/chapters.json` | the story tool emits the public `stories`, the metas' `endings` and `server/content/stories.json` | `catalog/stories` lint; `emit: server story index matches the server fixture shape` (TS) against `server/tests/fixtures/content/stories.json`, which the L6b content tests (Rust) load |
@@ -1332,10 +1404,13 @@ pub mod telegram::payments {
   pub async fn admin_refund(st: &AppState, charge: &ChargeId) -> Result<RevokeOutcome, RefundError>; }
 
 // server-dev lib (server/dev/src/lib.rs)
-pub struct DevPaths { pub db: PathBuf, pub content: PathBuf }
-    // main.rs: target/e2e/dev.db (deleted first) + server/content; dev.rs: a temp file per test + the test fixtures
+// changed by RULINGS 14 (decision §3.5; as merged, fee9da7)
+pub struct DevPaths { pub database_url: String, pub content: PathBuf }
+    // main.rs: tgn_dev_<port> (recreated per launch) + server/content; dev.rs: a pgdev::TestDb per test + the fixtures
 pub async fn build_dev_app(paths: DevPaths) -> Result<Router, StartupError>;   // AppState::new + with_gateway (L8a);
-                                                                             // opens + migrates paths.db, never deletes
+                                                       // connects + migrates paths.database_url, creates/drops nothing
+pub async fn launch_database(cluster: &DevCluster, name: &DbName) -> Result<String, PgDevError>;
+                                                       // DROP … WITH (FORCE) + CREATE; returns the database URL
 ```
 
 ---
@@ -1594,22 +1669,41 @@ list.
 `GET /api/entitlements` says `owned` (principle 1). The `purchase_unlocks_only_from_server` unit test forges a
 CloudStorage/DeviceStorage "owned" value and expects nothing to unlock.
 
-**Pre-checkout (P5).** One statement, then one answer:
+**Pre-checkout (P5).** One READ COMMITTED transaction inside `tokio::time::timeout(2 s)`, then one answer
+(`answerPreCheckoutQuery` outside it). Changed by RULINGS 14 (decision §4.4, DB-4): the PostgreSQL text, the payer-row
+lock first; the `$6`-`$8` predicates and the PK read are the hint products' (below; PUZZLES-PLAN "SQL"):
 
 ```sql
-UPDATE orders SET status = 'checkout', checkout_at = ?now
- WHERE id = ?payload AND user_id = ?from AND amount = ?total AND ?currency = 'XTR'
-   AND status IN ('created','checkout') AND created_at > ?now - 86400
+SELECT 1 FROM users WHERE id = $1 FOR NO KEY UPDATE;   -- $1 = from.id. Serializes every pre-checkout of this payer.
+                                                        -- No users row: no lock, and the UPDATE below cannot match.
+SELECT product_id FROM orders WHERE id = $2;            -- PZ step 1 (none -> UnknownOrder); Rust: catalog.prereqs()
+UPDATE orders SET status = 'checkout', checkout_at = $3
+ WHERE id = $2 AND user_id = $1 AND amount = $4 AND $5 = 'XTR'
+   AND status IN ('created', 'checkout') AND created_at > $3 - 86400
    AND NOT EXISTS (SELECT 1 FROM entitlements e WHERE e.user_id = orders.user_id AND e.product_id = orders.product_id)
    AND NOT EXISTS (SELECT 1 FROM orders o2 WHERE o2.user_id = orders.user_id AND o2.product_id = orders.product_id
-                     AND o2.status = 'checkout' AND o2.checkout_at > ?now - 120)
-RETURNING id;
+                     AND o2.status = 'checkout' AND o2.checkout_at > $3 - 120)
+   AND ($6 IS NULL OR EXISTS (SELECT 1 FROM entitlements e WHERE e.user_id = orders.user_id AND e.product_id = $6))
+   AND ($7 IS NULL OR EXISTS (SELECT 1 FROM entitlements e WHERE e.user_id = orders.user_id AND e.product_id = $7))
+   AND ($8 IS NULL OR NOT EXISTS (SELECT 1 FROM puzzle_progress p
+                                   WHERE p.user_id = orders.user_id AND p.puzzle_id = $8 AND p.solved_at IS NOT NULL))
+RETURNING id;                                           -- no row -> the classification read, same transaction
+COMMIT;
 ```
 
-The lock subquery deliberately has no `o2.id <> orders.id`: it sees this order too (SQLite evaluates the subquery
-against the pre-update row), so a second pre-checkout of the **same** order — the same slug opened on two devices —
+The lock subquery deliberately has no `o2.id <> orders.id`: it sees this order too (the post-lock snapshot holds the
+committed checkout of this same order; changed by RULINGS 14, it read "SQLite evaluates the subquery against the
+pre-update row"), so a second pre-checkout of the **same** order — the same slug opened on two devices —
 is refused while that order's own `checkout_at` is inside the 120 s window. After the window the same order may pass
 again (a retry after a failed payment).
+
+- **Why the lock closes both K18 races** (decision §4.4). The waiter's UPDATE takes its snapshot after the first
+  transaction committed, so it sees that transaction's `checkout` row (the same order on two devices, or the other
+  order) and gets no row: `InProgress`.
+- **`$6`-`$8` are bound as `Option<&str>`.** sqlx declares them TEXT, so `$n IS NULL` is typed.
+- **Tests (L8b).** `precheckout_concurrent_two_orders_one_passes` and `precheckout_concurrent_same_order_one_passes`,
+  on the deterministic two-connection shape (`common::wait_for_lock_waiter`, merged in LDB1). Both are predicted red
+  with the lock statement removed: two `ok`.
 
 **If no row comes back**, one read classifies the reason, and the answer is `ok = false` with a localized
 `error_message`:
@@ -1624,7 +1718,7 @@ again (a retry after a failed payment).
 | `Temporary` | the DB step exceeded 2 s |
 
 **Hint products** (changed by PUZZLES-PLAN, K18):
-- A PK read of the order's `product_id` comes first.
+- A PK read of the order's `product_id` comes first (after the payer-row lock; changed by RULINGS 14, decision §4.6).
 - The statement above gains three nullable predicates: the previous tier owned; the paid chapter owned; the puzzle not
   solved in `puzzle_progress`.
 - A failure classifies as `Unavailable`.
@@ -1635,23 +1729,32 @@ again (a retry after a failed payment).
 < 10 s (principle 2). No other work happens on this path. The answer gateway error is logged; we still return 200,
 because Telegram cancels the transaction itself when unanswered.
 
-**Grant (P6).** One transaction, write first:
+**Grant (P6).** One READ COMMITTED transaction, write first. Changed by RULINGS 14 (decision §4.4, DB-4): the
+PostgreSQL text; no payer lock: every step is arbitrated by a UNIQUE/PK or a single-row condition, and a lock would only
+add a timeout failure mode to a path that is never refused:
 
 ```sql
--- 1  (if RETURNING yields no row → Duplicate: commit, 200)
 INSERT INTO payments (telegram_payment_charge_id, invoice_payload, user_id, amount, currency,
                       provider_payment_charge_id, paid_at)
-VALUES (?charge, ?payload, ?from, ?total, ?currency, ?provider, ?now)
-ON CONFLICT (telegram_payment_charge_id) DO NOTHING RETURNING telegram_payment_charge_id;
--- 2  (no row → OrderMismatch: payment recorded, NO grant, tracing::error!; after COMMIT notify_unapplied (K19))
-UPDATE orders SET status = 'paid', paid_at = ?now, charge_id = ?charge
- WHERE id = ?payload AND user_id = ?from AND amount = ?total AND ?currency = 'XTR' AND status IN ('created','checkout')
-RETURNING product_id;
--- 3  (no row → AlreadyEntitled: a second paid order slipped past the checkout lock; after COMMIT notify_unapplied)
-INSERT INTO entitlements (user_id, product_id, charge_id, granted_at) VALUES (?from, ?product, ?charge, ?now)
-ON CONFLICT (user_id, product_id) DO NOTHING RETURNING product_id;
--- COMMIT; then, only for OrderMismatch / AlreadyEntitled: notify_unapplied; then 200
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (telegram_payment_charge_id) DO NOTHING
+RETURNING telegram_payment_charge_id;                   -- no row -> Duplicate (a twin waited, then skipped): COMMIT, 200
+UPDATE orders SET status = 'paid', paid_at = $7, charge_id = $1
+ WHERE id = $2 AND user_id = $3 AND amount = $4 AND $5 = 'XTR' AND status IN ('created', 'checkout')
+RETURNING product_id;                                   -- no row -> OrderMismatch (recorded, no grant)
+INSERT INTO entitlements (user_id, product_id, charge_id, granted_at) VALUES ($3, $8, $1, $7)
+ON CONFLICT (user_id, product_id) DO NOTHING
+RETURNING product_id;                                   -- no row -> AlreadyEntitled
+COMMIT;                                                 -- then 200; notify_unapplied after COMMIT (K19)
 ```
+
+- `OrderMismatch` logs `tracing::error!`; `AlreadyEntitled` means a second paid order slipped past the checkout lock.
+  Both are recorded with no grant and, after the commit, `notify_unapplied` runs (below).
+- **Rename.** `successful_payment_duplicate_concurrent_wal` becomes `successful_payment_duplicate_concurrent`. It is
+  deterministic: A's uncommitted insert, B observed waiting, A commits, B is `Duplicate`.
+- **Never lose money facts (K17/K19) on PostgreSQL text.** Telegram strings bound into `payments` get U+0000 → U+FFFD
+  at the `db/` boundary (`text` cannot hold U+0000). A replaced charge id replaces identically on redelivery, so
+  idempotency holds.
 
 **Unapplied charge** (`notify_unapplied`, after the commit, outside any transaction): `send_message` to the payer
 (bot text `payment_unapplied`: the charge id and `/paysupport`) and to each `ADMIN_TELEGRAM_IDS` entry (charge id,
@@ -1666,9 +1769,13 @@ admin's `/refund`; automatic refund is the owner's call (V4).
 3. On `Ok`, or on an API error that says the charge is already refunded (verify: the exact error text, L9) → revoke:
 
 ```sql
-UPDATE payments SET refunded_at = ?now WHERE telegram_payment_charge_id = ?charge AND refunded_at IS NULL RETURNING user_id;
-DELETE FROM entitlements WHERE charge_id = ?charge;
-UPDATE orders SET status = 'refunded' WHERE charge_id = ?charge;
+-- changed by RULINGS 14 (decision §4.4): the PostgreSQL text; a single-row conditional update, the twin waits and
+-- then finds refunded_at set
+UPDATE payments SET refunded_at = $2 WHERE telegram_payment_charge_id = $1 AND refunded_at IS NULL RETURNING user_id;
+-- no row -> AlreadyRefunded: COMMIT, done
+DELETE FROM entitlements WHERE charge_id = $1;
+UPDATE orders SET status = 'refunded' WHERE charge_id = $1;
+COMMIT;
 ```
 
 - `refunded_payment` updates run the same revoke; repeats are no-ops (`AlreadyRefunded`).
@@ -1693,14 +1800,14 @@ Texts come from `server/locales/bot.{ru,en}.json` by `from.language_code`. `serv
 
 | Situation | Authority | Outcome |
 |---|---|---|
-| Webhook `successful_payment` delivered twice (sequential or concurrent) | `payments` PK | first: Granted; second: Duplicate; both 200; one payment, one entitlement — `successful_payment_duplicate_concurrent_wal` (`tokio::join!`, temp-file WAL DB so connections really race [R4 §5.3]) |
+| Webhook `successful_payment` delivered twice (sequential or concurrent) | `payments` PK | first: Granted; second: Duplicate; both 200; one payment, one entitlement — `successful_payment_duplicate_concurrent` (two connections: A's uncommitted insert, B observed waiting; changed by RULINGS 14, decision section 6) |
 | Client `paid` before the webhook | DB | polling sees `checkout`, keeps polling; unlock on `paid` |
 | Webhook before `invoiceClosed` | DB | first poll sees `paid` |
 | Webhook never arrives (Telegram outage) | DB | `delayed` state; Check again; reload → entitlements; the payment is still recorded when Telegram redelivers |
 | Double tap on Buy | client guard + order reuse + checkout lock | one sheet; a second open of the same slug throws → ignored |
-| One order (one slug) opened on two devices, both press Pay | checkout lock, own order included | the second pre-checkout within 120 s of the first is refused (`InProgress`) — `precheckout_same_order_twice_refused` |
-| Two orders for one product paid in parallel | checkout lock (120 s) + entitlement PK | second pre-checkout refused (`InProgress`); if a charge still lands unapplied (`AlreadyEntitled` / `OrderMismatch`, e.g. a payment `pending` past the 120 s lock — E8): payer + admins notified, `/paysupport` flags it, refund per V4 — `unapplied_charge_notifies_payer_and_admin` |
-| Pre-checkout DB contention | `busy_timeout` within `timeout(2 s)` | answer `ok=false` (Temporary), 200 |
+| One order (one slug) opened on two devices, both press Pay | checkout lock, own order included | the second pre-checkout within 120 s of the first is refused (`InProgress`) — `precheckout_same_order_twice_refused`; concurrent: `precheckout_concurrent_same_order_one_passes` (the payer-row lock; changed by RULINGS 14) |
+| Two orders for one product paid in parallel | checkout lock (120 s) + entitlement PK | second pre-checkout refused (`InProgress`); if a charge still lands unapplied (`AlreadyEntitled` / `OrderMismatch`, e.g. a payment `pending` past the 120 s lock — E8): payer + admins notified, `/paysupport` flags it, refund per V4 — `unapplied_charge_notifies_payer_and_admin`; concurrent pre-checkouts: `precheckout_concurrent_two_orders_one_passes` (the payer-row lock; changed by RULINGS 14) |
+| Pre-checkout DB contention | `lock_timeout` 2 s (`55P03`) within `timeout(2 s)` (changed by RULINGS 14) | answer `ok=false` (Temporary), 200 |
 | Telegram API hung during the answer | `timeout(5 s)` | logged; 200; Telegram cancels the payment itself |
 | Undecodable / unknown update without a payment | — | 200 + log (no redelivery backlog) [R2 §2.3] |
 | `successful_payment` / `refunded_payment` the pinned frankenstein types reject (e.g. no `provider_payment_charge_id`) | own `PaymentProbe` (K17) | the same grant / revoke transaction; 200 after commit — `webhook_payment_undecodable_by_frankenstein_still_recorded`, `webhook_refund_undecodable_by_frankenstein_still_revokes` |
@@ -1723,6 +1830,22 @@ Texts come from `server/locales/bot.{ru,en}.json` by `from.language_code`. `serv
 | Asset 404 / decode failure | client | `Result` error → skip that visual, log, continue (no crash) |
 | Visible load still over the 48 MiB hard cap after evicting every `preload:*` / `next:*` | registry | refused with `over-cap` → the same skip path; `stats().overCap` + 1; the cap is never exceeded — `registry: visible load over hard cap after eviction is refused` |
 | Server: blocking work | server | none on request paths: content loaded at startup; file reads via `tokio::fs`; no `std::fs` in handlers (clippy `disallowed_methods` for `std::fs::read*` in `server/src/api`) |
+| DB unreachable at startup | `AppState::new` | `StartupError::Db`, exit non-zero; the process supervisor restarts |
+| DB down mid-run / managed failover | pool (`test_before_acquire`, `acquire_timeout 5 s`) | 500; webhook → Telegram redelivers (idempotent); pre-checkout → `Temporary` within 2 s; reconnect on recovery |
+| Row lock held > 2 s | `lock_timeout` → `55P03` | pre-checkout `Temporary` (`ok=false`); saves 500, and the client's retry with the same writeId is replay-safe |
+| Leaked transaction (future dropped mid-transaction) | `idle_in_transaction_session_timeout 30 s` | the session ends and its locks are released |
+| `40001` serialization failure | session pin (`Repo::open`) | impossible: every session runs READ COMMITTED whatever the server, database or role default, and no transaction asks for more — `pool_session_settings` |
+| U+0000 in a client string (saves `chapterId`/`storyVersion`/`lineId`/`writeId`) | edge | 400 `bad_request` (PG `text` cannot hold U+0000; it would be a 500) — `saves_nul_in_text_field_400` |
+| U+0000 in a Telegram string (initData `first_name`/`language_code`; L8b: payment fields) | `db/` boundary | replaced by U+FFFD before binding; login and money facts never fail on it — `auth_nul_in_first_name_stored_replaced` |
+| Save body deeper than serde_json's recursion limit, a lone surrogate, an out-of-range number | edge | 400; the edge is stricter than `IS JSON`, so the CHECK's 500 is unreachable — `saves_body_too_deep_400` |
+| Neon scale-to-zero wake | provider | "a few hundred ms" (DOC, no SLA), inside the 2 s budget; disabled on a paid plan by default (decision §2.2) |
+| Lane cluster corrupt after a hard reset | pgdev | start fails with no server running, and the message names `pgdev reset` (≈ 10-60 s re-init) |
+| Two consumers touch a cold slot cluster at once | pgdev `ensure_up` | the rename loser discards its own initdb copy; the start loser waits ≤ 180 s (`READY_DEADLINE`) for the peer, with `57P03` or `53300` meaning "wait" (`53300` as merged in LDB2 `a7e4a04`); both proceed — `ensure_up_concurrent_cold_start` |
+| A slot cluster still starting or recovering after 180 s | pgdev | `NotReady` naming `postgres.log`; never `reset` advice while a server runs |
+| Kit budget KILL of a gate that started the slot cluster | accepted (decision §3.7) | the slot's other consumers get connection-reset reds, never a wrong green; the next `ensure_up` restarts it |
+
+Changed by RULINGS 14 (decision section 6, §4.7; as merged, LDB1 `fee9da7`, LDB2 `a7e4a04`): the rows from "DB
+unreachable at startup" down are the PostgreSQL failure model; the test names are the merged ones.
 
 ---
 
@@ -1970,7 +2093,11 @@ only while a transition runs; the gate keeps every planned working set at or bel
 | Telegram subscriptions | caller (gets `Unsubscribe`) | subscribe | teardown | `facade_unsubscribe_removes_handler` |
 | Svelte `$effect`s | components | mount | unmount; async work inside carries an `AbortSignal` | component tests |
 | Save write queue | `saves/service.ts` | first write | idle (one in flight max) | `saves_one_in_flight` |
-| SQLite pool | `AppState` | startup | shutdown | — |
+| PG pool (≤ 8 connections; changed by RULINGS 14, decision §4.8, replacing the SQLite pool) | `AppState` (`Repo`) | `AppState::new` | `repo.close()` after serving (`server/src/main.rs:48`) | — |
+| Lane / dev cluster (postmaster; changed by RULINGS 14) | `pgdev::DevCluster` | `pgdev up` at lane start, from a plain Bash call outside any kit job; otherwise on demand by `ensure_up` (the first DB test or a `server-dev` launch) | `pgdev down` at lane end (orchestrator), a reboot, or a kit KILL | `pgdev status`; the kit DONE's `left_running_at_exit` |
+| Test database (changed by RULINGS 14) | `pgdev::TestDb` guard | `TestDb::create` | guard `Drop` (`DROP … WITH (FORCE)`); stale ones swept after 2 h | `test_db_created_then_dropped_on_drop`; seen-working `tgn_t_%` count = 0 |
+| Dev database `tgn_dev_<port>` (changed by RULINGS 14) | `server-dev` `main` | each launch (recreate) | the next launch | — |
+| Raw test connection (changed by RULINGS 14) | the test | `common::raw_db` | end of test; FORCE ends stragglers | — |
 | Delayed simulate tasks | `server-dev` | `simulate-payment` with delay | task completion | — |
 | Puzzle sessions, the explore controller, `room:*` / `scene:prop:*` holders, close-ups, lazy chunks | — | — | — | changed by PUZZLES-PLAN: [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section "Resource lifetime" |
 
@@ -2031,7 +2158,7 @@ All budgets are enforced by `client/scripts/budget.ts` inside `npm run build` un
 | Client unit | vitest project `unit` (node) — `src/**/*.test.ts`, `scripts/**/*.test.ts` | parser, codecs, runner, resume, registry, executor, layout, preload, API client, purchase flow, saves service, i18n, arch rules, build tools | `tags: every form from STAGING-DSL parses`, `tags: unknown kind is an error value`, `dsl-doc: headings equal parser kinds`, `runner: tag-only steps merge into next`, `resume: exact`, `resume: checkpoint after removed line`, `resume: chapter start after knot rename`, `resume: ink error after checkpoint resume falls back to chapter start`, `carry: g_ vars carried`, `registry_returns_to_baseline`, `registry_caps`, `registry: visible load over hard cap after eviction is refused`, `preload: next-chapter id resident after setChapter`, `audio: next-chapter sfx survives setChapter`, `executor_kills_timelines`, `chapter_change_releases`, `http: 401 re-auths once`, `http: concurrent 401s share one auth`, `loader: expired token re-auths once then loads`, `purchase_unlocks_only_from_server`, `flow: paid polls with backoff then unlocks`, `flow: cancelled returns to paywall`, `flow: window exceeded → delayed`, `saves: 409 pauses autosave`, `saves: retried write with same writeId is success`, `saves: lost response then newer body is not a conflict`, `saves: reload uploads pending when server writeId is ours`, `game: repeated ink error walks resume down to chapter start`, `game: next-chapter holder released on non-ending branch`, `decode: rust dto samples decode`, `budget: engine row fails when dynamic entry missing`, `budget: knot-set counts carried stage`, `scan: paid chapter with empty line-ID section fails`, `scan: paid asset bytes in dist fail`, `scan: paid-only asset with empty files section fails`, `dev server refuses /@fs paid path`, `dev config: fs.allow stays inside client/`, `arch: forbidden patterns`, `arch: import boundaries` |
 | Client DOM | vitest project `dom` (happy-dom 21.0.4) — `src/**/*.svelte.test.ts` | components with behaviour | `typewriter: graphemes intact`, `typewriter: tap completes`, `typewriter: reduced motion instant`, `choices: no tap-through`, `screens: back button visible iff overlay`, `menus: paywall needs terms checkbox` |
 | Story | `npm run story` (gate) + vitest on the tool with inline fixture inks | compile, lint (every rule red on a fixture), IDs, locales, graph reachability, 200 seeded playthroughs per chapter, ch2 with ch1 carries | `lint: <code> red on fixture` for every STAGING-DSL §11 code; `story: zero chapters is an error`; `play: step cap fails`; `graph: carry propagates until cleared` |
-| Server | `cargo test --workspace --all-targets --no-fail-fast --locked`; unit tests in modules + one integration crate `server/tests/it/` (one binary: one link; every state from `common::test_state()` → `AppState::new`) + `server/dev/tests/dev.rs` (imports the `server-dev` lib target, `oneshot`, binds no port, a temp-file DB per test [R4 §5.3]) | initData vectors, token, schema constraints, repos, routes via `tower::ServiceExt::oneshot`, payments, webhook, refunds, content gating, bindings, catalog contract | see below |
+| Server | `cargo test --workspace --all-targets --no-fail-fast --locked`; unit tests in modules + one integration crate `server/tests/it/` (one binary: one link; every state from `common::test_state()` → `AppState::new`) + `server/dev/tests/dev.rs` (imports the `server-dev` lib target, `oneshot`, binds no port; changed by RULINGS 14: a database per test on the slot's cluster (`pgdev::TestDb`); races by two connections with a lock-wait probe (`common::wait_for_lock_waiter`)) | initData vectors, token, schema constraints, repos, routes via `tower::ServiceExt::oneshot`, payments, webhook, refunds, content gating, bindings, catalog contract | see below |
 | e2e | Playwright 1.64.1, Chromium, 375×812, `hasTouch`, against `dist-e2e` via `vite preview` + `server-dev` | smoke + purchase + perf | see below |
 
 **Server test names:**
@@ -2041,7 +2168,9 @@ All budgets are enforced by `client/scripts/budget.ts` inside `npm run build` un
 - **token** — `token_roundtrip`, `token_expired_401`, `token_wrong_key_401`, `token_missing_401`,
   `auth_ignores_body_user_id`.
 - **schema** — `schema_charge_id_unique`, `schema_order_status_check`, `schema_paid_requires_charge`,
-  `schema_save_body_json_valid`, `wal_mode_on_file_db`, `no_dynamic_sql`.
+  `schema_save_body_json_valid`, `pool_session_settings`, `no_dynamic_sql`; changed by RULINGS 14 (as merged,
+  `fee9da7`): `wal_mode_on_file_db` → `pool_session_settings`, plus `test_db_isolated_per_state`,
+  `state_reopens_migrated_database` and `serve_log_names_database_target_not_password` (`it/main.rs`).
 - **saves** — `saves_create_then_conflict`, `saves_rev_increments`, `saves_retry_same_write_id_ok`,
   `saves_other_user_404`, `saves_body_too_large_413`, `saves_bad_slot_400`.
 - **invoices** — `invoice_unknown_product_404`, `invoice_already_owned_409`, `invoice_reuses_recent_order`,
@@ -2049,8 +2178,9 @@ All budgets are enforced by `client/scripts/budget.ts` inside `npm run build` un
 - **pre-checkout** — `precheckout_ok`, `precheckout_wrong_amount`, `precheckout_wrong_currency`,
   `precheckout_unknown_payload`, `precheckout_already_owned`, `precheckout_other_order_in_checkout`,
   `precheckout_same_order_twice_refused`, `precheckout_expired_order`, `precheckout_grants_nothing`,
-  `precheckout_answer_times_out_at_5s` (paused time).
-- **grant** — `successful_payment_grants_once`, `successful_payment_duplicate_concurrent_wal`,
+  `precheckout_answer_times_out_at_5s` (paused time); changed by RULINGS 14:
+  `precheckout_concurrent_two_orders_one_passes`, `precheckout_concurrent_same_order_one_passes`.
+- **grant** — `successful_payment_grants_once`, `successful_payment_duplicate_concurrent` (renamed by RULINGS 14),
   `successful_payment_unknown_order_recorded_no_grant`.
 - **webhook** — `webhook_missing_secret_401`, `webhook_wrong_secret_401`, `webhook_undecodable_200`,
   `webhook_payment_undecodable_by_frankenstein_still_recorded`, `webhook_payment_fields_unreadable_500`,
@@ -2065,8 +2195,16 @@ All budgets are enforced by `client/scripts/budget.ts` inside `npm run build` un
   `bot_texts_complete_and_within_limits`.
 - **routing and static** — `server_has_no_dev_routes`, `static_dir_must_not_contain_content_dir`.
 - **bot** — `start_has_web_app_button`.
-- **dev crate** — `dev_app_uses_given_db_path`, `launch_signs_valid_initdata`,
+- **dev crate** — `dev_app_uses_given_database`, `dev_database_reset_per_launch` (changed by RULINGS 14, replacing
+  `dev_app_uses_given_db_path`), `launch_signs_valid_initdata`,
   `simulate_payment_goes_through_webhook_handler`, `simulate_paid_twice_grants_once`.
+- **pgdev crate** (changed by RULINGS 14; as merged, LDB0 `857f7d6`, LDB2 `a7e4a04`) — `tests/pgdev.rs`:
+  `cluster_ensure_up_idempotent`, `ensure_up_concurrent_cold_start`, `test_db_created_then_dropped_on_drop`,
+  `test_dbs_isolated`, `recreate_drops_open_connections`, `sweep_drops_only_stale_test_dbs`,
+  `test_db_carries_hostile_defaults`; unit: `dev_cluster_env_defaults_and_errors`, `pg_version_parse`,
+  `connect_error_classes`, `encoded_command_base64_vectors`, `db_name_charset_and_length`,
+  `db_name_for_test_unique_and_dated`. The measurements `measure_test_db_lifecycle` (pgdev) and
+  `measure_state_lifecycle` (`it/main.rs`) are `#[ignore]`d.
 
 **e2e test names** (`client/e2e/*.spec.ts`):
 
@@ -2101,7 +2239,7 @@ section "Test strategy". The existing `saves_*` names are kept, on the per-story
 | clippy | a seeded `unwrap()` on a request path (`unwrap_used = deny`) | L2 |
 | `no_dynamic_sql` | a seeded `AssertSqlSafe` | L2 |
 | `bindings_are_fresh` | a DTO field added without regenerating | L6a |
-| idempotency | mutation: the PK on `payments` removed / check-then-insert → `successful_payment_duplicate_concurrent_wal` red | L8b (tester mutation) |
+| idempotency | mutation: the PK on `payments` removed / check-then-insert → `successful_payment_duplicate_concurrent` red (renamed by RULINGS 14) | L8b (tester mutation) |
 | e2e | L7: `main.ts` not calling the facade → `boot records ready, expand and swipe events` red; `$DEV_API_PORT` already bound by another process → the webServer "is already used" error (`reuseExistingServer: false`), never a run against the foreign server. L15: mock invoice forced to `failed` → `purchase unlocks chapter 2` red; BackButton binding removed → `back button closes overlays without history` red | L7, L15 |
 | puzzle extension | changed by PUZZLES-PLAN: yield lint and the `dsl-doc` heading (LW1); the soft-lock stub, the `successors` stub without `closed`, the checker capped at 200,000 instead of `RESUME_STATE_CAP`, the path-only reconcile step 4, the `resetSection` that keeps `section`, the current-section-only reconcile with no `unproved` (revision 3), and the pure-module arch rule (LW2); every `world/*` / `puzzle/*` / `explore/*` code (the cross-section-unlock world for `world/cross-section-effect`, revision 4; the multi-lock puzzle world for `world/puzzle-multi-lock`, revision 5; the cross-section arch world for `world/cross-section-exit`, revision 6), `paid/leak` for hints, the scan of hint text and of paid world text in dist, the whole-body world version (LW3); room-set and prop budget rows (L5); puzzle UI in the engine closure, the lazy rows without their importer, and the lazy-import arch rule (LP2); the controller that enters a section through `reduce` instead of `admitSection` (LX, revision 3); `0002` absent and the never-limiting stub (L6c); the pre-checkout without hint predicates (L8b); the wrong gate order, the failed mock invoice and the hotspot layer in the padded overlay in `puzzles.spec.ts` (L15) | [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section "Gates that must be seen red once" |
 | stories extension | changed by STORIES-PLAN: the `catalog/stories` code without its §11 row and every `catalog/stories` rule on a fixture, a missing `stories.json`, a paid ending name planted in the public catalog (LS1); a 30 KB cover and an oversize first-load row of one story (L5); a paid first chapter and a missing story index at startup (L6b); the dropped story-id CHECK (LS2); the dropped event key, the missing entitlement check, a read counting rows (LS3); regenerated event ids (LS4); saves keyed without the story (L15) | [STORIES-PLAN.md](STORIES-PLAN.md), section "Gates that must be seen red once" |
@@ -2141,7 +2279,7 @@ set on the `[workspace.dependencies]` entries [R4 §6.1]:
 | tokio | 1.54.1 (1.54.0 is yanked) | rt-multi-thread, macros, net, signal, time, fs |
 | tower / tower-http | 0.5.3 / 0.7.1 | tower-http: fs, trace, timeout, set-header |
 | frankenstein | =0.52.1 | `default-features = false, features = ["client-reqwest"]` (Bot API 10.3) |
-| sqlx | 0.9.0 | `default-features = false, features = ["runtime-tokio", "sqlite-bundled", "migrate", "macros"]` (macros only for `migrate!`) |
+| sqlx | 0.9.0 | `default-features = false, features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "postgres", "migrate", "macros"]` (macros only for `migrate!`; changed by RULINGS 14, as merged in the root `Cargo.toml`: `postgres` replaces `sqlite-bundled`, `tls-rustls-aws-lc-rs` shares the rustls stack reqwest already pulls) |
 | serde / serde_json | 1.0.229 / 1.0.154 | derive / raw_value |
 | thiserror | 2.0.21 | |
 | tracing / tracing-subscriber | 0.1.44 / 0.3.23 | fmt, env-filter |
@@ -2151,7 +2289,7 @@ set on the `[workspace.dependencies]` entries [R4 §6.1]:
 | form_urlencoded † | 1.2.2 | initData parsing (already in axum's tree via serde_urlencoded) |
 | getrandom † | 0.4.3 (MSRV 1.85) | order ids, token keys in dev (verify: the 0.4 fill API, L2) |
 | ts-rs † | 12.0.1 (MSRV 1.78) | default (`serde-compat`) + `no-serde-warnings` |
-| dev: tempfile † / http-body-util † / tower | 3.27.0 / 0.1.5 / 0.5.3 (util) | temp-file WAL DBs (dev-dependencies of `server` and `server-dev`); body collection in oneshot tests |
+| dev: pgdev / http-body-util † / tower | path crate `server/pgdev` / 0.1.5 / 0.5.3 (util) | changed by RULINGS 14 (as merged, `fee9da7`): `pgdev` replaces `tempfile` (the local cluster and a `TestDb` per test; a dev-dependency of `server`, a dependency of `server-dev`, never linked into the production `server`); body collection in oneshot tests |
 
 **Workspace lints:**
 - `[workspace.lints.rust] unsafe_code = "forbid"`.
@@ -2176,9 +2314,9 @@ set on the `[workspace.dependencies]` entries [R4 §6.1]:
 | `npm --prefix client run story` | `node scripts/story.ts` (Node 24 type stripping [R4]); flags `--fix-ids`, `--sync-locales`, `--strict` | the story gate |
 | `npm --prefix client run build` | `npm run story && npm run assets && vite build && node scripts/budget.ts && node scripts/scan-dist.ts` (`assets` = `node scripts/assets.ts`) | production build + budgets + leak scan |
 | `cargo fmt --all --check` | as is | |
-| `cargo clippy --workspace --all-targets --locked -- -D warnings` | as is | `server` (lib, bin, `tests/it`), `server-dev` (lib, bin, tests) |
-| `cargo test --workspace --all-targets --no-fail-fast --locked` | as is | `server` lib unit tests, `server` bin, `server/tests/it` (one binary), `server-dev` lib + bin + `tests/dev.rs` |
-| *(new, proposed)* `npm --prefix client run e2e` | `npm run story && npm run assets && vite build --mode e2e --outDir dist-e2e && cargo build --manifest-path ../Cargo.toml -p server-dev --locked && playwright test -c e2e/playwright.config.ts` | e2e; the config starts `server-dev` (fresh DB) on `127.0.0.1:$DEV_API_PORT` and `vite preview --mode e2e --outDir dist-e2e --port $DEV_WEB_PORT --strictPort`, both webServers with `reuseExistingServer: false` set explicitly; `preview.proxy` targets `$DEV_API_PORT`. Defaults 8787 / 4173; each parallel lane gets its own pair from per-lane env (E2), and every `server-dev` launch of a lane (e2e, seen working) uses it. Exceeds 2 min → the gate kit (open questions E1, E2) |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | as is | `server` (lib, bin, `tests/it`), `server-dev` (lib, bin, tests), `pgdev` (lib, bin, tests; changed by RULINGS 14) |
+| `cargo test --workspace --all-targets --no-fail-fast --locked` | as is | `server` lib unit tests, `server` bin, `server/tests/it` (one binary), `server-dev` lib + bin + `tests/dev.rs`, `pgdev` lib + bin + `tests/pgdev.rs`. Changed by RULINGS 14 (decision section 6): needs `PG_BIN` + the slot's `DEV_PG_PORT`/`DEV_PG_ROOT`; the cluster self-starts |
+| *(new, proposed)* `npm --prefix client run e2e` | `npm run story && npm run assets && vite build --mode e2e --outDir dist-e2e && cargo build --manifest-path ../Cargo.toml -p server-dev --locked && playwright test -c e2e/playwright.config.ts` | e2e; the config starts `server-dev` (fresh DB) on `127.0.0.1:$DEV_API_PORT` and `vite preview --mode e2e --outDir dist-e2e --port $DEV_WEB_PORT --strictPort`, both webServers with `reuseExistingServer: false` set explicitly; `preview.proxy` targets `$DEV_API_PORT`. Defaults 8787 / 4173; each parallel lane gets its own pair from per-lane env (E2), and every `server-dev` launch of a lane (e2e, seen working) uses it. Exceeds 2 min → the gate kit (open questions E1, E2). Changed by RULINGS 14 (decision section 6): needs `PG_BIN` + the slot's `DEV_PG_PORT`/`DEV_PG_ROOT`; the cluster self-starts, and `server-dev` recreates `tgn_dev_<port>` per launch |
 
 **Vacuous-green guards:**
 - vitest exits 1 on no files [R4 §5.1];
@@ -2431,6 +2569,8 @@ Notation:
   budget table (the engine row PENDING).
 
 #### L2 server-skeleton (server)
+- **Superseded by LDB1 (RULINGS 12; changed by RULINGS 14, decision section 6).** The SQLite text below is this
+  merged lane's history; the PostgreSQL port is LDB1 (`fee9da7`), its cut `D:/tmp/novel-orch/design/db/decision.md` §5.2.
 - **Goal:** the cargo workspace; the server boots, migrates SQLite in WAL, serves `/api/health`; fmt/clippy/test
   seen red.
 - **Lock:** `Cargo.toml`, `Cargo.lock`, `clippy.toml`, `.env.example`, `server/Cargo.toml`,
@@ -2488,6 +2628,8 @@ Notation:
 - **Seen working:** `npx vitest run src/story scripts/story --reporter=verbose` lists every rule by name.
 
 #### L4a server-auth (server)
+- **Superseded by LDB1 (RULINGS 12; changed by RULINGS 14, decision section 6).** The SQLite text below is this
+  merged lane's history; the PostgreSQL port is LDB1 (`fee9da7`), its cut `D:/tmp/novel-orch/design/db/decision.md` §5.2.
 - **Goal:** `POST /api/auth`; the token and the `AuthUser` extractor.
 - **Lock:** `server/src/{ids.rs,clock.rs,lib.rs}`, `server/src/auth/{mod.rs,initdata.rs,token.rs,extract.rs}`,
   `server/src/db/{mod.rs,users.rs}`, `server/src/api/{mod.rs,auth.rs,dto.rs}`, `server/tests/it/{main.rs,auth.rs}`,
@@ -2512,6 +2654,8 @@ Notation:
   `initdata_invalid`.
 
 #### L4b server-dev (server)
+- **Superseded by LDB1 (RULINGS 12; changed by RULINGS 14, decision section 6).** The SQLite text below is this
+  merged lane's history; the PostgreSQL port is LDB1 (`fee9da7`), its cut `D:/tmp/novel-orch/design/db/decision.md` §5.2.
 - **Goal:** the `server-dev` crate with `/dev/launch` (dev-signed initData, the real validator).
 - **Lock:** `Cargo.toml` (members), `Cargo.lock`, `server/dev/Cargo.toml`, `server/dev/src/{lib.rs,main.rs,launch.rs}`,
   `server/dev/tests/dev.rs` (7).
@@ -3478,8 +3622,8 @@ Notation:
   2. Pre-checkout statement + classification + timeouts. Red: each `precheckout_*` against a stub `Ok`;
      `precheckout_same_order_twice_refused` — predicted red: a second `on_pre_checkout` for an order that entered
      `checkout` 5 s earlier returns `Ok`.
-  3. Grant transaction (`on_successful_payment(&PaymentFact)`). Red: `successful_payment_duplicate_concurrent_wal`
-     against a check-then-insert stub → 2 entitlements.
+  3. Grant transaction (`on_successful_payment(&PaymentFact)`). Red: `successful_payment_duplicate_concurrent`
+     (renamed by RULINGS 14; two connections, B observed waiting) against a check-then-insert stub → 2 entitlements.
   4. Payment probe (K17): a full-decode failure of a payment-bearing update → `PaymentProbe` → the same grant.
      Red: `webhook_payment_undecodable_by_frankenstein_still_recorded` (a `successful_payment` without
      `provider_payment_charge_id`) — predicted red: 200 with 0 rows in `payments`; `webhook_payment_fields_unreadable_500`
@@ -3493,9 +3637,14 @@ Notation:
     them to `bot.*.json`).
   - **Reds:** `precheckout_hint_prereq_refused` (predicted red: `Ok` from the chapter-only statement),
     `precheckout_hint_solved_refused`, `precheckout_hint_chapter_not_owned_refused`.
-  - **Commit 3** adds `hint_purchase_duplicate_concurrent_grants_once` (the WAL `tokio::join!` race on a hint order:
-    one payment, one `hint:` entitlement).
+  - **Commit 3** adds `hint_purchase_duplicate_concurrent_grants_once` (the two-connection race on a hint order,
+    changed by RULINGS 14: one payment, one `hint:` entitlement).
   - **Tester mutation:** drop the `?prev` predicate.
+- **Changed by RULINGS 14 (decision section 6, §4.4; no lock change).** Commit 2's statement is the PostgreSQL
+  transaction of "Payment flow": the payer-row lock first, then the PK read and the conditional UPDATE. Its reds gain
+  `precheckout_concurrent_two_orders_one_passes` and `precheckout_concurrent_same_order_one_passes` (predicted red
+  with the lock statement removed: two `ok`), on `common::wait_for_lock_waiter` (merged in LDB1). Every statement
+  binds `$n`; Telegram strings get U+0000 → U+FFFD at the `db/` boundary.
 - **Gates:** fmt, clippy, test. The tester mutations from the catalogue: no PK, grant in pre-checkout, non-XTR
   accepted.
 - **Seen working:** `curl POST /dev/simulate-payment` → `GET /api/entitlements` shows `owned: true`.
@@ -4153,7 +4302,6 @@ Notation:
 | Item | Trigger / note |
 |---|---|
 | **R2 + TS Worker for paid assets** | axum issues a short-lived token scoped to `(user, item, exp)`; the Worker verifies it and reads R2 by binding; presigned URLs do not work on a custom domain [O]. `GET /api/assets/{file}` stays the reference implementation and test oracle |
-| **PostgreSQL** | the `db/` seam: `$n` placeholders, `jsonb` for `saves.body`, `query!` + `.sqlx` reconsidered; `BEGIN IMMEDIATE` semantics are no longer needed |
 | **Spine** (`@esotericsoftware/spine-pixi-v8`, needs Pixi ≥ 8.16 [O]) | a new staging kind (`anim:`), its own memory budget |
 | **Real art and audio** | PNG sources into `assets/src/` through the same sharp path; ffmpeg → AAC/M4A (new encoder step; WAV allowed only for placeholders, so a real WAV fails the gate on purpose); measure the CPU+GPU texture cost on an iPhone and a LOW Android |
 | **Deployment / hosting** | VPS + Cloudflare (Q5); TLS; `setWebhook` on the public URL; backups of the payments DB [R2 §1.5] |
@@ -4170,6 +4318,8 @@ Notation:
 | Choice events (changed by STORIES-PLAN) | only if the owner wants them (Q24); a new `kind` + a choice-ID vocabulary per build |
 | Statistics retention and erasure (changed by STORIES-PLAN) | Q23: an admin erasure command (`DELETE … WHERE user_id`), an age cut-off job |
 | Per-story globals, "Start over" on a finished story, story deep links (`startapp`) (changed by STORIES-PLAN) | past ~50 globals; UX polish; when the bot is real |
+
+Changed by RULINGS 14 (decision section 6): the **PostgreSQL** row is deleted; PostgreSQL 18 runs from day one (K14).
 
 ---
 
@@ -4258,6 +4408,7 @@ live in [STORIES-PLAN.md](STORIES-PLAN.md), section "Open questions". None block
 | 13 | 2026-10-31 | `D:/tmp/novel-orch/design/stories/triage_r2.md` (critique `design/stories/critique_r2.md`) | STORIES-PLAN revision 2: the 3 confirmed items resolved. W1: LS1 commit 8 makes the tool tests read an inline cast (`build.test.ts`, L3c's `locales.test.ts`, and one hunk each in the frozen `tags.test.ts` / `lint.test.ts`, reopened SQ2-style), proved by a scratch speaker `keeper` with `test` green; the LS1 lock 14 → 17; the collision locks; commit 6's "inline" sentence restated (the asset catalog is still read from the tree); N2's per-commit proof gains `test`. W2: `import-outside-src` judges template-literal `import()` / `new URL` heads, `+` joins and the glob `base` option as Vite does, flags `#` specifiers and refuses forms it cannot read; six red and two allow fixtures and a literal-only red ("Arch test rules", LS1 commit 5). W3: the fixture's paid ending is `q7_sealed_vault` (commit 6 fixture, commit 7 pin and test). Each PP edit is marked "STORIES-PLAN revision 2". Optional O1–O3 noted, not folded in. Per-item list: [STORIES-PLAN.md](STORIES-PLAN.md), section "Revision log"; detail: `D:/tmp/novel-orch/design/stories/revision_r2.md`. Pre-revision copy: `D:/tmp/novel-orch/design/stories/PROTOTYPE-PLAN.r2.before.md` |
 | 14 | 2026-10-31 | `D:/tmp/novel-orch/design/stories/triage_r3.md` (critique `design/stories/critique_r3.md`) | STORIES-PLAN revision 3: the 2 confirmed items resolved. W1: LS1 commit 6 also gives `locales.test.ts`'s own `repoFiles()` an inline `story/stories.json` (`manor`, `endings: {}`) with the story's title and teaser in its temp-repo name tables, with a red (`story: catalog names come from the locale tables`, ENOENT on the temp repo's `catalog.json`); the new `LocaleInput` story ids (commit 4) and `planEmit` story input (commit 7) are required fields, so the lock note names commits 4, 6, 7 and 8 for `locales.test.ts`, and commits 4 and 7 state their one-argument hunks; commit 6's real-tree line names both helpers. W2: `tags.test.ts` reopens for L5 (SQ9), one hunk: the catalog-key pins of `catalog: demo catalog and cast decode` (:450-458) become subset pins of the L3a keys, with a red-first and a seen-failing scratch; the L5 lock 13 → 14; the frozen-file bullet; LS1 commit 8 notes that L5 owns those pins. Each PP edit is marked "STORIES-PLAN revision 3". Optional O1–O3 noted, not folded in. Per-item list: [STORIES-PLAN.md](STORIES-PLAN.md), section "Revision log"; detail: `D:/tmp/novel-orch/design/stories/revision_r3.md`. Pre-revision copy: `D:/tmp/novel-orch/design/stories/PROTOTYPE-PLAN.r3.before.md` |
 | 15 | 2026-10-31 | `D:/tmp/novel-orch/design/stories/triage_r4.md` (critique `design/stories/critique_r4.md`) | STORIES-PLAN revision 4: the 1 confirmed item resolved. W1: `StoryNames` gains `stories` and `teasers` (`Record<StoryId, { ru; en }>`) in LS1 commit 7, where `emit.ts` first reads them, filled by `locales.ts` `nameChecks` for the `LocaleInput.stories` ids (commit 4 only requires them); L3c's pin `locales: matching tables raise nothing` (`locales.test.ts:291-298`) moves on purpose (`r.names` gains `stories: {}`, `teasers: {}`), with a red-first keyed on the diff lines; the inputs `NAMES` (`build.test.ts`), test 35's names and the `stories.test.ts` literals gain the keys; commit 4's red `loc: story title and teaser required` lives in `stories.test.ts`; the lock note (commit 7: two `locales.test.ts` hunks), the moved list (six pins) and the Gates line. Each PP edit is marked "STORIES-PLAN revision 4". Optional O1–O4 and the critique's open question 1 noted, not folded in. Per-item list: [STORIES-PLAN.md](STORIES-PLAN.md), section "Revision log"; detail: `D:/tmp/novel-orch/design/stories/revision_r4.md`. Pre-revision copy: `D:/tmp/novel-orch/design/stories/PROTOTYPE-PLAN.r4.before.md` |
+| 16 | 2026-10-31 | RULINGS 12, 14, 22 + `D:/tmp/novel-orch/design/db/decision.md` §6 (PP bullets; replacement texts §1.3, §3.5, §4.1, §4.3, §4.4, §4.7, §4.8), as merged: LDB0 `857f7d6`, LDB1 `fee9da7`, LDB2 `a7e4a04` | RULINGS 12: PostgreSQL 18 from day one (design/db/decision.md). Docs lane `docs-errata`, group A: T2; K12 storage; K14 rewritten to DB-1/DB-2; K18 (payer-row lock, DB-4); K19 (why); the Deviations and Later PostgreSQL rows deleted; the layout and module map (`server/pgdev/`, the server-dev `lib.rs`/`main.rs` rows, `DevPaths`, `launch_database`); the `0001` section (heading LDB1, the merged schema byte for byte, connection = the session pins, isolation = DB-4); the shared-types save-body row; the pre-checkout, grant and refund SQL in the PostgreSQL dialect; the concurrency table (renamed and new test names, `lock_timeout`, the §4.7 rows with `53300`); resource lifetime (§4.8); test strategy (server row, schema / pre-checkout / grant / dev-crate names, a pgdev bullet); seen-red rename; dependencies (sqlx features, `pgdev` for `tempfile`); gate mapping (cargo + e2e env, `pgdev` targets); L2/L4a/L4b "superseded by LDB1" lines; L8b commits 2-3. Each place is marked "changed by RULINGS 14". Ledger: `D:/tmp/novel-orch/docs-errata/ledger.md` |
 
 **Revision 1 (2026-10-30)** — what changed, by triage item:
 - **W1** (undecodable payment ACKed and lost): K17 (lenient `PaymentProbe` for the payment subset, 500 only when the
