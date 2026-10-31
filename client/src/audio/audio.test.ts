@@ -170,6 +170,8 @@ function fakeFetch(): { fn: (url: string, signal: AbortSignal) => Promise<Result
 
 const CALM = '/assets/bgm-calm-0a1b2c3d.wav';
 const TENSION = '/assets/bgm-tension-1b2c3d4e.wav';
+const STORM = '/api/assets/bgm-storm-9f8e7d6c.m4a';
+const WAVES = '/api/assets/bgm-waves-5e6f7a8b.m4a';
 
 function bgmEntry(url: string): unknown {
   return { kind: 'audio', role: 'bgm', durationMs: 8000, file: { url, bytes: 352_844 }, codec: url.endsWith('.wav') ? 'wav' : 'm4a' };
@@ -184,11 +186,26 @@ function manifest(chapterId: string, assets: Record<string, unknown>): AssetMani
   return decoded.value;
 }
 
-const CH1 = manifest('ch1', { 'bgm/calm': bgmEntry(CALM), 'bgm/tension': bgmEntry(TENSION) });
+const CH1 = manifest('ch1', {
+  'bgm/calm': bgmEntry(CALM),
+  'bgm/tension': bgmEntry(TENSION),
+  'bgm/storm': bgmEntry(STORM),
+  'bgm/waves': bgmEntry(WAVES),
+});
 
 function bgm(track: string | null, fadeMs = 1000, vol = 100): AudioCommand {
   // A fixture id: the manifests above hold it.
   return { kind: 'bgm', track: track as TrackId | null, fadeMs, vol };
+}
+
+const ok = (value: Blob): Result<Blob, AssetFetchError> => ({ ok: true, value });
+const calm = (vol: number): { track: TrackId; vol: number } => ({ track: 'calm' as TrackId, vol }); // a fixture id
+
+/** Lets every settled promise chain run (no timers move). */
+async function flush(): Promise<void> {
+  for (let i = 0; i < 20; i += 1) {
+    await Promise.resolve();
+  }
 }
 
 function at<T>(xs: readonly T[], i: number): T {
@@ -365,4 +382,185 @@ test('bgm: public track streams by url without fetchAsset', () => {
   expect(FakeAudio.instances.map((el) => el.loop)).toEqual([true, true]);
   // One source node per element, created once.
   expect(ctx.mediaSources.map((s) => s.el)).toEqual(FakeAudio.instances);
+});
+
+test('bgm_revokes_blob_urls', async () => {
+  vi.useFakeTimers();
+  const created = vi.spyOn(URL, 'createObjectURL');
+  const revoked = vi.spyOn(URL, 'revokeObjectURL');
+  const createdUrls = (): string[] => created.mock.results.map((r) => String(r.value));
+  const revokedUrls = (): string[] => revoked.mock.calls.map((c) => c[0]);
+  const { ctx, fetch, audio } = setup();
+  audio.setChapter(CH1);
+  const a = deck(ctx, 0);
+  // (a) A gated track: fetchAsset with a signal, one object URL, the deck plays it.
+  audio.apply([bgm('storm')], { instant: false });
+  const storm = at(fetch.calls, 0);
+  expect(storm.url).toBe(STORM);
+  expect(storm.signal.aborted).toBe(false);
+  storm.settle(ok(new Blob(['storm'])));
+  await flush();
+  expect(createdUrls().length).toBe(1);
+  const stormUrl = at(createdUrls(), 0);
+  expect(a.el.srcWrites).toEqual([stormUrl]);
+  // (b) Replaced by a public track: revoked once its fade has released the deck.
+  audio.apply([bgm('calm', 1000)], { instant: false });
+  await vi.advanceTimersByTimeAsync(999);
+  expect(revokedUrls()).toEqual([]);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(revokedUrls()).toEqual([stormUrl]);
+  expect(a.el.attr).toBeNull();
+  // (c) A gated track, then stop: revoked when its fade-out ends.
+  audio.apply([bgm('waves')], { instant: false });
+  at(fetch.calls, 1).settle(ok(new Blob(['waves'])));
+  await flush();
+  const wavesUrl = at(createdUrls(), 1);
+  audio.apply([bgm(null, 500)], { instant: false });
+  await vi.advanceTimersByTimeAsync(499);
+  expect(revokedUrls()).toEqual([stormUrl]);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(revokedUrls()).toEqual([stormUrl, wavesUrl]);
+  await vi.advanceTimersByTimeAsync(1000); // the calm deck's own fade-out ends too
+  // (d) Superseded while loading: the request is aborted, and its late result creates no URL.
+  audio.apply([bgm('storm')], { instant: false });
+  const late = at(fetch.calls, 2);
+  audio.apply([bgm('calm')], { instant: false });
+  expect(late.signal.aborted).toBe(true);
+  late.settle(ok(new Blob(['late'])));
+  await flush();
+  expect(createdUrls()).toEqual([stormUrl, wavesUrl]);
+  expect(revokedUrls()).toEqual([stormUrl, wavesUrl]); // every URL created is revoked, once
+});
+
+test('bgm: same track new vol tweens without restart', async () => {
+  vi.useFakeTimers();
+  const { ctx, audio } = setup();
+  audio.setChapter(CH1);
+  audio.apply([bgm('calm')], { instant: false });
+  const a = deck(ctx, 0);
+  const b = deck(ctx, 1);
+  ctx.currentTime = 5;
+  audio.apply([bgm('calm', 1000, 50)], { instant: false });
+  expect(a.el.srcWrites.length + b.el.srcWrites.length).toBe(1);
+  expect(a.el.plays + b.el.plays).toBe(1);
+  expect(a.gain.ops.slice(-3)).toEqual([
+    { op: 'cancel', t: 5 },
+    { op: 'set', v: 1, t: 5 },
+    { op: 'ramp', v: 0.5, t: 6 },
+  ]);
+  // Back to a track that is still fading out: revived from its level, with no new src.
+  ctx.currentTime = 10;
+  audio.apply([bgm('tension', 2000)], { instant: false });
+  ctx.currentTime = 11;
+  audio.apply([bgm('calm', 1000)], { instant: false });
+  expect(a.gain.ops.slice(-3)).toEqual([
+    { op: 'cancel', t: 11 },
+    { op: 'set', v: 0.25, t: 11 },
+    { op: 'ramp', v: 1, t: 12 },
+  ]);
+  expect(b.gain.ops.slice(-3)).toEqual([
+    { op: 'cancel', t: 11 },
+    { op: 'set', v: 0.5, t: 11 },
+    { op: 'ramp', v: 0, t: 12 },
+  ]);
+  expect(a.el.srcWrites).toEqual([CALM]);
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(a.el.attr).toBe(CALM);
+  expect(a.el.paused).toBe(false);
+  expect(b.el.attr).toBeNull();
+  expect(audio.currentBgm()).toEqual({ track: 'calm', vol: 100 });
+});
+
+test('bgm: restore is instant; currentBgm is the logical track', () => {
+  vi.useFakeTimers();
+  const { ctx, fetch, audio } = setup();
+  audio.setChapter(CH1);
+  audio.apply([bgm('storm', 1000, 80)], { instant: false });
+  expect(audio.currentBgm()).toEqual({ track: 'storm', vol: 80 });
+  ctx.currentTime = 3;
+  audio.restore(calm(60));
+  const a = deck(ctx, 0);
+  expect(at(fetch.calls, 0).signal.aborted).toBe(true);
+  expect(a.el.srcWrites).toEqual([CALM]);
+  expect(a.gain.ops).toEqual([
+    { op: 'cancel', t: 3 },
+    { op: 'set', v: 0.6, t: 3 },
+  ]);
+  expect(vi.getTimerCount()).toBe(0);
+  expect(audio.currentBgm()).toEqual({ track: 'calm', vol: 60 });
+  audio.restore(calm(30));
+  expect(a.el.srcWrites.length).toBe(1);
+  expect(a.gain.ops.slice(-1)).toEqual([{ op: 'set', v: 0.3, t: 3 }]);
+  audio.restore(null);
+  expect(a.el.attr).toBeNull();
+  expect(a.el.paused).toBe(true);
+  expect(vi.getTimerCount()).toBe(0);
+  expect(audio.currentBgm()).toBeNull();
+  // A track the manifest does not hold stops the music.
+  audio.restore(calm(40));
+  audio.restore({ track: 'nosuch' as TrackId, vol: 40 }); // a fixture id the manifest lacks
+  expect(a.el.attr).toBeNull();
+  expect(audio.currentBgm()).toBeNull();
+});
+
+test('bgm: commands during a gated load keep the audible track', async () => {
+  vi.useFakeTimers();
+  const { ctx, fetch, audio } = setup();
+  audio.setChapter(CH1);
+  audio.apply([bgm('calm', 0)], { instant: false });
+  const a = deck(ctx, 0);
+  const b = deck(ctx, 1);
+  const opsBeforeLoad = a.gain.ops.length;
+  ctx.currentTime = 10;
+  audio.apply([bgm('storm')], { instant: false }); // B loads; A keeps calm at its level
+  expect(a.gain.ops.length).toBe(opsBeforeLoad);
+  expect(a.el.paused).toBe(false);
+  // Back to the audible track during the load: revived, with no new src and no new download.
+  ctx.currentTime = 11;
+  audio.apply([bgm('calm', 1000, 60)], { instant: false });
+  expect(a.el.srcWrites).toEqual([CALM]);
+  expect(at(fetch.calls, 0).signal.aborted).toBe(true);
+  expect(fetch.calls.length).toBe(1);
+  expect(a.gain.ops.slice(-3)).toEqual([
+    { op: 'cancel', t: 11 },
+    { op: 'set', v: 1, t: 11 },
+    { op: 'ramp', v: 0.6, t: 12 },
+  ]);
+  expect(b.el.plays).toBe(0);
+  // Another track during a load: the load is replaced; the audible track keeps its level.
+  ctx.currentTime = 20;
+  audio.apply([bgm('storm')], { instant: false });
+  const opsAt20 = a.gain.ops.length;
+  ctx.currentTime = 21;
+  audio.apply([bgm('waves')], { instant: false });
+  expect(at(fetch.calls, 1).signal.aborted).toBe(true);
+  expect(at(fetch.calls, 2).url).toBe(WAVES);
+  expect(a.el.paused).toBe(false);
+  expect(a.el.attr).toBe(CALM);
+  expect(a.gain.ops.length).toBe(opsAt20);
+  // Stop during a load: the load is dropped and the audible track fades out.
+  ctx.currentTime = 22;
+  audio.apply([bgm(null, 1500)], { instant: false });
+  expect(at(fetch.calls, 2).signal.aborted).toBe(true);
+  expect(a.gain.ops.slice(-3)).toEqual([
+    { op: 'cancel', t: 22 },
+    { op: 'set', v: 0.6, t: 22 },
+    { op: 'ramp', v: 0, t: 23.5 },
+  ]);
+  expect(audio.currentBgm()).toBeNull();
+  await vi.advanceTimersByTimeAsync(1500);
+  expect(a.el.attr).toBeNull();
+  // A restore of a track that is still fading out revives it at once.
+  ctx.currentTime = 30;
+  audio.apply([bgm('calm', 0)], { instant: false });
+  ctx.currentTime = 31;
+  audio.apply([bgm('tension', 2000)], { instant: false });
+  audio.restore(calm(80));
+  expect(a.el.srcWrites).toEqual([CALM, CALM]);
+  expect(a.gain.ops.slice(-2)).toEqual([
+    { op: 'cancel', t: 31 },
+    { op: 'set', v: 0.8, t: 31 },
+  ]);
+  expect(b.el.attr).toBeNull();
+  expect(vi.getTimerCount()).toBe(0);
 });

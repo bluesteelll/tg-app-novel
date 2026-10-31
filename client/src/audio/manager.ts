@@ -2,7 +2,7 @@
 // the destination. GameSession creates it with the context unlockAudio() made inside the Start tap and calls apply()
 // once per batch, beside the scene (F2). Only this file and unlock.ts are imported from outside audio/.
 import type { AssetManifest, FetchAsset } from '../story/catalog.ts';
-import type { AssetId, StagingCommand } from '../story/staging.ts';
+import type { AssetId, StagingCommand, StagingSnapshot } from '../story/staging.ts';
 import { createBgm, GainRamp, toGain, type AudioEntry } from './bgm.ts';
 
 /** The staging commands audio plays (STAGING-DSL §6). */
@@ -17,6 +17,10 @@ export const VOLUME_RAMP_MS = 50;
 export interface AudioManager {
   /** One batch: `bgm` first, then `sfx` (STAGING-DSL §7); `instant` (skip mode) turns every fade into a cut. */
   apply(cmds: readonly AudioCommand[], o: { instant: boolean }): void;
+  /** A snapshot's bgm, at once; the track already sounding is never restarted. An id the manifest lacks stops it. */
+  restore(bgm: StagingSnapshot['bgm']): void;
+  /** The logical bgm a save records: set when the command is applied, also while a gated track loads. */
+  currentBgm(): StagingSnapshot['bgm'];
   /** The chapter whose manifest resolves track and sfx ids. */
   setChapter(m: AssetManifest | null): void;
   /** The settings' bus volumes, each change ramped. */
@@ -33,7 +37,7 @@ function audioEntry(m: AssetManifest | null, id: string, role: AudioEntry['role'
 }
 
 /** Builds the graph on `ctx` (the context unlockAudio() returned); the manager lives as long as the app. */
-export function createAudioManager(ctx: AudioContext, _deps: { fetchAsset: FetchAsset }): AudioManager {
+export function createAudioManager(ctx: AudioContext, deps: { fetchAsset: FetchAsset }): AudioManager {
   const master = ctx.createGain();
   master.connect(ctx.destination);
   const bgmBus = ctx.createGain();
@@ -45,7 +49,7 @@ export function createAudioManager(ctx: AudioContext, _deps: { fetchAsset: Fetch
     bgm: new GainRamp(ctx, bgmBus.gain, 1),
     sfx: new GainRamp(ctx, sfxBus.gain, 1),
   };
-  const bgm = createBgm(ctx, bgmBus);
+  const bgm = createBgm(ctx, bgmBus, deps);
   let manifest: AssetManifest | null = null;
 
   return {
@@ -65,6 +69,11 @@ export function createAudioManager(ctx: AudioContext, _deps: { fetchAsset: Fetch
         }
       }
     },
+    restore(s) {
+      const entry = s === null ? null : audioEntry(manifest, `bgm/${s.track}`, 'bgm');
+      bgm.restore(s !== null && entry !== null ? { track: s.track, entry, vol: s.vol } : null);
+    },
+    currentBgm: () => bgm.current(),
     setChapter(m) {
       manifest = m;
     },
