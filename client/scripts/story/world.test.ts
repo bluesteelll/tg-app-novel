@@ -6,9 +6,14 @@ import { readFileSync } from 'node:fs';
 
 import { expect, test } from 'vitest';
 
-import { decodeAssetCatalog } from '../../src/story/catalog.ts';
+import { assetIndex, decodeAssetCatalog } from '../../src/story/catalog.ts';
 import type { AssetCatalog } from '../../src/story/catalog.ts';
 import type { ChapterId, KnotName, PuzzleLocalId, VarName } from '../../src/story/staging.ts';
+import { toPublic } from '../../src/world/decode.ts';
+import { compileChapter } from './compile.ts';
+import { buildGraph } from './graph.ts';
+import type { ChapterGraph, GraphFacts, WorldRef } from './graph.ts';
+import { GLOBALS_PATH } from './lint.ts';
 import type { Finding, LintCode, SourceChapter } from './lint.ts';
 import { decodeWorldFile, lintWorld } from './world.ts';
 import type { SectionReport, VarLiteral } from './world.ts';
@@ -650,4 +655,221 @@ test('lint: id/chapter-prefix red on fixture (world)', () => {
   const w = base();
   obj(at(w, 'sections.manor.rooms.hall')['title'])['id'] = 'ch2.manor.zzzz';
   expect(of(lint(w), 'id/chapter-prefix')).toEqual([expect.objectContaining({ severity: 'E', message: "'ch2.manor.zzzz' is in a world of ch1 (§4)" })]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// graph.ts: the yield edges (STAGING-DSL §8 "Yield edges") and the yield codes against the chapter's world
+
+const ASSETS = assetIndex(CATALOG);
+const INK_HEAD = ['INCLUDE ../common/globals.ink', '-> start', '=== start ==='];
+
+/** The demo manor's story: hall_in yields the section; the cellar voice and the forced gate are its events, manor_out its leave. */
+function manorInk(): string[] {
+  return [
+    ...INK_HEAD,
+    'Пришли. #id:ch1.start.a001',
+    '-> hall_in',
+    '=== hall_in ===',
+    '# scene: street',
+    'Осмотримся. #id:ch1.hall_in.a002',
+    '# explore: manor',
+    '-> DONE',
+    '=== manor_cellar_voice ===',
+    'Кто здесь? #id:ch1.manor_cellar_voice.a003',
+    '# explore: manor',
+    '-> DONE',
+    '=== manor_gate_forced ===',
+    'Ворота поддались. #id:ch1.manor_gate_forced.a004',
+    '# explore: manor',
+    '-> DONE',
+    '=== manor_out ===',
+    'Мы вышли. #id:ch1.manor_out.a005',
+    '-> END',
+  ];
+}
+
+/** The demo world plus `cabinet`, a code puzzle on no lock: one a tag may yield. */
+function withCabinet(w: Json): Json {
+  obj(w['puzzles'])['cabinet'] = {
+    type: 'code',
+    title: t('cabinet', 'Шкаф'),
+    prompt: t('cabinet', 'Три диска.'),
+    closeup: 'cabinet',
+    params: { dials: 3 },
+    maxAttempts: null,
+    giveUp: false,
+    solution: [3, 1, 4],
+    hints: [],
+  };
+  return w;
+}
+
+/** A fixture world as the graph's world input: decoded the way the story gate decodes it, then made public. */
+function okWorld(w: Json): WorldRef {
+  const decoded = decodeWorldFile({ file: FILE, text: `${JSON.stringify(w, null, 2)}\n` });
+  if (decoded.world === null) {
+    throw new Error(`invariant: the fixture world decodes: ${JSON.stringify(decoded.findings)}`);
+  }
+  return { kind: 'ok', body: toPublic(decoded.world) };
+}
+
+/** Compiles `main` as ch1 (the fixture must compile cleanly) and builds its graph against `world` (default none). */
+function graphWith(main: readonly string[], world?: WorldRef): { graph: ChapterGraph; findings: Finding[]; facts: GraphFacts } {
+  const files = new Map([
+    [GLOBALS_PATH, 'VAR g_trust = 0\n'],
+    ['ch1/main.ink', `${main.join('\n')}\n`],
+  ]);
+  const r = compileChapter(CH1, (key) => files.get(key) ?? null);
+  expect(r.findings, `fixture compiles: ${JSON.stringify(r.findings)}`).toEqual([]);
+  if (r.compiled === null) {
+    throw new Error('invariant: a fixture with no findings compiled');
+  }
+  return buildGraph({ chapter: CH1, files: r.compiled.files, sources: files, assets: ASSETS, world });
+}
+
+/** The findings of `code` as `file:line: message`. */
+function sited(findings: readonly Finding[], code: LintCode): string[] {
+  return of(findings, code).map((f) => `${f.file}:${f.line}: ${f.message}`);
+}
+
+/** The 1-based line of `text` in a fixture's lines. */
+function lineIn(main: readonly string[], text: string): number {
+  const i = main.indexOf(text);
+  if (i < 0) {
+    throw new Error(`invariant: fixture line '${text}' exists`);
+  }
+  return i + 1;
+}
+
+/** A chapter whose start yields `tag`, with an `after` knot that ends it. */
+function yielding(tag: string): string[] {
+  return [...INK_HEAD, 'Ящик. #id:ch1.start.a001', tag, '-> DONE', '=== after ===', 'Готово. #id:ch1.after.a002', '-> END'];
+}
+
+test('lint: puzzle/unknown red on fixture', () => {
+  const main = yielding('# puzzle: chest then=after');
+  const line = lineIn(main, '# puzzle: chest then=after');
+  expect(sited(graphWith(main, okWorld(withCabinet(base()))).findings, 'puzzle/unknown')).toEqual([
+    `ch1/main.ink:${line}: puzzle 'chest' is not in story/ch1/world.json`,
+  ]);
+  // No world at all: the id is not in the chapter's world either (D6).
+  expect(sited(graphWith(main).findings, 'puzzle/unknown')).toEqual([`ch1/main.ink:${line}: puzzle 'chest': ch1 has no world (story/ch1/world.json)`]);
+  // A world that failed world/schema is not judged; a puzzle the world has is green.
+  expect(of(graphWith(main, { kind: 'invalid' }).findings, 'puzzle/unknown')).toEqual([]);
+  expect(graphWith(yielding('# puzzle: cabinet then=after'), okWorld(withCabinet(base()))).findings).toEqual([]);
+});
+
+test('lint: puzzle/then-unknown red on fixture', () => {
+  const main = yielding('# puzzle: cabinet then=nowhere');
+  const line = lineIn(main, '# puzzle: cabinet then=nowhere');
+  const expected = [`ch1/main.ink:${line}: 'then=nowhere' names no knot of ch1`];
+  // `then=` never depends on the world (D6).
+  expect(sited(graphWith(main, okWorld(withCabinet(base()))).findings, 'puzzle/then-unknown')).toEqual(expected);
+  expect(sited(graphWith(main, { kind: 'invalid' }).findings, 'puzzle/then-unknown')).toEqual(expected);
+  expect(sited(graphWith(main).findings, 'puzzle/then-unknown')).toEqual(expected);
+  expect(of(graphWith(yielding('# puzzle: cabinet then=after')).findings, 'puzzle/then-unknown')).toEqual([]);
+});
+
+test('lint: puzzle/in-section red on fixture', () => {
+  // The gate's order puzzle sits on the hall gate's lock: it opens from its room, never from a yield.
+  const main = yielding('# puzzle: gate then=after');
+  const line = lineIn(main, '# puzzle: gate then=after');
+  expect(of(graphWith(main, okWorld(base())).findings, 'puzzle/in-section')).toEqual([
+    {
+      code: 'puzzle/in-section',
+      severity: 'E',
+      file: 'ch1/main.ink',
+      line,
+      message: "puzzle 'gate' is yielded here and is the puzzle of lock hall.gate: a lock's puzzle opens from its room (PUZZLES-PLAN §8)",
+    },
+  ]);
+  expect(of(graphWith(main, okWorld(base())).findings, 'puzzle/unknown')).toEqual([]);
+  expect(of(graphWith(yielding('# puzzle: cabinet then=after'), okWorld(withCabinet(base()))).findings, 'puzzle/in-section')).toEqual([]);
+});
+
+test('lint: explore/unknown-section red on fixture', () => {
+  const main = yielding('# explore: garden');
+  const line = lineIn(main, '# explore: garden');
+  expect(sited(graphWith(main, okWorld(base())).findings, 'explore/unknown-section')).toEqual([
+    `ch1/main.ink:${line}: section 'garden' is not in story/ch1/world.json`,
+  ]);
+  expect(sited(graphWith(main).findings, 'explore/unknown-section')).toEqual([
+    `ch1/main.ink:${line}: explore 'garden': ch1 has no world (story/ch1/world.json)`,
+  ]);
+  expect(of(graphWith(main, { kind: 'invalid' }).findings, 'explore/unknown-section')).toEqual([]);
+  expect(of(graphWith(manorInk(), okWorld(base())).findings, 'explore/unknown-section')).toEqual([]);
+});
+
+test('lint: explore/event-return red on fixture', () => {
+  // The cellar voice runs and stops without handing control back to the rooms.
+  const main = manorInk();
+  main.splice(lineIn(main, 'Кто здесь? #id:ch1.manor_cellar_voice.a003'), 1);
+  const header = lineIn(main, '=== manor_cellar_voice ===');
+  expect(sited(graphWith(main, okWorld(base())).findings, 'explore/event-return')).toEqual([
+    `ch1/main.ink:${header}: event knot 'manor_cellar_voice' of section manor never yields '# explore: manor' back to the rooms (§6)`,
+  ]);
+  // E1 -> E2, where E2 yields: the closure over the section's event knots returns (D7), and nothing escapes.
+  const chained = manorInk();
+  chained.splice(lineIn(chained, 'Кто здесь? #id:ch1.manor_cellar_voice.a003'), 2, '-> manor_gate_forced');
+  const g = graphWith(chained, okWorld(base()));
+  expect(g.graph.knots.get('manor_cellar_voice' as KnotName)?.next).toEqual(['manor_gate_forced']);
+  expect(g.findings).toEqual([]);
+});
+
+test('lint: explore/event-escape red on fixture', () => {
+  // The cellar voice ends the story; the forced gate diverts out of the section's event knots.
+  const main = manorInk();
+  main.splice(lineIn(main, 'Кто здесь? #id:ch1.manor_cellar_voice.a003'), 2, '-> END');
+  main.splice(lineIn(main, 'Ворота поддались. #id:ch1.manor_gate_forced.a004'), 2, '-> hall_in');
+  const voice = lineIn(main, '=== manor_cellar_voice ===');
+  const gate = lineIn(main, '=== manor_gate_forced ===');
+  expect(sited(graphWith(main, okWorld(base())).findings, 'explore/event-escape')).toEqual([
+    `ch1/main.ink:${voice}: event knot 'manor_cellar_voice' of section manor writes '-> END': it returns with '# explore: manor' (§6)`,
+    `ch1/main.ink:${gate}: event knot 'manor_gate_forced' of section manor leads to 'hall_in', which is not an event knot of manor (§6)`,
+  ]);
+  // A leave knot is no event knot: its `-> END` is the chapter's way on.
+  expect(of(graphWith(manorInk(), okWorld(base())).findings, 'explore/event-escape')).toEqual([]);
+});
+
+test('graph: event knot carries the room stage', () => {
+  // The cellar voice runs over the cellar (its bg and the star medallion's prop); the forced gate and the leave over
+  // the hall. hall_in's street never flows along a section edge: a room's batch opens with its own scene.
+  const g = graphWith(manorInk(), okWorld(base()));
+  expect(g.graph.carried.get('manor_cellar_voice' as KnotName)).toEqual(['bg/cellar', 'prop/medal_star']);
+  expect(g.graph.carried.get('manor_gate_forced' as KnotName)).toEqual(['bg/hall']);
+  expect(g.graph.carried.get('manor_out' as KnotName)).toEqual(['bg/hall']);
+  expect(g.findings).toEqual([]);
+  // A `bg` on the event knot's opening tag lines clears the room's background and its props (STAGING-DSL §8).
+  const cleared = manorInk();
+  cleared.splice(lineIn(cleared, '=== manor_cellar_voice ==='), 0, '# bg: shore');
+  expect(graphWith(cleared, okWorld(base())).graph.carried.get('manor_cellar_voice' as KnotName)).toEqual([]);
+});
+
+test('graph: then= knot is a successor, section knots are reachability edges only', () => {
+  const manor = manorInk();
+  const main = [
+    ...INK_HEAD,
+    'Ящик. #id:ch1.start.a001',
+    '# puzzle: cabinet then=after',
+    '-> DONE',
+    '=== after ===',
+    'Открыто. #id:ch1.after.a002',
+    '# explore: manor',
+    '-> DONE',
+    ...manor.slice(manor.indexOf('=== manor_cellar_voice ===')),
+  ];
+  const g = graphWith(main, okWorld(withCabinet(base())));
+  expect(g.graph.knots.get('start' as KnotName)?.next).toEqual(['after']);
+  // The hub never preloads every event (K9): reachability only, so no unreachable knot, and the leave's END ends it.
+  expect(g.graph.knots.get('after' as KnotName)?.next).toEqual([]);
+  expect(g.findings).toEqual([]);
+  expect(g.facts.yields.get('after' as KnotName)).toEqual([{ kind: 'explore', section: 'manor' }]);
+  // Without the world the section knots have no edge in: unreachable, and no reachable knot writes END.
+  const bare = graphWith(main);
+  expect(of(bare.findings, 'graph/unreachable-knot').map((f) => f.message)).toEqual([
+    "knot 'manor_cellar_voice' is not reachable from '-> start'",
+    "knot 'manor_gate_forced' is not reachable from '-> start'",
+    "knot 'manor_out' is not reachable from '-> start'",
+  ]);
+  expect(of(bare.findings, 'graph/no-end')).toHaveLength(1);
 });
