@@ -38,7 +38,9 @@ The player:
 5. goes back to `manor`: its saves are untouched.
 
 The server records chapter starts and completions, endings reached and puzzle outcomes; `GET /api/stats` answers
-"endings X of Y" per story and for the game.
+"endings X of Y" per story and for the game. Changed by META-PLAN (M1, M8): it also records the picked option of
+every choice (`choice_made`), and `endingsTotal` leaves the API — the answer is "endings found" (the names reached),
+never a total; the titles exist only in the completion card ([META-PLAN.md](META-PLAN.md)).
 
 **Correctness targets** — each is a gate:
 
@@ -48,8 +50,8 @@ The server records chapter starts and completions, endings reached and puzzle ou
 | ST2 | The first chapter of every story is free; every chapter belongs to exactly one story; carry flows only along a story's chain | `catalog/stories` fixtures (LS1); `startup_fails_when_first_chapter_paid` (L6b); `story: a story-ending run does not carry into the next chapter` |
 | ST3 | Saves are per story: a slot of one story never overwrites or conflicts with another story's slot | `schema_saves_pk_per_story`, `saves_story_slots_independent` (LS2); `saves: pending entry is per story` (L10); e2e `stories: saves are per story` |
 | ST4 | Statistics never unlock anything: no content or entitlement path reads `stat_events` | `stats_do_not_unlock_paid_chapter` (LS3); `db/stats.rs` is called only from `api/stats.rs` (review rule, FEATURE_MAP) |
-| ST5 | A client event is stored once per (user, event id) whatever the retries; a set fact (an ending) counts once whatever the ids | `stats_event_replay_counts_once`, `stats_endings_x_of_y` |
-| ST6 | X ≤ Y: the read counts only chapters and endings of the current story index | `stats_retired_ending_not_counted` |
+| ST5 | A client event is stored once per (user, event id) whatever the retries; a set fact (an ending) counts once whatever the ids | `stats_event_replay_counts_once`, `stats_endings_x_of_y` (changed by META-PLAN: renamed `stats_endings_reached_distinct`) |
+| ST6 | X ≤ Y: the read counts only chapters and endings of the current story index (changed by META-PLAN: no Y in the API, M8; the index filter stays) | `stats_retired_ending_not_counted`; changed by META-PLAN: `stats_response_has_no_endings_total` |
 | ST7 | An event in a paid chapter needs the chapter entitlement at write time; the story id is derived by the server, never sent | `stats_paid_ending_needs_entitlement`, `stats_not_entitled_hides_ending_check`, `stats_story_derived_by_server` |
 | ST8 | Capture never blocks or breaks play: `record()` never throws or awaits; a failed flush keeps the events, bounded | `reporter: failure never throws`, `reporter: retried batch keeps event ids`, `reporter: queue capped at 64 drops oldest` |
 
@@ -290,6 +292,8 @@ Each: **What / Why / Alternatives / Trade-off.**
 - **Alternatives.** Capture choices now: rows per pick and a choice vocabulary per build for a metric nobody asked
   for — the owner decides (Q24, default off). "Chapter delivered" on the server: a prefetch is not engagement [S2].
 - **Trade-off.** "34 % chose this" starts on the day choice capture starts, if ever.
+- **Changed by META-PLAN (M1, Q24 resolved).** A fifth kind, `choice_made`: subject = the picked option's line ID
+  (STAGING-DSL §4), outcome null; nothing else (no timings, no text). The aggregate screen stays Later.
 
 **Y10. Trust: a closed vocabulary and the entitlement at write time; never a grant.**
 - **What.** An event is accepted only if:
@@ -307,6 +311,9 @@ Each: **What / Why / Alternatives / Trade-off.**
   entries and choices), so it adds a read per event for little; server-side ink replay (bladeink: a new crate,
   unverified state compatibility with inkjs [S2]).
 - **Trade-off.** Free-chapter endings are self-reported.
+- **Changed by META-PLAN (M1, M2).** Rule 3 extends to choices: a `choice_made` subject has the line-ID grammar and
+  the event's chapter as its prefix (LS3, `stat_events_choice_in_chapter`), and is an option of
+  `meta.choices[chapter]` (LM2, reason `unknown_choice`), checked after the entitlement like every subject.
 
 **Y11. Write API: `POST /api/stats/events`, batched, idempotent, capped.**
 - **What.**
@@ -324,6 +331,20 @@ Each: **What / Why / Alternatives / Trade-off.**
   duplicates); a `uuid` column (needs sqlx's `uuid` feature [S2]: `TEXT` + CHECK instead).
 - **Trade-off.** The cap is soft: two concurrent batches may both pass the count (overshoot ≤ 32). A per-user row
   lock is not worth it on a non-money path.
+- **Changed by META-PLAN revision 1 (W2; META-PLAN M3).** `choice_made` events (META-PLAN M1) arrive at about one per
+  3 s in a skip-mode replay, so one shared cap would let them crowd the facts out. The one count statement now returns
+  two counts over `stat_events_by_user_time` (`count(*) FILTER (WHERE kind = 'choice_made')` and the rest):
+  - **facts** (`chapter_started`, `chapter_completed`, `ending_reached`, `puzzle_ended`): `STATS_HOURLY_CAP` 600 per
+    rolling hour, counted over fact rows only; over it → 429 `rate_limited` + `Retry-After: 600`, nothing written, as
+    above. Choice rows never count toward it.
+  - **choices**: `STATS_CHOICE_HOURLY_CAP` 600 per rolling hour of their own, never a 429. Within the remaining budget
+    the batch's choice events are recorded in batch order; beyond it a choice event is still recorded if it is the
+    user's first pick of that option (no `choice_made` row of that subject yet, and the batch's first event of it: one
+    read on `stat_events_by_user_story`, made only when the batch exceeds the budget), otherwise it is rejected with
+    the new reason `rate_limited` (`StatRejectReason::RateLimited`, LS3) and the client drops it (Y13).
+  - So no fact and no first pick is ever refused because of choice volume; only repeat picks beyond 600 per hour are
+    dropped. Statements: + that one conditional read. A forged client adds at most 600 fact rows and 600 choice rows
+    per hour plus first picks, which the vocabulary bounds (28,800 rows a day plus the vocabulary once; was 14,400).
 
 **Y12. One read endpoint, `GET /api/stats`; no screen.**
 - **What.** `StatsResponse { stories: [{ storyId, started, chaptersCompleted, chaptersTotal, endingsReached,
@@ -336,6 +357,9 @@ Each: **What / Why / Alternatives / Trade-off.**
   one screen).
 - **Trade-off.** `endingsTotal` reveals how many endings a paid story has (Q25; default allowed — nothing shows it
   yet).
+- **Changed by META-PLAN (M8, Q25 resolved).** `endingsTotal` is removed from `StoryStatsDto` and `GameStatsDto`
+  (LS3 re-cut, before any client decodes it); `endingsReached` stays; `chaptersTotal` and `storiesTotal` stay. The
+  trade-off above no longer applies.
 
 **Y13. Client capture: one reporter, queued, flushed at natural points.**
 - **What.**
@@ -352,6 +376,13 @@ Each: **What / Why / Alternatives / Trade-off.**
 - **Alternatives.** A request per event; `localStorage` (forbidden: principle 1, arch rule); CloudStorage (4,096
   characters per value, synced: a per-device queue is the right scope).
 - **Trade-off.** Events of a device that never returns are lost — acceptable for display statistics.
+- **Changed by META-PLAN revision 1 (W2; META-PLAN M3).** The queue keeps its 64 events, but a full queue evicts the
+  oldest `choice_made` event first; a fact (`chapter_*`, `ending_reached`, `puzzle_ended`) is evicted only when no
+  choice event is queued (64 facts: not reachable in play, a chapter yields ≤ 3). A batch takes the queued facts first,
+  then the choices, each oldest first, so an ending's immediate flush carries the ending in its first batch. A
+  `rate_limited` rejection (a repeat pick over the choice budget, Y11) is dropped like any rejection. Trade-off: a
+  device offline for more than 64 events loses its oldest picks (a lost first pick only delays a `choice`
+  achievement until that option is picked again), never an ending.
 
 **Y14. Client UX: Home lists the stories; ChapterSelect per story; "The End".**
 - **What.**
@@ -369,6 +400,9 @@ Each: **What / Why / Alternatives / Trade-off.**
   accidental Back, or Android's hardware back, would leave the story).
 - **Trade-off.** Continue on a finished story resumes at its ending knot (the last lines, then "The End"), as PP's
   "To be continued" does; a "Start over" affordance is Later.
+- **Changed by META-PLAN (M9, M27).** `the_end` gains a second action "Прохождение" (the completion card, after
+  `reporter.settle`), and a story card on Home gains the same button once the player has reached one of its endings;
+  Menu and Home gain Friends and Wallet entries. L15 renders none of them; LMI wires them (L14b re-cut).
 
 **Y15. Covers: a public `cover` namespace, DOM images, measured into first-load.**
 - **What.**
@@ -397,6 +431,10 @@ Each: **What / Why / Alternatives / Trade-off.**
 - **Alternatives.** Hashed user ids (still personal data under Recital 26); a cascading FK (decide with the erasure
   feature).
 - **Trade-off.** The lawful basis and the retention period are open (owner + lawyer).
+- **Changed by META-PLAN (M24–M26, Q23 resolved).** The personal-data inventory, the lawful basis per item, the
+  retention defaults, the erasure order and the privacy policy (RU then EN, `GET /api/privacy`, versioned) are
+  META-PLAN "Privacy: personal-data inventory, lawful bases, erasure" and M26; the erasure command is a Later lane
+  before production.
 
 **Y17. Puzzles per story: unchanged.**
 - **What.** Worlds stay per chapter. `PuzzleId = <chapter>.<local>` and `hint:<PuzzleId>:<tier>` stay game-unique
@@ -405,6 +443,8 @@ Each: **What / Why / Alternatives / Trade-off.**
 - **Why.** Y1 makes the generalization free.
 - **Alternatives.** Per-story puzzle namespaces (needed only with per-story chapter numbering).
 - **Trade-off.** None.
+- **Changed by META-PLAN (M21).** The `hint:<PuzzleId>:<tier>` products are removed (RULINGS 25): a hint tier is
+  unlocked by spending a hint from the balance (`hint_unlocks`, PK (user, puzzle, tier)); `PuzzleId` is unchanged.
 
 **Y18. DSL: no tag change; the story-catalog contract enters STAGING-DSL through LS1.**
 - **What.** `tags.ts`, `staging.ts`, `TAG_KINDS` and the parser are unchanged. LS1 changes, in one commit with the
@@ -441,7 +481,7 @@ Each: **What / Why / Alternatives / Trade-off.**
 | `ChapterId` | `ch<N>` (unchanged) | **game** (unique across stories, Y1) | `ch3` |
 | `EndingName` | `^[a-z][a-z0-9_]{0,31}$` | story | `drowned` |
 | stat event id | lower-case UUID v4 `^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | user | `crypto.randomUUID()` |
-| `PuzzleId`, hint products, line IDs | unchanged (PZ, STAGING-DSL §4) | game | `ch1.drawer`, `hint:ch1.drawer:2` |
+| `PuzzleId`, hint products, line IDs | unchanged (PZ, STAGING-DSL §4). Changed by META-PLAN: hint products removed (M21); a line ID of a choice is also a `choice_made` subject (M1) | game | `ch1.drawer`, ~~`hint:ch1.drawer:2`~~ |
 
 ### Source file — `story/stories.json`
 
@@ -540,6 +580,8 @@ export type StatEvent =
   | { kind: 'ending_reached'; chapterId: ChapterId; storyVersion: StoryVersion; ending: EndingName }
   | { kind: 'puzzle_ended'; chapterId: ChapterId; storyVersion: StoryVersion; puzzle: PuzzleLocalId;
       outcome: PuzzleOutcome };                          // the reporter writes the subject as `<chapterId>.<puzzle>`
+// Changed by META-PLAN (M1, LS4 re-cut): + | { kind: 'choice_made'; chapterId; storyVersion; option: LineId }
+// (subject = option); StatsReporter gains settle({ timeoutMs }): Promise<'drained' | 'timeout'>.
 ```
 
 Save body: `SaveBodyV1` is unchanged (the story is the row's key, not a body field).
@@ -575,6 +617,8 @@ pub struct PostStatsResponse { pub recorded: u32, pub duplicates: u32, pub rejec
 pub struct RejectedEvent { pub event_id: String, pub reason: StatRejectReason }
 #[serde(rename_all = "snake_case")]
 pub enum StatRejectReason { UnknownChapter, NotEntitled, UnknownEnding, UnknownPuzzle }
+// Changed by META-PLAN (M1, M2, M8): StatKind gains ChoiceMade; StatRejectReason gains UnknownChoice (LS3 declares
+// it, LM2 uses it); endings_total is removed from StoryStatsDto and GameStatsDto (LS3 re-cut).
 pub struct StatsResponse { pub stories: Vec<StoryStatsDto>, pub game: GameStatsDto }
 pub struct StoryStatsDto { pub story_id: StoryId, pub started: bool, pub chapters_completed: Vec<String>,
                            pub chapters_total: u32, pub endings_reached: Vec<String>, pub endings_total: u32 }
@@ -583,6 +627,8 @@ pub struct GameStatsDto { pub stories_started: u32, pub stories_total: u32,
 // constants (api/stats.rs): STATS_BATCH_MAX = 32, STATS_HOURLY_CAP = 600, STATS_RETRY_AFTER_SECS = 600,
 // STATS_AGE_MS_MAX = 2_592_000_000 (30 days). Errors: ApiError::BadRequest, RateLimited (L6c), Internal — no new
 // ErrorCode.
+// Changed by META-PLAN revision 1 (W2, Y11): STATS_HOURLY_CAP counts fact rows only; STATS_CHOICE_HOURLY_CAP = 600
+// (choice_made); StatRejectReason gains RateLimited (a repeat pick over the choice budget; LS3 declares it).
 ```
 
 ### SQL schema
@@ -643,6 +689,10 @@ CREATE TABLE stat_events (                       -- append-only; never read by a
   CONSTRAINT stat_events_age_bounded      CHECK (age_ms BETWEEN 0 AND 2592000000),
   CONSTRAINT stat_events_received_positive CHECK (received_at > 0)
 );
+-- Changed by META-PLAN (M1, LS3 re-cut): stat_events_kind_known gains 'choice_made'; stat_events_subject_by_kind
+-- gains (kind = 'choice_made' AND subject ~ '^ch[1-9][0-9]*[.][a-z][a-z0-9_]*[.][0-9a-z]{4}$' AND outcome IS NULL);
+-- new: CONSTRAINT stat_events_choice_in_chapter CHECK (kind <> 'choice_made' OR split_part(subject, '.', 1) = chapter_id)
+-- (META-PLAN "SQL" holds the whole changed table).
 -- The read ("X of Y"): an index-only scan of one user's distinct facts.
 CREATE INDEX stat_events_by_user_story ON stat_events (user_id, story_id, kind, chapter_id, subject);
 -- The rolling-hour cap count.
@@ -669,6 +719,10 @@ Reject reasons, decided in this order per event: `unknown_chapter` (not in the i
 chapter, product not owned) → `unknown_ending` (not an ending of the chapter's story in that chapter) /
 `unknown_puzzle` (not in the chapter's puzzle index). Rejected events are answered, not retried.
 
+Changed by META-PLAN (M1, M2, M8): `StatEventDto` admits `kind: "choice_made"` (subject = the option's line ID of
+that chapter; 400 on a wrong shape or prefix); the reason `unknown_choice` (not an option of `meta.choices[chapter]`,
+LM2) joins the third step; `StatsResponse` has no `endingsTotal`. The new meta routes are in META-PLAN "HTTP API".
+
 ### Server formats (story tool → server; the committed fixture is the contract)
 
 ```jsonc
@@ -690,6 +744,8 @@ chapter, product not owned) → `unknown_ending` (not an ending of the chapter's
                 "title":       { "ru": "{chapter}", "en": "{chapter}" },     // rendered 1–32 characters
                 "description": { "ru": "«{story}»: {chapter}", "en": "“{story}”: {chapter}" } },   // 1–255
   "hints": { "priceStars": [1, 1, 2], "title": { … }, "description": { … } } }
+// Changed by META-PLAN (M17, M21): no `hints` section (RULINGS 25: L6b built no hint products); LE1 adds the
+// `economy` section (resource kinds, `pack:<id>` products, `spend.hintTier`, gift and referral rules).
 ```
 
 Fixtures (L6b, `server/tests/fixtures/content/`): `stories.json` exactly as above (two stories); paid content for
@@ -828,13 +884,18 @@ impl Repo {
 
 A resend after a lost 200 comes back as duplicates and is dropped (ST5).
 
+Changed by META-PLAN revision 1 (W2): step 2 sends the queued facts first, then choices (Y13); step 5 counts facts
+and choices apart — over 600 facts → 429 as above; over 600 choices → repeat picks rejected `rate_limited`, first
+picks recorded, never a 429 (Y11).
+
 ### F12. Statistics read
 
 `GET /api/stats` → `stat_facts(user)` (one statement) → per story of the index: `started` = any `chapter_started` in
 it; `chaptersCompleted` = distinct chapters still in the story with a `chapter_completed`, or holding a reached ending
 still in the story (a declared ending ends its chapter without a `chapter_completed`, F4′); `endingsReached` =
 distinct ending names still in the story; totals from the index → `game` sums. Old rows outside the index are kept
-and not counted (ST6).
+and not counted (ST6). Changed by META-PLAN (M8): no ending total in either level; `choice_made` rows are not read
+here (the card and the friend profile read them, META-PLAN F16, F22).
 
 ### F13. Back to stories
 
@@ -855,7 +916,8 @@ PP "Payment flow" unchanged: `POST /api/invoices { productId: "chapter:ch4" }` �
 | A stats batch resent after a lost response | every event a duplicate; nothing double-counted (ST5) |
 | The same ending reached twice (replay, resume at the knot) | two rows, one fact: `endingsReached` holds it once |
 | Two concurrent stats batches near the cap | both may pass the count: overshoot ≤ 32 rows (soft cap, Y11) |
-| A forged client posts new ids in a loop | 600 rows per hour, then 429; counts unchanged (set semantics) |
+| A forged client posts new ids in a loop | 600 rows per hour, then 429; counts unchanged (set semantics). Changed by META-PLAN revision 1 (W2): 600 fact rows per hour, then 429, plus 600 choice rows and first picks (bounded by the vocabulary) |
+| A skip-mode replay posts ≈ 1,200 picks per hour and reaches an ending (changed by META-PLAN revision 1, W2) | the ending is recorded (facts have their own budget); repeat picks past 600 per hour are rejected `rate_limited`, first picks recorded; a full queue evicts choices first |
 | A paid-chapter event without the entitlement (or after a refund) | `not_entitled`, dropped by the client; the subject is never checked |
 | Two devices, same story | PP's rev / writeId / 409 per (user, story, slot) |
 | Two devices, different stories | independent rows; no conflict (ST3) |
@@ -989,9 +1051,9 @@ STAGING-DSL reopened for LS1 only, and (revision 2) `tags.test.ts` / `lint.test.
 | Cover image | exactly 360×640; AVIF ≤ 24 KB; WebP ≤ 36 KB; both formats | Y15: 0.88 MiB decoded | `budget.ts` (L5) |
 | First-load to first line, per story | for every free chapter that no `next` names (the first chapter of each story, Y2 rule 3): closures + CSS + html + TWA + `catalog.json` + `covers.json` + the 3 largest cover AVIFs + that chapter's story / meta / manifest + its first knot's images ≤ 800 KB | PP row, per story; the 3 largest covers bound the 3 eager cards whatever the order | `budget.ts` (L5): `budget: first-load row per story` |
 | Story JSON, en table, per-chapter transfer, knot set | PP limits, per chapter of every story | unchanged | `budget.ts` |
-| Stats queue | ≤ 64 events (≈ 14 KB) | Y13 | `reporter: queue capped at 64 drops oldest` |
+| Stats queue | ≤ 64 events (≈ 14 KB); changed by META-PLAN revision 1 (W2): choices evicted first | Y13 | `reporter: queue capped at 64 drops oldest`, `reporter: queue full of choices keeps ending_reached` |
 | Stats batch | ≤ 32 events, ≤ 16 KB body | Y11 | `stats_batch_over_32_400`; the default body limit |
-| Stats rows | ≤ 600 per user per rolling hour | Y11 | `stats_rate_limited_after_600_per_hour` |
+| Stats rows | ≤ 600 per user per rolling hour; changed by META-PLAN revision 1 (W2): ≤ 600 fact rows + ≤ 600 choice rows per rolling hour, plus first picks | Y11 | `stats_rate_limited_after_600_per_hour` (fact rows), `stats_cap_does_not_refuse_facts`, `stats_choice_over_budget_keeps_first_picks` |
 | Home memory | Home unmounted during play; ≤ 2.6 MiB of cover bitmaps worst case | 138.1 MiB steady at the gated limits | e2e `stories: picker unmounted during play`; PP `heap under budget` |
 | Time to first line | ≤ 6 s (unchanged), the tap on the first card's Start | Y14 | e2e `time to first line under throttling` (L15) |
 
@@ -1012,9 +1074,9 @@ chapter's carry), paid chapters and paid metas absent from `dist/` (PP T1).
 | Asset tool (L5) | `catalog: cover namespace decodes`, `assets: covers always public`, `budget: cover over 24 KB fails`, `budget: first-load row per story` |
 | Server (L6b) | `story_index_loaded`, `startup_fails_without_story_index`, `startup_fails_when_first_chapter_paid`, `catalog_default_price_applies_to_every_paid_chapter`, `catalog_price_override_must_be_paid_chapter`, `chapter_invoice_titles_within_limits`, `entitlements_lists_every_paid_chapter_of_every_story` |
 | Server (LS2) | `schema_saves_story_id_shape`, `schema_saves_pk_per_story`, `saves_story_slots_independent`, `saves_unknown_story_404`, `saves_bad_story_id_400`, `saves_chapter_outside_story_400`, `saves_list_spans_stories`; every existing `saves_*` and `schema_save*` name kept, on the new paths |
-| Server (LS3) | `schema_stat_events_event_key`, `schema_stat_events_subject_by_kind`, `schema_stat_events_event_id_shape`, `schema_stat_events_story_id_shape`, `stats_event_replay_counts_once`, `stats_rate_limited_after_600_per_hour`, `stats_batch_over_32_400`, `stats_story_derived_by_server`, `stats_unknown_ending_rejected`, `stats_paid_ending_needs_entitlement`, `stats_not_entitled_hides_ending_check`, `stats_puzzle_of_other_chapter_rejected`, `stats_endings_x_of_y`, `stats_ending_completes_its_chapter`, `stats_retired_ending_not_counted`, `stats_do_not_unlock_paid_chapter`, `stats_private_no_store`; `bindings_are_fresh`, `dto_samples_are_fresh` |
+| Server (LS3) | `schema_stat_events_event_key`, `schema_stat_events_subject_by_kind`, `schema_stat_events_event_id_shape`, `schema_stat_events_story_id_shape`, `stats_event_replay_counts_once`, `stats_rate_limited_after_600_per_hour`, `stats_batch_over_32_400`, `stats_story_derived_by_server`, `stats_unknown_ending_rejected`, `stats_paid_ending_needs_entitlement`, `stats_not_entitled_hides_ending_check`, `stats_puzzle_of_other_chapter_rejected`, `stats_endings_x_of_y`, `stats_ending_completes_its_chapter`, `stats_retired_ending_not_counted`, `stats_do_not_unlock_paid_chapter`, `stats_private_no_store`; `bindings_are_fresh`, `dto_samples_are_fresh`. Changed by META-PLAN: `stats_endings_x_of_y` → `stats_endings_reached_distinct`; + `schema_stat_events_choice_in_chapter`, `stats_choice_shape_checked`, `stats_response_has_no_endings_total` (LS3); `stats_unknown_choice_rejected`, `stats_paid_choice_needs_entitlement_first` (LM2); the client rows gain `reporter: choice event carries the option line id`, `reporter: settle resolves after the queue drains`, `reporter: settle times out without throwing` (LS4) and `game: a choice records its option line id` (L15). Changed by META-PLAN revision 1 (W2): + `stats_cap_does_not_refuse_facts`, `stats_choice_over_budget_keeps_first_picks` (LS3); `stats_rate_limited_after_600_per_hour` counts fact rows |
 | Client unit (L10) | `saves: pending entry is per story`, `saves: list spans stories` |
-| Client unit (LS4) | `decode: stats samples decode`, `reporter: retried batch keeps event ids`, `reporter: ending flushes at once`, `reporter: 429 waits retry-after`, `reporter: 400 drops the batch`, `reporter: rejected events are dropped`, `reporter: failure never throws`, `reporter: queue survives reload through device storage`, `reporter: queue capped at 64 drops oldest`, `reporter: events older than 30 days are dropped`, `reporter: dispose clears timers` |
+| Client unit (LS4) | `decode: stats samples decode`, `reporter: retried batch keeps event ids`, `reporter: ending flushes at once`, `reporter: 429 waits retry-after`, `reporter: 400 drops the batch`, `reporter: rejected events are dropped`, `reporter: failure never throws`, `reporter: queue survives reload through device storage`, `reporter: queue capped at 64 drops oldest`, `reporter: events older than 30 days are dropped`, `reporter: dispose clears timers`; changed by META-PLAN revision 1 (W2): + `reporter: queue full of choices keeps ending_reached`, `reporter: batch sends facts first` |
 | Client DOM (L14a, L14b) | `tap: continue names the story`; `menus: story picker shows start or continue per story`, `menus: chapter select lists only its story`, `menus: notice kinds show their actions` (with `the_end`), `menus: menu has back to stories` |
 | Client unit (L15) | `game: chapter start and end are reported`, `game: exact or checkpoint resume does not report chapter start`, `game: pending chapter start reports chapter start`, `game: declared ending end is distinguishable from chapter end`, `game: ending knot reports the ending and skips next-chapter preload`, `game: story end shows the end`, `game: exit to stories returns the registry to baseline`, `game: exit to stories disposes the save service`, `game: exit to stories disposes explore, puzzle and purchase sessions`, `game: start rejects a chapter outside the story` |
 | e2e (L15, `stories.spec.ts`) | `stories: picker lists both stories with covers`, `stories: saves are per story`, `stories: second story first chapter free then paywall`, `stories: story ending shows the end and records the ending` (reads `GET /api/stats` with a token the test obtains through `/dev/launch` + `POST /api/auth` for the same dev user), `stories: back button closes chapter select to the picker`, `stories: picker unmounted during play` |
@@ -1031,7 +1093,7 @@ chapter's carry), paid chapters and paid metas absent from `dist/` (PP T1).
 | `build` budget | a 30 KB cover; a story whose first chapter's first-load row exceeds 800 KB (synthetic) | L5 |
 | server startup | a fixture index with a paid first chapter → `StartupError::Content`; an index file removed → the same | L6b |
 | schema | `saves_story_id_shape` removed → `schema_saves_story_id_shape` red; `stat_events_event_key` removed → `stats_event_replay_counts_once` red | LS2, LS3 (tester mutations) |
-| stats trust | the entitlement check removed → `stats_paid_ending_needs_entitlement` red; the read counting rows instead of distinct facts → `stats_endings_x_of_y` red | LS3 (tester mutations) |
+| stats trust | the entitlement check removed → `stats_paid_ending_needs_entitlement` red; the read counting rows instead of distinct facts → `stats_endings_x_of_y` red (changed by META-PLAN: `stats_endings_reached_distinct`) | LS3 (tester mutations) |
 | reporter | ids regenerated per attempt → `reporter: retried batch keeps event ids` red | LS4 (tester mutation) |
 | e2e | saves keyed without the story in a scratch tree → `stories: saves are per story` red | L15 |
 
@@ -1087,10 +1149,10 @@ Totals: 2 stories, 4 chapters (2 free, 2 paid), 4 endings (`truth`, `ashes`, `dr
 
 | # | Question | Default in the design |
 |---|---|---|
-| Q22 (open) | Which statistics to show, and where | Foundation only (this design): no screen; `GET /api/stats` answers endings and chapters X of Y |
-| Q23 (new) | Statistics retention, lawful basis, privacy-policy text (Telegram terms §4; GDPR; 152-FZ — with Q21) | Keep events with no deletion job; erasure designed, not built; policy text before production (owner + lawyer) |
-| Q24 (new) | Capture choice events from day one (for a later "X % chose this")? | Off: not captured (minimisation); the metric can only start when capture starts |
-| Q25 (new) | May the number of endings (and later their titles) be shown before a story is bought? | Names never public before reached; the count is returned by `/api/stats` but shown nowhere yet |
+| Q22 (open) | Which statistics to show, and where | Foundation only (this design): no screen; `GET /api/stats` answers endings and chapters X of Y. Changed by META-PLAN: the completion card per story (own statistics, found endings by title, achievements; M9); endings have no Y in the API (M8); other screens and community numbers stay open |
+| Q23 (RESOLVED 2026-10-31 by META-PLAN M24–M26) | Statistics retention, lawful basis, privacy-policy text (Telegram terms §4; GDPR; 152-FZ — with Q21) | Keep events with no deletion job; erasure designed, not built; policy text before production (owner + lawyer). Ruling: the inventory and lawful bases per item, the policy draft (RU then EN, placeholders for the operator facts, `GET /api/privacy`), consents versioned, erasure a Later lane before production; the operator facts and the lawyer review stay with the owner (META-PLAN MV12, MV13) |
+| Q24 (RESOLVED 2026-10-31 by META-PLAN M1) | Capture choice events from day one (for a later "X % chose this")? | Off: not captured (minimisation); the metric can only start when capture starts. Ruling: captured — `choice_made`, the option's line ID only; the aggregate is Later |
+| Q25 (RESOLVED 2026-10-31 by META-PLAN M7, M8) | May the number of endings (and later their titles) be shown before a story is bought? | Names never public before reached; the count is returned by `/api/stats` but shown nowhere yet. Ruling: no count anywhere (`endingsTotal` removed); the card shows only found endings, and a paid one's title only with the chapter's entitlement; a friend's counts stay visible (META-PLAN MV17) |
 | Q1 (story) | Story B's premise, cast names and length | Placeholder `tide`: a lighthouse keeper, about 5 minutes in two chapters |
 | Q2 (art) | Cover art direction | Generated placeholder covers, 360×640 |
 | Q3 (prices) | Prices of later chapters per story | One default `1` Star for every paid chapter (PLACEHOLDER), per-chapter overrides possible |
@@ -1136,6 +1198,8 @@ Totals: 2 stories, 4 chapters (2 free, 2 paid), 4 endings (`truth`, `ashes`, `dr
 | 3 | 2026-10-31 | `D:/tmp/novel-orch/design/stories/triage_r3.md` (critique `design/stories/critique_r3.md`) | The 2 confirmed items W1 and W2 resolved, with PROTOTYPE-PLAN revision 14; PUZZLES-PLAN unchanged. Optional O1–O3 and the critique's open question 1 noted, not folded in. Pre-revision copies: `design/stories/STORIES-PLAN.r3.before.md`, `PROTOTYPE-PLAN.r3.before.md`, `PUZZLES-PLAN.r3.before.md`. Per-item detail with the removed and added text: `D:/tmp/novel-orch/design/stories/revision_r3.md` |
 | 4 | 2026-10-31 | `D:/tmp/novel-orch/design/stories/triage_r4.md` (critique `design/stories/critique_r4.md`) | The 1 confirmed item W1 resolved, with PROTOTYPE-PLAN revision 15; PUZZLES-PLAN unchanged. Optional O1–O4 and the critique's open question 1 noted, not folded in. Pre-revision copies: `design/stories/STORIES-PLAN.r4.before.md`, `PROTOTYPE-PLAN.r4.before.md`, `PUZZLES-PLAN.r4.before.md`. Per-item detail with the removed and added text: `D:/tmp/novel-orch/design/stories/revision_r4.md` |
 | 5 | 2026-10-31 | RULINGS 22, 23 (as merged: LDB1 `fee9da7`, LDB2 `a7e4a04`, this design `66c92c4`) | Docs lane `docs-errata`, group C (not a triage round): "Implementation plan" — "Running and merged lanes" marked as of `66c92c4` (LDB1 and LDB2 merged, L3c resumed on `f1a46ea`, L6b running) and "Order" without LDB1 and LDB2, the critical path from L6b; with PROTOTYPE-PLAN revision 18. Review round 1: SQ5's "PZ:652–1877 are unchanged" marked as of `66c92c4` (PUZZLES-PLAN revision 9 moved them). Ledger: `D:/tmp/novel-orch/docs-errata/ledger.md` |
+| 6 | 2026-10-31 | the META-PLAN campaign spec + RULINGS 25 | Extended by [META-PLAN.md](META-PLAN.md): choice capture (`choice_made`), `endingsTotal` removed, hint products removed, privacy designed. Changed items marked "Changed by META-PLAN": Goal (the "X of Y" sentence; ST5, ST6); Y9; Y10; Y12; Y14; Y16; Y17; Identifiers; the `catalog.json` server format; the TS and Rust stats types; the SQL `0003` note; HTTP API; F12; test names and the seen-red row; Open questions (Q22 note; Q23, Q24, Q25 resolved). Design log: `D:/tmp/novel-orch/design/choices/design_log.md` |
+| 7 | 2026-10-31 | META-PLAN revision 1 (`D:/tmp/novel-orch/design/choices/triage_r1.md`, item W2) | Choice events no longer crowd facts out: Y11 counts facts and choices apart (facts 600/h with the 429; choices 600/h of their own, never a 429, repeat picks beyond it rejected `rate_limited`, first picks always recorded); Y13 evicts choices first and sends facts first; the stats constants, F11, the concurrency table, Budgets and Test strategy follow. Marked "Changed by META-PLAN revision 1". Pre-revision copy: `D:/tmp/novel-orch/design/choices/STORIES-PLAN.r1.before.md` |
 
 **Revision 1 (2026-10-31)** — what changed, by triage item:
 - **W1** (LS1 moved merged test pins it did not declare; commit 6 left the real-tree `story` gate red): PP "LS1" —
