@@ -22,7 +22,7 @@ import type { CompiledChapter } from './story/compile.ts';
 import { OUT, chapterPaths, decodeLineFingerprints, hintIdsOf, paidLeak, planEmit, storyVersion } from './story/emit.ts';
 import type { StoryNames, WorldNeedles } from './story/emit.ts';
 import { ID_SHAPED_RE, fixIds, fixWorldIds, syncLocales } from './story/fix.ts';
-import { buildGraph } from './story/graph.ts';
+import { buildGraph, writeOnly } from './story/graph.ts';
 import type { ChapterGraph, GraphFacts, WorldRef } from './story/graph.ts';
 import { LINT_CODES, lintCatalog, lintSources } from './story/lint.ts';
 import type { Finding, LintCode, SourceChapter, SourceLintInput } from './story/lint.ts';
@@ -604,6 +604,15 @@ export function main(argv: readonly string[], repoRoot: string): number {
     });
     found.push(...r.findings);
     sectionReports.set(ch.id, r.sections);
+  }
+  // A VAR assigned and never read (D15), judged across the chapters only when every listed chapter compiled: a chapter
+  // that did not would hide its reads, and the warnings of an error run would be spurious.
+  const everyFacts = chapters.flatMap((c) => {
+    const f = facts.get(c.id);
+    return f === undefined ? [] : [f];
+  });
+  if (chapters.length > 0 && everyFacts.length === chapters.length) {
+    found.push(...inStory(writeOnly(everyFacts)));
   }
   // The declared endings against the graphs (`catalog/stories` rule 8): its findings name story/stories.json, never a
   // chapter's file, so they never keep a chapter from being played.

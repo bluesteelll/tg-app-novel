@@ -2,8 +2,8 @@
 // literal tags name, its successor knots, whether it writes `-> END`, and the clears of its opening tag lines; then
 // reachability (`graph/*`), variable diverts (`ink/forbidden`), the carried stage per knot (the `budget/knot-set`
 // input) and the chapter's ID'd lines. From LW3 the yield edges (STAGING-DSL §8 "Yield edges"; PUZZLES-PLAN §8 knot
-// index) and the yield codes against the chapter's world (`puzzle/*`, `explore/*`). Pure: no node:*, no inkjs; tags
-// are read only through `parseTags`.
+// index) and the yield codes against the chapter's world (`puzzle/*`, `explore/*`), and the VARs each chapter assigns
+// and reads (`vars/write-only` across the chapters). Pure: no node:*, no inkjs; tags are read only through `parseTags`.
 import { lockOf, worldIndex } from '../../src/explore/reduce.ts';
 import type { AssetId, AssetIndex, ChapterId, CharId, KnotName, LineId, SectionId, StagingCommand, VarName, YieldCommand } from '../../src/story/staging.ts';
 import { parseTags, tagKind } from '../../src/story/tags.ts';
@@ -51,12 +51,21 @@ export type ChapterGraph = {
  * world-dependent codes are skipped, so one broken file is not also one finding per tag), or its public body.
  */
 export type WorldRef = { kind: 'none' } | { kind: 'invalid' } | { kind: 'ok'; body: WorldPublicBody };
-/** What the world lint needs of a compiled chapter beyond its graph. */
+/** A VAR's first assignment site in a chapter (story-relative); `global` marks a g_ VAR of common/globals.ink. */
+export type VarAssignment = { file: string; line: number; global: boolean };
+/** What the world lint and `vars/write-only` need of a compiled chapter beyond its graph. */
 export type GraphFacts = {
   /** Per knot, the yields its tags write, in source order. */
   yields: ReadonlyMap<KnotName, readonly YieldCommand[]>;
   /** Every VAR the chapter's files declare, with its declared value's literal type (`world/var-type`). */
   declared: ReadonlyMap<VarName, VarLiteral>;
+  /** Per declared VAR the chapter assigns (`~ x =`, `+=`, `-=`, `++`, `--`), its first site in file order. */
+  assigned: ReadonlyMap<VarName, VarAssignment>;
+  /**
+   * Every identifier the chapter's files read (D15): an assignment's right side (its own target included), any other
+   * logic line, a choice condition, a block head, an inline `{…}`, and every line of a function body.
+   */
+  read: ReadonlySet<string>;
 };
 /** An explore yield's section knots: reachability edges from the yielding knot, and their entry stage. */
 type SectionEdges = { edges: ReadonlyMap<KnotName, readonly KnotName[]>; seeds: ReadonlyMap<KnotName, readonly AssetId[]> };
@@ -307,6 +316,101 @@ function varLiteral(value: string): VarLiteral {
     return 'bool';
   }
   return /^"(?:[^"\\]|\\.)*"$/.test(value) ? 'string' : 'other';
+}
+
+const IDENT_RE = /[\p{L}_][\p{L}\p{N}_]*/gu;
+/** `x = …`, `x += …`, `x -= …` (never `x == …`), and `x++` / `x--`: the target, and the right side read. */
+const ASSIGN_RE = /^([\p{L}_][\p{L}\p{N}_]*)\s*(?:(?:\+|-)?=(?!=)\s*(.*)|\+\+|--)$/u;
+
+function identifiers(code: string): string[] {
+  return code.match(IDENT_RE) ?? [];
+}
+
+/**
+ * The VARs the files assign (first site per VAR) and every identifier they read (D15). A read set by identifiers is
+ * a heuristic, and `vars/write-only` is a W: a name that only looks read keeps it quiet, never the other way round.
+ */
+function varUse(parsed: readonly Parsed[], vars: ReadonlySet<VarName>, globals: ReadonlySet<VarName>): Pick<GraphFacts, 'assigned' | 'read'> {
+  const assigned = new Map<VarName, VarAssignment>();
+  const read = new Set<string>();
+  const readAll = (code: string): void => {
+    for (const id of identifiers(code)) {
+      read.add(id);
+    }
+  };
+  for (const { file, lines } of parsed) {
+    let inFunction = false;
+    for (const l of lines) {
+      const cls = l.cls;
+      if (cls.kind === 'knot') {
+        inFunction = cls.fn;
+        continue;
+      }
+      if (cls.kind === 'decl' || cls.kind === 'include' || cls.kind === 'comment' || cls.kind === 'blank') {
+        continue;
+      }
+      if (cls.kind === 'logic') {
+        const temp = /^temp\s+[\p{L}_][\p{L}\p{N}_]*\s*=(.*)$/u.exec(cls.code);
+        const m = temp === null ? ASSIGN_RE.exec(cls.code) : null;
+        const target = m?.[1];
+        if (temp !== null) {
+          readAll(temp[1] ?? '');
+        } else if (target === undefined) {
+          readAll(cls.code);
+        } else {
+          readAll(m?.[2] ?? '');
+          const name = target as VarName; // a lookup key: only a declared VAR counts
+          if (vars.has(name) && !assigned.has(name)) {
+            assigned.set(name, { file, line: l.line, global: globals.has(name) });
+          }
+        }
+        continue;
+      }
+      if (inFunction) {
+        readAll(l.code);
+        continue;
+      }
+      if (cls.kind === 'choice' && cls.condition !== null) {
+        readAll(cls.condition);
+      }
+      if (cls.kind === 'block-open' || cls.kind === 'block-branch') {
+        readAll(cls.head);
+      }
+      for (const m of l.code.matchAll(/\{([^{}]*)\}/g)) {
+        readAll(m[1] ?? '');
+      }
+    }
+  }
+  return { assigned, read };
+}
+
+/**
+ * `vars/write-only` (D15) over the facts of every listed chapter, in list order: the first assignment site of each VAR
+ * nothing reads, deduped by file and line. A g_ VAR of common/globals.ink is read when any chapter reads it (the
+ * carry set crosses chapters, STAGING-DSL §9); a chapter's own VAR only when that chapter does. The caller passes
+ * every listed chapter, compiled: a partial list would report a global its missing chapter reads.
+ */
+export function writeOnly(chapters: readonly GraphFacts[]): Finding[] {
+  const anyRead = new Set(chapters.flatMap((f) => [...f.read]));
+  const out: Finding[] = [];
+  const sites = new Set<string>();
+  const reported = new Set<VarName>();
+  for (const facts of chapters) {
+    for (const [name, site] of facts.assigned) {
+      const isRead = site.global ? anyRead.has(name) : facts.read.has(name);
+      const key = `${site.file}:${site.line}`;
+      if (isRead || sites.has(key) || (site.global && reported.has(name))) {
+        continue;
+      }
+      sites.add(key);
+      if (site.global) {
+        reported.add(name);
+      }
+      const where = site.global ? 'no listed chapter reads it' : 'its chapter never reads it';
+      out.push(finding('vars/write-only', site.file, site.line, `VAR ${name} is assigned, but ${where} (§11)`));
+    }
+  }
+  return out;
 }
 
 /** A section's knots: its event knots (named by a `story` effect of its rooms) and its leave knots, each with its rooms. */
@@ -600,6 +704,6 @@ export function buildGraph(input: {
       carried,
     },
     findings,
-    facts: { yields, declared },
+    facts: { yields, declared, ...varUse(parsed, vars, globals) },
   };
 }

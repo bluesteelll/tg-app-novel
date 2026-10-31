@@ -21,8 +21,8 @@ import { compileChapter, resolveInclude } from './compile.ts';
 import type { CompiledChapter, ReadInk } from './compile.ts';
 import { decodeLineFingerprints, decodeStoryUsage, paidLeak, planEmit, worldVersion } from './emit.ts';
 import type { LineFingerprints, ServerStoryIndex, StoryNames, WorldNeedles } from './emit.ts';
-import { buildGraph } from './graph.ts';
-import type { ChapterGraph } from './graph.ts';
+import { buildGraph, writeOnly } from './graph.ts';
+import type { ChapterGraph, GraphFacts } from './graph.ts';
 import { GLOBALS_PATH, lintSources } from './lint.ts';
 import type { Finding, LintCode, SourceChapter } from './lint.ts';
 import type { StoryPlan } from './stories.ts';
@@ -156,7 +156,7 @@ test('compile: a clean chapter compiles with no findings', () => {
 // graph.ts
 
 /** Compiles `files` as chapter `ch` (the fixture must compile cleanly) and builds its graph. */
-function graphOf(files: ReadonlyMap<string, string>, ch: SourceChapter = CH1): { graph: ChapterGraph; findings: Finding[] } {
+function graphOf(files: ReadonlyMap<string, string>, ch: SourceChapter = CH1): { graph: ChapterGraph; findings: Finding[]; facts: GraphFacts } {
   const r = compileChapter(ch, reader(files));
   expect(r.findings, `fixture compiles: ${JSON.stringify(r.findings)}`).toEqual([]);
   if (r.compiled === null) {
@@ -1708,3 +1708,74 @@ test(
   },
   CLI_TIMEOUT_MS,
 );
+
+// ---------------------------------------------------------------------------------------------------------------
+// graph.ts and story.ts: `vars/write-only` across the chapters (STAGING-DSL §11, D15)
+
+const CH2_SOURCE: SourceChapter = { id: chapterId('ch2'), paid: true, entry: 'ch2/main.ink' };
+const WRITE_GLOBALS = 'VAR g_trust = 0\nVAR g_flag = 0\n';
+/** ch1 sets g_flag, bumps its own `count` and never reads either; `x` reads itself. */
+const WRITE_CH1 = [
+  'INCLUDE ../common/globals.ink',
+  'VAR count = 0',
+  'VAR x = 0',
+  '-> start',
+  '=== start ===',
+  'Привет. #id:ch1.start.k1m2',
+  '~ g_flag = 1',
+  '~ count += 1',
+  '~ x = x + 1',
+  '-> END',
+];
+const WRITE_CH2 = ['INCLUDE ../common/globals.ink', '-> start', '=== start ===', 'Там. #id:ch2.start.k1m2', '-> END'];
+
+/** The graph facts of ch1 and ch2, in list order, over WRITE_GLOBALS. */
+function writeFacts(ch1: readonly string[], ch2: readonly string[]): GraphFacts[] {
+  const files = new Map([
+    [GLOBALS_PATH, WRITE_GLOBALS],
+    ['ch1/main.ink', `${ch1.join('\n')}\n`],
+    ['ch2/main.ink', `${ch2.join('\n')}\n`],
+  ]);
+  return [graphOf(files, CH1).facts, graphOf(files, CH2_SOURCE).facts];
+}
+
+test(
+  'lint: vars/write-only red on fixture',
+  () => {
+    const found = writeOnly(writeFacts(WRITE_CH1, WRITE_CH2));
+    // g_flag and count; `~ x = x + 1` reads x.
+    expect(where(found, 'vars/write-only')).toEqual([`ch1/main.ink:${lineOf(WRITE_CH1, '~ g_flag = 1')}`, `ch1/main.ink:${lineOf(WRITE_CH1, '~ count += 1')}`]);
+    expect(found.every((f) => f.severity === 'W')).toBe(true);
+    // Through the CLI: the same three writes in the emit fixture's ch1.
+    const ch1 = (EMIT_SOURCES.get('ch1/main.ink') ?? '')
+      .replace('INCLUDE ../common/globals.ink\n', 'INCLUDE ../common/globals.ink\nVAR count = 0\nVAR x = 0\n')
+      .replace('-> END\n', '~ g_flag = 1\n~ count += 1\n~ x = x + 1\n-> END\n');
+    const lines = ch1.split('\n');
+    const files = { ...repoFiles(), 'story/common/globals.ink': WRITE_GLOBALS, 'story/ch1/main.ink': ch1 };
+    const writes = (stdout: string): string[] => stdout.split('\n').filter((l) => l.includes(' vars/write-only '));
+    withRepo(files, (root) => {
+      const r = runStory(root);
+      expect(r.status, r.stdout + r.stderr).toBe(0);
+      expect(writes(r.stdout)).toEqual([
+        `W story/ch1/main.ink:${lineOf(lines, '~ g_flag = 1')} vars/write-only VAR g_flag is assigned, but no listed chapter reads it (§11)`,
+        `W story/ch1/main.ink:${lineOf(lines, '~ count += 1')} vars/write-only VAR count is assigned, but its chapter never reads it (§11)`,
+      ]);
+      expect(r.stdout).toMatch(/^story: 0 errors, 2 warnings$/m);
+    });
+    // The error-run control: ch2 does not compile, so its reads are unknown and nothing is judged.
+    const broken = (EMIT_SOURCES.get('ch2/main.ink') ?? '').replace('    -> drawer\n', '    -> nowhere\n');
+    withRepo({ ...files, 'story/ch2/main.ink': broken }, (root) => {
+      const r = runStory(root);
+      expect(r.stdout, r.stdout + r.stderr).toMatch(/^story: ch2 failed$/m);
+      expect(writes(r.stdout)).toEqual([]);
+      expect(r.status).toBe(1);
+    });
+  },
+  CLI_TIMEOUT_MS,
+);
+
+test('lint: vars/write-only allows a global read in a later chapter', () => {
+  const ch1 = ['INCLUDE ../common/globals.ink', '-> start', '=== start ===', 'Привет. #id:ch1.start.k1m2', '~ g_flag = 1', '-> END'];
+  const ch2 = ['INCLUDE ../common/globals.ink', '-> start', '=== start ===', '{ g_flag > 0:', '    Флаг поднят. #id:ch2.start.k3m4', '}', 'Там. #id:ch2.start.k1m2', '-> END'];
+  expect(where(writeOnly(writeFacts(ch1, ch2)), 'vars/write-only')).toEqual([]);
+});
