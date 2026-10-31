@@ -7,12 +7,20 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use sqlx::postgres::{PgConnectOptions, PgConnection};
-use sqlx::{ConnectOptions, Connection};
+use sqlx::{AssertSqlSafe, ConnectOptions, Connection};
 
 use crate::{DEFAULT_PORT, DbName, PgDevError, READY_DEADLINE, REQUIRED_MAJOR, UpOutcome};
+
+/// The age at which `ensure_up`'s sweep drops a test database. No test lives that long (the cargo test budget is
+/// 40 min), so a concurrent consumer's live databases are never touched.
+const STALE_AFTER_SECS: i64 = 2 * 60 * 60;
+
+/// Whether this process has swept already: the sweep runs once per process.
+static SWEPT: AtomicBool = AtomicBool::new(false);
 
 /// How long one connection attempt may take before the port counts as down.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -99,8 +107,75 @@ impl DevCluster {
     ///    directory fails, so of two cold starters exactly one result lands;
     /// 3. `pg_ctl start`, through a launcher that hands this process's handles to no long-lived process;
     /// 4. a failed start means a peer's server holds the data directory (or crash recovery outlasts the start
-    ///    timeout): wait for it, up to [`READY_DEADLINE`].
+    ///    timeout): wait for it, up to [`READY_DEADLINE`];
+    /// 5. once per process: [`DevCluster::sweep_stale`] with 2 h.
     pub async fn ensure_up(&self) -> Result<UpOutcome, PgDevError> {
+        let outcome = self.bring_up().await?;
+        // A concurrent consumer's sweep may drop the same leftovers; `IF EXISTS` makes that harmless.
+        if !SWEPT.swap(true, Ordering::SeqCst) {
+            let dropped = self.sweep_stale(STALE_AFTER_SECS).await?;
+            if dropped > 0 {
+                tracing::info!(port = self.port, dropped, "dropped stale test databases");
+            }
+        }
+        Ok(outcome)
+    }
+
+    /// Drops `db` if it exists (`WITH (FORCE)`, ending its connections) and creates it empty, with the cluster's
+    /// standard defaults.
+    pub async fn recreate(&self, db: &DbName) -> Result<(), PgDevError> {
+        let mut conn = self.admin().await?;
+        for kind in [Ddl::Drop, Ddl::Create] {
+            sqlx::raw_sql(ddl(kind, db)).execute(&mut conn).await?;
+        }
+        conn.close().await?;
+        Ok(())
+    }
+
+    /// Drops the test databases (`tgn_t_<epoch>_<8 hex>`) older than `older_than_secs` and returns how many it
+    /// dropped. `tgn_dev_*`, `tgn_local`, `postgres` and every other name are never swept.
+    pub async fn sweep_stale(&self, older_than_secs: i64) -> Result<u32, PgDevError> {
+        let mut conn = self.admin().await?;
+        let names: Vec<String> = sqlx::query_scalar("SELECT datname::text FROM pg_database")
+            .fetch_all(&mut conn)
+            .await?;
+        let now = crate::unix_secs();
+        let mut dropped = 0;
+        for db in names.iter().filter_map(|name| DbName::parse(name)) {
+            let stale = db.test_epoch().is_some_and(|epoch| {
+                i64::try_from(now.saturating_sub(epoch)).unwrap_or(i64::MAX) > older_than_secs
+            });
+            if stale {
+                sqlx::raw_sql(ddl(Ddl::Drop, &db))
+                    .execute(&mut conn)
+                    .await?;
+                dropped += 1;
+            }
+        }
+        conn.close().await?;
+        Ok(dropped)
+    }
+
+    /// `CREATE DATABASE` plus the test database's two hostile defaults.
+    pub(crate) async fn create_test_db(&self, db: &DbName) -> Result<(), PgDevError> {
+        let mut conn = self.admin().await?;
+        for kind in [Ddl::Create, Ddl::SynchronousCommitOff, Ddl::RepeatableRead] {
+            sqlx::raw_sql(ddl(kind, db)).execute(&mut conn).await?;
+        }
+        conn.close().await?;
+        Ok(())
+    }
+
+    /// `DROP DATABASE IF EXISTS … WITH (FORCE)`.
+    pub(crate) async fn drop_db(&self, db: &DbName) -> Result<(), PgDevError> {
+        let mut conn = self.admin().await?;
+        sqlx::raw_sql(ddl(Ddl::Drop, db)).execute(&mut conn).await?;
+        conn.close().await?;
+        Ok(())
+    }
+
+    /// Steps 1-4 of [`DevCluster::ensure_up`].
+    async fn bring_up(&self) -> Result<UpOutcome, PgDevError> {
         match self.probe().await? {
             Probe::Ready => return Ok(UpOutcome::AlreadyUp),
             // Starting, recovering or stopping: a server owns the data directory, so neither initdb nor start.
@@ -305,6 +380,32 @@ enum ConnectClass {
     Down,
     /// Something answers, but not as a server pgdev can use: an error at once, not after a wait.
     Refused(String),
+}
+
+/// The statements pgdev runs on one named database.
+#[derive(Debug, Clone, Copy)]
+enum Ddl {
+    Create,
+    Drop,
+    SynchronousCommitOff,
+    RepeatableRead,
+}
+
+/// The one place pgdev builds SQL text. A database name cannot be bound as a parameter, and [`DbName`] admits only
+/// `^tgn_[a-z0-9_]{1,59}$`, so no name can end the quoted identifier; the rest is constant. Run with `raw_sql`
+/// (the simple protocol), so no unique name leaves a statement-cache entry behind.
+fn ddl(kind: Ddl, db: &DbName) -> AssertSqlSafe<String> {
+    let name = db.as_str();
+    AssertSqlSafe(match kind {
+        Ddl::Create => format!("CREATE DATABASE \"{name}\""),
+        Ddl::Drop => format!("DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)"),
+        Ddl::SynchronousCommitOff => {
+            format!("ALTER DATABASE \"{name}\" SET synchronous_commit = off")
+        }
+        Ddl::RepeatableRead => format!(
+            "ALTER DATABASE \"{name}\" SET default_transaction_isolation = 'repeatable read'"
+        ),
+    })
 }
 
 /// An environment variable; a value that is not Unicode is passed on lossily, so a port check refuses it instead of

@@ -15,9 +15,9 @@ use std::net::{Ipv4Addr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use pgdev::{DevCluster, UpOutcome};
+use pgdev::{DbName, DevCluster, TestDb, UpOutcome};
 use sqlx::{Connection, PgConnection};
 
 fn report(failures: &[String]) {
@@ -354,4 +354,241 @@ fn ensure_up_concurrent_cold_start() {
     }
     drop(guard);
     report(&failures);
+}
+
+async fn admin(cluster: &DevCluster) -> PgConnection {
+    PgConnection::connect(&cluster.admin_url()).await.unwrap()
+}
+
+async fn exists(cluster: &DevCluster, name: &str) -> bool {
+    let mut conn = admin(cluster).await;
+    let found = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)")
+        .bind(name)
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+    conn.close().await.unwrap();
+    found
+}
+
+fn presence(present: bool) -> &'static str {
+    if present { "present" } else { "absent" }
+}
+
+#[tokio::test]
+async fn test_db_created_then_dropped_on_drop() {
+    let cluster = env_cluster();
+    let db = TestDb::create().await;
+    let name = db.name().to_owned();
+    let mut failures = Vec::new();
+    if !exists(&cluster, &name).await {
+        failures.push(format!(
+            "{name}: expected present in pg_database while the guard lives, absent"
+        ));
+    }
+    drop(db);
+    if exists(&cluster, &name).await {
+        failures.push(format!("{name}: expected absent from pg_database, present"));
+    }
+    report(&failures);
+}
+
+#[tokio::test]
+async fn test_dbs_isolated() {
+    let (a, b) = (TestDb::create().await, TestDb::create().await);
+    let mut failures = Vec::new();
+    if a.name() == b.name() {
+        failures.push(format!("two guards share one database {}", a.name()));
+    }
+    let mut in_a = PgConnection::connect(&a.url()).await.unwrap();
+    let mut in_b = PgConnection::connect(&b.url()).await.unwrap();
+    sqlx::raw_sql("CREATE TABLE isolation_probe (id int)")
+        .execute(&mut in_a)
+        .await
+        .unwrap();
+    for (db, conn, expected) in [(a.name(), &mut in_a, true), (b.name(), &mut in_b, false)] {
+        let present: bool = sqlx::query_scalar("SELECT to_regclass('isolation_probe') IS NOT NULL")
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+        if present != expected {
+            failures.push(format!(
+                "isolation_probe in {db}: expected {}, got {}",
+                presence(expected),
+                presence(present)
+            ));
+        }
+    }
+    in_a.close().await.unwrap();
+    in_b.close().await.unwrap();
+    report(&failures);
+}
+
+#[tokio::test]
+async fn recreate_drops_open_connections() {
+    let cluster = env_cluster();
+    let db = TestDb::create().await;
+    let name = DbName::parse(db.name()).unwrap();
+    let mut old = PgConnection::connect(&db.url()).await.unwrap();
+    sqlx::raw_sql("CREATE TABLE before_recreate (id int)")
+        .execute(&mut old)
+        .await
+        .unwrap();
+    let mut failures = Vec::new();
+    if let Err(e) = cluster.recreate(&name).await {
+        failures.push(format!("recreate {name}: expected Ok, got {e}"));
+    }
+    if sqlx::raw_sql("SELECT 1").execute(&mut old).await.is_ok() {
+        failures.push(
+            "the connection opened before recreate: expected an error on its next query, got a result"
+                .to_owned(),
+        );
+    }
+    drop(old);
+    let mut new = PgConnection::connect(&db.url()).await.unwrap();
+    let relations: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pg_class WHERE relnamespace = 'public'::regnamespace",
+    )
+    .fetch_one(&mut new)
+    .await
+    .unwrap();
+    new.close().await.unwrap();
+    if relations != 0 {
+        failures.push(format!(
+            "{name} after recreate: expected empty, got {relations} relations in public"
+        ));
+    }
+    report(&failures);
+}
+
+#[tokio::test]
+async fn sweep_drops_only_stale_test_dbs() {
+    let cluster = env_cluster();
+    let fresh = TestDb::create().await;
+    let three_hours_ago = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        - 3 * 60 * 60;
+    let stale = DbName::parse(&format!(
+        "tgn_t_{three_hours_ago}_{:08x}",
+        getrandom::u32().unwrap()
+    ))
+    .unwrap();
+    cluster.recreate(&stale).await.unwrap();
+    let mut conn = admin(&cluster).await;
+    for statement in ["CREATE DATABASE tgn_dev_0", "CREATE DATABASE tgn_local"] {
+        match sqlx::raw_sql(statement).execute(&mut conn).await {
+            Ok(_) => {}
+            // Already there (a concurrent creator gets 23505, not 42P04). Never dropped here: another target's run on
+            // the shared slot may be using it.
+            Err(sqlx::Error::Database(e))
+                if matches!(e.code().as_deref(), Some("42P04" | "23505")) => {}
+            Err(e) => panic!("{statement}: {e}"),
+        }
+    }
+    conn.close().await.unwrap();
+
+    let mut failures = Vec::new();
+    if let Err(e) = cluster.sweep_stale(7200).await {
+        failures.push(format!("sweep_stale(7200): expected Ok, got {e}"));
+    }
+    // Presence, not the returned count: this binary's own once-per-process sweep may drop `stale` first.
+    for (name, expected) in [
+        (stale.as_str(), false),
+        (fresh.name(), true),
+        ("tgn_dev_0", true),
+        ("tgn_local", true),
+        ("postgres", true),
+    ] {
+        let present = exists(&cluster, name).await;
+        if present != expected {
+            failures.push(format!(
+                "{name}: expected {} after sweep_stale(7200), got {}",
+                presence(expected),
+                presence(present)
+            ));
+        }
+    }
+    report(&failures);
+}
+
+#[tokio::test]
+async fn test_db_carries_hostile_defaults() {
+    let db = TestDb::create().await;
+    let mut conn = PgConnection::connect(&db.url()).await.unwrap();
+    let (synchronous_commit, isolation): (String, String) = sqlx::query_as(
+        "SELECT current_setting('synchronous_commit'), current_setting('default_transaction_isolation')",
+    )
+    .fetch_one(&mut conn)
+    .await
+    .unwrap();
+    conn.close().await.unwrap();
+    let mut failures = Vec::new();
+    if synchronous_commit != "off" {
+        failures.push(format!(
+            "synchronous_commit: expected off, got {synchronous_commit}"
+        ));
+    }
+    if isolation != "repeatable read" {
+        failures.push(format!(
+            "default_transaction_isolation: expected repeatable read, got {isolation}"
+        ));
+    }
+    report(&failures);
+}
+
+/// `n` create-then-drop cycles on this thread's own runtime, as one `#[tokio::test]` runs them: (create, drop) each.
+fn lifecycle_cycles(n: usize) -> Vec<(Duration, Duration)> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let mut samples = Vec::with_capacity(n);
+            for _ in 0..n {
+                let creating = Instant::now();
+                let db = TestDb::create().await;
+                let created = creating.elapsed();
+                let dropping = Instant::now();
+                drop(db);
+                samples.push((created, dropping.elapsed()));
+            }
+            samples
+        })
+}
+
+fn print_percentiles(phase: &str, samples: &[(Duration, Duration)]) {
+    let creates: Vec<Duration> = samples.iter().map(|s| s.0).collect();
+    let drops: Vec<Duration> = samples.iter().map(|s| s.1).collect();
+    let totals: Vec<Duration> = samples.iter().map(|s| s.0 + s.1).collect();
+    for (step, mut values) in [("create", creates), ("drop", drops), ("total", totals)] {
+        values.sort_unstable();
+        let ms = |p: usize| values[(values.len() - 1) * p / 100].as_secs_f64() * 1000.0;
+        println!(
+            "{phase}: {step} p50 {:.1} ms, p95 {:.1} ms (n = {})",
+            ms(50),
+            ms(95),
+            values.len()
+        );
+    }
+}
+
+#[test]
+#[ignore = "a measurement: cargo test -p pgdev --test pgdev measure_test_db_lifecycle -- --ignored --nocapture"]
+fn measure_test_db_lifecycle() {
+    // The first create brings the cluster up and sweeps: not a sample.
+    lifecycle_cycles(1);
+    let sequential = lifecycle_cycles(50);
+    let parallel: Vec<(Duration, Duration)> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..16)
+            .map(|_| scope.spawn(|| lifecycle_cycles(4)))
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|worker| worker.join().unwrap())
+            .collect()
+    });
+    print_percentiles("sequential 50", &sequential);
+    print_percentiles("16-way 16 x 4", &parallel);
 }

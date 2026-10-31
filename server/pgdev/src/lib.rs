@@ -130,6 +130,94 @@ impl DbName {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// The creation second of a test database name (`tgn_t_<unix secs>_<8 hex>`); `None` for every other name, so a
+    /// sweep by age can never reach `tgn_dev_*` or `tgn_local`.
+    fn test_epoch(&self) -> Option<u64> {
+        let (secs, hex) = self.0.strip_prefix("tgn_t_")?.split_once('_')?;
+        let shaped = !secs.is_empty()
+            && secs.bytes().all(|b| b.is_ascii_digit())
+            && hex.len() == 8
+            && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+        if shaped { secs.parse().ok() } else { None }
+    }
+}
+
+/// A test database on the dev cluster, dropped `WITH (FORCE)` (so open connections do not matter) when the guard
+/// drops, on panic too. Bind it (`let (state, _db) = …`), never `_`, which drops the database at once.
+pub struct TestDb {
+    cluster: DevCluster,
+    name: DbName,
+}
+
+/// This process's `ensure_up` result. Run once, so parallel first callers wait on one start instead of each running
+/// an initdb on a cold slot, and a failure fails every later `create` at once with its remedy.
+static UP: OnceLock<Result<(), String>> = OnceLock::new();
+
+impl TestDb {
+    /// A fresh database `tgn_t_<unix secs>_<8 hex>` on the cluster the environment names, brought up first if it is
+    /// down. Its defaults are hostile (`synchronous_commit = off`, `default_transaction_isolation = 'repeatable
+    /// read'`), so only an app's own session settings can pass a test that reads them.
+    ///
+    /// Panics, naming the remedy, when the cluster cannot be brought up or the database cannot be created.
+    pub async fn create() -> TestDb {
+        let cluster = DevCluster::from_env().unwrap_or_else(|e| panic!("TestDb::create: {e}"));
+        let up = UP.get_or_init(|| {
+            let cluster = cluster.clone();
+            on_own_runtime(async move { cluster.ensure_up().await.map(drop) })
+                .map_err(|e| e.to_string())
+        });
+        if let Err(e) = up {
+            panic!(
+                "TestDb::create: the dev cluster on port {} is not up: {e}",
+                cluster.port()
+            );
+        }
+        let name = DbName::for_test();
+        if let Err(e) = cluster.create_test_db(&name).await {
+            panic!("TestDb::create: {name}: {e}");
+        }
+        TestDb { cluster, name }
+    }
+
+    /// The database's URL (`sslmode=disable`).
+    pub fn url(&self) -> String {
+        self.cluster.database_url(&self.name)
+    }
+
+    /// The database's name.
+    pub fn name(&self) -> &str {
+        self.name.as_str()
+    }
+}
+
+impl Drop for TestDb {
+    fn drop(&mut self) {
+        let (cluster, name) = (self.cluster.clone(), self.name.clone());
+        if let Err(e) = on_own_runtime(async move { cluster.drop_db(&name).await }) {
+            // Printed, never a panic: a panic while a failing test unwinds would abort the test binary.
+            eprintln!("TestDb: cannot drop {}: {e}", self.name);
+        }
+    }
+}
+
+/// Runs `work` to its end on a new std thread with a current-thread runtime of its own: callable from sync code and
+/// from inside another runtime (a `Drop`, a `OnceLock` initializer), where `block_on` would panic.
+fn on_own_runtime<T: Send + 'static>(
+    work: impl Future<Output = Result<T, PgDevError>> + Send + 'static,
+) -> Result<T, PgDevError> {
+    std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(work)
+    })
+    .join()
+    .unwrap_or_else(|_| {
+        Err(PgDevError::Io(std::io::Error::other(
+            "a pgdev worker thread panicked",
+        )))
+    })
 }
 
 impl std::fmt::Display for DbName {
