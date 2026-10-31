@@ -143,7 +143,7 @@ test('dsl-doc: lint table equals lint codes', () => {
   const table: Array<readonly [string, string]> = rows.flatMap((cells) =>
     [...(cells[1] ?? '').matchAll(/`([^`]+)`/g)].map((m) => [m[1] ?? '', cells[2] ?? ''] as const),
   );
-  expect(table).toHaveLength(84);
+  expect(table).toHaveLength(85);
   const tool: Record<string, string> = LINT_CODES;
   expect({
     notInTool: table.filter(([code]) => !Object.hasOwn(tool, code)).map(([code]) => code),

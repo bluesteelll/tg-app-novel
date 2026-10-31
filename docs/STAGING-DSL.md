@@ -2,8 +2,9 @@
 
 Version: **DSL v2** (prototype). Status: DSL v1 was designed in [PROTOTYPE-PLAN.md](PROTOTYPE-PLAN.md) and
 implemented by lanes L3a (parser + lint) and L3b (story build). DSL v2 adds the `puzzle` / `explore` yield tags and
-the narrowed `-> DONE` ([PUZZLES-PLAN.md](PUZZLES-PLAN.md), lane LW1). The rules marked "from LW3" in §8 and §11 are
-the contract lane LW3 implements.
+the narrowed `-> DONE` ([PUZZLES-PLAN.md](PUZZLES-PLAN.md), lane LW1). §9 also describes the story list
+`story/stories.json` ([STORIES-PLAN.md](STORIES-PLAN.md), lane LS1); the tag language is unchanged. The rules marked
+"from LW3" in §8 and §11 are the contract lane LW3 implements.
 
 - **One parser.** `client/src/story/tags.ts` (`parseTags`) is used by the story gate (`npm --prefix client run
   story`) and by the runtime. Nothing else parses tags (CLAUDE.md principle 7; enforced by `client/src/arch.test.ts`).
@@ -162,7 +163,7 @@ regex:    ^ch[1-9][0-9]*\.[a-z][a-z0-9_]*\.[0-9a-z]{4}$
 |---|---|
 | Required on | every text line (narration or dialogue) and every choice with text. Not on tag-only lines, logic, diverts, fallback choices (`id/on-non-text`). |
 | Exactly one | per line or choice (`id/multiple`). |
-| Unique | across **all** chapters (`id/duplicate`). |
+| Unique | across **all** chapters of all stories (`id/duplicate`). |
 | Chapter prefix | must equal the chapter whose entry file includes the source file (`id/chapter-prefix`). Moving a line to another chapter means a new ID. |
 | Knot part | only a readability hint; moving a line to another knot keeps its ID; the lint does not compare it with the current knot. |
 | Stable | Editing a line's text keeps its ID. IDs are never derived from position or text and never renumbered. |
@@ -178,9 +179,11 @@ regex:    ^ch[1-9][0-9]*\.[a-z][a-z0-9_]*\.[0-9a-z]{4}$
   longer equals the current source → `loc/stale-en` (warning: update `en`, then copy the new `ru`).
 - The build ships only `{ "<lineId>": "<en>" }`; paid chapters' tables are delivered with the paid chapter, never in
   the public bundle (principle 0).
-- Speaker names and chapter titles: `story/locales/<lang>/story.json` →
-  `{ "names": { "<speakerId>": "…" }, "chapters": { "<chapterId>": "…" } }`, both languages required
-  (`loc/missing-name`).
+- Speaker names, chapter titles, story titles and story teasers: `story/locales/<lang>/story.json` →
+  `{ "names": { "<speakerId>": "…" }, "chapters": { "<chapterId>": "…" }, "stories": { "<storyId>": "…" },
+  "teasers": { "<storyId>": "…" } }`, every key of every section required in both languages (`loc/missing-name`).
+  A teaser is one sentence for the story's card. All four sections are public by design: the public chapter catalog
+  carries them, paid chapters' titles included.
 - Runtime: language `ru` shows the ink text; `en` shows the table entry; a missing entry falls back to the Russian
   text and is counted and logged (never a crash).
 
@@ -483,7 +486,8 @@ fixed:
       `next`: the room controller preloads per room, so a hub never preloads every event.
     - An event knot's carried stage (the budget below) is seeded with the background and props of every room that
       triggers it.
-  - **Output:** `<chapter>.meta.json` → `knots.<name> = { assets, next, ending }`.
+  - **Output:** `<chapter>.meta.json` → `knots.<name> = { assets, next, ending }`, plus `endings: { <knot>: <name> }`:
+    the chapter's declared story endings (§9), `{}` when it has none.
 - **Preload** — on entering knot K the runtime asks the scene and audio to load `assets(next(K))` in the background
   (cancellable; released if the story goes elsewhere). Knot K's own assets are already resident: they were preloaded
   when its predecessor was entered, or loaded at chapter start for the first knot. This is why tags must be literal and
@@ -492,7 +496,8 @@ fixed:
   leads to such a knot does not count) and the next chapter is free (or already owned), its first knot's assets are
   preloaded at low priority. Entering a knot without `-> END` releases them again, so they never hold memory while the
   story continues in this chapter; the next `ending` knot requests them again. A paid chapter that is not owned is
-  never preloaded: its manifest arrives only with the entitled chapter payload (principle 0).
+  never preloaded: its manifest arrives only with the entitled chapter payload (principle 0). A knot that is a
+  declared story ending (§9, the meta's `endings`) never preloads the next chapter: the story ends there.
 - **Budget** — for every knot K, the decoded size of the **carried stage** plus `assets(K) ∪ assets(next(K))` must
   stay within the knot working-set budget (PROTOTYPE-PLAN.md "Budgets"); the build fails otherwise. The carried stage
   is what an earlier knot may leave on screen (background, CG, characters) that K's opening tag lines do not clear and
@@ -508,10 +513,12 @@ fixed:
 
 ---
 
-## 9. Chapters
+## 9. Chapters and stories
 
 - **Layout:**
-  - `story/chapters.json` — the ordered list `{ id, entry, paid, productId?, next }`.
+  - `story/chapters.json` — the list `{ id, entry, paid, productId?, next }` in play order: a chapter's `next` is
+    a later chapter of the list, or `null`.
+  - `story/stories.json` — the story list (below).
   - Each chapter has one entry file, `story/<chapter>/main.ink`, and optional sibling files it INCLUDEs.
   - `story/common/globals.ink` holds the shared declarations.
 - **Entry file top level** — only `INCLUDE`s, chapter-local `VAR`/`CONST` declarations and one divert to the first
@@ -525,8 +532,33 @@ fixed:
     before its first line.
   - The prefix `g_` is forbidden outside `globals.ink` (`vars/global-prefix`).
 - **Chapter end.** A chapter ends at `-> END` (one or several endings). What follows comes from `story/chapters.json`
-  (`next`); if the next chapter is paid and not owned, the client shows the paywall. **There is no paywall tag**: the
-  story signals nothing about prices or purchase (narrative rule).
+  (`next`), unless the knot is a declared story ending (below); if the next chapter is paid and not owned, the client
+  shows the paywall. **There is no paywall tag**: the story signals nothing about prices or purchase (narrative rule).
+- **Stories** (`story/stories.json`; checked by `catalog/stories`, §11):
+
+  ```jsonc
+  // the array order is the Home order
+  [ { "id": "manor", "first": "ch1", "cover": "cover/manor",
+      "endings": { "truth": { "chapter": "ch2", "knot": "archive_truth" } } } ]
+  ```
+
+  - **Membership.** A story is the `next` chain from its `first` chapter; every chapter of `story/chapters.json` lies
+    on exactly one story's chain. `chapters.json` keeps tier, product and `next`; `stories.json` adds only which chain
+    is a story, its cover and its endings. Story ids match `^[a-z][a-z0-9_]{0,23}$`.
+  - **First chapter.** The first chapter of every story is free, and no chapter's `next` names it.
+  - **Title, teaser, cover.** The story's title and teaser are the `stories` / `teasers` entries of
+    `story/locales/<lang>/story.json` (§4); the cover is a `cover/<name>` of `assets/catalog.json`.
+  - **Endings.** `"endings": { "<name>": { "chapter": "<ch>", "knot": "<knot>" } }`, names
+    `^[a-z][a-z0-9_]{0,31}$`. The chapter lies on the story's chain (a mid-story bad end is allowed). The knot writes
+    `-> END`, has no successor knot and carries no `puzzle` / `explore` tag, so entering it is reaching the ending; one
+    ending per knot. A chapter with a `next` keeps at least one `-> END` knot that is not a story ending: otherwise no
+    playthrough could reach its successor.
+  - **Story end.** After a declared ending's END the player sees "The End", not the next chapter; such a run carries
+    nothing into the next chapter (the seeded playthroughs drop it too, §11).
+  - **Shared cast and globals.** `story/cast.json` and `globals.ink` serve every story; the carry flows only along a
+    story's chain, and the first chapter of a story starts from the declared defaults. New globals are named
+    `g_<story>_<name>` (a convention, not linted).
+  - **Never move a shipped chapter to another story:** its saves are keyed by story.
 - **Isolation (principle 0):**
   - no divert into another chapter's knot — it is a different compiled story;
   - a chapter may INCLUDE only files in its own directory and `story/common/`;
@@ -572,8 +604,9 @@ check (the second table below).
 
 | Code | Sev | Rule |
 |---|---|---|
-| `catalog/chapters` | E | `story/chapters.json`: ids `ch<N>` unique; `entry` exists; `paid` ⇒ `productId`; `next` names a listed chapter or `null`; at least one chapter compiled (a run with 0 chapters is an error, not a green) |
+| `catalog/chapters` | E | `story/chapters.json`: ids `ch<N>` unique; `entry` exists; `paid` ⇒ `productId`; `next` names a later listed chapter or `null` (the list is in play order, §9); at least one chapter compiled (a run with 0 chapters is an error, not a green) |
 | `catalog/assets` | E | `assets/catalog.json` keys well-formed; reserved words (`all`, `off`, `stop`) not used as ids; every `cast.json` `char` exists |
+| `catalog/stories` | E | `story/stories.json` (§9), judged once `chapters.json` decoded in play order and `assets/catalog.json` decoded: (1) it exists and is a non-empty array whose entries have exactly `id`, `first`, `cover`, `endings`; (2) each `id` matches `^[a-z][a-z0-9_]{0,23}$` and is unique; (3) `first` is a listed free chapter that no `next` names; (4) the chain from `first` along `next` visits no chapter twice; (5) every listed chapter lies on exactly one story's chain; (6) `cover` is a `cover/<name>` that `assets/catalog.json` lists; (7) each ending name matches `^[a-z][a-z0-9_]{0,31}$` and its `chapter` lies on the story's chain; (8) its `knot` is in that chapter's graph with `-> END`, no successor knot and no `puzzle` / `explore` tag, no two endings name one knot, and a chapter with a `next` keeps a `-> END` knot that is no story ending; (9) a paid chapter's title in `story.json` is 1–32 code points in `ru` and in `en` (it is the invoice title) |
 | `tag/syntax` | E | tag does not match the grammar (§2) |
 | `tag/unknown-kind` | E | kind not in §6 |
 | `tag/missing-arg` / `tag/bad-arg` | E | positional count, unknown/duplicate option, value out of range or not an integer; a `puzzle` without `then=`; a puzzle or section id or a knot name not `[a-z][a-z0-9_]*` (§6) |
@@ -618,7 +651,7 @@ check (the second table below).
 | `loc/missing-en` / `loc/empty-en` | E | no English entry / empty English entry for an ID |
 | `loc/orphan-en` | E | an English entry whose ID no longer exists in ink (retire it, §4) |
 | `loc/stale-en` | W | the entry's `ru` differs from the current Russian text |
-| `loc/missing-name` | E | a cast speaker or a chapter without a name/title in `ru` and `en` |
+| `loc/missing-name` | E | a cast speaker, a chapter or a story without its name, title or teaser in `ru` and `en` |
 | `budget/knot-set` | E | knot working set over budget (§8). Needs decoded sizes, so it is enforced by `npm --prefix client run build` (`budget.ts`), not by `story` |
 | `paid/leak` | E | a paid chapter's ID or text fingerprint found under `client/src/story-gen/` (the build's input); from LW3 also a hint line ID or hint text |
 
@@ -659,7 +692,8 @@ From LW3, world texts follow §4: `id/*` and `loc/*` apply to them, and IDs are 
 **Seeded playthroughs:**
 - **Runs** — 200 runs per chapter (seeds 1–200, mulberry32), random choice index, step cap 5,000.
 - **Paid chapters** — seeded with the carry values from the free chapter's runs, so ch2 is exercised with the states
-  ch1 can produce.
+  ch1 can produce. A run that ended in a declared story ending of its chapter (§9) carries nothing: the story ends
+  there.
 - **Each step** — tags parse, the line has an ID, the ID has an English entry, and the speaker is in the cast.
 - **Report** — the seeds and the visited/ending coverage per chapter.
 - **At a `puzzle` yield** (from LW3) — an outcome uniformly from {solved; failed if `maxAttempts`; abandoned if

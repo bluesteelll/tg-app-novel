@@ -528,8 +528,9 @@ test('lint: catalog/assets red on fixture (bad key)', () => {
 test('lint: catalog/assets red on fixture (cast char missing)', () => {
   const found = catalogFindings(rawCatalog(), { ally: { char: 'ally' }, ghost: { char: 'ghost' } });
   expect(found.some((m) => m.startsWith('story/cast.json: ghost.char:')), JSON.stringify(found)).toBe(true);
-  // The committed pair is clean: the control for the three catalog cases.
-  const clean = lintCatalog(rawCatalog(), readRepoJson('story/cast.json'));
+  // The committed catalog with the cast the fixtures were written against (inline, so a speaker added to
+  // story/cast.json moves no pin) is clean: the control for the three catalog cases.
+  const clean = lintCatalog(rawCatalog(), { ally: { char: 'ally' }, stranger: { char: 'stranger' }, voice: { char: null } });
   expect(clean.findings).toEqual([]);
   expect(clean.cast).toEqual({ ally: { char: 'ally' }, stranger: { char: 'stranger' }, voice: { char: null } });
 });

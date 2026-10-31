@@ -471,7 +471,9 @@ test('catalog: demo catalog and cast decode', () => {
   expect(pinned(catalog.bgm, L3A_BGM)).toEqual(L3A_BGM);
   const L3A_SFX = ['door', 'phone', 'steps'];
   expect(pinned(catalog.sfx, L3A_SFX)).toEqual(L3A_SFX);
-  expect(decodeCast(parseJson(castText), catalog)).toEqual({
+  // The cast the fixtures were written against, inline: a speaker added to story/cast.json moves no pin here.
+  const cast = { ally: { char: 'ally' }, stranger: { char: 'stranger' }, voice: { char: null } };
+  expect(decodeCast(cast, catalog)).toEqual({
     ok: true,
     value: { ally: { char: 'ally' }, stranger: { char: 'stranger' }, voice: { char: null } },
   });

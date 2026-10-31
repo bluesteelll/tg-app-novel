@@ -1,6 +1,6 @@
 // The story tool's localization side (STAGING-DSL §4, §11): `--fix-ids`, `--sync-locales`, the locale checks, and the
-// `story` CLI runs of this lane against a temporary repository (`--root`). Fixtures are inline; the catalog and cast
-// are the committed ones.
+// `story` CLI runs of this lane against a temporary repository (`--root`). Fixtures and the cast are inline; the catalog
+// is the committed one.
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -10,8 +10,8 @@ import { fileURLToPath } from 'node:url';
 import { expect, test } from 'vitest';
 
 import { assetIndex, decodeAssetCatalog, decodeCast, decodeChapterCatalog } from '../../src/story/catalog.ts';
-import type { Cast, ChapterListEntry } from '../../src/story/catalog.ts';
-import type { AssetIndex, ChapterId, LineId, ProductId } from '../../src/story/staging.ts';
+import type { Cast, ChapterListEntry, StoryId } from '../../src/story/catalog.ts';
+import type { AssetId, AssetIndex, ChapterId, LineId, ProductId } from '../../src/story/staging.ts';
 import { LINE_ID_RE } from '../../src/story/tags.ts';
 import { compileChapter } from './compile.ts';
 import type { CompiledChapter } from './compile.ts';
@@ -25,20 +25,28 @@ import { GLOBALS_PATH, lintSources } from './lint.ts';
 import type { Finding, LintCode, SourceChapter } from './lint.ts';
 import { checkLocales, decodeEnTable, decodeNameTable, decodeRetired } from './locales.ts';
 import type { EnTable } from './locales.ts';
+import type { StoryPlan } from './stories.ts';
 
 function readRepoJson(path: string): unknown {
   const text = readFileSync(new URL(`../../../${path}`, import.meta.url), 'utf8');
   return JSON.parse(text.startsWith(String.fromCharCode(0xfeff)) ? text.slice(1) : text);
 }
 
+/**
+ * The cast the fixtures were written against (STORIES-PLAN revision 2, W1): inline, so a speaker added to
+ * story/cast.json moves no test of the tool.
+ */
+const CAST_RAW = { ally: { char: 'ally' }, stranger: { char: 'stranger' }, voice: { char: null } };
+
+/** The committed catalog and the inline cast, decoded against it. */
 function committed(): { assets: AssetIndex; cast: Cast } {
   const catalog = decodeAssetCatalog(readRepoJson('assets/catalog.json'));
   if (!catalog.ok) {
     throw new Error('invariant: the committed catalog decodes');
   }
-  const cast = decodeCast(readRepoJson('story/cast.json'), catalog.value);
+  const cast = decodeCast(CAST_RAW, catalog.value);
   if (!cast.ok) {
-    throw new Error('invariant: the committed cast decodes');
+    throw new Error('invariant: the inline cast decodes against the committed catalog');
   }
   return { assets: assetIndex(catalog.value), cast: cast.value };
 }
@@ -213,7 +221,7 @@ function locales(texts: LocaleTexts = {}): { findings: Finding[]; names: StoryNa
     [CH2_ENTRY.id, linesGraph(CH2_ENTRY.id, lines.ch2)],
   ]);
   const chapters = texts.chapters === undefined ? [CH1_ENTRY, CH2_ENTRY] : texts.chapters;
-  const r = checkLocales({ chapters, graphs, en, names: { ru: ru.table, en: enNames.table }, cast: COMMITTED.cast, retired: retired.ids });
+  const r = checkLocales({ chapters, graphs, en, names: { ru: ru.table, en: enNames.table }, cast: COMMITTED.cast, retired: retired.ids, stories: [] });
   return { findings: [...decoded, ...r.findings], names: r.names };
 }
 
@@ -298,6 +306,8 @@ test('locales: matching tables raise nothing', () => {
   expect(r.names).toEqual({
     chapters: { ch1: { ru: 'Глава 1', en: 'Chapter 1' }, ch2: { ru: 'Глава 2', en: 'Chapter 2' } },
     speakers: { ally: { ru: 'Подруга', en: 'Ally' }, stranger: { ru: 'Незнакомец', en: 'Stranger' }, voice: { ru: 'Голос', en: 'Voice' } },
+    stories: {},
+    teasers: {},
   });
 });
 
@@ -395,22 +405,30 @@ function shipped(t: Readonly<Record<string, { ru: string; en: string }>>): Recor
   return Object.fromEntries(Object.entries(t).map(([id, e]) => [id, e.en])) as Record<LineId, string>; // the keys are line IDs
 }
 
-/** The committed catalog and cast, a free ch1 and a paid ch2, and their locale tables: a clean, emitting repo. */
+/**
+ * The committed catalog, the inline cast, a free ch1 and a paid ch2 in one story without endings, and their locale
+ * tables (the story's title and teaser included): a clean, emitting repo.
+ */
 function repoFiles(): Record<string, string> {
+  const manor = (title: string, teaser: string): { stories: Record<string, string>; teasers: Record<string, string> } => ({
+    stories: { manor: title },
+    teasers: { manor: teaser },
+  });
   return {
     'assets/catalog.json': readFileSync(new URL('../../../assets/catalog.json', import.meta.url), 'utf8'),
-    'story/cast.json': readFileSync(new URL('../../../story/cast.json', import.meta.url), 'utf8'),
+    'story/cast.json': JSON.stringify(CAST_RAW),
     'story/chapters.json': JSON.stringify([
       { id: 'ch1', entry: 'ch1/main.ink', paid: false, next: 'ch2' },
       { id: 'ch2', entry: 'ch2/main.ink', paid: true, productId: 'chapter:ch2', next: null },
     ]),
+    'story/stories.json': JSON.stringify([{ id: 'manor', first: 'ch1', cover: 'cover/manor', endings: {} }]),
     'story/common/globals.ink': 'VAR g_trust = 0\n',
     'story/ch1/main.ink': CH1_INK,
     'story/ch2/main.ink': CH2_INK,
     'story/locales/en/ch1.json': table(REPO_EN_CH1),
     'story/locales/en/ch2.json': table(REPO_EN_CH2),
-    'story/locales/ru/story.json': table(NAMES_RU),
-    'story/locales/en/story.json': table(NAMES_EN),
+    'story/locales/ru/story.json': table({ ...NAMES_RU, ...manor('Усадьба', 'Черновик истории для проверки сборки.') }),
+    'story/locales/en/story.json': table({ ...NAMES_EN, ...manor('The Manor', 'A draft story for the build check.') }),
   };
 }
 
@@ -563,15 +581,22 @@ test('emit: en tables routed with their chapters', () => {
     compiled.set(ch.id, r.compiled);
     graphs.set(ch.id, buildGraph({ chapter: source, files: r.compiled.files, sources: files, assets: COMMITTED.assets }).graph);
   }
-  const names = locales().names;
-  if (names === null) {
+  const helperNames = locales().names;
+  if (helperNames === null) {
     throw new Error('invariant: the default locale fixture has names');
   }
+  // One story of the two chapters; the helper requires no story, so its title and teaser join here.
+  const manor: StoryPlan = { id: 'manor' as StoryId, first: CH1_ENTRY.id, cover: 'cover/manor' as AssetId, endings: {}, chapters: [CH1_ENTRY.id, CH2_ENTRY.id] };
+  const names: StoryNames = {
+    ...helperNames,
+    stories: { manor: { ru: 'Усадьба', en: 'The Manor' } } as StoryNames['stories'],
+    teasers: { manor: { ru: 'Черновик истории для проверки сборки.', en: 'A draft story for the build check.' } } as StoryNames['teasers'],
+  };
   const en = new Map([
     [CH1_ENTRY.id, shipped(REPO_EN_CH1)],
     [CH2_ENTRY.id, shipped(REPO_EN_CH2)],
   ]);
-  const input = { chapters: [CH1_ENTRY, CH2_ENTRY], compiled, graphs, cast: COMMITTED.cast, names, en };
+  const input = { chapters: [CH1_ENTRY, CH2_ENTRY], compiled, graphs, cast: COMMITTED.cast, names, en, stories: [manor] };
   const plan = planEmit(input);
   expect([...plan.keys()]).toContain('client/src/story-gen/free/ch1.en.json');
   expect([...plan.keys()]).toContain('server/content/chapters/ch2/en.json');
