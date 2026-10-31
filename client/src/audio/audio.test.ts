@@ -1276,6 +1276,18 @@ test('sfx: entries that total exactly the cap all stay', async () => {
   expect(audio.stats().decodedBytes).toBe(8_388_608);
 });
 
+test('sfx: entries one mono frame over the cap evict', async () => {
+  const { fetch, audio } = setup();
+  audio.setChapter(CH1);
+  audio.preload(sfxIds('s1', 's2', 's3'));
+  // Decoded bytes come in 4-byte float32 frames: two 4 MiB entries and one mono frame are the smallest total over it.
+  at(fetch.calls, 0).settle(ok(sfxBlob('1048576x1')));
+  at(fetch.calls, 1).settle(ok(sfxBlob('1048576x1')));
+  at(fetch.calls, 2).settle(ok(sfxBlob('1x1')));
+  await flush();
+  expect(audio.stats().decodedBytes).toBeLessThanOrEqual(8_388_608);
+});
+
 test('audio: a resume cut short by suspend() still ends its need when the context runs', async () => {
   vi.useFakeTimers();
   const { ctx, audio } = setup();
