@@ -365,6 +365,109 @@ async fn saves_concurrent_writes_one_wins() {
     report(&failures);
 }
 
+/// Opens a raw READ COMMITTED transaction on `st`'s database (the stand-in for a concurrent app writer: raw
+/// connections run under the test database's hostile `repeatable read` default) and runs `sql` in it, uncommitted.
+async fn hold_row(st: &AppState, sql: &'static str) -> sqlx::PgConnection {
+    let mut a = common::raw_db(st).await;
+    sqlx::raw_sql("BEGIN ISOLATION LEVEL READ COMMITTED")
+        .execute(&mut a)
+        .await
+        .unwrap();
+    sqlx::query(sql)
+        .bind(ANN)
+        .bind(save_body("wA"))
+        .bind(T0 + 1)
+        .execute(&mut a)
+        .await
+        .unwrap();
+    a
+}
+
+/// Commits the transaction [`hold_row`] opened.
+async fn commit(mut a: sqlx::PgConnection) {
+    sqlx::raw_sql("COMMIT").execute(&mut a).await.unwrap();
+    sqlx::Connection::close(a).await.unwrap();
+}
+
+/// A writer A holds the slot's row with rev 2 uncommitted. The app's PUT `{expectedRev: 1}` is seen waiting on the
+/// row lock, then A commits: READ COMMITTED re-checks `rev = 1` on A's row version, so the PUT writes nothing and
+/// answers 409 naming A's row. Deterministic, unlike `saves_concurrent_writes_one_wins`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn saves_update_waits_for_winner_then_conflicts() {
+    let (st, _db) = saves_state(&[ANN]).await;
+    let mut failures = Vec::new();
+    let reply = put(&st, ANN, "auto", request(None, "w1")).await;
+    failures.extend(expect_json(
+        "PUT auto null/w1 (setup)",
+        &reply,
+        200,
+        &written(1, T0),
+    ));
+
+    let a = hold_row(
+        &st,
+        "UPDATE saves SET rev = 2, write_id = 'wA', body = $2, saved_at = $3 \
+         WHERE user_id = $1 AND slot = 'auto'",
+    )
+    .await;
+    let app = st.clone();
+    let pending = tokio::spawn(async move { put(&app, ANN, "auto", request(Some(1), "w2")).await });
+    common::wait_for_lock_waiter(&st).await;
+    commit(a).await;
+    let reply = pending.await.unwrap();
+    failures.extend(expect_json(
+        "PUT auto 1/w2 behind A's rev 2",
+        &reply,
+        409,
+        &conflict(summary("auto", 2, T0 + 1, "wA")),
+    ));
+    failures.extend(
+        expect_rows(
+            "after A's commit",
+            &st,
+            ANN,
+            &[row("auto", 2, "wA", T0 + 1)],
+        )
+        .await,
+    );
+    report(&failures);
+}
+
+/// A writer A holds an uncommitted INSERT of the empty slot. The app's PUT `{expectedRev: null}` is seen waiting on
+/// it (the INSERT's arbiter), then A commits: `ON CONFLICT DO NOTHING` skips, and the PUT answers 409 naming A's row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn saves_create_waits_for_winner_then_conflicts() {
+    let (st, _db) = saves_state(&[ANN]).await;
+    let mut failures = Vec::new();
+    let a = hold_row(
+        &st,
+        "INSERT INTO saves (user_id, slot, rev, chapter_id, story_version, line_id, write_id, body, saved_at) \
+         VALUES ($1, 'auto', 1, 'ch1', 'v1', 'ch1.k1.l3', 'wA', $2, $3)",
+    )
+    .await;
+    let app = st.clone();
+    let pending = tokio::spawn(async move { put(&app, ANN, "auto", request(None, "w2")).await });
+    common::wait_for_lock_waiter(&st).await;
+    commit(a).await;
+    let reply = pending.await.unwrap();
+    failures.extend(expect_json(
+        "PUT auto null/w2 behind A's insert",
+        &reply,
+        409,
+        &conflict(summary("auto", 1, T0 + 1, "wA")),
+    ));
+    failures.extend(
+        expect_rows(
+            "after A's commit",
+            &st,
+            ANN,
+            &[row("auto", 1, "wA", T0 + 1)],
+        )
+        .await,
+    );
+    report(&failures);
+}
+
 /// The one retry contract: a PUT whose `writeId` equals the stored row's gets 200 with the stored `rev` and `savedAt`
 /// and writes nothing, whatever its `expectedRev`. Only the stored row's `writeId` replays: an older one conflicts.
 #[tokio::test]
