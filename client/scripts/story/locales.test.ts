@@ -390,6 +390,11 @@ const REPO_EN_CH2 = { 'ch2.archive.b001': { ru: 'Спасибо.', en: 'Thanks.'
 /** `REPO_EN_CH1` without the street line's entry. */
 const EN_NO_STREET = Object.fromEntries(Object.entries(REPO_EN_CH1).filter(([id]) => id !== 'ch1.street.a004'));
 
+/** A table's shipped form (STAGING-DSL §4): `{ id: en }`. */
+function shipped(t: Readonly<Record<string, { ru: string; en: string }>>): Record<LineId, string> {
+  return Object.fromEntries(Object.entries(t).map(([id, e]) => [id, e.en])) as Record<LineId, string>; // the keys are line IDs
+}
+
 /** The committed catalog and cast, a free ch1 and a paid ch2, and their locale tables: a clean, emitting repo. */
 function repoFiles(): Record<string, string> {
   return {
@@ -533,6 +538,9 @@ test(
         stranger: { ru: NAMES_RU.names.stranger, en: NAMES_EN.names.stranger },
         voice: { ru: NAMES_RU.names.voice, en: NAMES_EN.names.voice },
       });
+      // The en tables the run emitted carry the texts of the committed tables, keyed by line ID.
+      expect(JSON.parse(readFileSync(join(root, 'client/src/story-gen/free/ch1.en.json'), 'utf8'))).toEqual(shipped(REPO_EN_CH1));
+      expect(JSON.parse(readFileSync(join(root, 'server/content/chapters/ch2/en.json'), 'utf8'))).toEqual(shipped(REPO_EN_CH2));
     });
   },
   CLI_TIMEOUT_MS,
@@ -559,8 +567,6 @@ test('emit: en tables routed with their chapters', () => {
   if (names === null) {
     throw new Error('invariant: the default locale fixture has names');
   }
-  const shipped = (t: Readonly<Record<string, { ru: string; en: string }>>): Record<LineId, string> =>
-    Object.fromEntries(Object.entries(t).map(([id, e]) => [id, e.en])) as Record<LineId, string>; // the keys are line IDs
   const en = new Map([
     [CH1_ENTRY.id, shipped(REPO_EN_CH1)],
     [CH2_ENTRY.id, shipped(REPO_EN_CH2)],
@@ -573,8 +579,6 @@ test('emit: en tables routed with their chapters', () => {
   // The shipped shape is { id: en }, keyed by the chapter's own line IDs.
   const free = JSON.parse(plan.get('client/src/story-gen/free/ch1.en.json') ?? '{}') as Record<string, unknown>; // checked just below
   expect(free).toEqual({ 'ch1.cafe.a001': 'Hi.', 'ch1.cafe.a002': 'Stay.', 'ch1.cafe.a003': 'Leave.', 'ch1.street.a004': 'The street.' });
-  const ch1Ids = new Set<string>((graphs.get(CH1_ENTRY.id)?.lines ?? []).map((l) => l.id));
-  expect(Object.keys(free).filter((id) => !ch1Ids.has(id))).toEqual([]);
   expect(plan.get('server/content/chapters/ch2/en.json')).toBe(`${JSON.stringify({ 'ch2.archive.b001': 'Thanks.', 'ch2.archive.b002': "We'll see." }, null, 2)}\n`);
   // A paid table routed into story-gen is a paid leak.
   const fp = decodeLineFingerprints(JSON.parse(plan.get('server/content/build/fingerprints.lines.json') ?? 'null'));
