@@ -58,6 +58,7 @@ fn routes() -> Router<AppState> {
         .route("/puzzles/{puzzle_id}", get(puzzles::get_status))
         .route("/puzzles/{puzzle_id}/attempts", post(puzzles::post_attempt))
         .route("/invoices", post(orders::post_invoice))
+        .route("/orders/{order_id}", get(orders::get_order))
 }
 
 /// `GET /api/health`: no auth, no database; `ok` as `text/plain`.

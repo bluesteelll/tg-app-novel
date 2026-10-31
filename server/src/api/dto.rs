@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use ts_rs::TS;
 
+use crate::db::orders::OrderStatus;
 use crate::error::{ApiErrorBody, ErrorCode};
 use crate::ids::{SaveSlot, StoryId};
 
@@ -231,6 +232,18 @@ pub struct CreateInvoiceResponse {
     pub order_id: String,
     /// The invoice link for `Telegram.WebApp.openInvoice`.
     pub invoice_url: String,
+}
+
+/// `GET /api/orders/{orderId}` response: the order's row, never client state.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderResponse {
+    /// The order id.
+    pub order_id: String,
+    /// The product the order is for.
+    pub product_id: String,
+    /// The order's status.
+    pub status: OrderStatus,
 }
 
 /// The first line of the generated file: what it is and how to rewrite it.

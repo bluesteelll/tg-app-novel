@@ -1,19 +1,20 @@
-//! `POST /api/invoices`: a Stars invoice link for a catalog product. A thin handler: the price and the texts come from
-//! the catalog, the order row from `db/orders.rs`, the link from the Bot API gateway.
+//! `POST /api/invoices` (a Stars invoice link for a catalog product) and `GET /api/orders/{orderId}` (the status of
+//! one of the user's orders). Thin handlers: the price and the texts come from the catalog, the order rows from
+//! `db/orders.rs`, the link from the Bot API gateway.
 //!
 //! Principle 2: the order is committed before the gateway call, which runs outside any transaction; nothing here
 //! grants. The request names a product only; a price, amount or currency in the body is ignored.
 
 use axum::Json;
-use axum::extract::State;
-use axum::extract::rejection::JsonRejection;
+use axum::extract::rejection::{JsonRejection, PathRejection};
+use axum::extract::{Path, State};
 
 use crate::AppState;
 use crate::api::body_rejection;
-use crate::api::dto::{CreateInvoiceRequest, CreateInvoiceResponse};
+use crate::api::dto::{CreateInvoiceRequest, CreateInvoiceResponse, OrderResponse};
 use crate::auth::AuthUser;
 use crate::content::Localized;
-use crate::db::orders::InvoiceOrder;
+use crate::db::orders::{InvoiceOrder, parse_order_id};
 use crate::error::ApiError;
 use crate::ids::ProductId;
 use crate::puzzles::Lang;
@@ -100,5 +101,29 @@ pub async fn post_invoice(
     Ok(Json(CreateInvoiceResponse {
         order_id: order.0,
         invoice_url,
+    }))
+}
+
+/// `GET /api/orders/{orderId}`: the product and status of one of the user's orders. A path segment that is not text
+/// or not the order id grammar names no order: 404 `not_found`, like an unknown order and another user's order (the
+/// table lists only 404), and it never reaches SQL.
+pub async fn get_order(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    id: Result<Path<String>, PathRejection>,
+) -> Result<Json<OrderResponse>, ApiError> {
+    let Ok(Path(raw)) = id else {
+        return Err(ApiError::NotFound);
+    };
+    let order = parse_order_id(&raw).ok_or(ApiError::NotFound)?;
+    let found = st
+        .repo
+        .order_for_user(user, &order)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    Ok(Json(OrderResponse {
+        order_id: order.0,
+        product_id: found.product.0,
+        status: found.status,
     }))
 }

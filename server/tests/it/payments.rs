@@ -1,5 +1,6 @@
 //! `POST /api/invoices`: Stars invoices priced and titled from the catalog, the order committed before the gateway
-//! call, and a recent order with a link handed out again.
+//! call, and a recent order with a link handed out again. `GET /api/orders/{orderId}`: the status of the user's own
+//! order, read from its row.
 //!
 //! [`RecordingGateway`] is this crate's Bot API fake: every state here installs it through `with_gateway`, so no test
 //! reaches the production gateway (whose placeholder token would answer `Disabled`, a 502, anyway). It records all
@@ -744,5 +745,129 @@ async fn invoice_rejects_bad_requests() {
             "orders rows / gateway calls: expected 0 / 0, got {rows} / {calls}"
         ));
     }
+    report(&failures);
+}
+
+/// `GET /api/orders/{orderId}` as `user` (a token from [`bearer_now`]) or without `Authorization`; `id` goes into the
+/// path as given (already percent-encoded where it must be).
+async fn get_order(st: &AppState, user: Option<i64>, id: &str) -> common::Reply {
+    let mut req = Request::get(format!("/api/orders/{id}"));
+    if let Some(user) = user {
+        req = req.header(AUTHORIZATION, bearer_now(st, user));
+    }
+    common::call(st, req.body(Body::empty()).unwrap()).await
+}
+
+/// The mismatch of `reply` against a 200 `OrderResponse` of `order` for `chapter:ch2` in `status`, `no-store`.
+fn expect_order(case: &str, reply: &common::Reply, order: &str, status: &str) -> Vec<String> {
+    let mut failures = Vec::new();
+    let body: Value = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
+    let want = json!({ "orderId": order, "productId": "chapter:ch2", "status": status });
+    if reply.status.as_u16() != 200 || body != want {
+        failures.push(format!(
+            "{case}: expected 200 {want}, got {} {:?}",
+            reply.status.as_u16(),
+            body_text(reply)
+        ));
+    }
+    let cache = reply
+        .headers
+        .get(CACHE_CONTROL)
+        .map(|v| v.to_str().unwrap_or("<not text>"));
+    if cache != Some("no-store") {
+        failures.push(format!(
+            "{case}: cache-control: expected no-store, got {cache:?}"
+        ));
+    }
+    failures
+}
+
+/// Another user's order is 404 `not_found`, like an unknown one; its owner reads it.
+#[tokio::test]
+async fn order_other_user_404() {
+    let (st, _db, _) = invoice_state(&[(ANN, Some("ru")), (BEN, Some("en"))]).await;
+    let mut failures = Vec::new();
+    let reply = post_invoice(&st, Some(ANN), &invoice_body("chapter:ch2")).await;
+    if let Some((order, _)) = invoice_reply("ANN's invoice", &reply, &mut failures) {
+        let reply = get_order(&st, Some(BEN), &order).await;
+        failures.extend(expect_error("BEN", &reply, 404, "not_found"));
+        let reply = get_order(&st, Some(ANN), &order).await;
+        failures.extend(expect_order("ANN", &reply, &order, "created"));
+    }
+    report(&failures);
+}
+
+/// The status is the row's: `checkout`, `paid` (with its payment row) and `refunded`, each `no-store`.
+#[tokio::test]
+async fn order_status_follows_row() {
+    let (st, _db, _) = invoice_state(&[(ANN, Some("ru"))]).await;
+    let mut failures = Vec::new();
+    let reply = post_invoice(&st, Some(ANN), &invoice_body("chapter:ch2")).await;
+    let Some((order, _)) = invoice_reply("ANN's invoice", &reply, &mut failures) else {
+        report(&failures);
+        return;
+    };
+    let mut conn = common::raw_db(&st).await;
+    sqlx::query("UPDATE orders SET status = 'checkout', checkout_at = $2 WHERE id = $1")
+        .bind(&order)
+        .bind(T0)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    let reply = get_order(&st, Some(ANN), &order).await;
+    failures.extend(expect_order("checkout", &reply, &order, "checkout"));
+
+    // `paid` needs its payment row (`orders_charge_fk`, `orders_paid_has_charge`).
+    sqlx::query(
+        "INSERT INTO payments (telegram_payment_charge_id, invoice_payload, user_id, amount, currency, \
+         provider_payment_charge_id, paid_at, refunded_at) VALUES ('ch-1', $1, $2, 1, 'XTR', '', $3, NULL)",
+    )
+    .bind(&order)
+    .bind(ANN)
+    .bind(T0)
+    .execute(&mut conn)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE orders SET status = 'paid', charge_id = 'ch-1', paid_at = $2 WHERE id = $1",
+    )
+    .bind(&order)
+    .bind(T0)
+    .execute(&mut conn)
+    .await
+    .unwrap();
+    let reply = get_order(&st, Some(ANN), &order).await;
+    failures.extend(expect_order("paid", &reply, &order, "paid"));
+
+    sqlx::query("UPDATE orders SET status = 'refunded' WHERE id = $1")
+        .bind(&order)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    conn.close().await.unwrap();
+    let reply = get_order(&st, Some(ANN), &order).await;
+    failures.extend(expect_order("refunded", &reply, &order, "refunded"));
+    report(&failures);
+}
+
+/// An unknown order and every path segment outside the order id grammar are 404 `not_found`, never a 500: a U+0000
+/// or a non-UTF-8 segment never reaches SQL. Without a token it is 401.
+#[tokio::test]
+async fn order_unknown_or_malformed_404() {
+    let (st, _db, _) = invoice_state(&[(ANN, Some("ru"))]).await;
+    let mut failures = Vec::new();
+    for (case, id) in [
+        ("unknown", "o_00000000000000000000000000000000"),
+        ("not the grammar", "nope"),
+        ("upper-case hex", "o_0123456789ABCDEF0123456789ABCDEF"),
+        ("33 hex", "o_0123456789abcdef0123456789abcdef0"),
+        ("U+0000", "o_%000123456789abcdef0123456789abcde"),
+        ("not UTF-8", "%FF"),
+    ] {
+        let reply = get_order(&st, Some(ANN), id).await;
+        failures.extend(expect_error(case, &reply, 404, "not_found"));
+    }
+    let reply = get_order(&st, None, "o_00000000000000000000000000000000").await;
+    failures.extend(expect_error("no bearer", &reply, 401, "token_missing"));
     report(&failures);
 }

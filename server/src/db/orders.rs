@@ -1,8 +1,11 @@
 //! The `orders` table: one row per Stars invoice the server created (PP P3). This module writes only the insert of a
-//! `created` order and its invoice link; there is no grant path here (a payment moves an order in a later lane).
+//! `created` order and its invoice link, and reads an order for its owner; there is no grant path here (a payment
+//! moves an order in a later lane).
 //!
 //! The order id grammar lives here too: `ids.rs` holds the type, and an id is minted and parsed only next to the rows
 //! it names.
+
+use serde::Serialize;
 
 use crate::db::Repo;
 use crate::ids::{OrderId, ProductId, UserId};
@@ -15,6 +18,42 @@ const ORDER_PREFIX: &str = "o_";
 
 /// The hex digits after [`ORDER_PREFIX`]: 16 random bytes.
 const ORDER_HEX_LEN: usize = 32;
+
+/// An order's status: the `orders.status` values (`orders_status_known`), and their wire form in `OrderResponse`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OrderStatus {
+    /// Invoiced, not paid.
+    Created,
+    /// A pre-checkout was accepted; the payment is pending.
+    Checkout,
+    /// Paid: the grant happened.
+    Paid,
+    /// Paid, then refunded.
+    Refunded,
+}
+
+impl OrderStatus {
+    /// The status the column value `s` names: exactly one of the four, as serde spells it.
+    pub fn parse(s: &str) -> Option<OrderStatus> {
+        match s {
+            "created" => Some(OrderStatus::Created),
+            "checkout" => Some(OrderStatus::Checkout),
+            "paid" => Some(OrderStatus::Paid),
+            "refunded" => Some(OrderStatus::Refunded),
+            _ => None,
+        }
+    }
+}
+
+/// One of the user's orders, as `GET /api/orders/{orderId}` reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserOrder {
+    /// The product the order is for.
+    pub product: ProductId,
+    /// The order's status.
+    pub status: OrderStatus,
+}
 
 /// What [`Repo::reuse_or_create_order`] did.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,6 +157,31 @@ impl Repo {
             order,
             language_code,
         })
+    }
+
+    /// `order` if it belongs to `user`: one `orders_pkey` lookup with the user bound, so another user's order is
+    /// `None`, like an unknown one. A status outside the four (the CHECK forbids it) is a decode error.
+    pub async fn order_for_user(
+        &self,
+        user: UserId,
+        order: &OrderId,
+    ) -> Result<Option<UserOrder>, sqlx::Error> {
+        let row: Option<(String, String)> =
+            sqlx::query_as("SELECT product_id, status FROM orders WHERE id = $1 AND user_id = $2")
+                .bind(&order.0)
+                .bind(user.0)
+                .fetch_optional(&self.pool)
+                .await?;
+        row.map(|(product, status)| {
+            let status = OrderStatus::parse(&status).ok_or_else(|| {
+                sqlx::Error::Decode("orders.status outside the known four".into())
+            })?;
+            Ok(UserOrder {
+                product: ProductId(product),
+                status,
+            })
+        })
+        .transpose()
     }
 
     /// Records the invoice link of `order` (autocommit), after the Bot API returned it.
