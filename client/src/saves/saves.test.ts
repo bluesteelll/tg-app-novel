@@ -390,6 +390,28 @@ test('saves: reload uploads pending when server writeId is ours', async () => {
   expect(d3.items.has('pending_manor')).toBe(false);
 });
 
+test('saves: no server copy uploads only an entry based on none', async () => {
+  // The entry was based on rev 3, and the slot is now empty: what it was based on is gone, so the server wins.
+  const srv = new FakeSaves();
+  const device = new FakeDevice();
+  device.items.set('pending_manor', encodePending({ v: 1, baseRev: 3, sentIds: ['w4'], writeId: 'w4', write: write(4) }));
+  expect(await service(srv, new FakeClock(), manor, device).s.start(list())).toEqual(started);
+  expect(srv.puts, 'an entry based on rev 3 is not uploaded over an empty slot').toEqual([]);
+  await settle();
+  expect(device.items.has('pending_manor')).toBe(false);
+  expect(srv.rows.has('manor/auto'), 'the row is not re-created').toBe(false);
+
+  // The first save of the story was based on no rev: it is uploaded and creates the row.
+  const first = new FakeSaves();
+  const d2 = new FakeDevice();
+  d2.items.set('pending_manor', encodePending({ v: 1, baseRev: null, sentIds: ['w1'], writeId: 'w1', write: write(1) }));
+  expect(await service(first, new FakeClock(), manor, d2).s.start(list())).toEqual(started);
+  expect(sent(first)).toEqual([['auto', 'w1', null]]);
+  expect(first.rows.get('manor/auto')).toMatchObject({ rev: 1, writeId: 'w1', body: write(1).body });
+  await settle();
+  expect(d2.items.has('pending_manor')).toBe(false);
+});
+
 test('saves: pending entry is per story', async () => {
   const device = new FakeDevice();
   const srv = new FakeSaves();
