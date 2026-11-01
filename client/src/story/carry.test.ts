@@ -149,3 +149,27 @@ test('carry: a carried false or zero overrides a truthy default of the next chap
   expect(into).toEqual({ g_alive: false, g_trust: 0 });
   expect(firstLine(ch2, { kind: 'fresh', carry: into })).toMatchObject({ kind: 'line', lineId: 'ch2.start.r002' });
 });
+
+test('carry: a carried empty string overrides a non-empty default of the next chapter', () => {
+  // A string global is a scalar the story lint admits; an empty name left by ch1 is a value, not an absence.
+  const globals = 'VAR g_name = "Anna"\n';
+  const ch1 = chapter('ch1', ['-> start', '=== start ===', '~ g_name = ""', 'Текст. #id:ch1.start.s001', '-> END'], globals, {
+    knots: ['start'],
+    globals: ['g_name'],
+  });
+  const ch2 = chapter(
+    'ch2',
+    ['-> start', '=== start ===', '{ g_name == "":', '    Без имени. #id:ch2.start.s002', '- else:', '    С именем. #id:ch2.start.s003', '}', '-> END'],
+    globals,
+    { knots: ['start'], globals: ['g_name'] },
+  );
+  const r1 = ok(StoryRunner.create(ch1, { kind: 'fresh', carry: {} }, ASSETS));
+  expect(ok(r1.next()).kind).toBe('line');
+  expect(ok(r1.next()).kind).toBe('end');
+  const out = carryOut(r1, ch1.meta);
+  r1.dispose();
+  expect(out).toEqual({ g_name: '' });
+  const into = carryInto(out, ch2.meta);
+  expect(into).toEqual({ g_name: '' });
+  expect(firstLine(ch2, { kind: 'fresh', carry: into })).toMatchObject({ kind: 'line', lineId: 'ch2.start.s002' });
+});
