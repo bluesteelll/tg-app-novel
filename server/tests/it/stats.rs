@@ -1,10 +1,17 @@
-//! Statistics (`server/migrations/0003_stats.sql`): the `stat_events` constraints on raw SQL.
+//! Statistics (`server/migrations/0003_stats.sql`, `db/stats.rs`): the `stat_events` constraints on raw SQL, and
+//! the repository's idempotent, budgeted write.
 //!
-//! Every refused case breaks one CHECK, or one whose name sorts before every other it breaks: PostgreSQL tests a
-//! table's CHECK constraints in name order, so the constraint a case reports is the one the case is about.
+//! Every refused schema case breaks one CHECK, or one whose name sorts before every other it breaks: PostgreSQL tests
+//! a table's CHECK constraints in name order, so the constraint a case reports is the one the case is about.
+//!
+//! Large seeds are raw `generate_series` inserts (`gen_random_uuid` is a lower-case v4): only their count and time
+//! matter to the budgets.
 
-use sqlx::PgConnection;
+use server::AppState;
+use server::db::stats::{NewStatEvent, RecordOutcome, StatCaps, StatKind, StatOutcome};
+use server::ids::{ChapterId, StoryId, UserId};
 use sqlx::postgres::PgQueryResult;
+use sqlx::{Connection, PgConnection};
 
 use crate::catalog::{ANN, T0, state_with_users};
 use crate::common;
@@ -511,5 +518,271 @@ async fn schema_stat_events_bounds() {
         ),
     ];
     let failures: Vec<String> = results.into_iter().filter_map(Result::err).collect();
+    report(&failures);
+}
+
+/// The production budgets (`api/stats.rs`): 600 fact rows and 600 choice rows per rolling hour.
+const CAPS: StatCaps = StatCaps {
+    facts: 600,
+    choices: 600,
+};
+
+/// An event of the repository tests: the owned parts a [`NewStatEvent`] borrows.
+struct Ev {
+    id: String,
+    kind: StatKind,
+    story: StoryId,
+    chapter: ChapterId,
+    subject: Option<String>,
+    outcome: Option<StatOutcome>,
+}
+
+/// Event `uuid(n)` of `kind` in `chapter` (manor's ch1 / ch2, else tide's).
+fn ev(
+    n: u64,
+    kind: StatKind,
+    chapter: &str,
+    subject: Option<&str>,
+    outcome: Option<StatOutcome>,
+) -> Ev {
+    let story = if matches!(chapter, "ch1" | "ch2") {
+        "manor"
+    } else {
+        "tide"
+    };
+    Ev {
+        id: uuid(n),
+        kind,
+        story: StoryId(story.to_owned()),
+        chapter: ChapterId(chapter.to_owned()),
+        subject: subject.map(str::to_owned),
+        outcome,
+    }
+}
+
+/// The `n`-th fact, in turn each subject / outcome shape (NULL and not), so every array bind carries NULL and non-NULL
+/// elements: a `chapter_started`, an `ending_reached`, a `puzzle_ended`.
+fn fact(n: u64) -> Ev {
+    match n % 3 {
+        0 => ev(n, StatKind::ChapterStarted, "ch3", None, None),
+        1 => ev(n, StatKind::EndingReached, "ch3", Some("drowned"), None),
+        _ => ev(
+            n,
+            StatKind::PuzzleEnded,
+            "ch1",
+            Some("ch1.drawer"),
+            Some(StatOutcome::Solved),
+        ),
+    }
+}
+
+/// Event `uuid(n)`: a pick of the ch3 option `ch3.shore.<suffix>`.
+fn pick(n: u64, suffix: &str) -> Ev {
+    let option = format!("ch3.shore.{suffix}");
+    ev(n, StatKind::ChoiceMade, "ch3", Some(&option), None)
+}
+
+fn ids(evs: &[Ev]) -> Vec<String> {
+    evs.iter().map(|e| e.id.clone()).collect()
+}
+
+/// `Recorded` with exactly these ids.
+fn recorded(inserted: Vec<String>, over_budget: Vec<String>) -> Result<RecordOutcome, String> {
+    Ok(RecordOutcome::Recorded {
+        inserted,
+        over_budget,
+    })
+}
+
+/// `Repo::record_events` of `user` at `now` under [`CAPS`]; a database error as [`describe`] writes it.
+async fn record(st: &AppState, user: i64, evs: &[Ev], now: i64) -> Result<RecordOutcome, String> {
+    let events: Vec<NewStatEvent<'_>> = evs
+        .iter()
+        .map(|e| NewStatEvent {
+            event_id: &e.id,
+            kind: e.kind,
+            story: &e.story,
+            chapter: &e.chapter,
+            subject: e.subject.as_deref(),
+            outcome: e.outcome,
+            story_version: VERSION,
+            age_ms: 0,
+        })
+        .collect();
+    st.repo
+        .record_events(UserId(user), &events, now, CAPS)
+        .await
+        .map_err(|e| describe(&e))
+}
+
+/// The mismatch of one `record` call against `want`.
+fn expect_record(
+    case: &str,
+    got: Result<RecordOutcome, String>,
+    want: Result<RecordOutcome, String>,
+) -> Option<String> {
+    (got != want).then(|| format!("{case}: expected {want:?}, got {got:?}"))
+}
+
+/// `n` rows of `kind` with `subject` by `user` in tide's ch3, received at `at`.
+async fn seed(st: &AppState, user: i64, n: i64, kind: &str, subject: Option<&str>, at: i64) {
+    let mut c = common::raw_db(st).await;
+    sqlx::query(
+        "INSERT INTO stat_events (user_id, event_id, kind, story_id, chapter_id, subject, outcome, story_version, \
+         age_ms, received_at) SELECT $1, gen_random_uuid()::text, $2, 'tide', 'ch3', $3, NULL, $4, 0, $5 \
+         FROM generate_series(1, $6)",
+    )
+    .bind(user)
+    .bind(kind)
+    .bind(subject)
+    .bind(VERSION)
+    .bind(at)
+    .bind(n)
+    .execute(&mut c)
+    .await
+    .unwrap();
+    c.close().await.unwrap();
+}
+
+/// The `stat_events` rows of `user`.
+async fn rows(st: &AppState, user: i64) -> i64 {
+    let mut c = common::raw_db(st).await;
+    let n = sqlx::query_scalar("SELECT count(*) FROM stat_events WHERE user_id = $1")
+        .bind(user)
+        .fetch_one(&mut c)
+        .await
+        .unwrap();
+    c.close().await.unwrap();
+    n
+}
+
+/// A resent batch is recorded once: the second call inserts nothing and is not an error (`stat_events_event_key`
+/// and `ON CONFLICT ... DO NOTHING`), for every subject / outcome shape.
+#[tokio::test]
+async fn stats_event_replay_counts_once() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    let batch: Vec<Ev> = (0..3).map(fact).collect();
+    let mut failures = Vec::new();
+    failures.extend(expect_record(
+        "first send",
+        record(&st, ANN, &batch, T0).await,
+        recorded(ids(&batch), Vec::new()),
+    ));
+    failures.extend(expect_record(
+        "resend",
+        record(&st, ANN, &batch, T0).await,
+        recorded(Vec::new(), Vec::new()),
+    ));
+    let n = rows(&st, ANN).await;
+    if n != 3 {
+        failures.push(format!("rows: expected 3, got {n}"));
+    }
+    report(&failures);
+}
+
+/// 600 fact rows per user per rolling hour: the 601st is refused with nothing written until the first rows leave the
+/// window (`received_at > now - 3600`); a batch that would cross the cap is refused whole, one that reaches it is not.
+#[tokio::test]
+async fn stats_rate_limited_after_600_per_hour() {
+    let (st, _db) = state_with_users(&[ANN, BEN]).await;
+    let mut failures = Vec::new();
+    let facts: Vec<Ev> = (0..600).map(fact).collect();
+    for (i, batch) in facts.chunks(32).enumerate() {
+        failures.extend(expect_record(
+            &format!("batch {i} of {} at T0", batch.len()),
+            record(&st, ANN, batch, T0).await,
+            recorded(ids(batch), Vec::new()),
+        ));
+    }
+    let one_more = [fact(600)];
+    failures.extend(expect_record(
+        "event 601 at T0",
+        record(&st, ANN, &one_more, T0).await,
+        Ok(RecordOutcome::RateLimited),
+    ));
+    let n = rows(&st, ANN).await;
+    if n != 600 {
+        failures.push(format!("rows after the refusal: expected 600, got {n}"));
+    }
+    failures.extend(expect_record(
+        "event 601 at T0 + 3599",
+        record(&st, ANN, &one_more, T0 + 3599).await,
+        Ok(RecordOutcome::RateLimited),
+    ));
+    failures.extend(expect_record(
+        "event 601 at T0 + 3600",
+        record(&st, ANN, &one_more, T0 + 3600).await,
+        recorded(ids(&one_more), Vec::new()),
+    ));
+
+    seed(&st, BEN, 590, "chapter_started", None, T0).await;
+    let eleven: Vec<Ev> = (1000..1011).map(fact).collect();
+    failures.extend(expect_record(
+        "BEN at 590: a batch of 11",
+        record(&st, BEN, &eleven, T0).await,
+        Ok(RecordOutcome::RateLimited),
+    ));
+    let ten = &eleven[..10];
+    failures.extend(expect_record(
+        "BEN at 590: a batch of 10",
+        record(&st, BEN, ten, T0).await,
+        recorded(ids(ten), Vec::new()),
+    ));
+    report(&failures);
+}
+
+/// Facts and choices have budgets of their own: 600 choice rows in the hour do not refuse a fact, and a fact window
+/// past its cap (concurrent batches overshoot it by up to one batch) does not refuse a batch without facts.
+#[tokio::test]
+async fn stats_cap_does_not_refuse_facts() {
+    let (st, _db) = state_with_users(&[ANN, BEN]).await;
+    let mut failures = Vec::new();
+    seed(&st, ANN, 600, "choice_made", Some("ch3.shore.s001"), T0).await;
+    let ending = [ev(1, StatKind::EndingReached, "ch3", Some("drowned"), None)];
+    failures.extend(expect_record(
+        "ANN at 600 choices: an ending",
+        record(&st, ANN, &ending, T0).await,
+        recorded(ids(&ending), Vec::new()),
+    ));
+    seed(&st, BEN, 601, "chapter_started", None, T0).await;
+    let choice = [pick(2, "s002")];
+    failures.extend(expect_record(
+        "BEN at 601 facts: a choice",
+        record(&st, BEN, &choice, T0).await,
+        recorded(ids(&choice), Vec::new()),
+    ));
+    report(&failures);
+}
+
+/// Past the choice budget only first picks are written: an option the user never picked, once per batch. The other
+/// choices past the budget come back `over_budget`, in batch order; within the budget every pick is written.
+#[tokio::test]
+async fn stats_choice_over_budget_keeps_first_picks() {
+    let (st, _db) = state_with_users(&[ANN, BEN]).await;
+    let mut failures = Vec::new();
+    seed(&st, ANN, 600, "choice_made", Some("ch3.shore.s001"), T0).await;
+    let (a, b, c) = (pick(1, "s001"), pick(2, "s002"), pick(3, "s002"));
+    let want = recorded(vec![b.id.clone()], vec![a.id.clone(), c.id.clone()]);
+    failures.extend(expect_record(
+        "ANN at 600: [A s001, B s002, C s002]",
+        record(&st, ANN, &[a, b, c], T0).await,
+        want,
+    ));
+
+    // BEN's stored picks are of another option: only the batch's own earlier picks make the third a repeat.
+    seed(&st, BEN, 598, "choice_made", Some("ch3.shore.s009"), T0).await;
+    let three: Vec<Ev> = (11..14).map(|n| pick(n, "s001")).collect();
+    failures.extend(expect_record(
+        "BEN at 598: [s001 x 3]",
+        record(&st, BEN, &three, T0).await,
+        recorded(ids(&three[..2]), ids(&three[2..])),
+    ));
+
+    let later = [pick(21, "s001"), pick(22, "s002"), pick(23, "s002")];
+    failures.extend(expect_record(
+        "ANN at T0 + 3600: [s001, s002, s002]",
+        record(&st, ANN, &later, T0 + 3600).await,
+        recorded(ids(&later), Vec::new()),
+    ));
     report(&failures);
 }
