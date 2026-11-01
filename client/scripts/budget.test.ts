@@ -13,11 +13,15 @@ import { ENGINE_SRC, LIMITS, evaluate, evaluateAssets, formatRows, readAssetInpu
 import type { AssetInputs, BudgetInputs, ChapterInputs, DistFile, ManifestChunk, Row } from './budget.ts';
 import { decodeChapterList, decodeStoryUsage } from './story/emit.ts';
 
+/** The lazy family rows (PUZZLES-PLAN X14, "Budgets"). */
+const LAZY_ROWS = ['puzzle-type chunk (br)', 'puzzle-host chunk (br)', 'explore-ui chunk (br)'];
+
 const ROW_NAMES = [
   'manifest',
   'entry closure JS (br)',
   'engine closure JS (br)',
   'JS before the first line (br)',
+  ...LAZY_ROWS,
   'all JS (br)',
   'CSS total (br)',
   'index.html (br)',
@@ -51,6 +55,8 @@ function inputs(over: Partial<BudgetInputs> = {}): BudgetInputs {
       file('assets/index-c.css', 200),
     ],
     engineSourceExists: false,
+    yieldsSourceExists: false,
+    lazySources: new Set(),
     ...over,
   };
 }
@@ -85,6 +91,38 @@ function withEngine(base: BudgetInputs, engineBr: number, pixiBr: number): Budge
     engineSourceExists: true,
     files: [...base.files, file('assets/engine-d.js', engineBr), file('assets/pixi-e.js', pixiBr)],
   };
+}
+
+const CODE_LOCK = 'src/puzzles/ui/CodeLock.svelte';
+const ORDER = 'src/puzzles/ui/OrderPuzzle.svelte';
+const HOST = 'src/ui/puzzles/PuzzleHost.svelte';
+const CONTROLLER = 'src/explore/controller.ts';
+const EXPLORE_VIEW = 'src/ui/explore/ExploreView.svelte';
+const ALL_LAZY: ReadonlySet<string> = new Set([CODE_LOCK, ORDER, HOST, CONTROLLER, EXPLORE_VIEW]);
+
+/** One built lazy root: its JS chunk's brotli bytes, and its CSS file's if any. */
+type LazyChunk = { js: number; css?: number };
+
+/**
+ * Adds each lazy root as a dynamic entry of the entry chunk (as Vite emits an `import()`'d module), importing the
+ * entry's shared chunk; app/yields.ts exists and the roots' sources too, unless `over` says otherwise.
+ */
+function withLazy(base: BudgetInputs, chunks: Readonly<Record<string, LazyChunk>>, over: Partial<BudgetInputs> = {}): BudgetInputs {
+  const manifest = { ...base.manifest };
+  const entry = manifest['index.html'];
+  if (entry === undefined) {
+    throw new Error('invariant: the base manifest has an entry');
+  }
+  manifest['index.html'] = { ...entry, dynamicImports: [...(entry.dynamicImports ?? []), ...Object.keys(chunks)] };
+  const files = [...base.files];
+  for (const [src, size] of Object.entries(chunks)) {
+    const stem = (src.split('/').pop() ?? src).replace(/\.\w+$/, '');
+    const js = `assets/${stem}-z.js`;
+    const css = size.css === undefined ? [] : [`assets/${stem}-z.css`];
+    manifest[src] = { file: js, src, isDynamicEntry: true, imports: ['_shared-b.js'], css };
+    files.push(file(js, size.js), ...css.map((c) => file(c, size.css ?? 0)));
+  }
+  return { ...base, manifest, files, yieldsSourceExists: true, lazySources: new Set(Object.keys(chunks)), ...over };
 }
 
 describe('budget evaluate', () => {
@@ -245,12 +283,113 @@ describe('budget evaluate', () => {
     expect(rowOf(evaluate(inputs(), LIMITS), 'manifest').status).toBe('PASS');
   });
 
+  test('budget: puzzle ui in engine closure fails', () => {
+    // Control: CodeLock as its own dynamic entry (yields.ts's import()) is measured and passes.
+    const base = withLazy(withEngine(inputs(), 50_000, 100_000), { [CODE_LOCK]: { js: 3_000 } });
+    expect(rowOf(evaluate(base, LIMITS), 'puzzle-type chunk (br)')).toMatchObject({ status: 'PASS', valueBytes: 3_000 });
+    // Also statically imported by app/engine.ts: it loads before the first line, whatever its own size.
+    const manifest = { ...base.manifest };
+    const engine = manifest[ENGINE_SRC];
+    if (engine === undefined) {
+      throw new Error('invariant: withEngine adds the engine chunk');
+    }
+    manifest[ENGINE_SRC] = { ...engine, imports: [...(engine.imports ?? []), CODE_LOCK] };
+    const row = rowOf(evaluate({ ...base, manifest }, LIMITS), 'puzzle-type chunk (br)');
+    expect(row.status).toBe('FAIL');
+    expect(row.note).toContain(`${CODE_LOCK} is in the engine closure`);
+    // The same through the entry's static closure.
+    const fromEntry = { ...base.manifest };
+    const entry = fromEntry['index.html'];
+    if (entry === undefined) {
+      throw new Error('invariant: the base manifest has an entry');
+    }
+    fromEntry['index.html'] = { ...entry, imports: [...(entry.imports ?? []), CODE_LOCK] };
+    const entryRow = rowOf(evaluate({ ...base, manifest: fromEntry }, LIMITS), 'puzzle-type chunk (br)');
+    expect(entryRow.status).toBe('FAIL');
+    expect(entryRow.note).toContain(`${CODE_LOCK} is in the entry static closure`);
+  });
+
+  test('budget: lazy row pending until its importer exists', () => {
+    // Every lazy source present, no app/yields.ts, no dynamic entries (nothing imports them yet: W7).
+    const rows = evaluate(inputs({ lazySources: ALL_LAZY }), LIMITS);
+    for (const name of LAZY_ROWS) {
+      expect(rowOf(rows, name), name).toMatchObject({ status: 'PENDING', valueBytes: null, note: 'src/app/yields.ts absent' });
+    }
+    // Built chunks change nothing while the importer is absent.
+    const built = evaluate(withLazy(inputs(), { [CODE_LOCK]: { js: 9_000 } }, { yieldsSourceExists: false }), LIMITS);
+    expect(rowOf(built, 'puzzle-type chunk (br)').status).toBe('PENDING');
+  });
+
+  test('budget: lazy row fails without dynamic entry once its importer exists', () => {
+    const rows = evaluate(inputs({ yieldsSourceExists: true, lazySources: ALL_LAZY }), LIMITS);
+    for (const name of LAZY_ROWS) {
+      const row = rowOf(rows, name);
+      expect(row.status, name).toBe('FAIL');
+      expect(row.note, name).toContain('no dynamic entry for src/');
+    }
+    // A root merged into another chunk (in the manifest, not a dynamic entry) has no chunk of its own either.
+    const base = inputs({ yieldsSourceExists: true, lazySources: new Set([HOST]) });
+    const merged = { ...base.manifest, [HOST]: { file: 'assets/shared-b.js', src: HOST } };
+    expect(rowOf(evaluate({ ...base, manifest: merged }, LIMITS), 'puzzle-host chunk (br)').status).toBe('FAIL');
+    // A family whose sources are absent stays PENDING (the explore UI before LX).
+    const puzzlesOnly = evaluate(withLazy(inputs(), { [CODE_LOCK]: { js: 2_000 }, [ORDER]: { js: 2_000 }, [HOST]: { js: 4_000 } }), LIMITS);
+    expect(rowOf(puzzlesOnly, 'explore-ui chunk (br)')).toMatchObject({ status: 'PENDING', valueBytes: null });
+    expect(rowOf(puzzlesOnly, 'puzzle-host chunk (br)')).toMatchObject({ status: 'PASS', valueBytes: 4_000 });
+    // No manifest: the importer exists, so nothing can be measured.
+    expect(rowOf(evaluate(inputs({ manifest: null, yieldsSourceExists: true, lazySources: ALL_LAZY }), LIMITS), 'puzzle-type chunk (br)').status).toBe('FAIL');
+  });
+
+  test('budget: lazy chunk over its limit fails', () => {
+    const row = (name: string, chunks: Readonly<Record<string, LazyChunk>>): Row => rowOf(evaluate(withLazy(inputs(), chunks), LIMITS), name);
+    // PZ "Red once": a 9 KB br type chunk fails; each type is its own chunk, so the largest decides (8 KB passes).
+    expect(row('puzzle-type chunk (br)', { [CODE_LOCK]: { js: 9_000 }, [ORDER]: { js: 2_000 } })).toMatchObject({ status: 'FAIL', valueBytes: 9_000 });
+    expect(row('puzzle-type chunk (br)', { [CODE_LOCK]: { js: 8_000 }, [ORDER]: { js: 8_000 } })).toMatchObject({ status: 'PASS', valueBytes: 8_000 });
+    // JS + CSS; the entry's shared chunk it imports is downloaded already and not counted.
+    expect(row('puzzle-type chunk (br)', { [ORDER]: { js: 7_500, css: 600 } })).toMatchObject({ status: 'FAIL', valueBytes: 8_100 });
+    expect(row('puzzle-host chunk (br)', { [HOST]: { js: 10_100 } })).toMatchObject({ status: 'FAIL', valueBytes: 10_100 });
+    expect(row('puzzle-host chunk (br)', { [HOST]: { js: 10_000 } }).status).toBe('PASS');
+    // The explore UI is one family: its roots' union counts.
+    expect(row('explore-ui chunk (br)', { [CONTROLLER]: { js: 8_100 }, [EXPLORE_VIEW]: { js: 8_000 } })).toMatchObject({ status: 'FAIL', valueBytes: 16_100 });
+    expect(row('explore-ui chunk (br)', { [CONTROLLER]: { js: 8_000 }, [EXPLORE_VIEW]: { js: 8_000 } }).status).toBe('PASS');
+    // A chunk the row reaches but dist lacks fails instead of measuring fewer bytes.
+    const base = withLazy(inputs(), { [HOST]: { js: 4_000 } });
+    const files = base.files.filter((f) => f.path !== 'assets/PuzzleHost-z.js');
+    const gone = rowOf(evaluate({ ...base, files }, LIMITS), 'puzzle-host chunk (br)');
+    expect(gone.status).toBe('FAIL');
+    expect(gone.note).toContain('assets/PuzzleHost-z.js');
+  });
+
+  test('budget: engine row excludes the lazy chunks', () => {
+    // yields.ts lives in the engine closure and import()s the lazy families: those load after the first line.
+    const base = withEngine(inputs(), 50_000, 179_000);
+    const manifest = { ...base.manifest };
+    const engine = manifest[ENGINE_SRC];
+    if (engine === undefined) {
+      throw new Error('invariant: withEngine adds the engine chunk');
+    }
+    const panel = 'src/ui/explore/LockPanel.svelte';
+    manifest[ENGINE_SRC] = { ...engine, dynamicImports: [CODE_LOCK, panel] };
+    manifest[CODE_LOCK] = { file: 'assets/CodeLock-z.js', src: CODE_LOCK, isDynamicEntry: true, imports: ['_pixi-e.js'] };
+    manifest[panel] = { file: 'assets/LockPanel-z.js', src: panel, isDynamicEntry: true };
+    const files = [...base.files, file('assets/CodeLock-z.js', 5_000), file('assets/LockPanel-z.js', 3_000)];
+    const rows = evaluate({ ...base, manifest, files, yieldsSourceExists: true, lazySources: new Set([CODE_LOCK]) }, LIMITS);
+    // 50 000 + 179 000 as without them; a lazy-directory chunk that is no listed root is not counted either.
+    expect(rowOf(rows, 'engine closure JS (br)')).toMatchObject({ status: 'PASS', valueBytes: 229_000 });
+    expect(rowOf(rows, 'JS before the first line (br)').valueBytes).toBe(12_000 + 229_000);
+    // The lazy row measures the chunk, without the Pixi chunk the engine already loaded.
+    expect(rowOf(rows, 'puzzle-type chunk (br)')).toMatchObject({ status: 'PASS', valueBytes: 5_000 });
+    // First-load to the first line counts the same JS.
+    const plain = assetRows(assetInputs(), withEngine(inputs(), 50_000, 179_000));
+    const lazy = assetRows(assetInputs(), { ...base, manifest, files });
+    expect(rowOf(lazy, 'first-load ch1').valueBytes).toBe(rowOf(plain, 'first-load ch1').valueBytes);
+  });
+
   test('budget: every row is printed', () => {
-    // A failing manifest does not stop later rows (no bail). PENDING: the engine row, and the first-line row while
-    // the engine is absent; with no manifest the first-line row FAILs instead.
+    // A failing manifest does not stop later rows (no bail). PENDING: the engine row, the first-line row while the
+    // engine is absent, and the three lazy rows while app/yields.ts is; with no manifest the first-line row FAILs.
     const cases: ReadonlyArray<readonly [BudgetInputs, number]> = [
-      [inputs(), 2],
-      [inputs({ manifest: null }), 1],
+      [inputs(), 5],
+      [inputs({ manifest: null }), 4],
     ];
     for (const [input, pendingRows] of cases) {
       const rows = evaluate(input, LIMITS);
@@ -271,6 +410,8 @@ describe('budget evaluate', () => {
 
 const CLIENT_DIR = fileURLToPath(new URL('..', import.meta.url));
 const SCRIPT = fileURLToPath(new URL('./budget.ts', import.meta.url));
+/** A test that spawns the CLI: the 5 s default tripped under load (RULINGS 45: 6.3 s at 93 % CPU). */
+const CLI_TIMEOUT_MS = 30_000;
 
 /** Deterministic, incompressible bytes (mulberry32): brotli cannot shrink them, so raw size = budget size. */
 function noise(length: number, seed: number): Uint8Array {
@@ -348,7 +489,7 @@ describe('budget cli', () => {
     for (const name of ROW_NAMES) {
       expect(r.stdout).toContain(`${name} |`);
     }
-  });
+  }, CLI_TIMEOUT_MS);
 
   test('budget: cli exits 0 on a small dist', () => {
     const dist = join(tmp, 'dist');
@@ -358,8 +499,12 @@ describe('budget cli', () => {
     expect(r.status, r.stdout + r.stderr).toBe(0);
     expect(r.stdout).toMatch(/^manifest \| — \| — \| PASS/m);
     expect(r.stdout).toMatch(/^engine closure JS \(br\) \| .* \| (PENDING|PASS)/m);
+    // The lazy rows read --root's client/: no app/yields.ts there, so PENDING whatever this repository holds.
+    expect(r.stdout).toContain('puzzle-type chunk (br) | — | 8.0 KB | PENDING | src/app/yields.ts absent');
+    expect(r.stdout).toContain('puzzle-host chunk (br) | — | 10.0 KB | PENDING | src/app/yields.ts absent');
+    expect(r.stdout).toContain('explore-ui chunk (br) | — | 16.0 KB | PENDING | src/app/yields.ts absent');
     expect(r.stdout).toMatch(/^budget: \d+ rows, \d+ PASS, 0 FAIL, \d+ PENDING$/m);
-  });
+  }, CLI_TIMEOUT_MS);
 
   test('budget: cli runs through a linked path', () => {
     // Node runs the main module from its realpath while argv[1] keeps the caller's spelling (a junction, macOS's
@@ -373,7 +518,7 @@ describe('budget cli', () => {
     } finally {
       unlinkSync(link); // the link only: afterEach's recursive delete never meets a way into client/scripts
     }
-  });
+  }, CLI_TIMEOUT_MS);
 
   test('budget: cli runs through a linked path under preserve-symlinks-main', () => {
     // With the flag (also reachable through NODE_OPTIONS) Node keeps the link's spelling in import.meta.url while the
@@ -387,7 +532,7 @@ describe('budget cli', () => {
     } finally {
       unlinkSync(link); // the link only: afterEach's recursive delete never meets a way into client/scripts
     }
-  });
+  }, CLI_TIMEOUT_MS);
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -778,6 +923,42 @@ describe('budget assets', () => {
     }
   });
 
+  test('budget: asset rows fail on a conflict or a lacking id', () => {
+    // Control: the base inputs fail no row.
+    expect(assetRows(assetInputs()).filter((r) => r.status === 'FAIL').map((r) => r.name)).toEqual([]);
+    // An id whose entry differs between two manifests (a stale one): its row FAILs, an image and a clip alike.
+    const conflicted = specsWith('ch2', (s) => {
+      s.assets['bg/cafe'] = img('bg-cafe-0a0a0a0a', 1080, 2048, 120_000, 150_000, '/api/assets/');
+      s.assets['bgm/calm'] = clip('bgm', 'bgm-calm-0f0f0f0f', 352_000, 8_000, 'wav', '/api/assets/');
+    });
+    const rows = assetRows(assetInputs(conflicted));
+    for (const name of ['image bg/cafe', 'audio bgm/calm']) {
+      const row = rowOf(rows, name);
+      expect(row.status, name).toBe('FAIL');
+      expect(row.note, name).toContain("the entry in ch2 differs from an earlier manifest's (a stale manifest?)");
+    }
+    // The same entry in both manifests is no conflict.
+    const shared = specsWith('ch2', (s) => {
+      s.assets['bg/cafe'] = bg('cafe');
+    });
+    expect(rowOf(assetRows(assetInputs(shared)), 'image bg/cafe').status).toBe('PASS');
+    // A knot naming an asset its chapter's manifest lacks cannot be summed: FAIL, not a smaller PASS.
+    const lacking = specsWith('ch1', (s) => {
+      s.knots['street']?.assets.push('bg/ghost');
+    });
+    const knot = rowOf(assetRows(assetInputs(lacking)), 'knot-set ch1/street');
+    expect(knot.status).toBe('FAIL');
+    expect(knot.note).toContain("not in ch1's manifest: bg/ghost");
+    // A room naming a close-up the manifest lacks, likewise.
+    const a = assetInputs();
+    const room = { bg: 'bg/cafe', props: [], closeups: ['cg/drawer'], neighbours: ['bg/street'] };
+    const roomRow = rowOf(assetRows({ ...a, rooms: { 'ch1/hall/main': room } as unknown as AssetInputs['rooms'] }), 'room-set ch1/hall/main'); // ids are fixture literals
+    expect(roomRow.status).toBe('FAIL');
+    expect(roomRow.note).toContain("not in ch1's manifest: cg/drawer");
+    const fits = { ...room, closeups: [] };
+    expect(rowOf(assetRows({ ...a, rooms: { 'ch1/hall/main': fits } as unknown as AssetInputs['rooms'] }), 'room-set ch1/hall/main').status).toBe('PASS');
+  });
+
   test('budget: asset rows pending without their subject', () => {
     const rows = assetRows(assetInputs());
     // No world source, no sectioned world: nothing to measure yet. The engine is absent: first-load is partial.
@@ -834,7 +1015,7 @@ describe('budget assets', () => {
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
-  });
+  }, CLI_TIMEOUT_MS);
 
   test('budget: cli prints asset rows from the root', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'budget-root-'));
@@ -860,11 +1041,11 @@ describe('budget assets', () => {
       ]) {
         expect(r.stdout).toMatch(row);
       }
-      expect(r.stdout).toMatch(/^budget: \d+ rows, \d+ PASS, 0 FAIL, 5 PENDING$/m);
+      expect(r.stdout).toMatch(/^budget: \d+ rows, \d+ PASS, 0 FAIL, 8 PENDING$/m);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
-  });
+  }, CLI_TIMEOUT_MS);
 });
 
 // A synthetic repository as `npm run story && npm run assets` leaves it: one free chapter (ch1) naming bg/cafe and

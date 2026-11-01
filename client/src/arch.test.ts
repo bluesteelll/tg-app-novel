@@ -30,14 +30,19 @@ const RULE_IDS = [
   'texture-create',
   'import-outside-src',
   'pure-world',
+  'lazy-ui',
+  'runner-enter',
 ] as const;
 
 type RuleId = (typeof RULE_IDS)[number];
-type Group = 'pattern' | 'boundary' | 'pure';
+type Group = 'pattern' | 'boundary' | 'pure' | 'lazy' | 'runner';
 type Violation = { rule: RuleId; file: string; line: number; excerpt: string };
 type Fixture = readonly [file: string, source: string];
 
-/** "Forbidden anywhere in src/", "import boundaries" of the plan's module map, and the pure world layer (X4). */
+/**
+ * "Forbidden anywhere in src/", "import boundaries" of the plan's module map, the pure world layer (X4), the lazy
+ * chunk families (X14) and the one caller of `runner.enter` (PZ "Modules"), each judged by its own tree test.
+ */
 const GROUP: Record<RuleId, Group> = {
   'vh-unit': 'pattern',
   'window-open': 'pattern',
@@ -62,6 +67,8 @@ const GROUP: Record<RuleId, Group> = {
   'texture-create': 'boundary',
   'import-outside-src': 'boundary',
   'pure-world': 'pure',
+  'lazy-ui': 'lazy',
+  'runner-enter': 'runner',
 };
 
 /** Paths are relative to src/; index.html sits one level up. */
@@ -129,6 +136,18 @@ function isPureWorld(file: string): boolean {
   );
 }
 
+// PUZZLES-PLAN X14: each lazy family is its own dynamic chunk, never in the entry or the engine's static closure. A
+// file under one of these directories is imported statically only from inside the same directory; anywhere else
+// only through `import()` (app/yields.ts and puzzles/registry.ts hold those).
+const LAZY_DIRS = ['puzzles/ui/', 'ui/puzzles/', 'ui/explore/'] as const;
+
+function lazyDirOf(file: string): string | undefined {
+  return LAZY_DIRS.find((dir) => file.startsWith(dir));
+}
+
+/** The only caller of `runner.enter` (PZ "Modules": `yields.ts` routes every yield and calls `project` first). */
+const RUNNER_ENTRY_FILE = 'app/yields.ts';
+
 /** Where a rule applies; everything outside is the rule's exemption. */
 function applies(rule: RuleId, file: string): boolean {
   switch (rule) {
@@ -154,6 +173,8 @@ function applies(rule: RuleId, file: string): boolean {
       return file !== 'scene/loader.ts' && file !== 'scene/registry.ts';
     case 'pure-world':
       return isPureWorld(file);
+    case 'runner-enter':
+      return file !== RUNNER_ENTRY_FILE;
     default:
       return true;
   }
@@ -187,6 +208,8 @@ const MARKUP_RULES: ReadonlyArray<readonly [RuleId, RegExp]> = [
   ['texture-create', /\bnew\s+Texture\b/g],
   ['texture-create', /\bAssets\s*\.\s*(?:load|loadBundle|backgroundLoad|backgroundLoadBundle)\b/g],
   ['texture-create', /\bcreateImageBitmap\b/g],
+  // Name-based on purpose (cut Q5): a receiver-name heuristic is bypassed by a rename.
+  ['runner-enter', /\.\s*enter\s*\(/g],
 ];
 
 function violations(files: Readonly<Record<string, string>>): Violation[] {
@@ -199,6 +222,7 @@ function violations(files: Readonly<Record<string, string>>): Violation[] {
       scanScript(file, parts.script, out);
       scanText(file, parts.markup, MARKUP_RULES, out);
       scanText(file, parts.style, [['vh-unit', VH_LENGTH]], out);
+      scanStyleReferences(file, parts.style, out);
     }
   }
   return out;
@@ -520,6 +544,10 @@ function checkCall(ctx: Ctx, node: ts.CallExpression): void {
     }
   }
   const m = member(callee);
+  // `a.enter(`, `a?.enter(`, `a['enter'](`: any receiver (cut Q5); a method declaration is no call.
+  if (m !== undefined && m.name === 'enter') {
+    report(ctx, 'runner-enter', node);
+  }
   const arg = node.arguments[0];
   if (m !== undefined && m.name === 'createElement' && arg !== undefined && ts.isStringLiteralLike(arg)) {
     const tag = arg.text.toLowerCase();
@@ -579,6 +607,12 @@ function checkImport(ctx: Ctx, node: ts.Node): void {
     const target = new URL(spec, `file:///src/${ctx.file}`).pathname;
     if (/^\/src\/(?:story|scene|audio)\//.test(target)) {
       report(ctx, 'ui-imports', node);
+    }
+    // A static value import or export-from into a lazy directory, from outside it; `import()` is allowed anywhere.
+    const lazy = target.startsWith('/src/') ? lazyDirOf(target.slice('/src/'.length)) : undefined;
+    const isStatic = ts.isImportDeclaration(node) || ts.isExportDeclaration(node);
+    if (isStatic && lazy !== undefined && !ctx.file.startsWith(lazy)) {
+      report(ctx, 'lazy-ui', node);
     }
   }
   if (spec === 'svelte' || spec.startsWith('svelte/') || /\.svelte(?:\.ts)?$/.test(spec)) {
@@ -720,12 +754,16 @@ function underSrc(spec: string, from: string): boolean {
   return new URL(spec, from).pathname.startsWith('/src/');
 }
 
+/** A URL scheme head: `file:`, `data:`, `virtual:`, and a Windows drive (`C:`), which parses as one. */
+const URL_SCHEME = /^[a-z][a-z0-9+.-]*:/i;
+
 /**
  * Whether an origin can load a file outside src/. A path resolves from the importer (a `#` head is a package import
- * map, refused); a bare specifier is a package. A glob resolves as Vite's `toAbsoluteGlob`: `/` from the project
- * root, `./` or `../` from `base` (a `/` base from the root, a relative one from the importer) or the importer. Its
- * static directory (the head before the first `*`, `?`, `[` or `{`, up to its last `/`) must lie under src/, and no
- * `..` may follow the first wildcard; any other head is refused. An opaque reference is refused.
+ * map, and a URL scheme or a drive letter names no file under src/: both refused); a bare specifier is a package. A
+ * glob resolves as Vite's `toAbsoluteGlob`: `/` from the project root, `./` or `../` from `base` (a `/` base from the
+ * root, a relative one from the importer) or the importer. Its static directory (the head before the first `*`, `?`,
+ * `[` or `{`, up to its last `/`) must lie under src/, and no `..` may follow the first wildcard; any other head is
+ * refused. An opaque reference is refused.
  */
 function reachesOutsideSrc(file: string, o: Origin): boolean {
   const from = `file:///src/${file}`;
@@ -733,7 +771,7 @@ function reachesOutsideSrc(file: string, o: Origin): boolean {
     case 'opaque':
       return true;
     case 'path':
-      if (o.spec.startsWith('#')) {
+      if (o.spec.startsWith('#') || URL_SCHEME.test(o.spec)) {
         return true;
       }
       return (o.spec.startsWith('.') || o.spec.startsWith('/')) && !underSrc(o.spec, from);
@@ -763,6 +801,31 @@ function reachesOutsideSrc(file: string, o: Origin): boolean {
   }
 }
 
+/** What a style body can make Vite load: `@import '<s>'`, and `url(<s>)` (with `@import url(<s>)`), quoted or not. */
+const CSS_REFERENCES: readonly RegExp[] = [/@import\s+(['"])(.*?)\1/g, /\burl\(\s*(['"]?)(.*?)\1\s*\)/g];
+/** A reference that loads no file of the tree: inline data, a web URL, an SVG fragment. */
+const CSS_NO_FILE = /^(?:data:|https?:|#)/i;
+
+/** The CSS references of a .svelte / .html style body (comments blanked), judged like an import path. */
+function scanStyleReferences(file: string, style: string, out: Violation[]): void {
+  if (!applies('import-outside-src', file)) {
+    return;
+  }
+  for (const re of CSS_REFERENCES) {
+    for (const m of style.matchAll(re)) {
+      const spec = (m[2] ?? '').trim();
+      if (spec === '' || CSS_NO_FILE.test(spec)) {
+        continue;
+      }
+      // CSS reads a bare `x.png` relative to the stylesheet, as Vite resolves it.
+      const path = spec.startsWith('.') || spec.startsWith('/') || URL_SCHEME.test(spec) ? spec : `./${spec}`;
+      if (reachesOutsideSrc(file, { form: 'path', spec: path })) {
+        out.push({ rule: 'import-outside-src', file, ...lineAt(style, m.index) });
+      }
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // The real tree
 
@@ -783,6 +846,16 @@ function loadSources(): Record<string, string> {
 const SOURCES = loadSources();
 const TREE: Record<string, string> = { ...SOURCES, [INDEX_HTML]: indexHtml };
 
+/** The whole-tree tests' limit: the 5 s default tripped under load (RULINGS 45: a tree scan took 5.7 s). */
+const TREE_TIMEOUT_MS = 30_000;
+
+let treeScan: readonly Violation[] | null = null;
+/** The real tree's violations: one AST pass, shared by every whole-tree test. */
+function treeViolations(): readonly Violation[] {
+  treeScan ??= violations(TREE);
+  return treeScan;
+}
+
 test('arch: scans raw sources', () => {
   const keys = Object.keys(SOURCES);
   expect(keys).toContain('main.ts');
@@ -792,15 +865,15 @@ test('arch: scans raw sources', () => {
   expect(app).toContain('<style');
   expect(app).not.toContain('svelte/internal');
   expect(indexHtml).toContain('telegram-web-app.js');
-});
+}, TREE_TIMEOUT_MS);
 
 test('arch: forbidden patterns', () => {
-  expect(violations(TREE).filter((v) => GROUP[v.rule] === 'pattern')).toEqual([]);
-});
+  expect(treeViolations().filter((v) => GROUP[v.rule] === 'pattern')).toEqual([]);
+}, TREE_TIMEOUT_MS);
 
 test('arch: import boundaries', () => {
-  expect(violations(TREE).filter((v) => GROUP[v.rule] === 'boundary')).toEqual([]);
-});
+  expect(treeViolations().filter((v) => GROUP[v.rule] === 'boundary')).toEqual([]);
+}, TREE_TIMEOUT_MS);
 
 test('arch: pure world modules', () => {
   // Non-vacuous: the layer's files are scanned, so an empty or renamed tree cannot pass.
@@ -808,8 +881,52 @@ test('arch: pure world modules', () => {
   for (const file of PURE_WORLD_FILES) {
     expect(keys, file).toContain(file);
   }
-  expect(violations(TREE).filter((v) => GROUP[v.rule] === 'pure')).toEqual([]);
-});
+  expect(treeViolations().filter((v) => GROUP[v.rule] === 'pure')).toEqual([]);
+}, TREE_TIMEOUT_MS);
+
+/** The lazy components on the tree (LX adds `ui/explore/`). */
+const LAZY_COMPONENTS = [
+  'puzzles/ui/CodeLock.svelte',
+  'puzzles/ui/OrderPuzzle.svelte',
+  'ui/puzzles/PuzzleHost.svelte',
+  'ui/puzzles/HintLadder.svelte',
+] as const;
+
+/** The files under a lazy directory that a source's literal `import()` calls load. */
+function dynamicLazyTargets(file: string, text: string): string[] {
+  const out: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      const o = dynamicOrigin(node.arguments[0]);
+      const target = o.form === 'path' ? new URL(o.spec, `file:///src/${file}`).pathname.slice('/src/'.length) : '';
+      if (lazyDirOf(target) !== undefined) {
+        out.push(target);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS));
+  return out.sort();
+}
+
+test('arch: lazy ui only by dynamic import', () => {
+  // Non-vacuous: the lazy components are scanned, and the allow side is exercised by registry.ts's import() calls
+  // and PuzzleHost's static import of HintLadder from its own directory.
+  const keys = Object.keys(SOURCES);
+  for (const file of LAZY_COMPONENTS) {
+    expect(keys, file).toContain(file);
+  }
+  expect(dynamicLazyTargets('puzzles/registry.ts', SOURCES['puzzles/registry.ts'] ?? '')).toEqual([
+    'puzzles/ui/CodeLock.svelte',
+    'puzzles/ui/OrderPuzzle.svelte',
+  ]);
+  expect(treeViolations().filter((v) => GROUP[v.rule] === 'lazy')).toEqual([]);
+}, TREE_TIMEOUT_MS);
+
+test('arch: only yields.ts enters the runner', () => {
+  // Vacuous on the tree until L15: no `.enter(` call exists yet. The red and allow fixtures carry the proof.
+  expect(treeViolations().filter((v) => GROUP[v.rule] === 'runner')).toEqual([]);
+}, TREE_TIMEOUT_MS);
 
 // ---------------------------------------------------------------------------------------------------------------
 // Red fixtures: every case must be flagged with its rule.
@@ -984,6 +1101,14 @@ const RED: Record<RuleId, readonly Fixture[]> = {
     ['app/content.ts', "import s from '#content/stories.json';"],
     ['app/content.ts', 'const m = import(spec);'],
     ['app/content.ts', 'const m = import(`../story-gen/${x}/../../../server/a.json`);'],
+    // CSS in a style body loads files too (LS1 review M1).
+    ['ui/S1.svelte', "<p></p>\n<style>\n  @import '../../../story/x.css';\n</style>"],
+    ['ui/S2.svelte', "<p></p>\n<style>\n  p { background: url('../../../server/content/a.png'); }\n</style>"],
+    ['ui/S3.svelte', '<p></p>\n<style>\n  @import url("../../assets/x.css");\n</style>'],
+    // A URL scheme or a drive letter is no package and no path under src/ (LS1 review M2).
+    ['app/content.ts', "import s from 'file:///D:/repo/story/stories.json';"],
+    ['app/content.ts', "const u = new URL('file:///D:/repo/x.json', import.meta.url);"],
+    ['app/content.ts', "import s from 'C:/repo/server/content/a.json';"],
   ],
   'pure-world': [
     ['explore/reduce.ts', 'document.title = s;'],
@@ -998,6 +1123,22 @@ const RED: Record<RuleId, readonly Fixture[]> = {
     ['story/catalog.ts', 'const d = document;'],
     ['explore/reduce.ts', 'const o = { document };'],
     ['world/decode.ts', "import { z } from 'zod';"],
+  ],
+  'lazy-ui': [
+    ['app/yields.ts', "import CodeLock from '../puzzles/ui/CodeLock.svelte';"],
+    ['ui/App.svelte', "<script lang=\"ts\">\n  import PuzzleHost from './puzzles/PuzzleHost.svelte';\n</script>\n<PuzzleHost />"],
+    ['puzzles/registry.ts', "export { default } from './ui/CodeLock.svelte';"],
+    ['app/game.ts', "import { x } from '../ui/explore/LockPanel.svelte';"],
+    // An inline `type` keeps the declaration (verbatimModuleSyntax), so the module still loads.
+    ['app/game.ts', "import { type Props } from '../puzzles/ui/OrderPuzzle.svelte';"],
+    // One lazy family's directory is outside another's.
+    ['ui/explore/ExploreView.svelte', "<script lang=\"ts\">\n  import HintLadder from '../puzzles/HintLadder.svelte';\n</script>\n<HintLadder />"],
+  ],
+  'runner-enter': [
+    ['app/game.ts', 'runner.enter(k, p);'],
+    ['app/game.ts', 'this.runner?.enter(k, p);'],
+    ['explore/controller.ts', "r['enter'](k, {});"],
+    ['ui/A.svelte', '<button onclick={() => runner.enter(k, p)}>x</button>'],
   ],
 };
 
@@ -1076,6 +1217,10 @@ const ALLOW: ReadonlyArray<readonly [RuleId, readonly Fixture[]]> = [
       ['story/catalog.ts', "const u = new URL('./x.ts', import.meta.url);"],
       ['story/catalog.ts', 'const m = import(`../story-gen/free/${id}.story.json`);'],
       ['story/catalog.ts', "const g = import.meta.glob('./*.json', { base: '../story-gen/free' });"],
+      // CSS that loads no file of the tree, and a bare name read relative to the component.
+      ['ui/S4.svelte', '<p></p>\n<style>\n  p { background: url(data:image/png;base64,AAAA); }\n</style>'],
+      ['ui/S5.svelte', '<svg></svg>\n<style>\n  svg { mask: url(#m); }\n</style>'],
+      ['ui/S6.svelte', "<p></p>\n<style>\n  p { background: url('./bg.png'); }\n  i { background: url(icon.svg); }\n</style>"],
     ],
   ],
   [
@@ -1086,6 +1231,23 @@ const ALLOW: ReadonlyArray<readonly [RuleId, readonly Fixture[]]> = [
       ['explore/reduce.ts', "import type { View } from '../ui/view.ts';"],
       ['world/decode.ts', 'const o = { document: 1 }; const d = w.docs;'],
       ['explore/reconcile.ts', "import { reduce } from './reduce.ts';\nconst n = s.date + o.random();"],
+    ],
+  ],
+  [
+    'lazy-ui',
+    [
+      ['puzzles/registry.ts', "const m = import('./ui/CodeLock.svelte');"],
+      ['ui/puzzles/PuzzleHost.svelte', "<script lang=\"ts\">\n  import HintLadder from './HintLadder.svelte';\n</script>\n<HintLadder />"],
+      // Erased: a type import from a lazy directory loads nothing.
+      ['app/yields.ts', "import type CodeLock from '../puzzles/ui/CodeLock.svelte';\nexport type { PuzzleUiProps } from '../puzzles/ui/Types.ts';"],
+    ],
+  ],
+  [
+    'runner-enter',
+    [
+      ['app/yields.ts', 'const r = runner.enter(then, projection);'],
+      ['story/runner.ts', 'class R { enter(k: string): void {} }'],
+      ['app/game.ts', '// GameSession never calls runner.enter( itself: yields.ts does.\nexport const x = 1;'],
     ],
   ],
 ];
