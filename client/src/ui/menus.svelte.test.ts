@@ -2,7 +2,7 @@
 // points (META-PLAN M9, M27) and the keys this lane declares for the puzzle, explore and hint UIs. Components render
 // through @testing-library/svelte. Events are built by hand where `detail` matters: a pointer click has detail >= 1, a
 // keyboard or assistive-technology activation has detail 0 (as in choices.svelte.test.ts).
-import { cleanup, render } from '@testing-library/svelte';
+import { cleanup, render, within } from '@testing-library/svelte';
 import { flushSync } from 'svelte';
 import ts from 'typescript';
 import { afterEach, expect, test, vi } from 'vitest';
@@ -10,12 +10,17 @@ import { afterEach, expect, test, vi } from 'vitest';
 import { en } from '../i18n/en.ts';
 import { t, type Lang, type UiKey } from '../i18n/index.ts';
 import { ru } from '../i18n/ru.ts';
-import type { LineId } from '../story/staging.ts';
+import type { StoryId } from '../story/catalog.ts';
+import type { ChapterId, LineId } from '../story/staging.ts';
 import Backlog from './Backlog.svelte';
 import type { BacklogLine } from './Backlog.svelte';
+import ChapterSelect from './ChapterSelect.svelte';
+import type { ChapterRow } from './ChapterSelect.svelte';
 import Menu from './Menu.svelte';
 import Notice from './Notice.svelte';
 import type { NoticeView } from './Notice.svelte';
+import StoryPicker from './StoryPicker.svelte';
+import type { StoryCardView } from './StoryPicker.svelte';
 import Terms from './Terms.svelte';
 
 // svelteTesting()'s auto-cleanup does not reach the `dom` project (L14a), so each test unmounts what it rendered here.
@@ -277,10 +282,208 @@ test('menus: terms render in the app, links only by callback', () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------
+// The story picker and the chapter select (C5)
+
+const storyId = (id: string): StoryId => id as StoryId;
+
+/** A story card with no cover, no save and no ending yet; the title carries markup, which must show as text. */
+function cardOf(id: string, over: Partial<StoryCardView> = {}): StoryCardView {
+  return {
+    id: storyId(id),
+    title: `<b>${id}</b>`,
+    teaser: `A ${id} teaser.`,
+    cover: null,
+    continue: false,
+    eager: false,
+    card: false,
+    ...over,
+  };
+}
+
+/** The picker's callbacks, each recording `<name> <story>` at the moment it is called. */
+function pickerProps(cards: readonly StoryCardView[], lang: Lang, calls: string[]) {
+  return {
+    cards,
+    lang,
+    onstart: (id: StoryId) => calls.push(`start ${id}`),
+    oncontinue: (id: StoryId) => calls.push(`continue ${id}`),
+    onchapters: (id: StoryId) => calls.push(`chapters ${id}`),
+    oncard: (id: StoryId) => calls.push(`card ${id}`),
+  };
+}
+
+/** The card element of story `id`. */
+function cardEl(container: HTMLElement, id: string): HTMLElement {
+  const el = container.querySelector<HTMLElement>(`[data-story="${id}"]`);
+  expect(el, id).not.toBeNull();
+  return el ?? container;
+}
+
+test('menus: story picker shows start or continue per story', () => {
+  for (const lang of LANGS) {
+    const calls: string[] = [];
+    const cards = [cardOf('manor'), cardOf('tide', { continue: true })];
+    const { container } = render(StoryPicker, pickerProps(cards, lang, calls));
+    expect([...container.querySelectorAll('[data-story]')].map((el) => el.getAttribute('data-story')), lang).toEqual([
+      'manor',
+      'tide',
+    ]);
+    const manor = within(cardEl(container, 'manor'));
+    const tide = within(cardEl(container, 'tide'));
+    // `continue` is the caller's (a save of that story exists): Start xor Continue, and Chapters on both.
+    expect(names(manor.getAllByRole('button')), lang).toEqual([t(lang, 'stories.start'), t(lang, 'stories.chapters')]);
+    expect(names(tide.getAllByRole('button')), lang).toEqual([t(lang, 'stories.continue'), t(lang, 'stories.chapters')]);
+    // Each callback runs inside the tap, so the caller's unlockAudio() is in the gesture (SP Y14, F1).
+    rawTap(manor.getByRole('button', { name: t(lang, 'stories.start') }));
+    expect(calls, lang).toEqual(['start manor']);
+    rawTap(tide.getByRole('button', { name: t(lang, 'stories.continue') }));
+    expect(calls, lang).toEqual(['start manor', 'continue tide']);
+    rawTap(manor.getByRole('button', { name: t(lang, 'stories.chapters') }));
+    rawTap(tide.getByRole('button', { name: t(lang, 'stories.chapters') }));
+    expect(calls, lang).toEqual(['start manor', 'continue tide', 'chapters manor', 'chapters tide']);
+    // Titles and teasers are text.
+    expect(container.querySelector('b'), lang).toBeNull();
+    expect(shown(cardEl(container, 'manor')), lang).toContain('<b>manor</b> A manor teaser.');
+    cleanup();
+  }
+});
+
+test('menus: story picker shows the card button only after an ending', () => {
+  for (const lang of LANGS) {
+    const calls: string[] = [];
+    const cards = [cardOf('manor', { card: true }), cardOf('tide', { continue: true })];
+    const { container } = render(StoryPicker, pickerProps(cards, lang, calls));
+    const manor = within(cardEl(container, 'manor'));
+    const tide = within(cardEl(container, 'tide'));
+    expect(names(manor.getAllByRole('button')), lang).toEqual([
+      t(lang, 'stories.start'),
+      t(lang, 'stories.chapters'),
+      t(lang, 'stories.card'),
+    ]);
+    expect(tide.queryByRole('button', { name: t(lang, 'stories.card') }), lang).toBeNull();
+    tap(manor.getByRole('button', { name: t(lang, 'stories.card') }));
+    expect(calls, lang).toEqual(['card manor']);
+    cleanup();
+  }
+});
+
+test('menus: story covers load lazily unless eager', () => {
+  const cover = (id: string) => ({ avif: `/assets/cover/${id}.a1.avif`, webp: `/assets/cover/${id}.w1.webp` });
+  const cards = [
+    cardOf('manor', { cover: cover('manor'), eager: true }),
+    cardOf('tide', { cover: cover('tide') }),
+    cardOf('ash'),
+  ];
+  const { container } = render(StoryPicker, pickerProps(cards, 'ru', []));
+  for (const [id, eager] of [
+    ['manor', true],
+    ['tide', false],
+  ] as const) {
+    const card = cardEl(container, id);
+    const source = card.querySelector('picture > source');
+    const img = card.querySelector('picture > img');
+    expect(source?.getAttribute('type'), id).toBe('image/avif');
+    expect(source?.getAttribute('srcset'), id).toBe(cover(id).avif);
+    expect(img?.getAttribute('src'), id).toBe(cover(id).webp);
+    // The budget's exact cover size (PP "Budgets"), decoded off the main thread, and decorative (the title follows).
+    expect(img?.getAttribute('width'), id).toBe('360');
+    expect(img?.getAttribute('height'), id).toBe('640');
+    expect(img?.getAttribute('decoding'), id).toBe('async');
+    expect(img?.getAttribute('alt'), id).toBe('');
+    expect(img?.getAttribute('loading'), id).toBe(eager ? null : 'lazy');
+  }
+  const ash = cardEl(container, 'ash');
+  expect(ash.querySelector('picture'), 'ash').toBeNull();
+  expect(ash.querySelector('img'), 'ash').toBeNull();
+});
+
+test('menus: chapter select lists only its story', () => {
+  const chapters: readonly ChapterRow[] = [
+    { id: 'ch1' as ChapterId, title: '<b>Arrival</b>', locked: false },
+    { id: 'ch3' as ChapterId, title: 'The cellar', locked: true },
+    { id: 'ch2' as ChapterId, title: 'The garden', locked: false },
+  ];
+  for (const lang of LANGS) {
+    const picked: ChapterId[] = [];
+    const { container, getByRole, getAllByRole } = render(ChapterSelect, {
+      story: '<i>The Manor</i>',
+      chapters,
+      lang,
+      onchapter: (id: ChapterId) => picked.push(id),
+    });
+    expect(shown(getByRole('heading')), lang).toBe(t(lang, 'chapters.title', { story: '<i>The Manor</i>' }));
+    // Exactly the given rows, in the given order; the paid-and-not-owned one says so.
+    expect(names(getAllByRole('button')), lang).toEqual([
+      '<b>Arrival</b>',
+      `The cellar ${t(lang, 'chapters.locked')}`,
+      'The garden',
+    ]);
+    expect(container.querySelector('b, i'), lang).toBeNull();
+    rawTap(getByRole('button', { name: /^The cellar/ }));
+    expect(picked, lang).toEqual(['ch3']);
+    cleanup();
+  }
+  // The select gets one story's chapters from its caller, never the catalog to filter.
+  // @ts-expect-error: ChapterSelect takes no catalog
+  render(ChapterSelect, { story: 'x', chapters, lang: 'en', onchapter: () => {}, catalog: [] });
+});
+
+test('menus: friends and wallet entries only when given', () => {
+  for (const lang of LANGS) {
+    const menuBase = { lang, onsaves: () => {}, onsettings: () => {}, onstories: () => {} };
+    const bare = render(Menu, menuBase);
+    for (const key of ['menu.friends', 'menu.wallet'] as const) {
+      expect(bare.queryByRole('button', { name: t(lang, key) }), `${lang} ${key}`).toBeNull();
+    }
+    cleanup();
+
+    const onfriends = vi.fn();
+    const onwallet = vi.fn();
+    const menu = render(Menu, { ...menuBase, onfriends, onwallet });
+    expect(names(menu.getAllByRole('button')), lang).toEqual([
+      t(lang, 'menu.saves'),
+      t(lang, 'menu.settings'),
+      t(lang, 'menu.friends'),
+      t(lang, 'menu.wallet'),
+      t(lang, 'menu.back_to_stories'),
+    ]);
+    tap(menu.getByRole('button', { name: t(lang, 'menu.friends') }));
+    tap(menu.getByRole('button', { name: t(lang, 'menu.wallet') }));
+    expect([onfriends.mock.calls.length, onwallet.mock.calls.length], lang).toEqual([1, 1]);
+    cleanup();
+
+    const picker = render(StoryPicker, pickerProps([cardOf('manor')], lang, []));
+    for (const key of ['stories.friends', 'stories.wallet'] as const) {
+      expect(picker.queryByRole('button', { name: t(lang, key) }), `${lang} ${key}`).toBeNull();
+    }
+    cleanup();
+
+    const homeFriends = vi.fn();
+    const homeWallet = vi.fn();
+    const home = render(StoryPicker, {
+      ...pickerProps([cardOf('manor')], lang, []),
+      onfriends: homeFriends,
+      onwallet: homeWallet,
+    });
+    tap(home.getByRole('button', { name: t(lang, 'stories.friends') }));
+    tap(home.getByRole('button', { name: t(lang, 'stories.wallet') }));
+    expect([homeFriends.mock.calls.length, homeWallet.mock.calls.length], lang).toEqual([1, 1]);
+    cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
 // No literal text and no I/O in this lane's components (C3-C8; principle 8, spec 2 and 4)
 
 /** This lane's components; L14a's six and App.svelte (L15) are not among them. */
-const MENU_COMPONENTS = ['Backlog.svelte', 'Menu.svelte', 'Notice.svelte', 'Terms.svelte'] as const;
+const MENU_COMPONENTS = [
+  'Backlog.svelte',
+  'ChapterSelect.svelte',
+  'Menu.svelte',
+  'Notice.svelte',
+  'StoryPicker.svelte',
+  'Terms.svelte',
+] as const;
 
 const COMPONENT_SOURCES = import.meta.glob<string>('./*.svelte', { query: '?raw', import: 'default', eager: true });
 
