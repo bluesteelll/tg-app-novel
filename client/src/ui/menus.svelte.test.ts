@@ -10,8 +10,13 @@ import { afterEach, expect, test, vi } from 'vitest';
 import { en } from '../i18n/en.ts';
 import { t, type Lang, type UiKey } from '../i18n/index.ts';
 import { ru } from '../i18n/ru.ts';
+import type { LineId } from '../story/staging.ts';
+import Backlog from './Backlog.svelte';
+import type { BacklogLine } from './Backlog.svelte';
+import Menu from './Menu.svelte';
 import Notice from './Notice.svelte';
 import type { NoticeView } from './Notice.svelte';
+import Terms from './Terms.svelte';
 
 // svelteTesting()'s auto-cleanup does not reach the `dom` project (L14a), so each test unmounts what it rendered here.
 afterEach(() => cleanup());
@@ -197,10 +202,85 @@ test('menus: the end offers the card when it exists', () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------
+// The menu, the backlog and the terms (C4)
+
+test('menus: menu has back to stories', () => {
+  for (const lang of LANGS) {
+    const calls: string[] = [];
+    const { getByRole, getAllByRole } = render(Menu, {
+      lang,
+      onsaves: () => calls.push('saves'),
+      onsettings: () => calls.push('settings'),
+      onstories: () => calls.push('stories'),
+    });
+    expect(shown(getByRole('heading')), lang).toBe(t(lang, 'menu.title'));
+    const items = getAllByRole('button');
+    expect(names(items), lang).toEqual([t(lang, 'menu.saves'), t(lang, 'menu.settings'), t(lang, 'menu.back_to_stories')]);
+    // Each tap calls back at once, inside the click (no await, no DOM update in between).
+    rawTap(getByRole('button', { name: t(lang, 'menu.back_to_stories') }));
+    expect(calls, lang).toEqual(['stories']);
+    rawTap(getByRole('button', { name: t(lang, 'menu.saves') }));
+    expect(calls, lang).toEqual(['stories', 'saves']);
+    rawTap(getByRole('button', { name: t(lang, 'menu.settings') }));
+    expect(calls, lang).toEqual(['stories', 'saves', 'settings']);
+    cleanup();
+  }
+});
+
+test('menus: backlog lists lines in order as text', () => {
+  const lines: readonly BacklogLine[] = [
+    { lineId: 'ch1.hall.0001' as LineId, speaker: '<i>Ally</i>', text: 'The door creaks.', chosen: null },
+    { lineId: 'ch1.hall.0002' as LineId, speaker: null, text: '<b>x</b>', chosen: '<u>y</u>' },
+    // A loop shows the same line again: its ID repeats in the backlog.
+    { lineId: 'ch1.hall.0001' as LineId, speaker: '<i>Ally</i>', text: 'The door creaks.', chosen: null },
+    { lineId: 'ch1.hall.0003' as LineId, speaker: null, text: 'Night falls.', chosen: null },
+  ];
+  for (const lang of LANGS) {
+    const { container, getByRole } = render(Backlog, { lines, lang });
+    expect(shown(getByRole('heading')), lang).toBe(t(lang, 'backlog.title'));
+    const rows = [...container.querySelectorAll('[data-line-id]')];
+    expect(
+      rows.map((r) => r.getAttribute('data-line-id')),
+      lang,
+    ).toEqual(['ch1.hall.0001', 'ch1.hall.0002', 'ch1.hall.0001', 'ch1.hall.0003']);
+    // Story text is text, never markup (principle 8, spec 5): the tags show as characters.
+    expect(container.querySelector('b, i, u'), lang).toBeNull();
+    expect(shown(rows[0] ?? container), lang).toBe('<i>Ally</i> The door creaks.');
+    expect(shown(rows[1] ?? container), lang).toBe(`<b>x</b> ${t(lang, 'backlog.chosen', { choice: '<u>y</u>' })}`);
+    expect(shown(container), lang).not.toContain(t(lang, 'backlog.empty'));
+    cleanup();
+
+    const empty = render(Backlog, { lines: [], lang });
+    expect(empty.container.querySelector('[data-line-id]'), lang).toBeNull();
+    expect(shown(empty.container), lang).toContain(t(lang, 'backlog.empty'));
+    cleanup();
+  }
+});
+
+test('menus: terms render in the app, links only by callback', () => {
+  for (const lang of LANGS) {
+    const { container, getByRole, queryAllByRole } = render(Terms, { lang });
+    expect(shown(getByRole('heading')), lang).toBe(t(lang, 'terms.title'));
+    expect(names([...container.querySelectorAll('p')]), lang).toEqual([t(lang, 'terms.body'), t(lang, 'terms.support')]);
+    expect(queryAllByRole('button'), lang).toEqual([]);
+    expect(container.querySelector('a'), lang).toBeNull();
+    cleanup();
+
+    const onpolicy = vi.fn();
+    const linked = render(Terms, { lang, onpolicy });
+    expect(names(linked.getAllByRole('button')), lang).toEqual([t(lang, 'terms.policy')]);
+    tap(linked.getByRole('button'));
+    expect(onpolicy, lang).toHaveBeenCalledTimes(1);
+    expect(linked.container.querySelector('a'), lang).toBeNull();
+    cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
 // No literal text and no I/O in this lane's components (C3-C8; principle 8, spec 2 and 4)
 
 /** This lane's components; L14a's six and App.svelte (L15) are not among them. */
-const MENU_COMPONENTS = ['Notice.svelte'] as const;
+const MENU_COMPONENTS = ['Backlog.svelte', 'Menu.svelte', 'Notice.svelte', 'Terms.svelte'] as const;
 
 const COMPONENT_SOURCES = import.meta.glob<string>('./*.svelte', { query: '?raw', import: 'default', eager: true });
 
