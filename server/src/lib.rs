@@ -18,6 +18,8 @@ pub mod telegram;
 use std::sync::Arc;
 
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
+use axum::routing::post;
 
 use crate::auth::Keys;
 use crate::catalog::{CATALOG_JSON, Catalog};
@@ -110,7 +112,15 @@ pub enum StartupError {
     Gateway(#[from] GatewayError),
 }
 
-/// The production routes. Dev-only routes live in `server-dev` and are never routable here.
+/// The production routes: `/api`, and Telegram's webhook with its own 1 MB body limit (outside `/api`, so none of
+/// its layers apply). Dev-only routes live in `server-dev` and are never routable here.
 pub fn build_router(state: AppState) -> Router {
-    Router::new().nest("/api", api::router()).with_state(state)
+    Router::new()
+        .nest("/api", api::router())
+        .route(
+            "/telegram/webhook",
+            post(telegram::webhook::webhook)
+                .layer(DefaultBodyLimit::max(telegram::webhook::WEBHOOK_BODY_LIMIT)),
+        )
+        .with_state(state)
 }

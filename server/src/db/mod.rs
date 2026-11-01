@@ -3,10 +3,12 @@
 
 pub mod entitlements;
 pub mod orders;
+pub mod payments;
 pub mod puzzles;
 pub mod saves;
 pub mod users;
 
+use std::borrow::Cow;
 use std::net::IpAddr;
 use std::str::FromStr;
 use std::time::Duration;
@@ -38,6 +40,17 @@ const SESSION_OPTIONS: [(&str, &str); 5] = [
     ("statement_timeout", "15s"),
     ("idle_in_transaction_session_timeout", "30s"),
 ];
+
+/// `text` with every U+0000 replaced by U+FFFD (borrowed when there is none). PostgreSQL `text` cannot hold U+0000
+/// (`22021`) and a Telegram string may carry it, so the payment path binds every Telegram string through this, at the
+/// `db/` boundary. The replacement is deterministic: a replaced charge id is the same key on every redelivery.
+pub(crate) fn without_nul(text: &str) -> Cow<'_, str> {
+    if text.contains('\0') {
+        Cow::Owned(text.replace('\0', "\u{FFFD}"))
+    } else {
+        Cow::Borrowed(text)
+    }
+}
 
 /// The database handle. Cloning shares one pool; the pool lives from `AppState::new` until `close` after serving.
 #[derive(Clone)]

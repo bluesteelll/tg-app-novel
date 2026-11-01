@@ -8,7 +8,7 @@ through VPN-mediated Telegram use (owner, 2026-10-31); English comes second. Cov
 channels, channels outside Telegram, funnel economics, law, a phased plan, product asks and owner questions. Not
 covered: hosting design (Q5/Q21), story and art (Q1/Q2).
 
-**Owner rulings applied (2026-10-31, verbatim):**
+**Owner rulings applied (2026-10-31 and 2026-11-01, verbatim):**
 
 | # | Ruling | Reading applied in this report |
 |---|---|---|
@@ -17,6 +17,13 @@ covered: hosting design (Q5/Q21), story and art (Q1/Q2).
 | R3 | «Про запрет на рекламу и так далее не обращай внимание это допустимо» | The ad-law risk (38-FZ art. 5 p. 10.7 and the related marking rules) is **accepted by the owner**. Russian in-Telegram paid channels are planned as usable; the legal rows stay in §8 as facts, marked "(R3: accepted)", and no phase waits on a FAS position |
 | R4 | «Возраст женщины 14-25 лет» | Audience: women aged 14-25 — a dual audience with a 14-17 part |
 | R5 | «Возможен эротический и софт порно контент при подтверждении возраста 18+» | An 18+ track with erotic content exists behind an age confirmation; everything a 14-17 user or an unverified user can reach stays minors-safe (§8.5) |
+| R6 | «ты ошибаешься на счет российского тиктока. Многие с впна записывают видео на тикток и ютуб. Они живее всех живых» | TikTok and YouTube are live channels for the Russian audience via VPN; short video is a primary organic channel (§4.4, §14). The earlier "TikTok: EN only" row is withdrawn |
+| R7 | «Сплит с замером» (2026-11-01, answering P34) | P34 is decided. At the growth phase, traffic that does not come from Telegram Ads is split through our redirect domain: one arm goes through the separate ad bot to the main bot (the gate), the other straight to the main bot, which offers the ad bot once as an opt-in (the satellite). The arm that earns more per new user, Stars plus ads, is kept. Telegram Ads always point at the main bot. F34 conditions apply (§12.1) |
+
+**Owner requests answered later (2026-10-31; research, no ruling yet):** ad monetization on the publisher side —
+official Telegram ads and third-party ads, including bots that send their users a daily ad (§12); a Russian payment
+system instead of Stars (§13); short video via VPN (§14); a separate entry bot that carries the daily ad and forwards
+users to the main bot (§12.1; decided by R7).
 
 What R3 does not change (they are not ad law): Telegram's own ad moderation (Ads guidelines §5.1/§5.4 reject
 suggestive or scary creatives regardless of law), exchanges and channel admins that demand an ERID before posting
@@ -58,6 +65,13 @@ product itself (§8.5).
 | `V4-verify-markets-access-minors.md` | Adversarial check of 08/09 (CONFIRMED 31, CORRECTED 12, UNSUPPORTED 5, MISLABELLED 1) |
 | `10-adult-content-age-gate-dual-audience.md` | The 18+ track: art. 242 / 242.1, Telegram and store rules, age-gate options, promotion of 18+, dual-audience precedent |
 | `V5-verify-adult-content.md` | Adversarial check of 10 (CONFIRMED 23, CORRECTED 11, STALE 1, MISLABELLED 1, UNSUPPORTED 2); applied in §8.5 |
+| `11-ad-monetization-publisher-side.md` | Earning from ads: Telegram's ad revenue share, Mini App ad SDKs, bot broadcast exchanges, hybrid evidence |
+| `12-russian-payments-vs-stars.md` | Russian payment rails vs Stars: Telegram's rule, Apple via Telegram, website and hybrid options, merchant duties, economics |
+| `13-tiktok-youtube-russia-vpn.md` | TikTok and YouTube in Russia via VPN: audience, posting, links, creator prices |
+| `V6-verify-ads-tiktok.md` | Adversarial check of 11 and 13 (CONFIRMED 40, CORRECTED 10, MISLABELLED 3, UNSUPPORTED 2) |
+| `V7-verify-payments.md` | Adversarial check of 12 (CONFIRMED 24, CORRECTED 9, STALE 2, UNSUPPORTED 1, MISLABELLED 1) |
+| `14-entry-bot-ad-broadcasts.md` | A separate entry bot for third-party broadcasts: what it isolates, account-level sanctions, the extra hop, designs, conditions |
+| `V8-verify-entry-bot.md` | Adversarial check of 14 (CONFIRMED 19, CORRECTED 11, UNSUPPORTED 1); applied in 14 and §12.1 |
 | `C1-completeness-critique.md` | Coverage matrix, contradictions K1-K3 / W1-W8, the test-bot list |
 
 ## 2. Executive summary
@@ -112,8 +126,9 @@ product itself (§8.5).
     managed: the RU ad law (R3).
 11. **Owner decisions waiting (§9):** the age-gate method and the 18+ track's scope and brand; real chapter prices;
     budget tier and ceiling; advertiser of record / jurisdiction (Q21); brand/persona; English timing and regions;
-    Affiliate Program; referral split; premium choices; influencer funding. Decided: audience 14-25 (R4), the
-    ad-law risk (R3).
+    Affiliate Program; referral split; premium choices; influencer funding; ads for hints (P23-P26); a ruble route and
+    its merchant (P27-P31); who runs the TikTok account (P32). Decided: audience 14-25 (R4), the ad-law risk (R3),
+    short video as a live channel (R6).
 12. **The 18+ track (R5, §8.5; INTERPRETATION):** Russian criminal law (UK RF art. 242) has no lawful channel for
     pornography — giving access to even one person is "distribution", so no age-gate or paywall exemption exists, and
     "soft porn" has no legal meaning; an expert decides. Text alone and drawn characters (judged as minors) have been
@@ -121,7 +136,24 @@ product itself (§8.5).
     products to under-18s is banned (436-FZ art. 16). No age signal a bot can read exists, so the gate is our own
     server flag. Telegram imports Apple/Google rules, judges the promoted product in ads, and may withhold Stars. The
     18+ track lives in a separate bot, never shown in public or 14-17-reachable places, with almost no paid channel.
-13. **Verify on the test bot before relying (§10):** Telegram Ads accepting `startapp`; `?ref=` opening the app;
+13. **Short video is a primary organic channel (R6, §14):** TikTok 65.9 M monthly in Russia (Dec 2025) and the
+    leader by teen online time (25 % of 12-17 time; VK leads by daily reach, 63 % vs 61 %, 2024); YouTube 65.9 M
+    monthly / ~22 M daily (Jan 2026); posting works via a foreign IP; integrations ≈ 1.3-2.6 ₽ per view (all
+    press/agency figures, CLAIMED). Cross-post to VK Clips (no VPN). Never say "use a VPN" in clips or briefs (38-FZ
+    p. 10.8; R3-accepted, but the first FAS case treated VPN links as ads).
+14. **Ads as extra income (§12):** rewarded ads for hints fit the hint economy and monetize players who cannot buy
+    Stars; grant only on a server-verified postback. Telegram's own ad share (50 % to bot owners) earns ≈ $0 on
+    Russian views (CLAIMED). Bot broadcast exchanges — what the owner saw — ask for the bot token, which would hand over
+    login forging and payments: **never from the main bot**. A separate entry bot on another owner account removes
+    that objection and is workable under the §12.1 conditions. The isolation is partial (Telegram may also ban the
+    account tied to a bot, and the Terms bind the developer); Telegram Ads must point straight at the main bot; the
+    exchange also receives our users' IDs. The owner chose a measured split between the gate and the opt-in satellite
+    (R7). Ads beat Stars only at very low prices (below ≈ 5.4 Stars per paying user per day, V6).
+15. **Russian payments (§13; INTERPRETATION):** inside the bot and Mini App, Stars cannot be replaced — Telegram's
+    terms require Stars for digital goods and sanction others by hiding the bot on mobile. A hybrid is the
+    rule-compatible path: Stars inside Telegram plus a ruble website outside it (the Romance Club pattern), with no
+    link or mention inside the Mini App. Rubles keep ≈ 2× more per 100 ₽ paid (≈ 96-99 ₽ vs ≈ 50 ₽ via Stars, V7).
+16. **Verify on the test bot before relying (§10):** Telegram Ads accepting `startapp`; `?ref=` opening the app;
     `start_param` lengths per platform; preview formats; gift prices; @PremiumBot with Russian cards.
 
 ## 3. The 2026 landscape
@@ -279,7 +311,10 @@ measurement covers Sep-Oct 2026 (V1 #14).
 | DTF «Инди» ("Indie"); Habr dev story | 0 | S-M | Low (developers, gamers). Habr allows one app-store link; whether t.me counts is a moderator call | Lawful | A (rules) | Launch (optional) |
 | Pikabu | Unknown | S | Unknown | Rules unreadable | C | — (gap) |
 | Yandex Direct (search/network → our landing) | Not priced | M | Medium | Lawful with ERID | B | Growth |
-| YouTube (RU audience) | ~1.53 ₽ per view for integrations (CLAIMED) | M | Low for RU: heavily throttled since 2024 | Same FAS transition as Telegram, to 2026-12-31 / exposure | C | Avoid (RU paid) |
+| TikTok organic, Russian-language (R6) | 0 cash; production time | L | High: 65.9 M monthly, 27.3 M daily (Dec 2025, 12+); the leader by teen online time (25 % of 12-17 time); reachable share = VPN users (40 %; 61 % of 18-29, Russian Field Apr 2026) + CIS + diaspora (all via press, CLAIMED) | Posting from Russia needs a foreign IP; TikTok ToS bans bypassing its restriction (account risk; who posts from where = Q21). No VPN mention (p. 10.8) | B / C | **Now** (§14) |
+| YouTube Shorts organic | 0 cash | M | Medium-high: 65.9 M monthly / ~22 M daily (Jan 2026); VPN-only since 2026-02; Shorts description links not clickable (YouTube help) — route via channel links | As TikTok | B / A (link rules) | **Now** (§14) |
+| TikTok / YouTube creator integrations (RU) | TikTok ≈ 1.26-2.61 ₽ per view; Shorts ≈ 1.30 ₽; YouTube entertainment ≈ 1.53 ₽ (2025-26, agency studies, CLAIMED) | M (brief, per-creator code) | Medium-high (hyp.): no romance / teen-girl niche prices or cases | ERID; RKN blogger list > 10 k (R3: accepted). Adult creators only (§14) | C | Soft launch |
+| YouTube / TikTok self-serve ads to Russia | — | — | Not available: Google shows no ads in Russia since 2022-03; TikTok per practitioners | — | B | n/a |
 | Instagram / Facebook (RU) | — | — | Excluded | Banned, with no transition (FAS 2026-03-25) | A | Avoid |
 | MAX / VK Mini Apps (a second platform) | MAX acquiring 1.8-2.9 % (CLAIMED); VK votes 45 % (2021, "not final"; no newer figure) | XL | Large audience (MAX 86.3 M). MAX publishers must be Russian residents; VK sells for votes only and pays out only to a Russian ИП, self-employed person or legal entity; both conflict with principles 2, 3 and 6 | n/a | A (rules) | Not a promotion channel; a Q21 hedge (V4; N30) |
 
@@ -291,7 +326,8 @@ measurement covers Sep-Oct 2026 (V1 #14).
 | r/otomegames, r/visualnovels | 0 | S | Medium for EN | Self-promotion only in the weekly thread (CLAIMED, undated mirror; re-check live) | C | Growth |
 | itch.io page + devlogs | 0 | M | Low unless there is a playable non-Telegram demo (an architect fork) | Link-only pages may drop out of discovery | A | Growth |
 | itch.io jams | 0 | M-L | Medium for EN. Otome Jam 2026 is over (Apr 30 - Jul 1); 2027 dates not published. Yuri Jam open until 2026-12-01. AI content banned (Otome Jam) | — | A | Growth |
-| TikTok / BookTok / Reels | 0 organic | L | EN only, via non-RU accounts. RU accounts cannot upload since early Mar 2022, and there is no RU ad cabinet (CLAIMED, still so in 2026-07) | — | C | Growth (EN) |
+| TikTok / BookTok (EN) | 0 organic | L | The same clips with English subtitles, from the same account at first (13) | — | C | Growth (EN) |
+| Instagram Reels | 0 organic | L | EN only: Instagram is blocked in Russia and advertising on it is banned with no transition (FAS 2026-03-25) | — | A | Growth (EN only) |
 | Discord server | 0 | M | EN only (blocked in RU since 2024-10-08) | — | A | Growth (EN) |
 | EN influencers | Not priced | M | Unknown | FTC / ASA disclosure (#ad; an affiliate reward is a material connection) | A/B | Growth |
 
@@ -354,6 +390,9 @@ neighbouring-model proxy.
 | 250 | $5.09 (pack) | 529 ₽ (pack) | $3.25 | $5.00 |
 
 Withdrawal needs 1,000 Stars ($13). At a 1-Star price that means 1,000 purchases before the first payout (01).
+**Note (V7):** the 209 ₽ per 100 Stars RU price could not be reproduced on refetch; 2026 guides quote 229 ₽ or more
+(T21). At the CBR rate of 80.56 ₽/$ (2026-10-31) a developer keeps ≈ 50 ₽ of every 100 ₽ a Russian iOS buyer pays,
+before the TON-payout conversion (§13).
 
 ### 5.4 Cost per start, reconciled (ANALYSIS on CLAIMED inputs)
 
@@ -485,13 +524,16 @@ constraint** (the owner accepts the RU ad-law risk). In the gates, "sourced" = a
 2. **Own Telegram channel + discussion group, mirrored as a VK community:** devlog, free-chapter character art,
    polls, character-led posts (Romance Club grew on memes about its love interests, 05, CLAIMED). Posts are
    information, not ads (V3 #22): no "buy now" pushes, never a VPN mention (p. 10.8).
-3. **Waitlist:** users who `/start` the bot have messaged it first and may be notified (04 §4); the Mini App
+3. **Short-video accounts (R6, §14):** TikTok (run from a foreign IP — who posts from where is a Q21 item), YouTube
+   Shorts and VK Clips, cross-posting the same vertical chapter-1 clips and character cards (minors-safe, never the
+   18+ track); a link-in-bio landing page with per-platform campaign codes (F17, F1); no VPN mention.
+4. **Waitlist:** users who `/start` the bot have messaged it first and may be notified (04 §4); the Mini App
    `requestWriteAccess` opt-in comes later (F9); stay within §6.2.5.
-4. **Run the test-bot checks** (§10) that gate attribution and the RU funnel.
-5. **Store assets:** Main Mini App; RU/EN/default preview sets (≤ 12 each, free art only); description with the age
+5. **Run the test-bot checks** (§10) that gate attribution and the RU funnel.
+6. **Store assets:** Main Mini App; RU/EN/default preview sets (≤ 12 each, free art only); description with the age
    sign; public privacy URL (MV14); loading-screen settings.
-6. **Hosting decision with RU reach in view** (Q21/Q5) — it decides whether RU clicks load (09 §4); not promotion.
-7. **Engage a Russian lawyer** before the first paid placement (06; V3).
+7. **Hosting decision with RU reach in view** (Q21/Q5) — it decides whether RU clicks load (09 §4); not promotion.
+8. **Engage a Russian lawyer** before the first paid placement (06; V3) and before any ruble payment route (§13).
 
 **Gate to soft launch:** a public bot with Stars live; chapter 1 of ≥ 1 real story; the soft-launch asks of §7
 shipped; age category set; RU fixed-broadband load verified; ≥ 1,000 waitlist/channel members (ASSUMPTION — no source
@@ -516,7 +558,8 @@ checks where an exchange demands them. The RU ad-law exposure itself is accepted
 3. **A paid measurement tranche** sized to reach ≈ 900 starts (C1 W5), in this order: (a) posts in Romance Club /
    otome fan channels on Telegram (exchanges, Suggested Posts, admin deals) and in the matching VK groups — the best
    evidenced audience match (09 §2; R3); (b) VK Ads → our landing page → t.me, if the test ad was accepted; (c)
-   Telegram Ads via RU resellers with minors-safe creatives (R3); (d) marketplace bloggers (CPA); (e) Telegram Ads
+   Telegram Ads via RU resellers with minors-safe creatives (R3); (d) TikTok / YouTube creator integrations with a
+   per-creator code (§14) and marketplace bloggers (CPA); (e) Telegram Ads
    aimed at KZ/BY; (f) EN Telegram Ads, only with complete EN chapter-1 tables. Every creative shows the public
    (minors-safe) track only (§8.5).
 4. **"How to buy Stars" help page** naming official routes only (09); read the invoice-friction event weekly.
@@ -595,6 +638,15 @@ channel posts at scale on the measured CAC (R3). **Gate:** the same LTV : CAC ru
 | F23 | Minors-safe defaults: no 18+ titles, covers, teasers or locked hints for a user without the flag; separate covers, previews and share texts for 18+ | §8.5 Recommend; A2 (complaints start cases) | M14 shares, M12-M13 friend views, Home, store previews | Friend views and shares must not reveal 18+ titles to a minor friend | Before the 18+ track | Engineering |
 | F24 | Story-gate lint for the 18+ track: explicitly adult characters in text and art metadata, no school setting | §8.5 A3 (art. 242.1) | Story lint (L3b/L3c) | Lint cannot judge art; a review step stays | Before the 18+ track | Engineering + narrative |
 | F25 | A kill and refund path for the 18+ track (disable, refund, revoke) | Stars withholding risk, Bot Developer Terms §6.2.4 (A5) | L9 refunds, catalog | Principle 2 | Before the 18+ track | Engineering |
+| F26 | Rewarded-ad hint source: network postback → our endpoint (secret, HTTPS) → idempotent grant keyed on a unique per-show id; a client `show()` never grants; a daily cap; an ad-hint ledger kept apart from Stars purchases | §12 (11 §Appl.; Monetag documents a per-show id; AdsGram's callback is unsigned) | Hint economy (M17-M21), M22/M23 caps as a model | Principle 1; a new third-party integration (principle 6) | Growth (after a holdout) | Engineering + owner (P23) |
+| F27 | One lazy-loaded ad module (init / preload / show), never in the initial bundle, never active during story scenes | §12 (SDK ≈ 191 K characters for AdsGram) | Client, L7-style facade | Principles 4, 5, 6 | With F26 | Engineering |
+| F28 | A written category blocklist (gambling, adult, dating, crypto incl. non-TON crypto per Developer Terms §7.4, VPN), "task" ads off, before any minors-reachable placement | §12; V6 | Ad network settings | 38-FZ art. 6; Developer Terms §7.4 | With F26 | Owner + engineering |
+| F29 | Ad-data consent step and a privacy-policy section naming the network and its jurisdiction | §12 (SDK data: Telegram id, username, device, IP; initData fields in headers, V6) | Privacy policy (M26), Y16 | Y16 needs an explicit exception; 152-FZ cross-border transfer — lawyer item | With F26 | Owner + lawyer |
+| F30 | An ads-free state (payers, or a Stars purchase) and an ads on / off holdout before wide rollout | §12 (cannibalization unmeasured) | Catalog, cohorts | — | With F26 | Owner + engineering |
+| F31 | Clip capture mode and marketing asset set: vertical 9:16 chapter-1 captures, character cards, subtitles RU/EN, a fan-edit licence note; an export check that no paid or 18+ asset enters it | §14 (13 §Appl.) | Client dev mode, asset pipeline | Principle 0 (no paid asset in public clips); §8.5 | Pre-launch | Engineering + owner (licence) |
+| F32 | A speakable bot username and a code-entry path for Shorts, where links are not clickable | §14 | Q4, F1 | — | Pre-launch (username) | Owner |
+| F33 | If a ruble route is approved (§13 option c): a rail-independent entitlement record (provider, provider payment id UNIQUE, refund/dispute states), a provider webhook with a status re-check, a per-currency price table, website identity (Telegram Login or a player id shown in settings), 54-FZ receipts | §13 (12 §Appl.) | L8a/L8b payments, L9 refunds | Principle 2's wording needs a scope sentence (owner); no link or mention inside the Mini App | After an owner ruling | Engineering + owner (P27-P31) |
+| F34 | For the R7 split: the redirect domain assigns each new visitor to an arm (50/50, sticky, recorded in the `start` code), and per-arm metrics (first-chapter starts, payer share, Stars and ad revenue per new user, block rate) are compared after a sample size fixed in advance; a separate bot created directly on a separate owner account (no transfer, no Managed Bots link), with its own token (no Mini App, no `web_app` button, no payments, no initData; the token never in the main server's environment); it links only to the main bot (URL button with a `start` code), never to our channel or chats; a first-screen notice with `/stop`; at most one mailing a day; every request checked against F28, the token revoked on a breach; the user-ID upload covered by the privacy policy and the 152-FZ review (F29); Telegram Ads links straight to the main bot, other public links through our redirect domain; block logging from `my_chat_member`; no re-creation after a ban | §12.1 (14 §5, V8) | A small separate service; the redirect domain; campaign codes | Principles 0-3 hold only while the token stays apart; Developer Terms §4.5, §5.2(f), §10; Ads guidelines §4.3 | Growth (exchanges need ≥ 1,000 active users) | Engineering + owner (R7) |
 
 ## 8. Legal do / don't checklist (INTERPRETATION, not legal advice)
 
@@ -726,7 +778,7 @@ Gap: no source states how Telegram decides to flag a bot (10 "Must verify" V1).
 
 ## 9. Owner value questions
 
-Numbered P1-P18 so they do not collide with the `docs/OPEN-QUESTIONS.md` numbers (Q3, Q5, Q21 …) cited elsewhere.
+Numbered P1-P34 so they do not collide with the `docs/OPEN-QUESTIONS.md` numbers (Q3, Q5, Q21 …) cited elsewhere.
 
 | # | Question | Why it matters | Options | Default the plan assumes |
 |---|---|---|---|---|
@@ -752,6 +804,18 @@ Numbered P1-P18 so they do not collide with the `docs/OPEN-QUESTIONS.md` numbers
 | P20 | One bot for both tracks, or a separate 18+ bot/brand | A platform flag applies per bot (§8.5 A7); Telegram Ads judge the promoted product (A10); separate apps are the precedent (A11) | One bot / two bots / two brands | A separate 18+ bot, so the advertised public bot stays clean |
 | P21 | Strength of the age confirmation | No readable Telegram or state signal (A8-A9) | Self-declaration / vendor check (≈ $0.10, CLAIMED) / no 18+ in RU | Logged self-declaration at the non-naturalistic level |
 | P22 | Accept the iOS reach and Stars-forfeiture risks of the 18+ track | Apple 1.1.4 / 4.7.5 via Telegram's 13+ rating; Bot Developer Terms §6.2.2 / §6.2.4 / §10 (A5-A6) | Accept / keep 18+ off iOS / no 18+ track | Accept, with 18+ revenue treated as at risk until a payout clears |
+| P23 | Ads in the minors-reachable main bot at all (§12) | Rewarded hints monetize non-payers; SDKs carry data and weak category controls | None / opt-in rewarded hints only / interstitials too | Opt-in rewarded ads for hints only, with the F28 blocklist; no interstitials, no "task" ads; after a holdout |
+| P24 | "Watch an ad to unlock a chapter" (§12) | It would change the "chapters are Stars-only" value | No / yes | No — ads fund hints only |
+| P25 | Third-party ad broadcasts through our bot — the model the owner saw (§12) | The exchanges ask for the bot token (V6); Developer Terms §5.2(b) / §6.2.5; 38-FZ art. 18 consent burden on us; uncontrolled creatives to 14-17 | No / own opt-in announcements only | **No** from the main bot; its messages stay our own opt-in announcements. A separate ad bot is P34 |
+| P26 | Share Telegram id and device data with a foreign ad network (§12) | Y16 and 152-FZ cross-border transfer | No SDK / after a lawyer and a consent step | Only after a lawyer's review, with a consent step (F29) |
+| P27 | "Instead of Stars" — inside Telegram, or alongside it outside Telegram (§13) | Inside the bot, Telegram's terms require Stars (sanction: hidden on mobile) | Replace inside (option a) / hybrid website (option c) / Stars only | Stars only inside Telegram; consider the hybrid website for Russian players after a lawyer reviews steering |
+| P28 | Change CLAUDE.md principle 2's wording | It says "Stars only" without scope | Unchanged / add "inside Telegram apps" | Unchanged until the hybrid is approved; then one scope sentence |
+| P29 | The merchant of record for rubles (with Q21) | A ruble route needs a Russian-resident ИП, ООО or самозанятый (НПД: ≤ 2.4 M ₽ a year, no staff) | ИП / ООО / НПД / none | Undecided; it gates P27 |
+| P30 | Price parity Stars vs rubles; a ruble rail for the 18+ track | Apple 3.1.3(b) pattern wants the same items in-app; acquirers' lists name erotic content | Parity / different; 18+ on rubles yes / no | One catalogue at comparable prices; no ruble rail for the 18+ track |
+| P31 | May 14-17-year-olds pay rubles directly to us | We become the counterparty for Civil Code art. 26/175 voiding | Yes, small amounts / no | Yes for small amounts, with an offer clause; a lawyer confirms |
+| P32 | Who posts our TikTok, from where (§14, with Q21) | TikTok ToS bans bypassing its Russia restriction; the account is at risk if run from Russia via VPN | Brand account run from abroad / creators only / both | A brand account run from outside Russia, plus creators |
+| P33 | Fan edits of our art and music | Edits drive romance virality; music licences decide | Allow (licence note) / forbid | Allow non-commercial edits of free-chapter art with a short licence note |
+| P34 | A separate entry bot for third-party broadcasts (§12.1) | It keeps the main bot's token and announcements safe, but a gate adds one screen for every new user, an account- or developer-level ban can still reach the main bot, and the exchange gets our users' IDs | Gate (non-Telegram-Ads link → ad bot → main bot) / satellite (offered once from the main bot, opt-in) / none | **Decided (R7, 2026-11-01):** at the growth phase, split non-Telegram-Ads traffic through our redirect domain (gate vs direct with the satellite); keep the arm that earns more per new user, Stars plus ads; F34 conditions |
 
 ## 10. Verify before relying (test-bot and live checks)
 
@@ -774,6 +838,10 @@ Numbered P1-P18 so they do not collide with the `docs/OPEN-QUESTIONS.md` numbers
 | T15 | The live r/otomegames and r/visualnovels self-promotion rules | EN posting | Read the wiki before posting | Owner |
 | T16 | Whether an age-estimation vendor's camera flow works in the Telegram WebView (iOS, Android, Desktop) without `window.open` | P21, F20 | A vendor sandbox page opened as a Mini App | Developer, test bot |
 | T17 | A lawyer's reading of sample 18+ scenes (text + art) against art. 242 / 242.1 and 436-FZ 18+ | P19, the RU 18+ line | Legal review before production | Owner + lawyer |
+| T18 | Whether SBP / bank-app deep links open from the Telegram WebView (if a ruble route is ever tried outside the Mini App, the link must not come from it) | §13 option c | A test page outside the Mini App | Developer |
+| T19 | Whether the Telegram Login `id` equals the Mini App user id (website identity for option c) | F33 | Test bot + a test login page | Developer |
+| T20 | Whether TikTok accepts a `t.me` link (bio, comments) and the bio-link follower threshold | §14, F17 | Try on the brand account | Owner |
+| T21 | The live Stars price on the Russian App Store (V7 could not reproduce 209 ₽ per 100) | §5.3, §13 | Open the Stars purchase sheet on a Russian iOS account | Owner |
 
 ## 11. Gaps and evidence quality
 
@@ -784,7 +852,8 @@ Numbered P1-P18 so they do not collide with the `docs/OPEN-QUESTIONS.md` numbers
   conversion; interactive-story retention; age and gender of the romance communities (TGStat 403, VK unfetchable);
   niche ad prices for romance, fandom and teen channels; the share of RU users able to buy Stars; the FAS 2027
   position; VK Ads t.me acceptance and VK's minimum target age; Yandex bot / Mini App landings; iOS/Android WebView vs
-  the in-app proxy; 2026 OONI data on foreign hosts; our revenue when Telegram debits Stars already spent.
+  the in-app proxy; 2026 OONI data on foreign hosts; our revenue when Telegram debits Stars already spent; the loss rate of a
+  bot-to-bot hop, any enforcement case for opt-in bot ad mailings, and the exchange's commission (14).
 - **18+ track gaps (10):** whether adult ad networks accept `t.me` landings; Nutaku's revenue share; whether a vendor
   face check produces biometric personal data under 152-FZ; settled practice on drawn characters under art. 242.1;
   the size of the RU adult-female erotic-romance audience on Telegram.
@@ -808,19 +877,146 @@ Numbered P1-P18 so they do not collide with the `docs/OPEN-QUESTIONS.md` numbers
   reach) were verified by V4 after the synthesis draft; its 12 corrections and 5 unsupported items are applied as
   N26-N33. Rows V4 confirmed keep their original wording.
 
-## 12. Sources
+## 12. Ad monetization on the publisher side (owner request; 11, checked by V6)
+
+The owner asked about earning from official Telegram ads and third-party ads, including bots that send their users an
+ad about once a day. **Shows:**
+
+| Option | What it earns (label) | Rules and constraints | Fit |
+|---|---|---|---|
+| Telegram's own ad share in our bot / channel | 50 % of ad revenue to bot owners, not only channels (DOCUMENTED, core.telegram.org/api/revenue); paid in Gram via Fragment; Russian views reportedly earn $0 and payout needs a Sumsub KYC (CLAIMED, press 2026-05) | A sponsored message above the bot chat, not inside the Mini App; Premium users can turn ads off; we cannot choose the ads | Poor for a Russian audience; leave it on if it comes by default, plan no revenue |
+| Rewarded ads for hints inside the Mini App (AdsGram, Monetag, TADS, RichAds) | No published RU/CIS publisher eCPM; anchors: AdsGram's $3.8-16 CPM claim (2024, CLAIMED), Russian native-app rewarded eCPM $4.52 Android / $11.44 iOS (Q2 2024, not TMA traffic, MEASURED-secondary) | Server-verified grants only (principle 1): Monetag documents a per-show id and a "paid" flag; AdsGram's reward callback and TADS's webhook carry no signature. SDKs send Telegram id, username, device, IP and signed initData fields (incl. any `start_param`) to foreign companies (Seychelles; Isle of Man / Hong Kong / UAE) — Y16 and 152-FZ items. AdsGram blocks only gambling and adult, on request; Telegram's Developer Terms §7.4 bans promoting non-TON crypto inside a Mini App (V6) | **Good fit for hints**: monetizes players who cannot buy Stars (09 §1); hints only, chapters stay Stars-only |
+| Interstitial / "task" ads | As above | Interrupt scenes; "task" ads send minors to third-party channels and apps | Poor |
+| Bot broadcast exchanges (Telega.in / telega.io) — **what the owner saw** | Advertisers pay 200-800 ₽ CPM or 12-41,958 ₽ per 1,000 bot users (eLama 2026-09, CLAIMED); the bot owner's net share not found | **The exchange asks for our bot token** (V6) — the token derives the initData key and controls payments and refunds, so handing it over breaks auth and money (principles 2-3). Also: Developer Terms §5.2(b) bans unsolicited messages, §6.2.5 allows broadcasts only with permission; 38-FZ art. 18 needs prior consent with the burden of proof on us (FAS 2019 letter applies it to messengers); uncontrolled creatives reach 14-17; blocks erode our own announcement channel | **Not from the main bot**; a separate entry bot: §12.1 |
+| Paid broadcasts (Telegram feature) | A cost: 0.1 Star per message above 30 msg/s; needs 100 k Stars + 100 k MAU (DOCUMENTED, Bot API 7.11) | — | Irrelevant at launch scale |
+
+**Arithmetic per 1,000 daily players per day (ANALYSIS on mostly ASSUMPTION inputs, 11 §5; V6 re-did it):** rewarded
+hint ads ≈ $0.03 / $0.70 / $5.40 (low / base / high); a daily third-party broadcast ≈ $0.22 / $2.64 / $17.70; Stars
+purchases ≈ $1.95 / $13 / $39. Ads out-earn Stars only below ≈ 5.4 Stars per paying user per day — for example at the
+1-Star placeholder — so the comparison depends on the chapter price (P13).
+
+**Recommend:** opt-in rewarded ads as an extra **hint** source for non-payers (P23), only through a server-verified
+postback with a daily cap (F26), a lazy-loaded module (F27), the F28 blocklist, the F29 consent and a holdout (F30);
+no interstitials or "task" ads; no ads in the 18+ bot until a network's acceptance and the §8.5 review are known; no
+third-party broadcasts from the main bot (P25); a separate entry bot only under §12.1 (P34).
+
+### 12.1 A separate entry bot for broadcasts (owner follow-up; 14, checked by V8)
+
+The owner proposed one entry bot that every new user reaches first: it carries the daily third-party ad and forwards
+users to the main bot, so a ban of the entry bot leaves the main bot working. **Shows:**
+- **It removes the token objection.** The exchange gets only the ad bot's token; the main bot's token (the initData
+  key, payments, refunds) never leaves our server. Users who block the ad bot keep the main bot's announcements.
+- **The isolation is partial (DOCUMENTED + INTERPRETATION).** §5.2: Telegram "may terminate your TPA, your account, or
+  both"; §10: "the Telegram account tied to your TPA may also be banned", with "any channels or communities affiliated
+  with your TPA", at Telegram's sole discretion; the Terms bind "you, the developer". One owner account would lose both
+  bots, so the ad bot is created directly on a separate account (no transfer, no Managed Bots link). That lowers the
+  risk to the main bot but cannot remove it. The affiliation clause names our channel and community chats, so the ad
+  bot links only to the main bot (V8).
+- **No respawn (INTERPRETATION).** §5.2(f) bans attempts to "circumvent bans or content moderation"; a re-created ad
+  bot reads as that. The ad bot earns until a ban and is not replaced.
+- **Telegram Ads cannot use the gate.** Ads guidelines §4.3 ban "mostly noninteractive bots designed to redirect
+  elsewhere", mock destinations for other ads and auto-redirecting websites (DOCUMENTED, V8). Telegram Ads campaigns
+  point straight at the main bot with a `start` code; the gate covers only TikTok, blogger and own-post traffic.
+- **The exchange also gets our users' Telegram IDs:** telega.io asks the owner to upload and refresh a user-ID list
+  (CLAIMED, vendor guide, V8). It includes 14-17-year-olds — a 152-FZ transfer item, like the SDK data (F29).
+- **Its token's actions count as ours** (§4.5); vendor-side approval is a workflow, not a control, so every creative is
+  checked against F28 and the token is revoked on a breach (BotFather `/token`).
+- **Enforcement:** no case of a bot banned for ad mailings was found (Gap, searched twice); the market is broad, as the
+  owner says.
+- **The front door:** in the gate design a ban kills every link that points at the ad bot, so non-Telegram-Ads links go
+  through our redirect domain.
+- **Timing:** the FAS no-liability window for Telegram ads ends 2026-12-31 (V3); a growth-phase launch most likely runs
+  after it, with us as the distributor of each broadcast (a fact under R3, not a blocker).
+- **Arithmetic (ANALYSIS on ASSUMPTION inputs, 14 §3):** drop-outs at the extra screen receive ads only until they
+  block an ads-only bot, and buy no Stars. At base inputs the gate beats no ad bot while the hop loses under ≈ 20 % of
+  new users (low 11 %, high 45 %); against the opt-in satellite the bar is lower; at the 1-Star placeholder ads
+  dominate. At 10,000 daily players: ≈ 6,300 / 75,000 / 504,000 ₽ a month (low / base / high), before blocks, marking
+  costs and the 3 % levy. Exchanges need ≥ 1,000 active users; their commission is not found.
+
+| Design | Ad base | Main-funnel cost | If the ad bot is banned |
+|---|---|---|---|
+| Gate (owner's): non-Telegram-Ads link → ad bot → main bot | New users from those channels, until they block | One more screen for them (unmeasured) | Links die unless they use our redirect domain |
+| Satellite: offered once from the main bot, opt-in | Opt-ins only | None | Nothing published points at it |
+| Broadcasts from the main bot | All users | Blocks erode our announcements | The main bot; its token is handed over: **no** |
+
+**Owner ruling (R7, 2026-11-01):** at the growth phase, split non-Telegram-Ads traffic through our redirect domain
+(gate vs direct with the satellite offered) and keep the arm that earns more per new user, Stars plus ads, under the
+F34 conditions. The arm assignment is random and sticky, and the comparison waits for a sample size fixed in advance.
+
+## 13. Russian payments vs Stars (owner request; 12, checked by V7; INTERPRETATION, not legal advice)
+
+**Shows:**
+- **Inside the bot and Mini App, Stars cannot be replaced.** Bot Developer Terms §6.2 and the FAQ of
+  core.telegram.org/bots/payments-stars: digital goods
+  are paid "exclusively" in Stars and "cannot be processed through third-party payment providers"; the sanction is the
+  bot hidden from mobile users or store versions of Telegram, then removal (DOCUMENTED). Precedent: Telegram warned
+  @combot in 2024-05 after Apple flagged it (the notice survives as the recipient's copy on Apple's forum, V7). The
+  Russian providers in BotFather (ЮKassa, Sber, Smart Glocal) are for physical goods (§6.1).
+- **Apple via Telegram:** mini apps must use in-app purchase (4.7.1 → 3.1.1); license keys or QR codes that unlock
+  content are banned; in-app links to other payment methods are banned outside the US. Apple has offered a Russia-only
+  external-link permission since 2023-10, but 2026 forum posts say Russian developer accounts cannot get it under
+  sanctions, and only Telegram's own app could hold it anyway (V7).
+- **Outside Telegram, rubles are possible.** The FAQ limits the Stars duty to sales "inside Telegram apps", "regardless
+  of any other web portals … outside the Telegram ecosystem" (V7: it neither frees outside sales nor speaks of
+  unlocking web-bought items in the bot). Apple 3.1.3(b) allows web-bought content to unlock in an app if the same
+  items are also sold in-app. Romance Club's precedent: a web shop keyed to a player id shown in the app's settings.
+
+| Option | Net per 100 ₽ paid (ANALYSIS, CBR 80.56 ₽/$, V7) | Rule status (INTERPRETATION) | Verdict |
+|---|---|---|---|
+| Stars only (today, principle 2) | ≈ 50 ₽ via the RU App Store (before the TON-payout conversion); RU buyers face degraded Stars routes (09) | Compliant everywhere | Baseline |
+| (a) Ruble payments inside the Mini App (ЮKassa widget, SBP, T-Pay, SberPay) | ≈ 95-96 ₽ by card (≈ 3.8-4.6 % fees incl. VAT), ≈ 97-99 ₽ by SBP (≤ 0.7 % bank-direct; 1.8-3.0 % via aggregators) | Breaks Telegram §6.2 as written; the bot can be hidden on mobile | **No** |
+| (b) Ruble-only website keyed to the Telegram id | As (a) | Outside "inside Telegram apps", but fails Apple 3.1.3(b) without a Stars price; no in-app link or mention | Weak |
+| (c) Hybrid: Stars inside Telegram + a ruble website for Russian players | Stars side ≈ 50 ₽, ruble side ≈ 96-99 ₽ (≈ 1.9-2.0×) | Closest to the 3.1.3(b) pattern; principle 2 kept inside Telegram; any link, button or price comparison inside the Mini App is "steering" | **The rule-compatible option** — after a lawyer reviews steering (P27) |
+| (d) Codes / vouchers sold elsewhere (Boosty, VK Donut), redeemed in the bot | Venue fee + code system | Apple names license keys and QR codes as forbidden unlocks | **No** |
+
+**Constraints of any ruble route:** a Russian-resident merchant (ИП, ООО, or самозанятый with ≤ 2.4 M ₽ a year and no
+staff — P29, Q21); 54-FZ receipts; 22 % VAT, now also on card-acquiring fees (SBP transfers exempt, V7); acquirers'
+lists name erotic content (no ruble rail for the 18+ track, P30); selling to 14-17 directly makes us the counterparty
+for Civil Code art. 26/175 voiding (P31); discovery of the website only through outside channels (VK, TikTok, the
+landing page), never from inside the Mini App.
+
+**Recommend:** keep Stars as the only payment inside Telegram (principle 2 as written); treat the hybrid website (c)
+as an option for Russian players once a merchant exists (P29) and a lawyer has reviewed steering; if approved, the
+product asks are in F33 and principle 2 gains a scope sentence (P28).
+
+## 14. Short video via VPN: TikTok, YouTube Shorts, VK Clips (R6; 13, checked by V6)
+
+**Shows (press citing measurers unless stated; CLAIMED):**
+- TikTok: 65.9 M monthly, 27.3 M daily in Russia (Dec 2025, 12+); the leader by teen online time (25 % of 12-17 time;
+  73 min/day 12-17, 48 min/day 18-24, period unstated). VK leads by teen daily reach (63 % vs 61 %, 2024, V6).
+- YouTube: 65.9 M monthly, ~22 M daily (Jan 2026); daily reach 22.4 M in Jan-May 2026 after the 2026-02 block (the
+  "it did not shrink" reading is an inference, V6).
+- Mechanics: TikTok restricted Russia itself in 2022-03 (RKN never blocked it); from a Russian IP the app shows a
+  pre-2022 archive; with a foreign IP the official app works normally (feed, uploads; practitioner tests 2026). TikTok's
+  terms (2025-12-01) forbid bypassing its access restrictions — the account is at risk (P32). VPN use: 40 % of
+  Russians, 61 % of 18-29 (Russian Field, Apr 2026, n = 1,600 — the one MEASURED figure); nobody measures what share of
+  Russian TikTok viewers see new content (the main gap).
+- Links: YouTube Shorts description and comment links are not clickable (YouTube help) — route through channel links;
+  TikTok's bio link reportedly needs 1,000 followers or a business account (CLAIMED); `t.me` itself was on a registry
+  hold for about a day on 2026-07-13/14 (V6) — an own-domain landing page is the fallback (F17).
+- Prices: integrations TikTok ≈ 1.26-2.61 ₽ per view, Shorts ≈ 1.30 ₽, VK Clips ≈ 3 ₽ (agency studies, CLAIMED);
+  self-serve TikTok / Google ads cannot target Russia.
+
+**Recommend:** from pre-launch, one set of vertical chapter-1 clips and character cards (F31) cross-posted to TikTok,
+Shorts and VK Clips, each platform and creator with its own campaign code (F1) and the landing page (F17); a brand
+account run from outside Russia (P32); 2-3 test creator integrations at soft launch before scaling; adult creators
+only; never the 18+ track; never a VPN mention (38-FZ p. 10.8 — the first FAS decision treated VPN links in a Telegram
+channel as ads; R3 accepts the ad-law risk, but there is no upside in taking this one).
+
+## 15. Sources
 
 Key URLs behind the executive summary and the tables, read 2026-10-31 unless stated. **The full source lists are in
 the area and verify reports.**
 
-- **Telegram (primary):** https://telegram.org/tos/bot-developers (§5.2, §6.2.3-6.2.6, §8.2.1);
+- **Telegram (primary):** https://telegram.org/tos/bot-developers (§4.5, §5.2, §5.2(f), §6.2.3-6.2.6, §8.2.1, §10);
   https://telegram.org/tos/stars and https://telegram.org/tos/third-party-payments (Stars ToS §2-§4, authorized
   resellers); https://telegram.org/tos (age); https://core.telegram.org/bots/webapps (featuring, Apps tab, attachment
   menu, `requestWriteAccess`, `shareToStory`); https://core.telegram.org/api/config (defaults);
   https://core.telegram.org/api/stars (30 % ad discount); https://core.telegram.org/api/bots/referrals;
   https://core.telegram.org/bots/api-changelog (10.3); https://core.telegram.org/bots/payments-stars;
   https://core.telegram.org/api/bots/guest-mode; https://ads.telegram.org/guidelines;
-  https://ads.telegram.org/getting-started; https://telegram.org/faq_premium;
+  https://ads.telegram.org/getting-started; https://core.telegram.org/bots/features (token, `/token`, ownership
+  transfer); https://telegram.org/faq_premium;
   https://telegram.org/blog/checklists-suggested-posts; https://telegram.org/blog/affiliate-programs-ai-sticker-search;
   https://fragment.com/stars/buy.
 - **Stores:** https://apps.apple.com/us/app/telegram-messenger/id686449807;
@@ -873,6 +1069,12 @@ the area and verify reports.**
   https://core.telegram.org/constructor/restrictionReason ; https://developer.apple.com/app-store/review/guidelines/ ;
   https://support.google.com/googleplay/android-developer/answer/9878810 ; https://www.currenttime.tv/a/33223807.html
   (Tomsk verdict) ; https://esports.ru/igrovaya-industriya/news/klub-romantiki-vernulsya-v-rossiyu-posle-czezury-kontenta/
+- **Ad monetization, payments, short video (§12-§14):** https://core.telegram.org/api/revenue ;
+  https://telegram.org/tos/bot-developers (§5.2, §6.1-§6.2.5, §7.4) ; https://core.telegram.org/bots/payments-stars
+  (incl. its FAQ) ; https://core.telegram.org/bots/payments ; https://developer.apple.com/app-store/review/guidelines/
+  (3.1.1, 3.1.3, 4.7) ; https://www.cbr.ru/PSystem/sfp/ (SBP fee cap, updated 2026-02-06) ;
+  https://support.google.com/youtube/answer/13748639 (Shorts links).
+  Full lists: 11, 12, 13, V6, V7.
 - **EU (law-firm summaries):**
   https://www.reedsmith.com/de/perspectives/2025/03/qas-on-the-eu-consumer-protection-authorities-joint-guidance-paper ;
   https://www.gleisslutz.com/en/know-how/new-guidelines-game-currencies-digital-consumer-protection-and-expanding-taboo-dark-patterns
