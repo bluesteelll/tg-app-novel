@@ -358,7 +358,7 @@ pub struct GameStatsDto {
 }
 
 /// A player-facing text in both languages, as the client receives it: the wire form of the catalog's texts.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 pub struct Localized {
     /// Russian, the primary language.
     pub ru: String,
@@ -367,20 +367,22 @@ pub struct Localized {
 }
 
 /// One resource balance as `GET /api/wallet` lists it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct BalanceDto {
     /// The resource kind, e.g. `hint`.
     pub kind: String,
     /// What the user can spend, at least 0.
+    #[ts(type = "number")]
     pub balance: i64,
     /// What a refund left owing, at least 0: the next credits pay it first, and it is non-zero only with a balance
     /// of 0.
+    #[ts(type = "number")]
     pub debt: i64,
 }
 
 /// A pack for sale as `GET /api/wallet` lists it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct PackDto {
     /// The product id for `POST /api/invoices`, `pack:<packId>`.
@@ -396,7 +398,7 @@ pub struct PackDto {
 }
 
 /// `GET /api/wallet` response: the user's balances and what can be bought.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct WalletResponse {
     /// Every resource kind of the catalog, in its order, `0` / `0` without a row.
@@ -409,10 +411,11 @@ pub struct WalletResponse {
 
 /// `POST /api/puzzles/{puzzleId}/hints/{tier}?lang=ru|en` response: the balance after the use, and the tier's text.
 // No `Debug`: `text` is sold content, never logged.
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct HintUseResponse {
     /// The `hint` balance after the use (unchanged when the tier was unlocked before).
+    #[ts(type = "number")]
     pub balance: i64,
     /// The tier's hint in the requested language.
     pub text: String,
@@ -461,6 +464,11 @@ pub fn ts_bindings() -> String {
         export::<StoryStatsDto>(&cfg),
         export::<GameStatsDto>(&cfg),
         export::<StatsResponse>(&cfg),
+        export::<Localized>(&cfg),
+        export::<BalanceDto>(&cfg),
+        export::<PackDto>(&cfg),
+        export::<WalletResponse>(&cfg),
+        export::<HintUseResponse>(&cfg),
     ];
     format!("{BINDINGS_HEADER}\n\n{}", decls.join("\n"))
 }
