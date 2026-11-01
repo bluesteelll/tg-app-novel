@@ -22,8 +22,9 @@ pub use crate::db::payments::{GrantOutcome, PaymentFact, PreCheckoutVerdict, Rej
 /// The deadline of the pre-checkout's database step (K18).
 pub const PRECHECKOUT_DB_DEADLINE: Duration = Duration::from_secs(2);
 
-// The 10 s rule as a compile-time fact: both deadlines together stay below it.
-const _: () = assert!(PRECHECKOUT_DB_DEADLINE.as_secs() + CALL_DEADLINE.as_secs() < 10);
+// The 10 s rule as a compile-time fact: both deadlines together stay below it, in milliseconds (`as_secs` truncates,
+// so 5.5 s + 4.6 s would pass as 5 + 4).
+const _: () = assert!(PRECHECKOUT_DB_DEADLINE.as_millis() + CALL_DEADLINE.as_millis() < 10_000);
 
 /// The primary language subtags whose speakers get Russian texts (K29); every other tag, or none, gets English.
 const RUSSIAN_LANGS: [&str; 4] = ["ru", "uk", "be", "kk"];

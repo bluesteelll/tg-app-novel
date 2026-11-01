@@ -357,6 +357,70 @@ pub struct GameStatsDto {
     pub endings_reached: u32,
 }
 
+/// A player-facing text in both languages, as the client receives it: the wire form of the catalog's texts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+pub struct Localized {
+    /// Russian, the primary language.
+    pub ru: String,
+    /// English.
+    pub en: String,
+}
+
+/// One resource balance as `GET /api/wallet` lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct BalanceDto {
+    /// The resource kind, e.g. `hint`.
+    pub kind: String,
+    /// What the user can spend, at least 0.
+    #[ts(type = "number")]
+    pub balance: i64,
+    /// What a refund left owing, at least 0: the next credits pay it first, and it is non-zero only with a balance
+    /// of 0.
+    #[ts(type = "number")]
+    pub debt: i64,
+}
+
+/// A pack for sale as `GET /api/wallet` lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PackDto {
+    /// The product id for `POST /api/invoices`, `pack:<packId>`.
+    pub product_id: String,
+    /// The resource kind it credits.
+    pub kind: String,
+    /// The units it credits.
+    pub amount: u32,
+    /// The price in Telegram Stars, from the server's catalog.
+    pub price_stars: u32,
+    /// The pack's title, as its invoice shows it.
+    pub title: Localized,
+}
+
+/// `GET /api/wallet` response: the user's balances and what can be bought.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletResponse {
+    /// Every resource kind of the catalog, in its order, `0` / `0` without a row.
+    pub balances: Vec<BalanceDto>,
+    /// Every pack for sale: by kind, then amount.
+    pub packs: Vec<PackDto>,
+    /// The hints one hint tier costs.
+    pub hint_tier_cost: u32,
+}
+
+/// `POST /api/puzzles/{puzzleId}/hints/{tier}?lang=ru|en` response: the balance after the use, and the tier's text.
+// No `Debug`: `text` is sold content, never logged.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct HintUseResponse {
+    /// The `hint` balance after the use (unchanged when the tier was unlocked before).
+    #[ts(type = "number")]
+    pub balance: i64,
+    /// The tier's hint in the requested language.
+    pub text: String,
+}
+
 /// The first line of the generated file: what it is and how to rewrite it.
 const BINDINGS_HEADER: &str = "// Built from server/src/api/dto.rs and error.rs by ts-rs; do not edit. Regenerate: \
                                cargo test -p server --test it bindings::write_bindings -- --ignored --exact";
@@ -400,6 +464,11 @@ pub fn ts_bindings() -> String {
         export::<StoryStatsDto>(&cfg),
         export::<GameStatsDto>(&cfg),
         export::<StatsResponse>(&cfg),
+        export::<Localized>(&cfg),
+        export::<BalanceDto>(&cfg),
+        export::<PackDto>(&cfg),
+        export::<WalletResponse>(&cfg),
+        export::<HintUseResponse>(&cfg),
     ];
     format!("{BINDINGS_HEADER}\n\n{}", decls.join("\n"))
 }

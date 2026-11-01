@@ -1,9 +1,31 @@
 {
-  "//": "PLACEHOLDER prices: the owner's values are Q3 (chapters), docs/OPEN-QUESTIONS.md. Hint packs come from META-PLAN (RULINGS 25).",
+  "//": "PLACEHOLDER values: chapter prices (Q3) and the whole economy section — pack sizes and prices (Q30), referral bonus and caps (Q31), gift limits (Q32), minimum play (Q33), the hint cost per tier and the pack invoice texts — are the owner's, docs/OPEN-QUESTIONS.md (META-PLAN M17, RULINGS 25).",
   "chapters": {
     "defaultPriceStars": 1,
     "priceStars": {},
     "title": { "ru": "{chapter}", "en": "{chapter}" },
     "description": { "ru": "«{story}»: {chapter}", "en": "“{story}”: {chapter}" }
+  },
+  "economy": {
+    "kinds": ["hint"],
+    "packs": {
+      "hint_s": {
+        "kind": "hint",
+        "amount": 3,
+        "priceStars": 1,
+        "title": { "ru": "3 подсказки", "en": "3 hints" },
+        "description": { "ru": "Три подсказки к загадкам игры.", "en": "Three hints for the game's puzzles." }
+      },
+      "hint_m": {
+        "kind": "hint",
+        "amount": 10,
+        "priceStars": 3,
+        "title": { "ru": "10 подсказок", "en": "10 hints" },
+        "description": { "ru": "Десять подсказок к загадкам игры.", "en": "Ten hints for the game's puzzles." }
+      }
+    },
+    "spend": { "hintTier": 1 },
+    "gifts": { "kinds": ["hint"], "maxPerGift": 3, "sendPerDay": 3, "receivePerDay": 5 },
+    "referral": { "kind": "hint", "inviter": 5, "invitee": 2, "minPlaySecs": 120, "capPerDay": 3, "capTotal": 20 }
   }
 }
