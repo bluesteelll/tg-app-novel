@@ -205,6 +205,15 @@ test('settings: cloud value over 4096 chunks', async () => {
   await capped.loadRead(ch1);
   expect(lines.filter((line) => capped.isRead(ch1, line)).length).toBe(6000);
   expect(capped.isRead(ch1, lines[6000] ?? unmarked)).toBe(false);
+
+  // The 6000th mark is the last one the eight keys hold: a session whose only new mark it is still writes it. Every
+  // batch above also carries earlier new marks, so only this step sees the cap's boundary (test_r1 F1).
+  const atLast = new FakeCloud();
+  await marked(atLast, 5999);
+  await marked(atLast, 6000);
+  const last = createSettingsStore({ cloud: atLast });
+  await last.loadRead(ch1);
+  expect(last.isRead(ch1, lines[5999] ?? unmarked)).toBe(true);
 });
 
 test('settings: defaults when the cloud has none', async () => {
