@@ -147,6 +147,13 @@ test('save-codec: malformed bodies are error values', () => {
     expect(r.ok ? 'decoded' : r.error.kind, path).toBe('malformed');
     expect(r.ok ? '' : r.error.detail, path).toMatch(new RegExp(`^${path.replace(/[.[\]]/g, '\\$&')}[:.]`));
   }
+  // A non-finite number is not a scalar. encodeSave never writes one (JSON writes Infinity as null), but JSON.parse
+  // reads 1e999 as Infinity, so the literal goes into the text.
+  const infinite = encodeSave(BODY).replace('"g_x":1,', '"g_x":1e999,');
+  expect(infinite).toContain('"g_x":1e999,');
+  const inf = decodeSave(infinite);
+  expect(inf.ok ? 'decoded' : inf.error.kind).toBe('malformed');
+  expect(inf.ok ? '' : inf.error.detail).toMatch(/^save\.checkpoint\.vars\.g_x:/);
   // A backlog longer than the cap keeps its last BACKLOG_MAX entries.
   const long = Array.from({ length: 60 }, (_, i) => line(i + 1));
   const kept = decodeSave(JSON.stringify({ ...BODY, backlog: long }));
