@@ -22,14 +22,15 @@ pub async fn get_entitlements(
     let products = st
         .catalog
         .chapters()
-        .map(|product| {
-            let ProductRef::Chapter { chapter } = &product.kind;
-            ProductDto {
+        .filter_map(|product| match &product.kind {
+            ProductRef::Chapter { chapter } => Some(ProductDto {
                 product_id: product.id.0.clone(),
                 chapter_id: chapter.0.clone(),
                 price_stars: product.price_stars,
                 owned: owned.contains(&product.id),
-            }
+            }),
+            // A pack is a consumable bought into a balance, never an entitlement.
+            ProductRef::Pack { .. } => None,
         })
         .collect();
     Ok(Json(EntitlementsResponse { products }))

@@ -13,6 +13,7 @@ mod catalog;
 mod common;
 mod content;
 mod dto_samples;
+mod economy;
 mod payments;
 mod puzzles;
 mod saves;
@@ -197,9 +198,9 @@ async fn state_reopens_migrated_database() {
         .iter()
         .map(|(version, _)| *version)
         .collect();
-    if versions != [1, 2, 3] {
+    if versions != [1, 2, 3, 4] {
         failures.push(format!(
-            "first start: expected versions [1, 2, 3], got {versions:?}"
+            "first start: expected versions [1, 2, 3, 4], got {versions:?}"
         ));
     }
     match AppState::new(common::test_config(&db)).await {

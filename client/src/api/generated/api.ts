@@ -483,3 +483,89 @@ stories: Array<StoryStatsDto>,
  * The sums over the stories.
  */
 game: GameStatsDto, };
+
+/**
+ * A player-facing text in both languages, as the client receives it: the wire form of the catalog's texts.
+ */
+export type Localized = { 
+/**
+ * Russian, the primary language.
+ */
+ru: string, 
+/**
+ * English.
+ */
+en: string, };
+
+/**
+ * One resource balance as `GET /api/wallet` lists it.
+ */
+export type BalanceDto = { 
+/**
+ * The resource kind, e.g. `hint`.
+ */
+kind: string, 
+/**
+ * What the user can spend, at least 0.
+ */
+balance: number, 
+/**
+ * What a refund left owing, at least 0: the next credits pay it first, and it is non-zero only with a balance
+ * of 0.
+ */
+debt: number, };
+
+/**
+ * A pack for sale as `GET /api/wallet` lists it.
+ */
+export type PackDto = { 
+/**
+ * The product id for `POST /api/invoices`, `pack:<packId>`.
+ */
+productId: string, 
+/**
+ * The resource kind it credits.
+ */
+kind: string, 
+/**
+ * The units it credits.
+ */
+amount: number, 
+/**
+ * The price in Telegram Stars, from the server's catalog.
+ */
+priceStars: number, 
+/**
+ * The pack's title, as its invoice shows it.
+ */
+title: Localized, };
+
+/**
+ * `GET /api/wallet` response: the user's balances and what can be bought.
+ */
+export type WalletResponse = { 
+/**
+ * Every resource kind of the catalog, in its order, `0` / `0` without a row.
+ */
+balances: Array<BalanceDto>, 
+/**
+ * Every pack for sale: by kind, then amount.
+ */
+packs: Array<PackDto>, 
+/**
+ * The hints one hint tier costs.
+ */
+hintTierCost: number, };
+
+/**
+ * `POST /api/puzzles/{puzzleId}/hints/{tier}?lang=ru|en` response: the balance after the use, and the tier's text.
+ */
+export type HintUseResponse = { 
+/**
+ * The `hint` balance after the use (unchanged when the tier was unlocked before).
+ */
+balance: number, 
+/**
+ * The tier's hint in the requested language.
+ */
+text: string, };
