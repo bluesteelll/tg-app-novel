@@ -1,6 +1,11 @@
 import { expect, test } from 'vitest';
 
+import type { StoryId } from '../story/catalog.ts';
+import type { ChapterId, OrderId, ProductId, PuzzleLocalId } from '../story/staging.ts';
 import { decodeAttemptResponse, decodeEntitlementsResponse } from './decode.ts';
+import type { DecodedDto } from './decode.ts';
+import { createEndpoints, puzzleId } from './endpoints.ts';
+import samplesText from './fixtures/dto-samples.json?raw';
 import { createHttp } from './http.ts';
 import type { ApiError, Clock, FetchFn } from './http.ts';
 import { langOfTag } from './session.ts';
@@ -350,4 +355,95 @@ test('session: language follows K29', async () => {
     lang: 'ru',
     user: { id: 7, firstName: 'Аян', languageCode: 'kk-KZ' },
   });
+});
+
+/** The `index`-th Rust-written sample of `dto`, by name (decode.test.ts reads the same file). */
+function sample(dto: DecodedDto, index = 0): unknown {
+  const all: unknown = JSON.parse(samplesText);
+  const list = typeof all === 'object' && all !== null && Object.hasOwn(all, dto) ? (all as Record<string, unknown>)[dto] : undefined;
+  const value: unknown = Array.isArray(list) ? list[index] : undefined;
+  if (value === undefined) {
+    throw new Error(`dto-samples.json has no ${dto}[${index}]`);
+  }
+  return value;
+}
+
+test('endpoints: routes carry story, slot and lang', async () => {
+  // Every call answers the sample of its DTO whatever the path, so a wrong route fails on the path, not the decode.
+  let answer: unknown = null;
+  const srv = fakeServer(() => json(200, answer));
+  const api = createEndpoints(createHttp({ initData: RAW, clock: new FakeClock(), fetch: srv.fetch }));
+  const manor = 'manor' as StoryId;
+  const drawer = puzzleId('ch1' as ChapterId, 'drawer' as PuzzleLocalId);
+  const put = { expectedRev: 3, writeId: 'w-4', chapterId: 'ch1', storyVersion: 'v1', lineId: 'ch1.k1.l3', body: '{"rev":4}' };
+  const cases: ReadonlyArray<{
+    name: string;
+    call: () => Promise<{ ok: boolean }>;
+    dto: DecodedDto;
+    index?: number;
+    method: string;
+    path: string;
+    body: unknown;
+    keepalive?: boolean;
+  }> = [
+    { name: 'getEntitlements', call: () => api.getEntitlements(), dto: 'EntitlementsResponse', method: 'GET', path: '/api/entitlements', body: null },
+    { name: 'listSaves', call: () => api.listSaves(), dto: 'SaveListResponse', method: 'GET', path: '/api/saves', body: null },
+    { name: 'getSave', call: () => api.getSave(manor, 'auto'), dto: 'SaveFull', method: 'GET', path: '/api/saves/manor/auto', body: null },
+    {
+      name: 'putSave',
+      call: () => api.putSave(manor, 's1', put, { keepalive: true }),
+      dto: 'PutSaveResponse',
+      method: 'PUT',
+      path: '/api/saves/manor/s1',
+      body: put,
+      keepalive: true,
+    },
+    {
+      name: 'createInvoice',
+      call: () => api.createInvoice('chapter:ch2' as ProductId),
+      dto: 'CreateInvoiceResponse',
+      method: 'POST',
+      path: '/api/invoices',
+      body: { productId: 'chapter:ch2' },
+    },
+    {
+      name: 'getOrder',
+      call: () => api.getOrder('o_0123456789abcdef0123456789abcdef' as OrderId),
+      dto: 'OrderResponse',
+      index: 2,
+      method: 'GET',
+      path: '/api/orders/o_0123456789abcdef0123456789abcdef',
+      body: null,
+    },
+    { name: 'getChapter', call: () => api.getChapter('ch2' as ChapterId), dto: 'ChapterPayload', method: 'GET', path: '/api/chapters/ch2', body: null },
+    { name: 'getPuzzle', call: () => api.getPuzzle(drawer, 'ru'), dto: 'PuzzleStatus', method: 'GET', path: '/api/puzzles/ch1.drawer?lang=ru', body: null },
+    {
+      name: 'postAttempt',
+      call: () => api.postAttempt(drawer, [1, 2, 3]),
+      dto: 'AttemptResponse',
+      method: 'POST',
+      path: '/api/puzzles/ch1.drawer/attempts',
+      body: { answer: [1, 2, 3] },
+    },
+  ];
+  for (const c of cases) {
+    answer = sample(c.dto, c.index);
+    const r = await c.call();
+    const sent = srv.seen[srv.seen.length - 1];
+    expect(sent?.url, c.name).toBe(c.path);
+    expect(sent?.method, c.name).toBe(c.method);
+    expect(sent?.body === null || sent?.body === undefined ? null : JSON.parse(sent.body), c.name).toEqual(c.body);
+    expect(sent?.keepalive, c.name).toBe(c.keepalive === true);
+    expect(sent?.headers['authorization'], c.name).toBe('Bearer tok-1');
+    expect(r, c.name).toEqual({ ok: true, value: answer });
+  }
+  expect(srv.auths()).toHaveLength(1);
+
+  // The chapter and puzzle calls take the caller's signal: an aborted one sends nothing.
+  const before = srv.seen.length;
+  const gone = AbortSignal.abort();
+  expect(await api.getChapter('ch2' as ChapterId, { signal: gone })).toEqual({ ok: false, error: { kind: 'aborted' } });
+  expect(await api.getPuzzle(drawer, 'en', { signal: gone })).toEqual({ ok: false, error: { kind: 'aborted' } });
+  expect(await api.postAttempt(drawer, [4], { signal: gone })).toEqual({ ok: false, error: { kind: 'aborted' } });
+  expect(srv.seen).toHaveLength(before);
 });
