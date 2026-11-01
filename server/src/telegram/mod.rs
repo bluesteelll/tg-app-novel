@@ -1,4 +1,7 @@
 //! The Telegram layer (principle 6): the Bot API through frankenstein types behind the [`gateway::BotGateway`] seam,
-//! with no bot framework. The webhook route and the payment facts join this module in a later lane.
+//! the webhook route Telegram's updates arrive on ([`webhook::webhook`]), and the payment path the webhook drives
+//! ([`payments`]), with no bot framework.
 
 pub mod gateway;
+pub mod payments;
+pub mod webhook;

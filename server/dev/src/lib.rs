@@ -6,6 +6,7 @@
 
 pub mod fake_gateway;
 pub mod launch;
+pub mod simulate;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -46,10 +47,12 @@ async fn dev_state(paths: &DevPaths) -> Result<(AppState, Arc<FakeBotGateway>), 
     Ok((state, fake))
 }
 
-/// The production router on `state`, plus the launch routes and the routes that read `fake`.
+/// The production router on `state`, plus the launch routes, the simulated payments (through the production webhook
+/// handler on `state`) and the routes that read `fake`.
 fn dev_router(state: AppState, fake: Arc<FakeBotGateway>) -> Router {
     build_router(state.clone())
-        .merge(launch::routes().with_state(state))
+        .merge(launch::routes().with_state(state.clone()))
+        .merge(simulate::routes(state, fake.clone()))
         .merge(fake_gateway::routes(fake))
 }
 

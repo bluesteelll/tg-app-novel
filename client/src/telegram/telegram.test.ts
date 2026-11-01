@@ -42,7 +42,8 @@ function versionAtLeast(have: string, want: string): boolean {
 /**
  * `window.Telegram.WebApp` as the facade uses it. Events live in one registry keyed by TWA's own event names
  * (`backButtonClicked` included, as `BackButton.onClick` registers it), and `onEvent` keeps an identical callback
- * once, as TWA's `indexOf` check does. A name in `throws` makes that method throw `Error(<code>)`, as TWA does.
+ * once, as TWA's `indexOf` check does. `emit` dispatches the way TWA's `callEventCallbacks` does. A name in `throws`
+ * makes that method throw `Error(<code>)`, as TWA does.
  */
 class FakeTwa implements TwaWebApp {
   readonly version: string;
@@ -77,9 +78,15 @@ class FakeTwa implements TwaWebApp {
     return this.#handlers.get(type)?.length ?? 0;
   }
 
+  /** Over the live array by index, each callback in its own try/catch: an `offEvent` inside a callback shifts it. */
   emit(type: string, data?: unknown): void {
-    for (const fn of [...(this.#handlers.get(type) ?? [])]) {
-      fn(data);
+    const list = this.#handlers.get(type) ?? [];
+    for (let i = 0; i < list.length; i++) {
+      try {
+        list[i]?.(data);
+      } catch {
+        // TWA swallows a callback's throw and goes on with the next index.
+      }
     }
   }
 
@@ -307,10 +314,11 @@ test('facade_unsubscribe_removes_handler', () => {
   const fn = (e: Lifecycle): void => {
     seen.push(e);
   };
-  // The same function twice is two subscriptions, though TWA's onEvent would keep one identical callback.
+  // The same function twice is two subscriptions, though TWA's onEvent would keep one identical callback. TWA holds
+  // one facade dispatcher per event name, registered while that name has a subscriber.
   const first = tg.onLifecycle(fn);
   const second = tg.onLifecycle(fn);
-  expect([twa.live('activated'), twa.live('deactivated')]).toEqual([2, 2]);
+  expect([twa.live('activated'), twa.live('deactivated')]).toEqual([1, 1]);
   twa.emit('deactivated');
   expect(seen).toEqual(['deactivated', 'deactivated']);
   first();
@@ -329,7 +337,7 @@ test('facade_unsubscribe_removes_handler', () => {
   };
   const offA = tg.backButton.onPress(press);
   const offB = tg.backButton.onPress(press);
-  expect(twa.live('backButtonClicked')).toBe(2);
+  expect(twa.live('backButtonClicked')).toBe(1);
   twa.emit('backButtonClicked');
   expect(presses).toBe(2);
   offA();
@@ -338,6 +346,87 @@ test('facade_unsubscribe_removes_handler', () => {
   expect(twa.live('backButtonClicked')).toBe(0);
   twa.emit('backButtonClicked');
   expect(presses).toBe(2);
+});
+
+test('facade: unsubscribe inside a lifecycle handler keeps the other subscribers', () => {
+  const twa = new FakeTwa('9.6');
+  const tg = createTelegramClient(twa, fakeEnv().env);
+  const seen: string[] = [];
+  const offA = tg.onLifecycle((e) => {
+    seen.push(`A:${e}`);
+    offA();
+  });
+  tg.onLifecycle((e) => {
+    seen.push(`B:${e}`);
+  });
+  twa.emit('activated');
+  expect(seen).toEqual(['A:activated', 'B:activated']);
+  twa.emit('activated');
+  expect(seen).toEqual(['A:activated', 'B:activated', 'B:activated']);
+});
+
+test('facade: unsubscribe inside a back press keeps the other press handlers', () => {
+  const twa = new FakeTwa('9.6');
+  const tg = createTelegramClient(twa, fakeEnv().env);
+  const presses: string[] = [];
+  const offX = tg.backButton.onPress(() => {
+    presses.push('X');
+    offX();
+  });
+  tg.backButton.onPress(() => {
+    presses.push('Y');
+  });
+  twa.emit('backButtonClicked');
+  expect(presses).toEqual(['X', 'Y']);
+  twa.emit('backButtonClicked');
+  expect(presses).toEqual(['X', 'Y', 'Y']);
+});
+
+test('facade: subscriber added inside a dispatch waits for the next event', () => {
+  const twa = new FakeTwa('9.6');
+  const tg = createTelegramClient(twa, fakeEnv().env);
+  const presses: string[] = [];
+  let added = false;
+  tg.backButton.onPress(() => {
+    presses.push('A');
+    if (!added) {
+      added = true;
+      tg.backButton.onPress(() => {
+        presses.push('C');
+      });
+    }
+  });
+  tg.backButton.onPress(() => {
+    presses.push('B');
+  });
+  twa.emit('backButtonClicked');
+  expect(presses).toEqual(['A', 'B']);
+  twa.emit('backButtonClicked');
+  expect(presses).toEqual(['A', 'B', 'A', 'B', 'C']);
+});
+
+test('facade: a throwing subscriber does not stop the others', () => {
+  const twa = new FakeTwa('9.6');
+  const tg = createTelegramClient(twa, fakeEnv().env);
+  const presses: string[] = [];
+  tg.backButton.onPress(() => {
+    throw new Error('press handler bug');
+  });
+  tg.backButton.onPress(() => {
+    presses.push('B');
+  });
+  twa.emit('backButtonClicked');
+  expect(presses).toEqual(['B']);
+
+  const seen: Lifecycle[] = [];
+  tg.onLifecycle(() => {
+    throw new Error('lifecycle handler bug');
+  });
+  tg.onLifecycle((e) => {
+    seen.push(e);
+  });
+  twa.emit('deactivated');
+  expect(seen).toEqual(['deactivated']);
 });
 
 test('lifecycle: visibilitychange fallback below 8.0', () => {
