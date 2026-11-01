@@ -4,6 +4,7 @@ import { expect, test } from 'vitest';
 
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { WorldState } from '../explore/state.ts';
+import type { InkScalar } from './catalog.ts';
 import { BACKLOG_MAX, decodeSave, encodeSave } from './save-codec.ts';
 import type { BacklogEntry, SaveBodyV1 } from './save-codec.ts';
 import { EMPTY_SNAPSHOT } from './staging.ts';
@@ -166,3 +167,63 @@ test('save-codec: malformed bodies are error values', () => {
   }));
   expect(extra).toEqual({ ok: true, value: BODY });
 });
+
+// The scalar-partition table (cut D9: a var holds a boolean, a string or a finite number), one name per arm and row.
+// Each arm has its own body that holds the probe var alone: the checkpoint is read before the carry, so a body with
+// both would let a checkpoint red hide a carry red.
+type Vars = SaveBodyV1['chapterStart']['carry'];
+const PROBE = 'g_probe';
+const ARMS: ReadonlyArray<{ arm: string; detail: RegExp; body: (vars: Vars) => SaveBodyV1 }> = [
+  {
+    arm: 'checkpoint.vars',
+    detail: /^save\.checkpoint\.vars\.g_probe: /,
+    body: (vars) => ({ ...BODY, checkpoint: { knot: 'start' as KnotName, vars, staging: EMPTY_SNAPSHOT }, chapterStart: { carry: {} } }),
+  },
+  {
+    arm: 'chapterStart.carry',
+    detail: /^save\.chapterStart\.carry\.g_probe: /,
+    body: (vars) => ({ ...BODY, checkpoint: null, chapterStart: { carry: vars } }),
+  },
+];
+/** Every partition a var value may take; the label names the row, since `''` would print as nothing. */
+const SCALARS: ReadonlyArray<readonly [label: string, value: InkScalar]> = [
+  ['the empty string', ''],
+  ['a non-empty string', 'Ann'],
+  ['true', true],
+  ['false', false],
+  ['zero', 0],
+  ['a positive number', 7],
+  ['a negative number', -3],
+  ['a fractional number', 0.25],
+];
+/** JSON text that is no scalar; 1e999 and -1e999 parse to ±Infinity, which JSON.stringify cannot write. */
+const NON_SCALARS: ReadonlyArray<readonly [label: string, json: string]> = [
+  ['null', 'null'],
+  ['1e999', '1e999'],
+  ['-1e999', '-1e999'],
+  ['an object', '{"n":1}'],
+  ['an array', '[1]'],
+];
+
+for (const { arm, body } of ARMS) {
+  for (const [label, value] of SCALARS) {
+    test(`save-codec: a ${arm} var holding ${label} round trips`, () => {
+      const b = body({ [PROBE]: value } as Vars);
+      expect(decodeSave(encodeSave(b))).toEqual({ ok: true, value: b });
+    });
+  }
+}
+
+for (const { arm, detail, body } of ARMS) {
+  for (const [label, json] of NON_SCALARS) {
+    test(`save-codec: a ${arm} var holding ${label} is malformed`, () => {
+      const sentinel = `"${PROBE}":0`;
+      const text = encodeSave(body({ [PROBE]: 0 } as Vars));
+      // An unmatched replace would leave a valid body, so the sentinel must occur exactly once.
+      expect(text.split(sentinel)).toHaveLength(2);
+      const r = decodeSave(text.replace(sentinel, `"${PROBE}":${json}`));
+      expect(r.ok ? 'decoded' : r.error.kind).toBe('malformed');
+      expect(r.ok ? '' : r.error.detail).toMatch(detail);
+    });
+  }
+}
