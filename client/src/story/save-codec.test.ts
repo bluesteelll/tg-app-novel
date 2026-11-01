@@ -106,6 +106,16 @@ test('save-codec: an empty string var round trips in the checkpoint and the carr
   expect(decodeSave(encodeSave(carried))).toEqual({ ok: true, value: carried });
 });
 
+test('save-codec: a false boolean and a negative number var round trip in the checkpoint and the carry', () => {
+  // `false` is the default of every bool VAR and the lint admits negative defaults: neither may read as malformed.
+  const v = { g_seen: false, g_aff: -2 } as SaveBodyV1['chapterStart']['carry'];
+  const falsy: SaveBodyV1 = { ...BODY, checkpoint: { knot: 'start' as KnotName, vars: v, staging: EMPTY_SNAPSHOT }, chapterStart: { carry: v } };
+  expect(decodeSave(encodeSave(falsy))).toEqual({ ok: true, value: falsy });
+  // The checkpoint is read first, so the carry gets its own body with no checkpoint.
+  const carried: SaveBodyV1 = { ...falsy, checkpoint: null };
+  expect(decodeSave(encodeSave(carried))).toEqual({ ok: true, value: carried });
+});
+
 test('save-codec: malformed bodies are error values', () => {
   const cases: ReadonlyArray<readonly [path: string, edit: (b: Record<string, unknown>) => void]> = [
     ['save.chapterId', (b) => (b['chapterId'] = 'chapter1')],
