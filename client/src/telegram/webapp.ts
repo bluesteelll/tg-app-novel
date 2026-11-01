@@ -189,6 +189,50 @@ function startParamOf(initData: string): string | null {
   return value !== null && START_PARAM.test(value) ? value : null;
 }
 
+type Sub = { readonly fn: TwaHandler; live: boolean };
+
+/**
+ * The subscribers of one TWA event behind one TWA registration, held while there is at least one (`on` at 0 -> 1,
+ * `off` at 1 -> 0). TWA runs its handler array live by index, so an `offEvent` inside a handler would skip the next
+ * one and a handler added mid-dispatch would run at once. This dispatch has DOM `EventTarget` semantics instead: it
+ * runs the subscribers present when the event started, skips one removed meanwhile, and leaves one added meanwhile to
+ * the next event. A subscriber's throw is caught here, as TWA catches each of its own callbacks, so it never stops the
+ * others. The splice that `off` makes inside TWA's loop is harmless: the facade is the only TWA-level subscriber of
+ * these events (arch rule window-telegram).
+ */
+function eventHub(on: (fn: TwaHandler) => void, off: (fn: TwaHandler) => void): (fn: TwaHandler) => Unsubscribe {
+  const subs: Sub[] = [];
+  const dispatch: TwaHandler = (data) => {
+    for (const sub of subs.slice()) {
+      if (!sub.live) {
+        continue;
+      }
+      try {
+        sub.fn(data);
+      } catch {
+        // The subscriber's own bug; the facade never throws into TWA.
+      }
+    }
+  };
+  return (fn) => {
+    const sub: Sub = { fn, live: true };
+    subs.push(sub);
+    if (subs.length === 1) {
+      attempt(() => on(dispatch));
+    }
+    return () => {
+      if (!sub.live) {
+        return;
+      }
+      sub.live = false;
+      subs.splice(subs.indexOf(sub), 1);
+      if (subs.length === 0) {
+        attempt(() => off(dispatch));
+      }
+    };
+  };
+}
+
 function visibilityLifecycle(doc: VisibilitySource, fn: (e: Lifecycle) => void): Unsubscribe {
   const listener = (): void => fn(doc.visibilityState === 'visible' ? 'activated' : 'deactivated');
   doc.addEventListener('visibilitychange', listener);
@@ -234,13 +278,24 @@ function webAppClient(w: TwaWebApp, env: TgEnv): TelegramClient {
       return false;
     }
   };
-  // A wrapper per subscription: TWA keeps an identical callback once, so two subscribers of one function would
-  // share one registration and the first unsubscribe would remove both.
+  // One hub per TWA event name; each subscription is its own entry, so one function subscribed twice is two.
+  const hubs = new Map<string, (fn: TwaHandler) => Unsubscribe>();
   const subscribe = (type: string, fn: TwaHandler): Unsubscribe => {
-    const handler: TwaHandler = (data) => fn(data);
-    attempt(() => w.onEvent(type, handler));
-    return () => attempt(() => w.offEvent(type, handler));
+    let hub = hubs.get(type);
+    if (hub === undefined) {
+      hub = eventHub(
+        (d) => w.onEvent(type, d),
+        (d) => w.offEvent(type, d),
+      );
+      hubs.set(type, hub);
+    }
+    return hub(fn);
   };
+  // BackButton.onClick registers TWA's `backButtonClicked`; the hub goes through the method, its own checks included.
+  const backPress = eventHub(
+    (d) => w.BackButton.onClick(d),
+    (d) => w.BackButton.offClick(d),
+  );
   // One owner for both listeners and the guard: whichever settles first removes all three.
   const share = (id: string): Promise<Result<void, ShareError>> =>
     new Promise((resolve) => {
@@ -334,9 +389,7 @@ function webAppClient(w: TwaWebApp, env: TgEnv): TelegramClient {
         if (!at('6.1')) {
           return () => {};
         }
-        const handler = (): void => fn();
-        attempt(() => w.BackButton.onClick(handler));
-        return () => attempt(() => w.BackButton.offClick(handler));
+        return backPress(() => fn());
       },
     },
     openInvoice: (url) =>
