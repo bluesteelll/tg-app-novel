@@ -15,6 +15,7 @@
 
 use serde::Serialize;
 use sqlx::PgConnection;
+use ts_rs::TS;
 
 use crate::auth::TgUser;
 use crate::db::Repo;
@@ -93,7 +94,7 @@ pub struct SocialRows {
 /// What a link holder's invite code means to them (`GET /api/invites/{code}`, M10). Nothing about the owner: a block
 /// of the caller by the owner, and the owner's full request list, answer `requested` exactly like the caller's own
 /// pending request, so the blocked or capped side learns nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum InviteState {
     /// The caller may ask: the prompt is shown.
