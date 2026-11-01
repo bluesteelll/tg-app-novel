@@ -11,6 +11,7 @@ use serde_json::value::RawValue;
 use ts_rs::TS;
 
 use crate::db::orders::OrderStatus;
+use crate::db::stats::{StatKind, StatOutcome};
 use crate::error::{ApiErrorBody, ErrorCode};
 use crate::ids::{SaveSlot, StoryId};
 
@@ -244,6 +245,77 @@ pub struct OrderResponse {
     pub product_id: String,
     /// The order's status.
     pub status: OrderStatus,
+}
+
+/// `POST /api/stats/events` request. An unknown field (a `storyId`, say) is a 400: the server derives the story.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PostStatsRequest {
+    /// The batch: 1 to 32 events, oldest first.
+    pub events: Vec<StatEventDto>,
+}
+
+/// One statistics event as the client reports it: a claim the server judges against the story index, the puzzle
+/// index and the user's entitlements. An unknown field is a 400.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StatEventDto {
+    /// The client's id of the event, a lower-case UUID v4: a resent event is a duplicate, never a second row.
+    pub event_id: String,
+    /// What the event reports.
+    pub kind: StatKind,
+    /// The chapter the event happened in.
+    pub chapter_id: String,
+    /// The story version the client ran: 16 lower-case hex characters.
+    pub story_version: String,
+    /// `ending_reached`: the ending name; `puzzle_ended`: the puzzle id; `choice_made`: the picked option's line ID;
+    /// `null` for the chapter kinds.
+    pub subject: Option<String>,
+    /// `puzzle_ended` only: how the puzzle ended; `null` for every other kind.
+    pub outcome: Option<StatOutcome>,
+    /// The event's age when the batch was sent, in ms: 0 to 30 days.
+    #[ts(type = "number")]
+    pub age_ms: i64,
+}
+
+/// Why an event of a stats batch was not recorded. The client drops a rejected event: it is never retried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum StatRejectReason {
+    /// The chapter is not in the story index.
+    UnknownChapter,
+    /// A paid chapter whose product the user does not own: judged before the subject.
+    NotEntitled,
+    /// Not an ending of the chapter's story reached in that chapter.
+    UnknownEnding,
+    /// Not a puzzle of the chapter.
+    UnknownPuzzle,
+    /// Not an option of the chapter.
+    UnknownChoice,
+    /// A repeat pick past the hour's choice budget.
+    RateLimited,
+}
+
+/// An event of the batch that was not recorded, and why.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RejectedEvent {
+    /// The event's id.
+    pub event_id: String,
+    /// Why it was not recorded.
+    pub reason: StatRejectReason,
+}
+
+/// `POST /api/stats/events` response: every event of the batch is recorded, a duplicate, or rejected.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PostStatsResponse {
+    /// Events recorded by this request.
+    pub recorded: u32,
+    /// Events already recorded: sent before, or repeated in this batch.
+    pub duplicates: u32,
+    /// Events not recorded, in batch order.
+    pub rejected: Vec<RejectedEvent>,
 }
 
 /// The first line of the generated file: what it is and how to rewrite it.

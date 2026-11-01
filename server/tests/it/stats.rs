@@ -1,19 +1,24 @@
-//! Statistics (`server/migrations/0003_stats.sql`, `db/stats.rs`): the `stat_events` constraints on raw SQL, and
-//! the repository's idempotent, budgeted write.
+//! Statistics (`server/migrations/0003_stats.sql`, `db/stats.rs`, `api/stats.rs`): the `stat_events` constraints on
+//! raw SQL, the repository's idempotent, budgeted write, and `POST /api/stats/events`, where every event is a claim
+//! judged against the story index, the puzzle index and the caller's entitlements.
 //!
 //! Every refused schema case breaks one CHECK, or one whose name sorts before every other it breaks: PostgreSQL tests
 //! a table's CHECK constraints in name order, so the constraint a case reports is the one the case is about.
 //!
 //! Large seeds are raw `generate_series` inserts (`gen_random_uuid` is a lower-case v4): only their count and time
-//! matter to the budgets.
+//! matter to the budgets. Entitlement rows are raw too (`catalog::own`): the server has no grant path but the payment.
 
+use axum::body::Body;
+use axum::http::Request;
+use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, RETRY_AFTER};
+use serde_json::{Value, json};
 use server::AppState;
 use server::db::stats::{NewStatEvent, RecordOutcome, StatCaps, StatKind, StatOutcome};
 use server::ids::{ChapterId, StoryId, UserId};
 use sqlx::postgres::PgQueryResult;
 use sqlx::{Connection, PgConnection};
 
-use crate::catalog::{ANN, T0, state_with_users};
+use crate::catalog::{ANN, T0, bearer, own, state_with_users};
 use crate::common;
 
 /// A second player.
@@ -783,6 +788,501 @@ async fn stats_choice_over_budget_keeps_first_picks() {
         "ANN at T0 + 3600: [s001, s002, s002]",
         record(&st, ANN, &later, T0 + 3600).await,
         recorded(ids(&later), Vec::new()),
+    ));
+    report(&failures);
+}
+
+/// A wire event `uuid(n)` of `kind` in `chapter`, of the right story version and age 0.
+fn event(n: u64, kind: &str, chapter: &str, subject: Option<&str>, outcome: Option<&str>) -> Value {
+    json!({
+        "eventId": uuid(n),
+        "kind": kind,
+        "chapterId": chapter,
+        "storyVersion": VERSION,
+        "subject": subject,
+        "outcome": outcome,
+        "ageMs": 0,
+    })
+}
+
+/// `event` with `key` set to `value`.
+fn with(mut event: Value, key: &str, value: Value) -> Value {
+    event[key] = value;
+    event
+}
+
+/// `POST /api/stats/events` as `user` with the raw `body`.
+async fn post_raw(st: &AppState, user: i64, body: String) -> common::Reply {
+    let req = Request::post("/api/stats/events")
+        .header(AUTHORIZATION, bearer(st, user))
+        .header(CONTENT_TYPE, "application/json")
+        .body(Body::from(body))
+        .unwrap();
+    common::call(st, req).await
+}
+
+/// `POST /api/stats/events` as `user` with the batch `{ events }`.
+async fn post(st: &AppState, user: i64, events: Vec<Value>) -> common::Reply {
+    post_raw(st, user, json!({ "events": events }).to_string()).await
+}
+
+/// A `PostStatsResponse` as JSON; `rejected` is (event `n`, reason) in batch order.
+fn answer(recorded: u32, duplicates: u32, rejected: &[(u64, &str)]) -> Value {
+    let rejected: Vec<Value> = rejected
+        .iter()
+        .map(|&(n, reason)| json!({ "eventId": uuid(n), "reason": reason }))
+        .collect();
+    json!({ "recorded": recorded, "duplicates": duplicates, "rejected": rejected })
+}
+
+fn body_text(reply: &common::Reply) -> String {
+    String::from_utf8_lossy(&reply.body).into_owned()
+}
+
+/// The mismatch of `reply` against a 200 with exactly the JSON `want`.
+fn expect_answer(case: &str, reply: &common::Reply, want: &Value) -> Option<String> {
+    let got: Option<Value> = serde_json::from_slice(&reply.body).ok();
+    (reply.status.as_u16() != 200 || got.as_ref() != Some(want)).then(|| {
+        format!(
+            "{case}: expected 200 {want}, got {} {}",
+            reply.status.as_u16(),
+            body_text(reply)
+        )
+    })
+}
+
+/// The mismatch of `reply` against `status` with exactly the body `body`.
+fn expect_reply(case: &str, reply: &common::Reply, status: u16, body: &str) -> Option<String> {
+    let got = body_text(reply);
+    (reply.status.as_u16() != status || got != body).then(|| {
+        format!(
+            "{case}: expected {status} {body}, got {} {got}",
+            reply.status.as_u16()
+        )
+    })
+}
+
+const BAD_REQUEST: &str = r#"{"error":"bad_request"}"#;
+
+/// An ending is accepted only in the chapter the story index places it in: `dawn` is tide's, but ch4's.
+#[tokio::test]
+async fn stats_unknown_ending_rejected() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    let mut failures = Vec::new();
+    let reply = post(
+        &st,
+        ANN,
+        vec![event(1, "ending_reached", "ch3", Some("dawn"), None)],
+    )
+    .await;
+    failures.extend(expect_answer(
+        "dawn for ch3",
+        &reply,
+        &answer(0, 0, &[(1, "unknown_ending")]),
+    ));
+    let reply = post(
+        &st,
+        ANN,
+        vec![event(2, "ending_reached", "ch3", Some("drowned"), None)],
+    )
+    .await;
+    failures.extend(expect_answer(
+        "drowned for ch3 (control)",
+        &reply,
+        &answer(1, 0, &[]),
+    ));
+    report(&failures);
+}
+
+/// A paid chapter's event is recorded only for its buyer, judged at write time.
+#[tokio::test]
+async fn stats_paid_ending_needs_entitlement() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    let mut failures = Vec::new();
+    let reply = post(
+        &st,
+        ANN,
+        vec![event(1, "ending_reached", "ch4", Some("dawn"), None)],
+    )
+    .await;
+    failures.extend(expect_answer(
+        "dawn for ch4 without chapter:ch4",
+        &reply,
+        &answer(0, 0, &[(1, "not_entitled")]),
+    ));
+    own(&st, ANN, "chapter:ch4").await;
+    let reply = post(
+        &st,
+        ANN,
+        vec![event(2, "ending_reached", "ch4", Some("dawn"), None)],
+    )
+    .await;
+    failures.extend(expect_answer(
+        "dawn for ch4 with chapter:ch4",
+        &reply,
+        &answer(1, 0, &[]),
+    ));
+    report(&failures);
+}
+
+/// The entitlement is judged before the subject: a non-buyer gets `not_entitled` for a real paid ending and for an
+/// invented one alike, so the answers name no paid ending.
+#[tokio::test]
+async fn stats_not_entitled_hides_ending_check() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    let reply = post(
+        &st,
+        ANN,
+        vec![
+            event(1, "ending_reached", "ch4", Some("nope"), None),
+            event(2, "ending_reached", "ch4", Some("dawn"), None),
+        ],
+    )
+    .await;
+    let failures: Vec<String> = expect_answer(
+        "nope and dawn in unowned ch4",
+        &reply,
+        &answer(0, 0, &[(1, "not_entitled"), (2, "not_entitled")]),
+    )
+    .into_iter()
+    .collect();
+    report(&failures);
+}
+
+/// The server derives the story from the chapter; a request that names one is refused whole.
+#[tokio::test]
+async fn stats_story_derived_by_server() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    let mut failures = Vec::new();
+    let reply = post(
+        &st,
+        ANN,
+        vec![event(1, "chapter_started", "ch3", None, None)],
+    )
+    .await;
+    failures.extend(expect_answer("ch3 started", &reply, &answer(1, 0, &[])));
+    let mut c = common::raw_db(&st).await;
+    let story: Option<String> =
+        sqlx::query_scalar("SELECT story_id FROM stat_events WHERE user_id = $1 AND event_id = $2")
+            .bind(ANN)
+            .bind(uuid(1))
+            .fetch_optional(&mut c)
+            .await
+            .unwrap();
+    c.close().await.unwrap();
+    if story.as_deref() != Some("tide") {
+        failures.push(format!("stored story_id: expected tide, got {story:?}"));
+    }
+    let inner = with(
+        event(2, "chapter_started", "ch3", None, None),
+        "storyId",
+        json!("manor"),
+    );
+    let reply = post(&st, ANN, vec![inner]).await;
+    failures.extend(expect_reply(
+        "storyId inside an event",
+        &reply,
+        400,
+        BAD_REQUEST,
+    ));
+    let top =
+        json!({ "events": [event(3, "chapter_started", "ch3", None, None)], "storyId": "manor" });
+    let reply = post_raw(&st, ANN, top.to_string()).await;
+    failures.extend(expect_reply(
+        "storyId at the top level",
+        &reply,
+        400,
+        BAD_REQUEST,
+    ));
+    let n = rows(&st, ANN).await;
+    if n != 1 {
+        failures.push(format!("rows after the two 400s: expected 1, got {n}"));
+    }
+    report(&failures);
+}
+
+/// A batch holds 1 to 32 events in at most 16 KB (the `/api` default body limit).
+#[tokio::test]
+async fn stats_batch_over_32_400() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    let mut failures = Vec::new();
+    let started = |n: u64| event(n, "chapter_started", "ch3", None, None);
+    let reply = post(&st, ANN, (100..133).map(started).collect()).await;
+    failures.extend(expect_reply("33 events", &reply, 400, BAD_REQUEST));
+    let reply = post(&st, ANN, Vec::new()).await;
+    failures.extend(expect_reply("0 events", &reply, 400, BAD_REQUEST));
+    let reply = post_raw(&st, ANN, "{}".to_owned()).await;
+    failures.extend(expect_reply("events missing", &reply, 400, BAD_REQUEST));
+    let long = with(started(200), "subject", json!("x".repeat(17 * 1024)));
+    let reply = post(&st, ANN, vec![long]).await;
+    failures.extend(expect_reply(
+        "a body over 16 KB",
+        &reply,
+        413,
+        r#"{"error":"payload_too_large"}"#,
+    ));
+    let n = rows(&st, ANN).await;
+    if n != 0 {
+        failures.push(format!("rows after the refusals: expected 0, got {n}"));
+    }
+    let reply = post(&st, ANN, (1..33).map(started).collect()).await;
+    failures.extend(expect_answer(
+        "32 events (control)",
+        &reply,
+        &answer(32, 0, &[]),
+    ));
+    report(&failures);
+}
+
+/// A puzzle is accepted only in its own chapter; a rejected event does not drop the rest of the batch.
+#[tokio::test]
+async fn stats_puzzle_of_other_chapter_rejected() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    let reply = post(
+        &st,
+        ANN,
+        vec![
+            event(1, "puzzle_ended", "ch3", Some("ch1.drawer"), Some("solved")),
+            event(
+                2,
+                "puzzle_ended",
+                "ch3",
+                Some("ch3.nothing"),
+                Some("failed"),
+            ),
+            event(3, "puzzle_ended", "ch1", Some("ch1.drawer"), Some("solved")),
+        ],
+    )
+    .await;
+    let failures: Vec<String> = expect_answer(
+        "ch1.drawer for ch3, ch3.nothing for ch3, ch1.drawer for ch1",
+        &reply,
+        &answer(1, 0, &[(1, "unknown_puzzle"), (2, "unknown_puzzle")]),
+    )
+    .into_iter()
+    .collect();
+    report(&failures);
+}
+
+/// A picked option is accepted only in its own chapter (its line ID's prefix), after the entitlement.
+#[tokio::test]
+async fn stats_choice_shape_checked() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    let reply = post(
+        &st,
+        ANN,
+        vec![
+            event(1, "choice_made", "ch3", Some("ch1.hall.a1b2"), None),
+            event(2, "choice_made", "ch3", Some("ch3.shore.s001"), None),
+            event(3, "choice_made", "ch4", Some("ch1.hall.a1b2"), None),
+        ],
+    )
+    .await;
+    let failures: Vec<String> = expect_answer(
+        "ch1 option for ch3, ch3 option for ch3, ch1 option for unowned ch4",
+        &reply,
+        &answer(1, 0, &[(1, "unknown_choice"), (3, "not_entitled")]),
+    )
+    .into_iter()
+    .collect();
+    report(&failures);
+}
+
+/// Every shape the table's CHECKs refuse is a 400 for the whole batch before any write, never a 500: the batch's
+/// well-formed event is not written either.
+#[tokio::test]
+async fn stats_malformed_event_400() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    let started = event(1, "chapter_started", "ch3", None, None);
+    // The well-formed second event each shape case changes.
+    let base = event(2, "chapter_started", "ch3", None, None);
+    let long_name = "d".repeat(33);
+    let cases: Vec<(&str, Value)> = vec![
+        (
+            "upper-case UUID",
+            with(
+                base.clone(),
+                "eventId",
+                json!("0000000A-0000-4000-8000-00000000000A"),
+            ),
+        ),
+        (
+            "v1 UUID",
+            with(
+                base.clone(),
+                "eventId",
+                json!("00000002-0000-1000-8000-000000000002"),
+            ),
+        ),
+        (
+            "NUL inside the id",
+            with(
+                base.clone(),
+                "eventId",
+                json!("00000002-0000-4000-8000-00000000000\u{0}"),
+            ),
+        ),
+        ("ageMs -1", with(base.clone(), "ageMs", json!(-1))),
+        (
+            "ageMs 2592000001",
+            with(base.clone(), "ageMs", json!(2_592_000_001_i64)),
+        ),
+        (
+            "chapterId ch01",
+            with(base.clone(), "chapterId", json!("ch01")),
+        ),
+        (
+            "storyVersion ABC",
+            with(base.clone(), "storyVersion", json!("ABC")),
+        ),
+        (
+            "chapter_started with a subject",
+            event(2, "chapter_started", "ch3", Some("drowned"), None),
+        ),
+        (
+            "chapter_completed with a subject",
+            event(2, "chapter_completed", "ch3", Some("drowned"), None),
+        ),
+        (
+            "chapter_completed with an outcome",
+            event(2, "chapter_completed", "ch3", None, Some("solved")),
+        ),
+        (
+            "ending_reached without a subject",
+            event(2, "ending_reached", "ch3", None, None),
+        ),
+        (
+            "ending_reached with an outcome",
+            event(2, "ending_reached", "ch3", Some("drowned"), Some("solved")),
+        ),
+        (
+            "an ending name of 33 chars",
+            event(2, "ending_reached", "ch3", Some(long_name.as_str()), None),
+        ),
+        (
+            "puzzle_ended without an outcome",
+            event(2, "puzzle_ended", "ch1", Some("ch1.drawer"), None),
+        ),
+        (
+            "puzzle_ended with outcome won",
+            event(2, "puzzle_ended", "ch1", Some("ch1.drawer"), Some("won")),
+        ),
+        (
+            "choice_made with an outcome",
+            event(
+                2,
+                "choice_made",
+                "ch3",
+                Some("ch3.shore.s001"),
+                Some("solved"),
+            ),
+        ),
+        (
+            "choice_made subject ch3.shore",
+            event(2, "choice_made", "ch3", Some("ch3.shore"), None),
+        ),
+        (
+            "choice_made subject ch3.shore.S001",
+            event(2, "choice_made", "ch3", Some("ch3.shore.S001"), None),
+        ),
+        (
+            "choice_made subject ch3.shore.s01",
+            event(2, "choice_made", "ch3", Some("ch3.shore.s01"), None),
+        ),
+        (
+            "choice_made subject ch3.shore.s0011",
+            event(2, "choice_made", "ch3", Some("ch3.shore.s0011"), None),
+        ),
+        ("unknown kind", event(2, "choice", "ch3", None, None)),
+    ];
+    let mut failures = Vec::new();
+    for (case, bad) in cases {
+        let reply = post(&st, ANN, vec![started.clone(), bad]).await;
+        failures.extend(expect_reply(case, &reply, 400, BAD_REQUEST));
+        let n = rows(&st, ANN).await;
+        if n != 0 {
+            failures.push(format!("{case}: expected 0 rows, got {n}"));
+        }
+    }
+    let reply = post(&st, ANN, vec![started]).await;
+    failures.extend(expect_answer(
+        "a well-formed event (control)",
+        &reply,
+        &answer(1, 0, &[]),
+    ));
+    report(&failures);
+}
+
+/// A resent batch is answered as duplicates; a batch repeating an id records it once and counts the repeat.
+#[tokio::test]
+async fn stats_replayed_batch_answers_duplicates() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    let mut failures = Vec::new();
+    let two = || {
+        vec![
+            event(1, "chapter_started", "ch3", None, None),
+            event(2, "ending_reached", "ch3", Some("drowned"), None),
+        ]
+    };
+    let reply = post(&st, ANN, two()).await;
+    failures.extend(expect_answer("first send", &reply, &answer(2, 0, &[])));
+    let reply = post(&st, ANN, two()).await;
+    failures.extend(expect_answer("resend", &reply, &answer(0, 2, &[])));
+    let repeated = event(3, "chapter_completed", "ch3", None, None);
+    let reply = post(&st, ANN, vec![repeated.clone(), repeated]).await;
+    failures.extend(expect_answer(
+        "one id twice in a batch",
+        &reply,
+        &answer(1, 1, &[]),
+    ));
+    let n = rows(&st, ANN).await;
+    if n != 3 {
+        failures.push(format!("rows: expected 3, one per id, got {n}"));
+    }
+    report(&failures);
+}
+
+/// Over the facts' budget the batch is a 429 with `Retry-After: 600` and nothing written; over the choice budget a
+/// repeat pick is a per-event `rate_limited`, never a 429.
+#[tokio::test]
+async fn stats_cap_429_and_rate_limited_reject() {
+    let (st, _db) = state_with_users(&[ANN, BEN]).await;
+    let mut failures = Vec::new();
+    seed(&st, ANN, 600, "chapter_started", None, T0).await;
+    let reply = post(
+        &st,
+        ANN,
+        vec![event(1, "chapter_completed", "ch3", None, None)],
+    )
+    .await;
+    failures.extend(expect_reply(
+        "ANN at 600 facts: one more",
+        &reply,
+        429,
+        r#"{"error":"rate_limited"}"#,
+    ));
+    let retry = reply
+        .headers
+        .get(RETRY_AFTER)
+        .map(|v| v.to_str().unwrap_or("<not text>"));
+    if retry != Some("600") {
+        failures.push(format!("Retry-After: expected 600, got {retry:?}"));
+    }
+    let n = rows(&st, ANN).await;
+    if n != 600 {
+        failures.push(format!("ANN rows after the 429: expected 600, got {n}"));
+    }
+    seed(&st, BEN, 600, "choice_made", Some("ch3.shore.s001"), T0).await;
+    let reply = post(
+        &st,
+        BEN,
+        vec![event(2, "choice_made", "ch3", Some("ch3.shore.s001"), None)],
+    )
+    .await;
+    failures.extend(expect_answer(
+        "BEN at 600 choices: a repeat pick",
+        &reply,
+        &answer(0, 0, &[(2, "rate_limited")]),
     ));
     report(&failures);
 }
