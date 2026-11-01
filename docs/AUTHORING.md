@@ -167,7 +167,9 @@ Two limits to know:
 
 `--fix-ids` also writes IDs into world texts that lack one ([The world file](#the-world-file)). A text lacks one
 when it has no `id` key at all, `{ "ru": "…" }` ([fix.ts:210](../client/scripts/story/fix.ts#L210)); an empty
-`"id": ""` is `id/format`, and `--fix-ids` leaves it alone (`fix-ids: 0 ids added in 0 files`): delete the key. A
+`"id": ""` is `id/format`, and `--fix-ids` leaves it alone (`fix-ids: 0 ids added in 0 files`): delete the key, or
+write the text's old ID back if it had one. The tool cannot know an old ID: a text that lost its ID gets it back by hand
+([The world file](#the-world-file), "A world text that lost its ID"). A
 world file the tool adds an ID to comes back as two-space JSON, one value per line
 ([fix.ts:220-222](../client/scripts/story/fix.ts#L220)): the example's 65-line `ch1/world.json` becomes 260 lines,
 so expect a large diff. The IDs it treats
@@ -358,11 +360,16 @@ rows). The gate plays each chapter 200 times (seeds 1-200), choosing at random, 
 each yield with a random puzzle outcome or a random walk over the rooms. The `play:` line reads
 `runs, knots visited/total, endings reached/total (seeds, start; ended, yielded, failed; pz_<puzzle> outcomes seen)`
 ([playthrough.ts:622-630](../client/scripts/story/playthrough.ts#L622)):
-- the start is `defaults`, or `<previous chapter> carries` when the chapter continues from the one before it;
+- the start is `defaults`, or `<previous chapter> carries` when the chapter continues from the one before it, or
+  `defaults: <previous chapter> left no carry` when no run of the previous chapter carried values into this one, for
+  example because every run ended in a declared ending
+  ([playthrough.ts:624](../client/scripts/story/playthrough.ts#L624));
 - `ended` counts the runs that reached an `-> END`, `yielded` the runs that stopped at a yield because the chapter has
   no world, and `failed` the runs that hit an error or the step cap
   ([playthrough.ts:4-5](../client/scripts/story/playthrough.ts#L4)). In a healthy chapter `ended` equals the run
-  count, so `yielded 0` is normal: a chapter with a world plays through its yields;
+  count, so `yielded 0` is normal: a chapter with a world plays through its yields, and a yield in a chapter without
+  a world is already `puzzle/unknown` or `explore/unknown-section`, which keeps the chapter from being played
+  ([The play gate](#reading-the-story-gates-output), below);
 - `pz_<puzzle> 1,3` lists the outcome codes the runs saw (1 solved, 2 failed, 3 abandoned, [Projection variables](#projection-variables)).
 
 Each run checks that tags parse, the line has an ID with an en entry and the speaker is in the cast. Two coverage
@@ -447,16 +454,26 @@ The decoder's rules ([decode.ts:1-5](../client/src/world/decode.ts#L1); the `wor
 
 **Fix the world's own error first.** A world that does not decode is not checked further: the `world:` line reads
 `not checked (world/schema)`, its yields add no edges to the knot graph and its texts count as no lines
-([story.ts:304-330](../client/scripts/story.ts#L304)). Two kinds of error stop the decode:
-- a `world/schema` issue. A stray `"requires": ["key"]` on a puzzle prints
+([story.ts:304-330](../client/scripts/story.ts#L304)). Any of the decoder's four codes stops the decode
+([world.ts:210-225](../client/scripts/story/world.ts#L210)):
+- `world/schema`. A stray `"requires": ["key"]` on a puzzle prints
   `world/schema puzzles.box.requires: unknown key …`;
-- an `id/missing` or `id/format` on a world text. Removing the clock label's ID prints
-  `E story/ch1/world.json:41 id/missing sections.house.rooms.hall.hotspots.2.label.id: missing: every world text carries a line ID (STAGING-DSL §4)`,
-  with no `world/schema` finding.
+- `world/hint-count`, more than 3 hint tiers. A fourth hint on `box` prints
+  `E story/ch1/world.json:16 world/hint-count puzzles.box.hints: 4 hints: at most 3 tiers (X18)`;
+- `id/missing` or `id/format` on a world text. Removing the clock label's ID prints
+  `E story/ch1/world.json:41 id/missing sections.house.rooms.hall.hotspots.2.label.id: missing: every world text carries a line ID (STAGING-DSL §4)`.
 
-In the example either one is followed by `graph/no-end`, two `graph/unreachable-knot` and a
-`loc/orphan-en … retire it` for each of the world's en entries. Those findings vanish with the world's error. **Do
-not retire those IDs**: the lines still exist.
+The last two print no `world/schema` finding, but the `world:` line still reads `not checked (world/schema)`. In the
+example each one is followed by `graph/no-end`, two `graph/unreachable-knot` and a `loc/orphan-en … retire it` for
+each of the world's en entries. Those findings vanish with the world's error. **Do not retire those IDs**: the lines
+still exist.
+
+**A world text that lost its ID: put the old ID back.** The text's entry is among those orphans, with the same `ru`.
+For the clock label it is `'ch1.house.l6ck'`, the entry `{ "ru": "Clock", … }`. Write that ID back into the text by
+hand. Do not run `--fix-ids` on it: the tool gives the text a fresh ID, and the gate then prints
+`loc/missing-en 'ch1.house.<new>'` and `loc/orphan-en 'ch1.house.l6ck' … retire it`. The text would lose its en
+translation, and its old ID would be retired for nothing. If you already ran the tool, replace `ch1.house.<new>` with
+`ch1.house.l6ck` in the world file: the gate is green again. Use `--fix-ids` only for a text that never had an ID.
 
 ### Hotspot kinds
 
@@ -575,8 +592,10 @@ A puzzle is `{ type, title, prompt, closeup, params, maxAttempts, giveUp, soluti
 `server/content/puzzles/<ch>.json`, and the public world carries the hint count (PUZZLES-PLAN X7). Hint texts are
 still written into the en table like any world text.
 
-**Writing a hint ladder.** A puzzle has 0–3 hint tiers, each a text with an ID (`world/hint-count`). Write them as a
-ladder: a nudge (where to look), a direction (what to use), the solution. The example's `box`:
+**Writing a hint ladder.** A puzzle has 0–3 hint tiers; a fourth is `world/hint-count`
+([decode.ts:544-549](../client/src/world/decode.ts#L544)). Each tier is a text with an ID. A hint without an `id` is
+`id/missing`, like any world text ([world.ts:196-197](../client/scripts/story/world.ts#L196)), although the
+STAGING-DSL §11 `world/hint-count` row names that case too. Write them as a ladder: a nudge (where to look), a direction (what to use), the solution. The example's `box`:
 
 ```json
 "box": { "type": "code", "title": { "id": "ch1.box.t1tl", "ru": "The box" },
@@ -1154,7 +1173,7 @@ voice: Is anyone there? #id:ch1.study.v01c
 | A meta text copied into ink or a locale table | nothing at `story` time; the build's leak scan fails once such a text of 12+ code points is in the built app | meta texts live only in `story/meta.json` |
 | Only short meta texts | nothing at `story` time; `npm run build` fails with `meta-empty` | at least one meta text of 12+ code points |
 | A blank line inside a yield block | `yield/shape` and `ink/forbidden` | `-> DONE` on the line right after the tag |
-| A world key misspelt, or a world text without its ID | `world/schema` or `id/missing`, then graph errors and `loc/orphan-en … retire it` that follow from it | fix the world's error first; retire nothing |
+| A world key misspelt, a fourth hint, or a world text without a valid ID | `world/schema`, `world/hint-count`, `id/missing` or `id/format`, then graph errors and `loc/orphan-en … retire it` that follow from it | fix the world's error first; retire nothing. A text that had an ID gets that ID back by hand ([Fix the world's own error first](#the-world-file)) |
 
 ## Next steps
 
