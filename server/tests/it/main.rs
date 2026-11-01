@@ -17,6 +17,7 @@ mod payments;
 mod puzzles;
 mod saves;
 mod schema;
+mod stats;
 mod webhook;
 
 use std::io::{BufRead, BufReader, Read};
@@ -196,9 +197,9 @@ async fn state_reopens_migrated_database() {
         .iter()
         .map(|(version, _)| *version)
         .collect();
-    if versions != [1, 2] {
+    if versions != [1, 2, 3] {
         failures.push(format!(
-            "first start: expected versions [1, 2], got {versions:?}"
+            "first start: expected versions [1, 2, 3], got {versions:?}"
         ));
     }
     match AppState::new(common::test_config(&db)).await {
