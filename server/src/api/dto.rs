@@ -11,6 +11,7 @@ use serde_json::value::RawValue;
 use ts_rs::TS;
 
 use crate::db::orders::OrderStatus;
+use crate::db::stats::{StatKind, StatOutcome};
 use crate::error::{ApiErrorBody, ErrorCode};
 use crate::ids::{SaveSlot, StoryId};
 
@@ -246,6 +247,116 @@ pub struct OrderResponse {
     pub status: OrderStatus,
 }
 
+/// `POST /api/stats/events` request. An unknown field (a `storyId`, say) is a 400: the server derives the story.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PostStatsRequest {
+    /// The batch: 1 to 32 events, oldest first.
+    pub events: Vec<StatEventDto>,
+}
+
+/// One statistics event as the client reports it: a claim the server judges against the story index, the puzzle
+/// index and the user's entitlements. An unknown field is a 400.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StatEventDto {
+    /// The client's id of the event, a lower-case UUID v4: a resent event is a duplicate, never a second row.
+    pub event_id: String,
+    /// What the event reports.
+    pub kind: StatKind,
+    /// The chapter the event happened in.
+    pub chapter_id: String,
+    /// The story version the client ran: 16 lower-case hex characters.
+    pub story_version: String,
+    /// `ending_reached`: the ending name; `puzzle_ended`: the puzzle id; `choice_made`: the picked option's line ID;
+    /// `null` for the chapter kinds.
+    pub subject: Option<String>,
+    /// `puzzle_ended` only: how the puzzle ended; `null` for every other kind.
+    pub outcome: Option<StatOutcome>,
+    /// The event's age when the batch was sent, in ms: 0 to 30 days.
+    #[ts(type = "number")]
+    pub age_ms: i64,
+}
+
+/// Why an event of a stats batch was not recorded. The client drops a rejected event: it is never retried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum StatRejectReason {
+    /// The chapter is not in the story index.
+    UnknownChapter,
+    /// A paid chapter whose product the user does not own: judged before the subject.
+    NotEntitled,
+    /// Not an ending of the chapter's story reached in that chapter.
+    UnknownEnding,
+    /// Not a puzzle of the chapter.
+    UnknownPuzzle,
+    /// Not an option of the chapter.
+    UnknownChoice,
+    /// A repeat pick past the hour's choice budget.
+    RateLimited,
+}
+
+/// An event of the batch that was not recorded, and why.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RejectedEvent {
+    /// The event's id.
+    pub event_id: String,
+    /// Why it was not recorded.
+    pub reason: StatRejectReason,
+}
+
+/// `POST /api/stats/events` response: every event of the batch is recorded, a duplicate, or rejected.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PostStatsResponse {
+    /// Events recorded by this request.
+    pub recorded: u32,
+    /// Events already recorded: sent before, or repeated in this batch.
+    pub duplicates: u32,
+    /// Events not recorded, in batch order.
+    pub rejected: Vec<RejectedEvent>,
+}
+
+/// `GET /api/stats` response: the user's statistics per story of the current index, and for the game. Only facts the
+/// index still holds count; an ending is named only once the user reached it.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct StatsResponse {
+    /// Every story of the index, in index order.
+    pub stories: Vec<StoryStatsDto>,
+    /// The sums over the stories.
+    pub game: GameStatsDto,
+}
+
+/// One story's statistics.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct StoryStatsDto {
+    /// The story.
+    pub story_id: StoryId,
+    /// Whether the user started any chapter of it.
+    pub started: bool,
+    /// The chapters the user completed (a chapter's end, or one of its endings), in chain order.
+    pub chapters_completed: Vec<String>,
+    /// The story's chapters.
+    pub chapters_total: u32,
+    /// The names of the story's endings the user reached, in name order.
+    pub endings_reached: Vec<String>,
+}
+
+/// The game's statistics: sums over the stories of the index.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct GameStatsDto {
+    /// The stories the user started.
+    pub stories_started: u32,
+    /// The stories of the index.
+    pub stories_total: u32,
+    /// The endings the user reached, over all stories.
+    pub endings_reached: u32,
+}
+
 /// The first line of the generated file: what it is and how to rewrite it.
 const BINDINGS_HEADER: &str = "// Built from server/src/api/dto.rs and error.rs by ts-rs; do not edit. Regenerate: \
                                cargo test -p server --test it bindings::write_bindings -- --ignored --exact";
@@ -279,6 +390,16 @@ pub fn ts_bindings() -> String {
         export::<CreateInvoiceRequest>(&cfg),
         export::<CreateInvoiceResponse>(&cfg),
         export::<OrderResponse>(&cfg),
+        export::<StatKind>(&cfg),
+        export::<StatOutcome>(&cfg),
+        export::<StatEventDto>(&cfg),
+        export::<PostStatsRequest>(&cfg),
+        export::<StatRejectReason>(&cfg),
+        export::<RejectedEvent>(&cfg),
+        export::<PostStatsResponse>(&cfg),
+        export::<StoryStatsDto>(&cfg),
+        export::<GameStatsDto>(&cfg),
+        export::<StatsResponse>(&cfg),
     ];
     format!("{BINDINGS_HEADER}\n\n{}", decls.join("\n"))
 }
