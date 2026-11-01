@@ -1,0 +1,99 @@
+# Feature map
+
+> Where is X? One row per feature that exists on the tree, with its entry files, its tests and its docs. First
+> version, from the merged tree at `e5ce724`; features not built yet are listed under [Not built yet](#not-built-yet).
+
+Rows come from the "docs/FEATURE_MAP.md entries" sections of [PROTOTYPE-PLAN.md](PROTOTYPE-PLAN.md),
+[PUZZLES-PLAN.md](PUZZLES-PLAN.md), [STORIES-PLAN.md](STORIES-PLAN.md) and [META-PLAN.md](META-PLAN.md), cut to what
+has merged. Paths are repo-relative; client source paths are under `client/src/` unless they start with `client/`.
+Tests are named by file and by a few exact test names; vitest names start with the module prefix shown. How the
+parts connect: [ARCHITECTURE.md](ARCHITECTURE.md). How a writer uses the story tool: [AUTHORING.md](AUTHORING.md).
+
+## Built features
+
+### Story authoring and the story tool
+
+| Feature | Entry files | Tests | Docs |
+|---|---|---|---|
+| Story pipeline (the story gate) | [client/scripts/story.ts](../client/scripts/story.ts) (`main`, stages 1-8), `client/scripts/story/{classify,lint,compile,graph,fix,locales,playthrough,emit}.ts`; inputs `story/**`, [assets/catalog.json](../assets/catalog.json) | `client/scripts/story/{lint,build,locales,play,classify}.test.ts` (`lint:`, `emit:`, `compile:`, `fix:`, `play:`, `classify:`), e.g. `emit: free and paid outputs are routed apart`, `fix: missing ids written, existing untouched`, `play: step cap fails`; gate `npm --prefix client run story` | [AUTHORING.md](AUTHORING.md), [STAGING-DSL §11](STAGING-DSL.md#11-what-the-story-lint-enforces) |
+| Staging DSL (tag parser, typed commands) | [story/tags.ts](../client/src/story/tags.ts) (`parseTags`, `TAG_KINDS` :27), [story/staging.ts](../client/src/story/staging.ts), [story/catalog.ts](../client/src/story/catalog.ts) (catalog, cast and chapter-list decoders) | `story/tags.test.ts` (`tags: every form from STAGING-DSL parses`, `catalog: cast char must exist in the catalog`), `story/dsl-doc.test.ts` (`dsl-doc: headings equal parser kinds`, `dsl-doc: lint table equals lint codes`) | [STAGING-DSL.md](STAGING-DSL.md) |
+| Line IDs and localization tables | `client/scripts/story/{fix,locales}.ts` (`--fix-ids`, `--sync-locales`, `loc/*`, cross-chapter `id/duplicate`, `id/retired`); `story/locales/**`, `story/retired-ids.txt` | `client/scripts/story/locales.test.ts` (`fix: new ids avoid taken ids`) | [AUTHORING.md "Line IDs"](AUTHORING.md#line-ids-and---fix-ids), [STAGING-DSL §4](STAGING-DSL.md#4-line-ids-localization-and-position--principle-8) |
+| Stories (catalog side) | [story/stories.json](../story/stories.json), [client/scripts/story/stories.ts](../client/scripts/story/stories.ts) (`catalog/stories`, endings, invoice titles), `emit.ts` (story list, endings, `server/content/stories.json`), `story/catalog.ts` (`StoryEntry` :333) | `client/scripts/story/stories.test.ts` (`stories: chapter in two stories fails`, `stories: paid first chapter fails`) | [AUTHORING.md Part 3](AUTHORING.md#part-3-stories), [STAGING-DSL §9](STAGING-DSL.md#9-chapters-and-stories) |
+| Story meta (ending titles, achievements, choice points) | [story/meta.json](../story/meta.json), [client/scripts/story/meta.ts](../client/scripts/story/meta.ts) (`lintMeta` :373, `choicePoints` :333), `emit.ts` (`server/content/meta.json`), `scan-dist.ts` (`meta-texts`, `meta-empty`) | `client/scripts/story/meta.test.ts` (`meta: every declared ending has a title`), `client/scripts/scan-dist.test.ts` (`scan: meta text in dist fails`) | [AUTHORING.md Part 4](AUTHORING.md#part-4-story-meta), [STAGING-DSL §9 "Story meta"](STAGING-DSL.md#story-meta) |
+| World tooling (world lint, soft-lock check) | `client/scripts/story/{world,softlock,emit,graph,playthrough}.ts`; input `story/<ch>/world.json` (none in the tree yet: the demo worlds are N1's) | `client/scripts/story/{world,softlock}.test.ts` (`softlock: fail branch without unlock fails`, `world: a clean world raises no finding`) | [AUTHORING.md Part 2](AUTHORING.md#part-2-worlds-puzzles-and-exploration) |
+
+### Client runtime pieces
+
+| Feature | Entry files | Tests | Docs |
+|---|---|---|---|
+| Boot (first part) | [main.ts](../client/src/main.ts) (`boot`: mock install, insets, `expand`, `disableVerticalSwipes`, mount, `ready`), [ui/App.svelte](../client/src/ui/App.svelte), [client/index.html](../client/index.html) | `client/e2e/boot.spec.ts` (`boot records ready, expand and swipe events`, `viewport vars and safe areas applied`, `no window.open or alert`); gate `npm --prefix client run e2e` | [ARCHITECTURE.md "Client modules"](ARCHITECTURE.md#client-modules) |
+| Telegram module and dev mock | [telegram/index.ts](../client/src/telegram/index.ts) (`TelegramClient` :30, `getTelegram` :84), [telegram/webapp.ts](../client/src/telegram/webapp.ts) (the only reader of `window.Telegram` outside `telegram/dev/`; `eventHub` :203, one TWA registration per event and its own dispatch over a snapshot), `telegram/{perf,viewport}.ts`, `telegram/dev/{mock-transport,invoice-sheet}.ts`, [client/vite-plugins/tg-dev-mock.ts](../client/vite-plugins/tg-dev-mock.ts); `server/dev/src/launch.rs` (`/dev/launch`) | `telegram/telegram.test.ts` (`mock:`, `share:`, `sheet:`, `facade:`, e.g. `facade: unsubscribe inside a back press keeps the other press handlers`, `facade: a throwing subscriber does not stop the others`), `client/scripts/dev-server.test.ts` (`dev server refuses /@fs paid path`); `server/dev/tests/dev.rs` (`launch_signs_valid_initdata`) | [ARCHITECTURE.md "Auth"](ARCHITECTURE.md#auth-initdata-then-the-servers-own-token) |
+| Scene (Pixi) | [scene/controller.ts](../client/src/scene/controller.ts) (`createSceneController` :165), `scene/{executor,registry,loader,preload,layout,render-loop}.ts`, [geom/cover.ts](../client/src/geom/cover.ts) | `scene/{executor,registry,preload,layout}.test.ts` (`executor: scene t=fade applies shows while black`, `registry: visible load over hard cap after eviction is refused`, `preload: next-chapter id resident after setChapter`, `layout: resolution capped at 2`), `geom/cover.test.ts` | [STAGING-DSL §7](STAGING-DSL.md#7-batches-and-execution-order), [§8](STAGING-DSL.md#8-assets-and-preloading) |
+| Audio | [audio/unlock.ts](../client/src/audio/unlock.ts) (`unlockAudio` :12), [audio/manager.ts](../client/src/audio/manager.ts) (`createAudioManager` :77), `audio/{bgm,sfx}.ts` | `audio/audio.test.ts` (`audio: suspend pauses decks, stops voices, completes fades`, `bgm: same track new vol tweens without restart`, `sfx: voices capped, oldest stopped first`) | [STAGING-DSL §6 `bgm`](STAGING-DSL.md#bgm), [`sfx`](STAGING-DSL.md#sfx) |
+| Overlay core (view model, screen stack and BackButton, dialogue, choices, quick bar, toasts, UI tables) | [ui/screens.ts](../client/src/ui/screens.ts) (`createScreens` :71), [ui/state.svelte.ts](../client/src/ui/state.svelte.ts) (`createViewModel` :147, `TOAST_MS` :37, `TOAST_MAX` :39), [ui/typewriter.ts](../client/src/ui/typewriter.ts) (`createTypewriter` :47), `ui/{TapToStart,Stage,DialogueBox,Choices,QuickBar,Toast}.svelte`; [i18n/index.ts](../client/src/i18n/index.ts) (`t` :18), `i18n/{ru,en}.ts`. Not mounted yet: `ui/App.svelte` renders none of them until L15 integration | `ui/screens.svelte.test.ts` (`screens:`, `tap:`, `stage:`, `toast:`, `i18n:`, e.g. `screens: back button visible iff overlay`, `screens: back walks the room path when no overlay`, `toast: dev variant renders only with the mock`, `i18n: lane components hold no literal text`), `ui/typewriter.svelte.test.ts` (`typewriter: graphemes intact`, `typewriter: line text is set as text, never markup`), `ui/choices.svelte.test.ts` (`choices: no tap-through`, `quick: taps stay in the bar`); vitest project `dom` | [ARCHITECTURE.md "Client modules"](ARCHITECTURE.md#client-modules) |
+| Assets (catalog, encode, manifests) | [client/scripts/assets.ts](../client/scripts/assets.ts), `client/scripts/assets/{placeholder,synth,encode,manifest}.ts`; [assets/catalog.json](../assets/catalog.json) | `client/scripts/assets/assets.test.ts` (`assets:`, `catalog:`, `placeholder:`); gate `npm --prefix client run build` | [AUTHORING.md "Assets"](AUTHORING.md#assets-and-assetscatalogjson) |
+| Puzzle rules | [puzzles/rules/index.ts](../client/src/puzzles/rules/index.ts) (`PUZZLE_RULES`), `puzzles/rules/{code,order}.ts` | `puzzles/rules/rules.test.ts` (`rules: order solution must be a permutation`) | [AUTHORING.md "Puzzles"](AUTHORING.md#puzzles-and-hint-ladders) |
+| Exploration model (world data, reducer, reconcile, projection) | [world/types.ts](../client/src/world/types.ts), [world/decode.ts](../client/src/world/decode.ts) (`decodeWorldSource` :624, `toPublic` :660), [explore/reduce.ts](../client/src/explore/reduce.ts) (`RESUME_STATE_CAP` :28), `explore/{reconcile,project,state}.ts` | `world/decode.test.ts` (`decode: public refuses solution and hints`), `explore/explore.test.ts` (`reduce: lock opens after last slot then puzzle`, `reconcile: unknown ids dropped`, `project: writes only declared vars`) | [AUTHORING.md Part 2](AUTHORING.md#part-2-worlds-puzzles-and-exploration) |
+| Client architecture rules | [client/src/arch.test.ts](../client/src/arch.test.ts) (rule list `RULE_IDS`, scopes in `applies`) | `arch: forbidden patterns`, `arch: import boundaries`, `arch: pure world modules`, one `arch: <rule> red on fixture` per rule | [ARCHITECTURE.md "Client modules"](ARCHITECTURE.md#client-modules) |
+
+### Server
+
+| Feature | Entry files | Tests | Docs |
+|---|---|---|---|
+| Server skeleton (state, router, config) | [server/src/main.rs](../server/src/main.rs), [server/src/lib.rs](../server/src/lib.rs) (`AppState::new` :61, `build_router` :117), [server/src/api/mod.rs](../server/src/api/mod.rs) (routes :43), [server/src/config.rs](../server/src/config.rs) (`Config::from_env`), `server/src/error.rs` | `server/tests/it/main.rs` (`health_ok`); unit tests in `config.rs`, `error.rs`, `ids.rs`; gate `cargo test --workspace --all-targets --no-fail-fast --locked` | [ARCHITECTURE.md "Server modules"](ARCHITECTURE.md#server-modules) |
+| Auth (initData, session token) | [server/src/auth/initdata.rs](../server/src/auth/initdata.rs) (`validate_init_data` :73), `server/src/auth/{token,extract}.rs` (`AuthUser`), [server/src/api/auth.rs](../server/src/api/auth.rs) (`post_auth` :18) | `server/tests/it/auth.rs` (`initdata_tampered_field`, `initdata_expired`, `token_expired_401`, `auth_ignores_body_user_id`) | [ARCHITECTURE.md "Auth"](ARCHITECTURE.md#auth-initdata-then-the-servers-own-token) |
+| Database and migrations | [server/src/db/mod.rs](../server/src/db/mod.rs) (`Repo`), `server/src/db/*.rs`, `server/migrations/{0001_init,0002_puzzles}.sql`; dev/test cluster [server/pgdev/src/lib.rs](../server/pgdev/src/lib.rs) | `server/tests/it/schema.rs` (`schema_charge_id_unique`), `server/tests/it/main.rs` (`test_db_isolated_per_state`), `server/pgdev/tests/pgdev.rs` | [ARCHITECTURE.md "Server modules"](ARCHITECTURE.md#server-modules) |
+| Saves per story (server) | [server/src/api/saves.rs](../server/src/api/saves.rs), [server/src/db/saves.rs](../server/src/db/saves.rs); table `saves` in `0001_init.sql` | `server/tests/it/saves.rs` (`saves_create_then_conflict`, `saves_story_slots_independent`, `saves_list_spans_stories`) | STORIES-PLAN "Saves per story" |
+| Stories and catalog (server) | [server/src/content.rs](../server/src/content.rs) (`ContentStore::load` :229, the story index), [server/src/catalog.rs](../server/src/catalog.rs) (chapter products, prices from `server/catalog.json`), [server/src/api/entitlements.rs](../server/src/api/entitlements.rs) | `server/tests/it/content.rs` (`story_index_loaded`, `startup_fails_when_first_chapter_paid`), `server/tests/it/catalog.rs` (`entitlements_lists_every_paid_chapter_of_every_story`, `chapter_invoice_titles_within_limits`) | [ARCHITECTURE.md "Paid content"](ARCHITECTURE.md#paid-content-and-the-entitlement-check) |
+| Paid delivery (chapters, gated assets) | [server/src/api/content.rs](../server/src/api/content.rs) (`get_chapter` :29, `get_asset` :59), `server/src/content.rs`; the leak scan [client/scripts/scan-dist.ts](../client/scripts/scan-dist.ts) | `server/tests/it/content.rs` (`paid_chapter_403_without_entitlement`, `free_chapter_not_served_by_api`, `asset_path_traversal_404`, `paid_responses_private_no_store`), `client/scripts/scan-dist.test.ts` (`scan: paid asset bytes in dist fail`, `scan: hint text in dist fails`) | [ARCHITECTURE.md "Paid content"](ARCHITECTURE.md#paid-content-and-the-entitlement-check) |
+| Puzzles (server check, hint texts) | [server/src/puzzles/mod.rs](../server/src/puzzles/mod.rs) (`check_answer` :64, `attempt` :110, `status` :138), [server/src/api/puzzles.rs](../server/src/api/puzzles.rs), [server/src/db/puzzles.rs](../server/src/db/puzzles.rs); `0002_puzzles.sql` (`puzzle_progress`, `hint_unlocks`) | `server/tests/it/puzzles.rs` (`attempt_rate_limited_after_20_in_window`, `puzzle_hint_text_only_when_unlocked`, `hint_text_403_for_unowned_paid_chapter`) | PUZZLES-PLAN "Server formats" |
+| Stars invoices and orders | [server/src/api/orders.rs](../server/src/api/orders.rs) (`post_invoice` :53, `get_order` :110), [server/src/db/orders.rs](../server/src/db/orders.rs), [server/src/telegram/gateway.rs](../server/src/telegram/gateway.rs) (`BotGateway` :49, `invoice_params` :248); dev fake [server/dev/src/fake_gateway.rs](../server/dev/src/fake_gateway.rs) | `server/tests/it/payments.rs` (`invoice_price_from_catalog`, `invoice_order_committed_before_gateway_call`, `invoice_already_owned_409`); unit tests in `gateway.rs` | [ARCHITECTURE.md "Payments"](ARCHITECTURE.md#payments-as-built) |
+| Telegram webhook, pre-checkout and the grant | [server/src/telegram/webhook.rs](../server/src/telegram/webhook.rs) (`webhook` :50, `WEBHOOK_BODY_LIMIT` :24, the lenient `probe` :84), [server/src/telegram/payments.rs](../server/src/telegram/payments.rs) (`on_pre_checkout` :35, `answer_pre_checkout` :65, `on_successful_payment` :84), [server/src/db/payments.rs](../server/src/db/payments.rs) (`pre_checkout` :110, `grant` :183); the route in `server/src/lib.rs` (`build_router` :117); dev [server/dev/src/simulate.rs](../server/dev/src/simulate.rs) (`/dev/simulate-payment`) | `server/tests/it/webhook.rs` (`webhook_wrong_secret_401`, `webhook_body_over_1mb_413`, `webhook_undecodable_200`, `webhook_payment_undecodable_by_frankenstein_still_recorded`, `webhook_payment_fields_unreadable_500`, `webhook_database_error_retries_payment_and_refuses_precheckout`), `server/tests/it/payments.rs` (`precheckout_*`, `successful_payment_*`, e.g. `precheckout_concurrent_two_orders_one_passes`, `precheckout_answer_times_out_at_5s`, `precheckout_grants_nothing`, `successful_payment_duplicate_concurrent`, `successful_payment_unapplied_recorded_no_grant`); unit tests in `telegram/payments.rs` (`payer_lang_matches_k29`, `reject_texts_complete_and_distinct`); `server/dev/tests/dev.rs` (`simulate_payment_goes_through_webhook_handler`, `simulate_paid_twice_grants_once`) | [ARCHITECTURE.md "Payments"](ARCHITECTURE.md#payments-as-built) |
+| DTO samples (the server-to-client body contract) | [client/src/api/fixtures/dto-samples.json](../client/src/api/fixtures/dto-samples.json), written from the Rust DTOs by [server/tests/it/dto_samples.rs](../server/tests/it/dto_samples.rs) | `dto_samples_are_fresh` (the committed file equals the DTOs' output); the ignored `write_dto_samples` rewrites it. No client decoder reads it yet (L10 client-data) | PROTOTYPE-PLAN "Shared types strategy" |
+| Dev server | [server/dev/src/main.rs](../server/dev/src/main.rs) (`DEV_API_PORT`, default 8787), [server/dev/src/lib.rs](../server/dev/src/lib.rs) (`build_dev_app` :34), `server/dev/src/{launch,fake_gateway,simulate}.rs` | `server/dev/tests/dev.rs` (`dev_app_uses_given_database`, `dev_database_reset_per_launch`, `simulate_payment_delay_answers_first`), `server/tests/it/content.rs` (`server_has_no_dev_routes`) | CLAUDE.md "Stack and layout" |
+
+### Build gates
+
+| Gate | Entry | Tests |
+|---|---|---|
+| `npm --prefix client run check` | `svelte-check` + `tsc -p tsconfig.node.json` ([client/package.json](../client/package.json)) | - |
+| `npm --prefix client run test` | vitest over `src/**` and `scripts/**` tests | every `*.test.ts` above |
+| `npm --prefix client run story` | [client/scripts/story.ts](../client/scripts/story.ts) | `client/scripts/story/*.test.ts` |
+| `npm --prefix client run build` | `story` → `assets` → `vite build` → [client/scripts/budget.ts](../client/scripts/budget.ts) (`LIMITS` :87) → [client/scripts/scan-dist.ts](../client/scripts/scan-dist.ts) | `client/scripts/budget.test.ts` (`budget: entry over limit fails`), `client/scripts/scan-dist.test.ts` |
+| `npm --prefix client run e2e` | Playwright, [client/e2e/playwright.config.ts](../client/e2e/playwright.config.ts) | `client/e2e/boot.spec.ts` |
+| `cargo fmt` / `clippy` / `test` | the workspace [Cargo.toml](../Cargo.toml): `server`, `server/dev`, `server/pgdev` | `server/tests/it/*.rs`, `server/dev/tests/dev.rs`, `server/pgdev/tests/pgdev.rs` |
+
+The exact commands are in CLAUDE.md "Gate commands".
+
+## Not built yet
+
+Each item names the lane that builds it ([PROTOTYPE-PLAN.md](PROTOTYPE-PLAN.md), the lane table). Open at
+`e5ce724`: L10 client-data and LS3 server-stats.
+
+- **Client data** (`api/http.ts`, `api/session.ts`, saves service, purchase flow): L10 client-data, running.
+- **Story runtime** (`story/runner.ts`, `chapters.ts`, `carry.ts`, `resume.ts`, `save-codec.ts`): L13 story-runtime.
+- **Menus, paywall, chapter select, story picker, "The End"** (`ui/Menu.svelte`, `ui/Paywall.svelte`,
+  `ui/ChapterSelect.svelte`, …): L14b overlay-menus.
+- **Puzzle and exploration UIs** (`puzzles/{registry,session}.ts`, `puzzles/ui/*`, `ui/puzzles/*`,
+  `ui/puzzle-view.svelte.ts`; `explore/controller.ts`, `ui/explore/*`, `ui/explore-view.svelte.ts`): LP2 puzzle-ui,
+  LX explore-ui.
+- **GameSession, boot sequence, engine chunk, yield router, full e2e** (`app/{boot,engine,game,yields}.ts`, smoke /
+  purchase / perf e2e; mounting the overlay-core components in `ui/App.svelte`): L15 integration.
+- **Refunds and the bot commands** (`/start`, `/terms`, `/support`, `/paysupport`, `server setup`; the webhook
+  acknowledges a `refunded_payment` unhandled until then): L9 refunds-bot.
+- **Player statistics and choice capture** (`api/stats.rs`, `db/stats.rs`, `0003_stats.sql`, `stats/reporter.ts`):
+  LS3 server-stats, running; LS4 stats-client.
+- **Achievements, completion card and the server meta index** (`meta.rs`, `db/achievements.rs`, `api/cards.rs`, the
+  `ContentStore` reading `server/content/meta.json`): LM2 meta-server; the meta UI: LU1 meta-ui, LMD meta-data, LMI
+  meta-integration.
+- **Economy and hint unlocks from a balance** (`catalog.json` `economy`, `db/economy.rs`, `api/wallet.rs`): LE1
+  economy-core.
+- **Friends, sharing, gifts and referrals** (`db/social.rs`, `api/{social,share,gifts}.rs`): LF1 friends-server, LF2
+  share-profile, LE2 gifts-referrals. The client side of sharing exists (`shareMessage` in `telegram/index.ts`).
+- **Privacy route and operator file**: the route `GET /api/privacy` (`api/legal.rs`) is LF1 friends-server's; the
+  operator file (`PRIVACY_OPERATOR_FILE`) is LPO privacy-operator's. The draft policy is
+  [server/legal/privacy-policy.html](../server/legal/privacy-policy.html).
+- **The demo stories** (`story/ch1`-`ch2` content, worlds, `story/meta.json` texts; story `tide`): N1 demo-story,
+  N2 story-tide.
+- **Paid assets from R2** (`worker/`): later, no lane yet.
+- **Runbooks and the final maps**: D2 docs-final.
