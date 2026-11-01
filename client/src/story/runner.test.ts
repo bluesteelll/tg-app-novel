@@ -6,10 +6,10 @@ import { expect, test } from 'vitest';
 import { compileChapter } from '../../scripts/story/compile.ts';
 import { GLOBALS_PATH } from '../../scripts/story/lint.ts';
 import { assetIndex, decodeAssetCatalog, decodeChapterMeta } from './catalog.ts';
-import type { LoadedChapter, Result } from './catalog.ts';
+import type { InkScalar, LoadedChapter, Result } from './catalog.ts';
 import { StoryRunner, liveRunners } from './runner.ts';
 import type { RunnerError, RunnerStep, StartPoint } from './runner.ts';
-import type { AssetIndex, ChapterId } from './staging.ts';
+import type { AssetIndex, ChapterId, KnotName, VarName } from './staging.ts';
 
 const CH1 = 'ch1' as ChapterId; // the fixtures' chapter
 
@@ -234,4 +234,79 @@ test('runner: dispose is idempotent and counts live runners', () => {
   r.dispose();
   expect(liveRunners()).toBe(before);
   expect(r.next().ok).toBe(false);
+});
+
+/** VAR values keyed by name: the fixtures name their VARs directly. */
+function vars(values: Readonly<Record<string, InkScalar>>): Readonly<Record<VarName, InkScalar>> {
+  return values as Readonly<Record<VarName, InkScalar>>;
+}
+
+/** PUZZLES-PLAN W8: a yield whose then-knot opens with a choice gated on the outcome VAR. */
+function puzzleChapter(): LoadedChapter {
+  return chapter(
+    [
+      'VAR pz_x = 0',
+      '-> start',
+      '=== start ===',
+      'Text. #id:ch1.start.g001',
+      '# puzzle: x then=after',
+      '-> DONE',
+      '=== after ===',
+      '* {pz_x == 1} [Open it. #id:ch1.after.g002]',
+      '    Opened. #id:ch1.after.g003',
+      '    -> END',
+      '* [Leave. #id:ch1.after.g004]',
+      '    Left. #id:ch1.after.g005',
+      '    -> END',
+    ],
+    ['start', 'after'],
+    ['pz_x'],
+  );
+}
+
+/** A runner of `puzzleChapter` stopped at its yield. */
+function atYield(): { r: StoryRunner; stop: RunnerStep } {
+  const r = runner(puzzleChapter());
+  is(ok(r.next()), 'line');
+  const stop = is(ok(r.next()), 'yield');
+  return { r, stop };
+}
+
+test('runner: then-knot choices see the outcome', () => {
+  const { r } = atYield();
+  ok(r.enter('after' as KnotName, vars({ pz_x: 1 })));
+  const pick = is(ok(r.next()), 'choices');
+  expect(pick.choices.map((c) => c.lineId)).toEqual(['ch1.after.g002', 'ch1.after.g004']);
+  r.dispose();
+});
+
+test('runner: enter rejects undeclared projection var', () => {
+  const { r, stop } = atYield();
+  expect(r.enter('after' as KnotName, vars({ pz_nope: 1 }))).toEqual({
+    ok: false,
+    error: { kind: 'bad-projection', name: 'pz_nope', detail: expect.any(String) },
+  });
+  expect(r.enter('after' as KnotName, vars({ pz_x: true }))).toEqual({
+    ok: false,
+    error: { kind: 'bad-projection', name: 'pz_x', detail: expect.any(String) },
+  });
+  // Nothing moved: the story still stands at its yield.
+  expect(r.current()).toBe(stop);
+  expect(ok(r.next())).toBe(stop);
+  r.dispose();
+});
+
+test('runner: enter outside a yield is an error', () => {
+  const r = runner(puzzleChapter());
+  is(ok(r.next()), 'line');
+  expect(r.enter('after' as KnotName, vars({ pz_x: 1 }))).toEqual({ ok: false, error: { kind: 'not-at-yield' } });
+  is(ok(r.next()), 'yield');
+  r.dispose();
+});
+
+test('runner: enter an unknown knot is an error', () => {
+  const { r, stop } = atYield();
+  expect(r.enter('nowhere' as KnotName, {})).toEqual({ ok: false, error: { kind: 'unknown-knot', knot: 'nowhere' } });
+  expect(r.current()).toBe(stop);
+  r.dispose();
 });

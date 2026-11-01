@@ -156,6 +156,45 @@ export class StoryRunner {
     return { ok: true, value: undefined };
   }
 
+  /**
+   * Leaves the yield the story stands at (PUZZLES-PLAN X2): writes the projection, then enters `knot` at its top, so
+   * the knot's first choice conditions already see the outcome. Every name must be a VAR of the chapter holding a
+   * value of the same type; any refusal moves nothing.
+   */
+  enter(knot: KnotName, projection: Readonly<Record<VarName, InkScalar>>): Result<void, RunnerError> {
+    const story = this.#live();
+    if (!story.ok) {
+      return story;
+    }
+    if (this.#current?.kind !== 'yield') {
+      return { ok: false, error: { kind: 'not-at-yield' } };
+    }
+    if (!Object.hasOwn(this.#ch.meta.knots, knot)) {
+      return { ok: false, error: { kind: 'unknown-knot', knot } };
+    }
+    const vars = story.value.variablesState;
+    for (const [name, v] of Object.entries(projection)) {
+      if (!this.#ch.meta.vars.some((declared) => declared === name)) {
+        return { ok: false, error: { kind: 'bad-projection', name: name as VarName, detail: `not a VAR of ${this.#ch.id}` } };
+      }
+      const now: unknown = vars.$(name);
+      if (typeof now !== typeof v) {
+        return { ok: false, error: { kind: 'bad-projection', name: name as VarName, detail: `a ${typeof v} for a ${typeof now} VAR` } };
+      }
+    }
+    try {
+      for (const [name, v] of Object.entries(projection)) {
+        vars.$(name, v);
+      }
+      story.value.ChoosePathString(knot);
+    } catch (e) {
+      return this.#fail({ kind: 'ink', message: message(e) });
+    }
+    this.#current = null;
+    this.#pending = [];
+    return { ok: true, value: undefined };
+  }
+
   /** The step last returned (after a `tags` error: that step without the bad commands). */
   current(): RunnerStep | null {
     return this.#current;
