@@ -165,7 +165,12 @@ Two limits to know:
   `id/duplicate`, `id/chapter-prefix`, `graph/unreachable-knot` and `loc/missing-en`. Delete scratch files, or include
   them.
 
-`--fix-ids` also writes IDs into world texts that lack one ([The world file](#the-world-file)). The IDs it treats
+`--fix-ids` also writes IDs into world texts that lack one ([The world file](#the-world-file)). A text lacks one
+when it has no `id` key at all, `{ "ru": "…" }` ([fix.ts:210](../client/scripts/story/fix.ts#L210)); an empty
+`"id": ""` is `id/format`, and `--fix-ids` leaves it alone (`fix-ids: 0 ids added in 0 files`): delete the key. A
+world file the tool adds an ID to comes back as two-space JSON, one value per line
+([fix.ts:220-222](../client/scripts/story/fix.ts#L220)): the example's 65-line `ch1/world.json` becomes 260 lines,
+so expect a large diff. The IDs it treats
 as taken are every ID-shaped string of the ink files, the world files, the en tables and `retired-ids.txt`
 ([story.ts:248-260](../client/scripts/story.ts#L248)); `story/meta.json` is not read (see
 [Choices are statistics](#choices-are-statistics)).
@@ -219,6 +224,18 @@ defaults and conflicts of each are in [STAGING-DSL §6](STAGING-DSL.md#6-tags) a
   working set against the memory budget (`budget/knot-set`, [STAGING-DSL §8](STAGING-DSL.md#8-assets-and-preloading)).
   `npm --prefix client run build` enforces it, not `story`.
 
+### Pacing on a phone
+
+The game is read in portrait on a phone. Two warnings of
+[STAGING-DSL §11](STAGING-DSL.md#11-what-the-story-lint-enforces) set the limits:
+- `text/long`: a line over 160 graphemes, about four phone lines, prints `text/long 161 graphemes (over 160)`. Split it
+  into two lines, each with its own ID;
+- `choice/too-many`: a choice block of more than 4 options prints
+  `choice/too-many more than 4 choices in one block (portrait UI)`.
+
+Both are warnings, so `story` stays green, but `--strict` (release builds) turns them into errors. The gate has no
+rule for Russian typography (quotes, dashes, `ё`).
+
 ### Locale tables (ru and en)
 
 Russian is the ink text; English lives in one table per chapter, `story/locales/en/<ch>.json`
@@ -239,7 +256,8 @@ Russian line. The real tables are [story/locales/en/ch1.json](../story/locales/e
 The workflow for a new line:
 1. Write the line with its ID (or run `--fix-ids`). The gate prints `loc/missing-en … (run --sync-locales)`.
 2. Run `--sync-locales`. It appends `{ "ru": "<current source>", "en": "" }` for each new ID and reports
-   `sync-locales: ch2 +1 entries`; the gate now prints `loc/empty-en`. The tool rewrites the table as two-space
+   one line per chapter, here `sync-locales: ch1 +0 entries` and `sync-locales: ch2 +1 entries`; the gate now prints
+   `loc/empty-en`. The tool rewrites the table as two-space
    JSON ([fix.ts:278](../client/scripts/story/fix.ts#L278)).
 3. Fill in `en`.
 
@@ -301,8 +319,9 @@ E story/ch2/main.ink:7 id/retired 'ch2.archive.p4pr' is in story/retired-ids.txt
 
 A line in `retired-ids.txt` that is not a line ID is `id/format` ([locales.ts:157](../client/scripts/story/locales.ts#L157)).
 To keep saves working after a story update, prefer adding lines to deleting them, disable a choice with `{false}`
-rather than delete it, and never rename a knot that shipped ([STAGING-DSL §9](STAGING-DSL.md#9-chapters-and-stories)
-"Saves and story edits").
+rather than delete it (but not the last way into an `-> END` knot: see `play/ending-not-reached` under
+[Reading the story gate's output](#reading-the-story-gates-output)), and never rename a knot that shipped
+([STAGING-DSL §9](STAGING-DSL.md#9-chapters-and-stories) "Saves and story edits").
 
 ### Reading the story gate's output
 
@@ -326,29 +345,52 @@ The lines, in print order ([story.ts:771-799](../client/scripts/story.ts#L771)):
 |---|---|
 | `fix-ids:` / `sync-locales:` | what the two flags wrote (only with the flag) |
 | `story: <ch> <tier> knots N lines N version <hex>` | the chapter compiled; `story: <ch> failed` when it did not |
-| `world: <ch>: …` | the world: `none`, `not checked (world/schema)`, or its sections, rooms, puzzles and the soft-lock verdict ([World lint codes](#world-lint-codes-and-soft-lock-counterexamples)) |
+| `world: <ch>: …` | the world: `none`, `not checked (world/schema)`, `not checked (catalog/assets)` (the asset catalog did not decode), or its sections, rooms, puzzles and the soft-lock verdict ([World lint codes](#world-lint-codes-and-soft-lock-counterexamples)) |
 | `stories: <id> (<chain>), endings N` | one per story: its chapters in order and its declared endings |
 | `meta: …` | per story its titled endings and achievements, then per chapter `<options>/<points>` ([Choices are statistics](#choices-are-statistics)); `meta: not checked (catalog/stories)` or `meta: invalid (catalog/meta)` instead |
 | `play: <ch>: …` | the seeded playthroughs (below) |
 | `E` / `W <file>:<line> <code> <message>` | one finding; line `0` means the whole file |
 | `story: N errors, N warnings` | the total; exit 1 when N errors > 0 |
 
-**Seeded playthroughs.** The gate plays each chapter 200 times (seeds 1-200), choosing at random, with a cap of 5,000
-steps per run ([playthrough.ts:35-37](../client/scripts/story/playthrough.ts#L35)). The `play:` line reads
+**Seeded playthroughs** ([STAGING-DSL §11](STAGING-DSL.md#11-what-the-story-lint-enforces) "Seeded playthroughs" and its `play/*`
+rows). The gate plays each chapter 200 times (seeds 1-200), choosing at random, with a cap of 5,000 steps per run
+([playthrough.ts:35-37](../client/scripts/story/playthrough.ts#L35)). In a chapter with a world, a run plays through
+each yield with a random puzzle outcome or a random walk over the rooms. The `play:` line reads
 `runs, knots visited/total, endings reached/total (seeds, start; ended, yielded, failed; pz_<puzzle> outcomes seen)`
 ([playthrough.ts:622-630](../client/scripts/story/playthrough.ts#L622)):
 - the start is `defaults`, or `<previous chapter> carries` when the chapter continues from the one before it;
+- `ended` counts the runs that reached an `-> END`, `yielded` the runs that stopped at a yield because the chapter has
+  no world, and `failed` the runs that hit an error or the step cap
+  ([playthrough.ts:4-5](../client/scripts/story/playthrough.ts#L4)). In a healthy chapter `ended` equals the run
+  count, so `yielded 0` is normal: a chapter with a world plays through its yields;
 - `pz_<puzzle> 1,3` lists the outcome codes the runs saw (1 solved, 2 failed, 3 abandoned, [Projection variables](#projection-variables)).
 
-Each run checks that tags parse, the line has an ID with an en entry and the speaker is in the cast. A knot no run
-entered is `play/knot-not-visited`, unless `story/lint-allow.json` lists it with a reason:
+Each run checks that tags parse, the line has an ID with an en entry and the speaker is in the cast. Two coverage
+findings follow the runs ([playthrough.ts:594-602](../client/scripts/story/playthrough.ts#L594)):
+- a knot no run entered is `play/knot-not-visited`, unless `story/lint-allow.json` lists it with a reason;
+- a knot that writes `-> END` and in which no run ended is `play/ending-not-reached`. `story/lint-allow.json` cannot
+  silence it.
+
+An allowlist entry has this shape (in the example every knot is visited, so this entry changes nothing; it shows the
+format):
 
 ```json
-{ "play/knot-not-visited": { "ch2.archive_silence": "reached only with a carry no seed produces" } }
+{ "play/knot-not-visited": { "ch1.study_voice": "entered only through the study's onEnter event" } }
 ```
 
 Each key is `<chapter>.<knot>` of a listed chapter, and each reason a non-empty string; a malformed entry is itself a
 `play/knot-not-visited` finding ([playthrough.ts:138-192](../client/scripts/story/playthrough.ts#L138)).
+
+An ending knot that no run can reach keeps the gate red. Disabling the archive's only way into `archive_silence`,
+`* {false} [Keep quiet #id:ch2.archive.q01t]`, prints:
+
+```text
+E story/ch2/main.ink:22 play/knot-not-visited knot 'archive_silence': no seeded run entered it (200 runs; story/lint-allow.json lists a knot with a reason)
+E story/ch2/main.ink:22 play/ending-not-reached knot 'archive_silence' writes -> END, but no seeded run ended in it (200 runs)
+```
+
+An allowlist entry for `ch2.archive_silence` removes the first line only. Keep at least one live path into every
+knot that writes `-> END`.
 
 **The play gate.** A chapter is played only when it compiled and the earlier stages left no error in its files or its
 world, and its predecessor was played ([story.ts:479-500](../client/scripts/story.ts#L479)). Otherwise its line reads
@@ -385,7 +427,8 @@ Its `items` and `docs` (JSON snippets in this part are fragments of that file):
 }
 ```
 
-The decoder's rules ([decode.ts:1-5](../client/src/world/decode.ts#L1)):
+The decoder's rules ([decode.ts:1-5](../client/src/world/decode.ts#L1); the `world/schema`, `world/duplicate-id` and
+`world/unknown-asset` rows of [STAGING-DSL §11](STAGING-DSL.md#11-what-the-story-lint-enforces), second table):
 - `format` is `1`. Every key of the format is required, except `take.then` and `lock.onOpen` (default `[]`).
   Nullable keys are still written: `"sfx": null`, `"prop": null`, `"look": null`, `"lock": null`,
   `"puzzle": null`, `"closeup": null`, `"maxAttempts": null`, `"bgm": null`.
@@ -397,14 +440,23 @@ The decoder's rules ([decode.ts:1-5](../client/src/world/decode.ts#L1)):
 - Every player-facing text is `{ "id": "<line ID>", "ru": "<text>" }`. The ID's knot part is the id of the item,
   document, puzzle or section that owns the text, which is what `--fix-ids` writes
   ([fix.ts:225](../client/scripts/story/fix.ts#L225)). World texts get en entries like ink lines; `--sync-locales`
-  covers them, and `id/*` and `loc/*` apply to them.
+  covers them, and `id/*` and `loc/*` apply to them (STAGING-DSL §11, the line under the second table, and
+  [§4](STAGING-DSL.md#4-line-ids-localization-and-position--principle-8)).
 - Asset names come from the catalog: room `bg`, hotspot `prop`, puzzle `closeup` (a `cg`), section `bgm`, exit `sfx`
   (`world/unknown-asset`).
 
-**Fix `world/schema` first.** A world that does not decode is not checked further: its yields add no edges to the
-knot graph and its texts count as no lines ([story.ts:324-330](../client/scripts/story.ts#L324)). A stray `"requires": ["key"]` on a puzzle prints `world/schema puzzles.box.requires: unknown key …`,
-followed in the example by `graph/no-end`, two `graph/unreachable-knot` and one `loc/orphan-en` per world text.
-Those vanish with the schema error.
+**Fix the world's own error first.** A world that does not decode is not checked further: the `world:` line reads
+`not checked (world/schema)`, its yields add no edges to the knot graph and its texts count as no lines
+([story.ts:304-330](../client/scripts/story.ts#L304)). Two kinds of error stop the decode:
+- a `world/schema` issue. A stray `"requires": ["key"]` on a puzzle prints
+  `world/schema puzzles.box.requires: unknown key …`;
+- an `id/missing` or `id/format` on a world text. Removing the clock label's ID prints
+  `E story/ch1/world.json:41 id/missing sections.house.rooms.hall.hotspots.2.label.id: missing: every world text carries a line ID (STAGING-DSL §4)`,
+  with no `world/schema` finding.
+
+In the example either one is followed by `graph/no-end`, two `graph/unreachable-knot` and a
+`loc/orphan-en … retire it` for each of the world's en entries. Those findings vanish with the world's error. **Do
+not retire those IDs**: the lines still exist.
 
 ### Hotspot kinds
 
@@ -435,8 +487,9 @@ The study's three hotspots: an exit, an object and a take (the hall's `clock` is
 ```
 
 Exits between rooms come in pairs: a room→room exit needs an exit back (`world/one-way-exit`), and stays inside its
-own section (`world/cross-section-exit`). An exit `{ "story": "<knot>" }` is how the player **leaves** the section;
-every section needs one the player can always reach (the soft-lock check, below).
+own section (`world/cross-section-exit`; both are rows of [STAGING-DSL §11](STAGING-DSL.md#11-what-the-story-lint-enforces), second
+table). An exit `{ "story": "<knot>" }` is how the player **leaves** the section; every section needs one the player
+can always reach (the soft-lock check, below).
 
 ### Locks and slots
 
@@ -457,7 +510,8 @@ The example's front door is a one-slot lock without a puzzle:
             "onFail": [] } }
 ```
 
-The lint's lock rules ([world.ts:571-641](../client/scripts/story/world.ts#L571)):
+The lint's lock rules ([world.ts:571-641](../client/scripts/story/world.ts#L571); their rows of
+[STAGING-DSL §11](STAGING-DSL.md#11-what-the-story-lint-enforces), second table):
 - a puzzle belongs to at most one lock (`world/puzzle-multi-lock`), and a lock's puzzle is never also yielded by a
   `puzzle` tag (`puzzle/in-section`);
 - a lock's puzzle has no Give up (`world/giveup-in-section`);
@@ -467,7 +521,8 @@ The lint's lock rules ([world.ts:571-641](../client/scripts/story/world.ts#L571)
 
 ### Effects and the once rule
 
-An effect is an object with exactly one key ([decode.ts:230-247](../client/src/world/decode.ts#L230)):
+An effect is an object with exactly one key ([decode.ts:230-247](../client/src/world/decode.ts#L230); the
+`world/cross-section-effect` and `world/unknown-ref` rows of STAGING-DSL §11, second table):
 - `{ "give": "<item>" }`;
 - `{ "unlock": "<room>.<hotspot>" }`: opens that hotspot's lock by force; only a hotspot of the same section
   (`world/cross-section-effect`);
@@ -483,7 +538,8 @@ section only (`world/cross-section-effect`).
 A room is drawn from a 1080×2048 source image ([cover.ts:14](../client/src/geom/cover.ts#L14)), so hotspot rects are
 `[x, y, w, h]` in those source pixels, integers with x, y ≥ 0 and w, h > 0
 ([decode.ts:278-289](../client/src/world/decode.ts#L278)). The lint checks each rect
-([world.ts:547-569](../client/scripts/story/world.ts#L547)):
+([world.ts:547-569](../client/scripts/story/world.ts#L547); the same rows of
+[STAGING-DSL §11](STAGING-DSL.md#11-what-the-story-lint-enforces), second table):
 
 | Code | Sev | Rule |
 |---|---|---|
@@ -511,6 +567,8 @@ A puzzle is `{ type, title, prompt, closeup, params, maxAttempts, giveUp, soluti
 - `maxAttempts` is `null` or 1–9; at the limit the outcome is `failed` ([decode.ts:489-502](../client/src/world/decode.ts#L489)).
 - `giveUp: true` offers Give up (outcome `abandoned`); only for a puzzle no lock carries.
 - `solution` must fit the type and differ from the start state (`world/solution`, `world/solution-initial`).
+  These rules and the hint, title and id rules below are rows of
+  [STAGING-DSL §11](STAGING-DSL.md#11-what-the-story-lint-enforces), second table.
 - `closeup` is a `cg` of the catalog or `null`.
 
 `solution` and `hints` never reach the player's device: the build writes them only to
@@ -581,7 +639,9 @@ E story/ch1/main.ink:13 ink/forbidden '-> DONE' only directly after a puzzle or 
 ### Event knots
 
 A `{ "story": "<knot>" }` effect names an **event knot** of the section. The game runs it, then returns to the rooms.
-An event knot ([graph.ts:652-673](../client/scripts/story/graph.ts#L652)):
+An event knot ([graph.ts:652-673](../client/scripts/story/graph.ts#L652);
+[STAGING-DSL §6 `explore`](STAGING-DSL.md#explore) "Effect", and the `explore/*` rows of STAGING-DSL §11, second
+table):
 - ends in its own section's yield, `# explore: <section>` then `-> DONE` (`explore/event-return`);
 - never writes `-> END`, and diverts only to other event knots of the same section (`explore/event-escape`).
 
@@ -600,7 +660,9 @@ it with `-> END`, as `house_out` does in the example.
 
 Ink never reads the world directly. When the game re-enters ink (at a `then=` knot, an event knot, a leave knot), it
 writes these values first, each only if the chapter declares a `VAR` of that name
-([project.ts:15](../client/src/explore/project.ts#L15), PUZZLES-PLAN X2):
+([project.ts:15](../client/src/explore/project.ts#L15), PUZZLES-PLAN X2). The `pz_*` pair is in
+[STAGING-DSL §6 `puzzle`](STAGING-DSL.md#puzzle) "Effect"; the type rule is `world/var-type`, STAGING-DSL §11, second
+table:
 
 | VAR | Type | Value |
 |---|---|---|
@@ -630,7 +692,8 @@ VAR dc_note = false
 A wrong type fails: `VAR dc_note = 0` prints
 `world/var-type VAR dc_note is declared int: the projection writes a bool (X2)`. The seeded playthroughs write the
 same projection ([playthrough.ts:414-422](../client/scripts/story/playthrough.ts#L414)), which is how
-`pz_box 1,3` reaches the `play:` line. In the game the writer is GameSession (planned: L13 story-runtime, L15).
+`pz_box 1,3` reaches the `play:` line. In the game the yield router (`app/yields.ts`, planned: L15 integration)
+writes them through `StoryRunner.enter` (planned: L13 story-runtime).
 
 ### World lint codes and soft-lock counterexamples
 
@@ -658,7 +721,8 @@ gate reports `softlock OK (26 states)`. The steps are `tap <room>.<hotspot>`, `i
 
 A section with more than 5,000 states is `world/state-cap`: split it into smaller sections
 ([reduce.ts:28](../client/src/explore/reduce.ts#L28)). An item, document, room or puzzle no reachable state touches is
-`world/unreachable` (W).
+`world/unreachable` (W). Both are rows of [STAGING-DSL §11](STAGING-DSL.md#11-what-the-story-lint-enforces), second table, like
+`world/softlock`.
 
 ## Part 3: stories
 
@@ -760,7 +824,10 @@ E story/locales/en/story.json:0 catalog/stories chapters.ch2: paid chapter ch2's
 
 - **Never move a shipped chapter to another story.** Saves are keyed by story.
 - Never rename a shipped knot, and never reuse a line ID ([Removing a line](#removing-a-line-retired-ids)).
-- Never reuse a shipped chapter id for different content.
+- Never reuse a shipped chapter id for different content: saves record the chapter id
+  ([0001_init.sql:68](../server/migrations/0001_init.sql#L68)), and a paid chapter's product is `chapter:<id>`
+  ([catalog.rs:26](../server/src/catalog.rs#L26)), so its buyers' entitlements follow the id. This is advice, not a
+  lint rule.
 
 ## Part 4: story meta
 
@@ -878,8 +945,9 @@ points or more; the example's `Open the box on the stairs without a hint.` is on
 
 ### Choices are statistics
 
-A choice's line ID is also its statistics identity: the game records which option a player picked by that ID
-([STAGING-DSL §9 "Story meta"](STAGING-DSL.md#story-meta), META-PLAN M1). So:
+A choice's line ID is also its statistics identity: the game will record which option a player picked by that ID
+(planned: LS3 server-stats, LS4 stats-client; [STAGING-DSL §9 "Story meta"](STAGING-DSL.md#story-meta), META-PLAN
+M1). So:
 - **keep the ID when you edit the option's text**;
 - **retire the ID when you remove the option** ([Removing a line](#removing-a-line-retired-ids)), never reuse it.
 
@@ -1086,7 +1154,7 @@ voice: Is anyone there? #id:ch1.study.v01c
 | A meta text copied into ink or a locale table | nothing at `story` time; the build's leak scan fails once such a text of 12+ code points is in the built app | meta texts live only in `story/meta.json` |
 | Only short meta texts | nothing at `story` time; `npm run build` fails with `meta-empty` | at least one meta text of 12+ code points |
 | A blank line inside a yield block | `yield/shape` and `ink/forbidden` | `-> DONE` on the line right after the tag |
-| A world key misspelt | `world/schema`, then graph and locale errors that follow from it | fix the schema error first |
+| A world key misspelt, or a world text without its ID | `world/schema` or `id/missing`, then graph errors and `loc/orphan-en … retire it` that follow from it | fix the world's error first; retire nothing |
 
 ## Next steps
 

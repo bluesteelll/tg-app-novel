@@ -27,7 +27,7 @@ parts connect: [ARCHITECTURE.md](ARCHITECTURE.md). How a writer uses the story t
 | Feature | Entry files | Tests | Docs |
 |---|---|---|---|
 | Boot (first part) | [main.ts](../client/src/main.ts) (`boot`: mock install, insets, `expand`, `disableVerticalSwipes`, mount, `ready`), [ui/App.svelte](../client/src/ui/App.svelte), [client/index.html](../client/index.html) | `client/e2e/boot.spec.ts` (`boot records ready, expand and swipe events`, `viewport vars and safe areas applied`, `no window.open or alert`); gate `npm --prefix client run e2e` | [ARCHITECTURE.md "Client modules"](ARCHITECTURE.md#client-modules) |
-| Telegram module and dev mock | [telegram/index.ts](../client/src/telegram/index.ts) (`TelegramClient` :30, `getTelegram` :84), [telegram/webapp.ts](../client/src/telegram/webapp.ts) (the only reader of `window.Telegram`), `telegram/{perf,viewport}.ts`, `telegram/dev/{mock-transport,invoice-sheet}.ts`, [client/vite-plugins/tg-dev-mock.ts](../client/vite-plugins/tg-dev-mock.ts); `server/dev/src/launch.rs` (`/dev/launch`) | `telegram/telegram.test.ts` (`mock:`, `share:`, `sheet:`), `client/scripts/dev-server.test.ts` (`dev server refuses /@fs paid path`); `server/dev/tests/dev.rs` (`launch_signs_valid_initdata`) | [ARCHITECTURE.md "Auth"](ARCHITECTURE.md#auth-initdata-then-the-servers-own-token) |
+| Telegram module and dev mock | [telegram/index.ts](../client/src/telegram/index.ts) (`TelegramClient` :30, `getTelegram` :84), [telegram/webapp.ts](../client/src/telegram/webapp.ts) (the only reader of `window.Telegram` outside `telegram/dev/`), `telegram/{perf,viewport}.ts`, `telegram/dev/{mock-transport,invoice-sheet}.ts`, [client/vite-plugins/tg-dev-mock.ts](../client/vite-plugins/tg-dev-mock.ts); `server/dev/src/launch.rs` (`/dev/launch`) | `telegram/telegram.test.ts` (`mock:`, `share:`, `sheet:`), `client/scripts/dev-server.test.ts` (`dev server refuses /@fs paid path`); `server/dev/tests/dev.rs` (`launch_signs_valid_initdata`) | [ARCHITECTURE.md "Auth"](ARCHITECTURE.md#auth-initdata-then-the-servers-own-token) |
 | Scene (Pixi) | [scene/controller.ts](../client/src/scene/controller.ts) (`createSceneController` :165), `scene/{executor,registry,loader,preload,layout,render-loop}.ts`, [geom/cover.ts](../client/src/geom/cover.ts) | `scene/{executor,registry,preload,layout}.test.ts` (`executor: scene t=fade applies shows while black`, `registry: visible load over hard cap after eviction is refused`, `preload: next-chapter id resident after setChapter`, `layout: resolution capped at 2`), `geom/cover.test.ts` | [STAGING-DSL §7](STAGING-DSL.md#7-batches-and-execution-order), [§8](STAGING-DSL.md#8-assets-and-preloading) |
 | Audio | [audio/unlock.ts](../client/src/audio/unlock.ts) (`unlockAudio` :12), [audio/manager.ts](../client/src/audio/manager.ts) (`createAudioManager` :77), `audio/{bgm,sfx}.ts` | `audio/audio.test.ts` (`audio: suspend pauses decks, stops voices, completes fades`, `bgm: same track new vol tweens without restart`, `sfx: voices capped, oldest stopped first`) | [STAGING-DSL §6 `bgm`](STAGING-DSL.md#bgm), [`sfx`](STAGING-DSL.md#sfx) |
 | Assets (catalog, encode, manifests) | [client/scripts/assets.ts](../client/scripts/assets.ts), `client/scripts/assets/{placeholder,synth,encode,manifest}.ts`; [assets/catalog.json](../assets/catalog.json) | `client/scripts/assets/assets.test.ts` (`assets:`, `catalog:`, `placeholder:`); gate `npm --prefix client run build` | [AUTHORING.md "Assets"](AUTHORING.md#assets-and-assetscatalogjson) |
@@ -75,8 +75,9 @@ Each item names the lane that builds it ([PROTOTYPE-PLAN.md](PROTOTYPE-PLAN.md),
 - **Story runtime** (`story/runner.ts`, `chapters.ts`, `carry.ts`, `resume.ts`, `save-codec.ts`): L13 story-runtime.
 - **Menus, paywall, chapter select, story picker, "The End"** (`ui/Menu.svelte`, `ui/Paywall.svelte`,
   `ui/ChapterSelect.svelte`, …): L14b overlay-menus.
-- **Puzzle and exploration UIs** (`puzzles/{registry,session}.ts`, `puzzles/ui/*`; `explore/controller.ts`,
-  `ui/explore/*`): LP2 puzzle-ui, LX explore-ui.
+- **Puzzle and exploration UIs** (`puzzles/{registry,session}.ts`, `puzzles/ui/*`, `ui/puzzles/*`,
+  `ui/puzzle-view.svelte.ts`; `explore/controller.ts`, `ui/explore/*`, `ui/explore-view.svelte.ts`): LP2 puzzle-ui,
+  LX explore-ui.
 - **GameSession, boot sequence, engine chunk, yield router, full e2e** (`app/{boot,engine,game,yields}.ts`, smoke /
   purchase / perf e2e): L15 integration.
 - **Refunds and the bot commands** (`/start`, `/terms`, `/support`, `/paysupport`, `server setup`): L9 refunds-bot.
@@ -89,8 +90,9 @@ Each item names the lane that builds it ([PROTOTYPE-PLAN.md](PROTOTYPE-PLAN.md),
   economy-core.
 - **Friends, sharing, gifts and referrals** (`db/social.rs`, `api/{social,share,gifts}.rs`): LF1 friends-server, LF2
   share-profile, LE2 gifts-referrals. The client side of sharing exists (`shareMessage` in `telegram/index.ts`).
-- **Privacy route and operator file** (`api/legal.rs`, `PRIVACY_OPERATOR_FILE`): LPO privacy-operator. The draft
-  policy is [server/legal/privacy-policy.html](../server/legal/privacy-policy.html).
+- **Privacy route and operator file**: the route `GET /api/privacy` (`api/legal.rs`) is LF1 friends-server's; the
+  operator file (`PRIVACY_OPERATOR_FILE`) is LPO privacy-operator's. The draft policy is
+  [server/legal/privacy-policy.html](../server/legal/privacy-policy.html).
 - **The demo stories** (`story/ch1`-`ch2` content, worlds, `story/meta.json` texts; story `tide`): N1 demo-story,
   N2 story-tide.
 - **Paid assets from R2** (`worker/`): later, no lane yet.

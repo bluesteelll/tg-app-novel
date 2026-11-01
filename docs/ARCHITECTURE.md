@@ -23,7 +23,7 @@ flowchart LR
     S -->|"story.ts main"| SC["server/content/ - paid chapters, puzzles, stories.json, meta.json, fingerprints"]
     S -->|"assets.ts"| PA["client/public/assets/ - free art and audio, covers"]
     S -->|"assets.ts"| SA["server/content/assets/ - paid-only art and audio"]
-    SG --> V["vite build"]
+    SG -.->|"imports (planned, L13)"| V["vite build"]
     PA --> V
     V --> D["client/dist/"]
     D -->|"budget.ts, scan-dist.ts"| G{"build gate"}
@@ -50,7 +50,8 @@ What exists under `client/src/` at `4d8a9ec`. The boundary column is enforced by
 | `story/{tags,staging,catalog}.ts` | `parseTags`, the typed staging commands, catalog and manifest decoders | `tags.ts` is the only tag parser |
 | `scene/*` | `SceneController` (Pixi application, layers, context-loss rebuild), executor (batch → GSAP timeline), texture registry with caps, loader, preload scheduler, layout | `pixi.js` only in `scene/`; `gsap` only in `scene/executor.ts`; textures created only in `loader.ts` / `registry.ts`; no `fetch` |
 | `audio/*` | `unlockAudio` (in the gesture), the audio manager, two-deck BGM, SFX cache | `AudioContext` and `new Audio` only in `audio/`; no `fetch` |
-| `world/*`, `explore/*`, `puzzles/rules/*`, `geom/cover.ts` | world types and the one decoder; the pure exploration reducer, reconcile and projection; puzzle rules; the cover transform | the pure-world rule: no DOM, network, storage or clock |
+| `world/*`, `puzzles/rules/*`, `explore/{state,reduce,project,reconcile}.ts` | world types and the one decoder; puzzle rules; the pure exploration reducer, reconcile and projection | the pure-world rule (`isPureWorld`, [arch.test.ts:123](../client/src/arch.test.ts#L123)): no DOM, network, storage, Svelte, clock or randomness; value imports stay inside these files and `story/{staging,catalog,tags}.ts` |
+| [geom/cover.ts](../client/src/geom/cover.ts) | the cover transform and the room safe frame, shared by `scene/layout.ts`, `scene/executor.ts` and the story tool's world lint | none: no arch rule scopes `geom/` |
 | `api/generated/api.ts` | ts-rs DTO types from the server | generated, committed |
 | [ui/App.svelte](../client/src/ui/App.svelte) | the mounted shell | `ui/` imports no story, scene or audio module except types |
 
@@ -79,7 +80,7 @@ outside `src/` (so neither `story/` nor `server/content/` can enter the bundle).
 | `puzzles/mod.rs` | answer check, attempt rate limit, puzzle status with the texts of unlocked hint tiers |
 | [telegram/gateway.rs](../server/src/telegram/gateway.rs) | `BotGateway` (:49) and `FrankensteinGateway`: the Bot API through frankenstein types, no bot framework (principle 6) |
 | `server/dev` (`server-dev`) | the production router plus `/dev/launch` (dev-signed initData) and `/dev/invoices/{slug}` on a fake gateway, on a fresh database per launch ([dev/src/lib.rs:33](../server/dev/src/lib.rs#L33)); never linked into `server` |
-| `server/pgdev` | the local PostgreSQL 18 cluster per port and a database per test; a dev-dependency only |
+| `server/pgdev` | the local PostgreSQL 18 cluster per port and a database per test; a dependency of `server-dev` and a dev-dependency of `server`, never linked into the `server` binary ([server/Cargo.toml:31-33](../server/Cargo.toml#L31)) |
 
 The configuration's variables, all read in `Config::from_env` ([config.rs:145-172](../server/src/config.rs#L145)):
 `BOT_TOKEN`, `WEBHOOK_SECRET`, `TOKEN_KEY` (required secrets); `TELEGRAM_ENV`, `PUBLIC_APP_URL`, `CONTENT_DIR`,
@@ -147,8 +148,9 @@ low-performance Android ([layout.ts:18-23](../client/src/scene/layout.ts#L18)). 
 (the engine chunk, a world) print `PENDING`.
 
 **The leak scan** `scan-dist.ts` reads every file of `client/dist/` (with decoded `data:` URIs) against fingerprint
-sections built from the sources: paid line IDs and texts, paid en values, paid asset names and bytes, hint IDs and
-texts, paid world texts, and every meta text of 12+ code points. Each section fails closed when its fingerprints
+sections built from the sources: paid line IDs and paid line text samples, paid en values, paid asset names and
+bytes, hint IDs and texts, paid world IDs and texts, and the meta texts. The trade-offs below give each section's
+floor. Each section fails closed when its fingerprints
 are empty while its sources exist ([scan-dist.ts:1-7](../client/scripts/scan-dist.ts#L1)).
 
 The CLAUDE.md gate commands map to: `check` (svelte-check, tsc), `test` (vitest projects `unit` and `dom`,
@@ -284,7 +286,8 @@ Participants: `post_invoice` ([api/orders.rs:53-107](../server/src/api/orders.rs
   1-32 code points by the story gate (`catalog/stories` rule 9).
 - **The schema is the idempotency.** `payments` has the primary key `telegram_payment_charge_id`; `orders.charge_id`
   and `entitlements.charge_id` are UNIQUE and reference it ([0001_init.sql:12-60](../server/migrations/0001_init.sql#L12),
-  test `schema_charge_id_unique`). A grant is one insert keyed by the charge id, not a check-then-insert.
+  test `schema_charge_id_unique`). No grant code exists yet ([db/entitlements.rs:1](../server/src/db/entitlements.rs#L1)).
+  Planned (L8b, PP "Payment flow"): a grant is one insert keyed by the charge id, not a check-then-insert.
 - **The gateway** already has `answer_pre_checkout` and `refund_star_payment`
   ([gateway.rs:53-63](../server/src/telegram/gateway.rs#L53)); `CALL_DEADLINE` is 5 s so a pre-checkout answer
   meets Telegram's 10 s.
@@ -317,7 +320,8 @@ Principle 5, as far as it is built:
 |---|---|---|
 | content directory missing or inconsistent | the server does not start; no pool opened | `startup_fails_*` (`content.rs` tests) |
 | Bot API slow or down at invoice time | 502 `telegram_unavailable`; the order stays `created` without a link and is never reused | `invoice_gateway_error_502_order_kept` |
-| double tap on Buy | the newest linked order of the hour is handed out again | `invoice_reuses_recent_order` |
+| a repeat Buy after the first invoice link was stored | the newest linked order of the hour is handed out again | `invoice_reuses_recent_order` (sequential requests) |
+| two Buy taps while the first link call is still running | an order without a link is never reused, so the second tap makes a second order and a second link ([db/orders.rs:107-109](../server/src/db/orders.rs#L107)); planned: pre-checkout refuses the double payment (L8b) | not pinned yet |
 | expired or tampered token | 401 `token_expired` / `token_invalid` | `token_expired_401`, `token_rejects_tampered_parts` |
 | WebGL context lost | rebuilt on `activated` after the grace period | `SceneController.onActivated` (wiring planned, L15) |
 | a story edit that breaks a soft-lock proof | the story gate fails with the action path | `softlock:` tests, [AUTHORING.md](AUTHORING.md#world-lint-codes-and-soft-lock-counterexamples) |
@@ -326,9 +330,14 @@ Principle 5, as far as it is built:
 
 - The free chapters' text ships in the bundle by design: only paid content is protected. Chapter titles, speaker
   names, story titles and teasers are public too, paid chapters' titles included (STAGING-DSL §4).
-- The leak scan proves absence only for the fingerprints it builds; a paid text under 12 code points has no text
-  needle (`TEXT_NEEDLE_MIN_CODE_POINTS`, [world.ts:366](../client/scripts/story/world.ts#L366)). Line IDs and asset
-  bytes are matched exactly.
+- The leak scan proves absence only for the fingerprints it builds, and the floor differs per section:
+  - paid ink line texts are **samples**: every 10th eligible line of 24+ code points, plus each paid chapter's
+    longest line (`SAMPLE_MIN_CODE_POINTS`, `SAMPLE_EVERY`, [emit.ts:115-117](../client/scripts/story/emit.ts#L115);
+    `fingerprints` :361). Most paid lines have no ink-text needle: a paid line's ink text copied into the bundle without
+    its `#id:` tag is caught only if it is a sample (its en value is a needle from 12 code points up, next item);
+  - paid en values, world and hint texts and meta texts are needles from 12 code points up
+    (`TEXT_NEEDLE_MIN_CODE_POINTS`, [world.ts:366](../client/scripts/story/world.ts#L366)); a shorter text has none;
+  - line IDs, paid asset names and asset bytes are matched exactly.
 - The session token has no revocation list: it lives at most `TOKEN_TTL_SECS` (≤ 1 h).
 
 ## See also
