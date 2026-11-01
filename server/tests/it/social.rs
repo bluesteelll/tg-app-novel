@@ -485,3 +485,23 @@ async fn schema_user_handle_shape() {
     ]);
     report(&failures);
 }
+
+/// The users upsert reports whether it inserted the row: a newcomer once, then never again, also within one second
+/// (M11: `created_at = now` would call both logins at `T0` new).
+#[tokio::test]
+async fn users_upsert_reports_inserted() {
+    let (st, _db) = social_state(&[]).await;
+    let mut got = Vec::new();
+    for at in [T0, T0, T0 + 100] {
+        got.push(
+            st.repo
+                .upsert_user(UserId(ANN), "Ann", Some("ru"), at)
+                .await
+                .unwrap(),
+        );
+    }
+    assert!(
+        got == [true, false, false],
+        "upserts at T0, T0, T0 + 100: expected [true, false, false], got {got:?}"
+    );
+}

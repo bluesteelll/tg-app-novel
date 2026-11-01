@@ -44,6 +44,9 @@ pub struct InitData {
     pub user: TgUser,
     /// When Telegram issued the initData, in unix seconds.
     pub auth_date: i64,
+    /// The signed `start_param` (the `startapp` value of the launch link) as sent, any shape, or `None` when the pair
+    /// is absent. What a shape means is the feature's decision (`api/social.rs` reads the invite prefix).
+    pub start_param: Option<String>,
 }
 
 /// The verified Telegram user.
@@ -112,6 +115,8 @@ pub fn validate_init_data(
             language_code: user.language_code,
         },
         auth_date,
+        // Read from the HMAC-checked pairs, like every field here: never from `initDataUnsafe` or the request body.
+        start_param: field(&pairs, "start_param").map(str::to_owned),
     })
 }
 
@@ -147,4 +152,84 @@ fn field<'a>(pairs: &'a [(String, String)], key: &str) -> Option<&'a str> {
         .iter()
         .find(|(k, _)| k == key)
         .map(|(_, v)| v.as_str())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The bot token the vectors are signed with (`config::PLACEHOLDER_BOT_TOKEN`).
+    const BOT_TOKEN: &str = crate::config::PLACEHOLDER_BOT_TOKEN;
+    /// The vectors' `auth_date`, used as the validator's clock.
+    const NOW: i64 = 1_790_000_000;
+    /// The signed `start_param` of vector (a).
+    const START: &str = "f0123456789abcdef0123456789abcdef";
+
+    /// (a) `auth_date`, `start_param` and `user`, signed.
+    const SIGNED_WITH_START: &str = "auth_date=1790000000&start_param=f0123456789abcdef0123456789abcdef&user=%7B%22id%22%3A5000000001%2C%22first_name%22%3A%22Ann%22%2C%22language_code%22%3A%22ru%22%7D&hash=51fbef8da1df9127bb1f96f82a326d96693caa130f86a4defcaf0336d3abe9fe";
+    /// (b) (a) with the last hex digit of `start_param` edited after signing.
+    const EDITED_START: &str = "auth_date=1790000000&start_param=f0123456789abcdef0123456789abcdee&user=%7B%22id%22%3A5000000001%2C%22first_name%22%3A%22Ann%22%2C%22language_code%22%3A%22ru%22%7D&hash=51fbef8da1df9127bb1f96f82a326d96693caa130f86a4defcaf0336d3abe9fe";
+    /// (c) `auth_date` and `user`, signed, without `start_param`.
+    const SIGNED_WITHOUT_START: &str = "auth_date=1790000000&user=%7B%22id%22%3A5000000001%2C%22first_name%22%3A%22Ann%22%2C%22language_code%22%3A%22ru%22%7D&hash=94e7e951aa55f51f0f3585494c1ec0b30a66a4baa9218d0cade0938b632256ae";
+    /// (d) (c) with a `start_param` pair appended after signing.
+    const APPENDED_START: &str = "auth_date=1790000000&user=%7B%22id%22%3A5000000001%2C%22first_name%22%3A%22Ann%22%2C%22language_code%22%3A%22ru%22%7D&hash=94e7e951aa55f51f0f3585494c1ec0b30a66a4baa9218d0cade0938b632256ae&start_param=f0123456789abcdef0123456789abcdef";
+
+    /// `start_param` comes from the signed pairs only. The four vectors are signed by Node's `crypto`, independently
+    /// of this module's signer, by this script (the algorithm of `tests/fixtures/sign_initdata.mjs`):
+    ///
+    /// ```text
+    /// import { createHmac } from 'node:crypto';
+    /// const BOT_TOKEN = '1000000001:placeholder-bot-token-not-a-real-one';
+    /// const AUTH_DATE = '1790000000';
+    /// const USER = '{"id":5000000001,"first_name":"Ann","language_code":"ru"}';
+    /// const START = 'f0123456789abcdef0123456789abcdef';
+    /// const SECRET = createHmac('sha256', 'WebAppData').update(BOT_TOKEN).digest();
+    /// const dcs = (pairs) => pairs.filter(([k]) => k !== 'hash').slice()
+    ///   .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)).map(([k, v]) => `${k}=${v}`).join('\n');
+    /// const raw = (pairs) => pairs.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
+    /// const sign = (pairs) => [...pairs, ['hash', createHmac('sha256', SECRET).update(dcs(pairs)).digest('hex')]];
+    /// const withStart = sign([['auth_date', AUTH_DATE], ['start_param', START], ['user', USER]]);
+    /// const without = sign([['auth_date', AUTH_DATE], ['user', USER]]);
+    /// const a = raw(withStart);
+    /// const b = a.replace(`start_param=${START}`, `start_param=${START.slice(0, -1)}e`);
+    /// const c = raw(without);
+    /// const d = `${c}&start_param=${START}`;
+    /// console.log(JSON.stringify({ a, b, c, d }, null, 2));
+    /// ```
+    #[test]
+    fn start_param_from_signed_string() {
+        let check = |raw: &str| validate_init_data(raw, BOT_TOKEN, NOW, 86400);
+        let mut failures = Vec::new();
+        match check(SIGNED_WITH_START) {
+            Ok(data) if data.start_param.as_deref() == Some(START) => {}
+            Ok(data) => failures.push(format!(
+                "(a): expected Some({START:?}), got {:?}",
+                data.start_param
+            )),
+            Err(e) => failures.push(format!("(a): expected Ok, got Err({e:?})")),
+        }
+        match check(EDITED_START) {
+            Err(InitDataError::BadHash) => {}
+            got => failures.push(format!(
+                "(b) edited value: expected Err(BadHash), got {got:?}"
+            )),
+        }
+        match check(SIGNED_WITHOUT_START) {
+            Ok(data) if data.start_param.is_none() => {}
+            Ok(data) => failures.push(format!("(c): expected None, got {:?}", data.start_param)),
+            Err(e) => failures.push(format!("(c): expected Ok, got Err({e:?})")),
+        }
+        match check(APPENDED_START) {
+            Err(InitDataError::BadHash) => {}
+            got => failures.push(format!(
+                "(d) appended after signing: expected Err(BadHash), got {got:?}"
+            )),
+        }
+        assert!(
+            failures.is_empty(),
+            "{} failures:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
 }
