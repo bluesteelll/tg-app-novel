@@ -1,6 +1,34 @@
 {
   "manor": {
-    "endings": { "end": { "ru": "Конец пробной истории", "en": "The end of the trial story" } },
-    "achievements": {}
+    "endings": {
+      "truth": { "ru": "Письма, которые дождались", "en": "The letters that waited" },
+      "ashes": { "ru": "Пепел на рассвете", "en": "Ashes at daybreak" }
+    },
+    "achievements": {
+      "drawer_no_hints": {
+        "hidden": false,
+        "when": { "puzzle": "ch1.drawer", "hints": 0 },
+        "name": { "ru": "Внимательный взгляд", "en": "A keen eye" },
+        "desc": { "ru": "Открыть ящик стола в кабинете без единой подсказки.", "en": "Open the desk drawer in the study without a single hint." }
+      },
+      "cabinet_no_hints": {
+        "hidden": false,
+        "when": { "puzzle": "ch2.cabinet", "hints": 0 },
+        "name": { "ru": "Ключ к прошлому", "en": "Key to the past" },
+        "desc": { "ru": "Открыть шкаф в архиве без единой подсказки.", "en": "Open the archive cabinet without a single hint." }
+      },
+      "both_endings": {
+        "hidden": false,
+        "when": { "allEndings": true },
+        "name": { "ru": "Обе дороги", "en": "Both roads" },
+        "desc": { "ru": "Увидеть оба финала истории об усадьбе.", "en": "See both endings of the manor story." }
+      },
+      "sharp_mind": {
+        "hidden": true,
+        "when": { "all": [ { "puzzle": "ch1.drawer", "hints": 0 }, { "puzzle": "ch2.cabinet", "hints": 0 } ] },
+        "name": { "ru": "Острый ум", "en": "Sharp mind" },
+        "desc": { "ru": "Открыть и ящик, и шкаф, ни разу не взяв подсказку.", "en": "Open both the drawer and the cabinet without taking a single hint." }
+      }
+    }
   }
 }

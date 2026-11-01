@@ -1,14 +1,45 @@
 {
-  "ch2.archive.r3t6": {
-    "ru": "Архив пахнет старой бумагой и пылью.",
-    "en": "The archive smells of old paper and dust."
-  },
-  "ch2.archive.v5c1": {
-    "ru": "Я знала, что на тебя можно положиться.",
-    "en": "I knew I could count on you."
-  },
-  "ch2.archive.h9j4": {
-    "ru": "Посмотрим, чего стоят твои обещания.",
-    "en": "Let's see what your promises are worth."
-  }
+  "ch2.archive_cabinet.c002": { "ru": "Под часовней пахло пылью и холодным камнем.", "en": "Under the chapel it smelled of dust and cold stone." },
+  "ch2.archive_cabinet.c003": { "ru": "На крюке горела забытая лампа. В пыли на полу темнели чужие следы.", "en": "A forgotten lamp was burning on a hook. Someone else's footprints showed dark in the dust on the floor." },
+  "ch2.archive_cabinet.c004": { "ru": "Я рад, что ты пошла со мной. Правда рад.", "en": "I'm glad you came with me. Really glad." },
+  "ch2.archive_cabinet.c005": { "ru": "Спасибо, что пришла. Я не был уверен, что придёшь.", "en": "Thank you for coming. I wasn't sure you would." },
+  "ch2.archive_cabinet.c006": { "ru": "Ты всё ещё мне не доверяешь. Я понимаю.", "en": "You still don't trust me. I understand." },
+  "ch2.archive_cabinet.c007": { "ru": "В подвале ты обещала меня вытащить. Теперь моя очередь помогать.", "en": "In the cellar you promised to get me out. Now it's my turn to help." },
+  "ch2.archive_cabinet.c008": { "ru": "Сторож наверняка видел выломанную решётку. Скоро он будет здесь.", "en": "The watchman must have seen the broken gate. He'll be here soon." },
+  "ch2.archive_cabinet.c009": { "ru": "Сторож делает обход раз в час. Время у нас есть.", "en": "The watchman makes his rounds once an hour. We have time." },
+  "ch2.archive_cabinet.q001": { "ru": "Спросить о его деде", "en": "Ask about his grandfather" },
+  "ch2.archive_cabinet.q002": { "ru": "Спросить, зачем ему эта правда", "en": "Ask why he wants this truth" },
+  "ch2.archive_cabinet.c010": { "ru": "Он ждал её всю жизнь. Так и не женился.", "en": "He waited for her all his life. He never married." },
+  "ch2.archive_cabinet.c011": { "ru": "Дед просил. А ещё… я хотел найти тебя.", "en": "My grandfather asked me to. And also… I wanted to find you." },
+  "ch2.archive_cabinet.c001": { "ru": "В углу стоял шкаф. У него три диска и пыльная табличка.", "en": "A cabinet stood in the corner. It has three dials and a dusty label." },
+  "ch2.archive_cabinet.c012": { "ru": "На табличке: «Открою в наш день».", "en": "The label read: \"I will open on our day.\"" },
+  "ch2.archive_after.a001": { "ru": "Диски щёлкнули. Дверца шкафа подалась.", "en": "The dials clicked. The cabinet door gave way." },
+  "ch2.archive_after.a002": { "ru": "Диски не поддавались. Механизм заело намертво.", "en": "The dials would not turn. The mechanism had jammed for good." },
+  "ch2.archive_after.a003": { "ru": "Наверху хлопнула дверь. Сторож шёл на шум.", "en": "A door banged upstairs. The watchman was coming toward the noise." },
+  "ch2.archive_truth.t001": { "ru": "Внутри лежала стопка писем, перевязанных лентой.", "en": "Inside lay a stack of letters tied with a ribbon." },
+  "ch2.archive_truth.t002": { "ru": "Её письма и его. Ни одно так и не было отправлено.", "en": "Her letters and his. Not one of them had ever been sent." },
+  "ch2.archive_truth.t003": { "ru": "«Анна, я ждал тебя у часовни каждое двенадцатое мая».", "en": "\"Anna, I waited for you by the chapel every twelfth of May.\"" },
+  "ch2.archive_truth.t004": { "ru": "Они любили друг друга. А семьи сказали: нельзя.", "en": "They loved each other. And their families said no." },
+  "ch2.archive_truth.t005": { "ru": "Последнее письмо было от бабушки. «Если наши внуки найдут друг друга, пусть не повторят нашей ошибки».", "en": "The last letter was from my grandmother. \"If our grandchildren find each other, let them not repeat our mistake.\"" },
+  "ch2.archive_truth.t006": { "ru": "Похоже, они знали про нас раньше нас самих.", "en": "Looks like they knew about us before we did." },
+  "ch2.archive_truth.q001": { "ru": "Взять его за руку", "en": "Take his hand" },
+  "ch2.archive_truth.q002": { "ru": "Поцеловать его в щёку", "en": "Kiss him on the cheek" },
+  "ch2.archive_truth.t007": { "ru": "Его пальцы были тёплыми. Он не отпустил мою руку.", "en": "His fingers were warm. He didn't let go of my hand." },
+  "ch2.archive_truth.t008": { "ru": "Это было «спасибо» или «останься»?", "en": "Was that \"thank you\" or \"stay\"?" },
+  "ch2.archive_truth.t009": { "ru": "«Останься», — ответила я.", "en": "\"Stay,\" I answered." },
+  "ch2.archive_truth.t010": { "ru": "Мы вышли из архива вместе. Над усадьбой светало.", "en": "We left the archive together. Dawn was breaking over the manor." },
+  "ch2.archive_ashes.h001": { "ru": "Оставь. Его не открыть.", "en": "Leave it. It won't open." },
+  "ch2.archive_ashes.h002": { "ru": "Я отступила, задела крюк, и лампа сорвалась вниз.", "en": "I stepped back, knocked the hook, and the lamp fell." },
+  "ch2.archive_ashes.h003": { "ru": "Сухая бумага вспыхнула сразу. Огонь побежал по полкам.", "en": "The dry paper caught at once. The fire ran along the shelves." },
+  "ch2.archive_ashes.h004": { "ru": "Наверх! Быстрее!", "en": "Upstairs! Hurry!" },
+  "ch2.archive_ashes.h005": { "ru": "Мы выбрались из часовни. За спиной горел архив и всё, что они не успели сказать.", "en": "We got out of the chapel. Behind us burned the archive, and everything they never got to say." },
+  "ch2.archive_ashes.h006": { "ru": "Ты не виновата. Но мне нужно побыть одному.", "en": "It's not your fault. But I need to be alone for a while." },
+  "ch2.archive_ashes.h007": { "ru": "Наверное, так и должно было кончиться. Как у них.", "en": "Maybe it was always going to end like this. Like it did for them." },
+  "ch2.archive_ashes.h008": { "ru": "Ты сдержала обещание. Спасибо тебе за это.", "en": "You kept your promise. Thank you for that." },
+  "ch2.archive_ashes.h009": { "ru": "Он ушёл по дороге навстречу рассвету. Их правду я так и не узнала.", "en": "He walked away down the road toward the dawn. I never learned their truth." },
+  "ch2.cabinet.t001": { "ru": "Шкаф в архиве", "en": "Archive cabinet" },
+  "ch2.cabinet.p001": { "ru": "Три медных диска. Табличка: «Открою в наш день».", "en": "Three brass dials. The label reads: \"I will open on our day.\"" },
+  "ch2.cabinet.h001": { "ru": "«Наш день» — так они называли одну дату. Она была на фотографии.", "en": "\"Our day\" was what they called one date. It was on the photograph." },
+  "ch2.cabinet.h002": { "ru": "Двенадцатое мая: сначала число, потом месяц.", "en": "The twelfth of May: first the day, then the month." },
+  "ch2.cabinet.h003": { "ru": "Код: 1-2-5.", "en": "The code is 1-2-5." }
 }

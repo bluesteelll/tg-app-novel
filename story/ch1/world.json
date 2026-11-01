@@ -1,0 +1,138 @@
+{
+  "format": 1,
+  "items": {
+    "medal_sun": {
+      "name": { "id": "ch1.medal_sun.n001", "ru": "Медальон солнца" },
+      "desc": { "id": "ch1.medal_sun.d001", "ru": "Тяжёлый и тёплый на ощупь. На нём выбито солнце." },
+      "glyph": "sun"
+    },
+    "medal_moon": {
+      "name": { "id": "ch1.medal_moon.n001", "ru": "Медальон луны" },
+      "desc": { "id": "ch1.medal_moon.d001", "ru": "Серебряный и холодный. На нём тонкий полумесяц." },
+      "glyph": "moon"
+    },
+    "medal_star": {
+      "name": { "id": "ch1.medal_star.n001", "ru": "Медальон звезды" },
+      "desc": { "id": "ch1.medal_star.d001", "ru": "Маленький, в паутине. На нём пятиконечная звезда." },
+      "glyph": "star"
+    }
+  },
+  "docs": {
+    "letter": {
+      "title": { "id": "ch1.letter.t001", "ru": "Письмо в конверте" },
+      "body": [
+        { "id": "ch1.letter.b001", "ru": "Павел, меня увозят в город. Отец сказал: ни писем, ни встреч." },
+        { "id": "ch1.letter.b002", "ru": "Я не прошу тебя ждать. Я прошу помнить двенадцатое мая." },
+        { "id": "ch1.letter.b003", "ru": "Если однажды мои и твои внуки встретятся, пусть узнают правду. Она в архиве. А." }
+      ]
+    },
+    "diary": {
+      "title": { "id": "ch1.diary.t001", "ru": "Дневник Павла" },
+      "body": [
+        { "id": "ch1.diary.b001", "ru": "Сегодня Анна уехала. В доме стало тихо, как в архиве." },
+        { "id": "ch1.diary.b002", "ru": "Её медальон я запер в ящике стола. Код — год, когда построили этот дом: 1847." },
+        { "id": "ch1.diary.b003", "ru": "Пусть его откроет тот, кто найдёт эти страницы." }
+      ]
+    }
+  },
+  "puzzles": {
+    "gate": {
+      "type": "order",
+      "title": { "id": "ch1.gate.t001", "ru": "Решётка в сад" },
+      "prompt": { "id": "ch1.gate.p001", "ru": "Расставь медальоны в верном порядке." },
+      "closeup": null,
+      "params": { "pieces": ["medal_sun", "medal_moon", "medal_star"] },
+      "maxAttempts": 3,
+      "giveUp": false,
+      "solution": [1, 0, 2],
+      "hints": []
+    },
+    "drawer": {
+      "type": "code",
+      "title": { "id": "ch1.drawer.t001", "ru": "Ящик стола" },
+      "prompt": { "id": "ch1.drawer.p001", "ru": "Четыре медных диска, на каждом цифры от 0 до 9." },
+      "closeup": "drawer",
+      "params": { "dials": 4 },
+      "maxAttempts": null,
+      "giveUp": false,
+      "solution": [1, 8, 4, 7],
+      "hints": [
+        { "id": "ch1.drawer.h001", "ru": "Код записан где-то в доме, но не в кабинете." },
+        { "id": "ch1.drawer.h002", "ru": "Найди в подвале дневник Павла: в нём есть год." },
+        { "id": "ch1.drawer.h003", "ru": "Код: 1-8-4-7." }
+      ]
+    }
+  },
+  "sections": {
+    "manor": {
+      "start": "hall",
+      "bgm": "tension",
+      "rooms": {
+        "hall": {
+          "bg": "hall",
+          "title": { "id": "ch1.manor.r001", "ru": "Зал" },
+          "onEnter": [],
+          "hotspots": [
+            { "id": "to_study", "kind": "exit", "rect": [100, 1300, 250, 400],
+              "label": { "id": "ch1.manor.l001", "ru": "В кабинет" },
+              "to": { "room": "study" }, "lock": null, "sfx": "steps" },
+            { "id": "to_cellar", "kind": "exit", "rect": [730, 1300, 250, 400],
+              "label": { "id": "ch1.manor.l002", "ru": "В подвал" },
+              "to": { "room": "cellar" }, "lock": null, "sfx": "steps" },
+            { "id": "gate", "kind": "exit", "rect": [400, 500, 300, 700],
+              "label": { "id": "ch1.manor.l003", "ru": "Решётка в сад" },
+              "to": { "story": "manor_out" }, "sfx": "door",
+              "lock": {
+                "slots": [ { "accepts": "medal_sun" }, { "accepts": "medal_moon" }, { "accepts": "medal_star" } ],
+                "puzzle": "gate",
+                "locked": { "id": "ch1.manor.k001", "ru": "Кованая решётка. В ней три пустых гнезда для медальонов." },
+                "onFail": [ { "story": "manor_gate_forced" }, { "unlock": "hall.gate" } ]
+              } },
+            { "id": "inscription", "kind": "look", "rect": [400, 1300, 280, 200],
+              "label": { "id": "ch1.manor.l004", "ru": "Надпись под решёткой" },
+              "look": { "id": "ch1.manor.t001", "ru": "«Луна прежде солнца. Звезда — последней»." },
+              "then": [] }
+          ]
+        },
+        "study": {
+          "bg": "study",
+          "title": { "id": "ch1.manor.r002", "ru": "Кабинет" },
+          "onEnter": [],
+          "hotspots": [
+            { "id": "to_hall", "kind": "exit", "rect": [100, 1300, 250, 400],
+              "label": { "id": "ch1.manor.l005", "ru": "В зал" },
+              "to": { "room": "hall" }, "lock": null, "sfx": "steps" },
+            { "id": "medal", "kind": "take", "rect": [700, 400, 200, 200],
+              "label": { "id": "ch1.manor.l006", "ru": "Медальон на полке" },
+              "gives": { "item": "medal_sun" }, "prop": "medal_sun" },
+            { "id": "drawer", "kind": "object", "rect": [450, 1000, 400, 250],
+              "label": { "id": "ch1.manor.l007", "ru": "Ящик стола" }, "look": null, "prop": null,
+              "lock": { "slots": [], "puzzle": "drawer",
+                        "locked": { "id": "ch1.manor.k002", "ru": "Ящик заперт на кодовый замок: четыре диска." },
+                        "onFail": [] },
+              "then": [ { "give": "medal_moon" } ] },
+            { "id": "letter", "kind": "take", "rect": [150, 600, 250, 250],
+              "label": { "id": "ch1.manor.l008", "ru": "Конверт на столе" },
+              "gives": { "doc": "letter" }, "prop": "note" }
+          ]
+        },
+        "cellar": {
+          "bg": "cellar",
+          "title": { "id": "ch1.manor.r003", "ru": "Подвал" },
+          "onEnter": [ { "story": "manor_cellar_voice" } ],
+          "hotspots": [
+            { "id": "to_hall", "kind": "exit", "rect": [100, 1300, 250, 400],
+              "label": { "id": "ch1.manor.l009", "ru": "Наверх, в зал" },
+              "to": { "room": "hall" }, "lock": null, "sfx": "steps" },
+            { "id": "star", "kind": "take", "rect": [650, 1200, 200, 200],
+              "label": { "id": "ch1.manor.l010", "ru": "Что-то блестит" },
+              "gives": { "item": "medal_star" }, "prop": "medal_star" },
+            { "id": "diary", "kind": "take", "rect": [400, 500, 300, 250],
+              "label": { "id": "ch1.manor.l011", "ru": "Старый дневник" },
+              "gives": { "doc": "diary" }, "prop": null }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -3,6 +3,9 @@
     "id": "manor",
     "first": "ch1",
     "cover": "cover/manor",
-    "endings": { "end": { "chapter": "ch2", "knot": "archive" } }
+    "endings": {
+      "truth": { "chapter": "ch2", "knot": "archive_truth" },
+      "ashes": { "chapter": "ch2", "knot": "archive_ashes" }
+    }
   }
 ]
