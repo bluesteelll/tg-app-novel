@@ -1,4 +1,4 @@
-// The statistics reporter (STORIES-PLAN Y13 and F11; META-PLAN M9): each event gets its id and its time at `record`,
+// The statistics reporter (STORIES-PLAN Y13 and F11; META-PLAN M1 and M9): each event gets its id and its time at `record`,
 // waits in a queue and goes out in batches through `postStatEvents`, one request at a time. A retry resends the same
 // ids, so the server counts an event once. Statistics grant and unlock nothing (principle 1): the server judges every
 // event, and the reporter drops whatever it rejected. It never throws (principle 5): a failure is a retry, a drop or a
@@ -12,13 +12,14 @@ import type { PostStatsResponse, StatEventDto } from '../api/generated/api.ts';
 import type { ApiError, Clock } from '../api/http.ts';
 import type { PuzzleOutcome } from '../explore/state.ts';
 import type { EndingName, Result } from '../story/catalog.ts';
-import type { ChapterId, PuzzleLocalId, StoryVersion } from '../story/staging.ts';
+import type { ChapterId, LineId, PuzzleLocalId, StoryVersion } from '../story/staging.ts';
 
-/** What the game session reports (STORIES-PLAN "StatEvent"). */
+/** What the game session reports (STORIES-PLAN "StatEvent"; META-PLAN M1: the picked option of a choice). */
 export type StatEvent =
   | { kind: 'chapter_started' | 'chapter_completed'; chapterId: ChapterId; storyVersion: StoryVersion }
   | { kind: 'ending_reached'; chapterId: ChapterId; storyVersion: StoryVersion; ending: EndingName }
-  | { kind: 'puzzle_ended'; chapterId: ChapterId; storyVersion: StoryVersion; puzzle: PuzzleLocalId; outcome: PuzzleOutcome };
+  | { kind: 'puzzle_ended'; chapterId: ChapterId; storyVersion: StoryVersion; puzzle: PuzzleLocalId; outcome: PuzzleOutcome }
+  | { kind: 'choice_made'; chapterId: ChapterId; storyVersion: StoryVersion; option: LineId };
 
 export interface StatsReporter {
   /** Queues the event; an ending is sent at once, anything else within 5 s. Synchronous; never throws. */
@@ -79,6 +80,9 @@ function subjectOf(e: StatEvent): Pick<Queued, 'subject' | 'outcome'> {
       return { subject: e.ending, outcome: null };
     case 'puzzle_ended':
       return { subject: puzzleId(e.chapterId, e.puzzle), outcome: e.outcome };
+    case 'choice_made':
+      // The option's line ID: stable across translations, so picks compare between languages.
+      return { subject: e.option, outcome: null };
     default: {
       const _never: never = e;
       return _never;

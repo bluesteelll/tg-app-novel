@@ -3,7 +3,7 @@ import { expect, test } from 'vitest';
 import type { PostStatsResponse, StatEventDto } from '../api/generated/api.ts';
 import type { ApiError, Clock } from '../api/http.ts';
 import type { EndingName, Result } from '../story/catalog.ts';
-import type { ChapterId, PuzzleLocalId, StoryVersion } from '../story/staging.ts';
+import type { ChapterId, LineId, PuzzleLocalId, StoryVersion } from '../story/staging.ts';
 import { FLUSH_DELAY_MS, createStatsReporter } from './reporter.ts';
 import type { StatEvent, StatsReporter } from './reporter.ts';
 
@@ -461,5 +461,28 @@ test('reporter: dispose clears timers', async () => {
     late.server.calls[0]?.answer({ ok: false, error: NETWORK });
     await late.clock.advance(0);
     expect(late.clock.pending()).toBe(0);
+  }
+});
+
+test('reporter: choice event carries the option line id', async () => {
+  const { clock, server, reporter } = setup();
+  reporter.record({ kind: 'choice_made', chapterId: CH, storyVersion: SV, option: 'ch1.intro.a1b2' as LineId });
+  reporter.record(solved());
+  reporter.record(started());
+  reporter.record(completed());
+  await clock.advance(1_200);
+  reporter.record(ending('truth'));
+  const sent = [...(server.calls[0]?.events ?? [])].sort((a, b) => a.eventId.localeCompare(b.eventId));
+  expect(sent[0]?.subject).toBe('ch1.intro.a1b2');
+  expect(sent).toEqual([
+    { eventId: uuid(1), kind: 'choice_made', chapterId: 'ch1', storyVersion: SV, subject: 'ch1.intro.a1b2', outcome: null, ageMs: 1_200 },
+    { eventId: uuid(2), kind: 'puzzle_ended', chapterId: 'ch1', storyVersion: SV, subject: 'ch1.drawer', outcome: 'solved', ageMs: 1_200 },
+    { eventId: uuid(3), kind: 'chapter_started', chapterId: 'ch1', storyVersion: SV, subject: null, outcome: null, ageMs: 1_200 },
+    { eventId: uuid(4), kind: 'chapter_completed', chapterId: 'ch1', storyVersion: SV, subject: null, outcome: null, ageMs: 1_200 },
+    { eventId: uuid(5), kind: 'ending_reached', chapterId: 'ch1', storyVersion: SV, subject: 'truth', outcome: null, ageMs: 0 },
+  ]);
+  // Exactly StatEventDto's keys: the server answers an unknown field (a `storyId`, say) with a 400 for the batch.
+  for (const e of sent) {
+    expect(Object.keys(e).sort()).toEqual(['ageMs', 'chapterId', 'eventId', 'kind', 'outcome', 'storyVersion', 'subject']);
   }
 });
