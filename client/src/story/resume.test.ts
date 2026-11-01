@@ -515,3 +515,19 @@ test('resume: a checkpoint var holding zero or false is restored, not reset to i
   expect(r.runner.readVars(['l_n', 'l_b'] as VarName[])).toEqual({ l_n: 0, l_b: false });
   r.runner.dispose();
 });
+
+test('resume: a checkpoint var holding the empty string is restored, not reset to its default', () => {
+  // A string VAR is a scalar the story lint admits; the story empties it over a non-empty default before the
+  // checkpoint knot is entered, so "" is the value to restore, not an absence.
+  const emptied = (main: readonly string[]): string[] => [
+    'VAR l_s = "dflt"',
+    ...main.flatMap((line) => (line === '=== start ===' ? [line, '~ l_s = ""'] : [line])),
+  ];
+  const saved = playAndSave(chapter(emptied(STORY_V1), KNOTS, V1, { vars: ['l_s'] }), 4); // at "K three.", checkpoint k
+  expect(saved.checkpoint?.vars).toEqual({ g_x: 0, l_s: '' });
+  // The version mismatch skips the exact level; the checkpoint's fresh Story starts from the VAR default "dflt".
+  const r = resumed(resume(saved, chapter(emptied(STORY_V2), KNOTS, V2, { vars: ['l_s'] }), ASSETS));
+  expect(r.level).toBe('checkpoint');
+  expect(r.runner.readVars(['l_s'] as VarName[])).toEqual({ l_s: '' });
+  r.runner.dispose();
+});
