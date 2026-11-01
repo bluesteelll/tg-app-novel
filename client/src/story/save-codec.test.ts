@@ -93,6 +93,19 @@ test('save-codec: world round trip', () => {
   expect(decodeSave(encodeSave(explore))).toEqual({ ok: true, value: explore });
 });
 
+test('save-codec: an empty string var round trips in the checkpoint and the carry', () => {
+  // The story lint admits `""` as a scalar value: the codec must keep it, never read it as an absence or reject it.
+  const emptied: SaveBodyV1 = {
+    ...BODY,
+    checkpoint: { knot: 'start' as KnotName, vars: { g_name: '' } as SaveBodyV1['chapterStart']['carry'], staging: EMPTY_SNAPSHOT },
+    chapterStart: { carry: { g_name: '' } as SaveBodyV1['chapterStart']['carry'] },
+  };
+  expect(decodeSave(encodeSave(emptied))).toEqual({ ok: true, value: emptied });
+  // The checkpoint is read first, so the carry gets its own body with no checkpoint.
+  const carried: SaveBodyV1 = { ...emptied, checkpoint: null };
+  expect(decodeSave(encodeSave(carried))).toEqual({ ok: true, value: carried });
+});
+
 test('save-codec: malformed bodies are error values', () => {
   const cases: ReadonlyArray<readonly [path: string, edit: (b: Record<string, unknown>) => void]> = [
     ['save.chapterId', (b) => (b['chapterId'] = 'chapter1')],
