@@ -783,6 +783,16 @@ function loadSources(): Record<string, string> {
 const SOURCES = loadSources();
 const TREE: Record<string, string> = { ...SOURCES, [INDEX_HTML]: indexHtml };
 
+/** The whole-tree tests' limit: the 5 s default tripped under load (RULINGS 45: a tree scan took 5.7 s). */
+const TREE_TIMEOUT_MS = 30_000;
+
+let treeScan: readonly Violation[] | null = null;
+/** The real tree's violations: one AST pass, shared by every whole-tree test. */
+function treeViolations(): readonly Violation[] {
+  treeScan ??= violations(TREE);
+  return treeScan;
+}
+
 test('arch: scans raw sources', () => {
   const keys = Object.keys(SOURCES);
   expect(keys).toContain('main.ts');
@@ -792,15 +802,15 @@ test('arch: scans raw sources', () => {
   expect(app).toContain('<style');
   expect(app).not.toContain('svelte/internal');
   expect(indexHtml).toContain('telegram-web-app.js');
-});
+}, TREE_TIMEOUT_MS);
 
 test('arch: forbidden patterns', () => {
-  expect(violations(TREE).filter((v) => GROUP[v.rule] === 'pattern')).toEqual([]);
-});
+  expect(treeViolations().filter((v) => GROUP[v.rule] === 'pattern')).toEqual([]);
+}, TREE_TIMEOUT_MS);
 
 test('arch: import boundaries', () => {
-  expect(violations(TREE).filter((v) => GROUP[v.rule] === 'boundary')).toEqual([]);
-});
+  expect(treeViolations().filter((v) => GROUP[v.rule] === 'boundary')).toEqual([]);
+}, TREE_TIMEOUT_MS);
 
 test('arch: pure world modules', () => {
   // Non-vacuous: the layer's files are scanned, so an empty or renamed tree cannot pass.
@@ -808,8 +818,8 @@ test('arch: pure world modules', () => {
   for (const file of PURE_WORLD_FILES) {
     expect(keys, file).toContain(file);
   }
-  expect(violations(TREE).filter((v) => GROUP[v.rule] === 'pure')).toEqual([]);
-});
+  expect(treeViolations().filter((v) => GROUP[v.rule] === 'pure')).toEqual([]);
+}, TREE_TIMEOUT_MS);
 
 // ---------------------------------------------------------------------------------------------------------------
 // Red fixtures: every case must be flagged with its rule.

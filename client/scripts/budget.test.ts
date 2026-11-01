@@ -271,6 +271,8 @@ describe('budget evaluate', () => {
 
 const CLIENT_DIR = fileURLToPath(new URL('..', import.meta.url));
 const SCRIPT = fileURLToPath(new URL('./budget.ts', import.meta.url));
+/** A test that spawns the CLI: the 5 s default tripped under load (RULINGS 45: 6.3 s at 93 % CPU). */
+const CLI_TIMEOUT_MS = 30_000;
 
 /** Deterministic, incompressible bytes (mulberry32): brotli cannot shrink them, so raw size = budget size. */
 function noise(length: number, seed: number): Uint8Array {
@@ -348,7 +350,7 @@ describe('budget cli', () => {
     for (const name of ROW_NAMES) {
       expect(r.stdout).toContain(`${name} |`);
     }
-  });
+  }, CLI_TIMEOUT_MS);
 
   test('budget: cli exits 0 on a small dist', () => {
     const dist = join(tmp, 'dist');
@@ -359,7 +361,7 @@ describe('budget cli', () => {
     expect(r.stdout).toMatch(/^manifest \| — \| — \| PASS/m);
     expect(r.stdout).toMatch(/^engine closure JS \(br\) \| .* \| (PENDING|PASS)/m);
     expect(r.stdout).toMatch(/^budget: \d+ rows, \d+ PASS, 0 FAIL, \d+ PENDING$/m);
-  });
+  }, CLI_TIMEOUT_MS);
 
   test('budget: cli runs through a linked path', () => {
     // Node runs the main module from its realpath while argv[1] keeps the caller's spelling (a junction, macOS's
@@ -373,7 +375,7 @@ describe('budget cli', () => {
     } finally {
       unlinkSync(link); // the link only: afterEach's recursive delete never meets a way into client/scripts
     }
-  });
+  }, CLI_TIMEOUT_MS);
 
   test('budget: cli runs through a linked path under preserve-symlinks-main', () => {
     // With the flag (also reachable through NODE_OPTIONS) Node keeps the link's spelling in import.meta.url while the
@@ -387,7 +389,7 @@ describe('budget cli', () => {
     } finally {
       unlinkSync(link); // the link only: afterEach's recursive delete never meets a way into client/scripts
     }
-  });
+  }, CLI_TIMEOUT_MS);
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -834,7 +836,7 @@ describe('budget assets', () => {
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
-  });
+  }, CLI_TIMEOUT_MS);
 
   test('budget: cli prints asset rows from the root', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'budget-root-'));
@@ -864,7 +866,7 @@ describe('budget assets', () => {
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
-  });
+  }, CLI_TIMEOUT_MS);
 });
 
 // A synthetic repository as `npm run story && npm run assets` leaves it: one free chapter (ch1) naming bg/cafe and
