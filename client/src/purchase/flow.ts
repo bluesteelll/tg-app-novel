@@ -93,11 +93,14 @@ export function createPurchaseFlow(deps: {
       onState(s);
     }
   };
-  const clearTimers = (): void => {
+  const cancelPoll = (): void => {
     if (pollTimer !== null) {
       clock.clearTimeout(pollTimer);
       pollTimer = null;
     }
+  };
+  const clearTimers = (): void => {
+    cancelPoll();
     if (windowTimer !== null) {
       clock.clearTimeout(windowTimer);
       windowTimer = null;
@@ -150,6 +153,7 @@ export function createPurchaseFlow(deps: {
       return;
     }
     step = Math.min(step + 1, POLL_DELAYS_MS.length - 1);
+    cancelPoll();
     pollTimer = clock.setTimeout(() => {
       pollTimer = null;
       poll('schedule');
@@ -347,7 +351,9 @@ export function createPurchaseFlow(deps: {
         if (clock.now() >= deadline) {
           finish({ kind: 'delayed', orderId: state.orderId });
         } else {
-          // Back from the background: the backoff starts over, and the window keeps its deadline.
+          // Back from the background: the poll below replaces a scheduled one, the backoff starts over, and the
+          // window keeps its deadline.
+          cancelPoll();
           step = 0;
           armWindow();
         }

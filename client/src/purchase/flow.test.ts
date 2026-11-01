@@ -438,6 +438,20 @@ test('flow_clears_timers', async () => {
   expect(tg2.opened).toBe(0);
   expect(kinds(gone.states)).toEqual(['requesting']);
   expect(c2.pending()).toBe(0);
+
+  // Activated with a poll already scheduled (no deactivated before it): the poll now replaces the scheduled one.
+  const c3 = new FakeClock();
+  const shop3 = new FakeShop(c3);
+  shop3.status = (n) => (n < 3 ? 'checkout' : 'paid');
+  shop3.owned = [CH2];
+  const early = flowOf(shop3, new FakeTg('paid'), c3);
+  early.flow.buy(CH2);
+  await c3.advance(400);
+  early.flow.onActivated();
+  await c3.advance(500);
+  expect(early.flow.state()).toEqual({ kind: 'unlocked', product: CH2 });
+  expect(shop3.polls).toEqual([0, 400, 900]);
+  expect(c3.pending()).toBe(0);
 });
 
 test('flow: check again leaves a lost sheet', async () => {
