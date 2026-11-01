@@ -9,10 +9,26 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use serde::Deserialize;
 
 use crate::content::{ContentError, ContentStore, Localized};
-use crate::ids::{ChapterId, ProductId};
+use crate::ids::{ChapterId, ProductId, is_local_id};
 
 /// `server/catalog.json`, compiled in: prices are server-only and change with a deploy (PLACEHOLDER values: Q3).
 pub const CATALOG_JSON: &str = include_str!("../catalog.json");
+
+/// The longest resource kind, in bytes (the `kind_shape` CHECKs of `0004_economy.sql`).
+const KIND_MAX_LEN: usize = 16;
+
+/// A resource kind of the economy, e.g. `hint`: `^[a-z][a-z0-9_]{0,15}$`, the `kind_shape` CHECKs of the balance and
+/// ledger tables.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ResourceKind(pub String);
+
+impl ResourceKind {
+    /// The kind `s` spells: a lower-case ASCII letter, then up to 15 lower-case letters, digits or `_`.
+    pub fn parse(s: &str) -> Option<ResourceKind> {
+        let ok = s.len() <= KIND_MAX_LEN && is_local_id(s);
+        ok.then(|| ResourceKind(s.to_owned()))
+    }
+}
 
 /// Telegram's limits on an invoice title, in characters (counted here in code points).
 const TITLE_CHARS: (usize, usize) = (1, 32);

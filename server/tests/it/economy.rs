@@ -1,11 +1,23 @@
-//! The resource economy (META-PLAN M17-M21): the `0004_economy.sql` constraints on raw SQL.
+//! The resource economy (META-PLAN M17-M21): the `0004_economy.sql` constraints on raw SQL, and the ledger and
+//! balance primitives of `db/economy.rs` on raw READ COMMITTED connections.
 //!
 //! Every refused schema case breaks one CHECK, or one whose name sorts before every other it breaks: PostgreSQL tests
 //! a table's CHECK constraints in name order, so the constraint a case reports is the one the case is about. Each
 //! refused case sits next to a control on the same parent rows, so a red names the constraint, not a missing parent.
+//!
+//! Balances are seeded through the primitives (a `referral_invitee` credit needs no charge; a debt is a clawback of a
+//! raw payment), never by raw balance rows, so every test keeps `balance - debt = SUM(amount)` per (user, kind).
 
-use sqlx::PgConnection;
-use sqlx::postgres::PgQueryResult;
+use std::fmt::Debug;
+use std::str::FromStr;
+
+use server::catalog::ResourceKind;
+use server::db::economy::{
+    Applied, Entry, Reason, clawback_in_tx, credit_in_tx, credited_by_charge, debit_in_tx,
+};
+use server::ids::UserId;
+use sqlx::postgres::{PgConnectOptions, PgQueryResult};
+use sqlx::{Connection, PgConnection};
 
 use crate::catalog::{ANN, T0, state_with_users};
 use crate::common;
@@ -484,4 +496,336 @@ async fn schema_economy_named_checks() {
         order(&mut c, "o-1", "pack:hint_m", Some("hint"), Some(1)).await,
     ));
     report(&failed(results));
+}
+
+/// The `hint` kind.
+fn hint() -> ResourceKind {
+    ResourceKind("hint".to_owned())
+}
+
+/// A ledger change of `user`'s `kind` by `amount` for `reason` under `key` at `T0`: no charge, no counterpart.
+fn entry<'a>(
+    user: i64,
+    kind: &'a ResourceKind,
+    amount: i64,
+    reason: Reason,
+    key: &str,
+) -> Entry<'a> {
+    Entry {
+        user: UserId(user),
+        kind,
+        amount,
+        reason,
+        idem_key: key.to_owned(),
+        charge_id: None,
+        counterpart: None,
+        r#ref: None,
+        at: T0,
+    }
+}
+
+/// A `referral_invitee` credit: the seed of these tests (it needs no charge).
+fn seed<'a>(user: i64, kind: &'a ResourceKind, amount: i64, key: &str) -> Entry<'a> {
+    entry(user, kind, amount, Reason::ReferralInvitee, key)
+}
+
+/// A `pack_refund` clawback of `amount` (above 0) of charge `charge`, keyed `refund:<charge>`.
+fn refund<'a>(user: i64, kind: &'a ResourceKind, amount: i64, charge: &'a str) -> Entry<'a> {
+    Entry {
+        charge_id: Some(charge),
+        ..entry(
+            user,
+            kind,
+            -amount,
+            Reason::PackRefund,
+            &format!("refund:{charge}"),
+        )
+    }
+}
+
+/// Opens a READ COMMITTED transaction on `c` (a raw connection's default is `repeatable read`).
+async fn begin(c: &mut PgConnection) {
+    sqlx::raw_sql("BEGIN ISOLATION LEVEL READ COMMITTED")
+        .execute(&mut *c)
+        .await
+        .unwrap();
+}
+
+async fn commit(c: &mut PgConnection) {
+    sqlx::raw_sql("COMMIT").execute(&mut *c).await.unwrap();
+}
+
+async fn rollback(c: &mut PgConnection) {
+    sqlx::raw_sql("ROLLBACK").execute(&mut *c).await.unwrap();
+}
+
+/// A raw connection to `st`'s database named like the app pool's sessions, so `wait_for_lock_waiter` sees it wait.
+async fn app_named(st: &server::AppState) -> PgConnection {
+    let options = PgConnectOptions::from_str(&st.cfg.database_url)
+        .unwrap()
+        .application_name("tg-novel-server");
+    PgConnection::connect_with(&options).await.unwrap()
+}
+
+/// Every balance row as (user, kind, balance, debt), by user and kind.
+async fn balance_rows(c: &mut PgConnection) -> Vec<(i64, String, i64, i64)> {
+    sqlx::query_as(
+        "SELECT user_id, kind, balance, debt FROM resource_balances ORDER BY user_id, kind",
+    )
+    .fetch_all(&mut *c)
+    .await
+    .unwrap()
+}
+
+/// Every ledger key, sorted.
+async fn ledger_keys(c: &mut PgConnection) -> Vec<String> {
+    sqlx::query_scalar("SELECT idem_key FROM resource_ledger ORDER BY idem_key")
+        .fetch_all(&mut *c)
+        .await
+        .unwrap()
+}
+
+/// The mismatch of `got` against `want`.
+fn expect_eq<T: PartialEq + Debug>(case: &str, got: T, want: T) -> Option<String> {
+    (got != want).then(|| format!("{case}: expected {want:?}, got {got:?}"))
+}
+
+/// A primitive's result as one comparable value: `Ok(Some(..))` applied or a duplicate, `Ok(None)` a refused debit,
+/// or the database error as `(SQLSTATE, constraint) message`.
+type Step = Result<Option<Applied>, String>;
+
+/// A credit's or a clawback's result as a [`Step`].
+fn step(got: Result<Applied, sqlx::Error>) -> Step {
+    got.map(Some).map_err(|e| describe(&e))
+}
+
+/// A debit's result as a [`Step`].
+fn debit_step(got: Result<Option<Applied>, sqlx::Error>) -> Step {
+    got.map_err(|e| describe(&e))
+}
+
+/// Applied, leaving this balance and debt.
+fn applied(balance: i64, debt: i64) -> Step {
+    Ok(Some(Applied::Applied { balance, debt }))
+}
+
+/// A replayed key: nothing changed.
+fn duplicate() -> Step {
+    Ok(Some(Applied::Duplicate))
+}
+
+/// M18's invariant over a mixed sequence (credits, debits, a clawback into debt, a credit that pays it, replayed
+/// keys): per (user, kind) the ledger sum equals `balance - debt`, and a replay changed nothing.
+#[tokio::test]
+async fn ledger_reconciles_with_balances() {
+    let (_st, _db, mut c) = schema_db().await;
+    let mut failures = Vec::new();
+    let (hint, gem) = (hint(), ResourceKind("gem".to_owned()));
+    failures.extend(expect_ok("payment c-refund", payment(&mut c, "c-refund", ANN).await).err());
+    begin(&mut c).await;
+    let mut steps = Vec::new();
+    let got = credit_in_tx(&mut c, &seed(ANN, &hint, 5, "r1")).await;
+    steps.push(("ANN +5", step(got), applied(5, 0)));
+    let got = debit_in_tx(&mut c, &entry(ANN, &hint, -2, Reason::HintSpend, "d1")).await;
+    steps.push(("ANN -2", debit_step(got), applied(3, 0)));
+    let got = clawback_in_tx(&mut c, &refund(ANN, &hint, 4, "c-refund")).await;
+    steps.push(("ANN clawback 4", step(got), applied(0, 1)));
+    let got = credit_in_tx(&mut c, &seed(ANN, &hint, 3, "r2")).await;
+    steps.push(("ANN +3 pays debt 1", step(got), applied(2, 0)));
+    let got = credit_in_tx(&mut c, &seed(ANN, &hint, 5, "r1")).await;
+    steps.push(("ANN r1 replayed", step(got), duplicate()));
+    let got = debit_in_tx(&mut c, &entry(ANN, &hint, -2, Reason::HintSpend, "d1")).await;
+    steps.push(("ANN d1 replayed", debit_step(got), duplicate()));
+    let got = clawback_in_tx(&mut c, &refund(ANN, &hint, 4, "c-refund")).await;
+    steps.push(("ANN clawback replayed", step(got), duplicate()));
+    let got = credit_in_tx(&mut c, &seed(BEN, &gem, 7, "r3")).await;
+    steps.push(("BEN gem +7", step(got), applied(7, 0)));
+    let got = debit_in_tx(&mut c, &entry(BEN, &gem, -7, Reason::GiftOut, "d2")).await;
+    steps.push(("BEN gem -7", debit_step(got), applied(0, 0)));
+    let got = credit_in_tx(&mut c, &seed(BEN, &hint, 1, "r4")).await;
+    steps.push(("BEN hint +1", step(got), applied(1, 0)));
+    commit(&mut c).await;
+    for (case, got, want) in steps {
+        failures.extend(expect_eq(case, got, want));
+    }
+    let sums: Vec<(i64, String, i64)> = sqlx::query_as(
+        "SELECT user_id, kind, SUM(amount)::BIGINT FROM resource_ledger \
+         GROUP BY user_id, kind ORDER BY user_id, kind",
+    )
+    .fetch_all(&mut c)
+    .await
+    .unwrap();
+    let rows = balance_rows(&mut c).await;
+    let net: Vec<(i64, String, i64)> = rows
+        .iter()
+        .map(|(user, kind, balance, debt)| (*user, kind.clone(), balance - debt))
+        .collect();
+    failures.extend(expect_eq(
+        "per (user, kind): SUM(amount) against balance - debt",
+        sums,
+        net,
+    ));
+    failures.extend(expect_eq(
+        "balance rows",
+        rows,
+        vec![
+            (ANN, "hint".to_owned(), 2, 0),
+            (BEN, "gem".to_owned(), 0, 0),
+            (BEN, "hint".to_owned(), 1, 0),
+        ],
+    ));
+    failures.extend(expect_eq(
+        "ledger keys",
+        ledger_keys(&mut c).await,
+        ["d1", "d2", "r1", "r2", "r3", "r4", "refund:c-refund"]
+            .map(str::to_owned)
+            .to_vec(),
+    ));
+    report(&failures);
+}
+
+/// A credit pays the debt first (M18, M20): debt 2 and a credit of 5 leave balance 3 and no debt; a credit of 1 on a
+/// debt of 2 leaves a debt of 1.
+#[tokio::test]
+async fn credit_pays_debt_first() {
+    let (_st, _db, mut c) = schema_db().await;
+    let mut failures = Vec::new();
+    let hint = hint();
+    for (user, charge) in [(ANN, "c-ann"), (BEN, "c-ben")] {
+        failures.extend(expect_ok(charge, payment(&mut c, charge, user).await).err());
+    }
+    begin(&mut c).await;
+    let mut steps = Vec::new();
+    let got = clawback_in_tx(&mut c, &refund(ANN, &hint, 2, "c-ann")).await;
+    steps.push(("ANN debt 2", step(got), applied(0, 2)));
+    let got = credit_in_tx(&mut c, &seed(ANN, &hint, 5, "r1")).await;
+    steps.push(("ANN +5", step(got), applied(3, 0)));
+    commit(&mut c).await;
+    begin(&mut c).await;
+    let got = clawback_in_tx(&mut c, &refund(BEN, &hint, 2, "c-ben")).await;
+    steps.push(("BEN debt 2", step(got), applied(0, 2)));
+    let got = credit_in_tx(&mut c, &seed(BEN, &hint, 1, "r2")).await;
+    steps.push(("BEN +1", step(got), applied(0, 1)));
+    commit(&mut c).await;
+    for (case, got, want) in steps {
+        failures.extend(expect_eq(case, got, want));
+    }
+    report(&failures);
+}
+
+/// A clawback takes the balance, then records the shortfall as debt (M20): balance 1, clawback 3 -> balance 0, debt 2.
+/// A user with no row gets one holding the whole amount as debt (D16: the clawback is an upsert).
+#[tokio::test]
+async fn clawback_takes_balance_then_debt() {
+    let (_st, _db, mut c) = schema_db().await;
+    let mut failures = Vec::new();
+    let hint = hint();
+    for (user, charge) in [(ANN, "c-ann"), (BEN, "c-ben")] {
+        failures.extend(expect_ok(charge, payment(&mut c, charge, user).await).err());
+    }
+    begin(&mut c).await;
+    let mut steps = Vec::new();
+    let got = credit_in_tx(&mut c, &seed(ANN, &hint, 1, "r1")).await;
+    steps.push(("ANN +1", step(got), applied(1, 0)));
+    let got = clawback_in_tx(&mut c, &refund(ANN, &hint, 3, "c-ann")).await;
+    steps.push(("ANN clawback 3", step(got), applied(0, 2)));
+    let got = clawback_in_tx(&mut c, &refund(BEN, &hint, 4, "c-ben")).await;
+    steps.push(("BEN (no row) clawback 4", step(got), applied(0, 4)));
+    commit(&mut c).await;
+    for (case, got, want) in steps {
+        failures.extend(expect_eq(case, got, want));
+    }
+    failures.extend(expect_eq(
+        "balance rows",
+        balance_rows(&mut c).await,
+        vec![
+            (ANN, "hint".to_owned(), 0, 2),
+            (BEN, "hint".to_owned(), 0, 4),
+        ],
+    ));
+    report(&failures);
+}
+
+/// Two debits of a balance of 1 at once (D14): A debits and holds the row; B's guarded UPDATE waits on it (B is a raw
+/// connection named like the app's sessions, so `wait_for_lock_waiter` sees the wait), then re-evaluates on A's
+/// committed row and matches nothing: `None`, and B rolls back. One debit applied; the ledger holds the seed and A's
+/// row only.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn balance_never_negative_concurrent_spends() {
+    let (st, _db, mut a) = schema_db().await;
+    let mut failures = Vec::new();
+    let hint = hint();
+    begin(&mut a).await;
+    let got = credit_in_tx(&mut a, &seed(ANN, &hint, 1, "seed")).await;
+    failures.extend(expect_eq("seed +1", step(got), applied(1, 0)));
+    commit(&mut a).await;
+
+    begin(&mut a).await;
+    let got = debit_in_tx(&mut a, &entry(ANN, &hint, -1, Reason::HintSpend, "d:a")).await;
+    failures.extend(expect_eq("A", debit_step(got), applied(0, 0)));
+    let mut b = app_named(&st).await;
+    let mut second = tokio::spawn(async move {
+        let hint = ResourceKind("hint".to_owned());
+        begin(&mut b).await;
+        let got = debit_in_tx(&mut b, &entry(ANN, &hint, -1, Reason::HintSpend, "d:b")).await;
+        rollback(&mut b).await;
+        b.close().await.unwrap();
+        debit_step(got)
+    });
+    let early = tokio::select! {
+        biased;
+        got = &mut second => Some(got.unwrap()),
+        () = common::wait_for_lock_waiter(&st) => None,
+    };
+    if early.is_some() {
+        failures.push("B never waited: it finished while A held the balance row".to_owned());
+    }
+    commit(&mut a).await;
+    let second = match early {
+        Some(got) => got,
+        None => second.await.unwrap(),
+    };
+    failures.extend(expect_eq("B", second, Ok(None)));
+    failures.extend(expect_eq(
+        "balance rows",
+        balance_rows(&mut a).await,
+        vec![(ANN, "hint".to_owned(), 0, 0)],
+    ));
+    failures.extend(expect_eq(
+        "ledger keys",
+        ledger_keys(&mut a).await,
+        vec!["d:a".to_owned(), "seed".to_owned()],
+    ));
+    report(&failures);
+}
+
+/// L9's clawback source (M20, revision 1): the kind and amount of a charge's `pay:<charge>` row; `None` for a charge
+/// with no ledger row, and for one whose only row is not its pack credit.
+#[tokio::test]
+async fn credited_by_charge_reads_the_pay_row() {
+    let (_st, _db, mut c) = schema_db().await;
+    let mut failures = Vec::new();
+    let hint = hint();
+    for charge in ["c1", "c2"] {
+        failures.extend(expect_ok(charge, payment(&mut c, charge, ANN).await).err());
+    }
+    begin(&mut c).await;
+    let pack = Entry {
+        charge_id: Some("c1"),
+        ..entry(ANN, &hint, 3, Reason::Pack, "pay:c1")
+    };
+    let got = credit_in_tx(&mut c, &pack).await;
+    failures.extend(expect_eq("pack +3 as pay:c1", step(got), applied(3, 0)));
+    let got = clawback_in_tx(&mut c, &refund(ANN, &hint, 1, "c2")).await;
+    failures.extend(expect_eq("refund:c2 only", step(got), applied(2, 0)));
+    commit(&mut c).await;
+    for (case, charge, want) in [
+        ("the pack charge c1", "c1", Some((hint.clone(), 3))),
+        ("an unknown charge", "c-none", None),
+        ("c2, whose only row is refund:c2", "c2", None),
+    ] {
+        let got = credited_by_charge(&mut c, charge).await;
+        failures.extend(expect_eq(case, got.map_err(|e| describe(&e)), Ok(want)));
+    }
+    report(&failures);
 }
