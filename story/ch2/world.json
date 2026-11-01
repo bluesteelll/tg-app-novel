@@ -1,0 +1,23 @@
+{
+  "format": 1,
+  "items": {},
+  "docs": {},
+  "puzzles": {
+    "cabinet": {
+      "type": "code",
+      "title": { "id": "ch2.cabinet.t001", "ru": "Шкаф в архиве" },
+      "prompt": { "id": "ch2.cabinet.p001", "ru": "Три медных диска. Табличка: «Открою в наш день»." },
+      "closeup": "cabinet",
+      "params": { "dials": 3 },
+      "maxAttempts": 3,
+      "giveUp": true,
+      "solution": [1, 2, 5],
+      "hints": [
+        { "id": "ch2.cabinet.h001", "ru": "«Наш день» — так они называли одну дату. Она была на фотографии." },
+        { "id": "ch2.cabinet.h002", "ru": "Двенадцатое мая: сначала число, потом месяц." },
+        { "id": "ch2.cabinet.h003", "ru": "Код: 1-2-5." }
+      ]
+    }
+  },
+  "sections": {}
+}

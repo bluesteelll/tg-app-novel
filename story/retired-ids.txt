@@ -2,3 +2,6 @@ ch1.cafe.k4p2
 ch1.cafe.w7m3
 ch1.cafe.b2x9
 ch1.street.q8n5
+ch2.archive.r3t6
+ch2.archive.v5c1
+ch2.archive.h9j4

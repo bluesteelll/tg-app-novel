@@ -1,6 +1,9 @@
 {
   "manor": {
-    "endings": { "end": { "ru": "Конец пробной истории", "en": "The end of the trial story" } },
+    "endings": {
+      "truth": { "ru": "Письма, которые дождались", "en": "The letters that waited" },
+      "ashes": { "ru": "Пепел на рассвете", "en": "Ashes at daybreak" }
+    },
     "achievements": {}
   }
 }
