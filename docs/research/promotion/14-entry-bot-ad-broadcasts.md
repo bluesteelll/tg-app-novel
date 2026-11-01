@@ -4,6 +4,7 @@
 - Labels as in PROMOTION.md §1: DOCUMENTED, CLAIMED, ANALYSIS, ASSUMPTION, INTERPRETATION (not legal advice), Gap.
 - R3 stands: the owner accepts the ad-law risk. The legal items below are facts, not blockers.
 - V8 checked this report: 19 CONFIRMED, 11 CORRECTED, 1 UNSUPPORTED. Its corrections are applied in this text.
+- Owner ruling R7 (2026-11-01, «Сплит с замером»): the measured split of §4 is chosen (PROMOTION.md §0, §12.1).
 
 ## The request
 
