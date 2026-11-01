@@ -59,6 +59,10 @@ fn routes() -> Router<AppState> {
         )
         .route("/puzzles/{puzzle_id}", get(puzzles::get_status))
         .route("/puzzles/{puzzle_id}/attempts", post(puzzles::post_attempt))
+        .route(
+            "/puzzles/{puzzle_id}/hints/{tier}",
+            post(puzzles::post_hint),
+        )
         .route("/invoices", post(orders::post_invoice))
         .route("/orders/{order_id}", get(orders::get_order))
         .route("/stats", get(stats::get_stats))

@@ -9,8 +9,8 @@
 //! raw payment), never by raw balance rows, so every test keeps `balance - debt = SUM(amount)` per (user, kind).
 //!
 //! The catalog's `economy` section (M17) and the pack path (M19): pack products, the order binding, and the credit
-//! inside the grant, through `POST /api/invoices` and the grant the webhook runs. `GET /api/wallet` through the
-//! production router.
+//! inside the grant, through `POST /api/invoices` and the grant the webhook runs. `GET /api/wallet` and the hint use
+//! `POST /api/puzzles/{puzzleId}/hints/{tier}` (M21) through the production router.
 
 use std::fmt::Debug;
 use std::path::Path;
@@ -18,13 +18,16 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use axum::http::header::CACHE_CONTROL;
+use axum::body::Body;
+use axum::http::header::{AUTHORIZATION, CACHE_CONTROL, X_CONTENT_TYPE_OPTIONS};
+use axum::http::{HeaderValue, Request};
 use serde_json::{Value, json};
 use server::AppState;
 use server::catalog::{
     CATALOG_JSON, Catalog, Economy, GiftRules, PackDef, PackId, ProductRef, ReferralRules,
     ResourceKind,
 };
+use server::clock::FixedClock;
 use server::content::{ContentError, ContentStore};
 use server::db::economy::{
     Applied, Entry, Reason, clawback_in_tx, credit_in_tx, credited_by_charge, debit_in_tx,
@@ -35,9 +38,9 @@ use server::telegram::payments::{GrantOutcome, PaymentFact, on_successful_paymen
 use sqlx::postgres::{PgConnectOptions, PgQueryResult};
 use sqlx::{Connection, PgConnection};
 
-use crate::catalog::{ANN, T0, get, state_with_users};
+use crate::catalog::{ANN, T0, bearer, get, own, state_with_users};
 use crate::common;
-use crate::content::FIXTURE;
+use crate::content::{FIXTURE, FixtureCopy, state_on};
 use crate::payments::{invoice_state, post_invoice};
 use crate::webhook::order_status;
 
@@ -1610,5 +1613,461 @@ async fn wallet_private_no_store() {
     )
     .into_iter()
     .collect();
+    report(&failures);
+}
+
+/// The fixture's `ch1.drawer` tier 1 hint, in Russian and English.
+const DRAWER_TIER1: (&str, &str) = (
+    "Цифры спрятаны в комнате.",
+    "The digits are hidden in the room.",
+);
+
+/// A collected `POST /api/puzzles/{puzzleId}/hints/{tier}` reply: (status, body as JSON, Cache-Control, nosniff).
+type HintReply = (u16, Value, Option<String>, Option<String>);
+
+/// `POST {path}` through the production router, as `user` (a token issued at `T0`) or without a token.
+async fn post_hint(st: &AppState, user: Option<i64>, path: &str) -> HintReply {
+    let mut req = Request::post(path);
+    if let Some(user) = user {
+        req = req.header(AUTHORIZATION, bearer(st, user));
+    }
+    let reply = common::call(st, req.body(Body::empty()).unwrap()).await;
+    let header = |name| {
+        reply
+            .headers
+            .get(name)
+            .and_then(|v: &HeaderValue| v.to_str().ok())
+            .map(str::to_owned)
+    };
+    let body = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
+    (
+        reply.status.as_u16(),
+        body,
+        header(CACHE_CONTROL),
+        header(X_CONTENT_TYPE_OPTIONS),
+    )
+}
+
+/// The (status, body) of a hint use of `puzzle`'s `tier` in `lang` by `user`.
+async fn use_hint(st: &AppState, user: i64, puzzle: &str, tier: &str, lang: &str) -> (u16, Value) {
+    let path = format!("/api/puzzles/{puzzle}/hints/{tier}?lang={lang}");
+    let (status, body, _, _) = post_hint(st, Some(user), &path).await;
+    (status, body)
+}
+
+/// A 200 `HintUseResponse`.
+fn spent(balance: i64, text: &str) -> (u16, Value) {
+    (200, json!({ "balance": balance, "text": text }))
+}
+
+/// An error reply with `code`.
+fn refusal_of(status: u16, code: &str) -> (u16, Value) {
+    (status, json!({ "error": code }))
+}
+
+/// Credits `amount` hints to `user` (a committed `referral_invitee` seed keyed `fund:<user>:<amount>`).
+async fn fund(st: &AppState, user: i64, amount: i64) {
+    let mut c = common::raw_db(st).await;
+    let hint = hint();
+    begin(&mut c).await;
+    credit_in_tx(
+        &mut c,
+        &seed(user, &hint, amount, &format!("fund:{user}:{amount}")),
+    )
+    .await
+    .unwrap();
+    commit(&mut c).await;
+    c.close().await.unwrap();
+}
+
+/// What `user` holds after hint uses: (the unlocked tiers of `puzzle`, the ledger keys, the `hint` row).
+type HintFacts = (Vec<i64>, Vec<String>, Option<(i64, i64)>);
+
+async fn hint_facts(st: &AppState, user: i64, puzzle: &str) -> HintFacts {
+    let mut c = common::raw_db(st).await;
+    let tiers = sqlx::query_scalar(
+        "SELECT tier FROM hint_unlocks WHERE user_id = $1 AND puzzle_id = $2 ORDER BY tier",
+    )
+    .bind(user)
+    .bind(puzzle)
+    .fetch_all(&mut c)
+    .await
+    .unwrap();
+    let keys = sqlx::query_scalar(
+        "SELECT idem_key FROM resource_ledger WHERE user_id = $1 ORDER BY idem_key",
+    )
+    .bind(user)
+    .fetch_all(&mut c)
+    .await
+    .unwrap();
+    c.close().await.unwrap();
+    (tiers, keys, hint_row(st, user).await)
+}
+
+/// A raw `puzzle_progress` row: `user` solved `puzzle` at `T0`.
+async fn solve(st: &AppState, user: i64, puzzle: &str) {
+    let mut c = common::raw_db(st).await;
+    sqlx::query(
+        "INSERT INTO puzzle_progress (user_id, puzzle_id, attempts, window_start, window_attempts, first_at, \
+         solved_at) VALUES ($1, $2, 1, $3, 1, $3, $3)",
+    )
+    .bind(user)
+    .bind(puzzle)
+    .bind(T0)
+    .execute(&mut c)
+    .await
+    .unwrap();
+    c.close().await.unwrap();
+}
+
+/// A raw `hint_unlocks` row with no ledger row: an unlock written before this lane (L6c's tests, or a later repair).
+async fn raw_unlock(st: &AppState, user: i64, puzzle: &str, tier: i64) {
+    let mut c = common::raw_db(st).await;
+    sqlx::query(
+        "INSERT INTO hint_unlocks (user_id, puzzle_id, tier, unlocked_at) VALUES ($1, $2, $3, $4)",
+    )
+    .bind(user)
+    .bind(puzzle)
+    .bind(tier)
+    .bind(T0)
+    .execute(&mut c)
+    .await
+    .unwrap();
+    c.close().await.unwrap();
+}
+
+/// The ladder is climbed in order (M21 step 1): tier 2 before tier 1 is 409 `hint_unavailable`, and nothing is
+/// written.
+#[tokio::test]
+async fn hint_spend_needs_previous_tier() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    fund(&st, ANN, 5).await;
+    let mut failures = Vec::new();
+    failures.extend(expect_eq(
+        "tier 2 first",
+        use_hint(&st, ANN, "ch1.drawer", "2", "ru").await,
+        refusal_of(409, "hint_unavailable"),
+    ));
+    failures.extend(expect_eq(
+        "after it",
+        hint_facts(&st, ANN, "ch1.drawer").await,
+        (Vec::new(), vec!["fund:1001:5".to_owned()], Some((5, 0))),
+    ));
+    report(&failures);
+}
+
+/// A balance that does not cover the tier is 409 `insufficient_balance`, and the transaction rolls back: no unlock
+/// row, no ledger row. Both forms of "nothing to spend": no balance row at all, and a row of balance 0 holding a debt
+/// (M20: a user with debt cannot spend), where the guarded UPDATE is what refuses.
+#[tokio::test]
+async fn hint_spend_insufficient_409_unlocks_nothing() {
+    let (st, _db) = state_with_users(&[ANN, BEN]).await;
+    let mut failures = Vec::new();
+    failures.extend(expect_eq(
+        "ANN, no row",
+        use_hint(&st, ANN, "ch1.drawer", "1", "ru").await,
+        refusal_of(409, "insufficient_balance"),
+    ));
+    failures.extend(expect_eq(
+        "ANN after it",
+        hint_facts(&st, ANN, "ch1.drawer").await,
+        (Vec::new(), Vec::new(), None),
+    ));
+
+    let mut c = common::raw_db(&st).await;
+    failures.extend(expect_ok("payment c-ben", payment(&mut c, "c-ben", BEN).await).err());
+    let hint = hint();
+    begin(&mut c).await;
+    let debt = step(clawback_in_tx(&mut c, &refund(BEN, &hint, 2, "c-ben")).await);
+    commit(&mut c).await;
+    c.close().await.unwrap();
+    failures.extend(expect_eq("BEN's debt of 2", debt, applied(0, 2)));
+    failures.extend(expect_eq(
+        "BEN, balance 0 and debt 2",
+        use_hint(&st, BEN, "ch1.drawer", "1", "ru").await,
+        refusal_of(409, "insufficient_balance"),
+    ));
+    failures.extend(expect_eq(
+        "BEN after it",
+        hint_facts(&st, BEN, "ch1.drawer").await,
+        (Vec::new(), vec!["refund:c-ben".to_owned()], Some((0, 2))),
+    ));
+    report(&failures);
+}
+
+/// Two uses of one tier at once debit once (M21: the unlock's primary key arbitrates). A (raw) has inserted the tier 1
+/// unlock and debited under a key of its own (`probe:a`, so the ledger key cannot be what stops B: D15), uncommitted;
+/// B's use through the app waits on A's unlock row, then finds it: 200 with the balance after A's one debit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hint_spend_concurrent_debits_once() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    fund(&st, ANN, 5).await;
+    let mut failures = Vec::new();
+    let mut a = common::raw_db(&st).await;
+    let hint = hint();
+    begin(&mut a).await;
+    sqlx::query(
+        "INSERT INTO hint_unlocks (user_id, puzzle_id, tier, unlocked_at) VALUES ($1, 'ch1.drawer', 1, $2)",
+    )
+    .bind(ANN)
+    .bind(T0)
+    .execute(&mut a)
+    .await
+    .unwrap();
+    let got =
+        debit_step(debit_in_tx(&mut a, &entry(ANN, &hint, -1, Reason::HintSpend, "probe:a")).await);
+    failures.extend(expect_eq("A's debit", got, applied(4, 0)));
+    let app = st.clone();
+    let mut b = tokio::spawn(async move { use_hint(&app, ANN, "ch1.drawer", "1", "ru").await });
+    let early = tokio::select! {
+        biased;
+        got = &mut b => Some(got.unwrap()),
+        () = common::wait_for_lock_waiter(&st) => None,
+    };
+    if early.is_some() {
+        failures.push("B never waited: it answered while A held the unlock row".to_owned());
+    }
+    commit(&mut a).await;
+    a.close().await.unwrap();
+    let got = match early {
+        Some(got) => got,
+        None => b.await.unwrap(),
+    };
+    failures.extend(expect_eq("B", got, spent(4, DRAWER_TIER1.0)));
+    failures.extend(expect_eq(
+        "after both",
+        hint_facts(&st, ANN, "ch1.drawer").await,
+        (
+            vec![1],
+            vec!["fund:1001:5".to_owned(), "probe:a".to_owned()],
+            Some((4, 0)),
+        ),
+    ));
+    report(&failures);
+}
+
+/// A solved puzzle's tiers cannot be bought (M21 step 1, before the unlock: D12): tier 1 of a puzzle solved first,
+/// and tier 2 after tier 1, are 409 `hint_unavailable` with nothing written; so is a replay of tier 1 after the solve.
+#[tokio::test]
+async fn hint_spend_after_solve_409() {
+    let (st, _db) = state_with_users(&[ANN, BEN]).await;
+    fund(&st, ANN, 5).await;
+    fund(&st, BEN, 5).await;
+    let mut failures = Vec::new();
+    solve(&st, BEN, "ch1.drawer").await;
+    failures.extend(expect_eq(
+        "BEN, solved: tier 1",
+        use_hint(&st, BEN, "ch1.drawer", "1", "ru").await,
+        refusal_of(409, "hint_unavailable"),
+    ));
+    failures.extend(expect_eq(
+        "BEN after it",
+        hint_facts(&st, BEN, "ch1.drawer").await,
+        (Vec::new(), vec!["fund:1002:5".to_owned()], Some((5, 0))),
+    ));
+
+    failures.extend(expect_eq(
+        "ANN tier 1",
+        use_hint(&st, ANN, "ch1.drawer", "1", "en").await,
+        spent(4, DRAWER_TIER1.1),
+    ));
+    solve(&st, ANN, "ch1.drawer").await;
+    for (case, tier) in [
+        ("ANN, solved: tier 2", "2"),
+        ("ANN, solved: tier 1 again", "1"),
+    ] {
+        failures.extend(expect_eq(
+            case,
+            use_hint(&st, ANN, "ch1.drawer", tier, "en").await,
+            refusal_of(409, "hint_unavailable"),
+        ));
+    }
+    failures.extend(expect_eq(
+        "ANN after it",
+        hint_facts(&st, ANN, "ch1.drawer").await,
+        (
+            vec![1],
+            vec![
+                "fund:1001:5".to_owned(),
+                "hint:1001:ch1.drawer:1".to_owned(),
+            ],
+            Some((4, 0)),
+        ),
+    ));
+    report(&failures);
+}
+
+/// A replayed use of an unlocked tier answers its text again and debits nothing (the unlock row comes before the
+/// debit, M21 step 2): tier 1 twice is one debit and one ledger row; an unlock row written with no ledger row (L6c
+/// era) is served at balance 0 with nothing debited. The status route then shows the unlocked text.
+#[tokio::test]
+async fn hint_spend_replay_no_debit() {
+    let (st, _db) = state_with_users(&[ANN, BEN]).await;
+    fund(&st, ANN, 5).await;
+    let mut failures = Vec::new();
+    for case in ["ANN tier 1", "ANN tier 1 again"] {
+        failures.extend(expect_eq(
+            case,
+            use_hint(&st, ANN, "ch1.drawer", "1", "ru").await,
+            spent(4, DRAWER_TIER1.0),
+        ));
+    }
+    failures.extend(expect_eq(
+        "ANN after both",
+        hint_facts(&st, ANN, "ch1.drawer").await,
+        (
+            vec![1],
+            vec![
+                "fund:1001:5".to_owned(),
+                "hint:1001:ch1.drawer:1".to_owned(),
+            ],
+            Some((4, 0)),
+        ),
+    ));
+
+    raw_unlock(&st, BEN, "ch1.drawer", 1).await;
+    failures.extend(expect_eq(
+        "BEN, an unlock with no ledger row, no balance row",
+        use_hint(&st, BEN, "ch1.drawer", "1", "en").await,
+        spent(0, DRAWER_TIER1.1),
+    ));
+    failures.extend(expect_eq(
+        "BEN after it",
+        hint_facts(&st, BEN, "ch1.drawer").await,
+        (vec![1], Vec::new(), None),
+    ));
+
+    let reply = get(&st, Some(ANN), "/api/puzzles/ch1.drawer?lang=en").await;
+    let status: Value = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
+    failures.extend(expect_eq(
+        "GET /api/puzzles/ch1.drawer?lang=en after the use",
+        (reply.status.as_u16(), status["hints"][0].clone()),
+        (
+            200,
+            json!({ "tier": 1, "unlocked": true, "text": DRAWER_TIER1.1 }),
+        ),
+    ));
+    report(&failures);
+}
+
+/// A paid chapter's puzzle is 403 `not_entitled` without the chapter, with nothing written and the balance kept; with
+/// the entitlement the use goes through.
+#[tokio::test]
+async fn hint_spend_paid_chapter_403() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    fund(&st, ANN, 5).await;
+    let mut failures = Vec::new();
+    failures.extend(expect_eq(
+        "ch2.cabinet without ch2",
+        use_hint(&st, ANN, "ch2.cabinet", "1", "ru").await,
+        refusal_of(403, "not_entitled"),
+    ));
+    failures.extend(expect_eq(
+        "after it",
+        hint_facts(&st, ANN, "ch2.cabinet").await,
+        (Vec::new(), vec!["fund:1001:5".to_owned()], Some((5, 0))),
+    ));
+    own(&st, ANN, "chapter:ch2").await;
+    failures.extend(expect_eq(
+        "ch2.cabinet with ch2",
+        use_hint(&st, ANN, "ch2.cabinet", "1", "ru").await,
+        spent(4, "Папки разложены не по цвету."),
+    ));
+    report(&failures);
+}
+
+/// The edge checks, in order: no token 401; a malformed id, a tier other than exactly `1`, `2` or `3`, and a missing,
+/// repeated or unknown `lang` are 400 (before the puzzle is looked up); an unknown puzzle is 404; a tier past the
+/// puzzle's own ladder is 404, judged after the gate. The 200 is `private, no-store` + `nosniff` (sold text).
+#[tokio::test]
+async fn hint_spend_shapes_and_ladder_bounds() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    fund(&st, ANN, 5).await;
+    let mut failures = Vec::new();
+    let (status, body, _, _) =
+        post_hint(&st, None, "/api/puzzles/ch1.drawer/hints/1?lang=ru").await;
+    failures.extend(expect_eq(
+        "no token",
+        (status, body),
+        refusal_of(401, "token_missing"),
+    ));
+    for path in [
+        "/api/puzzles/ch1/hints/1?lang=ru",
+        "/api/puzzles/ch1.Drawer/hints/1?lang=ru",
+        "/api/puzzles/ch01.drawer/hints/1?lang=ru",
+        "/api/puzzles/ch1.drawer/hints/0?lang=ru",
+        "/api/puzzles/ch1.drawer/hints/4?lang=ru",
+        "/api/puzzles/ch1.drawer/hints/01?lang=ru",
+        "/api/puzzles/ch1.drawer/hints/+1?lang=ru",
+        "/api/puzzles/ch1.drawer/hints/x?lang=ru",
+        "/api/puzzles/ch1.nothing/hints/0?lang=ru",
+        "/api/puzzles/ch1.drawer/hints/1",
+        "/api/puzzles/ch1.drawer/hints/1?lang=ru&lang=en",
+        "/api/puzzles/ch1.drawer/hints/1?lang=de",
+    ] {
+        let (status, body, _, _) = post_hint(&st, Some(ANN), path).await;
+        failures.extend(expect_eq(
+            path,
+            (status, body),
+            refusal_of(400, "bad_request"),
+        ));
+    }
+    for path in [
+        "/api/puzzles/ch1.nothing/hints/1?lang=ru",
+        "/api/puzzles/ch9.drawer/hints/1?lang=ru",
+    ] {
+        let (status, body, _, _) = post_hint(&st, Some(ANN), path).await;
+        failures.extend(expect_eq(
+            path,
+            (status, body),
+            refusal_of(404, "not_found"),
+        ));
+    }
+    failures.extend(expect_eq(
+        "after the refusals",
+        hint_facts(&st, ANN, "ch1.drawer").await,
+        (Vec::new(), vec!["fund:1001:5".to_owned()], Some((5, 0))),
+    ));
+    let got = post_hint(&st, Some(ANN), "/api/puzzles/ch1.drawer/hints/1?lang=ru").await;
+    failures.extend(expect_eq(
+        "the 200: status, body, cache-control, nosniff",
+        got,
+        (
+            200,
+            json!({ "balance": 4, "text": DRAWER_TIER1.0 }),
+            Some("private, no-store".to_owned()),
+            Some("nosniff".to_owned()),
+        ),
+    ));
+
+    // A ladder of 2 tiers: tier 3 names no hint (404), not a tier out of order (409).
+    let copy = FixtureCopy::new();
+    copy.edit_json("puzzles/ch1.json", |v| {
+        if let Some(hints) = v["puzzles"]["drawer"]["hints"].as_array_mut() {
+            hints.truncate(2);
+        }
+    })
+    .await;
+    let (started, _copy_db) = state_on(copy.path()).await;
+    let short = match started {
+        Ok(state) => state.with_clock(Arc::new(FixedClock(T0))),
+        Err(e) => panic!("a 2-hint ch1.drawer: expected a state, got {e}"),
+    };
+    short
+        .repo
+        .upsert_user(UserId(ANN), "Ann", None, T0)
+        .await
+        .unwrap();
+    fund(&short, ANN, 5).await;
+    failures.extend(expect_eq(
+        "a 2-tier ladder: tier 3",
+        use_hint(&short, ANN, "ch1.drawer", "3", "ru").await,
+        refusal_of(404, "not_found"),
+    ));
+    failures.extend(expect_eq(
+        "a 2-tier ladder: after it",
+        hint_facts(&short, ANN, "ch1.drawer").await,
+        (Vec::new(), vec!["fund:1001:5".to_owned()], Some((5, 0))),
+    ));
     report(&failures);
 }

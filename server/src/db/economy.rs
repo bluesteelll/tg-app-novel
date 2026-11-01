@@ -4,19 +4,23 @@
 //! Every change is one ledger insert (`ON CONFLICT ON CONSTRAINT resource_ledger_idem_key DO NOTHING`: no row back is
 //! a duplicate, and nothing else happens) followed by one balance statement, in the caller's transaction, so per
 //! (user, kind) `balance - debt` equals the sum of the ledger amounts. A credit pays the debt first; a debit only
-//! applies to a balance that covers it; a clawback takes the balance, then records the rest as debt (M20).
+//! applies to a balance that covers it; a clawback takes the balance, then records the rest as debt (M20). The hint
+//! spend (M21) unlocks a tier and debits it in one transaction.
 //!
-//! Lock order on every path: the ledger key, then the balance row. No path here waits for a `users` row while it holds
-//! a balance row.
+//! Lock order on every path: the ledger key, then the balance row (the spend takes the unlock key first). No path here
+//! waits for a `users` row while it holds a balance row.
 
 use sqlx::PgConnection;
 
-use crate::catalog::ResourceKind;
+use crate::catalog::{HINT_KIND, ResourceKind};
 use crate::db::{Repo, without_nul};
-use crate::ids::UserId;
+use crate::ids::{PuzzleId, UserId};
 
 /// The idempotency-key prefix of a pack credit: `pay:<charge>`.
 const PAY_KEY_PREFIX: &str = "pay:";
+
+/// The idempotency-key prefix of a hint spend: `hint:<user>:<puzzle>:<tier>`.
+const HINT_KEY_PREFIX: &str = "hint:";
 
 /// Why a ledger row moves a balance: the `resource_ledger_reason_known` words. The sign is the reason's
 /// (`resource_ledger_sign_by_reason`): a credit for `Pack`, `GiftIn` and the referral bonuses, a debit or clawback for
@@ -205,6 +209,58 @@ pub(crate) fn pay_key(charge: &str) -> String {
     key
 }
 
+/// The idempotency key of `user`'s spend on `puzzle`'s `tier`: `hint:<user>:<puzzle>:<tier>`.
+fn hint_key(user: UserId, puzzle: &PuzzleId, tier: u8) -> String {
+    let mut key = String::from(HINT_KEY_PREFIX);
+    key.push_str(&user.0.to_string());
+    key.push(':');
+    key.push_str(&spend_ref(puzzle, tier));
+    key
+}
+
+/// The ledger `ref` of a hint spend: `<puzzleId>:<tier>`.
+fn spend_ref(puzzle: &PuzzleId, tier: u8) -> String {
+    let mut reference = puzzle.0.clone();
+    reference.push(':');
+    reference.push_str(&tier.to_string());
+    reference
+}
+
+/// `user`'s balance of `kind` on `c`'s transaction, 0 without a row.
+async fn balance_of(
+    c: &mut PgConnection,
+    user: UserId,
+    kind: &ResourceKind,
+) -> Result<i64, sqlx::Error> {
+    let balance: Option<i64> = sqlx::query_scalar(
+        "SELECT balance FROM resource_balances WHERE user_id = $1 AND kind = $2",
+    )
+    .bind(user.0)
+    .bind(&kind.0)
+    .fetch_optional(&mut *c)
+    .await?;
+    Ok(balance.unwrap_or(0))
+}
+
+/// What [`Repo::spend_hint`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpendOutcome {
+    /// This use unlocked the tier and debited it: the `hint` balance after it.
+    Unlocked {
+        /// The balance after the debit.
+        balance: i64,
+    },
+    /// The tier was unlocked before: nothing was debited.
+    AlreadyUnlocked {
+        /// The current balance.
+        balance: i64,
+    },
+    /// The balance does not cover the tier: nothing was written.
+    Insufficient,
+    /// The puzzle is solved, or the tier before this one is not unlocked: nothing was written.
+    Unavailable,
+}
+
 /// One balance row as stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Balance {
@@ -233,5 +289,87 @@ impl Repo {
                 debt,
             })
             .collect())
+    }
+
+    /// Unlocks `tier` (1 to 3) of `puzzle` for `user` at `now`, paying `cost` units of [`HINT_KIND`] (M21), in one
+    /// READ COMMITTED transaction:
+    /// 1. one read: the puzzle not solved, and tier 1 or the tier before unlocked; else `Unavailable`, nothing written
+    ///    (a replay after a solve included);
+    /// 2. the unlock row, `ON CONFLICT ON CONSTRAINT hint_unlocks_pkey DO NOTHING`: no row back is `AlreadyUnlocked`,
+    ///    nothing debited. A concurrent use of the same tier waits on the first one's row here, then finds it: the
+    ///    unlock key, not the balance, makes one debit per tier;
+    /// 3. the debit keyed `hint:<user>:<puzzle>:<tier>`: a balance that does not cover it rolls back the unlock row and
+    ///    the ledger row with it (`Insufficient`).
+    ///
+    /// The unlock row comes before the debit, so no debit exists without its unlock.
+    pub async fn spend_hint(
+        &self,
+        user: UserId,
+        puzzle: &PuzzleId,
+        tier: u8,
+        cost: u32,
+        now: i64,
+    ) -> Result<SpendOutcome, sqlx::Error> {
+        let kind = ResourceKind(HINT_KIND.to_owned());
+        let mut tx = self.pool.begin().await?;
+        let open: bool = sqlx::query_scalar(
+            "SELECT NOT EXISTS (SELECT 1 FROM puzzle_progress \
+                                WHERE user_id = $1 AND puzzle_id = $2 AND solved_at IS NOT NULL) \
+             AND ($3 = 1 OR EXISTS (SELECT 1 FROM hint_unlocks \
+                                    WHERE user_id = $1 AND puzzle_id = $2 AND tier = $3 - 1))",
+        )
+        .bind(user.0)
+        .bind(&puzzle.0)
+        .bind(i64::from(tier))
+        .fetch_one(&mut *tx)
+        .await?;
+        if !open {
+            tx.rollback().await?;
+            return Ok(SpendOutcome::Unavailable);
+        }
+        let unlocked: Option<i64> = sqlx::query_scalar(
+            "INSERT INTO hint_unlocks (user_id, puzzle_id, tier, unlocked_at) VALUES ($1, $2, $3, $4) \
+             ON CONFLICT ON CONSTRAINT hint_unlocks_pkey DO NOTHING RETURNING tier",
+        )
+        .bind(user.0)
+        .bind(&puzzle.0)
+        .bind(i64::from(tier))
+        .bind(now)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if unlocked.is_none() {
+            let balance = balance_of(&mut tx, user, &kind).await?;
+            tx.commit().await?;
+            return Ok(SpendOutcome::AlreadyUnlocked { balance });
+        }
+        let reference = spend_ref(puzzle, tier);
+        let debit = Entry {
+            user,
+            kind: &kind,
+            amount: -i64::from(cost),
+            reason: Reason::HintSpend,
+            idem_key: hint_key(user, puzzle, tier),
+            charge_id: None,
+            counterpart: None,
+            r#ref: Some(&reference),
+            at: now,
+        };
+        match debit_in_tx(&mut tx, &debit).await? {
+            None => {
+                tx.rollback().await?;
+                Ok(SpendOutcome::Insufficient)
+            }
+            Some(Applied::Applied { balance, .. }) => {
+                tx.commit().await?;
+                Ok(SpendOutcome::Unlocked { balance })
+            }
+            // The key is the tier's own: a duplicate cannot follow a fresh unlock row, and if it did, nothing more is
+            // debited.
+            Some(Applied::Duplicate) => {
+                let balance = balance_of(&mut tx, user, &kind).await?;
+                tx.commit().await?;
+                Ok(SpendOutcome::AlreadyUnlocked { balance })
+            }
+        }
     }
 }

@@ -407,6 +407,17 @@ pub struct WalletResponse {
     pub hint_tier_cost: u32,
 }
 
+/// `POST /api/puzzles/{puzzleId}/hints/{tier}?lang=ru|en` response: the balance after the use, and the tier's text.
+// No `Debug`: `text` is sold content, never logged.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HintUseResponse {
+    /// The `hint` balance after the use (unchanged when the tier was unlocked before).
+    pub balance: i64,
+    /// The tier's hint in the requested language.
+    pub text: String,
+}
+
 /// The first line of the generated file: what it is and how to rewrite it.
 const BINDINGS_HEADER: &str = "// Built from server/src/api/dto.rs and error.rs by ts-rs; do not edit. Regenerate: \
                                cargo test -p server --test it bindings::write_bindings -- --ignored --exact";
