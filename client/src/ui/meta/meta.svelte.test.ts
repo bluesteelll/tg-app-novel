@@ -2,6 +2,7 @@
 // @testing-library/svelte. Events are built by hand where `detail` matters: a pointer click has detail >= 1, a
 // keyboard or assistive-technology activation has detail 0 (as in choices.svelte.test.ts).
 import { cleanup, render, within } from '@testing-library/svelte';
+import { flushSync } from 'svelte';
 import { afterEach, expect, test, vi } from 'vitest';
 
 import type { Lang } from '../../i18n/index.ts';
@@ -9,7 +10,10 @@ import { CONSENT_TEXT_VERSION, metaEn, metaRu, mt, type MetaKey } from '../../i1
 import type { EndingName, StoryId } from '../../story/catalog.ts';
 import type { ChapterId } from '../../story/staging.ts';
 import CompletionCard from './CompletionCard.svelte';
-import type { CardData } from './index.ts';
+import FriendProfile from './FriendProfile.svelte';
+import Friends from './Friends.svelte';
+import type { CardData, FriendData, FriendHandle, InviteProps, ProfileData, SocialData } from './index.ts';
+import InvitePrompt from './InvitePrompt.svelte';
 
 // svelteTesting()'s auto-cleanup does not reach the `dom` project (L14a), so each test unmounts what it rendered here.
 afterEach(() => cleanup());
@@ -27,13 +31,19 @@ function placeholders(text: string): string[] {
 const down = (el: Element): void => {
   el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
 };
+/** A pointer click with no pointerdown before it; the DOM is not updated yet. */
 const pointerClick = (el: Element): void => {
   el.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
 };
-/** A full pointer tap: pointerdown, then the click it produces. */
-const tap = (el: Element): void => {
+/** A full pointer tap: pointerdown, then the click it produces; the DOM is not updated yet (a double tap). */
+const rawTap = (el: Element): void => {
   down(el);
   pointerClick(el);
+};
+/** A full pointer tap, then Svelte's batched DOM update. */
+const tap = (el: Element): void => {
+  rawTap(el);
+  flushSync();
 };
 
 /** The rendered text with runs of whitespace as one space. */
@@ -226,4 +236,188 @@ test('card: data dropped on close', () => {
   expect(names).toContain('./CompletionCard.svelte');
   const withModule = names.filter((n) => /<script\b[^>]*\bmodule\b/.test(COMPONENT_SOURCES[n] ?? ''));
   expect(withModule.map((n) => n.replace(/^\.\//, ''))).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Friends, a friend's profile and the invite prompt (C3; M10, M13, F19-F22)
+
+// Handles are 24 hex characters (M10 W1); the brand is compile-time only, so the cast only builds fixtures.
+const handle = (c: string): FriendHandle => c.repeat(24) as FriendHandle;
+const [H1, H2, H3, H4] = [handle('1'), handle('2'), handle('3'), handle('4')];
+
+const SOCIAL: SocialData = {
+  inviteCode: 'c'.repeat(32),
+  friends: [{ handle: H3, firstName: 'Bo' }],
+  // Two people may share a first name: rows are keyed by handle (W1).
+  requests: [
+    { handle: H1, firstName: 'Alex', at: 1_790_000_000 },
+    { handle: H2, firstName: 'Alex', at: 1_790_000_001 },
+    { handle: H4, firstName: '<b>Kim</b>', at: 1_790_000_002 },
+  ],
+  profileVisible: false,
+};
+
+/** A text as a pattern that matches it literally (the table's punctuation is not regex syntax). */
+const literally = (text: string): RegExp => new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+
+test('friends: requests show accept and decline', async () => {
+  for (const lang of LANGS) {
+    const calls = {
+      onaccept: vi.fn(),
+      ondecline: vi.fn(),
+      onopen: vi.fn(),
+      oninvite: vi.fn(),
+      onconsent: vi.fn(),
+      onpolicy: vi.fn(),
+    };
+    const view = render(Friends, { social: SOCIAL, lang, ...calls });
+    const q = within(view.container);
+    const accepts = q.getAllByRole('button', { name: mt(lang, 'meta.friends_accept') });
+    const declines = q.getAllByRole('button', { name: mt(lang, 'meta.friends_decline') });
+    expect([accepts.length, declines.length], lang).toEqual([3, 3]);
+    tap(accepts[1] ?? document.body);
+    tap(declines[0] ?? document.body);
+    expect(calls.onaccept.mock.calls, lang).toEqual([[H2]]);
+    expect(calls.ondecline.mock.calls, lang).toEqual([[H1]]);
+    // The decline note is said once, under the heading.
+    expect(q.getAllByText(mt(lang, 'meta.friends_decline_note')), lang).toHaveLength(1);
+    // A first name is user text: characters, never markup; a handle is an address, never shown.
+    expect(view.container.querySelector('b'), lang).toBeNull();
+    expect(shown(view.container), lang).toContain('<b>Kim</b>');
+    for (const h of [H1, H2, H3, H4]) {
+      expect(view.container.outerHTML, lang).not.toContain(h);
+    }
+
+    tap(q.getByRole('button', { name: 'Bo' }));
+    expect(calls.onopen.mock.calls, lang).toEqual([[H3]]);
+    const visibility = q.getByRole('button', { name: literally(mt(lang, 'meta.friends_visibility')) });
+    expect(shown(visibility), lang).toContain(mt(lang, 'meta.friends_visibility_off'));
+    expect(shown(visibility), lang).not.toContain(mt(lang, 'meta.friends_visibility_on'));
+    tap(visibility);
+    tap(q.getByRole('button', { name: mt(lang, 'meta.friends_invite') }));
+    // M26: the policy is linked from Friends too (critique W1).
+    tap(q.getByRole('button', { name: mt(lang, 'meta.friends_policy') }));
+    expect([calls.onconsent, calls.oninvite, calls.onpolicy].map((f) => f.mock.calls.length), lang).toEqual([1, 1, 1]);
+
+    await view.rerender({ busy: true });
+    for (const b of [...accepts, ...declines]) {
+      expect((b as HTMLButtonElement).disabled, lang).toBe(true);
+    }
+    view.unmount();
+  }
+  // A friend carries a handle and a first name, never a Telegram id (W1).
+  // @ts-expect-error -- no numeric user id in the props
+  void ({ handle: H1, firstName: 'Bo', userId: 1 } satisfies FriendData);
+});
+
+const STORY: ProfileData['stories'][number] = {
+  storyId: 'tide' as StoryId,
+  storyTitle: 'The Tide',
+  endingsFound: 2,
+  achievementsUnlocked: 1,
+  sharedEndings: [{ name: 'truth' as EndingName, title: 'Truth' }],
+  sharedAchievements: [{ id: 'a1', name: 'First steps' }],
+};
+const PROFILE: ProfileData = { handle: H3, firstName: 'Bo', visible: true, stories: [STORY] };
+
+test('friend: progress hidden without consent, shared titles with it', () => {
+  for (const lang of LANGS) {
+    // Hidden: the name and the note, nothing of the stories, even when some arrive (defence in depth, M13).
+    const ongift = vi.fn();
+    const hidden = render(FriendProfile, { profile: { ...PROFILE, visible: false }, lang, ongift, onremove: vi.fn() });
+    const h = within(hidden.container);
+    const text = shown(hidden.container);
+    expect(text, lang).toContain('Bo');
+    expect(text, lang).toContain(mt(lang, 'meta.friend_hidden'));
+    for (const absent of ['The Tide', 'Truth', 'First steps', mt(lang, 'meta.friend_shared')]) {
+      expect(text, lang).not.toContain(absent);
+    }
+    expect(text, lang).not.toMatch(/\d/);
+    // Gift and Remove need the friendship, not the consent: a hidden profile keeps both (critique W2).
+    tap(h.getByRole('button', { name: mt(lang, 'meta.friend_gift') }));
+    expect(ongift.mock.calls, lang).toEqual([[H3]]);
+    tap(h.getByRole('button', { name: mt(lang, 'meta.friend_remove') }));
+    expect(shown(hidden.container), lang).toContain(mt(lang, 'meta.friend_remove_note'));
+    hidden.unmount();
+
+    // Visible: per story the friend's own counts and the titles both found; never "of".
+    const ongift2 = vi.fn();
+    const open = render(FriendProfile, { profile: PROFILE, lang, ongift: ongift2, onremove: vi.fn() });
+    const o = within(open.container);
+    const seen = shown(open.container);
+    for (const present of [
+      'The Tide',
+      mt(lang, 'meta.friend_endings', { n: 2 }),
+      mt(lang, 'meta.friend_achievements', { n: 1 }),
+      mt(lang, 'meta.friend_shared'),
+      'Truth',
+      'First steps',
+    ]) {
+      expect(seen, lang).toContain(present);
+    }
+    expect(seen, lang).not.toContain(mt(lang, 'meta.friend_hidden'));
+    expect(seen, lang).not.toMatch(OF_WORD);
+    tap(o.getByRole('button', { name: mt(lang, 'meta.friend_gift') }));
+    expect(ongift2.mock.calls, lang).toEqual([[H3]]);
+    open.unmount();
+  }
+});
+
+test('friend: remove asks once more and says it is final', () => {
+  for (const lang of LANGS) {
+    const onremove = vi.fn();
+    const view = render(FriendProfile, { profile: PROFILE, lang, ongift: vi.fn(), onremove });
+    const q = within(view.container);
+    const note = mt(lang, 'meta.friend_remove_note');
+    tap(q.getByRole('button', { name: mt(lang, 'meta.friend_remove') }));
+    expect(shown(view.container), lang).toContain(note);
+    expect(onremove, lang).not.toHaveBeenCalled();
+
+    tap(q.getByRole('button', { name: mt(lang, 'meta.cancel') }));
+    expect(shown(view.container), lang).not.toContain(note);
+    expect(q.queryByRole('button', { name: mt(lang, 'meta.friend_remove_confirm') }), lang).toBeNull();
+    expect(onremove, lang).not.toHaveBeenCalled();
+
+    tap(q.getByRole('button', { name: mt(lang, 'meta.friend_remove') }));
+    const confirmButton = q.getByRole('button', { name: mt(lang, 'meta.friend_remove_confirm') });
+    // Rule (b): a pointer click with no pointerdown on the confirm (the tap that revealed it) removes nobody (W5).
+    pointerClick(confirmButton);
+    expect(onremove, lang).not.toHaveBeenCalled();
+    tap(confirmButton);
+    expect(onremove.mock.calls, lang).toEqual([[H3]]);
+    view.unmount();
+  }
+});
+
+test('invite: prompt names nobody and says who sees the name', () => {
+  const fragments: Readonly<Record<Lang, readonly RegExp[]>> = {
+    en: [/shared this link will see your Telegram first name/, /only if they accept/],
+    ru: [/поделился этой ссылкой, увидит ваше имя/, /только если он примет/],
+  };
+  const keys = ['meta.invite_title', 'meta.invite_body', 'meta.invite_send', 'meta.invite_later'] as const;
+  for (const lang of LANGS) {
+    const onsend = vi.fn();
+    const onlater = vi.fn();
+    const view = render(InvitePrompt, { lang, onsend, onlater });
+    // Exactly the table's words: no name, no code, nothing else.
+    expect(shown(view.container), lang).toBe(keys.map((k) => mt(lang, k)).join(' '));
+    for (const k of keys) {
+      expect(placeholders(mt(lang, k)), `${lang} ${k}`).toEqual([]);
+    }
+    for (const re of fragments[lang]) {
+      expect(mt(lang, 'meta.invite_body'), lang).toMatch(re);
+    }
+    const q = within(view.container);
+    const send = q.getByRole('button', { name: mt(lang, 'meta.invite_send') });
+    // Rule (b): the prompt arrives at boot, possibly under a tap in progress; that tap sends nothing (W5).
+    pointerClick(send);
+    expect(onsend, lang).not.toHaveBeenCalled();
+    tap(send);
+    tap(q.getByRole('button', { name: mt(lang, 'meta.invite_later') }));
+    expect([onsend.mock.calls.length, onlater.mock.calls.length], lang).toEqual([1, 1]);
+    view.unmount();
+  }
+  // The prompt has no name prop (C1).
+  // @ts-expect-error -- the inviter is never named
+  void ({ lang: 'en', onsend: () => {}, onlater: () => {}, inviterName: 'Kim' } satisfies InviteProps);
 });
