@@ -19,25 +19,7 @@ use crate::error::ApiError;
 use crate::ids::ProductId;
 use crate::puzzles::Lang;
 use crate::telegram::gateway::InvoiceSpec;
-
-/// The primary language subtags whose speakers get the Russian invoice (K29); every other tag, or none, gets English.
-const RUSSIAN_INVOICE_LANGS: [&str; 4] = ["ru", "uk", "be", "kk"];
-
-/// The invoice language of a Telegram language tag (K29): its primary subtag, ASCII case-insensitive, in
-/// [`RUSSIAN_INVOICE_LANGS`] is Russian; anything else, or no tag, is English.
-fn invoice_lang(language_code: Option<&str>) -> Lang {
-    let primary = language_code
-        .and_then(|tag| tag.split('-').next())
-        .unwrap_or_default();
-    if RUSSIAN_INVOICE_LANGS
-        .iter()
-        .any(|lang| primary.eq_ignore_ascii_case(lang))
-    {
-        Lang::Ru
-    } else {
-        Lang::En
-    }
-}
+use crate::telegram::payments::payer_lang;
 
 /// `text` in `lang`.
 fn localized(text: &Localized, lang: Lang) -> &str {
@@ -66,7 +48,7 @@ pub async fn post_invoice(
     }
     let created = st
         .repo
-        .reuse_or_create_order(user, &product.id, product.price_stars, st.clock.now())
+        .reuse_or_create_order(user, product, st.clock.now())
         .await?;
     let (order, language_code) = match created {
         InvoiceOrder::Reused { order, invoice_url } => {
@@ -80,7 +62,7 @@ pub async fn post_invoice(
             language_code,
         } => (order, language_code),
     };
-    let lang = invoice_lang(language_code.as_deref());
+    let lang = payer_lang(language_code.as_deref());
     let title = localized(&product.title, lang).to_owned();
     let spec = InvoiceSpec {
         description: localized(&product.description, lang).to_owned(),

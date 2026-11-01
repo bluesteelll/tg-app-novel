@@ -10,10 +10,11 @@ use serde::Serialize;
 use serde_json::value::RawValue;
 use serde_json::{Map, Value};
 use server::api::dto::{
-    AttemptResponse, AuthResponse, ChapterPayload, CreateInvoiceResponse, EntitlementsResponse,
-    GameStatsDto, HintView, OrderResponse, PostStatsResponse, ProductDto, PutSaveResponse,
-    PuzzleStatus, RejectedEvent, SaveFull, SaveListResponse, SaveSummary, StatRejectReason,
-    StatsResponse, StoryStatsDto, UserDto, ts_bindings,
+    AttemptResponse, AuthResponse, BalanceDto, ChapterPayload, CreateInvoiceResponse,
+    EntitlementsResponse, GameStatsDto, HintUseResponse, HintView, Localized, OrderResponse,
+    PackDto, PostStatsResponse, ProductDto, PutSaveResponse, PuzzleStatus, RejectedEvent, SaveFull,
+    SaveListResponse, SaveSummary, StatRejectReason, StatsResponse, StoryStatsDto, UserDto,
+    WalletResponse, ts_bindings,
 };
 use server::db::orders::OrderStatus;
 use server::error::{ApiErrorBody, ErrorCode};
@@ -36,7 +37,7 @@ const REQUESTS: [&str; 8] = [
 ];
 
 /// The exported types that only appear inside a sampled body, and are sampled there.
-const NESTED: [&str; 12] = [
+const NESTED: [&str; 15] = [
     "SaveSlot",
     "StoryId",
     "ErrorCode",
@@ -49,6 +50,9 @@ const NESTED: [&str; 12] = [
     "RejectedEvent",
     "StoryStatsDto",
     "GameStatsDto",
+    "Localized",
+    "BalanceDto",
+    "PackDto",
 ];
 
 /// Every error code, each at its index in [`code_index`].
@@ -369,6 +373,46 @@ fn samples() -> Value {
                 },
             }),
         ],
+    );
+    let pack = |id: &str, amount: u32, price_stars: u32, ru: &str, en: &str| PackDto {
+        product_id: format!("pack:{id}"),
+        kind: "hint".to_owned(),
+        amount,
+        price_stars,
+        title: Localized {
+            ru: ru.to_owned(),
+            en: en.to_owned(),
+        },
+    };
+    let hint = |balance: i64, debt: i64| BalanceDto {
+        kind: "hint".to_owned(),
+        balance,
+        debt,
+    };
+    put(
+        "WalletResponse",
+        vec![
+            value(&WalletResponse {
+                balances: vec![hint(0, 2)],
+                packs: vec![
+                    pack("hint_s", 3, 1, "3 подсказки", "3 hints"),
+                    pack("hint_m", 10, 3, "10 подсказок", "10 hints"),
+                ],
+                hint_tier_cost: 1,
+            }),
+            value(&WalletResponse {
+                balances: vec![hint(0, 0)],
+                packs: Vec::new(),
+                hint_tier_cost: 1,
+            }),
+        ],
+    );
+    put(
+        "HintUseResponse",
+        vec![value(&HintUseResponse {
+            balance: 2,
+            text: "Look under the rug.".to_owned(),
+        })],
     );
     let mut errors: Vec<Value> = ERROR_CODES
         .iter()

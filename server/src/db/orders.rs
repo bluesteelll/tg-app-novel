@@ -1,6 +1,6 @@
 //! The `orders` table: one row per Stars invoice the server created (PP P3). This module writes only the insert of a
-//! `created` order and its invoice link, and reads an order for its owner; there is no grant path here (a payment
-//! moves an order in a later lane).
+//! `created` order (with a pack's binding) and its invoice link, and reads an order for its owner; the grant that
+//! moves an order is `db/payments.rs`'s.
 //!
 //! The order id grammar lives here too: `ids.rs` holds the type, and an id is minted and parsed only next to the rows
 //! it names.
@@ -8,6 +8,7 @@
 use serde::Serialize;
 use ts_rs::TS;
 
+use crate::catalog::Product;
 use crate::db::Repo;
 use crate::ids::{OrderId, ProductId, UserId};
 
@@ -56,11 +57,22 @@ pub struct UserOrder {
     pub status: OrderStatus,
 }
 
+/// The user an order belongs to, as Telegram's `from` would name them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrderPayer {
+    /// The Telegram user id.
+    pub user: UserId,
+    /// The first name of the user's last login.
+    pub first_name: String,
+    /// The Telegram language tag of the user's last login.
+    pub language_code: Option<String>,
+}
+
 /// What [`Repo::reuse_or_create_order`] did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvoiceOrder {
-    /// A `created` order of the same user, product and amount, younger than [`ORDER_REUSE_SECS`] and with a link:
-    /// its link is handed out again, with no Bot API call.
+    /// A `created` order of the same user, product, amount and pack binding, younger than [`ORDER_REUSE_SECS`] and
+    /// with a link: its link is handed out again, with no Bot API call.
     Reused {
         /// The order.
         order: OrderId,
@@ -99,33 +111,41 @@ pub fn parse_order_id(s: &str) -> Option<OrderId> {
 }
 
 impl Repo {
-    /// The order a `POST /api/invoices` of `product` at `amount` Stars by `user` at `now` hands out: the newest
-    /// `created` order of the same user, product and amount, younger than [`ORDER_REUSE_SECS`] and with a link; else a
-    /// new `created` order in `XTR`, read back with the user's language. One READ COMMITTED transaction, committed
+    /// The order a `POST /api/invoices` of the catalog's `product` by `user` at `now` hands out: the newest `created`
+    /// order of the same user, product, price and pack binding, younger than [`ORDER_REUSE_SECS`] and with a link;
+    /// else a new `created` order in `XTR` at the product's price, binding a pack's kind and amount (`NULL` for a
+    /// chapter: `orders_pack_binding`), read back with the user's language. One READ COMMITTED transaction, committed
     /// before the caller asks the Bot API for a link: no lock is held across that call.
     ///
-    /// An order without a link is never reused (its link call failed or is still running), and a price deploy inside
-    /// the hour makes a new order at the new price. Two concurrent first taps can make two orders; a double payment is
-    /// closed at pre-checkout.
+    /// The price and the binding come from the one catalog product that also titles the invoice (M19). An order
+    /// without a link is never reused (its link call failed or is still running), and a deploy inside the hour that
+    /// changes a price or a pack's amount makes a new order, so a reused invoice credits what the catalog lists. Two
+    /// concurrent first taps can make two orders; a double payment is closed at pre-checkout.
     pub async fn reuse_or_create_order(
         &self,
         user: UserId,
-        product: &ProductId,
-        amount: u32,
+        product: &Product,
         now: i64,
     ) -> Result<InvoiceOrder, sqlx::Error> {
-        let amount = i64::from(amount);
+        let amount = i64::from(product.price_stars);
+        let (pack_kind, pack_amount) = match &product.pack {
+            Some(pack) => (Some(pack.kind.0.as_str()), Some(i64::from(pack.amount))),
+            None => (None, None),
+        };
         let mut tx = self.pool.begin().await?;
         let recent: Option<(String, String)> = sqlx::query_as(
             "SELECT id, invoice_url FROM orders \
              WHERE user_id = $1 AND product_id = $2 AND amount = $3 AND status = 'created' \
              AND invoice_url IS NOT NULL AND created_at > $4 \
+             AND pack_kind IS NOT DISTINCT FROM $5 AND pack_amount IS NOT DISTINCT FROM $6 \
              ORDER BY created_at DESC, id DESC LIMIT 1",
         )
         .bind(user.0)
-        .bind(&product.0)
+        .bind(&product.id.0)
         .bind(amount)
         .bind(now.saturating_sub(ORDER_REUSE_SECS))
+        .bind(pack_kind)
+        .bind(pack_amount)
         .fetch_optional(&mut *tx)
         .await?;
         if let Some((order, invoice_url)) = recent {
@@ -137,14 +157,16 @@ impl Repo {
         }
         let order = new_order_id();
         sqlx::query(
-            "INSERT INTO orders (id, user_id, product_id, amount, currency, status, created_at) \
-             VALUES ($1, $2, $3, $4, 'XTR', 'created', $5)",
+            "INSERT INTO orders (id, user_id, product_id, amount, currency, status, created_at, pack_kind, \
+             pack_amount) VALUES ($1, $2, $3, $4, 'XTR', 'created', $5, $6, $7)",
         )
         .bind(&order.0)
         .bind(user.0)
-        .bind(&product.0)
+        .bind(&product.id.0)
         .bind(amount)
         .bind(now)
+        .bind(pack_kind)
+        .bind(pack_amount)
         .execute(&mut *tx)
         .await?;
         // The insert's foreign key just proved the row exists.
@@ -197,5 +219,23 @@ impl Repo {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    /// The payer of `order`: its user's id, first name and Telegram language, or `None` for an unknown order. Read
+    /// only by `server-dev`'s simulated payments, whose request names an invoice slug and no user; the production
+    /// server never calls it.
+    pub async fn order_payer(&self, order: &OrderId) -> Result<Option<OrderPayer>, sqlx::Error> {
+        let row: Option<(i64, String, Option<String>)> = sqlx::query_as(
+            "SELECT u.id, u.first_name, u.language_code FROM orders o JOIN users u ON u.id = o.user_id \
+             WHERE o.id = $1",
+        )
+        .bind(&order.0)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(id, first_name, language_code)| OrderPayer {
+            user: UserId(id),
+            first_name,
+            language_code,
+        }))
     }
 }

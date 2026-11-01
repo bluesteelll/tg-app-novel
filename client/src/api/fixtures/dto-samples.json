@@ -162,6 +162,12 @@
       ]
     }
   ],
+  "HintUseResponse": [
+    {
+      "balance": 2,
+      "text": "Look under the rug."
+    }
+  ],
   "OrderResponse": [
     {
       "orderId": "o_0123456789abcdef0123456789abcdef",
@@ -346,6 +352,51 @@
         "storiesTotal": 0
       },
       "stories": []
+    }
+  ],
+  "WalletResponse": [
+    {
+      "balances": [
+        {
+          "balance": 0,
+          "debt": 2,
+          "kind": "hint"
+        }
+      ],
+      "hintTierCost": 1,
+      "packs": [
+        {
+          "amount": 3,
+          "kind": "hint",
+          "priceStars": 1,
+          "productId": "pack:hint_s",
+          "title": {
+            "en": "3 hints",
+            "ru": "3 подсказки"
+          }
+        },
+        {
+          "amount": 10,
+          "kind": "hint",
+          "priceStars": 3,
+          "productId": "pack:hint_m",
+          "title": {
+            "en": "10 hints",
+            "ru": "10 подсказок"
+          }
+        }
+      ]
+    },
+    {
+      "balances": [
+        {
+          "balance": 0,
+          "debt": 0,
+          "kind": "hint"
+        }
+      ],
+      "hintTierCost": 1,
+      "packs": []
     }
   ]
 }
