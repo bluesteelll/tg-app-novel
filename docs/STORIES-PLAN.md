@@ -62,7 +62,8 @@ never a total; the titles exist only in the completion card ([META-PLAN.md](META
 - time to first line ≤ 6 s, unchanged, and no extra tap: the card's Start button is the audio-unlock gesture;
 - steady memory: Home is unmounted during play; worst-case retained cover bitmaps 3 × 0.88 MiB = 2.6 MiB →
   138.1 MiB (144.8 MB) < 150 MB (principle 4);
-- server: a stats flush is ≤ 3 statements; the stats read is 1 statement.
+- server: a stats flush is ≤ 3 statements; the stats read is 1 statement. As merged (LS3 `00d7c10`, cut D5): at most 4,
+  the 3 plus revision 1's conditional first-pick read.
 
 ---
 
@@ -325,11 +326,13 @@ Each: **What / Why / Alternatives / Trade-off.**
     (autocommit). The default 16 KB body limit holds 32 events of about 250 B.
 - **Why.** Three round trips worst case (≤ 480 ms at the Q21 RU-database-abroad p99 of 160 ms) against 32 for
   per-row inserts (5 s). `ON CONFLICT` on the client id is the `hint_ledger` / `saves.write_id` precedent [S2 §1].
-  The cap bounds what one forged client can add (14,400 rows a day). Reusing L6c's `RateLimited` keeps `ErrorCode`
+  The cap bounds what one forged client can add (14,400 rows a day; as merged, LS3 review M2: for sequential batches,
+  plus up to one batch per concurrent request). Reusing L6c's `RateLimited` keeps `ErrorCode`
   unchanged.
 - **Alternatives.** One event per request (a request per knot); one CTE statement (cannot tell the cap from
   duplicates); a `uuid` column (needs sqlx's `uuid` feature [S2]: `TEXT` + CHECK instead).
-- **Trade-off.** The cap is soft: two concurrent batches may both pass the count (overshoot ≤ 32). A per-user row
+- **Trade-off.** The cap is soft: two concurrent batches may both pass the count (overshoot ≤ 32; as merged, LS3
+  review M2: up to one batch per concurrent request). A per-user row
   lock is not worth it on a non-money path.
 - **Changed by META-PLAN revision 1 (W2; META-PLAN M3).** `choice_made` events (META-PLAN M1) arrive at about one per
   3 s in a skip-mode replay, so one shared cap would let them crowd the facts out. The one count statement now returns
@@ -337,7 +340,9 @@ Each: **What / Why / Alternatives / Trade-off.**
   - **facts** (`chapter_started`, `chapter_completed`, `ending_reached`, `puzzle_ended`): `STATS_HOURLY_CAP` 600 per
     rolling hour, counted over fact rows only; over it → 429 `rate_limited` + `Retry-After: 600`, nothing written, as
     above. Choice rows never count toward it.
-  - **choices**: `STATS_CHOICE_HOURLY_CAP` 600 per rolling hour of their own, never a 429. Within the remaining budget
+  - **choices**: `STATS_CHOICE_HOURLY_CAP` 600 per rolling hour of their own, never a 429 (as merged, LS3 `00d7c10`,
+    O1: this holds literally, since the facts' rule applies only to a batch that carries a fact,
+    `server/src/db/stats.rs:197`). Within the remaining budget
     the batch's choice events are recorded in batch order; beyond it a choice event is still recorded if it is the
     user's first pick of that option (no `choice_made` row of that subject yet, and the batch's first event of it: one
     read on `stat_events_by_user_story`, made only when the batch exceeds the budget), otherwise it is rejected with
@@ -507,7 +512,8 @@ Each: **What / Why / Alternatives / Trade-off.**
 7. each ending name matches the `EndingName` grammar; its `chapter` lies on the story's chain;
 8. its `knot` exists in that chapter's graph with `ending: true`, has no successor knot and carries no `puzzle` /
    `explore` tag (verify: the yield check reads the knot's parsed tag lines as the graph classifies them; LW3's yield
-   edges later make `then=` a successor anyway); no two endings name the same chapter and knot;
+   edges later make `then=` a successor anyway); no two endings name the same chapter and knot; changed by RULINGS 33
+   (as merged, LS1 `64fd798`; W1): a chapter with a `next` keeps a `-> END` knot that is no story ending;
 9. a paid chapter's title (`story.json` `chapters`, ru and en) is 1–32 characters — it is the invoice title (Y6).
    Counted in code points, the same rule as L6b's startup check (verify: Telegram's counting unit).
 
@@ -558,7 +564,9 @@ export type StoryPlan = StorySource & { chapters: readonly ChapterId[] };      /
 export function decodeStories(raw: unknown, chapters: readonly ChapterListEntry[],
                               assets: AssetCatalog): Result<readonly StoryPlan[], Finding[]>;      // rules 1–7
 export function checkEndings(stories: readonly StoryPlan[],
-                             graphs: ReadonlyMap<ChapterId, ChapterGraph>): Finding[];             // rule 8
+                             graphs: ReadonlyMap<ChapterId, ChapterGraph>,
+                             sources: ReadonlyMap<string, string>): Finding[];                     // rule 8
+// as merged (LS1 `64fd798`, RULINGS 31 Q3): `sources` is the story-relative source map the yield clause classifies
 export function checkInvoiceTitles(stories: readonly StoryPlan[], chapters: readonly ChapterListEntry[],
                                    names: StoryNames): Finding[];                                  // rule 9
 export function endingKnots(stories: readonly StoryPlan[]): ReadonlyMap<ChapterId, ReadonlyMap<KnotName, EndingName>>;
@@ -612,6 +620,8 @@ pub struct StatEventDto { pub event_id: String, pub kind: StatKind, pub chapter_
                           pub outcome: Option<StatOutcome>, pub age_ms: i64 }
 #[serde(rename_all = "snake_case")] pub enum StatKind { ChapterStarted, ChapterCompleted, EndingReached, PuzzleEnded }
 #[serde(rename_all = "snake_case")] pub enum StatOutcome { Solved, Failed, Abandoned }
+// as merged (LS3 `00d7c10`, cut D4): StatKind and StatOutcome live in db/stats.rs (the OrderStatus precedent) and
+// api/dto.rs imports them; StatKind::ChoiceMade lands with the enum in C2
 pub struct PostStatsRequest { pub events: Vec<StatEventDto> }                     // 1..=32
 pub struct PostStatsResponse { pub recorded: u32, pub duplicates: u32, pub rejected: Vec<RejectedEvent> }
 pub struct RejectedEvent { pub event_id: String, pub reason: StatRejectReason }
@@ -685,6 +695,9 @@ CREATE TABLE stat_events (                       -- append-only; never read by a
     OR (kind = 'ending_reached' AND subject ~ '^[a-z][a-z0-9_]{0,31}$' AND outcome IS NULL)
     OR (kind = 'puzzle_ended' AND subject ~ '^ch[1-9][0-9]*[.][a-z][a-z0-9_]*$'
         AND outcome IN ('solved', 'failed', 'abandoned'))),
+  -- as merged (LS3 `00d7c10`, cut D1; server/migrations/0003_stats.sql:28-34): every regex or IN test of `subject`
+  -- or `outcome` carries its own `IS NOT NULL` (on `subject`, and on `outcome` for puzzle_ended), because a CHECK
+  -- that is NULL passes
   CONSTRAINT stat_events_story_version_shape CHECK (story_version ~ '^[0-9a-f]{16}$'),
   CONSTRAINT stat_events_age_bounded      CHECK (age_ms BETWEEN 0 AND 2592000000),
   CONSTRAINT stat_events_received_positive CHECK (received_at > 0)
@@ -712,15 +725,17 @@ and old rows must stay valid history (ST6 filters at read).
 | `GET /api/saves` | bearer | — | `SaveListResponse { slots: SaveSummary[] }`, `SaveSummary { storyId, slot, rev, chapterId, storyVersion, lineId, savedAt, writeId }` — every story's slots | 401 | read; no-store |
 | `GET /api/saves/{storyId}/{slot}` (was `/{slot}`) | bearer | — | `SaveFull { summary, body }` | 400 (story id or slot shape), 404 (unknown story, or no row for this user) | read; no-store |
 | `PUT /api/saves/{storyId}/{slot}` (was `/{slot}`) | bearer | `PutSaveRequest` unchanged | `PutSaveResponse { rev, savedAt }` | 400 (shapes; `chapterId` not a chapter of the story), 404 unknown story, 409 `save_conflict` + `current`, 413 | PP's rev + writeId contract, per (user, story, slot); body limit 300 KB on this route |
-| `POST /api/stats/events` (new, LS3) | bearer | `PostStatsRequest { events: StatEventDto[] }`, 1–32, ≤ 16 KB | `PostStatsResponse { recorded, duplicates, rejected: [{ eventId, reason }] }` | 400 `bad_request` (shape, count, per-kind subject/outcome, event id not a lower-case v4 UUID, `ageMs` outside 0–30 days, `chapterId` / `storyVersion` shape, an unknown field such as `storyId`), 401, 413, 429 `rate_limited` + `Retry-After: 600` (nothing written) | (user, `eventId`): a replay is a duplicate, never a second row; no-store |
-| `GET /api/stats` (new, LS3) | bearer | — | `StatsResponse` (Y12) | 401 | read; no-store |
+| `POST /api/stats/events` (new, LS3) | bearer | `PostStatsRequest { events: StatEventDto[] }`, 1–32, ≤ 16 KB | `PostStatsResponse { recorded, duplicates, rejected: [{ eventId, reason }] }` | 400 `bad_request` (shape, count, per-kind subject/outcome, event id not a lower-case v4 UUID, `ageMs` outside 0–30 days, `chapterId` / `storyVersion` shape, an unknown field such as `storyId`), 401, 413, 429 `rate_limited` + `Retry-After: 600` (nothing written) | (user, `eventId`): a replay is a duplicate, never a second row; no-store (as merged, LS3 cut D7: `private, no-store` on the 200) |
+| `GET /api/stats` (new, LS3) | bearer | — | `StatsResponse` (Y12) | 401 | read; no-store (as merged, LS3 cut D7: `private, no-store` on the 200 of both stats routes) |
 
 Reject reasons, decided in this order per event: `unknown_chapter` (not in the index) → `not_entitled` (paid
 chapter, product not owned) → `unknown_ending` (not an ending of the chapter's story in that chapter) /
 `unknown_puzzle` (not in the chapter's puzzle index). Rejected events are answered, not retried.
 
 Changed by META-PLAN (M1, M2, M8): `StatEventDto` admits `kind: "choice_made"` (subject = the option's line ID of
-that chapter; 400 on a wrong shape or prefix); the reason `unknown_choice` (not an option of `meta.choices[chapter]`,
+that chapter; 400 on a wrong shape or prefix; as merged, LS3 cut D3: a well-formed choice whose chapter part differs
+from `chapterId` is a per-event `unknown_choice` after `not_entitled`, not a 400); the reason `unknown_choice` (not an
+option of `meta.choices[chapter]`,
 LM2) joins the third step; `StatsResponse` has no `endingsTotal`. The new meta routes are in META-PLAN "HTTP API".
 
 ### Server formats (story tool → server; the committed fixture is the contract)
@@ -832,9 +847,14 @@ pub struct NewStatEvent<'a> { pub event_id: &'a str, pub kind: StatKind, pub sto
 pub enum RecordOutcome { Recorded { inserted: Vec<String> }, RateLimited }
 impl Repo {
     /// The cap count, then one UNNEST insert with `ON CONFLICT ON CONSTRAINT stat_events_event_key DO NOTHING
-    /// RETURNING event_id` (autocommit; the cap is soft by one batch).
+    /// RETURNING event_id` (autocommit; the cap is soft by one batch; as merged, LS3 review M2: by up to one batch per
+    /// concurrent request).
     pub async fn record_events(&self, user: UserId, events: &[NewStatEvent<'_>], now: i64, cap: i64)
         -> Result<RecordOutcome, sqlx::Error>;
+    // as merged (LS3 `00d7c10`, cut D5; server/src/db/stats.rs:120-174): the two budgets of revision 1 —
+    //   record_events(user, events, now, caps: StatCaps { facts, choices })
+    //   RecordOutcome::{ Recorded { inserted, over_budget }, RateLimited }
+    // `over_budget` holds the choices past the choice budget that were not first picks (answered `rate_limited`)
     /// The user's distinct (story, kind, chapter, subject) facts of the three story kinds.
     pub async fn stat_facts(&self, user: UserId) -> Result<Vec<StatFact>, sqlx::Error>;
 }
@@ -915,7 +935,7 @@ PP "Payment flow" unchanged: `POST /api/invoices { productId: "chapter:ch4" }` �
 |---|---|
 | A stats batch resent after a lost response | every event a duplicate; nothing double-counted (ST5) |
 | The same ending reached twice (replay, resume at the knot) | two rows, one fact: `endingsReached` holds it once |
-| Two concurrent stats batches near the cap | both may pass the count: overshoot ≤ 32 rows (soft cap, Y11) |
+| Two concurrent stats batches near the cap | both may pass the count: overshoot ≤ 32 rows (soft cap, Y11); as merged (LS3 review M2): up to one batch per concurrent request |
 | A forged client posts new ids in a loop | 600 rows per hour, then 429; counts unchanged (set semantics). Changed by META-PLAN revision 1 (W2): 600 fact rows per hour, then 429, plus 600 choice rows and first picks (bounded by the vocabulary) |
 | A skip-mode replay posts ≈ 1,200 picks per hour and reaches an ending (changed by META-PLAN revision 1, W2) | the ending is recorded (facts have their own budget); repeat picks past 600 per hour are rejected `rate_limited`, first picks recorded; a full queue evicts choices first |
 | A paid-chapter event without the entitlement (or after a refund) | `not_entitled`, dropped by the client; the subject is never checked |
@@ -1027,12 +1047,20 @@ while LDB1 ran; LDB1 and LDB2 had merged before the design landed, and the merge
   as cut; C4 tags each carry with the knot its run ended in, so LS1 can drop story-ending runs from the next chapter's
   carry. Its RULINGS 19 seen-working line stays.
 - **L6b** (running since the merge, server slot, base `d9ca9f1`): the first server lane of the chain.
+- **As of `6043941`** (changed by RULINGS 54; docs lane `docs-errata-2`; SHAs from `git log --first-parent main`):
+  - merged: L3c `91e35cd`, L6b `698993e`, and of this design's lanes LS2 `a358ec3`, LS1 `64fd798`, LS3 `00d7c10`;
+    every lane up to LU1 `2a7b50c` has merged (PP "Dependency order");
+  - running: L10 client-data and LE1 economy-core;
+  - to go, of this design's lanes: LS4 and N2.
 
 **Order** (RULINGS 8 rolling, RULINGS 18 three slots; as of `66c92c4`, changed by RULINGS 22, 23: LDB1 and LDB2
 merged, so the server chain starts at L6b): server L6b → LS2 → L6c → L8a → L8b → LS3 → L9; client (two slots)
 L3c → L5 → {L11, LS1 (after L6b), L12} → {L7, LW3} → L14a, D1 → N1 → N2, and L10 (after
 L8b) → L13, L14b → LP2 ∥ LX, LS4 → L15 → D2. Critical path: L6b → **LS2** → L6c → L8a → L8b → L10 → L14b →
 LP2 → L15 → D2 (+1 lane). The PP lane entries hold the locks, commits, red-firsts, gates and seen-working.
+Changed by RULINGS 54 (as of `6043941`): the server chain has run to LS3, and META-PLAN extended it: LE1 (running) →
+LF1 → LM2 → LF2 → LE2 → LPO → L9; client L10 (running) → L13, L14b → LP2 ∥ LX, LS4, N1 → N2 → L15 → D2 (with
+META-PLAN's LMD and LMI before D2). Critical path to the prototype milestone: L10 → L14b → LP2 → L15.
 
 **Collision locks added** (PP "Collision locks"): `0001` L2 → LDB1 → LS2; `0003` LS3; the serialized server files
 L6b → LS2 → L6c → L8a → L8b → LS3 → L9; `ids.rs` L6b (`StoryId` with `PuzzleId`); `lint.ts` / `dsl-doc.test.ts` /
@@ -1087,7 +1115,7 @@ chapter's carry), paid chapters and paid metas absent from `dist/` (PP T1).
 |---|---|---|
 | `dsl-doc` two-way | `catalog/stories` in `LINT_CODES`, the §11 row missing → `notInDoc: ['catalog/stories']` and 84 ≠ 85 | LS1 |
 | `story` | each `catalog/stories` rule on an inline fixture; `stories.json` absent → exit 1 | LS1 |
-| `emit` leak | a paid chapter's ending name planted in the public catalog → `emit: paid endings only in server outputs` red | LS1 |
+| `emit` leak | a paid chapter's ending name planted in the public catalog → `emit: paid endings only in server outputs` red | LS1 (as merged: seen red in C7 `3668a09`) |
 | arch | `import-outside-src` in `RULE_IDS` with its fixtures and no detector → `arch: import-outside-src red on fixture` (`story/catalog.ts` importing `../../../story/stories.json` not flagged); revision 2: a detector that reads string literals only → the same test red on each template-literal, `+`-join, glob-`base`, `#` and non-literal fixture ("expected [] to include 'import-outside-src'") | LS1 |
 | `test` (committed cast; revision 2) | a scratch speaker `keeper` in `story/cast.json` and in both committed name tables on LS1 commit 7's tree → `invariant: speaker keeper has a name` from `emitFixture()`, `loc/missing-name` for `keeper` in `locales.test.ts` and the `build.test.ts` `repoFiles()` CLI cases, the two exact cast pins (`tags.test.ts`, `lint.test.ts`) red; the same probe on commit 8's tree → `test` exit 0 | LS1 |
 | `build` budget | a 30 KB cover; a story whose first chapter's first-load row exceeds 800 KB (synthetic) | L5 |
@@ -1200,6 +1228,8 @@ Totals: 2 stories, 4 chapters (2 free, 2 paid), 4 endings (`truth`, `ashes`, `dr
 | 5 | 2026-10-31 | RULINGS 22, 23 (as merged: LDB1 `fee9da7`, LDB2 `a7e4a04`, this design `66c92c4`) | Docs lane `docs-errata`, group C (not a triage round): "Implementation plan" — "Running and merged lanes" marked as of `66c92c4` (LDB1 and LDB2 merged, L3c resumed on `f1a46ea`, L6b running) and "Order" without LDB1 and LDB2, the critical path from L6b; with PROTOTYPE-PLAN revision 18. Review round 1: SQ5's "PZ:652–1877 are unchanged" marked as of `66c92c4` (PUZZLES-PLAN revision 9 moved them). Ledger: `D:/tmp/novel-orch/docs-errata/ledger.md` |
 | 6 | 2026-10-31 | the META-PLAN campaign spec + RULINGS 25 | Extended by [META-PLAN.md](META-PLAN.md): choice capture (`choice_made`), `endingsTotal` removed, hint products removed, privacy designed. Changed items marked "Changed by META-PLAN": Goal (the "X of Y" sentence; ST5, ST6); Y9; Y10; Y12; Y14; Y16; Y17; Identifiers; the `catalog.json` server format; the TS and Rust stats types; the SQL `0003` note; HTTP API; F12; test names and the seen-red row; Open questions (Q22 note; Q23, Q24, Q25 resolved). Design log: `D:/tmp/novel-orch/design/choices/design_log.md` |
 | 7 | 2026-10-31 | META-PLAN revision 1 (`D:/tmp/novel-orch/design/choices/triage_r1.md`, item W2) | Choice events no longer crowd facts out: Y11 counts facts and choices apart (facts 600/h with the 429; choices 600/h of their own, never a 429, repeat picks beyond it rejected `rate_limited`, first picks always recorded); Y13 evicts choices first and sends facts first; the stats constants, F11, the concurrency table, Budgets and Test strategy follow. Marked "Changed by META-PLAN revision 1". Pre-revision copy: `D:/tmp/novel-orch/design/choices/STORIES-PLAN.r1.before.md` |
+| 8 | 2026-11-01 | `D:/tmp/novel-orch/carry.md` at ORCH `d97ba64` (the docs-errata-2 spec, group A), as merged on main `6043941` | Docs lane `docs-errata-2`, group A (not a triage round): LS1 (`64fd798`) — rule 8's `next` clause, `checkEndings(…, sources)`, the seeded leak seen in C7; LS3 (`00d7c10`) — at most 4 statements, the overshoot up to one batch per concurrent request, choices never a 429 (O1), `StatKind` / `StatOutcome` in `db/stats.rs`, the `IS NOT NULL` guards, `private, no-store`, the per-event `unknown_choice`, the `record_events` budgets. Fix round 1: the Module API `record_events` comment gains the same overshoot; the guard comment names the regex / IN tests of `subject` / `outcome`. Ledger: `D:/tmp/novel-orch/docs-errata-2/ledger.md` |
+| 9 | 2026-11-01 | RULINGS 54 (as merged on main `6043941`) | Docs lane `docs-errata-2`, group B (not a triage round): "Implementation plan" — "Running and merged lanes" and "Order" as of `6043941` (LS1, LS2, LS3 merged; L10, LE1 running; LS4, N2 to go; the critical path from L10). Ledger: `D:/tmp/novel-orch/docs-errata-2/ledger.md` |
 
 **Revision 1 (2026-10-31)** — what changed, by triage item:
 - **W1** (LS1 moved merged test pins it did not declare; commit 6 left the real-tree `story` gate red): PP "LS1" —

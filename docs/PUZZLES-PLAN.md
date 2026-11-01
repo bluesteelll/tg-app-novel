@@ -1102,7 +1102,8 @@ Staging tag lines above it merge into the yield step's batch (§3.5) and run bef
 - An `explore: S` yield → every knot named by S's effects and exits is a **reachability edge**. These knots are not
   in the preload `next`: the room controller preloads per room (X13), so a hub never preloads every event.
 - An event knot's carried stage is seeded with the background and props of every room that triggers it
-  (`budget/knot-set`).
+  (`budget/knot-set`). As merged (LW3 `be8ba8b`, RULINGS 42 Q4): so is an exit `{story}` (leave) knot's, with the
+  background and props of its room.
 
 **Lint codes:**
 
@@ -1112,7 +1113,7 @@ Staging tag lines above it merge into the yield step's batch (§3.5) and run bef
 | `puzzle/unknown`, `explore/unknown-section` | E | the id is not in the chapter's world | LW3 |
 | `puzzle/then-unknown` | E | `then=` names no knot of the chapter | LW3 |
 | `puzzle/in-section` | E | a puzzle both yielded and attached to a lock | LW3 |
-| `explore/event-return` | E | an event knot (named by a `story` effect of S) has no `explore: S` yield | LW3 |
+| `explore/event-return` | E | an event knot (named by a `story` effect of S) has no `explore: S` yield; as merged (LW3 `be8ba8b`, Q5): judged over the event closure, so an event knot that diverts to another event knot of S, which yields, passes | LW3 |
 | `explore/event-escape` | E | an event knot contains `-> END` or diverts to a knot that is not an event knot of S | LW3 |
 | `world/schema` | E | `decodeWorldSource` issues (unknown key, missing field, bad id, wrong type) — every issue, never the first only | LW3 |
 | `world/duplicate-id`, `world/id-reserved` | E | rooms collide across sections; a puzzle id ends in `_hints` | LW3 |
@@ -1125,7 +1126,7 @@ Staging tag lines above it merge into the yield step's batch (§3.5) and run bef
 | `world/solution`, `world/solution-initial` | E | `PUZZLE_RULES[type].validateSolution` fails; the solution equals the initial state | LW3 |
 | `world/order-pieces` | E | an `order` puzzle in a lock whose `pieces` differ from the lock's slot items | LW3 |
 | `world/hint-count` | E | more than 3 hint tiers; a hint without an `id` | LW3 |
-| `world/title-long` | E | a puzzle title over 18 graphemes (the invoice title `Подсказка 3: <title>` must fit 32 chars) | LW3 |
+| `world/title-long` | E | a puzzle title over 18 graphemes (the invoice title `Подсказка 3: <title>` must fit 32 chars; changed by RULINGS 50 (D1 open item 2): M21 / RULINGS 25 removed the hint invoices, so that reason is gone and the 18-grapheme limit stays as the rule) | LW3 |
 | `world/giveup-in-section`, `world/linear-requires`, `world/cross-section-item` | E | X8, X15 | LW3 |
 | `world/cross-section-effect` | E | an `{ unlock: key }` in a room's `onEnter` or a hotspot's `then` / `onOpen` / `onFail` whose key is a hotspot of another section; an item or doc given (`gives`, `{ give }`) in more than one section. X15, X9 step 5's premise (revision 4) | LW3 |
 | `world/puzzle-multi-lock` | E | a puzzle named by the `puzzle` field of more than one lock, in one section or in several; prints every lock that names it. X15, X9 step 5's premise, reducer rule `puzzle-ended` (revision 5) | LW3 |
@@ -1197,6 +1198,8 @@ export type ServerPuzzleContent = { format: 1; chapterId: ChapterId; puzzles: Re
 // scripts/story/emit.ts (LW3; build only, so 0 bytes in the bundle)
 export function worldVersion(body: WorldPublicBody): string;
   // sha256(emitted body JSON with every WorldText { id, ru } replaced by 1)[0..16] (X9 World version)
+  // as merged (LW3 `be8ba8b`, RULINGS 42 Q10): worldVersion(body, rules = RULES_VERSION); the optional `rules` is used
+  // only by the bump test
   // erratum (RULINGS 21 Q2, PE7 final shape): the hashed input is { rules: RULES_VERSION, body: <textless body> },
   // so a rules edit with no world edit changes every world's version (LW3 test `emit: world version changes on a
   // RULES_VERSION bump`, beside `emit: world version changes on a rules edit`)
@@ -1243,6 +1246,13 @@ pub fn check_answer(def: &PuzzleDef, answer: &[u16]) -> Result<bool, AnswerError
 pub enum AttemptOutcome { Correct, Wrong, RateLimited { retry_after_secs: i64 } }
 pub async fn attempt(st: &AppState, user: UserId, id: &PuzzleId, answer: &[u16]) -> Result<AttemptOutcome, ApiError>;
 pub async fn status(st: &AppState, user: UserId, id: &PuzzleId, lang: Lang) -> Result<PuzzleStatus, ApiError>;
+// as merged (L6c `039a2f3`, RULINGS 36 Q4; server/src/puzzles/mod.rs:76-145): `Correct | Wrong` cannot carry `solved`,
+// and the gate is one shared function, so the three lines above read:
+//   pub enum AttemptOutcome { Answered { correct: bool, solved: bool }, RateLimited { retry_after_secs: i64 } }
+//   pub async fn entitled_puzzle<'a>(st: &'a AppState, user: UserId, id: &PuzzleId) -> Result<&'a PuzzleDef, ApiError>;
+//       // 404 for an id the content does not hold, 403 for a paid chapter's puzzle without its entitlement
+//   pub async fn attempt(st: &AppState, user: UserId, def: &PuzzleDef, answer: &[u16]) -> Result<AttemptOutcome, ApiError>;
+//   pub async fn status(st: &AppState, user: UserId, def: &PuzzleDef, lang: Lang) -> Result<PuzzleStatus, ApiError>;
 
 // db/puzzles.rs (L6c)
 pub struct AttemptRecord { pub limited: bool, pub retry_after_secs: i64, pub solved: bool }
@@ -1326,6 +1336,8 @@ RETURNING window_attempts, window_start, solved_at;     -- $1 user, $2 puzzle, $
 --   used or revealed
 -- correct → UPDATE puzzle_progress SET solved_at = $3 WHERE user_id = $1 AND puzzle_id = $2 AND solved_at IS NULL;
 -- COMMIT
+-- as merged (L6c `039a2f3`, RULINGS 36 Q5; server/src/db/puzzles.rs:68): SET solved_at = GREATEST($3, first_at), so a
+--   clock stepped back between the first attempt and the solve cannot violate puzzle_progress_solved_after_first
 ```
 
 - **Two concurrent attempts serialize.** The `DO UPDATE` locks the row (a first-ever pair: the second insert waits
@@ -1407,7 +1419,7 @@ one file.
 | public world (`WorldPublic`) | `client/src/story-gen/free/<ch>.world.json` | `server/content/chapters/<ch>/world.json` (in `ChapterPayload.world`) |
 | server puzzle content | `server/content/puzzles/<ch>.json` | same |
 | en table | hint IDs excluded (they live in the server puzzle content only) | same |
-| `usage.json` | `+ worldAssets` per chapter (room bgs, props, close-ups, section bgm, exit sfx: asset tiering and `scan-dist`'s paid-only check) and `rooms: { "<ch>/<section>/<room>": { bg, props[], closeups[], neighbours[] } }` (`budget/room-set`) | same |
+| `usage.json` | `+ worldAssets` per chapter (room bgs, props, close-ups, section bgm, exit sfx: asset tiering and `scan-dist`'s paid-only check) and `rooms: { "<ch>/<section>/<room>": { bg, props[], closeups[], neighbours[] } }` (`budget/room-set`); as merged (LW3 `be8ba8b`, Q12): `worldAssets` only for a chapter with a world, `rooms` top-level and only when some room exists, both optional on read | same |
 
 ---
 
@@ -2045,6 +2057,7 @@ so no line moved. What it means for this design:
 | 8 | 2026-10-31 | `D:/tmp/novel-orch/design/stories/triage_r1.md` (STORIES-PLAN revision 1, W5) | Two single-line in-place edits in "Resource lifetime" (the `PuzzleSession` and `ExploreController` rows: also destroyed by `exitToStories()`, with its test) and one row in "Changed by STORIES-PLAN"; no X decision changes; the line numbers before line 1878 are unchanged. Pre-revision copy: `D:/tmp/novel-orch/design/stories/PUZZLES-PLAN.r1.before.md`. Detail: `D:/tmp/novel-orch/design/stories/revision_r1.md` |
 | 9 | 2026-10-31 | RULINGS 21 + `D:/tmp/novel-orch/lw2-world-model/cut.md` §6 (Q1-Q8) and its addendum (C1, W1, developer decisions), as merged: LW2 `38bc717` | Docs lane `docs-errata`, group B (the LW2 errata, not a triage round): X15 `world/linear-requires` by construction (Q6); "World data" schema strictness (Q5/D3: required and nullable keys, repeated hotspot ids); the state API signatures take `WorldPublicBody`, only `reconcile` `WorldPublic` (Q3), `sectionKey` sets (W1), `RULES_VERSION` (Q2); "The points the rules leave open" (D7 with C1's restated no-change rule and the developer decisions); `WorldIssue` (D4); `worldVersion` hashes `{ rules: RULES_VERSION, body }` (Q2); the `world/softlock` message; the `pure-world` arch rule as merged (Q4); the X9 cost and the budget row carry the provisional timing (Q7); Test strategy: the LW2 names beside the list (Q8) and LW3's `emit: world version changes on a RULES_VERSION bump` in the emit list (Q2); PE7 resolved; the "Changed by STORIES-PLAN" line-number note says this revision moved the lines (review round 1). Each place is marked "erratum (RULINGS 21 …)" or "as merged". Ledger: `D:/tmp/novel-orch/docs-errata/ledger.md` |
 | 10 | 2026-10-31 | the META-PLAN campaign spec + RULINGS 25 | Hint purchases superseded by the META-PLAN economy: X6, X7, X18 headers, the Identifiers hint row and the `catalog.json` `hints` comment marked by same-line appends; a new section "Changed by META-PLAN" lists every superseded item (HTTP, Module API, H2–H7, Q14, Q15, tests, lanes). Design log: `D:/tmp/novel-orch/design/choices/design_log.md` |
+| 11 | 2026-11-01 | `D:/tmp/novel-orch/carry.md` at ORCH `d97ba64` (the docs-errata-2 spec, group A), as merged on main `6043941` | Docs lane `docs-errata-2`, group A (not a triage round): L6c (`039a2f3`) — the `puzzles/mod.rs` signatures (`AttemptOutcome::Answered`, `entitled_puzzle`, `&PuzzleDef`) and `GREATEST($3, first_at)`; LW3 (`be8ba8b`) — leave knots' carried stage, `explore/event-return` over the event closure, `worldVersion(body, rules)`, the `usage.json` world sections; the `world/title-long` reason gone with M21 (RULINGS 50). Decision §4.6 (revision 4b) was already applied. Ledger: `D:/tmp/novel-orch/docs-errata-2/ledger.md` |
 
 **Revision 1 (2026-10-30)** — what changed, by triage item:
 - **W1** (a fully slotted lock's puzzle cannot be reopened after Back or a reload): "Lock" (the tap rule: every slot
