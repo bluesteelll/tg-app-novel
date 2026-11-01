@@ -3,6 +3,7 @@
 // keyboard or assistive-technology activation has detail 0 (as in choices.svelte.test.ts).
 import { cleanup, render, within } from '@testing-library/svelte';
 import { flushSync } from 'svelte';
+import ts from 'typescript';
 import { afterEach, expect, test, vi } from 'vitest';
 
 import type { Lang } from '../../i18n/index.ts';
@@ -13,7 +14,20 @@ import CompletionCard from './CompletionCard.svelte';
 import ConsentDialog from './ConsentDialog.svelte';
 import FriendProfile from './FriendProfile.svelte';
 import Friends from './Friends.svelte';
-import type { CardData, FriendData, FriendHandle, InviteProps, ProfileData, SocialData, WalletData } from './index.ts';
+import GiftDialog from './GiftDialog.svelte';
+import * as ui from './index.ts';
+import type {
+  CardData,
+  FriendData,
+  FriendHandle,
+  GiftProps,
+  InviteProps,
+  ProfileData,
+  ShownError,
+  SocialData,
+  WalletData,
+} from './index.ts';
+import indexSource from './index.ts?raw';
 import InvitePrompt from './InvitePrompt.svelte';
 import Wallet from './Wallet.svelte';
 
@@ -22,7 +36,18 @@ afterEach(() => cleanup());
 
 const LANGS: readonly Lang[] = ['ru', 'en'];
 
-/** The seven components; their raw sources are what the source pins read. */
+/** The chunk's seven components, sorted (spec 3: the list is explicit, so a missing or renamed file fails). */
+const META_COMPONENTS = [
+  'CompletionCard.svelte',
+  'ConsentDialog.svelte',
+  'FriendProfile.svelte',
+  'Friends.svelte',
+  'GiftDialog.svelte',
+  'InvitePrompt.svelte',
+  'Wallet.svelte',
+] as const;
+
+/** Every component in this directory, as raw text: what the source pins read. */
 const COMPONENT_SOURCES = import.meta.glob<string>('./*.svelte', { query: '?raw', import: 'default', eager: true });
 
 /** The `{name}` placeholders of a template, sorted. */
@@ -586,4 +611,326 @@ test('wallet: buy needs the terms checkbox', async () => {
     expect(buys.map((b) => b.disabled), lang).toEqual([true, true]);
     view.unmount();
   }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The gift dialog (C5; M22, F25)
+
+const KIM: FriendData = { handle: H4, firstName: '<b>Kim</b>' };
+
+/** The dialog's props for `lang`, with `over` on top. */
+const gift = (lang: Lang, over: Partial<GiftProps> = {}): GiftProps => ({
+  friend: KIM,
+  kind: 'hint',
+  balance: 2,
+  maxAmount: null,
+  error: null,
+  lang,
+  onsend: vi.fn(),
+  oncancel: vi.fn(),
+  ...over,
+});
+
+/** The dialog's controls and its shown amount. */
+function giftControls(container: HTMLElement, lang: Lang) {
+  const q = within(container);
+  const button = (key: MetaKey): HTMLButtonElement => q.getByRole('button', { name: mt(lang, key) }) as HTMLButtonElement;
+  return {
+    less: button('meta.gift_less'),
+    more: button('meta.gift_more'),
+    send: button('meta.gift_send'),
+    cancel: button('meta.cancel'),
+    amount: (): string => shown(q.getByRole('status')),
+    notes: (): string[] => [...(q.queryByRole('alert')?.querySelectorAll('p') ?? [])].map(shown),
+  };
+}
+
+test('gift: amount bounded by balance and caps', async () => {
+  for (const lang of LANGS) {
+    // Bounded by the balance when the per-gift maximum is unknown; never below 1.
+    const onsend = vi.fn();
+    const oncancel = vi.fn();
+    const two = render(GiftDialog, gift(lang, { balance: 2, onsend, oncancel }));
+    const c = giftControls(two.container, lang);
+    expect(shown(within(two.container).getByRole('heading', { level: 2 })), lang).toBe(
+      mt(lang, 'meta.gift_title', { name: '<b>Kim</b>' }),
+    );
+    expect(two.container.querySelector('b'), lang).toBeNull();
+    expect(c.amount(), lang).toBe(mt(lang, 'meta.gift_amount', { n: 1 }));
+    expect(c.less.disabled, lang).toBe(true);
+    tap(c.less);
+    expect(c.amount(), lang).toBe(mt(lang, 'meta.gift_amount', { n: 1 }));
+    for (let i = 0; i < 5; i++) {
+      tap(c.more);
+    }
+    expect(c.amount(), lang).toBe(mt(lang, 'meta.gift_amount', { n: 2 }));
+    expect(c.more.disabled, lang).toBe(true);
+    tap(c.send);
+    tap(c.cancel);
+    expect([onsend.mock.calls, oncancel.mock.calls.length], lang).toEqual([[[2]], 1]);
+    two.unmount();
+
+    // Bounded by the per-gift maximum below the balance; a balance that drops while open bounds it again.
+    const capped = render(GiftDialog, gift(lang, { balance: 10, maxAmount: 3 }));
+    const d = giftControls(capped.container, lang);
+    for (let i = 0; i < 5; i++) {
+      tap(d.more);
+    }
+    expect(d.amount(), lang).toBe(mt(lang, 'meta.gift_amount', { n: 3 }));
+    expect(d.more.disabled, lang).toBe(true);
+    await capped.rerender({ balance: 2 });
+    expect(d.amount(), lang).toBe(mt(lang, 'meta.gift_amount', { n: 2 }));
+    capped.unmount();
+
+    // Nothing to give: Send is disabled and the dialog says why.
+    const empty = render(GiftDialog, gift(lang, { balance: 0 }));
+    const e = giftControls(empty.container, lang);
+    expect(e.send.disabled, lang).toBe(true);
+    expect(e.notes(), lang).toEqual([mt(lang, 'meta.gift_insufficient')]);
+    empty.unmount();
+
+    // The server's answers: the daily caps arrive as `limit` or as 429 `rate-limited` (cut Q3), the rest as below.
+    const rows: ReadonlyArray<readonly [ShownError, readonly string[]]> = [
+      [{ kind: 'limit' }, [mt(lang, 'meta.gift_capped')]],
+      [{ kind: 'rate-limited' }, [mt(lang, 'meta.gift_capped')]],
+      [
+        { kind: 'rate-limited', retryAfter: 5400 },
+        [mt(lang, 'meta.gift_capped'), mt(lang, 'meta.gift_retry', { hours: 2 })],
+      ],
+      [{ kind: 'insufficient' }, [mt(lang, 'meta.gift_insufficient')]],
+      [{ kind: 'not-found' }, [mt(lang, 'meta.gift_not_friend')]],
+      [{ kind: 'network' }, [mt(lang, 'meta.error_retry')]],
+      [{ kind: 'auth' }, [mt(lang, 'meta.error_retry')]],
+      [{ kind: 'unavailable' }, [mt(lang, 'meta.error_retry')]],
+    ];
+    for (const [error, notes] of rows) {
+      const view = render(GiftDialog, gift(lang, { balance: 5, error }));
+      expect(giftControls(view.container, lang).notes(), `${lang} ${JSON.stringify(error)}`).toEqual(notes);
+      view.unmount();
+    }
+  }
+});
+
+test('gift: one send per submit', async () => {
+  for (const lang of LANGS) {
+    const onsend = vi.fn();
+    const view = render(GiftDialog, gift(lang, { balance: 5, onsend }));
+    const c = giftControls(view.container, lang);
+    // Rule (b): the tap that opened the dialog, a click with no pointerdown on Send, sends nothing (W5).
+    pointerClick(c.send);
+    flushSync();
+    expect(onsend, lang).not.toHaveBeenCalled();
+    tap(c.more);
+    // A double tap: both taps land before the DOM updates; one gift goes out.
+    rawTap(c.send);
+    rawTap(c.send);
+    flushSync();
+    expect(onsend.mock.calls, lang).toEqual([[2]]);
+    expect(c.send.disabled, lang).toBe(true);
+
+    // A new error releases the latch: the retry sends the same amount, once.
+    await view.rerender({ error: { kind: 'network' } });
+    expect(c.send.disabled, lang).toBe(false);
+    tap(c.send);
+    tap(c.send);
+    expect(onsend.mock.calls, lang).toEqual([[2], [2]]);
+
+    // While the controller works, Send stays disabled.
+    await view.rerender({ error: { kind: 'network' }, busy: true });
+    expect(c.send.disabled, lang).toBe(true);
+    view.unmount();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The sources: no literal text, one entry without I/O, the table inside the chunk (C5; spec 2-4, principle 8)
+
+/** The markup with every `{…}` (expressions, blocks, tags) blanked; braces nest, as in an inline handler body. */
+function withoutMustaches(text: string): string {
+  let out = '';
+  let depth = 0;
+  for (const ch of text) {
+    if (ch === '{') {
+      depth++;
+    } else if (ch === '}' && depth > 0) {
+      depth--;
+    } else if (depth === 0) {
+      out += ch;
+      continue;
+    }
+    out += ' ';
+  }
+  return out;
+}
+
+/**
+ * Where a component shows a literal string: text nodes and the text attributes, outside scripts and styles (a copy
+ * of L14a's reader in ui/screens.svelte.test.ts; that file is outside this lane, carry C1 shares one reader).
+ */
+function literalText(source: string): string[] {
+  const markup = withoutMustaches(
+    source.replace(/<!--[\s\S]*?-->/g, ' ').replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, ' '),
+  );
+  const found: string[] = [];
+  for (const m of markup.matchAll(/\b(aria-label|title|alt|placeholder)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) {
+    const value = m[2] ?? m[3] ?? '';
+    if (/\p{L}/u.test(value)) {
+      found.push(`${m[1]}="${value}"`);
+    }
+  }
+  for (const m of markup.replace(/<[^>]*>/g, ' ').matchAll(/\S*\p{L}\S*/gu)) {
+    found.push(`text "${m[0]}"`);
+  }
+  return found;
+}
+
+test('i18n: meta components hold no literal text', () => {
+  // Non-vacuous and exact: every component of the chunk is read, and no other component sits beside them.
+  const names = Object.keys(COMPONENT_SOURCES)
+    .map((key) => key.replace(/^\.\//, ''))
+    .sort();
+  expect(names).toEqual([...META_COMPONENTS]);
+  const offenders: string[] = [];
+  for (const name of META_COMPONENTS) {
+    const source = COMPONENT_SOURCES[`./${name}`] ?? '';
+    expect(source, name).toContain('</');
+    for (const literal of literalText(source)) {
+      offenders.push(`${name}: ${literal}`);
+    }
+    // Russian belongs in i18n/meta.ts only: no Cyrillic in a component, in its script or inside `{…}` either.
+    if (/\p{Script=Cyrillic}/u.test(source)) {
+      offenders.push(`${name}: Cyrillic in the source`);
+    }
+  }
+  if (/\p{Script=Cyrillic}/u.test(indexSource)) {
+    offenders.push('index.ts: Cyrillic in the source');
+  }
+  expect(offenders).toEqual([]);
+
+  // The reader itself: a text node and a text attribute are found, an expression and a glyph are not.
+  expect(literalText('<p>Меню</p><b aria-label="Close">×</b><i title={mt(lang, "k")}>{label}</i>')).toEqual([
+    'aria-label="Close"',
+    'text "Меню"',
+  ]);
+});
+
+/** One module reference: `type` when erased (`import type`, `export type … from`, `import('x').T`). */
+type ModuleRef = { spec: string; typeOnly: boolean; dynamic: boolean };
+
+/** Every module reference of a .ts file or of a component's scripts, read with the TypeScript parser. */
+function moduleRefs(file: string, text: string): ModuleRef[] {
+  const scripts = file.endsWith('.svelte')
+    ? [...text.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi)].map((m) => m[1] ?? '')
+    : [text];
+  const out: ModuleRef[] = [];
+  for (const script of scripts) {
+    const visit = (node: ts.Node): void => {
+      if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
+        // `import { type X }` keeps the declaration (verbatimModuleSyntax): only `import type` is type-only.
+        const typeOnly = node.importClause?.phaseModifier === ts.SyntaxKind.TypeKeyword;
+        out.push({ spec: node.moduleSpecifier.text, typeOnly, dynamic: false });
+      } else if (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined) {
+        const spec = ts.isStringLiteral(node.moduleSpecifier) ? node.moduleSpecifier.text : '<computed>';
+        out.push({ spec, typeOnly: node.isTypeOnly, dynamic: false });
+      } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+        const arg = node.arguments[0];
+        const spec = arg !== undefined && ts.isStringLiteralLike(arg) ? arg.text : '<computed>';
+        out.push({ spec, typeOnly: false, dynamic: true });
+      } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) {
+        const literal = node.argument.literal;
+        out.push({ spec: ts.isStringLiteral(literal) ? literal.text : '<computed>', typeOnly: true, dynamic: false });
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(ts.createSourceFile(`${file}.ts`, script, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS));
+  }
+  return out;
+}
+
+/** Every source of src/ but the tests, keyed by its path under src/ (`main.ts`, `ui/meta/index.ts`, …). */
+const SRC_SOURCES: Readonly<Record<string, string>> = Object.fromEntries(
+  Object.entries(
+    import.meta.glob<string>(['../../**/*.ts', '../../**/*.svelte', '!../../**/*.test.ts'], {
+      query: '?raw',
+      import: 'default',
+      eager: true,
+    }),
+  ).map(([key, text]) => [new URL(key, 'file:///src/ui/meta/').pathname.slice('/src/'.length), text]),
+);
+
+/** The I/O a presentational overlay never does (spec 4); storage, dialogs and window.open are arch's rules. */
+const IO_NAMES =
+  /\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|navigator|window|globalThis|document|indexedDB|postMessage|setTimeout|setInterval)\b/g;
+
+/** A source without its comments (HTML, block and line comments). */
+const withoutComments = (text: string): string =>
+  text
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:\\])\/\/.*$/gm, '$1');
+
+test('meta: one entry, no I/O, the meta table stays in the chunk', () => {
+  // (1) The entry's runtime exports are exactly the seven components: no store, no service, no data.
+  expect(Object.keys(ui).sort()).toEqual(META_COMPONENTS.map((n) => n.replace(/\.svelte$/, '')).sort());
+
+  // (2) Every module reference inside the chunk is on its allowlist.
+  const componentAllowed = new Set(['value ../../i18n/meta.ts', 'type ./index.ts', 'type ../../i18n/index.ts']);
+  const indexAllowed = new Set([
+    ...META_COMPONENTS.map((n) => `value ./${n}`),
+    'type ../../story/catalog.ts',
+    'type ../../story/staging.ts',
+    'type ../../i18n/index.ts',
+    'type ../../i18n/meta.ts',
+  ]);
+  const form = (r: ModuleRef): string => `${r.dynamic ? 'dynamic' : r.typeOnly ? 'type' : 'value'} ${r.spec}`;
+  const outsideAllowlist: string[] = [];
+  const chunkFiles: ReadonlyArray<readonly [string, string, ReadonlySet<string>]> = [
+    ...META_COMPONENTS.map((n) => [n, COMPONENT_SOURCES[`./${n}`] ?? '', componentAllowed] as const),
+    ['index.ts', indexSource, indexAllowed],
+  ];
+  for (const [name, source, allowed] of chunkFiles) {
+    const refs = moduleRefs(name, source).map(form);
+    // Non-vacuous: a component reads the table, the entry re-exports the seven.
+    expect(refs.length, name).toBeGreaterThan(0);
+    outsideAllowlist.push(...refs.filter((r) => !allowed.has(r)).map((r) => `${name}: ${r}`));
+
+    // (3) No I/O identifier, outside comments.
+    for (const m of withoutComments(source).matchAll(IO_NAMES)) {
+      outsideAllowlist.push(`${name}: ${m[0]}`);
+    }
+  }
+  expect(moduleRefs('index.ts', indexSource).map(form)).toEqual(
+    expect.arrayContaining(META_COMPONENTS.map((n) => `value ./${n}`)),
+  );
+  expect(outsideAllowlist).toEqual([]);
+
+  // (4) Outside the chunk, nothing loads the table, and the chunk is reached only by a type or by LMI's dynamic
+  // import in app/meta.ts (M27), so neither the meta strings nor the overlays join the entry.
+  const outside = Object.keys(SRC_SOURCES).filter((f) => !f.startsWith('ui/meta/'));
+  expect(outside).toContain('main.ts');
+  expect(outside).toContain('i18n/index.ts');
+  const intoChunk: string[] = [];
+  for (const file of outside) {
+    for (const ref of moduleRefs(file, SRC_SOURCES[file] ?? '')) {
+      if (ref.spec === '<computed>') {
+        intoChunk.push(`${file}: a computed module reference`);
+        continue;
+      }
+      if (!ref.spec.startsWith('.') && !ref.spec.startsWith('/')) {
+        continue;
+      }
+      const target = new URL(ref.spec, `file:///src/${file}`).pathname.slice('/src/'.length);
+      const loader = ref.dynamic && file === 'app/meta.ts' && target === 'ui/meta/index.ts';
+      if ((target === 'i18n/meta.ts' || target.startsWith('ui/meta/')) && !ref.typeOnly && !loader) {
+        intoChunk.push(`${file}: ${form(ref)}`);
+      }
+    }
+  }
+  expect(intoChunk).toEqual([]);
+});
+
+test('i18n: every meta key is used by a meta component', () => {
+  const sources = META_COMPONENTS.map((n) => COMPONENT_SOURCES[`./${n}`] ?? '');
+  const quoted = (key: string): boolean => sources.some((s) => s.includes(`'${key}'`) || s.includes(`"${key}"`));
+  expect(META_KEYS.filter((key) => !quoted(key))).toEqual([]);
 });

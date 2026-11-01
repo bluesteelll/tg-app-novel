@@ -55,6 +55,15 @@ export type WalletData = {
   hintTierCost: number;
 };
 
+/**
+ * A server answer the gift dialog shows (= `MetaError`): the daily caps arrive as `limit` or as 429 `rate-limited`
+ * with `retryAfter` in seconds (M22).
+ */
+export type ShownError = {
+  kind: 'network' | 'auth' | 'insufficient' | 'unavailable' | 'limit' | 'rate-limited' | 'not-found';
+  retryAfter?: number;
+};
+
 /** The completion card; `storyTitle` is the public catalog title in the UI language. */
 export type CardProps = { card: CardData; storyTitle: string; lang: Lang; onshare: () => void };
 
@@ -104,9 +113,27 @@ export type WalletProps = {
   onterms: () => void;
 };
 
+/**
+ * The gift dialog: the amount runs from 1 to `balance`, and to `maxAmount` when the per-gift maximum is known (null:
+ * the server's 400 is the backstop, cut Q4). `onsend` fires once per submit; a new `error` re-enables Send, and on
+ * success the controller closes the dialog. The request id is the controller's (cut Q9).
+ */
+export type GiftProps = {
+  friend: FriendData;
+  kind: string;
+  balance: number;
+  maxAmount: number | null;
+  error: ShownError | null;
+  lang: Lang;
+  busy?: boolean;
+  onsend: (amount: number) => void;
+  oncancel: () => void;
+};
+
 export { default as CompletionCard } from './CompletionCard.svelte';
 export { default as ConsentDialog } from './ConsentDialog.svelte';
 export { default as FriendProfile } from './FriendProfile.svelte';
 export { default as Friends } from './Friends.svelte';
+export { default as GiftDialog } from './GiftDialog.svelte';
 export { default as InvitePrompt } from './InvitePrompt.svelte';
 export { default as Wallet } from './Wallet.svelte';
