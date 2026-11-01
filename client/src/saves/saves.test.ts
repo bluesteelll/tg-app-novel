@@ -610,6 +610,29 @@ test('saves: backoff keeps its base when Retry-After is shorter', async () => {
   expect(clock.pending()).toBe(0);
 });
 
+test('saves: a plain 500 is transient and backs off', async () => {
+  const clock = new FakeClock();
+  const srv = new FakeSaves(clock);
+  srv.seed('manor', 'auto', 3, 'w0');
+  // Our own server's answer to a database fault: the lowest 5xx, without Retry-After, is still worth a retry.
+  srv.script = [{ fail: { kind: 'http', status: 500, code: 'internal', body: { error: 'internal' }, retryAfter: null } }];
+  const { s } = service(srv, clock, manor, new FakeDevice());
+  await s.start(list(summary('manor', 'auto', 3, 'w0')));
+  s.autosave(write(1));
+  await clock.advance(10);
+  expect(s.state(), 'a 500 is transient like any 5xx').toEqual({ kind: 'retrying', attempt: 1, inMs: 1000 });
+  await clock.advance(989);
+  expect(srv.puts.length, 'no re-send before the first backoff step has passed').toBe(1);
+  await clock.advance(1);
+  expect(srv.puts.map((p) => [p.at, p.req.writeId, p.req.expectedRev])).toEqual([
+    [0, 'w1', 3],
+    [1000, 'w1', 3],
+  ]);
+  expect(s.state()).toEqual({ kind: 'idle' });
+  expect(srv.rows.get('manor/auto')).toMatchObject({ rev: 4, writeId: 'w1', body: write(1).body });
+  expect(clock.pending()).toBe(0);
+});
+
 test('saves: keepalive put only under the shared quota', async () => {
   // The request JSON around an empty body, in the service's field order; the PUT's real size is checked below.
   const empty = { expectedRev: null, writeId: 'w1', chapterId: 'ch1', storyVersion: 'v1', lineId: 'ch1.k1.l1', body: '' };
