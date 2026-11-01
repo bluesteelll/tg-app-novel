@@ -1,6 +1,7 @@
 //! The social graph (META-PLAN M10-M12, M15; `0005_social.sql`): the schema's named constraints on raw SQL, the
-//! users upsert's inserted flag, the attribution at `POST /api/auth` (M11), the invite routes (F19), and the social
-//! view, the accept and the decline or removal with its durable block (F20) through the production router.
+//! users upsert's inserted flag, the attribution at `POST /api/auth` (M11), the invite routes (F19), the social view
+//! with the accept and the decline or removal and its durable block (F20), and the public privacy page (M26), through
+//! the production router.
 //!
 //! A concurrency case holds a row lock on a raw READ COMMITTED connection (a stand-in for another app transaction)
 //! and observes the app's request waiting on it through `common::wait_for_lock_waiter`, never by timing.
@@ -1845,6 +1846,109 @@ async fn are_friends_either_order() {
         let got = st.repo.are_friends(UserId(a), UserId(b)).await.unwrap();
         if got != want {
             failures.push(format!("are_friends({case}): expected {want}, got {got}"));
+        }
+    }
+    report(&failures);
+}
+
+/// The policy file as the test reads it, compiled in independently of `api/legal.rs`.
+const POLICY_FILE: &str = include_str!("../../legal/privacy-policy.html");
+
+/// The content of the file's `<meta name="policy-version">`, parsed here, not by the server.
+fn file_policy_version() -> &'static str {
+    POLICY_FILE
+        .split_once(r#"<meta name="policy-version" content=""#)
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map_or("<no policy-version meta>", |(version, _)| version)
+}
+
+/// `^[0-9]{4}-[0-9]{2}-[0-9]{2}[a-z]?$`, the `consents_policy_version_shape` CHECK.
+fn version_shaped(v: &str) -> bool {
+    let chars: Vec<char> = v.chars().collect();
+    let digit = |i: usize| chars.get(i).is_some_and(char::is_ascii_digit);
+    let date = (0..10).all(|i| {
+        if i == 4 || i == 7 {
+            chars.get(i) == Some(&'-')
+        } else {
+            digit(i)
+        }
+    });
+    date && (chars.len() == 10 || (chars.len() == 11 && chars[10].is_ascii_lowercase()))
+}
+
+/// `GET /api/privacy` (M26): the compiled template byte for byte, as `text/html; charset=utf-8`, publicly cacheable
+/// for five minutes (never the router's `no-store`), under the CSP; its version meta has the consent row's shape and
+/// is what `policy_version()` reports.
+#[tokio::test]
+async fn privacy_page_served_with_version() {
+    let (st, _db) = social_state(&[]).await;
+    let reply = send(&st, Method::GET, None, "/api/privacy").await;
+    let mut failures = Vec::new();
+    if reply.status != StatusCode::OK {
+        failures.push(format!(
+            "status: expected 200, got {}",
+            reply.status.as_u16()
+        ));
+    }
+    for (name, want) in [
+        (CONTENT_TYPE, "text/html; charset=utf-8"),
+        (axum::http::header::CACHE_CONTROL, "public, max-age=300"),
+        (
+            axum::http::header::CONTENT_SECURITY_POLICY,
+            "default-src 'none'; style-src 'unsafe-inline'",
+        ),
+    ] {
+        let got = reply
+            .headers
+            .get(&name)
+            .map(|v| v.to_str().unwrap_or("<not text>"));
+        if got != Some(want) {
+            failures.push(format!("{name}: expected {want:?}, got {got:?}"));
+        }
+    }
+    if reply.body.as_ref() != POLICY_FILE.as_bytes() {
+        failures.push(format!(
+            "body: expected the policy file's {} bytes, got {} bytes",
+            POLICY_FILE.len(),
+            reply.body.len()
+        ));
+    }
+    let version = file_policy_version();
+    if !version_shaped(version) {
+        failures.push(format!(
+            "the file's policy-version {version:?}: expected YYYY-MM-DD[a-z]"
+        ));
+    }
+    let compiled = server::api::legal::policy_version();
+    if compiled != version {
+        failures.push(format!(
+            "policy_version(): expected the file's {version:?}, got {compiled:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// The policy is public: no `Authorization`, and a garbage one, both get the page.
+#[tokio::test]
+async fn privacy_page_needs_no_token() {
+    let (st, _db) = social_state(&[]).await;
+    let mut failures = Vec::new();
+    let without = send(&st, Method::GET, None, "/api/privacy").await;
+    let garbage = common::call(
+        &st,
+        Request::get("/api/privacy")
+            .header(AUTHORIZATION, "Bearer garbage")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    for (case, reply) in [("no Authorization", without), ("a garbage token", garbage)] {
+        if reply.status != StatusCode::OK || reply.body.as_ref() != POLICY_FILE.as_bytes() {
+            failures.push(format!(
+                "{case}: expected 200 with the policy, got {} ({} bytes)",
+                reply.status.as_u16(),
+                reply.body.len()
+            ));
         }
     }
     report(&failures);

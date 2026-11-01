@@ -4,6 +4,7 @@ pub mod auth;
 pub mod content;
 pub mod dto;
 pub mod entitlements;
+pub mod legal;
 pub mod orders;
 pub mod puzzles;
 pub mod saves;
@@ -77,6 +78,7 @@ fn routes() -> Router<AppState> {
             post(social::post_accept),
         )
         .route("/friends/{handle}", delete(social::delete_friend))
+        .merge(legal::routes())
 }
 
 /// `GET /api/health`: no auth, no database; `ok` as `text/plain`.
