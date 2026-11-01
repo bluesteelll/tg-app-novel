@@ -8,12 +8,14 @@ import { afterEach, expect, test, vi } from 'vitest';
 import type { Lang } from '../../i18n/index.ts';
 import { CONSENT_TEXT_VERSION, metaEn, metaRu, mt, type MetaKey } from '../../i18n/meta.ts';
 import type { EndingName, StoryId } from '../../story/catalog.ts';
-import type { ChapterId } from '../../story/staging.ts';
+import type { ChapterId, ProductId } from '../../story/staging.ts';
 import CompletionCard from './CompletionCard.svelte';
+import ConsentDialog from './ConsentDialog.svelte';
 import FriendProfile from './FriendProfile.svelte';
 import Friends from './Friends.svelte';
-import type { CardData, FriendData, FriendHandle, InviteProps, ProfileData, SocialData } from './index.ts';
+import type { CardData, FriendData, FriendHandle, InviteProps, ProfileData, SocialData, WalletData } from './index.ts';
 import InvitePrompt from './InvitePrompt.svelte';
+import Wallet from './Wallet.svelte';
 
 // svelteTesting()'s auto-cleanup does not reach the `dom` project (L14a), so each test unmounts what it rendered here.
 afterEach(() => cleanup());
@@ -420,4 +422,168 @@ test('invite: prompt names nobody and says who sees the name', () => {
   // The prompt has no name prop (C1).
   // @ts-expect-error -- the inviter is never named
   void ({ lang: 'en', onsend: () => {}, onlater: () => {}, inviterName: 'Kim' } satisfies InviteProps);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The consent dialog and the wallet (C4; M12, M20, M24, F21, F23, PP P1-P2)
+
+/** A pointer-free activation: Enter or Space on a focused button, or assistive technology (detail 0). */
+const keyClick = (el: Element): void => {
+  el.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 0 }));
+  flushSync();
+};
+
+test('consent: off by default and one tap withdraws', () => {
+  for (const lang of LANGS) {
+    const onchange = vi.fn();
+    const off = render(ConsentDialog, { lang, onchange, onpolicy: vi.fn() });
+    const offSwitch = within(off.container).getByRole('switch', { name: mt(lang, 'meta.consent_switch') });
+    expect(offSwitch.getAttribute('aria-checked'), lang).toBe('false');
+    const controls = off.container.querySelectorAll('button').length;
+    // Rule (b): the tap that opened the dialog, a click with no pointerdown on the switch, consents to nothing (W5).
+    pointerClick(offSwitch);
+    flushSync();
+    expect(onchange, lang).not.toHaveBeenCalled();
+    tap(offSwitch);
+    expect(onchange.mock.calls, lang).toEqual([[true, 'friends_profile.v1']]);
+    // The switch shows the server's state: it does not flip before the answer arrives as `granted`.
+    expect(offSwitch.getAttribute('aria-checked'), lang).toBe('false');
+    off.unmount();
+
+    const withdraw = vi.fn();
+    const on = render(ConsentDialog, { granted: true, lang, onchange: withdraw, onpolicy: vi.fn() });
+    const onSwitch = within(on.container).getByRole('switch', { name: mt(lang, 'meta.consent_switch') });
+    expect(onSwitch.getAttribute('aria-checked'), lang).toBe('true');
+    tap(onSwitch);
+    // One tap withdraws: no confirm step appears.
+    expect(withdraw.mock.calls, lang).toEqual([[false, 'friends_profile.v1']]);
+    expect(on.container.querySelectorAll('button'), lang).toHaveLength(controls);
+    // A keyboard activation counts as well.
+    keyClick(onSwitch);
+    expect(withdraw, lang).toHaveBeenCalledTimes(2);
+    on.unmount();
+  }
+});
+
+/** The consent as the player reads it: title, body and the switch's label (MT5: the version names this text). */
+const consentText = (lang: Lang): string =>
+  (['meta.consent_title', 'meta.consent_body', 'meta.consent_switch'] as const).map((k) => mt(lang, k)).join('\n');
+
+/**
+ * sha256 of the ru and en consent texts per version: a wording edit without a new version (and its entry in the
+ * server's closed list, LF1) fails here.
+ */
+const CONSENT_PINS: Readonly<Record<string, string>> = {
+  'friends_profile.v1': 'd4c1970079a6fbf0f547ff4f79900d8f4cf166c079ee7943782bf7ad9b2d4d87',
+};
+
+/** The hex sha256 of a text's UTF-8 bytes (Web Crypto: the client's tsconfig types no `node:` module). */
+async function sha256(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+test('consent: text names the friend circle', async () => {
+  const fragments: Readonly<Record<Lang, readonly RegExp[]>> = {
+    en: [/whose friend request you accepted/, /who accepted your request/, /No one else/],
+    ru: [/чей запрос в друзья вы приняли/, /которые приняли ваш запрос/, /Больше никто/],
+  };
+  for (const lang of LANGS) {
+    const onpolicy = vi.fn();
+    const view = render(ConsentDialog, { lang, onchange: vi.fn(), onpolicy });
+    const q = within(view.container);
+    expect(q.getByRole('heading', { level: 2 }).textContent, lang).toBe(mt(lang, 'meta.consent_title'));
+    expect(shown(q.getByText(mt(lang, 'meta.consent_body'))), lang).toBe(mt(lang, 'meta.consent_body'));
+    for (const re of fragments[lang]) {
+      expect(mt(lang, 'meta.consent_body'), lang).toMatch(re);
+    }
+    tap(q.getByRole('button', { name: mt(lang, 'meta.consent_policy') }));
+    expect(onpolicy, lang).toHaveBeenCalledTimes(1);
+    view.unmount();
+  }
+  expect(await sha256(`${consentText('ru')}\n${consentText('en')}`)).toBe(CONSENT_PINS[CONSENT_TEXT_VERSION]);
+});
+
+// Every derived number (a per-hint price floor / ceil / round, a total, a sum) falls outside these server numbers,
+// so a client-side price cannot hide among them (critique W4).
+const WALLET: WalletData = {
+  balances: [{ kind: 'hint', balance: 0, debt: 3 }],
+  packs: [
+    { productId: 'pack:hint_s' as ProductId, kind: 'hint', amount: 5, priceStars: 40, title: '5 hints' },
+    { productId: 'pack:hint_m' as ProductId, kind: 'hint', amount: 20, priceStars: 130, title: '20 hints' },
+  ],
+  hintTierCost: 1,
+};
+const WALLET_NUMBERS = new Set([0, 3, 5, 20, 40, 130]);
+
+test('wallet: packs show server prices and debt', () => {
+  // The fixture's property, checked: none of the usual derivations lands on an allowed number.
+  for (const p of WALLET.packs) {
+    const each = p.priceStars / p.amount;
+    for (const derived of [Math.floor(each), Math.ceil(each), Math.round(each), p.priceStars * p.amount]) {
+      expect(WALLET_NUMBERS.has(derived), `${p.productId} ${derived}`).toBe(false);
+    }
+  }
+  for (const lang of LANGS) {
+    const view = render(Wallet, { wallet: WALLET, lang, onbuy: vi.fn(), onterms: vi.fn() });
+    const text = shown(view.container);
+    for (const present of [
+      '5 hints',
+      '20 hints',
+      mt(lang, 'meta.wallet_buy', { stars: 40 }),
+      mt(lang, 'meta.wallet_buy', { stars: 130 }),
+      mt(lang, 'meta.wallet_balance', { kind: mt(lang, 'meta.kind_hint'), n: 0 }),
+      mt(lang, 'meta.wallet_debt', { n: 3 }),
+    ]) {
+      expect(text, lang).toContain(present);
+    }
+    // Every number on screen is a server number, verbatim.
+    const numbers = [...text.matchAll(/\d+/g)].map((m) => Number(m[0]));
+    expect(numbers.filter((n) => !WALLET_NUMBERS.has(n)), lang).toEqual([]);
+    view.unmount();
+  }
+  // A kind without a label shows its id; no debt line without debt.
+  const other = render(Wallet, {
+    wallet: { ...WALLET, balances: [{ kind: 'gem', balance: 2, debt: 0 }] },
+    lang: 'en',
+    onbuy: vi.fn(),
+    onterms: vi.fn(),
+  });
+  expect(shown(other.container)).toContain(mt('en', 'meta.wallet_balance', { kind: 'gem', n: 2 }));
+  expect(shown(other.container)).not.toContain(mt('en', 'meta.wallet_debt', { n: 0 }));
+});
+
+test('wallet: buy needs the terms checkbox', async () => {
+  for (const lang of LANGS) {
+    const onbuy = vi.fn();
+    const onterms = vi.fn();
+    const view = render(Wallet, { wallet: WALLET, lang, onbuy, onterms });
+    const q = within(view.container);
+    const box = q.getByRole('checkbox', { name: mt(lang, 'meta.wallet_terms_agree') }) as HTMLInputElement;
+    const buys = WALLET.packs.map(
+      (p) => q.getByRole('button', { name: mt(lang, 'meta.wallet_buy', { stars: p.priceStars }) }) as HTMLButtonElement,
+    );
+    const [small, medium] = buys;
+    if (small === undefined || medium === undefined) {
+      throw new Error('two Buy buttons expected');
+    }
+    // Unchecked on every open, and Buy is disabled until it is ticked (P1).
+    expect(box.checked, lang).toBe(false);
+    expect(buys.map((b) => b.disabled), lang).toEqual([true, true]);
+    tap(medium);
+    expect(onbuy, lang).not.toHaveBeenCalled();
+    tap(q.getByRole('button', { name: mt(lang, 'meta.wallet_terms_link') }));
+    expect(onterms, lang).toHaveBeenCalledTimes(1);
+
+    box.click();
+    flushSync();
+    expect(buys.map((b) => b.disabled), lang).toEqual([false, false]);
+    tap(medium);
+    expect(onbuy.mock.calls, lang).toEqual([['pack:hint_m']]);
+
+    // While a purchase is requested, Buy is disabled (P2).
+    await view.rerender({ busy: true });
+    expect(buys.map((b) => b.disabled), lang).toEqual([true, true]);
+    view.unmount();
+  }
 });

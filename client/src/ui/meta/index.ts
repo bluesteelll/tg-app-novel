@@ -3,8 +3,9 @@
 // META-PLAN's views field for field, so LMI passes its views without an adapter. Everything that reaches outside the
 // chunk is `import type` (erased: zero bytes, and no module of the entry joins the chunk's graph).
 import type { Lang } from '../../i18n/index.ts';
+import type { ConsentTextVersion } from '../../i18n/meta.ts';
 import type { EndingName, StoryId } from '../../story/catalog.ts';
-import type { ChapterId } from '../../story/staging.ts';
+import type { ChapterId, ProductId } from '../../story/staging.ts';
 
 /** A completion card (= META-PLAN `CardView`): own counts only; titles and names in the UI language. */
 export type CardData = {
@@ -47,6 +48,13 @@ export type ProfileData = {
   }>;
 };
 
+/** The wallet (= `WalletView`): balances with debt (M20) and the packs with their server prices. */
+export type WalletData = {
+  balances: ReadonlyArray<{ kind: string; balance: number; debt: number }>;
+  packs: ReadonlyArray<{ productId: ProductId; kind: string; amount: number; priceStars: number; title: string }>;
+  hintTierCost: number;
+};
+
 /** The completion card; `storyTitle` is the public catalog title in the UI language. */
 export type CardProps = { card: CardData; storyTitle: string; lang: Lang; onshare: () => void };
 
@@ -75,7 +83,30 @@ export type FriendProfileProps = {
 /** The invite prompt: no name and no code, it names nobody (M10 revision 1, C1). */
 export type InviteProps = { lang: Lang; busy?: boolean; onsend: () => void; onlater: () => void };
 
+/**
+ * The consent dialog: `granted` is the server's state (default off); `onchange` asks for the opposite, with the
+ * version of the text shown.
+ */
+export type ConsentProps = {
+  granted?: boolean;
+  lang: Lang;
+  busy?: boolean;
+  onchange: (granted: boolean, textVersion: ConsentTextVersion) => void;
+  onpolicy: () => void;
+};
+
+/** The wallet: `busy` disables Buy while a purchase is requested (P2); `onterms` opens the terms overlay (P1). */
+export type WalletProps = {
+  wallet: WalletData;
+  lang: Lang;
+  busy?: boolean;
+  onbuy: (p: ProductId) => void;
+  onterms: () => void;
+};
+
 export { default as CompletionCard } from './CompletionCard.svelte';
+export { default as ConsentDialog } from './ConsentDialog.svelte';
 export { default as FriendProfile } from './FriendProfile.svelte';
 export { default as Friends } from './Friends.svelte';
 export { default as InvitePrompt } from './InvitePrompt.svelte';
+export { default as Wallet } from './Wallet.svelte';
