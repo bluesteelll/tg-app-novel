@@ -560,6 +560,13 @@ function slotEl(container: HTMLElement, slot: SaveSlot): HTMLElement {
   return el ?? container;
 }
 
+/** The blocks of a save row under its label, top to bottom (the row is a flex column): the text and buttons of each. */
+function blocksUnderLabel(row: HTMLElement): Array<{ text: string; buttons: string[] }> {
+  const [label, ...blocks] = [...row.children];
+  expect(label?.classList.contains('label'), 'the label comes first').toBe(true);
+  return blocks.map((b) => ({ text: shown(b), buttons: names([...b.querySelectorAll('button')]) }));
+}
+
 test('menus: save asks before overwriting, one save per tap', async () => {
   const savedAt = 1_790_000_000;
   // Out of order on purpose: a row is found by its slot, never by its position in the list (LS2 D4).
@@ -616,10 +623,16 @@ test('menus: save asks before overwriting, one save per tap', async () => {
     expect(saveDisabled(), lang).toEqual([false, false, false]);
 
     // An occupied row asks first: No drops the ask, Yes saves once, however often it is tapped (critique W1).
+    // The ask fills the block that held Save with the question and No, and gives Yes a block of its own below it: the
+    // second tap of a double tap on Save meets the question or No, never Yes (triage I1).
+    expect(blocksUnderLabel(slotEl(container, 's2')), lang).toEqual([{ text: `${load} ${save}`, buttons: [load, save] }]);
     tap(row('s2').getByRole('button', { name: save }));
     expect(shown(slotEl(container, 's2')), lang).toContain(t(lang, 'saves.overwrite_ask'));
     expect(onsave.mock.calls, lang).toEqual([['s1']]);
-    expect(names(row('s2').getAllByRole('button')), lang).toEqual([yes, no]);
+    expect(blocksUnderLabel(slotEl(container, 's2')), lang).toEqual([
+      { text: `${t(lang, 'saves.overwrite_ask')} ${no}`, buttons: [no] },
+      { text: yes, buttons: [yes] },
+    ]);
     tap(row('s2').getByRole('button', { name: no }));
     expect(shown(container), lang).not.toContain(t(lang, 'saves.overwrite_ask'));
     expect(onsave.mock.calls, lang).toEqual([['s1']]);

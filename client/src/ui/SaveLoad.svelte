@@ -11,8 +11,11 @@
   // whether to overwrite. One write per tap (L10 review M3, critique W1): every control that writes (Save, both Yes
   // and the conflict's No) is disabled while `saving` names a slot, and a latch set on the tap blocks a second tap
   // that lands before the caller's answer; the next change of `saving`, `conflict`, `failed` or `slots` releases it.
-  // A failed save shows on its row (`failed`, critique W2). The overwrite ask puts No where Save was, so a double tap
-  // on an occupied row's Save lands on No. Loading once per tap is the caller's, as Start is.
+  // A failed save shows on its row (`failed`, critique W2). The overwrite ask keeps Yes out of Save's place (triage
+  // I1): the question and No fill the block that held Save, and Yes gets a block of its own below it. The upper block
+  // holds a button and no button label wraps, so it is at least as tall as the actions row was, and Yes starts below
+  // Save's former rectangle: the second tap of a double tap on an occupied row's Save meets the question or No, never
+  // Yes. Loading once per tap is the caller's, as Start is.
   import { t, type Lang } from '../i18n/index.ts';
   import type { ManualSlot } from '../saves/service.ts';
 
@@ -112,12 +115,14 @@
             <button type="button" disabled={busy} onclick={() => write(() => oncancel())}>{t(lang, 'saves.no')}</button>
           </div>
         {:else if asking === slot}
-          <p class="ask">{t(lang, 'saves.overwrite_ask')}</p>
+          <div class="actions">
+            <p class="ask">{t(lang, 'saves.overwrite_ask')}</p>
+            <button type="button" onclick={() => (asking = null)}>{t(lang, 'saves.no')}</button>
+          </div>
           <div class="actions">
             <button type="button" class="primary" disabled={busy} onclick={() => write(() => onsave(slot))}
               >{t(lang, 'saves.yes')}</button
             >
-            <button type="button" onclick={() => (asking = null)}>{t(lang, 'saves.no')}</button>
           </div>
         {:else}
           <div class="actions">
@@ -202,6 +207,11 @@
     gap: 8px;
   }
 
+  .actions > .ask {
+    flex: 1 1 auto;
+    align-self: center;
+  }
+
   button {
     min-width: 44px;
     min-height: 44px;
@@ -211,6 +221,8 @@
     background: rgb(127 127 127 / 20%);
     color: inherit;
     font: inherit;
+    /* One line per label, so every button of a row is one height: the overwrite ask relies on it (see the script). */
+    white-space: nowrap;
   }
 
   button:disabled {
