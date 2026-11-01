@@ -5,8 +5,10 @@
 
 This guide is the writers' contract. The tag reference is [STAGING-DSL.md](STAGING-DSL.md): this guide links to it
 for every tag and lint rule and never adds a rule of its own. Where it restates a rule, it names the DSL section.
-Facts here describe the tree at `4d8a9ec`; where a game screen is not built yet, the guide says "planned" and names
-the lane.
+Facts here describe the tree at `e5ce724`; where a game screen is not built yet, the guide says "planned" and names
+the lane. The dialogue box, the choices and the quick bar exist as components, but no game session mounts them until
+L15 integration: nothing in the tree plays a chapter yet. Today the story gate's seeded playthroughs are the way to
+run your story ([Reading the story gate's output](#reading-the-story-gates-output)).
 
 Examples use English placeholder text. Real chapters are written in Russian (the ink text *is* the Russian text).
 Every snippet the guide calls valid passes the story gate: it is part of one small story whose files are listed in
@@ -985,7 +987,7 @@ not compile shows `-` ([story.ts:366-369](../client/scripts/story.ts#L366)).
 
 These files, on top of the tree's `story/cast.json`, `story/common/globals.ink`, `story/lint-allow.json`, both
 `story/locales/*/story.json` tables, an empty `story/retired-ids.txt` and `assets/catalog.json` (all as at
-`4d8a9ec`), pass the story gate with the output under [Reading the story gate's output](#reading-the-story-gates-output).
+`e5ce724`), pass the story gate with the output under [Reading the story gate's output](#reading-the-story-gates-output).
 
 `story/chapters.json` and `story/stories.json`: as under [Chapters](#chapters-and-storychaptersjson) and
 [`story/stories.json`](#storystoriesjson). `story/ch2/main.ink`: as under
