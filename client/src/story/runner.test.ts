@@ -196,6 +196,13 @@ test('runner: errors are values, never thrown', () => {
   expect(bare.next()).toMatchObject({ ok: false, error: { kind: 'no-id' } });
   bare.dispose();
 
+  // A choice is shown text too: one without its line ID is the same error, never a choice with a null id.
+  const bareChoice = runner(chapter(['-> start', '=== start ===', 'Pick. #id:ch1.start.d003', '* [No id here]', '    -> END'], ['start']));
+  is(ok(bareChoice.next()), 'line');
+  expect(bareChoice.next()).toMatchObject({ ok: false, error: { kind: 'no-id' } });
+  expect(bareChoice.next()).toMatchObject({ ok: false, error: { kind: 'no-id' } });
+  bareChoice.dispose();
+
   const tagged = runner(
     chapter(
       [
