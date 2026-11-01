@@ -52,12 +52,20 @@ export type BudgetInputs = {
   indexHtml: string | null;
   files: DistFile[];
   engineSourceExists: boolean;
+  /** `src/app/yields.ts` exists: the importer of every lazy family (PUZZLES-PLAN X14, W7). */
+  yieldsSourceExists: boolean;
+  /** The LAZY_FAMILIES roots that exist under client/, by their manifest `src`. */
+  lazySources: ReadonlySet<string>;
 };
 export type Limits = {
   entryJsBr: number;
   engineJsBr: number;
   /** PUZZLES-PLAN: entry + engine closures, what loads before the first line. */
   firstLineJsBr: number;
+  /** PUZZLES-PLAN "Budgets": JS + CSS of each puzzle type chunk, of the puzzle host, of the explore UI. */
+  puzzleTypeChunkBr: number;
+  puzzleHostChunkBr: number;
+  exploreUiChunkBr: number;
   allJsBr: number;
   cssBr: number;
   htmlBr: number;
@@ -88,6 +96,9 @@ export const LIMITS: Limits = {
   entryJsBr: 40_000,
   engineJsBr: 230_000,
   firstLineJsBr: 270_000,
+  puzzleTypeChunkBr: 8_000,
+  puzzleHostChunkBr: 10_000,
+  exploreUiChunkBr: 16_000,
   allJsBr: 290_000,
   cssBr: 12_000,
   htmlBr: 2_000,
@@ -110,6 +121,39 @@ export const LIMITS: Limits = {
 };
 /** The dynamic-import root of the engine chunk (two-stage boot); its manifest key and `src`. */
 export const ENGINE_SRC = 'src/app/engine.ts';
+/** The importer of every lazy family (PUZZLES-PLAN X14): the lazy rows are PENDING until it exists (W7). */
+export const YIELDS_SRC = 'src/app/yields.ts';
+
+/** One lazy chunk family: its roots (manifest `src`), its limit, and whether the largest root or their union counts. */
+export type LazyFamily = {
+  name: string;
+  roots: readonly string[];
+  limit: 'puzzleTypeChunkBr' | 'puzzleHostChunkBr' | 'exploreUiChunkBr';
+  measure: 'largest' | 'union';
+};
+/** PUZZLES-PLAN X14: every family is a dynamic chunk, never in the entry or the engine closure. */
+export const LAZY_FAMILIES: readonly LazyFamily[] = [
+  {
+    name: 'puzzle-type chunk (br)',
+    roots: ['src/puzzles/ui/CodeLock.svelte', 'src/puzzles/ui/OrderPuzzle.svelte'],
+    limit: 'puzzleTypeChunkBr',
+    measure: 'largest',
+  },
+  { name: 'puzzle-host chunk (br)', roots: ['src/ui/puzzles/PuzzleHost.svelte'], limit: 'puzzleHostChunkBr', measure: 'largest' },
+  {
+    name: 'explore-ui chunk (br)',
+    roots: ['src/explore/controller.ts', 'src/ui/explore/ExploreView.svelte'],
+    limit: 'exploreUiChunkBr',
+    measure: 'union',
+  },
+];
+const LAZY_ROOTS: ReadonlySet<string> = new Set(LAZY_FAMILIES.flatMap((f) => f.roots));
+/** The arch rule's lazy directories: a chunk from one of them loads after the first line, listed root or not. */
+const LAZY_DIRS = ['src/puzzles/ui/', 'src/ui/puzzles/', 'src/ui/explore/'];
+
+function isLazySrc(src: string | undefined): boolean {
+  return src !== undefined && (LAZY_ROOTS.has(src) || LAZY_DIRS.some((dir) => src.startsWith(dir)));
+}
 /** telegram-web-app.js, loaded by index.html before the entry [R1]. */
 export const TWA_BYTES = 16_200;
 /** Principle 4: no image side over 2048 px. */
@@ -141,6 +185,7 @@ export function evaluate(inputs: BudgetInputs, limits: Limits): Row[] {
     entryRow(inputs, entry, entryClosure, sizes, limits),
     engineRow(inputs, entryClosure, sizes, limits),
     firstLineRow(inputs, entry, entryClosure, sizes, limits),
+    ...LAZY_FAMILIES.map((family) => lazyRow(inputs, family, entryClosure, sizes, limits)),
     sumRow('all JS (br)', inputs.files, (p) => JS.test(p), limits.allJsBr),
     sumRow('CSS total (br)', inputs.files, (p) => p.endsWith('.css'), limits.cssBr),
     htmlRow(sizes, limits),
@@ -159,8 +204,8 @@ function findEntry(manifest: Record<string, ManifestChunk> | null): Entry {
   return { ok: true, key: first[0], chunk: first[1] };
 }
 
-/** The chunk and everything it reaches through `edges`, transitively. */
-function closure(manifest: Record<string, ManifestChunk>, start: string, edges: Edges): Closure {
+/** The chunk and everything it reaches through `edges`, transitively; a dynamic edge to a `stop` key is not followed. */
+function closure(manifest: Record<string, ManifestChunk>, start: string, edges: Edges, stop: (key: string) => boolean = () => false): Closure {
   const keys = new Set<string>();
   const missing: string[] = [];
   const queue = [start];
@@ -176,10 +221,32 @@ function closure(manifest: Record<string, ManifestChunk>, start: string, edges: 
     keys.add(key);
     queue.push(...(chunk.imports ?? []));
     if (edges === 'static+dynamic') {
-      queue.push(...(chunk.dynamicImports ?? []));
+      queue.push(...(chunk.dynamicImports ?? []).filter((k) => !stop(k)));
     }
   }
   return { keys, missing };
+}
+
+/** Sums the brotli size of the JS files and the CSS files of `keys`; a file missing from dist is an input error. */
+function chunkBytes(
+  manifest: Record<string, ManifestChunk>,
+  keys: Iterable<string>,
+  sizes: ReadonlyMap<string, number>,
+): { bytes: number; missing: string[] } {
+  const list = [...keys];
+  const js = jsBytes(manifest, list, sizes);
+  const css = new Set(list.flatMap((key) => manifest[key]?.css ?? []));
+  let bytes = js.bytes;
+  const missing = [...js.missing];
+  for (const file of css) {
+    const size = sizes.get(file);
+    if (size === undefined) {
+      missing.push(file);
+    } else {
+      bytes += size;
+    }
+  }
+  return { bytes, missing };
 }
 
 /** Sums the brotli size of the JS files of `keys`; a chunk without its file in dist is an input error. */
@@ -250,8 +317,13 @@ function entryMeasure(inputs: BudgetInputs, entry: Entry, entryClosure: Closure 
   return { ok: true, bytes, note: `${entryClosure.keys.size} chunks` };
 }
 
-/** The engine's download beyond the entry closure; null while the engine source does not exist (PENDING). */
-function engineMeasure(inputs: BudgetInputs, entryClosure: Closure | null, sizes: ReadonlyMap<string, number>): Measure | null {
+/** The engine's chunks, or why they cannot be found; null while the engine source does not exist (PENDING). */
+type EngineClosure =
+  | { ok: true; manifest: Record<string, ManifestChunk>; keys: Set<string>; missing: string[] }
+  | { ok: false; problem: string }
+  | null;
+
+function engineClosure(inputs: BudgetInputs): EngineClosure {
   if (!inputs.engineSourceExists) {
     return null;
   }
@@ -268,19 +340,32 @@ function engineMeasure(inputs: BudgetInputs, entryClosure: Closure | null, sizes
     return { ok: false, problem: `no dynamic entry for ${ENGINE_SRC} in the manifest` };
   }
   const keys = new Set<string>();
-  const absent: string[] = [];
+  const missing: string[] = [];
   // Application.init() always imports Pixi's environment chunk (browserAll) dynamically, and the 230 KB basis
   // (P:1739, R4 145.1 K) counts it: the engine row follows dynamic imports too; the entry row stays static (P:1738).
+  // The walk stops at a lazy chunk (yields.ts imports them): they load after the first line (PUZZLES-PLAN X14), so
+  // neither the engine row nor the first-line and first-load rows count them; their own rows do.
   for (const root of roots) {
-    const c = closure(manifest, root, 'static+dynamic');
+    const c = closure(manifest, root, 'static+dynamic', (key) => isLazySrc(manifest[key]?.src));
     c.keys.forEach((k) => keys.add(k));
-    absent.push(...c.missing);
+    missing.push(...c.missing);
   }
+  return { ok: true, manifest, keys, missing };
+}
+
+/** The engine's download beyond the entry closure; null while the engine source does not exist (PENDING). */
+function engineMeasure(inputs: BudgetInputs, entryClosure: Closure | null, sizes: ReadonlyMap<string, number>): Measure | null {
+  const engine = engineClosure(inputs);
+  if (engine === null || !engine.ok) {
+    return engine;
+  }
+  const keys = new Set(engine.keys);
+  const absent = [...engine.missing];
   // Chunks the entry already loaded are downloaded once; the engine row counts only what the engine adds.
   for (const key of entryClosure?.keys ?? []) {
     keys.delete(key);
   }
-  const { bytes, missing } = jsBytes(manifest, keys, sizes);
+  const { bytes, missing } = jsBytes(engine.manifest, keys, sizes);
   absent.push(...missing);
   if (absent.length > 0) {
     return { ok: false, problem: `missing from manifest/dist: ${absent.join(', ')}` };
@@ -352,6 +437,69 @@ function partialRow(name: string, bytes: number, limit: number, partial: boolean
   }
   const why = `${ENGINE_SRC} absent: partial sum without the engine closure`;
   return { name, valueBytes: bytes, limitBytes: limit, status: bytes > limit ? 'FAIL' : 'PENDING', note: why, unit: 'KB' };
+}
+
+/**
+ * A lazy family's row, keyed on its importer like the engine row on `app/engine.ts` (PUZZLES-PLAN W7): PENDING while
+ * `src/app/yields.ts` or every root source is absent. Once both exist, a present root FAILs without a dynamic entry
+ * of its own, or inside the entry or the engine closure (it would load before the first line). Its bytes are the JS
+ * and CSS of its static closure beyond the entry and engine closures (downloaded once): the largest root's, or the
+ * union of the roots'.
+ */
+function lazyRow(inputs: BudgetInputs, family: LazyFamily, entryClosure: Closure | null, sizes: ReadonlyMap<string, number>, limits: Limits): Row {
+  const { name } = family;
+  const limit = limits[family.limit];
+  if (!inputs.yieldsSourceExists) {
+    return pending(name, limit, `${YIELDS_SRC} absent`);
+  }
+  const present = family.roots.filter((root) => inputs.lazySources.has(root));
+  if (present.length === 0) {
+    return pending(name, limit, `no source of ${family.roots.join(', ')}`);
+  }
+  if (inputs.manifest === null) {
+    return failed(name, limit, 'dist/.vite/manifest.json missing');
+  }
+  const manifest = inputs.manifest;
+  const entryKeys = entryClosure?.keys ?? new Set<string>();
+  const engine = engineClosure(inputs);
+  const engineKeys = engine?.ok === true ? engine.keys : new Set<string>();
+  const problems: string[] = [];
+  const perRoot: Array<{ root: string; keys: Set<string> }> = [];
+  for (const root of present) {
+    const chunks = Object.keys(manifest).filter((key) => manifest[key]?.src === root && manifest[key]?.isDynamicEntry === true);
+    if (chunks.length === 0) {
+      problems.push(`no dynamic entry for ${root}`);
+      continue;
+    }
+    if (chunks.some((key) => entryKeys.has(key))) {
+      problems.push(`${root} is in the entry static closure`);
+    }
+    if (chunks.some((key) => engineKeys.has(key))) {
+      problems.push(`${root} is in the engine closure`);
+    }
+    const keys = new Set<string>();
+    for (const key of chunks) {
+      const c = closure(manifest, key, 'static');
+      c.keys.forEach((k) => keys.add(k));
+      problems.push(...c.missing.map((k) => `missing from manifest: ${k}`));
+    }
+    for (const key of [...entryKeys, ...engineKeys]) {
+      keys.delete(key);
+    }
+    perRoot.push({ root, keys });
+  }
+  const sized = perRoot.map((r) => ({ ...r, ...chunkBytes(manifest, r.keys, sizes) }));
+  problems.push(...sized.flatMap((r) => r.missing.map((file) => `missing from dist: ${file}`)));
+  if (problems.length > 0) {
+    return failed(name, limit, problems.join('; '));
+  }
+  if (family.measure === 'union') {
+    const union = new Set(perRoot.flatMap((r) => [...r.keys]));
+    const { bytes } = chunkBytes(manifest, union, sizes);
+    return measured(name, bytes, limit, `${union.size} chunks of ${present.length} roots`);
+  }
+  const largest = sized.reduce((a, b) => (b.bytes > a.bytes ? b : a));
+  return measured(name, largest.bytes, limit, `largest: ${largest.root}, ${largest.keys.size} chunks`);
 }
 
 function sumRow(name: string, files: readonly DistFile[], pick: (path: string) => boolean, limit: number): Row {
@@ -834,8 +982,11 @@ export function readInputs(distDir: string, clientRoot: string): { inputs: Budge
   const indexHtml = existsSync(htmlPath) ? readFileSync(htmlPath, 'utf8') : null;
   const manifestStale =
     manifest !== null && indexHtml !== null && statSync(manifestPath).mtimeMs < statSync(htmlPath).mtimeMs - STALE_MS;
-  const engineSourceExists = existsSync(path.join(clientRoot, ...ENGINE_SRC.split('/')));
-  return { inputs: { manifest, manifestStale, indexHtml, files, engineSourceExists }, problems };
+  const sourceExists = (src: string): boolean => existsSync(path.join(clientRoot, ...src.split('/')));
+  const engineSourceExists = sourceExists(ENGINE_SRC);
+  const yieldsSourceExists = sourceExists(YIELDS_SRC);
+  const lazySources = new Set([...LAZY_ROOTS].filter(sourceExists));
+  return { inputs: { manifest, manifestStale, indexHtml, files, engineSourceExists, yieldsSourceExists, lazySources }, problems };
 }
 
 /** The repository's story and asset tool outputs as evaluateAssets() reads them; every unusable input is a problem. */
