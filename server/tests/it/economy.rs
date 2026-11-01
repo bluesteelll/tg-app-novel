@@ -7,20 +7,37 @@
 //!
 //! Balances are seeded through the primitives (a `referral_invitee` credit needs no charge; a debt is a clawback of a
 //! raw payment), never by raw balance rows, so every test keeps `balance - debt = SUM(amount)` per (user, kind).
+//!
+//! The catalog's `economy` section (M17) and the pack path (M19): pack products, the order binding, and the credit
+//! inside the grant, through `POST /api/invoices` and the grant the webhook runs.
 
 use std::fmt::Debug;
+use std::path::Path;
 use std::str::FromStr;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use server::catalog::ResourceKind;
+use serde_json::{Value, json};
+use server::AppState;
+use server::catalog::{
+    CATALOG_JSON, Catalog, Economy, GiftRules, PackDef, PackId, ProductRef, ReferralRules,
+    ResourceKind,
+};
+use server::content::{ContentError, ContentStore};
 use server::db::economy::{
     Applied, Entry, Reason, clawback_in_tx, credit_in_tx, credited_by_charge, debit_in_tx,
 };
-use server::ids::UserId;
+use server::ids::{ChargeId, OrderId, ProductId, UserId};
+use server::telegram::gateway::InvoiceSpec;
+use server::telegram::payments::{GrantOutcome, PaymentFact, on_successful_payment};
 use sqlx::postgres::{PgConnectOptions, PgQueryResult};
 use sqlx::{Connection, PgConnection};
 
 use crate::catalog::{ANN, T0, state_with_users};
 use crate::common;
+use crate::content::FIXTURE;
+use crate::payments::{invoice_state, post_invoice};
+use crate::webhook::order_status;
 
 /// A second player.
 const BEN: i64 = 1002;
@@ -827,5 +844,667 @@ async fn credited_by_charge_reads_the_pay_row() {
         let got = credited_by_charge(&mut c, charge).await;
         failures.extend(expect_eq(case, got.map_err(|e| describe(&e)), Ok(want)));
     }
+    report(&failures);
+}
+
+/// `server/catalog.json` with `edit` applied, as text.
+fn catalog_with(edit: impl FnOnce(&mut Value)) -> String {
+    let mut v: Value = serde_json::from_str(CATALOG_JSON).unwrap();
+    edit(&mut v);
+    v.to_string()
+}
+
+/// The fixture's content, loaded without a database.
+async fn fixture_content() -> ContentStore {
+    ContentStore::load(Path::new(FIXTURE)).await.unwrap()
+}
+
+/// A `successful_payment` fact from `payer`: `amount` XTR for order `order`, charge `charge`.
+fn paid(payer: i64, amount: u32, order: &str, charge: &str) -> PaymentFact {
+    PaymentFact {
+        payer: UserId(payer),
+        currency: "XTR".to_owned(),
+        total_amount: amount,
+        invoice_payload: order.to_owned(),
+        charge: ChargeId(charge.to_owned()),
+        provider_charge: String::new(),
+    }
+}
+
+/// A new order of `product` for `user` through `POST /api/invoices`: its id. A refusal is a failure line and `None`.
+async fn order_of(
+    st: &AppState,
+    user: i64,
+    product: &str,
+    failures: &mut Vec<String>,
+) -> Option<String> {
+    let reply = post_invoice(st, Some(user), &json!({ "productId": product }).to_string()).await;
+    let body: Value = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
+    let order = body["orderId"]
+        .as_str()
+        .filter(|_| reply.status.as_u16() == 200);
+    if order.is_none() {
+        failures.push(format!(
+            "POST /api/invoices {product} for {user}: expected 200 with an orderId, got {} {}",
+            reply.status.as_u16(),
+            String::from_utf8_lossy(&reply.body)
+        ));
+    }
+    order.map(str::to_owned)
+}
+
+/// An order's (product_id, amount, pack_kind, pack_amount), read outside the app pool.
+type OrderBinding = (String, i64, Option<String>, Option<i64>);
+
+async fn order_binding(st: &AppState, order: &str) -> OrderBinding {
+    let mut c = common::raw_db(st).await;
+    let row = sqlx::query_as(
+        "SELECT product_id, amount, pack_kind, pack_amount FROM orders WHERE id = $1",
+    )
+    .bind(order)
+    .fetch_one(&mut c)
+    .await
+    .unwrap();
+    c.close().await.unwrap();
+    row
+}
+
+/// `user`'s `hint` row as (balance, debt), or `None` without one; read outside the app pool.
+async fn hint_row(st: &AppState, user: i64) -> Option<(i64, i64)> {
+    let mut c = common::raw_db(st).await;
+    let row = sqlx::query_as(
+        "SELECT balance, debt FROM resource_balances WHERE user_id = $1 AND kind = 'hint'",
+    )
+    .bind(user)
+    .fetch_optional(&mut c)
+    .await
+    .unwrap();
+    c.close().await.unwrap();
+    row
+}
+
+/// One statement on a raw autocommit connection.
+async fn raw_exec(st: &AppState, sql: &'static str, order: &str) {
+    let mut c = common::raw_db(st).await;
+    sqlx::query(sql).bind(order).execute(&mut c).await.unwrap();
+    c.close().await.unwrap();
+}
+
+/// The (payments rows, `pay:` ledger rows) of `charge`, read outside the app pool.
+async fn charge_rows(st: &AppState, charge: &str) -> (i64, i64) {
+    let mut c = common::raw_db(st).await;
+    let row = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM payments WHERE telegram_payment_charge_id = $1), \
+         (SELECT count(*) FROM resource_ledger WHERE idem_key = 'pay:' || $1)",
+    )
+    .bind(charge)
+    .fetch_one(&mut c)
+    .await
+    .unwrap();
+    c.close().await.unwrap();
+    row
+}
+
+/// Returns once at least `n` app-pool sessions on `st`'s database wait for a lock; panics after 5 s (the shape of
+/// `common::wait_for_lock_waiter`, which returns at one).
+async fn wait_for_waiters(st: &AppState, n: i64) {
+    let mut c = common::raw_db(st).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let waiters: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' \
+             AND datname = current_database() AND application_name = 'tg-novel-server'",
+        )
+        .fetch_one(&mut c)
+        .await
+        .unwrap();
+        if waiters >= n {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{waiters} lock waiters after 5 s, expected {n}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    c.close().await.unwrap();
+}
+
+/// The credit is the kind and amount the order bound at invoice time (revision 1, W3), never the current catalog: an
+/// order whose binding was raised to 7 (an order invoiced by an earlier build) credits 7, and an order whose product
+/// was retired (`pack:gone`, the binding kept) credits its bound 3.
+#[tokio::test]
+async fn pack_credit_uses_amount_bound_at_order() {
+    let (st, _db, _gateway) = invoice_state(&[(ANN, Some("ru"))]).await;
+    let mut failures = Vec::new();
+    let Some(raised) = order_of(&st, ANN, "pack:hint_s", &mut failures).await else {
+        return report(&failures);
+    };
+    raw_exec(
+        &st,
+        "UPDATE orders SET pack_amount = 7 WHERE id = $1",
+        &raised,
+    )
+    .await;
+    let outcome = on_successful_payment(&st, &paid(ANN, 1, &raised, "c-raised")).await;
+    failures.extend(expect_eq(
+        "raised to 7: grant",
+        outcome.ok(),
+        Some(GrantOutcome::Granted),
+    ));
+    failures.extend(expect_eq(
+        "raised to 7: hint row",
+        hint_row(&st, ANN).await,
+        Some((7, 0)),
+    ));
+
+    let Some(gone) = order_of(&st, ANN, "pack:hint_s", &mut failures).await else {
+        return report(&failures);
+    };
+    raw_exec(
+        &st,
+        "UPDATE orders SET product_id = 'pack:gone' WHERE id = $1",
+        &gone,
+    )
+    .await;
+    let outcome = on_successful_payment(&st, &paid(ANN, 1, &gone, "c-gone")).await;
+    failures.extend(expect_eq(
+        "pack:gone: grant",
+        outcome.ok(),
+        Some(GrantOutcome::Granted),
+    ));
+    failures.extend(expect_eq(
+        "pack:gone: hint row",
+        hint_row(&st, ANN).await,
+        Some((10, 0)),
+    ));
+    failures.extend(expect_eq(
+        "pack:gone: rows",
+        charge_rows(&st, "c-gone").await,
+        (1, 1),
+    ));
+    report(&failures);
+}
+
+/// Two deliveries of one pack charge at once credit once (META-PLAN concurrency, `payments_pkey` the arbiter): with
+/// the order row held, grant 1 records the payment and waits on the order; grant 2 waits on grant 1's payment key;
+/// both are seen waiting, then the row is released. One `Granted`, one `Duplicate`, one payment, one `pay:` row,
+/// balance 3; a third, later delivery is `Duplicate` and changes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pack_credit_once_on_duplicate_payment() {
+    let (st, _db, _gateway) = invoice_state(&[(ANN, Some("ru"))]).await;
+    let mut failures = Vec::new();
+    let Some(order) = order_of(&st, ANN, "pack:hint_s", &mut failures).await else {
+        return report(&failures);
+    };
+    let mut holder = common::raw_db(&st).await;
+    begin(&mut holder).await;
+    sqlx::query("SELECT 1 FROM orders WHERE id = $1 FOR UPDATE")
+        .bind(&order)
+        .execute(&mut holder)
+        .await
+        .unwrap();
+    let spawn_grant = |st: &AppState| {
+        let (st, fact) = (st.clone(), paid(ANN, 1, &order, "c-twin"));
+        tokio::spawn(async move { on_successful_payment(&st, &fact).await })
+    };
+    let first = spawn_grant(&st);
+    common::wait_for_lock_waiter(&st).await;
+    let second = spawn_grant(&st);
+    wait_for_waiters(&st, 2).await;
+    commit(&mut holder).await;
+    holder.close().await.unwrap();
+    let mut outcomes: Vec<String> = Vec::new();
+    for grant in [first, second] {
+        outcomes.push(format!("{:?}", grant.await.unwrap()));
+    }
+    outcomes.sort_unstable();
+    failures.extend(expect_eq(
+        "the twin outcomes, sorted",
+        outcomes,
+        vec!["Ok(Duplicate)".to_owned(), "Ok(Granted)".to_owned()],
+    ));
+    failures.extend(expect_eq("rows", charge_rows(&st, "c-twin").await, (1, 1)));
+    failures.extend(expect_eq(
+        "hint row",
+        hint_row(&st, ANN).await,
+        Some((3, 0)),
+    ));
+
+    let third = on_successful_payment(&st, &paid(ANN, 1, &order, "c-twin")).await;
+    failures.extend(expect_eq(
+        "a later redelivery",
+        third.ok(),
+        Some(GrantOutcome::Duplicate),
+    ));
+    failures.extend(expect_eq(
+        "rows after it",
+        charge_rows(&st, "c-twin").await,
+        (1, 1),
+    ));
+    failures.extend(expect_eq(
+        "hint row after it",
+        hint_row(&st, ANN).await,
+        Some((3, 0)),
+    ));
+    report(&failures);
+}
+
+/// The pack credit is inside the grant's one transaction (M19): while the credit waits on the held balance row, an
+/// autocommit reader sees no payment, the order still `created` and no ledger row; after the release all three
+/// appear together with the balance.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pack_grant_credits_in_the_grant_transaction() {
+    let (st, _db, _gateway) = invoice_state(&[(ANN, Some("ru"))]).await;
+    let mut failures = Vec::new();
+    let Some(order) = order_of(&st, ANN, "pack:hint_s", &mut failures).await else {
+        return report(&failures);
+    };
+    let mut holder = common::raw_db(&st).await;
+    // A (0, 0) row holds `balance - debt = SUM(amount)` with no ledger row.
+    sqlx::query(
+        "INSERT INTO resource_balances (user_id, kind, balance, debt, updated_at) VALUES ($1, 'hint', 0, 0, $2)",
+    )
+    .bind(ANN)
+    .bind(T0)
+    .execute(&mut holder)
+    .await
+    .unwrap();
+    begin(&mut holder).await;
+    sqlx::query("SELECT 1 FROM resource_balances WHERE user_id = $1 AND kind = 'hint' FOR UPDATE")
+        .bind(ANN)
+        .execute(&mut holder)
+        .await
+        .unwrap();
+    let (app, fact) = (st.clone(), paid(ANN, 1, &order, "c-held"));
+    let grant = tokio::spawn(async move { on_successful_payment(&app, &fact).await });
+    common::wait_for_lock_waiter(&st).await;
+    let while_waiting = (
+        charge_rows(&st, "c-held").await,
+        order_status(&st, &order).await,
+    );
+    commit(&mut holder).await;
+    holder.close().await.unwrap();
+    failures.extend(expect_eq(
+        "while the credit waits: (payments, pay: rows), order status",
+        while_waiting,
+        ((0, 0), "created".to_owned()),
+    ));
+    let outcome = grant.await.unwrap();
+    failures.extend(expect_eq(
+        "grant",
+        outcome.ok(),
+        Some(GrantOutcome::Granted),
+    ));
+    failures.extend(expect_eq(
+        "after the release: (payments, pay: rows), order status",
+        (
+            charge_rows(&st, "c-held").await,
+            order_status(&st, &order).await,
+        ),
+        ((1, 1), "paid".to_owned()),
+    ));
+    failures.extend(expect_eq(
+        "hint row",
+        hint_row(&st, ANN).await,
+        Some((3, 0)),
+    ));
+    report(&failures);
+}
+
+/// The compiled-in catalog's `economy` section (M17, PLACEHOLDER values): the packs in (kind, amount, id) order (D6),
+/// each a product with its binding, the spend and the gift and referral rules; `chapters()` is still the chapter
+/// products only.
+#[tokio::test]
+async fn catalog_packs_from_economy() {
+    let catalog = Catalog::build(CATALOG_JSON, &fixture_content().await).unwrap();
+    let mut failures = Vec::new();
+    let packs: Vec<(String, u32, &str, &str, Option<PackDef>)> = catalog
+        .packs()
+        .map(|p| {
+            (
+                p.id.0.clone(),
+                p.price_stars,
+                p.title.ru.as_str(),
+                p.title.en.as_str(),
+                p.pack.clone(),
+            )
+        })
+        .collect();
+    let def = |id: &str, amount: u32| PackDef {
+        id: PackId(id.to_owned()),
+        kind: hint(),
+        amount,
+    };
+    failures.extend(expect_eq(
+        "packs()",
+        packs,
+        vec![
+            (
+                "pack:hint_s".to_owned(),
+                1,
+                "3 подсказки",
+                "3 hints",
+                Some(def("hint_s", 3)),
+            ),
+            (
+                "pack:hint_m".to_owned(),
+                3,
+                "10 подсказок",
+                "10 hints",
+                Some(def("hint_m", 10)),
+            ),
+        ],
+    ));
+    for (id, pack, amount) in [("pack:hint_s", "hint_s", 3), ("pack:hint_m", "hint_m", 10)] {
+        let id = ProductId(id.to_owned());
+        let product = catalog
+            .product(&id)
+            .map(|p| (p.kind.clone(), p.pack.clone()));
+        let want = Some((
+            ProductRef::Pack {
+                pack: PackId(pack.to_owned()),
+            },
+            Some(def(pack, amount)),
+        ));
+        failures.extend(expect_eq(&format!("product({})", id.0), product, want));
+        failures.extend(expect_eq(
+            &format!("pack({})", id.0),
+            catalog.pack(&id).cloned(),
+            Some(def(pack, amount)),
+        ));
+    }
+    failures.extend(expect_eq(
+        "economy()",
+        catalog.economy().clone(),
+        Economy {
+            kinds: vec![hint()],
+            hint_tier_cost: 1,
+            gifts: GiftRules {
+                kinds: vec![hint()],
+                max_per_gift: 3,
+                send_per_day: 3,
+                receive_per_day: 5,
+            },
+            referral: ReferralRules {
+                kind: hint(),
+                inviter: 5,
+                invitee: 2,
+                min_play_secs: 120,
+                cap_per_day: 3,
+                cap_total: 20,
+            },
+        },
+    ));
+    let chapters: Vec<String> = catalog.chapters().map(|p| p.id.0.clone()).collect();
+    failures.extend(expect_eq(
+        "chapters()",
+        chapters,
+        vec!["chapter:ch2".to_owned(), "chapter:ch4".to_owned()],
+    ));
+    report(&failures);
+}
+
+/// A pack's invoice texts are 1-32 (title) and 1-255 (description) code points in each language, checked at startup
+/// with the pack's product id.
+#[tokio::test]
+async fn catalog_pack_titles_within_limits() {
+    let content = fixture_content().await;
+    let mut failures = Vec::new();
+    let text = |lang: &'static str, field: &'static str, value: String| {
+        catalog_with(move |v| v["economy"]["packs"]["hint_s"][field][lang] = json!(value))
+    };
+    let built = Catalog::build(&text("ru", "title", "Я".repeat(32)), &content);
+    if let Err(e) = &built {
+        failures.push(format!("a 32-character ru title: expected Ok, got {e}"));
+    }
+    for (case, edited, lang, field, chars, max) in [
+        (
+            "a 33-character ru title",
+            text("ru", "title", "Я".repeat(33)),
+            "ru",
+            "title",
+            33,
+            32,
+        ),
+        (
+            "an empty en description",
+            text("en", "description", String::new()),
+            "en",
+            "description",
+            0,
+            255,
+        ),
+    ] {
+        match Catalog::build(&edited, &content) {
+            Err(ContentError::InvoiceText {
+                product,
+                lang: got_lang,
+                field: got_field,
+                chars: got_chars,
+                min: 1,
+                max: got_max,
+            }) if product == "pack:hint_s"
+                && got_lang == lang
+                && got_field == field
+                && got_chars == chars
+                && got_max == max => {}
+            Err(e) => failures.push(format!(
+                "{case}: expected InvoiceText {{ pack:hint_s, {lang}, {field}, {chars}, 1..={max} }}, got {e}"
+            )),
+            Ok(_) => failures.push(format!("{case}: expected InvoiceText, got Ok(catalog)")),
+        }
+    }
+    report(&failures);
+}
+
+/// `POST /api/invoices { pack:hint_s }`: the price and the texts from the catalog's pack, in the user's language; the
+/// order row binds the pack's kind and amount (revision 1, W3).
+#[tokio::test]
+async fn invoice_pack_price_from_catalog() {
+    let (st, _db, gateway) = invoice_state(&[(ANN, Some("ru"))]).await;
+    let mut failures = Vec::new();
+    let Some(order) = order_of(&st, ANN, "pack:hint_s", &mut failures).await else {
+        return report(&failures);
+    };
+    failures.extend(expect_eq(
+        "gateway calls",
+        gateway.invoice_calls(),
+        vec![InvoiceSpec {
+            title: "3 подсказки".to_owned(),
+            description: "Три подсказки к загадкам игры.".to_owned(),
+            payload: OrderId(order.clone()),
+            label: "3 подсказки".to_owned(),
+            amount: 1,
+        }],
+    ));
+    failures.extend(expect_eq(
+        "order row",
+        order_binding(&st, &order).await,
+        (
+            "pack:hint_s".to_owned(),
+            1,
+            Some("hint".to_owned()),
+            Some(3),
+        ),
+    ));
+    report(&failures);
+}
+
+/// Every rule of the `economy` section is a startup refusal naming its key (`ContentError::Catalog`); a pack price
+/// has no ceiling (one-time invoices have none, carry 5b).
+#[tokio::test]
+async fn catalog_economy_rules_refused() {
+    let content = fixture_content().await;
+    let mut failures = Vec::new();
+    type Edit = Box<dyn FnOnce(&mut Value)>;
+    let set = |path: &'static [&'static str], value: Value| -> Edit {
+        Box::new(move |v: &mut Value| {
+            let mut at = &mut v["economy"];
+            for key in path {
+                at = &mut at[*key];
+            }
+            *at = value;
+        })
+    };
+    let cases: Vec<(&str, Edit, &str)> = vec![
+        ("no kinds", set(&["kinds"], json!([])), "economy.kinds"),
+        (
+            "kinds without hint",
+            set(&["kinds"], json!(["gem"])),
+            "economy.kinds",
+        ),
+        (
+            "a duplicate kind",
+            set(&["kinds"], json!(["hint", "hint"])),
+            "economy.kinds",
+        ),
+        (
+            "Hint as a kind",
+            set(&["kinds"], json!(["hint", "Hint"])),
+            "economy.kinds",
+        ),
+        (
+            "a 17-character kind",
+            set(&["kinds"], json!(["hint", "a".repeat(17)])),
+            "economy.kinds",
+        ),
+        (
+            "an undeclared pack kind",
+            set(&["packs", "hint_s", "kind"], json!("gem")),
+            "economy.packs",
+        ),
+        (
+            "pack amount 0",
+            set(&["packs", "hint_s", "amount"], json!(0)),
+            "economy.packs",
+        ),
+        (
+            "pack amount 1001",
+            set(&["packs", "hint_s", "amount"], json!(1001)),
+            "economy.packs",
+        ),
+        (
+            "pack priceStars 0",
+            set(&["packs", "hint_s", "priceStars"], json!(0)),
+            "economy.packs",
+        ),
+        (
+            "a bad pack id",
+            Box::new(|v: &mut Value| {
+                let pack = v["economy"]["packs"]["hint_s"].take();
+                v["economy"]["packs"]["Hint_S"] = pack;
+            }),
+            "economy.packs",
+        ),
+        (
+            "hintTier 0",
+            set(&["spend", "hintTier"], json!(0)),
+            "economy.spend.hintTier",
+        ),
+        (
+            "hintTier 1001",
+            set(&["spend", "hintTier"], json!(1001)),
+            "economy.spend.hintTier",
+        ),
+        (
+            "an undeclared gift kind",
+            set(&["gifts", "kinds"], json!(["gem"])),
+            "economy.gifts",
+        ),
+        (
+            "maxPerGift 0",
+            set(&["gifts", "maxPerGift"], json!(0)),
+            "economy.gifts",
+        ),
+        (
+            "an undeclared referral kind",
+            set(&["referral", "kind"], json!("gem")),
+            "economy.referral",
+        ),
+        (
+            "referral inviter 0",
+            set(&["referral", "inviter"], json!(0)),
+            "economy.referral",
+        ),
+        (
+            "referral invitee 1001",
+            set(&["referral", "invitee"], json!(1001)),
+            "economy.referral",
+        ),
+    ];
+    for (case, edit, key) in cases {
+        let edited = catalog_with(|v| {
+            // A bad pack id leaves `packs` with `null` under the old key: drop it.
+            edit(v);
+            if let Some(packs) = v["economy"]["packs"].as_object_mut() {
+                packs.retain(|_, pack| !pack.is_null());
+            }
+        });
+        match Catalog::build(&edited, &content) {
+            Err(ContentError::Catalog(text)) if text.starts_with(key) => {}
+            Err(e) => failures.push(format!("{case}: expected Catalog(\"{key}…\"), got {e}")),
+            Ok(_) => failures.push(format!(
+                "{case}: expected Catalog(\"{key}…\"), got Ok(catalog)"
+            )),
+        }
+    }
+    let unbounded =
+        catalog_with(|v| v["economy"]["packs"]["hint_s"]["priceStars"] = json!(100_000));
+    if let Err(e) = Catalog::build(&unbounded, &content) {
+        failures.push(format!("pack priceStars 100000: expected Ok, got {e}"));
+    }
+    report(&failures);
+}
+
+/// A recent pack order is handed out again only for the same binding (D10): a catalog that changes `hint_s` to 4 at
+/// the same price makes a new order bound to 4; the compiled-in catalog then reuses the first order.
+#[tokio::test]
+async fn invoice_pack_reuse_needs_same_binding() {
+    let (st, _db, gateway) = invoice_state(&[(ANN, Some("ru"))]).await;
+    let mut failures = Vec::new();
+    let Some(first) = order_of(&st, ANN, "pack:hint_s", &mut failures).await else {
+        return report(&failures);
+    };
+    let again = order_of(&st, ANN, "pack:hint_s", &mut failures).await;
+    failures.extend(expect_eq(
+        "the same catalog: reused",
+        again.as_deref(),
+        Some(first.as_str()),
+    ));
+
+    let four = Catalog::build(
+        &catalog_with(|v| v["economy"]["packs"]["hint_s"]["amount"] = json!(4)),
+        &st.content,
+    )
+    .unwrap();
+    let changed = st.clone().with_catalog(Arc::new(four));
+    let Some(second) = order_of(&changed, ANN, "pack:hint_s", &mut failures).await else {
+        return report(&failures);
+    };
+    if second == first {
+        failures.push("hint_s at 4: expected a new order, got the first one".to_owned());
+    }
+    failures.extend(expect_eq(
+        "hint_s at 4: the new row",
+        order_binding(&st, &second).await,
+        (
+            "pack:hint_s".to_owned(),
+            1,
+            Some("hint".to_owned()),
+            Some(4),
+        ),
+    ));
+    let back = order_of(&st, ANN, "pack:hint_s", &mut failures).await;
+    failures.extend(expect_eq(
+        "the compiled-in catalog again: the first order",
+        back.as_deref(),
+        Some(first.as_str()),
+    ));
+    failures.extend(expect_eq(
+        "createInvoiceLink calls",
+        gateway.invoice_calls().len(),
+        2,
+    ));
     report(&failures);
 }

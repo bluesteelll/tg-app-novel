@@ -66,7 +66,7 @@ pub async fn post_invoice(
     }
     let created = st
         .repo
-        .reuse_or_create_order(user, &product.id, product.price_stars, st.clock.now())
+        .reuse_or_create_order(user, product, st.clock.now())
         .await?;
     let (order, language_code) = match created {
         InvoiceOrder::Reused { order, invoice_url } => {

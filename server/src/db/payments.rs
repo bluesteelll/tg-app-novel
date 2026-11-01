@@ -6,7 +6,8 @@
 //! `telegram::payments` re-exports them, so `db/` never imports `telegram/`. Every Telegram string is bound through
 //! [`without_nul`].
 
-use crate::catalog::{ProductRef, parse_product_id};
+use crate::catalog::{ProductRef, ResourceKind, parse_product_id};
+use crate::db::economy::{Entry, Reason, credit_in_tx, pay_key};
 use crate::db::{Repo, without_nul};
 use crate::ids::{ChargeId, OrderId, UserId};
 
@@ -65,7 +66,8 @@ pub struct PaymentFact {
 /// What a grant did. Every outcome is committed; only a database error is not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GrantOutcome {
-    /// Recorded, the order paid, the product granted.
+    /// Recorded, the order paid, the product granted: a chapter's entitlement, or a pack's credit of the kind and
+    /// amount its order bound.
     Granted,
     /// The charge was recorded before (a redelivery, or its concurrent twin): nothing changed.
     Duplicate,
@@ -75,7 +77,8 @@ pub enum GrantOutcome {
     /// Recorded, but the payload names no order of this payer at this amount in `XTR` that is still payable (unknown,
     /// another payer's, another amount or currency, already paid): not applied.
     OrderMismatch,
-    /// Recorded and the order paid, but its product id names no product kind this build can grant: not applied.
+    /// Recorded and the order paid, but its product id names no product kind this build can grant (or a pack order
+    /// without its binding, which `orders_pack_binding` forbids): not applied.
     UnknownProduct,
 }
 
@@ -176,8 +179,9 @@ impl Repo {
     /// 2. The order → `paid`, only if it is the payer's, at this amount, in `XTR`, and still `created` / `checkout`:
     ///    no row → `OrderMismatch` (recorded, no grant).
     /// 3. The order's product: a chapter → the entitlement, `ON CONFLICT ON CONSTRAINT entitlements_pkey DO NOTHING`
-    ///    (no row → `AlreadyEntitled`); an id no product grammar knows → `UnknownProduct`, the order paid with no
-    ///    entitlement.
+    ///    (no row → `AlreadyEntitled`); a pack → the credit of the kind and amount the order bound at invoice time
+    ///    (never the catalog's current values), keyed `pay:<charge>` (M19); an id no product grammar knows →
+    ///    `UnknownProduct`, the order paid with no entitlement and no credit.
     ///
     /// Every outcome commits; only an `Err` does not.
     pub async fn grant(&self, fact: &PaymentFact, now: i64) -> Result<GrantOutcome, sqlx::Error> {
@@ -206,11 +210,11 @@ impl Repo {
             tx.commit().await?;
             return Ok(GrantOutcome::Duplicate);
         }
-        let product: Option<String> = sqlx::query_scalar(
+        let paid: Option<(String, Option<String>, Option<i64>)> = sqlx::query_as(
             "UPDATE orders SET status = 'paid', paid_at = $5, charge_id = $1 \
              WHERE id = $2 AND user_id = $3 AND amount = $4 AND $6 = 'XTR' \
              AND status IN ('created', 'checkout') \
-             RETURNING product_id",
+             RETURNING product_id, pack_kind, pack_amount",
         )
         .bind(&*charge)
         .bind(&*payload)
@@ -220,7 +224,7 @@ impl Repo {
         .bind(&*currency)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some(product) = product else {
+        let Some((product, pack_kind, pack_amount)) = paid else {
             tx.commit().await?;
             return Ok(GrantOutcome::OrderMismatch);
         };
@@ -245,6 +249,30 @@ impl Repo {
                     GrantOutcome::AlreadyEntitled
                 }
             }
+            // The order's binding, never the catalog: a pack changed or retired since the invoice credits what the
+            // invoice advertised (revision 1, W3).
+            Some(ProductRef::Pack { .. }) => match (pack_kind, pack_amount) {
+                (Some(kind), Some(amount)) => {
+                    let kind = ResourceKind(kind);
+                    let credit = Entry {
+                        user: fact.payer,
+                        kind: &kind,
+                        amount,
+                        reason: Reason::Pack,
+                        idem_key: pay_key(&charge),
+                        charge_id: Some(&*charge),
+                        counterpart: None,
+                        r#ref: Some(product.as_str()),
+                        at: now,
+                    };
+                    // `Duplicate` cannot follow a fresh payments row (the key is the charge's): the credit exists
+                    // once either way.
+                    credit_in_tx(&mut tx, &credit).await?;
+                    GrantOutcome::Granted
+                }
+                // Unreachable under `orders_pack_binding`: recorded, nothing credited.
+                _ => GrantOutcome::UnknownProduct,
+            },
             None => GrantOutcome::UnknownProduct,
         };
         tx.commit().await?;
