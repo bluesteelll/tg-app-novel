@@ -16,7 +16,7 @@ use axum::extract::DefaultBodyLimit;
 use axum::extract::rejection::JsonRejection;
 use axum::http::header::CACHE_CONTROL;
 use axum::http::{HeaderValue, StatusCode};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::AppState;
@@ -71,6 +71,12 @@ fn routes() -> Router<AppState> {
         .route("/wallet", get(wallet::get_wallet))
         .route("/invites/{code}", get(social::get_invite))
         .route("/invites/{code}/request", post(social::post_invite_request))
+        .route("/social", get(social::get_social))
+        .route(
+            "/friends/requests/{handle}/accept",
+            post(social::post_accept),
+        )
+        .route("/friends/{handle}", delete(social::delete_friend))
 }
 
 /// `GET /api/health`: no auth, no database; `ok` as `text/plain`.

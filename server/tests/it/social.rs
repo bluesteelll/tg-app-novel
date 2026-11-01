@@ -1,6 +1,6 @@
 //! The social graph (META-PLAN M10-M12, M15; `0005_social.sql`): the schema's named constraints on raw SQL, the
-//! users upsert's inserted flag, the attribution at `POST /api/auth` (M11), and the invite routes (F19) through the
-//! production router.
+//! users upsert's inserted flag, the attribution at `POST /api/auth` (M11), the invite routes (F19), and the social
+//! view, the accept and the decline or removal with its durable block (F20) through the production router.
 //!
 //! A concurrency case holds a row lock on a raw READ COMMITTED connection (a stand-in for another app transaction)
 //! and observes the app's request waiting on it through `common::wait_for_lock_waiter`, never by timing.
@@ -37,6 +37,8 @@ const ANN: i64 = 5_000_000_001;
 const BEN: i64 = 5_000_000_002;
 /// The third player.
 const CAT: i64 = 5_000_000_003;
+/// The fourth player.
+const DAN: i64 = 5_000_000_004;
 /// A user id below every player with no `users` row.
 const NOBODY_LOW: i64 = 4_000_000_001;
 /// A user id above every player with no `users` row.
@@ -981,6 +983,869 @@ async fn invite_request_repeat_creates_one() {
         failures.push(format!(
             "friend requests: expected [(BEN, ANN)], got {requests:?}"
         ));
+    }
+    report(&failures);
+}
+
+/// `GET /api/social` as `user`: the reply and its JSON.
+async fn social(st: &AppState, user: i64) -> (common::Reply, Value) {
+    let reply = send(st, Method::GET, Some(user), "/api/social").await;
+    let json = body_json(&reply);
+    (reply, json)
+}
+
+/// `user`'s invite code, read through `GET /api/social` (which creates it on the first call).
+async fn invite_code(st: &AppState, user: i64) -> String {
+    let (reply, json) = social(st, user).await;
+    match json["inviteCode"].as_str() {
+        Some(code) if reply.status == StatusCode::OK => code.to_owned(),
+        _ => panic!(
+            "GET /api/social as {user}: expected 200 with an inviteCode, got {} {}",
+            reply.status.as_u16(),
+            body_text(&reply)
+        ),
+    }
+}
+
+/// `POST /api/friends/requests/{handle}/accept` as `user`.
+async fn accept(st: &AppState, user: i64, handle: &str) -> common::Reply {
+    send(
+        st,
+        Method::POST,
+        Some(user),
+        &format!("/api/friends/requests/{handle}/accept"),
+    )
+    .await
+}
+
+/// `DELETE /api/friends/{handle}` as `user`.
+async fn remove(st: &AppState, user: i64, handle: &str) -> common::Reply {
+    send(
+        st,
+        Method::DELETE,
+        Some(user),
+        &format!("/api/friends/{handle}"),
+    )
+    .await
+}
+
+/// `user`'s handle, read raw (`None` before the user first asked or accepted).
+async fn handle_of(c: &mut PgConnection, user: i64) -> Option<String> {
+    sqlx::query_scalar("SELECT handle FROM user_handles WHERE user_id = $1")
+        .bind(user)
+        .fetch_optional(&mut *c)
+        .await
+        .unwrap()
+}
+
+/// The (handle, firstName) pairs of a `SocialResponse` list (`friends` or `requests`).
+fn people(json: &Value, list: &str) -> Vec<(String, String)> {
+    json[list]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| {
+                    (
+                        item["handle"].as_str().unwrap_or("<no handle>").to_owned(),
+                        item["firstName"]
+                            .as_str()
+                            .unwrap_or("<no firstName>")
+                            .to_owned(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `(handle, first name)` as [`people`] lists it.
+fn person(handle: &str, first_name: &str) -> (String, String) {
+    (handle.to_owned(), first_name.to_owned())
+}
+
+/// Every friendship as (lo, hi).
+async fn friendship_rows(c: &mut PgConnection) -> Vec<(i64, i64)> {
+    sqlx::query_as("SELECT user_lo, user_hi FROM friendships ORDER BY user_lo, user_hi")
+        .fetch_all(&mut *c)
+        .await
+        .unwrap()
+}
+
+/// Every block as (remover, removed).
+async fn block_rows(c: &mut PgConnection) -> Vec<(i64, i64)> {
+    sqlx::query_as("SELECT user_id, blocked_id FROM friend_blocks ORDER BY user_id, blocked_id")
+        .fetch_all(&mut *c)
+        .await
+        .unwrap()
+}
+
+/// `None` when `reply` is a 200 `SocialResponse` whose `list` holds exactly `want`, else the failure line.
+fn list_is(
+    case: &str,
+    reply: &common::Reply,
+    list: &str,
+    want: &[(String, String)],
+) -> Option<String> {
+    let got = people(&body_json(reply), list);
+    (reply.status != StatusCode::OK || got != want).then(|| {
+        format!(
+            "{case}: expected 200 with {list} {want:?}, got {} {}",
+            reply.status.as_u16(),
+            body_text(reply)
+        )
+    })
+}
+
+/// `owner` and `requester` become friends through the routes: `requester` asks through `owner`'s code and `owner`
+/// accepts. Returns (the owner's code, the owner's handle, the requester's handle).
+async fn befriend(
+    st: &AppState,
+    c: &mut PgConnection,
+    owner: i64,
+    requester: i64,
+) -> (String, String, String) {
+    let code = invite_code(st, owner).await;
+    let asked = ask(st, requester, &code).await;
+    assert!(
+        asked.status == StatusCode::OK,
+        "befriend: the ask answered {}",
+        asked.status
+    );
+    let requester_handle = handle_of(c, requester).await.unwrap();
+    let accepted = accept(st, owner, &requester_handle).await;
+    assert!(
+        accepted.status == StatusCode::OK,
+        "befriend: the accept answered {} {}",
+        accepted.status,
+        body_text(&accepted)
+    );
+    let owner_handle = handle_of(c, owner).await.unwrap();
+    (code, owner_handle, requester_handle)
+}
+
+/// A friendship needs the code owner's accept (M10): BEN's send makes a request that only ANN sees; BEN has no friend
+/// until ANN accepts, and the accept fills both lists.
+#[tokio::test]
+async fn friendship_needs_inviter_accept() {
+    let (st, _db) = social_state(&[ANN, BEN]).await;
+    let mut c = common::raw_db(&st).await;
+    let code_a = invite_code(&st, ANN).await;
+    let mut failures = Vec::new();
+    failures.extend(state_is(
+        "BEN's send",
+        &ask(&st, BEN, &code_a).await,
+        "requested",
+    ));
+    let handle_b = handle_of(&mut c, BEN).await.unwrap();
+
+    let (reply, _) = social(&st, BEN).await;
+    failures.extend(list_is("BEN after the send", &reply, "friends", &[]));
+    failures.extend(list_is("BEN after the send", &reply, "requests", &[]));
+    let (reply, _) = social(&st, ANN).await;
+    failures.extend(list_is("ANN after the send", &reply, "friends", &[]));
+    failures.extend(list_is(
+        "ANN after the send",
+        &reply,
+        "requests",
+        &[person(&handle_b, "Ben")],
+    ));
+    let rows = friendship_rows(&mut c).await;
+    if !rows.is_empty() {
+        failures.push(format!(
+            "friendships before the accept: expected none, got {rows:?}"
+        ));
+    }
+
+    let reply = accept(&st, ANN, &handle_b).await;
+    failures.extend(list_is(
+        "ANN's accept",
+        &reply,
+        "friends",
+        &[person(&handle_b, "Ben")],
+    ));
+    failures.extend(list_is("ANN's accept", &reply, "requests", &[]));
+    let handle_a = handle_of(&mut c, ANN).await.unwrap_or_default();
+    let (reply, _) = social(&st, BEN).await;
+    failures.extend(list_is(
+        "BEN after the accept",
+        &reply,
+        "friends",
+        &[person(&handle_a, "Ann")],
+    ));
+    failures.extend(state_is(
+        "BEN's view of the code after the accept",
+        &view_invite(&st, BEN, &code_a).await,
+        "friends",
+    ));
+    let rows = friendship_rows(&mut c).await;
+    if rows != [(ANN, BEN)] {
+        failures.push(format!("friendships: expected [(ANN, BEN)], got {rows:?}"));
+    }
+    report(&failures);
+}
+
+/// A removal is durable (C1): after ANN removes BEN, BEN's old link of ANN answers `requested` on the GET and the
+/// POST, before and after the send, exactly like a pending request, and creates nothing.
+#[tokio::test]
+async fn unfriend_is_durable_against_old_code() {
+    let (st, _db) = social_state(&[ANN, BEN]).await;
+    let mut c = common::raw_db(&st).await;
+    let (code_a, _, handle_b) = befriend(&st, &mut c, ANN, BEN).await;
+    let mut failures = Vec::new();
+    failures.extend(list_is(
+        "ANN removes BEN",
+        &remove(&st, ANN, &handle_b).await,
+        "friends",
+        &[],
+    ));
+    failures.extend(state_is(
+        "BEN's GET before the send",
+        &view_invite(&st, BEN, &code_a).await,
+        "requested",
+    ));
+    failures.extend(state_is(
+        "BEN's send",
+        &ask(&st, BEN, &code_a).await,
+        "requested",
+    ));
+    failures.extend(state_is(
+        "BEN's GET after the send",
+        &view_invite(&st, BEN, &code_a).await,
+        "requested",
+    ));
+    let (reply, _) = social(&st, ANN).await;
+    failures.extend(list_is("ANN's requests", &reply, "requests", &[]));
+    failures.extend(list_is("ANN's friends", &reply, "friends", &[]));
+    let requests = request_rows(&mut c).await;
+    if !requests.is_empty() {
+        failures.push(format!("friend requests: expected none, got {requests:?}"));
+    }
+    let blocks = block_rows(&mut c).await;
+    if blocks != [(ANN, BEN)] {
+        failures.push(format!("blocks: expected [(ANN, BEN)], got {blocks:?}"));
+    }
+    report(&failures);
+}
+
+/// The places in `value` that hold `id` as a number or as its decimal string, as JSON paths.
+fn id_paths(value: &Value, path: &str, id: i64, out: &mut Vec<String>) {
+    match value {
+        Value::Number(n) if n.as_i64() == Some(id) => out.push(path.to_owned()),
+        Value::String(s) if *s == id.to_string() => out.push(path.to_owned()),
+        Value::Array(items) => {
+            for (i, item) in items.iter().enumerate() {
+                id_paths(item, &format!("{path}[{i}]"), id, out);
+            }
+        }
+        Value::Object(map) => {
+            for (key, item) in map {
+                id_paths(item, &format!("{path}.{key}"), id, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// No social body carries a Telegram id (W1): every `SocialResponse` and `InviteView` of both users, with each other
+/// as a request and then as a friend, holds neither user's `users.id` at any depth, as a number or a string, nor its
+/// decimal anywhere in the raw text.
+#[tokio::test]
+async fn social_dto_has_no_telegram_id() {
+    let (st, _db) = social_state(&[ANN, BEN]).await;
+    let mut c = common::raw_db(&st).await;
+    let code_a = invite_code(&st, ANN).await;
+    let mut bodies: Vec<(&str, common::Reply)> = Vec::new();
+    bodies.push(("BEN's send", ask(&st, BEN, &code_a).await));
+    bodies.push((
+        "BEN's invite view, requested",
+        view_invite(&st, BEN, &code_a).await,
+    ));
+    bodies.push((
+        "ANN's SocialResponse with BEN's request",
+        social(&st, ANN).await.0,
+    ));
+    bodies.push((
+        "BEN's SocialResponse after the send",
+        social(&st, BEN).await.0,
+    ));
+    let handle_b = handle_of(&mut c, BEN).await.unwrap();
+    bodies.push(("ANN's accept", accept(&st, ANN, &handle_b).await));
+    bodies.push((
+        "ANN's SocialResponse with BEN as friend",
+        social(&st, ANN).await.0,
+    ));
+    bodies.push((
+        "BEN's SocialResponse with ANN as friend",
+        social(&st, BEN).await.0,
+    ));
+    bodies.push((
+        "BEN's invite view, friends",
+        view_invite(&st, BEN, &code_a).await,
+    ));
+    let mut failures = Vec::new();
+    for (case, reply) in &bodies {
+        if reply.status != StatusCode::OK {
+            failures.push(format!(
+                "{case}: expected 200, got {} {}",
+                reply.status.as_u16(),
+                body_text(reply)
+            ));
+        }
+        let json = body_json(reply);
+        let text = body_text(reply);
+        for (name, id) in [("ANN", ANN), ("BEN", BEN)] {
+            let mut paths = Vec::new();
+            id_paths(&json, "", id, &mut paths);
+            for path in paths {
+                failures.push(format!("{case}: {path} equals {name}'s id"));
+            }
+            if text.contains(&id.to_string()) {
+                failures.push(format!("{case}: the body text carries {name}'s id: {text}"));
+            }
+        }
+    }
+    report(&failures);
+}
+
+/// One step of a raw stand-in transaction: `Err` with the step's name and the error, never a panic.
+async fn step(
+    c: &mut PgConnection,
+    name: &str,
+    sql: &'static str,
+    binds: &[i64],
+) -> Result<(), String> {
+    let mut query = sqlx::query(sql);
+    for &value in binds {
+        query = query.bind(value);
+    }
+    query
+        .execute(&mut *c)
+        .await
+        .map(|_| ())
+        .map_err(|e| format!("stand-in {name}: {}", describe(&e)))
+}
+
+/// A and B accept each other's requests at once (META-PLAN concurrency table): both transactions lock the two `users`
+/// rows ascending. A stand-in for BEN's accept holds ANN's row (the low one); ANN's accept is observed waiting on it;
+/// the stand-in then takes BEN's row, makes the friendship and deletes both requests. ANN's accept, re-run on the
+/// committed rows, finds no request: 404. One friendship, no request, no deadlock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn accept_both_directions_one_friendship() {
+    let (st, _db) = social_state(&[ANN, BEN]).await;
+    let mut c = common::raw_db(&st).await;
+    let code_a = invite_code(&st, ANN).await;
+    let code_b = invite_code(&st, BEN).await;
+    let mut failures = Vec::new();
+    failures.extend(state_is(
+        "ANN asks BEN",
+        &ask(&st, ANN, &code_b).await,
+        "requested",
+    ));
+    failures.extend(state_is(
+        "BEN asks ANN",
+        &ask(&st, BEN, &code_a).await,
+        "requested",
+    ));
+    let handle_b = handle_of(&mut c, BEN).await.unwrap();
+
+    let mut stand_in = common::raw_db(&st).await;
+    begin(&mut stand_in).await;
+    lock_user(&mut stand_in, ANN).await;
+    let app = st.clone();
+    let mut accepting = tokio::spawn(async move { accept(&app, ANN, &handle_b).await });
+    let early = tokio::select! {
+        biased;
+        reply = &mut accepting => Some(reply.unwrap()),
+        () = common::wait_for_lock_waiter(&st) => None,
+    };
+    if early.is_some() {
+        failures.push(
+            "ANN's accept never waited: it answered while the stand-in held ANN's row".to_owned(),
+        );
+    }
+    let steps: [(&str, &'static str, &[i64]); 4] = [
+        (
+            "lock BEN",
+            "SELECT 1 FROM users WHERE id = $1 FOR NO KEY UPDATE",
+            &[BEN],
+        ),
+        (
+            "delete ANN -> BEN",
+            "DELETE FROM friend_requests WHERE from_id = $1 AND to_id = $2",
+            &[ANN, BEN],
+        ),
+        (
+            "insert the friendship",
+            "INSERT INTO friendships (user_lo, user_hi, created_at) VALUES ($1, $2, $3)",
+            &[ANN, BEN, T0],
+        ),
+        (
+            "delete BEN -> ANN",
+            "DELETE FROM friend_requests WHERE from_id = $1 AND to_id = $2",
+            &[BEN, ANN],
+        ),
+    ];
+    let mut stand_in_ok = true;
+    for (name, sql, binds) in steps {
+        if let Err(line) = step(&mut stand_in, name, sql, binds).await {
+            failures.push(line);
+            stand_in_ok = false;
+            break;
+        }
+    }
+    let end = if stand_in_ok { "COMMIT" } else { "ROLLBACK" };
+    sqlx::raw_sql(end).execute(&mut stand_in).await.unwrap();
+    stand_in.close().await.unwrap();
+    let reply = match early {
+        Some(reply) => reply,
+        None => accepting.await.unwrap(),
+    };
+    failures.extend(not_found("ANN's accept after BEN's", &reply));
+    let rows = friendship_rows(&mut c).await;
+    if rows != [(ANN, BEN)] {
+        failures.push(format!("friendships: expected [(ANN, BEN)], got {rows:?}"));
+    }
+    let requests = request_rows(&mut c).await;
+    if !requests.is_empty() {
+        failures.push(format!("friend requests: expected none, got {requests:?}"));
+    }
+    report(&failures);
+}
+
+/// A decline is durable (C1): after ANN declines BEN's request, BEN's link answers `requested` on the GET and the
+/// POST, before and after the send, and creates nothing.
+#[tokio::test]
+async fn decline_is_durable_against_old_code() {
+    let (st, _db) = social_state(&[ANN, BEN]).await;
+    let mut c = common::raw_db(&st).await;
+    let code_a = invite_code(&st, ANN).await;
+    let mut failures = Vec::new();
+    failures.extend(state_is(
+        "BEN's send",
+        &ask(&st, BEN, &code_a).await,
+        "requested",
+    ));
+    let handle_b = handle_of(&mut c, BEN).await.unwrap();
+    failures.extend(list_is(
+        "ANN declines",
+        &remove(&st, ANN, &handle_b).await,
+        "requests",
+        &[],
+    ));
+    failures.extend(state_is(
+        "BEN's GET before the second send",
+        &view_invite(&st, BEN, &code_a).await,
+        "requested",
+    ));
+    failures.extend(state_is(
+        "BEN's second send",
+        &ask(&st, BEN, &code_a).await,
+        "requested",
+    ));
+    failures.extend(state_is(
+        "BEN's GET after the second send",
+        &view_invite(&st, BEN, &code_a).await,
+        "requested",
+    ));
+    let (reply, _) = social(&st, ANN).await;
+    failures.extend(list_is("ANN's requests", &reply, "requests", &[]));
+    let requests = request_rows(&mut c).await;
+    if !requests.is_empty() {
+        failures.push(format!("friend requests: expected none, got {requests:?}"));
+    }
+    let blocks = block_rows(&mut c).await;
+    if blocks != [(ANN, BEN)] {
+        failures.push(format!("blocks: expected [(ANN, BEN)], got {blocks:?}"));
+    }
+    let rows = friendship_rows(&mut c).await;
+    if !rows.is_empty() {
+        failures.push(format!("friendships: expected none, got {rows:?}"));
+    }
+    report(&failures);
+}
+
+/// Only the remover lifts a block, by their own act (M10): ANN removed BEN, then asks through BEN's code. ANN's block
+/// is gone and BEN sees ANN's request.
+#[tokio::test]
+async fn blocker_request_lifts_own_block() {
+    let (st, _db) = social_state(&[ANN, BEN]).await;
+    let mut c = common::raw_db(&st).await;
+    let (_, handle_a, handle_b) = befriend(&st, &mut c, ANN, BEN).await;
+    let mut failures = Vec::new();
+    failures.extend(list_is(
+        "ANN removes BEN",
+        &remove(&st, ANN, &handle_b).await,
+        "friends",
+        &[],
+    ));
+    let code_b = invite_code(&st, BEN).await;
+    failures.extend(state_is(
+        "ANN asks BEN",
+        &ask(&st, ANN, &code_b).await,
+        "requested",
+    ));
+    let blocks = block_rows(&mut c).await;
+    if !blocks.is_empty() {
+        failures.push(format!(
+            "blocks after ANN's own ask: expected none, got {blocks:?}"
+        ));
+    }
+    let (reply, _) = social(&st, BEN).await;
+    failures.extend(list_is(
+        "BEN's requests",
+        &reply,
+        "requests",
+        &[person(&handle_a, "Ann")],
+    ));
+    report(&failures);
+}
+
+/// Seeds `n` users at ids `first..first + n` and a friendship of each with `user`, stored low id first.
+async fn seed_friends(c: &mut PgConnection, user: i64, first: i64, n: i64) {
+    let last = first + n - 1;
+    sqlx::query(
+        "INSERT INTO users (id, first_name, language_code, created_at, last_seen_at) \
+         SELECT g, 'Pal', NULL, $3, $3 FROM generate_series($1::bigint, $2::bigint) g",
+    )
+    .bind(first)
+    .bind(last)
+    .bind(T0)
+    .execute(&mut *c)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO friendships (user_lo, user_hi, created_at) \
+         SELECT LEAST(g, $3), GREATEST(g, $3), $4 FROM generate_series($1::bigint, $2::bigint) g",
+    )
+    .bind(first)
+    .bind(last)
+    .bind(user)
+    .bind(T0)
+    .execute(&mut *c)
+    .await
+    .unwrap();
+}
+
+/// 200 friends per user (MV15), counted on either side of the stored pair: an accept with either user at 200 is 409
+/// `limit_reached` and keeps the request; at 199 it succeeds.
+#[tokio::test]
+async fn friend_cap_409() {
+    let (st, _db) = social_state(&[ANN, BEN, CAT, DAN]).await;
+    let mut c = common::raw_db(&st).await;
+    // ANN at 200: 100 friends below her id (ANN stored as hi), 100 above (ANN stored as lo). The same for BEN.
+    seed_friends(&mut c, ANN, 1_000_000_001, 100).await;
+    seed_friends(&mut c, ANN, 7_000_000_001, 100).await;
+    seed_friends(&mut c, BEN, 1_100_000_001, 100).await;
+    seed_friends(&mut c, BEN, 7_100_000_001, 100).await;
+    let code_a = invite_code(&st, ANN).await;
+    let code_d = invite_code(&st, DAN).await;
+    let mut failures = Vec::new();
+    failures.extend(state_is(
+        "CAT asks ANN",
+        &ask(&st, CAT, &code_a).await,
+        "requested",
+    ));
+    failures.extend(state_is(
+        "BEN asks DAN",
+        &ask(&st, BEN, &code_d).await,
+        "requested",
+    ));
+    let handle_c = handle_of(&mut c, CAT).await.unwrap();
+    let handle_b = handle_of(&mut c, BEN).await.unwrap();
+    let limit = r#"{"error":"limit_reached"}"#;
+    for (case, reply) in [
+        (
+            "ANN (at 200) accepts CAT",
+            accept(&st, ANN, &handle_c).await,
+        ),
+        (
+            "DAN accepts BEN (at 200)",
+            accept(&st, DAN, &handle_b).await,
+        ),
+    ] {
+        let body = body_text(&reply);
+        if reply.status != StatusCode::CONFLICT || body != limit {
+            failures.push(format!(
+                "{case}: expected 409 {limit}, got {} {body}",
+                reply.status.as_u16()
+            ));
+        }
+    }
+    let requests = request_rows(&mut c).await;
+    if requests != [(BEN, DAN), (CAT, ANN)] {
+        failures.push(format!(
+            "requests after the 409s: expected [(BEN, DAN), (CAT, ANN)], got {requests:?}"
+        ));
+    }
+    sqlx::query("DELETE FROM friendships WHERE user_lo = $1 AND user_hi = $2")
+        .bind(1_000_000_001_i64)
+        .bind(ANN)
+        .execute(&mut c)
+        .await
+        .unwrap();
+    let reply = accept(&st, ANN, &handle_c).await;
+    if reply.status != StatusCode::OK {
+        failures.push(format!(
+            "ANN (at 199) accepts CAT: expected 200, got {} {}",
+            reply.status.as_u16(),
+            body_text(&reply)
+        ));
+    }
+    report(&failures);
+}
+
+/// A removal from the requester's side ends the friendship for both, writes the remover's block, and a repeat is 404.
+#[tokio::test]
+async fn remove_friend_ends_both_sides() {
+    let (st, _db) = social_state(&[ANN, BEN]).await;
+    let mut c = common::raw_db(&st).await;
+    let (_, handle_a, _) = befriend(&st, &mut c, ANN, BEN).await;
+    let mut failures = Vec::new();
+    failures.extend(list_is(
+        "BEN removes ANN",
+        &remove(&st, BEN, &handle_a).await,
+        "friends",
+        &[],
+    ));
+    let (reply, _) = social(&st, ANN).await;
+    failures.extend(list_is("ANN's friends", &reply, "friends", &[]));
+    failures.extend(not_found(
+        "BEN removes ANN again",
+        &remove(&st, BEN, &handle_a).await,
+    ));
+    let rows = friendship_rows(&mut c).await;
+    if !rows.is_empty() {
+        failures.push(format!("friendships: expected none, got {rows:?}"));
+    }
+    let blocks = block_rows(&mut c).await;
+    if blocks != [(BEN, ANN)] {
+        failures.push(format!("blocks: expected [(BEN, ANN)], got {blocks:?}"));
+    }
+    report(&failures);
+}
+
+/// `None` when `reply` is a 200 with `Cache-Control: private, no-store`, else the failure line.
+fn private_no_store(case: &str, reply: &common::Reply) -> Option<String> {
+    let cache = reply
+        .headers
+        .get(axum::http::header::CACHE_CONTROL)
+        .map(|v| v.to_str().unwrap_or("<not text>"));
+    (reply.status != StatusCode::OK || cache != Some("private, no-store")).then(|| {
+        format!(
+            "{case}: expected 200 private, no-store, got {} {cache:?} {}",
+            reply.status.as_u16(),
+            body_text(reply)
+        )
+    })
+}
+
+/// Every social route needs the token (401 without one), and every 200 is `private, no-store`: one user's own view.
+#[tokio::test]
+async fn social_private_no_store() {
+    let (st, _db) = social_state(&[ANN, BEN]).await;
+    let mut c = common::raw_db(&st).await;
+    let mut failures = Vec::new();
+    let reply = send(&st, Method::GET, Some(ANN), "/api/social").await;
+    failures.extend(private_no_store("GET /api/social", &reply));
+    let code_a = body_json(&reply)["inviteCode"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    failures.extend(private_no_store(
+        "GET /api/invites/{code}",
+        &view_invite(&st, BEN, &code_a).await,
+    ));
+    failures.extend(private_no_store(
+        "POST /api/invites/{code}/request",
+        &ask(&st, BEN, &code_a).await,
+    ));
+    let handle_b = handle_of(&mut c, BEN).await.unwrap_or_default();
+    failures.extend(private_no_store(
+        "POST /api/friends/requests/{handle}/accept",
+        &accept(&st, ANN, &handle_b).await,
+    ));
+    failures.extend(private_no_store(
+        "DELETE /api/friends/{handle}",
+        &remove(&st, ANN, &handle_b).await,
+    ));
+    for (method, path) in [
+        (Method::GET, "/api/social".to_owned()),
+        (Method::GET, format!("/api/invites/{CODE_A}")),
+        (Method::POST, format!("/api/invites/{CODE_A}/request")),
+        (
+            Method::POST,
+            format!("/api/friends/requests/{HANDLE_A}/accept"),
+        ),
+        (Method::DELETE, format!("/api/friends/{HANDLE_A}")),
+    ] {
+        let reply = send(&st, method.clone(), None, &path).await;
+        let body = body_text(&reply);
+        if reply.status != StatusCode::UNAUTHORIZED || body != r#"{"error":"token_missing"}"# {
+            failures.push(format!(
+                "{method} {path} without a token: expected 401 token_missing, got {} {body}",
+                reply.status.as_u16()
+            ));
+        }
+    }
+    report(&failures);
+}
+
+/// A malformed code or handle is 400 on every route that takes one (it never reaches SQL, so U+0000 is no 500); a
+/// well-shaped unknown one is 404, and so is one's own handle (no request or friendship with oneself).
+#[tokio::test]
+async fn social_malformed_ids_400_unknown_404() {
+    let (st, _db) = social_state(&[ANN, BEN]).await;
+    let mut c = common::raw_db(&st).await;
+    handle(&mut c, ANN, HANDLE_A).await.unwrap();
+    let mut failures = Vec::new();
+    let bad = r#"{"error":"bad_request"}"#;
+    let bad_codes = [
+        CODE_A.to_uppercase(),
+        CODE_A[1..].to_owned(),
+        format!("{CODE_A}0"),
+        format!("%00{}", &CODE_A[1..]),
+        "g".repeat(32),
+    ];
+    let bad_handles = [
+        HANDLE_A.to_uppercase(),
+        HANDLE_A[1..].to_owned(),
+        format!("{HANDLE_A}0"),
+        format!("%00{}", &HANDLE_A[1..]),
+    ];
+    let mut cases: Vec<(String, common::Reply)> = Vec::new();
+    for code in &bad_codes {
+        cases.push((
+            format!("GET invite {code:?}"),
+            view_invite(&st, BEN, code).await,
+        ));
+        cases.push((format!("POST invite {code:?}"), ask(&st, BEN, code).await));
+    }
+    for h in &bad_handles {
+        cases.push((format!("accept {h:?}"), accept(&st, BEN, h).await));
+        cases.push((format!("DELETE {h:?}"), remove(&st, BEN, h).await));
+    }
+    for (case, reply) in &cases {
+        let body = body_text(reply);
+        if reply.status != StatusCode::BAD_REQUEST || body != bad {
+            failures.push(format!(
+                "{case}: expected 400 {bad}, got {} {body}",
+                reply.status.as_u16()
+            ));
+        }
+    }
+    let unknown_code = "00000000000000000000000000000000";
+    let unknown_handle = "000000000000000000000000";
+    failures.extend(not_found(
+        "GET an unknown code",
+        &view_invite(&st, BEN, unknown_code).await,
+    ));
+    failures.extend(not_found(
+        "POST an unknown code",
+        &ask(&st, BEN, unknown_code).await,
+    ));
+    failures.extend(not_found(
+        "accept an unknown handle",
+        &accept(&st, BEN, unknown_handle).await,
+    ));
+    failures.extend(not_found(
+        "DELETE an unknown handle",
+        &remove(&st, BEN, unknown_handle).await,
+    ));
+    failures.extend(not_found(
+        "accept a stranger's handle",
+        &accept(&st, BEN, HANDLE_A).await,
+    ));
+    failures.extend(not_found(
+        "DELETE a stranger's handle",
+        &remove(&st, BEN, HANDLE_A).await,
+    ));
+    failures.extend(not_found(
+        "accept one's own handle",
+        &accept(&st, ANN, HANDLE_A).await,
+    ));
+    failures.extend(not_found(
+        "DELETE one's own handle",
+        &remove(&st, ANN, HANDLE_A).await,
+    ));
+    let blocks = block_rows(&mut c).await;
+    if !blocks.is_empty() {
+        failures.push(format!("blocks: expected none, got {blocks:?}"));
+    }
+    report(&failures);
+}
+
+/// Two first opens of Friends at once (two devices of one user) create one code: a stand-in holds an uncommitted
+/// active code of ANN; ANN's first `GET /api/social` is observed waiting on the partial unique index, then reads the
+/// stand-in's code. One active code; no 500.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn social_code_created_once_concurrently() {
+    let (st, _db) = social_state(&[ANN]).await;
+    let mut c = common::raw_db(&st).await;
+    let mut stand_in = common::raw_db(&st).await;
+    begin(&mut stand_in).await;
+    code(&mut stand_in, CODE_A, ANN, None).await.unwrap();
+    let app = st.clone();
+    let mut opening = tokio::spawn(async move { social(&app, ANN).await });
+    let early = tokio::select! {
+        biased;
+        reply = &mut opening => Some(reply.unwrap()),
+        () = common::wait_for_lock_waiter(&st) => None,
+    };
+    let mut failures = Vec::new();
+    if early.is_some() {
+        failures.push(
+            "the first GET never waited: it answered while the stand-in's code was uncommitted"
+                .to_owned(),
+        );
+    }
+    commit(&mut stand_in).await;
+    stand_in.close().await.unwrap();
+    let (reply, json) = match early {
+        Some(got) => got,
+        None => opening.await.unwrap(),
+    };
+    if reply.status != StatusCode::OK || json["inviteCode"] != CODE_A {
+        failures.push(format!(
+            "ANN's first GET: expected 200 with inviteCode {CODE_A}, got {} {}",
+            reply.status.as_u16(),
+            body_text(&reply)
+        ));
+    }
+    let active: Vec<String> = sqlx::query_scalar(
+        "SELECT code FROM invite_codes WHERE user_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(ANN)
+    .fetch_all(&mut c)
+    .await
+    .unwrap();
+    if active != [CODE_A] {
+        failures.push(format!(
+            "active codes of ANN: expected [{CODE_A}], got {active:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// `are_friends` (the read LF2's profile and LE2's gifts build on) sees a friendship from either side, and nothing
+/// else: not a stranger, not oneself.
+#[tokio::test]
+async fn are_friends_either_order() {
+    let (st, _db) = social_state(&[ANN, BEN, CAT]).await;
+    let mut c = common::raw_db(&st).await;
+    friendship(&mut c, ANN, BEN).await.unwrap();
+    let mut failures = Vec::new();
+    for (case, a, b, want) in [
+        ("ANN, BEN", ANN, BEN, true),
+        ("BEN, ANN", BEN, ANN, true),
+        ("ANN, CAT", ANN, CAT, false),
+        ("CAT, BEN", CAT, BEN, false),
+        ("ANN, ANN", ANN, ANN, false),
+    ] {
+        let got = st.repo.are_friends(UserId(a), UserId(b)).await.unwrap();
+        if got != want {
+            failures.push(format!("are_friends({case}): expected {want}, got {got}"));
+        }
     }
     report(&failures);
 }

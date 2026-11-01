@@ -431,6 +431,43 @@ pub struct InviteView {
     pub state: InviteState,
 }
 
+/// A friend as `GET /api/social` lists them: by handle, never by Telegram id (W1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendDto {
+    /// The friend's handle: 24 lower-case hex, the id of `DELETE /api/friends/{handle}`.
+    pub handle: String,
+    /// The friend's first name.
+    pub first_name: String,
+}
+
+/// An incoming friend request as `GET /api/social` lists it: the requester by handle (W1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendRequestDto {
+    /// The requester's handle: the id of `POST /api/friends/requests/{handle}/accept`.
+    pub handle: String,
+    /// The requester's first name.
+    pub first_name: String,
+    /// When the request was sent, in unix seconds.
+    pub at: i64,
+}
+
+/// `GET /api/social` response, also the answer of every social action: the user's own invite code, friends, incoming
+/// requests and profile visibility.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SocialResponse {
+    /// The user's active invite code (the link is `startapp=f<code>`).
+    pub invite_code: String,
+    /// The friends, oldest friendship first.
+    pub friends: Vec<FriendDto>,
+    /// The incoming requests, oldest first.
+    pub requests: Vec<FriendRequestDto>,
+    /// The user's latest profile-visibility consent is a grant (`false` until consented).
+    pub profile_visible: bool,
+}
+
 /// The first line of the generated file: what it is and how to rewrite it.
 const BINDINGS_HEADER: &str = "// Built from server/src/api/dto.rs and error.rs by ts-rs; do not edit. Regenerate: \
                                cargo test -p server --test it bindings::write_bindings -- --ignored --exact";

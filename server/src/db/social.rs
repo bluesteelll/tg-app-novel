@@ -1,9 +1,12 @@
 //! The social graph's SQL (META-PLAN M10-M12; `0005_social.sql`). This module writes the referral of a newcomer's
-//! first launch (M11: the launch creates no friend request), and a link holder's request to the code's owner (F19
-//! step 4) with the requester's handle.
+//! first launch (M11: the launch creates no friend request), a link holder's request to the code's owner (F19 step 4)
+//! with the requester's handle, the owner's accept and the decline or removal with its durable block (F20), and a
+//! user's first invite code; it reads the user's friends, incoming requests and profile visibility.
 //!
-//! Invite codes reach SQL only in the shape [`crate::api::social::is_invite_code`] accepts (32 lower-case hex), so no
-//! U+0000 is ever bound; Telegram's own strings go through [`without_nul`](crate::db::without_nul).
+//! Invite codes and handles reach SQL only in the shapes [`crate::api::social::is_invite_code`] and
+//! [`crate::api::social::is_handle`] accept (lower-case hex), so no U+0000 is ever bound; Telegram's own strings go
+//! through [`without_nul`](crate::db::without_nul). Other users are named by handle only: no row read here for another
+//! user carries a Telegram id out of this module.
 //!
 //! Lock order of every transaction here: both `users` rows in ascending id, taken by one statement, then the rest
 //! (META-PLAN "Concurrency and failure model"). `NO KEY UPDATE` does not conflict with the `KEY SHARE` of foreign-key
@@ -19,6 +22,56 @@ use crate::ids::UserId;
 
 /// The random bytes of a handle: 96 bits, 24 hex digits (`user_handles_shape`).
 const HANDLE_BYTES: usize = 12;
+
+/// The random bytes of an invite code: 128 bits, 32 hex digits (`invite_codes_shape`), so a code cannot be guessed.
+const CODE_BYTES: usize = 16;
+
+/// The consent purpose of profile visibility (`consents_purpose_known`).
+const FRIENDS_PROFILE: &str = "friends_profile";
+
+/// What [`Repo::accept`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcceptOutcome {
+    /// The request became a friendship.
+    Accepted,
+    /// No request from that user to me (none, or accepted before): nothing changed.
+    NoRequest,
+    /// One of the two is at the friend cap: nothing changed, the request stays.
+    LimitReached,
+}
+
+/// A friend of the user, as another user may see them: by handle, never by Telegram id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FriendRow {
+    /// The friend's handle.
+    pub handle: String,
+    /// The friend's first name.
+    pub first_name: String,
+}
+
+/// An incoming request, by the requester's handle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestRow {
+    /// The requester's handle.
+    pub handle: String,
+    /// The requester's first name.
+    pub first_name: String,
+    /// When the request was sent, in unix seconds.
+    pub at: i64,
+}
+
+/// What [`Repo::social`] read: the user's own invite code, friends, incoming requests and profile visibility.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SocialRows {
+    /// The user's active invite code.
+    pub invite_code: String,
+    /// The friends, oldest friendship first, then by handle.
+    pub friends: Vec<FriendRow>,
+    /// The incoming requests, oldest first, then by handle.
+    pub requests: Vec<RequestRow>,
+    /// The latest `friends_profile` consent is a grant (none: `false`, M12).
+    pub profile_visible: bool,
+}
 
 /// What a link holder's invite code means to them (`GET /api/invites/{code}`, M10). Nothing about the owner: a block
 /// of the caller by the owner, and the owner's full request list, answer `requested` exactly like the caller's own
@@ -168,6 +221,223 @@ impl Repo {
         tx.commit().await?;
         Ok(Some(InviteState::Requested))
     }
+
+    /// The user a handle names, if any.
+    pub async fn user_by_handle(&self, h: &str) -> Result<Option<UserId>, sqlx::Error> {
+        let user: Option<i64> =
+            sqlx::query_scalar("SELECT user_id FROM user_handles WHERE handle = $1")
+                .bind(h)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(user.map(UserId))
+    }
+
+    /// `u`'s social view (`GET /api/social`): the active invite code, created on the first call; the friends and the
+    /// incoming requests, each with the other user's handle and first name; the profile visibility. Four reads; the
+    /// first call adds the code insert (and, when a concurrent first call won it, a re-read of the winner's code).
+    pub async fn social(&self, u: UserId, now: i64) -> Result<SocialRows, sqlx::Error> {
+        let invite_code = self.active_code(u, now).await?;
+        let friends: Vec<(String, String)> = sqlx::query_as(
+            "SELECT h.handle, o.first_name FROM friendships f \
+             JOIN users o ON o.id = CASE WHEN f.user_lo = $1 THEN f.user_hi ELSE f.user_lo END \
+             JOIN user_handles h ON h.user_id = o.id \
+             WHERE f.user_lo = $1 OR f.user_hi = $1 ORDER BY f.created_at, h.handle",
+        )
+        .bind(u.0)
+        .fetch_all(&self.pool)
+        .await?;
+        let requests: Vec<(String, String, i64)> = sqlx::query_as(
+            "SELECT h.handle, o.first_name, r.created_at FROM friend_requests r \
+             JOIN users o ON o.id = r.from_id JOIN user_handles h ON h.user_id = r.from_id \
+             WHERE r.to_id = $1 ORDER BY r.created_at, h.handle",
+        )
+        .bind(u.0)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(SocialRows {
+            invite_code,
+            friends: friends
+                .into_iter()
+                .map(|(handle, first_name)| FriendRow { handle, first_name })
+                .collect(),
+            requests: requests
+                .into_iter()
+                .map(|(handle, first_name, at)| RequestRow {
+                    handle,
+                    first_name,
+                    at,
+                })
+                .collect(),
+            profile_visible: self.profile_visible(u).await?,
+        })
+    }
+
+    /// `me` accepts the request from `from` (F20 step 1), in one transaction: both `users` rows locked ascending; the
+    /// request deleted (none: [`AcceptOutcome::NoRequest`]); both below `cap` friends, else
+    /// [`AcceptOutcome::LimitReached`] with the request kept; the friendship inserted `ON CONFLICT DO NOTHING`; the
+    /// reverse request deleted; `me`'s handle ensured (`from` now sees it).
+    pub async fn accept(
+        &self,
+        me: UserId,
+        from: UserId,
+        cap: i64,
+        now: i64,
+    ) -> Result<AcceptOutcome, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        if !lock_pair(&mut tx, me, from).await? {
+            tx.rollback().await?;
+            return Ok(AcceptOutcome::NoRequest);
+        }
+        let deleted = sqlx::query("DELETE FROM friend_requests WHERE from_id = $1 AND to_id = $2")
+            .bind(from.0)
+            .bind(me.0)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        if deleted == 0 {
+            tx.rollback().await?;
+            return Ok(AcceptOutcome::NoRequest);
+        }
+        let (mine, theirs): (i64, i64) = sqlx::query_as(
+            "SELECT (SELECT count(*) FROM friendships WHERE user_lo = $1 OR user_hi = $1), \
+             (SELECT count(*) FROM friendships WHERE user_lo = $2 OR user_hi = $2)",
+        )
+        .bind(me.0)
+        .bind(from.0)
+        .fetch_one(&mut *tx)
+        .await?;
+        if mine >= cap || theirs >= cap {
+            tx.rollback().await?;
+            return Ok(AcceptOutcome::LimitReached);
+        }
+        let (lo, hi) = ordered(me, from);
+        sqlx::query(
+            "INSERT INTO friendships (user_lo, user_hi, created_at) VALUES ($1, $2, $3) \
+             ON CONFLICT ON CONSTRAINT friendships_pkey DO NOTHING",
+        )
+        .bind(lo)
+        .bind(hi)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM friend_requests WHERE from_id = $1 AND to_id = $2")
+            .bind(me.0)
+            .bind(from.0)
+            .execute(&mut *tx)
+            .await?;
+        ensure_handle(&mut tx, me).await?;
+        tx.commit().await?;
+        Ok(AcceptOutcome::Accepted)
+    }
+
+    /// `me` removes `other` (F20 step 2: a decline of an incoming request or an unfriending, from either side), in one
+    /// transaction: both `users` rows locked ascending; the friendship and every request between the two deleted;
+    /// `false` (and nothing changed) when there was neither a friendship nor a request from `other`; otherwise the
+    /// durable block `(me, other)` inserted `ON CONFLICT DO NOTHING`, so `other`'s requests to `me` create nothing.
+    pub async fn remove(&self, me: UserId, other: UserId, now: i64) -> Result<bool, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        if !lock_pair(&mut tx, me, other).await? {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        let (lo, hi) = ordered(me, other);
+        let unfriended = sqlx::query("DELETE FROM friendships WHERE user_lo = $1 AND user_hi = $2")
+            .bind(lo)
+            .bind(hi)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected()
+            == 1;
+        let senders: Vec<i64> = sqlx::query_scalar(
+            "DELETE FROM friend_requests WHERE (from_id = $1 AND to_id = $2) OR (from_id = $2 AND to_id = $1) \
+             RETURNING from_id",
+        )
+        .bind(other.0)
+        .bind(me.0)
+        .fetch_all(&mut *tx)
+        .await?;
+        if !unfriended && !senders.contains(&other.0) {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        sqlx::query(
+            "INSERT INTO friend_blocks (user_id, blocked_id, created_at) VALUES ($1, $2, $3) \
+             ON CONFLICT ON CONSTRAINT friend_blocks_pkey DO NOTHING",
+        )
+        .bind(me.0)
+        .bind(other.0)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    /// The two users are friends (either order; one user is never its own friend). One read.
+    pub async fn are_friends(&self, a: UserId, b: UserId) -> Result<bool, sqlx::Error> {
+        let (lo, hi) = ordered(a, b);
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM friendships WHERE user_lo = $1 AND user_hi = $2)",
+        )
+        .bind(lo)
+        .bind(hi)
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    /// `u`'s latest `friends_profile` consent is a grant; `false` without one (private by default, M12). One read.
+    pub async fn profile_visible(&self, u: UserId) -> Result<bool, sqlx::Error> {
+        let granted: Option<bool> = sqlx::query_scalar(
+            "SELECT granted FROM consents WHERE user_id = $1 AND purpose = $2 ORDER BY id DESC LIMIT 1",
+        )
+        .bind(u.0)
+        .bind(FRIENDS_PROFILE)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(granted.unwrap_or(false))
+    }
+
+    /// `u`'s active invite code, inserted when `u` has none. The insert names the partial unique index
+    /// `invite_codes_one_active` by inference (`ON CONFLICT (user_id) WHERE revoked_at IS NULL`; `ON CONSTRAINT` names
+    /// constraints only, and a partial index is not one): a concurrent first call waits on the winner's row, inserts
+    /// nothing, and re-reads the winner's code.
+    async fn active_code(&self, u: UserId, now: i64) -> Result<String, sqlx::Error> {
+        let active = "SELECT code FROM invite_codes WHERE user_id = $1 AND revoked_at IS NULL";
+        let code: Option<String> = sqlx::query_scalar(active)
+            .bind(u.0)
+            .fetch_optional(&self.pool)
+            .await?;
+        if let Some(code) = code {
+            return Ok(code);
+        }
+        let inserted: Option<String> = sqlx::query_scalar(
+            "INSERT INTO invite_codes (code, user_id, created_at) VALUES ($1, $2, $3) \
+             ON CONFLICT (user_id) WHERE revoked_at IS NULL DO NOTHING RETURNING code",
+        )
+        .bind(new_invite_code())
+        .bind(u.0)
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await?;
+        match inserted {
+            Some(code) => Ok(code),
+            None => {
+                sqlx::query_scalar(active)
+                    .bind(u.0)
+                    .fetch_one(&self.pool)
+                    .await
+            }
+        }
+    }
+}
+
+/// A new invite code: 32 lower-case hex of 16 OS-random bytes.
+fn new_invite_code() -> String {
+    let mut bytes = [0u8; CODE_BYTES];
+    getrandom::fill(&mut bytes).expect(
+        "invariant: the OS random source works (ProcessPrng on Windows 10+ is documented never to fail)",
+    );
+    hex::encode(bytes)
 }
 
 /// The owner of the active code `code`, if any.
