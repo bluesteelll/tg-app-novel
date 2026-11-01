@@ -1045,12 +1045,20 @@ while LDB1 ran; LDB1 and LDB2 had merged before the design landed, and the merge
   as cut; C4 tags each carry with the knot its run ended in, so LS1 can drop story-ending runs from the next chapter's
   carry. Its RULINGS 19 seen-working line stays.
 - **L6b** (running since the merge, server slot, base `d9ca9f1`): the first server lane of the chain.
+- **As of `6043941`** (changed by RULINGS 54; docs lane `docs-errata-2`; SHAs from `git log --first-parent main`):
+  - merged: L3c `91e35cd`, L6b `698993e`, and of this design's lanes LS2 `a358ec3`, LS1 `64fd798`, LS3 `00d7c10`;
+    every lane up to LU1 `2a7b50c` has merged (PP "Dependency order");
+  - running: L10 client-data and LE1 economy-core;
+  - to go, of this design's lanes: LS4 and N2.
 
 **Order** (RULINGS 8 rolling, RULINGS 18 three slots; as of `66c92c4`, changed by RULINGS 22, 23: LDB1 and LDB2
 merged, so the server chain starts at L6b): server L6b → LS2 → L6c → L8a → L8b → LS3 → L9; client (two slots)
 L3c → L5 → {L11, LS1 (after L6b), L12} → {L7, LW3} → L14a, D1 → N1 → N2, and L10 (after
 L8b) → L13, L14b → LP2 ∥ LX, LS4 → L15 → D2. Critical path: L6b → **LS2** → L6c → L8a → L8b → L10 → L14b →
 LP2 → L15 → D2 (+1 lane). The PP lane entries hold the locks, commits, red-firsts, gates and seen-working.
+Changed by RULINGS 54 (as of `6043941`): the server chain has run to LS3, and META-PLAN extended it: LE1 (running) →
+LF1 → LM2 → LF2 → LE2 → LPO → L9; client L10 (running) → L13, L14b → LP2 ∥ LX, LS4, N1 → N2 → L15 → D2 (with
+META-PLAN's LMD and LMI before D2). Critical path to the prototype milestone: L10 → L14b → LP2 → L15.
 
 **Collision locks added** (PP "Collision locks"): `0001` L2 → LDB1 → LS2; `0003` LS3; the serialized server files
 L6b → LS2 → L6c → L8a → L8b → LS3 → L9; `ids.rs` L6b (`StoryId` with `PuzzleId`); `lint.ts` / `dsl-doc.test.ts` /
@@ -1219,6 +1227,7 @@ Totals: 2 stories, 4 chapters (2 free, 2 paid), 4 endings (`truth`, `ashes`, `dr
 | 6 | 2026-10-31 | the META-PLAN campaign spec + RULINGS 25 | Extended by [META-PLAN.md](META-PLAN.md): choice capture (`choice_made`), `endingsTotal` removed, hint products removed, privacy designed. Changed items marked "Changed by META-PLAN": Goal (the "X of Y" sentence; ST5, ST6); Y9; Y10; Y12; Y14; Y16; Y17; Identifiers; the `catalog.json` server format; the TS and Rust stats types; the SQL `0003` note; HTTP API; F12; test names and the seen-red row; Open questions (Q22 note; Q23, Q24, Q25 resolved). Design log: `D:/tmp/novel-orch/design/choices/design_log.md` |
 | 7 | 2026-10-31 | META-PLAN revision 1 (`D:/tmp/novel-orch/design/choices/triage_r1.md`, item W2) | Choice events no longer crowd facts out: Y11 counts facts and choices apart (facts 600/h with the 429; choices 600/h of their own, never a 429, repeat picks beyond it rejected `rate_limited`, first picks always recorded); Y13 evicts choices first and sends facts first; the stats constants, F11, the concurrency table, Budgets and Test strategy follow. Marked "Changed by META-PLAN revision 1". Pre-revision copy: `D:/tmp/novel-orch/design/choices/STORIES-PLAN.r1.before.md` |
 | 8 | 2026-11-01 | `D:/tmp/novel-orch/carry.md` at ORCH `d97ba64` (the docs-errata-2 spec, group A), as merged on main `6043941` | Docs lane `docs-errata-2`, group A (not a triage round): LS1 (`64fd798`) — rule 8's `next` clause, `checkEndings(…, sources)`, the seeded leak seen in C7; LS3 (`00d7c10`) — at most 4 statements, the overshoot up to one batch per concurrent request, choices never a 429 (O1), `StatKind` / `StatOutcome` in `db/stats.rs`, the `IS NOT NULL` guards, `private, no-store`, the per-event `unknown_choice`, the `record_events` budgets. Ledger: `D:/tmp/novel-orch/docs-errata-2/ledger.md` |
+| 9 | 2026-11-01 | RULINGS 54 (as merged on main `6043941`) | Docs lane `docs-errata-2`, group B (not a triage round): "Implementation plan" — "Running and merged lanes" and "Order" as of `6043941` (LS1, LS2, LS3 merged; L10, LE1 running; LS4, N2 to go; the critical path from L10). Ledger: `D:/tmp/novel-orch/docs-errata-2/ledger.md` |
 
 **Revision 1 (2026-10-31)** — what changed, by triage item:
 - **W1** (LS1 moved merged test pins it did not declare; commit 6 left the real-tree `story` gate red): PP "LS1" —
