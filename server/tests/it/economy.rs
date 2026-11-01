@@ -876,6 +876,36 @@ async fn balance_concurrent_affordable_debits_both_apply() {
     report(&failures);
 }
 
+/// A debit larger than a positive balance is refused (`None`, D18) and leaves the balance as it was: seed 1, debit 2.
+/// The refusal is the guard `balance >= amount`, not the CHECK behind it: a guard that only asks for a positive
+/// balance lets the UPDATE hit the CHECK, and the caller sees an error (a 500, not the 409 `insufficient_balance`).
+/// A balance of 0 or a debit of 1 cannot tell the two guards apart, so this is the only case that does.
+#[tokio::test]
+async fn balance_debit_over_positive_balance_is_refused() {
+    let (_st, _db, mut c) = schema_db().await;
+    let mut failures = Vec::new();
+    let hint = hint();
+    begin(&mut c).await;
+    let got = credit_in_tx(&mut c, &seed(ANN, &hint, 1, "seed")).await;
+    failures.extend(expect_eq("seed +1", step(got), applied(1, 0)));
+    let got = debit_in_tx(&mut c, &entry(ANN, &hint, -2, Reason::HintSpend, "d:over")).await;
+    let refused = debit_step(got);
+    failures.extend(expect_eq(
+        "over-debit of 2 against 1",
+        refused.clone(),
+        Ok(None),
+    ));
+    // An erroring statement aborts the transaction: the balance is readable only after an `Ok`.
+    if refused.is_ok() {
+        failures.extend(expect_eq(
+            "balance rows",
+            balance_rows(&mut c).await,
+            vec![(ANN, "hint".to_owned(), 1, 0)],
+        ));
+    }
+    report(&failures);
+}
+
 /// L9's clawback source (M20, revision 1): the kind and amount of a charge's `pay:<charge>` row; `None` for a charge
 /// with no ledger row, and for one whose only row is not its pack credit.
 #[tokio::test]
