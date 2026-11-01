@@ -1,7 +1,7 @@
 //! `client/src/api/fixtures/dto-samples.json` (K22): samples of every response body, serialized from the real Rust
 //! DTOs, keyed by the TypeScript type name. The client's decoders are tested against this file, so a change of a
 //! body's shape on the Rust side reaches the client's tests. Every optional field is sampled both absent (or null)
-//! and present, and every value of the four wire unions at least once.
+//! and present, and every value of the five wire unions at least once.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -11,12 +11,13 @@ use serde_json::value::RawValue;
 use serde_json::{Map, Value};
 use server::api::dto::{
     AttemptResponse, AuthResponse, BalanceDto, ChapterPayload, CreateInvoiceResponse,
-    EntitlementsResponse, GameStatsDto, HintUseResponse, HintView, Localized, OrderResponse,
-    PackDto, PostStatsResponse, ProductDto, PutSaveResponse, PuzzleStatus, RejectedEvent, SaveFull,
-    SaveListResponse, SaveSummary, StatRejectReason, StatsResponse, StoryStatsDto, UserDto,
-    WalletResponse, ts_bindings,
+    EntitlementsResponse, FriendDto, FriendRequestDto, GameStatsDto, HintUseResponse, HintView,
+    InviteView, Localized, OrderResponse, PackDto, PostStatsResponse, ProductDto, PutSaveResponse,
+    PuzzleStatus, RejectedEvent, SaveFull, SaveListResponse, SaveSummary, SocialResponse,
+    StatRejectReason, StatsResponse, StoryStatsDto, UserDto, WalletResponse, ts_bindings,
 };
 use server::db::orders::OrderStatus;
+use server::db::social::InviteState;
 use server::error::{ApiErrorBody, ErrorCode};
 use server::ids::{SaveSlot, StoryId};
 use ts_rs::TS;
@@ -25,7 +26,7 @@ use ts_rs::TS;
 const REGENERATE: &str = "regenerate: cargo test -p server --test it dto_samples::write_dto_samples -- --ignored --exact";
 
 /// The exported request bodies and the types only they carry: the client only sends them, so it decodes none.
-const REQUESTS: [&str; 8] = [
+const REQUESTS: [&str; 9] = [
     "AuthRequest",
     "PutSaveRequest",
     "AttemptRequest",
@@ -34,10 +35,11 @@ const REQUESTS: [&str; 8] = [
     "StatEventDto",
     "StatKind",
     "StatOutcome",
+    "ConsentRequest",
 ];
 
 /// The exported types that only appear inside a sampled body, and are sampled there.
-const NESTED: [&str; 15] = [
+const NESTED: [&str; 18] = [
     "SaveSlot",
     "StoryId",
     "ErrorCode",
@@ -53,6 +55,9 @@ const NESTED: [&str; 15] = [
     "Localized",
     "BalanceDto",
     "PackDto",
+    "InviteState",
+    "FriendDto",
+    "FriendRequestDto",
 ];
 
 /// Every error code, each at its index in [`code_index`].
@@ -129,6 +134,24 @@ fn reason_index(reason: StatRejectReason) -> usize {
         StatRejectReason::UnknownPuzzle => 3,
         StatRejectReason::UnknownChoice => 4,
         StatRejectReason::RateLimited => 5,
+    }
+}
+
+/// Every invite state, each at its index in [`invite_state_index`], sampled in `InviteView`.
+const INVITE_STATES: [InviteState; 4] = [
+    InviteState::Open,
+    InviteState::Requested,
+    InviteState::Friends,
+    InviteState::Own,
+];
+
+/// The index of `state` in [`INVITE_STATES`]: no wildcard arm, so a new state does not compile until it is sampled.
+fn invite_state_index(state: InviteState) -> usize {
+    match state {
+        InviteState::Open => 0,
+        InviteState::Requested => 1,
+        InviteState::Friends => 2,
+        InviteState::Own => 3,
     }
 }
 
@@ -414,6 +437,37 @@ fn samples() -> Value {
             text: "Look under the rug.".to_owned(),
         })],
     );
+    put(
+        "InviteView",
+        INVITE_STATES
+            .iter()
+            .map(|&state| value(&InviteView { state }))
+            .collect(),
+    );
+    put(
+        "SocialResponse",
+        vec![
+            value(&SocialResponse {
+                invite_code: "0123456789abcdef0123456789abcdef".to_owned(),
+                friends: vec![FriendDto {
+                    handle: "0123456789abcdef01234567".to_owned(),
+                    first_name: "Аня".to_owned(),
+                }],
+                requests: vec![FriendRequestDto {
+                    handle: "fedcba9876543210fedcba98".to_owned(),
+                    first_name: "Ben".to_owned(),
+                    at: AT,
+                }],
+                profile_visible: true,
+            }),
+            value(&SocialResponse {
+                invite_code: "fedcba9876543210fedcba9876543210".to_owned(),
+                friends: Vec::new(),
+                requests: Vec::new(),
+                profile_visible: false,
+            }),
+        ],
+    );
     let mut errors: Vec<Value> = ERROR_CODES
         .iter()
         .map(|&error| {
@@ -464,7 +518,7 @@ fn report(failures: &[String]) {
 
 /// The committed file equals what the DTOs serialize today, byte for byte; every type `ts_bindings()` exports is
 /// sampled or listed as a request or a nested-only type (so a new body is red until it is sampled); every value of
-/// the error-code, slot, order-status and stats reject-reason unions is sampled.
+/// the error-code, slot, order-status, stats reject-reason and invite-state unions is sampled.
 #[test]
 #[allow(
     clippy::disallowed_methods,
@@ -546,6 +600,14 @@ fn dto_samples_are_fresh() {
             ));
         }
     }
+    for (i, &state) in INVITE_STATES.iter().enumerate() {
+        if invite_state_index(state) != i {
+            failures.push(format!(
+                "INVITE_STATES[{i}] is {state:?}, indexed {}",
+                invite_state_index(state)
+            ));
+        }
+    }
     let cfg = ts_rs::Config::default();
     for (union, ts, sampled) in [
         (
@@ -567,6 +629,11 @@ fn dto_samples_are_fresh() {
             "StatRejectReason",
             StatRejectReason::inline(&cfg),
             wire_names(&STAT_REJECT_REASONS),
+        ),
+        (
+            "InviteState",
+            InviteState::inline(&cfg),
+            wire_names(&INVITE_STATES),
         ),
     ] {
         let literals = union_literals(&ts);

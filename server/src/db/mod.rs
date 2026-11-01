@@ -7,6 +7,7 @@ pub mod orders;
 pub mod payments;
 pub mod puzzles;
 pub mod saves;
+pub mod social;
 pub mod stats;
 pub mod users;
 
@@ -44,8 +45,9 @@ const SESSION_OPTIONS: [(&str, &str); 5] = [
 ];
 
 /// `text` with every U+0000 replaced by U+FFFD (borrowed when there is none). PostgreSQL `text` cannot hold U+0000
-/// (`22021`) and a Telegram string may carry it, so the payment path binds every Telegram string through this, at the
-/// `db/` boundary. The replacement is deterministic: a replaced charge id is the same key on every redelivery.
+/// (`22021`) and a Telegram string may carry it, so the payment path and the users upsert bind every Telegram string
+/// through this, at the `db/` boundary. The replacement is deterministic: a replaced charge id is the same key on
+/// every redelivery.
 pub(crate) fn without_nul(text: &str) -> Cow<'_, str> {
     if text.contains('\0') {
         Cow::Owned(text.replace('\0', "\u{FFFD}"))

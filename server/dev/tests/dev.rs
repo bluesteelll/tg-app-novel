@@ -460,6 +460,68 @@ async fn launch_query_sets_user() {
     report(&failures);
 }
 
+/// `?startapp=` launches the way an invite link does (META-PLAN M10, PP "HTTP API" dev routes): the signed initData
+/// carries `start_param`, which the validator reads from the HMAC-covered pairs, the hash carries
+/// `tgWebAppStartParam`, and `POST /api/auth` accepts the launch. A value Telegram cannot carry (65 characters, a `/`)
+/// is 400 `bad_request`.
+#[tokio::test]
+async fn dev_launch_signs_start_param() {
+    let dev = dev_app().await;
+    let start = "f0123456789abcdef0123456789abcdef";
+    let reply = get(&dev, &format!("/dev/launch?uid=2002&startapp={start}")).await;
+    let mut failures = Vec::new();
+    if reply.status != StatusCode::FOUND {
+        failures.push(format!("status: expected 302 Found, got {}", reply.status));
+    }
+    let pairs = hash_pairs(&reply);
+    let init_data = value(&pairs, "tgWebAppData").unwrap_or("").to_owned();
+    match validate_init_data(&init_data, PLACEHOLDER_BOT_TOKEN, SystemClock.now(), 86400) {
+        Ok(data) if data.start_param.as_deref() == Some(start) => {}
+        Ok(data) => failures.push(format!(
+            "start_param: expected Some({start:?}), got {:?}",
+            data.start_param
+        )),
+        Err(e) => failures.push(format!("validate_init_data: expected Ok, got Err({e:?})")),
+    }
+    let echoed = value(&pairs, "tgWebAppStartParam");
+    if echoed != Some(start) {
+        failures.push(format!(
+            "tgWebAppStartParam: expected {start:?}, got {echoed:?}"
+        ));
+    }
+    let init_pairs: Vec<(String, String)> = form_urlencoded::parse(init_data.as_bytes())
+        .into_owned()
+        .collect();
+    let init_keys = key_set(&init_pairs);
+    if init_keys != "{auth_date, hash, start_param, user}" {
+        failures.push(format!(
+            "initData keys: expected {{auth_date, hash, start_param, user}}, got {init_keys}"
+        ));
+    }
+    let auth = post_auth(&dev, &init_data).await;
+    if auth.status != StatusCode::OK {
+        failures.push(format!(
+            "POST /api/auth: expected 200, got {} {}",
+            auth.status,
+            body_text(&auth)
+        ));
+    }
+    for (case, startapp) in [
+        ("65 characters", "a".repeat(65)),
+        ("a slash", "a%2Fb".to_owned()),
+    ] {
+        let reply = get(&dev, &format!("/dev/launch?startapp={startapp}")).await;
+        let body = body_text(&reply);
+        if reply.status != StatusCode::BAD_REQUEST || body != r#"{"error":"bad_request"}"# {
+            failures.push(format!(
+                "startapp {case}: expected 400 {{\"error\":\"bad_request\"}}, got {} {body}",
+                reply.status
+            ));
+        }
+    }
+    report(&failures);
+}
+
 /// A session for dev user `uid`: `/dev/launch?uid=<uid>&lang=ru`, then `POST /api/auth`; the `Authorization` value.
 async fn session(dev: &DevApp, uid: i64) -> String {
     let launch = get(dev, &format!("/dev/launch?uid={uid}&lang=ru")).await;

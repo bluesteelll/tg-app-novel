@@ -4,9 +4,11 @@ pub mod auth;
 pub mod content;
 pub mod dto;
 pub mod entitlements;
+pub mod legal;
 pub mod orders;
 pub mod puzzles;
 pub mod saves;
+pub mod social;
 pub mod stats;
 pub mod wallet;
 
@@ -15,7 +17,7 @@ use axum::extract::DefaultBodyLimit;
 use axum::extract::rejection::JsonRejection;
 use axum::http::header::CACHE_CONTROL;
 use axum::http::{HeaderValue, StatusCode};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post, put};
 use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::AppState;
@@ -68,6 +70,17 @@ fn routes() -> Router<AppState> {
         .route("/stats", get(stats::get_stats))
         .route("/stats/events", post(stats::post_events))
         .route("/wallet", get(wallet::get_wallet))
+        .route("/invites/{code}", get(social::get_invite))
+        .route("/invites/{code}/request", post(social::post_invite_request))
+        .route("/social", get(social::get_social))
+        .route(
+            "/friends/requests/{handle}/accept",
+            post(social::post_accept),
+        )
+        .route("/friends/{handle}", delete(social::delete_friend))
+        .route("/invite/rotate", post(social::post_rotate))
+        .route("/consents/friends_profile", put(social::put_consent))
+        .merge(legal::routes())
 }
 
 /// `GET /api/health`: no auth, no database; `ok` as `text/plain`.
