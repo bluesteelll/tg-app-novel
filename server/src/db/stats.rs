@@ -1,6 +1,7 @@
 //! The `stat_events` table (`0003_stats.sql`): the append-only log of client-reported statistics (STORIES-PLAN Y8).
-//! Written only by [`Repo::record_events`], called only from the stats routes (`api/stats.rs`): no unlock, content or
-//! grant path reads a statistic (ST4, principle 1).
+//! Written only by [`Repo::record_events`] and read only by [`Repo::stat_facts`], both called only from the stats routes
+//! (`api/stats.rs`): no unlock, content or grant path reads a statistic (ST4, principle 1; pinned by
+//! `stats::stats_repo_called_only_from_stats_api`).
 //!
 //! Every statement is autocommit: a statistic is not money, and its budgets are soft by one concurrent batch. The kind
 //! and outcome vocabularies live here, next to the rows they name (the `OrderStatus` precedent of `db/orders.rs`).
@@ -139,6 +140,19 @@ pub enum RecordOutcome {
     RateLimited,
 }
 
+/// One distinct fact of a user, as [`Repo::stat_facts`] reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatFact {
+    /// The story the row was recorded under.
+    pub story: StoryId,
+    /// `chapter_started`, `chapter_completed` or `ending_reached`.
+    pub kind: StatKind,
+    /// The chapter the row was recorded in.
+    pub chapter: ChapterId,
+    /// The ending name of an `ending_reached`; `None` for the chapter kinds.
+    pub subject: Option<String>,
+}
+
 /// One column of the insert's UNNEST: `f` of each event, in order.
 fn column<'e, T>(events: &[&NewStatEvent<'e>], f: impl Fn(&NewStatEvent<'e>) -> T) -> Vec<T> {
     events.iter().map(|e| f(e)).collect()
@@ -260,5 +274,32 @@ impl Repo {
             inserted,
             over_budget,
         })
+    }
+
+    /// The distinct (story, kind, chapter, subject) facts of `user` of the three story kinds (`chapter_started`,
+    /// `chapter_completed`, `ending_reached`): one statement over `stat_events_by_user_story`. Rows outside the current
+    /// index are returned too: the caller counts only what the index still holds (ST6).
+    pub async fn stat_facts(&self, user: UserId) -> Result<Vec<StatFact>, sqlx::Error> {
+        let rows: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
+            "SELECT DISTINCT story_id, kind, chapter_id, subject FROM stat_events \
+             WHERE user_id = $1 AND kind IN ('chapter_started', 'chapter_completed', 'ending_reached')",
+        )
+        .bind(user.0)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|(story, kind, chapter, subject)| {
+                // `stat_events_kind_known` makes the error unreachable; a 500 beats a panic if the schema ever drifts.
+                let kind = StatKind::parse(&kind).ok_or_else(|| {
+                    sqlx::Error::Decode("stat_events.kind outside the vocabulary".into())
+                })?;
+                Ok(StatFact {
+                    story: StoryId(story),
+                    kind,
+                    chapter: ChapterId(chapter),
+                    subject,
+                })
+            })
+            .collect()
     }
 }

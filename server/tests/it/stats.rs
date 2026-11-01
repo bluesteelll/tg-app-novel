@@ -1,24 +1,30 @@
 //! Statistics (`server/migrations/0003_stats.sql`, `db/stats.rs`, `api/stats.rs`): the `stat_events` constraints on
-//! raw SQL, the repository's idempotent, budgeted write, and `POST /api/stats/events`, where every event is a claim
-//! judged against the story index, the puzzle index and the caller's entitlements.
+//! raw SQL, the repository's idempotent, budgeted write, `POST /api/stats/events`, where every event is a claim
+//! judged against the story index, the puzzle index and the caller's entitlements, and `GET /api/stats`, the distinct
+//! facts the current index still holds. Statistics unlock nothing (ST4).
 //!
 //! Every refused schema case breaks one CHECK, or one whose name sorts before every other it breaks: PostgreSQL tests
 //! a table's CHECK constraints in name order, so the constraint a case reports is the one the case is about.
 //!
 //! Large seeds are raw `generate_series` inserts (`gen_random_uuid` is a lower-case v4): only their count and time
 //! matter to the budgets. Entitlement rows are raw too (`catalog::own`): the server has no grant path but the payment.
+//! Rows that `classify` would refuse are written through `Repo::record_events`.
+
+use std::path::{Path, PathBuf};
 
 use axum::body::Body;
 use axum::http::Request;
-use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, RETRY_AFTER};
+use axum::http::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, RETRY_AFTER};
 use serde_json::{Value, json};
 use server::AppState;
+use server::api::dto::{GameStatsDto, StoryStatsDto};
 use server::db::stats::{NewStatEvent, RecordOutcome, StatCaps, StatKind, StatOutcome};
 use server::ids::{ChapterId, StoryId, UserId};
 use sqlx::postgres::PgQueryResult;
 use sqlx::{Connection, PgConnection};
+use ts_rs::TS;
 
-use crate::catalog::{ANN, T0, bearer, own, state_with_users};
+use crate::catalog::{ANN, T0, bearer, get, own, state_with_users};
 use crate::common;
 
 /// A second player.
@@ -1284,5 +1290,407 @@ async fn stats_cap_429_and_rate_limited_reject() {
         &reply,
         &answer(0, 0, &[(2, "rate_limited")]),
     ));
+    report(&failures);
+}
+
+/// `GET /api/stats` as `user`: the status and the body as JSON (`null` when it is not JSON).
+async fn read_stats(st: &AppState, user: i64) -> (u16, Value) {
+    let reply = get(st, Some(user), "/api/stats").await;
+    let body = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
+    (reply.status.as_u16(), body)
+}
+
+/// A `StoryStatsDto` as JSON.
+fn story_stats(id: &str, started: bool, completed: &[&str], total: u32, endings: &[&str]) -> Value {
+    json!({
+        "storyId": id,
+        "started": started,
+        "chaptersCompleted": completed,
+        "chaptersTotal": total,
+        "endingsReached": endings,
+    })
+}
+
+/// A `StatsResponse` of the fixture's two stories (manor first) as JSON, the game totals summed from them.
+fn stats_body(manor: Value, tide: Value) -> Value {
+    let started = [&manor, &tide]
+        .iter()
+        .filter(|s| s["started"] == json!(true))
+        .count();
+    let endings: usize = [&manor, &tide]
+        .iter()
+        .map(|s| s["endingsReached"].as_array().map_or(0, Vec::len))
+        .sum();
+    json!({
+        "stories": [manor, tide],
+        "game": { "storiesStarted": started, "storiesTotal": 2, "endingsReached": endings },
+    })
+}
+
+/// The mismatch of a stats read against a 200 with exactly `want`.
+fn expect_stats(case: &str, got: &(u16, Value), want: &Value) -> Option<String> {
+    (got.0 != 200 || &got.1 != want)
+        .then(|| format!("{case}: expected 200 {want}, got {} {}", got.0, got.1))
+}
+
+/// An ending reached twice under two ids is one fact; an ending never reached is not named; a story without a start
+/// is not started. The game sums the stories.
+#[tokio::test]
+async fn stats_endings_reached_distinct() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    let mut failures = Vec::new();
+    for n in [1, 2] {
+        let reply = post(
+            &st,
+            ANN,
+            vec![event(n, "ending_reached", "ch3", Some("drowned"), None)],
+        )
+        .await;
+        failures.extend(expect_answer(
+            &format!("drowned, id {n}"),
+            &reply,
+            &answer(1, 0, &[]),
+        ));
+    }
+    let want = stats_body(
+        story_stats("manor", false, &[], 2, &[]),
+        story_stats("tide", false, &["ch3"], 2, &["drowned"]),
+    );
+    failures.extend(expect_stats("read", &read_stats(&st, ANN).await, &want));
+    report(&failures);
+}
+
+/// The number of object keys named `name` at any depth of `v`.
+fn keys_named(v: &Value, name: &str) -> usize {
+    match v {
+        Value::Object(map) => map
+            .iter()
+            .map(|(key, value)| usize::from(key == name) + keys_named(value, name))
+            .sum(),
+        Value::Array(items) => items.iter().map(|item| keys_named(item, name)).sum(),
+        _ => 0,
+    }
+}
+
+/// No total of endings at either level (META-PLAN M8): not in the served JSON, not in the client's contract.
+#[tokio::test]
+async fn stats_response_has_no_endings_total() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    let mut failures = Vec::new();
+    let reply = post(
+        &st,
+        ANN,
+        vec![
+            event(1, "chapter_started", "ch3", None, None),
+            event(2, "ending_reached", "ch3", Some("drowned"), None),
+        ],
+    )
+    .await;
+    failures.extend(expect_answer("the events", &reply, &answer(2, 0, &[])));
+    let (status, body) = read_stats(&st, ANN).await;
+    if status != 200 || body["stories"].as_array().is_none_or(Vec::is_empty) {
+        failures.push(format!(
+            "read: expected 200 with stories, got {status} {body}"
+        ));
+    }
+    let n = keys_named(&body, "endingsTotal");
+    if n != 0 {
+        failures.push(format!(
+            "the served JSON: expected no endingsTotal key, got {n} in {body}"
+        ));
+    }
+    let cfg = ts_rs::Config::default();
+    for (dto, decl) in [
+        ("StoryStatsDto", StoryStatsDto::decl(&cfg)),
+        ("GameStatsDto", GameStatsDto::decl(&cfg)),
+    ] {
+        if decl.contains("endingsTotal") {
+            failures.push(format!("{dto}: expected no endingsTotal, got {decl}"));
+        }
+    }
+    report(&failures);
+}
+
+/// A declared ending ends its chapter without a `chapter_completed` (STORIES-PLAN F4'): the chapter counts as
+/// completed, listed in chain order.
+#[tokio::test]
+async fn stats_ending_completes_its_chapter() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    own(&st, ANN, "chapter:ch4").await;
+    let mut failures = Vec::new();
+    let reply = post(
+        &st,
+        ANN,
+        vec![
+            event(1, "ending_reached", "ch4", Some("dawn"), None),
+            event(2, "ending_reached", "ch3", Some("drowned"), None),
+        ],
+    )
+    .await;
+    failures.extend(expect_answer(
+        "dawn in ch4, drowned in ch3",
+        &reply,
+        &answer(2, 0, &[]),
+    ));
+    let want = stats_body(
+        story_stats("manor", false, &[], 2, &[]),
+        story_stats("tide", false, &["ch3", "ch4"], 2, &["dawn", "drowned"]),
+    );
+    failures.extend(expect_stats("read", &read_stats(&st, ANN).await, &want));
+    report(&failures);
+}
+
+/// An `Ev` with every part given: rows `classify` would refuse.
+fn raw_ev(n: u64, kind: StatKind, story: &str, chapter: &str, subject: Option<&str>) -> Ev {
+    Ev {
+        id: uuid(n),
+        kind,
+        story: StoryId(story.to_owned()),
+        chapter: ChapterId(chapter.to_owned()),
+        subject: subject.map(str::to_owned),
+        outcome: None,
+    }
+}
+
+/// Old rows outside the current index stay in the table and are not counted (ST6): an ending the story no longer
+/// declares (and so no completed chapter by it), a chapter the story no longer has, a story the index no longer has,
+/// and a chapter recorded under another story.
+#[tokio::test]
+async fn stats_retired_ending_not_counted() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    let retired = [
+        raw_ev(1, StatKind::EndingReached, "tide", "ch3", Some("lost")),
+        raw_ev(2, StatKind::ChapterCompleted, "tide", "ch9", None),
+        raw_ev(3, StatKind::ChapterStarted, "gone", "ch5", None),
+        raw_ev(4, StatKind::ChapterStarted, "manor", "ch3", None),
+    ];
+    let mut failures = Vec::new();
+    failures.extend(expect_record(
+        "the retired rows",
+        record(&st, ANN, &retired, T0).await,
+        recorded(ids(&retired), Vec::new()),
+    ));
+    let want = stats_body(
+        story_stats("manor", false, &[], 2, &[]),
+        story_stats("tide", false, &[], 2, &[]),
+    );
+    failures.extend(expect_stats("read", &read_stats(&st, ANN).await, &want));
+    report(&failures);
+}
+
+/// Statistics of a paid chapter unlock nothing (ST4, principle 1): with rows that say ch4 was started, completed and
+/// ended, the chapter is still 403 and its product still not owned.
+#[tokio::test]
+async fn stats_do_not_unlock_paid_chapter() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    let rows4 = [
+        raw_ev(1, StatKind::ChapterStarted, "tide", "ch4", None),
+        raw_ev(2, StatKind::ChapterCompleted, "tide", "ch4", None),
+        raw_ev(3, StatKind::EndingReached, "tide", "ch4", Some("dawn")),
+    ];
+    let mut failures = Vec::new();
+    failures.extend(expect_record(
+        "the ch4 rows",
+        record(&st, ANN, &rows4, T0).await,
+        recorded(ids(&rows4), Vec::new()),
+    ));
+    let reply = get(&st, Some(ANN), "/api/chapters/ch4").await;
+    failures.extend(expect_reply(
+        "GET /api/chapters/ch4",
+        &reply,
+        403,
+        r#"{"error":"not_entitled"}"#,
+    ));
+    let reply = get(&st, Some(ANN), "/api/entitlements").await;
+    let body: Value = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
+    let ch4 = body["products"].as_array().and_then(|products| {
+        products
+            .iter()
+            .find(|p| p["productId"] == json!("chapter:ch4"))
+    });
+    if reply.status.as_u16() != 200 || ch4.map(|p| &p["owned"]) != Some(&json!(false)) {
+        failures.push(format!(
+            "GET /api/entitlements: expected 200 with chapter:ch4 owned false, got {} {body}",
+            reply.status.as_u16()
+        ));
+    }
+    report(&failures);
+}
+
+/// The `Cache-Control` of `reply`.
+fn cache_control(reply: &common::Reply) -> Option<String> {
+    reply
+        .headers
+        .get(CACHE_CONTROL)
+        .map(|v| v.to_str().unwrap_or("<not text>").to_owned())
+}
+
+/// Both 200s are one user's own data, `private, no-store`; an error keeps the router's `no-store`.
+#[tokio::test]
+async fn stats_private_no_store() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    let mut failures = Vec::new();
+    let no_token_post = Request::post("/api/stats/events")
+        .header(CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({ "events": [event(9, "chapter_started", "ch3", None, None)] }).to_string(),
+        ))
+        .unwrap();
+    for (case, reply, status, cache) in [
+        (
+            "POST 200",
+            post(
+                &st,
+                ANN,
+                vec![event(1, "chapter_started", "ch3", None, None)],
+            )
+            .await,
+            200,
+            "private, no-store",
+        ),
+        (
+            "GET 200",
+            get(&st, Some(ANN), "/api/stats").await,
+            200,
+            "private, no-store",
+        ),
+        (
+            "GET without a token",
+            get(&st, None, "/api/stats").await,
+            401,
+            "no-store",
+        ),
+        (
+            "POST without a token",
+            common::call(&st, no_token_post).await,
+            401,
+            "no-store",
+        ),
+    ] {
+        let got = cache_control(&reply);
+        if reply.status.as_u16() != status || got.as_deref() != Some(cache) {
+            failures.push(format!(
+                "{case}: expected {status} with Cache-Control {cache}, got {} with {got:?}",
+                reply.status.as_u16()
+            ));
+        }
+    }
+    report(&failures);
+}
+
+/// Every Rust file under `dir`, with its text.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a sync test may read files; the lint guards async handlers"
+)]
+fn rust_files(dir: &Path, files: &mut Vec<(PathBuf, String)>, problems: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        problems.push(format!("cannot read {}", dir.display()));
+        return;
+    };
+    for entry in entries {
+        let path = match entry {
+            Ok(entry) => entry.path(),
+            Err(e) => {
+                problems.push(format!("cannot list {}: {e}", dir.display()));
+                continue;
+            }
+        };
+        if path.is_dir() {
+            rust_files(&path, files, problems);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            match std::fs::read_to_string(&path) {
+                Ok(text) => files.push((path, text)),
+                Err(e) => problems.push(format!("cannot read {}: {e}", path.display())),
+            }
+        }
+    }
+}
+
+/// The identifiers of the code lines of `text`: a comment line (`//`, `///`, `//!`) is skipped, so a why-comment may
+/// name the repository.
+fn code_identifiers(text: &str) -> impl Iterator<Item = (usize, &str)> {
+    text.lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim_start().starts_with("//"))
+        .flat_map(|(i, line)| {
+            line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .filter(|t| !t.is_empty())
+                .map(move |t| (i + 1, t))
+        })
+}
+
+/// The names of the statistics repository and its table.
+const STATS_REPO_WORDS: [&str; 7] = [
+    "record_events",
+    "stat_facts",
+    "stat_events",
+    "NewStatEvent",
+    "StatFact",
+    "RecordOutcome",
+    "StatCaps",
+];
+
+/// Statistics unlock nothing (ST4): the repository is named only by `db/stats.rs` and by the stats routes in
+/// `api/stats.rs` (which leave the table's name to `db/`), in `server` and `server-dev` alike. A later reader of the
+/// table moves this allow-list on purpose.
+#[test]
+fn stats_repo_called_only_from_stats_api() {
+    let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    let mut failures = Vec::new();
+    for root in ["src", "dev/src"] {
+        rust_files(&crate_dir.join(root), &mut files, &mut failures);
+    }
+    let rel = |path: &Path| {
+        path.strip_prefix(crate_dir)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/")
+    };
+    let api_words: Vec<&str> = STATS_REPO_WORDS
+        .into_iter()
+        .filter(|&w| w != "stat_events")
+        .collect();
+    let mut seen: Vec<(String, &str)> = Vec::new();
+    for (path, text) in &files {
+        let file = rel(path);
+        let allowed: &[&str] = match file.as_str() {
+            "src/db/stats.rs" => &STATS_REPO_WORDS,
+            "src/api/stats.rs" => &api_words,
+            _ => &[],
+        };
+        for (line, word) in code_identifiers(text).filter(|(_, w)| STATS_REPO_WORDS.contains(w)) {
+            if allowed.contains(&word) {
+                seen.push((file.clone(), word));
+            } else {
+                failures.push(format!("{file}:{line}: {word}"));
+            }
+        }
+    }
+    for (file, word, what) in [
+        (
+            "src/db/stats.rs",
+            "stat_events",
+            "db/stats.rs does not name stat_events",
+        ),
+        (
+            "src/api/stats.rs",
+            "record_events",
+            "api/stats.rs does not call record_events",
+        ),
+        (
+            "src/api/stats.rs",
+            "stat_facts",
+            "api/stats.rs does not call stat_facts",
+        ),
+    ] {
+        if !seen.iter().any(|(f, w)| f == file && *w == word) {
+            failures.push(what.to_owned());
+        }
+    }
+    if !files.iter().any(|(path, _)| rel(path) == "dev/src/main.rs") {
+        failures.push("the scan did not reach dev/src/main.rs".to_owned());
+    }
     report(&failures);
 }

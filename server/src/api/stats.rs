@@ -1,9 +1,12 @@
-//! `/api/stats`: the statistics routes (STORIES-PLAN Y10-Y11, META-PLAN M1). Every event is a claim. Its shape is
-//! checked first: a malformed event refuses the whole batch with 400 before any write, so no table CHECK ever answers
-//! with a 500. Then [`classify`] judges each event against the story index, the puzzle index and the caller's
-//! entitlements in a fixed order: the chapter, the entitlement, the subject. A non-buyer gets `not_entitled` before
-//! any subject is looked at, so no answer names a paid ending, puzzle or option. The story is derived here, never
-//! sent.
+//! `/api/stats`: the statistics routes (STORIES-PLAN Y10-Y12, META-PLAN M1, M8).
+//!
+//! Writes: every event is a claim. Its shape is checked first: a malformed event refuses the whole batch with 400
+//! before any write, so no table CHECK ever answers with a 500. Then [`classify`] judges each event against the story
+//! index, the puzzle index and the caller's entitlements in a fixed order: the chapter, the entitlement, the subject.
+//! A non-buyer gets `not_entitled` before any subject is looked at, so no answer names a paid ending, puzzle or option.
+//! The story is derived here, never sent.
+//!
+//! Reads: the user's distinct facts, counted only where the current index still holds them (ST6).
 //!
 //! Statistics unlock nothing (ST4): these handlers are the only callers of the `db/stats.rs` repository.
 
@@ -19,11 +22,12 @@ use axum::response::{IntoResponse, Response};
 use crate::AppState;
 use crate::api::body_rejection;
 use crate::api::dto::{
-    PostStatsRequest, PostStatsResponse, RejectedEvent, StatEventDto, StatRejectReason,
+    GameStatsDto, PostStatsRequest, PostStatsResponse, RejectedEvent, StatEventDto,
+    StatRejectReason, StatsResponse, StoryStatsDto,
 };
 use crate::auth::AuthUser;
 use crate::content::{ContentStore, StoryChapter, StoryDef};
-use crate::db::stats::{NewStatEvent, RecordOutcome, StatCaps, StatKind};
+use crate::db::stats::{NewStatEvent, RecordOutcome, StatCaps, StatFact, StatKind};
 use crate::error::ApiError;
 use crate::ids::{ChapterId, ProductId, PuzzleId, is_local_id};
 
@@ -138,6 +142,74 @@ pub async fn post_events(
         rejected,
     };
     Ok((private_headers(), Json(body)).into_response())
+}
+
+/// `GET /api/stats`: the user's statistics per story of the index and for the game (STORIES-PLAN F12), from one read
+/// of the user's distinct facts. No ending total at either level (META-PLAN M8). The 200 is `private, no-store`.
+pub async fn get_stats(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+) -> Result<Response, ApiError> {
+    let facts = st.repo.stat_facts(user).await?;
+    Ok((private_headers(), Json(stats_of(&st.content, &facts))).into_response())
+}
+
+/// The statistics `facts` give over the index of `content`: every story in index order, then the game's sums.
+fn stats_of(content: &ContentStore, facts: &[StatFact]) -> StatsResponse {
+    let stories: Vec<StoryStatsDto> = content
+        .stories()
+        .iter()
+        .map(|story| story_stats(story, facts))
+        .collect();
+    let game = GameStatsDto {
+        stories_started: count(stories.iter().filter(|s| s.started).count()),
+        stories_total: count(stories.len()),
+        endings_reached: count(stories.iter().map(|s| s.endings_reached.len()).sum()),
+    };
+    StatsResponse { stories, game }
+}
+
+/// One story's statistics. A fact counts only while the index holds it: recorded under this story, in a chapter the
+/// story still has, and for an ending one the story still declares (ST6). A reached ending also completes its chapter:
+/// a declared ending ends the chapter without a `chapter_completed` (STORIES-PLAN F4').
+fn story_stats(story: &StoryDef, facts: &[StatFact]) -> StoryStatsDto {
+    let held: Vec<&StatFact> = facts
+        .iter()
+        .filter(|f| f.story == story.id && story.chapters.iter().any(|ch| ch.id == f.chapter))
+        .collect();
+    let ending = |f: &StatFact| {
+        f.kind == StatKind::EndingReached
+            && f.subject
+                .as_deref()
+                .is_some_and(|name| story.endings.contains_key(name))
+    };
+    let chapters_completed = story
+        .chapters
+        .iter()
+        .filter(|ch| {
+            held.iter()
+                .any(|f| f.chapter == ch.id && (f.kind == StatKind::ChapterCompleted || ending(f)))
+        })
+        .map(|ch| ch.id.0.clone())
+        .collect();
+    let reached: HashSet<&str> = held
+        .iter()
+        .filter(|f| ending(f))
+        .filter_map(|f| f.subject.as_deref())
+        .collect();
+    let endings_reached = story
+        .endings
+        .keys()
+        .filter(|name| reached.contains(name.as_str()))
+        .cloned()
+        .collect();
+    StoryStatsDto {
+        story_id: story.id.clone(),
+        started: held.iter().any(|f| f.kind == StatKind::ChapterStarted),
+        chapters_completed,
+        chapters_total: count(story.chapters.len()),
+        endings_reached,
+    }
 }
 
 /// The shape of one event as the table's CHECKs judge it (`0003_stats.sql`), with the reason for the log: the id, the

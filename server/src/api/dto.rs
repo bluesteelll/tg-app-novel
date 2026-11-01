@@ -318,6 +318,45 @@ pub struct PostStatsResponse {
     pub rejected: Vec<RejectedEvent>,
 }
 
+/// `GET /api/stats` response: the user's statistics per story of the current index, and for the game. Only facts the
+/// index still holds count; an ending is named only once the user reached it.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct StatsResponse {
+    /// Every story of the index, in index order.
+    pub stories: Vec<StoryStatsDto>,
+    /// The sums over the stories.
+    pub game: GameStatsDto,
+}
+
+/// One story's statistics.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct StoryStatsDto {
+    /// The story.
+    pub story_id: StoryId,
+    /// Whether the user started any chapter of it.
+    pub started: bool,
+    /// The chapters the user completed (a chapter's end, or one of its endings), in chain order.
+    pub chapters_completed: Vec<String>,
+    /// The story's chapters.
+    pub chapters_total: u32,
+    /// The names of the story's endings the user reached, in name order.
+    pub endings_reached: Vec<String>,
+}
+
+/// The game's statistics: sums over the stories of the index.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct GameStatsDto {
+    /// The stories the user started.
+    pub stories_started: u32,
+    /// The stories of the index.
+    pub stories_total: u32,
+    /// The endings the user reached, over all stories.
+    pub endings_reached: u32,
+}
+
 /// The first line of the generated file: what it is and how to rewrite it.
 const BINDINGS_HEADER: &str = "// Built from server/src/api/dto.rs and error.rs by ts-rs; do not edit. Regenerate: \
                                cargo test -p server --test it bindings::write_bindings -- --ignored --exact";
