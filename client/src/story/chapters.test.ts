@@ -245,6 +245,17 @@ test('loader: chapter change aborts the fetch', async () => {
   expect(net.calls.map((c) => c.signal.aborted)).toEqual([true, true, true, true, true]);
   expect([{ ok: false, error: { kind: 'aborted' } }, { ok: false, error: { kind: 'stale' } }]).toContainEqual(await pending);
 
+  // The next load() does the same to the load it supersedes: its bytes stop competing with the new load's.
+  net.calls.length = 0;
+  const superseded = loader.load({ id: CH1, paid: false }, { withEn: false });
+  const supersededSignals = net.calls.map((c) => c.signal);
+  const next = loader.load({ id: CH1, paid: false }, { withEn: false });
+  expect(supersededSignals.map((s) => s.aborted)).toEqual([true, true, true, true]);
+  expect(net.calls.slice(supersededSignals.length).map((c) => c.signal.aborted)).toEqual([false, false, false, false]);
+  expect(await superseded).toEqual({ ok: false, error: { kind: 'stale' } });
+  net.release();
+  expect(await next).toMatchObject({ ok: true, value: { id: 'ch1' } });
+
   // dispose() does the same, and the loader starts nothing afterwards.
   net.calls.length = 0;
   const last = loader.load({ id: CH1, paid: false }, { withEn: false });
