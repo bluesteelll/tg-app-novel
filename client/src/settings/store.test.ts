@@ -205,6 +205,13 @@ test('settings: cloud value over 4096 chunks', async () => {
   await capped.loadRead(ch1);
   expect(lines.filter((line) => capped.isRead(ch1, line)).length).toBe(6000);
   expect(capped.isRead(ch1, lines[6000] ?? unmarked)).toBe(false);
+  // A mark past the cap and a re-mark are not changes: the flush writes nothing, so a replayed chapter never puts this
+  // session's copy over a newer one another device wrote since the load (test_r2 F2).
+  const setsBefore = atCap.sets.length;
+  capped.markRead(ch1, lines[6000] ?? unmarked);
+  capped.markRead(ch1, lines[0] ?? unmarked);
+  await capped.flush();
+  expect(atCap.sets.slice(setsBefore).map(([k]) => k)).toEqual([]);
 
   // The 6000th mark is the last one the eight keys hold: a session whose only new mark it is still writes it. Every
   // batch above also carries earlier new marks, so only this step sees the cap's boundary (test_r1 F1).
