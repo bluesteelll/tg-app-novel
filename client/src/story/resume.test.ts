@@ -499,3 +499,19 @@ test('resume: a failed checkpoint under minLevel checkpoint reports storyUpdated
   expect(failed.storyUpdated).toBe(true);
   failed.runner.dispose();
 });
+
+test('resume: a checkpoint var holding zero or false is restored, not reset to its default', () => {
+  // The story itself drives both VARs to a falsy value over a truthy default before the checkpoint knot is entered.
+  const zeroed = (main: readonly string[]): string[] => [
+    'VAR l_n = 5',
+    'VAR l_b = true',
+    ...main.flatMap((line) => (line === '=== start ===' ? [line, '~ l_n = 0', '~ l_b = false'] : [line])),
+  ];
+  const saved = playAndSave(chapter(zeroed(STORY_V1), KNOTS, V1, { vars: ['l_n', 'l_b'] }), 4); // at "K three.", checkpoint k
+  expect(saved.checkpoint?.vars).toEqual({ g_x: 0, l_n: 0, l_b: false });
+  // The version mismatch skips the exact level; the checkpoint's fresh Story starts from the VAR defaults.
+  const r = resumed(resume(saved, chapter(zeroed(STORY_V2), KNOTS, V2, { vars: ['l_n', 'l_b'] }), ASSETS));
+  expect(r.level).toBe('checkpoint');
+  expect(r.runner.readVars(['l_n', 'l_b'] as VarName[])).toEqual({ l_n: 0, l_b: false });
+  r.runner.dispose();
+});
