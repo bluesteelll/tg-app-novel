@@ -465,3 +465,15 @@ test('resume: the chapter-start floor failing is an error value', () => {
   });
   expect(liveRunners()).toBe(before);
 });
+
+test('resume: a checkpoint var the story no longer declares is skipped', () => {
+  // v1 declares a VAR that the update removes; the checkpoint written under v1 still holds it.
+  const saved = playAndSave(chapter(['VAR l_gone = 0', ...STORY_V1], KNOTS, V1, { vars: ['l_gone'] }), 4, { g_x: 1 } as Record<VarName, InkScalar>);
+  expect(saved.checkpoint?.vars).toEqual({ g_x: 1, l_gone: 0 });
+  const r = resumed(resume(saved, chapter(STORY_V2, KNOTS, V2), ASSETS));
+  expect(r.level).toBe('checkpoint');
+  expect(shown(r.first)).toEqual({ kind: 'line', lineId: 'ch1.k.m003', knot: 'k', enteredKnot: true });
+  // The vars the story still declares are restored.
+  expect(r.runner.readVars(['g_x'] as VarName[])).toEqual({ g_x: 1 });
+  r.runner.dispose();
+});
