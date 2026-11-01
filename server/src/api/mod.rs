@@ -8,6 +8,7 @@ pub mod orders;
 pub mod puzzles;
 pub mod saves;
 pub mod stats;
+pub mod wallet;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
@@ -62,6 +63,7 @@ fn routes() -> Router<AppState> {
         .route("/orders/{order_id}", get(orders::get_order))
         .route("/stats", get(stats::get_stats))
         .route("/stats/events", post(stats::post_events))
+        .route("/wallet", get(wallet::get_wallet))
 }
 
 /// `GET /api/health`: no auth, no database; `ok` as `text/plain`.

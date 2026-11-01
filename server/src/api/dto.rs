@@ -357,6 +357,56 @@ pub struct GameStatsDto {
     pub endings_reached: u32,
 }
 
+/// A player-facing text in both languages, as the client receives it: the wire form of the catalog's texts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Localized {
+    /// Russian, the primary language.
+    pub ru: String,
+    /// English.
+    pub en: String,
+}
+
+/// One resource balance as `GET /api/wallet` lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BalanceDto {
+    /// The resource kind, e.g. `hint`.
+    pub kind: String,
+    /// What the user can spend, at least 0.
+    pub balance: i64,
+    /// What a refund left owing, at least 0: the next credits pay it first, and it is non-zero only with a balance
+    /// of 0.
+    pub debt: i64,
+}
+
+/// A pack for sale as `GET /api/wallet` lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackDto {
+    /// The product id for `POST /api/invoices`, `pack:<packId>`.
+    pub product_id: String,
+    /// The resource kind it credits.
+    pub kind: String,
+    /// The units it credits.
+    pub amount: u32,
+    /// The price in Telegram Stars, from the server's catalog.
+    pub price_stars: u32,
+    /// The pack's title, as its invoice shows it.
+    pub title: Localized,
+}
+
+/// `GET /api/wallet` response: the user's balances and what can be bought.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletResponse {
+    /// Every resource kind of the catalog, in its order, `0` / `0` without a row.
+    pub balances: Vec<BalanceDto>,
+    /// Every pack for sale: by kind, then amount.
+    pub packs: Vec<PackDto>,
+    /// The hints one hint tier costs.
+    pub hint_tier_cost: u32,
+}
+
 /// The first line of the generated file: what it is and how to rewrite it.
 const BINDINGS_HEADER: &str = "// Built from server/src/api/dto.rs and error.rs by ts-rs; do not edit. Regenerate: \
                                cargo test -p server --test it bindings::write_bindings -- --ignored --exact";

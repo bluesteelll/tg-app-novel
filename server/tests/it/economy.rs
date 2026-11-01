@@ -9,7 +9,8 @@
 //! raw payment), never by raw balance rows, so every test keeps `balance - debt = SUM(amount)` per (user, kind).
 //!
 //! The catalog's `economy` section (M17) and the pack path (M19): pack products, the order binding, and the credit
-//! inside the grant, through `POST /api/invoices` and the grant the webhook runs.
+//! inside the grant, through `POST /api/invoices` and the grant the webhook runs. `GET /api/wallet` through the
+//! production router.
 
 use std::fmt::Debug;
 use std::path::Path;
@@ -17,6 +18,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use axum::http::header::CACHE_CONTROL;
 use serde_json::{Value, json};
 use server::AppState;
 use server::catalog::{
@@ -33,7 +35,7 @@ use server::telegram::payments::{GrantOutcome, PaymentFact, on_successful_paymen
 use sqlx::postgres::{PgConnectOptions, PgQueryResult};
 use sqlx::{Connection, PgConnection};
 
-use crate::catalog::{ANN, T0, state_with_users};
+use crate::catalog::{ANN, T0, get, state_with_users};
 use crate::common;
 use crate::content::FIXTURE;
 use crate::payments::{invoice_state, post_invoice};
@@ -1506,5 +1508,107 @@ async fn invoice_pack_reuse_needs_same_binding() {
         gateway.invoice_calls().len(),
         2,
     ));
+    report(&failures);
+}
+
+/// A third player.
+const CAT: i64 = 1003;
+
+/// `GET /api/wallet` as `user` (a token issued at `T0`) or without a token: (status, body as JSON).
+async fn wallet(st: &AppState, user: Option<i64>) -> (u16, Value) {
+    let reply = get(st, user, "/api/wallet").await;
+    let body = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
+    (reply.status.as_u16(), body)
+}
+
+/// A `WalletResponse` with these `hint` figures and the compiled-in catalog's packs and hint cost.
+fn wallet_body(balance: i64, debt: i64) -> Value {
+    json!({
+        "balances": [{ "kind": "hint", "balance": balance, "debt": debt }],
+        "packs": [
+            {
+                "productId": "pack:hint_s",
+                "kind": "hint",
+                "amount": 3,
+                "priceStars": 1,
+                "title": { "ru": "3 подсказки", "en": "3 hints" }
+            },
+            {
+                "productId": "pack:hint_m",
+                "kind": "hint",
+                "amount": 10,
+                "priceStars": 3,
+                "title": { "ru": "10 подсказок", "en": "10 hints" }
+            }
+        ],
+        "hintTierCost": 1
+    })
+}
+
+/// `GET /api/wallet`: every declared kind in declaration order, zero-filled for a new player (D5), a row of a kind
+/// the catalog does not declare left out; a debt as the row holds it; the catalog's packs and hint cost. No token is a
+/// 401.
+#[tokio::test]
+async fn wallet_lists_balances_and_packs() {
+    let (st, _db) = state_with_users(&[ANN, BEN, CAT]).await;
+    let mut failures = Vec::new();
+    failures.extend(expect_eq(
+        "a new player",
+        wallet(&st, Some(ANN)).await,
+        (200, wallet_body(0, 0)),
+    ));
+
+    let mut c = common::raw_db(&st).await;
+    failures.extend(expect_ok("payment c-ben", payment(&mut c, "c-ben", BEN).await).err());
+    let (hint, gem) = (hint(), ResourceKind("gem".to_owned()));
+    begin(&mut c).await;
+    let mut steps = vec![
+        step(credit_in_tx(&mut c, &seed(CAT, &hint, 3, "r-cat")).await),
+        step(credit_in_tx(&mut c, &seed(CAT, &gem, 5, "r-gem")).await),
+    ];
+    steps.push(step(
+        clawback_in_tx(&mut c, &refund(BEN, &hint, 2, "c-ben")).await,
+    ));
+    commit(&mut c).await;
+    c.close().await.unwrap();
+    failures.extend(expect_eq(
+        "seeds",
+        steps,
+        vec![applied(3, 0), applied(5, 0), applied(0, 2)],
+    ));
+    failures.extend(expect_eq(
+        "hint 3 and an undeclared gem row",
+        wallet(&st, Some(CAT)).await,
+        (200, wallet_body(3, 0)),
+    ));
+    failures.extend(expect_eq(
+        "a debt of 2",
+        wallet(&st, Some(BEN)).await,
+        (200, wallet_body(0, 2)),
+    ));
+    failures.extend(expect_eq(
+        "no token",
+        wallet(&st, None).await,
+        (401, json!({ "error": "token_missing" })),
+    ));
+    report(&failures);
+}
+
+/// The wallet is one user's own figures: no shared cache stores it.
+#[tokio::test]
+async fn wallet_private_no_store() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    let reply = get(&st, Some(ANN), "/api/wallet").await;
+    let cache = reply
+        .headers
+        .get(CACHE_CONTROL)
+        .and_then(|v| v.to_str().ok());
+    let failures: Vec<String> = expect_eq(
+        "status, cache-control",
+        (reply.status.as_u16(), cache),
+        (200, Some("private, no-store")),
+    )
+    .into_iter()
+    .collect();
     report(&failures);
 }
