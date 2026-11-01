@@ -2,6 +2,7 @@
 // parseTags reads. Decoded at the edge, never trusted blindly; every lookup is an own-property lookup, so a tag
 // naming `constructor` is an unknown asset, not Object.prototype's. L3b and L5 append their parts of this module.
 // Pure (PUZZLES-PLAN X4, the arch test's pure-world rule): no clock, randomness, DOM, network or storage.
+import type { WorldPublic } from '../world/types.ts';
 import type {
   AssetId,
   AssetIndex,
@@ -11,6 +12,7 @@ import type {
   CharId,
   ExprId,
   KnotName,
+  LineId,
   ProductId,
   PropId,
   SfxId,
@@ -897,3 +899,22 @@ export function decodeCoverManifest(raw: unknown): Result<CoverManifest, Catalog
   }
   return { ok: true, value: { assets: images as Record<AssetId, ImageEntry> } }; // every key matched ASSET_ID_RE
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// A loaded chapter (L13): what story/chapters.ts hands GameSession, decoded file by file. A type only.
+
+/**
+ * One chapter as the runtime plays it (PROTOTYPE-PLAN "TS types" + PUZZLES-PLAN): the parsed ink JSON, its meta, its
+ * asset manifest, the en line table and the public world. JSON only: no texture, blob or audio.
+ */
+export type LoadedChapter = {
+  id: ChapterId;
+  /** The parsed ink JSON; never in `$state` (one value seeds every Story a resume builds). */
+  story: unknown;
+  meta: ChapterMeta;
+  assets: AssetManifest;
+  /** null: not loaded (a ru player, a free chapter). */
+  en: Readonly<Record<LineId, string>> | null;
+  /** free: story-gen/free/<ch>.world.json; paid: ChapterPayload.world; null for a chapter without a world. */
+  world: WorldPublic | null;
+};
