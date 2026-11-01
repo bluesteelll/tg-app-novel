@@ -168,6 +168,20 @@
       "text": "Look under the rug."
     }
   ],
+  "InviteView": [
+    {
+      "state": "open"
+    },
+    {
+      "state": "requested"
+    },
+    {
+      "state": "friends"
+    },
+    {
+      "state": "own"
+    }
+  ],
   "OrderResponse": [
     {
       "orderId": "o_0123456789abcdef0123456789abcdef",
@@ -313,6 +327,31 @@
     },
     {
       "slots": []
+    }
+  ],
+  "SocialResponse": [
+    {
+      "friends": [
+        {
+          "firstName": "Аня",
+          "handle": "0123456789abcdef01234567"
+        }
+      ],
+      "inviteCode": "0123456789abcdef0123456789abcdef",
+      "profileVisible": true,
+      "requests": [
+        {
+          "at": 1800000000,
+          "firstName": "Ben",
+          "handle": "fedcba9876543210fedcba98"
+        }
+      ]
+    },
+    {
+      "friends": [],
+      "inviteCode": "fedcba9876543210fedcba9876543210",
+      "profileVisible": false,
+      "requests": []
     }
   ],
   "StatsResponse": [
