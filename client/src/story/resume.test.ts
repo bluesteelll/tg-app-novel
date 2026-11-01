@@ -414,3 +414,54 @@ test('resume: a same-version exact load that fails falls back to checkpoint', ()
   // (1) An unloadable state: inkjs throws "ink save format incorrect".
   fallsBack({ ...saved, ink: '{}' }, v1);
 });
+
+test('resume: a checkpoint whose first step fails falls back to chapter start', () => {
+  const saved = playAndSave(chapter(STORY_V1, KNOTS, V1), 4); // at "K three.", checkpoint k
+  // The update leaves the knot's first line without its id: the checkpoint runner is created, then its first step fails.
+  const v2 = chapter(STORY_V1.map((line) => line.replace('K one. #id:ch1.k.m003', 'K one.')), KNOTS, V2);
+  const before = liveRunners();
+  const r = resumed(resume(saved, v2, ASSETS));
+  expect(r.level).toBe('chapter-start');
+  expect(r.storyUpdated).toBe(true);
+  expect(shown(r.first)).toEqual({ kind: 'line', lineId: 'ch1.start.m002', knot: 'start', enteredKnot: true });
+  // The failed checkpoint runner is disposed before the floor is tried: only the returned runner is live.
+  expect(liveRunners()).toBe(before + 1);
+  r.runner.dispose();
+});
+
+test('resume: a bad tag on the first step keeps the level', () => {
+  const saved = playAndSave(chapter(STORY_V1, KNOTS, V1), 4); // at "K three.", checkpoint k
+  // The update puts a tag naming no asset above the knot's first line: the line stands without the command.
+  const v2 = chapter(
+    STORY_V1.flatMap((line) => (line === 'K one. #id:ch1.k.m003' ? ['# bg: nowhere', line] : [line])),
+    KNOTS,
+    V2,
+  );
+  const before = liveRunners();
+  const r = resumed(resume(saved, v2, ASSETS));
+  expect(r.level).toBe('checkpoint');
+  expect(r.storyUpdated).toBe(true);
+  expect(r.first).toMatchObject({ kind: 'line', lineId: 'ch1.k.m003', ru: 'K one.', commands: [], knot: 'k', enteredKnot: true });
+  expect(r.staging).toBe(CHECKPOINT_STAGE);
+  expect(liveRunners()).toBe(before + 1);
+  r.runner.dispose();
+});
+
+test('resume: the chapter-start floor failing is an error value', () => {
+  // The chapter's first line has no id: the chapter itself is broken.
+  const broken = STORY_V1.map((line) => line.replace('Fresh. #id:ch1.start.m002', 'Fresh.'));
+  const before = liveRunners();
+  expect(resume(body({}), chapter(broken, KNOTS, V1), ASSETS)).toMatchObject({
+    ok: false,
+    error: { kind: 'runner', error: { kind: 'no-id' } },
+  });
+  expect(liveRunners()).toBe(before);
+  // The same after every level above it failed too: each failed runner is disposed, none is returned.
+  const saved = playAndSave(chapter(STORY_V1, KNOTS, V1), 4);
+  const brokenToo = broken.map((line) => line.replace('K one. #id:ch1.k.m003', 'K one.'));
+  expect(resume(saved, chapter(brokenToo, KNOTS, V2), ASSETS)).toMatchObject({
+    ok: false,
+    error: { kind: 'runner', error: { kind: 'no-id' } },
+  });
+  expect(liveRunners()).toBe(before);
+});
