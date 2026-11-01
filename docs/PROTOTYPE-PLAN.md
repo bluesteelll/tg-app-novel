@@ -203,6 +203,8 @@ research is newer and verified (brief), so it wins, and the deviation is recorde
   - Above 48 MiB, a visible load first evicts every `preload:*` and `next:*` holder. If it still does not fit, it is
     refused with `AssetError { kind: 'over-cap' }`: the executor skips that visual (the asset-failure path: logged,
     counted in `stats().overCap`, the story continues). The cap is never exceeded.
+  - Changed by RULINGS 35 (as merged, L11 `1e2f421`; cut Q2): the visible load evicts every preload-priority holder,
+    `room:*` included, not only `preload:*` and `next:*` (`client/src/scene/registry.ts:183-204`).
 - **Why.**
   - A counter can be decremented twice by a buggy path; a set makes release idempotent.
   - The caps make principle 4 a runtime invariant. 32 / 48 MiB come from the steady total at the gated limits
@@ -981,11 +983,16 @@ pub struct RefundFact { pub payer: UserId, pub charge: ChargeId, pub total_amoun
 #[derive(Deserialize)] struct ProbeSuccessful { currency: String, total_amount: u32, invoice_payload: String,
     telegram_payment_charge_id: String, provider_payment_charge_id: Option<String> }
 #[derive(Deserialize)] struct ProbeRefunded { total_amount: u32, telegram_payment_charge_id: String }
+// as merged (L8b `06bae54`, cut Q11; server/src/telegram/webhook.rs:84): the probe navigates a serde_json::Value
+// (`pointer("/message/successful_payment")`, `/message/from/id`) instead of these structs, and reads no
+// refunded_payment until L9
 
 pub enum PreCheckoutVerdict { Ok, Reject(RejectReason) }
 pub enum RejectReason { UnknownOrder, Mismatch, AlreadyOwned, InProgress, Expired, Temporary,
                         Unavailable /* changed by PUZZLES-PLAN: a hint's tier, chapter or solved predicate */ }
 pub enum GrantOutcome { Granted, Duplicate, AlreadyEntitled, OrderMismatch }
+// as merged (L8b `06bae54`, cut Q6; server/src/db/payments.rs:67-79): + UnknownProduct, the M19 `None` arm (the
+// order stays paid, no entitlement, recorded and logged)
 pub enum RevokeOutcome { Revoked, AlreadyRefunded, UnknownCharge }
 
 // telegram/gateway.rs — object-safe (boxed futures), so AppState holds Arc<dyn BotGateway>
@@ -1163,7 +1170,7 @@ CREATE TABLE saves (
 | `GET /dev/launch?uid=1001&lang=ru&name=Dev` | sign initData with the dev bot token → `302 /#tgWebAppData=<enc>&tgWebAppVersion=9.6&tgWebAppPlatform=android&tgWebAppThemeParams=<enc json>`. Changed by META-PLAN (LF1): `&startapp=<p>` signs `start_param` into the initData and appends `tgWebAppStartParam` |
 | `GET /dev/prepared/{id}` (changed by META-PLAN, LF2) | the `PreparedShare` the fake gateway stored for `savePreparedInlineMessage` (text, button, url), so the e2e can assert a share's content |
 | `GET /dev/invoices/{slug}` | `{ orderId, title, description, amount }` recorded by the fake gateway |
-| `POST /dev/simulate-payment` | `{ slug, outcome: 'paid' \| 'paid_twice', webhookDelayMs?: number }`. Feeds a `pre_checkout_query` update, then (if answered ok) a `successful_payment` message (`provider_payment_charge_id: ""`, `telegram_payment_charge_id: "dev_<uuid>"`) through the real handler. Returns `{ precheckoutOk, chargeId? }` |
+| `POST /dev/simulate-payment` | `{ slug, outcome: 'paid' \| 'paid_twice', webhookDelayMs?: number }`. Feeds a `pre_checkout_query` update, then (if answered ok) a `successful_payment` message (`provider_payment_charge_id: ""`, `telegram_payment_charge_id: "dev_<uuid>"`) through the real handler. Returns `{ precheckoutOk, chargeId? }`. As merged (L8b `06bae54`, cut Q12; `server/dev/src/simulate.rs`): the charge id is `dev_<32 hex>`; the route answers after the pre-checkout, and a `webhookDelayMs` (0..=60000) delays only the payment, fed by a spawned task; 400 for a delay out of range or a bad body, 404 for an unknown slug or order, 500 when the webhook handler answers anything but 200 |
 | `POST /dev/refund` | `{ chargeId }` → the admin refund path with the fake gateway → `{ outcome }` |
 | `POST /dev/refunded-update` | `{ chargeId }` → a `refunded_payment` message through the real handler |
 
@@ -1186,7 +1193,7 @@ v1.<user_id>.<exp_unix>.<hex(HMAC-SHA256(TOKEN_KEY, "v1.<user_id>.<exp_unix>"))>
 |---|---|---|
 | compiled story | `client/src/story-gen/free/<ch>.story.json` | `server/content/chapters/<ch>/story.json` |
 | meta (`ChapterMeta`) | `client/src/story-gen/free/<ch>.meta.json` | `server/content/chapters/<ch>/meta.json` |
-| en table `{id: text}` | `client/src/story-gen/free/<ch>.en.json` | `server/content/chapters/<ch>/en.json` |
+| en table `{id: text}` (produced by L3c C5, as merged `523a117`) | `client/src/story-gen/free/<ch>.en.json` | `server/content/chapters/<ch>/en.json` |
 | asset manifest | `client/src/story-gen/free/<ch>.assets.json` | `server/content/chapters/<ch>/assets.json` |
 | encoded files | `client/public/assets/<kind>-<id>-<hash8>.<ext>` (asset used by any free chapter) | `server/content/assets/<kind>-<id>-<hash8>.<ext>` (used only by paid chapters) |
 
@@ -1201,7 +1208,9 @@ Shared outputs:
     never empty while a paid chapter has text.
   - `server/content/build/fingerprints.assets.json` (asset tool, `manifest.ts`): `files` — paid asset file names and
     their content hashes.
-- `server/content/build/asset-owners.json` — paid file → products allowed to read it.
+- `server/content/build/asset-owners.json` — paid file → products allowed to read it. Changed by RULINGS 30 (as
+  merged, L5 `e21775b`; cut Q1): dropped, not produced. No code read it; L6b derives the owners from the paid
+  `assets.json` manifests.
 
 Changed by STORIES-PLAN (Y5, Y15):
 - `catalog.json` gains `stories` (no endings); every meta gains `endings` (free metas public, paid metas server-only);
@@ -1358,6 +1367,8 @@ export interface SceneController {
                                                  // in `from` (the next chapter's manifest, F5) or else the current one
   releasePreload(tag: string): void;
   ensure(ids: readonly AssetId[], signal: AbortSignal): Promise<Result<void, SceneError>>;  // blocking load of a batch's assets
+                                                 // as merged (L11 `1e2f421`, RULINGS 35 Q11): holder 'ensure' (exact),
+                                                 // released by apply / restore, setChapter, destroy
   onActivated(): Promise<void>;                  // context-loss check + rebuild
   pause(): void; resume(): void;
   stats(): { liveTextures: number; liveBytes: number; pendingLoads: number; activeTimelines: number; overCap: number };
@@ -1374,6 +1385,10 @@ export interface AssetRegistry {
   releaseHolder(prefix: string): void;           // e.g. 'preload:'
   stats(): { live: number; bytes: number };
 }
+// changed by RULINGS 35 (as merged, L11 `1e2f421`; cut Q3; `client/src/scene/registry.ts:31-48`):
+//   acquire(id, holder, o: { entry: ImageEntry; priority: 'visible' | 'preload'; signal?: AbortSignal })
+//   releaseHolder(h: string)  — a trailing ':' ('preload:') releases that family; any other name is that exact holder
+//   stats(): { live: number; bytes: number; pending: number; overCap: number }
 
 // audio/manager.ts
 export interface AudioManager {
@@ -1386,6 +1401,11 @@ export interface AudioManager {
   suspend(): void; resume(): Promise<'running' | 'needs-gesture'>;
   stats(): { decodedBytes: number; state: AudioContextState };
 }
+// changed by RULINGS 40 (as merged, L12 `d6c07f7`; impl Q1, Q2; client/src/audio/manager.ts:21-58):
+//   setChapter(m: AssetManifest | null): void;   // null: no chapter, as on Home (exitToStories)
+//   onNeedsGesture(fn: (needed: boolean) => void): () => void;   // fn(true) / fn(false) on both edges; returns the unsubscribe
+//   preload: SFX decode only, no BGM head. The reason is memory: a gated BGM head would be a third blob of up to
+//   3 MB beside the two decks of the memory row "Audio: decoded SFX + 2 BGM files during a crossfade".
 export function createAudioManager(ctx: AudioContext, deps: { fetchAsset: FetchAsset }): AudioManager;
 export function unlockAudio(): AudioContext;      // audio/unlock.ts — call synchronously inside the tap handler
 
@@ -1513,6 +1533,9 @@ pub async fn launch_database(cluster: &DevCluster, name: &DbName) -> Result<Stri
   - `openTelegramLink(url)` (only `https://t.me/` URLs) and `openLink(url)` (only `https:`; from a tap) — never
     `window.open`, which TWA's `openLink` uses below 6.1, so the facade refuses below 6.1;
   - `startParam()` reads `initDataUnsafe.start_param` for UX only (the invite prompt); the server reads the signed one.
+    As merged (L7 `57e1424`, cut Q1): it parses `start_param` from the raw `initData` string
+    (`client/src/telegram/webapp.ts:187`), since the arch rule `init-data-unsafe` forbids reading `initDataUnsafe`;
+    it stays a UX hint only.
     Revision 1 (META-PLAN M10, C1): the client also presents the invite code it carries to `GET` / `POST
     /api/invites/{code}` — a bearer capability to ask, validated by the server; never an identity. The referral
     attribution reads only the signed `start_param`.
@@ -1964,7 +1987,8 @@ unreachable at startup" down are the PostgreSQL failure model; the test names ar
        `texts` section is empty;
      - if a paid-only asset exists and `fingerprints.assets.json` is missing or its `files` section is empty. "A
        paid-only asset exists" is computed by `scan-dist` itself from story-tool outputs, never from the asset tool's
-       own files (`asset-owners.json`, `fingerprints.assets.json`): an asset id in `server/content/build/usage.json`
+       own files (`fingerprints.assets.json`; `asset-owners.json` was dropped by RULINGS 30): an asset id in
+       `server/content/build/usage.json`
        that a paid chapter of `story/chapters.json` uses and no free chapter uses. A tiering fault in the asset tool
        therefore cannot also switch the check off;
      - if a paid chapter is declared and `usage.json` is missing;
@@ -2023,7 +2047,9 @@ true, antialias: false, background: '#000', resizeTo: host, autoStart: false }` 
 - The stage is the host size.
 - Backgrounds and CGs are cover-scaled (canonical source 1080×2048).
 - Characters are anchored bottom-center at x = 0.25 / 0.5 / 0.75 of the stage width, height = 0.78 × stage height,
-  never upscaled above the source's native size × resolution.
+  never upscaled above the source's native size × resolution. Changed by RULINGS 35 (as merged, L11 `1e2f421`; cut
+  Q7): device px ≤ source px, so the CSS height is `min(0.78 × stage height, source height / resolution)`
+  (`client/src/scene/layout.ts:32`).
 
 **Executor** (`scene/executor.ts`; the only GSAP user):
 - Turns a batch into one timeline per the order in STAGING-DSL §7.
@@ -2040,7 +2066,8 @@ true, antialias: false, background: '#000', resizeTo: host, autoStart: false }` 
 - **Decode and cap.**
   - `createImageBitmap(blob)` → `Texture`; `decodedBytes = w × h × 4` counted.
   - Cap (K5): a preload is refused if it would exceed 32 MiB live; a visible load may reach 48 MiB, first evicting
-    every `preload:*` and `next:*` holder, and is refused with `over-cap` if it still does not fit.
+    every `preload:*` and `next:*` holder, and is refused with `over-cap` if it still does not fit. Changed by RULINGS
+    35 (as merged, L11 `1e2f421`; cut Q2): it evicts every preload-priority holder, `room:*` included.
 - **Release.** At holder-set empty: `texture.destroy(true)`, `bitmap.close()`, counters down.
 
 **Per-chapter manifest.** `scene.setChapter(manifest)` swaps the id → `AssetEntry` table. A missing id → error value.
@@ -2051,7 +2078,10 @@ after `setChapter`.
 **Preload.**
 - **Sources.** Knot hints from GameSession (`next(K)` from `ChapterMeta`); the next chapter's first knot (holder
   `next:<chapterId>`, resolved in that chapter's manifest, kept across `setChapter` to it — F4, F5 — and released on
-  entering a knot without `-> END` — F2); the blocking `ensure()` for a batch's own assets.
+  entering a knot without `-> END` — F2); the blocking `ensure()` for a batch's own assets. Changed by RULINGS 35 (as
+  merged, L11 `1e2f421`; cut Q11): `ensure` holds its ids under the exact holder `ensure`, released by `apply` /
+  `restore` once the slot holders are taken, and by `setChapter` / `destroy` (`client/src/scene/preload.ts:15`,
+  `client/src/scene/controller.ts:323,334`).
 - **Concurrency.** Two in-flight fetches for preloads, unlimited for `ensure`.
 - **Cancellation.** By holder release and `AbortController`.
 
@@ -2125,7 +2155,9 @@ only while a transition runs; the gate keeps every planned working set at or bel
   - `activated` → `ctx.resume()`; if not `running` after 500 ms → the "tap to resume sound" chip (one tap resumes).
   - The collapsed panel never plays audio.
 - **Placeholder audio.** WAV synthesized by `client/scripts/assets/synth.ts` from catalog parameters: BGM 8 s mono
-  22.05 kHz 16-bit ≈ 353 KB, SFX ≤ 1 s. Shipped as `codec: 'wav'` with `placeholder: true` (K23).
+  22.05 kHz 16-bit ≈ 353 KB, SFX ≤ 1 s. Shipped as `codec: 'wav'` with `placeholder: true` (K23). Changed by
+  RULINGS 30 (as merged, L5 `e21775b`; cut Q7): the manifest has no `placeholder` field; the catalog entry
+  (`placeholder: { hz }`, `assets/catalog.json`) carries it, and the budget reads it from the decoded catalog.
 - **Snapshot.** `bgm` (track + vol) is part of `StagingSnapshot`; SFX are never replayed on load.
 
 ---
@@ -2260,7 +2292,8 @@ All budgets are enforced by `client/scripts/budget.ts` inside `npm run build` un
 - **pre-checkout** — `precheckout_ok`, `precheckout_wrong_amount`, `precheckout_wrong_currency`,
   `precheckout_unknown_payload`, `precheckout_already_owned`, `precheckout_other_order_in_checkout`,
   `precheckout_same_order_twice_refused`, `precheckout_expired_order`, `precheckout_grants_nothing`,
-  `precheckout_answer_times_out_at_5s` (paused time); changed by RULINGS 14:
+  `precheckout_answer_times_out_at_5s` (paused time; as merged, L8b cut Q2: real time, 5.0 s ≤ elapsed < 7.5 s
+  under a hung gateway, since tokio's `test-util` is off); changed by RULINGS 14:
   `precheckout_concurrent_two_orders_one_passes`, `precheckout_concurrent_same_order_one_passes`.
 - **grant** — `successful_payment_grants_once`, `successful_payment_duplicate_concurrent` (renamed by RULINGS 14),
   `successful_payment_unknown_order_recorded_no_grant`.
@@ -2321,7 +2354,7 @@ section "Test strategy". The existing `saves_*` names are kept, on the per-story
 | clippy | a seeded `unwrap()` on a request path (`unwrap_used = deny`) | L2 |
 | `no_dynamic_sql` | a seeded `AssertSqlSafe` | L2 |
 | `bindings_are_fresh` | a DTO field added without regenerating | L6a |
-| idempotency | mutation: the PK on `payments` removed / check-then-insert → `successful_payment_duplicate_concurrent` red (renamed by RULINGS 14) | L8b (tester mutation) |
+| idempotency | mutation: the PK on `payments` removed / check-then-insert → `successful_payment_duplicate_concurrent` red (renamed by RULINGS 14); as merged (L8b `06bae54`, cut Q4): the check-then-insert mutation only, since removing the PK fails the migration (`42830`, the charge-id foreign keys); its red: B waits on `payments_pkey`, then fails `23505` | L8b (tester mutation) |
 | e2e | L7: `main.ts` not calling the facade → `boot records ready, expand and swipe events` red; `$DEV_API_PORT` already bound by another process → the webServer "is already used" error (`reuseExistingServer: false`), never a run against the foreign server. L15: mock invoice forced to `failed` → `purchase unlocks chapter 2` red; BackButton binding removed → `back button closes overlays without history` red | L7, L15 |
 | puzzle extension | changed by PUZZLES-PLAN: yield lint and the `dsl-doc` heading (LW1); the soft-lock stub, the `successors` stub without `closed`, the checker capped at 200,000 instead of `RESUME_STATE_CAP`, the path-only reconcile step 4, the `resetSection` that keeps `section`, the current-section-only reconcile with no `unproved` (revision 3), and the pure-module arch rule (LW2); every `world/*` / `puzzle/*` / `explore/*` code (the cross-section-unlock world for `world/cross-section-effect`, revision 4; the multi-lock puzzle world for `world/puzzle-multi-lock`, revision 5; the cross-section arch world for `world/cross-section-exit`, revision 6), `paid/leak` for hints, the scan of hint text and of paid world text in dist, the whole-body world version (LW3); room-set and prop budget rows (L5); puzzle UI in the engine closure, the lazy rows without their importer, and the lazy-import arch rule (LP2); the controller that enters a section through `reduce` instead of `admitSection` (LX, revision 3); `0002` absent and the never-limiting stub (L6c); the pre-checkout without hint predicates (L8b); the wrong gate order, the failed mock invoice and the hotspot layer in the padded overlay in `puzzles.spec.ts` (L15) | [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section "Gates that must be seen red once" |
 | stories extension | changed by STORIES-PLAN: the `catalog/stories` code without its §11 row and every `catalog/stories` rule on a fixture, a missing `stories.json`, a paid ending name planted in the public catalog (LS1); a 30 KB cover and an oversize first-load row of one story (L5); a paid first chapter and a missing story index at startup (L6b); the dropped story-id CHECK (LS2); the dropped event key, the missing entitlement check, a read counting rows (LS3); regenerated event ids (LS4); saves keyed without the story (L15) | [STORIES-PLAN.md](STORIES-PLAN.md), section "Gates that must be seen red once" |
@@ -2398,7 +2431,7 @@ set on the `[workspace.dependencies]` entries [R4 §6.1]:
 | `cargo fmt --all --check` | as is | |
 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | as is | `server` (lib, bin, `tests/it`), `server-dev` (lib, bin, tests), `pgdev` (lib, bin, tests; changed by RULINGS 14) |
 | `cargo test --workspace --all-targets --no-fail-fast --locked` | as is | `server` lib unit tests, `server` bin, `server/tests/it` (one binary), `server-dev` lib + bin + `tests/dev.rs`, `pgdev` lib + bin + `tests/pgdev.rs`. Changed by RULINGS 14 (decision section 6): needs `PG_BIN` + the slot's `DEV_PG_PORT`/`DEV_PG_ROOT`; the cluster self-starts |
-| *(new, proposed)* `npm --prefix client run e2e` | `npm run story && npm run assets && vite build --mode e2e --outDir dist-e2e && cargo build --manifest-path ../Cargo.toml -p server-dev --locked && playwright test -c e2e/playwright.config.ts` | e2e; the config starts `server-dev` (fresh DB) on `127.0.0.1:$DEV_API_PORT` and `vite preview --mode e2e --outDir dist-e2e --port $DEV_WEB_PORT --strictPort`, both webServers with `reuseExistingServer: false` set explicitly; `preview.proxy` targets `$DEV_API_PORT`. Defaults 8787 / 4173; each parallel lane gets its own pair from per-lane env (E2), and every `server-dev` launch of a lane (e2e, seen working) uses it. Exceeds 2 min → the gate kit (open questions E1, E2). Changed by RULINGS 14 (decision section 6): needs `PG_BIN` + the slot's `DEV_PG_PORT`/`DEV_PG_ROOT`; the cluster self-starts, and `server-dev` recreates `tgn_dev_<port>` per launch |
+| *(new, proposed)* `npm --prefix client run e2e` | `npm run story && npm run assets && vite build --mode e2e --outDir dist-e2e && cargo build --manifest-path ../Cargo.toml -p server-dev --locked && playwright test -c e2e/playwright.config.ts`; as merged (L7 `57e1424`, cut Q2): no `cargo build` step (`client/package.json:17`) | e2e; as merged: the `server-dev` webServer runs `process.env.SERVER_DEV_CMD ?? 'cargo run -p server-dev --locked'` with a 600 s start timeout (`client/e2e/playwright.config.ts:48,54`); the config starts `server-dev` (fresh DB) on `127.0.0.1:$DEV_API_PORT` and `vite preview --mode e2e --outDir dist-e2e --port $DEV_WEB_PORT --strictPort`, both webServers with `reuseExistingServer: false` set explicitly; `preview.proxy` targets `$DEV_API_PORT`. Defaults 8787 / 4173; each parallel lane gets its own pair from per-lane env (E2), and every `server-dev` launch of a lane (e2e, seen working) uses it. Exceeds 2 min → the gate kit (open questions E1, E2). Changed by RULINGS 14 (decision section 6): needs `PG_BIN` + the slot's `DEV_PG_PORT`/`DEV_PG_ROOT`; the cluster self-starts, and `server-dev` recreates `tgn_dev_<port>` per launch |
 
 **Vacuous-green guards:**
 - vitest exits 1 on no files [R4 §5.1];
@@ -2413,7 +2446,8 @@ set on the `[workspace.dependencies]` entries [R4 §6.1]:
   paid-only asset exists (paid-only computed from `usage.json` + `story/chapters.json`, never from the asset tool's
   outputs);
 - Playwright: `forbidOnly: true`, `retries: 0`, and the suite fails if any test is skipped (`--fail-on-flaky-tests`
-  off; a custom check on `skipped == 0`);
+  off; a custom check on `skipped == 0`; as merged, L7 `57e1424`, cut Q3: the check is a reporter, the default
+  export `SkipGuard` of `client/e2e/helpers.ts`);
 - cargo targets are counted by name against the lists above.
 
 ---
@@ -2521,10 +2555,12 @@ are in):
 - `client/src/story/catalog.ts`: L3a → L3b → L5 → L13. Changed by STORIES-PLAN: L5 → LS1 → L13.
 - `client/scripts/story.ts`: L3b → L3c → LW3. Changed by STORIES-PLAN: L3c → LS1 → LW3.
 - `client/scripts/story/{emit.ts,build.test.ts}`: L3b → LW3; `graph.ts`: L3b → LW1 → LW3 (RULINGS 16 Q1). Changed by
-  STORIES-PLAN: `emit.ts`, `build.test.ts` L3b → LS1 → LW3.
+  STORIES-PLAN: `emit.ts`, `build.test.ts` L3b → LS1 → LW3. Changed by RULINGS 19 Q1, Q2 (as merged, L3c `91e35cd`):
+  `emit.ts`, `build.test.ts` L3b → L3c → LS1 → LW3.
 - `client/scripts/story/{fix.ts,locales.ts,playthrough.ts,play.test.ts,locales.test.ts}`: L3c → LW3. Changed by
   STORIES-PLAN: `locales.ts` L3c → LS1 → LW3; revision 2 (W1): `locales.test.ts` L3c → LS1 → LW3.
-- `story/stories.json`, `story/locales/{ru,en}/story.json` (changed by STORIES-PLAN): LS1 → N1 → N2;
+- `story/stories.json`, `story/locales/{ru,en}/story.json` (changed by STORIES-PLAN): LS1 → N1 → N2; as merged
+  (L3c `91e35cd` created the two tables): `story/locales/{ru,en}/story.json` L3c → LS1 → N1 → N2;
   `story/chapters.json`, `story/cast.json`: N2 (after L3b).
 - `client/src/api/{endpoints.ts,decode.ts,decode.test.ts}` (changed by STORIES-PLAN): L10 → LS4.
 - `client/scripts/scan-dist.ts`: L1 → L3b → L5 → LW3. `client/scripts/scan-dist.test.ts`: L1 → L5 → LW3.
@@ -2565,9 +2601,11 @@ are in):
     only (LM2 and later server lanes read it). `story/meta.json`: LM1 → N1 → N2.
   - `client/src/stats/{reporter.ts,reporter.test.ts}`: LS4 only (re-cut). `client/src/api/{endpoints.ts,decode.ts,
     decode.test.ts}`: L10 → LS4 → LMD → LMI.
-  - `client/src/telegram/**`: L7 only (re-cut: the share and link methods, the mock).
+  - `client/src/telegram/**`: L7 only (re-cut: the share and link methods, the mock). As merged (RULINGS 44; L14a
+    `e5ce724`, cut Q3): L7 → L14a (`webapp.ts`, `telegram.test.ts`).
   - `client/src/ui/screens.ts`: L14a only (re-cut: the meta overlay kinds). `client/src/i18n/{ru.ts,en.ts}`: L14a →
     L14b, then frozen (the meta strings live in `client/src/i18n/meta.ts`, LU1 only).
+  - As merged (L14a `e5ce724`, cut Q4): `client/src/ui/state.svelte.ts`: L14a → L15 → LMI.
   - `client/src/ui/meta/**`: LU1 only. `client/src/meta/**`: LMD only. `client/src/app/meta.ts` (+ test): LMI only.
   - `client/src/app/{boot.ts,game.ts,game.test.ts,yields.ts}`, `client/src/ui/App.svelte`, `client/e2e/helpers.ts`:
     L15 → LMI. `client/scripts/{budget.ts,budget.test.ts}`: L1 → L5 → LP2 → LMI.
@@ -2882,7 +2920,8 @@ Notation:
   skeleton en tables.
 - **Lock:** `client/scripts/story/{fix.ts,locales.ts,playthrough.ts,play.test.ts,locales.test.ts}`,
   `client/scripts/story.ts`, `story/locales/en/{ch1.json,ch2.json}`, `story/locales/{ru,en}/story.json`,
-  `story/retired-ids.txt`, `story/lint-allow.json` (12).
+  `story/retired-ids.txt`, `story/lint-allow.json` (12). Changed by RULINGS 19 Q1, Q2 (as merged, `91e35cd`): the lock
+  gains `client/scripts/story/{build.test.ts,emit.ts}` (14).
 - **Commits:**
   1. `fix.ts` `--fix-ids`. Red: a fixture without IDs → the IDs written, the existing ones untouched.
   2. `locales.ts` (`loc/*`, `id/duplicate` across chapters, `id/retired`). Red: one fixture per code.
@@ -2902,6 +2941,12 @@ Notation:
     chapter's carry. `story.ts` reads `.vars`. Red (with the C4 tests, against the C4 stub that returns bare
     snapshots): `play: carries name the knot each run ended in` — predicted red: the carry entry has no `knot`.
   - Seen working unchanged (RULINGS 19): `ch1: 200 runs, knots 2/2, endings 1/1`.
+- **As merged (`91e35cd`, RULINGS 19 Q3, RULINGS 27; the cut `D:/tmp/novel-orch/l3c-story-locales/cut.md` Q8):** the
+  commits ran in the order pure modules, then tables + wiring, then playthrough, then the en emission: C1 `fix.ts`
+  `--fix-ids` (`87ee7cf`); C2 `locales.ts` + `syncLocales`, pure, not wired (`5d12aa3`); C3 the skeleton tables,
+  stage 5, names from the tables and `--sync-locales` (`e71d069`); C4 `playthrough.ts`, stage 6, the play gate and
+  `lint-allow.json` (`80888e5`); C5 the en-table emission through `emit.ts` (`523a117`); then the review fix
+  `afb9e2f` (the CLI test asserts the emitted en tables). The numbered list above is the pre-cut plan.
 
 #### LW1 puzzle-dsl (client; new, PUZZLES-PLAN)
 - **Goal:** DSL v2 — the `puzzle` and `explore` yield tags in the one parser, the yield-block lint, the narrowed
@@ -3093,7 +3138,9 @@ Notation:
      `Config` already names. Red:
      `paid_chapter_403_without_entitlement` (404 before the route); `asset_path_traversal_404`;
      `paid_responses_private_no_store`.
-  3. `paid_chapter_200_with_entitlement` (entitlement row inserted by the test through `db/`),
+  3. `paid_chapter_200_with_entitlement` (entitlement row inserted by the test through `db/`; changed by RULINGS 26
+     (as merged, `698993e`; cut Q1 b): a raw row inserted by SQL in the test, never through `db/`, since a `db/`
+     insert would be a grant path outside the `charge_id` insert),
      `free_chapter_not_served_by_api`, `server_has_no_dev_routes`.
   4. `catalog_matches_story_chapters`; `startup_fails_when_product_has_no_content`. Red: a fixture catalog with an
      extra product.
@@ -3143,6 +3190,18 @@ Notation:
       `catalog_price_override_must_be_paid_chapter` (an override for `ch3` → `StartupError::Content`).
   - **Seen working** (SQ1): by test names only. Until LS1 merges no tool emits `server/content/stories.json`, so
     `server-dev` does not start on generated content; the live 403 check moves to L7's e2e (and L15).
+- **As merged (`698993e`, RULINGS 26; the cut `D:/tmp/novel-orch/l6b-server-content/cut.md` Q1, Q3):**
+  - **Commit order (Q1 a).** Chapter products derive from the story index (Y6), so the index precedes the catalog:
+    C1 the id grammars in `ids.rs` (`e8f15de`); C2 `ContentStore` (commit 2's loader + 4b's story index + 4a's puzzle
+    index, `501750e`); C3 the catalog and `GET /api/entitlements` (commits 1, 4, 4b's price checks, `7ef5b60`); C4
+    the paid chapter and asset routes (commits 2's routes + 3, `b4bdbce`); C5 the bindings (commit 5, `5eeaaf4`). The
+    predicted reds above that assume a per-chapter catalog ("only `chapter:ch2` listed", "hint products listed")
+    describe states this tree never had; they were observed as C3 mutations, plus the 404 parent red.
+  - **The catalog (Q1 c)** is compiled in (`include_str!`, `server/src/catalog.rs:15`), with the test-only
+    `AppState::with_catalog` (`server/src/lib.rs:88`): `Config` has no catalog path.
+  - **`AppState::new` order (Q1 d).** The content loads before the database opens (`server/src/lib.rs:62-65`).
+  - **Asset owners (Q3)** come from the paid `assets.json` manifests (an `/api/assets/<file>` URL → that chapter's
+    product), not from `asset-owners.json`, which no server code reads (L5 dropped it, RULINGS 30).
 
 #### LS2 server-story-saves (server; new, STORIES-PLAN)
 - **Goal:** saves keyed by story (STORIES-PLAN Y7): the `saves` table of `0001` rewritten with `story_id`, the routes
@@ -3151,7 +3210,10 @@ Notation:
   rewrites is LDB1's PostgreSQL file (collision lock `0001`: L2 → LDB1 → LS2).
 - **Lock:** `server/migrations/0001_init.sql`, `server/src/db/{mod.rs,saves.rs}`,
   `server/src/api/{mod.rs,dto.rs,saves.rs}`, `server/tests/it/{main.rs,saves.rs,schema.rs}`,
-  `client/src/api/generated/api.ts` (10). `server/dev` has no saves code (no dev file in the lock); no new `.rs` file.
+  `client/src/api/generated/api.ts` (10). Changed by RULINGS 28 (as merged, `a358ec3`): the lock gains
+  `server/src/error.rs` (11) for `SaveConflict(Option<Box<SaveSummary>>)` and the one `into_response` line that
+  unboxes it, since `SaveSummary.storyId` makes the unboxed error trip `clippy::result_large_err`; the wire form and
+  `api.ts` do not change. `server/dev` has no saves code (no dev file in the lock); no new `.rs` file.
   The edit to an existing migration rebuilds the crate through `migrate!`'s `include_str!`; `server/build.rs` is not
   needed yet (L6c adds it for the new `0002`).
 - **Commits:**
@@ -3173,10 +3235,15 @@ Notation:
      - Red: `saves_list_spans_stories` (rows of `manor` and `tide` → two summaries with `storyId`) — predicted red:
        the `storyId` key missing.
   4. `#[derive(TS)]` + regenerated `api.ts`. Red: `bindings_are_fresh` before regenerating.
+  - Changed by RULINGS 29 (as merged, `a358ec3`; cut Q1): 3 commits. Commits 3 and 4 are one commit (C3 `eed33c0`),
+    because every DTO already derives `TS` and the `SaveSummary` field turns `bindings_are_fresh` red at once; C1
+    `be39e8d`, C2 `ed901be`.
 - **Gates:** fmt, clippy, test (the names above plus every `saves_*` / `schema_save*` name of L6a and LDB1, counted);
   client `check` (no client code consumes `SaveSummary` yet: L10 is later).
 - **Tester mutations:** the PK without `story_id`; the story check skipped; `chapterId` accepted from any story.
-- **Seen working:** `cargo test -p server --test it saves_ schema_saves` lists every name. Live `server-dev` + `curl
+- **Seen working:** `cargo test -p server --test it saves_ schema_saves` lists every name (as merged, cut Q6: cargo
+  takes one TESTNAME, so the second filter goes after `--`: `cargo test -p server --test it --locked -- saves_
+  schema_saves`). Live `server-dev` + `curl
   PUT /api/saves/manor/auto` only if LS1 has merged (SQ1); a local `tgn_local` that applied the old `0001` is reset
   with `pgdev reset`, and the lane quotes sqlx's refusal first (verify: the 0.9 message for a modified applied
   migration).
@@ -3184,7 +3251,9 @@ Notation:
 #### L6c server-puzzles (server; new, PUZZLES-PLAN)
 - **Goal:** server-checked puzzle attempts with a per-(user, puzzle) rate limit; puzzle status with hint tiers and
   owner-only hint texts; migration `0002`; the two new error codes (X5, X6, X7).
-- **Gate to start:** L6b merged (ContentStore puzzle index, catalog hint products, `PuzzleId`). L6b itself waits for
+- **Gate to start:** L6b merged (ContentStore puzzle index, catalog hint products, `PuzzleId`; as merged `039a2f3`,
+  RULINGS 36 Q11: "catalog hint products" reads "the `ContentStore` puzzle index", since RULINGS 25 removed the hint
+  products). L6b itself waits for
   LDB1, so `0002` and every L6c statement are PostgreSQL (changed by PUZZLES-PLAN revision 4b, RULINGS 14). Changed by
   STORIES-PLAN: LS2 merged too (the serialized server files `api/mod.rs`, `api/dto.rs`, `db/mod.rs`, `api.ts`,
   `it/main.rs`); the scope is unchanged (STORIES-PLAN Y17).
@@ -3239,6 +3308,23 @@ Notation:
     `hint_unlocks` row for tier 1 inserted by SQL in the test, never through `db/`: the only writer is LE1's spend;
     tiers 2–3 `text: null`) — same predicted reds.
   - **Tester mutation:** "serve `text` for unowned tiers" reads "for tiers without an unlock row".
+- **As merged (`039a2f3`, RULINGS 36; the cut `D:/tmp/novel-orch/l6c-server-puzzles/cut.md` Q1-Q5, Q11):**
+  - **Commits (Q1, Q2).** 7 commits, with `api.ts` regenerated in C2, C6 and C7: C1 `0002` + `build.rs` (`e1105c5`);
+    C2 the error codes (`4bf4307`); C3 `db/puzzles.rs` (`e0510b9`); C4 the attempts route (`c1fb75b`); C5 the status
+    route (`7cb58dc`); C6 the TS bindings (`a14ddb8`); C7 the `SaveListResponse` doc fix (LS2 review M2, `74ccaaa`).
+  - **Names.** The schema tests live in `server/tests/it/puzzles.rs` as `puzzles::schema_*`. The lane added 17 names,
+    all `puzzles::`: the five `schema_*` names above, the attempt and status names above (with
+    `puzzle_hint_text_only_when_unlocked`), plus `attempt_concurrent_window_exact` and
+    `attempt_limited_correct_answer_429_not_solved` (Q3).
+  - **Seen working.** libtest takes several filters only after `--`:
+    `cargo test -p server --test it -- puzzles:: bindings::`.
+  - **`state_reopens_migrated_database`** (`server/tests/it/main.rs:187`) pins the applied migrations as a version
+    list, not a count, so each migration lane moves it on purpose (`[1, 2, 3]` at `6043941`).
+  - **Gate and outcome (Q4).** One gate, `puzzles::entitled_puzzle` (404 unknown, 403 not entitled), serves both routes
+    and LE1's hint route; `attempt` and `status` take the gated `&PuzzleDef`; `AttemptOutcome` is
+    `Answered { correct, solved } | RateLimited { retry_after_secs }` (`server/src/puzzles/mod.rs:76-145`).
+  - **Solve time (Q5).** `SET solved_at = GREATEST($3, first_at)` (`server/src/db/puzzles.rs:68`), and `Retry-After`
+    is clamped to `1..=600`. PUZZLES-PLAN "Rust types" and "SQL" carry both errata.
 
 #### L5 asset-pipeline (client)
 - **Goal:** `npm run assets` renders the placeholders, encodes AVIF + WebP with sharp, synthesizes WAV, writes the
@@ -3260,19 +3346,22 @@ Notation:
   3. `synth.ts` (WAV header + PCM). Red: a header-bytes test.
   4. `manifest.ts`:
      - tiering (free if any free chapter uses the asset) → `client/public/assets/` or `server/content/assets/`;
-     - `asset-owners.json`;
+     - `asset-owners.json` (changed by RULINGS 30, as merged `e21775b`: dropped, not produced);
      - `fingerprints.assets.json` (paid file names + content hashes; the asset tool's own file, never
        `fingerprints.lines.json`); `scan-dist.ts` reads it (file names and content hashes over every `dist/` file)
        with the per-section non-vacuity check, its paid-only trigger computed from `usage.json` +
        `story/chapters.json` (Paid-content protection);
      - `story/catalog.ts` gains `FetchAsset` / `AssetFetchError` next to `AssetRef` (used by L10, L11, L12).
+       Changed by RULINGS 30 (as merged, `e21775b`; cut Q8): `AssetRef` did not exist, so L5 adds the manifest types
+       of "Data model" (`AssetRef`, `AssetEntry`, `AssetManifest`, `decodeAssetManifest`) as well.
      - Reds:
        - a paid-only asset routed public → test failure;
        - `scan: paid asset bytes in dist fail` (in `scan-dist.test.ts`: a synthetic dist holding the paid AVIF under
          its own name, and a second one holding its bytes renamed) — predicted red: exit 0 on both dists before the
          reader exists; a name-only reader would still exit 0 on the renamed copy;
        - `scan: paid-only asset with empty files section fails` (`usage.json` + `chapters.json` show a paid-only
-         asset; `files` and `asset-owners.json` empty, the single tiering fault) — predicted red: exit 0.
+         asset; `files` and `asset-owners.json` empty, the single tiering fault; as merged, RULINGS 30: `files`
+         empty) — predicted red: exit 0.
   5. Budget rows for assets + the knot working set (carried stage from `usage.json`, ≤ 32 MiB); `build` chain
      `story && assets && vite build && budget && scan`. Red: 4096 px; WAV without `placeholder`; a 60 MiB knot set
      (synthetic); `budget: knot-set counts carried stage` (knot B: `assets(B) ∪ assets(next(B))` = 17.4 MiB, under the
@@ -3349,6 +3438,13 @@ Notation:
     `assets/catalog.json`. Predicted red: `expected [ 'archive', 'cafe', 'street' ] to deeply equal [ 'archive',
     'cafe', 'room', 'street' ]`. A green there means the restriction is vacuous.
   - **Gates:** `check`, `test` (`catalog: demo catalog and cast decode` green, by name).
+- **As merged (`e21775b`, RULINGS 30; the cut `D:/tmp/novel-orch/l5-asset-pipeline/cut.md` Q3):** 8 commits, catalog
+  first, the manifest types and the scan reader each in their own commit; every red-first above was kept. C1 the
+  catalog (`prop` and `cover` namespaces, placeholder entries, the demo additions; `cc1e238`); C2 `placeholder.ts`
+  (`d35568b`); C3 `encode.ts` (`211062f`); C4 `synth.ts` (`09f17f8`); C5 the manifest types, decoders and
+  `FetchAsset` in `catalog.ts` (`9bc20f6`); C6 tiering, manifests, covers, fingerprints, the CLI and the build chain
+  (`467cf1b`); C7 the `scan-dist` reader of paid asset files by name and content hash (`b3dab3a`); C8 the budget rows
+  (`b819afd`).
 
 #### LS1 story-catalog (client; new, STORIES-PLAN)
 - **Goal:** the story list and its outputs (STORIES-PLAN Y2, Y4, Y5, Y18): `story/stories.json` and the
@@ -3395,7 +3491,8 @@ Notation:
        `stories: chapter in no story fails`, `stories: paid first chapter fails`, `stories: next cycle fails`,
        `stories: first named by a next fails`, `stories: unknown cover fails`, `stories: bad story id fails`,
        `stories: unknown key fails` — predicted red: no finding for each.
-  3. `checkEndings` (rule 8) and `checkInvoiceTitles` (rule 9).
+  3. `checkEndings` (rule 8) and `checkInvoiceTitles` (rule 9). Changed by RULINGS 33 (as merged, `64fd798`; W1):
+     rule 8 also requires that a chapter with a `next` keeps a `-> END` knot that is no story ending.
      - Red: `stories: ending knot must end the chapter`, `stories: ending knot with successors fails`,
        `stories: ending knot with a yield fails`, `stories: ending chapter outside the story fails`,
        `stories: two endings on one knot fail`, `stories: paid chapter title over 32 characters fails` — predicted
@@ -3622,6 +3719,36 @@ Notation:
   `client/src/story-gen/catalog.json` has `stories` and no `endings` key (`rg '"endings"'
   client/src/story-gen/catalog.json` finds nothing); `server/content/chapters/ch2/meta.json` holds
   `"endings": { "archive": "end" }`; `server/content/stories.json` exists.
+- **As merged (`64fd798`, RULINGS 31, 33; the cut `D:/tmp/novel-orch/ls1-story-catalog/cut.md` §1b-§1d and Q1-Q7,
+  `impl.md`):**
+  - **Line refs.** The line numbers above are at the trees they name; the cut's §1b re-locates each on `e21775b`.
+  - **Lock (Q1).** 18 files: the 17 above plus `client/scripts/budget.test.ts`, for the two input-only `endings: {}`
+    hunks in C7 (the `assetInputs()` literal and `REPO_META`; without them 14 baseline `budget:` names fail).
+  - **Commits:** C1 `d157433`, C2 `3180ebb`, C3 `1f57b48`, C4 `5921785`, C5 `f6c3d3d`, C6 `8c20ccb`, C7 `3668a09`,
+    C8 `6ccab4a`, in the order above.
+  - **C1's red** takes two runs: `toHaveLength` fails before the `notInDoc` diff, so one run shows
+    `notInDoc: [ 'catalog/stories' ]` and the other "a length of 85 but got 84" (F5).
+  - **C2 (Q4).** `stories: ending chapter outside the story fails` (rule 7) moves from C3 to C2, which also adds
+    `stories: bad ending name fails` (the `EndingName` grammar).
+  - **C3 (W1).** Rule 8 gains a clause: a chapter with a `next` keeps a `-> END` knot that is no story ending, or no
+    run could reach its successor. Its red is the sixth C3 name, `stories: chapter with a next and only story endings
+    fails`. `checkEndings` takes a third input, `sources` (Q3; `client/scripts/story/stories.ts:219`), and
+    `graph.ts` is untouched.
+  - **C5's red** for the `story/catalog.ts` fixture reads `expected [ 'pure-world' ] to include
+    'import-outside-src'`, because `story/catalog.ts` is a pure-world dependency (F6). The allow fixture
+    `../story-gen/catalog.json` sits in a non-pure, non-`ui/` file such as `app/boot.ts` (F7).
+  - **C6.** The stories stage runs only on a decoded, play-ordered chapter list (Q2). The carry red is the coverage
+    line (`play: ch2: … knots 3/3 …` without the filter), since `carriedFrom` is `ChapterId | null` and counts
+    nothing. The revision-3 red is not ENOENT: four `locales.test.ts` names fail on status or error counts (F9). The
+    `lint: paid/leak red on fixture (story cli)` red of the `build.test.ts` proof is "no paid/leak line" (W2).
+  - **C7.** The moved-pin counts are 10 / 6 / 4: `routed apart` has 10 sorted keys and `cli builds` 6 server files,
+    `server/content/stories.json` last in both, and `CLIENT_OUTPUTS` stays 4 (L3c C5 added the en tables). Two
+    input-only hunks: `emit: line fingerprints cover every paid line` passes a one-chapter story input (F10), and
+    test 35 spreads `manor`'s title and teaser into its names (F12). The STORIES-PLAN seeded leak is seen red here.
+  - **C8.** On the `keeper` probe, the `lint: loc/missing-name red on fixture` location list has 4 entries against 2
+    expected (`impl.md`), as "gains two entries" above says.
+  - **STAGING-DSL (Q5).** The single reopening (C1) also fixed the §4 table bullet and the §11 `loc/missing-name`
+    text, and the §11 `catalog/chapters` row reads "names a later listed chapter or `null`".
 
 #### LW3 story-world (client; new, PUZZLES-PLAN)
 - **Changed by STORIES-PLAN:** gate to start + LS1 (`story.ts`, `emit.ts`, `build.test.ts`, `locales.ts` and, from
@@ -3640,11 +3767,12 @@ Notation:
   - `scan-dist` hint and paid-world fingerprints from the sources (X4, X7, T7, T9).
 - **Gate to start:** L3c, L5, L6b, LW1, LW2 merged (L5 for the `scan-dist.ts` serialization; L6b for
   `server/tests/fixtures/content/puzzles/ch1.json`, which commit 3's red reads — changed by PUZZLES-PLAN revision 1,
-  W9).
+  W9). As merged (`be8ba8b`, RULINGS 42; cut Q14): met at the launch on `f81193b`.
 - **Lock:** `client/scripts/story.ts`,
   `client/scripts/story/{graph.ts,emit.ts,locales.ts,fix.ts,playthrough.ts,world.ts,build.test.ts,play.test.ts,locales.test.ts,world.test.ts}`,
   `client/scripts/{scan-dist.ts,scan-dist.test.ts}` (13). Fixtures are inline in the tests; `story/` is untouched
-  (N1 writes the real worlds).
+  (N1 writes the real worlds). Changed by RULINGS 42 (as merged, `be8ba8b`; cut Q14, L5 cut Q2): the lock gains
+  `client/scripts/assets/manifest.ts` for one hunk (`assetUsage()` maps `worldAssets` / `rooms`) → 14.
 - **Commits:**
   1. `world.ts`: loads `story/<ch>/world.json` (`decodeWorldSource` → `world/schema`) and runs every `world/*` code of
      PUZZLES-PLAN "Lint codes" that needs no compiled story (catalog refs, frame, one-way exits, solution, title,
@@ -3752,6 +3880,27 @@ Notation:
   `world: none` per chapter), `build`.
 - **Seen working:** `npx vitest run scripts/story scripts/scan-dist --reporter=verbose` lists every LW3 name;
   `npm --prefix client run story` prints the world line per chapter.
+- **As merged (`be8ba8b`, RULINGS 42; the cut `D:/tmp/novel-orch/lw3-story-world/cut.md` Q1-Q14, `impl.md`):**
+  - **Commits (Q1).** 8: C1 `world.ts` and the soft-lock check (`c246d3d`); C2 the yield edges (`1372989`); C3 the
+    public and server worlds, the world version and the world usage (`495ae17`); C4 world texts in IDs and locales
+    (`82327fa`); C5 the playthroughs through yields (`ec51873`); C6 the `scan-dist` fingerprints (`383c80d`); C7 the
+    wiring (`e3e7fa8`); C8 `vars/write-only` (`89db368`).
+  - **C2's tests** live in `world.test.ts`, not `build.test.ts`.
+  - **C3's red** against the parent is the `planned()` invariant of `build.test.ts` (`invariant: … is planned`);
+    "a missing `answerLen`" is a scratch mutation. `server/content/puzzles/<ch>.json` is written for every listed
+    chapter, `puzzles: {}` without a world (Q3).
+  - **C4's rename (S14).** The red is `lint: id/duplicate red on fixture (ink and world)`, since L3a already owns the
+    plain name.
+  - **C7's report line (Q11, D16)** keeps the `<stage>: <ch>:` shape of the `play:` lines: `world: <ch>: none`, or
+    `world: <ch>: <S> section(s), <R> rooms, <P> puzzles, softlock OK (<n> states)` with each count pluralised (`1
+    section`, `2 rooms`), or `… softlock FAIL (<k> of <S> sections)`, or `world: <ch>: not checked (world/schema)` (or
+    `(catalog/assets)`; `client/scripts/story.ts:383-398`). The C7 fixture world has 2 rooms: the pinned line is `1 section, 2 rooms, 2 puzzles`. The gate on the skeleton
+    prints `world: <ch>: none` per chapter.
+  - **C8 (Q2, D15).** `vars/write-only` (W) lives in `graph.ts` (`writeOnly`) and `story.ts`; `lint.ts` stays frozen.
+    A chapter's own VAR is judged against that chapter's reads, a `g_` global against every listed chapter, and the
+    rule runs only when every listed chapter compiled.
+  - **PUZZLES-PLAN and STAGING-DSL** carry Q4 (leave knots' carried stage), Q5 (the event closure), Q10
+    (`worldVersion`'s `rules`) and Q12 (`usage.json` world sections).
 
 #### LM1 meta-catalog (client; new, META-PLAN)
 - **Goal:** the story meta source `story/meta.json` and its lint `catalog/meta`; choice points from the compiled
@@ -3770,13 +3919,17 @@ Notation:
        predicted red on a decoder-only stub: every fixture passes.
      - Also: `meta: every declared ending has a title`, `meta: conditions name existing endings, choices, chapters and
        puzzles` (a `puzzle` of a chapter outside the story's chain is refused).
-  2. Choice points from the compiled ink JSON (option → point; a point = the options offered together).
+  2. Choice points from the compiled ink JSON (option → point; a point = the options offered together). As merged
+     (`4d8a9ec`, cut Q3): from the classified sources of each compiled chapter, not the compiled ink JSON.
      - Red: `meta: choice points split by gathers and knots` (a fixture with two choice blocks separated by a gather,
        and one per knot) — predicted red on a per-knot grouping: one point for both blocks.
      - Also: `meta: deeper weave is transparent` (a nested choice inside an option's content is its own point),
        `meta: fallback choices are not options` (an invisible default `* ->` is not in the vocabulary).
   3. `emit.ts` writes `server/content/meta.json` (META-PLAN "Server formats"); `story.ts` wires it and prints the meta
-     line (`meta: manor endings 1, achievements 0; choices ch1 n/m`); the committed fixture
+     line (`meta: manor endings 1, achievements 0; choices ch1 n/m`; as merged, cut Q10: `n/m` is
+     `<options>/<points>` per chapter, `<ch> -` for a chapter not checked, and the whole line reads
+     `meta: not checked (catalog/stories)` or `meta: invalid (catalog/meta)` when those fail;
+     `client/scripts/story.ts:350-371`); the committed fixture
      `server/tests/fixtures/content/meta.json` (the four fixture chapters, both fixture stories, one achievement of
      every condition kind).
      - Red: `emit: meta texts only in server outputs` (every meta text absent from `client/src/story-gen/**` and the
@@ -3799,6 +3952,13 @@ Notation:
 - **Seen working:** `npx vitest run scripts/story scripts/scan-dist src/story/dsl-doc --reporter=verbose` lists every
   LM1 name; `npm --prefix client run story` writes `server/content/meta.json` and prints the meta line; `rg` finds no
   meta text under `client/src/story-gen` or `client/dist`.
+- **As merged (`4d8a9ec`, RULINGS 45; the cut `D:/tmp/novel-orch/lm1-meta-catalog/cut.md` Q1-Q5, Q10):** the DSL
+  reopen is C1, since `catalog/meta` must be a `LintCode` before `meta.ts` compiles, and `story/meta.json` lands in
+  C4, where the CLI first reads it. C1 the `catalog/meta` registration and the STAGING-DSL reopen (`5efb16e`); C2
+  `meta.ts` and rules 1-5 (`fa1b727`); C3 choice points from the classified sources (`e665f57`); C4 the emit of
+  `server/content/meta.json`, the CLI wiring and `story/meta.json` (`4f67cda`); C5 the `scan-dist` meta fingerprints
+  (`01edcb8`); C6 the public text count from the shipped free en values only (`ed0b4b3`); C7 the old-hash public copy
+  of a paid-only asset (L5 review M1, `88556c0`).
 
 #### L8a invoices (server)
 - **Goal:** the `BotGateway` trait + the frankenstein implementation; orders; `POST /api/invoices`,
@@ -3837,6 +3997,8 @@ Notation:
   `invoice_pack_price_from_catalog`.
 - **Gates:** fmt, clippy, test; client `check`.
 - **Seen working:** `server-dev` on the lane's `DEV_API_PORT` + `curl POST /api/invoices` → `https://t.me/$dev-o_…`.
+  As merged (`9e55ef6`, L8a impl Q3): the content comes from `npm --prefix client run story` and then
+  `npm --prefix client run assets`, since `ContentStore` refuses to start without `chapters/<paid>/assets.json`.
 
 #### L7 telegram-client (client)
 - **Goal:** the Telegram facade; viewport/safe areas; BackButton; lifecycle; the native-transport mock + the fake Stars
@@ -3922,7 +4084,8 @@ Notation:
   binds `$n`; Telegram strings get U+0000 → U+FFFD at the `db/` boundary.
 - **Gates:** fmt, clippy, test. The tester mutations from the catalogue: no PK, grant in pre-checkout, non-XTR
   accepted.
-- **Seen working:** `curl POST /dev/simulate-payment` → `GET /api/entitlements` shows `owned: true`.
+- **Seen working:** `curl POST /dev/simulate-payment` → `GET /api/entitlements` shows `owned: true`. As in L8a (impl
+  Q3): `npm --prefix client run assets` runs after `story`, or `server-dev` does not start.
 - **Changed by STORIES-PLAN:** no scope change. If LS1 has not merged, the live `server-dev` checks of L8a and L8b
   move to L7 / L15 and these lanes prove seen-working by test names (SQ1).
 - **Changed by META-PLAN (re-cut; same lock).** M19: the PUZZLES-PLAN commit-2 and commit-3 additions above are
@@ -3939,6 +4102,17 @@ Notation:
     (`successful_payment_duplicate_concurrent`).
   - **Tester mutation:** "drop the `$6` previous-tier predicate" is replaced by "drop the payer-row lock" (predicted
     red: the two `precheckout_concurrent_*` tests answer two `ok`).
+- **As merged (`06bae54`, RULINGS 46; the cut `D:/tmp/novel-orch/l8b-webhook-grant/cut.md` Q11):**
+  - **Commits.** C0-C6 plus two fix commits: C0 the K29 case-insensitivity pin (`dc43c1d`); C1 the webhook route
+    (`ab3bc8b`); C2 pre-checkout (`eaa8041`); C3 the grant (`c3105e7`); C4 the K17 probe (`7095baa`); C5 the dev
+    simulate route (`e44e5bf`); C6 the DTO samples (`d6c63ac`); the fixes `8fc5118` (a failed database step
+    redelivers a payment and refuses a pre-checkout) and `d86f87f` (a pre-checkout from anyone but the order's owner
+    is refused `Mismatch`).
+  - **Names.** 33 new (baseline rows `L8b`): 19 `payments::`, 7 `webhook::`, 2 `dto_samples::` (one ignored), 3
+    `server-dev` `simulate_*`, 2 `telegram::payments::tests::` unit names. The two fix names are
+    `webhook::webhook_database_error_retries_payment_and_refuses_precheckout` and `payments::precheckout_wrong_payer`.
+  - **Errata** in "Rust types" (`PaymentProbe`, `GrantOutcome`), the dev routes table (`/dev/simulate-payment`), the
+    test strategy (`precheckout_answer_times_out_at_5s` in real time) and the seen-red table (the idempotency mutation).
 
 #### LS3 server-stats (server; new, STORIES-PLAN)
 - **Goal:** the statistics foundation on the server (STORIES-PLAN Y8–Y12): `0003_stats.sql`, `POST
@@ -3970,7 +4144,8 @@ Notation:
      600`).
      - Red: `stats_unknown_ending_rejected` (`dawn` reported for ch3) — predicted red: 404 before the route.
      - Red: `stats_paid_ending_needs_entitlement` (`dawn` for ch4 without, then with, an entitlement row inserted
-       through `db/`) — predicted red on a `classify` that skips the entitlement: `recorded: 1` without it.
+       through `db/`; as merged, LS3 `00d7c10`, cut D11: a raw row through `it/catalog.rs::own`, never through
+       `db/`) — predicted red on a `classify` that skips the entitlement: `recorded: 1` without it.
      - Red: `stats_not_entitled_hides_ending_check` (an unknown ending name in unowned ch4 → `not_entitled`, never
        `unknown_ending`) — predicted red on the subject-first order: `unknown_ending`.
      - Also: `stats_story_derived_by_server` (the stored `story_id` is `tide` for ch3; a request with a `storyId`
@@ -3990,7 +4165,9 @@ Notation:
 - **Gates:** fmt, clippy, test (the names above, counted); client `check`.
 - **Tester mutations:** drop `ON CONFLICT`; count rows instead of distinct facts; skip the entitlement; read the
   story from the request; drop `stat_events_subject_by_kind`.
-- **Seen working:** `cargo test -p server --test it stats_ schema_stat` lists every name. Live (LS1 is merged by
+- **Seen working:** `cargo test -p server --test it stats_ schema_stat` lists every name (as merged, cut Q12: cargo
+  takes one TESTNAME, so the second filter goes after `--`: `cargo test -p server --test it --locked -- stats_
+  schema_stat`). Live (LS1 is merged by
   then): `server-dev`, a token from `/dev/launch` + `POST /api/auth`, the same `POST /api/stats/events` twice →
   `{"recorded":1,"duplicates":0,…}` then `{"recorded":0,"duplicates":1,…}`; `GET /api/stats` shows the ending.
 - **Changed by META-PLAN (re-cut; same lock, 11 files).** M1, M8:
@@ -3999,7 +4176,9 @@ Notation:
     `choice_made` for ch3 with subject `ch1.hall.a1b2` → `("23514", "stat_events_choice_in_chapter")`; a well-formed
     one accepted; predicted red before the constraint: the row is accepted). `schema_stat_events_subject_by_kind`
     gains a `choice_made` with an outcome and one with a malformed subject.
-  - **Commit 3:** `StatKind::ChoiceMade`, `StatRejectReason::UnknownChoice`; `classify` checks a choice's shape and
+  - **Commit 3:** `StatKind::ChoiceMade`, `StatRejectReason::UnknownChoice` (as merged, cut D4: `StatKind` and
+    `StatOutcome` live in `db/stats.rs`, the `OrderStatus` precedent, and `ChoiceMade` lands with the enum in C2,
+    since `NewStatEvent` needs it); `classify` checks a choice's shape and
     that its chapter part equals `chapterId` → else `unknown_choice` (LM2 adds the vocabulary). Order:
     `unknown_chapter` → `not_entitled` → `unknown_choice`. Red: `stats_choice_shape_checked` (an option of ch1 reported
     for ch3 → rejected `unknown_choice`; predicted red on a `classify` without the branch: 400 on the unknown kind).
@@ -4021,6 +4200,11 @@ Notation:
       predicted red on a plain per-kind cap: the new option rejected too.
     - `stats_rate_limited_after_600_per_hour` counts fact rows (600 accepted, the next fact batch refused).
     - **Tester mutations** add: count choice rows toward the facts' cap; reject a first pick over the budget.
+- **As merged (`00d7c10`, RULINGS 52; the cut `D:/tmp/novel-orch/ls3-server-stats/cut.md` D1-D11, O1):** C1
+  `0003_stats.sql` (`5913e6e`); C2 `db/stats.rs`, `record_events` with the fact and choice budgets (`972c41e`); C3
+  `POST /api/stats/events` (`d04108f`); C4 `GET /api/stats` (`99ec1dc`); C5 the bindings and samples (`d353c95`).
+  STORIES-PLAN and META-PLAN carry the schema guards (D1), the cache header (D7), the choice prefix (D3), the
+  `record_events` contract (D5, O1) and the soft-budget overshoot (review M2).
 
 #### LE1 economy-core (server; new, META-PLAN)
 - **Goal:** the resource foundation (META-PLAN M17–M19, M21): `0004_economy.sql`, the ledger and balance primitives,
@@ -4538,6 +4722,13 @@ Notation:
 - **Seen working:** a dev-only scene harness is not added. In this lane: the unit tests by name (`npx vitest run
   src/scene --reporter=verbose`). The engine closure is first measured in L15, when `app/engine.ts` lands and the
   engine row turns from PENDING to a measured row.
+- **As merged (`1e2f421`, RULINGS 35; the cut `D:/tmp/novel-orch/l11-scene/cut.md` Q4):** 7 commits, not 6. Commit
+  6 is split, and PUZZLES-PLAN's commit-5 `registry_caps` room case moves into C2, since a case added after its logic
+  exists can never be red. C1 layout (`9aff99b`); C2 the registry, with the room case (`ef2a463`); C3 the executor
+  (`d83917e`); C4 the render loop (`2dfbce2`); C5 the preload scheduler (`5f03cfa`); C6 the Pixi controller + loader,
+  red-first impossible (`b5f8352`); C7 context-loss rebuild, relayout and `debugPropRects`, with two real reds
+  (`1cb2688`). Then six test-only commits from the review rounds (`c24eef3`, `60b48a6`, `da1042c`, `4553613`,
+  `3364f2d`, `962ddea`).
 
 #### L12 audio (client)
 - **Goal:** the gesture unlock, buses, BGM A/B streaming (blob for paid), the SFX cache, lifecycle.
@@ -4679,6 +4870,18 @@ Notation:
   - Red (dom, in `screens.svelte.test.ts`): `screens: meta overlays close with back` (each of the seven kinds pushed
     over `the_end` and over Home; one press returns to the view below) — predicted red: the union rejects the kinds
     (a `check` error, quoted), then the button hidden for a kind missing from the overlay set.
+- **As merged (`e5ce724`, RULINGS 44, 49; the cut `D:/tmp/novel-orch/l14a-overlay-core/cut.md`):**
+  - **Lock 17:** the 15 above plus `client/src/telegram/{webapp.ts,telegram.test.ts}` (one registration per event and a
+    dispatch over a snapshot, L7 review M1).
+  - **Commits (C1-C8):** C1 the Telegram facade's event registration (`e2bcadc`); C2 the UI tables and `t()`
+    (`1818daf`); C3 the screens stack and the BackButton (`0a63781`); C4 the view model and Toast (`6eacaa1`); C5 the
+    Home frame and the stage host (`412f561`); C6 the typewriter and DialogueBox (`09845a2`); C7 Choices and QuickBar
+    (`af0e6fa`); C8 no literal text in the components (`bec77c3`).
+  - **Names:** 34 new (baseline rows `L14a`).
+  - **The META red (cut Q5).** `RootView` is `home | game | notice` without the notice identity
+    (`client/src/ui/screens.ts:35`), so "pushed over `the_end`" is a push over `{ kind: 'notice' }`. Every `Screen` is
+    an overlay by type, so "the button hidden for a kind missing from the overlay set" has no runtime form: it is the
+    `check` error (TS2322) of the first red.
 
 #### LU1 meta-ui (client; new, META-PLAN)
 - **Goal:** the presentational meta overlays and their locale table, one lazy chunk (META-PLAN M9, M12, M13, M22,
@@ -5412,6 +5615,7 @@ each has a default there; the policy's operator facts are placeholders until the
 | 20 | 2026-10-31 | META-PLAN revision 1 (`D:/tmp/novel-orch/design/choices/triage_r1.md`, critique `design/choices/critique_r1.md`) | The 7 confirmed items, marked "revision 1": C1 / W1 — LF1 (the launch creates no request; `GET` / `POST /api/invites/{code}`: a holder asks, the owner accepts per person; `friend_blocks` makes a decline or removal durable; `user_handles` replace the Telegram id; eight commits), LF2 (the profile by handle; the `InviteView` sample), LE2 (`to` a handle), L14a (screen kinds by handle and code), LU1 (the prompt names nobody; the consent text names the circle), LMD, LMI, the HTTP API row, the `startParam` wrapper line; W2 — LS3 (facts and choices counted apart, first picks kept), LS4 (choices evicted first, facts first in a batch), the stats HTTP row; W3 — K19, K20, Payment flow, LE1 (`db/orders.rs`: the order binds the pack's kind and amount; 15 files), L9 (the clawback from the credited ledger row); W4 — the new lane LPO privacy-operator (`PRIVACY_OPERATOR_FILE`, the prod refusal; 8 files, 2 commits; LE2 → LPO → L9), LF1 commit 7 without the log warning, the config pre-declaration rule, collision locks, the dependency order, 48 lanes / 34 to go, the launch preference, the critical path, D2 (`privacy-ops`, README, gate); W5 — LE2 (the hook on every batch, never failing the response); W6 — META-PLAN only (the inventory). Pre-revision copy: `D:/tmp/novel-orch/design/choices/PROTOTYPE-PLAN.r1.before.md` |
 | 21 | 2026-10-31 | META-PLAN revision 2 (`D:/tmp/novel-orch/design/choices/triage_r2.md`, critique `design/choices/critique_r2.md`) | The 1 confirmed item W1, marked "revision 2". The policy's operator file carries identity facts only, and content values change only with a new policy version. LPO: the goal (`IDENTITY_KEYS`, `CONTENT_KEYS`, `PolicyError::ContentKey`, `{POLICY_VERSION}` from the meta, `POLICY_PINS`); commit 1's `.env.example` comment; commit 2 gains the reds `privacy_operator_content_key_refused` and `api::legal::tests::policy_template_pinned_per_version`, plus `policy_placeholders_classified`, and three restated tests; the mutations and seen working. D2 `privacy-ops`: how the policy changes (a content value is a template commit with a new version and a pin row; a contact fix is a host-file edit; an operator change is both; dated host-file copies). LPO keeps 8 files and 2 commits; the lock, the dependency order and the lane count are unchanged. Pre-revision copy: `D:/tmp/novel-orch/design/choices/PROTOTYPE-PLAN.r2.before.md` |
 | 22 | 2026-10-31 | META-PLAN revision 3 (`D:/tmp/novel-orch/design/choices/triage_r3.md`, critique `design/choices/critique_r3.md`) | The 1 confirmed item W1, marked "revision 3": each of the policy pin's three conditions gets a failing input. LPO: the goal (one `#[cfg(test)]` checker `check_pins`); commit 2 gains the red `pin_check_rejects_non_increasing_versions` / `pin_check_rejects_last_not_meta` / `pin_check_rejects_hash_mismatch` (crafted histories, red against an `Ok(())` stub) and the control `pin_check_accepts_a_valid_history`; `policy_template_pinned_per_version` runs the checker on the real data; tester mutation 3 restated against the checker; seen working. LPO keeps 8 files and 2 commits; the lock, the dependency order and the lane count are unchanged. Pre-revision copy: `D:/tmp/novel-orch/design/choices/PROTOTYPE-PLAN.r3.before.md` |
+| 23 | 2026-11-01 | `D:/tmp/novel-orch/carry.md` at ORCH `d97ba64` (the docs-errata-2 spec, group A; RULINGS 26-52), as merged on main `6043941` | Docs lane `docs-errata-2`, group A: the carried plan errata of the merged lanes, each place marked "as merged" with its SHA and ruling. "As merged" bullets (commit lists, names, red texts, fill-ins) in the L3c, L6b, L6c, L5, LS1, LW3, LM1, L8b, LS3, L11 and L14a entries; in place: the LS2 entry (lock, commits, seen working), the en-table output row (L3c C5), the collision chains (`emit.ts` / `build.test.ts`, `story/locales/{ru,en}/story.json`, `client/src/telegram/**`, `client/src/ui/state.svelte.ts`), the L3c and LS2 and LW3 locks, K5's eviction class and the registry sections (L11), the Module API (`AssetRegistry`, `ensure`, `AudioManager`), the layout's character height, `asset-owners.json` dropped (L5), the audio placeholder flag, the `startParam()` wrapper (L7), the e2e gate row and the skip guard (L7), the L8a / L8b seen working (`assets` after `story`), the Rust payment types and the simulate route (L8b), the test-strategy timing and the idempotency seen-red row (L8b), the LS3 commit-3 red, seen working and `StatKind` home. The code on `6043941` is the ground truth. Ledger: `D:/tmp/novel-orch/docs-errata-2/ledger.md` |
 
 **Revision 1 (2026-10-30)** — what changed, by triage item:
 - **W1** (undecodable payment ACKed and lost): K17 (lenient `PaymentProbe` for the payment subset, 500 only when the
