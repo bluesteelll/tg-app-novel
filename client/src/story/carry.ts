@@ -2,7 +2,13 @@
 // globals.ink. A chapter's `next` stays on its story's chain (STORIES-PLAN Y3), so nothing here checks the story; a
 // story's first chapter is started with `{}` by its caller. Pure: no inkjs (the runner owns the Story).
 import type { ChapterMeta, InkScalar } from './catalog.ts';
+import type { StoryRunner } from './runner.ts';
 import type { VarName } from './staging.ts';
+
+/** The carry out of a finished chapter: its g_ globals as the story left them. */
+export function carryOut(runner: Pick<StoryRunner, 'readVars'>, meta: ChapterMeta): Record<VarName, InkScalar> {
+  return runner.readVars(meta.globals);
+}
 
 /** The carry into a chapter: only the globals it declares, so a global a story update removed never reaches a write. */
 export function carryInto(carry: Readonly<Record<VarName, InkScalar>>, meta: ChapterMeta): Record<VarName, InkScalar> {

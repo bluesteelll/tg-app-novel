@@ -3,6 +3,8 @@
 // the next line or choice set, a yield block stops as a yield step, and every ink failure is an error value, never a
 // throw at this module's edge. It emits steps and staging commands only: no Pixi, GSAP, Svelte or scene (principle 7).
 import { Story } from 'inkjs';
+import type { InkObject } from 'inkjs/engine/Object';
+import type { AbstractValue } from 'inkjs/engine/Value';
 
 import type { InkScalar, LoadedChapter, Result } from './catalog.ts';
 import type { AssetIndex, KnotName, LineId, SpeakerId, StagingCommand, TagError, VarName, YieldCommand } from './staging.ts';
@@ -44,8 +46,12 @@ type ChoiceList = { choices: Array<{ index: number; lineId: LineId; ru: string }
 /** A knot's own container entered at its start, with the VAR values at that moment (before its top `~` logic runs). */
 type KnotEntry = { knot: KnotName; vars: Record<VarName, InkScalar> };
 
-/** inkjs `ErrorType.Author` (engine/Error.js): the compiler's TODO note, never a runtime failure. */
+// inkjs's numeric enums are runtime objects the typings-only imports cannot reach, so the values are restated here:
+// `ErrorType.Author` (engine/Error.js, the compiler's TODO note, never a runtime failure), `ValueType.Int` / `.Float`
+// (engine/Value.js).
 const INK_ERROR_AUTHOR = 0;
+const INK_INT = 0;
+const INK_FLOAT = 1;
 const DISPOSED: RunnerError = { kind: 'load', message: 'the runner is disposed' };
 
 /** Runners created and not yet disposed (PROTOTYPE-PLAN "Resource lifetime": GameSession holds one). */
@@ -83,11 +89,30 @@ function newStory(json: unknown): Result<Story, RunnerError> {
   }
 }
 
-/** Writes `values` into the story's globals; a name the story does not declare is a `load` error. */
+/** A variable's slot holds an ink Value; structural, since the runtime classes live inside the bundle (no instanceof). */
+function isInkValue(o: InkObject): o is AbstractValue {
+  return 'valueType' in o && typeof o.valueType === 'number' && 'Cast' in o && typeof o.Cast === 'function';
+}
+
+/**
+ * Writes `values` into the story's globals, each keeping its declared type (K8): JS cannot tell 2 from 2.0 and inkjs
+ * stores an integral number as an Int, so a number written into a Float-declared VAR is cast back, else `g_ratio / 4`
+ * would divide as integers. The declared type is the one shared globals.ink's (as the story gate's carry write,
+ * playthrough.ts). A name the story does not declare is a `load` error.
+ */
 function writeVars(story: Story, values: Readonly<Record<VarName, InkScalar>>): Result<void, RunnerError> {
+  const vars = story.variablesState;
   try {
     for (const [name, v] of Object.entries(values)) {
-      story.variablesState.$(name, v);
+      vars.$(name, v);
+      if (typeof v !== 'number') {
+        continue;
+      }
+      const declared = vars.TryGetDefaultVariableValue(name);
+      const written = vars.GetVariableWithName(name);
+      if (declared !== null && written !== null && isInkValue(declared) && isInkValue(written) && declared.valueType === INK_FLOAT && written.valueType === INK_INT) {
+        vars.SetGlobal(name, written.Cast(INK_FLOAT));
+      }
     }
     return { ok: true, value: undefined };
   } catch (e) {
@@ -311,12 +336,9 @@ export class StoryRunner {
         return { ok: false, error: { kind: 'bad-projection', name: name as VarName, detail: `a ${typeof v} for a ${typeof now} VAR` } };
       }
     }
-    try {
-      for (const [name, v] of Object.entries(projection)) {
-        vars.$(name, v);
-      }
-    } catch (e) {
-      return this.#fail({ kind: 'ink', message: message(e) });
+    const written = writeVars(story.value, projection); // the one write path: declared types kept
+    if (!written.ok) {
+      return this.#fail(written.error);
     }
     return this.#hostEnter(story.value, knot); // after the writes: the knot's entry sees the outcome
   }
