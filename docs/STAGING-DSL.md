@@ -486,7 +486,8 @@ fixed:
     - `explore: S` — every knot named by S's effects and exits is a reachability edge, but not in the preload
       `next`: the room controller preloads per room, so a hub never preloads every event.
     - An event knot's carried stage (the budget below) is seeded with the background and props of every room that
-      triggers it.
+      triggers it. As merged (LW3 `be8ba8b`): so is an exit `{story}` (leave) knot's, with its room's background and
+      props.
   - **Output:** `<chapter>.meta.json` → `knots.<name> = { assets, next, ending }`, plus `endings: { <knot>: <name> }`:
     the chapter's declared story endings (§9), `{}` when it has none.
 - **Preload** — on entering knot K the runtime asks the scene and audio to load `assets(next(K))` in the background
@@ -609,7 +610,9 @@ meta.
   | `{ "all": [ … ] }` | 2–4 conditions of the kinds above, no nested `all`, all hold |
 
 - **Meta texts are server-only: never put a meta text into ink or a locale table.** The story tool writes them only to
-  `server/content/meta.json`, and the build fails if a meta text of 12 or more code points appears in `dist/`.
+  `server/content/meta.json`, and the build fails if a meta text of 12 or more code points appears in `dist/`. While
+  a story declares an ending, at least one text of `story/meta.json` needs 12 or more code points, or the build fails
+  with `meta-empty`.
 - **A choice's line ID is also its statistics identity** ([META-PLAN.md](META-PLAN.md) M1): keep it when you edit the
   text, retire it when you remove the option (§4). A choice point is the options of one weave level of one knot or
   stitch, up to a gather of that depth or less, a knot header or a stitch header; deeper options form their own
@@ -684,7 +687,7 @@ check (the second table below).
 | `ink/entry` | E | entry top level holds anything but INCLUDE / declarations / one divert; first line not `INCLUDE ../common/globals.ink` |
 | `ink/name` | E | knot/stitch name not `[a-z][a-z0-9_]*` |
 | `vars/global-prefix` | E | a `globals.ink` VAR not `g_`-prefixed or not scalar; a `g_` VAR declared elsewhere; text or non-function knots in `globals.ink` |
-| `vars/write-only` | W | a VAR assigned but never read |
+| `vars/write-only` | W | a VAR assigned but never read: a chapter's own VAR by that chapter, a `g_` global by any listed chapter; judged only when every listed chapter compiled |
 | `graph/unreachable-knot` | E | knot not reachable from the entry divert (static graph) |
 | `graph/no-end` | E | the chapter has no path to `END` |
 | `graph/entry-below-top` | E | a divert from one knot to a stitch or labelled gather of another knot (§10); enter the knot at its top |
@@ -707,7 +710,7 @@ check (the second table below).
 | `puzzle/unknown`, `explore/unknown-section` | E | the id is not in the chapter's world |
 | `puzzle/then-unknown` | E | `then=` names no knot of the chapter |
 | `puzzle/in-section` | E | a puzzle both yielded and attached to a lock |
-| `explore/event-return` | E | an event knot (named by a `story` effect of S) has no `explore: S` yield |
+| `explore/event-return` | E | an event knot (named by a `story` effect of S) has no `explore: S` yield, judged over the event closure: an event knot that diverts to another event knot of S, which yields, passes |
 | `explore/event-escape` | E | an event knot contains `-> END` or diverts to a knot that is not an event knot of S |
 | `world/schema` | E | `decodeWorldSource` issues (unknown key, missing field, bad id, wrong type) — every issue, never the first only |
 | `world/duplicate-id`, `world/id-reserved` | E | rooms collide across sections; a puzzle id ends in `_hints` |

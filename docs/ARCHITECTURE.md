@@ -1,7 +1,8 @@
 # Architecture
 
-> The layers of tg-app-novel as merged at `e5ce724`, how data moves between them, and where each CLAUDE.md principle
-> is enforced. First version; parts not built yet are marked **planned** with the lane and the plan section.
+> The layers of tg-app-novel as merged at `6043941`, how data moves between them, and where each CLAUDE.md principle
+> is enforced. First version at `e5ce724`, with LS3 server-stats and LU1 meta-ui added since; parts not built yet are
+> marked **planned** with the lane and the plan section.
 
 The design is in [PROTOTYPE-PLAN.md](PROTOTYPE-PLAN.md) (PP), [PUZZLES-PLAN.md](PUZZLES-PLAN.md) (PZ),
 [STORIES-PLAN.md](STORIES-PLAN.md) (SP) and [META-PLAN.md](META-PLAN.md); this page describes what the tree does. Where
@@ -38,7 +39,7 @@ Each arrow is a function: `main` ([story.ts:530](../client/scripts/story.ts#L530
 
 ## Client modules
 
-What exists under `client/src/` at `e5ce724`. The boundary column is enforced by
+What exists under `client/src/` at `6043941`. The boundary column is enforced by
 [arch.test.ts](../client/src/arch.test.ts) (rules `RULE_IDS`, scopes in `applies`), not by review.
 
 | Module | Responsibility | Boundary |
@@ -56,8 +57,9 @@ What exists under `client/src/` at `e5ce724`. The boundary column is enforced by
 | [ui/App.svelte](../client/src/ui/App.svelte) | the mounted shell: a placeholder glyph until L15 integration | `ui/` imports no story, scene or audio module except types (arch rule `ui-imports`) |
 | [ui/screens.ts](../client/src/ui/screens.ts) | `createScreens` (:71): overlays over a root view (Home, the game, a Notice), no router; the one owner of the BackButton ([WebView constraints](#webview-constraints)) | the button only through the facade's `backButton` |
 | [ui/state.svelte.ts](../client/src/ui/state.svelte.ts) | `createViewModel` (:147): the overlay's view model (the line, the choices, the play mode, the text speed, the screens view, the toasts); its `$state.raw` fields are replaced, never mutated | views only: never a Story, a runner or a Pixi object (principle 7) |
-| `ui/{TapToStart,Stage,DialogueBox,Choices,QuickBar,Toast}.svelte`, [ui/typewriter.ts](../client/src/ui/typewriter.ts) | Home's frame, the stage host the scene mounts into, the dialogue box with the grapheme typewriter, the choices (no tap-through), the quick bar, the toast stack (its `dev` banner only under the mock) | presentational: props in, callbacks out; text through `t()` or `textContent`, never markup |
+| `ui/{TapToStart,Stage,DialogueBox,Choices,QuickBar,Toast}.svelte`, [ui/typewriter.ts](../client/src/ui/typewriter.ts) | Home's frame, the stage host the scene mounts into, the dialogue box with the grapheme typewriter, the choices (no tap-through), the quick bar, the toast stack (its `dev` banner only under the mock) | presentational: props in, callbacks out; text through `t()`, `textContent` or Svelte text interpolation, never markup |
 | [i18n/index.ts](../client/src/i18n/index.ts), `i18n/{ru,en}.ts` | the UI string tables and `t(lang, key, params)` (:18) | `ru.ts` defines the keys; `en.ts` is typed by them, so a missing or an extra key is a compile error ([en.ts:1-6](../client/src/i18n/en.ts#L1)) |
+| [ui/meta/index.ts](../client/src/ui/meta/index.ts), `ui/meta/*.svelte`, [i18n/meta.ts](../client/src/i18n/meta.ts) | the presentational meta overlays (completion card, friends and requests, a friend's profile, invite prompt, consent, wallet, gift) and their own string table (`mt` :140); `ui/meta/index.ts` is the one entry of one lazy chunk (META-PLAN M27) | **nothing imports the chunk yet, and nothing mounts it until LMI meta-integration**, whose `app/meta.ts` is the only module allowed to load `ui/meta/index.ts`, and only by a dynamic import. Outside `ui/meta/` a module may reach it only by `import type`, nothing outside the chunk loads `i18n/meta.ts`, and the chunk does no I/O (`meta: one entry, no I/O, the meta table stays in the chunk`, [meta.svelte.test.ts:872-930](../client/src/ui/meta/meta.svelte.test.ts#L872)) |
 
 Forbidden anywhere in `src/` (arch rules): `vh` units, `window.open` and dialogs, `innerHTML` / `{@html`, Service
 Workers, `document.cookie`, `<iframe`, `history` navigation, `localStorage` / `sessionStorage` outside
@@ -66,7 +68,7 @@ outside `src/` (so neither `story/` nor `server/content/` can enter the bundle).
 
 **Not wired yet.** No production module creates the scene controller, the audio manager, the screen stack or the
 view model, and none imports `client/src/story-gen/`. `App.svelte` mounts none of the overlay components until L15
-integration. The conductor, the story runtime and the API client are planned (GameSession `app/game.ts`, L15;
+integration, and none of the meta overlays until LMI meta-integration. The conductor, the story runtime and the API client are planned (GameSession `app/game.ts`, L15;
 `story/runner.ts`, L13; `api/http.ts`, L10 client-data, running; PP "Module map"). The boot e2e
 ([boot.spec.ts](../client/e2e/boot.spec.ts)) covers what boot does today; the overlay components are tested in the
 vitest `dom` project.
@@ -78,12 +80,13 @@ vitest `dom` project.
 | [main.rs](../server/src/main.rs) | `server serve` (the default): `Config::from_env`, `AppState::new`, bind `LISTEN_ADDR`, graceful shutdown |
 | [lib.rs](../server/src/lib.rs) | `AppState` (one constructor, `AppState::new` :61; `with_clock` / `with_catalog` / `with_gateway` seams), `build_router` :117 (production routes only: `/api`, and `/telegram/webhook` outside it with its own 1 MiB body limit) |
 | [config.rs](../server/src/config.rs) | `Config::from_env`: secrets and settings only from the environment; the committed placeholder secrets are refused unless `TELEGRAM_ENV` is `test` and `PUBLIC_APP_URL` is a local host (:173-187) |
-| [api/mod.rs](../server/src/api/mod.rs) | the routes (:43): `/health`, `/auth`, `/entitlements`, `/chapters/{chapterId}`, `/assets/{file}`, `/saves`, `/saves/{storyId}/{slot}`, `/puzzles/{puzzleId}`, `/puzzles/{puzzleId}/attempts`, `/invoices`, `/orders/{orderId}`; a 16 KB body limit (300 KB for saves) and `Cache-Control: no-store` by default |
+| [api/mod.rs](../server/src/api/mod.rs) | the routes (:44): `/health`, `/auth`, `/entitlements`, `/chapters/{chapterId}`, `/assets/{file}`, `/saves`, `/saves/{storyId}/{slot}`, `/puzzles/{puzzleId}`, `/puzzles/{puzzleId}/attempts`, `/invoices`, `/orders/{orderId}`, `/stats`, `/stats/events`; a 16 KB body limit (300 KB for saves) and `Cache-Control: no-store` by default |
 | `auth/*` | initData validation, the session token, the `AuthUser` extractor ([Auth](#auth-initdata-then-the-servers-own-token)) |
 | `db/*` | `Repo`, the repository seam: every SQL statement; handlers never see `sqlx` |
 | [content.rs](../server/src/content.rs) | `ContentStore`: the story index, paid chapters, the puzzle index and the gated asset index, loaded once at startup |
 | [catalog.rs](../server/src/catalog.rs) | products: every paid chapter of the story index, priced by `server/catalog.json` (prices are server-only) |
 | `puzzles/mod.rs` | answer check, attempt rate limit, puzzle status with the texts of unlocked hint tiers |
+| [api/stats.rs](../server/src/api/stats.rs), [db/stats.rs](../server/src/db/stats.rs) | the player statistics: the event batch, its classification and budgets, the read of distinct facts ([Player statistics](#player-statistics-as-built)) |
 | [telegram/gateway.rs](../server/src/telegram/gateway.rs) | `BotGateway` (:49) and `FrankensteinGateway`: the Bot API through frankenstein types, no bot framework (principle 6) |
 | [telegram/webhook.rs](../server/src/telegram/webhook.rs) | `POST /telegram/webhook` (`webhook` :50): the secret check, the decode into frankenstein's `Update`, the lenient payment probe, the dispatch ([Payments](#payments-as-built)) |
 | [telegram/payments.rs](../server/src/telegram/payments.rs), [db/payments.rs](../server/src/db/payments.rs) | the pre-checkout decision and its answer under their deadlines; the grant on `successful_payment`; their SQL in `db/` |
@@ -294,7 +297,8 @@ Participants: `post_invoice` ([api/orders.rs:53-107](../server/src/api/orders.rs
   1-32 code points by the story gate (`catalog/stories` rule 9).
 - **The schema is the idempotency.** `payments` has the primary key `telegram_payment_charge_id`; `orders.charge_id`
   and `entitlements.charge_id` are UNIQUE and reference it ([0001_init.sql:12-60](../server/migrations/0001_init.sql#L12),
-  test `schema_charge_id_unique`). The grant (below) writes through these keys, never a check-then-insert.
+  test `schema_charge_id_unique`). The grant (below) writes through the primary keys `payments_pkey` and
+  `entitlements_pkey` (user, product), never a check-then-insert; the UNIQUE charge-id columns back them.
 
 Tests: `server/tests/it/payments.rs` (`invoice_price_from_catalog`, `invoice_reuses_recent_order`,
 `invoice_order_committed_before_gateway_call`, `invoice_gateway_error_502_order_kept`, `invoice_already_owned_409`,
@@ -336,7 +340,7 @@ Participants: `webhook` ([webhook.rs:50](../server/src/telegram/webhook.rs#L50))
   [lib.rs:117-126](../server/src/lib.rs#L117)); one byte more is 413 before the handler runs. The handler answers 401
   unless exactly one `X-Telegram-Bot-Api-Secret-Token` value equals `WEBHOOK_SECRET`. It compares in constant time,
   before anything is parsed ([webhook.rs:60-69](../server/src/telegram/webhook.rs#L60)). Logs never carry the body,
-  the headers or the secret.
+  the headers or the secret; they carry the charge id, a body field that is no secret (webhook.rs :125, :160, :189).
 - **Pre-checkout under the payer-row lock.** `Repo::pre_checkout` is one READ COMMITTED transaction
   ([db/payments.rs:98-170](../server/src/db/payments.rs#L98)). It locks the payer's `users` row
   (`FOR NO KEY UPDATE`), so one payer's pre-checkouts run one after another. Then one conditional UPDATE moves the
@@ -371,7 +375,7 @@ Participants: `webhook` ([webhook.rs:50](../server/src/telegram/webhook.rs#L50))
   redelivers and the idempotent grant runs again (`grant`,
   [webhook.rs:183-193](../server/src/telegram/webhook.rs#L183)). A pre-checkout whose database step fails is answered
   as a `Temporary` refusal (:195-206).
-- **Telegram strings** are bound through `without_nul` ([db/mod.rs:47](../server/src/db/mod.rs#L47)): PostgreSQL
+- **Telegram strings** are bound through `without_nul` ([db/mod.rs:48](../server/src/db/mod.rs#L48)): PostgreSQL
   `text` cannot hold U+0000, so it becomes U+FFFD, the same key on every redelivery.
 - **Dev: simulated payments take the production path.** `server-dev`'s `POST /dev/simulate-payment` builds
   Telegram's update JSON: the `pre_checkout_query` and, when that was answered ok, the `successful_payment`. It feeds
@@ -393,6 +397,66 @@ Tests: `server/tests/it/webhook.rs` (`webhook_missing_secret_401`, `webhook_wron
 `successful_payment_nul_in_strings_recorded_replaced`); `server/dev/tests/dev.rs`
 (`simulate_payment_goes_through_webhook_handler`, `simulate_paid_twice_grants_once`,
 `simulate_payment_delay_answers_first`).
+
+## Player statistics as built
+
+STORIES-PLAN Y8-Y12 and META-PLAN M1-M3, built by LS3 server-stats. The server records what a player did (a chapter
+started or completed, an ending reached, a puzzle ended, a choice made) and reads it back as distinct facts. No
+client sends events yet: the reporter is LS4 stats-client's, and L15 integration adds the event points.
+
+```mermaid
+sequenceDiagram
+    participant C as Client (Mini App)
+    participant S as Server (axum)
+    participant DB as PostgreSQL
+    C->>S: POST /api/stats/events {events: 1-32} (Bearer)
+    S->>S: structural checks (else 400), repeated event ids dropped
+    opt the batch names a paid chapter
+        S->>DB: Repo::entitlements(user)
+    end
+    S->>S: classify each event - unknown_chapter, not_entitled, then the subject
+    S->>DB: Repo::record_events - one count of facts and choices in the last hour
+    alt facts over 600 in the hour
+        S-->>C: 429 rate_limited, Retry-After 600 - nothing written
+    else within the facts budget
+        S->>DB: UNNEST insert ON CONFLICT ON CONSTRAINT stat_events_event_key DO NOTHING
+        S-->>C: recorded, duplicates, rejected (private, no-store)
+    end
+    C->>S: GET /api/stats (Bearer)
+    S->>DB: Repo::stat_facts - the user's distinct facts
+    S-->>C: per story and for the game, no endings total (private, no-store)
+```
+
+Participants: `post_events` ([api/stats.rs:63-145](../server/src/api/stats.rs#L63)), `check_event` (:217),
+`classify` (:303), `Repo::record_events` ([db/stats.rs:174](../server/src/db/stats.rs#L174)), `get_stats`
+([api/stats.rs:149](../server/src/api/stats.rs#L149)), `Repo::stat_facts` ([db/stats.rs:282](../server/src/db/stats.rs#L282)).
+
+- **The classify order.** Per event: a chapter outside the story index is `unknown_chapter`; a paid chapter whose
+  product the user does not own is `not_entitled`; only then is the subject judged (`unknown_ending`,
+  `unknown_puzzle`, or `unknown_choice` for a choice whose chapter part is not the event's chapter). So an unowned
+  chapter's ending names are never confirmed or denied (`stats_not_entitled_hides_ending_check`; the unit test
+  `classify_order`). A rejected event is answered in `rejected`. The server derives the story; the
+  request never names it.
+- **Two budgets per rolling hour** (`StatCaps`, [db/stats.rs:122](../server/src/db/stats.rs#L122); 600 each,
+  [api/stats.rs:38-41](../server/src/api/stats.rs#L38)), counted in one statement. Facts: a batch carrying a fact that
+  would pass 600 fact rows is 429, and nothing of it is written. Choices: past 600 choice rows only a first pick of an
+  option is written; a repeat pick is rejected `rate_limited`, and a choice-only batch is never a 429
+  ([db/stats.rs:197](../server/src/db/stats.rs#L197)). Both budgets are soft by up to one batch per concurrent
+  request: the statements are autocommit, with no row lock ([db/stats.rs:6](../server/src/db/stats.rs#L6)).
+- **Idempotent on the event key.** `stat_events_event_key` is UNIQUE (user, event id)
+  ([0003_stats.sql:22](../server/migrations/0003_stats.sql#L22)); the insert skips a known id, so a resent batch
+  counts as duplicates and changes nothing (`stats_event_replay_counts_once`, `stats_replayed_batch_answers_duplicates`).
+  The table's CHECKs mirror the structural checks, so a malformed event is a 400 before any SQL
+  (`stats_malformed_event_400`).
+- **Statistics never unlock (ST4, principle 1).** Only `db/stats.rs` and `api/stats.rs` name the statistics
+  repository, in `server` and `server-dev` alike (`stats_repo_called_only_from_stats_api`), and rows saying a paid
+  chapter was played leave it 403 and unowned (`stats_do_not_unlock_paid_chapter`).
+- **No endings total.** `GET /api/stats` gives each story's started flag, completed chapters (a reached ending
+  completes its chapter), chapter total and the endings reached, and the game's stories started, stories total and
+  endings reached; there is no endings total at either level (META-PLAN M8; `stats_response_has_no_endings_total`).
+  A fact counts only while the current index holds it (`stats_retired_ending_not_counted`).
+- **Planned (LM2).** A choice is checked against the chapter's option vocabulary only from LM2 meta-server on; until
+  then a first pick past the choice budget is written for any well-formed option ID of the chapter.
 
 ## WebView constraints
 
