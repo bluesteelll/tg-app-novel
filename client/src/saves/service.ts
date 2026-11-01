@@ -3,13 +3,16 @@
 // retry of an unchanged body replays its `writeId` (the server answers 200 if it had landed); `sentIds` remembers the
 // writeIds sent since the last acknowledged rev, so a 409 whose `current` is one of ours is adopted, never a prompt. Any
 // other 409 pauses autosave until the player chooses: progress is never overwritten silently (principle 1: the server
-// copy is the truth). No player-facing text here: states and error values only.
+// copy is the truth). While the newest body is unacknowledged it is also cached in DeviceStorage (saves/pending.ts),
+// and `start` uploads that cache only by the F3 step 5 rule. No player-facing text here: states and error values only.
 import type { Endpoints } from '../api/endpoints.ts';
 import type { PutSaveRequest, PutSaveResponse, SaveFull, SaveListResponse, SaveSlot, SaveSummary } from '../api/generated/api.ts';
 import type { ApiError, Clock } from '../api/http.ts';
 import type { Result, StoryId } from '../story/catalog.ts';
 import type { ChapterId, LineId, StoryVersion } from '../story/staging.ts';
 import type { Unsubscribe } from '../telegram/index.ts';
+import { createPendingStore, shouldUpload } from './pending.ts';
+import type { DeviceStore } from './pending.ts';
 
 export type ManualSlot = Exclude<SaveSlot, 'auto'>;
 /** One body to store, with the envelope the server lists. */
@@ -25,9 +28,16 @@ export type SaveState =
 export type SaveError = ApiError | { kind: 'conflict'; current: SaveSummary };
 
 export interface SaveService {
-  /** F3 for this story: seeds the known revs from the boot list by (story, slot). Re-callable after an error. */
+  /**
+   * F3 step 5 for this story: seeds the known revs from the boot list by (story, slot), then uploads or discards the
+   * pending entry. A network failure of the upload keeps the entry and is returned (Game.start shows Retry); `start`
+   * may be called again.
+   */
   start(list: SaveListResponse): Promise<Result<void, ApiError>>;
-  /** Coalescing; never throws. Queued until `start` succeeds. */
+  /**
+   * Coalescing; never throws. Queued until `start` succeeds. `keepalive` (`pagehide`) caches the body first, then
+   * sends it as a keepalive PUT when its JSON fits `KEEPALIVE_BODY_MAX`, even beside a PUT in flight.
+   */
   autosave(w: SaveWrite, o?: { keepalive?: boolean }): void;
   /** One PUT per call; a 409 is `conflict` and never pauses autosave. */
   save(slot: ManualSlot, w: SaveWrite): Promise<Result<PutSaveResponse, SaveError>>;
@@ -37,6 +47,11 @@ export interface SaveService {
   resolveConflict(choice: 'keep-here' | 'load-theirs'): void;
   /** The stored save, or `null` for an empty slot (404); adopts its rev when nothing of ours is waiting for the slot. */
   load(slot: SaveSlot): Promise<Result<SaveFull | null, ApiError>>;
+  /**
+   * exitToStories' "autosave (≤ 2 s, else the pending cache)": `'saved'` when nothing is unacknowledged; otherwise the
+   * newest body is cached, a waiting retry runs now, and the ack (`'saved'`) or the timeout (`'pending'`) decides.
+   */
+  flush(o: { timeoutMs: number }): Promise<'saved' | 'pending'>;
   state(): SaveState;
   onState(fn: (s: SaveState) => void): Unsubscribe;
   /** The app came back: a waiting retry runs now. */
@@ -49,8 +64,15 @@ export interface SaveService {
 export const SENT_IDS_MAX = 16;
 /** F3 step 3: the waits after the 1st, 2nd, … transient failure; the last one repeats. */
 export const BACKOFF_MS: readonly number[] = [1000, 2000, 4000, 8000, 16000, 30000];
+/**
+ * The largest keepalive PUT, in UTF-8 bytes of its JSON body. The Fetch Standard refuses a keepalive request once the
+ * group's in-flight keepalive bytes would pass 64 KiB (WebKit: 65536), and the refusal is a plain network error; the
+ * `pagehide` stats flush (LS4) may carry 16 KiB beside this PUT, so 64 - 16 KiB.
+ */
+export const KEEPALIVE_BODY_MAX = 49_152;
 
 const SLOTS: readonly SaveSlot[] = ['auto', 's1', 's2', 's3'];
+const utf8 = new TextEncoder();
 
 /** The summary of (story, slot) in the boot list: a lookup by key, never by position (the order is the collation's). */
 export function summaryOf(list: SaveListResponse, story: StoryId, slot: SaveSlot): SaveSummary | null {
@@ -108,12 +130,19 @@ function failureOf(e: ApiError): 'transient' | 'rejected' | 'unsaved' {
 
 export function createSaveService(deps: {
   api: Pick<Endpoints, 'getSave' | 'putSave'>;
+  /** The facade's DeviceStorage, `null` below Bot API 9.0 (no pending cache then). */
+  device: DeviceStore | null;
   clock: Clock;
   story: StoryId;
   newId?: () => string;
 }): SaveService {
   const { api, clock, story } = deps;
   const newId = deps.newId ?? randomId;
+  const pending = createPendingStore(deps.device, story);
+  /** Whether a pending entry may be stored: it then follows the newest body until the ack clears it. */
+  let pendingLive = false;
+  /** `flush` calls waiting for the ack. */
+  const waiters = new Set<(r: 'saved' | 'pending') => void>();
   /** lastKnownRev per slot; `null` = no row known. */
   const revs = new Map<SaveSlot, number | null>();
   const listeners = new Set<(s: SaveState) => void>();
@@ -157,21 +186,41 @@ export function createSaveService(deps: {
       retryTimer = null;
     }
   };
+  /** Caches the newest body (F3 step 3). Before `start` the revs are unknown, so nothing is written over the old entry. */
+  const persist = (): void => {
+    if (!started || newest === null) {
+      return;
+    }
+    pendingLive = true;
+    // Fire and forget: a refused set means no cache (K13), and nothing waits for the device's answer.
+    void pending.write({ v: 1, baseRev: revs.get('auto') ?? null, sentIds, writeId: newest.writeId, write: newest.write });
+  };
+  const unpersist = (): void => {
+    if (pendingLive) {
+      pendingLive = false;
+      void pending.clear();
+    }
+  };
+  const finishWaiters = (r: 'saved' | 'pending'): void => {
+    for (const done of [...waiters]) {
+      done(r);
+    }
+  };
 
   /** Sends `newest` when nothing blocks it: started, not paused, no PUT in flight and no retry waiting. */
   function pump(): void {
     if (disposed || !started || conflict !== null || inFlight !== null || retryTimer !== null || newest === null) {
       return;
     }
-    send(newest);
+    send(newest, false);
   }
 
-  function send(p: Pending): void {
+  function send(p: Pending, keepalive: boolean): void {
     inFlight = p;
     remember(p.writeId);
     setState({ kind: 'saving' });
     // putSave answers every failure as a value; a rejection (a bug) is treated as a network failure, never lost.
-    void api.putSave(story, 'auto', requestFor(p)).then(
+    void api.putSave(story, 'auto', requestFor(p), keepalive ? { keepalive: true } : undefined).then(
       (r) => settled(p, r),
       (e: unknown) => settled(p, { ok: false, error: { kind: 'network', detail: String(e) } }),
     );
@@ -189,8 +238,13 @@ export function createSaveService(deps: {
       noRowRetried = false;
       if (newest === p) {
         newest = null;
+        unpersist();
         setState({ kind: 'idle' });
+        finishWaiters('saved');
       } else {
+        if (pendingLive) {
+          persist();
+        }
         pump();
       }
       return;
@@ -203,12 +257,16 @@ export function createSaveService(deps: {
           // An earlier write of ours landed and its answer was lost: adopt its rev and re-PUT the newest body.
           const current = r.error.kind === 'http' ? r.error.body?.current : undefined;
           revs.set('auto', current?.rev ?? null);
+          if (pendingLive) {
+            persist();
+          }
           pump();
           return;
         }
         case 'theirs':
           conflict = c.current;
           setState({ kind: 'paused', current: c.current });
+          finishWaiters('pending');
           return;
         case 'no-row':
           if (!noRowRetried) {
@@ -230,6 +288,7 @@ export function createSaveService(deps: {
         attempt += 1;
         const base = BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length) - 1] ?? 30_000;
         const wait = r.error.kind === 'http' && r.error.retryAfter !== null ? Math.max(base, r.error.retryAfter * 1000) : base;
+        persist();
         setState({ kind: 'retrying', attempt, inMs: wait });
         retryTimer = clock.setTimeout(() => {
           retryTimer = null;
@@ -238,16 +297,24 @@ export function createSaveService(deps: {
         return;
       }
       case 'rejected':
+        // Never accepted as it is: dropped, and its cache with it.
         if (newest === p) {
           newest = null;
+          unpersist();
         }
         break;
       case 'unsaved':
+        // Kept for the next launch (the session ended, say): the cache holds the newest body.
+        persist();
         break;
     }
     attempt = 0;
     setState({ kind: 'failed', error: r.error });
-    if (newest !== p) {
+    if (newest === null) {
+      finishWaiters('saved');
+    } else if (newest === p) {
+      finishWaiters('pending');
+    } else {
       // A newer body is waiting: it is a different write, so sending it is no retry loop.
       pump();
     }
@@ -270,9 +337,44 @@ export function createSaveService(deps: {
     return r;
   }
 
+  /**
+   * F3 step 5: the entry is uploaded when `shouldUpload` holds, with its own writeId (a copy that already landed is a
+   * 200 no-op); otherwise, or on a 409 or a refusal, it is discarded and the server wins. A transient failure keeps it.
+   */
+  async function uploadPending(server: SaveSummary | null): Promise<Result<void, ApiError>> {
+    const entry = await pending.read();
+    if (entry === null || disposed) {
+      return { ok: true, value: undefined };
+    }
+    if (!shouldUpload(entry, server)) {
+      void pending.clear();
+      return { ok: true, value: undefined };
+    }
+    const r = await api.putSave(story, 'auto', { expectedRev: server?.rev ?? null, writeId: entry.writeId, ...entry.write });
+    if (r.ok) {
+      revs.set('auto', r.value.rev);
+      void pending.clear();
+      return { ok: true, value: undefined };
+    }
+    if (conflictOf(r.error, () => false) !== null) {
+      revs.set('auto', (r.error.kind === 'http' ? r.error.body?.current?.rev : undefined) ?? null);
+      void pending.clear();
+      return { ok: true, value: undefined };
+    }
+    if (failureOf(r.error) === 'rejected') {
+      void pending.clear();
+      return { ok: true, value: undefined };
+    }
+    return r;
+  }
+
   async function run(list: SaveListResponse): Promise<Result<void, ApiError>> {
     for (const slot of SLOTS) {
       revs.set(slot, summaryOf(list, story, slot)?.rev ?? null);
+    }
+    const uploaded = await uploadPending(summaryOf(list, story, 'auto'));
+    if (!uploaded.ok) {
+      return uploaded;
     }
     if (!disposed) {
       started = true;
@@ -291,12 +393,37 @@ export function createSaveService(deps: {
       });
       return starting;
     },
-    autosave(w) {
+    autosave(w, o) {
       if (disposed) {
         return;
       }
-      newest = { write: w, writeId: newId() };
-      pump();
+      const p: Pending = { write: w, writeId: newId() };
+      newest = p;
+      if (o?.keepalive !== true) {
+        if (pendingLive) {
+          persist();
+        }
+        pump();
+        return;
+      }
+      // pagehide: the page may be going away. The cache is written first; neither call waits for the other.
+      const fits = utf8.encode(JSON.stringify(requestFor(p))).byteLength <= KEEPALIVE_BODY_MAX;
+      const sendNow = started && conflict === null && fits;
+      if (sendNow) {
+        remember(p.writeId);
+      }
+      persist();
+      if (!sendNow) {
+        return;
+      }
+      if (inFlight === null) {
+        cancelRetry();
+        send(p, true);
+        return;
+      }
+      // Beside the PUT in flight. Its answer is not read: `p` stays the newest, its id is in sentIds, so whichever of
+      // the two lands first, the other's 409 is ours and the re-send of `p` replays its writeId.
+      void api.putSave(story, 'auto', requestFor(p), { keepalive: true }).catch(() => undefined);
     },
     save: (slot, w) => manualPut(slot, w, revs.get(slot) ?? null),
     overwrite: (slot, w, current) => manualPut(slot, w, current.rev),
@@ -309,6 +436,7 @@ export function createSaveService(deps: {
       if (choice === 'load-theirs') {
         newest = null;
         sentIds = [];
+        unpersist();
       }
       setState({ kind: 'idle' });
       pump();
@@ -330,6 +458,32 @@ export function createSaveService(deps: {
       }
       return r;
     },
+    flush({ timeoutMs }) {
+      if (disposed) {
+        return Promise.resolve('pending');
+      }
+      if (newest === null) {
+        return Promise.resolve('saved');
+      }
+      persist();
+      if (conflict !== null || state.kind === 'failed') {
+        // Nothing acknowledges this by itself: the player's choice or a new session must come first.
+        return Promise.resolve('pending');
+      }
+      if (retryTimer !== null) {
+        cancelRetry();
+        pump();
+      }
+      return new Promise((resolve) => {
+        const timer = clock.setTimeout(() => done('pending'), timeoutMs);
+        const done = (r: 'saved' | 'pending'): void => {
+          clock.clearTimeout(timer);
+          waiters.delete(done);
+          resolve(r);
+        };
+        waiters.add(done);
+      });
+    },
     state: () => state,
     onState(fn) {
       const entry = (s: SaveState): void => fn(s);
@@ -347,6 +501,7 @@ export function createSaveService(deps: {
     dispose() {
       disposed = true;
       cancelRetry();
+      finishWaiters('pending');
       listeners.clear();
     },
   };
