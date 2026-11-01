@@ -7,6 +7,7 @@ pub mod entitlements;
 pub mod orders;
 pub mod puzzles;
 pub mod saves;
+pub mod social;
 pub mod stats;
 pub mod wallet;
 

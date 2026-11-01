@@ -1,17 +1,26 @@
-//! The social graph (META-PLAN M10-M12, M15; `0005_social.sql`): the schema's named constraints on raw SQL.
+//! The social graph (META-PLAN M10-M12, M15; `0005_social.sql`): the schema's named constraints on raw SQL, the
+//! users upsert's inserted flag, and the attribution at `POST /api/auth` (M11) through the production router.
 //!
 //! Every refused schema case breaks one constraint, or one whose CHECK name sorts before every other it breaks:
 //! PostgreSQL tests a table's CHECK constraints in name order, then the unique indexes, then the foreign keys at the
 //! end of the statement, so the constraint a case reports is the one the case is about. Each refused case sits next to
 //! a control on the same parent rows, so a red names the constraint, not a missing parent.
 //!
-//! User ids are at least 5 000 000 001, so no timestamp, count or code fragment of a test can equal one.
+//! User ids are at least 5 000 000 001, so no timestamp, count or code fragment of a test can equal one. initData is
+//! signed here with the validator's own data-check-string and key (the `auth.rs` precedent).
 
 use std::sync::Arc;
 
+use axum::body::Body;
+use axum::http::header::CONTENT_TYPE;
+use axum::http::{Request, StatusCode};
+use hmac::{Hmac, KeyInit, Mac};
+use serde_json::{Value, json};
 use server::AppState;
+use server::auth::{data_check_string, secret_key};
 use server::clock::FixedClock;
 use server::ids::UserId;
+use sha2::Sha256;
 use sqlx::PgConnection;
 use sqlx::postgres::PgQueryResult;
 
@@ -22,6 +31,8 @@ use crate::common;
 const ANN: i64 = 5_000_000_001;
 /// The second player.
 const BEN: i64 = 5_000_000_002;
+/// The third player.
+const CAT: i64 = 5_000_000_003;
 /// A user id below every player with no `users` row.
 const NOBODY_LOW: i64 = 4_000_000_001;
 /// A user id above every player with no `users` row.
@@ -504,4 +515,181 @@ async fn users_upsert_reports_inserted() {
         got == [true, false, false],
         "upserts at T0, T0, T0 + 100: expected [true, false, false], got {got:?}"
     );
+}
+
+/// initData for `user` named `name`, issued at `T0`, with `start_param` when given, signed with the test bot token.
+fn init_data(user: i64, name: &str, start_param: Option<&str>) -> String {
+    let user_json = json!({ "id": user, "first_name": name, "language_code": "ru" }).to_string();
+    let mut pairs = vec![
+        ("auth_date".to_owned(), T0.to_string()),
+        ("user".to_owned(), user_json),
+    ];
+    if let Some(start_param) = start_param {
+        pairs.push(("start_param".to_owned(), start_param.to_owned()));
+    }
+    let mut mac = Hmac::<Sha256>::new_from_slice(&secret_key(common::TEST_BOT_TOKEN)).unwrap();
+    mac.update(data_check_string(&pairs).as_bytes());
+    pairs.push(("hash".to_owned(), hex::encode(mac.finalize().into_bytes())));
+    form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(&pairs)
+        .finish()
+}
+
+/// `POST /api/auth` with the JSON `body`.
+async fn post_auth(st: &AppState, body: &Value) -> common::Reply {
+    let req = Request::post("/api/auth")
+        .header(CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    common::call(st, req).await
+}
+
+/// A launch of `user` named `name` with `start_param`: `POST /api/auth` with signed initData.
+async fn launch(st: &AppState, user: i64, name: &str, start_param: Option<&str>) -> common::Reply {
+    post_auth(
+        st,
+        &json!({ "initData": init_data(user, name, start_param) }),
+    )
+    .await
+}
+
+fn body_json(reply: &common::Reply) -> Value {
+    serde_json::from_slice(&reply.body).unwrap_or(Value::Null)
+}
+
+fn body_text(reply: &common::Reply) -> String {
+    String::from_utf8_lossy(&reply.body).into_owned()
+}
+
+/// `None` when `reply` is a 200 `AuthResponse` (exactly `token`, `expiresAt`, `user`), else the failure line.
+fn auth_ok(case: &str, reply: &common::Reply) -> Option<String> {
+    let json = body_json(reply);
+    let keys: Vec<&str> = json
+        .as_object()
+        .map(|map| map.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    (reply.status != StatusCode::OK || keys != ["expiresAt", "token", "user"]).then(|| {
+        format!(
+            "{case}: expected 200 with exactly expiresAt, token, user; got {} {}",
+            reply.status.as_u16(),
+            body_text(reply)
+        )
+    })
+}
+
+/// A referral row: (invitee, inviter, attributed_at, qualified_at, outcome).
+type ReferralRow = (i64, Option<i64>, i64, Option<i64>, Option<String>);
+
+/// Every referral row, by invitee.
+async fn referral_rows(c: &mut PgConnection) -> Vec<ReferralRow> {
+    sqlx::query_as(
+        "SELECT invitee_id, inviter_id, attributed_at, qualified_at, outcome FROM referrals ORDER BY invitee_id",
+    )
+    .fetch_all(&mut *c)
+    .await
+    .unwrap()
+}
+
+/// Every friend request as (from, to), in that order.
+async fn request_rows(c: &mut PgConnection) -> Vec<(i64, i64)> {
+    sqlx::query_as("SELECT from_id, to_id FROM friend_requests ORDER BY from_id, to_id")
+        .fetch_all(&mut *c)
+        .await
+        .unwrap()
+}
+
+/// A newcomer's first launch with an invite records one referral to the code's owner; an existing user's launch with
+/// the same code, and the newcomer's second launch, record nothing (M11: a property of the first login only).
+#[tokio::test]
+async fn referral_attributed_on_first_login_only() {
+    let (st, _db) = social_state(&[ANN, BEN]).await;
+    let mut c = common::raw_db(&st).await;
+    code(&mut c, CODE_A, ANN, None).await.unwrap();
+    let invite = format!("f{CODE_A}");
+    let mut failures = Vec::new();
+
+    failures.extend(auth_ok(
+        "existing BEN",
+        &launch(&st, BEN, "Ben", Some(&invite)).await,
+    ));
+    let rows = referral_rows(&mut c).await;
+    if !rows.is_empty() {
+        failures.push(format!("existing BEN: expected no row, got {rows:?}"));
+    }
+
+    failures.extend(auth_ok(
+        "newcomer CAT",
+        &launch(&st, CAT, "Cat", Some(&invite)).await,
+    ));
+    let want: Vec<ReferralRow> = vec![(CAT, Some(ANN), T0, None, None)];
+    let rows = referral_rows(&mut c).await;
+    if rows != want {
+        failures.push(format!("newcomer CAT: expected {want:?}, got {rows:?}"));
+    }
+
+    failures.extend(auth_ok(
+        "CAT again",
+        &launch(&st, CAT, "Cat", Some(&invite)).await,
+    ));
+    let rows = referral_rows(&mut c).await;
+    if rows != want {
+        failures.push(format!(
+            "CAT's second launch: expected {want:?}, got {rows:?}"
+        ));
+    }
+    let requests = request_rows(&mut c).await;
+    if !requests.is_empty() {
+        failures.push(format!(
+            "friend requests: expected none at auth, got {requests:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// Only `f` + 32 lower-case hex naming an active code is an invite: every other signed `start_param`, and an unsigned
+/// `startParam` in the body, is a plain login (200, `AuthResponse`'s three keys) that writes no referral and no
+/// request. Each case is a fresh newcomer, so each takes the attribution path.
+#[tokio::test]
+async fn auth_start_param_other_shapes_create_nothing() {
+    let (st, _db) = social_state(&[ANN]).await;
+    let mut c = common::raw_db(&st).await;
+    code(&mut c, CODE_A, ANN, None).await.unwrap();
+    code(&mut c, CODE_B, ANN, Some(T0)).await.unwrap();
+    let cases: Vec<(&str, String)> = vec![
+        ("upper-case prefix", format!("F{CODE_A}")),
+        ("upper-case code", format!("f{}", CODE_A.to_uppercase())),
+        ("31 hex", format!("f{}", &CODE_A[1..])),
+        ("33 hex", format!("f{CODE_A}0")),
+        ("U+0000 and 31 hex", format!("f\u{0}{}", &CODE_A[1..])),
+        ("campaign code", "c_spring_2027".to_owned()),
+        ("empty", String::new()),
+        (
+            "unknown code",
+            "f00000000000000000000000000000000".to_owned(),
+        ),
+        ("revoked code", format!("f{CODE_B}")),
+    ];
+    let mut failures = Vec::new();
+    for (i, (case, start_param)) in cases.iter().enumerate() {
+        let user = 5_000_000_100 + i64::try_from(i).unwrap();
+        failures.extend(auth_ok(
+            case,
+            &launch(&st, user, "New", Some(start_param)).await,
+        ));
+    }
+    let unsigned = post_auth(
+        &st,
+        &json!({ "initData": init_data(5_000_000_200, "New", None), "startParam": format!("f{CODE_A}") }),
+    )
+    .await;
+    failures.extend(auth_ok("unsigned startParam in the body", &unsigned));
+    let referrals = referral_rows(&mut c).await;
+    if !referrals.is_empty() {
+        failures.push(format!("referrals: expected none, got {referrals:?}"));
+    }
+    let requests = request_rows(&mut c).await;
+    if !requests.is_empty() {
+        failures.push(format!("friend requests: expected none, got {requests:?}"));
+    }
+    report(&failures);
 }
