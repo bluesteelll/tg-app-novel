@@ -101,7 +101,9 @@ The player:
 - **2** — packs ride the existing grant: only `successful_payment`, only through the idempotent charge-id insert, the
   credit in the same transaction; refunds claw back.
 - **3** — `start_param` is read from the verified initData only; `initDataUnsafe.start_param` drives UX hints, never an
-  identity or attribution decision. Revision 1 (C1): the invite code it carries is also what the client presents to
+  identity or attribution decision (as merged, L7 `57e1424`, cut Q1: the client's `startParam()` parses the hint from
+  the raw `initData` string, since the arch rule `init-data-unsafe` forbids reading `initDataUnsafe`). Revision 1
+  (C1): the invite code it carries is also what the client presents to
   `GET` / `POST /api/invites/{code}` — a bearer capability to *ask* the code's owner, validated by the server like any
   request input; who the caller is still comes only from the bearer token.
 - **4** — the meta UI is a lazy chunk; nothing new loads before the first line except 2.9 KB br in the entry.
@@ -492,7 +494,9 @@ Gifts and referrals have their own caps (M22, M23). Each limit's test is in the 
     `"novel_dev_bot"`). No configuration variable, no inline-query handler, `allowed_updates` unchanged.
   - Client (`telegram/`, L7 re-cut): `shareMessage(id) → Promise<Result<void, ShareError>>` (the `shareMessageSent` /
     `shareMessageFailed` events, a 60 s guard), `openTelegramLink(url)`, `openLink(url)`, `startParam()` (from
-    `initDataUnsafe`, for UX only), `supportsShareMessage()` (`isVersionAtLeast('8.0')`).
+    `initDataUnsafe`, for UX only; as merged, L7 `57e1424`, cut Q1: parsed from the raw `initData` string, since the
+    arch rule `init-data-unsafe` forbids reading `initDataUnsafe`; still a UX hint only), `supportsShareMessage()`
+    (`isVersionAtLeast('8.0')`).
   - Dev mock: `/dev/launch?startapp=<p>` signs `start_param` into the dev initData (LF1); the fake gateway stores each
     prepared message and serves it at `GET /dev/prepared/{id}` (LF2); the mock transport answers
     `web_app_send_prepared_message` with `prepared_message_sent`, or the failure set by `__tgMock.setShareOutcome(…)`,
@@ -835,6 +839,9 @@ unchanged.**
   - Lanes: 38 + 10 = 48. The critical path becomes the server chain LS2 → L6c → L8a → L8b → LS3 → LE1 → LF1 → LM2 →
     LF2 → LE2 → LMI → D2; LPO and then L9 run in the server slot beside LMI (D2 waits for all three); the prototype
     milestone L15 no longer waits for L9 and is reached as before; the meta work adds about three lane-times after L15.
+  - Changed by RULINGS 54 (as of `6043941`; docs lane `docs-errata-2`): of the ten lanes, LM1 (`4d8a9ec`) and LU1
+    (`2a7b50c`) have merged and LE1 runs; LF1, LM2, LF2, LE2, LPO, LMD and LMI are to go. The server chain has run to
+    LS3 (`00d7c10`), so it continues LE1 → LF1 → LM2 → LF2 → LE2 → LPO → L9.
   - Why LPO is a lane of its own (revision 1, W4): the operator facts need a `Config` variable, which means editing
     the three `Config` constructors (`config.rs`, `server/dev/src/lib.rs`, `server/tests/it/common.rs`) plus
     `lib.rs` and `.env.example`; in LF1 that is 15 + 4 = 19 files, over the cap. LPO holds them with `api/legal.rs` and
@@ -868,7 +875,9 @@ unchanged.**
 
 Hand-written by the narrative-designer (format in M4). `catalog/meta` (E), every finding printed, none stops the run:
 1. the file exists and is an object; its keys are story ids of `story/stories.json` (a story may be absent: no
-   achievements, and then it may declare no ending); each value has exactly `endings` and `achievements`;
+   achievements, and then it may declare no ending); each value has exactly `endings` and `achievements`; as merged
+   (LM1 `4d8a9ec`, cut Q2): a missing `story/meta.json` counts as `{}`, and rule 2 still fails a story that declares
+   an ending without its entry;
 2. `endings` has exactly the ending names `stories.json` declares for that story, each `{ ru, en }`, 1–40 code points,
    non-blank (a story that declares an ending must be present);
 3. each achievement id matches `AchievementId`, is unique in its story, ≤ 50 per story; each value has exactly
@@ -932,6 +941,8 @@ export interface Tg { /* PP facade */
   openTelegramLink(url: string): Result<void, TgError>;                 // https://t.me/ links only
   openLink(url: string): Result<void, TgError>;                         // https only; from a tap
   startParam(): string | null;                                          // initDataUnsafe: UX only, never trusted
+                                                                        // as merged (L7 `57e1424`, cut Q1): parsed from
+                                                                        // the raw initData string (arch `init-data-unsafe`)
 }
 
 // meta/card.ts, meta/social.ts, meta/wallet.ts (LMD): views over the generated DTOs (ts-rs, api.ts)
@@ -1118,6 +1129,9 @@ CREATE TABLE hint_unlocks (                     -- META-PLAN M21: replaces the h
   CONSTRAINT stat_events_subject_by_kind CHECK (
        … SP's three branches unchanged …
     OR (kind = 'choice_made' AND subject ~ '^ch[1-9][0-9]*[.][a-z][a-z0-9_]*[.][0-9a-z]{4}$' AND outcome IS NULL)),
+  -- as merged (LS3 `00d7c10`, cut D1; server/migrations/0003_stats.sql:28-34): each regex or IN test of `subject`
+  -- or `outcome`, this branch's included, carries its own `IS NOT NULL` (on `subject`, and on `outcome` for
+  -- puzzle_ended): a NULL CHECK passes
   CONSTRAINT stat_events_choice_in_chapter CHECK (kind <> 'choice_made' OR split_part(subject, '.', 1) = chapter_id),
 ```
 
@@ -1311,7 +1325,7 @@ with builds; old rows stay valid history).
 
 | Method + path | Auth | Request | 200 response | Errors | Idempotency / cache | Lane |
 |---|---|---|---|---|---|---|
-| `POST /api/stats/events` (changed) | bearer | + `kind: "choice_made"`, `subject` = the option ID | unchanged | + reject `unknown_choice`; revision 1 (W2): the 429 counts fact rows only (600/h); + reject `rate_limited` for a repeat pick over the choice budget (600/h; a first pick of an option is recorded at any volume) | unchanged | LS3, LM2 |
+| `POST /api/stats/events` (changed) | bearer | + `kind: "choice_made"`, `subject` = the option ID | unchanged | + reject `unknown_choice`; revision 1 (W2): the 429 counts fact rows only (600/h); + reject `rate_limited` for a repeat pick over the choice budget (600/h; a first pick of an option is recorded at any volume); as merged (LS3 `00d7c10`, O1): a choice-only batch is never a 429, since the facts' rule applies only to a batch that carries a fact | unchanged | LS3, LM2 |
 | `GET /api/stats` (changed) | bearer | — | `StatsResponse` without `endingsTotal` (M8) | 401 | read | LS3 |
 | `GET /api/puzzles/{puzzleId}?lang` (changed) | bearer | — | `PuzzleStatus { puzzleId, solved, hints: [{ tier, unlocked, text \| null }] }` | as PZ | read | L6c |
 | `POST /api/puzzles/{puzzleId}/hints/{tier}?lang` | bearer | — | `HintUseResponse { balance, text }` | 400 (shapes), 403 `not_entitled`, 404, 409 `hint_unavailable` (order, solved), 409 `insufficient_balance` | (user, puzzle, tier): a repeat returns the text and debits nothing | LE1 |
@@ -1785,6 +1799,8 @@ LANE CUT", section "Lanes". Summary:
 
 Order: server LS2 → L6c → L8a → L8b → LS3 → **LE1 → LF1 → LM2 → LF2 → LE2 → LPO** → L9 (LPO and L9 beside LMI);
 client: LM1 beside D1 after LW3; LU1 after L14a; LMD after LS4 and LF2; LMI after L15.
+Changed by RULINGS 54 (as of `6043941`): merged LS2 … LS3, LM1 `4d8a9ec`, LU1 `2a7b50c`; running LE1 (server) and
+L10 (client, ahead of LS4 and LMD); to go: server LF1 → LM2 → LF2 → LE2 → LPO → L9, client LMD, then LMI.
 
 ---
 
@@ -1892,7 +1908,7 @@ server tests only.
 | MQ13 | Meta texts inline in `story/meta.json` instead of the locale tables. | Keep (M4): server-only by construction; revisit if a translation tool needs one table format. |
 | MQ14 | `getMe` instead of a `BOT_USERNAME` variable. | Keep (M16); the first share after a restart pays one Bot API call. |
 | MQ15 | Revision 1 (W4) adds the lane LPO (8 files, 2 commits) for `PRIVACY_OPERATOR_FILE`, the one `Config` variable added after L2, instead of four more files in LF1 (19 > 15). | Accept: it runs in the server slot beside LMI (LE2 → LPO → L9), off the critical path unless LPO + L9 outlast LMI. |
-| MQ16 | Revision 1 (C1): the invite code reaches the invite routes from `initDataUnsafe.start_param` through the client. | Accept: the code is a bearer capability to ask, validated server-side like any input; identity stays the bearer token's and the referral stays on the signed `start_param` (MT7). |
+| MQ16 | Revision 1 (C1): the invite code reaches the invite routes from `initDataUnsafe.start_param` through the client (as merged, L7 `57e1424`, cut Q1: `startParam()` parses it from the raw `initData` string, see the `telegram/` client bullet). | Accept: the code is a bearer capability to ask, validated server-side like any input; identity stays the bearer token's and the referral stays on the signed `start_param` (MT7). |
 
 ### VALUES / SCOPE (for the owner — the orchestrator records them in docs/OPEN-QUESTIONS.md)
 
@@ -1957,3 +1973,5 @@ lists (default: the narrative-designer drafts the demo ones above), Q21 jurisdic
 | 1 | 2026-10-31 | `D:/tmp/novel-orch/design/choices/triage_r1.md` (critique `design/choices/critique_r1.md`) | Revision 1: the 7 confirmed items resolved. **C1** — M10 rewritten: a code lets its holder *ask* (`GET` / `POST /api/invites/{code}`), the owner accepts per person, a decline or removal writes a durable `friend_blocks` row; the launch creates no request (M11: the referral only); M12, M14, M15, MT5, MT6, F19, F20, the concurrency table, the inventory and policy §4 describe the resulting circle. **W1** — `user_handles` (96-bit handles) replace the Telegram id in every social DTO, path and `GiftRequest.to`. **W2** — choice events get their own budget (SP Y11: facts keep 600/h and the 429; repeat picks over 600/h are rejected `rate_limited`, first picks always recorded) and the queue evicts choices first and sends facts first (SP Y13); M3's rate restated with skip mode. **W3** — `0004` binds a pack order's kind and amount (`orders_pack_binding`), the grant credits them, the refund claws back the `pay:<charge>` ledger row's (M19, M20). **W4** — the operator facts come from `PRIVACY_OPERATOR_FILE` outside the repository; production refuses to start with a placeholder left; new lane LPO (M26, M28: 48 lanes). **W5** — the referral hook runs on every batch and re-reads the evidence; a hook failure never fails the response (M23, F26, MT12). **W6** — the inventory splits DeviceStorage (device) from CloudStorage (Telegram-hosted: settings, the read-set); policy §7, §8. Optional O1–O12 and the critique's open questions 1–3 are not folded in. Pre-revision copies: `D:/tmp/novel-orch/design/choices/{META-PLAN,STORIES-PLAN,PROTOTYPE-PLAN,PUZZLES-PLAN}.r1.before.md`; report `design/choices/revision_r1.md`. |
 | 2 | 2026-10-31 | `D:/tmp/novel-orch/design/choices/triage_r2.md` (critique `design/choices/critique_r2.md`) | Revision 2: the 1 confirmed item resolved. **W1** (the served policy text could change while the version a consent records stayed the same), by the triage's option (b): M26 classifies revision 1's 17 placeholders as identity (10, host file `PRIVACY_OPERATOR_FILE`, `IDENTITY_KEYS`), content (6: retention, minimum age, database country, hosting provider, cross-border transfer, supervisory authority; written only by a template commit with a new version) and derived (`{POLICY_VERSION}` from the meta, replacing `{EFFECTIVE_DATE}`). `Policy::load` refuses a content key (`CONTENT_KEYS`) or `POLICY_VERSION` in the host file (`PolicyError::ContentKey`; `privacy_operator_content_key_refused`). `POLICY_PINS` pins each version to one template hash (`policy_template_pinned_per_version`). Every template placeholder must be classified (`policy_placeholders_classified`). An identity edit does not version the policy, but an operator change does (runbook; MV22). The version shape CHECK is unchanged. Also changed: MT5, MT13, Rust types, Module API, the HTTP API privacy row, Integration, the LPO table row, the test names, gates seen red, MV22; PP LPO and D2 `privacy-ops`; PP revision log row 21. Optional O1–O9 and the critique's open questions 2–3 are not folded in. Pre-revision copies: `D:/tmp/novel-orch/design/choices/{META-PLAN,STORIES-PLAN,PROTOTYPE-PLAN,PUZZLES-PLAN}.r2.before.md`; report `design/choices/revision_r2.md`. |
 | 3 | 2026-10-31 | `D:/tmp/novel-orch/design/choices/triage_r3.md` (critique `design/choices/critique_r3.md`) | Revision 3: the 1 confirmed item resolved. **W1** (two of the pin's three conditions had no failing input, and tester mutation 3 had no killer): M26 moves the three conditions (versions strictly increase, the last equals the meta, its hash equals the template's) into one pure checker `check_pins(pins, meta, template bytes)` returning `PinError::{NotIncreasing, LastNotMeta, HashMismatch}`. `policy_template_pinned_per_version` runs it on `POLICY_PINS`, `policy_version()` and the compiled template. The crafted reds `pin_check_rejects_non_increasing_versions`, `pin_check_rejects_last_not_meta` and `pin_check_rejects_hash_mismatch` each break exactly one condition of a valid two-row history, and the control `pin_check_accepts_a_valid_history` passes that history. All three red against an `Ok(())` stub. `POLICY_PINS`, `PinError` and `check_pins` are `#[cfg(test)]` (no `dead_code` in the lib target under `-D warnings`, probed; `pub` and a startup use rejected). Also changed: MT5, M26 Alternatives and Trade-off, Rust types, Module API, Integration, the LPO table row, the test names, gates seen red; PP LPO (goal, commit 2, mutation 3 restated against the checker, seen working); PP revision log row 22. LPO keeps 8 files and 2 commits. Optional O1–O4 and the triage's open question 2 are not folded in. Pre-revision copies: `D:/tmp/novel-orch/design/choices/{META-PLAN,STORIES-PLAN,PROTOTYPE-PLAN,PUZZLES-PLAN}.r3.before.md`; report `design/choices/revision_r3.md`. |
+| 4 | 2026-11-01 | `D:/tmp/novel-orch/carry.md` at ORCH `d97ba64` (the docs-errata-2 spec, group A), as merged on main `6043941` | Docs lane `docs-errata-2`, group A (not a triage round): L7 (`57e1424`) — `startParam()` parsed from the raw `initData`; LM1 (`4d8a9ec`) — a missing `story/meta.json` counts as `{}`; LS3 (`00d7c10`) — the `IS NOT NULL` guards and a choice-only batch never a 429. Fix round 1: the principle-3 line and MQ16 point at the raw-`initData` `startParam()`; the guard comment names the regex / IN tests of `subject` / `outcome`. Ledger: `D:/tmp/novel-orch/docs-errata-2/ledger.md` |
+| 5 | 2026-11-01 | RULINGS 54 (as merged on main `6043941`) | Docs lane `docs-errata-2`, group B (not a triage round): M28 and "Implementation plan" Order as of `6043941` (LM1, LU1 merged; LE1 running; LF1, LM2, LF2, LE2, LPO, LMD, LMI to go). Ledger: `D:/tmp/novel-orch/docs-errata-2/ledger.md` |
