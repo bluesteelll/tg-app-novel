@@ -695,8 +695,9 @@ CREATE TABLE stat_events (                       -- append-only; never read by a
     OR (kind = 'ending_reached' AND subject ~ '^[a-z][a-z0-9_]{0,31}$' AND outcome IS NULL)
     OR (kind = 'puzzle_ended' AND subject ~ '^ch[1-9][0-9]*[.][a-z][a-z0-9_]*$'
         AND outcome IN ('solved', 'failed', 'abandoned'))),
-  -- as merged (LS3 `00d7c10`, cut D1; server/migrations/0003_stats.sql:28-34): every regex or IN branch also
-  -- requires `subject IS NOT NULL` (and `outcome IS NOT NULL` for puzzle_ended), because a CHECK that is NULL passes
+  -- as merged (LS3 `00d7c10`, cut D1; server/migrations/0003_stats.sql:28-34): every regex or IN test of `subject`
+  -- or `outcome` carries its own `IS NOT NULL` (on `subject`, and on `outcome` for puzzle_ended), because a CHECK
+  -- that is NULL passes
   CONSTRAINT stat_events_story_version_shape CHECK (story_version ~ '^[0-9a-f]{16}$'),
   CONSTRAINT stat_events_age_bounded      CHECK (age_ms BETWEEN 0 AND 2592000000),
   CONSTRAINT stat_events_received_positive CHECK (received_at > 0)
@@ -846,7 +847,8 @@ pub struct NewStatEvent<'a> { pub event_id: &'a str, pub kind: StatKind, pub sto
 pub enum RecordOutcome { Recorded { inserted: Vec<String> }, RateLimited }
 impl Repo {
     /// The cap count, then one UNNEST insert with `ON CONFLICT ON CONSTRAINT stat_events_event_key DO NOTHING
-    /// RETURNING event_id` (autocommit; the cap is soft by one batch).
+    /// RETURNING event_id` (autocommit; the cap is soft by one batch; as merged, LS3 review M2: by up to one batch per
+    /// concurrent request).
     pub async fn record_events(&self, user: UserId, events: &[NewStatEvent<'_>], now: i64, cap: i64)
         -> Result<RecordOutcome, sqlx::Error>;
     // as merged (LS3 `00d7c10`, cut D5; server/src/db/stats.rs:120-174): the two budgets of revision 1 —
@@ -1226,7 +1228,7 @@ Totals: 2 stories, 4 chapters (2 free, 2 paid), 4 endings (`truth`, `ashes`, `dr
 | 5 | 2026-10-31 | RULINGS 22, 23 (as merged: LDB1 `fee9da7`, LDB2 `a7e4a04`, this design `66c92c4`) | Docs lane `docs-errata`, group C (not a triage round): "Implementation plan" — "Running and merged lanes" marked as of `66c92c4` (LDB1 and LDB2 merged, L3c resumed on `f1a46ea`, L6b running) and "Order" without LDB1 and LDB2, the critical path from L6b; with PROTOTYPE-PLAN revision 18. Review round 1: SQ5's "PZ:652–1877 are unchanged" marked as of `66c92c4` (PUZZLES-PLAN revision 9 moved them). Ledger: `D:/tmp/novel-orch/docs-errata/ledger.md` |
 | 6 | 2026-10-31 | the META-PLAN campaign spec + RULINGS 25 | Extended by [META-PLAN.md](META-PLAN.md): choice capture (`choice_made`), `endingsTotal` removed, hint products removed, privacy designed. Changed items marked "Changed by META-PLAN": Goal (the "X of Y" sentence; ST5, ST6); Y9; Y10; Y12; Y14; Y16; Y17; Identifiers; the `catalog.json` server format; the TS and Rust stats types; the SQL `0003` note; HTTP API; F12; test names and the seen-red row; Open questions (Q22 note; Q23, Q24, Q25 resolved). Design log: `D:/tmp/novel-orch/design/choices/design_log.md` |
 | 7 | 2026-10-31 | META-PLAN revision 1 (`D:/tmp/novel-orch/design/choices/triage_r1.md`, item W2) | Choice events no longer crowd facts out: Y11 counts facts and choices apart (facts 600/h with the 429; choices 600/h of their own, never a 429, repeat picks beyond it rejected `rate_limited`, first picks always recorded); Y13 evicts choices first and sends facts first; the stats constants, F11, the concurrency table, Budgets and Test strategy follow. Marked "Changed by META-PLAN revision 1". Pre-revision copy: `D:/tmp/novel-orch/design/choices/STORIES-PLAN.r1.before.md` |
-| 8 | 2026-11-01 | `D:/tmp/novel-orch/carry.md` at ORCH `d97ba64` (the docs-errata-2 spec, group A), as merged on main `6043941` | Docs lane `docs-errata-2`, group A (not a triage round): LS1 (`64fd798`) — rule 8's `next` clause, `checkEndings(…, sources)`, the seeded leak seen in C7; LS3 (`00d7c10`) — at most 4 statements, the overshoot up to one batch per concurrent request, choices never a 429 (O1), `StatKind` / `StatOutcome` in `db/stats.rs`, the `IS NOT NULL` guards, `private, no-store`, the per-event `unknown_choice`, the `record_events` budgets. Ledger: `D:/tmp/novel-orch/docs-errata-2/ledger.md` |
+| 8 | 2026-11-01 | `D:/tmp/novel-orch/carry.md` at ORCH `d97ba64` (the docs-errata-2 spec, group A), as merged on main `6043941` | Docs lane `docs-errata-2`, group A (not a triage round): LS1 (`64fd798`) — rule 8's `next` clause, `checkEndings(…, sources)`, the seeded leak seen in C7; LS3 (`00d7c10`) — at most 4 statements, the overshoot up to one batch per concurrent request, choices never a 429 (O1), `StatKind` / `StatOutcome` in `db/stats.rs`, the `IS NOT NULL` guards, `private, no-store`, the per-event `unknown_choice`, the `record_events` budgets. Fix round 1: the Module API `record_events` comment gains the same overshoot; the guard comment names the regex / IN tests of `subject` / `outcome`. Ledger: `D:/tmp/novel-orch/docs-errata-2/ledger.md` |
 | 9 | 2026-11-01 | RULINGS 54 (as merged on main `6043941`) | Docs lane `docs-errata-2`, group B (not a triage round): "Implementation plan" — "Running and merged lanes" and "Order" as of `6043941` (LS1, LS2, LS3 merged; L10, LE1 running; LS4, N2 to go; the critical path from L10). Ledger: `D:/tmp/novel-orch/docs-errata-2/ledger.md` |
 
 **Revision 1 (2026-10-31)** — what changed, by triage item:

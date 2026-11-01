@@ -440,9 +440,9 @@ Participants: `post_events` ([api/stats.rs:63-145](../server/src/api/stats.rs#L6
 - **Two budgets per rolling hour** (`StatCaps`, [db/stats.rs:122](../server/src/db/stats.rs#L122); 600 each,
   [api/stats.rs:38-41](../server/src/api/stats.rs#L38)), counted in one statement. Facts: a batch carrying a fact that
   would pass 600 fact rows is 429, and nothing of it is written. Choices: past 600 choice rows only a first pick of an
-  option is written; a repeat pick is rejected `rate_limited`, and a choice-only batch is never a 429 (:197). Both
-  budgets are soft by up to one batch per concurrent request: the statements are autocommit, with no row lock
-  ([db/stats.rs:6](../server/src/db/stats.rs#L6)).
+  option is written; a repeat pick is rejected `rate_limited`, and a choice-only batch is never a 429
+  ([db/stats.rs:197](../server/src/db/stats.rs#L197)). Both budgets are soft by up to one batch per concurrent
+  request: the statements are autocommit, with no row lock ([db/stats.rs:6](../server/src/db/stats.rs#L6)).
 - **Idempotent on the event key.** `stat_events_event_key` is UNIQUE (user, event id)
   ([0003_stats.sql:22](../server/migrations/0003_stats.sql#L22)); the insert skips a known id, so a resent batch
   counts as duplicates and changes nothing (`stats_event_replay_counts_once`, `stats_replayed_batch_answers_duplicates`).
