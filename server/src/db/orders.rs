@@ -57,6 +57,17 @@ pub struct UserOrder {
     pub status: OrderStatus,
 }
 
+/// The user an order belongs to, as Telegram's `from` would name them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrderPayer {
+    /// The Telegram user id.
+    pub user: UserId,
+    /// The first name of the user's last login.
+    pub first_name: String,
+    /// The Telegram language tag of the user's last login.
+    pub language_code: Option<String>,
+}
+
 /// What [`Repo::reuse_or_create_order`] did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvoiceOrder {
@@ -208,5 +219,23 @@ impl Repo {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    /// The payer of `order`: its user's id, first name and Telegram language, or `None` for an unknown order. Read
+    /// only by `server-dev`'s simulated payments, whose request names an invoice slug and no user; the production
+    /// server never calls it.
+    pub async fn order_payer(&self, order: &OrderId) -> Result<Option<OrderPayer>, sqlx::Error> {
+        let row: Option<(i64, String, Option<String>)> = sqlx::query_as(
+            "SELECT u.id, u.first_name, u.language_code FROM orders o JOIN users u ON u.id = o.user_id \
+             WHERE o.id = $1",
+        )
+        .bind(&order.0)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(id, first_name, language_code)| OrderPayer {
+            user: UserId(id),
+            first_name,
+            language_code,
+        }))
     }
 }

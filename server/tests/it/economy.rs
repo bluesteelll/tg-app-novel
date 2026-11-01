@@ -10,7 +10,8 @@
 //!
 //! The catalog's `economy` section (M17) and the pack path (M19): pack products, the order binding, and the credit
 //! inside the grant, through `POST /api/invoices` and the grant the webhook runs. `GET /api/wallet` and the hint use
-//! `POST /api/puzzles/{puzzleId}/hints/{tier}` (M21) through the production router.
+//! `POST /api/puzzles/{puzzleId}/hints/{tier}` (M21) through the production router. A pack pre-checkout refused in the
+//! query's language.
 
 use std::fmt::Debug;
 use std::path::Path;
@@ -33,16 +34,17 @@ use server::db::economy::{
     Applied, Entry, Reason, clawback_in_tx, credit_in_tx, credited_by_charge, debit_in_tx,
 };
 use server::ids::{ChargeId, OrderId, ProductId, UserId};
+use server::puzzles::Lang;
 use server::telegram::gateway::InvoiceSpec;
-use server::telegram::payments::{GrantOutcome, PaymentFact, on_successful_payment};
+use server::telegram::payments::{GrantOutcome, PaymentFact, RejectReason, on_successful_payment};
 use sqlx::postgres::{PgConnectOptions, PgQueryResult};
 use sqlx::{Connection, PgConnection};
 
 use crate::catalog::{ANN, T0, bearer, get, own, state_with_users};
 use crate::common;
 use crate::content::{FIXTURE, FixtureCopy, state_on};
-use crate::payments::{invoice_state, post_invoice};
-use crate::webhook::order_status;
+use crate::payments::{invoice_state, post_invoice, refusal};
+use crate::webhook::{order_status, post_update, pre_checkout_update};
 
 /// A second player.
 const BEN: i64 = 1002;
@@ -2068,6 +2070,31 @@ async fn hint_spend_shapes_and_ladder_bounds() {
         "a 2-tier ladder: after it",
         hint_facts(&short, ANN, "ch1.drawer").await,
         (Vec::new(), vec!["fund:1001:5".to_owned()], Some((5, 0))),
+    ));
+    report(&failures);
+}
+
+/// A refusal is in the language of the query's own `from.language_code`, never the stored `users.language_code`
+/// (carry 5c, L8b review r2 M2): Ann logged in with `en`, her Telegram now says `ru`, and a pack pre-checkout at the
+/// wrong amount is refused in Russian.
+#[tokio::test]
+async fn precheckout_pack_refusal_in_query_language() {
+    let (st, _db, gateway) = invoice_state(&[(ANN, Some("en"))]).await;
+    let mut failures = Vec::new();
+    let Some(order) = order_of(&st, ANN, "pack:hint_s", &mut failures).await else {
+        return report(&failures);
+    };
+    let update = pre_checkout_update("q-stale", ANN, Some("ru"), "XTR", 2, &order);
+    let reply = post_update(&st, &update).await;
+    failures.extend(expect_eq(
+        "webhook status, the answer",
+        (reply.status.as_u16(), gateway.answer("q-stale")),
+        (200, Some(refusal(RejectReason::Mismatch, Lang::Ru))),
+    ));
+    failures.extend(expect_eq(
+        "the order",
+        order_status(&st, &order).await,
+        "created".to_owned(),
     ));
     report(&failures);
 }
