@@ -310,3 +310,169 @@ test('runner: enter an unknown knot is an error', () => {
   expect(r.current()).toBe(stop);
   r.dispose();
 });
+
+/** A step as `[kind, knot, enteredKnot]`; an `end` step has neither. */
+type Seen = readonly [RunnerStep['kind'], string | null, boolean | null];
+
+function seen(s: RunnerStep): Seen {
+  return s.kind === 'end' ? ['end', null, null] : [s.kind, s.knot, s.enteredKnot];
+}
+
+/** Every step up to an `end` or a yield; at the n-th choice set it takes `picks[n]`. */
+function walk(r: StoryRunner, picks: readonly number[]): Seen[] {
+  const out: Seen[] = [];
+  let pick = 0;
+  for (let n = 0; n < 20; n += 1) {
+    const s = ok(r.next());
+    out.push(seen(s));
+    if (s.kind === 'end' || s.kind === 'yield') {
+      return out;
+    }
+    if (s.kind === 'choices') {
+      ok(r.choose(picks[pick] ?? 0));
+      pick += 1;
+    }
+  }
+  throw new Error(`the walk did not stop: ${JSON.stringify(out)}`);
+}
+
+test("runner: enteredKnot on a knot's first step", () => {
+  // S1 the chapter start, S2 a divert into a two-line knot, S3 a knot opening with a tag line, S7 a line after a
+  // gather, S4 a one-line ending knot entered from a choice (its line ends at `-> END`: a null pointer).
+  const linear = runner(
+    chapter(
+      [
+        '-> start',
+        '=== start ===',
+        'Hello. #id:ch1.start.h001',
+        '-> b',
+        '=== b ===',
+        'B one. #id:ch1.b.h002',
+        'B two. #id:ch1.b.h003',
+        '-> c',
+        '=== c ===',
+        '# scene: cafe',
+        'C one. #id:ch1.c.h004',
+        'C two. #id:ch1.c.h005',
+        '* [Pick. #id:ch1.c.h006]',
+        '    Picked. #id:ch1.c.h007',
+        '- Gathered. #id:ch1.c.h008',
+        '* [End it. #id:ch1.c.h009] -> end_k',
+        '=== end_k ===',
+        'The end. #id:ch1.end_k.h010',
+        '-> END',
+      ],
+      ['start', 'b', 'c', 'end_k'],
+    ),
+  );
+  expect.soft(walk(linear, [0, 0])).toEqual([
+    ['line', 'start', true], // S1
+    ['line', 'b', true], // S2
+    ['line', 'b', false],
+    ['line', 'c', true], // S3
+    ['line', 'c', false],
+    ['choices', 'c', false],
+    ['line', 'c', false],
+    ['line', 'c', false], // S7
+    ['choices', 'c', false],
+    ['line', 'end_k', true], // S4
+    ['end', null, null],
+  ]);
+  linear.dispose();
+
+  // S5 a choices-only knot entered by a divert after another knot's two lines: the line before the divert is already
+  // `pick`'s (D4's one-step-early case, the same stage). Then a hub that diverts to its own top inside ink: no entry on
+  // the second pass (PROTOTYPE-PLAN's rule; RULINGS 58 Q17).
+  const choicesOnly = runner(
+    chapter(
+      [
+        '-> a',
+        '=== a ===',
+        'A one. #id:ch1.a.h011',
+        'A two. #id:ch1.a.h012',
+        '-> pick',
+        '=== pick ===',
+        '* [To the hub. #id:ch1.pick.h013] -> hub',
+        '* [Stop. #id:ch1.pick.h014] -> END',
+        '=== hub ===',
+        'The hub. #id:ch1.hub.h015',
+        '+ [Stay. #id:ch1.hub.h016] -> hub',
+        '+ [Leave. #id:ch1.hub.h017] -> END',
+      ],
+      ['a', 'pick', 'hub'],
+    ),
+  );
+  expect.soft(walk(choicesOnly, [0, 0, 1])).toEqual([
+    ['line', 'a', true],
+    ['line', 'pick', true], // S5
+    ['choices', 'pick', false],
+    ['line', 'hub', true],
+    ['choices', 'hub', false],
+    ['line', 'hub', false], // the hub's second pass (Q17)
+    ['choices', 'hub', false],
+    ['end', null, null],
+  ]);
+  choicesOnly.dispose();
+
+  // S6 enter() into the yielding knot itself (a retry): a host re-entry is a knot top (Q4).
+  const retry = runner(
+    chapter(['-> start', '=== start ===', 'Try. #id:ch1.start.h018', '# puzzle: x then=start', '-> DONE'], ['start']),
+  );
+  expect.soft(walk(retry, [])).toEqual([
+    ['line', 'start', true],
+    ['yield', 'start', false],
+  ]);
+  ok(retry.enter('start' as KnotName, {}));
+  expect.soft(walk(retry, [])).toEqual([
+    ['line', 'start', true], // S6
+    ['yield', 'start', false],
+  ]);
+  retry.dispose();
+});
+
+test("runner: checkpoint vars are read at the knot's entry", () => {
+  // The romance shape (critique W1): a reply knot bumps a counter, says one line, then diverts into a knot that opens
+  // with text. That line's lookahead enters next_scene (counter already bumped) before ink rolls it back.
+  const r = runner(
+    chapter(
+      [
+        'VAR affection = 0',
+        '-> start',
+        '=== start ===',
+        'Hello. #id:ch1.start.i001',
+        '* [Be kind. #id:ch1.start.i002] -> kind_reply',
+        '=== kind_reply ===',
+        '~ affection = affection + 1',
+        'She smiles. #id:ch1.kind_reply.i003',
+        '-> next_scene',
+        '=== next_scene ===',
+        'Next. #id:ch1.next_scene.i004',
+        'Later. #id:ch1.next_scene.i005',
+        '-> END',
+      ],
+      ['start', 'kind_reply', 'next_scene'],
+      ['affection'],
+    ),
+  );
+  is(ok(r.next()), 'line');
+  is(ok(r.next()), 'choices');
+  ok(r.choose(0));
+  const reply = is(ok(r.next()), 'line');
+  expect([reply.knot, reply.enteredKnot]).toEqual(['kind_reply', true]);
+  expect(r.readVars(['affection' as VarName])).toEqual({ affection: 1 });
+  // The value before kind_reply's top ran: a checkpoint resume replays the increment exactly once.
+  expect(r.checkpointVars()).toEqual({ g_x: 0, affection: 0 });
+  const next = is(ok(r.next()), 'line');
+  expect([next.knot, next.enteredKnot]).toEqual(['next_scene', true]);
+  expect(r.checkpointVars()).toEqual({ g_x: 0, affection: 1 });
+  is(ok(r.next()), 'line'); // no entry: the checkpoint stays next_scene's
+  expect(r.checkpointVars()).toEqual({ g_x: 0, affection: 1 });
+  r.dispose();
+
+  // A host entry snapshots after the projection is written: the then-knot's checkpoint holds the outcome.
+  const { r: solved } = atYield();
+  ok(solved.enter('after' as KnotName, vars({ pz_x: 1 })));
+  expect(is(ok(solved.next()), 'choices').enteredKnot).toBe(true);
+  expect(solved.checkpointVars()).toEqual({ g_x: 0, pz_x: 1 });
+  solved.dispose();
+});
