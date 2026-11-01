@@ -468,6 +468,17 @@ pub struct SocialResponse {
     pub profile_visible: bool,
 }
 
+/// `PUT /api/consents/friends_profile` request (M12): show my progress to my friends, or stop. Unknown fields are
+/// ignored; the policy version is the server's own, never the client's.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsentRequest {
+    /// On or off.
+    pub granted: bool,
+    /// The consent text the user saw, one of a closed list (`friends_profile.v1`).
+    pub text_version: String,
+}
+
 /// The first line of the generated file: what it is and how to rewrite it.
 const BINDINGS_HEADER: &str = "// Built from server/src/api/dto.rs and error.rs by ts-rs; do not edit. Regenerate: \
                                cargo test -p server --test it bindings::write_bindings -- --ignored --exact";

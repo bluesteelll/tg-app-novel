@@ -17,7 +17,7 @@ use axum::extract::DefaultBodyLimit;
 use axum::extract::rejection::JsonRejection;
 use axum::http::header::CACHE_CONTROL;
 use axum::http::{HeaderValue, StatusCode};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::AppState;
@@ -78,6 +78,8 @@ fn routes() -> Router<AppState> {
             post(social::post_accept),
         )
         .route("/friends/{handle}", delete(social::delete_friend))
+        .route("/invite/rotate", post(social::post_rotate))
+        .route("/consents/friends_profile", put(social::put_consent))
         .merge(legal::routes())
 }
 

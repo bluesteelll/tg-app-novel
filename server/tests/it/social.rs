@@ -1,7 +1,7 @@
 //! The social graph (META-PLAN M10-M12, M15; `0005_social.sql`): the schema's named constraints on raw SQL, the
 //! users upsert's inserted flag, the attribution at `POST /api/auth` (M11), the invite routes (F19), the social view
-//! with the accept and the decline or removal and its durable block (F20), and the public privacy page (M26), through
-//! the production router.
+//! with the accept and the decline or removal and its durable block (F20), the code rotation and the consent log
+//! (M12), and the public privacy page (M26), through the production router.
 //!
 //! A concurrency case holds a row lock on a raw READ COMMITTED connection (a stand-in for another app transaction)
 //! and observes the app's request waiting on it through `common::wait_for_lock_waiter`, never by timing.
@@ -22,7 +22,7 @@ use axum::http::{Method, Request, StatusCode};
 use hmac::{Hmac, KeyInit, Mac};
 use serde_json::{Value, json};
 use server::AppState;
-use server::auth::{data_check_string, secret_key};
+use server::auth::{data_check_string, issue_token, secret_key};
 use server::clock::FixedClock;
 use server::ids::UserId;
 use sha2::Sha256;
@@ -1670,8 +1670,18 @@ async fn social_private_no_store() {
         "DELETE /api/friends/{handle}",
         &remove(&st, ANN, &handle_b).await,
     ));
+    failures.extend(private_no_store(
+        "POST /api/invite/rotate",
+        &rotate(&st, ANN).await,
+    ));
+    failures.extend(private_no_store(
+        "PUT /api/consents/friends_profile",
+        &put_consent(&st, ANN, &consent_body(true, "friends_profile.v1")).await,
+    ));
     for (method, path) in [
         (Method::GET, "/api/social".to_owned()),
+        (Method::POST, "/api/invite/rotate".to_owned()),
+        (Method::PUT, "/api/consents/friends_profile".to_owned()),
         (Method::GET, format!("/api/invites/{CODE_A}")),
         (Method::POST, format!("/api/invites/{CODE_A}/request")),
         (
@@ -1950,6 +1960,256 @@ async fn privacy_page_needs_no_token() {
                 reply.body.len()
             ));
         }
+    }
+    report(&failures);
+}
+
+/// `method path` with the JSON `body` (when given), as `user` with a token issued at `at`, through `st`'s router.
+async fn send_at(
+    st: &AppState,
+    method: Method,
+    user: i64,
+    path: &str,
+    body: Option<&Value>,
+    at: i64,
+) -> common::Reply {
+    let (token, _) = issue_token(&st.keys.token, UserId(user), at, st.cfg.token_ttl_secs);
+    let req = Request::builder()
+        .method(method)
+        .uri(path)
+        .header(AUTHORIZATION, format!("Bearer {token}"));
+    let req = match body {
+        Some(body) => req
+            .header(CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string())),
+        None => req.body(Body::empty()),
+    };
+    common::call(st, req.unwrap()).await
+}
+
+/// `POST /api/invite/rotate` as `user` at `T0`.
+async fn rotate(st: &AppState, user: i64) -> common::Reply {
+    send_at(st, Method::POST, user, "/api/invite/rotate", None, T0).await
+}
+
+/// `PUT /api/consents/friends_profile` as `user` at `T0` with `body`.
+async fn put_consent(st: &AppState, user: i64, body: &Value) -> common::Reply {
+    send_at(
+        st,
+        Method::PUT,
+        user,
+        "/api/consents/friends_profile",
+        Some(body),
+        T0,
+    )
+    .await
+}
+
+/// A `ConsentRequest` body.
+fn consent_body(granted: bool, text_version: &str) -> Value {
+    json!({ "granted": granted, "textVersion": text_version })
+}
+
+/// A consent row: (purpose, granted, policy_version, text_version, at).
+type ConsentRow = (String, bool, String, String, i64);
+
+/// `user`'s consent rows, oldest first.
+async fn consent_rows(c: &mut PgConnection, user: i64) -> Vec<ConsentRow> {
+    sqlx::query_as(
+        "SELECT purpose, granted, policy_version, text_version, at FROM consents WHERE user_id = $1 ORDER BY id",
+    )
+    .bind(user)
+    .fetch_all(&mut *c)
+    .await
+    .unwrap()
+}
+
+/// The consent log records the compiled policy's version (M12, M26), never a client value, with the named text; the
+/// profile is private until then. An unknown text version, or a body without `textVersion`, is 400 and writes nothing.
+#[tokio::test]
+async fn consent_records_policy_version() {
+    let (st, _db) = social_state(&[ANN]).await;
+    let mut c = common::raw_db(&st).await;
+    let mut failures = Vec::new();
+    let (_, before) = social(&st, ANN).await;
+    if before["profileVisible"] != false {
+        failures.push(format!(
+            "before any consent: expected profileVisible false, got {before}"
+        ));
+    }
+    let bad = r#"{"error":"bad_request"}"#;
+    for (case, body) in [
+        (
+            "unknown text version",
+            consent_body(true, "friends_profile.v2"),
+        ),
+        ("no textVersion", json!({ "granted": true })),
+        (
+            "snake_case text_version",
+            json!({ "granted": true, "text_version": "friends_profile.v1" }),
+        ),
+        (
+            "a client-sent policy version only",
+            json!({ "granted": true, "policyVersion": "2099-01-01" }),
+        ),
+    ] {
+        let reply = put_consent(&st, ANN, &body).await;
+        let text = body_text(&reply);
+        if reply.status != StatusCode::BAD_REQUEST || text != bad {
+            failures.push(format!(
+                "{case}: expected 400 {bad}, got {} {text}",
+                reply.status.as_u16()
+            ));
+        }
+    }
+    if !consent_rows(&mut c, ANN).await.is_empty() {
+        failures.push("rows after the 400s: expected none".to_owned());
+    }
+    let reply = put_consent(
+        &st,
+        ANN,
+        &json!({ "granted": true, "textVersion": "friends_profile.v1", "policyVersion": "2099-01-01" }),
+    )
+    .await;
+    let json = body_json(&reply);
+    if reply.status != StatusCode::OK || json["profileVisible"] != true {
+        failures.push(format!(
+            "consent on: expected 200 with profileVisible true, got {} {}",
+            reply.status.as_u16(),
+            body_text(&reply)
+        ));
+    }
+    let want: Vec<ConsentRow> = vec![(
+        "friends_profile".to_owned(),
+        true,
+        file_policy_version().to_owned(),
+        "friends_profile.v1".to_owned(),
+        T0,
+    )];
+    let rows = consent_rows(&mut c, ANN).await;
+    if rows != want {
+        failures.push(format!("consent rows: expected {want:?}, got {rows:?}"));
+    }
+    report(&failures);
+}
+
+/// Each toggle appends a row and the latest decides (M12: as easy to withdraw as to give): on, off, on.
+#[tokio::test]
+async fn consent_latest_row_wins() {
+    let (st, _db) = social_state(&[ANN]).await;
+    let mut c = common::raw_db(&st).await;
+    let mut failures = Vec::new();
+    for granted in [true, false, true] {
+        let reply = put_consent(&st, ANN, &consent_body(granted, "friends_profile.v1")).await;
+        let got = body_json(&reply)["profileVisible"].clone();
+        if reply.status != StatusCode::OK || got != granted {
+            failures.push(format!(
+                "consent {granted}: expected 200 with profileVisible {granted}, got {} {}",
+                reply.status.as_u16(),
+                body_text(&reply)
+            ));
+        }
+        let (_, view) = social(&st, ANN).await;
+        if view["profileVisible"] != granted {
+            failures.push(format!(
+                "GET /api/social after {granted}: expected {granted}, got {view}"
+            ));
+        }
+    }
+    let granted: Vec<bool> = consent_rows(&mut c, ANN)
+        .await
+        .into_iter()
+        .map(|row| row.1)
+        .collect();
+    if granted != [true, false, true] {
+        failures.push(format!(
+            "rows: expected [true, false, true], got {granted:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// 10 rotations per rolling day (MV15): each revokes the old code (its link answers 404) and issues a new one; the 11th
+/// is 429 `rate_limited` with `Retry-After` until the oldest rotation leaves the window (86400 at once, 82800 an hour
+/// later) and keeps the active code; a day after the first rotation one is allowed again.
+#[tokio::test]
+async fn rotate_invite_code_limited() {
+    let (st, _db) = social_state(&[ANN, BEN]).await;
+    let mut failures = Vec::new();
+    let mut active = invite_code(&st, ANN).await;
+    for i in 1..=10 {
+        let reply = rotate(&st, ANN).await;
+        let code = body_json(&reply)["inviteCode"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        if reply.status != StatusCode::OK || code.is_empty() || code == active {
+            failures.push(format!(
+                "rotation {i}: expected 200 with a new inviteCode, got {} {}",
+                reply.status.as_u16(),
+                body_text(&reply)
+            ));
+        }
+        failures.extend(not_found(
+            &format!("the code before rotation {i}"),
+            &view_invite(&st, BEN, &active).await,
+        ));
+        active = code;
+    }
+    let limited = r#"{"error":"rate_limited"}"#;
+    for (case, at, retry_after) in [
+        ("the 11th at T0", T0, "86400"),
+        ("the 11th at T0 + 3600", T0 + 3600, "82800"),
+    ] {
+        let later = st.clone().with_clock(Arc::new(FixedClock(at)));
+        let reply = send_at(&later, Method::POST, ANN, "/api/invite/rotate", None, at).await;
+        let body = body_text(&reply);
+        let retry = reply
+            .headers
+            .get(axum::http::header::RETRY_AFTER)
+            .map(|v| v.to_str().unwrap_or("<not text>"));
+        if reply.status != StatusCode::TOO_MANY_REQUESTS
+            || body != limited
+            || retry != Some(retry_after)
+        {
+            failures.push(format!(
+                "{case}: expected 429 {limited} with Retry-After {retry_after}, got {} {body} {retry:?}",
+                reply.status.as_u16()
+            ));
+        }
+    }
+    let (_, view) = social(&st, ANN).await;
+    if view["inviteCode"] != active.as_str() {
+        failures.push(format!(
+            "after the 429s: expected the active code {active}, got {view}"
+        ));
+    }
+    failures.extend(state_is(
+        "the active code after the 429s",
+        &view_invite(&st, BEN, &active).await,
+        "open",
+    ));
+    let next_day = T0 + 86_400;
+    let later = st.clone().with_clock(Arc::new(FixedClock(next_day)));
+    let reply = send_at(
+        &later,
+        Method::POST,
+        ANN,
+        "/api/invite/rotate",
+        None,
+        next_day,
+    )
+    .await;
+    let code = body_json(&reply)["inviteCode"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    if reply.status != StatusCode::OK || code == active {
+        failures.push(format!(
+            "a day later: expected 200 with a new inviteCode, got {} {}",
+            reply.status.as_u16(),
+            body_text(&reply)
+        ));
     }
     report(&failures);
 }

@@ -1,7 +1,8 @@
 //! The social graph's SQL (META-PLAN M10-M12; `0005_social.sql`). This module writes the referral of a newcomer's
 //! first launch (M11: the launch creates no friend request), a link holder's request to the code's owner (F19 step 4)
-//! with the requester's handle, the owner's accept and the decline or removal with its durable block (F20), and a
-//! user's first invite code; it reads the user's friends, incoming requests and profile visibility.
+//! with the requester's handle, the owner's accept and the decline or removal with its durable block (F20), a user's
+//! first invite code and its rotation, and the append-only consent log (M12); it reads the user's friends, incoming
+//! requests and profile visibility.
 //!
 //! Invite codes and handles reach SQL only in the shapes [`crate::api::social::is_invite_code`] and
 //! [`crate::api::social::is_handle`] accept (lower-case hex), so no U+0000 is ever bound; Telegram's own strings go
@@ -28,6 +29,22 @@ const CODE_BYTES: usize = 16;
 
 /// The consent purpose of profile visibility (`consents_purpose_known`).
 const FRIENDS_PROFILE: &str = "friends_profile";
+
+/// The rolling window of the rotation limit, in seconds: a day. Only a rotation revokes a code, so the codes revoked
+/// inside the window are the rotations it counts (the first code is not one).
+pub const ROTATION_WINDOW_SECS: i64 = 86_400;
+
+/// What [`Repo::rotate`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RotateOutcome {
+    /// The active code was revoked and a new one issued.
+    Rotated,
+    /// The window already holds the limit's rotations: nothing changed.
+    Limited {
+        /// Seconds until the oldest rotation in the window leaves it.
+        retry_after_secs: i64,
+    },
+}
 
 /// What [`Repo::accept`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -371,6 +388,77 @@ impl Repo {
         .await?;
         tx.commit().await?;
         Ok(true)
+    }
+
+    /// `me` rotates the invite code (M10: a leaked link stops producing requests), in one transaction: `me`'s `users`
+    /// row locked, so the count is exact; the rotations of the last [`ROTATION_WINDOW_SECS`] counted, and at
+    /// `per_day` [`RotateOutcome::Limited`] until the oldest of them leaves the window; else the active code revoked
+    /// at `now` and a new one inserted. Pending requests stay until handled.
+    pub async fn rotate(
+        &self,
+        me: UserId,
+        per_day: i64,
+        now: i64,
+    ) -> Result<RotateOutcome, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("SELECT 1 FROM users WHERE id = $1 FOR NO KEY UPDATE")
+            .bind(me.0)
+            .execute(&mut *tx)
+            .await?;
+        let (rotations, oldest): (i64, Option<i64>) = sqlx::query_as(
+            "SELECT count(*), min(revoked_at) FROM invite_codes WHERE user_id = $1 AND revoked_at > $2",
+        )
+        .bind(me.0)
+        .bind(now.saturating_sub(ROTATION_WINDOW_SECS))
+        .fetch_one(&mut *tx)
+        .await?;
+        if rotations >= per_day {
+            tx.rollback().await?;
+            let leaves_at = oldest.unwrap_or(now).saturating_add(ROTATION_WINDOW_SECS);
+            return Ok(RotateOutcome::Limited {
+                retry_after_secs: leaves_at.saturating_sub(now),
+            });
+        }
+        sqlx::query(
+            "UPDATE invite_codes SET revoked_at = $2 WHERE user_id = $1 AND revoked_at IS NULL",
+        )
+        .bind(me.0)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("INSERT INTO invite_codes (code, user_id, created_at) VALUES ($1, $2, $3)")
+            .bind(new_invite_code())
+            .bind(me.0)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(RotateOutcome::Rotated)
+    }
+
+    /// Appends `me`'s `friends_profile` consent row (M12): the decision, the server's policy version and the consent
+    /// text the user saw. The latest row wins (`consents_latest`); nothing is ever updated.
+    pub async fn record_consent(
+        &self,
+        me: UserId,
+        granted: bool,
+        policy: &str,
+        text: &str,
+        now: i64,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO consents (user_id, purpose, granted, policy_version, text_version, at) \
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(me.0)
+        .bind(FRIENDS_PROFILE)
+        .bind(granted)
+        .bind(policy)
+        .bind(text)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     /// The two users are friends (either order; one user is never its own friend). One read.

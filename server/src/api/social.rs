@@ -1,7 +1,8 @@
 //! The social routes (META-PLAN M10-M12, M15): the user's social view, the invite view and the request through an
-//! invite code (F19), the accept and the decline or removal (F20). Thin handlers: the limits and the wire shapes of
-//! invite codes and handles live here, the SQL in `db/social.rs`. Every 200 is `private, no-store`: one user's own
-//! view. Another user is named by handle only, never by Telegram id (W1).
+//! invite code (F19), the accept and the decline or removal (F20), the code rotation, and the profile-visibility
+//! consent (F21). Thin handlers: the limits and the wire shapes of invite codes and handles live here, the SQL in
+//! `db/social.rs`. Every 200 is `private, no-store`: one user's own view. Another user is named by handle only, never
+//! by Telegram id (W1).
 //!
 //! An invite link is `https://t.me/<bot>?startapp=f<code>`; the server reads the signed `start_param` only. Every
 //! other `start_param` shape is reserved for later prefixes (campaign codes) and stays harmless: it creates nothing.
@@ -10,16 +11,18 @@
 //! this caller is 404 `not_found`. Neither reveals anything about another user.
 
 use axum::Json;
-use axum::extract::rejection::PathRejection;
+use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Path, State};
 use axum::http::HeaderValue;
 use axum::http::header::{CACHE_CONTROL, HeaderName};
 use axum::response::{IntoResponse, Response};
 
 use crate::AppState;
-use crate::api::dto::{FriendDto, FriendRequestDto, InviteView, SocialResponse};
+use crate::api::body_rejection;
+use crate::api::dto::{ConsentRequest, FriendDto, FriendRequestDto, InviteView, SocialResponse};
+use crate::api::legal::policy_version;
 use crate::auth::AuthUser;
-use crate::db::social::AcceptOutcome;
+use crate::db::social::{AcceptOutcome, RotateOutcome};
 use crate::error::ApiError;
 use crate::ids::UserId;
 
@@ -202,5 +205,47 @@ pub async fn delete_friend(
     if !st.repo.remove(user, other, st.clock.now()).await? {
         return Err(ApiError::NotFound);
     }
+    social_reply(&st, user).await
+}
+
+/// `POST /api/invite/rotate`: revokes the user's active code and issues a new one (the old link then answers 404).
+/// 429 `rate_limited` with `Retry-After` past [`MAX_ROTATIONS_PER_DAY`] in a rolling day.
+pub async fn post_rotate(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+) -> Result<Response, ApiError> {
+    match st
+        .repo
+        .rotate(user, MAX_ROTATIONS_PER_DAY, st.clock.now())
+        .await?
+    {
+        RotateOutcome::Rotated => social_reply(&st, user).await,
+        RotateOutcome::Limited { retry_after_secs } => {
+            Err(ApiError::RateLimited { retry_after_secs })
+        }
+    }
+}
+
+/// `PUT /api/consents/friends_profile` (F21): appends the user's decision with the server's own policy version and the
+/// named consent text. 400 for a bad body or a text version outside [`CONSENT_TEXT_VERSIONS`]. Profile visibility is
+/// the latest row's decision, so nothing is read from the client to grant it (principle 1).
+pub async fn put_consent(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    req: Result<Json<ConsentRequest>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    let Json(req) = req.map_err(body_rejection)?;
+    if !CONSENT_TEXT_VERSIONS.contains(&req.text_version.as_str()) {
+        return Err(ApiError::BadRequest("unknown consent text version"));
+    }
+    st.repo
+        .record_consent(
+            user,
+            req.granted,
+            policy_version(),
+            &req.text_version,
+            st.clock.now(),
+        )
+        .await?;
     social_reply(&st, user).await
 }
