@@ -135,6 +135,32 @@ test('http: 401 re-auths once', async () => {
   expect(always.calls('/api/entitlements')).toHaveLength(2);
 });
 
+test('http: only a token 401 re-auths', async () => {
+  // A paywalled chapter or asset the player does not own: a fresh token cannot change the answer.
+  const forbidden = fakeServer(() => json(403, { error: 'not_entitled' }));
+  const http = createHttp({ initData: RAW, clock: new FakeClock(), fetch: forbidden.fetch });
+  expect(await http.request({ method: 'GET', path: '/api/chapters/ch2' }, (raw) => ({ ok: true, value: raw }))).toEqual({
+    ok: false,
+    error: { kind: 'http', status: 403, code: 'not_entitled', body: { error: 'not_entitled' }, retryAfter: null },
+  });
+  expect(forbidden.auths(), 'a 403 must not trigger a re-auth').toHaveLength(1);
+  expect(forbidden.calls('/api/chapters/ch2'), 'a 403 is not retried').toHaveLength(1);
+  const asset = '/api/assets/bg-hall-0123abcd.avif';
+  expect(await http.fetchAsset(asset, new AbortController().signal)).toEqual({ ok: false, error: { kind: 'http', status: 403 } });
+  expect(forbidden.auths(), 'a 403 on an asset must not trigger a re-auth').toHaveLength(1);
+  expect(forbidden.calls(asset), 'a 403 on an asset is not retried').toHaveLength(1);
+
+  // A 401 whose code is not a token rejection (a proxy, say) is the caller's error too.
+  const odd = fakeServer(() => json(401, { error: 'initdata_invalid' }));
+  const http2 = createHttp({ initData: RAW, clock: new FakeClock(), fetch: odd.fetch });
+  expect(await http2.request(GET_ENTITLEMENTS, decodeEntitlementsResponse)).toEqual({
+    ok: false,
+    error: { kind: 'http', status: 401, code: 'initdata_invalid', body: { error: 'initdata_invalid' }, retryAfter: null },
+  });
+  expect(odd.auths(), 'a 401 with a non-token code must not trigger a re-auth').toHaveLength(1);
+  expect(odd.calls('/api/entitlements'), 'a 401 with a non-token code is not retried').toHaveLength(1);
+});
+
 test('http: concurrent 401s share one auth', async () => {
   const reauth = deferred<Response>();
   const srv = fakeServer(
