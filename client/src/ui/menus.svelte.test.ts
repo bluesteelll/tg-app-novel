@@ -7,9 +7,11 @@ import { flushSync } from 'svelte';
 import ts from 'typescript';
 import { afterEach, expect, test, vi } from 'vitest';
 
+import type { SaveSlot } from '../api/generated/api.ts';
 import { en } from '../i18n/en.ts';
 import { t, type Lang, type UiKey } from '../i18n/index.ts';
 import { ru } from '../i18n/ru.ts';
+import type { ManualSlot } from '../saves/service.ts';
 import type { Settings } from '../settings/store.ts';
 import type { StoryId } from '../story/catalog.ts';
 import type { ChapterId, LineId } from '../story/staging.ts';
@@ -20,6 +22,8 @@ import type { ChapterRow } from './ChapterSelect.svelte';
 import Menu from './Menu.svelte';
 import Notice from './Notice.svelte';
 import type { NoticeView } from './Notice.svelte';
+import SaveLoad from './SaveLoad.svelte';
+import type { SlotView } from './SaveLoad.svelte';
 // Imported under another name: `Settings` is the store's type.
 import SettingsScreen from './Settings.svelte';
 import StoryPicker from './StoryPicker.svelte';
@@ -545,6 +549,156 @@ test('menus: settings emit speed, volume, language and skip', async () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------
+// Save and load (C7)
+
+/** The row element of `slot`. */
+function slotEl(container: HTMLElement, slot: SaveSlot): HTMLElement {
+  const el = container.querySelector<HTMLElement>(`[data-slot="${slot}"]`);
+  expect(el, slot).not.toBeNull();
+  return el ?? container;
+}
+
+test('menus: save asks before overwriting, one save per tap', async () => {
+  const savedAt = 1_790_000_000;
+  // Out of order on purpose: a row is found by its slot, never by its position in the list (LS2 D4).
+  const slots: readonly SlotView[] = [
+    { slot: 's2', savedAt, chapter: '<b>Два</b>' },
+    { slot: 'auto', savedAt: savedAt + 60, chapter: 'Пролог' },
+  ];
+  for (const lang of LANGS) {
+    const onsave = vi.fn<(slot: ManualSlot) => void>();
+    const onoverwrite = vi.fn<(slot: ManualSlot) => void>();
+    const oncancel = vi.fn<() => void>();
+    const onload = vi.fn<(slot: SaveSlot) => void>();
+    const base = { slots, lang, saving: null, conflict: null, failed: null, onsave, onoverwrite, oncancel, onload };
+    const { container, getByRole, getAllByRole, rerender } = render(SaveLoad, base);
+    const row = (slot: SaveSlot) => within(slotEl(container, slot));
+    const [save, load, yes, no] = [t(lang, 'saves.save'), t(lang, 'saves.load'), t(lang, 'saves.yes'), t(lang, 'saves.no')];
+    const time = (s: number): string =>
+      new Intl.DateTimeFormat(lang, { dateStyle: 'short', timeStyle: 'short' }).format(new Date(s * 1000));
+    const saveDisabled = (): boolean[] => getAllByRole('button', { name: save }).map((b) => b.hasAttribute('disabled'));
+
+    expect(shown(getByRole('heading')), lang).toBe(t(lang, 'saves.title'));
+    expect([...container.querySelectorAll('[data-slot]')].map((el) => el.getAttribute('data-slot')), lang).toEqual([
+      'auto',
+      's1',
+      's2',
+      's3',
+    ]);
+    expect(shown(slotEl(container, 'auto')), lang).toBe(
+      `${t(lang, 'saves.auto')} ${t(lang, 'saves.info', { chapter: 'Пролог', time: time(savedAt + 60) })} ${load}`,
+    );
+    expect(shown(slotEl(container, 's2')), lang).toBe(
+      `${t(lang, 'saves.slot', { n: 2 })} ${t(lang, 'saves.info', { chapter: '<b>Два</b>', time: time(savedAt) })} ${load} ${save}`,
+    );
+    expect(shown(slotEl(container, 's1')), lang).toBe(`${t(lang, 'saves.slot', { n: 1 })} ${t(lang, 'saves.empty')} ${save}`);
+    expect(container.querySelector('b'), lang).toBeNull();
+    // `auto` is loaded only; an empty row has no Load.
+    expect(names(row('auto').getAllByRole('button')), lang).toEqual([load]);
+    expect(names(row('s3').getAllByRole('button')), lang).toEqual([save]);
+
+    // An empty row saves at once.
+    tap(row('s1').getByRole('button', { name: save }));
+    expect(onsave.mock.calls, lang).toEqual([['s1']]);
+    expect(shown(container), lang).not.toContain(t(lang, 'saves.overwrite_ask'));
+    // In flight: the row says so, and every Save is disabled.
+    await rerender({ saving: 's1' });
+    expect(shown(slotEl(container, 's1')), lang).toContain(t(lang, 'saves.saving'));
+    expect(saveDisabled(), lang).toEqual([true, true, true]);
+    tap(row('s3').getByRole('button', { name: save }));
+    expect(onsave.mock.calls, lang).toEqual([['s1']]);
+    // A failed save says so on its row (critique W2), and Save is open again.
+    await rerender({ saving: null, failed: 's1' });
+    expect(shown(slotEl(container, 's1')), lang).toContain(t(lang, 'saves.failed'));
+    expect(row('s1').getByRole('alert').textContent, lang).toBe(t(lang, 'saves.failed'));
+    expect(saveDisabled(), lang).toEqual([false, false, false]);
+
+    // An occupied row asks first: No drops the ask, Yes saves once, however often it is tapped (critique W1).
+    tap(row('s2').getByRole('button', { name: save }));
+    expect(shown(slotEl(container, 's2')), lang).toContain(t(lang, 'saves.overwrite_ask'));
+    expect(onsave.mock.calls, lang).toEqual([['s1']]);
+    expect(names(row('s2').getAllByRole('button')), lang).toEqual([yes, no]);
+    tap(row('s2').getByRole('button', { name: no }));
+    expect(shown(container), lang).not.toContain(t(lang, 'saves.overwrite_ask'));
+    expect(onsave.mock.calls, lang).toEqual([['s1']]);
+    tap(row('s2').getByRole('button', { name: save }));
+    const overwriteYes = row('s2').getByRole('button', { name: yes });
+    rawTap(overwriteYes);
+    rawTap(overwriteYes);
+    flushSync();
+    expect(onsave.mock.calls, lang).toEqual([['s1'], ['s2']]);
+    expect(shown(container), lang).not.toContain(t(lang, 'saves.overwrite_ask'));
+
+    // One action per tap (L10 review M3): a double tap lands before `saving` arrives and still saves once.
+    await rerender({ failed: null, slots: [...slots] });
+    const s3 = row('s3').getByRole('button', { name: save });
+    rawTap(s3);
+    rawTap(s3);
+    flushSync();
+    expect(onsave.mock.calls, lang).toEqual([['s1'], ['s2'], ['s3']]);
+    await rerender({ saving: 's3' });
+    expect(saveDisabled(), lang).toEqual([true, true, true]);
+    await rerender({ saving: null });
+    expect(saveDisabled(), lang).toEqual([false, false, false]);
+    tap(row('s3').getByRole('button', { name: save }));
+    expect(onsave.mock.calls, lang).toEqual([['s1'], ['s2'], ['s3'], ['s3']]);
+
+    // Load by slot.
+    tap(row('s2').getByRole('button', { name: load }));
+    tap(row('auto').getByRole('button', { name: load }));
+    expect(onload.mock.calls, lang).toEqual([['s2'], ['auto']]);
+    cleanup();
+
+    // The server's 409 on a manual slot (F3): Yes overwrites once however often it is tapped, and is disabled while
+    // the overwrite is in flight (critique W1).
+    const conflicted = render(SaveLoad, { ...base, conflict: 's1' });
+    const s1 = within(slotEl(conflicted.container, 's1'));
+    expect(shown(slotEl(conflicted.container, 's1')), lang).toContain(t(lang, 'saves.conflict_ask'));
+    expect(names(s1.getAllByRole('button')), lang).toEqual([yes, no]);
+    const conflictYes = s1.getByRole('button', { name: yes });
+    rawTap(conflictYes);
+    rawTap(conflictYes);
+    flushSync();
+    expect(onoverwrite.mock.calls, lang).toEqual([['s1']]);
+    expect(oncancel, lang).not.toHaveBeenCalled();
+    await conflicted.rerender({ saving: 's1' });
+    expect(
+      s1.getAllByRole('button').map((b) => b.hasAttribute('disabled')),
+      lang,
+    ).toEqual([true, true]);
+    cleanup();
+
+    const declined = render(SaveLoad, { ...base, conflict: 's1' });
+    tap(within(slotEl(declined.container, 's1')).getByRole('button', { name: no }));
+    expect(oncancel, lang).toHaveBeenCalledTimes(1);
+    expect(onoverwrite.mock.calls, lang).toEqual([['s1']]);
+    expect(onsave.mock.calls.length, lang).toBe(4);
+    cleanup();
+
+    // The latch ends at the next change of any answer, `saving` alone included. rerender() replaces the whole props
+    // object at once, so here `saving` is a signal of its own.
+    let liveSaving = $state<ManualSlot | null>(null);
+    const live = render(SaveLoad, {
+      ...base,
+      get saving() {
+        return liveSaving;
+      },
+    });
+    const liveSave = (): HTMLElement => within(slotEl(live.container, 's3')).getByRole('button', { name: save });
+    tap(liveSave());
+    expect(onsave.mock.calls.length, lang).toBe(5);
+    liveSaving = 's3';
+    flushSync();
+    liveSaving = null;
+    flushSync();
+    expect(liveSave().hasAttribute('disabled'), lang).toBe(false);
+    tap(liveSave());
+    expect(onsave.mock.calls.length, lang).toBe(6);
+    cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
 // No literal text and no I/O in this lane's components (C3-C8; principle 8, spec 2 and 4)
 
 /** This lane's components; L14a's six and App.svelte (L15) are not among them. */
@@ -553,6 +707,7 @@ const MENU_COMPONENTS = [
   'ChapterSelect.svelte',
   'Menu.svelte',
   'Notice.svelte',
+  'SaveLoad.svelte',
   'Settings.svelte',
   'StoryPicker.svelte',
   'Terms.svelte',
