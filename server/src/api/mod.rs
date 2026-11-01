@@ -69,6 +69,8 @@ fn routes() -> Router<AppState> {
         .route("/stats", get(stats::get_stats))
         .route("/stats/events", post(stats::post_events))
         .route("/wallet", get(wallet::get_wallet))
+        .route("/invites/{code}", get(social::get_invite))
+        .route("/invites/{code}/request", post(social::post_invite_request))
 }
 
 /// `GET /api/health`: no auth, no database; `ok` as `text/plain`.

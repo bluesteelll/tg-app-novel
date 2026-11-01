@@ -11,6 +11,7 @@ use serde_json::value::RawValue;
 use ts_rs::TS;
 
 use crate::db::orders::OrderStatus;
+use crate::db::social::InviteState;
 use crate::db::stats::{StatKind, StatOutcome};
 use crate::error::{ApiErrorBody, ErrorCode};
 use crate::ids::{SaveSlot, StoryId};
@@ -419,6 +420,15 @@ pub struct HintUseResponse {
     pub balance: i64,
     /// The tier's hint in the requested language.
     pub text: String,
+}
+
+/// `GET /api/invites/{code}` and `POST /api/invites/{code}/request` response: what the code means to the caller, and
+/// nothing about its owner (META-PLAN M10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteView {
+    /// The caller's state toward the code's owner.
+    pub state: InviteState,
 }
 
 /// The first line of the generated file: what it is and how to rewrite it.

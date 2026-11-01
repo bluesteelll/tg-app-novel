@@ -1,5 +1,9 @@
 //! The social graph (META-PLAN M10-M12, M15; `0005_social.sql`): the schema's named constraints on raw SQL, the
-//! users upsert's inserted flag, and the attribution at `POST /api/auth` (M11) through the production router.
+//! users upsert's inserted flag, the attribution at `POST /api/auth` (M11), and the invite routes (F19) through the
+//! production router.
+//!
+//! A concurrency case holds a row lock on a raw READ COMMITTED connection (a stand-in for another app transaction)
+//! and observes the app's request waiting on it through `common::wait_for_lock_waiter`, never by timing.
 //!
 //! Every refused schema case breaks one constraint, or one whose CHECK name sorts before every other it breaks:
 //! PostgreSQL tests a table's CHECK constraints in name order, then the unique indexes, then the foreign keys at the
@@ -12,8 +16,8 @@
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::http::header::CONTENT_TYPE;
-use axum::http::{Request, StatusCode};
+use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
+use axum::http::{Method, Request, StatusCode};
 use hmac::{Hmac, KeyInit, Mac};
 use serde_json::{Value, json};
 use server::AppState;
@@ -21,10 +25,10 @@ use server::auth::{data_check_string, secret_key};
 use server::clock::FixedClock;
 use server::ids::UserId;
 use sha2::Sha256;
-use sqlx::PgConnection;
 use sqlx::postgres::PgQueryResult;
+use sqlx::{Connection, PgConnection};
 
-use crate::catalog::T0;
+use crate::catalog::{T0, bearer};
 use crate::common;
 
 /// The first player: the lowest id, so every two-row lock takes ANN's row first.
@@ -690,6 +694,293 @@ async fn auth_start_param_other_shapes_create_nothing() {
     let requests = request_rows(&mut c).await;
     if !requests.is_empty() {
         failures.push(format!("friend requests: expected none, got {requests:?}"));
+    }
+    report(&failures);
+}
+
+/// `method path` through the production router, as `user` (a token issued at `T0`) or without `Authorization`.
+async fn send(st: &AppState, method: Method, user: Option<i64>, path: &str) -> common::Reply {
+    let mut req = Request::builder().method(method).uri(path);
+    if let Some(user) = user {
+        req = req.header(AUTHORIZATION, bearer(st, user));
+    }
+    common::call(st, req.body(Body::empty()).unwrap()).await
+}
+
+/// `GET /api/invites/{code}` as `user`.
+async fn view_invite(st: &AppState, user: i64, code: &str) -> common::Reply {
+    send(st, Method::GET, Some(user), &format!("/api/invites/{code}")).await
+}
+
+/// `POST /api/invites/{code}/request` as `user`.
+async fn ask(st: &AppState, user: i64, code: &str) -> common::Reply {
+    send(
+        st,
+        Method::POST,
+        Some(user),
+        &format!("/api/invites/{code}/request"),
+    )
+    .await
+}
+
+/// `None` when `reply` is a 200 whose body is exactly `{"state":"<state>"}`, else the failure line.
+fn state_is(case: &str, reply: &common::Reply, state: &str) -> Option<String> {
+    let want = format!(r#"{{"state":"{state}"}}"#);
+    let body = body_text(reply);
+    (reply.status != StatusCode::OK || body != want).then(|| {
+        format!(
+            "{case}: expected 200 {want}, got {} {body}",
+            reply.status.as_u16()
+        )
+    })
+}
+
+/// `None` when `reply` is a 404 `{"error":"not_found"}`, else the failure line.
+fn not_found(case: &str, reply: &common::Reply) -> Option<String> {
+    let body = body_text(reply);
+    (reply.status != StatusCode::NOT_FOUND || body != r#"{"error":"not_found"}"#).then(|| {
+        format!(
+            "{case}: expected 404 {{\"error\":\"not_found\"}}, got {} {body}",
+            reply.status.as_u16()
+        )
+    })
+}
+
+/// Opens a READ COMMITTED transaction on a raw connection: a stand-in for another app transaction.
+async fn begin(c: &mut PgConnection) {
+    sqlx::raw_sql("BEGIN ISOLATION LEVEL READ COMMITTED")
+        .execute(&mut *c)
+        .await
+        .unwrap();
+}
+
+async fn commit(c: &mut PgConnection) {
+    sqlx::raw_sql("COMMIT").execute(&mut *c).await.unwrap();
+}
+
+/// Locks `user`'s `users` row on `c` as the app's transactions do.
+async fn lock_user(c: &mut PgConnection, user: i64) {
+    sqlx::query("SELECT 1 FROM users WHERE id = $1 FOR NO KEY UPDATE")
+        .bind(user)
+        .execute(&mut *c)
+        .await
+        .unwrap();
+}
+
+/// Both invite answers are exactly `{"state":...}`: the owner's first name, handle and id appear nowhere in them.
+#[tokio::test]
+async fn invite_view_reveals_nothing_about_owner() {
+    let (st, _db) = social_state(&[ANN, BEN]).await;
+    let mut c = common::raw_db(&st).await;
+    code(&mut c, CODE_A, ANN, None).await.unwrap();
+    handle(&mut c, ANN, HANDLE_A).await.unwrap();
+    let mut failures = Vec::new();
+    failures.extend(state_is(
+        "GET as BEN",
+        &view_invite(&st, BEN, CODE_A).await,
+        "open",
+    ));
+    failures.extend(state_is(
+        "POST as BEN",
+        &ask(&st, BEN, CODE_A).await,
+        "requested",
+    ));
+    failures.extend(state_is(
+        "GET as BEN after the request",
+        &view_invite(&st, BEN, CODE_A).await,
+        "requested",
+    ));
+    report(&failures);
+}
+
+/// The owner's pending incoming requests stop at 50 (M10, M15), exactly, under concurrency: at 49 a stand-in holds
+/// ANN's `users` row and inserts the 50th; BEN's ask is observed waiting on that row, then counts the committed 50th
+/// and answers `requested` without a row. A capped caller sees `requested` on the GET and the POST alike (the cap is
+/// never told apart from a pending request).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pending_requests_capped() {
+    let (st, _db) = social_state(&[ANN, BEN, CAT]).await;
+    let mut c = common::raw_db(&st).await;
+    code(&mut c, CODE_A, ANN, None).await.unwrap();
+    // 50 requesters with ids above every player; 49 of them ask now, the stand-in sends the 50th.
+    sqlx::query(
+        "INSERT INTO users (id, first_name, language_code, created_at, last_seen_at) \
+         SELECT g, 'Req', NULL, $1, $1 FROM generate_series(6000000001::bigint, 6000000050::bigint) g",
+    )
+    .bind(T0)
+    .execute(&mut c)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO friend_requests (from_id, to_id, created_at) \
+         SELECT g, $1, $2 FROM generate_series(6000000001::bigint, 6000000049::bigint) g",
+    )
+    .bind(ANN)
+    .bind(T0)
+    .execute(&mut c)
+    .await
+    .unwrap();
+    let mut failures = Vec::new();
+    failures.extend(state_is(
+        "GET as BEN at 49",
+        &view_invite(&st, BEN, CODE_A).await,
+        "open",
+    ));
+
+    let mut stand_in = common::raw_db(&st).await;
+    begin(&mut stand_in).await;
+    lock_user(&mut stand_in, ANN).await;
+    request(&mut stand_in, 6_000_000_050, ANN).await.unwrap();
+    let app = st.clone();
+    let mut asking = tokio::spawn(async move { ask(&app, BEN, CODE_A).await });
+    let early = tokio::select! {
+        biased;
+        reply = &mut asking => Some(reply.unwrap()),
+        () = common::wait_for_lock_waiter(&st) => None,
+    };
+    if early.is_some() {
+        failures
+            .push("the ask never waited: it answered while the stand-in held ANN's row".to_owned());
+    }
+    commit(&mut stand_in).await;
+    stand_in.close().await.unwrap();
+    let reply = match early {
+        Some(reply) => reply,
+        None => asking.await.unwrap(),
+    };
+    failures.extend(state_is("BEN's ask beside the 50th", &reply, "requested"));
+
+    for (case, reply) in [
+        ("GET as BEN at 50", view_invite(&st, BEN, CODE_A).await),
+        ("GET as CAT at 50", view_invite(&st, CAT, CODE_A).await),
+        ("POST as CAT at 50", ask(&st, CAT, CODE_A).await),
+        (
+            "GET as CAT after the send",
+            view_invite(&st, CAT, CODE_A).await,
+        ),
+    ] {
+        failures.extend(state_is(case, &reply, "requested"));
+    }
+    let rows = request_rows(&mut c).await;
+    let to_ann = rows.iter().filter(|(_, to)| *to == ANN).count();
+    if to_ann != 50 {
+        failures.push(format!("rows: expected 50 requests to ANN, got {to_ann}"));
+    }
+    let of_players: Vec<&(i64, i64)> = rows
+        .iter()
+        .filter(|(from, _)| [BEN, CAT].contains(from))
+        .collect();
+    if !of_players.is_empty() {
+        failures.push(format!(
+            "requests of BEN or CAT: expected none, got {of_players:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// A launch with a live invite (an existing user's and a newcomer's) creates no friend request: asking is the
+/// holder's own act. Both see `open`.
+#[tokio::test]
+async fn invite_launch_creates_no_request() {
+    let (st, _db) = social_state(&[ANN, BEN]).await;
+    let mut c = common::raw_db(&st).await;
+    code(&mut c, CODE_A, ANN, None).await.unwrap();
+    let invite = format!("f{CODE_A}");
+    let mut failures = Vec::new();
+    failures.extend(auth_ok(
+        "existing BEN",
+        &launch(&st, BEN, "Ben", Some(&invite)).await,
+    ));
+    failures.extend(auth_ok(
+        "newcomer CAT",
+        &launch(&st, CAT, "Cat", Some(&invite)).await,
+    ));
+    let requests = request_rows(&mut c).await;
+    if !requests.is_empty() {
+        failures.push(format!("friend requests: expected none, got {requests:?}"));
+    }
+    for (case, user) in [("GET as BEN", BEN), ("GET as CAT", CAT)] {
+        failures.extend(state_is(
+            case,
+            &view_invite(&st, user, CODE_A).await,
+            "open",
+        ));
+    }
+    report(&failures);
+}
+
+/// One's own code is `own` on both routes and creates nothing: the owner's own-code launch writes no referral (a
+/// newcomer owns no code, so this is the reachable case), and the request route writes no row.
+#[tokio::test]
+async fn self_invite_creates_nothing() {
+    let (st, _db) = social_state(&[ANN]).await;
+    let mut c = common::raw_db(&st).await;
+    code(&mut c, CODE_A, ANN, None).await.unwrap();
+    let mut failures = Vec::new();
+    failures.extend(auth_ok(
+        "ANN's own-code launch",
+        &launch(&st, ANN, "Ann", Some(&format!("f{CODE_A}"))).await,
+    ));
+    failures.extend(state_is(
+        "GET as ANN",
+        &view_invite(&st, ANN, CODE_A).await,
+        "own",
+    ));
+    failures.extend(state_is("POST as ANN", &ask(&st, ANN, CODE_A).await, "own"));
+    let referrals = referral_rows(&mut c).await;
+    if !referrals.is_empty() {
+        failures.push(format!("referrals: expected none, got {referrals:?}"));
+    }
+    let requests = request_rows(&mut c).await;
+    if !requests.is_empty() {
+        failures.push(format!("friend requests: expected none, got {requests:?}"));
+    }
+    report(&failures);
+}
+
+/// A revoked code is unknown to both routes (404) and creates nothing, not even a newcomer's referral.
+#[tokio::test]
+async fn revoked_code_creates_nothing() {
+    let (st, _db) = social_state(&[ANN, BEN]).await;
+    let mut c = common::raw_db(&st).await;
+    code(&mut c, CODE_A, ANN, Some(T0)).await.unwrap();
+    code(&mut c, CODE_B, ANN, None).await.unwrap();
+    let mut failures = Vec::new();
+    failures.extend(not_found(
+        "GET as BEN",
+        &view_invite(&st, BEN, CODE_A).await,
+    ));
+    failures.extend(not_found("POST as BEN", &ask(&st, BEN, CODE_A).await));
+    failures.extend(auth_ok(
+        "newcomer CAT with the revoked code",
+        &launch(&st, CAT, "Cat", Some(&format!("f{CODE_A}"))).await,
+    ));
+    let referrals = referral_rows(&mut c).await;
+    if !referrals.is_empty() {
+        failures.push(format!("referrals: expected none, got {referrals:?}"));
+    }
+    let requests = request_rows(&mut c).await;
+    if !requests.is_empty() {
+        failures.push(format!("friend requests: expected none, got {requests:?}"));
+    }
+    report(&failures);
+}
+
+/// Two sends through one code make one request; both answer `requested`.
+#[tokio::test]
+async fn invite_request_repeat_creates_one() {
+    let (st, _db) = social_state(&[ANN, BEN]).await;
+    let mut c = common::raw_db(&st).await;
+    code(&mut c, CODE_A, ANN, None).await.unwrap();
+    let mut failures = Vec::new();
+    for case in ["first send", "second send"] {
+        failures.extend(state_is(case, &ask(&st, BEN, CODE_A).await, "requested"));
+    }
+    let requests = request_rows(&mut c).await;
+    if requests != [(BEN, ANN)] {
+        failures.push(format!(
+            "friend requests: expected [(BEN, ANN)], got {requests:?}"
+        ));
     }
     report(&failures);
 }
