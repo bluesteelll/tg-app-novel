@@ -125,3 +125,27 @@ test('carry: an integral value for a float global stays a float', () => {
   const vars = { g_ratio: 2 } as Readonly<Record<VarName, InkScalar>>;
   expect(firstLine(ch2, { kind: 'checkpoint', knot: 'start' as KnotName, vars })).toMatchObject({ lineId: 'ch2.half.q002' });
 });
+
+test('carry: a carried false or zero overrides a truthy default of the next chapter', () => {
+  // The story lint admits any scalar default for a global; a falsy value left by ch1 is a value, not an absence.
+  const globals = 'VAR g_alive = true\nVAR g_trust = 3\n';
+  const ch1 = chapter('ch1', ['-> start', '=== start ===', '~ g_alive = false', '~ g_trust = 0', 'Текст. #id:ch1.start.r001', '-> END'], globals, {
+    knots: ['start'],
+    globals: ['g_alive', 'g_trust'],
+  });
+  const ch2 = chapter(
+    'ch2',
+    ['-> start', '=== start ===', '{ not g_alive && g_trust == 0:', '    Ушёл. #id:ch2.start.r002', '- else:', '    Остался. #id:ch2.start.r003', '}', '-> END'],
+    globals,
+    { knots: ['start'], globals: ['g_alive', 'g_trust'] },
+  );
+  const r1 = ok(StoryRunner.create(ch1, { kind: 'fresh', carry: {} }, ASSETS));
+  expect(ok(r1.next()).kind).toBe('line');
+  expect(ok(r1.next()).kind).toBe('end');
+  const out = carryOut(r1, ch1.meta);
+  r1.dispose();
+  expect(out).toEqual({ g_alive: false, g_trust: 0 });
+  const into = carryInto(out, ch2.meta);
+  expect(into).toEqual({ g_alive: false, g_trust: 0 });
+  expect(firstLine(ch2, { kind: 'fresh', carry: into })).toMatchObject({ kind: 'line', lineId: 'ch2.start.r002' });
+});
