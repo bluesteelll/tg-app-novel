@@ -184,6 +184,43 @@
       "status": "refunded"
     }
   ],
+  "PostStatsResponse": [
+    {
+      "duplicates": 1,
+      "recorded": 3,
+      "rejected": [
+        {
+          "eventId": "00000000-0000-4000-8000-000000000000",
+          "reason": "unknown_chapter"
+        },
+        {
+          "eventId": "00000000-0000-4000-8000-000000000001",
+          "reason": "not_entitled"
+        },
+        {
+          "eventId": "00000000-0000-4000-8000-000000000002",
+          "reason": "unknown_ending"
+        },
+        {
+          "eventId": "00000000-0000-4000-8000-000000000003",
+          "reason": "unknown_puzzle"
+        },
+        {
+          "eventId": "00000000-0000-4000-8000-000000000004",
+          "reason": "unknown_choice"
+        },
+        {
+          "eventId": "00000000-0000-4000-8000-000000000005",
+          "reason": "rate_limited"
+        }
+      ]
+    },
+    {
+      "duplicates": 0,
+      "recorded": 2,
+      "rejected": []
+    }
+  ],
   "PutSaveResponse": [
     {
       "rev": 4,
@@ -270,6 +307,45 @@
     },
     {
       "slots": []
+    }
+  ],
+  "StatsResponse": [
+    {
+      "game": {
+        "endingsReached": 2,
+        "storiesStarted": 1,
+        "storiesTotal": 2
+      },
+      "stories": [
+        {
+          "chaptersCompleted": [
+            "ch1",
+            "ch2"
+          ],
+          "chaptersTotal": 2,
+          "endingsReached": [
+            "ashes",
+            "truth"
+          ],
+          "started": true,
+          "storyId": "manor"
+        },
+        {
+          "chaptersCompleted": [],
+          "chaptersTotal": 2,
+          "endingsReached": [],
+          "started": false,
+          "storyId": "tide"
+        }
+      ]
+    },
+    {
+      "game": {
+        "endingsReached": 0,
+        "storiesStarted": 0,
+        "storiesTotal": 0
+      },
+      "stories": []
     }
   ]
 }

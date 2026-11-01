@@ -6,6 +6,7 @@ pub mod orders;
 pub mod payments;
 pub mod puzzles;
 pub mod saves;
+pub mod stats;
 pub mod users;
 
 use std::borrow::Cow;
