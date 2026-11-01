@@ -1,7 +1,7 @@
 //! `client/src/api/fixtures/dto-samples.json` (K22): samples of every response body, serialized from the real Rust
 //! DTOs, keyed by the TypeScript type name. The client's decoders are tested against this file, so a change of a
 //! body's shape on the Rust side reaches the client's tests. Every optional field is sampled both absent (or null)
-//! and present, and every value of the three wire unions at least once.
+//! and present, and every value of the four wire unions at least once.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -11,8 +11,9 @@ use serde_json::value::RawValue;
 use serde_json::{Map, Value};
 use server::api::dto::{
     AttemptResponse, AuthResponse, ChapterPayload, CreateInvoiceResponse, EntitlementsResponse,
-    HintView, OrderResponse, ProductDto, PutSaveResponse, PuzzleStatus, SaveFull, SaveListResponse,
-    SaveSummary, UserDto, ts_bindings,
+    GameStatsDto, HintView, OrderResponse, PostStatsResponse, ProductDto, PutSaveResponse,
+    PuzzleStatus, RejectedEvent, SaveFull, SaveListResponse, SaveSummary, StatRejectReason,
+    StatsResponse, StoryStatsDto, UserDto, ts_bindings,
 };
 use server::db::orders::OrderStatus;
 use server::error::{ApiErrorBody, ErrorCode};
@@ -22,16 +23,20 @@ use ts_rs::TS;
 /// How to rewrite the file.
 const REGENERATE: &str = "regenerate: cargo test -p server --test it dto_samples::write_dto_samples -- --ignored --exact";
 
-/// The exported request bodies: the client only sends them, so it decodes none.
-const REQUESTS: [&str; 4] = [
+/// The exported request bodies and the types only they carry: the client only sends them, so it decodes none.
+const REQUESTS: [&str; 8] = [
     "AuthRequest",
     "PutSaveRequest",
     "AttemptRequest",
     "CreateInvoiceRequest",
+    "PostStatsRequest",
+    "StatEventDto",
+    "StatKind",
+    "StatOutcome",
 ];
 
 /// The exported types that only appear inside a sampled body, and are sampled there.
-const NESTED: [&str; 8] = [
+const NESTED: [&str; 12] = [
     "SaveSlot",
     "StoryId",
     "ErrorCode",
@@ -40,6 +45,10 @@ const NESTED: [&str; 8] = [
     "ProductDto",
     "HintView",
     "OrderStatus",
+    "StatRejectReason",
+    "RejectedEvent",
+    "StoryStatsDto",
+    "GameStatsDto",
 ];
 
 /// Every error code, each at its index in [`code_index`].
@@ -95,6 +104,29 @@ const ORDER_STATUSES: [OrderStatus; 4] = [
     OrderStatus::Paid,
     OrderStatus::Refunded,
 ];
+
+/// Every stats reject reason, each at its index in [`reason_index`], sampled in `PostStatsResponse`.
+const STAT_REJECT_REASONS: [StatRejectReason; 6] = [
+    StatRejectReason::UnknownChapter,
+    StatRejectReason::NotEntitled,
+    StatRejectReason::UnknownEnding,
+    StatRejectReason::UnknownPuzzle,
+    StatRejectReason::UnknownChoice,
+    StatRejectReason::RateLimited,
+];
+
+/// The index of `reason` in [`STAT_REJECT_REASONS`]: no wildcard arm, so a new reason does not compile until it is
+/// sampled.
+fn reason_index(reason: StatRejectReason) -> usize {
+    match reason {
+        StatRejectReason::UnknownChapter => 0,
+        StatRejectReason::NotEntitled => 1,
+        StatRejectReason::UnknownEnding => 2,
+        StatRejectReason::UnknownPuzzle => 3,
+        StatRejectReason::UnknownChoice => 4,
+        StatRejectReason::RateLimited => 5,
+    }
+}
 
 /// The time of every sample.
 const AT: i64 = 1_800_000_000;
@@ -280,6 +312,64 @@ fn samples() -> Value {
             })
             .collect(),
     );
+    put(
+        "PostStatsResponse",
+        vec![
+            value(&PostStatsResponse {
+                recorded: 3,
+                duplicates: 1,
+                rejected: STAT_REJECT_REASONS
+                    .iter()
+                    .enumerate()
+                    .map(|(n, &reason)| RejectedEvent {
+                        event_id: format!("00000000-0000-4000-8000-00000000000{n}"),
+                        reason,
+                    })
+                    .collect(),
+            }),
+            value(&PostStatsResponse {
+                recorded: 2,
+                duplicates: 0,
+                rejected: Vec::new(),
+            }),
+        ],
+    );
+    put(
+        "StatsResponse",
+        vec![
+            value(&StatsResponse {
+                stories: vec![
+                    StoryStatsDto {
+                        story_id: StoryId("manor".to_owned()),
+                        started: true,
+                        chapters_completed: vec!["ch1".to_owned(), "ch2".to_owned()],
+                        chapters_total: 2,
+                        endings_reached: vec!["ashes".to_owned(), "truth".to_owned()],
+                    },
+                    StoryStatsDto {
+                        story_id: StoryId("tide".to_owned()),
+                        started: false,
+                        chapters_completed: Vec::new(),
+                        chapters_total: 2,
+                        endings_reached: Vec::new(),
+                    },
+                ],
+                game: GameStatsDto {
+                    stories_started: 1,
+                    stories_total: 2,
+                    endings_reached: 2,
+                },
+            }),
+            value(&StatsResponse {
+                stories: Vec::new(),
+                game: GameStatsDto {
+                    stories_started: 0,
+                    stories_total: 0,
+                    endings_reached: 0,
+                },
+            }),
+        ],
+    );
     let mut errors: Vec<Value> = ERROR_CODES
         .iter()
         .map(|&error| {
@@ -330,7 +420,7 @@ fn report(failures: &[String]) {
 
 /// The committed file equals what the DTOs serialize today, byte for byte; every type `ts_bindings()` exports is
 /// sampled or listed as a request or a nested-only type (so a new body is red until it is sampled); every value of
-/// the error-code, slot and order-status unions is sampled.
+/// the error-code, slot, order-status and stats reject-reason unions is sampled.
 #[test]
 #[allow(
     clippy::disallowed_methods,
@@ -404,6 +494,14 @@ fn dto_samples_are_fresh() {
             ));
         }
     }
+    for (i, &reason) in STAT_REJECT_REASONS.iter().enumerate() {
+        if reason_index(reason) != i {
+            failures.push(format!(
+                "STAT_REJECT_REASONS[{i}] is {reason:?}, indexed {}",
+                reason_index(reason)
+            ));
+        }
+    }
     let cfg = ts_rs::Config::default();
     for (union, ts, sampled) in [
         (
@@ -420,6 +518,11 @@ fn dto_samples_are_fresh() {
             "OrderStatus",
             OrderStatus::inline(&cfg),
             wire_names(&ORDER_STATUSES),
+        ),
+        (
+            "StatRejectReason",
+            StatRejectReason::inline(&cfg),
+            wire_names(&STAT_REJECT_REASONS),
         ),
     ] {
         let literals = union_literals(&ts);
