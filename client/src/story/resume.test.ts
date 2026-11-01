@@ -477,3 +477,25 @@ test('resume: a checkpoint var the story no longer declares is skipped', () => {
   expect(r.runner.readVars(['g_x'] as VarName[])).toEqual({ g_x: 1 });
   r.runner.dispose();
 });
+
+test('resume: a failed checkpoint under minLevel checkpoint reports storyUpdated', () => {
+  // "Return to last save" after the first ink error skips the exact level by minLevel only, which sets nothing; the
+  // checkpoint level it allows failing is a skipped level the caller allowed, so the floor reports the update.
+  const v1 = chapter(STORY_V1, KNOTS, V1);
+  const saved = playAndSave(v1, 4); // at "K three.", checkpoint k
+  const held = resumed(resume(saved, v1, ASSETS, { minLevel: 'checkpoint' }));
+  expect(held.level).toBe('checkpoint');
+  expect(held.storyUpdated).toBe(false);
+  held.runner.dispose();
+  // The update renamed the checkpoint's knot.
+  const renamed = resumed(resume(saved, chapter(STORY_V3, ['start', 'k_new'], V3), ASSETS, { minLevel: 'checkpoint' }));
+  expect(renamed.level).toBe('chapter-start');
+  expect(renamed.storyUpdated).toBe(true);
+  renamed.runner.dispose();
+  // The update left the knot's first line without its id: the checkpoint's first step fails.
+  const noId = chapter(STORY_V1.map((line) => line.replace('K one. #id:ch1.k.m003', 'K one.')), KNOTS, V2);
+  const failed = resumed(resume(saved, noId, ASSETS, { minLevel: 'checkpoint' }));
+  expect(failed.level).toBe('chapter-start');
+  expect(failed.storyUpdated).toBe(true);
+  failed.runner.dispose();
+});
