@@ -5,12 +5,15 @@
 //!
 //! Every body derives `TS`: [`ts_bindings`] turns them into the client's `client/src/api/generated/api.ts`. Every
 //! `i64` is `#[ts(type = "number")]`: ids and timestamps stay below 2^53, and ts-rs would otherwise say `bigint`.
+//!
+//! Social bodies name another user by handle only, never by Telegram id (META-PLAN M10, W1).
 
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use ts_rs::TS;
 
 use crate::db::orders::OrderStatus;
+use crate::db::social::InviteState;
 use crate::db::stats::{StatKind, StatOutcome};
 use crate::error::{ApiErrorBody, ErrorCode};
 use crate::ids::{SaveSlot, StoryId};
@@ -421,6 +424,64 @@ pub struct HintUseResponse {
     pub text: String,
 }
 
+/// `GET /api/invites/{code}` and `POST /api/invites/{code}/request` response: what the code means to the caller, and
+/// nothing about its owner (META-PLAN M10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteView {
+    /// The caller's state toward the code's owner.
+    pub state: InviteState,
+}
+
+/// A friend as `GET /api/social` lists them: by handle, never by Telegram id (W1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendDto {
+    /// The friend's handle: 24 lower-case hex, the id of `DELETE /api/friends/{handle}`.
+    pub handle: String,
+    /// The friend's first name.
+    pub first_name: String,
+}
+
+/// An incoming friend request as `GET /api/social` lists it: the requester by handle (W1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendRequestDto {
+    /// The requester's handle: the id of `POST /api/friends/requests/{handle}/accept`.
+    pub handle: String,
+    /// The requester's first name.
+    pub first_name: String,
+    /// When the request was sent, in unix seconds.
+    #[ts(type = "number")]
+    pub at: i64,
+}
+
+/// `GET /api/social` response, also the answer of every social action: the user's own invite code, friends, incoming
+/// requests and profile visibility.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SocialResponse {
+    /// The user's active invite code (the link is `startapp=f<code>`).
+    pub invite_code: String,
+    /// The friends, oldest friendship first.
+    pub friends: Vec<FriendDto>,
+    /// The incoming requests, oldest first.
+    pub requests: Vec<FriendRequestDto>,
+    /// The user's latest profile-visibility consent is a grant (`false` until consented).
+    pub profile_visible: bool,
+}
+
+/// `PUT /api/consents/friends_profile` request (M12): show my progress to my friends, or stop. Unknown fields are
+/// ignored; the policy version is the server's own, never the client's.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsentRequest {
+    /// On or off.
+    pub granted: bool,
+    /// The consent text the user saw, one of a closed list (`friends_profile.v1`).
+    pub text_version: String,
+}
+
 /// The first line of the generated file: what it is and how to rewrite it.
 const BINDINGS_HEADER: &str = "// Built from server/src/api/dto.rs and error.rs by ts-rs; do not edit. Regenerate: \
                                cargo test -p server --test it bindings::write_bindings -- --ignored --exact";
@@ -469,6 +530,12 @@ pub fn ts_bindings() -> String {
         export::<PackDto>(&cfg),
         export::<WalletResponse>(&cfg),
         export::<HintUseResponse>(&cfg),
+        export::<InviteState>(&cfg),
+        export::<InviteView>(&cfg),
+        export::<FriendDto>(&cfg),
+        export::<FriendRequestDto>(&cfg),
+        export::<SocialResponse>(&cfg),
+        export::<ConsentRequest>(&cfg),
     ];
     format!("{BINDINGS_HEADER}\n\n{}", decls.join("\n"))
 }

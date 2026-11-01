@@ -569,3 +569,86 @@ balance: number,
  * The tier's hint in the requested language.
  */
 text: string, };
+
+/**
+ * What a link holder's invite code means to them (`GET /api/invites/{code}`, M10). Nothing about the owner: a block
+ * of the caller by the owner, and the owner's full request list, answer `requested` exactly like the caller's own
+ * pending request, so the blocked or capped side learns nothing.
+ */
+export type InviteState = "open" | "requested" | "friends" | "own";
+
+/**
+ * `GET /api/invites/{code}` and `POST /api/invites/{code}/request` response: what the code means to the caller, and
+ * nothing about its owner (META-PLAN M10).
+ */
+export type InviteView = { 
+/**
+ * The caller's state toward the code's owner.
+ */
+state: InviteState, };
+
+/**
+ * A friend as `GET /api/social` lists them: by handle, never by Telegram id (W1).
+ */
+export type FriendDto = { 
+/**
+ * The friend's handle: 24 lower-case hex, the id of `DELETE /api/friends/{handle}`.
+ */
+handle: string, 
+/**
+ * The friend's first name.
+ */
+firstName: string, };
+
+/**
+ * An incoming friend request as `GET /api/social` lists it: the requester by handle (W1).
+ */
+export type FriendRequestDto = { 
+/**
+ * The requester's handle: the id of `POST /api/friends/requests/{handle}/accept`.
+ */
+handle: string, 
+/**
+ * The requester's first name.
+ */
+firstName: string, 
+/**
+ * When the request was sent, in unix seconds.
+ */
+at: number, };
+
+/**
+ * `GET /api/social` response, also the answer of every social action: the user's own invite code, friends, incoming
+ * requests and profile visibility.
+ */
+export type SocialResponse = { 
+/**
+ * The user's active invite code (the link is `startapp=f<code>`).
+ */
+inviteCode: string, 
+/**
+ * The friends, oldest friendship first.
+ */
+friends: Array<FriendDto>, 
+/**
+ * The incoming requests, oldest first.
+ */
+requests: Array<FriendRequestDto>, 
+/**
+ * The user's latest profile-visibility consent is a grant (`false` until consented).
+ */
+profileVisible: boolean, };
+
+/**
+ * `PUT /api/consents/friends_profile` request (M12): show my progress to my friends, or stop. Unknown fields are
+ * ignored; the policy version is the server's own, never the client's.
+ */
+export type ConsentRequest = { 
+/**
+ * On or off.
+ */
+granted: boolean, 
+/**
+ * The consent text the user saw, one of a closed list (`friends_profile.v1`).
+ */
+textVersion: string, };

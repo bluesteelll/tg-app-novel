@@ -18,6 +18,7 @@ mod payments;
 mod puzzles;
 mod saves;
 mod schema;
+mod social;
 mod stats;
 mod webhook;
 
@@ -198,9 +199,9 @@ async fn state_reopens_migrated_database() {
         .iter()
         .map(|(version, _)| *version)
         .collect();
-    if versions != [1, 2, 3, 4] {
+    if versions != [1, 2, 3, 4, 5] {
         failures.push(format!(
-            "first start: expected versions [1, 2, 3, 4], got {versions:?}"
+            "first start: expected versions [1, 2, 3, 4, 5], got {versions:?}"
         ));
     }
     match AppState::new(common::test_config(&db)).await {
