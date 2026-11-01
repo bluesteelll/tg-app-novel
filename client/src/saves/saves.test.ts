@@ -497,6 +497,35 @@ test('saves: network failure keeps pending and backs off', async () => {
   expect(srv2.puts).toHaveLength(3);
 });
 
+test('saves: autosave during a backoff waits for the timer', async () => {
+  const clock = new FakeClock();
+  const srv = new FakeSaves(clock);
+  srv.seed('manor', 'auto', 3, 'w0');
+  srv.script = [{ then: 'down' }];
+  const device = new FakeDevice();
+  const { s } = service(srv, clock, manor, device);
+  await s.start(list(summary('manor', 'auto', 3, 'w0')));
+  s.autosave(write(1));
+  await clock.advance(10);
+  expect(s.state()).toEqual({ kind: 'retrying', attempt: 1, inMs: 1000 });
+  // Offline, the next autosave comes long before the network does: it is cached and waits for the timer.
+  s.autosave(write(2));
+  await clock.advance(10);
+  expect(srv.puts.length, 'no PUT before the backoff timer fires').toBe(1);
+  expect(s.state()).toEqual({ kind: 'retrying', attempt: 1, inMs: 1000 });
+  expect(decodePending(device.items.get('pending_manor') ?? '')).toMatchObject({ baseRev: 3, writeId: 'w2', write: write(2) });
+  await clock.advance(1000);
+  // The timer sends the newest body; w1 was superseded.
+  expect(srv.puts.map((p) => [p.at, p.req.writeId, p.req.expectedRev, p.req.body])).toEqual([
+    [0, 'w1', 3, write(1).body],
+    [1000, 'w2', 3, write(2).body],
+  ]);
+  expect(s.state()).toEqual({ kind: 'idle' });
+  expect(srv.rows.get('manor/auto')).toMatchObject({ rev: 4, writeId: 'w2', body: write(2).body });
+  expect(device.items.has('pending_manor')).toBe(false);
+  expect(clock.pending()).toBe(0);
+});
+
 test('saves: keepalive put only under the shared quota', async () => {
   // The request JSON around an empty body, in the service's field order; the PUT's real size is checked below.
   const empty = { expectedRev: null, writeId: 'w1', chapterId: 'ch1', storyVersion: 'v1', lineId: 'ch1.k1.l1', body: '' };
