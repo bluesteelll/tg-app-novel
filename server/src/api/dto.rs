@@ -390,6 +390,16 @@ pub fn ts_bindings() -> String {
         export::<CreateInvoiceRequest>(&cfg),
         export::<CreateInvoiceResponse>(&cfg),
         export::<OrderResponse>(&cfg),
+        export::<StatKind>(&cfg),
+        export::<StatOutcome>(&cfg),
+        export::<StatEventDto>(&cfg),
+        export::<PostStatsRequest>(&cfg),
+        export::<StatRejectReason>(&cfg),
+        export::<RejectedEvent>(&cfg),
+        export::<PostStatsResponse>(&cfg),
+        export::<StoryStatsDto>(&cfg),
+        export::<GameStatsDto>(&cfg),
+        export::<StatsResponse>(&cfg),
     ];
     format!("{BINDINGS_HEADER}\n\n{}", decls.join("\n"))
 }

@@ -338,3 +338,148 @@ productId: string,
  * The order's status.
  */
 status: OrderStatus, };
+
+/**
+ * What an event reports: the `stat_events.kind` values (`stat_events_kind_known`), and their wire form.
+ */
+export type StatKind = "chapter_started" | "chapter_completed" | "ending_reached" | "puzzle_ended" | "choice_made";
+
+/**
+ * How a puzzle ended: the `stat_events.outcome` values of a `puzzle_ended` (`stat_events_subject_by_kind`).
+ */
+export type StatOutcome = "solved" | "failed" | "abandoned";
+
+/**
+ * One statistics event as the client reports it: a claim the server judges against the story index, the puzzle
+ * index and the user's entitlements. An unknown field is a 400.
+ */
+export type StatEventDto = { 
+/**
+ * The client's id of the event, a lower-case UUID v4: a resent event is a duplicate, never a second row.
+ */
+eventId: string, 
+/**
+ * What the event reports.
+ */
+kind: StatKind, 
+/**
+ * The chapter the event happened in.
+ */
+chapterId: string, 
+/**
+ * The story version the client ran: 16 lower-case hex characters.
+ */
+storyVersion: string, 
+/**
+ * `ending_reached`: the ending name; `puzzle_ended`: the puzzle id; `choice_made`: the picked option's line ID;
+ * `null` for the chapter kinds.
+ */
+subject: string | null, 
+/**
+ * `puzzle_ended` only: how the puzzle ended; `null` for every other kind.
+ */
+outcome: StatOutcome | null, 
+/**
+ * The event's age when the batch was sent, in ms: 0 to 30 days.
+ */
+ageMs: number, };
+
+/**
+ * `POST /api/stats/events` request. An unknown field (a `storyId`, say) is a 400: the server derives the story.
+ */
+export type PostStatsRequest = { 
+/**
+ * The batch: 1 to 32 events, oldest first.
+ */
+events: Array<StatEventDto>, };
+
+/**
+ * Why an event of a stats batch was not recorded. The client drops a rejected event: it is never retried.
+ */
+export type StatRejectReason = "unknown_chapter" | "not_entitled" | "unknown_ending" | "unknown_puzzle" | "unknown_choice" | "rate_limited";
+
+/**
+ * An event of the batch that was not recorded, and why.
+ */
+export type RejectedEvent = { 
+/**
+ * The event's id.
+ */
+eventId: string, 
+/**
+ * Why it was not recorded.
+ */
+reason: StatRejectReason, };
+
+/**
+ * `POST /api/stats/events` response: every event of the batch is recorded, a duplicate, or rejected.
+ */
+export type PostStatsResponse = { 
+/**
+ * Events recorded by this request.
+ */
+recorded: number, 
+/**
+ * Events already recorded: sent before, or repeated in this batch.
+ */
+duplicates: number, 
+/**
+ * Events not recorded, in batch order.
+ */
+rejected: Array<RejectedEvent>, };
+
+/**
+ * One story's statistics.
+ */
+export type StoryStatsDto = { 
+/**
+ * The story.
+ */
+storyId: StoryId, 
+/**
+ * Whether the user started any chapter of it.
+ */
+started: boolean, 
+/**
+ * The chapters the user completed (a chapter's end, or one of its endings), in chain order.
+ */
+chaptersCompleted: Array<string>, 
+/**
+ * The story's chapters.
+ */
+chaptersTotal: number, 
+/**
+ * The names of the story's endings the user reached, in name order.
+ */
+endingsReached: Array<string>, };
+
+/**
+ * The game's statistics: sums over the stories of the index.
+ */
+export type GameStatsDto = { 
+/**
+ * The stories the user started.
+ */
+storiesStarted: number, 
+/**
+ * The stories of the index.
+ */
+storiesTotal: number, 
+/**
+ * The endings the user reached, over all stories.
+ */
+endingsReached: number, };
+
+/**
+ * `GET /api/stats` response: the user's statistics per story of the current index, and for the game. Only facts the
+ * index still holds count; an ending is named only once the user reached it.
+ */
+export type StatsResponse = { 
+/**
+ * Every story of the index, in index order.
+ */
+stories: Array<StoryStatsDto>, 
+/**
+ * The sums over the stories.
+ */
+game: GameStatsDto, };
