@@ -111,11 +111,19 @@ class FakeDevice implements DeviceStore {
 }
 
 type Row = SaveSummary & { body: string };
-/** One scripted PUT: wait for `gate`, then answer normally, or lose the answer after storing ('lost'), or never store ('down'). */
-type Step = { gate?: Promise<void>; then?: 'lost' | 'down' };
+/**
+ * One scripted PUT: wait for `gate`, then answer normally, or lose the answer after storing ('lost'), or never store
+ * ('down'); `fail` never stores either and answers that error instead of a network failure.
+ */
+type Step = { gate?: Promise<void>; then?: 'lost' | 'down'; fail?: ApiError };
 type Put = { story: string; slot: SaveSlot; req: PutSaveRequest; keepalive: boolean; at: number };
 
 const networkDown: ApiError = { kind: 'network', detail: 'offline' };
+
+/** A front proxy's overload answer: no JSON body of ours, only the status and its `Retry-After` in seconds. */
+function busy(status: number, retryAfter: number): ApiError {
+  return { kind: 'http', status, code: null, body: null, retryAfter };
+}
 
 /** PROTOTYPE-PLAN "HTTP API" PUT contract per (story, slot): the same writeId replays 200; another expectedRev is 409. */
 class FakeSaves implements Pick<Endpoints, 'getSave' | 'putSave'> {
@@ -164,6 +172,9 @@ class FakeSaves implements Pick<Endpoints, 'getSave' | 'putSave'> {
     try {
       if (step.gate !== undefined) {
         await step.gate;
+      }
+      if (step.fail !== undefined) {
+        return { ok: false, error: step.fail };
       }
       if (step.then === 'down') {
         return { ok: false, error: networkDown };
@@ -545,6 +556,57 @@ test('saves: autosave during a backoff waits for the timer', async () => {
   expect(s.state()).toEqual({ kind: 'idle' });
   expect(srv.rows.get('manor/auto')).toMatchObject({ rev: 4, writeId: 'w2', body: write(2).body });
   expect(device.items.has('pending_manor')).toBe(false);
+  expect(clock.pending()).toBe(0);
+});
+
+test('saves: backoff waits for Retry-After when it is longer', async () => {
+  const clock = new FakeClock();
+  const srv = new FakeSaves(clock);
+  srv.seed('manor', 'auto', 3, 'w0');
+  // A 429 asking for 5 s, longer than the first 1 s step: the proxy's wish wins.
+  srv.script = [{ fail: busy(429, 5) }];
+  const { s } = service(srv, clock, manor, new FakeDevice());
+  await s.start(list(summary('manor', 'auto', 3, 'w0')));
+  s.autosave(write(1));
+  await clock.advance(10);
+  expect(s.state(), 'a 429 with Retry-After 5 waits 5000 ms, not the 1000 ms base').toEqual({ kind: 'retrying', attempt: 1, inMs: 5000 });
+  await clock.advance(4989);
+  expect(srv.puts.length, 'no re-send before Retry-After has passed').toBe(1);
+  await clock.advance(1);
+  expect(srv.puts.map((p) => [p.at, p.req.writeId, p.req.expectedRev])).toEqual([
+    [0, 'w1', 3],
+    [5000, 'w1', 3],
+  ]);
+  expect(s.state()).toEqual({ kind: 'idle' });
+  expect(srv.rows.get('manor/auto')).toMatchObject({ rev: 4, writeId: 'w1', body: write(1).body });
+  expect(clock.pending()).toBe(0);
+});
+
+test('saves: backoff keeps its base when Retry-After is shorter', async () => {
+  const clock = new FakeClock();
+  const srv = new FakeSaves(clock);
+  srv.seed('manor', 'auto', 3, 'w0');
+  // Offline first, then a 503 asking for 1 s: the second step's 2 s base is longer and wins.
+  srv.script = [{ then: 'down' }, { fail: busy(503, 1) }];
+  const { s } = service(srv, clock, manor, new FakeDevice());
+  await s.start(list(summary('manor', 'auto', 3, 'w0')));
+  s.autosave(write(1));
+  await clock.advance(1000);
+  expect(s.state(), 'a 503 with Retry-After 1 on attempt 2 waits the 2000 ms base, not 1000 ms').toEqual({
+    kind: 'retrying',
+    attempt: 2,
+    inMs: 2000,
+  });
+  await clock.advance(1999);
+  expect(srv.puts.length, 'no re-send before the base backoff has passed').toBe(2);
+  await clock.advance(1);
+  expect(srv.puts.map((p) => [p.at, p.req.writeId, p.req.expectedRev])).toEqual([
+    [0, 'w1', 3],
+    [1000, 'w1', 3],
+    [3000, 'w1', 3],
+  ]);
+  expect(s.state()).toEqual({ kind: 'idle' });
+  expect(srv.rows.get('manor/auto')).toMatchObject({ rev: 4, writeId: 'w1', body: write(1).body });
   expect(clock.pending()).toBe(0);
 });
 
