@@ -823,6 +823,59 @@ async fn balance_never_negative_concurrent_spends() {
     report(&failures);
 }
 
+/// Two affordable debits of a balance of 2 at once (D14, M18): A debits 1 and holds the row; B's guarded UPDATE waits
+/// on it, then applies to A's committed row (1 -> 0) and commits. With a seed of 1 the re-evaluated guard refuses B
+/// whatever B's SET reads, so only this case sees a debit that subtracts from a stale balance (a SET from the
+/// statement's snapshot, or an app-side read of the balance) while the guard still holds: two ledger rows, balance 1.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn balance_concurrent_affordable_debits_both_apply() {
+    let (st, _db, mut a) = schema_db().await;
+    let mut failures = Vec::new();
+    let hint = hint();
+    begin(&mut a).await;
+    let got = credit_in_tx(&mut a, &seed(ANN, &hint, 2, "seed")).await;
+    failures.extend(expect_eq("seed +2", step(got), applied(2, 0)));
+    commit(&mut a).await;
+
+    begin(&mut a).await;
+    let got = debit_in_tx(&mut a, &entry(ANN, &hint, -1, Reason::HintSpend, "d:a")).await;
+    failures.extend(expect_eq("A", debit_step(got), applied(1, 0)));
+    let mut b = app_named(&st).await;
+    let mut second = tokio::spawn(async move {
+        let hint = ResourceKind("hint".to_owned());
+        begin(&mut b).await;
+        let got = debit_in_tx(&mut b, &entry(ANN, &hint, -1, Reason::HintSpend, "d:b")).await;
+        commit(&mut b).await;
+        b.close().await.unwrap();
+        debit_step(got)
+    });
+    let early = tokio::select! {
+        biased;
+        got = &mut second => Some(got.unwrap()),
+        () = common::wait_for_lock_waiter(&st) => None,
+    };
+    if early.is_some() {
+        failures.push("B never waited: it finished while A held the balance row".to_owned());
+    }
+    commit(&mut a).await;
+    let second = match early {
+        Some(got) => got,
+        None => second.await.unwrap(),
+    };
+    failures.extend(expect_eq("B", second, applied(0, 0)));
+    failures.extend(expect_eq(
+        "balance rows",
+        balance_rows(&mut a).await,
+        vec![(ANN, "hint".to_owned(), 0, 0)],
+    ));
+    failures.extend(expect_eq(
+        "ledger keys",
+        ledger_keys(&mut a).await,
+        ["d:a", "d:b", "seed"].map(str::to_owned).to_vec(),
+    ));
+    report(&failures);
+}
+
 /// L9's clawback source (M20, revision 1): the kind and amount of a charge's `pay:<charge>` row; `None` for a charge
 /// with no ledger row, and for one whose only row is not its pack credit.
 #[tokio::test]
