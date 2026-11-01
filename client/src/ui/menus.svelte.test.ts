@@ -11,10 +11,11 @@ import type { SaveSlot } from '../api/generated/api.ts';
 import { en } from '../i18n/en.ts';
 import { t, type Lang, type UiKey } from '../i18n/index.ts';
 import { ru } from '../i18n/ru.ts';
+import type { PurchaseState } from '../purchase/flow.ts';
 import type { ManualSlot } from '../saves/service.ts';
 import type { Settings } from '../settings/store.ts';
 import type { StoryId } from '../story/catalog.ts';
-import type { ChapterId, LineId } from '../story/staging.ts';
+import type { ChapterId, LineId, OrderId, ProductId } from '../story/staging.ts';
 import Backlog from './Backlog.svelte';
 import type { BacklogLine } from './Backlog.svelte';
 import ChapterSelect from './ChapterSelect.svelte';
@@ -22,6 +23,7 @@ import type { ChapterRow } from './ChapterSelect.svelte';
 import Menu from './Menu.svelte';
 import Notice from './Notice.svelte';
 import type { NoticeView } from './Notice.svelte';
+import Paywall from './Paywall.svelte';
 import SaveLoad from './SaveLoad.svelte';
 import type { SlotView } from './SaveLoad.svelte';
 // Imported under another name: `Settings` is the store's type.
@@ -699,14 +701,146 @@ test('menus: save asks before overwriting, one save per tap', async () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------
+// The paywall (C8)
+
+const PRICE = 37;
+
+/** The paywall's props with spies; the price is the server's `ProductDto.priceStars`. */
+function paywallProps(state: PurchaseState, lang: Lang, priceStars: number | null = PRICE) {
+  return {
+    chapter: 'The Cellar',
+    priceStars,
+    state,
+    lang,
+    onbuy: vi.fn<() => void>(),
+    oncheckagain: vi.fn<() => void>(),
+    onterms: vi.fn<() => void>(),
+    onretry: vi.fn<() => void>(),
+  };
+}
+
+/** Every number on screen: the price is shown verbatim, never computed. */
+const numbersIn = (el: Element): string[] => [...(el.textContent ?? '').matchAll(/\d+(?:[.,]\d+)?/g)].map((m) => m[0]);
+
+test('menus: paywall needs terms checkbox', async () => {
+  for (const lang of LANGS) {
+    const p = paywallProps({ kind: 'idle' }, lang);
+    const { getByRole, rerender } = render(Paywall, p);
+    const box = inputOf(getByRole('checkbox', { name: t(lang, 'paywall.terms_agree') }));
+    const buy = (): HTMLElement => getByRole('button', { name: t(lang, 'paywall.buy', { n: PRICE }) });
+    // P1: the box starts unchecked, and Buy waits for it.
+    expect(box.checked, lang).toBe(false);
+    expect(buy().hasAttribute('disabled'), lang).toBe(true);
+    tap(buy());
+    expect(p.onbuy, lang).not.toHaveBeenCalled();
+    // The Terms link opens the in-app terms (the caller's overlay).
+    tap(getByRole('button', { name: t(lang, 'paywall.terms_link') }));
+    expect(p.onterms, lang).toHaveBeenCalledTimes(1);
+    box.click();
+    flushSync();
+    expect(buy().hasAttribute('disabled'), lang).toBe(false);
+    // Buy asks the caller, inside the tap; the paywall never starts a purchase itself.
+    rawTap(buy());
+    expect(p.onbuy, lang).toHaveBeenCalledTimes(1);
+    // P2: disabled while the invoice is being created.
+    await rerender({ state: { kind: 'requesting' } });
+    expect(buy().hasAttribute('disabled'), lang).toBe(true);
+    tap(buy());
+    expect(p.onbuy, lang).toHaveBeenCalledTimes(1);
+    cleanup();
+
+    // Every open starts unchecked again.
+    const again = render(Paywall, paywallProps({ kind: 'idle' }, lang));
+    expect(inputOf(again.getByRole('checkbox')).checked, lang).toBe(false);
+    expect(again.getByRole('button', { name: t(lang, 'paywall.buy', { n: PRICE }) }).hasAttribute('disabled'), lang).toBe(
+      true,
+    );
+    cleanup();
+  }
+});
+
+test('menus: paywall shows the purchase states', () => {
+  const orderId = 'order-1' as OrderId;
+  const product = 'chapter:ch2' as ProductId;
+  /** Each P1-P8 state: the note it shows, whether the form (box, Terms, Buy) shows, Buy busy, and Check again. */
+  const rows: ReadonlyArray<{ state: PurchaseState; note: UiKey | null; form: boolean; busy?: boolean; check?: boolean }> = [
+    { state: { kind: 'idle' }, note: null, form: true },
+    { state: { kind: 'failed', reason: 'cancelled' }, note: null, form: true },
+    { state: { kind: 'failed', reason: 'failed' }, note: null, form: true },
+    { state: { kind: 'requesting' }, note: null, form: true, busy: true },
+    { state: { kind: 'sheet', orderId }, note: 'paywall.sheet', form: false, check: true },
+    { state: { kind: 'confirming', orderId, since: 0 }, note: 'paywall.confirming', form: false },
+    { state: { kind: 'delayed', orderId }, note: 'paywall.delayed', form: false, check: true },
+    { state: { kind: 'failed', reason: 'network' }, note: 'paywall.error_network', form: true },
+    { state: { kind: 'failed', reason: 'telegram' }, note: 'paywall.error_telegram', form: true },
+    { state: { kind: 'failed', reason: 'unknown-product' }, note: 'paywall.unavailable', form: false },
+    { state: { kind: 'unlocked', product }, note: 'paywall.unlocked', form: false },
+  ];
+  const NOTES: readonly UiKey[] = [
+    'paywall.sheet',
+    'paywall.confirming',
+    'paywall.delayed',
+    'paywall.error_network',
+    'paywall.error_telegram',
+    'paywall.unavailable',
+    'paywall.unlocked',
+    'paywall.load_failed',
+  ];
+  for (const lang of LANGS) {
+    for (const row of rows) {
+      const where = `${lang} ${row.state.kind}${row.state.kind === 'failed' ? `:${row.state.reason}` : ''}`;
+      const p = paywallProps(row.state, lang);
+      const { container, getByRole, queryByRole } = render(Paywall, p);
+      expect(shown(getByRole('heading')), where).toBe('The Cellar');
+      expect(shown(container), where).toContain(t(lang, 'paywall.body'));
+      expect(
+        NOTES.filter((key) => shown(container).includes(t(lang, key))),
+        where,
+      ).toEqual(row.note === null ? [] : [row.note]);
+      const buy = queryByRole('button', { name: t(lang, 'paywall.buy', { n: PRICE }) });
+      expect([queryByRole('checkbox') !== null, buy !== null], where).toEqual([row.form, row.form]);
+      expect(numbersIn(container), where).toEqual(row.form ? [String(PRICE)] : []);
+      if (buy !== null) {
+        inputOf(getByRole('checkbox')).click();
+        flushSync();
+        expect(buy.hasAttribute('disabled'), where).toBe(row.busy === true);
+      }
+      const check = queryByRole('button', { name: t(lang, 'paywall.check_again') });
+      expect(check !== null, where).toBe(row.check === true);
+      if (check !== null) {
+        tap(check);
+        expect(p.oncheckagain, where).toHaveBeenCalledTimes(1);
+      }
+      expect(queryByRole('button', { name: t(lang, 'paywall.retry') }), where).toBeNull();
+      cleanup();
+
+      // The price read failed (P1): Retry instead of the form; the states past the form show as they are.
+      const unpriced = paywallProps(row.state, lang, null);
+      const failed = render(Paywall, unpriced);
+      const retry = failed.queryByRole('button', { name: t(lang, 'paywall.retry') });
+      expect(retry !== null, where).toBe(row.form);
+      expect(failed.queryByRole('checkbox'), where).toBeNull();
+      expect(failed.queryByRole('button', { name: /⭐/ }), where).toBeNull();
+      expect(shown(failed.container).includes(t(lang, 'paywall.load_failed')), where).toBe(row.form);
+      if (retry !== null) {
+        tap(retry);
+        expect(unpriced.onretry, where).toHaveBeenCalledTimes(1);
+      }
+      cleanup();
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
 // No literal text and no I/O in this lane's components (C3-C8; principle 8, spec 2 and 4)
 
-/** This lane's components; L14a's six and App.svelte (L15) are not among them. */
+/** This lane's nine components; L14a's six and App.svelte (L15) are not among them. */
 const MENU_COMPONENTS = [
   'Backlog.svelte',
   'ChapterSelect.svelte',
   'Menu.svelte',
   'Notice.svelte',
+  'Paywall.svelte',
   'SaveLoad.svelte',
   'Settings.svelte',
   'StoryPicker.svelte',
