@@ -10,6 +10,7 @@ import { afterEach, expect, test, vi } from 'vitest';
 import { en } from '../i18n/en.ts';
 import { t, type Lang, type UiKey } from '../i18n/index.ts';
 import { ru } from '../i18n/ru.ts';
+import type { Settings } from '../settings/store.ts';
 import type { StoryId } from '../story/catalog.ts';
 import type { ChapterId, LineId } from '../story/staging.ts';
 import Backlog from './Backlog.svelte';
@@ -19,6 +20,8 @@ import type { ChapterRow } from './ChapterSelect.svelte';
 import Menu from './Menu.svelte';
 import Notice from './Notice.svelte';
 import type { NoticeView } from './Notice.svelte';
+// Imported under another name: `Settings` is the store's type.
+import SettingsScreen from './Settings.svelte';
 import StoryPicker from './StoryPicker.svelte';
 import type { StoryCardView } from './StoryPicker.svelte';
 import Terms from './Terms.svelte';
@@ -473,6 +476,75 @@ test('menus: friends and wallet entries only when given', () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------
+// The settings screen (C6)
+
+/** The element as an input, or a failed test. */
+function inputOf(el: HTMLElement): HTMLInputElement {
+  if (!(el instanceof HTMLInputElement)) {
+    throw new Error(`invariant: <${el.tagName.toLowerCase()}> is not an input`);
+  }
+  return el;
+}
+
+test('menus: settings emit speed, volume, language and skip', async () => {
+  for (const lang of LANGS) {
+    // Frozen, so a component that wrote into its props would throw.
+    const fixture: Settings = Object.freeze({
+      lang: null,
+      speed: 'normal',
+      volume: Object.freeze({ master: 80, bgm: 60, sfx: 100 }),
+      skipUnread: false,
+    });
+    const emitted: Settings[] = [];
+    const { getByRole, rerender } = render(SettingsScreen, {
+      settings: fixture,
+      lang,
+      onchange: (next: Settings) => emitted.push(next),
+    });
+    const radio = (name: string): HTMLInputElement => inputOf(getByRole('radio', { name }));
+    expect(shown(getByRole('heading')), lang).toBe(t(lang, 'settings.title'));
+
+    // Every control shows the props.
+    expect(radio(t(lang, 'settings.speed_normal')).checked, lang).toBe(true);
+    const bgm = inputOf(getByRole('slider', { name: t(lang, 'settings.volume_bgm') }));
+    expect(
+      [t(lang, 'settings.volume_master'), t(lang, 'settings.volume_bgm'), t(lang, 'settings.volume_sfx')].map(
+        (name) => inputOf(getByRole('slider', { name })).value,
+      ),
+      lang,
+    ).toEqual(['80', '60', '100']);
+    // `lang` null follows the account's language, so the UI language is the one checked.
+    expect([radio('Русский').checked, radio('English').checked], lang).toEqual([lang === 'ru', lang === 'en']);
+    expect(inputOf(getByRole('checkbox', { name: t(lang, 'settings.skip_unread') })).checked, lang).toBe(false);
+
+    // Each change emits the whole next Settings, a new object.
+    radio(t(lang, 'settings.speed_fast')).click();
+    expect(emitted.at(-1), lang).toStrictEqual({ ...fixture, speed: 'fast' });
+    bgm.value = '40';
+    bgm.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(emitted.at(-1)?.volume.bgm, lang).toBe(40);
+    expect(emitted.at(-1), lang).toStrictEqual({ ...fixture, volume: { master: 80, bgm: 40, sfx: 100 } });
+    // Each language is labelled in itself, whatever the UI language. The UI language is checked already (`lang`
+    // null), so the other one is tapped first.
+    const [other, own] = lang === 'ru' ? (['en', 'ru'] as const) : (['ru', 'en'] as const);
+    const endonym = { ru: 'Русский', en: 'English' } as const;
+    radio(endonym[other]).click();
+    expect(emitted.at(-1), lang).toStrictEqual({ ...fixture, lang: other });
+    radio(endonym[own]).click();
+    expect(emitted.at(-1), lang).toStrictEqual({ ...fixture, lang: own });
+    inputOf(getByRole('checkbox', { name: t(lang, 'settings.skip_unread') })).click();
+    expect(emitted.at(-1), lang).toStrictEqual({ ...fixture, skipUnread: true });
+    expect(emitted.every((s) => s !== fixture), lang).toBe(true);
+
+    await rerender({ settings: { ...fixture, speed: 'slow', lang: 'en' } });
+    expect(radio(t(lang, 'settings.speed_slow')).checked, lang).toBe(true);
+    expect(radio(t(lang, 'settings.speed_fast')).checked, lang).toBe(false);
+    expect([radio('Русский').checked, radio('English').checked], lang).toEqual([false, true]);
+    cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
 // No literal text and no I/O in this lane's components (C3-C8; principle 8, spec 2 and 4)
 
 /** This lane's components; L14a's six and App.svelte (L15) are not among them. */
@@ -481,6 +553,7 @@ const MENU_COMPONENTS = [
   'ChapterSelect.svelte',
   'Menu.svelte',
   'Notice.svelte',
+  'Settings.svelte',
   'StoryPicker.svelte',
   'Terms.svelte',
 ] as const;
