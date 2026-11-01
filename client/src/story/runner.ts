@@ -28,8 +28,19 @@ export type RunnerError =
   | { kind: 'unknown-knot'; knot: KnotName }
   | { kind: 'bad-projection'; name: VarName; detail: string }
   | { kind: 'bad-choice'; index: number };
-/** Where a runner starts: a new chapter with the values carried into it. */
-export type StartPoint = { kind: 'fresh'; carry: Readonly<Record<VarName, InkScalar>> };
+/**
+ * Where a runner starts: a new chapter with the values carried into it; a saved ink state with the save's `at` (which
+ * step it stood at: the same state serves "a line shown, choices next" and "choices shown"); or a knot's top with the
+ * VAR values of its entry.
+ */
+export type StartPoint =
+  | { kind: 'fresh'; carry: Readonly<Record<VarName, InkScalar>> }
+  | { kind: 'exact'; ink: string; atYield: YieldCommand | null; lineId: LineId | null; knot: KnotName | null }
+  | { kind: 'checkpoint'; knot: KnotName; vars: Readonly<Record<VarName, InkScalar>> };
+type ExactStart = Extract<StartPoint, { kind: 'exact' }>;
+/** A step that stands in a knot. */
+type PlacedStep = Exclude<RunnerStep, { kind: 'end' }>;
+type ChoiceList = { choices: Array<{ index: number; lineId: LineId; ru: string }>; errors: TagError[] };
 /** A knot's own container entered at its start, with the VAR values at that moment (before its top `~` logic runs). */
 type KnotEntry = { knot: KnotName; vars: Record<VarName, InkScalar> };
 
@@ -84,6 +95,70 @@ function writeVars(story: Story, values: Readonly<Record<VarName, InkScalar>>): 
   }
 }
 
+function loadError(detail: string): { ok: false; error: RunnerError } {
+  return { ok: false, error: { kind: 'load', message: detail } };
+}
+
+/** The offered choices with their ids (only `id` is allowed inside the brackets, §3.4); a choice without one fails. */
+function choiceList(offered: Story['currentChoices'], assets: AssetIndex): Result<ChoiceList, { path: string }> {
+  const out: ChoiceList = { choices: [], errors: [] };
+  for (const c of offered) {
+    const own = parseTags(c.tags ?? [], assets);
+    if (own.lineId === null) {
+      return { ok: false, error: { path: c.sourcePath } };
+    }
+    out.errors.push(...own.errors);
+    out.choices.push({ index: c.index, lineId: own.lineId, ru: c.text });
+  }
+  return { ok: true, value: out };
+}
+
+/**
+ * Loads a saved ink state and rebuilds the step it stood at, with no commands: the save's staging already holds their
+ * end state, and a replay would fire sounds and transitions again. A throw, an error or a warning of the load (inkjs
+ * approximates a position the story no longer has) and a position the save's `at` does not describe are `load` errors,
+ * so the caller steps down a level (PROTOTYPE-PLAN "Save format and resume" step 3).
+ */
+function loadExact(story: Story, start: ExactStart, assets: AssetIndex): Result<PlacedStep, RunnerError> {
+  const knot = start.knot;
+  if (knot === null) {
+    return loadError('the exact position has no knot');
+  }
+  try {
+    story.state.LoadJson(start.ink);
+    const problems = [...(story.state.currentErrors ?? []), ...(story.state.currentWarnings ?? [])];
+    if (problems.length > 0) {
+      return loadError(problems.join('\n'));
+    }
+    if (start.atYield !== null) {
+      // PUZZLES-PLAN X9: the yield comes from the save, never from tags a stopped story may re-expose.
+      if (story.canContinue || story.currentChoices.length > 0) {
+        return loadError('the saved yield is not where the story stands');
+      }
+      return { ok: true, value: { kind: 'yield', yield: start.atYield, commands: [], knot, enteredKnot: false } };
+    }
+    if (start.lineId !== null) {
+      // LoadJson re-exposes the last line; a different line means the save does not describe this state.
+      if (parseTags(story.currentTags ?? [], assets).lineId !== start.lineId) {
+        return loadError(`the saved line ${start.lineId} is not the story's current line`);
+      }
+      const shown = splitSpeaker((story.currentText ?? '').trim());
+      const speaker = shown.speaker as SpeakerId | null; // SPEAKER_RE inside splitSpeaker earned the brand
+      return { ok: true, value: { kind: 'line', lineId: start.lineId, speaker, ru: shown.text, commands: [], knot, enteredKnot: false } };
+    }
+    const list = choiceList(story.currentChoices, assets);
+    if (!list.ok) {
+      return loadError(`a saved choice has no line id (${list.error.path})`);
+    }
+    if (list.value.choices.length === 0) {
+      return loadError('the exact position is not found: no yield, line or choice set');
+    }
+    return { ok: true, value: { kind: 'choices', choices: list.value.choices, commands: [], knot, enteredKnot: false } };
+  } catch (e) {
+    return loadError(message(e));
+  }
+}
+
 /** One chapter's inkjs Story, owned: `dispose()` drops it. */
 export class StoryRunner {
   #story: Story | null;
@@ -126,17 +201,52 @@ export class StoryRunner {
     live += 1;
   }
 
-  /** A runner at `start`; nothing is counted for a start that fails. */
+  /**
+   * A runner at `start`; nothing stays counted for a start that fails. An exact start stands at its rebuilt step
+   * (`current()`, `enteredKnot: false`); a checkpoint start's first step is the knot's entry.
+   */
   static create(ch: LoadedChapter, start: StartPoint, assets: AssetIndex): Result<StoryRunner, RunnerError> {
-    const story = newStory(ch.story);
-    if (!story.ok) {
-      return story;
+    const made = newStory(ch.story);
+    if (!made.ok) {
+      return made;
     }
-    const written = writeVars(story.value, start.carry);
-    if (!written.ok) {
-      return written;
+    const story = made.value;
+    switch (start.kind) {
+      case 'fresh': {
+        const written = writeVars(story, start.carry);
+        return written.ok ? { ok: true, value: new StoryRunner(story, ch, assets) } : written;
+      }
+      case 'exact': {
+        const step = loadExact(story, start, assets);
+        if (!step.ok) {
+          return step;
+        }
+        const runner = new StoryRunner(story, ch, assets);
+        runner.#current = step.value;
+        runner.#knot = step.value.knot;
+        return { ok: true, value: runner };
+      }
+      case 'checkpoint': {
+        if (!Object.hasOwn(ch.meta.knots, start.knot)) {
+          return { ok: false, error: { kind: 'unknown-knot', knot: start.knot } };
+        }
+        const written = writeVars(story, start.vars);
+        if (!written.ok) {
+          return written;
+        }
+        const runner = new StoryRunner(story, ch, assets); // the VisitContainer hook must see the knot's top
+        const entered = runner.#hostEnter(story, start.knot);
+        if (!entered.ok) {
+          runner.dispose();
+          return entered;
+        }
+        return { ok: true, value: runner };
+      }
+      default: {
+        const unreachable: never = start;
+        return unreachable;
+      }
     }
-    return { ok: true, value: new StoryRunner(story.value, ch, assets) };
   }
 
   /** The next displayed step. At a stop (choices, yield, end) it returns that step again and runs no ink. */
@@ -201,24 +311,27 @@ export class StoryRunner {
         return { ok: false, error: { kind: 'bad-projection', name: name as VarName, detail: `a ${typeof v} for a ${typeof now} VAR` } };
       }
     }
-    this.#clearTrail();
     try {
       for (const [name, v] of Object.entries(projection)) {
         vars.$(name, v);
       }
-      story.value.ChoosePathString(knot); // visits the knot's top after the writes: its entry sees the outcome
     } catch (e) {
       return this.#fail({ kind: 'ink', message: message(e) });
     }
-    this.#current = null;
-    this.#pending = [];
-    this.#hostEntry = true;
-    return { ok: true, value: undefined };
+    return this.#hostEnter(story.value, knot); // after the writes: the knot's entry sees the outcome
   }
 
   /** The step last returned (after a `tags` error: that step without the bad commands). */
   current(): RunnerStep | null {
     return this.#current;
+  }
+
+  /** `story.state.toJson()`: a save body's `ink`. Only a live runner has a state; asking a disposed one is a bug. */
+  inkState(): string {
+    if (this.#story === null) {
+      throw new Error('invariant: inkState() is asked of a live runner');
+    }
+    return this.#story.state.toJson();
   }
 
   /** The current values of `names`; a name the story does not declare is left out. */
@@ -301,6 +414,23 @@ export class StoryRunner {
   }
 
   /**
+   * The host's ChoosePathString (enter(), a checkpoint start): it resets the call stack and visits the knot's top
+   * inside the call, so the entry snapshots the VARs written before it; the next step reports the entry (Q4).
+   */
+  #hostEnter(story: Story, knot: KnotName): Result<void, RunnerError> {
+    this.#clearTrail();
+    try {
+      story.ChoosePathString(knot);
+    } catch (e) {
+      return this.#fail({ kind: 'ink', message: message(e) });
+    }
+    this.#current = null;
+    this.#pending = [];
+    this.#hostEntry = true;
+    return { ok: true, value: undefined };
+  }
+
+  /**
    * The knot a step is in (D4): the pointer's knot while ink still points into the story (its snapshot rollback has
    * undone any lookahead); at a null pointer, the last container this step visited; else the previous step's knot.
    */
@@ -365,20 +495,15 @@ export class StoryRunner {
     const offered = story.currentChoices;
     const first = offered[0];
     if (first !== undefined) {
-      const errors = [...batch.errors];
-      const choices: Array<{ index: number; lineId: LineId; ru: string }> = [];
-      for (const c of offered) {
-        const own = parseTags(c.tags ?? [], this.#assets); // only `id` is allowed inside the brackets (§3.4)
-        if (own.lineId === null) {
-          return this.#fail({ kind: 'no-id', path: c.sourcePath });
-        }
-        errors.push(...own.errors);
-        choices.push({ index: c.index, lineId: own.lineId, ru: c.text });
+      const list = choiceList(offered, this.#assets);
+      if (!list.ok) {
+        return this.#fail({ kind: 'no-id', path: list.error.path });
       }
       // ink has nulled the pointer at a choice set; the choice's own source path still names its knot.
       const knot = this.#knotAt(first.sourcePath);
       const enteredKnot = this.#place(knot);
-      return this.#show({ kind: 'choices', choices, commands: batch.commands, knot, enteredKnot }, errors, null);
+      const step: RunnerStep = { kind: 'choices', choices: list.value.choices, commands: batch.commands, knot, enteredKnot };
+      return this.#show(step, [...batch.errors, ...list.value.errors], null);
     }
     // A yield block ends at `-> DONE` (PUZZLES-PLAN X1): the story cannot continue and no choice is offered.
     const y = batch.commands.find(isYield);
