@@ -32,6 +32,11 @@ export interface StatsReporter {
 
 /** The server's batch limit (`STATS_BATCH_MAX`). */
 export const STATS_BATCH_MAX = 32;
+/**
+ * D1: the largest POST body, in UTF-8 bytes of its JSON, for every batch. The server's body limit is the same 16 KiB,
+ * and with the save PUT's `KEEPALIVE_BODY_MAX` it fills the 64 KiB keepalive quota of the two `pagehide` requests.
+ */
+export const STATS_BODY_MAX = 16_384;
 /** D2: the wait from the first unsent record; later records do not push it back. */
 export const FLUSH_DELAY_MS = 5_000;
 /** The waits after the 1st, 2nd, … failure in a row; the last one repeats. */
@@ -103,6 +108,38 @@ function wire(q: Queued, now: number): StatEventDto {
   };
 }
 
+const utf8 = new TextEncoder();
+/** `{"events":[]}`: the body around the events; each event after the first adds a comma. */
+const BODY_FRAME_BYTES = utf8.encode(JSON.stringify({ events: [] })).length;
+
+const isChoice = (q: Queued): boolean => q.kind === 'choice_made';
+
+/**
+ * The next batch (D1, D8): the facts (chapters, endings, puzzles) oldest first, then the choices oldest first, within
+ * `STATS_BATCH_MAX` events and `STATS_BODY_MAX` bytes; `leftover` when events stay behind. `oversized` are the events
+ * whose body alone passes the bound: no batch can ever carry them, so they must not hold up the queue.
+ */
+function buildBatch(queue: readonly Queued[], now: number): { batch: StatEventDto[]; leftover: boolean; oversized: Queued[] } {
+  const batch: StatEventDto[] = [];
+  const oversized: Queued[] = [];
+  let bytes = BODY_FRAME_BYTES;
+  for (const q of [...queue.filter((x) => !isChoice(x)), ...queue.filter(isChoice)]) {
+    const e = wire(q, now);
+    const size = utf8.encode(JSON.stringify(e)).length;
+    if (BODY_FRAME_BYTES + size > STATS_BODY_MAX) {
+      oversized.push(q);
+      continue;
+    }
+    const grown = bytes + size + (batch.length > 0 ? 1 : 0);
+    if (batch.length === STATS_BATCH_MAX || grown > STATS_BODY_MAX) {
+      return { batch, leftover: true, oversized };
+    }
+    batch.push(e);
+    bytes = grown;
+  }
+  return { batch, leftover: false, oversized };
+}
+
 /** For the log only; a value whose own conversion throws is described as such, never rethrown. */
 function describe(e: unknown): string {
   try {
@@ -124,7 +161,7 @@ export function createStatsReporter(deps: {
   log?: (msg: string) => void;
 }): StatsReporter {
   const { api, clock } = deps;
-  /** Oldest first; the batch in flight stays here until its answer. */
+  /** In record order; the batch in flight stays here until its answer. */
   let queue: Queued[] = [];
   let flying = false;
   /** An explicit send asked for during the flight: one more request once it ends, keepalive if any asked for it. */
@@ -182,12 +219,16 @@ export function createStatsReporter(deps: {
   function send(keepalive: boolean): void {
     clearTimer();
     again = null;
-    const now = clock.now();
-    const batch = queue.slice(0, STATS_BATCH_MAX).map((q) => wire(q, now));
+    const { batch, leftover, oversized } = buildBatch(queue, clock.now());
+    if (oversized.length > 0) {
+      for (const q of oversized) {
+        log(`stats: ${q.eventId} dropped, its body alone is over ${STATS_BODY_MAX} B`);
+      }
+      queue = queue.filter((q) => !oversized.includes(q));
+    }
     if (batch.length === 0) {
       return;
     }
-    const leftover = queue.length > batch.length;
     flying = true;
     let answer: Promise<Result<PostStatsResponse, ApiError>>;
     try {

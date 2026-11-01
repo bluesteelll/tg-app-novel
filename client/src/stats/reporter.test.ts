@@ -3,8 +3,9 @@ import { expect, test } from 'vitest';
 import type { PostStatsResponse, StatEventDto } from '../api/generated/api.ts';
 import type { ApiError, Clock } from '../api/http.ts';
 import type { EndingName, Result } from '../story/catalog.ts';
+import { KEEPALIVE_BODY_MAX } from '../saves/service.ts';
 import type { ChapterId, LineId, PuzzleLocalId, StoryVersion } from '../story/staging.ts';
-import { FLUSH_DELAY_MS, createStatsReporter } from './reporter.ts';
+import { FLUSH_DELAY_MS, STATS_BODY_MAX, createStatsReporter } from './reporter.ts';
 import type { StatEvent, StatsReporter } from './reporter.ts';
 
 /**
@@ -144,7 +145,15 @@ const solved = (): StatEvent => ({
   puzzle: 'drawer' as PuzzleLocalId,
   outcome: 'solved',
 });
+const choice = (option: string): StatEvent => ({ kind: 'choice_made', chapterId: CH, storyVersion: SV, option: option as LineId });
 const idsOf = (c: Call | undefined): string[] => (c === undefined ? [] : c.events.map((e) => e.eventId));
+/** `uuid(from)` … `uuid(to)`. */
+const uuids = (from: number, to: number): string[] => Array.from({ length: to - from + 1 }, (_, i) => uuid(from + i));
+const utf8 = new TextEncoder();
+/** The UTF-8 bytes of the POST body, as http.ts serializes it. */
+const bodyBytes = (events: readonly StatEventDto[]): number => utf8.encode(JSON.stringify({ events })).length;
+/** An option line ID whose knot name is `n` characters long. */
+const longOption = (n: number): string => `ch1.${'k'.repeat(n)}.a1b2`;
 
 test('reporter: retried batch keeps event ids', async () => {
   const { clock, server, reporter } = setup(fail(NETWORK));
@@ -484,5 +493,83 @@ test('reporter: choice event carries the option line id', async () => {
   // Exactly StatEventDto's keys: the server answers an unknown field (a `storyId`, say) with a 400 for the batch.
   for (const e of sent) {
     expect(Object.keys(e).sort()).toEqual(['ageMs', 'chapterId', 'eventId', 'kind', 'outcome', 'storyVersion', 'subject']);
+  }
+});
+
+test('reporter: batch sends facts first', async () => {
+  const { clock, server, reporter } = setup();
+  for (let i = 1; i <= 40; i += 1) {
+    reporter.record(choice(`ch1.intro.c${i}`));
+  }
+  reporter.record(ending());
+  expect(server.calls).toHaveLength(1);
+  expect(server.calls[0]?.events[0]?.kind).toBe('ending_reached');
+  expect(idsOf(server.calls[0])).toEqual([uuid(41), ...uuids(1, 31)]);
+  await clock.advance(0);
+  expect(server.calls).toHaveLength(2);
+  expect(idsOf(server.calls[1])).toEqual(uuids(32, 40));
+});
+
+test('reporter: keepalive flush stays within 16 KiB', async () => {
+  // The two `pagehide` requests share the 64 KiB keepalive quota; raising the save cap must fail here.
+  expect(STATS_BODY_MAX).toBe(16_384);
+  expect(STATS_BODY_MAX + KEEPALIVE_BODY_MAX).toBe(65_536);
+
+  {
+    const { clock, server, reporter } = setup();
+    for (let i = 0; i < 32; i += 1) {
+      reporter.record(choice(longOption(600)));
+    }
+    reporter.flush({ keepalive: true });
+    const first = server.calls[0];
+    expect(first?.keepalive).toBe(true);
+    expect(bodyBytes(first?.events ?? [])).toBeLessThanOrEqual(STATS_BODY_MAX);
+    expect(first?.events.length).toBeLessThan(32);
+    await clock.advance(0);
+    expect(server.calls).toHaveLength(2);
+    expect(bodyBytes(server.calls[1]?.events ?? [])).toBeLessThanOrEqual(STATS_BODY_MAX);
+    expect(server.calls.flatMap(idsOf)).toEqual(uuids(1, 32));
+  }
+
+  // The boundary: 20 events of exactly 16,384 B go as one batch; one byte more leaves the 20th for the next.
+  for (const extra of [0, 1]) {
+    const { clock, server, reporter } = setup();
+    const at = (subject: string, n: number): StatEventDto => ({
+      eventId: uuid(n),
+      kind: 'choice_made',
+      chapterId: 'ch1',
+      storyVersion: SV,
+      subject,
+      outcome: null,
+      ageMs: 0,
+    });
+    const head = Array.from({ length: 19 }, (_, i) => at(longOption(660), i + 1));
+    const short = longOption(1);
+    const pad = STATS_BODY_MAX - bodyBytes([...head, at(short, 20)]);
+    const twentieth = longOption(1 + pad + extra);
+    expect(bodyBytes([...head, at(twentieth, 20)])).toBe(STATS_BODY_MAX + extra);
+    for (const e of head) {
+      reporter.record(choice(e.subject ?? ''));
+    }
+    reporter.record(choice(twentieth));
+    reporter.record(choice('ch1.intro.c21'));
+    reporter.flush();
+    expect(server.calls[0]?.events).toHaveLength(20 - extra);
+    expect(bodyBytes(server.calls[0]?.events ?? [])).toBe(extra === 0 ? STATS_BODY_MAX : bodyBytes(head));
+    await clock.advance(0);
+    expect(idsOf(server.calls[1])).toEqual(uuids(21 - extra, 21));
+  }
+
+  // An event too large for any batch is dropped, never retried, and the rest still go.
+  {
+    const { clock, server, reporter, logs } = setup();
+    reporter.record(choice('ch1.intro.c1'));
+    reporter.record(choice(longOption(STATS_BODY_MAX)));
+    reporter.record(choice('ch1.intro.c3'));
+    reporter.flush();
+    expect(idsOf(server.calls[0])).toEqual([uuid(1), uuid(3)]);
+    expect(logs.some((l) => l.includes(uuid(2)))).toBe(true);
+    await clock.advance(3_600_000);
+    expect(server.calls).toHaveLength(1);
   }
 });
