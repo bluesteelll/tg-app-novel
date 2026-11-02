@@ -14,20 +14,26 @@ import type {
   HintView,
   OrderResponse,
   OrderStatus,
+  GameStatsDto,
+  PostStatsResponse,
   ProductDto,
   PutSaveResponse,
   PuzzleStatus,
+  RejectedEvent,
   SaveFull,
   SaveListResponse,
   SaveSlot,
   SaveSummary,
+  StatRejectReason,
+  StatsResponse,
+  StoryStatsDto,
   UserDto,
 } from './generated/api.ts';
 
 /** A boundary parser: raw JSON in; a typed value, or the first problem as `<Type><path>: <problem>`, out. */
 export type Decoder<T> = (raw: unknown) => Result<T, string>;
 
-/** The response DTOs this module decodes: the keys of `DTO_DECODERS` (LS4 adds the stats DTOs). */
+/** The response DTOs this module decodes: the keys of `DTO_DECODERS`. */
 export type DecodedDto =
   | 'ApiErrorBody'
   | 'AttemptResponse'
@@ -36,12 +42,14 @@ export type DecodedDto =
   | 'CreateInvoiceResponse'
   | 'EntitlementsResponse'
   | 'OrderResponse'
+  | 'PostStatsResponse'
   | 'PutSaveResponse'
   | 'PuzzleStatus'
   | 'SaveFull'
-  | 'SaveListResponse';
+  | 'SaveListResponse'
+  | 'StatsResponse';
 
-// Exhaustive by type: a code, status or slot added to api.ts fails `check` here until it is listed.
+// Exhaustive by type: a code, status, slot or reason added to api.ts fails `check` here until it is listed.
 const ERROR_CODES = {
   bad_request: true,
   initdata_invalid: true,
@@ -64,6 +72,14 @@ const ERROR_CODES = {
 } as const satisfies Record<ErrorCode, true>;
 const ORDER_STATUSES = { created: true, checkout: true, paid: true, refunded: true } as const satisfies Record<OrderStatus, true>;
 const SAVE_SLOTS = { auto: true, s1: true, s2: true, s3: true } as const satisfies Record<SaveSlot, true>;
+const STAT_REJECT_REASONS = {
+  unknown_chapter: true,
+  not_entitled: true,
+  unknown_ending: true,
+  unknown_puzzle: true,
+  unknown_choice: true,
+  rate_limited: true,
+} as const satisfies Record<StatRejectReason, true>;
 /** HintView.tier: a ladder has 1 to 3 tiers (PZ X18). */
 const TIER_MAX = 3;
 
@@ -167,6 +183,15 @@ const tier: Field<number> = (v, p) => {
   return !r.ok || (r.value >= 1 && r.value <= TIER_MAX) ? r : problem(p, `expected a tier 1..${TIER_MAX}, got ${r.value}`);
 };
 const hintFields = object<HintView>({ tier, unlocked: bool, text: nullable(str) });
+const rejectedEvent = object<RejectedEvent>({ eventId: str, reason: oneOf(STAT_REJECT_REASONS) });
+const storyStats = object<StoryStatsDto>({
+  storyId: str,
+  started: bool,
+  chaptersCompleted: arrayOf(str),
+  chaptersTotal: int,
+  endingsReached: arrayOf(str),
+});
+const gameStats = object<GameStatsDto>({ storiesStarted: int, storiesTotal: int, endingsReached: int });
 /** META M21: `text` only when unlocked, so a locked tier that carries text is an error, never shown. */
 const hintView: Field<HintView> = (v, p) => {
   const r = hintFields(v, p);
@@ -243,6 +268,17 @@ export const decodeAttemptResponse: Decoder<AttemptResponse> = root(
   object<AttemptResponse>({ correct: bool, solved: bool }),
 );
 
+/** `POST /api/stats/events`: every event of the batch is counted as recorded or a duplicate, or listed as rejected. */
+export const decodePostStatsResponse: Decoder<PostStatsResponse> = root(
+  'PostStatsResponse',
+  object<PostStatsResponse>({ recorded: int, duplicates: int, rejected: arrayOf(rejectedEvent) }),
+);
+/** `GET /api/stats`: per story of the index and for the game. META M8: no `endingsTotal` exists to read. */
+export const decodeStatsResponse: Decoder<StatsResponse> = root(
+  'StatsResponse',
+  object<StatsResponse>({ stories: arrayOf(storyStats), game: gameStats }),
+);
+
 /** Every decoder by its DTO name: the sample test's index. */
 export const DTO_DECODERS: Readonly<Record<DecodedDto, Decoder<unknown>>> = {
   ApiErrorBody: decodeApiErrorBody,
@@ -252,8 +288,10 @@ export const DTO_DECODERS: Readonly<Record<DecodedDto, Decoder<unknown>>> = {
   CreateInvoiceResponse: decodeCreateInvoiceResponse,
   EntitlementsResponse: decodeEntitlementsResponse,
   OrderResponse: decodeOrderResponse,
+  PostStatsResponse: decodePostStatsResponse,
   PutSaveResponse: decodePutSaveResponse,
   PuzzleStatus: decodePuzzleStatus,
   SaveFull: decodeSaveFull,
   SaveListResponse: decodeSaveListResponse,
+  StatsResponse: decodeStatsResponse,
 };
