@@ -289,7 +289,10 @@ with their texts inline in ru and en.**
     puzzle facts of the story's puzzles (`puzzle_progress` + the `hint_unlocks` count); the user's entitlements; the
     persisted unlocks. Rust evaluates every achievement of the story's meta (a pure function), inserts the newly met
     ones into `achievement_unlocks` with `ON CONFLICT DO NOTHING RETURNING achievement_id`, and marks exactly the
-    returned ones `new: true`. Five statements; each autocommits; repeating the call changes nothing.
+    returned ones `new: true`. Five statements; each autocommits; repeating the call changes nothing. As merged (LM2
+    `5a33183`, RULINGS 77; cut D5, Q9): the insert takes the met **and visible** achievements (`meta::visible` with the
+    owned set read in this request), so `new: true` only ever comes in a response that shows the item; a refunded
+    player's met paid item is not stored until it is visible again.
   - An unlock stays once stored: a later edit of the condition or a refund does not remove it (it can be hidden, M7).
     An achievement id absent from the current meta is not shown (retired).
   - A friend's view (M13) reads that friend's **persisted** unlocks only; it never evaluates for someone else.
@@ -346,7 +349,10 @@ with their texts inline in ru and en.**
     (new ones marked), runs and completed chapters, and a Share button (M14).
 - **Why.** Q25's replay loop needs the card at the moment of the ending. `settle` makes the just-reached ending appear
   on the card without a second request. A per-story endpoint returns ≤ one story's meta (≤ 16 KB worst case at 50
-  achievements, typically < 2 KB); a game-wide card would ship every story's texts to read one.
+  achievements, typically < 2 KB; as merged, LM2 `5a33183`, RULINGS 77; cut Q4: typically about 2 KB, the fixture's
+  card 2,036 B; 34,167 B at the M4 limits (50 achievements, ru in Cyrillic), bounded at 36 KiB by
+  `card_response_bounded`; 4-byte code points could pass 36 KiB, which is accepted: display only, and the 256 KiB
+  `meta.json` cap holds); a game-wide card would ship every story's texts to read one.
 - **Alternatives.** Extend `GET /api/stats` (a GET that writes unlocks; every boot would pay for the texts); render
   the card from client facts (texts would ship).
 - **Trade-off.** The card costs one request at each ending (≤ 5 statements, M6).
@@ -399,7 +405,11 @@ C1, W1).**
   `chat_instance` co-presence (only on direct-link launches, unverified across members [M2 §3]).
 - **Trade-off.** One more tap for the inviter per friend, and a friendship forms only when the inviter next opens
   Friends (no bot notification in the foundation); a recipient of a forward that hides its author asks without knowing
-  whom (the prompt says so); there is no search (deliberately: no enumeration surface).
+  whom (the prompt says so); there is no search (deliberately: no enumeration surface). An accepted residual (LF1
+  `946e2b5`, RULINGS 70; review open question 1): a capped requester can tell afterwards that the owner was at the cap
+  (refused at 50 pending, it sees `requested`; once the owner handles requests below 50, its `GET` says `open` again).
+  This reveals a request-queue state, not an identity or a relationship; a blocked requester stays fully
+  indistinguishable.
 
 **M11. Attribution at `POST /api/auth`, from the verified initData only.**
 - **What.**
@@ -409,7 +419,9 @@ C1, W1).**
     in `RETURNING`; `old` is NULL for an inserted row). Newcomer = inserted by this call.
   - Without a code: the one upsert statement, as today. With a code: one transaction — the upsert; if the user is a
     newcomer: the active code's owner (`revoked_at IS NULL`) and, if the owner is not the user, `INSERT INTO referrals
-    (invitee, inviter, attributed_at) … ON CONFLICT DO NOTHING`. ≤ 3 statements. Revision 1 (C1): the launch creates
+    (invitee, inviter, attributed_at) … ON CONFLICT DO NOTHING`. As merged (LF1 `946e2b5`, RULINGS 70; cut Q7): the
+    owner-is-the-user case is unreachable for a newcomer, who owns no code yet (`invite_codes_user_fk`); the guard
+    stays as defence before `referrals_not_self`, whose CHECK failure would fail the login. ≤ 3 statements. Revision 1 (C1): the launch creates
     no friend request; asking is the player's own act (M10, `POST /api/invites/{code}/request`).
   - `AuthResponse` is unchanged; the client learns the invite's state from `GET /api/invites/{code}` (M10).
 - **Why.** Principle 3: `initDataUnsafe` is never trusted, and the signed string already holds `start_param`. "First
@@ -580,7 +592,10 @@ Gifts and referrals have their own caps (M22, M23). Each limit's test is in the 
   - "Unapplied" (K19, `/paysupport`, L9) = a payment with no `entitlements` row **and** no ledger row of that charge,
     and `refunded_at IS NULL`.
   - The client confirms a pack through the polled order (`status: paid`, which the grant sets in the same transaction
-    as the credit) and then reads `GET /api/wallet` (L10's `isDelivered`, re-cut).
+    as the credit) and then reads `GET /api/wallet` (L10's `isDelivered`, re-cut). As merged (L10 `34b7f13`, cut Q3
+    (e); `client/src/purchase/flow.ts:23-59`): `isDelivered` keeps the `(p) => Promise<Result<boolean, ApiError>>`
+    shape, and L10 exports its two implementations, `chapterDelivered(api)` (the entitlements list) and
+    `packDelivered` (true once the polled order is `paid`; the wallet is read by LMI after `unlocked`).
 - **Why.** Principle 2 and the spec ("pre-checkout unchanged in shape"): the grant stays the only place value is
   created from money, and it stays one transaction. Removing the hint predicates returns pre-checkout to the reviewed
   RULINGS 14 statement pair.
@@ -816,7 +831,9 @@ deletion on request). Not stored, ever: `last_name`, `username`, `photo_url`, `i
     BackButton (K26).
   - Hints: LP2's puzzle session takes a `HintPort | null`; L15 passes `null`; LMI passes the wallet's port.
   - Entry points: `Menu` and `StoryPicker` (L14b) take optional `onFriends` / `onWallet` items, rendered iff given;
-    the card button and the `the_end` card action likewise (L15 passes none, LMI the controller's).
+    the card button and the `the_end` card action likewise (L15 passes none, LMI the controller's). As merged (L14b
+    `3364f73`, cut Q3): the callbacks are lower case, `onfriends` / `onwallet` and `oncard`, by the merged component
+    convention.
 - **Why.** Principle 4: none of this is needed before the first line; the entry pays ≈ 2.9 KB br for the controller,
   the services and the decoders, the rest waits in a 14 KB chunk. The `HintPort | null` seam keeps L15 (the prototype
   milestone) independent of the economy lanes.
@@ -842,6 +859,9 @@ unchanged.**
   - Changed by RULINGS 54 (as of `6043941`; docs lane `docs-errata-2`): of the ten lanes, LM1 (`4d8a9ec`) and LU1
     (`2a7b50c`) have merged and LE1 runs; LF1, LM2, LF2, LE2, LPO, LMD and LMI are to go. The server chain has run to
     LS3 (`00d7c10`), so it continues LE1 → LF1 → LM2 → LF2 → LE2 → LPO → L9.
+  - Changed by RULINGS 78 (as of `22ed4d5`; docs lane `docs-errata-3`, group B): of the ten lanes, LM1, LU1, LE1
+    (`29c310b`), LF1 (`946e2b5`) and LM2 (`5a33183`) have merged and LF2 runs; LE2, LPO, LMD and LMI are to go. The
+    server chain has run to LM2, so it continues LF2 → LE2 → LPO → L9.
   - Why LPO is a lane of its own (revision 1, W4): the operator facts need a `Config` variable, which means editing
     the three `Config` constructors (`config.rs`, `server/dev/src/lib.rs`, `server/tests/it/common.rs`) plus
     `lib.rs` and `.env.example`; in LF1 that is 15 + 4 = 19 files, over the cap. LPO holds them with `api/legal.rs` and
@@ -906,7 +926,8 @@ Hand-written by the narrative-designer (format in M4). `catalog/meta` (E), every
 
 Startup checks (`StartupError::Content`, LM2): `format` 1; every chapter of the index has a `choices` entry (possibly
 empty) and no other chapter does; every option key has its chapter's prefix and the line-ID grammar; every story of
-`meta.json` is in the index and its `endings` keys equal the index's ending names; every condition names an ending,
+`meta.json` is in the index (as merged, LM2 `5a33183`, cut Q10: the meta stories equal the index stories, one rule on
+both sides, `server/src/meta.rs:73-90`) and its `endings` keys equal the index's ending names; every condition names an ending,
 chapter or puzzle of the content index and an option of that story's chapters; texts non-empty and within the M4
 limits; the file ≤ 256 KB. The fixture holds the four fixture chapters, both fixture stories, and at least one
 achievement of every condition kind.
@@ -965,6 +986,9 @@ export interface HintPort {                                              // LP2'
   use(puzzle: PuzzleId, tier: number, lang: Lang): Promise<Result<{ text: string; balance: number }, MetaError>>;
   getMore(): void;                                                       // opens the wallet overlay
 }
+// as merged (LP2 `88d0964`, RULINGS 67; cut D5; client/src/puzzles/session.ts:51-65): HintPort is declared in
+//   puzzles/session.ts, and use() answers Result<…, HintPortError>; HintPortError has MetaError's exact shape, and
+//   LMD's MetaError must stay assignable to it
 // ui/screens.ts (L14a re-cut): Screen gains
 //   | { kind: 'card'; story: StoryId } | { kind: 'friends' } | { kind: 'friend'; handle: string }
 //   | { kind: 'wallet' } | { kind: 'gift'; to: string } | { kind: 'consent' } | { kind: 'invite'; code: string }
@@ -1032,6 +1056,11 @@ pub struct Facts { pub endings: BTreeMap<String, i64>, pub chapters: BTreeSet<Ch
 pub fn met(c: &Condition, f: &Facts, story: &StoryDef) -> bool;                              // pure
 pub fn gate(c: &Condition, story: &StoryDef, content: &ContentStore) -> BTreeSet<ChapterId>;  // paid chapters named
 pub fn visible(gate: &BTreeSet<ChapterId>, owned: &BTreeSet<ProductId>, content: &ContentStore) -> bool;
+// as merged (LM2 `5a33183`, RULINGS 77; cut Q7, D1; server/src/meta.rs:23-56,499-640): hash collections in place of
+//   the BTree collections of id types (ids.rs gives them no order): gates and `owned` are HashSet<ChapterId> /
+//   HashSet<ProductId>, Facts.chapters HashSet<ChapterId>, Facts.choices HashSet<String>, Facts.puzzles
+//   HashMap<PuzzleId, PuzzleFact>, MetaIndex.stories HashMap<StoryId, StoryMeta>; Facts.endings stays
+//   BTreeMap<String, i64>
 
 // api/dto.rs (LE1, LM2, LF1, LF2, LE2), all #[derive(Serialize | Deserialize, TS)], camelCase
 pub struct WalletResponse { pub balances: Vec<BalanceDto>, pub packs: Vec<PackDto>,
@@ -1197,8 +1226,10 @@ violates the CHECK (no pack order exists before `0004`).
 The credit, for one row (`$1` user, `$2` kind, `$3` n > 0, `$4` now; after the ledger insert returned a row):
 
 ```sql
+-- as merged (LE1 `29c310b`, cut D16; server/src/db/economy.rs:128-131): the conflict target is the named
+-- constraint, ON CONFLICT ON CONSTRAINT resource_balances_pkey (the same key, user_id and kind)
 INSERT INTO resource_balances AS b (user_id, kind, balance, debt, updated_at) VALUES ($1, $2, $3, 0, $4)
-ON CONFLICT (user_id, kind) DO UPDATE SET
+ON CONFLICT ON CONSTRAINT resource_balances_pkey DO UPDATE SET
   balance    = b.balance + GREATEST($3 - b.debt, 0),   -- both SET expressions read the old row (PostgreSQL)
   debt       = GREATEST(b.debt - $3, 0),
   updated_at = $4
@@ -1208,7 +1239,12 @@ RETURNING balance, debt;
 The debit: `UPDATE resource_balances SET balance = balance - $3, updated_at = $4 WHERE user_id = $1 AND kind = $2 AND
 balance >= $3 RETURNING balance, debt` (no row → insufficient; the caller rolls back, which removes the ledger row). The
 clawback: `UPDATE resource_balances SET balance = GREATEST(balance - $3, 0), debt = debt + GREATEST($3 - balance, 0),
-updated_at = $4 WHERE user_id = $1 AND kind = $2 RETURNING balance, debt` (the pack's credit created the row).
+updated_at = $4 WHERE user_id = $1 AND kind = $2 RETURNING balance, debt` (the pack's credit created the row). As
+merged (LE1 `29c310b`, cut D16; `server/src/db/economy.rs:174-177`): the clawback is an upsert, `INSERT INTO
+resource_balances AS b (user_id, kind, balance, debt, updated_at) VALUES ($1, $2, 0, $3, $4) ON CONFLICT ON
+CONSTRAINT resource_balances_pkey DO UPDATE SET balance = GREATEST(b.balance - $3, 0), debt = b.debt + GREATEST($3 -
+b.balance, 0), updated_at = $4 RETURNING balance, debt`, so L9's revoke never meets a missing row (a missing row would
+be a 500 and an endless redelivery); the arithmetic and the CHECKs are the same.
 
 `server/migrations/0006_achievements.sql` (LM2, new; numbered after LF1's `0005`, the lane order):
 
@@ -1306,6 +1342,9 @@ CREATE TABLE referrals (                        -- one per invitee, written on t
   CONSTRAINT referrals_not_self      CHECK (inviter_id IS NULL OR inviter_id <> invitee_id),
   CONSTRAINT referrals_outcome_known CHECK ((qualified_at IS NULL AND outcome IS NULL)
                                          OR (qualified_at IS NOT NULL AND outcome IN ('granted', 'capped')))
+  -- as merged (LF1 `946e2b5`, RULINGS 70; deviation 1; server/migrations/0005_social.sql:80-83): the second branch
+  -- is (qualified_at IS NOT NULL AND outcome IS NOT NULL AND outcome IN ('granted', 'capped')); NULL IN (...) is
+  -- NULL, and a CHECK that evaluates to NULL passes, so without it a qualified referral with a NULL outcome passes
 );
 CREATE INDEX referrals_by_inviter ON referrals (inviter_id, outcome, qualified_at);
 ```
@@ -1331,7 +1370,7 @@ with builds; old rows stay valid history).
 | `POST /api/puzzles/{puzzleId}/hints/{tier}?lang` | bearer | — | `HintUseResponse { balance, text }` | 400 (shapes), 403 `not_entitled`, 404, 409 `hint_unavailable` (order, solved), 409 `insufficient_balance` | (user, puzzle, tier): a repeat returns the text and debits nothing | LE1 |
 | `GET /api/wallet` | bearer | — | `WalletResponse { balances, packs, hintTierCost }` | 401 | read | LE1 |
 | `POST /api/invoices` (changed) | bearer | `productId`: `chapter:<ch>` or `pack:<id>` | as PP | as PP (no `hint_unavailable`) | as PP; revision 1 (W3): a pack order binds its kind and amount at creation | L8a, LE1 |
-| `POST /api/stories/{storyId}/card` | bearer | — (empty body) | `CardResponse` (M9) | 400 (shape), 404 unknown story | unlocks `ON CONFLICT DO NOTHING`: a repeat changes nothing, `new` once | LM2 |
+| `POST /api/stories/{storyId}/card` | bearer | — (empty body) | `CardResponse` (M9); as merged (LM2 `5a33183`, cut Q8): the 200 carries `Cache-Control: private, no-store` and `X-Content-Type-Options: nosniff` | 400 (shape), 404 unknown story | unlocks `ON CONFLICT DO NOTHING`: a repeat changes nothing, `new` once | LM2 |
 | `GET /api/social` | bearer | — | `SocialResponse { inviteCode, friends, requests, profileVisible }` (creates the code on the first call) | 401 | read (+ one code insert, once) | LF1 |
 | `GET /api/invites/{code}` (revision 1, C1) | bearer | — | `InviteView { state }`: `open`, `requested` (a request of the caller pending, or a block of the caller by the owner, or the owner's 50 pending), `friends`, `own`; nothing about the owner | 400 (code shape), 404 `not_found` (unknown or revoked code) | read | LF1 |
 | `POST /api/invites/{code}/request` (revision 1, C1) | bearer | — (empty body) | `InviteView` (the state after the act) | 400, 404 (unknown or revoked code) | the request PK: a repeat changes nothing; a blocked or capped request answers `requested` and writes nothing | LF1 |
@@ -1408,6 +1447,9 @@ export function createWalletService(api: MetaApi): {
 
 // puzzles/session.ts (LP2 re-cut): createPuzzleSession(deps: { …; hints: HintPort | null })
 //   useHint(tier): void — single-flight; a 409 insufficient offers port.getMore(); texts in memory only
+//   as merged (LP2 `88d0964`, RULINGS 67; cut D1, D4; client/src/puzzles/session.ts:67-106,455):
+//   createPuzzleSession(deps): Result<PuzzleSession, { kind: 'unknown-puzzle'; puzzle: PuzzleLocalId }>;
+//   useHint(tier): Promise<Result<HintLadder, HintError>> (the new ladder; a second call in flight answers 'busy')
 // stats/reporter.ts (LS4 re-cut): settle({ timeoutMs })
 ```
 
@@ -1420,11 +1462,16 @@ impl Repo {
     pub async fn unlocks(&self, u: UserId, story: &StoryId) -> Result<BTreeMap<String, i64>, sqlx::Error>;
     pub async fn insert_unlocks(&self, u: UserId, story: &StoryId, ids: &[&str], now: i64) -> Result<Vec<String>, sqlx::Error>;
     pub async fn owned_products(&self, u: UserId) -> Result<BTreeSet<ProductId>, sqlx::Error>;
+    // as merged (LM2 `5a33183`, cut Q7, D4): no owned_products; the card reads Repo::entitlements
+    // (db/entitlements.rs) into a HashSet<ProductId> (server/src/api/cards.rs:60)
 }
 // db/social.rs (LF1; LF2 and LE2 read). Revision 1: the referral only at auth; invites; handles; blocks.
 impl Repo {
     pub async fn auth_with_code(&self, u: &TgUser, code: Option<&str>, now: i64) -> Result<AuthAttribution, sqlx::Error>;
     pub async fn invite_state(&self, me: UserId, code: &str) -> Result<Option<InviteState>, sqlx::Error>;   // None: 404
+    // as merged (LF1 `946e2b5`, RULINGS 70; critique W1, deviations 2-3): invite_state(me, code, pending_cap), since
+    // the GET answers the cap like the POST; ROTATION_WINDOW_SECS lives in db/social.rs (db/ imports no api/) and
+    // MAX_ROTATIONS_PER_DAY in api/social.rs
     pub async fn ask(&self, me: UserId, code: &str, pending_cap: i64, now: i64)                           // F19 step 4
         -> Result<Option<InviteState>, sqlx::Error>;
     pub async fn user_by_handle(&self, h: &str) -> Result<Option<UserId>, sqlx::Error>;
@@ -1440,6 +1487,8 @@ impl Repo {
 // db/economy.rs (LE1, LE2)
 impl Repo {
     pub async fn balances(&self, u: UserId) -> Result<Vec<BalanceDto>, sqlx::Error>;
+    // as merged (LE1 `29c310b`, cut D17): -> Result<Vec<db::economy::Balance>, sqlx::Error> (kind, balance, debt);
+    // no db/ module imports api::dto, so the wallet route maps the rows to its DTO
     pub async fn spend_hint(&self, u: UserId, p: &PuzzleId, tier: u8, cost: u32, now: i64) -> Result<SpendOutcome, sqlx::Error>;
     pub async fn transfer(&self, from: UserId, to: UserId, kind: &ResourceKind, amount: u32, request_id: &str,
                           rules: &GiftRules, now: i64) -> Result<GiftOutcome, sqlx::Error>;           // LE2
@@ -1651,7 +1700,7 @@ COMMITTED with the statements listed; `lock_timeout` as RULINGS 14 sets it for t
 | Share limiter entries | `AppState.share_limit` | a user's first share in a window | pruned on access when older than 1 h | `share_rate_limited_after_20_per_hour` |
 | Invite codes | `invite_codes` | the first `GET /api/social` / a rotation | never (revoked rows stay) | — |
 | Friend blocks, user handles (revision 1) | `friend_blocks`, `user_handles` | a decline or removal; the user's first request sent or accepted | a block: the blocker's own request to that person; both: erasure (Later) | — |
-| A gift's `requestId` | the gift dialog | on submit | on a definitive answer | `wallet: gift retry keeps its request id` (LMI) |
+| A gift's `requestId` | the gift dialog; as merged (LU1 `2a7b50c`, cut Q9): the meta controller (LMI), not the dialog, which emits `onsend(amount)` only | on submit | on a definitive answer | `wallet: gift retry keeps its request id` (LMI) |
 
 No Pixi resource, texture or audio buffer is created by this plan (the meta UI is DOM; principle 7).
 
@@ -1801,6 +1850,9 @@ Order: server LS2 → L6c → L8a → L8b → LS3 → **LE1 → LF1 → LM2 → 
 client: LM1 beside D1 after LW3; LU1 after L14a; LMD after LS4 and LF2; LMI after L15.
 Changed by RULINGS 54 (as of `6043941`): merged LS2 … LS3, LM1 `4d8a9ec`, LU1 `2a7b50c`; running LE1 (server) and
 L10 (client, ahead of LS4 and LMD); to go: server LF1 → LM2 → LF2 → LE2 → LPO → L9, client LMD, then LMI.
+Changed by RULINGS 78 (as of `22ed4d5`): merged LS2 … LS3, LE1 `29c310b`, LF1 `946e2b5`, LM2 `5a33183`, LM1 `4d8a9ec`,
+LU1 `2a7b50c`; running LF2 (server) and L15 (client, ahead of LMI); to go: server LE2 → LPO → L9, client LMD, then
+LMI (its gate gains MEMORY-PLAN's M1).
 
 ---
 
@@ -1814,8 +1866,8 @@ L10 (client, ahead of LS4 and LMD); to go: server LF1 → LM2 → LF2 → LE2 �
 | JS before the first line | ≤ 270 KB br, unchanged | the meta chunk is not in it | `budget.ts` |
 | First-load to first line, per story | ≤ 800 KB, unchanged | + 2.9 KB | `budget.ts` |
 | Time to first line | ≤ 6 s, unchanged | 2.9 KB × 8 / 1.6 Mbps ≈ 15 ms; the three boot GETs (≈ 0.5–2 KB each) are parallel and never awaited | e2e `time to first line under throttling` |
-| Steady memory | ≤ 138.6 MiB (145.3 MB) | 138.1 (SP) + < 0.5 MiB (DOM overlays, ≤ 16 KB of card JSON, the chunk) | the estimate; e2e `heap under budget` (its 48 MB limit unchanged) |
-| Card response | ≤ 16 KB | 50 achievements × ≈ 250 B + 32 endings × ≈ 120 B; typically < 2 KB | `card_response_bounded` (LM2) |
+| Steady memory | ≤ 138.6 MiB (145.3 MB) | 138.1 (SP) + < 0.5 MiB (DOM overlays, ≤ 16 KB of card JSON, the chunk; as merged, LM2 `5a33183`, RULINGS 77; cut Q4: the card is bounded at 36 KiB, see the next row, and the total stays < 0.5 MiB) | the estimate; e2e `heap under budget` (its 48 MB limit unchanged) |
+| Card response | ≤ 16 KB; as merged (LM2 `5a33183`, RULINGS 77; cut Q4): ≤ 36 KiB (36,864 B) | 50 achievements × ≈ 250 B + 32 endings × ≈ 120 B; typically < 2 KB; as merged: the fixture's card 2,036 B (< 2,048), 34,167 B at the M4 limits (one achievement ≈ 675 B in Cyrillic); 4-byte code points could pass 36 KiB, accepted (display only; the 256 KiB `meta.json` cap holds) | `card_response_bounded` (LM2) |
 | Stats batch with choices | ≤ 16 KB body | 32 × ≈ 160 B = 5.1 KB | SP's limit |
 | `server/content/meta.json` | ≤ 256 KB raw (a startup check) | ≈ 40 B per option: ≈ 3 KB for the demo, ≈ 60 KB for 10 chapters × 150 options; texts ≤ 36 KB per story | `startup_fails_when_meta_too_large` (LM2) |
 | Server statements | card ≤ 5; profile ≤ 7; spend ≤ 6 (1 tx); gift ≤ 9 (1 tx) + 1 handle read; an invite request ≤ 6 (1 tx); the stats POST + 1 per batch (the referral probe with its evidence, revision 1 W5) + 1 only over the choice budget (first picks, revision 1 W2); pre-checkout 2 (was 3) | at the Q21 p99 RTT of 160 ms: the card ≤ 0.8 s, a spend ≤ 1 s, the stats POST ≤ 0.8 s worst case (5 statements) | the lane tests |
@@ -1975,3 +2027,5 @@ lists (default: the narrative-designer drafts the demo ones above), Q21 jurisdic
 | 3 | 2026-10-31 | `D:/tmp/novel-orch/design/choices/triage_r3.md` (critique `design/choices/critique_r3.md`) | Revision 3: the 1 confirmed item resolved. **W1** (two of the pin's three conditions had no failing input, and tester mutation 3 had no killer): M26 moves the three conditions (versions strictly increase, the last equals the meta, its hash equals the template's) into one pure checker `check_pins(pins, meta, template bytes)` returning `PinError::{NotIncreasing, LastNotMeta, HashMismatch}`. `policy_template_pinned_per_version` runs it on `POLICY_PINS`, `policy_version()` and the compiled template. The crafted reds `pin_check_rejects_non_increasing_versions`, `pin_check_rejects_last_not_meta` and `pin_check_rejects_hash_mismatch` each break exactly one condition of a valid two-row history, and the control `pin_check_accepts_a_valid_history` passes that history. All three red against an `Ok(())` stub. `POLICY_PINS`, `PinError` and `check_pins` are `#[cfg(test)]` (no `dead_code` in the lib target under `-D warnings`, probed; `pub` and a startup use rejected). Also changed: MT5, M26 Alternatives and Trade-off, Rust types, Module API, Integration, the LPO table row, the test names, gates seen red; PP LPO (goal, commit 2, mutation 3 restated against the checker, seen working); PP revision log row 22. LPO keeps 8 files and 2 commits. Optional O1–O4 and the triage's open question 2 are not folded in. Pre-revision copies: `D:/tmp/novel-orch/design/choices/{META-PLAN,STORIES-PLAN,PROTOTYPE-PLAN,PUZZLES-PLAN}.r3.before.md`; report `design/choices/revision_r3.md`. |
 | 4 | 2026-11-01 | `D:/tmp/novel-orch/carry.md` at ORCH `d97ba64` (the docs-errata-2 spec, group A), as merged on main `6043941` | Docs lane `docs-errata-2`, group A (not a triage round): L7 (`57e1424`) — `startParam()` parsed from the raw `initData`; LM1 (`4d8a9ec`) — a missing `story/meta.json` counts as `{}`; LS3 (`00d7c10`) — the `IS NOT NULL` guards and a choice-only batch never a 429. Fix round 1: the principle-3 line and MQ16 point at the raw-`initData` `startParam()`; the guard comment names the regex / IN tests of `subject` / `outcome`. Ledger: `D:/tmp/novel-orch/docs-errata-2/ledger.md` |
 | 5 | 2026-11-01 | RULINGS 54 (as merged on main `6043941`) | Docs lane `docs-errata-2`, group B (not a triage round): M28 and "Implementation plan" Order as of `6043941` (LM1, LU1 merged; LE1 running; LF1, LM2, LF2, LE2, LPO, LMD, LMI to go). Ledger: `D:/tmp/novel-orch/docs-errata-2/ledger.md` |
+| 6 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `ba5fc68` (the docs-errata-3 spec, group A), as merged on main `22ed4d5` | Docs lane `docs-errata-3`, group A (not a triage round): LE1 (`29c310b`) — the named-constraint credit, the clawback upsert, `balances -> Vec<Balance>`; L10 (`34b7f13`) — `chapterDelivered` / `packDelivered`; LU1 (`2a7b50c`) — the controller owns a gift's `requestId`; L14b (`3364f73`) — lower-case callbacks; LP2 (`88d0964`) — `HintPort` / `HintPortError` in `puzzles/session.ts`, `createPuzzleSession` -> `Result`, `useHint` -> the ladder; LF1 (`946e2b5`) — the self-invite guard, `referrals_outcome_known`'s `outcome IS NOT NULL`, `invite_state`'s `pending_cap` and the rotation constants, the capped-requester residual; LM2 (`5a33183`) — met and visible unlocks, the card bound (36 KiB), the meta stories equal the index stories, the card headers, hash collections and `Repo::entitlements`. Ledger: `D:/tmp/novel-orch/docs-errata-3/ledger.md` |
+| 7 | 2026-11-02 | RULINGS 78 (as merged on main `22ed4d5`) | Docs lane `docs-errata-3`, group B (not a triage round): M28 and "Implementation plan" Order as of `22ed4d5` (LM1, LU1, LE1, LF1, LM2 merged; LF2 running; LE2, LPO, LMD, LMI to go). Ledger: `D:/tmp/novel-orch/docs-errata-3/ledger.md` |
