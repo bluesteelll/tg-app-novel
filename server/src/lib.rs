@@ -22,6 +22,7 @@ use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::routing::post;
 
+use crate::api::share::{RateWindow, SHARE_WINDOW_SECS, SHARES_PER_HOUR};
 use crate::auth::Keys;
 use crate::catalog::{CATALOG_JSON, Catalog};
 use crate::clock::{Clock, SystemClock};
@@ -51,18 +52,21 @@ pub struct AppState {
     /// The Bot API: frankenstein's client on `cfg`'s token and environment, or a fake set by
     /// [`AppState::with_gateway`] (tests, the dev app).
     pub gateway: Arc<dyn BotGateway>,
+    /// The per-user window of `POST /api/share` ([`SHARES_PER_HOUR`] per rolling hour), in memory: one per state and
+    /// shared by its clones (a re-clocked test state keeps it); a restart forgets it.
+    pub share_limit: Arc<RateWindow>,
 }
 
 impl AppState {
     /// Loads the content from `CONTENT_DIR`, builds the catalog from it and the compiled-in `server/catalog.json`, and
-    /// the Bot API gateway from `BOT_TOKEN` and `TELEGRAM_ENV`, then connects the database pool to `DATABASE_URL` and
-    /// applies the migrations. Content, catalog and gateway come first: a refusal ([`StartupError::Content`],
-    /// [`StartupError::Gateway`]) opens no pool. Creates no database: a missing or unreachable one is a
-    /// [`StartupError::Db`].
+    /// the Bot API gateway from the config ([`FrankensteinGateway::from_config`]: `BOT_TOKEN` on the base of
+    /// `TELEGRAM_ENV`), then connects the database pool to `DATABASE_URL` and applies the migrations. Content, catalog
+    /// and gateway come first: a refusal ([`StartupError::Content`], [`StartupError::Gateway`]) opens no pool.
+    /// Creates no database: a missing or unreachable one is a [`StartupError::Db`].
     pub async fn new(cfg: Config) -> Result<AppState, StartupError> {
         let content = ContentStore::load(&cfg.content_dir).await?;
         let catalog = Catalog::build(CATALOG_JSON, &content)?;
-        let gateway = FrankensteinGateway::new(&cfg.bot_token, cfg.telegram_env)?;
+        let gateway = FrankensteinGateway::from_config(&cfg)?;
         let repo = Repo::open(&cfg.database_url).await?;
         if let Err(e) = repo.migrate().await {
             // Close at once: the pool's connections end now, not whenever the last clone of the pool is dropped.
@@ -77,6 +81,7 @@ impl AppState {
             content: Arc::new(content),
             catalog: Arc::new(catalog),
             gateway: Arc::new(gateway),
+            share_limit: Arc::new(RateWindow::new(SHARES_PER_HOUR, SHARE_WINDOW_SECS)),
         })
     }
 

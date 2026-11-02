@@ -1,0 +1,14 @@
+{
+  "ru": {
+    "share_story": "Я играю в «{story}»: найдено концовок — {endings}, достижений — {achievements}. Присоединяйся!",
+    "share_invite": "Присоединяйся ко мне в этой игре!",
+    "share_button": "Открыть",
+    "share_title": "Прогресс"
+  },
+  "en": {
+    "share_story": "I'm playing “{story}”: {endings} endings and {achievements} achievements found. Join me!",
+    "share_invite": "Join me in this game!",
+    "share_button": "Open",
+    "share_title": "Progress"
+  }
+}

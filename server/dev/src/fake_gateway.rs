@@ -1,6 +1,7 @@
 //! The dev app's Bot API: [`FakeBotGateway`] records every gateway call and answers it locally, so a dev run never
-//! talks to Telegram. `GET /dev/invoices/{slug}` shows what an invoice link would have opened; later dev routes that
-//! read the fake (a prepared share) join [`routes`] here.
+//! talks to Telegram. `GET /dev/invoices/{slug}` shows what an invoice link would have opened and
+//! `GET /dev/prepared/{id}` what a prepared share would send; later dev routes that read the fake join [`routes`]
+//! here.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -16,11 +17,18 @@ use serde::Serialize;
 use server::error::ApiError;
 use server::ids::{ChargeId, UserId};
 use server::telegram::gateway::{
-    BotGateway, BoxFut, GatewayError, InvoiceSpec, OutMessage, SetupSpec,
+    BotGateway, BoxFut, GatewayError, InvoiceSpec, OutMessage, PreparedMessage, PreparedShare,
+    SetupSpec,
 };
 
 /// The slug prefix of a dev invoice: the link is `https://t.me/$dev-<payload>`, its slug `dev-<payload>`.
 const SLUG_PREFIX: &str = "dev-";
+
+/// The id prefix of a dev prepared message: `dev-prepared-<n>`, numbered from 1.
+const PREPARED_PREFIX: &str = "dev-prepared-";
+
+/// The bot username the fake answers for `getMe`: no real bot's.
+const BOT_USERNAME: &str = "novel_dev_bot";
 
 /// Everything the fake was asked.
 #[derive(Default)]
@@ -35,10 +43,13 @@ struct FakeLog {
     messages: Vec<OutMessage>,
     /// How many setups ran.
     setups: usize,
+    /// Prepared shares by id.
+    prepared: HashMap<String, PreparedShare>,
 }
 
 /// The dev app's Bot API: every call is recorded and answered `Ok` at once; an invoice link is
-/// `https://t.me/$dev-<payload>`. The record grows without bound, a few hundred bytes per call, in a dev process only.
+/// `https://t.me/$dev-<payload>`, a prepared message `dev-prepared-<n>` that never expires, the bot username
+/// `novel_dev_bot`. The record grows without bound, a few hundred bytes per call, in a dev process only.
 #[derive(Default)]
 pub struct FakeBotGateway {
     log: Mutex<FakeLog>,
@@ -48,6 +59,11 @@ impl FakeBotGateway {
     /// The spec of the invoice whose link has slug `slug` (`dev-<payload>`).
     pub fn invoice(&self, slug: &str) -> Option<InvoiceSpec> {
         self.log().invoices.get(slug).cloned()
+    }
+
+    /// The share prepared under `id` (`dev-prepared-<n>`).
+    pub fn prepared(&self, id: &str) -> Option<PreparedShare> {
+        self.log().prepared.get(id).cloned()
     }
 
     /// The latest answer given to pre-checkout query `query_id`.
@@ -123,6 +139,26 @@ impl BotGateway for FakeBotGateway {
             Ok(())
         })
     }
+
+    fn save_prepared_inline_message(
+        &self,
+        _user: UserId,
+        share: PreparedShare,
+    ) -> BoxFut<'_, Result<PreparedMessage, GatewayError>> {
+        Box::pin(async move {
+            let mut log = self.log();
+            let id = format!("{PREPARED_PREFIX}{}", log.prepared.len() + 1);
+            log.prepared.insert(id.clone(), share);
+            Ok(PreparedMessage {
+                id,
+                expiration_date: i64::MAX,
+            })
+        })
+    }
+
+    fn bot_username(&self) -> BoxFut<'_, Result<String, GatewayError>> {
+        Box::pin(async { Ok(BOT_USERNAME.to_owned()) })
+    }
 }
 
 /// `GET /dev/invoices/{slug}` response: what the invoice would show.
@@ -139,10 +175,27 @@ struct DevInvoice {
     amount: u32,
 }
 
-/// The routes that read `fake`: `GET /dev/invoices/{slug}`.
+/// `GET /dev/prepared/{id}` response: what the prepared message would send. No user id: the share names none.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DevPrepared {
+    /// The inline result's id.
+    result_id: String,
+    /// The article's title.
+    title: String,
+    /// The message text.
+    text: String,
+    /// The button text.
+    button: String,
+    /// The URL the button opens.
+    url: String,
+}
+
+/// The routes that read `fake`: `GET /dev/invoices/{slug}` and `GET /dev/prepared/{id}`.
 pub fn routes(fake: Arc<FakeBotGateway>) -> Router {
     Router::new()
         .route("/dev/invoices/{slug}", get(invoice))
+        .route("/dev/prepared/{id}", get(prepared_message))
         .with_state(fake)
 }
 
@@ -168,6 +221,29 @@ async fn invoice(
     response
 }
 
+/// The share prepared under `id`, or 404 `not_found` (an id that is not text names none); `no-store` either way.
+async fn prepared_message(
+    State(fake): State<Arc<FakeBotGateway>>,
+    id: Result<Path<String>, PathRejection>,
+) -> Response {
+    let share = id.ok().and_then(|Path(id)| fake.prepared(&id));
+    let mut response = match share {
+        Some(share) => Json(DevPrepared {
+            result_id: share.result_id,
+            title: share.title,
+            text: share.text,
+            button: share.button,
+            url: share.url,
+        })
+        .into_response(),
+        None => ApiError::NotFound.into_response(),
+    };
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -180,7 +256,9 @@ mod tests {
     use serde_json::{Value, json};
     use server::auth::issue_token;
     use server::ids::OrderId;
-    use server::telegram::gateway::{BotCommandSpec, CommandSet, WebAppButton};
+    use server::telegram::gateway::{
+        BotCommandSpec, CommandSet, PreparedMessage, PreparedShare, WebAppButton,
+    };
     use tower::ServiceExt;
 
     use super::*;
@@ -299,6 +377,44 @@ mod tests {
             failures.push(format!(
                 "setup: expected Ok and 1 setup, got {set_up:?} and {}",
                 fake.setups()
+            ));
+        }
+
+        let share = PreparedShare {
+            result_id: "fedcba9876543210fedcba9876543210".to_owned(),
+            title: "Progress".to_owned(),
+            text: "“The Tide”: 1 ending".to_owned(),
+            button: "Open".to_owned(),
+            url: "https://t.me/novel_dev_bot?startapp=f0123456789abcdef0123456789abcdef".to_owned(),
+        };
+        let prepared = fake
+            .save_prepared_inline_message(UserId(1001), share.clone())
+            .await;
+        let want = PreparedMessage {
+            id: "dev-prepared-1".to_owned(),
+            expiration_date: i64::MAX,
+        };
+        if prepared != Ok(want) {
+            failures.push(format!(
+                "save_prepared_inline_message: expected Ok(dev-prepared-1), got {prepared:?}"
+            ));
+        }
+        if fake.prepared("dev-prepared-1") != Some(share) {
+            failures.push(format!(
+                "prepared(dev-prepared-1): expected the share, got {:?}",
+                fake.prepared("dev-prepared-1")
+            ));
+        }
+        if let Some(got) = fake.prepared("dev-prepared-2") {
+            failures.push(format!(
+                "prepared(dev-prepared-2): expected None, got {got:?}"
+            ));
+        }
+
+        let username = fake.bot_username().await;
+        if username.as_deref() != Ok("novel_dev_bot") {
+            failures.push(format!(
+                "bot_username: expected Ok(\"novel_dev_bot\"), got {username:?}"
             ));
         }
         report(&failures);
