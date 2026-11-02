@@ -582,7 +582,9 @@ Gifts and referrals have their own caps (M22, M23). Each limit's test is in the 
 **M19. Packs are bought on the existing payment path; pre-checkout is the RULINGS 14 form again.**
 - **What.**
   - `POST /api/invoices { productId: "pack:<id>" }` runs P3 unchanged (the price and texts from the catalog; the
-    entitlement check is trivially false for a pack; order reuse < 1 h). Revision 1 (W3): P3 also binds the pack's
+    entitlement check is trivially false for a pack; order reuse < 1 h; as merged, LPH `d423cb3`, RULINGS 97 Q2: no
+    order reuse, each POST a new order, at most 10 unpaid per user in a rolling hour, then 429).
+    Revision 1 (W3): P3 also binds the pack's
     kind and amount into the order row it inserts (`orders.pack_kind`, `orders.pack_amount`; `0004` adds the two
     columns and the CHECK `orders_pack_binding`, so a pack order without its binding cannot exist), from the same
     catalog read that titles the invoice ("3 подсказки").
@@ -883,6 +885,10 @@ unchanged.**
     continues LPH payments-hardening (running; RULINGS 96, after L9 and before D2). LMI's gate is met: L15b
     (`fbcfd38`), M1 (`f1b707d`) and LFU1 (`f637bac`, the `game.ts` half of the client follow-ups lane, RULINGS 92, 95)
     have merged.
+  - Changed by RULINGS 104-108 (as of `a4d53ef`; docs lane `docs-errata-6`, group B): LPH has merged (`d423cb3`), so
+    the server chain has run to its end (MEMORY-PLAN's M3s follows M3c and D2); of the ten lanes, LMI still runs
+    (relaunched, RULINGS 105). After LMI come M2, then LFU3 (RULINGS 107, OB-1: M2 first, since both hold
+    `client/src/app/game.ts`), and D2 waits for M2 only.
   - Why LPO is a lane of its own (revision 1, W4): the operator facts need a `Config` variable, which means editing
     the three `Config` constructors (`config.rs`, `server/dev/src/lib.rs`, `server/tests/it/common.rs`) plus
     `lib.rs` and `.env.example`; in LF1 that is 15 + 4 = 19 files, over the cap. LPO holds them with `api/legal.rs` and
@@ -1925,6 +1931,8 @@ LMI (after L15b and M1).
 Changed by RULINGS 89-103 (as of `6d77329`): merged also LPO `90e1226` and L9 `d837c8b` (server), and L15b `fbcfd38`,
 M1 `f1b707d` and LFU1 `f637bac` (LMI's gate); running LPH (server, after L9; RULINGS 96) and LMI (client); to go of
 this design's lanes: none. LFU3 (RULINGS 99) follows LMI.
+Changed by RULINGS 104-108 (as of `a4d53ef`): merged also LPH `d423cb3` (server); running LMI (client); to go of this
+design's lanes: none. M2 follows LMI, and LFU3 follows M2 (RULINGS 107, OB-1).
 
 ---
 
@@ -2105,3 +2113,5 @@ lists (default: the narrative-designer drafts the demo ones above), Q21 jurisdic
 | 9 | 2026-11-02 | RULINGS 80-88 (as merged on main `48abfaf`) | Docs lane `docs-errata-4`, group B (not a triage round): M28 and "Implementation plan" Order as of `48abfaf` (LM1, LU1, LE1, LF1, LM2, LF2, LE2, LMD merged; LPO running; LMI to go, after L15b and M1). Ledger: `D:/tmp/novel-orch/docs-errata-4/ledger.md` |
 | 10 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `874d685` (the docs-errata-5 spec, group A; RULINGS 89-103), as merged on main `6d77329` | Docs lane `docs-errata-5`, group A (not a triage round): LPO (`90e1226`) — `Policy::load` async on `tokio::fs`; LE2 (`ec3b29f`) — `db/social.rs` also written by `qualify_referral`; LF1 (`946e2b5`) — requester names from `Repo::social`'s request list; L9 (`d837c8b`) — the L9 names row as merged. Ledger: `D:/tmp/novel-orch/docs-errata-5/ledger.md` |
 | 11 | 2026-11-02 | RULINGS 89-103 (as merged on main `6d77329`) | Docs lane `docs-errata-5`, group B (not a triage round): M28 and "Implementation plan" Order as of `6d77329` (LM1, LU1, LE1, LF1, LM2, LF2, LE2, LMD, LPO merged; L9 merged, so the server chain continues LPH, RULINGS 96; LMI running, its gate with L15b, M1 and LFU1 met). Ledger: `D:/tmp/novel-orch/docs-errata-5/ledger.md` |
+| 12 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `a190136` (the docs-errata-6 spec, group A; RULINGS 97-108), as merged on main `a4d53ef` | Docs lane `docs-errata-6`, group A (not a triage round): LPH (`d423cb3`; RULINGS 97 Q2) — M19's "order reuse < 1 h": no reuse, each POST a new order, at most 10 unpaid per user in a rolling hour, then 429. Ledger: `D:/tmp/novel-orch/docs-errata-6/ledger.md` |
+| 13 | 2026-11-02 | RULINGS 104-108 (as merged on main `a4d53ef`) | Docs lane `docs-errata-6`, group B (not a triage round): M28 and "Implementation plan" Order as of `a4d53ef` (LM1, LU1, LE1, LF1, LM2, LF2, LE2, LMD, LPO merged; LPH merged `d423cb3`, so the server chain has run to its end; LMI running, relaunched, RULINGS 105; M2 then LFU3 after LMI, RULINGS 107, OB-1). Ledger: `D:/tmp/novel-orch/docs-errata-6/ledger.md` |

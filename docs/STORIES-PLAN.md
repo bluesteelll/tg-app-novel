@@ -1096,6 +1096,12 @@ while LDB1 ran; LDB1 and LDB2 had merged before the design landed, and the merge
   - running: LPH payments-hardening (server; new, RULINGS 96, after L9 and before D2) and LMI meta-integration
     (client);
   - to go, of this design's lanes: none.
+- **As of `a4d53ef`** (changed by RULINGS 104-108; docs lane `docs-errata-6`, group B; SHAs from `git log --first-parent
+  main`):
+  - merged since `6d77329`: LPH `d423cb3` (and the docs lane `docs-errata-5` as `a4d53ef`). RULINGS 107 ruled the
+    order of LFU3 and M2: M2 first, then LFU3 after M2 (PP "Dependency order");
+  - running: LMI meta-integration (client; relaunched, RULINGS 105);
+  - to go, of this design's lanes: none.
 
 **Order** (RULINGS 8 rolling, RULINGS 18 three slots; as of `66c92c4`, changed by RULINGS 22, 23: LDB1 and LDB2
 merged, so the server chain starts at L6b): server L6b → LS2 → L6c → L8a → L8b → LS3 → L9; client (two slots)
@@ -1117,7 +1123,12 @@ LFU2, and LMI's gate keeps LFU1.
 Changed by RULINGS 89-103 (as of `6d77329`): the server chain has run to L9 (`d837c8b`), so it continues LPH (running;
 RULINGS 96), then MEMORY-PLAN's M3s; client LMI (running; its gate with M1 and LFU1 met) → M2 → D2 (MEMORY-PLAN's M3c
 beside D2; D2 also waits for LPH; LFU3 after LMI, RULINGS 99, its order with M2 not ruled yet: PP "Dependency order").
-The prototype milestone is reached: L15b merged `fbcfd38`.
+The prototype milestone is reached: L15b merged `fbcfd38`. Ruled since (RULINGS 107, OB-1): M2 first; LFU3 after M2,
+beside M3c / D2.
+Changed by RULINGS 104-108 (as of `a4d53ef`): the server chain has run to LPH (`d423cb3`), so it continues with
+MEMORY-PLAN's M3s (after M3c and D2); client LMI (running) → M2 → D2 (D2 waits for M2 only; MEMORY-PLAN's M3c beside
+D2), and LFU3 after M2, beside M3c / D2 (RULINGS 107, OB-1: both hold `client/src/app/game.ts`, and M2 is on the
+critical path).
 
 **Collision locks added** (PP "Collision locks"): `0001` L2 → LDB1 → LS2; `0003` LS3; the serialized server files
 L6b → LS2 → L6c → L8a → L8b → LS3 → L9; `ids.rs` L6b (`StoryId` with `PuzzleId`); `lint.ts` / `dsl-doc.test.ts` /
@@ -1293,6 +1304,8 @@ Totals: 2 stories, 4 chapters (2 free, 2 paid), 4 endings (`truth`, `ashes`, `dr
 | 13 | 2026-11-02 | RULINGS 80-88 (as merged on main `48abfaf`) | Docs lane `docs-errata-4`, group B (not a triage round): "Implementation plan" — "Running and merged lanes" and "Order" as of `48abfaf` (LF2, LE2, L15a and LMD merged; L15 split into L15a and L15b, RULINGS 80; L15b and LPO running; the critical path from L15b). Ledger: `D:/tmp/novel-orch/docs-errata-4/ledger.md` |
 | 14 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `874d685` (the docs-errata-5 spec, group A; RULINGS 89-103), as merged on main `6d77329` | Docs lane `docs-errata-5`, group A (not a triage round): the OB1 ruling (RULINGS 92) and the LFU1 / LFU2 split (RULINGS 95) where "Order" said "not ruled yet"; L15b (`fbcfd38`) — the e2e row's seventh name (`stories: a locked chapter row opens the paywall without loading the chapter`). Ledger: `D:/tmp/novel-orch/docs-errata-5/ledger.md` |
 | 15 | 2026-11-02 | RULINGS 89-103 (as merged on main `6d77329`) | Docs lane `docs-errata-5`, group B (not a triage round): "Implementation plan" — "Running and merged lanes" and "Order" as of `6d77329` (LPO, L15b, L9, M1, LFU1 and LFU2 merged; the client follow-ups lane cut into LFU1 and LFU2, RULINGS 95; LFU3 and LPH new, RULINGS 99, 96; LPH and LMI running; the prototype milestone reached at L15b). Ledger: `D:/tmp/novel-orch/docs-errata-5/ledger.md` |
+| 16 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `a190136` (the docs-errata-6 spec, group A; RULINGS 97-108), as merged on main `a4d53ef` | Docs lane `docs-errata-6`, group A (not a triage round): the LFU3 / M2 order as ruled (RULINGS 107, OB-1: M2 first; LFU3 after M2, beside M3c / D2) in "Order". Ledger: `D:/tmp/novel-orch/docs-errata-6/ledger.md` |
+| 17 | 2026-11-02 | RULINGS 104-108 (as merged on main `a4d53ef`) | Docs lane `docs-errata-6`, group B (not a triage round): "Implementation plan" — "Running and merged lanes" and "Order" as of `a4d53ef` (LPH merged `d423cb3`; LMI running, relaunched, RULINGS 105; the LFU3 / M2 order ruled by RULINGS 107, OB-1: M2 first, then LFU3 after M2, beside M3c / D2; D2 waits for M2 only). Ledger: `D:/tmp/novel-orch/docs-errata-6/ledger.md` |
 
 **Revision 1 (2026-10-31)** — what changed, by triage item:
 - **W1** (LS1 moved merged test pins it did not declare; commit 6 left the real-tree `story` gate red): PP "LS1" —
