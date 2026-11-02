@@ -100,6 +100,8 @@ export function createEngine(d: EngineDeps): { game: Game; ui: EngineUi } {
     dpr: () => globalThis.devicePixelRatio,
     accountLang: d.accountLang,
     onExit: d.onExit,
+    explore,
+    puzzle,
   });
   return {
     game,

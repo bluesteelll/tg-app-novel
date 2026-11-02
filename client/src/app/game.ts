@@ -47,11 +47,15 @@ import type {
 } from '../story/staging.ts';
 import type { Lifecycle, TelegramClient } from '../telegram/index.ts';
 import type { BacklogLine } from '../ui/Backlog.svelte';
+import type { ExploreViewStore } from '../ui/explore-view.svelte.ts';
 import type { NoticeView } from '../ui/Notice.svelte';
 import type { SlotView } from '../ui/SaveLoad.svelte';
-import type { Screens } from '../ui/screens.ts';
+import type { PuzzleHostCallbacks, PuzzleView } from '../ui/puzzle-view.svelte.ts';
+import type { Screens, ScreensView } from '../ui/screens.ts';
 import type { ChoiceSet, LineView, PlayMode, ViewModel } from '../ui/state.svelte.ts';
 import { graphemes, GRAPHEMES_PER_SECOND } from '../ui/typewriter.ts';
+import { createYields, LAZY_CHUNKS } from './yields.ts';
+import type { ExploreLayerActions, LazyChunks, Yields, YieldsHost } from './yields.ts';
 
 /** What a session starts from: a chapter of the story from its start, or a save slot of the story. */
 export type StartFrom = { kind: 'new'; story: StoryId; chapter: ChapterId } | { kind: 'slot'; story: StoryId; slot: SaveSlot };
@@ -82,7 +86,7 @@ export type GameDeps = {
   vm: ViewModel;
   screens: Screens;
   tg: Pick<TelegramClient, 'haptic' | 'setClosingConfirmation' | 'openInvoice'>;
-  api: Pick<Endpoints, 'listSaves' | 'createInvoice' | 'getOrder' | 'getEntitlements'>;
+  api: Pick<Endpoints, 'listSaves' | 'createInvoice' | 'getOrder' | 'getEntitlements' | 'getPuzzle' | 'postAttempt'>;
   catalog: ChapterCatalog;
   entitlements: Entitlements;
   /** The saves list a session starts from: boot's own list once, then a fresh `GET /api/saves`. */
@@ -106,6 +110,11 @@ export type GameDeps = {
   accountLang: Lang;
   /** The session ended for Home (exitToStories). */
   onExit: () => void;
+  /** The two lazy views' stores App renders (app/yields.ts writes them). */
+  explore: ExploreViewStore;
+  puzzle: PuzzleView;
+  /** The lazy families' loaders; the tests pass their own. */
+  chunks?: LazyChunks;
 };
 
 /** The Game the overlay drives. Each method that starts an intent resolves once that intent is done. */
@@ -148,6 +157,12 @@ export interface Game {
   offerChapter(story: StoryId, chapter: ChapterId): void;
   /** STORIES-PLAN "Module API": every session resource in its order, then Home; single-shot, after a batch in flight. */
   exitToStories(): Promise<void>;
+  /** The screens stack changed (boot's `onView`): the explore panels and an exploration puzzle follow it. */
+  screensChanged(v: ScreensView): void;
+  /** The explore layer's callbacks, for the current session's yields. */
+  readonly exploreActions: ExploreLayerActions;
+  /** The puzzle host's callbacks, for the current session's yields. */
+  readonly puzzleActions: PuzzleHostCallbacks;
   dispose(): void;
 }
 
@@ -288,6 +303,8 @@ type Session = {
   pending: SaveBodyV1 | null;
   /** D10: the runtime errors of the current chapter, which walk "Return to last save" down the resume levels. */
   inkErrors: number;
+  /** The yields of this session: the world, the explore controller, the open puzzle (PZ "Resource lifetime"). */
+  readonly yields: Yields;
 };
 
 /** The paywall's purchase: its chapter, its flow once Buy ran, and the story a pre-session unlock starts (D17). */
@@ -307,6 +324,7 @@ export function createGame(deps: GameDeps): Game {
   let busy: Promise<void> | null = null;
   let host: HTMLElement | null = null;
   let hostWaiters: Array<(h: HTMLElement) => void> = [];
+  const chunks = deps.chunks ?? LAZY_CHUNKS;
   let mounted: Promise<Result<void, SceneError>> | null = null;
   let sound: AudioManager | null = null;
   let autoTimer: number | null = null;
@@ -389,6 +407,7 @@ export function createGame(deps: GameDeps): Game {
       vm.choices = choiceSet(s, s.step);
     }
     vm.backlog = backlogLines(s);
+    s.yields.relabel(); // K49
   };
 
   const showNotice = (n: NoticeView): void => {
@@ -499,7 +518,7 @@ export function createGame(deps: GameDeps): Game {
   // -------------------------------------------------------------------------------------------------------------
   // The world (PUZZLES-PLAN; yields.ts from C6)
 
-  const worldOf = (_s: Session): SaveBodyV1['world'] => EMPTY_WORLD_STATE;
+  const worldOf = (s: Session): SaveBodyV1['world'] => s.yields.world();
 
   // -------------------------------------------------------------------------------------------------------------
   // Steps
@@ -578,6 +597,10 @@ export function createGame(deps: GameDeps): Game {
       await chapterEnd(s, ch);
       return;
     }
+    if (step.kind === 'yield') {
+      await s.yields.onYield(step.yield);
+      return;
+    }
     if (step.kind === 'line' && vm.mode === 'skip') {
       if (wasRead || settings.current().skipUnread) {
         skipTimer = clock.setTimeout(() => {
@@ -639,6 +662,7 @@ export function createGame(deps: GameDeps): Game {
     }
     screens.setRoot({ kind: 'game' });
     tg.setClosingConfirmation(true);
+    s.yields.rootShown(); // D4: setRoot cleared the root-back
     const body = s.last;
     if (body === null) {
       return;
@@ -670,6 +694,7 @@ export function createGame(deps: GameDeps): Game {
    * F4 step 4's order: the scene's chapter, the empty stage (every `scene:*` holder of the old chapter), the audio's.
    */
   const enterChapter = async (s: Session, ch: LoadedChapter, clear: boolean): Promise<void> => {
+    s.yields.chapterChanged(); // D11 / PZ F10: the puzzle session, then the controller; the world starts empty
     s.ch = ch;
     s.assets = manifestIndex(ch.assets);
     s.lines = createLineText(ch.en);
@@ -765,6 +790,7 @@ export function createGame(deps: GameDeps): Game {
       return err({ kind: 'story', error: r.error });
     }
     const resumed = r.value;
+    s.yields.restore(resumed.world, resumed.reset);
     s.runner?.dispose();
     s.runner = resumed.runner;
     s.carry = { ...body.chapterStart.carry };
@@ -1092,11 +1118,84 @@ export function createGame(deps: GameDeps): Game {
     });
   };
 
+  /** The session's side of its yields; every method runs after the session exists. */
+  const yieldsHost = (of: () => Session): YieldsHost => ({
+    vm,
+    screens,
+    tg,
+    api: deps.api,
+    scene,
+    explore: deps.explore,
+    puzzle: deps.puzzle,
+    reporter,
+    clock,
+    chunks,
+    stageHost: () => host,
+    chapter: () => of().ch,
+    runner: () => of().runner,
+    text: (w) => of().lines.text(w.id, w.ru, vm.lang),
+    apply: async (visual, audio) => {
+      const s = of();
+      const instant = vm.mode === 'skip';
+      const shown = await stage(s, visual, instant);
+      if (session !== s) {
+        return;
+      }
+      audioOnce().apply(audio, { instant });
+      await shown.done;
+    },
+    bgm: () => sound?.currentBgm() ?? null,
+    continueStory: async () => {
+      const s = of();
+      const runner = s.runner;
+      if (session === s && runner !== null) {
+        s.step = null;
+        await handle(s, runner.next());
+      }
+    },
+    storyError: (e) => storyError(of(), e),
+    autosave: () => autosave(of()),
+    notice: (retry) => {
+      const s = of();
+      showNotice({
+        kind: 'error',
+        onaction: () =>
+          void after(async () => {
+            if (session !== s) {
+              return;
+            }
+            screens.setRoot({ kind: 'game' });
+            tg.setClosingConfirmation(true);
+            s.yields.rootShown();
+            await retry();
+          }),
+      });
+    },
+    tap: (fn) => {
+      if (busy !== null) {
+        scene.complete(); // D7: a tap during a batch completes it
+        return busy;
+      }
+      return run(fn);
+    },
+    queue: (fn) => after(fn),
+  });
+
   const openSession = (story: StoryEntry): Session => {
     const saves = deps.saves(story.id);
+    let self: Session | null = null;
+    const yields = createYields(
+      yieldsHost(() => {
+        if (self === null) {
+          throw new Error('invariant: a session exists before its yields run');
+        }
+        return self;
+      }),
+    );
     const s: Session = {
       story,
       saves,
+      yields,
       offSaves: () => {},
       abort: new AbortController(),
       ch: null,
@@ -1119,6 +1218,7 @@ export function createGame(deps: GameDeps): Game {
       pending: null,
       inkErrors: 0,
     };
+    self = s;
     s.offSaves = saves.onState((st) => onSaveState(s, st));
     return s;
   };
@@ -1131,6 +1231,7 @@ export function createGame(deps: GameDeps): Game {
     clearAuto();
     clearSkip();
     s.abort.abort();
+    s.yields.dispose();
     s.runner?.dispose();
     s.runner = null;
     s.offSaves();
@@ -1165,12 +1266,14 @@ export function createGame(deps: GameDeps): Game {
     if (s === null) {
       return;
     }
+    s.yields.disposePuzzle();
     closeOffer();
-    autosave(s);
+    autosave(s); // the world is still in the explore controller
     await s.saves.flush({ timeoutMs: EXIT_FLUSH_MS });
     if (session !== s) {
       return;
     }
+    s.yields.dispose();
     clearAuto();
     clearSkip();
     s.runner?.dispose();
@@ -1305,7 +1408,12 @@ export function createGame(deps: GameDeps): Game {
 
   if (__TG_MOCK__) {
     const hook: DebugHook = {
-      stats: () => ({ scene: scene.stats(), audio: sound?.stats() ?? null, runners: liveRunners() }),
+      stats: () => ({
+        scene: scene.stats(),
+        audio: sound?.stats() ?? null,
+        runners: liveRunners(),
+        ...(session?.yields.presence() ?? { explore: false, puzzle: false }),
+      }),
       lineId: () => vm.line?.lineId ?? null,
       forceContextLoss: () => scene.debugForceContextLoss(),
       propRects: () => scene.debugPropRects(),
@@ -1382,6 +1490,7 @@ export function createGame(deps: GameDeps): Game {
     lineShown() {
       revealed = true;
       scheduleAuto();
+      session?.yields.lineShown();
     },
     gesture() {
       const a = sound;
@@ -1543,6 +1652,27 @@ export function createGame(deps: GameDeps): Game {
         return;
       }
       openPaywall(chapter, story);
+    },
+    screensChanged(v) {
+      session?.yields.screensChanged(v);
+    },
+    exploreActions: {
+      ontap: (key) => session?.yields.layer.ontap(key),
+      oninsert: (key, item) => session?.yields.layer.oninsert(key, item),
+      oninventory: () => session?.yields.layer.oninventory(),
+      onread: (doc) => session?.yields.layer.onread(doc),
+      onreveal: () => session?.yields.layer.onreveal(),
+      onclose: () => session?.yields.layer.onclose(),
+    },
+    puzzleActions: {
+      item: (id) => session?.yields.host.item(id) ?? null,
+      onchange: (a) => session?.yields.host.onchange(a),
+      ontry: () => session?.yields.host.ontry(),
+      ongiveup: () => session?.yields.host.ongiveup(),
+      onhint: () => session?.yields.host.onhint(),
+      onretry: () => session?.yields.host.onretry(),
+      onusehint: (tier) => session?.yields.host.onusehint(tier),
+      ongetmore: () => session?.yields.host.ongetmore(),
     },
     exitToStories() {
       if (disposed || exiting || session === null) {

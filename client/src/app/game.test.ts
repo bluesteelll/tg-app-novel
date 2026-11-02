@@ -2,13 +2,15 @@
 // the story tool's compiler and played by the real runner, a fake scene that keeps the asset registry's holders, fake
 // audio, saves and reporter, and the real view model, screens stack and settings store. Each test disposes its game,
 // so `liveRunners()` deltas are exact.
-import { expect, test } from 'vitest';
+import type { Component } from 'svelte';
+import { expect, test, vi } from 'vitest';
 
 import { compileChapter } from '../../scripts/story/compile.ts';
 import { GLOBALS_PATH } from '../../scripts/story/lint.ts';
-import type { ProductDto, SaveFull, SaveListResponse, SaveSlot, SaveSummary } from '../api/generated/api.ts';
+import type { AttemptResponse, ProductDto, SaveFull, SaveListResponse, SaveSlot, SaveSummary } from '../api/generated/api.ts';
 import type { ApiError, Clock } from '../api/http.ts';
 import type { AudioCommand, AudioManager } from '../audio/manager.ts';
+import { createExploreController } from '../explore/controller.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { ManualSlot, SaveService, SaveState, SaveWrite } from '../saves/service.ts';
 import type { SceneController } from '../scene/controller.ts';
@@ -16,20 +18,28 @@ import type { SceneSnapshot, VisualCommand } from '../scene/executor.ts';
 import { createSettingsStore } from '../settings/store.ts';
 import type { CloudPort, SettingsStore } from '../settings/store.ts';
 import type { StatEvent } from '../stats/reporter.ts';
+import type { PuzzleUiProps } from '../puzzles/registry.ts';
 import type { ChapterLoader } from '../story/chapters.ts';
 import { decodeChapterMeta } from '../story/catalog.ts';
-import type { AssetEntry, AssetManifest, ChapterCatalog, LoadedChapter, StoryId } from '../story/catalog.ts';
+import type { AssetEntry, AssetManifest, ChapterCatalog, LoadedChapter, Result, StoryId } from '../story/catalog.ts';
 import { liveRunners } from '../story/runner.ts';
 import { decodeSave } from '../story/save-codec.ts';
 import type { AssetId, ChapterId, ProductId, StoryVersion } from '../story/staging.ts';
 import type { InvoiceStatus } from '../telegram/index.ts';
+import { createExploreView } from '../ui/explore-view.svelte.ts';
+import type { ExploreViewStore } from '../ui/explore-view.svelte.ts';
+import { createPuzzleView } from '../ui/puzzle-view.svelte.ts';
+import type { PuzzleHostProps, PuzzleView } from '../ui/puzzle-view.svelte.ts';
 import { createScreens } from '../ui/screens.ts';
 import type { Screens } from '../ui/screens.ts';
+import { decodeWorldSource, toPublic } from '../world/decode.ts';
+import type { HotspotKey, ItemId, WorldPublic } from '../world/types.ts';
 import { createViewModel } from '../ui/state.svelte.ts';
 import type { ViewModel } from '../ui/state.svelte.ts';
 import { newestAuto } from './boot.ts';
 import { createGame } from './game.ts';
 import type { Entitlements, Game, GameDeps } from './game.ts';
+import type { ExploreChunk, LazyChunks } from './yields.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
 // Fixtures: chapters
@@ -82,7 +92,7 @@ function chapter(
   id: string,
   main: readonly string[],
   knots: Readonly<Record<string, KnotSpec>>,
-  o: { assets?: readonly string[]; endings?: Readonly<Record<string, string>>; version?: string } = {},
+  o: { assets?: readonly string[]; endings?: Readonly<Record<string, string>>; version?: string; vars?: readonly string[]; world?: WorldPublic } = {},
 ): LoadedChapter {
   const names = Object.keys(knots);
   const meta = decodeChapterMeta({
@@ -90,7 +100,7 @@ function chapter(
     storyVersion: o.version ?? `${id.slice(2).padStart(2, '0')}11111111111111`,
     firstKnot: names[0],
     globals: ['g_x'],
-    vars: ['g_x'],
+    vars: o.vars ?? ['g_x'],
     knots: Object.fromEntries(
       names.map((k) => [k, { assets: knots[k]?.assets ?? [], next: knots[k]?.next ?? [], ending: knots[k]?.ending ?? false }]),
     ),
@@ -100,7 +110,7 @@ function chapter(
     throw new Error(`fixture meta does not decode: ${JSON.stringify(meta.error)}`);
   }
   const used = new Set([...(o.assets ?? []), ...names.flatMap((k) => knots[k]?.assets ?? [])]);
-  return { id: id as ChapterId, story: inkJson(id, main), meta: meta.value, assets: manifest(id, [...used]), en: null, world: null };
+  return { id: id as ChapterId, story: inkJson(id, main), meta: meta.value, assets: manifest(id, [...used]), en: null, world: o.world ?? null };
 }
 
 /** manor ch1: a knot with a speaker, a second line, a choice set, then a garden knot that ends the chapter. */
@@ -465,10 +475,19 @@ function fakeCloud(): CloudPort & { readonly writes: Array<[string, string]> } {
   };
 }
 
+/** No lazy chunk: a test that reaches a yield passes its own. */
+const NO_CHUNKS: LazyChunks = {
+  explore: async () => ({ ok: false, error: { kind: 'chunk', detail: 'no chunks in this test' } }),
+  puzzleHost: async () => ({ ok: false, error: { kind: 'chunk', detail: 'no chunks in this test' } }),
+  puzzleUi: async () => ({ ok: false, error: { kind: 'chunk', detail: 'no chunks in this test' } }),
+};
+
 type Harness = {
   game: Game;
   vm: ViewModel;
   screens: Screens;
+  explore: ExploreViewStore;
+  puzzle: PuzzleView;
   clock: FakeClock;
   scene: FakeScene;
   audio: FakeAudio;
@@ -495,12 +514,25 @@ type HarnessOptions = {
   slots?: ReadonlyMap<SaveSlot, SaveFull>;
   /** openInvoice's answers in order (then 'cancelled'); 'paid' also grants, as the webhook does on the server. */
   invoice?: readonly InvoiceStatus[];
+  /** The lazy families; the default imports none (a yield with no chunks is a test bug). */
+  chunks?: LazyChunks;
+  /** postAttempt's answer; the default is a network error. */
+  attempt?: () => Promise<Result<AttemptResponse, ApiError>>;
 };
 
 function harness(o: HarnessOptions = {}): Harness {
   const clock = new FakeClock();
   const vm = createViewModel({ timers: clock, lang: 'ru' });
-  const screens = createScreens({ back: { setVisible() {}, onPress: () => () => {} }, onView: (v) => (vm.screens = v) });
+  let gameRef: Game | null = null;
+  const screens = createScreens({
+    back: { setVisible() {}, onPress: () => () => {} },
+    onView: (v) => {
+      vm.screens = v;
+      gameRef?.screensChanged(v);
+    },
+  });
+  const explore = createExploreView();
+  const puzzle = createPuzzleView();
   const scene = fakeScene();
   const audio = fakeAudio();
   const saves: FakeSaves[] = [];
@@ -565,6 +597,8 @@ function harness(o: HarnessOptions = {}): Harness {
         purchases.push('getEntitlements');
         return { ok: true, value: { products: products() } };
       },
+      getPuzzle: async () => ({ ok: false, error: fail }),
+      postAttempt: () => o.attempt?.() ?? Promise.resolve({ ok: false, error: fail }),
     },
     catalog: catalog(),
     entitlements,
@@ -590,13 +624,20 @@ function harness(o: HarnessOptions = {}): Harness {
     onExit: () => {
       exits += 1;
     },
+    explore,
+    puzzle,
+    chunks: o.chunks ?? NO_CHUNKS,
   };
   const game = createGame(deps);
-  game.attachStage({} as HTMLElement); // the fake scene never reads its host
+  gameRef = game;
+  // A stand-in: the fake scene never reads its host, and the explore controller reads only its two sizes.
+  game.attachStage({ clientWidth: 360, clientHeight: 640 } as unknown as HTMLElement);
   return {
     game,
     vm,
     screens,
+    explore,
+    puzzle,
     clock,
     scene,
     audio,
@@ -1288,4 +1329,258 @@ test('game: a locked chapter row opens the paywall and the unlock starts it', as
   expect(lineOf(h.vm)).toBe('ch2.study.l001');
   expect(reports(h)).toEqual([{ kind: 'chapter_started', chapterId: CH2, storyVersion: V_CH2 }]);
   h.game.dispose();
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// C6: the yields in the session (PZ "Resource lifetime", F9, F10; SP "Module API")
+
+type Json = Record<string, unknown>;
+let worldLine = 0;
+const wtxt = (ru: string): Json => ({ id: `ch1.gw.${(worldLine++).toString(36).padStart(4, '0')}`, ru });
+const WRECT = [100, 200, 200, 200];
+
+/** hall (an exit to study, a medal, a box the medal and the gate code open); study's onEnter runs study_event. */
+function gameWorld(): WorldPublic {
+  const code = (closeup: string | null, maxAttempts: number | null): Json => ({
+    type: 'code',
+    title: wtxt('code'),
+    prompt: wtxt('prompt'),
+    closeup,
+    params: { dials: 4 },
+    maxAttempts,
+    giveUp: false,
+    solution: [1, 1, 1, 1],
+    hints: [wtxt('hint')],
+  });
+  const exitTo = (id: string, to: string): Json => ({ id, kind: 'exit', rect: WRECT, label: wtxt(id), to: { room: to }, lock: null, sfx: null });
+  const r = decodeWorldSource({
+    format: 1,
+    items: { medal: { name: wtxt('Медаль'), desc: wtxt('d'), glyph: 'sun' } },
+    docs: {},
+    puzzles: { drawer: code('drawer_close', 2), gate: code(null, null) },
+    sections: {
+      manor: {
+        start: 'hall',
+        bgm: null,
+        rooms: {
+          hall: {
+            bg: 'hall',
+            title: wtxt('Hall'),
+            onEnter: [],
+            hotspots: [
+              exitTo('to_study', 'study'),
+              { id: 'medal', kind: 'take', rect: WRECT, label: wtxt('medal'), gives: { item: 'medal' }, prop: 'medal', then: [] },
+              {
+                id: 'box',
+                kind: 'object',
+                rect: WRECT,
+                label: wtxt('box'),
+                lock: { slots: [{ accepts: 'medal' }], puzzle: 'gate', locked: wtxt('locked'), onOpen: [], onFail: [] },
+                then: [],
+                look: null,
+                prop: null,
+              },
+            ],
+          },
+          study: { bg: 'study', title: wtxt('Study'), onEnter: [{ story: 'study_event' }], hotspots: [exitTo('to_hall', 'hall')] },
+        },
+      },
+    },
+  });
+  if (!r.ok) {
+    throw new Error(`invariant: the fixture world decodes: ${JSON.stringify(r.error)}`);
+  }
+  return { ...toPublic(r.value), version: '1111111111111111' };
+}
+
+const WORLD_VARS = ['g_x', 'pz_drawer', 'pz_drawer_hints', 'pz_gate', 'pz_gate_hints', 'it_medal'];
+const WORLD_INK_VARS = ['VAR pz_drawer = 0', 'VAR pz_drawer_hints = 0', 'VAR pz_gate = 0', 'VAR pz_gate_hints = 0', 'VAR it_medal = false'];
+
+/** ch1 with the world: `start` hands over to the manor rooms, or (`puzzle`) to the drawer's linear puzzle first. */
+function worldCh1(first: 'explore' | 'puzzle'): LoadedChapter {
+  return chapter(
+    'ch1',
+    [
+      ...WORLD_INK_VARS,
+      '-> start',
+      '=== start ===',
+      '# scene: hall',
+      'Start. #id:ch1.start.l001',
+      ...(first === 'explore' ? ['# explore: manor', '-> DONE'] : ['-> cabinet']),
+      '=== cabinet ===',
+      'The drawer. #id:ch1.cabinet.l002',
+      '# puzzle: drawer then=after',
+      '-> DONE',
+      '=== after ===',
+      'After. #id:ch1.after.l003',
+      '-> END',
+      '=== study_event ===',
+      'Event. #id:ch1.study_event.l004',
+      '# explore: manor',
+      '-> DONE',
+    ],
+    {
+      start: { assets: ['bg/hall'], next: first === 'explore' ? [] : ['cabinet'] },
+      cabinet: { next: [] },
+      after: { ending: true },
+      study_event: {},
+    },
+    { assets: ['bg/study', 'prop/medal', 'cg/drawer_close'], vars: WORLD_VARS, world: gameWorld() },
+  );
+}
+
+/** The real controller behind a counting factory, and a stand-in layer and host (the unit never renders them). */
+function worldChunks(): { chunks: LazyChunks; created: () => number } {
+  let created = 0;
+  const layer = (() => ({})) as unknown as ExploreChunk['layer'];
+  const host = (() => ({})) as unknown as Component<PuzzleHostProps>;
+  const ui = (() => ({})) as unknown as Component<PuzzleUiProps>;
+  return {
+    chunks: {
+      explore: async () => ({
+        ok: true,
+        value: {
+          create: (d) => {
+            created += 1;
+            return createExploreController(d);
+          },
+          layer,
+        },
+      }),
+      puzzleHost: async () => ({ ok: true, value: host }),
+      puzzleUi: async () => ({ ok: true, value: ui }),
+    },
+    created: () => created,
+  };
+}
+
+/** A fake ResizeObserver whose disconnects are counted (the controller observes the stage host). */
+function stubObserver(): { disconnected: () => number } {
+  let disconnected = 0;
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe(): void {}
+      disconnect(): void {
+        disconnected += 1;
+      }
+    },
+  );
+  return { disconnected: () => disconnected };
+}
+
+type HeldAttempt = {
+  attempt: () => Promise<Result<AttemptResponse, ApiError>>;
+  answer: (r: Result<AttemptResponse, ApiError>) => void;
+  sent: () => number;
+};
+
+/** Attempts the test answers by hand, the oldest first. */
+function heldAttempt(): HeldAttempt {
+  const waiting: Array<(r: Result<AttemptResponse, ApiError>) => void> = [];
+  let sent = 0;
+  return {
+    attempt: () => {
+      sent += 1;
+      return new Promise((resolve) => {
+        waiting.push(resolve);
+      });
+    },
+    answer: (r) => waiting.shift()?.(r),
+    sent: () => sent,
+  };
+}
+
+const WRONG: Result<AttemptResponse, ApiError> = { ok: true, value: { correct: false, solved: false } };
+const hk = (k: string): HotspotKey => k as HotspotKey;
+
+test('game_holds_one_explore_controller', async () => {
+  const observer = stubObserver();
+  const w = worldChunks();
+  const h = harness({ chapters: [worldCh1('explore')], chunks: w.chunks });
+  await startManor(h);
+  await h.game.advance(); // the explore yield
+  await settle();
+  expect([w.created(), h.explore.layer !== null]).toEqual([1, true]);
+  // The study's onEnter event and its return run on the same controller.
+  h.game.exploreActions.ontap(hk('hall.to_study'));
+  await settle();
+  expect(lineOf(h.vm)).toBe('ch1.study_event.l004');
+  await h.game.advance(); // the event's explore yield: back to the study
+  await settle();
+  expect(w.created()).toBe(1);
+  // A load of the autosave at that yield re-enters the rooms with the same controller.
+  await h.game.load('auto');
+  await settle();
+  expect([w.created(), h.explore.layer !== null]).toEqual([1, true]);
+  h.game.dispose();
+  expect(observer.disconnected()).toBe(1);
+  vi.unstubAllGlobals();
+});
+
+test('game_holds_at_most_one_puzzle_session', async () => {
+  const held = heldAttempt();
+  const w = worldChunks();
+  const h = harness({ chapters: [worldCh1('puzzle')], chunks: w.chunks, attempt: held.attempt });
+  await startManor(h);
+  await h.game.advance(); // l002, the cabinet
+  await h.game.advance(); // the puzzle yield
+  await settle();
+  const first = h.puzzle.frame?.id;
+  expect(h.puzzle.frame?.mode).toBe('linear');
+  h.game.puzzleActions.ontry(); // an attempt in flight
+  expect(held.sent()).toBe(1);
+  // A reload of the autosave at the yield reopens the puzzle: one session, the first one disposed.
+  await h.game.load('auto');
+  await settle();
+  expect(h.puzzle.frame?.id).not.toBe(first);
+  held.answer(WRONG); // the first session's late answer counts nothing
+  await settle();
+  h.game.pagehide();
+  const last = h.save().autosaves.at(-1);
+  const body = last === undefined ? null : decodeSave(last.body);
+  expect(body?.ok && body.value.world.puzzles).toEqual({});
+  expect(h.puzzle.frame?.line).toBe('idle');
+  h.game.dispose();
+  expect(h.puzzle.frame).toBeNull();
+});
+
+test('game: exit to stories disposes explore, puzzle and purchase sessions', async () => {
+  const observer = stubObserver();
+  const held = heldAttempt();
+  const w = worldChunks();
+  const h = harness({ chapters: [worldCh1('explore')], chunks: w.chunks, attempt: held.attempt });
+  await startManor(h);
+  await h.game.advance(); // the rooms
+  await settle();
+  // The medal into the box's slot opens the gate puzzle (an exploration overlay), and a Try goes out.
+  h.game.exploreActions.ontap(hk('hall.medal'));
+  await settle();
+  h.game.exploreActions.oninsert(hk('hall.box'), 'medal' as ItemId);
+  await settle();
+  expect([h.puzzle.frame?.mode, h.vm.screens.overlays.map((o) => o.kind)]).toEqual(['explore', ['puzzle']]);
+  h.game.puzzleActions.ontry();
+  expect(held.sent()).toBe(1);
+  expect([...h.scene.holders.keys()].some((k) => k.startsWith('room:'))).toBe(true);
+  await h.game.exitToStories();
+  const autosaves = h.save().autosaves.length;
+  held.answer(WRONG); // the attempt's late answer dispatches nothing
+  await settle();
+  expect([...h.scene.holders.keys()].filter((k) => k.startsWith('room:'))).toEqual([]);
+  expect([observer.disconnected(), h.puzzle.frame, h.explore.layer, h.save().autosaves.length]).toEqual([1, null, null, autosaves]);
+  h.game.dispose();
+  vi.unstubAllGlobals();
+  // The chapter purchase: a flow confirming at the exit polls no more.
+  const p = harness({ chapters: [manorCh1(), manorCh2()], invoice: ['pending'] });
+  await playManorCh1(p);
+  await p.game.advance(); // END: the paywall
+  p.game.buy();
+  await settle();
+  expect(p.vm.paywall?.state.kind).toBe('confirming');
+  await p.game.exitToStories();
+  const polls = p.purchases.length;
+  p.clock.advance(60_000);
+  await settle();
+  expect(p.purchases.length).toBe(polls);
+  p.game.dispose();
 });

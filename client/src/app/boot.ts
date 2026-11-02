@@ -128,7 +128,14 @@ type EngineModule = typeof import('./engine.ts');
 export function startApp(tg: TelegramClient): AppHandle {
   const vm = createViewModel({ timers: systemClock, lang: 'ru' });
   // K12: a stack made with another root would not seed the view itself.
-  const screens: Screens = createScreens({ back: tg.backButton, onView: (v) => (vm.screens = v) });
+  let game: Game | null = null;
+  const screens: Screens = createScreens({
+    back: tg.backButton,
+    onView: (v) => {
+      vm.screens = v;
+      game?.screensChanged(v); // the explore panels and an exploration puzzle follow the stack
+    },
+  });
   vm.screens = screens.view();
   vm.reducedMotion = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
   const http = createHttp({ initData: tg.initData, clock: systemClock });
@@ -137,7 +144,6 @@ export function startApp(tg: TelegramClient): AppHandle {
   const subscriptions: Unsubscribe[] = [];
   let reporter: StatsReporter | null = null;
   let data: BootData | null = null;
-  let game: Game | null = null;
   let engine: Promise<Game | null> | null = null;
   /** The boot list, handed to the first session that asks; later sessions list again. */
   let freshList: SaveListResponse | null = null;
