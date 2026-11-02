@@ -1632,3 +1632,71 @@ test('game: an autosave while a step loads resumes exactly', async () => {
   // The knot entry's autosave, then the lifecycle's: written once the step was on screen, not dropped.
   expect(written.map((w) => w.lineId)).toEqual(['ch1.garden.l005', 'ch1.garden.l005']);
 });
+
+test('game: load it sends no autosave between the choice and the load', async () => {
+  const h = harness();
+  await startManor(h);
+  await h.game.advance(); // l002
+  await h.game.advance(); // the choice set
+  await h.game.choose(0); // l003
+  const sv = h.save();
+  const theirs = sv.autosaves[0]; // the other device's save: the start knot's entry, at l001
+  expect(theirs).toBeDefined();
+  if (theirs === undefined) {
+    return;
+  }
+  const log: string[] = [];
+  const autosave = sv.autosave;
+  sv.autosave = (w, o) => {
+    log.push(`autosave:${w.lineId}`);
+    autosave(w, o);
+  };
+  const resolveConflict = sv.resolveConflict;
+  sv.resolveConflict = (c) => {
+    log.push(`resolve:${c}`);
+    resolveConflict(c);
+  };
+  let held: Promise<void> | null = null;
+  const load = sv.load;
+  sv.load = async (slot) => {
+    log.push(`load:${slot}`);
+    await held;
+    return load(slot);
+  };
+  const loadIt = (): void => {
+    const p = h.vm.toasts.find((e) => e.key === 'save_conflict');
+    if (p?.kind === 'prompt') {
+      p.actions[0]?.run();
+    }
+  };
+  // 1. "Load it" while a step waits on its art: that step's knot-entry autosave must not land over their save.
+  sv.slots.set('auto', { summary: THEIRS, body: theirs.body });
+  const release = holdEnsure(h.scene);
+  sv.emit({ kind: 'paused', current: THEIRS });
+  const step = h.game.advance(); // l005, garden's entry: waits on bg/garden
+  await settle();
+  loadIt();
+  release();
+  await step;
+  await settle();
+  expect(log).toEqual(['resolve:load-theirs', 'load:auto']);
+  expect(lineOf(h.vm)).toBe('ch1.arrival.l001');
+  // 2. The app is left while their save is being read: its autosave is written after the resume, of their save.
+  await h.game.advance(); // l002
+  log.length = 0;
+  sv.slots.set('auto', { summary: THEIRS, body: theirs.body });
+  let answer = (): void => {};
+  held = new Promise((resolve) => {
+    answer = resolve;
+  });
+  sv.emit({ kind: 'paused', current: THEIRS });
+  loadIt();
+  await settle();
+  h.game.onLifecycle('deactivated');
+  answer();
+  await settle();
+  await settle();
+  expect(log).toEqual(['resolve:load-theirs', 'load:auto', 'autosave:ch1.arrival.l001']);
+  expect(lineOf(h.vm)).toBe('ch1.arrival.l001');
+  h.game.dispose();
+});

@@ -289,6 +289,11 @@ type Session = {
   shown: Extract<RunnerStep, { kind: 'line' }> | null;
   /** The body of the last autosave: "Return to last save" resumes it. */
   last: SaveBodyV1 | null;
+  /**
+   * W1 "Load it": the player chose the other device's autosave. The service's lane is open over their rev from that
+   * tap on, so nothing of this session is written until a body loaded from the server has resumed (principle 1).
+   */
+  adopting: boolean;
   /** The manual slot whose 409 asked "Overwrite?", with the server's envelope. */
   conflict: { slot: ManualSlot; current: SaveSummary } | null;
   /** The knots of the current chapter whose `preload:<knot>` holder this session requested (F2 steps 3-4). */
@@ -509,7 +514,7 @@ export function createGame(deps: GameDeps): Game {
 
   /** F3 / D9: the autosave of the current state; the read-sets flush at the same points. */
   const autosave = (s: Session, o?: { keepalive?: boolean }): void => {
-    const body = bodyOf(s);
+    const body = s.adopting ? null : bodyOf(s);
     if (body === null) {
       return;
     }
@@ -1021,8 +1026,7 @@ export function createGame(deps: GameDeps): Game {
     s.pending = body;
     s.last = body;
     if (write) {
-      s.saves.autosave(writeOf(body));
-      void settings.flush(); // never rejects
+      autosave(s); // the pending body, through the one guarded write
     }
     openPaywall(body.chapterId, null);
   };
@@ -1126,10 +1130,14 @@ export function createGame(deps: GameDeps): Game {
       }
       answered = true;
       vm.dismissToast(CONFLICT_PROMPT);
-      s.saves.resolveConflict(choice);
-      if (choice === 'load-theirs') {
-        void after(() => loadSlot(s, 'auto')); // the other device's progress; the outcome is on screen
+      if (choice === 'keep-here') {
+        s.saves.resolveConflict(choice);
+        return;
       }
+      // Before the resolve opens the lane: the step in flight, a lifecycle event or a timer may autosave next.
+      s.adopting = true;
+      s.saves.resolveConflict(choice);
+      void after(() => loadSlot(s, 'auto')); // the other device's progress; the outcome is on screen
     };
     vm.showToast({
       kind: 'prompt',
@@ -1234,6 +1242,7 @@ export function createGame(deps: GameDeps): Game {
       step: null,
       shown: null,
       last: null,
+      adopting: false,
       conflict: null,
       held: new Set(),
       nextTag: null,
@@ -1394,7 +1403,12 @@ export function createGame(deps: GameDeps): Game {
     }
     clearAuto();
     clearSkip();
-    await resumeBody(s, body.value);
+    const resumed = await resumeBody(s, body.value);
+    if (resumed.ok && session === s && s.adopting) {
+      // Their save took over. Nothing of this session was written since the choice: the server's copy is this body.
+      s.adopting = false;
+      s.last = body.value;
+    }
   };
 
   // -------------------------------------------------------------------------------------------------------------
