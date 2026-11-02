@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import type { AssetCatalog, AssetEntry, ImageEntry } from '../src/story/catalog.ts';
 import type { AssetId, ChapterId, TrackId } from '../src/story/staging.ts';
 import { decodeAssetCatalog, decodeAssetManifest, decodeChapterMeta, decodeCoverManifest, urlPath } from './assets/manifest.ts';
-import { ENGINE_SRC, LIMITS, evaluate, evaluateAssets, formatRows, readAssetInputs } from './budget.ts';
+import { ENGINE_SRC, LIMITS, evaluate, evaluateAssets, formatRows, readAssetInputs, readInputs } from './budget.ts';
 import type { AssetInputs, BudgetInputs, ChapterInputs, DistFile, ManifestChunk, Row } from './budget.ts';
 import { decodeChapterList, decodeStoryUsage } from './story/emit.ts';
 
@@ -57,6 +57,7 @@ function inputs(over: Partial<BudgetInputs> = {}): BudgetInputs {
     engineSourceExists: false,
     yieldsSourceExists: false,
     lazySources: new Set(),
+    facades: new Set(),
     ...over,
   };
 }
@@ -309,6 +310,42 @@ describe('budget evaluate', () => {
     expect(entryRow.note).toContain(`${CODE_LOCK} is in the entry static closure`);
   });
 
+  test('budget: a lazy root behind a facade in the engine closure fails', () => {
+    // RULINGS 92: a static import of a lazy root moves its code into a closure chunk, and Rolldown keeps the root's
+    // dynamic entry as a re-export facade over it (the L15 probe: 0.1 KB, a false PASS).
+    const facade = 'assets/PuzzleHost-f.js';
+    const split = '_PuzzleHost-s.js';
+    const base = withLazy(withEngine(inputs(), 50_000, 100_000), { [HOST]: { js: 100 } });
+    const manifest = { ...base.manifest };
+    const engine = manifest[ENGINE_SRC];
+    const entry = manifest['index.html'];
+    if (engine === undefined || entry === undefined) {
+      throw new Error('invariant: withEngine adds the engine chunk to the base entry');
+    }
+    manifest[HOST] = { file: facade, src: HOST, isDynamicEntry: true, imports: [split] };
+    manifest[split] = { file: 'assets/PuzzleHost-s.js' };
+    const files = [...base.files.filter((f) => f.path !== 'assets/PuzzleHost-z.js'), file(facade, 100), file('assets/PuzzleHost-s.js', 2_500)];
+    const facades = new Set([facade]);
+    const host = (over: Partial<BudgetInputs>): Row => rowOf(evaluate({ ...base, manifest, files, facades, ...over }, LIMITS), 'puzzle-host chunk (br)');
+    // The engine imports the chunk that holds the root's code: it loads before the first line.
+    const inEngine = { ...manifest, [ENGINE_SRC]: { ...engine, imports: [...(engine.imports ?? []), split] } };
+    const row = host({ manifest: inEngine });
+    expect(row.status).toBe('FAIL');
+    expect(row.note).toBe(
+      `${HOST}: its dynamic entry ${facade} only re-exports assets/PuzzleHost-s.js, which the engine closure loads before the first line (a static import of the root?)`,
+    );
+    // The same through the entry's static closure.
+    const inEntry = { ...manifest, 'index.html': { ...entry, imports: [...(entry.imports ?? []), split] } };
+    expect(host({ manifest: inEntry })).toMatchObject({
+      status: 'FAIL',
+      note: `${HOST}: its dynamic entry ${facade} only re-exports assets/PuzzleHost-s.js, which the entry static closure loads before the first line (a static import of the root?)`,
+    });
+    // Control: a facade over a chunk outside both closures (two lazy roots sharing code) is measured as today.
+    expect(host({})).toMatchObject({ status: 'PASS', valueBytes: 2_600 });
+    // Control: a root chunk with code of its own that imports an engine chunk keeps today's meaning.
+    expect(host({ manifest: inEngine, facades: new Set() })).toMatchObject({ status: 'PASS', valueBytes: 100 });
+  });
+
   test('budget: lazy row pending until its importer exists', () => {
     // Every lazy source present, no app/yields.ts, no dynamic entries (nothing imports them yet: W7).
     const rows = evaluate(inputs({ lazySources: ALL_LAZY }), LIMITS);
@@ -505,6 +542,21 @@ describe('budget cli', () => {
     expect(r.stdout).toContain('explore-ui chunk (br) | — | 16.0 KB | PENDING | src/app/yields.ts absent');
     expect(r.stdout).toMatch(/^budget: \d+ rows, \d+ PASS, 0 FAIL, \d+ PENDING$/m);
   }, CLI_TIMEOUT_MS);
+
+  test('budget: the reader marks re-export-only chunks as facades', () => {
+    // The PuzzleHost dynamic entry of the C1 probe build (fbcfd38, PuzzleHost.svelte also imported statically).
+    const probe = 'export{n as default}from"./engine-CvlDvfLE.js";';
+    const dist = join(tmp, 'dist');
+    writeDist(dist, 'export const main = 1;\n');
+    const put = (name: string, text: string): void => writeFileSync(join(dist, 'assets', name), text);
+    put('facade-f.js', probe);
+    put('facade-c.js', `/* a banner */\n${probe}\n`);
+    put('facade-i.js', 'import{t as e}from"./shared-s.js";\nexport{e as default};\n');
+    put('real-r.js', 'import{t as e}from"./shared-s.js";function o(n){return e(n)+1}export{o as run};\n');
+    put('empty-e.js', '');
+    const { inputs: read } = readInputs(dist, tmp);
+    expect(read.facades).toEqual(new Set(['assets/facade-c.js', 'assets/facade-f.js', 'assets/facade-i.js']));
+  });
 
   test('budget: cli runs through a linked path', () => {
     // Node runs the main module from its realpath while argv[1] keeps the caller's spelling (a junction, macOS's
