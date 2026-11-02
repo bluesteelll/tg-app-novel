@@ -874,6 +874,10 @@ unchanged.**
   - Changed by RULINGS 78 (as of `22ed4d5`; docs lane `docs-errata-3`, group B): of the ten lanes, LM1, LU1, LE1
     (`29c310b`), LF1 (`946e2b5`) and LM2 (`5a33183`) have merged and LF2 runs; LE2, LPO, LMD and LMI are to go. The
     server chain has run to LM2, so it continues LF2 → LE2 → LPO → L9.
+  - Changed by RULINGS 80-88 (as of `48abfaf`; docs lane `docs-errata-4`, group B): of the ten lanes, LM1, LU1, LE1,
+    LF1, LM2, LF2 (`d0c7870`), LE2 (`ec3b29f`) and LMD (`48abfaf`) have merged and LPO runs; LMI is to go. The server
+    chain has run to LE2, so it continues LPO → L9. LMI's gate "L15" is met when L15b merges: RULINGS 80 split L15
+    into L15a (merged `e94c786`) and L15b (running); MEMORY-PLAN adds M1 to the gate.
   - Why LPO is a lane of its own (revision 1, W4): the operator facts need a `Config` variable, which means editing
     the three `Config` constructors (`config.rs`, `server/dev/src/lib.rs`, `server/tests/it/common.rs`) plus
     `lib.rs` and `.env.example`; in LF1 that is 15 + 4 = 19 files, over the cap. LPO holds them with `api/legal.rs` and
@@ -1905,6 +1909,9 @@ L10 (client, ahead of LS4 and LMD); to go: server LF1 → LM2 → LF2 → LE2 �
 Changed by RULINGS 78 (as of `22ed4d5`): merged LS2 … LS3, LE1 `29c310b`, LF1 `946e2b5`, LM2 `5a33183`, LM1 `4d8a9ec`,
 LU1 `2a7b50c`; running LF2 (server) and L15 (client, ahead of LMI); to go: server LE2 → LPO → L9, client LMD, then
 LMI (its gate gains MEMORY-PLAN's M1).
+Changed by RULINGS 80-88 (as of `48abfaf`): merged also LF2 `d0c7870`, LE2 `ec3b29f` and LMD `48abfaf`; running LPO
+(server) and L15b (client, the second half of L15 after RULINGS 80's split, ahead of LMI); to go: server L9, client
+LMI (after L15b and M1).
 
 ---
 
@@ -2082,3 +2089,4 @@ lists (default: the narrative-designer drafts the demo ones above), Q21 jurisdic
 | 6 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `ba5fc68` (the docs-errata-3 spec, group A), as merged on main `22ed4d5` | Docs lane `docs-errata-3`, group A (not a triage round): LE1 (`29c310b`) — the named-constraint credit, the clawback upsert, `balances -> Vec<Balance>`; L10 (`34b7f13`) — `chapterDelivered` / `packDelivered`; LU1 (`2a7b50c`) — the controller owns a gift's `requestId`; L14b (`3364f73`) — lower-case callbacks; LP2 (`88d0964`) — `HintPort` / `HintPortError` in `puzzles/session.ts`, `createPuzzleSession` -> `Result`, `useHint` -> the ladder; LF1 (`946e2b5`) — the self-invite guard, `referrals_outcome_known`'s `outcome IS NOT NULL`, `invite_state`'s `pending_cap` and the rotation constants, the capped-requester residual; LM2 (`5a33183`) — met and visible unlocks, the card bound (36 KiB), the meta stories equal the index stories, the card headers, hash collections and `Repo::entitlements`. Ledger: `D:/tmp/novel-orch/docs-errata-3/ledger.md` |
 | 7 | 2026-11-02 | RULINGS 78 (as merged on main `22ed4d5`) | Docs lane `docs-errata-3`, group B (not a triage round): M28 and "Implementation plan" Order as of `22ed4d5` (LM1, LU1, LE1, LF1, LM2 merged; LF2 running; LE2, LPO, LMD, LMI to go). Ledger: `D:/tmp/novel-orch/docs-errata-3/ledger.md` |
 | 8 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `e6eca0d` (the docs-errata-4 spec, group A; RULINGS 79-88), as merged on main `48abfaf` | Docs lane `docs-errata-4`, group A (not a triage round): LF2 (`d0c7870`) — the profile's 8 statements, its stories with a counted ending or unlock, no `first_name`, no `?lang`, the gateway's `PreparedShare` by value and the `u64` expiry; LM2 (`5a33183`) — `gate` / `visible` over the `StoryDef`, `EndingMeta`, `StoryMeta.puzzles`; LE2 (`ec3b29f`) — `transfer(&GiftMove, …)`, `qualify_referral(first_chapters, …)` in `db/social.rs`, the window constants, the caps in units (and MV6), `maxPerGift` in `WalletResponse`, `Retry-After` as the earliest time, the balance-row lock order, the 404 on a retry after an unfriend; LMD (`48abfaf`) — the services' `Pick<MetaEndpoints, …>` and options, `setVisible`'s text version, `MetaError` / `metaError` / `FriendHandle` in `api/endpoints.ts` with the error table, `WalletView.maxPerGift`. Ledger: `D:/tmp/novel-orch/docs-errata-4/ledger.md` |
+| 9 | 2026-11-02 | RULINGS 80-88 (as merged on main `48abfaf`) | Docs lane `docs-errata-4`, group B (not a triage round): M28 and "Implementation plan" Order as of `48abfaf` (LM1, LU1, LE1, LF1, LM2, LF2, LE2, LMD merged; LPO running; LMI to go, after L15b and M1). Ledger: `D:/tmp/novel-orch/docs-errata-4/ledger.md` |
