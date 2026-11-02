@@ -16,6 +16,7 @@ mod content;
 mod dto_samples;
 mod economy;
 mod gifts;
+mod legal;
 mod payments;
 mod puzzles;
 mod referrals;
@@ -283,6 +284,7 @@ fn serve_log_names_database_target_not_password() {
             ("DATABASE_URL", url.as_str()),
             ("TELEGRAM_ENV", "test"),
             ("LISTEN_ADDR", "127.0.0.1:0"),
+            ("PRIVACY_OPERATOR_FILE", ""),
             // The production default filter, as plain text: ANSI escapes would split `field=value`.
             ("RUST_LOG", "info"),
             ("NO_COLOR", "1"),

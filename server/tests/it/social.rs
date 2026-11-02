@@ -1875,6 +1875,12 @@ fn file_policy_version() -> &'static str {
         .map_or("<no policy-version meta>", |(version, _)| version)
 }
 
+/// What `GET /api/privacy` serves without a host file (every test state): the file with `{POLICY_VERSION}` filled from
+/// its meta (LPO), every other placeholder visible.
+fn served_draft() -> String {
+    POLICY_FILE.replace("{POLICY_VERSION}", file_policy_version())
+}
+
 /// `^[0-9]{4}-[0-9]{2}-[0-9]{2}[a-z]?$`, the `consents_policy_version_shape` CHECK.
 fn version_shaped(v: &str) -> bool {
     let chars: Vec<char> = v.chars().collect();
@@ -1889,9 +1895,9 @@ fn version_shaped(v: &str) -> bool {
     date && (chars.len() == 10 || (chars.len() == 11 && chars[10].is_ascii_lowercase()))
 }
 
-/// `GET /api/privacy` (M26): the compiled template byte for byte, as `text/html; charset=utf-8`, publicly cacheable
-/// for five minutes (never the router's `no-store`), under the CSP; its version meta has the consent row's shape and
-/// is what `policy_version()` reports.
+/// `GET /api/privacy` (M26): the compiled template with `{POLICY_VERSION}` filled from its meta (LPO; a test state has
+/// no host file), as `text/html; charset=utf-8`, publicly cacheable for five minutes (never the router's `no-store`),
+/// under the CSP; its version meta has the consent row's shape and is what `policy_version()` reports.
 #[tokio::test]
 async fn privacy_page_served_with_version() {
     let (st, _db) = social_state(&[]).await;
@@ -1919,10 +1925,11 @@ async fn privacy_page_served_with_version() {
             failures.push(format!("{name}: expected {want:?}, got {got:?}"));
         }
     }
-    if reply.body.as_ref() != POLICY_FILE.as_bytes() {
+    let draft = served_draft();
+    if reply.body.as_ref() != draft.as_bytes() {
         failures.push(format!(
-            "body: expected the policy file's {} bytes, got {} bytes",
-            POLICY_FILE.len(),
+            "body: expected the draft policy's {} bytes (the file with {{POLICY_VERSION}} filled), got {} bytes",
+            draft.len(),
             reply.body.len()
         ));
     }
@@ -1955,10 +1962,11 @@ async fn privacy_page_needs_no_token() {
             .unwrap(),
     )
     .await;
+    let draft = served_draft();
     for (case, reply) in [("no Authorization", without), ("a garbage token", garbage)] {
-        if reply.status != StatusCode::OK || reply.body.as_ref() != POLICY_FILE.as_bytes() {
+        if reply.status != StatusCode::OK || reply.body.as_ref() != draft.as_bytes() {
             failures.push(format!(
-                "{case}: expected 200 with the policy, got {} ({} bytes)",
+                "{case}: expected 200 with the draft policy, got {} ({} bytes)",
                 reply.status.as_u16(),
                 reply.body.len()
             ));

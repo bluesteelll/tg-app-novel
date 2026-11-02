@@ -22,6 +22,7 @@ use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::routing::post;
 
+use crate::api::legal::{Policy, PolicyError};
 use crate::api::share::{RateWindow, SHARE_WINDOW_SECS, SHARES_PER_HOUR};
 use crate::auth::Keys;
 use crate::catalog::{CATALOG_JSON, Catalog};
@@ -49,6 +50,8 @@ pub struct AppState {
     pub content: Arc<ContentStore>,
     /// The products for sale: every paid chapter of `content`'s index, priced by `server/catalog.json`.
     pub catalog: Arc<Catalog>,
+    /// The privacy page, substituted once at startup from the compiled template and `cfg.privacy_operator_file`.
+    pub policy: Arc<Policy>,
     /// The Bot API: frankenstein's client on `cfg`'s token and environment, or a fake set by
     /// [`AppState::with_gateway`] (tests, the dev app).
     pub gateway: Arc<dyn BotGateway>,
@@ -58,14 +61,17 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Loads the content from `CONTENT_DIR`, builds the catalog from it and the compiled-in `server/catalog.json`, and
-    /// the Bot API gateway from the config ([`FrankensteinGateway::from_config`]: `BOT_TOKEN` on the base of
-    /// `TELEGRAM_ENV`), then connects the database pool to `DATABASE_URL` and applies the migrations. Content, catalog
-    /// and gateway come first: a refusal ([`StartupError::Content`], [`StartupError::Gateway`]) opens no pool.
-    /// Creates no database: a missing or unreachable one is a [`StartupError::Db`].
+    /// Loads the content from `CONTENT_DIR`, builds the catalog from it and the compiled-in `server/catalog.json`, the
+    /// privacy page from the compiled template and `PRIVACY_OPERATOR_FILE` ([`Policy::load`]), and the Bot API gateway
+    /// from the config ([`FrankensteinGateway::from_config`]: `BOT_TOKEN` on the base of `TELEGRAM_ENV`), then
+    /// connects the database pool to `DATABASE_URL` and applies the migrations. Content, catalog, privacy policy and
+    /// gateway come first: a refusal ([`StartupError::Content`], [`StartupError::Privacy`],
+    /// [`StartupError::Gateway`]) opens no pool. Creates no database: a missing or unreachable one is a
+    /// [`StartupError::Db`].
     pub async fn new(cfg: Config) -> Result<AppState, StartupError> {
         let content = ContentStore::load(&cfg.content_dir).await?;
         let catalog = Catalog::build(CATALOG_JSON, &content)?;
+        let policy = Policy::load(cfg.privacy_operator_file.as_deref(), cfg.telegram_env).await?;
         let gateway = FrankensteinGateway::from_config(&cfg)?;
         let repo = Repo::open(&cfg.database_url).await?;
         if let Err(e) = repo.migrate().await {
@@ -80,6 +86,7 @@ impl AppState {
             clock: Arc::new(SystemClock),
             content: Arc::new(content),
             catalog: Arc::new(catalog),
+            policy: Arc::new(policy),
             gateway: Arc::new(gateway),
             share_limit: Arc::new(RateWindow::new(SHARES_PER_HOUR, SHARE_WINDOW_SECS)),
         })
@@ -116,6 +123,9 @@ pub enum StartupError {
     /// The Bot API client could not be built.
     #[error("bot api client: {0}")]
     Gateway(#[from] GatewayError),
+    /// The host file named by `PRIVACY_OPERATOR_FILE` is unreadable or invalid, or under prod a placeholder is left.
+    #[error("privacy policy: {0}")]
+    Privacy(#[from] PolicyError),
 }
 
 /// The production routes: `/api`, and Telegram's webhook with its own 1 MB body limit (outside `/api`, so none of
