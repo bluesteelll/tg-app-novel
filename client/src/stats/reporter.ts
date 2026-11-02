@@ -37,6 +37,10 @@ export const STATS_BATCH_MAX = 32;
  * and with the save PUT's `KEEPALIVE_BODY_MAX` it fills the 64 KiB keepalive quota of the two `pagehide` requests.
  */
 export const STATS_BODY_MAX = 16_384;
+/** STORIES-PLAN Y13: the queue's bound; a record past it evicts the oldest choice first (revision 1, W2). */
+export const STATS_QUEUE_MAX = 64;
+/** The server's oldest accepted event (`STATS_AGE_MS_MAX`, 30 days): an older one would fail its whole batch. */
+export const STATS_AGE_MS_MAX = 2_592_000_000;
 /** D2: the wait from the first unsent record; later records do not push it back. */
 export const FLUSH_DELAY_MS = 5_000;
 /** The waits after the 1st, 2nd, … failure in a row; the last one repeats. */
@@ -140,6 +144,17 @@ function buildBatch(queue: readonly Queued[], now: number): { batch: StatEventDt
   return { batch, leftover: false, oversized };
 }
 
+/** D8: the events a queue past `STATS_QUEUE_MAX` gives up, oldest choice first, else the oldest event. */
+function overCap(queue: readonly Queued[]): Queued[] {
+  const out: Queued[] = [];
+  const kept = [...queue];
+  while (kept.length > STATS_QUEUE_MAX) {
+    const i = kept.findIndex(isChoice);
+    out.push(...kept.splice(i === -1 ? 0 : i, 1));
+  }
+  return out;
+}
+
 /** For the log only; a value whose own conversion throws is described as such, never rethrown. */
 function describe(e: unknown): string {
   try {
@@ -199,6 +214,16 @@ export function createStatsReporter(deps: {
     const ids = new Set(sent.map((e) => e.eventId));
     queue = queue.filter((q) => !ids.has(q.eventId));
   };
+  /** Events that can never be sent, or must give way: dropped from the queue with a log line each. */
+  const discard = (gone: readonly Queued[], why: string): void => {
+    if (gone.length === 0) {
+      return;
+    }
+    for (const q of gone) {
+      log(`stats: ${q.eventId} dropped, ${why}`);
+    }
+    queue = queue.filter((q) => !gone.includes(q));
+  };
 
   /** D4's explicit trigger: an ending, `flush`. */
   function trigger(keepalive: boolean): void {
@@ -219,13 +244,11 @@ export function createStatsReporter(deps: {
   function send(keepalive: boolean): void {
     clearTimer();
     again = null;
-    const { batch, leftover, oversized } = buildBatch(queue, clock.now());
-    if (oversized.length > 0) {
-      for (const q of oversized) {
-        log(`stats: ${q.eventId} dropped, its body alone is over ${STATS_BODY_MAX} B`);
-      }
-      queue = queue.filter((q) => !oversized.includes(q));
-    }
+    const now = clock.now();
+    // Exactly 30 days old is still accepted; one older would fail its whole batch.
+    discard(queue.filter((q) => now - q.at > STATS_AGE_MS_MAX), 'older than 30 days');
+    const { batch, leftover, oversized } = buildBatch(queue, now);
+    discard(oversized, `its body alone is over ${STATS_BODY_MAX} B`);
     if (batch.length === 0) {
       return;
     }
@@ -315,6 +338,8 @@ export function createStatsReporter(deps: {
       return;
     }
     queue.push({ eventId, kind: e.kind, chapterId: e.chapterId, storyVersion: e.storyVersion, ...subjectOf(e), at: clock.now() });
+    // An evicted event of the batch in flight is simply not found at its answer.
+    discard(overCap(queue), 'the queue is full');
     if (e.kind === 'ending_reached') {
       trigger(false);
     } else if (timer === null && !flying && !halted) {

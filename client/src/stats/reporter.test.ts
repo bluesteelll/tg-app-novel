@@ -5,7 +5,7 @@ import type { ApiError, Clock } from '../api/http.ts';
 import type { EndingName, Result } from '../story/catalog.ts';
 import { KEEPALIVE_BODY_MAX } from '../saves/service.ts';
 import type { ChapterId, LineId, PuzzleLocalId, StoryVersion } from '../story/staging.ts';
-import { FLUSH_DELAY_MS, STATS_BODY_MAX, createStatsReporter } from './reporter.ts';
+import { FLUSH_DELAY_MS, STATS_AGE_MS_MAX, STATS_BODY_MAX, STATS_QUEUE_MAX, createStatsReporter } from './reporter.ts';
 import type { StatEvent, StatsReporter } from './reporter.ts';
 
 /**
@@ -571,5 +571,81 @@ test('reporter: keepalive flush stays within 16 KiB', async () => {
     expect(logs.some((l) => l.includes(uuid(2)))).toBe(true);
     await clock.advance(3_600_000);
     expect(server.calls).toHaveLength(1);
+  }
+});
+
+test('reporter: queue capped at 64 drops oldest', async () => {
+  const { clock, server, reporter } = setup();
+  for (let i = 1; i <= 65; i += 1) {
+    reporter.record(choice(`ch1.intro.c${i}`));
+  }
+  await clock.advance(FLUSH_DELAY_MS);
+  expect(server.calls.flatMap(idsOf)).toEqual(uuids(2, 65));
+  await clock.advance(3_600_000);
+  expect(server.calls.flatMap(idsOf)).toEqual(uuids(2, 65));
+
+  // With no choice queued, the oldest event goes.
+  const facts = setup();
+  for (let i = 0; i < STATS_QUEUE_MAX + 1; i += 1) {
+    facts.reporter.record(started());
+  }
+  await facts.clock.advance(FLUSH_DELAY_MS);
+  expect(facts.server.calls.flatMap(idsOf)).toEqual(uuids(2, 65));
+});
+
+test('reporter: queue full of choices keeps ending_reached', async () => {
+  const { clock, server, reporter } = setup(fail(NETWORK));
+  reporter.record(ending());
+  await clock.advance(0);
+  expect(idsOf(server.calls[0])).toEqual([uuid(1)]);
+  for (let i = 1; i <= 64; i += 1) {
+    reporter.record(choice(`ch1.intro.c${i}`));
+  }
+  server.script = okAll;
+  await clock.advance(FLUSH_DELAY_MS);
+  const sent = server.calls.slice(1).flatMap(idsOf);
+  // The 65th record evicted the oldest choice (c1), never the ending.
+  expect([...sent].sort()).toEqual([uuid(1), ...uuids(3, 65)]);
+  expect(sent[0]).toBe(uuid(1));
+});
+
+test('reporter: events older than 30 days are dropped', async () => {
+  // Exactly 30 days old is sent; 1 ms older is not (the server refuses the whole batch for it).
+  {
+    const { clock, server, reporter, logs } = setup();
+    reporter.record(started());
+    clock.jump(1);
+    reporter.record(completed());
+    clock.jump(STATS_AGE_MS_MAX);
+    await clock.advance(0);
+    expect(server.calls).toHaveLength(1);
+    expect(idsOf(server.calls[0])).toEqual([uuid(2)]);
+    expect(server.calls[0]?.events[0]?.ageMs).toBe(2_592_000_000);
+    expect(logs.some((l) => l.includes(uuid(1)))).toBe(true);
+    await clock.advance(3_600_000);
+    expect(server.calls).toHaveLength(1);
+  }
+
+  // Only too-old events: no request at all.
+  {
+    const { clock, server, reporter } = setup();
+    reporter.record(started());
+    reporter.record(completed());
+    clock.jump(STATS_AGE_MS_MAX + 1);
+    await clock.advance(0);
+    reporter.flush();
+    await clock.advance(3_600_000);
+    expect(server.calls).toHaveLength(0);
+    expect(clock.pending()).toBe(0);
+  }
+
+  // A clock set back dates the event after `now`: age 0, never a negative age.
+  {
+    const { server, reporter, clock } = setup();
+    clock.jump(1_000_000);
+    reporter.record(started());
+    clock.jump(-60_000);
+    reporter.flush();
+    expect(server.calls[0]?.events[0]?.ageMs).toBe(0);
   }
 });
