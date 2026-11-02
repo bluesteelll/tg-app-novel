@@ -4,6 +4,8 @@
 // and is tested in node over a fake loader; `scene/loader.ts` is the real `LoadImage`.
 import type { AssetFetchError, AssetRef, ImageEntry, Result } from '../story/catalog.ts';
 import type { AssetId } from '../story/staging.ts';
+import { textureGeometry } from './layout.ts';
+import type { TextureGeometry } from './layout.ts';
 
 /** Preload admission: live + in-flight decoded bytes stay ≤ 32 MiB (K5). */
 export const STEADY_CAP_BYTES = 33_554_432;
@@ -24,9 +26,17 @@ export type SceneError = { kind: 'mount'; detail: string } | { kind: 'assets'; e
 
 /** A loader failure; the loader sees a file reference, not an asset id, so the registry names the id. */
 export type LoadError = { kind: 'fetch'; error: AssetFetchError } | { kind: 'decode'; detail: string } | { kind: 'aborted' };
-/** A decoded image; `release()` frees the GPU texture and the CPU bitmap (`texture.destroy(true)` + `bitmap.close()`). */
+/**
+ * A decoded image; `release()` frees the GPU texture and the CPU bitmap (`texture.destroy(true)` + `bitmap.close()`).
+ * `w`, `h`: the bitmap's stored px, checked against the entry's.
+ */
 export type Decoded<T> = { texture: T; w: number; h: number; release(): void };
-export type LoadImage<T> = (ref: AssetRef, signal: AbortSignal) => Promise<Result<Decoded<T>, LoadError>>;
+/**
+ * `geometry` lays the file out as its canvas (MEMORY-PLAN §6). A trailing parameter, so a loader that ignores it
+ * still type-checks (the scene suites' fakes).
+ */
+export type LoadImage<T> = (ref: AssetRef, signal: AbortSignal, geometry: TextureGeometry) => Promise<Result<Decoded<T>, LoadError>>;
+/** `w`, `h`: the canvas (a trimmed file's full image), what charPlacement sizes on (RULINGS 35). */
 export type TextureHandle<T> = { readonly id: AssetId; readonly texture: T; readonly w: number; readonly h: number };
 export type Priority = 'visible' | 'preload';
 export type AcquireOptions = { entry: ImageEntry; priority: Priority; signal?: AbortSignal };
@@ -52,6 +62,8 @@ export interface AssetRegistry<T> {
 type Rec<T> = {
   readonly id: AssetId;
   readonly entry: ImageEntry;
+  /** The entry's texture geometry, computed once when the record starts. */
+  readonly geometry: TextureGeometry;
   readonly holders: Map<string, Priority>;
   readonly controller: AbortController;
   /** Settles once, when the record leaves `pending`. */
@@ -144,7 +156,7 @@ export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avi
     }
     rec.state = 'live';
     rec.decoded = d;
-    rec.handle = { id: rec.id, texture: d.texture, w: d.w, h: d.h };
+    rec.handle = { id: rec.id, texture: d.texture, w: rec.geometry.canvas.w, h: rec.geometry.canvas.h };
     rec.settle({ ok: true, value: rec.handle });
   };
 
@@ -156,6 +168,7 @@ export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avi
     const rec: Rec<T> = {
       id,
       entry,
+      geometry: textureGeometry(entry),
       holders: new Map([[holder, priority]]),
       controller: new AbortController(),
       outcome,
@@ -168,7 +181,7 @@ export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avi
     const ref = deps.variant === 'avif' ? entry.avif : entry.webp;
     let loading: Promise<Result<Decoded<T>, LoadError>>;
     try {
-      loading = deps.load(ref, rec.controller.signal);
+      loading = deps.load(ref, rec.controller.signal, rec.geometry);
     } catch (e) {
       loading = Promise.resolve(fail({ kind: 'decode', detail: String(e) }));
     }
