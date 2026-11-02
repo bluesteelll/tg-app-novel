@@ -557,6 +557,17 @@ test('controller: dispose releases room holders', () => {
   d.c.dispatch(tap('hall.to_study'));
   expect(late).toEqual([]);
   expect(d.log.slice(move)).toEqual(['effect room', 'release room:']);
+  // Dispose empties every view the controller writes, not only the hotspots: a held medal, a read letter and an open
+  // lock panel are all gone (the components read this store after the controller is gone).
+  const p = harness(manor());
+  p.c.enter(sec('manor'), at('study', 'manor'));
+  p.c.dispatch(tap('study.medal'));
+  p.c.dispatch(tap('study.letter'));
+  p.c.dispatch(tap('study.to_hall'));
+  p.c.dispatch(tap('hall.gate'));
+  expect([p.view.items.map((i) => i.id), p.view.docs.map((d) => d.id), p.view.lock?.key]).toEqual([['medal_sun'], ['letter'], 'hall.gate']);
+  p.c.dispose();
+  expect([p.view.items, p.view.docs, p.view.lock]).toEqual([[], [], null]);
 });
 
 test('controller: leave releases room holders', () => {
