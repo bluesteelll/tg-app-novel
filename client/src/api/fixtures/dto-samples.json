@@ -261,6 +261,11 @@
       "visible": false
     }
   ],
+  "GiftResponse": [
+    {
+      "balance": 1
+    }
+  ],
   "HintUseResponse": [
     {
       "balance": 2,
@@ -514,6 +519,7 @@
         }
       ],
       "hintTierCost": 1,
+      "maxPerGift": 3,
       "packs": [
         {
           "amount": 3,
@@ -546,6 +552,7 @@
         }
       ],
       "hintTierCost": 1,
+      "maxPerGift": 3,
       "packs": []
     }
   ]

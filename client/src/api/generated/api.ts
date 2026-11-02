@@ -555,7 +555,11 @@ packs: Array<PackDto>,
 /**
  * The hints one hint tier costs.
  */
-hintTierCost: number, };
+hintTierCost: number, 
+/**
+ * The most units one gift moves: the gift dialog's bound. The daily caps stay the server's.
+ */
+maxPerGift: number, };
 
 /**
  * `POST /api/puzzles/{puzzleId}/hints/{tier}?lang=ru|en` response: the balance after the use, and the tier's text.
@@ -826,3 +830,34 @@ visible: boolean,
  * The stories with a counted ending or unlock, in index order; empty when not `visible`.
  */
 stories: Array<FriendStoryDto>, };
+
+/**
+ * `POST /api/gifts` request (META-PLAN M22): units of a gift kind for a friend, named by handle. An unknown field (a
+ * client-sent `from`, a price) is a 400: the sender is the token's user, the bound the catalog's.
+ */
+export type GiftRequest = { 
+/**
+ * The friend's handle: 24 lower-case hex, as `SocialResponse.friends` lists it.
+ */
+to: string, 
+/**
+ * A gift kind of the catalog, e.g. `hint`.
+ */
+kind: string, 
+/**
+ * The units, 1 to `WalletResponse.maxPerGift`.
+ */
+amount: number, 
+/**
+ * A lower-case UUID v4 the client makes once per gift and resends on a retry: the gift moves once.
+ */
+requestId: string, };
+
+/**
+ * `POST /api/gifts` response: the sender's balance of the kind after the gift (on a replay, the current one).
+ */
+export type GiftResponse = { 
+/**
+ * The sender's balance of the gift's kind.
+ */
+balance: number, };

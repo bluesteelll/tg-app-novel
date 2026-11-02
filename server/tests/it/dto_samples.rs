@@ -12,8 +12,8 @@ use serde_json::{Map, Value};
 use server::api::dto::{
     AttemptResponse, AuthResponse, BalanceDto, CardAchievement, CardEnding, CardResponse,
     ChapterPayload, CreateInvoiceResponse, EntitlementsResponse, FriendDto, FriendProfile,
-    FriendRequestDto, FriendStoryDto, GameStatsDto, HintUseResponse, HintView, InviteView,
-    Localized, OrderResponse, PackDto, PostStatsResponse, ProductDto, PutSaveResponse,
+    FriendRequestDto, FriendStoryDto, GameStatsDto, GiftResponse, HintUseResponse, HintView,
+    InviteView, Localized, OrderResponse, PackDto, PostStatsResponse, ProductDto, PutSaveResponse,
     PuzzleStatus, RejectedEvent, SaveFull, SaveListResponse, SaveSummary, ShareResponse,
     SharedAchievement, SharedEnding, SocialResponse, StatRejectReason, StatsResponse,
     StoryStatsDto, UserDto, WalletResponse, ts_bindings,
@@ -28,7 +28,7 @@ use ts_rs::TS;
 const REGENERATE: &str = "regenerate: cargo test -p server --test it dto_samples::write_dto_samples -- --ignored --exact";
 
 /// The exported request bodies and the types only they carry: the client only sends them, so it decodes none.
-const REQUESTS: [&str; 10] = [
+const REQUESTS: [&str; 11] = [
     "AuthRequest",
     "PutSaveRequest",
     "AttemptRequest",
@@ -39,6 +39,7 @@ const REQUESTS: [&str; 10] = [
     "StatOutcome",
     "ConsentRequest",
     "ShareRequest",
+    "GiftRequest",
 ];
 
 /// The exported types that only appear inside a sampled body, and are sampled there.
@@ -430,11 +431,13 @@ fn samples() -> Value {
                     pack("hint_m", 10, 3, "10 подсказок", "10 hints"),
                 ],
                 hint_tier_cost: 1,
+                max_per_gift: 3,
             }),
             value(&WalletResponse {
                 balances: vec![hint(0, 0)],
                 packs: Vec::new(),
                 hint_tier_cost: 1,
+                max_per_gift: 3,
             }),
         ],
     );
@@ -570,6 +573,7 @@ fn samples() -> Value {
             }),
         ],
     );
+    put("GiftResponse", vec![value(&GiftResponse { balance: 1 })]);
     let mut errors: Vec<Value> = ERROR_CODES
         .iter()
         .map(|&error| {

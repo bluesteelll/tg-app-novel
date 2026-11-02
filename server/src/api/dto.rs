@@ -460,6 +460,8 @@ pub struct WalletResponse {
     pub packs: Vec<PackDto>,
     /// The hints one hint tier costs.
     pub hint_tier_cost: u32,
+    /// The most units one gift moves: the gift dialog's bound. The daily caps stay the server's.
+    pub max_per_gift: u32,
 }
 
 /// `POST /api/puzzles/{puzzleId}/hints/{tier}?lang=ru|en` response: the balance after the use, and the tier's text.
@@ -700,6 +702,8 @@ pub fn ts_bindings() -> String {
         export::<SharedAchievement>(&cfg),
         export::<FriendStoryDto>(&cfg),
         export::<FriendProfile>(&cfg),
+        export::<GiftRequest>(&cfg),
+        export::<GiftResponse>(&cfg),
     ];
     format!("{BINDINGS_HEADER}\n\n{}", decls.join("\n"))
 }

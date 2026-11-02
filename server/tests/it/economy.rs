@@ -1707,7 +1707,7 @@ async fn wallet(st: &AppState, user: Option<i64>) -> (u16, Value) {
     (reply.status.as_u16(), body)
 }
 
-/// A `WalletResponse` with these `hint` figures and the compiled-in catalog's packs and hint cost.
+/// A `WalletResponse` with these `hint` figures and the compiled-in catalog's packs, hint cost and gift bound.
 fn wallet_body(balance: i64, debt: i64) -> Value {
     json!({
         "balances": [{ "kind": "hint", "balance": balance, "debt": debt }],
@@ -1727,7 +1727,8 @@ fn wallet_body(balance: i64, debt: i64) -> Value {
                 "title": { "ru": "10 подсказок", "en": "10 hints" }
             }
         ],
-        "hintTierCost": 1
+        "hintTierCost": 1,
+        "maxPerGift": 3
     })
 }
 
