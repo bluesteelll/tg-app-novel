@@ -180,6 +180,13 @@ const CONFLICT_PROMPT = 'save_conflict';
 const PURCHASE_TOAST = 'purchase';
 /** SP "Module API": how long the exit waits for the autosave before the service's pending cache keeps it. */
 export const EXIT_FLUSH_MS = 2000;
+/**
+ * K31 (L15b review OQ1): a manual save's 409 asks "Overwrite?" no sooner than this after the tap that sent it. The
+ * conflict ask's Yes renders where the overwrite ask's Yes was, so the second tap of a double tap would overwrite
+ * another device's save unseen; until then `saving` keeps every write control disabled. AOSP's DOUBLE_TAP_TIMEOUT
+ * (300 ms, from the first tap's up to the second's down) plus the second press's down to click.
+ */
+export const CONFLICT_HOLD_MS = 500;
 /** Every holder family the session requests besides the stage: knot preloads, F5, the explore rooms. */
 const EXIT_RELEASES: readonly string[] = ['preload:', 'next:', 'room:'];
 const IDLE: PurchaseState = Object.freeze({ kind: 'idle' });
@@ -340,6 +347,8 @@ export function createGame(deps: GameDeps): Game {
   let sound: AudioManager | null = null;
   let autoTimer: number | null = null;
   let skipTimer: number | null = null;
+  /** A manual save's conflict ask held for CONFLICT_HOLD_MS; cleared when it fires and when the session or the screen goes. */
+  let conflictHold: number | null = null;
   /** The shown line is fully revealed (its `ondone` came). */
   let revealed = false;
   let paused = false;
@@ -472,6 +481,12 @@ export function createGame(deps: GameDeps): Game {
       skipTimer = null;
     }
   };
+  const clearHold = (): void => {
+    if (conflictHold !== null) {
+      clock.clearTimeout(conflictHold);
+      conflictHold = null;
+    }
+  };
   /** F2 auto: `1200 + 40 × graphemes` ms at normal speed, scaled by the text speed. */
   const autoDelay = (text: string): number => {
     const speed = vm.speed === 'instant' ? 'fast' : vm.speed;
@@ -521,9 +536,18 @@ export function createGame(deps: GameDeps): Game {
   };
   const writeOf = (b: SaveBodyV1): SaveWrite => ({ chapterId: b.chapterId, storyVersion: b.storyVersion, lineId: b.at.lineId, body: encodeSave(b) });
 
-  /** F3 / D9: the autosave of the current state; the read-sets flush at the same points. */
+  /**
+   * `bodyOf` would compose a body of two steps: the session is `torn` and its fields are what it composes from. A
+   * pending start is one complete body (D11 read it from the server, or `pendingPaid` wrote it), so it never mixes.
+   */
+  const mixes = (s: Session): boolean => s.torn && s.pending === null;
+
+  /**
+   * F3 / D9: the autosave of the current state; the read-sets flush at the same points. A session that `mixes` writes
+   * nothing (fix_r2 KL4): a resume that failed past `enterChapter` leaves the new chapter over the old runner at rest.
+   */
   const autosave = (s: Session, o?: { keepalive?: boolean }): void => {
-    const body = s.adopting ? null : bodyOf(s);
+    const body = s.adopting || mixes(s) ? null : bodyOf(s);
     if (body === null) {
       return;
     }
@@ -536,9 +560,9 @@ export function createGame(deps: GameDeps): Game {
    * An intent is past a move of the session and before its `present` (the runner and the backlog at the next step,
    * the position, the checkpoint and the stage still at the last), whose body would resume a level lower as a false
    * story update; or "Load it" holds every write until their save has resumed, and a request kept until then is
-   * written of their save.
+   * written of their save. While a pending start is the body nothing waits (fix_r2 KL2): it is complete as it is.
    */
-  const waits = (s: Session): boolean => s.adopting || s.torn;
+  const waits = (s: Session): boolean => s.adopting || mixes(s);
 
   /**
    * The autosave of `deactivated`, `pagehide` and the yields' timers, which run outside the intent queue. It is
@@ -708,19 +732,22 @@ export function createGame(deps: GameDeps): Game {
 
   /**
    * "Return to last save": the last autosave, one level lower per error in this chapter (D10): the first from its
-   * checkpoint, every later one from the chapter start, so a knot that keeps failing cannot loop.
+   * checkpoint, every later one from the chapter start, so a knot that keeps failing cannot loop. With no autosave in
+   * this session (a new game's first step, a Continue resumed at a line) it exits to the stories (triage r1 M1): the
+   * server's copy stays, and Home's Continue is the retry (RULINGS 93).
    */
   const returnToSave = async (s: Session): Promise<void> => {
     if (session !== s) {
       return;
     }
+    const body = s.last;
+    if (body === null) {
+      void game.exitToStories(); // queued after this intent; Home is its outcome
+      return;
+    }
     screens.setRoot({ kind: 'game' });
     tg.setClosingConfirmation(true);
     s.yields.rootShown(); // D4: setRoot cleared the root-back
-    const body = s.last;
-    if (body === null) {
-      return;
-    }
     await resumeBody(s, body, s.inkErrors > 1 ? 'chapter-start' : 'checkpoint');
   };
 
@@ -1293,6 +1320,7 @@ export function createGame(deps: GameDeps): Game {
     }
     clearAuto();
     clearSkip();
+    clearHold();
     s.abort.abort();
     s.yields.dispose();
     s.runner?.dispose();
@@ -1426,14 +1454,37 @@ export function createGame(deps: GameDeps): Game {
     return resumeBody(s, body.value);
   };
 
+  /**
+   * W1 "Load it" read nothing to resume: a failed read, an empty slot or an unreadable body (fix_r1 KL1; RULINGS 81).
+   * `adopting` stays set until the session ends, so nothing of it is written, a request kept during the read included;
+   * the error notice exits, and Home's Continue reads their save (RULINGS 93). An ended session gets the reopen notice,
+   * as in `chapterFailed`, never the error notice over the one the http layer showed. A manual load is unchanged.
+   */
+  const adoptFailed = (s: Session, e: ApiError | null): void => {
+    if (!s.adopting) {
+      return;
+    }
+    if (e?.kind === 'session-expired') {
+      endSession(s);
+      showNotice({ kind: 'reopen' });
+      return;
+    }
+    showNotice({ kind: 'error', onaction: () => void game.exitToStories() });
+  };
+
   const loadSlot = async (s: Session, slot: SaveSlot): Promise<void> => {
     const full = await s.saves.load(slot);
-    if (session !== s || !full.ok || full.value === null) {
+    if (session !== s) {
+      return;
+    }
+    if (!full.ok || full.value === null) {
+      adoptFailed(s, full.ok ? null : full.error);
       return;
     }
     const body = decodeSave(full.value.body);
     if (!body.ok) {
       console.error('saves: unreadable body', body.error);
+      adoptFailed(s, null);
       return;
     }
     clearAuto();
@@ -1460,20 +1511,62 @@ export function createGame(deps: GameDeps): Game {
       vm.saves = { ...vm.saves, slots: slotViews(s, r.value) };
     }
   };
-  const saved = async (s: Session, slot: ManualSlot, r: Result<unknown, SaveError>): Promise<void> => {
+  /** A manual write's answer on the save screen; `tappedAt` is the tap that sent it, which a conflict ask waits past. */
+  const saved = async (s: Session, slot: ManualSlot, r: Result<unknown, SaveError>, tappedAt: number): Promise<void> => {
     if (session !== s) {
       return;
     }
+    clearHold(); // a newer answer replaces a held ask (critique O3)
     if (r.ok) {
       s.conflict = null;
       vm.saves = { ...vm.saves, saving: null, conflict: null, failed: null };
       await refreshSlots(s);
     } else if (r.error.kind === 'conflict') {
       s.conflict = { slot, current: r.error.current };
-      vm.saves = { ...vm.saves, saving: null, conflict: slot, failed: null };
+      const ask = (): void => {
+        conflictHold = null;
+        if (session === s) {
+          vm.saves = { ...vm.saves, saving: null, conflict: slot, failed: null };
+        }
+      };
+      const left = tappedAt + CONFLICT_HOLD_MS - clock.now();
+      if (left > 0) {
+        conflictHold = clock.setTimeout(ask, left);
+      } else {
+        ask();
+      }
     } else {
       vm.saves = { ...vm.saves, saving: null, failed: slot };
     }
+  };
+
+  /**
+   * A manual save writes the step on screen (triage r2 M4). While an intent is past a move and before its `present`
+   * (`mixes`), `saving` names the slot at once, as D33's latch needs, and the body is taken once that intent has ended:
+   * the wait is the step's own load time, as an exit's is. A session that still mixes then, or at rest, writes nothing.
+   */
+  const writeManual = async (s: Session, slot: ManualSlot, put: (w: SaveWrite) => Promise<Result<unknown, SaveError>>): Promise<void> => {
+    const tappedAt = clock.now();
+    const waiting = busy !== null && mixes(s);
+    let body = mixes(s) ? null : bodyOf(s);
+    if (!waiting && body === null) {
+      return; // at rest: no chapter runs, or the session describes two steps (a resume failed past the swap)
+    }
+    vm.saves = { ...vm.saves, saving: slot, conflict: null, failed: null };
+    if (body === null) {
+      while (busy !== null && mixes(s)) {
+        await busy;
+      }
+      if (session !== s) {
+        return;
+      }
+      body = mixes(s) ? null : bodyOf(s);
+      if (body === null) {
+        vm.saves = { ...vm.saves, saving: null };
+        return;
+      }
+    }
+    await saved(s, slot, await put(writeOf(body)), tappedAt);
   };
 
   // -------------------------------------------------------------------------------------------------------------
@@ -1595,6 +1688,7 @@ export function createGame(deps: GameDeps): Game {
       if (s === null) {
         return;
       }
+      clearHold(); // a held ask would show over the fresh screen, whose Yes then finds no conflict
       s.conflict = null;
       vm.saves = { ...vm.saves, saving: null, conflict: null, failed: null };
       screens.push({ kind: 'saves' });
@@ -1605,24 +1699,21 @@ export function createGame(deps: GameDeps): Game {
     },
     async save(slot) {
       const s = session;
-      const body = s === null ? null : bodyOf(s);
-      if (s === null || body === null || vm.saves.saving !== null) {
+      if (s === null || vm.saves.saving !== null) {
         return;
       }
-      vm.saves = { ...vm.saves, saving: slot, conflict: null, failed: null };
-      await saved(s, slot, await s.saves.save(slot, writeOf(body)));
+      await writeManual(s, slot, (w) => s.saves.save(slot, w));
     },
     async overwrite(slot) {
       const s = session;
       const c = s?.conflict ?? null;
-      const body = s === null ? null : bodyOf(s);
-      if (s === null || c === null || c.slot !== slot || body === null || vm.saves.saving !== null) {
+      if (s === null || c === null || c.slot !== slot || vm.saves.saving !== null) {
         return;
       }
-      vm.saves = { ...vm.saves, saving: slot, conflict: null, failed: null };
-      await saved(s, slot, await s.saves.overwrite(slot, writeOf(body), c.current));
+      await writeManual(s, slot, (w) => s.saves.overwrite(slot, w, c.current));
     },
     cancelOverwrite() {
+      clearHold();
       if (session !== null) {
         session.conflict = null;
       }
@@ -1769,6 +1860,7 @@ export function createGame(deps: GameDeps): Game {
       }
       clearAuto();
       clearSkip();
+      clearHold();
       hostWaiters = [];
       if (__TG_MOCK__) {
         delete (globalThis as typeof globalThis & { __novelDebug?: DebugHook }).__novelDebug;

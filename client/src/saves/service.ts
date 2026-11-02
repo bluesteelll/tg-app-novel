@@ -65,6 +65,11 @@ export const SENT_IDS_MAX = 16;
 /** F3 step 3: the waits after the 1st, 2nd, … transient failure; the last one repeats. */
 export const BACKOFF_MS: readonly number[] = [1000, 2000, 4000, 8000, 16000, 30000];
 /**
+ * K24: a `Retry-After` past an hour waits an hour: a broken header must not reach `setTimeout`'s 2^31 ms overflow,
+ * which fires at once. It mirrors `RETRY_AFTER_MAX_MS` of stats/reporter.ts (saves never import stats).
+ */
+export const RETRY_AFTER_MAX_MS = 3_600_000;
+/**
  * The largest keepalive PUT, in UTF-8 bytes of its JSON body. The Fetch Standard refuses a keepalive request once the
  * group's in-flight keepalive bytes would pass 64 KiB (WebKit: 65536), and the refusal is a plain network error; the
  * `pagehide` stats flush (LS4) may carry 16 KiB beside this PUT, so 64 - 16 KiB.
@@ -287,7 +292,8 @@ export function createSaveService(deps: {
       case 'transient': {
         attempt += 1;
         const base = BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length) - 1] ?? 30_000;
-        const wait = r.error.kind === 'http' && r.error.retryAfter !== null ? Math.max(base, r.error.retryAfter * 1000) : base;
+        const retryAfter = r.error.kind === 'http' ? r.error.retryAfter : null;
+        const wait = retryAfter === null ? base : Math.min(Math.max(base, retryAfter * 1000), RETRY_AFTER_MAX_MS);
         persist();
         setState({ kind: 'retrying', attempt, inMs: wait });
         retryTimer = clock.setTimeout(() => {
