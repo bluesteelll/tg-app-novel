@@ -188,6 +188,17 @@ describe('scan files', () => {
       found('assets/d.js', 'paid-en', esc(q), 'plain'),
     ]);
   });
+
+  test('scan: a text with a backtick and a dollar-brace is found in a template literal', () => {
+    // The bundler's minifier writes such a text as a template literal with `\`` and `\${`; written here by hand, so
+    // one fixture pins both escapes of the backtick form.
+    const q = 'Tell me `why` for ${price}.';
+    const c = text('assets/c.js', 'const c=`Tell me \\`why\\` for \\${price}.`;export{c};');
+    expect(rawIncludes(c, q)).toBe(false); // only the escaped form finds it
+    expect(scanFiles([INDEX, c], [{ name: 'paid-texts', needles: [q] }])).toEqual([
+      { kind: 'fingerprint', file: 'assets/c.js', section: 'paid-texts', needle: q, via: 'js-string' },
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------------------------------------------
