@@ -9,6 +9,7 @@ use std::sync::LazyLock;
 
 use serde::Deserialize;
 
+use crate::config::TelegramEnv;
 use crate::puzzles::Lang;
 
 /// `server/locales/bot.ru.json`.
@@ -29,8 +30,8 @@ pub const BUTTON_LIMIT: usize = 64;
 /// `answerPreCheckoutQuery.error_message`: the Bot API documents no bound, this is L8b's own.
 pub const REFUSAL_LIMIT: usize = 255;
 
-/// The Russian texts, parsed once. The file is compiled in and `bot_texts_complete_and_within_limits` parses it, so a
-/// parse failure here is a bug.
+/// The Russian texts, parsed once. The file is compiled in, `bot_texts_complete_and_within_limits` parses it and
+/// [`startup_check`] forces it before a start goes on, so a parse failure here is a bug.
 static RU: LazyLock<BotFile> = LazyLock::new(|| {
     parse(BOT_RU_JSON).expect(
         "invariant: server/locales/bot.ru.json parses (pinned by bot_texts_complete_and_within_limits)",
@@ -293,6 +294,59 @@ impl LangTexts {
 /// `json` as a `bot.*.json` file.
 pub fn parse(json: &str) -> Result<BotFile, serde_json::Error> {
     serde_json::from_str(json)
+}
+
+/// Why the bot texts refuse a start (critique O3, O6).
+#[derive(Debug, thiserror::Error)]
+pub enum TextsError {
+    /// A file does not parse into every text.
+    #[error("server/locales/bot.{lang}.json: {source}")]
+    Parse {
+        /// The file's language.
+        lang: &'static str,
+        /// Why.
+        source: serde_json::Error,
+    },
+    /// Under TELEGRAM_ENV=prod a file still lists drafts (the owner's VALUES step empties them).
+    #[error("server/locales/bot.{lang}.json: draft texts under TELEGRAM_ENV=prod: {keys}")]
+    Drafts {
+        /// The file's language.
+        lang: &'static str,
+        /// Its draft keys, comma-separated.
+        keys: String,
+    },
+}
+
+/// The `(lang, json)` files checked: every one parses into every text first (a parse error wins over a draft), then
+/// under [`TelegramEnv::Prod`] none may list a draft. `Ok` holds the drafts left, sorted and deduplicated.
+pub fn check(files: &[(&'static str, &str)], env: TelegramEnv) -> Result<Vec<String>, TextsError> {
+    let mut parsed = Vec::with_capacity(files.len());
+    for &(lang, json) in files {
+        let file = parse(json).map_err(|source| TextsError::Parse { lang, source })?;
+        parsed.push((lang, file));
+    }
+    let mut drafts = Vec::new();
+    for (lang, file) in parsed {
+        if env == TelegramEnv::Prod && !file.drafts.is_empty() {
+            return Err(TextsError::Drafts {
+                lang,
+                keys: file.drafts.join(", "),
+            });
+        }
+        drafts.extend(file.drafts);
+    }
+    drafts.sort_unstable();
+    drafts.dedup();
+    Ok(drafts)
+}
+
+/// [`check`] of the compiled-in pair ([`BOT_RU_JSON`], [`BOT_EN_JSON`]), then both parsed texts forced: they cannot
+/// panic afterwards, the same bytes just parsed. Run at startup, before anything is opened or built.
+pub fn startup_check(env: TelegramEnv) -> Result<Vec<String>, TextsError> {
+    let drafts = check(&[("ru", BOT_RU_JSON), ("en", BOT_EN_JSON)], env)?;
+    LazyLock::force(&RU);
+    LazyLock::force(&EN);
+    Ok(drafts)
 }
 
 /// The compiled-in file of `lang`.

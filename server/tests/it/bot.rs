@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use server::AppState;
 use server::config::{
-    PLACEHOLDER_BOT_TOKEN, PLACEHOLDER_TOKEN_KEY_HEX, PLACEHOLDER_WEBHOOK_SECRET,
+    PLACEHOLDER_BOT_TOKEN, PLACEHOLDER_TOKEN_KEY_HEX, PLACEHOLDER_WEBHOOK_SECRET, TelegramEnv,
 };
 use server::puzzles::Lang;
 use server::telegram::commands::utc_date;
@@ -24,7 +24,7 @@ use server::telegram::gateway::{
 };
 use server::telegram::payments::{RejectReason, RevokeOutcome};
 use server::telegram::setup;
-use server::telegram::texts::{self, BotFile, MESSAGE_LIMIT, fill};
+use server::telegram::texts::{self, BotFile, MESSAGE_LIMIT, TextsError, fill};
 
 use crate::catalog::{ANN, T0, own};
 use crate::common::{self, TEST_ADMIN_ID};
@@ -158,6 +158,100 @@ fn bot_texts_complete_and_within_limits() {
         if r.text == e.text {
             failures.push(format!("{}: the ru and en texts are the same", r.key));
         }
+    }
+    report(&failures);
+}
+
+/// The JSON text `json` with `edit` applied.
+fn edited(json: &str, edit: impl FnOnce(&mut Value)) -> String {
+    let mut value: Value = serde_json::from_str(json).unwrap();
+    edit(&mut value);
+    value.to_string()
+}
+
+/// `texts::check`'s result as one comparable line: the drafts left, or the refusal's kind and language.
+fn checked(got: Result<Vec<String>, TextsError>) -> String {
+    match got {
+        Ok(drafts) => format!("Ok({drafts:?})"),
+        Err(TextsError::Drafts { lang, .. }) => format!("Err(Drafts {lang})"),
+        Err(TextsError::Parse { lang, .. }) => format!("Err(Parse {lang})"),
+    }
+}
+
+/// The startup check of the bot texts (critique O3, O6): every file must parse into every text (a parse error comes
+/// first), and under prod no file may list a draft; otherwise the drafts left are returned. Files built from the
+/// committed ones: as committed under test, with no drafts under prod, as committed under prod (ru refused), ru without
+/// drafts and en as committed under prod (en refused), ru without `start` (ru unparsable), en not JSON under prod (en
+/// unparsable, before ru's drafts). `startup_check` on the compiled-in files under test passes.
+#[test]
+fn bot_texts_startup_check_refuses_drafts_in_prod() {
+    let (ru, en) = (texts::BOT_RU_JSON, texts::BOT_EN_JSON);
+    let mut committed: Vec<String> = [ru, en]
+        .iter()
+        .flat_map(|json| texts::parse(json).unwrap().drafts)
+        .collect();
+    committed.sort_unstable();
+    committed.dedup();
+    let without_drafts = |json: &str| edited(json, |v| v["drafts"] = json!([]));
+    let (ru_clean, en_clean) = (without_drafts(ru), without_drafts(en));
+    let ru_no_start = edited(ru, |v| {
+        v["texts"].as_object_mut().unwrap().remove("start");
+    });
+    let cases = [
+        (
+            "committed, Test",
+            ru,
+            en,
+            TelegramEnv::Test,
+            format!("Ok({committed:?})"),
+        ),
+        (
+            "no drafts, Prod",
+            ru_clean.as_str(),
+            en_clean.as_str(),
+            TelegramEnv::Prod,
+            "Ok([])".to_owned(),
+        ),
+        (
+            "committed, Prod",
+            ru,
+            en,
+            TelegramEnv::Prod,
+            "Err(Drafts ru)".to_owned(),
+        ),
+        (
+            "ru without drafts, en committed, Prod",
+            ru_clean.as_str(),
+            en,
+            TelegramEnv::Prod,
+            "Err(Drafts en)".to_owned(),
+        ),
+        (
+            "start removed from ru, Test",
+            ru_no_start.as_str(),
+            en,
+            TelegramEnv::Test,
+            "Err(Parse ru)".to_owned(),
+        ),
+        (
+            "en not JSON, Prod",
+            ru,
+            "not json",
+            TelegramEnv::Prod,
+            "Err(Parse en)".to_owned(),
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (case, ru, en, env, want) in cases {
+        let got = checked(texts::check(&[("ru", ru), ("en", en)], env));
+        if got != want {
+            failures.push(format!("{case}: expected {want}, got {got}"));
+        }
+    }
+    if let Err(e) = texts::startup_check(TelegramEnv::Test) {
+        failures.push(format!(
+            "startup_check(Test) on the compiled-in files: expected Ok, got {e}"
+        ));
     }
     report(&failures);
 }
