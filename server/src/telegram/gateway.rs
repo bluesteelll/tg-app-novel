@@ -9,18 +9,23 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use frankenstein::AsyncTelegramApi;
 use frankenstein::client_reqwest::Bot;
+use frankenstein::inline_mode::{
+    InlineQueryResult, InlineQueryResultArticle, InputMessageContent, InputTextMessageContent,
+};
 use frankenstein::methods::{
     AnswerPreCheckoutQueryParams, CreateInvoiceLinkParams, RefundStarPaymentParams,
-    SendMessageParams, SetChatMenuButtonParams, SetMyCommandsParams, SetWebhookParams,
+    SavePreparedInlineMessageParams, SendMessageParams, SetChatMenuButtonParams,
+    SetMyCommandsParams, SetWebhookParams,
 };
 use frankenstein::payments::LabeledPrice;
 use frankenstein::types::{
     AllowedUpdate, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, MenuButton,
-    MenuButtonWebApp, ReplyMarkup, WebAppInfo,
+    MenuButtonWebApp, ReplyMarkup, User, WebAppInfo,
 };
 
 use crate::config::{Config, PLACEHOLDER_BOT_TOKEN, TelegramEnv};
@@ -66,6 +71,40 @@ pub trait BotGateway: Send + Sync {
     /// `setWebhook`, then `setMyCommands` once per command set, then `setChatMenuButton` for the default chat; stops
     /// at the first error.
     fn setup(&self, s: SetupSpec) -> BoxFut<'_, Result<(), GatewayError>>;
+    /// `savePreparedInlineMessage` of `share` for `user`: the message the client sends with `shareMessage`, to user
+    /// and group chats only.
+    fn save_prepared_inline_message(
+        &self,
+        user: UserId,
+        share: PreparedShare,
+    ) -> BoxFut<'_, Result<PreparedMessage, GatewayError>>;
+    /// The bot's username, from `getMe`: asked on first use and cached by the implementation (a failure is not).
+    fn bot_username(&self) -> BoxFut<'_, Result<String, GatewayError>>;
+}
+
+/// A share as a prepared inline message (META-PLAN M14): an article whose message is `text`, with one url button
+/// `button` that opens `url`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedShare {
+    /// The inline result's id, unique per call.
+    pub result_id: String,
+    /// The article's title in the share sheet.
+    pub title: String,
+    /// The message text, sent without a parse mode.
+    pub text: String,
+    /// The button text.
+    pub button: String,
+    /// The URL the button opens: the sharer's invite link.
+    pub url: String,
+}
+
+/// A prepared message: the id the client passes to `shareMessage`, and when Telegram forgets it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedMessage {
+    /// The prepared message id.
+    pub id: String,
+    /// When it expires, in unix seconds; `i64::MAX` when Telegram's value does not fit.
+    pub expiration_date: i64,
 }
 
 /// A Stars invoice: the texts, the payload and the one price. The currency and the empty `provider_token` are the
@@ -159,6 +198,8 @@ pub enum GatewayError {
 pub struct FrankensteinGateway {
     /// `None` for the placeholder token: every call is then [`GatewayError::Disabled`].
     bot: Option<Bot>,
+    /// The bot's username once `getMe` answered it: the token's own, so it never changes in a process.
+    username: OnceLock<String>,
 }
 
 impl FrankensteinGateway {
@@ -195,7 +236,10 @@ fn api_base(bot_token: &str, env: TelegramEnv) -> String {
 /// test that forgets its fake gets [`GatewayError::Disabled`], never a request to Telegram.
 fn build(bot_token: &str, base: String) -> Result<FrankensteinGateway, GatewayError> {
     if bot_token == PLACEHOLDER_BOT_TOKEN {
-        return Ok(FrankensteinGateway { bot: None });
+        return Ok(FrankensteinGateway {
+            bot: None,
+            username: OnceLock::new(),
+        });
     }
     let client = frankenstein::reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
@@ -204,6 +248,7 @@ fn build(bot_token: &str, base: String) -> Result<FrankensteinGateway, GatewayEr
         .map_err(|e| GatewayError::Transport(e.without_url().to_string()))?;
     Ok(FrankensteinGateway {
         bot: Some(Bot::builder().api_url(base).client(client).build()),
+        username: OnceLock::new(),
     })
 }
 
@@ -286,6 +331,52 @@ fn refund_params(user: UserId, charge: ChargeId) -> Result<RefundStarPaymentPara
         user_id,
         telegram_payment_charge_id: charge.0,
     })
+}
+
+/// `savePreparedInlineMessage` params: the article with the text as its message and one url button, allowed in user
+/// and group chats; bot and channel chats stay unset (META-PLAN M14). A negative user id is no Telegram user and makes
+/// no call.
+fn prepared_params(
+    user: UserId,
+    s: &PreparedShare,
+) -> Result<SavePreparedInlineMessageParams, GatewayError> {
+    let user_id = u64::try_from(user.0)
+        .map_err(|_| GatewayError::Transport("user id out of range".to_owned()))?;
+    let button = InlineKeyboardButton::builder()
+        .text(s.button.clone())
+        .url(s.url.clone())
+        .build();
+    // The builder, not a struct literal: a literal must name the deprecated `hide_url`.
+    let article = InlineQueryResultArticle::builder()
+        .id(s.result_id.clone())
+        .title(s.title.clone())
+        .input_message_content(InputMessageContent::Text(
+            InputTextMessageContent::builder()
+                .message_text(s.text.clone())
+                .build(),
+        ))
+        .reply_markup(InlineKeyboardMarkup {
+            inline_keyboard: vec![vec![button]],
+            force_reply: None,
+        })
+        .build();
+    Ok(SavePreparedInlineMessageParams::builder()
+        .user_id(user_id)
+        .result(InlineQueryResult::Article(article))
+        .allow_user_chats(true)
+        .allow_group_chats(true)
+        .build())
+}
+
+/// The username in `getMe`'s answer. It becomes the path of every invite link, so only `[A-Za-z0-9_]{1,64}` is kept:
+/// a URL-safety guard, not Telegram's own username rule. Anything else is a refusal.
+fn username_of(me: User) -> Result<String, GatewayError> {
+    me.username
+        .filter(|name| {
+            (1..=64).contains(&name.len())
+                && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        })
+        .ok_or_else(|| GatewayError::Api("getMe returned no usable username".to_owned()))
 }
 
 /// The inline button that opens `button.url` as a Mini App.
@@ -436,6 +527,37 @@ impl BotGateway for FrankensteinGateway {
             Ok(())
         })
     }
+
+    fn save_prepared_inline_message(
+        &self,
+        user: UserId,
+        share: PreparedShare,
+    ) -> BoxFut<'_, Result<PreparedMessage, GatewayError>> {
+        Box::pin(async move {
+            let bot = self.bot()?;
+            let params = prepared_params(user, &share)?;
+            let prepared = bounded(CALL_DEADLINE, bot.save_prepared_inline_message(&params))
+                .await?
+                .result;
+            Ok(PreparedMessage {
+                id: prepared.id,
+                expiration_date: i64::try_from(prepared.expiration_date).unwrap_or(i64::MAX),
+            })
+        })
+    }
+
+    fn bot_username(&self) -> BoxFut<'_, Result<String, GatewayError>> {
+        Box::pin(async move {
+            if let Some(name) = self.username.get() {
+                return Ok(name.clone());
+            }
+            let bot = self.bot()?;
+            let me = bounded(CALL_DEADLINE, bot.get_me()).await?.result;
+            let name = username_of(me)?;
+            // Two first calls may both ask; both get the token's one name, and the first stored stays.
+            Ok(self.username.get_or_init(|| name).clone())
+        })
+    }
 }
 
 #[cfg(test)]
@@ -443,6 +565,7 @@ mod tests {
     use std::time::Instant;
 
     use frankenstein::response::ErrorResponse;
+    use frankenstein::types::User;
     use serde_json::{Value, json};
 
     use super::*;
@@ -450,6 +573,9 @@ mod tests {
 
     /// An order id in the payload grammar.
     const ORDER: &str = "o_0123456789abcdef0123456789abcdef";
+
+    /// A token that is not the placeholder: [`build`] makes a real client for it (no call is made).
+    const REAL_LOOKING_TOKEN: &str = "123456:not-a-real-token";
 
     fn report(failures: &[String]) {
         assert!(
@@ -514,6 +640,26 @@ mod tests {
         }
     }
 
+    fn share() -> PreparedShare {
+        PreparedShare {
+            result_id: "fedcba9876543210fedcba9876543210".to_owned(),
+            title: "Прогресс".to_owned(),
+            text: "«Прилив»: концовок 2, достижений 1".to_owned(),
+            button: "Открыть".to_owned(),
+            url: "https://t.me/novel_dev_bot?startapp=f0123456789abcdef0123456789abcdef".to_owned(),
+        }
+    }
+
+    /// `getMe`'s answer for a bot with `username`.
+    fn me(username: Option<&str>) -> User {
+        User::builder()
+            .id(1)
+            .is_bot(true)
+            .first_name("Novel".to_owned())
+            .maybe_username(username.map(str::to_owned))
+            .build()
+    }
+
     /// A `serde_json::Error` to wrap in frankenstein's JSON errors.
     fn json_error() -> serde_json::Error {
         serde_json::from_str::<Value>("{").expect_err("invariant: `{` is not JSON")
@@ -546,6 +692,89 @@ mod tests {
             &got,
             &want,
         )));
+    }
+
+    /// The prepared share (META-PLAN M14): an article whose message is the text, with one url button to the link, for
+    /// user and group chats only (`allow_bot_chats` and `allow_channel_chats` unset); a negative user id makes no
+    /// params.
+    #[test]
+    fn gateway_prepared_share_shape() {
+        let s = share();
+        let mut failures = Vec::new();
+        match prepared_params(UserId(1001), &s) {
+            Ok(params) => failures.extend(expect_json(
+                "savePreparedInlineMessage",
+                &to_json(&params),
+                &json!({
+                    "user_id": 1001,
+                    "result": {
+                        "type": "article",
+                        "id": "fedcba9876543210fedcba9876543210",
+                        "title": "Прогресс",
+                        "input_message_content": { "message_text": "«Прилив»: концовок 2, достижений 1" },
+                        "reply_markup": {
+                            "inline_keyboard": [[{
+                                "text": "Открыть",
+                                "url": "https://t.me/novel_dev_bot?startapp=f0123456789abcdef0123456789abcdef",
+                            }]]
+                        },
+                    },
+                    "allow_user_chats": true,
+                    "allow_group_chats": true,
+                }),
+            )),
+            Err(e) => failures.push(format!("prepared 1001: expected params, got {e:?}")),
+        }
+        let negative = prepared_params(UserId(-1), &s);
+        if negative != Err(GatewayError::Transport("user id out of range".to_owned())) {
+            failures.push(format!(
+                "prepared -1: expected Transport(\"user id out of range\"), got {negative:?}"
+            ));
+        }
+        report(&failures);
+    }
+
+    /// A cached username is answered without a call: the base is the loopback discard port, so a cache miss shows as
+    /// a connect failure of about 2 s, never as traffic to Telegram. `getMe`'s answer is kept only when it is a name
+    /// that is safe inside the link.
+    #[tokio::test]
+    async fn gateway_bot_username_cached() {
+        let gateway = match build(REAL_LOOKING_TOKEN, "http://127.0.0.1:9/bot".to_owned()) {
+            Ok(gateway) => gateway,
+            Err(e) => panic!("build: expected Ok, got {e:?}"),
+        };
+        let mut failures = Vec::new();
+        if gateway.username.set("novel_dev_bot".to_owned()).is_err() {
+            failures.push("a new gateway: expected no cached username".to_owned());
+        }
+        let started = Instant::now();
+        let got = gateway.bot_username().await;
+        let elapsed = started.elapsed();
+        if got.as_deref() != Ok("novel_dev_bot") || elapsed >= Duration::from_millis(100) {
+            failures.push(format!(
+                "cached bot_username: expected Ok(\"novel_dev_bot\") within 100 ms, got {got:?} after {elapsed:?}"
+            ));
+        }
+        let unusable = Err(GatewayError::Api(
+            "getMe returned no usable username".to_owned(),
+        ));
+        for (case, username, want) in [
+            (
+                "novel_dev_bot",
+                Some("novel_dev_bot"),
+                Ok("novel_dev_bot".to_owned()),
+            ),
+            ("no username", None, unusable.clone()),
+            ("a space", Some("a b"), unusable),
+        ] {
+            let got = username_of(me(username));
+            if got != want {
+                failures.push(format!(
+                    "username_of {case}: expected {want:?}, got {got:?}"
+                ));
+            }
+        }
+        report(&failures);
     }
 
     /// The pre-checkout answers and the refund: an accept has no `error_message`, a refusal carries it; a negative
@@ -759,6 +988,14 @@ mod tests {
             ),
             ("sendMessage", gateway.send_message(message(None)).await),
             ("setup", gateway.setup(setup_spec()).await),
+            (
+                "savePreparedInlineMessage",
+                gateway
+                    .save_prepared_inline_message(UserId(1001), share())
+                    .await
+                    .map(drop),
+            ),
+            ("getMe", gateway.bot_username().await.map(drop)),
         ];
         let elapsed = started.elapsed();
         let mut failures: Vec<String> = results
@@ -768,7 +1005,7 @@ mod tests {
             .collect();
         if elapsed >= Duration::from_millis(100) {
             failures.push(format!(
-                "the five calls: expected < 100 ms together, got {elapsed:?}"
+                "the seven calls: expected < 100 ms together, got {elapsed:?}"
             ));
         }
         report(&failures);
