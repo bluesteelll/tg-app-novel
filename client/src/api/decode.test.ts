@@ -13,16 +13,34 @@ const NAMES: readonly DecodedDto[] = [
   'ApiErrorBody',
   'AttemptResponse',
   'AuthResponse',
+  'CardResponse',
   'ChapterPayload',
   'CreateInvoiceResponse',
   'EntitlementsResponse',
+  'FriendProfile',
+  'HintUseResponse',
+  'InviteView',
   'OrderResponse',
   'PostStatsResponse',
   'PutSaveResponse',
   'PuzzleStatus',
   'SaveFull',
   'SaveListResponse',
+  'ShareResponse',
+  'SocialResponse',
   'StatsResponse',
+  'WalletResponse',
+];
+
+// The meta DTOs (META-PLAN M9-M14, M19-M21): a subset of NAMES, each with its own samples test below.
+const META_NAMES: readonly DecodedDto[] = [
+  'CardResponse',
+  'FriendProfile',
+  'HintUseResponse',
+  'InviteView',
+  'ShareResponse',
+  'SocialResponse',
+  'WalletResponse',
 ];
 
 // Parsed here, so the decoders see `unknown`, as at the real edge.
@@ -60,7 +78,16 @@ function edited(sample: unknown, path: readonly Step[], value: unknown): unknown
   return copy;
 }
 
-type Malformed = { dto: DecodedDto; sample: number; path: readonly Step[]; value: unknown; error: string };
+/** A deep copy of the value at `path` in a sample: the repeated item of a duplicate-key row. */
+function copyOf(name: DecodedDto, sample: number, path: readonly Step[]): unknown {
+  let node: unknown = samplesOf(name)[sample];
+  for (const step of path) {
+    node = (node as Record<Step, unknown>)[step];
+  }
+  return structuredClone(node);
+}
+
+type Malformed ={ dto: DecodedDto; sample: number; path: readonly Step[]; value: unknown; error: string };
 
 // Per DTO: one required field removed, one wrong type, one out-of-union value where the DTO has a union.
 const MALFORMED: readonly Malformed[] = [
@@ -73,6 +100,10 @@ const MALFORMED: readonly Malformed[] = [
   { dto: 'AuthResponse', sample: 0, path: ['token'], value: REMOVE, error: 'AuthResponse.token: missing' },
   { dto: 'AuthResponse', sample: 0, path: ['expiresAt'], value: '1800001800', error: 'AuthResponse.expiresAt: ' },
   { dto: 'AuthResponse', sample: 0, path: ['user', 'languageCode'], value: 5, error: 'AuthResponse.user.languageCode: ' },
+  // A keyed `{#each}` of the meta overlays throws on a repeated key: every keyed list refuses one (carry a).
+  { dto: 'CardResponse', sample: 0, path: ['endings', 1, 'name'], value: 'ashes', error: 'CardResponse.endings[1].name: duplicate' },
+  { dto: 'CardResponse', sample: 0, path: ['achievements', 1, 'id'], value: 'first_steps', error: 'CardResponse.achievements[1].id: duplicate' },
+  { dto: 'CardResponse', sample: 0, path: ['achievements', 0, 'new'], value: REMOVE, error: 'CardResponse.achievements[0].new: missing' },
   { dto: 'ChapterPayload', sample: 1, path: ['world'], value: REMOVE, error: 'ChapterPayload.world: missing' },
   { dto: 'ChapterPayload', sample: 0, path: ['chapterId'], value: 2, error: 'ChapterPayload.chapterId: ' },
   { dto: 'ChapterPayload', sample: 0, path: ['story'], value: null, error: 'ChapterPayload.story: ' },
@@ -80,6 +111,35 @@ const MALFORMED: readonly Malformed[] = [
   { dto: 'CreateInvoiceResponse', sample: 0, path: ['orderId'], value: null, error: 'CreateInvoiceResponse.orderId: ' },
   { dto: 'EntitlementsResponse', sample: 0, path: ['products', 0, 'owned'], value: REMOVE, error: 'EntitlementsResponse.products[0].owned: missing' },
   { dto: 'EntitlementsResponse', sample: 0, path: ['products', 1, 'priceStars'], value: 1.5, error: 'EntitlementsResponse.products[1].priceStars: ' },
+  { dto: 'FriendProfile', sample: 0, path: ['stories', 1], value: copyOf('FriendProfile', 0, ['stories', 0]), error: 'FriendProfile.stories[1].storyId: duplicate' },
+  {
+    dto: 'FriendProfile',
+    sample: 0,
+    path: ['stories', 0, 'sharedEndings', 1],
+    value: copyOf('FriendProfile', 0, ['stories', 0, 'sharedEndings', 0]),
+    error: 'FriendProfile.stories[0].sharedEndings[1].name: duplicate',
+  },
+  {
+    dto: 'FriendProfile',
+    sample: 0,
+    path: ['stories', 0, 'sharedAchievements', 1],
+    value: copyOf('FriendProfile', 0, ['stories', 0, 'sharedAchievements', 0]),
+    error: 'FriendProfile.stories[0].sharedAchievements[1].id: duplicate',
+  },
+  // A handle is 24 lower-case hex (the server's is_handle): a numeric user id never passes for one (M10).
+  { dto: 'FriendProfile', sample: 0, path: ['handle'], value: '0123456789ABCDEF01234567', error: 'FriendProfile.handle: expected a handle' },
+  // M13: a hidden profile shows nothing, so stories on one are an error value, never shown.
+  {
+    dto: 'FriendProfile',
+    sample: 1,
+    path: ['stories'],
+    value: [copyOf('FriendProfile', 0, ['stories', 0])],
+    error: 'FriendProfile.stories: stories on a hidden profile',
+  },
+  // The seeded field rename of PROTOTYPE-PLAN LMD commit 1, kept as an in-memory row: the fixture is never edited.
+  { dto: 'HintUseResponse', sample: 0, path: ['text'], value: REMOVE, error: 'HintUseResponse.text: missing' },
+  { dto: 'HintUseResponse', sample: 0, path: ['balance'], value: '2', error: 'HintUseResponse.balance: ' },
+  { dto: 'InviteView', sample: 0, path: ['state'], value: 'blocked', error: 'InviteView.state: ' },
   { dto: 'OrderResponse', sample: 0, path: ['status'], value: REMOVE, error: 'OrderResponse.status: missing' },
   { dto: 'OrderResponse', sample: 0, path: ['productId'], value: 3, error: 'OrderResponse.productId: ' },
   { dto: 'OrderResponse', sample: 0, path: ['status'], value: 'shipped', error: 'OrderResponse.status: ' },
@@ -100,10 +160,20 @@ const MALFORMED: readonly Malformed[] = [
   { dto: 'SaveListResponse', sample: 0, path: ['slots', 0, 'writeId'], value: REMOVE, error: 'SaveListResponse.slots[0].writeId: missing' },
   { dto: 'SaveListResponse', sample: 0, path: ['slots', 1, 'lineId'], value: 4, error: 'SaveListResponse.slots[1].lineId: ' },
   { dto: 'SaveListResponse', sample: 0, path: ['slots', 2, 'slot'], value: 'manual', error: 'SaveListResponse.slots[2].slot: ' },
+  { dto: 'ShareResponse', sample: 1, path: ['preparedMessageId'], value: 7, error: 'ShareResponse.preparedMessageId: ' },
+  { dto: 'ShareResponse', sample: 0, path: ['link'], value: REMOVE, error: 'ShareResponse.link: missing' },
+  { dto: 'SocialResponse', sample: 0, path: ['friends', 1], value: copyOf('SocialResponse', 0, ['friends', 0]), error: 'SocialResponse.friends[1].handle: duplicate' },
+  { dto: 'SocialResponse', sample: 0, path: ['requests', 1], value: copyOf('SocialResponse', 0, ['requests', 0]), error: 'SocialResponse.requests[1].handle: duplicate' },
+  { dto: 'SocialResponse', sample: 0, path: ['friends', 0, 'handle'], value: '1001', error: 'SocialResponse.friends[0].handle: expected a handle' },
+  { dto: 'SocialResponse', sample: 0, path: ['inviteCode'], value: REMOVE, error: 'SocialResponse.inviteCode: missing' },
   { dto: 'StatsResponse', sample: 0, path: ['game', 'storiesTotal'], value: REMOVE, error: 'StatsResponse.game.storiesTotal: missing' },
   { dto: 'StatsResponse', sample: 0, path: ['stories', 0, 'started'], value: 'yes', error: 'StatsResponse.stories[0].started: ' },
   { dto: 'StatsResponse', sample: 0, path: ['stories', 0, 'chaptersCompleted', 0], value: 1, error: 'StatsResponse.stories[0].chaptersCompleted[0]: ' },
   { dto: 'StatsResponse', sample: 0, path: ['stories', 1, 'endingsReached'], value: null, error: 'StatsResponse.stories[1].endingsReached: ' },
+  { dto: 'WalletResponse', sample: 0, path: ['balances', 1], value: { kind: 'hint', balance: 0, debt: 0 }, error: 'WalletResponse.balances[1].kind: duplicate' },
+  { dto: 'WalletResponse', sample: 0, path: ['packs', 1, 'productId'], value: 'pack:hint_s', error: 'WalletResponse.packs[1].productId: duplicate' },
+  { dto: 'WalletResponse', sample: 0, path: ['hintTierCost'], value: REMOVE, error: 'WalletResponse.hintTierCost: missing' },
+  { dto: 'WalletResponse', sample: 0, path: ['packs', 0, 'title', 'ru'], value: 3, error: 'WalletResponse.packs[0].title.ru: ' },
 ];
 
 test('decode: rust dto samples decode', () => {
@@ -113,6 +183,32 @@ test('decode: rust dto samples decode', () => {
       // Equal, not only ok: a decoder that drops or renames a field fails here too.
       expect(DTO_DECODERS[name](sample), name).toEqual({ ok: true, value: sample });
     }
+  }
+});
+
+test('decode: meta samples decode', () => {
+  const decoders = Object.keys(DTO_DECODERS);
+  for (const name of META_NAMES) {
+    expect(NAMES, name).toContain(name);
+    expect(decoders, name).toContain(name);
+    for (const sample of samplesOf(name)) {
+      expect(DTO_DECODERS[name](sample), name).toEqual({ ok: true, value: sample });
+    }
+  }
+
+  // RULINGS 79 Q3, M10: a profile carries no first name and no user id, and an invite names nobody; one a server sent
+  // is ignored, never copied. An achievement's `id` is legitimate deeper in a profile, so `id` is scanned at the top.
+  for (const plain of samplesOf('FriendProfile')) {
+    const read = DTO_DECODERS.FriendProfile(edited(edited(plain, ['firstName'], 'Аня'), ['id'], 1001));
+    expect(read).toEqual({ ok: true, value: plain });
+    const value = read.ok ? read.value : null;
+    expect(Object.keys(value ?? {})).not.toContain('id');
+    expect(keysDeep(value)).not.toContain('firstName');
+  }
+  for (const plain of samplesOf('InviteView')) {
+    const read = DTO_DECODERS.InviteView(edited(plain, ['ownerName'], 'Аня'));
+    expect(read).toEqual({ ok: true, value: plain });
+    expect(keysDeep(read.ok ? read.value : null)).not.toContain('ownerName');
   }
 });
 

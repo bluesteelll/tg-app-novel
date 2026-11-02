@@ -7,14 +7,27 @@ import type {
   ApiErrorBody,
   AttemptResponse,
   AuthResponse,
+  BalanceDto,
+  CardAchievement,
+  CardEnding,
+  CardResponse,
   ChapterPayload,
   CreateInvoiceResponse,
   EntitlementsResponse,
   ErrorCode,
+  FriendDto,
+  FriendProfile,
+  FriendRequestDto,
+  FriendStoryDto,
+  HintUseResponse,
   HintView,
+  InviteState,
+  InviteView,
+  Localized,
   OrderResponse,
   OrderStatus,
   GameStatsDto,
+  PackDto,
   PostStatsResponse,
   ProductDto,
   PutSaveResponse,
@@ -24,10 +37,15 @@ import type {
   SaveListResponse,
   SaveSlot,
   SaveSummary,
+  ShareResponse,
+  SharedAchievement,
+  SharedEnding,
+  SocialResponse,
   StatRejectReason,
   StatsResponse,
   StoryStatsDto,
   UserDto,
+  WalletResponse,
 } from './generated/api.ts';
 
 /** A boundary parser: raw JSON in; a typed value, or the first problem as `<Type><path>: <problem>`, out. */
@@ -38,16 +56,23 @@ export type DecodedDto =
   | 'ApiErrorBody'
   | 'AttemptResponse'
   | 'AuthResponse'
+  | 'CardResponse'
   | 'ChapterPayload'
   | 'CreateInvoiceResponse'
   | 'EntitlementsResponse'
+  | 'FriendProfile'
+  | 'HintUseResponse'
+  | 'InviteView'
   | 'OrderResponse'
   | 'PostStatsResponse'
   | 'PutSaveResponse'
   | 'PuzzleStatus'
   | 'SaveFull'
   | 'SaveListResponse'
-  | 'StatsResponse';
+  | 'ShareResponse'
+  | 'SocialResponse'
+  | 'StatsResponse'
+  | 'WalletResponse';
 
 // Exhaustive by type: a code, status, slot or reason added to api.ts fails `check` here until it is listed.
 const ERROR_CODES = {
@@ -80,8 +105,11 @@ const STAT_REJECT_REASONS = {
   unknown_choice: true,
   rate_limited: true,
 } as const satisfies Record<StatRejectReason, true>;
+const INVITE_STATES = { open: true, requested: true, friends: true, own: true } as const satisfies Record<InviteState, true>;
 /** HintView.tier: a ladder has 1 to 3 tiers (PZ X18). */
 const TIER_MAX = 3;
+/** A friend's handle: 24 lower-case hex digits (the server's `is_handle`, META M10). */
+const HANDLE = /^[0-9a-f]{24}$/;
 
 type Raw = Readonly<Record<string, unknown>>;
 /** One value's reader; `path` is its JSON path, prefixed with the DTO name. */
@@ -161,6 +189,27 @@ function object<T>(shape: Shape<T>): Field<T> {
   };
 }
 
+/**
+ * A list a keyed `{#each}` renders by `key`: a repeated key would throw in the overlay, so it is an error value here
+ * (`<path>[i].<key>: duplicate <value>`).
+ */
+function uniqueBy<T>(key: keyof T & string, list: Field<T[]>): Field<T[]> {
+  return (v, p) => {
+    const r = list(v, p);
+    if (!r.ok) {
+      return r;
+    }
+    const seen = new Set<unknown>();
+    for (const [i, item] of r.value.entries()) {
+      if (seen.has(item[key])) {
+        return problem(`${p}[${i}].${key}`, `duplicate ${shown(item[key])}`);
+      }
+      seen.add(item[key]);
+    }
+    return r;
+  };
+}
+
 /** Adds the DTO name as the root of every path. */
 function root<T>(name: DecodedDto, f: Field<T>): Decoder<T> {
   return (raw) => f(raw, name);
@@ -196,6 +245,37 @@ const gameStats = object<GameStatsDto>({ storiesStarted: int, storiesTotal: int,
 const hintView: Field<HintView> = (v, p) => {
   const r = hintFields(v, p);
   return !r.ok || r.value.unlocked || r.value.text === null ? r : problem(`${p}.text`, 'text on a locked tier');
+};
+/** The grammar earns the client's `FriendHandle` brand: a numeric user id can never pass for a handle (M10, W1). */
+const handle: Field<string> = (v, p) => {
+  const r = str(v, p);
+  return !r.ok || HANDLE.test(r.value) ? r : problem(p, `expected a handle, got ${shown(r.value)}`);
+};
+const localized = object<Localized>({ ru: str, en: str });
+const cardEnding = object<CardEnding>({ name: str, title: localized, firstReachedAt: int });
+const cardAchievement = object<CardAchievement>({
+  id: str,
+  name: localized,
+  description: localized,
+  unlockedAt: int,
+  new: bool,
+});
+const balanceDto = object<BalanceDto>({ kind: str, balance: int, debt: int });
+const packDto = object<PackDto>({ productId: str, kind: str, amount: int, priceStars: int, title: localized });
+const friendDto = object<FriendDto>({ handle, firstName: str });
+const friendRequestDto = object<FriendRequestDto>({ handle, firstName: str, at: int });
+const friendStory = object<FriendStoryDto>({
+  storyId: str,
+  endingsFound: int,
+  achievementsUnlocked: int,
+  sharedEndings: uniqueBy('name', arrayOf(object<SharedEnding>({ name: str, title: localized }))),
+  sharedAchievements: uniqueBy('id', arrayOf(object<SharedAchievement>({ id: str, name: localized }))),
+});
+const friendProfileFields = object<FriendProfile>({ handle, visible: bool, stories: uniqueBy('storyId', arrayOf(friendStory)) });
+/** META M13: a hidden profile shows nothing, so stories on one are an error, never shown. */
+const friendProfile: Field<FriendProfile> = (v, p) => {
+  const r = friendProfileFields(v, p);
+  return !r.ok || r.value.visible || r.value.stories.length === 0 ? r : problem(`${p}.stories`, 'stories on a hidden profile');
 };
 
 /** Every error response's body; `current` only on `save_conflict`, omitted (not `null`) otherwise. */
@@ -279,19 +359,72 @@ export const decodeStatsResponse: Decoder<StatsResponse> = root(
   object<StatsResponse>({ stories: arrayOf(storyStats), game: gameStats }),
 );
 
+// The meta DTOs (META-PLAN M9-M14, M19-M21). The decoders rely on no catalog order: they cannot know the catalog.
+/** `POST /api/stories/{storyId}/card` (M9): the user's own found items only. */
+export const decodeCardResponse: Decoder<CardResponse> = root(
+  'CardResponse',
+  object<CardResponse>({
+    storyId: str,
+    runs: int,
+    chaptersCompleted: arrayOf(str),
+    endings: uniqueBy('name', arrayOf(cardEnding)),
+    achievements: uniqueBy('id', arrayOf(cardAchievement)),
+  }),
+);
+/** `GET /api/friends/{handle}/profile` (M13): no first name and no user id. */
+export const decodeFriendProfile: Decoder<FriendProfile> = root('FriendProfile', friendProfile);
+/** `POST /api/puzzles/{puzzleId}/hints/{tier}?lang` (M21). */
+export const decodeHintUseResponse: Decoder<HintUseResponse> = root(
+  'HintUseResponse',
+  object<HintUseResponse>({ balance: int, text: str }),
+);
+/** `GET /api/invites/{code}` and `POST /api/invites/{code}/request` (M10): nothing about the code's owner. */
+export const decodeInviteView: Decoder<InviteView> = root('InviteView', object<InviteView>({ state: oneOf(INVITE_STATES) }));
+/** `POST /api/share` (M14). */
+export const decodeShareResponse: Decoder<ShareResponse> = root(
+  'ShareResponse',
+  object<ShareResponse>({ link: str, text: str, preparedMessageId: nullable(str) }),
+);
+/** `GET /api/social` and the answer of every social action (M10-M12). */
+export const decodeSocialResponse: Decoder<SocialResponse> = root(
+  'SocialResponse',
+  object<SocialResponse>({
+    inviteCode: str,
+    friends: uniqueBy('handle', arrayOf(friendDto)),
+    requests: uniqueBy('handle', arrayOf(friendRequestDto)),
+    profileVisible: bool,
+  }),
+);
+/** `GET /api/wallet` (M19, M20). */
+export const decodeWalletResponse: Decoder<WalletResponse> = root(
+  'WalletResponse',
+  object<WalletResponse>({
+    balances: uniqueBy('kind', arrayOf(balanceDto)),
+    packs: uniqueBy('productId', arrayOf(packDto)),
+    hintTierCost: int,
+  }),
+);
+
 /** Every decoder by its DTO name: the sample test's index. */
 export const DTO_DECODERS: Readonly<Record<DecodedDto, Decoder<unknown>>> = {
   ApiErrorBody: decodeApiErrorBody,
   AttemptResponse: decodeAttemptResponse,
   AuthResponse: decodeAuthResponse,
+  CardResponse: decodeCardResponse,
   ChapterPayload: decodeChapterPayload,
   CreateInvoiceResponse: decodeCreateInvoiceResponse,
   EntitlementsResponse: decodeEntitlementsResponse,
+  FriendProfile: decodeFriendProfile,
+  HintUseResponse: decodeHintUseResponse,
+  InviteView: decodeInviteView,
   OrderResponse: decodeOrderResponse,
   PostStatsResponse: decodePostStatsResponse,
   PutSaveResponse: decodePutSaveResponse,
   PuzzleStatus: decodePuzzleStatus,
   SaveFull: decodeSaveFull,
   SaveListResponse: decodeSaveListResponse,
+  ShareResponse: decodeShareResponse,
+  SocialResponse: decodeSocialResponse,
   StatsResponse: decodeStatsResponse,
+  WalletResponse: decodeWalletResponse,
 };
