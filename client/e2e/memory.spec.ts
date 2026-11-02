@@ -4,7 +4,8 @@
 // the sample rule (critique_r3 open question 2; M3c reuses it on the half tier): a uniform neighbourhood of >= 4 CSS px
 // in both rasters, >= 4 CSS px inside the stage, the canvas on top. Then the pixel is read with the shared stagePixel.
 // MEMORY-PLAN M2 (section 11): a context loss nothing restores reaches the D13 rebuild, and the stage it draws again
-// is the one before the loss, with no image fetched again.
+// is the one before the loss, with no image fetched again; a revive whose decode fails ends that record, and the stage
+// takes the visual again with one GET of its file.
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -49,7 +50,16 @@ type Raster = { w: number; h: number; data: Buffer };
  * mode; its next holder folds them into DebugStats / NovelDebug. Not a type import of scene/controller.ts: that module
  * loads pixi.js into the node project's check.
  */
-type M2Scene = { rebuilds: number };
+type M2Scene = {
+  rebuilds: number;
+  pendingLoads: number;
+  openBitmaps: number;
+  stale: number;
+  staleFrames: number;
+  reviveFailed: number;
+  reviving: boolean;
+  visibleReviveMs: number | null;
+};
 type M2Debug = { stats(): { scene: M2Scene }; forceContextLoss(mode: 'restorable' | 'hard'): void };
 type M2Window = Omit<E2eWindow, '__novelDebug'> & { __novelDebug?: M2Debug };
 
@@ -281,7 +291,16 @@ test('scene: an unrestored context loss rebuilds the stage', async ({ page }) =>
     mock.restore();
   });
   await expect.poll(async () => (await sceneStats(page)).rebuilds, { timeout: REBUILD_MS, message: 'activated rebuilt the stage' }).toBe(1);
+  // The rebuilt canvas draws its first frame after the revive's visible pass, and `rebuilds` rises before the revive
+  // starts: the samples wait for the whole revive (critique r2 O1).
+  await expect.poll(async () => (await sceneStats(page)).reviving, { timeout: REBUILD_MS, message: 'the revive settled' }).toBe(false);
   await atRest(page);
+  const revived = await sceneStats(page);
+  console.log(`memory: visible revive after the rebuild ${revived.visibleReviveMs ?? 'none'} ms`);
+  expect(
+    { openBitmaps: revived.openBitmaps, stale: revived.stale, staleFrames: revived.staleFrames, reviving: revived.reviving },
+    'after the revive: every bitmap closed, every texture revived, no frame drawn early',
+  ).toEqual({ openBitmaps: 0, stale: 0, staleFrames: 0, reviving: false });
   expect(await stageSize(page), 'the rebuilt canvas has the same box').toEqual(stage);
   const after = { bg: await stagePixel(page, bgAt.x, bgAt.y), ally: await stagePixel(page, head.x, head.y) };
   const worst = Math.max(deviation(after.bg, before.bg), deviation(after.ally, before.ally));
@@ -303,5 +322,79 @@ test('scene: an unrestored context loss rebuilds the stage', async ({ page }) =>
   const got = await stagePixel(page, right.x, right.y);
   console.log(`memory: the stranger's head at ${STRANGER_LINE}: expected ${right.expected.slice(0, 3).join(',')}, got ${got.slice(0, 3).join(',')}`);
   expect(deviation(got, right.expected), `the stranger's head: expected ≈ (${right.expected.slice(0, 3).join(',')}) ±${TOLERANCE}`).toBeLessThanOrEqual(TOLERANCE);
+  expect(errors, 'no page error').toEqual([]);
+});
+
+test('scene: a failed revive re-acquires the visual', async ({ page }) => {
+  test.setTimeout(120_000);
+  const [ally, street] = await Promise.all([placeholder(ALLY), placeholder(STREET)]);
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  const images = requests(page, IMAGE_URL);
+
+  await launch(page, 7003);
+  await firstLineAtRest(page);
+  const stage = await stageSize(page);
+  const bgAt = { x: Math.round(stage.w / 2), y: Math.round(stage.h * 0.12) };
+  const head = await headSample(page, stage, 'left', ally, street);
+  const before = { bg: await stagePixel(page, bgAt.x, bgAt.y), ally: await stagePixel(page, head.x, head.y) };
+  expect(Math.max(...before.bg.slice(0, 3)), `the stage before the loss: ${before.bg.join(',')}`).toBeGreaterThan(CONTRAST);
+  expect(deviation(before.ally, head.expected), `the ally's head before the loss: ${before.ally.join(',')}`).toBeLessThanOrEqual(TOLERANCE);
+  // Nothing loads now, so the next decode is the revive's first re-decode of a kept file (a visible record).
+  expect((await sceneStats(page)).pendingLoads, 'no load before the decode is armed').toBe(0);
+  await page.evaluate(() => {
+    const decode = window.createImageBitmap.bind(window);
+    let armed = true;
+    const once = (image: ImageBitmapSource, options?: ImageBitmapOptions): Promise<ImageBitmap> => {
+      if (armed) {
+        armed = false;
+        return Promise.reject(new DOMException('e2e: the decode fails once', 'InvalidStateError'));
+      }
+      return decode(image, options);
+    };
+    // The loader calls the one-source form only (scene/loader.ts); the crop overload is never reached.
+    window.createImageBitmap = once as typeof window.createImageBitmap;
+  });
+  console.log(`memory: image URLs fetched twice before the marker: ${twice(images.urls).join(', ') || 'none'}`);
+  const marker = images.urls.length;
+  const fetchedBefore = images.urls.slice(0, marker).map((u) => new URL(u).pathname);
+
+  expect(await hardLoss(page), 'the hard loss landed and nothing restored it within 1 s').toEqual(['lost']);
+  await page.evaluate(() => {
+    const mock = (window as unknown as M2Window).__tgMock;
+    mock.minimize();
+    mock.restore();
+  });
+  await expect.poll(async () => (await sceneStats(page)).rebuilds, { timeout: REBUILD_MS, message: 'activated rebuilt the stage' }).toBe(1);
+  await expect
+    .poll(
+      async () => {
+        const s = await sceneStats(page);
+        return !s.reviving && s.pendingLoads === 0;
+      },
+      { timeout: 5_000, message: 'the revive settled and the re-acquired visual loaded' },
+    )
+    .toBe(true);
+  await atRest(page);
+  const revived = await sceneStats(page);
+  console.log(`memory: visible revive after the failed decode ${revived.visibleReviveMs ?? 'none'} ms`);
+  expect(
+    { reviveFailed: revived.reviveFailed, rebuilds: revived.rebuilds, openBitmaps: revived.openBitmaps, stale: revived.stale },
+    'one record ended by the failed decode, every other one revived',
+  ).toEqual({ reviveFailed: 1, rebuilds: 1, openBitmaps: 0, stale: 0 });
+  const after = { bg: await stagePixel(page, bgAt.x, bgAt.y), ally: await stagePixel(page, head.x, head.y) };
+  console.log(
+    `memory: after the failed revive bg ${before.bg.slice(0, 3).join(',')} -> ${after.bg.slice(0, 3).join(',')}, ` +
+      `ally head ${before.ally.slice(0, 3).join(',')} -> ${after.ally.slice(0, 3).join(',')}`,
+  );
+  expect(deviation(after.bg, before.bg), 'the bg after the failed revive').toBeLessThanOrEqual(TOLERANCE);
+  expect(deviation(after.ally, before.ally), "the ally's head after the failed revive").toBeLessThanOrEqual(TOLERANCE);
+  // The ended record's slot is taken again on a new record: one GET of a file the page fetched before (F10).
+  const fetched = images.urls.slice(marker).map((u) => new URL(u).pathname);
+  console.log(`memory: image GETs after the marker: ${fetched.join(', ') || 'none'}`);
+  expect(fetched, 'exactly one image GET after the loss').toHaveLength(1);
+  expect(fetchedBefore, `${fetched.join(', ')} was fetched before the marker`).toContain(fetched[0]);
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 500)));
+  expect(images.urls.slice(marker).map((u) => new URL(u).pathname), 'no image GET 500 ms later').toEqual(fetched);
   expect(errors, 'no page error').toEqual([]);
 });
