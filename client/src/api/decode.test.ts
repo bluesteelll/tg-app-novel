@@ -177,6 +177,8 @@ const MALFORMED: readonly Malformed[] = [
   { dto: 'WalletResponse', sample: 0, path: ['balances', 1], value: { kind: 'hint', balance: 0, debt: 0 }, error: 'WalletResponse.balances[1].kind: duplicate' },
   { dto: 'WalletResponse', sample: 0, path: ['packs', 1, 'productId'], value: 'pack:hint_s', error: 'WalletResponse.packs[1].productId: duplicate' },
   { dto: 'WalletResponse', sample: 0, path: ['hintTierCost'], value: REMOVE, error: 'WalletResponse.hintTierCost: missing' },
+  { dto: 'WalletResponse', sample: 0, path: ['maxPerGift'], value: REMOVE, error: 'WalletResponse.maxPerGift: missing' },
+  { dto: 'WalletResponse', sample: 0, path: ['maxPerGift'], value: 1.5, error: 'WalletResponse.maxPerGift: ' },
   { dto: 'WalletResponse', sample: 0, path: ['packs', 0, 'title', 'ru'], value: 3, error: 'WalletResponse.packs[0].title.ru: ' },
 ];
 

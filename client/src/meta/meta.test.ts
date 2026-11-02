@@ -374,11 +374,13 @@ test('wallet: hint port reads the balance from the server only', async () => {
 
 test("wallet: view keeps the server's kinds and pack order", async () => {
   const body = sample('WalletResponse', 0, decodeWalletResponse);
-  // Not in (kind, amount) order, and a kind before `hint`: whatever the server sends is shown as sent.
+  // Not in (kind, amount) order, and a kind before `hint`: whatever the server sends is shown as sent. The per-gift
+  // maximum is not the samples' 3, so a constant in the view cannot pass.
   const unordered: WalletResponse = {
     ...body,
     balances: [...body.balances.map((b) => ({ ...b, kind: 'star', balance: 7, debt: 0 })), ...body.balances],
     packs: [...body.packs].reverse(),
+    maxPerGift: 5,
   };
   let lang: Lang = 'ru';
   const api = walletApi();
@@ -396,10 +398,16 @@ test("wallet: view keeps the server's kinds and pack order", async () => {
     { productId: 'pack:hint_s', kind: 'hint', amount: 3, priceStars: 1, title: '3 подсказки' },
   ]);
   expect(view.hintTierCost).toBe(1);
-  // META-PLAN's three fields, nothing copied beyond them.
-  expect(Object.keys(view).sort()).toEqual(['balances', 'hintTierCost', 'packs']);
+  expect(wallet.state()?.maxPerGift).toBe(5);
+  // META-PLAN's three fields and the per-gift maximum, nothing copied beyond them.
+  expect(Object.keys(view).sort()).toEqual(['balances', 'hintTierCost', 'maxPerGift', 'packs']);
   expect(wallet.state()).toEqual(view);
   expect(port.balance()).toBe(0);
+
+  // A hint use's answer carries no maximum: the wallet answer's stays (D9).
+  api.useHint.mockResolvedValueOnce(ok(sample('HintUseResponse', 0, decodeHintUseResponse)));
+  value(await port.use(DRAWER, 1, 'ru'));
+  expect(wallet.state()?.maxPerGift).toBe(5);
 
   // The titles follow the language as of each answer.
   lang = 'en';

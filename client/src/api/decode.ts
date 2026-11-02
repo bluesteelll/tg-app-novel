@@ -402,6 +402,8 @@ export const decodeWalletResponse: Decoder<WalletResponse> = root(
     balances: uniqueBy('kind', arrayOf(balanceDto)),
     packs: uniqueBy('productId', arrayOf(packDto)),
     hintTierCost: int,
+    // No range check: the bound is the server catalog's startup check, and the gift dialog clamps by the balance.
+    maxPerGift: int,
   }),
 );
 

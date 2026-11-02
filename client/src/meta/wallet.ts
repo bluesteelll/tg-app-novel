@@ -17,6 +17,8 @@ export type WalletView = {
   balances: ReadonlyArray<{ kind: ResourceKind; balance: number; debt: number }>;
   packs: ReadonlyArray<{ productId: ProductId; kind: ResourceKind; amount: number; priceStars: number; title: string }>;
   hintTierCost: number;
+  /** The most units one gift moves (the gift dialog's bound); only a wallet answer carries it, a hint use keeps it. */
+  maxPerGift: number;
 };
 
 export interface WalletService {
@@ -103,6 +105,7 @@ function walletView(w: WalletResponse, lang: Lang): WalletView {
       title: p.title[lang],
     })),
     hintTierCost: w.hintTierCost,
+    maxPerGift: w.maxPerGift,
   };
 }
 
