@@ -153,6 +153,52 @@ describe('scan files', () => {
     expect(findings).toContainEqual(expect.objectContaining({ kind: 'fingerprint', needle: 'Compilation failed' }));
     expect(findings).toContainEqual({ kind: 'source-map', file: 'assets/index-a.js.map' });
   });
+
+  test('scan: a text in a JS string literal is found in its escaped forms', () => {
+    // K7(c): a paid text with `"`, `\` and `'`, as fingerprints.lines.json gives it (the plain text only).
+    const q = 'Say "quiet" at C:\\gate, don\'t wait.';
+    const esc = (s: string): string => JSON.stringify(s).slice(1, -1);
+    const json = JSON.stringify({ t: q });
+    // Vite's JSON module form, the same JSON single-quoted, the text in a template literal, the text double-quoted.
+    const a = text('assets/a.js', `const a=JSON.parse(${JSON.stringify(json)});export{a};`);
+    const b = text('assets/b.js', `const b=JSON.parse('${json.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}');export{b};`);
+    const c = text('assets/c.js', `const c=\`${q.replace(/\\/g, '\\\\')}\`;export{c};`);
+    const d = text('assets/d.js', `const d=${JSON.stringify(q)};export{d};`);
+    for (const f of [a, b, c]) {
+      expect([rawIncludes(f, q), rawIncludes(f, esc(q))], f.path).toEqual([false, false]); // only an escaped form finds it
+    }
+    expect(rawIncludes(d, q)).toBe(false);
+    const found = (file: string, section: string, needle: string, via: 'plain' | 'js-string'): Finding => ({
+      kind: 'fingerprint',
+      file,
+      section,
+      needle,
+      via,
+    });
+    expect(scanFiles([INDEX, a, b, c], [{ name: 'paid-texts', needles: [q] }])).toEqual([
+      found('assets/a.js', 'paid-texts', q, 'js-string'),
+      found('assets/b.js', 'paid-texts', q, 'js-string'),
+      found('assets/c.js', 'paid-texts', q, 'js-string'),
+    ]);
+    expect(scanFiles([INDEX, d], [{ name: 'paid-texts', needles: [q] }])).toEqual([
+      found('assets/d.js', 'paid-texts', q, 'js-string'),
+    ]);
+    // A section holding the escape as its own needle (textNeedles' pairs): one finding, the escape's, none for q.
+    expect(scanFiles([INDEX, d], [{ name: 'paid-en', needles: [q, esc(q)].sort() }])).toEqual([
+      found('assets/d.js', 'paid-en', esc(q), 'plain'),
+    ]);
+  });
+
+  test('scan: a text with a backtick and a dollar-brace is found in a template literal', () => {
+    // The bundler's minifier writes such a text as a template literal with `\`` and `\${`; written here by hand, so
+    // one fixture pins both escapes of the backtick form.
+    const q = 'Tell me `why` for ${price}.';
+    const c = text('assets/c.js', 'const c=`Tell me \\`why\\` for \\${price}.`;export{c};');
+    expect(rawIncludes(c, q)).toBe(false); // only the escaped form finds it
+    expect(scanFiles([INDEX, c], [{ name: 'paid-texts', needles: [q] }])).toEqual([
+      { kind: 'fingerprint', file: 'assets/c.js', section: 'paid-texts', needle: q, via: 'js-string' },
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -785,6 +831,30 @@ describe('scan meta', () => {
     const clean = scanDist('dist-clean', { 'assets/index-a.js': `const s=${JSON.stringify(SHORT.ru)};export{s};` });
     expect(clean.code, clean.lines.join('\n')).toBe(0);
     expect(clean.lines).toContainEqual(expect.stringMatching(/ sections compiler\(2\) dev-canary\(4\) meta-texts\(4\)$/));
+  });
+
+  test('scan: a meta text inside JSON.parse fails the scan', () => {
+    // K7(c): an ending title with quotes, inlined the way Vite inlines a JSON module.
+    const quoted = { ru: 'Финал "тихой" усадьбы.', en: 'The "quiet" ending.' };
+    const esc = (s: string): string => JSON.stringify(s).slice(1, -1);
+    const meta = { manor: { ...META.manor, endings: { quiet: quoted } } };
+    const { sections, findings } = setup({ 'story/meta.json': JSON.stringify(meta) });
+    expect(findings).toEqual([]);
+    expect(sections.find((s) => s.name === 'meta-texts')?.needles).toEqual(
+      [quoted.ru, esc(quoted.ru), quoted.en, esc(quoted.en), DESC.ru, DESC.en].sort(),
+    );
+    // Only the title in the chunk, so the plain DESC texts cannot fail the parent's scan.
+    const chunk = `const m=JSON.parse(${JSON.stringify(JSON.stringify({ endings: { quiet: quoted } }))});export{m};`;
+    for (const raw of [quoted.ru, esc(quoted.ru), quoted.en, esc(quoted.en)]) {
+      expect(chunk.includes(raw), raw).toBe(false); // only an escaped form finds it
+    }
+    const dist = scanDist('dist-parse', { 'assets/index-a.js': chunk });
+    expect(dist.code, dist.lines.join('\n')).toBe(1);
+    expect(dist.lines).toContainEqual(`scan: fingerprint meta-texts ${JSON.stringify(quoted.ru)} in assets/index-a.js (via js-string)`);
+    expect(dist.lines).toContainEqual(`scan: fingerprint meta-texts ${JSON.stringify(quoted.en)} in assets/index-a.js (via js-string)`);
+    // One finding per text: the escapes the section holds as needles add none.
+    expect(dist.lines).toContainEqual('scan: 2 findings');
+    expect(dist.lines).toContainEqual(expect.stringMatching(/ sections compiler\(2\) dev-canary\(4\) meta-texts\(6\)$/));
   });
 
   test('scan: empty meta fingerprint set fails', () => {

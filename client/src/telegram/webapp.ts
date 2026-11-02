@@ -23,6 +23,7 @@ export type TwaWebApp = {
   isVersionAtLeast(v: string): boolean;
   ready(): void;
   expand(): void;
+  close(): void;
   disableVerticalSwipes(): void;
   enableClosingConfirmation(): void;
   disableClosingConfirmation(): void;
@@ -74,7 +75,7 @@ export type TgEnv = {
 type TwaWindow = Window & { Telegram?: { WebApp?: unknown } };
 
 /** CloudStorage's value limit (core.telegram.org/bots/webapps#cloudstorage). */
-const CLOUD_VALUE_MAX = 4096;
+export const CLOUD_VALUE_MAX = 4096;
 /**
  * A CloudStorage / DeviceStorage call whose callback has not come by then settles as a `timeout` storage error, and a
  * later callback is ignored: boot awaits these calls, and Telegram does not promise to answer one.
@@ -275,6 +276,8 @@ function inertClient(env: TgEnv): TelegramClient {
     isVersionAtLeast: () => false,
     ready: none,
     expand: none,
+    // No Mini App to close; the page is never closed through window.close.
+    close: none,
     disableVerticalSwipes: none,
     setClosingConfirmation: none,
     setChromeColors: none,
@@ -375,6 +378,8 @@ function webAppClient(w: TwaWebApp, env: TgEnv): TelegramClient {
     isVersionAtLeast: at,
     ready: () => attempt(() => w.ready()),
     expand: () => attempt(() => w.expand()),
+    // No `return_back` (a 7.6 extra nothing here needs), so no version gate.
+    close: () => attempt(() => w.close()),
     disableVerticalSwipes: () => {
       if (at('7.7')) {
         attempt(() => w.disableVerticalSwipes());
