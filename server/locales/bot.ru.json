@@ -13,6 +13,7 @@
     "paysupport_not_applied": "— не зачислен, напишите нам",
     "paysupport_refunded": "— возвращён",
     "paysupport_more": "…и ещё платежей: {n}.",
+    "paysupport_unavailable": "Список платежей сейчас недоступен. Повторите /paysupport через минуту.",
     "privacy": "Политика конфиденциальности: {url}",
     "unknown_command": "Неизвестная команда. Доступные команды: /start, /paysupport, /support, /terms, /privacy.",
     "payment_unapplied": "Платёж {charge} получен, но покупка не зачислена. Мы разберёмся: зачислим покупку или вернём звёзды. Номер платежа поможет при обращении (/paysupport).",

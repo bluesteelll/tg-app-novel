@@ -84,6 +84,8 @@ pub struct LangTexts {
     pub paysupport_refunded: String,
     /// After the listed charges, when more were left out: `{n}`.
     pub paysupport_more: String,
+    /// `/paysupport` when the charges cannot be read now, after the intro.
+    pub paysupport_unavailable: String,
     /// `/privacy`: `{url}`, the policy page.
     pub privacy: String,
     /// Any other command, and `/refund` from anyone but an admin.
@@ -159,6 +161,7 @@ impl LangTexts {
             paysupport_not_applied,
             paysupport_refunded,
             paysupport_more,
+            paysupport_unavailable,
             privacy,
             unknown_command,
             payment_unapplied,
@@ -221,6 +224,12 @@ impl LangTexts {
                 &[],
             ),
             entry("paysupport_more", paysupport_more, MESSAGE_LIMIT, &["n"]),
+            entry(
+                "paysupport_unavailable",
+                paysupport_unavailable,
+                MESSAGE_LIMIT,
+                &[],
+            ),
             entry("privacy", privacy, MESSAGE_LIMIT, &["url"]),
             entry("unknown_command", unknown_command, MESSAGE_LIMIT, &[]),
             entry(

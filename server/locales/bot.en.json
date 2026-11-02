@@ -13,6 +13,7 @@
     "paysupport_not_applied": "(not applied, please contact us)",
     "paysupport_refunded": "(refunded)",
     "paysupport_more": "…and {n} more payments.",
+    "paysupport_unavailable": "Your payment list is unavailable right now. Please repeat /paysupport in a minute.",
     "privacy": "Privacy policy: {url}",
     "unknown_command": "Unknown command. Available commands: /start, /paysupport, /support, /terms, /privacy.",
     "payment_unapplied": "Payment {charge} was received, but the purchase was not applied. We will sort it out: apply the purchase or refund the Stars. The payment number helps when you contact us (/paysupport).",

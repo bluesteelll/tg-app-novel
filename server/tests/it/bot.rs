@@ -760,6 +760,52 @@ async fn paysupport_lists_newest_twenty_with_total() {
     report(&failures);
 }
 
+/// A `/paysupport` whose database read fails (the payments table locked: the read meets the 2 s `lock_timeout`)
+/// answers 200 with the intro and `paysupport_unavailable` (critique O2): a 500 would hold the chat's later updates,
+/// the payer's `successful_payment` included. An admin `/refund` under the same failure stays 500 with no message
+/// (money-relevant, repeat-safe, the admin's chat only). Released, `/paysupport` lists the charge again.
+#[tokio::test]
+async fn paysupport_db_error_answers_200() {
+    let (st, _db, gateway) = refund_state().await;
+    let mut failures = Vec::new();
+    if bought(&st, ANN, "chapter:ch2", "c-x", &mut failures)
+        .await
+        .is_none()
+    {
+        return report(&failures);
+    }
+    let mut held = common::raw_db(&st).await;
+    sqlx::raw_sql("BEGIN").execute(&mut held).await.unwrap();
+    sqlx::raw_sql("LOCK TABLE payments IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut held)
+        .await
+        .unwrap();
+    let ru = texts::texts(Lang::Ru);
+    let unavailable = format!("{}\n\n{}", ru.paysupport, ru.paysupport_unavailable);
+    let got = say(&st, &gateway, ANN, Some("ru"), "/paysupport").await;
+    failures.extend(expect_reply(
+        "/paysupport under a DB failure",
+        &got,
+        &plain(ANN, &unavailable),
+    ));
+    let (status, sent) = say(&st, &gateway, TEST_ADMIN_ID, Some("ru"), "/refund c-x").await;
+    if status != 500 || !sent.is_empty() {
+        failures.push(format!(
+            "/refund under a DB failure: expected 500 and no message, got {status} and {sent:?}"
+        ));
+    }
+    sqlx::raw_sql("ROLLBACK").execute(&mut held).await.unwrap();
+    sqlx::Connection::close(held).await.unwrap();
+    let (status, sent) = say(&st, &gateway, ANN, Some("ru"), "/paysupport").await;
+    let text = sent.first().map(|msg| msg.text.clone()).unwrap_or_default();
+    if status != 200 || sent.len() != 1 || !text.contains("c-x") {
+        failures.push(format!(
+            "/paysupport released: expected 200 and 1 message listing c-x, got {status} and {sent:?}"
+        ));
+    }
+    report(&failures);
+}
+
 /// The command menu in `t`'s language, as `server setup` registers it.
 fn menu_of(t: &texts::LangTexts) -> Vec<BotCommandSpec> {
     [
