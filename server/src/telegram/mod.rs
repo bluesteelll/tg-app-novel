@@ -2,6 +2,9 @@
 //! the webhook route Telegram's updates arrive on ([`webhook::webhook`]), and the payment path the webhook drives
 //! ([`payments`]), with no bot framework.
 
+pub mod commands;
 pub mod gateway;
 pub mod payments;
+pub mod setup;
+pub mod texts;
 pub mod webhook;
