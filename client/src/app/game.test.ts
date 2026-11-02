@@ -2581,6 +2581,35 @@ test('game: a 409 after a round trip asks when the window since the tap closes',
   h.game.dispose();
 });
 
+test('game: the hold of a 409 counts from the tap, not from the end of the step wait', async () => {
+  const h = harness();
+  await startManor(h);
+  await h.game.advance(); // l002
+  await h.game.advance(); // the choice set
+  await h.game.choose(0); // l003
+  conflicting(h.save());
+  const view = (): unknown[] => [h.vm.saves.saving, h.vm.saves.conflict];
+  const release = holdEnsure(h.scene);
+  const step = h.game.advance(); // l005, garden's entry: waits on bg/garden
+  await settle();
+  const saving = h.game.save('s1');
+  await settle();
+  // The step ends 300 ms after the tap and the 409 answers at once: the ask shows at the tap's window end, the
+  // double tap's second tap having been absorbed by `saving` during the wait.
+  h.clock.advance(300);
+  release();
+  await step;
+  await saving;
+  await settle();
+  const atAnswer = view();
+  h.clock.advance(CONFLICT_HOLD_MS - 300);
+  expect([atAnswer, view()]).toEqual([
+    ['s1', null],
+    [null, 's1'],
+  ]);
+  h.game.dispose();
+});
+
 test('game: a manual save with a step in flight waits for that step', async () => {
   /** A manual slot's body resumed in a fresh session: [lineId, ok, toasts, line]. */
   const resumed = async (full: SaveFull | undefined): Promise<unknown[] | null> => {
