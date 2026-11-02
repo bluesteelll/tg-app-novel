@@ -438,15 +438,17 @@ test('wallet: an older wallet answer never replaces a newer balance', async () =
   // The caller still gets its own answer.
   expect(hintEntry(own)).toBe(5);
 
-  // Two refreshes out of order: the later-issued one stays.
+  // Two refreshes out of order: the later-issued one stays, its cost with its balance. The stale answer carries another
+  // cost because the balance alone cannot tell them apart: the newer balance would stand over a stale base as well.
   const slow = deferred<Result<WalletResponse, ApiError>>();
   api.getWallet.mockReturnValueOnce(slow.promise).mockResolvedValueOnce(ok(walletWithHints(7)));
   const first = wallet.refresh();
   value(await wallet.refresh());
-  slow.resolve(ok(walletWithHints(4)));
+  slow.resolve(ok({ ...walletWithHints(4), hintTierCost: 9 }));
   value(await first);
   expect(port.balance()).toBe(7);
   expect(hintEntry(wallet.state())).toBe(7);
+  expect(port.tierCost()).toBe(1);
 });
 
 test('meta: views are assignable to the overlay and port types', async () => {
