@@ -766,6 +766,8 @@ test('controller: inventory and lock views follow the state', () => {
   expect([h.view.items, h.view.docs, h.view.lock]).toEqual([[], [], null]);
   h.c.dispatch(tap('hall.to_study'));
   h.c.dispatch(tap('study.medal'));
+  // A taken take leaves the room's list in world order, as the reducer's actions do: no dead button over the prop.
+  expect(h.view.hotspots.map((v) => v.key)).toEqual(['study.drawer', 'study.letter', 'study.to_hall']);
   h.c.dispatch(tap('study.letter'));
   expect(h.view.items).toEqual([{ id: 'medal_sun', name: 'name medal_sun', desc: 'desc medal_sun', glyph: 'sun' }]);
   expect(h.view.docs).toEqual([{ id: 'letter', title: 'title letter', body: ['p1 letter', 'p2 letter'] }]);
