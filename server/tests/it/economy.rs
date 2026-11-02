@@ -1421,8 +1421,9 @@ async fn invoice_pack_price_from_catalog() {
     report(&failures);
 }
 
-/// Every rule of the `economy` section is a startup refusal naming its key (`ContentError::Catalog`); a pack price
-/// has no ceiling (one-time invoices have none, carry 5b).
+/// Every rule of the `economy` section is a startup refusal naming its key (`ContentError::Catalog`; a gift or referral
+/// bound names its full key); a pack price has no ceiling (one-time invoices have none, carry 5b), and every accepted
+/// edge of the gift and referral bounds builds.
 #[tokio::test]
 async fn catalog_economy_rules_refused() {
     let content = fixture_content().await;
@@ -1522,6 +1523,61 @@ async fn catalog_economy_rules_refused() {
             set(&["referral", "invitee"], json!(1001)),
             "economy.referral",
         ),
+        (
+            "sendPerDay 2, below maxPerGift 3",
+            set(&["gifts", "sendPerDay"], json!(2)),
+            "economy.gifts.sendPerDay:",
+        ),
+        (
+            "sendPerDay 1001",
+            set(&["gifts", "sendPerDay"], json!(1001)),
+            "economy.gifts.sendPerDay:",
+        ),
+        (
+            "receivePerDay 2, below maxPerGift 3",
+            set(&["gifts", "receivePerDay"], json!(2)),
+            "economy.gifts.receivePerDay:",
+        ),
+        (
+            "receivePerDay 1001",
+            set(&["gifts", "receivePerDay"], json!(1001)),
+            "economy.gifts.receivePerDay:",
+        ),
+        (
+            "capTotal 0",
+            set(&["referral", "capTotal"], json!(0)),
+            "economy.referral.capTotal:",
+        ),
+        (
+            "capTotal 1001",
+            set(&["referral", "capTotal"], json!(1001)),
+            "economy.referral.capTotal:",
+        ),
+        (
+            "capPerDay 0",
+            set(&["referral", "capPerDay"], json!(0)),
+            "economy.referral.capPerDay:",
+        ),
+        (
+            "capPerDay 21, above capTotal 20",
+            set(&["referral", "capPerDay"], json!(21)),
+            "economy.referral.capPerDay:",
+        ),
+        (
+            "minPlaySecs 0",
+            set(&["referral", "minPlaySecs"], json!(0)),
+            "economy.referral.minPlaySecs:",
+        ),
+        (
+            "minPlaySecs -1",
+            set(&["referral", "minPlaySecs"], json!(-1)),
+            "economy.referral.minPlaySecs:",
+        ),
+        (
+            "minPlaySecs 86401",
+            set(&["referral", "minPlaySecs"], json!(86_401)),
+            "economy.referral.minPlaySecs:",
+        ),
     ];
     for (case, edit, key) in cases {
         let edited = catalog_with(|v| {
@@ -1539,10 +1595,52 @@ async fn catalog_economy_rules_refused() {
             )),
         }
     }
-    let unbounded =
-        catalog_with(|v| v["economy"]["packs"]["hint_s"]["priceStars"] = json!(100_000));
-    if let Err(e) = Catalog::build(&unbounded, &content) {
-        failures.push(format!("pack priceStars 100000: expected Ok, got {e}"));
+    // Every accepted edge of the gift and referral bounds builds, so an off-by-one bound is red.
+    let set_all = |edits: Vec<(&'static [&'static str], Value)>| -> Edit {
+        Box::new(move |v: &mut Value| {
+            for (path, value) in edits {
+                let mut at = &mut v["economy"];
+                for key in path {
+                    at = &mut at[*key];
+                }
+                *at = value;
+            }
+        })
+    };
+    let accepted: Vec<(&str, Edit)> = vec![
+        (
+            "pack priceStars 100000",
+            set(&["packs", "hint_s", "priceStars"], json!(100_000)),
+        ),
+        (
+            "the lower edges: sendPerDay = receivePerDay = maxPerGift 3, capPerDay = capTotal 1, minPlaySecs 1",
+            set_all(vec![
+                (&["gifts", "sendPerDay"], json!(3)),
+                (&["gifts", "receivePerDay"], json!(3)),
+                (&["referral", "capTotal"], json!(1)),
+                (&["referral", "capPerDay"], json!(1)),
+                (&["referral", "minPlaySecs"], json!(1)),
+            ]),
+        ),
+        (
+            "the upper edges: sendPerDay, receivePerDay, capTotal, capPerDay 1000, minPlaySecs 86400",
+            set_all(vec![
+                (&["gifts", "sendPerDay"], json!(1000)),
+                (&["gifts", "receivePerDay"], json!(1000)),
+                (&["referral", "capTotal"], json!(1000)),
+                (&["referral", "capPerDay"], json!(1000)),
+                (&["referral", "minPlaySecs"], json!(86_400)),
+            ]),
+        ),
+        (
+            "capPerDay = capTotal 20",
+            set(&["referral", "capPerDay"], json!(20)),
+        ),
+    ];
+    for (case, edit) in accepted {
+        if let Err(e) = Catalog::build(&catalog_with(edit), &content) {
+            failures.push(format!("{case}: expected Ok, got {e}"));
+        }
     }
     report(&failures);
 }
