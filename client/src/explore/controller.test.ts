@@ -13,7 +13,7 @@ import type { AssetId, ChapterId, SectionId } from '../story/staging.ts';
 import type { ExploreViewStore } from '../ui/explore-view.svelte.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { HotspotKey, ItemId, RoomId, WorldPublic, WorldText } from '../world/types.ts';
-import { MIN_TARGET_PX, createExploreController } from './controller.ts';
+import { MIN_TARGET_PX, REVEAL_MS, createExploreController } from './controller.ts';
 import type { ExploreController, ExploreControllerDeps } from './controller.ts';
 import type { ExploreAction, ExploreEffect } from './reduce.ts';
 import { EMPTY_WORLD_STATE } from './state.ts';
@@ -692,5 +692,41 @@ test('controller: neighbour preloads stay under the steady cap', async () => {
   // X13: 29.3 MiB with two neighbours, 20.9 MiB with a close-up open; never above the steady cap.
   expect(Math.max(...steps.map((s) => s.bytes))).toBeLessThanOrEqual(STEADY_CAP_BYTES);
   expect(sc.errors).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// C4: the "show spots" outline (X16, cut D12): one timer, owned here, never in a component
+
+test('controller: reveal ends after 2 s', () => {
+  vi.useFakeTimers();
+  try {
+    expect(REVEAL_MS).toBe(2000);
+    const h = harness(frame());
+    h.c.enter(sec('frame'), EMPTY_WORLD_STATE);
+    h.c.reveal();
+    expect(h.view.reveal).toBe(true);
+    vi.advanceTimersByTime(1999);
+    expect(h.view.reveal).toBe(true);
+    vi.advanceTimersByTime(1);
+    expect(h.view.reveal).toBe(false);
+    // A second reveal restarts the 2 s instead of ending with the first.
+    h.c.reveal();
+    vi.advanceTimersByTime(1500);
+    h.c.reveal();
+    expect(vi.getTimerCount()).toBe(1);
+    vi.advanceTimersByTime(1999);
+    expect(h.view.reveal).toBe(true);
+    vi.advanceTimersByTime(1);
+    expect(h.view.reveal).toBe(false);
+    // Disposed mid-reveal: no timer is left behind and the outline is off.
+    h.c.reveal();
+    h.c.dispose();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(h.view.reveal).toBe(false);
+    h.c.reveal();
+    expect([h.view.reveal, vi.getTimerCount()]).toEqual([false, 0]);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 

@@ -18,6 +18,8 @@ import type { WorldState } from './state.ts';
 
 /** PZ:552 (principle 5): the smallest hotspot side, in CSS px. */
 export const MIN_TARGET_PX = 44;
+/** X16: how long "show spots" outlines every hotspot. */
+export const REVEAL_MS = 2000;
 
 /** Owned by GameSession, one per chapter (PZ "Resource lifetime"). */
 export interface ExploreController {
@@ -40,9 +42,11 @@ export interface ExploreController {
    * outside a section, while an event knot is pending, and once disposed.
    */
   roomShown(): void;
+  /** "Show spots" (X16): every hotspot outlined for REVEAL_MS; a second call restarts the time. */
+  reveal(): void;
   state(): WorldState;
   onEffect(fn: (e: ExploreEffect) => void): Unsubscribe;
-  /** Idempotent: disconnects the observer, drops the listeners and empties the views it writes. */
+  /** Idempotent: releases `room:*`, disconnects the observer, clears the reveal timer, drops the listeners, empties its views. */
   dispose(): void;
 }
 
@@ -85,6 +89,8 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
   let pathFns: Array<(walkable: boolean) => void> = [];
   /** D10: the rooms whose `room:<id>` tag was requested and not released since. */
   const tracked = new Set<RoomId>();
+  /** D12: the one reveal timer; components hold none. */
+  let revealTimer: ReturnType<typeof setTimeout> | null = null;
   let dead = false;
 
   /** D4: the current room's hotspots in world order, except a taken `take` (as `actions` lists them). */
@@ -299,6 +305,19 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
     },
     resize,
     roomShown,
+    reveal() {
+      if (dead) {
+        return;
+      }
+      if (revealTimer !== null) {
+        clearTimeout(revealTimer);
+      }
+      view.reveal = true;
+      revealTimer = setTimeout(() => {
+        revealTimer = null;
+        view.reveal = false;
+      }, REVEAL_MS);
+    },
     state: () => current,
     onEffect(fn) {
       if (dead) {
@@ -317,6 +336,10 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
       dead = true;
       releaseAll();
       observer.disconnect();
+      if (revealTimer !== null) {
+        clearTimeout(revealTimer);
+        revealTimer = null;
+      }
       effectFns = [];
       pathFns = [];
       view.hotspots = [];
