@@ -35,9 +35,9 @@ export const systemClock: Clock = {
 
 export type FetchFn = (input: string, init: RequestInit) => Promise<Response>;
 
-/** One JSON call; `body` is serialized here. */
+/** One JSON call; `body` is serialized here. `DELETE` removes a friend or declines a request (META F20). */
 export type ApiRequest = {
-  method: 'GET' | 'POST' | 'PUT';
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE';
   path: `/api/${string}`;
   body?: unknown;
   keepalive?: boolean;
