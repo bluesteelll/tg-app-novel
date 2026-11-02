@@ -18,7 +18,7 @@
     "payment_unapplied": "Payment {charge} was received, but the purchase was not applied. We will sort it out: apply the purchase or refund the Stars. The payment number helps when you contact us (/paysupport).",
     "admin_unapplied": "Unapplied payment {charge} from user {payer}: {outcome}. Check it and refund if needed: /refund {charge}",
     "refund_usage": "Usage: /refund <payment number>",
-    "refund_done": "Payment {charge} refunded, the purchase revoked.",
+    "refund_done": "Payment {charge} refunded. The purchase is revoked unless another payment paid for it.",
     "refund_already": "Payment {charge} is already refunded.",
     "refund_unknown": "Payment {charge} was not found.",
     "refund_failed": "Could not refund payment {charge}: {error}. Nothing changed, please try again.",

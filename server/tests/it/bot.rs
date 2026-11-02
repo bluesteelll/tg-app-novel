@@ -224,7 +224,7 @@ pub(crate) fn messages(gateway: &RecordingGateway) -> Vec<OutMessage> {
 
 /// `text` from `from` (language `language`) in their private chat, through the webhook: the HTTP status and the
 /// messages sent while it was handled.
-async fn say(
+pub(crate) async fn say(
     st: &AppState,
     gateway: &RecordingGateway,
     from: i64,
@@ -431,7 +431,7 @@ fn payment_in(payer: i64, language: &str, amount: u32, order: &str, charge: &str
 
 /// A second `created` order of `product` for `user` at `T0`, as raw SQL: the order the invoice route refuses once the
 /// product is owned, as if it had been opened before the first one was paid and slipped past the checkout window.
-async fn raw_order(st: &AppState, order: &str, user: i64, product: &str) {
+pub(crate) async fn raw_order(st: &AppState, order: &str, user: i64, product: &str) {
     let mut c = common::raw_db(st).await;
     sqlx::query(
         "INSERT INTO orders (id, user_id, product_id, amount, currency, status, created_at) \
@@ -513,7 +513,7 @@ async fn unapplied_charge_notifies_payer_and_admin() {
 }
 
 /// The `/paysupport` lines of `text` after its intro: one per charge.
-fn charge_lines<'a>(text: &'a str, intro: &str) -> Vec<&'a str> {
+pub(crate) fn charge_lines<'a>(text: &'a str, intro: &str) -> Vec<&'a str> {
     text.strip_prefix(intro)
         .unwrap_or(text)
         .lines()
