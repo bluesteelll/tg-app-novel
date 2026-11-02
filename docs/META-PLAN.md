@@ -859,6 +859,9 @@ unchanged.**
   - Changed by RULINGS 54 (as of `6043941`; docs lane `docs-errata-2`): of the ten lanes, LM1 (`4d8a9ec`) and LU1
     (`2a7b50c`) have merged and LE1 runs; LF1, LM2, LF2, LE2, LPO, LMD and LMI are to go. The server chain has run to
     LS3 (`00d7c10`), so it continues LE1 → LF1 → LM2 → LF2 → LE2 → LPO → L9.
+  - Changed by RULINGS 78 (as of `22ed4d5`; docs lane `docs-errata-3`, group B): of the ten lanes, LM1, LU1, LE1
+    (`29c310b`), LF1 (`946e2b5`) and LM2 (`5a33183`) have merged and LF2 runs; LE2, LPO, LMD and LMI are to go. The
+    server chain has run to LM2, so it continues LF2 → LE2 → LPO → L9.
   - Why LPO is a lane of its own (revision 1, W4): the operator facts need a `Config` variable, which means editing
     the three `Config` constructors (`config.rs`, `server/dev/src/lib.rs`, `server/tests/it/common.rs`) plus
     `lib.rs` and `.env.example`; in LF1 that is 15 + 4 = 19 files, over the cap. LPO holds them with `api/legal.rs` and
@@ -1847,6 +1850,9 @@ Order: server LS2 → L6c → L8a → L8b → LS3 → **LE1 → LF1 → LM2 → 
 client: LM1 beside D1 after LW3; LU1 after L14a; LMD after LS4 and LF2; LMI after L15.
 Changed by RULINGS 54 (as of `6043941`): merged LS2 … LS3, LM1 `4d8a9ec`, LU1 `2a7b50c`; running LE1 (server) and
 L10 (client, ahead of LS4 and LMD); to go: server LF1 → LM2 → LF2 → LE2 → LPO → L9, client LMD, then LMI.
+Changed by RULINGS 78 (as of `22ed4d5`): merged LS2 … LS3, LE1 `29c310b`, LF1 `946e2b5`, LM2 `5a33183`, LM1 `4d8a9ec`,
+LU1 `2a7b50c`; running LF2 (server) and L15 (client, ahead of LMI); to go: server LE2 → LPO → L9, client LMD, then
+LMI (its gate gains MEMORY-PLAN's M1).
 
 ---
 
@@ -2022,3 +2028,4 @@ lists (default: the narrative-designer drafts the demo ones above), Q21 jurisdic
 | 4 | 2026-11-01 | `D:/tmp/novel-orch/carry.md` at ORCH `d97ba64` (the docs-errata-2 spec, group A), as merged on main `6043941` | Docs lane `docs-errata-2`, group A (not a triage round): L7 (`57e1424`) — `startParam()` parsed from the raw `initData`; LM1 (`4d8a9ec`) — a missing `story/meta.json` counts as `{}`; LS3 (`00d7c10`) — the `IS NOT NULL` guards and a choice-only batch never a 429. Fix round 1: the principle-3 line and MQ16 point at the raw-`initData` `startParam()`; the guard comment names the regex / IN tests of `subject` / `outcome`. Ledger: `D:/tmp/novel-orch/docs-errata-2/ledger.md` |
 | 5 | 2026-11-01 | RULINGS 54 (as merged on main `6043941`) | Docs lane `docs-errata-2`, group B (not a triage round): M28 and "Implementation plan" Order as of `6043941` (LM1, LU1 merged; LE1 running; LF1, LM2, LF2, LE2, LPO, LMD, LMI to go). Ledger: `D:/tmp/novel-orch/docs-errata-2/ledger.md` |
 | 6 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `ba5fc68` (the docs-errata-3 spec, group A), as merged on main `22ed4d5` | Docs lane `docs-errata-3`, group A (not a triage round): LE1 (`29c310b`) — the named-constraint credit, the clawback upsert, `balances -> Vec<Balance>`; L10 (`34b7f13`) — `chapterDelivered` / `packDelivered`; LU1 (`2a7b50c`) — the controller owns a gift's `requestId`; L14b (`3364f73`) — lower-case callbacks; LP2 (`88d0964`) — `HintPort` / `HintPortError` in `puzzles/session.ts`, `createPuzzleSession` -> `Result`, `useHint` -> the ladder; LF1 (`946e2b5`) — the self-invite guard, `referrals_outcome_known`'s `outcome IS NOT NULL`, `invite_state`'s `pending_cap` and the rotation constants, the capped-requester residual; LM2 (`5a33183`) — met and visible unlocks, the card bound (36 KiB), the meta stories equal the index stories, the card headers, hash collections and `Repo::entitlements`. Ledger: `D:/tmp/novel-orch/docs-errata-3/ledger.md` |
+| 7 | 2026-11-02 | RULINGS 78 (as merged on main `22ed4d5`) | Docs lane `docs-errata-3`, group B (not a triage round): M28 and "Implementation plan" Order as of `22ed4d5` (LM1, LU1, LE1, LF1, LM2 merged; LF2 running; LE2, LPO, LMD, LMI to go). Ledger: `D:/tmp/novel-orch/docs-errata-3/ledger.md` |
