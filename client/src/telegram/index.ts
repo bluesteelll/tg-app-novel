@@ -38,6 +38,8 @@ export interface TelegramClient {
   isVersionAtLeast(v: string): boolean;
   ready(): void;
   expand(): void;
+  /** Closes the Mini App (`WebApp.close`); no version gate (core.telegram.org/bots/webapps, the pinned TWA). */
+  close(): void;
   /** 7.7. */
   disableVerticalSwipes(): void;
   /** 6.2. */
