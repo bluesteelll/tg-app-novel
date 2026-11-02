@@ -337,6 +337,36 @@ test('friends: requests show accept and decline', async () => {
   void ({ handle: H1, firstName: 'Bo', userId: 1 } satisfies FriendData);
 });
 
+test('friends: accept and decline count only an armed tap', () => {
+  for (const lang of LANGS) {
+    const onaccept = vi.fn();
+    const ondecline = vi.fn();
+    const view = render(Friends, { social: SOCIAL, lang, onaccept, ondecline, onopen: vi.fn(), oninvite: vi.fn(), onconsent: vi.fn(), onpolicy: vi.fn() });
+    const q = within(view.container);
+    const accepts = q.getAllByRole('button', { name: mt(lang, 'meta.friends_accept') });
+    const declines = q.getAllByRole('button', { name: mt(lang, 'meta.friends_decline') });
+    // Rule (b): the tap that opened Friends, a click with no pointerdown on the button, accepts or declines nothing.
+    pointerClick(accepts[0] ?? document.body);
+    pointerClick(declines[0] ?? document.body);
+    flushSync();
+    expect(onaccept.mock.calls, lang).toEqual([]);
+    expect(ondecline.mock.calls, lang).toEqual([]);
+    // A pointerdown arms its own button only.
+    down(accepts[0] ?? document.body);
+    pointerClick(declines[0] ?? document.body);
+    flushSync();
+    expect(ondecline.mock.calls, lang).toEqual([]);
+    // A keyboard or assistive-technology click (detail 0) counts, and so does a full tap, each once.
+    keyClick(accepts[1] ?? document.body);
+    tap(declines[2] ?? document.body);
+    pointerClick(declines[2] ?? document.body);
+    flushSync();
+    expect(onaccept.mock.calls, lang).toEqual([[H2]]);
+    expect(ondecline.mock.calls, lang).toEqual([[H4]]);
+    view.unmount();
+  }
+});
+
 const STORY: ProfileData['stories'][number] = {
   storyId: 'tide' as StoryId,
   storyTitle: 'The Tide',
@@ -858,6 +888,15 @@ const SRC_SOURCES: Readonly<Record<string, string>> = Object.fromEntries(
   ).map(([key, text]) => [new URL(key, 'file:///src/ui/meta/').pathname.slice('/src/'.length), text]),
 );
 
+/**
+ * A resolved specifier as the source file it names, as the bundler resolves it: `x.js` is `x.ts`, an extensionless `x`
+ * is `x.ts`, and a directory is its `index.ts` (carry: `'../ui/meta'` reaches the chunk's entry too).
+ */
+function sourceOf(target: string): string {
+  const stem = target.replace(/\/$/, '').replace(/\.js$/, '');
+  return [stem, `${stem}.ts`, `${stem}/index.ts`].find((f) => Object.hasOwn(SRC_SOURCES, f)) ?? target;
+}
+
 /** The I/O a presentational overlay never does (spec 4); storage, dialogs and window.open are arch's rules. */
 const IO_NAMES =
   /\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|navigator|window|globalThis|document|indexedDB|postMessage|setTimeout|setInterval)\b/g;
@@ -919,7 +958,7 @@ test('meta: one entry, no I/O, the meta table stays in the chunk', () => {
       if (!ref.spec.startsWith('.') && !ref.spec.startsWith('/')) {
         continue;
       }
-      const target = new URL(ref.spec, `file:///src/${file}`).pathname.slice('/src/'.length);
+      const target = sourceOf(new URL(ref.spec, `file:///src/${file}`).pathname.slice('/src/'.length));
       const loader = ref.dynamic && file === 'app/meta.ts' && target === 'ui/meta/index.ts';
       if ((target === 'i18n/meta.ts' || target.startsWith('ui/meta/')) && !ref.typeOnly && !loader) {
         intoChunk.push(`${file}: ${form(ref)}`);

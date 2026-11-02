@@ -2,14 +2,37 @@
   // Friends (META-PLAN M10, M26; F19-F21): Invite, the visibility row that opens the consent dialog, the incoming
   // requests with Accept and Decline (the note says once that a decline is final), the friends, and the privacy
   // policy. Every row is keyed by handle, since two people may share a first name (W1); a handle is only the address
-  // a callback carries and is never shown.
+  // a callback carries and is never shown. Accept and Decline follow rule (b) of Choices.svelte, as the gift dialog's
+  // Send does: a pointer click counts only after a pointerdown on that button while this list is shown, so the tap
+  // that opened Friends decides nothing; a keyboard or assistive-technology click (detail 0) counts.
   import { mt } from '../../i18n/meta.ts';
-  import type { FriendsProps } from './index.ts';
+  import type { FriendHandle, FriendsProps, SocialData } from './index.ts';
 
   let { social, lang, busy = false, onaccept, ondecline, onopen, oninvite, onconsent, onpolicy }: FriendsProps =
     $props();
 
   const uid = $props.id();
+
+  type Answer = 'accept' | 'decline';
+  /** The button a pointer went down on, and in which presentation of the list. */
+  let armed: { social: SocialData; handle: FriendHandle; answer: Answer } | null = null;
+
+  function arm(handle: FriendHandle, answer: Answer): void {
+    armed = { social, handle, answer };
+  }
+
+  function answer(e: MouseEvent, handle: FriendHandle, a: Answer): void {
+    const counts = e.detail === 0 || (armed !== null && armed.social === social && armed.handle === handle && armed.answer === a);
+    if (!counts) {
+      return;
+    }
+    armed = null;
+    if (a === 'accept') {
+      onaccept(handle);
+    } else {
+      ondecline(handle);
+    }
+  }
 </script>
 
 <section class="panel" aria-labelledby="{uid}-title">
@@ -28,10 +51,21 @@
       {#each social.requests as request (request.handle)}
         <li>
           <span class="name">{request.firstName}</span>
-          <button type="button" class="primary" disabled={busy} onclick={() => onaccept(request.handle)}>
+          <button
+            type="button"
+            class="primary"
+            disabled={busy}
+            onpointerdown={() => arm(request.handle, 'accept')}
+            onclick={(e) => answer(e, request.handle, 'accept')}
+          >
             {mt(lang, 'meta.friends_accept')}
           </button>
-          <button type="button" disabled={busy} onclick={() => ondecline(request.handle)}>
+          <button
+            type="button"
+            disabled={busy}
+            onpointerdown={() => arm(request.handle, 'decline')}
+            onclick={(e) => answer(e, request.handle, 'decline')}
+          >
             {mt(lang, 'meta.friends_decline')}
           </button>
         </li>
