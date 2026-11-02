@@ -29,7 +29,12 @@ export interface StatsReporter {
   record(e: StatEvent): void;
   /** Sends now (`keepalive` on `deactivated` / `pagehide`); during a request it only asks for one more after it. */
   flush(o?: { keepalive?: boolean }): void;
-  /** Clears every timer and ignores a late answer; the calls after it do nothing. */
+  /**
+   * META M9: sends now, as `flush`, and answers `'drained'` once the queue is empty or `'timeout'` after `timeoutMs`
+   * (at once after `dispose`). Never rejects, and never a second request beside the one in flight.
+   */
+  settle(o: { timeoutMs: number }): Promise<'drained' | 'timeout'>;
+  /** Clears every timer, answers pending `settle`s `'timeout'` and ignores a late answer; later calls do nothing. */
   dispose(): void;
 }
 
@@ -248,6 +253,8 @@ export function createStatsReporter(deps: {
   let loaded = mirror === null;
   let writing = false;
   let dirty = false;
+  /** Pending `settle` calls, each with its deadline timer. */
+  const waiters = new Set<{ readonly resolve: (r: 'drained' | 'timeout') => void; readonly timer: number }>();
 
   const log = (msg: string): void => {
     try {
@@ -307,9 +314,26 @@ export function createStatsReporter(deps: {
     writing = false;
   }
 
-  /** After every change of the queue (D7): its copy follows. A write that started before `dispose` still lands. */
+  const answerWaiters = (r: 'drained' | 'timeout'): void => {
+    for (const w of [...waiters]) {
+      clock.clearTimeout(w.timer);
+      w.resolve(r);
+    }
+    waiters.clear();
+  };
+
+  /**
+   * After every change of the queue: an empty one answers every `settle` (D11), and its copy follows (D7). A write that
+   * started before `dispose` still lands.
+   */
   function changed(): void {
-    if (mirror === null || !loaded || disposed) {
+    if (!loaded || disposed) {
+      return;
+    }
+    if (queue.length === 0) {
+      answerWaiters('drained');
+    }
+    if (mirror === null) {
       return;
     }
     dirty = true;
@@ -490,13 +514,36 @@ export function createStatsReporter(deps: {
     void load(mirror);
   }
 
+  function settle(o: { timeoutMs: number }): Promise<'drained' | 'timeout'> {
+    if (disposed) {
+      return Promise.resolve('timeout');
+    }
+    if (loaded && queue.length === 0) {
+      return Promise.resolve('drained');
+    }
+    return new Promise((resolve) => {
+      const w = {
+        resolve,
+        timer: clock.setTimeout(() => {
+          waiters.delete(w);
+          resolve('timeout');
+        }, o.timeoutMs),
+      };
+      waiters.add(w);
+      // Shares the one flight: during a request this only asks for one more after it.
+      trigger(false);
+    });
+  }
+
   return {
     record,
     flush: (o) => trigger(o?.keepalive === true),
+    settle,
     dispose: () => {
       disposed = true;
       again = null;
       clearTimer();
+      answerWaiters('timeout');
     },
   };
 }

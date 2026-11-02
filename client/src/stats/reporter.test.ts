@@ -190,6 +190,20 @@ const solved = (): StatEvent => ({
   outcome: 'solved',
 });
 const choice = (option: string): StatEvent => ({ kind: 'choice_made', chapterId: CH, storyVersion: SV, option: option as LineId });
+/** `settle`'s answer as it arrives: `null` while pending, `'rejected'` if it ever rejects. */
+function watch(p: Promise<'drained' | 'timeout'>): { readonly value: 'drained' | 'timeout' | 'rejected' | null } {
+  const w: { value: 'drained' | 'timeout' | 'rejected' | null } = { value: null };
+  // Observed, not awaited: the test reads the answer between clock steps.
+  void p.then(
+    (r) => {
+      w.value = r;
+    },
+    () => {
+      w.value = 'rejected';
+    },
+  );
+  return w;
+}
 const idsOf = (c: Call | undefined): string[] => (c === undefined ? [] : c.events.map((e) => e.eventId));
 /** `uuid(from)` … `uuid(to)`. */
 const uuids = (from: number, to: number): string[] => Array.from({ length: to - from + 1 }, (_, i) => uuid(from + i));
@@ -302,11 +316,13 @@ test('reporter: 429 waits retry-after', async () => {
   await clock.advance(0);
   expect(server.calls).toHaveLength(1);
 
-  // The wait governs: neither an ending nor a flush sends before it ends.
+  // The wait governs: neither an ending, a flush nor a settle sends before it ends.
   reporter.record(ending('ashes'));
   reporter.flush();
   reporter.flush({ keepalive: true });
+  const settled = watch(reporter.settle({ timeoutMs: 3_000 }));
   await clock.advance(599_999);
+  expect(settled.value).toBe('timeout');
   expect(server.calls).toHaveLength(1);
   server.script = fail(httpError(429, 10_000_000));
   await clock.advance(1);
@@ -512,8 +528,11 @@ test('reporter: failure never throws', async () => {
       reporter.flush({ keepalive: true });
     }).not.toThrow();
     expect(clock.pending()).toBe(0);
+    const settled = watch(reporter.settle({ timeoutMs: 1_000 }));
     await clock.advance(3_600_000);
+    expect(settled.value).toBe('timeout');
     expect(server.calls).toHaveLength(1);
+    expect(clock.pending()).toBe(0);
   }
 });
 
@@ -557,6 +576,18 @@ test('reporter: dispose clears timers', async () => {
     expect(clock.pending()).toBe(0);
     await clock.advance(3_600_000);
     expect(server.calls).toHaveLength(1);
+  }
+
+  // A pending settle: answered 'timeout' at dispose, its timer cleared.
+  {
+    const { clock, reporter } = setup(hang);
+    reporter.record(ending());
+    const settled = watch(reporter.settle({ timeoutMs: 3_000 }));
+    expect(clock.pending()).toBe(1);
+    reporter.dispose();
+    expect(clock.pending()).toBe(0);
+    await tick();
+    expect(settled.value).toBe('timeout');
   }
 
   // A late answer arms nothing.
@@ -844,4 +875,100 @@ test('reporter: queue survives reload through device storage', async () => {
   const none = setup(okAll, { device: null });
   none.reporter.record(ending());
   expect(idsOf(none.server.calls[0])).toEqual([uuid(1)]);
+});
+
+test('reporter: settle resolves after the queue drains', async () => {
+  // The server answers each request 1 s after it.
+  const after1s =
+    (clock: FakeClock): Script =>
+    (c) => {
+      clock.setTimeout(() => c.answer({ ok: true, value: { recorded: c.events.length, duplicates: 0, rejected: [] } }), 1_000);
+      return 'hang';
+    };
+
+  // An ending, then settle: it waits for that request's answer, and asks for no second one.
+  {
+    const clock = new FakeClock();
+    const { server, reporter } = setup(after1s(clock), { clock });
+    reporter.record(started());
+    reporter.record(ending());
+    const settled = watch(reporter.settle({ timeoutMs: 3_000 }));
+    await clock.advance(999);
+    expect(settled.value).toBe(null);
+    await clock.advance(1);
+    expect(settled.value).toBe('drained');
+    expect(server.calls).toHaveLength(1);
+    expect(idsOf(server.calls[0])).toEqual([uuid(1), uuid(2)]);
+    await clock.advance(60_000);
+    expect(server.calls).toHaveLength(1);
+    expect(clock.pending()).toBe(0);
+  }
+
+  // A pending 5 s send is folded into settle's: one request, at once.
+  {
+    const clock = new FakeClock();
+    const { server, reporter } = setup(after1s(clock), { clock });
+    reporter.record(started());
+    await clock.advance(2_000);
+    const settled = watch(reporter.settle({ timeoutMs: 3_000 }));
+    expect(server.calls).toHaveLength(1);
+    expect(server.calls[0]?.at).toBe(2_000);
+    await clock.advance(1_000);
+    expect(settled.value).toBe('drained');
+    await clock.advance(60_000);
+    expect(server.calls).toHaveLength(1);
+  }
+
+  // A dropped batch empties the queue too.
+  {
+    const { clock, server, reporter } = setup(hang);
+    reporter.record(ending());
+    const settled = watch(reporter.settle({ timeoutMs: 3_000 }));
+    server.calls[0]?.answer({ ok: false, error: httpError(400) });
+    await clock.advance(0);
+    expect(settled.value).toBe('drained');
+  }
+
+  // Nothing queued: drained at once.
+  {
+    const { reporter } = setup(hang);
+    const settled = watch(reporter.settle({ timeoutMs: 3_000 }));
+    await tick();
+    expect(settled.value).toBe('drained');
+  }
+});
+
+test('reporter: settle times out without throwing', async () => {
+  // The request never answers: 'timeout' at the deadline, never a rejection.
+  {
+    const { clock, server, reporter } = setup(hang);
+    reporter.record(ending());
+    const settled = watch(reporter.settle({ timeoutMs: 3_000 }));
+    await clock.advance(2_999);
+    expect(settled.value).toBe(null);
+    await clock.advance(1);
+    expect(settled.value).toBe('timeout');
+    expect(server.calls).toHaveLength(1);
+    expect(clock.pending()).toBe(0);
+
+    // After dispose: 'timeout' at once.
+    reporter.dispose();
+    const late = watch(reporter.settle({ timeoutMs: 3_000 }));
+    await tick();
+    expect(late.value).toBe('timeout');
+    expect(clock.pending()).toBe(0);
+  }
+
+  // Halted (the session ended): 'timeout' at the deadline, with no request.
+  {
+    const { clock, server, reporter } = setup(fail({ kind: 'session-expired' }));
+    reporter.record(ending());
+    await clock.advance(0);
+    const settled = watch(reporter.settle({ timeoutMs: 3_000 }));
+    await clock.advance(2_999);
+    expect(settled.value).toBe(null);
+    await clock.advance(1);
+    expect(settled.value).toBe('timeout');
+    expect(server.calls).toHaveLength(1);
+  }
 });
