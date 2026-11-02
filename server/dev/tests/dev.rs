@@ -819,3 +819,74 @@ async fn simulate_payment_delay_answers_first() {
     }
     report(&failures);
 }
+
+/// `s` is exactly 32 lower-case hex digits.
+fn is_hex32(s: &str) -> bool {
+    s.len() == 32 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// The dev fake prepares a share and shows it (META-PLAN M16): `POST /api/share` with `native` answers the invite
+/// link on the fake's bot and a `dev-prepared-<n>` id, and `GET /dev/prepared/{id}` shows that message's title, text,
+/// button and url, `no-store`. An unknown id is 404 `not_found`.
+#[tokio::test]
+async fn dev_prepared_message_readable() {
+    let dev = dev_app().await;
+    let bearer = session(&dev, 1001).await;
+    let mut failures = Vec::new();
+    let reply = send(
+        &dev,
+        "POST",
+        "/api/share",
+        Some(&bearer),
+        Some(json!({ "storyId": "tide", "lang": "ru", "native": true })),
+    )
+    .await;
+    let share = body_json(&reply);
+    let link = share["link"].as_str().unwrap_or_default().to_owned();
+    let code_ok = link
+        .strip_prefix("https://t.me/novel_dev_bot?startapp=f")
+        .is_some_and(is_hex32);
+    if reply.status != StatusCode::OK
+        || !code_ok
+        || share["preparedMessageId"].as_str() != Some("dev-prepared-1")
+    {
+        failures.push(format!(
+            "POST /api/share: expected 200 with a novel_dev_bot invite link and dev-prepared-1, got {} {}",
+            reply.status,
+            body_text(&reply)
+        ));
+    }
+
+    let reply = get(&dev, "/dev/prepared/dev-prepared-1").await;
+    let got = body_json(&reply);
+    let result_id = got["resultId"].as_str().unwrap_or_default().to_owned();
+    let want = json!({
+        "resultId": result_id,
+        "title": "Прогресс",
+        "text": share["text"],
+        "button": "Открыть",
+        "url": link,
+    });
+    if reply.status != StatusCode::OK
+        || got != want
+        || !is_hex32(&result_id)
+        || header(&reply, CACHE_CONTROL) != Some("no-store")
+    {
+        failures.push(format!(
+            "GET /dev/prepared/dev-prepared-1: expected 200 {want} no-store with a 32-hex resultId, got {} {} {:?}",
+            reply.status,
+            body_text(&reply),
+            header(&reply, CACHE_CONTROL)
+        ));
+    }
+
+    let reply = get(&dev, "/dev/prepared/dev-prepared-999").await;
+    let body = body_text(&reply);
+    if reply.status != StatusCode::NOT_FOUND || body != r#"{"error":"not_found"}"# {
+        failures.push(format!(
+            "GET /dev/prepared/dev-prepared-999: expected 404 {{\"error\":\"not_found\"}}, got {} {body}",
+            reply.status
+        ));
+    }
+    report(&failures);
+}

@@ -376,6 +376,17 @@ Each: **What / Why / Alternatives / Trade-off.**
     `keepalive`; after boot auth (the persisted queue). Retries keep the event ids; backoff 5 → 300 s; a 429 waits
     `Retry-After`; a 400 drops the batch (a client bug, logged under `__TG_MOCK__`); a 200 drops the recorded,
     duplicate and rejected events; events older than 30 days are dropped before sending.
+  - As merged (LS4 `4c713fa`, RULINGS 73; the cut `D:/tmp/novel-orch/ls4-stats-client/cut.md` D2, D3, O2, O4;
+    `client/src/stats/reporter.ts`):
+    - "5 s after a record" is 5 s after the first unflushed record; a later record does not re-arm the timer (D2);
+    - the failure classes (D3): `network`, `aborted`, 5xx, a 401 after `http.ts`'s one re-auth, and `decode` are
+      transient (the events stay; backoff 5, 10, 20, 40, 80, 160, 300 s, the last repeating); a 429 waits
+      `min(max(Retry-After, the backoff step), 1 h)` (`RETRY_AFTER_MAX_MS`, `:59`); every other 4xx (400, 403, 404,
+      409, 413), not only a 400, drops the batch and logs it; `session-expired` halts sending for the page;
+    - the backoff counter resets on a 200 or a dropped batch; a transient failure or a 429 advances it (O4,
+      `:442-476`);
+    - a failed DeviceStorage read means a memory-only queue for the page, and `stats_queue` is left untouched for the
+      next launch (O2, `:357-361`).
 - **Why.** ST8: play never awaits statistics. One id per event makes every retry idempotent (ST5). DeviceStorage
   (K13 precedent) survives a closed app: 64 × about 220 B ≈ 14 KB.
 - **Alternatives.** A request per event; `localStorage` (forbidden: principle 1, arch rule); CloudStorage (4,096
@@ -819,11 +830,18 @@ export interface Game {
 // saves/service.ts (L10) — one per game session
 export function createSaveService(deps: { api: Endpoints; device: DeviceStore | null; clock: Clock;
                                           story: StoryId }): SaveService;     // pending key `pending_${story}`
+// as merged (L10 `34b7f13`, RULINGS 55; cut Q3 (f), D10-D13; client/src/saves/service.ts:30-61,131-138): deps
+//   { api: Pick<Endpoints, 'getSave' | 'putSave'>; device; clock; story; newId?: () => string } (default: a random id);
+//   SaveService adds start(list): Promise<Result<void, ApiError>> (F3 step 5 from the boot list), overwrite(slot, w,
+//   current) (the "Overwrite?" PUT), resolveConflict('keep-here' | 'load-theirs') and flush({ timeoutMs }):
+//   Promise<'saved' | 'pending'> (exitToStories' autosave) beside autosave, save, load, state, onState, onActivated
+//   and dispose
 // api/endpoints.ts (L10, LS4)
 listSaves(): Promise<Result<SaveListResponse, ApiError>>;                      // every story
 getSave(story: StoryId, slot: SaveSlot): Promise<Result<SaveFull, ApiError>>;
 putSave(story: StoryId, slot: SaveSlot, req: PutSaveRequest): Promise<Result<PutSaveResponse, ApiError>>;
 postStatEvents(events: readonly StatEventDto[], o?: { keepalive: boolean }): Promise<Result<PostStatsResponse, ApiError>>;
+// as merged (LS4 `4c713fa`, RULINGS 73; cut D13; client/src/api/endpoints.ts:63): o?: { keepalive?: boolean }, putSave's form
 getStats(): Promise<Result<StatsResponse, ApiError>>;
 
 // stats/reporter.ts (LS4)
@@ -903,6 +921,9 @@ impl Repo {
 | 7 | client | 200 → drop recorded, duplicate and rejected events; persist the queue | network / 5xx → keep, backoff 5 → 300 s; 401 → the single-flight re-auth of `http.ts`, retried once; 429 → wait `Retry-After` |
 
 A resend after a lost 200 comes back as duplicates and is dropped (ST5).
+
+As merged (LS4 `4c713fa`, RULINGS 73; cut D3): step 3's drop covers every 4xx except 401 and 429, and step 7's 429
+wait is capped at 1 h (`RETRY_AFTER_MAX_MS`); the failure classes are Y13's "As merged" list.
 
 Changed by META-PLAN revision 1 (W2): step 2 sends the queued facts first, then choices (Y13); step 5 counts facts
 and choices apart — over 600 facts → 429 as above; over 600 choices → repeat picks rejected `rate_limited`, first
@@ -1052,6 +1073,12 @@ while LDB1 ran; LDB1 and LDB2 had merged before the design landed, and the merge
     every lane up to LU1 `2a7b50c` has merged (PP "Dependency order");
   - running: L10 client-data and LE1 economy-core;
   - to go, of this design's lanes: LS4 and N2.
+- **As of `22ed4d5`** (changed by RULINGS 78; docs lane `docs-errata-3`, group B; SHAs from `git log --first-parent
+  main`):
+  - merged, of this design's lanes: LS4 `4c713fa` and N2 `3587bdd`, so all five have merged; every lane up to LM2
+    `5a33183` has merged (PP "Dependency order");
+  - running: L15 integration (client) and LF2 share-profile (server);
+  - to go, of this design's lanes: none.
 
 **Order** (RULINGS 8 rolling, RULINGS 18 three slots; as of `66c92c4`, changed by RULINGS 22, 23: LDB1 and LDB2
 merged, so the server chain starts at L6b): server L6b → LS2 → L6c → L8a → L8b → LS3 → L9; client (two slots)
@@ -1061,6 +1088,9 @@ LP2 → L15 → D2 (+1 lane). The PP lane entries hold the locks, commits, red-f
 Changed by RULINGS 54 (as of `6043941`): the server chain has run to LS3, and META-PLAN extended it: LE1 (running) →
 LF1 → LM2 → LF2 → LE2 → LPO → L9; client L10 (running) → L13, L14b → LP2 ∥ LX, LS4, N1 → N2 → L15 → D2 (with
 META-PLAN's LMD and LMI before D2). Critical path to the prototype milestone: L10 → L14b → LP2 → L15.
+Changed by RULINGS 78 (as of `22ed4d5`): the server chain has run to LM2, so it continues LF2 (running) → LE2 → LPO →
+L9, then MEMORY-PLAN's M3s; client L15 (running) → M1 → LMI → M2 → D2 (with META-PLAN's LMD before LMI, and
+MEMORY-PLAN's M3c beside D2). Critical path to the prototype milestone: L15.
 
 **Collision locks added** (PP "Collision locks"): `0001` L2 → LDB1 → LS2; `0003` LS3; the serialized server files
 L6b → LS2 → L6c → L8a → L8b → LS3 → L9; `ids.rs` L6b (`StoryId` with `PuzzleId`); `lint.ts` / `dsl-doc.test.ts` /
@@ -1230,6 +1260,8 @@ Totals: 2 stories, 4 chapters (2 free, 2 paid), 4 endings (`truth`, `ashes`, `dr
 | 7 | 2026-10-31 | META-PLAN revision 1 (`D:/tmp/novel-orch/design/choices/triage_r1.md`, item W2) | Choice events no longer crowd facts out: Y11 counts facts and choices apart (facts 600/h with the 429; choices 600/h of their own, never a 429, repeat picks beyond it rejected `rate_limited`, first picks always recorded); Y13 evicts choices first and sends facts first; the stats constants, F11, the concurrency table, Budgets and Test strategy follow. Marked "Changed by META-PLAN revision 1". Pre-revision copy: `D:/tmp/novel-orch/design/choices/STORIES-PLAN.r1.before.md` |
 | 8 | 2026-11-01 | `D:/tmp/novel-orch/carry.md` at ORCH `d97ba64` (the docs-errata-2 spec, group A), as merged on main `6043941` | Docs lane `docs-errata-2`, group A (not a triage round): LS1 (`64fd798`) — rule 8's `next` clause, `checkEndings(…, sources)`, the seeded leak seen in C7; LS3 (`00d7c10`) — at most 4 statements, the overshoot up to one batch per concurrent request, choices never a 429 (O1), `StatKind` / `StatOutcome` in `db/stats.rs`, the `IS NOT NULL` guards, `private, no-store`, the per-event `unknown_choice`, the `record_events` budgets. Fix round 1: the Module API `record_events` comment gains the same overshoot; the guard comment names the regex / IN tests of `subject` / `outcome`. Ledger: `D:/tmp/novel-orch/docs-errata-2/ledger.md` |
 | 9 | 2026-11-01 | RULINGS 54 (as merged on main `6043941`) | Docs lane `docs-errata-2`, group B (not a triage round): "Implementation plan" — "Running and merged lanes" and "Order" as of `6043941` (LS1, LS2, LS3 merged; L10, LE1 running; LS4, N2 to go; the critical path from L10). Ledger: `D:/tmp/novel-orch/docs-errata-2/ledger.md` |
+| 10 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `ba5fc68` (the docs-errata-3 spec, group A), as merged on main `22ed4d5` | Docs lane `docs-errata-3`, group A (not a triage round): L10 (`34b7f13`) — the `createSaveService` deps and the `SaveService` methods; LS4 (`4c713fa`) — `postStatEvents`' optional `keepalive`, the 5 s timer from the first unflushed record, the failure classes with the 1 h `Retry-After` cap and the 4xx drop, the backoff reset, a failed DeviceStorage read as a memory-only queue. Ledger: `D:/tmp/novel-orch/docs-errata-3/ledger.md` |
+| 11 | 2026-11-02 | RULINGS 78 (as merged on main `22ed4d5`) | Docs lane `docs-errata-3`, group B (not a triage round): "Implementation plan" — "Running and merged lanes" and "Order" as of `22ed4d5` (LS4, N2 merged, so all five lanes of this design have merged; L15, LF2 running; the critical path from L15). Ledger: `D:/tmp/novel-orch/docs-errata-3/ledger.md` |
 
 **Revision 1 (2026-10-31)** — what changed, by triage item:
 - **W1** (LS1 moved merged test pins it did not declare; commit 6 left the real-tree `story` gate red): PP "LS1" —

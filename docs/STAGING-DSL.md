@@ -458,7 +458,11 @@ fixed:
 - **The logical stage state changes at batch start**, so a save taken mid-transition records the end state.
 - **Conflicts** (`batch/conflict`, error) — two commands for the same target in one batch: two `bg`; `bg` + `scene`;
   `scene` + `hide` or `cg`; two `show`, or `show` + `hide`, of one character; two `cg`; two `bgm`; two `wait`; two
-  yields (`puzzle` and `explore`, two `puzzle`, two `explore`).
+  yields (`puzzle` and `explore`, two `puzzle`, two `explore`). As merged (L13 `06dc6a3`, RULINGS 58 Q16): at
+  runtime a conflict can also appear in a batch merged from tag-only steps (§3.5). `parseTags` reports it as
+  `conflict` and keeps both commands; the story runner returns its non-terminal `tags` error, and the step it holds
+  carries both commands, so the scene applies them in order (`client/src/story/tags.ts:384-389`,
+  `client/src/story/runner.ts:496-509`).
 
 ---
 

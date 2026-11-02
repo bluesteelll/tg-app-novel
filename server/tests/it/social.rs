@@ -1,7 +1,7 @@
 //! The social graph (META-PLAN M10-M12, M15; `0005_social.sql`): the schema's named constraints on raw SQL, the
 //! users upsert's inserted flag, the attribution at `POST /api/auth` (M11), the invite routes (F19), the social view
 //! with the accept and the decline or removal and its durable block (F20), the code rotation and the consent log
-//! (M12), and the public privacy page (M26), through the production router.
+//! (M12), the public privacy page (M26) and a friend's profile (M13, LF2), through the production router.
 //!
 //! A concurrency case holds a row lock on a raw READ COMMITTED connection (a stand-in for another app transaction)
 //! and observes the app's request waiting on it through `common::wait_for_lock_waiter`, never by timing.
@@ -17,7 +17,9 @@
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
+use axum::http::header::{
+    AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, HeaderName, X_CONTENT_TYPE_OPTIONS,
+};
 use axum::http::{Method, Request, StatusCode};
 use hmac::{Hmac, KeyInit, Mac};
 use serde_json::{Value, json};
@@ -29,7 +31,8 @@ use sha2::Sha256;
 use sqlx::postgres::PgQueryResult;
 use sqlx::{Connection, PgConnection};
 
-use crate::catalog::{T0, bearer};
+use crate::cards::{stat, unlock};
+use crate::catalog::{T0, bearer, own};
 use crate::common;
 
 /// The first player: the lowest id, so every two-row lock takes ANN's row first.
@@ -1230,7 +1233,7 @@ async fn unfriend_is_durable_against_old_code() {
 }
 
 /// The places in `value` that hold `id` as a number or as its decimal string, as JSON paths.
-fn id_paths(value: &Value, path: &str, id: i64, out: &mut Vec<String>) {
+pub(crate) fn id_paths(value: &Value, path: &str, id: i64, out: &mut Vec<String>) {
     match value {
         Value::Number(n) if n.as_i64() == Some(id) => out.push(path.to_owned()),
         Value::String(s) if *s == id.to_string() => out.push(path.to_owned()),
@@ -2210,6 +2213,338 @@ async fn rotate_invite_code_limited() {
             reply.status.as_u16(),
             body_text(&reply)
         ));
+    }
+    report(&failures);
+}
+
+/// `GET /api/friends/{handle}/profile` as `viewer` (a token issued at `T0`).
+async fn profile(st: &AppState, viewer: i64, handle: &str) -> common::Reply {
+    send(
+        st,
+        Method::GET,
+        Some(viewer),
+        &format!("/api/friends/{handle}/profile"),
+    )
+    .await
+}
+
+/// Deletes `user`'s entitlement to `product` raw: the schema's revoke (`0001_init.sql`: "revoke = DELETE").
+async fn revoke(st: &AppState, user: i64, product: &str) {
+    let mut c = common::raw_db(st).await;
+    let deleted = sqlx::query("DELETE FROM entitlements WHERE user_id = $1 AND product_id = $2")
+        .bind(user)
+        .bind(product)
+        .execute(&mut c)
+        .await
+        .unwrap()
+        .rows_affected();
+    c.close().await.unwrap();
+    assert!(
+        deleted == 1,
+        "revoke {product} of {user}: expected one row deleted, got {deleted}"
+    );
+}
+
+/// A `{ ru, en }` text of the fixture's meta index, as the profile sends it.
+fn meta_text(ru: &str, en: &str) -> Value {
+    json!({ "ru": ru, "en": en })
+}
+
+/// `None` when `reply` is a 200 whose body is exactly `want`, `private, no-store` and `nosniff`; else the failure line.
+fn profile_is(case: &str, reply: &common::Reply, want: &Value) -> Option<String> {
+    let header = |name: HeaderName| {
+        reply
+            .headers
+            .get(name)
+            .map(|v| v.to_str().unwrap_or("<not text>"))
+    };
+    let cache = header(CACHE_CONTROL);
+    let sniff = header(X_CONTENT_TYPE_OPTIONS);
+    (reply.status != StatusCode::OK
+        || body_json(reply) != *want
+        || cache != Some("private, no-store")
+        || sniff != Some("nosniff"))
+    .then(|| {
+        format!(
+            "{case}: expected 200 {want} private, no-store, nosniff; got {} {} {cache:?} {sniff:?}",
+            reply.status.as_u16(),
+            body_text(reply)
+        )
+    })
+}
+
+/// The hidden profile of `handle`: the handle, `visible: false` and nothing else.
+fn hidden(handle: &str) -> Value {
+    json!({ "handle": handle, "visible": false, "stories": [] })
+}
+
+/// A friend's paid-gated titles reach the viewer only while the viewer owns the gated chapter (M7, M13, principle
+/// 0): ANN and BEN both found `dawn` (ch4) and `dawn_walk` (gated on ch4) and both own ch4, so both titles are
+/// shared; once ANN's ch4 entitlement is revoked, neither title is in the body, and BEN's counts stay (they are BEN's
+/// own statistics, not gated).
+#[tokio::test]
+async fn friend_profile_paid_titles_need_viewer_entitlement() {
+    let (st, _db) = social_state(&[ANN, BEN]).await;
+    let mut c = common::raw_db(&st).await;
+    let (_, _, ben) = befriend(&st, &mut c, ANN, BEN).await;
+    let mut failures = Vec::new();
+    let consent = put_consent(&st, BEN, &consent_body(true, "friends_profile.v1")).await;
+    failures.extend(private_no_store("BEN's consent", &consent));
+    for (user, n) in [(ANN, 1), (BEN, 2)] {
+        own(&st, user, "chapter:ch4").await;
+        stat(&st, user, n, "ending_reached", "ch4", Some("dawn"), T0 - 50).await;
+        unlock(&mut c, user, "tide", "dawn_walk", T0 - 40)
+            .await
+            .unwrap();
+    }
+    c.close().await.unwrap();
+    let story = |shared_endings: Value, shared_achievements: Value| {
+        json!({
+            "handle": ben,
+            "visible": true,
+            "stories": [{
+                "storyId": "tide",
+                "endingsFound": 1,
+                "achievementsUnlocked": 1,
+                "sharedEndings": shared_endings,
+                "sharedAchievements": shared_achievements,
+            }],
+        })
+    };
+    let entitled = story(
+        json!([{ "name": "dawn", "title": meta_text("Фикстура: рассвет", "Fixture: dawn") }]),
+        json!([{
+            "id": "dawn_walk",
+            "name": meta_text("Фикстура: прогулка на рассвете", "Fixture: a walk at dawn"),
+        }]),
+    );
+    failures.extend(profile_is(
+        "ANN owns ch4",
+        &profile(&st, ANN, &ben).await,
+        &entitled,
+    ));
+
+    revoke(&st, ANN, "chapter:ch4").await;
+    let reply = profile(&st, ANN, &ben).await;
+    failures.extend(profile_is(
+        "ANN's ch4 revoked",
+        &reply,
+        &story(json!([]), json!([])),
+    ));
+    let text = body_text(&reply);
+    for paid in ["dawn", "рассвет", "прогулка"] {
+        if text.contains(paid) {
+            failures.push(format!(
+                "ANN's ch4 revoked: the body carries {paid:?}: {text}"
+            ));
+        }
+    }
+    report(&failures);
+}
+
+/// The profile is a friend's only (M13, M15): an unknown well-formed handle, a user whose request is still pending
+/// (either way) and one's own handle are all 404 `not_found`, beside a friend's 200; a malformed handle is 400 and no
+/// bearer 401.
+#[tokio::test]
+async fn friend_profile_404_for_non_friend() {
+    let (st, _db) = social_state(&[ANN, BEN, CAT]).await;
+    let mut c = common::raw_db(&st).await;
+    let (code, ann, ben) = befriend(&st, &mut c, ANN, BEN).await;
+    let mut failures = Vec::new();
+    failures.extend(profile_is(
+        "control: ANN views her friend BEN",
+        &profile(&st, ANN, &ben).await,
+        &hidden(&ben),
+    ));
+    failures.extend(state_is(
+        "CAT asks ANN",
+        &ask(&st, CAT, &code).await,
+        "requested",
+    ));
+    let cat = handle_of(&mut c, CAT).await.unwrap();
+    c.close().await.unwrap();
+    for (case, viewer, handle) in [
+        ("an unknown handle", ANN, HANDLE_A),
+        ("ANN views CAT, whose request is pending", ANN, cat.as_str()),
+        ("CAT views ANN, whom CAT asked", CAT, ann.as_str()),
+        ("ANN views her own handle", ANN, ann.as_str()),
+    ] {
+        failures.extend(not_found(case, &profile(&st, viewer, handle).await));
+    }
+    let reply = profile(&st, ANN, "NOT-A-HANDLE").await;
+    let body = body_text(&reply);
+    if reply.status != StatusCode::BAD_REQUEST || body != r#"{"error":"bad_request"}"# {
+        failures.push(format!(
+            "a malformed handle: expected 400 {{\"error\":\"bad_request\"}}, got {} {body}",
+            reply.status.as_u16()
+        ));
+    }
+    let path = format!("/api/friends/{ben}/profile");
+    let reply = send(&st, Method::GET, None, &path).await;
+    let body = body_text(&reply);
+    if reply.status != StatusCode::UNAUTHORIZED || body != r#"{"error":"token_missing"}"# {
+        failures.push(format!(
+            "no bearer: expected 401 {{\"error\":\"token_missing\"}}, got {} {body}",
+            reply.status.as_u16()
+        ));
+    }
+    report(&failures);
+}
+
+/// A profile is private by default (M12, M13): with the friend's facts present, a friend without a consent row, or
+/// whose latest row withdraws, shows exactly the hidden body, even though the viewer granted their own.
+#[tokio::test]
+async fn friend_profile_private_by_default() {
+    let (st, _db) = social_state(&[ANN, BEN]).await;
+    let mut c = common::raw_db(&st).await;
+    let (_, _, ben) = befriend(&st, &mut c, ANN, BEN).await;
+    c.close().await.unwrap();
+    stat(
+        &st,
+        BEN,
+        1,
+        "ending_reached",
+        "ch3",
+        Some("drowned"),
+        T0 - 50,
+    )
+    .await;
+    let mut failures = Vec::new();
+    let consent = put_consent(&st, ANN, &consent_body(true, "friends_profile.v1")).await;
+    failures.extend(private_no_store("ANN's own consent", &consent));
+    failures.extend(profile_is(
+        "BEN has no consent row",
+        &profile(&st, ANN, &ben).await,
+        &hidden(&ben),
+    ));
+    let refused = put_consent(&st, BEN, &consent_body(false, "friends_profile.v1")).await;
+    failures.extend(private_no_store("BEN refuses", &refused));
+    failures.extend(profile_is(
+        "BEN's row is granted: false",
+        &profile(&st, ANN, &ben).await,
+        &hidden(&ben),
+    ));
+    report(&failures);
+}
+
+/// A withdrawal hides the profile at once (M12): grant, withdraw, grant again, all at `T0`; the latest row (by id)
+/// decides each time.
+#[tokio::test]
+async fn consent_withdrawal_hides_profile() {
+    let (st, _db) = social_state(&[ANN, BEN]).await;
+    let mut c = common::raw_db(&st).await;
+    let (_, _, ben) = befriend(&st, &mut c, ANN, BEN).await;
+    c.close().await.unwrap();
+    stat(
+        &st,
+        BEN,
+        1,
+        "ending_reached",
+        "ch3",
+        Some("drowned"),
+        T0 - 50,
+    )
+    .await;
+    let visible = json!({
+        "handle": ben,
+        "visible": true,
+        "stories": [{
+            "storyId": "tide",
+            "endingsFound": 1,
+            "achievementsUnlocked": 0,
+            "sharedEndings": [],
+            "sharedAchievements": [],
+        }],
+    });
+    let hidden_body = hidden(&ben);
+    let mut failures = Vec::new();
+    for (case, granted, want) in [
+        ("granted", true, &visible),
+        ("withdrawn", false, &hidden_body),
+        ("granted again", true, &visible),
+    ] {
+        let consent = put_consent(&st, BEN, &consent_body(granted, "friends_profile.v1")).await;
+        failures.extend(private_no_store(case, &consent));
+        failures.extend(profile_is(case, &profile(&st, ANN, &ben).await, want));
+    }
+    report(&failures);
+}
+
+/// Titles only of what both found and the viewer may see (M13: a spoiler guard): BEN found `drowned`, `dawn` and a
+/// raw `gone` that tide does not declare, and unlocked `lighthouse` and `dawn_walk`; ANN, who owns ch4 like BEN (so
+/// the gate hides nothing here), found `drowned` and unlocked `lighthouse` only. BEN's counts are 2 and 2 (`gone` does
+/// not count, ST6); only `drowned` and `lighthouse` are shared, so nothing of `dawn` is in the body. Neither user's id
+/// is in it, and it is `private, no-store` with `nosniff`.
+#[tokio::test]
+async fn friend_profile_shared_titles_only() {
+    let (st, _db) = social_state(&[ANN, BEN]).await;
+    let mut c = common::raw_db(&st).await;
+    let (_, _, ben) = befriend(&st, &mut c, ANN, BEN).await;
+    let mut failures = Vec::new();
+    let consent = put_consent(&st, BEN, &consent_body(true, "friends_profile.v1")).await;
+    failures.extend(private_no_store("BEN's consent", &consent));
+    own(&st, ANN, "chapter:ch4").await;
+    own(&st, BEN, "chapter:ch4").await;
+    stat(
+        &st,
+        BEN,
+        1,
+        "ending_reached",
+        "ch3",
+        Some("drowned"),
+        T0 - 90,
+    )
+    .await;
+    stat(&st, BEN, 2, "ending_reached", "ch4", Some("dawn"), T0 - 80).await;
+    stat(&st, BEN, 3, "ending_reached", "ch3", Some("gone"), T0 - 70).await;
+    stat(
+        &st,
+        ANN,
+        4,
+        "ending_reached",
+        "ch3",
+        Some("drowned"),
+        T0 - 60,
+    )
+    .await;
+    for (user, id) in [(BEN, "lighthouse"), (BEN, "dawn_walk"), (ANN, "lighthouse")] {
+        unlock(&mut c, user, "tide", id, T0 - 50).await.unwrap();
+    }
+    c.close().await.unwrap();
+    let reply = profile(&st, ANN, &ben).await;
+    let want = json!({
+        "handle": ben,
+        "visible": true,
+        "stories": [{
+            "storyId": "tide",
+            "endingsFound": 2,
+            "achievementsUnlocked": 2,
+            "sharedEndings": [{
+                "name": "drowned",
+                "title": meta_text("Фикстура: утонувший", "Fixture: drowned"),
+            }],
+            "sharedAchievements": [{
+                "id": "lighthouse",
+                "name": meta_text("Фикстура: маяк", "Fixture: the lighthouse"),
+            }],
+        }],
+    });
+    failures.extend(profile_is("ANN views BEN", &reply, &want));
+    let text = body_text(&reply);
+    for absent in ["dawn", "рассвет", "gone"] {
+        if text.contains(absent) {
+            failures.push(format!(
+                "the body carries {absent:?}, which ANN did not find: {text}"
+            ));
+        }
+    }
+    let json = body_json(&reply);
+    for id in [ANN, BEN] {
+        let mut paths = Vec::new();
+        id_paths(&json, "$", id, &mut paths);
+        if !paths.is_empty() || text.contains(&id.to_string()) {
+            failures.push(format!("the body carries the id {id} at {paths:?}: {text}"));
+        }
     }
     report(&failures);
 }

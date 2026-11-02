@@ -720,3 +720,109 @@ endings: Array<CardEnding>,
  * The unlocked achievements the user may see now, in the story's display order.
  */
 achievements: Array<CardAchievement>, };
+
+/**
+ * `POST /api/share` request (META-PLAN M14): what to share, in which language, and whether the client can send a
+ * prepared message (`shareMessage`, Bot API 8.0). Unknown fields are refused.
+ */
+export type ShareRequest = { 
+/**
+ * The story whose progress to share; `null` is a plain invite.
+ */
+storyId: StoryId | null, 
+/**
+ * The language of the text: `ru` or `en`, checked by the route.
+ */
+lang: "ru" | "en", 
+/**
+ * Whether the client can send a prepared message.
+ */
+native: boolean, };
+
+/**
+ * `POST /api/share` response: the sharer's invite link, the share text (the story title and the sharer's counts,
+ * never an ending or achievement title) and, for a native share, the prepared message's id.
+ */
+export type ShareResponse = { 
+/**
+ * `https://t.me/<bot>?startapp=f<invite code>`.
+ */
+link: string, 
+/**
+ * The text, in the request's language.
+ */
+text: string, 
+/**
+ * The id for `shareMessage`; `null` without `native` or when the prepare failed (then send the link).
+ */
+preparedMessageId: string | null, };
+
+/**
+ * An ending both the friend and the viewer found, as a friend's profile lists it.
+ */
+export type SharedEnding = { 
+/**
+ * The ending name.
+ */
+name: string, 
+/**
+ * Its title.
+ */
+title: Localized, };
+
+/**
+ * An achievement both the friend and the viewer unlocked, as a friend's profile lists it.
+ */
+export type SharedAchievement = { 
+/**
+ * The achievement id, unique in its story.
+ */
+id: string, 
+/**
+ * Its name.
+ */
+name: Localized, };
+
+/**
+ * One story of a friend's profile: the friend's own counts, and the titles both found that the viewer may see.
+ */
+export type FriendStoryDto = { 
+/**
+ * The story.
+ */
+storyId: StoryId, 
+/**
+ * The endings the friend found (the current index), whatever the viewer owns.
+ */
+endingsFound: number, 
+/**
+ * The achievements the friend unlocked (the current meta), whatever the viewer owns.
+ */
+achievementsUnlocked: number, 
+/**
+ * The endings both found that the viewer may see now, in name order.
+ */
+sharedEndings: Array<SharedEnding>, 
+/**
+ * The achievements both unlocked that the viewer may see now, in the story's display order.
+ */
+sharedAchievements: Array<SharedAchievement>, };
+
+/**
+ * `GET /api/friends/{handle}/profile` response (META-PLAN M13): a friend by handle, and with the friend's consent
+ * their progress per story they found something in. Without the consent `visible` is `false` and nothing else is
+ * sent. No first name (the client has it from `SocialResponse.friends`) and no Telegram id.
+ */
+export type FriendProfile = { 
+/**
+ * The friend's handle.
+ */
+handle: string, 
+/**
+ * The friend's latest profile consent is a grant.
+ */
+visible: boolean, 
+/**
+ * The stories with a counted ending or unlock, in index order; empty when not `visible`.
+ */
+stories: Array<FriendStoryDto>, };

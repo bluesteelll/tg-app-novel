@@ -532,6 +532,87 @@ pub struct ConsentRequest {
     pub text_version: String,
 }
 
+/// An ending both the friend and the viewer found, as a friend's profile lists it.
+// No `Debug`: the title may be paid-gated content (META-PLAN M7), never logged.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedEnding {
+    /// The ending name.
+    pub name: String,
+    /// Its title.
+    pub title: Localized,
+}
+
+/// An achievement both the friend and the viewer unlocked, as a friend's profile lists it.
+// No `Debug`: the name may be paid-gated content (META-PLAN M7), never logged.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedAchievement {
+    /// The achievement id, unique in its story.
+    pub id: String,
+    /// Its name.
+    pub name: Localized,
+}
+
+/// One story of a friend's profile: the friend's own counts, and the titles both found that the viewer may see.
+// No `Debug`: it carries paid-gated texts.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendStoryDto {
+    /// The story.
+    pub story_id: StoryId,
+    /// The endings the friend found (the current index), whatever the viewer owns.
+    pub endings_found: u32,
+    /// The achievements the friend unlocked (the current meta), whatever the viewer owns.
+    pub achievements_unlocked: u32,
+    /// The endings both found that the viewer may see now, in name order.
+    pub shared_endings: Vec<SharedEnding>,
+    /// The achievements both unlocked that the viewer may see now, in the story's display order.
+    pub shared_achievements: Vec<SharedAchievement>,
+}
+
+/// `GET /api/friends/{handle}/profile` response (META-PLAN M13): a friend by handle, and with the friend's consent
+/// their progress per story they found something in. Without the consent `visible` is `false` and nothing else is
+/// sent. No first name (the client has it from `SocialResponse.friends`) and no Telegram id.
+// No `Debug`: it carries paid-gated texts.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendProfile {
+    /// The friend's handle.
+    pub handle: String,
+    /// The friend's latest profile consent is a grant.
+    pub visible: bool,
+    /// The stories with a counted ending or unlock, in index order; empty when not `visible`.
+    pub stories: Vec<FriendStoryDto>,
+}
+
+/// `POST /api/share` request (META-PLAN M14): what to share, in which language, and whether the client can send a
+/// prepared message (`shareMessage`, Bot API 8.0). Unknown fields are refused.
+#[derive(Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ShareRequest {
+    /// The story whose progress to share; `null` is a plain invite.
+    pub story_id: Option<StoryId>,
+    /// The language of the text: `ru` or `en`, checked by the route.
+    #[ts(type = "\"ru\" | \"en\"")]
+    pub lang: String,
+    /// Whether the client can send a prepared message.
+    pub native: bool,
+}
+
+/// `POST /api/share` response: the sharer's invite link, the share text (the story title and the sharer's counts,
+/// never an ending or achievement title) and, for a native share, the prepared message's id.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareResponse {
+    /// `https://t.me/<bot>?startapp=f<invite code>`.
+    pub link: String,
+    /// The text, in the request's language.
+    pub text: String,
+    /// The id for `shareMessage`; `null` without `native` or when the prepare failed (then send the link).
+    pub prepared_message_id: Option<String>,
+}
+
 /// The first line of the generated file: what it is and how to rewrite it.
 const BINDINGS_HEADER: &str = "// Built from server/src/api/dto.rs and error.rs by ts-rs; do not edit. Regenerate: \
                                cargo test -p server --test it bindings::write_bindings -- --ignored --exact";
@@ -589,6 +670,12 @@ pub fn ts_bindings() -> String {
         export::<CardEnding>(&cfg),
         export::<CardAchievement>(&cfg),
         export::<CardResponse>(&cfg),
+        export::<ShareRequest>(&cfg),
+        export::<ShareResponse>(&cfg),
+        export::<SharedEnding>(&cfg),
+        export::<SharedAchievement>(&cfg),
+        export::<FriendStoryDto>(&cfg),
+        export::<FriendProfile>(&cfg),
     ];
     format!("{BINDINGS_HEADER}\n\n{}", decls.join("\n"))
 }

@@ -7,7 +7,8 @@
 //!
 //! [`RecordingGateway`] is this crate's Bot API fake: every state here installs it through `with_gateway`, so no test
 //! reaches the production gateway (whose placeholder token would answer `Disabled`, a 502, anyway). It records all
-//! five gateway methods for the later payment, refund, bot, pack and share tests that import it from here.
+//! seven gateway methods for the payment, refund, bot, pack and share tests that import it from here.
+//! [`HungAnswerGateway`], the other fake here, implements the seven too and never answers a pre-checkout.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -24,7 +25,8 @@ use server::db::orders::parse_order_id;
 use server::ids::{ChargeId, OrderId, UserId};
 use server::puzzles::Lang;
 use server::telegram::gateway::{
-    BotGateway, BoxFut, CommandSet, GatewayError, InvoiceSpec, OutMessage, SetupSpec, WebAppButton,
+    BotGateway, BoxFut, CommandSet, GatewayError, InvoiceSpec, OutMessage, PreparedMessage,
+    PreparedShare, SetupSpec, WebAppButton,
 };
 use server::telegram::payments::{
     GrantOutcome, PaymentFact, RejectReason, on_successful_payment, reject_text,
@@ -42,6 +44,12 @@ const BEN: i64 = 1002;
 
 /// The link prefix of every invoice the recorder makes: `https://t.me/$test-<payload>`.
 const TEST_LINK_PREFIX: &str = "https://t.me/$test-";
+
+/// The id prefix of every prepared message the recorder makes: `test-prepared-<n>`, numbered from 1.
+const TEST_PREPARED_PREFIX: &str = "test-prepared-";
+
+/// The bot username both fakes here answer (the dev fake's too).
+const TEST_BOT_USERNAME: &str = "novel_dev_bot";
 
 /// One call the server made to the Bot API, as [`RecordingGateway`] recorded it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +84,15 @@ pub(crate) enum GatewayCall {
         /// The menu button.
         menu_button: WebAppButton,
     },
+    /// `savePreparedInlineMessage`.
+    Prepared {
+        /// The sharer.
+        user: UserId,
+        /// The prepared share.
+        share: PreparedShare,
+    },
+    /// `getMe`, through `bot_username`.
+    BotUsername,
 }
 
 /// What [`RecordingGateway`] saw and how it answers.
@@ -85,6 +102,8 @@ struct RecordLog {
     calls: Vec<GatewayCall>,
     /// The error every call answers with, when set.
     failure: Option<GatewayError>,
+    /// The error `savePreparedInlineMessage` alone answers with, when set (and no `failure` is).
+    prepare_failure: Option<GatewayError>,
     /// What the database probe read at each `createInvoiceLink`, in order.
     probes: Vec<Option<(String, Option<String>)>>,
 }
@@ -119,9 +138,26 @@ impl RecordingGateway {
         self.log().failure = failure;
     }
 
+    /// `savePreparedInlineMessage` from now on answers `failure` (`None`: `Ok` again); every other call is unchanged.
+    pub(crate) fn fail_prepare_with(&self, failure: Option<GatewayError>) {
+        self.log().prepare_failure = failure;
+    }
+
     /// Every call so far, in order.
     pub(crate) fn calls(&self) -> Vec<GatewayCall> {
         self.log().calls.clone()
+    }
+
+    /// The `savePreparedInlineMessage` calls so far as (sharer, share), in order (a call answered with a failure too).
+    pub(crate) fn prepared_calls(&self) -> Vec<(UserId, PreparedShare)> {
+        self.log()
+            .calls
+            .iter()
+            .filter_map(|call| match call {
+                GatewayCall::Prepared { user, share } => Some((*user, share.clone())),
+                _ => None,
+            })
+            .collect()
     }
 
     /// The `createInvoiceLink` specs so far, in order.
@@ -220,6 +256,36 @@ impl BotGateway for RecordingGateway {
                 commands: s.commands,
                 menu_button: s.menu_button,
             })
+        })
+    }
+
+    fn save_prepared_inline_message(
+        &self,
+        user: UserId,
+        share: PreparedShare,
+    ) -> BoxFut<'_, Result<PreparedMessage, GatewayError>> {
+        Box::pin(async move {
+            let mut log = self.log();
+            log.calls.push(GatewayCall::Prepared { user, share });
+            if let Some(failure) = log.failure.clone().or_else(|| log.prepare_failure.clone()) {
+                return Err(failure);
+            }
+            let n = log
+                .calls
+                .iter()
+                .filter(|call| matches!(call, GatewayCall::Prepared { .. }))
+                .count();
+            Ok(PreparedMessage {
+                id: format!("{TEST_PREPARED_PREFIX}{n}"),
+                expiration_date: i64::MAX,
+            })
+        })
+    }
+
+    fn bot_username(&self) -> BoxFut<'_, Result<String, GatewayError>> {
+        Box::pin(async move {
+            self.record(GatewayCall::BotUsername)?;
+            Ok(TEST_BOT_USERNAME.to_owned())
         })
     }
 }
@@ -896,8 +962,8 @@ async fn order_unknown_or_malformed_404() {
     report(&failures);
 }
 
-/// A Bot API whose `answerPreCheckoutQuery` never returns; every other call answers `Ok` at once (an invoice link in
-/// the recorder's form).
+/// A Bot API whose `answerPreCheckoutQuery` never returns; every other call answers `Ok` at once (an invoice link, a
+/// prepared message and the bot username in the recorder's form).
 struct HungAnswerGateway;
 
 impl BotGateway for HungAnswerGateway {
@@ -931,6 +997,23 @@ impl BotGateway for HungAnswerGateway {
 
     fn setup(&self, _s: SetupSpec) -> BoxFut<'_, Result<(), GatewayError>> {
         Box::pin(async { Ok(()) })
+    }
+
+    fn save_prepared_inline_message(
+        &self,
+        _user: UserId,
+        _share: PreparedShare,
+    ) -> BoxFut<'_, Result<PreparedMessage, GatewayError>> {
+        Box::pin(async {
+            Ok(PreparedMessage {
+                id: format!("{TEST_PREPARED_PREFIX}1"),
+                expiration_date: i64::MAX,
+            })
+        })
+    }
+
+    fn bot_username(&self) -> BoxFut<'_, Result<String, GatewayError>> {
+        Box::pin(async { Ok(TEST_BOT_USERNAME.to_owned()) })
     }
 }
 

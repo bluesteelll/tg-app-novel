@@ -608,7 +608,8 @@ load.**
 - **What:**
   - On entering room R, the controller requests `preload('room:<N>', [bg(N), props(N)])` for each neighbour N in
     exit order. The registry refuses a preload that would pass 32 MiB (K5), so the rest load on the tap behind the
-    400 ms door fade (`ensure`).
+    400 ms door fade (`ensure`). As merged (LX `a9e991c`, RULINGS 75; impl limitation 1, the cut addendum's W1 / W2):
+    `preload('room:<N>', [bg(N)])`, backgrounds only, requested by `roomShown()` once R's batch is applied.
   - Holders of non-neighbours are released on every move.
   - Opening a puzzle that has a close-up first releases every `room:*` holder, then ensures the close-up.
   - Arithmetic:
@@ -1453,6 +1454,23 @@ export function createPuzzleSession(deps: { api: Endpoints; purchase: (p: Produc
 export function loadPuzzleUi(t: PuzzleType): Promise<Result<Component<PuzzleUiProps>, { kind: 'chunk'; detail: string }>>;
 export type PuzzleUiProps = { params: unknown; answer: readonly number[]; busy: boolean;
                               onChange: (a: readonly number[]) => void; labels: (id: LineId) => string };
+// as merged (LP2 `88d0964`, RULINGS 67; cut Q2, D1-D8; client/src/puzzles/session.ts:28-106,455,
+//   client/src/puzzles/registry.ts:15-22, client/src/ui/puzzle-view.svelte.ts:16-88), with META-PLAN M21 / M27:
+//   PuzzleError gains { kind: 'invalid' } (the client pre-check refuses the answer; no request goes out) (D6);
+//   HintTierView = { tier; text: string | null; state: 'unlocked' | 'usable' | 'locked' | 'unavailable' } (no product
+//     or price); HintLadder = { tiers: readonly HintTierView[]; wallet: { cost; balance } | null } (null iff no port) (D3);
+//   hints(): Promise<Result<HintLadder, PuzzleError>>; ladder(): HintLadder; buyHint is gone: useHint(tier):
+//     Promise<Result<HintLadder, HintError>>, HintError.kind 'busy' | 'locked' | 'no-port' | 'closed' | 'insufficient'
+//     | 'unavailable' | 'failed' (D4);
+//   HintPort and HintPortError (MetaError's exact shape) are declared here (D5; META-PLAN "TS types");
+//   createPuzzleSession(deps: { api: Pick<Endpoints, 'getPuzzle' | 'postAttempt'>; hints: HintPort | null; world;
+//     chapter; puzzle; mode; run; lang: () => Lang; dispatch }): Result<PuzzleSession, { kind: 'unknown-puzzle';
+//     puzzle: PuzzleLocalId }> (D1, D2);
+//   PuzzleUiProps = { params: unknown; answer; busy; lang: Lang; onchange: (a) => void; item: (id: ItemId) =>
+//     { name: string } | null } (`lang`, `item` in place of `labels`, lower-case `onchange`) (D7);
+//   ui/puzzle-view.svelte.ts (the $state.raw store GameSession writes): createPuzzleView(): PuzzleView { host:
+//     Component<PuzzleHostProps> | null; frame: PuzzleFrameView | null; ladder: HintLadderUiView | null } and
+//     backScreen(f): Screen | null ({ kind: 'puzzle' } for explore, null for linear: X8) (D8, critique W1)
 
 // explore/controller.ts (LX) — lives in the explore-ui chunk; owned by GameSession, one per chapter
 export type HotspotView = { key: HotspotKey; kind: Hotspot['kind']; label: string;
@@ -1470,6 +1488,14 @@ export interface ExploreController {
 export function createExploreController(deps: { world: WorldPublic; manifest: AssetManifest;
   scene: Pick<SceneController, 'preload' | 'releasePreload'>; view: ExploreViewStore; text: (t: WorldText) => string;
   stageHost: HTMLElement }): ExploreController;                 // the Stage.svelte element: Pixi's resizeTo box, observed for resize()
+// as merged (LX `a9e991c`, RULINGS 75; cut Q3, impl limitation 1; client/src/explore/controller.ts:25-63,
+//   client/src/ui/explore-view.svelte.ts:13-82):
+//   HotspotView lives in the view store module ui/explore-view.svelte.ts (ExploreViewStore { layer, panel, hotspots,
+//     reveal, items, docs, lock }), whose panel is { kind: 'inventory' } | { kind: 'doc'; doc: DocId } | { kind: 'lock' } | null;
+//   ExploreController gains roomShown(): void (after the room batch is applied or its close-up cleared: the room's own
+//     bg, then each neighbour's bg in exit order; a no-op while an event knot is pending), reveal(): void ("show
+//     spots", REVEAL_MS = 2000) and relabel(): void (the view texts after a language change);
+//   deps.manifest is the preload's `from`: scene.preload('room:<id>', [bg], manifest)
 
 // scene/controller.ts (L11): one debug addition, wired to __novelDebug only under __TG_MOCK__ (like debugForceContextLoss)
 debugPropRects(): ReadonlyArray<{ prop: PropId; x: number; y: number; w: number; h: number }>;   // page CSS px of live prop sprites
@@ -1483,6 +1509,9 @@ export function setRootBack(fn: (() => void) | null): void;   // visible = stack
 export function createPurchaseFlow(deps: { api: Endpoints; tg: TelegramClient; clock: Clock;
   isOwned: (p: ProductId) => Promise<Result<boolean, ApiError>>;   // chapters: entitlements; hints: GET /api/puzzles
   onState: (s: PurchaseState) => void }): { buy(p: ProductId): void; checkAgain(): void; onActivated(): void; dispose(): void };
+// superseded by META-PLAN M19, M21 (as merged, L10 `34b7f13`, RULINGS 55; cut Q3, Q10): no hint product exists, and
+//   isOwned is isDelivered (chapters: the entitlements; packs: the polled order); the merged signature, with
+//   tg: Pick<TelegramClient, 'openInvoice'>, onDeactivated() and state(), is PROTOTYPE-PLAN's "purchase/flow.ts"
 
 // story/runner.ts (L13)
 enter(knot: KnotName, projection: Readonly<Record<VarName, InkScalar>>): Result<void, RunnerError>;
@@ -1491,6 +1520,9 @@ enter(knot: KnotName, projection: Readonly<Record<VarName, InkScalar>>): Result<
 // api/endpoints.ts (L10)
 getPuzzle(id: PuzzleId, lang: 'ru' | 'en'): Promise<Result<PuzzleStatus, ApiError>>;
 postAttempt(id: PuzzleId, answer: readonly number[]): Promise<Result<AttemptResponse, ApiError>>;   // 429 → ApiError http + retryAfter
+// as merged (L10 `34b7f13`, RULINGS 55; cut Q3 (b), (g); client/src/api/endpoints.ts:39,55-58): each takes an optional
+//   last argument o?: { signal?: AbortSignal } (an abort answers ApiError { kind: 'aborted' }), as getChapter does;
+//   PuzzleId is a local brand in endpoints.ts (`<chapter>.<local>`), and lang is `Lang`
 ```
 
 ---
@@ -1651,7 +1683,7 @@ postAttempt(id: PuzzleId, answer: readonly number[]): Promise<Result<AttemptResp
 | `client/src/explore/controller.ts` | rooms at runtime: hotspot views (`geom/cover`), the room path, preload policy, effects out; enters a section only through `admitSection` | explore-ui chunk; no ink, no Pixi import (scene via the injected port) |
 | `client/src/puzzles/{session,registry}.ts` | attempts, hints, purchase per open puzzle; lazy UI loaders | engine chunk; never reads ink |
 | `client/src/puzzles/ui/{CodeLock,OrderPuzzle}.svelte` | per-type presentational UI | one lazy chunk each |
-| `client/src/ui/puzzles/{PuzzleHost,HintLadder}.svelte`, `ui/puzzle-view.svelte.ts` | puzzle frame, ladder; view store | puzzle-host chunk; the view store is a statically importable plain `$state.raw` |
+| `client/src/ui/puzzles/{PuzzleHost,HintLadder}.svelte`, `ui/puzzle-view.svelte.ts` | puzzle frame, ladder; view store (as merged, LP2 `88d0964`, critique W1: the puzzle view store holds `host`, `frame` and `ladder`) | puzzle-host chunk; the view store is a statically importable plain `$state.raw` |
 | `client/src/ui/explore/{ExploreView,Inventory,DocumentReader,LockPanel}.svelte`, `ui/explore-view.svelte.ts` | hotspot layer + bar, inventory (items / files), document reader, slots panel; view store | explore-ui chunk |
 | `client/src/geom/cover.ts` | the one cover transform | pure; used by `scene/layout.ts` and the controller |
 | `client/src/app/yields.ts` | routes `yield` steps and explore/puzzle effects; builds room batches; calls `project` + `runner.enter`; holds every `import()` of the lazy families (X14); sets the root-back from `onPath` and the event state (X12) | the only caller of `runner.enter` |
@@ -1716,6 +1748,7 @@ The lanes are cut in PROTOTYPE-PLAN.md "THE LANE CUT" (dependency order, locks, 
 | Puzzle type chunk (JS + CSS), each | ≤ 8 KB br, a dynamic entry, absent from the entry and engine static closures | X14 | `budget.ts` (LP2), keyed on the importer as the engine row keys on `src/app/engine.ts`: PENDING while `src/app/yields.ts` (the importer of every lazy family, L15) does not exist, whatever the lazy sources; once it exists, PENDING for a family whose sources are absent, FAIL if a source exists with no dynamic entry, or if it is in a static closure — `budget: puzzle ui in engine closure fails`, `budget: lazy row pending until its importer exists`, `budget: lazy row fails without dynamic entry once its importer exists` |
 | Puzzle-host chunk | ≤ 10 KB br, same rules | | `budget.ts` (LP2) |
 | Explore-ui chunk | ≤ 16 KB br, same rules | | `budget.ts` (LP2) |
+| As merged (LP2 `88d0964`, RULINGS 67; cut Q4, D9; `client/scripts/budget.ts:135-150,346-352`) | three lazy rows: `puzzle-type chunk (br)` is one row that measures the largest type chunk (`CodeLock`, `OrderPuzzle`, each ≤ 8 KB br), `puzzle-host chunk (br)` (`PuzzleHost.svelte`) and `explore-ui chunk (br)` (keyed on `src/explore/controller.ts` + `src/ui/explore/ExploreView.svelte`, the union); the engine closure's dynamic walk stops at a lazy root, so the engine, first-line and first-load rows never count a lazy chunk | X14 | `budget.ts` (LP2) |
 | Engine closure | ≤ 230 KB br (unchanged; about 7 KB of pure world/puzzle code joins it) | | `budget.ts` (risk: about 8 KB headroom left; measured first in L15) |
 | World JSON per chapter (public) | ≤ 32 KB raw, ≤ 8 KB br | | `budget.ts` (L5) |
 | Prop image | ≤ 512×512, AVIF ≤ 60 KB, WebP ≤ 90 KB; ≤ 8 per room | ≤ 1 MiB decoded | `budget.ts` (L5) + `world/props-per-room` |
@@ -2058,6 +2091,7 @@ so no line moved. What it means for this design:
 | 9 | 2026-10-31 | RULINGS 21 + `D:/tmp/novel-orch/lw2-world-model/cut.md` §6 (Q1-Q8) and its addendum (C1, W1, developer decisions), as merged: LW2 `38bc717` | Docs lane `docs-errata`, group B (the LW2 errata, not a triage round): X15 `world/linear-requires` by construction (Q6); "World data" schema strictness (Q5/D3: required and nullable keys, repeated hotspot ids); the state API signatures take `WorldPublicBody`, only `reconcile` `WorldPublic` (Q3), `sectionKey` sets (W1), `RULES_VERSION` (Q2); "The points the rules leave open" (D7 with C1's restated no-change rule and the developer decisions); `WorldIssue` (D4); `worldVersion` hashes `{ rules: RULES_VERSION, body }` (Q2); the `world/softlock` message; the `pure-world` arch rule as merged (Q4); the X9 cost and the budget row carry the provisional timing (Q7); Test strategy: the LW2 names beside the list (Q8) and LW3's `emit: world version changes on a RULES_VERSION bump` in the emit list (Q2); PE7 resolved; the "Changed by STORIES-PLAN" line-number note says this revision moved the lines (review round 1). Each place is marked "erratum (RULINGS 21 …)" or "as merged". Ledger: `D:/tmp/novel-orch/docs-errata/ledger.md` |
 | 10 | 2026-10-31 | the META-PLAN campaign spec + RULINGS 25 | Hint purchases superseded by the META-PLAN economy: X6, X7, X18 headers, the Identifiers hint row and the `catalog.json` `hints` comment marked by same-line appends; a new section "Changed by META-PLAN" lists every superseded item (HTTP, Module API, H2–H7, Q14, Q15, tests, lanes). Design log: `D:/tmp/novel-orch/design/choices/design_log.md` |
 | 11 | 2026-11-01 | `D:/tmp/novel-orch/carry.md` at ORCH `d97ba64` (the docs-errata-2 spec, group A), as merged on main `6043941` | Docs lane `docs-errata-2`, group A (not a triage round): L6c (`039a2f3`) — the `puzzles/mod.rs` signatures (`AttemptOutcome::Answered`, `entitled_puzzle`, `&PuzzleDef`) and `GREATEST($3, first_at)`; LW3 (`be8ba8b`) — leave knots' carried stage, `explore/event-return` over the event closure, `worldVersion(body, rules)`, the `usage.json` world sections; the `world/title-long` reason gone with M21 (RULINGS 50). Decision §4.6 (revision 4b) was already applied. Ledger: `D:/tmp/novel-orch/docs-errata-2/ledger.md` |
+| 12 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `ba5fc68` (the docs-errata-3 spec, group A), as merged on main `22ed4d5` | Docs lane `docs-errata-3`, group A (not a triage round): L10 (`34b7f13`) — `isOwned` superseded by `isDelivered`, the endpoints' optional `signal` and the local `PuzzleId`; LP2 (`88d0964`) — the session contract fill-ins D1-D8, the view store's `host`, the three lazy budget rows and the engine walk; LX (`a9e991c`) — the controller's `roomShown()`, `reveal()`, `relabel()`, the store's `HotspotView` and `doc` panel, `manifest` as the preload's `from`, X13's backgrounds-only neighbour preload. Ledger: `D:/tmp/novel-orch/docs-errata-3/ledger.md` |
 
 **Revision 1 (2026-10-30)** — what changed, by triage item:
 - **W1** (a fully slotted lock's puzzle cannot be reopened after Back or a reload): "Lock" (the tap rule: every slot

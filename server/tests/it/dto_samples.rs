@@ -11,11 +11,12 @@ use serde_json::value::RawValue;
 use serde_json::{Map, Value};
 use server::api::dto::{
     AttemptResponse, AuthResponse, BalanceDto, CardAchievement, CardEnding, CardResponse,
-    ChapterPayload, CreateInvoiceResponse, EntitlementsResponse, FriendDto, FriendRequestDto,
-    GameStatsDto, HintUseResponse, HintView, InviteView, Localized, OrderResponse, PackDto,
-    PostStatsResponse, ProductDto, PutSaveResponse, PuzzleStatus, RejectedEvent, SaveFull,
-    SaveListResponse, SaveSummary, SocialResponse, StatRejectReason, StatsResponse, StoryStatsDto,
-    UserDto, WalletResponse, ts_bindings,
+    ChapterPayload, CreateInvoiceResponse, EntitlementsResponse, FriendDto, FriendProfile,
+    FriendRequestDto, FriendStoryDto, GameStatsDto, HintUseResponse, HintView, InviteView,
+    Localized, OrderResponse, PackDto, PostStatsResponse, ProductDto, PutSaveResponse,
+    PuzzleStatus, RejectedEvent, SaveFull, SaveListResponse, SaveSummary, ShareResponse,
+    SharedAchievement, SharedEnding, SocialResponse, StatRejectReason, StatsResponse,
+    StoryStatsDto, UserDto, WalletResponse, ts_bindings,
 };
 use server::db::orders::OrderStatus;
 use server::db::social::InviteState;
@@ -27,7 +28,7 @@ use ts_rs::TS;
 const REGENERATE: &str = "regenerate: cargo test -p server --test it dto_samples::write_dto_samples -- --ignored --exact";
 
 /// The exported request bodies and the types only they carry: the client only sends them, so it decodes none.
-const REQUESTS: [&str; 9] = [
+const REQUESTS: [&str; 10] = [
     "AuthRequest",
     "PutSaveRequest",
     "AttemptRequest",
@@ -37,10 +38,11 @@ const REQUESTS: [&str; 9] = [
     "StatKind",
     "StatOutcome",
     "ConsentRequest",
+    "ShareRequest",
 ];
 
 /// The exported types that only appear inside a sampled body, and are sampled there.
-const NESTED: [&str; 20] = [
+const NESTED: [&str; 23] = [
     "SaveSlot",
     "StoryId",
     "ErrorCode",
@@ -61,6 +63,9 @@ const NESTED: [&str; 20] = [
     "FriendRequestDto",
     "CardEnding",
     "CardAchievement",
+    "SharedEnding",
+    "SharedAchievement",
+    "FriendStoryDto",
 ];
 
 /// Every error code, each at its index in [`code_index`].
@@ -518,6 +523,50 @@ fn samples() -> Value {
                 chapters_completed: Vec::new(),
                 endings: Vec::new(),
                 achievements: Vec::new(),
+            }),
+        ],
+    );
+    // The dev fake's bot and an invented code: no real bot name.
+    let link = "https://t.me/novel_dev_bot?startapp=f0123456789abcdef0123456789abcdef";
+    put(
+        "ShareResponse",
+        vec![
+            value(&ShareResponse {
+                link: link.to_owned(),
+                text: "Образец: «Прилив», концовок 2, достижений 1".to_owned(),
+                prepared_message_id: Some("dev-prepared-1".to_owned()),
+            }),
+            value(&ShareResponse {
+                link: link.to_owned(),
+                text: "Sample: join me".to_owned(),
+                prepared_message_id: None,
+            }),
+        ],
+    );
+    put(
+        "FriendProfile",
+        vec![
+            value(&FriendProfile {
+                handle: "0123456789abcdef01234567".to_owned(),
+                visible: true,
+                stories: vec![FriendStoryDto {
+                    story_id: StoryId("tide".to_owned()),
+                    endings_found: 2,
+                    achievements_unlocked: 1,
+                    shared_endings: vec![SharedEnding {
+                        name: "drowned".to_owned(),
+                        title: text("утонувший", "drowned"),
+                    }],
+                    shared_achievements: vec![SharedAchievement {
+                        id: "first_steps".to_owned(),
+                        name: text("первые шаги", "first steps"),
+                    }],
+                }],
+            }),
+            value(&FriendProfile {
+                handle: "fedcba9876543210fedcba98".to_owned(),
+                visible: false,
+                stories: Vec::new(),
             }),
         ],
     );
