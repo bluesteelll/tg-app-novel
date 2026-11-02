@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use axum::body::Bytes;
+use axum::body::Body;
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::header::CACHE_CONTROL;
@@ -341,7 +341,7 @@ async fn feed(app: &AppState, update: &Value) -> Result<(), SimError> {
     let secret = HeaderValue::from_str(&app.cfg.webhook_secret).map_err(|_| SimError::Handler)?;
     let mut headers = HeaderMap::new();
     headers.insert(SECRET_HEADER, secret);
-    let status = webhook(State(app.clone()), headers, Bytes::from(update.to_string())).await;
+    let status = webhook(State(app.clone()), headers, Body::from(update.to_string())).await;
     if status == StatusCode::OK {
         Ok(())
     } else {

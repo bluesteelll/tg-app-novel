@@ -344,6 +344,30 @@ fn serve_log_names_database_target_not_password() {
     report(&failures);
 }
 
+/// The webhook secret is checked before the body is read: a 2 MiB body with a wrong secret, or with none, is 401
+/// (not buffered first and refused 413), and only with the right secret does the 1 MiB limit answer 413.
+#[tokio::test]
+async fn webhook_secret_checked_before_body_read() {
+    let (st, _db) = common::test_state().await;
+    let body = vec![b' '; 2 * 1024 * 1024];
+    let secret = st.cfg.webhook_secret.clone();
+    let mut failures = Vec::new();
+    for (case, secrets, want) in [
+        ("wrong secret, 2 MiB", vec![b"wrong-secret".as_slice()], 401),
+        ("no secret, 2 MiB", Vec::new(), 401),
+        ("the right secret, 2 MiB", vec![secret.as_bytes()], 413),
+    ] {
+        let got = webhook::post_webhook(&st, &secrets, body.clone())
+            .await
+            .status
+            .as_u16();
+        if got != want {
+            failures.push(format!("{case}: expected {want}, got {got}"));
+        }
+    }
+    report(&failures);
+}
+
 /// `n` cycles of create, migrate and drop on this thread's own runtime, as one `#[tokio::test]` runs them:
 /// (create, migrate, drop) each.
 fn state_cycles(n: usize) -> Vec<[Duration; 3]> {

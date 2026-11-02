@@ -1,5 +1,6 @@
 //! `POST /telegram/webhook` (K17): the one door for Telegram's updates. The secret header is compared in constant
-//! time before anything is parsed; the body is read as bytes and decoded as frankenstein's `Update`. A body that
+//! time before the body is read, so a forged update is refused before it is buffered; the body is then read as
+//! bytes, up to [`WEBHOOK_BODY_LIMIT`], and decoded as frankenstein's `Update`. A body that
 //! decode refuses is read again by a lenient payment probe, so a payment or a refund the pinned types cannot decode
 //! still reaches the same grant or revoke; anything else undecodable is acknowledged, and an unreadable payment or
 //! refund is retried.
@@ -7,7 +8,7 @@
 //! Logs never carry the body, the headers or the secret: a decode error is logged by its class and position only,
 //! because its text can quote a field value.
 
-use axum::body::Bytes;
+use axum::body::Body;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use frankenstein::payments::PreCheckoutQuery;
@@ -21,7 +22,8 @@ use crate::AppState;
 use crate::ids::{ChargeId, UserId};
 use crate::telegram::payments::{self, PaymentFact, PreCheckoutVerdict, RejectReason};
 
-/// The webhook's body limit (PP "HTTP API": 1 MB): far above any update, and applied by the route before the handler.
+/// The webhook's body limit (PP "HTTP API": 1 MB): far above any update, applied by the handler once the secret
+/// matched.
 pub const WEBHOOK_BODY_LIMIT: usize = 1024 * 1024;
 
 /// The header Telegram sends `setWebhook`'s `secret_token` in.
@@ -53,12 +55,18 @@ enum Handled {
     Retry,
 }
 
-/// `POST /telegram/webhook`: 401 unless exactly one `X-Telegram-Bot-Api-Secret-Token` equals `WEBHOOK_SECRET`; else
-/// the update is handled and answered 200, or 500 when a money fact could not be recorded.
-pub async fn webhook(State(st): State<AppState>, headers: HeaderMap, body: Bytes) -> StatusCode {
+/// `POST /telegram/webhook`: 401 unless exactly one `X-Telegram-Bot-Api-Secret-Token` equals `WEBHOOK_SECRET`, with
+/// the body unread; 413 when the body exceeds [`WEBHOOK_BODY_LIMIT`]; else the update is handled and answered 200,
+/// or 500 when a money fact could not be recorded.
+pub async fn webhook(State(st): State<AppState>, headers: HeaderMap, body: Body) -> StatusCode {
     if !secret_ok(&headers, st.cfg.webhook_secret.as_bytes()) {
         return StatusCode::UNAUTHORIZED;
     }
+    // The limit is the one error a whole request can meet here; a body cut off mid-stream has no reader of the
+    // answer, so it shares the 413.
+    let Ok(body) = axum::body::to_bytes(body, WEBHOOK_BODY_LIMIT).await else {
+        return StatusCode::PAYLOAD_TOO_LARGE;
+    };
     match handle(&st, &body).await {
         Handled::Ack => StatusCode::OK,
         Handled::Retry => StatusCode::INTERNAL_SERVER_ERROR,
