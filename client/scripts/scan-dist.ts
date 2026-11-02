@@ -3,8 +3,9 @@
 // paid fingerprints: paid line IDs and texts, paid asset file names, and paid asset bytes by content hash (a renamed
 // copy, or one inlined as a base64 data: URI); from LW3 the hint IDs and texts of every world, the paid worlds' IDs
 // and texts and the paid en values, all built from the sources (PUZZLES-PLAN X7); from LM1 the meta texts of
-// story/meta.json (META-PLAN "Paid-content protection"). Every finding is reported; exit 1 iff there is one or dist
-// is missing.
+// story/meta.json (META-PLAN "Paid-content protection"); from LFU2 (K7(c)) a text inside a JS string literal, found
+// in its escaped forms (Vite's `JSON.parse("…")` of a JSON module, a requoted literal). Every finding is reported;
+// exit 1 iff there is one or dist is missing.
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
@@ -51,7 +52,7 @@ export type FingerprintReason =
   | 'meta-empty';
 export type Finding =
   | { kind: 'source-map'; file: string }
-  | { kind: 'fingerprint'; file: string; section: string; needle: string; via: 'plain' | 'data-uri' }
+  | { kind: 'fingerprint'; file: string; section: string; needle: string; via: 'plain' | 'js-string' | 'data-uri' }
   | { kind: 'empty-dist'; reason: string }
   | { kind: 'fingerprints'; reason: FingerprintReason; detail: string }
   /**
@@ -119,7 +120,83 @@ export function decodeDataUris(text: string, depth = 1): string[] {
   return dataUris(text, depth).map((d) => d.text);
 }
 
-/** Scans every file for every needle of every section; never stops at the first finding. */
+type Quote = '"' | "'" | '`';
+const QUOTES: readonly Quote[] = ['"', "'", '`'];
+type Via = Extract<Finding, { kind: 'fingerprint' }>['via'];
+
+/** `s` as a JSON file writes it, and as a `"`-quoted JS literal does, without the quotes. */
+function jsonBody(s: string): string {
+  return JSON.stringify(s).slice(1, -1);
+}
+
+/** `s` as the body of a JS string literal quoted by `q`. */
+function jsBody(s: string, q: Quote): string {
+  switch (q) {
+    case '"':
+      return jsonBody(s);
+    case "'":
+      return s.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
+    case '`':
+      return s.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
+    default: {
+      const unreachable: never = q;
+      return unreachable;
+    }
+  }
+}
+
+/**
+ * The JS-string forms of one section's needles (K7(c)): each base needle's text and its JSON escape, each as the body
+ * of a `"`, `'` and backtick literal (a JSON module's `JSON.parse("…")`, a requoted literal), minus the section's own
+ * needles. A needle that is the JSON escape of another needle of the section (textNeedles adds them in pairs) gets no
+ * forms, so an escaped occurrence is one finding, the escaped needle's own `plain`. A needle with nothing a literal
+ * escapes (an ID) gets none.
+ */
+function jsStringForms(needles: readonly string[]): ReadonlyMap<string, readonly string[]> {
+  const own = new Set(needles);
+  const escaped = new Set<string>();
+  for (const needle of needles) {
+    const e = jsonBody(needle);
+    if (e !== needle && own.has(e)) {
+      escaped.add(e);
+    }
+  }
+  const out = new Map<string, readonly string[]>();
+  for (const needle of needles) {
+    if (escaped.has(needle)) {
+      continue;
+    }
+    const forms = new Set<string>();
+    for (const level of [needle, jsonBody(needle)]) {
+      for (const q of QUOTES) {
+        const form = jsBody(level, q);
+        if (!own.has(form)) {
+          forms.add(form);
+        }
+      }
+    }
+    if (forms.size > 0) {
+      out.set(needle, [...forms]);
+    }
+  }
+  return out;
+}
+
+/** How `needle` occurs in one file: as itself, as one of its JS-string `forms`, or inside a decoded data: URI. */
+function viaOf(text: string, decoded: readonly string[], needle: string, forms: readonly string[]): Via | null {
+  if (text.includes(needle)) {
+    return 'plain';
+  }
+  if (forms.some((f) => text.includes(f))) {
+    return 'js-string';
+  }
+  if (decoded.some((d) => d.includes(needle) || forms.some((f) => d.includes(f)))) {
+    return 'data-uri';
+  }
+  return null;
+}
+
+/** Scans every file for every needle of every section, and its JS-string forms; never stops at the first finding. */
 export function scanFiles(files: readonly ScanFile[], sections: readonly Section[]): Finding[] {
   for (const section of sections) {
     if (section.needles.some((needle) => needle === '')) {
@@ -133,18 +210,19 @@ export function scanFiles(files: readonly ScanFile[], sections: readonly Section
   } else if (!files.some((f) => f.path === 'index.html')) {
     findings.push({ kind: 'empty-dist', reason: 'no index.html' });
   }
+  // Once per section, outside the file loop.
+  const scans = sections.map((section) => ({ section, forms: jsStringForms(section.needles) }));
   for (const file of files) {
     const text = utf8.decode(file.bytes);
     if (file.path.endsWith('.map') || INLINE_SOURCE_MAP.test(text)) {
       findings.push({ kind: 'source-map', file: file.path });
     }
     const decoded = decodeDataUris(text);
-    for (const section of sections) {
+    for (const { section, forms } of scans) {
       for (const needle of section.needles) {
-        if (text.includes(needle)) {
-          findings.push({ kind: 'fingerprint', file: file.path, section: section.name, needle, via: 'plain' });
-        } else if (decoded.some((d) => d.includes(needle))) {
-          findings.push({ kind: 'fingerprint', file: file.path, section: section.name, needle, via: 'data-uri' });
+        const via = viaOf(text, decoded, needle, forms.get(needle) ?? []);
+        if (via !== null) {
+          findings.push({ kind: 'fingerprint', file: file.path, section: section.name, needle, via });
         }
       }
     }

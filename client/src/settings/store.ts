@@ -1,8 +1,8 @@
 // The player's settings and the read-sets, cached in Telegram CloudStorage (PROTOTYPE-PLAN K13). A cache, never a
 // source of truth (principle 1): a forged value can change a preference or let skip pass an unread line, nothing
 // else. Only the four settings are kept and written back, and nothing here is ever asked whether something is owned.
-// Every write is best effort (the facade answers ok even when Telegram did not store the value), so nothing waits on
-// one. A copy that could not be read is never written over in that session. No timers: the caller flushes the
+// Every write is best effort, and nothing waits on one (the facade answers an error when Telegram did not store a
+// value). A copy that could not be read is never written over in that session. No timers: the caller flushes the
 // read-sets (L15: at autosave points, on `deactivated`, at a chapter's END).
 import type { Volumes } from '../audio/manager.ts';
 import type { Lang } from '../i18n/index.ts';
@@ -24,8 +24,8 @@ export const DEFAULT_SETTINGS: Settings = Object.freeze({
 });
 /** The CloudStorage key of the settings value. */
 export const SETTINGS_KEY = 'settings';
-/** CloudStorage's value limit (core.telegram.org/bots/webapps#cloudstorage); telegram/webapp.ts keeps its copy private. */
-export const CLOUD_VALUE_MAX = 4096;
+/** CloudStorage's value limit, the facade's (re-exported for the store's callers). */
+export { CLOUD_VALUE_MAX } from '../telegram/index.ts';
 /** One read-set chunk: 750 hashes = 3000 bytes = exactly 4000 base64 characters, without padding. */
 export const READ_CHUNK_CHARS = 4000;
 /** Chunks per chapter: 6000 lines, at most 8 of a user's 1024 keys, and the count in the head stays one digit. */

@@ -56,7 +56,7 @@ async function continueToPaywall(page: Page, uid: number): Promise<void> {
 const firstLine = (page: Page) => page.locator('.dialogue[data-line-id="ch2.archive_cabinet.c002"]');
 
 test('purchase unlocks chapter 2', async ({ page, request }) => {
-  test.setTimeout(240_000);
+  test.setTimeout(180_000);
   const token = await devToken(request, 3001);
   const auth = { headers: { Authorization: `Bearer ${token}` } };
   expect((await request.get('/api/chapters/ch2', auth)).status(), 'ch2 before the purchase').toBe(403);
@@ -98,7 +98,19 @@ test('failed purchase keeps paywall', async ({ page, request }) => {
   await continueToPaywall(page, 3003);
   await setOutcome(page, 'failed');
   await buy(page, price);
-  await expect(page.locator('[data-variant="note"]', { hasText: ru('toast.purchase_failed') })).toBeVisible({ timeout: 10_000 });
+  const note = page.locator('[data-variant="note"]', { hasText: ru('toast.purchase_failed') });
+  await expect(note).toBeVisible({ timeout: 10_000 });
+  // The note lives 4 s (TOAST_MS): it is hit-tested first, at its own centre, in one evaluate.
+  const onTop = await note.evaluate((el) => {
+    const r = el.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return hit !== null && el.contains(hit);
+  });
+  expect(onTop, 'the note is on top at its centre').toBe(true);
+  // Under the note, the paywall's plain form (L15b cut: the form "above" the toast): no error, Buy enabled.
+  await expect(paywall(page), 'the paywall under the note').toBeVisible();
+  await expect(buyButton(page, price), 'the form is back').toBeEnabled();
+  await expect(page.locator('section', { has: paywall(page) }).getByRole('alert'), 'no error form').toHaveCount(0);
 });
 
 test('delayed webhook unlocks after polling', async ({ page, request }) => {

@@ -110,6 +110,9 @@ class FakeTwa implements TwaWebApp {
   expand(): void {
     this.#call('expand');
   }
+  close(): void {
+    this.#call('close');
+  }
   disableVerticalSwipes(): void {
     this.#call('disableVerticalSwipes');
   }
@@ -694,6 +697,21 @@ test('facade: no WebApp is an inert client', async () => {
   expect([seen, doc.listeners.size]).toEqual([['deactivated'], 0]);
   // A loaded script without launch params is not "in Telegram" either.
   expect(createTelegramClient(new FakeTwa('9.6', ''), env).inTelegram).toBe(false);
+});
+
+test('facade: close reaches WebApp.close at every version and never throws', () => {
+  // TWA's close has no version gate (core.telegram.org/bots/webapps; the pinned fixture posts web_app_close).
+  for (const version of ['6.0', '9.6']) {
+    const twa = new FakeTwa(version);
+    createTelegramClient(twa, fakeEnv().env).close();
+    expect(twa.names(), version).toEqual(['close']);
+  }
+  const refusing = new FakeTwa('9.6');
+  refusing.throws.set('close', 'WebAppMethodUnsupported');
+  expect(() => createTelegramClient(refusing, fakeEnv().env).close()).not.toThrow();
+  expect(refusing.names()).toEqual(['close']);
+  // No Mini App to close: a no-op, never window.close.
+  expect(() => createTelegramClient(null, fakeEnv().env).close()).not.toThrow();
 });
 
 test('share: failed event maps to a typed error', async () => {
