@@ -3,9 +3,11 @@ import { expect, test } from 'vitest';
 import type { PostStatsResponse, StatEventDto } from '../api/generated/api.ts';
 import type { ApiError, Clock } from '../api/http.ts';
 import type { EndingName, Result } from '../story/catalog.ts';
+import type { DeviceStore } from '../saves/pending.ts';
 import { KEEPALIVE_BODY_MAX } from '../saves/service.ts';
 import type { ChapterId, LineId, PuzzleLocalId, StoryVersion } from '../story/staging.ts';
-import { FLUSH_DELAY_MS, STATS_AGE_MS_MAX, STATS_BODY_MAX, STATS_QUEUE_MAX, createStatsReporter } from './reporter.ts';
+import type { TgError } from '../telegram/index.ts';
+import { FLUSH_DELAY_MS, STATS_AGE_MS_MAX, STATS_BODY_MAX, STATS_QUEUE_KEY, STATS_QUEUE_MAX, createStatsReporter } from './reporter.ts';
 import type { StatEvent, StatsReporter } from './reporter.ts';
 
 /**
@@ -115,19 +117,61 @@ function fakeServer(clock: FakeClock, script: Script) {
 /** The n-th lower-case UUID v4, as `crypto.randomUUID` would give one. */
 const uuid = (n: number): string => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 
-function counterIds(): () => string {
-  let n = 0;
+function counterIds(first = 1): () => string {
+  let n = first - 1;
   return () => uuid(++n);
 }
 
-function setup(script: Script = okAll) {
-  const clock = new FakeClock();
+type DeviceCall = { op: 'get'; key: string } | { op: 'set'; key: string; value: string | null };
+
+/** A Map-backed DeviceStorage; `holdReads` makes reads wait until the returned release is called. */
+function fakeDevice() {
+  const map = new Map<string, string>();
+  const calls: DeviceCall[] = [];
+  let gate: Promise<void> | null = null;
+  const device: DeviceStore = {
+    async get(key) {
+      calls.push({ op: 'get', key });
+      await gate;
+      return { ok: true, value: map.get(key) ?? null };
+    },
+    async set(key, value) {
+      calls.push({ op: 'set', key, value });
+      if (value === null) {
+        map.delete(key);
+      } else {
+        map.set(key, value);
+      }
+      return { ok: true, value: undefined };
+    },
+  };
+  const holdReads = (): (() => void) => {
+    const d = deferred<undefined>();
+    gate = d.promise;
+    return () => {
+      gate = null;
+      d.resolve(undefined);
+    };
+  };
+  const sets = (): number => calls.filter((c) => c.op === 'set').length;
+  /** The event ids of the stored queue, oldest first. */
+  const stored = (): string[] => {
+    const raw = map.get(STATS_QUEUE_KEY);
+    // The reporter wrote it: a parse failure fails the test, which is the point.
+    return raw === undefined ? [] : (JSON.parse(raw) as { events: { eventId: string }[] }).events.map((e) => e.eventId);
+  };
+  return { map, calls, device, holdReads, sets, stored };
+}
+
+function setup(script: Script = okAll, o: { device?: DeviceStore | null; clock?: FakeClock; firstId?: number } = {}) {
+  const clock = o.clock ?? new FakeClock();
   const server = fakeServer(clock, script);
   const logs: string[] = [];
   const reporter: StatsReporter = createStatsReporter({
     api: server.api,
+    device: o.device ?? null,
     clock,
-    newId: counterIds(),
+    newId: counterIds(o.firstId),
     log: (m) => logs.push(m),
   });
   return { clock, server, logs, reporter };
@@ -353,6 +397,7 @@ test('reporter: failure never throws', async () => {
     let n = 0;
     const reporter = createStatsReporter({
       api: server.api,
+      device: null,
       clock,
       newId: () => {
         n += 1;
@@ -389,6 +434,68 @@ test('reporter: failure never throws', async () => {
     expect(server.calls).toHaveLength(2);
     await clock.advance(1);
     expect(idsOf(server.calls[2])).toEqual([uuid(1)]);
+  }
+
+  // DeviceStorage that answers an error, rejects or throws: memory only, the events still sent.
+  const refused: Result<never, TgError> = { ok: false, error: { kind: 'storage', detail: 'full' } };
+  for (const broken of ['error', 'reject', 'throw'] as const) {
+    const answer = (): Promise<Result<never, TgError>> => {
+      if (broken === 'throw') {
+        throw new Error('no storage');
+      }
+      return broken === 'reject' ? Promise.reject(new Error('no storage')) : Promise.resolve(refused);
+    };
+    const device: DeviceStore = { get: answer, set: answer };
+    const { clock, server, reporter } = setup(okAll, { device });
+    await tick();
+    expect(() => reporter.record(ending())).not.toThrow();
+    expect(idsOf(server.calls[0]), broken).toEqual([uuid(1)]);
+    await clock.advance(0);
+    expect(clock.pending()).toBe(0);
+  }
+
+  // A failed read leaves the key alone for the page: writing over it could erase the last session's events.
+  {
+    const written: (string | null)[] = [];
+    const device: DeviceStore = {
+      get: () => Promise.resolve(refused),
+      set: (_k, v) => {
+        written.push(v);
+        return Promise.resolve({ ok: true, value: undefined });
+      },
+    };
+    const { clock, server, reporter } = setup(fail(NETWORK), { device });
+    await tick();
+    reporter.record(started());
+    reporter.record(ending());
+    await clock.advance(FLUSH_DELAY_MS);
+    expect(server.calls).toHaveLength(2);
+    expect(written).toEqual([]);
+  }
+
+  // A failed write is that write only: the next change is written again.
+  {
+    const written: (string | null)[] = [];
+    let refuse = true;
+    const device: DeviceStore = {
+      get: () => Promise.resolve({ ok: true, value: null }),
+      set: (_k, v) => {
+        if (refuse) {
+          refuse = false;
+          return Promise.resolve(refused);
+        }
+        written.push(v);
+        return Promise.resolve({ ok: true, value: undefined });
+      },
+    };
+    const { reporter } = setup(fail(NETWORK), { device });
+    await tick();
+    reporter.record(started());
+    await tick();
+    reporter.record(completed());
+    await tick();
+    expect(written.at(-1)).toContain(uuid(1));
+    expect(written.at(-1)).toContain(uuid(2));
   }
 
   // The session ended for the page: no further request and no timer; the calls still return.
@@ -470,6 +577,22 @@ test('reporter: dispose clears timers', async () => {
     late.server.calls[0]?.answer({ ok: false, error: NETWORK });
     await late.clock.advance(0);
     expect(late.clock.pending()).toBe(0);
+  }
+
+  // A late 200 writes nothing: the unsent copy stays for the next launch.
+  {
+    const dev = fakeDevice();
+    const { clock, server, reporter } = setup(hang, { device: dev.device });
+    await tick();
+    reporter.record(ending());
+    await tick();
+    expect(dev.stored()).toEqual([uuid(1)]);
+    const sets = dev.sets();
+    reporter.dispose();
+    server.calls[0]?.answer({ ok: true, value: { recorded: 1, duplicates: 0, rejected: [] } });
+    await clock.advance(60_000);
+    expect(dev.sets()).toBe(sets);
+    expect(dev.stored()).toEqual([uuid(1)]);
   }
 });
 
@@ -648,4 +771,77 @@ test('reporter: events older than 30 days are dropped', async () => {
     reporter.flush();
     expect(server.calls[0]?.events[0]?.ageMs).toBe(0);
   }
+});
+
+test('reporter: queue survives reload through device storage', async () => {
+  const dev = fakeDevice();
+  const clock = new FakeClock();
+  // A records offline, then the page goes away.
+  const a = setup(fail(NETWORK), { device: dev.device, clock });
+  await tick();
+  a.reporter.record(started());
+  a.reporter.record(solved());
+  await clock.advance(FLUSH_DELAY_MS);
+  expect(a.server.calls).toHaveLength(1);
+  expect(dev.stored()).toEqual([uuid(1), uuid(2)]);
+  a.reporter.dispose();
+  expect(dev.stored()).toEqual([uuid(1), uuid(2)]);
+
+  // B records before its read answers: nothing is written over A's events, and nothing is sent yet.
+  const release = dev.holdReads();
+  const b = setup(okAll, { device: dev.device, clock, firstId: 101 });
+  b.reporter.record(completed());
+  const sets = dev.sets();
+  await clock.advance(10_000);
+  expect(b.server.calls).toHaveLength(0);
+  expect(dev.sets()).toBe(sets);
+  expect(dev.stored()).toEqual([uuid(1), uuid(2)]);
+
+  // After the read: one request at once, the stored events first; its 200 removes the key.
+  release();
+  await clock.advance(0);
+  await clock.advance(0);
+  expect(b.server.calls).toHaveLength(1);
+  expect(b.server.calls[0]?.at).toBe(15_000);
+  expect(idsOf(b.server.calls[0])).toEqual([uuid(1), uuid(2), uuid(101)]);
+  expect(dev.calls.at(-1)).toEqual({ op: 'set', key: STATS_QUEUE_KEY, value: null });
+  expect(dev.map.has(STATS_QUEUE_KEY)).toBe(false);
+  b.reporter.dispose();
+
+  // A then B again: B ages and caps the merged queue at load.
+  {
+    const dev2 = fakeDevice();
+    const clock2 = new FakeClock();
+    const a2 = setup(hang, { device: dev2.device, clock: clock2 });
+    await tick();
+    a2.reporter.record(started());
+    clock2.jump(STATS_AGE_MS_MAX);
+    for (let i = 2; i <= STATS_QUEUE_MAX; i += 1) {
+      a2.reporter.record(choice(`ch1.intro.c${i}`));
+    }
+    await tick();
+    expect(dev2.stored()).toEqual(uuids(1, 64));
+    a2.reporter.dispose();
+    clock2.jump(1);
+
+    const release2 = dev2.holdReads();
+    const b2 = setup(okAll, { device: dev2.device, clock: clock2, firstId: 101 });
+    b2.reporter.record(choice('ch1.intro.b1'));
+    b2.reporter.record(choice('ch1.intro.b2'));
+    const before = dev2.sets();
+    release2();
+    await clock2.advance(0);
+    await clock2.advance(0);
+    // The 30-days-and-1-ms `chapter_started` is gone, then the 65th event evicted the oldest choice.
+    const written = dev2.calls.filter((c) => c.op === 'set')[before];
+    const events = written?.op === 'set' && written.value !== null ? (JSON.parse(written.value) as { events: unknown[] }).events : [];
+    expect(events).toHaveLength(64);
+    expect(b2.server.calls.flatMap(idsOf)).toEqual([...uuids(3, 64), uuid(101), uuid(102)]);
+    b2.reporter.dispose();
+  }
+
+  // No DeviceStorage (below Bot API 9.0): nothing to wait for; the queue lives in memory.
+  const none = setup(okAll, { device: null });
+  none.reporter.record(ending());
+  expect(idsOf(none.server.calls[0])).toEqual([uuid(1)]);
 });

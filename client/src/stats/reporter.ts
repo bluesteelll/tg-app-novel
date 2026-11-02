@@ -2,17 +2,20 @@
 // waits in a queue and goes out in batches through `postStatEvents`, one request at a time. A retry resends the same
 // ids, so the server counts an event once. Statistics grant and unlock nothing (principle 1): the server judges every
 // event, and the reporter drops whatever it rejected. It never throws (principle 5): a failure is a retry, a drop or a
-// log line.
+// log line. From Bot API 9.0 the queue has a DeviceStorage copy, so unsent events survive a reload: a cache of claims
+// the server has not judged yet, never a source of truth.
 //
 // A `rate_limited` rejection may also answer a resend of a choice already on record, once the batch is past the
 // server's choice budget (LS3 review M1): a logged `rate_limited` is not proof that a pick was lost.
 import { puzzleId } from '../api/endpoints.ts';
 import type { Endpoints } from '../api/endpoints.ts';
-import type { PostStatsResponse, StatEventDto } from '../api/generated/api.ts';
+import type { PostStatsResponse, StatEventDto, StatKind, StatOutcome } from '../api/generated/api.ts';
 import type { ApiError, Clock } from '../api/http.ts';
 import type { PuzzleOutcome } from '../explore/state.ts';
+import type { DeviceStore } from '../saves/pending.ts';
 import type { EndingName, Result } from '../story/catalog.ts';
 import type { ChapterId, LineId, PuzzleLocalId, StoryVersion } from '../story/staging.ts';
+import type { TgError } from '../telegram/index.ts';
 
 /** What the game session reports (STORIES-PLAN "StatEvent"; META-PLAN M1: the picked option of a choice). */
 export type StatEvent =
@@ -37,6 +40,8 @@ export const STATS_BATCH_MAX = 32;
  * and with the save PUT's `KEEPALIVE_BODY_MAX` it fills the 64 KiB keepalive quota of the two `pagehide` requests.
  */
 export const STATS_BODY_MAX = 16_384;
+/** The DeviceStorage key of the queue's copy (D7): `{"v":1,"events":[…]}`. */
+export const STATS_QUEUE_KEY = 'stats_queue';
 /** STORIES-PLAN Y13: the queue's bound; a record past it evicts the oldest choice first (revision 1, W2). */
 export const STATS_QUEUE_MAX = 64;
 /** The server's oldest accepted event (`STATS_AGE_MS_MAX`, 30 days): an older one would fail its whole batch. */
@@ -144,6 +149,54 @@ function buildBatch(queue: readonly Queued[], now: number): { batch: StatEventDt
   return { batch, leftover: false, oversized };
 }
 
+// Exhaustive by type: a kind or an outcome added to api.ts fails `check` here until it is listed.
+const STAT_KINDS = {
+  chapter_started: true,
+  chapter_completed: true,
+  ending_reached: true,
+  puzzle_ended: true,
+  choice_made: true,
+} as const satisfies Record<StatKind, true>;
+const STAT_OUTCOMES = { solved: true, failed: true, abandoned: true } as const satisfies Record<StatOutcome, true>;
+
+function isRecord(v: unknown): v is Readonly<Record<string, unknown>> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+function isMember<T extends string>(set: Readonly<Record<T, true>>, v: unknown): v is T {
+  return typeof v === 'string' && Object.hasOwn(set, v);
+}
+
+/** One stored event, or `null` for anything this version did not write. */
+function decodeQueued(v: unknown): Queued | null {
+  if (!isRecord(v)) {
+    return null;
+  }
+  const { eventId, kind, chapterId, storyVersion, subject, outcome, at } = v;
+  return typeof eventId === 'string' &&
+    isMember(STAT_KINDS, kind) &&
+    typeof chapterId === 'string' &&
+    typeof storyVersion === 'string' &&
+    (subject === null || typeof subject === 'string') &&
+    (outcome === null || isMember(STAT_OUTCOMES, outcome)) &&
+    typeof at === 'number' &&
+    Number.isSafeInteger(at)
+    ? { eventId, kind, chapterId, storyVersion, subject, outcome, at }
+    : null;
+}
+
+/** D7: the stored queue, oldest first. A value this version did not write is empty; an unreadable event goes alone. */
+function decodeStored(raw: string): Queued[] {
+  let v: unknown;
+  try {
+    v = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  const events = isRecord(v) && v['v'] === 1 ? v['events'] : null;
+  return Array.isArray(events) ? events.flatMap((e) => decodeQueued(e) ?? []) : [];
+}
+
 /** D8: the events a queue past `STATS_QUEUE_MAX` gives up, oldest choice first, else the oldest event. */
 function overCap(queue: readonly Queued[]): Queued[] {
   const out: Queued[] = [];
@@ -170,6 +223,8 @@ function describeError(e: ApiError): string {
 
 export function createStatsReporter(deps: {
   api: Pick<Endpoints, 'postStatEvents'>;
+  /** The facade's DeviceStorage, `null` below Bot API 9.0 (the queue then lives in memory only). */
+  device: DeviceStore | null;
   clock: Clock;
   /** A lower-case UUID v4 per event (the server's `is_event_id`); boot injects `crypto.randomUUID`. */
   newId: () => string;
@@ -187,6 +242,12 @@ export function createStatsReporter(deps: {
   let failures = 0;
   let halted = false;
   let disposed = false;
+  /** The queue's copy; `null` without DeviceStorage, or for the page once its read failed. */
+  let mirror: DeviceStore | null = deps.device;
+  /** D7: until the stored queue is read, nothing is written over it and nothing is sent. */
+  let loaded = mirror === null;
+  let writing = false;
+  let dirty = false;
 
   const log = (msg: string): void => {
     try {
@@ -215,15 +276,83 @@ export function createStatsReporter(deps: {
     queue = queue.filter((q) => !ids.has(q.eventId));
   };
   /** Events that can never be sent, or must give way: dropped from the queue with a log line each. */
-  const discard = (gone: readonly Queued[], why: string): void => {
+  const discard = (gone: readonly Queued[], why: string): boolean => {
     if (gone.length === 0) {
-      return;
+      return false;
     }
     for (const q of gone) {
       log(`stats: ${q.eventId} dropped, ${why}`);
     }
     queue = queue.filter((q) => !gone.includes(q));
+    return true;
   };
+  // Exactly 30 days old is still accepted; one older would fail its whole batch.
+  const dropStale = (now: number): boolean => discard(queue.filter((q) => now - q.at > STATS_AGE_MS_MAX), 'older than 30 days');
+
+  /** One `set` at a time, then the newest queue if it changed meanwhile; a failed write loses only the cache. */
+  async function write(device: DeviceStore): Promise<void> {
+    writing = true;
+    while (dirty) {
+      dirty = false;
+      const value = queue.length === 0 ? null : JSON.stringify({ v: 1, events: queue });
+      try {
+        const r = await device.set(STATS_QUEUE_KEY, value);
+        if (!r.ok) {
+          log(`stats: DeviceStorage write failed (${r.error.kind})`);
+        }
+      } catch (e) {
+        log(`stats: DeviceStorage write failed (${describe(e)})`);
+      }
+    }
+    writing = false;
+  }
+
+  /** After every change of the queue (D7): its copy follows. A write that started before `dispose` still lands. */
+  function changed(): void {
+    if (mirror === null || !loaded || disposed) {
+      return;
+    }
+    dirty = true;
+    if (!writing) {
+      // Never rejects: each `set` is caught inside.
+      void write(mirror);
+    }
+  }
+
+  /** D7: the stored queue (oldest first) before this page's records, de-duplicated, aged, capped and written back. */
+  async function load(device: DeviceStore): Promise<void> {
+    let read: Result<string | null, TgError>;
+    try {
+      read = await device.get(STATS_QUEUE_KEY);
+    } catch (e) {
+      read = { ok: false, error: { kind: 'storage', detail: describe(e) } };
+    }
+    if (disposed) {
+      return;
+    }
+    if (!read.ok) {
+      // A failed read says nothing about the key: writing over it could erase the last session's unsent events.
+      log(`stats: no DeviceStorage copy for this page (${read.error.kind})`);
+      mirror = null;
+    }
+    const merged: Queued[] = [];
+    const seen = new Set<string>();
+    for (const q of [...(read.ok && read.value !== null ? decodeStored(read.value) : []), ...queue]) {
+      if (!seen.has(q.eventId)) {
+        seen.add(q.eventId);
+        merged.push(q);
+      }
+    }
+    queue = merged;
+    loaded = true;
+    dropStale(clock.now());
+    discard(overCap(queue), 'the queue is full');
+    changed();
+    if (queue.length > 0) {
+      // The flush after boot (STORIES-PLAN F1' step 3), with whatever a flush during the read asked for.
+      trigger(again?.keepalive ?? false);
+    }
+  }
 
   /** D4's explicit trigger: an ending, `flush`. */
   function trigger(keepalive: boolean): void {
@@ -242,13 +371,19 @@ export function createStatsReporter(deps: {
   }
 
   function send(keepalive: boolean): void {
+    if (!loaded) {
+      // Remembered: the flush after the read sends it.
+      again = { keepalive: (again?.keepalive ?? false) || keepalive };
+      return;
+    }
     clearTimer();
     again = null;
     const now = clock.now();
-    // Exactly 30 days old is still accepted; one older would fail its whole batch.
-    discard(queue.filter((q) => now - q.at > STATS_AGE_MS_MAX), 'older than 30 days');
+    const stale = dropStale(now);
     const { batch, leftover, oversized } = buildBatch(queue, now);
-    discard(oversized, `its body alone is over ${STATS_BODY_MAX} B`);
+    if (discard(oversized, `its body alone is over ${STATS_BODY_MAX} B`) || stale) {
+      changed();
+    }
     if (batch.length === 0) {
       return;
     }
@@ -286,6 +421,7 @@ export function createStatsReporter(deps: {
         log(`stats: rejected ${x.eventId} ${x.reason}`);
       }
       drop(sent);
+      changed();
       failures = 0;
       next(leftover);
       return;
@@ -310,6 +446,7 @@ export function createStatsReporter(deps: {
       case 'rejected':
         log(`stats: batch of ${sent.length} dropped (${describeError(r.error)})`);
         drop(sent);
+        changed();
         failures = 0;
         next(leftover);
         return;
@@ -340,11 +477,17 @@ export function createStatsReporter(deps: {
     queue.push({ eventId, kind: e.kind, chapterId: e.chapterId, storyVersion: e.storyVersion, ...subjectOf(e), at: clock.now() });
     // An evicted event of the batch in flight is simply not found at its answer.
     discard(overCap(queue), 'the queue is full');
+    changed();
     if (e.kind === 'ending_reached') {
       trigger(false);
     } else if (timer === null && !flying && !halted) {
       arm('delay', FLUSH_DELAY_MS);
     }
+  }
+
+  if (mirror !== null) {
+    // Never rejects: the read's failure is a value, and everything after it is caught or cannot throw.
+    void load(mirror);
   }
 
   return {
