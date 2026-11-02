@@ -1,7 +1,7 @@
 //! The payment path's Telegram half: the pre-checkout decision under its deadline, its answer under the Bot API
-//! deadline, and the reject texts in the payer's language (K18; PE4: a `match` here until the bot texts move to
-//! `bot.*.json`); the grant on `successful_payment` (K19). The fact, decision and outcome types are
-//! `db::payments`'s, re-exported here.
+//! deadline, and the reject texts in the payer's language (K18; the texts live in `server/locales/bot.*.json`); the
+//! grant on `successful_payment` (K19); the revoke of a refund and the admin refund (K20). The fact, decision and
+//! outcome types are `db::payments`'s, re-exported here.
 //!
 //! Principle 2: Telegram must receive the pre-checkout answer within 10 s of the query. The database step is bounded
 //! by [`PRECHECKOUT_DB_DEADLINE`] and the answer by [`CALL_DEADLINE`], and nothing else runs on the path. The grant
@@ -13,11 +13,14 @@ use frankenstein::payments::PreCheckoutQuery;
 
 use crate::AppState;
 use crate::db::orders::parse_order_id;
-use crate::ids::UserId;
+use crate::ids::{ChargeId, UserId};
 use crate::puzzles::Lang;
-use crate::telegram::gateway::CALL_DEADLINE;
+use crate::telegram::gateway::{CALL_DEADLINE, GatewayError, OutMessage};
+use crate::telegram::texts::{self, fill};
 
-pub use crate::db::payments::{GrantOutcome, PaymentFact, PreCheckoutVerdict, RejectReason};
+pub use crate::db::payments::{
+    GrantOutcome, PaymentFact, PreCheckoutVerdict, RejectReason, RevokeOutcome,
+};
 
 /// The deadline of the pre-checkout's database step (K18).
 pub const PRECHECKOUT_DB_DEADLINE: Duration = Duration::from_secs(2);
@@ -27,7 +30,7 @@ pub const PRECHECKOUT_DB_DEADLINE: Duration = Duration::from_secs(2);
 const _: () = assert!(PRECHECKOUT_DB_DEADLINE.as_millis() + CALL_DEADLINE.as_millis() < 10_000);
 
 /// The primary language subtags whose speakers get Russian texts (K29); every other tag, or none, gets English.
-const RUSSIAN_LANGS: [&str; 4] = ["ru", "uk", "be", "kk"];
+pub(crate) const RUSSIAN_LANGS: [&str; 4] = ["ru", "uk", "be", "kk"];
 
 /// The pre-checkout decision on `q` at the state's clock. A payload outside the order id grammar is `UnknownOrder`
 /// and a payer id outside `i64` is `Mismatch`, both with no SQL (junk and U+0000 never reach the database); else the
@@ -106,6 +109,126 @@ pub async fn on_successful_payment(
     Ok(outcome)
 }
 
+/// M19's notice of a payment recorded but not applied (`OrderMismatch`, `AlreadyEntitled`, `UnknownProduct`): the
+/// payer is told in `lang` (their payment message's language), and each admin in Russian, with the charge id to
+/// refund. An applied payment and a redelivery (`Duplicate`) send nothing. The whole notice, sent one message after
+/// another, is cut at one [`CALL_DEADLINE`] after the commit; a failure or the cut is logged, never an error: the money
+/// fact is recorded already.
+pub async fn notify_unapplied(
+    st: &AppState,
+    fact: &PaymentFact,
+    outcome: GrantOutcome,
+    lang: Lang,
+) {
+    // No wildcard arm: a new outcome does not compile until it is sorted into applied or not here.
+    match outcome {
+        GrantOutcome::Granted | GrantOutcome::Duplicate => return,
+        GrantOutcome::OrderMismatch
+        | GrantOutcome::AlreadyEntitled
+        | GrantOutcome::UnknownProduct => {}
+    }
+    let charge = fact.charge.0.as_str();
+    let payer = fact.payer.0.to_string();
+    let word = format!("{outcome:?}");
+    let to_payer = OutMessage {
+        chat_id: fact.payer.0,
+        text: fill(&texts::texts(lang).payment_unapplied, &[("charge", charge)]),
+        web_app_button: None,
+    };
+    let admin_text = fill(
+        &texts::texts(Lang::Ru).admin_unapplied,
+        &[("charge", charge), ("payer", &payer), ("outcome", &word)],
+    );
+    let notice = async {
+        if let Err(e) = st.gateway.send_message(to_payer).await {
+            tracing::warn!(charge, error = %e, "unapplied payment: the payer's notice failed");
+        }
+        for &admin in &st.cfg.admin_telegram_ids {
+            let to_admin = OutMessage {
+                chat_id: admin,
+                text: admin_text.clone(),
+                web_app_button: None,
+            };
+            if let Err(e) = st.gateway.send_message(to_admin).await {
+                tracing::warn!(charge, error = %e, "unapplied payment: an admin's notice failed");
+            }
+        }
+    };
+    if tokio::time::timeout(CALL_DEADLINE, notice).await.is_err() {
+        tracing::warn!(
+            charge,
+            "unapplied payment: the notice was cut at the deadline"
+        );
+    }
+}
+
+/// K20: the revoke of `charge` at the state's clock, through the one guarded transaction ([`Repo::revoke`]); both
+/// refund paths (`/refund` and `refunded_payment`) end here. The outcome is logged with the charge id (not a secret):
+/// `Revoked` and `AlreadyRefunded` at `info`, `UnknownCharge` at `error` (a refund of a charge this server never
+/// recorded). Only a database error is `Err`.
+///
+/// [`Repo::revoke`]: crate::db::Repo::revoke
+pub async fn revoke(st: &AppState, charge: &ChargeId) -> Result<RevokeOutcome, sqlx::Error> {
+    let outcome = st.repo.revoke(charge, st.clock.now()).await?;
+    let charge = charge.0.as_str();
+    match outcome {
+        RevokeOutcome::Revoked | RevokeOutcome::AlreadyRefunded => {
+            tracing::info!(charge, ?outcome, "refund recorded");
+        }
+        RevokeOutcome::UnknownCharge => {
+            tracing::error!(charge, ?outcome, "refund of a charge with no payment row");
+        }
+    }
+    Ok(outcome)
+}
+
+/// Why an admin refund did not end in a revoke outcome.
+#[derive(Debug, thiserror::Error)]
+pub enum RefundError {
+    /// `refundStarPayment` failed (other than "already refunded"): nothing moved, the entitlement stays.
+    #[error("refundStarPayment: {0}")]
+    Gateway(GatewayError),
+    /// The database failed: the payment row could not be read, or the revoke did not commit.
+    #[error("database: {0}")]
+    Db(#[from] sqlx::Error),
+}
+
+/// The admin refund of `charge` (`/refund`, `/dev/refund`; K20): the payment row is read first, and an unknown or
+/// already refunded charge answers with no Bot API call. Else `refundStarPayment` to the payer, with no transaction
+/// open, cut at [`CALL_DEADLINE`]; then the revoke, when Telegram refunded or answers the charge was refunded before
+/// (a crash between the two recovers on the next `/refund`). Any other gateway answer moves nothing.
+pub async fn admin_refund(st: &AppState, charge: &ChargeId) -> Result<RevokeOutcome, RefundError> {
+    let Some(record) = st.repo.payment_record(charge).await? else {
+        return Ok(RevokeOutcome::UnknownCharge);
+    };
+    if record.refunded_at.is_some() {
+        return Ok(RevokeOutcome::AlreadyRefunded);
+    }
+    let call = st.gateway.refund_star_payment(record.payer, charge.clone());
+    let refunded = match tokio::time::timeout(CALL_DEADLINE, call).await {
+        Ok(answer) => answer,
+        Err(_) => Err(GatewayError::Timeout),
+    };
+    match refunded {
+        Ok(()) => {}
+        Err(e) if already_refunded(&e) => {
+            tracing::warn!(charge = %charge.0, "refundStarPayment: refunded before; revoking");
+        }
+        Err(e) => {
+            tracing::warn!(charge = %charge.0, error = %e, "refundStarPayment failed; nothing revoked");
+            return Err(RefundError::Gateway(e));
+        }
+    }
+    Ok(revoke(st, charge).await?)
+}
+
+/// Whether `e` is the Bot API saying the charge was refunded before: MTProto's `CHARGE_ALREADY_REFUNDED`, which the
+/// Bot API passes on in its description (`"Bad Request: CHARGE_ALREADY_REFUNDED"`). Only an API refusal counts: a
+/// transport text is not Telegram's answer.
+pub fn already_refunded(e: &GatewayError) -> bool {
+    matches!(e, GatewayError::Api(description) if description.contains("CHARGE_ALREADY_REFUNDED"))
+}
+
 /// The language of a Telegram language tag (K29, the rule of the invoice texts): its primary subtag, ASCII
 /// case-insensitive, in [`RUSSIAN_LANGS`] is Russian; anything else, or no tag, is English.
 pub fn payer_lang(language_code: Option<&str>) -> Lang {
@@ -122,42 +245,17 @@ pub fn payer_lang(language_code: Option<&str>) -> Lang {
     }
 }
 
-/// The `error_message` of a refused pre-checkout: plain, with no price and no legal claim (placeholder copy until
-/// the bot texts move to `bot.*.json`).
+/// The `error_message` of a refused pre-checkout, from the bot texts of `lang`: plain, with no price and no legal
+/// claim. No wildcard arm: a new reason does not compile until its text is named here.
 pub fn reject_text(reason: RejectReason, lang: Lang) -> &'static str {
-    match (reason, lang) {
-        (RejectReason::UnknownOrder, Lang::Ru) => {
-            "Этот счёт не найден. Откройте покупку в приложении ещё раз."
-        }
-        (RejectReason::UnknownOrder, Lang::En) => {
-            "This invoice was not found. Please start the purchase again in the app."
-        }
-        (RejectReason::Mismatch, Lang::Ru) => {
-            "Счёт не совпадает с заказом. Откройте покупку в приложении ещё раз."
-        }
-        (RejectReason::Mismatch, Lang::En) => {
-            "This invoice does not match the order. Please start the purchase again in the app."
-        }
-        (RejectReason::AlreadyOwned, Lang::Ru) => "Эта покупка уже ваша, оплата не нужна.",
-        (RejectReason::AlreadyOwned, Lang::En) => "You already own this, no payment is needed.",
-        (RejectReason::InProgress, Lang::Ru) => {
-            "Эта покупка уже оплачивается. Подождите пару минут и проверьте её в приложении."
-        }
-        (RejectReason::InProgress, Lang::En) => {
-            "This purchase is already being paid for. Please wait a couple of minutes and check the app."
-        }
-        (RejectReason::Expired, Lang::Ru) => {
-            "Срок действия счёта истёк. Откройте покупку в приложении ещё раз."
-        }
-        (RejectReason::Expired, Lang::En) => {
-            "This invoice has expired. Please start the purchase again in the app."
-        }
-        (RejectReason::Temporary, Lang::Ru) => {
-            "Не удалось проверить заказ. Попробуйте ещё раз через минуту."
-        }
-        (RejectReason::Temporary, Lang::En) => {
-            "The order could not be checked. Please try again in a minute."
-        }
+    let t = texts::texts(lang);
+    match reason {
+        RejectReason::UnknownOrder => &t.reject_unknown_order,
+        RejectReason::Mismatch => &t.reject_mismatch,
+        RejectReason::AlreadyOwned => &t.reject_already_owned,
+        RejectReason::InProgress => &t.reject_in_progress,
+        RejectReason::Expired => &t.reject_expired,
+        RejectReason::Temporary => &t.reject_temporary,
     }
 }
 
@@ -234,6 +332,34 @@ mod tests {
                 failures.push(format!("{reason:?}: the ru and en texts are the same"));
             }
         }
+        report(&failures);
+    }
+
+    /// `CHARGE_ALREADY_REFUNDED` in an API refusal's description is "refunded before"; another refusal, a timeout or
+    /// a transport text that happens to quote the word is not.
+    #[test]
+    fn refund_already_refunded_error_matches() {
+        let cases = [
+            (
+                GatewayError::Api("Bad Request: CHARGE_ALREADY_REFUNDED".to_owned()),
+                true,
+            ),
+            (
+                GatewayError::Api("Bad Request: CHARGE_NOT_FOUND".to_owned()),
+                false,
+            ),
+            (GatewayError::Timeout, false),
+            (
+                GatewayError::Transport("proxy said CHARGE_ALREADY_REFUNDED".to_owned()),
+                false,
+            ),
+            (GatewayError::Disabled, false),
+        ];
+        let failures: Vec<String> = cases
+            .iter()
+            .filter(|(e, want)| already_refunded(e) != *want)
+            .map(|(e, want)| format!("{e:?}: expected {want}, got {}", already_refunded(e)))
+            .collect();
         report(&failures);
     }
 
