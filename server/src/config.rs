@@ -54,6 +54,9 @@ pub struct Config {
     pub telegram_env: TelegramEnv,
     /// `LISTEN_ADDR`: the HTTP listen address (default `127.0.0.1:8787`).
     pub listen_addr: SocketAddr,
+    /// `PRIVACY_OPERATOR_FILE`: the privacy policy's operator identity facts, a JSON file outside the repository
+    /// (META-PLAN M26); required under [`TelegramEnv::Prod`]. Without it the test environment serves the draft.
+    pub privacy_operator_file: Option<PathBuf>,
 }
 
 /// Stands in for a secret in `Debug` output.
@@ -80,6 +83,7 @@ impl fmt::Debug for Config {
             .field("database_url", &Redacted)
             .field("telegram_env", &self.telegram_env)
             .field("listen_addr", &self.listen_addr)
+            .field("privacy_operator_file", &self.privacy_operator_file)
             .finish()
     }
 }
@@ -170,6 +174,14 @@ impl Config {
                     .map_err(|_| "must be a socket address such as 127.0.0.1:8787")
             },
         );
+        let privacy_operator_file = scan.optional("PRIVACY_OPERATOR_FILE", None, |v| {
+            Ok(Some(PathBuf::from(v)))
+        });
+        // A production policy names its operator (META-PLAN M26). Only an exact `prod` asks for it: a missing or
+        // unknown TELEGRAM_ENV is already a problem of its own.
+        if telegram_env == Some(TelegramEnv::Prod) && privacy_operator_file == Some(None) {
+            scan.fail("PRIVACY_OPERATOR_FILE", ProblemKind::Missing);
+        }
 
         // The placeholder secrets are public (committed in .env.example): with them anyone can sign initData, mint
         // session tokens and forge webhook updates. They may run only where nobody else can reach the app.
@@ -200,6 +212,7 @@ impl Config {
             Some(content_dir),
             Some(database_url),
             Some(listen_addr),
+            Some(privacy_operator_file),
         ) = (
             bot_token,
             webhook_secret,
@@ -213,6 +226,7 @@ impl Config {
             content_dir,
             database_url,
             listen_addr,
+            privacy_operator_file,
         )
         else {
             return Err(ConfigError {
@@ -238,6 +252,7 @@ impl Config {
             database_url,
             telegram_env,
             listen_addr,
+            privacy_operator_file,
         })
     }
 }
@@ -436,6 +451,7 @@ mod tests {
             ("CONTENT_DIR", "content".to_owned()),
             ("DATABASE_URL", "postgres://u@127.0.0.1:5487/x".to_owned()),
             ("TELEGRAM_ENV", "test".to_owned()),
+            ("PRIVACY_OPERATOR_FILE", "operator.json".to_owned()),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_owned(), v))
@@ -775,6 +791,85 @@ mod tests {
         );
     }
 
+    /// `PRIVACY_OPERATOR_FILE` (META-PLAN M26): required under exactly `prod`, where an empty value is unset as
+    /// everywhere; optional under `test`. The rows that expect a value set it themselves, never through `base()`.
+    #[test]
+    fn privacy_operator_file_required_in_prod() {
+        let mut failures = Vec::new();
+        let prod = || {
+            with(&[
+                ("TELEGRAM_ENV", "prod"),
+                ("PUBLIC_APP_URL", "https://novel.example.com/"),
+            ])
+        };
+        let missing = vec![ConfigProblem {
+            var: "PRIVACY_OPERATOR_FILE",
+            kind: ProblemKind::Missing,
+        }];
+
+        let mut prod_unset = prod();
+        prod_unset.remove("PRIVACY_OPERATOR_FILE");
+        let mut prod_empty = prod();
+        prod_empty.insert("PRIVACY_OPERATOR_FILE".to_owned(), String::new());
+        for (case, map) in [
+            ("prod without PRIVACY_OPERATOR_FILE", prod_unset),
+            ("prod with PRIVACY_OPERATOR_FILE empty", prod_empty),
+        ] {
+            match load(&map) {
+                Err(e) if e.problems == missing => {}
+                Err(e) => failures.push(format!(
+                    "{case}: expected [PRIVACY_OPERATOR_FILE: missing], got {:?}",
+                    e.problems
+                )),
+                Ok(_) => failures.push(format!(
+                    "{case}: expected [PRIVACY_OPERATOR_FILE: missing], got Ok"
+                )),
+            }
+        }
+
+        let mut prod_set = prod();
+        prod_set.insert(
+            "PRIVACY_OPERATOR_FILE".to_owned(),
+            "operator.json".to_owned(),
+        );
+        let mut test_unset = base();
+        test_unset.remove("PRIVACY_OPERATOR_FILE");
+        let mut test_set = base();
+        test_set.insert(
+            "PRIVACY_OPERATOR_FILE".to_owned(),
+            "/srv/novel/privacy-operator.json".to_owned(),
+        );
+        for (case, map, want) in [
+            (
+                "prod with PRIVACY_OPERATOR_FILE set",
+                prod_set,
+                Some(PathBuf::from("operator.json")),
+            ),
+            ("test without PRIVACY_OPERATOR_FILE", test_unset, None),
+            (
+                "test with PRIVACY_OPERATOR_FILE set",
+                test_set,
+                Some(PathBuf::from("/srv/novel/privacy-operator.json")),
+            ),
+        ] {
+            match load(&map) {
+                Ok(cfg) if cfg.privacy_operator_file == want => {}
+                Ok(cfg) => failures.push(format!(
+                    "{case}: expected privacy_operator_file {want:?}, got {:?}",
+                    cfg.privacy_operator_file
+                )),
+                Err(e) => failures.push(format!("{case}: expected Ok, got Err: {e}")),
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "{} failures:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
     /// Off loopback the URL itself must say `sslmode=verify-full`, judged on the values sqlx connects with: the query
     /// decoded, a later `host` / `hostaddr` / `sslmode` / `ssl-mode` overriding the authority and earlier pairs, and
     /// a URL without a host (sqlx would take `PGHOST`) counted as off loopback.
@@ -837,6 +932,7 @@ mod tests {
             database_url: "postgres://u:DBPASS-SENTINEL-3@127.0.0.1/x".to_owned(),
             telegram_env: TelegramEnv::Test,
             listen_addr: SocketAddr::from(([127, 0, 0, 1], 8787)),
+            privacy_operator_file: None,
         };
         let printed = format!("{cfg:?}");
         let key_hex = "ab".repeat(32);
