@@ -14,7 +14,7 @@ import type { Lang } from '../i18n/index.ts';
 import { createLineText } from '../i18n/lines.ts';
 import type { LineText } from '../i18n/lines.ts';
 import { summaryOf } from '../saves/service.ts';
-import type { ManualSlot, SaveError, SaveService, SaveWrite } from '../saves/service.ts';
+import type { ManualSlot, SaveError, SaveService, SaveState, SaveWrite } from '../saves/service.ts';
 import type { SceneController } from '../scene/controller.ts';
 import type { VisualCommand } from '../scene/executor.ts';
 import type { SceneError } from '../scene/registry.ts';
@@ -134,6 +134,8 @@ export const AUTO_PER_GRAPHEME_MS = 40;
 export const SKIP_STEP_MS = 80;
 /** The sound chip's toast key. */
 const SOUND_CHIP = 'sound';
+/** F3 step 4's prompt: another device's save paused the autosave lane. */
+const CONFLICT_PROMPT = 'save_conflict';
 /** The dev banner of a dropped tag (D10); `__TG_MOCK__` builds only. */
 const TAG_ERROR_TOAST = '__novelDebug:tag-error';
 
@@ -218,6 +220,8 @@ export function knotAssets(ids: readonly AssetId[]): { images: AssetId[]; sounds
 type Session = {
   readonly story: StoryEntry;
   readonly saves: SaveService;
+  /** The autosave lane's state subscription (W1). */
+  offSaves: () => void;
   /** Aborts the session's blocking loads when it ends. */
   readonly abort: AbortController;
   ch: LoadedChapter | null;
@@ -672,11 +676,47 @@ export function createGame(deps: GameDeps): Game {
   // -------------------------------------------------------------------------------------------------------------
   // Sessions
 
+  /**
+   * W1 / F3 step 4: the autosave lane paused on another device's save; only the player's explicit choice resumes it
+   * (principle 1: progress is never overwritten silently). `retrying` and `failed` show nothing (F3 step 3).
+   */
+  const onSaveState = (s: Session, st: SaveState): void => {
+    if (session !== s) {
+      return;
+    }
+    if (st.kind !== 'paused') {
+      vm.dismissToast(CONFLICT_PROMPT);
+      return;
+    }
+    let answered = false; // one answer per prompt: a double tap resolves once
+    const answer = (choice: 'keep-here' | 'load-theirs'): void => {
+      if (answered || session !== s) {
+        return;
+      }
+      answered = true;
+      vm.dismissToast(CONFLICT_PROMPT);
+      s.saves.resolveConflict(choice);
+      if (choice === 'load-theirs') {
+        void after(() => loadSlot(s, 'auto')); // the other device's progress; the outcome is on screen
+      }
+    };
+    vm.showToast({
+      kind: 'prompt',
+      key: CONFLICT_PROMPT,
+      message: t(vm.lang, 'toast.save_conflict'),
+      actions: [
+        { label: t(vm.lang, 'toast.save_conflict_load'), run: () => answer('load-theirs') },
+        { label: t(vm.lang, 'toast.save_conflict_keep'), run: () => answer('keep-here') },
+      ],
+    });
+  };
+
   const openSession = (story: StoryEntry): Session => {
     const saves = deps.saves(story.id);
-    return {
+    const s: Session = {
       story,
       saves,
+      offSaves: () => {},
       abort: new AbortController(),
       ch: null,
       assets: EMPTY_INDEX,
@@ -692,6 +732,8 @@ export function createGame(deps: GameDeps): Game {
       last: null,
       conflict: null,
     };
+    s.offSaves = saves.onState((st) => onSaveState(s, st));
+    return s;
   };
 
   /** Every per-session resource is released; the scene and the audio stay with the Game. */
@@ -704,6 +746,8 @@ export function createGame(deps: GameDeps): Game {
     s.abort.abort();
     s.runner?.dispose();
     s.runner = null;
+    s.offSaves();
+    vm.dismissToast(CONFLICT_PROMPT);
     s.saves.dispose();
     loaders.current.cancel();
     vm.line = null;

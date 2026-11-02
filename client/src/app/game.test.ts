@@ -658,6 +658,74 @@ test('game: continue picks the newest auto across stories', () => {
   expect(newestAuto({ slots: [at('gone', 'auto', 1, 1)] }, c)).toBeNull();
 });
 
+// ---------------------------------------------------------------------------------------------------------------
+// W1: the autosave conflict prompt (PP F3 step 4)
+
+const THEIRS: SaveSummary = {
+  storyId: MANOR,
+  slot: 'auto',
+  rev: 9,
+  chapterId: 'ch1',
+  storyVersion: '0111111111111111',
+  lineId: 'ch1.arrival.l001',
+  savedAt: 5,
+  writeId: 'another-device',
+};
+
+/** The conflict prompt in the toasts, as the player sees it: the message and its two labels. */
+function conflictPrompt(vm: ViewModel): { message: string; labels: string[] } | null {
+  const p = vm.toasts.find((e) => e.key === 'save_conflict');
+  return p?.kind === 'prompt' ? { message: p.message, labels: p.actions.map((a) => a.label) } : null;
+}
+
+test('game: a foreign autosave conflict shows the load or keep prompt', async () => {
+  const h = harness();
+  await startManor(h);
+  expect(conflictPrompt(h.vm)).toBeNull();
+  h.save().emit({ kind: 'paused', current: THEIRS });
+  expect(conflictPrompt(h.vm)).toEqual({
+    message: 'Прогресс сохранён на другом устройстве',
+    labels: ['Загрузить его', 'Играть здесь'],
+  });
+  // A retry or a failure shows nothing (F3 step 3); the lane leaving `paused` takes the prompt away.
+  h.save().emit({ kind: 'retrying', attempt: 1, inMs: 1000 });
+  expect(conflictPrompt(h.vm)).toBeNull();
+  h.save().emit({ kind: 'failed', error: { kind: 'network', detail: 'offline' } });
+  expect(conflictPrompt(h.vm)).toBeNull();
+  h.game.dispose();
+});
+
+test('game: each conflict action resolves the conflict with its choice', async () => {
+  const h = harness();
+  await startManor(h);
+  await h.game.advance();
+  await h.game.advance();
+  expect(h.vm.choices).not.toBeNull();
+  const actions = (): Array<() => void> => {
+    const p = h.vm.toasts.find((e) => e.key === 'save_conflict');
+    return p?.kind === 'prompt' ? p.actions.map((a) => a.run) : [];
+  };
+  // Keep playing here: the service re-PUTs over theirs; the story stays where it is.
+  h.save().emit({ kind: 'paused', current: THEIRS });
+  actions()[1]?.();
+  actions()[1]?.(); // a second tap on a gone prompt changes nothing
+  expect(h.save().resolved).toEqual(['keep-here']);
+  expect(conflictPrompt(h.vm)).toBeNull();
+  // Load it: the service drops our queue, and the other device's autosave is resumed.
+  const first = h.save().autosaves[0];
+  expect(first).toBeDefined();
+  if (first !== undefined) {
+    h.save().slots.set('auto', { summary: THEIRS, body: first.body });
+  }
+  h.save().emit({ kind: 'paused', current: THEIRS });
+  actions()[0]?.();
+  await settle();
+  expect(h.save().resolved).toEqual(['keep-here', 'load-theirs']);
+  expect(lineOf(h.vm)).toBe('ch1.arrival.l001');
+  expect(h.vm.choices).toBeNull();
+  h.game.dispose();
+});
+
 test('game: deactivated suspends audio and the auto timer', async () => {
   const h = harness();
   await startManor(h);
