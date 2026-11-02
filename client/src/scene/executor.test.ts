@@ -7,10 +7,11 @@ import type { AssetId, BgId, CgId, CharId, ExprId, PropId, Rect, Slot } from '..
 import { createExecutor } from './executor.ts';
 import type { Layer, Placement, StageAdapter, VisualCommand } from './executor.ts';
 import { propPlacement } from './layout.ts';
-import { createAssetRegistry } from './registry.ts';
-import type { AssetError, LoadImage } from './registry.ts';
+import { REVIVE_DEADLINE_MS, createAssetRegistry } from './registry.ts';
+import type { AssetError, Decoded, LoadError, LoadImage } from './registry.ts';
 import { createRenderLoop } from './render-loop.ts';
 import type { RenderLoop, Ticker } from './render-loop.ts';
+import { createReviveFlow } from './revive-flow.ts';
 
 // GSAP reads the clock through `Date.now`, captured when its module loads: fake timers installed before every import
 // (vi.hoisted runs first) make its ticker deterministic. advance() moves the fake clock and runs one manual tick (V6).
@@ -43,7 +44,7 @@ const track = (p: Promise<void>): { done: boolean } => {
 // destroyed object or on a sprite over a released texture (Pixi would crash, or draw a dead texture, there).
 
 type Tex = { readonly url: string };
-type Node = { kind: 'sprite' | 'group'; layer: Layer | 'group'; key: string; group: number | null; alive: boolean; p: Placement };
+type Node = { kind: 'sprite' | 'group'; layer: Layer | 'group'; key: string; group: number | null; alive: boolean; p: Placement; tex: Tex | null };
 
 const S390: Size = { w: 390, h: 844 };
 
@@ -66,7 +67,7 @@ function recordingStage(size: Size, freed: ReadonlySet<Tex> = new Set()) {
     size: () => stage.size,
     group(char) {
       n += 1;
-      nodes.set(n, { kind: 'group', layer: 'group', key: char, group: null, alive: true, p: {} });
+      nodes.set(n, { kind: 'group', layer: 'group', key: char, group: null, alive: true, p: {}, tex: null });
       log.push(`group:${char}`);
       return { group: n };
     },
@@ -84,7 +85,7 @@ function recordingStage(size: Size, freed: ReadonlySet<Tex> = new Set()) {
       }
       n += 1;
       const key = keyOf(layer, tex.id);
-      nodes.set(n, { kind: 'sprite', layer, key, group: g?.group ?? null, alive: true, p: {} });
+      nodes.set(n, { kind: 'sprite', layer, key, group: g?.group ?? null, alive: true, p: {}, tex: tex.texture });
       log.push(`create:${layer}:${key}`);
       return { sprite: n };
     },
@@ -109,7 +110,9 @@ function recordingStage(size: Size, freed: ReadonlySet<Tex> = new Set()) {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Assets: a fixture manifest, the real registry and a loader that decodes at once, counting loads and releases.
+// Assets: a fixture manifest, the real registry and a loader that decodes at once, counting loads and releases. Each
+// Decoded reports the harness's GPU generation when its load settles (1 unless a test raises it); its revive succeeds
+// at once unless the test fails or holds it (MEMORY-PLAN M2 commit 3a), and a load can be deferred (a stalled fetch).
 
 const image = (file: string, w: number, h: number): ImageEntry => ({
   kind: 'image',
@@ -142,18 +145,64 @@ function harness(size: Size = S390, loop: RenderLoop = quietLoop()) {
   const loads = new Map<string, number>();
   const released = new Map<string, number>();
   const byUrl = new Map(Object.values(ENTRIES).map((e) => [e.avif.url, e]));
+  let gen = 1;
+  /** Per URL: every revive fails, or each waits for `settle` (held). */
+  const reviveRule = new Map<string, 'fail' | 'hold'>();
+  const heldRevives = new Map<string, Array<(r: Result<void, LoadError>) => void>>();
+  /** Per URL: the next load waits until the test lets it settle. */
+  const deferred = new Map<string, { ready: boolean; go: (() => void) | null }>();
   const load: LoadImage<Tex> = (ref) => {
     loads.set(ref.url, (loads.get(ref.url) ?? 0) + 1);
     const e = byUrl.get(ref.url);
     if (e === undefined || ref.url === urlOf('bg/broken')) {
       return Promise.resolve({ ok: false, error: { kind: 'decode', detail: 'no such fixture' } });
     }
-    const texture: Tex = { url: ref.url };
-    const release = (): void => {
-      released.set(ref.url, (released.get(ref.url) ?? 0) + 1);
-      freed.add(texture);
+    const decode = (): Result<Decoded<Tex>, LoadError> => {
+      const texture: Tex = { url: ref.url };
+      const release = (): void => {
+        released.set(ref.url, (released.get(ref.url) ?? 0) + 1);
+        freed.add(texture);
+      };
+      const d: Decoded<Tex> = {
+        texture,
+        w: e.w,
+        h: e.h,
+        keptBytes: ref.bytes,
+        gen,
+        open: () => false,
+        revive: (to, signal) => {
+          const done = (r: Result<void, LoadError>): Result<void, LoadError> => {
+            if (r.ok && !signal.aborted) {
+              d.gen = to;
+            }
+            return r;
+          };
+          const rule = reviveRule.get(ref.url);
+          if (rule === 'fail') {
+            return Promise.resolve(done({ ok: false, error: { kind: 'decode', detail: 'revive failed' } }));
+          }
+          if (rule === 'hold') {
+            return new Promise((resolve) => {
+              heldRevives.set(ref.url, [...(heldRevives.get(ref.url) ?? []), (r) => resolve(done(r))]);
+            });
+          }
+          return Promise.resolve(done({ ok: true, value: undefined }));
+        },
+        release,
+      };
+      return { ok: true, value: d };
     };
-    return Promise.resolve({ ok: true, value: { texture, w: e.w, h: e.h, release } });
+    const wait = deferred.get(ref.url);
+    if (wait === undefined) {
+      return Promise.resolve(decode());
+    }
+    deferred.delete(ref.url);
+    return new Promise((resolve) => {
+      wait.go = () => resolve(decode());
+      if (wait.ready) {
+        wait.go();
+      }
+    });
   };
   const registry = createAssetRegistry<Tex>({ load, variant: 'avif' });
   const resolve = (id: AssetId): Result<ImageEntry, AssetError> => {
@@ -173,7 +222,72 @@ function harness(size: Size = S390, loop: RenderLoop = quietLoop()) {
     skipped,
     loadsOf: (id: string): number => loads.get(urlOf(id)) ?? 0,
     releasedOf: (id: string): number => released.get(urlOf(id)) ?? 0,
+    /** The generation the next settling load reports; a test raises it before it revives. */
+    setGen: (g: number): void => {
+      gen = g;
+    },
+    failRevive: (id: string): void => {
+      reviveRule.set(urlOf(id), 'fail');
+    },
+    /** Every revive of `id` waits; the returned controls settle the ones held so far. */
+    holdRevive: (id: string): { succeed(): void; fail(): void } => {
+      reviveRule.set(urlOf(id), 'hold');
+      const settle = (r: Result<void, LoadError>): void => {
+        const waiting = heldRevives.get(urlOf(id)) ?? [];
+        heldRevives.delete(urlOf(id));
+        for (const w of waiting) {
+          w(r);
+        }
+      };
+      return {
+        succeed: () => settle({ ok: true, value: undefined }),
+        fail: () => settle({ ok: false, error: { kind: 'decode', detail: 'revive failed' } }),
+      };
+    },
+    /** The next load of `id` waits (a stalled fetch) until the returned function is called. */
+    deferLoad: (id: string): (() => void) => {
+      const wait: { ready: boolean; go: (() => void) | null } = { ready: false, go: null };
+      deferred.set(urlOf(id), wait);
+      return () => {
+        wait.ready = true;
+        wait.go?.();
+      };
+    },
   };
+}
+
+/** A fixture entry by id. */
+function entryOf(id: string): ImageEntry {
+  const e = ENTRIES[id];
+  if (e === undefined) {
+    throw new Error(`invariant: ${id} is a fixture entry`);
+  }
+  return e;
+}
+const asId = (s: string): AssetId => s as AssetId; // fixture ids: the brand is earned by the manifest decoder
+const noAbort = (): AbortSignal => new AbortController().signal;
+
+/** Holds `id`'s record under a holder of the test, outside the executor (a preload or the scheduler's ensure). */
+async function pin(h: ReturnType<typeof harness>, id: string): Promise<void> {
+  const r = await h.registry.acquire(asId(id), 'test', { entry: entryOf(id), priority: 'visible' });
+  expect(r.ok).toBe(true);
+}
+
+/** Ends `id`'s record the way a context restore does: generation 2, and its re-decode fails. */
+async function failOnRevive(h: ReturnType<typeof harness>, id: string): Promise<void> {
+  h.failRevive(id);
+  h.setGen(2);
+  expect(await h.registry.revive(2, noAbort()).visible).toBe('done');
+  expect(h.registry.current(asId(id))).toBe(null);
+}
+
+/** Records console.error calls (the chain's catch logs a build that threw) until `restore`. */
+function spyErrors(): { readonly errors: unknown[][]; restore(): void } {
+  const errors: unknown[][] = [];
+  const spy = vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => {
+    errors.push(a);
+  });
+  return { errors, restore: () => spy.mockRestore() };
 }
 
 // Commands as parseTags types them; the brands are earned by the parser in production.
@@ -243,7 +357,7 @@ test('executor_kills_timelines', async () => {
   await flush();
   expect(thirdDone).toBe(true);
   expect(gsap.globalTimeline.getChildren(true, true, true)).toEqual([]);
-  expect(h.registry.stats()).toEqual({ live: 0, bytes: 0, pending: 0, overCap: 0 });
+  expect(h.registry.stats()).toEqual({ live: 0, bytes: 0, pending: 0, overCap: 0, keptBytes: 0, keptMismatch: 0, openBitmaps: 0, stale: 0, reviveFailed: 0 });
 });
 
 test('executor_sprite_count_per_slot', async () => {
@@ -644,5 +758,248 @@ test('executor: prop rects in stage px', async () => {
     propPlacement(small, LAMP),
     propPlacement(small, KEY),
   ]);
+  h.ex.destroy();
+});
+
+test('executor: a build that throws kills its timeline', async () => {
+  // L11 review minor M1: a build that throws before its timeline is handed to the batch must not leave that paused
+  // timeline in gsap's root timeline. The chain's catch logs it and the batch still settles.
+  const h = harness();
+  const errors: unknown[][] = [];
+  const spy = vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => {
+    errors.push(a);
+  });
+  const sprite = h.adapter.sprite.bind(h.adapter);
+  let thrown = false;
+  h.adapter.sprite = (layer, tex, g) => {
+    if (!thrown) {
+      thrown = true;
+      throw new Error('stage: a bug in a build');
+    }
+    return sprite(layer, tex, g);
+  };
+  const applied = track(h.ex.apply([bg('cafe', 'crossfade', 500)], NOW));
+  await flush();
+  spy.mockRestore();
+  expect(errors.map((e) => e[0])).toEqual(['scene: batch failed']);
+  expect(applied.done).toBe(true);
+  expect(gsap.globalTimeline.getChildren(true, true, true)).toEqual([]);
+  h.ex.destroy();
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// MEMORY-PLAN M2 commit 3a: reacquire() and the identity rule (section 8). Records end through the real
+// registry.revive(2, signal) after the harness generation is raised to 2.
+
+test('executor: reacquire removes a view bound to an ended record at once', async () => {
+  const h = harness();
+  await h.ex.apply([bg('cafe', 'cut'), show('ally', 'neutral', 'left', 'cut')], NOW);
+  await failOnRevive(h, 'bg/cafe');
+  h.log.length = 0;
+  const returned: unknown = h.ex.reacquire();
+  // Synchronously, before any await: nothing waits on the re-take.
+  expect(returned).toBe(undefined);
+  expect(h.live('bg')).toEqual([]);
+  expect(h.inGroup('ally').length).toBe(1);
+  expect(h.log.filter((x) => x.startsWith('destroy:'))).toEqual(['destroy:bg:cafe']);
+  h.ex.destroy();
+});
+
+test('executor: reacquire takes the slot again on a new record', async () => {
+  const h = harness();
+  await h.ex.apply([bg('cafe', 'cut'), show('ally', 'neutral', 'left', 'cut')], NOW);
+  const ended = h.registry.current(asId('bg/cafe'));
+  await failOnRevive(h, 'bg/cafe');
+  h.ex.reacquire();
+  await flush();
+  expect(h.loadsOf('bg/cafe')).toBe(2);
+  const now = h.registry.current(asId('bg/cafe'));
+  expect(now).not.toBe(null);
+  expect(now).not.toBe(ended);
+  const [sprite] = h.live('bg');
+  expect(sprite?.tex).toBe(now?.texture);
+  expect(sprite?.tex !== null && sprite?.tex !== undefined && h.freed.has(sprite.tex)).toBe(false);
+  expect(h.loadsOf('char/ally/neutral')).toBe(1);
+  expect(h.ex.snapshot().bg).toBe('cafe');
+  h.ex.destroy();
+});
+
+test('executor: a batch never builds on a handle whose record ended', async () => {
+  const h = harness();
+  const spy = spyErrors();
+  await pin(h, 'bg/cafe');
+  const allyLoads = h.deferLoad('char/ally/neutral');
+  // B's bg take joins the live record at once; its ally take waits on a stalled fetch.
+  const b = h.ex.apply([bg('cafe', 'cut'), show('ally', 'neutral', null, 'cut')], NOW);
+  await flush();
+  await failOnRevive(h, 'bg/cafe');
+  h.ex.reacquire();
+  allyLoads();
+  await b;
+  await flush();
+  spy.restore();
+  expect(spy.errors).toEqual([]);
+  expect(h.inGroup('ally').length).toBe(1);
+  // The re-take, queued behind B, shows the slot on the new record.
+  const [sprite] = h.live('bg');
+  expect(sprite?.tex).toBe(h.registry.current(asId('bg/cafe'))?.texture);
+  expect(h.loadsOf('bg/cafe')).toBe(2);
+  h.ex.destroy();
+});
+
+test('executor: a fade through black never shows a handle whose record ended at black', async () => {
+  const h = harness();
+  await pin(h, 'bg/street');
+  const s = track(h.ex.apply([scene('street', 'fade', 800)], NOW));
+  await flush();
+  advance(100);
+  await failOnRevive(h, 'bg/street');
+  h.ex.reacquire(); // no street sprite yet: it removes nothing and completes nothing
+  expect(h.ex.stats().activeTimelines).toBe(1);
+  advance(400); // the midpoint: the slot keeps what it showed
+  expect(h.live('bg')).toEqual([]);
+  advance(400); // past S's end, so the re-take chained behind it builds
+  await flush();
+  expect(s.done).toBe(true);
+  const [sprite] = h.live('bg');
+  expect(sprite?.key).toBe('street');
+  expect(sprite?.tex).toBe(h.registry.current(asId('bg/street'))?.texture);
+  expect(h.loadsOf('bg/street')).toBe(2);
+  h.ex.destroy();
+});
+
+test('executor: a second reacquire touches nothing', async () => {
+  const h = harness();
+  await h.ex.apply([bg('cafe', 'cut'), show('ally', 'neutral', 'left', 'cut')], NOW);
+  await failOnRevive(h, 'bg/cafe');
+  h.ex.reacquire();
+  h.ex.reacquire(); // while the re-take is pending
+  await flush();
+  const current = h.registry.current(asId('bg/cafe'));
+  const live = h.registry.stats().live;
+  h.ex.reacquire(); // after it settled
+  await flush();
+  expect(h.loadsOf('bg/cafe')).toBe(2);
+  expect(h.log.filter((x) => x === 'destroy:bg:cafe')).toEqual(['destroy:bg:cafe']);
+  expect(h.live('bg').map((x) => x.key)).toEqual(['cafe']);
+  expect(h.registry.current(asId('bg/cafe'))).toBe(current);
+  expect(h.registry.stats().live).toBe(live);
+  h.ex.destroy();
+});
+
+test('executor: reacquire behind a waiting batch removes at once', async () => {
+  const h = harness();
+  await h.ex.apply([bg('cafe', 'cut')], NOW);
+  const allyLoads = h.deferLoad('char/ally/neutral');
+  const a = h.ex.apply([show('ally', 'neutral', 'left', 'cut')], NOW);
+  await flush();
+  await failOnRevive(h, 'bg/cafe');
+  h.ex.reacquire();
+  // A still waits in the chain; the removal does not.
+  expect(h.live('bg')).toEqual([]);
+  allyLoads();
+  await a;
+  await flush();
+  expect(h.inGroup('ally').length).toBe(1);
+  expect(h.live('bg').map((x) => x.key)).toEqual(['cafe']);
+  expect(h.loadsOf('bg/cafe')).toBe(2);
+  h.ex.destroy();
+});
+
+test('executor: a waiting take that failed with its record is taken again', async () => {
+  const h = harness();
+  await pin(h, 'char/ally/neutral');
+  const held = h.holdRevive('char/ally/neutral');
+  h.setGen(2);
+  void h.registry.revive(2, noAbort());
+  await flush();
+  // B's take joins the record still waiting for its revive.
+  const b = h.ex.apply([show('ally', 'neutral', 'left', 'cut')], NOW);
+  await flush();
+  expect(h.inGroup('ally').length).toBe(0);
+  held.fail();
+  await b;
+  expect(h.skipped.map((e) => e.kind)).toEqual(['decode']);
+  expect(h.inGroup('ally').length).toBe(0);
+  h.ex.reacquire();
+  await flush();
+  expect(h.loadsOf('char/ally/neutral')).toBe(2);
+  expect(h.inGroup('ally').length).toBe(1);
+  h.ex.destroy();
+});
+
+test('executor: reacquire touches nothing not bound to an ended record', async () => {
+  const h = harness();
+  // A visual skipped by its own decode failure, a live character, then a running 200 ms expression fade.
+  await h.ex.apply([bg('broken', 'cut'), show('ally', 'neutral', 'left', 'cut')], NOW);
+  expect(h.skipped.map((e) => e.kind)).toEqual(['decode']);
+  const fade = h.ex.apply([show('ally', 'worried', null, 'fade', 200)], NOW);
+  await flush();
+  expect(h.ex.stats().activeTimelines).toBe(1);
+  const ids = ['bg/broken', 'char/ally/neutral', 'char/ally/worried'];
+  const loads = ids.map(h.loadsOf);
+  h.log.length = 0;
+  h.ex.reacquire();
+  await flush();
+  expect(ids.map(h.loadsOf)).toEqual(loads);
+  expect(h.log.filter((x) => x.startsWith('destroy:'))).toEqual([]);
+  expect(h.ex.stats().activeTimelines).toBe(1);
+  h.ex.complete();
+  await fade;
+  h.ex.destroy();
+});
+
+test('executor: rebind skips a view whose record ended', async () => {
+  const h = harness();
+  await h.ex.apply([bg('cafe', 'cut'), show('ally', 'neutral', 'left', 'cut')], NOW);
+  await failOnRevive(h, 'bg/cafe');
+  const fresh = recordingStage(S390, h.freed);
+  h.ex.rebind(fresh.adapter);
+  expect(fresh.live('bg')).toEqual([]);
+  expect(fresh.inGroup('ally').length).toBe(1);
+  h.ex.reacquire();
+  await flush();
+  expect(fresh.live('bg').map((x) => x.key)).toEqual(['cafe']);
+  expect(fresh.live('bg')[0]?.tex).toBe(h.registry.current(asId('bg/cafe'))?.texture);
+  expect(fresh.inGroup('ally').length).toBe(1);
+  h.ex.destroy();
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// MEMORY-PLAN M2 commit 3b: the revive flow over the real registry and executor.
+
+test('executor: with the revive flow, frames resume at the deadline while a batch waits on a stalled fetch', async () => {
+  const h = harness();
+  const spy = spyErrors();
+  await h.ex.apply([bg('cafe', 'cut')], NOW);
+  const allyLoads = h.deferLoad('char/ally/neutral');
+  const a = track(h.ex.apply([show('ally', 'neutral', 'left', 'cut')], NOW));
+  await flush();
+  h.holdRevive('bg/cafe'); // the bg's re-decode never settles
+  const atResume: Array<{ stale: number; bgSprites: number; waiting: boolean }> = [];
+  const resume = vi.fn(() => {
+    atResume.push({ stale: h.registry.stats().stale, bgSprites: h.live('bg').length, waiting: !a.done });
+  });
+  const flow = createReviveFlow({ revive: (gen, signal) => h.registry.revive(gen, signal), reacquire: () => h.ex.reacquire(), resume });
+  flow.lost();
+  h.setGen(2);
+  flow.start(2);
+  await flush();
+  expect(resume).not.toHaveBeenCalled();
+  vi.advanceTimersByTime(REVIVE_DEADLINE_MS);
+  await flush();
+  // Once, while A still waits: nothing stale can be bound by a frame, and the bg's view is already gone.
+  expect(atResume).toEqual([{ stale: 0, bgSprites: 0, waiting: true }]);
+  expect(flow.suspended()).toBe(false);
+  allyLoads();
+  await flush();
+  expect(a.done).toBe(true);
+  expect(h.inGroup('ally').length).toBe(1);
+  expect(h.live('bg').map((x) => x.key)).toEqual(['cafe']);
+  expect(h.loadsOf('bg/cafe')).toBe(2);
+  spy.restore();
+  expect(spy.errors).toEqual([]);
+  expect(resume).toHaveBeenCalledTimes(1);
+  flow.destroy();
   h.ex.destroy();
 });

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
+import { STEADY_CAP_BYTES } from '../src/scene/registry.ts';
 import type { AssetCatalog, AssetEntry, ImageEntry } from '../src/story/catalog.ts';
 import type { AssetId, ChapterId, TrackId } from '../src/story/staging.ts';
 import { decodeAssetCatalog, decodeAssetManifest, decodeChapterMeta, decodeCoverManifest, urlPath } from './assets/manifest.ts';
@@ -938,7 +939,7 @@ describe('budget assets', () => {
   });
 
   test('budget: knot set over 32 MiB fails', () => {
-    // Seven backgrounds and a CG in one knot: 8 × 8.4375 = 67.5 MiB.
+    // Seven backgrounds and a CG in one knot, each with its kept 150,000 B file: 8 × 8.58 = 68.6 MiB.
     const huge = specsWith('ch1', (s) => {
       const names = ['b1', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7'];
       for (const n of names) {
@@ -948,13 +949,13 @@ describe('budget assets', () => {
       s.knots['street'] = { assets: [...names.map((n) => `bg/${n}`), 'cg/letter'], next: [] };
     });
     const row = rowOf(assetRows(assetInputs(huge)), 'knot-set ch1/street');
-    expect(row).toMatchObject({ status: 'FAIL', unit: 'MiB', valueBytes: 8 * 1080 * 2048 * 4 });
+    expect(row).toMatchObject({ status: 'FAIL', unit: 'MiB', valueBytes: 8 * (1080 * 2048 * 4 + 150_000) });
     expect(row.valueBytes ?? 0).toBeGreaterThan(60 * MIB);
   });
 
   test('budget: knot-set counts carried stage', () => {
-    // PP:3115: B's own set (bg + 2 sprites = 17.4 MiB) fits; the stage carried into B (bg + CG + 2 sprites =
-    // 25.9 MiB) puts it at 43.3 MiB.
+    // PP:3115: B's own set (bg + 2 sprites = 17.9 MiB with their kept files) fits; the stage carried into B (bg + CG +
+    // 2 sprites = 26.4 MiB) puts it at 44.3 MiB.
     const carried = specsWith('ch1', (s) => {
       Object.assign(s.assets, {
         'char/stranger/neutral': sprite('stranger', 'neutral'),
@@ -968,16 +969,17 @@ describe('budget assets', () => {
       };
     });
     const row = rowOf(assetRows(assetInputs(carried)), 'knot-set ch1/b');
-    const own = 1080 * 2048 * 4 + 2 * 768 * 1536 * 4;
-    const stage = 2 * 1080 * 2048 * 4 + 2 * 768 * 1536 * 4;
-    expect((own / MIB).toFixed(1)).toBe('17.4');
-    expect((stage / MIB).toFixed(1)).toBe('25.9');
+    // Each image counts its kept file, the larger variant (WebP, 150,000 B).
+    const own = 1080 * 2048 * 4 + 150_000 + 2 * (768 * 1536 * 4 + 150_000);
+    const stage = 2 * (1080 * 2048 * 4 + 150_000) + 2 * (768 * 1536 * 4 + 150_000);
+    expect((own / MIB).toFixed(1)).toBe('17.9');
+    expect((stage / MIB).toFixed(1)).toBe('26.4');
     expect(row).toMatchObject({ status: 'FAIL', valueBytes: own + stage });
-    expect(row.note).toBe('own 17.4 MiB + carried 25.9 MiB');
+    expect(row.note).toBe('own 17.9 MiB + carried 26.4 MiB');
   });
 
   test('budget: room-set counts props and close-up', () => {
-    // PZ:1710: bg 8.4 + close-up 8.4 + 16 props of 1 MiB = 32.9 MiB, over 32 MiB.
+    // PZ:1710, with the kept files: bg 8.6 + close-up 8.6 + 16 props of 1.03 MiB = 33.6 MiB, over 32 MiB.
     const props = Array.from({ length: 16 }, (_, i) => `prop/p${i}`);
     const a = assetInputs(
       specsWith('ch1', (s) => {
@@ -991,12 +993,54 @@ describe('budget assets', () => {
     const room = { bg: 'bg/hall', props, closeups: ['cg/drawer'], neighbours: [] };
     const rows = assetRows({ ...a, rooms: { 'ch1/hall/main': room } as unknown as AssetInputs['rooms'] }); // ids are fixture literals
     const row = rowOf(rows, 'room-set ch1/hall/main');
-    expect(row).toMatchObject({ status: 'FAIL', unit: 'MiB', valueBytes: 2 * 1080 * 2048 * 4 + 16 * MIB });
-    expect(((row.valueBytes ?? 0) / MIB).toFixed(1)).toBe('32.9');
-    // Without the close-up the same room fits (24.4 MiB): the close-up term is what tips it.
+    expect(row).toMatchObject({ status: 'FAIL', unit: 'MiB', valueBytes: 2 * (1080 * 2048 * 4 + 150_000) + 16 * (MIB + 30_000) });
+    expect(((row.valueBytes ?? 0) / MIB).toFixed(1)).toBe('33.6');
+    // Without the close-up the same room fits (25.0 MiB): the close-up term is what tips it.
     const open = assetRows({ ...a, rooms: { 'ch1/hall/main': { ...room, closeups: [] } } as unknown as AssetInputs['rooms'] });
     expect(rowOf(open, 'room-set ch1/hall/main').status).toBe('PASS');
     expect(rows.some((r) => r.name === 'room-set')).toBe(false); // no PENDING row once a room is measured
+  });
+
+  test('budget: knot-set counts kept encoded bytes', () => {
+    // MEMORY-PLAN M2: a live record keeps its encoded file, so the set counts it. Three bgs of 1080 × 2048 and one of
+    // 1024 × 1712 decode to exactly 32 MiB (the decoder fixes decodedBytes = w × h × 4); four 1 B files put it over.
+    const ids = ['k1', 'k2', 'k3', 'k4'];
+    const specs = specsWith('ch1', (s) => {
+      ids.forEach((n, i) => {
+        s.assets[`bg/${n}`] = i < 3 ? img(`bg-${n}-0a0a0a0a`, 1080, 2048, 1, 1) : img(`bg-${n}-0a0a0a0a`, 1024, 1712, 1, 1);
+      });
+      s.knots['street'] = { assets: ids.map((n) => `bg/${n}`), next: [] };
+    });
+    const pixels = 3 * 1080 * 2048 * 4 + 1024 * 1712 * 4;
+    expect(pixels, 'the decoded bytes alone are at the limit').toBe(32 * MIB);
+    const row = rowOf(assetRows(assetInputs(specs)), 'knot-set ch1/street');
+    expect(row).toMatchObject({ status: 'FAIL', unit: 'MiB', valueBytes: pixels + 4 });
+  });
+
+  test('budget: room-set counts kept encoded bytes', () => {
+    // A bg and a neighbour bg of 1080 × 2048, 15 props of 512 × 512 and one of 256 × 128: exactly 32 MiB decoded;
+    // the 18 files of 1 B put it over.
+    const props = Array.from({ length: 16 }, (_, i) => `prop/q${i}`);
+    const a = assetInputs(
+      specsWith('ch1', (s) => {
+        s.assets['bg/hall'] = img('bg-hall-0a0a0a0a', 1080, 2048, 1, 1);
+        s.assets['bg/yard'] = img('bg-yard-0a0a0a0a', 1080, 2048, 1, 1);
+        props.forEach((p, i) => {
+          const name = `prop-${p.slice('prop/'.length)}-0d0d0d0d`;
+          s.assets[p] = i < 15 ? img(name, 512, 512, 1, 1) : img(name, 256, 128, 1, 1);
+        });
+      }),
+    );
+    const pixels = 2 * 1080 * 2048 * 4 + 15 * 512 * 512 * 4 + 256 * 128 * 4;
+    expect(pixels, 'the decoded bytes alone are at the limit').toBe(32 * MIB);
+    const room = { bg: 'bg/hall', props, closeups: [], neighbours: ['bg/yard'] };
+    const rows = assetRows({ ...a, rooms: { 'ch1/hall/main': room } as unknown as AssetInputs['rooms'] }); // ids are fixture literals
+    expect(rowOf(rows, 'room-set ch1/hall/main')).toMatchObject({ status: 'FAIL', unit: 'MiB', valueBytes: pixels + 18 });
+  });
+
+  test('budget: knot-set and room-set limits are the registry steady cap', () => {
+    // The rows bound what the registry admits as preloads: one number (MEMORY-PLAN M2), not a copy that can drift.
+    expect({ knotSet: LIMITS.knotSet, roomSet: LIMITS.roomSet }).toEqual({ knotSet: STEADY_CAP_BYTES, roomSet: STEADY_CAP_BYTES });
   });
 
   test('budget: world with sections and no rooms fails', () => {

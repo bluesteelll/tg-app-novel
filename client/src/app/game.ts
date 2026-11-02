@@ -349,7 +349,8 @@ type Offer = { readonly chapter: ChapterId; readonly product: ProductId | null; 
 type DebugHook = {
   stats(): unknown;
   lineId(): LineId | null;
-  forceContextLoss(): void;
+  /** No argument: `'restorable'` (perf e2e); `'hard'`: the loss nothing restores (memory e2e). */
+  forceContextLoss(mode?: 'restorable' | 'hard'): void;
   propRects(): ReturnType<SceneController['debugPropRects']>;
 };
 
@@ -1609,7 +1610,7 @@ export function createGame(deps: GameDeps): Game {
         ...(session?.yields.presence() ?? { explore: false, puzzle: false }),
       }),
       lineId: () => vm.line?.lineId ?? null,
-      forceContextLoss: () => scene.debugForceContextLoss(),
+      forceContextLoss: (mode) => scene.debugForceContextLoss(mode ?? 'restorable'),
       propRects: () => scene.debugPropRects(),
     };
     (globalThis as typeof globalThis & { __novelDebug?: DebugHook }).__novelDebug = hook;

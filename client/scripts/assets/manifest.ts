@@ -29,6 +29,8 @@ export {
   decodeChapterMeta,
   decodeCoverManifest,
 } from '../../src/story/catalog.ts';
+/** The registry's preload cap: the knot-set and room-set rows' limit (MEMORY-PLAN M2). */
+export { STEADY_CAP_BYTES } from '../../src/scene/registry.ts';
 
 /** Output locations, repo-relative posix. Paid files never go under `client/` (principle 0). */
 export const ASSET_OUT = {

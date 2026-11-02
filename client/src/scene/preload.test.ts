@@ -7,11 +7,12 @@ import { createAssetRegistry } from './registry.ts';
 import type { AssetError, Decoded, LoadError, LoadImage } from './registry.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
-// Two chapter manifests over the real registry. The fake loader records every call (URL, signal) and decodes at once,
-// or on demand when deferred; every Decoded counts its release() calls by URL.
+// Two chapter manifests over the real registry. The fake loader records every call (URL, file bytes, signal) and
+// decodes at once, or on demand when deferred; every Decoded keeps its file's bytes (MEMORY-PLAN M2), is uploaded under
+// generation 1, revives at once, and counts its release() calls by URL.
 
 type Tex = { readonly url: string };
-type Call = { url: string; signal: AbortSignal; resolve(r: Result<Decoded<Tex>, LoadError>): void; done: boolean };
+type Call = { url: string; bytes: number; signal: AbortSignal; resolve(r: Result<Decoded<Tex>, LoadError>): void; done: boolean };
 
 const asId = (s: string): AssetId => s as AssetId; // test fixture ids: the brand is earned by the manifest decoder
 const image = (file: string, w: number, h: number, gated = false): ImageEntry => {
@@ -56,14 +57,29 @@ const urlOf = (m: AssetManifest, id: string): string => {
 function harness(mode: 'auto' | 'deferred' = 'auto') {
   const calls: Call[] = [];
   const released = new Map<string, number>();
-  const decoded = (url: string): Decoded<Tex> | null => {
+  const decoded = (url: string, keptBytes: number): Decoded<Tex> | null => {
     const e = URLS.get(url);
-    return e === undefined
-      ? null
-      : { texture: { url }, w: e.w, h: e.h, release: () => released.set(url, (released.get(url) ?? 0) + 1) };
+    if (e === undefined) {
+      return null;
+    }
+    // Uploaded under generation 1; a revive succeeds (MEMORY-PLAN M2).
+    const d: Decoded<Tex> = {
+      texture: { url },
+      w: e.w,
+      h: e.h,
+      keptBytes,
+      gen: 1,
+      open: () => false,
+      revive: (gen) => {
+        d.gen = gen;
+        return Promise.resolve({ ok: true, value: undefined });
+      },
+      release: () => released.set(url, (released.get(url) ?? 0) + 1),
+    };
+    return d;
   };
   const succeed = (call: Call): void => {
-    const d = decoded(call.url);
+    const d = decoded(call.url, call.bytes);
     if (!call.done && d !== null) {
       call.done = true;
       call.resolve({ ok: true, value: d });
@@ -71,7 +87,7 @@ function harness(mode: 'auto' | 'deferred' = 'auto') {
   };
   const load: LoadImage<Tex> = (ref, signal) =>
     new Promise((resolve) => {
-      const call: Call = { url: ref.url, signal, resolve, done: false };
+      const call: Call = { url: ref.url, bytes: ref.bytes, signal, resolve, done: false };
       calls.push(call);
       if (mode === 'auto') {
         succeed(call);
@@ -117,7 +133,7 @@ test('abort_after_release_destroys', async () => {
   h.succeedAll();
   await flush();
   expect(h.releasedOf(ch1, 'bg/a')).toBe(1);
-  expect(h.registry.stats()).toEqual({ live: 0, bytes: 0, pending: 0, overCap: 0 });
+  expect(h.registry.stats()).toEqual({ live: 0, bytes: 0, pending: 0, overCap: 0, keptBytes: 0, keptMismatch: 0, openBitmaps: 0, stale: 0, reviveFailed: 0 });
 });
 
 test('preload: next-chapter id resident after setChapter', async () => {
@@ -202,5 +218,5 @@ test('preload: setChapter releases preload and other next holders', async () => 
   expect(h.releasedOf(ch1, 'prop/r1')).toBe(0);
   expect(h.registry.stats().live).toBe(2);
   h.s.destroy();
-  expect(h.registry.stats()).toEqual({ live: 0, bytes: 0, pending: 0, overCap: 0 });
+  expect(h.registry.stats()).toEqual({ live: 0, bytes: 0, pending: 0, overCap: 0, keptBytes: 0, keptMismatch: 0, openBitmaps: 0, stale: 0, reviveFailed: 0 });
 });

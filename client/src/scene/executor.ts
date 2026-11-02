@@ -72,9 +72,18 @@ export interface Executor<T> {
   relayout(): void;
   /**
    * A new stage after an unrecoverable context loss: a running batch completes on the old one, whose display objects
-   * die with their Application; what the stage showed is re-created instantly on `a`, every holder kept (no load).
+   * die with their Application; what the stage showed is re-created instantly on `a`, every holder kept (no load). A
+   * view whose record has ended is not re-created: it leaves the stage model, and `reacquire` takes its slot again.
    */
   rebind(a: StageAdapter<T>): void;
+  /**
+   * After a revive (MEMORY-PLAN M2, section 8 "Identity rule"): takes every shown or retiring view whose record has
+   * ended off the stage at once (after complete(), and only when there is one), forgets every hold entry bound to an
+   * ended record without a registry release, and takes those slots of the logical stage again in one instant batch.
+   * It touches nothing else, so a repeated call is a no-op. Returns void: that batch may queue behind a batch waiting
+   * on a fetch, and nothing waits for it.
+   */
+  reacquire(): void;
   /** Stage px boxes of the live prop sprites, in the props command's order (debugPropRects adds the page offset). */
   propRects(): ReadonlyArray<{ prop: PropId } & Box>;
   stats(): { activeTimelines: number };
@@ -103,6 +112,7 @@ const EMPTY: SceneSnapshot = Object.freeze({ bg: null, cg: null, chars: Object.f
 const charSlot = (c: CharId): string => `char:${c}`;
 const propSlot = (p: PropId): string => `prop:${p}`;
 const holderOf = (slot: string): string => `scene:${slot}`;
+const slotOf = (holder: string): string => holder.slice('scene:'.length);
 
 /** Slot → asset id of a snapshot (STAGING-DSL §8 ids, as scripts/story/graph.ts maps commands). */
 function slotsOf(s: SceneSnapshot): Map<string, AssetId> {
@@ -183,6 +193,12 @@ const sameRect = (a: Rect, b: Rect): boolean => a.every((v, i) => v === b[i]);
 // The executor
 
 type Hold<T> = Promise<Result<TextureHandle<T>, AssetError>>;
+/**
+ * A hold entry: the acquire, and the handle of the record it is bound to (identity rule item 2): the live record `take`
+ * joined, read by `registry.current` right after the acquire, else the handle the acquire resolved with; null until
+ * then, and for a take that could not acquire.
+ */
+type Held<T> = { readonly hold: Hold<T>; bound: TextureHandle<T> | null };
 type View<T> = { readonly slot: string; readonly handle: TextureHandle<T>; readonly sprite: SpriteRef };
 type CharView<T> = { readonly char: CharId; readonly group: GroupRef; at: Slot; view: View<T> };
 /** `box`: where the sprite was last placed, in stage px (propRects). */
@@ -207,7 +223,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
   let adapter = deps.adapter;
   let logical: SceneSnapshot = EMPTY;
   /** holder → asset id → the acquire, for every texture the executor holds (one release per (holder, id)). */
-  const holds = new Map<string, Map<AssetId, Hold<T>>>();
+  const holds = new Map<string, Map<AssetId, Held<T>>>();
   const unfinished: Batch<T>[] = [];
   const active = new Set<Timeline>();
   const retiring = new Set<Retiree<T>>();
@@ -220,6 +236,10 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
   const chars = new Map<CharId, CharView<T>>();
   const props = new Map<PropId, PropView<T>>();
 
+  /** The record behind `h` has ended (failed its revive): the registry no longer names this handle (identity rule). */
+  const ended = (h: TextureHandle<T>): boolean => registry.current(h.id) !== h;
+  const deadBound = (held: Held<T>): boolean => held.bound !== null && ended(held.bound);
+
   const take = (slot: string, id: AssetId): Hold<T> => {
     const holder = holderOf(slot);
     let byId = holds.get(holder);
@@ -229,13 +249,21 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     }
     const have = byId.get(id);
     if (have !== undefined) {
-      return have;
+      return have.hold;
     }
     const entry = resolve(id);
-    const hold: Hold<T> = entry.ok
-      ? registry.acquire(id, holder, { entry: entry.value, priority: 'visible' })
-      : Promise.resolve(entry);
-    byId.set(id, hold);
+    if (!entry.ok) {
+      byId.set(id, { hold: Promise.resolve(entry), bound: null });
+      return Promise.resolve(entry);
+    }
+    const hold = registry.acquire(id, holder, { entry: entry.value, priority: 'visible' });
+    const held: Held<T> = { hold, bound: registry.current(id) };
+    void hold.then((r) => {
+      if (r.ok && held.bound === null) {
+        held.bound = r.value;
+      }
+    });
+    byId.set(id, held);
     return hold;
   };
 
@@ -278,10 +306,13 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       add(v.slot, v.handle.id);
     }
     for (const [holder, byId] of holds) {
-      for (const id of [...byId.keys()]) {
+      for (const [id, held] of [...byId]) {
         if (!keep.has(`${holder}\n${id}`)) {
           byId.delete(id);
-          registry.release(id, holder);
+          // An entry bound to an ended record holds nothing; a release by id would act on a newer record of the id.
+          if (!deadBound(held)) {
+            registry.release(id, holder);
+          }
         }
       }
       if (byId.size === 0) {
@@ -369,11 +400,19 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     b.settle();
   };
 
-  const build = (b: Batch<T>, got: ReadonlyMap<string, TextureHandle<T>>): void => {
-    const tl = gsap.timeline({ paused: true, defaults: { ease: 'none', lazy: false } });
+  /** Builds the batch's stage changes on `tl` and hands it to the batch (or ends the batch when it has no time). */
+  const compose = (b: Batch<T>, got: ReadonlyMap<string, TextureHandle<T>>, tl: Timeline): void => {
     const target = b.target;
     const want = slotsOf(target);
     const sec = (ms: number): number => (b.instant ? 0 : Math.max(0, ms) / 1000);
+    /**
+     * The batch's handle for a slot only while its record is live, read in the same step as the sprite it makes,
+     * also at a fade's midpoint (identity rule item 1). Else the slot is built as a skipped visual.
+     */
+    const handleFor = (slot: string): TextureHandle<T> | undefined => {
+      const h = got.get(slot);
+      return h === undefined || ended(h) ? undefined : h;
+    };
 
     /** Tweens an alpha from → to from t = 0; with no time it is set at once and `onEnd` runs now. */
     const fade = (on: SpriteRef | GroupRef, from: number, to: number, ms: number, onEnd?: () => void): void => {
@@ -448,7 +487,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       if ((bg?.handle.id ?? null) === id) {
         return;
       }
-      const h = got.get('bg');
+      const h = handleFor('bg');
       if (id !== null && h === undefined) {
         return;
       }
@@ -474,7 +513,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         }
       }
       for (const p of target.props) {
-        const h = got.get(propSlot(p.prop));
+        const h = handleFor(propSlot(p.prop));
         if (!props.has(p.prop) && h !== undefined) {
           newProp(p, h, 0);
           const v = props.get(p.prop);
@@ -508,7 +547,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         swapBg();
         for (const c of target.chars) {
           const cv = chars.get(c.char);
-          const h = got.get(charSlot(c.char));
+          const h = handleFor(charSlot(c.char));
           if (cv !== undefined) {
             cv.at = c.at;
             adapter.set(cv.group, { ...groupAt(c.at, cv.view), alpha: 1 });
@@ -529,7 +568,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         });
       } else if (bgCmd !== undefined && bgCmd.t === 'crossfade') {
         const id = want.get('bg') ?? null;
-        const h = got.get('bg');
+        const h = handleFor('bg');
         if ((bg?.handle.id ?? null) !== id && h !== undefined) {
           // New over old, never a symmetric fade (K7); the old one is destroyed when the new one is opaque.
           const old = bg;
@@ -555,7 +594,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         const ms = (byDefault: number): number => (show?.kind !== 'show' || show.t === 'cut' ? 0 : (show.ms ?? byDefault));
         const cv = chars.get(c.char);
         const id = want.get(charSlot(c.char));
-        const h = got.get(charSlot(c.char));
+        const h = handleFor(charSlot(c.char));
         if (cv === undefined) {
           if (h !== undefined) {
             fade(newChar(c.char, c.at, h, 0).group, 0, 1, ms(300));
@@ -584,7 +623,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         const cgCmd = find(b.cmds, 'cg');
         const ms = cgCmd === undefined || cgCmd.t === 'cut' ? 0 : cgCmd.ms;
         const old = cg;
-        const h = got.get('cg');
+        const h = handleFor('cg');
         if (cgId === null && old !== null) {
           cg = null;
           fade(old.sprite, 1, 0, ms, retire([old], null));
@@ -612,6 +651,18 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     tl.eventCallback('onComplete', () => finish(b));
     tl.play();
   };
+  const build = (b: Batch<T>, got: ReadonlyMap<string, TextureHandle<T>>): void => {
+    const tl = gsap.timeline({ paused: true, defaults: { ease: 'none', lazy: false } });
+    try {
+      compose(b, got, tl);
+    } catch (e) {
+      // A paused timeline stays in gsap's root timeline until killed; once the batch holds it, finish() kills it.
+      if (b.tl !== tl) {
+        tl.kill();
+      }
+      throw e;
+    }
+  };
 
   const run = async (b: Batch<T>): Promise<void> => {
     const got = new Map<string, TextureHandle<T>>();
@@ -630,15 +681,8 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     await b.done;
   };
 
-  const enqueue = (cmds: readonly VisualCommand[], target: SceneSnapshot, instant: boolean): Promise<void> => {
-    const before = slotsOf(logical);
-    logical = target;
-    const takes = new Map<string, Hold<T>>();
-    for (const [slot, id] of slotsOf(target)) {
-      if (before.get(slot) !== id) {
-        takes.set(slot, take(slot, id));
-      }
-    }
+  /** Chains a batch with the textures it takes. */
+  const queue = (cmds: readonly VisualCommand[], target: SceneSnapshot, instant: boolean, takes: ReadonlyMap<string, Hold<T>>): Promise<void> => {
     let settle: () => void = () => {};
     const done = new Promise<void>((r) => {
       settle = r;
@@ -654,6 +698,18 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         console.error('scene: batch failed', e);
       });
     return done;
+  };
+
+  const enqueue = (cmds: readonly VisualCommand[], target: SceneSnapshot, instant: boolean): Promise<void> => {
+    const before = slotsOf(logical);
+    logical = target;
+    const takes = new Map<string, Hold<T>>();
+    for (const [slot, id] of slotsOf(target)) {
+      if (before.get(slot) !== id) {
+        takes.set(slot, take(slot, id));
+      }
+    }
+    return queue(cmds, target, instant, takes);
   };
 
   const complete = (): void => {
@@ -713,21 +769,30 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       complete();
       adapter = a;
       fxAlpha = 0;
-      // After complete() every visual is at its end state: opaque, at its slot.
+      // After complete() every visual is at its end state: opaque, at its slot. A view whose record ended is not
+      // re-created (identity rule item 1); reacquire() takes its slot again.
       const again = <V extends View<T>>(v: V, layer: Layer, group?: GroupRef): V => {
         const sprite = adapter.sprite(layer, v.handle, group);
         adapter.set(sprite, { alpha: 1 });
         return { ...v, sprite };
       };
       if (bg !== null) {
-        bg = again(bg, 'bg');
-        placeBackdrop(bg);
+        bg = ended(bg.handle) ? null : again(bg, 'bg');
+        if (bg !== null) {
+          placeBackdrop(bg);
+        }
       }
       if (cg !== null) {
-        cg = again(cg, 'cg');
-        placeBackdrop(cg);
+        cg = ended(cg.handle) ? null : again(cg, 'cg');
+        if (cg !== null) {
+          placeBackdrop(cg);
+        }
       }
       for (const cv of [...chars.values()]) {
+        if (ended(cv.view.handle)) {
+          chars.delete(cv.char);
+          continue;
+        }
         const group = adapter.group(cv.char);
         const view = again(cv.view, 'chars', group);
         chars.set(cv.char, { char: cv.char, group, at: cv.at, view });
@@ -736,11 +801,68 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       }
       orderChars(logical);
       for (const v of [...props.values()]) {
+        if (ended(v.handle)) {
+          props.delete(v.prop);
+          continue;
+        }
         const next = again(v, 'props');
         props.set(v.prop, next);
         placeProp(next);
       }
       loop.requestRender();
+    },
+    reacquire() {
+      if (destroyed) {
+        return;
+      }
+      if (shownViews().some((v) => ended(v.handle))) {
+        // No transition may write to a view after it is gone: every running batch ends first (its retirees with it).
+        complete();
+        if (bg !== null && ended(bg.handle)) {
+          destroyView(bg);
+          bg = null;
+        }
+        if (cg !== null && ended(cg.handle)) {
+          destroyView(cg);
+          cg = null;
+        }
+        for (const cv of [...chars.values()]) {
+          if (ended(cv.view.handle)) {
+            destroyChar(cv);
+          }
+        }
+        for (const v of [...props.values()]) {
+          if (ended(v.handle)) {
+            props.delete(v.prop);
+            destroyView(v);
+          }
+        }
+        loop.requestRender();
+      }
+      const want = slotsOf(logical);
+      const takes = new Map<string, Hold<T>>();
+      const again: Array<[string, AssetId]> = [];
+      for (const [holder, byId] of holds) {
+        for (const [id, held] of [...byId]) {
+          if (deadBound(held)) {
+            // No registry release: the record has ended, and a release by id would act on a newer one.
+            byId.delete(id);
+            if (want.get(slotOf(holder)) === id) {
+              again.push([slotOf(holder), id]);
+            }
+          }
+        }
+        if (byId.size === 0) {
+          holds.delete(holder);
+        }
+      }
+      for (const [slot, id] of again) {
+        takes.set(slot, take(slot, id));
+      }
+      if (takes.size > 0) {
+        // The logical stage is unchanged: the batch only shows those slots again, on new records.
+        void queue([], logical, true, takes);
+      }
     },
     propRects() {
       return [...props.values()].map((v) => ({ prop: v.prop, ...v.box }));

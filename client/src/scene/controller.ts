@@ -1,9 +1,10 @@
 // The scene controller (PROTOTYPE-PLAN "Scene controller and asset registry"): one Pixi Application driven
 // imperatively, its layers (bg, props, chars, cg, fx), the Pixi StageAdapter the executor drives, and the wiring of
-// registry, loader, scheduler, executor and render loop. It reads staging commands only, never story state
-// (principle 7); input belongs to the DOM overlay (`stage.eventMode = 'none'`).
+// registry, loader, scheduler, executor, revive flow and render loop. It reads staging commands only, never story state
+// (principle 7); input belongs to the DOM overlay (`stage.eventMode = 'none'`). After a GPU context change it drives
+// the revive (MEMORY-PLAN M2, section 8): frames are drawn only while the context is live and the flow lets them.
 import { Application, Container, Graphics, Sprite } from 'pixi.js';
-import type { ApplicationOptions, Texture } from 'pixi.js';
+import type { ApplicationOptions, ImageSource, Texture } from 'pixi.js';
 
 import type { AssetManifest, FetchAsset, Result } from '../story/catalog.ts';
 import type { AssetId, PropId } from '../story/staging.ts';
@@ -15,9 +16,36 @@ import { createImageLoader, probeAvif } from './loader.ts';
 import { ENSURE_HOLDER, createAssetScheduler } from './preload.ts';
 import type { AssetScheduler } from './preload.ts';
 import { createAssetRegistry } from './registry.ts';
-import type { AssetError, AssetRegistry, SceneError } from './registry.ts';
+import type { AssetError, AssetRegistry, ReviveEnd, SceneError } from './registry.ts';
 import { createRenderLoop } from './render-loop.ts';
 import type { RenderLoop } from './render-loop.ts';
+import { createReviveFlow } from './revive-flow.ts';
+import type { ReviveFlow } from './revive-flow.ts';
+
+/** `__novelDebug.stats().scene` under `__TG_MOCK__` (perf and memory e2e); every field is always reported. */
+export type SceneStats = {
+  liveTextures: number;
+  liveBytes: number;
+  pendingLoads: number;
+  activeTimelines: number;
+  overCap: number;
+  /** D13 rebuilds since mount: an unrestored context loss reached `activated` (MEMORY-PLAN M2 commit 1). */
+  rebuilds: number;
+  /** The GPU generation: 1 at mount, +1 at each `webglcontextrestored` and at each rebuild's install. */
+  gen: number;
+  /** Live textures whose decoded bitmap is still open (0 on a GL renderer once uploads are done). */
+  openBitmaps: number;
+  /** Live textures not yet brought to the generation of the latest revive. */
+  stale: number;
+  /** Frames drawn before the latest generation's visible revive was done (each could bind a stale texture). */
+  staleFrames: number;
+  /** Textures ended by a failed or late revive (cumulative). */
+  reviveFailed: number;
+  /** A revive is running (its passes have not both settled). */
+  reviving: boolean;
+  /** The latest visible revive, from its start to its visible pass done, in ms; null before the first. */
+  visibleReviveMs: number | null;
+};
 
 export interface SceneController {
   /** The render resolution is decided here, from the device's pixel ratio and its class (layout.ts, lever F). */
@@ -40,9 +68,12 @@ export interface SceneController {
   onActivated(): Promise<void>;
   pause(): void;
   resume(): void;
-  stats(): { liveTextures: number; liveBytes: number; pendingLoads: number; activeTimelines: number; overCap: number };
-  /** Wired to __novelDebug only under __TG_MOCK__ (perf e2e). */
-  debugForceContextLoss(): void;
+  stats(): SceneStats;
+  /**
+   * Wired to __novelDebug only under __TG_MOCK__ (perf and memory e2e). `'restorable'`: Pixi's forced loss, which Pixi
+   * restores itself; `'hard'`: the WebGL extension's loss, which nothing restores, so `activated` rebuilds.
+   */
+  debugForceContextLoss(mode: 'restorable' | 'hard'): void;
   /** Page CSS px of the live prop sprites (PUZZLES-PLAN X10); __novelDebug only under __TG_MOCK__ (puzzles e2e). */
   debugPropRects(): ReadonlyArray<{ prop: PropId; x: number; y: number; w: number; h: number }>;
   destroy(): void;
@@ -61,13 +92,18 @@ type Mounted = {
   readonly scheduler: AssetScheduler;
   readonly loop: RenderLoop;
   readonly executor: Executor<Texture>;
+  readonly flow: ReviveFlow;
   readonly observer: ResizeObserver;
 };
 
 const EMPTY: SceneSnapshot = Object.freeze({ bg: null, cg: null, chars: Object.freeze([]), props: Object.freeze([]) });
 const fail = (detail: string): { ok: false; error: SceneError } => ({ ok: false, error: { kind: 'mount', detail } });
 
-/** PROTOTYPE-PLAN "Init" [R3 §4.3], plus the accessibility layer off: it would listen for Tab and add DOM nodes. */
+/**
+ * PROTOTYPE-PLAN "Init" [R3 §4.3], plus the accessibility layer off: it would listen for Tab and add DOM nodes. Sized
+ * from the host at init and then only by the controller's ResizeObserver, not `resizeTo`: Pixi's ResizePlugin renders
+ * on a window resize outside the render loop's gate, which could draw a texture not yet revived (MEMORY-PLAN M2).
+ */
 function appOptions(host: HTMLElement, resolution: number): Partial<ApplicationOptions> {
   return {
     preference: 'webgl',
@@ -75,7 +111,8 @@ function appOptions(host: HTMLElement, resolution: number): Partial<ApplicationO
     autoDensity: true,
     antialias: false,
     background: '#000000',
-    resizeTo: host,
+    width: host.clientWidth,
+    height: host.clientHeight,
     autoStart: false,
     accessibilityOptions: { enabledByDefault: false, activateOnTab: false },
   };
@@ -173,6 +210,13 @@ export function createSceneController(): SceneController {
   let lost = false;
   let activating: Promise<void> | null = null;
   let grace: { timer: ReturnType<typeof setTimeout>; wake: () => void } | null = null;
+  let rebuilds = 0;
+  /** The GPU generation every upload reports (MEMORY-PLAN 4.A). */
+  let gen = 1;
+  /** The generation of the latest revive whose visible pass settled 'done' (the mount's uploads are generation 1). */
+  let doneGen = 1;
+  let staleFrames = 0;
+  let visibleReviveMs: number | null = null;
 
   const onResize = (): void => {
     const c = core;
@@ -185,12 +229,23 @@ export function createSceneController(): SceneController {
   };
   const onLost = (): void => {
     lost = true;
+    core?.flow.lost();
   };
-  // Critique W3: Pixi restores the context itself and re-uploads lazily, but a restored drawing buffer is cleared and
-  // nothing renders on demand unless asked; the stage would stay black until the next visual batch.
+  // Pixi's own listener ran first (GlContextSystem, added during app.init): every GPU texture of this renderer is gone.
+  // The revive uploads them again, and its visible pass draws the cleared buffer (resume). While deactivated, only the
+  // generation moves: `activated` starts the revive (MEMORY-PLAN section 9).
   const onRestored = (): void => {
     lost = false;
-    core?.loop.requestRender();
+    gen += 1;
+    const c = core;
+    if (c === null) {
+      return;
+    }
+    if (paused) {
+      c.flow.lost();
+    } else {
+      c.flow.start(gen);
+    }
   };
   const watch = (canvas: HTMLCanvasElement): void => {
     canvas.addEventListener('webglcontextlost', onLost);
@@ -204,6 +259,48 @@ export function createSceneController(): SceneController {
     const r = app.renderer;
     return lost || ('gl' in r && r.context.isLost);
   };
+  /**
+   * The loader's upload (MEMORY-PLAN 4.A): to the renderer current at this call (the rebuild replaces it), GL only and
+   * never on a lost context; the generation it uploaded under, else null (the bitmap stays open).
+   */
+  const upload = (source: ImageSource): number | null => {
+    const c = core;
+    if (c === null) {
+      return null;
+    }
+    const r = c.app.renderer;
+    if (!('gl' in r) || isLost(c.app)) {
+      return null;
+    }
+    r.texture.initSource(source);
+    return gen;
+  };
+  /** `registry.revive`, timed, and the generation whose visible pass is done recorded before the flow sees it. */
+  const reviveWith =
+    (registry: AssetRegistry<Texture>) =>
+    (to: number, signal: AbortSignal): { visible: Promise<ReviveEnd>; all: Promise<ReviveEnd> } => {
+      const t0 = performance.now();
+      const passes = registry.revive(to, signal);
+      const visible = passes.visible.then((end) => {
+        if (end === 'done') {
+          doneGen = Math.max(doneGen, to);
+          visibleReviveMs = performance.now() - t0;
+        }
+        return end;
+      });
+      return { visible, all: passes.all };
+    };
+  /**
+   * Every point where `activated` finds the context live: a revive that did not finish (frames still suspended, or a
+   * stale texture) starts again under the current generation; while deactivated, nothing (the next `activated` does).
+   */
+  const live = (c: Mounted): void => {
+    if (!paused && (c.flow.suspended() || c.registry.stats().stale > 0)) {
+      c.flow.start(gen);
+    } else {
+      c.loop.requestRender();
+    }
+  };
   /** Resolves after CONTEXT_GRACE_MS, or at once when the controller is destroyed. */
   const waitGrace = (): Promise<void> =>
     new Promise((resolve) => {
@@ -215,8 +312,9 @@ export function createSceneController(): SceneController {
     });
 
   /**
-   * D13: a new Application on the same host. The registry's textures stay: their sources keep the ImageBitmaps, and GPU
-   * copies are per renderer, so the new one uploads them on first use. The executor re-creates the stage on it.
+   * D13: a new Application on the same host. The registry's textures stay; their GPU copies are per renderer, so the
+   * revive brings each to the new one before its first frame (an upload of a kept bitmap, else a decode of the kept
+   * file). The executor re-creates the stage on it.
    */
   const rebuild = async (c: Mounted): Promise<void> => {
     const app = new Application();
@@ -230,21 +328,31 @@ export function createSceneController(): SceneController {
       app.destroy({ removeView: true }, { children: true });
       return;
     }
+    // MEMORY-PLAN section 8 "Rebuild": one synchronous block, so no upload and no frame meets a half-installed stage.
+    // The first frame is the revive's resume, after this block.
     const old = c.app;
+    c.flow.lost();
     unwatch(old.canvas);
     c.host.appendChild(app.canvas);
     c.executor.rebind(pixiAdapter(app, createLayers(app)));
     c.app = app;
     lost = false;
     watch(app.canvas);
+    gen += 1;
+    rebuilds += 1;
+    // A rebuild the grace reaches while deactivated builds at once and defers only the revive (RULINGS 78).
+    if (paused) {
+      c.flow.lost();
+    } else {
+      c.flow.start(gen);
+    }
     // Sprites and layers go with the old stage; textures and their sources are the registry's and are kept.
     old.destroy({ removeView: true }, { children: true, texture: false, textureSource: false });
-    c.loop.requestRender();
   };
 
   const activated = async (c: Mounted): Promise<void> => {
     if (!isLost(c.app)) {
-      c.loop.requestRender();
+      live(c);
       return;
     }
     await waitGrace();
@@ -254,7 +362,7 @@ export function createSceneController(): SceneController {
     if (isLost(c.app)) {
       await rebuild(c);
     } else {
-      c.loop.requestRender();
+      live(c);
     }
   };
 
@@ -282,12 +390,25 @@ export function createSceneController(): SceneController {
       host.appendChild(app.canvas);
       const layers = createLayers(app);
       const registry = createAssetRegistry<Texture>({
-        load: createImageLoader({ fetchAsset: o.fetchAsset }),
+        load: createImageLoader({ fetchAsset: o.fetchAsset, upload }),
         variant: avif ? 'avif' : 'webp',
       });
       const scheduler = createAssetScheduler({ registry, onError: report });
-      // The current Application: the rebuild replaces it.
-      const loop = createRenderLoop({ ticker: gsapTicker, render: () => core?.app.render() });
+      // The current Application (the rebuild replaces it), and the only path to a frame: none while the context is lost
+      // or the revive flow holds frames, so no frame binds a texture not yet revived (MEMORY-PLAN I7).
+      const loop = createRenderLoop({
+        ticker: gsapTicker,
+        render: () => {
+          const c = core;
+          if (c === null || lost || c.flow.suspended()) {
+            return;
+          }
+          if (doneGen !== gen) {
+            staleFrames += 1;
+          }
+          c.app.render();
+        },
+      });
       const executor = createExecutor<Texture>({
         adapter: pixiAdapter(app, layers),
         registry,
@@ -296,9 +417,14 @@ export function createSceneController(): SceneController {
         resolution,
         onSkip: report,
       });
-      // Telegram changes the host's height without a window resize; Pixi's resizeTo listens to window only.
+      const flow = createReviveFlow({
+        revive: reviveWith(registry),
+        reacquire: () => executor.reacquire(),
+        resume: () => loop.requestRender(),
+      });
+      // The renderer's only sizing after init: the host's box, whatever changed it (a window resize, Telegram's height).
       const observer = new ResizeObserver(onResize);
-      core = { host, resolution, app, registry, scheduler, loop, executor, observer };
+      core = { host, resolution, app, registry, scheduler, loop, executor, flow, observer };
       observer.observe(host);
       watch(app.canvas);
       if (pendingManifest !== null) {
@@ -366,6 +492,8 @@ export function createSceneController(): SceneController {
       paused = true;
       pauseAll();
       core.loop.pause();
+      // A hidden WebView throttles timers: the revive stops here, records stay stale, frames stay as they are.
+      core.flow.abort();
     },
     resume() {
       if (core === null || !paused) {
@@ -376,23 +504,45 @@ export function createSceneController(): SceneController {
       core.loop.resume();
     },
     stats() {
+      const counters = { rebuilds, gen, staleFrames, visibleReviveMs };
       if (core === null) {
-        return { liveTextures: 0, liveBytes: 0, pendingLoads: 0, activeTimelines: 0, overCap: 0 };
+        const none = { liveTextures: 0, liveBytes: 0, pendingLoads: 0, activeTimelines: 0, overCap: 0 };
+        return { ...none, openBitmaps: 0, stale: 0, reviveFailed: 0, reviving: false, ...counters };
       }
       const r = core.registry.stats();
       return {
         liveTextures: r.live,
-        liveBytes: r.bytes,
+        // Live texture bytes: the caps also count the kept files (MEMORY-PLAN M2), which hold no texture.
+        liveBytes: r.bytes - r.keptBytes,
         pendingLoads: r.pending,
         activeTimelines: core.executor.stats().activeTimelines,
         overCap: r.overCap,
+        openBitmaps: r.openBitmaps,
+        stale: r.stale,
+        reviveFailed: r.reviveFailed,
+        reviving: core.flow.reviving(),
+        ...counters,
       };
     },
-    debugForceContextLoss() {
+    debugForceContextLoss(mode) {
       const r = core?.app.renderer;
-      // Pixi restores a forced loss on the next tick (GlContextSystem.handleContextLost); webglcontextrestored follows.
-      if (r !== undefined && 'gl' in r) {
-        r.context.forceContextLoss();
+      if (r === undefined || !('gl' in r)) {
+        return;
+      }
+      switch (mode) {
+        case 'restorable':
+          // Pixi restores a forced loss on the next tick (GlContextSystem.handleContextLost); webglcontextrestored follows.
+          r.context.forceContextLoss();
+          return;
+        case 'hard':
+          // Neither Pixi (no `_contextLossForced`) nor the browser restores this loss (MEMORY-PLAN 4.A), so `activated`
+          // finds the context lost after the grace and rebuilds (D13).
+          r.gl.getExtension('WEBGL_lose_context')?.loseContext();
+          return;
+        default: {
+          const unhandled: never = mode;
+          throw new Error(`invariant: unhandled context loss mode ${String(unhandled)}`);
+        }
       }
     },
     debugPropRects() {
@@ -426,8 +576,9 @@ export function createSceneController(): SceneController {
         return;
       }
       unwatch(c.app.canvas);
-      // Executor (timelines, sprites, scene:*), scheduler (preloads, ensure), registry (every texture and bitmap),
-      // render loop, observer, then the Application with its layers.
+      // The revive flow (its revive aborted), executor (timelines, sprites, scene:*), scheduler (preloads, ensure),
+      // registry (every texture, bitmap and kept file), render loop, observer, then the Application with its layers.
+      c.flow.destroy();
       c.executor.destroy();
       c.scheduler.destroy();
       c.registry.destroy();
