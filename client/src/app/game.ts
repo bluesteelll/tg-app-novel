@@ -802,6 +802,7 @@ export function createGame(deps: GameDeps): Game {
           vm.choices = null;
           s.step = null;
           s.shown = null;
+          s.yields.restore(EMPTY_WORLD_STATE, null, null); // no rooms under the paywall; a pending body has no world
           pendingPaid(s, body, false);
           return ok(undefined);
         }
@@ -819,7 +820,7 @@ export function createGame(deps: GameDeps): Game {
       return err({ kind: 'story', error: r.error });
     }
     const resumed = r.value;
-    s.yields.restore(resumed.world, resumed.reset);
+    s.yields.restore(resumed.world, resumed.reset, resumed.first.kind === 'yield' ? resumed.first.yield : null);
     s.runner?.dispose();
     s.runner = resumed.runner;
     s.carry = { ...body.chapterStart.carry };

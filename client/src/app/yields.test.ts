@@ -308,7 +308,7 @@ test('yields: puzzle end clears the close-up', async () => {
 test('yields: a run at max attempts ends failed without a session', async () => {
   const r = rig();
   const spent: WorldState = { ...EMPTY_WORLD_STATE, puzzles: { [DRAWER]: { outcome: null, attempts: 2, hintsOpened: 0 } } };
-  r.yields.restore(spent, null);
+  r.yields.restore(spent, null, null);
   await r.yields.onYield({ kind: 'puzzle', puzzle: DRAWER, then: AFTER });
   // D18: no session, no frame, no attempt; the run ends failed and the story goes on with pz_drawer = 2.
   expect([r.puzzle.frame, r.calls.host, r.calls.attempts]).toEqual([null, 0, 0]);
@@ -403,9 +403,9 @@ const resetShown = (r: Rig): boolean => r.vm.toasts.some((e) => e.kind === 'note
 
 test('yields: a resume reset shows the area reset toast', () => {
   const r = rig();
-  r.yields.restore(EMPTY_WORLD_STATE, null);
+  r.yields.restore(EMPTY_WORLD_STATE, null, null);
   expect(resetShown(r)).toBe(false);
-  r.yields.restore(EMPTY_WORLD_STATE, MANOR);
+  r.yields.restore(EMPTY_WORLD_STATE, MANOR, null);
   expect(resetShown(r)).toBe(true);
   r.yields.dispose();
 });

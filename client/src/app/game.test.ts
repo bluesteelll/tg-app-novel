@@ -23,7 +23,8 @@ import type { ChapterLoader } from '../story/chapters.ts';
 import { decodeChapterMeta } from '../story/catalog.ts';
 import type { AssetEntry, AssetManifest, ChapterCatalog, LoadedChapter, Result, StoryId } from '../story/catalog.ts';
 import { liveRunners } from '../story/runner.ts';
-import { decodeSave } from '../story/save-codec.ts';
+import { decodeSave, encodeSave } from '../story/save-codec.ts';
+import { EMPTY_SNAPSHOT } from '../story/staging.ts';
 import type { AssetId, ChapterId, ProductId, StoryVersion } from '../story/staging.ts';
 import type { InvoiceStatus } from '../telegram/index.ts';
 import { createExploreView } from '../ui/explore-view.svelte.ts';
@@ -1719,4 +1720,43 @@ test('game: a failed scene mount is retried by the notice', async () => {
   await settle();
   expect([mounts, lineOf(h.vm)]).toEqual([2, 'ch1.arrival.l001']);
   h.game.dispose();
+});
+
+test('game: a load at a story step hides the rooms and releases their holders', async () => {
+  stubObserver();
+  const w = worldChunks();
+  const h = harness({ chapters: [worldCh1('explore'), manorCh2()], chunks: w.chunks });
+  await startManor(h);
+  const auto = h.save().slots.get('auto'); // the start knot's entry autosave, at l001
+  const decoded = auto === undefined ? null : decodeSave(auto.body);
+  expect(decoded?.ok).toBe(true);
+  if (auto === undefined || decoded === null || !decoded.ok) {
+    return;
+  }
+  h.save().slots.set('s1', { ...auto, summary: { ...auto.summary, slot: 's1' } });
+  const rooms = (): string[] => [...h.scene.holders.keys()].filter((k) => k.startsWith('room:'));
+  const view = (): unknown[] => [lineOf(h.vm), h.explore.layer !== null, h.vm.screens.backVisible, rooms()];
+  await h.game.advance(); // the explore yield: the hall
+  await settle();
+  h.game.exploreActions.ontap(hk('hall.to_study')); // the study's onEnter event
+  await settle();
+  await h.game.advance(); // the event's explore yield: back in the study
+  await settle();
+  expect(view()).toEqual(['ch1.study_event.l004', true, true, ['room:hall', 'room:study']]);
+  // 1. The same chapter, at a story line: the layer, the root-back and the rooms' holders go.
+  await h.game.load('s1');
+  await settle();
+  expect(view()).toEqual(['ch1.start.l001', false, false, []]);
+  await h.game.advance(); // the story goes on into the rooms: entered afresh
+  await settle();
+  expect([w.created(), h.explore.layer !== null, rooms()]).toEqual([2, true, ['room:hall', 'room:study']]);
+  // 2. A saved start of a chapter not owned (D11): the paywall over an empty stage, with no rooms under it.
+  h.game.exploreActions.oninventory();
+  const pending = { ...decoded.value, chapterId: CH2, ink: null, at: { lineId: null, knot: null, yield: null }, staging: EMPTY_SNAPSHOT };
+  h.save().slots.set('s2', { summary: { ...auto.summary, slot: 's2', chapterId: CH2 }, body: encodeSave({ ...pending, checkpoint: null, backlog: [] }) });
+  await h.game.load('s2');
+  await settle();
+  expect([h.explore.layer !== null, h.explore.panel, rooms(), h.vm.screens.overlays.map((o) => o.kind)]).toEqual([false, null, [], ['paywall']]);
+  h.game.dispose();
+  vi.unstubAllGlobals();
 });

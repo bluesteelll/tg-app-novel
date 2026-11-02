@@ -122,8 +122,13 @@ export interface Yields {
   lineShown(): void;
   /** The world a save body carries now. */
   world(): WorldState;
-  /** A resume's world; a non-null `reset` is a section that restarted (X9: the area-reset toast). */
-  restore(world: WorldState, reset: SectionId | null): void;
+  /**
+   * A resume's world; a non-null `reset` is a section that restarted (X9: the area-reset toast). `at` is the yield
+   * of the resumed step, if it is one. The rooms leave the screen with the step they belonged to: the layer, its
+   * panels and the root-back. An explore yield re-enters them with this controller; any other step drops the
+   * controller with its `room:*` holders, and a later explore yield makes a new one.
+   */
+  restore(world: WorldState, reset: SectionId | null, at: YieldCommand | null): void;
   /** PZ F10: the puzzle session, then the controller; the world starts empty. */
   chapterChanged(): void;
   /** D4: the game root is set again (`setRoot` cleared the root-back): it returns from the cached path state. */
@@ -749,8 +754,15 @@ export function createYields(h: YieldsHost): Yields {
       }
     },
     world: () => world,
-    restore(next, reset) {
+    restore(next, reset, at) {
       dropPuzzle();
+      jobs.length = 0;
+      if (at?.kind !== 'explore') {
+        disposeController();
+      }
+      closePanel();
+      explore.layer = null;
+      screens.setRootBack(null);
       world = next;
       if (reset !== null) {
         vm.showToast({ kind: 'note', key: 'area_reset', message: t(vm.lang, 'explore.area_reset'), sticky: false });
