@@ -369,6 +369,56 @@ pub struct Localized {
     pub en: String,
 }
 
+/// A found ending as the completion card lists it.
+// No `Debug`: the title is paid-gated content (META-PLAN M7), never logged.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CardEnding {
+    /// The ending name.
+    pub name: String,
+    /// Its title.
+    pub title: Localized,
+    /// When the user first reached it, in unix seconds (server clock).
+    #[ts(type = "number")]
+    pub first_reached_at: i64,
+}
+
+/// An unlocked achievement as the completion card lists it.
+// No `Debug`: the texts are paid-gated content (META-PLAN M7), never logged.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CardAchievement {
+    /// The achievement id, unique in its story.
+    pub id: String,
+    /// The name.
+    pub name: Localized,
+    /// The description.
+    pub description: Localized,
+    /// When it was first unlocked, in unix seconds (server clock).
+    #[ts(type = "number")]
+    pub unlocked_at: i64,
+    /// Whether this request unlocked it.
+    pub new: bool,
+}
+
+/// `POST /api/stories/{storyId}/card` response (META-PLAN M9): the user's own completion card of one story. Only what
+/// the user found and may see now: no total, and no item listed as locked, hidden or missing (M7, M8).
+// No `Debug`: it carries paid-gated texts.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CardResponse {
+    /// The story.
+    pub story_id: StoryId,
+    /// The endings reached, counting every reach.
+    pub runs: u32,
+    /// The chapters completed (a chapter's end, or one of its endings), in chain order.
+    pub chapters_completed: Vec<String>,
+    /// The endings found that the user may see now, in name order.
+    pub endings: Vec<CardEnding>,
+    /// The unlocked achievements the user may see now, in the story's display order.
+    pub achievements: Vec<CardAchievement>,
+}
+
 /// One resource balance as `GET /api/wallet` lists it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]

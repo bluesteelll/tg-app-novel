@@ -1,6 +1,7 @@
 //! The `/api` routes.
 
 pub mod auth;
+pub mod cards;
 pub mod content;
 pub mod dto;
 pub mod entitlements;
@@ -69,6 +70,7 @@ fn routes() -> Router<AppState> {
         .route("/orders/{order_id}", get(orders::get_order))
         .route("/stats", get(stats::get_stats))
         .route("/stats/events", post(stats::post_events))
+        .route("/stories/{story_id}/card", post(cards::post_card))
         .route("/wallet", get(wallet::get_wallet))
         .route("/invites/{code}", get(social::get_invite))
         .route("/invites/{code}/request", post(social::post_invite_request))

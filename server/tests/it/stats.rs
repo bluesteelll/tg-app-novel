@@ -1705,7 +1705,11 @@ async fn stats_private_no_store() {
     clippy::disallowed_methods,
     reason = "a sync test may read files; the lint guards async handlers"
 )]
-fn rust_files(dir: &Path, files: &mut Vec<(PathBuf, String)>, problems: &mut Vec<String>) {
+pub(crate) fn rust_files(
+    dir: &Path,
+    files: &mut Vec<(PathBuf, String)>,
+    problems: &mut Vec<String>,
+) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         problems.push(format!("cannot read {}", dir.display()));
         return;
@@ -1731,7 +1735,7 @@ fn rust_files(dir: &Path, files: &mut Vec<(PathBuf, String)>, problems: &mut Vec
 
 /// The identifiers of the code lines of `text`: a comment line (`//`, `///`, `//!`) is skipped, so a why-comment may
 /// name the repository.
-fn code_identifiers(text: &str) -> impl Iterator<Item = (usize, &str)> {
+pub(crate) fn code_identifiers(text: &str) -> impl Iterator<Item = (usize, &str)> {
     text.lines()
         .enumerate()
         .filter(|(_, line)| !line.trim_start().starts_with("//"))
@@ -1754,8 +1758,9 @@ const STATS_REPO_WORDS: [&str; 7] = [
 ];
 
 /// Statistics unlock nothing (ST4): the repository is named only by `db/stats.rs` and by the stats routes in
-/// `api/stats.rs` (which leave the table's name to `db/`), in `server` and `server-dev` alike. A later reader of the
-/// table moves this allow-list on purpose.
+/// `api/stats.rs` (which leave the table's name to `db/`), in `server` and `server-dev` alike. The one other reader
+/// of the table is the completion card's display read in `db/achievements.rs` (META-PLAN M6), which names the table
+/// and no item of the repository; a later reader moves this allow-list on purpose.
 #[test]
 fn stats_repo_called_only_from_stats_api() {
     let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -1780,6 +1785,7 @@ fn stats_repo_called_only_from_stats_api() {
         let allowed: &[&str] = match file.as_str() {
             "src/db/stats.rs" => &STATS_REPO_WORDS,
             "src/api/stats.rs" => &api_words,
+            "src/db/achievements.rs" => &["stat_events"],
             _ => &[],
         };
         for (line, word) in code_identifiers(text).filter(|(_, w)| STATS_REPO_WORDS.contains(w)) {
@@ -1805,6 +1811,11 @@ fn stats_repo_called_only_from_stats_api() {
             "src/api/stats.rs",
             "stat_facts",
             "api/stats.rs does not call stat_facts",
+        ),
+        (
+            "src/db/achievements.rs",
+            "stat_events",
+            "db/achievements.rs does not name stat_events",
         ),
     ] {
         if !seen.iter().any(|(f, w)| f == file && *w == word) {

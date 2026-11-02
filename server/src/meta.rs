@@ -14,6 +14,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use serde::Deserialize;
 
 use crate::content::{Localized, PuzzleDef, StoryDef, is_ending_name, is_line_id};
+use crate::db::achievements::{PuzzleRow, StatGroup};
+use crate::db::stats::StatKind;
 use crate::ids::{ChapterId, ProductId, PuzzleId, StoryId};
 
 /// The meta index: the choice vocabulary of every chapter of the story index, and per story its ending titles and
@@ -514,6 +516,57 @@ pub struct Facts {
     pub puzzles: HashMap<PuzzleId, PuzzleFact>,
     /// The endings reached, counting every reach of one ending.
     pub runs: u32,
+}
+
+/// One user's facts in `story` from the card's reads (`db/achievements.rs`), as the current index counts them (ST6):
+/// an ending only where the index declares it, in the chapter it was recorded in; anything only in a chapter on the
+/// chain. A chapter is completed by a `chapter_completed` or a counted ending in it; `runs` counts every row of a
+/// counted ending; each ending keeps its earliest time.
+pub fn facts(story: &StoryDef, stats: &[StatGroup], puzzles: &[PuzzleRow]) -> Facts {
+    let mut f = Facts::default();
+    let mut runs: i64 = 0;
+    for g in stats {
+        if !story.chapters.iter().any(|ch| ch.id == g.chapter) {
+            continue;
+        }
+        match g.kind {
+            StatKind::ChapterCompleted => {
+                f.chapters.insert(g.chapter.clone());
+            }
+            StatKind::EndingReached => {
+                let Some(name) = g.subject.as_deref() else {
+                    continue;
+                };
+                if story.endings.get(name) != Some(&g.chapter) {
+                    continue;
+                }
+                f.chapters.insert(g.chapter.clone());
+                runs = runs.saturating_add(g.rows);
+                f.endings
+                    .entry(name.to_owned())
+                    .and_modify(|at| *at = (*at).min(g.first_at))
+                    .or_insert(g.first_at);
+            }
+            StatKind::ChoiceMade => {
+                if let Some(option) = &g.subject {
+                    f.choices.insert(option.clone());
+                }
+            }
+            StatKind::ChapterStarted | StatKind::PuzzleEnded => {}
+        }
+    }
+    f.runs = u32::try_from(runs).unwrap_or(u32::MAX);
+    f.puzzles = puzzles
+        .iter()
+        .map(|p| {
+            let fact = PuzzleFact {
+                solved: p.solved,
+                hints_unlocked: u32::try_from(p.hints).unwrap_or(u32::MAX),
+            };
+            (p.puzzle.clone(), fact)
+        })
+        .collect();
+    f
 }
 
 /// Whether `f` meets `c` in `story`. Pure. Endings are counted by name, so one ending reached twice is one ending.
