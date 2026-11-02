@@ -9,6 +9,7 @@ import { GLOBALS_PATH } from '../../scripts/story/lint.ts';
 import type { ProductDto, SaveFull, SaveListResponse, SaveSlot, SaveSummary } from '../api/generated/api.ts';
 import type { ApiError, Clock } from '../api/http.ts';
 import type { AudioCommand, AudioManager } from '../audio/manager.ts';
+import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { ManualSlot, SaveService, SaveState, SaveWrite } from '../saves/service.ts';
 import type { SceneController } from '../scene/controller.ts';
 import type { SceneSnapshot, VisualCommand } from '../scene/executor.ts';
@@ -19,8 +20,10 @@ import type { ChapterLoader } from '../story/chapters.ts';
 import { decodeChapterMeta } from '../story/catalog.ts';
 import type { AssetEntry, AssetManifest, ChapterCatalog, LoadedChapter, StoryId } from '../story/catalog.ts';
 import { liveRunners } from '../story/runner.ts';
+import { decodeSave } from '../story/save-codec.ts';
 import type { AssetId, ChapterId, ProductId, StoryVersion } from '../story/staging.ts';
 import { createScreens } from '../ui/screens.ts';
+import type { Screens } from '../ui/screens.ts';
 import { createViewModel } from '../ui/state.svelte.ts';
 import type { ViewModel } from '../ui/state.svelte.ts';
 import { newestAuto } from './boot.ts';
@@ -464,6 +467,7 @@ function fakeCloud(): CloudPort & { readonly writes: Array<[string, string]> } {
 type Harness = {
   game: Game;
   vm: ViewModel;
+  screens: Screens;
   clock: FakeClock;
   scene: FakeScene;
   audio: FakeAudio;
@@ -555,6 +559,7 @@ function harness(o: HarnessOptions = {}): Harness {
   return {
     game,
     vm,
+    screens,
     clock,
     scene,
     audio,
@@ -786,5 +791,286 @@ test('game: deactivated suspends audio and the auto timer', async () => {
   await settle();
   expect(lineOf(h.vm)).toBe('ch1.arrival.l002');
   h.game.dispose();
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// C3: chapter change, the next-chapter preload, endings and the chapter reports (PP F2 steps 1-5, F4, F5; SP F4′)
+
+/** manor ch2 (paid): one knot whose batch is a background only, so a character left from ch1 would survive it. */
+function manorCh2(): LoadedChapter {
+  return chapter(
+    'ch2',
+    ['-> study', '=== study ===', '# bg: study', 'Two begins. #id:ch2.study.l001', 'Two ends. #id:ch2.study.l002', '-> END'],
+    { study: { assets: ['bg/study'], ending: true } },
+  );
+}
+
+/** ch1 whose first knot `a` ends (a choice diverts to END) and leads to `b`, which does not end, then to `c`, which does. */
+function branchCh1(): LoadedChapter {
+  return chapter(
+    'ch1',
+    [
+      '-> a',
+      '=== a ===',
+      '# scene: hall',
+      'A line. #id:ch1.a.l001',
+      '* [To b. #id:ch1.a.c001]',
+      '    -> b',
+      '* [End. #id:ch1.a.c002]',
+      '    -> END',
+      '=== b ===',
+      'B line. #id:ch1.b.l002',
+      '-> c',
+      '=== c ===',
+      '# bg: garden',
+      'C line. #id:ch1.c.l003',
+      '-> END',
+    ],
+    {
+      a: { assets: ['bg/hall'], next: ['b'], ending: true },
+      b: { next: ['c'] },
+      c: { assets: ['bg/garden'], ending: true },
+    },
+  );
+}
+
+/** tide ch3 (free, the last of its chain): Trust leads to `dawn` (a plain END), Doubt to `drowned` (a declared ending). */
+function tideCh3(): LoadedChapter {
+  return chapter(
+    'ch3',
+    [
+      '-> shore',
+      '=== shore ===',
+      '# scene: beach',
+      'The shore. #id:ch3.shore.l001',
+      '* [Trust. #id:ch3.shore.c001]',
+      '    -> dawn',
+      '* [Doubt. #id:ch3.shore.c002]',
+      '    -> drowned',
+      '=== dawn ===',
+      'Dawn. #id:ch3.dawn.l002',
+      '-> END',
+      '=== drowned ===',
+      'Cold water. #id:ch3.drowned.l003',
+      '-> END',
+    ],
+    { shore: { assets: ['bg/beach'], next: ['dawn', 'drowned'] }, dawn: { ending: true }, drowned: { ending: true } },
+    { endings: { drowned: 'drowned' } },
+  );
+}
+
+const V_CH1 = '0111111111111111' as StoryVersion;
+const V_CH2 = '0211111111111111' as StoryVersion;
+const V_CH3 = '0311111111111111' as StoryVersion;
+
+/** The chapter and ending reports, in order. */
+const reports = (h: Harness): StatEvent[] => h.events.filter((e) => e.kind !== 'choice_made');
+
+/** Every asset id the fake registry holds, as `holder=id`. */
+const held = (h: Harness): string[] => [...h.scene.holders].flatMap(([tag, ids]) => [...ids].map((id) => `${tag}=${id}`)).sort();
+
+/** manor ch1 from its start to the garden knot's line (the ending knot), through the first option. */
+async function playManorCh1(h: Harness): Promise<void> {
+  await startManor(h);
+  await h.game.advance(); // l002
+  await h.game.advance(); // the choice set
+  await h.game.choose(0); // l003
+  await h.game.advance(); // l005, entering garden
+  await settle(); // F5's load of the next chapter
+}
+
+test('chapter_change_releases', async () => {
+  const h = harness({ chapters: [manorCh1(), manorCh2()], owned: ['ch2'] });
+  await playManorCh1(h);
+  expect(lineOf(h.vm)).toBe('ch1.garden.l005');
+  expect(h.scene.holders.has('scene:char:ally')).toBe(true);
+  expect(h.scene.holders.has('next:ch2')).toBe(true);
+  await h.game.advance(); // END: the change, then ch2's first line
+  expect(lineOf(h.vm)).toBe('ch2.study.l001');
+  // F4 step 5: the new first knot's batch and its hand-over only; nothing of ch1's stage or preloads.
+  expect(held(h)).toEqual(['preload:study=bg/study', 'scene:bg=bg/study']);
+  const change = h.scene.calls.indexOf('setChapter:ch2');
+  expect(change).toBeGreaterThan(-1);
+  expect(h.scene.calls.slice(change, change + 2)).toEqual(['setChapter:ch2', 'restore:-']);
+  expect(h.audio.calls).toContain('setChapter:ch2');
+  expect(h.loader.loads).toEqual(['ch1', 'ch2']); // F4 step 4 takes the chapter F5 kept
+  h.game.dispose();
+});
+
+test('game: next-chapter holder released on non-ending branch', async () => {
+  const h = harness({ chapters: [branchCh1(), manorCh2()], owned: ['ch2'] });
+  expect((await h.game.start({ kind: 'new', story: MANOR, chapter: CH1 })).ok).toBe(true);
+  await settle();
+  // Knot a is an ending knot: F5 holds the next chapter's first knot.
+  expect([...(h.scene.holders.get('next:ch2') ?? [])]).toEqual(['bg/study']);
+  await h.game.advance(); // a's choice set
+  const mark = h.scene.calls.length;
+  await h.game.choose(0); // b, which does not end
+  expect(lineOf(h.vm)).toBe('ch1.b.l002');
+  expect([...h.scene.holders.keys()].filter((k) => k.startsWith('next:'))).toEqual([]);
+  const since = h.scene.calls.slice(mark);
+  const released = since.indexOf('release:next:');
+  expect(released).toBeGreaterThan(-1);
+  expect(since.indexOf('preload:preload:c')).toBeGreaterThan(released); // step 4 after step 2
+  h.game.dispose();
+});
+
+test('game: ending knot reports the ending and skips next-chapter preload', async () => {
+  const lonely = chapter(
+    'ch1',
+    MANOR_CH1,
+    { arrival: { assets: ['bg/hall', 'char/ally/neutral', 'bgm/calm'], next: ['garden'] }, garden: { assets: ['bg/garden'], ending: true } },
+    { endings: { garden: 'lonely' } },
+  );
+  const h = harness({ chapters: [lonely, manorCh2()], owned: ['ch2'] });
+  await playManorCh1(h);
+  expect(reports(h)).toEqual([
+    { kind: 'chapter_started', chapterId: CH1, storyVersion: V_CH1 },
+    { kind: 'ending_reached', chapterId: CH1, storyVersion: V_CH1, ending: 'lonely' },
+  ]);
+  expect(h.scene.calls.filter((c) => c.startsWith('preload:next:'))).toEqual([]);
+  expect(h.loader.loads).toEqual(['ch1']);
+  h.game.dispose();
+});
+
+test('game: declared ending end is distinguishable from chapter end', async () => {
+  const run = async (option: number): Promise<StatEvent[]> => {
+    const h = harness({ chapters: [tideCh3()] });
+    expect((await h.game.start({ kind: 'new', story: TIDE, chapter: CH3 })).ok).toBe(true);
+    await h.game.advance();
+    await h.game.choose(option);
+    await h.game.advance(); // END
+    h.game.dispose();
+    return reports(h);
+  };
+  const started = { kind: 'chapter_started', chapterId: CH3, storyVersion: V_CH3 };
+  expect(await run(1)).toEqual([started, { kind: 'ending_reached', chapterId: CH3, storyVersion: V_CH3, ending: 'drowned' }]);
+  expect(await run(0)).toEqual([started, { kind: 'chapter_completed', chapterId: CH3, storyVersion: V_CH3 }]);
+});
+
+test('game: story end shows the end', async () => {
+  const h = harness({ chapters: [tideCh3()] });
+  expect((await h.game.start({ kind: 'new', story: TIDE, chapter: CH3 })).ok).toBe(true);
+  await h.game.advance();
+  await h.game.choose(1); // drowned, the declared ending
+  const autosaves = h.save().autosaves.length;
+  await h.game.advance(); // END
+  expect(h.vm.notice?.kind).toBe('the_end');
+  expect(h.vm.screens.root.kind).toBe('notice');
+  // F4′: no new autosave (the ending knot's checkpoint is the last one), not even at pagehide.
+  h.game.pagehide();
+  expect(h.save().autosaves.length).toBe(autosaves);
+  h.game.dispose();
+});
+
+test('game: a chapter end with no next chapter shows to be continued', async () => {
+  const h = harness({ chapters: [tideCh3()] });
+  expect((await h.game.start({ kind: 'new', story: TIDE, chapter: CH3 })).ok).toBe(true);
+  await h.game.advance();
+  await h.game.choose(0); // dawn: a plain END, and ch3 has no next chapter
+  await h.game.advance(); // END
+  expect(h.vm.notice?.kind).toBe('to_be_continued');
+  expect(h.vm.screens.root.kind).toBe('notice');
+  expect(reports(h).at(-1)).toEqual({ kind: 'chapter_completed', chapterId: CH3, storyVersion: V_CH3 });
+  h.game.dispose();
+});
+
+test('game: chapter start and end are reported', async () => {
+  const h = harness({ chapters: [manorCh1(), manorCh2()], owned: ['ch2'] });
+  await playManorCh1(h);
+  await h.game.advance(); // END, then ch2
+  expect(reports(h)).toEqual([
+    { kind: 'chapter_started', chapterId: CH1, storyVersion: V_CH1 },
+    { kind: 'chapter_completed', chapterId: CH1, storyVersion: V_CH1 },
+    { kind: 'chapter_started', chapterId: CH2, storyVersion: V_CH2 },
+  ]);
+  h.game.dispose();
+});
+
+test('game: an unowned next chapter saves its pending start and opens the paywall', async () => {
+  const h = harness({ chapters: [manorCh1(), manorCh2()] });
+  await playManorCh1(h);
+  expect(h.loader.loads).toEqual(['ch1']); // F5 preloads only a chapter the player may read
+  await h.game.advance(); // END
+  const w = h.save().autosaves.at(-1);
+  const body = w === undefined ? null : decodeSave(w.body);
+  expect(body?.ok && { chapterId: body.value.chapterId, ink: body.value.ink, carry: body.value.chapterStart.carry }).toEqual({
+    chapterId: 'ch2',
+    ink: null,
+    carry: { g_x: 0 },
+  });
+  expect(h.vm.paywall).toEqual({ chapter: 'Two', priceStars: 50, state: { kind: 'idle' } });
+  expect(h.vm.screens.overlays.map((o) => o.kind)).toEqual(['paywall']);
+  expect(reports(h).at(-1)).toEqual({ kind: 'chapter_completed', chapterId: CH1, storyVersion: V_CH1 });
+  // Back closes it; the next tap opens it again (D11).
+  h.screens.back();
+  expect(h.vm.screens.overlays).toEqual([]);
+  await h.game.advance();
+  expect(h.vm.screens.overlays.map((o) => o.kind)).toEqual(['paywall']);
+  const auto = h.save().slots.get('auto');
+  h.game.dispose();
+  // Continue from that save in a later session: the paywall again, over the game root.
+  const again = harness({ chapters: [manorCh1(), manorCh2()], slots: new Map(auto === undefined ? [] : [['auto', auto]]) });
+  expect((await again.game.start({ kind: 'slot', story: MANOR, slot: 'auto' })).ok).toBe(true);
+  expect(again.vm.screens.root.kind).toBe('game');
+  expect(again.vm.screens.overlays.map((o) => o.kind)).toEqual(['paywall']);
+  again.game.dispose();
+});
+
+/** A body as F4 step 3 writes it at ch1's END while ch2 was not owned. */
+function pendingCh2(): SaveFull {
+  const body = {
+    format: 1,
+    chapterId: 'ch2',
+    storyVersion: V_CH1,
+    ink: null,
+    at: { lineId: null, knot: null, yield: null },
+    staging: { bg: null, cg: null, chars: [], bgm: null, props: [] },
+    checkpoint: null,
+    chapterStart: { carry: { g_x: 1 } },
+    backlog: [],
+    world: EMPTY_WORLD_STATE,
+    worldVersion: null,
+  };
+  const w: SaveWrite = { chapterId: CH2, storyVersion: V_CH1, lineId: null, body: JSON.stringify(body) };
+  return { summary: summary(MANOR, 'auto', w), body: w.body };
+}
+
+test('game: pending chapter start reports chapter start', async () => {
+  const h = harness({ chapters: [manorCh1(), manorCh2()], owned: ['ch2'], slots: new Map([['auto', pendingCh2()]]) });
+  expect((await h.game.start({ kind: 'slot', story: MANOR, slot: 'auto' })).ok).toBe(true);
+  expect(lineOf(h.vm)).toBe('ch2.study.l001');
+  expect(reports(h)).toEqual([{ kind: 'chapter_started', chapterId: CH2, storyVersion: V_CH2 }]);
+  h.game.dispose();
+});
+
+test('game: exact or checkpoint resume does not report chapter start', async () => {
+  const first = harness();
+  await startManor(first);
+  await first.game.advance();
+  const auto = first.save().slots.get('auto'); // the knot entry's autosave, at l001
+  first.game.dispose();
+  expect(auto).toBeDefined();
+  if (auto === undefined) {
+    return;
+  }
+  // Exact: the same story version.
+  const exact = harness({ slots: new Map([['auto', auto]]) });
+  expect((await exact.game.start({ kind: 'slot', story: MANOR, slot: 'auto' })).ok).toBe(true);
+  expect(lineOf(exact.vm)).toBe('ch1.arrival.l001');
+  expect(reports(exact)).toEqual([]);
+  exact.game.dispose();
+  // Checkpoint: a story update changed the version, so the exact level is skipped.
+  const updated = chapter(
+    'ch1',
+    MANOR_CH1,
+    { arrival: { assets: ['bg/hall', 'char/ally/neutral', 'bgm/calm'], next: ['garden'] }, garden: { assets: ['bg/garden'], ending: true } },
+    { version: '0122222222222222' },
+  );
+  const checkpoint = harness({ chapters: [updated], slots: new Map([['auto', auto]]) });
+  expect((await checkpoint.game.start({ kind: 'slot', story: MANOR, slot: 'auto' })).ok).toBe(true);
+  expect(lineOf(checkpoint.vm)).toBe('ch1.arrival.l001');
+  expect(reports(checkpoint)).toEqual([]);
+  checkpoint.game.dispose();
 });
 

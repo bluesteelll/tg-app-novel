@@ -20,7 +20,7 @@ import type { VisualCommand } from '../scene/executor.ts';
 import type { SceneError } from '../scene/registry.ts';
 import type { Settings, SettingsStore } from '../settings/store.ts';
 import type { StatsReporter } from '../stats/reporter.ts';
-import { carryInto } from '../story/carry.ts';
+import { carryInto, carryOut } from '../story/carry.ts';
 import type { ChapterLoader, ChapterLoadError } from '../story/chapters.ts';
 import type { AssetManifest, ChapterCatalog, FetchAsset, InkScalar, LoadedChapter, Result, StoryEntry, StoryId } from '../story/catalog.ts';
 import { resume } from '../story/resume.ts';
@@ -30,7 +30,7 @@ import type { RunnerError, RunnerStep } from '../story/runner.ts';
 import { BACKLOG_MAX, decodeSave, encodeSave } from '../story/save-codec.ts';
 import type { BacklogEntry, SaveBodyV1 } from '../story/save-codec.ts';
 import { EMPTY_SNAPSHOT } from '../story/staging.ts';
-import type { AssetId, AssetIndex, ChapterId, LineId, SpeakerId, StagingCommand, StagingSnapshot, TagError, VarName } from '../story/staging.ts';
+import type { AssetId, AssetIndex, ChapterId, KnotName, LineId, SpeakerId, StagingCommand, StagingSnapshot, TagError, VarName } from '../story/staging.ts';
 import type { Lifecycle, TelegramClient } from '../telegram/index.ts';
 import type { BacklogLine } from '../ui/Backlog.svelte';
 import type { NoticeView } from '../ui/Notice.svelte';
@@ -243,6 +243,16 @@ type Session = {
   last: SaveBodyV1 | null;
   /** The manual slot whose 409 asked "Overwrite?", with the server's envelope. */
   conflict: { slot: ManualSlot; current: SaveSummary } | null;
+  /** The knots of the current chapter whose `preload:<knot>` holder this session requested (F2 steps 3-4). */
+  readonly held: Set<KnotName>;
+  /** F5's `next:<id>` holder while it is wanted (requested, or its chapter still loading); null once released. */
+  nextTag: string | null;
+  /** F5's next chapter, kept for F4 step 4 so it is fetched once. */
+  kept: { id: ChapterId; loaded: Promise<Result<LoadedChapter, ChapterLoadError>> } | null;
+  /** The new chapter's first knot, whose entry turns `next:<id>` into `preload:<knot>` (F4 step 4, F2 step 1). */
+  handover: KnotName | null;
+  /** D11: the saved start of a paid chapter the player does not own; the paywall's chapter. */
+  pending: SaveBodyV1 | null;
 };
 
 type DebugHook = {
@@ -411,6 +421,9 @@ export function createGame(deps: GameDeps): Game {
 
   /** The body an autosave or a manual save writes now; null when no chapter is running. */
   const bodyOf = (s: Session): SaveBodyV1 | null => {
+    if (s.pending !== null) {
+      return s.pending;
+    }
     const ch = s.ch;
     const runner = s.runner;
     if (ch === null || runner === null) {
@@ -512,12 +525,17 @@ export function createGame(deps: GameDeps): Game {
     }
     if (step.kind !== 'end' && step.enteredKnot) {
       s.checkpoint = { knot: step.knot, vars: s.runner?.checkpointVars() ?? {}, staging: before };
+      enterKnot(s, ch, step.knot);
       autosave(s);
     } else if (step.kind === 'choices' || step.kind === 'yield') {
       autosave(s);
     }
     await shown.done;
     if (session !== s) {
+      return;
+    }
+    if (step.kind === 'end') {
+      await chapterEnd(s, ch);
       return;
     }
     if (step.kind === 'line' && vm.mode === 'skip') {
@@ -550,6 +568,10 @@ export function createGame(deps: GameDeps): Game {
   const next = async (s: Session): Promise<void> => {
     clearAuto();
     clearSkip();
+    if (s.pending !== null) {
+      openPaywall(s.pending.chapterId); // D11: the tap after Back closed the paywall opens it again
+      return;
+    }
     const runner = s.runner;
     // A choice set waits for its pick, a yield for the host; next() would hand the same step back.
     if (runner === null || s.step?.kind === 'choices' || s.step?.kind === 'yield' || s.step?.kind === 'end') {
@@ -593,22 +615,43 @@ export function createGame(deps: GameDeps): Game {
     return loaders.current.load({ id, paid: entry.paid }, { withEn: vm.lang === 'en' });
   };
 
+  /** A paid chapter is the player's only by the server's entitlement list (principle 1); a free one always is. */
+  const owns = (c: ChapterCatalog['chapters'][number]): boolean =>
+    !c.paid || (deps.entitlements.list()?.some((p) => p.chapterId === c.id && p.owned) ?? false);
+  const priceOf = (id: ChapterId): number | null => deps.entitlements.list()?.find((p) => p.chapterId === id)?.priceStars ?? null;
+
   /**
    * The chapter becomes the session's: its manifest resolves the scene's and the audio's ids, its table the lines, and
-   * its read-set loads from CloudStorage (W2 a), merging the marks made meanwhile, so the flushes write it.
+   * its read-set loads from CloudStorage (W2 a), merging the marks made meanwhile, so the flushes write it. `clear` is
+   * F4 step 4's order: the scene's chapter, the empty stage (every `scene:*` holder of the old chapter), the audio's.
    */
-  const enterChapter = (s: Session, ch: LoadedChapter): void => {
+  const enterChapter = async (s: Session, ch: LoadedChapter, clear: boolean): Promise<void> => {
     s.ch = ch;
     s.assets = manifestIndex(ch.assets);
     s.lines = createLineText(ch.en);
+    s.held.clear(); // setChapter releases every preload:* holder
     void settings.loadRead(ch.id); // never rejects; a failed read keeps the chapter memory-only (settings/store.ts)
     scene.setChapter(ch.assets);
+    if (clear) {
+      await scene.restore(EMPTY_SNAPSHOT);
+      if (session !== s) {
+        return;
+      }
+    }
     audioOnce().setChapter(ch.assets);
   };
 
-  /** A fresh runner of `ch` with the carry, and its first step. */
-  const beginChapter = async (s: Session, ch: LoadedChapter, carry: Readonly<Record<VarName, InkScalar>>): Promise<Result<void, GameError>> => {
-    enterChapter(s, ch);
+  /** A fresh runner of `ch` with the carry (a `fresh` start point: `chapter_started`, SP F2), and its first step. */
+  const beginChapter = async (
+    s: Session,
+    ch: LoadedChapter,
+    carry: Readonly<Record<VarName, InkScalar>>,
+    clear: boolean,
+  ): Promise<Result<void, GameError>> => {
+    await enterChapter(s, ch, clear);
+    if (session !== s) {
+      return err({ kind: 'busy' });
+    }
     const into = carryInto(carry, ch.meta);
     const made = StoryRunner.create(ch, { kind: 'fresh', carry: into }, s.assets);
     if (!made.ok) {
@@ -622,12 +665,26 @@ export function createGame(deps: GameDeps): Game {
     s.at = NO_AT;
     s.step = null;
     s.shown = null;
+    s.pending = null;
+    reporter.record({ kind: 'chapter_started', chapterId: ch.id, storyVersion: ch.meta.storyVersion });
     await handle(s, made.value.next());
     return ok(undefined);
   };
 
+  /** F5 cancelled: another save is resumed (PP F5 "Release"); the kept chapter is dropped. */
+  const dropNext = (s: Session): void => {
+    if (s.nextTag !== null || s.handover !== null) {
+      scene.releasePreload('next:');
+    }
+    s.nextTag = null;
+    s.handover = null;
+    s.kept = null;
+    loaders.next.cancel();
+  };
+
   /** A save body back into the session (F3 step 6): its chapter, a runner at the level resume reaches, its stage. */
   const resumeBody = async (s: Session, body: SaveBodyV1, minLevel?: ResumeLevel): Promise<Result<void, GameError>> => {
+    dropNext(s);
     let ch = s.ch !== null && s.ch.id === body.chapterId ? s.ch : null;
     if (ch === null) {
       const loaded = await loadChapter(body.chapterId);
@@ -635,10 +692,27 @@ export function createGame(deps: GameDeps): Game {
         return err({ kind: 'busy' });
       }
       if (!loaded.ok) {
+        if (loaded.error.kind === 'not-entitled' && body.ink === null) {
+          // D11: the saved start of a chapter still not owned; the paywall again, over an empty stage.
+          await scene.restore(EMPTY_SNAPSHOT);
+          audioOnce().restore(null);
+          if (session !== s) {
+            return err({ kind: 'busy' });
+          }
+          vm.line = null;
+          vm.choices = null;
+          s.step = null;
+          s.shown = null;
+          pendingPaid(s, body, false);
+          return ok(undefined);
+        }
         return chapterFailed(s, loaded.error);
       }
       ch = loaded.value;
-      enterChapter(s, ch);
+      await enterChapter(s, ch, false);
+      if (session !== s) {
+        return err({ kind: 'busy' });
+      }
     }
     const r = resume(body, ch, s.assets, minLevel === undefined ? {} : { minLevel });
     if (!r.ok) {
@@ -654,16 +728,199 @@ export function createGame(deps: GameDeps): Game {
     s.at = NO_AT;
     s.step = null;
     s.shown = null;
+    s.pending = null;
     vm.line = null;
     vm.choices = null;
+    if (vm.paywall !== null) {
+      vm.paywall = null;
+      screens.close('paywall');
+    }
     // D12: the audio's chapter is set (enterChapter) before its restore.
     await scene.restore(resumed.staging);
     audioOnce().restore(resumed.staging.bgm);
     if (session !== s) {
       return err({ kind: 'busy' });
     }
+    if (resumed.level === 'chapter-start') {
+      // Resume steps 2 and 5 start the chapter from a `fresh` point; exact and checkpoint resumes report nothing.
+      reporter.record({ kind: 'chapter_started', chapterId: ch.id, storyVersion: ch.meta.storyVersion });
+    }
     await present(s, resumed.first);
     return ok(undefined);
+  };
+
+  // -------------------------------------------------------------------------------------------------------------
+  // Knots, the next chapter and the chapter end (PP F2 steps 1-5, F4, F5; SP F2 addition, F4′)
+
+  /** Requests `preload:<k>` for knot `k` of `ch` once: its images in the scene, its sfx in the audio. */
+  const hold = (s: Session, ch: LoadedChapter, k: KnotName): void => {
+    if (s.held.has(k) || !Object.hasOwn(ch.meta.knots, k)) {
+      return;
+    }
+    const { images, sounds } = knotAssets(ch.meta.knots[k]?.assets ?? []);
+    if (images.length > 0) {
+      scene.preload(`preload:${k}`, images);
+    }
+    if (sounds.length > 0) {
+      audioOnce().preload(sounds);
+    }
+    s.held.add(k);
+  };
+
+  /** F5: a free or owned next chapter is loaded once (kept for F4 step 4) and its first knot's art is preloaded. */
+  const preloadNext = (s: Session, ch: LoadedChapter): void => {
+    const id = chapterEntry(ch.id)?.next ?? null;
+    const entry = id === null ? null : chapterEntry(id);
+    if (entry === null || !owns(entry)) {
+      return;
+    }
+    const tag = `next:${entry.id}`;
+    s.nextTag = tag;
+    if (s.kept?.id !== entry.id) {
+      s.kept = { id: entry.id, loaded: loaders.next.load({ id: entry.id, paid: entry.paid }, { withEn: vm.lang === 'en' }) };
+    }
+    const kept = s.kept;
+    // A background request: the loader answers with a Result, never a rejection; F4 step 4 awaits the same promise.
+    void kept.loaded.then((r) => {
+      if (session !== s || s.kept !== kept || s.nextTag !== tag) {
+        return; // the player left the ending knot, loaded another save, or left the story meanwhile
+      }
+      if (!r.ok) {
+        s.kept = null; // F4 step 4 loads it again and reports its error there
+        return;
+      }
+      const { images, sounds } = knotAssets(r.value.meta.knots[r.value.meta.firstKnot]?.assets ?? []);
+      // The ids resolve in the next chapter's manifest: art only that chapter uses loads too.
+      scene.preload(tag, images, r.value.assets);
+      audioOnce().preload(sounds, r.value.assets);
+    });
+  };
+
+  /** F2 steps 1-5 at the entry of knot `k`, between its checkpoint and its autosave. */
+  const enterKnot = (s: Session, ch: LoadedChapter, k: KnotName): void => {
+    const knot = Object.hasOwn(ch.meta.knots, k) ? ch.meta.knots[k] : undefined;
+    if (knot === undefined) {
+      return;
+    }
+    if (s.handover === k) {
+      // 1. The new chapter's first knot: its art, resident under next:<id>, is held under the chapter's own tag.
+      s.handover = null;
+      hold(s, ch, k);
+      scene.releasePreload(`next:${ch.id}`);
+    }
+    if (!knot.ending && (s.nextTag !== null || s.handover !== null)) {
+      // 2. The story goes on in this chapter: the next chapter's art does not stay live; the kept chapter stays.
+      scene.releasePreload('next:');
+      s.nextTag = null;
+      s.handover = null;
+    }
+    // 3. Preloads of knots no longer in {k} ∪ next(k).
+    const keep = new Set<KnotName>([k, ...knot.next]);
+    for (const held of [...s.held]) {
+      if (!keep.has(held)) {
+        scene.releasePreload(`preload:${held}`);
+        s.held.delete(held);
+      }
+    }
+    // 4. After 2-3, so the bytes they freed count toward the cap.
+    for (const n of knot.next) {
+      hold(s, ch, n);
+    }
+    if (!knot.ending) {
+      return;
+    }
+    // 5. F5, unless k is a declared story ending (SP F2 addition): that reports the ending, flushed at once.
+    const ending = Object.hasOwn(ch.meta.endings, k) ? ch.meta.endings[k] : undefined;
+    if (ending === undefined) {
+      preloadNext(s, ch);
+      return;
+    }
+    reporter.record({ kind: 'ending_reached', chapterId: ch.id, storyVersion: ch.meta.storyVersion, ending });
+    reporter.flush();
+  };
+
+  const openPaywall = (id: ChapterId): void => {
+    vm.paywall = { chapter: titleOf(id), priceStars: priceOf(id), state: { kind: 'idle' } };
+    screens.push({ kind: 'paywall' });
+  };
+
+  /** D11 / F4 step 3: the chapter's start is the save (`ink: null`), and the paywall opens over the game. */
+  const pendingPaid = (s: Session, body: SaveBodyV1, write: boolean): void => {
+    s.runner?.dispose();
+    s.runner = null;
+    s.pending = body;
+    s.last = body;
+    if (write) {
+      s.saves.autosave(writeOf(body));
+      void settings.flush(); // never rejects
+    }
+    openPaywall(body.chapterId);
+  };
+
+  /** F4 / F4′ at the chapter's END, inside the intent that reached it. */
+  const chapterEnd = async (s: Session, ch: LoadedChapter): Promise<void> => {
+    void settings.flush(); // F4 step 1: the read-set of the chapter's last lines; never rejects
+    const runner = s.runner;
+    const last = s.checkpoint?.knot ?? null;
+    if (last !== null && Object.hasOwn(ch.meta.endings, last)) {
+      // F4′: the story is over. The knot's ending_reached marks it; nothing is saved past the knot's checkpoint.
+      runner?.dispose();
+      s.runner = null;
+      showNotice({ kind: 'the_end', onaction: () => void exitHome() });
+      return;
+    }
+    reporter.record({ kind: 'chapter_completed', chapterId: ch.id, storyVersion: ch.meta.storyVersion });
+    const carry = runner === null ? { ...s.carry } : carryOut(runner, ch.meta);
+    runner?.dispose();
+    s.runner = null;
+    const id = chapterEntry(ch.id)?.next ?? null;
+    if (id === null) {
+      showNotice({ kind: 'to_be_continued', onaction: () => void exitHome() });
+      return;
+    }
+    const entry = chapterEntry(id);
+    if (entry === null) {
+      showNotice({ kind: 'error', onaction: () => void exitHome() }); // the catalog decoder admits no such chain
+      return;
+    }
+    const pending = (): SaveBodyV1 => ({
+      format: 1,
+      chapterId: id,
+      // The next chapter's version is unknown before its load; resume reads none for an `ink: null` body.
+      storyVersion: ch.meta.storyVersion,
+      ink: null,
+      at: NO_AT,
+      staging: EMPTY_SNAPSHOT,
+      checkpoint: null,
+      chapterStart: { carry },
+      backlog: s.backlog.slice(-BACKLOG_MAX),
+      world: EMPTY_WORLD_STATE,
+      worldVersion: null,
+    });
+    if (!owns(entry)) {
+      pendingPaid(s, pending(), true);
+      return;
+    }
+    const kept = s.kept?.id === id ? s.kept.loaded : null;
+    s.kept = null;
+    let loaded = kept === null ? null : await kept;
+    if (loaded === null || !loaded.ok) {
+      loaded = await loadChapter(id);
+    }
+    if (session !== s) {
+      return;
+    }
+    if (!loaded.ok) {
+      if (loaded.error.kind === 'not-entitled') {
+        pendingPaid(s, pending(), true); // the list said owned, the server did not (a refund): the server wins
+        return;
+      }
+      chapterFailed(s, loaded.error);
+      return;
+    }
+    s.handover = s.nextTag === `next:${id}` ? loaded.value.meta.firstKnot : null;
+    s.nextTag = null;
+    await beginChapter(s, loaded.value, carry, true);
   };
 
   /** A chapter that could not be loaded: the reopen notice for an ended session, else the error notice. */
@@ -735,6 +992,11 @@ export function createGame(deps: GameDeps): Game {
       shown: null,
       last: null,
       conflict: null,
+      held: new Set(),
+      nextTag: null,
+      kept: null,
+      handover: null,
+      pending: null,
     };
     s.offSaves = saves.onState((st) => onSaveState(s, st));
     return s;
@@ -754,8 +1016,12 @@ export function createGame(deps: GameDeps): Game {
     vm.dismissToast(CONFLICT_PROMPT);
     s.saves.dispose();
     loaders.current.cancel();
+    loaders.next.cancel();
+    s.kept = null;
+    s.nextTag = null;
     vm.line = null;
     vm.choices = null;
+    vm.paywall = null;
   };
 
   /** A failed start: the session ends, and the notice's Retry starts again from the same point. */
@@ -815,7 +1081,7 @@ export function createGame(deps: GameDeps): Game {
       if (!ch.ok) {
         return chapterFailed(s, ch.error);
       }
-      return beginChapter(s, ch.value, {});
+      return beginChapter(s, ch.value, {}, false);
     }
     // A slot: the pending upload first, so the load reads the newest copy of ours (F3 step 5).
     const started = await s.saves.start(list.value);
