@@ -10,7 +10,7 @@ use frankenstein::types::{ChatType, Message};
 use crate::AppState;
 use crate::db::payments::ChargeLine;
 use crate::ids::{ChargeId, UserId};
-use crate::telegram::gateway::{CALL_DEADLINE, OutMessage, WebAppButton};
+use crate::telegram::gateway::{CALL_DEADLINE, GatewayError, OutMessage, WebAppButton};
 use crate::telegram::payments::{self, RefundError, RevokeOutcome, payer_lang};
 use crate::telegram::setup::app_url;
 use crate::telegram::texts::{self, LangTexts, fill};
@@ -75,8 +75,9 @@ pub fn parse_command(text: &str) -> Option<Command<'_>> {
 }
 
 /// A text message (D6): answered only when it is a command in a private chat with a sender, in the sender's language,
-/// in that chat. A reply the gateway fails to send is logged; only a database error is `Err` (the webhook answers 500
-/// and Telegram redelivers the command).
+/// in that chat. A reply the gateway fails to send is logged. `Err` (the webhook answers 500 and Telegram redelivers
+/// the command) only when an admin refund's database step failed; a `/paysupport` read failure is answered and
+/// acknowledged — a 500 would hold the chat's later updates, the payer's `successful_payment` included (critique O2).
 pub async fn on_text(st: &AppState, m: &Message) -> Result<(), sqlx::Error> {
     let (Some(text), Some(from)) = (m.text.as_deref(), m.from.as_deref()) else {
         return Ok(());
@@ -100,7 +101,7 @@ pub async fn on_text(st: &AppState, m: &Message) -> Result<(), sqlx::Error> {
         },
         Command::Terms => plain(m, t.terms.clone()),
         Command::Support => plain(m, t.support.clone()),
-        Command::PaySupport => plain(m, paysupport(st, from.id, t).await?),
+        Command::PaySupport => plain(m, paysupport(st, from.id, t).await),
         Command::Privacy => {
             let url = app_url(&st.cfg.public_app_url, "api/privacy");
             plain(m, fill(&t.privacy, &[("url", &url)]))
@@ -204,18 +205,28 @@ fn plain(m: &Message, text: String) -> OutMessage {
 }
 
 /// `/paysupport` for Telegram user `from`: the intro and their newest charges, flagged. A sender id beyond `i64` has
-/// no payment row.
-async fn paysupport(st: &AppState, from: u64, t: &LangTexts) -> Result<String, sqlx::Error> {
+/// no payment row. A database error is logged and answered with the intro (it carries the support contact) and
+/// `paysupport_unavailable`: never `Err`, so the update is acknowledged and the chat's queue moves on.
+async fn paysupport(st: &AppState, from: u64, t: &LangTexts) -> String {
     let Ok(user) = i64::try_from(from) else {
-        return Ok(paysupport_message(t, &[], 0));
+        return paysupport_message(t, &[], 0);
     };
-    let (lines, total) = st.repo.charges_of(UserId(user), PAYSUPPORT_CHARGES).await?;
-    Ok(paysupport_message(t, &lines, total))
+    match st.repo.charges_of(UserId(user), PAYSUPPORT_CHARGES).await {
+        Ok((lines, total)) => paysupport_message(t, &lines, total),
+        Err(e) => {
+            tracing::error!(command = "paysupport", error = %e, "charges read failed; answered try later");
+            let mut out = t.paysupport.clone();
+            out.push_str("\n\n");
+            out.push_str(&t.paysupport_unavailable);
+            out
+        }
+    }
 }
 
 /// The admin's `/refund <charge>`: the usage without a usable argument, else the admin refund's outcome in `t`. A
-/// database error is `Err`: Telegram redelivers the command, and its retry meets `CHARGE_ALREADY_REFUNDED` and
-/// revokes.
+/// gateway timeout or transport break says the outcome is unknown (Telegram may have refunded; a repeat is safe: it
+/// meets `CHARGE_ALREADY_REFUNDED` and revokes), an API refusal or a disabled gateway that nothing changed. A database
+/// error is `Err`: Telegram redelivers the command, and its retry meets `CHARGE_ALREADY_REFUNDED` and revokes.
 async fn refund_reply(
     st: &AppState,
     t: &LangTexts,
@@ -228,11 +239,17 @@ async fn refund_reply(
         Ok(RevokeOutcome::Revoked) => fill(&t.refund_done, &[("charge", charge)]),
         Ok(RevokeOutcome::AlreadyRefunded) => fill(&t.refund_already, &[("charge", charge)]),
         Ok(RevokeOutcome::UnknownCharge) => fill(&t.refund_unknown, &[("charge", charge)]),
-        // `GatewayError`'s text carries no request text (no token, no secret).
-        Err(RefundError::Gateway(e)) => fill(
-            &t.refund_failed,
-            &[("charge", charge), ("error", &e.to_string())],
-        ),
+        Err(RefundError::Gateway(e)) => {
+            // No wildcard arm: a new gateway error does not compile until its reply is chosen here.
+            let template = match &e {
+                // The call may have reached Telegram: the Stars may be back already.
+                GatewayError::Timeout | GatewayError::Transport(_) => &t.refund_unknown_outcome,
+                // Telegram refused, or no call left the process: nothing changed.
+                GatewayError::Api(_) | GatewayError::Disabled => &t.refund_failed,
+            };
+            // `GatewayError`'s text carries no request text (no token, no secret).
+            fill(template, &[("charge", charge), ("error", &e.to_string())])
+        }
         Err(RefundError::Db(e)) => return Err(e),
     };
     Ok(text)

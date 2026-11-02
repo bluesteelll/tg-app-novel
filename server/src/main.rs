@@ -7,12 +7,12 @@
 use std::process::ExitCode;
 
 use server::api::static_files::{self, StaticDir};
-use server::config::Config;
+use server::config::{Config, TelegramEnv};
 use server::telegram::gateway::FrankensteinGateway;
-use server::telegram::setup;
+use server::telegram::{setup, texts};
 use server::{AppState, build_router, db};
 use tokio::net::TcpListener;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -33,7 +33,30 @@ async fn main() -> ExitCode {
     }
 }
 
-/// `server setup`: the configuration, the production gateway on it, then the one setup call. Opens no database.
+/// The bot texts checked before anything else is opened or built (critique O3, O6): a file that does not parse, or a
+/// draft under `TELEGRAM_ENV=prod`, refuses the start; drafts under test are a warning. Whether the start goes on.
+fn bot_texts_ok(env: TelegramEnv) -> bool {
+    match texts::startup_check(env) {
+        Ok(drafts) if drafts.is_empty() => {
+            info!("bot texts checked");
+            true
+        }
+        Ok(drafts) => {
+            warn!(
+                drafts = %drafts.join(", "),
+                "bot texts checked; drafts left (TELEGRAM_ENV=prod refuses them)"
+            );
+            true
+        }
+        Err(e) => {
+            error!("bot texts refused: {e}");
+            false
+        }
+    }
+}
+
+/// `server setup`: the configuration, the bot texts, the production gateway on it, then the one setup call. Opens no
+/// database.
 async fn bot_setup() -> ExitCode {
     let cfg = match Config::from_env() {
         Ok(cfg) => cfg,
@@ -42,6 +65,9 @@ async fn bot_setup() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if !bot_texts_ok(cfg.telegram_env) {
+        return ExitCode::FAILURE;
+    }
     let gateway = match FrankensteinGateway::from_config(&cfg) {
         Ok(gateway) => gateway,
         Err(e) => {
@@ -72,6 +98,11 @@ async fn serve() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // First: every later step refuses under prod on its own (the policy placeholders, a closed database), so only a
+    // check placed before them can be seen refusing.
+    if !bot_texts_ok(cfg.telegram_env) {
+        return ExitCode::FAILURE;
+    }
     // Principle 0 before anything else is opened: a STATIC_DIR that could serve paid content refuses the start.
     let static_dir = match &cfg.static_dir {
         None => None,

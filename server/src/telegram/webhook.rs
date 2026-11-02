@@ -207,7 +207,9 @@ async fn dispatch(st: &AppState, update: Update) -> Handled {
 /// P6: a `successful_payment` is granted, and acknowledged only after the commit; one whose payer cannot be recorded
 /// (no `from`, an id beyond `i64`) is retried, never acknowledged away. A `refunded_payment` is revoked by its charge,
 /// and acknowledged only after the commit (K20). A text message is a command when it is one ([`commands::on_text`]):
-/// answered, then acknowledged, or retried when its database step failed. Any other message is acknowledged.
+/// answered, then acknowledged; retried only when an admin refund's database step failed; a `/paysupport` read
+/// failure is answered and acknowledged — a 500 would hold the chat's later updates, the payer's `successful_payment`
+/// included (critique O2). Any other message is acknowledged.
 async fn message(st: &AppState, m: &Message) -> Handled {
     if let Some(sp) = &m.successful_payment {
         let Some(payer) = m.from.as_ref().and_then(|from| i64::try_from(from.id).ok()) else {

@@ -9,6 +9,7 @@ use std::sync::LazyLock;
 
 use serde::Deserialize;
 
+use crate::config::TelegramEnv;
 use crate::puzzles::Lang;
 
 /// `server/locales/bot.ru.json`.
@@ -29,8 +30,8 @@ pub const BUTTON_LIMIT: usize = 64;
 /// `answerPreCheckoutQuery.error_message`: the Bot API documents no bound, this is L8b's own.
 pub const REFUSAL_LIMIT: usize = 255;
 
-/// The Russian texts, parsed once. The file is compiled in and `bot_texts_complete_and_within_limits` parses it, so a
-/// parse failure here is a bug.
+/// The Russian texts, parsed once. The file is compiled in, `bot_texts_complete_and_within_limits` parses it and
+/// [`startup_check`] forces it before a start goes on, so a parse failure here is a bug.
 static RU: LazyLock<BotFile> = LazyLock::new(|| {
     parse(BOT_RU_JSON).expect(
         "invariant: server/locales/bot.ru.json parses (pinned by bot_texts_complete_and_within_limits)",
@@ -84,6 +85,8 @@ pub struct LangTexts {
     pub paysupport_refunded: String,
     /// After the listed charges, when more were left out: `{n}`.
     pub paysupport_more: String,
+    /// `/paysupport` when the charges cannot be read now, after the intro.
+    pub paysupport_unavailable: String,
     /// `/privacy`: `{url}`, the policy page.
     pub privacy: String,
     /// Any other command, and `/refund` from anyone but an admin.
@@ -100,8 +103,11 @@ pub struct LangTexts {
     pub refund_already: String,
     /// `/refund`: no payment has the charge: `{charge}`.
     pub refund_unknown: String,
-    /// `/refund`: Telegram refused or did not answer: `{charge}`, `{error}`.
+    /// `/refund`: Telegram refused, or no call left the process (nothing changed): `{charge}`, `{error}`.
     pub refund_failed: String,
+    /// `/refund`: the call timed out or broke off, so Telegram may have refunded; a repeat is safe: `{charge}`,
+    /// `{error}`.
+    pub refund_unknown_outcome: String,
     /// The command menu's `/start`.
     pub cmd_start: String,
     /// The command menu's `/paysupport`.
@@ -156,6 +162,7 @@ impl LangTexts {
             paysupport_not_applied,
             paysupport_refunded,
             paysupport_more,
+            paysupport_unavailable,
             privacy,
             unknown_command,
             payment_unapplied,
@@ -165,6 +172,7 @@ impl LangTexts {
             refund_already,
             refund_unknown,
             refund_failed,
+            refund_unknown_outcome,
             cmd_start,
             cmd_paysupport,
             cmd_support,
@@ -217,6 +225,12 @@ impl LangTexts {
                 &[],
             ),
             entry("paysupport_more", paysupport_more, MESSAGE_LIMIT, &["n"]),
+            entry(
+                "paysupport_unavailable",
+                paysupport_unavailable,
+                MESSAGE_LIMIT,
+                &[],
+            ),
             entry("privacy", privacy, MESSAGE_LIMIT, &["url"]),
             entry("unknown_command", unknown_command, MESSAGE_LIMIT, &[]),
             entry(
@@ -238,6 +252,12 @@ impl LangTexts {
             entry(
                 "refund_failed",
                 refund_failed,
+                MESSAGE_LIMIT,
+                &["charge", "error"],
+            ),
+            entry(
+                "refund_unknown_outcome",
+                refund_unknown_outcome,
                 MESSAGE_LIMIT,
                 &["charge", "error"],
             ),
@@ -274,6 +294,59 @@ impl LangTexts {
 /// `json` as a `bot.*.json` file.
 pub fn parse(json: &str) -> Result<BotFile, serde_json::Error> {
     serde_json::from_str(json)
+}
+
+/// Why the bot texts refuse a start (critique O3, O6).
+#[derive(Debug, thiserror::Error)]
+pub enum TextsError {
+    /// A file does not parse into every text.
+    #[error("server/locales/bot.{lang}.json: {source}")]
+    Parse {
+        /// The file's language.
+        lang: &'static str,
+        /// Why.
+        source: serde_json::Error,
+    },
+    /// Under TELEGRAM_ENV=prod a file still lists drafts (the owner's VALUES step empties them).
+    #[error("server/locales/bot.{lang}.json: draft texts under TELEGRAM_ENV=prod: {keys}")]
+    Drafts {
+        /// The file's language.
+        lang: &'static str,
+        /// Its draft keys, comma-separated.
+        keys: String,
+    },
+}
+
+/// The `(lang, json)` files checked: every one parses into every text first (a parse error wins over a draft), then
+/// under [`TelegramEnv::Prod`] none may list a draft. `Ok` holds the drafts left, sorted and deduplicated.
+pub fn check(files: &[(&'static str, &str)], env: TelegramEnv) -> Result<Vec<String>, TextsError> {
+    let mut parsed = Vec::with_capacity(files.len());
+    for &(lang, json) in files {
+        let file = parse(json).map_err(|source| TextsError::Parse { lang, source })?;
+        parsed.push((lang, file));
+    }
+    let mut drafts = Vec::new();
+    for (lang, file) in parsed {
+        if env == TelegramEnv::Prod && !file.drafts.is_empty() {
+            return Err(TextsError::Drafts {
+                lang,
+                keys: file.drafts.join(", "),
+            });
+        }
+        drafts.extend(file.drafts);
+    }
+    drafts.sort_unstable();
+    drafts.dedup();
+    Ok(drafts)
+}
+
+/// [`check`] of the compiled-in pair ([`BOT_RU_JSON`], [`BOT_EN_JSON`]), then both parsed texts forced: they cannot
+/// panic afterwards, the same bytes just parsed. Run at startup, before anything is opened or built.
+pub fn startup_check(env: TelegramEnv) -> Result<Vec<String>, TextsError> {
+    let drafts = check(&[("ru", BOT_RU_JSON), ("en", BOT_EN_JSON)], env)?;
+    LazyLock::force(&RU);
+    LazyLock::force(&EN);
+    Ok(drafts)
 }
 
 /// The compiled-in file of `lang`.

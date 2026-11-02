@@ -15,21 +15,23 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use server::AppState;
 use server::config::{
-    PLACEHOLDER_BOT_TOKEN, PLACEHOLDER_TOKEN_KEY_HEX, PLACEHOLDER_WEBHOOK_SECRET,
+    PLACEHOLDER_BOT_TOKEN, PLACEHOLDER_TOKEN_KEY_HEX, PLACEHOLDER_WEBHOOK_SECRET, TelegramEnv,
 };
 use server::puzzles::Lang;
 use server::telegram::commands::utc_date;
-use server::telegram::gateway::{BotCommandSpec, CommandSet, OutMessage, WebAppButton};
+use server::telegram::gateway::{
+    BotCommandSpec, CommandSet, GatewayError, OutMessage, WebAppButton,
+};
 use server::telegram::payments::{RejectReason, RevokeOutcome};
 use server::telegram::setup;
-use server::telegram::texts::{self, BotFile, MESSAGE_LIMIT, fill};
+use server::telegram::texts::{self, BotFile, MESSAGE_LIMIT, TextsError, fill};
 
 use crate::catalog::{ANN, T0, own};
 use crate::common::{self, TEST_ADMIN_ID};
 use crate::payments::{GatewayCall, RecordingGateway, invoice_state, refusal};
 use crate::refunds::{
     BEN, T1, bought, entitlements_of, expect_eq, order_of, pay, refund_calls, refund_state,
-    revoke_at,
+    refunded_at, revoke_at,
 };
 use crate::webhook::{payment_update, post_update, pre_checkout_update};
 
@@ -160,6 +162,100 @@ fn bot_texts_complete_and_within_limits() {
     report(&failures);
 }
 
+/// The JSON text `json` with `edit` applied.
+fn edited(json: &str, edit: impl FnOnce(&mut Value)) -> String {
+    let mut value: Value = serde_json::from_str(json).unwrap();
+    edit(&mut value);
+    value.to_string()
+}
+
+/// `texts::check`'s result as one comparable line: the drafts left, or the refusal's kind and language.
+fn checked(got: Result<Vec<String>, TextsError>) -> String {
+    match got {
+        Ok(drafts) => format!("Ok({drafts:?})"),
+        Err(TextsError::Drafts { lang, .. }) => format!("Err(Drafts {lang})"),
+        Err(TextsError::Parse { lang, .. }) => format!("Err(Parse {lang})"),
+    }
+}
+
+/// The startup check of the bot texts (critique O3, O6): every file must parse into every text (a parse error comes
+/// first), and under prod no file may list a draft; otherwise the drafts left are returned. Files built from the
+/// committed ones: as committed under test, with no drafts under prod, as committed under prod (ru refused), ru without
+/// drafts and en as committed under prod (en refused), ru without `start` (ru unparsable), en not JSON under prod (en
+/// unparsable, before ru's drafts). `startup_check` on the compiled-in files under test passes.
+#[test]
+fn bot_texts_startup_check_refuses_drafts_in_prod() {
+    let (ru, en) = (texts::BOT_RU_JSON, texts::BOT_EN_JSON);
+    let mut committed: Vec<String> = [ru, en]
+        .iter()
+        .flat_map(|json| texts::parse(json).unwrap().drafts)
+        .collect();
+    committed.sort_unstable();
+    committed.dedup();
+    let without_drafts = |json: &str| edited(json, |v| v["drafts"] = json!([]));
+    let (ru_clean, en_clean) = (without_drafts(ru), without_drafts(en));
+    let ru_no_start = edited(ru, |v| {
+        v["texts"].as_object_mut().unwrap().remove("start");
+    });
+    let cases = [
+        (
+            "committed, Test",
+            ru,
+            en,
+            TelegramEnv::Test,
+            format!("Ok({committed:?})"),
+        ),
+        (
+            "no drafts, Prod",
+            ru_clean.as_str(),
+            en_clean.as_str(),
+            TelegramEnv::Prod,
+            "Ok([])".to_owned(),
+        ),
+        (
+            "committed, Prod",
+            ru,
+            en,
+            TelegramEnv::Prod,
+            "Err(Drafts ru)".to_owned(),
+        ),
+        (
+            "ru without drafts, en committed, Prod",
+            ru_clean.as_str(),
+            en,
+            TelegramEnv::Prod,
+            "Err(Drafts en)".to_owned(),
+        ),
+        (
+            "start removed from ru, Test",
+            ru_no_start.as_str(),
+            en,
+            TelegramEnv::Test,
+            "Err(Parse ru)".to_owned(),
+        ),
+        (
+            "en not JSON, Prod",
+            ru,
+            "not json",
+            TelegramEnv::Prod,
+            "Err(Parse en)".to_owned(),
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (case, ru, en, env, want) in cases {
+        let got = checked(texts::check(&[("ru", ru), ("en", en)], env));
+        if got != want {
+            failures.push(format!("{case}: expected {want}, got {got}"));
+        }
+    }
+    if let Err(e) = texts::startup_check(TelegramEnv::Test) {
+        failures.push(format!(
+            "startup_check(Test) on the compiled-in files: expected Ok, got {e}"
+        ));
+    }
+    report(&failures);
+}
+
 /// K29 for refusals: the refusal is in the language of the query's `from.language_code`, not the users row's (which
 /// is the last login's, possibly stale). A payer whose row says `en` but whose query says `ru` gets the Russian
 /// `AlreadyOwned` text, and the inverse the English one.
@@ -224,7 +320,7 @@ pub(crate) fn messages(gateway: &RecordingGateway) -> Vec<OutMessage> {
 
 /// `text` from `from` (language `language`) in their private chat, through the webhook: the HTTP status and the
 /// messages sent while it was handled.
-async fn say(
+pub(crate) async fn say(
     st: &AppState,
     gateway: &RecordingGateway,
     from: i64,
@@ -361,6 +457,68 @@ async fn refund_command_admin_only() {
     report(&failures);
 }
 
+/// A `/refund` whose `refundStarPayment` timed out or broke off says the outcome is unknown and that a repeat is safe
+/// (review M3): Telegram may have refunded already. Only an API refusal says nothing changed. None of the three moves
+/// anything here (the entitlement kept, `refunded_at` NULL), and a repeat once the gateway answers revokes. The reply is
+/// recorded although the failing gateway fails its send too.
+#[tokio::test]
+async fn refund_timeout_reply_says_outcome_unknown() {
+    let (st, _db, gateway) = refund_state().await;
+    let mut failures = Vec::new();
+    if bought(&st, ANN, "chapter:ch2", "c-ch2", &mut failures)
+        .await
+        .is_none()
+    {
+        return report(&failures);
+    }
+    let ru = texts::texts(Lang::Ru);
+    for (case, failure, template) in [
+        ("timeout", GatewayError::Timeout, &ru.refund_unknown_outcome),
+        (
+            "transport",
+            GatewayError::Transport("connection reset".to_owned()),
+            &ru.refund_unknown_outcome,
+        ),
+        (
+            "CHARGE_NOT_FOUND",
+            GatewayError::Api("Bad Request: CHARGE_NOT_FOUND".to_owned()),
+            &ru.refund_failed,
+        ),
+    ] {
+        gateway.fail_with(Some(failure.clone()));
+        let got = say(&st, &gateway, TEST_ADMIN_ID, Some("ru"), "/refund c-ch2").await;
+        gateway.fail_with(None);
+        let want = fill(
+            template,
+            &[("charge", "c-ch2"), ("error", &failure.to_string())],
+        );
+        failures.extend(expect_reply(case, &got, &plain(TEST_ADMIN_ID, &want)));
+        failures.extend(expect_eq(
+            &format!("{case}: entitlements of the charge"),
+            entitlements_of(&st, "c-ch2").await,
+            1,
+        ));
+        failures.extend(expect_eq(
+            &format!("{case}: refunded_at"),
+            refunded_at(&st, "c-ch2").await,
+            None,
+        ));
+    }
+    let got = say(&st, &gateway, TEST_ADMIN_ID, Some("ru"), "/refund c-ch2").await;
+    let done = fill(&ru.refund_done, &[("charge", "c-ch2")]);
+    failures.extend(expect_reply(
+        "repeated once the gateway answers",
+        &got,
+        &plain(TEST_ADMIN_ID, &done),
+    ));
+    failures.extend(expect_eq(
+        "repeated: entitlements of the charge",
+        entitlements_of(&st, "c-ch2").await,
+        0,
+    ));
+    report(&failures);
+}
+
 /// `/privacy` links the policy page at `PUBLIC_APP_URL` + `api/privacy`, in the sender's language.
 #[tokio::test]
 async fn privacy_command_links_policy() {
@@ -431,7 +589,7 @@ fn payment_in(payer: i64, language: &str, amount: u32, order: &str, charge: &str
 
 /// A second `created` order of `product` for `user` at `T0`, as raw SQL: the order the invoice route refuses once the
 /// product is owned, as if it had been opened before the first one was paid and slipped past the checkout window.
-async fn raw_order(st: &AppState, order: &str, user: i64, product: &str) {
+pub(crate) async fn raw_order(st: &AppState, order: &str, user: i64, product: &str) {
     let mut c = common::raw_db(st).await;
     sqlx::query(
         "INSERT INTO orders (id, user_id, product_id, amount, currency, status, created_at) \
@@ -513,7 +671,7 @@ async fn unapplied_charge_notifies_payer_and_admin() {
 }
 
 /// The `/paysupport` lines of `text` after its intro: one per charge.
-fn charge_lines<'a>(text: &'a str, intro: &str) -> Vec<&'a str> {
+pub(crate) fn charge_lines<'a>(text: &'a str, intro: &str) -> Vec<&'a str> {
     text.strip_prefix(intro)
         .unwrap_or(text)
         .lines()
@@ -621,6 +779,122 @@ async fn paysupport_pack_credit_is_applied() {
         };
         failures.push(format!(
             "expected 1 unflagged charge line {want:?}, got {got}"
+        ));
+    }
+    report(&failures);
+}
+
+/// `/paysupport` against the database (review M2): of ANN's 22 payments, each on its own day, the newest 20 are
+/// listed newest first (`c-21` … `c-02`, none applied), and the message ends with how many were left out of the
+/// total (2); BEN's payment is not listed. 22 short lines fit one message far below 4096 characters, so the cap cannot
+/// stand in for the `LIMIT`.
+#[tokio::test]
+async fn paysupport_lists_newest_twenty_with_total() {
+    let (st, _db, gateway) = refund_state().await;
+    let mut c = common::raw_db(&st).await;
+    let charges: Vec<(String, i64, i64)> = (0..22)
+        .map(|i| (format!("c-{i:02}"), ANN, T0 + i * 86_400))
+        .chain([("c-ben".to_owned(), BEN, T0)])
+        .collect();
+    for (charge, user, paid_at) in &charges {
+        sqlx::query(
+            "INSERT INTO payments (telegram_payment_charge_id, invoice_payload, user_id, amount, currency, \
+             provider_payment_charge_id, paid_at) VALUES ($1, 'o-x', $2, 1, 'XTR', '', $3)",
+        )
+        .bind(charge)
+        .bind(user)
+        .bind(paid_at)
+        .execute(&mut c)
+        .await
+        .unwrap();
+    }
+    sqlx::Connection::close(c).await.unwrap();
+    let ru = texts::texts(Lang::Ru);
+    let more = fill(&ru.paysupport_more, &[("n", "2")]);
+    let mut want: Vec<String> = (2..22)
+        .rev()
+        .map(|i| {
+            let line = fill(
+                &ru.paysupport_line,
+                &[
+                    ("date", &utc_date(T0 + i * 86_400)),
+                    ("charge", &format!("c-{i:02}")),
+                    ("amount", "1"),
+                ],
+            );
+            format!("{line} {}", ru.paysupport_not_applied)
+        })
+        .collect();
+    want.push(more.clone());
+    let (status, sent) = say(&st, &gateway, ANN, Some("ru"), "/paysupport").await;
+    let text = sent.first().map(|msg| msg.text.clone()).unwrap_or_default();
+    let got = charge_lines(&text, &ru.paysupport);
+    let mut failures = Vec::new();
+    if status != 200 || sent.len() != 1 || !text.starts_with(&ru.paysupport) {
+        failures.push(format!(
+            "expected 200 and 1 message with the intro, got {status} and {} messages",
+            sent.len()
+        ));
+    }
+    if got != want {
+        failures.push(format!(
+            "expected 20 lines (c-21 … c-02, newest first) and {more:?}, got {} lines: {got:?}",
+            got.len()
+        ));
+    }
+    if !text.ends_with(&more) {
+        failures.push(format!(
+            "expected the message to end with {more:?}, got the end {:?}",
+            got.last()
+        ));
+    }
+    if text.contains("c-ben") {
+        failures.push("another user's charge is listed".to_owned());
+    }
+    report(&failures);
+}
+
+/// A `/paysupport` whose database read fails (the payments table locked: the read meets the 2 s `lock_timeout`)
+/// answers 200 with the intro and `paysupport_unavailable` (critique O2): a 500 would hold the chat's later updates,
+/// the payer's `successful_payment` included. An admin `/refund` under the same failure stays 500 with no message
+/// (money-relevant, repeat-safe, the admin's chat only). Released, `/paysupport` lists the charge again.
+#[tokio::test]
+async fn paysupport_db_error_answers_200() {
+    let (st, _db, gateway) = refund_state().await;
+    let mut failures = Vec::new();
+    if bought(&st, ANN, "chapter:ch2", "c-x", &mut failures)
+        .await
+        .is_none()
+    {
+        return report(&failures);
+    }
+    let mut held = common::raw_db(&st).await;
+    sqlx::raw_sql("BEGIN").execute(&mut held).await.unwrap();
+    sqlx::raw_sql("LOCK TABLE payments IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut held)
+        .await
+        .unwrap();
+    let ru = texts::texts(Lang::Ru);
+    let unavailable = format!("{}\n\n{}", ru.paysupport, ru.paysupport_unavailable);
+    let got = say(&st, &gateway, ANN, Some("ru"), "/paysupport").await;
+    failures.extend(expect_reply(
+        "/paysupport under a DB failure",
+        &got,
+        &plain(ANN, &unavailable),
+    ));
+    let (status, sent) = say(&st, &gateway, TEST_ADMIN_ID, Some("ru"), "/refund c-x").await;
+    if status != 500 || !sent.is_empty() {
+        failures.push(format!(
+            "/refund under a DB failure: expected 500 and no message, got {status} and {sent:?}"
+        ));
+    }
+    sqlx::raw_sql("ROLLBACK").execute(&mut held).await.unwrap();
+    sqlx::Connection::close(held).await.unwrap();
+    let (status, sent) = say(&st, &gateway, ANN, Some("ru"), "/paysupport").await;
+    let text = sent.first().map(|msg| msg.text.clone()).unwrap_or_default();
+    if status != 200 || sent.len() != 1 || !text.contains("c-x") {
+        failures.push(format!(
+            "/paysupport released: expected 200 and 1 message listing c-x, got {status} and {sent:?}"
         ));
     }
     report(&failures);

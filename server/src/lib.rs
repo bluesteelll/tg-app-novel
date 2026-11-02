@@ -136,6 +136,8 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/telegram/webhook",
             post(telegram::webhook::webhook)
+                // Inert for this handler: it takes the raw `Body`, and `to_bytes(body, WEBHOOK_BODY_LIMIT)` in
+                // `webhook.rs` is the limit, after the secret check (L9 O7); kept for an extractor-based handler.
                 .layer(DefaultBodyLimit::max(telegram::webhook::WEBHOOK_BODY_LIMIT)),
         )
         .with_state(state)

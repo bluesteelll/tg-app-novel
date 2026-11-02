@@ -5,7 +5,9 @@
 //! Principle 0: [`check`] runs at startup, before the pool opens. `STATIC_DIR` and `CONTENT_DIR` must be disjoint
 //! trees (neither the same nor one inside the other), and no entry of `STATIC_DIR` may resolve outside it: tower-http's
 //! `ServeDir` refuses `..` and absolute components but opens whatever a path resolves to, so a link or a junction
-//! inside the built client would serve its target. Compression is the reverse proxy's (K1).
+//! inside the built client would serve its target. No dot-entry may be in it either (critique O9: `GET /.env` would
+//! serve a host file), except the root's `.vite` directory, where the build writes its manifest. Compression is the
+//! reverse proxy's (K1).
 
 use std::path::{Path, PathBuf};
 
@@ -95,6 +97,15 @@ pub enum StaticDirError {
         /// What it resolves to.
         target: PathBuf,
     },
+    /// An entry's name starts with `.`, and it is not the root's `.vite` directory.
+    #[error(
+        "STATIC_DIR entry {entry}: a dot-entry; only the root's .vite directory is served, and a host file such as \
+         .env would be public"
+    )]
+    DotEntry {
+        /// The entry.
+        entry: PathBuf,
+    },
     /// An entry of `STATIC_DIR` could not be listed or resolved (a dangling link included).
     #[error("STATIC_DIR entry {path}: cannot be checked: {source}")]
     Unreadable {
@@ -133,7 +144,8 @@ fn overlap(a: &Path, b: &Path) -> Overlap {
 
 /// The startup check of `static_dir` against `content_dir` (`tokio::fs` only; one caller, `server serve`): both
 /// canonicalized, `static_dir` a directory, the two disjoint both ways, then a walk of `static_dir` in which every
-/// entry must resolve inside it. A built client is a few hundred files: the walk costs milliseconds.
+/// entry must resolve inside it and none may be a dot-entry but the root's `.vite` directory. A built client is a few
+/// hundred files: the walk costs milliseconds.
 pub async fn check(static_dir: &Path, content_dir: &Path) -> Result<StaticDir, StaticDirError> {
     let root = tokio::fs::canonicalize(static_dir)
         .await
@@ -177,8 +189,12 @@ pub async fn check(static_dir: &Path, content_dir: &Path) -> Result<StaticDir, S
     Ok(StaticDir { root })
 }
 
-/// Every entry under `root` resolves inside it. Only real directories are descended into: a link that resolves
-/// inside `root` names something the walk reaches anyway, and descending into it could loop.
+/// The one dot-entry `STATIC_DIR` may hold, as a real directory at its root: Vite's build manifest directory.
+const VITE_DIR: &str = ".vite";
+
+/// Every entry under `root` resolves inside it, and none is a dot-entry but the root's [`VITE_DIR`] directory. Only
+/// real directories are descended into: a link that resolves inside `root` names something the walk reaches anyway,
+/// and descending into it could loop.
 async fn walk(root: &Path) -> Result<(), StaticDirError> {
     let unreadable = |path: &Path| {
         let path = path.to_owned();
@@ -189,6 +205,14 @@ async fn walk(root: &Path) -> Result<(), StaticDirError> {
         let mut entries = tokio::fs::read_dir(&dir).await.map_err(unreadable(&dir))?;
         while let Some(entry) = entries.next_entry().await.map_err(unreadable(&dir))? {
             let path = entry.path();
+            let kind = entry.file_type().await.map_err(unreadable(&path))?;
+            let name = entry.file_name();
+            // Before resolving: a host file such as `.env` or `.git` would be public, and `.well-known` is the reverse
+            // proxy's to serve.
+            let vite = dir == root && name == VITE_DIR && kind.is_dir() && !kind.is_symlink();
+            if name.as_encoded_bytes().starts_with(b".") && !vite {
+                return Err(StaticDirError::DotEntry { entry: path });
+            }
             let target = tokio::fs::canonicalize(&path)
                 .await
                 .map_err(unreadable(&path))?;
@@ -198,7 +222,6 @@ async fn walk(root: &Path) -> Result<(), StaticDirError> {
                     target,
                 });
             }
-            let kind = entry.file_type().await.map_err(unreadable(&path))?;
             if kind.is_dir() && !kind.is_symlink() {
                 dirs.push(path);
             }
