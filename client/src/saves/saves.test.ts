@@ -610,6 +610,30 @@ test('saves: backoff keeps its base when Retry-After is shorter', async () => {
   expect(clock.pending()).toBe(0);
 });
 
+test('saves: a huge Retry-After waits at most an hour', async () => {
+  // K24: a delay past 2^31 - 1 ms overflows setTimeout, which then fires almost at once: a PUT loop on a broken header.
+  for (const seconds of [1_000_000_000, 3601, 3600]) {
+    const clock = new FakeClock();
+    const srv = new FakeSaves(clock);
+    srv.seed('manor', 'auto', 3, 'w0');
+    srv.script = [{ fail: busy(503, seconds) }];
+    const { s } = service(srv, clock, manor, new FakeDevice());
+    await s.start(list(summary('manor', 'auto', 3, 'w0')));
+    s.autosave(write(1));
+    await clock.advance(10);
+    expect(s.state(), `Retry-After ${seconds} s`).toEqual({ kind: 'retrying', attempt: 1, inMs: 3_600_000 });
+    await clock.advance(3_599_989);
+    expect(srv.puts.length, `no re-send before the hour, Retry-After ${seconds} s`).toBe(1);
+    await clock.advance(1);
+    expect(srv.puts.map((p) => [p.at, p.req.writeId, p.req.expectedRev]), `Retry-After ${seconds} s`).toEqual([
+      [0, 'w1', 3],
+      [3_600_000, 'w1', 3],
+    ]);
+    expect(s.state()).toEqual({ kind: 'idle' });
+    expect(clock.pending()).toBe(0);
+  }
+});
+
 test('saves: a plain 500 is transient and backs off', async () => {
   const clock = new FakeClock();
   const srv = new FakeSaves(clock);
