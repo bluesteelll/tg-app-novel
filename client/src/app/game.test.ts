@@ -1925,3 +1925,28 @@ test('game: load it blocks the pending-start write of a refunded next chapter', 
   expect(lineOf(h.vm)).toBe('ch1.arrival.l001');
   h.game.dispose();
 });
+
+test('game: keep here neither loads the other save nor stops autosaving', async () => {
+  const h = harness();
+  await startManor(h);
+  await h.game.advance(); // l002
+  const sv = h.save();
+  const log: string[] = [];
+  const load = sv.load;
+  sv.load = async (slot) => {
+    log.push(`load:${slot}`);
+    return load(slot);
+  };
+  sv.emit({ kind: 'paused', current: THEIRS });
+  const p = h.vm.toasts.find((e) => e.key === 'save_conflict');
+  expect(p?.kind).toBe('prompt');
+  if (p?.kind === 'prompt') {
+    p.actions[1]?.run(); // Играть здесь
+  }
+  await settle();
+  expect(log).toEqual([]);
+  const before = sv.autosaves.length;
+  await h.game.advance(); // the choice set: its autosave goes on
+  expect(sv.autosaves.slice(before).map((w) => w.lineId)).toEqual([null]);
+  h.game.dispose();
+});
