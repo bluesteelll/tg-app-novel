@@ -613,6 +613,30 @@ pub struct ShareResponse {
     pub prepared_message_id: Option<String>,
 }
 
+/// `POST /api/gifts` request (META-PLAN M22): units of a gift kind for a friend, named by handle. An unknown field (a
+/// client-sent `from`, a price) is a 400: the sender is the token's user, the bound the catalog's.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GiftRequest {
+    /// The friend's handle: 24 lower-case hex, as `SocialResponse.friends` lists it.
+    pub to: String,
+    /// A gift kind of the catalog, e.g. `hint`.
+    pub kind: String,
+    /// The units, 1 to `WalletResponse.maxPerGift`.
+    pub amount: u32,
+    /// A lower-case UUID v4 the client makes once per gift and resends on a retry: the gift moves once.
+    pub request_id: String,
+}
+
+/// `POST /api/gifts` response: the sender's balance of the kind after the gift (on a replay, the current one).
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct GiftResponse {
+    /// The sender's balance of the gift's kind.
+    #[ts(type = "number")]
+    pub balance: i64,
+}
+
 /// The first line of the generated file: what it is and how to rewrite it.
 const BINDINGS_HEADER: &str = "// Built from server/src/api/dto.rs and error.rs by ts-rs; do not edit. Regenerate: \
                                cargo test -p server --test it bindings::write_bindings -- --ignored --exact";

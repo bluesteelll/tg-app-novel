@@ -5,6 +5,7 @@ pub mod cards;
 pub mod content;
 pub mod dto;
 pub mod entitlements;
+pub mod gifts;
 pub mod legal;
 pub mod orders;
 pub mod puzzles;
@@ -73,6 +74,7 @@ fn routes() -> Router<AppState> {
         .route("/stats/events", post(stats::post_events))
         .route("/stories/{story_id}/card", post(cards::post_card))
         .route("/wallet", get(wallet::get_wallet))
+        .route("/gifts", post(gifts::post_gift))
         .route("/invites/{code}", get(social::get_invite))
         .route("/invites/{code}/request", post(social::post_invite_request))
         .route("/social", get(social::get_social))

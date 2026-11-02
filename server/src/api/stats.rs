@@ -248,8 +248,8 @@ fn check_event(e: &StatEventDto) -> Result<(), &'static str> {
 }
 
 /// `^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` (`stat_events_event_id_shape`): what
-/// `crypto.randomUUID` returns.
-fn is_event_id(s: &str) -> bool {
+/// `crypto.randomUUID` returns. Also the grammar of a gift's request id (`api/gifts.rs`, META-PLAN M22).
+pub(crate) fn is_event_id(s: &str) -> bool {
     let bytes = s.as_bytes();
     bytes.len() == 36
         && bytes.iter().enumerate().all(|(at, &b)| match at {
