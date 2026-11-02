@@ -1758,9 +1758,10 @@ const STATS_REPO_WORDS: [&str; 7] = [
 ];
 
 /// Statistics unlock nothing (ST4): the repository is named only by `db/stats.rs` and by the stats routes in
-/// `api/stats.rs` (which leave the table's name to `db/`), in `server` and `server-dev` alike. The one other reader
-/// of the table is the completion card's display read in `db/achievements.rs` (META-PLAN M6), which names the table
-/// and no item of the repository; a later reader moves this allow-list on purpose.
+/// `api/stats.rs` (which leave the table's name to `db/`), in `server` and `server-dev` alike. The two other readers
+/// of the table name it and no item of the repository: the completion card's display read in `db/achievements.rs`
+/// (META-PLAN M6), and the referral grant's evidence read in `db/social.rs` (META-PLAN M23, MT12), the one grant input
+/// statistics are by design. A later reader moves this allow-list on purpose.
 #[test]
 fn stats_repo_called_only_from_stats_api() {
     let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -1786,6 +1787,7 @@ fn stats_repo_called_only_from_stats_api() {
             "src/db/stats.rs" => &STATS_REPO_WORDS,
             "src/api/stats.rs" => &api_words,
             "src/db/achievements.rs" => &["stat_events"],
+            "src/db/social.rs" => &["stat_events"],
             _ => &[],
         };
         for (line, word) in code_identifiers(text).filter(|(_, w)| STATS_REPO_WORDS.contains(w)) {
@@ -1816,6 +1818,11 @@ fn stats_repo_called_only_from_stats_api() {
             "src/db/achievements.rs",
             "stat_events",
             "db/achievements.rs does not name stat_events",
+        ),
+        (
+            "src/db/social.rs",
+            "stat_events",
+            "db/social.rs does not name stat_events",
         ),
     ] {
         if !seen.iter().any(|(f, w)| f == file && *w == word) {

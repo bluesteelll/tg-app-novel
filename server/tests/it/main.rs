@@ -18,6 +18,7 @@ mod economy;
 mod gifts;
 mod payments;
 mod puzzles;
+mod referrals;
 mod saves;
 mod schema;
 mod share;
