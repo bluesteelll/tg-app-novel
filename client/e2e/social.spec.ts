@@ -1,5 +1,6 @@
-// LMI's social e2e (META-PLAN "Test strategy", e2e; M10-M14, M22; F18-F22, F25): an invite link, a friend's profile
-// behind the friend's consent, the share as a prepared message and its fallback link, and a gift between friends.
+// LMI's social e2e (META-PLAN "Test strategy", e2e; M10-M14, M22; F18-F22, F25): an invite link whose prompt waits
+// for Home, a friend's profile behind the friend's consent, the share as a prepared message and its fallback link, and
+// a gift between friends.
 // The second user has a browser context of its own, through the same guards as the fixture's page, checked before it
 // closes. Every friendship and balance checked is the server's; the setup a test does not exercise goes through the
 // API with the dev users' real tokens (devToken), never through a dev shortcut.
@@ -11,7 +12,23 @@ import type { APIRequestContext, Browser, BrowserContextOptions, Page } from '@p
 
 import { t, type UiKey } from '../src/i18n/index.ts';
 import { mt, type MetaKey } from '../src/i18n/meta.ts';
-import { catalogTitle, devToken, events, expect, grantChapter, guard, inviteCode, launch, reachLine, test, walletOf, type E2eWindow } from './helpers.ts';
+import {
+  ANSWER_SETTLE_MS,
+  backToStories,
+  catalogTitle,
+  devToken,
+  events,
+  expect,
+  grantChapter,
+  guard,
+  holdRequests,
+  inviteCode,
+  launch,
+  reachLine,
+  test,
+  walletOf,
+  type E2eWindow,
+} from './helpers.ts';
 
 const ru = (key: UiKey, params?: Readonly<Record<string, string | number>>): string => t('ru', key, params);
 const meta = (key: MetaKey, params?: Readonly<Record<string, string | number>>): string => mt('ru', key, params);
@@ -74,12 +91,23 @@ async function openProfile(page: Page, name: string) {
 }
 
 test('social: invite link sends a request the inviter accepts', async ({ page, request, browser, baseURL, viewport, hasTouch }) => {
+  test.setTimeout(120_000);
   const code = await inviteCode(request, 9001);
-  // B opens A's link (`startapp=f<code>`, M11): the prompt names nobody; Send asks once.
+  // B opens A's link (`startapp=f<code>`, M11) and starts a story before the invite read lands. The prompt is held:
+  // never over the story, shown when Home is (F19 step 3; boot's showHome forward, critique O2).
   const b = await secondPage(browser, { baseURL, viewport, hasTouch, reducedMotion: 'reduce' });
+  const invite = await holdRequests(b.page, '**/api/invites/*');
   await launch(b.page, 9002, { name: 'Bea', startapp: `f${code}` });
+  await invite.requested; // the controller's boot read of the invite
+  await b.page.locator('[data-story="tide"]').getByRole('button', { name: ru('stories.start') }).tap();
+  await expect(b.page.locator('.dialogue[data-line-id]')).toBeVisible({ timeout: LINE_MS });
+  await invite.release();
+  await b.page.waitForTimeout(ANSWER_SETTLE_MS);
   const prompt = region(b.page, meta('meta.invite_title'));
-  await expect(prompt).toBeVisible({ timeout: LINE_MS });
+  await expect(prompt, 'the invite prompt over the story').toHaveCount(0);
+  await backToStories(b.page);
+  // The prompt names nobody; Send asks once.
+  await expect(prompt, 'the held prompt over Home').toBeVisible({ timeout: LINE_MS });
   await prompt.getByRole('button', { name: meta('meta.invite_send') }).tap();
   await expect(prompt).toBeHidden();
   await expect(b.page.getByText(ru('meta.invite_sent'))).toBeVisible();

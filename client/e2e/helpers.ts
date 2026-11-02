@@ -231,6 +231,42 @@ export function requests(page: Page, match: RegExp): { readonly urls: string[] }
   return { urls };
 }
 
+/** After a held answer arrives: far longer than the page needs to decode it and push an overlay. */
+export const ANSWER_SETTLE_MS = 2000;
+
+/**
+ * Holds every request of `page` matching `url` until `release()`. A delay only: the request goes on to the fixture's
+ * guard and the answer is the server's. `requested` settles at the first such request; `release()` returns once every
+ * request held so far has its whole answer.
+ */
+export async function holdRequests(page: Page, url: string): Promise<{ readonly requested: Promise<void>; release(): Promise<void> }> {
+  let open = (): void => undefined;
+  const opened = new Promise<void>((resolve) => (open = resolve));
+  let seen = (): void => undefined;
+  const requested = new Promise<void>((resolve) => (seen = resolve));
+  const answers: Array<Promise<unknown>> = [];
+  await page.route(url, async (route) => {
+    seen();
+    answers.push(route.request().response().then((r) => r?.finished()));
+    await opened;
+    await route.fallback();
+  });
+  return {
+    requested,
+    release: async () => {
+      open();
+      await Promise.all(answers);
+    },
+  };
+}
+
+/** The quick menu's "Back to stories": the session ends, and Home shows the story cards again (and a held prompt). */
+export async function backToStories(page: Page): Promise<void> {
+  await page.getByRole('button', { name: t('ru', 'quick.menu') }).tap();
+  await page.getByRole('button', { name: t('ru', 'menu.back_to_stories') }).tap();
+  await expect(page.locator('[data-story]').first()).toBeVisible({ timeout: STEP_MS });
+}
+
 /** What the play surface shows: the dialogue's line (null while hidden), whether it is still revealing, the choices. */
 type PlayState = { line: string | null; revealing: boolean; choices: string[] };
 

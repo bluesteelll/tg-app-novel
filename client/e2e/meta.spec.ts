@@ -1,8 +1,9 @@
 // LMI's meta e2e (META-PLAN "Test strategy", e2e; F16, F17, F23, F24, F28): the completion card after a declared
 // ending and from Home, the pack purchase through server-dev's simulated payment and the real webhook handler
-// (principles 1-2), a hint spent from that pack, and the privacy link through openLink. Every number checked is the
-// server's (`GET /api/wallet`); the overlays are found by their labelled regions, since the layers under an overlay are
-// inert but still in the accessibility tree Playwright reads.
+// (principles 1-2), a hint spent from that pack, and the privacy link through openLink, reached after a late Friends
+// answer that a started story dropped. Every number checked is the server's (`GET /api/wallet`); the overlays are found
+// by their labelled regions, since the layers under an overlay are inert but still in the accessibility tree Playwright
+// reads.
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,7 +12,24 @@ import type { Page } from '@playwright/test';
 
 import { t, type UiKey } from '../src/i18n/index.ts';
 import { mt, type MetaKey } from '../src/i18n/meta.ts';
-import { catalogTitle, enterManor, events, expect, grantChapter, launch, puzzleFrame, reachLine, tapHotspot, test, walk, walletOf, type E2eWindow } from './helpers.ts';
+import {
+  ANSWER_SETTLE_MS,
+  backToStories,
+  catalogTitle,
+  enterManor,
+  events,
+  expect,
+  grantChapter,
+  holdRequests,
+  launch,
+  puzzleFrame,
+  reachLine,
+  tapHotspot,
+  test,
+  walk,
+  walletOf,
+  type E2eWindow,
+} from './helpers.ts';
 
 const ru = (key: UiKey, params?: Readonly<Record<string, string | number>>): string => t('ru', key, params);
 const meta = (key: MetaKey, params?: Readonly<Record<string, string | number>>): string => mt('ru', key, params);
@@ -168,9 +186,20 @@ test('meta: hint from a pack shows its text', async ({ page, request }) => {
 });
 
 test('meta: privacy link opens through openLink', async ({ page, request }) => {
+  test.setTimeout(120_000);
+  // Critique O2: Friends tapped on Home, then a story started before the friends read landed. The root change (boot's
+  // onView forward) drops that answer, so Friends never comes over the story; back on Home, it opens.
+  const social = await holdRequests(page, '**/api/social');
   await launch(page, 8006);
+  await social.requested; // the controller's boot read: the controller is in before the tap
   await page.getByRole('button', { name: ru('stories.friends'), exact: true }).tap();
+  await start(page, 'tide');
+  await social.release();
+  await page.waitForTimeout(ANSWER_SETTLE_MS);
   const friends = page.getByRole('region', { name: meta('meta.friends_title') });
+  await expect(friends, 'Friends pushed over the story').toHaveCount(0);
+  await backToStories(page);
+  await page.getByRole('button', { name: ru('stories.friends'), exact: true }).tap();
   await expect(friends).toBeVisible({ timeout: LINE_MS });
   await friends.getByRole('button', { name: meta('meta.friends_policy'), exact: true }).tap();
   // F28: through the facade's openLink inside the tap, https on this host; the mock records it and navigates nowhere.
