@@ -19,6 +19,7 @@ import type {
   FriendProfile,
   FriendRequestDto,
   FriendStoryDto,
+  GiftResponse,
   HintUseResponse,
   HintView,
   InviteState,
@@ -61,6 +62,7 @@ export type DecodedDto =
   | 'CreateInvoiceResponse'
   | 'EntitlementsResponse'
   | 'FriendProfile'
+  | 'GiftResponse'
   | 'HintUseResponse'
   | 'InviteView'
   | 'OrderResponse'
@@ -373,6 +375,8 @@ export const decodeCardResponse: Decoder<CardResponse> = root(
 );
 /** `GET /api/friends/{handle}/profile` (M13): no first name and no user id. */
 export const decodeFriendProfile: Decoder<FriendProfile> = root('FriendProfile', friendProfile);
+/** `POST /api/gifts` (M22): the sender's balance of the kind after the gift, or the current one on a replay. */
+export const decodeGiftResponse: Decoder<GiftResponse> = root('GiftResponse', object<GiftResponse>({ balance: int }));
 /** `POST /api/puzzles/{puzzleId}/hints/{tier}?lang` (M21). */
 export const decodeHintUseResponse: Decoder<HintUseResponse> = root(
   'HintUseResponse',
@@ -417,6 +421,7 @@ export const DTO_DECODERS: Readonly<Record<DecodedDto, Decoder<unknown>>> = {
   CreateInvoiceResponse: decodeCreateInvoiceResponse,
   EntitlementsResponse: decodeEntitlementsResponse,
   FriendProfile: decodeFriendProfile,
+  GiftResponse: decodeGiftResponse,
   HintUseResponse: decodeHintUseResponse,
   InviteView: decodeInviteView,
   OrderResponse: decodeOrderResponse,

@@ -4,6 +4,7 @@
 // own answer (the services order the answers; principle 1), and nothing here unlocks anything: the card, the wallet and
 // the friends are the server's. An epoch, bumped by `closeOverlays`, a root change and `dispose`, drops an answer that
 // would push an overlay over a later screen.
+import { metaError } from '../api/endpoints.ts';
 import type { Endpoints, FriendHandle, MetaEndpoints, MetaError } from '../api/endpoints.ts';
 import type { Clock } from '../api/http.ts';
 import { t } from '../i18n/index.ts';
@@ -13,13 +14,14 @@ import { createCardService } from '../meta/card.ts';
 import { createSocialService } from '../meta/social.ts';
 import type { SocialView } from '../meta/social.ts';
 import { createWalletService } from '../meta/wallet.ts';
+import type { ResourceKind } from '../meta/wallet.ts';
 import type { PurchaseFlow, PurchaseState } from '../purchase/flow.ts';
 import type { HintPort } from '../puzzles/session.ts';
 import type { StatsReporter } from '../stats/reporter.ts';
 import type { Result, StoryId } from '../story/catalog.ts';
 import type { ProductId } from '../story/staging.ts';
 import type { Lifecycle, TelegramClient } from '../telegram/index.ts';
-import type { CardData, ProfileData, SocialData, WalletData } from '../ui/meta/index.ts';
+import type { CardData, FriendData, ProfileData, ShownError, SocialData, WalletData } from '../ui/meta/index.ts';
 import type { Screen, ScreenKind, Screens, ScreensView } from '../ui/screens.ts';
 import type { ViewModel } from '../ui/state.svelte.ts';
 
@@ -36,6 +38,15 @@ export type MetaView = {
   wallet: WalletData | null;
   purchase: PurchaseState;
   invite: { code: string } | null;
+  /** The gift dialog: the kind's balance and the per-gift maximum follow the wallet's state; `busy` while one is sent. */
+  gift: {
+    friend: FriendData;
+    kind: ResourceKind;
+    balance: number;
+    maxAmount: number | null;
+    error: ShownError | null;
+    busy: boolean;
+  } | null;
   /** An answer is awaited: Accept / Decline / Remove, the consent switch, the invite's Send, Buy (requesting, confirming). */
   busy: { social: boolean; consent: boolean; invite: boolean; wallet: boolean };
 };
@@ -53,6 +64,15 @@ export interface MetaController {
   openProfile(h: FriendHandle): void;
   openConsent(): void;
   openWallet(): void;
+  /** A friend's Gift (F25): the dialog for the wallet's hint kind, once the wallet has answered. */
+  openGift(h: FriendHandle): void;
+  /**
+   * The dialog's Send (F25): one gift at a time. The request id is kept per (to, kind, amount) until a definitive
+   * answer, so a retry after a lost answer moves nothing twice; success closes the dialog, and the wallet is read again.
+   */
+  gift(to: FriendHandle, kind: ResourceKind, amount: number): Promise<Result<void, MetaError>>;
+  /** The dialog's Cancel; a kept request id stays for the retry. */
+  cancelGift(): void;
   accept(h: FriendHandle): void;
   /** Declines a request or removes a friend (F20). */
   remove(h: FriendHandle): void;
@@ -114,6 +134,8 @@ export function policyUrl(host: string): string {
 /** F16: how long the ending's events may take to reach the server before the card is asked for. */
 export const CARD_SETTLE_MS = 3000;
 const SHARE_PROMPT = 'meta.share_prompt';
+/** The one gift kind of the catalog today (carry: a second kind is shown with `meta.kind_hint`). */
+const GIFT_KIND = 'hint';
 const OK: Result<void, never> = { ok: true, value: undefined };
 
 export function createMetaController(d: MetaDeps): MetaController {
@@ -131,6 +153,7 @@ export function createMetaController(d: MetaDeps): MetaController {
     wallet: null,
     purchase: { kind: 'idle' },
     invite: null,
+    gift: null,
     busy: { social: false, consent: false, invite: false, wallet: false },
   };
   let alive = true;
@@ -148,6 +171,9 @@ export function createMetaController(d: MetaDeps): MetaController {
   let sharing = false;
   let flow: PurchaseFlow | null = null;
   let flowLoad: Promise<PurchaseFlow | null> | null = null;
+  /** A gift's request id per (to, kind, amount), until a definitive answer (META-PLAN's resource lifetime). */
+  const giftIds = new Map<string, string>();
+  let giftFlight: Promise<Result<void, MetaError>> | null = null;
 
   vm.meta = idle;
   const set = (p: Partial<MetaView>): void => {
@@ -157,7 +183,16 @@ export function createMetaController(d: MetaDeps): MetaController {
   };
   const flag = (k: keyof MetaView['busy'], on: boolean): void => set({ busy: { ...(vm.meta ?? idle).busy, [k]: on } });
   const busy = (k: keyof MetaView['busy']): boolean => (vm.meta ?? idle).busy[k];
-  const publish = (): void => set({ social: social.state(), wallet: wallet.state() });
+  const publish = (): void => {
+    const w = wallet.state();
+    const g = (vm.meta ?? idle).gift;
+    const balance = g === null ? undefined : w?.balances.find((b) => b.kind === g.kind)?.balance;
+    set({
+      social: social.state(),
+      wallet: w,
+      gift: g === null ? null : { ...g, balance: balance ?? g.balance, maxAmount: w?.maxPerGift ?? g.maxAmount },
+    });
+  };
   const current = (e: number): boolean => alive && e === epoch;
   const note = (key: UiKey, params?: Readonly<Record<string, number>>): void => {
     if (alive) {
@@ -252,6 +287,14 @@ export function createMetaController(d: MetaDeps): MetaController {
       return;
     }
     screens.push(s);
+  };
+
+  /** A gift's answer reaches the open dialog; its error only when the dialog is still for that friend. */
+  const giftLanded = (to: FriendHandle, error: ShownError | null): void => {
+    const g = (vm.meta ?? idle).gift;
+    if (g !== null) {
+      set({ gift: { ...g, busy: false, error: g.friend.handle === to && error !== null ? error : g.error } });
+    }
   };
 
   /** F19 step 3: the prompt over Home only; a held one waits for Home. */
@@ -501,6 +544,72 @@ export function createMetaController(d: MetaDeps): MetaController {
       }
       void show({ kind: 'wallet' }, () => wallet.state() !== null, walletSync.soft());
     },
+    openGift(h) {
+      const friend = social.state()?.friends.find((f) => f.handle === h);
+      if (friend === undefined) {
+        void socialSync.hard(); // unfriended meanwhile (F22)
+        return;
+      }
+      const e = epoch;
+      const read = walletSync.soft();
+      void Promise.all([ensureUi(), wallet.state() === null ? read : Promise.resolve()]).then(([m]) => {
+        if (!current(e)) {
+          return;
+        }
+        const w = wallet.state();
+        const entry = w?.balances.find((b) => b.kind === GIFT_KIND);
+        if (m === null || w === null || entry === undefined) {
+          note('meta.action_failed');
+          return;
+        }
+        const gift = { friend, kind: entry.kind, balance: entry.balance, maxAmount: w.maxPerGift, error: null, busy: giftFlight !== null };
+        set({ gift });
+        screens.push({ kind: 'gift', to: h });
+      });
+    },
+    gift(to, kind, amount) {
+      if (giftFlight !== null) {
+        return giftFlight;
+      }
+      const key = JSON.stringify([to, kind, amount]);
+      const requestId = giftIds.get(key) ?? d.newId();
+      giftIds.set(key, requestId);
+      const g = (vm.meta ?? idle).gift;
+      if (g !== null) {
+        set({ gift: { ...g, busy: true } });
+      }
+      const run = walletSync
+        .mutate(() => d.meta.postGift({ to, kind, amount, requestId }))
+        .then((r): Result<void, MetaError> => {
+          giftFlight = null;
+          const error = r.ok ? null : metaError(r.error);
+          if (error?.kind !== 'network') {
+            giftIds.delete(key); // a definitive answer: the next Send is a new gift
+          }
+          if (!alive) {
+            return error === null ? OK : { ok: false, error };
+          }
+          if (error === null) {
+            giftLanded(to, null);
+            screens.close('gift');
+            void walletSync.hard(); // the debit; the balance shown is the wallet's, never this answer's
+            return OK;
+          }
+          giftLanded(to, { ...error }); // a new object per answer: the dialog's Send opens again
+          if (error.kind === 'not-found') {
+            void socialSync.hard(); // unfriended, or a retry after the friendship ended (M22 as merged)
+          }
+          if (error.kind === 'not-found' || error.kind === 'network') {
+            void walletSync.hard(); // the gift may have moved: its debit shows before the player changes the amount
+          }
+          return { ok: false, error };
+        });
+      giftFlight = run;
+      return run;
+    },
+    cancelGift() {
+      screens.close('gift');
+    },
     accept: (h) => friendCall(() => social.accept(h), null),
     remove: (h) => friendCall(() => social.remove(h), h),
     setVisible(on, textVersion) {
@@ -598,14 +707,18 @@ export function createMetaController(d: MetaDeps): MetaController {
         root = v.root.kind;
         epoch += 1;
       }
+      const was = open;
       const now = new Set(v.overlays.map((s) => s.kind));
-      const closed = (k: ScreenKind): boolean => open.has(k) && !now.has(k);
+      const closed = (k: ScreenKind): boolean => was.has(k) && !now.has(k);
       open = now;
       if (closed('card')) {
         set({ card: null });
       }
       if (closed('friend')) {
         set({ profile: null });
+      }
+      if (closed('gift')) {
+        set({ gift: null }); // the request ids stay: a reopened dialog retries with its own
       }
       if (closed('invite')) {
         asking = null;
@@ -628,6 +741,7 @@ export function createMetaController(d: MetaDeps): MetaController {
       }
       alive = false;
       epoch += 1;
+      giftIds.clear();
       flow?.dispose();
       flow = null;
     },

@@ -11,6 +11,7 @@ import samplesText from '../api/fixtures/dto-samples.json?raw';
 import type { ErrorCode } from '../api/generated/api.ts';
 import type { ApiError, ApiRequest, Clock, Http } from '../api/http.ts';
 import { t } from '../i18n/index.ts';
+import type { ResourceKind } from '../meta/wallet.ts';
 import { createPurchaseFlow, packDelivered } from '../purchase/flow.ts';
 import type { PurchaseFlow } from '../purchase/flow.ts';
 import type { Result, StoryId } from '../story/catalog.ts';
@@ -81,6 +82,7 @@ const DEFAULTS: ReadonlyArray<readonly [RegExp, () => Wire]> = [
   [/^POST \/api\/puzzles\/[^/]+\/hints\/\d+/, () => okWire(sample('HintUseResponse'))],
   [/^POST \/api\/invoices$/, () => okWire(sample('CreateInvoiceResponse'))],
   [/^GET \/api\/orders\/[^/]+$/, () => okWire({ orderId: ORDER, productId: PACK, status: 'created' })],
+  [/^POST \/api\/gifts$/, () => okWire(sample('GiftResponse'))],
 ];
 
 /** A request the http fake saw: `METHOD path` and its body. */
@@ -235,6 +237,7 @@ function rig(o: RigOptions = {}): Rig {
   let ctl: MetaController | null = null;
   let cards = 0;
   let loads = 0;
+  let ids = 0;
   const screens = createScreens({
     back: { setVisible() {}, onPress: () => () => {} },
     onView: (v) => {
@@ -277,7 +280,7 @@ function rig(o: RigOptions = {}): Rig {
     },
     storyTitle: (story, lang) => (story === TIDE ? (lang === 'ru' ? 'Прилив' : 'The Tide') : null),
     clock,
-    newId: () => 'id-1',
+    newId: () => `id-${++ids}`,
     host: 'example.test',
     onCards: () => {
       cards += 1;
@@ -773,4 +776,113 @@ test('meta: dispose drops late answers', async () => {
   gate.resolve(await flows.load());
   await flush();
   expect([flows.made(), late.server.count(INVOICE_LABEL)]).toEqual([0, 0]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The gift (F25, M22; META-PLAN's resource lifetime: the request id)
+
+const GIFT_LABEL = /^POST \/api\/gifts$/;
+const HINT = 'hint' as ResourceKind;
+/** A response lost on the way: no server verdict, so the gift may have moved. */
+const LOST: Wire = { ok: false, error: { kind: 'network', detail: 'offline' } };
+
+/** A wallet answer holding `balance` hints, no debt. */
+const walletWire = (balance: number): Wire =>
+  okWire({ balances: [{ kind: 'hint', balance, debt: 0 }], packs: [], hintTierCost: 1, maxPerGift: 3 });
+
+/** The request ids of the gifts sent so far, in order. */
+const requestIds = (r: Rig): unknown[] =>
+  r.server.sent
+    .filter((s) => GIFT_LABEL.test(s.label))
+    .map((s) => (typeof s.body === 'object' && s.body !== null ? (s.body as Record<string, unknown>)['requestId'] : null));
+
+test('wallet: gift retry keeps its request id', async () => {
+  const r = await booted();
+  r.server.on(GIFT_LABEL, () => LOST);
+  // A lost answer: the retry resends the id, so the gift moves once (F25); closing the dialog keeps it.
+  expect(await r.ctl.gift(ANYA, HINT, 1)).toEqual({ ok: false, error: { kind: 'network' } });
+  r.ctl.cancelGift();
+  await r.ctl.gift(ANYA, HINT, 1);
+  expect(requestIds(r)).toEqual(['id-1', 'id-1']);
+  expect(r.server.sent.find((s) => GIFT_LABEL.test(s.label))?.body).toEqual({ to: ANYA, kind: 'hint', amount: 1, requestId: 'id-1' });
+  // A definitive answer ends the id: the retry lands, and the next gift of the same body is a new gift.
+  r.server.on(GIFT_LABEL, () => okWire(sample('GiftResponse')));
+  expect((await r.ctl.gift(ANYA, HINT, 1)).ok).toBe(true);
+  await r.ctl.gift(ANYA, HINT, 1);
+  expect(requestIds(r)).toEqual(['id-1', 'id-1', 'id-1', 'id-2']);
+  // A refusal is definitive as well.
+  r.server.on(GIFT_LABEL, () => httpError(429, 'rate_limited', 3600));
+  await r.ctl.gift(ANYA, HINT, 1);
+  await r.ctl.gift(ANYA, HINT, 1);
+  expect(requestIds(r).slice(4)).toEqual(['id-3', 'id-4']);
+  // One gift at a time: a second Send while one is answered joins it.
+  const held = r.server.park(GIFT_LABEL);
+  const first = r.ctl.gift(ANYA, HINT, 2);
+  const second = r.ctl.gift(ANYA, HINT, 2);
+  await flush();
+  expect(second).toBe(first);
+  held.release();
+  await first;
+  expect(requestIds(r).slice(6)).toEqual(['id-5']);
+  r.ctl.dispose();
+});
+
+test('meta: gift outcome closes the dialog or shows a new error', async () => {
+  const r = rig();
+  r.server.on(WALLET_LABEL, () => walletWire(3));
+  r.ctl.boot();
+  await flush();
+  r.ctl.openGift(ANYA);
+  await flush();
+  expect(kinds(r)).toEqual(['gift']);
+  // The friend from the list, the kind and the bounds from the wallet: the dialog decides nothing of its own.
+  expect(r.vm.meta?.gift).toEqual({ friend: { handle: ANYA, firstName: 'Аня' }, kind: 'hint', balance: 3, maxAmount: 3, error: null, busy: false });
+
+  // Every answer is a new error object, so the dialog's Send opens again even for an equal one.
+  r.server.on(GIFT_LABEL, () => httpError(409, 'limit_reached'));
+  const held = r.server.park(GIFT_LABEL);
+  const sent = r.ctl.gift(ANYA, HINT, 1);
+  expect(r.vm.meta?.gift?.busy).toBe(true);
+  await flush();
+  held.release();
+  await sent;
+  const first = r.vm.meta?.gift?.error;
+  expect([first, r.vm.meta?.gift?.busy]).toEqual([{ kind: 'limit' }, false]);
+  await r.ctl.gift(ANYA, HINT, 1);
+  expect(r.vm.meta?.gift?.error).toEqual({ kind: 'limit' });
+  expect(r.vm.meta?.gift?.error).not.toBe(first);
+  expect(kinds(r)).toEqual(['gift']);
+
+  // A lost answer: the gift may have moved, so the wallet is read again once it is done (critique r1 O5), and the
+  // dialog's balance is the wallet's state. A changed amount is another gift with its own request id.
+  r.server.on(GIFT_LABEL, () => LOST);
+  r.server.on(WALLET_LABEL, () => walletWire(2));
+  const wallets = r.server.count(WALLET_LABEL);
+  await r.ctl.gift(ANYA, HINT, 1);
+  await flush();
+  expect(r.server.count(WALLET_LABEL)).toBe(wallets + 1);
+  expect(r.vm.meta?.gift).toMatchObject({ error: { kind: 'network' }, balance: 2, busy: false });
+  await r.ctl.gift(ANYA, HINT, 2);
+  await flush();
+  expect(requestIds(r).slice(2)).toEqual(['id-3', 'id-4']);
+
+  // 404: unfriended meanwhile, or a retry after the friendship ended (M22 as merged): the wallet and the list again.
+  r.server.on(GIFT_LABEL, () => httpError(404, 'not_found'));
+  const [w404, s404] = [r.server.count(WALLET_LABEL), r.server.count(SOCIAL_LABEL)];
+  await r.ctl.gift(ANYA, HINT, 1);
+  await flush();
+  expect([r.server.count(WALLET_LABEL), r.server.count(SOCIAL_LABEL)]).toEqual([w404 + 1, s404 + 1]);
+  expect(r.vm.meta?.gift?.error).toEqual({ kind: 'not-found' });
+
+  // Sent: the dialog closes and the wallet is read; the balance shown is that read's, not the gift's own answer (1).
+  r.server.on(GIFT_LABEL, () => okWire(sample('GiftResponse')));
+  r.server.on(WALLET_LABEL, () => walletWire(0));
+  const before = r.server.count(WALLET_LABEL);
+  expect((await r.ctl.gift(ANYA, HINT, 2)).ok).toBe(true);
+  await flush();
+  expect(kinds(r)).toEqual([]);
+  expect(r.vm.meta?.gift).toBeNull();
+  expect(r.server.count(WALLET_LABEL)).toBe(before + 1);
+  expect(r.vm.meta?.wallet?.balances).toEqual([{ kind: 'hint', balance: 0, debt: 0 }]);
+  r.ctl.dispose();
 });
