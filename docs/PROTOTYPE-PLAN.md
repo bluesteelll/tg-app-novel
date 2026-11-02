@@ -57,6 +57,7 @@ records chapter, ending and puzzle facts per story ([STORIES-PLAN "Goal"](STORIE
 | T7–T11 | Changed by PUZZLES-PLAN: no hint text, solution or paid world text in `dist/`; a hint tier granted once per charge, never out of order or after a solve, revoked on refund; no exploration soft-lock; the host writes ink only at a yield; a save restores the open puzzle's start and the exact exploration state, and a story update never strands the player | [PUZZLES-PLAN "Goal"](PUZZLES-PLAN.md#goal) |
 | ST1–ST8 | Changed by STORIES-PLAN: no paid ending vocabulary or paid meta in client outputs; the first chapter of every story free, every chapter in one story, carry within a story; saves per story; statistics never unlock; one row per client event, a fact counted once; X ≤ Y; paid-chapter events need the entitlement, the story derived by the server; capture never blocks play | [STORIES-PLAN "Goal"](STORIES-PLAN.md#goal) |
 | MT1–MT13 | Changed by META-PLAN: choice events by line ID in a server-only vocabulary; no ending count in any response; meta texts server-only and gated per viewer; achievements display only, `new` once; friendships both-sided and profiles friends-only by a separate revocable consent (revision 1: a link holder asks, the owner accepts per person, a decline or removal is durable, no Telegram id reaches another user); shares without titles, codes unguessable and revocable; attribution from verified initData on the first launch only; a balance never negative and reconciled with the ledger; a pack credited once in the grant, clawed back on refund (revision 1: the amount bound to the order, the clawback from the credited ledger row); a hint tier unlocked and debited once, in order; gifts between friends, once per request, capped; a referral only on server-observed evidence, capped (revision 1: re-evaluated on every batch); the privacy policy public and versioned (revision 1: production refuses to start with a placeholder left); choice volume never refuses or evicts a fact (revision 1). T7's hint part is replaced: a hint tier is unlocked once from the balance (MT10), not bought per charge | [META-PLAN "Goal"](META-PLAN.md#goal) |
+| I1–I7 | Changed by MEMORY-PLAN (RULINGS 78): the registry never holds more than its caps count; the static knot-set value ≥ what the runtime counts for the same knot; one creator and one destroy point per texture, bitmap and kept Blob; the layout of every visual is identical whatever the file's crop or tier; no paid byte at a public or new URL; the half tier is selected only where no backdrop, CG or character half file would be drawn above its stored px; a frame binds only textures uploaded to the renderer that draws it | [MEMORY-PLAN "Context and constraints"](MEMORY-PLAN.md#3-context-and-constraints) (invariants I1–I7); the reds and e2e of the lanes M1, M2, M3c, M3s |
 
 **Budget targets** (numbers and gates in [Budgets](#budgets-and-validation)):
 - initial JS ≤ 40 KB brotli; all JS before the first line ≤ 270 KB brotli; first-load ≤ 800 KB;
@@ -68,6 +69,12 @@ records chapter, ending and puzzle facts per story ([STORIES-PLAN "Goal"](STORIE
 - Changed by META-PLAN: the entry closure gains about 2.9 KB br (the meta controller) inside the 40 KB row; the meta
   UI is one lazy chunk ≤ 14 KB br; all JS ≤ 305 KB br (was 290); the steady memory ≤ 138.6 MiB (145.3 MB)
   ([META-PLAN "Budgets"](META-PLAN.md#budgets-and-validation)).
+- Changed by MEMORY-PLAN (RULINGS 78): the steady memory per lever at the gated limits, MiB: today 138.6 (LOW with
+  F: 129.6); after M2 106.6 (LOW with F: 97.6); on LOW phones with F + M2 + M3c the planned set gives ≤ 75.2 (75.8 with
+  the 10.15 MiB bound of the 5-image busiest knot), and the cap-bounded worst case stays 97.6. M2 also lowers the
+  crossfade transient at the 48 MiB hard cap from 170.6 to 122.6 MiB, under 150 MB. The texture caps stay 32 / 48 MiB
+  and `budget/knot-set` ≤ 32 MiB; a raise to 48 / 64 MiB is decided only after M2's device measurement (Q54)
+  ([MEMORY-PLAN "Caps and the knot-set gate after each lever"](MEMORY-PLAN.md#7-caps-and-the-knot-set-gate-after-each-lever)).
 
 Changed by META-PLAN: the player also sees a completion card at each ending and from Home (found endings and unlocked
 achievements only), invites friends and shares progress through Telegram, sees friends' progress when they allow it,
@@ -224,6 +231,15 @@ research is newer and verified (brief), so it wins, and the deviation is recorde
 
   Exploration steady state: 12.4 MiB room + 16.9 MiB for two neighbours = 29.3 MiB; with a close-up open,
   20.9 MiB.
+- **Changed by MEMORY-PLAN (lever A, lane M2; RULINGS 78).** On a GL renderer the loader uploads each texture at
+  decode and closes its bitmap; the record keeps the fetched Blob (never given a URL) for a context-loss revive. The
+  caps count the kept bytes: the admission reserves `decodedBytes + ref.bytes`, and a live record counts
+  `decodedBytes + blob.size` (a different size is counted and reported in `stats().keptMismatch`, never refused).
+  `registry_caps`' figures rise by the kept file bytes (critique_r3 W2). On `webglcontextrestored` and in the rebuild,
+  `registry.revive(gen, signal)` brings every live record to the current GPU generation, visible holders first, one at
+  a time; a re-decode that fails or misses `REVIVE_DEADLINE_MS` ends its record at once. The caps stay 32 / 48 MiB
+  ([MEMORY-PLAN 4.A](MEMORY-PLAN.md#4a-drop-the-decoded-cpu-copy-after-upload-keep-the-encoded-blob),
+  [section 8](MEMORY-PLAN.md#8-critical-flows)).
 
 **K6. On-demand rendering.**
 - **What.** `Application.init({ autoStart: false })`. `scene/render-loop.ts` renders on the GSAP ticker only while
@@ -301,6 +317,12 @@ architect baseline preload from `TagsForContentAtPath` of the next node.)
 - **Changed by STORIES-PLAN (Y4, Y5).** The meta gains `endings: { <knot>: <ending name> }`, the chapter's declared
   story endings (`story/stories.json`; a paid chapter's endings travel only in its paid meta). Entering a declared
   ending knot reports `ending_reached` and does **not** trigger F5: the story ends there.
+- **Changed by MEMORY-PLAN (M1, M2, M3c; RULINGS 78).** `budget/knot-set` and `budget/room-set` count the kept file
+  bytes from M2: the shared `decoded()` helper counts `decodedBytes + max(avif.bytes, webp.bytes)`, and
+  `LIMITS.knotSet = LIMITS.roomSet = STEADY_CAP_BYTES` (one source). M1's trimmed char and prop files are counted
+  through `decodedBytes` with no gate code change. M3c's gate stays on the full tier: per entry the half file's count is
+  ≤ the full count, so the gate bounds LOW too
+  ([MEMORY-PLAN section 7](MEMORY-PLAN.md#7-caps-and-the-knot-set-gate-after-each-lever)).
 
 **K10. Speaker as a text prefix `ally: …`, not a `#speaker` tag.**
 - **Why.**
@@ -1376,6 +1398,10 @@ export interface SceneController {
                                                  // as merged (L11 `1e2f421`, RULINGS 35 Q11): holder 'ensure' (exact),
                                                  // released by apply / restore, setChapter, destroy
   onActivated(): Promise<void>;                  // context-loss check + rebuild
+                                                 // changed by MEMORY-PLAN (M2; RULINGS 78): with a live context and
+                                                 // (flow.suspended() or stale > 0) -> flow.start(gen), also at the end
+                                                 // of the grace; the rebuild follows the restore rule (paused ->
+                                                 // flow.lost(), and activated starts the revive)
   pause(): void; resume(): void;
   stats(): { liveTextures: number; liveBytes: number; pendingLoads: number; activeTimelines: number; overCap: number };
   debugForceContextLoss(): void;                 // wired to __novelDebug only under __TG_MOCK__ (perf e2e)
@@ -1939,7 +1965,7 @@ Texts come from `server/locales/bot.{ru,en}.json` by `from.language_code`. `serv
 | Server clock behind Telegram's (initData `auth_date` more than 60 s in the server's future) | server clock | erratum (RULINGS 9 Q3): `FromFuture` → 401 `initdata_expired` → "Reopen the app", which cannot help while the clock is wrong. The remedy is operational: NTP time sync on the host (runbook item in D2) |
 | Puzzles, exploration, hint purchases | — | changed by PUZZLES-PLAN: the rows in [PUZZLES-PLAN "Concurrency and failure model"](PUZZLES-PLAN.md#concurrency-and-failure-model-additions-to-pps-table) |
 | `deactivated` during a transition | client | GSAP global timeline paused, render loop stopped, audio suspended; resume continues the same timeline |
-| WebGL context lost (on `activated` or any time) | client | Pixi handles `webglcontextlost`/`restored` and re-uploads from live sources [R3 §4.4]; we keep the `ImageBitmap`s alive while textures live, so restore works. If `renderer.context.isLost` is still true 2 s after `activated`, the controller destroys the `Application`, builds a new one, re-creates textures from the registry's bitmaps, and `restore(snapshot)` instantly. Pixi ≥ 8.21 is required (the Text restore fix); we pin 8.22.0 |
+| WebGL context lost (on `activated` or any time) | client | Pixi handles `webglcontextlost`/`restored` and re-uploads from live sources [R3 §4.4]; we keep the `ImageBitmap`s alive while textures live, so restore works. If `renderer.context.isLost` is still true 2 s after `activated`, the controller destroys the `Application`, builds a new one, re-creates textures from the registry's bitmaps, and `restore(snapshot)` instantly. Pixi ≥ 8.21 is required (the Text restore fix); we pin 8.22.0. Changed by MEMORY-PLAN (M2; RULINGS 78): the bitmaps are closed after upload; a restore or the rebuild revives every live record from its kept Blob under a new GPU generation, and frames stay suspended until the visible pass of the current revive is done (at most `REVIVE_DEADLINE_MS`); a record whose re-decode fails ends at once, and `executor.reacquire()` loads its slot again; `deactivated` aborts a revive, a restore while deactivated waits for `activated`, and a rebuild that the grace reaches while deactivated builds at once and defers only the revive. The rows: [MEMORY-PLAN "Concurrency and failure model"](MEMORY-PLAN.md#9-concurrency-and-failure-model) |
 | Preload vs knot exit | client | preload holders are released on the next knot entry, `next:*` holders on the next entry into a knot without `-> END` (F2); in-flight fetches aborted (`AbortController`); a load completing after abort is destroyed at once (the registry checks the holder still exists) |
 | Response after unmount / chapter change | client | every async load carries the chapter generation number; stale results are dropped and released |
 | Asset 404 / decode failure | client | `Result` error → skip that visual, log, continue (no crash) |
@@ -2069,6 +2095,19 @@ true, antialias: false, background: '#000', resizeTo: host, autoStart: false }` 
 - Kills timelines on completion.
 - Operates on a `StageAdapter` interface (create/destroy sprite, set props), so its logic is unit-tested with a fake
   adapter (no WebGL in happy-dom [R4 §5.1]).
+- Changed by MEMORY-PLAN (M2; RULINGS 78): `reacquire(): void` and the identity rule. A record's `TextureHandle` is
+  its token, checked with `registry.current(id)` at every point of use: no sprite is made from an ended record's
+  handle (one accessor, `handleFor(slot)`, also at a fade through black's midpoint), and `rebind` re-creates only views
+  whose handle is current and drops a non-current view from the model. `reacquire()` takes no ids: it removes every
+  shown or retiring view bound to an ended record at once, deletes the hold entries bound to one without a registry
+  release, and takes those slots of the logical stage again in one instant batch, once per ended record. With nothing
+  bound to an ended record it is a no-op ([MEMORY-PLAN section 8 "Identity rule"](MEMORY-PLAN.md#8-critical-flows)).
+
+**Revive flow** (changed by MEMORY-PLAN, M2): the new pure `scene/revive-flow.ts` owns the revive's `AbortController`
+and the frame suspension. `webglcontextlost` and the rebuild's start call `flow.lost()`; `webglcontextrestored` calls
+`flow.start(gen)`, or `flow.lost()` while deactivated; `deactivated` calls `flow.abort()`. Each settle of a revive pass
+calls `executor.reacquire()`; only the current revive's visible pass settling `'done'` resumes frames
+([MEMORY-PLAN section 6](MEMORY-PLAN.md#6-module-api-signatures-only), [section 9](MEMORY-PLAN.md#9-concurrency-and-failure-model)).
 
 **Registry and loader:**
 - **Variant choice.** AVIF if a 1 px probe decodes at boot, else WebP.
@@ -2080,6 +2119,18 @@ true, antialias: false, background: '#000', resizeTo: host, autoStart: false }` 
     every `preload:*` and `next:*` holder, and is refused with `over-cap` if it still does not fit. Changed by RULINGS
     35 (as merged, L11 `1e2f421`; cut Q2): it evicts every preload-priority holder, `room:*` included.
 - **Release.** At holder-set empty: `texture.destroy(true)`, `bitmap.close()`, counters down.
+- **Changed by MEMORY-PLAN (RULINGS 78).**
+  - M1: a char or prop entry may carry `trim = { canvasW, canvasH, x, y }`; the loader builds `new Texture({ source,
+    orig: (0, 0, canvasW, canvasH), trim: (x, y, w, h) })`, and `TextureHandle.w/h` report the canvas. The geometry is
+    `load`'s third argument.
+  - M2: the loader uploads at decode through an injected `upload(source)` (GL only, to the renderer current at call
+    time), then `bitmap.close()`, and keeps the fetched Blob; `upload` returns the GPU generation, or `null` (context
+    lost or not GL: the bitmap stays open). Release: `texture.destroy(true)` and the Blob dropped.
+  - M3c: the registry is created with `{ variant, tier }`, `tier = tierFor(perfClass, stageBound(screen, host),
+    resolution)`; a LOW phone whose stage passes `halfFits` loads every public scene image's half file, and a resize
+    that fails `halfFits` calls `registry.demote()` once (later records load the full tier).
+  ([MEMORY-PLAN 4.B](MEMORY-PLAN.md#4b-trim-transparent-margins-char-prop-build-time), [4.A](MEMORY-PLAN.md#4a-drop-the-decoded-cpu-copy-after-upload-keep-the-encoded-blob),
+  [4.C](MEMORY-PLAN.md#4c-half-tier-on-android-low-phones), [section 8](MEMORY-PLAN.md#8-critical-flows).)
 
 **Per-chapter manifest.** `scene.setChapter(manifest)` swaps the id → `AssetEntry` table. A missing id → error value.
 `preload(tag, ids, from)` resolves in `from` when given, so the next chapter's ids resolve in its own manifest (F5);
@@ -2127,6 +2178,14 @@ The registry keeps each `ImageBitmap` while its texture lives: it is the source 
 CPU bitmaps therefore equal live texture bytes and are counted, not assumed away (verify the real CPU+GPU cost on an
 iPhone and a LOW Android — Later measurement).
 
+Changed by MEMORY-PLAN (RULINGS 78): from M2 the bitmap lives from decode to upload only, and the kept Blob is the
+context-loss source (about 3 % of the bytes: 300 KB AVIF against 8.44 MiB decoded), so paid art is still not
+re-downloaded. The CPU row falls from the live texture bytes to 0, and the kept Blobs are counted inside the caps. At
+the busiest knot the real residency falls from 47.8 to about 30.5 MiB. M1's trim cuts a placeholder sprite to 2.48-3.47
+MiB, and the busiest knot from 30.4 to 24.3-27.3 MiB (an estimate the lane's budget output replaces)
+([MEMORY-PLAN "Current state in numbers"](MEMORY-PLAN.md#2-current-state-in-numbers), [4.A](MEMORY-PLAN.md#4a-drop-the-decoded-cpu-copy-after-upload-keep-the-encoded-blob),
+[4.B](MEMORY-PLAN.md#4b-trim-transparent-margins-char-prop-build-time)).
+
 **Steady total at the gated limits** (one unit: MiB; principle 4's 150 MB = 143.1 MiB):
 
 | Item | Limit that bounds it | MiB |
@@ -2140,6 +2199,13 @@ iPhone and a LOW Android — Later measurement).
 
 Transient peak (a crossfade with textures at the 48 MiB hard cap): 2 × 48 + 12 + 45.8 + 13.7 = 167.5 MiB (175.6 MB),
 only while a transition runs; the gate keeps every planned working set at or below the 32 MiB steady cap.
+
+Changed by MEMORY-PLAN (RULINGS 78): with the STORIES-PLAN and META-PLAN rows (Home covers 2.6, meta UI 0.5) the total
+is 138.6 MiB = 145.3 MB today, and the crossfade transient 170.6 MiB. M2 removes the bitmap row: the steady total
+becomes 106.6 MiB, and the transient 122.6 MiB (48 + 12 + 45.8 + 13.7 + 2.6 + 0.5), under 150 MB. On LOW, F brings the
+framebuffers to about 3 MiB (129.6 today, 97.6 with M2); with M3c a LOW phone's planned set gives ≤ 75.2 MiB. A cap
+raise to 48 / 64 MiB (steady 122.6, transient 138.6) is a PP decision on M2's device measurement, not part of M2
+([MEMORY-PLAN section 7](MEMORY-PLAN.md#7-caps-and-the-knot-set-gate-after-each-lever)).
 
 ---
 
@@ -2253,14 +2319,14 @@ All budgets are enforced by `client/scripts/budget.ts` inside `npm run build` un
 | First-load to first line (static estimate) | ≤ 800 KB transfer | the entry + engine closures (changed by PUZZLES-PLAN: lazy chunks excluded; was "all JS") + CSS + html + TWA 16.2 KB [R1] + ch1 story/meta/manifest + first knot's images (AVIF); audio excluded (it streams, never blocks the first line) | `budget.ts` |
 | First-load per story, covers (changed by STORIES-PLAN) | the row above for every story's first chapter (a free chapter no `next` names), plus `catalog.json`, `covers.json` and the 3 largest cover AVIFs, ≤ 800 KB; cover exactly 360×640, AVIF ≤ 24 KB, WebP ≤ 36 KB | [STORIES-PLAN.md](STORIES-PLAN.md), section "Budgets and validation" | `budget.ts` (L5): `budget: first-load row per story`, `budget: cover over 24 KB fails` |
 | First knot images | ≤ 450 KB | | `budget.ts` |
-| Image dimensions | ≤ 2048 px each side; bg/cg exactly 1080×2048; sprites ≤ 768×1536 | principle 4 | `assets.ts` writes dims from sharp metadata; `budget.ts` checks |
+| Image dimensions | ≤ 2048 px each side; bg/cg exactly 1080×2048; sprites ≤ 768×1536. Changed by MEMORY-PLAN (M1): a trimmed sprite's dimensions are checked on its canvas; `trim` only on char/prop, inside the canvas, with even stored sides on char/prop — `budget: a trimmed background fails`, `budget: a char canvas over 768x1536 fails` | principle 4 | `assets.ts` writes dims from sharp metadata; `budget.ts` checks |
 | Image file | AVIF ≤ 300 KB, WebP ≤ 450 KB | | `budget.ts` |
 | Image formats | every image has both AVIF and WebP | [O] | `budget.ts` |
-| Knot working set | for every K: bound(`carried(K)`) + decoded `assets(K) ∪ assets(next(K))` ≤ 32 MiB. `carried(K)` (story tool, `usage.json`) = image assets a predecessor may leave on stage that K's opening tag lines do not clear and that K and next(K) do not name; propagated over the knot graph from an empty stage at the chapter's first knot. Only K's opening tag lines clear: the tag-only lines before K's first other line, as `classify.ts` classifies them (STAGING-DSL §3.3). They run in K's first batch on every entry, because `graph/entry-below-top` makes every entry a knot top. There `scene` clears all, and `bg` / `cg` / `cg: off` / `show` / `hide` replace or clear their slot; every other tag in a knot only adds. bound() = the largest bg + the largest CG + per character its largest expression, since the stage holds one of each | K5, K9 | `budget.ts` (`budget/knot-set`) — `budget: knot-set counts carried stage` |
-| Per-chapter transfer (images AVIF + audio) | ≤ 6 MB | [O]: 10–15 MB practical ceiling for the whole app | `budget.ts` |
+| Knot working set | for every K: bound(`carried(K)`) + decoded `assets(K) ∪ assets(next(K))` ≤ 32 MiB. `carried(K)` (story tool, `usage.json`) = image assets a predecessor may leave on stage that K's opening tag lines do not clear and that K and next(K) do not name; propagated over the knot graph from an empty stage at the chapter's first knot. Only K's opening tag lines clear: the tag-only lines before K's first other line, as `classify.ts` classifies them (STAGING-DSL §3.3). They run in K's first batch on every entry, because `graph/entry-below-top` makes every entry a knot top. There `scene` clears all, and `bg` / `cg` / `cg: off` / `show` / `hide` replace or clear their slot; every other tag in a knot only adds. bound() = the largest bg + the largest CG + per character its largest expression, since the stage holds one of each. Changed by MEMORY-PLAN (M2): + the kept file bytes, `decodedBytes + max(avif.bytes, webp.bytes)` per image, for the knot-set and room-set rows, with `LIMITS.knotSet = LIMITS.roomSet = STEADY_CAP_BYTES` | K5, K9 | `budget.ts` (`budget/knot-set`) — `budget: knot-set counts carried stage`; changed by MEMORY-PLAN: `budget: knot-set counts kept encoded bytes`, `budget: room-set counts kept encoded bytes`, the guard `budget: knot-set and room-set limits are the registry steady cap` (M2) |
+| Per-chapter transfer (images AVIF + audio) | ≤ 6 MB. Changed by MEMORY-PLAN (M3c, M3s): + the `transfer <ch> (half)` rows (6 MB), a measurement of what a half-tier session downloads per chapter (the half file where an entry has one, else the full; gated halves from M3s), not counted as a guard | [O]: 10–15 MB practical ceiling for the whole app | `budget.ts` |
 | BGM file | m4a ≤ 3 MB and ≤ 240 s; WAV only if `placeholder`, ≤ 400 KB | K23 | `budget.ts` |
 | SFX | ≤ 100 KB and ≤ 3 s | decoded ≤ 1.06 MiB each | `budget.ts` |
-| Live texture bytes | steady ≤ 32 MiB; hard cap 48 MiB; a visible load over the hard cap after eviction is refused | steady total above (135.5 MiB at the gated limits) | registry code + `registry_caps`, `registry: visible load over hard cap after eviction is refused` unit + e2e `textures released on chapter change` |
+| Live texture bytes | steady ≤ 32 MiB; hard cap 48 MiB; a visible load over the hard cap after eviction is refused. Changed by MEMORY-PLAN (M2): the caps count the kept Blob bytes too (`registry_caps_count_kept_bytes`, `registry: a kept blob is counted at its real size`); the basis becomes the steady total of 106.6 MiB; the caps are unchanged until M2's device measurement | steady total above (135.5 MiB at the gated limits) | registry code + `registry_caps`, `registry: visible load over hard cap after eviction is refused` unit + e2e `textures released on chapter change` |
 | Decoded audio | ≤ 8 MiB | | `sfx_cache_cap` unit |
 | JS heap after ch2 start | ≤ 48 MB (CDP `Performance.getMetrics` `JSHeapUsedSize`) | | e2e `heap under budget` |
 | Time to first line | ≤ 6 s from navigation (tap issued at once), CPU 4× (`Emulation.setCPUThrottlingRate`), 1.6 Mbps down / 150 ms RTT (`Network.emulateNetworkConditions`), on `dist-e2e` | about 0.4 MB at 200 KB/s ≈ 2 s + parse + auth | e2e `time to first line under throttling` |
@@ -2563,7 +2629,8 @@ are in):
   the catalog-key pins of `catalog: demo catalog and cast decode` (:450-458 at main `a7e4a04`) become subset pins
   (L5 entry), then frozen again. LS1 commit 8's cast hunk (:459-462) stays disjoint from it, and the line both read,
   `const catalog = committedCatalog()` (:448), is touched by neither.
-- `client/src/story/catalog.ts`: L3a → L3b → L5 → L13. Changed by STORIES-PLAN: L5 → LS1 → L13.
+- `client/src/story/catalog.ts`: L3a → L3b → L5 → L13. Changed by STORIES-PLAN: L5 → LS1 → L13. Changed by
+  MEMORY-PLAN: … → L13 → M1 → M3c.
 - `client/scripts/story.ts`: L3b → L3c → LW3. Changed by STORIES-PLAN: L3c → LS1 → LW3.
 - `client/scripts/story/{emit.ts,build.test.ts}`: L3b → LW3; `graph.ts`: L3b → LW1 → LW3 (RULINGS 16 Q1). Changed by
   STORIES-PLAN: `emit.ts`, `build.test.ts` L3b → LS1 → LW3. Changed by RULINGS 19 Q1, Q2 (as merged, L3c `91e35cd`):
@@ -2575,12 +2642,14 @@ are in):
   `story/chapters.json`, `story/cast.json`: N2 (after L3b).
 - `client/src/api/{endpoints.ts,decode.ts,decode.test.ts}` (changed by STORIES-PLAN): L10 → LS4.
 - `client/scripts/scan-dist.ts`: L1 → L3b → L5 → LW3. `client/scripts/scan-dist.test.ts`: L1 → L5 → LW3.
-- `client/scripts/{budget.ts,budget.test.ts}`: L1 → L5 → LP2.
+- `client/scripts/{budget.ts,budget.test.ts}`: L1 → L5 → LP2. Changed by MEMORY-PLAN: L1 → L5 → LP2 → M1 → LMI → M2 →
+  M3c.
 - `client/src/arch.test.ts`: L1 → LW2 → LP2. Changed by STORIES-PLAN (revision 1): L1 → LW2 → LS1 → LP2.
 - `client/src/i18n/{ru.ts,en.ts}`: L14a → L14b (which pre-declares the puzzle and explore keys), then frozen.
 - `client/src/ui/screens.ts`: L14a only.
 - `client/src/main.ts`: L1 → L7 → L15. `client/src/ui/App.svelte`: L1 → L15.
-- `docs/FEATURE_MAP.md`, `docs/ARCHITECTURE.md`: D1, D2 only.
+- `docs/FEATURE_MAP.md`, `docs/ARCHITECTURE.md`: D1, D2 only. Changed by MEMORY-PLAN (critique W3): D1 → D2 → M3s
+  (M3s writes the half-tier rows after D2).
 - `docs/STAGING-DSL.md`: L3a (doc-test fixes only), then LW1 (DSL v2), then frozen. Changed by STORIES-PLAN (Y18,
   SQ2): reopened for LS1 (§4 wording, §8, §9, one §11 row; no tag change), then frozen again.
 - **Changed by META-PLAN** (the nine new lanes and, revision 1, LPO; every chain below is serialized by the dependency
@@ -2595,7 +2664,7 @@ are in):
     LPO. `server/tests/it/common.rs`: … → LPO. `server/src/api/legal.rs`: LF1 → LPO. `server/src/db/orders.rs`: L8a →
     LE1 (W3: the pack binding).
   - `server/src/{catalog.rs}`, `server/catalog.json`: L6b → LE1 (the `economy` section, `ProductRef::Pack`).
-  - `server/src/content.rs`: L6b → LM2 (the meta loader).
+  - `server/src/content.rs`: L6b → LM2 (the meta loader). Changed by MEMORY-PLAN: L6b → LM2 → M3s.
   - `server/src/db/payments.rs`: L8b → LE1 (the grant's pack branch) → L9. `server/src/telegram/payments.rs`: L8b → LE1
     → L9.
   - `server/src/api/puzzles.rs`: L6c → LE1 (the hint use route).
@@ -2619,7 +2688,27 @@ are in):
   - As merged (L14a `e5ce724`, cut Q4): `client/src/ui/state.svelte.ts`: L14a → L15 → LMI.
   - `client/src/ui/meta/**`: LU1 only. `client/src/meta/**`: LMD only. `client/src/app/meta.ts` (+ test): LMI only.
   - `client/src/app/{boot.ts,game.ts,game.test.ts,yields.ts}`, `client/src/ui/App.svelte`, `client/e2e/helpers.ts`:
-    L15 → LMI. `client/scripts/{budget.ts,budget.test.ts}`: L1 → L5 → LP2 → LMI.
+    L15 → LMI. `client/scripts/{budget.ts,budget.test.ts}`: L1 → L5 → LP2 → LMI. Changed by MEMORY-PLAN:
+    `client/src/app/game.ts` L15 → LMI → M2; `budget.ts`, `budget.test.ts` … → LP2 → M1 → LMI → M2 → M3c.
+- **Changed by MEMORY-PLAN** (RULINGS 78; the lanes M1, M2, M3c, M3s; every chain below is serialized by the
+  dependency order; [MEMORY-PLAN "Lane cut sketches"](MEMORY-PLAN.md#11-lane-cut-sketches)):
+  - `client/scripts/{budget.ts,budget.test.ts}`: L1 → L5 → LP2 → **M1** → LMI → **M2** → **M3c**; LMI's gate gains M1.
+  - `client/src/story/catalog.ts`: … → L13 → M1 → M3c.
+  - `client/scripts/assets.ts`, `client/scripts/assets/{encode.ts,assets.test.ts}`: … → LW3 → M1 → M3c → M3s.
+  - `client/scripts/assets/manifest.ts`: … → LW3 → M1 → M2 → M3c → M3s (M2 re-exports the cap).
+  - `client/src/scene/{registry,registry.test}.ts`: L11 → M1 → M2 → M3c.
+  - `client/src/scene/loader.ts`: L11 → M1 → M2.
+  - `client/src/scene/{preload.test,executor.test}.ts`: L11 → M2 → M3c.
+  - `client/src/scene/{layout,layout.test}.ts`: L11 → M1 → M3c.
+  - `client/src/scene/controller.ts`: L11 → L15 (F) → M2 → M3c.
+  - `client/src/scene/executor.ts`: L11 → M2. `client/src/scene/{revive-flow.ts,revive-flow.test.ts}`: new in M2.
+  - `client/e2e/memory.spec.ts` (new in M1): M1 → M2 → M3c → M3s; no L15 or LMI spec is edited.
+  - `client/src/app/game.ts` (the `__novelDebug` hook): L15 → LMI → M2.
+  - `server/src/content.rs`: L6b → LM2 → M3s. `server/tests/it/content.rs`,
+    `server/tests/fixtures/content/chapters/{ch2,ch4}/assets.json`: → M3s.
+  - `docs/FEATURE_MAP.md`, `docs/ARCHITECTURE.md`: D1 → D2 → M3s.
+  - No M lane edits `docs/PROTOTYPE-PLAN.md`: this revision owns every PP text the design changes, and a cut that must
+    deviate records it in carry.md for the next revision.
 
 **Dependencies:**
 - All client dependencies are installed by L1 (one lockfile change); later client lanes change only `scripts`.
@@ -2651,6 +2740,11 @@ Changed by RULINGS 54 (as merged; docs lane `docs-errata-2`): the State column i
 SHA from `git log --first-parent main` (the seven lanes merged before the RULINGS 11 rewrite name their old SHA too).
 Merged: every lane up to LU1 `2a7b50c`. Running: L10 client-data (base `e5ce724`) and LE1 economy-core (base
 `00d7c10`). "To go": the rest, in the planned order below.
+
+Changed by MEMORY-PLAN (RULINGS 78): the four MEMORY-PLAN lanes M1 memory-trim, M2 memory-cpu-copy, M3c
+memory-half-tier (client) and M3s memory-half-paid (server slot) are added, all to go. LMI's gate gains M1 and D2's
+gate gains M2; M3s runs in the server slot after M3c, L9 and D2. The "Re-cut" column names MEMORY-PLAN where it changes
+a lane ([MEMORY-PLAN "Decision table"](MEMORY-PLAN.md#0-decision-table)).
 
 | Lane | Slot | State | Gate to start (merged) | Re-cut |
 |---|---|---|---|---|
@@ -2699,16 +2793,20 @@ Merged: every lane up to LU1 `2a7b50c`. Running: L10 client-data (base `e5ce724`
 | **N2 story-tide** | narrative | to go (new, STORIES-PLAN) | N1 (shared story files), LS1, L5 | new; META-PLAN: ending titles, achievements |
 | **LP2 puzzle-ui** | client | to go | L10, L14b, LW2 | PUZZLES-PLAN; META-PLAN: `HintPort \| null` |
 | **LX explore-ui** | client | to go | L11, L14b, LW2 | PUZZLES-PLAN (∥ LP2: disjoint locks) |
-| L15 integration | client | to go | every lane above (N1 and N2 included: the e2e plays both stories). Changed by META-PLAN: every lane above except L9 and the META-PLAN lanes (LE1, LF1, LM2, LF2, LE2, LU1, LMD; LM1 is in through N1) | PUZZLES-PLAN, STORIES-PLAN (stories wiring, `stories.spec.ts`); META-PLAN: `choice_made`, `hints: null` |
-| **LMI meta-integration** | client | to go (new, META-PLAN) | L15, LMD, LU1, LE2 | new |
-| D2 docs-final | doc | to go | L15. Changed by META-PLAN: LMI, L9; revision 1: LPO | PUZZLES-PLAN, STORIES-PLAN; META-PLAN: the meta rows and runbooks |
+| L15 integration | client | to go | every lane above (N1 and N2 included: the e2e plays both stories). Changed by META-PLAN: every lane above except L9 and the META-PLAN lanes (LE1, LF1, LM2, LF2, LE2, LU1, LMD; LM1 is in through N1) | PUZZLES-PLAN, STORIES-PLAN (stories wiring, `stories.spec.ts`); META-PLAN: `choice_made`, `hints: null`; MEMORY-PLAN: lever F (+ `scene/controller.ts`) and the e2e helpers, carried into its running cut through its brief |
+| **M1 memory-trim** | client | to go (new, MEMORY-PLAN) | L15 (the first rendered scene and `perf.spec.ts`; the e2e helpers) | new |
+| **LMI meta-integration** | client | to go (new, META-PLAN) | L15, LMD, LU1, LE2. Changed by MEMORY-PLAN: M1 | new; MEMORY-PLAN: gate + M1 |
+| **M2 memory-cpu-copy** | client | to go (new, MEMORY-PLAN) | LMI (after M1; the `budget.ts` and `app/game.ts` chains) | new |
+| **M3c memory-half-tier** | client | to go (new, MEMORY-PLAN) | M2 | new |
+| D2 docs-final | doc | to go | L15. Changed by META-PLAN: LMI, L9; revision 1: LPO. Changed by MEMORY-PLAN: M2 | PUZZLES-PLAN, STORIES-PLAN; META-PLAN: the meta rows and runbooks; MEMORY-PLAN: gate + M2, the M1 / M2 map rows, two authoring-guide rules |
+| **M3s memory-half-paid** | server | to go (new, MEMORY-PLAN) | M3c, L9 (the end of the server chain), D2 (the docs chain D1 → D2 → M3s) | new |
 
 There are 38 lanes: 12 merged, 2 running, 24 to go (changed by RULINGS 22, 23; it read "10 merged, 1 running, 1
 paused, 26 to go"); 6 are new from PUZZLES-PLAN, 3 (LDB0, LDB1, LDB2) from RULINGS 14/17 and 5 (LS1–LS4, N2) from
 STORIES-PLAN. Changed by META-PLAN: there are 47 lanes — 14 merged (L6b `698993e`, L3c `91e35cd`), none running, 33 to go; 9
 (LE1, LF1, LM2, LF2, LE2, LM1, LU1, LMD, LMI) are new from META-PLAN. Changed by META-PLAN revision 1 (W4): 48 lanes,
 34 to go; LPO is the tenth new lane. Changed by RULINGS 54 (as of `6043941`): 48 lanes — 29 merged, 2 running (L10, LE1),
-17 to go.
+17 to go. Changed by MEMORY-PLAN (RULINGS 78): 52 lanes; M1, M2, M3c and M3s are new from MEMORY-PLAN, all to go.
 
 **Launch preference** when several lanes are ready (critical path first; changed by STORIES-PLAN):
 - client (two slots): L3c (running), L5, L11, LS1, L7, L12, LW3, L14a, L10, L13, L14b, LP2 ∥ LX, LS4, D1, N1, N2, L15,
@@ -2720,6 +2818,9 @@ STORIES-PLAN. Changed by META-PLAN: there are 47 lanes — 14 merged (L6b `69899
   fixture).
 - Changed by RULINGS 54 (as of `6043941`; merged lanes dropped): client: L10 (running), L13, L14b, LP2 ∥ LX, LS4, N1,
   N2, L15, LMD, LMI, D2; server: LE1 (running), LF1, LM2, LF2, LE2, LPO, L9. LM1 has merged, so LM2 waits only for LF1.
+- Changed by MEMORY-PLAN (RULINGS 78): in the client list M1 follows L15 (before LMD and LMI), and M2 then M3c follow
+  LMI; D2 follows M2 and runs beside M3c (disjoint locks). In the server list M3s follows L9, once M3c and D2 have
+  merged.
 
 After L9 the server slot takes doc / narrative / client lanes with disjoint locks.
 
@@ -2753,6 +2854,12 @@ beside them.
 - The prototype milestone: L10 (running) → L14b → LP2 → L15.
 - The whole plan: the server chain LE1 (running) → LF1 → LM2 → LF2 → LE2, then LMI → D2; LPO → L9 run in the server
   slot beside LMI, and D2 waits for them. LMD (← LS4, LF2) runs beside LE2. LM1 and LU1 have merged.
+
+**Changed by MEMORY-PLAN — the critical path** (RULINGS 78; MEMORY-PLAN section 0 "Order", section 11).
+- The prototype milestone is unchanged: L15.
+- The whole plan's path gains M2 and M3s: the server chain to LE2, then LMI → M2 → D2 → M3s, with M3c beside D2 (M3s
+  needs both) and LPO → L9 in the server slot beside LMI and M2.
+- M1 runs between L15 and LMI, in the window in which LMI waits for LE2. If LE2 merges first, LMI starts one M1 later.
 
 ### Lanes
 
@@ -5455,6 +5562,91 @@ Notation:
     solve` fails at "hotspot layer visible". The hint use e2e moves to LMI (`meta: hint from a pack shows its text`).
   - **Commit 6b** (`stories.spec.ts`): the stats check asserts `endingsReached: ["drowned"]` and that the response has
     no `endingsTotal`.
+- **Changed by MEMORY-PLAN (RULINGS 76, 78; MEMORY-PLAN 4.F, section 14 items 1 and 7).** Recorded as carried into
+  L15's running cut through its brief (L15 spec item 3), not as merged:
+  - **Lock:** + `client/src/scene/controller.ts`, for one hunk → 15.
+  - **Lever F:** `mount(host, { dpr, perfClass, fetchAsset })`, with `renderResolution(o.dpr, o.perfClass)` in place of
+    the re-clamp with `'HIGH'` (`controller.ts:265`). M3c's `tierFor` needs the class inside the controller.
+  - **Red:** `scene: a LOW perf class renders at resolution 1` (`perf.spec.ts`), asserting `canvas.width ===
+    canvas.clientWidth`, inside a `test.describe` with `test.use({ deviceScaleFactor: 2, userAgent: <a Telegram-Android
+    UA whose last token is "LOW"> })`. Predicted red before the controller hunk: `canvas.width` = 2 × `clientWidth`.
+  - **Control:** `scene: an AVERAGE perf class at DPR 2 renders at resolution 2` (DPR 2, the default UA):
+    `canvas.width === 2 × canvas.clientWidth`. If the control is red, the LOW test is vacuous and is not counted.
+  - **The e2e helpers** (section 14 item 7; in L15's resume note, RULINGS 78): export the helpers that reach a line and
+    read a stage-canvas pixel, which M1's `memory.spec.ts` needs, from `client/e2e/helpers.ts`, so that M1's lock stays
+    13. If L15's merged tree keeps them inside `perf.spec.ts`, M1's cut adds `helpers.ts` (lock 14).
+
+#### M1 memory-trim (client; new, MEMORY-PLAN)
+- **Source:** [MEMORY-PLAN "Lane cut sketches"](MEMORY-PLAN.md#11-lane-cut-sketches), M1 (RULINGS 78; lever B,
+  [MEMORY-PLAN 4.B](MEMORY-PLAN.md#4b-trim-transparent-margins-char-prop-build-time)). "Section <n>" below is MEMORY-PLAN's; `PP:<line>`,
+  RESUME and code line citations are as of `f53755b` / `a9e991c` and are re-located at cut time. No M lane edits
+  this file.
+- **Gate to start:** L15 merged (the first client slot after L15, before LMI).
+- **Goal.** char/prop files hold their alpha box + 2 px, laid out as the untrimmed canvas; knot-set rows drop (quote
+  before/after); bg/cg/cover bytes byte-identical; no DSL, server code or HTTP change.
+- **Why after L15.** L15 brings the first rendered scene and `perf.spec.ts` (PP:2332); the placement proof is an e2e.
+- **Why before LMI.** M1 is the one lever that buys knot-set headroom for the real art. It also fits the window in
+  which LMI waits for LE2 (RESUME "Next launches": LM2 -> LF2 -> LE2 are still ahead in the server slot after LF1).
+  The cost if LE2 is merged first: LMI starts one M1 later.
+- **Chains (PP revision).**
+  - `client/scripts/{budget.ts,budget.test.ts}`: L1 -> L5 -> LP2 -> **M1** -> LMI -> **M2** -> **M3c** (PP:2568, :2612
+    end at LMI today). LMI's gate gains M1.
+  - `client/src/story/catalog.ts`: ... -> L13 -> M1 -> M3c (PP:2556).
+  - `client/scripts/assets.ts`, `client/scripts/assets/{encode.ts,assets.test.ts}`: ... -> LW3 -> M1 -> M3c -> M3s.
+  - `client/scripts/assets/manifest.ts`: ... -> LW3 -> M1 -> M2 -> M3c -> M3s (M2 re-exports the cap; critique_r2 O3).
+  - `client/src/scene/{registry,registry.test}.ts`: L11 -> M1 -> M2 -> M3c.
+  - `client/src/scene/loader.ts`: L11 -> M1 -> M2. M1's loader forwards the geometry's `resolution`, so M3c leaves the
+    loader unchanged (critique_r2 W6).
+  - `client/src/scene/{preload.test,executor.test}.ts`: L11 -> M2 -> M3c. Their fakes gain M2's `Decoded` members and
+    M3c's `tier`; M1's third `load` argument needs no fake change (critique_r2 W6).
+  - `client/src/scene/{layout,layout.test}.ts`: L11 -> M1 -> M3c.
+  - `client/e2e/memory.spec.ts`: M1 -> M2 -> M3c -> M3s.
+- **Lock (13).** `client/scripts/assets/encode.ts`, `client/scripts/assets.ts`, `client/scripts/assets/manifest.ts`,
+  `client/scripts/assets/assets.test.ts`, `client/src/story/catalog.ts`, `client/scripts/budget.ts`,
+  `client/scripts/budget.test.ts`, `client/src/scene/layout.ts`, `client/src/scene/layout.test.ts`,
+  `client/src/scene/registry.ts`, `client/src/scene/registry.test.ts`, `client/src/scene/loader.ts`,
+  `client/e2e/memory.spec.ts` (new). No docs.
+- **Commits.**
+  1. Decoder `trim`. Red `catalog: trimmed image entry decodes` -> issue `trim: unknown key`; also `catalog: a trim
+     outside its canvas is an error value` and `catalog: a char entry with an odd stored side is an error value` (it
+     decodes; critique_r2 W5). A different red (a fixture failing) means the optional-key path broke `exactKeys`.
+  2. `textureGeometry`. Red `layout: a trimmed file keeps its canvas as orig` -> orig 466 x 1394, expected 768 x 1536.
+  3. Registry handle, the geometry as `load`'s third argument, and loader `orig`/`trim`/`resolution`.
+     - Red `registry: a trimmed entry's handle reports its canvas` -> h 1394.
+     - Red `registry: load receives the entry's geometry` -> the third argument is undefined.
+     - `preload.test.ts` and `executor.test.ts` are not edited. Their fakes take one or two parameters and still
+       type-check (critique_r2 W6); this commit's `npm run check` proves it.
+  4. Budget. Red `budget: a trimmed background fails` -> a PASS row; `budget: a char canvas over 768x1536 fails`.
+  5. Encoder + planner on. Red `encode: a transparent sprite is cut to its alpha box plus 2 px, even-sided` -> w 768;
+     `assets: expressions of one character share a canvas` -> exit 0 on a mismatched pair; `assets: a char canvas with
+     an odd side is refused` -> exit 0. The shape test `assets:
+     paid manifest keeps the server fixture keys` compares untrimmed kinds; the server fixtures stay as they are.
+  6. e2e `scene: trimmed character renders where its canvas puts it`, in the new `client/e2e/memory.spec.ts` (pixel
+     samples just inside the head's top edge, beside the body and above the head, computed from `placeholder.ts` and
+     `layout.ts` constants). Seen red by mutation: loader without `orig`. The sample rule (critique_r3 open question 2),
+     which M3c reuses on the half tier:
+     - every sample sits >= 4 CSS px (>= 4 device px at resolution >= 1) from every edge: the silhouette, the head,
+       the label glyph boxes and the canvas. At M3c's LOW phone (resolution 1, 0.78 x 740 / 1536 = 0.38 device px per
+       canvas px), 4 px is >= 10 canvas px, i.e. >= 5 half texels, well past the 1 half texel that the 2 x 2 mean and
+       bilinear sampling can move an edge;
+     - each sample is compared with the expected flat colour of its region (`placeholder.ts` constants; outside the
+       body, the bg showing through) at +-12 per RGB channel. The test asserts that the inside and outside colours of
+       each sample differ by > 24 in some channel, so a match cannot confuse them;
+     - the lane report quotes the largest per-channel deviation seen; above 6 (half the tolerance) the tester flags it.
+
+     The helpers that reach a line and read a canvas pixel come from `client/e2e/helpers.ts` (section 14 item 7).
+- **Pins.** char/prop files, their manifest entries and knot-set rows move on purpose; bg/cg/cover files and covers.json
+  byte-identical; story outputs untouched.
+- **Gates.** check, test, story, build, e2e. Seen working: `npm --prefix client run build` knot-set rows.
+- **Seen red once** (section 12): besides the reds and commit 6's mutation, one `node scripts/budget.ts` run on a
+  synthetic input, which asserts its row and note, not only exit 1:
+  - a trimmed bg -> the CLI decodes each manifest first, the decoder refuses `trim` on a bg, so the `asset inputs` row
+    FAILs naming it and that chapter's knot-set rows are absent (M1).
+- **Tester mutations:** MEMORY-PLAN names none for M1 beyond commit 6's seen-red mutation (the loader without
+  `orig`).
+- **Budgets** (section 12, 4.B): the knot-set rows drop, quoted before and after (the placeholder estimate at the
+  busiest knot is 30.4 -> 24.3-27.3 MiB); first-load and per-chapter transfer ~0, quoted by the lane; M1-M3 together
+  add < 1.5 KB brotli to the engine chunk (an estimate the per-chunk row reports); no new dependency.
 
 #### LMI meta-integration (client; new, META-PLAN)
 - **Goal:** the meta controller and its wiring into boot, GameSession, the yields and App; the gift call; the
@@ -5515,6 +5707,374 @@ Notation:
   the wallet shows it → a hint used in ch1; a second dev user via `startapp` → Send in the prompt → the first user
   accepts → a gift.
   `npm --prefix client run e2e`.
+- **Changed by MEMORY-PLAN (RULINGS 78).** **Gate to start:** + M1 merged (MEMORY-PLAN section 11 M1, "Why before
+  LMI"; `budget.ts` / `budget.test.ts` … → LP2 → M1 → LMI → M2 → M3c). The lock is unchanged; `client/src/app/game.ts`
+  passes to M2 after LMI.
+
+#### M2 memory-cpu-copy (client; new, MEMORY-PLAN)
+- **Source:** [MEMORY-PLAN "Lane cut sketches"](MEMORY-PLAN.md#11-lane-cut-sketches), M2 (RULINGS 78; lever A,
+  [MEMORY-PLAN 4.A](MEMORY-PLAN.md#4a-drop-the-decoded-cpu-copy-after-upload-keep-the-encoded-blob)). "Section <n>" below is MEMORY-PLAN's; `PP:<line>`,
+  RESUME and code line citations are as of `f53755b` / `a9e991c` and are re-located at cut time. No M lane edits
+  this file.
+  critique_r5 O1-O3 and its open question 1 are applied as in MEMORY-PLAN.
+- **Gate to start:** LMI merged (M1 precedes LMI).
+- **Goal.**
+  - On a GL renderer, no decoded bitmap outlives its upload; Blobs are kept for revive.
+  - A revive brings every live texture to the current renderer before a frame binds it (I7).
+  - The caps count kept bytes; `LIMITS.knotSet = LIMITS.roomSet = STEADY_CAP_BYTES`.
+  - After a context loss the player sees the same stage. After a Pixi-restored loss or a rebuild, it appears when the
+    visible revive ends (3 decodes at the busiest knot, timed in section 12), not at the first frame as today (O4).
+  - A visual whose re-decode fails leaves the stage at once and loads again through the normal path (critique_r3 O5),
+    once per ended record, found by handle identity; no sprite is ever made from an ended record's handle
+    (critique_r4 W1, W2; R5-0).
+  - Frames resume when the visible pass of the current revive is done, whatever the executor's chain waits on; an
+    aborted or superseded revive never resumes them (critique_r4 O1, O2).
+- **Slot and chains (W3).**
+  - Runs after LMI. `budget.ts` chain: ... -> LMI -> M2 -> M3c.
+  - `client/src/app/game.ts`, which installs the `__novelDebug` hook (PP:5284-5286): L15 -> LMI -> M2.
+  - `client/src/scene/controller.ts`: L11 -> L15 (F) -> M2 -> M3c.
+  - `client/src/scene/{preload.test,executor.test}.ts`: L11 -> M2 -> M3c (critique_r2 W6).
+  - `client/src/scene/executor.ts`: L11 -> M2 (`reacquire`; critique_r3 O5). Only L11 locks it in the plans (PP:4705;
+    no other lock in `docs/` names it), and no running lane does (RESUME:27-29).
+  - `client/src/scene/{revive-flow.ts,revive-flow.test.ts}`: new in M2 (critique_r4 O1, O2). The arch rules allow a
+    pure `scene/` file (`arch.test.ts:152-181`: no Pixi, GSAP or fetch rule is broken).
+  - D2's gate gains M2.
+- **Lock (14).**
+  - `client/src/scene/{loader.ts,registry.ts,registry.test.ts,controller.ts,executor.ts}` (`executor.ts` for
+    `reacquire`, critique_r3 O5).
+  - `client/src/scene/{revive-flow.ts,revive-flow.test.ts}` (new; critique_r4 O1, O2).
+  - `client/src/scene/{preload.test.ts,executor.test.ts}` (critique_r2 W6). Their fakes return `Decoded`
+    (`preload.test.ts:63`, `executor.test.ts:156`). They become byte-faithful hosts (critique_r3 W2): `keptBytes` = the
+    bytes of the ref they were called with (100 B, the avif fixture, `preload.test.ts:19`, `executor.test.ts:119`),
+    `gen` = the harness's current generation when the load settles (1 by default; a test raises it before it calls
+    `revive`, as the production `upload` reports the current one, section 9), and a `revive` that resolves ok unless
+    a test makes it fail or wait for one id. So `keptMismatch` stays 0, and no admission moves (R4-4). Declared
+    assertion moves, per commit:
+    - commit 2: the empty baselines `preload.test.ts:120`, `:205` and `executor.test.ts:246` gain `keptBytes: 0,
+      keptMismatch: 0`;
+    - commit 3: the same three gain `openBitmaps: 0, stale: 0, reviveFailed: 0`.
+
+    The new fields at 0 make these baselines leak checks for the kept Blob, the open bitmap and the revive state. No
+    other assertion in the two suites moves: their other registry assertions read `.live` only. `executor.test.ts` also
+    gains commit 3a's `reacquire` tests and commit 3b's integration red (it imports `revive-flow.ts`; test files are
+    outside the arch scan, `arch.test.ts:834`).
+  - `client/scripts/{budget.ts,budget.test.ts}`; `client/scripts/assets/manifest.ts` (re-export of the cap; verify the
+    `arch.test.ts` import rules at cut time).
+  - `client/src/app/game.ts` (the hook gains the `'hard'` mode and the new stats; at cut time, check whether the hook
+    already forwards them, and drop the file if it does).
+  - `client/e2e/memory.spec.ts`.
+- **Commits.**
+  1. Guard e2e `scene: an unrestored context loss rebuilds the stage` (W1), on today's code:
+     - reach a line with a bg and a character on stage, and sample the stage;
+     - `__novelDebug.forceContextLoss('hard')` (`gl.getExtension('WEBGL_lose_context').loseContext()` called
+       directly);
+     - the mock's `minimize()` then `restore()` (`mock-transport.ts:230-231`, `visibility_changed`) -> `deactivated`,
+       then `activated`;
+     - wait `CONTEXT_GRACE_MS` + 1 s;
+     - assert `stats().rebuilds === 1` (the branch was entered; a Pixi self-restore would leave it 0), samples at the
+       bg and at the character's head equal to the pre-loss ones, and no page error;
+     - advance to the next batch that shows an asset not loaded before (the cut names its line ID), and sample it as
+       not black.
+
+     It is green on the parent, because the bitmaps are kept today. Its red is seen by mutation and quoted in this
+     commit's report: with the rebuild skipped on `activated`, `rebuilds === 0` and the bg sample is black. The hook's
+     `'hard'` mode and the `rebuilds` stat land here.
+  2. Kept bytes in the caps: `Decoded.keptBytes` and the stats `keptBytes`, `keptMismatch`. The loader keeps the
+     fetched Blob in its `Decoded` (dropped on release) and reports `blob.size`; the bitmap stays open until commit 4.
+     - Red `registry_caps_count_kept_bytes`: a preload of 32 MiB - 100 B decoded + 200 B file is admitted.
+     - Red `registry: a kept blob is counted at its real size`: it is counted at `ref.bytes`, and `keptMismatch` is 0
+       (expected 1).
+     - Declared moves in `registry.test.ts` (critique_r3 W2). Its fake `decoded()` returns `keptBytes` = the call's ref
+       bytes (F = 100 B, the avif fixture, `registry.test.ts:24`), so a record counts `decodedBytes + F` both pending
+       and live. R4-4's table lists every moved figure: `registry_caps` (the K5 caps pin, PP:2100) at :114, :116, :118,
+       :121, :125, :134, :149, :155; then :167, :171, :172, :194, :250, :273, :282, :290, and the comments :168, :189.
+       Every `toEqual` over `stats()` (:99, :125, :155, :194, :229, :250, :273, :282, :290, :294) gains `keptBytes`
+       (live records x F) and `keptMismatch: 0`. No admission outcome moves (R4-4).
+     - The baselines of `preload.test.ts` and `executor.test.ts` move as stated under the lock.
+  3. Revive in the registry, over the fake loader: `Decoded.gen`, `Decoded.revive`, `ReviveEnd`, `current(id)`, and the
+     stats `openBitmaps`, `stale`, `reviveFailed`, added at 0 to every `toEqual` over `stats()` in the three suites
+     (declared; critique_r3 W2). Until commit 4 the production loader reports `gen: null` and a `revive` that resolves
+     ok (today's kept-bitmap path). The default fake of `registry.test.ts` reports `gen: 1`, like the preload and
+     executor fakes, so its live rows read `openBitmaps: 0` as R4-4's table declares (critique_r4 O4). Predicted reds:
+     - `registry: revive brings every record of an older generation once` -> 0 calls;
+     - `registry: revive skips a record uploaded under the current generation` -> 1 call;
+     - `registry: revive serves visible holders first` -> the preload-only record (inserted first) revives first;
+     - `registry: acquire on a record not yet revived waits for it` -> it resolves before its revive;
+     - `registry: a failed revive ends the record and fails its waiting acquire` (critique_r2 O5) -> the record stays
+       live, and the waiting acquire resolves ok with the stale texture;
+     - `registry: a revive that misses its deadline ends the record` (fake timers; a re-decode that never settles) ->
+       `visible` never resolves;
+     - `registry: an acquire after a failed revive starts a new record` -> it joins the ended record, with no load
+       call;
+     - `registry: an aborted revive fails no record` (the `deactivated` path) -> the records are ended as failures;
+     - `registry: revive ignores an entry released mid-revive`;
+     - `registry: current names a live record's handle and nothing else` (critique_r4 open question 1): `null` while
+       pending, the handle once live, `null` after the last release, `null` after a failed revive, and a later record
+       of the id has a different handle -> first red `TypeError: h.registry.current is not a function`;
+     - `registry: a revived record keeps its handle` (`current(id)` after a successful revive is the handle acquired
+       before it) -> a revive that rebuilt the texture object would give a new handle and strand every view;
+     - `registry: visible and all settle aborted when the revive is aborted`, by `signal` and by a newer call, and a
+       pass that had settled keeps `'done'` (critique_r4 O2) -> against a stub that settles both `'done'` at once;
+     - `registry: a revive with no stale record settles done at once` (the `activated` restart, section 9).
+  3a. `executor.reacquire()` and the identity rule (section 8; critique_r3 O5, R4-0, critique_r4 W1, W2, R5-0), in
+      `executor.ts` and `executor.test.ts`. The harness gains three things, all inside `executor.test.ts`:
+      - `failRevive(id)` and `holdRevive(id)`: the fake `Decoded.revive` of that id rejects, or waits for the test;
+      - `deferLoad(id)`: the next load of that id waits for the test, a stalled fetch;
+      - a `console.error` spy. The chain's catch logs a build that threw (`executor.ts:651-655`), so a throw from
+        the recording stage inside `run` shows there, not as a rejected test.
+
+      Records end through commit 3's real `registry.revive(2, signal)`, after the test sets the harness generation
+      to 2. The method is new, so every red below first fails with `TypeError: h.ex.reacquire is not a function`. The
+      behavioural red, which the tester's mutation reproduces, is in brackets. A different red, an assertion of an
+      existing executor test, means the commit changed `enqueue` or `sweep` for the other callers. Reds:
+      - `executor: reacquire removes a view bound to an ended record at once`. A bg and a character are shown (cut),
+        and the bg's revive fails. Then `reacquire()`: before any await the bg sprite is destroyed, the character's is
+        alive, and the call returned `undefined` (critique_r4 O1). [The removal moved inside the enqueued batch: the
+        bg sprite is still alive.]
+      - `executor: reacquire takes the slot again on a new record`. After a flush the bg is loaded a second time, the
+        bg sprite's texture is not in `freed`, and `registry.current('bg/cafe')` is a new handle.
+      - `executor: a batch never builds on a handle whose record ended` (critique_r4 W1's red).
+        - Setup: `bg/cafe` is live under a test holder. B = `apply([bg('cafe','cut'), show('ally','neutral',null,
+          'cut')])`, so B's bg take resolves at once while the ally load is deferred. Cafe's revive fails, then
+          `reacquire()`, then the ally load settles, then a flush.
+        - Asserted: no `console.error`; the ally sprite is alive; after the re-take the bg sprite's texture is the new
+          one; `loadsOf('bg/cafe') === 2`.
+        - [Without `handleFor`, as in round 4: `console.error('scene: batch failed', Error('stage: sprite on the
+          released texture /assets/bg_cafe.avif'))`, and no ally sprite, because the throw ends B's build before the
+          characters.]
+        - A different red: the bg shows a freed texture with no throw. That means the recording stage stopped
+          checking `freed`.
+      - `executor: a fade through black never shows a handle whose record ended at black` (R5-0).
+        - Setup: `bg/street` is live under a test holder. `apply([scene('street','fade',800)])`; `advance(100)`;
+          street's revive fails; `reacquire()` (it removes nothing: no street sprite yet); `advance(400)`, so the
+          midpoint fires; flush.
+        - (critique_r5 O1) Right after `reacquire()`, `stats().activeTimelines` is still 1. Before the re-take
+          assertion the test advances past S's end (800 ms), so `S.done` settles and the re-take chained behind
+          `run(S)` builds.
+        - Asserted: no throw, and after the re-take the bg is street on a new texture.
+        - [With the check only where `run` collects the takes: `advance` throws `stage: sprite on the released texture
+          /assets/bg_street.avif` from the GSAP callback.]
+      - `executor: a second reacquire touches nothing` (critique_r4 W2). After the first call, a second one while the
+        re-take is pending and a third after it settled. Asserted: `loadsOf('bg/cafe') === 2`, one `destroy:bg:cafe`
+        in the log, the bg sprite alive, `registry.current('bg/cafe')` unchanged and `registry.stats().live`
+        unchanged. [Views and entries matched by asset id, as in round 4: 3 loads and two destroys.]
+      - `executor: reacquire behind a waiting batch removes at once` (the R4-0 case). A batch whose load is deferred is
+        queued first, and the shown bg's revive fails. The removal still happens before any await. [The removal moved
+        inside the enqueued batch: the bg is alive.]
+      - `executor: a waiting take that failed with its record is taken again`. `char/ally/neutral` is live under a
+        test holder and its revive is held; B = `apply([show('ally','neutral','left','cut')])` waits on the stale
+        record; the held revive rejects, so B skips the ally (`onSkip` gets `decode`). Then `reacquire()`: the ally
+        loads a second time and is shown. [`bound` set only on an ok result: no second load and no ally sprite.]
+      - `executor: reacquire touches nothing not bound to an ended record` (critique_r4 open question 2). The setup
+        has a `bg/broken` visual skipped by its own decode failure, a live character, and a running 200 ms expression
+        fade. Asserted: no load call, no destroy in the log, and `stats().activeTimelines` stays 1. [`complete()`
+        before the scan: 0 timelines. A re-take of every absent slot: a second `bg/broken` load.]
+
+      - `executor: rebind skips a view whose record ended`. A bg and a character are shown, and the bg's revive fails.
+        Then `ex.rebind(<a second recording stage sharing freed>)`: no throw, the new stage holds the character only,
+        and a following `reacquire()` shows the bg on the new stage on a new texture, and the character is still alive
+        on the new stage after it (critique_r5 O3). [Without the check in `rebind`:
+        `rebind` throws `stage: sprite on the released texture /assets/bg_cafe.avif` synchronously.]
+
+      Tester mutations: the removal inside the enqueued batch (the waiting-batch red); `handleFor` dropped at the
+      midpoint (the fade red); `rebind` without the check (the rebind red); `complete()` whenever an entry is
+      dead-bound (the fade red: `activeTimelines` is 0 right after `reacquire()`; critique_r5 O1). The entry is deleted rather than released
+      by id. That is a rule, not a mutation target: while a dead-bound entry exists, no other record of the id holds
+      its holder (`take` reuses the entry), so a release by id is a no-op, and a mutation there would be equivalent.
+  3b. The revive flow (critique_r4 O1, O2): the new `scene/revive-flow.ts` and `revive-flow.test.ts`, over a fake
+      `revive` whose passes the test settles, and spies for `reacquire` and `resume`. First red: the module is missing
+      (`Failed to resolve import "./revive-flow.ts"`). Reds:
+      - `revive-flow: frames resume when the visible pass is done, before all settles` [`resume` called only after
+        `all`];
+      - `revive-flow: every settled pass reacquires`: 2 calls for a done revive, and also on `'aborted'` [no call on
+        abort];
+      - `revive-flow: a superseded revive never resumes frames`. `start(2)`, then `start(3)`; the fake then settles
+        visible(2) `'done'` late, ignoring its abort. `resume` runs once, after visible(3). [The token check is
+        missing: two calls, the first while revive 3 is stale.]
+      - `revive-flow: an aborted revive leaves frames suspended`. `start(2)`, `abort()`: `suspended()` stays true and
+        `resume` is not called. A new `start(2)` that settles `'done'` resumes.
+      - `revive-flow: lost aborts the current revive` (the second-loss row of section 9) [a `lost()` that only
+        suspends: the old revive's `visible` `'done'` resumes frames during the second loss];
+      - In `executor.test.ts`, the integration red `executor: with the revive flow, frames resume at the deadline while
+        a batch waits on a stalled fetch` (critique_r4 O1). It uses the real registry, the real executor and
+        `createReviveFlow`.
+        - Setup: the bg is shown; A = `apply([show('ally','neutral','left','cut')])` with the ally load deferred;
+          `flow.lost()`, `flow.start(2)`, with the bg's revive held (never settles); `vi.advanceTimersByTime(
+          REVIVE_DEADLINE_MS)`; flush.
+        - Asserted: `resume` was called once while A still waits. Inside the spy, `registry.stats().stale === 0`, so a
+          frame can bind no stale texture (the controller's `staleFrames` stays 0), and the bg sprite is already
+          destroyed. No `console.error`. After the ally load settles, the ally and the re-taken bg are on stage.
+        - [A `reacquire` that returns its batch's promise, awaited by the flow before `resume`: `resume` is not called
+          until the ally settles.]
+  4. Loader close-after-upload, controller revive and frame suspension, in one commit. The red is seen on the working
+     tree between the halves: with the loader change alone, commit 1's e2e samples a black bg after the rebuild, and
+     L15's `context loss recovers` samples a black stage after the restore.
+     - The controller drives `createReviveFlow({ revive: registry.revive, reacquire: executor.reacquire, resume })`
+       (section 8 A2, Rebuild):
+       - the render callback draws only when `!lost && !flow.suspended()`;
+       - `webglcontextlost` -> `flow.lost()`; `webglcontextrestored` -> `gen += 1`, then `paused ? flow.lost() :
+         flow.start(gen)`;
+       - `pause()` (deactivated) -> `flow.abort()`;
+       - `activated` with a live context and (`flow.suspended()` or `stale > 0`) -> `flow.start(gen)`. Every point where
+         `activated` handling finds the context live, including the end of the grace, applies this same check
+         (critique_r5 O2);
+       - the rebuild runs `flow.lost()`, install, `gen += 1`, `flow.start(gen)` and the old app's destroy in one
+         synchronous block. The block follows the restore rule: when `paused`, it calls `flow.lost()` in place of
+         `flow.start(gen)`, and `activated` starts the revive. A rebuild that the grace reaches while deactivated builds
+         at once and defers only the revive (RULINGS 78; critique_r5 O2 and its open question 2);
+       - `destroy()` -> `flow.destroy()`;
+       - `stats().reviving = flow.reviving()`.
+     - The commit also adds the e2e `scene: a failed revive re-acquires the visual` (critique_r3 O5). After the first
+       line, once `stats().pendingLoads === 0` (so no preload decode can take the failure), the test wraps
+       `window.createImageBitmap` from the page so that its next call rejects once (the loader calls the global at call
+       time, `loader.ts:33`). Then it runs commit 1's hard loss; the revive's first re-decode is a visible record. The
+       test polls, for up to 5 s, until `stats().reviving === false` and `pendingLoads === 0`, so `all` has settled
+       and the re-take has finished. Then it asserts: `reviveFailed === 1`, `rebuilds === 1`, both samples equal to
+       the pre-loss ones, `openBitmaps === 0`, `stale === 0`. In the request log exactly one image URL was fetched
+       twice and none three times (exactly one extra GET; critique_r4 W2), the log is unchanged 500 ms later, and
+       there is no page error. The fixture routes every request, which disables the HTTP cache (Playwright
+       `page.route`, critique_r4 Sources), so each GET is in the log.
+     - Its predicted reds:
+       - with the controller calling round 3's `executor.restore(<snapshot without them>)` in place of `reacquire`:
+         one sample stays black and no second GET follows;
+       - with round 4's id-based `reacquire(ids)` called at both passes: the failed URL is fetched three times,
+         because the `all` call removes the healed view and re-takes it.
+
+       A different red, `reviveFailed === 0`, means the wrapper did not reach the decode.
+     - M2-cut item (critique_r5 open question 1): the cut checks the parent's request log at commit 1's sample point.
+       If any image URL is already fetched twice there, the "exactly one image URL fetched twice" assertion counts GETs
+       from a marker taken just before `forceContextLoss('hard')`.
+     - Re-locate at cut time: an L15 e2e that asserts the whole `stats()` object with `toEqual` moves with the new
+       counters, and its spec then joins this lock with the move declared.
+
+     Tester mutations:
+     - `upload` captured at mount: the new asset after the rebuild samples black;
+     - frames not suspended until the visible pass: `staleFrames > 0`, plus a page error if the browser throws on a
+       closed bitmap (verify the error text);
+     - revive started after `requestRender()`: `staleFrames > 0`;
+     - the render gate without `flow.suspended()` (only `lost`): `staleFrames > 0` after the rebuild.
+  5. Budget.
+     - Red `budget: knot-set counts kept encoded bytes`: PASS at 32 MiB - 1 B decoded + 2 B file.
+     - Red `budget: room-set counts kept encoded bytes` (O2).
+     - Guard `budget: knot-set and room-set limits are the registry steady cap` (critique_r3 O2). It is green on the
+       parent: `LIMITS.knotSet = LIMITS.roomSet = 32 * MIB` (`budget.ts:91,112-113`) already equals `STEADY_CAP_BYTES`
+       (`registry.ts:9`). Seen red by mutation (`knotSet: 32 * MIB + 1`) and quoted in the commit report, as commit 1's
+       e2e is.
+  6. e2e `scene: no decoded bitmap outlives its upload`: `stats().openBitmaps === 0` after the first line and after a
+     preload settles. Seen red by mutation: skip `close()`.
+- **Pins.** Knot-set and room-set rows rise by the kept bytes (placeholders ~0.1 MiB; at the file limits <= 2.2 MiB per
+  5-image knot). The registry test figures rise by the kept file bytes, and the `toEqual` stats objects gain the five
+  counters (commits 2-3, R4-4; `registry_caps` is K5's caps pin, PP:2100). Everything else byte-identical. This is one
+  more reason M1 precedes M2: untrimmed, the busiest knot with real art at the file limits would be 30.4 + 2.15 = 32.5
+  MiB, over the gate (ARITHMETIC).
+- **Gates.** check, test, build, e2e. Device measurement (section 12) is reported, not gated.
+- **Tester mutations:** as listed under commits 3a (with critique_r5 O1's `complete()` mutant) and 4.
+- **Budgets** (section 12, 4.A): the knot-set and room-set rows rise by the kept bytes (Pins above); transfer 0;
+  in the PP model the steady total goes from 138.6 to 106.6 MiB and the crossfade transient from 170.6 to 122.6
+  MiB; the caps stay 32 / 48 MiB.
+
+#### M3c memory-half-tier (client; new, MEMORY-PLAN)
+- **Source:** [MEMORY-PLAN "Lane cut sketches"](MEMORY-PLAN.md#11-lane-cut-sketches), M3c (RULINGS 78; lever C,
+  [MEMORY-PLAN 4.C](MEMORY-PLAN.md#4c-half-tier-on-android-low-phones)). "Section <n>" below is MEMORY-PLAN's; `PP:<line>`,
+  RESUME and code line citations are as of `f53755b` / `a9e991c` and are re-located at cut time. No M lane edits
+  this file.
+- **Gate to start:** M2 merged.
+- **Goal.**
+  - On a LOW Android phone whose largest stage passes `halfFits`, every **public** scene image loads its half file
+    (a char only on the canonical 1536-px canvas; critique_r3 W1): texture bytes x 0.25, layout identical.
+  - A LOW tablet and every other device load the full tier.
+  - Gated entries keep today's shape until M3s.
+- **Public entries, not free manifests.** An id's entry must be identical in every manifest that names it
+  (`budget.ts:559-577` conflicts; `assets.test.ts:509` checks `bg/cafe` in ch1 and ch2). So M3c writes `half` on every
+  entry with a public file, in free and paid manifests alike, and on no gated entry.
+- **Server side.**
+  - `AssetProbe` ignores the nested `half` (no `deny_unknown_fields`, `content.rs:351-356`), and `index_assets` skips
+    public URLs (`:643-645`). So M3c needs no server change, no cargo and no PostgreSQL slot, and the committed server
+    fixtures do not move.
+  - `assets: paid manifest keeps the server fixture keys` (`assets.test.ts:542-567`) compares shapes with `half` set
+    aside, and gains the assertion that every `half` URL in a paid manifest is public. M3s restores the full
+    comparison.
+- **Chains.** `budget.ts` ... -> M2 -> M3c; `catalog.ts` L13 -> M1 -> M3c; the asset-tool files M1 -> M3c -> M3s
+  (`manifest.ts` M1 -> M2 -> M3c -> M3s); `scene/{registry,registry.test,controller,preload.test,executor.test}.ts`
+  M2 -> M3c; `scene/{layout,layout.test}.ts` M1 -> M3c; `memory.spec.ts` M2 -> M3c -> M3s. No `loader.ts`.
+- **Lock (15).** `client/scripts/assets/{encode.ts,manifest.ts,assets.test.ts}`, `client/scripts/assets.ts`,
+  `client/src/story/catalog.ts`, `client/scripts/{budget.ts,budget.test.ts}`,
+  `client/src/scene/{layout.ts,layout.test.ts,registry.ts,registry.test.ts,controller.ts}`,
+  `client/src/scene/{preload.test.ts,executor.test.ts}`, `client/e2e/memory.spec.ts`.
+  - The two suites are here because `createAssetRegistry`'s `tier` is required (critique_r2 W6): each fake gains
+    `tier: 'full'`. That change is declared, and the assertions do not change.
+  - `loader.ts` is out: M1's loader already forwards `geometry.resolution`.
+  - Its doc rows go to M3s.
+- **Reds** (predicted red in brackets):
+  - `catalog: half tier decodes` [unknown key];
+  - `catalog: a half that is not exactly half its file is an error value` (233 x 698 under a 466 x 1394 file) [it
+    decodes];
+  - `encode: the half of a trimmed placeholder is its 2 x 2 average` (critique_r2 W5). It runs on
+    `char/stranger/neutral` as `placeholder.ts` draws it, through M1's trim, and asserts: `half.w x 2 = w` and
+    `half.h x 2 = h`; every half pixel is the premultiplied mean of its 2 x 2 block (+-1 per channel for rounding);
+    alpha 0 on every border row and column of the half that is not at the canvas edge; the planned pair passes the
+    decoder's exact-halving rule, because `planAssets` decodes every manifest it plans and throws otherwise
+    (`manifest.ts:314-317`) [no output];
+  - `budget: a half whose LOW count exceeds its full count fails` (half files inflated in a fixture) [PASS];
+  - `budget: a half file over its kind's file limit fails` [PASS];
+  - `layout: half tier keeps the canvas and the full trim rect at resolution 0.5` [canvas 233 x 697, trim null];
+  - `layout: no decodable half is drawn above its stored px` (W2; critique_r3 W1). Candidates, each decoded as a
+    one-entry manifest by `decodeAssetManifest`: the bg 1080 x 2048 with its half; a char on the canonical 768 x 1536
+    canvas (stored 466 x 1394, half 233 x 697); a char on a 600 x 1200 canvas (stored 400 x 1100, half 200 x 550); an
+    untrimmed char on 768 x 1024 (half 384 x 512). For every candidate that decodes with a `half`, every stage 320-1280
+    x 480-2048 CSS px (step 8) and r in {1, 1.5, 2} where `tierFor('LOW', stage, r)` is `half`, the device px per
+    canvas px stay <= 0.5 (bg: `cover(stage, ROOM_SOURCE).scale x r`; char: `min(0.78 x H x r, c) / c`).
+    Non-vacuity: the bg and the canonical char decode with `half`, and the half tier occurs (360 x 800 at r = 1). The
+    char term's band also occurs: stages where the bg term holds and 0.78 x H x r > 768, i.e. 984.6 < H x r <= 1024.
+    That is 140 stages at r = 1 (H 992-1024, W 320-536) and 18 at r = 1.5 (H 664-680, W 320-360). There is none at
+    r = 2, because W x 2 >= 640 > 540 for every W of the grid, so the bg term already fails there. Each band stage
+    must give `full`. A char term loosened to any value above 768 is red there; e.g. 360 x 1000 at r = 1 has bg scale
+    0.488 and char 780 / 1536 = 0.508 (critique_r4 O3). [Red
+    on round 3's design: the 600 x 1200 candidate decodes, and at 360 x 800, r = 1 it is drawn at 624 / 1200 = 0.52,
+    above 0.5 per canvas px. Red on round 1's perf-only rule: the bg at 720 x 1280, 1.33 x.] The test imports the
+    decoder: test files are outside the arch scan (`arch.test.ts:834`);
+  - `catalog: a char half off the 1536-px canvas is an error value` (the 600 x 1200 candidate) [it decodes];
+  - `assets: a char on a canvas shorter than 1536 px gets no half` (the asset tool's half rule and the encoder on a
+    600 x 1200 RGBA source built with sharp in the test; the asset CLI admits placeholders only, `assets.ts:130`) [the
+    entry carries `half`];
+  - `layout: a LOW tablet keeps the full tier` (an 800 x 1280 screen -> `full`) [`half` on the perf-only rule];
+  - `layout: a LOW 360 x 800 phone takes the half tier`;
+  - `layout: a screen of unknown size takes the full tier`;
+  - `layout: tierFor takes the half tier only for LOW` (AVERAGE and HIGH at 360 x 800, r = 1 -> `full`; critique_r3
+    O1) [`half` on a class-blind `tierFor`];
+  - `registry: a LOW registry counts the half file` [counts 4.5 MiB];
+  - `registry: demote applies to records started later` [the live half record is reloaded];
+  - `assets: a paid manifest names no gated half file` [a gated `half` on `bg/archive`];
+  - e2e at `deviceScaleFactor: 2` (the AVERAGE control at 1, below) with `screen` set explicitly, through `test.use`
+    inside a `test.describe` (critique_r2 W7, O9). At Playwright's default DPR 1, LOW and HIGH render at the same
+    resolution 1:
+    - `scene: a LOW phone loads half-tier files` (viewport 360 x 740, screen 360 x 800, LOW UA) [the request log shows
+      full files].
+      - It also samples the trimmed character at M1's CSS points, under M1's sample rule (>= 4 CSS px from every edge,
+        +-12 per channel; critique_r3 open question 2). That proves that the half tier lays out as the full one on the
+        real Pixi at resolution 0.5 (I4).
+      - A red here while `layout: a LOW 360 x 800 phone takes the half tier` is green means that the class or the
+        resolution does not reach `tierFor` in the controller. At r = 2, `halfFits(360 x 800, 2)` is false
+        (W x 2 = 720 > 540).
+    - `scene: an AVERAGE phone at DPR 1 loads full-tier files` (viewport 360 x 740, screen 360 x 800, the default UA,
+      `deviceScaleFactor: 1`; critique_r3 O1). At DPR 1 an AVERAGE session renders at resolution 1
+      (`layout.ts:18-23`), where `halfFits(360 x 800, 1)` holds (360 <= 540, 800 <= 984). So only the class conjunct
+      keeps the full tier: the test is red on a `tierFor` that ignores the class and on a controller that passes a
+      constant `'LOW'`. Round 3's control ran at DPR 2, where `halfFits` is false, so it could not be red;
+    - `scene: a LOW tablet loads full-tier files` (viewport 800 x 1180, screen 800 x 1280).
+- **Seen working (W4: the quality check is the tester's).** Side-by-side screenshots, full vs half, at 360 x 800, DPR
+  2, with a LOW UA (and on a LOW Android in Telegram when one is available), judged for halos, banding and softness on
+  character outlines and backgrounds. Both screenshots go into the lane report.
+- **Gates.** check, test, story, build, e2e. No cargo.
+- **Seen red once** (section 12): two `node scripts/budget.ts` runs on synthetic inputs, each asserting its row and
+  note, not only exit 1:
+  - a half that is not exactly half its file -> the decoder refuses it the same way: the `asset inputs` row FAILs naming
+    the entry, and that chapter's knot-set rows are absent (M3c; critique_r2 W5);
+  - a half whose LOW count exceeds its full count -> the `image <id>` row FAILs with the I2 note (M3c).
+- **Tester mutations:** MEMORY-PLAN names none for M3c; the quality check under "Seen working" is the tester's.
+- **Budgets** (section 12, section 7): the `transfer <ch> (half)` rows (6 MB) are added as a measurement, and the
+  first-load row stays on the full tier (worst case); per entry `half.decodedBytes + max(half avif, half webp) <=
+  decodedBytes + max(avif, webp)`; half files within their kind's file limits.
 
 #### D2 docs-final (doc-writer)
 - **Goal:** README (local run, the owner's steps to connect a real bot), FEATURE_MAP/ARCHITECTURE final, runbooks
@@ -5563,6 +6123,57 @@ Notation:
     `PRIVACY_OPERATOR_FILE`.
   - The AUTHORING.md story-meta part if D1 did not write it (D1 re-cut).
 - **Gates:** the link check; env var names grep-matched against `config.rs`.
+- **Changed by MEMORY-PLAN (RULINGS 78; MEMORY-PLAN section 13).**
+  - **Gate to start:** + M2 merged.
+  - FEATURE_MAP / ARCHITECTURE: the M1 and M2 rows, "image trimming -> `client/scripts/assets/encode.ts`", "texture
+    geometry (orig/trim/tier) -> `client/src/scene/layout.ts`", "context-loss revive -> `client/src/scene/registry.ts`
+    (records), `client/src/scene/revive-flow.ts` (frames), `client/src/scene/executor.ts` `reacquire` (the stage)". M3s
+    writes the half-tier rows after D2 (the docs chain D1 → D2 → M3s).
+  - The story-authoring guide (`docs/AUTHORING.md`) gains the rule "the expressions of one character share one canvas,
+    and every char and prop canvas has even sides", which M1's asset tool enforces, and the guidance "deliver every
+    character on the canonical 768 x 1536 canvas" (guidance, not a gate).
+
+#### M3s memory-half-paid (server; new, MEMORY-PLAN)
+- **Source:** [MEMORY-PLAN "Lane cut sketches"](MEMORY-PLAN.md#11-lane-cut-sketches), M3s (RULINGS 78; lever C,
+  [MEMORY-PLAN 4.C](MEMORY-PLAN.md#4c-half-tier-on-android-low-phones)). "Section <n>" below is MEMORY-PLAN's; `PP:<line>`,
+  RESUME and code line citations are as of `f53755b` / `a9e991c` and are re-located at cut time. No M lane edits
+  this file.
+- **Gate to start:** M3c, L9 and D2 merged (the server slot, after the end of the server chain).
+- **Goal.** Gated image entries of paid manifests carry `half`. The server indexes those files under the chapter's
+  product and serves them only after the entitlement check. LOW phones get the half tier of paid art.
+- **Why one server-slot lane, after M3c (W3, O7).**
+  - The paid manifest's shape is pinned to the committed server fixtures (`assets.test.ts:542-567`), and the server
+    needs every file a fixture names on disk (`content.rs:660-670`). So the planner's gated branch, the server index
+    and the fixtures change together, and that needs cargo and the PostgreSQL slot.
+  - The client decoder already knows `half` (M3c), so `catalog: asset manifest decodes the server fixtures`
+    (`assets.test.ts:312-327`) stays green when the fixtures gain it.
+  - After L9 it delays no planned server lane, because the server chain has ended (PP:2620-2621).
+  - Round 1's "new fixture chapter" is dropped. A chapter exists for the server only through the shared
+    `stories.json` (O7); negative cases use `FixtureCopy::edit_json` (`server/tests/it/content.rs:72-77`).
+- **Chains.**
+  - `server/src/content.rs`: L6b -> LM2 -> M3s (PP:2588).
+  - `server/tests/it/content.rs`, `server/tests/fixtures/content/chapters/{ch2,ch4}/assets.json`: -> M3s.
+  - The asset-tool files and `memory.spec.ts`: ... -> M3c -> M3s.
+  - `docs/FEATURE_MAP.md`, `docs/ARCHITECTURE.md`: D1 -> D2 -> M3s. M3s writes the M3c and M3s rows.
+- **Lock (13).** `server/src/content.rs`, `server/tests/it/content.rs`,
+  `server/tests/fixtures/content/chapters/{ch2,ch4}/assets.json`, 4 fixture files
+  `server/tests/fixtures/content/assets/<bg half name>.{avif,webp}` (named by M3c's `assetFileName` token),
+  `client/scripts/assets/{manifest.ts,assets.test.ts}`, `client/e2e/memory.spec.ts`, `docs/FEATURE_MAP.md`,
+  `docs/ARCHITECTURE.md`.
+- **Reds** (predicted red in brackets):
+  - `content: half-tier gated file is served to an owner` [404];
+  - `content: half-tier gated file is refused without the entitlement` (the existing gated rule);
+  - `content: a manifest naming a missing half file fails to load` [it loads: `half` is not read];
+  - client `assets: paid manifest keeps the server fixture keys`, with the M3c exclusion removed [the `image` key lists
+    differ by `half` until the gated branch writes it];
+  - e2e `scene: a LOW phone loads half-tier files of a paid chapter` (after the mock purchase; DPR 2 and `screen` set,
+    as in M3c) [full files in the request log].
+- **Gates.**
+  - server: cargo fmt, clippy, test (slot-B PostgreSQL);
+  - client: check, test, build (the paid `transfer <ch> (half)` rows appear);
+  - e2e with a server-dev built in the lane.
+- **Tester mutations / seen working:** MEMORY-PLAN names none for M3s beyond the reds and gates above.
+- **Budgets** (section 12): the paid `(half)` rows move to gated halves.
 
 ---
 
@@ -5704,6 +6315,7 @@ each has a default there; the policy's operator facts are placeholders until the
 | 23 | 2026-11-01 | `D:/tmp/novel-orch/carry.md` at ORCH `d97ba64` (the docs-errata-2 spec, group A; RULINGS 26-52), as merged on main `6043941` | Docs lane `docs-errata-2`, group A: the carried plan errata of the merged lanes, each place marked "as merged" with its SHA and ruling. "As merged" bullets (commit lists, names, red texts, fill-ins) in the L3c, L6b, L6c, L5, LS1, LW3, LM1, L8b, LS3, L11 and L14a entries; in place: the LS2 entry (lock, commits, seen working), the en-table output row (L3c C5), the collision chains (`emit.ts` / `build.test.ts`, `story/locales/{ru,en}/story.json`, `client/src/telegram/**`, `client/src/ui/state.svelte.ts`), the L3c and LS2 and LW3 locks, K5's eviction class and the registry sections (L11), the Module API (`AssetRegistry`, `ensure`, `AudioManager`), the layout's character height, `asset-owners.json` dropped (L5), the audio placeholder flag, the `startParam()` wrapper (L7), the e2e gate row and the skip guard (L7), the L8a / L8b seen working (`assets` after `story`), the Rust payment types and the simulate route (L8b), the test-strategy timing and the idempotency seen-red row (L8b), the LS3 commit-3 red, seen working and `StatKind` home. The code on `6043941` is the ground truth. Fix round 1: the same L8b facts at their siblings (T3 real time, the L8b gates' check-then-insert mutation) and the probe erratum narrowed (`ProbeSuccessful` stays). Ledger: `D:/tmp/novel-orch/docs-errata-2/ledger.md` |
 | 24 | 2026-11-01 | RULINGS 54 (as merged: every lane up to LU1 `2a7b50c`; L10, LE1 running; main `6043941`) | Docs lane `docs-errata-2`, group B: "Dependency order" — a marker paragraph and the State column as of `6043941` (29 merged with SHAs from `git log --first-parent main`, the seven pre-rewrite SHAs kept beside the new ones; L10 and LE1 running; 17 to go), the lane count (48: 29 merged, 2 running, 17 to go), the launch preference without the merged lanes, the critical path from L10 → L14b → LP2 → L15 (and the server chain from LE1). The planned order is otherwise unchanged. STORIES-PLAN revision 9 and META-PLAN revision 5 hold their lines. Ledger: `D:/tmp/novel-orch/docs-errata-2/ledger.md` |
 | 25 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `ba5fc68` (the docs-errata-3 spec, group A; RULINGS 53-77), as merged on main `22ed4d5` | Docs lane `docs-errata-3`, group A: the carried plan errata of the merged lanes, each place marked "as merged" with its SHA and ruling. "As merged" bullets (commit lists, filters) in the L10, LP2, LF1 and LX entries; in place: the LE1 lock, seen working and commit-2 red; the L8a pack pass-through superseded by the pack binding; LF2 commit 5's samples list; the `ApiError` and `purchase/flow.ts` signatures (L10); the LU1 gift-cap mapping; the L14b callbacks and the `hint` keys; the LP2 lazy budget rows; L15 commit 3's puzzle view store; the LF1 self-invite red and seen working; the LM2 paid-gated fixture items; K5's `room:` holders (backgrounds only, LX). The code on `22ed4d5` is the ground truth. Ledger: `D:/tmp/novel-orch/docs-errata-3/ledger.md` |
+| 26 | 2026-11-02 | RULINGS 78 + the approved design `D:/tmp/novel-orch/design/memory/proposal.md` (round 5; with "Revision 2" to "Revision 5"; critiques `design/memory/critique_r1.md` to `critique_r5.md`, round 5 APPROVED) | MEMORY-PLAN adoption (RULINGS 78), docs lane `docs-errata-3`, group M: extended by [MEMORY-PLAN.md](MEMORY-PLAN.md) (levers B, A, C as the lanes M1, M2, M3c, M3s; F carried into L15's running cut; D deferred to Q52; E rejected and frozen). Each changed place is marked "Changed by MEMORY-PLAN": the budget targets; the correctness-target row I1–I7; K5; K9; the controller's `onActivated` note; the executor (`reacquire()`, the identity rule) and the revive flow; "Registry and loader", "Memory estimate", "Steady total"; the concurrency table's context-loss row; the budget rows "Image dimensions", "Knot working set", "Per-chapter transfer", "Live texture bytes"; the collision locks (`catalog.ts`, `budget.ts`, the two docs, `content.rs`, `game.ts`, and a MEMORY-PLAN block); the dependency order (intro, four rows, LMI's, L15's and D2's rows, the lane count 48 → 52, the launch preference, the critical path); the L15, LMI and D2 entries; the new lane sections M1, M2, M3c, M3s |
 
 **Revision 1 (2026-10-30)** — what changed, by triage item:
 - **W1** (undecodable payment ACKed and lost): K17 (lenient `PaymentProbe` for the payment subset, 500 only when the
