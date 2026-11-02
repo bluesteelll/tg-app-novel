@@ -20,6 +20,7 @@ mod legal;
 mod payments;
 mod puzzles;
 mod referrals;
+mod refunds;
 mod saves;
 mod schema;
 mod share;

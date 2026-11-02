@@ -1,13 +1,16 @@
 //! The payment path's SQL (PP "Payment flow end to end"): the pre-checkout decision, which locks the payer's row
-//! and then moves the order to `checkout` in one conditional statement (RULINGS 14, M19), and the grant on
-//! `successful_payment`, written first and made idempotent by the `payments_pkey` arbiter (K19).
+//! and then moves the order to `checkout` in one conditional statement (RULINGS 14, M19), the grant on
+//! `successful_payment`, written first and made idempotent by the `payments_pkey` arbiter (K19), and the revoke of a
+//! refund, made exactly-once by the payment row's `refunded_at IS NULL` guard (K20, M20).
 //!
 //! The money-fact, decision and outcome types live here, next to the statements that bind and decide them;
 //! `telegram::payments` re-exports them, so `db/` never imports `telegram/`. Every Telegram string is bound through
 //! [`without_nul`].
 
 use crate::catalog::{ProductRef, ResourceKind, parse_product_id};
-use crate::db::economy::{Entry, Reason, credit_in_tx, pay_key};
+use crate::db::economy::{
+    Entry, Reason, clawback_in_tx, credit_in_tx, credited_by_charge, pay_key,
+};
 use crate::db::{Repo, without_nul};
 use crate::ids::{ChargeId, OrderId, UserId};
 
@@ -17,6 +20,9 @@ pub const CHECKOUT_LOCK_SECS: i64 = 120;
 
 /// How long an order can be paid after it was created, in seconds (PP P5: `created_at > now - 86400`).
 pub const ORDER_PAYABLE_SECS: i64 = 86_400;
+
+/// The idempotency-key prefix of a pack clawback: `refund:<charge>` (META-PLAN M18).
+const REFUND_KEY_PREFIX: &str = "refund:";
 
 /// The pre-checkout decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +86,18 @@ pub enum GrantOutcome {
     /// Recorded and the order paid, but its product id names no product kind this build can grant (or a pack order
     /// without its binding, which `orders_pack_binding` forbids): not applied.
     UnknownProduct,
+}
+
+/// What a revoke did (K20). Only `Revoked` wrote anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevokeOutcome {
+    /// The payment is marked refunded, its order `refunded`, its entitlement deleted and its pack credit clawed back:
+    /// whatever of these the charge had.
+    Revoked,
+    /// The payment was refunded before (a redelivery, the other refund path, or a concurrent twin): nothing changed.
+    AlreadyRefunded,
+    /// No payment has this charge id: nothing changed.
+    UnknownCharge,
 }
 
 /// An order as the refusal classification reads it: (user_id, amount, status, created_at, the product owned by the
@@ -267,6 +285,91 @@ impl Repo {
         tx.commit().await?;
         Ok(outcome)
     }
+
+    /// The revoke of `charge` at `now` (K20, M20), in one READ COMMITTED transaction, its statements in the grant's
+    /// order (payments, orders, entitlements, the ledger key, the balance row):
+    /// 1. the payment → refunded, only if it is not yet: this single-row guard is the exactly-once arbiter. A twin
+    ///    waits on the row lock, then READ COMMITTED re-checks the committed row and finds it set. No row back → one
+    ///    read tells `AlreadyRefunded` from `UnknownCharge`, and nothing is written;
+    /// 2. the charge's order → `refunded`, if it has one;
+    /// 3. the charge's entitlement deleted, if it has one (an `AlreadyEntitled` charge has none: the entitlement is the
+    ///    first charge's);
+    /// 4. the pack credit of the charge (its `pay:<charge>` row, never the catalog) clawed back, keyed
+    ///    `refund:<charge>`: the balance first, the rest as debt. No credit (an unapplied charge, a chapter) → none.
+    ///
+    /// Every undo is keyed by the charge's own rows, so an entitlement without an order is revoked too. No statistics
+    /// or ledger row is deleted (ST4).
+    pub async fn revoke(&self, charge: &ChargeId, now: i64) -> Result<RevokeOutcome, sqlx::Error> {
+        let charge = without_nul(&charge.0);
+        let mut tx = self.pool.begin().await?;
+        // `GREATEST`: a clock stepped back since the grant would otherwise break `payments_refunded_after_paid`
+        // (`23514`), a 500 Telegram redelivers for good.
+        let payer: Option<i64> = sqlx::query_scalar(
+            "UPDATE payments SET refunded_at = GREATEST($2, paid_at) \
+             WHERE telegram_payment_charge_id = $1 AND refunded_at IS NULL RETURNING user_id",
+        )
+        .bind(&*charge)
+        .bind(now)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(payer) = payer else {
+            let known: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM payments WHERE telegram_payment_charge_id = $1)",
+            )
+            .bind(&*charge)
+            .fetch_one(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            return Ok(if known {
+                RevokeOutcome::AlreadyRefunded
+            } else {
+                RevokeOutcome::UnknownCharge
+            });
+        };
+        let product: Option<String> = sqlx::query_scalar(
+            "UPDATE orders SET status = 'refunded' WHERE charge_id = $1 RETURNING product_id",
+        )
+        .bind(&*charge)
+        .fetch_optional(&mut *tx)
+        .await?;
+        // No wildcard arm: a new product kind does not compile until its undo is reviewed here, as its grant is in
+        // `grant`. Both kinds known today are undone by the charge's own rows below, whatever the order says.
+        if let Some(product) = &product {
+            match parse_product_id(product) {
+                Some(ProductRef::Chapter { .. }) | Some(ProductRef::Pack { .. }) | None => {}
+            }
+        }
+        sqlx::query("DELETE FROM entitlements WHERE charge_id = $1")
+            .bind(&*charge)
+            .execute(&mut *tx)
+            .await?;
+        if let Some((kind, credited)) = credited_by_charge(&mut tx, &charge).await? {
+            let clawback = Entry {
+                user: UserId(payer),
+                kind: &kind,
+                amount: -credited,
+                reason: Reason::PackRefund,
+                idem_key: refund_key(&charge),
+                charge_id: Some(&*charge),
+                counterpart: None,
+                r#ref: product.as_deref(),
+                at: now,
+            };
+            // A `Duplicate` cannot follow the guard above (the key is the charge's): the clawback exists once.
+            clawback_in_tx(&mut tx, &clawback).await?;
+        }
+        tx.commit().await?;
+        Ok(RevokeOutcome::Revoked)
+    }
+}
+
+/// The idempotency key of the pack clawback of `charge` (already through `without_nul`): `refund:<charge>`.
+fn refund_key(charge: &str) -> String {
+    // `push_str`, not string formatting: this module holds SQL, and the dynamic-SQL scan flags formatting near it.
+    let mut key = String::with_capacity(REFUND_KEY_PREFIX.len() + charge.len());
+    key.push_str(REFUND_KEY_PREFIX);
+    key.push_str(charge);
+    key
 }
 
 /// Why the UPDATE matched no row, read in the same transaction, in a fixed precedence: unknown, then a mismatch,

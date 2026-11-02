@@ -13,11 +13,13 @@ use frankenstein::payments::PreCheckoutQuery;
 
 use crate::AppState;
 use crate::db::orders::parse_order_id;
-use crate::ids::UserId;
+use crate::ids::{ChargeId, UserId};
 use crate::puzzles::Lang;
 use crate::telegram::gateway::CALL_DEADLINE;
 
-pub use crate::db::payments::{GrantOutcome, PaymentFact, PreCheckoutVerdict, RejectReason};
+pub use crate::db::payments::{
+    GrantOutcome, PaymentFact, PreCheckoutVerdict, RejectReason, RevokeOutcome,
+};
 
 /// The deadline of the pre-checkout's database step (K18).
 pub const PRECHECKOUT_DB_DEADLINE: Duration = Duration::from_secs(2);
@@ -101,6 +103,26 @@ pub async fn on_successful_payment(
         }
         GrantOutcome::OrderMismatch | GrantOutcome::UnknownProduct => {
             tracing::error!(charge, ?outcome, "payment recorded, not applied");
+        }
+    }
+    Ok(outcome)
+}
+
+/// K20: the revoke of `charge` at the state's clock, through the one guarded transaction ([`Repo::revoke`]); both
+/// refund paths (`/refund` and `refunded_payment`) end here. The outcome is logged with the charge id (not a secret):
+/// `Revoked` and `AlreadyRefunded` at `info`, `UnknownCharge` at `error` (a refund of a charge this server never
+/// recorded). Only a database error is `Err`.
+///
+/// [`Repo::revoke`]: crate::db::Repo::revoke
+pub async fn revoke(st: &AppState, charge: &ChargeId) -> Result<RevokeOutcome, sqlx::Error> {
+    let outcome = st.repo.revoke(charge, st.clock.now()).await?;
+    let charge = charge.0.as_str();
+    match outcome {
+        RevokeOutcome::Revoked | RevokeOutcome::AlreadyRefunded => {
+            tracing::info!(charge, ?outcome, "refund recorded");
+        }
+        RevokeOutcome::UnknownCharge => {
+            tracing::error!(charge, ?outcome, "refund of a charge with no payment row");
         }
     }
     Ok(outcome)
