@@ -1,17 +1,24 @@
 //! The bot (PP "Bot texts", K20-K22): its texts in `server/locales/bot.*.json` within Telegram's bounds, Russian
-//! first; a pre-checkout refusal in the query's language.
+//! first; a pre-checkout refusal in the query's language; the commands, answered in a private chat in the sender's
+//! language, `/refund` for admins only.
 //!
 //! Every state calls the Bot API through [`RecordingGateway`]: no test reaches Telegram.
 //!
 //! [`RecordingGateway`]: crate::payments::RecordingGateway
 
+use serde_json::{Value, json};
+use server::AppState;
 use server::puzzles::Lang;
+use server::telegram::gateway::{OutMessage, WebAppButton};
 use server::telegram::payments::RejectReason;
 use server::telegram::texts::{self, BotFile, MESSAGE_LIMIT, fill};
 
-use crate::catalog::{ANN, own};
-use crate::payments::{invoice_state, refusal};
-use crate::refunds::{BEN, order_of};
+use crate::catalog::{ANN, T0, own};
+use crate::common::TEST_ADMIN_ID;
+use crate::payments::{GatewayCall, RecordingGateway, invoice_state, refusal};
+use crate::refunds::{
+    BEN, bought, entitlements_of, expect_eq, order_of, refund_calls, refund_state,
+};
 use crate::webhook::{post_update, pre_checkout_update};
 
 fn report(failures: &[String]) {
@@ -165,6 +172,238 @@ async fn bot_precheckout_refusal_language_from_query() {
             failures.push(format!(
                 "{case}: expected the {query_lang} text {want:?}, got {} {got:?}",
                 reply.status.as_u16()
+            ));
+        }
+    }
+    report(&failures);
+}
+
+/// A `message` update with `text` from `from` (Telegram language `language`) in chat `chat` of type `chat_type`.
+pub(crate) fn text_update(
+    from: i64,
+    chat: i64,
+    chat_type: &str,
+    language: Option<&str>,
+    text: &str,
+) -> Value {
+    json!({
+        "update_id": 4,
+        "message": {
+            "message_id": 9,
+            "date": T0,
+            "chat": { "id": chat, "type": chat_type, "title": "Readers" },
+            "from": { "id": from, "is_bot": false, "first_name": "Ann", "language_code": language },
+            "text": text
+        }
+    })
+}
+
+/// The `sendMessage` calls `gateway` recorded, in order.
+pub(crate) fn messages(gateway: &RecordingGateway) -> Vec<OutMessage> {
+    gateway
+        .calls()
+        .into_iter()
+        .filter_map(|call| match call {
+            GatewayCall::Message(msg) => Some(msg),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `text` from `from` (language `language`) in their private chat, through the webhook: the HTTP status and the
+/// messages sent while it was handled.
+async fn say(
+    st: &AppState,
+    gateway: &RecordingGateway,
+    from: i64,
+    language: Option<&str>,
+    text: &str,
+) -> (u16, Vec<OutMessage>) {
+    say_in(st, gateway, from, from, "private", language, text).await
+}
+
+/// [`say`] in chat `chat` of type `chat_type`.
+async fn say_in(
+    st: &AppState,
+    gateway: &RecordingGateway,
+    from: i64,
+    chat: i64,
+    chat_type: &str,
+    language: Option<&str>,
+    text: &str,
+) -> (u16, Vec<OutMessage>) {
+    let before = messages(gateway).len();
+    let reply = post_update(st, &text_update(from, chat, chat_type, language, text)).await;
+    let sent = messages(gateway).split_off(before);
+    (reply.status.as_u16(), sent)
+}
+
+/// A plain message of `text` to chat `chat`.
+fn plain(chat: i64, text: &str) -> OutMessage {
+    OutMessage {
+        chat_id: chat,
+        text: text.to_owned(),
+        web_app_button: None,
+    }
+}
+
+/// The mismatch of one command's answer against 200 and exactly the message `want`.
+fn expect_reply(case: &str, got: &(u16, Vec<OutMessage>), want: &OutMessage) -> Option<String> {
+    let (status, sent) = got;
+    (*status != 200 || sent.as_slice() != std::slice::from_ref(want)).then(|| {
+        format!(
+            "{case}: expected 1 message {want:?}, got {status} and {} messages: {sent:?}",
+            sent.len()
+        )
+    })
+}
+
+/// `/start`, with or without the bot's name and a payload, answers the welcome with one button that opens the Mini App
+/// at `PUBLIC_APP_URL`, in the sender's chat.
+#[tokio::test]
+async fn start_has_web_app_button() {
+    let (st, _db, gateway) = refund_state().await;
+    let ru = texts::texts(Lang::Ru);
+    let want = OutMessage {
+        chat_id: ANN,
+        text: ru.start.clone(),
+        web_app_button: Some(WebAppButton {
+            text: ru.start_button.clone(),
+            url: "https://example.invalid/".to_owned(),
+        }),
+    };
+    let mut failures = Vec::new();
+    for text in ["/start", "/start@novel_bot payload"] {
+        let (status, sent) = say(&st, &gateway, ANN, Some("ru"), text).await;
+        if status != 200 || sent != [want.clone()] {
+            failures.push(format!(
+                "{text}: expected 1 message with a web_app button, got {}: {status} {sent:?}",
+                sent.len()
+            ));
+        }
+    }
+    report(&failures);
+}
+
+/// `/refund` is the admins' only: anyone else gets exactly the unknown-command reply, with no lookup and no Bot API
+/// refund, whether the charge exists or not, and the entitlement stays. An admin without a charge gets the usage; an
+/// admin with one refunds it through the gateway, revokes it and reads `refund_done`.
+#[tokio::test]
+async fn refund_command_admin_only() {
+    let (st, _db, gateway) = refund_state().await;
+    let mut failures = Vec::new();
+    if bought(&st, ANN, "chapter:ch2", "c-ch2", &mut failures)
+        .await
+        .is_none()
+    {
+        return report(&failures);
+    }
+    let ru = texts::texts(Lang::Ru);
+    for text in ["/refund c-ch2", "/refund nope"] {
+        let (status, sent) = say(&st, &gateway, ANN, Some("ru"), text).await;
+        let want = plain(ANN, &ru.unknown_command);
+        if status != 200 || sent != [want] {
+            let got = if sent.is_empty() {
+                "no message".to_owned()
+            } else {
+                format!("{sent:?}")
+            };
+            failures.push(format!(
+                "non-admin {text}: expected the unknown-command reply, got {status} {got}"
+            ));
+        }
+    }
+    failures.extend(expect_eq(
+        "non-admin: refundStarPayment calls",
+        refund_calls(&gateway).len(),
+        0,
+    ));
+    failures.extend(expect_eq(
+        "non-admin: entitlements of the charge",
+        entitlements_of(&st, "c-ch2").await,
+        1,
+    ));
+    let got = say(&st, &gateway, TEST_ADMIN_ID, Some("ru"), "/refund").await;
+    failures.extend(expect_reply(
+        "admin /refund",
+        &got,
+        &plain(TEST_ADMIN_ID, &ru.refund_usage),
+    ));
+    let got = say(&st, &gateway, TEST_ADMIN_ID, Some("ru"), "/refund c-ch2").await;
+    let done = fill(&ru.refund_done, &[("charge", "c-ch2")]);
+    failures.extend(expect_reply(
+        "admin /refund c-ch2",
+        &got,
+        &plain(TEST_ADMIN_ID, &done),
+    ));
+    failures.extend(expect_eq(
+        "admin: refundStarPayment calls",
+        refund_calls(&gateway),
+        vec![(ANN, "c-ch2".to_owned())],
+    ));
+    failures.extend(expect_eq(
+        "admin: entitlements of the charge",
+        entitlements_of(&st, "c-ch2").await,
+        0,
+    ));
+    report(&failures);
+}
+
+/// `/privacy` links the policy page at `PUBLIC_APP_URL` + `api/privacy`, in the sender's language.
+#[tokio::test]
+async fn privacy_command_links_policy() {
+    let (st, _db, gateway) = refund_state().await;
+    let mut failures = Vec::new();
+    for (user, language, lang) in [(ANN, "ru", Lang::Ru), (BEN, "en", Lang::En)] {
+        let want = fill(
+            &texts::texts(lang).privacy,
+            &[("url", "https://example.invalid/api/privacy")],
+        );
+        let got = say(&st, &gateway, user, Some(language), "/privacy").await;
+        failures.extend(expect_reply(
+            &format!("/privacy {language}"),
+            &got,
+            &plain(user, &want),
+        ));
+    }
+    report(&failures);
+}
+
+/// A command is answered in the sender's language (K29: `ru` Russian, `de` English), in their private chat only: the
+/// same command in a group or a supergroup, and free text anywhere, get no message.
+#[tokio::test]
+async fn bot_commands_reply_in_sender_language() {
+    let (st, _db, gateway) = refund_state().await;
+    let mut failures = Vec::new();
+    for (sender, language, lang) in [(ANN, "ru", Lang::Ru), (1003, "de", Lang::En)] {
+        let t = texts::texts(lang);
+        for (text, want) in [
+            ("/terms", &t.terms),
+            ("/support", &t.support),
+            ("/x", &t.unknown_command),
+        ] {
+            let got = say(&st, &gateway, sender, Some(language), text).await;
+            failures.extend(expect_reply(
+                &format!("{text} from {language}"),
+                &got,
+                &plain(sender, want),
+            ));
+        }
+    }
+    for (case, chat, chat_type, text) in [
+        ("/terms in a group", -100_123, "group", "/terms"),
+        (
+            "/paysupport in a supergroup",
+            -100_124,
+            "supergroup",
+            "/paysupport",
+        ),
+        ("free text", ANN, "private", "hello"),
+    ] {
+        let (status, sent) = say_in(&st, &gateway, ANN, chat, chat_type, Some("ru"), text).await;
+        if status != 200 || !sent.is_empty() {
+            failures.push(format!(
+                "{case}: expected 200 and no message, got {status} and {sent:?}"
             ));
         }
     }

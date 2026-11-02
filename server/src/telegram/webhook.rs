@@ -20,6 +20,7 @@ use subtle::ConstantTimeEq;
 
 use crate::AppState;
 use crate::ids::{ChargeId, UserId};
+use crate::telegram::commands;
 use crate::telegram::payments::{self, PaymentFact, PreCheckoutVerdict, RejectReason};
 
 /// The webhook's body limit (PP "HTTP API": 1 MB): far above any update, applied by the handler once the secret
@@ -199,7 +200,8 @@ async fn dispatch(st: &AppState, update: Update) -> Handled {
 
 /// P6: a `successful_payment` is granted, and acknowledged only after the commit; one whose payer cannot be recorded
 /// (no `from`, an id beyond `i64`) is retried, never acknowledged away. A `refunded_payment` is revoked by its charge,
-/// and acknowledged only after the commit (K20). Any other message is acknowledged.
+/// and acknowledged only after the commit (K20). A text message is a command when it is one ([`commands::on_text`]):
+/// answered, then acknowledged, or retried when its database step failed. Any other message is acknowledged.
 async fn message(st: &AppState, m: &Message) -> Handled {
     if let Some(sp) = &m.successful_payment {
         let Some(payer) = m.from.as_ref().and_then(|from| i64::try_from(from.id).ok()) else {
@@ -222,7 +224,13 @@ async fn message(st: &AppState, m: &Message) -> Handled {
     if let Some(rp) = &m.refunded_payment {
         return refund(st, &ChargeId(rp.telegram_payment_charge_id.clone())).await;
     }
-    Handled::Ack
+    match commands::on_text(st, m).await {
+        Ok(()) => Handled::Ack,
+        Err(e) => {
+            tracing::error!(error = %e, "bot command failed; Telegram redelivers");
+            Handled::Retry
+        }
+    }
 }
 
 /// The grant for `fact`: 200 after the commit, whatever the outcome; 500 on a database error, so Telegram
