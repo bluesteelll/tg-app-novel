@@ -94,8 +94,8 @@ export type MetaDeps = {
   clock: Clock;
   /** A lower-case UUID v4 (`crypto.randomUUID()`). */
   newId: () => string;
-  /** `policyUrl(location.host)`. */
-  policyUrl: string;
+  /** `location.host`; the policy URL is built from it inside the chunk (`policyUrl`), so boot imports no value from here. */
+  host: string;
   /** Home's card buttons follow `hasCard` again (the stats arrived). */
   onCards: () => void;
   loadUi?: () => Promise<MetaUi>;
@@ -565,7 +565,7 @@ export function createMetaController(d: MetaDeps): MetaController {
       });
     },
     openPolicy() {
-      if (!tg.openLink(d.policyUrl).ok) {
+      if (!tg.openLink(policyUrl(d.host)).ok) {
         note('meta.action_failed');
       }
     },

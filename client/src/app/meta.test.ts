@@ -278,7 +278,7 @@ function rig(o: RigOptions = {}): Rig {
     storyTitle: (story, lang) => (story === TIDE ? (lang === 'ru' ? 'Прилив' : 'The Tide') : null),
     clock,
     newId: () => 'id-1',
-    policyUrl: POLICY,
+    host: 'example.test',
     onCards: () => {
       cards += 1;
     },
