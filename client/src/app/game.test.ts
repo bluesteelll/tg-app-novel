@@ -2185,3 +2185,48 @@ test('game: a deactivated during the end batch keeps the last exact save', async
   // the end step never sets the position: a body of it would resume a level lower as a false story update
   expect(resumed).toEqual(['ch1.garden.l006', true, [], 'ch1.garden.l006']);
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// The engine follow-ups (LFU1): the save paths of a session that describes two steps, the failure notices, the manual
+// save's conflict hold
+
+/** manor ch2 broken past the story gate: its first line has no line id, so a resume at its start fails at the floor. */
+function noIdCh2(): LoadedChapter {
+  return chapter('ch2', ['-> study', '=== study ===', '# bg: study', 'Two begins.', '-> END'], { study: { assets: ['bg/study'], ending: true } });
+}
+
+/**
+ * At l002, a load of ch2's saved start: the chapter is swapped in, then the resume fails at its floor (fix_r2 KL4).
+ * Resolves with the number of autosaves before the load.
+ */
+async function failAfterSwap(h: Harness): Promise<number> {
+  await startManor(h);
+  await h.game.advance(); // l002
+  const start = pendingCh2();
+  h.save().slots.set('s1', { ...start, summary: { ...start.summary, slot: 's1' } });
+  const since = h.save().autosaves.length;
+  await h.game.load('s1');
+  return since;
+}
+
+test('game: a resume that fails after the chapter swap writes no autosave', async () => {
+  const base = liveRunners();
+  const h = harness({ chapters: [manorCh1(), noIdCh2()], owned: ['ch2'] });
+  const sv = h.save;
+  const since = await failAfterSwap(h);
+  expect(h.vm.notice?.kind).toBe('error');
+  // At rest under the notice, the session holds ch2 over ch1's runner at l002: no request may write that body.
+  h.game.onLifecycle('deactivated');
+  h.game.pagehide();
+  h.game.onLifecycle('activated');
+  const n = h.vm.notice;
+  if (n?.kind === 'error') {
+    n.onaction(); // the notice's exit, whose own autosave comes first
+  }
+  await settle();
+  await settle();
+  expect(sv().autosaves.slice(since).map((w) => [w.chapterId, w.lineId])).toEqual([]);
+  expect(h.exits()).toBe(1);
+  expect(liveRunners() - base).toBe(0);
+  h.game.dispose();
+});

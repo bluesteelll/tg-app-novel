@@ -521,9 +521,18 @@ export function createGame(deps: GameDeps): Game {
   };
   const writeOf = (b: SaveBodyV1): SaveWrite => ({ chapterId: b.chapterId, storyVersion: b.storyVersion, lineId: b.at.lineId, body: encodeSave(b) });
 
-  /** F3 / D9: the autosave of the current state; the read-sets flush at the same points. */
+  /**
+   * `bodyOf` would compose a body of two steps: the session is `torn` and its fields are what it composes from. A
+   * pending start is one complete body (D11 read it from the server, or `pendingPaid` wrote it), so it never mixes.
+   */
+  const mixes = (s: Session): boolean => s.torn && s.pending === null;
+
+  /**
+   * F3 / D9: the autosave of the current state; the read-sets flush at the same points. A session that `mixes` writes
+   * nothing (fix_r2 KL4): a resume that failed past `enterChapter` leaves the new chapter over the old runner at rest.
+   */
   const autosave = (s: Session, o?: { keepalive?: boolean }): void => {
-    const body = s.adopting ? null : bodyOf(s);
+    const body = s.adopting || mixes(s) ? null : bodyOf(s);
     if (body === null) {
       return;
     }
