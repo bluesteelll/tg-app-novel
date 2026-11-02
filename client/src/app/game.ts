@@ -593,11 +593,15 @@ export function createGame(deps: GameDeps): Game {
     return loaders.current.load({ id, paid: entry.paid }, { withEn: vm.lang === 'en' });
   };
 
-  /** The chapter becomes the session's: its manifest resolves the scene's and the audio's ids, its table the lines. */
+  /**
+   * The chapter becomes the session's: its manifest resolves the scene's and the audio's ids, its table the lines, and
+   * its read-set loads from CloudStorage (W2 a), merging the marks made meanwhile, so the flushes write it.
+   */
   const enterChapter = (s: Session, ch: LoadedChapter): void => {
     s.ch = ch;
     s.assets = manifestIndex(ch.assets);
     s.lines = createLineText(ch.en);
+    void settings.loadRead(ch.id); // never rejects; a failed read keeps the chapter memory-only (settings/store.ts)
     scene.setChapter(ch.assets);
     audioOnce().setChapter(ch.assets);
   };

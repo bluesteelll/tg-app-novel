@@ -13,7 +13,7 @@ import type { ManualSlot, SaveService, SaveState, SaveWrite } from '../saves/ser
 import type { SceneController } from '../scene/controller.ts';
 import type { SceneSnapshot, VisualCommand } from '../scene/executor.ts';
 import { createSettingsStore } from '../settings/store.ts';
-import type { CloudPort } from '../settings/store.ts';
+import type { CloudPort, SettingsStore } from '../settings/store.ts';
 import type { StatEvent } from '../stats/reporter.ts';
 import type { ChapterLoader } from '../story/chapters.ts';
 import { decodeChapterMeta } from '../story/catalog.ts';
@@ -471,13 +471,22 @@ type Harness = {
   events: StatEvent[];
   haptics: string[];
   cloud: ReturnType<typeof fakeCloud>;
+  settings: SettingsStore;
   loader: ReturnType<typeof fakeLoader>;
   owned: Set<string>;
   /** The newest session's saves. */
   save(): FakeSaves;
 };
 
-function harness(o: { chapters?: readonly LoadedChapter[]; owned?: readonly string[]; list?: SaveListResponse } = {}): Harness {
+type HarnessOptions = {
+  chapters?: readonly LoadedChapter[];
+  owned?: readonly string[];
+  list?: SaveListResponse;
+  /** Slots every new session's saves start with (the server's copy). */
+  slots?: ReadonlyMap<SaveSlot, SaveFull>;
+};
+
+function harness(o: HarnessOptions = {}): Harness {
   const clock = new FakeClock();
   const vm = createViewModel({ timers: clock, lang: 'ru' });
   const screens = createScreens({ back: { setVisible() {}, onPress: () => () => {} }, onView: (v) => (vm.screens = v) });
@@ -487,6 +496,7 @@ function harness(o: { chapters?: readonly LoadedChapter[]; owned?: readonly stri
   const events: StatEvent[] = [];
   const haptics: string[] = [];
   const cloud = fakeCloud();
+  const settings = createSettingsStore({ cloud });
   const owned = new Set(o.owned ?? []);
   const chapters = new Map((o.chapters ?? [manorCh1()]).map((c) => [c.id as string, c]));
   const loader = fakeLoader(chapters, () => owned);
@@ -522,10 +532,13 @@ function harness(o: { chapters?: readonly LoadedChapter[]; owned?: readonly stri
     saveList: async () => ({ ok: true, value: o.list ?? { slots: [] } }),
     saves: (story) => {
       const s = fakeSaves(story);
+      for (const [slot, full] of o.slots ?? []) {
+        s.slots.set(slot, full);
+      }
       saves.push(s);
       return s;
     },
-    settings: createSettingsStore({ cloud }),
+    settings,
     reporter: { record: (e) => events.push(e), flush: () => {} },
     clock,
     scene,
@@ -549,6 +562,7 @@ function harness(o: { chapters?: readonly LoadedChapter[]; owned?: readonly stri
     events,
     haptics,
     cloud,
+    settings,
     loader,
     owned,
     save: () => {
@@ -724,6 +738,32 @@ test('game: each conflict action resolves the conflict with its choice', async (
   expect(lineOf(h.vm)).toBe('ch1.arrival.l001');
   expect(h.vm.choices).toBeNull();
   h.game.dispose();
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// W2 (a): the read-set reaches CloudStorage (PP K13, F4 step 1)
+
+const readWrites = (h: Harness): string[] => h.cloud.writes.map(([k]) => k).filter((k) => k.startsWith('read_'));
+
+test('game: a chapter start and a resume load the read-set so flush writes it', async () => {
+  const h = harness();
+  await startManor(h);
+  await settle();
+  await h.settings.flush();
+  expect(readWrites(h)).toEqual(['read_ch1']);
+  // A later session resumes the autosave: its chapter's read-set is loaded before the first mark, too.
+  const auto = h.save().slots.get('auto');
+  h.game.dispose();
+  expect(auto).toBeDefined();
+  if (auto === undefined) {
+    return;
+  }
+  const again = harness({ slots: new Map([['auto', auto]]) });
+  expect((await again.game.start({ kind: 'slot', story: MANOR, slot: 'auto' })).ok).toBe(true);
+  await settle();
+  await again.settings.flush();
+  expect(readWrites(again)).toEqual(['read_ch1']);
+  again.game.dispose();
 });
 
 test('game: deactivated suspends audio and the auto timer', async () => {
