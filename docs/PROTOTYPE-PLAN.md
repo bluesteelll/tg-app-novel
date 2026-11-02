@@ -200,6 +200,10 @@ research is newer and verified (brief), so it wins, and the deviation is recorde
   lifetimes).
 - **Trade-off.** We lose Pixi's format detection: we detect AVIF once at boot with a 1 px probe and pick the variant.
   verify: the `Texture.from(ImageBitmap)` / `ImageSource` constructor in 8.22 (L11).
+- **Changed by MEMORY-PLAN (M2; RULINGS 78).** The loader uploads at decode and closes the bitmap right after the
+  upload (it stays open while `upload` returns `null`), keeping the fetched Blob for a revive after a context loss.
+  Release is `texture.destroy(true)` and the Blob dropped, so the CPU copy is freed at upload, not at release
+  ([MEMORY-PLAN 4.A](MEMORY-PLAN.md#4a-drop-the-decoded-cpu-copy-after-upload-keep-the-encoded-blob), section 10).
 
 **K5. Holder-based ref-counted asset registry with byte caps.**
 - **What.** Each asset has a set of holders (`scene:bg`, `scene:char:<id>`, `scene:cg`, `preload:<knot>`,
@@ -736,7 +740,7 @@ client/playwright-report/  client/.svelte-check/  server/content/  target/
 | `story/carry.ts`, `save-codec.ts`, `resume.ts` | carry set; `SaveBodyV1` codec; exact/checkpoint/chapter-start resume | |
 | `scene/controller.ts` | `SceneController`: the Pixi `Application`, layers, context loss | the **only** importer of `pixi.js` |
 | `scene/executor.ts` | batch → timeline plan; skip/complete | the **only** importer of `gsap` |
-| `scene/registry.ts`, `loader.ts`, `preload.ts`, `layout.ts`, `render-loop.ts` | textures (holder sets, caps), decode of `FetchAsset` blobs, hint scheduling, pure layout math, on-demand frames | `Texture`/`ImageBitmap` created only in `loader.ts`/`registry.ts`; no `fetch` |
+| `scene/registry.ts`, `loader.ts`, `preload.ts`, `layout.ts`, `render-loop.ts` | textures (holder sets, caps), decode of `FetchAsset` blobs, hint scheduling, pure layout math, on-demand frames; changed by MEMORY-PLAN (RULINGS 78; planned): + `scene/revive-flow.ts` (M2, new; pure, no Pixi or GSAP), the one owner of the revive's `AbortController` and the frame suspension after a context loss, and `layout.ts` gains the texture geometry (M1) and the size tier (M3c) ([MEMORY-PLAN section 6](MEMORY-PLAN.md#6-module-api-signatures-only)) | `Texture`/`ImageBitmap` created only in `loader.ts`/`registry.ts`; no `fetch` |
 | `audio/unlock.ts` | create + resume `AudioContext` in the gesture (entry chunk) | |
 | `audio/manager.ts`, `bgm.ts`, `sfx.ts` | buses, BGM A/B streaming, SFX cache, lifecycle | the only users of `AudioContext` / `HTMLAudioElement` |
 | `saves/service.ts`, `pending.ts` | server saves (rev, write id, coalescing, conflict policy); DeviceStorage pending autosave | |
@@ -1410,6 +1414,10 @@ export interface SceneController {
                                                  // __novelDebug only under __TG_MOCK__ (puzzles e2e)
   destroy(): void;
 }
+// changed by MEMORY-PLAN (RULINGS 78; MEMORY-PLAN section 6; planned, not merged):
+//   mount(host, o: { dpr: number; perfClass: PerfClass; fetchAsset: FetchAsset }) (F, L15b C12; M3c reads the class);
+//   stats() gains rebuilds, gen, openBitmaps, stale, staleFrames, reviveFailed, reviving (M2; __novelDebug only);
+//   debugForceContextLoss(mode: 'restorable' | 'hard') (M2: 'hard' = WEBGL_lose_context.loseContext())
 // scene/registry.ts
 export interface AssetRegistry {
   acquire(id: AssetId, holder: string, o: { signal?: AbortSignal; priority: 'visible' | 'preload' }): Promise<Result<TextureHandle, AssetError>>;
@@ -1421,6 +1429,10 @@ export interface AssetRegistry {
 //   acquire(id, holder, o: { entry: ImageEntry; priority: 'visible' | 'preload'; signal?: AbortSignal })
 //   releaseHolder(h: string)  — a trailing ':' ('preload:') releases that family; any other name is that exact holder
 //   stats(): { live: number; bytes: number; pending: number; overCap: number }
+// changed by MEMORY-PLAN (RULINGS 78; MEMORY-PLAN section 6; planned, not merged):
+//   createAssetRegistry(deps: { load; variant; tier }) (tier: M3c); + current(id): TextureHandle | null and
+//   revive(gen, signal): { visible; all } (M2); + demote() (M3c); stats(): RegistryStats, the four above + keptBytes,
+//   keptMismatch, openBitmaps, stale, reviveFailed (M2); load's third argument is the TextureGeometry (M1)
 
 // audio/manager.ts
 export interface AudioManager {
@@ -1548,12 +1560,19 @@ pub async fn launch_database(cluster: &DevCluster, name: &DbName) -> Result<Stri
 - Changed by PUZZLES-PLAN (K26, X12): while exploring with a non-empty room path, `setRootBack` makes the button walk
   one room back; with an empty path, and while an event knot runs, it stays hidden.
 - Never `history`.
+- As merged (L15a `e94c786`, RULINGS 80; L15 cut K32, Q7): Bot API 6.1 is the minimum. Below it the facade shows no
+  BackButton, so no overlay can be closed (overlays close only through the BackButton, K26), and `openInvoice` answers
+  `unsupported` (`client/src/telegram/webapp.ts:407-421`). No "update Telegram" notice is built: it would need new
+  keys, and the locale tables are frozen.
 
 **Lifecycle (`activated` / `deactivated`, 8.0; `visibilitychange` as fallback):**
 - `deactivated` → pause GSAP's global timeline and the render loop, suspend audio, pause typewriter/auto/polling,
   autosave.
 - `activated` → resume; `scene.onActivated()` (context check); `audio.resume()` → `'needs-gesture'` shows
   "tap to resume sound"; the purchase flow re-polls; token refresh if expired.
+  As merged (L15a `e94c786`, RULINGS 80; L15 cut K21, Q7): no token refresh on `activated` is built
+  (`client/src/app/game.ts:1652-1682`). The single-flight 401 re-auth (`http: 401 re-auths once`) covers an expired
+  token, and no client path can refresh an expired initData ("Reopen").
 
 **Wrappers:**
 - `openInvoice(url, cb)` → Promise. TWA throws `WebAppInvoiceUrlInvalid` / `WebAppInvoiceOpened` /
@@ -2270,7 +2289,7 @@ raise to 48 / 64 MiB (steady 122.6, transient 138.6) is a PP decision on M2's de
 |---|---|---|---|---|
 | inkjs `Story` | `StoryRunner` | `StoryRunner.create` | `dispose()` on chapter change, load, new game | `game_holds_one_runner` (unit, debug counter) |
 | Pixi `Application` + canvas | `SceneController` | `mount()` | `destroy()`; rebuilt once on unrecoverable context loss | e2e: exactly one `<canvas>` |
-| `Texture` + `ImageBitmap` | `AssetRegistry` entry | first `acquire` | holder set empty → `destroy(true)` + `close()` | `registry_returns_to_baseline`; e2e liveBytes |
+| `Texture` + `ImageBitmap` | `AssetRegistry` entry | first `acquire` | holder set empty → `destroy(true)` + `close()`; changed by MEMORY-PLAN (M2; RULINGS 78; planned): the decode bitmap closes right after its upload, the kept Blob is dropped at holder-set empty, and the revive bitmap and the revive `AbortController` get their own rows ([MEMORY-PLAN section 10](MEMORY-PLAN.md#10-resource-lifetime)) | `registry_returns_to_baseline`; e2e liveBytes |
 | `Sprite` / containers | executor (per slot) | command start | after the replacing transition, `hide`, `scene`, `restore`, `destroy` | `executor_sprite_count_per_slot` (≤ 2 in transition, 1 after) |
 | GSAP timeline | executor | `apply(batch)` | `onComplete` → `kill()`; `complete()` → `progress(1)` → `kill()`; `destroy()` kills all | `executor_kills_timelines` (active = 0) |
 | GSAP ticker listener | `render-loop.ts` | first active timeline or dirty frame | when active = 0 and not dirty | `render_loop_idles` |
@@ -2406,6 +2425,7 @@ All budgets are enforced by `client/scripts/budget.ts` inside `npm run build` un
 | `smoke.spec.ts` (L15) | `tap-to-start unlocks audio only after the gesture`, `play choose save reload load resumes at same line` (asserts `data-line-id`), `autosave resume after reload`, `back button closes overlays without history` (`history.length` unchanged, `web_app_setup_back_button` events recorded), `deactivated pauses audio, activated resumes` (the dev-server `/@fs` check is a vitest test, not e2e: see Paid-content protection) |
 | `purchase.spec.ts` | `purchase unlocks chapter 2` (403 before, sheet shows the server price, 200 after, ch2 first line reacts to a ch1 choice), `cancelled purchase keeps paywall`, `failed purchase keeps paywall`, `delayed webhook unlocks after polling`, `paid twice grants once` |
 | `perf.spec.ts` | `time to first line under throttling`, `textures released on chapter change`, `heap under budget`, `context loss recovers` (debug hook calls Pixi's `forceContextLoss()`, then a pixel sample of the stage is not black) |
+| `memory.spec.ts` (changed by MEMORY-PLAN; RULINGS 78; new in M1, then M2, M3c, M3s; planned) | `scene: trimmed character renders where its canvas puts it` (M1); `scene: no decoded bitmap outlives its upload`, `scene: an unrestored context loss rebuilds the stage`, `scene: a failed revive re-acquires the visual` (M2); `scene: a LOW phone loads half-tier files`, `scene: an AVERAGE phone at DPR 1 loads full-tier files`, `scene: a LOW tablet loads full-tier files` (M3c); `scene: a LOW phone loads half-tier files of a paid chapter` (M3s). `perf.spec.ts` keeps its four and gains L15's `scene: a LOW perf class renders at resolution 1` with its AVERAGE control ([MEMORY-PLAN section 12](MEMORY-PLAN.md#12-budgets-and-validation)) |
 | `stories.spec.ts` (L15; changed by STORIES-PLAN) | `stories: picker lists both stories with covers`, `stories: saves are per story`, `stories: second story first chapter free then paywall`, `stories: story ending shows the end and records the ending`, `stories: back button closes chapter select to the picker`, `stories: picker unmounted during play` |
 | `puzzles.spec.ts` (L15; changed by PUZZLES-PLAN) | `explore: search item puzzle buy hint solve`, `explore: gate fail branch`, `explore: reload resumes in the same room with items`, `puzzle: hint text absent until bought`, `puzzle: paid chapter puzzle needs entitlement`, `explore: back button walks rooms then hides`, `explore: live texture bytes stay under the steady cap`, `explore: hotspot buttons align with props under safe area and landscape` |
 
@@ -2663,13 +2683,20 @@ are in):
   - Revision 1: `server/src/config.rs`, `.env.example`: L2 → LPO (W4). `server/dev/src/lib.rs`: L4b → L8a → L8b →
     LPO. `server/tests/it/common.rs`: … → LPO. `server/src/api/legal.rs`: LF1 → LPO. `server/src/db/orders.rs`: L8a →
     LE1 (W3: the pack binding).
-  - `server/src/{catalog.rs}`, `server/catalog.json`: L6b → LE1 (the `economy` section, `ProductRef::Pack`).
+  - `server/src/{catalog.rs}`, `server/catalog.json`: L6b → LE1 (the `economy` section, `ProductRef::Pack`). As merged
+    (LE2 `ec3b29f`, RULINGS 81, 84; LE2 cut Q9): `server/src/catalog.rs` L6b → LE1 → LE2 (the startup bounds of the
+    gift and referral numbers).
   - `server/src/content.rs`: L6b → LM2 (the meta loader). Changed by MEMORY-PLAN: L6b → LM2 → M3s.
   - `server/src/db/payments.rs`: L8b → LE1 (the grant's pack branch) → L9. `server/src/telegram/payments.rs`: L8b → LE1
     → L9.
   - `server/src/api/puzzles.rs`: L6c → LE1 (the hint use route).
   - `server/src/api/stats.rs`: LS3 → LM2 (the vocabulary check) → LE2 (the referral hook).
   - `server/src/db/economy.rs`: LE1 → LE2. `server/src/{db,api}/social.rs`, `server/tests/it/social.rs`: LF1 → LF2.
+    As merged (LE2 `ec3b29f`, RULINGS 81, 84; LE2 cut Q9): `server/src/db/social.rs` LF1 → LE2 (LE2's
+    `qualify_referral` and the referral evidence read; LF2, between them, held only `api/social.rs` and
+    `it/social.rs` and read `db/social.rs`); `server/tests/it/stats.rs`: LS3 → LM2 → LE2 (the guard's allow-list for
+    the evidence read); `server/tests/it/economy.rs` (the catalog bound cases) and `server/src/api/wallet.rs`
+    (`maxPerGift` in `WalletResponse`): LE1 → LE2.
   - `server/src/{auth/initdata.rs, api/auth.rs, db/users.rs}`: L4a → LF1. `server/dev/src/launch.rs`: L4b → LF1.
   - `server/src/telegram/gateway.rs`, `server/dev/src/fake_gateway.rs`: L8a → LF2.
   - `server/dev/tests/dev.rs`: L8b → LF1 → LF2.
@@ -2754,6 +2781,18 @@ these merged: L10 `34b7f13`, L14b `3364f73`, LE1 `29c310b`, N1 `f53755b`, LP2 `8
 the docs lane `docs-errata-3`; both have trunk-synced to `22ed4d5`. "To go": the rest, in the planned order below,
 M1, M2, M3c and M3s included.
 
+Changed by RULINGS 80-88 (as merged; docs lane `docs-errata-4`, group B): the State column is the state as of
+`48abfaf`, with each SHA from `git log --first-parent main`. Since `22ed4d5` these merged: LF2 `d0c7870`, LE2
+`ec3b29f`, L15a `e94c786` and LMD `48abfaf` (and the docs lane `docs-errata-3` as `8f1b1b3`). L15 is split (RULINGS
+80; L15 cut Q2): L15a `engine-wiring` (C1-C6, merged) and L15b `app-e2e` (C7-C13, running); the L15 lane entry
+records the split ("As cut and split"). A gate below that names L15 is met when L15b has merged (MEMORY-PLAN: M1
+after L15, i.e. after L15b). One "client follow-ups" lane is added after L15b (RULINGS 80, L15 cut Q3): K24, K33,
+K34, K46, K39 / K58 and K7(c) of the L15 cut, plus the three L15a items of RULINGS 85 (the "Load it" error notice,
+the torn-session autosave refusal, the `budget.ts` row of a statically imported lazy root). It has no lane entry
+below; its cut starts from `D:/tmp/novel-orch/carry.md` (the L15 cut and L15a blocks). Running: L15b app-e2e (client,
+base `e94c786`) and LPO privacy-operator (server, base `e94c786`), beside the docs lane `docs-errata-4` (base
+`48abfaf`). "To go": the rest, in the planned order below.
+
 | Lane | Slot | State | Gate to start (merged) | Re-cut |
 |---|---|---|---|---|
 | L1 client-shell | client | merged `ea8a6a2` (`f6e2624` before the rewrite) | — | — |
@@ -2784,9 +2823,9 @@ M1, M2, M3c and M3s included.
 | **LE1 economy-core** | server | merged `29c310b` (new, META-PLAN) | LS3 (serialized server files) | new |
 | **LF1 friends-server** | server | merged `946e2b5` (new, META-PLAN) | LE1 (serialized server files) | new |
 | **LM2 meta-server** | server | merged `5a33183` (new, META-PLAN) | LF1 (serialized server files), LM1 (`server/content/meta.json` and its fixture) | new |
-| **LF2 share-profile** | server | running (base `5a33183`; new, META-PLAN) | LM2 (the profile reads the meta and the unlocks) | new |
-| **LE2 gifts-referrals** | server | to go (new, META-PLAN) | LF2 (serialized server files; needs LE1, LF1) | new |
-| **LPO privacy-operator** | server | to go (new, META-PLAN revision 1) | LE2 (serialized server files; LF1's `api/legal.rs`) | new |
+| **LF2 share-profile** | server | merged `d0c7870` (new, META-PLAN) | LM2 (the profile reads the meta and the unlocks) | new |
+| **LE2 gifts-referrals** | server | merged `ec3b29f` (new, META-PLAN) | LF2 (serialized server files; needs LE1, LF1) | new |
+| **LPO privacy-operator** | server | running (base `e94c786`; new, META-PLAN revision 1) | LE2 (serialized server files; LF1's `api/legal.rs`) | new |
 | L9 refunds-bot | server | to go | LS3 (serialized server files; needs L8b). Changed by META-PLAN: LE2 (the pack clawback needs LE1's ledger; the gifted-pack test needs LE2); revision 1: LPO (serialized server files) | STORIES-PLAN: gate only; META-PLAN: the pack clawback, unapplied, `/privacy`; moved to the end of the server chain |
 | **LDB2 pgdev-tune** | server | merged `a7e4a04` (ran early, SQ4) | LDB1; launched after L9 unless the server slot idles earlier (SQ4) | cut in RULINGS 17 / `design/db/decision.md` |
 | L10 client-data | client | merged `34b7f13` | L7, L8b, LS2 | PUZZLES-PLAN, STORIES-PLAN (saves per story); META-PLAN: `isDelivered`, the hint status decoder |
@@ -2796,12 +2835,13 @@ M1, M2, M3c and M3s included.
 | D1 docs-authoring | doc | merged `dbcd170` | L3c, L5, LW3, LS1 | PUZZLES-PLAN, STORIES-PLAN (stories authoring); META-PLAN: the meta authoring part if LM1 merged first |
 | L14b overlay-menus | client | merged `3364f73` | L10, L14a | PUZZLES-PLAN, STORIES-PLAN (picker, the end); META-PLAN: the card button, the end's second action, the hint keys |
 | **LS4 stats-client** | client | merged `4c713fa` (new, STORIES-PLAN) | L10, LS3 | new; META-PLAN: `choice_made`, `settle` |
-| **LMD meta-data** | client | to go (new, META-PLAN) | LS4 (serialized `api/` files), LF2 (the meta DTOs and their samples) | new |
+| **LMD meta-data** | client | merged `48abfaf` (new, META-PLAN) | LS4 (serialized `api/` files), LF2 (the meta DTOs and their samples) | new |
 | N1 demo-story | narrative | merged `f53755b` | D1, LW3, LS1. Changed by META-PLAN: + LM1 (`story/meta.json` and `catalog/meta`) | PUZZLES-PLAN, STORIES-PLAN (story `manor`, two endings); META-PLAN: ending titles, achievements |
 | **N2 story-tide** | narrative | merged `3587bdd` (new, STORIES-PLAN) | N1 (shared story files), LS1, L5 | new; META-PLAN: ending titles, achievements |
 | **LP2 puzzle-ui** | client | merged `88d0964` | L10, L14b, LW2 | PUZZLES-PLAN; META-PLAN: `HintPort \| null` |
 | **LX explore-ui** | client | merged `a9e991c` | L11, L14b, LW2 | PUZZLES-PLAN (∥ LP2: disjoint locks) |
-| L15 integration | client | running (base `a9e991c`) | every lane above (N1 and N2 included: the e2e plays both stories). Changed by META-PLAN: every lane above except L9 and the META-PLAN lanes (LE1, LF1, LM2, LF2, LE2, LU1, LMD; LM1 is in through N1) | PUZZLES-PLAN, STORIES-PLAN (stories wiring, `stories.spec.ts`); META-PLAN: `choice_made`, `hints: null`; MEMORY-PLAN: lever F (+ `scene/controller.ts`) and the e2e helpers, carried into its running cut through its brief |
+| L15 integration | client | split (RULINGS 80): L15a `engine-wiring` merged `e94c786`; L15b `app-e2e` running (base `e94c786`) | every lane above (N1 and N2 included: the e2e plays both stories). Changed by META-PLAN: every lane above except L9 and the META-PLAN lanes (LE1, LF1, LM2, LF2, LE2, LU1, LMD; LM1 is in through N1) | PUZZLES-PLAN, STORIES-PLAN (stories wiring, `stories.spec.ts`); META-PLAN: `choice_made`, `hints: null`; MEMORY-PLAN: lever F (+ `scene/controller.ts`) and the e2e helpers, carried into its running cut through its brief |
+| **client follow-ups** | client | to go (new, RULINGS 80; L15 cut Q3) | L15b (its items touch `app/game.ts`, which L15b also holds; RULINGS 87) | new |
 | **M1 memory-trim** | client | to go (new, MEMORY-PLAN) | L15 (the first rendered scene and `perf.spec.ts`; the e2e helpers) | new |
 | **LMI meta-integration** | client | to go (new, META-PLAN) | L15, LMD, LU1, LE2. Changed by MEMORY-PLAN: M1 | new; MEMORY-PLAN: gate + M1 |
 | **M2 memory-cpu-copy** | client | to go (new, MEMORY-PLAN) | LMI (after M1; the `budget.ts` and `app/game.ts` chains) | new |
@@ -2817,6 +2857,9 @@ STORIES-PLAN. Changed by META-PLAN: there are 47 lanes — 14 merged (L6b `69899
 17 to go. Changed by MEMORY-PLAN (RULINGS 78): 52 lanes; M1, M2, M3c and M3s are new from MEMORY-PLAN, all to go.
 Changed by RULINGS 78 (as of `22ed4d5`; docs lane `docs-errata-3`, group B): 52 lanes — 40 merged, 2 running (L15,
 LF2), 10 to go (LE2, LPO, L9, LMD, M1, LMI, M2, M3c, D2, M3s).
+Changed by RULINGS 80-88 (as of `48abfaf`; docs lane `docs-errata-4`, group B): 54 lanes (L15 counts as L15a and
+L15b, and the client follow-ups lane is new) — 44 merged, 2 running (L15b, LPO), 8 to go (the client follow-ups lane,
+M1, LMI, M2, M3c, D2, L9, M3s).
 
 **Launch preference** when several lanes are ready (critical path first; changed by STORIES-PLAN):
 - client (two slots): L3c (running), L5, L11, LS1, L7, L12, LW3, L14a, L10, L13, L14b, LP2 ∥ LX, LS4, D1, N1, N2, L15,
@@ -2833,6 +2876,11 @@ LF2), 10 to go (LE2, LPO, L9, LMD, M1, LMI, M2, M3c, D2, M3s).
   merged.
 - Changed by RULINGS 78 (as of `22ed4d5`; merged lanes dropped): client: L15 (running), M1, LMD, LMI, M2, M3c ∥ D2;
   server: LF2 (running), LE2, LPO, L9, M3s. LMD waits for LF2 (its gate), and M3s for M3c and D2.
+- Changed by RULINGS 80-88 (as of `48abfaf`; docs lane `docs-errata-4`, group B; merged lanes dropped): client: L15b
+  (running), M1, LMI, M2, M3c ∥ D2, and the client follow-ups lane (gate L15b); server: LPO (running), L9, M3s. LMI
+  waits only for M1 now (LMD and LE2 have merged), and M3s for M3c and D2. The follow-ups lane's carried items name
+  `client/src/app/game.ts`, its test and `client/scripts/budget.ts`, which M1 and M3c (`budget.ts`), LMI and M2
+  (both) also lock, so it runs beside none of them; its place in the client chain is not ruled yet.
 
 After L9 the server slot takes doc / narrative / client lanes with disjoint locks.
 
@@ -2879,6 +2927,16 @@ beside them.
   LF2 (running) → LE2 reaches LMI in as many lanes, with LMD (← LF2) beside LE2, so LMI starts after the later of
   M1 and LE2. LPO → L9 run in the server slot beside LMI and M2.
 - L10, L14b, LP2, LX, L13, LS4, N1, N2, LE1, LF1 and LM2 have merged.
+
+**Changed by RULINGS 80-88 — the critical path as of `48abfaf`** (docs lane `docs-errata-4`, group B).
+- The critical path starts at L15b (running; RULINGS 80 split L15, and L15a merged `e94c786`). The prototype
+  milestone is L15b's merge.
+- The whole plan: L15b (running) → M1 → LMI → M2 → D2 → M3s, with M3c beside D2 (M3s needs both). LE2 and LMD have
+  merged, so LMI starts when M1 merges. LPO (running) → L9 run in the server slot beside the client chain, and M3s
+  follows L9 once M3c and D2 have merged.
+- The client follow-ups lane (gate L15b) is not on the path, but it shares files with M1, LMI, M2 and M3c (the launch
+  preference above), so where it runs in the client chain is not ruled yet.
+- LF2, LE2, L15a and LMD have merged.
 
 ### Lanes
 
@@ -4623,11 +4681,31 @@ Notation:
        viewer's gate: `dawn` shared.
      - Also: `friend_profile_404_for_non_friend`, `friend_profile_private_by_default`,
        `consent_withdrawal_hides_profile`, `friend_profile_shared_titles_only`.
+     - As merged (`d0c7870`, RULINGS 79; LF2 cut Q2): at most 8 statements, not ≤ 7. The handle and the friendship are
+       two lookup reads (RULINGS 70 Q8), so the worst path is `user_by_handle`, `are_friends`, `profile_visible`,
+       `entitlements` and four grouped reads (`server/src/api/social.rs:326-356`).
   4. `#[derive(TS)]` + `api.ts`. Red: `bindings_are_fresh`.
   5. The DTO samples of `WalletResponse`, `HintUseResponse`, `CardResponse`, `SocialResponse`, `FriendProfile`,
      `InviteView` (revision 1) and `ShareResponse` in `dto_samples.rs` + `dto-samples.json` (handles, no Telegram id).
      Red: `dto_samples_are_fresh` before regenerating. Changed by RULINGS 52, 53 (as merged, LE1 `29c310b`; LE1 cut
      Q5 (c)): `WalletResponse` and `HintUseResponse` are dropped from this list, since LE1 samples them already.
+- **As merged (`d0c7870`, RULINGS 79, 81; LF2 cut Q8, C2, C5):**
+  - Five commits, restructured: C1 `a3dc70e` carry (a), `FrankensteinGateway::from_config` as the one constructor;
+    C2 `ed139ee` the gateway (`savePreparedInlineMessage`, the cached `getMe`, the fakes); C3 `fec5270` the share, with
+    `server/locales/meta.json`, `share_limit` and `dev_prepared_message_readable` (moved here from commit 1, since it
+    drives `POST /api/share`); C4 `f2a520a` the profile; C5 `ff65d57` the bindings and the samples (the plan's commits
+    4 and 5 in one, because an exports-only commit reds `dto_samples_are_fresh`).
+  - The gateway takes `PreparedShare` by value (`save_prepared_inline_message(&self, user, share: PreparedShare)`), and
+    `PreparedMessage.expiration_date` is Telegram's `u64` made an `i64` (`i64::MAX` when it does not fit;
+    `server/src/telegram/gateway.rs:76-80`, `:103-108`, `:544`).
+  - C5 adds samples of `ShareResponse` and `FriendProfile` only. The four other share / profile DTOs that
+    `dto_samples_are_fresh` names are listed: `SharedEnding`, `SharedAchievement` and `FriendStoryDto` in `NESTED`
+    (sampled inside `FriendProfile`), `ShareRequest` in `REQUESTS` (a request body;
+    `server/tests/it/dto_samples.rs:31-70`). `CardResponse` (LM2), `SocialResponse` and `InviteView` (LF1) were
+    sampled by their own lanes.
+  - The fixture items `lighthouse` / `dawn_walk` (LM2 cut Q2) stand in for `dawn_seen`: `share_text_has_no_titles`
+    (`server/tests/it/share.rs:186`) and the profile tests `friend_profile_paid_titles_need_viewer_entitlement`,
+    `friend_profile_shared_titles_only` (`server/tests/it/social.rs:2286`, `:2479`) unlock them.
 - **Gates:** fmt, clippy, test (counted); client `check`.
 - **Tester mutations:** an ending title in the share template; the profile without the viewer's gate; `visible: true`
   without a consent row; the limiter removed; `allow_channel_chats` true.
@@ -4635,6 +4713,12 @@ Notation:
   dto_samples` and `cargo test -p server-dev dev_prepared` list every name. Live: `POST /api/share { storyId: "tide",
   lang: "ru", native: true }` → `{ link: "https://t.me/novel_dev_bot?startapp=f…", preparedMessageId }`;
   `GET /dev/prepared/{id}` shows the text and the button.
+  - As merged (`d0c7870`, RULINGS 79; LF2 cut Q10): `gateway_prepared_share_shape` is a `server --lib` unit test
+    (`prepared_params` is private, the `gateway_invoice_request_shape` precedent), and `dev_prepared_message_readable`
+    runs under `-p server-dev`. The filters go after `--` (the LF1 Q6 precedent): `cargo test -p server --lib --locked
+    -- telegram::gateway:: api::share::`; `cargo test -p server --test it --locked -- share:: friend_profile
+    consent_withdrawal achievements_repo_called_only bindings_are_fresh dto_samples_are_fresh`; `cargo test -p
+    server-dev --locked -- dev_prepared fake_gateway::`.
 
 #### LE2 gifts-referrals (server; new, META-PLAN)
 - **Goal:** gifts between friends (META-PLAN M22) and the referral qualification and grant (M23); the gift DTO
@@ -4679,6 +4763,10 @@ Notation:
   the hook only for newly recorded completions; let a hook error fail the stats response.
 - **Seen working:** `cargo test -p server --test it gift_ referral_` lists every name. Live: two dev friends (LF1), a
   pack for one (LE1) → `POST /api/gifts` → both `GET /api/wallet` answers changed.
+  - As merged (`ec3b29f`, RULINGS 84; LE2 cut Q9): the filters go after `--` (the LF1 Q6 precedent), `cargo test -p
+    server --test it -- gift_ referral_`; two filters before `--` are a cargo usage error. A live `server-dev` run
+    needs `npm --prefix client run assets` after `story`: `server-dev` refuses to start without a paid chapter's
+    `server/content/chapters/<id>/assets.json` (`server/src/content.rs:603-607`).
 
 #### LPO privacy-operator (server; new, META-PLAN revision 1)
 - **Goal:** the privacy policy's operator facts from outside the repository and the production refusal (META-PLAN M26,
@@ -4753,6 +4841,8 @@ Notation:
   and `api::legal::`; revision 3: with the four `pin_check_` names) list every name. Live: `server-dev` (test env, no
   file) → `curl /api/privacy` shows the placeholders; the prod refusal is observed through
   `privacy_placeholder_refuses_prod_start` (a live prod start needs real secrets).
+  As merged (LE2 `ec3b29f`, RULINGS 84; LE2 implement addendum): the live run needs `npm --prefix client run assets`
+  after `story`, since `server-dev` refuses to start without a paid chapter's `assets.json`.
 
 #### L10 client-data (client)
 - **Goal:** the API client with single-flight re-auth; the saves service (rev, writeId, pending cache, conflict
@@ -4845,6 +4935,8 @@ Notation:
   nothing (STORIES-PLAN ST4).
 - **Gates:** fmt, clippy, test.
 - **Seen working:** `curl POST /dev/refund` → `GET /api/chapters/ch2` → 403.
+  As merged (LE2 `ec3b29f`, RULINGS 84; LE2 implement addendum): the live run needs `npm --prefix client run assets`
+  after `story`, since `server-dev` refuses to start without a paid chapter's `assets.json`.
 - **Changed by META-PLAN (re-cut; same lock, 16 files).** META-PLAN M19, M20, M26:
   - **Gate to start:** LE2 merged (the serialized server files; LE1's `clawback_in_tx` and ledger; L9 runs last in
     the server chain).
@@ -5568,6 +5660,8 @@ Notation:
   all six specs (`boot`, `smoke`, `purchase`, `perf`, `puzzles`, `stories`).
 - **Seen working:** `npm run dev` + `cargo run -p server-dev`, play to the paywall, buy, ch2. `npm --prefix client run
   e2e`.
+  As merged (LE2 `ec3b29f`, RULINGS 84; LE2 implement addendum): the live run needs `npm --prefix client run assets`
+  after `story`, since `server-dev` refuses to start without a paid chapter's `assets.json`.
 - **Changed by META-PLAN (re-cut; same lock, 14 files).** META-PLAN M1, M21, M27, M28:
   - **Gate to start:** unchanged by the meta lanes — L15 waits for none of LE1–LE2, LM1–LMI or L9 (the prototype
     milestone; the dependency order).
@@ -5597,6 +5691,28 @@ Notation:
   - **The e2e helpers** (section 14 item 7; in L15's resume note, RULINGS 78): export the helpers that reach a line and
     read a stage-canvas pixel, which M1's `memory.spec.ts` needs, from `client/e2e/helpers.ts`, so that M1's lock stays
     13. If L15's merged tree keeps them inside `perf.spec.ts`, M1's cut adds `helpers.ts` (lock 14).
+- **As cut and split (RULINGS 80; L15 cut Q2, Q7).** The cut wrote the commits above as C1-C13 over a base lock of 15
+  (the lock above, `scene/controller.ts` included), and the lane runs as two:
+  - **L15a `engine-wiring`**, C1-C6 (as merged, `e94c786`, RULINGS 85): C1 `dc9bd30` the Telegram storage bound; C2
+    `14e1b01` the two-stage boot, the engine chunk and the GameSession core; C3 `94d898e` chapter change, the
+    next-chapter preload, endings and the chapter reports; C4 `0bdddbf` the ink-error floor; C5 `67cd615` the chapter
+    purchase and exit to stories; C6 `33e98e1` `yields.ts`, the one caller of `runner.enter`, and the lazy families
+    (the prefetch: PZ X14 as merged, D13). The critique's W1 and W2 added `4ecd6ba` (the autosave conflict prompt),
+    `a88503b` (the read-set at every chapter start and resume) and `74d85f4` (the story-update resume toasts); the
+    fix rounds 1-3 added pins and fixes after C6. Lock 10: `client/src/app/{boot,engine,game,game.test,yields,
+    yields.test}.ts`, `client/src/main.ts`, `client/src/telegram/{webapp,telegram.test}.ts`,
+    `client/src/ui/state.svelte.ts`.
+  - **L15b `app-e2e`**, C7-C13, a delta cut of C7-C13 on `e94c786`: C7 the e2e helpers, smoke and stories; C8
+    `App.svelte` (Home, the play surface, the overlays); C9 the typewriter's `Intl.Segmenter` fallback; C10 the
+    save-conflict ask in two blocks; C11 purchase; C12 lever F (`mount` takes the device class) and perf; C13 puzzles.
+    Lock: 14 working files, `client/src/ui/App.svelte`, `client/src/main.ts`, `client/e2e/{helpers,smoke.spec,
+    stories.spec,purchase.spec,perf.spec,puzzles.spec}.ts`, `client/src/ui/{typewriter.ts,typewriter.svelte.test.ts,
+    SaveLoad.svelte,menus.svelte.test.ts}`, `client/src/scene/controller.ts`, `client/src/app/game.ts` (the lever-F
+    `mount` call); 5 fix-only, `client/src/app/{boot.ts,game.test.ts,yields.ts,yields.test.ts}` and
+    `client/src/ui/state.svelte.ts`.
+  - The lock additions beyond the base 15 (RULINGS 80): `telegram/{webapp,telegram.test}.ts` and
+    `ui/state.svelte.ts` for L15a; `ui/{typewriter.ts,typewriter.svelte.test.ts,SaveLoad.svelte,
+    menus.svelte.test.ts}` for L15b.
 
 #### M1 memory-trim (client; new, MEMORY-PLAN)
 - **Source:** [MEMORY-PLAN "Lane cut sketches"](MEMORY-PLAN.md#11-lane-cut-sketches), M1 (RULINGS 78; lever B,
@@ -5731,6 +5847,8 @@ Notation:
   the wallet shows it → a hint used in ch1; a second dev user via `startapp` → Send in the prompt → the first user
   accepts → a gift.
   `npm --prefix client run e2e`.
+  As merged (LE2 `ec3b29f`, RULINGS 84; LE2 implement addendum): the live run needs `npm --prefix client run assets`
+  after `story`, since `server-dev` refuses to start without a paid chapter's `assets.json`.
 - **Changed by MEMORY-PLAN (RULINGS 78).** **Gate to start:** + M1 merged (MEMORY-PLAN section 11 M1, "Why before
   LMI"; `budget.ts` / `budget.test.ts` … → LP2 → M1 → LMI → M2 → M3c). The lock is unchanged; `client/src/app/game.ts`
   passes to M2 after LMI.
@@ -5869,7 +5987,7 @@ Notation:
         - A different red: the bg shows a freed texture with no throw. That means the recording stage stopped
           checking `freed`.
       - `executor: a fade through black never shows a handle whose record ended at black` (R5-0).
-        - Setup: `bg/street` is live under a test holder. `apply([scene('street','fade',800)])`; `advance(100)`;
+        - Setup: `bg/street` is live under a test holder. S = `apply([scene('street','fade',800)])`; `advance(100)`;
           street's revive fails; `reacquire()` (it removes nothing: no street sprite yet); `advance(400)`, so the
           midpoint fires; flush.
         - (critique_r5 O1) Right after `reacquire()`, `stats().activeTimelines` is still 1. Before the re-take
@@ -6346,6 +6464,8 @@ each has a default there; the policy's operator facts are placeholders until the
 | 25 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `ba5fc68` (the docs-errata-3 spec, group A; RULINGS 53-77), as merged on main `22ed4d5` | Docs lane `docs-errata-3`, group A: the carried plan errata of the merged lanes, each place marked "as merged" with its SHA and ruling. "As merged" bullets (commit lists, filters) in the L10, LP2, LF1 and LX entries; in place: the LE1 lock, seen working and commit-2 red; the L8a pack pass-through superseded by the pack binding; LF2 commit 5's samples list; the `ApiError` and `purchase/flow.ts` signatures (L10); the LU1 gift-cap mapping; the L14b callbacks and the `hint` keys; the LP2 lazy budget rows; L15 commit 3's puzzle view store; the LF1 self-invite red and seen working; the LM2 paid-gated fixture items; K5's `room:` holders (backgrounds only, LX). The code on `22ed4d5` is the ground truth. Ledger: `D:/tmp/novel-orch/docs-errata-3/ledger.md` |
 | 26 | 2026-11-02 | RULINGS 78 + the approved design `D:/tmp/novel-orch/design/memory/proposal.md` (round 5; with "Revision 2" to "Revision 5"; critiques `design/memory/critique_r1.md` to `critique_r5.md`, round 5 APPROVED) | MEMORY-PLAN adoption (RULINGS 78), docs lane `docs-errata-3`, group M: extended by [MEMORY-PLAN.md](MEMORY-PLAN.md) (levers B, A, C as the lanes M1, M2, M3c, M3s; F carried into L15's running cut; D deferred to Q52; E rejected and frozen). Each changed place is marked "Changed by MEMORY-PLAN": the budget targets; the correctness-target row I1–I7; K5; K9; the controller's `onActivated` note; the executor (`reacquire()`, the identity rule) and the revive flow; "Registry and loader", "Memory estimate", "Steady total"; the concurrency table's context-loss row; the budget rows "Image dimensions", "Knot working set", "Per-chapter transfer", "Live texture bytes"; the collision locks (`catalog.ts`, `budget.ts`, the two docs, `content.rs`, `game.ts`, and a MEMORY-PLAN block); the dependency order (intro, four rows, LMI's, L15's and D2's rows, the lane count 48 → 52, the launch preference, the critical path); the L15, LMI and D2 entries; the new lane sections M1, M2, M3c, M3s |
 | 27 | 2026-11-02 | RULINGS 78 (as merged: every lane up to LM2 `5a33183`; L15, LF2 running; main `22ed4d5`) | Docs lane `docs-errata-3`, group B: "Dependency order" — a marker paragraph and the State column as of `22ed4d5` (11 more lanes merged since `6043941`, with SHAs from `git log --first-parent main`: L10, L14b, LE1, N1, LP2, L13, LF1, LS4, N2, LX, LM2; L15 and LF2 running), the lane count (52: 40 merged, 2 running, 10 to go), the launch preference without the merged lanes, the critical path from L15. The planned order is otherwise unchanged. STORIES-PLAN revision 11 and META-PLAN revision 7 hold their lines. Ledger: `D:/tmp/novel-orch/docs-errata-3/ledger.md` |
+| 28 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `e6eca0d` (the docs-errata-4 spec, group A; RULINGS 79-88), as merged on main `48abfaf` | Docs lane `docs-errata-4`, group A: the carried plan errata of the merged lanes, each place marked "as merged" (or "Changed by MEMORY-PLAN") with its SHA and ruling. "As merged" bullets in the LF2 entry (the five commits, the gateway by value, the C5 samples, the fixture items, the seen-working listings) and the LE2 entry (the filters after `--`, `run assets` before a live run); the L15 entry's "As cut and split" bullet (L15a C1-C6 merged with the SHAs, L15b C7-C13, the two locks); in place: the profile's 8 statements; no token refresh on `activated` (K21); Bot API 6.1 the minimum (K32); the LE2 chains (`catalog.rs`, `db/social.rs`, `it/stats.rs`, `it/economy.rs`, `api/wallet.rs`); `run assets` in the live seen working of LPO, L9, L15 and LMI; the "Changed by MEMORY-PLAN" pointers of docs-errata-3's OM2 (K4, the Module API `SceneController` / `AssetRegistry`, the `Texture` + `ImageBitmap` lifetime row, the module map's `scene/` row, a `memory.spec.ts` e2e row); "S" named in the M2 entry's fade test (as in MEMORY-PLAN). The code on `48abfaf` is the ground truth. Ledger: `D:/tmp/novel-orch/docs-errata-4/ledger.md` |
+| 29 | 2026-11-02 | RULINGS 80-88 (as merged: LF2 `d0c7870`, LE2 `ec3b29f`, L15a `e94c786`, LMD `48abfaf`; L15b, LPO running; main `48abfaf`) | Docs lane `docs-errata-4`, group B: "Dependency order" — a marker paragraph and the State column as of `48abfaf` (LF2, LE2, L15a and LMD merged since `22ed4d5`, with SHAs from `git log --first-parent main`; L15 split into L15a and L15b, RULINGS 80, and a gate naming L15 met at L15b's merge; the new "client follow-ups" row after L15b, RULINGS 80 / 85; L15b and LPO running), the lane count (54: 44 merged, 2 running, 8 to go), the launch preference without the merged lanes, the critical path from L15b. The follow-ups lane's place in the client chain is left unruled (its carried files overlap M1, LMI, M2 and M3c). The planned order is otherwise unchanged; the L15 entry's split record is group A's (revision 28). STORIES-PLAN revision 13 and META-PLAN revision 9 hold their lines. Ledger: `D:/tmp/novel-orch/docs-errata-4/ledger.md` |
 
 **Revision 1 (2026-10-30)** — what changed, by triage item:
 - **W1** (undecodable payment ACKed and lost): K17 (lenient `PaymentProbe` for the payment subset, 500 only when the
