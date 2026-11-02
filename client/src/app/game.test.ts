@@ -2125,3 +2125,63 @@ test('game: a deactivated while a load restores the stage waits for the loaded s
   expect([same.waited, resumed]).toEqual([0, [['ch1.arrival.l001', true, 0, 'ch1.arrival.l001']]]);
   expect([paid.waited, paid.written.map((w) => [w.chapterId, w.lineId])]).toEqual([0, [['ch2', null]]]);
 });
+
+/** manor ch1 whose ending knot ends on a batch of its own: a tag line between its last line and `-> END`. */
+function endBatchCh1(): LoadedChapter {
+  return chapter('ch1', [...MANOR_CH1.slice(0, -1), 'Night falls. #id:ch1.garden.l006', '# hide: ally', '-> END'], {
+    arrival: { assets: ['bg/hall', 'char/ally/neutral', 'bgm/calm'], next: ['garden'] },
+    garden: { assets: ['bg/garden'], ending: true },
+  });
+}
+
+test('game: a deactivated during the end batch keeps the last exact save', async () => {
+  const h = harness({ chapters: [endBatchCh1(), manorCh2()], owned: ['ch2'] });
+  await playManorCh1(h); // l005, entering garden
+  await h.game.advance(); // l006, the chapter's last line
+  await settle();
+  const sv = h.save();
+  const written: SaveWrite[] = [];
+  const autosave = sv.autosave;
+  sv.autosave = (w, o) => {
+    written.push(w);
+    autosave(w, o);
+  };
+  h.game.onLifecycle('deactivated'); // no intent runs: l006 is written at once
+  await settle();
+  h.game.onLifecycle('activated');
+  await settle();
+  const apply = h.scene.apply;
+  const ends: Array<() => void> = [];
+  h.scene.apply = (batch, o) => {
+    void apply(batch, o); // the fake stage takes the batch; only its end is held
+    return new Promise<void>((resolve) => {
+      ends.push(resolve);
+    });
+  };
+  const step = h.game.advance(); // END: ink is past l006 while the end batch (`hide: ally`) runs
+  await settle();
+  h.game.onLifecycle('deactivated');
+  await settle();
+  const atKill = written.at(-1); // a WebView killed here leaves the auto slot's last write
+  h.scene.apply = apply;
+  for (const end of ends.splice(0)) {
+    end();
+  }
+  await step;
+  await settle();
+  h.game.dispose();
+  let resumed: unknown = null;
+  if (atKill !== undefined) {
+    const again = harness({
+      chapters: [endBatchCh1(), manorCh2()],
+      owned: ['ch2'],
+      slots: new Map([['auto', { summary: summary(MANOR, 'auto', atKill), body: atKill.body }]]),
+    });
+    const ok = (await again.game.start({ kind: 'slot', story: MANOR, slot: 'auto' })).ok;
+    await settle();
+    resumed = [atKill.lineId, ok, again.vm.toasts.map((t) => t.key), lineOf(again.vm)];
+    again.game.dispose();
+  }
+  // the end step never sets the position: a body of it would resume a level lower as a false story update
+  expect(resumed).toEqual(['ch1.garden.l006', true, [], 'ch1.garden.l006']);
+});
