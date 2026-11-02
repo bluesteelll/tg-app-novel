@@ -75,7 +75,7 @@ export type TgEnv = {
 type TwaWindow = Window & { Telegram?: { WebApp?: unknown } };
 
 /** CloudStorage's value limit (core.telegram.org/bots/webapps#cloudstorage). */
-const CLOUD_VALUE_MAX = 4096;
+export const CLOUD_VALUE_MAX = 4096;
 /**
  * A CloudStorage / DeviceStorage call whose callback has not come by then settles as a `timeout` storage error, and a
  * later callback is ignored: boot awaits these calls, and Telegram does not promise to answer one.

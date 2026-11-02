@@ -5,6 +5,8 @@
 import type { Result } from '../story/catalog.ts';
 import { browserEnv, createTelegramClient, readWebApp } from './webapp.ts';
 
+export { CLOUD_VALUE_MAX } from './webapp.ts';
+
 /** How Telegram closed an invoice; 'paid' only tells the purchase flow to poll the server. */
 export type InvoiceStatus = 'paid' | 'cancelled' | 'failed' | 'pending';
 
