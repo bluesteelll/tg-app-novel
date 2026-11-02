@@ -15,6 +15,8 @@ import { decodeChapterList, decodeStoryUsage } from './story/emit.ts';
 
 /** The lazy family rows (PUZZLES-PLAN X14, "Budgets"). */
 const LAZY_ROWS = ['puzzle-type chunk (br)', 'puzzle-host chunk (br)', 'explore-ui chunk (br)'];
+/** The meta families' rows (META-PLAN M27, "Budgets"; RULINGS 105): app/meta.ts is their importer. */
+const META_ROWS = ['meta-ui chunk (br)', 'meta controller chunk (br)'];
 
 const ROW_NAMES = [
   'manifest',
@@ -22,6 +24,7 @@ const ROW_NAMES = [
   'engine closure JS (br)',
   'JS before the first line (br)',
   ...LAZY_ROWS,
+  ...META_ROWS,
   'all JS (br)',
   'CSS total (br)',
   'index.html (br)',
@@ -56,6 +59,7 @@ function inputs(over: Partial<BudgetInputs> = {}): BudgetInputs {
     ],
     engineSourceExists: false,
     yieldsSourceExists: false,
+    metaSourceExists: false,
     lazySources: new Set(),
     facades: new Set(),
     ...over,
@@ -100,6 +104,8 @@ const HOST = 'src/ui/puzzles/PuzzleHost.svelte';
 const CONTROLLER = 'src/explore/controller.ts';
 const EXPLORE_VIEW = 'src/ui/explore/ExploreView.svelte';
 const ALL_LAZY: ReadonlySet<string> = new Set([CODE_LOCK, ORDER, HOST, CONTROLLER, EXPLORE_VIEW]);
+const META_UI = 'src/ui/meta/index.ts';
+const META_CTL = 'src/app/meta.ts';
 
 /** One built lazy root: its JS chunk's brotli bytes, and its CSS file's if any. */
 type LazyChunk = { js: number; css?: number };
@@ -129,11 +135,12 @@ function withLazy(base: BudgetInputs, chunks: Readonly<Record<string, LazyChunk>
 describe('budget evaluate', () => {
   test('budget: entry over limit fails', () => {
     const big = inputs();
-    big.files = big.files.map((f) => (f.path === 'assets/index-a.js' ? file(f.path, 300_000) : f));
+    // 310 000 + 2 000 shared: over the entry's 40 KB and the 305 KB of all JS.
+    big.files = big.files.map((f) => (f.path === 'assets/index-a.js' ? file(f.path, 310_000) : f));
     const rows = evaluate(big, LIMITS);
     const entry = rowOf(rows, 'entry closure JS (br)');
     expect(entry.status).toBe('FAIL');
-    expect(entry.valueBytes).toBe(302_000);
+    expect(entry.valueBytes).toBe(312_000);
     expect(rowOf(rows, 'all JS (br)').status).toBe('FAIL');
   });
 
@@ -220,7 +227,7 @@ describe('budget evaluate', () => {
   });
 
   test('budget: all js over limit fails', () => {
-    // PUZZLES-PLAN raised the limit to 290 KB br: 12 000 + 11 × 27 000 = 309 000 is over it.
+    // META-PLAN raised the limit to 305 KB br: 12 000 + 11 × 27 000 = 309 000 is over it.
     const base = inputs();
     const lazy = Array.from({ length: 11 }, (_, i) => file(`assets/lazy-${i}.js`, 27_000));
     const rows = evaluate({ ...base, files: [...base.files, ...lazy] }, LIMITS);
@@ -421,12 +428,127 @@ describe('budget evaluate', () => {
     expect(rowOf(lazy, 'first-load ch1').valueBytes).toBe(rowOf(plain, 'first-load ch1').valueBytes);
   });
 
+  test('budget: meta ui in entry closure fails', () => {
+    // META M27: the overlays are a dynamic chunk of their own; the M1 facade rule applies to them unchanged.
+    const base = withLazy(inputs(), { [META_UI]: { js: 6_000, css: 1_200 } }, { metaSourceExists: true });
+    const row = (b: BudgetInputs): Row => rowOf(evaluate(b, LIMITS), 'meta-ui chunk (br)');
+    // Control: its own dynamic chunk, JS and CSS beyond the entry.
+    expect(row(base)).toMatchObject({ status: 'PASS', valueBytes: 7_200 });
+    const manifest = { ...base.manifest };
+    const entry = manifest['index.html'];
+    if (entry === undefined) {
+      throw new Error('invariant: the base manifest has an entry');
+    }
+    // The entry imports the overlays statically as well: they load before the first line.
+    const inEntry = { ...manifest, 'index.html': { ...entry, imports: [...(entry.imports ?? []), META_UI] } };
+    expect(row({ ...base, manifest: inEntry })).toMatchObject({ status: 'FAIL', note: `${META_UI} is in the entry static closure` });
+    // A static import moved the code into an entry chunk, and the dynamic entry is a facade over it (RULINGS 92).
+    const facade = 'assets/index-f.js';
+    const overEntry = { ...manifest, [META_UI]: { file: facade, src: META_UI, isDynamicEntry: true, imports: ['_shared-b.js'] } };
+    expect(row({ ...base, manifest: overEntry, files: [...base.files, file(facade, 60)], facades: new Set([facade]) })).toMatchObject({
+      status: 'FAIL',
+      note: `${META_UI}: its dynamic entry ${facade} only re-exports assets/shared-b.js, which the entry static closure loads before the first line (a static import of the root?)`,
+    });
+  });
+
+  test('budget: meta row pending until its importer exists', () => {
+    // Both roots built, but no app/meta.ts: PENDING, as the lazy rows without app/yields.ts (W7).
+    const built = evaluate(withLazy(inputs(), { [META_UI]: { js: 6_000 }, [META_CTL]: { js: 3_500 } }, { metaSourceExists: false }), LIMITS);
+    for (const name of META_ROWS) {
+      expect(rowOf(built, name), name).toMatchObject({ status: 'PENDING', valueBytes: null, note: 'src/app/meta.ts absent' });
+    }
+    // The importer exists and nothing is a dynamic entry: FAIL, never a 0 KB PASS; the yields' rows do not follow it.
+    const rows = evaluate(inputs({ metaSourceExists: true, lazySources: new Set([META_UI, META_CTL]) }), LIMITS);
+    for (const name of META_ROWS) {
+      const row = rowOf(rows, name);
+      expect(row.status, name).toBe('FAIL');
+      expect(row.note, name).toContain('no dynamic entry for src/');
+    }
+    for (const name of LAZY_ROWS) {
+      expect(rowOf(rows, name).status, name).toBe('PENDING');
+    }
+  });
+
+  /**
+   * The built topology (the lever probe's manifest): the engine and the controller import the entry, the entry
+   * import()s both, and the controller import()s the overlays.
+   */
+  function withMeta(controllerBr: number, uiBr: number): BudgetInputs {
+    const base = withEngine(inputs(), 50_000, 100_000);
+    const manifest = { ...base.manifest };
+    const entry = manifest['index.html'];
+    const engine = manifest[ENGINE_SRC];
+    if (entry === undefined || engine === undefined) {
+      throw new Error('invariant: withEngine adds the engine chunk to the base entry');
+    }
+    manifest['index.html'] = { ...entry, dynamicImports: [ENGINE_SRC, META_CTL] };
+    manifest[ENGINE_SRC] = { ...engine, imports: ['index.html', ...(engine.imports ?? [])] };
+    manifest[META_CTL] = { file: 'assets/meta-m.js', src: META_CTL, isDynamicEntry: true, imports: ['index.html'], dynamicImports: [META_UI] };
+    manifest[META_UI] = { file: 'assets/meta-u.js', src: META_UI, isDynamicEntry: true, imports: ['index.html'] };
+    return {
+      ...base,
+      manifest,
+      files: [...base.files, file('assets/meta-m.js', controllerBr), file('assets/meta-u.js', uiBr)],
+      metaSourceExists: true,
+      lazySources: new Set([META_CTL, META_UI]),
+    };
+  }
+
+  test('budget: meta controller chunk counts before the first line', () => {
+    // RULINGS 105: boot import()s the controller after auth, beside the engine. Its chunk is requested before the first
+    // line and counted there, once; the overlays it import()s load later. Neither is the engine's.
+    const rows = evaluate(withMeta(3_500, 6_000), LIMITS);
+    expect(rowOf(rows, 'engine closure JS (br)')).toMatchObject({ status: 'PASS', valueBytes: 150_000 });
+    expect(rowOf(rows, 'JS before the first line (br)').valueBytes).toBe(12_000 + 150_000 + 3_500);
+    expect(rowOf(rows, 'meta controller chunk (br)')).toMatchObject({ status: 'PASS', valueBytes: 3_500 });
+    expect(rowOf(rows, 'meta-ui chunk (br)')).toMatchObject({ status: 'PASS', valueBytes: 6_000 });
+    // First-load to the first line counts the controller too, and only it.
+    const plain = assetRows(assetInputs(), withEngine(inputs(), 50_000, 100_000));
+    const meta = assetRows(assetInputs(), withMeta(3_500, 6_000));
+    expect((rowOf(meta, 'first-load ch1').valueBytes ?? 0) - (rowOf(plain, 'first-load ch1').valueBytes ?? 0)).toBe(3_500);
+    // The limit: 5.0 KB br.
+    expect(rowOf(evaluate(withMeta(5_000, 6_000), LIMITS), 'meta controller chunk (br)').status).toBe('PASS');
+    expect(rowOf(evaluate(withMeta(5_001, 6_000), LIMITS), 'meta controller chunk (br)').status).toBe('FAIL');
+  });
+
+  test('budget: meta controller imported statically fails', () => {
+    const base = withMeta(3_500, 6_000);
+    const row = (b: BudgetInputs): Row => rowOf(evaluate(b, LIMITS), 'meta controller chunk (br)');
+    // Control: its own dynamic chunk.
+    expect(row(base)).toMatchObject({ status: 'PASS', valueBytes: 3_500 });
+    // Merged into the entry: no chunk of its own, so a FAIL, never a 0 KB PASS (RULINGS 105 point 3's guard).
+    const { [META_CTL]: _merged, ...rest } = base.manifest ?? {};
+    const entry = rest['index.html'];
+    if (entry === undefined) {
+      throw new Error('invariant: the base manifest has an entry');
+    }
+    const merged = { ...rest, 'index.html': { ...entry, dynamicImports: [ENGINE_SRC] } };
+    expect(row({ ...base, manifest: merged })).toMatchObject({ status: 'FAIL', note: `no dynamic entry for ${META_CTL}` });
+    // Imported as a value too: the dynamic entry is a facade over the entry chunk that holds the code.
+    const facade = 'assets/meta-m.js';
+    const overEntry = { ...base.manifest, [META_CTL]: { file: facade, src: META_CTL, isDynamicEntry: true, imports: ['index.html'] } };
+    expect(row({ ...base, manifest: overEntry, facades: new Set([facade]) })).toMatchObject({
+      status: 'FAIL',
+      note: `${META_CTL}: its dynamic entry ${facade} only re-exports assets/index-a.js, which the entry static closure loads before the first line (a static import of the root?)`,
+    });
+  });
+
+  test('budget: all js limit is 305 KB', () => {
+    // META-PLAN "Budgets": 290 KB br plus the meta chunks.
+    const base = inputs(); // 12 000 B of JS
+    const all = (bytes: number): Row => rowOf(evaluate({ ...base, files: [...base.files, file('assets/lazy-0.js', bytes - 12_000)] }, LIMITS), 'all JS (br)');
+    expect(all(300_000).status).toBe('PASS');
+    expect(all(305_000)).toMatchObject({ status: 'PASS', valueBytes: 305_000 });
+    expect(all(305_001).status).toBe('FAIL');
+  });
+
   test('budget: every row is printed', () => {
     // A failing manifest does not stop later rows (no bail). PENDING: the engine row, the first-line row while the
-    // engine is absent, and the three lazy rows while app/yields.ts is; with no manifest the first-line row FAILs.
+    // engine is absent, the three lazy rows while app/yields.ts is, and the two meta rows while app/meta.ts is; with no
+    // manifest the first-line row FAILs.
     const cases: ReadonlyArray<readonly [BudgetInputs, number]> = [
-      [inputs(), 5],
-      [inputs({ manifest: null }), 4],
+      [inputs(), 7],
+      [inputs({ manifest: null }), 6],
     ];
     for (const [input, pendingRows] of cases) {
       const rows = evaluate(input, LIMITS);
@@ -516,11 +638,11 @@ describe('budget cli', () => {
 
   test('budget: cli exits 1 on oversize dist', () => {
     const dist = join(tmp, 'dist');
-    writeDist(dist, noise(300_000, 42));
+    writeDist(dist, noise(310_000, 42)); // over the 305 KB of all JS too
     writeRepo(join(tmp, 'repo'), { bgWidth: 4096 });
     const r = runCli(dist, SCRIPT, [], ['--root', join(tmp, 'repo')]);
     expect(r.status, r.stdout + r.stderr).toBe(1);
-    expect(r.stdout).toMatch(/^entry closure JS \(br\) \| 300\.\d KB \| 40\.0 KB \| FAIL/m);
+    expect(r.stdout).toMatch(/^entry closure JS \(br\) \| 310\.\d KB \| 40\.0 KB \| FAIL/m);
     expect(r.stdout).toMatch(/^all JS \(br\) \| .* \| FAIL/m);
     expect(r.stdout).toMatch(/^image bg\/cafe \| .* \| FAIL \| 4096×2048 over 2048 px/m);
     for (const name of ROW_NAMES) {
@@ -540,6 +662,8 @@ describe('budget cli', () => {
     expect(r.stdout).toContain('puzzle-type chunk (br) | — | 8.0 KB | PENDING | src/app/yields.ts absent');
     expect(r.stdout).toContain('puzzle-host chunk (br) | — | 10.0 KB | PENDING | src/app/yields.ts absent');
     expect(r.stdout).toContain('explore-ui chunk (br) | — | 16.0 KB | PENDING | src/app/yields.ts absent');
+    expect(r.stdout).toContain('meta-ui chunk (br) | — | 14.0 KB | PENDING | src/app/meta.ts absent');
+    expect(r.stdout).toContain('meta controller chunk (br) | — | 5.0 KB | PENDING | src/app/meta.ts absent');
     expect(r.stdout).toMatch(/^budget: \d+ rows, \d+ PASS, 0 FAIL, \d+ PENDING$/m);
   }, CLI_TIMEOUT_MS);
 
@@ -1123,7 +1247,7 @@ describe('budget assets', () => {
       ]) {
         expect(r.stdout).toMatch(row);
       }
-      expect(r.stdout).toMatch(/^budget: \d+ rows, \d+ PASS, 0 FAIL, 8 PENDING$/m);
+      expect(r.stdout).toMatch(/^budget: \d+ rows, \d+ PASS, 0 FAIL, 10 PENDING$/m);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
