@@ -626,6 +626,76 @@ async fn paysupport_pack_credit_is_applied() {
     report(&failures);
 }
 
+/// `/paysupport` against the database (review M2): of ANN's 22 payments, each on its own day, the newest 20 are
+/// listed newest first (`c-21` … `c-02`, none applied), and the message ends with how many were left out of the
+/// total (2); BEN's payment is not listed. 22 short lines fit one message far below 4096 characters, so the cap cannot
+/// stand in for the `LIMIT`.
+#[tokio::test]
+async fn paysupport_lists_newest_twenty_with_total() {
+    let (st, _db, gateway) = refund_state().await;
+    let mut c = common::raw_db(&st).await;
+    let charges: Vec<(String, i64, i64)> = (0..22)
+        .map(|i| (format!("c-{i:02}"), ANN, T0 + i * 86_400))
+        .chain([("c-ben".to_owned(), BEN, T0)])
+        .collect();
+    for (charge, user, paid_at) in &charges {
+        sqlx::query(
+            "INSERT INTO payments (telegram_payment_charge_id, invoice_payload, user_id, amount, currency, \
+             provider_payment_charge_id, paid_at) VALUES ($1, 'o-x', $2, 1, 'XTR', '', $3)",
+        )
+        .bind(charge)
+        .bind(user)
+        .bind(paid_at)
+        .execute(&mut c)
+        .await
+        .unwrap();
+    }
+    sqlx::Connection::close(c).await.unwrap();
+    let ru = texts::texts(Lang::Ru);
+    let more = fill(&ru.paysupport_more, &[("n", "2")]);
+    let mut want: Vec<String> = (2..22)
+        .rev()
+        .map(|i| {
+            let line = fill(
+                &ru.paysupport_line,
+                &[
+                    ("date", &utc_date(T0 + i * 86_400)),
+                    ("charge", &format!("c-{i:02}")),
+                    ("amount", "1"),
+                ],
+            );
+            format!("{line} {}", ru.paysupport_not_applied)
+        })
+        .collect();
+    want.push(more.clone());
+    let (status, sent) = say(&st, &gateway, ANN, Some("ru"), "/paysupport").await;
+    let text = sent.first().map(|msg| msg.text.clone()).unwrap_or_default();
+    let got = charge_lines(&text, &ru.paysupport);
+    let mut failures = Vec::new();
+    if status != 200 || sent.len() != 1 || !text.starts_with(&ru.paysupport) {
+        failures.push(format!(
+            "expected 200 and 1 message with the intro, got {status} and {} messages",
+            sent.len()
+        ));
+    }
+    if got != want {
+        failures.push(format!(
+            "expected 20 lines (c-21 … c-02, newest first) and {more:?}, got {} lines: {got:?}",
+            got.len()
+        ));
+    }
+    if !text.ends_with(&more) {
+        failures.push(format!(
+            "expected the message to end with {more:?}, got the end {:?}",
+            got.last()
+        ));
+    }
+    if text.contains("c-ben") {
+        failures.push("another user's charge is listed".to_owned());
+    }
+    report(&failures);
+}
+
 /// The command menu in `t`'s language, as `server setup` registers it.
 fn menu_of(t: &texts::LangTexts) -> Vec<BotCommandSpec> {
     [
