@@ -12,6 +12,7 @@ pub mod content;
 pub mod db;
 pub mod error;
 pub mod ids;
+pub mod meta;
 pub mod puzzles;
 pub mod telegram;
 
