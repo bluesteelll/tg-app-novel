@@ -712,7 +712,9 @@ fn expect_limited(case: &str, reply: &common::Reply, retry_after: &str) -> Optio
 /// The bound (K9): at most 10 unpaid orders (`created` or `checkout`) per user per rolling hour, then 429 `rate_limited`
 /// with `Retry-After` until the oldest leaves the window, with no row and no Bot API call. Ten POSTs at `T0` (three
 /// products) pass and the 11th is refused; another user is not bound by them; an order in `checkout` still counts; a
-/// paid one does not, so one more passes; at `T0+3599` the refusal says 1 s; at `T0+3600` the `T0` orders have left.
+/// paid one does not, so one more passes; at `T0-100` (the wall clock stepped back, so the counted orders are stamped
+/// after `now`) the refusal still says at most the window, 3600 s; at `T0+3599` it says 1 s; at `T0+3600` the `T0`
+/// orders have left.
 #[tokio::test]
 async fn invoice_open_orders_bounded() {
     let (st, _db, gateway) = invoice_state(&[(ANN, Some("ru")), (BEN, Some("en"))]).await;
@@ -784,6 +786,9 @@ async fn invoice_open_orders_bounded() {
     let reply = post_invoice(&st, Some(ANN), &invoice_body("chapter:ch4")).await;
     failures.extend(expect_limited("the next POST", &reply, "3600"));
 
+    let back = at(&st, T0 - 100);
+    let reply = post_invoice(&back, Some(ANN), &invoice_body("chapter:ch2")).await;
+    failures.extend(expect_limited("POST at T0-100", &reply, "3600"));
     let late = at(&st, T0 + 3599);
     let reply = post_invoice(&late, Some(ANN), &invoice_body("chapter:ch2")).await;
     failures.extend(expect_limited("POST at T0+3599", &reply, "1"));
