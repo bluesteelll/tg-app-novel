@@ -534,7 +534,7 @@ pub struct ConsentRequest {
 
 /// An ending both the friend and the viewer found, as a friend's profile lists it.
 // No `Debug`: the title may be paid-gated content (META-PLAN M7), never logged.
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SharedEnding {
     /// The ending name.
@@ -545,7 +545,7 @@ pub struct SharedEnding {
 
 /// An achievement both the friend and the viewer unlocked, as a friend's profile lists it.
 // No `Debug`: the name may be paid-gated content (META-PLAN M7), never logged.
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SharedAchievement {
     /// The achievement id, unique in its story.
@@ -556,7 +556,7 @@ pub struct SharedAchievement {
 
 /// One story of a friend's profile: the friend's own counts, and the titles both found that the viewer may see.
 // No `Debug`: it carries paid-gated texts.
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct FriendStoryDto {
     /// The story.
@@ -575,7 +575,7 @@ pub struct FriendStoryDto {
 /// their progress per story they found something in. Without the consent `visible` is `false` and nothing else is
 /// sent. No first name (the client has it from `SocialResponse.friends`) and no Telegram id.
 // No `Debug`: it carries paid-gated texts.
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct FriendProfile {
     /// The friend's handle.
@@ -588,12 +588,13 @@ pub struct FriendProfile {
 
 /// `POST /api/share` request (META-PLAN M14): what to share, in which language, and whether the client can send a
 /// prepared message (`shareMessage`, Bot API 8.0). Unknown fields are refused.
-#[derive(Deserialize)]
+#[derive(Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ShareRequest {
     /// The story whose progress to share; `null` is a plain invite.
     pub story_id: Option<StoryId>,
     /// The language of the text: `ru` or `en`, checked by the route.
+    #[ts(type = "\"ru\" | \"en\"")]
     pub lang: String,
     /// Whether the client can send a prepared message.
     pub native: bool,
@@ -601,7 +602,7 @@ pub struct ShareRequest {
 
 /// `POST /api/share` response: the sharer's invite link, the share text (the story title and the sharer's counts,
 /// never an ending or achievement title) and, for a native share, the prepared message's id.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ShareResponse {
     /// `https://t.me/<bot>?startapp=f<invite code>`.
@@ -669,6 +670,12 @@ pub fn ts_bindings() -> String {
         export::<CardEnding>(&cfg),
         export::<CardAchievement>(&cfg),
         export::<CardResponse>(&cfg),
+        export::<ShareRequest>(&cfg),
+        export::<ShareResponse>(&cfg),
+        export::<SharedEnding>(&cfg),
+        export::<SharedAchievement>(&cfg),
+        export::<FriendStoryDto>(&cfg),
+        export::<FriendProfile>(&cfg),
     ];
     format!("{BINDINGS_HEADER}\n\n{}", decls.join("\n"))
 }
