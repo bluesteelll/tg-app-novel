@@ -3,6 +3,8 @@
 // encoder does) and the stage layout from scene/layout.ts, so neither is copied. Every sample is first checked against
 // the sample rule (critique_r3 open question 2; M3c reuses it on the half tier): a uniform neighbourhood of >= 4 CSS px
 // in both rasters, >= 4 CSS px inside the stage, the canvas on top. Then the pixel is read with the shared stagePixel.
+// MEMORY-PLAN M2 (section 11): a context loss nothing restores reaches the D13 rebuild, and the stage it draws again
+// is the one before the loss, with no image fetched again.
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,8 +16,9 @@ import { catalogImage, decodeAssetCatalog, decodeAssetManifest } from '../script
 import { renderPlaceholder } from '../scripts/assets/placeholder.ts';
 import { t } from '../src/i18n/index.ts';
 import { backdropPlacement, charPlacement, renderResolution } from '../src/scene/layout.ts';
+import type { ImageEntry } from '../src/story/catalog.ts';
 import type { AssetId } from '../src/story/staging.ts';
-import { atRest, expect, launch, stagePixel, test } from './helpers.ts';
+import { atRest, expect, launch, reachLine, requests, stagePixel, test, type E2eWindow } from './helpers.ts';
 
 const E2E_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_DIR = path.resolve(E2E_DIR, '..');
@@ -23,14 +26,32 @@ const LINE_MS = 30_000;
 
 const ALLY = 'char/ally/neutral' as AssetId; // story/ch1/main.ink `arrival`: `# show: ally neutral at=left`
 const STREET = 'bg/street' as AssetId; // `# scene: street`
+/** `# show: stranger neutral at=right`, before `a005`: not in `next(arrival)`, so first fetched there (M2 commit 1). */
+const STRANGER = 'char/stranger/neutral' as AssetId;
 const FIRST_LINE = 'ch1.arrival.a001';
+const STRANGER_LINE = 'ch1.arrival.a005';
 /** MEMORY-PLAN §11 commit 6: the sample rule's margin and the colour tolerances, per RGB channel. */
 const MARGIN_CSS = 4;
 const TOLERANCE = 12;
 const CONTRAST = 24;
+/** scene/controller.ts CONTEXT_GRACE_MS (2000; not imported: the module loads pixi.js) plus the rebuild's own time. */
+const REBUILD_MS = 2_000 + 3_000;
+/** The art the stage fetches (the debug hook, chunks and the API are not images). */
+const IMAGE_URL = /\.(?:avif|webp)(?:\?|$)/;
+/** The placeholder head's centre on the 768×1536 char canvas (scripts/assets/placeholder.ts: cy = 0.18 h). */
+const HEAD: readonly [number, number] = [384, 276];
 
 type Rgba = [number, number, number, number];
 type Raster = { w: number; h: number; data: Buffer };
+
+/**
+ * The M2 fields of `__novelDebug` this spec reads. helpers.ts (frozen in this lane) names neither them nor the loss
+ * mode; its next holder folds them into DebugStats / NovelDebug. Not a type import of scene/controller.ts: that module
+ * loads pixi.js into the node project's check.
+ */
+type M2Scene = { rebuilds: number };
+type M2Debug = { stats(): { scene: M2Scene }; forceContextLoss(mode: 'restorable' | 'hard'): void };
+type M2Window = Omit<E2eWindow, '__novelDebug'> & { __novelDebug?: M2Debug };
 
 /** An asset's placeholder as the asset tool rasterizes it before encoding (sharp at its default 72 dpi: 1 px per unit). */
 async function placeholder(id: AssetId): Promise<Raster> {
@@ -72,6 +93,91 @@ async function firstLineAtRest(page: Page): Promise<void> {
   await start.tap();
   await expect(page.locator(`.dialogue[data-line-id="${FIRST_LINE}"]`)).toBeVisible({ timeout: LINE_MS });
   await atRest(page);
+}
+
+/** An image entry of ch1's free manifest, as the build under test ships it. */
+function ch1Image(id: AssetId): ImageEntry {
+  const manifest = decodeAssetManifest(JSON.parse(readFileSync(path.join(CLIENT_DIR, 'src', 'story-gen', 'free', 'ch1.assets.json'), 'utf8')));
+  const entry = manifest.ok ? manifest.value.assets[id] : undefined;
+  if (entry?.kind !== 'image') {
+    throw new Error(`ch1.assets.json has no image ${id}`);
+  }
+  return entry;
+}
+
+/** The scene's M2 stats through the debug hook. */
+async function sceneStats(page: Page): Promise<M2Scene> {
+  await page.waitForFunction(() => '__novelDebug' in window);
+  return page.evaluate(() => {
+    const hook = (window as unknown as M2Window).__novelDebug;
+    if (hook === undefined) {
+      throw new Error('__novelDebug is gone');
+    }
+    return hook.stats().scene;
+  });
+}
+
+/** The stage's size in CSS px (the canvas box). */
+async function stageSize(page: Page): Promise<{ w: number; h: number }> {
+  const box = await page.locator('canvas').boundingBox();
+  if (box === null) {
+    throw new Error('no canvas');
+  }
+  return { w: box.width, h: box.height };
+}
+
+/**
+ * A character's head centre on the stage at `slot`, checked against the sample rule first (a uniform neighbourhood of
+ * MARGIN_CSS in the sprite and bg rasters, inside the stage, the canvas on top). `expected` is the sprite's colour
+ * there, `bg` the backdrop's under it.
+ */
+async function headSample(
+  page: Page,
+  stage: { w: number; h: number },
+  slot: 'left' | 'right',
+  sprite: Raster,
+  street: Raster,
+): Promise<{ x: number; y: number; expected: Rgba; bg: Rgba }> {
+  const p = charPlacement(stage, slot, { w: sprite.w, h: sprite.h }, renderResolution(1, 'AVERAGE'));
+  const s = p.h / sprite.h;
+  const [cx, cy] = HEAD;
+  const x = Math.round(p.x + (cx - sprite.w / 2) * s);
+  const y = Math.round(p.y - (sprite.h - cy) * s);
+  const cover = backdropPlacement(stage);
+  const b = { x: Math.round((x + 0.5 - cover.offsetX) / cover.scale), y: Math.round((y + 0.5 - cover.offsetY) / cover.scale) };
+  expect(uniform(sprite, cx, cy, Math.ceil(MARGIN_CSS / s)), `${slot} head: the sprite raster is uniform within ${MARGIN_CSS} CSS px`).toBe(true);
+  expect(uniform(street, b.x, b.y, Math.ceil(MARGIN_CSS / cover.scale)), `${slot} head: the bg raster is uniform within ${MARGIN_CSS} CSS px`).toBe(true);
+  expect(x >= MARGIN_CSS && y >= MARGIN_CSS && x <= stage.w - MARGIN_CSS && y <= stage.h - MARGIN_CSS, `${slot} head (${x}, ${y}) inside the stage`).toBe(true);
+  const box = await page.locator('canvas').boundingBox();
+  const top = box === null ? null : await page.evaluate(([px, py]) => document.elementFromPoint(px, py)?.tagName ?? null, [box.x + x + 0.5, box.y + y + 0.5] as const);
+  expect(top, `${slot} head: the canvas is the element at the sample`).toBe('CANVAS');
+  const expected = at(sprite, cx, cy);
+  expect(expected[3], `${slot} head: the sprite is opaque there`).toBe(255);
+  return { x, y, expected, bg: at(street, b.x, b.y) };
+}
+
+/** URL paths fetched more than once, in first-fetch order. */
+function twice(urls: readonly string[]): string[] {
+  const seen = new Map<string, number>();
+  for (const u of urls) {
+    const p = new URL(u).pathname;
+    seen.set(p, (seen.get(p) ?? 0) + 1);
+  }
+  return [...seen].filter(([, n]) => n > 1).map(([p, n]) => `${p} x${n}`);
+}
+
+/** `forceContextLoss('hard')`, the loss observed on the canvas itself, and no restore within 1 s (nothing restores it). */
+async function hardLoss(page: Page): Promise<string[]> {
+  return page.locator('canvas').evaluate(
+    (canvas) =>
+      new Promise<string[]>((resolve) => {
+        const seen: string[] = [];
+        canvas.addEventListener('webglcontextlost', () => seen.push('lost'), { once: true });
+        canvas.addEventListener('webglcontextrestored', () => seen.push('restored'), { once: true });
+        (window as unknown as M2Window).__novelDebug?.forceContextLoss('hard');
+        setTimeout(() => resolve([...seen]), 1_000);
+      }),
+  );
 }
 
 test('scene: trimmed character renders where its canvas puts it', async ({ page }) => {
@@ -143,4 +249,59 @@ test('scene: trimmed character renders where its canvas puts it', async ({ page 
     expect(d, `${sample.name}: expected ≈ (${expected.slice(0, 3).join(',')}) ±${TOLERANCE}, got ≈ (${got.slice(0, 3).join(',')})`).toBeLessThanOrEqual(TOLERANCE);
   }
   console.log(`memory: largest per-channel deviation ${worst} (tolerance ${TOLERANCE}; above ${TOLERANCE / 2} is flagged)`);
+});
+
+test('scene: an unrestored context loss rebuilds the stage', async ({ page }) => {
+  test.setTimeout(120_000);
+  // Vacuity guard: the stranger's file is first fetched at a005, after the rebuild (the "asset not loaded before").
+  const strangerUrl = ch1Image(STRANGER).avif.url;
+  const [ally, stranger, street] = await Promise.all([placeholder(ALLY), placeholder(STRANGER), placeholder(STREET)]);
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  const images = requests(page, IMAGE_URL);
+
+  await launch(page, 7002);
+  await firstLineAtRest(page);
+  expect(images.urls.map((u) => new URL(u).pathname), `${STRANGER} is not fetched before ${STRANGER_LINE}`).not.toContain(strangerUrl);
+  const stage = await stageSize(page);
+  // The backdrop's centre column at 12 % of the height, above the characters' heads (perf.spec.ts `context loss recovers`).
+  const bgAt = { x: Math.round(stage.w / 2), y: Math.round(stage.h * 0.12) };
+  const head = await headSample(page, stage, 'left', ally, street);
+  const before = { bg: await stagePixel(page, bgAt.x, bgAt.y), ally: await stagePixel(page, head.x, head.y) };
+  expect(Math.max(...before.bg.slice(0, 3)), `the stage before the loss: ${before.bg.join(',')}`).toBeGreaterThan(CONTRAST);
+  expect(deviation(before.ally, head.expected), `the ally's head before the loss: ${before.ally.join(',')}`).toBeLessThanOrEqual(TOLERANCE);
+  // critique_r5 open question 1: GETs are counted from here; what the page fetched twice before is reported.
+  console.log(`memory: image URLs fetched twice before the marker: ${twice(images.urls).join(', ') || 'none'}`);
+  const marker = images.urls.length;
+
+  expect(await hardLoss(page), 'the hard loss landed and nothing restored it within 1 s').toEqual(['lost']);
+  await page.evaluate(() => {
+    const mock = (window as unknown as M2Window).__tgMock;
+    mock.minimize();
+    mock.restore();
+  });
+  await expect.poll(async () => (await sceneStats(page)).rebuilds, { timeout: REBUILD_MS, message: 'activated rebuilt the stage' }).toBe(1);
+  await atRest(page);
+  expect(await stageSize(page), 'the rebuilt canvas has the same box').toEqual(stage);
+  const after = { bg: await stagePixel(page, bgAt.x, bgAt.y), ally: await stagePixel(page, head.x, head.y) };
+  const worst = Math.max(deviation(after.bg, before.bg), deviation(after.ally, before.ally));
+  console.log(
+    `memory: after the rebuild bg ${before.bg.slice(0, 3).join(',')} -> ${after.bg.slice(0, 3).join(',')}, ` +
+      `ally head ${before.ally.slice(0, 3).join(',')} -> ${after.ally.slice(0, 3).join(',')}, largest deviation ${worst}`,
+  );
+  expect(deviation(after.bg, before.bg), 'the bg after the rebuild').toBeLessThanOrEqual(TOLERANCE);
+  expect(deviation(after.ally, before.ally), "the ally's head after the rebuild").toBeLessThanOrEqual(TOLERANCE);
+  // Kept art is drawn again from what the page holds: no re-download of no-store files (MEMORY-PLAN 4.A).
+  expect(images.urls.slice(marker), 'no image fetched after the loss').toEqual([]);
+  expect(errors, 'no page error').toEqual([]);
+
+  // The next batch that shows an asset not loaded before: it decodes and draws on the rebuilt renderer.
+  await reachLine(page, STRANGER_LINE);
+  await atRest(page);
+  const right = await headSample(page, stage, 'right', stranger, street);
+  expect(deviation(right.expected, right.bg), `the stranger's head ${right.expected.slice(0, 3).join(',')} vs the bg's ${right.bg.slice(0, 3).join(',')}`).toBeGreaterThan(CONTRAST);
+  const got = await stagePixel(page, right.x, right.y);
+  console.log(`memory: the stranger's head at ${STRANGER_LINE}: expected ${right.expected.slice(0, 3).join(',')}, got ${got.slice(0, 3).join(',')}`);
+  expect(deviation(got, right.expected), `the stranger's head: expected ≈ (${right.expected.slice(0, 3).join(',')}) ±${TOLERANCE}`).toBeLessThanOrEqual(TOLERANCE);
+  expect(errors, 'no page error').toEqual([]);
 });

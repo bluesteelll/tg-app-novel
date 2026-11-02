@@ -19,6 +19,17 @@ import type { AssetError, AssetRegistry, SceneError } from './registry.ts';
 import { createRenderLoop } from './render-loop.ts';
 import type { RenderLoop } from './render-loop.ts';
 
+/** `__novelDebug.stats().scene` under `__TG_MOCK__` (perf and memory e2e); every field is always reported. */
+export type SceneStats = {
+  liveTextures: number;
+  liveBytes: number;
+  pendingLoads: number;
+  activeTimelines: number;
+  overCap: number;
+  /** D13 rebuilds since mount: an unrestored context loss reached `activated` (MEMORY-PLAN M2 commit 1). */
+  rebuilds: number;
+};
+
 export interface SceneController {
   /** The render resolution is decided here, from the device's pixel ratio and its class (layout.ts, lever F). */
   mount(host: HTMLElement, o: { dpr: number; perfClass: PerfClass; fetchAsset: FetchAsset }): Promise<Result<void, SceneError>>;
@@ -40,9 +51,12 @@ export interface SceneController {
   onActivated(): Promise<void>;
   pause(): void;
   resume(): void;
-  stats(): { liveTextures: number; liveBytes: number; pendingLoads: number; activeTimelines: number; overCap: number };
-  /** Wired to __novelDebug only under __TG_MOCK__ (perf e2e). */
-  debugForceContextLoss(): void;
+  stats(): SceneStats;
+  /**
+   * Wired to __novelDebug only under __TG_MOCK__ (perf and memory e2e). `'restorable'`: Pixi's forced loss, which Pixi
+   * restores itself; `'hard'`: the WebGL extension's loss, which nothing restores, so `activated` rebuilds.
+   */
+  debugForceContextLoss(mode: 'restorable' | 'hard'): void;
   /** Page CSS px of the live prop sprites (PUZZLES-PLAN X10); __novelDebug only under __TG_MOCK__ (puzzles e2e). */
   debugPropRects(): ReadonlyArray<{ prop: PropId; x: number; y: number; w: number; h: number }>;
   destroy(): void;
@@ -173,6 +187,7 @@ export function createSceneController(): SceneController {
   let lost = false;
   let activating: Promise<void> | null = null;
   let grace: { timer: ReturnType<typeof setTimeout>; wake: () => void } | null = null;
+  let rebuilds = 0;
 
   const onResize = (): void => {
     const c = core;
@@ -237,6 +252,7 @@ export function createSceneController(): SceneController {
     c.app = app;
     lost = false;
     watch(app.canvas);
+    rebuilds += 1;
     // Sprites and layers go with the old stage; textures and their sources are the registry's and are kept.
     old.destroy({ removeView: true }, { children: true, texture: false, textureSource: false });
     c.loop.requestRender();
@@ -377,7 +393,7 @@ export function createSceneController(): SceneController {
     },
     stats() {
       if (core === null) {
-        return { liveTextures: 0, liveBytes: 0, pendingLoads: 0, activeTimelines: 0, overCap: 0 };
+        return { liveTextures: 0, liveBytes: 0, pendingLoads: 0, activeTimelines: 0, overCap: 0, rebuilds };
       }
       const r = core.registry.stats();
       return {
@@ -386,13 +402,28 @@ export function createSceneController(): SceneController {
         pendingLoads: r.pending,
         activeTimelines: core.executor.stats().activeTimelines,
         overCap: r.overCap,
+        rebuilds,
       };
     },
-    debugForceContextLoss() {
+    debugForceContextLoss(mode) {
       const r = core?.app.renderer;
-      // Pixi restores a forced loss on the next tick (GlContextSystem.handleContextLost); webglcontextrestored follows.
-      if (r !== undefined && 'gl' in r) {
-        r.context.forceContextLoss();
+      if (r === undefined || !('gl' in r)) {
+        return;
+      }
+      switch (mode) {
+        case 'restorable':
+          // Pixi restores a forced loss on the next tick (GlContextSystem.handleContextLost); webglcontextrestored follows.
+          r.context.forceContextLoss();
+          return;
+        case 'hard':
+          // Neither Pixi (no `_contextLossForced`) nor the browser restores this loss (MEMORY-PLAN 4.A), so `activated`
+          // finds the context lost after the grace and rebuilds (D13).
+          r.gl.getExtension('WEBGL_lose_context')?.loseContext();
+          return;
+        default: {
+          const unhandled: never = mode;
+          throw new Error(`invariant: unhandled context loss mode ${String(unhandled)}`);
+        }
       }
     },
     debugPropRects() {

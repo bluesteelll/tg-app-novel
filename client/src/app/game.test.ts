@@ -333,7 +333,7 @@ function fakeScene(): FakeScene {
     resume() {
       calls.push('resume');
     },
-    stats: () => ({ liveTextures: holders.size, liveBytes: 0, pendingLoads: 0, activeTimelines: 0, overCap: 0 }),
+    stats: () => ({ liveTextures: holders.size, liveBytes: 0, pendingLoads: 0, activeTimelines: 0, overCap: 0, rebuilds: 0 }),
     debugForceContextLoss() {},
     debugPropRects: () => [],
     destroy() {
