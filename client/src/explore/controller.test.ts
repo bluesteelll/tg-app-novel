@@ -395,8 +395,17 @@ test('controller: back walks the path, cycles truncate', () => {
   h.c.dispatch(tap('hall.to_cellar'));
   // The cellar's onEnter runs its event knot; the knot's last block yields back into the section.
   expect(h.effects.at(-2)).toEqual({ kind: 'story', knot: 'manor_cellar_voice' });
+  // In the cellar of a current section with the knot pending, the rooms are suspended: a shown room requests nothing
+  // (the addendum's phase B); once the knot returns, the same call requests the cellar's set.
+  expect([h.c.state().section, h.c.state().room, h.c.state().pendingStory.length > 0]).toEqual(['manor', 'cellar', true]);
+  const knot = h.log.length;
+  h.c.roomShown();
+  expect(h.log.slice(knot)).toEqual([]);
   h.c.enter(sec('manor'), h.c.state());
   expect(h.c.state().pendingStory).toEqual([]);
+  const shown = h.log.length;
+  h.c.roomShown();
+  expect(h.log.slice(shown)).toEqual(['preload room:cellar bg/cellar', 'preload room:hall bg/hall']);
   // hall -> study -> hall truncated the cycle: the one way back from the cellar is the hall, and then nothing.
   const before = h.effects.length;
   expect(h.c.back()).toBe(true);
