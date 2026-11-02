@@ -7,10 +7,11 @@ import type { AssetId, BgId, CgId, CharId, ExprId, PropId, Rect, Slot } from '..
 import { createExecutor } from './executor.ts';
 import type { Layer, Placement, StageAdapter, VisualCommand } from './executor.ts';
 import { propPlacement } from './layout.ts';
-import { createAssetRegistry } from './registry.ts';
+import { REVIVE_DEADLINE_MS, createAssetRegistry } from './registry.ts';
 import type { AssetError, Decoded, LoadError, LoadImage } from './registry.ts';
 import { createRenderLoop } from './render-loop.ts';
 import type { RenderLoop, Ticker } from './render-loop.ts';
+import { createReviveFlow } from './revive-flow.ts';
 
 // GSAP reads the clock through `Date.now`, captured when its module loads: fake timers installed before every import
 // (vi.hoisted runs first) make its ticker deterministic. advance() moves the fake clock and runs one manual tick (V6).
@@ -961,5 +962,44 @@ test('executor: rebind skips a view whose record ended', async () => {
   expect(fresh.live('bg').map((x) => x.key)).toEqual(['cafe']);
   expect(fresh.live('bg')[0]?.tex).toBe(h.registry.current(asId('bg/cafe'))?.texture);
   expect(fresh.inGroup('ally').length).toBe(1);
+  h.ex.destroy();
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// MEMORY-PLAN M2 commit 3b: the revive flow over the real registry and executor.
+
+test('executor: with the revive flow, frames resume at the deadline while a batch waits on a stalled fetch', async () => {
+  const h = harness();
+  const spy = spyErrors();
+  await h.ex.apply([bg('cafe', 'cut')], NOW);
+  const allyLoads = h.deferLoad('char/ally/neutral');
+  const a = track(h.ex.apply([show('ally', 'neutral', 'left', 'cut')], NOW));
+  await flush();
+  h.holdRevive('bg/cafe'); // the bg's re-decode never settles
+  const atResume: Array<{ stale: number; bgSprites: number; waiting: boolean }> = [];
+  const resume = vi.fn(() => {
+    atResume.push({ stale: h.registry.stats().stale, bgSprites: h.live('bg').length, waiting: !a.done });
+  });
+  const flow = createReviveFlow({ revive: (gen, signal) => h.registry.revive(gen, signal), reacquire: () => h.ex.reacquire(), resume });
+  flow.lost();
+  h.setGen(2);
+  flow.start(2);
+  await flush();
+  expect(resume).not.toHaveBeenCalled();
+  vi.advanceTimersByTime(REVIVE_DEADLINE_MS);
+  await flush();
+  // Once, while A still waits: nothing stale can be bound by a frame, and the bg's view is already gone.
+  expect(atResume).toEqual([{ stale: 0, bgSprites: 0, waiting: true }]);
+  expect(flow.suspended()).toBe(false);
+  allyLoads();
+  await flush();
+  expect(a.done).toBe(true);
+  expect(h.inGroup('ally').length).toBe(1);
+  expect(h.live('bg').map((x) => x.key)).toEqual(['cafe']);
+  expect(h.loadsOf('bg/cafe')).toBe(2);
+  spy.restore();
+  expect(spy.errors).toEqual([]);
+  expect(resume).toHaveBeenCalledTimes(1);
+  flow.destroy();
   h.ex.destroy();
 });
