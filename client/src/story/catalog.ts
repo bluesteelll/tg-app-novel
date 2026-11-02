@@ -390,12 +390,15 @@ const VAR_NAME_RE = /^[\p{L}_][\p{L}\p{N}_]*$/u;
 export const ASSET_ID_RE = /^(?:(?:bg|cg|bgm|sfx|prop|cover)\/[a-z][a-z0-9_]*|char\/[a-z][a-z0-9_]*\/[a-z][a-z0-9_]*)$/;
 const STORY_VERSION_RE = /^[0-9a-f]{16}$/;
 
-/** Reports every key of `value` that is not in `keys`, and every key of `keys` that is missing. */
-function exactKeys(value: Raw, keys: readonly string[], path: string, report: Report): void {
+/**
+ * Reports every key of `value` that is in neither `keys` nor `optional`, and every key of `keys` that is missing
+ * (an optional key is never missing).
+ */
+function exactKeys(value: Raw, keys: readonly string[], path: string, report: Report, optional: readonly string[] = []): void {
   const at = (key: string): string => (path === '' ? key : `${path}.${key}`);
   for (const key of Object.keys(value)) {
-    if (!keys.includes(key)) {
-      report(at(key), `unknown key (expected ${keys.join(', ')})`);
+    if (!keys.includes(key) && !optional.includes(key)) {
+      report(at(key), `unknown key (expected ${[...keys, ...optional].join(', ')})`);
     }
   }
   for (const key of keys) {
@@ -713,8 +716,14 @@ export function decodeChapterMeta(raw: unknown): Result<ChapterMeta, CatalogIssu
 
 /** '/assets/<file>' (public, a static file of the client build) or '/api/assets/<file>' (gated by entitlement). */
 export type AssetRef = { url: string; bytes: number };
+/**
+ * MEMORY-PLAN 4.B: a char or prop file cut to its alpha box. The canvas is the full image in its px; (x, y) is where
+ * the stored `w × h` sits on it. Absent: the stored file is the canvas.
+ */
+export type Trim = { canvasW: number; canvasH: number; x: number; y: number };
+/** `w`, `h` and `decodedBytes = w × h × 4` are the stored file's, trimmed or not (what the caps count). */
 export type AssetEntry =
-  | { kind: 'image'; w: number; h: number; decodedBytes: number; avif: AssetRef; webp: AssetRef }
+  | { kind: 'image'; w: number; h: number; decodedBytes: number; avif: AssetRef; webp: AssetRef; trim?: Trim }
   | { kind: 'audio'; role: 'bgm' | 'sfx'; durationMs: number; file: AssetRef; codec: 'm4a' | 'wav' };
 export type ImageEntry = Extract<AssetEntry, { kind: 'image' }>;
 /** `<ch>.assets.json`: every asset the chapter names, at the tier of its file. */
@@ -737,6 +746,11 @@ const ASSET_FILE_RE = /^[a-z0-9][a-z0-9_-]*\.(?:avif|webp|m4a|wav)$/;
 const PUBLIC_PREFIX = '/assets/';
 const GATED_PREFIX = '/api/assets/';
 const IMAGE_NAMESPACES: readonly string[] = ['bg', 'cg', 'char', 'prop', 'cover'];
+/**
+ * MEMORY-PLAN 4.B: the transparent kinds, trimmed to their alpha box and stored with even sides. The one list the
+ * decoder, the asset tool and the budget read; bg, cg and cover are opaque and never trimmed.
+ */
+export const TRIMMED_NAMESPACES: readonly string[] = ['char', 'prop'];
 
 function positiveInt(value: unknown, path: string, report: Report): number | null {
   if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
@@ -744,6 +758,56 @@ function positiveInt(value: unknown, path: string, report: Report): number | nul
     return null;
   }
   return value;
+}
+
+function nonNegativeInt(value: unknown, path: string, report: Report): number | null {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    report(path, `${JSON.stringify(value) ?? 'undefined'} is not a non-negative integer`);
+    return null;
+  }
+  return value;
+}
+
+/**
+ * An image entry's `trim` (MEMORY-PLAN §5): char and prop entries only; exactly canvasW, canvasH, x, y; the stored
+ * `w × h` inside the canvas and not the whole of it (then the entry omits `trim`).
+ */
+function trimOf(value: unknown, path: string, trimmed: boolean, w: number | null, h: number | null, report: Report): Trim | null {
+  if (!trimmed) {
+    report(path, 'only char and prop entries are trimmed');
+    return null;
+  }
+  if (!isObject(value)) {
+    report(path, 'not an object');
+    return null;
+  }
+  exactKeys(value, ['canvasW', 'canvasH', 'x', 'y'], path, report);
+  const field = (key: string, decode: (v: unknown, p: string, r: Report) => number | null): number | null =>
+    Object.hasOwn(value, key) ? decode(value[key], `${path}.${key}`, report) : null;
+  const canvasW = field('canvasW', positiveInt);
+  const canvasH = field('canvasH', positiveInt);
+  const x = field('x', nonNegativeInt);
+  const y = field('y', nonNegativeInt);
+  if (canvasW === null || canvasH === null || x === null || y === null || w === null || h === null) {
+    return null;
+  }
+  let inside = true;
+  if (x + w > canvasW) {
+    report(`${path}.x`, `x + w = ${x + w} is past canvasW ${canvasW}`);
+    inside = false;
+  }
+  if (y + h > canvasH) {
+    report(`${path}.y`, `y + h = ${y + h} is past canvasH ${canvasH}`);
+    inside = false;
+  }
+  if (!inside) {
+    return null;
+  }
+  if (w === canvasW && h === canvasH) {
+    report(path, 'the stored size is the canvas: omit trim');
+    return null;
+  }
+  return { canvasW, canvasH, x, y };
 }
 
 /** A file reference under one of `prefixes`, its name in the server's pattern, ending `.<ext>` (null: any). */
@@ -793,19 +857,27 @@ function assetEntry(id: string, value: unknown, path: string, prefixes: readonly
     Object.hasOwn(value, key) ? decode(value[key], `${path}.${key}`) : null;
   const int = (v: unknown, p: string): number | null => positiveInt(v, p, report);
   if (kind === 'image') {
-    exactKeys(value, ['kind', 'w', 'h', 'decodedBytes', 'avif', 'webp'], path, report);
+    exactKeys(value, ['kind', 'w', 'h', 'decodedBytes', 'avif', 'webp'], path, report, ['trim']);
     const w = field('w', int);
     const h = field('h', int);
     const decodedBytes = field('decodedBytes', int);
     if (w !== null && h !== null && decodedBytes !== null && decodedBytes !== w * h * 4) {
       report(`${path}.decodedBytes`, `${decodedBytes} is not w × h × 4 = ${w * h * 4} (RGBA)`);
     }
+    // Even sides on every char and prop file, trimmed or not: the half tier is an exact halving (MEMORY-PLAN 4.B).
+    const trimmed = TRIMMED_NAMESPACES.includes(ns);
+    for (const [key, side] of [['w', w], ['h', h]] as const) {
+      if (trimmed && side !== null && side % 2 !== 0) {
+        report(`${path}.${key}`, `${side} is odd (char and prop files have even sides)`);
+      }
+    }
+    const trim = Object.hasOwn(value, 'trim') ? trimOf(value['trim'], `${path}.trim`, trimmed, w, h, report) : undefined;
     const avif = field('avif', (v, p) => assetRef(v, p, 'avif', prefixes, report));
     const webp = field('webp', (v, p) => assetRef(v, p, 'webp', prefixes, report));
-    if (w === null || h === null || decodedBytes === null || avif === null || webp === null) {
+    if (w === null || h === null || decodedBytes === null || avif === null || webp === null || trim === null) {
       return null;
     }
-    return { kind, w, h, decodedBytes, avif, webp };
+    return { kind, w, h, decodedBytes, avif, webp, ...(trim === undefined ? {} : { trim }) };
   }
   exactKeys(value, ['kind', 'role', 'durationMs', 'file', 'codec'], path, report);
   const role = value['role'];
@@ -855,8 +927,9 @@ function manifestEntries(
 /**
  * Decodes a chapter's `assets.json` (free: story-gen/free/<ch>.assets.json; paid: server/content/chapters/<ch>/):
  * exact keys per kind, URLs `/assets/<file>` or `/api/assets/<file>` with the server's file-name rule and the slot's
- * extension (`avif`, `webp`, `file` = `.<codec>`), `decodedBytes = w × h × 4`, kinds and roles per namespace. A cover
- * belongs to no chapter (covers.json). Every problem is reported.
+ * extension (`avif`, `webp`, `file` = `.<codec>`), `decodedBytes = w × h × 4`, kinds and roles per namespace, even
+ * sides and the optional `trim` on char and prop entries only (`trimOf`). A cover belongs to no chapter (covers.json).
+ * Every problem is reported.
  */
 export function decodeAssetManifest(raw: unknown): Result<AssetManifest, CatalogIssue[]> {
   const issues: CatalogIssue[] = [];
