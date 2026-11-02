@@ -16,6 +16,7 @@ mod content;
 mod dto_samples;
 mod economy;
 mod gifts;
+mod legal;
 mod payments;
 mod puzzles;
 mod referrals;
