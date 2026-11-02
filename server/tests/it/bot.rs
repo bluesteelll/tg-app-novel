@@ -1,18 +1,27 @@
 //! The bot (PP "Bot texts", K20-K22): its texts in `server/locales/bot.*.json` within Telegram's bounds, Russian
 //! first; a pre-checkout refusal in the query's language; the commands, answered in a private chat in the sender's
 //! language, `/refund` for admins only; the notice of a payment recorded but not applied, and `/paysupport`'s list
-//! that flags it.
+//! that flags it; `server setup` (the webhook, the command menus, the menu button) on the fake gateway, and the real
+//! subcommand refusing the placeholder token.
 //!
 //! Every state calls the Bot API through [`RecordingGateway`]: no test reaches Telegram.
 //!
 //! [`RecordingGateway`]: crate::payments::RecordingGateway
 
+use std::process::{Command, Stdio};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::time::{Duration, Instant};
+
 use serde_json::{Value, json};
 use server::AppState;
+use server::config::{
+    PLACEHOLDER_BOT_TOKEN, PLACEHOLDER_TOKEN_KEY_HEX, PLACEHOLDER_WEBHOOK_SECRET,
+};
 use server::puzzles::Lang;
 use server::telegram::commands::utc_date;
-use server::telegram::gateway::{OutMessage, WebAppButton};
+use server::telegram::gateway::{BotCommandSpec, CommandSet, OutMessage, WebAppButton};
 use server::telegram::payments::{RejectReason, RevokeOutcome};
+use server::telegram::setup;
 use server::telegram::texts::{self, BotFile, MESSAGE_LIMIT, fill};
 
 use crate::catalog::{ANN, T0, own};
@@ -613,6 +622,145 @@ async fn paysupport_pack_credit_is_applied() {
         failures.push(format!(
             "expected 1 unflagged charge line {want:?}, got {got}"
         ));
+    }
+    report(&failures);
+}
+
+/// The command menu in `t`'s language, as `server setup` registers it.
+fn menu_of(t: &texts::LangTexts) -> Vec<BotCommandSpec> {
+    [
+        ("start", &t.cmd_start),
+        ("paysupport", &t.cmd_paysupport),
+        ("support", &t.cmd_support),
+        ("terms", &t.cmd_terms),
+        ("privacy", &t.cmd_privacy),
+    ]
+    .into_iter()
+    .map(|(command, description)| BotCommandSpec {
+        command: command.to_owned(),
+        description: description.clone(),
+    })
+    .collect()
+}
+
+/// `server setup` on the fake gateway makes one setup call: the webhook at `PUBLIC_APP_URL` + `telegram/webhook` with
+/// the configured secret, five command sets (the English default, and Russian for `ru`, `uk`, `be`, `kk`) of the five
+/// listed commands, and the Russian menu button opening `PUBLIC_APP_URL`.
+#[tokio::test]
+async fn bot_setup_registers_webhook_commands_and_menu() {
+    let (st, _db, gateway) = refund_state().await;
+    let mut failures = Vec::new();
+    if let Err(e) = setup::run(gateway.as_ref(), &st.cfg).await {
+        failures.push(format!("setup::run: expected Ok, got {e}"));
+    }
+    let setups: Vec<GatewayCall> = gateway
+        .calls()
+        .into_iter()
+        .filter(|call| matches!(call, GatewayCall::Setup { .. }))
+        .collect();
+    let ru = texts::texts(Lang::Ru);
+    let mut commands = vec![CommandSet {
+        language_code: None,
+        commands: menu_of(texts::texts(Lang::En)),
+    }];
+    for code in ["ru", "uk", "be", "kk"] {
+        commands.push(CommandSet {
+            language_code: Some(code.to_owned()),
+            commands: menu_of(ru),
+        });
+    }
+    let want = GatewayCall::Setup {
+        webhook_url: "https://example.invalid/telegram/webhook".to_owned(),
+        secret_token: "test-webhook-secret".to_owned(),
+        commands,
+        menu_button: WebAppButton {
+            text: ru.menu_button.clone(),
+            url: "https://example.invalid/".to_owned(),
+        },
+    };
+    if setups.len() != 1 {
+        failures.push(format!("setup calls: expected 1, got {}", setups.len()));
+    } else if setups[0] != want {
+        failures.push(format!(
+            "setup call: expected {want:?}, got {:?}",
+            setups[0]
+        ));
+    }
+    report(&failures);
+}
+
+/// The real `server setup` with the placeholder token (every `Config` variable set, the test environment on a local
+/// URL): the production gateway is `Disabled`, so no request leaves the process, the setup fails with the gateway's
+/// line, and it exits non-zero without serving or waiting on a database.
+#[test]
+fn bot_setup_subcommand_refuses_placeholder_token() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_server"))
+        .arg("setup")
+        // Every variable `Config` reads, so none comes from the caller's environment; an empty value is unset.
+        .envs([
+            ("BOT_TOKEN", PLACEHOLDER_BOT_TOKEN),
+            ("WEBHOOK_SECRET", PLACEHOLDER_WEBHOOK_SECRET),
+            ("TOKEN_KEY", PLACEHOLDER_TOKEN_KEY_HEX),
+            ("TOKEN_TTL_SECS", "1800"),
+            ("INITDATA_MAX_AGE_SECS", "86400"),
+            ("PUBLIC_APP_URL", "http://127.0.0.1/"),
+            ("ADMIN_TELEGRAM_IDS", ""),
+            ("STATIC_DIR", ""),
+            (
+                "CONTENT_DIR",
+                concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/content"),
+            ),
+            // A closed port: setup must not need a database.
+            ("DATABASE_URL", "postgres://postgres@127.0.0.1:1/tgn_setup"),
+            ("TELEGRAM_ENV", "test"),
+            ("LISTEN_ADDR", "127.0.0.1:0"),
+            ("PRIVACY_OPERATOR_FILE", ""),
+            ("RUST_LOG", "info"),
+            ("NO_COLOR", "1"),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (lines, received) = mpsc::channel();
+    crate::forward_lines(child.stdout.take().unwrap(), lines.clone());
+    crate::forward_lines(child.stderr.take().unwrap(), lines);
+    // A hang bound, not a timing verdict: both pipes closing (the process is exiting) ends the wait at once.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut log = Vec::new();
+    let hung = loop {
+        match received.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(line) => log.push(line),
+            Err(RecvTimeoutError::Disconnected) => break false,
+            Err(RecvTimeoutError::Timeout) => break true,
+        }
+    };
+    let mut failures = Vec::new();
+    if hung && let Err(e) = child.kill() {
+        failures.push(format!("kill server: expected Ok, got {e}"));
+    }
+    let status = child.wait().unwrap();
+    let text = log.join("\n");
+    if hung {
+        failures.push(format!(
+            "server setup: expected an exit within 60 s, got a hang and the log:\n{text}"
+        ));
+    } else if status.success() {
+        failures.push(format!(
+            "server setup: expected a failure exit, got {status} and the log:\n{text}"
+        ));
+    }
+    if !log
+        .iter()
+        .any(|line| line.contains("bot api disabled: placeholder BOT_TOKEN"))
+    {
+        failures.push(format!(
+            "expected the gateway's `bot api disabled: placeholder BOT_TOKEN` line, got the log:\n{text}"
+        ));
+    }
+    if log.iter().any(|line| line.contains("listening")) {
+        failures.push(format!("server setup served, the log:\n{text}"));
     }
     report(&failures);
 }

@@ -30,7 +30,7 @@ pub const PRECHECKOUT_DB_DEADLINE: Duration = Duration::from_secs(2);
 const _: () = assert!(PRECHECKOUT_DB_DEADLINE.as_millis() + CALL_DEADLINE.as_millis() < 10_000);
 
 /// The primary language subtags whose speakers get Russian texts (K29); every other tag, or none, gets English.
-const RUSSIAN_LANGS: [&str; 4] = ["ru", "uk", "be", "kk"];
+pub(crate) const RUSSIAN_LANGS: [&str; 4] = ["ru", "uk", "be", "kk"];
 
 /// The pre-checkout decision on `q` at the state's clock. A payload outside the order id grammar is `UnknownOrder`
 /// and a payer id outside `i64` is `Mismatch`, both with no SQL (junk and U+0000 never reach the database); else the

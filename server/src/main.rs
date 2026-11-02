@@ -1,10 +1,13 @@
-//! The `server` binary: `server serve` (the default) runs the HTTP server. L9 adds `server setup`.
+//! The `server` binary: `server serve` (the default) runs the HTTP server; `server setup` registers the bot's webhook,
+//! command menus and menu button with Telegram, once per deploy (no database, no content).
 
 #![forbid(unsafe_code)]
 
 use std::process::ExitCode;
 
 use server::config::Config;
+use server::telegram::gateway::FrankensteinGateway;
+use server::telegram::setup;
 use server::{AppState, build_router, db};
 use tokio::net::TcpListener;
 use tracing::{error, info};
@@ -17,8 +20,43 @@ async fn main() -> ExitCode {
 
     match std::env::args().nth(1).as_deref() {
         None | Some("serve") => serve().await,
+        Some("setup") => bot_setup().await,
         Some(other) => {
-            error!(command = other, "unknown command; usage: server [serve]");
+            error!(
+                command = other,
+                "unknown command; usage: server [serve|setup]"
+            );
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `server setup`: the configuration, the production gateway on it, then the one setup call. Opens no database.
+async fn bot_setup() -> ExitCode {
+    let cfg = match Config::from_env() {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            error!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let gateway = match FrankensteinGateway::from_config(&cfg) {
+        Ok(gateway) => gateway,
+        Err(e) => {
+            error!("bot api client: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match setup::run(&gateway, &cfg).await {
+        Ok(()) => {
+            info!(
+                webhook = %setup::app_url(&cfg.public_app_url, "telegram/webhook"),
+                "bot set up"
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            error!("setup failed: {e}");
             ExitCode::FAILURE
         }
     }
