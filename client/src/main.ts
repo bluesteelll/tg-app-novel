@@ -1,5 +1,6 @@
 import { mount } from 'svelte';
 
+import { startApp } from './app/boot.ts';
 import { getTelegram } from './telegram/index.ts';
 import { applyInsetVars } from './telegram/viewport.ts';
 import App from './ui/App.svelte';
@@ -15,6 +16,8 @@ async function boot(): Promise<void> {
   tg.expand();
   tg.disableVerticalSwipes();
   tg.setChromeColors('#000000', '#000000');
+  // The two-stage boot (F1 step 3): the engine import and the boot reads start now, beside the tap screen.
+  startApp(tg);
   const target = document.getElementById('app');
   if (target === null) {
     throw new Error('invariant: #app exists in index.html');

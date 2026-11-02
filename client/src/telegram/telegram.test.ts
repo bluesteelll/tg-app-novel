@@ -52,6 +52,11 @@ class FakeTwa implements TwaWebApp {
   readonly calls: Call[] = [];
   readonly throws = new Map<string, string>();
   storageError: string | null = null;
+  /** Storage callbacks are kept in `held` instead of being called: a client whose answer never comes. */
+  holdStorage = false;
+  readonly held: Array<() => void> = [];
+  /** `setItem` answers `(null, false)`: Telegram did not store the value. */
+  notStored = false;
   readonly #handlers = new Map<string, TwaHandler[]>();
   readonly #cloud = new Map<string, string>();
   readonly #device = new Map<string, string>();
@@ -144,39 +149,50 @@ class FakeTwa implements TwaWebApp {
     this.#call('openInvoice', url);
     this.#invoice = callback;
   }
+  /** A storage answer: now, or kept in `held` for the test to fire late. */
+  #answer(fn: () => void): void {
+    if (this.holdStorage) {
+      this.held.push(fn);
+    } else {
+      fn();
+    }
+  }
   readonly CloudStorage = {
     getItem: (key: string, callback: (error: string | null, value?: string) => void): void => {
       this.#call('CloudStorage.getItem', key);
-      if (this.storageError !== null) {
-        callback(this.storageError);
-      } else {
-        callback(null, this.#cloud.get(key) ?? '');
-      }
+      const error = this.storageError;
+      const value = this.#cloud.get(key) ?? '';
+      this.#answer(() => (error !== null ? callback(error) : callback(null, value)));
     },
     setItem: (key: string, value: string, callback: (error: string | null, stored?: boolean) => void): void => {
       this.#call('CloudStorage.setItem', key, value);
-      this.#cloud.set(key, value);
-      callback(this.storageError, this.storageError === null);
+      const error = this.storageError;
+      const stored = error === null && !this.notStored;
+      if (stored) {
+        this.#cloud.set(key, value);
+      }
+      this.#answer(() => callback(error, stored));
     },
   };
   readonly DeviceStorage = {
     getItem: (key: string, callback: (error: string | null, value?: string | null) => void): void => {
       this.#call('DeviceStorage.getItem', key);
-      if (this.storageError !== null) {
-        callback(this.storageError);
-      } else {
-        callback(null, this.#device.get(key) ?? null);
-      }
+      const error = this.storageError;
+      const value = this.#device.get(key) ?? null;
+      this.#answer(() => (error !== null ? callback(error) : callback(null, value)));
     },
     setItem: (key: string, value: string, callback: (error: string | null, stored?: boolean) => void): void => {
       this.#call('DeviceStorage.setItem', key, value);
-      this.#device.set(key, value);
-      callback(null, true);
+      const stored = !this.notStored;
+      if (stored) {
+        this.#device.set(key, value);
+      }
+      this.#answer(() => callback(null, stored));
     },
     removeItem: (key: string, callback: (error: string | null, removed?: boolean) => void): void => {
       this.#call('DeviceStorage.removeItem', key);
       this.#device.delete(key);
-      callback(null, true);
+      this.#answer(() => callback(null, true));
     },
   };
   readonly HapticFeedback = {
@@ -427,6 +443,103 @@ test('facade: a throwing subscriber does not stop the others', () => {
   });
   twa.emit('deactivated');
   expect(seen).toEqual(['deactivated']);
+});
+
+test('facade: a subscriber removed before its turn is skipped', () => {
+  const twa = new FakeTwa('9.6');
+  const tg = createTelegramClient(twa, fakeEnv().env);
+  const seen: string[] = [];
+  let offB: () => void = () => {};
+  // A removes B, which was present when the event started: B's turn in that same dispatch is skipped.
+  tg.onLifecycle(() => {
+    seen.push('A');
+    offB();
+  });
+  offB = tg.onLifecycle(() => {
+    seen.push('B');
+  });
+  twa.emit('activated');
+  expect(seen).toEqual(['A']);
+
+  const presses: string[] = [];
+  let offY: () => void = () => {};
+  tg.backButton.onPress(() => {
+    presses.push('X');
+    offY();
+  });
+  offY = tg.backButton.onPress(() => {
+    presses.push('Y');
+  });
+  twa.emit('backButtonClicked');
+  expect(presses).toEqual(['X']);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The storage bound (L15 D23): a CloudStorage / DeviceStorage call settles within 5 s, and `setItem`'s `stored` flag
+
+const STORAGE_TIMEOUT = { ok: false, error: { kind: 'storage', detail: 'timeout' } };
+
+test('storage: a callback that never fires settles as a timeout', async () => {
+  const twa = new FakeTwa('9.6');
+  twa.holdStorage = true;
+  const { env, clock } = fakeEnv();
+  const tg = createTelegramClient(twa, env);
+  const device = tg.device;
+  expect(device).not.toBeNull();
+  if (device === null) {
+    return;
+  }
+  const cloud = tg.cloud.get('settings');
+  const local = device.get('pending_manor');
+  const write = tg.cloud.set('settings', '{}');
+  clock.advance(4_999);
+  expect(await peek(cloud)).toBe(PENDING);
+  clock.advance(1);
+  expect(await peek(cloud)).toEqual(STORAGE_TIMEOUT);
+  expect(await peek(local)).toEqual(STORAGE_TIMEOUT);
+  expect(await peek(write)).toEqual(STORAGE_TIMEOUT);
+});
+
+test('storage: setItem not stored is an error', async () => {
+  const twa = new FakeTwa('9.6');
+  twa.notStored = true;
+  const tg = createTelegramClient(twa, fakeEnv().env);
+  const device = tg.device;
+  expect(device).not.toBeNull();
+  if (device === null) {
+    return;
+  }
+  const notStored = { ok: false, error: { kind: 'storage', detail: 'not stored' } };
+  expect(await tg.cloud.set('settings', '{}')).toEqual(notStored);
+  expect(await device.set('pending_manor', '{}')).toEqual(notStored);
+  // A stored value and a removal stay plain successes.
+  twa.notStored = false;
+  expect(await tg.cloud.set('settings', '{}')).toEqual({ ok: true, value: undefined });
+  expect(await device.set('pending_manor', null)).toEqual({ ok: true, value: undefined });
+});
+
+test('storage: a late callback after the timeout changes nothing', async () => {
+  const twa = new FakeTwa('9.6');
+  const { env, clock } = fakeEnv();
+  const tg = createTelegramClient(twa, env);
+  // An answered call clears its bound: no timer is left behind.
+  expect(await tg.cloud.get('settings')).toEqual({ ok: true, value: null });
+  expect(clock.pending).toBe(0);
+  twa.holdStorage = true;
+  const seen: unknown[] = [];
+  const late = tg.cloud.get('settings').then((r) => {
+    seen.push(r);
+    return r;
+  });
+  clock.advance(5_000);
+  expect(await peek(late)).toEqual(STORAGE_TIMEOUT);
+  // Telegram answers after all: the settled call keeps its timeout, and its consumer ran once.
+  for (const fire of twa.held.splice(0)) {
+    fire();
+  }
+  expect(await peek(late)).toEqual(STORAGE_TIMEOUT);
+  expect(seen).toEqual([STORAGE_TIMEOUT]);
+  expect(clock.pending).toBe(0);
 });
 
 test('lifecycle: visibilitychange fallback below 8.0', () => {
