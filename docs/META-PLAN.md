@@ -878,6 +878,11 @@ unchanged.**
     LF1, LM2, LF2 (`d0c7870`), LE2 (`ec3b29f`) and LMD (`48abfaf`) have merged and LPO runs; LMI is to go. The server
     chain has run to LE2, so it continues LPO → L9. LMI's gate "L15" is met when L15b merges: RULINGS 80 split L15
     into L15a (merged `e94c786`) and L15b (running); MEMORY-PLAN adds M1 to the gate.
+  - Changed by RULINGS 89-103 (as of `6d77329`; docs lane `docs-errata-5`, group B): of the ten lanes, LPO
+    (`90e1226`) has merged too, and LMI runs (base `f637bac`). L9 has merged (`d837c8b`), so the server chain
+    continues LPH payments-hardening (running; RULINGS 96, after L9 and before D2). LMI's gate is met: L15b
+    (`fbcfd38`), M1 (`f1b707d`) and LFU1 (`f637bac`, the `game.ts` half of the client follow-ups lane, RULINGS 92, 95)
+    have merged.
   - Why LPO is a lane of its own (revision 1, W4): the operator facts need a `Config` variable, which means editing
     the three `Config` constructors (`config.rs`, `server/dev/src/lib.rs`, `server/tests/it/common.rs`) plus
     `lib.rs` and `.env.example`; in LF1 that is 15 + 4 = 19 files, over the cap. LPO holds them with `api/legal.rs` and
@@ -1110,7 +1115,8 @@ pub struct FriendProfile { pub handle: String, pub first_name: String, pub visib
 // as merged (LF2 `d0c7870`, RULINGS 79; cut Q3; server/src/api/dto.rs:582-589): no first_name, FriendProfile { handle,
 //   visible, stories }; no read by handle gives a name (Repo::user_by_handle returns the id only,
 //   server/src/db/social.rs:394), and the names come only from Repo::social's friend list
-//   (db/social.rs:408-410), so the client keeps the name from SocialResponse.friends (FriendDto { handle, first_name })
+//   (db/social.rs:408-410; as merged, LF1 `946e2b5`: and, for a requester, its request list, :417-418), so the client
+//   keeps the name from SocialResponse.friends (FriendDto { handle, first_name })
 pub struct FriendStoryDto { pub story_id: StoryId, pub endings_found: u32, pub achievements_unlocked: u32,
                             pub shared_endings: Vec<SharedEnding>, pub shared_achievements: Vec<SharedAchievement> }
 pub struct SharedEnding { pub name: String, pub title: Localized }
@@ -1159,6 +1165,8 @@ enum PinError { NotIncreasing { at: usize }, LastNotMeta { last: Option<String>,
 #[cfg(test)] fn check_pins(pins: &[(&str, &str)], meta: &str, template: &[u8]) -> Result<(), PinError>;
 // pure; in order: the versions strictly increase, the last equals meta, its hash = hex SHA-256(template)
 impl Policy { pub fn load(file: Option<&Path>, env: TelegramEnv) -> Result<Policy, PolicyError>; pub fn html(&self) -> &str; }
+// as merged (LPO `90e1226`, RULINGS 89 Q3; server/src/api/legal.rs:93): `pub async fn load`, the host file read with
+// `tokio::fs::read` (`clippy.toml` denies `std::fs::read`); AppState::new awaits it
 // lib.rs: AppState gains `policy: Arc<Policy>` inside AppState::new; StartupError gains `Privacy(#[from] PolicyError)`.
 ```
 
@@ -1510,6 +1518,7 @@ impl Repo {
     // (db/entitlements.rs) into a HashSet<ProductId> (server/src/api/cards.rs:60)
 }
 // db/social.rs (LF1; LF2 and LE2 read). Revision 1: the referral only at auth; invites; handles; blocks.
+// as merged (LE2 `ec3b29f`, RULINGS 84): LE2 also writes here, Repo::qualify_referral (server/src/db/social.rs:217)
 impl Repo {
     pub async fn auth_with_code(&self, u: &TgUser, code: Option<&str>, now: i64) -> Result<AuthAttribution, sqlx::Error>;
     pub async fn invite_state(&self, me: UserId, code: &str) -> Result<Option<InviteState>, sqlx::Error>;   // None: 404
@@ -1913,6 +1922,9 @@ LMI (its gate gains MEMORY-PLAN's M1).
 Changed by RULINGS 80-88 (as of `48abfaf`): merged also LF2 `d0c7870`, LE2 `ec3b29f` and LMD `48abfaf`; running LPO
 (server) and L15b (client, the second half of L15 after RULINGS 80's split, ahead of LMI); to go: server L9, client
 LMI (after L15b and M1).
+Changed by RULINGS 89-103 (as of `6d77329`): merged also LPO `90e1226` and L9 `d837c8b` (server), and L15b `fbcfd38`,
+M1 `f1b707d` and LFU1 `f637bac` (LMI's gate); running LPH (server, after L9; RULINGS 96) and LMI (client); to go of
+this design's lanes: none. LFU3 (RULINGS 99) follows LMI.
 
 ---
 
@@ -1954,7 +1966,7 @@ by name per lane.
 | Server (LF2) | `share_text_has_no_titles`, `share_link_carries_invite_code`, `share_prepares_inline_message_for_native`, `share_without_native_returns_link_only`, `share_prepare_failure_falls_back_to_link`, `share_rate_limited_after_20_per_hour`, `gateway_prepared_share_shape`, `friend_profile_404_for_non_friend`, `friend_profile_private_by_default`, `consent_withdrawal_hides_profile`, `friend_profile_shared_titles_only`, `friend_profile_paid_titles_need_viewer_entitlement`; dev `dev_prepared_message_readable`; `bindings_are_fresh`, `dto_samples_are_fresh` |
 | Server (LE2) | `gift_requires_friendship`, `gift_moves_once_and_reconciles`, `gift_replay_moves_once`, `gift_replay_with_other_body_400`, `gift_daily_send_cap_429`, `gift_daily_receive_cap_429`, `gift_insufficient_409`, `gift_concurrent_same_sender_respects_cap`, `gift_opposite_directions_no_deadlock`, `referral_needs_first_chapter`, `referral_needs_min_play_gap`, `referral_grants_both_once`, `referral_cap_per_inviter_day`, `referral_cap_total`, `referral_concurrent_batches_grant_once`; revision 1: `referral_qualifies_after_hook_failure`, `referral_fast_reader_qualifies_on_a_later_batch` |
 | Server (LPO, revision 1) | `config::tests::privacy_operator_file_required_in_prod`, `privacy_placeholder_refuses_prod_start`, `privacy_operator_file_fills_placeholders`, `privacy_operator_unknown_key_refused`, `privacy_draft_served_without_file_in_test`; revision 2: `privacy_operator_content_key_refused`, `api::legal::tests::policy_template_pinned_per_version`, `api::legal::tests::policy_placeholders_classified`; revision 3: `api::legal::tests::pin_check_rejects_non_increasing_versions`, `api::legal::tests::pin_check_rejects_last_not_meta`, `api::legal::tests::pin_check_rejects_hash_mismatch`, `api::legal::tests::pin_check_accepts_a_valid_history` |
-| Server (L9 re-cut) | `refund_pack_claws_back_unspent`, `refund_spent_pack_records_debt`, `refund_pack_twice_claws_once`, `refund_gifted_pack_keeps_friend_balance`, `paysupport_pack_credit_is_applied`, `privacy_command_links_policy`; revision 1: `refund_claws_back_the_credited_amount` |
+| Server (L9 re-cut) | `refund_pack_claws_back_unspent`, `refund_spent_pack_records_debt`, `refund_pack_twice_claws_once`, `refund_gifted_pack_keeps_friend_balance`, `paysupport_pack_credit_is_applied`, `privacy_command_links_policy`; revision 1: `refund_claws_back_the_credited_amount`; as merged (L9 `d837c8b`, RULINGS 96; L9 cut Q6): the seven as named, five in `server/tests/it/refunds.rs` and `paysupport_pack_credit_is_applied`, `privacy_command_links_policy` in `server/tests/it/bot.rs`, among L9's 38 new names (server it 30, server lib 6, server-dev lib 2) |
 | Client unit (L7, LS4, L10, LP2, LMD, LMI, L15) | `share: failed event maps to a typed error`, `share: below 8.0 is unsupported`, `share: listeners removed after the event`, `links: open link refuses non-https`; `reporter: choice event carries the option line id`, `reporter: settle resolves after the queue drains`, `reporter: settle times out without throwing`, revision 1: `reporter: queue full of choices keeps ending_reached`, `reporter: batch sends facts first`; `flow: pack product confirms through order status`, `decode: puzzle status with unlocked hints`; `hints: next tier usable only after previous unlocked`, `hints: use without balance offers get more`; `decode: meta samples decode`, `card: loads once per open and keeps no copy`, `social: accept refreshes friends`, `social: ask returns the invite state` (revision 1), `wallet: hint port reads the balance from the server only`; `wallet: gift retry keeps its request id`, `meta: boot fetches never block the first line`, `meta: invite prompt only for an open invite` (was `… only for an incoming request`, revision 1), `meta: share falls back when unsupported`, `meta: expired prepared message re-prepared once`, `game: ending settles stats then opens the card`, `game: card failure keeps the end`; `game: a choice records its option line id` (L15) |
 | Client DOM (L14a, L14b, LP2, LU1) | `screens: meta overlays close with back`; `menus: story picker shows the card button only after an ending`, `menus: the end offers the card when it exists`, `menus: friends and wallet entries only when given`; `hint ladder: no port shows no use button`; `card: lists endings and achievements, new ones marked`, `card: no total or empty slots`, `card: data dropped on close`, `friends: requests show accept and decline`, `consent: off by default and one tap withdraws`, `consent: text names the friend circle` (revision 1), `gift: amount bounded by balance and caps`, `wallet: packs show server prices and debt`, `invite: prompt names nobody and says who sees the name` (was `invite: prompt names the inviter`, revision 1), `i18n: meta keys complete in ru and en` |
 | e2e (LMI) | `meta.spec.ts`: `meta: ending opens the card with the ending and a new achievement`, `meta: card back returns to the end`, `meta: home opens the card after the first ending`, `meta: pack purchase credits the wallet`, `meta: hint from a pack shows its text`, `meta: privacy link opens through openLink`; `social.spec.ts`: `social: invite link sends a request the inviter accepts` (was `social: invite link opens a friend request`, revision 1), `social: friend profile hidden until consent`, `social: share sends a prepared message without titles`, `social: share falls back to a share link below 8.0`, `social: gift moves a hint to a friend` |
@@ -2091,3 +2103,5 @@ lists (default: the narrative-designer drafts the demo ones above), Q21 jurisdic
 | 7 | 2026-11-02 | RULINGS 78 (as merged on main `22ed4d5`) | Docs lane `docs-errata-3`, group B (not a triage round): M28 and "Implementation plan" Order as of `22ed4d5` (LM1, LU1, LE1, LF1, LM2 merged; LF2 running; LE2, LPO, LMD, LMI to go). Ledger: `D:/tmp/novel-orch/docs-errata-3/ledger.md` |
 | 8 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `e6eca0d` (the docs-errata-4 spec, group A; RULINGS 79-88), as merged on main `48abfaf` | Docs lane `docs-errata-4`, group A (not a triage round): LF2 (`d0c7870`) — the profile's 8 statements, its stories with a counted ending or unlock, no `first_name`, no `?lang`, the gateway's `PreparedShare` by value and the `u64` expiry; LM2 (`5a33183`) — `gate` / `visible` over the `StoryDef`, `EndingMeta`, `StoryMeta.puzzles`; LE2 (`ec3b29f`) — `transfer(&GiftMove, …)`, `qualify_referral(first_chapters, …)` in `db/social.rs`, the window constants, the caps in units (and MV6), `maxPerGift` in `WalletResponse`, `Retry-After` as the earliest time, the balance-row lock order, the 404 on a retry after an unfriend; LMD (`48abfaf`) — the services' `Pick<MetaEndpoints, …>` and options, `setVisible`'s text version, `MetaError` / `metaError` / `FriendHandle` in `api/endpoints.ts` with the error table, `WalletView.maxPerGift`; fix round 1: the profile comment names the handle read (`user_by_handle`, the id only) and the friend list as the one name read. Ledger: `D:/tmp/novel-orch/docs-errata-4/ledger.md` |
 | 9 | 2026-11-02 | RULINGS 80-88 (as merged on main `48abfaf`) | Docs lane `docs-errata-4`, group B (not a triage round): M28 and "Implementation plan" Order as of `48abfaf` (LM1, LU1, LE1, LF1, LM2, LF2, LE2, LMD merged; LPO running; LMI to go, after L15b and M1). Ledger: `D:/tmp/novel-orch/docs-errata-4/ledger.md` |
+| 10 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `874d685` (the docs-errata-5 spec, group A; RULINGS 89-103), as merged on main `6d77329` | Docs lane `docs-errata-5`, group A (not a triage round): LPO (`90e1226`) — `Policy::load` async on `tokio::fs`; LE2 (`ec3b29f`) — `db/social.rs` also written by `qualify_referral`; LF1 (`946e2b5`) — requester names from `Repo::social`'s request list; L9 (`d837c8b`) — the L9 names row as merged. Ledger: `D:/tmp/novel-orch/docs-errata-5/ledger.md` |
+| 11 | 2026-11-02 | RULINGS 89-103 (as merged on main `6d77329`) | Docs lane `docs-errata-5`, group B (not a triage round): M28 and "Implementation plan" Order as of `6d77329` (LM1, LU1, LE1, LF1, LM2, LF2, LE2, LMD, LPO merged; L9 merged, so the server chain continues LPH, RULINGS 96; LMI running, its gate with L15b, M1 and LFU1 met). Ledger: `D:/tmp/novel-orch/docs-errata-5/ledger.md` |

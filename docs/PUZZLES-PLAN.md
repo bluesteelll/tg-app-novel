@@ -1876,16 +1876,21 @@ The lanes are cut in PROTOTYPE-PLAN.md "THE LANE CUT" (dependency order, locks, 
 - **errors** — `error_codes_serialize_snake_case`, extended with `rate_limited` and `hint_unavailable`.
 
 **e2e** (`client/e2e/puzzles.spec.ts`, L15):
-- `explore: search item puzzle buy hint solve`
+- `explore: search item puzzle buy hint solve` (as merged, L15b `fbcfd38`, RULINGS 93 Q8, 94; PP L15 re-cut commit 6a:
+  `explore: search item puzzle solve`, the hint buy left the e2e)
 - `explore: gate fail branch`
 - `explore: reload resumes in the same room with items`
-- `puzzle: hint text absent until bought`
+- `puzzle: hint text absent until bought` (as merged, L15b `fbcfd38`: `puzzle: hint text absent while locked`, no use
+  button while `yields.ts` passes `hints: null`)
 - `puzzle: paid chapter puzzle needs entitlement`
 - `explore: back button walks rooms then hides`
 - `explore: live texture bytes stay under the steady cap`
 - `explore: hotspot buttons align with props under safe area and landscape` (X10: `__tgMock.setSafeArea()` with
   non-zero insets, then a landscape viewport; each hotspot button's page rect against its prop sprite's rect from
   `__novelDebug.propRects()`, centres within 1 CSS px, sizes equal unless min-target expanded)
+
+As merged (L15b `fbcfd38`): these eight are the merged names (`client/e2e/puzzles.spec.ts:95-238`), with the two
+renames above.
 
 ### Gates that must be seen red once
 
@@ -2102,6 +2107,7 @@ so no line moved. What it means for this design:
 | 11 | 2026-11-01 | `D:/tmp/novel-orch/carry.md` at ORCH `d97ba64` (the docs-errata-2 spec, group A), as merged on main `6043941` | Docs lane `docs-errata-2`, group A (not a triage round): L6c (`039a2f3`) — the `puzzles/mod.rs` signatures (`AttemptOutcome::Answered`, `entitled_puzzle`, `&PuzzleDef`) and `GREATEST($3, first_at)`; LW3 (`be8ba8b`) — leave knots' carried stage, `explore/event-return` over the event closure, `worldVersion(body, rules)`, the `usage.json` world sections; the `world/title-long` reason gone with M21 (RULINGS 50). Decision §4.6 (revision 4b) was already applied. Ledger: `D:/tmp/novel-orch/docs-errata-2/ledger.md` |
 | 12 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `ba5fc68` (the docs-errata-3 spec, group A), as merged on main `22ed4d5` | Docs lane `docs-errata-3`, group A (not a triage round): L10 (`34b7f13`) — `isOwned` superseded by `isDelivered`, the endpoints' optional `signal` and the local `PuzzleId`; LP2 (`88d0964`) — the session contract fill-ins D1-D8, the view store's `host`, the three lazy budget rows and the engine walk; LX (`a9e991c`) — the controller's `roomShown()`, `reveal()`, `relabel()`, the store's `HotspotView` and `doc` panel, `manifest` as the preload's `from`, X13's backgrounds-only neighbour preload. Ledger: `D:/tmp/novel-orch/docs-errata-3/ledger.md` |
 | 13 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `e6eca0d` (the docs-errata-4 spec, group A; RULINGS 79-88), as merged on main `48abfaf` | Docs lane `docs-errata-4`, group A (not a triage round): L15a (`e94c786`) — X14's prefetch after the first line on the chapter's world (D13); X8 and F6 step 5 on `{ correct: false, solved: true }` (D19); the `ExploreController` row's destruction at a resume whose step is not an explore yield (fix_r1 KL3). Ledger: `D:/tmp/novel-orch/docs-errata-4/ledger.md` |
+| 14 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `874d685` (the docs-errata-5 spec, group A; RULINGS 89-103), as merged on main `6d77329` | Docs lane `docs-errata-5`, group A (not a triage round): L15b (`fbcfd38`) — the e2e list as merged (`explore: search item puzzle solve`, `puzzle: hint text absent while locked`). Ledger: `D:/tmp/novel-orch/docs-errata-5/ledger.md` |
 
 **Revision 1 (2026-10-30)** — what changed, by triage item:
 - **W1** (a fully slotted lock's puzzle cannot be reopened after Back or a reload): "Lock" (the tap rule: every slot

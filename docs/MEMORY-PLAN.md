@@ -29,7 +29,7 @@ verify: (not established). Adopted 2026-11-02 (RULINGS 78) through lane docs-err
 | **B. Trim transparent margins** (char, prop) at build time, even-sided | 30.4 -> 24.3-27.3 (placeholders); 22.1-26.1 (real-art scenarios) | unchanged at the caps; real residency at the busiest knot -5.2 to -10.1 MiB (2 shown sprites x CPU+GPU + 1 preload x CPU) | ~0 | all | **ADOPT** - lane M1 | first client slot after L15, before LMI (LMI's gate gains M1) |
 | **A. Drop the decoded CPU copy after upload**, keep the fetched Blob for context-loss revive | + kept file bytes (placeholders <= 0.1 MiB; <= 2.2 MiB per 5-image knot at the file limits) | 138.6 -> 106.6; crossfade transient 170.6 -> 122.6 (now under 150 MB) | 0 | all; GL renderers only (the WebGPU / canvas fallback keeps today's path) | **ADOPT** - lane M2 | after LMI (D2's gate gains M2) |
 | **C. Half tier on Android LOW phones** (the 2 x 2 average of the full file, same canvas and trim rect; a character gets a half only on the canonical 768 x 1536 canvas; selected only where no backdrop, CG or character half file is drawn above its stored px: stage <= 540 x 984 device px) | LOW phones only: 30.4 -> 7.6 (6.1-6.8 with B); LOW tablets and other devices unchanged | LOW planned set <= ~9.6 MiB at the file limits (10.15 bounds the 5-image busiest knot; any knot: LOW <= full per entry, so <= 32) | LOW phones download the half files only | Android (UA `performance_class`) + stage size | **ADOPT** (engineering decision, critique W4) - lanes M3c (client) then M3s (server slot: paid half files) | M3c after M2; M3s after M3c, L9 and D2 |
-| **F. LOW render resolution 1** (already designed, not wired: no caller passes the class yet, `controller.ts:265` re-clamps with `'HIGH'`) | - | LOW: framebuffers 12 -> ~3 MiB | 0 | Android LOW | **FIX inside L15** (carry, not a lane; L15's lock + `controller.ts` for the `mount` signature; its red at DPR 2; into L15's brief directly). Recorded: F went to L15 through its brief (L15 spec item 3, RULINGS 76) and is in L15's running cut; section 14 item 7's helpers line goes into L15's resume note (RULINGS 78) | L15 |
+| **F. LOW render resolution 1** (already designed, not wired: no caller passes the class yet, `controller.ts:265` re-clamps with `'HIGH'`) | - | LOW: framebuffers 12 -> ~3 MiB | 0 | Android LOW | **FIX inside L15** (carry, not a lane; L15's lock + `controller.ts` for the `mount` signature; its red at DPR 2; into L15's brief directly). Recorded: F went to L15 through its brief (L15 spec item 3, RULINGS 76) and is in L15's running cut; section 14 item 7's helpers line goes into L15's resume note (RULINGS 78). As of `6d77329` (docs lane `docs-errata-5`, group B): L15 has merged as L15a `e94c786` and L15b `fbcfd38`, and L15b wired F (section 2) | L15 |
 | **D. Layered sprites** (body + trimmed face parts) | with B: 23.5; an expression-heavy knot 39.4 (FAIL today) -> 24.7 | small | smaller per extra expression (unmeasured) | all | **DEFER**: only if owner Q-M1 = layered art | design round + 2 lanes with the real art |
 | **E. GPU-compressed textures (KTX2/Basis)** | 30.4 -> 7.6 (10.1 if a mip chain is added for minification quality) | large | no measured KTX2-vs-AVIF comparison (MR1 :208); vs WebP (Defold 2021, MEASURED): ETC1S 2.28 MB vs WebP 2.30-3.76 MB, UASTC 1.3-2.5x WebP; McCurdy (CLAIMED): UASTC 1-2x JPEG/ETC1S | BC7 Windows; ASTC/ETC2 phones | **REJECT now, FREEZE** with return conditions (section 4.E) | not before D |
 | Caps 32 / 48 MiB | - | - | - | - | **unchanged** by M1-M3; a raise to 48 / 64 is decided only after M2 is measured on devices | after M2 measurement |
@@ -91,6 +91,9 @@ Textures + their CPU copies are 64 of 138.6 MiB (46 %); each MiB of texture save
   caller exists yet (L15 writes it), and `TelegramClient.perfClass` (`webapp.ts:249`) has no path into the scene
   (MR2:42-44). Unwired, framebuffers on LOW stay ~12 MiB instead of ~3. (L15 cut Q7: `:249` is the inert client's
   `perfClass`, the real client's is `:349`; as of `48abfaf` they are `webapp.ts:274` and `:374`.)
+  - As merged (L15a `e94c786`, L15b `fbcfd38`; RULINGS 85, 94): the caller exists. `client/src/app/game.ts` calls
+    `mount` since L15a (`:1387` on `6d77329`), and since L15b's C12 (`1714f6b`) it passes `{ dpr, perfClass }`, with
+    `renderResolution(o.dpr, o.perfClass)` in `controller.ts:267` (lever F, 4.F). The gap is closed.
 - `LIMITS.knotSet`, `LIMITS.roomSet` (`budget.ts:112-113`) and `STEADY_CAP_BYTES` (`registry.ts:9`) are three literals
   for one invariant.
 - The next chapter's first knot (`next:*`) is outside the knot-set gate, bounded at runtime only (carry.md:82).
@@ -252,6 +255,10 @@ The manifest entry keeps `w`, `h`, `decodedBytes = w x h x 4` of the **stored** 
     0.5-0.56 em of a 55 px font, 578-647 px, + margin, even (critique_r2 O1). That is 2.48-3.47 MiB per sprite (-23 to
     -45 %). Busiest knot 30.4 -> **24.3-27.3 MiB** (headroom 4.7-7.7). The lane's budget output replaces this estimate
     with the exact rows.
+    - As merged (M1 `f1b707d`, RULINGS 98; M1 cut addendum, impl "Checks run"): the placeholder boxes as measured are
+      ally 546 x 1394 at (111, 142) (the label `char/ally/neutral` is wider than the body), stranger 610-674 and keeper
+      546-610 px wide, props 494 x 494 at (9, 9). The busiest knot-set is now **27.3 MiB** (`ch2/archive_after`; ch1's
+      busiest knots `arrival`, `manor_out` and `street` 26.3-26.6), inside the estimate.
   - Real art (MR2 scenarios, figure 70/55/40 % of the canvas width, 97 % height): 3.06 / 2.40 / 1.75 MiB per sprite;
     busiest knot 26.1 / 24.1 / 22.1 MiB.
   - Props: the placeholder disc has `r = round(0.47 x 512) = 241` plus an 8-px stroke (`placeholder.ts:72-75`), 490 px
@@ -803,6 +810,9 @@ Ownership rules for every lane below (critique W3):
 - **Why before LMI.** M1 is the one lever that buys knot-set headroom for the real art. It also fits the window in
   which LMI waits for LE2 (RESUME "Next launches": LM2 -> LF2 -> LE2 are still ahead in the server slot after LF1).
   The cost if LE2 is merged first: LMI starts one M1 later.
+  - As merged (M1 `f1b707d`, RULINGS 92, 95, 98): LM2, LF2 and LE2 had all merged before M1 launched (on `fbcfd38`,
+    after L15b, beside LFU1), so no LE2 window remained; M1 also took the budget-gate gap item (RULINGS 92), and LMI
+    started after M1 and LFU1.
 - **Chains (PP revision).**
   - `client/scripts/{budget.ts,budget.test.ts}`: L1 -> L5 -> LP2 -> **M1** -> LMI -> **M2** -> **M3c** (PP:2568, :2612
     end at LMI today). LMI's gate gains M1.
