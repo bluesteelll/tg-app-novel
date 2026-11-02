@@ -9,6 +9,7 @@
 
 mod auth;
 mod bindings;
+mod cards;
 mod catalog;
 mod common;
 mod content;
@@ -199,9 +200,9 @@ async fn state_reopens_migrated_database() {
         .iter()
         .map(|(version, _)| *version)
         .collect();
-    if versions != [1, 2, 3, 4, 5] {
+    if versions != [1, 2, 3, 4, 5, 6] {
         failures.push(format!(
-            "first start: expected versions [1, 2, 3, 4, 5], got {versions:?}"
+            "first start: expected versions [1, 2, 3, 4, 5, 6], got {versions:?}"
         ));
     }
     match AppState::new(common::test_config(&db)).await {
