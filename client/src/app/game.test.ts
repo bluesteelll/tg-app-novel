@@ -3033,74 +3033,87 @@ test('game: exit closes the meta overlays', async () => {
   b.m.gate.dispose();
 });
 
+/** Longer than any retry timer a gate could hide (RULINGS 105: never on a timer). */
+const LONG_WAIT_MS = 10 * 60_000;
+
 test('boot: meta chunk import retried by the next tap, single flight', async () => {
   const module = await import('./meta.ts');
-  // The gate only hands the controller out and disposes it: nothing else here calls into it.
-  let ended = 0;
-  const ctl = {
-    dispose: () => {
-      ended += 1;
-    },
-  } as MetaController;
-  const flights: Array<{ resolve: (m: MetaModule) => void; reject: (e: unknown) => void }> = [];
-  let loads = 0;
-  let made = 0;
-  const notes: string[] = [];
-  const runs: string[] = [];
-  const gate = createMetaGate({
-    load: () => {
-      loads += 1;
-      return new Promise<MetaModule>((resolve, reject) => flights.push({ resolve, reject }));
-    },
-    make: () => {
-      made += 1;
-      return ctl;
-    },
-    note: (key) => notes.push(key),
-  });
-  // The boot's import fails silently, and nothing imports again without a tap.
-  void gate.ready();
-  flights.shift()?.reject(new Error('offline'));
-  await settle();
-  expect([loads, notes, gate.current()]).toEqual([1, [], null]);
-  // A tap imports again; its failure shows the toast.
-  gate.tap(() => runs.push('friends'));
-  expect(loads).toBe(2);
-  flights.shift()?.reject(new Error('offline'));
-  await settle();
-  expect([runs, notes]).toEqual([[], ['meta.action_failed']]);
-  // A tap that must run in its own task (the policy link, F28) only imports before the chunk; two taps join it.
-  gate.tap(() => runs.push('policy'), { inTask: true });
-  gate.tap(() => runs.push('friends'));
-  gate.tap(() => runs.push('wallet'));
-  expect(loads).toBe(3);
-  flights.shift()?.resolve(module);
-  await settle();
-  expect([runs, made, gate.current()]).toEqual([['friends', 'wallet'], 1, ctl]);
-  // With the controller in, every tap runs at once, inside the tap.
-  gate.tap(() => runs.push('policy'), { inTask: true });
-  gate.tap(() => runs.push('card'));
-  expect(runs).toEqual(['friends', 'wallet', 'policy', 'card']);
-  expect([loads, made]).toEqual([3, 1]);
-  gate.dispose();
-  gate.tap(() => runs.push('after'));
-  expect([ended, gate.current(), runs.length]).toEqual([1, null, 4]);
+  // Fake timers from here on (the dynamic import above is real): a re-import on any timer shows as a second `load`.
+  vi.useFakeTimers();
+  try {
+    // The gate only hands the controller out and disposes it: nothing else here calls into it.
+    let ended = 0;
+    const ctl = {
+      dispose: () => {
+        ended += 1;
+      },
+    } as MetaController;
+    const flights: Array<{ resolve: (m: MetaModule) => void; reject: (e: unknown) => void }> = [];
+    let loads = 0;
+    let made = 0;
+    const notes: string[] = [];
+    const runs: string[] = [];
+    const gate = createMetaGate({
+      load: () => {
+        loads += 1;
+        return new Promise<MetaModule>((resolve, reject) => flights.push({ resolve, reject }));
+      },
+      make: () => {
+        made += 1;
+        return ctl;
+      },
+      note: (key) => notes.push(key),
+    });
+    // The boot's import fails silently, and nothing imports again without a tap, however long the page stays open.
+    void gate.ready();
+    flights.shift()?.reject(new Error('offline'));
+    await settle();
+    await vi.advanceTimersByTimeAsync(LONG_WAIT_MS);
+    expect([loads, notes, gate.current()]).toEqual([1, [], null]);
+    expect(vi.getTimerCount(), 'no timer left to import again').toBe(0);
+    // A tap imports again; its failure shows the toast, and again nothing imports until the next tap.
+    gate.tap(() => runs.push('friends'));
+    expect(loads).toBe(2);
+    flights.shift()?.reject(new Error('offline'));
+    await settle();
+    await vi.advanceTimersByTimeAsync(LONG_WAIT_MS);
+    expect([runs, notes]).toEqual([[], ['meta.action_failed']]);
+    expect([loads, vi.getTimerCount()], 'no retry after a failed tap without another tap').toEqual([2, 0]);
+    // A tap that must run in its own task (the policy link, F28) only imports before the chunk; two taps join it.
+    gate.tap(() => runs.push('policy'), { inTask: true });
+    gate.tap(() => runs.push('friends'));
+    gate.tap(() => runs.push('wallet'));
+    expect(loads).toBe(3);
+    flights.shift()?.resolve(module);
+    await settle();
+    expect([runs, made, gate.current()]).toEqual([['friends', 'wallet'], 1, ctl]);
+    // With the controller in, every tap runs at once, inside the tap.
+    gate.tap(() => runs.push('policy'), { inTask: true });
+    gate.tap(() => runs.push('card'));
+    expect(runs).toEqual(['friends', 'wallet', 'policy', 'card']);
+    expect([loads, made]).toEqual([3, 1]);
+    gate.dispose();
+    gate.tap(() => runs.push('after'));
+    expect([ended, gate.current(), runs.length]).toEqual([1, null, 4]);
 
-  // Disposed before the chunk lands: no controller is made, and a waiting ending or tap shows nothing (critique O4).
-  const late = createMetaGate({
-    load: () => new Promise<MetaModule>((resolve, reject) => flights.push({ resolve, reject })),
-    make: () => {
-      made += 1;
-      return ctl;
-    },
-    note: (key) => notes.push(key),
-  });
-  void late.ready();
-  const ending = late.port.onEnding(TIDE);
-  late.tap(() => runs.push('late'));
-  late.dispose();
-  flights.shift()?.resolve(module);
-  await ending;
-  await settle();
-  expect([made, late.current(), runs.length, notes]).toEqual([1, null, 4, ['meta.action_failed']]);
+    // Disposed before the chunk lands: no controller is made, and a waiting ending or tap shows nothing (critique O4).
+    const late = createMetaGate({
+      load: () => new Promise<MetaModule>((resolve, reject) => flights.push({ resolve, reject })),
+      make: () => {
+        made += 1;
+        return ctl;
+      },
+      note: (key) => notes.push(key),
+    });
+    void late.ready();
+    const ending = late.port.onEnding(TIDE);
+    late.tap(() => runs.push('late'));
+    late.dispose();
+    flights.shift()?.resolve(module);
+    await ending;
+    await settle();
+    expect([made, late.current(), runs.length, notes]).toEqual([1, null, 4, ['meta.action_failed']]);
+  } finally {
+    vi.useRealTimers();
+  }
 });
