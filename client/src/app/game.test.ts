@@ -2278,3 +2278,66 @@ test('game: an outside autosave over a pending start is written at once', async 
     ['ch2', 'ch2.study.l001'],
   ]);
 });
+
+test('game: a failed load it read shows the error notice', async () => {
+  const rows: unknown[] = [];
+  for (const kind of ['get', 'empty', 'undecodable', 'expired'] as const) {
+    const h = harness();
+    await startManor(h);
+    await h.game.advance(); // l002
+    const sv = h.save();
+    const log: Array<string | null> = [];
+    const autosave = sv.autosave;
+    sv.autosave = (w, o) => {
+      log.push(w.lineId);
+      autosave(w, o);
+    };
+    let answer = (): void => {};
+    const held = new Promise<void>((resolve) => {
+      answer = resolve;
+    });
+    const load = sv.load;
+    sv.load = async (slot) => {
+      if (kind === 'get') {
+        await held;
+        return { ok: false, error: { kind: 'network', detail: 'offline' } };
+      }
+      // The http layer's answer once the page's session has ended; it has shown the reopen notice already (boot).
+      return kind === 'expired' ? { ok: false, error: { kind: 'session-expired' } } : load(slot);
+    };
+    if (kind === 'empty') {
+      sv.slots.delete('auto');
+    } else if (kind === 'undecodable') {
+      sv.slots.set('auto', { summary: THEIRS, body: 'not json' });
+    }
+    sv.emit({ kind: 'paused', current: THEIRS });
+    const p = h.vm.toasts.find((e) => e.key === 'save_conflict');
+    if (p?.kind === 'prompt') {
+      p.actions[0]?.run(); // Load it
+    }
+    await settle();
+    if (kind === 'get') {
+      h.game.onLifecycle('deactivated'); // during the read: kept under adopting
+      answer();
+      await settle();
+    }
+    h.game.onLifecycle('deactivated'); // at rest
+    const notice = h.vm.notice;
+    const root = h.vm.screens.root.kind;
+    if (notice?.kind === 'error') {
+      notice.onaction();
+    }
+    await settle();
+    await settle();
+    rows.push([kind, notice?.kind, root, log, h.exits(), h.save().disposed]);
+    h.game.dispose();
+  }
+  // Their save stays the server's copy: nothing of ours is written; the notice exits to Home, whose Continue reads it.
+  // An ended session keeps the reopen notice, as a chapter load does (chapterFailed).
+  expect(rows).toEqual([
+    ['get', 'error', 'notice', [], 1, 1],
+    ['empty', 'error', 'notice', [], 1, 1],
+    ['undecodable', 'error', 'notice', [], 1, 1],
+    ['expired', 'reopen', 'notice', [], 0, 1],
+  ]);
+});

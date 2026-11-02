@@ -1435,14 +1435,37 @@ export function createGame(deps: GameDeps): Game {
     return resumeBody(s, body.value);
   };
 
+  /**
+   * W1 "Load it" read nothing to resume: a failed read, an empty slot or an unreadable body (fix_r1 KL1; RULINGS 81).
+   * `adopting` stays set until the session ends, so nothing of it is written, a request kept during the read included;
+   * the error notice exits, and Home's Continue reads their save (RULINGS 93). An ended session gets the reopen notice,
+   * as in `chapterFailed`, never the error notice over the one the http layer showed. A manual load is unchanged.
+   */
+  const adoptFailed = (s: Session, e: ApiError | null): void => {
+    if (!s.adopting) {
+      return;
+    }
+    if (e?.kind === 'session-expired') {
+      endSession(s);
+      showNotice({ kind: 'reopen' });
+      return;
+    }
+    showNotice({ kind: 'error', onaction: () => void game.exitToStories() });
+  };
+
   const loadSlot = async (s: Session, slot: SaveSlot): Promise<void> => {
     const full = await s.saves.load(slot);
-    if (session !== s || !full.ok || full.value === null) {
+    if (session !== s) {
+      return;
+    }
+    if (!full.ok || full.value === null) {
+      adoptFailed(s, full.ok ? null : full.error);
       return;
     }
     const body = decodeSave(full.value.body);
     if (!body.ok) {
       console.error('saves: unreadable body', body.error);
+      adoptFailed(s, null);
       return;
     }
     clearAuto();
