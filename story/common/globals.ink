@@ -5,3 +5,5 @@ VAR g_gate_forced = false
 VAR g_manor_trust = 0
 // manor: she promised the voice in the cellar to get him out; ch1's street and ch2 read it.
 VAR g_manor_promise = false
+// tide: whether the heroine believed the keeper in ch3's lighthouse (0 or 1); ch3's stairs and ch4 read it.
+VAR g_tide_trust_keeper = 0

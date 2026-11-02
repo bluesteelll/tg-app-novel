@@ -2,16 +2,20 @@
   "names": {
     "ally": "Sonya",
     "stranger": "Arseny",
-    "voice": "Voice"
+    "voice": "Voice",
+    "keeper": "Matvey"
   },
   "chapters": {
     "ch1": "Chapter 1. The Key",
-    "ch2": "Chapter 2. The Archive"
+    "ch2": "Chapter 2. The Archive",
+    "ch3": "Chapter 1. High Tide"
   },
   "stories": {
-    "manor": "Elm Manor"
+    "manor": "Elm Manor",
+    "tide": "The Lighthouse Above the Tide"
   },
   "teasers": {
-    "manor": "A grandmother's key, an abandoned manor, and a young man whose family keeps the same secret as yours."
+    "manor": "A grandmother's key, an abandoned manor, and a young man whose family keeps the same secret as yours.",
+    "tide": "The storm has cut off the road home, and the only light on the shore burns in the window of a young lighthouse keeper."
   }
 }
