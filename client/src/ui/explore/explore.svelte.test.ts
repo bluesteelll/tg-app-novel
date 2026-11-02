@@ -7,9 +7,10 @@ import { afterEach, expect, test, vi } from 'vitest';
 
 import { t } from '../../i18n/index.ts';
 import type { Lang } from '../../i18n/index.ts';
-import type { HotspotKey } from '../../world/types.ts';
+import type { DocId, HotspotKey, ItemId } from '../../world/types.ts';
 import { createExploreView } from '../explore-view.svelte.ts';
-import type { ExploreLayerProps, HotspotView } from '../explore-view.svelte.ts';
+import type { DocView, ExploreLayerProps, HotspotView, ItemView, LockView } from '../explore-view.svelte.ts';
+import { GLYPH_PATHS } from '../glyphs.ts';
 import ExploreView from './ExploreView.svelte';
 import exploreViewSource from './ExploreView.svelte?raw';
 
@@ -124,6 +125,97 @@ test('explore view: hotspot buttons have labels', async () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------
+// C6: the panels over the rooms (X16, F7 step 5)
+
+const SUN: ItemView = { id: 'medal_sun' as ItemId, name: 'Sun medal', desc: 'Warm to the touch', glyph: 'sun' };
+const COIN: ItemView = { id: 'coin' as ItemId, name: 'Old coin', desc: 'Worn smooth', glyph: 'coin' };
+const LETTER: DocView = { id: 'letter' as DocId, title: 'A letter', body: ['Dear friend,', 'the key is under the clock.'] };
+const DIARY: DocView = { id: 'diary' as DocId, title: 'The diary', body: ['Day one.'] };
+
+/** The `d` of each glyph path inside `el`, in document order. */
+const glyphsIn = (el: Element): string[] => [...el.querySelectorAll('svg.glyph path')].map((p) => p.getAttribute('d') ?? '');
+
+test('inventory: documents re-readable', async () => {
+  for (const lang of LANGS) {
+    const onread = vi.fn<(doc: DocId) => void>();
+    const onclose = vi.fn();
+    const { container, getByRole, queryByRole, rerender, unmount } = render(
+      ExploreView,
+      layerProps({ lang, items: [SUN], docs: [LETTER, DIARY], panel: { kind: 'inventory' }, onread, onclose }),
+    );
+    // The items tab first: each row shows its glyph, its name and its description.
+    const rows = [...container.querySelectorAll('.item')];
+    expect(rows.map((r) => [glyphsIn(r), (r.textContent ?? '').replace(/\s+/g, ' ').trim()]), lang).toEqual([
+      [[GLYPH_PATHS.sun], 'Sun medal Warm to the touch'],
+    ]);
+    expect(queryByRole('button', { name: LETTER.title }), lang).toBeNull();
+    // The files tab lists the documents; a tap opens one.
+    await fireEvent.click(getByRole('tab', { name: t(lang, 'inv.files') }));
+    await fireEvent.click(getByRole('button', { name: LETTER.title }));
+    expect(onread.mock.calls, lang).toEqual([['letter']]);
+    // GameSession opens the reader: the title and every paragraph.
+    await rerender({ panel: { kind: 'doc', doc: LETTER.id } });
+    const reader = container.querySelector('.reader');
+    expect(reader?.querySelector('h2')?.textContent, lang).toBe(LETTER.title);
+    expect([...(reader?.querySelectorAll('p') ?? [])].map((p) => p.textContent), lang).toEqual(LETTER.body);
+    await fireEvent.click(getByRole('button', { name: t(lang, 'doc.close') }));
+    expect(onclose, lang).toHaveBeenCalledTimes(1);
+    // Back in the inventory the document is still there, on the same tab, and reads again.
+    await rerender({ panel: { kind: 'inventory' } });
+    expect(container.querySelector('.reader'), lang).toBeNull();
+    await fireEvent.click(getByRole('button', { name: LETTER.title }));
+    expect(onread.mock.calls, lang).toEqual([['letter'], ['letter']]);
+    // Empty tabs say so.
+    await rerender({ items: [], docs: [] });
+    expect(getByRole('tabpanel').textContent?.trim(), lang).toBe(t(lang, 'inv.empty'));
+    await fireEvent.click(getByRole('tab', { name: t(lang, 'inv.items') }));
+    expect(getByRole('tabpanel').textContent?.trim(), lang).toBe(t(lang, 'inv.empty'));
+    unmount();
+  }
+});
+
+test('lock panel: wrong item refused right item inserts', async () => {
+  const gate = (over: Partial<LockView> = {}): LockView => ({
+    key: k('hall.gate'),
+    title: 'The gate',
+    locked: 'Three hollows in the iron',
+    slots: [null, null, null],
+    refused: false,
+    ...over,
+  });
+  for (const lang of LANGS) {
+    const oninsert = vi.fn<(key: HotspotKey, item: ItemId) => void>();
+    const { container, getByRole, queryByRole, rerender, unmount } = render(
+      ExploreView,
+      layerProps({ lang, items: [COIN, SUN], lock: gate(), panel: { kind: 'lock' }, oninsert }),
+    );
+    const slotTexts = (): string[] => [...container.querySelectorAll('.slot')].map((s) => (s.textContent ?? '').trim());
+    expect(container.querySelector('.lock h2')?.textContent, lang).toBe('The gate');
+    expect(slotTexts(), lang).toEqual([1, 2, 3].map(() => t(lang, 'lock.slot_empty')));
+    // A wrong item: the panel asks; the controller refuses.
+    await fireEvent.click(getByRole('button', { name: COIN.name }));
+    expect(oninsert.mock.calls, lang).toEqual([['hall.gate', 'coin']]);
+    await rerender({ lock: gate({ refused: true }) });
+    expect(getByRole('alert').textContent?.trim(), lang).toBe(t(lang, 'lock.no_fit'));
+    expect(slotTexts(), lang).toEqual([1, 2, 3].map(() => t(lang, 'lock.slot_empty')));
+    // The right item fills its slot and leaves the held list.
+    await fireEvent.click(getByRole('button', { name: SUN.name }));
+    expect(oninsert.mock.calls, lang).toEqual([
+      ['hall.gate', 'coin'],
+      ['hall.gate', 'medal_sun'],
+    ]);
+    await rerender({ lock: gate({ slots: [SUN, null, null] }), items: [COIN] });
+    const first = container.querySelector('.slot');
+    expect(first === null ? [] : glyphsIn(first), lang).toEqual([GLYPH_PATHS.sun]);
+    expect(slotTexts(), lang).toEqual(['Sun medal', t(lang, 'lock.slot_empty'), t(lang, 'lock.slot_empty')]);
+    expect(queryByRole('alert'), lang).toBeNull();
+    expect(queryByRole('button', { name: SUN.name }), lang).toBeNull();
+    expect(getByRole('button', { name: COIN.name }), lang).toBeDefined();
+    unmount();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
 // The reader rules (spec 2, K26): copies of L14b's readers over every component of this directory, with an exact
 // value-import list per component (cut D14).
 
@@ -131,7 +223,10 @@ const COMPONENT_SOURCES = import.meta.glob<string>('./*.svelte', { query: '?raw'
 
 /** Each component and the only modules it may import as values. */
 const VALUE_IMPORTS: Readonly<Record<string, readonly string[]>> = {
-  './ExploreView.svelte': ['../../i18n/index.ts', '../glyphs.ts'],
+  './ExploreView.svelte': ['../../i18n/index.ts', '../glyphs.ts', './DocumentReader.svelte', './Inventory.svelte', './LockPanel.svelte'],
+  './Inventory.svelte': ['../../i18n/index.ts', '../glyphs.ts'],
+  './LockPanel.svelte': ['../../i18n/index.ts', '../glyphs.ts'],
+  './DocumentReader.svelte': ['../../i18n/index.ts'],
 };
 const COMPONENTS = Object.keys(VALUE_IMPORTS);
 
