@@ -12,7 +12,7 @@ import type { Decoder } from '../api/decode.ts';
 import { puzzleId } from '../api/endpoints.ts';
 import type { MetaEndpoints, MetaError } from '../api/endpoints.ts';
 import samplesText from '../api/fixtures/dto-samples.json?raw';
-import type { SocialResponse, WalletResponse } from '../api/generated/api.ts';
+import type { HintUseResponse, SocialResponse, WalletResponse } from '../api/generated/api.ts';
 import type { ApiError } from '../api/http.ts';
 import type { Lang } from '../i18n/index.ts';
 import type { HintPort, HintPortError } from '../puzzles/session.ts';
@@ -449,6 +449,30 @@ test('wallet: an older wallet answer never replaces a newer balance', async () =
   expect(port.balance()).toBe(7);
   expect(hintEntry(wallet.state())).toBe(7);
   expect(port.tierCost()).toBe(1);
+
+  // Two hint uses out of order (a closed puzzle's use still in flight): the later-issued answer's balance stays.
+  const used = sample('HintUseResponse', 0, decodeHintUseResponse);
+  const slowUse = deferred<Result<HintUseResponse, ApiError>>();
+  api.useHint.mockReturnValueOnce(slowUse.promise).mockResolvedValueOnce(ok({ ...used, balance: 2 }));
+  const firstUse = port.use(DRAWER, 1, 'ru');
+  value(await port.use(DRAWER, 1, 'ru'));
+  expect(port.balance()).toBe(2);
+  slowUse.resolve(ok({ ...used, balance: 3 }));
+  value(await firstUse);
+  expect(port.balance()).toBe(2);
+  expect(hintEntry(wallet.state())).toBe(2);
+
+  // A use issued before a refresh answers after it: the refresh is the newer server fact, so its balance stays.
+  const lateUse = deferred<Result<HintUseResponse, ApiError>>();
+  api.useHint.mockReturnValueOnce(lateUse.promise);
+  api.getWallet.mockResolvedValueOnce(ok(walletWithHints(6)));
+  const using = port.use(DRAWER, 1, 'ru');
+  value(await wallet.refresh());
+  expect(port.balance()).toBe(6);
+  lateUse.resolve(ok({ ...used, balance: 3 }));
+  value(await using);
+  expect(port.balance()).toBe(6);
+  expect(hintEntry(wallet.state())).toBe(6);
 });
 
 test('meta: views are assignable to the overlay and port types', async () => {
