@@ -5,7 +5,7 @@
 // in both rasters, >= 4 CSS px inside the stage, the canvas on top. Then the pixel is read with the shared stagePixel.
 // MEMORY-PLAN M2 (section 11): a context loss nothing restores reaches the D13 rebuild, and the stage it draws again
 // is the one before the loss, with no image fetched again; a revive whose decode fails ends that record, and the stage
-// takes the visual again with one GET of its file.
+// takes the visual again with one GET of its file; no decoded bitmap stays open once its texture is uploaded.
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -52,6 +52,7 @@ type Raster = { w: number; h: number; data: Buffer };
  */
 type M2Scene = {
   rebuilds: number;
+  liveTextures: number;
   pendingLoads: number;
   openBitmaps: number;
   stale: number;
@@ -396,5 +397,25 @@ test('scene: a failed revive re-acquires the visual', async ({ page }) => {
   expect(fetchedBefore, `${fetched.join(', ')} was fetched before the marker`).toContain(fetched[0]);
   await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 500)));
   expect(images.urls.slice(marker).map((u) => new URL(u).pathname), 'no image GET 500 ms later').toEqual(fetched);
+  expect(errors, 'no page error').toEqual([]);
+});
+
+test('scene: no decoded bitmap outlives its upload', async ({ page }) => {
+  test.setTimeout(120_000);
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await launch(page, 7004);
+  await firstLineAtRest(page);
+  const first = await sceneStats(page);
+  console.log(`memory: at ${FIRST_LINE} ${first.liveTextures} live textures, ${first.openBitmaps} open bitmaps`);
+  // Vacuity guard: the stage's visuals and a preload-only record of `next(arrival)` are live (MEMORY-PLAN M2 commit 6).
+  expect(first.liveTextures, `live textures at ${FIRST_LINE}`).toBeGreaterThanOrEqual(3);
+  expect(first.openBitmaps, `open bitmaps at ${FIRST_LINE}`).toBe(0);
+  // A visible load after the first line (the stranger, first fetched at a005).
+  await reachLine(page, STRANGER_LINE);
+  await atRest(page);
+  const later = await sceneStats(page);
+  console.log(`memory: at ${STRANGER_LINE} ${later.liveTextures} live textures, ${later.openBitmaps} open bitmaps`);
+  expect(later.openBitmaps, `open bitmaps at ${STRANGER_LINE}`).toBe(0);
   expect(errors, 'no page error').toEqual([]);
 });
