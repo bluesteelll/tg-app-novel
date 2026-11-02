@@ -2446,6 +2446,39 @@ test('game: a 409 on a manual save asks only after the double-tap window', async
   h.game.dispose();
 });
 
+test('game: a late answer of an earlier manual save replaces a held conflict ask', async () => {
+  const h = harness();
+  await startManor(h);
+  await h.game.advance(); // l002
+  const sv = h.save();
+  type Answer = Awaited<ReturnType<SaveService['save']>>;
+  const inFlight = new Map<ManualSlot, { w: SaveWrite; answer: (r: Answer) => void }>();
+  sv.save = (slot, w) =>
+    new Promise<Answer>((answer) => {
+      inFlight.set(slot, { w, answer });
+    });
+  // 1. s1's write in flight, the save screen left and opened again (which resets `saving`), then s2's write.
+  void h.game.save('s1');
+  await settle();
+  await h.game.openSaves();
+  void h.game.save('s2');
+  await settle();
+  const s1 = inFlight.get('s1');
+  const s2 = inFlight.get('s2');
+  if (s1 === undefined || s2 === undefined) {
+    throw new Error('both manual writes should be in flight');
+  }
+  // 2. s2 answers 409 inside the double-tap window, so its ask is held; then s1's earlier write lands.
+  s2.answer({ ok: false, error: { kind: 'conflict', current: summary(MANOR, 's2', s2.w) } });
+  await settle();
+  s1.answer({ ok: true, value: { rev: 1, savedAt: 1 } });
+  await settle();
+  // 3. The held ask never shows after the newer answer.
+  h.clock.advance(CONFLICT_HOLD_MS);
+  expect([h.vm.saves.saving, h.vm.saves.conflict]).toEqual([null, null]);
+  h.game.dispose();
+});
+
 test('game: a manual save with a step in flight waits for that step', async () => {
   /** A manual slot's body resumed in a fresh session: [lineId, ok, toasts, line]. */
   const resumed = async (full: SaveFull | undefined): Promise<unknown[] | null> => {
