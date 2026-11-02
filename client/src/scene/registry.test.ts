@@ -1,28 +1,30 @@
 import { expect, test } from 'vitest';
 
-import type { ImageEntry, Result } from '../story/catalog.ts';
+import type { ImageEntry, Result, Trim } from '../story/catalog.ts';
 import type { AssetId } from '../story/staging.ts';
+import type { TextureGeometry } from './layout.ts';
 import { createAssetRegistry } from './registry.ts';
 import type { Decoded, LoadError, LoadImage } from './registry.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
-// A fake loader with deferred results: every call is recorded with its URL and signal, and every Decoded counts its
-// release() calls by URL.
+// A fake loader with deferred results: every call is recorded with its URL, signal and geometry, and every Decoded
+// counts its release() calls by URL.
 
 type Tex = { readonly url: string };
-type Call = { url: string; signal: AbortSignal; resolve(r: Result<Decoded<Tex>, LoadError>): void; done: boolean };
+type Call = { url: string; signal: AbortSignal; geometry: TextureGeometry; resolve(r: Result<Decoded<Tex>, LoadError>): void; done: boolean };
 
 const BG = 8_847_360; // 1080 × 2048 × 4
 const PROP = 1_048_576; // 512 × 512 × 4
 
 const asId = (s: string): AssetId => s as AssetId; // test fixture ids: the brand is earned by the manifest decoder
-const image = (name: string, w: number, h: number): ImageEntry => ({
+const image = (name: string, w: number, h: number, trim?: Trim): ImageEntry => ({
   kind: 'image',
   w,
   h,
   decodedBytes: w * h * 4,
   avif: { url: `/assets/${name}.avif`, bytes: 100 },
   webp: { url: `/assets/${name}.webp`, bytes: 120 },
+  ...(trim === undefined ? {} : { trim }),
 });
 const bg = (name: string): ImageEntry => image(name, 1080, 2048);
 const prop = (name: string): ImageEntry => image(name, 512, 512);
@@ -31,9 +33,9 @@ function harness(variant: 'avif' | 'webp' = 'avif') {
   const calls: Call[] = [];
   const released = new Map<string, number>();
   const sizes = new Map<string, { w: number; h: number }>();
-  const load: LoadImage<Tex> = (ref, signal) =>
+  const load: LoadImage<Tex> = (ref, signal, geometry) =>
     new Promise((resolve) => {
-      calls.push({ url: ref.url, signal, resolve, done: false });
+      calls.push({ url: ref.url, signal, geometry, resolve, done: false });
     });
   const registry = createAssetRegistry<Tex>({ load, variant });
   const decoded = (url: string, w: number, h: number): Decoded<Tex> => ({
@@ -227,6 +229,43 @@ test('registry: image over 2048 px or off its manifest size is refused', async (
   expect(await lying).toMatchObject({ ok: false, error: { kind: 'decode' } });
   expect(releasedOf(h.released, 'lie')).toBe(1);
   expect(h.registry.stats()).toEqual({ live: 0, bytes: 0, pending: 0, overCap: 0 });
+});
+
+// MEMORY-PLAN 4.B: the placeholder sprite's alpha box, stored 466×1394, at (151, 142) on its 768×1536 canvas.
+const ALLY_TRIM: Trim = { canvasW: 768, canvasH: 1536, x: 151, y: 142 };
+
+test("registry: a trimmed entry's handle reports its canvas", async () => {
+  // charPlacement sizes a character on the canvas (RULINGS 35): the handle reports it, the caps count stored px.
+  const h = harness();
+  const got = h.acquire('char/ally/neutral', image('ally_neutral', 466, 1394, ALLY_TRIM), 'scene:char:ally', 'visible');
+  h.succeedAll();
+  const r = await got;
+  if (!r.ok) {
+    throw new Error(`invariant: the stored-size decode succeeds: ${JSON.stringify(r.error)}`);
+  }
+  expect(r.value.h).toBe(1536);
+  expect(r.value.w).toBe(768);
+  expect(h.registry.stats()).toEqual({ live: 1, bytes: 466 * 1394 * 4, pending: 0, overCap: 0 });
+});
+
+test("registry: load receives the entry's geometry", async () => {
+  const h = harness();
+  const ally = h.acquire('char/ally/neutral', image('ally_neutral', 466, 1394, ALLY_TRIM), 'scene:char:ally', 'visible');
+  const street = h.acquire('bg/street', bg('street'), 'scene:bg', 'visible');
+  expect(h.callsOf('/assets/ally_neutral.avif')[0]?.geometry).toEqual({
+    canvas: { w: 768, h: 1536 },
+    orig: { x: 0, y: 0, w: 768, h: 1536 },
+    trim: { x: 151, y: 142, w: 466, h: 1394 },
+    resolution: 1,
+  });
+  expect(h.callsOf('/assets/street.avif')[0]?.geometry).toEqual({
+    canvas: { w: 1080, h: 2048 },
+    orig: { x: 0, y: 0, w: 1080, h: 2048 },
+    trim: null,
+    resolution: 1,
+  });
+  h.succeedAll();
+  expect((await ally).ok && (await street).ok).toBe(true);
 });
 
 test('registry: variant follows the avif probe', async () => {

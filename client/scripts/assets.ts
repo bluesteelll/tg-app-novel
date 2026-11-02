@@ -12,7 +12,9 @@ import { encodeImage } from './assets/encode.ts';
 import type { EncodedImage } from './assets/encode.ts';
 import {
   ASSET_OUT,
+  TRIMMED_NAMESPACES,
   assetUsage,
+  canvasProblems,
   catalogAudio,
   catalogImage,
   decodeAssetCatalog,
@@ -24,9 +26,12 @@ import { renderPlaceholder } from './assets/placeholder.ts';
 import { synthWav } from './assets/synth.ts';
 import { decodeChapterList, decodeStoryUsage } from './story/emit.ts';
 
-/** The encoders, injectable so planner and CLI tests stay fast (the real ones are the default). */
+/**
+ * The encoders, injectable so planner and CLI tests stay fast (the real ones are the default). `trim`: cut the image
+ * to its alpha box (char and prop, MEMORY-PLAN 4.B).
+ */
 export type Encoders = {
-  encodeImage: (input: Uint8Array) => Promise<EncodedImage>;
+  encodeImage: (input: Uint8Array, o: { trim: boolean }) => Promise<EncodedImage>;
   synthWav: typeof synthWav;
 };
 
@@ -122,7 +127,8 @@ export async function main(argv: readonly string[], root: string, encoders: Enco
     const audio = catalogAudio(catalog, id);
     if (image !== undefined) {
       const svg = renderPlaceholder(id, image).svg;
-      encoded.set(id, { kind: 'image', ...(await encoders.encodeImage(new TextEncoder().encode(svg))) });
+      const trim = TRIMMED_NAMESPACES.includes(id.slice(0, id.indexOf('/')));
+      encoded.set(id, { kind: 'image', ...(await encoders.encodeImage(new TextEncoder().encode(svg), { trim })) });
     } else if (audio !== undefined && 'placeholder' in audio) {
       const role = id.startsWith('bgm/') ? 'bgm' : 'sfx';
       encoded.set(id, { kind: 'audio', role, ...encoders.synthWav(role, audio.placeholder) });
@@ -131,7 +137,15 @@ export async function main(argv: readonly string[], root: string, encoders: Enco
       throw new Error(`invariant: ${id} is a catalog placeholder before it is encoded`);
     }
   }
-  // 3. Plan, sweep, write.
+  // 3. The canvases are input errors, reported before planning (the planner's own decode would throw on an odd file).
+  const canvases = canvasProblems(encoded);
+  if (canvases.length > 0) {
+    for (const p of canvases) {
+      console.error(`assets: ${p}`);
+    }
+    return 1;
+  }
+  // 4. Plan, sweep, write.
   const plan = planAssets({ chapters, usage, tiers: tiers.value, encoded });
   const swept = [...stale(root, ASSET_OUT.public, plan.files), ...stale(root, ASSET_OUT.paid, plan.files)];
   for (const rel of swept) {

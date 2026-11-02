@@ -9,6 +9,7 @@ import { brotliCompressSync, constants } from 'node:zlib';
 import type { AssetCatalog, AssetEntry, AssetManifest, ChapterListEntry, ChapterMeta, CoverManifest, ImageEntry } from '../src/story/catalog.ts';
 import type { AssetId, ChapterId } from '../src/story/staging.ts';
 import {
+  TRIMMED_NAMESPACES,
   assetUsage,
   catalogAudio,
   decodeAssetCatalog,
@@ -56,6 +57,8 @@ export type BudgetInputs = {
   yieldsSourceExists: boolean;
   /** The LAZY_FAMILIES roots that exist under client/, by their manifest `src`. */
   lazySources: ReadonlySet<string>;
+  /** Dist paths of the re-export-only JS files: Rolldown's facades, which hold no code of their own (RULINGS 92). */
+  facades: ReadonlySet<string>;
 };
 export type Limits = {
   entryJsBr: number;
@@ -168,6 +171,38 @@ const DIMS: Readonly<Record<ImageKind, { w: number; h: number; exact: boolean }>
 };
 
 const JS = /\.m?js$/;
+
+// A dynamic entry whose code was bundled into another chunk stays as a facade that only re-exports it (Rolldown
+// `preserveEntrySignatures`), e.g. `export{n as default}from"./engine-….js";`. The grammar: import declarations and
+// `export {…}` / `export * …` declarations, comments and whitespace aside. Every alternative starts on its own
+// character, so a chunk with code fails at its first statement without backtracking.
+const GAP = String.raw`(?:\s|/\*[\s\S]*?\*/|//[^\n]*)*`;
+const STR = String.raw`(?:"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')`;
+const IDENT = String.raw`[\p{ID_Start}$_][\p{ID_Continue}$‌‍]*`;
+const NAMES = String.raw`\{(?:[^{}"'/]|${STR}|/\*[\s\S]*?\*/|//[^\n]*)*\}`;
+const STAR_AS = String.raw`\*${GAP}as${GAP}${IDENT}`;
+const CLAUSE = String.raw`(?:${IDENT}${GAP}(?:,${GAP}(?:${NAMES}|${STAR_AS}))?|${NAMES}|${STAR_AS})`;
+const IMPORT_DECL = String.raw`import${GAP}(?:${STR}|${CLAUSE}${GAP}from${GAP}${STR})`;
+const EXPORT_DECL = String.raw`export${GAP}(?:${NAMES}(?:${GAP}from${GAP}${STR})?|\*${GAP}(?:as${GAP}(?:${IDENT}|${STR})${GAP})?from${GAP}${STR})`;
+const FACADE_STATEMENT = new RegExp(String.raw`${GAP}(?:${IMPORT_DECL}|(${EXPORT_DECL}))${GAP};?`, 'uy');
+const FACADE_END = new RegExp(String.raw`${GAP}$`, 'uy');
+
+/** True for a JS file that is import and re-export declarations only, with at least one export. */
+function isReexportFacade(js: string): boolean {
+  let at = 0;
+  let exports = 0;
+  for (;;) {
+    FACADE_STATEMENT.lastIndex = at;
+    const m = FACADE_STATEMENT.exec(js);
+    if (m === null) {
+      break;
+    }
+    exports += m[1] === undefined ? 0 : 1;
+    at = FACADE_STATEMENT.lastIndex;
+  }
+  FACADE_END.lastIndex = at;
+  return exports > 0 && FACADE_END.test(js);
+}
 
 type Closure = { keys: Set<string>; missing: string[] };
 /** `imports` load before a chunk runs; `dynamicImports` load when it calls them (Pixi's `init` always does). */
@@ -442,7 +477,8 @@ function partialRow(name: string, bytes: number, limit: number, partial: boolean
 /**
  * A lazy family's row, keyed on its importer like the engine row on `app/engine.ts` (PUZZLES-PLAN W7): PENDING while
  * `src/app/yields.ts` or every root source is absent. Once both exist, a present root FAILs without a dynamic entry
- * of its own, or inside the entry or the engine closure (it would load before the first line). Its bytes are the JS
+ * of its own, or inside the entry or the engine closure (it would load before the first line), or when its dynamic
+ * entry is a facade over a chunk of either closure (a static import moved its code there). Its bytes are the JS
  * and CSS of its static closure beyond the entry and engine closures (downloaded once): the largest root's, or the
  * union of the roots'.
  */
@@ -476,6 +512,21 @@ function lazyRow(inputs: BudgetInputs, family: LazyFamily, entryClosure: Closure
     }
     if (chunks.some((key) => engineKeys.has(key))) {
       problems.push(`${root} is in the engine closure`);
+    }
+    for (const chunk of chunks.map((key) => manifest[key])) {
+      if (chunk === undefined || !inputs.facades.has(chunk.file)) {
+        continue;
+      }
+      // The root's code is in the chunk its facade imports: inside a closure, it loads before the first line.
+      for (const target of chunk.imports ?? []) {
+        const where = entryKeys.has(target) ? 'entry static' : engineKeys.has(target) ? 'engine' : null;
+        if (where !== null) {
+          const file = manifest[target]?.file ?? target;
+          problems.push(
+            `${root}: its dynamic entry ${chunk.file} only re-exports ${file}, which the ${where} closure loads before the first line (a static import of the root?)`,
+          );
+        }
+      }
     }
     const keys = new Set<string>();
     for (const key of chunks) {
@@ -595,12 +646,19 @@ function imageRow(a: AssetInputs, id: AssetId, e: ImageEntry, conflict: string |
   const limit = limits.image[kind];
   const dims = DIMS[kind];
   const v: string[] = [];
-  if (e.w > MAX_SIDE || e.h > MAX_SIDE) {
-    v.push(`${e.w}×${e.h} over ${MAX_SIDE} px`);
+  // The sizes hold on the canvas (MEMORY-PLAN §7): a trimmed file is laid out, and sized, as its full image.
+  const t = e.trim;
+  const canvas = t === undefined ? { w: e.w, h: e.h } : { w: t.canvasW, h: t.canvasH };
+  if (canvas.w > MAX_SIDE || canvas.h > MAX_SIDE) {
+    v.push(`${canvas.w}×${canvas.h} over ${MAX_SIDE} px`);
   }
-  if (dims.exact ? e.w !== dims.w || e.h !== dims.h : e.w > dims.w || e.h > dims.h) {
-    v.push(`${e.w}×${e.h}, ${dims.exact ? 'not exactly' : 'over'} ${dims.w}×${dims.h} (${kind})`);
+  if (dims.exact ? canvas.w !== dims.w || canvas.h !== dims.h : canvas.w > dims.w || canvas.h > dims.h) {
+    v.push(`${canvas.w}×${canvas.h}, ${dims.exact ? 'not exactly' : 'over'} ${dims.w}×${dims.h} (${kind})`);
   }
+  if (t !== undefined && !TRIMMED_NAMESPACES.includes(kind)) {
+    v.push(`trim on a ${kind} (only char and prop are trimmed)`);
+  }
+  // The caps and the knot-set rows count the stored px.
   if (e.decodedBytes !== e.w * e.h * 4) {
     v.push(`decodedBytes ${e.decodedBytes} ≠ w × h × 4`);
   }
@@ -614,7 +672,8 @@ function imageRow(a: AssetInputs, id: AssetId, e: ImageEntry, conflict: string |
   if (conflict !== undefined) {
     v.push(conflict);
   }
-  const note = v.length > 0 ? v.join('; ') : `${e.w}×${e.h}, WebP ${kbText(e.webp.bytes)}`;
+  const size = t === undefined ? `${e.w}×${e.h}` : `${e.w}×${e.h} in ${t.canvasW}×${t.canvasH}`;
+  const note = v.length > 0 ? v.join('; ') : `${size}, WebP ${kbText(e.webp.bytes)}`;
   return { name, valueBytes: e.avif.bytes, limitBytes: limit.avif, status: v.length > 0 ? 'FAIL' : 'PASS', note, unit: 'KB' };
 }
 
@@ -965,8 +1024,12 @@ export function parseManifest(json: unknown): Record<string, ManifestChunk> {
 /** Reads a built dist into evaluate()'s inputs; `problems` explains a manifest that could not be used. */
 export function readInputs(distDir: string, clientRoot: string): { inputs: BudgetInputs; problems: string[] } {
   const problems: string[] = [];
+  const facades = new Set<string>();
   const files = walkFiles(distDir).map((rel): DistFile => {
     const data = readFileSync(path.join(distDir, rel));
+    if (JS.test(rel) && isReexportFacade(data.toString('utf8'))) {
+      facades.add(rel);
+    }
     return { path: rel, rawBytes: data.length, brBytes: brotliBytes(data) };
   });
   const manifestPath = path.join(distDir, '.vite', 'manifest.json');
@@ -986,7 +1049,7 @@ export function readInputs(distDir: string, clientRoot: string): { inputs: Budge
   const engineSourceExists = sourceExists(ENGINE_SRC);
   const yieldsSourceExists = sourceExists(YIELDS_SRC);
   const lazySources = new Set([...LAZY_ROOTS].filter(sourceExists));
-  return { inputs: { manifest, manifestStale, indexHtml, files, engineSourceExists, yieldsSourceExists, lazySources }, problems };
+  return { inputs: { manifest, manifestStale, indexHtml, files, engineSourceExists, yieldsSourceExists, lazySources, facades }, problems };
 }
 
 /** The repository's story and asset tool outputs as evaluateAssets() reads them; every unusable input is a problem. */
