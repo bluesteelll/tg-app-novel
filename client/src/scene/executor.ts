@@ -369,8 +369,8 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     b.settle();
   };
 
-  const build = (b: Batch<T>, got: ReadonlyMap<string, TextureHandle<T>>): void => {
-    const tl = gsap.timeline({ paused: true, defaults: { ease: 'none', lazy: false } });
+  /** Builds the batch's stage changes on `tl` and hands it to the batch (or ends the batch when it has no time). */
+  const compose = (b: Batch<T>, got: ReadonlyMap<string, TextureHandle<T>>, tl: Timeline): void => {
     const target = b.target;
     const want = slotsOf(target);
     const sec = (ms: number): number => (b.instant ? 0 : Math.max(0, ms) / 1000);
@@ -611,6 +611,18 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     loop.begin();
     tl.eventCallback('onComplete', () => finish(b));
     tl.play();
+  };
+  const build = (b: Batch<T>, got: ReadonlyMap<string, TextureHandle<T>>): void => {
+    const tl = gsap.timeline({ paused: true, defaults: { ease: 'none', lazy: false } });
+    try {
+      compose(b, got, tl);
+    } catch (e) {
+      // A paused timeline stays in gsap's root timeline until killed; once the batch holds it, finish() kills it.
+      if (b.tl !== tl) {
+        tl.kill();
+      }
+      throw e;
+    }
   };
 
   const run = async (b: Batch<T>): Promise<void> => {

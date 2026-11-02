@@ -660,3 +660,29 @@ test('executor: prop rects in stage px', async () => {
   ]);
   h.ex.destroy();
 });
+
+test('executor: a build that throws kills its timeline', async () => {
+  // L11 review minor M1: a build that throws before its timeline is handed to the batch must not leave that paused
+  // timeline in gsap's root timeline. The chain's catch logs it and the batch still settles.
+  const h = harness();
+  const errors: unknown[][] = [];
+  const spy = vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => {
+    errors.push(a);
+  });
+  const sprite = h.adapter.sprite.bind(h.adapter);
+  let thrown = false;
+  h.adapter.sprite = (layer, tex, g) => {
+    if (!thrown) {
+      thrown = true;
+      throw new Error('stage: a bug in a build');
+    }
+    return sprite(layer, tex, g);
+  };
+  const applied = track(h.ex.apply([bg('cafe', 'crossfade', 500)], NOW));
+  await flush();
+  spy.mockRestore();
+  expect(errors.map((e) => e[0])).toEqual(['scene: batch failed']);
+  expect(applied.done).toBe(true);
+  expect(gsap.globalTimeline.getChildren(true, true, true)).toEqual([]);
+  h.ex.destroy();
+});
