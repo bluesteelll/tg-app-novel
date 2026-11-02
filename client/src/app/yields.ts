@@ -20,7 +20,7 @@ import { t } from '../i18n/index.ts';
 import { loadPuzzleUi } from '../puzzles/registry.ts';
 import type { ChunkError } from '../puzzles/registry.ts';
 import { createPuzzleSession } from '../puzzles/session.ts';
-import type { AttemptResult, PuzzleEnd, PuzzleError, PuzzleMode, PuzzleSession } from '../puzzles/session.ts';
+import type { AttemptResult, HintPort, PuzzleEnd, PuzzleError, PuzzleMode, PuzzleSession } from '../puzzles/session.ts';
 import type { SceneController } from '../scene/controller.ts';
 import type { VisualCommand } from '../scene/executor.ts';
 import type { StatsReporter } from '../stats/reporter.ts';
@@ -91,6 +91,8 @@ export type YieldsHost = {
   reporter: Pick<StatsReporter, 'record'>;
   clock: Clock;
   chunks: LazyChunks;
+  /** The hint port a new puzzle session takes (META-PLAN M21: the wallet's), or null; none given is null. */
+  hints?: () => HintPort | null;
   /** The Stage element the scene mounted into (X10: the controller's box); null before the first mount. */
   stageHost(): HTMLElement | null;
   chapter(): LoadedChapter | null;
@@ -168,7 +170,16 @@ const sameProps = (a: readonly PropPlacement[], b: readonly PropPlacement[]): bo
   a.length === b.length && a.every((p, i) => p.prop === b[i]?.prop && p.rect.every((v, j) => v === b[i]?.rect[j]));
 
 /** An open puzzle: its session, how it ends, and the frame the overlay shows. */
-type Open = { session: PuzzleSession; local: PuzzleLocalId; mode: PuzzleMode; then: KnotName | null; closeup: boolean; id: number };
+type Open = {
+  session: PuzzleSession;
+  /** The session's hint port: its get-more opens the wallet. */
+  port: HintPort | null;
+  local: PuzzleLocalId;
+  mode: PuzzleMode;
+  then: KnotName | null;
+  closeup: boolean;
+  id: number;
+};
 
 let frameSeq = 0;
 
@@ -537,12 +548,13 @@ export function createYields(h: YieldsHost): Yields {
       return;
     }
     dropPuzzle(); // at most one session
-    const made = createPuzzleSession({ api: h.api, hints: null, world: w, chapter: ch.id, puzzle: local, mode, run, lang: () => vm.lang, dispatch: act });
+    const port = h.hints?.() ?? null;
+    const made = createPuzzleSession({ api: h.api, hints: port, world: w, chapter: ch.id, puzzle: local, mode, run, lang: () => vm.lang, dispatch: act });
     if (!made.ok) {
       h.storyError({ kind: 'load', message: `puzzle ${made.error.puzzle} has no session` });
       return;
     }
-    const o: Open = { session: made.value, local, mode, then, closeup: p.closeup !== null, id: ++frameSeq };
+    const o: Open = { session: made.value, port, local, mode, then, closeup: p.closeup !== null, id: ++frameSeq };
     open = o;
     o.session.onEnd((e) => onEnd(o, e));
     if (p.closeup !== null) {
@@ -680,13 +692,34 @@ export function createYields(h: YieldsHost): Yields {
     },
     onusehint: (tier) => {
       const o = open;
-      const tierView = o?.session.ladder().tiers.find((x) => x.tier === tier);
-      if (o !== null && tierView?.state === 'unlocked') {
-        o.session.openHint(tier); // a re-read; no hint port in L15 (LMI passes the wallet's)
-        puzzle.ladder = { ...o.session.ladder(), busy: false, failed: false };
+      const state = o?.session.ladder().tiers.find((x) => x.tier === tier)?.state;
+      if (o === null || state === undefined) {
+        return;
       }
+      if (state === 'unlocked') {
+        o.session.openHint(tier); // a re-read: the text is in memory, nothing is spent
+        puzzle.ladder = { ...o.session.ladder(), busy: false, failed: false };
+        return;
+      }
+      if (state !== 'usable' || o.port === null) {
+        return;
+      }
+      puzzle.ladder = { ...o.session.ladder(), busy: true, failed: false };
+      void o.session.useHint(tier).then((r) => {
+        if (open !== o || puzzle.ladder === null) {
+          return; // the puzzle or its ladder was left meanwhile
+        }
+        if (r.ok) {
+          puzzle.ladder = { ...r.value, busy: false, failed: false };
+        } else if (r.error.kind !== 'busy') {
+          // `busy`: another use is in flight, and its answer is the ladder.
+          puzzle.ladder = { ...o.session.ladder(), busy: false, failed: r.error.kind === 'failed' };
+        }
+      }); // the ladder shows the answer
     },
-    ongetmore: () => {}, // the wallet is LMI's; L15's ladder has no port
+    ongetmore: () => {
+      open?.port?.getMore();
+    },
   };
 
   // -------------------------------------------------------------------------------------------------------------
@@ -792,8 +825,12 @@ export function createYields(h: YieldsHost): Yields {
       if (open !== null && open.mode === 'explore' && puzzle.frame?.id === open.id && !kinds.has('puzzle')) {
         open.session.close(); // X8: Back closes an exploration puzzle with no outcome (deferred while an attempt runs)
       }
-      if (puzzle.ladder !== null && !kinds.has('hints')) {
+      const ladder = puzzle.ladder;
+      if (ladder !== null && !kinds.has('hints')) {
         puzzle.ladder = null;
+      } else if (ladder !== null && open !== null) {
+        // The wallet's balance, as of now: a pack bought over the ladder shows once the wallet closes.
+        puzzle.ladder = { ...open.session.ladder(), busy: ladder.busy, failed: ladder.failed };
       }
     },
     relabel() {

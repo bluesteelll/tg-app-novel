@@ -2,14 +2,17 @@
 // Pixi, inkjs or GSAP, and meanwhile, in parallel, imports the engine chunk, exchanges initData for the server's token,
 // fetches the public catalog and covers, lists every story's saves, reads the entitlements and loads the settings. A
 // Home tap unlocks audio synchronously, inside the tap (principle 5), then waits for the engine and starts the story.
-// It owns the page's subscriptions: the lifecycle, `pagehide`, the session's expiry.
-import { createEndpoints } from '../api/endpoints.ts';
+// It owns the page's subscriptions: the lifecycle, `pagehide`, the session's expiry. After auth it imports the meta
+// controller's chunk beside the engine (RULINGS 105); the gate below is the one way to it.
+import { createEndpoints, createMetaEndpoints } from '../api/endpoints.ts';
 import type { Endpoints } from '../api/endpoints.ts';
 import type { ProductDto, SaveListResponse, SaveSummary } from '../api/generated/api.ts';
 import { createHttp, systemClock } from '../api/http.ts';
 import type { ApiError, Http } from '../api/http.ts';
 import type { Session } from '../api/session.ts';
 import { unlockAudio } from '../audio/unlock.ts';
+import { t } from '../i18n/index.ts';
+import type { UiKey } from '../i18n/index.ts';
 import { summaryOf } from '../saves/service.ts';
 import { createSettingsStore } from '../settings/store.ts';
 import type { Settings, SettingsStore } from '../settings/store.ts';
@@ -24,7 +27,8 @@ import { createScreens } from '../ui/screens.ts';
 import type { Screens } from '../ui/screens.ts';
 import { createViewModel } from '../ui/state.svelte.ts';
 import type { ViewModel } from '../ui/state.svelte.ts';
-import type { Entitlements, Game, StartFrom } from './game.ts';
+import type { Entitlements, Game, GameMeta, StartFrom } from './game.ts';
+import type { MetaController } from './meta.ts';
 
 /** Home's buttons; each one unlocks audio inside its tap and is single-shot until Home is shown again (F1 step 5). */
 export type HomeActions = {
@@ -125,6 +129,115 @@ function describe(e: ApiError): string {
 /** The engine module, imported in parallel with the boot reads (F1 step 3). */
 type EngineModule = typeof import('./engine.ts');
 
+/** The meta controller's module (RULINGS 105): imported after auth, beside the engine; never awaited before the first line. */
+type MetaModule = typeof import('./meta.ts');
+
+/** The meta controller behind its lazy chunk (META-PLAN M27; RULINGS 105): Home, the end and the puzzles reach it here. */
+export type MetaGate = {
+  /** The controller once its chunk landed; null before, and after a failed import until a later one lands. */
+  current(): MetaController | null;
+  /** The controller, importing its chunk when it is not in (one import in flight); null when that import failed. */
+  ready(): Promise<MetaController | null>;
+  /**
+   * A tap that needs the controller: `run` now, or once a new import (single flight) lands; a failed import shows
+   * `meta.action_failed`. `inTask`: `run` only inside the tap's own task (F28); before the chunk the tap only imports.
+   */
+  tap(run: (m: MetaController) => void, o?: { inTask: boolean }): void;
+  /** The Game's port, read when called: `onEnding` waits for the import; the others are no-ops before it. */
+  readonly port: GameMeta;
+  dispose(): void;
+};
+
+/**
+ * The gate (RULINGS 105): one import in flight, as `importEngine`'s; a failed one is never retried on a timer, only by
+ * the next tap or ending. `make` runs once, and only while the gate is not disposed.
+ */
+export function createMetaGate(d: {
+  load: () => Promise<MetaModule>;
+  make: (m: MetaModule) => MetaController;
+  note: (key: UiKey) => void;
+}): MetaGate {
+  let current: MetaController | null = null;
+  let flight: Promise<MetaController | null> | null = null;
+  let disposed = false;
+  /** Bumped when the session leaves: an ending that waited on the import is dropped. */
+  let leaves = 0;
+
+  const ready = (): Promise<MetaController | null> => {
+    if (current !== null) {
+      return Promise.resolve(current);
+    }
+    flight ??= d.load().then(
+      (m) => {
+        if (!disposed) {
+          current ??= d.make(m);
+        }
+        return current;
+      },
+      (e: unknown) => {
+        console.error('boot: the meta chunk did not load', e);
+        flight = null;
+        return null;
+      },
+    );
+    return flight;
+  };
+
+  return {
+    current: () => current,
+    ready,
+    tap(run, o) {
+      const m = current;
+      if (disposed) {
+        return;
+      }
+      if (m !== null) {
+        run(m);
+        return;
+      }
+      void ready().then((c) => {
+        if (disposed) {
+          return;
+        }
+        if (c === null) {
+          d.note('meta.action_failed');
+        } else if (o?.inTask !== true) {
+          run(c);
+        }
+      }); // a tap has no caller; the outcome is on screen
+    },
+    port: {
+      async onEnding(story) {
+        const m = current;
+        if (m !== null) {
+          return m.onEnding(story);
+        }
+        const left = leaves;
+        const c = await ready();
+        if (disposed || leaves !== left) {
+          return; // the end (or the page) was left while the chunk loaded: no card
+        }
+        if (c === null) {
+          d.note('meta.card_later'); // the end stays; its card action imports again
+          return;
+        }
+        await c.onEnding(story);
+      },
+      hintPort: () => current?.hintPort() ?? null,
+      lineShown: () => current?.lineShown(),
+      closeOverlays: () => {
+        leaves += 1;
+        current?.closeOverlays();
+      },
+    },
+    dispose() {
+      disposed = true;
+      current?.dispose();
+      current = null;
+    },
+  };
+}
+
 export function startApp(tg: TelegramClient): AppHandle {
   const vm = createViewModel({ timers: systemClock, lang: 'ru' });
   // K12: a stack made with another root would not seed the view itself.
@@ -134,6 +247,7 @@ export function startApp(tg: TelegramClient): AppHandle {
     onView: (v) => {
       vm.screens = v;
       game?.screensChanged(v); // the explore panels and an exploration puzzle follow the stack
+      gate.current()?.screensChanged(v); // a closed meta overlay drops its data; a root change drops late answers
     },
   });
   vm.screens = screens.view();
@@ -144,6 +258,31 @@ export function startApp(tg: TelegramClient): AppHandle {
   const subscriptions: Unsubscribe[] = [];
   let reporter: StatsReporter | null = null;
   let data: BootData | null = null;
+  const gate = createMetaGate({
+    load: () => import('./meta.ts'),
+    make: (m) => {
+      const c = m.createMetaController({
+        meta: createMetaEndpoints(http),
+        api,
+        tg,
+        screens,
+        vm,
+        reporter: { settle: (o) => reporter?.settle(o) ?? Promise.resolve('timeout') },
+        storyTitle: (story, lang) => data?.catalog.stories.find((s) => s.id === story)?.title[lang] ?? null,
+        clock: systemClock,
+        newId: () => crypto.randomUUID(),
+        host: location.host,
+        onCards: () => {
+          if (data !== null && screens.view().root.kind === 'home') {
+            vm.cards = cardsOf(data);
+          }
+        },
+      });
+      c.boot();
+      return c;
+    },
+    note: (key) => vm.showToast({ kind: 'note', key, message: t(vm.lang, key), sticky: false }),
+  });
   let engine: Promise<Game | null> | null = null;
   /** The boot list, handed to the first session that asks; later sessions list again. */
   let freshList: SaveListResponse | null = null;
@@ -178,6 +317,7 @@ export function startApp(tg: TelegramClient): AppHandle {
     screens.setRoot({ kind: 'home' });
     tg.setClosingConfirmation(false);
     homeBusy = false;
+    gate.current()?.homeShown(); // a held invite prompt shows over Home
   };
 
   const entitlements: Entitlements = {
@@ -278,6 +418,7 @@ export function startApp(tg: TelegramClient): AppHandle {
         unlock: unlockAudio,
         onExit: () => void refreshHome(),
       });
+      made.game.attachMeta(gate.port); // before the game is published, so every session runs attached
       game = made.game;
       vm.ui = made.ui;
       return made.game;
@@ -411,12 +552,14 @@ export function startApp(tg: TelegramClient): AppHandle {
       });
       reporter.flush();
     }
+    void gate.ready(); // beside the engine; a failure is silent here and imported again by the next meta tap
     showHome(d);
     void engineOf(d); // created ahead of the tap; a failure shows at the tap
   };
 
   const onLifecycle = (e: Lifecycle): void => {
     game?.onLifecycle(e);
+    gate.current()?.onLifecycle(e);
     if (e === 'deactivated') {
       reporter?.flush({ keepalive: true });
     }
@@ -452,6 +595,7 @@ export function startApp(tg: TelegramClient): AppHandle {
         off();
       }
       game?.dispose();
+      gate.dispose();
       reporter?.dispose();
       screens.dispose();
       vm.destroy();

@@ -7,8 +7,11 @@ import { expect, test, vi } from 'vitest';
 
 import { compileChapter } from '../../scripts/story/compile.ts';
 import { GLOBALS_PATH } from '../../scripts/story/lint.ts';
-import type { AttemptResponse, ProductDto, SaveFull, SaveListResponse, SaveSlot, SaveSummary } from '../api/generated/api.ts';
-import type { ApiError, Clock } from '../api/http.ts';
+import type { Decoder } from '../api/decode.ts';
+import { createEndpoints, createMetaEndpoints } from '../api/endpoints.ts';
+import samplesText from '../api/fixtures/dto-samples.json?raw';
+import type { AttemptResponse, ProductDto, PuzzleStatus, SaveFull, SaveListResponse, SaveSlot, SaveSummary } from '../api/generated/api.ts';
+import type { ApiError, ApiRequest, Clock, Http } from '../api/http.ts';
 import type { AudioCommand, AudioManager } from '../audio/manager.ts';
 import { createExploreController } from '../explore/controller.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
@@ -32,14 +35,16 @@ import type { ExploreViewStore } from '../ui/explore-view.svelte.ts';
 import { createPuzzleView } from '../ui/puzzle-view.svelte.ts';
 import type { PuzzleHostProps, PuzzleView } from '../ui/puzzle-view.svelte.ts';
 import { createScreens } from '../ui/screens.ts';
-import type { Screens } from '../ui/screens.ts';
+import type { Screens, ScreensView } from '../ui/screens.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { HotspotKey, ItemId, WorldPublic } from '../world/types.ts';
 import { createViewModel } from '../ui/state.svelte.ts';
 import type { ViewModel } from '../ui/state.svelte.ts';
-import { newestAuto } from './boot.ts';
+import { createMetaGate, newestAuto } from './boot.ts';
+import type { MetaGate } from './boot.ts';
 import { CONFLICT_HOLD_MS, createGame } from './game.ts';
 import type { Entitlements, Game, GameDeps } from './game.ts';
+import type { MetaController, MetaDeps, MetaUi } from './meta.ts';
 import type { ExploreChunk, LazyChunks } from './yields.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -519,6 +524,10 @@ type HarnessOptions = {
   chunks?: LazyChunks;
   /** postAttempt's answer; the default is a network error. */
   attempt?: () => Promise<Result<AttemptResponse, ApiError>>;
+  /** getPuzzle's answer; the default is a network error. */
+  status?: () => Promise<Result<PuzzleStatus, ApiError>>;
+  /** Also told every screens view, after the game (boot's `onView` tells the meta controller too). */
+  onView?: (v: ScreensView) => void;
 };
 
 function harness(o: HarnessOptions = {}): Harness {
@@ -530,6 +539,7 @@ function harness(o: HarnessOptions = {}): Harness {
     onView: (v) => {
       vm.screens = v;
       gameRef?.screensChanged(v);
+      o.onView?.(v);
     },
   });
   const explore = createExploreView();
@@ -598,7 +608,7 @@ function harness(o: HarnessOptions = {}): Harness {
         purchases.push('getEntitlements');
         return { ok: true, value: { products: products() } };
       },
-      getPuzzle: async () => ({ ok: false, error: fail }),
+      getPuzzle: () => o.status?.() ?? Promise.resolve({ ok: false, error: fail }),
       postAttempt: () => o.attempt?.() ?? Promise.resolve({ ok: false, error: fail }),
     },
     catalog: catalog(),
@@ -2678,4 +2688,419 @@ test('game: a manual save with a step in flight waits for that step', async () =
     ['ch1.garden.l005', true, 0, 'ch1.garden.l005'],
     ['error', false, null],
   ]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// LMI: the meta controller through boot's gate (META-PLAN F16, F17, M21, M27; RULINGS 105). The real gate and
+// controller over the real endpoints and decoders; the meta routes answer their dto samples unless a test replaces
+// one, and the chunk import and the stats settle are answered by hand.
+
+const META_SAMPLES: unknown = JSON.parse(samplesText);
+
+/** The raw dto sample `name[0]`, as the server sends it. */
+function metaSample(name: string): unknown {
+  const all = typeof META_SAMPLES === 'object' && META_SAMPLES !== null ? (META_SAMPLES as Record<string, unknown>) : {};
+  const list = Object.hasOwn(all, name) ? all[name] : undefined;
+  const s = Array.isArray(list) ? (list[0] as unknown) : undefined;
+  if (s === undefined) {
+    throw new Error(`dto-samples.json has no ${name}[0]`);
+  }
+  return s;
+}
+
+type MetaWire = { ok: true; body: unknown } | { ok: false; error: ApiError };
+type MetaModule = typeof import('./meta.ts');
+
+const CARD_ROUTE = /^POST \/api\/stories\/[^/]+\/card$/;
+const HINT_ROUTE = /^POST \/api\/puzzles\/[^/]+\/hints\/\d+$/;
+const WALLET_ROUTE = /^GET \/api\/wallet$/;
+const META_ROUTES: ReadonlyArray<readonly [RegExp, string]> = [
+  [/^GET \/api\/social$/, 'SocialResponse'],
+  [WALLET_ROUTE, 'WalletResponse'],
+  [/^GET \/api\/stats$/, 'StatsResponse'],
+  [CARD_ROUTE, 'CardResponse'],
+  [HINT_ROUTE, 'HintUseResponse'],
+];
+const serverError = (status: number, code: 'internal' | 'insufficient_balance'): MetaWire => ({
+  ok: false,
+  error: { kind: 'http', status, code, body: null, retryAfter: null },
+});
+
+const META_TG = {
+  supportsShareMessage: () => false,
+  shareMessage: () => Promise.resolve({ ok: true, value: undefined }),
+  openTelegramLink: () => ({ ok: true, value: undefined }),
+  openLink: () => ({ ok: true, value: undefined }),
+  startParam: () => null,
+  openInvoice: () => Promise.resolve({ ok: true, value: 'cancelled' }),
+} satisfies MetaDeps['tg'];
+
+type MetaRig = {
+  gate: MetaGate;
+  /** `METHOD path` of every meta request, in order. */
+  sent: string[];
+  /** `match`'s answer from now on; a promise holds the request until it settles. */
+  on(match: RegExp, answer: () => MetaWire | Promise<MetaWire>): void;
+  /** Every settle's options, in order. */
+  settles: Array<{ timeoutMs: number }>;
+  /** Answers every pending settle 'drained'. */
+  drain(): void;
+  loads(): number;
+  made(): number;
+  /** The import in flight lands with the real module. */
+  land(): Promise<void>;
+  /** The import in flight fails. */
+  fail(): Promise<void>;
+};
+
+/** Boot's gate over the harness's view model and stack, wired as boot.ts wires it (its `make` and `note`). */
+function metaRig(h: Harness, bind: (gate: MetaGate) => void = () => {}): MetaRig {
+  const sent: string[] = [];
+  const own: Array<readonly [RegExp, () => MetaWire | Promise<MetaWire>]> = [];
+  const http: Pick<Http, 'request'> = {
+    request: async <T>(r: ApiRequest, decode: Decoder<T>): Promise<Result<T, ApiError>> => {
+      const label = `${r.method} ${r.path.split('?')[0] ?? r.path}`;
+      sent.push(label);
+      const mine = own.find(([m]) => m.test(label));
+      const sample = META_ROUTES.find(([m]) => m.test(label));
+      let wire: MetaWire;
+      if (mine !== undefined) {
+        wire = await mine[1]();
+      } else if (sample !== undefined) {
+        wire = { ok: true, body: metaSample(sample[1]) };
+      } else {
+        throw new Error(`no answer for ${label}`);
+      }
+      if (!wire.ok) {
+        return { ok: false, error: wire.error };
+      }
+      const d = decode(wire.body);
+      return d.ok ? d : { ok: false, error: { kind: 'decode', detail: d.error } };
+    },
+  };
+  const settles: Array<{ timeoutMs: number }> = [];
+  const waiting: Array<(v: 'drained' | 'timeout') => void> = [];
+  let loads = 0;
+  let made = 0;
+  let flight: { resolve: (m: MetaModule) => void; reject: (e: unknown) => void } | null = null;
+  const gate = createMetaGate({
+    load: () => {
+      loads += 1;
+      return new Promise<MetaModule>((resolve, reject) => {
+        flight = { resolve, reject };
+      });
+    },
+    make: (m) => {
+      made += 1;
+      const c = m.createMetaController({
+        meta: createMetaEndpoints(http),
+        api: createEndpoints(http),
+        tg: META_TG,
+        screens: h.screens,
+        vm: h.vm,
+        reporter: {
+          settle: (o) => {
+            settles.push(o);
+            return new Promise((resolve) => waiting.push(resolve));
+          },
+        },
+        storyTitle: () => null,
+        clock: h.clock,
+        newId: () => 'id-1',
+        host: 'example.test',
+        onCards: () => {},
+        // The overlays are never rendered here: the controller only hands the module to App.svelte.
+        loadUi: () => Promise.resolve({} as MetaUi),
+      });
+      c.boot();
+      return c;
+    },
+    note: (key) => h.vm.showToast({ kind: 'note', key, message: key, sticky: false }),
+  });
+  bind(gate);
+  return {
+    gate,
+    sent,
+    on: (match, answer) => {
+      own.unshift([match, answer]);
+    },
+    settles,
+    drain: () => {
+      for (const resolve of waiting.splice(0)) {
+        resolve('drained');
+      }
+    },
+    loads: () => loads,
+    made: () => made,
+    land: async () => {
+      const m = await import('./meta.ts');
+      flight?.resolve(m);
+      await settle();
+    },
+    fail: async () => {
+      flight?.reject(new Error('offline'));
+      await settle();
+    },
+  };
+}
+
+/** A tide harness whose screens reach the gate's controller, as boot's `onView` does, with the gate attached. */
+function metaHarness(o: HarnessOptions = {}): { h: Harness; m: MetaRig } {
+  let gate: MetaGate | null = null;
+  const h = harness({ chapters: [tideCh3()], ...o, onView: (v) => gate?.current()?.screensChanged(v) });
+  const m = metaRig(h, (g) => {
+    gate = g;
+  });
+  h.game.attachMeta(m.gate.port);
+  return { h, m };
+}
+
+/** Tide ch3 to its declared ending (drowned): the end notice. */
+async function drowned(h: Harness): Promise<void> {
+  expect((await h.game.start({ kind: 'new', story: TIDE, chapter: CH3 })).ok).toBe(true);
+  await h.game.advance();
+  await h.game.choose(1);
+  await h.game.advance(); // END
+  await settle();
+  expect(h.vm.notice?.kind).toBe('the_end');
+}
+
+const overlayKinds = (h: Harness): string[] => h.vm.screens.overlays.map((x) => x.kind);
+const toastKeys = (h: Harness): string[] => h.vm.toasts.map((x) => x.key);
+const cardPosts = (m: MetaRig): string[] => m.sent.filter((x) => CARD_ROUTE.test(x));
+
+/** The end's card action; the test fails without one. */
+function cardAction(h: Harness): () => void {
+  const n = h.vm.notice;
+  if (n?.kind !== 'the_end' || n.oncard === undefined) {
+    throw new Error('the end has no card action');
+  }
+  return n.oncard;
+}
+
+test('game: ending settles stats then opens the card', async () => {
+  const { h, m } = metaHarness();
+  void m.gate.ready();
+  await m.land();
+  await drowned(h);
+  // The end shows with its card action; the card waits for the ending's event to reach the server (F16).
+  expect(typeof cardAction(h)).toBe('function');
+  expect(m.settles).toEqual([{ timeoutMs: 3000 }]);
+  expect(cardPosts(m)).toEqual([]);
+  m.drain();
+  await settle();
+  expect(cardPosts(m)).toEqual(['POST /api/stories/tide/card']);
+  expect(overlayKinds(h)).toEqual(['card']);
+  expect(h.vm.meta?.card?.story).toBe(TIDE);
+  expect(h.vm.screens.root.kind).toBe('notice');
+  h.game.dispose();
+  m.gate.dispose();
+});
+
+test('game: card failure keeps the end', async () => {
+  // (a) The card POST fails: the end stays under the toast, and its card action asks again.
+  const { h, m } = metaHarness();
+  void m.gate.ready();
+  await m.land();
+  m.on(CARD_ROUTE, () => serverError(500, 'internal'));
+  await drowned(h);
+  m.drain();
+  await settle();
+  expect([h.vm.screens.root.kind, h.vm.notice?.kind, overlayKinds(h), toastKeys(h)]).toEqual(['notice', 'the_end', [], ['meta.card_later']]);
+  h.vm.dismissToast('meta.card_later');
+  m.on(CARD_ROUTE, () => ({ ok: true, body: metaSample('CardResponse') }));
+  cardAction(h)();
+  await settle();
+  m.drain();
+  await settle();
+  expect(overlayKinds(h)).toEqual(['card']);
+  h.game.dispose();
+  m.gate.dispose();
+
+  // (b) The meta chunk does not load: the boot's import fails silently, the ending's own import fails with the toast,
+  // and the end's card action imports again.
+  const b = metaHarness();
+  void b.m.gate.ready();
+  await b.m.fail();
+  expect([b.m.loads(), toastKeys(b.h)]).toEqual([1, []]);
+  await drowned(b.h);
+  expect(b.m.loads()).toBe(2);
+  await b.m.fail();
+  expect([b.h.vm.screens.root.kind, b.h.vm.notice?.kind, overlayKinds(b.h), toastKeys(b.h)]).toEqual(['notice', 'the_end', [], ['meta.card_later']]);
+  cardAction(b.h)();
+  expect(b.m.loads()).toBe(3);
+  await b.m.land();
+  b.m.drain();
+  await settle();
+  expect([cardPosts(b.m), overlayKinds(b.h)]).toEqual([['POST /api/stories/tide/card'], ['card']]);
+  b.h.game.dispose();
+  b.m.gate.dispose();
+});
+
+test('game: an ending while the meta chunk loads gets its card', async () => {
+  const { h, m } = metaHarness();
+  void m.gate.ready(); // the boot's import, still in flight at the end
+  await drowned(h);
+  expect(typeof cardAction(h)).toBe('function');
+  expect([m.loads(), m.made(), cardPosts(m), m.settles]).toEqual([1, 0, [], []]);
+  await m.land();
+  expect(m.settles).toEqual([{ timeoutMs: 3000 }]);
+  m.drain();
+  await settle();
+  expect([cardPosts(m), overlayKinds(h)]).toEqual([['POST /api/stories/tide/card'], ['card']]);
+  h.game.dispose();
+  m.gate.dispose();
+});
+
+test('game: puzzle hints use the attached port', async () => {
+  const w = worldChunks();
+  const status: PuzzleStatus = { puzzleId: 'ch1.drawer', solved: false, hints: [{ tier: 1, unlocked: false, text: null }] };
+  const { h, m } = metaHarness({ chapters: [worldCh1('puzzle')], chunks: w.chunks, status: () => Promise.resolve({ ok: true, value: status }) });
+  m.on(WALLET_ROUTE, () => ({ ok: true, body: { balances: [{ kind: 'hint', balance: 3, debt: 0 }], packs: [], hintTierCost: 1, maxPerGift: 3 } }));
+  void m.gate.ready();
+  await m.land();
+  await startManor(h);
+  await h.game.advance(); // l002, the cabinet
+  await h.game.advance(); // the puzzle yield
+  await settle();
+  h.game.puzzleActions.onhint();
+  await settle();
+  // The wallet's port: its cost and balance are the server's.
+  expect(h.puzzle.ladder?.wallet).toEqual({ cost: 1, balance: 3 });
+  expect(h.puzzle.ladder?.tiers.map((x) => x.state)).toEqual(['usable']);
+
+  // Not enough on the server: the session asks the port for more, which opens the wallet; Get more opens it too.
+  m.on(HINT_ROUTE, () => serverError(409, 'insufficient_balance'));
+  h.game.puzzleActions.onusehint(1);
+  await settle();
+  expect(overlayKinds(h)).toEqual(['hints', 'wallet']);
+  expect(h.puzzle.ladder).toMatchObject({ busy: false, failed: false });
+  h.screens.back();
+  h.game.puzzleActions.ongetmore();
+  await settle();
+  expect(overlayKinds(h)).toEqual(['hints', 'wallet']);
+  h.screens.back();
+
+  // A use in flight: a second Use is answered `busy` and writes nothing; the first use's answer is the ladder.
+  let release: (w: MetaWire) => void = () => {};
+  m.on(HINT_ROUTE, () => new Promise<MetaWire>((resolve) => (release = resolve)));
+  h.game.puzzleActions.onusehint(1);
+  expect(h.puzzle.ladder?.busy).toBe(true);
+  h.game.puzzleActions.onusehint(1);
+  await settle();
+  expect(h.puzzle.ladder?.busy).toBe(true);
+  release({ ok: true, body: metaSample('HintUseResponse') });
+  await settle();
+  expect(m.sent.filter((x) => HINT_ROUTE.test(x))).toEqual(['POST /api/puzzles/ch1.drawer/hints/1', 'POST /api/puzzles/ch1.drawer/hints/1']);
+  expect(h.puzzle.ladder).toEqual({
+    tiers: [{ tier: 1, text: 'Look under the rug.', state: 'unlocked' }],
+    wallet: { cost: 1, balance: 2 },
+    busy: false,
+    failed: false,
+  });
+  h.game.dispose();
+  m.gate.dispose();
+});
+
+test('game: exit closes the meta overlays', async () => {
+  // (a) The card is asked for, then the player leaves the end: its late answer pushes nothing.
+  const { h, m } = metaHarness();
+  void m.gate.ready();
+  await m.land();
+  let release: (w: MetaWire) => void = () => {};
+  m.on(CARD_ROUTE, () => new Promise<MetaWire>((resolve) => (release = resolve)));
+  await drowned(h);
+  m.drain();
+  await settle();
+  expect(cardPosts(m)).toEqual(['POST /api/stories/tide/card']);
+  await h.game.exitToStories();
+  release({ ok: true, body: metaSample('CardResponse') });
+  await settle();
+  expect([h.exits(), overlayKinds(h)]).toEqual([1, []]);
+  h.game.dispose();
+  m.gate.dispose();
+
+  // (b) The ending waits on the import, and the player leaves before it lands: no card is asked for at all.
+  const b = metaHarness();
+  void b.m.gate.ready();
+  await drowned(b.h);
+  await b.h.game.exitToStories();
+  await b.m.land();
+  b.m.drain();
+  await settle();
+  expect([b.m.made(), b.m.settles, cardPosts(b.m), overlayKinds(b.h)]).toEqual([1, [], [], []]);
+  b.h.game.dispose();
+  b.m.gate.dispose();
+});
+
+test('boot: meta chunk import retried by the next tap, single flight', async () => {
+  const module = await import('./meta.ts');
+  // The gate only hands the controller out and disposes it: nothing else here calls into it.
+  let ended = 0;
+  const ctl = {
+    dispose: () => {
+      ended += 1;
+    },
+  } as MetaController;
+  const flights: Array<{ resolve: (m: MetaModule) => void; reject: (e: unknown) => void }> = [];
+  let loads = 0;
+  let made = 0;
+  const notes: string[] = [];
+  const runs: string[] = [];
+  const gate = createMetaGate({
+    load: () => {
+      loads += 1;
+      return new Promise<MetaModule>((resolve, reject) => flights.push({ resolve, reject }));
+    },
+    make: () => {
+      made += 1;
+      return ctl;
+    },
+    note: (key) => notes.push(key),
+  });
+  // The boot's import fails silently, and nothing imports again without a tap.
+  void gate.ready();
+  flights.shift()?.reject(new Error('offline'));
+  await settle();
+  expect([loads, notes, gate.current()]).toEqual([1, [], null]);
+  // A tap imports again; its failure shows the toast.
+  gate.tap(() => runs.push('friends'));
+  expect(loads).toBe(2);
+  flights.shift()?.reject(new Error('offline'));
+  await settle();
+  expect([runs, notes]).toEqual([[], ['meta.action_failed']]);
+  // A tap that must run in its own task (the policy link, F28) only imports before the chunk; two taps join it.
+  gate.tap(() => runs.push('policy'), { inTask: true });
+  gate.tap(() => runs.push('friends'));
+  gate.tap(() => runs.push('wallet'));
+  expect(loads).toBe(3);
+  flights.shift()?.resolve(module);
+  await settle();
+  expect([runs, made, gate.current()]).toEqual([['friends', 'wallet'], 1, ctl]);
+  // With the controller in, every tap runs at once, inside the tap.
+  gate.tap(() => runs.push('policy'), { inTask: true });
+  gate.tap(() => runs.push('card'));
+  expect(runs).toEqual(['friends', 'wallet', 'policy', 'card']);
+  expect([loads, made]).toEqual([3, 1]);
+  gate.dispose();
+  gate.tap(() => runs.push('after'));
+  expect([ended, gate.current(), runs.length]).toEqual([1, null, 4]);
+
+  // Disposed before the chunk lands: no controller is made, and a waiting ending or tap shows nothing (critique O4).
+  const late = createMetaGate({
+    load: () => new Promise<MetaModule>((resolve, reject) => flights.push({ resolve, reject })),
+    make: () => {
+      made += 1;
+      return ctl;
+    },
+    note: (key) => notes.push(key),
+  });
+  void late.ready();
+  const ending = late.port.onEnding(TIDE);
+  late.tap(() => runs.push('late'));
+  late.dispose();
+  flights.shift()?.resolve(module);
+  await ending;
+  await settle();
+  expect([made, late.current(), runs.length, notes]).toEqual([1, null, 4, ['meta.action_failed']]);
 });
