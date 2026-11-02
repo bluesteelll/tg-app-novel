@@ -91,6 +91,9 @@ Textures + their CPU copies are 64 of 138.6 MiB (46 %); each MiB of texture save
   caller exists yet (L15 writes it), and `TelegramClient.perfClass` (`webapp.ts:249`) has no path into the scene
   (MR2:42-44). Unwired, framebuffers on LOW stay ~12 MiB instead of ~3. (L15 cut Q7: `:249` is the inert client's
   `perfClass`, the real client's is `:349`; as of `48abfaf` they are `webapp.ts:274` and `:374`.)
+  - As merged (L15a `e94c786`, L15b `fbcfd38`; RULINGS 85, 94): the caller exists. `client/src/app/game.ts` calls
+    `mount` since L15a (`:1387` on `6d77329`), and since L15b's C12 (`1714f6b`) it passes `{ dpr, perfClass }`, with
+    `renderResolution(o.dpr, o.perfClass)` in `controller.ts:267` (lever F, 4.F). The gap is closed.
 - `LIMITS.knotSet`, `LIMITS.roomSet` (`budget.ts:112-113`) and `STEADY_CAP_BYTES` (`registry.ts:9`) are three literals
   for one invariant.
 - The next chapter's first knot (`next:*`) is outside the knot-set gate, bounded at runtime only (carry.md:82).
@@ -252,6 +255,10 @@ The manifest entry keeps `w`, `h`, `decodedBytes = w x h x 4` of the **stored** 
     0.5-0.56 em of a 55 px font, 578-647 px, + margin, even (critique_r2 O1). That is 2.48-3.47 MiB per sprite (-23 to
     -45 %). Busiest knot 30.4 -> **24.3-27.3 MiB** (headroom 4.7-7.7). The lane's budget output replaces this estimate
     with the exact rows.
+    - As merged (M1 `f1b707d`, RULINGS 98; M1 cut addendum, impl "Checks run"): the placeholder boxes as measured are
+      ally 546 x 1394 at (111, 142) (the label `char/ally/neutral` is wider than the body), stranger 610-674 and keeper
+      546-610 px wide, props 494 x 494 at (9, 9). The busiest knot-set is now **27.3 MiB** (`ch2/archive_after`; ch1's
+      knots 26.3-26.6), inside the estimate.
   - Real art (MR2 scenarios, figure 70/55/40 % of the canvas width, 97 % height): 3.06 / 2.40 / 1.75 MiB per sprite;
     busiest knot 26.1 / 24.1 / 22.1 MiB.
   - Props: the placeholder disc has `r = round(0.47 x 512) = 241` plus an 8-px stroke (`placeholder.ts:72-75`), 490 px
@@ -803,6 +810,9 @@ Ownership rules for every lane below (critique W3):
 - **Why before LMI.** M1 is the one lever that buys knot-set headroom for the real art. It also fits the window in
   which LMI waits for LE2 (RESUME "Next launches": LM2 -> LF2 -> LE2 are still ahead in the server slot after LF1).
   The cost if LE2 is merged first: LMI starts one M1 later.
+  - As merged (M1 `f1b707d`, RULINGS 92, 95, 98): LM2, LF2 and LE2 had all merged before M1 launched (on `fbcfd38`,
+    after L15b, beside LFU1), so no LE2 window remained; M1 also took the budget-gate gap item (RULINGS 92), and LMI
+    started after M1 and LFU1.
 - **Chains (PP revision).**
   - `client/scripts/{budget.ts,budget.test.ts}`: L1 -> L5 -> LP2 -> **M1** -> LMI -> **M2** -> **M3c** (PP:2568, :2612
     end at LMI today). LMI's gate gains M1.

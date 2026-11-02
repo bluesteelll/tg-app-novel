@@ -638,6 +638,10 @@ server.**
   `$DEV_WEB_PORT`, default 4173), so two parallel lanes never share a server ([gate mapping](#gate-commands-mapping)).
 - **Production.** The axum binary optionally serves `client/dist` (`STATIC_DIR`), and refuses to start if
   `STATIC_DIR` contains `CONTENT_DIR`.
+  As merged (L9 `d837c8b`, RULINGS 96; L9 cut Q6): the two must be disjoint both ways (neither the same, nor one
+  inside the other), and a walk refuses an entry that resolves outside `STATIC_DIR` (a link or a junction);
+  `/assets/*` answers a found file `public, max-age=31536000, immutable`, everything else `no-cache`
+  (`server/src/api/static_files.rs:137-178`, `:210-223`).
 - **Why.** No CORS; Bot API 10.2 origin hardening is satisfied trivially [R1 §3].
 
 **K28. System fonts only.**
@@ -1018,6 +1022,9 @@ pub struct RefundFact { pub payer: UserId, pub charge: ChargeId, pub total_amoun
 // (`pointer("/message/successful_payment")`, `/message/from/id`) instead of PaymentProbe / ProbeMessage / ProbeUser;
 // ProbeSuccessful stays as above, deserialized from the pointed-to value (webhook.rs:32, :112); no ProbeRefunded and
 // no refunded_payment read until L9
+// as merged (L9 `d837c8b`, RULINGS 96; L9 cut Q6; server/src/telegram/webhook.rs:48-50, :170-191): ProbeRefunded
+// { telegram_payment_charge_id } only, deserialized from the pointed-to `/message/refunded_payment` value; no
+// RefundFact: the revoke reads only the charge
 
 pub enum PreCheckoutVerdict { Ok, Reject(RejectReason) }
 pub enum RejectReason { UnknownOrder, Mismatch, AlreadyOwned, InProgress, Expired, Temporary,
@@ -1728,6 +1735,30 @@ tap of step 5 is a Home button (Continue, a card's Start / Continue, Chapters) a
 6. Continue → `GET /api/saves/auto` → `decodeSave` → [resume algorithm](#save-format-and-resume).
 7. Token expiry mid-session: an in-flight PUT gets 401 → single-flight re-auth → retried once.
 
+As merged (LFU1 `f637bac`, RULINGS 101; LFU1 cut Q7, critique W1, addendum O1). GameSession's failure model in
+`client/src/app/game.ts`:
+- **`mixes(s)`** = `s.torn && s.pending === null` (`:543`): the session's fields would compose a body of two steps. A
+  pending start is one complete body, so it never mixes. `autosave` writes nothing while `s.adopting || mixes(s)`
+  (`:549-550`), and an outside request waits only on `waits(s)` = `s.adopting || mixes(s)` (`:565`). The cut's window
+  table (`D:/tmp/novel-orch/lfu1-engine-followups/cut.md` section 1a, rows 1-11, and the addendum's row 12):
+  - a step before its `present`, an END before the next chapter's fetch, a resume's restore: kept, flushed later;
+  - after `pendingPaid` or `startPending` (rows 4-5), and a D11 restore or a manual load from a session at a paywall
+    (rows 8, 12): written at once, the pending start being one complete body (the old one in rows 8 and 12);
+  - at rest after a resume that failed past the chapter swap (row 9): refused.
+- **The "Load it" failure notice** (`adoptFailed`, `:1463`). When the read of "Load it" fails (a GET error, an empty
+  slot or an undecodable body), the error notice shows, and its action exits to the stories; Home's Continue then
+  reads their save. An expired session ends the session and shows the reopen notice instead. A manual load is
+  unchanged.
+- **(e) "Return to last save" with no last save** (`returnToSave`, `:739-752`): it exits to the stories and writes
+  nothing, so the server's copy stays.
+- **The manual-save wait** (`writeManual`, `:1548`). A manual save or overwrite during a step in flight that mixes
+  names its slot as `saving` at once, waits for that intent to end and writes the step on screen then. A session that
+  still mixes, or at rest, writes nothing.
+- **The conflict hold** (`saved`, `:1515`; `CONFLICT_HOLD_MS` = 500, `:189`). A manual write's 409 conflict ask is
+  held until 500 ms after the tap that sent the write, with `saving` kept. A double tap on the overwrite Yes therefore
+  cannot reach the conflict ask's Yes in the same place (K31, principle 1). The hold is cleared when it fires, by a
+  newer answer, by `openSaves`, `cancelOverwrite` and at the session's end (`clearHold`, `:484`).
+
 ### F4. Chapter change
 
 1. The ink reaches `END` → `step.kind === 'end'`. If END is the last step of a free chapter, still save the read-set.
@@ -1911,6 +1942,10 @@ COMMIT;                                                 -- then 200; notify_unap
 **Unapplied charge** (`notify_unapplied`, after the commit, outside any transaction): `send_message` to the payer
 (bot text `payment_unapplied`: the charge id and `/paysupport`) and to each `ADMIN_TELEGRAM_IDS` entry (charge id,
 payer, outcome), each under the gateway's 5 s timeout; a gateway error is logged and the webhook still answers 200.
+As merged (L9 `d837c8b`, RULINGS 96; L9 cut Q6, critique O8): `notify_unapplied(st, fact, outcome, lang)` tells the
+payer in `lang` (the payment message's language) and each admin in Russian; `UnknownProduct` is notified like
+`OrderMismatch` and `AlreadyEntitled`; and one `CALL_DEADLINE` (5 s) cuts the whole notice, its messages sent one after
+another, not each call (`server/src/telegram/payments.rs:112-162`).
 The durable record is the data itself: `/paysupport` flags every charge of the user that has no `entitlements` row and
 `refunded_at IS NULL` as "not applied". A redelivered duplicate is `Duplicate` and sends nothing. The remedy is the
 admin's `/refund`; automatic refund is the owner's call (V4). Changed by META-PLAN (M19): "not applied" also requires
@@ -1939,6 +1974,13 @@ COMMIT;
   `debt`). The `refunded_at` guard and the ledger key make a repeat a no-op (`refund_pack_twice_claws_once`, L9).
   Revision 1 (W3): the kind and n are the charge's `pay:<charge>` ledger row's (`credited_by_charge`, LE1), never the
   catalog's; a charge without that row (an unapplied pack) claws back nothing.
+- **As merged (L9 `d837c8b`, RULINGS 96; L9 cut Q6).** `Repo::revoke(charge, now)` (`server/src/db/payments.rs:332`)
+  runs its statements in the grant's order: `refunded_at = GREATEST($2, paid_at)` (a clock stepped back since the
+  grant would break `payments_refunded_after_paid`), then the order, then `DELETE FROM entitlements WHERE charge_id`,
+  then the clawback. Every undo is keyed by the charge's own rows, whatever the order says; the `match` on
+  `parse_product_id` has no wildcard arm, a tripwire that stops a new product kind from compiling until its undo is
+  reviewed. `payments::revoke(st, charge)` reads the state's clock (`server/src/telegram/payments.rs:171`), and both
+  refund paths end there.
 
 **Bot commands:**
 - **`/start`** — a message with an inline `web_app` button (`PUBLIC_APP_URL`).
@@ -1953,6 +1995,10 @@ COMMIT;
 Texts come from `server/locales/bot.{ru,en}.json` by `from.language_code`. `server setup` registers the commands with
 `setMyCommands` (ru, en, default), the webhook (`secret_token`, explicit `allowed_updates`) and the menu button
 [R2 §1.5–1.6].
+As merged (L9 `d837c8b`, RULINGS 96; L9 cut Q6): a command is answered only in a private chat with a sender, so
+`/refund` outside one is ignored (`server/src/telegram/commands.rs:77-84`); `server setup` sets the English menu as the
+default set and the Russian one for `ru`, `uk`, `be` and `kk` (no `en` set; `server/src/telegram/setup.rs:37-60`,
+`RUSSIAN_LANGS` in `telegram/payments.rs:33`), and the menu button text is Russian.
 
 ---
 
@@ -2026,7 +2072,8 @@ unreachable at startup" down are the PostgreSQL failure model; the test names ar
    - Paid files go out only through `GET /api/chapters/{id}` and `GET /api/assets/{file}`: bearer token → entitlement
      row → response, `Cache-Control: private, no-store`.
    - The asset route looks the file up in the `ContentStore` index (a `HashMap`), never joins user input into a path.
-   - `STATIC_DIR` must not contain `CONTENT_DIR` (startup check + test).
+   - `STATIC_DIR` must not contain `CONTENT_DIR` (startup check + test). As merged (L9 `d837c8b`): disjoint both ways,
+     with the link walk (K27).
 4. **Client memory only.** Paid JSON and blobs are never written to CloudStorage, DeviceStorage or `localStorage`.
    Blob URLs are revoked on track change.
 5. **Gates:**
@@ -2038,6 +2085,10 @@ unreachable at startup" down are the PostgreSQL failure model; the test names ar
        samples) or `fingerprints.assets.json` (paid asset file names and content hashes);
      - fails on the compiler strings `Compilation failed` / `Recursive INCLUDE detected` [R4 §2.1];
      - fails on the dev canaries.
+     - as merged (LFU2 `6d77329`, RULINGS 103; K7(c)): a fingerprint text is also found inside a JS string literal, in
+       its escaped forms, a finding `via: 'js-string'`. Each base needle and its JSON escape is taken as the body of a
+       `"`, `'` and backtick literal (quotes, backslashes, backticks and `${` escaped). The forms are computed once per
+       section, outside the file loop, from the base needles only (`client/scripts/scan-dist.ts:147-182`, `:213-214`).
    - **Non-vacuous, per section.** It fails:
      - if `story/chapters.json` declares a paid chapter and `fingerprints.lines.json` is missing or its `lineIds` or
        `texts` section is empty;
@@ -2422,12 +2473,15 @@ All budgets are enforced by `client/scripts/budget.ts` inside `npm run build` un
 | Spec | Tests |
 |---|---|
 | `boot.spec.ts` (L7) | `boot records ready, expand and swipe events`, `viewport vars and safe areas applied`, `no window.open or alert` (an init script patches them to record calls) |
-| `smoke.spec.ts` (L15) | `tap-to-start unlocks audio only after the gesture`, `play choose save reload load resumes at same line` (asserts `data-line-id`), `autosave resume after reload`, `back button closes overlays without history` (`history.length` unchanged, `web_app_setup_back_button` events recorded), `deactivated pauses audio, activated resumes` (the dev-server `/@fs` check is a vitest test, not e2e: see Paid-content protection) |
+| `smoke.spec.ts` (L15) | `tap-to-start unlocks audio only after the gesture`, `play choose save reload load resumes at same line` (asserts `data-line-id`), `autosave resume after reload`, `back button closes overlays without history` (`history.length` unchanged, `web_app_setup_back_button` events recorded), `deactivated pauses audio, activated resumes` (the dev-server `/@fs` check is a vitest test, not e2e: see Paid-content protection); as merged (L15b `fbcfd38`, RULINGS 93 Q8, 94; L15b cut K30): + `saves: overwrite ask keeps yes below save` (6) |
 | `purchase.spec.ts` | `purchase unlocks chapter 2` (403 before, sheet shows the server price, 200 after, ch2 first line reacts to a ch1 choice), `cancelled purchase keeps paywall`, `failed purchase keeps paywall`, `delayed webhook unlocks after polling`, `paid twice grants once` |
-| `perf.spec.ts` | `time to first line under throttling`, `textures released on chapter change`, `heap under budget`, `context loss recovers` (debug hook calls Pixi's `forceContextLoss()`, then a pixel sample of the stage is not black) |
+| `perf.spec.ts` | `time to first line under throttling`, `textures released on chapter change`, `heap under budget`, `context loss recovers` (debug hook calls Pixi's `forceContextLoss()`, then a pixel sample of the stage is not black); as merged (L15b `fbcfd38`, RULINGS 93 Q8, 94; lever F, L15b C12): + `scene: a LOW perf class renders at resolution 1`, `scene: an AVERAGE perf class at DPR 2 renders at resolution 2` (6) |
 | `memory.spec.ts` (changed by MEMORY-PLAN; RULINGS 78; new in M1, then M2, M3c, M3s; planned) | `scene: trimmed character renders where its canvas puts it` (M1); `scene: no decoded bitmap outlives its upload`, `scene: an unrestored context loss rebuilds the stage`, `scene: a failed revive re-acquires the visual` (M2); `scene: a LOW phone loads half-tier files`, `scene: an AVERAGE phone at DPR 1 loads full-tier files`, `scene: a LOW tablet loads full-tier files` (M3c); `scene: a LOW phone loads half-tier files of a paid chapter` (M3s). `perf.spec.ts` keeps its four and gains L15's `scene: a LOW perf class renders at resolution 1` with its AVERAGE control ([MEMORY-PLAN section 12](MEMORY-PLAN.md#12-budgets-and-validation)) |
-| `stories.spec.ts` (L15; changed by STORIES-PLAN) | `stories: picker lists both stories with covers`, `stories: saves are per story`, `stories: second story first chapter free then paywall`, `stories: story ending shows the end and records the ending`, `stories: back button closes chapter select to the picker`, `stories: picker unmounted during play` |
-| `puzzles.spec.ts` (L15; changed by PUZZLES-PLAN) | `explore: search item puzzle buy hint solve`, `explore: gate fail branch`, `explore: reload resumes in the same room with items`, `puzzle: hint text absent until bought`, `puzzle: paid chapter puzzle needs entitlement`, `explore: back button walks rooms then hides`, `explore: live texture bytes stay under the steady cap`, `explore: hotspot buttons align with props under safe area and landscape` |
+| `stories.spec.ts` (L15; changed by STORIES-PLAN) | `stories: picker lists both stories with covers`, `stories: saves are per story`, `stories: second story first chapter free then paywall`, `stories: story ending shows the end and records the ending`, `stories: back button closes chapter select to the picker`, `stories: picker unmounted during play`; as merged (L15b `fbcfd38`, RULINGS 93 Q3, Q8, 94; L15b cut D30): + `stories: a locked chapter row opens the paywall without loading the chapter` (7) |
+| `puzzles.spec.ts` (L15; changed by PUZZLES-PLAN) | `explore: search item puzzle buy hint solve`, `explore: gate fail branch`, `explore: reload resumes in the same room with items`, `puzzle: hint text absent until bought`, `puzzle: paid chapter puzzle needs entitlement`, `explore: back button walks rooms then hides`, `explore: live texture bytes stay under the steady cap`, `explore: hotspot buttons align with props under safe area and landscape`; as merged (L15b `fbcfd38`, RULINGS 93 Q8, 94; L15 re-cut commit 6a): `explore: search item puzzle buy hint solve` is `explore: search item puzzle solve` and `puzzle: hint text absent until bought` is `puzzle: hint text absent while locked` (8) |
+
+As merged (L15b `fbcfd38`, RULINGS 93 Q8, 94; L15b cut §6 Q8): the e2e suite L15b left is 35 names, boot 3, smoke 6,
+stories 7, purchase 5, perf 6, puzzles 8 (`client/e2e/*.spec.ts`); M1 then added the first `memory.spec.ts` name (36).
 
 **Changed by PUZZLES-PLAN.** The unit, DOM, story and server test names of the puzzle extension (world, rules,
 reduce, softlock, cover, runner yields, session, controller, yields, arch, budget, scan, emit; schema, attempts,
@@ -2880,7 +2934,10 @@ M1, LMI, M2, M3c, D2, L9, M3s).
   (running), M1, LMI, M2, M3c ∥ D2, and the client follow-ups lane (gate L15b); server: LPO (running), L9, M3s. LMI
   waits only for M1 now (LMD and LE2 have merged), and M3s for M3c and D2. The follow-ups lane's carried items name
   `client/src/app/game.ts`, its test and `client/scripts/budget.ts`, which M1 and M3c (`budget.ts`), LMI and M2
-  (both) also lock, so it runs beside none of them; its place in the client chain is not ruled yet.
+  (both) also lock, so it runs beside none of them; its place in the client chain is not ruled yet. Ruled since
+  (RULINGS 92, OB1): the budget-gate gap item moved into M1's cut, so M1 and the follow-ups lane run in parallel in the
+  two client slots after L15b, and LMI's gate gains the follow-ups lane (L15a → L15b → follow-ups → LMI → M2); RULINGS
+  95 then cut the follow-ups lane in two, LFU1 and LFU2, and LMI's gate keeps LFU1.
 
 After L9 the server slot takes doc / narrative / client lanes with disjoint locks.
 
@@ -2935,7 +2992,9 @@ beside them.
   merged, so LMI starts when M1 merges. LPO (running) → L9 run in the server slot beside the client chain, and M3s
   follows L9 once M3c and D2 have merged.
 - The client follow-ups lane (gate L15b) is not on the path, but it shares files with M1, LMI, M2 and M3c (the launch
-  preference above), so where it runs in the client chain is not ruled yet.
+  preference above), so where it runs in the client chain is not ruled yet. Ruled since (RULINGS 92, OB1): beside M1
+  after L15b, with the budget-gate gap item in M1's cut, and before LMI (LMI's gate gains it); RULINGS 95 cut it into
+  LFU1 and LFU2, and LMI's gate keeps LFU1.
 - LF2, LE2, L15a and LMD have merged.
 
 ### Lanes
@@ -4659,6 +4718,9 @@ Notation:
   `client/src/api/generated/api.ts` (15; `api/share.rs`, `it/share.rs` are new). `AppState` gains `share_limit`
   inside `AppState::new` (lane rules: no caller changes). The new dev route sits in `fake_gateway.rs`'s `routes()`, so
   the dev `lib.rs` is not touched.
+  - As merged (`d0c7870`, RULINGS 77, 79 Q1): the lock is 17, + `server/tests/it/payments.rs` (L8a W1: two test
+    gateways implement `BotGateway`, which gains two methods) and `server/tests/it/cards.rs` (the
+    `achievements_repo_called_only_from_cards_api` allow-list gains the `api/social.rs` arm).
 - **Commits:**
   1. `gateway.rs`: `save_prepared_inline_message` (an `InlineQueryResultArticle` with a text content and one url
      button; `allow_user_chats` and `allow_group_chats` true) and `bot_username` (`getMe`, cached in the
@@ -4727,6 +4789,9 @@ Notation:
 - **Lock:** `server/src/api/{mod.rs,dto.rs,gifts.rs,stats.rs}`, `server/src/db/{economy.rs,social.rs}`,
   `server/tests/it/{main.rs,gifts.rs,referrals.rs,dto_samples.rs}`, `client/src/api/fixtures/dto-samples.json`,
   `client/src/api/generated/api.ts` (12; `api/gifts.rs`, `it/gifts.rs`, `it/referrals.rs` are new).
+  - As merged (`ec3b29f`, RULINGS 81, 84): the lock is 16, + `server/src/catalog.rs` (the startup bounds of the gift
+    and referral numbers), `server/tests/it/stats.rs` (the guard's allow-list for the referral evidence read),
+    `server/src/api/wallet.rs` and `server/tests/it/economy.rs` (`maxPerGift` in `WalletResponse`).
 - **Commits:**
   1. `db/economy.rs` `transfer` (M22's transaction).
      - Red: `gift_moves_once_and_reconciles` — predicted red: the method missing (a compile error), then on a stub that
@@ -4783,10 +4848,17 @@ Notation:
   `server/tests/it/{main.rs,common.rs,legal.rs}` (8; `it/legal.rs` is new, its parent `it/main.rs` is in the lock).
   This is the one `Config` variable added after L2 (lane rules: the three `Config` constructors are in the lock).
   `AppState` gains `policy` inside `AppState::new` (lane rules: no caller changes).
+  - As merged (`90e1226`, RULINGS 89 Q1, 90; LPO cut r1 Q8): the lock is 9, + `server/tests/it/social.rs` for one
+    commit-2 hunk. LF1's two privacy tests compared the body with the raw template, and `{POLICY_VERSION}` is now
+    filled in every environment, so their body is `served_draft()` (`server/tests/it/social.rs:1880`), the template
+    with `{POLICY_VERSION}` filled. "LF1's two privacy tests stay green" (commit 2) holds after that hunk.
 - **Commits:**
   1. `config.rs` + `.env.example` (a commented `PRIVACY_OPERATOR_FILE=` line: "a JSON file outside the repository
      with the policy's operator identity facts; required with TELEGRAM_ENV=prod"; revision 2) +
      `privacy_operator_file: None` in `dev/src/lib.rs` and `it/common.rs`.
+     - As merged (`90e1226`, RULINGS 89 Q2; LPO cut r1 Q8): `.env.example` carries `PRIVACY_OPERATOR_FILE=`
+       uncommented under a `#` comment (`.env.example:29-31`), because `config_env_example_is_complete_and_valid`
+       (`server/src/config.rs:500`) requires every variable `Config` reads and skips only `#` lines (`:431`).
      - Red: `config::tests::privacy_operator_file_required_in_prod` (a prod lookup without the variable → a
        `ConfigError` naming `PRIVACY_OPERATOR_FILE`; the same lookup under `test` → `Ok`) — predicted red: the field
        is missing (a compile error, quoted), then `Ok` under prod on a scan that reads the variable as optional.
@@ -4967,6 +5039,14 @@ Notation:
   - **Gate to start (revision 1):** LPO merged (the serialized server files; LPO runs between LE2 and L9).
   - **Seen working** adds: a dev pack bought and refunded (`/dev/refund`) → `GET /api/wallet` shows balance 0 and the
     debt of the spent part.
+- **As merged (`d837c8b`, RULINGS 96; L9 cut Q6).** 9 commits, not 7: the texts and the commands are two commits, and
+  the secret check before the body (L8b O7) is its own. C1 `77ac632` the revoke transaction (with
+  `paid_chapter_403_after_refund`), C2 `4a5295e` the admin refund through the gateway and `POST /dev/refund`, C3
+  `9d35fef` `refunded_payment` and the K17 probe, C4 `652bce9` the secret before the body (the webhook takes `Body`
+  and reads it with `to_bytes` only after the secret, `server/src/telegram/webhook.rs:63-71`), C5 `af85922` the bot
+  texts, C6 `331a4ff` the commands (private chats only), C7 `b5806c7` the unapplied notice and `/paysupport`, C8
+  `b4ccf3e` `server setup`, C9 `888a85e` `STATIC_DIR`. Lock 16, as planned. The revoke, the notice, the command sets
+  and `STATIC_DIR` as merged: "Refund", "Unapplied charge", "Bot commands" and K27.
 
 #### L11 scene (client)
 - **Goal:** the scene controller (Pixi), the registry, the loader, the executor, layout, the render loop, preload,
@@ -5532,6 +5612,11 @@ Notation:
   samples). Runs beside LE2.
 - **Lock:** `client/src/meta/{card.ts,social.ts,wallet.ts,meta.test.ts}` (new), `client/src/api/{endpoints.ts,decode.ts,
   decode.test.ts}` (7).
+  - As merged (`48abfaf`, RULINGS 83 Q1, Q2, 87): the lock is 8, + `client/src/api/http.ts` (one hunk: `DELETE` in the
+    `ApiRequest.method` union, for `removeFriend`). The duplicate-key refusal (`uniqueBy`) wraps nine keyed lists, not
+    ten (`client/src/api/decode.ts:271-274`, `:370-371`, `:393-394`, `:402-403`; LMD critique O3). C6 (`maxPerGift` in
+    `WalletView`, after LE2's trunk sync) was red as `check` TS2345, elaborated by "Property 'maxPerGift' is missing",
+    not TS2741 (`decode.ts:401`; LMD critique O2, observed).
 - **Commits:**
   1. Endpoints + decoders: `getWallet`, `useHint`, `postCard`, `getSocial`, `getInvite`, `askInvite` (revision 1, C1),
      `acceptFriend`, `removeFriend`, `rotateInvite`, `putConsent`, `getFriendProfile`, `postShare` (friends addressed
@@ -5581,7 +5666,8 @@ Notation:
       `story` / `leave` → `project` + `runner.enter`, the lock panel, the puzzle overlay;
     - `dirty` → the 2 s debounced autosave;
     - the close-up shown on puzzle open and cleared on puzzle end;
-    - lazy chunks prefetched when a chapter's world has sections or `next(K)` holds a puzzle yield;
+    - lazy chunks prefetched when a chapter's world has sections or `next(K)` holds a puzzle yield (as merged, L15a
+      `e94c786`, RULINGS 80; L15 cut D13: once per chapter, after its first line, by the chapter's world; PZ X14);
     - (changed by PUZZLES-PLAN revision 1) every `import()` of the lazy families lives here (the puzzle types through
       `puzzles/registry.ts`), so the lazy budget rows turn from PENDING to measured with this file (W7);
     - the root-back: set and cleared from `ExploreController.onPath` edges, cleared when an event knot starts (a
@@ -6466,6 +6552,7 @@ each has a default there; the policy's operator facts are placeholders until the
 | 27 | 2026-11-02 | RULINGS 78 (as merged: every lane up to LM2 `5a33183`; L15, LF2 running; main `22ed4d5`) | Docs lane `docs-errata-3`, group B: "Dependency order" — a marker paragraph and the State column as of `22ed4d5` (11 more lanes merged since `6043941`, with SHAs from `git log --first-parent main`: L10, L14b, LE1, N1, LP2, L13, LF1, LS4, N2, LX, LM2; L15 and LF2 running), the lane count (52: 40 merged, 2 running, 10 to go), the launch preference without the merged lanes, the critical path from L15. The planned order is otherwise unchanged. STORIES-PLAN revision 11 and META-PLAN revision 7 hold their lines. Ledger: `D:/tmp/novel-orch/docs-errata-3/ledger.md` |
 | 28 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `e6eca0d` (the docs-errata-4 spec, group A; RULINGS 79-88), as merged on main `48abfaf` | Docs lane `docs-errata-4`, group A: the carried plan errata of the merged lanes, each place marked "as merged" (or "Changed by MEMORY-PLAN") with its SHA and ruling. "As merged" bullets in the LF2 entry (the five commits, the gateway by value, the C5 samples, the fixture items, the seen-working listings) and the LE2 entry (the filters after `--`, `run assets` before a live run); the L15 entry's "As cut and split" bullet (L15a C1-C6 merged with the SHAs, L15b C7-C13, the two locks); in place: the profile's 8 statements; no token refresh on `activated` (K21); Bot API 6.1 the minimum (K32); the LE2 chains (`catalog.rs`, `db/social.rs`, `it/stats.rs`, `it/economy.rs`, `api/wallet.rs`); `run assets` in the live seen working of LPO, L9, L15 and LMI; the "Changed by MEMORY-PLAN" pointers of docs-errata-3's OM2 (K4, the Module API `SceneController` / `AssetRegistry`, the `Texture` + `ImageBitmap` lifetime row, the module map's `scene/` row, a `memory.spec.ts` e2e row); "S" named in the M2 entry's fade test (as in MEMORY-PLAN). The code on `48abfaf` is the ground truth. Ledger: `D:/tmp/novel-orch/docs-errata-4/ledger.md` |
 | 29 | 2026-11-02 | RULINGS 80-88 (as merged: LF2 `d0c7870`, LE2 `ec3b29f`, L15a `e94c786`, LMD `48abfaf`; L15b, LPO running; main `48abfaf`) | Docs lane `docs-errata-4`, group B: "Dependency order" — a marker paragraph and the State column as of `48abfaf` (LF2, LE2, L15a and LMD merged since `22ed4d5`, with SHAs from `git log --first-parent main`; L15 split into L15a and L15b, RULINGS 80, and a gate naming L15 met at L15b's merge; the new "client follow-ups" row after L15b, RULINGS 80 / 85; L15b and LPO running), the lane count (54: 44 merged, 2 running, 8 to go), the launch preference without the merged lanes, the critical path from L15b. The follow-ups lane's place in the client chain is left unruled (its carried files overlap M1, LMI, M2 and M3c). The planned order is otherwise unchanged; the L15 entry's split record is group A's (revision 28). STORIES-PLAN revision 13 and META-PLAN revision 9 hold their lines. Ledger: `D:/tmp/novel-orch/docs-errata-4/ledger.md` |
+| 30 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `874d685` (the docs-errata-5 spec, group A; RULINGS 89-103), as merged on main `6d77329` | Docs lane `docs-errata-5`, group A: the carried plan errata of the merged lanes, each place marked "as merged" with its SHA and ruling. LPO (`90e1226`): `.env.example`'s uncommented `PRIVACY_OPERATOR_FILE=` (commit 1), the lock of 9 with `served_draft()`; the merged locks of LF2 (17), LE2 (16) and LMD (8, with the nine keyed lists and C6's TS2345 red); the L15 prefetch pointer to PZ X14; the OB1 ruling (RULINGS 92) and the LFU1 / LFU2 split where the dependency order said "not ruled yet"; L15b (`fbcfd38`): the e2e table as merged (35 names); L9 (`d837c8b`): the nine commits, the probe (`ProbeRefunded`, no `RefundFact`), the revoke keyed by the charge's rows (`GREATEST`, the `parse_product_id` tripwire, the clock), the unapplied notice under one `CALL_DEADLINE` in the payer's language with `UnknownProduct`, the command sets and the Russian menu button, private chats only, `STATIC_DIR` disjoint both ways with the link walk and the `/assets` cache split, the webhook taking `Body`; LFU1 (`f637bac`): F3's failure model (`mixes`, the "Load it" failure notice, the (e) exit, the manual-save wait, the conflict hold); LFU2 (`6d77329`): the leak scan's `js-string` forms. The code on `6d77329` is the ground truth. Ledger: `D:/tmp/novel-orch/docs-errata-5/ledger.md` |
 
 **Revision 1 (2026-10-30)** — what changed, by triage item:
 - **W1** (undecodable payment ACKed and lost): K17 (lenient `PaymentProbe` for the payment subset, 500 only when the

@@ -50,7 +50,7 @@ What exists under `client/src/` at `48abfaf`. The boundary column is enforced by
 | [app/boot.ts](../client/src/app/boot.ts) | the entry's half of the two-stage boot (L15a): `startApp` (:128) creates the view model, the screen stack, the API client and the settings store; runs the boot reads in parallel (auth, the public catalog and covers, the saves list, the entitlements, the settings), retried after `BOOT_RETRY_MS` (:53); imports the engine chunk beside them; creates the stats reporter after auth; owns the lifecycle, `pagehide` and session-expiry subscriptions; Home's actions unlock audio first, inside the tap | no Pixi, inkjs or GSAP: the engine is reached only through `import('./engine.ts')` (:247), budgeted by the engine and first-line rows |
 | [app/engine.ts](../client/src/app/engine.ts) | the engine chunk's composition root (L15a): `createEngine` (:73) builds the scene controller, one chapter loader per role, the SaveService factory, the explore and puzzle views and the Game; the audio manager at the first start, after a Home tap; hands the overlay the in-play components (`EngineUi`, :38) | the only path to Pixi, inkjs and GSAP; `ENGINE_SRC` ([budget.ts:123](../client/scripts/budget.ts#L123)) |
 | [app/game.ts](../client/src/app/game.ts), [app/yields.ts](../client/src/app/yields.ts) | GameSession (L15a, `createGame` :330): runner steps to staging batches for the scene and the audio, views for the overlay, autosaves; one intent at a time; chapter change and the next-chapter preload, endings and the chapter reports, the ink-error floor, the autosave conflict prompt, the read-sets, the resume toasts, the chapter purchase and exit to stories. The yields (`createYields` :175): linear puzzles and exploration sections, every `import()` of the lazy families (`LAZY_CHUNKS` :63) and their prefetch after a chapter's first line | the scene, the audio and the explore controller only through their types (fakes in tests); `runner.enter` only in `yields.ts` (arch rule `runner-enter`) |
-| [telegram/index.ts](../client/src/telegram/index.ts), [webapp.ts](../client/src/telegram/webapp.ts) | `TelegramClient`: the one Mini App facade, errors as values, version gates. Each TWA event, the BackButton press included, has one TWA registration and the facade's own dispatch over a snapshot of its subscribers: one added during a dispatch waits for the next event, one removed is skipped, a throwing one does not stop the others (`eventHub`, [webapp.ts:228-259](../client/src/telegram/webapp.ts#L228); the `facade:` tests in `telegram.test.ts`). A CloudStorage / DeviceStorage call whose callback has not come within `STORAGE_TIMEOUT_MS` (5 s, [webapp.ts:82](../client/src/telegram/webapp.ts#L82), L15a) settles as a `timeout` error, and a later callback changes nothing (the `storage:` tests) | only `webapp.ts` and `telegram/dev/` read `window.Telegram` |
+| [telegram/index.ts](../client/src/telegram/index.ts), [webapp.ts](../client/src/telegram/webapp.ts) | `TelegramClient`: the one Mini App facade, errors as values, version gates. Each TWA event, the BackButton press included, has one TWA registration and the facade's own dispatch over a snapshot of its subscribers: one added during a dispatch waits for the next event, one removed is skipped, a throwing one does not stop the others (`eventHub`, [webapp.ts:228-259](../client/src/telegram/webapp.ts#L228); the `facade:` tests in `telegram.test.ts`). A CloudStorage / DeviceStorage call whose callback has not come within `STORAGE_TIMEOUT_MS` (5 s, [webapp.ts:82](../client/src/telegram/webapp.ts#L82), L15a) settles as a `timeout` error, and a later callback changes nothing (the `storage:` tests). As merged (LFU2 `6d77329`): `close()` closes the Mini App through `WebApp.close` (a no-op in the inert client, never throwing; [index.ts:43-44](../client/src/telegram/index.ts#L43)), and the facade exports the one CloudStorage value limit `CLOUD_VALUE_MAX` (4096, [webapp.ts:78](../client/src/telegram/webapp.ts#L78)) that the settings store re-exports | only `webapp.ts` and `telegram/dev/` read `window.Telegram` |
 | `telegram/{perf,viewport}.ts` | Android performance class; `--app-inset-*` CSS variables | |
 | `telegram/dev/*` | mock transport and fake Stars sheet | only under `__TG_MOCK__`; production compiles it out ([vite.config.ts:33](../client/vite.config.ts#L33)) |
 | [api/http.ts](../client/src/api/http.ts), `api/{session,endpoints,decode}.ts` | the API client (L10): `createHttp` (:138) carries every `/api` call and asset byte; the token lives only in `session.ts`'s closure; a `401 token_*` re-auths once, single flight, and retries once; typed calls per route; one decoder per server DTO ([Auth](#auth-initdata-then-the-servers-own-token)); created by `startApp` since L15a. The meta calls (LMD): `createMetaEndpoints`, the meta error table `metaError`, `DELETE` in the request method union for unfriend and decline | only `api/` sets `Authorization` (arch rule `authorization`); the bearer goes to `/api/` URLs only |
@@ -117,13 +117,17 @@ vitest `dom` project.
 | `server/dev` (`server-dev`) | the production router plus `/dev/launch` (dev-signed initData), `/dev/invoices/{slug}` and `/dev/prepared/{id}` (LF2: what a prepared share would send) on a fake gateway and `/dev/simulate-payment` through the production webhook handler, on a fresh database per launch ([dev/src/lib.rs:34](../server/dev/src/lib.rs#L34)); never linked into `server` |
 | `server/pgdev` | the local PostgreSQL 18 cluster per port and a database per test; a dependency of `server-dev` and a dev-dependency of `server`, never linked into the `server` binary ([server/Cargo.toml:31-33](../server/Cargo.toml#L31)) |
 
-The configuration's variables, all read in `Config::from_env` ([config.rs:145-172](../server/src/config.rs#L145)):
+The configuration's variables, all read in `Config::from_env` (as merged, LPO `90e1226`: through `from_lookup`,
+[config.rs:143-184](../server/src/config.rs#L143)):
 `BOT_TOKEN`, `WEBHOOK_SECRET`, `TOKEN_KEY` (required secrets); `TELEGRAM_ENV`, `PUBLIC_APP_URL`, `CONTENT_DIR`,
 `DATABASE_URL` (required); `TOKEN_TTL_SECS` (default 1800, 900-3600), `INITDATA_MAX_AGE_SECS` (default 86400,
-1-86400), `ADMIN_TELEGRAM_IDS`, `STATIC_DIR`, `LISTEN_ADDR` (default `127.0.0.1:8787`).
+1-86400), `ADMIN_TELEGRAM_IDS`, `STATIC_DIR`, `LISTEN_ADDR` (default `127.0.0.1:8787`), `PRIVACY_OPERATOR_FILE`
+(LPO; required under `TELEGRAM_ENV=prod`, [config.rs:177-184](../server/src/config.rs#L177)).
 
 **Startup refuses bad content.** `AppState::new` loads the content and builds the catalog and the gateway before it
-opens the database pool, so a refusal opens no pool ([lib.rs:66-86](../server/src/lib.rs#L66)). Tests pin the
+opens the database pool, so a refusal opens no pool (as merged, LPO `90e1226`: in the order content, catalog, privacy
+policy (`Policy::load`, a refusal is `StartupError::Privacy`), gateway, pool;
+[lib.rs:71-93](../server/src/lib.rs#L71)). Tests pin the
 refusals: `startup_fails_without_story_index`, `startup_fails_when_first_chapter_paid`,
 `startup_fails_when_world_carries_solution`, and for the meta index (LM2) `startup_fails_when_meta_names_unknown_ending`,
 `startup_fails_when_meta_too_large` (`server/tests/it/content.rs`).
@@ -196,6 +200,11 @@ sections built from the sources: paid line IDs and paid line text samples, paid 
 bytes, hint IDs and texts, paid world IDs and texts, and the meta texts. The trade-offs below give each section's
 floor. Each section fails closed when its fingerprints
 are empty while its sources exist ([scan-dist.ts:1-7](../client/scripts/scan-dist.ts#L1)).
+As merged (LFU2 `6d77329`, RULINGS 103): a text is also found inside a JS string literal (Vite's `JSON.parse("…")` of
+a JSON module, a requoted literal), in its escaped forms: each base needle and its JSON escape as the body of a `"`,
+`'` and backtick literal, with quotes, backslashes, backticks and `${` escaped. The forms are computed once per
+section, from the base needles only; such a finding is `via: 'js-string'`
+([scan-dist.ts:147-182](../client/scripts/scan-dist.ts#L147)).
 
 The CLAUDE.md gate commands map to: `check` (svelte-check, tsc), `test` (vitest projects `unit` and `dom`,
 [vite.config.ts:44-64](../client/vite.config.ts#L44)), `story`, `build` (above), `e2e` (Playwright on
@@ -308,7 +317,7 @@ Tests: `server/tests/it/auth.rs` (`initdata_tampered_field`, `initdata_expired`,
 Principle 2: Stars only, correct or absent. Built: invoices and orders (L8a); the webhook, the pre-checkout and the
 grant (L8b); hint packs, priced by the catalog's `economy` and credited inside the grant (LE1); the client's purchase
 flow (L10; created by GameSession since L15a, [game.ts:1695](../client/src/app/game.ts#L1695)). Refunds and the bot
-commands are L9 refunds-bot's. The invoice:
+commands are L9 refunds-bot's (as merged, L9 `d837c8b`: built; the refund below). The invoice:
 
 ```mermaid
 sequenceDiagram
@@ -432,10 +441,17 @@ Participants: `webhook` ([webhook.rs:50](../server/src/telegram/webhook.rs#L50))
   Telegram's update JSON: the `pre_checkout_query` and, when that was answered ok, the `successful_payment`. It feeds
   each through the production `webhook` handler with the configured secret header (`run`, `feed`,
   [simulate.rs:150-245](../server/dev/src/simulate.rs#L150)).
-- **Refunds are not handled yet.** A `refunded_payment` message is acknowledged and logged
-  ([webhook.rs:175-179](../server/src/telegram/webhook.rs#L175)), and no handler calls the gateway's
-  `refund_star_payment` ([gateway.rs:63-68](../server/src/telegram/gateway.rs#L63)). Refunds and `/terms`,
-  `/support`, `/paysupport` are L9 refunds-bot's.
+- **Refunds** (as merged, L9 `d837c8b`, RULINGS 96; until then a `refunded_payment` was acknowledged and logged, and
+  nothing called `refund_star_payment`). The admin's `/refund <charge>` (`admin_refund`,
+  [telegram/payments.rs:200](../server/src/telegram/payments.rs#L200)) reads the payment row, calls
+  `refund_star_payment` with no transaction open, cut at `CALL_DEADLINE`, then revokes on success or on
+  `CHARGE_ALREADY_REFUNDED`. A `refunded_payment` update, read by frankenstein or by the lenient probe (`ProbeRefunded`,
+  the charge id only, [webhook.rs:48](../server/src/telegram/webhook.rs#L48)), revokes too. Both end in
+  `payments::revoke(st, charge)` at the state's clock (:171) and `Repo::revoke`
+  ([db/payments.rs:332](../server/src/db/payments.rs#L332)): one transaction keyed by the charge's own rows; the
+  `refunded_at IS NULL` guard (set to `GREATEST(now, paid_at)`) makes a repeat `AlreadyRefunded`. Every command
+  (`/start`, `/terms`, `/support`, `/paysupport`, `/privacy`, `/refund`) is answered in private chats only
+  ([commands.rs:80](../server/src/telegram/commands.rs#L80)).
 
 Tests: `server/tests/it/webhook.rs` (`webhook_missing_secret_401`, `webhook_wrong_secret_401`,
 `webhook_undecodable_200`, `webhook_body_over_1mb_413`, `webhook_payment_undecodable_by_frankenstein_still_recorded`,
