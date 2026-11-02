@@ -12,6 +12,7 @@ pub mod puzzles;
 pub mod saves;
 pub mod share;
 pub mod social;
+pub mod static_files;
 pub mod stats;
 pub mod wallet;
 

@@ -1,10 +1,12 @@
-//! The `server` binary: `server serve` (the default) runs the HTTP server; `server setup` registers the bot's webhook,
-//! command menus and menu button with Telegram, once per deploy (no database, no content).
+//! The `server` binary: `server serve` (the default) runs the HTTP server, with the built client from `STATIC_DIR`
+//! when it is set; `server setup` registers the bot's webhook, command menus and menu button with Telegram, once per
+//! deploy (no database, no content).
 
 #![forbid(unsafe_code)]
 
 use std::process::ExitCode;
 
+use server::api::static_files::{self, StaticDir};
 use server::config::Config;
 use server::telegram::gateway::FrankensteinGateway;
 use server::telegram::setup;
@@ -70,6 +72,17 @@ async fn serve() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // Principle 0 before anything else is opened: a STATIC_DIR that could serve paid content refuses the start.
+    let static_dir = match &cfg.static_dir {
+        None => None,
+        Some(dir) => match static_files::check(dir, &cfg.content_dir).await {
+            Ok(dir) => Some(dir),
+            Err(e) => {
+                error!("static dir refused: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
+    };
     // The target only (host:port/database): DATABASE_URL may hold a password, so it is never logged.
     info!(database = %db::database_target(&cfg.database_url), "opening database");
     let listen_addr = cfg.listen_addr;
@@ -81,7 +94,7 @@ async fn serve() -> ExitCode {
         }
     };
     let repo = state.repo.clone();
-    let result = run(listen_addr, state).await;
+    let result = run(listen_addr, state, static_dir.as_ref()).await;
     // The pool lives until the server has stopped; close it so the pool closes its connections.
     repo.close().await;
     match result {
@@ -93,10 +106,19 @@ async fn serve() -> ExitCode {
     }
 }
 
-async fn run(listen_addr: std::net::SocketAddr, state: AppState) -> std::io::Result<()> {
+async fn run(
+    listen_addr: std::net::SocketAddr,
+    state: AppState,
+    static_dir: Option<&StaticDir>,
+) -> std::io::Result<()> {
+    let app = build_router(state);
+    let app = match static_dir {
+        Some(dir) => static_files::with_static(app, dir),
+        None => app,
+    };
     let listener = TcpListener::bind(listen_addr).await?;
     info!(addr = %listener.local_addr()?, "listening");
-    axum::serve(listener, build_router(state))
+    axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await
 }

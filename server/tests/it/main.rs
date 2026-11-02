@@ -30,20 +30,24 @@ mod stats;
 mod webhook;
 
 use std::io::{BufRead, BufReader, Read};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::http::header::CACHE_CONTROL;
 use axum::http::{Request, StatusCode};
+use http_body_util::BodyExt;
 use pgdev::{DevCluster, TestDb};
 use server::AppState;
+use server::api::static_files;
 use server::config::{
     PLACEHOLDER_BOT_TOKEN, PLACEHOLDER_TOKEN_KEY_HEX, PLACEHOLDER_WEBHOOK_SECRET,
 };
 use server::ids::UserId;
 use sqlx::{Connection, PgConnection};
+use tower::ServiceExt;
 
 #[tokio::test]
 async fn health_ok() {
@@ -364,6 +368,280 @@ async fn webhook_secret_checked_before_body_read() {
             .as_u16();
         if got != want {
             failures.push(format!("{case}: expected {want}, got {got}"));
+        }
+    }
+    report(&failures);
+}
+
+/// A fresh directory `name` under the test binary's scratch root (`CARGO_TARGET_TMPDIR`), emptied first. The removal
+/// does not follow a link or a junction left inside it by an earlier run (std's `remove_dir_all`).
+fn scratch_dir(name: &str) -> PathBuf {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// A link at `link` to the directory `target`: a junction on Windows (`mklink /J`, no privilege needed), a symlink
+/// elsewhere. A failure fails the test: the case is never skipped.
+fn dir_link(link: &Path, target: &Path) {
+    #[cfg(windows)]
+    {
+        let out = Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(link)
+            .arg(target)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "mklink /J {} {}: {}",
+            link.display(),
+            target.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    #[cfg(not(windows))]
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+/// The real `server serve` with `static_dir` and `content_dir` (every other variable set; the database a closed port,
+/// so a start that gets that far fails there): its log, until it exits (bounded at 60 s, then killed).
+fn serve_log(static_dir: &Path, content_dir: &Path) -> Vec<String> {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_server"))
+        .arg("serve")
+        .envs([
+            ("BOT_TOKEN", PLACEHOLDER_BOT_TOKEN),
+            ("WEBHOOK_SECRET", PLACEHOLDER_WEBHOOK_SECRET),
+            ("TOKEN_KEY", PLACEHOLDER_TOKEN_KEY_HEX),
+            ("TOKEN_TTL_SECS", "1800"),
+            ("INITDATA_MAX_AGE_SECS", "86400"),
+            ("PUBLIC_APP_URL", "http://127.0.0.1/"),
+            ("ADMIN_TELEGRAM_IDS", ""),
+            ("DATABASE_URL", "postgres://postgres@127.0.0.1:1/tgn_static"),
+            ("TELEGRAM_ENV", "test"),
+            ("LISTEN_ADDR", "127.0.0.1:0"),
+            ("PRIVACY_OPERATOR_FILE", ""),
+            ("RUST_LOG", "info"),
+            ("NO_COLOR", "1"),
+        ])
+        .env("STATIC_DIR", static_dir)
+        .env("CONTENT_DIR", content_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (lines, received) = mpsc::channel();
+    forward_lines(child.stdout.take().unwrap(), lines.clone());
+    forward_lines(child.stderr.take().unwrap(), lines);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut log = Vec::new();
+    loop {
+        match received.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(line) => log.push(line),
+            Err(RecvTimeoutError::Disconnected) => break,
+            Err(RecvTimeoutError::Timeout) => {
+                log.push("<no exit within 60 s: killed>".to_owned());
+                child.kill().unwrap();
+                break;
+            }
+        }
+    }
+    child.wait().unwrap();
+    log
+}
+
+/// Principle 0 at startup: `server serve` with `CONTENT_DIR` inside `STATIC_DIR` exits with a `STATIC_DIR` refusal
+/// before it opens the database; with the two disjoint it goes on to open it. `check` itself refuses `STATIC_DIR`
+/// inside `CONTENT_DIR`, the two as one, a missing `STATIC_DIR`, and a junction or link inside `STATIC_DIR` that
+/// resolves to the content; it accepts two disjoint trees.
+#[test]
+fn static_dir_must_not_contain_content_dir() {
+    let root = scratch_dir("static-check");
+    let site = root.join("site");
+    let nested = site.join("content");
+    let content = root.join("content");
+    let linked = root.join("linked");
+    for dir in [&nested, &content, &linked] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::write(site.join("index.html"), "<!doctype html>").unwrap();
+    std::fs::write(content.join("paid.json"), "{}").unwrap();
+    dir_link(&linked.join("paid"), &content);
+    let mut failures = Vec::new();
+
+    let refused = serve_log(&site, &nested);
+    let refusal = refused
+        .iter()
+        .position(|line| line.contains("STATIC_DIR") && line.contains("ERROR"));
+    let opening = refused
+        .iter()
+        .position(|line| line.contains("opening database"));
+    if refusal.is_none() || opening.is_some() {
+        failures.push(format!(
+            "CONTENT_DIR inside STATIC_DIR: expected a STATIC_DIR refusal before opening the database, got:\n{}",
+            refused.join("\n")
+        ));
+    }
+    let control = serve_log(&root.join("missing"), &content);
+    if !control
+        .iter()
+        .any(|line| line.contains("STATIC_DIR") && line.contains("ERROR"))
+    {
+        failures.push(format!(
+            "a missing STATIC_DIR: expected a STATIC_DIR refusal, got:\n{}",
+            control.join("\n")
+        ));
+    }
+    std::fs::create_dir_all(root.join("site2")).unwrap();
+    let disjoint = serve_log(&root.join("site2"), &content);
+    if !disjoint
+        .iter()
+        .any(|line| line.contains("opening database"))
+    {
+        failures.push(format!(
+            "disjoint trees: expected the start to reach `opening database`, got:\n{}",
+            disjoint.join("\n")
+        ));
+    }
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let outcome = |static_dir: &Path, content_dir: &Path| match runtime
+        .block_on(static_files::check(static_dir, content_dir))
+    {
+        Ok(dir) => format!("Ok({})", dir.root().display()),
+        Err(e) => format!("{e:?}"),
+    };
+    for (case, static_dir, content_dir, want) in [
+        (
+            "CONTENT_DIR inside STATIC_DIR",
+            &site,
+            &nested,
+            "ContainsContent",
+        ),
+        (
+            "STATIC_DIR inside CONTENT_DIR",
+            &nested,
+            &site,
+            "InsideContent",
+        ),
+        ("one directory", &content, &content, "Same"),
+        (
+            "a missing STATIC_DIR",
+            &root.join("nope"),
+            &content,
+            "Unresolved",
+        ),
+        (
+            "a junction to CONTENT_DIR inside STATIC_DIR",
+            &linked,
+            &content,
+            "Escape",
+        ),
+        ("disjoint trees", &root.join("site2"), &content, "Ok("),
+    ] {
+        let got = outcome(static_dir, content_dir);
+        if !got.starts_with(want) {
+            failures.push(format!("check, {case}: expected {want}.., got {got}"));
+        }
+    }
+    report(&failures);
+}
+
+/// One request through `app`, collected.
+async fn call_app(app: &axum::Router, req: Request<Body>) -> common::Reply {
+    let response = app.clone().oneshot(req).await.unwrap();
+    let (parts, body) = response.into_parts();
+    common::Reply {
+        status: parts.status,
+        headers: parts.headers,
+        body: body.collect().await.unwrap().to_bytes(),
+    }
+}
+
+/// The client next to the API: `/` is `index.html`, revalidated (`no-cache`); a found `/assets/*` file is cached for
+/// a year (`immutable`), a missing one is 404 without that; encoded traversals are 404 and never reach the file
+/// beside the directory; `/api` routes keep their own answers, an unknown `/api` path is 404 (no SPA fallback); a
+/// POST to a static path is 405.
+#[tokio::test]
+async fn static_dir_serves_client_with_cache_headers() {
+    const INDEX: &str = "<!doctype html><title>novel</title>";
+    const SECRET: &str = "NOT-PUBLIC-91";
+    let root = scratch_dir("static-serve");
+    let site = root.join("site");
+    std::fs::create_dir_all(site.join("assets")).unwrap();
+    std::fs::write(site.join("index.html"), INDEX).unwrap();
+    std::fs::write(site.join("assets").join("app-1a2b3c4d.js"), "export {};").unwrap();
+    std::fs::write(root.join("secret.txt"), SECRET).unwrap();
+    let (st, _db) = common::test_state().await;
+    let dir = static_files::check(&site, &st.cfg.content_dir)
+        .await
+        .unwrap();
+    let app = static_files::with_static(server::build_router(st.clone()), &dir);
+    let mut failures = Vec::new();
+    let cache = |reply: &common::Reply| {
+        reply
+            .headers
+            .get(CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+    };
+    for (method, path, status, want_cache, body) in [
+        ("GET", "/", 200, Some("no-cache"), Some(INDEX)),
+        (
+            "GET",
+            "/assets/app-1a2b3c4d.js",
+            200,
+            Some("public, max-age=31536000, immutable"),
+            Some("export {};"),
+        ),
+        ("GET", "/api/health", 200, Some("no-store"), Some("ok")),
+        ("POST", "/index.html", 405, None, None),
+    ] {
+        let req = Request::builder()
+            .method(method)
+            .uri(path)
+            .body(Body::empty())
+            .unwrap();
+        let reply = call_app(&app, req).await;
+        let text = String::from_utf8_lossy(&reply.body).into_owned();
+        if reply.status.as_u16() != status || body.is_some_and(|want| text != want) {
+            failures.push(format!(
+                "{method} {path}: expected {status} {body:?}, got {} {text:?}",
+                reply.status.as_u16()
+            ));
+        }
+        if want_cache.is_some() && cache(&reply).as_deref() != want_cache {
+            failures.push(format!(
+                "{method} {path}: cache-control: expected {want_cache:?}, got {:?}",
+                cache(&reply)
+            ));
+        }
+    }
+    for path in [
+        "/assets/missing.js",
+        "/%2e%2e/secret.txt",
+        "/..%5csecret.txt",
+        "/api/nope",
+    ] {
+        let reply = call_app(&app, Request::get(path).body(Body::empty()).unwrap()).await;
+        let text = String::from_utf8_lossy(&reply.body).into_owned();
+        if reply.status != StatusCode::NOT_FOUND || text.contains(SECRET) || text.contains(INDEX) {
+            failures.push(format!(
+                "GET {path}: expected 404 without the page or the file beside it, got {} {text:?}",
+                reply.status.as_u16()
+            ));
+        }
+        if cache(&reply).is_some_and(|v| v.contains("immutable")) {
+            failures.push(format!("GET {path}: a 404 must not be cached as immutable"));
         }
     }
     report(&failures);
