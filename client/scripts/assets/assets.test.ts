@@ -8,7 +8,7 @@ import sharp from 'sharp';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { ASSET_ID_RE, decodeAssetCatalog, decodeAssetManifest, decodeCoverManifest } from '../../src/story/catalog.ts';
-import type { CatalogImage, CatalogIssue, ChapterListEntry } from '../../src/story/catalog.ts';
+import type { CatalogImage, CatalogIssue, ChapterListEntry, Trim } from '../../src/story/catalog.ts';
 import type { AssetId } from '../../src/story/staging.ts';
 import { main } from '../assets.ts';
 import type { Encoders } from '../assets.ts';
@@ -223,6 +223,39 @@ describe('encode', () => {
       h: 640,
     });
     expect(await dims(e.webp)).toEqual({ w: 360, h: 640, format: 'webp' });
+  });
+
+  test('encode: a transparent sprite is cut to its alpha box plus 2 px, even-sided', async () => {
+    // MEMORY-PLAN 4.B: an integer-aligned opaque rect on a transparent canvas; the box widens by 2 px (clamped to the
+    // canvas), then to even sides on the far side, or on the near side where the far side is the canvas edge.
+    const sprite = (w: number, h: number, r: { x: number; y: number; w: number; h: number } | null): Uint8Array =>
+      utf8.encode(
+        `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">` +
+          (r === null ? '' : `<rect x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" fill="hsl(200 45% 55%)"/>`) +
+          '</svg>',
+      );
+    // Case A: x 154..613 → 152..615; y 145..1535 → 143..1535 (the canvas edge), odd, so the near side: 142..1535.
+    const a = await encodeImage(sprite(768, 1536, { x: 154, y: 145, w: 460, h: 1391 }), { trim: true });
+    expect(a.w).toBe(464);
+    expect({ w: a.w, h: a.h, trim: a.trim }).toEqual({ w: 464, h: 1394, trim: { canvasW: 768, canvasH: 1536, x: 152, y: 142 } });
+    expect(await dims(a.avif)).toEqual({ w: 464, h: 1394, format: 'heif' });
+    expect(await dims(a.webp)).toEqual({ w: 464, h: 1394, format: 'webp' });
+    // Case B, on the 512×512 prop canvas: x 101..201 → 99..203, y 201..301 → 199..303, both odd: the far sides widen,
+    // x 99..204 and y 199..304.
+    const b = await encodeImage(sprite(512, 512, { x: 101, y: 201, w: 101, h: 101 }), { trim: true });
+    expect({ w: b.w, h: b.h, trim: b.trim }).toEqual({ w: 106, h: 106, trim: { canvasW: 512, canvasH: 512, x: 99, y: 199 } });
+    expect(await dims(b.avif)).toEqual({ w: 106, h: 106, format: 'heif' });
+    expect(await dims(b.webp)).toEqual({ w: 106, h: 106, format: 'webp' });
+    // Controls: an empty alpha box and a box that is the whole canvas stay untrimmed, byte for byte the untrimmed
+    // encode (bg, cg and cover never ask for a trim).
+    for (const input of [sprite(768, 1536, null), strip(100, 50)]) {
+      const plain = await encodeImage(input);
+      const asked = await encodeImage(input, { trim: true });
+      expect(Object.hasOwn(asked, 'trim')).toBe(false);
+      expect({ w: asked.w, h: asked.h }).toEqual({ w: plain.w, h: plain.h });
+      expect(Buffer.compare(asked.avif, plain.avif)).toBe(0);
+      expect(Buffer.compare(asked.webp, plain.webp)).toBe(0);
+    }
   });
 });
 
@@ -539,6 +572,19 @@ const FAKE_ENCODERS: Encoders = {
   synthWav,
 };
 
+/** FAKE_ENCODERS with the stored size and trim set per asset id (read from the placeholder's label). */
+function trimmingFakes(over: Readonly<Record<string, { w: number; h: number; trim?: Trim }>>): Encoders {
+  return {
+    ...FAKE_ENCODERS,
+    encodeImage: async (svg, o) => {
+      const e = await FAKE_ENCODERS.encodeImage(svg, o);
+      const id = /<text\b[^>]*>([^<]+)<\/text>/.exec(new TextDecoder().decode(svg))?.[1];
+      const size = id === undefined ? undefined : over[id];
+      return size === undefined ? e : { ...e, ...size };
+    },
+  };
+}
+
 async function runTool(root: string, encoders = FAKE_ENCODERS): Promise<{ code: number; out: string[]; err: string[] }> {
   const out: string[] = [];
   const err: string[] = [];
@@ -702,6 +748,44 @@ describe('assets', () => {
     expect(missing.code).toBe(1);
     expect(missing.err).toContain('assets: assets/catalog.json: missing');
     expect(listDir(repo, 'client/public/assets')).toEqual(['bg-archive-deadbeef.avif']);
+  });
+
+  test('assets: expressions of one character share a canvas', async () => {
+    // MEMORY-PLAN 4.B: every expression of a character keeps one transform on its canvas, so a swap stays aligned.
+    const catalog = { ...REPO_CATALOG, chars: { ally: { exprs: { neutral: { placeholder: { hue: 200 } }, smile: { placeholder: { hue: 160 } } } } } };
+    const usage = { chapters: { ...REPO_USAGE.chapters, ch1: { assets: [...REPO_USAGE.chapters.ch1.assets, 'char/ally/smile'], knots: {} } } };
+    const stored = { w: 466, h: 1394 };
+    const neutral = { ...stored, trim: { canvasW: 768, canvasH: 1536, x: 151, y: 142 } };
+    writeRepo(repo, { 'assets/catalog.json': catalog, 'server/content/build/usage.json': usage });
+    const mismatched = await runTool(repo, trimmingFakes({ 'char/ally/neutral': neutral, 'char/ally/smile': { ...stored, trim: { canvasW: 768, canvasH: 1534, x: 151, y: 140 } } }));
+    expect(mismatched.code).toBe(1);
+    expect(mismatched.err).toEqual(['assets: char/ally: expressions on different canvases (char/ally/neutral 768×1536, char/ally/smile 768×1534)']);
+    expect(listDir(repo, 'client/public/assets')).toEqual([]);
+    expect(existsSync(join(repo, 'client', 'src', 'story-gen'))).toBe(false);
+    // Control: one canvas for both; the planner writes each file's trim into its manifest entry.
+    const matched = await runTool(repo, trimmingFakes({ 'char/ally/neutral': neutral, 'char/ally/smile': { ...stored, trim: { canvasW: 768, canvasH: 1536, x: 151, y: 140 } } }));
+    expect(matched.code, matched.err.join('\n')).toBe(0);
+    const ch1 = JSON.parse(readRel(repo, 'client/src/story-gen/free/ch1.assets.json')) as { assets: Record<string, RawEntry> };
+    expect(ch1.assets['char/ally/neutral']).toMatchObject({ w: 466, h: 1394, decodedBytes: 466 * 1394 * 4, trim: neutral.trim });
+    expect(Object.keys(ch1.assets['char/ally/neutral'] ?? {})).toEqual(['kind', 'w', 'h', 'decodedBytes', 'avif', 'webp', 'trim']);
+    expect(Object.hasOwn(ch1.assets['bg/cafe'] ?? {}, 'trim')).toBe(false);
+  });
+
+  test('assets: a char canvas with an odd side is refused', async () => {
+    // Even canvases keep an even trimmed box inside them (MEMORY-PLAN 4.B). A trimmed file first: its stored sides are
+    // even, so only the canvas is at fault.
+    writeRepo(repo);
+    const odd = await runTool(repo, trimmingFakes({ 'char/ally/neutral': { w: 466, h: 1394, trim: { canvasW: 767, canvasH: 1536, x: 151, y: 142 } } }));
+    expect(odd.code).toBe(1);
+    expect(odd.err).toEqual(['assets: char/ally/neutral: canvas 767×1536 has an odd side (char and prop canvases are even)']);
+    expect(existsSync(join(repo, 'client', 'src', 'story-gen'))).toBe(false);
+    // An untrimmed file is its own canvas: a used prop at 512×511.
+    const usage = { chapters: { ...REPO_USAGE.chapters, ch1: { assets: [...REPO_USAGE.chapters.ch1.assets, 'prop/note'], knots: {} } } };
+    writeRepo(repo, { 'server/content/build/usage.json': usage });
+    const prop = await runTool(repo, trimmingFakes({ 'prop/note': { w: 512, h: 511 } }));
+    expect(prop.code).toBe(1);
+    expect(prop.err).toEqual(['assets: prop/note: canvas 512×511 has an odd side (char and prop canvases are even)']);
+    expect(listDir(repo, 'client/public/assets')).toEqual([]);
   });
 
   test('assets: cli runs through a linked path under preserve-symlinks-main', async () => {

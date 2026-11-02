@@ -5,7 +5,7 @@
 // relative imports stay under scripts/ (emit.ts, the `--preserve-symlinks-main` CLI tests).
 import { createHash } from 'node:crypto';
 
-import { ASSET_ID_RE, decodeAssetManifest } from '../../src/story/catalog.ts';
+import { ASSET_ID_RE, TRIMMED_NAMESPACES, decodeAssetManifest } from '../../src/story/catalog.ts';
 import type {
   AssetCatalog,
   AssetEntry,
@@ -15,6 +15,7 @@ import type {
   CoverManifest,
   ImageEntry,
   Result,
+  Trim,
 } from '../../src/story/catalog.ts';
 import type { AssetId, ChapterId } from '../../src/story/staging.ts';
 import { decodeWorldSource } from '../../src/world/decode.ts';
@@ -200,10 +201,41 @@ export function tierAll(
 // ---------------------------------------------------------------------------------------------------------------
 // The plan
 
-/** An encoded asset: an image as AVIF + WebP with sharp's dimensions, or a clip as WAV. */
+/** An encoded asset: an image as AVIF + WebP with sharp's dimensions (and a char or prop's trim), or a clip as WAV. */
 export type Encoded =
-  | { kind: 'image'; avif: Uint8Array; webp: Uint8Array; w: number; h: number }
+  | { kind: 'image'; avif: Uint8Array; webp: Uint8Array; w: number; h: number; trim?: Trim }
   | { kind: 'audio'; role: 'bgm' | 'sfx'; wav: Uint8Array; durationMs: number };
+
+/**
+ * MEMORY-PLAN 4.B, input errors of the encoded char and prop images: per character, one canvas for all expressions
+ * (a swap keeps one transform); every canvas with even sides (an even trimmed box always fits it). Messages, empty
+ * when fine; the asset tool checks them before planning.
+ */
+export function canvasProblems(encoded: ReadonlyMap<AssetId, Encoded>): string[] {
+  const problems: string[] = [];
+  const perChar = new Map<string, Array<readonly [AssetId, string]>>();
+  for (const [id, enc] of [...encoded].sort(([a], [b]) => (a < b ? -1 : 1))) {
+    const [ns, name] = id.split('/');
+    if (enc.kind !== 'image' || ns === undefined || !TRIMMED_NAMESPACES.includes(ns)) {
+      continue;
+    }
+    const w = enc.trim?.canvasW ?? enc.w;
+    const h = enc.trim?.canvasH ?? enc.h;
+    if (w % 2 !== 0 || h % 2 !== 0) {
+      problems.push(`${id}: canvas ${w}×${h} has an odd side (char and prop canvases are even)`);
+    }
+    if (ns === 'char') {
+      const key = `char/${name ?? ''}`;
+      perChar.set(key, [...(perChar.get(key) ?? []), [id, `${w}×${h}`] as const]);
+    }
+  }
+  for (const [char, canvases] of perChar) {
+    if (new Set(canvases.map(([, c]) => c)).size > 1) {
+      problems.push(`${char}: expressions on different canvases (${canvases.map(([id, c]) => `${id} ${c}`).join(', ')})`);
+    }
+  }
+  return problems;
+}
 
 /** server/content/build/fingerprints.assets.json: one entry per paid file, sorted by name. */
 export type AssetFingerprint = { asset: AssetId; name: string; sha256: string };
@@ -290,10 +322,19 @@ export function planAssets(input: {
       }
       return { url: `${urlPrefix}${name}`, bytes: bytes.length };
     };
+    // An image's w, h and decodedBytes are its stored px; a trimmed file's trim follows webp (MEMORY-PLAN §5).
     entries.set(
       id,
       enc.kind === 'image'
-        ? { kind: 'image', w: enc.w, h: enc.h, decodedBytes: enc.w * enc.h * 4, avif: file(enc.avif, 'avif'), webp: file(enc.webp, 'webp') }
+        ? {
+            kind: 'image',
+            w: enc.w,
+            h: enc.h,
+            decodedBytes: enc.w * enc.h * 4,
+            avif: file(enc.avif, 'avif'),
+            webp: file(enc.webp, 'webp'),
+            ...(enc.trim === undefined ? {} : { trim: enc.trim }),
+          }
         : { kind: 'audio', role: enc.role, durationMs: enc.durationMs, file: file(enc.wav, 'wav'), codec: 'wav' },
     );
   }
