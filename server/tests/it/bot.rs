@@ -1,6 +1,7 @@
 //! The bot (PP "Bot texts", K20-K22): its texts in `server/locales/bot.*.json` within Telegram's bounds, Russian
 //! first; a pre-checkout refusal in the query's language; the commands, answered in a private chat in the sender's
-//! language, `/refund` for admins only.
+//! language, `/refund` for admins only; the notice of a payment recorded but not applied, and `/paysupport`'s list
+//! that flags it.
 //!
 //! Every state calls the Bot API through [`RecordingGateway`]: no test reaches Telegram.
 //!
@@ -9,17 +10,19 @@
 use serde_json::{Value, json};
 use server::AppState;
 use server::puzzles::Lang;
+use server::telegram::commands::utc_date;
 use server::telegram::gateway::{OutMessage, WebAppButton};
-use server::telegram::payments::RejectReason;
+use server::telegram::payments::{RejectReason, RevokeOutcome};
 use server::telegram::texts::{self, BotFile, MESSAGE_LIMIT, fill};
 
 use crate::catalog::{ANN, T0, own};
-use crate::common::TEST_ADMIN_ID;
+use crate::common::{self, TEST_ADMIN_ID};
 use crate::payments::{GatewayCall, RecordingGateway, invoice_state, refusal};
 use crate::refunds::{
-    BEN, bought, entitlements_of, expect_eq, order_of, refund_calls, refund_state,
+    BEN, T1, bought, entitlements_of, expect_eq, order_of, pay, refund_calls, refund_state,
+    revoke_at,
 };
-use crate::webhook::{post_update, pre_checkout_update};
+use crate::webhook::{payment_update, post_update, pre_checkout_update};
 
 fn report(failures: &[String]) {
     assert!(
@@ -406,6 +409,210 @@ async fn bot_commands_reply_in_sender_language() {
                 "{case}: expected 200 and no message, got {status} and {sent:?}"
             ));
         }
+    }
+    report(&failures);
+}
+
+/// A `successful_payment` update (every field frankenstein requires) from `payer` with Telegram language `language`.
+fn payment_in(payer: i64, language: &str, amount: u32, order: &str, charge: &str) -> Value {
+    let mut update = payment_update(payer, "XTR", amount, order, charge, "");
+    update["message"]["from"]["language_code"] = json!(language);
+    update
+}
+
+/// A second `created` order of `product` for `user` at `T0`, as raw SQL: the order the invoice route refuses once the
+/// product is owned, as if it had been opened before the first one was paid and slipped past the checkout window.
+async fn raw_order(st: &AppState, order: &str, user: i64, product: &str) {
+    let mut c = common::raw_db(st).await;
+    sqlx::query(
+        "INSERT INTO orders (id, user_id, product_id, amount, currency, status, created_at) \
+         VALUES ($1, $2, $3, 1, 'XTR', 'created', $4)",
+    )
+    .bind(order)
+    .bind(user)
+    .bind(product)
+    .bind(T0)
+    .execute(&mut c)
+    .await
+    .unwrap();
+    sqlx::Connection::close(c).await.unwrap();
+}
+
+/// A payment the grant records but cannot apply notifies its payer (in the payment's sender language) and each admin
+/// (in Russian) once: an `AlreadyEntitled` payment (a second order of an owned chapter) and an `OrderMismatch` one (a
+/// wrong amount). A redelivery, and an applied payment, send nothing.
+#[tokio::test]
+async fn unapplied_charge_notifies_payer_and_admin() {
+    let (st, _db, gateway) = refund_state().await;
+    let mut failures = Vec::new();
+    let Some((first, amount)) = order_of(&st, ANN, "chapter:ch2", &mut failures).await else {
+        return report(&failures);
+    };
+    let second = "o_0123456789abcdef0123456789abcdef";
+    raw_order(&st, second, ANN, "chapter:ch2").await;
+    let Some((wrong, wrong_amount)) = order_of(&st, BEN, "chapter:ch4", &mut failures).await else {
+        return report(&failures);
+    };
+    let ru = texts::texts(Lang::Ru);
+    let en = texts::texts(Lang::En);
+    let notice = |payer: i64, t: &texts::LangTexts, charge: &str, outcome: &str| {
+        let admin = fill(
+            &ru.admin_unapplied,
+            &[
+                ("charge", charge),
+                ("payer", &payer.to_string()),
+                ("outcome", outcome),
+            ],
+        );
+        vec![
+            plain(payer, &fill(&t.payment_unapplied, &[("charge", charge)])),
+            plain(TEST_ADMIN_ID, &admin),
+        ]
+    };
+    let mismatch = payment_in(BEN, "en", wrong_amount + 1, &wrong, "c-wrong");
+    for (case, update, want) in [
+        (
+            "applied",
+            payment_in(ANN, "ru", amount, &first, "c-first"),
+            Vec::new(),
+        ),
+        (
+            "already entitled",
+            payment_in(ANN, "ru", 1, second, "c-second"),
+            notice(ANN, ru, "c-second", "AlreadyEntitled"),
+        ),
+        (
+            "order mismatch",
+            mismatch.clone(),
+            notice(BEN, en, "c-wrong", "OrderMismatch"),
+        ),
+        ("order mismatch redelivered", mismatch, Vec::new()),
+    ] {
+        let before = messages(&gateway).len();
+        let status = post_update(&st, &update).await.status.as_u16();
+        let sent = messages(&gateway).split_off(before);
+        if status != 200 || sent != want {
+            failures.push(format!(
+                "{case}: expected 200 and {} messages {want:?}, got {status} and the fake gateway records {} messages \
+                 {sent:?}",
+                want.len(),
+                sent.len()
+            ));
+        }
+    }
+    report(&failures);
+}
+
+/// The `/paysupport` lines of `text` after its intro: one per charge.
+fn charge_lines<'a>(text: &'a str, intro: &str) -> Vec<&'a str> {
+    text.strip_prefix(intro)
+        .unwrap_or(text)
+        .lines()
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
+/// `/paysupport` lists the sender's own charges, newest first: an applied chapter unflagged, an unapplied charge (paid
+/// at a wrong amount) flagged, a refunded pack marked refunded. Another user's charge is not listed.
+#[tokio::test]
+async fn paysupport_flags_unapplied_charge() {
+    let (st, _db, gateway) = refund_state().await;
+    let mut failures = Vec::new();
+    if bought(&st, ANN, "chapter:ch2", "c-applied", &mut failures)
+        .await
+        .is_none()
+    {
+        return report(&failures);
+    }
+    let Some((order, amount)) = order_of(&st, ANN, "chapter:ch4", &mut failures).await else {
+        return report(&failures);
+    };
+    pay(&st, ANN, amount + 1, &order, "c-unapplied", &mut failures).await;
+    if bought(&st, ANN, "pack:hint_s", "c-refunded", &mut failures)
+        .await
+        .is_none()
+    {
+        return report(&failures);
+    }
+    failures.extend(expect_eq(
+        "revoke c-refunded",
+        revoke_at(&st, T1, "c-refunded").await,
+        Ok(RevokeOutcome::Revoked),
+    ));
+    own(&st, BEN, "chapter:ch4").await;
+    let ru = texts::texts(Lang::Ru);
+    let line = |charge: &str, amount: u32, status: Option<&str>| {
+        let mut line = fill(
+            &ru.paysupport_line,
+            &[
+                ("date", &utc_date(T0)),
+                ("charge", charge),
+                ("amount", &amount.to_string()),
+            ],
+        );
+        if let Some(status) = status {
+            line.push(' ');
+            line.push_str(status);
+        }
+        line
+    };
+    let want = vec![
+        line("c-unapplied", amount + 1, Some(&ru.paysupport_not_applied)),
+        line("c-refunded", 1, Some(&ru.paysupport_refunded)),
+        line("c-applied", 1, None),
+    ];
+    let (status, sent) = say(&st, &gateway, ANN, Some("ru"), "/paysupport").await;
+    let text = sent.first().map(|msg| msg.text.clone()).unwrap_or_default();
+    let got = charge_lines(&text, &ru.paysupport);
+    if status != 200 || sent.len() != 1 || !text.starts_with(&ru.paysupport) || got != want {
+        let got = if got.is_empty() {
+            "the intro only".to_owned()
+        } else {
+            format!("{got:?}")
+        };
+        failures.push(format!(
+            "expected 3 charge lines {want:?}, got {status}, {} messages, {got}",
+            sent.len()
+        ));
+    }
+    if text.contains("charge-1002") {
+        failures.push("another user's charge is listed".to_owned());
+    }
+    report(&failures);
+}
+
+/// A paid pack applied through its ledger credit (no entitlement row) is not flagged as unapplied.
+#[tokio::test]
+async fn paysupport_pack_credit_is_applied() {
+    let (st, _db, gateway) = refund_state().await;
+    let mut failures = Vec::new();
+    if bought(&st, ANN, "pack:hint_s", "c-pack", &mut failures)
+        .await
+        .is_none()
+    {
+        return report(&failures);
+    }
+    let ru = texts::texts(Lang::Ru);
+    let want = vec![fill(
+        &ru.paysupport_line,
+        &[
+            ("date", &utc_date(T0)),
+            ("charge", "c-pack"),
+            ("amount", "1"),
+        ],
+    )];
+    let (_, sent) = say(&st, &gateway, ANN, Some("ru"), "/paysupport").await;
+    let text = sent.first().map(|msg| msg.text.clone()).unwrap_or_default();
+    let got = charge_lines(&text, &ru.paysupport);
+    if got != want {
+        let got = if got.is_empty() {
+            "the intro only".to_owned()
+        } else {
+            format!("{got:?}")
+        };
+        failures.push(format!(
+            "expected 1 unflagged charge line {want:?}, got {got}"
+        ));
     }
     report(&failures);
 }

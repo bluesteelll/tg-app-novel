@@ -15,8 +15,8 @@ use crate::AppState;
 use crate::db::orders::parse_order_id;
 use crate::ids::{ChargeId, UserId};
 use crate::puzzles::Lang;
-use crate::telegram::gateway::{CALL_DEADLINE, GatewayError};
-use crate::telegram::texts;
+use crate::telegram::gateway::{CALL_DEADLINE, GatewayError, OutMessage};
+use crate::telegram::texts::{self, fill};
 
 pub use crate::db::payments::{
     GrantOutcome, PaymentFact, PreCheckoutVerdict, RejectReason, RevokeOutcome,
@@ -107,6 +107,59 @@ pub async fn on_successful_payment(
         }
     }
     Ok(outcome)
+}
+
+/// M19's notice of a payment recorded but not applied (`OrderMismatch`, `AlreadyEntitled`, `UnknownProduct`): the
+/// payer is told in `lang` (their payment message's language), and each admin in Russian, with the charge id to
+/// refund. An applied payment and a redelivery (`Duplicate`) send nothing. The whole notice, sent one message after
+/// another, is cut at one [`CALL_DEADLINE`] after the commit; a failure or the cut is logged, never an error: the money
+/// fact is recorded already.
+pub async fn notify_unapplied(
+    st: &AppState,
+    fact: &PaymentFact,
+    outcome: GrantOutcome,
+    lang: Lang,
+) {
+    // No wildcard arm: a new outcome does not compile until it is sorted into applied or not here.
+    match outcome {
+        GrantOutcome::Granted | GrantOutcome::Duplicate => return,
+        GrantOutcome::OrderMismatch
+        | GrantOutcome::AlreadyEntitled
+        | GrantOutcome::UnknownProduct => {}
+    }
+    let charge = fact.charge.0.as_str();
+    let payer = fact.payer.0.to_string();
+    let word = format!("{outcome:?}");
+    let to_payer = OutMessage {
+        chat_id: fact.payer.0,
+        text: fill(&texts::texts(lang).payment_unapplied, &[("charge", charge)]),
+        web_app_button: None,
+    };
+    let admin_text = fill(
+        &texts::texts(Lang::Ru).admin_unapplied,
+        &[("charge", charge), ("payer", &payer), ("outcome", &word)],
+    );
+    let notice = async {
+        if let Err(e) = st.gateway.send_message(to_payer).await {
+            tracing::warn!(charge, error = %e, "unapplied payment: the payer's notice failed");
+        }
+        for &admin in &st.cfg.admin_telegram_ids {
+            let to_admin = OutMessage {
+                chat_id: admin,
+                text: admin_text.clone(),
+                web_app_button: None,
+            };
+            if let Err(e) = st.gateway.send_message(to_admin).await {
+                tracing::warn!(charge, error = %e, "unapplied payment: an admin's notice failed");
+            }
+        }
+    };
+    if tokio::time::timeout(CALL_DEADLINE, notice).await.is_err() {
+        tracing::warn!(
+            charge,
+            "unapplied payment: the notice was cut at the deadline"
+        );
+    }
 }
 
 /// K20: the revoke of `charge` at the state's clock, through the one guarded transaction ([`Repo::revoke`]); both

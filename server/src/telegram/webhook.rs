@@ -20,6 +20,7 @@ use subtle::ConstantTimeEq;
 
 use crate::AppState;
 use crate::ids::{ChargeId, UserId};
+use crate::puzzles::Lang;
 use crate::telegram::commands;
 use crate::telegram::payments::{self, PaymentFact, PreCheckoutVerdict, RejectReason};
 
@@ -158,7 +159,12 @@ async fn probe(st: &AppState, body: &[u8], decode: &serde_json::Error) -> Handle
         charge: ChargeId(fields.telegram_payment_charge_id),
         provider_charge: fields.provider_payment_charge_id.unwrap_or_default(),
     };
-    grant(st, &fact).await
+    let lang = payments::payer_lang(
+        update
+            .pointer("/message/from/language_code")
+            .and_then(Value::as_str),
+    );
+    grant(st, &fact, lang).await
 }
 
 /// K17 for a refund: the charge id of a `refunded_payment` the full decode refused, through the same revoke; an
@@ -219,7 +225,12 @@ async fn message(st: &AppState, m: &Message) -> Handled {
             charge: ChargeId(sp.telegram_payment_charge_id.clone()),
             provider_charge: sp.provider_payment_charge_id.clone(),
         };
-        return grant(st, &fact).await;
+        let lang = payments::payer_lang(
+            m.from
+                .as_ref()
+                .and_then(|from| from.language_code.as_deref()),
+        );
+        return grant(st, &fact, lang).await;
     }
     if let Some(rp) = &m.refunded_payment {
         return refund(st, &ChargeId(rp.telegram_payment_charge_id.clone())).await;
@@ -233,11 +244,15 @@ async fn message(st: &AppState, m: &Message) -> Handled {
     }
 }
 
-/// The grant for `fact`: 200 after the commit, whatever the outcome; 500 on a database error, so Telegram
-/// redelivers and the idempotent grant runs again.
-async fn grant(st: &AppState, fact: &PaymentFact) -> Handled {
+/// The grant for `fact`: 200 after the commit, whatever the outcome, an unapplied one after its notice in `lang`
+/// (the payment message's language); 500 on a database error, so Telegram redelivers and the idempotent grant runs
+/// again.
+async fn grant(st: &AppState, fact: &PaymentFact, lang: Lang) -> Handled {
     match payments::on_successful_payment(st, fact).await {
-        Ok(_) => Handled::Ack,
+        Ok(outcome) => {
+            payments::notify_unapplied(st, fact, outcome, lang).await;
+            Handled::Ack
+        }
         Err(e) => {
             tracing::error!(charge = %fact.charge.0, error = %e, "grant failed; Telegram redelivers");
             Handled::Retry

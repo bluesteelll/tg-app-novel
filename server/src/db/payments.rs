@@ -115,6 +115,21 @@ pub struct PaymentRecord {
     pub refunded_at: Option<i64>,
 }
 
+/// One payment of a user, as `/paysupport` lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChargeLine {
+    /// The `telegram_payment_charge_id`.
+    pub charge: String,
+    /// The amount as received.
+    pub amount: i64,
+    /// When the server recorded it.
+    pub paid_at: i64,
+    /// When it was revoked, if it was.
+    pub refunded_at: Option<i64>,
+    /// Whether it granted anything: an entitlement or a ledger row of the charge (M19's "unapplied" is neither).
+    pub applied: bool,
+}
+
 /// An order as the refusal classification reads it: (user_id, amount, status, created_at, the product owned by the
 /// order's user, an order of that user for that product inside the checkout window).
 type OrderFacts = (i64, i64, String, i64, bool, bool);
@@ -400,7 +415,46 @@ impl Repo {
             },
         ))
     }
+
+    /// `user`'s newest `limit` payments, newest first (`paid_at`, then the charge id, descending), each with whether
+    /// it granted anything (an entitlement or a ledger row of the charge: both are indexed by charge), and how many
+    /// payments `user` has in all; one statement on `payments_by_user`.
+    pub async fn charges_of(
+        &self,
+        user: UserId,
+        limit: i64,
+    ) -> Result<(Vec<ChargeLine>, i64), sqlx::Error> {
+        let rows: Vec<ChargeRow> = sqlx::query_as(
+            "SELECT p.telegram_payment_charge_id, p.amount, p.paid_at, p.refunded_at, \
+             EXISTS (SELECT 1 FROM entitlements e WHERE e.charge_id = p.telegram_payment_charge_id) \
+             OR EXISTS (SELECT 1 FROM resource_ledger l WHERE l.charge_id = p.telegram_payment_charge_id), \
+             count(*) OVER () \
+             FROM payments p WHERE p.user_id = $1 \
+             ORDER BY p.paid_at DESC, p.telegram_payment_charge_id DESC LIMIT $2",
+        )
+        .bind(user.0)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        let total = rows.first().map_or(0, |row| row.5);
+        let lines = rows
+            .into_iter()
+            .map(
+                |(charge, amount, paid_at, refunded_at, applied, _)| ChargeLine {
+                    charge,
+                    amount,
+                    paid_at,
+                    refunded_at,
+                    applied,
+                },
+            )
+            .collect();
+        Ok((lines, total))
+    }
 }
+
+/// One `charges_of` row: (charge, amount, paid_at, refunded_at, applied, the user's payment count).
+type ChargeRow = (String, i64, i64, Option<i64>, bool, i64);
 
 /// The idempotency key of the pack clawback of `charge` (already through `without_nul`): `refund:<charge>`.
 fn refund_key(charge: &str) -> String {
