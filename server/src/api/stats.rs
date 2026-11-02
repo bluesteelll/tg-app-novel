@@ -8,7 +8,9 @@
 //!
 //! Reads: the user's distinct facts, counted only where the current index still holds them (ST6).
 //!
-//! Statistics unlock nothing (ST4): these handlers are the only callers of the `db/stats.rs` repository.
+//! Statistics unlock nothing (ST4), with one grant that reads them by design: the referral (META-PLAN M23, MT12),
+//! evaluated after every recorded batch from the server's own receipt times through `Repo::qualify_referral`, never
+//! from the batch's claims. These handlers stay the only callers of the `db/stats.rs` repository.
 
 use std::collections::HashSet;
 
@@ -31,7 +33,7 @@ use crate::content::{
 };
 use crate::db::stats::{NewStatEvent, RecordOutcome, StatCaps, StatFact, StatKind};
 use crate::error::ApiError;
-use crate::ids::{ChapterId, ProductId, PuzzleId};
+use crate::ids::{ChapterId, ProductId, PuzzleId, UserId};
 
 /// The most events in one batch.
 pub const STATS_BATCH_MAX: usize = 32;
@@ -61,7 +63,8 @@ fn count(n: usize) -> u32 {
 /// `POST /api/stats/events`: records a batch of events. The checks run in a fixed order: token, body, count, each
 /// event's shape, in-batch duplicates, then per event the chapter, the entitlement and the subject, then the budgets.
 /// No 4xx writes anything, a 429 writes nothing either, and a 200 answers every event: recorded, a duplicate, or
-/// rejected.
+/// rejected. Every batch answered 200 then runs the referral hook ([`referral_hook`]) at the same clock read, whose
+/// failure never changes the answer.
 pub async fn post_events(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
@@ -103,11 +106,8 @@ pub async fn post_events(
         facts: STATS_HOURLY_CAP,
         choices: STATS_CHOICE_HOURLY_CAP,
     };
-    let (inserted, over_budget) = match st
-        .repo
-        .record_events(user, &accepted, st.clock.now(), caps)
-        .await?
-    {
+    let now = st.clock.now();
+    let (inserted, over_budget) = match st.repo.record_events(user, &accepted, now, caps).await? {
         RecordOutcome::Recorded {
             inserted,
             over_budget,
@@ -118,6 +118,7 @@ pub async fn post_events(
             });
         }
     };
+    referral_hook(&st, user, now).await;
     let over: HashSet<&str> = over_budget.iter().map(String::as_str).collect();
     let rejected = judged
         .iter()
@@ -144,6 +145,32 @@ pub async fn post_events(
         rejected,
     };
     Ok((private_headers(), Json(body)).into_response())
+}
+
+/// The referral qualification after a recorded batch (META-PLAN M23, revision 1 W5), on every batch answered 200
+/// (all duplicates or all rejected included): the evidence is re-read from the table, so a completion recorded by an
+/// earlier batch qualifies on any later one. Each story's first chapter comes from the current index. Inline, not
+/// spawned: the request owns it, and the next wallet read sees its grant. An error (a `lock_timeout` on a `users` row
+/// a gift holds, a transient failure) has already rolled the hook's transaction back; it is logged with no user id,
+/// handle or Telegram id, and the batch's answer is unchanged, so the next batch evaluates again.
+async fn referral_hook(st: &AppState, user: UserId, now: i64) {
+    let first_chapters: Vec<(&str, &str)> = st
+        .content
+        .stories()
+        .iter()
+        .filter_map(|story| {
+            let first = story.chapters.first()?;
+            Some((story.id.0.as_str(), first.id.0.as_str()))
+        })
+        .collect();
+    let rules = &st.catalog.economy().referral;
+    if let Err(e) = st
+        .repo
+        .qualify_referral(user, &first_chapters, rules, now)
+        .await
+    {
+        tracing::warn!(error = %e, "referral hook failed; rolled back, the next batch evaluates again");
+    }
 }
 
 /// `GET /api/stats`: the user's statistics per story of the index and for the game (STORIES-PLAN F12), from one read
