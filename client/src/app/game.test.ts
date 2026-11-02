@@ -2479,6 +2479,57 @@ test('game: a late answer of an earlier manual save replaces a held conflict ask
   h.game.dispose();
 });
 
+/** What a manual write answers. */
+type SaveAnswer = Awaited<ReturnType<SaveService['save']>>;
+
+/** Keeps every manual write of `h` in flight until the test answers it, by slot. */
+function inFlightSaves(h: Harness): Map<ManualSlot, { w: SaveWrite; answer: (r: SaveAnswer) => void }> {
+  const inFlight = new Map<ManualSlot, { w: SaveWrite; answer: (r: SaveAnswer) => void }>();
+  h.save().save = (slot, w) =>
+    new Promise<SaveAnswer>((answer) => {
+      inFlight.set(slot, { w, answer });
+    });
+  return inFlight;
+}
+
+/** The server's 409 for a manual write of `w` to `slot`: another device saved the slot. */
+const conflictOn = (slot: ManualSlot, w: SaveWrite): SaveAnswer => ({
+  ok: false,
+  error: { kind: 'conflict', current: summary(MANOR, slot, w) },
+});
+
+test('game: no on a shown conflict ask drops the ask a later 409 holds', async () => {
+  const h = harness();
+  await startManor(h);
+  await h.game.advance(); // l002
+  const inFlight = inFlightSaves(h);
+  // 1. s1's write in flight, the save screen left and opened again, then s2's write 50 ms before s1's window closes.
+  void h.game.save('s1');
+  await settle();
+  await h.game.openSaves();
+  h.clock.advance(CONFLICT_HOLD_MS - 50);
+  void h.game.save('s2');
+  await settle();
+  const s1 = inFlight.get('s1');
+  const s2 = inFlight.get('s2');
+  if (s1 === undefined || s2 === undefined) {
+    throw new Error('both manual writes should be in flight');
+  }
+  // 2. s1's 409 asks when its window closes; s2's 409 lands 60 ms after its tap, so its ask is held under s1's.
+  s1.answer(conflictOn('s1', s1.w));
+  await settle();
+  h.clock.advance(50);
+  const shown = h.vm.saves.conflict;
+  h.clock.advance(10);
+  s2.answer(conflictOn('s2', s2.w));
+  await settle();
+  // 3. No on s1's ask: the held ask never shows, since its Yes would find no conflict (`overwrite` refuses it).
+  h.game.cancelOverwrite();
+  h.clock.advance(CONFLICT_HOLD_MS);
+  expect([shown, h.vm.saves.conflict, h.clock.pending]).toEqual(['s1', null, 0]);
+  h.game.dispose();
+});
+
 test('game: a manual save with a step in flight waits for that step', async () => {
   /** A manual slot's body resumed in a fresh session: [lineId, ok, toasts, line]. */
   const resumed = async (full: SaveFull | undefined): Promise<unknown[] | null> => {
