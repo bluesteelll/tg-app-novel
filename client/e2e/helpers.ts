@@ -336,11 +336,12 @@ export function puzzleTitle(id: string): string {
   return title;
 }
 
-const hotspot = (page: Page, room: string, id: string): Locator =>
+/** A ch1 hotspot's button, found by its label. */
+export const hotspot = (page: Page, room: string, id: string): Locator =>
   page.getByRole('button', { name: hotspotLabel(room, id), exact: true });
 
 /** The open puzzle's frame (PuzzleHost's labelled section). */
-const puzzleFrame = (page: Page, id: string): Locator => page.getByRole('region', { name: puzzleTitle(id), exact: true });
+export const puzzleFrame = (page: Page, id: string): Locator => page.getByRole('region', { name: puzzleTitle(id), exact: true });
 
 /**
  * The scene at rest: no load and no transition, on two reads 100 ms apart. A room's hotspots show while its
@@ -366,7 +367,7 @@ export async function atRest(page: Page): Promise<void> {
 }
 
 /** Taps a hotspot of the current room once the scene is at rest; a room change, a take or a lock answers on screen. */
-async function tapHotspot(page: Page, room: string, id: string): Promise<void> {
+export async function tapHotspot(page: Page, room: string, id: string): Promise<void> {
   const h = hotspot(page, room, id);
   await expect(h).toBeVisible({ timeout: STEP_MS });
   await atRest(page);
@@ -374,13 +375,13 @@ async function tapHotspot(page: Page, room: string, id: string): Promise<void> {
 }
 
 /** An exit, then the next room's own exit button. */
-async function walk(page: Page, room: string, exit: string, to: string, toExit: string): Promise<void> {
+export async function walk(page: Page, room: string, exit: string, to: string, toExit: string): Promise<void> {
   await tapHotspot(page, room, exit);
   await expect(hotspot(page, to, toExit)).toBeVisible({ timeout: STEP_MS });
 }
 
 /** A `take`: its button goes with the prop. */
-async function take(page: Page, room: string, id: string): Promise<void> {
+export async function take(page: Page, room: string, id: string): Promise<void> {
   await tapHotspot(page, room, id);
   await expect(hotspot(page, room, id)).toBeHidden({ timeout: STEP_MS });
 }
@@ -404,8 +405,8 @@ async function solveCode(page: Page, puzzle: string, code: readonly number[]): P
   await expect(frame).toBeHidden({ timeout: STEP_MS });
 }
 
-/** The order puzzle: two taps swap two slots, so a selection sort reaches `order`; then Try; the frame closes. */
-async function solveOrder(page: Page, puzzle: string, order: readonly number[]): Promise<void> {
+/** The order puzzle's slots put in `order` (indices into its pieces): two taps swap two slots, a selection sort. */
+export async function arrangeOrder(page: Page, puzzle: string, order: readonly number[]): Promise<void> {
   const frame = puzzleFrame(page, puzzle);
   await expect(frame).toBeVisible({ timeout: STEP_MS });
   const pieces = ch1World().puzzles[puzzle]?.params.pieces ?? [];
@@ -422,32 +423,41 @@ async function solveOrder(page: Page, puzzle: string, order: readonly number[]):
     }
   }
   await expect(slots.locator('.name')).toHaveText(want);
+}
+
+/** The order puzzle in `order`, then Try; the frame closes once solved. */
+export async function solveOrder(page: Page, puzzle: string, order: readonly number[]): Promise<void> {
+  await arrangeOrder(page, puzzle, order);
+  const frame = puzzleFrame(page, puzzle);
   await frame.getByRole('button', { name: t('ru', 'puzzle.try') }).tap();
   await expect(frame).toBeHidden({ timeout: STEP_MS });
 }
 
+/** From ch1's first line into its explore section (`# explore: manor`): the hall's hotspot layer shows. */
+export async function enterManor(page: Page, picks: Readonly<Record<string, number>> = {}): Promise<void> {
+  await reachLine(page, 'ch1.manor_arrive.a008', picks);
+  await page.locator('.dialogue .tap').tap();
+  await expect(hotspot(page, 'hall', 'to_study'), 'the hotspot layer').toBeVisible({ timeout: STEP_MS });
+}
+
 /**
- * Plays ch1 from its first line through the explore section to its END, and taps past the last line: the hall,
- * the study (the sun medal, the drawer's code: the moon medal), the cellar (its voice event, the star medal), the
- * gate's three slots and its order, then the way out. Choices take `picks` (reachLine's rule), option 0 by default:
- * the trust picks. `o.inDrawer` runs while the drawer's frame is open, before its code is entered (the perf heap
- * sample). What follows the END (the paywall, the next chapter, a notice) is the caller's to check.
+ * Plays ch1 from its first line through the explore section up to the gate's order puzzle: the hall, the study (the
+ * sun medal, the drawer's code: the moon medal), the cellar (its voice event, the star medal), then the gate's three
+ * slots, the last of which opens its order puzzle. Choices take `picks` (reachLine's rule), option 0 by default: the
+ * trust picks. `o.inDrawer` runs while the drawer's frame is open, before its code is entered (the perf heap sample).
  */
-export async function playCh1ToEnd(
+export async function playCh1ToGate(
   page: Page,
   picks: Readonly<Record<string, number>> = {},
   o: { inDrawer?: () => Promise<void> } = {},
 ): Promise<void> {
-  const solutions = worldSolutions();
-  await reachLine(page, 'ch1.manor_arrive.a008', picks);
-  await page.locator('.dialogue .tap').tap(); // `# explore: manor`
-  await expect(hotspot(page, 'hall', 'to_study')).toBeVisible({ timeout: STEP_MS });
+  await enterManor(page, picks);
   await walk(page, 'hall', 'to_study', 'study', 'to_hall');
   await take(page, 'study', 'medal');
   await tapHotspot(page, 'study', 'drawer');
   await expect(puzzleFrame(page, 'drawer')).toBeVisible({ timeout: STEP_MS });
   await o.inDrawer?.();
-  await solveCode(page, 'drawer', solutions.drawer);
+  await solveCode(page, 'drawer', worldSolutions().drawer);
   await walk(page, 'study', 'to_hall', 'hall', 'to_cellar');
   await tapHotspot(page, 'hall', 'to_cellar'); // the cellar's onEnter: the voice
   await reachLine(page, 'ch1.manor_cellar_voice.v007', picks);
@@ -462,7 +472,20 @@ export async function playCh1ToEnd(
     await held.tap();
     await expect(held).toBeHidden({ timeout: STEP_MS });
   }
-  await solveOrder(page, 'gate', solutions.gate); // the last slot filled opens it
+  await expect(puzzleFrame(page, 'gate')).toBeVisible({ timeout: STEP_MS });
+}
+
+/**
+ * Plays ch1 from its first line to its END (playCh1ToGate, the gate's order, the way out) and taps past the last
+ * line. What follows the END (the paywall, the next chapter, a notice) is the caller's to check.
+ */
+export async function playCh1ToEnd(
+  page: Page,
+  picks: Readonly<Record<string, number>> = {},
+  o: { inDrawer?: () => Promise<void> } = {},
+): Promise<void> {
+  await playCh1ToGate(page, picks, o);
+  await solveOrder(page, 'gate', worldSolutions().gate);
   await tapHotspot(page, 'hall', 'gate'); // open now: `manor_out`
   await reachLine(page, 'ch1.street.s018', picks);
   await page.locator('.dialogue .tap').tap(); // END
