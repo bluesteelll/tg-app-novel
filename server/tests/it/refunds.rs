@@ -979,7 +979,9 @@ async fn release(mut held: sqlx::PgConnection) {
 /// whole. (a) The order row held `FOR UPDATE`: a payment errors at the 2 s `lock_timeout` after its payments insert,
 /// which rolls back with it (0 payments rows); released and redelivered, it grants. (b) The payment row held: a
 /// `refunded_payment` errors the same way, the entitlement kept and `refunded_at` NULL; released and redelivered, it
-/// revokes.
+/// revokes. (c) Another charge's order row held: its `refunded_payment` passes the guard, then errors at the order
+/// step, and the guard's write rolls back with it (`refunded_at` NULL, the entitlement kept); released and
+/// redelivered, it revokes. Only (c) fails after the guard: in (b) the guard itself waits.
 #[tokio::test]
 async fn refund_and_grant_mid_transaction_failure_500() {
     let (st, _db, _gateway) = refund_state().await;
@@ -1042,6 +1044,45 @@ async fn refund_and_grant_mid_transaction_failure_500() {
     failures.extend(expect_eq(
         "(b) redelivered: entitlements of the charge",
         entitlements_of(&st, "c-ch2").await,
+        0,
+    ));
+
+    let Some((ben_order, ben_amount)) = order_of(&st, BEN, "chapter:ch2", &mut failures).await
+    else {
+        return report(&failures);
+    };
+    pay(&st, BEN, ben_amount, &ben_order, "c-ben", &mut failures).await;
+    let held = hold_row(
+        &st,
+        "SELECT 1 FROM orders WHERE charge_id = $1 FOR UPDATE",
+        "c-ben",
+    )
+    .await;
+    let refund = refund_update(BEN, ben_amount, &ben_order, "c-ben");
+    failures.extend(expect_eq(
+        "(c) refunded_payment with the order row held: status",
+        post_at(&st, T1, &refund).await,
+        500,
+    ));
+    release(held).await;
+    failures.extend(expect_eq(
+        "(c) after the failure: refunded_at",
+        refunded_at(&st, "c-ben").await,
+        None,
+    ));
+    failures.extend(expect_eq(
+        "(c) after the failure: entitlements of the charge",
+        entitlements_of(&st, "c-ben").await,
+        1,
+    ));
+    failures.extend(expect_eq(
+        "(c) redelivered: status",
+        post_at(&st, T1, &refund).await,
+        200,
+    ));
+    failures.extend(expect_eq(
+        "(c) redelivered: entitlements of the charge",
+        entitlements_of(&st, "c-ben").await,
         0,
     ));
     report(&failures);
