@@ -452,7 +452,8 @@ test('reporter: failure never throws', async () => {
     expect(idsOf(server.calls[2])).toEqual([uuid(1)]);
   }
 
-  // DeviceStorage that answers an error, rejects or throws: memory only, the events still sent.
+  // A DeviceStorage read that answers an error, rejects or throws turns the mirror off, so `set` is never reached:
+  // memory only, the events still sent. The failed writes are the blocks below.
   const refused: Result<never, TgError> = { ok: false, error: { kind: 'storage', detail: 'full' } };
   for (const broken of ['error', 'reject', 'throw'] as const) {
     const answer = (): Promise<Result<never, TgError>> => {
@@ -512,6 +513,34 @@ test('reporter: failure never throws', async () => {
     await tick();
     expect(written.at(-1)).toContain(uuid(1));
     expect(written.at(-1)).toContain(uuid(2));
+  }
+
+  // A write that rejects or throws is that write only as well: the events are still sent, and the next change is
+  // written, so the write in progress was released.
+  for (const broken of ['reject', 'throw'] as const) {
+    const fake = fakeDevice();
+    let refuse = true;
+    const device: DeviceStore = {
+      get: (k) => fake.device.get(k),
+      set: (k, v) => {
+        if (!refuse) {
+          return fake.device.set(k, v);
+        }
+        // The first write is the load's write-back of the empty queue.
+        refuse = false;
+        if (broken === 'throw') {
+          throw new Error('no storage');
+        }
+        return Promise.reject(new Error('no storage'));
+      },
+    };
+    const { clock, server, reporter } = setup(fail(NETWORK), { device });
+    await tick();
+    expect(refuse, broken).toBe(false);
+    expect(() => reporter.record(ending())).not.toThrow();
+    expect(idsOf(server.calls[0]), broken).toEqual([uuid(1)]);
+    await clock.advance(0);
+    expect(fake.stored(), broken).toEqual([uuid(1)]);
   }
 
   // The session ended for the page: no further request and no timer; the calls still return.
