@@ -756,6 +756,36 @@ describe('budget assets', () => {
     expect(rowOf(assetRows(assetInputs(fits)), 'image prop/note').status).toBe('PASS'); // control
   });
 
+  test('budget: a trimmed background fails', () => {
+    // MEMORY-PLAN 4.B: bg, cg and cover are opaque and never trimmed. The decoder refuses this entry, so it is patched
+    // in after decoding: the row refuses it on its own rule too.
+    const a = assetInputs();
+    const ch1 = chapterOf(a, 'ch1');
+    const m = ch1.manifest;
+    if (m === null) {
+      throw new Error('invariant: the base ch1 has a manifest');
+    }
+    const trimmed: ImageEntry = { ...bg('cafe'), trim: { canvasW: 1080, canvasH: 2048, x: 0, y: 0 } };
+    const patched = { ...ch1, manifest: { ...m, value: { ...m.value, assets: { ...m.value.assets, ['bg/cafe' as AssetId]: trimmed } } } };
+    const row = rowOf(assetRows({ ...a, chapters: a.chapters.map((c) => (c === ch1 ? patched : c)) }), 'image bg/cafe');
+    expect(row.status).toBe('FAIL');
+    expect(row.note).toBe('trim on a bg (only char and prop are trimmed)');
+  });
+
+  test('budget: a char canvas over 768x1536 fails', () => {
+    // The stored 466×1394 fits DIMS; the canvas, which charPlacement sizes on, does not. The decoder admits it.
+    const on = (canvasW: number, canvasH: number): Row => {
+      const trim = { canvasW, canvasH, x: 151, y: 142 };
+      const sprite: ImageEntry = { ...img('char-ally-neutral-0c0c0c0c', 466, 1394), trim };
+      return rowOf(assetRows(assetInputs(specsWith('ch1', (s) => (s.assets['char/ally/neutral'] = sprite)))), 'image char/ally/neutral');
+    };
+    const row = on(800, 1600);
+    expect(row.status).toBe('FAIL');
+    expect(row.note).toBe('800×1600, over 768×1536 (char)');
+    // Control: the same file on the canonical canvas passes, its note naming both sizes.
+    expect(on(768, 1536)).toMatchObject({ status: 'PASS', note: '466×1394 in 768×1536, WebP 150.0 KB' });
+  });
+
   test('budget: cover over 24 KB fails', () => {
     const row = rowOf(assetRows(assetInputs(baseSpecs(), { 'cover/manor': cover('manor', 30_000) })), 'image cover/manor');
     expect(row).toMatchObject({ status: 'FAIL', valueBytes: 30_000, limitBytes: 24_000 });

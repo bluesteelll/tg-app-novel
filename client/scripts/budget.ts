@@ -9,6 +9,7 @@ import { brotliCompressSync, constants } from 'node:zlib';
 import type { AssetCatalog, AssetEntry, AssetManifest, ChapterListEntry, ChapterMeta, CoverManifest, ImageEntry } from '../src/story/catalog.ts';
 import type { AssetId, ChapterId } from '../src/story/staging.ts';
 import {
+  TRIMMED_NAMESPACES,
   assetUsage,
   catalogAudio,
   decodeAssetCatalog,
@@ -645,12 +646,19 @@ function imageRow(a: AssetInputs, id: AssetId, e: ImageEntry, conflict: string |
   const limit = limits.image[kind];
   const dims = DIMS[kind];
   const v: string[] = [];
-  if (e.w > MAX_SIDE || e.h > MAX_SIDE) {
-    v.push(`${e.w}×${e.h} over ${MAX_SIDE} px`);
+  // The sizes hold on the canvas (MEMORY-PLAN §7): a trimmed file is laid out, and sized, as its full image.
+  const t = e.trim;
+  const canvas = t === undefined ? { w: e.w, h: e.h } : { w: t.canvasW, h: t.canvasH };
+  if (canvas.w > MAX_SIDE || canvas.h > MAX_SIDE) {
+    v.push(`${canvas.w}×${canvas.h} over ${MAX_SIDE} px`);
   }
-  if (dims.exact ? e.w !== dims.w || e.h !== dims.h : e.w > dims.w || e.h > dims.h) {
-    v.push(`${e.w}×${e.h}, ${dims.exact ? 'not exactly' : 'over'} ${dims.w}×${dims.h} (${kind})`);
+  if (dims.exact ? canvas.w !== dims.w || canvas.h !== dims.h : canvas.w > dims.w || canvas.h > dims.h) {
+    v.push(`${canvas.w}×${canvas.h}, ${dims.exact ? 'not exactly' : 'over'} ${dims.w}×${dims.h} (${kind})`);
   }
+  if (t !== undefined && !TRIMMED_NAMESPACES.includes(kind)) {
+    v.push(`trim on a ${kind} (only char and prop are trimmed)`);
+  }
+  // The caps and the knot-set rows count the stored px.
   if (e.decodedBytes !== e.w * e.h * 4) {
     v.push(`decodedBytes ${e.decodedBytes} ≠ w × h × 4`);
   }
@@ -664,7 +672,8 @@ function imageRow(a: AssetInputs, id: AssetId, e: ImageEntry, conflict: string |
   if (conflict !== undefined) {
     v.push(conflict);
   }
-  const note = v.length > 0 ? v.join('; ') : `${e.w}×${e.h}, WebP ${kbText(e.webp.bytes)}`;
+  const size = t === undefined ? `${e.w}×${e.h}` : `${e.w}×${e.h} in ${t.canvasW}×${t.canvasH}`;
+  const note = v.length > 0 ? v.join('; ') : `${size}, WebP ${kbText(e.webp.bytes)}`;
   return { name, valueBytes: e.avif.bytes, limitBytes: limit.avif, status: v.length > 0 ? 'FAIL' : 'PASS', note, unit: 'KB' };
 }
 

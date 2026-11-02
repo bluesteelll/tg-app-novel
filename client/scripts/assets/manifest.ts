@@ -22,6 +22,7 @@ import type { StoryUsage } from '../story/emit.ts';
 import { imageKind } from './placeholder.ts';
 
 export {
+  TRIMMED_NAMESPACES,
   decodeAssetCatalog,
   decodeAssetManifest,
   decodeChapterMeta,
