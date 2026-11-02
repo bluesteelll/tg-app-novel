@@ -1036,8 +1036,8 @@ async fn charge_rows(st: &AppState, charge: &str) -> (i64, i64) {
 }
 
 /// Returns once at least `n` app-pool sessions on `st`'s database wait for a lock; panics after 5 s (the shape of
-/// `common::wait_for_lock_waiter`, which returns at one).
-async fn wait_for_waiters(st: &AppState, n: i64) {
+/// `common::wait_for_lock_waiter`, which returns at one). The gift and referral tests wait for two this way.
+pub(crate) async fn wait_for_waiters(st: &AppState, n: i64) {
     let mut c = common::raw_db(st).await;
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {

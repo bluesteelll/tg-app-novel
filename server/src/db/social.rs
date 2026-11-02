@@ -462,16 +462,10 @@ impl Repo {
         Ok(())
     }
 
-    /// The two users are friends (either order; one user is never its own friend). One read.
+    /// The two users are friends (either order; one user is never its own friend). One read, [`are_friends_in`]'s.
     pub async fn are_friends(&self, a: UserId, b: UserId) -> Result<bool, sqlx::Error> {
-        let (lo, hi) = ordered(a, b);
-        sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM friendships WHERE user_lo = $1 AND user_hi = $2)",
-        )
-        .bind(lo)
-        .bind(hi)
-        .fetch_one(&self.pool)
-        .await
+        let mut c = self.pool.acquire().await?;
+        are_friends_in(&mut c, a, b).await
     }
 
     /// `u`'s latest `friends_profile` consent is a grant; `false` without one (private by default, M12). One read.
@@ -545,10 +539,32 @@ fn ordered(a: UserId, b: UserId) -> (i64, i64) {
     (a.0.min(b.0), a.0.max(b.0))
 }
 
+/// The one friendship read, on `c`: `a` and `b` are friends (either order; one user is never its own friend).
+/// [`Repo::are_friends`] runs it autocommit; the gift ([`Repo::transfer`]) under its `users` locks.
+pub(crate) async fn are_friends_in(
+    c: &mut PgConnection,
+    a: UserId,
+    b: UserId,
+) -> Result<bool, sqlx::Error> {
+    let (lo, hi) = ordered(a, b);
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM friendships WHERE user_lo = $1 AND user_hi = $2)",
+    )
+    .bind(lo)
+    .bind(hi)
+    .fetch_one(&mut *c)
+    .await
+}
+
 /// Locks the `users` rows of `a` and `b` (`NO KEY UPDATE`) in one statement. `ORDER BY` runs before the locking
 /// clause, so the rows lock in ascending id and two transactions over one pair never deadlock. `false` unless both
-/// rows exist and are two (one's own handle names one row).
-async fn lock_pair(c: &mut PgConnection, a: UserId, b: UserId) -> Result<bool, sqlx::Error> {
+/// rows exist and are two (one's own handle names one row). The friendship transactions here and the gift
+/// ([`Repo::transfer`]) take it first.
+pub(crate) async fn lock_pair(
+    c: &mut PgConnection,
+    a: UserId,
+    b: UserId,
+) -> Result<bool, sqlx::Error> {
     let locked: Vec<i64> =
         sqlx::query_scalar("SELECT id FROM users WHERE id = ANY($1) ORDER BY id FOR NO KEY UPDATE")
             .bind([a.0, b.0].as_slice())
