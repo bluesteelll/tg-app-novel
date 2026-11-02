@@ -102,6 +102,8 @@ struct RecordLog {
     calls: Vec<GatewayCall>,
     /// The error every call answers with, when set.
     failure: Option<GatewayError>,
+    /// The error `savePreparedInlineMessage` alone answers with, when set (and no `failure` is).
+    prepare_failure: Option<GatewayError>,
     /// What the database probe read at each `createInvoiceLink`, in order.
     probes: Vec<Option<(String, Option<String>)>>,
 }
@@ -136,9 +138,26 @@ impl RecordingGateway {
         self.log().failure = failure;
     }
 
+    /// `savePreparedInlineMessage` from now on answers `failure` (`None`: `Ok` again); every other call is unchanged.
+    pub(crate) fn fail_prepare_with(&self, failure: Option<GatewayError>) {
+        self.log().prepare_failure = failure;
+    }
+
     /// Every call so far, in order.
     pub(crate) fn calls(&self) -> Vec<GatewayCall> {
         self.log().calls.clone()
+    }
+
+    /// The `savePreparedInlineMessage` calls so far as (sharer, share), in order (a call answered with a failure too).
+    pub(crate) fn prepared_calls(&self) -> Vec<(UserId, PreparedShare)> {
+        self.log()
+            .calls
+            .iter()
+            .filter_map(|call| match call {
+                GatewayCall::Prepared { user, share } => Some((*user, share.clone())),
+                _ => None,
+            })
+            .collect()
     }
 
     /// The `createInvoiceLink` specs so far, in order.
@@ -246,9 +265,12 @@ impl BotGateway for RecordingGateway {
         share: PreparedShare,
     ) -> BoxFut<'_, Result<PreparedMessage, GatewayError>> {
         Box::pin(async move {
-            self.record(GatewayCall::Prepared { user, share })?;
-            let n = self
-                .log()
+            let mut log = self.log();
+            log.calls.push(GatewayCall::Prepared { user, share });
+            if let Some(failure) = log.failure.clone().or_else(|| log.prepare_failure.clone()) {
+                return Err(failure);
+            }
+            let n = log
                 .calls
                 .iter()
                 .filter(|call| matches!(call, GatewayCall::Prepared { .. }))

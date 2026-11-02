@@ -532,6 +532,32 @@ pub struct ConsentRequest {
     pub text_version: String,
 }
 
+/// `POST /api/share` request (META-PLAN M14): what to share, in which language, and whether the client can send a
+/// prepared message (`shareMessage`, Bot API 8.0). Unknown fields are refused.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ShareRequest {
+    /// The story whose progress to share; `null` is a plain invite.
+    pub story_id: Option<StoryId>,
+    /// The language of the text: `ru` or `en`, checked by the route.
+    pub lang: String,
+    /// Whether the client can send a prepared message.
+    pub native: bool,
+}
+
+/// `POST /api/share` response: the sharer's invite link, the share text (the story title and the sharer's counts,
+/// never an ending or achievement title) and, for a native share, the prepared message's id.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareResponse {
+    /// `https://t.me/<bot>?startapp=f<invite code>`.
+    pub link: String,
+    /// The text, in the request's language.
+    pub text: String,
+    /// The id for `shareMessage`; `null` without `native` or when the prepare failed (then send the link).
+    pub prepared_message_id: Option<String>,
+}
+
 /// The first line of the generated file: what it is and how to rewrite it.
 const BINDINGS_HEADER: &str = "// Built from server/src/api/dto.rs and error.rs by ts-rs; do not edit. Regenerate: \
                                cargo test -p server --test it bindings::write_bindings -- --ignored --exact";

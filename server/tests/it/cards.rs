@@ -83,7 +83,7 @@ fn expect_ok(case: &str, res: Res) -> Result<(), String> {
 }
 
 /// An `achievement_unlocks` row, written raw.
-async fn unlock(c: &mut PgConnection, user: i64, story: &str, id: &str, at: i64) -> Res {
+pub(crate) async fn unlock(c: &mut PgConnection, user: i64, story: &str, id: &str, at: i64) -> Res {
     sqlx::query(
         "INSERT INTO achievement_unlocks (user_id, story_id, achievement_id, unlocked_at) VALUES ($1, $2, $3, $4)",
     )
@@ -191,7 +191,7 @@ fn uuid(n: u64) -> String {
 /// A raw `stat_events` row `uuid(n)` of `user`: `kind` in `chapter` (manor's ch1 / ch2, else tide's) with `subject`,
 /// received at `at`. Raw, so a row `classify` would refuse (a retired ending, an ending in another chapter) is written
 /// too.
-async fn stat(
+pub(crate) async fn stat(
     st: &AppState,
     user: i64,
     n: u64,
@@ -1053,9 +1053,15 @@ const CARD_CALLS: [&str; 4] = [
     "story_unlocks",
 ];
 
-/// Achievements grant nothing (M6, principle 1): the repository is named only by `db/achievements.rs` and by the card
-/// route in `api/cards.rs` (which leaves the table's name to `db/`), in `server` and `server-dev` alike; LF2's friend
-/// profile (`api/social.rs`) moves this allow-list on purpose for `endings_by_story` / `unlocks_by_story`.
+/// The two grouped reads of a user's progress (the friend profile and the share's counts, LF2), which `api/social.rs`
+/// alone calls.
+const SOCIAL_CALLS: [&str; 2] = ["endings_by_story", "unlocks_by_story"];
+
+/// Achievements grant nothing (M6, principle 1): the repository is named only by `db/achievements.rs`, by the card
+/// route in `api/cards.rs` (which leaves the table's name to `db/`) and by `api/social.rs` for the two grouped reads
+/// alone ([`SOCIAL_CALLS`]: LF2's friend profile and the share's counts, which `api/share.rs` takes from
+/// `api/social.rs`), in `server` and `server-dev` alike. Each allowed file must name each of its words, so a move
+/// cannot pass with an empty scan.
 #[test]
 fn achievements_repo_called_only_from_cards_api() {
     let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -1076,6 +1082,7 @@ fn achievements_repo_called_only_from_cards_api() {
         let allowed: &[&str] = match file.as_str() {
             "src/db/achievements.rs" => &ACHIEVEMENTS_REPO_WORDS,
             "src/api/cards.rs" => &CARD_CALLS,
+            "src/api/social.rs" => &SOCIAL_CALLS,
             _ => &[],
         };
         for (line, word) in
@@ -1089,7 +1096,8 @@ fn achievements_repo_called_only_from_cards_api() {
         }
     }
     let presence = std::iter::once(("src/db/achievements.rs", "achievement_unlocks"))
-        .chain(CARD_CALLS.iter().map(|&call| ("src/api/cards.rs", call)));
+        .chain(CARD_CALLS.iter().map(|&call| ("src/api/cards.rs", call)))
+        .chain(SOCIAL_CALLS.iter().map(|&call| ("src/api/social.rs", call)));
     for (file, word) in presence {
         if !seen.iter().any(|(f, w)| f == file && *w == word) {
             failures.push(format!("{file} does not name {word}"));

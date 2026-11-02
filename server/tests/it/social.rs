@@ -1230,7 +1230,7 @@ async fn unfriend_is_durable_against_old_code() {
 }
 
 /// The places in `value` that hold `id` as a number or as its decimal string, as JSON paths.
-fn id_paths(value: &Value, path: &str, id: i64, out: &mut Vec<String>) {
+pub(crate) fn id_paths(value: &Value, path: &str, id: i64, out: &mut Vec<String>) {
     match value {
         Value::Number(n) if n.as_i64() == Some(id) => out.push(path.to_owned()),
         Value::String(s) if *s == id.to_string() => out.push(path.to_owned()),

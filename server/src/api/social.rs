@@ -4,8 +4,14 @@
 //! `db/social.rs`. Every 200 is `private, no-store`: one user's own view. Another user is named by handle only, never
 //! by Telegram id (W1).
 //!
-//! An invite link is `https://t.me/<bot>?startapp=f<code>`; the server reads the signed `start_param` only. Every
-//! other `start_param` shape is reserved for later prefixes (campaign codes) and stays harmless: it creates nothing.
+//! An invite link is `https://t.me/<bot>?startapp=f<code>` ([`invite_link`] writes it, [`invite_code_of_start_param`]
+//! reads it); the server reads the signed `start_param` only. Every other `start_param` shape is reserved for later
+//! prefixes (campaign codes) and stays harmless: it creates nothing.
+//!
+//! A user's progress for others (the share's counts in `api/share.rs`, LF2) comes from the two grouped reads of
+//! `db/achievements.rs` ([`progress`]), counted against the current index ([`story_counts`]): this module is the one
+//! route module besides the card that names them (META-PLAN M6; pinned by
+//! `cards::achievements_repo_called_only_from_cards_api`).
 //!
 //! A malformed code or handle is 400 `bad_request` (it never reaches SQL); a well-shaped one that names nothing for
 //! this caller is 404 `not_found`. Neither reveals anything about another user.
@@ -22,9 +28,12 @@ use crate::api::body_rejection;
 use crate::api::dto::{ConsentRequest, FriendDto, FriendRequestDto, InviteView, SocialResponse};
 use crate::api::legal::policy_version;
 use crate::auth::AuthUser;
+use crate::content::StoryDef;
+use crate::db::achievements::{EndingRow, UnlockRow};
 use crate::db::social::{AcceptOutcome, RotateOutcome};
 use crate::error::ApiError;
 use crate::ids::UserId;
+use crate::meta::StoryMeta;
 
 /// Friends per user (MV15).
 pub const MAX_FRIENDS: i64 = 200;
@@ -67,6 +76,67 @@ pub fn invite_code_of_start_param(sp: &str) -> Option<&str> {
 /// `s` is a handle: exactly 24 lower-case hex digits.
 pub fn is_handle(s: &str) -> bool {
     is_lower_hex(s, HANDLE_HEX_LEN)
+}
+
+/// The invite link of `code` on the bot `username`: `https://t.me/<username>?startapp=f<code>`, which
+/// [`invite_code_of_start_param`] reads back.
+pub(crate) fn invite_link(username: &str, code: &str) -> String {
+    format!("https://t.me/{username}?startapp={INVITE_PREFIX}{code}")
+}
+
+/// What a user found, raw, over all stories: the distinct reached endings and the stored unlocks.
+pub(crate) struct Progress {
+    /// Every distinct (story, chapter, ending) reached.
+    endings: Vec<EndingRow>,
+    /// Every stored unlock.
+    unlocks: Vec<UnlockRow>,
+}
+
+/// `user`'s [`Progress`]: two grouped reads, autocommit.
+pub(crate) async fn progress(st: &AppState, user: UserId) -> Result<Progress, ApiError> {
+    Ok(Progress {
+        endings: st.repo.endings_by_story(user).await?,
+        unlocks: st.repo.unlocks_by_story(user).await?,
+    })
+}
+
+/// What counts of a user's progress in one story under the current index (STORIES-PLAN ST6).
+pub(crate) struct StoryCounts {
+    /// The endings found, in name order.
+    pub endings: Vec<String>,
+    /// The achievements unlocked, in the meta's display order.
+    pub achievements: Vec<String>,
+}
+
+/// `p` counted in `story` (pure; not gated: these are the user's own statistics, M13). An ending counts when the row
+/// is the story's and the story declares the ending in the row's chapter (`meta::facts`' rule): a retired ending, or
+/// one recorded in another chapter, does not. An unlock counts when the row is the story's and the story's meta still
+/// holds the id.
+pub(crate) fn story_counts(p: &Progress, story: &StoryDef, meta: &StoryMeta) -> StoryCounts {
+    let endings = story
+        .endings
+        .iter()
+        .filter(|&(name, chapter)| {
+            p.endings
+                .iter()
+                .any(|row| row.story == story.id && &row.name == name && &row.chapter == chapter)
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    let achievements = meta
+        .achievements
+        .iter()
+        .filter(|a| {
+            p.unlocks
+                .iter()
+                .any(|row| row.story == story.id && row.achievement == a.id)
+        })
+        .map(|a| a.id.clone())
+        .collect();
+    StoryCounts {
+        endings,
+        achievements,
+    }
 }
 
 /// The headers of a 200: one user's own view, which no shared cache stores (the `api/wallet.rs` pair).

@@ -22,6 +22,7 @@ use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::routing::post;
 
+use crate::api::share::{RateWindow, SHARE_WINDOW_SECS, SHARES_PER_HOUR};
 use crate::auth::Keys;
 use crate::catalog::{CATALOG_JSON, Catalog};
 use crate::clock::{Clock, SystemClock};
@@ -51,6 +52,9 @@ pub struct AppState {
     /// The Bot API: frankenstein's client on `cfg`'s token and environment, or a fake set by
     /// [`AppState::with_gateway`] (tests, the dev app).
     pub gateway: Arc<dyn BotGateway>,
+    /// The per-user window of `POST /api/share` ([`SHARES_PER_HOUR`] per rolling hour), in memory: one per state and
+    /// shared by its clones (a re-clocked test state keeps it); a restart forgets it.
+    pub share_limit: Arc<RateWindow>,
 }
 
 impl AppState {
@@ -77,6 +81,7 @@ impl AppState {
             content: Arc::new(content),
             catalog: Arc::new(catalog),
             gateway: Arc::new(gateway),
+            share_limit: Arc::new(RateWindow::new(SHARES_PER_HOUR, SHARE_WINDOW_SECS)),
         })
     }
 
