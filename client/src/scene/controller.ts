@@ -10,6 +10,7 @@ import type { AssetId, PropId } from '../story/staging.ts';
 import { createExecutor, gsapTicker, pauseAll, resumeAll } from './executor.ts';
 import type { Executor, GroupRef, Layer, SceneSnapshot, SpriteRef, StageAdapter, VisualCommand } from './executor.ts';
 import { renderResolution } from './layout.ts';
+import type { PerfClass } from './layout.ts';
 import { createImageLoader, probeAvif } from './loader.ts';
 import { ENSURE_HOLDER, createAssetScheduler } from './preload.ts';
 import type { AssetScheduler } from './preload.ts';
@@ -19,7 +20,8 @@ import { createRenderLoop } from './render-loop.ts';
 import type { RenderLoop } from './render-loop.ts';
 
 export interface SceneController {
-  mount(host: HTMLElement, o: { resolution: number; fetchAsset: FetchAsset }): Promise<Result<void, SceneError>>;
+  /** The render resolution is decided here, from the device's pixel ratio and its class (layout.ts, lever F). */
+  mount(host: HTMLElement, o: { dpr: number; perfClass: PerfClass; fetchAsset: FetchAsset }): Promise<Result<void, SceneError>>;
   /** Releases every preload:* holder and every next:* holder except next:<m.chapterId> (F4, F5). */
   setChapter(m: AssetManifest): void;
   /** Resolves after transitions + wait. */
@@ -262,7 +264,7 @@ export function createSceneController(): SceneController {
         return fail(`mount while ${state}`);
       }
       state = 'mounting';
-      const resolution = renderResolution(o.resolution, 'HIGH');
+      const resolution = renderResolution(o.dpr, o.perfClass);
       const avif = await probeAvif();
       const app = new Application();
       try {
