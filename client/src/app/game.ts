@@ -717,19 +717,22 @@ export function createGame(deps: GameDeps): Game {
 
   /**
    * "Return to last save": the last autosave, one level lower per error in this chapter (D10): the first from its
-   * checkpoint, every later one from the chapter start, so a knot that keeps failing cannot loop.
+   * checkpoint, every later one from the chapter start, so a knot that keeps failing cannot loop. With no autosave in
+   * this session (a new game's first step, a Continue resumed at a line) it exits to the stories (triage r1 M1): the
+   * server's copy stays, and Home's Continue is the retry (RULINGS 93).
    */
   const returnToSave = async (s: Session): Promise<void> => {
     if (session !== s) {
       return;
     }
+    const body = s.last;
+    if (body === null) {
+      void game.exitToStories(); // queued after this intent; Home is its outcome
+      return;
+    }
     screens.setRoot({ kind: 'game' });
     tg.setClosingConfirmation(true);
     s.yields.rootShown(); // D4: setRoot cleared the root-back
-    const body = s.last;
-    if (body === null) {
-      return;
-    }
     await resumeBody(s, body, s.inkErrors > 1 ? 'chapter-start' : 'checkpoint');
   };
 

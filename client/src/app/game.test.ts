@@ -2341,3 +2341,61 @@ test('game: a failed load it read shows the error notice', async () => {
     ['expired', 'reopen', 'notice', [], 0, 1],
   ]);
 });
+
+/** ch1 broken past the story gate after its first line: the second line has no line id. */
+function noIdNextCh1(): LoadedChapter {
+  return chapter('ch1', ['-> start', '=== start ===', 'Start line. #id:ch1.start.l001', 'No id here.', '-> END'], { start: {} });
+}
+
+/** ch1 broken past the story gate at its first line: it has no line id. */
+function noIdFirstCh1(): LoadedChapter {
+  return chapter('ch1', ['-> start', '=== start ===', 'No id here.', '-> END'], { start: {} });
+}
+
+test('game: return to last save with no save exits to the stories', async () => {
+  const first = harness({ chapters: [noIdNextCh1()] });
+  await startManor(first); // l001: its knot entry's autosave
+  const auto = first.save().slots.get('auto');
+  first.game.dispose();
+  expect(auto).toBeDefined();
+  if (auto === undefined) {
+    return;
+  }
+  const parts: ReadonlyArray<readonly [string, () => Promise<Harness>]> = [
+    [
+      'continue',
+      async () => {
+        // An exact resume at a line writes nothing, so the session has no last save when the next step raises.
+        const h = harness({ chapters: [noIdNextCh1()], slots: new Map([['auto', auto]]) });
+        expect((await h.game.start({ kind: 'slot', story: MANOR, slot: 'auto' })).ok).toBe(true);
+        await h.game.advance();
+        return h;
+      },
+    ],
+    [
+      'new',
+      async () => {
+        const h = harness({ chapters: [noIdFirstCh1()] });
+        await startManor(h); // the first step raises
+        return h;
+      },
+    ],
+  ];
+  const rows: unknown[] = [];
+  for (const [part, reach] of parts) {
+    const h = await reach();
+    const n = h.vm.notice;
+    expect(n?.kind).toBe('story_error');
+    if (n?.kind === 'story_error') {
+      n.onaction(); // Return to last save
+    }
+    await settle();
+    await settle();
+    rows.push([part, h.exits(), h.save().disposed, lineOf(h.vm)]);
+    h.game.dispose();
+  }
+  expect(rows).toEqual([
+    ['continue', 1, 1, null],
+    ['new', 1, 1, null],
+  ]);
+});
