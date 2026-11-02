@@ -29,9 +29,10 @@ fn localized(text: &Localized, lang: Lang) -> &str {
     }
 }
 
-/// `POST /api/invoices`: the checks run in a fixed order (token, body, product known, not owned); then a recent order
-/// with a link is handed out again, or a new order is committed and its link asked from the Bot API. A gateway failure
-/// is 502 `telegram_unavailable`, and the order stays `created` without a link (never reused).
+/// `POST /api/invoices`: the checks run in a fixed order (token, body, product known, not owned); then a new order is
+/// committed and its link asked from the Bot API. Every POST is a new order with its own link (K9), so a retry never
+/// hands out a link TWA has opened. A gateway failure is 502 `telegram_unavailable`, and the order stays `created`
+/// without a link.
 pub async fn post_invoice(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
@@ -46,22 +47,10 @@ pub async fn post_invoice(
     if st.repo.is_entitled(user, &product.id).await? {
         return Err(ApiError::AlreadyOwned);
     }
-    let created = st
-        .repo
-        .reuse_or_create_order(user, product, st.clock.now())
-        .await?;
-    let (order, language_code) = match created {
-        InvoiceOrder::Reused { order, invoice_url } => {
-            return Ok(Json(CreateInvoiceResponse {
-                order_id: order.0,
-                invoice_url,
-            }));
-        }
-        InvoiceOrder::Created {
-            order,
-            language_code,
-        } => (order, language_code),
-    };
+    let InvoiceOrder::Created {
+        order,
+        language_code,
+    } = st.repo.create_order(user, product, st.clock.now()).await?;
     let lang = payer_lang(language_code.as_deref());
     let title = localized(&product.title, lang).to_owned();
     let spec = InvoiceSpec {

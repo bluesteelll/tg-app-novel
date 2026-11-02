@@ -12,9 +12,6 @@ use crate::catalog::Product;
 use crate::db::Repo;
 use crate::ids::{OrderId, ProductId, UserId};
 
-/// How long a `created` order with a link is handed out again, in seconds (PP "HTTP API": younger than 1 h).
-pub const ORDER_REUSE_SECS: i64 = 3600;
-
 /// The prefix of every order id.
 const ORDER_PREFIX: &str = "o_";
 
@@ -68,17 +65,9 @@ pub struct OrderPayer {
     pub language_code: Option<String>,
 }
 
-/// What [`Repo::reuse_or_create_order`] did.
+/// What [`Repo::create_order`] did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvoiceOrder {
-    /// A `created` order of the same user, product, amount and pack binding, younger than [`ORDER_REUSE_SECS`] and
-    /// with a link: its link is handed out again, with no Bot API call.
-    Reused {
-        /// The order.
-        order: OrderId,
-        /// Its invoice link.
-        invoice_url: String,
-    },
     /// A new `created` order without a link, committed.
     Created {
         /// The order: also the invoice payload.
@@ -111,17 +100,16 @@ pub fn parse_order_id(s: &str) -> Option<OrderId> {
 }
 
 impl Repo {
-    /// The order a `POST /api/invoices` of the catalog's `product` by `user` at `now` hands out: the newest `created`
-    /// order of the same user, product, price and pack binding, younger than [`ORDER_REUSE_SECS`] and with a link;
-    /// else a new `created` order in `XTR` at the product's price, binding a pack's kind and amount (`NULL` for a
-    /// chapter: `orders_pack_binding`), read back with the user's language. One READ COMMITTED transaction, committed
-    /// before the caller asks the Bot API for a link: no lock is held across that call.
+    /// A new `created` order for a `POST /api/invoices` of the catalog's `product` by `user` at `now`: in `XTR` at the
+    /// product's price, binding a pack's kind and amount (`NULL` for a chapter: `orders_pack_binding`), read back with
+    /// the user's language. One READ COMMITTED transaction, committed before the caller asks the Bot API for a link:
+    /// no lock is held across that call.
     ///
-    /// The price and the binding come from the one catalog product that also titles the invoice (M19). An order
-    /// without a link is never reused (its link call failed or is still running), and a deploy inside the hour that
-    /// changes a price or a pack's amount makes a new order, so a reused invoice credits what the catalog lists. Two
-    /// concurrent first taps can make two orders; a double payment is closed at pre-checkout.
-    pub async fn reuse_or_create_order(
+    /// No order is handed out again (K9): each POST is a new payload, so `createInvoiceLink` makes a new invoice with a
+    /// slug TWA has not opened (it throws `WebAppInvoiceOpened` on one it has), and each order row costs one Bot API
+    /// call. The price and the binding come from the one catalog product that also titles the invoice (M19). Two open
+    /// orders of one product can coexist; a double payment of a chapter is closed at pre-checkout.
+    pub async fn create_order(
         &self,
         user: UserId,
         product: &Product,
@@ -133,28 +121,6 @@ impl Repo {
             None => (None, None),
         };
         let mut tx = self.pool.begin().await?;
-        let recent: Option<(String, String)> = sqlx::query_as(
-            "SELECT id, invoice_url FROM orders \
-             WHERE user_id = $1 AND product_id = $2 AND amount = $3 AND status = 'created' \
-             AND invoice_url IS NOT NULL AND created_at > $4 \
-             AND pack_kind IS NOT DISTINCT FROM $5 AND pack_amount IS NOT DISTINCT FROM $6 \
-             ORDER BY created_at DESC, id DESC LIMIT 1",
-        )
-        .bind(user.0)
-        .bind(&product.id.0)
-        .bind(amount)
-        .bind(now.saturating_sub(ORDER_REUSE_SECS))
-        .bind(pack_kind)
-        .bind(pack_amount)
-        .fetch_optional(&mut *tx)
-        .await?;
-        if let Some((order, invoice_url)) = recent {
-            tx.commit().await?;
-            return Ok(InvoiceOrder::Reused {
-                order: OrderId(order),
-                invoice_url,
-            });
-        }
         let order = new_order_id();
         sqlx::query(
             "INSERT INTO orders (id, user_id, product_id, amount, currency, status, created_at, pack_kind, \

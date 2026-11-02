@@ -1,5 +1,5 @@
 //! `POST /api/invoices`: Stars invoices priced and titled from the catalog, the order committed before the gateway
-//! call, and a recent order with a link handed out again. `GET /api/orders/{orderId}`: the status of the user's own
+//! call, and every POST a new order with its own link (K9). `GET /api/orders/{orderId}`: the status of the user's own
 //! order, read from its row. The pre-checkout (P5) through `POST /telegram/webhook`: the payer-row lock, the
 //! conditional order UPDATE, the classified refusals in the payer's language, and the 2 s / 5 s deadlines. The
 //! grant (P6): write-first and idempotent on the charge id, every money fact recorded, applied only to the payer's
@@ -499,55 +499,31 @@ async fn invoice_price_from_catalog() {
     report(&failures);
 }
 
-/// What a step of [`invoice_reuses_recent_order`] expects.
-enum Want {
-    /// The first order handed out again, with the first body.
-    Reuse,
-    /// A new order.
-    New,
-}
-
-/// The steps of [`invoice_reuses_recent_order`]: every order seen so far, and the failures.
-struct ReuseSteps<'g> {
+/// The steps of [`invoice_each_post_is_a_new_order`]: every order handed out so far, and the failures.
+struct PostSteps<'g> {
     gateway: &'g RecordingGateway,
-    /// The first reply's order and body.
-    first: (String, axum::body::Bytes),
-    /// Every distinct order handed out, in order.
+    /// Every order handed out, in order (a repeat included).
     seen: Vec<String>,
     failures: Vec<String>,
 }
 
-impl ReuseSteps<'_> {
-    /// One `POST /api/invoices` of `product` by `user` on `st`, checked against `want`; then the gateway calls and the
-    /// orders rows must each equal the distinct orders seen. The order handed out, if the reply was one.
+impl PostSteps<'_> {
+    /// One `POST /api/invoices` of `product` by `user` on `st`: the order must be one not handed out before; then the
+    /// gateway calls and the orders rows must each equal the POSTs so far. The order handed out, if the reply was one.
     async fn post(
         &mut self,
         case: &str,
         st: &AppState,
         user: i64,
         product: &str,
-        want: Want,
     ) -> Option<String> {
         let reply = post_invoice(st, Some(user), &invoice_body(product)).await;
         let (order, _) = invoice_reply(case, &reply, &mut self.failures)?;
-        match want {
-            Want::Reuse => {
-                if order != self.first.0 || reply.body != self.first.1 {
-                    self.failures.push(format!(
-                        "{case}: expected order {} with the first body, got {order} {:?}",
-                        self.first.0,
-                        body_text(&reply)
-                    ));
-                }
-            }
-            Want::New => {
-                if self.seen.contains(&order) {
-                    self.failures
-                        .push(format!("{case}: expected a new order, got {order} again"));
-                }
-                self.seen.push(order.clone());
-            }
+        if self.seen.contains(&order) {
+            self.failures
+                .push(format!("{case}: expected a new order, got {order} again"));
         }
+        self.seen.push(order.clone());
         let calls = self.gateway.invoice_calls().len();
         let rows = order_rows(st).await.len();
         let n = self.seen.len();
@@ -560,34 +536,34 @@ impl ReuseSteps<'_> {
     }
 }
 
-/// A recent `created` order with a link is handed out again, with no gateway call: at `T0` and up to `T0+3599`. At
-/// `T0+3600` (the window's edge), after the order moved to `checkout`, at a new price, for another product and for
-/// another user, it is a new order. Every request carries a token issued at its state's clock.
+/// No order is handed out again (K9): at `T0`, `T0+3599`, `T0+3600`, after checkout, at a new price, for another
+/// product and another user, each POST makes a new order with its own link and one `createInvoiceLink` call. Every
+/// request carries a token issued at its state's clock.
 #[tokio::test]
-async fn invoice_reuses_recent_order() {
+async fn invoice_each_post_is_a_new_order() {
     let (st, _db, gateway) = invoice_state(&[(ANN, Some("ru")), (BEN, Some("en"))]).await;
-    let mut first_failures = Vec::new();
-    let first = post_invoice(&st, Some(ANN), &invoice_body("chapter:ch2")).await;
-    let Some((a, _)) = invoice_reply("first POST at T0", &first, &mut first_failures) else {
-        report(&first_failures);
-        return;
-    };
-    let mut steps = ReuseSteps {
+    let mut steps = PostSteps {
         gateway: &gateway,
-        first: (a.clone(), first.body.clone()),
-        seen: vec![a],
-        failures: first_failures,
+        seen: Vec::new(),
+        failures: Vec::new(),
     };
+    if steps
+        .post("first POST at T0", &st, ANN, "chapter:ch2")
+        .await
+        .is_none()
+    {
+        return report(&steps.failures);
+    }
     steps
-        .post("second POST at T0", &st, ANN, "chapter:ch2", Want::Reuse)
+        .post("second POST at T0", &st, ANN, "chapter:ch2")
         .await;
     let late = at(&st, T0 + 3599);
     steps
-        .post("POST at T0+3599", &late, ANN, "chapter:ch2", Want::Reuse)
+        .post("POST at T0+3599", &late, ANN, "chapter:ch2")
         .await;
     let edge = at(&st, T0 + 3600);
     let b = steps
-        .post("POST at T0+3600", &edge, ANN, "chapter:ch2", Want::New)
+        .post("POST at T0+3600", &edge, ANN, "chapter:ch2")
         .await;
     if let Some(b) = b {
         let mut conn = common::raw_db(&st).await;
@@ -604,27 +580,107 @@ async fn invoice_reuses_recent_order() {
                 &edge,
                 ANN,
                 "chapter:ch2",
-                Want::New,
             )
             .await;
     }
     let repriced = edge.clone().with_catalog(catalog_priced(&st, "ch2", 5));
     steps
-        .post(
-            "POST at a new price",
-            &repriced,
-            ANN,
-            "chapter:ch2",
-            Want::New,
-        )
+        .post("POST at a new price", &repriced, ANN, "chapter:ch2")
         .await;
     steps
-        .post("POST for chapter:ch4", &edge, ANN, "chapter:ch4", Want::New)
+        .post("POST for chapter:ch4", &edge, ANN, "chapter:ch4")
         .await;
     steps
-        .post("POST by another user", &edge, BEN, "chapter:ch2", Want::New)
+        .post("POST by another user", &edge, BEN, "chapter:ch2")
         .await;
     report(&steps.failures);
+}
+
+/// An order's (status, invoice_url, pack_kind, pack_amount), read outside the app pool.
+async fn order_link_binding(
+    st: &AppState,
+    order: &str,
+) -> (String, Option<String>, Option<String>, Option<i64>) {
+    let mut conn = common::raw_db(st).await;
+    let row = sqlx::query_as(
+        "SELECT status, invoice_url, pack_kind, pack_amount FROM orders WHERE id = $1",
+    )
+    .bind(order)
+    .fetch_one(&mut conn)
+    .await
+    .unwrap();
+    conn.close().await.unwrap();
+    row
+}
+
+/// K9: a retry of an open order gets a new order with a fresh link (TWA throws `WebAppInvoiceOpened` on a link it has
+/// opened, keyed by its slug): for a chapter and for a pack, the second POST at `T0` is a second order and a second
+/// `createInvoiceLink` call, each row `created` with its own link (a pack's bound to the catalog's `hint`, 3); the
+/// second chapter order passes its pre-checkout.
+#[tokio::test]
+async fn invoice_retry_of_open_order_gets_fresh_link() {
+    let (st, _db, gateway) = invoice_state(&[(ANN, Some("ru"))]).await;
+    let mut failures = Vec::new();
+    let mut retried_chapter = None;
+    for (product, binding) in [
+        ("chapter:ch2", (None, None)),
+        ("pack:hint_s", (Some("hint".to_owned()), Some(3))),
+    ] {
+        let before = gateway.invoice_calls().len();
+        let first = post_invoice(&st, Some(ANN), &invoice_body(product)).await;
+        let first = invoice_reply(&format!("{product}: first POST"), &first, &mut failures);
+        let second = post_invoice(&st, Some(ANN), &invoice_body(product)).await;
+        let second = invoice_reply(&format!("{product}: second POST"), &second, &mut failures);
+        let (Some((o1, l1)), Some((o2, l2))) = (first, second) else {
+            continue;
+        };
+        if o2 == o1 || l2 == l1 {
+            failures.push(format!(
+                "{product}: second POST: expected a new order and link, got {o2} / {l2} again"
+            ));
+        }
+        let payloads: Vec<String> = gateway.invoice_calls()[before..]
+            .iter()
+            .map(|spec| spec.payload.0.clone())
+            .collect();
+        if payloads.len() != 2 {
+            failures.push(format!(
+                "{product}: createInvoiceLink calls: expected 2, got {} (payloads {payloads:?})",
+                payloads.len()
+            ));
+        } else if payloads != [o1.clone(), o2.clone()] {
+            failures.push(format!(
+                "{product}: createInvoiceLink payloads: expected [{o1}, {o2}], got {payloads:?}"
+            ));
+        }
+        for (case, order, link) in [("first", &o1, &l1), ("second", &o2, &l2)] {
+            let want = (
+                "created".to_owned(),
+                Some(link.clone()),
+                binding.0.clone(),
+                binding.1,
+            );
+            let got = order_link_binding(&st, order).await;
+            if got != want {
+                failures.push(format!(
+                    "{product}: the {case} order's row: expected {want:?}, got {got:?}"
+                ));
+            }
+        }
+        if product == "chapter:ch2" {
+            retried_chapter = Some(o2);
+        }
+    }
+    if let Some(order) = retried_chapter {
+        let update = pre_checkout_update("q-retry", ANN, Some("ru"), "XTR", 1, &order);
+        let got = answered(&st, &gateway, &update).await;
+        failures.extend(expect_answer(
+            "the pre-checkout of the second chapter order",
+            &got,
+            &Ok(()),
+        ));
+    }
+    report(&failures);
 }
 
 /// The order row is committed, without a link, when the gateway is called: a connection outside the app pool reads it
