@@ -392,6 +392,90 @@ describe('catalog manifests', () => {
     expect(refused({ assets: { 'cover/manor': audio('sfx', 'cover-manor-1a2b3c4d') } })).toContainEqual(at('assets.cover/manor.kind'));
     expect(refused({ assets: {}, chapterId: 'ch1' })).toEqual([at('chapterId')]);
   });
+
+  // MEMORY-PLAN 4.B / §5: a char or prop file holds its alpha box; `trim` places it on its canvas.
+  const ALLY_TRIM = { canvasW: 768, canvasH: 1536, x: 151, y: 142 };
+  const trimmedAlly = (over: RawEntry = {}, trim: unknown = ALLY_TRIM): RawEntry =>
+    image('char-ally-neutral-0c0c0c0c', { w: 466, h: 1394, decodedBytes: 466 * 1394 * 4, trim, ...over });
+  const oneEntry = (id: string, entry: RawEntry): CatalogIssue[] => manifestIssues({ chapterId: 'ch1', assets: { [id]: entry } });
+
+  test('catalog: trimmed image entry decodes', () => {
+    const raw = {
+      chapterId: 'ch1',
+      assets: {
+        'char/ally/neutral': trimmedAlly(),
+        'prop/note': image('prop-note-0d0d0d0d', { w: 494, h: 494, decodedBytes: 494 * 494 * 4, trim: { canvasW: 512, canvasH: 512, x: 9, y: 9 } }),
+        'bg/street': image('bg-street-0a0a0a0a'),
+      },
+    };
+    const r = decodeAssetManifest(raw);
+    expect(r).toEqual({ ok: true, value: raw });
+    // An untrimmed entry carries no `trim` key at all, not `trim: undefined`.
+    const street = r.ok ? r.value.assets['bg/street' as AssetId] : undefined;
+    expect(street).toBeDefined();
+    expect(Object.hasOwn(street ?? {}, 'trim')).toBe(false);
+  });
+
+  test('catalog: a trim outside its canvas is an error value', () => {
+    const ally = 'assets.char/ally/neutral';
+    const at = (path: string, detail: unknown = expect.any(String), file: CatalogIssue['file'] = 'assets.json'): CatalogIssue => ({
+      file,
+      path,
+      detail: detail as string, // a literal or an asymmetric matcher
+    });
+    const only = 'only char and prop entries are trimmed';
+    const coverIssues = (raw: unknown): CatalogIssue[] => {
+      const r = decodeCoverManifest(raw);
+      return r.ok ? [] : r.error;
+    };
+    const cover = image('x', {
+      w: 360,
+      h: 640,
+      decodedBytes: 360 * 640 * 4,
+      avif: { url: '/assets/cover-manor-1a2b3c4d.avif', bytes: 9_000 },
+      webp: { url: '/assets/cover-manor-1a2b3c4d.webp', bytes: 12_000 },
+      trim: { canvasW: 400, canvasH: 700, x: 20, y: 30 },
+    });
+    const sprite = (trim: unknown, over: RawEntry = {}) => (): CatalogIssue[] => oneEntry('char/ally/neutral', trimmedAlly(over, trim));
+    const cases: ReadonlyArray<readonly [string, () => CatalogIssue[], readonly CatalogIssue[]]> = [
+      ['x + w past canvasW', sprite({ ...ALLY_TRIM, x: 303 }), [at(`${ally}.trim.x`)]],
+      ['y + h past canvasH', sprite({ ...ALLY_TRIM, y: 143 }), [at(`${ally}.trim.y`)]],
+      ['negative x', sprite({ ...ALLY_TRIM, x: -1 }), [at(`${ally}.trim.x`)]],
+      ['zero canvasW', sprite({ ...ALLY_TRIM, canvasW: 0 }), [at(`${ally}.trim.canvasW`)]],
+      ['fractional y', sprite({ ...ALLY_TRIM, y: 141.5 }), [at(`${ally}.trim.y`)]],
+      [
+        'a trim equal to the canvas',
+        sprite({ canvasW: 768, canvasH: 1536, x: 0, y: 0 }, { w: 768, h: 1536, decodedBytes: 768 * 1536 * 4 }),
+        [at(`${ally}.trim`, 'the stored size is the canvas: omit trim')],
+      ],
+      ['a trim on a bg', () => oneEntry('bg/street', image('bg-street-0a0a0a0a', { trim: ALLY_TRIM })), [at('assets.bg/street.trim', only)]],
+      ['a trim on a cg', () => oneEntry('cg/letter', image('cg-letter-0b0b0b0b', { trim: ALLY_TRIM })), [at('assets.cg/letter.trim', only)]],
+      ['a trim on a cover', () => coverIssues({ assets: { 'cover/manor': cover } }), [at('assets.cover/manor.trim', only, 'story-gen/covers.json')]],
+      ['an unknown key in the trim', sprite({ ...ALLY_TRIM, z: 1 }), [at(`${ally}.trim.z`)]],
+      ['a missing y', sprite({ canvasW: 768, canvasH: 1536, x: 151 }), [at(`${ally}.trim.y`, 'missing')]],
+      ['a trim that is not an object', sprite(5), [at(`${ally}.trim`, 'not an object')]],
+    ];
+    for (const [name, issuesOf, expected] of cases) {
+      const found = issuesOf();
+      for (const issue of expected) {
+        expect(found, name).toContainEqual(issue);
+      }
+      expect(found.length, `${name}: ${JSON.stringify(found)}`).toBe(expected.length);
+    }
+    // Control: the sprite on its canvas decodes.
+    expect(oneEntry('char/ally/neutral', trimmedAlly())).toEqual([]);
+  });
+
+  test('catalog: a char entry with an odd stored side is an error value', () => {
+    // Even sides make the half tier an exact halving (MEMORY-PLAN 4.B), trimmed or not.
+    const at = (path: string): CatalogIssue => ({ file: 'assets.json', path, detail: expect.any(String) as string });
+    const char = oneEntry('char/ally/neutral', image('char-ally-neutral-0c0c0c0c', { w: 767, h: 1536, decodedBytes: 767 * 1536 * 4 }));
+    expect(char).toContainEqual(at('assets.char/ally/neutral.w'));
+    expect(char).toHaveLength(1);
+    expect(oneEntry('prop/note', image('prop-note-0d0d0d0d', { w: 512, h: 511, decodedBytes: 512 * 511 * 4 }))).toEqual([at('assets.prop/note.h')]);
+    // Control: the rule is char and prop only; the decoder leaves a bg's size to the budget.
+    expect(oneEntry('bg/street', image('bg-street-0a0a0a0a', { w: 1079, decodedBytes: 1079 * 2048 * 4 }))).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------------------------------------------
