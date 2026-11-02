@@ -75,6 +75,11 @@ type TwaWindow = Window & { Telegram?: { WebApp?: unknown } };
 
 /** CloudStorage's value limit (core.telegram.org/bots/webapps#cloudstorage). */
 const CLOUD_VALUE_MAX = 4096;
+/**
+ * A CloudStorage / DeviceStorage call whose callback has not come by then settles as a `timeout` storage error, and a
+ * later callback is ignored: boot awaits these calls, and Telegram does not promise to answer one.
+ */
+export const STORAGE_TIMEOUT_MS = 5_000;
 /** A share that neither succeeds nor fails within this ends as `unknown` (META M16). */
 const SHARE_GUARD_MS = 60_000;
 /** The startapp envelope (META "Telegram facts"): what Telegram passes through as `start_param`. */
@@ -150,20 +155,40 @@ function call(method: string, fn: () => void): Result<void, TgError> {
   }
 }
 
-/** One callback-style TWA call as a Promise of a Result: TWA's throw and its callback's error are values. */
+/**
+ * One callback-style TWA storage call as a Promise of a Result: TWA's throw, its callback's error and a callback that
+ * has not come within STORAGE_TIMEOUT_MS are values. The first of them settles the call and clears the bound.
+ */
 function request<T>(
   method: string,
+  env: Pick<TgEnv, 'setTimeout' | 'clearTimeout'>,
   start: (done: (error: string | null, value: T) => void) => void,
 ): Promise<Result<T, TgError>> {
   return new Promise((resolve) => {
+    let settled = false;
+    const settle = (r: Result<T, TgError>): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      env.clearTimeout(bound);
+      resolve(r);
+    };
+    // Set before the call: TWA may answer inside it.
+    const bound = env.setTimeout(() => settle({ ok: false, error: { kind: 'storage', detail: 'timeout' } }), STORAGE_TIMEOUT_MS);
     try {
       start((error, value) => {
-        resolve(error !== null ? { ok: false, error: { kind: 'storage', detail: String(error) } } : { ok: true, value });
+        settle(error !== null ? { ok: false, error: { kind: 'storage', detail: String(error) } } : { ok: true, value });
       });
     } catch (e) {
-      resolve({ ok: false, error: thrownError(method, e) });
+      settle({ ok: false, error: thrownError(method, e) });
     }
   });
+}
+
+/** A `setItem` callback's error: `(null, false)` means Telegram did not store the value. */
+function storedError(error: string | null, stored: boolean | undefined): string | null {
+  return error ?? (stored === false ? 'not stored' : null);
 }
 
 function parsedUrl(url: string): URL | null {
@@ -407,7 +432,7 @@ function webAppClient(w: TwaWebApp, env: TgEnv): TelegramClient {
       get: (k) =>
         !at('6.9')
           ? Promise.resolve(unsupported('cloud.get'))
-          : request<string | null>('cloud.get', (done) =>
+          : request<string | null>('cloud.get', env, (done) =>
               w.CloudStorage.getItem(k, (error, value) => done(error, typeof value === 'string' && value !== '' ? value : null)),
             ),
       set: (k, v) => {
@@ -420,20 +445,22 @@ function webAppClient(w: TwaWebApp, env: TgEnv): TelegramClient {
             error: { kind: 'invalid', method: 'cloud.set', detail: `value over ${CLOUD_VALUE_MAX} characters` },
           });
         }
-        return request<void>('cloud.set', (done) => w.CloudStorage.setItem(k, v, (error) => done(error, undefined)));
+        return request<void>('cloud.set', env, (done) =>
+          w.CloudStorage.setItem(k, v, (error, stored) => done(storedError(error, stored), undefined)),
+        );
       },
     },
     device: at('9.0')
       ? {
           get: (k) =>
-            request<string | null>('device.get', (done) =>
+            request<string | null>('device.get', env, (done) =>
               w.DeviceStorage.getItem(k, (error, value) => done(error, typeof value === 'string' ? value : null)),
             ),
           set: (k, v) =>
-            request<void>('device.set', (done) =>
+            request<void>('device.set', env, (done) =>
               v === null
                 ? w.DeviceStorage.removeItem(k, (error) => done(error, undefined))
-                : w.DeviceStorage.setItem(k, v, (error) => done(error, undefined)),
+                : w.DeviceStorage.setItem(k, v, (error, stored) => done(storedError(error, stored), undefined)),
             ),
         }
       : null,
