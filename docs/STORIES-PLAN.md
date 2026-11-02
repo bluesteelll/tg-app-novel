@@ -1088,6 +1088,14 @@ while LDB1 ran; LDB1 and LDB2 had merged before the design landed, and the merge
   - running: L15b app-e2e (client; it holds `client/e2e/stories.spec.ts`, this design's L15 re-cut) and LPO
     privacy-operator (server);
   - to go, of this design's lanes: none.
+- **As of `6d77329`** (changed by RULINGS 89-103; docs lane `docs-errata-5`, group B; SHAs from `git log --first-parent
+  main`):
+  - merged since `48abfaf`: LPO `90e1226`, L15b `fbcfd38` (with `client/e2e/stories.spec.ts`, this design's L15
+    re-cut), L9 `d837c8b`, M1 `f1b707d`, LFU1 `f637bac` and LFU2 `6d77329`. RULINGS 95 cut the client follow-ups lane
+    into LFU1 and LFU2, and RULINGS 99 added LFU3 after LMI (PP "Dependency order");
+  - running: LPH payments-hardening (server; new, RULINGS 96, after L9 and before D2) and LMI meta-integration
+    (client);
+  - to go, of this design's lanes: none.
 
 **Order** (RULINGS 8 rolling, RULINGS 18 three slots; as of `66c92c4`, changed by RULINGS 22, 23: LDB1 and LDB2
 merged, so the server chain starts at L6b): server L6b → LS2 → L6c → L8a → L8b → LS3 → L9; client (two slots)
@@ -1106,6 +1114,10 @@ has merged; MEMORY-PLAN's M3c beside D2; the client follow-ups lane after L15b, 
 PP "Dependency order"). Critical path to the prototype milestone: L15b. Ruled since (RULINGS 92, OB1): the follow-ups
 lane runs beside M1 after L15b and before LMI, and the budget-gate gap item is M1's; RULINGS 95 cut it into LFU1 and
 LFU2, and LMI's gate keeps LFU1.
+Changed by RULINGS 89-103 (as of `6d77329`): the server chain has run to L9 (`d837c8b`), so it continues LPH (running;
+RULINGS 96), then MEMORY-PLAN's M3s; client LMI (running; its gate with M1 and LFU1 met) → M2 → D2 (MEMORY-PLAN's M3c
+beside D2; D2 also waits for LPH; LFU3 after LMI, RULINGS 99, its order with M2 not ruled yet: PP "Dependency order").
+The prototype milestone is reached: L15b merged `fbcfd38`.
 
 **Collision locks added** (PP "Collision locks"): `0001` L2 → LDB1 → LS2; `0003` LS3; the serialized server files
 L6b → LS2 → L6c → L8a → L8b → LS3 → L9; `ids.rs` L6b (`StoryId` with `PuzzleId`); `lint.ts` / `dsl-doc.test.ts` /
@@ -1280,6 +1292,7 @@ Totals: 2 stories, 4 chapters (2 free, 2 paid), 4 endings (`truth`, `ashes`, `dr
 | 12 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `e6eca0d` (the docs-errata-4 spec, group A; RULINGS 79-88), as merged on main `48abfaf` | Docs lane `docs-errata-4`, group A (not a triage round): LS4 (`4c713fa`) — `flush`'s optional `keepalive` (docs-errata-3 fix-r1). Ledger: `D:/tmp/novel-orch/docs-errata-4/ledger.md` |
 | 13 | 2026-11-02 | RULINGS 80-88 (as merged on main `48abfaf`) | Docs lane `docs-errata-4`, group B (not a triage round): "Implementation plan" — "Running and merged lanes" and "Order" as of `48abfaf` (LF2, LE2, L15a and LMD merged; L15 split into L15a and L15b, RULINGS 80; L15b and LPO running; the critical path from L15b). Ledger: `D:/tmp/novel-orch/docs-errata-4/ledger.md` |
 | 14 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `874d685` (the docs-errata-5 spec, group A; RULINGS 89-103), as merged on main `6d77329` | Docs lane `docs-errata-5`, group A (not a triage round): the OB1 ruling (RULINGS 92) and the LFU1 / LFU2 split (RULINGS 95) where "Order" said "not ruled yet"; L15b (`fbcfd38`) — the e2e row's seventh name (`stories: a locked chapter row opens the paywall without loading the chapter`). Ledger: `D:/tmp/novel-orch/docs-errata-5/ledger.md` |
+| 15 | 2026-11-02 | RULINGS 89-103 (as merged on main `6d77329`) | Docs lane `docs-errata-5`, group B (not a triage round): "Implementation plan" — "Running and merged lanes" and "Order" as of `6d77329` (LPO, L15b, L9, M1, LFU1 and LFU2 merged; the client follow-ups lane cut into LFU1 and LFU2, RULINGS 95; LFU3 and LPH new, RULINGS 99, 96; LPH and LMI running; the prototype milestone reached at L15b). Ledger: `D:/tmp/novel-orch/docs-errata-5/ledger.md` |
 
 **Revision 1 (2026-10-31)** — what changed, by triage item:
 - **W1** (LS1 moved merged test pins it did not declare; commit 6 left the real-tree `story` gate red): PP "LS1" —

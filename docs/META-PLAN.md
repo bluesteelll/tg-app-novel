@@ -878,6 +878,11 @@ unchanged.**
     LF1, LM2, LF2 (`d0c7870`), LE2 (`ec3b29f`) and LMD (`48abfaf`) have merged and LPO runs; LMI is to go. The server
     chain has run to LE2, so it continues LPO → L9. LMI's gate "L15" is met when L15b merges: RULINGS 80 split L15
     into L15a (merged `e94c786`) and L15b (running); MEMORY-PLAN adds M1 to the gate.
+  - Changed by RULINGS 89-103 (as of `6d77329`; docs lane `docs-errata-5`, group B): of the ten lanes, LPO
+    (`90e1226`) has merged too, and LMI runs (base `f637bac`). L9 has merged (`d837c8b`), so the server chain
+    continues LPH payments-hardening (running; RULINGS 96, after L9 and before D2). LMI's gate is met: L15b
+    (`fbcfd38`), M1 (`f1b707d`) and LFU1 (`f637bac`, the `game.ts` half of the client follow-ups lane, RULINGS 92, 95)
+    have merged.
   - Why LPO is a lane of its own (revision 1, W4): the operator facts need a `Config` variable, which means editing
     the three `Config` constructors (`config.rs`, `server/dev/src/lib.rs`, `server/tests/it/common.rs`) plus
     `lib.rs` and `.env.example`; in LF1 that is 15 + 4 = 19 files, over the cap. LPO holds them with `api/legal.rs` and
@@ -1917,6 +1922,9 @@ LMI (its gate gains MEMORY-PLAN's M1).
 Changed by RULINGS 80-88 (as of `48abfaf`): merged also LF2 `d0c7870`, LE2 `ec3b29f` and LMD `48abfaf`; running LPO
 (server) and L15b (client, the second half of L15 after RULINGS 80's split, ahead of LMI); to go: server L9, client
 LMI (after L15b and M1).
+Changed by RULINGS 89-103 (as of `6d77329`): merged also LPO `90e1226` and L9 `d837c8b` (server), and L15b `fbcfd38`,
+M1 `f1b707d` and LFU1 `f637bac` (LMI's gate); running LPH (server, after L9; RULINGS 96) and LMI (client); to go of
+this design's lanes: none. LFU3 (RULINGS 99) follows LMI.
 
 ---
 
@@ -2096,3 +2104,4 @@ lists (default: the narrative-designer drafts the demo ones above), Q21 jurisdic
 | 8 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `e6eca0d` (the docs-errata-4 spec, group A; RULINGS 79-88), as merged on main `48abfaf` | Docs lane `docs-errata-4`, group A (not a triage round): LF2 (`d0c7870`) — the profile's 8 statements, its stories with a counted ending or unlock, no `first_name`, no `?lang`, the gateway's `PreparedShare` by value and the `u64` expiry; LM2 (`5a33183`) — `gate` / `visible` over the `StoryDef`, `EndingMeta`, `StoryMeta.puzzles`; LE2 (`ec3b29f`) — `transfer(&GiftMove, …)`, `qualify_referral(first_chapters, …)` in `db/social.rs`, the window constants, the caps in units (and MV6), `maxPerGift` in `WalletResponse`, `Retry-After` as the earliest time, the balance-row lock order, the 404 on a retry after an unfriend; LMD (`48abfaf`) — the services' `Pick<MetaEndpoints, …>` and options, `setVisible`'s text version, `MetaError` / `metaError` / `FriendHandle` in `api/endpoints.ts` with the error table, `WalletView.maxPerGift`; fix round 1: the profile comment names the handle read (`user_by_handle`, the id only) and the friend list as the one name read. Ledger: `D:/tmp/novel-orch/docs-errata-4/ledger.md` |
 | 9 | 2026-11-02 | RULINGS 80-88 (as merged on main `48abfaf`) | Docs lane `docs-errata-4`, group B (not a triage round): M28 and "Implementation plan" Order as of `48abfaf` (LM1, LU1, LE1, LF1, LM2, LF2, LE2, LMD merged; LPO running; LMI to go, after L15b and M1). Ledger: `D:/tmp/novel-orch/docs-errata-4/ledger.md` |
 | 10 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `874d685` (the docs-errata-5 spec, group A; RULINGS 89-103), as merged on main `6d77329` | Docs lane `docs-errata-5`, group A (not a triage round): LPO (`90e1226`) — `Policy::load` async on `tokio::fs`; LE2 (`ec3b29f`) — `db/social.rs` also written by `qualify_referral`; LF1 (`946e2b5`) — requester names from `Repo::social`'s request list; L9 (`d837c8b`) — the L9 names row as merged. Ledger: `D:/tmp/novel-orch/docs-errata-5/ledger.md` |
+| 11 | 2026-11-02 | RULINGS 89-103 (as merged on main `6d77329`) | Docs lane `docs-errata-5`, group B (not a triage round): M28 and "Implementation plan" Order as of `6d77329` (LM1, LU1, LE1, LF1, LM2, LF2, LE2, LMD, LPO merged; L9 merged, so the server chain continues LPH, RULINGS 96; LMI running, its gate with L15b, M1 and LFU1 met). Ledger: `D:/tmp/novel-orch/docs-errata-5/ledger.md` |

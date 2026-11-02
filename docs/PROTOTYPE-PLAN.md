@@ -2847,6 +2847,25 @@ below; its cut starts from `D:/tmp/novel-orch/carry.md` (the L15 cut and L15a bl
 base `e94c786`) and LPO privacy-operator (server, base `e94c786`), beside the docs lane `docs-errata-4` (base
 `48abfaf`). "To go": the rest, in the planned order below.
 
+Changed by RULINGS 89-103 (as merged; docs lane `docs-errata-5`, group B): the State column is the state as of
+`6d77329`, with each SHA from `git log --first-parent main`. Since `48abfaf` these merged: LPO `90e1226`, L15b
+`fbcfd38`, L9 `d837c8b`, M1 `f1b707d`, LFU1 `f637bac` and LFU2 `6d77329` (and the docs lane `docs-errata-4` as
+`6162a86`). RULINGS 95 cut the client follow-ups lane in two: LFU1 `engine-followups` (the `game.ts` / saves items
+and K24) and LFU2 `client-followups` (K33's facade half, K34, K39 / K58, K7(c) and L15b's e2e hardening); both have
+merged. RULINGS 92 moved the budget-gate gap item into M1, and it merged with M1. Two lanes are new:
+- **LFU3** (client, RULINGS 99; planned after LMI): K33's Notice half, K46 with its `yields.ts` producer line, and the
+  429 display of `POST /api/invoices`; RULINGS 101 adds two LFU1 carries (`s.last` after a resume; each save-conflict
+  answer on its own slot);
+- **LPH `payments-hardening`** (server, RULINGS 96; after L9, before D2): K9 (each invoice POST a new order), the
+  per-user order bound, the re-key of a refunded charge's entitlement to another paid charge, the money pins, the
+  timeout text, the 200 on a non-money command's database error, the prod refusal of draft bot texts, and the
+  `STATIC_DIR` dot-entry refusal.
+
+Neither LFU3 nor LPH has a lane entry below; their cuts start from `D:/tmp/novel-orch/carry.md` and the rulings named.
+Running: LPH payments-hardening (server, base `d837c8b`) and LMI meta-integration (client, base `f637bac`; its gate
+L15, LMD, LU1, LE2, M1 and LFU1 is met), beside the docs lane `docs-errata-5` (base `6d77329`). "To go": LFU3, M2,
+M3c, D2 and M3s, in the planned order below.
+
 | Lane | Slot | State | Gate to start (merged) | Re-cut |
 |---|---|---|---|---|
 | L1 client-shell | client | merged `ea8a6a2` (`f6e2624` before the rewrite) | — | — |
@@ -2879,8 +2898,9 @@ base `e94c786`) and LPO privacy-operator (server, base `e94c786`), beside the do
 | **LM2 meta-server** | server | merged `5a33183` (new, META-PLAN) | LF1 (serialized server files), LM1 (`server/content/meta.json` and its fixture) | new |
 | **LF2 share-profile** | server | merged `d0c7870` (new, META-PLAN) | LM2 (the profile reads the meta and the unlocks) | new |
 | **LE2 gifts-referrals** | server | merged `ec3b29f` (new, META-PLAN) | LF2 (serialized server files; needs LE1, LF1) | new |
-| **LPO privacy-operator** | server | running (base `e94c786`; new, META-PLAN revision 1) | LE2 (serialized server files; LF1's `api/legal.rs`) | new |
-| L9 refunds-bot | server | to go | LS3 (serialized server files; needs L8b). Changed by META-PLAN: LE2 (the pack clawback needs LE1's ledger; the gifted-pack test needs LE2); revision 1: LPO (serialized server files) | STORIES-PLAN: gate only; META-PLAN: the pack clawback, unapplied, `/privacy`; moved to the end of the server chain |
+| **LPO privacy-operator** | server | merged `90e1226` (new, META-PLAN revision 1) | LE2 (serialized server files; LF1's `api/legal.rs`) | new |
+| L9 refunds-bot | server | merged `d837c8b` | LS3 (serialized server files; needs L8b). Changed by META-PLAN: LE2 (the pack clawback needs LE1's ledger; the gifted-pack test needs LE2); revision 1: LPO (serialized server files) | STORIES-PLAN: gate only; META-PLAN: the pack clawback, unapplied, `/privacy`; moved to the end of the server chain |
+| **LPH payments-hardening** | server | running (base `d837c8b`; new, RULINGS 96) | L9 (serialized server files; it takes L9's carried payment gaps) | new (RULINGS 96; cut r1 ruled in RULINGS 97) |
 | **LDB2 pgdev-tune** | server | merged `a7e4a04` (ran early, SQ4) | LDB1; launched after L9 unless the server slot idles earlier (SQ4) | cut in RULINGS 17 / `design/db/decision.md` |
 | L10 client-data | client | merged `34b7f13` | L7, L8b, LS2 | PUZZLES-PLAN, STORIES-PLAN (saves per story); META-PLAN: `isDelivered`, the hint status decoder |
 | L13 story-runtime | client | merged `06dc6a3` | L3c, L5, L10, LW2, LS1 | STORIES-PLAN: gate + LS1 (`catalog.ts`) |
@@ -2894,13 +2914,14 @@ base `e94c786`) and LPO privacy-operator (server, base `e94c786`), beside the do
 | **N2 story-tide** | narrative | merged `3587bdd` (new, STORIES-PLAN) | N1 (shared story files), LS1, L5 | new; META-PLAN: ending titles, achievements |
 | **LP2 puzzle-ui** | client | merged `88d0964` | L10, L14b, LW2 | PUZZLES-PLAN; META-PLAN: `HintPort \| null` |
 | **LX explore-ui** | client | merged `a9e991c` | L11, L14b, LW2 | PUZZLES-PLAN (∥ LP2: disjoint locks) |
-| L15 integration | client | split (RULINGS 80): L15a `engine-wiring` merged `e94c786`; L15b `app-e2e` running (base `e94c786`) | every lane above (N1 and N2 included: the e2e plays both stories). Changed by META-PLAN: every lane above except L9 and the META-PLAN lanes (LE1, LF1, LM2, LF2, LE2, LU1, LMD; LM1 is in through N1) | PUZZLES-PLAN, STORIES-PLAN (stories wiring, `stories.spec.ts`); META-PLAN: `choice_made`, `hints: null`; MEMORY-PLAN: lever F (+ `scene/controller.ts`) and the e2e helpers, carried into its running cut through its brief |
-| **client follow-ups** | client | to go (new, RULINGS 80; L15 cut Q3) | L15b (its items touch `app/game.ts`, which L15b also holds; RULINGS 87) | new |
-| **M1 memory-trim** | client | to go (new, MEMORY-PLAN) | L15 (the first rendered scene and `perf.spec.ts`; the e2e helpers) | new |
-| **LMI meta-integration** | client | to go (new, META-PLAN) | L15, LMD, LU1, LE2. Changed by MEMORY-PLAN: M1 | new; MEMORY-PLAN: gate + M1 |
+| L15 integration | client | split (RULINGS 80): L15a `engine-wiring` merged `e94c786`; L15b `app-e2e` merged `fbcfd38` | every lane above (N1 and N2 included: the e2e plays both stories). Changed by META-PLAN: every lane above except L9 and the META-PLAN lanes (LE1, LF1, LM2, LF2, LE2, LU1, LMD; LM1 is in through N1) | PUZZLES-PLAN, STORIES-PLAN (stories wiring, `stories.spec.ts`); META-PLAN: `choice_made`, `hints: null`; MEMORY-PLAN: lever F (+ `scene/controller.ts`) and the e2e helpers, carried into its running cut through its brief |
+| **client follow-ups** | client | cut in two (RULINGS 95): LFU1 `engine-followups` merged `f637bac`; LFU2 `client-followups` merged `6d77329` (new, RULINGS 80; L15 cut Q3) | L15b (its items touch `app/game.ts`, which L15b also holds; RULINGS 87) | new |
+| **M1 memory-trim** | client | merged `f1b707d` (new, MEMORY-PLAN) | L15 (the first rendered scene and `perf.spec.ts`; the e2e helpers) | new; RULINGS 92: + the budget-gate gap item of the client follow-ups lane |
+| **LMI meta-integration** | client | running (base `f637bac`; new, META-PLAN) | L15, LMD, LU1, LE2. Changed by MEMORY-PLAN: M1. Changed by RULINGS 92, 95: LFU1 (both hold `client/src/app/game.ts`) | new; MEMORY-PLAN: gate + M1 |
+| **LFU3** | client | to go (new, RULINGS 99) | LMI (it holds `client/src/app/{boot,game,game.test,yields}.ts`, which LMI also holds) | new |
 | **M2 memory-cpu-copy** | client | to go (new, MEMORY-PLAN) | LMI (after M1; the `budget.ts` and `app/game.ts` chains) | new |
 | **M3c memory-half-tier** | client | to go (new, MEMORY-PLAN) | M2 | new |
-| D2 docs-final | doc | to go | L15. Changed by META-PLAN: LMI, L9; revision 1: LPO. Changed by MEMORY-PLAN: M2 | PUZZLES-PLAN, STORIES-PLAN; META-PLAN: the meta rows and runbooks; MEMORY-PLAN: gate + M2, the M1 / M2 map rows, two authoring-guide rules |
+| D2 docs-final | doc | to go | L15. Changed by META-PLAN: LMI, L9; revision 1: LPO. Changed by MEMORY-PLAN: M2. Changed by RULINGS 96: LPH (it closes L9's carried payment gaps before D2) | PUZZLES-PLAN, STORIES-PLAN; META-PLAN: the meta rows and runbooks; MEMORY-PLAN: gate + M2, the M1 / M2 map rows, two authoring-guide rules |
 | **M3s memory-half-paid** | server | to go (new, MEMORY-PLAN) | M3c, L9 (the end of the server chain), D2 (the docs chain D1 → D2 → M3s) | new |
 
 There are 38 lanes: 12 merged, 2 running, 24 to go (changed by RULINGS 22, 23; it read "10 merged, 1 running, 1
@@ -2914,6 +2935,9 @@ LF2), 10 to go (LE2, LPO, L9, LMD, M1, LMI, M2, M3c, D2, M3s).
 Changed by RULINGS 80-88 (as of `48abfaf`; docs lane `docs-errata-4`, group B): 54 lanes (L15 counts as L15a and
 L15b, and the client follow-ups lane is new) — 44 merged, 2 running (L15b, LPO), 8 to go (the client follow-ups lane,
 M1, LMI, M2, M3c, D2, L9, M3s).
+Changed by RULINGS 89-103 (as of `6d77329`; docs lane `docs-errata-5`, group B): 57 lanes (the client follow-ups
+lane counts as LFU1 and LFU2, RULINGS 95; LPH, RULINGS 96, and LFU3, RULINGS 99, are new) — 50 merged, 2 running (LPH,
+LMI), 5 to go (LFU3, M2, M3c, D2, M3s).
 
 **Launch preference** when several lanes are ready (critical path first; changed by STORIES-PLAN):
 - client (two slots): L3c (running), L5, L11, LS1, L7, L12, LW3, L14a, L10, L13, L14b, LP2 ∥ LX, LS4, D1, N1, N2, L15,
@@ -2938,6 +2962,11 @@ M1, LMI, M2, M3c, D2, L9, M3s).
   (RULINGS 92, OB1): the budget-gate gap item moved into M1's cut, so M1 and the follow-ups lane run in parallel in the
   two client slots after L15b, and LMI's gate gains the follow-ups lane (L15a → L15b → follow-ups → LMI → M2); RULINGS
   95 then cut the follow-ups lane in two, LFU1 and LFU2, and LMI's gate keeps LFU1.
+- Changed by RULINGS 89-103 (as of `6d77329`; docs lane `docs-errata-5`, group B; merged lanes dropped): client: LMI
+  (running), then LFU3 and M2 (both after LMI), M3c ∥ D2; server: LPH (running), M3s. D2 waits for M2 and LPH, and
+  M3s for M3c and D2. RULINGS 99 lets LFU3 run beside M2 if their locks are disjoint. As planned they are not: both
+  hold `client/src/app/game.ts` (M2's lock, MEMORY-PLAN section 11; LFU3's K33 producer in `game.ts`, carry.md). So
+  the order of LFU3 and M2 is not ruled yet.
 
 After L9 the server slot takes doc / narrative / client lanes with disjoint locks.
 
@@ -2996,6 +3025,14 @@ beside them.
   after L15b, with the budget-gate gap item in M1's cut, and before LMI (LMI's gate gains it); RULINGS 95 cut it into
   LFU1 and LFU2, and LMI's gate keeps LFU1.
 - LF2, LE2, L15a and LMD have merged.
+
+**Changed by RULINGS 89-103 — the critical path as of `6d77329`** (docs lane `docs-errata-5`, group B).
+- The prototype milestone is reached: L15b merged `fbcfd38` (after L15a `e94c786`).
+- The whole plan: LMI (running) → M2 → D2 → M3s, with M3c beside D2 (M3s needs both). LPH (running) runs in the
+  server slot beside LMI and M2; D2 waits for it too, so the path grows only if LPH outlasts LMI and M2.
+- LFU3 (after LMI) stays off the path only if it runs beside M2. Both hold `client/src/app/game.ts` (the launch
+  preference above), so their order is not ruled yet; if LFU3 runs before M2, the path grows by one lane.
+- LPO, L15b, L9, M1, LFU1 and LFU2 have merged.
 
 ### Lanes
 
@@ -6553,6 +6590,7 @@ each has a default there; the policy's operator facts are placeholders until the
 | 28 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `e6eca0d` (the docs-errata-4 spec, group A; RULINGS 79-88), as merged on main `48abfaf` | Docs lane `docs-errata-4`, group A: the carried plan errata of the merged lanes, each place marked "as merged" (or "Changed by MEMORY-PLAN") with its SHA and ruling. "As merged" bullets in the LF2 entry (the five commits, the gateway by value, the C5 samples, the fixture items, the seen-working listings) and the LE2 entry (the filters after `--`, `run assets` before a live run); the L15 entry's "As cut and split" bullet (L15a C1-C6 merged with the SHAs, L15b C7-C13, the two locks); in place: the profile's 8 statements; no token refresh on `activated` (K21); Bot API 6.1 the minimum (K32); the LE2 chains (`catalog.rs`, `db/social.rs`, `it/stats.rs`, `it/economy.rs`, `api/wallet.rs`); `run assets` in the live seen working of LPO, L9, L15 and LMI; the "Changed by MEMORY-PLAN" pointers of docs-errata-3's OM2 (K4, the Module API `SceneController` / `AssetRegistry`, the `Texture` + `ImageBitmap` lifetime row, the module map's `scene/` row, a `memory.spec.ts` e2e row); "S" named in the M2 entry's fade test (as in MEMORY-PLAN). The code on `48abfaf` is the ground truth. Ledger: `D:/tmp/novel-orch/docs-errata-4/ledger.md` |
 | 29 | 2026-11-02 | RULINGS 80-88 (as merged: LF2 `d0c7870`, LE2 `ec3b29f`, L15a `e94c786`, LMD `48abfaf`; L15b, LPO running; main `48abfaf`) | Docs lane `docs-errata-4`, group B: "Dependency order" — a marker paragraph and the State column as of `48abfaf` (LF2, LE2, L15a and LMD merged since `22ed4d5`, with SHAs from `git log --first-parent main`; L15 split into L15a and L15b, RULINGS 80, and a gate naming L15 met at L15b's merge; the new "client follow-ups" row after L15b, RULINGS 80 / 85; L15b and LPO running), the lane count (54: 44 merged, 2 running, 8 to go), the launch preference without the merged lanes, the critical path from L15b. The follow-ups lane's place in the client chain is left unruled (its carried files overlap M1, LMI, M2 and M3c). The planned order is otherwise unchanged; the L15 entry's split record is group A's (revision 28). STORIES-PLAN revision 13 and META-PLAN revision 9 hold their lines. Ledger: `D:/tmp/novel-orch/docs-errata-4/ledger.md` |
 | 30 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `874d685` (the docs-errata-5 spec, group A; RULINGS 89-103), as merged on main `6d77329` | Docs lane `docs-errata-5`, group A: the carried plan errata of the merged lanes, each place marked "as merged" with its SHA and ruling. LPO (`90e1226`): `.env.example`'s uncommented `PRIVACY_OPERATOR_FILE=` (commit 1), the lock of 9 with `served_draft()`; the merged locks of LF2 (17), LE2 (16) and LMD (8, with the nine keyed lists and C6's TS2345 red); the L15 prefetch pointer to PZ X14; the OB1 ruling (RULINGS 92) and the LFU1 / LFU2 split where the dependency order said "not ruled yet"; L15b (`fbcfd38`): the e2e table as merged (35 names); L9 (`d837c8b`): the nine commits, the probe (`ProbeRefunded`, no `RefundFact`), the revoke keyed by the charge's rows (`GREATEST`, the `parse_product_id` tripwire, the clock), the unapplied notice under one `CALL_DEADLINE` in the payer's language with `UnknownProduct`, the command sets and the Russian menu button, private chats only, `STATIC_DIR` disjoint both ways with the link walk and the `/assets` cache split, the webhook taking `Body`; LFU1 (`f637bac`): F3's failure model (`mixes`, the "Load it" failure notice, the (e) exit, the manual-save wait, the conflict hold); LFU2 (`6d77329`): the leak scan's `js-string` forms. The code on `6d77329` is the ground truth. Ledger: `D:/tmp/novel-orch/docs-errata-5/ledger.md` |
+| 31 | 2026-11-02 | RULINGS 89-103 (as merged: LPO `90e1226`, L15b `fbcfd38`, L9 `d837c8b`, M1 `f1b707d`, LFU1 `f637bac`, LFU2 `6d77329`; LPH, LMI running; main `6d77329`) | Docs lane `docs-errata-5`, group B: "Dependency order" — a marker paragraph and the State column as of `6d77329` (LPO, L15b, L9, M1, LFU1 and LFU2 merged since `48abfaf`, with SHAs from `git log --first-parent main`; the client follow-ups lane cut into LFU1 and LFU2, RULINGS 95, and its row marked so; the budget-gate gap item merged with M1, RULINGS 92; the new rows LPH after L9, RULINGS 96, and LFU3 after LMI, RULINGS 99; LMI's gate + LFU1 and D2's gate + LPH; LPH and LMI running), the lane count (57: 50 merged, 2 running, 5 to go), the launch preference without the merged lanes, the critical path from LMI. The order of LFU3 and M2 is left unruled (both hold `client/src/app/game.ts`). The planned order is otherwise unchanged. STORIES-PLAN revision 15 and META-PLAN revision 11 hold their lines. Ledger: `D:/tmp/novel-orch/docs-errata-5/ledger.md` |
 
 **Revision 1 (2026-10-30)** — what changed, by triage item:
 - **W1** (undecodable payment ACKed and lost): K17 (lenient `PaymentProbe` for the payment subset, 500 only when the
