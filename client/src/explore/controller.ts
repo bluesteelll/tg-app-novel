@@ -8,8 +8,8 @@ import type { SceneController } from '../scene/controller.ts';
 import type { AssetManifest } from '../story/catalog.ts';
 import type { AssetId, BgId, SectionId } from '../story/staging.ts';
 import type { Unsubscribe } from '../telegram/index.ts';
-import type { ExploreViewStore, HotspotView } from '../ui/explore-view.svelte.ts';
-import type { HotspotKey, RoomId, WorldPublic, WorldText } from '../world/types.ts';
+import type { DocView, ExploreViewStore, HotspotView, ItemView, LockView } from '../ui/explore-view.svelte.ts';
+import type { DocId, HotspotKey, ItemId, Lock, RoomId, WorldPublic, WorldText } from '../world/types.ts';
 import { admitSection } from './reconcile.ts';
 import { hotspotKey, lockOf, reduce, worldIndex } from './reduce.ts';
 import type { ExploreAction, ExploreEffect } from './reduce.ts';
@@ -44,6 +44,8 @@ export interface ExploreController {
   roomShown(): void;
   /** "Show spots" (X16): every hotspot outlined for REVEAL_MS; a second call restarts the time. */
   reveal(): void;
+  /** Recomputes every view text after a language change (principle 8); no action, no effect. */
+  relabel(): void;
   state(): WorldState;
   onEffect(fn: (e: ExploreEffect) => void): Unsubscribe;
   /** Idempotent: releases `room:*`, disconnects the observer, clears the reveal timer, drops the listeners, empties its views. */
@@ -91,6 +93,9 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
   const tracked = new Set<RoomId>();
   /** D12: the one reveal timer; components hold none. */
   let revealTimer: ReturnType<typeof setTimeout> | null = null;
+  /** D11: the hotspot of the latest `lock` effect while its panel can show, and whether its last insert was refused. */
+  let lockKey: HotspotKey | null = null;
+  let refused = false;
   let dead = false;
 
   /** D4: the current room's hotspots in world order, except a taken `take` (as `actions` lists them). */
@@ -173,8 +178,65 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
     }
   };
 
+  const itemView = (id: ItemId): ItemView | null => {
+    const item = Object.hasOwn(world.items, id) ? world.items[id] : undefined;
+    return item === undefined ? null : { id, name: text(item.name), desc: text(item.desc), glyph: item.glyph };
+  };
+
+  const docView = (id: DocId): DocView | null => {
+    const doc = Object.hasOwn(world.docs, id) ? world.docs[id] : undefined;
+    return doc === undefined ? null : { id, title: text(doc.title), body: doc.body.map(text) };
+  };
+
+  /** The lock at `key` while it is in the current room of a current section and not open yet; else null. */
+  const shutLock = (key: HotspotKey): { label: WorldText; lock: Lock } | null => {
+    const entry = ix.hotspots.get(key);
+    const lock = entry === undefined ? null : lockOf(entry.hotspot);
+    if (entry === undefined || lock === null || current.section === null || entry.room !== current.room || current.open.includes(key)) {
+      return null;
+    }
+    return { label: entry.hotspot.label, lock };
+  };
+
+  /**
+   * D11: the panel follows the latest `lock` effect and closes (null) after a room change or once the lock opens;
+   * `refused` holds only after an insert on that lock was refused.
+   */
+  const followLock = (route: Route, effects: readonly ExploreEffect[]): void => {
+    for (const e of effects) {
+      if (e.kind === 'lock') {
+        lockKey = e.hotspot;
+      }
+    }
+    const a = route.kind === 'action' ? route.action : null;
+    refused = a?.kind === 'insert' && a.hotspot === lockKey && effects.some((e) => e.kind === 'refused');
+    if (lockKey !== null && shutLock(lockKey) === null) {
+      lockKey = null;
+      refused = false;
+    }
+  };
+
+  const lockView = (): LockView | null => {
+    const key = lockKey;
+    const shut = key === null ? null : shutLock(key);
+    if (key === null || shut === null) {
+      return null;
+    }
+    const cells = Object.hasOwn(current.slots, key) ? current.slots[key] : undefined;
+    const slots = shut.lock.slots.map((_, i) => {
+      const id = cells?.[i] ?? null;
+      return id === null ? null : itemView(id);
+    });
+    return { key, title: text(shut.label), locked: text(shut.lock.locked), slots, refused };
+  };
+
+  const present = <T>(v: T | null): T[] => (v === null ? [] : [v]);
+
   const writeView = (): void => {
     view.hotspots = hotspotViews();
+    view.items = current.held.flatMap((id) => present(itemView(id)));
+    view.docs = current.docs.flatMap((id) => present(docView(id)));
+    view.lock = lockView();
   };
 
   /** The first exit of `room` to `target` that is lock-free or open now; locks never close (X12). */
@@ -233,6 +295,7 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
     current = out.state;
     walk(route, out.effects);
     releaseHolders(out.effects);
+    followLock(route, out.effects);
     writeView();
     reportPath();
     for (const e of out.effects) {
@@ -305,6 +368,11 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
     },
     resize,
     roomShown,
+    relabel() {
+      if (!dead) {
+        writeView();
+      }
+    },
     reveal() {
       if (dead) {
         return;

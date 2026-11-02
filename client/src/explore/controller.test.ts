@@ -268,11 +268,14 @@ type Harness = {
   effects: ExploreEffect[];
   froms: Array<AssetManifest | undefined>;
   ro: FakeRO;
+  /** The UI language the `text` fake answers in: en lines are the ru text with an `en ` prefix. */
+  lang: { en: boolean };
 };
 
 /** A controller over `w` on a 390×844 host; `o.scene` replaces the logging scene port (the real scheduler, C3). */
 function harness(w: WorldPublic, o: { scene?: ExploreControllerDeps['scene']; manifest?: AssetManifest } = {}): Harness {
   const host = { clientWidth: S390.w, clientHeight: S390.h };
+  const lang = { en: false };
   const view = emptyView();
   const log: string[] = [];
   const effects: ExploreEffect[] = [];
@@ -291,7 +294,7 @@ function harness(w: WorldPublic, o: { scene?: ExploreControllerDeps['scene']; ma
     manifest: o.manifest ?? MANIFEST,
     scene: o.scene ?? logged,
     view,
-    text: (t: WorldText) => t.ru,
+    text: (t: WorldText) => (lang.en ? `en ${t.ru}` : t.ru),
     stageHost: host as unknown as HTMLElement, // the controller reads only the two sizes and observes the element
   });
   c.onEffect((e) => {
@@ -302,7 +305,7 @@ function harness(w: WorldPublic, o: { scene?: ExploreControllerDeps['scene']; ma
   if (ro === null) {
     throw new Error('expected the controller to create a ResizeObserver');
   }
-  return { c, host, view, log, effects, froms, ro };
+  return { c, host, view, log, effects, froms, ro, lang };
 }
 
 function cssOf(h: Harness, key: string): { x: number; y: number; w: number; h: number } | undefined {
@@ -728,5 +731,50 @@ test('controller: reveal ends after 2 s', () => {
   } finally {
     vi.useRealTimers();
   }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// C5: the inventory, document and lock views (X16, cut D11) and the language switch
+
+test('controller: inventory and lock views follow the state', () => {
+  const h = harness(manor());
+  h.c.enter(sec('manor'), EMPTY_WORLD_STATE);
+  expect([h.view.items, h.view.docs, h.view.lock]).toEqual([[], [], null]);
+  h.c.dispatch(tap('hall.to_study'));
+  h.c.dispatch(tap('study.medal'));
+  h.c.dispatch(tap('study.letter'));
+  expect(h.view.items).toEqual([{ id: 'medal_sun', name: 'name medal_sun', desc: 'desc medal_sun', glyph: 'sun' }]);
+  expect(h.view.docs).toEqual([{ id: 'letter', title: 'title letter', body: ['p1 letter', 'p2 letter'] }]);
+  // The gate: its slots are empty, so a tap opens the lock panel.
+  h.c.dispatch(tap('study.to_hall'));
+  h.c.dispatch(tap('hall.gate'));
+  expect(h.effects.at(-1)).toEqual({ kind: 'lock', hotspot: 'hall.gate' });
+  expect(h.view.lock).toEqual({ key: 'hall.gate', title: 'exit gate', locked: 'locked', slots: [null, null, null], refused: false });
+  // An insert no slot takes (the moon medal is not held): "doesn't fit", the slots unchanged.
+  h.c.dispatch({ kind: 'insert', hotspot: k('hall.gate'), item: 'medal_moon' as ItemId });
+  expect(h.effects.at(-1)).toEqual({ kind: 'refused', reason: 'no-fit' });
+  expect(h.view.lock?.refused).toBe(true);
+  expect(h.view.lock?.slots).toEqual([null, null, null]);
+  // The sun medal fills its slot and leaves the inventory; the refusal is over.
+  h.c.dispatch({ kind: 'insert', hotspot: k('hall.gate'), item: 'medal_sun' as ItemId });
+  expect(h.view.lock).toEqual({
+    key: 'hall.gate',
+    title: 'exit gate',
+    locked: 'locked',
+    slots: [{ id: 'medal_sun', name: 'name medal_sun', desc: 'desc medal_sun', glyph: 'sun' }, null, null],
+    refused: false,
+  });
+  expect(h.view.items).toEqual([]);
+  // A language switch recomputes every text the controller wrote, with no action.
+  h.lang.en = true;
+  const effects = h.effects.length;
+  h.c.relabel();
+  expect(h.effects.length).toBe(effects);
+  expect(h.view.hotspots.map((v) => v.label)).toEqual(['en exit to_study', 'en exit to_cellar', 'en exit gate', 'en look inscription']);
+  expect(h.view.docs).toEqual([{ id: 'letter', title: 'en title letter', body: ['en p1 letter', 'en p2 letter'] }]);
+  expect([h.view.lock?.title, h.view.lock?.locked, h.view.lock?.slots[0]?.name]).toEqual(['en exit gate', 'en locked', 'en name medal_sun']);
+  // A move leaves the lock behind: its panel closes.
+  h.c.dispatch(tap('hall.to_study'));
+  expect(h.view.lock).toBeNull();
 });
 
