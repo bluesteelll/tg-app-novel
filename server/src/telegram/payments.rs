@@ -15,7 +15,7 @@ use crate::AppState;
 use crate::db::orders::parse_order_id;
 use crate::ids::{ChargeId, UserId};
 use crate::puzzles::Lang;
-use crate::telegram::gateway::CALL_DEADLINE;
+use crate::telegram::gateway::{CALL_DEADLINE, GatewayError};
 
 pub use crate::db::payments::{
     GrantOutcome, PaymentFact, PreCheckoutVerdict, RejectReason, RevokeOutcome,
@@ -126,6 +126,53 @@ pub async fn revoke(st: &AppState, charge: &ChargeId) -> Result<RevokeOutcome, s
         }
     }
     Ok(outcome)
+}
+
+/// Why an admin refund did not end in a revoke outcome.
+#[derive(Debug, thiserror::Error)]
+pub enum RefundError {
+    /// `refundStarPayment` failed (other than "already refunded"): nothing moved, the entitlement stays.
+    #[error("refundStarPayment: {0}")]
+    Gateway(GatewayError),
+    /// The database failed: the payment row could not be read, or the revoke did not commit.
+    #[error("database: {0}")]
+    Db(#[from] sqlx::Error),
+}
+
+/// The admin refund of `charge` (`/refund`, `/dev/refund`; K20): the payment row is read first, and an unknown or
+/// already refunded charge answers with no Bot API call. Else `refundStarPayment` to the payer, with no transaction
+/// open, cut at [`CALL_DEADLINE`]; then the revoke, when Telegram refunded or answers the charge was refunded before
+/// (a crash between the two recovers on the next `/refund`). Any other gateway answer moves nothing.
+pub async fn admin_refund(st: &AppState, charge: &ChargeId) -> Result<RevokeOutcome, RefundError> {
+    let Some(record) = st.repo.payment_record(charge).await? else {
+        return Ok(RevokeOutcome::UnknownCharge);
+    };
+    if record.refunded_at.is_some() {
+        return Ok(RevokeOutcome::AlreadyRefunded);
+    }
+    let call = st.gateway.refund_star_payment(record.payer, charge.clone());
+    let refunded = match tokio::time::timeout(CALL_DEADLINE, call).await {
+        Ok(answer) => answer,
+        Err(_) => Err(GatewayError::Timeout),
+    };
+    match refunded {
+        Ok(()) => {}
+        Err(e) if already_refunded(&e) => {
+            tracing::warn!(charge = %charge.0, "refundStarPayment: refunded before; revoking");
+        }
+        Err(e) => {
+            tracing::warn!(charge = %charge.0, error = %e, "refundStarPayment failed; nothing revoked");
+            return Err(RefundError::Gateway(e));
+        }
+    }
+    Ok(revoke(st, charge).await?)
+}
+
+/// Whether `e` is the Bot API saying the charge was refunded before: MTProto's `CHARGE_ALREADY_REFUNDED`, which the
+/// Bot API passes on in its description (`"Bad Request: CHARGE_ALREADY_REFUNDED"`). Only an API refusal counts: a
+/// transport text is not Telegram's answer.
+pub fn already_refunded(e: &GatewayError) -> bool {
+    matches!(e, GatewayError::Api(description) if description.contains("CHARGE_ALREADY_REFUNDED"))
 }
 
 /// The language of a Telegram language tag (K29, the rule of the invoice texts): its primary subtag, ASCII
@@ -256,6 +303,34 @@ mod tests {
                 failures.push(format!("{reason:?}: the ru and en texts are the same"));
             }
         }
+        report(&failures);
+    }
+
+    /// `CHARGE_ALREADY_REFUNDED` in an API refusal's description is "refunded before"; another refusal, a timeout or
+    /// a transport text that happens to quote the word is not.
+    #[test]
+    fn refund_already_refunded_error_matches() {
+        let cases = [
+            (
+                GatewayError::Api("Bad Request: CHARGE_ALREADY_REFUNDED".to_owned()),
+                true,
+            ),
+            (
+                GatewayError::Api("Bad Request: CHARGE_NOT_FOUND".to_owned()),
+                false,
+            ),
+            (GatewayError::Timeout, false),
+            (
+                GatewayError::Transport("proxy said CHARGE_ALREADY_REFUNDED".to_owned()),
+                false,
+            ),
+            (GatewayError::Disabled, false),
+        ];
+        let failures: Vec<String> = cases
+            .iter()
+            .filter(|(e, want)| already_refunded(e) != *want)
+            .map(|(e, want)| format!("{e:?}: expected {want}, got {}", already_refunded(e)))
+            .collect();
         report(&failures);
     }
 

@@ -15,12 +15,13 @@ use server::clock::FixedClock;
 use server::db::economy::GiftMove;
 use server::ids::{ChargeId, PuzzleId, UserId};
 use server::puzzles::Lang;
-use server::telegram::payments::{RejectReason, RevokeOutcome, revoke};
+use server::telegram::gateway::GatewayError;
+use server::telegram::payments::{RefundError, RejectReason, RevokeOutcome, admin_refund, revoke};
 use sqlx::Connection;
 
 use crate::catalog::{ANN, T0, get, own};
 use crate::common;
-use crate::payments::{RecordingGateway, invoice_state, owned, post_invoice, refusal};
+use crate::payments::{GatewayCall, RecordingGateway, invoice_state, owned, post_invoice, refusal};
 use crate::webhook::{order_status, payment_update, post_update, pre_checkout_update};
 
 /// A second player.
@@ -651,6 +652,133 @@ async fn refund_order_precheckout_refused_expired() {
             &format!("{case}: status"),
             order_status(&st, order).await,
             status.to_owned(),
+        ));
+    }
+    report(&failures);
+}
+
+/// The admin refund's result as one comparable value: the outcome, or the error's text.
+pub(crate) async fn refund_by_admin(
+    st: &AppState,
+    t: i64,
+    charge: &str,
+) -> Result<RevokeOutcome, String> {
+    admin_refund(&at(st, t), &ChargeId(charge.to_owned()))
+        .await
+        .map_err(|e| match e {
+            RefundError::Gateway(e) => format!("Gateway({e:?})"),
+            RefundError::Db(e) => format!("Db({e})"),
+        })
+}
+
+/// The `refundStarPayment` calls `gateway` recorded, as (payer, charge), in order.
+pub(crate) fn refund_calls(gateway: &RecordingGateway) -> Vec<(i64, String)> {
+    gateway
+        .calls()
+        .into_iter()
+        .filter_map(|call| match call {
+            GatewayCall::Refund { user, charge } => Some((user.0, charge.0)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A refused `refundStarPayment` (a timeout, or Telegram's refusal of the charge) is an error and moves nothing: the
+/// entitlement stays, the order stays `paid`, `refunded_at` stays NULL, and each attempt made exactly one call.
+#[tokio::test]
+async fn refund_gateway_error_keeps_entitlement() {
+    let (st, _db, gateway) = refund_state().await;
+    let mut failures = Vec::new();
+    let Some(order) = bought(&st, ANN, "chapter:ch2", "c-ch2", &mut failures).await else {
+        return report(&failures);
+    };
+    for (case, failure) in [
+        ("timeout", GatewayError::Timeout),
+        (
+            "CHARGE_NOT_FOUND",
+            GatewayError::Api("Bad Request: CHARGE_NOT_FOUND".to_owned()),
+        ),
+    ] {
+        let before = refund_calls(&gateway).len();
+        gateway.fail_with(Some(failure.clone()));
+        let got = refund_by_admin(&st, T1, "c-ch2").await;
+        gateway.fail_with(None);
+        failures.extend(expect_eq(
+            &format!("{case}: admin refund"),
+            got,
+            Err(format!("Gateway({failure:?})")),
+        ));
+        let kept = entitlements_of(&st, "c-ch2").await;
+        if kept != 1 {
+            failures.push(format!(
+                "{case}: after a refused refundStarPayment: expected the entitlement kept, got {kept} rows"
+            ));
+        }
+        failures.extend(expect_eq(
+            &format!("{case}: order status"),
+            order_status(&st, &order).await,
+            "paid".to_owned(),
+        ));
+        failures.extend(expect_eq(
+            &format!("{case}: refunded_at"),
+            refunded_at(&st, "c-ch2").await,
+            None,
+        ));
+        failures.extend(expect_eq(
+            &format!("{case}: refundStarPayment calls"),
+            refund_calls(&gateway).len() - before,
+            1,
+        ));
+    }
+    report(&failures);
+}
+
+/// The admin refund is repeat-safe: Telegram answering `CHARGE_ALREADY_REFUNDED` (a crash between an earlier refund
+/// and its revoke) still revokes; a charge already refunded here, or unknown, answers so with no Bot API call.
+#[tokio::test]
+async fn refund_repeat_safe() {
+    let (st, _db, gateway) = refund_state().await;
+    let mut failures = Vec::new();
+    if bought(&st, ANN, "chapter:ch2", "c-ch2", &mut failures)
+        .await
+        .is_none()
+    {
+        return report(&failures);
+    }
+    gateway.fail_with(Some(GatewayError::Api(
+        "Bad Request: CHARGE_ALREADY_REFUNDED".to_owned(),
+    )));
+    let got = refund_by_admin(&st, T1, "c-ch2").await;
+    gateway.fail_with(None);
+    failures.extend(expect_eq(
+        "refunded at Telegram before",
+        got,
+        Ok(RevokeOutcome::Revoked),
+    ));
+    failures.extend(expect_eq(
+        "refunded at Telegram before: entitlements of the charge",
+        entitlements_of(&st, "c-ch2").await,
+        0,
+    ));
+    failures.extend(expect_eq(
+        "refunded at Telegram before: refundStarPayment calls",
+        refund_calls(&gateway),
+        vec![(ANN, "c-ch2".to_owned())],
+    ));
+    for (case, charge, want) in [
+        ("a refunded charge", "c-ch2", RevokeOutcome::AlreadyRefunded),
+        ("an unknown charge", "c-nope", RevokeOutcome::UnknownCharge),
+    ] {
+        let before = refund_calls(&gateway).len();
+        failures.extend(expect_eq(
+            &format!("{case}: admin refund"),
+            refund_by_admin(&st, T1 + 60, charge).await,
+            Ok(want),
+        ));
+        failures.extend(expect_eq(
+            &format!("{case}: refundStarPayment calls"),
+            refund_calls(&gateway).len() - before,
+            0,
         ));
     }
     report(&failures);

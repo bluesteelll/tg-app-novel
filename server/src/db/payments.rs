@@ -100,6 +100,21 @@ pub enum RevokeOutcome {
     UnknownCharge,
 }
 
+/// A payment row as a refund reads it: who paid what for which payload, and whether it was refunded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaymentRecord {
+    /// The payer (`Message.from.id`).
+    pub payer: UserId,
+    /// The amount as received.
+    pub amount: i64,
+    /// The currency as received.
+    pub currency: String,
+    /// The invoice payload as received.
+    pub invoice_payload: String,
+    /// When the payment was revoked, if it was.
+    pub refunded_at: Option<i64>,
+}
+
 /// An order as the refusal classification reads it: (user_id, amount, status, created_at, the product owned by the
 /// order's user, an order of that user for that product inside the checkout window).
 type OrderFacts = (i64, i64, String, i64, bool, bool);
@@ -360,6 +375,30 @@ impl Repo {
         }
         tx.commit().await?;
         Ok(RevokeOutcome::Revoked)
+    }
+
+    /// The payment row of `charge` (one primary-key read), or `None` when no payment has it.
+    pub async fn payment_record(
+        &self,
+        charge: &ChargeId,
+    ) -> Result<Option<PaymentRecord>, sqlx::Error> {
+        let charge = without_nul(&charge.0);
+        let row: Option<(i64, i64, String, String, Option<i64>)> = sqlx::query_as(
+            "SELECT user_id, amount, currency, invoice_payload, refunded_at FROM payments \
+             WHERE telegram_payment_charge_id = $1",
+        )
+        .bind(&*charge)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(
+            |(payer, amount, currency, invoice_payload, refunded_at)| PaymentRecord {
+                payer: UserId(payer),
+                amount,
+                currency,
+                invoice_payload,
+                refunded_at,
+            },
+        ))
     }
 }
 
