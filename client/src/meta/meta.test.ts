@@ -445,7 +445,7 @@ test('wallet: an older wallet answer never replaces a newer balance', async () =
   const first = wallet.refresh();
   value(await wallet.refresh());
   slow.resolve(ok({ ...walletWithHints(4), hintTierCost: 9 }));
-  value(await first);
+  expect(hintEntry(value(await first))).toBe(4);
   expect(port.balance()).toBe(7);
   expect(hintEntry(wallet.state())).toBe(7);
   expect(port.tierCost()).toBe(1);
