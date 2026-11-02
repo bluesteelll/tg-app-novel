@@ -1,7 +1,7 @@
 //! The payment path's Telegram half: the pre-checkout decision under its deadline, its answer under the Bot API
-//! deadline, and the reject texts in the payer's language (K18; PE4: a `match` here until the bot texts move to
-//! `bot.*.json`); the grant on `successful_payment` (K19). The fact, decision and outcome types are
-//! `db::payments`'s, re-exported here.
+//! deadline, and the reject texts in the payer's language (K18; the texts live in `server/locales/bot.*.json`); the
+//! grant on `successful_payment` (K19); the revoke of a refund and the admin refund (K20). The fact, decision and
+//! outcome types are `db::payments`'s, re-exported here.
 //!
 //! Principle 2: Telegram must receive the pre-checkout answer within 10 s of the query. The database step is bounded
 //! by [`PRECHECKOUT_DB_DEADLINE`] and the answer by [`CALL_DEADLINE`], and nothing else runs on the path. The grant
@@ -16,6 +16,7 @@ use crate::db::orders::parse_order_id;
 use crate::ids::{ChargeId, UserId};
 use crate::puzzles::Lang;
 use crate::telegram::gateway::{CALL_DEADLINE, GatewayError};
+use crate::telegram::texts;
 
 pub use crate::db::payments::{
     GrantOutcome, PaymentFact, PreCheckoutVerdict, RejectReason, RevokeOutcome,
@@ -191,42 +192,17 @@ pub fn payer_lang(language_code: Option<&str>) -> Lang {
     }
 }
 
-/// The `error_message` of a refused pre-checkout: plain, with no price and no legal claim (placeholder copy until
-/// the bot texts move to `bot.*.json`).
+/// The `error_message` of a refused pre-checkout, from the bot texts of `lang`: plain, with no price and no legal
+/// claim. No wildcard arm: a new reason does not compile until its text is named here.
 pub fn reject_text(reason: RejectReason, lang: Lang) -> &'static str {
-    match (reason, lang) {
-        (RejectReason::UnknownOrder, Lang::Ru) => {
-            "Этот счёт не найден. Откройте покупку в приложении ещё раз."
-        }
-        (RejectReason::UnknownOrder, Lang::En) => {
-            "This invoice was not found. Please start the purchase again in the app."
-        }
-        (RejectReason::Mismatch, Lang::Ru) => {
-            "Счёт не совпадает с заказом. Откройте покупку в приложении ещё раз."
-        }
-        (RejectReason::Mismatch, Lang::En) => {
-            "This invoice does not match the order. Please start the purchase again in the app."
-        }
-        (RejectReason::AlreadyOwned, Lang::Ru) => "Эта покупка уже ваша, оплата не нужна.",
-        (RejectReason::AlreadyOwned, Lang::En) => "You already own this, no payment is needed.",
-        (RejectReason::InProgress, Lang::Ru) => {
-            "Эта покупка уже оплачивается. Подождите пару минут и проверьте её в приложении."
-        }
-        (RejectReason::InProgress, Lang::En) => {
-            "This purchase is already being paid for. Please wait a couple of minutes and check the app."
-        }
-        (RejectReason::Expired, Lang::Ru) => {
-            "Срок действия счёта истёк. Откройте покупку в приложении ещё раз."
-        }
-        (RejectReason::Expired, Lang::En) => {
-            "This invoice has expired. Please start the purchase again in the app."
-        }
-        (RejectReason::Temporary, Lang::Ru) => {
-            "Не удалось проверить заказ. Попробуйте ещё раз через минуту."
-        }
-        (RejectReason::Temporary, Lang::En) => {
-            "The order could not be checked. Please try again in a minute."
-        }
+    let t = texts::texts(lang);
+    match reason {
+        RejectReason::UnknownOrder => &t.reject_unknown_order,
+        RejectReason::Mismatch => &t.reject_mismatch,
+        RejectReason::AlreadyOwned => &t.reject_already_owned,
+        RejectReason::InProgress => &t.reject_in_progress,
+        RejectReason::Expired => &t.reject_expired,
+        RejectReason::Temporary => &t.reject_temporary,
     }
 }
 

@@ -9,6 +9,7 @@
 
 mod auth;
 mod bindings;
+mod bot;
 mod cards;
 mod catalog;
 mod common;

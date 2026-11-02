@@ -4,4 +4,5 @@
 
 pub mod gateway;
 pub mod payments;
+pub mod texts;
 pub mod webhook;
