@@ -542,6 +542,21 @@ test('controller: dispose releases room holders', () => {
   expect(calls).toEqual([false]);
   expect(h.view.hotspots).toEqual([]);
   expect(h.c.state().room).toBe('hall');
+  // A listener that disposes ends the call: a listener after it never hears that effect, and no listener hears a
+  // later one (with L15's listeners, a disposed chapter's room effect must not reach the scene).
+  const d = harness(manor());
+  d.c.enter(sec('manor'), EMPTY_WORLD_STATE);
+  const late: string[] = [];
+  d.c.onEffect((e) => {
+    if (e.kind === 'room') {
+      d.c.dispose();
+    }
+  });
+  d.c.onEffect((e) => late.push(e.kind));
+  const move = d.log.length;
+  d.c.dispatch(tap('hall.to_study'));
+  expect(late).toEqual([]);
+  expect(d.log.slice(move)).toEqual(['effect room', 'release room:']);
 });
 
 test('controller: leave releases room holders', () => {
