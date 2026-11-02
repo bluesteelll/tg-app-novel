@@ -44,12 +44,26 @@ export type HomeActions = {
   chapter(story: StoryId, chapter: ChapterId): void;
 };
 
+/** The meta taps of the entry and engine overlays (Home, the Menu, Terms; META-PLAN M24, M27; RULINGS 105). */
+export type MetaTaps = {
+  /** A card's playthrough button (F17); it shows only once the controller says the story has a card. */
+  card(story: StoryId): void;
+  friends(): void;
+  wallet(): void;
+  /** F28: the privacy policy, opened inside the tap or not at all (before the chunk, the tap only imports it). */
+  policy(): void;
+};
+
 /** What App.svelte renders from: the view model, Home's actions and the game once the engine is in. */
 export type AppHandle = {
   readonly vm: ViewModel;
   readonly home: HomeActions;
+  /** Through the meta gate: given from the first Home, so a tap after a failed import imports again. */
+  readonly metaTaps: MetaTaps;
   /** The Game, or null while the engine chunk loads. */
   game(): Game | null;
+  /** The meta controller, or null while its chunk is not in. */
+  meta(): MetaController | null;
   dispose(): void;
 };
 
@@ -305,7 +319,7 @@ export function startApp(tg: TelegramClient): AppHandle {
         cover: cover === undefined ? null : { avif: cover.avif.url, webp: cover.webp.url },
         continue: summaryOf(d.list, s.id, 'auto') !== null,
         eager: i < 3,
-        card: false, // META M27: no card action before LMI
+        card: gate.current()?.hasCard(s.id) ?? false, // the stats arrive later: the controller's onCards redraws
       };
     });
 
@@ -520,6 +534,13 @@ export function startApp(tg: TelegramClient): AppHandle {
     },
   };
 
+  const metaTaps: MetaTaps = {
+    card: (story) => gate.tap((m) => void m.openCard(story)), // its failure shows its toast
+    friends: () => gate.tap((m) => m.openFriends()),
+    wallet: () => gate.tap((m) => m.openWallet()),
+    policy: () => gate.tap((m) => m.openPolicy(), { inTask: true }),
+  };
+
   const boot = async (): Promise<void> => {
     const r = await readWithRetry();
     if (disposed) {
@@ -585,7 +606,9 @@ export function startApp(tg: TelegramClient): AppHandle {
   return {
     vm,
     home,
+    metaTaps,
     game: () => game,
+    meta: () => gate.current(),
     dispose() {
       if (disposed) {
         return;
