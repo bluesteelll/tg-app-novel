@@ -258,7 +258,7 @@ The manifest entry keeps `w`, `h`, `decodedBytes = w x h x 4` of the **stored** 
     - As merged (M1 `f1b707d`, RULINGS 98; M1 cut addendum, impl "Checks run"): the placeholder boxes as measured are
       ally 546 x 1394 at (111, 142) (the label `char/ally/neutral` is wider than the body), stranger 610-674 and keeper
       546-610 px wide, props 494 x 494 at (9, 9). The busiest knot-set is now **27.3 MiB** (`ch2/archive_after`; ch1's
-      knots 26.3-26.6), inside the estimate.
+      busiest knots `arrival`, `manor_out` and `street` 26.3-26.6), inside the estimate.
   - Real art (MR2 scenarios, figure 70/55/40 % of the canvas width, 97 % height): 3.06 / 2.40 / 1.75 MiB per sprite;
     busiest knot 26.1 / 24.1 / 22.1 MiB.
   - Props: the placeholder disc has `r = round(0.47 x 512) = 241` plus an 8-px stroke (`placeholder.ts:72-75`), 490 px

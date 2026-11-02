@@ -210,7 +210,7 @@ As merged (LFU2 `6d77329`, RULINGS 103): a text is also found inside a JS string
 a JSON module, a requoted literal), in its escaped forms: each base needle and its JSON escape as the body of a `"`,
 `'` and backtick literal, with quotes, backslashes, backticks and `${` escaped. The forms are computed once per
 section, from the base needles only; such a finding is `via: 'js-string'`
-([scan-dist.ts:147-182](../client/scripts/scan-dist.ts#L147)).
+([scan-dist.ts:148-182](../client/scripts/scan-dist.ts#L148)).
 
 The CLAUDE.md gate commands map to: `check` (svelte-check, tsc), `test` (vitest projects `unit` and `dom`,
 [vite.config.ts:44-64](../client/vite.config.ts#L44)), `story`, `build` (above), `e2e` (Playwright on
@@ -417,8 +417,8 @@ Participants: `webhook` ([webhook.rs:63](../server/src/telegram/webhook.rs#L63))
   is refused before it is buffered; only then does it read at most the limit, and one byte more is 413
   ([webhook.rs:67-71](../server/src/telegram/webhook.rs#L67); `webhook_secret_checked_before_body_read`,
   `server/tests/it/main.rs`). Logs never carry the body,
-  the headers or the secret; they carry the charge id, a body field that is no secret (webhook.rs :151, :187, :257,
-  :269).
+  the headers or the secret; they carry the charge id, a body field that is no secret (webhook.rs :151, :188, :215,
+  :257, :269).
 - **Pre-checkout under the payer-row lock.** `Repo::pre_checkout` is one READ COMMITTED transaction
   ([db/payments.rs:138-210](../server/src/db/payments.rs#L138)). It locks the payer's `users` row
   (`FOR NO KEY UPDATE`), so one payer's pre-checkouts run one after another. Then one conditional UPDATE moves the

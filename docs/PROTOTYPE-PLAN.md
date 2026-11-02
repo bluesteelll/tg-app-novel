@@ -2088,7 +2088,7 @@ unreachable at startup" down are the PostgreSQL failure model; the test names ar
      - as merged (LFU2 `6d77329`, RULINGS 103; K7(c)): a fingerprint text is also found inside a JS string literal, in
        its escaped forms, a finding `via: 'js-string'`. Each base needle and its JSON escape is taken as the body of a
        `"`, `'` and backtick literal (quotes, backslashes, backticks and `${` escaped). The forms are computed once per
-       section, outside the file loop, from the base needles only (`client/scripts/scan-dist.ts:147-182`, `:213-214`).
+       section, outside the file loop, from the base needles only (`client/scripts/scan-dist.ts:148-182`, `:213-214`).
    - **Non-vacuous, per section.** It fails:
      - if `story/chapters.json` declares a paid chapter and `fingerprints.lines.json` is missing or its `lineIds` or
        `texts` section is empty;
@@ -2915,13 +2915,13 @@ M3c, D2 and M3s, in the planned order below.
 | **LP2 puzzle-ui** | client | merged `88d0964` | L10, L14b, LW2 | PUZZLES-PLAN; META-PLAN: `HintPort \| null` |
 | **LX explore-ui** | client | merged `a9e991c` | L11, L14b, LW2 | PUZZLES-PLAN (∥ LP2: disjoint locks) |
 | L15 integration | client | split (RULINGS 80): L15a `engine-wiring` merged `e94c786`; L15b `app-e2e` merged `fbcfd38` | every lane above (N1 and N2 included: the e2e plays both stories). Changed by META-PLAN: every lane above except L9 and the META-PLAN lanes (LE1, LF1, LM2, LF2, LE2, LU1, LMD; LM1 is in through N1) | PUZZLES-PLAN, STORIES-PLAN (stories wiring, `stories.spec.ts`); META-PLAN: `choice_made`, `hints: null`; MEMORY-PLAN: lever F (+ `scene/controller.ts`) and the e2e helpers, carried into its running cut through its brief |
-| **client follow-ups** | client | cut in two (RULINGS 95): LFU1 `engine-followups` merged `f637bac`; LFU2 `client-followups` merged `6d77329` (new, RULINGS 80; L15 cut Q3) | L15b (its items touch `app/game.ts`, which L15b also holds; RULINGS 87) | new |
+| **client follow-ups** | client | cut in two (RULINGS 95): LFU1 `engine-followups` merged `f637bac`; LFU2 `client-followups` merged `6d77329` (new, RULINGS 80; L15 cut Q3) | L15b (its items touch `app/game.ts`, which L15b also holds; RULINGS 87) | new; RULINGS 95: scope cut in two (LFU1, LFU2) |
 | **M1 memory-trim** | client | merged `f1b707d` (new, MEMORY-PLAN) | L15 (the first rendered scene and `perf.spec.ts`; the e2e helpers) | new; RULINGS 92: + the budget-gate gap item of the client follow-ups lane |
-| **LMI meta-integration** | client | running (base `f637bac`; new, META-PLAN) | L15, LMD, LU1, LE2. Changed by MEMORY-PLAN: M1. Changed by RULINGS 92, 95: LFU1 (both hold `client/src/app/game.ts`) | new; MEMORY-PLAN: gate + M1 |
+| **LMI meta-integration** | client | running (base `f637bac`; new, META-PLAN) | L15, LMD, LU1, LE2. Changed by MEMORY-PLAN: M1. Changed by RULINGS 92, 95: LFU1 (both hold `client/src/app/game.ts`) | new; MEMORY-PLAN: gate + M1; RULINGS 92, 95: gate + LFU1 |
 | **LFU3** | client | to go (new, RULINGS 99) | LMI (it holds `client/src/app/{boot,game,game.test,yields}.ts`, which LMI also holds) | new |
 | **M2 memory-cpu-copy** | client | to go (new, MEMORY-PLAN) | LMI (after M1; the `budget.ts` and `app/game.ts` chains) | new |
 | **M3c memory-half-tier** | client | to go (new, MEMORY-PLAN) | M2 | new |
-| D2 docs-final | doc | to go | L15. Changed by META-PLAN: LMI, L9; revision 1: LPO. Changed by MEMORY-PLAN: M2. Changed by RULINGS 96: LPH (it closes L9's carried payment gaps before D2) | PUZZLES-PLAN, STORIES-PLAN; META-PLAN: the meta rows and runbooks; MEMORY-PLAN: gate + M2, the M1 / M2 map rows, two authoring-guide rules |
+| D2 docs-final | doc | to go | L15. Changed by META-PLAN: LMI, L9; revision 1: LPO. Changed by MEMORY-PLAN: M2. Changed by RULINGS 96: LPH (it closes L9's carried payment gaps before D2) | PUZZLES-PLAN, STORIES-PLAN; META-PLAN: the meta rows and runbooks; MEMORY-PLAN: gate + M2, the M1 / M2 map rows, two authoring-guide rules; RULINGS 96: gate + LPH |
 | **M3s memory-half-paid** | server | to go (new, MEMORY-PLAN) | M3c, L9 (the end of the server chain), D2 (the docs chain D1 → D2 → M3s) | new |
 
 There are 38 lanes: 12 merged, 2 running, 24 to go (changed by RULINGS 22, 23; it read "10 merged, 1 running, 1
@@ -3030,8 +3030,10 @@ beside them.
 - The prototype milestone is reached: L15b merged `fbcfd38` (after L15a `e94c786`).
 - The whole plan: LMI (running) → M2 → D2 → M3s, with M3c beside D2 (M3s needs both). LPH (running) runs in the
   server slot beside LMI and M2; D2 waits for it too, so the path grows only if LPH outlasts LMI and M2.
-- LFU3 (after LMI) stays off the path only if it runs beside M2. Both hold `client/src/app/game.ts` (the launch
-  preference above), so their order is not ruled yet; if LFU3 runs before M2, the path grows by one lane.
+- LFU3 (after LMI) cannot run beside M2: both hold `client/src/app/game.ts` (the launch preference above), so their
+  order is not ruled yet. If LFU3 runs before M2, the path grows by one lane. If M2 runs first, the path does not
+  grow: LFU3 is in no gate on the path, and it runs beside M3c and D2 (M3c's lock, MEMORY-PLAN section 11, holds none
+  of its files).
 - LPO, L15b, L9, M1, LFU1 and LFU2 have merged.
 
 ### Lanes
