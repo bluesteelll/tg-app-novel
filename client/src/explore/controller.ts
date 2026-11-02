@@ -6,7 +6,7 @@ import { ROOM_SOURCE, cover, minTarget, toStage } from '../geom/cover.ts';
 import type { Size } from '../geom/cover.ts';
 import type { SceneController } from '../scene/controller.ts';
 import type { AssetManifest } from '../story/catalog.ts';
-import type { SectionId } from '../story/staging.ts';
+import type { AssetId, BgId, SectionId } from '../story/staging.ts';
 import type { Unsubscribe } from '../telegram/index.ts';
 import type { ExploreViewStore, HotspotView } from '../ui/explore-view.svelte.ts';
 import type { HotspotKey, RoomId, WorldPublic, WorldText } from '../world/types.ts';
@@ -34,6 +34,12 @@ export interface ExploreController {
   onPath(fn: (walkable: boolean) => void): Unsubscribe;
   /** The stage host's content box (X10); recomputes the hotspot boxes. The host's own ResizeObserver calls it too. */
   resize(stage: Size): void;
+  /**
+   * The current room's batch is applied, or its close-up was cleared (GameSession calls it; the cut addendum, W1/W2):
+   * requests the room's own bg, then each neighbour's bg in exit order, under the registry's steady cap. A no-op
+   * outside a section, while an event knot is pending, and once disposed.
+   */
+  roomShown(): void;
   state(): WorldState;
   onEffect(fn: (e: ExploreEffect) => void): Unsubscribe;
   /** Idempotent: disconnects the observer, drops the listeners and empties the views it writes. */
@@ -52,6 +58,12 @@ export type ExploreControllerDeps = {
 };
 
 type Outcome = { state: WorldState; effects: ExploreEffect[] };
+
+/** The `room:<id>` holder family (a trailing `:` names a family, scene/preload.ts). */
+const ROOM_HOLDERS = 'room:';
+const roomTag = (room: RoomId): string => `${ROOM_HOLDERS}${room}`;
+/** A bg slot's asset id, as the executor forms it (scene/executor.ts:112). */
+const bgAsset = (bg: BgId): AssetId => `bg/${bg}` as AssetId; // STAGING-DSL §8: a bg id names its asset
 /**
  * How an outcome came: through a section's entry (the path restarts), an event's return (the path is kept), or a
  * player action from `room` (a `room` effect to another room is a move).
@@ -62,7 +74,7 @@ type Route = { kind: 'admit' } | { kind: 'event' } | { kind: 'action'; action: E
 const sizeOf = (host: HTMLElement): Size => ({ w: host.clientWidth, h: host.clientHeight });
 
 export function createExploreController(deps: ExploreControllerDeps): ExploreController {
-  const { world, view, text } = deps;
+  const { world, scene, view, text } = deps;
   const ix = worldIndex(world);
   let current: WorldState = EMPTY_WORLD_STATE;
   let stage = sizeOf(deps.stageHost);
@@ -71,6 +83,8 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
   let walkable = false;
   let effectFns: Array<(e: ExploreEffect) => void> = [];
   let pathFns: Array<(walkable: boolean) => void> = [];
+  /** D10: the rooms whose `room:<id>` tag was requested and not released since. */
+  const tracked = new Set<RoomId>();
   let dead = false;
 
   /** D4: the current room's hotspots in world order, except a taken `take` (as `actions` lists them). */
@@ -97,6 +111,60 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
       });
     }
     return out;
+  };
+
+  /** D9: the distinct rooms R's exits lead to, in hotspot order; locked exits included, story exits and R not. */
+  const neighbours = (room: RoomId): RoomId[] => {
+    const out: RoomId[] = [];
+    for (const h of ix.rooms.get(room)?.room.hotspots ?? []) {
+      if (h.kind === 'exit' && 'room' in h.to && h.to.room !== room && !out.includes(h.to.room)) {
+        out.push(h.to.room);
+      }
+    }
+    return out;
+  };
+
+  const releaseAll = (): void => {
+    tracked.clear();
+    scene.releasePreload(ROOM_HOLDERS);
+  };
+
+  /**
+   * D10 phase A, before any effect goes out: a move keeps only R and its neighbours; a puzzle with a close-up and a
+   * `leave` release every `room:*`, so the close-up, or the knot's own preloads, meet the bytes these free.
+   */
+  const releaseHolders = (effects: readonly ExploreEffect[]): void => {
+    for (const e of effects) {
+      if (e.kind === 'room') {
+        const keep = new Set([e.room, ...neighbours(e.room)]);
+        for (const m of [...tracked]) {
+          if (!keep.has(m)) {
+            tracked.delete(m);
+            scene.releasePreload(roomTag(m));
+          }
+        }
+      } else if (e.kind === 'leave' || (e.kind === 'puzzle' && (ix.puzzles.get(e.puzzle)?.closeup ?? null) !== null)) {
+        releaseAll();
+      }
+    }
+  };
+
+  /**
+   * D10 phase B: R's whole set is live and the previous room's props are gone, so the registry counts R when it
+   * admits each neighbour bg (K5's 32 MiB rule); the requests are idempotent joins when already live or queued.
+   */
+  const roomShown = (): void => {
+    const room = current.room;
+    if (dead || current.section === null || room === null || current.pendingStory.length > 0) {
+      return;
+    }
+    for (const r of [room, ...neighbours(room)]) {
+      const entry = ix.rooms.get(r);
+      if (entry !== undefined) {
+        tracked.add(r);
+        scene.preload(roomTag(r), [bgAsset(entry.room.bg)], deps.manifest);
+      }
+    }
   };
 
   const writeView = (): void => {
@@ -151,12 +219,14 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
   };
 
   /**
-   * D6: adopt the state, update the path, write the views, report the path edge, then the effects in order. Not
+   * D6: adopt the state, update the path, release holders, write the views, report the path edge, then the effects in
+   * order. Not
    * re-entrant: GameSession's single intent queue serializes; a listener that disposes ends the call.
    */
   const settle = (out: Outcome, route: Route): void => {
     current = out.state;
     walk(route, out.effects);
+    releaseHolders(out.effects);
     writeView();
     reportPath();
     for (const e of out.effects) {
@@ -228,6 +298,7 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
       };
     },
     resize,
+    roomShown,
     state: () => current,
     onEffect(fn) {
       if (dead) {
@@ -244,6 +315,7 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
         return;
       }
       dead = true;
+      releaseAll();
       observer.disconnect();
       effectFns = [];
       pathFns = [];

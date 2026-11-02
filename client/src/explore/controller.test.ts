@@ -5,13 +5,16 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 import { ROOM_SOURCE, cover, minTarget, toStage } from '../geom/cover.ts';
 import type { Size } from '../geom/cover.ts';
-import type { AssetManifest } from '../story/catalog.ts';
+import { createAssetScheduler } from '../scene/preload.ts';
+import { STEADY_CAP_BYTES, createAssetRegistry } from '../scene/registry.ts';
+import type { AssetError, LoadImage } from '../scene/registry.ts';
+import type { AssetEntry, AssetManifest, ImageEntry } from '../story/catalog.ts';
 import type { AssetId, ChapterId, SectionId } from '../story/staging.ts';
 import type { ExploreViewStore } from '../ui/explore-view.svelte.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
-import type { HotspotKey, WorldPublic, WorldText } from '../world/types.ts';
+import type { HotspotKey, ItemId, RoomId, WorldPublic, WorldText } from '../world/types.ts';
 import { MIN_TARGET_PX, createExploreController } from './controller.ts';
-import type { ExploreController } from './controller.ts';
+import type { ExploreController, ExploreControllerDeps } from './controller.ts';
 import type { ExploreAction, ExploreEffect } from './reduce.ts';
 import { EMPTY_WORLD_STATE } from './state.ts';
 import type { WorldState } from './state.ts';
@@ -267,13 +270,14 @@ type Harness = {
   ro: FakeRO;
 };
 
-function harness(w: WorldPublic, size: Size = S390): Harness {
-  const host = { clientWidth: size.w, clientHeight: size.h };
+/** A controller over `w` on a 390×844 host; `o.scene` replaces the logging scene port (the real scheduler, C3). */
+function harness(w: WorldPublic, o: { scene?: ExploreControllerDeps['scene']; manifest?: AssetManifest } = {}): Harness {
+  const host = { clientWidth: S390.w, clientHeight: S390.h };
   const view = emptyView();
   const log: string[] = [];
   const effects: ExploreEffect[] = [];
   const froms: Array<AssetManifest | undefined> = [];
-  const scene = {
+  const logged: ExploreControllerDeps['scene'] = {
     preload(tag: string, ids: readonly AssetId[], from?: AssetManifest): void {
       log.push(`preload ${tag} ${ids.join(',')}`);
       froms.push(from);
@@ -284,8 +288,8 @@ function harness(w: WorldPublic, size: Size = S390): Harness {
   };
   const c = createExploreController({
     world: w,
-    manifest: MANIFEST,
-    scene,
+    manifest: o.manifest ?? MANIFEST,
+    scene: o.scene ?? logged,
     view,
     text: (t: WorldText) => t.ru,
     stageHost: host as unknown as HTMLElement, // the controller reads only the two sizes and observes the element
@@ -435,5 +439,258 @@ test('controller: locked reverse exit clears the path', () => {
   const before = h.effects.length;
   expect(h.c.back()).toBe(false);
   expect(h.effects.length).toBe(before);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// C3: the `room:<id>` holders (X13, the cut addendum): releases inside the call, requests once the room is shown
+
+/** A deep copy of the empty state in `room` of `section`, with `extra` on top: a resume point. */
+function at(roomId: string, section: string, extra: Partial<WorldState> = {}): WorldState {
+  return {
+    ...structuredClone(EMPTY_WORLD_STATE),
+    section: sec(section),
+    room: roomId as RoomId,
+    lastRoom: { [section]: roomId as RoomId },
+    visited: [roomId as RoomId],
+    ...extra,
+  };
+}
+
+const sceneCalls = (h: Harness, from = 0): string[] => h.log.slice(from).filter((l) => !l.startsWith('effect'));
+
+test('controller: neighbours preloaded in exit order', () => {
+  const h = harness(manor());
+  h.c.enter(sec('manor'), EMPTY_WORLD_STATE);
+  // The call requests nothing: the room batch is not applied yet, so the room's own bytes are not counted (W1).
+  expect(sceneCalls(h)).toEqual([]);
+  h.c.roomShown();
+  // The room's own bg first (a join of the live entry), then the exits' rooms in hotspot order; no tag for the gate.
+  expect(sceneCalls(h)).toEqual(['preload room:hall bg/hall', 'preload room:study bg/study', 'preload room:cellar bg/cellar']);
+  expect(h.froms.every((f) => f === MANIFEST)).toBe(true);
+  // The cellar is no neighbour of the study: released before the room effect goes out; nothing is requested yet.
+  const move = h.log.length;
+  h.c.dispatch(tap('hall.to_study'));
+  expect(h.log.slice(move)).toEqual(['release room:cellar', 'effect room', 'effect dirty']);
+  h.c.roomShown();
+  expect(sceneCalls(h, move)).toEqual(['release room:cellar', 'preload room:study bg/study', 'preload room:hall bg/hall']);
+  // Take the medal and walk back: every request is a background, never a prop (W2: X13 counts neighbours as bgs).
+  h.c.dispatch(tap('study.medal'));
+  h.c.dispatch(tap('study.to_hall'));
+  h.c.roomShown();
+  const preloads = h.log.filter((l) => l.startsWith('preload'));
+  expect(preloads).toHaveLength(8);
+  expect(preloads.filter((l) => !/^preload room:([a-z]+) bg\/\1$/.test(l))).toEqual([]);
+  // The room walked into is never dropped (that would re-decode its 8.4 MiB bg).
+  expect(h.log).not.toContain('release room:study');
+  expect(h.log).not.toContain('release room:hall');
+});
+
+test('controller: puzzle open releases neighbour preloads', () => {
+  const h = harness(manor());
+  h.c.enter(sec('manor'), at('study', 'manor'));
+  h.c.roomShown();
+  // The drawer is a zero-slot lock whose puzzle has a close-up: every room:* goes before the puzzle effect.
+  const open = h.log.length;
+  h.c.dispatch(tap('study.drawer'));
+  expect(h.log.slice(open)).toEqual(['release room:', 'effect puzzle']);
+  // Once the close-up is cleared, GameSession reports the room shown again and the holders come back.
+  h.c.roomShown();
+  expect(sceneCalls(h, open)).toEqual(['release room:', 'preload room:study bg/study', 'preload room:hall bg/hall']);
+  // The gate's puzzle has no close-up: its last insert opens it with no release.
+  const g = harness(manor());
+  g.c.enter(sec('manor'), at('hall', 'manor', { held: MEDALS.map((m) => m as ItemId) }));
+  g.c.roomShown();
+  const fill = g.log.length;
+  for (const m of MEDALS) {
+    g.c.dispatch({ kind: 'insert', hotspot: k('hall.gate'), item: m as ItemId });
+  }
+  expect(g.effects).toContainEqual({ kind: 'puzzle', puzzle: 'gate', hotspot: 'hall.gate' });
+  expect(sceneCalls(g, fill)).toEqual([]);
+});
+
+test('controller: dispose releases room holders', () => {
+  const h = harness(manor());
+  h.c.enter(sec('manor'), EMPTY_WORLD_STATE);
+  h.c.roomShown();
+  const calls: boolean[] = [];
+  h.c.onPath((walkable) => calls.push(walkable));
+  const end = h.log.length;
+  h.c.dispose();
+  expect(h.log.slice(end)).toEqual(['release room:']);
+  expect(h.ro.disconnects).toBe(1);
+  expect(h.view.hotspots).toEqual([]);
+  // Later calls touch nothing: no scene call, no effect, no path report; a second dispose adds nothing.
+  h.c.dispatch(tap('hall.to_study'));
+  h.c.enter(sec('manor'), EMPTY_WORLD_STATE);
+  h.c.roomShown();
+  expect(h.c.back()).toBe(false);
+  h.c.dispose();
+  expect(h.log.slice(end)).toEqual(['release room:']);
+  expect(h.ro.disconnects).toBe(1);
+  expect(calls).toEqual([false]);
+  expect(h.view.hotspots).toEqual([]);
+  expect(h.c.state().room).toBe('hall');
+});
+
+test('controller: leave releases room holders', () => {
+  const h = harness(manor());
+  h.c.enter(sec('manor'), at('study', 'manor', { open: [k('hall.gate')] }));
+  const calls: boolean[] = [];
+  h.c.onPath((walkable) => calls.push(walkable));
+  h.c.dispatch(tap('study.to_hall'));
+  h.c.roomShown();
+  expect(calls).toEqual([false, true]);
+  // The open gate is a story exit: the holders go before the leave, so none rides into the knot's working set.
+  const out = h.log.length;
+  h.c.dispatch(tap('hall.gate'));
+  expect(h.log.slice(out)).toEqual(['release room:', 'effect leave', 'effect dirty']);
+  expect(calls).toEqual([false, true, false]);
+  // Outside the section a shown room requests nothing.
+  h.c.roomShown();
+  expect(h.log.slice(out + 3)).toEqual([]);
+});
+
+// The X13 room: a 1080×2048 bg (8.4375 MiB decoded) and four 512×512 props (1 MiB each).
+const BG = { w: 1080, h: 2048 };
+const PROP = { w: 512, h: 512 };
+const BG_BYTES = BG.w * BG.h * 4;
+const PROP_BYTES = PROP.w * PROP.h * 4;
+const CHAIN_ROOMS = ['a', 'b', 'c', 'd'];
+
+function image(id: string, size: { w: number; h: number }): ImageEntry {
+  return {
+    kind: 'image',
+    w: size.w,
+    h: size.h,
+    decodedBytes: size.w * size.h * 4,
+    avif: { url: `/assets/${id}.avif`, bytes: 1 },
+    webp: { url: `/assets/${id}.webp`, bytes: 1 },
+  };
+}
+
+function chainManifest(): AssetManifest {
+  const assets: Record<string, AssetEntry> = { 'cg/box': image('cg/box', BG) };
+  for (const r of CHAIN_ROOMS) {
+    assets[`bg/${r}`] = image(`bg/${r}`, BG);
+    for (const n of [1, 2, 3, 4]) {
+      assets[`prop/${r}_p${n}`] = image(`prop/${r}_p${n}`, PROP);
+    }
+  }
+  return { chapterId: 'ch1' as ChapterId, assets: assets as Record<AssetId, AssetEntry> }; // the ids above are AssetIds
+}
+
+/**
+ * The scene's side of a room walk over the real scheduler and registry, with a loader that decodes at once. A room
+ * batch is modelled as the scene runs it: `ensure` the room's assets, take its slot holders, drop the previous
+ * room's, release `ensure` (scene/preload.ts ENSURE_HOLDER, scene/executor.ts slots).
+ */
+function realScene(m: AssetManifest) {
+  const live = new Set<string>();
+  const errors: AssetError[] = [];
+  const entryOf = (id: string): ImageEntry => {
+    const e = Object.hasOwn(m.assets, id) ? m.assets[id as AssetId] : undefined;
+    if (e?.kind !== 'image') {
+      throw new Error(`invariant: ${id} is an image of the fixture manifest`);
+    }
+    return e;
+  };
+  const load: LoadImage<string> = (ref) => {
+    const id = ref.url.slice('/assets/'.length, -'.avif'.length);
+    const e = entryOf(id);
+    return Promise.resolve().then(() => {
+      live.add(id);
+      return { ok: true, value: { texture: id, w: e.w, h: e.h, release: () => live.delete(id) } };
+    });
+  };
+  const registry = createAssetRegistry<string>({ load, variant: 'avif' });
+  const scheduler = createAssetScheduler({ registry, onError: (e) => errors.push(e) });
+  scheduler.setChapter(m);
+  let slots = new Map<string, AssetId>();
+  const take = async (next: Map<string, AssetId>): Promise<void> => {
+    for (const [holder, id] of next) {
+      await registry.acquire(id, holder, { entry: entryOf(id), priority: 'visible' });
+    }
+    for (const [holder, id] of slots) {
+      if (next.get(holder) !== id) {
+        registry.release(id, holder);
+      }
+    }
+    slots = next;
+  };
+  return {
+    scheduler,
+    live,
+    errors,
+    bytes: () => registry.stats().bytes,
+    /** The room batch of a chain room: its bg and its four props. */
+    async show(room: string): Promise<void> {
+      const next = new Map<string, AssetId>([['scene:bg', `bg/${room}` as AssetId]]);
+      for (const n of [1, 2, 3, 4]) {
+        next.set(`scene:prop:${room}_p${n}`, `prop/${room}_p${n}` as AssetId);
+      }
+      const r = await scheduler.ensure([...next.values()], new AbortController().signal);
+      expect(r.ok).toBe(true);
+      await take(next);
+      registry.releaseHolder('ensure');
+    },
+    /** The puzzle's close-up in the cg slot, or the slot cleared. */
+    async closeup(on: boolean): Promise<void> {
+      const next = new Map(slots);
+      if (on) {
+        next.set('scene:cg', 'cg/box' as AssetId);
+      } else {
+        next.delete('scene:cg');
+      }
+      await take(next);
+    },
+  };
+}
+
+/** Lets every queued preload settle: the loader resolves on microtasks, so one macrotask drains them all. */
+const drain = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+test('controller: neighbour preloads stay under the steady cap', async () => {
+  const m = chainManifest();
+  const sc = realScene(m);
+  const h = harness(chain(), { scene: sc.scheduler, manifest: m });
+  const steps: Array<{ step: string; live: string[]; bytes: number }> = [];
+  const record = async (step: string): Promise<void> => {
+    await drain();
+    steps.push({ step, live: [...sc.live].filter((id) => !id.startsWith('prop/')).sort(), bytes: sc.bytes() });
+  };
+  /** GameSession's order (PZ F7 step 1): the room batch, then the controller hears the room is shown. */
+  const shown = async (room: string): Promise<void> => {
+    await sc.show(room);
+    h.c.roomShown();
+  };
+  h.c.enter(sec('line'), EMPTY_WORLD_STATE);
+  await shown('a');
+  await record('enter a');
+  h.c.dispatch(tap('a.to_b'));
+  await shown('b');
+  await record('a -> b');
+  h.c.dispatch(tap('b.to_c'));
+  await shown('c');
+  await record('b -> c');
+  // The box's close-up: every room:* is released before the puzzle effect, then the scene shows the close-up.
+  h.c.dispatch(tap('c.box'));
+  await sc.closeup(true);
+  await record('close-up open');
+  // Closed with no roomShown in between: b was not preloaded when the move starts (W1's case).
+  await sc.closeup(false);
+  h.c.dispatch(tap('c.to_b'));
+  await shown('b');
+  await record('c -> b');
+  const room = BG_BYTES + 4 * PROP_BYTES;
+  expect(steps).toEqual([
+    { step: 'enter a', live: ['bg/a', 'bg/b'], bytes: room + BG_BYTES },
+    { step: 'a -> b', live: ['bg/a', 'bg/b', 'bg/c'], bytes: room + 2 * BG_BYTES },
+    { step: 'b -> c', live: ['bg/b', 'bg/c', 'bg/d'], bytes: room + 2 * BG_BYTES },
+    { step: 'close-up open', live: ['bg/c', 'cg/box'], bytes: room + BG_BYTES },
+    { step: 'c -> b', live: ['bg/a', 'bg/b', 'bg/c'], bytes: room + 2 * BG_BYTES },
+  ]);
+  // X13: 29.3 MiB with two neighbours, 20.9 MiB with a close-up open; never above the steady cap.
+  expect(Math.max(...steps.map((s) => s.bytes))).toBeLessThanOrEqual(STEADY_CAP_BYTES);
+  expect(sc.errors).toEqual([]);
 });
 
