@@ -38,7 +38,7 @@ import type { HotspotKey, ItemId, WorldPublic } from '../world/types.ts';
 import { createViewModel } from '../ui/state.svelte.ts';
 import type { ViewModel } from '../ui/state.svelte.ts';
 import { newestAuto } from './boot.ts';
-import { createGame } from './game.ts';
+import { CONFLICT_HOLD_MS, createGame } from './game.ts';
 import type { Entitlements, Game, GameDeps } from './game.ts';
 import type { ExploreChunk, LazyChunks } from './yields.ts';
 
@@ -2398,4 +2398,50 @@ test('game: return to last save with no save exits to the stories', async () => 
     ['continue', 1, 1, null],
     ['new', 1, 1, null],
   ]);
+});
+
+/** Every manual save of `sv` answers the server's 409: another device saved the slot. */
+function conflicting(sv: FakeSaves): void {
+  sv.save = async (slot, w) => ({ ok: false, error: { kind: 'conflict', current: summary(MANOR, slot, w) } });
+}
+
+test('game: a 409 on a manual save asks only after the double-tap window', async () => {
+  const h = harness();
+  await startManor(h);
+  await h.game.advance(); // l002
+  const sv = h.save();
+  conflicting(sv);
+  const overwrites: string[] = [];
+  const overwrite = sv.overwrite;
+  sv.overwrite = (slot, w, current) => {
+    overwrites.push(slot);
+    return overwrite(slot, w, current);
+  };
+  const view = (): unknown[] => [h.vm.saves.saving, h.vm.saves.conflict];
+  // 1. The overwrite ask's Yes, answered 409 at once, then the double tap's second tap where the conflict's Yes renders.
+  void h.game.save('s1');
+  await settle();
+  await h.game.overwrite('s1');
+  await settle();
+  expect([...view(), overwrites.length]).toEqual(['s1', null, 0]);
+  // 2. After the window the conflict asks, and a deliberate Yes overwrites.
+  h.clock.advance(CONFLICT_HOLD_MS);
+  const asked = view();
+  await h.game.overwrite('s1');
+  await settle();
+  expect([asked, overwrites]).toEqual([[null, 's1'], ['s1']]);
+  // 3. The save screen left and opened again within the window: the held ask never shows over the fresh screen.
+  void h.game.save('s1');
+  await settle();
+  await h.game.openSaves();
+  h.clock.advance(CONFLICT_HOLD_MS);
+  expect(view()).toEqual([null, null]);
+  // 4. The story left within the window: the hold's timer goes with the session.
+  const timers = h.clock.pending;
+  void h.game.save('s1');
+  await settle();
+  const holding = h.clock.pending - timers;
+  await h.game.exitToStories();
+  expect([holding, h.clock.pending - timers, h.exits()]).toEqual([1, 0, 1]);
+  h.game.dispose();
 });

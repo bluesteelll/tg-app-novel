@@ -180,6 +180,13 @@ const CONFLICT_PROMPT = 'save_conflict';
 const PURCHASE_TOAST = 'purchase';
 /** SP "Module API": how long the exit waits for the autosave before the service's pending cache keeps it. */
 export const EXIT_FLUSH_MS = 2000;
+/**
+ * K31 (L15b review OQ1): a manual save's 409 asks "Overwrite?" no sooner than this after the tap that sent it. The
+ * conflict ask's Yes renders where the overwrite ask's Yes was, so the second tap of a double tap would overwrite
+ * another device's save unseen; until then `saving` keeps every write control disabled. AOSP's DOUBLE_TAP_TIMEOUT
+ * (300 ms, from the first tap's up to the second's down) plus the second press's down to click.
+ */
+export const CONFLICT_HOLD_MS = 500;
 /** Every holder family the session requests besides the stage: knot preloads, F5, the explore rooms. */
 const EXIT_RELEASES: readonly string[] = ['preload:', 'next:', 'room:'];
 const IDLE: PurchaseState = Object.freeze({ kind: 'idle' });
@@ -340,6 +347,8 @@ export function createGame(deps: GameDeps): Game {
   let sound: AudioManager | null = null;
   let autoTimer: number | null = null;
   let skipTimer: number | null = null;
+  /** A manual save's conflict ask held for CONFLICT_HOLD_MS; cleared when it fires and when the session or the screen goes. */
+  let conflictHold: number | null = null;
   /** The shown line is fully revealed (its `ondone` came). */
   let revealed = false;
   let paused = false;
@@ -470,6 +479,12 @@ export function createGame(deps: GameDeps): Game {
     if (skipTimer !== null) {
       clock.clearTimeout(skipTimer);
       skipTimer = null;
+    }
+  };
+  const clearHold = (): void => {
+    if (conflictHold !== null) {
+      clock.clearTimeout(conflictHold);
+      conflictHold = null;
     }
   };
   /** F2 auto: `1200 + 40 × graphemes` ms at normal speed, scaled by the text speed. */
@@ -1305,6 +1320,7 @@ export function createGame(deps: GameDeps): Game {
     }
     clearAuto();
     clearSkip();
+    clearHold();
     s.abort.abort();
     s.yields.dispose();
     s.runner?.dispose();
@@ -1495,17 +1511,30 @@ export function createGame(deps: GameDeps): Game {
       vm.saves = { ...vm.saves, slots: slotViews(s, r.value) };
     }
   };
-  const saved = async (s: Session, slot: ManualSlot, r: Result<unknown, SaveError>): Promise<void> => {
+  /** A manual write's answer on the save screen; `tappedAt` is the tap that sent it, which a conflict ask waits past. */
+  const saved = async (s: Session, slot: ManualSlot, r: Result<unknown, SaveError>, tappedAt: number): Promise<void> => {
     if (session !== s) {
       return;
     }
+    clearHold(); // a newer answer replaces a held ask (critique O3)
     if (r.ok) {
       s.conflict = null;
       vm.saves = { ...vm.saves, saving: null, conflict: null, failed: null };
       await refreshSlots(s);
     } else if (r.error.kind === 'conflict') {
       s.conflict = { slot, current: r.error.current };
-      vm.saves = { ...vm.saves, saving: null, conflict: slot, failed: null };
+      const ask = (): void => {
+        conflictHold = null;
+        if (session === s) {
+          vm.saves = { ...vm.saves, saving: null, conflict: slot, failed: null };
+        }
+      };
+      const left = tappedAt + CONFLICT_HOLD_MS - clock.now();
+      if (left > 0) {
+        conflictHold = clock.setTimeout(ask, left);
+      } else {
+        ask();
+      }
     } else {
       vm.saves = { ...vm.saves, saving: null, failed: slot };
     }
@@ -1630,6 +1659,7 @@ export function createGame(deps: GameDeps): Game {
       if (s === null) {
         return;
       }
+      clearHold(); // a held ask would show over the fresh screen, whose Yes then finds no conflict
       s.conflict = null;
       vm.saves = { ...vm.saves, saving: null, conflict: null, failed: null };
       screens.push({ kind: 'saves' });
@@ -1644,8 +1674,9 @@ export function createGame(deps: GameDeps): Game {
       if (s === null || body === null || vm.saves.saving !== null) {
         return;
       }
+      const tappedAt = clock.now();
       vm.saves = { ...vm.saves, saving: slot, conflict: null, failed: null };
-      await saved(s, slot, await s.saves.save(slot, writeOf(body)));
+      await saved(s, slot, await s.saves.save(slot, writeOf(body)), tappedAt);
     },
     async overwrite(slot) {
       const s = session;
@@ -1654,10 +1685,12 @@ export function createGame(deps: GameDeps): Game {
       if (s === null || c === null || c.slot !== slot || body === null || vm.saves.saving !== null) {
         return;
       }
+      const tappedAt = clock.now();
       vm.saves = { ...vm.saves, saving: slot, conflict: null, failed: null };
-      await saved(s, slot, await s.saves.overwrite(slot, writeOf(body), c.current));
+      await saved(s, slot, await s.saves.overwrite(slot, writeOf(body), c.current), tappedAt);
     },
     cancelOverwrite() {
+      clearHold();
       if (session !== null) {
         session.conflict = null;
       }
@@ -1804,6 +1837,7 @@ export function createGame(deps: GameDeps): Game {
       }
       clearAuto();
       clearSkip();
+      clearHold();
       hostWaiters = [];
       if (__TG_MOCK__) {
         delete (globalThis as typeof globalThis & { __novelDebug?: DebugHook }).__novelDebug;
