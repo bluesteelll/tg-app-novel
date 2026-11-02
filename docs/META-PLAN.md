@@ -69,6 +69,8 @@ The player:
 **Budget targets** (numbers and gates in [Budgets and validation](#budgets-and-validation)):
 - entry closure ≤ 40 KB br, unchanged; this change adds about 2.9 KB br (the meta controller, its services and
   decoders); the meta UI is one lazy chunk ≤ 14 KB br that never loads before the first line;
+  as merged (LMI `3e35a7b`; RULINGS 105, 110; M27): the controller and its services are a lazy chunk ≤ 5.0 KB br
+  loaded right after auth and counted in JS before the first line; the entry measured 38.9 KB br;
 - all JS ≤ 305 KB br (was 290: + the 14 KB meta chunk, + 1 KB of slack); JS before the first line ≤ 270 KB br,
   unchanged; first-load ≤ 800 KB per story, unchanged (+2.9 KB); time to first line ≤ 6 s, unchanged (+≈15 ms at
   1.6 Mbps); no extra tap;
@@ -854,6 +856,18 @@ deletion on request). Not stored, ever: `last_name`, `username`, `photo_url`, `i
 - **Alternatives.** Meta UI in the entry (+≈11 KB br before the first line); one chunk per screen (seven requests for
   ≈ 1.5 KB each).
 - **Trade-off.** The first card open in a session before the prefetch finished waits for ≈ 14 KB.
+- **As merged (LMI `3e35a7b`; RULINGS 105, 110).** The controller is not in the entry: it is a lazy chunk loaded right
+  after auth, counted before the first line.
+  - `boot.ts` imports `app/meta.ts` dynamically once the boot reads are in, beside the engine, never awaited before
+    the first line (`client/src/app/boot.ts:576`). The three services ride in its chunk (only `app/meta.ts` imports
+    them); the decoders and `createMetaEndpoints` stay in the entry (`boot.ts:7`, `:279`).
+  - The meta gate (`createMetaGate`, `boot.ts:169-253`) keeps one import in flight; a failed import is re-imported by
+    the next tap that needs the controller, never on a timer (`ready` :180-198, `tap` :203-222). An ending awaits the
+    import in flight (`port.onEnding` :224-239); `hintPort()` is null until the chunk lands (:240).
+  - The chunk has its own row, `meta controller chunk (br)` ≤ 5.0 KB br (cut Q3; `client/scripts/budget.ts:112`,
+    `:184`), and "JS before the first line" counts it (`budget.ts:503`): 84 rows. Measured at the merge
+    (RULINGS 110): the entry 38.9 / 40.0 KB br, the controller chunk 4.0 / 5.0, JS before the first line 255.1 / 270,
+    `meta-ui` 6.4 / 14.0, all JS 267.6 / 305.
 
 ### H. Lanes
 
@@ -889,6 +903,10 @@ unchanged.**
     the server chain has run to its end (MEMORY-PLAN's M3s follows M3c and D2); of the ten lanes, LMI still runs
     (relaunched, RULINGS 105). After LMI come M2, then LFU3 (RULINGS 107, OB-1: M2 first, since both hold
     `client/src/app/game.ts`), and D2 waits for M2 only.
+  - Changed by RULINGS 105-111 (as of `3e35a7b`; docs lane `docs-errata-7`, group B): LMI has merged (`3e35a7b`), so
+    all ten lanes have merged. Its first run STOPPED on the entry budget (41.3 KB br over the 40.0 KB cap with the
+    controller in the entry), and RULINGS 105 relaunched it with the controller as a lazy chunk (M27). M2 runs now;
+    LFU3 follows M2 (RULINGS 107, OB-1), and D2 waits for M2 only.
   - Why LPO is a lane of its own (revision 1, W4): the operator facts need a `Config` variable, which means editing
     the three `Config` constructors (`config.rs`, `server/dev/src/lib.rs`, `server/tests/it/common.rs`) plus
     `lib.rs` and `.env.example`; in LF1 that is 15 + 4 = 19 files, over the cap. LPO holds them with `api/legal.rs` and
@@ -1704,6 +1722,9 @@ impl Repo {
 ### F28. The privacy policy
 1. Telegram's Privacy Policy button (the BotFather URL), the bot's `/privacy`, or the app's link → `GET /api/privacy`
    (public). In the app: `tg.openLink(url)` from the tap (principle 5).
+   As merged (LMI `3e35a7b`; RULINGS 110, cut Q4): a policy tap before the controller chunk lands opens nothing; it
+   only starts the import, and the next tap opens the policy inside its own task (`client/src/app/boot.ts:541`, the
+   gate's `inTask` :218; `openPolicy`, `client/src/app/meta.ts:700-704`).
 
 ---
 
@@ -1933,6 +1954,9 @@ M1 `f1b707d` and LFU1 `f637bac` (LMI's gate); running LPH (server, after L9; RUL
 this design's lanes: none. LFU3 (RULINGS 99) follows LMI.
 Changed by RULINGS 104-108 (as of `a4d53ef`): merged also LPH `d423cb3` (server); running LMI (client); to go of this
 design's lanes: none. M2 follows LMI, and LFU3 follows M2 (RULINGS 107, OB-1).
+Changed by RULINGS 105-111 (as of `3e35a7b`): merged also LMI `3e35a7b` (client; RULINGS 105, 110), so all of this
+design's lanes have merged; running M2 (client, MEMORY-PLAN); to go of this design's lanes: none. LFU3 follows M2
+(RULINGS 107, OB-1).
 
 ---
 
@@ -1940,10 +1964,11 @@ design's lanes: none. M2 follows LMI, and LFU3 follows M2 (RULINGS 107, OB-1).
 
 | Budget | Limit | Basis | Enforced by |
 |---|---|---|---|
-| Entry closure JS | ≤ 40 KB br, unchanged | + ≈ 2.9 KB br: `app/meta.ts` ≈ 1.2, the three services ≈ 0.9, the decoders ≈ 0.8 | `budget.ts` (the existing row) |
+| Entry closure JS | ≤ 40 KB br, unchanged | + ≈ 2.9 KB br: `app/meta.ts` ≈ 1.2, the three services ≈ 0.9, the decoders ≈ 0.8; as merged (LMI `3e35a7b`; RULINGS 105, 110): `app/meta.ts` and the services are the lazy controller chunk (next row but one), and the entry measured 38.9 KB br | `budget.ts` (the existing row) |
 | `meta-ui` lazy chunk (`ui/meta/*` + `i18n/meta.ts`) | ≤ 14 KB br; a dynamic entry imported only by `app/meta.ts`; PENDING until `app/meta.ts` exists, then FAIL without a dynamic entry or inside a static closure | 8 components ≈ 1.2 KB br each + the table ≈ 1.5 KB | `budget.ts` (LMI): `budget: meta ui in entry closure fails`, `budget: meta row pending until its importer exists` |
+| `meta controller chunk (br)` (as merged, LMI `3e35a7b`; RULINGS 105, 110; M27) | ≤ 5.0 KB br; a dynamic entry for `app/meta.ts`; PENDING until `app/meta.ts` exists, then FAIL without a dynamic entry or inside a static closure | measured 4.0 KB br at the merge (cut Q3: 3.4 + the gift and the rotation, with headroom) | `budget.ts` (LMI; `client/scripts/budget.ts:112`, `:184`): `budget: meta controller chunk counts before the first line`, `budget: meta controller imported statically fails`; 84 rows |
 | All JS in `dist/` | ≤ 305 KB br (was 290) | + 14 meta-ui + 1 slack | `budget.ts` (LMI) |
-| JS before the first line | ≤ 270 KB br, unchanged | the meta chunk is not in it | `budget.ts` |
+| JS before the first line | ≤ 270 KB br, unchanged | the meta chunk is not in it; as merged (LMI `3e35a7b`; RULINGS 105): the `meta-ui` chunk is not, the controller chunk is (requested before the first line); 255.1 KB br at the merge | `budget.ts` |
 | First-load to first line, per story | ≤ 800 KB, unchanged | + 2.9 KB | `budget.ts` |
 | Time to first line | ≤ 6 s, unchanged | 2.9 KB × 8 / 1.6 Mbps ≈ 15 ms; the three boot GETs (≈ 0.5–2 KB each) are parallel and never awaited | e2e `time to first line under throttling` |
 | Steady memory | ≤ 138.6 MiB (145.3 MB) | 138.1 (SP) + < 0.5 MiB (DOM overlays, ≤ 16 KB of card JSON, the chunk; as merged, LM2 `5a33183`, RULINGS 77; cut Q4: the card is bounded at 36 KiB, see the next row, and the total stays < 0.5 MiB) | the estimate; e2e `heap under budget` (its 48 MB limit unchanged) |
@@ -1977,7 +2002,7 @@ by name per lane.
 | Server (L9 re-cut) | `refund_pack_claws_back_unspent`, `refund_spent_pack_records_debt`, `refund_pack_twice_claws_once`, `refund_gifted_pack_keeps_friend_balance`, `paysupport_pack_credit_is_applied`, `privacy_command_links_policy`; revision 1: `refund_claws_back_the_credited_amount`; as merged (L9 `d837c8b`, RULINGS 96; L9 cut Q6): the seven as named, five in `server/tests/it/refunds.rs` and `paysupport_pack_credit_is_applied`, `privacy_command_links_policy` in `server/tests/it/bot.rs`, among L9's 38 new names (server it 30, server lib 6, server-dev lib 2) |
 | Client unit (L7, LS4, L10, LP2, LMD, LMI, L15) | `share: failed event maps to a typed error`, `share: below 8.0 is unsupported`, `share: listeners removed after the event`, `links: open link refuses non-https`; `reporter: choice event carries the option line id`, `reporter: settle resolves after the queue drains`, `reporter: settle times out without throwing`, revision 1: `reporter: queue full of choices keeps ending_reached`, `reporter: batch sends facts first`; `flow: pack product confirms through order status`, `decode: puzzle status with unlocked hints`; `hints: next tier usable only after previous unlocked`, `hints: use without balance offers get more`; `decode: meta samples decode`, `card: loads once per open and keeps no copy`, `social: accept refreshes friends`, `social: ask returns the invite state` (revision 1), `wallet: hint port reads the balance from the server only`; `wallet: gift retry keeps its request id`, `meta: boot fetches never block the first line`, `meta: invite prompt only for an open invite` (was `… only for an incoming request`, revision 1), `meta: share falls back when unsupported`, `meta: expired prepared message re-prepared once`, `game: ending settles stats then opens the card`, `game: card failure keeps the end`; `game: a choice records its option line id` (L15) |
 | Client DOM (L14a, L14b, LP2, LU1) | `screens: meta overlays close with back`; `menus: story picker shows the card button only after an ending`, `menus: the end offers the card when it exists`, `menus: friends and wallet entries only when given`; `hint ladder: no port shows no use button`; `card: lists endings and achievements, new ones marked`, `card: no total or empty slots`, `card: data dropped on close`, `friends: requests show accept and decline`, `consent: off by default and one tap withdraws`, `consent: text names the friend circle` (revision 1), `gift: amount bounded by balance and caps`, `wallet: packs show server prices and debt`, `invite: prompt names nobody and says who sees the name` (was `invite: prompt names the inviter`, revision 1), `i18n: meta keys complete in ru and en` |
-| e2e (LMI) | `meta.spec.ts`: `meta: ending opens the card with the ending and a new achievement`, `meta: card back returns to the end`, `meta: home opens the card after the first ending`, `meta: pack purchase credits the wallet`, `meta: hint from a pack shows its text`, `meta: privacy link opens through openLink`; `social.spec.ts`: `social: invite link sends a request the inviter accepts` (was `social: invite link opens a friend request`, revision 1), `social: friend profile hidden until consent`, `social: share sends a prepared message without titles`, `social: share falls back to a share link below 8.0`, `social: gift moves a hint to a friend` |
+| e2e (LMI) | `meta.spec.ts`: `meta: ending opens the card with the ending and a new achievement`, `meta: card back returns to the end`, `meta: home opens the card after the first ending`, `meta: pack purchase credits the wallet`, `meta: hint from a pack shows its text`, `meta: privacy link opens through openLink`; `social.spec.ts`: `social: invite link sends a request the inviter accepts` (was `social: invite link opens a friend request`, revision 1), `social: friend profile hidden until consent`, `social: share sends a prepared message without titles`, `social: share falls back to a share link below 8.0`, `social: gift moves a hint to a friend`; as merged (LMI `3e35a7b`; RULINGS 105 Q4, 110): the 11 as named (`client/e2e/meta.spec.ts` 6, `client/e2e/social.spec.ts` 5), so the e2e is 47 names in nine specs. Fix F2's steps (boot's `onView` and `showHome` forwards) are folded into `meta: privacy link opens through openLink` and `social: invite link sends a request the inviter accepts`, so the count stays 47 |
 
 The e2e uses two dev users (`/dev/launch?uid=…`, two browser contexts); the second launches with
 `startapp=f<the first user's code>`, read from `GET /api/social` with the first user's token, and sends the request
@@ -2115,3 +2140,5 @@ lists (default: the narrative-designer drafts the demo ones above), Q21 jurisdic
 | 11 | 2026-11-02 | RULINGS 89-103 (as merged on main `6d77329`) | Docs lane `docs-errata-5`, group B (not a triage round): M28 and "Implementation plan" Order as of `6d77329` (LM1, LU1, LE1, LF1, LM2, LF2, LE2, LMD, LPO merged; L9 merged, so the server chain continues LPH, RULINGS 96; LMI running, its gate with L15b, M1 and LFU1 met). Ledger: `D:/tmp/novel-orch/docs-errata-5/ledger.md` |
 | 12 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `a190136` (the docs-errata-6 spec, group A; RULINGS 97-108), as merged on main `a4d53ef` | Docs lane `docs-errata-6`, group A (not a triage round): LPH (`d423cb3`; RULINGS 97 Q2) — M19's "order reuse < 1 h": no reuse, each POST a new order, at most 10 unpaid per user in a rolling hour, then 429. Ledger: `D:/tmp/novel-orch/docs-errata-6/ledger.md` |
 | 13 | 2026-11-02 | RULINGS 104-108 (as merged on main `a4d53ef`) | Docs lane `docs-errata-6`, group B (not a triage round): M28 and "Implementation plan" Order as of `a4d53ef` (LM1, LU1, LE1, LF1, LM2, LF2, LE2, LMD, LPO merged; LPH merged `d423cb3`, so the server chain has run to its end; LMI running, relaunched, RULINGS 105; M2 then LFU3 after LMI, RULINGS 107, OB-1). Ledger: `D:/tmp/novel-orch/docs-errata-6/ledger.md` |
+| 14 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `ba62703` (the docs-errata-7 spec, group A; RULINGS 105-111), as merged on main `3e35a7b` | Docs lane `docs-errata-7`, group A (not a triage round): LMI (`3e35a7b`; RULINGS 105, 110) — M27's controller as a lazy chunk loaded right after auth, re-imported by the next tap after a failure, awaited by an ending, counted before the first line; the budget targets and table (the `meta controller chunk (br)` row, 84 rows, the measured entry); F28's policy tap before the chunk; the e2e row (47 names in nine specs). Ledger: `D:/tmp/novel-orch/docs-errata-7/ledger.md` |
+| 15 | 2026-11-02 | RULINGS 105-111 (as merged on main `3e35a7b`) | Docs lane `docs-errata-7`, group B (not a triage round): M28 and "Implementation plan" Order as of `3e35a7b` (LMI merged `3e35a7b` after its entry-budget STOP and the relaunch of RULINGS 105, so all ten lanes of this design have merged; M2 running; LFU3 after M2, RULINGS 107, OB-1). Ledger: `D:/tmp/novel-orch/docs-errata-7/ledger.md` |
