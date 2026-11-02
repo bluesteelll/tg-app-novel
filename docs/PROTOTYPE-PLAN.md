@@ -69,6 +69,8 @@ records chapter, ending and puzzle facts per story ([STORIES-PLAN "Goal"](STORIE
 - Changed by META-PLAN: the entry closure gains about 2.9 KB br (the meta controller) inside the 40 KB row; the meta
   UI is one lazy chunk ≤ 14 KB br; all JS ≤ 305 KB br (was 290); the steady memory ≤ 138.6 MiB (145.3 MB)
   ([META-PLAN "Budgets"](META-PLAN.md#budgets-and-validation)).
+  As merged (LMI `3e35a7b`; RULINGS 105, 110; META-PLAN M27): the controller is a lazy chunk ≤ 5.0 KB br loaded
+  right after auth and counted in JS before the first line; the entry measured 38.9 KB br.
 - Changed by MEMORY-PLAN (RULINGS 78): the steady memory per lever at the gated limits, MiB: today 138.6 (LOW with
   F: 129.6); after M2 106.6 (LOW with F: 97.6); on LOW phones with F + M2 + M3c the planned set gives ≤ 75.2 (75.8 with
   the 10.15 MiB bound of the 5-image busiest knot), and the cap-bounded worst case stays 97.6. M2 also lowers the
@@ -186,6 +188,10 @@ research is newer and verified (brief), so it wins, and the deviation is recorde
   (about +2.9 KB br inside the 40 KB row); the meta overlays (`ui/meta/*` + `i18n/meta.ts`) are a fifth lazy family,
   one dynamic chunk `meta-ui` ≤ 14 KB br imported only by `app/meta.ts` and prefetched after the first line. Its
   budget row is PENDING until `app/meta.ts` exists (LMI).
+  As merged (LMI `3e35a7b`; RULINGS 105, 110): the controller is not in the entry. `boot.ts` imports `app/meta.ts`
+  (with its services) as a lazy chunk right after auth, never awaited before the first line; the next tap that needs
+  it re-imports it after a failure, and an ending awaits it (`createMetaGate`, `client/src/app/boot.ts:169-253`).
+  Its row `meta controller chunk (br)` ≤ 5.0 KB br is counted in JS before the first line (META-PLAN M27).
 
 **K4. Own image loader, not Pixi `Assets`.**
 - **What.** `scene/loader.ts`: the injected `FetchAsset` (implemented by `api/http.ts`: bearer and the single-flight
@@ -648,7 +654,8 @@ server.**
   As merged (L9 `d837c8b`, RULINGS 96; L9 cut Q6): the two must be disjoint both ways (neither the same, nor one
   inside the other), and a walk refuses an entry that resolves outside `STATIC_DIR` (a link or a junction);
   `/assets/*` answers a found file `public, max-age=31536000, immutable`, everything else `no-cache`
-  (`server/src/api/static_files.rs:137-178`, `:210-223`).
+  (`server/src/api/static_files.rs:149-190`, `:233-247`; `check` and `with_static`, moved by LPH `d423cb3` from
+  :137-178 and :210-223, re-checked at `3e35a7b`).
   As merged (LPH `d423cb3`, RULINGS 106; LPH critique O9): the walk also refuses any dot-entry (`GET /.env` would
   serve a host file), except the root's `.vite` directory, a real directory where the build writes its manifest
   (`server/src/api/static_files.rs`: `StaticDirError::DotEntry` :105, `VITE_DIR` :193, `walk` :198-215); pinned by
@@ -1834,7 +1841,7 @@ next-chapter preload`.
 |---|---|---|---|
 | P1 | client | paywall shows the product from `GET /api/entitlements` (price from the server, never the client); a **terms checkbox** must be ticked (payments-stars: users "must confirm that they have read and agree to your terms" [R2 §1.5]); a Terms link opens the in-app terms overlay | entitlement fetch fails → "Retry"; `owned: true` → skip to P9 |
 | P2 | client | Buy → state `requesting` (button disabled) → `POST /api/invoices { productId }` | double tap: button disabled (as merged, LPH `d423cb3`, RULINGS 97 Q2: the planned "+ server order reuse" is removed; a second POST is a second order, and K18 refuses paying both); network error → state `failed: network`, retry allowed |
-| P3 | server | catalog lookup (404) → entitled? (409 `already_owned`) → reuse this user's `created` order < 1 h with a link, else insert order (`amount`, `XTR` from the catalog) → **commit** → `create_invoice_link` (title/description in the user's language; one `LabeledPrice`; payload = order id; empty provider token) outside any transaction → `UPDATE orders SET invoice_url` | gateway error/timeout → 502 `telegram_unavailable`, order stays `created` without a link; client shows an error, retry creates or reuses |
+| P3 | server | catalog lookup (404) → entitled? (409 `already_owned`) → reuse this user's `created` order < 1 h with a link, else insert order (`amount`, `XTR` from the catalog) (as merged, LPH `d423cb3`, RULINGS 97 Q2: no reuse; every POST inserts a new order, at most 10 unpaid (`created` or `checkout`) per user in a rolling hour, then 429 `rate_limited` + `Retry-After`) → **commit** → `create_invoice_link` (title/description in the user's language; one `LabeledPrice`; payload = order id; empty provider token) outside any transaction → `UPDATE orders SET invoice_url` | gateway error/timeout → 502 `telegram_unavailable`, order stays `created` without a link; client shows an error, retry creates or reuses (as merged, LPH `d423cb3`: a retry creates a new order; the order without a link still counts toward the bound) |
 | P4 | client | `tg.openInvoice(url)` → state `sheet` | TWA throws (unsupported, second open of the same slug) → `failed: telegram` |
 | P5 | Telegram → server | `pre_checkout_query` → webhook: secret check → decode → `on_pre_checkout` (below) → `answer_pre_checkout` → 200 | see the pre-checkout table |
 | P6 | Telegram → server | `message.successful_payment` → `on_successful_payment` (one transaction, below) → commit → 200 | DB error → 500 → Telegram redelivers → idempotent; duplicate delivery → `Duplicate`, 200 |
@@ -2030,7 +2037,8 @@ Texts come from `server/locales/bot.{ru,en}.json` by `from.language_code`. `serv
 `setMyCommands` (ru, en, default), the webhook (`secret_token`, explicit `allowed_updates`) and the menu button
 [R2 §1.5–1.6].
 As merged (L9 `d837c8b`, RULINGS 96; L9 cut Q6): a command is answered only in a private chat with a sender, so
-`/refund` outside one is ignored (`server/src/telegram/commands.rs:77-84`); `server setup` sets the English menu as the
+`/refund` outside one is ignored (`server/src/telegram/commands.rs:77-87`, moved by LPH `d423cb3` from :77-84,
+re-checked at `3e35a7b`); `server setup` sets the English menu as the
 default set and the Russian one for `ru`, `uk`, `be` and `kk` (no `en` set; `server/src/telegram/setup.rs:37-60`,
 `RUSSIAN_LANGS` in `telegram/payments.rs:33`), and the menu button text is Russian.
 As merged (LPH `d423cb3`, RULINGS 97, 106; LPH critique O2, O3, O6, review M2, M3):
@@ -2434,6 +2442,7 @@ All budgets are enforced by `client/scripts/budget.ts` inside `npm run build` un
 | Engine closure JS (`app/engine.ts` dynamic entry + imports) | ≤ 230 KB br | Pixi 145.1 + inkjs 26.6 + GSAP 24.3 = 196 KB [R4] + our scene/story/audio | `budget.ts`: PENDING while `src/app/engine.ts` does not exist (before L15); once it exists, FAIL if the manifest has no `isDynamicEntry` chunk for it (never a 0 KB PASS) — `budget: engine row fails when dynamic entry missing` |
 | All JS in `dist/` | ≤ 290 KB br (changed by PUZZLES-PLAN: was 270; + about 20 KB of lazy puzzle and explore chunks that never load before the first line). Changed by META-PLAN: ≤ 305 KB br (+ the 14 KB meta-ui chunk + 1 KB slack; LMI) | R4 recommends ≤ 260 KB for one bundle; +10 for the split overhead | `budget.ts` |
 | `meta-ui` lazy chunk (changed by META-PLAN) | ≤ 14 KB br; a dynamic entry imported only by `app/meta.ts`; PENDING until `app/meta.ts` exists, then FAIL without a dynamic entry or inside a static closure | [META-PLAN.md](META-PLAN.md), section "Budgets and validation" | `budget.ts` (LMI): `budget: meta ui in entry closure fails`, `budget: meta row pending until its importer exists` |
+| `meta controller chunk (br)` (as merged, LMI `3e35a7b`; RULINGS 105, 110) | ≤ 5.0 KB br; a dynamic entry for `app/meta.ts`, counted in JS before the first line; 4.0 KB br at the merge | [META-PLAN.md](META-PLAN.md), M27 and "Budgets and validation" | `budget.ts` (LMI): `budget: meta controller chunk counts before the first line`, `budget: meta controller imported statically fails`; 84 rows |
 | JS before the first line (entry + engine closures) | ≤ 270 KB br (changed by PUZZLES-PLAN: the old all-JS limit, now scoped to what loads before the first line) | as above | `budget.ts` (L5) |
 | Lazy chunks, world JSON, props, `budget/room-set` | changed by PUZZLES-PLAN: puzzle type ≤ 8 KB br each, puzzle host ≤ 10, explore UI ≤ 16 (dynamic entries, never in a static closure; PENDING until `src/app/yields.ts` exists, then FAIL without a dynamic entry); as merged (LP2 `88d0964`, RULINGS 67; cut Q4): three lazy rows, the puzzle-type row measuring the largest type chunk, and the engine closure's walk stops at a lazy root, so the engine, first-line and first-load rows never count a lazy chunk; world ≤ 32 KB raw / 8 KB br; prop ≤ 512 px; room-set ≤ 32 MiB | [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section "Budgets and validation" | `budget.ts` (L5, LP2) |
 | CSS total | ≤ 12 KB br | | `budget.ts` |
@@ -2536,6 +2545,8 @@ All budgets are enforced by `client/scripts/budget.ts` inside `npm run build` un
 
 As merged (L15b `fbcfd38`, RULINGS 93 Q8, 94; L15b cut §6 Q8): the e2e suite L15b left is 35 names, boot 3, smoke 6,
 stories 7, purchase 5, perf 6, puzzles 8 (`client/e2e/*.spec.ts`); M1 then added the first `memory.spec.ts` name (36).
+As merged (LMI `3e35a7b`; RULINGS 105 Q4, 110): LMI added `meta.spec.ts` (6) and `social.spec.ts` (5), named in
+[META-PLAN.md](META-PLAN.md), section "Test strategy": 47 names in nine specs.
 
 **Changed by PUZZLES-PLAN.** The unit, DOM, story and server test names of the puzzle extension (world, rules,
 reduce, softlock, cover, runner yields, session, controller, yields, arch, budget, scan, emit; schema, attempts,
@@ -2929,6 +2940,14 @@ meta-integration (client; relaunched after its implement STOP, RULINGS 105, on b
 `76cb463`), beside the docs lane `docs-errata-6` (base `a4d53ef`). "To go": M2, LFU3, M3c, D2 and M3s, in the planned
 order below.
 
+Changed by RULINGS 105-111 (as merged; docs lane `docs-errata-7`, group B): the State column is the state as of
+`3e35a7b`, with each SHA from `git log --first-parent main`. Since `a4d53ef` these merged: LMI `3e35a7b` (and the docs
+lane `docs-errata-6` as `f911011`). LMI's first run STOPPED on the entry budget: with the meta controller in the entry
+the entry measured 41.3 KB br over its 40.0 KB cap. RULINGS 105 ruled the controller a lazy chunk (META-PLAN M27), and
+the relaunch merged with the entry at 38.9 KB br (RULINGS 110). Running: M2 memory-cpu-copy (client, lane A; base
+`3e35a7b`), beside the docs lane `docs-errata-7` (base `3e35a7b`). "To go": LFU3 (after M2, beside M3c / D2; RULINGS
+107), M3c (after M2), D2 (after M2) and M3s (after M3c and D2), in the planned order below.
+
 | Lane | Slot | State | Gate to start (merged) | Re-cut |
 |---|---|---|---|---|
 | L1 client-shell | client | merged `ea8a6a2` (`f6e2624` before the rewrite) | — | — |
@@ -2980,8 +2999,8 @@ order below.
 | L15 integration | client | split (RULINGS 80): L15a `engine-wiring` merged `e94c786`; L15b `app-e2e` merged `fbcfd38` | every lane above (N1 and N2 included: the e2e plays both stories). Changed by META-PLAN: every lane above except L9 and the META-PLAN lanes (LE1, LF1, LM2, LF2, LE2, LU1, LMD; LM1 is in through N1) | PUZZLES-PLAN, STORIES-PLAN (stories wiring, `stories.spec.ts`); META-PLAN: `choice_made`, `hints: null`; MEMORY-PLAN: lever F (+ `scene/controller.ts`) and the e2e helpers, carried into its running cut through its brief |
 | **client follow-ups** | client | cut in two (RULINGS 95): LFU1 `engine-followups` merged `f637bac`; LFU2 `client-followups` merged `6d77329` (new, RULINGS 80; L15 cut Q3) | L15b (its items touch `app/game.ts`, which L15b also holds; RULINGS 87) | new; RULINGS 95: scope cut in two (LFU1, LFU2) |
 | **M1 memory-trim** | client | merged `f1b707d` (new, MEMORY-PLAN) | L15 (the first rendered scene and `perf.spec.ts`; the e2e helpers) | new; RULINGS 92: + the budget-gate gap item of the client follow-ups lane |
-| **LMI meta-integration** | client | running (relaunched, RULINGS 105; base `6d77329` through the trunk sync `76cb463`, first base `f637bac`; new, META-PLAN) | L15, LMD, LU1, LE2. Changed by MEMORY-PLAN: M1. Changed by RULINGS 92, 95: LFU1 (both hold `client/src/app/game.ts`) | new; MEMORY-PLAN: gate + M1; RULINGS 92, 95: gate + LFU1 |
-| **M2 memory-cpu-copy** | client | to go (new, MEMORY-PLAN) | LMI (after M1; the `budget.ts` and `app/game.ts` chains) | new |
+| **LMI meta-integration** | client | merged `3e35a7b` (relaunched after its entry-budget STOP, RULINGS 105; new, META-PLAN) | L15, LMD, LU1, LE2. Changed by MEMORY-PLAN: M1. Changed by RULINGS 92, 95: LFU1 (both hold `client/src/app/game.ts`) | new; MEMORY-PLAN: gate + M1; RULINGS 92, 95: gate + LFU1 |
+| **M2 memory-cpu-copy** | client | running (base `3e35a7b`; new, MEMORY-PLAN) | LMI (after M1; the `budget.ts` and `app/game.ts` chains) | new |
 | **LFU3** | client | to go (new, RULINGS 99) | LMI (it holds `client/src/app/{boot,game,game.test,yields}.ts`, which LMI also holds). Changed by RULINGS 107 (OB-1): M2 (both hold `client/src/app/game.ts`; M2 first, then LFU3 beside M3c / D2) | new; RULINGS 107: gate + M2 |
 | **M3c memory-half-tier** | client | to go (new, MEMORY-PLAN) | M2 | new |
 | D2 docs-final | doc | to go | L15. Changed by META-PLAN: LMI, L9; revision 1: LPO. Changed by MEMORY-PLAN: M2. Changed by RULINGS 96: LPH (it closes L9's carried payment gaps before D2) | PUZZLES-PLAN, STORIES-PLAN; META-PLAN: the meta rows and runbooks; MEMORY-PLAN: gate + M2, the M1 / M2 map rows, two authoring-guide rules; RULINGS 96: gate + LPH |
@@ -3003,6 +3022,8 @@ lane counts as LFU1 and LFU2, RULINGS 95; LPH, RULINGS 96, and LFU3, RULINGS 99,
 LMI), 5 to go (LFU3, M2, M3c, D2, M3s).
 Changed by RULINGS 104-108 (as of `a4d53ef`; docs lane `docs-errata-6`, group B): 57 lanes — 51 merged (LPH
 `d423cb3` since `6d77329`), 1 running (LMI), 5 to go (M2, LFU3, M3c, D2, M3s).
+Changed by RULINGS 105-111 (as of `3e35a7b`; docs lane `docs-errata-7`, group B): 57 lanes — 52 merged (LMI
+`3e35a7b` since `a4d53ef`), 1 running (M2), 4 to go (LFU3, M3c, D2, M3s).
 
 **Launch preference** when several lanes are ready (critical path first; changed by STORIES-PLAN):
 - client (two slots): L3c (running), L5, L11, LS1, L7, L12, LW3, L14a, L10, L13, L14b, LP2 ∥ LX, LS4, D1, N1, N2, L15,
@@ -3037,6 +3058,9 @@ Changed by RULINGS 104-108 (as of `a4d53ef`; docs lane `docs-errata-6`, group B)
   (running), M2, then LFU3 beside M3c ∥ D2 (RULINGS 107, OB-1: both LFU3 and M2 hold `client/src/app/game.ts`, M2 is
   on the critical path, and LFU3 is in no gate); server: M3s. LPH has merged (`d423cb3`), so D2 waits for M2 only, and
   M3s for M3c and D2.
+- Changed by RULINGS 105-111 (as of `3e35a7b`; docs lane `docs-errata-7`, group B; merged lanes dropped): client: M2
+  (running), then LFU3 beside M3c ∥ D2 (RULINGS 107, OB-1); server: M3s. LMI has merged (`3e35a7b`), so LFU3, M3c and
+  D2 wait for M2 only, and M3s for M3c and D2.
 
 After L9 the server slot takes doc / narrative / client lanes with disjoint locks.
 
@@ -3112,6 +3136,12 @@ beside them.
   so D2 waits for M2 only, and no server lane runs beside LMI and M2.
 - LFU3 runs after M2, beside M3c and D2 (RULINGS 107, OB-1): it is in no gate on the path, so the path does not grow.
 - LPH has merged.
+
+**Changed by RULINGS 105-111 — the critical path as of `3e35a7b`** (docs lane `docs-errata-7`, group B).
+- The whole plan: M2 (running) → D2 → M3s, with M3c beside D2 (M3s needs both). No lane runs beside M2 in the server
+  slot: it is idle, since D2 waits for M2 and M3s for M3c and D2 (RULINGS 111).
+- LFU3 runs after M2, beside M3c and D2 (RULINGS 107, OB-1): it is in no gate on the path, so the path does not grow.
+- LMI has merged (`3e35a7b`).
 
 ### Lanes
 
@@ -6045,6 +6075,9 @@ Notation:
        titles` fails and `social: share falls back to a share link below 8.0` passes (quoted).
 - **Gates:** every client gate + `e2e` (all eight specs, counted by name); `build` shows the `meta-ui` row measured
   (≤ 14 KB br, quoted) and all JS ≤ 305 KB br.
+  As merged (LMI `3e35a7b`; RULINGS 105, 110): the controller is a lazy chunk (META-PLAN M27) with its own row,
+  `meta controller chunk (br)` ≤ 5.0 KB br, counted in JS before the first line, so `build` prints 84 rows; the e2e is
+  nine specs, 47 names.
 - **Seen red once:** the `meta-ui` row with a static import of `CompletionCard.svelte` from `app/boot.ts` (scratch) →
   FAIL.
 - **Tester mutations:** await a boot GET before the first line; open the card before `settle`; draw a new gift id per
@@ -6677,6 +6710,8 @@ each has a default there; the policy's operator facts are placeholders until the
 | 31 | 2026-11-02 | RULINGS 89-103 (as merged: LPO `90e1226`, L15b `fbcfd38`, L9 `d837c8b`, M1 `f1b707d`, LFU1 `f637bac`, LFU2 `6d77329`; LPH, LMI running; main `6d77329`) | Docs lane `docs-errata-5`, group B: "Dependency order" — a marker paragraph and the State column as of `6d77329` (LPO, L15b, L9, M1, LFU1 and LFU2 merged since `48abfaf`, with SHAs from `git log --first-parent main`; the client follow-ups lane cut into LFU1 and LFU2, RULINGS 95, and its row marked so; the budget-gate gap item merged with M1, RULINGS 92; the new rows LPH after L9, RULINGS 96, and LFU3 after LMI, RULINGS 99; LMI's gate + LFU1 and D2's gate + LPH; LPH and LMI running), the lane count (57: 50 merged, 2 running, 5 to go), the launch preference without the merged lanes, the critical path from LMI. The order of LFU3 and M2 is left unruled (both hold `client/src/app/game.ts`). The planned order is otherwise unchanged. STORIES-PLAN revision 15 and META-PLAN revision 11 hold their lines. Ledger: `D:/tmp/novel-orch/docs-errata-5/ledger.md` |
 | 32 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `a190136` (the docs-errata-6 spec, group A; RULINGS 97-108), as merged on main `a4d53ef` | Docs lane `docs-errata-6`, group A: the carried plan errata of LPH (`d423cb3`; RULINGS 97, 100, 106), each place marked "as merged" with its SHA and ruling: K9-D (every invoice POST a new order, at most 10 unpaid per user per rolling hour, then 429 `rate_limited` + `Retry-After`) in the invoices row, P2, K18's two-orders arm, the double-tap row, L8a commit 2 and LE1's note; the two renamed tests (`invoice_each_post_is_a_new_order`, `invoice_pack_binds_catalog_at_invoice`); K20 and "Refund.": the re-key to the oldest other unrefunded paid charge, `FOR SHARE`, `refund_done`, the accepted residual of RULINGS 100; the `0001_init.sql:57` erratum; K27: `STATIC_DIR`'s dot-entry refusal (the root's `.vite` excepted); "Bot commands": the startup order (bot texts first, prod refuses drafts), `/paysupport`'s newest twenty with the total and its 200 on a database error, the timeout's outcome-unknown reply; docs-errata-5's open items: the `memory.spec.ts` row's state (OA1) and the LFU3 / M2 order (OB-1, RULINGS 107: M2 first). The code on `a4d53ef` is the ground truth. Ledger: `D:/tmp/novel-orch/docs-errata-6/ledger.md` |
 | 33 | 2026-11-02 | RULINGS 104-108 (as merged: LPH `d423cb3`, docs-errata-5 `a4d53ef`; LMI running; main `a4d53ef`) | Docs lane `docs-errata-6`, group B: "Dependency order" — a marker paragraph and the State column as of `a4d53ef` (LPH merged since `6d77329`, with its SHA from `git log --first-parent main`; LMI running, relaunched (RULINGS 105) on base `6d77329` through the trunk sync `76cb463`; the LFU3 / M2 order ruled by RULINGS 107, OB-1: M2 first, then LFU3 after M2, beside M3c / D2, so LFU3's gate gains M2 and its row moves after M2's; D2's gate LPH met, D2 waits for M2 only), the lane count (57: 51 merged, 1 running, 5 to go), the launch preference without the merged lanes and the critical path from LMI, both with the ruled order. The planned order is otherwise unchanged. STORIES-PLAN revision 17 and META-PLAN revision 13 hold their lines. Ledger: `D:/tmp/novel-orch/docs-errata-6/ledger.md` |
+| 34 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `ba62703` (the docs-errata-7 spec, group A; RULINGS 105-111), as merged on main `3e35a7b` | Docs lane `docs-errata-7`, group A: LMI (`3e35a7b`; RULINGS 105, 110) — the controller as a lazy chunk (the budget targets, K3's M27 paragraph, the `meta controller chunk (br)` budget row, the 84 rows, the e2e count of 47 in nine specs, LMI's gates); docs-errata-6's open items OA-1 (P3: no order reuse, a new order per POST, bounded) and the re-checked L9 citations of K27 (`static_files.rs`) and "Bot commands" (`commands.rs`), as merged with their SHAs and rulings. Ledger: `D:/tmp/novel-orch/docs-errata-7/ledger.md` |
+| 35 | 2026-11-02 | RULINGS 105-111 (as merged: LMI `3e35a7b`, docs-errata-6 `f911011`; M2 running; main `3e35a7b`) | Docs lane `docs-errata-7`, group B: "Dependency order" — a marker paragraph and the State column as of `3e35a7b` (LMI merged since `a4d53ef`, with its SHA from `git log --first-parent main`, after its entry-budget STOP and the relaunch of RULINGS 105, the entry 38.9 KB br at the merge; M2 running, base `3e35a7b`), the lane count (57: 52 merged, 1 running, 4 to go), the launch preference without the merged lanes and the critical path from M2 (LFU3 after M2, beside M3c / D2, RULINGS 107). The planned order is otherwise unchanged. STORIES-PLAN revision 18 and META-PLAN revision 15 hold their lines. Ledger: `D:/tmp/novel-orch/docs-errata-7/ledger.md` |
 
 **Revision 1 (2026-10-30)** — what changed, by triage item:
 - **W1** (undecodable payment ACKed and lost): K17 (lenient `PaymentProbe` for the payment subset, 500 only when the
