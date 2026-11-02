@@ -23,7 +23,7 @@ use frankenstein::types::{
     MenuButtonWebApp, ReplyMarkup, WebAppInfo,
 };
 
-use crate::config::{PLACEHOLDER_BOT_TOKEN, TelegramEnv};
+use crate::config::{Config, PLACEHOLDER_BOT_TOKEN, TelegramEnv};
 use crate::ids::{ChargeId, OrderId, UserId};
 
 /// The currency of every invoice: Telegram Stars.
@@ -162,9 +162,15 @@ pub struct FrankensteinGateway {
 }
 
 impl FrankensteinGateway {
+    /// The gateway of `cfg`: `BOT_TOKEN` on the Bot API base of `TELEGRAM_ENV`. The only public constructor, so no
+    /// caller can pair the token with another environment (L8a O3).
+    pub fn from_config(cfg: &Config) -> Result<FrankensteinGateway, GatewayError> {
+        FrankensteinGateway::new(&cfg.bot_token, cfg.telegram_env)
+    }
+
     /// The gateway for `bot_token` in `env`: the client has K18's timeouts (2 s connect, 5 s total). The placeholder
     /// token builds no client at all.
-    pub fn new(bot_token: &str, env: TelegramEnv) -> Result<FrankensteinGateway, GatewayError> {
+    fn new(bot_token: &str, env: TelegramEnv) -> Result<FrankensteinGateway, GatewayError> {
         build(bot_token, api_base(bot_token, env))
     }
 
@@ -440,6 +446,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
+    use crate::config::Config;
 
     /// An order id in the payload grammar.
     const ORDER: &str = "o_0123456789abcdef0123456789abcdef";
@@ -670,6 +677,57 @@ mod tests {
                     }
                 }
                 Err(e) => failures.push(format!("new {env:?}: expected Ok, got {e:?}")),
+            }
+        }
+        report(&failures);
+    }
+
+    /// `from_config` takes the token and the environment from one `Config` (L8a O3): a test config gets a client on
+    /// the test base, the same config in prod one on the prod base. The config comes from `from_lookup`, so a later
+    /// `Config` field cannot break this test.
+    #[test]
+    fn gateway_from_config_follows_telegram_env() {
+        let lookup: Vec<(&str, String)> = vec![
+            ("BOT_TOKEN", "123456:not-a-real-token".to_owned()),
+            ("WEBHOOK_SECRET", "from_config-test-secret".to_owned()),
+            ("TOKEN_KEY", "ab".repeat(32)),
+            ("PUBLIC_APP_URL", "https://example.invalid/".to_owned()),
+            ("CONTENT_DIR", "content".to_owned()),
+            ("DATABASE_URL", "postgres://u@127.0.0.1:5487/x".to_owned()),
+            ("TELEGRAM_ENV", "test".to_owned()),
+        ];
+        let test = match Config::from_lookup(|var| {
+            lookup
+                .iter()
+                .find(|(k, _)| *k == var)
+                .map(|(_, v)| v.clone())
+        }) {
+            Ok(cfg) => cfg,
+            Err(e) => panic!("the test lookup: expected a Config, got {e}"),
+        };
+        let prod = Config {
+            telegram_env: TelegramEnv::Prod,
+            ..test.clone()
+        };
+        let mut failures = Vec::new();
+        for (cfg, want) in [
+            (&prod, "https://api.telegram.org/bot123456:not-a-real-token"),
+            (
+                &test,
+                "https://api.telegram.org/bot123456:not-a-real-token/test",
+            ),
+        ] {
+            let env = cfg.telegram_env;
+            match FrankensteinGateway::from_config(cfg) {
+                Ok(gateway) => {
+                    let url = gateway.bot.as_ref().map(|bot| bot.api_url.as_str());
+                    if url != Some(want) {
+                        failures.push(format!(
+                            "from_config {env:?}: expected a client on {want}, got {url:?}"
+                        ));
+                    }
+                }
+                Err(e) => failures.push(format!("from_config {env:?}: expected Ok, got {e:?}")),
             }
         }
         report(&failures);
