@@ -40,6 +40,7 @@ pub fn test_config(db: &TestDb) -> Config {
         database_url: db.url(),
         telegram_env: TelegramEnv::Test,
         listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+        privacy_operator_file: None,
     }
 }
 

@@ -89,7 +89,8 @@ Textures + their CPU copies are 64 of 138.6 MiB (46 %); each MiB of texture save
 - `controller.ts:265` re-clamps the caller's value with `renderResolution(o.resolution, 'HIGH')`, so LOW -> resolution 1
   (PP:2042, `layout.ts:17-23`) holds only if the caller passes `renderResolution(dpr, perfClass)` (critique O9). No
   caller exists yet (L15 writes it), and `TelegramClient.perfClass` (`webapp.ts:249`) has no path into the scene
-  (MR2:42-44). Unwired, framebuffers on LOW stay ~12 MiB instead of ~3.
+  (MR2:42-44). Unwired, framebuffers on LOW stay ~12 MiB instead of ~3. (L15 cut Q7: `:249` is the inert client's
+  `perfClass`, the real client's is `:349`; as of `48abfaf` they are `webapp.ts:274` and `:374`.)
 - `LIMITS.knotSet`, `LIMITS.roomSet` (`budget.ts:112-113`) and `STEADY_CAP_BYTES` (`registry.ts:9`) are three literals
   for one invariant.
 - The next chapter's first knot (`next:*`) is outside the knot-set gate, bounded at runtime only (carry.md:82).
@@ -458,7 +459,7 @@ o.perfClass)` in place of the re-clamp with `'HIGH'` (`controller.ts:265`).
 - Red: `scene: a LOW perf class renders at resolution 1` (`perf.spec.ts`), asserting `canvas.width ===
   canvas.clientWidth`. It runs inside a `test.describe` with `test.use({ deviceScaleFactor: 2, userAgent: <a
   Telegram-Android UA whose last token is "LOW"> })`. Playwright allows `test.use` inside `test.describe`, and
-  `navigator.userAgent` reaches `perfClassFromUa` (`webapp.ts:112`, `perf.ts:9-13`).
+  `navigator.userAgent` reaches `perfClassFromUa` (`webapp.ts:112`, `perf.ts:9-13`; as of `48abfaf`, `webapp.ts:117`).
   - Predicted red before the controller hunk: `canvas.width` = 2 x `clientWidth` (750 vs 375 at the config's 375-px
     viewport), because `controller.ts:265` re-clamps with `'HIGH'` and `autoDensity` is on (`controller.ts:73`).
   - Why DPR 2 (critique_r2 W7): Playwright's `deviceScaleFactor` "Defaults to `1`", and the config sets none
@@ -981,7 +982,7 @@ Ownership rules for every lane below (critique W3):
         - A different red: the bg shows a freed texture with no throw. That means the recording stage stopped
           checking `freed`.
       - `executor: a fade through black never shows a handle whose record ended at black` (R5-0).
-        - Setup: `bg/street` is live under a test holder. `apply([scene('street','fade',800)])`; `advance(100)`;
+        - Setup: `bg/street` is live under a test holder. S = `apply([scene('street','fade',800)])`; `advance(100)`;
           street's revive fails; `reacquire()` (it removes nothing: no street sprite yet); `advance(400)`, so the
           midpoint fires; flush.
         - (critique_r5 O1) Right after `reacquire()`, `stats().activeTimelines` is still 1. Before the re-take

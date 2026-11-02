@@ -848,6 +848,7 @@ getStats(): Promise<Result<StatsResponse, ApiError>>;
 export interface StatsReporter {
   record(e: StatEvent): void;                      // synchronous; never throws, never awaits
   flush(o?: { keepalive: boolean }): void;          // single-flight; a failure keeps the events
+  // as merged (LS4 `4c713fa`, RULINGS 73; client/src/stats/reporter.ts:31): flush(o?: { keepalive?: boolean })
   dispose(): void;                                   // clears its timers; the queue stays in DeviceStorage
 }
 export function createStatsReporter(deps: { api: Pick<Endpoints, 'postStatEvents'>; device: DeviceStore | null;
@@ -1079,6 +1080,14 @@ while LDB1 ran; LDB1 and LDB2 had merged before the design landed, and the merge
     `5a33183` has merged (PP "Dependency order");
   - running: L15 integration (client) and LF2 share-profile (server);
   - to go, of this design's lanes: none.
+- **As of `48abfaf`** (changed by RULINGS 80-88; docs lane `docs-errata-4`, group B; SHAs from `git log --first-parent
+  main`):
+  - merged since `22ed4d5`: LF2 `d0c7870`, LE2 `ec3b29f`, L15a `e94c786` and LMD `48abfaf`. RULINGS 80 split L15
+    into L15a `engine-wiring` (C1-C6, merged) and L15b `app-e2e` (C7-C13), and added one "client follow-ups" lane
+    after L15b (PP "Dependency order");
+  - running: L15b app-e2e (client; it holds `client/e2e/stories.spec.ts`, this design's L15 re-cut) and LPO
+    privacy-operator (server);
+  - to go, of this design's lanes: none.
 
 **Order** (RULINGS 8 rolling, RULINGS 18 three slots; as of `66c92c4`, changed by RULINGS 22, 23: LDB1 and LDB2
 merged, so the server chain starts at L6b): server L6b → LS2 → L6c → L8a → L8b → LS3 → L9; client (two slots)
@@ -1091,6 +1100,10 @@ META-PLAN's LMD and LMI before D2). Critical path to the prototype milestone: L1
 Changed by RULINGS 78 (as of `22ed4d5`): the server chain has run to LM2, so it continues LF2 (running) → LE2 → LPO →
 L9, then MEMORY-PLAN's M3s; client L15 (running) → M1 → LMI → M2 → D2 (with META-PLAN's LMD before LMI, and
 MEMORY-PLAN's M3c beside D2). Critical path to the prototype milestone: L15.
+Changed by RULINGS 80-88 (as of `48abfaf`): the server chain has run to LE2, so it continues LPO (running) → L9, then
+MEMORY-PLAN's M3s; client L15b (running; RULINGS 80 split L15, and L15a merged `e94c786`) → M1 → LMI → M2 → D2 (LMD
+has merged; MEMORY-PLAN's M3c beside D2; the client follow-ups lane after L15b, its place in the chain not ruled yet:
+PP "Dependency order"). Critical path to the prototype milestone: L15b.
 
 **Collision locks added** (PP "Collision locks"): `0001` L2 → LDB1 → LS2; `0003` LS3; the serialized server files
 L6b → LS2 → L6c → L8a → L8b → LS3 → L9; `ids.rs` L6b (`StoryId` with `PuzzleId`); `lint.ts` / `dsl-doc.test.ts` /
@@ -1262,6 +1275,8 @@ Totals: 2 stories, 4 chapters (2 free, 2 paid), 4 endings (`truth`, `ashes`, `dr
 | 9 | 2026-11-01 | RULINGS 54 (as merged on main `6043941`) | Docs lane `docs-errata-2`, group B (not a triage round): "Implementation plan" — "Running and merged lanes" and "Order" as of `6043941` (LS1, LS2, LS3 merged; L10, LE1 running; LS4, N2 to go; the critical path from L10). Ledger: `D:/tmp/novel-orch/docs-errata-2/ledger.md` |
 | 10 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `ba5fc68` (the docs-errata-3 spec, group A), as merged on main `22ed4d5` | Docs lane `docs-errata-3`, group A (not a triage round): L10 (`34b7f13`) — the `createSaveService` deps and the `SaveService` methods; LS4 (`4c713fa`) — `postStatEvents`' optional `keepalive`, the 5 s timer from the first unflushed record, the failure classes with the 1 h `Retry-After` cap and the 4xx drop, the backoff reset, a failed DeviceStorage read as a memory-only queue. Ledger: `D:/tmp/novel-orch/docs-errata-3/ledger.md` |
 | 11 | 2026-11-02 | RULINGS 78 (as merged on main `22ed4d5`) | Docs lane `docs-errata-3`, group B (not a triage round): "Implementation plan" — "Running and merged lanes" and "Order" as of `22ed4d5` (LS4, N2 merged, so all five lanes of this design have merged; L15, LF2 running; the critical path from L15). Ledger: `D:/tmp/novel-orch/docs-errata-3/ledger.md` |
+| 12 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `e6eca0d` (the docs-errata-4 spec, group A; RULINGS 79-88), as merged on main `48abfaf` | Docs lane `docs-errata-4`, group A (not a triage round): LS4 (`4c713fa`) — `flush`'s optional `keepalive` (docs-errata-3 fix-r1). Ledger: `D:/tmp/novel-orch/docs-errata-4/ledger.md` |
+| 13 | 2026-11-02 | RULINGS 80-88 (as merged on main `48abfaf`) | Docs lane `docs-errata-4`, group B (not a triage round): "Implementation plan" — "Running and merged lanes" and "Order" as of `48abfaf` (LF2, LE2, L15a and LMD merged; L15 split into L15a and L15b, RULINGS 80; L15b and LPO running; the critical path from L15b). Ledger: `D:/tmp/novel-orch/docs-errata-4/ledger.md` |
 
 **Revision 1 (2026-10-31)** — what changed, by triage item:
 - **W1** (LS1 moved merged test pins it did not declare; commit 6 left the real-tree `story` gate red): PP "LS1" —
