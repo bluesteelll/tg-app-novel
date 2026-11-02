@@ -2530,6 +2530,31 @@ test('game: no on a shown conflict ask drops the ask a later 409 holds', async (
   h.game.dispose();
 });
 
+test('game: a 409 after a round trip asks when the window since the tap closes', async () => {
+  const h = harness();
+  await startManor(h);
+  await h.game.advance(); // l002
+  const inFlight = inFlightSaves(h);
+  const view = (): unknown[] => [h.vm.saves.saving, h.vm.saves.conflict];
+  void h.game.save('s1');
+  await settle();
+  const s1 = inFlight.get('s1');
+  if (s1 === undefined) {
+    throw new Error('the manual write should be in flight');
+  }
+  // The 409 lands 300 ms after the tap: the ask is still held there, and shows at the tap's window end, not later.
+  h.clock.advance(300);
+  s1.answer(conflictOn('s1', s1.w));
+  await settle();
+  const atAnswer = view();
+  h.clock.advance(CONFLICT_HOLD_MS - 300);
+  expect([atAnswer, view()]).toEqual([
+    ['s1', null],
+    [null, 's1'],
+  ]);
+  h.game.dispose();
+});
+
 test('game: a manual save with a step in flight waits for that step', async () => {
   /** A manual slot's body resumed in a fresh session: [lineId, ok, toasts, line]. */
   const resumed = async (full: SaveFull | undefined): Promise<unknown[] | null> => {
