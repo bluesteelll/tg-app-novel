@@ -313,8 +313,8 @@ async fn webhook_undecodable_200() {
     report(&failures);
 }
 
-/// The webhook takes bodies up to 1 MiB: one byte more is 413 before the handler runs; one byte less is read
-/// (not JSON, so acknowledged with 200).
+/// The webhook takes bodies up to 1 MiB: one byte more is 413 once the secret matched (the handler's `to_bytes`
+/// limit, before any decode); one byte less is read (not JSON, so acknowledged with 200).
 #[tokio::test]
 async fn webhook_body_over_1mb_413() {
     let (st, _db, _gateway) = invoice_state(&[]).await;
