@@ -3,12 +3,14 @@
     "ally": "Sonya",
     "stranger": "Arseny",
     "voice": "Voice",
-    "keeper": "Matvey"
+    "keeper": "Matvey",
+    "radio": "Radio"
   },
   "chapters": {
     "ch1": "Chapter 1. The Key",
     "ch2": "Chapter 2. The Archive",
-    "ch3": "Chapter 1. High Tide"
+    "ch3": "Chapter 1. High Tide",
+    "ch4": "Chapter 2. The Beacon"
   },
   "stories": {
     "manor": "Elm Manor",

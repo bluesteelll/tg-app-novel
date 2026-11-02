@@ -33,7 +33,8 @@
   },
   "tide": {
     "endings": {
-      "drowned": { "ru": "Море не отпускает", "en": "The sea does not let go" }
+      "drowned": { "ru": "Море не отпускает", "en": "The sea does not let go" },
+      "dawn": { "ru": "Свет до самого утра", "en": "A light until morning" }
     },
     "achievements": {
       "first_ending": {
@@ -47,6 +48,18 @@
         "when": { "choice": "ch3.lighthouse.c001" },
         "name": { "ru": "На слово", "en": "Taking his word" },
         "desc": { "ru": "Поверить смотрителю, когда в деревне ему не верит никто.", "en": "Believe the keeper when no one in the village does." }
+      },
+      "dawn_seen": {
+        "hidden": false,
+        "when": { "ending": "dawn" },
+        "name": { "ru": "Рассвет на маяке", "en": "Dawn at the lighthouse" },
+        "desc": { "ru": "Удержать свет маяка всю штормовую ночь.", "en": "Keep the lighthouse lit through the whole stormy night." }
+      },
+      "all_tide": {
+        "hidden": false,
+        "when": { "allEndings": true },
+        "name": { "ru": "Оба берега", "en": "Both shores" },
+        "desc": { "ru": "Увидеть оба финала истории о маяке.", "en": "See both endings of the lighthouse story." }
       }
     }
   }

@@ -13,7 +13,8 @@
     "first": "ch3",
     "cover": "cover/tide",
     "endings": {
-      "drowned": { "chapter": "ch3", "knot": "shore_drowned" }
+      "drowned": { "chapter": "ch3", "knot": "shore_drowned" },
+      "dawn": { "chapter": "ch4", "knot": "lamp_dawn" }
     }
   }
 ]
