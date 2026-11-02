@@ -1584,3 +1584,51 @@ test('game: exit to stories disposes explore, puzzle and purchase sessions', asy
   expect(p.purchases.length).toBe(polls);
   p.game.dispose();
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// The autosave windows, the mount retry and the rooms after a load (fix round 1)
+
+/** Holds every scene `ensure` until the returned release: the step that waits on one stays in flight. */
+function holdEnsure(scene: FakeScene): () => void {
+  const original = scene.ensure;
+  const waiting: Array<() => void> = [];
+  scene.ensure = () =>
+    new Promise((resolve) => {
+      waiting.push(() => resolve({ ok: true, value: undefined }));
+    });
+  return () => {
+    scene.ensure = original;
+    for (const w of waiting.splice(0)) {
+      w();
+    }
+  };
+}
+
+test('game: an autosave while a step loads resumes exactly', async () => {
+  const h = harness();
+  await startManor(h);
+  await h.game.advance(); // l002
+  await h.game.advance(); // the choice set
+  await h.game.choose(0); // l003
+  const since = h.save().autosaves.length;
+  const release = holdEnsure(h.scene);
+  const step = h.game.advance(); // the runner is at l005, garden's entry; its bg/garden is still loading
+  await settle();
+  h.game.onLifecycle('deactivated'); // the app is left while the step is in flight
+  h.game.pagehide();
+  release();
+  await step;
+  await settle();
+  const written = h.save().autosaves.slice(since);
+  h.game.dispose();
+  expect(written.length).toBeGreaterThan(0);
+  for (const w of written) {
+    const again = harness({ slots: new Map([['auto', { summary: summary(MANOR, 'auto', w), body: w.body }]]) });
+    expect((await again.game.start({ kind: 'slot', story: MANOR, slot: 'auto' })).ok).toBe(true);
+    expect(again.vm.toasts).toEqual([]); // an exact resume: no story-update note
+    expect([lineOf(again.vm), again.scene.snapshot().bg]).toEqual(['ch1.garden.l005', 'garden']);
+    again.game.dispose();
+  }
+  // The knot entry's autosave, then the lifecycle's: written once the step was on screen, not dropped.
+  expect(written.map((w) => w.lineId)).toEqual(['ch1.garden.l005', 'ch1.garden.l005']);
+});

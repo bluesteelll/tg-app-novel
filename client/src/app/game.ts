@@ -339,6 +339,8 @@ export function createGame(deps: GameDeps): Game {
   let exiting = false;
   let choiceSetId = 0;
   let offer: Offer | null = null;
+  /** An autosave asked for from outside the intent queue while an intent ran; it is written when that intent ends. */
+  let deferred: { s: Session; keepalive: boolean } | null = null;
 
   // -------------------------------------------------------------------------------------------------------------
   // Intents
@@ -352,6 +354,7 @@ export function createGame(deps: GameDeps): Game {
     const clear = (): void => {
       if (busy === tracked) {
         busy = null;
+        flushDeferred();
       }
     };
     const tracked: Promise<void> = p.then(clear, clear);
@@ -513,6 +516,27 @@ export function createGame(deps: GameDeps): Game {
     s.last = body;
     s.saves.autosave(writeOf(body), o);
     void settings.flush(); // never rejects; a failed write is not an error (settings/store.ts)
+  };
+
+  /**
+   * The autosave of `deactivated`, `pagehide` and the yields' timers, which run outside the intent queue. While an
+   * intent runs, the runner may already be a step ahead of the position, the stage and the backlog `present` has not
+   * reached yet, and such a body resumes a level lower as a false story update; so it waits for the intent's end,
+   * when the session describes one step again.
+   */
+  const autosaveOutside = (s: Session, keepalive: boolean): void => {
+    if (busy === null) {
+      autosave(s, { keepalive });
+      return;
+    }
+    deferred = { s, keepalive: keepalive || (deferred?.s === s && deferred.keepalive) };
+  };
+  const flushDeferred = (): void => {
+    const d = deferred;
+    deferred = null;
+    if (d !== null && session === d.s) {
+      autosave(d.s, { keepalive: d.keepalive });
+    }
   };
 
   // -------------------------------------------------------------------------------------------------------------
@@ -1154,7 +1178,7 @@ export function createGame(deps: GameDeps): Game {
       }
     },
     storyError: (e) => storyError(of(), e),
-    autosave: () => autosave(of()),
+    autosave: () => autosaveOutside(of(), false),
     notice: (retry) => {
       const s = of();
       showNotice({
@@ -1589,7 +1613,7 @@ export function createGame(deps: GameDeps): Game {
         }
         offer?.flow?.onDeactivated();
         if (s !== null) {
-          autosave(s);
+          autosaveOutside(s, false);
         }
         void settings.flush(); // never rejects
         return;
@@ -1611,7 +1635,7 @@ export function createGame(deps: GameDeps): Game {
     pagehide() {
       const s = session;
       if (s !== null) {
-        autosave(s, { keepalive: true });
+        autosaveOutside(s, true);
       }
     },
     buy() {
