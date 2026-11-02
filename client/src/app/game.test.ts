@@ -1760,3 +1760,41 @@ test('game: a load at a story step hides the rooms and releases their holders', 
   h.game.dispose();
   vi.unstubAllGlobals();
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// The outside autosave at once, and the guards of fix round 1 pinned (fix round 2)
+
+test('game: a pagehide and a deactivated during a step keep the keepalive of either order', async () => {
+  const seen: Record<string, Array<boolean | undefined>> = {};
+  for (const order of ['pagehide-first', 'deactivated-first'] as const) {
+    const h = harness();
+    await startManor(h);
+    await h.game.advance(); // l002
+    await h.game.advance(); // the choice set
+    await h.game.choose(0); // l003
+    const sv = h.save();
+    const keepalive: Array<boolean | undefined> = [];
+    const autosave = sv.autosave;
+    sv.autosave = (w, o) => {
+      keepalive.push(o?.keepalive);
+      autosave(w, o);
+    };
+    const release = holdEnsure(h.scene);
+    const step = h.game.advance(); // l005, garden's entry: waits on bg/garden
+    await settle();
+    if (order === 'pagehide-first') {
+      h.game.pagehide();
+      h.game.onLifecycle('deactivated');
+    } else {
+      h.game.onLifecycle('deactivated');
+      h.game.pagehide();
+    }
+    release();
+    await step;
+    await settle();
+    seen[order] = keepalive;
+    h.game.dispose();
+  }
+  // The knot entry's autosave, then the one write both requests waited for, with the pagehide's keepalive.
+  expect(seen).toEqual({ 'pagehide-first': [undefined, true], 'deactivated-first': [undefined, true] });
+});
