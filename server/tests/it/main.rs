@@ -19,6 +19,7 @@ mod payments;
 mod puzzles;
 mod saves;
 mod schema;
+mod share;
 mod social;
 mod stats;
 mod webhook;

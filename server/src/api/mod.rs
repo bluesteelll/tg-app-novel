@@ -9,6 +9,7 @@ pub mod legal;
 pub mod orders;
 pub mod puzzles;
 pub mod saves;
+pub mod share;
 pub mod social;
 pub mod stats;
 pub mod wallet;
@@ -80,8 +81,10 @@ fn routes() -> Router<AppState> {
             post(social::post_accept),
         )
         .route("/friends/{handle}", delete(social::delete_friend))
+        .route("/friends/{handle}/profile", get(social::get_friend_profile))
         .route("/invite/rotate", post(social::post_rotate))
         .route("/consents/friends_profile", put(social::put_consent))
+        .route("/share", post(share::post_share))
         .merge(legal::routes())
 }
 

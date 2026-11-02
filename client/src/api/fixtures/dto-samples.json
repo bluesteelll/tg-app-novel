@@ -225,6 +225,42 @@
       ]
     }
   ],
+  "FriendProfile": [
+    {
+      "handle": "0123456789abcdef01234567",
+      "stories": [
+        {
+          "achievementsUnlocked": 1,
+          "endingsFound": 2,
+          "sharedAchievements": [
+            {
+              "id": "first_steps",
+              "name": {
+                "en": "Sample: first steps",
+                "ru": "Образец: первые шаги"
+              }
+            }
+          ],
+          "sharedEndings": [
+            {
+              "name": "drowned",
+              "title": {
+                "en": "Sample: drowned",
+                "ru": "Образец: утонувший"
+              }
+            }
+          ],
+          "storyId": "tide"
+        }
+      ],
+      "visible": true
+    },
+    {
+      "handle": "fedcba9876543210fedcba98",
+      "stories": [],
+      "visible": false
+    }
+  ],
   "HintUseResponse": [
     {
       "balance": 2,
@@ -390,6 +426,18 @@
     },
     {
       "slots": []
+    }
+  ],
+  "ShareResponse": [
+    {
+      "link": "https://t.me/novel_dev_bot?startapp=f0123456789abcdef0123456789abcdef",
+      "preparedMessageId": "dev-prepared-1",
+      "text": "Образец: «Прилив», концовок 2, достижений 1"
+    },
+    {
+      "link": "https://t.me/novel_dev_bot?startapp=f0123456789abcdef0123456789abcdef",
+      "preparedMessageId": null,
+      "text": "Sample: join me"
     }
   ],
   "SocialResponse": [
