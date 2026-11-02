@@ -1950,3 +1950,48 @@ test('game: keep here neither loads the other save nor stops autosaving', async 
   expect(sv.autosaves.slice(before).map((w) => w.lineId)).toEqual([null]);
   h.game.dispose();
 });
+
+/** The ink-error floor's chapter: the choice after `broken`'s line raises at run time (`->->` outside a tunnel). */
+function brokenCh1(): LoadedChapter {
+  return chapter(
+    'ch1',
+    ['-> start', '=== start ===', 'Start line. #id:ch1.start.l001', '-> broken', '=== broken ===', 'Broken line. #id:ch1.broken.l002', '* [Go on. #id:ch1.broken.c001]', '    ->->'],
+    { start: { next: ['broken'] }, broken: {} },
+  );
+}
+
+test('game: return to last save after load it resumes their save', async () => {
+  const other = harness({ chapters: [brokenCh1()] });
+  await startManor(other);
+  await other.game.advance(); // l002, entering broken: its checkpoint
+  await other.game.advance(); // the choice set
+  const theirs = other.save().slots.get('auto');
+  other.game.dispose();
+  expect(theirs).toBeDefined();
+  if (theirs === undefined) {
+    return;
+  }
+  const h = harness({ chapters: [brokenCh1()] });
+  await startManor(h); // ours: l001, the start knot's entry
+  const sv = h.save();
+  sv.slots.set('auto', theirs);
+  sv.emit({ kind: 'paused', current: THEIRS });
+  const p = h.vm.toasts.find((e) => e.key === 'save_conflict');
+  if (p?.kind === 'prompt') {
+    p.actions[0]?.run(); // Load it
+  }
+  await settle();
+  await settle();
+  expect(h.vm.choices).not.toBeNull(); // their choice set
+  await h.game.choose(0); // the ink error, before any autosave of their save
+  const n = h.vm.notice;
+  expect(n?.kind).toBe('story_error');
+  if (n?.kind === 'story_error') {
+    n.onaction(); // Return to last save
+  }
+  await settle();
+  await settle();
+  const line = lineOf(h.vm);
+  h.game.dispose();
+  expect(line).toBe('ch1.broken.l002'); // their checkpoint; ours would be ch1.start.l001
+});
