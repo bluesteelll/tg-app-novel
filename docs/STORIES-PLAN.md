@@ -1117,7 +1117,8 @@ LFU2, and LMI's gate keeps LFU1.
 Changed by RULINGS 89-103 (as of `6d77329`): the server chain has run to L9 (`d837c8b`), so it continues LPH (running;
 RULINGS 96), then MEMORY-PLAN's M3s; client LMI (running; its gate with M1 and LFU1 met) → M2 → D2 (MEMORY-PLAN's M3c
 beside D2; D2 also waits for LPH; LFU3 after LMI, RULINGS 99, its order with M2 not ruled yet: PP "Dependency order").
-The prototype milestone is reached: L15b merged `fbcfd38`.
+The prototype milestone is reached: L15b merged `fbcfd38`. Ruled since (RULINGS 107, OB-1): M2 first; LFU3 after M2,
+beside M3c / D2.
 
 **Collision locks added** (PP "Collision locks"): `0001` L2 → LDB1 → LS2; `0003` LS3; the serialized server files
 L6b → LS2 → L6c → L8a → L8b → LS3 → L9; `ids.rs` L6b (`StoryId` with `PuzzleId`); `lint.ts` / `dsl-doc.test.ts` /
@@ -1293,6 +1294,7 @@ Totals: 2 stories, 4 chapters (2 free, 2 paid), 4 endings (`truth`, `ashes`, `dr
 | 13 | 2026-11-02 | RULINGS 80-88 (as merged on main `48abfaf`) | Docs lane `docs-errata-4`, group B (not a triage round): "Implementation plan" — "Running and merged lanes" and "Order" as of `48abfaf` (LF2, LE2, L15a and LMD merged; L15 split into L15a and L15b, RULINGS 80; L15b and LPO running; the critical path from L15b). Ledger: `D:/tmp/novel-orch/docs-errata-4/ledger.md` |
 | 14 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `874d685` (the docs-errata-5 spec, group A; RULINGS 89-103), as merged on main `6d77329` | Docs lane `docs-errata-5`, group A (not a triage round): the OB1 ruling (RULINGS 92) and the LFU1 / LFU2 split (RULINGS 95) where "Order" said "not ruled yet"; L15b (`fbcfd38`) — the e2e row's seventh name (`stories: a locked chapter row opens the paywall without loading the chapter`). Ledger: `D:/tmp/novel-orch/docs-errata-5/ledger.md` |
 | 15 | 2026-11-02 | RULINGS 89-103 (as merged on main `6d77329`) | Docs lane `docs-errata-5`, group B (not a triage round): "Implementation plan" — "Running and merged lanes" and "Order" as of `6d77329` (LPO, L15b, L9, M1, LFU1 and LFU2 merged; the client follow-ups lane cut into LFU1 and LFU2, RULINGS 95; LFU3 and LPH new, RULINGS 99, 96; LPH and LMI running; the prototype milestone reached at L15b). Ledger: `D:/tmp/novel-orch/docs-errata-5/ledger.md` |
+| 16 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `a190136` (the docs-errata-6 spec, group A; RULINGS 97-108), as merged on main `a4d53ef` | Docs lane `docs-errata-6`, group A (not a triage round): the LFU3 / M2 order as ruled (RULINGS 107, OB-1: M2 first; LFU3 after M2, beside M3c / D2) in "Order". Ledger: `D:/tmp/novel-orch/docs-errata-6/ledger.md` |
 
 **Revision 1 (2026-10-31)** — what changed, by triage item:
 - **W1** (LS1 moved merged test pins it did not declare; commit 6 left the real-tree `story` gate red): PP "LS1" —

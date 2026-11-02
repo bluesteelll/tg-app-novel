@@ -343,10 +343,10 @@ sequenceDiagram
     C->>S: POST /api/invoices {productId} (Bearer)
     S->>S: Catalog::product (unknown: 404 unknown_product)
     S->>DB: Repo::is_entitled (owned: 409 already_owned)
-    S->>DB: Repo::reuse_or_create_order (committed before the call)
-    alt a created order with a link, younger than an hour
-        S-->>C: {orderId, invoiceUrl} (reused)
-    else new order
+    S->>DB: Repo::create_order - payer row locked, unpaid orders of the hour counted, insert committed before the call
+    alt 10 unpaid orders in the rolling hour
+        S-->>C: 429 rate_limited + Retry-After (at most 3600 s)
+    else a new order (every POST)
         S->>T: createInvoiceLink (XTR, empty provider_token, one price, 5 s deadline)
         T-->>S: invoice link (or failure: 502 telegram_unavailable, the order kept without a link)
         S->>DB: Repo::set_invoice_url
@@ -356,8 +356,10 @@ sequenceDiagram
     C->>S: GET /api/orders/{orderId} (Bearer) - product and status
 ```
 
-Participants: `post_invoice` ([api/orders.rs:35-87](../server/src/api/orders.rs#L35)), `reuse_or_create_order`
-([db/orders.rs:124](../server/src/db/orders.rs#L124), `ORDER_REUSE_SECS` = 3600 :16), `invoice_params`
+Participants: `post_invoice` ([api/orders.rs:39-84](../server/src/api/orders.rs#L39)), `Repo::create_order`
+([db/orders.rs:133](../server/src/db/orders.rs#L133), `OPEN_ORDER_WINDOW_SECS` = 3600 :16, `OPEN_ORDERS_PER_WINDOW` =
+10 :20; as merged, LPH `d423cb3`, RULINGS 97 Q2: it replaced `reuse_or_create_order` and `ORDER_REUSE_SECS`, so no
+order is handed out again), `invoice_params`
 ([gateway.rs:299-311](../server/src/telegram/gateway.rs#L299)), `CALL_DEADLINE`
 ([gateway.rs:38](../server/src/telegram/gateway.rs#L38)), `get_order` ([api/orders.rs:92](../server/src/api/orders.rs#L92)),
 `openInvoice` ([telegram/index.ts:56](../client/src/telegram/index.ts#L56); its contract comment at :3). On the client,
@@ -373,7 +375,8 @@ confirms a chapter through `GET /api/entitlements` (`chapterDelivered` :48); a p
   test `schema_charge_id_unique`). The grant (below) writes through the primary keys `payments_pkey` and
   `entitlements_pkey` (user, product), never a check-then-insert; the UNIQUE charge-id columns back them.
 
-Tests: `server/tests/it/payments.rs` (`invoice_price_from_catalog`, `invoice_reuses_recent_order`,
+Tests: `server/tests/it/payments.rs` (`invoice_price_from_catalog`, `invoice_each_post_is_a_new_order` (renamed from
+`invoice_reuses_recent_order` by LPH `d423cb3`, RULINGS 97 Q3),
 `invoice_order_committed_before_gateway_call`, `invoice_gateway_error_502_order_kept`, `invoice_already_owned_409`,
 `order_other_user_404`).
 
@@ -397,8 +400,15 @@ sequenceDiagram
         else database error
             S-->>T: 500 - Telegram redelivers
         end
+    else message with refunded_payment
+        S->>DB: Repo::revoke - payment refunded, order, entitlement re-keyed or deleted, clawback (one transaction)
+        alt committed
+            S-->>T: 200
+        else database error
+            S-->>T: 500 - Telegram redelivers
+        end
     else any other update
-        S-->>T: 200
+        S-->>T: 200 (an admin /refund whose database step fails - 500)
     end
 ```
 
@@ -406,7 +416,11 @@ Participants: `webhook` ([webhook.rs:63](../server/src/telegram/webhook.rs#L63))
 (:196), `pre_checkout` (:277), `on_pre_checkout` ([telegram/payments.rs:39](../server/src/telegram/payments.rs#L39)),
 `Repo::pre_checkout` ([db/payments.rs:150](../server/src/db/payments.rs#L150)), `answer_pre_checkout`
 ([telegram/payments.rs:69](../server/src/telegram/payments.rs#L69)), `message` (webhook.rs :211), `grant`
-(webhook.rs :250), `Repo::grant` ([db/payments.rs:224](../server/src/db/payments.rs#L224)).
+(webhook.rs :250), `Repo::grant` ([db/payments.rs:224](../server/src/db/payments.rs#L224)); the `refunded_payment`
+branch (since L9; docs-errata-6, RULINGS 107 N1): `refund`
+([webhook.rs:265-275](../server/src/telegram/webhook.rs#L265), 500 on a database error), `Repo::revoke`
+([db/payments.rs:351](../server/src/db/payments.rs#L351)); an admin `/refund` whose database step fails is retried
+too (`message` :240-246, `on_text`'s `Err`; `Retry` is 500, :74).
 
 - **The route.** `POST /telegram/webhook` sits outside `/api` with its own body limit of 1 MiB
   (`WEBHOOK_BODY_LIMIT`, [webhook.rs:29](../server/src/telegram/webhook.rs#L29);
@@ -468,8 +482,15 @@ Participants: `webhook` ([webhook.rs:63](../server/src/telegram/webhook.rs#L63))
   `CHARGE_ALREADY_REFUNDED`. A `refunded_payment` update, read by frankenstein or by the lenient probe (`ProbeRefunded`,
   the charge id only, [webhook.rs:48](../server/src/telegram/webhook.rs#L48)), revokes too. Both end in
   `payments::revoke(st, charge)` at the state's clock (:171) and `Repo::revoke`
-  ([db/payments.rs:332](../server/src/db/payments.rs#L332)): one transaction keyed by the charge's own rows; the
-  `refunded_at IS NULL` guard (set to `GREATEST(now, paid_at)`) makes a repeat `AlreadyRefunded`. Every command
+  ([db/payments.rs:351](../server/src/db/payments.rs#L351)): one transaction keyed by the charge's own rows; the
+  `refunded_at IS NULL` guard (set to `GREATEST(now, paid_at)`) makes a repeat `AlreadyRefunded`. As merged (LPH
+  `d423cb3`; RULINGS 96, 97 Q10, 100): a chapter's entitlement is deleted only when the payer has no other
+  unrefunded charge whose own order of the chapter is `paid` and which keys no entitlement (a K18 double payment,
+  recorded `AlreadyEntitled`); otherwise it is re-keyed to the oldest such charge, `granted_at` kept (:383-431). The
+  candidates are read `FOR SHARE`, so one whose own refund is in flight is dropped. The residual (RULINGS 100,
+  accepted; the doc at :344-350): an admin `/refund` whose successor read falls inside a concurrent grant of another
+  charge of the chapter leaves that charge paid and unapplied; both of its unapplied notices fired, and an admin
+  `/refund` of it recovers it. Every command
   (`/start`, `/terms`, `/support`, `/paysupport`, `/privacy`, `/refund`) is answered in private chats only
   ([commands.rs:80](../server/src/telegram/commands.rs#L80)).
 - **Bot commands and `server setup`** (as merged, L9 `d837c8b`; PP "Bot commands"). A command is answered in the
@@ -611,13 +632,14 @@ Principle 5, as far as it is built:
 | `STATIC_DIR` the same as `CONTENT_DIR`, one inside the other, or holding a link that resolves outside it | `server serve` exits before the pool opens (L9) | `static_dir_must_not_contain_content_dir`, `api::static_files::tests::static_dir_disjoint_rules` |
 | a placeholder left in the privacy policy under `TELEGRAM_ENV=prod`, or an operator file with a content or unknown key | the server does not start (`StartupError::Privacy`; LPO) | `privacy_placeholder_refuses_prod_start`, `privacy_operator_content_key_refused`, `privacy_operator_unknown_key_refused` |
 | Bot API slow or down at invoice time | 502 `telegram_unavailable`; the order stays `created` without a link and is never reused | `invoice_gateway_error_502_order_kept` |
-| a repeat Buy after the first invoice link was stored | the newest linked order of the hour is handed out again | `invoice_reuses_recent_order` (sequential requests) |
-| two Buy taps while the first link call is still running | an order without a link is never reused, so the second tap makes a second order and a second link ([db/orders.rs:120-123](../server/src/db/orders.rs#L120)). Paying the second is refused `InProgress` at pre-checkout while the first is in `checkout` (120 s); a payment past that window is recorded as `AlreadyEntitled`, not applied | the two orders: not pinned; the refusal: `precheckout_other_order_in_checkout`, `precheckout_concurrent_two_orders_one_passes`; the record: `successful_payment_unapplied_recorded_no_grant` |
+| a repeat Buy after the first invoice link was stored | a new order with its own link (as merged, LPH `d423cb3`, RULINGS 97 Q2; until then the newest linked order of the hour was handed out again) | `invoice_each_post_is_a_new_order` (renamed from `invoice_reuses_recent_order`, RULINGS 97 Q3; sequential requests), `invoice_retry_of_open_order_gets_fresh_link` |
+| two Buy taps while the first link call is still running | every POST makes its own order (as merged, LPH `d423cb3`; [db/orders.rs:129-132](../server/src/db/orders.rs#L129); until then an order without a link was never reused), so the second tap makes a second order and a second link. Paying the second is refused `InProgress` at pre-checkout while the first is in `checkout` (120 s); a payment past that window is recorded as `AlreadyEntitled`, not applied | the two orders: `invoice_each_post_is_a_new_order` (LPH; until then not pinned); the refusal: `precheckout_other_order_in_checkout`, `precheckout_concurrent_two_orders_one_passes`; the record: `successful_payment_unapplied_recorded_no_grant` |
 | one order paid from two devices | the second pre-checkout within 120 s is refused `InProgress` | `precheckout_same_order_twice_refused`, `precheckout_concurrent_same_order_one_passes` |
 | the same `successful_payment` delivered twice, or twice at once | `Duplicate`: one payment, one entitlement | `successful_payment_grants_once`, `successful_payment_duplicate_concurrent` |
 | the database fails during a payment update, or is slow at pre-checkout | a failed grant answers 500 and Telegram redelivers; the pre-checkout is refused `Temporary`, at the latest when its 2 s database budget runs out | `webhook_database_error_retries_payment_and_refuses_precheckout`, `precheckout_lock_timeout_temporary` |
 | a forged webhook update with an oversized body | 401 before the body is read; only with the right secret does the 1 MiB limit answer 413 (L9) | `webhook_secret_checked_before_body_read` |
 | a refund repeated, raced, or its `refunded_payment` delivered twice | one revoke; a repeat is `AlreadyRefunded` and changes nothing (L9) | `refund_repeat_safe`, `refund_concurrent_revokes_once`, `refunded_payment_update_revokes_idempotent` |
+| a refund of the charge that keys a chapter's entitlement while the payer paid that chapter again (a K18 double payment, the later charge `AlreadyEntitled`) | the entitlement is re-keyed to the payer's oldest other unrefunded paid charge of the chapter, `granted_at` kept, so access stays; with none it is deleted; a candidate whose own refund is in flight is skipped (`FOR SHARE`). Residual (RULINGS 100, accepted): an admin `/refund` racing a concurrent grant of another charge of the chapter leaves that charge paid and unapplied, both unapplied notices sent; an admin `/refund` of it recovers it (LPH `d423cb3`) | `refund_rekeys_entitlement_to_other_paid_charge`, `refund_rekey_skips_charge_refunded_concurrently` |
 | the Bot API refuses or times out on `/refund` | nothing is revoked and the entitlement stays; the admin's reply carries the failure (L9) | `refund_gateway_error_keeps_entitlement` |
 | a `refunded_payment` whose charge id does not read | 500, so Telegram redelivers; one that frankenstein cannot decode still revokes through the probe (L9) | `webhook_refund_charge_unreadable_500`, `webhook_refund_undecodable_by_frankenstein_still_revokes` |
 | the Bot API hangs on `answerPreCheckoutQuery` | the call is cut at 5 s, the webhook answers 200, and the order stays `checkout` | `precheckout_answer_times_out_at_5s` |

@@ -582,7 +582,9 @@ Gifts and referrals have their own caps (M22, M23). Each limit's test is in the 
 **M19. Packs are bought on the existing payment path; pre-checkout is the RULINGS 14 form again.**
 - **What.**
   - `POST /api/invoices { productId: "pack:<id>" }` runs P3 unchanged (the price and texts from the catalog; the
-    entitlement check is trivially false for a pack; order reuse < 1 h). Revision 1 (W3): P3 also binds the pack's
+    entitlement check is trivially false for a pack; order reuse < 1 h; as merged, LPH `d423cb3`, RULINGS 97 Q2: no
+    order reuse, each POST a new order, at most 10 unpaid per user in a rolling hour, then 429).
+    Revision 1 (W3): P3 also binds the pack's
     kind and amount into the order row it inserts (`orders.pack_kind`, `orders.pack_amount`; `0004` adds the two
     columns and the CHECK `orders_pack_binding`, so a pack order without its binding cannot exist), from the same
     catalog read that titles the invoice ("3 подсказки").
@@ -2105,3 +2107,4 @@ lists (default: the narrative-designer drafts the demo ones above), Q21 jurisdic
 | 9 | 2026-11-02 | RULINGS 80-88 (as merged on main `48abfaf`) | Docs lane `docs-errata-4`, group B (not a triage round): M28 and "Implementation plan" Order as of `48abfaf` (LM1, LU1, LE1, LF1, LM2, LF2, LE2, LMD merged; LPO running; LMI to go, after L15b and M1). Ledger: `D:/tmp/novel-orch/docs-errata-4/ledger.md` |
 | 10 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `874d685` (the docs-errata-5 spec, group A; RULINGS 89-103), as merged on main `6d77329` | Docs lane `docs-errata-5`, group A (not a triage round): LPO (`90e1226`) — `Policy::load` async on `tokio::fs`; LE2 (`ec3b29f`) — `db/social.rs` also written by `qualify_referral`; LF1 (`946e2b5`) — requester names from `Repo::social`'s request list; L9 (`d837c8b`) — the L9 names row as merged. Ledger: `D:/tmp/novel-orch/docs-errata-5/ledger.md` |
 | 11 | 2026-11-02 | RULINGS 89-103 (as merged on main `6d77329`) | Docs lane `docs-errata-5`, group B (not a triage round): M28 and "Implementation plan" Order as of `6d77329` (LM1, LU1, LE1, LF1, LM2, LF2, LE2, LMD, LPO merged; L9 merged, so the server chain continues LPH, RULINGS 96; LMI running, its gate with L15b, M1 and LFU1 met). Ledger: `D:/tmp/novel-orch/docs-errata-5/ledger.md` |
+| 12 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `a190136` (the docs-errata-6 spec, group A; RULINGS 97-108), as merged on main `a4d53ef` | Docs lane `docs-errata-6`, group A (not a triage round): LPH (`d423cb3`; RULINGS 97 Q2) — M19's "order reuse < 1 h": no reuse, each POST a new order, at most 10 unpaid per user in a rolling hour, then 429. Ledger: `D:/tmp/novel-orch/docs-errata-6/ledger.md` |
