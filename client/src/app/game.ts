@@ -136,6 +136,8 @@ export const SKIP_STEP_MS = 80;
 const SOUND_CHIP = 'sound';
 /** F3 step 4's prompt: another device's save paused the autosave lane. */
 const CONFLICT_PROMPT = 'save_conflict';
+/** The story-update note of a resume below the level it asked for (W2 b); a later one replaces it. */
+const RESUME_TOAST = 'resume';
 /** The dev banner of a dropped tag (D10); `__TG_MOCK__` builds only. */
 const TAG_ERROR_TOAST = '__novelDebug:tag-error';
 
@@ -751,6 +753,11 @@ export function createGame(deps: GameDeps): Game {
     if (resumed.level === 'chapter-start') {
       // Resume steps 2 and 5 start the chapter from a `fresh` point; exact and checkpoint resumes report nothing.
       reporter.record({ kind: 'chapter_started', chapterId: ch.id, storyVersion: ch.meta.storyVersion });
+    }
+    if (resumed.storyUpdated) {
+      // A story update moved the player back: say from where (the error floor's lower levels are asked, never noted).
+      const key = resumed.level === 'chapter-start' ? 'toast.resume_chapter_start' : 'toast.resume_checkpoint';
+      vm.showToast({ kind: 'note', key: RESUME_TOAST, message: t(vm.lang, key), sticky: false });
     }
     await present(s, resumed.first);
     return ok(undefined);

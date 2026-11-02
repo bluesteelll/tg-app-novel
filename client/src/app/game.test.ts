@@ -1120,3 +1120,57 @@ test('game: repeated ink error walks resume down to chapter start', async () => 
   expect(await returnToSave()).toBe('ch1.start.l001'); // the floor
   h.game.dispose();
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// W2 (b): the story-update resume toasts (PP "Save format and resume")
+
+/** The transient note with that message, if shown. */
+const note = (vm: ViewModel, message: string): boolean => vm.toasts.some((e) => e.kind === 'note' && e.message === message);
+
+/** manor's autosave at l001 (the arrival knot's entry), from a session of the current ch1. */
+async function arrivalSave(): Promise<SaveFull | undefined> {
+  const first = harness();
+  await startManor(first);
+  const auto = first.save().slots.get('auto');
+  first.game.dispose();
+  return auto;
+}
+
+test('game: a story update resume at the checkpoint shows its toast', async () => {
+  const auto = await arrivalSave();
+  expect(auto).toBeDefined();
+  if (auto === undefined) {
+    return;
+  }
+  const same = harness({ slots: new Map([['auto', auto]]) });
+  expect((await same.game.start({ kind: 'slot', story: MANOR, slot: 'auto' })).ok).toBe(true);
+  expect(same.vm.toasts).toEqual([]); // the exact level: nothing to say
+  same.game.dispose();
+  const updated = chapter(
+    'ch1',
+    MANOR_CH1,
+    { arrival: { assets: ['bg/hall', 'char/ally/neutral', 'bgm/calm'], next: ['garden'] }, garden: { assets: ['bg/garden'], ending: true } },
+    { version: '0122222222222222' },
+  );
+  const h = harness({ chapters: [updated], slots: new Map([['auto', auto]]) });
+  expect((await h.game.start({ kind: 'slot', story: MANOR, slot: 'auto' })).ok).toBe(true);
+  expect(lineOf(h.vm)).toBe('ch1.arrival.l001');
+  expect(note(h.vm, 'История обновилась: продолжаем с начала сцены')).toBe(true);
+  h.game.dispose();
+});
+
+test('game: a story update resume at the chapter start shows its toast', async () => {
+  const auto = await arrivalSave();
+  expect(auto).toBeDefined();
+  if (auto === undefined) {
+    return;
+  }
+  // The update removed the saved checkpoint's knot: the resume falls to the chapter start.
+  const rewritten = chapter('ch1', ['-> hall', '=== hall ===', 'The hall. #id:ch1.hall.l001', '-> END'], { hall: { ending: true } }, { version: '0133333333333333' });
+  const h = harness({ chapters: [rewritten], slots: new Map([['auto', auto]]) });
+  expect((await h.game.start({ kind: 'slot', story: MANOR, slot: 'auto' })).ok).toBe(true);
+  expect(lineOf(h.vm)).toBe('ch1.hall.l001');
+  expect(note(h.vm, 'История обновилась: продолжаем с начала главы')).toBe(true);
+  expect(note(h.vm, 'История обновилась: продолжаем с начала сцены')).toBe(false);
+  h.game.dispose();
+});
