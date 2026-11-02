@@ -584,6 +584,34 @@ test('registry: a revive that misses its deadline ends the record', async () => 
   }
 });
 
+test('registry: the visible pass has one deadline counted from its start', async () => {
+  vi.useFakeTimers();
+  try {
+    const h = harness();
+    await liveBgs(h, ['a', 'b', 'c']);
+    h.setReviveMode('hold');
+    const r = h.registry.revive(2, noAbort());
+    const visible = seen(r.visible);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(urlsOf(h.revives)).toEqual(['/assets/a.avif@2']);
+    h.settleRevives(); // a is revived 2000 ms into the pass
+    await vi.advanceTimersByTimeAsync(0);
+    expect(urlsOf(h.revives)).toEqual(['/assets/a.avif@2', '/assets/b.avif@2']);
+    await vi.advanceTimersByTimeAsync(999); // 2999 ms from the start of the pass
+    expect(visible.value).toBe(null);
+    await vi.advanceTimersByTimeAsync(1); // 3000 ms: the pass deadline, not b's own 3000 ms from 2000
+    expect(visible.value).toBe('done');
+    expect(h.registry.current(asId('bg/a'))).not.toBe(null);
+    expect(h.registry.current(asId('bg/b'))).toBe(null);
+    expect(h.registry.current(asId('bg/c'))).toBe(null);
+    // c, reached after the expiry, is ended without a decode started for it (MEMORY-PLAN 4.A: one at a time).
+    expect(urlsOf(h.revives)).toEqual(['/assets/a.avif@2', '/assets/b.avif@2']);
+    expect(h.registry.stats().reviveFailed).toBe(2);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test('registry: an acquire after a failed revive starts a new record', async () => {
   const h = harness();
   const [first] = await liveBgs(h, ['a']);
