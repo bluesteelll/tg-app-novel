@@ -473,6 +473,78 @@ async fn card_paid_titles_need_entitlement() {
     report(&failures);
 }
 
+/// Principle 0 (M7) holds after a refund: the achievements stored while chapter:ch4 was owned, and the chapter's
+/// ending title, leave the card once the entitlement row is deleted (a refund), while their unlock rows stay (M6). Only
+/// the listing's own "visible now" check can hide them: the insert's check never sees a row that is already stored.
+#[tokio::test]
+async fn card_hides_stored_unlock_after_refund() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    stat(&st, ANN, 1, "ending_reached", "ch4", Some("dawn"), T0 - 30).await;
+    stat(
+        &st,
+        ANN,
+        2,
+        "choice_made",
+        "ch3",
+        Some("ch3.shore.s002"),
+        T0 - 60,
+    )
+    .await;
+    own(&st, ANN, "chapter:ch4").await;
+    let mut failures = Vec::new();
+    failures.extend(expect_card(
+        "tide with chapter:ch4 (control)",
+        &post_card(&st, Some(ANN), "tide").await,
+        &card(
+            "tide",
+            1,
+            &["ch4"],
+            vec![ending("dawn", DAWN, T0 - 30)],
+            vec![
+                achievement("lighthouse", T0, true),
+                achievement("dawn_walk", T0, true),
+            ],
+        ),
+    ));
+    let mut c = common::raw_db(&st).await;
+    let refunded =
+        sqlx::query("DELETE FROM entitlements WHERE user_id = $1 AND product_id = 'chapter:ch4'")
+            .bind(ANN)
+            .execute(&mut c)
+            .await
+            .unwrap()
+            .rows_affected();
+    c.close().await.unwrap();
+    if refunded != 1 {
+        failures.push(format!(
+            "refund: expected one entitlement row deleted, got {refunded}"
+        ));
+    }
+    let reply = post_card(&st, Some(ANN), "tide").await;
+    failures.extend(expect_card(
+        "tide after the chapter:ch4 refund",
+        &reply,
+        &card("tide", 1, &["ch4"], vec![], vec![]),
+    ));
+    let text = body_text(&reply);
+    for word in ["dawn", "lighthouse", "Фикстура"] {
+        if text.contains(word) {
+            failures.push(format!("after refund the card names {word}: {text}"));
+        }
+    }
+    let rows = unlock_rows(&st, ANN).await;
+    let stored = [
+        ("tide".to_owned(), "dawn_walk".to_owned(), T0),
+        ("tide".to_owned(), "lighthouse".to_owned(), T0),
+    ];
+    if rows != stored {
+        failures.push(format!(
+            "after refund: expected the dawn_walk and lighthouse rows at T0 to stay, got {rows:?}"
+        ));
+    }
+    report(&failures);
+}
+
 /// Opens a READ COMMITTED transaction on `c` (a raw connection's default is `repeatable read`).
 async fn begin(c: &mut PgConnection) {
     sqlx::raw_sql("BEGIN ISOLATION LEVEL READ COMMITTED")
