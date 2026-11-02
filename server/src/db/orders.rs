@@ -1,6 +1,6 @@
 //! The `orders` table: one row per Stars invoice the server created (PP P3). This module writes only the insert of a
-//! `created` order (with a pack's binding) and its invoice link, and reads an order for its owner; the grant that
-//! moves an order is `db/payments.rs`'s.
+//! `created` order (with a pack's binding), bounded per user ([`OPEN_ORDERS_PER_WINDOW`] unpaid in a rolling hour),
+//! and its invoice link, and reads an order for its owner; the grant that moves an order is `db/payments.rs`'s.
 //!
 //! The order id grammar lives here too: `ids.rs` holds the type, and an id is minted and parsed only next to the rows
 //! it names.
@@ -11,6 +11,13 @@ use ts_rs::TS;
 use crate::catalog::Product;
 use crate::db::Repo;
 use crate::ids::{OrderId, ProductId, UserId};
+
+/// The window of the open-order bound, in seconds: a rolling hour.
+pub const OPEN_ORDER_WINDOW_SECS: i64 = 3600;
+
+/// The most unpaid orders (`created` or `checkout`) a user may open inside [`OPEN_ORDER_WINDOW_SECS`]: each cost one
+/// `createInvoiceLink`, so the bound caps the Bot API calls a user can cause too.
+pub const OPEN_ORDERS_PER_WINDOW: i64 = 10;
 
 /// The prefix of every order id.
 const ORDER_PREFIX: &str = "o_";
@@ -75,6 +82,11 @@ pub enum InvoiceOrder {
         /// The user's Telegram language tag, for the invoice texts.
         language_code: Option<String>,
     },
+    /// The user has [`OPEN_ORDERS_PER_WINDOW`] unpaid orders inside the window: no order, no Bot API call.
+    Limited {
+        /// Seconds until the oldest of them leaves the window, 1..=[`OPEN_ORDER_WINDOW_SECS`].
+        retry_after_secs: i64,
+    },
 }
 
 /// A new order id: [`ORDER_PREFIX`] + 32 lower-case hex of 16 OS-random bytes (34 bytes, within the payload's 128).
@@ -102,8 +114,17 @@ pub fn parse_order_id(s: &str) -> Option<OrderId> {
 impl Repo {
     /// A new `created` order for a `POST /api/invoices` of the catalog's `product` by `user` at `now`: in `XTR` at the
     /// product's price, binding a pack's kind and amount (`NULL` for a chapter: `orders_pack_binding`), read back with
-    /// the user's language. One READ COMMITTED transaction, committed before the caller asks the Bot API for a link:
-    /// no lock is held across that call.
+    /// the user's language; or `Limited` when the user already has [`OPEN_ORDERS_PER_WINDOW`] unpaid orders created
+    /// after `now - OPEN_ORDER_WINDOW_SECS`. One READ COMMITTED transaction, committed before the caller asks the Bot
+    /// API for a link: no lock is held across that call.
+    /// 1. The payer's `users` row is locked (`FOR NO KEY UPDATE`, the pre-checkout's mode): two POSTs of one user run
+    ///    one after another, and the second one's count is a new statement whose snapshot holds the first one's
+    ///    insert. Without the lock two POSTs both count 9 and both insert (no check-then-insert race).
+    /// 2. The unpaid orders in the window are counted on `orders_by_user_product` (`user_id` leads it); `paid` and
+    ///    `refunded` ones are not, so a paying reader is never bound. Ten or more → rolled back, `Limited`.
+    /// 3. The insert, and the user's language read back.
+    ///
+    /// The lock order is users → orders, as the pre-checkout's; after the lock nothing waits on an existing row.
     ///
     /// No order is handed out again (K9): each POST is a new payload, so `createInvoiceLink` makes a new invoice with a
     /// slug TWA has not opened (it throws `WebAppInvoiceOpened` on one it has), and each order row costs one Bot API
@@ -121,6 +142,29 @@ impl Repo {
             None => (None, None),
         };
         let mut tx = self.pool.begin().await?;
+        // No users row: no lock, and the insert's foreign key fails below.
+        sqlx::query("SELECT 1 FROM users WHERE id = $1 FOR NO KEY UPDATE")
+            .bind(user.0)
+            .execute(&mut *tx)
+            .await?;
+        let (open, oldest): (i64, Option<i64>) = sqlx::query_as(
+            "SELECT count(*), min(created_at) FROM orders \
+             WHERE user_id = $1 AND status IN ('created', 'checkout') AND created_at > $2",
+        )
+        .bind(user.0)
+        .bind(now.saturating_sub(OPEN_ORDER_WINDOW_SECS))
+        .fetch_one(&mut *tx)
+        .await?;
+        if open >= OPEN_ORDERS_PER_WINDOW {
+            tx.rollback().await?;
+            // The oldest counted order leaves the window `OPEN_ORDER_WINDOW_SECS` after it was made.
+            let retry_after_secs = oldest
+                .unwrap_or(now)
+                .saturating_add(OPEN_ORDER_WINDOW_SECS)
+                .saturating_sub(now)
+                .clamp(1, OPEN_ORDER_WINDOW_SECS);
+            return Ok(InvoiceOrder::Limited { retry_after_secs });
+        }
         let order = new_order_id();
         sqlx::query(
             "INSERT INTO orders (id, user_id, product_id, amount, currency, status, created_at, pack_kind, \
