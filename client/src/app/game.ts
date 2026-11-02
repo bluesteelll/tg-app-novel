@@ -1540,6 +1540,35 @@ export function createGame(deps: GameDeps): Game {
     }
   };
 
+  /**
+   * A manual save writes the step on screen (triage r2 M4). While an intent is past a move and before its `present`
+   * (`mixes`), `saving` names the slot at once, as D33's latch needs, and the body is taken once that intent has ended:
+   * the wait is the step's own load time, as an exit's is. A session that still mixes then, or at rest, writes nothing.
+   */
+  const writeManual = async (s: Session, slot: ManualSlot, put: (w: SaveWrite) => Promise<Result<unknown, SaveError>>): Promise<void> => {
+    const tappedAt = clock.now();
+    const waiting = busy !== null && mixes(s);
+    let body = mixes(s) ? null : bodyOf(s);
+    if (!waiting && body === null) {
+      return; // at rest: no chapter runs, or the session describes two steps (a resume failed past the swap)
+    }
+    vm.saves = { ...vm.saves, saving: slot, conflict: null, failed: null };
+    if (body === null) {
+      while (busy !== null && mixes(s)) {
+        await busy;
+      }
+      if (session !== s) {
+        return;
+      }
+      body = mixes(s) ? null : bodyOf(s);
+      if (body === null) {
+        vm.saves = { ...vm.saves, saving: null };
+        return;
+      }
+    }
+    await saved(s, slot, await put(writeOf(body)), tappedAt);
+  };
+
   // -------------------------------------------------------------------------------------------------------------
   // The debug hook (D22)
 
@@ -1670,24 +1699,18 @@ export function createGame(deps: GameDeps): Game {
     },
     async save(slot) {
       const s = session;
-      const body = s === null ? null : bodyOf(s);
-      if (s === null || body === null || vm.saves.saving !== null) {
+      if (s === null || vm.saves.saving !== null) {
         return;
       }
-      const tappedAt = clock.now();
-      vm.saves = { ...vm.saves, saving: slot, conflict: null, failed: null };
-      await saved(s, slot, await s.saves.save(slot, writeOf(body)), tappedAt);
+      await writeManual(s, slot, (w) => s.saves.save(slot, w));
     },
     async overwrite(slot) {
       const s = session;
       const c = s?.conflict ?? null;
-      const body = s === null ? null : bodyOf(s);
-      if (s === null || c === null || c.slot !== slot || body === null || vm.saves.saving !== null) {
+      if (s === null || c === null || c.slot !== slot || vm.saves.saving !== null) {
         return;
       }
-      const tappedAt = clock.now();
-      vm.saves = { ...vm.saves, saving: slot, conflict: null, failed: null };
-      await saved(s, slot, await s.saves.overwrite(slot, writeOf(body), c.current), tappedAt);
+      await writeManual(s, slot, (w) => s.saves.overwrite(slot, w, c.current));
     },
     cancelOverwrite() {
       clearHold();

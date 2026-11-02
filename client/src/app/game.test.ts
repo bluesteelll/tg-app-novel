@@ -2445,3 +2445,73 @@ test('game: a 409 on a manual save asks only after the double-tap window', async
   expect([holding, h.clock.pending - timers, h.exits()]).toEqual([1, 0, 1]);
   h.game.dispose();
 });
+
+test('game: a manual save with a step in flight waits for that step', async () => {
+  /** A manual slot's body resumed in a fresh session: [lineId, ok, toasts, line]. */
+  const resumed = async (full: SaveFull | undefined): Promise<unknown[] | null> => {
+    if (full === undefined) {
+      return null;
+    }
+    const again = harness({ slots: new Map([['auto', { ...full, summary: { ...full.summary, slot: 'auto' } }]]) });
+    const ok = (await again.game.start({ kind: 'slot', story: MANOR, slot: 'auto' })).ok;
+    const row = [full.summary.lineId, ok, again.vm.toasts.length, lineOf(again.vm)];
+    again.game.dispose();
+    return row;
+  };
+  const atL003 = async (h: Harness): Promise<void> => {
+    await startManor(h);
+    await h.game.advance(); // l002
+    await h.game.advance(); // the choice set
+    await h.game.choose(0); // l003
+  };
+  // 1. Save while l005 (garden's entry) waits on its art: the runner is at l005, the position and the stage at l003.
+  const h = harness();
+  await atL003(h);
+  const sv = h.save();
+  let release = holdEnsure(h.scene);
+  let step = h.game.advance();
+  await settle();
+  const saving = h.game.save('s1');
+  await settle();
+  const during = [sv.slots.has('s1'), h.vm.saves.saving];
+  expect(during).toEqual([false, 's1']);
+  release();
+  await step;
+  await saving;
+  await settle();
+  const one = await resumed(sv.slots.get('s1'));
+  h.game.dispose();
+  // 2. The conflict's deliberate Yes in the same window.
+  const h2 = harness();
+  await atL003(h2);
+  const sv2 = h2.save();
+  conflicting(sv2);
+  await h2.game.save('s2');
+  h2.clock.advance(CONFLICT_HOLD_MS);
+  const asked = h2.vm.saves.conflict;
+  release = holdEnsure(h2.scene);
+  step = h2.game.advance();
+  await settle();
+  const writing = h2.game.overwrite('s2');
+  await settle();
+  const during2 = [sv2.slots.has('s2'), h2.vm.saves.saving];
+  release();
+  await step;
+  await writing;
+  await settle();
+  const two = await resumed(sv2.slots.get('s2'));
+  h2.game.dispose();
+  // 3. At rest in a session of two steps (a resume that failed after the chapter swap): nothing to save.
+  const h3 = harness({ chapters: [manorCh1(), noIdCh2()], owned: ['ch2'] });
+  await failAfterSwap(h3);
+  await h3.game.save('s3');
+  const three = [h3.vm.notice?.kind, h3.save().slots.has('s3'), h3.vm.saves.saving];
+  h3.game.dispose();
+  expect([one, asked, during2, two, three]).toEqual([
+    ['ch1.garden.l005', true, 0, 'ch1.garden.l005'],
+    's2',
+    [false, 's2'],
+    ['ch1.garden.l005', true, 0, 'ch1.garden.l005'],
+    ['error', false, null],
+  ]);
+});
