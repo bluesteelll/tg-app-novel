@@ -1995,3 +1995,133 @@ test('game: return to last save after load it resumes their save', async () => {
   h.game.dispose();
   expect(line).toBe('ch1.broken.l002'); // their checkpoint; ours would be ch1.start.l001
 });
+
+test('game: a deactivated during a transition autosaves at once', async () => {
+  const h = harness();
+  await startManor(h); // l001
+  const sv = h.save();
+  const written: Array<[string | null, boolean | undefined]> = [];
+  const autosave = sv.autosave;
+  sv.autosave = (w, o) => {
+    written.push([w.lineId, o?.keepalive]);
+    autosave(w, o);
+  };
+  /** Holds the end of the batches applied from now (their transitions; deactivated pauses them so) until the release. */
+  const holdApply = (): (() => void) => {
+    const apply = h.scene.apply;
+    const ends: Array<() => void> = [];
+    h.scene.apply = (batch, o) => {
+      void apply(batch, o); // the fake stage takes the batch; only its end is held
+      return new Promise<void>((resolve) => {
+        ends.push(resolve);
+      });
+    };
+    return () => {
+      h.scene.apply = apply;
+      for (const end of ends.splice(0)) {
+        end();
+      }
+    };
+  };
+  // 1. l002 is on screen while its batch runs: the session describes l002 alone, so each request is written at once.
+  let finish = holdApply();
+  let step = h.game.advance(); // l002
+  await settle();
+  expect(lineOf(h.vm)).toBe('ch1.arrival.l002');
+  h.game.onLifecycle('deactivated');
+  const atOnce = written.map(([line]) => line);
+  h.game.pagehide();
+  finish();
+  await step;
+  await settle();
+  expect(atOnce).toEqual(['ch1.arrival.l002']);
+  expect(written).toEqual([
+    ['ch1.arrival.l002', false],
+    ['ch1.arrival.l002', true],
+  ]);
+  // 2. While the next step waits on its art the request waits, and it is written once that step is on screen, while
+  // its batch still runs (a paused transition would hold the intent's end until activated).
+  h.game.onLifecycle('activated');
+  await h.game.advance(); // the choice set
+  await h.game.choose(0); // l003
+  written.length = 0;
+  const release = holdEnsure(h.scene);
+  finish = holdApply();
+  step = h.game.advance(); // l005, garden's entry: waits on bg/garden
+  await settle();
+  h.game.onLifecycle('deactivated');
+  const waited = written.length;
+  release();
+  await settle();
+  const onScreen = [...written];
+  finish();
+  await step;
+  await settle();
+  h.game.dispose();
+  expect([waited, onScreen]).toEqual([
+    0,
+    [
+      ['ch1.garden.l005', undefined],
+      ['ch1.garden.l005', false],
+    ],
+  ]);
+  expect(written).toEqual(onScreen); // nothing is left to write when the step ends
+});
+
+test('game: a deactivated while a load restores the stage waits for the loaded step', async () => {
+  const h = harness({ chapters: [manorCh1(), manorCh2()] });
+  await startManor(h); // l001: the start knot's entry autosave
+  const sv = h.save();
+  const auto = sv.slots.get('auto');
+  const decoded = auto === undefined ? null : decodeSave(auto.body);
+  expect(decoded?.ok).toBe(true);
+  if (auto === undefined || decoded === null || !decoded.ok) {
+    return;
+  }
+  sv.slots.set('s1', { ...auto, summary: { ...auto.summary, slot: 's1' } });
+  const pending = { ...decoded.value, chapterId: CH2, ink: null, at: { lineId: null, knot: null, yield: null }, staging: EMPTY_SNAPSHOT };
+  sv.slots.set('s2', { summary: { ...auto.summary, slot: 's2', chapterId: CH2 }, body: encodeSave({ ...pending, checkpoint: null, backlog: [] }) });
+  await h.game.advance(); // l002
+  /** Holds the next stage restore after the fake stage took it, until the returned release. */
+  const holdRestore = (): (() => void) => {
+    const restore = h.scene.restore;
+    let end = (): void => {};
+    h.scene.restore = (snapshot) => {
+      void restore(snapshot); // the fake stage takes the snapshot; only the restore's end is held
+      return new Promise<void>((resolve) => {
+        end = resolve;
+      });
+    };
+    return () => {
+      h.scene.restore = restore;
+      end();
+    };
+  };
+  const loadDeactivated = async (slot: 's1' | 's2'): Promise<{ waited: number; written: SaveWrite[] }> => {
+    const since = sv.autosaves.length;
+    const release = holdRestore();
+    const loading = h.game.load(slot);
+    await settle();
+    h.game.onLifecycle('deactivated');
+    const waited = sv.autosaves.length - since;
+    release();
+    await loading;
+    await settle();
+    h.game.onLifecycle('activated');
+    return { waited, written: sv.autosaves.slice(since) };
+  };
+  // 1. The same chapter: the body's runner and fields are in, its stage is still being restored.
+  const same = await loadDeactivated('s1');
+  // 2. D11, a saved start of a chapter not owned: the stage empties under l002 before the pending start is the body.
+  const paid = await loadDeactivated('s2');
+  h.game.dispose();
+  const resumed: unknown[] = [];
+  for (const w of same.written) {
+    const again = harness({ slots: new Map([['auto', { summary: summary(MANOR, 'auto', w), body: w.body }]]) });
+    const ok = (await again.game.start({ kind: 'slot', story: MANOR, slot: 'auto' })).ok;
+    resumed.push([w.lineId, ok, again.vm.toasts.length, lineOf(again.vm)]);
+    again.game.dispose();
+  }
+  expect([same.waited, resumed]).toEqual([0, [['ch1.arrival.l001', true, 0, 'ch1.arrival.l001']]]);
+  expect([paid.waited, paid.written.map((w) => [w.chapterId, w.lineId])]).toEqual([0, [['ch2', null]]]);
+});

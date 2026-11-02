@@ -283,6 +283,11 @@ type Session = {
   /** The ru text of every choice shown this session, for the backlog's "your choice". */
   readonly choiceText: Map<LineId, string>;
   at: SaveBodyV1['at'];
+  /**
+   * The session may describe two steps at once: the runner, the chapter, the world or the stage has moved and
+   * `present` has not yet set the position (an `end` step never does). Set at every move, cleared by `present`.
+   */
+  torn: boolean;
   /** The step on screen. */
   step: RunnerStep | null;
   /** The last line shown: it stays on screen above a choice set. */
@@ -344,7 +349,10 @@ export function createGame(deps: GameDeps): Game {
   let exiting = false;
   let choiceSetId = 0;
   let offer: Offer | null = null;
-  /** An autosave asked for from outside the intent queue while an intent ran; it is written when that intent ends. */
+  /**
+   * An autosave asked for from outside the intent queue that has to wait (`waits`); it is written as soon as it no
+   * longer has to, at the latest when the intent ends.
+   */
   let deferred: { s: Session; keepalive: boolean } | null = null;
 
   // -------------------------------------------------------------------------------------------------------------
@@ -524,22 +532,33 @@ export function createGame(deps: GameDeps): Game {
   };
 
   /**
-   * The autosave of `deactivated`, `pagehide` and the yields' timers, which run outside the intent queue. While an
-   * intent runs, the session may describe two steps at once (the runner and the backlog at the next one, the
-   * position, the checkpoint and the stage still at the last), and such a body resumes a level lower as a false story
-   * update; so it waits for the intent's end, when the session describes one step again.
+   * An intent is past a move of the session and before its `present` (the runner and the backlog at the next step,
+   * the position, the checkpoint and the stage still at the last), whose body would resume a level lower as a false
+   * story update; or "Load it" holds every write until their save has resumed, and a request kept until then is
+   * written of their save.
+   */
+  const waits = (s: Session): boolean => s.adopting || s.torn;
+
+  /**
+   * The autosave of `deactivated`, `pagehide` and the yields' timers, which run outside the intent queue. It is
+   * written at once, with its keepalive, unless an intent runs and the session `waits`: then it is kept, and written
+   * when the step is on screen (a deactivated holds a batch's transitions, and with them the intent's end, until
+   * activated) or when the intent ends.
    */
   const autosaveOutside = (s: Session, keepalive: boolean): void => {
-    if (busy === null) {
-      autosave(s, { keepalive });
+    if (busy !== null && waits(s)) {
+      deferred = { s, keepalive: keepalive || (deferred?.s === s && deferred.keepalive) };
       return;
     }
-    deferred = { s, keepalive: keepalive || (deferred?.s === s && deferred.keepalive) };
+    autosave(s, { keepalive });
   };
   const flushDeferred = (): void => {
     const d = deferred;
+    if (d === null || (busy !== null && waits(d.s))) {
+      return;
+    }
     deferred = null;
-    if (d !== null && session === d.s) {
+    if (session === d.s) {
       autosave(d.s, { keepalive: d.keepalive });
     }
   };
@@ -611,6 +630,9 @@ export function createGame(deps: GameDeps): Game {
         return _never;
       }
     }
+    if (step.kind !== 'end') {
+      s.torn = false; // the stage, the position and (below, in the same turn) the checkpoint are this step's
+    }
     if (step.kind !== 'end' && step.enteredKnot) {
       s.checkpoint = { knot: step.knot, vars: s.runner?.checkpointVars() ?? {}, staging: before };
       enterKnot(s, ch, step.knot);
@@ -618,6 +640,7 @@ export function createGame(deps: GameDeps): Game {
     } else if (step.kind === 'choices' || step.kind === 'yield') {
       autosave(s);
     }
+    flushDeferred(); // the session describes this step alone now: a request that waited for it is written
     await shown.done;
     if (session !== s) {
       return;
@@ -646,6 +669,7 @@ export function createGame(deps: GameDeps): Game {
 
   /** The runner's answer: a step to show, a dropped tag (the step without it), or the story-error notice. */
   const handle = async (s: Session, r: Result<RunnerStep, RunnerError>): Promise<void> => {
+    s.torn = true; // `r` is the runner's `next()`, called in this same turn: the runner is at the next step
     if (r.ok) {
       return present(s, r.value);
     }
@@ -723,6 +747,7 @@ export function createGame(deps: GameDeps): Game {
    * F4 step 4's order: the scene's chapter, the empty stage (every `scene:*` holder of the old chapter), the audio's.
    */
   const enterChapter = async (s: Session, ch: LoadedChapter, clear: boolean): Promise<void> => {
+    s.torn = true; // the chapter and the world change here; the runner and the position follow
     s.yields.chapterChanged(); // D11 / PZ F10: the puzzle session, then the controller; the world starts empty
     s.ch = ch;
     s.assets = manifestIndex(ch.assets);
@@ -793,6 +818,7 @@ export function createGame(deps: GameDeps): Game {
       if (!loaded.ok) {
         if (loaded.error.kind === 'not-entitled' && body.ink === null) {
           // D11: the saved start of a chapter still not owned; the paywall again, over an empty stage.
+          s.torn = true; // the stage empties under the last step
           await scene.restore(EMPTY_SNAPSHOT);
           audioOnce().restore(null);
           if (session !== s) {
@@ -820,6 +846,7 @@ export function createGame(deps: GameDeps): Game {
       return err({ kind: 'story', error: r.error });
     }
     const resumed = r.value;
+    s.torn = true; // the body's world, runner and fields come in here; its stage and its first step follow
     s.yields.restore(resumed.world, resumed.reset, resumed.first.kind === 'yield' ? resumed.first.yield : null);
     s.runner?.dispose();
     s.runner = resumed.runner;
@@ -1240,6 +1267,7 @@ export function createGame(deps: GameDeps): Game {
       backlog: [],
       choiceText: new Map(),
       at: NO_AT,
+      torn: false,
       step: null,
       shown: null,
       last: null,
@@ -1511,6 +1539,7 @@ export function createGame(deps: GameDeps): Game {
       if (option === undefined || ch === null || !s.runner.choose(index).ok) {
         return DONE;
       }
+      s.torn = true; // the runner is past the choice set; its next step is presented by the intent below
       tg.haptic.impact('light');
       reporter.record({ kind: 'choice_made', chapterId: ch.id, storyVersion: ch.meta.storyVersion, option: option.lineId });
       const last = s.backlog.at(-1);
