@@ -9,7 +9,7 @@ import type { AssetManifest } from '../story/catalog.ts';
 import type { SectionId } from '../story/staging.ts';
 import type { Unsubscribe } from '../telegram/index.ts';
 import type { ExploreViewStore, HotspotView } from '../ui/explore-view.svelte.ts';
-import type { WorldPublic, WorldText } from '../world/types.ts';
+import type { HotspotKey, RoomId, WorldPublic, WorldText } from '../world/types.ts';
 import { admitSection } from './reconcile.ts';
 import { hotspotKey, lockOf, reduce, worldIndex } from './reduce.ts';
 import type { ExploreAction, ExploreEffect } from './reduce.ts';
@@ -25,6 +25,13 @@ export interface ExploreController {
   enter(section: SectionId, state: WorldState): void;
   /** Taps, inserts and puzzle results; `enter-section` / `event-returned` take `enter`'s route, never `reduce` directly. */
   dispatch(a: ExploreAction): void;
+  /**
+   * BackButton at the root (X12): a `tap` on the current room's open exit to the previous room of the path; false
+   * when the path is empty or the controller is disposed. During an event knot the reducer refuses the tap.
+   */
+  back(): boolean;
+  /** The path's empty ↔ non-empty edges, for `setRootBack`; called once on subscribe with the current value. */
+  onPath(fn: (walkable: boolean) => void): Unsubscribe;
   /** The stage host's content box (X10); recomputes the hotspot boxes. The host's own ResizeObserver calls it too. */
   resize(stage: Size): void;
   state(): WorldState;
@@ -45,6 +52,11 @@ export type ExploreControllerDeps = {
 };
 
 type Outcome = { state: WorldState; effects: ExploreEffect[] };
+/**
+ * How an outcome came: through a section's entry (the path restarts), an event's return (the path is kept), or a
+ * player action from `room` (a `room` effect to another room is a move).
+ */
+type Route = { kind: 'admit' } | { kind: 'event' } | { kind: 'action'; action: ExploreAction; room: RoomId | null };
 
 /** The renderer reads the same two numbers (`scene/controller.ts:180`); `.host` has no padding, so this is its content box. */
 const sizeOf = (host: HTMLElement): Size => ({ w: host.clientWidth, h: host.clientHeight });
@@ -54,7 +66,11 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
   const ix = worldIndex(world);
   let current: WorldState = EMPTY_WORLD_STATE;
   let stage = sizeOf(deps.stageHost);
+  /** D7: the rooms walked before the current one; not saved (X12 trade-off). */
+  let path: readonly RoomId[] = [];
+  let walkable = false;
   let effectFns: Array<(e: ExploreEffect) => void> = [];
+  let pathFns: Array<(walkable: boolean) => void> = [];
   let dead = false;
 
   /** D4: the current room's hotspots in world order, except a taken `take` (as `actions` lists them). */
@@ -87,10 +103,62 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
     view.hotspots = hotspotViews();
   };
 
-  /** D6: adopt the state, write the views, then the effects in order; a listener that disposes ends the call. */
-  const settle = (out: Outcome): void => {
+  /** The first exit of `room` to `target` that is lock-free or open now; locks never close (X12). */
+  const openExit = (room: RoomId, target: RoomId): HotspotKey | null => {
+    for (const h of ix.rooms.get(room)?.room.hotspots ?? []) {
+      const key = hotspotKey(room, h.id);
+      if (h.kind === 'exit' && 'room' in h.to && h.to.room === target && (h.lock === null || current.open.includes(key))) {
+        return key;
+      }
+    }
+    return null;
+  };
+
+  /**
+   * D7: a move prev -> R truncates a cycle (R on the path), else pushes prev when R's way back to it is open, else
+   * clears the path (a door locked from the other side). An entry and a `leave` clear it; an event's return keeps it.
+   */
+  const walk = (route: Route, effects: readonly ExploreEffect[]): void => {
+    if (route.kind === 'admit') {
+      path = [];
+      return;
+    }
+    if (route.kind === 'event') {
+      return;
+    }
+    let prev = route.room;
+    for (const e of effects) {
+      if (e.kind === 'leave') {
+        path = [];
+      } else if (e.kind === 'room' && prev !== null && e.room !== prev) {
+        const at = path.indexOf(e.room);
+        path = at !== -1 ? path.slice(0, at) : openExit(e.room, prev) !== null ? [...path, prev] : [];
+        prev = e.room;
+      }
+    }
+  };
+
+  /** D8: only an empty ↔ non-empty edge reaches the listeners. */
+  const reportPath = (): void => {
+    const now = path.length > 0;
+    if (now === walkable) {
+      return;
+    }
+    walkable = now;
+    for (const fn of pathFns) {
+      fn(now);
+    }
+  };
+
+  /**
+   * D6: adopt the state, update the path, write the views, report the path edge, then the effects in order. Not
+   * re-entrant: GameSession's single intent queue serializes; a listener that disposes ends the call.
+   */
+  const settle = (out: Outcome, route: Route): void => {
     current = out.state;
+    walk(route, out.effects);
     writeView();
+    reportPath();
     for (const e of out.effects) {
       for (const fn of effectFns) {
         if (dead) {
@@ -102,8 +170,24 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
   };
 
   /** D5: the one route into a section; the reducer's `enter-section` is reached only through `admitSection`. */
-  const admit = (section: SectionId, s: WorldState): Outcome =>
-    s.pendingStory.length > 0 ? reduce(world, s, { kind: 'event-returned', section }) : admitSection(world, s, section);
+  const admit = (section: SectionId, s: WorldState): void => {
+    if (s.pendingStory.length > 0) {
+      settle(reduce(world, s, { kind: 'event-returned', section }), { kind: 'event' });
+    } else {
+      settle(admitSection(world, s, section), { kind: 'admit' });
+    }
+  };
+
+  const dispatch = (a: ExploreAction): void => {
+    if (dead) {
+      return;
+    }
+    if (a.kind === 'enter-section' || a.kind === 'event-returned') {
+      admit(a.section, current);
+      return;
+    }
+    settle(reduce(world, current, a), { kind: 'action', action: a, room: current.room });
+  };
 
   const resize = (size: Size): void => {
     if (dead) {
@@ -119,14 +203,29 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
   return {
     enter(section, state) {
       if (!dead) {
-        settle(admit(section, state));
+        admit(section, state);
       }
     },
-    dispatch(a) {
-      if (dead) {
-        return;
+    dispatch,
+    back() {
+      const target = path.at(-1);
+      const key = dead || target === undefined || current.room === null ? null : openExit(current.room, target);
+      if (key === null) {
+        return false;
       }
-      settle(a.kind === 'enter-section' || a.kind === 'event-returned' ? admit(a.section, current) : reduce(world, current, a));
+      dispatch({ kind: 'tap', hotspot: key });
+      return true;
+    },
+    onPath(fn) {
+      if (dead) {
+        return () => {};
+      }
+      const entry = (w: boolean): void => fn(w);
+      pathFns = [...pathFns, entry];
+      entry(walkable);
+      return () => {
+        pathFns = pathFns.filter((x) => x !== entry);
+      };
     },
     resize,
     state: () => current,
@@ -147,6 +246,7 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
       dead = true;
       observer.disconnect();
       effectFns = [];
+      pathFns = [];
       view.hotspots = [];
       view.reveal = false;
       view.items = [];

@@ -33,17 +33,17 @@ const exit = (id: string, to: string | { story: string }, o: { lock?: Json | nul
   lock: o.lock ?? null,
   sfx: null,
 });
-const take = (id: string, gives: { item: string } | { doc: string }, then: Json[] = []): Json => ({
+const take = (id: string, gives: { item: string } | { doc: string }, then: Json[] = [], prop: string | null = null): Json => ({
   id,
   kind: 'take',
   rect: RECT,
   label: txt(`take ${id}`),
   gives,
-  prop: null,
+  prop,
   then,
 });
 const look = (id: string, rect: number[] = RECT): Json => ({ id, kind: 'look', rect, label: txt(`look ${id}`), look: txt(`seen ${id}`), then: [] });
-const object = (id: string, lock: Json | null, then: Json[] = []): Json => ({
+const object = (id: string, lock: Json | null, then: Json[] = [], prop: string | null = null): Json => ({
   id,
   kind: 'object',
   rect: RECT,
@@ -51,7 +51,7 @@ const object = (id: string, lock: Json | null, then: Json[] = []): Json => ({
   lock,
   then,
   look: null,
-  prop: null,
+  prop,
 });
 const lock = (accepts: string[], puzzle: string | null = null): Json => ({
   slots: accepts.map((a) => ({ accepts: a })),
@@ -61,6 +61,28 @@ const lock = (accepts: string[], puzzle: string | null = null): Json => ({
   onFail: [],
 });
 const room = (bg: string, hotspots: Json[], onEnter: Json[] = []): Json => ({ bg, title: txt(`room ${bg}`), onEnter, hotspots });
+const code = (closeup: string | null): Json => ({
+  type: 'code',
+  title: txt('code'),
+  prompt: txt('prompt'),
+  closeup,
+  params: { dials: 4 },
+  maxAttempts: null,
+  giveUp: false,
+  solution: [1, 1, 1, 1],
+  hints: [txt('hint')],
+});
+const order = (pieces: string[]): Json => ({
+  type: 'order',
+  title: txt('order'),
+  prompt: txt('prompt'),
+  closeup: null,
+  params: { pieces },
+  maxAttempts: 3,
+  giveUp: false,
+  solution: pieces.map((_, i) => (i + 1) % pieces.length),
+  hints: [txt('hint')],
+});
 
 type WorldSpec = {
   items?: Record<string, string>;
@@ -115,6 +137,79 @@ function house(version: 1 | 2, withYard = false): WorldPublic {
     },
     version === 1 ? V1 : V2,
   );
+}
+
+const MEDALS = ['medal_sun', 'medal_moon', 'medal_star'];
+
+/** The demo section (PUZZLES-PLAN "Demo content outline"): the cellar's onEnter runs an event knot. */
+function manor(): WorldPublic {
+  return world({
+    items: { medal_sun: 'sun', medal_moon: 'moon', medal_star: 'star' },
+    docs: ['letter', 'diary'],
+    puzzles: { drawer: code('drawer'), gate: order(MEDALS) },
+    sections: {
+      manor: {
+        start: 'hall',
+        rooms: {
+          hall: room('hall', [
+            exit('to_study', 'study'),
+            exit('to_cellar', 'cellar'),
+            exit('gate', { story: 'manor_out' }, { lock: lock(MEDALS, 'gate') }),
+            look('inscription'),
+          ]),
+          study: room('study', [
+            take('medal', { item: 'medal_sun' }, [], 'medal_sun'),
+            object('drawer', lock([], 'drawer'), [{ give: 'medal_moon' }]),
+            take('letter', { doc: 'letter' }, [], 'letter'),
+            exit('to_hall', 'hall'),
+          ]),
+          cellar: room(
+            'cellar',
+            [take('star', { item: 'medal_star' }, [], 'star'), take('diary', { doc: 'diary' }), exit('to_hall', 'hall')],
+            [{ story: 'manor_cellar_voice' }],
+          ),
+        },
+      },
+    },
+  });
+}
+
+/** Four props per room (object hotspots, so none is ever taken): the X13 room of bg + 4 × 1 MiB. */
+const props = (r: string): Json[] => [1, 2, 3, 4].map((n) => object(`${r}_p${n}`, null, [], `${r}_p${n}`));
+
+/** Four rooms in a line, every exit pair symmetric; b and c list their forward exit first; c holds a close-up puzzle. */
+function chain(): WorldPublic {
+  return world({
+    puzzles: { box: code('box') },
+    sections: {
+      line: {
+        start: 'a',
+        rooms: {
+          a: room('a', [...props('a'), exit('to_b', 'b')]),
+          b: room('b', [...props('b'), exit('to_c', 'c'), exit('to_a', 'a')]),
+          c: room('c', [...props('c'), object('box', lock([], 'box')), exit('to_d', 'd'), exit('to_b', 'b')]),
+          d: room('d', [...props('d'), exit('to_c', 'c')]),
+        },
+      },
+    },
+  });
+}
+
+/** wb -> wv is free, but wv's way back needs a rune nobody holds. */
+function wing(): WorldPublic {
+  return world({
+    items: { rune: 'star' },
+    sections: {
+      wing: {
+        start: 'wa',
+        rooms: {
+          wa: room('wa', [exit('to_wb', 'wb')]),
+          wb: room('wb', [exit('to_wa', 'wa'), exit('to_wv', 'wv')]),
+          wv: room('wv', [exit('to_wb', 'wb', { lock: lock(['rune']) })]),
+        },
+      },
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -276,5 +371,69 @@ test('controller: enter admits an unproved section', () => {
   ]);
   expect(y.c.state().open).not.toContain('hall.to_vault');
   expect(y.c.state().unproved).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// C2: the room path behind BackButton (X12)
+
+/** The `room` effects after `from` in the effect list. */
+const roomsAfter = (h: Harness, from: number): string[] => h.effects.slice(from).flatMap((e) => (e.kind === 'room' ? [e.room] : []));
+
+test('controller: back walks the path, cycles truncate', () => {
+  const h = harness(manor());
+  h.c.enter(sec('manor'), EMPTY_WORLD_STATE);
+  expect(h.c.back()).toBe(false);
+  h.c.dispatch(tap('hall.to_study'));
+  h.c.dispatch(tap('study.to_hall'));
+  h.c.dispatch(tap('hall.to_cellar'));
+  // The cellar's onEnter runs its event knot; the knot's last block yields back into the section.
+  expect(h.effects.at(-2)).toEqual({ kind: 'story', knot: 'manor_cellar_voice' });
+  h.c.enter(sec('manor'), h.c.state());
+  expect(h.c.state().pendingStory).toEqual([]);
+  // hall -> study -> hall truncated the cycle: the one way back from the cellar is the hall, and then nothing.
+  const before = h.effects.length;
+  expect(h.c.back()).toBe(true);
+  expect(roomsAfter(h, before)).toEqual(['hall']);
+  expect(h.c.state().room).toBe('hall');
+  const after = h.effects.length;
+  expect(h.c.back()).toBe(false);
+  expect(h.effects.length).toBe(after);
+});
+
+test('controller: path state reported on change', () => {
+  const h = harness(chain());
+  h.c.enter(sec('line'), EMPTY_WORLD_STATE);
+  const calls: boolean[] = [];
+  const off = h.c.onPath((walkable) => calls.push(walkable));
+  expect(calls).toEqual([false]);
+  h.c.dispatch(tap('a.to_b'));
+  expect(calls).toEqual([false, true]);
+  // A second move keeps the path non-empty: no call; so does one step back.
+  h.c.dispatch(tap('b.to_c'));
+  expect(h.c.back()).toBe(true);
+  expect(h.c.state().room).toBe('b');
+  expect(calls).toEqual([false, true]);
+  expect(h.c.back()).toBe(true);
+  expect(h.c.state().room).toBe('a');
+  expect(calls).toEqual([false, true, false]);
+  off();
+  h.c.dispatch(tap('a.to_b'));
+  expect(calls).toEqual([false, true, false]);
+});
+
+test('controller: locked reverse exit clears the path', () => {
+  const h = harness(wing());
+  h.c.enter(sec('wing'), EMPTY_WORLD_STATE);
+  const calls: boolean[] = [];
+  h.c.onPath((walkable) => calls.push(walkable));
+  h.c.dispatch(tap('wa.to_wb'));
+  expect(calls).toEqual([false, true]);
+  // wv's exit back to wb wants a rune that is not held: the way back is closed, so the path is cleared.
+  h.c.dispatch(tap('wb.to_wv'));
+  expect(h.c.state().room).toBe('wv');
+  expect(calls).toEqual([false, true, false]);
+  const before = h.effects.length;
+  expect(h.c.back()).toBe(false);
+  expect(h.effects.length).toBe(before);
 });
 
