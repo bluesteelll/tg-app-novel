@@ -1866,7 +1866,7 @@ LMI (its gate gains MEMORY-PLAN's M1).
 | JS before the first line | ≤ 270 KB br, unchanged | the meta chunk is not in it | `budget.ts` |
 | First-load to first line, per story | ≤ 800 KB, unchanged | + 2.9 KB | `budget.ts` |
 | Time to first line | ≤ 6 s, unchanged | 2.9 KB × 8 / 1.6 Mbps ≈ 15 ms; the three boot GETs (≈ 0.5–2 KB each) are parallel and never awaited | e2e `time to first line under throttling` |
-| Steady memory | ≤ 138.6 MiB (145.3 MB) | 138.1 (SP) + < 0.5 MiB (DOM overlays, ≤ 16 KB of card JSON, the chunk) | the estimate; e2e `heap under budget` (its 48 MB limit unchanged) |
+| Steady memory | ≤ 138.6 MiB (145.3 MB) | 138.1 (SP) + < 0.5 MiB (DOM overlays, ≤ 16 KB of card JSON, the chunk; as merged, LM2 `5a33183`, RULINGS 77; cut Q4: the card is bounded at 36 KiB, see the next row, and the total stays < 0.5 MiB) | the estimate; e2e `heap under budget` (its 48 MB limit unchanged) |
 | Card response | ≤ 16 KB; as merged (LM2 `5a33183`, RULINGS 77; cut Q4): ≤ 36 KiB (36,864 B) | 50 achievements × ≈ 250 B + 32 endings × ≈ 120 B; typically < 2 KB; as merged: the fixture's card 2,036 B (< 2,048), 34,167 B at the M4 limits (one achievement ≈ 675 B in Cyrillic); 4-byte code points could pass 36 KiB, accepted (display only; the 256 KiB `meta.json` cap holds) | `card_response_bounded` (LM2) |
 | Stats batch with choices | ≤ 16 KB body | 32 × ≈ 160 B = 5.1 KB | SP's limit |
 | `server/content/meta.json` | ≤ 256 KB raw (a startup check) | ≈ 40 B per option: ≈ 3 KB for the demo, ≈ 60 KB for 10 chapters × 150 options; texts ≤ 36 KB per story | `startup_fails_when_meta_too_large` (LM2) |

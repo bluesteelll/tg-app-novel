@@ -5574,7 +5574,10 @@ Notation:
   - **Commit 1** (`game.ts`): a pick calls `runner.choose(i)` and `reporter.record({ kind: 'choice_made', chapterId,
     storyVersion, option: choices[i].lineId })`. Red: `game: a choice records its option line id` — predicted red: no
     event recorded. `yields.ts` creates every `PuzzleSession` with `hints: null` (LMI passes the wallet's port).
-    `the_end` and `StoryPicker` get no card action (`card: false`, no `onCard`).
+    `the_end` and `StoryPicker` get no card action (`card: false`, no `onCard`). As merged (L14b `3364f73`, RULINGS 60;
+    cut Q3): the props are lower case (`oncard`), and `StoryPicker`'s `oncard` is a required prop
+    (`client/src/ui/StoryPicker.svelte:33`), so L15 passes one beside `card: false`; `the_end`'s `oncard` is optional
+    (`Notice.svelte:10`).
   - **Commit 6a** (`puzzles.spec.ts`): the "buy hint 1 (mock Pay)" step is removed — `explore: search item puzzle
     solve`; "hint text absent until bought" becomes "hint text absent while locked" (no use button, `hints: null`);
     the forced-`failed` hint invoice red is replaced by: before the `yields.ts` wiring, `explore: search item puzzle
@@ -5693,14 +5696,16 @@ Notation:
      - Red: `wallet: gift retry keeps its request id` (a network failure, then a retry) — predicted red on a stub that
        draws an id per attempt: two ids. `decode: meta samples decode` gains `GiftResponse`.
   3. `boot.ts` + `game.ts` + `yields.ts`: the controller after auth; a declared ending's END → `meta.onEnding(story)`
-     after `the_end` is shown; `the_end`'s `onCard`; `yields.ts` passes `meta.hintPort()` to every `PuzzleSession`;
+     after `the_end` is shown; `the_end`'s `onCard` (as merged, L14b `3364f73`: `oncard`); `yields.ts` passes
+     `meta.hintPort()` to every `PuzzleSession`;
      `exitToStories` closes the meta overlays.
      - Red: `game: ending settles stats then opens the card` (fake reporter and controller; the card requested only
        after `settle` resolves) — predicted red on a wiring that opens the card first: the request precedes `settle`.
      - Red: `game: card failure keeps the end` (the card request fails → `the_end` stays with its card action and the
        toast) — predicted red: `the_end` popped.
   4. `App.svelte`: the meta overlays from the lazy module per `Screen` kind; `StoryPicker` `card` from `hasCard`,
-     `onCard`, `onFriends`, `onWallet`; the `Menu` items. Each component's props `satisfies` the LMD view (`check`).
+     `onCard`, `onFriends`, `onWallet` (as merged, L14b `3364f73`, RULINGS 60; cut Q3: `oncard`, `onfriends`, `onwallet`); the
+     `Menu` items. Each component's props `satisfies` the LMD view (`check`).
   5. `budget.ts`: the `meta-ui` row keyed on `app/meta.ts` (PENDING until it exists; then FAIL without a dynamic entry
      or inside a static closure); the all-JS limit 290 → 305.
      - Red: `budget: meta ui in entry closure fails` (a synthetic manifest with `CompletionCard.svelte` statically
@@ -5988,6 +5993,9 @@ Notation:
   MiB, over the gate (ARITHMETIC).
 - **Gates.** check, test, build, e2e. Device measurement (section 12) is reported, not gated.
 - **Tester mutations:** as listed under commits 3a (with critique_r5 O1's `complete()` mutant) and 4.
+- **Seen working:** MEMORY-PLAN names no separate seen-working for M2 beyond the reds' own observations: the reds seen
+  by mutation in commits 1, 5 and 6, commit 4's red seen on the working tree between its halves, and the section-12
+  device measurement (reported, not gated).
 - **Budgets** (section 12, 4.A): the knot-set and room-set rows rise by the kept bytes (Pins above); transfer 0;
   in the PP model the steady total goes from 138.6 to 106.6 MiB and the crossfade transient from 170.6 to 122.6
   MiB; the caps stay 32 / 48 MiB.
@@ -6151,6 +6159,8 @@ Notation:
   - The story-authoring guide (`docs/AUTHORING.md`) gains the rule "the expressions of one character share one canvas,
     and every char and prop canvas has even sides", which M1's asset tool enforces, and the guidance "deliver every
     character on the canonical 768 x 1536 canvas" (guidance, not a gate).
+  - **Lock:** the `docs/AUTHORING.md` entry above covers these two rules too, beside the story-meta part (MEMORY-PLAN
+    section 13, "D2's story-authoring guide gains the rule").
 
 #### M3s memory-half-paid (server; new, MEMORY-PLAN)
 - **Source:** [MEMORY-PLAN "Lane cut sketches"](MEMORY-PLAN.md#11-lane-cut-sketches), M3s (RULINGS 78; lever C,
