@@ -1,5 +1,5 @@
-// The typed calls per route (PROTOTYPE-PLAN "HTTP API"; STORIES-PLAN Y7: saves per story; PUZZLES-PLAN and META-PLAN
-// M21: puzzles): the path from branded ids, the request body and the answer's decoder. Every call goes through
+// The typed calls per route (PROTOTYPE-PLAN "HTTP API"; STORIES-PLAN Y7: saves per story, Y13: statistics; PUZZLES-PLAN
+// and META-PLAN M21: puzzles): the path from branded ids, the request body and the answer's decoder. Every call goes through
 // api/http.ts, so each carries the bearer, the single-flight re-auth and the request timeout.
 import type { Lang } from '../i18n/index.ts';
 import type { Result, StoryId } from '../story/catalog.ts';
@@ -10,10 +10,12 @@ import {
   decodeCreateInvoiceResponse,
   decodeEntitlementsResponse,
   decodeOrderResponse,
+  decodePostStatsResponse,
   decodePutSaveResponse,
   decodePuzzleStatus,
   decodeSaveFull,
   decodeSaveListResponse,
+  decodeStatsResponse,
 } from './decode.ts';
 import type {
   AttemptResponse,
@@ -21,12 +23,15 @@ import type {
   CreateInvoiceResponse,
   EntitlementsResponse,
   OrderResponse,
+  PostStatsResponse,
   PutSaveRequest,
   PutSaveResponse,
   PuzzleStatus,
   SaveFull,
   SaveListResponse,
   SaveSlot,
+  StatEventDto,
+  StatsResponse,
 } from './generated/api.ts';
 import type { ApiError, Http } from './http.ts';
 
@@ -51,6 +56,12 @@ export interface Endpoints {
   getPuzzle(id: PuzzleId, lang: Lang, o?: { signal?: AbortSignal }): Promise<Result<PuzzleStatus, ApiError>>;
   /** A 429 is `ApiError` http with `retryAfter`. */
   postAttempt(id: PuzzleId, answer: readonly number[], o?: { signal?: AbortSignal }): Promise<Result<AttemptResponse, ApiError>>;
+  /**
+   * 1 to 32 events, the body at most 16 KiB (the stats reporter bounds both); `keepalive` for the `pagehide` best
+   * effort. A 429 is `ApiError` http with `retryAfter`.
+   */
+  postStatEvents(events: readonly StatEventDto[], o?: { keepalive?: boolean }): Promise<Result<PostStatsResponse, ApiError>>;
+  getStats(): Promise<Result<StatsResponse, ApiError>>;
 }
 
 /** One path segment: ids are validated by the server, and a '/' or '?' in one can never change the route. */
@@ -77,5 +88,12 @@ export function createEndpoints(http: Pick<Http, 'request'>): Endpoints {
         { method: 'POST', path: `/api/puzzles/${seg(id)}/attempts`, body: { answer: [...answer] }, signal: o?.signal },
         decodeAttemptResponse,
       ),
+    postStatEvents: (events, o) =>
+      // The body is the whole PostStatsRequest: the reporter's byte bound is measured on exactly this object.
+      http.request(
+        { method: 'POST', path: '/api/stats/events', body: { events: [...events] }, keepalive: o?.keepalive === true },
+        decodePostStatsResponse,
+      ),
+    getStats: () => http.request({ method: 'GET', path: '/api/stats' }, decodeStatsResponse),
   };
 }
