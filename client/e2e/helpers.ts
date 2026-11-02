@@ -8,13 +8,20 @@
 // The play helpers (L15b; MEMORY-PLAN section 14 item 7): a dev user per test, the debug hook's readers and the line
 // helper, exported so later specs reuse them. They find a line by `.dialogue[data-line-id]` only: choices and backlog
 // rows carry `data-line-id` too.
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { test as base, expect, type APIRequestContext, type Page } from '@playwright/test';
+import { test as base, expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import type { FullResult, Reporter, TestCase, TestResult } from '@playwright/test/reporter';
 
+import type { PutSaveRequest } from '../src/api/generated/api.ts';
+import { EMPTY_WORLD_STATE } from '../src/explore/state.ts';
+import { t } from '../src/i18n/index.ts';
+import type { InkScalar } from '../src/story/catalog.ts';
+import { encodeSave, type SaveBodyV1 } from '../src/story/save-codec.ts';
+import { EMPTY_SNAPSHOT, type ChapterId, type StoryVersion, type VarName } from '../src/story/staging.ts';
 import type { MockControls, MockEvent } from '../src/telegram/dev/mock-transport.ts';
 
 /** A call the init script intercepted. */
@@ -261,6 +268,223 @@ export function catalogTitle(id: string): string {
     }
   }
   throw new Error(`catalog.json has no title for ${id}`);
+}
+
+/** What the specs read of `story/ch1/world.json`; the story gate has checked the file's shape. */
+type WorldJson = {
+  items: Record<string, { name: { ru: string } }>;
+  puzzles: Record<string, { title: { ru: string }; params: { pieces?: string[] }; solution: number[] }>;
+  sections: Record<string, { rooms: Record<string, { hotspots: Array<{ id: string; label: { ru: string } }> }> }>;
+};
+
+/** ch1's world, read in Node only: its solutions never enter the bundle (principle 0). */
+function ch1World(): WorldJson {
+  // A cast of a repository file the story gate validates; a missing field throws in the readers below.
+  return JSON.parse(readFileSync(path.join(CLIENT_DIR, '..', 'story', 'ch1', 'world.json'), 'utf8')) as WorldJson;
+}
+
+/** The demo's solutions: the gate's order and the drawer's code. */
+export function worldSolutions(): { gate: number[]; drawer: number[] } {
+  const w = ch1World();
+  const of = (id: string): number[] => {
+    const p = w.puzzles[id];
+    if (p === undefined) {
+      throw new Error(`world.json has no puzzle ${id}`);
+    }
+    return p.solution;
+  };
+  return { gate: of('gate'), drawer: of('drawer') };
+}
+
+/** A ch1 hotspot's label in Russian: its button's `aria-label`. */
+export function hotspotLabel(room: string, id: string): string {
+  const label = ch1World().sections['manor']?.rooms[room]?.hotspots.find((h) => h.id === id)?.label.ru;
+  if (label === undefined) {
+    throw new Error(`world.json has no hotspot ${room}.${id}`);
+  }
+  return label;
+}
+
+/** A ch1 item's name in Russian. */
+export function itemName(id: string): string {
+  const name = ch1World().items[id]?.name.ru;
+  if (name === undefined) {
+    throw new Error(`world.json has no item ${id}`);
+  }
+  return name;
+}
+
+/** A ch1 puzzle's title in Russian: its frame's heading. */
+export function puzzleTitle(id: string): string {
+  const title = ch1World().puzzles[id]?.title.ru;
+  if (title === undefined) {
+    throw new Error(`world.json has no puzzle ${id}`);
+  }
+  return title;
+}
+
+const hotspot = (page: Page, room: string, id: string): Locator =>
+  page.getByRole('button', { name: hotspotLabel(room, id), exact: true });
+
+/** The open puzzle's frame (PuzzleHost's labelled section). */
+const puzzleFrame = (page: Page, id: string): Locator => page.getByRole('region', { name: puzzleTitle(id), exact: true });
+
+/**
+ * The scene at rest: no load and no transition, on two reads 100 ms apart. A room's hotspots show while its
+ * background still loads, and a hotspot tap or an insert during that batch only completes it (app/game.ts D7).
+ */
+export async function atRest(page: Page): Promise<void> {
+  const still = async (): Promise<boolean> => {
+    const s = (await debugStats(page)).scene;
+    return s.pendingLoads === 0 && s.activeTimelines === 0;
+  };
+  await expect
+    .poll(
+      async () => {
+        if (!(await still())) {
+          return false;
+        }
+        await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 100)));
+        return still();
+      },
+      { timeout: STEP_MS, message: 'the scene at rest (no load, no transition)' },
+    )
+    .toBe(true);
+}
+
+/** Taps a hotspot of the current room once the scene is at rest; a room change, a take or a lock answers on screen. */
+async function tapHotspot(page: Page, room: string, id: string): Promise<void> {
+  const h = hotspot(page, room, id);
+  await expect(h).toBeVisible({ timeout: STEP_MS });
+  await atRest(page);
+  await h.tap();
+}
+
+/** An exit, then the next room's own exit button. */
+async function walk(page: Page, room: string, exit: string, to: string, toExit: string): Promise<void> {
+  await tapHotspot(page, room, exit);
+  await expect(hotspot(page, to, toExit)).toBeVisible({ timeout: STEP_MS });
+}
+
+/** A `take`: its button goes with the prop. */
+async function take(page: Page, room: string, id: string): Promise<void> {
+  await tapHotspot(page, room, id);
+  await expect(hotspot(page, room, id)).toBeHidden({ timeout: STEP_MS });
+}
+
+/** The code lock: each dial stepped up to its digit, then Try; the frame closes once solved. */
+async function solveCode(page: Page, puzzle: string, code: readonly number[]): Promise<void> {
+  const frame = puzzleFrame(page, puzzle);
+  await expect(frame).toBeVisible({ timeout: STEP_MS });
+  for (const [i, want] of code.entries()) {
+    const dial = frame.locator('.dial').nth(i);
+    const digit = dial.locator('.digit');
+    await expect(digit).toBeVisible({ timeout: STEP_MS });
+    for (let n = 0; n < 10 && Number(await digit.textContent()) !== want; n++) {
+      const before = await digit.textContent();
+      await dial.getByRole('button', { name: t('ru', 'puzzle.dial_up') }).tap();
+      await expect(digit).not.toHaveText(before ?? '');
+    }
+    await expect(digit).toHaveText(String(want));
+  }
+  await frame.getByRole('button', { name: t('ru', 'puzzle.try') }).tap();
+  await expect(frame).toBeHidden({ timeout: STEP_MS });
+}
+
+/** The order puzzle: two taps swap two slots, so a selection sort reaches `order`; then Try; the frame closes. */
+async function solveOrder(page: Page, puzzle: string, order: readonly number[]): Promise<void> {
+  const frame = puzzleFrame(page, puzzle);
+  await expect(frame).toBeVisible({ timeout: STEP_MS });
+  const pieces = ch1World().puzzles[puzzle]?.params.pieces ?? [];
+  const want = order.map((i) => itemName(pieces[i] ?? ''));
+  const slots = frame.locator('.slots button');
+  await expect(slots).toHaveCount(want.length);
+  for (let i = 0; i < want.length; i++) {
+    const names = await slots.locator('.name').allTextContents();
+    const j = names.indexOf(want[i] ?? '', i);
+    if (j > i) {
+      await slots.nth(i).tap();
+      await slots.nth(j).tap();
+      await expect(slots.nth(i).locator('.name')).toHaveText(want[i] ?? '');
+    }
+  }
+  await expect(slots.locator('.name')).toHaveText(want);
+  await frame.getByRole('button', { name: t('ru', 'puzzle.try') }).tap();
+  await expect(frame).toBeHidden({ timeout: STEP_MS });
+}
+
+/**
+ * Plays ch1 from its first line through the explore section to its END, and taps past the last line: the hall,
+ * the study (the sun medal, the drawer's code: the moon medal), the cellar (its voice event, the star medal), the
+ * gate's three slots and its order, then the way out. Choices take `picks` (reachLine's rule), option 0 by default:
+ * the trust picks. What follows the END (the paywall, the next chapter, a notice) is the caller's to check.
+ */
+export async function playCh1ToEnd(page: Page, picks: Readonly<Record<string, number>> = {}): Promise<void> {
+  const solutions = worldSolutions();
+  await reachLine(page, 'ch1.manor_arrive.a008', picks);
+  await page.locator('.dialogue .tap').tap(); // `# explore: manor`
+  await expect(hotspot(page, 'hall', 'to_study')).toBeVisible({ timeout: STEP_MS });
+  await walk(page, 'hall', 'to_study', 'study', 'to_hall');
+  await take(page, 'study', 'medal');
+  await tapHotspot(page, 'study', 'drawer');
+  await solveCode(page, 'drawer', solutions.drawer);
+  await walk(page, 'study', 'to_hall', 'hall', 'to_cellar');
+  await tapHotspot(page, 'hall', 'to_cellar'); // the cellar's onEnter: the voice
+  await reachLine(page, 'ch1.manor_cellar_voice.v007', picks);
+  await page.locator('.dialogue .tap').tap(); // `# explore: manor`: back in the cellar
+  await take(page, 'cellar', 'star');
+  await walk(page, 'cellar', 'to_hall', 'hall', 'gate');
+  await tapHotspot(page, 'hall', 'gate'); // the lock panel
+  for (const item of ['medal_sun', 'medal_moon', 'medal_star']) {
+    const held = page.locator('.held-item', { hasText: itemName(item) });
+    await expect(held).toBeVisible({ timeout: STEP_MS });
+    await atRest(page);
+    await held.tap();
+    await expect(held).toBeHidden({ timeout: STEP_MS });
+  }
+  await solveOrder(page, 'gate', solutions.gate); // the last slot filled opens it
+  await tapHotspot(page, 'hall', 'gate'); // open now: `manor_out`
+  await reachLine(page, 'ch1.street.s018', picks);
+  await page.locator('.dialogue .tap').tap(); // END
+}
+
+/**
+ * F4 step 3's pending start, written as the dev user's `auto` of the chapter's story: the save of a chapter that has
+ * not started (`ink: null`) with the values carried into it, so a Continue opens the chapter's paywall at once.
+ * `storyVersion` is the previous chapter's, as the game writes it (its next chapter is not loaded yet).
+ */
+export async function plantPending(
+  request: APIRequestContext,
+  uid: number,
+  chapterId: 'ch2' | 'ch4',
+  carry: Readonly<Record<string, string | number | boolean>>,
+): Promise<void> {
+  const [story, previous] = chapterId === 'ch2' ? ['manor', 'ch1'] : ['tide', 'ch3'];
+  const meta: unknown = JSON.parse(readFileSync(path.join(CLIENT_DIR, 'src', 'story-gen', 'free', `${previous}.meta.json`), 'utf8'));
+  const storyVersion: unknown = typeof meta === 'object' && meta !== null ? Reflect.get(meta, 'storyVersion') : undefined;
+  if (typeof storyVersion !== 'string') {
+    throw new Error(`${previous}.meta.json has no storyVersion`);
+  }
+  // The brands are the story decoders'; this body is built from the build's own ids, as the game builds it.
+  const body: SaveBodyV1 = {
+    format: 1,
+    chapterId: chapterId as ChapterId,
+    storyVersion: storyVersion as StoryVersion,
+    ink: null,
+    at: { lineId: null, knot: null, yield: null },
+    staging: EMPTY_SNAPSHOT,
+    checkpoint: null,
+    chapterStart: { carry: carry as Record<VarName, InkScalar> },
+    backlog: [],
+    world: EMPTY_WORLD_STATE,
+    worldVersion: null,
+  };
+  const write: PutSaveRequest = { expectedRev: null, writeId: randomUUID(), chapterId, storyVersion, lineId: null, body: encodeSave(body) };
+  const res = await request.put(`/api/saves/${story}/auto`, {
+    headers: { Authorization: `Bearer ${await devToken(request, uid)}` },
+    data: write,
+  });
+  expect(res.status(), `PUT /api/saves/${story}/auto`).toBe(200);
 }
 
 /** The e2e build's file of a chunk, by its source key in `dist-e2e/.vite/manifest.json` (e.g. `src/app/engine.ts`). */
