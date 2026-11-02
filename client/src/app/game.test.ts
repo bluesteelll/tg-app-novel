@@ -1875,3 +1875,53 @@ test('game: a rooms dirty write while a story step loads resumes exactly', async
     ['ch1.study_event.l004', true, 0, 'ch1.study_event.l004'],
   ]);
 });
+
+test('game: load it blocks the pending-start write of a refunded next chapter', async () => {
+  const h = harness({ chapters: [manorCh1(), manorCh2()], owned: ['ch2'] });
+  const load = h.loader.load;
+  let go = (): void => {};
+  const gate = new Promise<void>((resolve) => {
+    go = resolve;
+  });
+  h.loader.load = async (ch, o) => {
+    if (ch.id === 'ch2') {
+      await gate; // F5's load of ch2, which the END intent waits on
+    }
+    return load(ch, o);
+  };
+  await playManorCh1(h);
+  const sv = h.save();
+  const theirs = sv.autosaves[0]; // the other device's save: the start knot's entry, at l001
+  expect(theirs).toBeDefined();
+  if (theirs === undefined) {
+    return;
+  }
+  const log: string[] = [];
+  const autosave = sv.autosave;
+  sv.autosave = (w, o) => {
+    log.push(`autosave:${w.chapterId}`);
+    autosave(w, o);
+  };
+  const resolveConflict = sv.resolveConflict;
+  sv.resolveConflict = (c) => {
+    log.push(`resolve:${c}`);
+    resolveConflict(c);
+  };
+  sv.slots.set('auto', { summary: THEIRS, body: theirs.body });
+  const end = h.game.advance(); // END: ch2 is listed owned, and its held load decides
+  await settle();
+  sv.emit({ kind: 'paused', current: THEIRS });
+  const p = h.vm.toasts.find((e) => e.key === 'save_conflict');
+  if (p?.kind === 'prompt') {
+    p.actions[0]?.run(); // Load it
+  }
+  h.owned.delete('ch2'); // a refund meanwhile: the server answers 403
+  go();
+  await end;
+  await settle();
+  await settle();
+  // No pending start of ours lands over their save, so their save is what the queued load resumes.
+  expect(log.filter((l) => l !== 'resolve:load-theirs')).toEqual([]);
+  expect(lineOf(h.vm)).toBe('ch1.arrival.l001');
+  h.game.dispose();
+});
