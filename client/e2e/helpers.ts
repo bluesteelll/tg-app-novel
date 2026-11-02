@@ -138,12 +138,19 @@ export function events(page: Page): Promise<MockEvent[]> {
 
 /**
  * Opens the app as dev user `uid` (server-dev's `/dev/launch`, 302 to the signed hash) and waits for the mock. One uid
- * per test: purchases and saves are server state, and server-dev's database lives for the whole run.
+ * per test: purchases and saves are server state, and server-dev's database lives for the whole run. `name` is the
+ * user's first name in the initData; `startapp` the launch link's start parameter (`f<invite code>`, META M11).
  */
-export async function launch(page: Page, uid: number, o: { lang?: 'ru' | 'en' } = {}): Promise<void> {
+export async function launch(page: Page, uid: number, o: { lang?: 'ru' | 'en'; name?: string; startapp?: string } = {}): Promise<void> {
   const query = new URLSearchParams({ uid: String(uid) });
-  if (o.lang !== undefined) {
-    query.set('lang', o.lang);
+  for (const [key, value] of [
+    ['lang', o.lang],
+    ['name', o.name],
+    ['startapp', o.startapp],
+  ] as const) {
+    if (value !== undefined) {
+      query.set(key, value);
+    }
   }
   await page.goto(`/dev/launch?${query.toString()}`, { waitUntil: 'commit' });
   await page.waitForURL(/#tgWebAppData=/);
@@ -165,6 +172,35 @@ export async function devToken(request: APIRequestContext, uid: number): Promise
     throw new Error('POST /api/auth answered without a token');
   }
   return token;
+}
+
+/** A JSON answer of the server for dev user `uid` (the bearer from devToken), checked for a 200. */
+async function getAs(request: APIRequestContext, uid: number, url: string): Promise<unknown> {
+  const res = await request.get(url, { headers: { Authorization: `Bearer ${await devToken(request, uid)}` } });
+  expect(res.status(), `GET ${url}`).toBe(200);
+  return res.json();
+}
+
+/** Dev user `uid`'s invite code: `GET /api/social`, which creates it on the first call (META M10). */
+export async function inviteCode(request: APIRequestContext, uid: number): Promise<string> {
+  const body = await getAs(request, uid, '/api/social');
+  const code: unknown = typeof body === 'object' && body !== null ? Reflect.get(body, 'inviteCode') : undefined;
+  if (typeof code !== 'string') {
+    throw new Error('GET /api/social answered without an inviteCode');
+  }
+  return code;
+}
+
+/** Dev user `uid`'s hint balance: `GET /api/wallet`, the server's number (principle 1). */
+export async function walletOf(request: APIRequestContext, uid: number): Promise<number> {
+  const body = await getAs(request, uid, '/api/wallet');
+  const balances: unknown = typeof body === 'object' && body !== null ? Reflect.get(body, 'balances') : undefined;
+  const hint: unknown = Array.isArray(balances) ? (balances as unknown[]).find((b) => typeof b === 'object' && b !== null && Reflect.get(b, 'kind') === 'hint') : undefined;
+  const balance: unknown = typeof hint === 'object' && hint !== null ? Reflect.get(hint, 'balance') : undefined;
+  if (typeof balance !== 'number') {
+    throw new Error('GET /api/wallet answered without a hint balance');
+  }
+  return balance;
 }
 
 /** `__novelDebug.stats()`, once the engine has installed the hook. */
