@@ -10,11 +10,12 @@ use serde::Serialize;
 use serde_json::value::RawValue;
 use serde_json::{Map, Value};
 use server::api::dto::{
-    AttemptResponse, AuthResponse, BalanceDto, ChapterPayload, CreateInvoiceResponse,
-    EntitlementsResponse, FriendDto, FriendRequestDto, GameStatsDto, HintUseResponse, HintView,
-    InviteView, Localized, OrderResponse, PackDto, PostStatsResponse, ProductDto, PutSaveResponse,
-    PuzzleStatus, RejectedEvent, SaveFull, SaveListResponse, SaveSummary, SocialResponse,
-    StatRejectReason, StatsResponse, StoryStatsDto, UserDto, WalletResponse, ts_bindings,
+    AttemptResponse, AuthResponse, BalanceDto, CardAchievement, CardEnding, CardResponse,
+    ChapterPayload, CreateInvoiceResponse, EntitlementsResponse, FriendDto, FriendRequestDto,
+    GameStatsDto, HintUseResponse, HintView, InviteView, Localized, OrderResponse, PackDto,
+    PostStatsResponse, ProductDto, PutSaveResponse, PuzzleStatus, RejectedEvent, SaveFull,
+    SaveListResponse, SaveSummary, SocialResponse, StatRejectReason, StatsResponse, StoryStatsDto,
+    UserDto, WalletResponse, ts_bindings,
 };
 use server::db::orders::OrderStatus;
 use server::db::social::InviteState;
@@ -39,7 +40,7 @@ const REQUESTS: [&str; 9] = [
 ];
 
 /// The exported types that only appear inside a sampled body, and are sampled there.
-const NESTED: [&str; 18] = [
+const NESTED: [&str; 20] = [
     "SaveSlot",
     "StoryId",
     "ErrorCode",
@@ -58,6 +59,8 @@ const NESTED: [&str; 18] = [
     "InviteState",
     "FriendDto",
     "FriendRequestDto",
+    "CardEnding",
+    "CardAchievement",
 ];
 
 /// Every error code, each at its index in [`code_index`].
@@ -465,6 +468,56 @@ fn samples() -> Value {
                 friends: Vec::new(),
                 requests: Vec::new(),
                 profile_visible: false,
+            }),
+        ],
+    );
+    // Invented texts, never a story/meta.json one: the samples file is a client fixture.
+    let text = |ru: &str, en: &str| Localized {
+        ru: format!("Образец: {ru}"),
+        en: format!("Sample: {en}"),
+    };
+    put(
+        "CardResponse",
+        vec![
+            value(&CardResponse {
+                story_id: StoryId("manor".to_owned()),
+                runs: 3,
+                chapters_completed: vec!["ch1".to_owned(), "ch2".to_owned()],
+                endings: vec![
+                    CardEnding {
+                        name: "ashes".to_owned(),
+                        title: text("пепел", "ashes"),
+                        first_reached_at: AT - 600,
+                    },
+                    CardEnding {
+                        name: "truth".to_owned(),
+                        title: text("правда", "the truth"),
+                        first_reached_at: AT - 60,
+                    },
+                ],
+                achievements: vec![
+                    CardAchievement {
+                        id: "first_steps".to_owned(),
+                        name: text("первые шаги", "first steps"),
+                        description: text("дойти до концовки", "reach an ending"),
+                        unlocked_at: AT - 600,
+                        new: false,
+                    },
+                    CardAchievement {
+                        id: "both_roads".to_owned(),
+                        name: text("обе дороги", "both roads"),
+                        description: text("найти обе концовки", "find both endings"),
+                        unlocked_at: AT,
+                        new: true,
+                    },
+                ],
+            }),
+            value(&CardResponse {
+                story_id: StoryId("tide".to_owned()),
+                runs: 0,
+                chapters_completed: Vec::new(),
+                endings: Vec::new(),
+                achievements: Vec::new(),
             }),
         ],
     );

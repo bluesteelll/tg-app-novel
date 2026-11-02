@@ -1,10 +1,10 @@
-//! `/api/stats`: the statistics routes (STORIES-PLAN Y10-Y12, META-PLAN M1, M8).
+//! `/api/stats`: the statistics routes (STORIES-PLAN Y10-Y12, META-PLAN M1, M2, M8).
 //!
 //! Writes: every event is a claim. Its shape is checked first: a malformed event refuses the whole batch with 400
 //! before any write, so no table CHECK ever answers with a 500. Then [`classify`] judges each event against the story
-//! index, the puzzle index and the caller's entitlements in a fixed order: the chapter, the entitlement, the subject.
-//! A non-buyer gets `not_entitled` before any subject is looked at, so no answer names a paid ending, puzzle or option.
-//! The story is derived here, never sent.
+//! index, the puzzle index, the choice vocabulary and the caller's entitlements in a fixed order: the chapter, the
+//! entitlement, the subject. A non-buyer gets `not_entitled` before any subject is looked at, so no answer names a paid
+//! ending, puzzle or option. The story is derived here, never sent.
 //!
 //! Reads: the user's distinct facts, counted only where the current index still holds them (ST6).
 //!
@@ -26,10 +26,12 @@ use crate::api::dto::{
     StatRejectReason, StatsResponse, StoryStatsDto,
 };
 use crate::auth::AuthUser;
-use crate::content::{ContentStore, StoryChapter, StoryDef};
+use crate::content::{
+    ContentStore, StoryChapter, StoryDef, is_ending_name, is_line_id, is_story_version,
+};
 use crate::db::stats::{NewStatEvent, RecordOutcome, StatCaps, StatFact, StatKind};
 use crate::error::ApiError;
-use crate::ids::{ChapterId, ProductId, PuzzleId, is_local_id};
+use crate::ids::{ChapterId, ProductId, PuzzleId};
 
 /// The most events in one batch.
 pub const STATS_BATCH_MAX: usize = 32;
@@ -258,33 +260,6 @@ fn is_event_id(s: &str) -> bool {
         })
 }
 
-/// `^[0-9a-f]{16}$` (`stat_events_story_version_shape`): the rule `content.rs` applies to `meta.json`.
-fn is_story_version(s: &str) -> bool {
-    s.len() == 16 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-}
-
-/// `^[a-z][a-z0-9_]{0,31}$` (STORIES-PLAN `EndingName`): the rule `content.rs` applies to `stories.json`.
-fn is_ending_name(s: &str) -> bool {
-    s.len() <= 32 && is_local_id(s)
-}
-
-/// A line ID, `^ch[1-9][0-9]*\.[a-z][a-z0-9_]*\.[0-9a-z]{4}$` (STAGING-DSL §4): the owning chapter, the knot part
-/// and a four-character suffix.
-fn is_line_id(s: &str) -> bool {
-    let mut parts = s.split('.');
-    let (Some(chapter), Some(knot), Some(suffix), None) =
-        (parts.next(), parts.next(), parts.next(), parts.next())
-    else {
-        return false;
-    };
-    ChapterId::parse(chapter).is_some()
-        && is_local_id(knot)
-        && suffix.len() == 4
-        && suffix
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-}
-
 /// The story of the index and its chapter that `chapter_id` names.
 fn story_chapter<'a>(
     content: &'a ContentStore,
@@ -298,7 +273,7 @@ fn story_chapter<'a>(
 
 /// Judges one well-formed event against `content` and the products `owned`, in a fixed order: the chapter is in the
 /// index (`unknown_chapter`), a paid chapter's product is owned (`not_entitled`), then the subject belongs to that
-/// chapter (`unknown_ending`, `unknown_puzzle`, `unknown_choice`). Pure. The story is derived from the index, and the
+/// chapter (`unknown_ending`, `unknown_puzzle`; `unknown_choice` for an option outside its vocabulary). Pure. The story is derived from the index, and the
 /// returned event borrows its story and chapter ids from `content`.
 pub(crate) fn classify<'a>(
     content: &'a ContentStore,
@@ -330,8 +305,12 @@ pub(crate) fn classify<'a>(
             }
         }
         StatKind::ChoiceMade => {
-            // The line ID's chapter part (`stat_events_choice_in_chapter`); LM2 adds the chapter's option vocabulary.
-            if subject.and_then(|option| option.split('.').next()) != Some(chapter.id.0.as_str()) {
+            // The line ID's chapter part (`stat_events_choice_in_chapter`), then the chapter's vocabulary in this
+            // build (META-PLAN M2): past the choice budget a first pick is written, so the vocabulary is what bounds
+            // the rows a client can add by forging options.
+            let own =
+                subject.filter(|option| option.split('.').next() == Some(chapter.id.0.as_str()));
+            if !own.is_some_and(|option| content.meta().is_option(&chapter.id, option)) {
                 return Err(StatRejectReason::UnknownChoice);
             }
         }
@@ -377,7 +356,8 @@ mod tests {
 
     /// Every reason, and the order chapter, entitlement, subject, on the test fixture's index: manor ch1 free, ch2
     /// paid (endings truth and ashes in ch2, puzzles ch1.drawer and ch2.cabinet); tide ch3 free, ch4 paid (drowned in
-    /// ch3, dawn in ch4). An accepted event names the story the index derives.
+    /// ch3, dawn in ch4; choices.ch3 holds s001 and s002, choices.ch4 nothing). An accepted event names the story the
+    /// index derives.
     #[tokio::test]
     async fn classify_order() {
         use StatKind::{ChapterStarted, ChoiceMade, EndingReached, PuzzleEnded};
@@ -394,7 +374,7 @@ mod tests {
         };
         let none = HashSet::new();
         let ch4: HashSet<ProductId> = [ProductId("chapter:ch4".to_owned())].into();
-        let cases: [Case<'_>; 17] = [
+        let cases: [Case<'_>; 18] = [
             (
                 "unknown ch9, before its subject",
                 &ch4,
@@ -486,10 +466,16 @@ mod tests {
                 Ok(("tide", "ch3")),
             ),
             (
-                "ch4 owned: an option of ch4",
+                "ch3: a well-formed option outside choices.ch3",
+                &none,
+                dto(ChoiceMade, "ch3", Some("ch3.shore.ab12")),
+                Err(UnknownChoice),
+            ),
+            (
+                "ch4 owned: an option of ch4 outside choices.ch4, which is empty",
                 &ch4,
                 dto(ChoiceMade, "ch4", Some("ch4.lamp.ab12")),
-                Ok(("tide", "ch4")),
+                Err(UnknownChoice),
             ),
             (
                 "ch1: started",

@@ -652,3 +652,71 @@ granted: boolean,
  * The consent text the user saw, one of a closed list (`friends_profile.v1`).
  */
 textVersion: string, };
+
+/**
+ * A found ending as the completion card lists it.
+ */
+export type CardEnding = { 
+/**
+ * The ending name.
+ */
+name: string, 
+/**
+ * Its title.
+ */
+title: Localized, 
+/**
+ * When the user first reached it, in unix seconds (server clock).
+ */
+firstReachedAt: number, };
+
+/**
+ * An unlocked achievement as the completion card lists it.
+ */
+export type CardAchievement = { 
+/**
+ * The achievement id, unique in its story.
+ */
+id: string, 
+/**
+ * The name.
+ */
+name: Localized, 
+/**
+ * The description.
+ */
+description: Localized, 
+/**
+ * When it was first unlocked, in unix seconds (server clock).
+ */
+unlockedAt: number, 
+/**
+ * Whether this request unlocked it.
+ */
+new: boolean, };
+
+/**
+ * `POST /api/stories/{storyId}/card` response (META-PLAN M9): the user's own completion card of one story. Only what
+ * the user found and may see now: no total, and no item listed as locked, hidden or missing (M7, M8).
+ */
+export type CardResponse = { 
+/**
+ * The story.
+ */
+storyId: StoryId, 
+/**
+ * The endings reached, counting every reach.
+ */
+runs: number, 
+/**
+ * The chapters completed (a chapter's end, or one of its endings), in chain order.
+ */
+chaptersCompleted: Array<string>, 
+/**
+ * The endings found that the user may see now, in name order.
+ */
+endings: Array<CardEnding>, 
+/**
+ * The unlocked achievements the user may see now, in the story's display order.
+ */
+achievements: Array<CardAchievement>, };

@@ -98,6 +98,69 @@
       }
     }
   ],
+  "CardResponse": [
+    {
+      "achievements": [
+        {
+          "description": {
+            "en": "Sample: reach an ending",
+            "ru": "Образец: дойти до концовки"
+          },
+          "id": "first_steps",
+          "name": {
+            "en": "Sample: first steps",
+            "ru": "Образец: первые шаги"
+          },
+          "new": false,
+          "unlockedAt": 1799999400
+        },
+        {
+          "description": {
+            "en": "Sample: find both endings",
+            "ru": "Образец: найти обе концовки"
+          },
+          "id": "both_roads",
+          "name": {
+            "en": "Sample: both roads",
+            "ru": "Образец: обе дороги"
+          },
+          "new": true,
+          "unlockedAt": 1800000000
+        }
+      ],
+      "chaptersCompleted": [
+        "ch1",
+        "ch2"
+      ],
+      "endings": [
+        {
+          "firstReachedAt": 1799999400,
+          "name": "ashes",
+          "title": {
+            "en": "Sample: ashes",
+            "ru": "Образец: пепел"
+          }
+        },
+        {
+          "firstReachedAt": 1799999940,
+          "name": "truth",
+          "title": {
+            "en": "Sample: the truth",
+            "ru": "Образец: правда"
+          }
+        }
+      ],
+      "runs": 3,
+      "storyId": "manor"
+    },
+    {
+      "achievements": [],
+      "chaptersCompleted": [],
+      "endings": [],
+      "runs": 0,
+      "storyId": "tide"
+    }
+  ],
   "ChapterPayload": [
     {
       "assets": {
