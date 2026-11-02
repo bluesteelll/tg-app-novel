@@ -487,7 +487,9 @@ ACK 200 unless a money fact would be lost; explicit `allowed_updates = [message,
   5 s.
 - **Why:**
   - One indexed write is still bounded work. It closes both double-pay races: "two orders, two pre-checkouts, two
-    charges", and "one order opened on two devices" (P3 reuses a `created` order, so both devices hold one slug).
+    charges", and "one order opened on two devices" (P3 reuses a `created` order, so both devices hold one slug;
+    as merged, LPH `d423cb3`, RULINGS 97 Q2: P3 reuses no order, so two devices that each press Buy hold two orders,
+    and the first arm, "two orders, two pre-checkouts", covers them).
     No order for a (user, product) — the same order included — passes pre-checkout while an order for it entered
     `checkout` less than 120 s ago. The payments-stars guide puts this on the bot ("only accepts multiple payments
     when the order can be processed correctly").
@@ -554,6 +556,11 @@ the same revoke, idempotent** [R2 §1.4].
   `debt`, which later credits pay first. Hints already spent or gifted stay spent or gifted; a gift recipient's
   balance is never touched (L9). Revision 1 (W3): the kind and amount come from the charge's `pay:<charge>` ledger row
   (what was credited), never the catalog; a charge without that row claws back nothing.
+- **As merged (LPH `d423cb3`; RULINGS 96, 97 Q10, 100).** A revoke deletes the charge's entitlement only when no
+  other unrefunded charge of the payer paid for the chapter; otherwise it re-keys the entitlement to the payer's
+  oldest other unrefunded paid charge of it (a K18 double payment, recorded `AlreadyEntitled`), so access stays. The
+  admin's `refund_done` says so: "refunded. The purchase is revoked unless another payment paid for it"
+  (`server/locales/bot.en.json`). The re-key, its lock and its accepted residual: "Refund." below.
 
 **K21. Dev tooling is a separate crate `server/dev` (package `server-dev`), never linked into the `server` binary.**
 - **What.** It holds the dev-signed initData launch, the fake bot gateway, simulated payments and refunds. It calls
@@ -638,6 +645,14 @@ server.**
   `$DEV_WEB_PORT`, default 4173), so two parallel lanes never share a server ([gate mapping](#gate-commands-mapping)).
 - **Production.** The axum binary optionally serves `client/dist` (`STATIC_DIR`), and refuses to start if
   `STATIC_DIR` contains `CONTENT_DIR`.
+  As merged (L9 `d837c8b`, RULINGS 96; L9 cut Q6): the two must be disjoint both ways (neither the same, nor one
+  inside the other), and a walk refuses an entry that resolves outside `STATIC_DIR` (a link or a junction);
+  `/assets/*` answers a found file `public, max-age=31536000, immutable`, everything else `no-cache`
+  (`server/src/api/static_files.rs:137-178`, `:210-223`).
+  As merged (LPH `d423cb3`, RULINGS 106; LPH critique O9): the walk also refuses any dot-entry (`GET /.env` would
+  serve a host file), except the root's `.vite` directory, a real directory where the build writes its manifest
+  (`server/src/api/static_files.rs`: `StaticDirError::DotEntry` :105, `VITE_DIR` :193, `walk` :198-215); pinned by
+  `static_dir_refuses_dot_entries` (`server/tests/it/main.rs`).
 - **Why.** No CORS; Bot API 10.2 origin hardening is satisfied trivially [R1 §3].
 
 **K28. System fonts only.**
@@ -1018,6 +1033,9 @@ pub struct RefundFact { pub payer: UserId, pub charge: ChargeId, pub total_amoun
 // (`pointer("/message/successful_payment")`, `/message/from/id`) instead of PaymentProbe / ProbeMessage / ProbeUser;
 // ProbeSuccessful stays as above, deserialized from the pointed-to value (webhook.rs:32, :112); no ProbeRefunded and
 // no refunded_payment read until L9
+// as merged (L9 `d837c8b`, RULINGS 96; L9 cut Q6; server/src/telegram/webhook.rs:48-50, :170-191): ProbeRefunded
+// { telegram_payment_charge_id } only, deserialized from the pointed-to `/message/refunded_payment` value; no
+// RefundFact: the revoke reads only the charge
 
 pub enum PreCheckoutVerdict { Ok, Reject(RejectReason) }
 pub enum RejectReason { UnknownOrder, Mismatch, AlreadyOwned, InProgress, Expired, Temporary,
@@ -1137,6 +1155,11 @@ CREATE TABLE saves (
 );
 ```
 
+- **Erratum (as merged, LPH `d423cb3`; RULINGS 96, 100; `server/migrations/0001_init.sql` is frozen, so it is recorded
+  here).** The comment `-- one per product; revoke = DELETE` on `entitlements_pkey` (`0001_init.sql:57`, copied
+  above) now reads "revoke = DELETE or a re-key": a revoke whose chapter another unrefunded paid charge of the payer
+  paid re-keys the row to that charge (`UPDATE entitlements SET charge_id`, `Repo::revoke`,
+  `server/src/db/payments.rs:351`; PP "Refund.").
 - **Every FK column is indexed** by a UNIQUE or a leading PK/index column: `orders.user_id` by
   `orders_by_user_product`, `entitlements.user_id` and `saves.user_id` by their PKs, both `charge_id` columns by their
   UNIQUEs. PostgreSQL does not index referencing columns by itself.
@@ -1184,7 +1207,7 @@ CREATE TABLE saves (
 | `GET /api/saves` | bearer | — | `SaveListResponse { slots: SaveSummary[] }`, `SaveSummary { slot, rev, chapterId, storyVersion, lineId, savedAt, writeId }` (changed by STORIES-PLAN: `SaveSummary` gains `storyId`; every story's slots) | 401 | read |
 | `GET /api/saves/{slot}` (changed by STORIES-PLAN: `/api/saves/{storyId}/{slot}`; unknown story 404, bad story id 400) | bearer | — | `SaveFull { summary: SaveSummary, body: string }` | 400 bad slot, 404 `not_found` (also for another user's slot: rows are keyed by the token's user) | read |
 | `PUT /api/saves/{slot}` (changed by STORIES-PLAN: `/api/saves/{storyId}/{slot}`; a `chapterId` outside the story 400, unknown story 404; the contract below holds per (user, story, slot)) | bearer | `PutSaveRequest { expectedRev: number\|null, writeId: string, chapterId, storyVersion, lineId: string\|null, body: string }` | `PutSaveResponse { rev, savedAt }` | 400, 409 `save_conflict` + `current`, 413 `payload_too_large` | `expectedRev` (optimistic) + `writeId`. **The one statement of the retry contract:** a PUT whose `writeId` equals the stored row's `write_id` returns 200 with the stored `rev` / `savedAt` and writes nothing, whatever its `expectedRev`. Any other `expectedRev` mismatch → 409 + `current` (F3 handles an earlier write of ours in `current`) |
-| `POST /api/invoices` | bearer | `CreateInvoiceRequest { productId }` (`chapter:<ch>`, or `hint:<puzzleId>:<tier>`, changed by PUZZLES-PLAN; changed by META-PLAN: `chapter:<ch>` or `pack:<id>`, no hint products) | `CreateInvoiceResponse { orderId, invoiceUrl }` | 404 `unknown_product`, 409 `already_owned` (chapters), 409 `hint_unavailable` (tier order, solved, paid chapter not owned; changed by PUZZLES-PLAN; removed by META-PLAN), 502 `telegram_unavailable` | reuses this user's `created` order for the product younger than 1 h |
+| `POST /api/invoices` | bearer | `CreateInvoiceRequest { productId }` (`chapter:<ch>`, or `hint:<puzzleId>:<tier>`, changed by PUZZLES-PLAN; changed by META-PLAN: `chapter:<ch>` or `pack:<id>`, no hint products) | `CreateInvoiceResponse { orderId, invoiceUrl }` | 404 `unknown_product`, 409 `already_owned` (chapters), 409 `hint_unavailable` (tier order, solved, paid chapter not owned; changed by PUZZLES-PLAN; removed by META-PLAN), 502 `telegram_unavailable`; as merged (LPH `d423cb3`, RULINGS 97 Q2): 429 `rate_limited` + `Retry-After` (at most 3600 s) at 10 unpaid orders | reuses this user's `created` order for the product younger than 1 h. As merged (LPH `d423cb3`, RULINGS 97 Q2; K9-D): no reuse; each POST is a new order with its own link, and a user holds at most 10 unpaid (`created` or `checkout`) orders in a rolling hour, then 429 (`OPEN_ORDERS_PER_WINDOW`, `OPEN_ORDER_WINDOW_SECS`, `server/src/db/orders.rs:16-20`; the count under the payer-row lock, `Repo::create_order` :133) |
 | `GET /api/orders/{orderId}` | bearer | — | `OrderResponse { orderId, productId, status: 'created'\|'checkout'\|'paid'\|'refunded' }` | 404 (unknown, or not this user's) | read |
 | `GET /api/chapters/{chapterId}` | bearer | — | `ChapterPayload { chapterId, storyVersion, story: unknown, meta: unknown, assets: unknown, en: unknown, world: unknown }` (raw JSON composed from `ContentStore` via `RawValue`; `world`, the paid public world or `null`, changed by PUZZLES-PLAN) | 403 `not_entitled`, 404 (unknown or free chapter: free chapters are static files) | read; `private, no-store` |
 | `GET /api/assets/{file}` | bearer | — | bytes (`image/avif`, `image/webp`, `audio/mp4`, `audio/wav`) | 403, 404 (file not in the content index — a map lookup, never a path join) | read; `private, no-store` |
@@ -1728,6 +1751,30 @@ tap of step 5 is a Home button (Continue, a card's Start / Continue, Chapters) a
 6. Continue → `GET /api/saves/auto` → `decodeSave` → [resume algorithm](#save-format-and-resume).
 7. Token expiry mid-session: an in-flight PUT gets 401 → single-flight re-auth → retried once.
 
+As merged (LFU1 `f637bac`, RULINGS 101; LFU1 cut Q7, critique W1, addendum O1). GameSession's failure model in
+`client/src/app/game.ts`:
+- **`mixes(s)`** = `s.torn && s.pending === null` (`:543`): the session's fields would compose a body of two steps. A
+  pending start is one complete body, so it never mixes. `autosave` writes nothing while `s.adopting || mixes(s)`
+  (`:549-550`), and an outside request waits only on `waits(s)` = `s.adopting || mixes(s)` (`:565`). The cut's window
+  table (`D:/tmp/novel-orch/lfu1-engine-followups/cut.md` section 1a, rows 1-11, and the addendum's row 12):
+  - a step before its `present`, an END before the next chapter's fetch, a resume's restore: kept, flushed later;
+  - after `pendingPaid` or `startPending` (rows 4-5), and a D11 restore or a manual load from a session at a paywall
+    (rows 8, 12): written at once, the pending start being one complete body (the old one in rows 8 and 12);
+  - at rest after a resume that failed past the chapter swap (row 9): refused.
+- **The "Load it" failure notice** (`adoptFailed`, `:1463`). When the read of "Load it" fails (a GET error, an empty
+  slot or an undecodable body), the error notice shows, and its action exits to the stories; Home's Continue then
+  reads their save. An expired session ends the session and shows the reopen notice instead. A manual load is
+  unchanged.
+- **(e) "Return to last save" with no last save** (`returnToSave`, `:739-752`): it exits to the stories and writes
+  nothing, so the server's copy stays.
+- **The manual-save wait** (`writeManual`, `:1548`). A manual save or overwrite during a step in flight that mixes
+  names its slot as `saving` at once, waits for that intent to end and writes the step on screen then. A session that
+  still mixes, or at rest, writes nothing.
+- **The conflict hold** (`saved`, `:1515`; `CONFLICT_HOLD_MS` = 500, `:189`). A manual write's 409 conflict ask is
+  held until 500 ms after the tap that sent the write, with `saving` kept. A double tap on the overwrite Yes therefore
+  cannot reach the conflict ask's Yes in the same place (K31, principle 1). The hold is cleared when it fires, by a
+  newer answer, by `openSaves`, `cancelOverwrite` and at the session's end (`clearHold`, `:484`).
+
 ### F4. Chapter change
 
 1. The ink reaches `END` → `step.kind === 'end'`. If END is the last step of a free chapter, still save the read-set.
@@ -1786,7 +1833,7 @@ next-chapter preload`.
 | # | Actor | Step | Failure model |
 |---|---|---|---|
 | P1 | client | paywall shows the product from `GET /api/entitlements` (price from the server, never the client); a **terms checkbox** must be ticked (payments-stars: users "must confirm that they have read and agree to your terms" [R2 §1.5]); a Terms link opens the in-app terms overlay | entitlement fetch fails → "Retry"; `owned: true` → skip to P9 |
-| P2 | client | Buy → state `requesting` (button disabled) → `POST /api/invoices { productId }` | double tap: button disabled + server order reuse; network error → state `failed: network`, retry allowed |
+| P2 | client | Buy → state `requesting` (button disabled) → `POST /api/invoices { productId }` | double tap: button disabled (as merged, LPH `d423cb3`, RULINGS 97 Q2: the planned "+ server order reuse" is removed; a second POST is a second order, and K18 refuses paying both); network error → state `failed: network`, retry allowed |
 | P3 | server | catalog lookup (404) → entitled? (409 `already_owned`) → reuse this user's `created` order < 1 h with a link, else insert order (`amount`, `XTR` from the catalog) → **commit** → `create_invoice_link` (title/description in the user's language; one `LabeledPrice`; payload = order id; empty provider token) outside any transaction → `UPDATE orders SET invoice_url` | gateway error/timeout → 502 `telegram_unavailable`, order stays `created` without a link; client shows an error, retry creates or reuses |
 | P4 | client | `tg.openInvoice(url)` → state `sheet` | TWA throws (unsupported, second open of the same slug) → `failed: telegram` |
 | P5 | Telegram → server | `pre_checkout_query` → webhook: secret check → decode → `on_pre_checkout` (below) → `answer_pre_checkout` → 200 | see the pre-checkout table |
@@ -1911,6 +1958,10 @@ COMMIT;                                                 -- then 200; notify_unap
 **Unapplied charge** (`notify_unapplied`, after the commit, outside any transaction): `send_message` to the payer
 (bot text `payment_unapplied`: the charge id and `/paysupport`) and to each `ADMIN_TELEGRAM_IDS` entry (charge id,
 payer, outcome), each under the gateway's 5 s timeout; a gateway error is logged and the webhook still answers 200.
+As merged (L9 `d837c8b`, RULINGS 96; L9 cut Q6, critique O8): `notify_unapplied(st, fact, outcome, lang)` tells the
+payer in `lang` (the payment message's language) and each admin in Russian; `UnknownProduct` is notified like
+`OrderMismatch` and `AlreadyEntitled`; and one `CALL_DEADLINE` (5 s) cuts the whole notice, its messages sent one after
+another, not each call (`server/src/telegram/payments.rs:112-162`).
 The durable record is the data itself: `/paysupport` flags every charge of the user that has no `entitlements` row and
 `refunded_at IS NULL` as "not applied". A redelivered duplicate is `Duplicate` and sends nothing. The remedy is the
 admin's `/refund`; automatic refund is the owner's call (V4). Changed by META-PLAN (M19): "not applied" also requires
@@ -1939,6 +1990,31 @@ COMMIT;
   `debt`). The `refunded_at` guard and the ledger key make a repeat a no-op (`refund_pack_twice_claws_once`, L9).
   Revision 1 (W3): the kind and n are the charge's `pay:<charge>` ledger row's (`credited_by_charge`, LE1), never the
   catalog's; a charge without that row (an unapplied pack) claws back nothing.
+- **As merged (L9 `d837c8b`, RULINGS 96; L9 cut Q6).** `Repo::revoke(charge, now)` (`server/src/db/payments.rs:332`)
+  runs its statements in the grant's order: `refunded_at = GREATEST($2, paid_at)` (a clock stepped back since the
+  grant would break `payments_refunded_after_paid`), then the order, then `DELETE FROM entitlements WHERE charge_id`,
+  then the clawback. Every undo is keyed by the charge's own rows, whatever the order says; the `match` on
+  `parse_product_id` has no wildcard arm, a tripwire that stops a new product kind from compiling until its undo is
+  reviewed. `payments::revoke(st, charge)` reads the state's clock (`server/src/telegram/payments.rs:171`), and both
+  refund paths end there.
+- **As merged (LPH `d423cb3`; RULINGS 96, 97 Q10, 100).** `Repo::revoke` (now `server/src/db/payments.rs:351`) no
+  longer always runs the `DELETE FROM entitlements` above. Between the guard and the order it reads the charge
+  entitlement's successor: the payer's oldest other unrefunded charge whose own order of that product is `paid` and
+  which keys no entitlement, i.e. a second payment of the chapter recorded `AlreadyEntitled` (`:383-397`). The
+  candidates' payment rows are read `FOR SHARE`, so a concurrent refund of one makes this read wait and drop it
+  (RULINGS 97 Q10). With a successor the entitlement is re-keyed to it, `granted_at` kept (access never lapsed); with
+  none it is deleted (`:411-431`). The re-key grants nothing: `entitlements_charge_key` keeps every charge applied at
+  most once. The admin's `refund_done` reads "Payment {charge} refunded. The purchase is revoked unless another
+  payment paid for it." in English (`server/locales/bot.en.json`; the Russian text changed with it). Pinned by
+  `refund_rekeys_entitlement_to_other_paid_charge` and `refund_rekey_skips_charge_refunded_concurrently`
+  (`server/tests/it/refunds.rs`).
+  - **Residual (RULINGS 100, accepted; `Repo::revoke`'s doc, `:344-350`).** A grant of a new charge C of the same
+    chapter whose entitlement insert (`ON CONFLICT DO NOTHING`, no payer lock) runs between the successor read and the
+    delete meets the committed row and returns `AlreadyEntitled`; the read could not see C, so the revoke deletes, and
+    C stays paid with no entitlement. Both of C's unapplied notices (payer and admins) fired at its grant, an admin
+    `/refund` of C recovers it, and nothing is granted twice. Only the admin's `/refund` (another chat) opens the
+    window: Telegram's `refunded_payment` arrives in the payer's chat, serialized with C's `successful_payment`. Its
+    closure (a users-row lock in `grant` and `revoke`) is carried to a later payments lane.
 
 **Bot commands:**
 - **`/start`** — a message with an inline `web_app` button (`PUBLIC_APP_URL`).
@@ -1953,6 +2029,30 @@ COMMIT;
 Texts come from `server/locales/bot.{ru,en}.json` by `from.language_code`. `server setup` registers the commands with
 `setMyCommands` (ru, en, default), the webhook (`secret_token`, explicit `allowed_updates`) and the menu button
 [R2 §1.5–1.6].
+As merged (L9 `d837c8b`, RULINGS 96; L9 cut Q6): a command is answered only in a private chat with a sender, so
+`/refund` outside one is ignored (`server/src/telegram/commands.rs:77-84`); `server setup` sets the English menu as the
+default set and the Russian one for `ru`, `uk`, `be` and `kk` (no `en` set; `server/src/telegram/setup.rs:37-60`,
+`RUSSIAN_LANGS` in `telegram/payments.rs:33`), and the menu button text is Russian.
+As merged (LPH `d423cb3`, RULINGS 97, 106; LPH critique O2, O3, O6, review M2, M3):
+- **Startup order.** `server serve` and `server setup` check the bot texts right after the configuration, before
+  anything else is opened or built (`bot_texts_ok`, `server/src/main.rs:38`, called at :68 and :103;
+  `texts::startup_check`, `server/src/telegram/texts.rs:345`). A text file that does not pass the check refuses the
+  start, and so does, under `TELEGRAM_ENV=prod`, a non-empty `drafts` list in either file; drafts under test are a
+  warning. `serve` then checks `STATIC_DIR`, then builds `AppState` (content, catalog, privacy policy, gateway, pool).
+  Pinned by `startup_checks_bot_texts_first`, `prod_start_refuses_draft_bot_texts` (`server/tests/it/main.rs`) and
+  `bot_texts_startup_check_refuses_drafts_in_prod` (`server/tests/it/bot.rs`).
+- **`/paysupport`** lists the sender's newest twenty charges (`PAYSUPPORT_CHARGES`,
+  `server/src/telegram/commands.rs:22`; newest first by `paid_at`, then the charge id) and says how many more there
+  are (the total from the same statement, `Repo::charges_of`, `server/src/db/payments.rs:478`). A database error is
+  logged and answered with the intro and `paysupport_unavailable` ("… Please repeat /paysupport in a minute."), and
+  the webhook answers 200: a 500 would hold the chat's later updates, the payer's `successful_payment` included
+  (`paysupport`, commands.rs:210). An admin `/refund` whose database step fails stays 500. Pinned by
+  `paysupport_lists_newest_twenty_with_total` and `paysupport_db_error_answers_200` (`server/tests/it/bot.rs`).
+- **A `/refund` that timed out.** A gateway timeout or a broken transport on `refundStarPayment` answers
+  `refund_unknown_outcome`: the refund is not confirmed, Telegram may already have returned the Stars, and a repeat
+  of `/refund` is safe (it meets `CHARGE_ALREADY_REFUNDED` and revokes). Only an API refusal or a disabled gateway
+  answers `refund_failed` ("Nothing changed"). Nothing is revoked in either case (`refund_reply`, commands.rs:230).
+  Pinned by `refund_timeout_reply_says_outcome_unknown` (`server/tests/it/bot.rs`).
 
 ---
 
@@ -1964,7 +2064,7 @@ Texts come from `server/locales/bot.{ru,en}.json` by `from.language_code`. `serv
 | Client `paid` before the webhook | DB | polling sees `checkout`, keeps polling; unlock on `paid` |
 | Webhook before `invoiceClosed` | DB | first poll sees `paid` |
 | Webhook never arrives (Telegram outage) | DB | `delayed` state; Check again; reload → entitlements; the payment is still recorded when Telegram redelivers |
-| Double tap on Buy | client guard + order reuse + checkout lock | one sheet; a second open of the same slug throws → ignored |
+| Double tap on Buy | client guard + order reuse + checkout lock; as merged (LPH `d423cb3`, RULINGS 97 Q2): client guard + checkout lock + `AlreadyOwned`, no order reuse | one sheet; a second open of the same slug throws → ignored; as merged (LPH): a retry gets a new order and slug |
 | One order (one slug) opened on two devices, both press Pay | checkout lock, own order included | the second pre-checkout within 120 s of the first is refused (`InProgress`) — `precheckout_same_order_twice_refused`; concurrent: `precheckout_concurrent_same_order_one_passes` (the payer-row lock; changed by RULINGS 14) |
 | Two orders for one product paid in parallel | checkout lock (120 s) + entitlement PK | second pre-checkout refused (`InProgress`); if a charge still lands unapplied (`AlreadyEntitled` / `OrderMismatch`, e.g. a payment `pending` past the 120 s lock — E8): payer + admins notified, `/paysupport` flags it, refund per V4 — `unapplied_charge_notifies_payer_and_admin`; concurrent pre-checkouts: `precheckout_concurrent_two_orders_one_passes` (the payer-row lock; changed by RULINGS 14) |
 | Pre-checkout DB contention | `lock_timeout` 2 s (`55P03`) within `timeout(2 s)` (changed by RULINGS 14) | answer `ok=false` (Temporary), 200 |
@@ -2026,7 +2126,8 @@ unreachable at startup" down are the PostgreSQL failure model; the test names ar
    - Paid files go out only through `GET /api/chapters/{id}` and `GET /api/assets/{file}`: bearer token → entitlement
      row → response, `Cache-Control: private, no-store`.
    - The asset route looks the file up in the `ContentStore` index (a `HashMap`), never joins user input into a path.
-   - `STATIC_DIR` must not contain `CONTENT_DIR` (startup check + test).
+   - `STATIC_DIR` must not contain `CONTENT_DIR` (startup check + test). As merged (L9 `d837c8b`): disjoint both ways,
+     with the link walk (K27).
 4. **Client memory only.** Paid JSON and blobs are never written to CloudStorage, DeviceStorage or `localStorage`.
    Blob URLs are revoked on track change.
 5. **Gates:**
@@ -2038,6 +2139,10 @@ unreachable at startup" down are the PostgreSQL failure model; the test names ar
        samples) or `fingerprints.assets.json` (paid asset file names and content hashes);
      - fails on the compiler strings `Compilation failed` / `Recursive INCLUDE detected` [R4 §2.1];
      - fails on the dev canaries.
+     - as merged (LFU2 `6d77329`, RULINGS 103; K7(c)): a fingerprint text is also found inside a JS string literal, in
+       its escaped forms, a finding `via: 'js-string'`. Each base needle and its JSON escape is taken as the body of a
+       `"`, `'` and backtick literal (quotes, backslashes, backticks and `${` escaped). The forms are computed once per
+       section, outside the file loop, from the base needles only (`client/scripts/scan-dist.ts:148-182`, `:213-214`).
    - **Non-vacuous, per section.** It fails:
      - if `story/chapters.json` declares a paid chapter and `fingerprints.lines.json` is missing or its `lineIds` or
        `texts` section is empty;
@@ -2383,8 +2488,8 @@ All budgets are enforced by `client/scripts/budget.ts` inside `npm run build` un
   `state_reopens_migrated_database` and `serve_log_names_database_target_not_password` (`it/main.rs`).
 - **saves** — `saves_create_then_conflict`, `saves_rev_increments`, `saves_retry_same_write_id_ok`,
   `saves_other_user_404`, `saves_body_too_large_413`, `saves_bad_slot_400`.
-- **invoices** — `invoice_unknown_product_404`, `invoice_already_owned_409`, `invoice_reuses_recent_order`,
-  `invoice_price_from_catalog`.
+- **invoices** — `invoice_unknown_product_404`, `invoice_already_owned_409`, `invoice_reuses_recent_order` (as
+  merged, LPH `d423cb3`, RULINGS 97 Q3: renamed `invoice_each_post_is_a_new_order`), `invoice_price_from_catalog`.
 - **pre-checkout** — `precheckout_ok`, `precheckout_wrong_amount`, `precheckout_wrong_currency`,
   `precheckout_unknown_payload`, `precheckout_already_owned`, `precheckout_other_order_in_checkout`,
   `precheckout_same_order_twice_refused`, `precheckout_expired_order`, `precheckout_grants_nothing`,
@@ -2422,12 +2527,15 @@ All budgets are enforced by `client/scripts/budget.ts` inside `npm run build` un
 | Spec | Tests |
 |---|---|
 | `boot.spec.ts` (L7) | `boot records ready, expand and swipe events`, `viewport vars and safe areas applied`, `no window.open or alert` (an init script patches them to record calls) |
-| `smoke.spec.ts` (L15) | `tap-to-start unlocks audio only after the gesture`, `play choose save reload load resumes at same line` (asserts `data-line-id`), `autosave resume after reload`, `back button closes overlays without history` (`history.length` unchanged, `web_app_setup_back_button` events recorded), `deactivated pauses audio, activated resumes` (the dev-server `/@fs` check is a vitest test, not e2e: see Paid-content protection) |
+| `smoke.spec.ts` (L15) | `tap-to-start unlocks audio only after the gesture`, `play choose save reload load resumes at same line` (asserts `data-line-id`), `autosave resume after reload`, `back button closes overlays without history` (`history.length` unchanged, `web_app_setup_back_button` events recorded), `deactivated pauses audio, activated resumes` (the dev-server `/@fs` check is a vitest test, not e2e: see Paid-content protection); as merged (L15b `fbcfd38`, RULINGS 93 Q8, 94; L15b cut K30): + `saves: overwrite ask keeps yes below save` (6) |
 | `purchase.spec.ts` | `purchase unlocks chapter 2` (403 before, sheet shows the server price, 200 after, ch2 first line reacts to a ch1 choice), `cancelled purchase keeps paywall`, `failed purchase keeps paywall`, `delayed webhook unlocks after polling`, `paid twice grants once` |
-| `perf.spec.ts` | `time to first line under throttling`, `textures released on chapter change`, `heap under budget`, `context loss recovers` (debug hook calls Pixi's `forceContextLoss()`, then a pixel sample of the stage is not black) |
-| `memory.spec.ts` (changed by MEMORY-PLAN; RULINGS 78; new in M1, then M2, M3c, M3s; planned) | `scene: trimmed character renders where its canvas puts it` (M1); `scene: no decoded bitmap outlives its upload`, `scene: an unrestored context loss rebuilds the stage`, `scene: a failed revive re-acquires the visual` (M2); `scene: a LOW phone loads half-tier files`, `scene: an AVERAGE phone at DPR 1 loads full-tier files`, `scene: a LOW tablet loads full-tier files` (M3c); `scene: a LOW phone loads half-tier files of a paid chapter` (M3s). `perf.spec.ts` keeps its four and gains L15's `scene: a LOW perf class renders at resolution 1` with its AVERAGE control ([MEMORY-PLAN section 12](MEMORY-PLAN.md#12-budgets-and-validation)) |
-| `stories.spec.ts` (L15; changed by STORIES-PLAN) | `stories: picker lists both stories with covers`, `stories: saves are per story`, `stories: second story first chapter free then paywall`, `stories: story ending shows the end and records the ending`, `stories: back button closes chapter select to the picker`, `stories: picker unmounted during play` |
-| `puzzles.spec.ts` (L15; changed by PUZZLES-PLAN) | `explore: search item puzzle buy hint solve`, `explore: gate fail branch`, `explore: reload resumes in the same room with items`, `puzzle: hint text absent until bought`, `puzzle: paid chapter puzzle needs entitlement`, `explore: back button walks rooms then hides`, `explore: live texture bytes stay under the steady cap`, `explore: hotspot buttons align with props under safe area and landscape` |
+| `perf.spec.ts` | `time to first line under throttling`, `textures released on chapter change`, `heap under budget`, `context loss recovers` (debug hook calls Pixi's `forceContextLoss()`, then a pixel sample of the stage is not black); as merged (L15b `fbcfd38`, RULINGS 93 Q8, 94; lever F, L15b C12): + `scene: a LOW perf class renders at resolution 1`, `scene: an AVERAGE perf class at DPR 2 renders at resolution 2` (6) |
+| `memory.spec.ts` (changed by MEMORY-PLAN; RULINGS 78; new in M1, then M2, M3c, M3s; as of `a4d53ef`, RULINGS 107 OA1: M1 merged `f1b707d` (one name); M2, M3c, M3s planned) | `scene: trimmed character renders where its canvas puts it` (M1); `scene: no decoded bitmap outlives its upload`, `scene: an unrestored context loss rebuilds the stage`, `scene: a failed revive re-acquires the visual` (M2); `scene: a LOW phone loads half-tier files`, `scene: an AVERAGE phone at DPR 1 loads full-tier files`, `scene: a LOW tablet loads full-tier files` (M3c); `scene: a LOW phone loads half-tier files of a paid chapter` (M3s). `perf.spec.ts` keeps its four and gains L15's `scene: a LOW perf class renders at resolution 1` with its AVERAGE control ([MEMORY-PLAN section 12](MEMORY-PLAN.md#12-budgets-and-validation)) |
+| `stories.spec.ts` (L15; changed by STORIES-PLAN) | `stories: picker lists both stories with covers`, `stories: saves are per story`, `stories: second story first chapter free then paywall`, `stories: story ending shows the end and records the ending`, `stories: back button closes chapter select to the picker`, `stories: picker unmounted during play`; as merged (L15b `fbcfd38`, RULINGS 93 Q3, Q8, 94; L15b cut D30): + `stories: a locked chapter row opens the paywall without loading the chapter` (7) |
+| `puzzles.spec.ts` (L15; changed by PUZZLES-PLAN) | `explore: search item puzzle buy hint solve`, `explore: gate fail branch`, `explore: reload resumes in the same room with items`, `puzzle: hint text absent until bought`, `puzzle: paid chapter puzzle needs entitlement`, `explore: back button walks rooms then hides`, `explore: live texture bytes stay under the steady cap`, `explore: hotspot buttons align with props under safe area and landscape`; as merged (L15b `fbcfd38`, RULINGS 93 Q8, 94; L15 re-cut commit 6a): `explore: search item puzzle buy hint solve` is `explore: search item puzzle solve` and `puzzle: hint text absent until bought` is `puzzle: hint text absent while locked` (8) |
+
+As merged (L15b `fbcfd38`, RULINGS 93 Q8, 94; L15b cut §6 Q8): the e2e suite L15b left is 35 names, boot 3, smoke 6,
+stories 7, purchase 5, perf 6, puzzles 8 (`client/e2e/*.spec.ts`); M1 then added the first `memory.spec.ts` name (36).
 
 **Changed by PUZZLES-PLAN.** The unit, DOM, story and server test names of the puzzle extension (world, rules,
 reduce, softlock, cover, runner yields, session, controller, yields, arch, budget, scan, emit; schema, attempts,
@@ -2793,6 +2901,34 @@ below; its cut starts from `D:/tmp/novel-orch/carry.md` (the L15 cut and L15a bl
 base `e94c786`) and LPO privacy-operator (server, base `e94c786`), beside the docs lane `docs-errata-4` (base
 `48abfaf`). "To go": the rest, in the planned order below.
 
+Changed by RULINGS 89-103 (as merged; docs lane `docs-errata-5`, group B): the State column is the state as of
+`6d77329`, with each SHA from `git log --first-parent main`. Since `48abfaf` these merged: LPO `90e1226`, L15b
+`fbcfd38`, L9 `d837c8b`, M1 `f1b707d`, LFU1 `f637bac` and LFU2 `6d77329` (and the docs lane `docs-errata-4` as
+`6162a86`). RULINGS 95 cut the client follow-ups lane in two: LFU1 `engine-followups` (the `game.ts` / saves items
+and K24) and LFU2 `client-followups` (K33's facade half, K34, K39 / K58, K7(c) and L15b's e2e hardening); both have
+merged. RULINGS 92 moved the budget-gate gap item into M1, and it merged with M1. Two lanes are new:
+- **LFU3** (client, RULINGS 99; planned after LMI): K33's Notice half, K46 with its `yields.ts` producer line, and the
+  429 display of `POST /api/invoices`; RULINGS 101 adds two LFU1 carries (`s.last` after a resume; each save-conflict
+  answer on its own slot);
+- **LPH `payments-hardening`** (server, RULINGS 96; after L9, before D2): K9 (each invoice POST a new order), the
+  per-user order bound, the re-key of a refunded charge's entitlement to another paid charge, the money pins, the
+  timeout text, the 200 on a non-money command's database error, the prod refusal of draft bot texts, and the
+  `STATIC_DIR` dot-entry refusal.
+
+Neither LFU3 nor LPH has a lane entry below; their cuts start from `D:/tmp/novel-orch/carry.md` and the rulings named.
+Running: LPH payments-hardening (server, base `d837c8b`) and LMI meta-integration (client, base `f637bac`; its gate
+L15, LMD, LU1, LE2, M1 and LFU1 is met), beside the docs lane `docs-errata-5` (base `6d77329`). "To go": LFU3, M2,
+M3c, D2 and M3s, in the planned order below.
+
+Changed by RULINGS 104-108 (as merged; docs lane `docs-errata-6`, group B): the State column is the state as of
+`a4d53ef`, with each SHA from `git log --first-parent main`. Since `6d77329` these merged: LPH `d423cb3` (and the docs
+lane `docs-errata-5` as `a4d53ef`). RULINGS 107 (OB-1) rules the order of LFU3 and M2: M2 first (after LMI), then LFU3
+after M2, beside M3c / D2. Both hold `client/src/app/game.ts`, and M2 is on the critical path. So LFU3's gate gains
+M2, and its row moves after M2's. D2's gate LPH is met, so D2 waits for M2 only (LMI comes before M2). Running: LMI
+meta-integration (client; relaunched after its implement STOP, RULINGS 105, on base `6d77329` through the trunk sync
+`76cb463`), beside the docs lane `docs-errata-6` (base `a4d53ef`). "To go": M2, LFU3, M3c, D2 and M3s, in the planned
+order below.
+
 | Lane | Slot | State | Gate to start (merged) | Re-cut |
 |---|---|---|---|---|
 | L1 client-shell | client | merged `ea8a6a2` (`f6e2624` before the rewrite) | — | — |
@@ -2825,8 +2961,9 @@ base `e94c786`) and LPO privacy-operator (server, base `e94c786`), beside the do
 | **LM2 meta-server** | server | merged `5a33183` (new, META-PLAN) | LF1 (serialized server files), LM1 (`server/content/meta.json` and its fixture) | new |
 | **LF2 share-profile** | server | merged `d0c7870` (new, META-PLAN) | LM2 (the profile reads the meta and the unlocks) | new |
 | **LE2 gifts-referrals** | server | merged `ec3b29f` (new, META-PLAN) | LF2 (serialized server files; needs LE1, LF1) | new |
-| **LPO privacy-operator** | server | running (base `e94c786`; new, META-PLAN revision 1) | LE2 (serialized server files; LF1's `api/legal.rs`) | new |
-| L9 refunds-bot | server | to go | LS3 (serialized server files; needs L8b). Changed by META-PLAN: LE2 (the pack clawback needs LE1's ledger; the gifted-pack test needs LE2); revision 1: LPO (serialized server files) | STORIES-PLAN: gate only; META-PLAN: the pack clawback, unapplied, `/privacy`; moved to the end of the server chain |
+| **LPO privacy-operator** | server | merged `90e1226` (new, META-PLAN revision 1) | LE2 (serialized server files; LF1's `api/legal.rs`) | new |
+| L9 refunds-bot | server | merged `d837c8b` | LS3 (serialized server files; needs L8b). Changed by META-PLAN: LE2 (the pack clawback needs LE1's ledger; the gifted-pack test needs LE2); revision 1: LPO (serialized server files) | STORIES-PLAN: gate only; META-PLAN: the pack clawback, unapplied, `/privacy`; moved to the end of the server chain |
+| **LPH payments-hardening** | server | merged `d423cb3` (new, RULINGS 96) | L9 (serialized server files; it takes L9's carried payment gaps) | new (RULINGS 96; cut r1 ruled in RULINGS 97) |
 | **LDB2 pgdev-tune** | server | merged `a7e4a04` (ran early, SQ4) | LDB1; launched after L9 unless the server slot idles earlier (SQ4) | cut in RULINGS 17 / `design/db/decision.md` |
 | L10 client-data | client | merged `34b7f13` | L7, L8b, LS2 | PUZZLES-PLAN, STORIES-PLAN (saves per story); META-PLAN: `isDelivered`, the hint status decoder |
 | L13 story-runtime | client | merged `06dc6a3` | L3c, L5, L10, LW2, LS1 | STORIES-PLAN: gate + LS1 (`catalog.ts`) |
@@ -2840,13 +2977,14 @@ base `e94c786`) and LPO privacy-operator (server, base `e94c786`), beside the do
 | **N2 story-tide** | narrative | merged `3587bdd` (new, STORIES-PLAN) | N1 (shared story files), LS1, L5 | new; META-PLAN: ending titles, achievements |
 | **LP2 puzzle-ui** | client | merged `88d0964` | L10, L14b, LW2 | PUZZLES-PLAN; META-PLAN: `HintPort \| null` |
 | **LX explore-ui** | client | merged `a9e991c` | L11, L14b, LW2 | PUZZLES-PLAN (∥ LP2: disjoint locks) |
-| L15 integration | client | split (RULINGS 80): L15a `engine-wiring` merged `e94c786`; L15b `app-e2e` running (base `e94c786`) | every lane above (N1 and N2 included: the e2e plays both stories). Changed by META-PLAN: every lane above except L9 and the META-PLAN lanes (LE1, LF1, LM2, LF2, LE2, LU1, LMD; LM1 is in through N1) | PUZZLES-PLAN, STORIES-PLAN (stories wiring, `stories.spec.ts`); META-PLAN: `choice_made`, `hints: null`; MEMORY-PLAN: lever F (+ `scene/controller.ts`) and the e2e helpers, carried into its running cut through its brief |
-| **client follow-ups** | client | to go (new, RULINGS 80; L15 cut Q3) | L15b (its items touch `app/game.ts`, which L15b also holds; RULINGS 87) | new |
-| **M1 memory-trim** | client | to go (new, MEMORY-PLAN) | L15 (the first rendered scene and `perf.spec.ts`; the e2e helpers) | new |
-| **LMI meta-integration** | client | to go (new, META-PLAN) | L15, LMD, LU1, LE2. Changed by MEMORY-PLAN: M1 | new; MEMORY-PLAN: gate + M1 |
+| L15 integration | client | split (RULINGS 80): L15a `engine-wiring` merged `e94c786`; L15b `app-e2e` merged `fbcfd38` | every lane above (N1 and N2 included: the e2e plays both stories). Changed by META-PLAN: every lane above except L9 and the META-PLAN lanes (LE1, LF1, LM2, LF2, LE2, LU1, LMD; LM1 is in through N1) | PUZZLES-PLAN, STORIES-PLAN (stories wiring, `stories.spec.ts`); META-PLAN: `choice_made`, `hints: null`; MEMORY-PLAN: lever F (+ `scene/controller.ts`) and the e2e helpers, carried into its running cut through its brief |
+| **client follow-ups** | client | cut in two (RULINGS 95): LFU1 `engine-followups` merged `f637bac`; LFU2 `client-followups` merged `6d77329` (new, RULINGS 80; L15 cut Q3) | L15b (its items touch `app/game.ts`, which L15b also holds; RULINGS 87) | new; RULINGS 95: scope cut in two (LFU1, LFU2) |
+| **M1 memory-trim** | client | merged `f1b707d` (new, MEMORY-PLAN) | L15 (the first rendered scene and `perf.spec.ts`; the e2e helpers) | new; RULINGS 92: + the budget-gate gap item of the client follow-ups lane |
+| **LMI meta-integration** | client | running (relaunched, RULINGS 105; base `6d77329` through the trunk sync `76cb463`, first base `f637bac`; new, META-PLAN) | L15, LMD, LU1, LE2. Changed by MEMORY-PLAN: M1. Changed by RULINGS 92, 95: LFU1 (both hold `client/src/app/game.ts`) | new; MEMORY-PLAN: gate + M1; RULINGS 92, 95: gate + LFU1 |
 | **M2 memory-cpu-copy** | client | to go (new, MEMORY-PLAN) | LMI (after M1; the `budget.ts` and `app/game.ts` chains) | new |
+| **LFU3** | client | to go (new, RULINGS 99) | LMI (it holds `client/src/app/{boot,game,game.test,yields}.ts`, which LMI also holds). Changed by RULINGS 107 (OB-1): M2 (both hold `client/src/app/game.ts`; M2 first, then LFU3 beside M3c / D2) | new; RULINGS 107: gate + M2 |
 | **M3c memory-half-tier** | client | to go (new, MEMORY-PLAN) | M2 | new |
-| D2 docs-final | doc | to go | L15. Changed by META-PLAN: LMI, L9; revision 1: LPO. Changed by MEMORY-PLAN: M2 | PUZZLES-PLAN, STORIES-PLAN; META-PLAN: the meta rows and runbooks; MEMORY-PLAN: gate + M2, the M1 / M2 map rows, two authoring-guide rules |
+| D2 docs-final | doc | to go | L15. Changed by META-PLAN: LMI, L9; revision 1: LPO. Changed by MEMORY-PLAN: M2. Changed by RULINGS 96: LPH (it closes L9's carried payment gaps before D2) | PUZZLES-PLAN, STORIES-PLAN; META-PLAN: the meta rows and runbooks; MEMORY-PLAN: gate + M2, the M1 / M2 map rows, two authoring-guide rules; RULINGS 96: gate + LPH |
 | **M3s memory-half-paid** | server | to go (new, MEMORY-PLAN) | M3c, L9 (the end of the server chain), D2 (the docs chain D1 → D2 → M3s) | new |
 
 There are 38 lanes: 12 merged, 2 running, 24 to go (changed by RULINGS 22, 23; it read "10 merged, 1 running, 1
@@ -2860,6 +2998,11 @@ LF2), 10 to go (LE2, LPO, L9, LMD, M1, LMI, M2, M3c, D2, M3s).
 Changed by RULINGS 80-88 (as of `48abfaf`; docs lane `docs-errata-4`, group B): 54 lanes (L15 counts as L15a and
 L15b, and the client follow-ups lane is new) — 44 merged, 2 running (L15b, LPO), 8 to go (the client follow-ups lane,
 M1, LMI, M2, M3c, D2, L9, M3s).
+Changed by RULINGS 89-103 (as of `6d77329`; docs lane `docs-errata-5`, group B): 57 lanes (the client follow-ups
+lane counts as LFU1 and LFU2, RULINGS 95; LPH, RULINGS 96, and LFU3, RULINGS 99, are new) — 50 merged, 2 running (LPH,
+LMI), 5 to go (LFU3, M2, M3c, D2, M3s).
+Changed by RULINGS 104-108 (as of `a4d53ef`; docs lane `docs-errata-6`, group B): 57 lanes — 51 merged (LPH
+`d423cb3` since `6d77329`), 1 running (LMI), 5 to go (M2, LFU3, M3c, D2, M3s).
 
 **Launch preference** when several lanes are ready (critical path first; changed by STORIES-PLAN):
 - client (two slots): L3c (running), L5, L11, LS1, L7, L12, LW3, L14a, L10, L13, L14b, LP2 ∥ LX, LS4, D1, N1, N2, L15,
@@ -2880,7 +3023,20 @@ M1, LMI, M2, M3c, D2, L9, M3s).
   (running), M1, LMI, M2, M3c ∥ D2, and the client follow-ups lane (gate L15b); server: LPO (running), L9, M3s. LMI
   waits only for M1 now (LMD and LE2 have merged), and M3s for M3c and D2. The follow-ups lane's carried items name
   `client/src/app/game.ts`, its test and `client/scripts/budget.ts`, which M1 and M3c (`budget.ts`), LMI and M2
-  (both) also lock, so it runs beside none of them; its place in the client chain is not ruled yet.
+  (both) also lock, so it runs beside none of them; its place in the client chain is not ruled yet. Ruled since
+  (RULINGS 92, OB1): the budget-gate gap item moved into M1's cut, so M1 and the follow-ups lane run in parallel in the
+  two client slots after L15b, and LMI's gate gains the follow-ups lane (L15a → L15b → follow-ups → LMI → M2); RULINGS
+  95 then cut the follow-ups lane in two, LFU1 and LFU2, and LMI's gate keeps LFU1.
+- Changed by RULINGS 89-103 (as of `6d77329`; docs lane `docs-errata-5`, group B; merged lanes dropped): client: LMI
+  (running), then LFU3 and M2 (both after LMI), M3c ∥ D2; server: LPH (running), M3s. D2 waits for M2 and LPH, and
+  M3s for M3c and D2. RULINGS 99 lets LFU3 run beside M2 if their locks are disjoint. As planned they are not: both
+  hold `client/src/app/game.ts` (M2's lock, MEMORY-PLAN section 11; LFU3's K33 producer in `game.ts`, carry.md). So
+  the order of LFU3 and M2 is not ruled yet. Ruled since (RULINGS 107, OB-1): M2 first; LFU3 after M2, beside M3c /
+  D2 (two writers on `game.ts` stay refused; M2 is on the critical path, and LFU3 is in no gate).
+- Changed by RULINGS 104-108 (as of `a4d53ef`; docs lane `docs-errata-6`, group B; merged lanes dropped): client: LMI
+  (running), M2, then LFU3 beside M3c ∥ D2 (RULINGS 107, OB-1: both LFU3 and M2 hold `client/src/app/game.ts`, M2 is
+  on the critical path, and LFU3 is in no gate); server: M3s. LPH has merged (`d423cb3`), so D2 waits for M2 only, and
+  M3s for M3c and D2.
 
 After L9 the server slot takes doc / narrative / client lanes with disjoint locks.
 
@@ -2935,8 +3091,27 @@ beside them.
   merged, so LMI starts when M1 merges. LPO (running) → L9 run in the server slot beside the client chain, and M3s
   follows L9 once M3c and D2 have merged.
 - The client follow-ups lane (gate L15b) is not on the path, but it shares files with M1, LMI, M2 and M3c (the launch
-  preference above), so where it runs in the client chain is not ruled yet.
+  preference above), so where it runs in the client chain is not ruled yet. Ruled since (RULINGS 92, OB1): beside M1
+  after L15b, with the budget-gate gap item in M1's cut, and before LMI (LMI's gate gains it); RULINGS 95 cut it into
+  LFU1 and LFU2, and LMI's gate keeps LFU1.
 - LF2, LE2, L15a and LMD have merged.
+
+**Changed by RULINGS 89-103 — the critical path as of `6d77329`** (docs lane `docs-errata-5`, group B).
+- The prototype milestone is reached: L15b merged `fbcfd38` (after L15a `e94c786`).
+- The whole plan: LMI (running) → M2 → D2 → M3s, with M3c beside D2 (M3s needs both). LPH (running) runs in the
+  server slot beside LMI and M2; D2 waits for it too, so the path grows only if LPH outlasts LMI and M2.
+- LFU3 (after LMI) cannot run beside M2: both hold `client/src/app/game.ts` (the launch preference above), so their
+  order is not ruled yet. If LFU3 runs before M2, the path grows by one lane. If M2 runs first, the path does not
+  grow: LFU3 is in no gate on the path, and it runs beside M3c and D2 (M3c's lock, MEMORY-PLAN section 11, holds none
+  of its files).
+  Ruled since (RULINGS 107, OB-1): M2 first; LFU3 after M2, beside M3c / D2, so the path does not grow.
+- LPO, L15b, L9, M1, LFU1 and LFU2 have merged.
+
+**Changed by RULINGS 104-108 — the critical path as of `a4d53ef`** (docs lane `docs-errata-6`, group B).
+- The whole plan: LMI (running) → M2 → D2 → M3s, with M3c beside D2 (M3s needs both). LPH has merged (`d423cb3`),
+  so D2 waits for M2 only, and no server lane runs beside LMI and M2.
+- LFU3 runs after M2, beside M3c and D2 (RULINGS 107, OB-1): it is in no gate on the path, so the path does not grow.
+- LPH has merged.
 
 ### Lanes
 
@@ -4183,6 +4358,8 @@ Notation:
      (lane rules). Red: the serialized invoice shape test (R2 §2.3 MEASURED shape).
   2. Orders repo + invoices route (price from the catalog; reuse < 1 h; commit before the gateway call). Red:
      `invoice_price_from_catalog`, `invoice_reuses_recent_order`.
+     As merged (LPH `d423cb3`; RULINGS 97 Q2, Q3): the reuse is gone (every POST is a new order, bounded), and the
+     red `invoice_reuses_recent_order` is renamed `invoice_each_post_is_a_new_order` (`server/tests/it/payments.rs`).
   3. Orders route (user-scoped). Red: another user's order → 404.
   4. Fake gateway + `/dev/invoices/{slug}` (`build_dev_app` adds `.with_gateway(FakeBotGateway)` to its
      `AppState::new` call); `api.ts`.
@@ -4207,6 +4384,9 @@ Notation:
   the order call passes the whole `Product` (`api/orders.rs`), and `Repo::reuse_or_create_order` (`db/orders.rs`)
   binds `pack_kind` / `pack_amount` in the order INSERT (NULL for a chapter) and reuses an order only with the same
   binding (`invoice_pack_reuse_needs_same_binding`).
+  As merged (LPH `d423cb3`; RULINGS 97 Q2, Q3): the function is `Repo::create_order` (`server/src/db/orders.rs:133`),
+  which binds the pack the same way and reuses no order; the test is renamed `invoice_pack_binds_catalog_at_invoice`
+  (`server/tests/it/economy.rs`).
 - **Gates:** fmt, clippy, test; client `check`.
 - **Seen working:** `server-dev` on the lane's `DEV_API_PORT` + `curl POST /api/invoices` → `https://t.me/$dev-o_…`.
   As merged (`9e55ef6`, L8a impl Q3): the content comes from `npm --prefix client run story` and then
@@ -4659,6 +4839,9 @@ Notation:
   `client/src/api/generated/api.ts` (15; `api/share.rs`, `it/share.rs` are new). `AppState` gains `share_limit`
   inside `AppState::new` (lane rules: no caller changes). The new dev route sits in `fake_gateway.rs`'s `routes()`, so
   the dev `lib.rs` is not touched.
+  - As merged (`d0c7870`, RULINGS 77, 79 Q1): the lock is 17, + `server/tests/it/payments.rs` (L8a W1: two test
+    gateways implement `BotGateway`, which gains two methods) and `server/tests/it/cards.rs` (the
+    `achievements_repo_called_only_from_cards_api` allow-list gains the `api/social.rs` arm).
 - **Commits:**
   1. `gateway.rs`: `save_prepared_inline_message` (an `InlineQueryResultArticle` with a text content and one url
      button; `allow_user_chats` and `allow_group_chats` true) and `bot_username` (`getMe`, cached in the
@@ -4727,6 +4910,9 @@ Notation:
 - **Lock:** `server/src/api/{mod.rs,dto.rs,gifts.rs,stats.rs}`, `server/src/db/{economy.rs,social.rs}`,
   `server/tests/it/{main.rs,gifts.rs,referrals.rs,dto_samples.rs}`, `client/src/api/fixtures/dto-samples.json`,
   `client/src/api/generated/api.ts` (12; `api/gifts.rs`, `it/gifts.rs`, `it/referrals.rs` are new).
+  - As merged (`ec3b29f`, RULINGS 81, 84): the lock is 16, + `server/src/catalog.rs` (the startup bounds of the gift
+    and referral numbers), `server/tests/it/stats.rs` (the guard's allow-list for the referral evidence read),
+    `server/src/api/wallet.rs` and `server/tests/it/economy.rs` (`maxPerGift` in `WalletResponse`).
 - **Commits:**
   1. `db/economy.rs` `transfer` (M22's transaction).
      - Red: `gift_moves_once_and_reconciles` — predicted red: the method missing (a compile error), then on a stub that
@@ -4783,10 +4969,17 @@ Notation:
   `server/tests/it/{main.rs,common.rs,legal.rs}` (8; `it/legal.rs` is new, its parent `it/main.rs` is in the lock).
   This is the one `Config` variable added after L2 (lane rules: the three `Config` constructors are in the lock).
   `AppState` gains `policy` inside `AppState::new` (lane rules: no caller changes).
+  - As merged (`90e1226`, RULINGS 89 Q1, 90; LPO cut r1 Q8): the lock is 9, + `server/tests/it/social.rs` for one
+    commit-2 hunk. LF1's two privacy tests compared the body with the raw template, and `{POLICY_VERSION}` is now
+    filled in every environment, so their body is `served_draft()` (`server/tests/it/social.rs:1880`), the template
+    with `{POLICY_VERSION}` filled. "LF1's two privacy tests stay green" (commit 2) holds after that hunk.
 - **Commits:**
   1. `config.rs` + `.env.example` (a commented `PRIVACY_OPERATOR_FILE=` line: "a JSON file outside the repository
      with the policy's operator identity facts; required with TELEGRAM_ENV=prod"; revision 2) +
      `privacy_operator_file: None` in `dev/src/lib.rs` and `it/common.rs`.
+     - As merged (`90e1226`, RULINGS 89 Q2; LPO cut r1 Q8): `.env.example` carries `PRIVACY_OPERATOR_FILE=`
+       uncommented under a `#` comment (`.env.example:29-31`), because `config_env_example_is_complete_and_valid`
+       (`server/src/config.rs:500`) requires every variable `Config` reads and skips only `#` lines (`:431`).
      - Red: `config::tests::privacy_operator_file_required_in_prod` (a prod lookup without the variable → a
        `ConfigError` naming `PRIVACY_OPERATOR_FILE`; the same lookup under `test` → `Ok`) — predicted red: the field
        is missing (a compile error, quoted), then `Ok` under prod on a scan that reads the variable as optional.
@@ -4967,6 +5160,14 @@ Notation:
   - **Gate to start (revision 1):** LPO merged (the serialized server files; LPO runs between LE2 and L9).
   - **Seen working** adds: a dev pack bought and refunded (`/dev/refund`) → `GET /api/wallet` shows balance 0 and the
     debt of the spent part.
+- **As merged (`d837c8b`, RULINGS 96; L9 cut Q6).** 9 commits, not 7: the texts and the commands are two commits, and
+  the secret check before the body (L8b O7) is its own. C1 `77ac632` the revoke transaction (with
+  `paid_chapter_403_after_refund`), C2 `4a5295e` the admin refund through the gateway and `POST /dev/refund`, C3
+  `9d35fef` `refunded_payment` and the K17 probe, C4 `652bce9` the secret before the body (the webhook takes `Body`
+  and reads it with `to_bytes` only after the secret, `server/src/telegram/webhook.rs:63-71`), C5 `af85922` the bot
+  texts, C6 `331a4ff` the commands (private chats only), C7 `b5806c7` the unapplied notice and `/paysupport`, C8
+  `b4ccf3e` `server setup`, C9 `888a85e` `STATIC_DIR`. Lock 16, as planned. The revoke, the notice, the command sets
+  and `STATIC_DIR` as merged: "Refund", "Unapplied charge", "Bot commands" and K27.
 
 #### L11 scene (client)
 - **Goal:** the scene controller (Pixi), the registry, the loader, the executor, layout, the render loop, preload,
@@ -5532,6 +5733,11 @@ Notation:
   samples). Runs beside LE2.
 - **Lock:** `client/src/meta/{card.ts,social.ts,wallet.ts,meta.test.ts}` (new), `client/src/api/{endpoints.ts,decode.ts,
   decode.test.ts}` (7).
+  - As merged (`48abfaf`, RULINGS 83 Q1, Q2, 87): the lock is 8, + `client/src/api/http.ts` (one hunk: `DELETE` in the
+    `ApiRequest.method` union, for `removeFriend`). The duplicate-key refusal (`uniqueBy`) wraps nine keyed lists, not
+    ten (`client/src/api/decode.ts:271-274`, `:370-371`, `:393-394`, `:402-403`; LMD critique O3). C6 (`maxPerGift` in
+    `WalletView`, after LE2's trunk sync) was red as `check` TS2345, elaborated by "Property 'maxPerGift' is missing",
+    not TS2741 (`decode.ts:401`; LMD critique O2, observed).
 - **Commits:**
   1. Endpoints + decoders: `getWallet`, `useHint`, `postCard`, `getSocial`, `getInvite`, `askInvite` (revision 1, C1),
      `acceptFriend`, `removeFriend`, `rotateInvite`, `putConsent`, `getFriendProfile`, `postShare` (friends addressed
@@ -5581,7 +5787,8 @@ Notation:
       `story` / `leave` → `project` + `runner.enter`, the lock panel, the puzzle overlay;
     - `dirty` → the 2 s debounced autosave;
     - the close-up shown on puzzle open and cleared on puzzle end;
-    - lazy chunks prefetched when a chapter's world has sections or `next(K)` holds a puzzle yield;
+    - lazy chunks prefetched when a chapter's world has sections or `next(K)` holds a puzzle yield (as merged, L15a
+      `e94c786`, RULINGS 80; L15 cut D13: once per chapter, after its first line, by the chapter's world; PZ X14);
     - (changed by PUZZLES-PLAN revision 1) every `import()` of the lazy families lives here (the puzzle types through
       `puzzles/registry.ts`), so the lazy budget rows turn from PENDING to measured with this file (W7);
     - the root-back: set and cleared from `ExploreController.onPath` edges, cleared when an event knot starts (a
@@ -6466,6 +6673,10 @@ each has a default there; the policy's operator facts are placeholders until the
 | 27 | 2026-11-02 | RULINGS 78 (as merged: every lane up to LM2 `5a33183`; L15, LF2 running; main `22ed4d5`) | Docs lane `docs-errata-3`, group B: "Dependency order" — a marker paragraph and the State column as of `22ed4d5` (11 more lanes merged since `6043941`, with SHAs from `git log --first-parent main`: L10, L14b, LE1, N1, LP2, L13, LF1, LS4, N2, LX, LM2; L15 and LF2 running), the lane count (52: 40 merged, 2 running, 10 to go), the launch preference without the merged lanes, the critical path from L15. The planned order is otherwise unchanged. STORIES-PLAN revision 11 and META-PLAN revision 7 hold their lines. Ledger: `D:/tmp/novel-orch/docs-errata-3/ledger.md` |
 | 28 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `e6eca0d` (the docs-errata-4 spec, group A; RULINGS 79-88), as merged on main `48abfaf` | Docs lane `docs-errata-4`, group A: the carried plan errata of the merged lanes, each place marked "as merged" (or "Changed by MEMORY-PLAN") with its SHA and ruling. "As merged" bullets in the LF2 entry (the five commits, the gateway by value, the C5 samples, the fixture items, the seen-working listings) and the LE2 entry (the filters after `--`, `run assets` before a live run); the L15 entry's "As cut and split" bullet (L15a C1-C6 merged with the SHAs, L15b C7-C13, the two locks); in place: the profile's 8 statements; no token refresh on `activated` (K21); Bot API 6.1 the minimum (K32); the LE2 chains (`catalog.rs`, `db/social.rs`, `it/stats.rs`, `it/economy.rs`, `api/wallet.rs`); `run assets` in the live seen working of LPO, L9, L15 and LMI; the "Changed by MEMORY-PLAN" pointers of docs-errata-3's OM2 (K4, the Module API `SceneController` / `AssetRegistry`, the `Texture` + `ImageBitmap` lifetime row, the module map's `scene/` row, a `memory.spec.ts` e2e row); "S" named in the M2 entry's fade test (as in MEMORY-PLAN). The code on `48abfaf` is the ground truth. Ledger: `D:/tmp/novel-orch/docs-errata-4/ledger.md` |
 | 29 | 2026-11-02 | RULINGS 80-88 (as merged: LF2 `d0c7870`, LE2 `ec3b29f`, L15a `e94c786`, LMD `48abfaf`; L15b, LPO running; main `48abfaf`) | Docs lane `docs-errata-4`, group B: "Dependency order" — a marker paragraph and the State column as of `48abfaf` (LF2, LE2, L15a and LMD merged since `22ed4d5`, with SHAs from `git log --first-parent main`; L15 split into L15a and L15b, RULINGS 80, and a gate naming L15 met at L15b's merge; the new "client follow-ups" row after L15b, RULINGS 80 / 85; L15b and LPO running), the lane count (54: 44 merged, 2 running, 8 to go), the launch preference without the merged lanes, the critical path from L15b. The follow-ups lane's place in the client chain is left unruled (its carried files overlap M1, LMI, M2 and M3c). The planned order is otherwise unchanged; the L15 entry's split record is group A's (revision 28). STORIES-PLAN revision 13 and META-PLAN revision 9 hold their lines. Ledger: `D:/tmp/novel-orch/docs-errata-4/ledger.md` |
+| 30 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `874d685` (the docs-errata-5 spec, group A; RULINGS 89-103), as merged on main `6d77329` | Docs lane `docs-errata-5`, group A: the carried plan errata of the merged lanes, each place marked "as merged" with its SHA and ruling. LPO (`90e1226`): `.env.example`'s uncommented `PRIVACY_OPERATOR_FILE=` (commit 1), the lock of 9 with `served_draft()`; the merged locks of LF2 (17), LE2 (16) and LMD (8, with the nine keyed lists and C6's TS2345 red); the L15 prefetch pointer to PZ X14; the OB1 ruling (RULINGS 92) and the LFU1 / LFU2 split where the dependency order said "not ruled yet"; L15b (`fbcfd38`): the e2e table as merged (35 names); L9 (`d837c8b`): the nine commits, the probe (`ProbeRefunded`, no `RefundFact`), the revoke keyed by the charge's rows (`GREATEST`, the `parse_product_id` tripwire, the clock), the unapplied notice under one `CALL_DEADLINE` in the payer's language with `UnknownProduct`, the command sets and the Russian menu button, private chats only, `STATIC_DIR` disjoint both ways with the link walk and the `/assets` cache split, the webhook taking `Body`; LFU1 (`f637bac`): F3's failure model (`mixes`, the "Load it" failure notice, the (e) exit, the manual-save wait, the conflict hold); LFU2 (`6d77329`): the leak scan's `js-string` forms. The code on `6d77329` is the ground truth. Ledger: `D:/tmp/novel-orch/docs-errata-5/ledger.md` |
+| 31 | 2026-11-02 | RULINGS 89-103 (as merged: LPO `90e1226`, L15b `fbcfd38`, L9 `d837c8b`, M1 `f1b707d`, LFU1 `f637bac`, LFU2 `6d77329`; LPH, LMI running; main `6d77329`) | Docs lane `docs-errata-5`, group B: "Dependency order" — a marker paragraph and the State column as of `6d77329` (LPO, L15b, L9, M1, LFU1 and LFU2 merged since `48abfaf`, with SHAs from `git log --first-parent main`; the client follow-ups lane cut into LFU1 and LFU2, RULINGS 95, and its row marked so; the budget-gate gap item merged with M1, RULINGS 92; the new rows LPH after L9, RULINGS 96, and LFU3 after LMI, RULINGS 99; LMI's gate + LFU1 and D2's gate + LPH; LPH and LMI running), the lane count (57: 50 merged, 2 running, 5 to go), the launch preference without the merged lanes, the critical path from LMI. The order of LFU3 and M2 is left unruled (both hold `client/src/app/game.ts`). The planned order is otherwise unchanged. STORIES-PLAN revision 15 and META-PLAN revision 11 hold their lines. Ledger: `D:/tmp/novel-orch/docs-errata-5/ledger.md` |
+| 32 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `a190136` (the docs-errata-6 spec, group A; RULINGS 97-108), as merged on main `a4d53ef` | Docs lane `docs-errata-6`, group A: the carried plan errata of LPH (`d423cb3`; RULINGS 97, 100, 106), each place marked "as merged" with its SHA and ruling: K9-D (every invoice POST a new order, at most 10 unpaid per user per rolling hour, then 429 `rate_limited` + `Retry-After`) in the invoices row, P2, K18's two-orders arm, the double-tap row, L8a commit 2 and LE1's note; the two renamed tests (`invoice_each_post_is_a_new_order`, `invoice_pack_binds_catalog_at_invoice`); K20 and "Refund.": the re-key to the oldest other unrefunded paid charge, `FOR SHARE`, `refund_done`, the accepted residual of RULINGS 100; the `0001_init.sql:57` erratum; K27: `STATIC_DIR`'s dot-entry refusal (the root's `.vite` excepted); "Bot commands": the startup order (bot texts first, prod refuses drafts), `/paysupport`'s newest twenty with the total and its 200 on a database error, the timeout's outcome-unknown reply; docs-errata-5's open items: the `memory.spec.ts` row's state (OA1) and the LFU3 / M2 order (OB-1, RULINGS 107: M2 first). The code on `a4d53ef` is the ground truth. Ledger: `D:/tmp/novel-orch/docs-errata-6/ledger.md` |
+| 33 | 2026-11-02 | RULINGS 104-108 (as merged: LPH `d423cb3`, docs-errata-5 `a4d53ef`; LMI running; main `a4d53ef`) | Docs lane `docs-errata-6`, group B: "Dependency order" — a marker paragraph and the State column as of `a4d53ef` (LPH merged since `6d77329`, with its SHA from `git log --first-parent main`; LMI running, relaunched (RULINGS 105) on base `6d77329` through the trunk sync `76cb463`; the LFU3 / M2 order ruled by RULINGS 107, OB-1: M2 first, then LFU3 after M2, beside M3c / D2, so LFU3's gate gains M2 and its row moves after M2's; D2's gate LPH met, D2 waits for M2 only), the lane count (57: 51 merged, 1 running, 5 to go), the launch preference without the merged lanes and the critical path from LMI, both with the ruled order. The planned order is otherwise unchanged. STORIES-PLAN revision 17 and META-PLAN revision 13 hold their lines. Ledger: `D:/tmp/novel-orch/docs-errata-6/ledger.md` |
 
 **Revision 1 (2026-10-30)** — what changed, by triage item:
 - **W1** (undecodable payment ACKed and lost): K17 (lenient `PaymentProbe` for the payment subset, 500 only when the
