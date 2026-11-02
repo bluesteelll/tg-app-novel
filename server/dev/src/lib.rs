@@ -84,6 +84,8 @@ fn dev_config(paths: &DevPaths) -> Config {
         telegram_env: TelegramEnv::Test,
         // Unused: `main.rs` binds `DEV_API_PORT` itself.
         listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+        // No host file: the dev app serves the draft policy, its placeholders visible.
+        privacy_operator_file: None,
     }
 }
 
