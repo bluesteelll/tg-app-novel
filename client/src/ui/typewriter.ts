@@ -1,6 +1,7 @@
-// The line reveal (PROTOTYPE-PLAN "Localization"): time-based, by grapheme (Intl.Segmenter, iOS 14.1+), into two
-// spans written through `textContent` only, so story text is never parsed as markup. The unrevealed rest stays in
-// the layout (the caller hides it), so the box does not reflow as the line grows. One frame at most is pending.
+// The line reveal (PROTOTYPE-PLAN "Localization"): time-based, by grapheme (Intl.Segmenter, iOS 14.1+; by code
+// point in a WebView without it, K17), into two spans written through `textContent` only, so story text is never
+// parsed as markup. The unrevealed rest stays in the layout (the caller hides it), so the box does not reflow as the
+// line grows. One frame at most is pending.
 
 /** The player's text speed; `instant` shows each line whole. */
 export type TextSpeed = 'slow' | 'normal' | 'fast' | 'instant';
@@ -32,12 +33,18 @@ export interface Typewriter {
   destroy(): void;
 }
 
-let segmenter: Intl.Segmenter | null = null;
+/** The segmenter, probed once per module instance: undefined before the probe, null where there is none. */
+let segmenter: Intl.Segmenter | null | undefined;
 
-/** The user-perceived characters of `text`, so a reveal never splits an emoji or a combining mark. */
+/**
+ * The user-perceived characters of `text`, so a reveal never splits an emoji or a combining mark. Without
+ * Intl.Segmenter they are its code points: a reveal may then split an emoji for a frame, and the finished line is whole.
+ */
 export function graphemes(text: string): string[] {
-  segmenter ??= new Intl.Segmenter(undefined, { granularity: 'grapheme' });
-  return Array.from(segmenter.segment(text), (s) => s.segment);
+  if (segmenter === undefined) {
+    segmenter = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
+  }
+  return segmenter === null ? Array.from(text) : Array.from(segmenter.segment(text), (s) => s.segment);
 }
 
 /**

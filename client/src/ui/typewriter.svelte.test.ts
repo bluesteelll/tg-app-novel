@@ -108,6 +108,21 @@ test('typewriter: graphemes intact', () => {
   expect(done).toBe(1);
 });
 
+test('typewriter: graphemes fall back to code points without Intl.Segmenter', async () => {
+  // K17: a WebView without Intl.Segmenter (iOS before 14.1). A fresh module instance, so no segmenter made by an
+  // earlier test is reused; the text has 4 graphemes and 10 code points, so the two answers cannot be confused.
+  const text = 'а\u{1F469}‍\u{1F469}‍\u{1F467}é\u{1F1F7}\u{1F1FA}';
+  vi.resetModules();
+  vi.stubGlobal('Intl', Object.assign(Object.create(Intl) as typeof Intl, { Segmenter: undefined }));
+  try {
+    const fresh = await import('./typewriter.ts');
+    expect(fresh.graphemes(text)).toEqual(Array.from(text));
+    expect(fresh.graphemes(text)).toHaveLength(10);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
 test('typewriter: speed sets graphemes per second', () => {
   for (const speed of ['slow', 'normal', 'fast'] as const) {
     const clock = new FakeFrames();
