@@ -1798,3 +1798,80 @@ test('game: a pagehide and a deactivated during a step keep the keepalive of eit
   // The knot entry's autosave, then the one write both requests waited for, with the pagehide's keepalive.
   expect(seen).toEqual({ 'pagehide-first': [undefined, true], 'deactivated-first': [undefined, true] });
 });
+
+/** `worldCh1('explore')` whose study event opens on a cg, so its first step can be held on that one load. */
+function worldCh1Cg(): LoadedChapter {
+  return chapter(
+    'ch1',
+    [
+      ...WORLD_INK_VARS,
+      '-> start',
+      '=== start ===',
+      '# scene: hall',
+      'Start. #id:ch1.start.l001',
+      '# explore: manor',
+      '-> DONE',
+      '=== study_event ===',
+      '# cg: drawer_close',
+      'Event. #id:ch1.study_event.l004',
+      '# explore: manor',
+      '-> DONE',
+    ],
+    { start: { assets: ['bg/hall'], next: [] }, study_event: { assets: ['cg/drawer_close'] } },
+    { assets: ['bg/study', 'prop/medal', 'cg/drawer_close'], vars: WORLD_VARS, world: gameWorld() },
+  );
+}
+
+test('game: a rooms dirty write while a story step loads resumes exactly', async () => {
+  stubObserver();
+  const h = harness({ chapters: [worldCh1Cg()], chunks: worldChunks().chunks });
+  await startManor(h);
+  await h.game.advance(); // the explore yield: the hall
+  await settle();
+  const sv = h.save();
+  const since = sv.autosaves.length;
+  const ensure = h.scene.ensure;
+  let release = (): void => {};
+  let held = false;
+  h.scene.ensure = (ids, signal) => {
+    if (!ids.some((id) => id === 'cg/drawer_close')) {
+      return ensure(ids, signal);
+    }
+    held = true;
+    return new Promise((resolve) => {
+      release = () => resolve({ ok: true, value: undefined });
+    });
+  };
+  h.game.exploreActions.ontap(hk('hall.to_study')); // the study's room batch marks the world dirty; its event's cg loads
+  await settle();
+  await settle();
+  expect(held).toBe(true); // the runner is at l004 while the position is still the yield
+  h.clock.advance(2_000); // the dirty debounce fires inside that window
+  await settle();
+  release();
+  await settle();
+  await settle();
+  h.scene.ensure = ensure;
+  const written = sv.autosaves.slice(since);
+  h.game.dispose();
+  vi.unstubAllGlobals();
+  const resumed: unknown[] = [];
+  for (const w of written) {
+    stubObserver();
+    const again = harness({
+      chapters: [worldCh1Cg()],
+      chunks: worldChunks().chunks,
+      slots: new Map([['auto', { summary: summary(MANOR, 'auto', w), body: w.body }]]),
+    });
+    const ok = (await again.game.start({ kind: 'slot', story: MANOR, slot: 'auto' })).ok;
+    await settle();
+    resumed.push([w.lineId, ok, again.vm.toasts.length, lineOf(again.vm)]);
+    again.game.dispose();
+    vi.unstubAllGlobals();
+  }
+  // The event's knot entry, then the dirty write that waited for it: both resume at the event's line, with no note.
+  expect(resumed).toEqual([
+    ['ch1.study_event.l004', true, 0, 'ch1.study_event.l004'],
+    ['ch1.study_event.l004', true, 0, 'ch1.study_event.l004'],
+  ]);
+});
