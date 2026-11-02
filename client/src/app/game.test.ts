@@ -38,7 +38,7 @@ import type { HotspotKey, ItemId, WorldPublic } from '../world/types.ts';
 import { createViewModel } from '../ui/state.svelte.ts';
 import type { ViewModel } from '../ui/state.svelte.ts';
 import { newestAuto } from './boot.ts';
-import { createGame } from './game.ts';
+import { CONFLICT_HOLD_MS, createGame } from './game.ts';
 import type { Entitlements, Game, GameDeps } from './game.ts';
 import type { ExploreChunk, LazyChunks } from './yields.ts';
 
@@ -2184,4 +2184,498 @@ test('game: a deactivated during the end batch keeps the last exact save', async
   }
   // the end step never sets the position: a body of it would resume a level lower as a false story update
   expect(resumed).toEqual(['ch1.garden.l006', true, [], 'ch1.garden.l006']);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The engine follow-ups (LFU1): the save paths of a session that describes two steps, the failure notices, the manual
+// save's conflict hold
+
+/** manor ch2 broken past the story gate: its first line has no line id, so a resume at its start fails at the floor. */
+function noIdCh2(): LoadedChapter {
+  return chapter('ch2', ['-> study', '=== study ===', '# bg: study', 'Two begins.', '-> END'], { study: { assets: ['bg/study'], ending: true } });
+}
+
+/**
+ * At l002, a load of ch2's saved start: the chapter is swapped in, then the resume fails at its floor (fix_r2 KL4).
+ * Resolves with the number of autosaves before the load.
+ */
+async function failAfterSwap(h: Harness): Promise<number> {
+  await startManor(h);
+  await h.game.advance(); // l002
+  const start = pendingCh2();
+  h.save().slots.set('s1', { ...start, summary: { ...start.summary, slot: 's1' } });
+  const since = h.save().autosaves.length;
+  await h.game.load('s1');
+  return since;
+}
+
+test('game: a resume that fails after the chapter swap writes no autosave', async () => {
+  const base = liveRunners();
+  const h = harness({ chapters: [manorCh1(), noIdCh2()], owned: ['ch2'] });
+  const sv = h.save;
+  const since = await failAfterSwap(h);
+  expect(h.vm.notice?.kind).toBe('error');
+  // At rest under the notice, the session holds ch2 over ch1's runner at l002: no request may write that body.
+  h.game.onLifecycle('deactivated');
+  h.game.pagehide();
+  h.game.onLifecycle('activated');
+  const n = h.vm.notice;
+  if (n?.kind === 'error') {
+    n.onaction(); // the notice's exit, whose own autosave comes first
+  }
+  await settle();
+  await settle();
+  expect(sv().autosaves.slice(since).map((w) => [w.chapterId, w.lineId])).toEqual([]);
+  expect(h.exits()).toBe(1);
+  expect(liveRunners() - base).toBe(0);
+  h.game.dispose();
+});
+
+test('game: an outside autosave over a pending start is written at once', async () => {
+  const h = harness({ chapters: [manorCh1(), manorCh2()] });
+  await startManor(h); // l001: the start knot's entry autosave
+  await h.game.advance(); // l002
+  const sv = h.save();
+  const auto = sv.slots.get('auto');
+  const decoded = auto === undefined ? null : decodeSave(auto.body);
+  expect(decoded?.ok).toBe(true);
+  if (auto === undefined || decoded === null || !decoded.ok) {
+    return;
+  }
+  const pending = { ...decoded.value, chapterId: CH2, ink: null, at: { lineId: null, knot: null, yield: null }, staging: EMPTY_SNAPSHOT };
+  sv.slots.set('s2', { summary: { ...auto.summary, slot: 's2', chapterId: CH2 }, body: encodeSave({ ...pending, checkpoint: null, backlog: [] }) });
+  await h.game.load('s2'); // D11: ch2 is not owned, so its saved start is the session's body under the paywall
+  expect(h.vm.screens.overlays.map((o) => o.kind)).toEqual(['paywall']);
+  const since = sv.autosaves.length;
+  const load = h.loader.load;
+  let go = (): void => {};
+  const gate = new Promise<void>((resolve) => {
+    go = resolve;
+  });
+  h.loader.load = async (ch, o) => {
+    if (ch.id === 'ch2') {
+      await gate; // startPending's load of ch2
+    }
+    return load(ch, o);
+  };
+  h.owned.add('ch2');
+  const unlocking = h.game.retryPrice(); // P1: already owned, so P9 starts the pending chapter, held on its load
+  await settle();
+  h.game.onLifecycle('deactivated');
+  const atOnce = sv.autosaves.slice(since).map((w) => [w.chapterId, w.lineId]);
+  h.game.onLifecycle('activated');
+  go();
+  await unlocking;
+  await settle();
+  const all = sv.autosaves.slice(since).map((w) => [w.chapterId, w.lineId]);
+  const line = lineOf(h.vm);
+  h.game.dispose();
+  // The pending start is a complete body, so the request does not wait for ch2's first step.
+  expect(atOnce).toEqual([['ch2', null]]);
+  expect(line).toBe('ch2.study.l001');
+  expect(all).toEqual([
+    ['ch2', null],
+    ['ch2', 'ch2.study.l001'],
+  ]);
+});
+
+test('game: a failed load it read shows the error notice', async () => {
+  const rows: unknown[] = [];
+  for (const kind of ['get', 'empty', 'undecodable', 'expired'] as const) {
+    const h = harness();
+    await startManor(h);
+    await h.game.advance(); // l002
+    const sv = h.save();
+    const log: Array<string | null> = [];
+    const autosave = sv.autosave;
+    sv.autosave = (w, o) => {
+      log.push(w.lineId);
+      autosave(w, o);
+    };
+    let answer = (): void => {};
+    const held = new Promise<void>((resolve) => {
+      answer = resolve;
+    });
+    const load = sv.load;
+    sv.load = async (slot) => {
+      if (kind === 'get') {
+        await held;
+        return { ok: false, error: { kind: 'network', detail: 'offline' } };
+      }
+      // The http layer's answer once the page's session has ended; it has shown the reopen notice already (boot).
+      return kind === 'expired' ? { ok: false, error: { kind: 'session-expired' } } : load(slot);
+    };
+    if (kind === 'empty') {
+      sv.slots.delete('auto');
+    } else if (kind === 'undecodable') {
+      sv.slots.set('auto', { summary: THEIRS, body: 'not json' });
+    }
+    sv.emit({ kind: 'paused', current: THEIRS });
+    const p = h.vm.toasts.find((e) => e.key === 'save_conflict');
+    if (p?.kind === 'prompt') {
+      p.actions[0]?.run(); // Load it
+    }
+    await settle();
+    if (kind === 'get') {
+      h.game.onLifecycle('deactivated'); // during the read: kept under adopting
+      answer();
+      await settle();
+    }
+    h.game.onLifecycle('deactivated'); // at rest
+    const notice = h.vm.notice;
+    const root = h.vm.screens.root.kind;
+    if (notice?.kind === 'error') {
+      notice.onaction();
+    }
+    await settle();
+    await settle();
+    rows.push([kind, notice?.kind, root, log, h.exits(), h.save().disposed]);
+    h.game.dispose();
+  }
+  // Their save stays the server's copy: nothing of ours is written; the notice exits to Home, whose Continue reads it.
+  // An ended session keeps the reopen notice, as a chapter load does (chapterFailed).
+  expect(rows).toEqual([
+    ['get', 'error', 'notice', [], 1, 1],
+    ['empty', 'error', 'notice', [], 1, 1],
+    ['undecodable', 'error', 'notice', [], 1, 1],
+    ['expired', 'reopen', 'notice', [], 0, 1],
+  ]);
+});
+
+test('game: a failed manual load stays at the shown line without a notice', async () => {
+  const rows: unknown[] = [];
+  for (const kind of ['get', 'empty', 'undecodable'] as const) {
+    const h = harness();
+    await startManor(h);
+    await h.game.advance(); // l002
+    const sv = h.save();
+    if (kind === 'get') {
+      sv.load = async () => ({ ok: false, error: { kind: 'network', detail: 'offline' } });
+    } else if (kind === 'undecodable') {
+      sv.slots.set('s1', { summary: { ...THEIRS, slot: 's1' }, body: 'not json' });
+    } // 'empty': s1 was never saved
+    await h.game.openSaves();
+    await h.game.load('s1'); // the save screen's Load, not "Load it": the session is not adopting
+    await settle();
+    rows.push([kind, h.vm.notice?.kind ?? null, h.vm.screens.root.kind, lineOf(h.vm), h.exits()]);
+    h.game.dispose();
+  }
+  // Only "Load it" leaves the session with nothing to resume; a manual load that read nothing keeps the game as it was.
+  expect(rows).toEqual([
+    ['get', null, 'game', 'ch1.arrival.l002', 0],
+    ['empty', null, 'game', 'ch1.arrival.l002', 0],
+    ['undecodable', null, 'game', 'ch1.arrival.l002', 0],
+  ]);
+});
+
+/** ch1 broken past the story gate after its first line: the second line has no line id. */
+function noIdNextCh1(): LoadedChapter {
+  return chapter('ch1', ['-> start', '=== start ===', 'Start line. #id:ch1.start.l001', 'No id here.', '-> END'], { start: {} });
+}
+
+/** ch1 broken past the story gate at its first line: it has no line id. */
+function noIdFirstCh1(): LoadedChapter {
+  return chapter('ch1', ['-> start', '=== start ===', 'No id here.', '-> END'], { start: {} });
+}
+
+test('game: return to last save with no save exits to the stories', async () => {
+  const first = harness({ chapters: [noIdNextCh1()] });
+  await startManor(first); // l001: its knot entry's autosave
+  const auto = first.save().slots.get('auto');
+  first.game.dispose();
+  expect(auto).toBeDefined();
+  if (auto === undefined) {
+    return;
+  }
+  const parts: ReadonlyArray<readonly [string, () => Promise<Harness>]> = [
+    [
+      'continue',
+      async () => {
+        // An exact resume at a line writes nothing, so the session has no last save when the next step raises.
+        const h = harness({ chapters: [noIdNextCh1()], slots: new Map([['auto', auto]]) });
+        expect((await h.game.start({ kind: 'slot', story: MANOR, slot: 'auto' })).ok).toBe(true);
+        await h.game.advance();
+        return h;
+      },
+    ],
+    [
+      'new',
+      async () => {
+        const h = harness({ chapters: [noIdFirstCh1()] });
+        await startManor(h); // the first step raises
+        return h;
+      },
+    ],
+  ];
+  const rows: unknown[] = [];
+  for (const [part, reach] of parts) {
+    const h = await reach();
+    const n = h.vm.notice;
+    expect(n?.kind).toBe('story_error');
+    if (n?.kind === 'story_error') {
+      n.onaction(); // Return to last save
+    }
+    await settle();
+    await settle();
+    rows.push([part, h.exits(), h.save().disposed, lineOf(h.vm)]);
+    h.game.dispose();
+  }
+  expect(rows).toEqual([
+    ['continue', 1, 1, null],
+    ['new', 1, 1, null],
+  ]);
+});
+
+/** Every manual save of `sv` answers the server's 409: another device saved the slot. */
+function conflicting(sv: FakeSaves): void {
+  sv.save = async (slot, w) => ({ ok: false, error: { kind: 'conflict', current: summary(MANOR, slot, w) } });
+}
+
+test('game: a 409 on a manual save asks only after the double-tap window', async () => {
+  const h = harness();
+  await startManor(h);
+  await h.game.advance(); // l002
+  const sv = h.save();
+  conflicting(sv);
+  const overwrites: string[] = [];
+  const overwrite = sv.overwrite;
+  sv.overwrite = (slot, w, current) => {
+    overwrites.push(slot);
+    return overwrite(slot, w, current);
+  };
+  const view = (): unknown[] => [h.vm.saves.saving, h.vm.saves.conflict];
+  // 1. The overwrite ask's Yes, answered 409 at once, then the double tap's second tap where the conflict's Yes renders.
+  void h.game.save('s1');
+  await settle();
+  await h.game.overwrite('s1');
+  await settle();
+  expect([...view(), overwrites.length]).toEqual(['s1', null, 0]);
+  // 2. After the window the conflict asks, and a deliberate Yes overwrites.
+  h.clock.advance(CONFLICT_HOLD_MS);
+  const asked = view();
+  await h.game.overwrite('s1');
+  await settle();
+  expect([asked, overwrites]).toEqual([[null, 's1'], ['s1']]);
+  // 3. The save screen left and opened again within the window: the held ask never shows over the fresh screen.
+  void h.game.save('s1');
+  await settle();
+  await h.game.openSaves();
+  h.clock.advance(CONFLICT_HOLD_MS);
+  expect(view()).toEqual([null, null]);
+  // 4. The story left within the window: the hold's timer goes with the session.
+  const timers = h.clock.pending;
+  void h.game.save('s1');
+  await settle();
+  const holding = h.clock.pending - timers;
+  await h.game.exitToStories();
+  expect([holding, h.clock.pending - timers, h.exits()]).toEqual([1, 0, 1]);
+  h.game.dispose();
+});
+
+test('game: a late answer of an earlier manual save replaces a held conflict ask', async () => {
+  const h = harness();
+  await startManor(h);
+  await h.game.advance(); // l002
+  const sv = h.save();
+  type Answer = Awaited<ReturnType<SaveService['save']>>;
+  const inFlight = new Map<ManualSlot, { w: SaveWrite; answer: (r: Answer) => void }>();
+  sv.save = (slot, w) =>
+    new Promise<Answer>((answer) => {
+      inFlight.set(slot, { w, answer });
+    });
+  // 1. s1's write in flight, the save screen left and opened again (which resets `saving`), then s2's write.
+  void h.game.save('s1');
+  await settle();
+  await h.game.openSaves();
+  void h.game.save('s2');
+  await settle();
+  const s1 = inFlight.get('s1');
+  const s2 = inFlight.get('s2');
+  if (s1 === undefined || s2 === undefined) {
+    throw new Error('both manual writes should be in flight');
+  }
+  // 2. s2 answers 409 inside the double-tap window, so its ask is held; then s1's earlier write lands.
+  s2.answer({ ok: false, error: { kind: 'conflict', current: summary(MANOR, 's2', s2.w) } });
+  await settle();
+  s1.answer({ ok: true, value: { rev: 1, savedAt: 1 } });
+  await settle();
+  // 3. The held ask never shows after the newer answer.
+  h.clock.advance(CONFLICT_HOLD_MS);
+  expect([h.vm.saves.saving, h.vm.saves.conflict]).toEqual([null, null]);
+  h.game.dispose();
+});
+
+/** What a manual write answers. */
+type SaveAnswer = Awaited<ReturnType<SaveService['save']>>;
+
+/** Keeps every manual write of `h` in flight until the test answers it, by slot. */
+function inFlightSaves(h: Harness): Map<ManualSlot, { w: SaveWrite; answer: (r: SaveAnswer) => void }> {
+  const inFlight = new Map<ManualSlot, { w: SaveWrite; answer: (r: SaveAnswer) => void }>();
+  h.save().save = (slot, w) =>
+    new Promise<SaveAnswer>((answer) => {
+      inFlight.set(slot, { w, answer });
+    });
+  return inFlight;
+}
+
+/** The server's 409 for a manual write of `w` to `slot`: another device saved the slot. */
+const conflictOn = (slot: ManualSlot, w: SaveWrite): SaveAnswer => ({
+  ok: false,
+  error: { kind: 'conflict', current: summary(MANOR, slot, w) },
+});
+
+test('game: no on a shown conflict ask drops the ask a later 409 holds', async () => {
+  const h = harness();
+  await startManor(h);
+  await h.game.advance(); // l002
+  const inFlight = inFlightSaves(h);
+  // 1. s1's write in flight, the save screen left and opened again, then s2's write 50 ms before s1's window closes.
+  void h.game.save('s1');
+  await settle();
+  await h.game.openSaves();
+  h.clock.advance(CONFLICT_HOLD_MS - 50);
+  void h.game.save('s2');
+  await settle();
+  const s1 = inFlight.get('s1');
+  const s2 = inFlight.get('s2');
+  if (s1 === undefined || s2 === undefined) {
+    throw new Error('both manual writes should be in flight');
+  }
+  // 2. s1's 409 asks when its window closes; s2's 409 lands 60 ms after its tap, so its ask is held under s1's.
+  s1.answer(conflictOn('s1', s1.w));
+  await settle();
+  h.clock.advance(50);
+  const shown = h.vm.saves.conflict;
+  h.clock.advance(10);
+  s2.answer(conflictOn('s2', s2.w));
+  await settle();
+  // 3. No on s1's ask: the held ask never shows, since its Yes would find no conflict (`overwrite` refuses it).
+  h.game.cancelOverwrite();
+  h.clock.advance(CONFLICT_HOLD_MS);
+  expect([shown, h.vm.saves.conflict, h.clock.pending]).toEqual(['s1', null, 0]);
+  h.game.dispose();
+});
+
+test('game: a 409 after a round trip asks when the window since the tap closes', async () => {
+  const h = harness();
+  await startManor(h);
+  await h.game.advance(); // l002
+  const inFlight = inFlightSaves(h);
+  const view = (): unknown[] => [h.vm.saves.saving, h.vm.saves.conflict];
+  void h.game.save('s1');
+  await settle();
+  const s1 = inFlight.get('s1');
+  if (s1 === undefined) {
+    throw new Error('the manual write should be in flight');
+  }
+  // The 409 lands 300 ms after the tap: the ask is still held there, and shows at the tap's window end, not later.
+  h.clock.advance(300);
+  s1.answer(conflictOn('s1', s1.w));
+  await settle();
+  const atAnswer = view();
+  h.clock.advance(CONFLICT_HOLD_MS - 300);
+  expect([atAnswer, view()]).toEqual([
+    ['s1', null],
+    [null, 's1'],
+  ]);
+  h.game.dispose();
+});
+
+test('game: the hold of a 409 counts from the tap, not from the end of the step wait', async () => {
+  const h = harness();
+  await startManor(h);
+  await h.game.advance(); // l002
+  await h.game.advance(); // the choice set
+  await h.game.choose(0); // l003
+  conflicting(h.save());
+  const view = (): unknown[] => [h.vm.saves.saving, h.vm.saves.conflict];
+  const release = holdEnsure(h.scene);
+  const step = h.game.advance(); // l005, garden's entry: waits on bg/garden
+  await settle();
+  const saving = h.game.save('s1');
+  await settle();
+  // The step ends 300 ms after the tap and the 409 answers at once: the ask shows at the tap's window end, the
+  // double tap's second tap having been absorbed by `saving` during the wait.
+  h.clock.advance(300);
+  release();
+  await step;
+  await saving;
+  await settle();
+  const atAnswer = view();
+  h.clock.advance(CONFLICT_HOLD_MS - 300);
+  expect([atAnswer, view()]).toEqual([
+    ['s1', null],
+    [null, 's1'],
+  ]);
+  h.game.dispose();
+});
+
+test('game: a manual save with a step in flight waits for that step', async () => {
+  /** A manual slot's body resumed in a fresh session: [lineId, ok, toasts, line]. */
+  const resumed = async (full: SaveFull | undefined): Promise<unknown[] | null> => {
+    if (full === undefined) {
+      return null;
+    }
+    const again = harness({ slots: new Map([['auto', { ...full, summary: { ...full.summary, slot: 'auto' } }]]) });
+    const ok = (await again.game.start({ kind: 'slot', story: MANOR, slot: 'auto' })).ok;
+    const row = [full.summary.lineId, ok, again.vm.toasts.length, lineOf(again.vm)];
+    again.game.dispose();
+    return row;
+  };
+  const atL003 = async (h: Harness): Promise<void> => {
+    await startManor(h);
+    await h.game.advance(); // l002
+    await h.game.advance(); // the choice set
+    await h.game.choose(0); // l003
+  };
+  // 1. Save while l005 (garden's entry) waits on its art: the runner is at l005, the position and the stage at l003.
+  const h = harness();
+  await atL003(h);
+  const sv = h.save();
+  let release = holdEnsure(h.scene);
+  let step = h.game.advance();
+  await settle();
+  const saving = h.game.save('s1');
+  await settle();
+  const during = [sv.slots.has('s1'), h.vm.saves.saving];
+  expect(during).toEqual([false, 's1']);
+  release();
+  await step;
+  await saving;
+  await settle();
+  const one = await resumed(sv.slots.get('s1'));
+  h.game.dispose();
+  // 2. The conflict's deliberate Yes in the same window.
+  const h2 = harness();
+  await atL003(h2);
+  const sv2 = h2.save();
+  conflicting(sv2);
+  await h2.game.save('s2');
+  h2.clock.advance(CONFLICT_HOLD_MS);
+  const asked = h2.vm.saves.conflict;
+  release = holdEnsure(h2.scene);
+  step = h2.game.advance();
+  await settle();
+  const writing = h2.game.overwrite('s2');
+  await settle();
+  const during2 = [sv2.slots.has('s2'), h2.vm.saves.saving];
+  release();
+  await step;
+  await writing;
+  await settle();
+  const two = await resumed(sv2.slots.get('s2'));
+  h2.game.dispose();
+  // 3. At rest in a session of two steps (a resume that failed after the chapter swap): nothing to save.
+  const h3 = harness({ chapters: [manorCh1(), noIdCh2()], owned: ['ch2'] });
+  await failAfterSwap(h3);
+  await h3.game.save('s3');
+  const three = [h3.vm.notice?.kind, h3.save().slots.has('s3'), h3.vm.saves.saving];
+  h3.game.dispose();
+  expect([one, asked, during2, two, three]).toEqual([
+    ['ch1.garden.l005', true, 0, 'ch1.garden.l005'],
+    's2',
+    [false, 's2'],
+    ['ch1.garden.l005', true, 0, 'ch1.garden.l005'],
+    ['error', false, null],
+  ]);
 });
