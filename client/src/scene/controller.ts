@@ -398,7 +398,8 @@ export function createSceneController(): SceneController {
       const r = core.registry.stats();
       return {
         liveTextures: r.live,
-        liveBytes: r.bytes,
+        // Live texture bytes: the caps also count the kept files (MEMORY-PLAN M2), which hold no texture.
+        liveBytes: r.bytes - r.keptBytes,
         pendingLoads: r.pending,
         activeTimelines: core.executor.stats().activeTimelines,
         overCap: r.overCap,

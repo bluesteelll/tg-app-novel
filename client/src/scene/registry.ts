@@ -1,6 +1,7 @@
 // The texture registry (PROTOTYPE-PLAN K4, K5): one entry per asset id with a set of holders, destroyed when the set
-// empties; admission under the 32 MiB steady (preload) and 48 MiB hard (visible) caps, counting the bytes of loads
-// still in flight; the AVIF / WebP variant fixed at creation. Generic over the texture type, so it holds no Pixi value
+// empties; admission under the 32 MiB steady (preload) and 48 MiB hard (visible) caps, counting the decoded bytes and
+// the kept encoded file of every record, in flight included (MEMORY-PLAN M2); the AVIF / WebP variant fixed at
+// creation. Generic over the texture type, so it holds no Pixi value
 // and is tested in node over a fake loader; `scene/loader.ts` is the real `LoadImage`.
 import type { AssetFetchError, AssetRef, ImageEntry, Result } from '../story/catalog.ts';
 import type { AssetId } from '../story/staging.ts';
@@ -27,10 +28,12 @@ export type SceneError = { kind: 'mount'; detail: string } | { kind: 'assets'; e
 /** A loader failure; the loader sees a file reference, not an asset id, so the registry names the id. */
 export type LoadError = { kind: 'fetch'; error: AssetFetchError } | { kind: 'decode'; detail: string } | { kind: 'aborted' };
 /**
- * A decoded image; `release()` frees the GPU texture and the CPU bitmap (`texture.destroy(true)` + `bitmap.close()`).
+ * A decoded image; `release()` frees the GPU texture, the CPU bitmap and the kept file (`texture.destroy(true)` +
+ * `bitmap.close()` + the Blob dropped).
  * `w`, `h`: the bitmap's stored px, checked against the entry's.
+ * `keptBytes`: the size of the encoded file the loader keeps (the fetched Blob), counted by the caps once live.
  */
-export type Decoded<T> = { texture: T; w: number; h: number; release(): void };
+export type Decoded<T> = { texture: T; w: number; h: number; keptBytes: number; release(): void };
 /**
  * `geometry` lays the file out as its canvas (MEMORY-PLAN §6). A trailing parameter, so a loader that ignores it
  * still type-checks (the scene suites' fakes).
@@ -40,8 +43,12 @@ export type LoadImage<T> = (ref: AssetRef, signal: AbortSignal, geometry: Textur
 export type TextureHandle<T> = { readonly id: AssetId; readonly texture: T; readonly w: number; readonly h: number };
 export type Priority = 'visible' | 'preload';
 export type AcquireOptions = { entry: ImageEntry; priority: Priority; signal?: AbortSignal };
-/** `bytes` = what the caps count: decoded bytes of live entries plus the reservations of loads in flight. */
-export type RegistryStats = { live: number; bytes: number; pending: number; overCap: number };
+/**
+ * `bytes` = what the caps count: decoded bytes + kept file bytes of live entries, plus the reservations (decoded +
+ * the manifest's file bytes) of loads in flight. `keptBytes`: the kept files of live entries (inside `bytes`).
+ * `keptMismatch` (cumulative, like `overCap`): entries that went live keeping another size than the manifest's file.
+ */
+export type RegistryStats = { live: number; bytes: number; pending: number; overCap: number; keptBytes: number; keptMismatch: number };
 
 export interface AssetRegistry<T> {
   /**
@@ -62,6 +69,8 @@ export interface AssetRegistry<T> {
 type Rec<T> = {
   readonly id: AssetId;
   readonly entry: ImageEntry;
+  /** The file of the session's variant: what the load fetches and the admission reserves. */
+  readonly ref: AssetRef;
   /** The entry's texture geometry, computed once when the record starts. */
   readonly geometry: TextureGeometry;
   readonly holders: Map<string, Priority>;
@@ -96,12 +105,15 @@ export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avi
   // so a reservation is returned exactly once whatever order abort, release and a late settle come in.
   const records = new Map<AssetId, Rec<T>>();
   let overCap = 0;
+  let keptMismatch = 0;
   let destroyed = false;
 
+  const refOf = (entry: ImageEntry): AssetRef => (deps.variant === 'avif' ? entry.avif : entry.webp);
+  /** A pending record reserves the manifest's file; a live one counts the file its loader kept, at its real size. */
   const counted = (): number => {
     let bytes = 0;
     for (const rec of records.values()) {
-      bytes += rec.entry.decodedBytes;
+      bytes += rec.entry.decodedBytes + (rec.decoded === null ? rec.ref.bytes : rec.decoded.keptBytes);
     }
     return bytes;
   };
@@ -156,11 +168,15 @@ export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avi
     }
     rec.state = 'live';
     rec.decoded = d;
+    if (d.keptBytes !== rec.ref.bytes) {
+      // A host that rewrites images: counted as it is (above), never refused, so it cannot black the stage.
+      keptMismatch += 1;
+    }
     rec.handle = { id: rec.id, texture: d.texture, w: rec.geometry.canvas.w, h: rec.geometry.canvas.h };
     rec.settle({ ok: true, value: rec.handle });
   };
 
-  const start = (id: AssetId, entry: ImageEntry, holder: string, priority: Priority): Rec<T> => {
+  const start = (id: AssetId, entry: ImageEntry, ref: AssetRef, holder: string, priority: Priority): Rec<T> => {
     let settle: (r: Result<TextureHandle<T>, AssetError>) => void = () => {};
     const outcome = new Promise<Result<TextureHandle<T>, AssetError>>((resolve) => {
       settle = resolve;
@@ -168,6 +184,7 @@ export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avi
     const rec: Rec<T> = {
       id,
       entry,
+      ref,
       geometry: textureGeometry(entry),
       holders: new Map([[holder, priority]]),
       controller: new AbortController(),
@@ -178,7 +195,6 @@ export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avi
       handle: null,
     };
     records.set(id, rec);
-    const ref = deps.variant === 'avif' ? entry.avif : entry.webp;
     let loading: Promise<Result<Decoded<T>, LoadError>>;
     try {
       loading = deps.load(ref, rec.controller.signal, rec.geometry);
@@ -257,11 +273,12 @@ export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avi
       if (entry.w > MAX_TEXTURE_PX || entry.h > MAX_TEXTURE_PX) {
         return Promise.resolve(fail({ kind: 'too-large', id, w: entry.w, h: entry.h }));
       }
-      const refused = admit(id, entry.decodedBytes, o.priority);
+      const ref = refOf(entry);
+      const refused = admit(id, entry.decodedBytes + ref.bytes, o.priority);
       if (refused !== null) {
         return Promise.resolve(fail(refused));
       }
-      return waitFor(start(id, entry, holder, o.priority), holder, o.signal);
+      return waitFor(start(id, entry, ref, holder, o.priority), holder, o.signal);
     },
     release(id, holder) {
       const rec = records.get(id);
@@ -282,14 +299,16 @@ export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avi
     stats() {
       let live = 0;
       let pending = 0;
+      let keptBytes = 0;
       for (const rec of records.values()) {
         if (rec.state === 'live') {
           live += 1;
+          keptBytes += rec.decoded?.keptBytes ?? 0;
         } else {
           pending += 1;
         }
       }
-      return { live, bytes: counted(), pending, overCap };
+      return { live, bytes: counted(), pending, overCap, keptBytes, keptMismatch };
     },
     destroy() {
       destroyed = true;

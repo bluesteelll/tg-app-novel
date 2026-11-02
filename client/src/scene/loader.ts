@@ -18,10 +18,11 @@ const rect = (b: Box): Rectangle => new Rectangle(b.x, b.y, b.w, b.h);
 
 /**
  * FetchAsset → ImageBitmap → Texture. The bitmap is kept as the texture's resource (the context-loss restore re-uploads
- * from it; paid art is no-store) and closed on release, on abort and on failure. Alpha follows Pixi's own loader
- * (loadTextures.mjs:25, :64-69): a default-decoded bitmap uploaded with `premultiply-alpha-on-upload`. The texture is
- * laid out as the file's canvas (MEMORY-PLAN 4.B): Pixi sizes and anchors a sprite on `orig` and draws the stored
- * pixels at `trim`, so a trimmed file renders where its untrimmed canvas would.
+ * from it; paid art is no-store) and closed on release, on abort and on failure. The fetched Blob is kept too, counted
+ * by the caps at its real size (MEMORY-PLAN M2), never given a URL, and dropped on release. Alpha follows Pixi's own
+ * loader (loadTextures.mjs:25, :64-69): a default-decoded bitmap uploaded with `premultiply-alpha-on-upload`. The
+ * texture is laid out as the file's canvas (MEMORY-PLAN 4.B): Pixi sizes and anchors a sprite on `orig` and draws the
+ * stored pixels at `trim`, so a trimmed file renders where its untrimmed canvas would.
  */
 export function createImageLoader(deps: { fetchAsset: FetchAsset }): LoadImage<Texture> {
   return async (ref, signal, geometry) => {
@@ -32,9 +33,10 @@ export function createImageLoader(deps: { fetchAsset: FetchAsset }): LoadImage<T
     if (signal.aborted) {
       return aborted;
     }
+    let kept: Blob | null = got.value;
     let bitmap: ImageBitmap;
     try {
-      bitmap = await createImageBitmap(got.value);
+      bitmap = await createImageBitmap(kept);
     } catch (e) {
       return { ok: false, error: { kind: 'decode', detail: detail(e) } };
     }
@@ -54,6 +56,7 @@ export function createImageLoader(deps: { fetchAsset: FetchAsset }): LoadImage<T
       texture,
       w: bitmap.width,
       h: bitmap.height,
+      keptBytes: kept.size,
       release() {
         if (!alive) {
           return;
@@ -61,6 +64,7 @@ export function createImageLoader(deps: { fetchAsset: FetchAsset }): LoadImage<T
         alive = false;
         texture.destroy(true);
         bitmap.close();
+        kept = null;
       },
     };
     return { ok: true, value: decoded };

@@ -7,14 +7,24 @@ import { createAssetRegistry } from './registry.ts';
 import type { Decoded, LoadError, LoadImage } from './registry.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
-// A fake loader with deferred results: every call is recorded with its URL, signal and geometry, and every Decoded
-// counts its release() calls by URL.
+// A fake loader with deferred results: every call is recorded with its URL, file bytes, signal and geometry, and every
+// Decoded counts its release() calls by URL. Byte-faithful (MEMORY-PLAN M2): a Decoded keeps the bytes of the file it
+// was called with, as the real loader keeps the fetched Blob.
 
 type Tex = { readonly url: string };
-type Call = { url: string; signal: AbortSignal; geometry: TextureGeometry; resolve(r: Result<Decoded<Tex>, LoadError>): void; done: boolean };
+type Call = {
+  url: string;
+  bytes: number;
+  signal: AbortSignal;
+  geometry: TextureGeometry;
+  resolve(r: Result<Decoded<Tex>, LoadError>): void;
+  done: boolean;
+};
 
 const BG = 8_847_360; // 1080 × 2048 × 4
 const PROP = 1_048_576; // 512 × 512 × 4
+/** The AVIF fixture file: what each record keeps once live and reserves while in flight (M2). */
+const F = 100;
 
 const asId = (s: string): AssetId => s as AssetId; // test fixture ids: the brand is earned by the manifest decoder
 const image = (name: string, w: number, h: number, trim?: Trim): ImageEntry => ({
@@ -35,23 +45,24 @@ function harness(variant: 'avif' | 'webp' = 'avif') {
   const sizes = new Map<string, { w: number; h: number }>();
   const load: LoadImage<Tex> = (ref, signal, geometry) =>
     new Promise((resolve) => {
-      calls.push({ url: ref.url, signal, geometry, resolve, done: false });
+      calls.push({ url: ref.url, bytes: ref.bytes, signal, geometry, resolve, done: false });
     });
   const registry = createAssetRegistry<Tex>({ load, variant });
-  const decoded = (url: string, w: number, h: number): Decoded<Tex> => ({
+  const decoded = (url: string, w: number, h: number, keptBytes: number): Decoded<Tex> => ({
     texture: { url },
     w,
     h,
+    keptBytes,
     release: () => released.set(url, (released.get(url) ?? 0) + 1),
   });
   const callsOf = (url: string): Call[] => calls.filter((c) => c.url === url);
-  /** Resolves a call with its manifest size (or `size`), once. */
-  const succeed = (call: Call, size = sizes.get(call.url)): void => {
+  /** Resolves a call with its manifest size (or `size`) and its file's bytes kept (or `kept`), once. */
+  const succeed = (call: Call, size = sizes.get(call.url), kept = call.bytes): void => {
     if (call.done || size === undefined) {
       return;
     }
     call.done = true;
-    call.resolve({ ok: true, value: decoded(call.url, size.w, size.h) });
+    call.resolve({ ok: true, value: decoded(call.url, size.w, size.h, kept) });
   };
   const succeedAll = (): void => {
     for (const call of [...calls]) {
@@ -98,7 +109,7 @@ test('registry_returns_to_baseline', async () => {
       ['/assets/x_y.avif', 1],
     ]),
   );
-  expect(h.registry.stats()).toEqual({ live: 0, bytes: 0, pending: 0, overCap: 0 });
+  expect(h.registry.stats()).toEqual({ live: 0, bytes: 0, pending: 0, overCap: 0, keptBytes: 0, keptMismatch: 0 });
 });
 
 test('registry_caps', async () => {
@@ -113,27 +124,27 @@ test('registry_caps', async () => {
   for (const r of await Promise.all(room)) {
     expect(r.ok).toBe(true);
   }
-  expect(h.registry.stats().bytes).toBe(BG + 4 * PROP); // 13,041,664
+  expect(h.registry.stats().bytes).toBe(BG + 4 * PROP + 5 * F); // 13,042,164
   const a = h.acquire('bg/a', bg('a'), 'room:a', 'preload');
-  expect(h.registry.stats().bytes).toBe(21_889_024);
+  expect(h.registry.stats().bytes).toBe(21_889_624);
   const b = h.acquire('bg/b', bg('b'), 'room:b', 'preload');
-  expect(h.registry.stats().bytes).toBe(30_736_384);
+  expect(h.registry.stats().bytes).toBe(30_737_084);
   const c = h.acquire('bg/c', bg('c'), 'room:c', 'preload');
   h.succeedAll();
-  expect(await c).toMatchObject({ ok: false, error: { kind: 'over-cap', capBytes: 33_554_432, needBytes: BG } });
+  expect(await c).toMatchObject({ ok: false, error: { kind: 'over-cap', capBytes: 33_554_432, needBytes: BG + F } });
   expect(h.callsOf('/assets/c.avif').length).toBe(0);
   expect((await a).ok).toBe(true);
   expect((await b).ok).toBe(true);
-  expect(h.registry.stats()).toEqual({ live: 7, bytes: 30_736_384, pending: 0, overCap: 0 });
+  expect(h.registry.stats()).toEqual({ live: 7, bytes: 30_737_084, pending: 0, overCap: 0, keptBytes: 7 * F, keptMismatch: 0 });
 
-  // (b) Visible admission up to the hard cap: five backgrounds = 44,236,800 B.
+  // (b) Visible admission up to the hard cap: five backgrounds and their files = 44,237,300 B.
   const v = harness();
   const five = ['v1', 'v2', 'v3', 'v4', 'v5'].map((n) => v.acquire(`bg/${n}`, bg(n), `scene:${n}`, 'visible'));
   v.succeedAll();
   for (const r of await Promise.all(five)) {
     expect(r.ok).toBe(true);
   }
-  expect(v.registry.stats().bytes).toBe(5 * BG);
+  expect(v.registry.stats().bytes).toBe(44_237_300);
 
   // (c) Over the hard cap, a visible load first evicts every preload-priority holder, then fits.
   const e = harness();
@@ -148,13 +159,13 @@ test('registry_caps', async () => {
   const join = e.acquire('bg/v1', bg('v1'), 'preload:k2', 'preload');
   expect((await join).ok).toBe(true);
   expect(e.calls.length).toBe(5);
-  expect(e.registry.stats().bytes).toBe(5 * BG);
+  expect(e.registry.stats().bytes).toBe(44_237_300);
   const fifth = e.acquire('bg/v5', bg('v5'), 'scene:v5', 'visible');
   e.succeedAll();
   expect((await fifth).ok).toBe(true);
   expect(releasedOf(e.released, 'p')).toBe(1);
   expect(releasedOf(e.released, 'v1')).toBe(0);
-  expect(e.registry.stats()).toEqual({ live: 5, bytes: 5 * BG, pending: 0, overCap: 0 });
+  expect(e.registry.stats()).toEqual({ live: 5, bytes: 44_237_300, pending: 0, overCap: 0, keptBytes: 5 * F, keptMismatch: 0 });
 });
 
 test('registry: visible load over hard cap after eviction is refused', async () => {
@@ -166,12 +177,12 @@ test('registry: visible load over hard cap after eviction is refused', async () 
   for (const r of await Promise.all(vs)) {
     expect(r.ok).toBe(true);
   }
-  expect(h.registry.stats().bytes).toBe(45_285_376);
-  // 45,285,376 + 8,847,360 = 54,132,736 > 50,331,648; evicting p1 leaves 53,084,160, still over.
+  expect(h.registry.stats().bytes).toBe(45_285_976);
+  // 45,285,976 + 8,847,460 = 54,133,436 > 50,331,648; evicting p1 leaves 53,084,760, still over.
   const v6 = h.acquire('bg/v6', bg('v6'), 'scene:v6', 'visible');
   h.succeedAll();
-  expect(await v6).toMatchObject({ ok: false, error: { kind: 'over-cap', capBytes: 50_331_648, liveBytes: 5 * BG } });
-  expect(h.registry.stats().bytes).toBe(44_236_800);
+  expect(await v6).toMatchObject({ ok: false, error: { kind: 'over-cap', capBytes: 50_331_648, liveBytes: 44_237_300 } });
+  expect(h.registry.stats().bytes).toBe(44_237_300);
   expect(h.registry.stats().overCap).toBe(1);
   expect(releasedOf(h.released, 'p1')).toBe(1);
   expect(h.callsOf('/assets/v6.avif').length).toBe(0);
@@ -188,12 +199,12 @@ test('registry: a visible load over the hard cap evicts room and next preloads',
     for (const r of await Promise.all(four)) {
       expect(r.ok).toBe(true);
     }
-    // 5 BG live = 44,236,800; a fifth visible BG needs 53,084,160 > 50,331,648 unless the preload goes.
+    // 5 BG live = 44,237,300; a fifth visible BG needs 53,084,760 > 50,331,648 unless the preload goes.
     const fifth = h.acquire('bg/v5', bg('v5'), 'scene:v5', 'visible');
     h.succeedAll();
     expect({ holder, ok: (await fifth).ok }).toEqual({ holder, ok: true });
     expect(releasedOf(h.released, 'r')).toBe(1);
-    expect(h.registry.stats()).toEqual({ live: 5, bytes: 5 * BG, pending: 0, overCap: 0 });
+    expect(h.registry.stats()).toEqual({ live: 5, bytes: 44_237_300, pending: 0, overCap: 0, keptBytes: 5 * F, keptMismatch: 0 });
   }
 });
 
@@ -228,7 +239,7 @@ test('registry: image over 2048 px or off its manifest size is refused', async (
   }
   expect(await lying).toMatchObject({ ok: false, error: { kind: 'decode' } });
   expect(releasedOf(h.released, 'lie')).toBe(1);
-  expect(h.registry.stats()).toEqual({ live: 0, bytes: 0, pending: 0, overCap: 0 });
+  expect(h.registry.stats()).toEqual({ live: 0, bytes: 0, pending: 0, overCap: 0, keptBytes: 0, keptMismatch: 0 });
 });
 
 // MEMORY-PLAN 4.B: the placeholder sprite's alpha box, stored 466×1394, at (151, 142) on its 768×1536 canvas.
@@ -245,7 +256,7 @@ test("registry: a trimmed entry's handle reports its canvas", async () => {
   }
   expect(r.value.h).toBe(1536);
   expect(r.value.w).toBe(768);
-  expect(h.registry.stats()).toEqual({ live: 1, bytes: 466 * 1394 * 4, pending: 0, overCap: 0 });
+  expect(h.registry.stats()).toEqual({ live: 1, bytes: 466 * 1394 * 4 + F, pending: 0, overCap: 0, keptBytes: F, keptMismatch: 0 });
 });
 
 test("registry: load receives the entry's geometry", async () => {
@@ -286,7 +297,7 @@ test('registry: abort frees the reservation', async () => {
   const h = harness();
   const ctl = new AbortController();
   const pending = h.acquire('bg/a', bg('a'), 'scene:bg', 'visible', ctl.signal);
-  expect(h.registry.stats()).toEqual({ live: 0, bytes: BG, pending: 1, overCap: 0 });
+  expect(h.registry.stats()).toEqual({ live: 0, bytes: 8_847_460, pending: 1, overCap: 0, keptBytes: 0, keptMismatch: 0 });
   ctl.abort();
   // The loader resolves anyway, late: that texture is destroyed at once and nothing is counted.
   h.succeedAll();
@@ -309,7 +320,7 @@ test('registry: a late settle acts only on its own load', async () => {
     expect(h.calls.length).toBe(2);
     const [l1, l2] = h.calls;
     expect(l1?.signal.aborted).toBe(true);
-    expect(h.registry.stats()).toEqual({ live: 0, bytes: BG, pending: 1, overCap: 0 });
+    expect(h.registry.stats()).toEqual({ live: 0, bytes: 8_847_460, pending: 1, overCap: 0, keptBytes: 0, keptMismatch: 0 });
 
     // L1 settles late: as the real FetchAsset reports an aborted fetch, or as a decode the loader finished anyway.
     if (late === 'aborted') {
@@ -318,7 +329,7 @@ test('registry: a late settle acts only on its own load', async () => {
       h.succeed(l1);
     }
     await flush();
-    expect(h.registry.stats()).toEqual({ live: 0, bytes: BG, pending: 1, overCap: 0 });
+    expect(h.registry.stats()).toEqual({ live: 0, bytes: 8_847_460, pending: 1, overCap: 0, keptBytes: 0, keptMismatch: 0 });
     expect(await first).toMatchObject({ ok: false, error: { kind: 'aborted' } });
 
     if (l2 !== undefined) {
@@ -326,10 +337,43 @@ test('registry: a late settle acts only on its own load', async () => {
     }
     const got = await second;
     expect(got.ok).toBe(true);
-    expect(h.registry.stats()).toEqual({ live: 1, bytes: BG, pending: 0, overCap: 0 });
+    expect(h.registry.stats()).toEqual({ live: 1, bytes: 8_847_460, pending: 0, overCap: 0, keptBytes: F, keptMismatch: 0 });
     expect(releasedOf(h.released, 'x')).toBe(late === 'decoded' ? 1 : 0);
     h.registry.releaseHolder('preload:');
     expect(releasedOf(h.released, 'x')).toBe(late === 'decoded' ? 2 : 1);
-    expect(h.registry.stats()).toEqual({ live: 0, bytes: 0, pending: 0, overCap: 0 });
+    expect(h.registry.stats()).toEqual({ live: 0, bytes: 0, pending: 0, overCap: 0, keptBytes: 0, keptMismatch: 0 });
   }
+});
+
+test('registry_caps_count_kept_bytes', async () => {
+  // MEMORY-PLAN M2 commit 2: admission reserves decoded + file bytes. The registry counts the manifest's decodedBytes
+  // as given, so one entry carries the whole 32 MiB - 100 B here.
+  const atCap = (file: number): ImageEntry => ({ ...image('big', 2048, 2048), decodedBytes: 33_554_432 - 100, avif: { url: '/assets/big.avif', bytes: file } });
+  const over = harness();
+  const refused = over.acquire('bg/big', atCap(200), 'preload:k1', 'preload');
+  over.succeedAll();
+  expect(await refused).toMatchObject({ ok: false, error: { kind: 'over-cap', capBytes: 33_554_432, needBytes: 33_554_532, liveBytes: 0 } });
+  expect(over.calls.length).toBe(0);
+  // Control: decoded + file exactly at the steady cap is admitted.
+  const fits = harness();
+  const got = fits.acquire('bg/big', atCap(100), 'preload:k1', 'preload');
+  expect(fits.registry.stats().bytes).toBe(33_554_432);
+  fits.succeedAll();
+  expect((await got).ok).toBe(true);
+});
+
+test('registry: a kept blob is counted at its real size', async () => {
+  // The admission reserves the manifest's file bytes; once live the record counts what the loader kept. A host that
+  // rewrote the file (another size) is counted as it is and reported, never refused (MEMORY-PLAN 4.A, critique O8).
+  const h = harness();
+  const got = h.acquire('bg/a', bg('a'), 'scene:bg', 'visible');
+  const call = h.callsOf('/assets/a.avif')[0];
+  if (call === undefined) {
+    throw new Error('invariant: the acquire started a load');
+  }
+  h.succeed(call, undefined, 300);
+  expect((await got).ok).toBe(true);
+  expect(h.registry.stats()).toEqual({ live: 1, bytes: BG + 300, pending: 0, overCap: 0, keptBytes: 300, keptMismatch: 1 });
+  h.registry.release(asId('bg/a'), 'scene:bg');
+  expect(h.registry.stats()).toEqual({ live: 0, bytes: 0, pending: 0, overCap: 0, keptBytes: 0, keptMismatch: 1 });
 });

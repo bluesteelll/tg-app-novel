@@ -637,7 +637,7 @@ function realScene(m: AssetManifest) {
     const e = entryOf(id);
     return Promise.resolve().then(() => {
       live.add(id);
-      return { ok: true, value: { texture: id, w: e.w, h: e.h, release: () => live.delete(id) } };
+      return { ok: true, value: { texture: id, w: e.w, h: e.h, keptBytes: ref.bytes, release: () => live.delete(id) } };
     });
   };
   const registry = createAssetRegistry<string>({ load, variant: 'avif' });
@@ -721,11 +721,12 @@ test('controller: neighbour preloads stay under the steady cap', async () => {
   await record('c -> b');
   const room = BG_BYTES + 4 * PROP_BYTES;
   expect(steps).toEqual([
-    { step: 'enter a', live: ['bg/a', 'bg/b'], bytes: room + BG_BYTES },
-    { step: 'a -> b', live: ['bg/a', 'bg/b', 'bg/c'], bytes: room + 2 * BG_BYTES },
-    { step: 'b -> c', live: ['bg/b', 'bg/c', 'bg/d'], bytes: room + 2 * BG_BYTES },
-    { step: 'close-up open', live: ['bg/c', 'cg/box'], bytes: room + BG_BYTES },
-    { step: 'c -> b', live: ['bg/a', 'bg/b', 'bg/c'], bytes: room + 2 * BG_BYTES },
+    // + 1 B per live record: each keeps its 1 B fixture file (MEMORY-PLAN M2).
+    { step: 'enter a', live: ['bg/a', 'bg/b'], bytes: room + BG_BYTES + 6 },
+    { step: 'a -> b', live: ['bg/a', 'bg/b', 'bg/c'], bytes: room + 2 * BG_BYTES + 7 },
+    { step: 'b -> c', live: ['bg/b', 'bg/c', 'bg/d'], bytes: room + 2 * BG_BYTES + 7 },
+    { step: 'close-up open', live: ['bg/c', 'cg/box'], bytes: room + BG_BYTES + 6 },
+    { step: 'c -> b', live: ['bg/a', 'bg/b', 'bg/c'], bytes: room + 2 * BG_BYTES + 7 },
   ]);
   // X13: 29.3 MiB with two neighbours, 20.9 MiB with a close-up open; never above the steady cap.
   expect(Math.max(...steps.map((s) => s.bytes))).toBeLessThanOrEqual(STEADY_CAP_BYTES);
