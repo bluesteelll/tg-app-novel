@@ -2342,6 +2342,32 @@ test('game: a failed load it read shows the error notice', async () => {
   ]);
 });
 
+test('game: a failed manual load stays at the shown line without a notice', async () => {
+  const rows: unknown[] = [];
+  for (const kind of ['get', 'empty', 'undecodable'] as const) {
+    const h = harness();
+    await startManor(h);
+    await h.game.advance(); // l002
+    const sv = h.save();
+    if (kind === 'get') {
+      sv.load = async () => ({ ok: false, error: { kind: 'network', detail: 'offline' } });
+    } else if (kind === 'undecodable') {
+      sv.slots.set('s1', { summary: { ...THEIRS, slot: 's1' }, body: 'not json' });
+    } // 'empty': s1 was never saved
+    await h.game.openSaves();
+    await h.game.load('s1'); // the save screen's Load, not "Load it": the session is not adopting
+    await settle();
+    rows.push([kind, h.vm.notice?.kind ?? null, h.vm.screens.root.kind, lineOf(h.vm), h.exits()]);
+    h.game.dispose();
+  }
+  // Only "Load it" leaves the session with nothing to resume; a manual load that read nothing keeps the game as it was.
+  expect(rows).toEqual([
+    ['get', null, 'game', 'ch1.arrival.l002', 0],
+    ['empty', null, 'game', 'ch1.arrival.l002', 0],
+    ['undecodable', null, 'game', 'ch1.arrival.l002', 0],
+  ]);
+});
+
 /** ch1 broken past the story gate after its first line: the second line has no line id. */
 function noIdNextCh1(): LoadedChapter {
   return chapter('ch1', ['-> start', '=== start ===', 'Start line. #id:ch1.start.l001', 'No id here.', '-> END'], { start: {} });
