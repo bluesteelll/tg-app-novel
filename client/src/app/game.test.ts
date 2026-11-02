@@ -2230,3 +2230,51 @@ test('game: a resume that fails after the chapter swap writes no autosave', asyn
   expect(liveRunners() - base).toBe(0);
   h.game.dispose();
 });
+
+test('game: an outside autosave over a pending start is written at once', async () => {
+  const h = harness({ chapters: [manorCh1(), manorCh2()] });
+  await startManor(h); // l001: the start knot's entry autosave
+  await h.game.advance(); // l002
+  const sv = h.save();
+  const auto = sv.slots.get('auto');
+  const decoded = auto === undefined ? null : decodeSave(auto.body);
+  expect(decoded?.ok).toBe(true);
+  if (auto === undefined || decoded === null || !decoded.ok) {
+    return;
+  }
+  const pending = { ...decoded.value, chapterId: CH2, ink: null, at: { lineId: null, knot: null, yield: null }, staging: EMPTY_SNAPSHOT };
+  sv.slots.set('s2', { summary: { ...auto.summary, slot: 's2', chapterId: CH2 }, body: encodeSave({ ...pending, checkpoint: null, backlog: [] }) });
+  await h.game.load('s2'); // D11: ch2 is not owned, so its saved start is the session's body under the paywall
+  expect(h.vm.screens.overlays.map((o) => o.kind)).toEqual(['paywall']);
+  const since = sv.autosaves.length;
+  const load = h.loader.load;
+  let go = (): void => {};
+  const gate = new Promise<void>((resolve) => {
+    go = resolve;
+  });
+  h.loader.load = async (ch, o) => {
+    if (ch.id === 'ch2') {
+      await gate; // startPending's load of ch2
+    }
+    return load(ch, o);
+  };
+  h.owned.add('ch2');
+  const unlocking = h.game.retryPrice(); // P1: already owned, so P9 starts the pending chapter, held on its load
+  await settle();
+  h.game.onLifecycle('deactivated');
+  const atOnce = sv.autosaves.slice(since).map((w) => [w.chapterId, w.lineId]);
+  h.game.onLifecycle('activated');
+  go();
+  await unlocking;
+  await settle();
+  const all = sv.autosaves.slice(since).map((w) => [w.chapterId, w.lineId]);
+  const line = lineOf(h.vm);
+  h.game.dispose();
+  // The pending start is a complete body, so the request does not wait for ch2's first step.
+  expect(atOnce).toEqual([['ch2', null]]);
+  expect(line).toBe('ch2.study.l001');
+  expect(all).toEqual([
+    ['ch2', null],
+    ['ch2', 'ch2.study.l001'],
+  ]);
+});

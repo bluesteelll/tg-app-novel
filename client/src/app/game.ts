@@ -545,9 +545,9 @@ export function createGame(deps: GameDeps): Game {
    * An intent is past a move of the session and before its `present` (the runner and the backlog at the next step,
    * the position, the checkpoint and the stage still at the last), whose body would resume a level lower as a false
    * story update; or "Load it" holds every write until their save has resumed, and a request kept until then is
-   * written of their save.
+   * written of their save. While a pending start is the body nothing waits (fix_r2 KL2): it is complete as it is.
    */
-  const waits = (s: Session): boolean => s.adopting || s.torn;
+  const waits = (s: Session): boolean => s.adopting || mixes(s);
 
   /**
    * The autosave of `deactivated`, `pagehide` and the yields' timers, which run outside the intent queue. It is
