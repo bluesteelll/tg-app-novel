@@ -11,6 +11,7 @@ import {
   decodeCreateInvoiceResponse,
   decodeEntitlementsResponse,
   decodeFriendProfile,
+  decodeGiftResponse,
   decodeHintUseResponse,
   decodeInviteView,
   decodeOrderResponse,
@@ -33,6 +34,8 @@ import type {
   EntitlementsResponse,
   ErrorCode,
   FriendProfile,
+  GiftRequest,
+  GiftResponse,
   HintUseResponse,
   InviteView,
   OrderResponse,
@@ -184,8 +187,9 @@ export function metaError(e: ApiError): MetaError {
 }
 
 /**
- * The meta routes (META-PLAN "HTTP API"), apart from `Endpoints`: the game engine takes that whole object, so these
- * routes and their decoders reach the entry only through the meta controller's import (M27).
+ * The meta routes (META-PLAN "HTTP API"), apart from `Endpoints`, which the game engine takes whole. These routes and
+ * their decoders are in the entry, since this module is an entry module; only the meta controller's lazy chunk calls
+ * them (RULINGS 105). Splitting them out is the next lever when the entry needs bytes.
  */
 export interface MetaEndpoints {
   getWallet(): Promise<Result<WalletResponse, ApiError>>;
@@ -206,6 +210,8 @@ export interface MetaEndpoints {
   getFriendProfile(h: FriendHandle): Promise<Result<FriendProfile, ApiError>>;
   /** The body always carries `storyId` (`null` for a plain invite). A 429 is `ApiError` http with `retryAfter`. */
   postShare(req: ShareRequest): Promise<Result<ShareResponse, ApiError>>;
+  /** M22: a resent `requestId` is a replay (nothing moves twice); a daily cap is 429 with `retryAfter`. */
+  postGift(req: GiftRequest): Promise<Result<GiftResponse, ApiError>>;
 }
 
 export function createMetaEndpoints(http: Pick<Http, 'request'>): MetaEndpoints {
@@ -231,6 +237,11 @@ export function createMetaEndpoints(http: Pick<Http, 'request'>): MetaEndpoints 
       http.request(
         { method: 'POST', path: '/api/share', body: { storyId: req.storyId, lang: req.lang, native: req.native } },
         decodeShareResponse,
+      ),
+    postGift: (req) =>
+      http.request(
+        { method: 'POST', path: '/api/gifts', body: { to: req.to, kind: req.kind, amount: req.amount, requestId: req.requestId } },
+        decodeGiftResponse,
       ),
   };
 }

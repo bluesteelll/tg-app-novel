@@ -22,6 +22,7 @@ const NAMES: readonly DecodedDto[] = [
   'CreateInvoiceResponse',
   'EntitlementsResponse',
   'FriendProfile',
+  'GiftResponse',
   'HintUseResponse',
   'InviteView',
   'OrderResponse',
@@ -40,6 +41,7 @@ const NAMES: readonly DecodedDto[] = [
 const META_NAMES: readonly DecodedDto[] = [
   'CardResponse',
   'FriendProfile',
+  'GiftResponse',
   'HintUseResponse',
   'InviteView',
   'ShareResponse',
@@ -91,7 +93,7 @@ function copyOf(name: DecodedDto, sample: number, path: readonly Step[]): unknow
   return structuredClone(node);
 }
 
-type Malformed ={ dto: DecodedDto; sample: number; path: readonly Step[]; value: unknown; error: string };
+type Malformed = { dto: DecodedDto; sample: number; path: readonly Step[]; value: unknown; error: string };
 
 // Per DTO: one required field removed, one wrong type, one out-of-union value where the DTO has a union.
 const MALFORMED: readonly Malformed[] = [
@@ -140,6 +142,8 @@ const MALFORMED: readonly Malformed[] = [
     value: [copyOf('FriendProfile', 0, ['stories', 0])],
     error: 'FriendProfile.stories: stories on a hidden profile',
   },
+  { dto: 'GiftResponse', sample: 0, path: ['balance'], value: REMOVE, error: 'GiftResponse.balance: missing' },
+  { dto: 'GiftResponse', sample: 0, path: ['balance'], value: '1', error: 'GiftResponse.balance: ' },
   // The seeded field rename of PROTOTYPE-PLAN LMD commit 1, kept as an in-memory row: the fixture is never edited.
   { dto: 'HintUseResponse', sample: 0, path: ['text'], value: REMOVE, error: 'HintUseResponse.text: missing' },
   { dto: 'HintUseResponse', sample: 0, path: ['balance'], value: '2', error: 'HintUseResponse.balance: ' },
@@ -369,6 +373,8 @@ function metaApi(answer: (s: Sent) => Response): { api: MetaEndpoints; sent: Sen
 test('endpoints: meta routes', async () => {
   const friend = '0123456789abcdef01234567' as FriendHandle;
   const code = '0123456789abcdef0123456789abcdef';
+  const requestId = '6f1c2b0e-3d4a-4b5c-8d9e-0a1b2c3d4e5f';
+  const gift = { to: friend, kind: 'hint', amount: 2, requestId, from: 1001 };
   type Route = {
     call: (api: MetaEndpoints) => Promise<Result<unknown, ApiError>>;
     method: string;
@@ -416,6 +422,14 @@ test('endpoints: meta routes', async () => {
       body: { storyId: null, lang: 'ru', native: false },
       answer: 'ShareResponse',
     },
+    // A field the caller's object holds beyond GiftRequest (a `from`, say) is a 400 on the server: it is never sent.
+    {
+      call: (api) => api.postGift(gift),
+      method: 'POST',
+      url: '/api/gifts',
+      body: { to: friend, kind: 'hint', amount: 2, requestId },
+      answer: 'GiftResponse',
+    },
   ];
   for (const route of routes) {
     for (const [i, sample] of samplesOf(route.answer).entries()) {
@@ -432,12 +446,18 @@ test('endpoints: meta routes', async () => {
   }
 
   // The bodies are the whole requests, in order: `storyId` is sent as null for a plain invite, never left out (LF2 M1).
-  const { api, sent } = metaApi((s) => json(200, s.url === '/api/share' ? samplesOf('ShareResponse')[1] : samplesOf('SocialResponse')[0]));
+  const answers: Readonly<Record<string, unknown>> = {
+    '/api/share': samplesOf('ShareResponse')[1],
+    '/api/gifts': samplesOf('GiftResponse')[0],
+  };
+  const { api, sent } = metaApi((s) => json(200, Object.hasOwn(answers, s.url) ? answers[s.url] : samplesOf('SocialResponse')[0]));
   await api.postShare({ storyId: null, lang: 'ru', native: false });
   await api.putConsent({ granted: false, textVersion: 'friends_profile.v1' });
+  await api.postGift(gift);
   expect(sent.map((s) => (typeof s.body === 'object' && s.body !== null ? Object.keys(s.body) : null))).toEqual([
     ['storyId', 'lang', 'native'],
     ['granted', 'textVersion'],
+    ['to', 'kind', 'amount', 'requestId'],
   ]);
 });
 

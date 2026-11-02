@@ -1,9 +1,11 @@
 <script lang="ts">
   // The overlay's root (PROTOTYPE-PLAN "Screen map"; L15 D5, D6, D12, D26): it routes the view model to the
-  // components and their callbacks to Home's actions and the Game, and decides nothing itself. Home, the notices, the
-  // chapter list and the toasts ship in the entry; every other component is the engine's (`vm.ui`) and renders once
-  // that chunk is in. The Stage mounts with the engine and stays for the page's life (one Pixi Application; the scene
-  // itself mounts at the first start), under the opaque Home and notice layers. Every layer is full-bleed: each
+  // components and their callbacks to Home's actions, the Game and the meta controller, and decides nothing itself.
+  // Home, the notices, the chapter list and the toasts ship in the entry; the meta overlays are the meta chunk's
+  // (`vm.meta.ui`, META M27); every other component is the engine's (`vm.ui`); each renders once its chunk is in.
+  // Home's, the Menu's and the Terms' meta taps go through boot's gate (`app.metaTaps`), so they are always given.
+  // The Stage mounts with the engine and stays for the page's life (one Pixi Application; the scene itself mounts at
+  // the first start), under the opaque Home and notice layers. Every layer is full-bleed: each
   // component pads itself past the safe area, and the hotspot layer lives inside the Stage host, the box the canvas
   // and the hotspot rects share. Below the top overlay every layer is inert. Player-facing words come from the UI
   // tables only (principle 8).
@@ -18,8 +20,10 @@
 
   let { app }: { app: AppHandle } = $props();
 
-  /** The overlays this component renders; the explore panels, the puzzle frame and the meta screens render elsewhere. */
+  /** Home's and the engine's overlays; the explore panels and the puzzle frame render elsewhere. */
   const OWN: ReadonlySet<ScreenKind> = new Set<ScreenKind>(['menu', 'backlog', 'settings', 'saves', 'chapters', 'paywall', 'terms']);
+  /** The meta overlays, from the meta chunk once the controller has loaded it. */
+  const META: ReadonlySet<ScreenKind> = new Set<ScreenKind>(['card', 'friends', 'friend', 'wallet', 'gift', 'consent', 'invite']);
 
   const vm = $derived(app.vm);
   const ui = $derived(vm.ui);
@@ -27,14 +31,15 @@
   const game = $derived(ui === null ? null : app.game());
   const root = $derived(vm.screens.root.kind);
   const overlays = $derived(vm.screens.overlays);
-  const covered = $derived(overlays.some((o) => OWN.has(o.kind)));
+  const covered = $derived(overlays.some((o) => OWN.has(o.kind) || META.has(o.kind)));
+  const meta = $derived(vm.meta);
+  const mui = $derived(meta?.ui ?? null);
+  /** Set before `vm.meta` changes after the controller's creation (app/boot.ts), so it is there whenever its data are. */
+  const ctl = $derived(meta === null ? null : app.meta());
   const frame = $derived(ui?.puzzle.frame ?? null);
   const puzzleHost = $derived(ui?.puzzle.host ?? null);
   /** The puzzle-host chunk did not load: no frame component to show its Retry (D13). */
   const hostFailed = $derived(frame !== null && frame.loadFailed && puzzleHost === null);
-
-  /** StoryPicker requires a card action; every card has `card: false` before LMI (META M27), so it never shows. */
-  const noCard = (): void => {};
 
   let rootEl: HTMLElement | undefined = $state();
 
@@ -123,7 +128,9 @@
               onstart={(id) => app.home.start(id)}
               oncontinue={(id) => app.home.resume(id)}
               onchapters={(id) => app.home.chapters(id)}
-              oncard={noCard}
+              oncard={(id) => app.metaTaps.card(id)}
+              onfriends={() => app.metaTaps.friends()}
+              onwallet={() => app.metaTaps.wallet()}
             />
           </div>
         </TapToStart>
@@ -155,6 +162,8 @@
               onsaves={() => void game?.openSaves()}
               onsettings={() => game?.openSettings()}
               onstories={() => void game?.exitToStories()}
+              onfriends={() => app.metaTaps.friends()}
+              onwallet={() => app.metaTaps.wallet()}
             />
           {:else if o.kind === 'backlog'}
             <ui.Backlog lines={vm.backlog} lang={vm.lang} />
@@ -186,8 +195,84 @@
               />
             {/if}
           {:else if o.kind === 'terms'}
-            <ui.Terms lang={vm.lang} />
+            <ui.Terms lang={vm.lang} onpolicy={() => app.metaTaps.policy()} />
           {/if}
+        {/if}
+      </div>
+    {:else if META.has(o.kind) && meta !== null && mui !== null}
+      <div class="layer" inert={i < overlays.length - 1}>
+        {#if o.kind === 'card'}
+          {#if meta.card !== null}
+            {@const story = meta.card.story}
+            <mui.CompletionCard card={meta.card.data} storyTitle={meta.card.storyTitle} lang={vm.lang} onshare={() => void ctl?.share(story)} />
+          {/if}
+        {:else if o.kind === 'friends'}
+          {#if meta.social !== null}
+            <mui.Friends
+              social={meta.social}
+              lang={vm.lang}
+              busy={meta.busy.social}
+              onaccept={(h) => ctl?.accept(h)}
+              ondecline={(h) => ctl?.remove(h)}
+              onopen={(h) => ctl?.openProfile(h)}
+              oninvite={() => void ctl?.share(null)}
+              onconsent={() => ctl?.openConsent()}
+              onpolicy={() => ctl?.openPolicy()}
+              onrotate={() => ctl?.rotate()}
+            />
+          {/if}
+        {:else if o.kind === 'friend'}
+          {#if meta.profile !== null}
+            <mui.FriendProfile
+              profile={meta.profile}
+              lang={vm.lang}
+              busy={meta.busy.social}
+              ongift={(h) => ctl?.openGift(h)}
+              onremove={(h) => ctl?.remove(h)}
+            />
+          {/if}
+        {:else if o.kind === 'wallet'}
+          {#if meta.wallet !== null}
+            <mui.Wallet
+              wallet={meta.wallet}
+              lang={vm.lang}
+              busy={meta.busy.wallet}
+              onbuy={(p) => ctl?.buyPack(p)}
+              onterms={() => ctl?.openTerms()}
+            />
+          {/if}
+        {:else if o.kind === 'gift'}
+          {#if meta.gift !== null}
+            {@const g = meta.gift}
+            <mui.GiftDialog
+              friend={g.friend}
+              kind={g.kind}
+              balance={g.balance}
+              maxAmount={g.maxAmount}
+              error={g.error}
+              lang={vm.lang}
+              busy={g.busy}
+              onsend={(n) => void ctl?.gift(g.friend.handle, g.kind, n)}
+              oncancel={() => ctl?.cancelGift()}
+            />
+          {/if}
+        {:else if o.kind === 'consent'}
+          {#if meta.social !== null}
+            <mui.ConsentDialog
+              granted={meta.social.profileVisible}
+              lang={vm.lang}
+              busy={meta.busy.consent}
+              onchange={(on, version) => ctl?.setVisible(on, version)}
+              onpolicy={() => ctl?.openPolicy()}
+            />
+          {/if}
+        {:else if o.kind === 'invite'}
+          <mui.InvitePrompt
+            lang={vm.lang}
+            busy={meta.busy.invite}
+            onsend={() => ctl?.sendInvite()}
+            onlater={() => ctl?.dismissInvite()}
+          />
         {/if}
       </div>
     {/if}

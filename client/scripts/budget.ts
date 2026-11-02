@@ -53,8 +53,10 @@ export type BudgetInputs = {
   indexHtml: string | null;
   files: DistFile[];
   engineSourceExists: boolean;
-  /** `src/app/yields.ts` exists: the importer of every lazy family (PUZZLES-PLAN X14, W7). */
+  /** `src/app/yields.ts` exists: the importer of the puzzle and explore families (PUZZLES-PLAN X14, W7). */
   yieldsSourceExists: boolean;
+  /** `src/app/meta.ts` exists: the importer of the meta families (META-PLAN M27; RULINGS 105). */
+  metaSourceExists: boolean;
   /** The LAZY_FAMILIES roots that exist under client/, by their manifest `src`. */
   lazySources: ReadonlySet<string>;
   /** Dist paths of the re-export-only JS files: Rolldown's facades, which hold no code of their own (RULINGS 92). */
@@ -69,6 +71,10 @@ export type Limits = {
   puzzleTypeChunkBr: number;
   puzzleHostChunkBr: number;
   exploreUiChunkBr: number;
+  /** META-PLAN "Budgets": JS + CSS of the meta overlays' chunk. */
+  metaUiChunkBr: number;
+  /** RULINGS 105: the meta controller's chunk, requested before the first line (from its measurement, at most 6 KB). */
+  metaControllerChunkBr: number;
   allJsBr: number;
   cssBr: number;
   htmlBr: number;
@@ -102,7 +108,9 @@ export const LIMITS: Limits = {
   puzzleTypeChunkBr: 8_000,
   puzzleHostChunkBr: 10_000,
   exploreUiChunkBr: 16_000,
-  allJsBr: 290_000,
+  metaUiChunkBr: 14_000,
+  metaControllerChunkBr: 5_000,
+  allJsBr: 305_000,
   cssBr: 12_000,
   htmlBr: 2_000,
   storyRaw: 160_000,
@@ -124,31 +132,56 @@ export const LIMITS: Limits = {
 };
 /** The dynamic-import root of the engine chunk (two-stage boot); its manifest key and `src`. */
 export const ENGINE_SRC = 'src/app/engine.ts';
-/** The importer of every lazy family (PUZZLES-PLAN X14): the lazy rows are PENDING until it exists (W7). */
+/** The importer of the puzzle and explore families (PUZZLES-PLAN X14): their rows are PENDING until it exists (W7). */
 export const YIELDS_SRC = 'src/app/yields.ts';
+/** The meta controller (META-PLAN M27; RULINGS 105): boot import()s it after auth, and it import()s the overlays. */
+export const META_SRC = 'src/app/meta.ts';
 
-/** One lazy chunk family: its roots (manifest `src`), its limit, and whether the largest root or their union counts. */
+/**
+ * One lazy chunk family: its roots (manifest `src`), its limit, whether the largest root or their union counts, the
+ * source whose absence keeps its row PENDING, and whether it is requested before the first line.
+ */
 export type LazyFamily = {
   name: string;
   roots: readonly string[];
-  limit: 'puzzleTypeChunkBr' | 'puzzleHostChunkBr' | 'exploreUiChunkBr';
+  limit: 'puzzleTypeChunkBr' | 'puzzleHostChunkBr' | 'exploreUiChunkBr' | 'metaUiChunkBr' | 'metaControllerChunkBr';
   measure: 'largest' | 'union';
+  importer: typeof YIELDS_SRC | typeof META_SRC;
+  /** Requested beside the engine (RULINGS 105): the first-line and first-load rows count its JS. */
+  firstLine: boolean;
 };
-/** PUZZLES-PLAN X14: every family is a dynamic chunk, never in the entry or the engine closure. */
+/**
+ * PUZZLES-PLAN X14, META-PLAN M27: every family is a dynamic chunk, never in the entry or the engine closure. The meta
+ * controller loads before the first line but outside both closures, so it is counted there once, through its row.
+ */
 export const LAZY_FAMILIES: readonly LazyFamily[] = [
   {
     name: 'puzzle-type chunk (br)',
     roots: ['src/puzzles/ui/CodeLock.svelte', 'src/puzzles/ui/OrderPuzzle.svelte'],
     limit: 'puzzleTypeChunkBr',
     measure: 'largest',
+    importer: YIELDS_SRC,
+    firstLine: false,
   },
-  { name: 'puzzle-host chunk (br)', roots: ['src/ui/puzzles/PuzzleHost.svelte'], limit: 'puzzleHostChunkBr', measure: 'largest' },
+  {
+    name: 'puzzle-host chunk (br)',
+    roots: ['src/ui/puzzles/PuzzleHost.svelte'],
+    limit: 'puzzleHostChunkBr',
+    measure: 'largest',
+    importer: YIELDS_SRC,
+    firstLine: false,
+  },
   {
     name: 'explore-ui chunk (br)',
     roots: ['src/explore/controller.ts', 'src/ui/explore/ExploreView.svelte'],
     limit: 'exploreUiChunkBr',
     measure: 'union',
+    importer: YIELDS_SRC,
+    firstLine: false,
   },
+  { name: 'meta-ui chunk (br)', roots: ['src/ui/meta/index.ts'], limit: 'metaUiChunkBr', measure: 'largest', importer: META_SRC, firstLine: false },
+  // Its own root is its importer: boot.ts always exists, so the row is PENDING exactly while the controller is absent.
+  { name: 'meta controller chunk (br)', roots: [META_SRC], limit: 'metaControllerChunkBr', measure: 'largest', importer: META_SRC, firstLine: true },
 ];
 const LAZY_ROOTS: ReadonlySet<string> = new Set(LAZY_FAMILIES.flatMap((f) => f.roots));
 /** The arch rule's lazy directories: a chunk from one of them loads after the first line, listed root or not. */
@@ -430,8 +463,10 @@ function engineRow(inputs: BudgetInputs, entryClosure: Closure | null, sizes: Re
 }
 
 /**
- * Entry + engine closures: what loads before the first line. While the engine source does not exist the sum is
- * partial: PENDING, or FAIL when the entry alone is already over (a partial PASS would be a 0 KB pass).
+ * Entry + engine closures, and the lazy chunks requested beside them (the meta controller): what loads before the first
+ * line. While the engine source does not exist the sum is partial: PENDING, or FAIL when the entry alone is already over
+ * (a partial PASS would be a 0 KB pass). A pending or failed early chunk adds nothing: its code is then in a closure
+ * counted here, or not built, and its own row says so.
  */
 function firstLineJs(
   inputs: BudgetInputs,
@@ -444,10 +479,13 @@ function firstLineJs(
     return { ok: false, problem: `entry closure: ${e.problem}` };
   }
   const g = engineMeasure(inputs, entryClosure, sizes);
+  const early = LAZY_FAMILIES.filter((f) => f.firstLine)
+    .map((f) => lazyMeasure(inputs, f, entryClosure, sizes))
+    .reduce((sum, m) => sum + (m.kind === 'ok' ? m.js : 0), 0);
   if (g === null) {
-    return { ok: true, bytes: e.bytes, partial: true };
+    return { ok: true, bytes: e.bytes + early, partial: true };
   }
-  return g.ok ? { ok: true, bytes: e.bytes + g.bytes, partial: false } : { ok: false, problem: `engine closure: ${g.problem}` };
+  return g.ok ? { ok: true, bytes: e.bytes + g.bytes + early, partial: false } : { ok: false, problem: `engine closure: ${g.problem}` };
 }
 
 function firstLineRow(
@@ -462,7 +500,7 @@ function firstLineRow(
   if (!js.ok) {
     return failed(name, limits.firstLineJsBr, js.problem);
   }
-  return partialRow(name, js.bytes, limits.firstLineJsBr, js.partial, 'entry + engine closures');
+  return partialRow(name, js.bytes, limits.firstLineJsBr, js.partial, 'entry + engine closures + meta controller chunk');
 }
 
 /** A sum that lacks the engine while its source is absent: PENDING (with the partial value) unless already over. */
@@ -474,26 +512,27 @@ function partialRow(name: string, bytes: number, limit: number, partial: boolean
   return { name, valueBytes: bytes, limitBytes: limit, status: bytes > limit ? 'FAIL' : 'PENDING', note: why, unit: 'KB' };
 }
 
+/** A lazy family's bytes (JS + CSS, and the JS alone), or why it is not measured yet, or why it cannot be. */
+type LazyMeasure = { kind: 'pending'; note: string } | { kind: 'failed'; problem: string } | { kind: 'ok'; bytes: number; js: number; note: string };
+
 /**
- * A lazy family's row, keyed on its importer like the engine row on `app/engine.ts` (PUZZLES-PLAN W7): PENDING while
- * `src/app/yields.ts` or every root source is absent. Once both exist, a present root FAILs without a dynamic entry
- * of its own, or inside the entry or the engine closure (it would load before the first line), or when its dynamic
- * entry is a facade over a chunk of either closure (a static import moved its code there). Its bytes are the JS
- * and CSS of its static closure beyond the entry and engine closures (downloaded once): the largest root's, or the
- * union of the roots'.
+ * A lazy family, keyed on its importer like the engine row on `app/engine.ts` (PUZZLES-PLAN W7): PENDING while the
+ * importer or every root source is absent. Once both exist, a present root FAILs without a dynamic entry of its own,
+ * or inside the entry or the engine closure (it would be counted there), or when its dynamic entry is a facade over a
+ * chunk of either closure (a static import moved its code there). Its bytes are the JS and CSS of its static closure
+ * beyond the entry and engine closures (downloaded once): the largest root's, or the union of the roots'.
  */
-function lazyRow(inputs: BudgetInputs, family: LazyFamily, entryClosure: Closure | null, sizes: ReadonlyMap<string, number>, limits: Limits): Row {
-  const { name } = family;
-  const limit = limits[family.limit];
-  if (!inputs.yieldsSourceExists) {
-    return pending(name, limit, `${YIELDS_SRC} absent`);
+function lazyMeasure(inputs: BudgetInputs, family: LazyFamily, entryClosure: Closure | null, sizes: ReadonlyMap<string, number>): LazyMeasure {
+  const importerExists = family.importer === META_SRC ? inputs.metaSourceExists : inputs.yieldsSourceExists;
+  if (!importerExists) {
+    return { kind: 'pending', note: `${family.importer} absent` };
   }
   const present = family.roots.filter((root) => inputs.lazySources.has(root));
   if (present.length === 0) {
-    return pending(name, limit, `no source of ${family.roots.join(', ')}`);
+    return { kind: 'pending', note: `no source of ${family.roots.join(', ')}` };
   }
   if (inputs.manifest === null) {
-    return failed(name, limit, 'dist/.vite/manifest.json missing');
+    return { kind: 'failed', problem: 'dist/.vite/manifest.json missing' };
   }
   const manifest = inputs.manifest;
   const entryKeys = entryClosure?.keys ?? new Set<string>();
@@ -542,15 +581,33 @@ function lazyRow(inputs: BudgetInputs, family: LazyFamily, entryClosure: Closure
   const sized = perRoot.map((r) => ({ ...r, ...chunkBytes(manifest, r.keys, sizes) }));
   problems.push(...sized.flatMap((r) => r.missing.map((file) => `missing from dist: ${file}`)));
   if (problems.length > 0) {
-    return failed(name, limit, problems.join('; '));
+    return { kind: 'failed', problem: problems.join('; ') };
   }
   if (family.measure === 'union') {
     const union = new Set(perRoot.flatMap((r) => [...r.keys]));
     const { bytes } = chunkBytes(manifest, union, sizes);
-    return measured(name, bytes, limit, `${union.size} chunks of ${present.length} roots`);
+    return { kind: 'ok', bytes, js: jsBytes(manifest, union, sizes).bytes, note: `${union.size} chunks of ${present.length} roots` };
   }
   const largest = sized.reduce((a, b) => (b.bytes > a.bytes ? b : a));
-  return measured(name, largest.bytes, limit, `largest: ${largest.root}, ${largest.keys.size} chunks`);
+  const js = jsBytes(manifest, largest.keys, sizes).bytes;
+  return { kind: 'ok', bytes: largest.bytes, js, note: `largest: ${largest.root}, ${largest.keys.size} chunks` };
+}
+
+function lazyRow(inputs: BudgetInputs, family: LazyFamily, entryClosure: Closure | null, sizes: ReadonlyMap<string, number>, limits: Limits): Row {
+  const limit = limits[family.limit];
+  const m = lazyMeasure(inputs, family, entryClosure, sizes);
+  switch (m.kind) {
+    case 'pending':
+      return pending(family.name, limit, m.note);
+    case 'failed':
+      return failed(family.name, limit, m.problem);
+    case 'ok':
+      return measured(family.name, m.bytes, limit, m.note);
+    default: {
+      const _never: never = m;
+      return _never;
+    }
+  }
 }
 
 function sumRow(name: string, files: readonly DistFile[], pick: (path: string) => boolean, limit: number): Row {
@@ -1048,8 +1105,12 @@ export function readInputs(distDir: string, clientRoot: string): { inputs: Budge
   const sourceExists = (src: string): boolean => existsSync(path.join(clientRoot, ...src.split('/')));
   const engineSourceExists = sourceExists(ENGINE_SRC);
   const yieldsSourceExists = sourceExists(YIELDS_SRC);
+  const metaSourceExists = sourceExists(META_SRC);
   const lazySources = new Set([...LAZY_ROOTS].filter(sourceExists));
-  return { inputs: { manifest, manifestStale, indexHtml, files, engineSourceExists, yieldsSourceExists, lazySources, facades }, problems };
+  return {
+    inputs: { manifest, manifestStale, indexHtml, files, engineSourceExists, yieldsSourceExists, metaSourceExists, lazySources, facades },
+    problems,
+  };
 }
 
 /** The repository's story and asset tool outputs as evaluateAssets() reads them; every unusable input is a problem. */

@@ -148,4 +148,12 @@ export const ru = {
   'hint.failed': 'Не удалось открыть подсказку',
   // Declared for LMI: the toast when the playthrough card is not ready at an ending (META M9).
   'meta.card_later': 'Прохождение будет готово чуть позже',
+  // The meta controller's toasts (app/meta.ts; F18-F20); the overlays' own texts live in i18n/meta.ts.
+  'meta.invite_sent': 'Запрос отправлен',
+  'meta.share_failed': 'Не удалось отправить сообщение',
+  'meta.share_as_link': 'Отправить ссылкой',
+  'meta.share_wait': 'Слишком часто. Попробуйте через {minutes} мин.',
+  'meta.telegram_unavailable': 'Telegram недоступен',
+  'meta.friend_limit': 'Друзей уже слишком много',
+  'meta.action_failed': 'Не получилось. Попробуйте ещё раз',
 } as const;

@@ -2,6 +2,7 @@
 // game session. It holds views only, never a Story, a runner or a Pixi object (principle 7). Every field is
 // `$state.raw` and is replaced, never mutated, so a component re-renders on assignment and nothing deep is proxied.
 import type { EngineUi } from '../app/engine.ts';
+import type { MetaView } from '../app/meta.ts';
 import type { Lang } from '../i18n/index.ts';
 import type { PurchaseState } from '../purchase/flow.ts';
 import type { ManualSlot } from '../saves/service.ts';
@@ -84,6 +85,8 @@ export interface ViewModel {
   paused: boolean;
   /** The in-play components, once the engine chunk has loaded; null before. */
   ui: EngineUi | null;
+  /** What the meta overlays render (app/meta.ts writes it); null until the meta controller exists, after auth. */
+  meta: MetaView | null;
   readonly toasts: readonly ToastEntry[];
   /** Adds `e`; an entry with the same key is replaced in place (its timer restarted). Above TOAST_MAX the oldest
    * transient is dropped; a sticky entry never is. */
@@ -119,6 +122,7 @@ class OverlayState implements ViewModel {
   reducedMotion: boolean = $state.raw(false);
   paused: boolean = $state.raw(false);
   ui: EngineUi | null = $state.raw(null);
+  meta: MetaView | null = $state.raw(null);
   #toasts: readonly ToastEntry[] = $state.raw([]);
   readonly #timers: Timers;
   /** The pending expiry of each transient entry, by key. */

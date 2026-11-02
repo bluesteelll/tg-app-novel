@@ -95,6 +95,7 @@ const META_KEYS = [
   // friends
   'meta.friends_title',
   'meta.friends_invite',
+  'meta.friends_rotate',
   'meta.friends_visibility',
   'meta.friends_visibility_on',
   'meta.friends_visibility_off',
@@ -296,6 +297,7 @@ test('friends: requests show accept and decline', async () => {
       oninvite: vi.fn(),
       onconsent: vi.fn(),
       onpolicy: vi.fn(),
+      onrotate: vi.fn(),
     };
     const view = render(Friends, { social: SOCIAL, lang, ...calls });
     const q = within(view.container);
@@ -335,6 +337,79 @@ test('friends: requests show accept and decline', async () => {
   // A friend carries a handle and a first name, never a Telegram id (W1).
   // @ts-expect-error -- no numeric user id in the props
   void ({ handle: H1, firstName: 'Bo', userId: 1 } satisfies FriendData);
+});
+
+test('friends: accept and decline count only an armed tap', () => {
+  for (const lang of LANGS) {
+    const onaccept = vi.fn();
+    const ondecline = vi.fn();
+    const view = render(Friends, {
+      social: SOCIAL,
+      lang,
+      onaccept,
+      ondecline,
+      onopen: vi.fn(),
+      oninvite: vi.fn(),
+      onconsent: vi.fn(),
+      onpolicy: vi.fn(),
+      onrotate: vi.fn(),
+    });
+    const q = within(view.container);
+    const accepts = q.getAllByRole('button', { name: mt(lang, 'meta.friends_accept') });
+    const declines = q.getAllByRole('button', { name: mt(lang, 'meta.friends_decline') });
+    // Rule (b): the tap that opened Friends, a click with no pointerdown on the button, accepts or declines nothing.
+    pointerClick(accepts[0] ?? document.body);
+    pointerClick(declines[0] ?? document.body);
+    flushSync();
+    expect(onaccept.mock.calls, lang).toEqual([]);
+    expect(ondecline.mock.calls, lang).toEqual([]);
+    // A pointerdown arms its own button only.
+    down(accepts[0] ?? document.body);
+    pointerClick(declines[0] ?? document.body);
+    flushSync();
+    expect(ondecline.mock.calls, lang).toEqual([]);
+    // A keyboard or assistive-technology click (detail 0) counts, and so does a full tap, each once.
+    keyClick(accepts[1] ?? document.body);
+    tap(declines[2] ?? document.body);
+    pointerClick(declines[2] ?? document.body);
+    flushSync();
+    expect(onaccept.mock.calls, lang).toEqual([[H2]]);
+    expect(ondecline.mock.calls, lang).toEqual([[H4]]);
+    view.unmount();
+  }
+});
+
+test('friends: rotate asks for a new invite link', async () => {
+  for (const lang of LANGS) {
+    const onrotate = vi.fn();
+    const view = render(Friends, {
+      social: SOCIAL,
+      lang,
+      onaccept: vi.fn(),
+      ondecline: vi.fn(),
+      onopen: vi.fn(),
+      oninvite: vi.fn(),
+      onconsent: vi.fn(),
+      onpolicy: vi.fn(),
+      onrotate,
+    });
+    const q = within(view.container);
+    const rotate = q.getByRole('button', { name: mt(lang, 'meta.friends_rotate') });
+    // Rule (b): a rotation revokes the link already sent, so the tap that opened Friends rotates nothing, and neither
+    // does a click after a pointerdown on another button.
+    pointerClick(rotate);
+    down(q.getAllByRole('button', { name: mt(lang, 'meta.friends_accept') })[0] ?? document.body);
+    pointerClick(rotate);
+    flushSync();
+    expect(onrotate, lang).not.toHaveBeenCalled();
+    // A full tap and a keyboard or assistive-technology click (detail 0) each ask once.
+    tap(rotate);
+    keyClick(rotate);
+    expect(onrotate, lang).toHaveBeenCalledTimes(2);
+    await view.rerender({ busy: true });
+    expect((rotate as HTMLButtonElement).disabled, lang).toBe(true);
+    view.unmount();
+  }
 });
 
 const STORY: ProfileData['stories'][number] = {
@@ -858,6 +933,15 @@ const SRC_SOURCES: Readonly<Record<string, string>> = Object.fromEntries(
   ).map(([key, text]) => [new URL(key, 'file:///src/ui/meta/').pathname.slice('/src/'.length), text]),
 );
 
+/**
+ * A resolved specifier as the source file it names, as the bundler resolves it: `x.js` is `x.ts`, an extensionless `x`
+ * is `x.ts`, and a directory is its `index.ts` (carry: `'../ui/meta'` reaches the chunk's entry too).
+ */
+function sourceOf(target: string): string {
+  const stem = target.replace(/\/$/, '').replace(/\.js$/, '');
+  return [stem, `${stem}.ts`, `${stem}/index.ts`].find((f) => Object.hasOwn(SRC_SOURCES, f)) ?? target;
+}
+
 /** The I/O a presentational overlay never does (spec 4); storage, dialogs and window.open are arch's rules. */
 const IO_NAMES =
   /\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|navigator|window|globalThis|document|indexedDB|postMessage|setTimeout|setInterval)\b/g;
@@ -919,7 +1003,7 @@ test('meta: one entry, no I/O, the meta table stays in the chunk', () => {
       if (!ref.spec.startsWith('.') && !ref.spec.startsWith('/')) {
         continue;
       }
-      const target = new URL(ref.spec, `file:///src/${file}`).pathname.slice('/src/'.length);
+      const target = sourceOf(new URL(ref.spec, `file:///src/${file}`).pathname.slice('/src/'.length));
       const loader = ref.dynamic && file === 'app/meta.ts' && target === 'ui/meta/index.ts';
       if ((target === 'i18n/meta.ts' || target.startsWith('ui/meta/')) && !ref.typeOnly && !loader) {
         intoChunk.push(`${file}: ${form(ref)}`);

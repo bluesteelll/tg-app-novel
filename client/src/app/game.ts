@@ -15,6 +15,7 @@ import { createLineText } from '../i18n/lines.ts';
 import type { LineText } from '../i18n/lines.ts';
 import { chapterDelivered, createPurchaseFlow } from '../purchase/flow.ts';
 import type { PurchaseFlow, PurchaseState } from '../purchase/flow.ts';
+import type { HintPort } from '../puzzles/session.ts';
 import { summaryOf } from '../saves/service.ts';
 import type { ManualSlot, SaveError, SaveService, SaveState, SaveWrite } from '../saves/service.ts';
 import type { SceneController } from '../scene/controller.ts';
@@ -118,6 +119,21 @@ export type GameDeps = {
   chunks?: LazyChunks;
 };
 
+/**
+ * The meta controller's side of a session (META-PLAN M27, F16; RULINGS 105): boot's gate, which reads the controller
+ * when called, so the session runs the same before and after the controller's chunk lands.
+ */
+export type GameMeta = {
+  /** A declared ending was reached (F16): the stats settle, then the card over the end; never rejects. */
+  onEnding(story: StoryId): Promise<void>;
+  /** The puzzle session's hint port (M21), or null while the controller is not in. */
+  hintPort(): HintPort | null;
+  /** A line was revealed: the meta overlays' chunk is fetched once. */
+  lineShown(): void;
+  /** The session leaves: no meta answer of before pushes an overlay. */
+  closeOverlays(): void;
+};
+
 /** The Game the overlay drives. Each method that starts an intent resolves once that intent is done. */
 export interface Game {
   /** Starts a session of `from.story` (F1 steps 7-9); one session at a time. */
@@ -160,6 +176,8 @@ export interface Game {
   exitToStories(): Promise<void>;
   /** The screens stack changed (boot's `onView`): the explore panels and an exploration puzzle follow it. */
   screensChanged(v: ScreensView): void;
+  /** Boot's meta port, attached before the game is published; a game without one shows no card and no hint port. */
+  attachMeta(m: GameMeta): void;
   /** The explore layer's callbacks, for the current session's yields. */
   readonly exploreActions: ExploreLayerActions;
   /** The puzzle host's callbacks, for the current session's yields. */
@@ -359,6 +377,7 @@ export function createGame(deps: GameDeps): Game {
   let exiting = false;
   let choiceSetId = 0;
   let offer: Offer | null = null;
+  let meta: GameMeta | null = null;
   /**
    * An autosave asked for from outside the intent queue that has to wait (`waits`); it is written as soon as it no
    * longer has to, at the latest when the intent ends.
@@ -1096,7 +1115,14 @@ export function createGame(deps: GameDeps): Game {
       // F4′: the story is over. The knot's ending_reached marks it; nothing is saved past the knot's checkpoint.
       runner?.dispose();
       s.runner = null;
-      showNotice({ kind: 'the_end', onaction: () => void game.exitToStories() });
+      const m = meta;
+      const story = s.story.id;
+      const onaction = (): void => void game.exitToStories();
+      // F16: the card action is the retry; the first card follows the settle, asked for once the end is the root.
+      showNotice(m === null ? { kind: 'the_end', onaction } : { kind: 'the_end', onaction, oncard: () => void m.onEnding(story) });
+      if (m !== null) {
+        void m.onEnding(story); // never rejects; the card or its toast is on screen
+      }
       return;
     }
     reporter.record({ kind: 'chapter_completed', chapterId: ch.id, storyVersion: ch.meta.storyVersion });
@@ -1218,6 +1244,7 @@ export function createGame(deps: GameDeps): Game {
     reporter,
     clock,
     chunks,
+    hints: () => meta?.hintPort() ?? null,
     stageHost: () => host,
     chapter: () => of().ch,
     runner: () => of().runner,
@@ -1357,6 +1384,7 @@ export function createGame(deps: GameDeps): Game {
     if (s === null) {
       return;
     }
+    meta?.closeOverlays(); // a card asked for at the end lands on nothing
     s.yields.disposePuzzle();
     closeOffer();
     autosave(s); // the world is still in the explore controller
@@ -1658,6 +1686,7 @@ export function createGame(deps: GameDeps): Game {
       revealed = true;
       scheduleAuto();
       session?.yields.lineShown();
+      meta?.lineShown();
     },
     gesture() {
       const a = sound;
@@ -1820,6 +1849,9 @@ export function createGame(deps: GameDeps): Game {
     },
     screensChanged(v) {
       session?.yields.screensChanged(v);
+    },
+    attachMeta(m) {
+      meta = m;
     },
     exploreActions: {
       ontap: (key) => session?.yields.layer.ontap(key),
