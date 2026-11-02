@@ -1,12 +1,12 @@
 # Architecture
 
-> The layers of tg-app-novel as merged at `6d77329`, how data moves between them, and where each CLAUDE.md principle
+> The layers of tg-app-novel as merged at `a4d53ef`, how data moves between them, and where each CLAUDE.md principle
 > is enforced. First version at `e5ce724`, with LS3 server-stats and LU1 meta-ui added at `6043941`, L10, L14b, LE1,
 > LP2, L13, LF1, LS4, LX and LM2 since, LF2 share-profile, LE2 gifts-referrals, L15a engine-wiring and LMD
-> meta-data at `48abfaf`, and LPO privacy-operator, L15b app-e2e, L9 refunds-bot, LFU1 engine-followups and LFU2
-> client-followups at `6d77329` (M1 memory-trim merged too; its sections are D2's, MEMORY-PLAN section 11); open at
-> `6d77329`: LPH payments-hardening and LMI meta-integration. Parts not built yet are marked **planned** with the lane
-> and the plan section.
+> meta-data at `48abfaf`, LPO privacy-operator, L15b app-e2e, L9 refunds-bot, LFU1 engine-followups and LFU2
+> client-followups at `6d77329` (M1 memory-trim merged too; its sections are D2's, MEMORY-PLAN section 11), and LPH
+> payments-hardening at `a4d53ef` (merged `d423cb3`); open at `a4d53ef`: LMI meta-integration. Parts not built yet are
+> marked **planned** with the lane and the plan section.
 
 The design is in [PROTOTYPE-PLAN.md](PROTOTYPE-PLAN.md) (PP), [PUZZLES-PLAN.md](PUZZLES-PLAN.md) (PZ),
 [STORIES-PLAN.md](STORIES-PLAN.md) (SP) and [META-PLAN.md](META-PLAN.md); this page describes what the tree does. Where
@@ -43,7 +43,7 @@ Each arrow is a function: `main` ([story.ts:530](../client/scripts/story.ts#L530
 
 ## Client modules
 
-What exists under `client/src/` at `6d77329`. The boundary column is enforced by
+What exists under `client/src/` at `a4d53ef`. The boundary column is enforced by
 [arch.test.ts](../client/src/arch.test.ts) (rules `RULE_IDS`, scopes in `applies`), not by review.
 
 | Module | Responsibility | Boundary |
@@ -100,7 +100,7 @@ components are tested in the vitest `dom` project.
 
 | Module | Responsibility |
 |---|---|
-| [main.rs](../server/src/main.rs) | `server serve` (the default): `Config::from_env`, `AppState::new`, bind `LISTEN_ADDR`, graceful shutdown. As merged (L9 `d837c8b`): before `AppState::new`, a set `STATIC_DIR` passes `static_files::check` or the start is refused, and the built client is served beside the API (`with_static`; [main.rs:67-124](../server/src/main.rs#L67)); `server setup` (`bot_setup` :37) registers the bot with Telegram and opens no database |
+| [main.rs](../server/src/main.rs) | `server serve` (the default): `Config::from_env`, `AppState::new`, bind `LISTEN_ADDR`, graceful shutdown. As merged (L9 `d837c8b`): before `AppState::new`, a set `STATIC_DIR` passes `static_files::check` or the start is refused, and the built client is served beside the API (`with_static`; [main.rs:93-155](../server/src/main.rs#L93)); `server setup` (`bot_setup` :60) registers the bot with Telegram and opens no database. As merged (LPH `d423cb3`, RULINGS 106): both subcommands check the bot texts right after the configuration (`bot_texts_ok` :38), so a text file that does not parse, or a draft under `TELEGRAM_ENV=prod`, refuses the start before anything is opened ("Startup refuses bad content", below the table) |
 | [lib.rs](../server/src/lib.rs) | `AppState` (one constructor, `AppState::new` :71; `with_clock` / `with_catalog` / `with_gateway` seams; `share_limit` :60, the in-memory share window, LF2), `build_router` :133 (production routes only: `/api`, and `/telegram/webhook` outside it with its own 1 MiB body limit) |
 | [config.rs](../server/src/config.rs) | `Config::from_env`: secrets and settings only from the environment; the committed placeholder secrets are refused unless `TELEGRAM_ENV` is `test` and `PUBLIC_APP_URL` is a local host (:186-200) |
 | [api/mod.rs](../server/src/api/mod.rs) | the routes (:51): `/health`, `/auth`, `/entitlements`, `/chapters/{chapterId}`, `/assets/{file}`, `/saves`, `/saves/{storyId}/{slot}`, `/puzzles/{puzzleId}`, `/puzzles/{puzzleId}/attempts`, `/puzzles/{puzzleId}/hints/{tier}`, `/invoices`, `/orders/{orderId}`, `/stats`, `/stats/events`, `/stories/{storyId}/card`, `/wallet`, `/gifts` (LE2), `/invites/{code}`, `/invites/{code}/request`, `/social`, `/friends/requests/{handle}/accept`, `/friends/{handle}`, `/friends/{handle}/profile` (LF2), `/invite/rotate`, `/consents/friends_profile`, `/share` (LF2), and `/privacy` from `api/legal.rs`; a 16 KB body limit (300 KB for saves) and `Cache-Control: no-store` by default |
@@ -117,9 +117,9 @@ components are tested in the vitest `dom` project.
 | [meta.rs](../server/src/meta.rs), [api/cards.rs](../server/src/api/cards.rs), [db/achievements.rs](../server/src/db/achievements.rs) | story meta (LM2): the meta index and its rules, achievement conditions evaluated on the server (`met`, `meta.rs` :573), paid gates (`gate` :604, `visible` :637); `POST /api/stories/{storyId}/card` (`post_card`, `api/cards.rs` :48), whose unlocks are stored for display and grant nothing |
 | [telegram/gateway.rs](../server/src/telegram/gateway.rs) | `BotGateway` (:54) and `FrankensteinGateway` (built by `from_config` :208 on the base of `TELEGRAM_ENV`, LF2): the Bot API through frankenstein types, no bot framework (principle 6); since LF2 also `savePreparedInlineMessage` and the bot username from `getMe`, cached after the first success (`save_prepared_inline_message` :76, `bot_username` :82) |
 | [telegram/webhook.rs](../server/src/telegram/webhook.rs) | `POST /telegram/webhook` (`webhook` :63): the secret check, the decode into frankenstein's `Update`, the lenient payment probe, the dispatch ([Payments](#payments-as-built)). As merged (L9 `d837c8b`): the handler takes the raw `Body` and checks the secret before it reads the body; a `refunded_payment` goes to the revoke (also through the lenient probe), and a text message to the bot commands |
-| [telegram/payments.rs](../server/src/telegram/payments.rs), [db/payments.rs](../server/src/db/payments.rs) | the pre-checkout decision and its answer under their deadlines; the grant on `successful_payment`; their SQL in `db/`. As merged (L9 `d837c8b`): the unapplied-charge notice (`notify_unapplied` :117), the admin refund (`admin_refund` :200) and the revoke (`revoke` :171, `Repo::revoke` [db/payments.rs:332](../server/src/db/payments.rs#L332)) |
-| [telegram/commands.rs](../server/src/telegram/commands.rs), [telegram/texts.rs](../server/src/telegram/texts.rs), [telegram/setup.rs](../server/src/telegram/setup.rs) | the bot (L9 `d837c8b`): the commands, answered in private chats only (`on_text`, [commands.rs:80](../server/src/telegram/commands.rs#L80)); the bot texts of `server/locales/bot.{ru,en}.json`, compiled in and bounded (`LangTexts::entries`, texts.rs :146); `server setup`'s one `BotGateway::setup` call (`run`, setup.rs :80) ([Payments](#payments-as-built)) |
-| [api/static_files.rs](../server/src/api/static_files.rs) | the built client next to the API when `STATIC_DIR` is set (L9 `d837c8b`, PP K27): `check` (:137) at startup, before the pool opens, and `with_static` (:213), `/assets/*` immutable for a year and everything else `no-cache` ([Paid content](#paid-content-and-the-entitlement-check)) |
+| [telegram/payments.rs](../server/src/telegram/payments.rs), [db/payments.rs](../server/src/db/payments.rs) | the pre-checkout decision and its answer under their deadlines; the grant on `successful_payment`; their SQL in `db/`. As merged (L9 `d837c8b`): the unapplied-charge notice (`notify_unapplied` :117), the admin refund (`admin_refund` :200) and the revoke (`revoke` :171, `Repo::revoke` [db/payments.rs:351](../server/src/db/payments.rs#L351)) |
+| [telegram/commands.rs](../server/src/telegram/commands.rs), [telegram/texts.rs](../server/src/telegram/texts.rs), [telegram/setup.rs](../server/src/telegram/setup.rs) | the bot (L9 `d837c8b`): the commands, answered in private chats only (`on_text`, [commands.rs:81](../server/src/telegram/commands.rs#L81)); the bot texts of `server/locales/bot.{ru,en}.json`, compiled in and bounded (`LangTexts::entries`, texts.rs :152; as merged, LPH `d423cb3`: checked at startup, `startup_check` :345); `server setup`'s one `BotGateway::setup` call (`run`, setup.rs :80) ([Payments](#payments-as-built)) |
+| [api/static_files.rs](../server/src/api/static_files.rs) | the built client next to the API when `STATIC_DIR` is set (L9 `d837c8b`, PP K27): `check` (:149) at startup, before the pool opens (as merged, LPH `d423cb3`: it also refuses a dot-entry, the root's `.vite` directory excepted), and `with_static` (:236), `/assets/*` immutable for a year and everything else `no-cache` ([Paid content](#paid-content-and-the-entitlement-check)) |
 | `server/dev` (`server-dev`) | the production router plus `/dev/launch` (dev-signed initData), `/dev/invoices/{slug}` and `/dev/prepared/{id}` (LF2: what a prepared share would send) on a fake gateway and `/dev/simulate-payment` through the production webhook handler (L9: also `/dev/refund`, the admin refund on the fake gateway, and `/dev/refunded-update`, Telegram's `refunded_payment` through the same handler), on a fresh database per launch ([dev/src/lib.rs:34](../server/dev/src/lib.rs#L34)); never linked into `server` |
 | `server/pgdev` | the local PostgreSQL 18 cluster per port and a database per test; a dependency of `server-dev` and a dev-dependency of `server`, never linked into the `server` binary ([server/Cargo.toml:31-33](../server/Cargo.toml#L31)) |
 
@@ -137,6 +137,14 @@ policy (`Policy::load`, a refusal is `StartupError::Privacy`), gateway, pool;
 refusals: `startup_fails_without_story_index`, `startup_fails_when_first_chapter_paid`,
 `startup_fails_when_world_carries_solution`, and for the meta index (LM2) `startup_fails_when_meta_names_unknown_ending`,
 `startup_fails_when_meta_too_large` (`server/tests/it/content.rs`).
+
+As merged (LPH `d423cb3`, RULINGS 106; LPH critique O3, O6), `server serve` runs in the order configuration, bot
+texts, `STATIC_DIR`, `AppState::new` ([main.rs:93-126](../server/src/main.rs#L93)). The bot texts come first
+(`bot_texts_ok` :38, `texts::startup_check`, [texts.rs:345](../server/src/telegram/texts.rs#L345)): a file that does
+not parse refuses the start, and so does a non-empty `drafts` list under `TELEGRAM_ENV=prod`; under `test` the drafts
+are a warning. `server setup` checks them too, right after the configuration (`bot_setup` :60). Tests:
+`startup_checks_bot_texts_first`, `prod_start_refuses_draft_bot_texts` (`server/tests/it/main.rs`),
+`bot_texts_startup_check_refuses_drafts_in_prod` (`server/tests/it/bot.rs`).
 
 ## One-way staging
 
@@ -272,12 +280,16 @@ at all (`share_text_has_no_titles`, `server/tests/it/share.rs`).
 
 **The served client holds no paid content** (as merged, L9 `d837c8b`; PP K27). With `STATIC_DIR` set, `server serve`
 serves the built client next to the API, and `static_files::check` runs first, before the pool opens
-([static_files.rs:137-178](../server/src/api/static_files.rs#L137); [main.rs:75-85](../server/src/main.rs#L75)). It
+([static_files.rs:149-190](../server/src/api/static_files.rs#L149); [main.rs:106-116](../server/src/main.rs#L106)). It
 refuses the start when `STATIC_DIR` and `CONTENT_DIR` are the same tree or one lies inside the other, and when an
-entry of `STATIC_DIR` (a link or a junction) resolves outside it (`walk` :182). `/assets/*` is cached for a year and
-everything else is revalidated; an unknown path is 404, with no SPA fallback (`with_static` :213). Tests:
-`static_dir_must_not_contain_content_dir`, `static_dir_serves_client_with_cache_headers` (`server/tests/it/main.rs`),
-unit `api::static_files::tests::static_dir_disjoint_rules`.
+entry of `STATIC_DIR` (a link or a junction) resolves outside it (`walk` :198). As merged (LPH `d423cb3`, RULINGS 106;
+LPH critique O9): the walk also refuses any dot-entry before it resolves it, since `GET /.env` would serve a host
+file; only the root's `.vite` directory, a real directory where the build writes its manifest, is let through
+(`StaticDirError::DotEntry` :105, `VITE_DIR` :193, :209-215). `/assets/*` is cached for a year and
+everything else is revalidated; an unknown path is 404, with no SPA fallback (`with_static` :236). Tests:
+`static_dir_must_not_contain_content_dir`, `static_dir_serves_client_with_cache_headers`, LPH's
+`static_dir_refuses_dot_entries` (`server/tests/it/main.rs`), unit
+`api::static_files::tests::static_dir_disjoint_rules`.
 
 Only the `entitlements` table unlocks: its rows reference a payment by `charge_id`, UNIQUE
 ([0001_init.sql:52-60](../server/migrations/0001_init.sql#L52)). Nothing is ever unlocked from client state
@@ -361,7 +373,7 @@ Participants: `post_invoice` ([api/orders.rs:39-84](../server/src/api/orders.rs#
 10 :20; as merged, LPH `d423cb3`, RULINGS 97 Q2: it replaced `reuse_or_create_order` and `ORDER_REUSE_SECS`, so no
 order is handed out again), `invoice_params`
 ([gateway.rs:299-311](../server/src/telegram/gateway.rs#L299)), `CALL_DEADLINE`
-([gateway.rs:38](../server/src/telegram/gateway.rs#L38)), `get_order` ([api/orders.rs:92](../server/src/api/orders.rs#L92)),
+([gateway.rs:38](../server/src/telegram/gateway.rs#L38)), `get_order` ([api/orders.rs:89](../server/src/api/orders.rs#L89)),
 `openInvoice` ([telegram/index.ts:56](../client/src/telegram/index.ts#L56); its contract comment at :3). On the client,
 `createPurchaseFlow` ([purchase/flow.ts:66](../client/src/purchase/flow.ts#L66)) polls the order after the sheet, then
 confirms a chapter through `GET /api/entitlements` (`chapterDelivered` :48); a pack's `paid` order is the confirmation
@@ -370,6 +382,14 @@ confirms a chapter through `GET /api/entitlements` (`chapterDelivered` :48); a p
 - **Prices are server-only**: `server/catalog.json` prices every paid chapter of the story index
   ([catalog.rs:291](../server/src/catalog.rs#L291)); the invoice title is the chapter's title in the user's language,
   1-32 code points by the story gate (`catalog/stories` rule 9).
+- **Each POST is a new order, bounded** (as merged, LPH `d423cb3`, RULINGS 97 Q2; K9). No order is handed out again:
+  each POST commits a new `created` order and asks its own link, so a retry never gets a link TWA has opened
+  ([db/orders.rs:129-132](../server/src/db/orders.rs#L129)). `Repo::create_order` first locks the payer's `users` row
+  (`FOR NO KEY UPDATE`, the pre-checkout's mode), so one user's POSTs run one after another and the count below is no
+  check-then-insert race (:146-149). Then it counts the user's unpaid (`created` or `checkout`) orders made in the
+  rolling hour; at 10 it rolls back, and the handler answers 429 `rate_limited` with `Retry-After`: the seconds until
+  the oldest counted order leaves the window, 1 to 3600 (:150-166;
+  [error.rs:159-162](../server/src/error.rs#L159)). An order whose link call failed keeps no link and still counts.
 - **The schema is the idempotency.** `payments` has the primary key `telegram_payment_charge_id`; `orders.charge_id`
   and `entitlements.charge_id` are UNIQUE and reference it ([0001_init.sql:12-60](../server/migrations/0001_init.sql#L12),
   test `schema_charge_id_unique`). The grant (below) writes through the primary keys `payments_pkey` and
@@ -378,7 +398,8 @@ confirms a chapter through `GET /api/entitlements` (`chapterDelivered` :48); a p
 Tests: `server/tests/it/payments.rs` (`invoice_price_from_catalog`, `invoice_each_post_is_a_new_order` (renamed from
 `invoice_reuses_recent_order` by LPH `d423cb3`, RULINGS 97 Q3),
 `invoice_order_committed_before_gateway_call`, `invoice_gateway_error_502_order_kept`, `invoice_already_owned_409`,
-`order_other_user_404`).
+`order_other_user_404`, and LPH's `invoice_retry_of_open_order_gets_fresh_link`, `invoice_open_orders_bounded`,
+`invoice_bound_serialized_by_payer_lock`).
 
 The payment reaches the server only as Telegram's updates on the webhook:
 
@@ -413,10 +434,10 @@ sequenceDiagram
 ```
 
 Participants: `webhook` ([webhook.rs:63](../server/src/telegram/webhook.rs#L63)), `secret_ok` (:80), `dispatch`
-(:196), `pre_checkout` (:277), `on_pre_checkout` ([telegram/payments.rs:39](../server/src/telegram/payments.rs#L39)),
-`Repo::pre_checkout` ([db/payments.rs:150](../server/src/db/payments.rs#L150)), `answer_pre_checkout`
-([telegram/payments.rs:69](../server/src/telegram/payments.rs#L69)), `message` (webhook.rs :211), `grant`
-(webhook.rs :250), `Repo::grant` ([db/payments.rs:224](../server/src/db/payments.rs#L224)); the `refunded_payment`
+(:196), `pre_checkout` (:279), `on_pre_checkout` ([telegram/payments.rs:39](../server/src/telegram/payments.rs#L39)),
+`Repo::pre_checkout` ([db/payments.rs:151](../server/src/db/payments.rs#L151)), `answer_pre_checkout`
+([telegram/payments.rs:69](../server/src/telegram/payments.rs#L69)), `message` (webhook.rs :213), `grant`
+(webhook.rs :252), `Repo::grant` ([db/payments.rs:225](../server/src/db/payments.rs#L225)); the `refunded_payment`
 branch (since L9; docs-errata-6, RULINGS 107 N1): `refund`
 ([webhook.rs:265-275](../server/src/telegram/webhook.rs#L265), 500 on a database error), `Repo::revoke`
 ([db/payments.rs:351](../server/src/db/payments.rs#L351)); an admin `/refund` whose database step fails is retried
@@ -424,22 +445,22 @@ too (`message` :240-246, `on_text`'s `Err`; `Retry` is 500, :74).
 
 - **The route.** `POST /telegram/webhook` sits outside `/api` with its own body limit of 1 MiB
   (`WEBHOOK_BODY_LIMIT`, [webhook.rs:29](../server/src/telegram/webhook.rs#L29);
-  [lib.rs:131-142](../server/src/lib.rs#L131)). The handler answers 401
+  [lib.rs:131-144](../server/src/lib.rs#L131)). The handler answers 401
   unless exactly one `X-Telegram-Bot-Api-Secret-Token` value equals `WEBHOOK_SECRET`. It compares in constant time,
   before anything is parsed ([webhook.rs:63-66](../server/src/telegram/webhook.rs#L63), `secret_ok` :80-87). As merged
   (L9 `d837c8b`): the handler takes the raw `Body` and checks the secret before it reads the body, so a forged update
   is refused before it is buffered; only then does it read at most the limit, and one byte more is 413
   ([webhook.rs:67-71](../server/src/telegram/webhook.rs#L67); `webhook_secret_checked_before_body_read`,
   `server/tests/it/main.rs`). Logs never carry the body,
-  the headers or the secret; they carry the charge id, a body field that is no secret (webhook.rs :151, :188, :215,
-  :257, :269).
+  the headers or the secret; they carry the charge id, a body field that is no secret (webhook.rs :151, :188, :217,
+  :259, :271).
 - **Pre-checkout under the payer-row lock.** `Repo::pre_checkout` is one READ COMMITTED transaction
-  ([db/payments.rs:138-210](../server/src/db/payments.rs#L138)). It locks the payer's `users` row
+  ([db/payments.rs:139-211](../server/src/db/payments.rs#L139)). It locks the payer's `users` row
   (`FOR NO KEY UPDATE`), so one payer's pre-checkouts run one after another. Then one conditional UPDATE moves the
   order to `checkout`: the payer's own order, at its amount, in `XTR`, younger than 24 h, not owned, and no order of
-  the payer for the product in `checkout` within the last 120 s (`CHECKOUT_LOCK_SECS`, :19), this one included. With
+  the payer for the product in `checkout` within the last 120 s (`CHECKOUT_LOCK_SECS`, :20), this one included. With
   no row back, one read classifies the refusal: unknown order, mismatch, already owned, in progress or expired
-  (`classify` :470). The pre-checkout grants nothing.
+  (`classify` :526). The pre-checkout grants nothing.
 - **Answered within its deadline.** The database step is cut at 2 s (`PRECHECKOUT_DB_DEADLINE`,
   [telegram/payments.rs:26](../server/src/telegram/payments.rs#L26)); running out of it is a `Temporary` refusal. The
   answer is cut at `CALL_DEADLINE`, 5 s ([gateway.rs:38](../server/src/telegram/gateway.rs#L38)). A compile-time
@@ -447,7 +468,7 @@ too (`message` :240-246, `on_text`'s `Err`; `Retry` is 500, :74).
   language (`reject_text` :250, `payer_lang` :234). A failed or timed-out answer is logged, and the webhook still
   answers 200: Telegram cancels an unanswered checkout.
 - **The grant only on `successful_payment`, in one transaction** (`Repo::grant`,
-  [db/payments.rs:212-317](../server/src/db/payments.rs#L212)). First the payment row,
+  [db/payments.rs:213-318](../server/src/db/payments.rs#L213)). First the payment row,
   `ON CONFLICT ON CONSTRAINT payments_pkey DO NOTHING`: no row back is `Duplicate`, so a redelivery or its concurrent
   twin changes nothing. Then the order turns `paid`, and a chapter product gets its entitlement
   (`ON CONFLICT ON CONSTRAINT entitlements_pkey DO NOTHING`). A pack (LE1) gets the credit of the kind and amount its
@@ -456,7 +477,7 @@ too (`message` :240-246, `on_text`'s `Err`; `Retry` is 500, :74).
   Telegram's message date.
 - **Unapplied and unknown products are recorded.** Every outcome commits, and a payment that cannot be applied is
   still a payment row, logged with its charge id (`GrantOutcome`,
-  [db/payments.rs:72-89](../server/src/db/payments.rs#L72); `on_successful_payment`,
+  [db/payments.rs:73-90](../server/src/db/payments.rs#L73); `on_successful_payment`,
   [telegram/payments.rs:85-110](../server/src/telegram/payments.rs#L85)). `OrderMismatch`: no payable order of this
   payer at this amount in `XTR`. `UnknownProduct`: the order is paid, with no entitlement and no credit. `AlreadyEntitled`: the
   payer owned the product already.
@@ -467,8 +488,8 @@ too (`message` :240-246, `on_text`'s `Err`; `Retry` is 500, :74).
   no money moves.
 - **Database failures are redelivered or refused.** A grant that fails on the database is 500, so Telegram
   redelivers and the idempotent grant runs again (`grant`,
-  [webhook.rs:247-261](../server/src/telegram/webhook.rs#L247)). A pre-checkout whose database step fails is answered
-  as a `Temporary` refusal (:275-287).
+  [webhook.rs:249-263](../server/src/telegram/webhook.rs#L249)). A pre-checkout whose database step fails is answered
+  as a `Temporary` refusal (:277-288).
 - **Telegram strings** are bound through `without_nul` ([db/mod.rs:48](../server/src/db/mod.rs#L48)): PostgreSQL
   `text` cannot hold U+0000, so it becomes U+FFFD, the same key on every redelivery.
 - **Dev: simulated payments take the production path.** `server-dev`'s `POST /dev/simulate-payment` builds
@@ -492,17 +513,27 @@ too (`message` :240-246, `on_text`'s `Err`; `Retry` is 500, :74).
   charge of the chapter leaves that charge paid and unapplied; both of its unapplied notices fired, and an admin
   `/refund` of it recovers it. Every command
   (`/start`, `/terms`, `/support`, `/paysupport`, `/privacy`, `/refund`) is answered in private chats only
-  ([commands.rs:80](../server/src/telegram/commands.rs#L80)).
+  ([commands.rs:81](../server/src/telegram/commands.rs#L81)).
 - **Bot commands and `server setup`** (as merged, L9 `d837c8b`; PP "Bot commands"). A command is answered in the
   sender's Telegram language (`payer_lang`), in that chat: `/start` with a button that opens the Mini App, `/terms`,
   `/support`, `/privacy` (the policy's URL), and `/paysupport` with the sender's newest charges, each flagged refunded
-  or not applied (`PAYSUPPORT_CHARGES` = 20, [commands.rs:22](../server/src/telegram/commands.rs#L22)). `/refund` is
-  the admins' (`ADMIN_TELEGRAM_IDS`); anyone else gets the unknown-command reply before any lookup (:91, :108-110). Each
+  or not applied (`PAYSUPPORT_CHARGES` = 20, [commands.rs:22](../server/src/telegram/commands.rs#L22)). As merged (LPH
+  `d423cb3`, RULINGS 97): the newest twenty, newest first, and the total of the same statement (`Repo::charges_of`,
+  [db/payments.rs:478](../server/src/db/payments.rs#L478)). `/refund` is
+  the admins' (`ADMIN_TELEGRAM_IDS`); anyone else gets the unknown-command reply before any lookup (:92, :109-111). Each
   reply is one `sendMessage` cut at `CALL_DEADLINE`; a command whose database step fails is answered 500, so Telegram
-  redelivers it ([webhook.rs:238-244](../server/src/telegram/webhook.rs#L238)). The texts live in
+  redelivers it ([webhook.rs:240-246](../server/src/telegram/webhook.rs#L240)). As merged (LPH `d423cb3`; LPH critique
+  O2): only an admin `/refund` still fails that way. A `/paysupport` whose read fails is logged and answered with the
+  intro, which carries the support contact, and `paysupport_unavailable`, and the webhook answers 200: a 500 would
+  hold the chat's later updates, the payer's `successful_payment` included (`paysupport`,
+  [commands.rs:207-224](../server/src/telegram/commands.rs#L207); `message`'s doc, webhook.rs :208-212). An admin
+  `/refund` whose Bot API call timed out or broke in transport answers `refund_unknown_outcome`: not confirmed, Telegram
+  may already have returned the Stars, and a repeat is safe; a refusal or a disabled gateway answers `refund_failed`;
+  neither revokes (`refund_reply`, [commands.rs:226-256](../server/src/telegram/commands.rs#L226)). The texts live in
   `server/locales/bot.{ru,en}.json`, compiled in; each text is checked against its Telegram bound and its placeholders
-  (`LangTexts::entries`, [texts.rs:146](../server/src/telegram/texts.rs#L146)). `server setup` (`bot_setup`,
-  [main.rs:37](../server/src/main.rs#L37)) opens no database: one `BotGateway::setup` call registers the webhook with
+  (`LangTexts::entries`, [texts.rs:152](../server/src/telegram/texts.rs#L152)); as merged (LPH), a draft refuses a
+  production start ("Startup refuses bad content"). `server setup` (`bot_setup`,
+  [main.rs:60](../server/src/main.rs#L60)) opens no database: one `BotGateway::setup` call registers the webhook with
   its secret, the command menus (English by default, Russian for `ru`, `uk`, `be`, `kk`) and the Russian menu button,
   every URL derived from `PUBLIC_APP_URL` (`spec`, [setup.rs:41](../server/src/telegram/setup.rs#L41)).
 
@@ -525,7 +556,12 @@ Tests: `server/tests/it/webhook.rs` (`webhook_missing_secret_401`, `webhook_wron
 `refund_spent_pack_records_debt`, and six more), `server/tests/it/bot.rs` (`refund_command_admin_only`,
 `bot_commands_reply_in_sender_language`, `paysupport_flags_unapplied_charge`,
 `unapplied_charge_notifies_payer_and_admin`, `bot_setup_registers_webhook_commands_and_menu`, and six more),
-`webhook_secret_checked_before_body_read` (`server/tests/it/main.rs`); every name: FEATURE_MAP "Refunds and the bot".
+`webhook_secret_checked_before_body_read` (`server/tests/it/main.rs`). LPH `d423cb3`:
+`refund_rekeys_entitlement_to_other_paid_charge`, `refund_rekey_skips_charge_refunded_concurrently` (`refunds.rs`),
+`paysupport_lists_newest_twenty_with_total`, `paysupport_db_error_answers_200`,
+`refund_timeout_reply_says_outcome_unknown`, `bot_texts_startup_check_refuses_drafts_in_prod` (`bot.rs`),
+`startup_checks_bot_texts_first`, `prod_start_refuses_draft_bot_texts` (`main.rs`); every name: FEATURE_MAP "Refunds
+and the bot".
 
 ## Player statistics as built
 
@@ -629,10 +665,12 @@ Principle 5, as far as it is built:
 | Case | Behaviour | Pinned by |
 |---|---|---|
 | content directory missing or inconsistent | the server does not start; no pool opened | `startup_fails_*` (`content.rs` tests) |
-| `STATIC_DIR` the same as `CONTENT_DIR`, one inside the other, or holding a link that resolves outside it | `server serve` exits before the pool opens (L9) | `static_dir_must_not_contain_content_dir`, `api::static_files::tests::static_dir_disjoint_rules` |
+| `STATIC_DIR` the same as `CONTENT_DIR`, one inside the other, or holding a link that resolves outside it; as merged (LPH `d423cb3`), or holding a dot-entry other than the root's `.vite` directory | `server serve` exits before the pool opens (L9; the dot-entry: LPH) | `static_dir_must_not_contain_content_dir`, `api::static_files::tests::static_dir_disjoint_rules`, `static_dir_refuses_dot_entries` |
 | a placeholder left in the privacy policy under `TELEGRAM_ENV=prod`, or an operator file with a content or unknown key | the server does not start (`StartupError::Privacy`; LPO) | `privacy_placeholder_refuses_prod_start`, `privacy_operator_content_key_refused`, `privacy_operator_unknown_key_refused` |
+| a bot text file that does not parse, or a `drafts` list left under `TELEGRAM_ENV=prod` | neither `server serve` nor `server setup` starts: the bot texts are checked first, right after the configuration; drafts under `test` are a warning (as merged, LPH `d423cb3`) | `prod_start_refuses_draft_bot_texts`, `startup_checks_bot_texts_first`, `bot_texts_startup_check_refuses_drafts_in_prod` |
 | Bot API slow or down at invoice time | 502 `telegram_unavailable`; the order stays `created` without a link and is never reused | `invoice_gateway_error_502_order_kept` |
 | a repeat Buy after the first invoice link was stored | a new order with its own link (as merged, LPH `d423cb3`, RULINGS 97 Q2; until then the newest linked order of the hour was handed out again) | `invoice_each_post_is_a_new_order` (renamed from `invoice_reuses_recent_order`, RULINGS 97 Q3; sequential requests), `invoice_retry_of_open_order_gets_fresh_link` |
+| an eleventh unpaid order inside a rolling hour, or a POST racing the insert of the tenth | 429 `rate_limited` with `Retry-After` of 1 to 3600 s, no order and no Bot API call; the count runs under the payer-row lock, so a racing POST waits for the tenth and counts it (as merged, LPH `d423cb3`) | `invoice_open_orders_bounded`, `invoice_bound_serialized_by_payer_lock` |
 | two Buy taps while the first link call is still running | every POST makes its own order (as merged, LPH `d423cb3`; [db/orders.rs:129-132](../server/src/db/orders.rs#L129); until then an order without a link was never reused), so the second tap makes a second order and a second link. Paying the second is refused `InProgress` at pre-checkout while the first is in `checkout` (120 s); a payment past that window is recorded as `AlreadyEntitled`, not applied | the two orders: `invoice_each_post_is_a_new_order` (LPH; until then not pinned); the refusal: `precheckout_other_order_in_checkout`, `precheckout_concurrent_two_orders_one_passes`; the record: `successful_payment_unapplied_recorded_no_grant` |
 | one order paid from two devices | the second pre-checkout within 120 s is refused `InProgress` | `precheckout_same_order_twice_refused`, `precheckout_concurrent_same_order_one_passes` |
 | the same `successful_payment` delivered twice, or twice at once | `Duplicate`: one payment, one entitlement | `successful_payment_grants_once`, `successful_payment_duplicate_concurrent` |
@@ -640,7 +678,8 @@ Principle 5, as far as it is built:
 | a forged webhook update with an oversized body | 401 before the body is read; only with the right secret does the 1 MiB limit answer 413 (L9) | `webhook_secret_checked_before_body_read` |
 | a refund repeated, raced, or its `refunded_payment` delivered twice | one revoke; a repeat is `AlreadyRefunded` and changes nothing (L9) | `refund_repeat_safe`, `refund_concurrent_revokes_once`, `refunded_payment_update_revokes_idempotent` |
 | a refund of the charge that keys a chapter's entitlement while the payer paid that chapter again (a K18 double payment, the later charge `AlreadyEntitled`) | the entitlement is re-keyed to the payer's oldest other unrefunded paid charge of the chapter, `granted_at` kept, so access stays; with none it is deleted; a candidate whose own refund is in flight is skipped (`FOR SHARE`). Residual (RULINGS 100, accepted): an admin `/refund` racing a concurrent grant of another charge of the chapter leaves that charge paid and unapplied, both unapplied notices sent; an admin `/refund` of it recovers it (LPH `d423cb3`) | `refund_rekeys_entitlement_to_other_paid_charge`, `refund_rekey_skips_charge_refunded_concurrently` |
-| the Bot API refuses or times out on `/refund` | nothing is revoked and the entitlement stays; the admin's reply carries the failure (L9) | `refund_gateway_error_keeps_entitlement` |
+| the Bot API refuses or times out on `/refund` | nothing is revoked and the entitlement stays; the admin's reply carries the failure (L9). As merged (LPH `d423cb3`): a timeout or a transport break answers `refund_unknown_outcome` (not confirmed, the Stars may be back, a repeat is safe), a refusal `refund_failed` | `refund_gateway_error_keeps_entitlement`, `refund_timeout_reply_says_outcome_unknown` |
+| the database fails on a `/paysupport` read | the intro and `paysupport_unavailable` are sent and the webhook answers 200, so the chat's later updates are not held; an admin `/refund`'s database failure is still 500 (as merged, LPH `d423cb3`) | `paysupport_db_error_answers_200` |
 | a `refunded_payment` whose charge id does not read | 500, so Telegram redelivers; one that frankenstein cannot decode still revokes through the probe (L9) | `webhook_refund_charge_unreadable_500`, `webhook_refund_undecodable_by_frankenstein_still_revokes` |
 | the Bot API hangs on `answerPreCheckoutQuery` | the call is cut at 5 s, the webhook answers 200, and the order stays `checkout` | `precheckout_answer_times_out_at_5s` |
 | an update the pinned types cannot decode | a payment is still granted through the probe, or answered 500; anything else is acknowledged | `webhook_payment_undecodable_by_frankenstein_still_recorded`, `webhook_payment_fields_unreadable_500`, `webhook_undecodable_200` |
