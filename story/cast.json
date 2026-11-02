@@ -1,5 +1,7 @@
 {
   "ally": { "char": "ally" },
   "stranger": { "char": "stranger" },
-  "voice": { "char": null }
+  "voice": { "char": null },
+  "keeper": { "char": "keeper" },
+  "radio": { "char": null }
 }
