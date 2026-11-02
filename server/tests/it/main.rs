@@ -31,7 +31,7 @@ mod webhook;
 
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
@@ -46,6 +46,7 @@ use server::config::{
     PLACEHOLDER_BOT_TOKEN, PLACEHOLDER_TOKEN_KEY_HEX, PLACEHOLDER_WEBHOOK_SECRET,
 };
 use server::ids::UserId;
+use server::telegram::texts;
 use sqlx::{Connection, PgConnection};
 use tower::ServiceExt;
 
@@ -552,6 +553,219 @@ fn static_dir_must_not_contain_content_dir() {
         if !got.starts_with(want) {
             failures.push(format!("check, {case}: expected {want}.., got {got}"));
         }
+    }
+    report(&failures);
+}
+
+/// Critique O9: `check` refuses a dot-entry anywhere in `STATIC_DIR` (`GET /.env` would serve the host's secrets): a
+/// `.env` at the root, a dot-file deeper down, a dot-entry inside `.vite`, a `.vite` below the root, a `.vite` that is a
+/// file, and `.well-known` (the reverse proxy's). Only the root's `.vite` directory passes, with Vite's manifest in it.
+#[test]
+fn static_dir_refuses_dot_entries() {
+    let root = scratch_dir("static-dots");
+    let content = root.join("content");
+    std::fs::create_dir_all(&content).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let mut failures = Vec::new();
+    for (i, (case, file, want)) in [
+        ("a .env in STATIC_DIR", ".env", "DotEntry"),
+        ("a dot-file under assets", "assets/.secret", "DotEntry"),
+        ("the root's .vite manifest", ".vite/manifest.json", "Ok("),
+        ("a dot-file inside .vite", ".vite/.x", "DotEntry"),
+        (
+            "a .vite below the root",
+            "sub/.vite/manifest.json",
+            "DotEntry",
+        ),
+        ("a .vite file", ".vite", "DotEntry"),
+        (".well-known", ".well-known/x", "DotEntry"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let site = root.join(format!("site{i}"));
+        let path = site.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(site.join("index.html"), "<!doctype html>").unwrap();
+        std::fs::write(&path, "{}").unwrap();
+        let got = match runtime.block_on(static_files::check(&site, &content)) {
+            Ok(dir) => format!("Ok({})", dir.root().display()),
+            Err(e) => format!("{e:?}"),
+        };
+        if !got.starts_with(want) {
+            failures.push(format!("check, {case}: expected {want}.., got {got}"));
+        }
+    }
+    report(&failures);
+}
+
+/// The real `server <command>` with `envs` set (each caller passes every variable `Config` reads, so none comes from
+/// the caller's environment; an empty value is unset): its log until it exits (bounded at 60 s, then killed), and its
+/// exit status.
+fn server_log(command: &str, envs: &[(&str, &str)]) -> (Vec<String>, ExitStatus) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_server"))
+        .arg(command)
+        .envs(envs.iter().copied())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (lines, received) = mpsc::channel();
+    forward_lines(child.stdout.take().unwrap(), lines.clone());
+    forward_lines(child.stderr.take().unwrap(), lines);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut log = Vec::new();
+    loop {
+        match received.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(line) => log.push(line),
+            Err(RecvTimeoutError::Disconnected) => break,
+            Err(RecvTimeoutError::Timeout) => {
+                log.push("<no exit within 60 s: killed>".to_owned());
+                child.kill().unwrap();
+                break;
+            }
+        }
+    }
+    let status = child.wait().unwrap();
+    (log, status)
+}
+
+/// The first line of `log` holding every one of `parts`.
+fn line_with(log: &[String], parts: &[&str]) -> Option<usize> {
+    log.iter()
+        .position(|line| parts.iter().all(|part| line.contains(part)))
+}
+
+/// Critique O3: a production start with draft bot texts exits non-zero with the refusal, before it opens the database
+/// (once the owner's VALUES step empties `drafts`, the start must not refuse on the texts). The prod configuration is
+/// complete, with fake non-placeholder secrets (`Config` refuses the placeholders under prod). RULINGS 97 Q8: nothing
+/// is sent on any path, under any mutation: `serve` makes no Bot API call before `listening`, `Policy::load` refuses
+/// the missing `PRIVACY_OPERATOR_FILE` before the gateway is built, and the database is a closed port.
+#[test]
+fn prod_start_refuses_draft_bot_texts() {
+    let dir = scratch_dir("prod-texts");
+    let operator = dir.join("no-such-operator.json");
+    let token_key = "1".repeat(64);
+    let (log, status) = server_log(
+        "serve",
+        &[
+            ("BOT_TOKEN", "1000000002:lph-fake-token-never-sent"),
+            ("WEBHOOK_SECRET", "lph-prod-test-secret"),
+            ("TOKEN_KEY", &token_key),
+            ("TOKEN_TTL_SECS", "1800"),
+            ("INITDATA_MAX_AGE_SECS", "86400"),
+            ("PUBLIC_APP_URL", "https://example.invalid/"),
+            ("ADMIN_TELEGRAM_IDS", ""),
+            ("STATIC_DIR", ""),
+            (
+                "CONTENT_DIR",
+                concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/content"),
+            ),
+            (
+                "DATABASE_URL",
+                "postgres://postgres@127.0.0.1:1/tgn_prod_texts",
+            ),
+            ("TELEGRAM_ENV", "prod"),
+            ("LISTEN_ADDR", "127.0.0.1:0"),
+            ("PRIVACY_OPERATOR_FILE", operator.to_str().unwrap()),
+            ("RUST_LOG", "info"),
+            ("NO_COLOR", "1"),
+        ],
+    );
+    let text = log.join("\n");
+    let drafts_left = [texts::BOT_RU_JSON, texts::BOT_EN_JSON]
+        .iter()
+        .any(|json| !texts::parse(json).unwrap().drafts.is_empty());
+    let mut failures = Vec::new();
+    if line_with(&log, &["invalid configuration"]).is_some() {
+        failures.push(format!(
+            "the test's prod configuration is incomplete, the log:\n{text}"
+        ));
+    }
+    let refused = line_with(
+        &log,
+        &[
+            "ERROR",
+            "bot texts refused",
+            "draft texts under TELEGRAM_ENV=prod",
+        ],
+    );
+    let opening = line_with(&log, &["opening database"]);
+    if drafts_left {
+        if status.success() || refused.is_none() || opening.is_some() {
+            failures.push(format!(
+                "expected a bot-texts drafts refusal before `opening database` and a failure exit, got {status} and \
+                 the log:\n{text}"
+            ));
+        }
+    } else if line_with(&log, &["bot texts refused"]).is_some() {
+        failures.push(format!(
+            "no drafts left: expected no bot-texts refusal, got the log:\n{text}"
+        ));
+    }
+    if line_with(&log, &["listening"]).is_some() {
+        failures.push(format!("the prod start served, the log:\n{text}"));
+    }
+    report(&failures);
+}
+
+/// Critique O6: both subcommands check the bot texts right after the configuration, before anything else is opened
+/// or built: `serve` logs `bot texts checked` before `opening database`, and `setup` (the placeholder token, so its
+/// gateway is disabled and sends nothing) before the gateway's `bot api disabled` line.
+#[test]
+fn startup_checks_bot_texts_first() {
+    let root = scratch_dir("startup-order");
+    let site = root.join("site");
+    std::fs::create_dir_all(&site).unwrap();
+    std::fs::write(site.join("index.html"), "<!doctype html>").unwrap();
+    let content = Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/content"
+    ));
+    let mut failures = Vec::new();
+    let serve = serve_log(&site, content);
+    let checked = line_with(&serve, &["bot texts checked"]);
+    let opening = line_with(&serve, &["opening database"]);
+    if !matches!((checked, opening), (Some(c), Some(o)) if c < o) {
+        failures.push(format!(
+            "serve: expected a `bot texts checked` line before `opening database`, got:\n{}",
+            serve.join("\n")
+        ));
+    }
+    let (setup, _) = server_log(
+        "setup",
+        &[
+            ("BOT_TOKEN", PLACEHOLDER_BOT_TOKEN),
+            ("WEBHOOK_SECRET", PLACEHOLDER_WEBHOOK_SECRET),
+            ("TOKEN_KEY", PLACEHOLDER_TOKEN_KEY_HEX),
+            ("TOKEN_TTL_SECS", "1800"),
+            ("INITDATA_MAX_AGE_SECS", "86400"),
+            ("PUBLIC_APP_URL", "http://127.0.0.1/"),
+            ("ADMIN_TELEGRAM_IDS", ""),
+            ("STATIC_DIR", ""),
+            (
+                "CONTENT_DIR",
+                concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/content"),
+            ),
+            ("DATABASE_URL", "postgres://postgres@127.0.0.1:1/tgn_setup"),
+            ("TELEGRAM_ENV", "test"),
+            ("LISTEN_ADDR", "127.0.0.1:0"),
+            ("PRIVACY_OPERATOR_FILE", ""),
+            ("RUST_LOG", "info"),
+            ("NO_COLOR", "1"),
+        ],
+    );
+    let checked = line_with(&setup, &["bot texts checked"]);
+    let disabled = line_with(&setup, &["bot api disabled: placeholder BOT_TOKEN"]);
+    if !matches!((checked, disabled), (Some(c), Some(d)) if c < d) {
+        failures.push(format!(
+            "setup: expected a `bot texts checked` line before the gateway's `bot api disabled` line, got:\n{}",
+            setup.join("\n")
+        ));
     }
     report(&failures);
 }

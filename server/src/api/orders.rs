@@ -29,9 +29,13 @@ fn localized(text: &Localized, lang: Lang) -> &str {
     }
 }
 
-/// `POST /api/invoices`: the checks run in a fixed order (token, body, product known, not owned); then a recent order
-/// with a link is handed out again, or a new order is committed and its link asked from the Bot API. A gateway failure
-/// is 502 `telegram_unavailable`, and the order stays `created` without a link (never reused).
+/// `POST /api/invoices`: the checks run in a fixed order (token, body, product known, not owned, the user's open-order
+/// bound: 429 `rate_limited` with `Retry-After` at [`OPEN_ORDERS_PER_WINDOW`] unpaid orders in the rolling hour);
+/// then a new order is committed and its link asked from the Bot API. Every POST is a new order with its own link
+/// (K9), so a retry never hands out a link TWA has opened. A gateway failure is 502 `telegram_unavailable`, and the
+/// order stays `created` without a link (it still counts against the bound: its call was made).
+///
+/// [`OPEN_ORDERS_PER_WINDOW`]: crate::db::orders::OPEN_ORDERS_PER_WINDOW
 pub async fn post_invoice(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
@@ -46,21 +50,14 @@ pub async fn post_invoice(
     if st.repo.is_entitled(user, &product.id).await? {
         return Err(ApiError::AlreadyOwned);
     }
-    let created = st
-        .repo
-        .reuse_or_create_order(user, product, st.clock.now())
-        .await?;
-    let (order, language_code) = match created {
-        InvoiceOrder::Reused { order, invoice_url } => {
-            return Ok(Json(CreateInvoiceResponse {
-                order_id: order.0,
-                invoice_url,
-            }));
-        }
+    let (order, language_code) = match st.repo.create_order(user, product, st.clock.now()).await? {
         InvoiceOrder::Created {
             order,
             language_code,
         } => (order, language_code),
+        InvoiceOrder::Limited { retry_after_secs } => {
+            return Err(ApiError::RateLimited { retry_after_secs });
+        }
     };
     let lang = payer_lang(language_code.as_deref());
     let title = localized(&product.title, lang).to_owned();

@@ -1,6 +1,6 @@
 //! The `orders` table: one row per Stars invoice the server created (PP P3). This module writes only the insert of a
-//! `created` order (with a pack's binding) and its invoice link, and reads an order for its owner; the grant that
-//! moves an order is `db/payments.rs`'s.
+//! `created` order (with a pack's binding), bounded per user ([`OPEN_ORDERS_PER_WINDOW`] unpaid in a rolling hour),
+//! and its invoice link, and reads an order for its owner; the grant that moves an order is `db/payments.rs`'s.
 //!
 //! The order id grammar lives here too: `ids.rs` holds the type, and an id is minted and parsed only next to the rows
 //! it names.
@@ -12,8 +12,12 @@ use crate::catalog::Product;
 use crate::db::Repo;
 use crate::ids::{OrderId, ProductId, UserId};
 
-/// How long a `created` order with a link is handed out again, in seconds (PP "HTTP API": younger than 1 h).
-pub const ORDER_REUSE_SECS: i64 = 3600;
+/// The window of the open-order bound, in seconds: a rolling hour.
+pub const OPEN_ORDER_WINDOW_SECS: i64 = 3600;
+
+/// The most unpaid orders (`created` or `checkout`) a user may open inside [`OPEN_ORDER_WINDOW_SECS`]: each cost one
+/// `createInvoiceLink`, so the bound caps the Bot API calls a user can cause too.
+pub const OPEN_ORDERS_PER_WINDOW: i64 = 10;
 
 /// The prefix of every order id.
 const ORDER_PREFIX: &str = "o_";
@@ -68,23 +72,20 @@ pub struct OrderPayer {
     pub language_code: Option<String>,
 }
 
-/// What [`Repo::reuse_or_create_order`] did.
+/// What [`Repo::create_order`] did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvoiceOrder {
-    /// A `created` order of the same user, product, amount and pack binding, younger than [`ORDER_REUSE_SECS`] and
-    /// with a link: its link is handed out again, with no Bot API call.
-    Reused {
-        /// The order.
-        order: OrderId,
-        /// Its invoice link.
-        invoice_url: String,
-    },
     /// A new `created` order without a link, committed.
     Created {
         /// The order: also the invoice payload.
         order: OrderId,
         /// The user's Telegram language tag, for the invoice texts.
         language_code: Option<String>,
+    },
+    /// The user has [`OPEN_ORDERS_PER_WINDOW`] unpaid orders inside the window: no order, no Bot API call.
+    Limited {
+        /// Seconds until the oldest of them leaves the window, 1..=[`OPEN_ORDER_WINDOW_SECS`].
+        retry_after_secs: i64,
     },
 }
 
@@ -111,17 +112,25 @@ pub fn parse_order_id(s: &str) -> Option<OrderId> {
 }
 
 impl Repo {
-    /// The order a `POST /api/invoices` of the catalog's `product` by `user` at `now` hands out: the newest `created`
-    /// order of the same user, product, price and pack binding, younger than [`ORDER_REUSE_SECS`] and with a link;
-    /// else a new `created` order in `XTR` at the product's price, binding a pack's kind and amount (`NULL` for a
-    /// chapter: `orders_pack_binding`), read back with the user's language. One READ COMMITTED transaction, committed
-    /// before the caller asks the Bot API for a link: no lock is held across that call.
+    /// A new `created` order for a `POST /api/invoices` of the catalog's `product` by `user` at `now`: in `XTR` at the
+    /// product's price, binding a pack's kind and amount (`NULL` for a chapter: `orders_pack_binding`), read back with
+    /// the user's language; or `Limited` when the user already has [`OPEN_ORDERS_PER_WINDOW`] unpaid orders created
+    /// after `now - OPEN_ORDER_WINDOW_SECS`. One READ COMMITTED transaction, committed before the caller asks the Bot
+    /// API for a link: no lock is held across that call.
+    /// 1. The payer's `users` row is locked (`FOR NO KEY UPDATE`, the pre-checkout's mode): two POSTs of one user run
+    ///    one after another, and the second one's count is a new statement whose snapshot holds the first one's
+    ///    insert. Without the lock two POSTs both count 9 and both insert (no check-then-insert race).
+    /// 2. The unpaid orders in the window are counted on `orders_by_user_product` (`user_id` leads it); `paid` and
+    ///    `refunded` ones are not, so a paying reader is never bound. Ten or more → rolled back, `Limited`.
+    /// 3. The insert, and the user's language read back.
     ///
-    /// The price and the binding come from the one catalog product that also titles the invoice (M19). An order
-    /// without a link is never reused (its link call failed or is still running), and a deploy inside the hour that
-    /// changes a price or a pack's amount makes a new order, so a reused invoice credits what the catalog lists. Two
-    /// concurrent first taps can make two orders; a double payment is closed at pre-checkout.
-    pub async fn reuse_or_create_order(
+    /// The lock order is users → orders, as the pre-checkout's; after the lock nothing waits on an existing row.
+    ///
+    /// No order is handed out again (K9): each POST is a new payload, so `createInvoiceLink` makes a new invoice with a
+    /// slug TWA has not opened (it throws `WebAppInvoiceOpened` on one it has), and each order row costs one Bot API
+    /// call. The price and the binding come from the one catalog product that also titles the invoice (M19). Two open
+    /// orders of one product can coexist; a double payment of a chapter is closed at pre-checkout.
+    pub async fn create_order(
         &self,
         user: UserId,
         product: &Product,
@@ -133,27 +142,28 @@ impl Repo {
             None => (None, None),
         };
         let mut tx = self.pool.begin().await?;
-        let recent: Option<(String, String)> = sqlx::query_as(
-            "SELECT id, invoice_url FROM orders \
-             WHERE user_id = $1 AND product_id = $2 AND amount = $3 AND status = 'created' \
-             AND invoice_url IS NOT NULL AND created_at > $4 \
-             AND pack_kind IS NOT DISTINCT FROM $5 AND pack_amount IS NOT DISTINCT FROM $6 \
-             ORDER BY created_at DESC, id DESC LIMIT 1",
+        // No users row: no lock, and the insert's foreign key fails below.
+        sqlx::query("SELECT 1 FROM users WHERE id = $1 FOR NO KEY UPDATE")
+            .bind(user.0)
+            .execute(&mut *tx)
+            .await?;
+        let (open, oldest): (i64, Option<i64>) = sqlx::query_as(
+            "SELECT count(*), min(created_at) FROM orders \
+             WHERE user_id = $1 AND status IN ('created', 'checkout') AND created_at > $2",
         )
         .bind(user.0)
-        .bind(&product.id.0)
-        .bind(amount)
-        .bind(now.saturating_sub(ORDER_REUSE_SECS))
-        .bind(pack_kind)
-        .bind(pack_amount)
-        .fetch_optional(&mut *tx)
+        .bind(now.saturating_sub(OPEN_ORDER_WINDOW_SECS))
+        .fetch_one(&mut *tx)
         .await?;
-        if let Some((order, invoice_url)) = recent {
-            tx.commit().await?;
-            return Ok(InvoiceOrder::Reused {
-                order: OrderId(order),
-                invoice_url,
-            });
+        if open >= OPEN_ORDERS_PER_WINDOW {
+            tx.rollback().await?;
+            // The oldest counted order leaves the window `OPEN_ORDER_WINDOW_SECS` after it was made.
+            let retry_after_secs = oldest
+                .unwrap_or(now)
+                .saturating_add(OPEN_ORDER_WINDOW_SECS)
+                .saturating_sub(now)
+                .clamp(1, OPEN_ORDER_WINDOW_SECS);
+            return Ok(InvoiceOrder::Limited { retry_after_secs });
         }
         let order = new_order_id();
         sqlx::query(

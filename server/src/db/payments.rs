@@ -1,7 +1,8 @@
 //! The payment path's SQL (PP "Payment flow end to end"): the pre-checkout decision, which locks the payer's row
 //! and then moves the order to `checkout` in one conditional statement (RULINGS 14, M19), the grant on
 //! `successful_payment`, written first and made idempotent by the `payments_pkey` arbiter (K19), and the revoke of a
-//! refund, made exactly-once by the payment row's `refunded_at IS NULL` guard (K20, M20).
+//! refund, made exactly-once by the payment row's `refunded_at IS NULL` guard (K20, M20), which re-keys a chapter's
+//! entitlement to another unrefunded paid charge of the payer for it instead of deleting it (RULINGS 96).
 //!
 //! The money-fact, decision and outcome types live here, next to the statements that bind and decide them;
 //! `telegram::payments` re-exports them, so `db/` never imports `telegram/`. Every Telegram string is bound through
@@ -91,8 +92,8 @@ pub enum GrantOutcome {
 /// What a revoke did (K20). Only `Revoked` wrote anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RevokeOutcome {
-    /// The payment is marked refunded, its order `refunded`, its entitlement deleted and its pack credit clawed back:
-    /// whatever of these the charge had.
+    /// The payment is marked refunded, its order `refunded`, its entitlement deleted, or re-keyed to the oldest other
+    /// unrefunded paid charge of the same product, and its pack credit clawed back: whatever of these the charge had.
     Revoked,
     /// The payment was refunded before (a redelivery, the other refund path, or a concurrent twin): nothing changed.
     AlreadyRefunded,
@@ -321,14 +322,32 @@ impl Repo {
     /// 1. the payment → refunded, only if it is not yet: this single-row guard is the exactly-once arbiter. A twin
     ///    waits on the row lock, then READ COMMITTED re-checks the committed row and finds it set. No row back → one
     ///    read tells `AlreadyRefunded` from `UnknownCharge`, and nothing is written;
-    /// 2. the charge's order → `refunded`, if it has one;
-    /// 3. the charge's entitlement deleted, if it has one (an `AlreadyEntitled` charge has none: the entitlement is the
-    ///    first charge's);
-    /// 4. the pack credit of the charge (its `pay:<charge>` row, never the catalog) clawed back, keyed
+    /// 2. the successor of the charge's entitlement, if it has one (RULINGS 96): the payer's oldest other unrefunded
+    ///    charge whose own order of the entitlement's product is `paid` and which keys no entitlement, i.e. a second
+    ///    payment of the chapter that slipped past the checkout window (`AlreadyEntitled`, notified as unapplied). An
+    ///    order is `paid` only by a grant that matched it, so its product and price are proven; an `OrderMismatch` or
+    ///    `UnknownProduct` charge, another user's, a pack's or a refunded one never qualifies. The candidates' payment
+    ///    rows are locked `FOR SHARE` (RULINGS 97 Q10): a concurrent refund of a candidate holds its row from its
+    ///    guard, so this read waits, then re-checks the row's `refunded_at` and drops it;
+    /// 3. the charge's order → `refunded`, if it has one;
+    /// 4. the charge's entitlement re-keyed to the successor (`granted_at` kept: access never lapsed), or deleted
+    ///    when there is none (an `AlreadyEntitled` charge keys none: the entitlement is another charge's);
+    /// 5. the pack credit of the charge (its `pay:<charge>` row, never the catalog) clawed back, keyed
     ///    `refund:<charge>`: the balance first, the rest as debt. No credit (an unapplied charge, a chapter) → none.
     ///
     /// Every undo is keyed by the charge's own rows, so an entitlement without an order is revoked too. No statistics
-    /// or ledger row is deleted (ST4).
+    /// or ledger row is deleted (ST4). The re-key grants nothing: the row this charge's `successful_payment` created
+    /// moves to a charge recorded by its own `payments_pkey` insert, and `entitlements_charge_key` keeps every charge
+    /// applied at most once. The lock order is all payments rows (the guard's, then the candidates'), then orders,
+    /// entitlements, the ledger key, the balance.
+    ///
+    /// Residual (RULINGS 100, accepted): a grant of a new charge C of the same chapter whose entitlement insert
+    /// (`ON CONFLICT DO NOTHING`, no payer lock) runs between step 2 and step 4 meets the committed entitlement row,
+    /// which this transaction has not touched yet, and returns `AlreadyEntitled` without waiting; step 2 could not see
+    /// C, so step 4 deletes, and C stays paid with no entitlement. Both of C's unapplied notices (payer and admins)
+    /// fired at its grant, an admin `/refund` of C recovers it, and nothing is ever granted twice. Only a refund from
+    /// another chat (the admin's `/refund`) opens the window: Telegram's `refunded_payment` arrives in the payer's
+    /// chat, serialized with C's `successful_payment`.
     pub async fn revoke(&self, charge: &ChargeId, now: i64) -> Result<RevokeOutcome, sqlx::Error> {
         let charge = without_nul(&charge.0);
         let mut tx = self.pool.begin().await?;
@@ -356,6 +375,26 @@ impl Repo {
                 RevokeOutcome::UnknownCharge
             });
         };
+        // Fetched whole (0-2 rows in practice, each locked until the commit) and its first row taken: the oldest. The
+        // charge itself is out twice: the guard just set its `refunded_at`, and it keys the entitlement. The
+        // `p.refunded_at IS NULL` predicate stays although committed states exclude a refunded candidate already by
+        // `o.status = 'paid'` (every revoke sets its order `refunded`): after the `FOR SHARE` wait, READ COMMITTED
+        // re-checks the locked `p` row's new version but keeps the joined `o` row's old one.
+        let successors: Vec<String> = sqlx::query_scalar(
+            "SELECT p.telegram_payment_charge_id \
+             FROM entitlements e \
+             JOIN orders o ON o.user_id = e.user_id AND o.product_id = e.product_id AND o.status = 'paid' \
+             JOIN payments p ON p.telegram_payment_charge_id = o.charge_id \
+             WHERE e.charge_id = $1 AND p.user_id = e.user_id AND p.refunded_at IS NULL \
+             AND NOT EXISTS (SELECT 1 FROM entitlements e2 \
+                             WHERE e2.charge_id = p.telegram_payment_charge_id) \
+             ORDER BY p.paid_at, p.telegram_payment_charge_id \
+             FOR SHARE OF p",
+        )
+        .bind(&*charge)
+        .fetch_all(&mut *tx)
+        .await?;
+        let successor = successors.into_iter().next();
         let product: Option<String> = sqlx::query_scalar(
             "UPDATE orders SET status = 'refunded' WHERE charge_id = $1 RETURNING product_id",
         )
@@ -369,10 +408,27 @@ impl Repo {
                 Some(ProductRef::Chapter { .. }) | Some(ProductRef::Pack { .. }) | None => {}
             }
         }
-        sqlx::query("DELETE FROM entitlements WHERE charge_id = $1")
-            .bind(&*charge)
-            .execute(&mut *tx)
-            .await?;
+        match &successor {
+            Some(successor) => {
+                // `granted_at` stays: access never lapsed.
+                sqlx::query("UPDATE entitlements SET charge_id = $2 WHERE charge_id = $1")
+                    .bind(&*charge)
+                    .bind(successor)
+                    .execute(&mut *tx)
+                    .await?;
+                tracing::info!(
+                    charge = %charge,
+                    successor = %successor,
+                    "revoke: entitlement re-keyed to the oldest other paid charge"
+                );
+            }
+            None => {
+                sqlx::query("DELETE FROM entitlements WHERE charge_id = $1")
+                    .bind(&*charge)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+        }
         if let Some((kind, credited)) = credited_by_charge(&mut tx, &charge).await? {
             let clawback = Entry {
                 user: UserId(payer),

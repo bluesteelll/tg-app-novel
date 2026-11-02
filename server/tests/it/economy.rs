@@ -1645,21 +1645,33 @@ async fn catalog_economy_rules_refused() {
     report(&failures);
 }
 
-/// A recent pack order is handed out again only for the same binding (D10): a catalog that changes `hint_s` to 4 at
-/// the same price makes a new order bound to 4; the compiled-in catalog then reuses the first order.
+/// Each pack order binds the catalog's kind and amount at its own invoice time (D10; K9: no order is reused): the
+/// compiled-in catalog binds (hint, 3), a catalog with `hint_s` at 4 binds (hint, 4), and the compiled-in one again
+/// binds (hint, 3) on a new order.
 #[tokio::test]
-async fn invoice_pack_reuse_needs_same_binding() {
+async fn invoice_pack_binds_catalog_at_invoice() {
     let (st, _db, gateway) = invoice_state(&[(ANN, Some("ru"))]).await;
     let mut failures = Vec::new();
     let Some(first) = order_of(&st, ANN, "pack:hint_s", &mut failures).await else {
         return report(&failures);
     };
+    let compiled_in = (
+        "pack:hint_s".to_owned(),
+        1,
+        Some("hint".to_owned()),
+        Some(3),
+    );
     let again = order_of(&st, ANN, "pack:hint_s", &mut failures).await;
-    failures.extend(expect_eq(
-        "the same catalog: reused",
-        again.as_deref(),
-        Some(first.as_str()),
-    ));
+    if let Some(again) = &again {
+        if *again == first {
+            failures.push("the same catalog: expected a new order, got the first one".to_owned());
+        }
+        failures.extend(expect_eq(
+            "the same catalog: the new row",
+            order_binding(&st, again).await,
+            compiled_in.clone(),
+        ));
+    }
 
     let four = Catalog::build(
         &catalog_with(|v| v["economy"]["packs"]["hint_s"]["amount"] = json!(4)),
@@ -1683,16 +1695,32 @@ async fn invoice_pack_reuse_needs_same_binding() {
             Some(4),
         ),
     ));
-    let back = order_of(&st, ANN, "pack:hint_s", &mut failures).await;
-    failures.extend(expect_eq(
-        "the compiled-in catalog again: the first order",
-        back.as_deref(),
-        Some(first.as_str()),
-    ));
+    if let Some(back) = order_of(&st, ANN, "pack:hint_s", &mut failures).await {
+        let seen = if back == first {
+            Some("the first one")
+        } else if again.as_deref() == Some(back.as_str()) {
+            Some("the second one")
+        } else if back == second {
+            Some("the hint_s-at-4 one")
+        } else {
+            None
+        };
+        if let Some(seen) = seen {
+            failures.push(format!(
+                "the compiled-in catalog again: expected an order other than the first, the second and the \
+                 hint_s-at-4 one, got {seen}"
+            ));
+        }
+        failures.extend(expect_eq(
+            "the compiled-in catalog again: the new row",
+            order_binding(&st, &back).await,
+            compiled_in,
+        ));
+    }
     failures.extend(expect_eq(
         "createInvoiceLink calls",
         gateway.invoice_calls().len(),
-        2,
+        4,
     ));
     report(&failures);
 }
