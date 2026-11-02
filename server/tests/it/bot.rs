@@ -19,7 +19,9 @@ use server::config::{
 };
 use server::puzzles::Lang;
 use server::telegram::commands::utc_date;
-use server::telegram::gateway::{BotCommandSpec, CommandSet, OutMessage, WebAppButton};
+use server::telegram::gateway::{
+    BotCommandSpec, CommandSet, GatewayError, OutMessage, WebAppButton,
+};
 use server::telegram::payments::{RejectReason, RevokeOutcome};
 use server::telegram::setup;
 use server::telegram::texts::{self, BotFile, MESSAGE_LIMIT, fill};
@@ -29,7 +31,7 @@ use crate::common::{self, TEST_ADMIN_ID};
 use crate::payments::{GatewayCall, RecordingGateway, invoice_state, refusal};
 use crate::refunds::{
     BEN, T1, bought, entitlements_of, expect_eq, order_of, pay, refund_calls, refund_state,
-    revoke_at,
+    refunded_at, revoke_at,
 };
 use crate::webhook::{payment_update, post_update, pre_checkout_update};
 
@@ -355,6 +357,68 @@ async fn refund_command_admin_only() {
     ));
     failures.extend(expect_eq(
         "admin: entitlements of the charge",
+        entitlements_of(&st, "c-ch2").await,
+        0,
+    ));
+    report(&failures);
+}
+
+/// A `/refund` whose `refundStarPayment` timed out or broke off says the outcome is unknown and that a repeat is safe
+/// (review M3): Telegram may have refunded already. Only an API refusal says nothing changed. None of the three moves
+/// anything here (the entitlement kept, `refunded_at` NULL), and a repeat once the gateway answers revokes. The reply is
+/// recorded although the failing gateway fails its send too.
+#[tokio::test]
+async fn refund_timeout_reply_says_outcome_unknown() {
+    let (st, _db, gateway) = refund_state().await;
+    let mut failures = Vec::new();
+    if bought(&st, ANN, "chapter:ch2", "c-ch2", &mut failures)
+        .await
+        .is_none()
+    {
+        return report(&failures);
+    }
+    let ru = texts::texts(Lang::Ru);
+    for (case, failure, template) in [
+        ("timeout", GatewayError::Timeout, &ru.refund_unknown_outcome),
+        (
+            "transport",
+            GatewayError::Transport("connection reset".to_owned()),
+            &ru.refund_unknown_outcome,
+        ),
+        (
+            "CHARGE_NOT_FOUND",
+            GatewayError::Api("Bad Request: CHARGE_NOT_FOUND".to_owned()),
+            &ru.refund_failed,
+        ),
+    ] {
+        gateway.fail_with(Some(failure.clone()));
+        let got = say(&st, &gateway, TEST_ADMIN_ID, Some("ru"), "/refund c-ch2").await;
+        gateway.fail_with(None);
+        let want = fill(
+            template,
+            &[("charge", "c-ch2"), ("error", &failure.to_string())],
+        );
+        failures.extend(expect_reply(case, &got, &plain(TEST_ADMIN_ID, &want)));
+        failures.extend(expect_eq(
+            &format!("{case}: entitlements of the charge"),
+            entitlements_of(&st, "c-ch2").await,
+            1,
+        ));
+        failures.extend(expect_eq(
+            &format!("{case}: refunded_at"),
+            refunded_at(&st, "c-ch2").await,
+            None,
+        ));
+    }
+    let got = say(&st, &gateway, TEST_ADMIN_ID, Some("ru"), "/refund c-ch2").await;
+    let done = fill(&ru.refund_done, &[("charge", "c-ch2")]);
+    failures.extend(expect_reply(
+        "repeated once the gateway answers",
+        &got,
+        &plain(TEST_ADMIN_ID, &done),
+    ));
+    failures.extend(expect_eq(
+        "repeated: entitlements of the charge",
         entitlements_of(&st, "c-ch2").await,
         0,
     ));

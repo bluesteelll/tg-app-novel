@@ -10,7 +10,7 @@ use frankenstein::types::{ChatType, Message};
 use crate::AppState;
 use crate::db::payments::ChargeLine;
 use crate::ids::{ChargeId, UserId};
-use crate::telegram::gateway::{CALL_DEADLINE, OutMessage, WebAppButton};
+use crate::telegram::gateway::{CALL_DEADLINE, GatewayError, OutMessage, WebAppButton};
 use crate::telegram::payments::{self, RefundError, RevokeOutcome, payer_lang};
 use crate::telegram::setup::app_url;
 use crate::telegram::texts::{self, LangTexts, fill};
@@ -214,8 +214,9 @@ async fn paysupport(st: &AppState, from: u64, t: &LangTexts) -> Result<String, s
 }
 
 /// The admin's `/refund <charge>`: the usage without a usable argument, else the admin refund's outcome in `t`. A
-/// database error is `Err`: Telegram redelivers the command, and its retry meets `CHARGE_ALREADY_REFUNDED` and
-/// revokes.
+/// gateway timeout or transport break says the outcome is unknown (Telegram may have refunded; a repeat is safe: it
+/// meets `CHARGE_ALREADY_REFUNDED` and revokes), an API refusal or a disabled gateway that nothing changed. A database
+/// error is `Err`: Telegram redelivers the command, and its retry meets `CHARGE_ALREADY_REFUNDED` and revokes.
 async fn refund_reply(
     st: &AppState,
     t: &LangTexts,
@@ -228,11 +229,17 @@ async fn refund_reply(
         Ok(RevokeOutcome::Revoked) => fill(&t.refund_done, &[("charge", charge)]),
         Ok(RevokeOutcome::AlreadyRefunded) => fill(&t.refund_already, &[("charge", charge)]),
         Ok(RevokeOutcome::UnknownCharge) => fill(&t.refund_unknown, &[("charge", charge)]),
-        // `GatewayError`'s text carries no request text (no token, no secret).
-        Err(RefundError::Gateway(e)) => fill(
-            &t.refund_failed,
-            &[("charge", charge), ("error", &e.to_string())],
-        ),
+        Err(RefundError::Gateway(e)) => {
+            // No wildcard arm: a new gateway error does not compile until its reply is chosen here.
+            let template = match &e {
+                // The call may have reached Telegram: the Stars may be back already.
+                GatewayError::Timeout | GatewayError::Transport(_) => &t.refund_unknown_outcome,
+                // Telegram refused, or no call left the process: nothing changed.
+                GatewayError::Api(_) | GatewayError::Disabled => &t.refund_failed,
+            };
+            // `GatewayError`'s text carries no request text (no token, no secret).
+            fill(template, &[("charge", charge), ("error", &e.to_string())])
+        }
         Err(RefundError::Db(e)) => return Err(e),
     };
     Ok(text)

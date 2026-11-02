@@ -22,6 +22,7 @@
     "refund_already": "Payment {charge} is already refunded.",
     "refund_unknown": "Payment {charge} was not found.",
     "refund_failed": "Could not refund payment {charge}: {error}. Nothing changed, please try again.",
+    "refund_unknown_outcome": "The refund of payment {charge} is not confirmed ({error}): Telegram may already have returned the Stars. Repeat /refund {charge}; repeating is safe.",
     "cmd_start": "Start the game",
     "cmd_paysupport": "Payment support",
     "cmd_support": "Support",

@@ -100,8 +100,11 @@ pub struct LangTexts {
     pub refund_already: String,
     /// `/refund`: no payment has the charge: `{charge}`.
     pub refund_unknown: String,
-    /// `/refund`: Telegram refused or did not answer: `{charge}`, `{error}`.
+    /// `/refund`: Telegram refused, or no call left the process (nothing changed): `{charge}`, `{error}`.
     pub refund_failed: String,
+    /// `/refund`: the call timed out or broke off, so Telegram may have refunded; a repeat is safe: `{charge}`,
+    /// `{error}`.
+    pub refund_unknown_outcome: String,
     /// The command menu's `/start`.
     pub cmd_start: String,
     /// The command menu's `/paysupport`.
@@ -165,6 +168,7 @@ impl LangTexts {
             refund_already,
             refund_unknown,
             refund_failed,
+            refund_unknown_outcome,
             cmd_start,
             cmd_paysupport,
             cmd_support,
@@ -238,6 +242,12 @@ impl LangTexts {
             entry(
                 "refund_failed",
                 refund_failed,
+                MESSAGE_LIMIT,
+                &["charge", "error"],
+            ),
+            entry(
+                "refund_unknown_outcome",
+                refund_unknown_outcome,
                 MESSAGE_LIMIT,
                 &["charge", "error"],
             ),

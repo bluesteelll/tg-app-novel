@@ -22,6 +22,7 @@
     "refund_already": "Платёж {charge} уже возвращён.",
     "refund_unknown": "Платёж {charge} не найден.",
     "refund_failed": "Не удалось вернуть платёж {charge}: {error}. Ничего не изменилось, попробуйте ещё раз.",
+    "refund_unknown_outcome": "Возврат платежа {charge} не подтверждён ({error}): Telegram мог уже вернуть звёзды. Повторите /refund {charge} — повтор безопасен.",
     "cmd_start": "Начать игру",
     "cmd_paysupport": "Помощь с оплатой",
     "cmd_support": "Поддержка",
