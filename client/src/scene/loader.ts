@@ -57,6 +57,10 @@ export function createImageLoader(deps: { fetchAsset: FetchAsset }): LoadImage<T
       w: bitmap.width,
       h: bitmap.height,
       keptBytes: kept.size,
+      // The bitmap stays the texture's resource for now: never closed after an upload, so nothing is stale to revive.
+      gen: null,
+      open: () => alive && bitmap.width > 0,
+      revive: () => Promise.resolve({ ok: true, value: undefined }),
       release() {
         if (!alive) {
           return;

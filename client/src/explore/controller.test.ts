@@ -637,7 +637,19 @@ function realScene(m: AssetManifest) {
     const e = entryOf(id);
     return Promise.resolve().then(() => {
       live.add(id);
-      return { ok: true, value: { texture: id, w: e.w, h: e.h, keptBytes: ref.bytes, release: () => live.delete(id) } };
+      return {
+        ok: true,
+        value: {
+          texture: id,
+          w: e.w,
+          h: e.h,
+          keptBytes: ref.bytes,
+          gen: 1,
+          open: () => false,
+          revive: () => Promise.resolve({ ok: true, value: undefined }),
+          release: () => live.delete(id),
+        },
+      };
     });
   };
   const registry = createAssetRegistry<string>({ load, variant: 'avif' });

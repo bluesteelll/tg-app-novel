@@ -8,7 +8,7 @@ import { createExecutor } from './executor.ts';
 import type { Layer, Placement, StageAdapter, VisualCommand } from './executor.ts';
 import { propPlacement } from './layout.ts';
 import { createAssetRegistry } from './registry.ts';
-import type { AssetError, LoadImage } from './registry.ts';
+import type { AssetError, Decoded, LoadImage } from './registry.ts';
 import { createRenderLoop } from './render-loop.ts';
 import type { RenderLoop, Ticker } from './render-loop.ts';
 
@@ -153,7 +153,21 @@ function harness(size: Size = S390, loop: RenderLoop = quietLoop()) {
       released.set(ref.url, (released.get(ref.url) ?? 0) + 1);
       freed.add(texture);
     };
-    return Promise.resolve({ ok: true, value: { texture, w: e.w, h: e.h, keptBytes: ref.bytes, release } });
+    // Uploaded under generation 1; a revive succeeds (MEMORY-PLAN M2).
+    const d: Decoded<Tex> = {
+      texture,
+      w: e.w,
+      h: e.h,
+      keptBytes: ref.bytes,
+      gen: 1,
+      open: () => false,
+      revive: (gen) => {
+        d.gen = gen;
+        return Promise.resolve({ ok: true, value: undefined });
+      },
+      release,
+    };
+    return Promise.resolve({ ok: true, value: d });
   };
   const registry = createAssetRegistry<Tex>({ load, variant: 'avif' });
   const resolve = (id: AssetId): Result<ImageEntry, AssetError> => {
@@ -243,7 +257,7 @@ test('executor_kills_timelines', async () => {
   await flush();
   expect(thirdDone).toBe(true);
   expect(gsap.globalTimeline.getChildren(true, true, true)).toEqual([]);
-  expect(h.registry.stats()).toEqual({ live: 0, bytes: 0, pending: 0, overCap: 0, keptBytes: 0, keptMismatch: 0 });
+  expect(h.registry.stats()).toEqual({ live: 0, bytes: 0, pending: 0, overCap: 0, keptBytes: 0, keptMismatch: 0, openBitmaps: 0, stale: 0, reviveFailed: 0 });
 });
 
 test('executor_sprite_count_per_slot', async () => {

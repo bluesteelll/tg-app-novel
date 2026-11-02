@@ -1,15 +1,16 @@
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 
 import type { ImageEntry, Result, Trim } from '../story/catalog.ts';
 import type { AssetId } from '../story/staging.ts';
 import type { TextureGeometry } from './layout.ts';
-import { createAssetRegistry } from './registry.ts';
+import { REVIVE_DEADLINE_MS, createAssetRegistry } from './registry.ts';
 import type { Decoded, LoadError, LoadImage } from './registry.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
 // A fake loader with deferred results: every call is recorded with its URL, file bytes, signal and geometry, and every
 // Decoded counts its release() calls by URL. Byte-faithful (MEMORY-PLAN M2): a Decoded keeps the bytes of the file it
-// was called with, as the real loader keeps the fetched Blob.
+// was called with, as the real loader keeps the fetched Blob, reports the harness's GPU generation when its load settles
+// (1 unless a test raises it), and records every revive, which succeeds at once unless the test holds them.
 
 type Tex = { readonly url: string };
 type Call = {
@@ -20,6 +21,7 @@ type Call = {
   resolve(r: Result<Decoded<Tex>, LoadError>): void;
   done: boolean;
 };
+type Revive = { url: string; gen: number; signal: AbortSignal; settle(r: Result<void, LoadError>): void; done: boolean };
 
 const BG = 8_847_360; // 1080 × 2048 × 4
 const PROP = 1_048_576; // 512 × 512 × 4
@@ -41,20 +43,53 @@ const prop = (name: string): ImageEntry => image(name, 512, 512);
 
 function harness(variant: 'avif' | 'webp' = 'avif') {
   const calls: Call[] = [];
+  const revives: Revive[] = [];
   const released = new Map<string, number>();
+  /** The generation a load that settles now was uploaded under (the controller's, MEMORY-PLAN 4.A). */
+  let gen = 1;
+  let reviveMode: 'auto' | 'hold' = 'auto';
   const sizes = new Map<string, { w: number; h: number }>();
   const load: LoadImage<Tex> = (ref, signal, geometry) =>
     new Promise((resolve) => {
       calls.push({ url: ref.url, bytes: ref.bytes, signal, geometry, resolve, done: false });
     });
   const registry = createAssetRegistry<Tex>({ load, variant });
-  const decoded = (url: string, w: number, h: number, keptBytes: number): Decoded<Tex> => ({
-    texture: { url },
-    w,
-    h,
-    keptBytes,
-    release: () => released.set(url, (released.get(url) ?? 0) + 1),
-  });
+  const decoded = (url: string, w: number, h: number, keptBytes: number): Decoded<Tex> => {
+    const d: Decoded<Tex> = {
+      texture: { url },
+      w,
+      h,
+      keptBytes,
+      gen,
+      open: () => false,
+      revive: (to, signal) =>
+        new Promise((resolve) => {
+          const r: Revive = {
+            url,
+            gen: to,
+            signal,
+            done: false,
+            settle(result) {
+              if (r.done) {
+                return;
+              }
+              r.done = true;
+              // As the loader: a revive that settles after its abort uploads nothing.
+              if (result.ok && !signal.aborted) {
+                d.gen = to;
+              }
+              resolve(result);
+            },
+          };
+          revives.push(r);
+          if (reviveMode === 'auto') {
+            r.settle({ ok: true, value: undefined });
+          }
+        }),
+      release: () => released.set(url, (released.get(url) ?? 0) + 1),
+    };
+    return d;
+  };
   const callsOf = (url: string): Call[] => calls.filter((c) => c.url === url);
   /** Resolves a call with its manifest size (or `size`) and its file's bytes kept (or `kept`), once. */
   const succeed = (call: Call, size = sizes.get(call.url), kept = call.bytes): void => {
@@ -75,11 +110,47 @@ function harness(variant: 'avif' | 'webp' = 'avif') {
     sizes.set(entry.webp.url, { w: entry.w, h: entry.h });
     return registry.acquire(asId(name), holder, signal === undefined ? { entry, priority } : { entry, priority, signal });
   };
-  return { registry, calls, released, callsOf, succeed, succeedAll, acquire, decoded };
+  /** Settles every held revive so far with `r`; returns how many. */
+  const settleRevives = (r: Result<void, LoadError> = { ok: true, value: undefined }): number => {
+    const open = revives.filter((x) => !x.done);
+    for (const x of open) {
+      x.settle(r);
+    }
+    return open.length;
+  };
+  return {
+    registry,
+    calls,
+    revives,
+    released,
+    callsOf,
+    succeed,
+    succeedAll,
+    acquire,
+    decoded,
+    settleRevives,
+    setGen: (g: number): void => {
+      gen = g;
+    },
+    setReviveMode: (m: 'auto' | 'hold'): void => {
+      reviveMode = m;
+    },
+  };
 }
 
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 const releasedOf = (released: Map<string, number>, name: string): number => released.get(`/assets/${name}.avif`) ?? 0;
+const noAbort = (): AbortSignal => new AbortController().signal;
+/** What a promise settled with so far (null: not yet), read without awaiting it. */
+function seen<V>(p: Promise<V>): { value: V | null } {
+  const s: { value: V | null } = { value: null };
+  void p.then((v) => {
+    s.value = v;
+  });
+  return s;
+}
+const ZERO = { live: 0, bytes: 0, pending: 0, overCap: 0, keptBytes: 0, keptMismatch: 0, openBitmaps: 0, stale: 0, reviveFailed: 0 };
+const FAILED: Result<void, LoadError> = { ok: false, error: { kind: 'decode', detail: 'corrupt file' } };
 
 // ---------------------------------------------------------------------------------------------------------------
 
@@ -109,7 +180,7 @@ test('registry_returns_to_baseline', async () => {
       ['/assets/x_y.avif', 1],
     ]),
   );
-  expect(h.registry.stats()).toEqual({ live: 0, bytes: 0, pending: 0, overCap: 0, keptBytes: 0, keptMismatch: 0 });
+  expect(h.registry.stats()).toEqual({ live: 0, bytes: 0, pending: 0, overCap: 0, keptBytes: 0, keptMismatch: 0, openBitmaps: 0, stale: 0, reviveFailed: 0 });
 });
 
 test('registry_caps', async () => {
@@ -135,7 +206,7 @@ test('registry_caps', async () => {
   expect(h.callsOf('/assets/c.avif').length).toBe(0);
   expect((await a).ok).toBe(true);
   expect((await b).ok).toBe(true);
-  expect(h.registry.stats()).toEqual({ live: 7, bytes: 30_737_084, pending: 0, overCap: 0, keptBytes: 7 * F, keptMismatch: 0 });
+  expect(h.registry.stats()).toEqual({ live: 7, bytes: 30_737_084, pending: 0, overCap: 0, keptBytes: 7 * F, keptMismatch: 0, openBitmaps: 0, stale: 0, reviveFailed: 0 });
 
   // (b) Visible admission up to the hard cap: five backgrounds and their files = 44,237,300 B.
   const v = harness();
@@ -165,7 +236,7 @@ test('registry_caps', async () => {
   expect((await fifth).ok).toBe(true);
   expect(releasedOf(e.released, 'p')).toBe(1);
   expect(releasedOf(e.released, 'v1')).toBe(0);
-  expect(e.registry.stats()).toEqual({ live: 5, bytes: 44_237_300, pending: 0, overCap: 0, keptBytes: 5 * F, keptMismatch: 0 });
+  expect(e.registry.stats()).toEqual({ live: 5, bytes: 44_237_300, pending: 0, overCap: 0, keptBytes: 5 * F, keptMismatch: 0, openBitmaps: 0, stale: 0, reviveFailed: 0 });
 });
 
 test('registry: visible load over hard cap after eviction is refused', async () => {
@@ -204,7 +275,7 @@ test('registry: a visible load over the hard cap evicts room and next preloads',
     h.succeedAll();
     expect({ holder, ok: (await fifth).ok }).toEqual({ holder, ok: true });
     expect(releasedOf(h.released, 'r')).toBe(1);
-    expect(h.registry.stats()).toEqual({ live: 5, bytes: 44_237_300, pending: 0, overCap: 0, keptBytes: 5 * F, keptMismatch: 0 });
+    expect(h.registry.stats()).toEqual({ live: 5, bytes: 44_237_300, pending: 0, overCap: 0, keptBytes: 5 * F, keptMismatch: 0, openBitmaps: 0, stale: 0, reviveFailed: 0 });
   }
 });
 
@@ -239,7 +310,7 @@ test('registry: image over 2048 px or off its manifest size is refused', async (
   }
   expect(await lying).toMatchObject({ ok: false, error: { kind: 'decode' } });
   expect(releasedOf(h.released, 'lie')).toBe(1);
-  expect(h.registry.stats()).toEqual({ live: 0, bytes: 0, pending: 0, overCap: 0, keptBytes: 0, keptMismatch: 0 });
+  expect(h.registry.stats()).toEqual({ live: 0, bytes: 0, pending: 0, overCap: 0, keptBytes: 0, keptMismatch: 0, openBitmaps: 0, stale: 0, reviveFailed: 0 });
 });
 
 // MEMORY-PLAN 4.B: the placeholder sprite's alpha box, stored 466×1394, at (151, 142) on its 768×1536 canvas.
@@ -256,7 +327,7 @@ test("registry: a trimmed entry's handle reports its canvas", async () => {
   }
   expect(r.value.h).toBe(1536);
   expect(r.value.w).toBe(768);
-  expect(h.registry.stats()).toEqual({ live: 1, bytes: 466 * 1394 * 4 + F, pending: 0, overCap: 0, keptBytes: F, keptMismatch: 0 });
+  expect(h.registry.stats()).toEqual({ live: 1, bytes: 466 * 1394 * 4 + F, pending: 0, overCap: 0, keptBytes: F, keptMismatch: 0, openBitmaps: 0, stale: 0, reviveFailed: 0 });
 });
 
 test("registry: load receives the entry's geometry", async () => {
@@ -297,7 +368,7 @@ test('registry: abort frees the reservation', async () => {
   const h = harness();
   const ctl = new AbortController();
   const pending = h.acquire('bg/a', bg('a'), 'scene:bg', 'visible', ctl.signal);
-  expect(h.registry.stats()).toEqual({ live: 0, bytes: 8_847_460, pending: 1, overCap: 0, keptBytes: 0, keptMismatch: 0 });
+  expect(h.registry.stats()).toEqual({ live: 0, bytes: 8_847_460, pending: 1, overCap: 0, keptBytes: 0, keptMismatch: 0, openBitmaps: 0, stale: 0, reviveFailed: 0 });
   ctl.abort();
   // The loader resolves anyway, late: that texture is destroyed at once and nothing is counted.
   h.succeedAll();
@@ -320,7 +391,7 @@ test('registry: a late settle acts only on its own load', async () => {
     expect(h.calls.length).toBe(2);
     const [l1, l2] = h.calls;
     expect(l1?.signal.aborted).toBe(true);
-    expect(h.registry.stats()).toEqual({ live: 0, bytes: 8_847_460, pending: 1, overCap: 0, keptBytes: 0, keptMismatch: 0 });
+    expect(h.registry.stats()).toEqual({ live: 0, bytes: 8_847_460, pending: 1, overCap: 0, keptBytes: 0, keptMismatch: 0, openBitmaps: 0, stale: 0, reviveFailed: 0 });
 
     // L1 settles late: as the real FetchAsset reports an aborted fetch, or as a decode the loader finished anyway.
     if (late === 'aborted') {
@@ -329,7 +400,7 @@ test('registry: a late settle acts only on its own load', async () => {
       h.succeed(l1);
     }
     await flush();
-    expect(h.registry.stats()).toEqual({ live: 0, bytes: 8_847_460, pending: 1, overCap: 0, keptBytes: 0, keptMismatch: 0 });
+    expect(h.registry.stats()).toEqual({ live: 0, bytes: 8_847_460, pending: 1, overCap: 0, keptBytes: 0, keptMismatch: 0, openBitmaps: 0, stale: 0, reviveFailed: 0 });
     expect(await first).toMatchObject({ ok: false, error: { kind: 'aborted' } });
 
     if (l2 !== undefined) {
@@ -337,11 +408,11 @@ test('registry: a late settle acts only on its own load', async () => {
     }
     const got = await second;
     expect(got.ok).toBe(true);
-    expect(h.registry.stats()).toEqual({ live: 1, bytes: 8_847_460, pending: 0, overCap: 0, keptBytes: F, keptMismatch: 0 });
+    expect(h.registry.stats()).toEqual({ live: 1, bytes: 8_847_460, pending: 0, overCap: 0, keptBytes: F, keptMismatch: 0, openBitmaps: 0, stale: 0, reviveFailed: 0 });
     expect(releasedOf(h.released, 'x')).toBe(late === 'decoded' ? 1 : 0);
     h.registry.releaseHolder('preload:');
     expect(releasedOf(h.released, 'x')).toBe(late === 'decoded' ? 2 : 1);
-    expect(h.registry.stats()).toEqual({ live: 0, bytes: 0, pending: 0, overCap: 0, keptBytes: 0, keptMismatch: 0 });
+    expect(h.registry.stats()).toEqual({ live: 0, bytes: 0, pending: 0, overCap: 0, keptBytes: 0, keptMismatch: 0, openBitmaps: 0, stale: 0, reviveFailed: 0 });
   }
 });
 
@@ -373,7 +444,296 @@ test('registry: a kept blob is counted at its real size', async () => {
   }
   h.succeed(call, undefined, 300);
   expect((await got).ok).toBe(true);
-  expect(h.registry.stats()).toEqual({ live: 1, bytes: BG + 300, pending: 0, overCap: 0, keptBytes: 300, keptMismatch: 1 });
+  expect(h.registry.stats()).toEqual({ live: 1, bytes: BG + 300, pending: 0, overCap: 0, keptBytes: 300, keptMismatch: 1, openBitmaps: 0, stale: 0, reviveFailed: 0 });
   h.registry.release(asId('bg/a'), 'scene:bg');
-  expect(h.registry.stats()).toEqual({ live: 0, bytes: 0, pending: 0, overCap: 0, keptBytes: 0, keptMismatch: 1 });
+  expect(h.registry.stats()).toEqual({ live: 0, bytes: 0, pending: 0, overCap: 0, keptBytes: 0, keptMismatch: 1, openBitmaps: 0, stale: 0, reviveFailed: 0 });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// MEMORY-PLAN M2 commit 3: the revive (4.A, section 8 A2, "Revive failure", "Identity rule").
+
+/** Acquires each `bg/<name>` under `scene:<name>` (visible) and lets every load settle; returns the handles. */
+async function liveBgs(h: ReturnType<typeof harness>, names: readonly string[], priority: 'visible' | 'preload' = 'visible') {
+  const got = names.map((n) => h.acquire(`bg/${n}`, bg(n), priority === 'visible' ? `scene:${n}` : `preload:${n}`, priority));
+  h.succeedAll();
+  const out = [];
+  for (const r of await Promise.all(got)) {
+    if (!r.ok) {
+      throw new Error(`invariant: the fixture loads: ${JSON.stringify(r.error)}`);
+    }
+    out.push(r.value);
+  }
+  return out;
+}
+const urlsOf = (revives: readonly Revive[]): string[] => revives.map((r) => `${r.url}@${r.gen}`);
+
+test('registry: revive brings every record of an older generation once', async () => {
+  const h = harness();
+  await liveBgs(h, ['a', 'b', 'c']);
+  expect(h.registry.stats().stale).toBe(0);
+  const r = h.registry.revive(2, noAbort());
+  expect(await r.visible).toBe('done');
+  expect(await r.all).toBe('done');
+  expect(urlsOf(h.revives)).toEqual(['/assets/a.avif@2', '/assets/b.avif@2', '/assets/c.avif@2']);
+  expect(h.registry.stats()).toEqual({ ...ZERO, live: 3, bytes: 3 * (BG + F), keptBytes: 3 * F });
+  // A second revive to the same generation finds nothing stale.
+  expect(await h.registry.revive(2, noAbort()).all).toBe('done');
+  expect(h.revives.length).toBe(3);
+});
+
+test('registry: revive skips a record uploaded under the current generation', async () => {
+  const h = harness();
+  await liveBgs(h, ['old']);
+  h.setGen(2); // the next load uploads under the restored context's generation
+  await liveBgs(h, ['new']);
+  expect(await h.registry.revive(2, noAbort()).all).toBe('done');
+  expect(h.revives.filter((r) => r.url === '/assets/new.avif').length).toBe(0);
+  expect(urlsOf(h.revives)).toEqual(['/assets/old.avif@2']);
+  expect(h.registry.stats().stale).toBe(0);
+});
+
+test('registry: revive serves visible holders first', async () => {
+  const h = harness();
+  // The preload-only record is inserted first.
+  await liveBgs(h, ['p'], 'preload');
+  await liveBgs(h, ['v']);
+  h.setReviveMode('hold');
+  const r = h.registry.revive(2, noAbort());
+  const visible = seen(r.visible);
+  const all = seen(r.all);
+  await flush();
+  // One at a time: the visible record first, the preload-only record only after the visible pass.
+  expect(urlsOf(h.revives)).toEqual(['/assets/v.avif@2']);
+  h.settleRevives();
+  await flush();
+  expect(visible.value).toBe('done');
+  expect(all.value).toBe(null);
+  expect(urlsOf(h.revives)).toEqual(['/assets/v.avif@2', '/assets/p.avif@2']);
+  h.settleRevives();
+  await flush();
+  expect(all.value).toBe('done');
+});
+
+test('registry: acquire on a record not yet revived waits for it', async () => {
+  const h = harness();
+  const [, , z] = await liveBgs(h, ['x', 'y', 'z']);
+  h.setReviveMode('hold');
+  void h.registry.revive(2, noAbort());
+  await flush();
+  expect(urlsOf(h.revives)).toEqual(['/assets/x.avif@2']);
+  const join = seen(h.acquire('bg/z', bg('z'), 'preload:k1', 'preload'));
+  await flush();
+  expect(join.value).toBe(null);
+  h.settleRevives();
+  await flush();
+  // The record an acquire waits on moves to the front: z before y.
+  expect(urlsOf(h.revives)).toEqual(['/assets/x.avif@2', '/assets/z.avif@2']);
+  expect(join.value).toBe(null);
+  h.settleRevives();
+  await flush();
+  expect(join.value).toEqual({ ok: true, value: z });
+  expect(join.value?.ok === true ? join.value.value : null).toBe(z);
+});
+
+test('registry: a failed revive ends the record and fails its waiting acquire', async () => {
+  const h = harness();
+  await liveBgs(h, ['a']);
+  h.setReviveMode('hold');
+  const r = h.registry.revive(2, noAbort());
+  await flush();
+  const waiting = h.acquire('bg/a', bg('a'), 'preload:k1', 'preload');
+  h.settleRevives(FAILED);
+  expect(await waiting).toMatchObject({ ok: false, error: { kind: 'decode', id: 'bg/a', detail: 'corrupt file' } });
+  expect(await r.visible).toBe('done');
+  expect(await r.all).toBe('done');
+  // Out of the map whatever its holders: its texture destroyed, its kept file dropped.
+  expect(h.registry.current(asId('bg/a'))).toBe(null);
+  expect(releasedOf(h.released, 'a')).toBe(1);
+  expect(h.registry.stats()).toEqual({ ...ZERO, reviveFailed: 1 });
+});
+
+test('registry: a revive that misses its deadline ends the record', async () => {
+  vi.useFakeTimers();
+  try {
+    const h = harness();
+    await liveBgs(h, ['p'], 'preload');
+    await liveBgs(h, ['v']);
+    h.setReviveMode('hold'); // a re-decode that never settles
+    const r = h.registry.revive(2, noAbort());
+    const visible = seen(r.visible);
+    const all = seen(r.all);
+    await vi.advanceTimersByTimeAsync(REVIVE_DEADLINE_MS - 1);
+    expect(visible.value).toBe(null);
+    expect(h.registry.current(asId('bg/v'))).not.toBe(null);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(visible.value).toBe('done');
+    expect(h.registry.current(asId('bg/v'))).toBe(null);
+    expect(h.revives[0]?.signal.aborted).toBe(true);
+    expect(releasedOf(h.released, 'v')).toBe(1);
+    // The background record's deadline counts from its own start, at the end of the visible pass.
+    expect(urlsOf(h.revives)).toEqual(['/assets/v.avif@2', '/assets/p.avif@2']);
+    await vi.advanceTimersByTimeAsync(REVIVE_DEADLINE_MS - 1);
+    expect(all.value).toBe(null);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(all.value).toBe('done');
+    expect(h.registry.stats()).toEqual({ ...ZERO, reviveFailed: 2 });
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test('registry: an acquire after a failed revive starts a new record', async () => {
+  const h = harness();
+  const [first] = await liveBgs(h, ['a']);
+  h.setReviveMode('hold');
+  const r = h.registry.revive(2, noAbort());
+  await flush();
+  h.settleRevives(FAILED);
+  expect(await r.visible).toBe('done');
+  const again = h.acquire('bg/a', bg('a'), 'scene:a', 'visible');
+  expect(h.callsOf('/assets/a.avif').length).toBe(2);
+  h.succeedAll();
+  const got = await again;
+  if (!got.ok) {
+    throw new Error(`invariant: the new record loads: ${JSON.stringify(got.error)}`);
+  }
+  expect(got.value).not.toBe(first);
+  expect(h.registry.current(asId('bg/a'))).toBe(got.value);
+});
+
+test('registry: an aborted revive fails no record', async () => {
+  // `deactivated`: the revive is aborted through its signal; the records stay stale for the next one.
+  const h = harness();
+  const [a] = await liveBgs(h, ['a', 'b']);
+  h.setReviveMode('hold');
+  const ctl = new AbortController();
+  const r = h.registry.revive(2, ctl.signal);
+  await flush();
+  expect(h.revives.length).toBe(1);
+  ctl.abort();
+  expect(h.revives[0]?.signal.aborted).toBe(true);
+  // The loader answers its own abort.
+  h.settleRevives({ ok: false, error: { kind: 'aborted' } });
+  expect(await r.visible).toBe('aborted');
+  expect(await r.all).toBe('aborted');
+  await flush();
+  expect(h.registry.stats()).toEqual({ ...ZERO, live: 2, bytes: 2 * (BG + F), keptBytes: 2 * F, stale: 2 });
+  expect(h.registry.current(asId('bg/a'))).toBe(a);
+  expect(releasedOf(h.released, 'a')).toBe(0);
+  // `activated`: a new revive under the same generation brings both.
+  h.setReviveMode('auto');
+  expect(await h.registry.revive(2, noAbort()).all).toBe('done');
+  expect(h.registry.stats()).toMatchObject({ live: 2, stale: 0, reviveFailed: 0 });
+});
+
+test('registry: revive ignores an entry released mid-revive', async () => {
+  for (const late of [{ ok: true, value: undefined }, FAILED] as const) {
+    const h = harness();
+    await liveBgs(h, ['a']);
+    h.setReviveMode('hold');
+    const r = h.registry.revive(2, noAbort());
+    await flush();
+    h.registry.release(asId('bg/a'), 'scene:a');
+    expect(releasedOf(h.released, 'a')).toBe(1);
+    // The revive settles after the release: it acts on nothing.
+    h.settleRevives(late);
+    expect(await r.visible).toBe('done');
+    expect(await r.all).toBe('done');
+    expect(releasedOf(h.released, 'a')).toBe(1);
+    expect(h.registry.stats()).toEqual(ZERO);
+  }
+});
+
+test("registry: current names a live record's handle and nothing else", async () => {
+  const h = harness();
+  const pending = h.acquire('bg/a', bg('a'), 'scene:a', 'visible');
+  expect(h.registry.current(asId('bg/a'))).toBe(null);
+  h.succeedAll();
+  const first = await pending;
+  if (!first.ok) {
+    throw new Error('invariant: the fixture loads');
+  }
+  expect(h.registry.current(asId('bg/a'))).toBe(first.value);
+  h.registry.release(asId('bg/a'), 'scene:a');
+  expect(h.registry.current(asId('bg/a'))).toBe(null);
+  // A later record of the id has another handle.
+  const [second] = await liveBgs(h, ['a']);
+  expect(second).not.toBe(first.value);
+  expect(h.registry.current(asId('bg/a'))).toBe(second);
+  // A failed revive ends it: nothing is current.
+  h.setReviveMode('hold');
+  const r = h.registry.revive(2, noAbort());
+  await flush();
+  h.settleRevives(FAILED);
+  expect(await r.visible).toBe('done');
+  expect(h.registry.current(asId('bg/a'))).toBe(null);
+  expect(h.registry.current(asId('bg/none'))).toBe(null);
+});
+
+test('registry: a revived record keeps its handle', async () => {
+  const h = harness();
+  const [a] = await liveBgs(h, ['a']);
+  expect(await h.registry.revive(2, noAbort()).all).toBe('done');
+  expect(h.revives.length).toBe(1);
+  // The same texture re-uploaded in place: every view bound to the handle stays valid.
+  expect(h.registry.current(asId('bg/a'))).toBe(a);
+  const join = await h.acquire('bg/a', bg('a'), 'preload:k1', 'preload');
+  expect(join.ok ? join.value : null).toBe(a);
+});
+
+test('registry: visible and all settle aborted when the revive is aborted', async () => {
+  const h = harness();
+  await liveBgs(h, ['p'], 'preload');
+  await liveBgs(h, ['v']);
+  h.setReviveMode('hold');
+
+  // By its signal during the visible pass: both passes.
+  const c1 = new AbortController();
+  const r1 = h.registry.revive(2, c1.signal);
+  await flush();
+  c1.abort();
+  expect(await r1.visible).toBe('aborted');
+  expect(await r1.all).toBe('aborted');
+  h.settleRevives({ ok: false, error: { kind: 'aborted' } });
+
+  // By its signal after the visible pass: that pass keeps 'done'.
+  const c2 = new AbortController();
+  const r2 = h.registry.revive(2, c2.signal);
+  await flush();
+  h.settleRevives();
+  expect(await r2.visible).toBe('done');
+  await flush();
+  expect(urlsOf(h.revives).at(-1)).toBe('/assets/p.avif@2');
+  c2.abort();
+  expect(await r2.all).toBe('aborted');
+  h.settleRevives({ ok: false, error: { kind: 'aborted' } });
+
+  // By a newer call: the older revive's passes settle 'aborted', the newer one runs.
+  const r3 = h.registry.revive(3, noAbort());
+  await flush();
+  const r4 = h.registry.revive(4, noAbort());
+  expect(await r3.visible).toBe('aborted');
+  expect(await r3.all).toBe('aborted');
+  const r4all = seen(r4.all);
+  for (let i = 0; i < 10 && r4all.value === null; i++) {
+    h.settleRevives();
+    await flush();
+  }
+  expect(await r4.visible).toBe('done');
+  expect(r4all.value).toBe('done');
+  expect(h.registry.stats()).toMatchObject({ live: 2, stale: 0, reviveFailed: 0 });
+});
+
+test('registry: a revive with no stale record settles done at once', async () => {
+  // The `activated` restart (section 9): nothing stale, no timer, no revive call.
+  const h = harness();
+  h.setGen(2);
+  await liveBgs(h, ['a']);
+  const r = h.registry.revive(2, noAbort());
+  const settled: string[] = [];
+  void r.visible.then((e) => settled.push(`visible:${e}`));
+  void r.all.then((e) => settled.push(`all:${e}`));
+  await Promise.resolve();
+  expect(settled).toEqual(['visible:done', 'all:done']);
+  expect(h.revives).toEqual([]);
 });

@@ -8,8 +8,8 @@ import type { AssetError, Decoded, LoadError, LoadImage } from './registry.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
 // Two chapter manifests over the real registry. The fake loader records every call (URL, file bytes, signal) and
-// decodes at once, or on demand when deferred; every Decoded keeps its file's bytes (MEMORY-PLAN M2) and counts its
-// release() calls by URL.
+// decodes at once, or on demand when deferred; every Decoded keeps its file's bytes (MEMORY-PLAN M2), is uploaded under
+// generation 1, revives at once, and counts its release() calls by URL.
 
 type Tex = { readonly url: string };
 type Call = { url: string; bytes: number; signal: AbortSignal; resolve(r: Result<Decoded<Tex>, LoadError>): void; done: boolean };
@@ -59,9 +59,24 @@ function harness(mode: 'auto' | 'deferred' = 'auto') {
   const released = new Map<string, number>();
   const decoded = (url: string, keptBytes: number): Decoded<Tex> | null => {
     const e = URLS.get(url);
-    return e === undefined
-      ? null
-      : { texture: { url }, w: e.w, h: e.h, keptBytes, release: () => released.set(url, (released.get(url) ?? 0) + 1) };
+    if (e === undefined) {
+      return null;
+    }
+    // Uploaded under generation 1; a revive succeeds (MEMORY-PLAN M2).
+    const d: Decoded<Tex> = {
+      texture: { url },
+      w: e.w,
+      h: e.h,
+      keptBytes,
+      gen: 1,
+      open: () => false,
+      revive: (gen) => {
+        d.gen = gen;
+        return Promise.resolve({ ok: true, value: undefined });
+      },
+      release: () => released.set(url, (released.get(url) ?? 0) + 1),
+    };
+    return d;
   };
   const succeed = (call: Call): void => {
     const d = decoded(call.url, call.bytes);
@@ -118,7 +133,7 @@ test('abort_after_release_destroys', async () => {
   h.succeedAll();
   await flush();
   expect(h.releasedOf(ch1, 'bg/a')).toBe(1);
-  expect(h.registry.stats()).toEqual({ live: 0, bytes: 0, pending: 0, overCap: 0, keptBytes: 0, keptMismatch: 0 });
+  expect(h.registry.stats()).toEqual({ live: 0, bytes: 0, pending: 0, overCap: 0, keptBytes: 0, keptMismatch: 0, openBitmaps: 0, stale: 0, reviveFailed: 0 });
 });
 
 test('preload: next-chapter id resident after setChapter', async () => {
@@ -203,5 +218,5 @@ test('preload: setChapter releases preload and other next holders', async () => 
   expect(h.releasedOf(ch1, 'prop/r1')).toBe(0);
   expect(h.registry.stats().live).toBe(2);
   h.s.destroy();
-  expect(h.registry.stats()).toEqual({ live: 0, bytes: 0, pending: 0, overCap: 0, keptBytes: 0, keptMismatch: 0 });
+  expect(h.registry.stats()).toEqual({ live: 0, bytes: 0, pending: 0, overCap: 0, keptBytes: 0, keptMismatch: 0, openBitmaps: 0, stale: 0, reviveFailed: 0 });
 });
