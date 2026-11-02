@@ -903,6 +903,10 @@ unchanged.**
     the server chain has run to its end (MEMORY-PLAN's M3s follows M3c and D2); of the ten lanes, LMI still runs
     (relaunched, RULINGS 105). After LMI come M2, then LFU3 (RULINGS 107, OB-1: M2 first, since both hold
     `client/src/app/game.ts`), and D2 waits for M2 only.
+  - Changed by RULINGS 105-111 (as of `3e35a7b`; docs lane `docs-errata-7`, group B): LMI has merged (`3e35a7b`), so
+    all ten lanes have merged. Its first run STOPPED on the entry budget (41.3 KB br over the 40.0 KB cap with the
+    controller in the entry), and RULINGS 105 relaunched it with the controller as a lazy chunk (M27). M2 runs now;
+    LFU3 follows M2 (RULINGS 107, OB-1), and D2 waits for M2 only.
   - Why LPO is a lane of its own (revision 1, W4): the operator facts need a `Config` variable, which means editing
     the three `Config` constructors (`config.rs`, `server/dev/src/lib.rs`, `server/tests/it/common.rs`) plus
     `lib.rs` and `.env.example`; in LF1 that is 15 + 4 = 19 files, over the cap. LPO holds them with `api/legal.rs` and
@@ -1950,6 +1954,9 @@ M1 `f1b707d` and LFU1 `f637bac` (LMI's gate); running LPH (server, after L9; RUL
 this design's lanes: none. LFU3 (RULINGS 99) follows LMI.
 Changed by RULINGS 104-108 (as of `a4d53ef`): merged also LPH `d423cb3` (server); running LMI (client); to go of this
 design's lanes: none. M2 follows LMI, and LFU3 follows M2 (RULINGS 107, OB-1).
+Changed by RULINGS 105-111 (as of `3e35a7b`): merged also LMI `3e35a7b` (client; RULINGS 105, 110), so all of this
+design's lanes have merged; running M2 (client, MEMORY-PLAN); to go of this design's lanes: none. LFU3 follows M2
+(RULINGS 107, OB-1).
 
 ---
 
@@ -2134,3 +2141,4 @@ lists (default: the narrative-designer drafts the demo ones above), Q21 jurisdic
 | 12 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `a190136` (the docs-errata-6 spec, group A; RULINGS 97-108), as merged on main `a4d53ef` | Docs lane `docs-errata-6`, group A (not a triage round): LPH (`d423cb3`; RULINGS 97 Q2) — M19's "order reuse < 1 h": no reuse, each POST a new order, at most 10 unpaid per user in a rolling hour, then 429. Ledger: `D:/tmp/novel-orch/docs-errata-6/ledger.md` |
 | 13 | 2026-11-02 | RULINGS 104-108 (as merged on main `a4d53ef`) | Docs lane `docs-errata-6`, group B (not a triage round): M28 and "Implementation plan" Order as of `a4d53ef` (LM1, LU1, LE1, LF1, LM2, LF2, LE2, LMD, LPO merged; LPH merged `d423cb3`, so the server chain has run to its end; LMI running, relaunched, RULINGS 105; M2 then LFU3 after LMI, RULINGS 107, OB-1). Ledger: `D:/tmp/novel-orch/docs-errata-6/ledger.md` |
 | 14 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `ba62703` (the docs-errata-7 spec, group A; RULINGS 105-111), as merged on main `3e35a7b` | Docs lane `docs-errata-7`, group A (not a triage round): LMI (`3e35a7b`; RULINGS 105, 110) — M27's controller as a lazy chunk loaded right after auth, re-imported by the next tap after a failure, awaited by an ending, counted before the first line; the budget targets and table (the `meta controller chunk (br)` row, 84 rows, the measured entry); F28's policy tap before the chunk; the e2e row (47 names in nine specs). Ledger: `D:/tmp/novel-orch/docs-errata-7/ledger.md` |
+| 15 | 2026-11-02 | RULINGS 105-111 (as merged on main `3e35a7b`) | Docs lane `docs-errata-7`, group B (not a triage round): M28 and "Implementation plan" Order as of `3e35a7b` (LMI merged `3e35a7b` after its entry-budget STOP and the relaunch of RULINGS 105, so all ten lanes of this design have merged; M2 running; LFU3 after M2, RULINGS 107, OB-1). Ledger: `D:/tmp/novel-orch/docs-errata-7/ledger.md` |
