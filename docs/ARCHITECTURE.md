@@ -1,9 +1,10 @@
 # Architecture
 
-> The layers of tg-app-novel as merged at `22ed4d5`, how data moves between them, and where each CLAUDE.md principle
-> is enforced. First version at `e5ce724`, with LS3 server-stats and LU1 meta-ui added at `6043941`, and L10, L14b,
-> LE1, LP2, L13, LF1, LS4, LX and LM2 since; open at `22ed4d5`: L15 integration and LF2 share-profile. Parts not built
-> yet are marked **planned** with the lane and the plan section.
+> The layers of tg-app-novel as merged at `48abfaf`, how data moves between them, and where each CLAUDE.md principle
+> is enforced. First version at `e5ce724`, with LS3 server-stats and LU1 meta-ui added at `6043941`, L10, L14b, LE1,
+> LP2, L13, LF1, LS4, LX and LM2 since, and LF2 share-profile, LE2 gifts-referrals, L15a engine-wiring and LMD
+> meta-data at `48abfaf`; open at `48abfaf`: L15b app-e2e and LPO privacy-operator. Parts not built yet are marked
+> **planned** with the lane and the plan section.
 
 The design is in [PROTOTYPE-PLAN.md](PROTOTYPE-PLAN.md) (PP), [PUZZLES-PLAN.md](PUZZLES-PLAN.md) (PZ),
 [STORIES-PLAN.md](STORIES-PLAN.md) (SP) and [META-PLAN.md](META-PLAN.md); this page describes what the tree does. Where
@@ -25,7 +26,7 @@ flowchart LR
     S -->|"story.ts main"| SC["server/content/ - paid chapters, puzzles, stories.json, meta.json, fingerprints"]
     S -->|"assets.ts"| PA["client/public/assets/ - free art and audio, covers"]
     S -->|"assets.ts"| SA["server/content/assets/ - paid-only art and audio"]
-    SG -.->|"URL glob in story/chapters.ts, reached from the entry with L15"| V["vite build"]
+    SG -.->|"URL globs in app/boot.ts and story/chapters.ts"| V["vite build"]
     PA --> V
     V --> D["client/dist/"]
     D -->|"budget.ts, scan-dist.ts"| G{"build gate"}
@@ -40,16 +41,19 @@ Each arrow is a function: `main` ([story.ts:530](../client/scripts/story.ts#L530
 
 ## Client modules
 
-What exists under `client/src/` at `22ed4d5`. The boundary column is enforced by
+What exists under `client/src/` at `48abfaf`. The boundary column is enforced by
 [arch.test.ts](../client/src/arch.test.ts) (rules `RULE_IDS`, scopes in `applies`), not by review.
 
 | Module | Responsibility | Boundary |
 |---|---|---|
-| [main.ts](../client/src/main.ts) | entry: dev mock install (dev and e2e only), inset variables, `expand`, `disableVerticalSwipes`, mount `App`, `ready` | |
-| [telegram/index.ts](../client/src/telegram/index.ts), [webapp.ts](../client/src/telegram/webapp.ts) | `TelegramClient`: the one Mini App facade, errors as values, version gates. Each TWA event, the BackButton press included, has one TWA registration and the facade's own dispatch over a snapshot of its subscribers: one added during a dispatch waits for the next event, one removed is skipped, a throwing one does not stop the others (`eventHub`, [webapp.ts:203-234](../client/src/telegram/webapp.ts#L203); the `facade:` tests in `telegram.test.ts`) | only `webapp.ts` and `telegram/dev/` read `window.Telegram` |
+| [main.ts](../client/src/main.ts) | entry: dev mock install (dev and e2e only), inset variables, `expand`, `disableVerticalSwipes`, `startApp` (L15a), mount `App`, `ready` | |
+| [app/boot.ts](../client/src/app/boot.ts) | the entry's half of the two-stage boot (L15a): `startApp` (:128) creates the view model, the screen stack, the API client and the settings store; runs the boot reads in parallel (auth, the public catalog and covers, the saves list, the entitlements, the settings), retried after `BOOT_RETRY_MS` (:53); imports the engine chunk beside them; creates the stats reporter after auth; owns the lifecycle, `pagehide` and session-expiry subscriptions; Home's actions unlock audio first, inside the tap | no Pixi, inkjs or GSAP: the engine is reached only through `import('./engine.ts')` (:247), budgeted by the engine and first-line rows |
+| [app/engine.ts](../client/src/app/engine.ts) | the engine chunk's composition root (L15a): `createEngine` (:73) builds the scene controller, one chapter loader per role, the SaveService factory, the explore and puzzle views and the Game; the audio manager at the first start, after a Home tap; hands the overlay the in-play components (`EngineUi`, :38) | the only path to Pixi, inkjs and GSAP; `ENGINE_SRC` ([budget.ts:123](../client/scripts/budget.ts#L123)) |
+| [app/game.ts](../client/src/app/game.ts), [app/yields.ts](../client/src/app/yields.ts) | GameSession (L15a, `createGame` :330): runner steps to staging batches for the scene and the audio, views for the overlay, autosaves; one intent at a time; chapter change and the next-chapter preload, endings and the chapter reports, the ink-error floor, the autosave conflict prompt, the read-sets, the resume toasts, the chapter purchase and exit to stories. The yields (`createYields` :175): linear puzzles and exploration sections, every `import()` of the lazy families (`LAZY_CHUNKS` :63) and their prefetch after a chapter's first line | the scene, the audio and the explore controller only through their types (fakes in tests); `runner.enter` only in `yields.ts` (arch rule `runner-enter`) |
+| [telegram/index.ts](../client/src/telegram/index.ts), [webapp.ts](../client/src/telegram/webapp.ts) | `TelegramClient`: the one Mini App facade, errors as values, version gates. Each TWA event, the BackButton press included, has one TWA registration and the facade's own dispatch over a snapshot of its subscribers: one added during a dispatch waits for the next event, one removed is skipped, a throwing one does not stop the others (`eventHub`, [webapp.ts:228-259](../client/src/telegram/webapp.ts#L228); the `facade:` tests in `telegram.test.ts`). A CloudStorage / DeviceStorage call whose callback has not come within `STORAGE_TIMEOUT_MS` (5 s, [webapp.ts:82](../client/src/telegram/webapp.ts#L82), L15a) settles as a `timeout` error, and a later callback changes nothing (the `storage:` tests) | only `webapp.ts` and `telegram/dev/` read `window.Telegram` |
 | `telegram/{perf,viewport}.ts` | Android performance class; `--app-inset-*` CSS variables | |
 | `telegram/dev/*` | mock transport and fake Stars sheet | only under `__TG_MOCK__`; production compiles it out ([vite.config.ts:33](../client/vite.config.ts#L33)) |
-| [api/http.ts](../client/src/api/http.ts), `api/{session,endpoints,decode}.ts` | the API client (L10): `createHttp` (:138) carries every `/api` call and asset byte; the token lives only in `session.ts`'s closure; a `401 token_*` re-auths once, single flight, and retries once; typed calls per route; one decoder per server DTO ([Auth](#auth-initdata-then-the-servers-own-token)) | only `api/` sets `Authorization` (arch rule `authorization`); the bearer goes to `/api/` URLs only |
+| [api/http.ts](../client/src/api/http.ts), `api/{session,endpoints,decode}.ts` | the API client (L10): `createHttp` (:138) carries every `/api` call and asset byte; the token lives only in `session.ts`'s closure; a `401 token_*` re-auths once, single flight, and retries once; typed calls per route; one decoder per server DTO ([Auth](#auth-initdata-then-the-servers-own-token)); created by `startApp` since L15a. The meta calls (LMD): `createMetaEndpoints`, the meta error table `metaError`, `DELETE` in the request method union for unfriend and decline | only `api/` sets `Authorization` (arch rule `authorization`); the bearer goes to `/api/` URLs only |
 | `saves/{service,pending}.ts` | saves per story (L10): one autosave PUT in flight, a retry replays its `writeId`, a foreign 409 pauses autosave; the unacknowledged body cached in DeviceStorage (`pending_<storyId>`) | a cache only: the server copy wins (principle 1) |
 | [purchase/flow.ts](../client/src/purchase/flow.ts) | the purchase state machine (L10): the invoice, `openInvoice`, the order poll; `unlocked` only from server reads ([Payments](#payments-as-built)) | typed to `openInvoice` alone, so no storage value reaches the decision (principles 1-2) |
 | [stats/reporter.ts](../client/src/stats/reporter.ts) | the statistics reporter (LS4): the event queue, batches of at most 32, a retry with the same event ids, the queue's DeviceStorage copy ([Player statistics](#player-statistics-as-built)) | grants nothing, never throws; the copy is a cache |
@@ -60,51 +64,57 @@ What exists under `client/src/` at `22ed4d5`. The boundary column is enforced by
 | `world/*`, `puzzles/rules/*`, `explore/{state,reduce,project,reconcile}.ts` | world types and the one decoder; puzzle rules; the pure exploration reducer, reconcile and projection | the pure-world rule (`isPureWorld`, [arch.test.ts:130](../client/src/arch.test.ts#L130)): no DOM, network, storage, Svelte, clock or randomness; value imports stay inside these files and `story/{staging,catalog,tags}.ts` |
 | [geom/cover.ts](../client/src/geom/cover.ts) | the cover transform and the room safe frame, shared by `scene/layout.ts`, `scene/executor.ts` and the story tool's world lint | no module rule of its own: the pure-world rule does not cover it ([arch.test.ts:130](../client/src/arch.test.ts#L130)); the global rules below and `pixi.js` only in `scene/` apply ([arch.test.ts:152-181](../client/src/arch.test.ts#L152)) |
 | `api/generated/api.ts` | ts-rs DTO types from the server | generated, committed |
-| [ui/App.svelte](../client/src/ui/App.svelte) | the mounted shell: a placeholder glyph until L15 integration | `ui/` imports no story, scene or audio module except types (arch rule `ui-imports`) |
+| [ui/App.svelte](../client/src/ui/App.svelte) | the mounted shell: still a placeholder glyph; it renders `startApp`'s `AppHandle` (the view model, Home's actions, the game) from L15b app-e2e (running) | `ui/` imports no story, scene or audio module except types (arch rule `ui-imports`) |
 | [ui/screens.ts](../client/src/ui/screens.ts) | `createScreens` (:71): overlays over a root view (Home, the game, a Notice), no router; the one owner of the BackButton ([WebView constraints](#webview-constraints)) | the button only through the facade's `backButton` |
-| [ui/state.svelte.ts](../client/src/ui/state.svelte.ts) | `createViewModel` (:147): the overlay's view model (the line, the choices, the play mode, the text speed, the screens view, the toasts); its `$state.raw` fields are replaced, never mutated | views only: never a Story, a runner or a Pixi object (principle 7) |
+| [ui/state.svelte.ts](../client/src/ui/state.svelte.ts) | `createViewModel` (:194): the overlay's view model (the line, the choices, the play mode, the text speed, the screens view, the toasts; since L15a also Home's cards, the notice, the chapters, the backlog, the settings, the saves, the paywall, `paused` and the engine's `ui`), written by the boot and the game session; its `$state.raw` fields are replaced, never mutated | views only: never a Story, a runner or a Pixi object (principle 7) |
 | `ui/{TapToStart,Stage,DialogueBox,Choices,QuickBar,Toast}.svelte`, [ui/typewriter.ts](../client/src/ui/typewriter.ts) | Home's frame, the stage host the scene mounts into, the dialogue box with the grapheme typewriter, the choices (no tap-through), the quick bar, the toast stack (its `dev` banner only under the mock) | presentational: props in, callbacks out; text through `t()`, `textContent` or Svelte text interpolation, never markup |
 | [i18n/index.ts](../client/src/i18n/index.ts), `i18n/{ru,en}.ts` | the UI string tables and `t(lang, key, params)` (:18) | `ru.ts` defines the keys; `en.ts` is typed by them, so a missing or an extra key is a compile error ([en.ts:1-6](../client/src/i18n/en.ts#L1)) |
 | `ui/{Menu,Paywall,ChapterSelect,StoryPicker,SaveLoad,Settings,Backlog,Notice,Terms}.svelte`, [settings/store.ts](../client/src/settings/store.ts) | the menus (L14b): the game menu, the paywall with the terms checkbox, chapter select per story, the story picker, save and load, settings, the backlog, notices, the terms; the settings and read-sets cached in CloudStorage | presentational, no I/O (`menus: components do no I/O`); the settings store is a cache that is never asked what is owned |
 | `puzzles/{registry,session}.ts`, `puzzles/ui/*`, `ui/puzzles/*`, [ui/puzzle-view.svelte.ts](../client/src/ui/puzzle-view.svelte.ts) | the puzzle UI (LP2): one puzzle session with its hint ladder (hint texts from the server, in memory only), one dynamic chunk per puzzle type, the puzzle host | the lazy directories `puzzles/ui/`, `ui/puzzles/`, `ui/explore/` are imported from outside only by `import()` (arch rule `lazy-ui`, [arch.test.ts:142](../client/src/arch.test.ts#L142)) and budgeted per chunk |
-| [explore/controller.ts](../client/src/explore/controller.ts), `ui/explore/*`, [ui/explore-view.svelte.ts](../client/src/ui/explore-view.svelte.ts), [ui/glyphs.ts](../client/src/ui/glyphs.ts) | the exploration UI (LX): the explore controller (hotspot views through the cover transform, 44 px minimum targets, the room path for Back, neighbour preloads), the hotspot layer, inventory, document reader and lock panel, one lazy chunk | the world only through `reduce` / `admitSection` (principle 7); one lazy chunk, guarded per file: `ui/explore/*` by the arch rule `lazy-ui` ([arch.test.ts:142](../client/src/arch.test.ts#L142) `LAZY_DIRS`), the controller as a root of the budget row `explore-ui chunk (br)` ([budget.ts:143-148](../client/scripts/budget.ts#L143), PENDING until `app/yields.ts` exists); the view store and `ui/glyphs.ts` are statically importable (their module comments) |
+| [explore/controller.ts](../client/src/explore/controller.ts), `ui/explore/*`, [ui/explore-view.svelte.ts](../client/src/ui/explore-view.svelte.ts), [ui/glyphs.ts](../client/src/ui/glyphs.ts) | the exploration UI (LX): the explore controller (hotspot views through the cover transform, 44 px minimum targets, the room path for Back, neighbour preloads), the hotspot layer, inventory, document reader and lock panel, one lazy chunk | the world only through `reduce` / `admitSection` (principle 7); one lazy chunk, guarded per file: `ui/explore/*` by the arch rule `lazy-ui` ([arch.test.ts:142](../client/src/arch.test.ts#L142) `LAZY_DIRS`), the controller as a root of the budget row `explore-ui chunk (br)` ([budget.ts:143-148](../client/scripts/budget.ts#L143), measured since `app/yields.ts` exists, L15a); the view store and `ui/glyphs.ts` are statically importable (their module comments) |
 | [ui/meta/index.ts](../client/src/ui/meta/index.ts), `ui/meta/*.svelte`, [i18n/meta.ts](../client/src/i18n/meta.ts) | the presentational meta overlays (completion card, friends and requests, a friend's profile, invite prompt, consent, wallet, gift) and their own string table (`mt` :140); `ui/meta/index.ts` is the one entry of one lazy chunk (META-PLAN M27) | **nothing imports the chunk yet, and nothing mounts it until LMI meta-integration**, whose `app/meta.ts` is the only module allowed to load `ui/meta/index.ts`, and only by a dynamic import. Outside `ui/meta/` a module may reach it only by `import type`, nothing outside the chunk loads `i18n/meta.ts`, and the chunk does no I/O (`meta: one entry, no I/O, the meta table stays in the chunk`, [meta.svelte.test.ts:872-930](../client/src/ui/meta/meta.svelte.test.ts#L872)) |
+| `meta/{card,social,wallet}.ts` | the meta data services (LMD): the completion card, one `POST /api/stories/{storyId}/card` per open and no copy kept; friends, invites, consent, a friend's profile (the first name from the friend list) and the share, the state being the last applied `SocialResponse`; the wallet with `maxPerGift` from each wallet answer, and the hint port. Social and wallet guard against a stale answer: an older response never replaces a newer state | a cache of server answers only, persisted nowhere (principle 1); nothing outside `meta/` imports them until LMI meta-integration's `app/meta.ts` |
 
 Forbidden anywhere in `src/` (arch rules): `vh` units, `window.open` and dialogs, `innerHTML` / `{@html`, Service
 Workers, `document.cookie`, `<iframe`, `history` navigation, `localStorage` / `sessionStorage` outside
 `telegram/dev/`, `initDataUnsafe`, `inkjs/full` and `inkjs/compiler`, `svelte-pixi`, and any import that resolves
 outside `src/` (so neither `story/` nor `server/content/` can enter the bundle).
 
-**Not wired yet** (as of `22ed4d5`). No module reachable from `main.ts` creates the scene controller, the audio
-manager, the screen stack, the view model, the API client, the story runner, the saves, purchase or statistics
-services, or a puzzle or explore session. The one reader of `client/src/story-gen/` is the chapter loader's URL glob
-(`FREE_CHAPTER_FILES`, [chapters.ts:67](../client/src/story/chapters.ts#L67)), which nothing reachable from the entry
-imports yet. `App.svelte` mounts none of the overlay or menu components until L15 integration (running), and none of
-the meta overlays until LMI meta-integration. The conductor is planned (GameSession `app/game.ts` and the yield router
-`app/yields.ts`, L15; PP "Module map"). The boot e2e ([boot.spec.ts](../client/e2e/boot.spec.ts)) covers what boot does
-today; the overlay components are tested in the vitest `dom` project.
+**Wired, not rendered yet** (as of `48abfaf`; L15a). `main.ts` calls `startApp`, which creates the view model, the
+screen stack, the API client, the settings store and, after auth, the statistics reporter, and runs the boot reads.
+The engine chunk (`app/engine.ts`) is imported beside the boot reads and created ahead of a tap: the scene
+controller, the chapter loaders, the SaveService factory and GameSession, whose yields open the puzzle and explore
+sessions. The readers of `client/src/story-gen/` are boot's URL glob for the catalog and the covers (`PUBLIC_JSON`,
+[boot.ts:59](../client/src/app/boot.ts#L59)) and the chapter loader's in the engine chunk (`FREE_CHAPTER_FILES`,
+[chapters.ts:67](../client/src/story/chapters.ts#L67)). `App.svelte` is still the placeholder glyph: it renders
+neither Home nor the overlay and menu components until L15b app-e2e (running), so no story starts from the screen,
+and none of the meta overlays until LMI meta-integration. The boot e2e
+([boot.spec.ts](../client/e2e/boot.spec.ts)) covers what boot does today; the overlay components are tested in the
+vitest `dom` project.
 
 ## Server modules
 
 | Module | Responsibility |
 |---|---|
 | [main.rs](../server/src/main.rs) | `server serve` (the default): `Config::from_env`, `AppState::new`, bind `LISTEN_ADDR`, graceful shutdown |
-| [lib.rs](../server/src/lib.rs) | `AppState` (one constructor, `AppState::new` :62; `with_clock` / `with_catalog` / `with_gateway` seams), `build_router` :118 (production routes only: `/api`, and `/telegram/webhook` outside it with its own 1 MiB body limit) |
+| [lib.rs](../server/src/lib.rs) | `AppState` (one constructor, `AppState::new` :66; `with_clock` / `with_catalog` / `with_gateway` seams; `share_limit` :57, the in-memory share window, LF2), `build_router` :123 (production routes only: `/api`, and `/telegram/webhook` outside it with its own 1 MiB body limit) |
 | [config.rs](../server/src/config.rs) | `Config::from_env`: secrets and settings only from the environment; the committed placeholder secrets are refused unless `TELEGRAM_ENV` is `test` and `PUBLIC_APP_URL` is a local host (:173-187) |
-| [api/mod.rs](../server/src/api/mod.rs) | the routes (:48): `/health`, `/auth`, `/entitlements`, `/chapters/{chapterId}`, `/assets/{file}`, `/saves`, `/saves/{storyId}/{slot}`, `/puzzles/{puzzleId}`, `/puzzles/{puzzleId}/attempts`, `/puzzles/{puzzleId}/hints/{tier}`, `/invoices`, `/orders/{orderId}`, `/stats`, `/stats/events`, `/stories/{storyId}/card`, `/wallet`, `/invites/{code}`, `/invites/{code}/request`, `/social`, `/friends/requests/{handle}/accept`, `/friends/{handle}`, `/invite/rotate`, `/consents/friends_profile`, and `/privacy` from `api/legal.rs`; a 16 KB body limit (300 KB for saves) and `Cache-Control: no-store` by default |
+| [api/mod.rs](../server/src/api/mod.rs) | the routes (:50): `/health`, `/auth`, `/entitlements`, `/chapters/{chapterId}`, `/assets/{file}`, `/saves`, `/saves/{storyId}/{slot}`, `/puzzles/{puzzleId}`, `/puzzles/{puzzleId}/attempts`, `/puzzles/{puzzleId}/hints/{tier}`, `/invoices`, `/orders/{orderId}`, `/stats`, `/stats/events`, `/stories/{storyId}/card`, `/wallet`, `/gifts` (LE2), `/invites/{code}`, `/invites/{code}/request`, `/social`, `/friends/requests/{handle}/accept`, `/friends/{handle}`, `/friends/{handle}/profile` (LF2), `/invite/rotate`, `/consents/friends_profile`, `/share` (LF2), and `/privacy` from `api/legal.rs`; a 16 KB body limit (300 KB for saves) and `Cache-Control: no-store` by default |
 | `auth/*` | initData validation, the session token, the `AuthUser` extractor ([Auth](#auth-initdata-then-the-servers-own-token)) |
 | `db/*` | `Repo`, the repository seam: every SQL statement; handlers never see `sqlx` |
 | [content.rs](../server/src/content.rs) | `ContentStore`: the story index, paid chapters, the puzzle index, the gated asset index and the meta index (`load_meta` :719, LM2), loaded once at startup |
-| [catalog.rs](../server/src/catalog.rs) | products: every paid chapter of the story index, priced by `server/catalog.json` (prices are server-only), and the hint packs of its `economy` section (`build_economy` :395, LE1) |
+| [catalog.rs](../server/src/catalog.rs) | products: every paid chapter of the story index, priced by `server/catalog.json` (prices are server-only), and the hint packs of its `economy` section (`build_economy` :405, LE1), whose gift and referral rules are bounded at startup (`GiftRules` :118, `ReferralRules` :131, LE2) |
 | `puzzles/mod.rs` | answer check, attempt rate limit, puzzle status with the texts of unlocked hint tiers |
-| [api/stats.rs](../server/src/api/stats.rs), [db/stats.rs](../server/src/db/stats.rs) | the player statistics: the event batch, its classification and budgets, the read of distinct facts ([Player statistics](#player-statistics-as-built)) |
-| [api/wallet.rs](../server/src/api/wallet.rs), [db/economy.rs](../server/src/db/economy.rs) | the economy (LE1): `GET /api/wallet` (the balances and the packs for sale); the append-only ledger and the balance rows, credited inside the grant, debited by `POST /api/puzzles/{puzzleId}/hints/{tier}` (`Repo::spend_hint`, `db/economy.rs` :305) |
-| [api/social.rs](../server/src/api/social.rs), [db/social.rs](../server/src/db/social.rs), [api/legal.rs](../server/src/api/legal.rs) | friends (LF1): invite codes, requests the link's owner accepts, removal and blocks, consent rows, the referral recorded at login (`Repo::auth_with_code`, `db/social.rs` :124); the public, versioned `GET /api/privacy` |
+| [api/stats.rs](../server/src/api/stats.rs), [db/stats.rs](../server/src/db/stats.rs) | the player statistics: the event batch, its classification and budgets, the read of distinct facts, and the referral hook after every batch answered 200 (`referral_hook` :156, LE2) ([Player statistics](#player-statistics-as-built)) |
+| [api/wallet.rs](../server/src/api/wallet.rs), [db/economy.rs](../server/src/db/economy.rs) | the economy (LE1): `GET /api/wallet` (the balances and the packs for sale); the append-only ledger and the balance rows, credited inside the grant, debited by `POST /api/puzzles/{puzzleId}/hints/{tier}` (`Repo::spend_hint`, `db/economy.rs` :383); moved between two friends by a gift (`Repo::transfer` :472, LE2) and credited by the referral grant (below) |
+| [api/social.rs](../server/src/api/social.rs), [db/social.rs](../server/src/db/social.rs), [api/legal.rs](../server/src/api/legal.rs) | friends (LF1): invite codes, requests the link's owner accepts, removal and blocks, consent rows, the referral recorded at login (`Repo::auth_with_code`, `db/social.rs` :153); a friend's profile by handle (LF2, `get_friend_profile`, `api/social.rs` :333): 404 unless a friend, `visible: false` without the friend's consent grant, counts from the two grouped reads of `db/achievements.rs` (`progress` :102), titles gated as on the card; the referral's qualification (LE2, `Repo::qualify_referral`, `db/social.rs` :217); the public, versioned `GET /api/privacy` |
+| [api/share.rs](../server/src/api/share.rs), [server/locales/meta.json](../server/locales/meta.json) | sharing (LF2): `POST /api/share` (`post_share` :208) answers the sharer's invite link and a text of the story title and the sharer's own counts, never a title of an ending or an achievement; with `native`, a prepared inline message's id (a failed prepare answers a null id). At most `SHARES_PER_HOUR` (:37) per user, counted in memory in `AppState.share_limit`; the texts compiled in from `server/locales/meta.json` (`SHARE_TEXTS_JSON` :43) |
+| [api/gifts.rs](../server/src/api/gifts.rs) | gifts (LE2): `POST /api/gifts` (`post_gift` :37), units of a resource to a friend by handle; the friendship, the daily caps, the balance and the replay are one transaction of `Repo::transfer` ([db/economy.rs:472](../server/src/db/economy.rs#L472)); one's own handle, a non-friend and an unknown handle answer the same 404 |
 | [meta.rs](../server/src/meta.rs), [api/cards.rs](../server/src/api/cards.rs), [db/achievements.rs](../server/src/db/achievements.rs) | story meta (LM2): the meta index and its rules, achievement conditions evaluated on the server (`met`, `meta.rs` :573), paid gates (`gate` :604, `visible` :637); `POST /api/stories/{storyId}/card` (`post_card`, `api/cards.rs` :48), whose unlocks are stored for display and grant nothing |
-| [telegram/gateway.rs](../server/src/telegram/gateway.rs) | `BotGateway` (:49) and `FrankensteinGateway`: the Bot API through frankenstein types, no bot framework (principle 6) |
+| [telegram/gateway.rs](../server/src/telegram/gateway.rs) | `BotGateway` (:54) and `FrankensteinGateway` (built by `from_config` :208 on the base of `TELEGRAM_ENV`, LF2): the Bot API through frankenstein types, no bot framework (principle 6); since LF2 also `savePreparedInlineMessage` and the bot username from `getMe`, cached after the first success (`save_prepared_inline_message` :76, `bot_username` :82) |
 | [telegram/webhook.rs](../server/src/telegram/webhook.rs) | `POST /telegram/webhook` (`webhook` :50): the secret check, the decode into frankenstein's `Update`, the lenient payment probe, the dispatch ([Payments](#payments-as-built)) |
 | [telegram/payments.rs](../server/src/telegram/payments.rs), [db/payments.rs](../server/src/db/payments.rs) | the pre-checkout decision and its answer under their deadlines; the grant on `successful_payment`; their SQL in `db/` |
-| `server/dev` (`server-dev`) | the production router plus `/dev/launch` (dev-signed initData), `/dev/invoices/{slug}` on a fake gateway and `/dev/simulate-payment` through the production webhook handler, on a fresh database per launch ([dev/src/lib.rs:34](../server/dev/src/lib.rs#L34)); never linked into `server` |
+| `server/dev` (`server-dev`) | the production router plus `/dev/launch` (dev-signed initData), `/dev/invoices/{slug}` and `/dev/prepared/{id}` (LF2: what a prepared share would send) on a fake gateway and `/dev/simulate-payment` through the production webhook handler, on a fresh database per launch ([dev/src/lib.rs:34](../server/dev/src/lib.rs#L34)); never linked into `server` |
 | `server/pgdev` | the local PostgreSQL 18 cluster per port and a database per test; a dependency of `server-dev` and a dev-dependency of `server`, never linked into the `server` binary ([server/Cargo.toml:31-33](../server/Cargo.toml#L31)) |
 
 The configuration's variables, all read in `Config::from_env` ([config.rs:145-172](../server/src/config.rs#L145)):
@@ -113,7 +123,7 @@ The configuration's variables, all read in `Config::from_env` ([config.rs:145-17
 1-86400), `ADMIN_TELEGRAM_IDS`, `STATIC_DIR`, `LISTEN_ADDR` (default `127.0.0.1:8787`).
 
 **Startup refuses bad content.** `AppState::new` loads the content and builds the catalog and the gateway before it
-opens the database pool, so a refusal opens no pool ([lib.rs:62-81](../server/src/lib.rs#L62)). Tests pin the
+opens the database pool, so a refusal opens no pool ([lib.rs:66-86](../server/src/lib.rs#L66)). Tests pin the
 refusals: `startup_fails_without_story_index`, `startup_fails_when_first_chapter_paid`,
 `startup_fails_when_world_carries_solution`, and for the meta index (LM2) `startup_fails_when_meta_names_unknown_ending`,
 `startup_fails_when_meta_too_large` (`server/tests/it/content.rs`).
@@ -126,16 +136,19 @@ story never touches Pixi.
 ```mermaid
 flowchart LR
     I["ink runtime - story/runner.ts"] -->|line tags| P["parseTags - story/tags.ts"]
-    P -->|"ParsedTags: lineId + StagingCommand[]"| G["GameSession - app/game.ts (planned, L15)"]
+    P -->|"ParsedTags: lineId + StagingCommand[]"| G["GameSession - app/game.ts"]
     G -->|"bg, scene, show, hide, cg, wait"| SC["SceneController.apply - scene/controller.ts"]
     G -->|"bgm, sfx"| AM["AudioManager.apply - audio/manager.ts"]
     G -->|"lineId, text, choices"| OV["overlay - ui/ view model and components"]
-    G -->|"puzzle, explore"| Y["yield router - app/yields.ts (planned, L15)"]
+    G -->|"puzzle, explore"| Y["yield router - app/yields.ts"]
 ```
 
 - **One parser.** `parseTags` ([tags.ts:360](../client/src/story/tags.ts#L360)) serves the story gate and the
   runtime alike; `TAG_KINDS` ([tags.ts:27](../client/src/story/tags.ts#L27)) is the tag list, and
   [dsl-doc.test.ts](../client/src/story/dsl-doc.test.ts) keeps it equal to STAGING-DSL §6.
+- **GameSession routes the batch** (as merged, L15a): `splitBatch` ([game.ts:215](../client/src/app/game.ts#L215))
+  splits a step's commands into the visual and the audio half; a `yield` goes to `app/yields.ts`, the one module that
+  re-enters the story (`runner.enter`, [yields.ts:392](../client/src/app/yields.ts#L392); arch rule `runner-enter`).
 - **The consumers are typed by command kind.** The scene controller takes the visual commands (`VisualCommand`,
   [executor.ts:35](../client/src/scene/executor.ts#L35)); the audio manager takes `AudioCommand`, the `bgm` / `sfx`
   kinds ([manager.ts:10](../client/src/audio/manager.ts#L10), `apply` :28).
@@ -153,7 +166,7 @@ outputs first ([story.ts:728-752](../client/scripts/story.ts#L728)).
 
 | Output | Written by | Read by | Public |
 |---|---|---|---|
-| `client/src/story-gen/catalog.json`, `free/<ch>.{story,meta,en,world}.json`, `free/<ch>.assets.json`, `covers.json` | story tool, asset tool | the chapter loader `story/chapters.ts` (the free files by URL); in the bundle once L15 integration imports it | yes |
+| `client/src/story-gen/catalog.json`, `free/<ch>.{story,meta,en,world}.json`, `free/<ch>.assets.json`, `covers.json` | story tool, asset tool | `app/boot.ts` (the catalog and the covers by URL) and the chapter loader `story/chapters.ts` in the engine chunk (the free files by URL), both since L15a | yes |
 | `client/public/assets/` | asset tool | `vite build` copies it to `dist/assets/` | yes |
 | `server/content/chapters/<ch>/{story,meta,en,world,assets}.json` | story tool, asset tool | `ContentStore` → `GET /api/chapters/{id}` | no |
 | `server/content/assets/` | asset tool | `GET /api/assets/{file}` | no |
@@ -166,13 +179,17 @@ Paths: `OUT` ([emit.ts:28](../client/scripts/story/emit.ts#L28)) and `ASSET_OUT`
 ([manifest.ts:32](../client/scripts/assets/manifest.ts#L32)). All are git-ignored.
 
 **Budgets** (principle 4) are enforced by `budget.ts`, `LIMITS` ([budget.ts:95](../client/scripts/budget.ts#L95)),
-among them: the entry chunk ≤ 40 KB brotli, all JS ≤ 290 KB brotli, each lazy chunk (LP2: a puzzle type ≤ 8 KB, the
+among them: the entry chunk ≤ 40 KB brotli, the engine closure ≤ 230 KB, the JS before the first line ≤ 270 KB,
+all JS ≤ 290 KB brotli, each lazy chunk (LP2: a puzzle type ≤ 8 KB, the
 puzzle host ≤ 10 KB, the explore UI ≤ 16 KB brotli), a chapter's story JSON ≤ 35 KB brotli, a knot's
 working set (its stage plus its successors' assets, decoded) ≤ 32 MiB, images at most 2048 px a side. At run time the
 texture registry holds a steady cap of 32 MiB and a hard cap of 48 MiB
 ([registry.ts:9-13](../client/src/scene/registry.ts#L9)), and the render resolution is at most 2× DPR, 1× on a
-low-performance Android ([layout.ts:18-23](../client/src/scene/layout.ts#L18)). Rows whose input does not exist yet
-(the engine chunk; the lazy chunks until their importer `app/yields.ts` exists, L15) print `PENDING`.
+low-performance Android ([layout.ts:18-23](../client/src/scene/layout.ts#L18)). A row whose input does not exist
+prints `PENDING`; since L15a none does: the engine root `ENGINE_SRC` and the lazy chunks' importer `YIELDS_SRC` exist
+([budget.ts:123-125](../client/scripts/budget.ts#L123)). Measured at the L15a merge (RULINGS 85): 82 rows, 82 PASS,
+0 PENDING; the entry closure 29.1 / 40.0 KB br, the engine closure 214.5 / 230.0, the JS before the first line
+243.6 / 270.0. LMD's merge read the entry closure at 29.1 KB again (RULINGS 87).
 
 **The leak scan** `scan-dist.ts` reads every file of `client/dist/` (with decoded `data:` URIs) against fingerprint
 sections built from the sources: paid line IDs and paid line text samples, paid en values, paid asset names and
@@ -233,7 +250,10 @@ hint texts of a paid chapter need the same entitlement (`attempt_paid_chapter_40
 `hint_text_403_for_unowned_paid_chapter`, `server/tests/it/puzzles.rs`), and so does a hint bought from the balance
 (LE1, `hint_spend_paid_chapter_403`, `server/tests/it/economy.rs`). The completion card (LM2) lists an ending title or
 an achievement gated on a paid chapter only for a user who owns that chapter now (`visible`,
-[meta.rs:637](../server/src/meta.rs#L637); `card_paid_titles_need_entitlement`, `server/tests/it/cards.rs`).
+[meta.rs:637](../server/src/meta.rs#L637); `card_paid_titles_need_entitlement`, `server/tests/it/cards.rs`). A
+friend's profile (LF2) shows a title only when both found it and the viewer owns every chapter it is gated on
+(`friend_profile_paid_titles_need_viewer_entitlement`, `server/tests/it/social.rs`), and a share's text holds no title
+at all (`share_text_has_no_titles`, `server/tests/it/share.rs`).
 
 Only the `entitlements` table unlocks: its rows reference a payment by `charge_id`, UNIQUE
 ([0001_init.sql:52-60](../server/migrations/0001_init.sql#L52)). Nothing is ever unlocked from client state
@@ -273,7 +293,8 @@ sequenceDiagram
   ([extract.rs:20-38](../server/src/auth/extract.rs#L20)).
 - **Dev.** `server-dev`'s `/dev/launch` signs initData with the dev bot token through the same `data_check_string` and
   `secret_key` ([launch.rs:101](../server/dev/src/launch.rs#L101)).
-- **The client side** (as merged, L10 `34b7f13`; not wired until L15): the token lives only in the session store's
+- **The client side** (as merged, L10 `34b7f13`; wired since L15a: `startApp`'s first boot read is `http.auth()`,
+  [boot.ts:197](../client/src/app/boot.ts#L197)): the token lives only in the session store's
   closure ([session.ts:38](../client/src/api/session.ts#L38)); `createHttp`
   ([http.ts:138](../client/src/api/http.ts#L138)) re-auths once on a `401 token_*`, single flight, with the same
   initData, and an `initdata_*` refusal ends the session for the page (`http: concurrent 401s share one auth`,
@@ -286,7 +307,8 @@ Tests: `server/tests/it/auth.rs` (`initdata_tampered_field`, `initdata_expired`,
 
 Principle 2: Stars only, correct or absent. Built: invoices and orders (L8a); the webhook, the pre-checkout and the
 grant (L8b); hint packs, priced by the catalog's `economy` and credited inside the grant (LE1); the client's purchase
-flow (L10, not wired until L15). Refunds and the bot commands are L9 refunds-bot's. The invoice:
+flow (L10; created by GameSession since L15a, [game.ts:1695](../client/src/app/game.ts#L1695)). Refunds and the bot
+commands are L9 refunds-bot's. The invoice:
 
 ```mermaid
 sequenceDiagram
@@ -312,15 +334,15 @@ sequenceDiagram
 
 Participants: `post_invoice` ([api/orders.rs:35-87](../server/src/api/orders.rs#L35)), `reuse_or_create_order`
 ([db/orders.rs:124](../server/src/db/orders.rs#L124), `ORDER_REUSE_SECS` = 3600 :16), `invoice_params`
-([gateway.rs:248-260](../server/src/telegram/gateway.rs#L248)), `CALL_DEADLINE`
-([gateway.rs:33](../server/src/telegram/gateway.rs#L33)), `get_order` ([api/orders.rs:92](../server/src/api/orders.rs#L92)),
+([gateway.rs:299-311](../server/src/telegram/gateway.rs#L299)), `CALL_DEADLINE`
+([gateway.rs:38](../server/src/telegram/gateway.rs#L38)), `get_order` ([api/orders.rs:92](../server/src/api/orders.rs#L92)),
 `openInvoice` ([telegram/index.ts:52](../client/src/telegram/index.ts#L52); its contract comment at :3). On the client,
 `createPurchaseFlow` ([purchase/flow.ts:66](../client/src/purchase/flow.ts#L66)) polls the order after the sheet, then
 confirms a chapter through `GET /api/entitlements` (`chapterDelivered` :48); a pack's `paid` order is the confirmation
 (`packDelivered` :59).
 
 - **Prices are server-only**: `server/catalog.json` prices every paid chapter of the story index
-  ([catalog.rs:286](../server/src/catalog.rs#L286)); the invoice title is the chapter's title in the user's language,
+  ([catalog.rs:291](../server/src/catalog.rs#L291)); the invoice title is the chapter's title in the user's language,
   1-32 code points by the story gate (`catalog/stories` rule 9).
 - **The schema is the idempotency.** `payments` has the primary key `telegram_payment_charge_id`; `orders.charge_id`
   and `entitlements.charge_id` are UNIQUE and reference it ([0001_init.sql:12-60](../server/migrations/0001_init.sql#L12),
@@ -364,7 +386,7 @@ Participants: `webhook` ([webhook.rs:50](../server/src/telegram/webhook.rs#L50))
 
 - **The route.** `POST /telegram/webhook` sits outside `/api` with its own body limit of 1 MiB
   (`WEBHOOK_BODY_LIMIT`, [webhook.rs:24](../server/src/telegram/webhook.rs#L24);
-  [lib.rs:118-127](../server/src/lib.rs#L118)); one byte more is 413 before the handler runs. The handler answers 401
+  [lib.rs:123-132](../server/src/lib.rs#L123)); one byte more is 413 before the handler runs. The handler answers 401
   unless exactly one `X-Telegram-Bot-Api-Secret-Token` value equals `WEBHOOK_SECRET`. It compares in constant time,
   before anything is parsed ([webhook.rs:60-69](../server/src/telegram/webhook.rs#L60)). Logs never carry the body,
   the headers or the secret; they carry the charge id, a body field that is no secret (webhook.rs :125, :160, :189).
@@ -377,7 +399,7 @@ Participants: `webhook` ([webhook.rs:50](../server/src/telegram/webhook.rs#L50))
   (`classify` :274). The pre-checkout grants nothing.
 - **Answered within its deadline.** The database step is cut at 2 s (`PRECHECKOUT_DB_DEADLINE`,
   [telegram/payments.rs:23](../server/src/telegram/payments.rs#L23)); running out of it is a `Temporary` refusal. The
-  answer is cut at `CALL_DEADLINE`, 5 s ([gateway.rs:33](../server/src/telegram/gateway.rs#L33)). A compile-time
+  answer is cut at `CALL_DEADLINE`, 5 s ([gateway.rs:38](../server/src/telegram/gateway.rs#L38)). A compile-time
   assertion keeps the two below Telegram's 10 s (payments.rs :27). A refusal carries its text in the payer's Telegram
   language (`reject_text` :127, `payer_lang` :111). A failed or timed-out answer is logged, and the webhook still
   answers 200: Telegram cancels an unanswered checkout.
@@ -387,7 +409,7 @@ Participants: `webhook` ([webhook.rs:50](../server/src/telegram/webhook.rs#L50))
   twin changes nothing. Then the order turns `paid`, and a chapter product gets its entitlement
   (`ON CONFLICT ON CONSTRAINT entitlements_pkey DO NOTHING`). A pack (LE1) gets the credit of the kind and amount its
   order bound at invoice time, never the catalog's current values, keyed `pay:<charge>` in the ledger (`credit_in_tx`,
-  [db/economy.rs:123](../server/src/db/economy.rs#L123)). The time recorded is the server's receipt time, never
+  [db/economy.rs:135](../server/src/db/economy.rs#L135)). The time recorded is the server's receipt time, never
   Telegram's message date.
 - **Unapplied and unknown products are recorded.** Every outcome commits, and a payment that cannot be applied is
   still a payment row, logged with its charge id (`GrantOutcome`,
@@ -412,7 +434,7 @@ Participants: `webhook` ([webhook.rs:50](../server/src/telegram/webhook.rs#L50))
   [simulate.rs:150-245](../server/dev/src/simulate.rs#L150)).
 - **Refunds are not handled yet.** A `refunded_payment` message is acknowledged and logged
   ([webhook.rs:175-179](../server/src/telegram/webhook.rs#L175)), and no handler calls the gateway's
-  `refund_star_payment` ([gateway.rs:58-63](../server/src/telegram/gateway.rs#L58)). Refunds and `/terms`,
+  `refund_star_payment` ([gateway.rs:63-68](../server/src/telegram/gateway.rs#L63)). Refunds and `/terms`,
   `/support`, `/paysupport` are L9 refunds-bot's.
 
 Tests: `server/tests/it/webhook.rs` (`webhook_missing_secret_401`, `webhook_wrong_secret_401`,
@@ -432,10 +454,13 @@ Tests: `server/tests/it/webhook.rs` (`webhook_missing_secret_401`, `webhook_wron
 ## Player statistics as built
 
 STORIES-PLAN Y8-Y12 and META-PLAN M1-M3, built by LS3 server-stats, with the choice vocabulary check of LM2
-meta-server. The server records what a player did (a chapter started or completed, an ending reached, a puzzle ended,
-a choice made) and reads it back as distinct facts. No client sends events yet: the reporter is built (LS4
-stats-client, `createStatsReporter`, [stats/reporter.ts:229](../client/src/stats/reporter.ts#L229)), and L15
-integration adds the event points.
+meta-server and the referral hook of LE2 gifts-referrals (META-PLAN M23). The server records what a player did (a
+chapter started or completed, an ending reached, a puzzle ended, a choice made) and reads it back as distinct facts.
+The client side (as merged, L15a): `startApp` creates the reporter (LS4 stats-client, `createStatsReporter`,
+[stats/reporter.ts:229](../client/src/stats/reporter.ts#L229)) after auth and flushes its kept queue
+([boot.ts:405](../client/src/app/boot.ts#L405)), and GameSession records the events (`chapter_started`,
+`ending_reached`, `chapter_completed`, `choice_made`; [game.ts:793](../client/src/app/game.ts#L793)). A session starts
+only from Home, which `ui/App.svelte` renders from L15b.
 
 ```mermaid
 sequenceDiagram
@@ -453,6 +478,7 @@ sequenceDiagram
         S-->>C: 429 rate_limited, Retry-After 600 - nothing written
     else within the facts budget
         S->>DB: UNNEST insert ON CONFLICT ON CONSTRAINT stat_events_event_key DO NOTHING
+        S->>DB: referral hook - Repo::qualify_referral (a failure leaves the answer unchanged)
         S-->>C: recorded, duplicates, rejected (private, no-store)
     end
     C->>S: GET /api/stats (Bearer)
@@ -460,9 +486,11 @@ sequenceDiagram
     S-->>C: per story and for the game, no endings total (private, no-store)
 ```
 
-Participants: `post_events` ([api/stats.rs:65-147](../server/src/api/stats.rs#L65)), `check_event` (:219),
-`classify` (:278), `Repo::record_events` ([db/stats.rs:174](../server/src/db/stats.rs#L174)), `get_stats`
-([api/stats.rs:151](../server/src/api/stats.rs#L151)), `Repo::stat_facts` ([db/stats.rs:282](../server/src/db/stats.rs#L282)).
+Participants: `post_events` ([api/stats.rs:68-148](../server/src/api/stats.rs#L68)), `check_event` (:246),
+`classify` (:305), `Repo::record_events` ([db/stats.rs:174](../server/src/db/stats.rs#L174)), `referral_hook`
+([api/stats.rs:156](../server/src/api/stats.rs#L156)), `Repo::qualify_referral`
+([db/social.rs:217](../server/src/db/social.rs#L217)), `get_stats` ([api/stats.rs:178](../server/src/api/stats.rs#L178)),
+`Repo::stat_facts` ([db/stats.rs:282](../server/src/db/stats.rs#L282)).
 
 - **The classify order.** Per event: a chapter outside the story index is `unknown_chapter`; a paid chapter whose
   product the user does not own is `not_entitled`; only then is the subject judged (`unknown_ending`,
@@ -473,7 +501,7 @@ Participants: `post_events` ([api/stats.rs:65-147](../server/src/api/stats.rs#L6
   `classify_order`). A rejected event is answered in `rejected`. The server derives the story; the
   request never names it.
 - **Two budgets per rolling hour** (`StatCaps`, [db/stats.rs:122](../server/src/db/stats.rs#L122); 600 each,
-  [api/stats.rs:40-43](../server/src/api/stats.rs#L40)), counted in one statement. Facts: a batch carrying a fact that
+  [api/stats.rs:42-45](../server/src/api/stats.rs#L42)), counted in one statement. Facts: a batch carrying a fact that
   would pass 600 fact rows is 429, and nothing of it is written. Choices: past 600 choice rows only a first pick of an
   option is written; a repeat pick is rejected `rate_limited`, and a choice-only batch is never a 429
   ([db/stats.rs:197](../server/src/db/stats.rs#L197)). Both budgets are soft by up to one batch per concurrent
@@ -484,10 +512,19 @@ Participants: `post_events` ([api/stats.rs:65-147](../server/src/api/stats.rs#L6
   The table's CHECKs mirror the structural checks, so a malformed event is a 400 before any SQL
   (`stats_malformed_event_400`).
 - **Statistics never unlock (ST4, principle 1).** Only `db/stats.rs` and `api/stats.rs` name the statistics
-  repository, in `server` and `server-dev` alike (`stats_repo_called_only_from_stats_api`). The one other reader of
-  `stat_events` is the completion card's display read in `db/achievements.rs` (LM2), which names the table and no
-  item of the repository. Rows saying a paid chapter was played leave it 403 and unowned
-  (`stats_do_not_unlock_paid_chapter`).
+  repository, in `server` and `server-dev` alike (`stats_repo_called_only_from_stats_api`). The two other readers of
+  `stat_events` name the table and no item of the repository: the completion card's display read in
+  `db/achievements.rs` (LM2), and the referral's evidence read in `db/social.rs` (LE2). Rows saying a paid chapter was
+  played leave it 403 and unowned (`stats_do_not_unlock_paid_chapter`).
+- **The referral, the one grant that reads statistics by design** (as merged, LE2 `ec3b29f`; META-PLAN M23). After
+  every batch answered 200, never a 4xx or a 429, `referral_hook` asks `Repo::qualify_referral` whether the user's
+  referral now qualifies. The evidence is re-read from `stat_events` on every call, by the server's receipt times
+  only: a recorded completion of some story's first chapter whose earliest `chapter_started` came at least
+  `minPlaySecs` earlier. Under both `users` rows' locks the inviter's caps per day and in total decide `granted` or
+  `capped`; the credits of the catalog's referral kind are keyed `ref:<invitee>:inviter` (only when granted) and
+  `ref:<invitee>:invitee` in the ledger. A
+  failure rolls back and the next batch evaluates again (`referral_grants_both_once`,
+  `referral_concurrent_batches_grant_once`, `referral_qualifies_after_hook_failure`, `server/tests/it/referrals.rs`).
 - **No endings total.** `GET /api/stats` gives each story's started flag, completed chapters (a reached ending
   completes its chapter), chapter total and the endings reached, and the game's stories started, stories total and
   endings reached; there is no endings total at either level (META-PLAN M8; `stats_response_has_no_endings_total`).
@@ -503,10 +540,10 @@ Principle 5, as far as it is built:
 | Constraint | Where |
 |---|---|
 | height and safe areas from Telegram, never `100vh` | `applyInsetVars` ([viewport.ts:25](../client/src/telegram/viewport.ts#L25)); arch rule `vh-unit` |
-| no vertical swipe-to-close | `disableVerticalSwipes` in `boot` ([main.ts:16](../client/src/main.ts#L16)) |
-| audio only after a gesture | `unlockAudio` resumes the one `AudioContext` inside the tap ([unlock.ts:12](../client/src/audio/unlock.ts#L12)); the manager reports `needs-gesture`; `TapToStart` calls back first and synchronously inside the click, so the caller's `unlockAudio()` runs in the tap ([TapToStart.svelte:1-4](../client/src/ui/TapToStart.svelte#L1)); wiring planned (L15) |
-| pause on `deactivated`, check WebGL on `activated` | `TelegramClient.onLifecycle`; `AudioManager` suspend / resume; `SceneController.onActivated` rebuilds a context still lost after `CONTEXT_GRACE_MS` = 2000 ([controller.ts:50](../client/src/scene/controller.ts#L50)); wiring planned (L15) |
-| `BackButton`, not browser history | the screen stack `createScreens` ([screens.ts:71](../client/src/ui/screens.ts#L71)) owns `TelegramClient.backButton`: visible iff an overlay is open or, at the game root, a root-back is set; a press pops the top overlay, else runs the root-back. Arch rule `history`. Mounted by L15 |
+| no vertical swipe-to-close | `disableVerticalSwipes` in `boot` ([main.ts:17](../client/src/main.ts#L17)) |
+| audio only after a gesture | `unlockAudio` resumes the one `AudioContext` inside the tap ([unlock.ts:12](../client/src/audio/unlock.ts#L12)); the manager reports `needs-gesture`; `TapToStart` calls back first and synchronously inside the click, so the caller's `unlockAudio()` runs in the tap ([TapToStart.svelte:1-4](../client/src/ui/TapToStart.svelte#L1)); wired (L15a): each of Home's actions in `startApp` calls `unlockAudio()` first and synchronously ([boot.ts:310-311](../client/src/app/boot.ts#L310)), and the audio manager is created at the first start; Home is rendered from L15b |
+| pause on `deactivated`, check WebGL on `activated` | `TelegramClient.onLifecycle`; `AudioManager` suspend / resume; `SceneController.onActivated` rebuilds a context still lost after `CONTEXT_GRACE_MS` = 2000 ([controller.ts:50](../client/src/scene/controller.ts#L50)); wired (L15a): `startApp` subscribes `onLifecycle` ([boot.ts:429](../client/src/app/boot.ts#L429)), and GameSession's `onLifecycle` suspends the audio on `deactivated` and resumes the scene and calls `onActivated` on `activated` ([game.ts:1652-1682](../client/src/app/game.ts#L1652)) |
+| `BackButton`, not browser history | the screen stack `createScreens` ([screens.ts:71](../client/src/ui/screens.ts#L71)) owns `TelegramClient.backButton`: visible iff an overlay is open or, at the game root, a root-back is set; a press pops the top overlay, else runs the root-back. Arch rule `history`. Created by `startApp` with the facade's `backButton` (L15a, [boot.ts:132](../client/src/app/boot.ts#L132)) |
 | no Service Worker, no `window.open` / `alert` | arch rules `service-worker`, `window-open`, `dialog`; e2e `no window.open or alert` |
 | every SDK call from the main origin | the dev and preview servers proxy `/api/`, `/dev/`, `/telegram/` to `server-dev` on one origin ([vite.config.ts:26-28](../client/vite.config.ts#L26)) |
 
@@ -524,7 +561,11 @@ Principle 5, as far as it is built:
 | the Bot API hangs on `answerPreCheckoutQuery` | the call is cut at 5 s, the webhook answers 200, and the order stays `checkout` | `precheckout_answer_times_out_at_5s` |
 | an update the pinned types cannot decode | a payment is still granted through the probe, or answered 500; anything else is acknowledged | `webhook_payment_undecodable_by_frankenstein_still_recorded`, `webhook_payment_fields_unreadable_500`, `webhook_undecodable_200` |
 | expired or tampered token | 401 `token_expired` / `token_invalid` | `token_expired_401`, `token_rejects_tampered_parts` |
-| WebGL context lost | rebuilt on `activated` after the grace period | `SceneController.onActivated` (wiring planned, L15) |
+| WebGL context lost | rebuilt on `activated` after the grace period | `SceneController.onActivated`, called by GameSession's `onLifecycle` (L15a) |
+| a CloudStorage / DeviceStorage callback that never comes | the call settles as a `timeout` error after `STORAGE_TIMEOUT_MS` (5 s); a later callback changes nothing; a `setItem` answered "not stored" is an error (L15a) | `storage: a callback that never fires settles as a timeout`, `storage: a late callback after the timeout changes nothing`, `storage: setItem not stored is an error` |
+| `savePreparedInlineMessage` fails at a share | the share still answers the link and the text, with a null prepared id (LF2) | `share_prepare_failure_falls_back_to_link` |
+| the referral hook fails (a lock timeout on a `users` row a gift holds) | rolled back and logged without ids; the batch's answer is unchanged, and the next batch evaluates again (LE2) | `referral_qualifies_after_hook_failure` |
+| a gift replayed after a lost answer, or with another body | the same request id moves once; another body under it is 400 (LE2) | `gift_replay_moves_once`, `gift_replay_with_other_body_400` |
 | a story edit that breaks a soft-lock proof | the story gate fails with the action path | `softlock:` tests, [AUTHORING.md](AUTHORING.md#world-lint-codes-and-soft-lock-counterexamples) |
 
 ## Trade-offs
@@ -540,6 +581,8 @@ Principle 5, as far as it is built:
     (`TEXT_NEEDLE_MIN_CODE_POINTS`, [world.ts:366](../client/scripts/story/world.ts#L366)); a shorter text has none;
   - line IDs, paid asset names and asset bytes are matched exactly.
 - The session token has no revocation list: it lives at most `TOKEN_TTL_SECS` (≤ 1 h).
+- The share window (LF2) lives in memory in `AppState.share_limit`, per process: a restart forgets it, accepted
+  ([share.rs:9-11](../server/src/api/share.rs#L9)).
 
 ## See also
 
