@@ -1,15 +1,473 @@
-//! The meta rules (META-PLAN M5-M7): achievement conditions over facts the server has, and the gate that keeps a paid
-//! item from a viewer who does not own its chapter.
+//! The meta index and its rules (META-PLAN M2, M4-M7): `meta.json` checked against the story and puzzle indexes at
+//! startup — per story the ending titles and the achievements, per chapter the choice vocabulary — and the
+//! achievement conditions over facts the server has, with the gate that keeps a paid item from a viewer who does not
+//! own its chapter.
 //!
-//! Principle 0 (M7): the gate of an item is the set of paid chapters its condition names, computed from the story
-//! index; an item reaches a viewer only if every gated chapter is owned now. No type here derives `Debug`.
+//! Principle 0 (M7): every text here is server-only. The gate of an item is the set of paid chapters its condition
+//! names, computed once from the story index; an item reaches a viewer only if every gated chapter is owned now. No
+//! type here derives `Debug`, and a startup refusal names ids, never a text.
 //!
 //! Achievements are display only (M6, principle 1): evaluating one grants nothing.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::content::StoryDef;
-use crate::ids::{ChapterId, ProductId, PuzzleId};
+use serde::Deserialize;
+
+use crate::content::{Localized, PuzzleDef, StoryDef, is_ending_name, is_line_id};
+use crate::ids::{ChapterId, ProductId, PuzzleId, StoryId};
+
+/// The meta index: the choice vocabulary of every chapter of the story index, and per story its ending titles and
+/// achievements. Immutable for the process lifetime.
+pub struct MetaIndex {
+    choices: HashMap<ChapterId, HashMap<String, String>>,
+    stories: HashMap<StoryId, StoryMeta>,
+}
+
+/// One story's meta.
+pub struct StoryMeta {
+    /// Every ending the story index declares, by name: its title and gate.
+    pub endings: BTreeMap<String, EndingMeta>,
+    /// The achievements in display order (M4).
+    pub achievements: Vec<AchievementDef>,
+    /// The puzzles the achievements' conditions name, once each, in display order: what a card reads facts of.
+    pub puzzles: Vec<PuzzleId>,
+}
+
+/// An ending's title and gate: an ending title is gated on its chapter (M7).
+pub struct EndingMeta {
+    /// The title.
+    pub title: Localized,
+    /// The ending's chapter when it is paid; empty for a free one.
+    pub gate: HashSet<ChapterId>,
+}
+
+/// An achievement of a story.
+pub struct AchievementDef {
+    /// `^[a-z][a-z0-9_]{0,31}$`, unique in the story.
+    pub id: String,
+    /// Reserved for a later "all achievements" list (M4); the card shows unlocked items only.
+    pub hidden: bool,
+    /// What unlocks it.
+    pub when: Condition,
+    /// The paid chapters `when` names ([`gate`]).
+    pub gate: HashSet<ChapterId>,
+    /// The name.
+    pub name: Localized,
+    /// The description.
+    pub desc: Localized,
+}
+
+impl MetaIndex {
+    /// The index `file` describes, checked against the story index `stories` and the puzzle index `puzzles`; the
+    /// reason of a refusal names ids and counts only.
+    pub(crate) fn build(
+        file: MetaFile,
+        stories: &[StoryDef],
+        puzzles: &[PuzzleDef],
+    ) -> Result<MetaIndex, String> {
+        if file.format != 1 {
+            return Err(format!("format {}, expected 1", file.format));
+        }
+        let choices = vocabulary(file.choices, stories)?;
+        let mut entries = file.stories;
+        for key in entries.keys() {
+            if !stories.iter().any(|s| &s.id.0 == key) {
+                return Err(match StoryId::parse(key) {
+                    Some(id) => format!("stories: {} is not a story of the index", id.0),
+                    None => "stories: a key is not a story id".to_owned(),
+                });
+            }
+        }
+        let mut metas = HashMap::with_capacity(stories.len());
+        for story in stories {
+            let Some(entry) = entries.remove(&story.id.0) else {
+                return Err(format!("stories: no entry for story {}", story.id.0));
+            };
+            let ctx = Ctx {
+                story,
+                choices: &choices,
+                puzzles,
+            };
+            let meta =
+                story_meta(entry, &ctx).map_err(|reason| format!("{}: {reason}", story.id.0))?;
+            metas.insert(story.id.clone(), meta);
+        }
+        Ok(MetaIndex {
+            choices,
+            stories: metas,
+        })
+    }
+
+    /// The meta of story `id`.
+    pub fn story(&self, id: &StoryId) -> Option<&StoryMeta> {
+        self.stories.get(id)
+    }
+
+    /// The vocabulary of chapter `ch` (M2): each option's line ID with its point's id.
+    pub fn choices(&self, ch: &ChapterId) -> Option<&HashMap<String, String>> {
+        self.choices.get(ch)
+    }
+
+    /// Whether `option` is an option of chapter `ch` in this build.
+    pub fn is_option(&self, ch: &ChapterId, option: &str) -> bool {
+        self.choices
+            .get(ch)
+            .is_some_and(|options| options.contains_key(option))
+    }
+}
+
+/// `meta.json` as the story tool writes it (META-PLAN "Server formats"); the fixture is the contract.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct MetaFile {
+    format: u32,
+    choices: BTreeMap<String, BTreeMap<String, String>>,
+    stories: BTreeMap<String, StoryFile>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoryFile {
+    endings: BTreeMap<String, Localized>,
+    achievements: Vec<AchievementFile>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AchievementFile {
+    id: String,
+    hidden: bool,
+    when: ConditionFile,
+    name: Localized,
+    desc: Localized,
+}
+
+/// A condition as written: every kind optional and every number signed, so a wrong count of kinds or a number out of
+/// range is a rule with a reason, not a parse fault.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ConditionFile {
+    ending: Option<String>,
+    endings: Option<i64>,
+    all_endings: Option<bool>,
+    choice: Option<String>,
+    chapter: Option<String>,
+    puzzle: Option<String>,
+    hints: Option<i64>,
+    all: Option<Vec<ConditionFile>>,
+}
+
+/// The most achievements of one story (M4).
+pub const MAX_ACHIEVEMENTS: usize = 50;
+
+/// The longest ending title and achievement name, in code points (M4).
+pub const MAX_NAME_CHARS: usize = 40;
+
+/// The longest achievement description, in code points (M4).
+pub const MAX_DESC_CHARS: usize = 140;
+
+/// How many conditions an `all` holds (M5).
+const ALL_LEN: std::ops::RangeInclusive<usize> = 2..=4;
+
+/// What one story's conditions are judged against.
+struct Ctx<'a> {
+    story: &'a StoryDef,
+    choices: &'a HashMap<ChapterId, HashMap<String, String>>,
+    puzzles: &'a [PuzzleDef],
+}
+
+impl Ctx<'_> {
+    fn on_chain(&self, ch: &str) -> bool {
+        self.story.chapters.iter().any(|c| c.id.0 == ch)
+    }
+}
+
+/// The choice vocabulary (M2): exactly the index's chapters, each option a line ID of its own chapter, each point an
+/// option of the same chapter.
+fn vocabulary(
+    file: BTreeMap<String, BTreeMap<String, String>>,
+    stories: &[StoryDef],
+) -> Result<HashMap<ChapterId, HashMap<String, String>>, String> {
+    let chapters: Vec<&ChapterId> = stories
+        .iter()
+        .flat_map(|s| &s.chapters)
+        .map(|c| &c.id)
+        .collect();
+    for key in file.keys() {
+        if !chapters.iter().any(|ch| &ch.0 == key) {
+            return Err(match ChapterId::parse(key) {
+                Some(ch) => format!("choices: {} is not a chapter of the story index", ch.0),
+                None => "choices: a key is not a chapter id".to_owned(),
+            });
+        }
+    }
+    let mut file = file;
+    let mut choices = HashMap::with_capacity(chapters.len());
+    for ch in chapters {
+        let Some(options) = file.remove(&ch.0) else {
+            return Err(format!("choices: no entry for chapter {}", ch.0));
+        };
+        for (option, point) in &options {
+            if !is_line_id(option) {
+                return Err(format!("choices.{}: an option is not a line ID", ch.0));
+            }
+            if id_chapter(option).as_ref() != Some(ch) {
+                return Err(format!(
+                    "choices.{}: option {option} is not of {}",
+                    ch.0, ch.0
+                ));
+            }
+            if !options.contains_key(point) {
+                return Err(format!(
+                    "choices.{}: the point of {option} is not an option of {}",
+                    ch.0, ch.0
+                ));
+            }
+        }
+        choices.insert(ch.clone(), options.into_iter().collect());
+    }
+    Ok(choices)
+}
+
+/// The language of `text` that is blank or longer than `max` code points.
+fn misfit(text: &Localized, max: usize) -> Option<&'static str> {
+    [("ru", &text.ru), ("en", &text.en)]
+        .into_iter()
+        .find(|(_, t)| t.trim().is_empty() || t.chars().count() > max)
+        .map(|(lang, _)| lang)
+}
+
+/// One story's entry: the endings are exactly the index's, each titled; at most [`MAX_ACHIEVEMENTS`] achievements
+/// with unique ids, texts within the M4 limits and conditions the index can meet.
+fn story_meta(entry: StoryFile, ctx: &Ctx<'_>) -> Result<StoryMeta, String> {
+    let story = ctx.story;
+    let mut titles = entry.endings;
+    for name in titles.keys() {
+        if !story.endings.contains_key(name) {
+            return Err(if is_ending_name(name) {
+                format!("endings: {name} is not an ending the index declares")
+            } else {
+                "endings: a key is not an ending name".to_owned()
+            });
+        }
+    }
+    let mut endings = BTreeMap::new();
+    for name in story.endings.keys() {
+        let Some(title) = titles.remove(name) else {
+            return Err(format!("endings: no title for {name}"));
+        };
+        if let Some(lang) = misfit(&title, MAX_NAME_CHARS) {
+            return Err(format!(
+                "ending {name}: the {lang} title is not 1 to {MAX_NAME_CHARS} code points of text"
+            ));
+        }
+        let gate = gate(&Condition::Ending(name.clone()), story);
+        endings.insert(name.clone(), EndingMeta { title, gate });
+    }
+    if entry.achievements.len() > MAX_ACHIEVEMENTS {
+        return Err(format!(
+            "{} achievements, at most {MAX_ACHIEVEMENTS}",
+            entry.achievements.len()
+        ));
+    }
+    let mut achievements: Vec<AchievementDef> = Vec::with_capacity(entry.achievements.len());
+    let mut named_puzzles = Vec::new();
+    for (at, a) in entry.achievements.into_iter().enumerate() {
+        if !is_ending_name(&a.id) {
+            return Err(format!(
+                "achievement {}: the id is not an achievement id",
+                at + 1
+            ));
+        }
+        if achievements.iter().any(|seen| seen.id == a.id) {
+            return Err(format!("achievement {} is listed twice", a.id));
+        }
+        for (field, text, max) in [
+            ("name", &a.name, MAX_NAME_CHARS),
+            ("desc", &a.desc, MAX_DESC_CHARS),
+        ] {
+            if let Some(lang) = misfit(text, max) {
+                return Err(format!(
+                    "achievement {}: the {lang} {field} is not 1 to {max} code points of text",
+                    a.id
+                ));
+            }
+        }
+        let when = condition(a.when, ctx, false)
+            .map_err(|reason| format!("achievement {}: {reason}", a.id))?;
+        puzzles_named(&when, &mut named_puzzles);
+        achievements.push(AchievementDef {
+            gate: gate(&when, story),
+            id: a.id,
+            hidden: a.hidden,
+            when,
+            name: a.name,
+            desc: a.desc,
+        });
+    }
+    Ok(StoryMeta {
+        endings,
+        achievements,
+        puzzles: named_puzzles,
+    })
+}
+
+/// The puzzles `c` names, added to `out` once each.
+fn puzzles_named(c: &Condition, out: &mut Vec<PuzzleId>) {
+    match c {
+        Condition::Puzzle { puzzle, .. } => {
+            if !out.contains(puzzle) {
+                out.push(puzzle.clone());
+            }
+        }
+        Condition::All(parts) => {
+            for part in parts {
+                puzzles_named(part, out);
+            }
+        }
+        Condition::Ending(_)
+        | Condition::Endings(_)
+        | Condition::AllEndings
+        | Condition::Choice(_)
+        | Condition::Chapter(_) => {}
+    }
+}
+
+/// One condition (M5): exactly one kind, `hints: 0` only beside `puzzle`, each naming what the story has; an `all` of
+/// 2 to 4 conditions, none an `all` (`nested`).
+fn condition(raw: ConditionFile, ctx: &Ctx<'_>, nested: bool) -> Result<Condition, String> {
+    let ConditionFile {
+        ending,
+        endings,
+        all_endings,
+        choice,
+        chapter,
+        puzzle,
+        hints,
+        all,
+    } = raw;
+    let kinds: Vec<&str> = [
+        ("ending", ending.is_some()),
+        ("endings", endings.is_some()),
+        ("allEndings", all_endings.is_some()),
+        ("choice", choice.is_some()),
+        ("chapter", chapter.is_some()),
+        ("puzzle", puzzle.is_some()),
+        ("all", all.is_some()),
+    ]
+    .into_iter()
+    .filter_map(|(kind, present)| present.then_some(kind))
+    .collect();
+    let [kind] = kinds.as_slice() else {
+        return Err(format!(
+            "the condition has {} kinds ({}), expected exactly one",
+            kinds.len(),
+            kinds.join(", ")
+        ));
+    };
+    if let Some(n) = hints {
+        if *kind != "puzzle" {
+            return Err(format!("hints beside {kind}: hints only beside puzzle"));
+        }
+        if n != 0 {
+            return Err(format!("hints {n}, expected 0"));
+        }
+    }
+    let story = ctx.story;
+    let id = &story.id.0;
+    if let Some(name) = ending {
+        return if story.endings.contains_key(&name) {
+            Ok(Condition::Ending(name))
+        } else if is_ending_name(&name) {
+            Err(format!("ending {name} is not an ending of {id}"))
+        } else {
+            Err("the ending is not an ending name".to_owned())
+        };
+    }
+    if let Some(n) = endings {
+        let count = story.endings.len();
+        return match u32::try_from(n) {
+            Ok(n) if n >= 1 && usize::try_from(n).is_ok_and(|n| n <= count) => {
+                Ok(Condition::Endings(n))
+            }
+            _ => Err(format!(
+                "endings {n} is outside 1 to {count}, the endings of {id}"
+            )),
+        };
+    }
+    if let Some(all_endings) = all_endings {
+        return if !all_endings {
+            Err("allEndings is not true".to_owned())
+        } else if story.endings.is_empty() {
+            Err(format!("allEndings: {id} declares no ending"))
+        } else {
+            Ok(Condition::AllEndings)
+        };
+    }
+    if let Some(option) = choice {
+        if !is_line_id(&option) {
+            return Err("the choice is not a line ID".to_owned());
+        }
+        let known = id_chapter(&option).is_some_and(|ch| {
+            ctx.on_chain(&ch.0)
+                && ctx
+                    .choices
+                    .get(&ch)
+                    .is_some_and(|o| o.contains_key(&option))
+        });
+        return if known {
+            Ok(Condition::Choice(option))
+        } else {
+            Err(format!(
+                "choice {option} is not an option of a chapter of {id}"
+            ))
+        };
+    }
+    if let Some(ch) = chapter {
+        return match ChapterId::parse(&ch) {
+            Some(ch) if ctx.on_chain(&ch.0) => Ok(Condition::Chapter(ch)),
+            Some(ch) => Err(format!("chapter {} is not on the chain of {id}", ch.0)),
+            None => Err("the chapter is not a chapter id".to_owned()),
+        };
+    }
+    if let Some(p) = puzzle {
+        let Some(p) = PuzzleId::parse(&p) else {
+            return Err("the puzzle is not a puzzle id".to_owned());
+        };
+        let known = ctx
+            .puzzles
+            .iter()
+            .any(|def| def.id == p && ctx.on_chain(&def.chapter.0));
+        return if known {
+            Ok(Condition::Puzzle {
+                puzzle: p,
+                no_hints: hints.is_some(),
+            })
+        } else {
+            Err(format!(
+                "puzzle {} is not a puzzle of a chapter of {id}",
+                p.0
+            ))
+        };
+    }
+    if let Some(parts) = all {
+        if nested {
+            return Err("an all inside an all".to_owned());
+        }
+        if !ALL_LEN.contains(&parts.len()) {
+            return Err(format!(
+                "all holds {} conditions, expected 2 to 4",
+                parts.len()
+            ));
+        }
+        return parts
+            .into_iter()
+            .map(|part| condition(part, ctx, true))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Condition::All);
+    }
+    Err("the condition has no kind".to_owned())
+}
 
 /// What an achievement asks for (M5): one kind over facts the server has.
 pub enum Condition {
