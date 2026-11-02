@@ -900,6 +900,48 @@ test('reporter: queue survives reload through device storage', async () => {
     b2.reporter.dispose();
   }
 
+  // One `set` in flight: a real DeviceStorage answers later and in any order, so a second write beside a pending one
+  // could leave an older queue stored. Changes meanwhile wait, then the newest queue is written.
+  {
+    const held: (() => void)[] = [];
+    const values: (string | null)[] = [];
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const device: DeviceStore = {
+      get: () => Promise.resolve({ ok: true, value: null }),
+      set: (_k, v) => {
+        values.push(v);
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        const d = deferred<Result<undefined, TgError>>();
+        held.push(() => {
+          inFlight -= 1;
+          d.resolve({ ok: true, value: undefined });
+        });
+        return d.promise;
+      },
+    };
+    const { reporter } = setup(fail(NETWORK), { device });
+    await tick();
+    // The load's write-back of the empty queue is held while two records change the queue.
+    reporter.record(started());
+    reporter.record(completed());
+    await tick();
+    expect(maxInFlight, 'a second set started while one was pending').toBe(1);
+    // Bounded: a reporter that kept writing would otherwise hold the test forever.
+    for (let i = 0; i < 4 && held.length > 0; i += 1) {
+      held.shift()?.();
+      await tick();
+    }
+    expect(maxInFlight, 'a second set started while one was pending').toBe(1);
+    expect(inFlight).toBe(0);
+    const last = values.at(-1);
+    const ids = typeof last === 'string' ? (JSON.parse(last) as { events: { eventId: string }[] }).events.map((e) => e.eventId) : [];
+    expect(ids, 'the newest queue is written after the pending set').toEqual([uuid(1), uuid(2)]);
+    expect(values).toHaveLength(2);
+    reporter.dispose();
+  }
+
   // No DeviceStorage (below Bot API 9.0): nothing to wait for; the queue lives in memory.
   const none = setup(okAll, { device: null });
   none.reporter.record(ending());
