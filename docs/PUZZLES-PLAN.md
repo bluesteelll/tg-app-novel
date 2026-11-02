@@ -303,6 +303,10 @@ to end, locally against the mock Telegram environment:
   - The `then` knot branches on `pz_<id>`. Whether the story loops back for a retry is the writer's call (a divert
     to the puzzle knot is legal).
   - The puzzle is a mode, not an overlay: BackButton is hidden, so one stray Back never abandons a branch.
+  - As merged (L15a `e94c786`, RULINGS 80; L15 cut D19, Q7): a server answer `{ correct: false, solved: true }` (the
+    puzzle was solved on another run or device) counts as a wrong attempt toward `maxAttempts`; `solved` only marks
+    the hint ladder `unavailable`. The run follows the player's own save, where replays are allowed
+    (`client/src/puzzles/session.ts:235-252`; F6 step 5).
 - **Attempts used** are saved (`PuzzleRun.attempts`) and autosaved after every wrong Try, so a reload does not reset
   the fail counter. An older manual slot still can.
 - **Why.** Spec 6 (a branch, never a dead end). RE/SH have no fail state; the branching patterns come from narrative
@@ -639,6 +643,11 @@ load.**
   (Budgets).
 - **Prefetch.** A non-awaited `import()` when a chapter's world has sections, or when the knot index shows a
   `puzzle` yield in `next(K)`.
+  As merged (L15a `e94c786`, RULINGS 80; L15 cut D13, Q7): the prefetch is issued once per chapter, after the
+  chapter's first line is shown, so its bytes never compete with the first knot's images on the TTFL path. The
+  condition is the chapter's world: sections → `explore-ui`, puzzles → `puzzle-host`; the knot index has no yield
+  entries, so "`next(K)` holds a puzzle yield" is not readable at runtime (`client/src/app/yields.ts:121-122`,
+  `:741-755`).
 - **Why.** Spec 9. The entry is 40 KB br and Svelte components otherwise land in it through `App.svelte` (PP K3).
 - **Trade-off.** Four more budget rows and one arch rule (static imports of the lazy directories only from inside the
   same directory).
@@ -1537,7 +1546,7 @@ postAttempt(id: PuzzleId, answer: readonly number[]): Promise<Result<AttemptResp
 | 2 | client | `createPuzzleSession(mode 'linear')`; the scene ensures `closeup` (cg) and the controller releases `room:*`; `loadPuzzleUi(type)` | chunk load error → "Couldn't load" + Retry (no outcome) |
 | 3 | player | sets the dials, taps Try → `POST /attempts` | double tap → one request (single-flight); network → toast, nothing counted; 429 → "wait N s", Try disabled until then; 401 → single-flight re-auth, retry once |
 | 4 | server | upsert window; limited → 429; check the answer; correct → `solved_at` (guarded) | concurrent attempts from two devices → both answered; the first `solved_at` stays |
-| 5 | client | wrong → `attempt-failed` (autosave); at `maxAttempts` → end `failed`; correct → end `solved`; Give up (confirmed) → `abandoned` | `deactivated` mid-request → it completes; nothing to pause |
+| 5 | client | wrong → `attempt-failed` (autosave); at `maxAttempts` → end `failed`; correct → end `solved`; Give up (confirmed) → `abandoned` | `deactivated` mid-request → it completes; nothing to pause; as merged (L15a `e94c786`, RULINGS 80; L15 cut D19, Q7): an answer `{ correct: false, solved: true }` (solved on another run or device) is a wrong attempt like any other, and `solved` only marks the hint ladder `unavailable` (`client/src/puzzles/session.ts:235-252`) |
 | 6 | client | `reduce(puzzle-ended)` → `project` → `runner.enter(then, projection)` → `next()`; the then-knot branches on `pz_cabinet` | `enter` error value (undeclared var / unknown knot; prevented by lint) → the story-error screen (PP F2) |
 
 ### F7. Exploration
@@ -1663,7 +1672,7 @@ postAttempt(id: PuzzleId, answer: readonly number[]): Promise<Result<AttemptResp
 | `PuzzleSession` (+ its `AbortController`, hint texts) | `app/yields.ts` | puzzle effect / yield | end, close, chapter change, `dispose()`; changed by STORIES-PLAN (revision 1): also `exitToStories()`, before its autosave | `session: dispose aborts the attempt`, `game_holds_at_most_one_puzzle_session`, `game: exit to stories disposes explore, puzzle and purchase sessions` |
 | Puzzle UI component | `PuzzleHost.svelte` | session open | session end | `puzzle host: unmount on end` (dom) |
 | Lazy chunk modules | browser module cache | first `import()` | app lifetime (code, not data) | budget rows |
-| `ExploreController` (+ `ResizeObserver` on the stage host, `deps.stageHost`) | GameSession | first explore yield of the chapter | chapter change, new game, `dispose()` (disconnects the observer); changed by STORIES-PLAN (revision 1): also `exitToStories()`, after its autosave | `game_holds_one_explore_controller`, `controller: dispose releases room holders`, `game: exit to stories disposes explore, puzzle and purchase sessions` |
+| `ExploreController` (+ `ResizeObserver` on the stage host, `deps.stageHost`) | GameSession | first explore yield of the chapter | chapter change, new game, `dispose()` (disconnects the observer); changed by STORIES-PLAN (revision 1): also `exitToStories()`, after its autosave; as merged (L15a `e94c786`, RULINGS 85; fix_r1 KL3, triage I4): also a resume whose step is not an explore yield, with the section's `room:*` holders (`client/src/app/yields.ts:757-762`; `game: a load at a story step hides the rooms and releases their holders`) | `game_holds_one_explore_controller`, `controller: dispose releases room holders`, `game: exit to stories disposes explore, puzzle and purchase sessions` |
 | `room:<id>` preload holders | `ExploreController` | room entry | move away (non-neighbour), puzzle with a close-up opens, section exit, `dispose()` | `controller: puzzle open releases neighbour preloads`; e2e `explore: live texture bytes stay under the steady cap` |
 | Prop sprites (`scene:prop:<id>` holders) | executor (props layer) | `props` command / `restore` | any `bg`/`scene`, `restore` diff, `destroy()` | `executor: scene clears props` |
 | Close-up texture (cg) | executor (cg slot) | puzzle open | puzzle end (`cg: null`) | `yields: puzzle end clears the close-up` |
@@ -2092,6 +2101,7 @@ so no line moved. What it means for this design:
 | 10 | 2026-10-31 | the META-PLAN campaign spec + RULINGS 25 | Hint purchases superseded by the META-PLAN economy: X6, X7, X18 headers, the Identifiers hint row and the `catalog.json` `hints` comment marked by same-line appends; a new section "Changed by META-PLAN" lists every superseded item (HTTP, Module API, H2–H7, Q14, Q15, tests, lanes). Design log: `D:/tmp/novel-orch/design/choices/design_log.md` |
 | 11 | 2026-11-01 | `D:/tmp/novel-orch/carry.md` at ORCH `d97ba64` (the docs-errata-2 spec, group A), as merged on main `6043941` | Docs lane `docs-errata-2`, group A (not a triage round): L6c (`039a2f3`) — the `puzzles/mod.rs` signatures (`AttemptOutcome::Answered`, `entitled_puzzle`, `&PuzzleDef`) and `GREATEST($3, first_at)`; LW3 (`be8ba8b`) — leave knots' carried stage, `explore/event-return` over the event closure, `worldVersion(body, rules)`, the `usage.json` world sections; the `world/title-long` reason gone with M21 (RULINGS 50). Decision §4.6 (revision 4b) was already applied. Ledger: `D:/tmp/novel-orch/docs-errata-2/ledger.md` |
 | 12 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `ba5fc68` (the docs-errata-3 spec, group A), as merged on main `22ed4d5` | Docs lane `docs-errata-3`, group A (not a triage round): L10 (`34b7f13`) — `isOwned` superseded by `isDelivered`, the endpoints' optional `signal` and the local `PuzzleId`; LP2 (`88d0964`) — the session contract fill-ins D1-D8, the view store's `host`, the three lazy budget rows and the engine walk; LX (`a9e991c`) — the controller's `roomShown()`, `reveal()`, `relabel()`, the store's `HotspotView` and `doc` panel, `manifest` as the preload's `from`, X13's backgrounds-only neighbour preload. Ledger: `D:/tmp/novel-orch/docs-errata-3/ledger.md` |
+| 13 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `e6eca0d` (the docs-errata-4 spec, group A; RULINGS 79-88), as merged on main `48abfaf` | Docs lane `docs-errata-4`, group A (not a triage round): L15a (`e94c786`) — X14's prefetch after the first line on the chapter's world (D13); X8 and F6 step 5 on `{ correct: false, solved: true }` (D19); the `ExploreController` row's destruction at a resume whose step is not an explore yield (fix_r1 KL3). Ledger: `D:/tmp/novel-orch/docs-errata-4/ledger.md` |
 
 **Revision 1 (2026-10-30)** — what changed, by triage item:
 - **W1** (a fully slotted lock's puzzle cannot be reopened after Back or a reload): "Lock" (the tap rule: every slot

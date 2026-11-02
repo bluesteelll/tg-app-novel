@@ -76,7 +76,8 @@ The player:
 - server: the card is ≤ 5 statements; a friend profile ≤ 7; a hint spend one transaction of ≤ 6 statements; a gift one
   transaction of ≤ 9 after one handle read; the stats POST gains one statement per batch (the referral probe by PK with
   its evidence, M23; revision 1, W5) and, only for a batch over the choice budget, one indexed read (first picks, M3;
-  revision 1, W2); nothing new on the pre-checkout path (it gets shorter: M19).
+  revision 1, W2); nothing new on the pre-checkout path (it gets shorter: M19). As merged (LF2 `d0c7870`, RULINGS 79;
+  cut Q2): a friend profile is ≤ 8 statements (M13).
 
 ---
 
@@ -457,6 +458,12 @@ C1, W1).**
   (and nothing else) unless the friend's consent stands; otherwise per story the friend has started: `endingsFound`,
   `achievementsUnlocked` (counts of the friend's facts, current index), and `sharedEndings` / `sharedAchievements` —
   the titles of items the friend has and the viewer has too and that pass the viewer's gate (M7). ≤ 7 statements.
+  - As merged (LF2 `d0c7870`, RULINGS 79; cut Q2): at most 8 statements. The handle and the friendship are two lookup
+    reads (RULINGS 70 Q8), so the worst path is `user_by_handle`, `are_friends`, `profile_visible`, `entitlements` and
+    four grouped reads, two per user (`server/src/api/social.rs:326-356`).
+  - As merged (LF2 `d0c7870`, RULINGS 79; cut Q4): the profile lists the stories of the index with at least one
+    counted ending or unlock of the friend, not every story the friend has started ("started" would need a ninth
+    read, of `stat_facts`; `server/src/api/social.rs:366-369`).
 - **Why.** Showing a title the viewer has not found is a spoiler and, for paid items, paid content; showing what both
   found is the social hook ("you both found 'Dawn'"). Counts of the friend's own facts are the friend's statistics,
   which the owner wants shareable.
@@ -654,7 +661,8 @@ Gifts and referrals have their own caps (M22, M23). Each limit's test is in the 
      counterpart, kind and amount must equal the request (else 400 `bad_request`), 200 with the current balance;
   4. the caps: the sender's `gift_out` units in the last 24 h + amount ≤ `sendPerDay`, the recipient's `gift_in` units
      + amount ≤ `receivePerDay`, else ROLLBACK → 429 `rate_limited` + `Retry-After` (until the oldest counted gift
-     leaves the window);
+     leaves the window); as merged (LE2 `ec3b29f`, RULINGS 84; critique O3): `Retry-After` is the earliest time the
+     gift may pass (the oldest counted gift of the side over its cap leaving the window), not a promise;
   5. the sender's conditional balance UPDATE (no row → ROLLBACK → 409 `insufficient_balance`);
   6. the recipient's ledger credit row (`…:in`) and credit (pays the recipient's debt first);
   7. COMMIT → `GiftResponse { balance }`.
@@ -665,6 +673,10 @@ Gifts and referrals have their own caps (M22, M23). Each limit's test is in the 
   into one account).
 - **Trade-off.** Farming through friends stays possible within the caps: at most `receivePerDay` (5) hints per day into
   one account.
+- **As merged (LE2 `ec3b29f`, RULINGS 84; review r1 M1).** The friendship is read (step 2) before the replay (step 3),
+  so a retried gift whose friendship was removed after the move answers 404 `not_found`, although the gift moved once.
+  Planned (LMI, the gift dialog): a 404 on a retry refreshes the wallet (`server/src/db/economy.rs:479-484`,
+  `server/src/api/gifts.rs:74`).
 
 **M23. Referral: attributed on the first launch, granted on server-observed evidence, capped per inviter.**
 - **What.**
@@ -978,6 +990,8 @@ export type InviteView = { state: 'open' | 'requested' | 'friends' | 'own' };   
 export type WalletView = { balances: ReadonlyArray<{ kind: ResourceKind; balance: number; debt: number }>;
   packs: ReadonlyArray<{ productId: ProductId; kind: ResourceKind; amount: number; priceStars: number; title: string }>;
   hintTierCost: number };
+// as merged (LMD `48abfaf`, RULINGS 83 Q2, 87; cut C6; client/src/meta/wallet.ts:16-22): + maxPerGift: number, from
+//   each wallet answer (a hint use keeps it)
 export type MetaError = { kind: 'network' | 'auth' | 'insufficient' | 'unavailable' | 'limit' | 'rate-limited' | 'not-found';
   retryAfter?: number };
 export interface HintPort {                                              // LP2's seam; LMI passes wallet.hintPort()
@@ -1018,6 +1032,8 @@ pub struct PackId(pub String);  pub struct ResourceKind(pub String);   // gramma
 pub enum ProductRef { Chapter { chapter: ChapterId }, Pack { pack: PackId } }
 pub struct PackDef { pub id: PackId, pub kind: ResourceKind, pub amount: u32 }
 pub struct GiftRules { pub kinds: Vec<ResourceKind>, pub max_per_gift: u32, pub send_per_day: u32, pub receive_per_day: u32 }
+// as merged (LE2 `ec3b29f`, RULINGS 84; cut Q9): send_per_day / receive_per_day count units (the gifted amounts) per
+//   rolling 24 h (M22 step 4), not gifts
 pub struct ReferralRules { pub kind: ResourceKind, pub inviter: u32, pub invitee: u32, pub min_play_secs: i64,
                            pub cap_per_day: u32, pub cap_total: u32 }
 pub struct Economy { pub kinds: Vec<ResourceKind>, pub packs: Vec<PackDef>, pub hint_tier_cost: u32,
@@ -1061,10 +1077,16 @@ pub fn visible(gate: &BTreeSet<ChapterId>, owned: &BTreeSet<ProductId>, content:
 //   HashSet<ProductId>, Facts.chapters HashSet<ChapterId>, Facts.choices HashSet<String>, Facts.puzzles
 //   HashMap<PuzzleId, PuzzleFact>, MetaIndex.stories HashMap<StoryId, StoryMeta>; Facts.endings stays
 //   BTreeMap<String, i64>
+// as merged (LM2 `5a33183`, RULINGS 77; docs-errata-3 fix-r1; server/src/meta.rs:28-44,604,637): gate(c, story) and
+//   visible(gate, owned, story) take the &StoryDef, not the ContentStore; StoryMeta { endings: BTreeMap<String,
+//   EndingMeta>, achievements, puzzles: Vec<PuzzleId> } (the puzzles the conditions name, once each, in display
+//   order) in place of endings + ending_gates; EndingMeta { title: Localized, gate: HashSet<ChapterId> }
 
 // api/dto.rs (LE1, LM2, LF1, LF2, LE2), all #[derive(Serialize | Deserialize, TS)], camelCase
 pub struct WalletResponse { pub balances: Vec<BalanceDto>, pub packs: Vec<PackDto>,
                             pub hint_tier_cost: u32 }   // economy.spend.hintTier (MV19), so the ladder shows the cost
+// as merged (LE2 `ec3b29f`, RULINGS 84; cut Q9; server/src/api/dto.rs:456-465): + pub max_per_gift: u32
+//   (`maxPerGift`, economy.gifts.maxPerGift: the gift dialog's bound; the daily caps stay the server's)
 pub struct BalanceDto { pub kind: String, pub balance: i64, pub debt: i64 }
 pub struct PackDto { pub product_id: String, pub kind: String, pub amount: u32, pub price_stars: u32, pub title: Localized }
 pub struct HintUseResponse { pub balance: i64, pub text: String }
@@ -1081,6 +1103,9 @@ pub struct InviteView { pub state: InviteState }                                
 #[serde(rename_all = "snake_case")] pub enum InviteState { Open, Requested, Friends, Own }
 pub struct ConsentRequest { pub granted: bool, pub text_version: String }
 pub struct FriendProfile { pub handle: String, pub first_name: String, pub visible: bool, pub stories: Vec<FriendStoryDto> }
+// as merged (LF2 `d0c7870`, RULINGS 79; cut Q3; server/src/api/dto.rs:582-589): no first_name, FriendProfile { handle,
+//   visible, stories }; no read gives another user's first name, so the client keeps the name from
+//   SocialResponse.friends (FriendDto { handle, first_name })
 pub struct FriendStoryDto { pub story_id: StoryId, pub endings_found: u32, pub achievements_unlocked: u32,
                             pub shared_endings: Vec<SharedEnding>, pub shared_achievements: Vec<SharedAchievement> }
 pub struct SharedEnding { pub name: String, pub title: Localized }
@@ -1097,6 +1122,9 @@ trait BotGateway { /* PP */
     async fn save_prepared_inline_message(&self, user: UserId, s: &PreparedShare) -> Result<PreparedMessage, GatewayError>;
     async fn bot_username(&self) -> Result<String, GatewayError>;      // getMe once, cached by the implementation
 }
+// as merged (LF2 `d0c7870`, RULINGS 79; cut C2; server/src/telegram/gateway.rs:76-82,103-108,544): the share is
+//   taken by value, save_prepared_inline_message(&self, user: UserId, share: PreparedShare) (a boxed future, as every
+//   BotGateway method); PreparedMessage.expiration_date comes from Telegram's u64 (i64::MAX when it does not fit)
 // The frankenstein side: InlineQueryResultArticle::builder() … into InlineQueryResult, with a text message content
 // and one url button. LF2 commit 1 verifies the 0.52.1 type names on docs.rs and pins the serialized request in
 // `gateway_prepared_share_shape` (the PP L8a invoice-shape precedent).
@@ -1368,7 +1396,7 @@ with builds; old rows stay valid history).
 | `GET /api/stats` (changed) | bearer | — | `StatsResponse` without `endingsTotal` (M8) | 401 | read | LS3 |
 | `GET /api/puzzles/{puzzleId}?lang` (changed) | bearer | — | `PuzzleStatus { puzzleId, solved, hints: [{ tier, unlocked, text \| null }] }` | as PZ | read | L6c |
 | `POST /api/puzzles/{puzzleId}/hints/{tier}?lang` | bearer | — | `HintUseResponse { balance, text }` | 400 (shapes), 403 `not_entitled`, 404, 409 `hint_unavailable` (order, solved), 409 `insufficient_balance` | (user, puzzle, tier): a repeat returns the text and debits nothing | LE1 |
-| `GET /api/wallet` | bearer | — | `WalletResponse { balances, packs, hintTierCost }` | 401 | read | LE1 |
+| `GET /api/wallet` | bearer | — | `WalletResponse { balances, packs, hintTierCost }`; as merged (LE2 `ec3b29f`, cut Q9): + `maxPerGift` | 401 | read | LE1, LE2 |
 | `POST /api/invoices` (changed) | bearer | `productId`: `chapter:<ch>` or `pack:<id>` | as PP | as PP (no `hint_unavailable`) | as PP; revision 1 (W3): a pack order binds its kind and amount at creation | L8a, LE1 |
 | `POST /api/stories/{storyId}/card` | bearer | — (empty body) | `CardResponse` (M9); as merged (LM2 `5a33183`, cut Q8): the 200 carries `Cache-Control: private, no-store` and `X-Content-Type-Options: nosniff` | 400 (shape), 404 unknown story | unlocks `ON CONFLICT DO NOTHING`: a repeat changes nothing, `new` once | LM2 |
 | `GET /api/social` | bearer | — | `SocialResponse { inviteCode, friends, requests, profileVisible }` (creates the code on the first call) | 401 | read (+ one code insert, once) | LF1 |
@@ -1379,7 +1407,7 @@ with builds; old rows stay valid history).
 | `POST /api/invite/rotate` | bearer | — | `SocialResponse` (the new code) | 429 `rate_limited` + `Retry-After` (> 10 per day) | each call rotates | LF1 |
 | `PUT /api/consents/friends_profile` | bearer | `ConsentRequest { granted, textVersion }` | `SocialResponse` | 400 (an unknown text version) | appends a row each call; the latest wins | LF1 |
 | `GET /api/privacy` | **none** | — | the policy HTML (from LPO on: the operator identity facts and `{POLICY_VERSION}` substituted at startup; revision 1, W4; revision 2, W1) | — | `public, max-age=300`; CSP `default-src 'none'; style-src 'unsafe-inline'` | LF1, LPO |
-| `GET /api/friends/{handle}/profile?lang` | bearer | — | `FriendProfile` (M13) | 404 not a friend (or an unknown handle) | read | LF2 |
+| `GET /api/friends/{handle}/profile?lang` (as merged, LF2 `d0c7870`, RULINGS 79; cut Q7: no `?lang`, the titles carry both languages; an unread query string is ignored) | bearer | — | `FriendProfile` (M13) | 404 not a friend (or an unknown handle) | read | LF2 |
 | `POST /api/share` | bearer | `ShareRequest { storyId \| null, lang, native }` | `ShareResponse { link, text, preparedMessageId }` | 400, 404 unknown story, 429 `rate_limited` (> 20 per hour), 502 `telegram_unavailable` (no username) | none needed (each call prepares a new message) | LF2 |
 | `POST /api/gifts` | bearer | `GiftRequest { to (a friend handle), kind, amount, requestId }` | `GiftResponse { balance }` | 400 (shapes; a replay with another body), 404 not a friend (or an unknown handle), 409 `insufficient_balance`, 429 `rate_limited` + `Retry-After` (the daily caps) | (sender, `requestId`): a replay moves nothing and answers 200 | LE2 |
 
@@ -1442,6 +1470,17 @@ export function createSocialService(api: MetaApi): {
   prepareShare(story: StoryId | null, lang: Lang, native: boolean): Promise<Result<ShareResponse, MetaError>> };
 export function createWalletService(api: MetaApi): {
   state(): WalletView | null; refresh(): Promise<Result<WalletView, MetaError>>; hintPort(open: () => void): HintPort };
+// as merged (LMD `48abfaf`, RULINGS 83 Q3, 87; client/src/meta/{card,social,wallet}.ts, client/src/api/endpoints.ts:
+//   118-209): no MetaApi type; each service takes the Pick<MetaEndpoints, …> it calls:
+//   createCardService(api: Pick<MetaEndpoints, 'postCard'>);
+//   createSocialService(api: Pick<MetaEndpoints, …>,
+//     o: { storyTitle: (story: StoryId, lang: Lang) => string | null }), with setVisible(on: boolean,
+//     textVersion: ConsentTextVersion);
+//   createWalletService(api: Pick<MetaEndpoints, 'getWallet' | 'useHint'>, o: { lang: () => Lang });
+//   MetaError, metaError(e: ApiError) and FriendHandle live in api/endpoints.ts. The error table: 403 not_entitled,
+//   400 (bad_request), 413 (payload_too_large), 502 telegram_unavailable -> 'unavailable'; internal, a 5xx without a
+//   code, decode, aborted -> 'network'; token codes and session-expired -> 'auth'; 429 -> 'rate-limited' with
+//   retryAfter
 // The gift call is MetaController.gift (LMI: the endpoint, its decoder and the request id kept across retries live in
 // LMI, because GiftResponse exists only after LE2 and LMD runs beside LE2).
 
@@ -1494,6 +1533,12 @@ impl Repo {
                           rules: &GiftRules, now: i64) -> Result<GiftOutcome, sqlx::Error>;           // LE2
     pub async fn qualify_referral(&self, invitee: UserId, chapter: &ChapterId, rules: &ReferralRules, now: i64)
         -> Result<ReferralOutcome, sqlx::Error>;                                                       // LE2
+    // as merged (LE2 `ec3b29f`, RULINGS 84; cut Q3, Q4, Q9; server/src/db/economy.rs:35,303-314,472-477,
+    //   server/src/db/social.rs:52,217-223): transfer(&self, g: &GiftMove<'_>, rules: &GiftRules, now: i64), with
+    //   GiftMove { from, to, kind, amount, request_id } (clippy too_many_arguments); qualify_referral lives in
+    //   db/social.rs and takes the first-chapter pairs, qualify_referral(&self, invitee, first_chapters: &[(&str,
+    //   &str)], rules, now) (story id, chapter id); the windows are GIFT_WINDOW_SECS (db/economy.rs) and
+    //   REFERRAL_WINDOW_SECS (db/social.rs), 86 400 s each
 }
 // api/legal.rs (LF1): pub fn routes() -> Router<AppState>; pub fn policy_version() -> &'static str
 // api/legal.rs (LPO, revision 1 W4): + Policy::load (above); the route serves AppState.policy; revision 2 W1:
@@ -1588,6 +1633,8 @@ impl Repo {
    friendship in one read (404) → the friend's
    latest consent (`visible: false` → stop) → the friend's facts and unlocks (current index) → the viewer's facts,
    unlocks and entitlements → counts + the shared titles passing the viewer's gate (≤ 7 statements).
+   As merged (LF2 `d0c7870`, RULINGS 79; cut Q2, Q7): no `?lang` (the titles carry both languages), and the handle
+   and the friendship are two reads, so at most 8 statements (M13).
 2. Client: the `friend` overlay; its Gift button (F25).
 - Races: consent withdrawn between the list and the profile → `visible: false`; unfriended → 404 → the list refreshes.
 
@@ -1611,7 +1658,8 @@ impl Repo {
 1. Client: a friend → Gift → the `gift` dialog (amount 1–`maxPerGift`, bounded by the balance) → `POST /api/gifts { to,
    kind, amount, requestId: crypto.randomUUID() }` (`to` the friend's handle; the id kept until a definitive answer).
 2. Server: M22's transaction.
-3. Client: the new balance; a 429 shows when the next gift is possible.
+3. Client: the new balance; a 429 shows when the next gift is possible. As merged (LE2 `ec3b29f`, RULINGS 84;
+   critique O3): `Retry-After` is the earliest time the gift may pass, not a promise (M22 step 4).
 - Repeats: a retry with the same `requestId` → 200, nothing moves twice.
 
 ### F26. Referral qualification (revision 1, W5)
@@ -1648,6 +1696,10 @@ Additions to PP's, PZ's and SP's tables.
 the grant takes no `users` lock and one balance row; gifts, accepts and the referral grant take `users` rows first. No
 cycle: nothing that holds a balance row waits for a `users` row. FK checks take `KEY SHARE`, which `NO KEY UPDATE`
 does not block.
+As merged (LE2 `ec3b29f`, RULINGS 84; critique O1): the gift takes its two balance rows in M22's step order (the
+sender's, then the recipient's), not ascending (user id, kind). That is deadlock-free only because every path that
+holds two balance rows (the gift, the referral grant) holds both `users` rows first. A future path that holds two
+balance rows without those `users` locks takes them ascending (`server/src/db/economy.rs:10-16`).
 
 | Race / failure | Outcome | Test |
 |---|---|---|
@@ -1870,7 +1922,7 @@ LMI (its gate gains MEMORY-PLAN's M1).
 | Card response | ≤ 16 KB; as merged (LM2 `5a33183`, RULINGS 77; cut Q4): ≤ 36 KiB (36,864 B) | 50 achievements × ≈ 250 B + 32 endings × ≈ 120 B; typically < 2 KB; as merged: the fixture's card 2,036 B (< 2,048), 34,167 B at the M4 limits (one achievement ≈ 675 B in Cyrillic); 4-byte code points could pass 36 KiB, accepted (display only; the 256 KiB `meta.json` cap holds) | `card_response_bounded` (LM2) |
 | Stats batch with choices | ≤ 16 KB body | 32 × ≈ 160 B = 5.1 KB | SP's limit |
 | `server/content/meta.json` | ≤ 256 KB raw (a startup check) | ≈ 40 B per option: ≈ 3 KB for the demo, ≈ 60 KB for 10 chapters × 150 options; texts ≤ 36 KB per story | `startup_fails_when_meta_too_large` (LM2) |
-| Server statements | card ≤ 5; profile ≤ 7; spend ≤ 6 (1 tx); gift ≤ 9 (1 tx) + 1 handle read; an invite request ≤ 6 (1 tx); the stats POST + 1 per batch (the referral probe with its evidence, revision 1 W5) + 1 only over the choice budget (first picks, revision 1 W2); pre-checkout 2 (was 3) | at the Q21 p99 RTT of 160 ms: the card ≤ 0.8 s, a spend ≤ 1 s, the stats POST ≤ 0.8 s worst case (5 statements) | the lane tests |
+| Server statements | card ≤ 5; profile ≤ 7 (as merged, LF2 `d0c7870`, RULINGS 79: ≤ 8, M13); spend ≤ 6 (1 tx); gift ≤ 9 (1 tx) + 1 handle read; an invite request ≤ 6 (1 tx); the stats POST + 1 per batch (the referral probe with its evidence, revision 1 W5) + 1 only over the choice budget (first picks, revision 1 W2); pre-checkout 2 (was 3) | at the Q21 p99 RTT of 160 ms: the card ≤ 0.8 s, a spend ≤ 1 s, the stats POST ≤ 0.8 s worst case (5 statements) | the lane tests |
 
 **Vacuous-green guards.** The meta-ui row is PENDING, never PASS, until `app/meta.ts` exists; `scan-dist`'s meta set
 fails when `story/meta.json` is missing or has zero texts of ≥ 12 code points while any story declares an ending
@@ -1971,7 +2023,7 @@ server tests only.
 | MV3 | Share content and art | text + a button, no image; the wording in `server/locales/meta.json` (placeholder) |
 | MV4 | Pack sizes and prices | `hint_s` 3 hints for 1 ⭐, `hint_m` 10 for 3 ⭐ (placeholders) |
 | MV5 | The referral bonus and caps | inviter 5 hints, invitee 2; 3 per inviter per day, 20 lifetime |
-| MV6 | Gift limits | up to 3 per gift; 3 sent and 5 received per day |
+| MV6 | Gift limits | up to 3 per gift; 3 sent and 5 received per day (as merged, LE2 `ec3b29f`, cut Q9: units, not gifts, M22 step 4) |
 | MV7 | The minimum play before a referral qualifies | the first chapter's completion recorded and a stats batch ≥ 120 s after its start (revision 1) |
 | MV8 | The refund of a spent pack | claw back what is left; the rest becomes debt paid by later credits |
 | MV9 | Multi-level referrals | none (the Telegram §5.2(d)(i) risk) |
@@ -2029,3 +2081,4 @@ lists (default: the narrative-designer drafts the demo ones above), Q21 jurisdic
 | 5 | 2026-11-01 | RULINGS 54 (as merged on main `6043941`) | Docs lane `docs-errata-2`, group B (not a triage round): M28 and "Implementation plan" Order as of `6043941` (LM1, LU1 merged; LE1 running; LF1, LM2, LF2, LE2, LPO, LMD, LMI to go). Ledger: `D:/tmp/novel-orch/docs-errata-2/ledger.md` |
 | 6 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `ba5fc68` (the docs-errata-3 spec, group A), as merged on main `22ed4d5` | Docs lane `docs-errata-3`, group A (not a triage round): LE1 (`29c310b`) — the named-constraint credit, the clawback upsert, `balances -> Vec<Balance>`; L10 (`34b7f13`) — `chapterDelivered` / `packDelivered`; LU1 (`2a7b50c`) — the controller owns a gift's `requestId`; L14b (`3364f73`) — lower-case callbacks; LP2 (`88d0964`) — `HintPort` / `HintPortError` in `puzzles/session.ts`, `createPuzzleSession` -> `Result`, `useHint` -> the ladder; LF1 (`946e2b5`) — the self-invite guard, `referrals_outcome_known`'s `outcome IS NOT NULL`, `invite_state`'s `pending_cap` and the rotation constants, the capped-requester residual; LM2 (`5a33183`) — met and visible unlocks, the card bound (36 KiB), the meta stories equal the index stories, the card headers, hash collections and `Repo::entitlements`. Ledger: `D:/tmp/novel-orch/docs-errata-3/ledger.md` |
 | 7 | 2026-11-02 | RULINGS 78 (as merged on main `22ed4d5`) | Docs lane `docs-errata-3`, group B (not a triage round): M28 and "Implementation plan" Order as of `22ed4d5` (LM1, LU1, LE1, LF1, LM2 merged; LF2 running; LE2, LPO, LMD, LMI to go). Ledger: `D:/tmp/novel-orch/docs-errata-3/ledger.md` |
+| 8 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `e6eca0d` (the docs-errata-4 spec, group A; RULINGS 79-88), as merged on main `48abfaf` | Docs lane `docs-errata-4`, group A (not a triage round): LF2 (`d0c7870`) — the profile's 8 statements, its stories with a counted ending or unlock, no `first_name`, no `?lang`, the gateway's `PreparedShare` by value and the `u64` expiry; LM2 (`5a33183`) — `gate` / `visible` over the `StoryDef`, `EndingMeta`, `StoryMeta.puzzles`; LE2 (`ec3b29f`) — `transfer(&GiftMove, …)`, `qualify_referral(first_chapters, …)` in `db/social.rs`, the window constants, the caps in units (and MV6), `maxPerGift` in `WalletResponse`, `Retry-After` as the earliest time, the balance-row lock order, the 404 on a retry after an unfriend; LMD (`48abfaf`) — the services' `Pick<MetaEndpoints, …>` and options, `setVisible`'s text version, `MetaError` / `metaError` / `FriendHandle` in `api/endpoints.ts` with the error table, `WalletView.maxPerGift`. Ledger: `D:/tmp/novel-orch/docs-errata-4/ledger.md` |

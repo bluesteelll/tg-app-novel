@@ -848,6 +848,7 @@ getStats(): Promise<Result<StatsResponse, ApiError>>;
 export interface StatsReporter {
   record(e: StatEvent): void;                      // synchronous; never throws, never awaits
   flush(o?: { keepalive: boolean }): void;          // single-flight; a failure keeps the events
+  // as merged (LS4 `4c713fa`, RULINGS 73; client/src/stats/reporter.ts:31): flush(o?: { keepalive?: boolean })
   dispose(): void;                                   // clears its timers; the queue stays in DeviceStorage
 }
 export function createStatsReporter(deps: { api: Pick<Endpoints, 'postStatEvents'>; device: DeviceStore | null;
@@ -1262,6 +1263,7 @@ Totals: 2 stories, 4 chapters (2 free, 2 paid), 4 endings (`truth`, `ashes`, `dr
 | 9 | 2026-11-01 | RULINGS 54 (as merged on main `6043941`) | Docs lane `docs-errata-2`, group B (not a triage round): "Implementation plan" — "Running and merged lanes" and "Order" as of `6043941` (LS1, LS2, LS3 merged; L10, LE1 running; LS4, N2 to go; the critical path from L10). Ledger: `D:/tmp/novel-orch/docs-errata-2/ledger.md` |
 | 10 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `ba5fc68` (the docs-errata-3 spec, group A), as merged on main `22ed4d5` | Docs lane `docs-errata-3`, group A (not a triage round): L10 (`34b7f13`) — the `createSaveService` deps and the `SaveService` methods; LS4 (`4c713fa`) — `postStatEvents`' optional `keepalive`, the 5 s timer from the first unflushed record, the failure classes with the 1 h `Retry-After` cap and the 4xx drop, the backoff reset, a failed DeviceStorage read as a memory-only queue. Ledger: `D:/tmp/novel-orch/docs-errata-3/ledger.md` |
 | 11 | 2026-11-02 | RULINGS 78 (as merged on main `22ed4d5`) | Docs lane `docs-errata-3`, group B (not a triage round): "Implementation plan" — "Running and merged lanes" and "Order" as of `22ed4d5` (LS4, N2 merged, so all five lanes of this design have merged; L15, LF2 running; the critical path from L15). Ledger: `D:/tmp/novel-orch/docs-errata-3/ledger.md` |
+| 12 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `e6eca0d` (the docs-errata-4 spec, group A; RULINGS 79-88), as merged on main `48abfaf` | Docs lane `docs-errata-4`, group A (not a triage round): LS4 (`4c713fa`) — `flush`'s optional `keepalive` (docs-errata-3 fix-r1). Ledger: `D:/tmp/novel-orch/docs-errata-4/ledger.md` |
 
 **Revision 1 (2026-10-31)** — what changed, by triage item:
 - **W1** (LS1 moved merged test pins it did not declare; commit 6 left the real-tree `story` gate red): PP "LS1" —
