@@ -1074,3 +1074,49 @@ test('game: exact or checkpoint resume does not report chapter start', async () 
   checkpoint.game.dispose();
 });
 
+
+// ---------------------------------------------------------------------------------------------------------------
+// C4: the ink-error floor (PP F2 "Runtime errors", D10)
+
+test('game: repeated ink error walks resume down to chapter start', async () => {
+  // `->->` outside a tunnel raises at run time, after the knot's checkpoint and its choice set.
+  const broken = chapter(
+    'ch1',
+    [
+      '-> start',
+      '=== start ===',
+      'Start line. #id:ch1.start.l001',
+      '-> broken',
+      '=== broken ===',
+      'Broken line. #id:ch1.broken.l002',
+      '* [Go on. #id:ch1.broken.c001]',
+      '    ->->',
+    ],
+    { start: { next: ['broken'] }, broken: {} },
+  );
+  const h = harness({ chapters: [broken] });
+  await startManor(h);
+  await h.game.advance(); // l002, entering broken: its checkpoint
+  const fail = async (): Promise<void> => {
+    await h.game.advance(); // the choice set
+    await h.game.choose(0); // the ink error
+    expect(h.vm.notice?.kind).toBe('story_error');
+  };
+  const returnToSave = async (): Promise<string | null> => {
+    const n = h.vm.notice;
+    if (n?.kind === 'story_error') {
+      n.onaction();
+    }
+    await settle();
+    await settle();
+    return lineOf(h.vm);
+  };
+  await fail();
+  expect(await returnToSave()).toBe('ch1.broken.l002'); // the first error: the checkpoint
+  await fail();
+  expect(await returnToSave()).toBe('ch1.start.l001'); // a later one: the chapter start
+  await h.game.advance();
+  await fail();
+  expect(await returnToSave()).toBe('ch1.start.l001'); // the floor
+  h.game.dispose();
+});

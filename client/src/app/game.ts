@@ -253,6 +253,8 @@ type Session = {
   handover: KnotName | null;
   /** D11: the saved start of a paid chapter the player does not own; the paywall's chapter. */
   pending: SaveBodyV1 | null;
+  /** D10: the runtime errors of the current chapter, which walk "Return to last save" down the resume levels. */
+  inkErrors: number;
 };
 
 type DebugHook = {
@@ -583,12 +585,16 @@ export function createGame(deps: GameDeps): Game {
   /** F2 runtime errors: the story-error screen, whose action returns to the last save. */
   const storyError = (s: Session, e: RunnerError): void => {
     console.error('story: runtime error', e);
+    s.inkErrors += 1;
     s.runner?.dispose();
     s.runner = null;
     showNotice({ kind: 'story_error', onaction: () => void after(() => returnToSave(s)) });
   };
 
-  /** "Return to last save": the last autosave, resumed from its checkpoint. */
+  /**
+   * "Return to last save": the last autosave, one level lower per error in this chapter (D10): the first from its
+   * checkpoint, every later one from the chapter start, so a knot that keeps failing cannot loop.
+   */
   const returnToSave = async (s: Session): Promise<void> => {
     if (session !== s) {
       return;
@@ -599,7 +605,7 @@ export function createGame(deps: GameDeps): Game {
     if (body === null) {
       return;
     }
-    await resumeBody(s, body, 'checkpoint');
+    await resumeBody(s, body, s.inkErrors > 1 ? 'chapter-start' : 'checkpoint');
   };
 
   // -------------------------------------------------------------------------------------------------------------
@@ -630,6 +636,7 @@ export function createGame(deps: GameDeps): Game {
     s.assets = manifestIndex(ch.assets);
     s.lines = createLineText(ch.en);
     s.held.clear(); // setChapter releases every preload:* holder
+    s.inkErrors = 0;
     void settings.loadRead(ch.id); // never rejects; a failed read keeps the chapter memory-only (settings/store.ts)
     scene.setChapter(ch.assets);
     if (clear) {
@@ -997,6 +1004,7 @@ export function createGame(deps: GameDeps): Game {
       kept: null,
       handover: null,
       pending: null,
+      inkErrors: 0,
     };
     s.offSaves = saves.onState((st) => onSaveState(s, st));
     return s;
