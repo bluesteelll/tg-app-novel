@@ -5,6 +5,8 @@
 import type { Result } from '../story/catalog.ts';
 import { browserEnv, createTelegramClient, readWebApp } from './webapp.ts';
 
+export { CLOUD_VALUE_MAX } from './webapp.ts';
+
 /** How Telegram closed an invoice; 'paid' only tells the purchase flow to poll the server. */
 export type InvoiceStatus = 'paid' | 'cancelled' | 'failed' | 'pending';
 
@@ -38,6 +40,8 @@ export interface TelegramClient {
   isVersionAtLeast(v: string): boolean;
   ready(): void;
   expand(): void;
+  /** Closes the Mini App (`WebApp.close`); no version gate (core.telegram.org/bots/webapps, the pinned TWA). */
+  close(): void;
   /** 7.7. */
   disableVerticalSwipes(): void;
   /** 6.2. */

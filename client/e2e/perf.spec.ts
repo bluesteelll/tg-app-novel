@@ -152,7 +152,7 @@ test.describe(() => {
   test.use({ reducedMotion: 'reduce' });
 
   test('textures released on chapter change', async ({ page, request }) => {
-    test.setTimeout(240_000);
+    test.setTimeout(180_000);
     await grantChapter(request, 4003, 'chapter:ch2');
     await launch(page, 4003);
     await startManor(page);
@@ -167,7 +167,7 @@ test.describe(() => {
   });
 
   test('heap under budget', async ({ page, request }) => {
-    test.setTimeout(240_000);
+    test.setTimeout(180_000);
     await grantChapter(request, 4004, 'chapter:ch2');
     await launch(page, 4004);
     await startManor(page);
@@ -214,7 +214,28 @@ test('context loss recovers', async ({ page }) => {
   const lit = (p: readonly number[]): boolean => Math.max(p[0] ?? 0, p[1] ?? 0, p[2] ?? 0) > 24;
   expect(lit(before), `the stage before the loss: ${before.join(',')}`).toBe(true);
 
-  await page.evaluate(() => (window as unknown as E2eWindow).__novelDebug?.forceContextLoss());
+  // The loss is observed on the canvas itself (L15b review M2), not assumed: a no-op hook would leave the stage lit
+  // and the poll below green. Our listeners are the canvas's last (after Pixi's and the controller's), so on
+  // `restored` the controller has already asked for the render the poll reads.
+  const events = await page.locator('canvas').evaluate(
+    (canvas) =>
+      new Promise<string[]>((resolve) => {
+        const seen: string[] = [];
+        const guard = setTimeout(() => resolve([...seen]), 5_000);
+        canvas.addEventListener('webglcontextlost', () => seen.push('lost'), { once: true });
+        canvas.addEventListener(
+          'webglcontextrestored',
+          () => {
+            seen.push('restored');
+            clearTimeout(guard);
+            resolve([...seen]);
+          },
+          { once: true },
+        );
+        (window as unknown as E2eWindow).__novelDebug?.forceContextLoss();
+      }),
+  );
+  expect(events, 'the loss landed, then the restore').toEqual(['lost', 'restored']);
   let after: number[] = [];
   try {
     await expect

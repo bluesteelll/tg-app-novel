@@ -884,12 +884,16 @@ test('arch: pure world modules', () => {
   expect(treeViolations().filter((v) => GROUP[v.rule] === 'pure')).toEqual([]);
 }, TREE_TIMEOUT_MS);
 
-/** The lazy components on the tree (LX adds `ui/explore/`). */
+/** The lazy components on the tree: the puzzle families, the puzzle host, and LX's explore UI (LX Q5). */
 const LAZY_COMPONENTS = [
   'puzzles/ui/CodeLock.svelte',
   'puzzles/ui/OrderPuzzle.svelte',
   'ui/puzzles/PuzzleHost.svelte',
   'ui/puzzles/HintLadder.svelte',
+  'ui/explore/ExploreView.svelte',
+  'ui/explore/Inventory.svelte',
+  'ui/explore/DocumentReader.svelte',
+  'ui/explore/LockPanel.svelte',
 ] as const;
 
 /** The files under a lazy directory that a source's literal `import()` calls load. */
@@ -915,6 +919,8 @@ test('arch: lazy ui only by dynamic import', () => {
   const keys = Object.keys(SOURCES);
   for (const file of LAZY_COMPONENTS) {
     expect(keys, file).toContain(file);
+    // The list names only files the rule treats as lazy.
+    expect(lazyDirOf(file), file).toBeDefined();
   }
   expect(dynamicLazyTargets('puzzles/registry.ts', SOURCES['puzzles/registry.ts'] ?? '')).toEqual([
     'puzzles/ui/CodeLock.svelte',
@@ -924,7 +930,14 @@ test('arch: lazy ui only by dynamic import', () => {
 }, TREE_TIMEOUT_MS);
 
 test('arch: only yields.ts enters the runner', () => {
-  // Vacuous on the tree until L15: no `.enter(` call exists yet. The red and allow fixtures carry the proof.
+  // Non-vacuous: yields.ts is scanned, and its own runner call is found once the file is judged under a name the rule
+  // does not exempt. The `runner.enter(` prefix tells that call from the section controller's `c.enter(` in the same
+  // file, which would satisfy the probe alone; a rename of that receiver in yields.ts must update this filter.
+  expect(Object.keys(SOURCES)).toContain(RUNNER_ENTRY_FILE);
+  const probe = violations({ 'app/yields.as-judged.ts': SOURCES[RUNNER_ENTRY_FILE] ?? '' }).filter(
+    (v) => v.rule === 'runner-enter' && v.excerpt.startsWith('runner.enter('),
+  );
+  expect(probe).not.toEqual([]);
   expect(treeViolations().filter((v) => GROUP[v.rule] === 'runner')).toEqual([]);
 }, TREE_TIMEOUT_MS);
 
