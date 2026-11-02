@@ -9,6 +9,7 @@ import { brotliCompressSync, constants } from 'node:zlib';
 import type { AssetCatalog, AssetEntry, AssetManifest, ChapterListEntry, ChapterMeta, CoverManifest, ImageEntry } from '../src/story/catalog.ts';
 import type { AssetId, ChapterId } from '../src/story/staging.ts';
 import {
+  STEADY_CAP_BYTES,
   TRIMMED_NAMESPACES,
   assetUsage,
   catalogAudio,
@@ -120,8 +121,9 @@ export const LIMITS: Limits = {
   worldBr: 8_000,
   transfer: 6_000_000,
   firstKnotImages: 450_000,
-  knotSet: 32 * MIB,
-  roomSet: 32 * MIB,
+  // What the registry admits as preloads: decoded bytes and the kept file of every live record (MEMORY-PLAN M2).
+  knotSet: STEADY_CAP_BYTES,
+  roomSet: STEADY_CAP_BYTES,
   firstLoad: 800_000,
   image: { bg: PHOTO, cg: PHOTO, char: PHOTO, prop: { avif: 60_000, webp: 90_000 }, cover: { avif: 24_000, webp: 36_000 } },
   bgmM4aBytes: 3_000_000,
@@ -779,11 +781,15 @@ function sizedRow(name: string, file: Sized | null, rawLimit: number, brLimit: n
   return { name, valueBytes: file.brBytes, limitBytes: brLimit, status, note: over, unit: 'KB' };
 }
 
+/**
+ * What a live image record holds against the caps: its decoded bytes and the encoded file it keeps for a revive
+ * (MEMORY-PLAN M2, 4.A), the larger variant, since the client picks AVIF or WebP at run time.
+ */
 function decoded(e: AssetEntry | undefined): number | null {
-  return e?.kind === 'image' ? e.decodedBytes : null;
+  return e?.kind === 'image' ? e.decodedBytes + Math.max(e.avif.bytes, e.webp.bytes) : null;
 }
 
-/** The images of `ids` in `manifest`: their decoded bytes; an id the manifest lacks is reported. */
+/** The images of `ids` in `manifest`: their decoded bytes and kept file; an id the manifest lacks is reported. */
 function decodedOf(manifest: AssetManifest, ids: Iterable<AssetId>, lacking: string[]): Map<AssetId, number> {
   const out = new Map<AssetId, number>();
   for (const id of ids) {
