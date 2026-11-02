@@ -12,6 +12,7 @@ pub mod content;
 pub mod db;
 pub mod error;
 pub mod ids;
+pub mod meta;
 pub mod puzzles;
 pub mod telegram;
 
@@ -42,8 +43,8 @@ pub struct AppState {
     pub keys: Arc<Keys>,
     /// The time source: the system clock, or a fixed one set by [`AppState::with_clock`] in tests.
     pub clock: Arc<dyn Clock>,
-    /// The content loaded from `cfg.content_dir` at startup: the story index, the paid chapters, the puzzle index
-    /// and the gated asset index.
+    /// The content loaded from `cfg.content_dir` at startup: the story index, the paid chapters, the puzzle index,
+    /// the gated asset index and the meta index.
     pub content: Arc<ContentStore>,
     /// The products for sale: every paid chapter of `content`'s index, priced by `server/catalog.json`.
     pub catalog: Arc<Catalog>,

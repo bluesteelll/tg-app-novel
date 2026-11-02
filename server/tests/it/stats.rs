@@ -1094,6 +1094,128 @@ async fn stats_choice_shape_checked() {
     report(&failures);
 }
 
+/// The choice vocabulary (META-PLAN M2): a well-formed option of ch3 that the build did not emit for ch3
+/// (`choices.ch3` of the meta index) is `unknown_choice`; one it emitted is recorded.
+#[tokio::test]
+async fn stats_unknown_choice_rejected() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    let reply = post(
+        &st,
+        ANN,
+        vec![
+            event(1, "choice_made", "ch3", Some("ch3.shore.zz99"), None),
+            event(2, "choice_made", "ch3", Some("ch3.shore.s001"), None),
+        ],
+    )
+    .await;
+    let failures: Vec<String> = expect_answer(
+        "ch3.shore.zz99 (outside choices.ch3) and ch3.shore.s001",
+        &reply,
+        &answer(1, 0, &[(1, "unknown_choice")]),
+    )
+    .into_iter()
+    .collect();
+    report(&failures);
+}
+
+/// The entitlement is judged before the vocabulary: an option of unowned ch4 is `not_entitled` whether or not the
+/// build emitted it, so the answer names no paid option; with ch4 owned, the same option outside `choices.ch4` (empty
+/// in the fixture) is `unknown_choice`.
+#[tokio::test]
+async fn stats_paid_choice_needs_entitlement_first() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    let mut failures = Vec::new();
+    let reply = post(
+        &st,
+        ANN,
+        vec![event(1, "choice_made", "ch4", Some("ch4.lamp.zz99"), None)],
+    )
+    .await;
+    failures.extend(expect_answer(
+        "ch4.lamp.zz99 in unowned ch4",
+        &reply,
+        &answer(0, 0, &[(1, "not_entitled")]),
+    ));
+    own(&st, ANN, "chapter:ch4").await;
+    let reply = post(
+        &st,
+        ANN,
+        vec![event(2, "choice_made", "ch4", Some("ch4.lamp.zz99"), None)],
+    )
+    .await;
+    failures.extend(expect_answer(
+        "ch4.lamp.zz99 in owned ch4",
+        &reply,
+        &answer(0, 0, &[(2, "unknown_choice")]),
+    ));
+    report(&failures);
+}
+
+/// Past the choice budget only first picks are written (SP Y11), and the vocabulary bounds them: a client forging
+/// distinct well-formed options outside `choices.ch3` writes nothing, so the window grows by at most the vocabulary's
+/// size (the LS3 pre-deploy item, RULINGS 52).
+#[tokio::test]
+async fn stats_first_picks_bounded_by_vocabulary() {
+    let (st, _db) = state_with_users(&[BEN]).await;
+    let mut failures = Vec::new();
+    seed(&st, BEN, 600, "choice_made", Some("ch3.shore.s001"), T0).await;
+    let forged = |from: u64| -> (Vec<Value>, Vec<(u64, &'static str)>) {
+        let events = (from..from + 32)
+            .map(|n| {
+                let option = format!("ch3.shore.x{:03}", n % 64);
+                event(n, "choice_made", "ch3", Some(option.as_str()), None)
+            })
+            .collect();
+        let rejected = (from..from + 32).map(|n| (n, "unknown_choice")).collect();
+        (events, rejected)
+    };
+    for (round, from) in [("first", 0), ("second", 32)] {
+        let (events, rejected) = forged(from);
+        let reply = post(&st, BEN, events).await;
+        failures.extend(expect_answer(
+            &format!("{round} 32 options outside choices.ch3"),
+            &reply,
+            &answer(0, 0, &rejected),
+        ));
+    }
+    let n = rows(&st, BEN).await;
+    if n != 600 {
+        failures.push(format!(
+            "rows after 64 out-of-vocabulary first picks: expected 600, got {n}"
+        ));
+    }
+    let reply = post(
+        &st,
+        BEN,
+        vec![
+            event(100, "choice_made", "ch3", Some("ch3.shore.s001"), None),
+            event(101, "choice_made", "ch3", Some("ch3.shore.s002"), None),
+        ],
+    )
+    .await;
+    failures.extend(expect_answer(
+        "s001 (a repeat) and s002 (a first pick)",
+        &reply,
+        &answer(1, 0, &[(100, "rate_limited")]),
+    ));
+    for (round, from) in [("third", 200), ("fourth", 232)] {
+        let (events, rejected) = forged(from);
+        let reply = post(&st, BEN, events).await;
+        failures.extend(expect_answer(
+            &format!("{round} 32 options outside choices.ch3"),
+            &reply,
+            &answer(0, 0, &rejected),
+        ));
+    }
+    let n = rows(&st, BEN).await;
+    if n != 601 {
+        failures.push(format!(
+            "rows after the vocabulary's first pick and 64 more forged ones: expected 601, got {n}"
+        ));
+    }
+    report(&failures);
+}
+
 /// Every shape the table's CHECKs refuse is a 400 for the whole batch before any write, never a 500: the batch's
 /// well-formed event is not written either.
 #[tokio::test]
@@ -1583,7 +1705,11 @@ async fn stats_private_no_store() {
     clippy::disallowed_methods,
     reason = "a sync test may read files; the lint guards async handlers"
 )]
-fn rust_files(dir: &Path, files: &mut Vec<(PathBuf, String)>, problems: &mut Vec<String>) {
+pub(crate) fn rust_files(
+    dir: &Path,
+    files: &mut Vec<(PathBuf, String)>,
+    problems: &mut Vec<String>,
+) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         problems.push(format!("cannot read {}", dir.display()));
         return;
@@ -1609,7 +1735,7 @@ fn rust_files(dir: &Path, files: &mut Vec<(PathBuf, String)>, problems: &mut Vec
 
 /// The identifiers of the code lines of `text`: a comment line (`//`, `///`, `//!`) is skipped, so a why-comment may
 /// name the repository.
-fn code_identifiers(text: &str) -> impl Iterator<Item = (usize, &str)> {
+pub(crate) fn code_identifiers(text: &str) -> impl Iterator<Item = (usize, &str)> {
     text.lines()
         .enumerate()
         .filter(|(_, line)| !line.trim_start().starts_with("//"))
@@ -1632,8 +1758,9 @@ const STATS_REPO_WORDS: [&str; 7] = [
 ];
 
 /// Statistics unlock nothing (ST4): the repository is named only by `db/stats.rs` and by the stats routes in
-/// `api/stats.rs` (which leave the table's name to `db/`), in `server` and `server-dev` alike. A later reader of the
-/// table moves this allow-list on purpose.
+/// `api/stats.rs` (which leave the table's name to `db/`), in `server` and `server-dev` alike. The one other reader
+/// of the table is the completion card's display read in `db/achievements.rs` (META-PLAN M6), which names the table
+/// and no item of the repository; a later reader moves this allow-list on purpose.
 #[test]
 fn stats_repo_called_only_from_stats_api() {
     let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -1658,6 +1785,7 @@ fn stats_repo_called_only_from_stats_api() {
         let allowed: &[&str] = match file.as_str() {
             "src/db/stats.rs" => &STATS_REPO_WORDS,
             "src/api/stats.rs" => &api_words,
+            "src/db/achievements.rs" => &["stat_events"],
             _ => &[],
         };
         for (line, word) in code_identifiers(text).filter(|(_, w)| STATS_REPO_WORDS.contains(w)) {
@@ -1683,6 +1811,11 @@ fn stats_repo_called_only_from_stats_api() {
             "src/api/stats.rs",
             "stat_facts",
             "api/stats.rs does not call stat_facts",
+        ),
+        (
+            "src/db/achievements.rs",
+            "stat_events",
+            "db/achievements.rs does not name stat_events",
         ),
     ] {
         if !seen.iter().any(|(f, w)| f == file && *w == word) {

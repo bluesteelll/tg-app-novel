@@ -1,8 +1,9 @@
 //! The server's content, loaded once from `CONTENT_DIR` in `AppState::new`: the story index (`stories.json`), the
-//! paid chapters (`chapters/<ch>/`), the puzzle index (`puzzles/<ch>.json`) and the gated asset index (`assets/`).
+//! paid chapters (`chapters/<ch>/`), the puzzle index (`puzzles/<ch>.json`), the gated asset index (`assets/`) and
+//! the meta index (`meta.json`: ending titles, achievements, the choice vocabulary; its rules live in `meta.rs`).
 //!
-//! Principle 0: paid chapter JSON, paid worlds and puzzle solutions live here and leave only through routes that check
-//! an entitlement first. No paid type derives `Debug`, so none of them reaches a log line, and a [`ContentError`]
+//! Principle 0: paid chapter JSON, paid worlds, puzzle solutions and meta texts live here and leave only through
+//! routes that check an entitlement first. No paid type derives `Debug`, so none of them reaches a log line, and a [`ContentError`]
 //! names paths and ids, never what a file holds. A load that does not fully succeed is a refusal to start, never a
 //! server that sells a chapter it cannot serve.
 //!
@@ -19,10 +20,14 @@ use serde::de::{DeserializeOwned, IgnoredAny};
 use serde_json::value::RawValue;
 
 use crate::ids::{ChapterId, ProductId, PuzzleId, StoryId, is_local_id};
+use crate::meta::{MetaFile, MetaIndex};
 
 /// The most hint tiers a puzzle has (PUZZLES-PLAN X18); a puzzle may have none (the producer's `HintTiers` is
 /// `0 | 1 | 2 | 3`).
 pub const MAX_HINT_TIERS: usize = 3;
+
+/// The largest `meta.json`, in bytes (META-PLAN "Server formats"; the story tool's mirror checks the same bound).
+pub const META_MAX_BYTES: usize = 256 * 1024;
 
 /// Why the content could not be loaded. Each text names a path, an id or a count, never file contents.
 #[derive(Debug, thiserror::Error)]
@@ -220,12 +225,14 @@ pub struct ContentStore {
     puzzles: Vec<PuzzleDef>,
     puzzle_at: HashMap<PuzzleId, usize>,
     assets: HashMap<String, AssetFile>,
+    meta: MetaIndex,
 }
 
 impl ContentStore {
     /// Loads and checks the content under `dir`: the story index (required), every paid chapter's files (required:
-    /// `story`, `meta`, `assets`, `en`; optional: `world`), each gated asset its manifest names (required), and the
-    /// puzzle index (optional: no `puzzles/` directory, or no file for a chapter, means no puzzles there).
+    /// `story`, `meta`, `assets`, `en`; optional: `world`), each gated asset its manifest names (required), the
+    /// puzzle index (optional: no `puzzles/` directory, or no file for a chapter, means no puzzles there), and last
+    /// the meta index (required).
     pub async fn load(dir: &Path) -> Result<ContentStore, ContentError> {
         let stories = load_index(dir).await?;
         let mut story_of = HashMap::new();
@@ -249,6 +256,7 @@ impl ContentStore {
             .enumerate()
             .map(|(at, puzzle)| (puzzle.id.clone(), at))
             .collect();
+        let meta = load_meta(dir, &stories, &puzzles).await?;
         Ok(ContentStore {
             stories,
             story_of,
@@ -256,6 +264,7 @@ impl ContentStore {
             puzzles,
             puzzle_at,
             assets,
+            meta,
         })
     }
 
@@ -297,6 +306,11 @@ impl ContentStore {
     /// The gated asset with exactly this file name: the only asset lookup, so a request never becomes a path.
     pub fn asset(&self, file: &str) -> Option<&AssetFile> {
         self.assets.get(file)
+    }
+
+    /// The meta index: ending titles, achievements and the choice vocabulary.
+    pub fn meta(&self) -> &MetaIndex {
+        &self.meta
     }
 }
 
@@ -429,14 +443,33 @@ async fn raw_file(path: &Path) -> Result<Box<RawValue>, ContentError> {
     parse(path, &read_text(path).await?)
 }
 
-/// `^[a-z][a-z0-9_]{0,31}$` (STORIES-PLAN `EndingName`).
-fn is_ending_name(s: &str) -> bool {
+/// `^[a-z][a-z0-9_]{0,31}$` (STORIES-PLAN `EndingName`; also an achievement id, META-PLAN M4): the one copy the
+/// story index, the meta index and the stats route check against.
+pub(crate) fn is_ending_name(s: &str) -> bool {
     s.len() <= 32 && is_local_id(s)
 }
 
-/// `^[0-9a-f]{16}$`: the first 16 hex characters of the story's sha256.
-fn is_story_version(s: &str) -> bool {
+/// `^[0-9a-f]{16}$`: the first 16 hex characters of the story's sha256 (`meta.json` here, a stats event's
+/// `storyVersion` in `api/stats.rs`).
+pub(crate) fn is_story_version(s: &str) -> bool {
     s.len() == 16 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// A line ID, `^ch[1-9][0-9]*\.[a-z][a-z0-9_]*\.[0-9a-z]{4}$` (STAGING-DSL §4): the owning chapter, the knot part
+/// and a four-character suffix. A meta option key and a stats `choice_made` subject.
+pub(crate) fn is_line_id(s: &str) -> bool {
+    let mut parts = s.split('.');
+    let (Some(chapter), Some(knot), Some(suffix), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    ChapterId::parse(chapter).is_some()
+        && is_local_id(knot)
+        && suffix.len() == 4
+        && suffix
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
 }
 
 /// The `Content-Type` of a gated asset file name `^[a-z0-9][a-z0-9_-]*\.(avif|webp|m4a|wav)$`
@@ -681,6 +714,25 @@ async fn index_assets(
     Ok(())
 }
 
+/// The meta index `meta.json` (required): at most [`META_MAX_BYTES`], checked before it is parsed, then its rules
+/// against the story and puzzle indexes (`meta.rs`). Read last, so every earlier file keeps its own refusal.
+async fn load_meta(
+    dir: &Path,
+    stories: &[StoryDef],
+    puzzles: &[PuzzleDef],
+) -> Result<MetaIndex, ContentError> {
+    let path = dir.join("meta.json");
+    let text = read_text(&path).await?;
+    if text.len() > META_MAX_BYTES {
+        return Err(invalid(
+            &path,
+            format!("{} bytes, at most {META_MAX_BYTES}", text.len()),
+        ));
+    }
+    let file: MetaFile = parse(&path, &text)?;
+    MetaIndex::build(file, stories, puzzles).map_err(|reason| invalid(&path, reason))
+}
+
 /// The puzzle index: `puzzles/<ch>.json` for chapters of the index, in story and chain order. A `.json` file named
 /// after no chapter of the index is refused: the story tool and the index disagree about the chapter set.
 async fn load_puzzles(dir: &Path, stories: &[StoryDef]) -> Result<Vec<PuzzleDef>, ContentError> {
@@ -777,4 +829,88 @@ async fn load_puzzle_file(
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The ending-name, story-version and line-ID grammars, held here once for the story index, the meta index and
+    /// the stats route (`api/stats.rs`): the shapes `stats_malformed_event_400` refuses, and the meta option keys.
+    #[test]
+    fn grammars_shared_with_stats() {
+        let longest_name = format!("a{}", "b".repeat(31));
+        let long_name = "d".repeat(33);
+        type Table<'a> = (&'a str, fn(&str) -> bool, Vec<&'a str>, Vec<&'a str>);
+        let tables: [Table<'_>; 3] = [
+            (
+                "is_ending_name",
+                is_ending_name,
+                vec!["truth", "drowned", "a", "a_1", "a9", longest_name.as_str()],
+                vec![
+                    "",
+                    "Truth",
+                    "1a",
+                    "_a",
+                    "a-b",
+                    "a.b",
+                    "a b",
+                    "\u{e9}",
+                    long_name.as_str(),
+                ],
+            ),
+            (
+                "is_story_version",
+                is_story_version,
+                vec!["0123456789abcdef", "c2c2c2c2c2c2c2c2"],
+                vec![
+                    "",
+                    "ABC",
+                    "0123456789ABCDEF",
+                    "0123456789abcde",
+                    "0123456789abcdef0",
+                    "0123456789abcdeg",
+                ],
+            ),
+            (
+                "is_line_id",
+                is_line_id,
+                vec!["ch1.hall.c001", "ch3.shore.s001", "ch12.a_b.0z9y"],
+                vec![
+                    "",
+                    "ch3.shore",
+                    "ch3.shore.S001",
+                    "ch3.shore.s01",
+                    "ch3.shore.s0011",
+                    "ch1.hall.C001",
+                    "ch0.hall.c001",
+                    "ch01.hall.c001",
+                    "ch1.Hall.c001",
+                    "ch1.hall.c001.x",
+                    "hall.c001",
+                    "ch1..c001",
+                    "ch1.hall.c0-1",
+                ],
+            ),
+        ];
+        let mut failures = Vec::new();
+        for (name, grammar, ok, bad) in &tables {
+            for s in ok {
+                if !grammar(s) {
+                    failures.push(format!("{name}({s:?}): expected true"));
+                }
+            }
+            for s in bad {
+                if grammar(s) {
+                    failures.push(format!("{name}({s:?}): expected false"));
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} failures:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
 }

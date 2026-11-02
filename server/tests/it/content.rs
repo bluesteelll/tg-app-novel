@@ -2,6 +2,7 @@
 //! chapters, the puzzle index and the gated asset index of the committed fixture, the startup refusals on mutated
 //! copies of it, and the paid routes that serve it only after the entitlement check (principle 0).
 
+use std::collections::HashSet;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -12,8 +13,9 @@ use axum::http::Request;
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, HeaderName, X_CONTENT_TYPE_OPTIONS};
 use serde_json::{Value, json};
 use server::config::Config;
-use server::content::ContentError;
+use server::content::{ContentError, ContentStore};
 use server::ids::{ChapterId, ProductId, PuzzleId, StoryId};
+use server::meta::Condition;
 use server::{AppState, StartupError};
 
 use crate::catalog::{ANN, get, own, state_with_users};
@@ -538,6 +540,507 @@ async fn startup_fails_when_world_carries_solution() {
             )),
             Err(failure) => failures.push(failure),
         }
+    }
+    report(&failures);
+}
+
+/// A condition as one line: its kind and what it names (`all [ending dawn, choice ch3.shore.s002]`).
+fn condition_text(c: &Condition) -> String {
+    match c {
+        Condition::Ending(name) => format!("ending {name}"),
+        Condition::Endings(n) => format!("endings {n}"),
+        Condition::AllEndings => "allEndings".to_owned(),
+        Condition::Choice(option) => format!("choice {option}"),
+        Condition::Chapter(ch) => format!("chapter {}", ch.0),
+        Condition::Puzzle { puzzle, no_hints } => {
+            let hints = if *no_hints { " hints 0" } else { "" };
+            format!("puzzle {}{hints}", puzzle.0)
+        }
+        Condition::All(parts) => {
+            let parts: Vec<String> = parts.iter().map(condition_text).collect();
+            format!("all [{}]", parts.join(", "))
+        }
+    }
+}
+
+/// The chapter ids of a gate, sorted.
+fn gate_ids(gate: &HashSet<ChapterId>) -> Vec<String> {
+    let mut ids: Vec<String> = gate.iter().map(|ch| ch.0.clone()).collect();
+    ids.sort_unstable();
+    ids
+}
+
+/// The fixture's meta index (META-PLAN "Server formats"): both stories with their ending titles and gates, the
+/// achievements in file order with their conditions, gates and texts, the puzzles they name, and every chapter's
+/// choice vocabulary (`ch4` empty).
+#[tokio::test]
+async fn meta_index_loaded() {
+    let (st, _db) = common::test_state().await;
+    let meta = st.content.meta();
+    let mut failures = Vec::new();
+    type Ending<'a> = (&'a str, &'a str, &'a str, &'a [&'a str]);
+    type Achievement<'a> = (&'a str, bool, &'a str, &'a [&'a str]);
+    type StoryWant<'a> = (
+        &'a str,
+        Vec<Ending<'a>>,
+        Vec<Achievement<'a>>,
+        &'a [&'a str],
+    );
+    let stories: [StoryWant<'_>; 2] = [
+        (
+            "manor",
+            vec![
+                ("ashes", "Фикстура: пепел", "Fixture: ashes", &["ch2"]),
+                ("truth", "Фикстура: правда", "Fixture: the truth", &["ch2"]),
+            ],
+            vec![
+                ("truth_found", false, "ending truth", &["ch2"]),
+                ("both_endings", false, "endings 2", &[]),
+                ("every_ending", true, "allEndings", &["ch2"]),
+                ("drawer_no_hints", false, "puzzle ch1.drawer hints 0", &[]),
+                ("cabinet_open", false, "puzzle ch2.cabinet", &["ch2"]),
+                ("kind_word", false, "choice ch1.hall.c002", &[]),
+            ],
+            &["ch1.drawer", "ch2.cabinet"],
+        ),
+        (
+            "tide",
+            vec![
+                ("dawn", "Фикстура: рассвет", "Fixture: dawn", &["ch4"]),
+                ("drowned", "Фикстура: утонувший", "Fixture: drowned", &[]),
+            ],
+            vec![
+                ("lighthouse", false, "chapter ch4", &["ch4"]),
+                (
+                    "dawn_walk",
+                    false,
+                    "all [ending dawn, choice ch3.shore.s002]",
+                    &["ch4"],
+                ),
+            ],
+            &[],
+        ),
+    ];
+    for (id, endings, achievements, puzzles) in stories {
+        let Some(story) = meta.story(&StoryId(id.to_owned())) else {
+            failures.push(format!("story({id}): expected Some"));
+            continue;
+        };
+        let got: Vec<(&str, &str, &str, Vec<String>)> = story
+            .endings
+            .iter()
+            .map(|(name, e)| {
+                (
+                    name.as_str(),
+                    e.title.ru.as_str(),
+                    e.title.en.as_str(),
+                    gate_ids(&e.gate),
+                )
+            })
+            .collect();
+        let want: Vec<(&str, &str, &str, Vec<String>)> = endings
+            .iter()
+            .map(|&(name, ru, en, gate)| {
+                (name, ru, en, gate.iter().map(|&g| g.to_owned()).collect())
+            })
+            .collect();
+        if got != want {
+            failures.push(format!("{id} endings: expected {want:?}, got {got:?}"));
+        }
+        let got: Vec<(&str, bool, String, Vec<String>)> = story
+            .achievements
+            .iter()
+            .map(|a| {
+                (
+                    a.id.as_str(),
+                    a.hidden,
+                    condition_text(&a.when),
+                    gate_ids(&a.gate),
+                )
+            })
+            .collect();
+        let want: Vec<(&str, bool, String, Vec<String>)> = achievements
+            .iter()
+            .map(|&(a, hidden, when, gate)| {
+                (
+                    a,
+                    hidden,
+                    when.to_owned(),
+                    gate.iter().map(|&g| g.to_owned()).collect(),
+                )
+            })
+            .collect();
+        if got != want {
+            failures.push(format!("{id} achievements: expected {want:?}, got {got:?}"));
+        }
+        let got: Vec<&str> = story.puzzles.iter().map(|p| p.0.as_str()).collect();
+        if got != puzzles {
+            failures.push(format!("{id} puzzles: expected {puzzles:?}, got {got:?}"));
+        }
+    }
+    // The texts come through whole: one name and one description.
+    let texts = meta
+        .story(&StoryId("manor".to_owned()))
+        .and_then(|s| s.achievements.first())
+        .map(|a| (a.name.ru.as_str(), a.desc.en.as_str()));
+    if texts
+        != Some((
+            "Фикстура: правда найдена",
+            "Fixture: reach the ending The Truth.",
+        ))
+    {
+        failures.push(format!("manor truth_found texts: got {texts:?}"));
+    }
+    if meta.story(&StoryId("nope".to_owned())).is_some() {
+        failures.push("story(nope): expected None".to_owned());
+    }
+
+    let vocabulary: [(&str, &[(&str, &str)]); 4] = [
+        (
+            "ch1",
+            &[
+                ("ch1.hall.c001", "ch1.hall.c001"),
+                ("ch1.hall.c002", "ch1.hall.c001"),
+                ("ch1.study.c003", "ch1.study.c003"),
+            ],
+        ),
+        (
+            "ch2",
+            &[
+                ("ch2.archive.k001", "ch2.archive.k001"),
+                ("ch2.archive.k002", "ch2.archive.k001"),
+            ],
+        ),
+        (
+            "ch3",
+            &[
+                ("ch3.shore.s001", "ch3.shore.s001"),
+                ("ch3.shore.s002", "ch3.shore.s001"),
+            ],
+        ),
+        ("ch4", &[]),
+    ];
+    for (ch, want) in vocabulary {
+        match meta.choices(&chapter(ch)) {
+            Some(options) => {
+                let mut got: Vec<(&str, &str)> = options
+                    .iter()
+                    .map(|(option, point)| (option.as_str(), point.as_str()))
+                    .collect();
+                got.sort_unstable();
+                if got != want {
+                    failures.push(format!("choices({ch}): expected {want:?}, got {got:?}"));
+                }
+            }
+            None => failures.push(format!("choices({ch}): expected Some")),
+        }
+    }
+    if meta.choices(&chapter("ch9")).is_some() {
+        failures.push("choices(ch9): expected None".to_owned());
+    }
+    report(&failures);
+}
+
+/// An edit of the fixture's `meta.json`.
+type MetaEdit = fn(&mut Value);
+
+/// `Invalid` on `<dir>/meta.json` (the meta index, not a paid chapter's `meta.json`), else a failure line.
+fn expect_meta_invalid(
+    case: &str,
+    dir: &Path,
+    refused: Result<ContentError, String>,
+) -> Option<String> {
+    match refused {
+        Ok(ContentError::Invalid { path, .. }) if path == dir.join("meta.json") => None,
+        Ok(other) => Some(format!(
+            "{case}: expected Invalid on meta.json, got {other}"
+        )),
+        Err(failure) => Some(failure),
+    }
+}
+
+/// A meta index naming an ending the story index does not declare refuses the start: in a condition (`truth_found`
+/// on `nope`), and as a title key (manor's `endings` with an extra `nope`).
+#[tokio::test]
+async fn startup_fails_when_meta_names_unknown_ending() {
+    let mut failures = Vec::new();
+    let cases: [(&str, MetaEdit); 2] = [
+        ("truth_found on ending nope", |v| {
+            v["stories"]["manor"]["achievements"][0]["when"]["ending"] = json!("nope")
+        }),
+        ("a manor title for nope", |v| {
+            v["stories"]["manor"]["endings"]["nope"] = json!({ "ru": "Нет", "en": "None" })
+        }),
+    ];
+    for (case, edit) in cases {
+        let copy = FixtureCopy::new();
+        copy.edit_json("meta.json", edit).await;
+        let (started, _db) = state_on(copy.path()).await;
+        let refused = content_error(case, started);
+        failures.extend(expect_meta_invalid(case, copy.path(), refused));
+    }
+    report(&failures);
+}
+
+/// `meta.json` is at most 256 KiB (META-PLAN "Server formats"): the fixture padded with trailing spaces to one byte
+/// over refuses the start; padded to exactly the bound, it starts.
+#[tokio::test]
+async fn startup_fails_when_meta_too_large() {
+    let mut failures = Vec::new();
+    let text = tokio::fs::read_to_string(Path::new(FIXTURE).join("meta.json"))
+        .await
+        .unwrap();
+    for (case, size, refused) in [
+        ("262,145 bytes", 256 * 1024 + 1, true),
+        ("262,144 bytes", 256 * 1024, false),
+    ] {
+        let copy = FixtureCopy::new();
+        let padded = format!("{text}{}", " ".repeat(size - text.len()));
+        std::fs::write(copy.path().join("meta.json"), &padded).unwrap();
+        let (started, _db) = state_on(copy.path()).await;
+        if refused {
+            let refusal = content_error(case, started);
+            failures.extend(expect_meta_invalid(case, copy.path(), refusal));
+        } else if let Err(e) = started {
+            failures.push(format!("{case}: expected Ok, got {e}"));
+        }
+    }
+    report(&failures);
+}
+
+/// The content error `ContentStore::load` refuses `dir` with, or the failure line when it loads.
+async fn load_error(case: &str, dir: &Path) -> Result<ContentError, String> {
+    match ContentStore::load(dir).await {
+        Ok(_) => Err(format!("{case}: expected a content error, got Ok")),
+        Err(e) => Ok(e),
+    }
+}
+
+/// Every other startup rule of the meta index (META-PLAN "Server formats", M4, M5), one edit of the fixture each:
+/// the format, the choice vocabulary against the chapter set, the story set both ways, the ending titles, the
+/// achievement ids, counts and texts, and every condition kind's rule. A shape the parser refuses is `Json`; a
+/// missing file is `Read`.
+#[tokio::test]
+async fn startup_fails_when_meta_breaks_a_rule() {
+    fn manor(v: &mut Value, at: usize) -> &mut Value {
+        &mut v["stories"]["manor"]["achievements"][at]
+    }
+    fn tide(v: &mut Value, at: usize) -> &mut Value {
+        &mut v["stories"]["tide"]["achievements"][at]
+    }
+    // (case, a fragment of the reason its own rule gives, the edit)
+    let cases: Vec<(&str, &str, MetaEdit)> = vec![
+        ("format 2", "format 2, expected 1", |v| {
+            v["format"] = json!(2)
+        }),
+        (
+            "choices without ch4",
+            "choices: no entry for chapter ch4",
+            |v| {
+                v["choices"].as_object_mut().unwrap().remove("ch4");
+            },
+        ),
+        (
+            "choices.ch9",
+            "choices: ch9 is not a chapter of the story index",
+            |v| v["choices"]["ch9"] = json!({}),
+        ),
+        (
+            "option ch1.hall.C001",
+            "choices.ch1: an option is not a line ID",
+            |v| v["choices"]["ch1"]["ch1.hall.C001"] = json!("ch1.hall.c001"),
+        ),
+        (
+            "option ch2.hall.c001 under ch1",
+            "choices.ch1: option ch2.hall.c001 is not of ch1",
+            |v| v["choices"]["ch1"]["ch2.hall.c001"] = json!("ch1.hall.c001"),
+        ),
+        (
+            "a point that is no option",
+            "choices.ch1: the point of ch1.hall.c002 is not an option of ch1",
+            |v| v["choices"]["ch1"]["ch1.hall.c002"] = json!("ch1.hall.c009"),
+        ),
+        (
+            "stories without tide",
+            "stories: no entry for story tide",
+            |v| {
+                v["stories"].as_object_mut().unwrap().remove("tide");
+            },
+        ),
+        (
+            "stories.nope",
+            "stories: nope is not a story of the index",
+            |v| v["stories"]["nope"] = json!({ "endings": {}, "achievements": [] }),
+        ),
+        (
+            "manor endings without ashes",
+            "manor: endings: no title for ashes",
+            |v| {
+                v["stories"]["manor"]["endings"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("ashes");
+            },
+        ),
+        (
+            "a 41-code-point ending title",
+            "manor: ending truth: the ru title",
+            |v| v["stories"]["manor"]["endings"]["truth"]["ru"] = json!("я".repeat(41)),
+        ),
+        (
+            "a blank en ending title",
+            "tide: ending dawn: the en title",
+            |v| v["stories"]["tide"]["endings"]["dawn"]["en"] = json!("   "),
+        ),
+        (
+            "achievement id Bad",
+            "manor: achievement 1: the id is not an achievement id",
+            |v| manor(v, 0)["id"] = json!("Bad"),
+        ),
+        (
+            "an achievement id of 33 characters",
+            "manor: achievement 1: the id is not an achievement id",
+            |v| manor(v, 0)["id"] = json!(format!("a{}", "b".repeat(32))),
+        ),
+        (
+            "a duplicate achievement id",
+            "manor: achievement truth_found is listed twice",
+            |v| manor(v, 1)["id"] = json!("truth_found"),
+        ),
+        (
+            "51 achievements",
+            "manor: 51 achievements, at most 50",
+            |v| {
+                let list = v["stories"]["manor"]["achievements"]
+                    .as_array_mut()
+                    .unwrap();
+                let template = list[5].clone();
+                for i in 0..45 {
+                    let mut extra = template.clone();
+                    extra["id"] = json!(format!("extra_{i}"));
+                    list.push(extra);
+                }
+            },
+        ),
+        (
+            "a 41-code-point name",
+            "achievement truth_found: the ru name",
+            |v| manor(v, 0)["name"]["ru"] = json!("я".repeat(41)),
+        ),
+        (
+            "a 141-code-point desc",
+            "achievement truth_found: the en desc",
+            |v| manor(v, 0)["desc"]["en"] = json!("d".repeat(141)),
+        ),
+        (
+            "a blank en name",
+            "achievement truth_found: the en name",
+            |v| manor(v, 0)["name"]["en"] = json!(" "),
+        ),
+        (
+            "an empty ru desc",
+            "achievement truth_found: the ru desc",
+            |v| manor(v, 0)["desc"]["ru"] = json!(""),
+        ),
+        ("hints: 0 beside ending", "hints beside ending", |v| {
+            manor(v, 0)["when"]["hints"] = json!(0)
+        }),
+        ("hints: 1 beside puzzle", "hints 1, expected 0", |v| {
+            manor(v, 3)["when"]["hints"] = json!(1)
+        }),
+        ("endings: 3 on manor", "endings 3 is outside 1 to 2", |v| {
+            manor(v, 1)["when"]["endings"] = json!(3)
+        }),
+        ("endings: 0", "endings 0 is outside 1 to 2", |v| {
+            manor(v, 1)["when"]["endings"] = json!(0)
+        }),
+        ("allEndings: false", "allEndings is not true", |v| {
+            manor(v, 2)["when"]["allEndings"] = json!(false)
+        }),
+        (
+            "choice ch3.shore.s001 in manor",
+            "choice ch3.shore.s001 is not an option of a chapter of manor",
+            |v| manor(v, 5)["when"]["choice"] = json!("ch3.shore.s001"),
+        ),
+        (
+            "choice ch1.hall.c009, no option of ch1",
+            "choice ch1.hall.c009 is not an option of a chapter of manor",
+            |v| manor(v, 5)["when"]["choice"] = json!("ch1.hall.c009"),
+        ),
+        (
+            "chapter ch3 in manor",
+            "chapter ch3 is not on the chain of manor",
+            |v| manor(v, 0)["when"] = json!({ "chapter": "ch3" }),
+        ),
+        (
+            "puzzle ch1.nothing",
+            "puzzle ch1.nothing is not a puzzle of a chapter of manor",
+            |v| manor(v, 3)["when"]["puzzle"] = json!("ch1.nothing"),
+        ),
+        (
+            "puzzle ch1.drawer in tide",
+            "puzzle ch1.drawer is not a puzzle of a chapter of tide",
+            |v| tide(v, 0)["when"] = json!({ "puzzle": "ch1.drawer" }),
+        ),
+        ("all with one condition", "all holds 1 conditions", |v| {
+            tide(v, 1)["when"] = json!({ "all": [{ "ending": "dawn" }] })
+        }),
+        ("all with five conditions", "all holds 5 conditions", |v| {
+            tide(v, 1)["when"] = json!({ "all": [
+                { "ending": "dawn" }, { "ending": "drowned" }, { "chapter": "ch3" },
+                { "chapter": "ch4" }, { "choice": "ch3.shore.s002" }
+            ] })
+        }),
+        ("a nested all", "an all inside an all", |v| {
+            tide(v, 1)["when"] = json!({ "all": [
+                { "ending": "dawn" },
+                { "all": [{ "ending": "drowned" }, { "choice": "ch3.shore.s002" }] }
+            ] })
+        }),
+        (
+            "two kinds in one condition",
+            "the condition has 2 kinds",
+            |v| manor(v, 0)["when"] = json!({ "ending": "truth", "chapter": "ch2" }),
+        ),
+        ("no condition kind", "the condition has 0 kinds", |v| {
+            manor(v, 0)["when"] = json!({})
+        }),
+    ];
+    let mut failures = Vec::new();
+    for (case, rule, edit) in cases {
+        let copy = FixtureCopy::new();
+        copy.edit_json("meta.json", edit).await;
+        // The reason names the case's own rule: a copy refused by another rule would not prove this one.
+        match load_error(case, copy.path()).await {
+            Ok(ContentError::Invalid { path, reason })
+                if path == copy.path().join("meta.json") && reason.contains(rule) => {}
+            Ok(other) => failures.push(format!(
+                "{case}: expected Invalid on meta.json naming {rule:?}, got {other}"
+            )),
+            Err(failure) => failures.push(failure),
+        }
+    }
+
+    let copy = FixtureCopy::new();
+    copy.edit_json("meta.json", |v| {
+        manor(v, 0)["when"] = json!({ "ending": "truth", "when": 1 })
+    })
+    .await;
+    let case = "an unknown key in a condition";
+    match load_error(case, copy.path()).await {
+        Ok(ContentError::Json { path, .. }) if path == copy.path().join("meta.json") => {}
+        Ok(other) => failures.push(format!("{case}: expected Json on meta.json, got {other}")),
+        Err(failure) => failures.push(failure),
+    }
+
+    let copy = FixtureCopy::new();
+    copy.remove("meta.json");
+    let case = "no meta.json";
+    match load_error(case, copy.path()).await {
+        Ok(ContentError::Read { path, source })
+            if path == copy.path().join("meta.json") && source.kind() == ErrorKind::NotFound => {}
+        Ok(other) => failures.push(format!("{case}: expected Read (NotFound), got {other}")),
+        Err(failure) => failures.push(failure),
     }
     report(&failures);
 }
