@@ -216,7 +216,8 @@ research is newer and verified (brief), so it wins, and the deviation is recorde
   included (K9, `budget/knot-set`). An over-cap visible load drops a visual instead of growing memory; a gated story
   never reaches it.
 - **Changed by PUZZLES-PLAN (X11, X13).** Two more holder families:
-  - `room:<roomId>` — neighbour room backgrounds + props, requested in exit order by the explore controller and
+  - `room:<roomId>` — neighbour room backgrounds + props (as merged, LX `a9e991c`, RULINGS 75; impl limitation 1:
+    backgrounds only), requested in exit order by the explore controller and
     refused by the same 32 MiB rule. Released on moving to a non-neighbour, on opening a puzzle with a close-up, on
     section exit and on chapter change.
   - `scene:prop:<id>` — prop sprites, released by any `bg` / `scene`.
@@ -928,6 +929,10 @@ export type Result<T, E> = { ok: true; value: T } | { ok: false; error: E };
 export type ApiError =
   | { kind: 'http'; status: number; code: ErrorCode; body: ApiErrorBody }  // ErrorCode, ApiErrorBody from generated/api.ts
   | { kind: 'network'; detail: string } | { kind: 'decode'; detail: string } | { kind: 'session-expired' };
+// as merged (L10 `34b7f13`, RULINGS 55; cut Q3 (a), (g); client/src/api/http.ts:19-31): the 'http' arm is
+//   { kind: 'http'; status: number; code: ErrorCode | null; body: ApiErrorBody | null; retryAfter: number | null }
+//   (a non-JSON error, e.g. a proxy's 502, has no code), plus { kind: 'aborted' } for a caller's AbortSignal;
+//   http.ts also exports `Clock` { now(); setTimeout(fn, ms); clearTimeout(id) } and `systemClock`
 ```
 
 ### Rust types (server)
@@ -1432,6 +1437,11 @@ export type PurchaseState =
   | { kind: 'unlocked'; product: ProductId };
 export function createPurchaseFlow(deps: { api: Endpoints; tg: TelegramClient; clock: Clock;
   onState: (s: PurchaseState) => void }): { buy(p: ProductId): void; checkAgain(): void; onActivated(): void; dispose(): void };
+// as merged (L10 `34b7f13`, RULINGS 55; cut Q3 (c)-(e); client/src/purchase/flow.ts:23-72):
+//   createPurchaseFlow(deps: { api: Pick<Endpoints, 'createInvoice' | 'getOrder'>; tg: Pick<TelegramClient, 'openInvoice'>;
+//     clock: Clock; isDelivered: IsDelivered; onState }): PurchaseFlow   // IsDelivered = (p: ProductId) => Promise<Result<boolean, ApiError>>
+//   PurchaseFlow = { buy; checkAgain; onActivated; onDeactivated(): void; state(): PurchaseState; dispose }  // P7's pause
+//   chapterDelivered(api: Pick<Endpoints, 'getEntitlements'>): IsDelivered; packDelivered: IsDelivered (the polled order)
 ```
 
 ```rust
@@ -2235,7 +2245,7 @@ All budgets are enforced by `client/scripts/budget.ts` inside `npm run build` un
 | All JS in `dist/` | ≤ 290 KB br (changed by PUZZLES-PLAN: was 270; + about 20 KB of lazy puzzle and explore chunks that never load before the first line). Changed by META-PLAN: ≤ 305 KB br (+ the 14 KB meta-ui chunk + 1 KB slack; LMI) | R4 recommends ≤ 260 KB for one bundle; +10 for the split overhead | `budget.ts` |
 | `meta-ui` lazy chunk (changed by META-PLAN) | ≤ 14 KB br; a dynamic entry imported only by `app/meta.ts`; PENDING until `app/meta.ts` exists, then FAIL without a dynamic entry or inside a static closure | [META-PLAN.md](META-PLAN.md), section "Budgets and validation" | `budget.ts` (LMI): `budget: meta ui in entry closure fails`, `budget: meta row pending until its importer exists` |
 | JS before the first line (entry + engine closures) | ≤ 270 KB br (changed by PUZZLES-PLAN: the old all-JS limit, now scoped to what loads before the first line) | as above | `budget.ts` (L5) |
-| Lazy chunks, world JSON, props, `budget/room-set` | changed by PUZZLES-PLAN: puzzle type ≤ 8 KB br each, puzzle host ≤ 10, explore UI ≤ 16 (dynamic entries, never in a static closure; PENDING until `src/app/yields.ts` exists, then FAIL without a dynamic entry); world ≤ 32 KB raw / 8 KB br; prop ≤ 512 px; room-set ≤ 32 MiB | [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section "Budgets and validation" | `budget.ts` (L5, LP2) |
+| Lazy chunks, world JSON, props, `budget/room-set` | changed by PUZZLES-PLAN: puzzle type ≤ 8 KB br each, puzzle host ≤ 10, explore UI ≤ 16 (dynamic entries, never in a static closure; PENDING until `src/app/yields.ts` exists, then FAIL without a dynamic entry); as merged (LP2 `88d0964`, RULINGS 67; cut Q4): three lazy rows, the puzzle-type row measuring the largest type chunk, and the engine closure's walk stops at a lazy root, so the engine, first-line and first-load rows never count a lazy chunk; world ≤ 32 KB raw / 8 KB br; prop ≤ 512 px; room-set ≤ 32 MiB | [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section "Budgets and validation" | `budget.ts` (L5, LP2) |
 | CSS total | ≤ 12 KB br | | `budget.ts` |
 | `index.html` | ≤ 2 KB br | | `budget.ts` |
 | Story JSON per chapter | ≤ 160 KB raw and ≤ 35 KB br | ink JSON is verbose, compresses well [R4 §4.3] | `budget.ts` (free from `story-gen`, paid from `server/content`) |
@@ -4008,7 +4018,11 @@ Notation:
   code unchanged, because their entitlement check is trivially false and their price and texts come from the same
   `Product`. The reds `invoice_hint_tier_order_409`, `invoice_hint_after_solve_409`,
   `invoice_hint_paid_chapter_needs_entitlement_409` and `invoice_hint_price_from_catalog` are dropped; LE1 adds
-  `invoice_pack_price_from_catalog`.
+  `invoice_pack_price_from_catalog`. Changed by RULINGS 53 Q1 (as merged, LE1 `29c310b`; cut Q1, Q5 (b)): "pass
+  through the same code unchanged" is superseded by META-PLAN revision 1's pack binding (W3). LE1 changed this code:
+  the order call passes the whole `Product` (`api/orders.rs`), and `Repo::reuse_or_create_order` (`db/orders.rs`)
+  binds `pack_kind` / `pack_amount` in the order INSERT (NULL for a chapter) and reuses an order only with the same
+  binding (`invoice_pack_reuse_needs_same_binding`).
 - **Gates:** fmt, clippy, test; client `check`.
 - **Seen working:** `server-dev` on the lane's `DEV_API_PORT` + `curl POST /api/invoices` → `https://t.me/$dev-o_…`.
   As merged (`9e55ef6`, L8a impl Q3): the content comes from `npm --prefix client run story` and then
@@ -4231,7 +4245,11 @@ Notation:
   `server/src/api/{mod.rs,dto.rs,wallet.rs,puzzles.rs}`, `server/tests/it/{main.rs,economy.rs}`,
   `client/src/api/generated/api.ts` (15; `db/economy.rs`, `api/wallet.rs`, `it/economy.rs` are new, their parents are
   in the lock; `db/orders.rs` added by revision 1, W3: P3's pack binding). `AppState` gains no field (`catalog`
-  exists); `error.rs` is untouched (L6c pre-declared the variants).
+  exists); `error.rs` is untouched (L6c pre-declared the variants). Changed by RULINGS 53 Q1 (as merged, `29c310b`;
+  cut Q1, Q5 (a)): the lock is 19. It gains `server/src/api/{orders.rs,entitlements.rs}` (the order call passes the
+  `Product` and its pack binding; `entitlements.rs` matches `ProductRef` exhaustively, and a pack is never
+  listed), `server/tests/it/dto_samples.rs` and `client/src/api/fixtures/dto-samples.json` (the `WalletResponse` and
+  `HintUseResponse` samples).
 - **Commits:**
   1. `0004_economy.sql` (META-PLAN "SQL", including revision 1's `ALTER TABLE orders`: `pack_kind`, `pack_amount`,
      `orders_pack_binding`).
@@ -4252,7 +4270,8 @@ Notation:
      - Also: `clawback_takes_balance_then_debt` (balance 1, clawback 3 → 0 and debt 2);
        `balance_never_negative_concurrent_spends` (two connections, balance 1, two debits; B observed waiting on A's row
        through `common::wait_for_lock_waiter`; one applied, one `None`) — predicted red on a read-then-write stub: B's
-       commit fails with `("23514", "resource_balances_balance_nonneg")`.
+       commit fails with `("23514", "resource_balances_balance_nonneg")`. As merged (`29c310b`; LE1 cut Q5 (e)): B's
+       statement fails with that CHECK, not its commit.
   3. `catalog.rs` + `catalog.json`: the `economy` section (M17, PLACEHOLDER amounts), `ProductRef::Pack`, the
      `pack:<id>` products and their startup checks; P3's binding (`db/orders.rs`: the order INSERT sets `pack_kind` /
      `pack_amount` from the catalog for a pack, NULL for a chapter; revision 1, W3); the grant's `Pack` arm
@@ -4295,7 +4314,12 @@ Notation:
 - **Seen working:** `cargo test -p server --test it schema_balance schema_ledger schema_orders ledger_ credit_ clawback_
   balance_ pack_ catalog_pack invoice_pack wallet_ hint_spend` lists every name. Live: `server-dev`, a dev token →
   `POST /api/invoices { productId: "pack:hint_s" }` → `/dev/simulate-payment` → `GET /api/wallet` shows `hint` 3; with
-  LW3's generated puzzles, `POST /api/puzzles/ch1.drawer/hints/1?lang=ru` → `{ balance: 2, text }`.
+  LW3's generated puzzles, `POST /api/puzzles/ch1.drawer/hints/1?lang=ru` → `{ balance: 2, text }`. As merged
+  (`29c310b`, RULINGS 53 Q3, 61; cut Q5 (a)): cargo takes one TESTNAME, and this filter form also matches neighbours,
+  so the module filters replace it: `cargo test -p server --test it -- economy::` (every `it` name) and
+  `cargo test -p server --lib -- catalog::tests::pack_product_id_grammar`. The live check ended at `GET /api/wallet`
+  (`hint` 3), because `00d7c10`'s content had no puzzles; the live hint spend ran at the N1 merge on N1's content
+  (RULINGS 63: 200 `{ balance: 2, text }`, and a repeat costs nothing).
 
 #### LF1 friends-server (server; new, META-PLAN)
 - **Goal:** the verified `start_param`; attribution at `POST /api/auth` (a referral row for a newcomer; revision 1,
@@ -4338,7 +4362,10 @@ Notation:
        red on a stub without the owner-row lock: 51 rows.
      - Also: `invite_launch_creates_no_request` (a launch with a live code leaves `friend_requests` empty; the state is
        `open`), `self_invite_creates_nothing` (one's own code: no referral at a first launch; the routes answer `own`,
-       no row), `revoked_code_creates_nothing` (404, no row; no referral at a first launch),
+       no row; as merged, `946e2b5`, RULINGS 70; cut Q7: "no referral at a first launch" is unreachable, since a
+       newcomer owns no code (`invite_codes_user_fk`), so the test runs an existing owner's own-code launch (200,
+       nothing) and the routes; the `owner ≠ invitee` guard stays as defence before `referrals_not_self`),
+       `revoked_code_creates_nothing` (404, no row; no referral at a first launch),
        `invite_request_repeat_creates_one` (two sends → one row, `requested`).
   5. `GET /api/social`, accept, remove / decline with the block (`api/social.rs`, the locks of F20).
      - Red: `friendship_needs_inviter_accept` (B sends through A's code: B's `friends: []`, A's `requests: [B]`; only
@@ -4368,6 +4395,12 @@ Notation:
      - Red: `dev_launch_signs_start_param` (the redirect's initData verifies and carries `start_param`) — predicted red:
        the parameter ignored.
      - Red: `bindings_are_fresh` before regenerating.
+- **As merged (`946e2b5`, RULINGS 70; the cut `D:/tmp/novel-orch/lf1-friends-server/cut.md` Q2):** nine commits.
+  The DTOs carry no `TS` until the bindings commit (the L6c / L8a / LE1 precedent), the privacy page comes before the
+  consent log, and commit 8 splits into the bindings and the dev launch: C1 `0005_social.sql` (`67b52af`), C2 `start_param`
+  and `inserted` (`542d23a`), C3 the attribution (`3c5f21c`), C4 the invite routes (`bd95516`), C5 social, accept,
+  decline and removal (`d0296ad`), C6 `GET /api/privacy` (`651f1ae`), C7 rotation and the consent log (`2ff3f5a`), C8
+  the TS bindings and samples (`549a51b`), C9 the dev `/dev/launch?startapp=` (`4a7e6fe`).
 - **Gates:** fmt, clippy, test (counted); client `check`.
 - **Tester mutations:** read `start_param` outside the verified pairs; accept without deleting the request; lock the
   two `users` rows in request order; a referral for a non-newcomer; serve the policy with `no-store`; (revision 1)
@@ -4378,7 +4411,11 @@ Notation:
   every name. Live: two dev users; `/dev/launch?uid=2002&startapp=f<2001's code>` → `POST /api/auth` →
   `GET /api/invites/<code>` as 2002 → `open` → `POST /api/invites/<code>/request` → `GET /api/social` as 2001 shows
   2002's request (a handle, no Telegram id) → accept → both lists; 2001 removes 2002 → 2002 sends again → `requested`,
-  nothing new; `curl /api/privacy` without a token → the policy.
+  nothing new; `curl /api/privacy` without a token → the policy. As merged (`946e2b5`, RULINGS 70; cut Q6): cargo
+  takes one TESTNAME, so the names are listed with one filter before `--`:
+  `cargo test -p server --test it --locked -- social::`,
+  `cargo test -p server --lib --locked -- auth::initdata::tests::start_param_from_signed_string` and
+  `cargo test -p server-dev --test dev --locked -- dev_launch_signs_start_param`.
 
 #### LM2 meta-server (server; new, META-PLAN)
 - **Goal:** the meta index (`server/content/meta.json`) loaded at startup; the choice vocabulary check; achievement
@@ -4410,7 +4447,10 @@ Notation:
   5. `db/achievements.rs` + `api/cards.rs` (M6, M9).
      - Red: `card_lists_only_found_endings` — predicted red: 404 before the route.
      - Red: `card_paid_titles_need_entitlement` (raw stat rows for `dawn` in ch4; without the entitlement `dawn` and
-       `dawn_seen` are absent, with it present) — predicted red on a stub without `visible`: present without it.
+       `dawn_seen` are absent, with it present) — predicted red on a stub without `visible`: present without it. As
+       merged (`5a33183`, RULINGS 77; LM2 cut Q2): the fixture has no `dawn_seen`, so the test uses its `lighthouse`
+       (`{ "chapter": "ch4" }`) and `dawn_walk` (`all` of the ending `dawn` and a ch3 option), both gated on ch4: the
+       same paid-gated items.
      - Red: `card_concurrent_posts_new_once` (two connections) — predicted red on a stub that marks every met
        achievement `new`: `new: true` twice.
      - Also: `card_has_no_endings_total`, `card_unlock_persists_and_new_once`, `card_puzzle_no_hints_condition` (a raw
@@ -4460,7 +4500,8 @@ Notation:
   4. `#[derive(TS)]` + `api.ts`. Red: `bindings_are_fresh`.
   5. The DTO samples of `WalletResponse`, `HintUseResponse`, `CardResponse`, `SocialResponse`, `FriendProfile`,
      `InviteView` (revision 1) and `ShareResponse` in `dto_samples.rs` + `dto-samples.json` (handles, no Telegram id).
-     Red: `dto_samples_are_fresh` before regenerating.
+     Red: `dto_samples_are_fresh` before regenerating. Changed by RULINGS 52, 53 (as merged, LE1 `29c310b`; LE1 cut
+     Q5 (c)): `WalletResponse` and `HintUseResponse` are dropped from this list, since LE1 samples them already.
 - **Gates:** fmt, clippy, test (counted); client `check`.
 - **Tester mutations:** an ending title in the share template; the profile without the viewer's gate; `visible: true`
   without a consent row; the limiter removed; `allow_channel_chats` true.
@@ -4634,6 +4675,16 @@ Notation:
     entitlements stay empty) — predicted red on `isOwned`: the flow never reaches `unlocked` for a `pack:` product.
     It replaces `flow: hint product confirms through puzzle status`; no `hint:` product exists (M21). The wallet is
     read by LMI after `unlocked`, not by the flow.
+- **As merged (`34b7f13`, RULINGS 55; the cut `D:/tmp/novel-orch/l10-client-data/cut.md` Q1, Q3, Q9, Q10):**
+  - Six commits, decode first, because `http.ts` imports the auth and error decoders (Q1): C1 `decode.ts`
+    (`dd01cea`), C2 `http.ts` + `session.ts` (`572d5e3`), C3 `endpoints.ts` (`8e85bef`), C4 the saves service
+    (`c191612`), C5 the pending cache (`d4aa58c`), C6 the purchase flow (`3352c6f`, `924d319`).
+  - Commit 2's "Rust samples" half was already merged (L8b's `server/tests/it/dto_samples.rs`); the seeded field
+    rename is a scratch run of C1, never committed (Q9).
+  - The signatures beyond the plan text (Q3): this plan's `ApiError` and `purchase/flow.ts` notes, STORIES-PLAN's
+    `createSaveService` note, PUZZLES-PLAN's `api/endpoints.ts` note and META-PLAN M19's `isDelivered` note.
+  - Superseded text not built (Q10): the `isOwned` / `hint:` items of the PUZZLES-PLAN re-cut above (commit 5) and of
+    the "Hint tiers" paragraph of the payment flow; PUZZLES-PLAN's `isOwned` in `purchase/flow.ts` is marked there.
 
 #### L9 refunds-bot (server)
 - **Goal:** the admin refund + revoke; `refunded_payment`; `/start`, `/terms`, `/support`, `/paysupport`; the `setup`
@@ -4935,7 +4986,9 @@ Notation:
      - Also: `wallet: packs show server prices and debt`.
   5. `GiftDialog.svelte` + `index.ts`. Red (dom): `gift: amount bounded by balance and caps` (the stepper stops at
      the balance; an `error: 'limit'` prop shows `meta.gift_capped` — the daily caps are the server's, LE2) —
-     predicted red: the stepper passes the balance.
+     predicted red: the stepper passes the balance. As merged (LU1 `2a7b50c`, RULINGS 54; cut Q3): the daily caps
+     arrive as `rate-limited` (the server's 429), and the dialog maps both `limit` and `rate-limited` to
+     `meta.gift_capped`, adding `meta.gift_retry` with the hours when `retryAfter` is known.
 - **Gates:** `check`, `test` (the `dom` names counted).
 - **Tester mutations:** render the ending total; default the consent to on; store the card props in a module `$state`.
 - **Seen working:** `npx vitest run --project dom src/ui/meta --reporter=verbose` lists every LU1 name; the chunk is
@@ -5053,7 +5106,9 @@ Notation:
   - **Lock:** + `client/src/ui/StoryPicker.svelte` → 14.
   - `StoryPicker.svelte` (presentational): `cards: StoryCardView[]` (`{ id, title, teaser, cover: { avif, webp } |
     null, continue: boolean, eager: boolean }`), callbacks `onStart(id)`, `onContinue(id)`, `onChapters(id)`; covers
-    as `<picture>` with `width` / `height`, `decoding="async"`, `loading="lazy"` unless `eager`.
+    as `<picture>` with `width` / `height`, `decoding="async"`, `loading="lazy"` unless `eager`. As merged (L14b
+    `3364f73`, RULINGS 60; cut Q3): the callbacks are lower case, `onstart(id)`, `oncontinue(id)`, `onchapters(id)`,
+    by the merged component convention (`oncontinue`, `onmenu`, `onbuy`).
   - `ChapterSelect.svelte` lists one story's chapters (props carry the story's chapters only); `Notice` gains the
     kind `the_end` (action "Back to stories"); `Menu` gains "Back to stories".
   - Keys: `stories.start`, `stories.continue`, `stories.chapters`, `notice.the_end_title`, `notice.the_end_action`,
@@ -5071,10 +5126,13 @@ Notation:
     renders (L15), with it both (LMI).
   - The meta entry points: `Menu` and `StoryPicker` (a footer row) gain optional `onFriends` and `onWallet` items,
     rendered iff given (L15 passes none; LMI passes the controller's `openFriends` / `openWallet`).
+  - As merged (L14b `3364f73`, RULINGS 60; cut Q3): these callbacks are lower case too, `oncard(id)` on
+    `StoryPicker`, `oncard` on the `the_end` notice, `onfriends` / `onwallet` on `Menu` and `StoryPicker`.
   - Keys (entry tables, so they work before the `meta-ui` chunk loads): `stories.card`, `stories.friends`,
     `stories.wallet`, `menu.friends`, `menu.wallet`, `notice.the_end_card`, `meta.card_later` (the toast). The `hint` group becomes `title`, `tier` ("{n}"), `use` ("{n}"), `unlocked`, `balance`
     ("{n}"), `get_more`, `unavailable`, `failed` (`buy`, `owned`, `terms`, `confirming` removed: no hint purchase,
-    M21); the meta overlays' own keys live in LU1's `i18n/meta.ts`.
+    M21); the meta overlays' own keys live in LU1's `i18n/meta.ts`. As merged (L14b `3364f73`, RULINGS 60; cut Q1):
+    the `hint` group is exactly these eight keys, with no `locked` key; the group test pins `locked` absent.
   - Reds (dom, in `menus.svelte.test.ts`): `menus: story picker shows the card button only after an ending` —
     predicted red: no button for `card: true`; `menus: the end offers the card when it exists` — predicted red: one
     action with `onCard` given; `menus: friends and wallet entries only when given` — predicted red: no item with the
@@ -5143,6 +5201,12 @@ Notation:
     - Red (dom): `hint ladder: no port shows no use button` (replaces `hint ladder: locked tiers not buyable`) —
       predicted red: the button rendered with a null port.
   - **Tester mutations** add: call `port.use` twice on a double tap; persist a hint text to DeviceStorage.
+- **As merged (`88d0964`, RULINGS 67; the cut `D:/tmp/novel-orch/lp2-puzzle-ui/cut.md` §9 Q1, Q2, Q4 and its
+  addendum):** six commits in place of 1-6 above (Q1): C0 the explicit test timeouts (`76a9660`), C1 the session
+  (`c92720a`), C2 the registry with the type UIs (`f223a55`), C3 the host, the ladder and the view store
+  (`b7472e9`), C4 the arch rules (`136fd73`), C5 the budget rows (`07b4a9d`). The contract fill-ins D1-D8 (Q2) are in
+  PUZZLES-PLAN "Module API" and META-PLAN "TS types"; the view store's `host` field (critique W1) is in L15 commit 3
+  below; the three lazy rows and the engine walk (Q4) are in "Budgets and validation".
 
 #### LX explore-ui (client; new, PUZZLES-PLAN)
 - **Goal:** the runtime explore controller (hotspot views through `geom/cover`, min targets, the room path for
@@ -5187,6 +5251,12 @@ Notation:
 - **Gates:** `check`, `test` (every name above).
 - **Seen working:** `npx vitest run src/explore src/ui/explore --reporter=verbose`; the components render in
   happy-dom.
+- **As merged (`a9e991c`, RULINGS 75; the cut `D:/tmp/novel-orch/lx-explore-ui/cut.md` §6 Q2):** six commits. The view
+  store moves from commit 4 to C1, because it is the controller's `deps.view` type, and commit 5 splits into the
+  controller's views (C5) and the panels (C6): C1 the controller core and the view store (`9707f2c`), C2 the room path
+  (`91486b5`), C3 the room preload holders (`6892d9e`), C4 the hotspot layer and bar, the glyph module and the reveal
+  timer (`7c87437`), C5 the inventory, document and lock views and `relabel` (`bf9c577`), C6 the inventory, document
+  reader and lock panel (`1fb7838`); then four fix pins.
 
 #### LS4 stats-client (client; new, STORIES-PLAN)
 - **Goal:** the client half of the statistics foundation (STORIES-PLAN Y13): the stats endpoints and decoders, and
@@ -5309,7 +5379,9 @@ Notation:
   - **Commit 3:** `App.svelte` renders the explore UI and the puzzle host as dynamic components from their view stores
     (loaded by `yields.ts`); the hotspot layer mounts inside the `Stage.svelte` host element through its `children`
     snippet, never in the inset-padded overlay, and the host element goes to `createExploreController` as
-    `deps.stageHost` (W3, X10 "The box").
+    `deps.stageHost` (W3, X10 "The box"). As merged (LP2 `88d0964`, RULINGS 67; critique W1): the puzzle view store
+    (`ui/puzzle-view.svelte.ts`) holds `host`, `frame` and `ladder`; `yields.ts` writes `host` when the puzzle-host
+    chunk loads, and `App.svelte` renders `host` with `frame` and `ladder`.
   - **New commit 6a — `puzzles.spec.ts`:** it reads the demo solutions from `story/ch1/world.json` in the Node test
     process; they are never in the bundle. The tests are the eight of PUZZLES-PLAN "Test strategy": search → item →
     drawer → buy hint 1 (mock Pay) → solve; the gate fail branch; reload in a room; hint text absent until bought;
@@ -5631,6 +5703,7 @@ each has a default there; the policy's operator facts are placeholders until the
 | 22 | 2026-10-31 | META-PLAN revision 3 (`D:/tmp/novel-orch/design/choices/triage_r3.md`, critique `design/choices/critique_r3.md`) | The 1 confirmed item W1, marked "revision 3": each of the policy pin's three conditions gets a failing input. LPO: the goal (one `#[cfg(test)]` checker `check_pins`); commit 2 gains the red `pin_check_rejects_non_increasing_versions` / `pin_check_rejects_last_not_meta` / `pin_check_rejects_hash_mismatch` (crafted histories, red against an `Ok(())` stub) and the control `pin_check_accepts_a_valid_history`; `policy_template_pinned_per_version` runs the checker on the real data; tester mutation 3 restated against the checker; seen working. LPO keeps 8 files and 2 commits; the lock, the dependency order and the lane count are unchanged. Pre-revision copy: `D:/tmp/novel-orch/design/choices/PROTOTYPE-PLAN.r3.before.md` |
 | 23 | 2026-11-01 | `D:/tmp/novel-orch/carry.md` at ORCH `d97ba64` (the docs-errata-2 spec, group A; RULINGS 26-52), as merged on main `6043941` | Docs lane `docs-errata-2`, group A: the carried plan errata of the merged lanes, each place marked "as merged" with its SHA and ruling. "As merged" bullets (commit lists, names, red texts, fill-ins) in the L3c, L6b, L6c, L5, LS1, LW3, LM1, L8b, LS3, L11 and L14a entries; in place: the LS2 entry (lock, commits, seen working), the en-table output row (L3c C5), the collision chains (`emit.ts` / `build.test.ts`, `story/locales/{ru,en}/story.json`, `client/src/telegram/**`, `client/src/ui/state.svelte.ts`), the L3c and LS2 and LW3 locks, K5's eviction class and the registry sections (L11), the Module API (`AssetRegistry`, `ensure`, `AudioManager`), the layout's character height, `asset-owners.json` dropped (L5), the audio placeholder flag, the `startParam()` wrapper (L7), the e2e gate row and the skip guard (L7), the L8a / L8b seen working (`assets` after `story`), the Rust payment types and the simulate route (L8b), the test-strategy timing and the idempotency seen-red row (L8b), the LS3 commit-3 red, seen working and `StatKind` home. The code on `6043941` is the ground truth. Fix round 1: the same L8b facts at their siblings (T3 real time, the L8b gates' check-then-insert mutation) and the probe erratum narrowed (`ProbeSuccessful` stays). Ledger: `D:/tmp/novel-orch/docs-errata-2/ledger.md` |
 | 24 | 2026-11-01 | RULINGS 54 (as merged: every lane up to LU1 `2a7b50c`; L10, LE1 running; main `6043941`) | Docs lane `docs-errata-2`, group B: "Dependency order" — a marker paragraph and the State column as of `6043941` (29 merged with SHAs from `git log --first-parent main`, the seven pre-rewrite SHAs kept beside the new ones; L10 and LE1 running; 17 to go), the lane count (48: 29 merged, 2 running, 17 to go), the launch preference without the merged lanes, the critical path from L10 → L14b → LP2 → L15 (and the server chain from LE1). The planned order is otherwise unchanged. STORIES-PLAN revision 9 and META-PLAN revision 5 hold their lines. Ledger: `D:/tmp/novel-orch/docs-errata-2/ledger.md` |
+| 25 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `ba5fc68` (the docs-errata-3 spec, group A; RULINGS 53-77), as merged on main `22ed4d5` | Docs lane `docs-errata-3`, group A: the carried plan errata of the merged lanes, each place marked "as merged" with its SHA and ruling. "As merged" bullets (commit lists, filters) in the L10, LP2, LF1 and LX entries; in place: the LE1 lock, seen working and commit-2 red; the L8a pack pass-through superseded by the pack binding; LF2 commit 5's samples list; the `ApiError` and `purchase/flow.ts` signatures (L10); the LU1 gift-cap mapping; the L14b callbacks and the `hint` keys; the LP2 lazy budget rows; L15 commit 3's puzzle view store; the LF1 self-invite red and seen working; the LM2 paid-gated fixture items; K5's `room:` holders (backgrounds only, LX). The code on `22ed4d5` is the ground truth. Ledger: `D:/tmp/novel-orch/docs-errata-3/ledger.md` |
 
 **Revision 1 (2026-10-30)** — what changed, by triage item:
 - **W1** (undecodable payment ACKed and lost): K17 (lenient `PaymentProbe` for the payment subset, 500 only when the
