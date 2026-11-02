@@ -557,6 +557,51 @@ fn static_dir_must_not_contain_content_dir() {
     report(&failures);
 }
 
+/// Critique O9: `check` refuses a dot-entry anywhere in `STATIC_DIR` (`GET /.env` would serve the host's secrets): a
+/// `.env` at the root, a dot-file deeper down, a dot-entry inside `.vite`, a `.vite` below the root, a `.vite` that is a
+/// file, and `.well-known` (the reverse proxy's). Only the root's `.vite` directory passes, with Vite's manifest in it.
+#[test]
+fn static_dir_refuses_dot_entries() {
+    let root = scratch_dir("static-dots");
+    let content = root.join("content");
+    std::fs::create_dir_all(&content).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let mut failures = Vec::new();
+    for (i, (case, file, want)) in [
+        ("a .env in STATIC_DIR", ".env", "DotEntry"),
+        ("a dot-file under assets", "assets/.secret", "DotEntry"),
+        ("the root's .vite manifest", ".vite/manifest.json", "Ok("),
+        ("a dot-file inside .vite", ".vite/.x", "DotEntry"),
+        (
+            "a .vite below the root",
+            "sub/.vite/manifest.json",
+            "DotEntry",
+        ),
+        ("a .vite file", ".vite", "DotEntry"),
+        (".well-known", ".well-known/x", "DotEntry"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let site = root.join(format!("site{i}"));
+        let path = site.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(site.join("index.html"), "<!doctype html>").unwrap();
+        std::fs::write(&path, "{}").unwrap();
+        let got = match runtime.block_on(static_files::check(&site, &content)) {
+            Ok(dir) => format!("Ok({})", dir.root().display()),
+            Err(e) => format!("{e:?}"),
+        };
+        if !got.starts_with(want) {
+            failures.push(format!("check, {case}: expected {want}.., got {got}"));
+        }
+    }
+    report(&failures);
+}
+
 /// The real `server <command>` with `envs` set (each caller passes every variable `Config` reads, so none comes from
 /// the caller's environment; an empty value is unset): its log until it exits (bounded at 60 s, then killed), and its
 /// exit status.
