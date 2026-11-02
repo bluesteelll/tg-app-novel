@@ -1,7 +1,8 @@
 //! `POST /telegram/webhook` (K17): the one door for Telegram's updates. The secret header is compared in constant
 //! time before anything is parsed; the body is read as bytes and decoded as frankenstein's `Update`. A body that
-//! decode refuses is read again by a lenient payment probe, so a payment the pinned types cannot decode still reaches
-//! the same grant; anything else undecodable is acknowledged, and an unreadable payment is retried.
+//! decode refuses is read again by a lenient payment probe, so a payment or a refund the pinned types cannot decode
+//! still reaches the same grant or revoke; anything else undecodable is acknowledged, and an unreadable payment or
+//! refund is retried.
 //!
 //! Logs never carry the body, the headers or the secret: a decode error is logged by its class and position only,
 //! because its text can quote a field value.
@@ -27,7 +28,7 @@ pub const WEBHOOK_BODY_LIMIT: usize = 1024 * 1024;
 const SECRET_HEADER: &str = "x-telegram-bot-api-secret-token";
 
 /// The `successful_payment` fields the grant reads, decoded leniently (K17): unknown fields are ignored and
-/// `provider_payment_charge_id` may be absent. Refunds are not probed: they are a later lane's.
+/// `provider_payment_charge_id` may be absent.
 #[derive(Deserialize)]
 struct ProbeSuccessful {
     currency: String,
@@ -35,6 +36,13 @@ struct ProbeSuccessful {
     invoice_payload: String,
     telegram_payment_charge_id: String,
     provider_payment_charge_id: Option<String>,
+}
+
+/// The `refunded_payment` field the revoke reads, decoded leniently (K17): the charge id only, so no field the revoke
+/// never uses can turn a readable refund into a redelivery loop; unknown fields are ignored.
+#[derive(Deserialize)]
+struct ProbeRefunded {
+    telegram_payment_charge_id: String,
 }
 
 /// What the handler made of an update: acknowledged (200, Telegram forgets it) or to be redelivered (500).
@@ -79,8 +87,10 @@ async fn handle(st: &AppState, body: &[u8]) -> Handled {
 /// K17: a body the full decode refused, navigated as plain JSON, so a malformed sibling field cannot hide a payment.
 /// An update whose `message.successful_payment` is present and not null is payment-bearing: with its money fields
 /// and a payer id in `i64` readable it goes through the same grant, else it is retried (500), never acknowledged
-/// away. Anything else (not JSON, an unknown update kind, a changed non-payment type) is acknowledged; an
-/// undecodable pre-checkout stays unanswered, so Telegram cancels it and no money moves.
+/// away. Without one, a present and not null `message.refunded_payment` is refund-bearing: with its charge id
+/// readable it goes through the same revoke, else it is retried. Anything else (not JSON, an unknown update kind, a
+/// changed non-payment type) is acknowledged; an undecodable pre-checkout stays unanswered, so Telegram cancels it
+/// and no money moves.
 async fn probe(st: &AppState, body: &[u8], decode: &serde_json::Error) -> Handled {
     let (class, line, column) = (decode.classify(), decode.line(), decode.column());
     let Ok(update) = serde_json::from_slice::<Value>(body) else {
@@ -96,6 +106,12 @@ async fn probe(st: &AppState, body: &[u8], decode: &serde_json::Error) -> Handle
         .pointer("/message/successful_payment")
         .filter(|v| !v.is_null())
     else {
+        if let Some(refunded) = update
+            .pointer("/message/refunded_payment")
+            .filter(|v| !v.is_null())
+        {
+            return probe_refund(st, refunded, decode).await;
+        }
         tracing::warn!(
             ?class,
             line,
@@ -136,6 +152,30 @@ async fn probe(st: &AppState, body: &[u8], decode: &serde_json::Error) -> Handle
     grant(st, &fact).await
 }
 
+/// K17 for a refund: the charge id of a `refunded_payment` the full decode refused, through the same revoke; an
+/// unreadable charge id is retried (500).
+async fn probe_refund(st: &AppState, refunded: &Value, decode: &serde_json::Error) -> Handled {
+    let (class, line, column) = (decode.classify(), decode.line(), decode.column());
+    // The probe's own error is not logged: its text can quote a field value.
+    let Ok(fields) = ProbeRefunded::deserialize(refunded) else {
+        tracing::error!(
+            ?class,
+            line,
+            column,
+            "webhook: refund update unreadable; Telegram redelivers"
+        );
+        return Handled::Retry;
+    };
+    tracing::warn!(
+        ?class,
+        line,
+        column,
+        charge = %fields.telegram_payment_charge_id,
+        "webhook: refund read by the lenient probe"
+    );
+    refund(st, &ChargeId(fields.telegram_payment_charge_id)).await
+}
+
 /// One decoded update: a pre-checkout is decided and answered, a message is read for a payment; every other kind is
 /// acknowledged.
 async fn dispatch(st: &AppState, update: Update) -> Handled {
@@ -150,9 +190,8 @@ async fn dispatch(st: &AppState, update: Update) -> Handled {
 }
 
 /// P6: a `successful_payment` is granted, and acknowledged only after the commit; one whose payer cannot be recorded
-/// (no `from`, an id beyond `i64`) is retried, never acknowledged away. A `refunded_payment` is acknowledged and
-/// logged: refunds are handled by a later lane, and no refund can be issued before it. Any other message is
-/// acknowledged.
+/// (no `from`, an id beyond `i64`) is retried, never acknowledged away. A `refunded_payment` is revoked by its charge,
+/// and acknowledged only after the commit (K20). Any other message is acknowledged.
 async fn message(st: &AppState, m: &Message) -> Handled {
     if let Some(sp) = &m.successful_payment {
         let Some(payer) = m.from.as_ref().and_then(|from| i64::try_from(from.id).ok()) else {
@@ -172,10 +211,8 @@ async fn message(st: &AppState, m: &Message) -> Handled {
         };
         return grant(st, &fact).await;
     }
-    if m.refunded_payment.is_some() {
-        tracing::warn!(
-            "refunded_payment acknowledged unhandled: refund handling is a later lane's"
-        );
+    if let Some(rp) = &m.refunded_payment {
+        return refund(st, &ChargeId(rp.telegram_payment_charge_id.clone())).await;
     }
     Handled::Ack
 }
@@ -187,6 +224,18 @@ async fn grant(st: &AppState, fact: &PaymentFact) -> Handled {
         Ok(_) => Handled::Ack,
         Err(e) => {
             tracing::error!(charge = %fact.charge.0, error = %e, "grant failed; Telegram redelivers");
+            Handled::Retry
+        }
+    }
+}
+
+/// The revoke of `charge`: 200 after the commit, whatever the outcome (the revoke logs an unknown charge); 500 on a
+/// database error, so Telegram redelivers and the guarded revoke runs again.
+async fn refund(st: &AppState, charge: &ChargeId) -> Handled {
+    match payments::revoke(st, charge).await {
+        Ok(_) => Handled::Ack,
+        Err(e) => {
+            tracing::error!(charge = %charge.0, error = %e, "revoke failed; Telegram redelivers");
             Handled::Retry
         }
     }

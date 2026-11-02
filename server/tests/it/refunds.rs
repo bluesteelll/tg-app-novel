@@ -783,3 +783,266 @@ async fn refund_repeat_safe() {
     }
     report(&failures);
 }
+
+/// A `message` update with a `refunded_payment` of `charge` from `payer` (`amount` XTR for `payload`): every field
+/// frankenstein requires is present.
+pub(crate) fn refund_update(payer: i64, amount: u32, payload: &str, charge: &str) -> Value {
+    json!({
+        "update_id": 3,
+        "message": {
+            "message_id": 8,
+            "date": T0,
+            "chat": { "id": payer, "type": "private" },
+            "from": { "id": payer, "is_bot": false, "first_name": "Ann" },
+            "refunded_payment": {
+                "currency": "XTR",
+                "total_amount": amount,
+                "invoice_payload": payload,
+                "telegram_payment_charge_id": charge,
+                "provider_payment_charge_id": ""
+            }
+        }
+    })
+}
+
+/// `update` through the webhook on `st` at `t`: the HTTP status.
+async fn post_at(st: &AppState, t: i64, update: &Value) -> u16 {
+    post_update(&at(st, t), update).await.status.as_u16()
+}
+
+/// A `refunded_payment` update revokes, answered 200 only after the commit; Telegram's redelivery answers 200 too and
+/// moves nothing: `refunded_at` stays the first delivery's time.
+#[tokio::test]
+async fn refunded_payment_update_revokes_idempotent() {
+    let (st, _db, _gateway) = refund_state().await;
+    let mut failures = Vec::new();
+    let Some(order) = bought(&st, ANN, "chapter:ch2", "c-ch2", &mut failures).await else {
+        return report(&failures);
+    };
+    let update = refund_update(ANN, 1, &order, "c-ch2");
+    for (case, t) in [("first delivery", T1), ("redelivery", T1 + 60)] {
+        let status = post_at(&st, t, &update).await;
+        let left = entitlements_of(&st, "c-ch2").await;
+        if status != 200 || left != 0 {
+            failures.push(format!(
+                "{case}: expected 200 with the entitlement gone, got {status} with {left} entitlement rows"
+            ));
+        }
+        failures.extend(expect_eq(
+            &format!("{case}: refunded_at"),
+            refunded_at(&st, "c-ch2").await,
+            Some(T1),
+        ));
+    }
+    failures.extend(expect_eq(
+        "order status",
+        order_status(&st, &order).await,
+        "refunded".to_owned(),
+    ));
+    report(&failures);
+}
+
+/// K17 for refunds: a `refunded_payment` frankenstein refuses (no `invoice_payload`, which its type requires) is read
+/// by the lenient probe, which needs only the charge id, and revokes the same way: 200 after the commit.
+#[tokio::test]
+async fn webhook_refund_undecodable_by_frankenstein_still_revokes() {
+    let (st, _db, _gateway) = refund_state().await;
+    let mut failures = Vec::new();
+    if bought(&st, ANN, "chapter:ch2", "c-ch2", &mut failures)
+        .await
+        .is_none()
+    {
+        return report(&failures);
+    }
+    let mut update = refund_update(ANN, 1, "o_x", "c-ch2");
+    update["message"]["refunded_payment"]
+        .as_object_mut()
+        .unwrap()
+        .remove("invoice_payload");
+    if serde_json::from_value::<frankenstein::updates::Update>(update.clone()).is_ok() {
+        failures.push("the update decodes with frankenstein: the case tests nothing".to_owned());
+    }
+    let status = post_at(&st, T1, &update).await;
+    let left = entitlements_of(&st, "c-ch2").await;
+    if status != 200 || left != 0 {
+        failures.push(format!(
+            "undecodable refunded_payment: expected 200 with the entitlement gone, got {status} with {left} \
+             entitlement rows"
+        ));
+    }
+    failures.extend(expect_eq(
+        "refunded_at",
+        refunded_at(&st, "c-ch2").await,
+        Some(T1),
+    ));
+    report(&failures);
+}
+
+/// A refund whose charge id cannot be read (missing, or a number) is never acknowledged away: 500, so Telegram
+/// redelivers it, and nothing moves.
+#[tokio::test]
+async fn webhook_refund_charge_unreadable_500() {
+    let (st, _db, _gateway) = refund_state().await;
+    let mut failures = Vec::new();
+    if bought(&st, ANN, "chapter:ch2", "c-ch2", &mut failures)
+        .await
+        .is_none()
+    {
+        return report(&failures);
+    }
+    let mut missing = refund_update(ANN, 1, "o_x", "c-ch2");
+    missing["message"]["refunded_payment"]
+        .as_object_mut()
+        .unwrap()
+        .remove("telegram_payment_charge_id");
+    let mut number = refund_update(ANN, 1, "o_x", "c-ch2");
+    number["message"]["refunded_payment"]["telegram_payment_charge_id"] = json!(42);
+    for (case, update) in [("no charge id", missing), ("a numeric charge id", number)] {
+        failures.extend(expect_eq(
+            &format!("{case}: status"),
+            post_at(&st, T1, &update).await,
+            500,
+        ));
+    }
+    failures.extend(expect_eq(
+        "entitlements of the charge",
+        entitlements_of(&st, "c-ch2").await,
+        1,
+    ));
+    failures.extend(expect_eq(
+        "refunded_at",
+        refunded_at(&st, "c-ch2").await,
+        None,
+    ));
+    report(&failures);
+}
+
+/// Both refund paths for one pack charge claw back once: the admin refund at `T1`, then Telegram's
+/// `refunded_payment` at a later time. One `refund:` row, the wallet unchanged by the second, `refunded_at` the
+/// first's.
+#[tokio::test]
+async fn refund_pack_twice_claws_once() {
+    let (st, _db, _gateway) = refund_state().await;
+    let mut failures = Vec::new();
+    let Some(order) = bought(&st, ANN, "pack:hint_s", "c-pack", &mut failures).await else {
+        return report(&failures);
+    };
+    failures.extend(expect_eq(
+        "admin refund",
+        refund_by_admin(&st, T1, "c-pack").await,
+        Ok(RevokeOutcome::Revoked),
+    ));
+    let after_admin = hint_of(&st, ANN).await;
+    let status = post_at(&st, T1 + 60, &refund_update(ANN, 1, &order, "c-pack")).await;
+    failures.extend(expect_eq("refunded_payment status", status, 200));
+    failures.extend(expect_eq(
+        "refunded_at",
+        refunded_at(&st, "c-pack").await,
+        Some(T1),
+    ));
+    failures.extend(expect_eq(
+        "refund: rows",
+        refund_rows(&st, "c-pack").await,
+        1,
+    ));
+    failures.extend(expect_eq(
+        "hint row after the second path",
+        hint_of(&st, ANN).await,
+        after_admin,
+    ));
+    report(&failures);
+}
+
+/// A raw READ COMMITTED transaction on `st`'s database that holds `sql` (one row lock, `charge_or_order` bound as
+/// `$1`) until it is rolled back.
+async fn hold_row(st: &AppState, sql: &'static str, charge_or_order: &str) -> sqlx::PgConnection {
+    let mut c = common::raw_db(st).await;
+    sqlx::raw_sql("BEGIN ISOLATION LEVEL READ COMMITTED")
+        .execute(&mut c)
+        .await
+        .unwrap();
+    sqlx::query(sql)
+        .bind(charge_or_order)
+        .execute(&mut c)
+        .await
+        .unwrap();
+    c
+}
+
+/// Rolls back and closes a connection from [`hold_row`].
+async fn release(mut held: sqlx::PgConnection) {
+    sqlx::raw_sql("ROLLBACK").execute(&mut held).await.unwrap();
+    held.close().await.unwrap();
+}
+
+/// A money fact whose transaction fails midway answers 500 and leaves no partial row, so Telegram's redelivery runs it
+/// whole. (a) The order row held `FOR UPDATE`: a payment errors at the 2 s `lock_timeout` after its payments insert,
+/// which rolls back with it (0 payments rows); released and redelivered, it grants. (b) The payment row held: a
+/// `refunded_payment` errors the same way, the entitlement kept and `refunded_at` NULL; released and redelivered, it
+/// revokes.
+#[tokio::test]
+async fn refund_and_grant_mid_transaction_failure_500() {
+    let (st, _db, _gateway) = refund_state().await;
+    let mut failures = Vec::new();
+    let Some((order, amount)) = order_of(&st, ANN, "chapter:ch2", &mut failures).await else {
+        return report(&failures);
+    };
+    let held = hold_row(&st, "SELECT 1 FROM orders WHERE id = $1 FOR UPDATE", &order).await;
+    let payment = payment_update(ANN, "XTR", amount, &order, "c-ch2", "");
+    failures.extend(expect_eq(
+        "(a) payment with the order row held: status",
+        post_at(&st, T0, &payment).await,
+        500,
+    ));
+    release(held).await;
+    failures.extend(expect_eq(
+        "(a) payments rows after the failure",
+        crate::webhook::payment_rows(&st).await,
+        0,
+    ));
+    failures.extend(expect_eq(
+        "(a) redelivered: status",
+        post_at(&st, T0, &payment).await,
+        200,
+    ));
+    failures.extend(expect_eq(
+        "(a) redelivered: entitlements of the charge",
+        entitlements_of(&st, "c-ch2").await,
+        1,
+    ));
+
+    let held = hold_row(
+        &st,
+        "SELECT 1 FROM payments WHERE telegram_payment_charge_id = $1 FOR UPDATE",
+        "c-ch2",
+    )
+    .await;
+    let refund = refund_update(ANN, amount, &order, "c-ch2");
+    failures.extend(expect_eq(
+        "(b) refunded_payment with the payment row held: status",
+        post_at(&st, T1, &refund).await,
+        500,
+    ));
+    release(held).await;
+    failures.extend(expect_eq(
+        "(b) after the failure: entitlements of the charge",
+        entitlements_of(&st, "c-ch2").await,
+        1,
+    ));
+    failures.extend(expect_eq(
+        "(b) after the failure: refunded_at",
+        refunded_at(&st, "c-ch2").await,
+        None,
+    ));
+    failures.extend(expect_eq(
+        "(b) redelivered: status",
+        post_at(&st, T1, &refund).await,
+        200,
+    ));
+    failures.extend(expect_eq(
+        "(b) redelivered: entitlements of the charge",
+        entitlements_of(&st, "c-ch2").await,
+        0,
+    ));
+    report(&failures);
+}

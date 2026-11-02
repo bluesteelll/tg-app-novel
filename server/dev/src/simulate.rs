@@ -4,7 +4,8 @@
 //! Nothing here reaches the payment code but through that handler, so a simulated payment takes the production path.
 //!
 //! `POST /dev/refund` (K20) runs the admin refund itself (`telegram::payments::admin_refund`, as `/refund` does) on the
-//! fake gateway: the dev configuration has no admin ids, so no command could reach it.
+//! fake gateway: the dev configuration has no admin ids, so no command could reach it. `POST /dev/refunded-update`
+//! feeds the `refunded_payment` message Telegram sends for a refund it made on its own, through the same handler.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -152,6 +153,7 @@ pub fn routes(app: AppState, fake: Arc<FakeBotGateway>) -> Router {
     Router::new()
         .route("/dev/simulate-payment", post(simulate))
         .route("/dev/refund", post(dev_refund))
+        .route("/dev/refunded-update", post(refunded_update))
         .with_state(Simulator {
             app,
             fake,
@@ -286,6 +288,52 @@ async fn run(
         precheckout_ok: true,
         charge_id: Some(charge),
     })
+}
+
+/// `POST /dev/refunded-update { chargeId }`: Telegram's `refunded_payment` message for a recorded charge, from its
+/// payer, fed through the real webhook handler with the real secret: 204, 404 for a charge with no payment row, 500
+/// when the handler did not answer 200; `no-store` always.
+async fn refunded_update(
+    State(sim): State<Simulator>,
+    req: Result<Json<ChargeRequest>, JsonRejection>,
+) -> Response {
+    no_store(refunded(&sim, req).await.map(|()| StatusCode::NO_CONTENT))
+}
+
+/// The `refunded_payment` update of the request's charge, through the webhook handler.
+async fn refunded(
+    sim: &Simulator,
+    req: Result<Json<ChargeRequest>, JsonRejection>,
+) -> Result<(), SimError> {
+    let Json(req) = req.map_err(body_rejection)?;
+    let charge = ChargeId(req.charge_id);
+    let record = sim
+        .app
+        .repo
+        .payment_record(&charge)
+        .await
+        .map_err(ApiError::Db)?
+        .ok_or(ApiError::NotFound)?;
+    let id = sim.next_id();
+    let payer = json!({ "id": record.payer.0, "is_bot": false, "first_name": "Dev" });
+    let update = json!({
+        "update_id": id,
+        "message": {
+            "message_id": id,
+            "date": u64::try_from(sim.app.clock.now()).unwrap_or_default(),
+            "chat": { "id": record.payer.0, "type": "private" },
+            "from": payer,
+            "refunded_payment": {
+                "currency": record.currency,
+                // Recorded from Telegram's `u32`: it fits.
+                "total_amount": u32::try_from(record.amount).unwrap_or_default(),
+                "invoice_payload": record.invoice_payload,
+                "telegram_payment_charge_id": charge.0,
+                "provider_payment_charge_id": "",
+            },
+        },
+    });
+    feed(&sim.app, &update).await
 }
 
 /// `update` through the real webhook handler with the configured secret; anything but 200 fails the simulation.
@@ -511,6 +559,50 @@ mod tests {
         if after != StatusCode::FORBIDDEN {
             failures.push(format!(
                 "GET /api/chapters/ch2 after the refund: expected 403, got {after}"
+            ));
+        }
+        report(&failures);
+    }
+
+    /// `POST /dev/refunded-update` feeds Telegram's `refunded_payment` for a paid charge through the real webhook
+    /// handler: 204, then ch2 is 403 again, with no Bot API refund call (Telegram refunded on its own). An unknown
+    /// charge is 404. Every answer is `no-store`.
+    #[tokio::test]
+    async fn dev_refunded_update_revokes_through_webhook() {
+        let (app, fake, _db) = dev_app().await;
+        let bearer = session(&app, 1001).await;
+        let charge = paid_ch2(&app, &bearer).await;
+        let mut failures = Vec::new();
+        for (case, charge, status) in [
+            ("a paid charge", charge.as_str(), StatusCode::NO_CONTENT),
+            ("an unknown charge", "dev_nope", StatusCode::NOT_FOUND),
+        ] {
+            let body = json!({ "chargeId": charge }).to_string();
+            let (got, cache, json) =
+                send(&app, "POST", "/dev/refunded-update", None, Some(body)).await;
+            if got != status {
+                failures.push(format!(
+                    "POST /dev/refunded-update {case}: expected {}, got {} {json}",
+                    status.as_u16(),
+                    got.as_u16()
+                ));
+            }
+            if cache.as_deref() != Some("no-store") {
+                failures.push(format!(
+                    "POST /dev/refunded-update {case}: cache-control: expected no-store, got {cache:?}"
+                ));
+            }
+        }
+        let after = ch2_status(&app, &bearer).await;
+        if after != StatusCode::FORBIDDEN {
+            failures.push(format!(
+                "GET /api/chapters/ch2 after the refunded update: expected 403, got {after}"
+            ));
+        }
+        let refunds = fake.refunds();
+        if !refunds.is_empty() {
+            failures.push(format!(
+                "refundStarPayment calls: expected none, got {refunds:?}"
             ));
         }
         report(&failures);
