@@ -85,7 +85,8 @@ export interface Entitlements {
 export type GameDeps = {
   vm: ViewModel;
   screens: Screens;
-  tg: Pick<TelegramClient, 'haptic' | 'setClosingConfirmation' | 'openInvoice'>;
+  /** `perfClass` picks the render resolution (lever F); a facade without it renders as 'AVERAGE' (telegram/perf.ts). */
+  tg: Pick<TelegramClient, 'haptic' | 'setClosingConfirmation' | 'openInvoice'> & Partial<Pick<TelegramClient, 'perfClass'>>;
   api: Pick<Endpoints, 'listSaves' | 'createInvoice' | 'getOrder' | 'getEntitlements' | 'getPuzzle' | 'postAttempt'>;
   catalog: ChapterCatalog;
   entitlements: Entitlements;
@@ -1355,7 +1356,7 @@ export function createGame(deps: GameDeps): Game {
   const mountOnce = (): Promise<Result<void, SceneError>> => {
     mounted ??= (async () => {
       const el = host ?? (await new Promise<HTMLElement>((resolve) => hostWaiters.push(resolve)));
-      const r = await scene.mount(el, { resolution: deps.dpr(), fetchAsset: deps.fetchAsset });
+      const r = await scene.mount(el, { dpr: deps.dpr(), perfClass: tg.perfClass ?? 'AVERAGE', fetchAsset: deps.fetchAsset });
       if (!r.ok) {
         mounted = null; // the controller is idle again after a failed init (scene/controller.ts)
       }

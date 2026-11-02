@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 
 import { test as base, expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import type { FullResult, Reporter, TestCase, TestResult } from '@playwright/test/reporter';
+import sharp from 'sharp';
 
 import type { PutSaveRequest } from '../src/api/generated/api.ts';
 import { EMPTY_WORLD_STATE } from '../src/explore/state.ts';
@@ -77,32 +78,44 @@ function recordForbiddenCalls(): void {
   }
 }
 
-export const test = base.extend({
-  page: async ({ page }, use) => {
-    const aborted: string[] = [];
-    const dialogs: string[] = [];
-    await page.route(
-      () => true,
-      async (route) => {
-        const url = new URL(route.request().url());
-        if (isTwaScript(url)) {
-          await route.fulfill({ path: TWA_FIXTURE, contentType: 'application/javascript; charset=utf-8' });
-        } else if (isLoopback(url)) {
-          await route.continue();
-        } else {
-          aborted.push(url.href);
-          await route.abort('blockedbyclient');
-        }
-      },
-    );
-    page.on('dialog', (dialog) => {
-      dialogs.push(`${dialog.type()}: ${dialog.message()}`);
-      void dialog.dismiss(); // dismissing settles the dialog; its promise carries nothing the test needs
-    });
-    await page.addInitScript(recordForbiddenCalls);
-    await use(page);
+/**
+ * The fixture's guards on any page: the TWA script from the fixture, every request off the loopback aborted, the
+ * forbidden calls recorded, dialogs dismissed. The returned check fails the test if a request was aborted or a dialog
+ * opened; a spec that opens its own context calls it before closing that context.
+ */
+export async function guard(page: Page): Promise<() => void> {
+  const aborted: string[] = [];
+  const dialogs: string[] = [];
+  await page.route(
+    () => true,
+    async (route) => {
+      const url = new URL(route.request().url());
+      if (isTwaScript(url)) {
+        await route.fulfill({ path: TWA_FIXTURE, contentType: 'application/javascript; charset=utf-8' });
+      } else if (isLoopback(url)) {
+        await route.continue();
+      } else {
+        aborted.push(url.href);
+        await route.abort('blockedbyclient');
+      }
+    },
+  );
+  page.on('dialog', (dialog) => {
+    dialogs.push(`${dialog.type()}: ${dialog.message()}`);
+    void dialog.dismiss(); // dismissing settles the dialog; its promise carries nothing the test needs
+  });
+  await page.addInitScript(recordForbiddenCalls);
+  return () => {
     expect(aborted, 'requests that would have left the machine').toEqual([]);
     expect(dialogs, 'dialogs the page opened').toEqual([]);
+  };
+}
+
+export const test = base.extend({
+  page: async ({ page }, use) => {
+    const check = await guard(page);
+    await use(page);
+    check();
   },
 });
 
@@ -417,9 +430,14 @@ async function solveOrder(page: Page, puzzle: string, order: readonly number[]):
  * Plays ch1 from its first line through the explore section to its END, and taps past the last line: the hall,
  * the study (the sun medal, the drawer's code: the moon medal), the cellar (its voice event, the star medal), the
  * gate's three slots and its order, then the way out. Choices take `picks` (reachLine's rule), option 0 by default:
- * the trust picks. What follows the END (the paywall, the next chapter, a notice) is the caller's to check.
+ * the trust picks. `o.inDrawer` runs while the drawer's frame is open, before its code is entered (the perf heap
+ * sample). What follows the END (the paywall, the next chapter, a notice) is the caller's to check.
  */
-export async function playCh1ToEnd(page: Page, picks: Readonly<Record<string, number>> = {}): Promise<void> {
+export async function playCh1ToEnd(
+  page: Page,
+  picks: Readonly<Record<string, number>> = {},
+  o: { inDrawer?: () => Promise<void> } = {},
+): Promise<void> {
   const solutions = worldSolutions();
   await reachLine(page, 'ch1.manor_arrive.a008', picks);
   await page.locator('.dialogue .tap').tap(); // `# explore: manor`
@@ -427,6 +445,8 @@ export async function playCh1ToEnd(page: Page, picks: Readonly<Record<string, nu
   await walk(page, 'hall', 'to_study', 'study', 'to_hall');
   await take(page, 'study', 'medal');
   await tapHotspot(page, 'study', 'drawer');
+  await expect(puzzleFrame(page, 'drawer')).toBeVisible({ timeout: STEP_MS });
+  await o.inDrawer?.();
   await solveCode(page, 'drawer', solutions.drawer);
   await walk(page, 'study', 'to_hall', 'hall', 'to_cellar');
   await tapHotspot(page, 'hall', 'to_cellar'); // the cellar's onEnter: the voice
@@ -485,6 +505,58 @@ export async function plantPending(
     data: write,
   });
   expect(res.status(), `PUT /api/saves/${story}/auto`).toBe(200);
+}
+
+/**
+ * Buys `product` for dev user `uid` the way a payment arrives: `POST /api/invoices`, then server-dev's simulated
+ * payment through the real pre-checkout and webhook handlers (principles 1-2); never a direct grant.
+ */
+export async function grantChapter(request: APIRequestContext, uid: number, product: string): Promise<void> {
+  const auth = { Authorization: `Bearer ${await devToken(request, uid)}` };
+  const invoice = await request.post('/api/invoices', { headers: auth, data: { productId: product } });
+  expect(invoice.status(), `POST /api/invoices ${product}`).toBe(200);
+  const body: unknown = await invoice.json();
+  const url: unknown = typeof body === 'object' && body !== null ? Reflect.get(body, 'invoiceUrl') : undefined;
+  if (typeof url !== 'string' || !url.includes('$')) {
+    throw new Error('POST /api/invoices answered without an invoice link');
+  }
+  // The dev gateway's link is `https://t.me/$<slug>`, its slug `dev-<orderId>` (server/dev/src/fake_gateway.rs).
+  const slug = url.slice(url.indexOf('$') + 1);
+  const paid = await request.post('/dev/simulate-payment', { data: { slug, outcome: 'paid' } });
+  expect(paid.status(), 'POST /dev/simulate-payment').toBe(200);
+  const result: unknown = await paid.json();
+  expect(typeof result === 'object' && result !== null ? Reflect.get(result, 'precheckoutOk') : undefined, 'the pre-checkout').toBe(true);
+}
+
+/**
+ * The composited colour `[r, g, b, a]` of one CSS pixel of the stage, at `(x, y)` from the canvas box's top left.
+ * A screenshot reads what the page shows; the WebGL drawing buffer itself is not preserved, so `toDataURL` cannot.
+ */
+export async function stagePixel(page: Page, x: number, y: number): Promise<[number, number, number, number]> {
+  const box = await page.locator('canvas').boundingBox();
+  if (box === null) {
+    throw new Error('stagePixel: no canvas on the page');
+  }
+  const png = await page.screenshot({ clip: { x: box.x + x, y: box.y + y, width: 1, height: 1 }, scale: 'css' });
+  const { data } = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  return [data[0] ?? 0, data[1] ?? 0, data[2] ?? 0, data[3] ?? 0];
+}
+
+/** The page's JS heap after a forced collection, in bytes (CDP `Performance.getMetrics` `JSHeapUsedSize`). */
+export async function heapUsed(page: Page): Promise<number> {
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await cdp.send('HeapProfiler.collectGarbage');
+    await cdp.send('Performance.enable');
+    const { metrics } = await cdp.send('Performance.getMetrics');
+    const used = metrics.find((m) => m.name === 'JSHeapUsedSize')?.value;
+    if (used === undefined) {
+      throw new Error('Performance.getMetrics has no JSHeapUsedSize');
+    }
+    return used;
+  } finally {
+    await cdp.detach();
+  }
 }
 
 /** The e2e build's file of a chunk, by its source key in `dist-e2e/.vite/manifest.json` (e.g. `src/app/engine.ts`). */
