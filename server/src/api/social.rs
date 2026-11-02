@@ -1,39 +1,45 @@
-//! The social routes (META-PLAN M10-M12, M15): the user's social view, the invite view and the request through an
-//! invite code (F19), the accept and the decline or removal (F20), the code rotation, and the profile-visibility
-//! consent (F21). Thin handlers: the limits and the wire shapes of invite codes and handles live here, the SQL in
-//! `db/social.rs`. Every 200 is `private, no-store`: one user's own view. Another user is named by handle only, never
-//! by Telegram id (W1).
+//! The social routes (META-PLAN M10-M13, M15): the user's social view, the invite view and the request through an
+//! invite code (F19), the accept and the decline or removal (F20), the code rotation, the profile-visibility consent
+//! (F21) and a friend's profile (M13). Thin handlers: the limits and the wire shapes of invite codes and handles live
+//! here, the SQL in `db/social.rs`. Every 200 is `private, no-store`: one user's own view. Another user is named by
+//! handle only, never by Telegram id (W1).
 //!
 //! An invite link is `https://t.me/<bot>?startapp=f<code>` ([`invite_link`] writes it, [`invite_code_of_start_param`]
 //! reads it); the server reads the signed `start_param` only. Every other `start_param` shape is reserved for later
 //! prefixes (campaign codes) and stays harmless: it creates nothing.
 //!
-//! A user's progress for others (the share's counts in `api/share.rs`, LF2) comes from the two grouped reads of
-//! `db/achievements.rs` ([`progress`]), counted against the current index ([`story_counts`]): this module is the one
-//! route module besides the card that names them (META-PLAN M6; pinned by
-//! `cards::achievements_repo_called_only_from_cards_api`).
+//! A user's progress for others (a friend's profile; the share's counts in `api/share.rs`, LF2) comes from the two
+//! grouped reads of `db/achievements.rs` ([`progress`]), counted against the current index ([`story_counts`]): this
+//! module is the one route module besides the card that names them (META-PLAN M6; pinned by
+//! `cards::achievements_repo_called_only_from_cards_api`). Counts are the friend's own statistics and are not gated;
+//! a title is shown only when both found it and the viewer owns every chapter it is gated on (M7, principle 0).
 //!
 //! A malformed code or handle is 400 `bad_request` (it never reaches SQL); a well-shaped one that names nothing for
 //! this caller is 404 `not_found`. Neither reveals anything about another user.
+
+use std::collections::HashSet;
 
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Path, State};
 use axum::http::HeaderValue;
-use axum::http::header::{CACHE_CONTROL, HeaderName};
+use axum::http::header::{CACHE_CONTROL, HeaderName, X_CONTENT_TYPE_OPTIONS};
 use axum::response::{IntoResponse, Response};
 
 use crate::AppState;
 use crate::api::body_rejection;
-use crate::api::dto::{ConsentRequest, FriendDto, FriendRequestDto, InviteView, SocialResponse};
+use crate::api::dto::{
+    ConsentRequest, FriendDto, FriendProfile, FriendRequestDto, FriendStoryDto, InviteView,
+    Localized, SharedAchievement, SharedEnding, SocialResponse,
+};
 use crate::api::legal::policy_version;
 use crate::auth::AuthUser;
-use crate::content::StoryDef;
+use crate::content::{self, StoryDef};
 use crate::db::achievements::{EndingRow, UnlockRow};
 use crate::db::social::{AcceptOutcome, RotateOutcome};
 use crate::error::ApiError;
-use crate::ids::UserId;
-use crate::meta::StoryMeta;
+use crate::ids::{ProductId, UserId};
+use crate::meta::{StoryMeta, visible};
 
 /// Friends per user (MV15).
 pub const MAX_FRIENDS: i64 = 200;
@@ -294,6 +300,114 @@ pub async fn post_rotate(
             Err(ApiError::RateLimited { retry_after_secs })
         }
     }
+}
+
+/// The headers of a profile: it may carry paid-gated titles, so no shared cache stores it and no browser sniffs another
+/// type into it (the paid-content pair of `api/cards.rs`).
+fn profile_headers() -> [(HeaderName, HeaderValue); 2] {
+    [
+        (CACHE_CONTROL, HeaderValue::from_static("private, no-store")),
+        (X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff")),
+    ]
+}
+
+/// A meta text in its wire form.
+fn wire(text: &content::Localized) -> Localized {
+    Localized {
+        ru: text.ru.clone(),
+        en: text.en.clone(),
+    }
+}
+
+/// A count as the wire's `u32` (a user's distinct items are far fewer).
+fn count(items: &[String]) -> u32 {
+    u32::try_from(items.len()).unwrap_or(u32::MAX)
+}
+
+/// `GET /api/friends/{handle}/profile` (M13): a friend's progress, by handle. 400 for a malformed handle; 404
+/// `not_found` unless the handle names a friend of the viewer (an unknown handle, a pending request either way, one's
+/// own handle); `visible: false` and nothing else unless the friend's latest consent is a grant. Otherwise per story
+/// of the index with a counted ending or unlock of the friend (Q4): the friend's counts, and the titles of the items
+/// both found that pass the viewer's gate. At most eight autocommit reads: the handle, the friendship, the consent,
+/// the viewer's entitlements and two grouped reads per user. No `?lang`: titles carry both languages.
+pub async fn get_friend_profile(
+    State(st): State<AppState>,
+    AuthUser(viewer): AuthUser,
+    handle: Result<Path<String>, PathRejection>,
+) -> Result<Response, ApiError> {
+    let handle = handle_param(handle)?;
+    let friend = st
+        .repo
+        .user_by_handle(&handle)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    // One's own handle answers `false` here too: one user is never its own friend.
+    if !st.repo.are_friends(viewer, friend).await? {
+        return Err(ApiError::NotFound);
+    }
+    if !st.repo.profile_visible(friend).await? {
+        let body = FriendProfile {
+            handle,
+            visible: false,
+            stories: Vec::new(),
+        };
+        return Ok((profile_headers(), Json(body)).into_response());
+    }
+    let owned: HashSet<ProductId> = st.repo.entitlements(viewer).await?.into_iter().collect();
+    let theirs = progress(&st, friend).await?;
+    let mine = progress(&st, viewer).await?;
+    let stories = st
+        .content
+        .stories()
+        .iter()
+        .filter_map(|story| {
+            // The meta index holds every story of the index (a startup rule).
+            let meta = st.content.meta().story(&story.id)?;
+            let friend_counts = story_counts(&theirs, story, meta);
+            if friend_counts.endings.is_empty() && friend_counts.achievements.is_empty() {
+                return None;
+            }
+            let viewer_counts = story_counts(&mine, story, meta);
+            let shared_endings = friend_counts
+                .endings
+                .iter()
+                .filter(|name| viewer_counts.endings.contains(name))
+                .filter_map(|name| {
+                    let ending = meta.endings.get(name)?;
+                    visible(&ending.gate, &owned, story).then(|| SharedEnding {
+                        name: name.clone(),
+                        title: wire(&ending.title),
+                    })
+                })
+                .collect();
+            let shared_achievements = meta
+                .achievements
+                .iter()
+                .filter(|a| {
+                    friend_counts.achievements.contains(&a.id)
+                        && viewer_counts.achievements.contains(&a.id)
+                        && visible(&a.gate, &owned, story)
+                })
+                .map(|a| SharedAchievement {
+                    id: a.id.clone(),
+                    name: wire(&a.name),
+                })
+                .collect();
+            Some(FriendStoryDto {
+                story_id: story.id.clone(),
+                endings_found: count(&friend_counts.endings),
+                achievements_unlocked: count(&friend_counts.achievements),
+                shared_endings,
+                shared_achievements,
+            })
+        })
+        .collect();
+    let body = FriendProfile {
+        handle,
+        visible: true,
+        stories,
+    };
+    Ok((profile_headers(), Json(body)).into_response())
 }
 
 /// `PUT /api/consents/friends_profile` (F21): appends the user's decision with the server's own policy version and the

@@ -532,6 +532,60 @@ pub struct ConsentRequest {
     pub text_version: String,
 }
 
+/// An ending both the friend and the viewer found, as a friend's profile lists it.
+// No `Debug`: the title may be paid-gated content (META-PLAN M7), never logged.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedEnding {
+    /// The ending name.
+    pub name: String,
+    /// Its title.
+    pub title: Localized,
+}
+
+/// An achievement both the friend and the viewer unlocked, as a friend's profile lists it.
+// No `Debug`: the name may be paid-gated content (META-PLAN M7), never logged.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedAchievement {
+    /// The achievement id, unique in its story.
+    pub id: String,
+    /// Its name.
+    pub name: Localized,
+}
+
+/// One story of a friend's profile: the friend's own counts, and the titles both found that the viewer may see.
+// No `Debug`: it carries paid-gated texts.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendStoryDto {
+    /// The story.
+    pub story_id: StoryId,
+    /// The endings the friend found (the current index), whatever the viewer owns.
+    pub endings_found: u32,
+    /// The achievements the friend unlocked (the current meta), whatever the viewer owns.
+    pub achievements_unlocked: u32,
+    /// The endings both found that the viewer may see now, in name order.
+    pub shared_endings: Vec<SharedEnding>,
+    /// The achievements both unlocked that the viewer may see now, in the story's display order.
+    pub shared_achievements: Vec<SharedAchievement>,
+}
+
+/// `GET /api/friends/{handle}/profile` response (META-PLAN M13): a friend by handle, and with the friend's consent
+/// their progress per story they found something in. Without the consent `visible` is `false` and nothing else is
+/// sent. No first name (the client has it from `SocialResponse.friends`) and no Telegram id.
+// No `Debug`: it carries paid-gated texts.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendProfile {
+    /// The friend's handle.
+    pub handle: String,
+    /// The friend's latest profile consent is a grant.
+    pub visible: bool,
+    /// The stories with a counted ending or unlock, in index order; empty when not `visible`.
+    pub stories: Vec<FriendStoryDto>,
+}
+
 /// `POST /api/share` request (META-PLAN M14): what to share, in which language, and whether the client can send a
 /// prepared message (`shareMessage`, Bot API 8.0). Unknown fields are refused.
 #[derive(Deserialize)]
