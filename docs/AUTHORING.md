@@ -5,10 +5,10 @@
 
 This guide is the writers' contract. The tag reference is [STAGING-DSL.md](STAGING-DSL.md): this guide links to it
 for every tag and lint rule and never adds a rule of its own. Where it restates a rule, it names the DSL section.
-Facts here describe the tree at `e5ce724`; where a game screen is not built yet, the guide says "planned" and names
-the lane. The dialogue box, the choices and the quick bar exist as components, but no game session mounts them until
-L15 integration: nothing in the tree plays a chapter yet. Today the story gate's seeded playthroughs are the way to
-run your story ([Reading the story gate's output](#reading-the-story-gates-output)).
+Facts here describe the tree at `e5ce724` unless a section names a later commit. Since L15 integration (L15a
+`e94c786`, L15b `fbcfd38`) the app plays the chapters: run it in a browser as in
+[the local-dev runbook](runbooks/local-dev.md). The story gate's seeded playthroughs stay the fast way to check a story
+([Reading the story gate's output](#reading-the-story-gates-output)).
 
 Examples use English placeholder text. Real chapters are written in Russian (the ink text *is* the Russian text).
 Every snippet the guide calls valid passes the story gate: it is part of one small story whose files are listed in
@@ -73,7 +73,7 @@ paid chapter's text out of the bundle:
   gate stops it with `ink/include` (below, and [STAGING-DSL §9](STAGING-DSL.md#9-chapters-and-stories) "Isolation").
 
 There is no paywall tag. The story never mentions prices or purchase; the game shows the paywall when the next
-chapter is paid and not owned (planned: L14b overlay-menus).
+chapter is paid and not owned (the paywall: L14b overlay-menus, shown by the game since L15a).
 
 ### The entry file and the ink subset
 
@@ -300,6 +300,30 @@ E story/ch2/main.ink:7 tag/unknown-asset 'bg: garden': bg 'garden' is not in ass
 
 Writers do not edit [assets/catalog.json](../assets/catalog.json). A missing background, sprite, expression, sound,
 prop or cover is an asset request in your narrative report.
+
+### Character and prop canvases
+
+Two rules for whoever delivers character and prop art (pass them on with an asset request; as merged, M1
+`f1b707d`; [MEMORY-PLAN.md](MEMORY-PLAN.md) section 13):
+
+- **The expressions of one character share one canvas, and every character and prop canvas has even sides.** The
+  asset tool refuses anything else, so `npm --prefix client run assets` and `npm --prefix client run build` fail
+  ([manifest.ts:216-240](../client/scripts/assets/manifest.ts#L216), printed by
+  [assets.ts:140-147](../client/scripts/assets.ts#L140)), with these message shapes:
+
+  ```text
+  assets: char/<char>/<expr>: canvas <w>×<h> has an odd side (char and prop canvases are even)
+  assets: char/<char>: expressions on different canvases (char/<char>/<expr> <w>×<h>, char/<char>/<expr> <w>×<h>)
+  ```
+
+- **Deliver every character on the canonical 768 × 1536 canvas.** This is guidance, not a gate: the build fails
+  only a character canvas larger than 768 × 1536 ([budget.ts:199-205](../client/scripts/budget.ts#L199)).
+
+Keep the transparent margin around the figure as it is: the asset tool cuts every character and prop file to its
+visible pixels plus 2 px and stores where that box sat on the canvas, so the sprite still stands where the full canvas
+puts it ([encode.ts:12](../client/scripts/assets/encode.ts#L12), `encodeImage` :75;
+[ARCHITECTURE.md](ARCHITECTURE.md#texture-memory-and-the-context-loss-revive)). Backgrounds, CGs and covers are never
+cut.
 
 ### Removing a line: retired IDs
 
@@ -713,8 +737,8 @@ VAR dc_note = false
 A wrong type fails: `VAR dc_note = 0` prints
 `world/var-type VAR dc_note is declared int: the projection writes a bool (X2)`. The seeded playthroughs write the
 same projection ([playthrough.ts:414-422](../client/scripts/story/playthrough.ts#L414)), which is how
-`pz_box 1,3` reaches the `play:` line. In the game the yield router (`app/yields.ts`, planned: L15 integration)
-writes them through `StoryRunner.enter` (planned: L13 story-runtime).
+`pz_box 1,3` reaches the `play:` line. In the game the yield router writes them through `StoryRunner.enter`
+([yields.ts:403](../client/src/app/yields.ts#L403); L13 story-runtime, L15a).
 
 ### World lint codes and soft-lock counterexamples
 
@@ -817,14 +841,16 @@ Every declared ending needs a title in `story/meta.json` ([Part 4](#part-4-story
   paid and not owned.
 - **An `-> END` that is no ending, in a chapter with `next: null`.** "To be continued".
 
-The screens are planned (L14b overlay-menus, STORIES-PLAN Y14); the gate's rules above are in force now.
+The screens are built (L14b overlay-menus, STORIES-PLAN Y14) and shown by the game since L15a.
 
 ### Shared cast and globals
 
 `story/cast.json` and `story/common/globals.ink` serve every story. A carry flows only along a story's chain: the
 first chapter of a story starts from the declared defaults
 ([STAGING-DSL §9](STAGING-DSL.md#9-chapters-and-stories)). Name a new global after its story,
-`g_<story>_<name>` (for example `g_tide_trust`); this is a convention, not a lint rule. A `g_` value one chapter
+`g_<story>_<name>`; this is a convention, not a lint rule. The demo's globals on `385d52f` are `g_manor_trust`,
+`g_manor_promise`, `g_tide_trust_keeper` and the older `g_gate_forced`
+([story/common/globals.ink](../story/common/globals.ink)). A `g_` value one chapter
 writes and no listed chapter reads is the warning `vars/write-only`.
 
 ### Titles, teasers and invoice titles
@@ -966,8 +992,8 @@ points or more; the example's `Open the box on the stairs without a hint.` is on
 
 ### Choices are statistics
 
-A choice's line ID is also its statistics identity: the game will record which option a player picked by that ID
-(planned: LS3 server-stats, LS4 stats-client; [STAGING-DSL §9 "Story meta"](STAGING-DSL.md#story-meta), META-PLAN
+A choice's line ID is also its statistics identity: the game records which option a player picked by that ID
+(LS3 server-stats, LS4 stats-client, L15a; [game.ts:1667](../client/src/app/game.ts#L1667); [STAGING-DSL §9 "Story meta"](STAGING-DSL.md#story-meta), META-PLAN
 M1). So:
 - **keep the ID when you edit the option's text**;
 - **retire the ID when you remove the option** ([Removing a line](#removing-a-line-retired-ids)), never reuse it.
@@ -988,6 +1014,9 @@ not compile shows `-` ([story.ts:366-369](../client/scripts/story.ts#L366)).
 These files, on top of the tree's `story/cast.json`, `story/common/globals.ink`, `story/lint-allow.json`, both
 `story/locales/*/story.json` tables, an empty `story/retired-ids.txt` and `assets/catalog.json` (all as at
 `e5ce724`), pass the story gate with the output under [Reading the story gate's output](#reading-the-story-gates-output).
+The example's global `g_trust_ally` is the one `globals.ink` declared at `e5ce724`; today's file declares the demo's
+globals instead ([Shared cast and globals](#shared-cast-and-globals)), so a copy of the example on a newer tree
+declares `VAR g_trust_ally = 0` in its own `globals.ink`.
 
 `story/chapters.json` and `story/stories.json`: as under [Chapters](#chapters-and-storychaptersjson) and
 [`story/stories.json`](#storystoriesjson). `story/ch2/main.ink`: as under
