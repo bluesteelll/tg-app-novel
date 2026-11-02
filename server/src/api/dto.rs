@@ -586,6 +586,9 @@ pub fn ts_bindings() -> String {
         export::<FriendRequestDto>(&cfg),
         export::<SocialResponse>(&cfg),
         export::<ConsentRequest>(&cfg),
+        export::<CardEnding>(&cfg),
+        export::<CardAchievement>(&cfg),
+        export::<CardResponse>(&cfg),
     ];
     format!("{BINDINGS_HEADER}\n\n{}", decls.join("\n"))
 }
