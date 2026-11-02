@@ -7,6 +7,7 @@
 //! packs into a balance (RULINGS 25), and a tier is unlocked by spending from it (M21).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ops::RangeInclusive;
 
 use serde::Deserialize;
 
@@ -27,6 +28,9 @@ const KIND_MAX_LEN: usize = 16;
 /// The largest amount one pack, hint tier, gift or referral bonus moves: the `orders_pack_binding` and
 /// `resource_ledger_amount_bounded` CHECKs, so a paid grant can never fail on them after the payment row.
 const AMOUNT_MAX: u32 = 1000;
+
+/// The longest referral play gap, in seconds: a day, a sanity ceiling (the owner's value is 120 s, MT12).
+const MIN_PLAY_SECS_MAX: i64 = 86_400;
 
 /// A resource kind of the economy, e.g. `hint`: `^[a-z][a-z0-9_]{0,15}$`, the `kind_shape` CHECKs of the balance and
 /// ledger tables.
@@ -116,9 +120,9 @@ pub struct GiftRules {
     pub kinds: Vec<ResourceKind>,
     /// The most units one gift moves, 1 to 1000.
     pub max_per_gift: u32,
-    /// The gifts a user may send per day.
+    /// The units a user may send per rolling 24 h, `max_per_gift` to 1000.
     pub send_per_day: u32,
-    /// The gifts a user may receive per day.
+    /// The units a user may receive per rolling 24 h, `max_per_gift` to 1000.
     pub receive_per_day: u32,
 }
 
@@ -131,11 +135,12 @@ pub struct ReferralRules {
     pub inviter: u32,
     /// The invitee's bonus, 1 to 1000.
     pub invitee: u32,
-    /// The invitee's play time before the bonuses count, in seconds.
+    /// The server-observed gap between the invitee's first-chapter start and a later batch before the bonuses count,
+    /// in seconds, 1 to 86 400.
     pub min_play_secs: i64,
-    /// The inviter's bonuses per day.
+    /// The inviter's granted bonuses per rolling 24 h, 1 to `cap_total`.
     pub cap_per_day: u32,
-    /// The inviter's bonuses in total.
+    /// The inviter's granted bonuses in total, 1 to 1000.
     pub cap_total: u32,
 }
 
@@ -389,7 +394,12 @@ impl Catalog {
 ///   ceiling: a one-time invoice has none), and its texts within Telegram's limits;
 /// - `spend.hintTier` 1 to [`AMOUNT_MAX`];
 /// - every gift kind and the referral kind declared; `maxPerGift`, `inviter` and `invitee` 1 to [`AMOUNT_MAX`] (they
-///   are ledger amounts).
+///   are ledger amounts);
+/// - `gifts.sendPerDay` and `gifts.receivePerDay` `maxPerGift` to [`AMOUNT_MAX`]: below it the largest gift the wallet
+///   offers is refused in an empty window, and a refused gift's `Retry-After` always names a counted earlier gift;
+/// - `referral.capTotal` 1 to [`AMOUNT_MAX`], then `referral.capPerDay` 1 to `capTotal` (0 caps every inviter; a daily
+///   cap above the total is meaningless);
+/// - `referral.minPlaySecs` 1 to [`MIN_PLAY_SECS_MAX`]: 0 or less removes the server-observed play gap (M23).
 ///
 /// The packs come by kind (declaration order), then amount, then id: the smaller pack first, whatever its id sorts to.
 fn build_economy(file: &EconomyFile) -> Result<(Economy, Vec<Product>), ContentError> {
@@ -466,9 +476,41 @@ fn build_economy(file: &EconomyFile) -> Result<(Economy, Vec<Product>), ContentE
         .map(|raw| declared("economy.gifts.kinds", raw).map(|(_, kind)| kind))
         .collect::<Result<Vec<_>, _>>()?;
     check_amount("economy.gifts.maxPerGift", file.gifts.max_per_gift)?;
+    let per_gift = file.gifts.max_per_gift;
+    check_within(
+        "economy.gifts.sendPerDay",
+        file.gifts.send_per_day,
+        per_gift..=AMOUNT_MAX,
+        "a day allows the largest gift, and stays a ledger amount",
+    )?;
+    check_within(
+        "economy.gifts.receivePerDay",
+        file.gifts.receive_per_day,
+        per_gift..=AMOUNT_MAX,
+        "a day allows the largest gift, and stays a ledger amount",
+    )?;
     let (_, referral_kind) = declared("economy.referral.kind", &file.referral.kind)?;
     check_amount("economy.referral.inviter", file.referral.inviter)?;
     check_amount("economy.referral.invitee", file.referral.invitee)?;
+    let cap_total = file.referral.cap_total;
+    check_within(
+        "economy.referral.capTotal",
+        cap_total,
+        1..=AMOUNT_MAX,
+        "0 caps every inviter",
+    )?;
+    check_within(
+        "economy.referral.capPerDay",
+        file.referral.cap_per_day,
+        1..=cap_total,
+        "0 caps every inviter, and a day never exceeds the total",
+    )?;
+    check_within(
+        "economy.referral.minPlaySecs",
+        file.referral.min_play_secs,
+        1..=MIN_PLAY_SECS_MAX,
+        "the server-observed play gap, at most a day",
+    )?;
     let economy = Economy {
         kinds,
         hint_tier_cost: file.spend.hint_tier,
@@ -517,6 +559,27 @@ fn check_amount(what: &str, amount: u32) -> Result<(), ContentError> {
         Err(refused(
             what,
             format!("{amount} is outside 1..={AMOUNT_MAX}"),
+        ))
+    }
+}
+
+/// A count or a span of the economy section lies in `range`; the refusal says why the bound exists.
+fn check_within<T: PartialOrd + std::fmt::Display>(
+    what: &str,
+    value: T,
+    range: RangeInclusive<T>,
+    why: &str,
+) -> Result<(), ContentError> {
+    if range.contains(&value) {
+        Ok(())
+    } else {
+        Err(refused(
+            what,
+            format!(
+                "{value} is outside {}..={} ({why})",
+                range.start(),
+                range.end()
+            ),
         ))
     }
 }

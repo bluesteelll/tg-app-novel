@@ -1,0 +1,460 @@
+// The two-stage boot (PROTOTYPE-PLAN F1, STORIES-PLAN F1′; L15 D2): the entry's half. It shows Home without a byte of
+// Pixi, inkjs or GSAP, and meanwhile, in parallel, imports the engine chunk, exchanges initData for the server's token,
+// fetches the public catalog and covers, lists every story's saves, reads the entitlements and loads the settings. A
+// Home tap unlocks audio synchronously, inside the tap (principle 5), then waits for the engine and starts the story.
+// It owns the page's subscriptions: the lifecycle, `pagehide`, the session's expiry.
+import { createEndpoints } from '../api/endpoints.ts';
+import type { Endpoints } from '../api/endpoints.ts';
+import type { ProductDto, SaveListResponse, SaveSummary } from '../api/generated/api.ts';
+import { createHttp, systemClock } from '../api/http.ts';
+import type { ApiError, Http } from '../api/http.ts';
+import type { Session } from '../api/session.ts';
+import { unlockAudio } from '../audio/unlock.ts';
+import { summaryOf } from '../saves/service.ts';
+import { createSettingsStore } from '../settings/store.ts';
+import type { Settings, SettingsStore } from '../settings/store.ts';
+import { createStatsReporter } from '../stats/reporter.ts';
+import type { StatsReporter } from '../stats/reporter.ts';
+import { decodeChapterCatalog, decodeCoverManifest } from '../story/catalog.ts';
+import type { CatalogIssue, ChapterCatalog, CoverManifest, Result, StoryEntry, StoryId } from '../story/catalog.ts';
+import type { ChapterId } from '../story/staging.ts';
+import type { Lifecycle, TelegramClient, Unsubscribe } from '../telegram/index.ts';
+import type { StoryCardView } from '../ui/StoryPicker.svelte';
+import { createScreens } from '../ui/screens.ts';
+import type { Screens } from '../ui/screens.ts';
+import { createViewModel } from '../ui/state.svelte.ts';
+import type { ViewModel } from '../ui/state.svelte.ts';
+import type { Entitlements, Game, StartFrom } from './game.ts';
+
+/** Home's buttons; each one unlocks audio inside its tap and is single-shot until Home is shown again (F1 step 5). */
+export type HomeActions = {
+  /** Continue: the newest autosave across stories. */
+  continue(): void;
+  /** A card's Start: the story's first chapter. */
+  start(story: StoryId): void;
+  /** A card's Continue: the story's autosave. */
+  resume(story: StoryId): void;
+  /** A card's Chapters: the story's chapter list. */
+  chapters(story: StoryId): void;
+  /** A row of the chapter list; a locked one leads to the paywall. */
+  chapter(story: StoryId, chapter: ChapterId): void;
+};
+
+/** What App.svelte renders from: the view model, Home's actions and the game once the engine is in. */
+export type AppHandle = {
+  readonly vm: ViewModel;
+  readonly home: HomeActions;
+  /** The Game, or null while the engine chunk loads. */
+  game(): Game | null;
+  dispose(): void;
+};
+
+/** F1 step 3: the boot reads are retried this many times, with these waits, before the error notice. */
+export const BOOT_RETRY_MS: readonly number[] = [1000, 2000, 4000];
+
+/**
+ * D15: the public catalog and covers as hashed static files (`?url`), fetched at boot, so the entry JS carries no
+ * story data. A glob, as chapters.ts's: before the story tool has run the map is empty, and boot reports it.
+ */
+const PUBLIC_JSON = import.meta.glob<string>(['../story-gen/catalog.json', '../story-gen/covers.json'], {
+  query: '?url',
+  import: 'default',
+  eager: true,
+});
+const CATALOG_URL = PUBLIC_JSON['../story-gen/catalog.json'] ?? null;
+const COVERS_URL = PUBLIC_JSON['../story-gen/covers.json'] ?? null;
+
+/** The boot reads Home needs; the covers and the entitlements may be missing (cards without images, Retry on price). */
+type BootData = {
+  session: Session;
+  catalog: ChapterCatalog;
+  covers: CoverManifest | null;
+  list: SaveListResponse;
+  products: readonly ProductDto[] | null;
+  settings: Settings;
+};
+type BootError = { kind: 'expired' } | { kind: 'failed'; detail: string };
+
+/**
+ * Home's Continue (D16): the newest `auto` of the catalog's stories, by keyed lookups (never list position): the
+ * newest `savedAt`, then the higher `rev`, then the lower story id. A save of a story the catalog lacks is ignored.
+ */
+export function newestAuto(list: SaveListResponse, catalog: ChapterCatalog): { story: StoryEntry; summary: SaveSummary } | null {
+  let best: { story: StoryEntry; summary: SaveSummary } | null = null;
+  for (const story of catalog.stories) {
+    const summary = summaryOf(list, story.id, 'auto');
+    if (summary === null) {
+      continue;
+    }
+    const b = best?.summary;
+    const newer =
+      b === undefined ||
+      summary.savedAt > b.savedAt ||
+      (summary.savedAt === b.savedAt && (summary.rev > b.rev || (summary.rev === b.rev && story.id < (best?.story.id ?? story.id))));
+    if (newer) {
+      best = { story, summary };
+    }
+  }
+  return best;
+}
+
+/** A public JSON file of the build, through the one fetch seam, decoded at this edge (principle 1). */
+async function fetchJson<T>(http: Http, url: string | null, decode: (raw: unknown) => Result<T, CatalogIssue[]>): Promise<Result<T, string>> {
+  if (url === null) {
+    return { ok: false, error: 'not in this build (the story tool has not run)' };
+  }
+  // Nothing cancels a boot read: the page needs its answer, and a hung one ends at the network's own timeout.
+  const r = await http.fetchAsset(url, new AbortController().signal);
+  if (!r.ok) {
+    return { ok: false, error: `${url}: ${r.error.kind}` };
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await r.value.text());
+  } catch (e) {
+    return { ok: false, error: `${url}: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  const d = decode(raw);
+  return d.ok ? d : { ok: false, error: `${url}: ${JSON.stringify(d.error)}` };
+}
+
+function describe(e: ApiError): string {
+  return e.kind === 'http' ? `http ${e.status}` : e.kind;
+}
+
+/** The engine module, imported in parallel with the boot reads (F1 step 3). */
+type EngineModule = typeof import('./engine.ts');
+
+export function startApp(tg: TelegramClient): AppHandle {
+  const vm = createViewModel({ timers: systemClock, lang: 'ru' });
+  // K12: a stack made with another root would not seed the view itself.
+  let game: Game | null = null;
+  const screens: Screens = createScreens({
+    back: tg.backButton,
+    onView: (v) => {
+      vm.screens = v;
+      game?.screensChanged(v); // the explore panels and an exploration puzzle follow the stack
+    },
+  });
+  vm.screens = screens.view();
+  vm.reducedMotion = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const http = createHttp({ initData: tg.initData, clock: systemClock });
+  const api: Endpoints = createEndpoints(http);
+  const settings: SettingsStore = createSettingsStore({ cloud: tg.cloud });
+  const subscriptions: Unsubscribe[] = [];
+  let reporter: StatsReporter | null = null;
+  let data: BootData | null = null;
+  let engine: Promise<Game | null> | null = null;
+  /** The boot list, handed to the first session that asks; later sessions list again. */
+  let freshList: SaveListResponse | null = null;
+  /** F1 step 5: a Home button runs once until Home is shown again. */
+  let homeBusy = false;
+  let disposed = false;
+
+  const showNotice = (n: NonNullable<ViewModel['notice']>): void => {
+    vm.notice = n;
+    screens.setRoot({ kind: 'notice' });
+  };
+
+  const cardsOf = (d: BootData): StoryCardView[] =>
+    d.catalog.stories.map((s, i) => {
+      const cover = d.covers !== null && Object.hasOwn(d.covers.assets, s.cover) ? d.covers.assets[s.cover] : undefined;
+      return {
+        id: s.id,
+        title: s.title[vm.lang],
+        teaser: s.teaser[vm.lang],
+        cover: cover === undefined ? null : { avif: cover.avif.url, webp: cover.webp.url },
+        continue: summaryOf(d.list, s.id, 'auto') !== null,
+        eager: i < 3,
+        card: false, // META M27: no card action before LMI
+      };
+    });
+
+  const showHome = (d: BootData): void => {
+    vm.cards = cardsOf(d);
+    vm.continueLabel = newestAuto(d.list, d.catalog)?.story.title[vm.lang] ?? null;
+    vm.notice = null;
+    vm.chapters = null;
+    screens.setRoot({ kind: 'home' });
+    tg.setClosingConfirmation(false);
+    homeBusy = false;
+  };
+
+  const entitlements: Entitlements = {
+    list: () => data?.products ?? null,
+    async refresh() {
+      const r = await api.getEntitlements();
+      if (r.ok && data !== null) {
+        data = { ...data, products: r.value.products };
+      }
+      return r.ok ? { ok: true, value: r.value.products } : r;
+    },
+  };
+
+  /** One round of the boot reads, all at once; only the auth, catalog and saves are required. */
+  const readAll = async (): Promise<Result<BootData, BootError>> => {
+    const [auth, catalog, covers, list, ents, loaded] = await Promise.all([
+      http.auth(),
+      fetchJson(http, CATALOG_URL, decodeChapterCatalog),
+      fetchJson(http, COVERS_URL, decodeCoverManifest),
+      api.listSaves(),
+      api.getEntitlements(),
+      settings.load(),
+    ]);
+    if (!auth.ok) {
+      return { ok: false, error: auth.error.kind === 'session-expired' ? { kind: 'expired' } : { kind: 'failed', detail: describe(auth.error) } };
+    }
+    if (!catalog.ok) {
+      return { ok: false, error: { kind: 'failed', detail: catalog.error } };
+    }
+    if (!list.ok) {
+      return { ok: false, error: { kind: 'failed', detail: describe(list.error) } };
+    }
+    if (!covers.ok) {
+      console.warn('boot: covers unavailable', covers.error); // STORIES-PLAN F1′: cards without images
+    }
+    return {
+      ok: true,
+      value: {
+        session: auth.value,
+        catalog: catalog.value,
+        covers: covers.ok ? covers.value : null,
+        list: list.value,
+        products: ents.ok ? ents.value.products : null,
+        settings: loaded,
+      },
+    };
+  };
+
+  const wait = (ms: number): Promise<void> => new Promise((resolve) => systemClock.setTimeout(resolve, ms));
+
+  /** F1 step 3's failure column: a refused initData is "Reopen"; anything else retries with backoff, then Retry. */
+  const readWithRetry = async (): Promise<Result<BootData, BootError>> => {
+    let r = await readAll();
+    for (const ms of BOOT_RETRY_MS) {
+      if (r.ok || r.error.kind === 'expired' || disposed) {
+        return r;
+      }
+      await wait(ms);
+      r = await readAll();
+    }
+    return r;
+  };
+
+  /** F1 step 3: the engine chunk, imported beside the boot reads; a failed import is tried again at the next tap. */
+  let engineModule: Promise<EngineModule | null> | null = null;
+  const importEngine = (): Promise<EngineModule | null> => {
+    engineModule ??= import('./engine.ts').catch((e: unknown) => {
+      console.error('boot: the engine chunk did not load', e);
+      engineModule = null;
+      return null;
+    });
+    return engineModule;
+  };
+
+  /** The Game, created once the engine chunk and the boot reads are both in; null when the chunk failed. */
+  const engineOf = (d: BootData): Promise<Game | null> => {
+    engine ??= importEngine().then((m) => {
+      if (m === null || disposed) {
+        engine = null; // F1 step 7: an engine chunk error shows the error notice; the next tap imports again
+        return null;
+      }
+      const made = m.createEngine({
+        tg,
+        vm,
+        screens,
+        http,
+        api,
+        catalog: d.catalog,
+        entitlements,
+        saveList: () => {
+          const fresh = freshList;
+          freshList = null;
+          return fresh !== null ? Promise.resolve({ ok: true, value: fresh }) : api.listSaves();
+        },
+        settings,
+        reporter: { record: (e) => reporter?.record(e), flush: (o) => reporter?.flush(o) },
+        accountLang: d.session.lang,
+        unlock: unlockAudio,
+        onExit: () => void refreshHome(),
+      });
+      game = made.game;
+      vm.ui = made.ui;
+      return made.game;
+    });
+    return engine;
+  };
+
+  /** Home again after a session: the saves are listed again for Continue and the cards. */
+  const refreshHome = async (): Promise<void> => {
+    const d = data;
+    if (d === null) {
+      return;
+    }
+    const list = await api.listSaves();
+    const now = data ?? d;
+    data = list.ok ? { ...now, list: list.value } : now;
+    if (list.ok) {
+      freshList = list.value;
+    }
+    showHome(data);
+  };
+
+  /** A paid chapter the entitlement list does not show owned (the server checks again at every load). */
+  const locked = (d: BootData, id: ChapterId): boolean => {
+    const entry = d.catalog.chapters.find((c) => c.id === id);
+    return entry?.paid === true && !(d.products ?? []).some((p) => p.chapterId === id && p.owned);
+  };
+
+  /** A Home tap: the unlock first and synchronously (principle 5), then the engine, then the story. */
+  const begin = (from: StartFrom): void => {
+    unlockAudio();
+    const d = data;
+    if (homeBusy || d === null) {
+      return;
+    }
+    homeBusy = true;
+    void (async () => {
+      const g = await engineOf(d);
+      if (g === null) {
+        showNotice({ kind: 'error', onaction: () => showHome(d) });
+        return;
+      }
+      const r = await g.start(from);
+      if (!r.ok) {
+        homeBusy = false; // the game showed its notice; a later Home tap may run again
+      }
+    })(); // a tap has no caller; the outcome is on screen
+  };
+
+  const home: HomeActions = {
+    continue() {
+      const d = data;
+      const newest = d === null ? null : newestAuto(d.list, d.catalog);
+      if (newest === null) {
+        unlockAudio();
+        return;
+      }
+      begin({ kind: 'slot', story: newest.story.id, slot: 'auto' });
+    },
+    start(story) {
+      const s = data?.catalog.stories.find((x) => x.id === story);
+      const first = s?.chapters[0];
+      if (first === undefined) {
+        unlockAudio();
+        return;
+      }
+      begin({ kind: 'new', story, chapter: first });
+    },
+    resume(story) {
+      begin({ kind: 'slot', story, slot: 'auto' });
+    },
+    chapters(story) {
+      const d = data;
+      const s = d?.catalog.stories.find((x) => x.id === story);
+      if (d === null || s === undefined) {
+        return;
+      }
+      vm.chapters = {
+        story: s.title[vm.lang],
+        rows: s.chapters.map((id) => ({ id, title: d.catalog.chapters.find((c) => c.id === id)?.title[vm.lang] ?? id, locked: locked(d, id) })),
+      };
+      screens.push({ kind: 'chapters', story });
+    },
+    chapter(story, chapter) {
+      const d = data;
+      if (d === null || !locked(d, chapter)) {
+        begin({ kind: 'new', story, chapter });
+        return;
+      }
+      // D17: a locked row opens the paywall over Home (the Paywall is the engine's); the unlock starts the chapter.
+      unlockAudio();
+      void engineOf(d).then((g) => {
+        if (g === null) {
+          showNotice({ kind: 'error', onaction: () => showHome(d) });
+        } else {
+          g.offerChapter(story, chapter);
+        }
+      }); // a tap has no caller; the outcome is on screen
+    },
+  };
+
+  const boot = async (): Promise<void> => {
+    const r = await readWithRetry();
+    if (disposed) {
+      return;
+    }
+    if (!r.ok) {
+      if (r.error.kind === 'expired') {
+        showNotice({ kind: 'reopen' });
+      } else {
+        console.error('boot: the boot reads failed', r.error.detail);
+        showNotice({ kind: 'error', onaction: () => void boot() });
+      }
+      return;
+    }
+    const d = r.value;
+    data = d;
+    freshList = d.list;
+    // K25: the settings' language, else the account's.
+    vm.lang = d.settings.lang ?? d.session.lang;
+    vm.settings = d.settings;
+    vm.speed = d.settings.speed;
+    if (reporter === null) {
+      // STORIES-PLAN F1′ step 3: the reporter after auth, then the persisted queue goes out.
+      reporter = createStatsReporter({
+        api,
+        device: tg.device,
+        clock: systemClock,
+        newId: () => crypto.randomUUID(),
+        log: __TG_MOCK__ ? (msg) => console.info(msg) : undefined,
+      });
+      reporter.flush();
+    }
+    showHome(d);
+    void engineOf(d); // created ahead of the tap; a failure shows at the tap
+  };
+
+  const onLifecycle = (e: Lifecycle): void => {
+    game?.onLifecycle(e);
+    if (e === 'deactivated') {
+      reporter?.flush({ keepalive: true });
+    }
+  };
+  const onPageHide = (): void => {
+    game?.pagehide();
+    reporter?.flush({ keepalive: true });
+  };
+
+  subscriptions.push(tg.onLifecycle(onLifecycle));
+  subscriptions.push(http.onSessionExpired(() => showNotice({ kind: 'reopen' })));
+  window.addEventListener('pagehide', onPageHide);
+  subscriptions.push(() => window.removeEventListener('pagehide', onPageHide));
+
+  if (!tg.inTelegram) {
+    // F1 step 1: opened outside Telegram (or by a reply-keyboard button): nothing to sign in with.
+    showNotice({ kind: 'open_in_telegram' });
+  } else {
+    void importEngine(); // in parallel with the reads; its failure shows at the tap
+    void boot(); // the outcome is on screen: Home, Reopen or the error notice
+  }
+
+  return {
+    vm,
+    home,
+    game: () => game,
+    dispose() {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
+      for (const off of subscriptions.splice(0)) {
+        off();
+      }
+      game?.dispose();
+      reporter?.dispose();
+      screens.dispose();
+      vm.destroy();
+    },
+  };
+}

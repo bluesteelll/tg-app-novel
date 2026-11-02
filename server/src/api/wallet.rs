@@ -20,7 +20,8 @@ fn private_headers() -> [(HeaderName, HeaderValue); 1] {
 
 /// `GET /api/wallet`: every kind the catalog declares, in its order, with the user's balance and debt (`0` / `0`
 /// without a row, so a new player sees every kind); a row of a kind the catalog no longer declares is not listed.
-/// Then the catalog's packs and the hint tier cost. One read; the 200 is `private, no-store`.
+/// Then the catalog's packs, the hint tier cost and the most units one gift moves. One read; the 200 is
+/// `private, no-store`.
 pub async fn get_wallet(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
@@ -60,6 +61,7 @@ pub async fn get_wallet(
         balances,
         packs,
         hint_tier_cost: economy.hint_tier_cost,
+        max_per_gift: economy.gifts.max_per_gift,
     };
     Ok((private_headers(), Json(body)).into_response())
 }
