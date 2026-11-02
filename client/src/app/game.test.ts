@@ -1700,3 +1700,23 @@ test('game: load it sends no autosave between the choice and the load', async ()
   expect(lineOf(h.vm)).toBe('ch1.arrival.l001');
   h.game.dispose();
 });
+
+test('game: a failed scene mount is retried by the notice', async () => {
+  const h = harness();
+  let mounts = 0;
+  h.scene.mount = async () => {
+    mounts += 1;
+    return mounts === 1 ? { ok: false, error: { kind: 'mount', detail: 'no webgl context' } } : { ok: true, value: undefined };
+  };
+  const r = await h.game.start({ kind: 'new', story: MANOR, chapter: CH1 });
+  expect(r.ok).toBe(false);
+  const notice = h.vm.notice;
+  expect(notice?.kind).toBe('error');
+  if (notice?.kind === 'error') {
+    notice.onaction(); // its Retry starts again from the same point
+  }
+  await settle();
+  await settle();
+  expect([mounts, lineOf(h.vm)]).toEqual([2, 'ch1.arrival.l001']);
+  h.game.dispose();
+});

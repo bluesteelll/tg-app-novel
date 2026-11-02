@@ -1322,10 +1322,15 @@ export function createGame(deps: GameDeps): Game {
     deps.onExit();
   };
 
+  /** One mount for the page: one in flight or done is shared; a failed one is forgotten, so a Retry mounts again. */
   const mountOnce = (): Promise<Result<void, SceneError>> => {
     mounted ??= (async () => {
       const el = host ?? (await new Promise<HTMLElement>((resolve) => hostWaiters.push(resolve)));
-      return scene.mount(el, { resolution: deps.dpr(), fetchAsset: deps.fetchAsset });
+      const r = await scene.mount(el, { resolution: deps.dpr(), fetchAsset: deps.fetchAsset });
+      if (!r.ok) {
+        mounted = null; // the controller is idle again after a failed init (scene/controller.ts)
+      }
+      return r;
     })();
     return mounted;
   };
