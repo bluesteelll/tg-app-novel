@@ -148,4 +148,12 @@ export const en: Record<UiKey, string> = {
   'hint.failed': 'Could not reveal the hint',
   // Declared for LMI: the toast when the playthrough card is not ready at an ending (META M9).
   'meta.card_later': 'The playthrough will be ready a little later',
+  // The meta controller's toasts (app/meta.ts; F18-F20); the overlays' own texts live in i18n/meta.ts.
+  'meta.invite_sent': 'Request sent',
+  'meta.share_failed': 'Could not send the message',
+  'meta.share_as_link': 'Send as a link',
+  'meta.share_wait': 'Too often. Try again in {minutes} min.',
+  'meta.telegram_unavailable': 'Telegram is unavailable',
+  'meta.friend_limit': 'You already have too many friends',
+  'meta.action_failed': 'That did not work. Please try again',
 };
