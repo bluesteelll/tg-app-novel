@@ -1,24 +1,34 @@
-//! The social graph's SQL (META-PLAN M10-M12; `0005_social.sql`). This module writes the referral of a newcomer's
-//! first launch (M11: the launch creates no friend request), a link holder's request to the code's owner (F19 step 4)
-//! with the requester's handle, the owner's accept and the decline or removal with its durable block (F20), a user's
-//! first invite code and its rotation, and the append-only consent log (M12); it reads the user's friends, incoming
-//! requests and profile visibility.
+//! The social graph's SQL (META-PLAN M10-M12, M23; `0005_social.sql`). This module writes the referral of a
+//! newcomer's first launch (M11: the launch creates no friend request) and its qualification with both bonuses (M23),
+//! a link holder's request to the code's owner (F19 step 4) with the requester's handle, the owner's accept and the
+//! decline or removal with its durable block (F20), a user's first invite code and its rotation, and the append-only
+//! consent log (M12); it reads the user's friends, incoming requests and profile visibility.
 //!
 //! Invite codes and handles reach SQL only in the shapes [`crate::api::social::is_invite_code`] and
 //! [`crate::api::social::is_handle`] accept (lower-case hex), so no U+0000 is ever bound; Telegram's own strings go
-//! through [`without_nul`](crate::db::without_nul). Other users are named by handle only: no row read here for another
-//! user carries a Telegram id out of this module.
+//! through [`without_nul`](crate::db::without_nul). No Telegram id of another user reaches a DTO: other users leave
+//! this module by handle only, and the ids returned (a handle's user, a referral's inviter) are for the server's own
+//! next statement.
 //!
-//! Lock order of every transaction here: both `users` rows in ascending id, taken by one statement, then the rest
-//! (META-PLAN "Concurrency and failure model"). `NO KEY UPDATE` does not conflict with the `KEY SHARE` of foreign-key
-//! checks, so logins, saves and grants never wait on these locks.
+//! Lock order of every transaction here: both `users` rows in ascending id, taken by one statement ([`lock_pair`];
+//! the rotation locks one row), then the rest (META-PLAN "Concurrency and failure model"). What waits on these
+//! `FOR NO KEY UPDATE` row locks: a known user's login upsert (`db/users.rs`, its `DO UPDATE` of the row), the payer's
+//! pre-checkout (`db/payments.rs`, which locks the same row), and the gift and referral transactions, which take them
+//! too. What never waits: the `KEY SHARE` of foreign-key checks, which `NO KEY UPDATE` does not conflict with, so
+//! saves, grants, a newcomer's attribution and the ledger's own FK checks pass under them.
+//!
+//! The one statistics read here is the referral's evidence ([`Repo::qualify_referral`], M23): a grant input by design
+//! (MT12), read from the server's own receipt times (`stat_events.received_at`), never from the client's `ageMs` or a
+//! batch's own claim.
 
 use serde::Serialize;
 use sqlx::PgConnection;
 use ts_rs::TS;
 
 use crate::auth::TgUser;
+use crate::catalog::ReferralRules;
 use crate::db::Repo;
+use crate::db::economy::{Entry, Reason, credit_in_tx};
 use crate::db::users::upsert_user_in;
 use crate::ids::UserId;
 
@@ -34,6 +44,25 @@ const FRIENDS_PROFILE: &str = "friends_profile";
 /// The rolling window of the rotation limit, in seconds: a day. Only a rotation revokes a code, so the codes revoked
 /// inside the window are the rotations it counts (the first code is not one).
 pub const ROTATION_WINDOW_SECS: i64 = 86_400;
+
+/// The idempotency-key prefix of the two referral bonuses: `ref:<invitee>:inviter` and `ref:<invitee>:invitee`.
+const REFERRAL_KEY_PREFIX: &str = "ref:";
+
+/// The rolling window of the inviter's daily referral cap, in seconds: a day (M23).
+pub const REFERRAL_WINDOW_SECS: i64 = 86_400;
+
+/// What [`Repo::qualify_referral`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReferralOutcome {
+    /// No unqualified referral of the user with an inviter, or no evidence yet: nothing written (the common case).
+    NotEligible,
+    /// Both bonuses credited; the referral is `granted`.
+    Granted,
+    /// The inviter is at a cap: only the invitee's bonus credited; the referral is `capped`.
+    Capped,
+    /// Another batch qualified the referral first: nothing written.
+    AlreadyQualified,
+}
 
 /// What [`Repo::rotate`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,6 +196,127 @@ impl Repo {
         }
         tx.commit().await?;
         Ok(AuthAttribution { inserted, inviter })
+    }
+
+    /// Qualifies `invitee`'s referral at `now` under `rules` (M23), the hook of every recorded stats batch.
+    /// `first_chapters` holds each story's first chapter as (story id, chapter id), from the current index.
+    ///
+    /// One autocommit probe first: the unqualified referral of `invitee` that names an inviter, by its primary key,
+    /// together with the evidence, re-read from `stat_events` on every call: a recorded completion (`chapter_completed`,
+    /// or an `ending_reached` in it) of some first chapter whose earliest `chapter_started` was received at least
+    /// `minPlaySecs` before `now`. Only `received_at`, the server's own clock, is read. No row is `NotEligible`; for a
+    /// user without a referral that is the one statement. Then one READ COMMITTED transaction:
+    /// 1. both `users` rows locked ascending ([`lock_pair`]);
+    /// 2. the inviter's granted referrals after `now - REFERRAL_WINDOW_SECS` and in total, counted under the lock:
+    ///    below `capPerDay` and `capTotal` is `granted`, else `capped`;
+    /// 3. the referral qualified at `now` with that outcome, only while `qualified_at IS NULL`: no row means another
+    ///    batch won (`AlreadyQualified`);
+    /// 4. the credits in ascending user id, keyed `ref:<invitee>:inviter` (only when granted) and
+    ///    `ref:<invitee>:invitee` (always), each naming the other user;
+    /// 5. COMMIT. A database error rolls back on drop, and the caller's next batch evaluates again.
+    pub async fn qualify_referral(
+        &self,
+        invitee: UserId,
+        first_chapters: &[(&str, &str)],
+        rules: &ReferralRules,
+        now: i64,
+    ) -> Result<ReferralOutcome, sqlx::Error> {
+        let (stories, chapters): (Vec<&str>, Vec<&str>) = first_chapters.iter().copied().unzip();
+        let inviter: Option<i64> = sqlx::query_scalar(
+            "SELECT r.inviter_id FROM referrals r \
+             WHERE r.invitee_id = $1 AND r.qualified_at IS NULL AND r.inviter_id IS NOT NULL \
+             AND EXISTS (SELECT 1 FROM UNNEST($2::text[], $3::text[]) AS f (story_id, chapter_id) \
+                         WHERE EXISTS (SELECT 1 FROM stat_events d \
+                                       WHERE d.user_id = $1 AND d.story_id = f.story_id \
+                                       AND d.kind IN ('chapter_completed', 'ending_reached') \
+                                       AND d.chapter_id = f.chapter_id) \
+                         AND (SELECT min(s.received_at) FROM stat_events s \
+                              WHERE s.user_id = $1 AND s.story_id = f.story_id \
+                              AND s.kind = 'chapter_started' AND s.chapter_id = f.chapter_id) <= $4)",
+        )
+        .bind(invitee.0)
+        .bind(&stories)
+        .bind(&chapters)
+        .bind(now.saturating_sub(rules.min_play_secs))
+        .fetch_optional(&self.pool)
+        .await?
+        .flatten();
+        let Some(inviter) = inviter.map(UserId) else {
+            return Ok(ReferralOutcome::NotEligible);
+        };
+        let mut tx = self.pool.begin().await?;
+        if !lock_pair(&mut tx, invitee, inviter).await? {
+            tx.rollback().await?;
+            return Ok(ReferralOutcome::NotEligible);
+        }
+        let (today, total): (i64, i64) = sqlx::query_as(
+            "SELECT count(*) FILTER (WHERE qualified_at > $2), count(*) FROM referrals \
+             WHERE inviter_id = $1 AND outcome = 'granted'",
+        )
+        .bind(inviter.0)
+        .bind(now.saturating_sub(REFERRAL_WINDOW_SECS))
+        .fetch_one(&mut *tx)
+        .await?;
+        let granted = today < i64::from(rules.cap_per_day) && total < i64::from(rules.cap_total);
+        let qualified: Option<Option<i64>> = sqlx::query_scalar(
+            "UPDATE referrals SET qualified_at = $2, outcome = $3 \
+             WHERE invitee_id = $1 AND qualified_at IS NULL RETURNING inviter_id",
+        )
+        .bind(invitee.0)
+        .bind(now)
+        .bind(if granted { "granted" } else { "capped" })
+        .fetch_optional(&mut *tx)
+        .await?;
+        match qualified {
+            None => {
+                tx.rollback().await?;
+                return Ok(ReferralOutcome::AlreadyQualified);
+            }
+            // The inviter the probe read is the one locked and credited; a change in between (only an erasure, later)
+            // qualifies nothing.
+            Some(row) if row != Some(inviter.0) => {
+                tx.rollback().await?;
+                return Ok(ReferralOutcome::NotEligible);
+            }
+            Some(_) => {}
+        }
+        let bonus = |user: UserId, other: UserId, amount: u32, reason: Reason, side: &str| Entry {
+            user,
+            kind: &rules.kind,
+            amount: i64::from(amount),
+            reason,
+            idem_key: referral_key(invitee, side),
+            charge_id: None,
+            counterpart: Some(other),
+            r#ref: None,
+            at: now,
+        };
+        let mut credits = vec![bonus(
+            invitee,
+            inviter,
+            rules.invitee,
+            Reason::ReferralInvitee,
+            "invitee",
+        )];
+        if granted {
+            credits.push(bonus(
+                inviter,
+                invitee,
+                rules.inviter,
+                Reason::ReferralInviter,
+                "inviter",
+            ));
+        }
+        credits.sort_by_key(|e| e.user.0);
+        for credit in &credits {
+            credit_in_tx(&mut tx, credit).await?;
+        }
+        tx.commit().await?;
+        Ok(if granted {
+            ReferralOutcome::Granted
+        } else {
+            ReferralOutcome::Capped
+        })
     }
 
     /// What `code` means to `me` (F19 step 3), or `None` when no active code is `code` (unknown or revoked: 404).
@@ -462,16 +612,10 @@ impl Repo {
         Ok(())
     }
 
-    /// The two users are friends (either order; one user is never its own friend). One read.
+    /// The two users are friends (either order; one user is never its own friend). One read, [`are_friends_in`]'s.
     pub async fn are_friends(&self, a: UserId, b: UserId) -> Result<bool, sqlx::Error> {
-        let (lo, hi) = ordered(a, b);
-        sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM friendships WHERE user_lo = $1 AND user_hi = $2)",
-        )
-        .bind(lo)
-        .bind(hi)
-        .fetch_one(&self.pool)
-        .await
+        let mut c = self.pool.acquire().await?;
+        are_friends_in(&mut c, a, b).await
     }
 
     /// `u`'s latest `friends_profile` consent is a grant; `false` without one (private by default, M12). One read.
@@ -540,15 +684,47 @@ async fn code_owner(c: &mut PgConnection, code: &str) -> Result<Option<UserId>, 
     Ok(owner.map(UserId))
 }
 
+/// The idempotency key of one referral bonus (`side` `inviter` or `invitee`): `ref:<invitee>:<side>`.
+fn referral_key(invitee: UserId, side: &str) -> String {
+    // `push_str`, not string formatting: this module holds SQL, and the dynamic-SQL scan flags formatting near it.
+    let mut key = String::from(REFERRAL_KEY_PREFIX);
+    key.push_str(&invitee.0.to_string());
+    key.push(':');
+    key.push_str(side);
+    key
+}
+
 /// `(a, b)` as a `friendships` row stores them: the lower id first.
 fn ordered(a: UserId, b: UserId) -> (i64, i64) {
     (a.0.min(b.0), a.0.max(b.0))
 }
 
+/// The one friendship read, on `c`: `a` and `b` are friends (either order; one user is never its own friend).
+/// [`Repo::are_friends`] runs it autocommit; the gift ([`Repo::transfer`]) under its `users` locks.
+pub(crate) async fn are_friends_in(
+    c: &mut PgConnection,
+    a: UserId,
+    b: UserId,
+) -> Result<bool, sqlx::Error> {
+    let (lo, hi) = ordered(a, b);
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM friendships WHERE user_lo = $1 AND user_hi = $2)",
+    )
+    .bind(lo)
+    .bind(hi)
+    .fetch_one(&mut *c)
+    .await
+}
+
 /// Locks the `users` rows of `a` and `b` (`NO KEY UPDATE`) in one statement. `ORDER BY` runs before the locking
 /// clause, so the rows lock in ascending id and two transactions over one pair never deadlock. `false` unless both
-/// rows exist and are two (one's own handle names one row).
-async fn lock_pair(c: &mut PgConnection, a: UserId, b: UserId) -> Result<bool, sqlx::Error> {
+/// rows exist and are two (one's own handle names one row). The friendship transactions here and the gift
+/// ([`Repo::transfer`]) take it first.
+pub(crate) async fn lock_pair(
+    c: &mut PgConnection,
+    a: UserId,
+    b: UserId,
+) -> Result<bool, sqlx::Error> {
     let locked: Vec<i64> =
         sqlx::query_scalar("SELECT id FROM users WHERE id = ANY($1) ORDER BY id FOR NO KEY UPDATE")
             .bind([a.0, b.0].as_slice())

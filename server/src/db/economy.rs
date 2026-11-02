@@ -5,14 +5,20 @@
 //! a duplicate, and nothing else happens) followed by one balance statement, in the caller's transaction, so per
 //! (user, kind) `balance - debt` equals the sum of the ledger amounts. A credit pays the debt first; a debit only
 //! applies to a balance that covers it; a clawback takes the balance, then records the rest as debt (M20). The hint
-//! spend (M21) unlocks a tier and debits it in one transaction.
+//! spend (M21) unlocks a tier and debits it in one transaction; a gift (M22) moves units between two friends in one.
 //!
 //! Lock order on every path: the ledger key, then the balance row (the spend takes the unlock key first). No path here
-//! waits for a `users` row while it holds a balance row.
+//! waits for a `users` row while it holds a balance row. The gift ([`Repo::transfer`]) locks both `users` rows first
+//! (ascending id), then the sender's key and balance row, then the recipient's: its two balance rows follow M22's step
+//! order, not ascending (user id, kind). That is deadlock-free because every path that holds two balance rows (the
+//! gift, the referral grant in `db/social.rs`) holds both of their `users` rows first, so two such paths sharing a
+//! balance row are already serialized on that user's row, and every single-row path (grant, spend, clawback) waits on
+//! nothing after its balance row.
 
 use sqlx::PgConnection;
 
-use crate::catalog::{HINT_KIND, ResourceKind};
+use crate::catalog::{GiftRules, HINT_KIND, ResourceKind};
+use crate::db::social::{are_friends_in, lock_pair};
 use crate::db::{Repo, without_nul};
 use crate::ids::{PuzzleId, UserId};
 
@@ -21,6 +27,12 @@ const PAY_KEY_PREFIX: &str = "pay:";
 
 /// The idempotency-key prefix of a hint spend: `hint:<user>:<puzzle>:<tier>`.
 const HINT_KEY_PREFIX: &str = "hint:";
+
+/// The idempotency-key prefix of a gift's two rows: `gift:<sender>:<requestId>:out` and `…:in`.
+const GIFT_KEY_PREFIX: &str = "gift:";
+
+/// The rolling window of both gift caps, in seconds: a day (M22).
+pub const GIFT_WINDOW_SECS: i64 = 86_400;
 
 /// Why a ledger row moves a balance: the `resource_ledger_reason_known` words. The sign is the reason's
 /// (`resource_ledger_sign_by_reason`): a credit for `Pack`, `GiftIn` and the referral bonuses, a debit or clawback for
@@ -150,17 +162,30 @@ pub async fn debit_in_tx(
         return Ok(Some(Applied::Duplicate));
     }
     // The ledger insert above passed `resource_ledger_amount_bounded`: the negation cannot overflow.
-    let row: Option<(i64, i64)> = sqlx::query_as(
+    let row = debit_balance(c, e.user, e.kind, -e.amount, e.at).await?;
+    Ok(row.map(|(balance, debt)| Applied::Applied { balance, debt }))
+}
+
+/// The guarded debit of `amount` (above 0) from `user`'s `kind` balance at `at`, which READ COMMITTED re-evaluates on
+/// the committed row after a wait: (balance, debt) after it, or `None` when the balance does not cover it or the user
+/// has no row. [`debit_in_tx`] and the gift ([`Repo::transfer`]) both debit here, after their ledger row.
+async fn debit_balance(
+    c: &mut PgConnection,
+    user: UserId,
+    kind: &ResourceKind,
+    amount: i64,
+    at: i64,
+) -> Result<Option<(i64, i64)>, sqlx::Error> {
+    sqlx::query_as(
         "UPDATE resource_balances SET balance = balance - $3, updated_at = $4 \
          WHERE user_id = $1 AND kind = $2 AND balance >= $3 RETURNING balance, debt",
     )
-    .bind(e.user.0)
-    .bind(&e.kind.0)
-    .bind(-e.amount)
-    .bind(e.at)
+    .bind(user.0)
+    .bind(&kind.0)
+    .bind(amount)
+    .bind(at)
     .fetch_optional(&mut *c)
-    .await?;
-    Ok(row.map(|(balance, debt)| Applied::Applied { balance, debt }))
+    .await
 }
 
 /// Claws back `-e.amount` (`e.amount` below 0) on `c`'s transaction (M20): the ledger row, then an upsert that takes
@@ -226,6 +251,17 @@ fn spend_ref(puzzle: &PuzzleId, tier: u8) -> String {
     reference
 }
 
+/// The idempotency key of one side (`out` or `in`) of `from`'s gift `request_id`: `gift:<from>:<requestId>:<side>`.
+fn gift_key(from: UserId, request_id: &str, side: &str) -> String {
+    let mut key = String::from(GIFT_KEY_PREFIX);
+    key.push_str(&from.0.to_string());
+    key.push(':');
+    key.push_str(request_id);
+    key.push(':');
+    key.push_str(side);
+    key
+}
+
 /// `user`'s balance of `kind` on `c`'s transaction, 0 without a row.
 async fn balance_of(
     c: &mut PgConnection,
@@ -259,6 +295,48 @@ pub enum SpendOutcome {
     Insufficient,
     /// The puzzle is solved, or the tier before this one is not unlocked: nothing was written.
     Unavailable,
+}
+
+/// One gift for [`Repo::transfer`] (M22): `amount` units of `kind` from `from` to `to`, keyed by the sender's
+/// request id.
+#[derive(Debug, Clone, Copy)]
+pub struct GiftMove<'a> {
+    /// The sender: the token's user.
+    pub from: UserId,
+    /// The recipient: the user the friend handle names.
+    pub to: UserId,
+    /// A gift kind of the catalog.
+    pub kind: &'a ResourceKind,
+    /// The units, 1 to the catalog's `maxPerGift`.
+    pub amount: u32,
+    /// The sender's request id, already a lower-case UUID v4: one gift per id.
+    pub request_id: &'a str,
+}
+
+/// What [`Repo::transfer`] did. Every outcome but `Sent` wrote nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GiftOutcome {
+    /// The gift moved.
+    Sent {
+        /// The sender's balance of the kind after the debit.
+        balance: i64,
+    },
+    /// The request id moved this same gift before: nothing moved again.
+    Replayed {
+        /// The sender's current balance of the kind.
+        balance: i64,
+    },
+    /// Not two friends: one's own handle, a friendship removed since the dialog, or a missing user.
+    NotFriends,
+    /// The request id moved another gift (another recipient, kind or amount).
+    Mismatch,
+    /// The sender's balance does not cover the amount.
+    Insufficient,
+    /// A daily cap of the sender or the recipient.
+    Capped {
+        /// Seconds until the oldest counted gift of the side over its cap leaves the window (the later of the two).
+        retry_after_secs: i64,
+    },
 }
 
 /// One balance row as stored.
@@ -371,5 +449,123 @@ impl Repo {
                 Ok(SpendOutcome::AlreadyUnlocked { balance })
             }
         }
+    }
+
+    /// Moves the gift `g` at `now` under `rules` (M22), in one READ COMMITTED transaction of at most seven statements:
+    /// 1. both `users` rows locked in ascending id ([`lock_pair`]): every gift of the sender and every gift to the
+    ///    recipient runs after the one before it committed. Fewer than two rows (one's own handle, a missing user) is
+    ///    `NotFriends`;
+    /// 2. the friendship, read under the locks: `NotFriends` when it was removed since the dialog;
+    /// 3. the sender's `gift_out` row keyed `gift:<from>:<requestId>:out`. A duplicate key is the replay: the recorded
+    ///    row's counterpart, kind and amount equal this request's → `Replayed` with the current balance, else
+    ///    `Mismatch`;
+    /// 4. the caps, one read of `resource_ledger_by_user`: the sender's other `gift_out` units and the recipient's
+    ///    `gift_in` units created after `now - GIFT_WINDOW_SECS`, each plus `amount` within `sendPerDay` /
+    ///    `receivePerDay`, else `Capped` until the oldest counted gift of the side over its cap leaves the window. The
+    ///    window has no upper bound: a gift committed by a request that read the clock after this one still counts, so
+    ///    a count after the locks sees every committed gift;
+    /// 5. the sender's guarded debit: `Insufficient` when the balance does not cover it;
+    /// 6. the recipient's `gift_in` row keyed `…:in` and its credit, which pays a debt first;
+    /// 7. COMMIT → `Sent` with the sender's balance after the debit.
+    ///
+    /// Every other outcome rolls back, so no gift row exists without its pair. A database error rolls back on drop.
+    pub async fn transfer(
+        &self,
+        g: &GiftMove<'_>,
+        rules: &GiftRules,
+        now: i64,
+    ) -> Result<GiftOutcome, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        if !lock_pair(&mut tx, g.from, g.to).await?
+            || !are_friends_in(&mut tx, g.from, g.to).await?
+        {
+            tx.rollback().await?;
+            return Ok(GiftOutcome::NotFriends);
+        }
+        let amount = i64::from(g.amount);
+        let out = Entry {
+            user: g.from,
+            kind: g.kind,
+            amount: -amount,
+            reason: Reason::GiftOut,
+            idem_key: gift_key(g.from, g.request_id, "out"),
+            charge_id: None,
+            counterpart: Some(g.to),
+            r#ref: None,
+            at: now,
+        };
+        if !insert_ledger(&mut tx, &out).await? {
+            let recorded: Option<(Option<i64>, String, i64)> = sqlx::query_as(
+                "SELECT counterpart_id, kind, amount FROM resource_ledger WHERE idem_key = $1",
+            )
+            .bind(&out.idem_key)
+            .fetch_optional(&mut *tx)
+            .await?;
+            if recorded == Some((Some(g.to.0), g.kind.0.clone(), -amount)) {
+                let balance = balance_of(&mut tx, g.from, g.kind).await?;
+                tx.commit().await?;
+                return Ok(GiftOutcome::Replayed { balance });
+            }
+            tx.rollback().await?;
+            return Ok(GiftOutcome::Mismatch);
+        }
+        // The sender's own row (just written, stamped `now`) is left out of its count: the rule is the M22 sum plus
+        // `amount`, and the oldest row a refusal names is always a committed gift.
+        let (sent, sent_oldest, received, received_oldest): (i64, Option<i64>, i64, Option<i64>) =
+            sqlx::query_as(
+                "SELECT o.units, o.oldest, i.units, i.oldest FROM \
+                 (SELECT COALESCE(-sum(amount), 0)::bigint AS units, min(created_at) AS oldest \
+                  FROM resource_ledger WHERE user_id = $1 AND reason = $3 AND created_at > $5 \
+                  AND idem_key <> $6) AS o, \
+                 (SELECT COALESCE(sum(amount), 0)::bigint AS units, min(created_at) AS oldest \
+                  FROM resource_ledger WHERE user_id = $2 AND reason = $4 AND created_at > $5) AS i",
+            )
+            .bind(g.from.0)
+            .bind(g.to.0)
+            .bind(Reason::GiftOut.as_str())
+            .bind(Reason::GiftIn.as_str())
+            .bind(now.saturating_sub(GIFT_WINDOW_SECS))
+            .bind(&out.idem_key)
+            .fetch_one(&mut *tx)
+            .await?;
+        let over_send = sent + amount > i64::from(rules.send_per_day);
+        let over_receive = received + amount > i64::from(rules.receive_per_day);
+        if over_send || over_receive {
+            tx.rollback().await?;
+            let leaves = |over: bool, oldest: Option<i64>| {
+                oldest
+                    .filter(|_| over)
+                    .map(|at| at.saturating_add(GIFT_WINDOW_SECS).saturating_sub(now))
+            };
+            // The catalog's bound (each cap at least `maxPerGift`) means a side over its cap counted a gift; a whole
+            // window is the answer only for rules built around it.
+            let retry_after_secs = leaves(over_send, sent_oldest)
+                .max(leaves(over_receive, received_oldest))
+                .unwrap_or(GIFT_WINDOW_SECS);
+            return Ok(GiftOutcome::Capped { retry_after_secs });
+        }
+        let Some((balance, _)) = debit_balance(&mut tx, g.from, g.kind, amount, now).await? else {
+            tx.rollback().await?;
+            return Ok(GiftOutcome::Insufficient);
+        };
+        let credit = Entry {
+            user: g.to,
+            kind: g.kind,
+            amount,
+            reason: Reason::GiftIn,
+            idem_key: gift_key(g.from, g.request_id, "in"),
+            charge_id: None,
+            counterpart: Some(g.from),
+            r#ref: None,
+            at: now,
+        };
+        // Both keys of a gift are written in one transaction, and its `…:out` key was fresh above: an `…:in` row
+        // cannot exist. Were one there, the debit is not committed without its credit.
+        if credit_in_tx(&mut tx, &credit).await? == Applied::Duplicate {
+            tx.rollback().await?;
+            return Ok(GiftOutcome::Mismatch);
+        }
+        tx.commit().await?;
+        Ok(GiftOutcome::Sent { balance })
     }
 }
