@@ -232,6 +232,24 @@ async fn referral_grants_both_once() {
     report(&failures);
 }
 
+/// The play gap is measured from the EARLIEST `chapter_started` of the first chapter (M23: `min(received_at)`), so a
+/// later restart of the chapter does not push qualification out: ch1 started at `T0` and again at `T0 + 100`,
+/// completed at `T0 + 110`; at `T0 + 120` the earliest start is `minPlaySecs` old → `Granted` (from the latest start
+/// it would be 20 s old → `NotEligible`).
+#[tokio::test]
+async fn referral_gap_counts_from_the_earliest_start() {
+    let (st, _db) = state_with_invitees(1).await;
+    refer(&st, INVITEE, ANN).await;
+    stat(&st, INVITEE, 1, "chapter_started", "ch1", None, T0).await;
+    stat(&st, INVITEE, 3, "chapter_started", "ch1", None, T0 + 100).await;
+    stat(&st, INVITEE, 2, "chapter_completed", "ch1", None, T0 + 110).await;
+    assert_eq!(
+        qualify(&st, INVITEE, &rules(3, 20), T0 + 120).await,
+        Ok(ReferralOutcome::Granted),
+        "the gap runs from the earliest start (T0), not the latest (T0 + 100)"
+    );
+}
+
 /// The inviter's daily cap (3 granted bonuses a rolling day, counted after the locks): three invitees of Ann qualify
 /// in the day → `Granted` each; the fourth → `Capped`, the invitee's 2 still credited, Ann's 5 not, the row `capped`.
 /// A fifth after the first grant left the window → `Granted`.
