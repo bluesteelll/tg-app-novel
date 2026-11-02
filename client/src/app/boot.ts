@@ -294,6 +294,12 @@ export function startApp(tg: TelegramClient): AppHandle {
     showHome(data);
   };
 
+  /** A paid chapter the entitlement list does not show owned (the server checks again at every load). */
+  const locked = (d: BootData, id: ChapterId): boolean => {
+    const entry = d.catalog.chapters.find((c) => c.id === id);
+    return entry?.paid === true && !(d.products ?? []).some((p) => p.chapterId === id && p.owned);
+  };
+
   /** A Home tap: the unlock first and synchronously (principle 5), then the engine, then the story. */
   const begin = (from: StartFrom): void => {
     unlockAudio();
@@ -343,18 +349,27 @@ export function startApp(tg: TelegramClient): AppHandle {
       if (d === null || s === undefined) {
         return;
       }
-      const owned = new Set((d.products ?? []).filter((p) => p.owned).map((p) => p.chapterId));
       vm.chapters = {
         story: s.title[vm.lang],
-        rows: s.chapters.map((id) => {
-          const entry = d.catalog.chapters.find((c) => c.id === id);
-          return { id, title: entry?.title[vm.lang] ?? id, locked: entry?.paid === true && !owned.has(id) };
-        }),
+        rows: s.chapters.map((id) => ({ id, title: d.catalog.chapters.find((c) => c.id === id)?.title[vm.lang] ?? id, locked: locked(d, id) })),
       };
       screens.push({ kind: 'chapters', story });
     },
     chapter(story, chapter) {
-      begin({ kind: 'new', story, chapter });
+      const d = data;
+      if (d === null || !locked(d, chapter)) {
+        begin({ kind: 'new', story, chapter });
+        return;
+      }
+      // D17: a locked row opens the paywall over Home (the Paywall is the engine's); the unlock starts the chapter.
+      unlockAudio();
+      void engineOf(d).then((g) => {
+        if (g === null) {
+          showNotice({ kind: 'error', onaction: () => showHome(d) });
+        } else {
+          g.offerChapter(story, chapter);
+        }
+      }); // a tap has no caller; the outcome is on screen
     },
   };
 

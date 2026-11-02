@@ -13,6 +13,8 @@ import { t } from '../i18n/index.ts';
 import type { Lang } from '../i18n/index.ts';
 import { createLineText } from '../i18n/lines.ts';
 import type { LineText } from '../i18n/lines.ts';
+import { chapterDelivered, createPurchaseFlow } from '../purchase/flow.ts';
+import type { PurchaseFlow, PurchaseState } from '../purchase/flow.ts';
 import { summaryOf } from '../saves/service.ts';
 import type { ManualSlot, SaveError, SaveService, SaveState, SaveWrite } from '../saves/service.ts';
 import type { SceneController } from '../scene/controller.ts';
@@ -30,7 +32,19 @@ import type { RunnerError, RunnerStep } from '../story/runner.ts';
 import { BACKLOG_MAX, decodeSave, encodeSave } from '../story/save-codec.ts';
 import type { BacklogEntry, SaveBodyV1 } from '../story/save-codec.ts';
 import { EMPTY_SNAPSHOT } from '../story/staging.ts';
-import type { AssetId, AssetIndex, ChapterId, KnotName, LineId, SpeakerId, StagingCommand, StagingSnapshot, TagError, VarName } from '../story/staging.ts';
+import type {
+  AssetId,
+  AssetIndex,
+  ChapterId,
+  KnotName,
+  LineId,
+  ProductId,
+  SpeakerId,
+  StagingCommand,
+  StagingSnapshot,
+  TagError,
+  VarName,
+} from '../story/staging.ts';
 import type { Lifecycle, TelegramClient } from '../telegram/index.ts';
 import type { BacklogLine } from '../ui/Backlog.svelte';
 import type { NoticeView } from '../ui/Notice.svelte';
@@ -124,6 +138,16 @@ export interface Game {
   onLifecycle(e: Lifecycle): void;
   /** `pagehide`: the autosave as a keepalive PUT. */
   pagehide(): void;
+  /** The paywall's Buy (P2): the purchase flow of the paywall's chapter; the server's reads unlock it, never this. */
+  buy(): void;
+  /** The paywall's Check again (P7: `delayed`, or a sheet whose close was lost). */
+  checkAgain(): void;
+  /** The paywall's Retry after a failed price read (P1); a chapter the server lists owned unlocks (P9). */
+  retryPrice(): Promise<void>;
+  /** D17: a locked chapter row: the paywall over the current root; the unlock starts the chapter. */
+  offerChapter(story: StoryId, chapter: ChapterId): void;
+  /** STORIES-PLAN "Module API": every session resource in its order, then Home; single-shot, after a batch in flight. */
+  exitToStories(): Promise<void>;
   dispose(): void;
 }
 
@@ -136,6 +160,13 @@ export const SKIP_STEP_MS = 80;
 const SOUND_CHIP = 'sound';
 /** F3 step 4's prompt: another device's save paused the autosave lane. */
 const CONFLICT_PROMPT = 'save_conflict';
+/** P7: the failed-payment note. */
+const PURCHASE_TOAST = 'purchase';
+/** SP "Module API": how long the exit waits for the autosave before the service's pending cache keeps it. */
+export const EXIT_FLUSH_MS = 2000;
+/** Every holder family the session requests besides the stage: knot preloads, F5, the explore rooms. */
+const EXIT_RELEASES: readonly string[] = ['preload:', 'next:', 'room:'];
+const IDLE: PurchaseState = Object.freeze({ kind: 'idle' });
 /** The story-update note of a resume below the level it asked for (W2 b); a later one replaces it. */
 const RESUME_TOAST = 'resume';
 /** The dev banner of a dropped tag (D10); `__TG_MOCK__` builds only. */
@@ -259,6 +290,9 @@ type Session = {
   inkErrors: number;
 };
 
+/** The paywall's purchase: its chapter, its flow once Buy ran, and the story a pre-session unlock starts (D17). */
+type Offer = { readonly chapter: ChapterId; readonly product: ProductId | null; readonly start: StoryId | null; flow: PurchaseFlow | null };
+
 type DebugHook = {
   stats(): unknown;
   lineId(): LineId | null;
@@ -284,7 +318,9 @@ export function createGame(deps: GameDeps): Game {
   let autoHeld = false;
   let loading = false;
   let disposed = false;
+  let exiting = false;
   let choiceSetId = 0;
+  let offer: Offer | null = null;
 
   // -------------------------------------------------------------------------------------------------------------
   // Intents
@@ -573,7 +609,7 @@ export function createGame(deps: GameDeps): Game {
     clearAuto();
     clearSkip();
     if (s.pending !== null) {
-      openPaywall(s.pending.chapterId); // D11: the tap after Back closed the paywall opens it again
+      openPaywall(s.pending.chapterId, null); // D11: the tap after Back closed the paywall opens it again
       return;
     }
     const runner = s.runner;
@@ -725,7 +761,7 @@ export function createGame(deps: GameDeps): Game {
     }
     const r = resume(body, ch, s.assets, minLevel === undefined ? {} : { minLevel });
     if (!r.ok) {
-      showNotice({ kind: 'error', onaction: () => void exitHome() });
+      showNotice({ kind: 'error', onaction: () => void game.exitToStories() });
       return err({ kind: 'story', error: r.error });
     }
     const resumed = r.value;
@@ -853,9 +889,79 @@ export function createGame(deps: GameDeps): Game {
     reporter.flush();
   };
 
-  const openPaywall = (id: ChapterId): void => {
-    vm.paywall = { chapter: titleOf(id), priceStars: priceOf(id), state: { kind: 'idle' } };
+  /** The offer's flow dies with it: its timers, its late answers (P2-P8). */
+  const closeOffer = (): void => {
+    const o = offer;
+    offer = null;
+    o?.flow?.dispose();
+  };
+
+  /** The paywall of `id`; an open offer of the same chapter keeps its flow, so a re-open shows its state. */
+  const openPaywall = (id: ChapterId, start: StoryId | null): void => {
+    let o = offer;
+    if (o === null || o.chapter !== id || o.start !== start) {
+      closeOffer();
+      o = { chapter: id, product: chapterEntry(id)?.productId ?? null, start, flow: null };
+      offer = o;
+    }
+    vm.paywall = { chapter: titleOf(id), priceStars: priceOf(id), state: o.flow?.state() ?? IDLE };
     screens.push({ kind: 'paywall' });
+  };
+
+  /** P9 / F4 step 4: the chapter now owned starts from its saved start, with the carry it saved. */
+  const startPending = async (s: Session): Promise<void> => {
+    const body = s.pending;
+    if (session !== s || body === null) {
+      return;
+    }
+    const loaded = await loadChapter(body.chapterId);
+    if (session !== s) {
+      return;
+    }
+    if (!loaded.ok) {
+      if (loaded.error.kind === 'not-entitled') {
+        openPaywall(body.chapterId, null); // P9: refunded in between; the server wins
+        return;
+      }
+      chapterFailed(s, loaded.error);
+      return;
+    }
+    await beginChapter(s, loaded.value, body.chapterStart.carry, true);
+  };
+
+  /** P8-P9: the server delivered the chapter: the list follows, the paywall closes, the chapter starts. */
+  const unlocked = async (o: Offer, refreshed: boolean): Promise<void> => {
+    if (!refreshed) {
+      await deps.entitlements.refresh(); // F5 and the chapter rows read the list; a failed read changes nothing here
+    }
+    if (offer !== o) {
+      return;
+    }
+    closeOffer();
+    vm.paywall = null;
+    screens.close('paywall');
+    if (o.start !== null) {
+      await game.start({ kind: 'new', story: o.start, chapter: o.chapter }); // its failures show their notices
+      return;
+    }
+    const s = session;
+    if (s !== null && s.pending?.chapterId === o.chapter) {
+      await after(() => startPending(s));
+    }
+  };
+
+  const purchaseState = (o: Offer, st: PurchaseState): void => {
+    if (offer !== o) {
+      return;
+    }
+    if (vm.paywall !== null) {
+      vm.paywall = { ...vm.paywall, state: st };
+    }
+    if (st.kind === 'failed' && st.reason === 'failed') {
+      vm.showToast({ kind: 'note', key: PURCHASE_TOAST, message: t(vm.lang, 'toast.purchase_failed'), sticky: false });
+    } else if (st.kind === 'unlocked') {
+      void unlocked(o, false); // the outcome is on screen: the chapter, or the paywall again
+    }
   };
 
   /** D11 / F4 step 3: the chapter's start is the save (`ink: null`), and the paywall opens over the game. */
@@ -868,7 +974,7 @@ export function createGame(deps: GameDeps): Game {
       s.saves.autosave(writeOf(body));
       void settings.flush(); // never rejects
     }
-    openPaywall(body.chapterId);
+    openPaywall(body.chapterId, null);
   };
 
   /** F4 / F4′ at the chapter's END, inside the intent that reached it. */
@@ -880,7 +986,7 @@ export function createGame(deps: GameDeps): Game {
       // F4′: the story is over. The knot's ending_reached marks it; nothing is saved past the knot's checkpoint.
       runner?.dispose();
       s.runner = null;
-      showNotice({ kind: 'the_end', onaction: () => void exitHome() });
+      showNotice({ kind: 'the_end', onaction: () => void game.exitToStories() });
       return;
     }
     reporter.record({ kind: 'chapter_completed', chapterId: ch.id, storyVersion: ch.meta.storyVersion });
@@ -889,12 +995,12 @@ export function createGame(deps: GameDeps): Game {
     s.runner = null;
     const id = chapterEntry(ch.id)?.next ?? null;
     if (id === null) {
-      showNotice({ kind: 'to_be_continued', onaction: () => void exitHome() });
+      showNotice({ kind: 'to_be_continued', onaction: () => void game.exitToStories() });
       return;
     }
     const entry = chapterEntry(id);
     if (entry === null) {
-      showNotice({ kind: 'error', onaction: () => void exitHome() }); // the catalog decoder admits no such chain
+      showNotice({ kind: 'error', onaction: () => void game.exitToStories() }); // the catalog decoder admits no such chain
       return;
     }
     const pending = (): SaveBodyV1 => ({
@@ -943,7 +1049,7 @@ export function createGame(deps: GameDeps): Game {
       endSession(s);
       showNotice({ kind: 'reopen' });
     } else {
-      showNotice({ kind: 'error', onaction: () => void exitHome() });
+      showNotice({ kind: 'error', onaction: () => void game.exitToStories() });
     }
     return err({ kind: 'chapter', error: e });
   };
@@ -1034,6 +1140,9 @@ export function createGame(deps: GameDeps): Game {
     loaders.next.cancel();
     s.kept = null;
     s.nextTag = null;
+    if (offer !== null && offer.start === null) {
+      closeOffer();
+    }
     vm.line = null;
     vm.choices = null;
     vm.paywall = null;
@@ -1046,14 +1155,33 @@ export function createGame(deps: GameDeps): Game {
     return err(e);
   };
 
-  /** Home again, without an autosave (a notice root: nothing is in play). */
-  const exitHome = async (): Promise<void> => {
+  /**
+   * STORIES-PLAN "Module API", in order: the chapter purchase, the autosave (EXIT_FLUSH_MS, else the pending cache),
+   * the runner, the stage and every holder family, the audio, the saves, the reporter; then Home. The Pixi
+   * Application stays.
+   */
+  const exitNow = async (): Promise<void> => {
     const s = session;
-    if (s !== null) {
-      endSession(s);
+    if (s === null) {
+      return;
     }
+    closeOffer();
+    autosave(s);
+    await s.saves.flush({ timeoutMs: EXIT_FLUSH_MS });
+    if (session !== s) {
+      return;
+    }
+    clearAuto();
+    clearSkip();
+    s.runner?.dispose();
+    s.runner = null;
     await scene.restore(EMPTY_SNAPSHOT);
+    for (const tag of EXIT_RELEASES) {
+      scene.releasePreload(tag);
+    }
     sound?.setChapter(null);
+    endSession(s);
+    reporter.flush();
     tg.setClosingConfirmation(false);
     deps.onExit();
   };
@@ -1072,6 +1200,7 @@ export function createGame(deps: GameDeps): Game {
       showNotice({ kind: 'error', onaction: () => void game.start(from) });
       return err({ kind: 'saves', error: list.error });
     }
+    closeOffer();
     const s = openSession(story);
     session = s;
     vm.notice = null;
@@ -1349,6 +1478,7 @@ export function createGame(deps: GameDeps): Game {
           clearAuto();
           autoHeld = true;
         }
+        offer?.flow?.onDeactivated();
         if (s !== null) {
           autosave(s);
         }
@@ -1363,6 +1493,7 @@ export function createGame(deps: GameDeps): Game {
         void sound.resume(); // 'needs-gesture' reaches the chip through onNeedsGesture
       }
       s?.saves.onActivated();
+      offer?.flow?.onActivated();
       if (autoHeld) {
         autoHeld = false;
         scheduleAuto();
@@ -1374,11 +1505,60 @@ export function createGame(deps: GameDeps): Game {
         autosave(s, { keepalive: true });
       }
     },
+    buy() {
+      const o = offer;
+      if (disposed || o === null || o.product === null) {
+        return;
+      }
+      o.flow ??= createPurchaseFlow({
+        api: deps.api,
+        tg,
+        clock,
+        isDelivered: chapterDelivered(deps.api),
+        onState: (st) => purchaseState(o, st),
+      });
+      o.flow.buy(o.product);
+    },
+    checkAgain() {
+      offer?.flow?.checkAgain();
+    },
+    async retryPrice() {
+      const o = offer;
+      if (o === null) {
+        return;
+      }
+      const r = await deps.entitlements.refresh();
+      if (offer !== o || vm.paywall === null) {
+        return;
+      }
+      if (r.ok && r.value.some((x) => x.chapterId === o.chapter && x.owned)) {
+        await unlocked(o, true); // P1: already owned skips to P9
+        return;
+      }
+      vm.paywall = { ...vm.paywall, priceStars: priceOf(o.chapter) };
+    },
+    offerChapter(story, chapter) {
+      const entry = catalog.stories.find((x) => x.id === story);
+      if (disposed || session !== null || entry === undefined || !entry.chapters.includes(chapter)) {
+        return;
+      }
+      openPaywall(chapter, story);
+    },
+    exitToStories() {
+      if (disposed || exiting || session === null) {
+        return DONE;
+      }
+      exiting = true;
+      return after(exitNow).finally(() => {
+        exiting = false;
+      });
+    },
     dispose() {
       if (disposed) {
         return;
       }
       disposed = true;
+      closeOffer();
       const s = session;
       if (s !== null) {
         endSession(s);

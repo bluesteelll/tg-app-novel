@@ -22,6 +22,7 @@ import type { AssetEntry, AssetManifest, ChapterCatalog, LoadedChapter, StoryId 
 import { liveRunners } from '../story/runner.ts';
 import { decodeSave } from '../story/save-codec.ts';
 import type { AssetId, ChapterId, ProductId, StoryVersion } from '../story/staging.ts';
+import type { InvoiceStatus } from '../telegram/index.ts';
 import { createScreens } from '../ui/screens.ts';
 import type { Screens } from '../ui/screens.ts';
 import { createViewModel } from '../ui/state.svelte.ts';
@@ -478,6 +479,10 @@ type Harness = {
   settings: SettingsStore;
   loader: ReturnType<typeof fakeLoader>;
   owned: Set<string>;
+  /** The purchase calls in order: createInvoice, openInvoice, getOrder, getEntitlements, and the list's refresh. */
+  readonly purchases: string[];
+  /** How many times the game handed Home back (onExit). */
+  exits(): number;
   /** The newest session's saves. */
   save(): FakeSaves;
 };
@@ -488,6 +493,8 @@ type HarnessOptions = {
   list?: SaveListResponse;
   /** Slots every new session's saves start with (the server's copy). */
   slots?: ReadonlyMap<SaveSlot, SaveFull>;
+  /** openInvoice's answers in order (then 'cancelled'); 'paid' also grants, as the webhook does on the server. */
+  invoice?: readonly InvoiceStatus[];
 };
 
 function harness(o: HarnessOptions = {}): Harness {
@@ -510,9 +517,17 @@ function harness(o: HarnessOptions = {}): Harness {
       .map((c) => ({ productId: c.productId ?? '', chapterId: c.id, priceStars: 50, owned: owned.has(c.id) }));
   const entitlements: Entitlements = {
     list: products,
-    refresh: async () => ({ ok: true, value: products() }),
+    refresh: async () => {
+      purchases.push('refresh');
+      return { ok: true, value: products() };
+    },
   };
   const fail: ApiError = { kind: 'network', detail: 'offline in the unit test' };
+  const purchases: string[] = [];
+  const answers = [...(o.invoice ?? [])];
+  let product: string | null = null;
+  let exits = 0;
+  const chapterOf = (p: string | null): string | null => catalog().chapters.find((c) => c.productId === p)?.id ?? null;
   const deps: GameDeps = {
     vm,
     screens,
@@ -523,13 +538,33 @@ function harness(o: HarnessOptions = {}): Harness {
         notify: (t) => haptics.push(`notify:${t}`),
       },
       setClosingConfirmation: () => {},
-      openInvoice: async () => ({ ok: true, value: 'cancelled' }),
+      openInvoice: async () => {
+        purchases.push('openInvoice');
+        const status = answers.shift() ?? 'cancelled';
+        const ch = chapterOf(product);
+        if (status === 'paid' && ch !== null) {
+          owned.add(ch);
+        }
+        return { ok: true, value: status };
+      },
     },
     api: {
       listSaves: async () => ({ ok: true, value: { slots: [] } }),
-      createInvoice: async () => ({ ok: false, error: fail }),
-      getOrder: async () => ({ ok: false, error: fail }),
-      getEntitlements: async () => ({ ok: true, value: { products: products() } }),
+      createInvoice: async (p) => {
+        purchases.push(`createInvoice:${p}`);
+        product = p;
+        return o.invoice === undefined ? { ok: false, error: fail } : { ok: true, value: { orderId: 'o1', invoiceUrl: 'https://t.me/$o1' } };
+      },
+      getOrder: async (id) => {
+        purchases.push(`getOrder:${id}`);
+        const ch = chapterOf(product);
+        const status = ch !== null && owned.has(ch) ? 'paid' : 'created';
+        return { ok: true, value: { orderId: id, productId: product ?? '', status } };
+      },
+      getEntitlements: async () => {
+        purchases.push('getEntitlements');
+        return { ok: true, value: { products: products() } };
+      },
     },
     catalog: catalog(),
     entitlements,
@@ -552,7 +587,9 @@ function harness(o: HarnessOptions = {}): Harness {
     fetchAsset: async () => ({ ok: false, error: { kind: 'network', detail: 'no assets in the unit test' } }),
     dpr: () => 2,
     accountLang: 'ru',
-    onExit: () => {},
+    onExit: () => {
+      exits += 1;
+    },
   };
   const game = createGame(deps);
   game.attachStage({} as HTMLElement); // the fake scene never reads its host
@@ -570,6 +607,8 @@ function harness(o: HarnessOptions = {}): Harness {
     settings,
     loader,
     owned,
+    purchases,
+    exits: () => exits,
     save: () => {
       const s = saves.at(-1);
       if (s === undefined) {
@@ -1172,5 +1211,81 @@ test('game: a story update resume at the chapter start shows its toast', async (
   expect(lineOf(h.vm)).toBe('ch1.hall.l001');
   expect(note(h.vm, 'История обновилась: продолжаем с начала главы')).toBe(true);
   expect(note(h.vm, 'История обновилась: продолжаем с начала сцены')).toBe(false);
+  h.game.dispose();
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// C5: the chapter purchase and exit to stories (PP P1-P9, D11, D17; SP "Module API")
+
+test('game: exit to stories returns the registry to baseline', async () => {
+  const base = liveRunners();
+  const h = harness({ chapters: [manorCh1(), manorCh2()], owned: ['ch2'] });
+  await playManorCh1(h);
+  // In play at an ending knot: its stage, its own preload and the next chapter (F5) are held.
+  expect(held(h)).toEqual(expect.arrayContaining(['scene:bg=bg/garden', 'scene:char:ally=char/ally/neutral', 'next:ch2=bg/study']));
+  await h.game.exitToStories();
+  expect(held(h)).toEqual([]);
+  expect(h.audio.calls).toContain('setChapter:null');
+  expect(liveRunners() - base).toBe(0);
+  expect([h.exits(), h.vm.line, h.vm.choices]).toEqual([1, null, null]);
+  h.game.dispose();
+});
+
+test('game: exit to stories disposes the save service', async () => {
+  const h = harness();
+  await startManor(h);
+  await h.game.advance(); // l002
+  const before = h.save().autosaves.length;
+  await Promise.all([h.game.exitToStories(), h.game.exitToStories()]); // single-shot
+  // SP order: the autosave of the line on screen, then the service is disposed.
+  expect(h.save().autosaves.map((w) => w.lineId).slice(before)).toEqual(['ch1.arrival.l002']);
+  expect(h.save().disposed).toBe(1);
+  expect(h.exits()).toBe(1);
+  h.game.dispose();
+});
+
+test('game: a confirmed purchase starts the pending chapter', async () => {
+  const h = harness({ chapters: [manorCh1(), manorCh2()], invoice: ['failed', 'paid'] });
+  await playManorCh1(h);
+  await h.game.advance(); // END: ch2's pending start and the paywall
+  h.game.buy();
+  await settle();
+  // P7: a failed payment is a toast, and the paywall stays.
+  expect(h.vm.toasts.some((e) => e.kind === 'note' && e.message === 'Оплата не прошла')).toBe(true);
+  expect(h.vm.paywall?.state).toEqual({ kind: 'failed', reason: 'failed' });
+  expect(lineOf(h.vm)).toBe('ch1.garden.l005');
+  h.game.buy();
+  await settle();
+  await settle();
+  // P8-P9: unlocked only after the server's order and entitlement reads; then F4 step 4 with the saved carry.
+  expect(h.purchases).toEqual([
+    'createInvoice:chapter:ch2',
+    'openInvoice',
+    'createInvoice:chapter:ch2',
+    'openInvoice',
+    'getOrder:o1',
+    'getEntitlements',
+    'refresh',
+  ]);
+  expect(h.vm.paywall).toBeNull();
+  expect(h.vm.screens.overlays).toEqual([]);
+  expect(lineOf(h.vm)).toBe('ch2.study.l001');
+  expect(reports(h).at(-1)).toEqual({ kind: 'chapter_started', chapterId: CH2, storyVersion: V_CH2 });
+  h.game.dispose();
+});
+
+test('game: a locked chapter row opens the paywall and the unlock starts it', async () => {
+  const h = harness({ chapters: [manorCh1(), manorCh2()], invoice: ['paid'] });
+  h.game.offerChapter(MANOR, CH2);
+  // D17: over the current root, before any session.
+  expect(h.vm.screens.root.kind).toBe('home');
+  expect(h.vm.screens.overlays.map((o) => o.kind)).toEqual(['paywall']);
+  expect(h.vm.paywall).toEqual({ chapter: 'Two', priceStars: 50, state: { kind: 'idle' } });
+  h.game.buy();
+  await settle();
+  await settle();
+  expect(h.vm.screens.root.kind).toBe('game');
+  expect(lineOf(h.vm)).toBe('ch2.study.l001');
+  expect(reports(h)).toEqual([{ kind: 'chapter_started', chapterId: CH2, storyVersion: V_CH2 }]);
   h.game.dispose();
 });
