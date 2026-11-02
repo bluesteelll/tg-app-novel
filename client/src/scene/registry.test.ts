@@ -3,7 +3,7 @@ import { expect, test, vi } from 'vitest';
 import type { ImageEntry, Result, Trim } from '../story/catalog.ts';
 import type { AssetId } from '../story/staging.ts';
 import type { TextureGeometry } from './layout.ts';
-import { REVIVE_DEADLINE_MS, createAssetRegistry } from './registry.ts';
+import { createAssetRegistry } from './registry.ts';
 import type { Decoded, LoadError, LoadImage } from './registry.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -562,7 +562,9 @@ test('registry: a revive that misses its deadline ends the record', async () => 
     const r = h.registry.revive(2, noAbort());
     const visible = seen(r.visible);
     const all = seen(r.all);
-    await vi.advanceTimersByTimeAsync(REVIVE_DEADLINE_MS - 1);
+    // Literal advances pin REVIVE_DEADLINE_MS at 3000 (MEMORY-PLAN 4.A: 6 x the 500 ms visible-revive threshold); a
+    // move of the value is a declared pin move here.
+    await vi.advanceTimersByTimeAsync(2999);
     expect(visible.value).toBe(null);
     expect(h.registry.current(asId('bg/v'))).not.toBe(null);
     await vi.advanceTimersByTimeAsync(1);
@@ -572,7 +574,7 @@ test('registry: a revive that misses its deadline ends the record', async () => 
     expect(releasedOf(h.released, 'v')).toBe(1);
     // The background record's deadline counts from its own start, at the end of the visible pass.
     expect(urlsOf(h.revives)).toEqual(['/assets/v.avif@2', '/assets/p.avif@2']);
-    await vi.advanceTimersByTimeAsync(REVIVE_DEADLINE_MS - 1);
+    await vi.advanceTimersByTimeAsync(2999);
     expect(all.value).toBe(null);
     await vi.advanceTimersByTimeAsync(1);
     expect(all.value).toBe('done');
