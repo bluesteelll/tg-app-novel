@@ -669,7 +669,7 @@ test('menus: save asks before overwriting, one save per tap', async () => {
     const conflicted = render(SaveLoad, { ...base, conflict: 's1' });
     const s1 = within(slotEl(conflicted.container, 's1'));
     expect(shown(slotEl(conflicted.container, 's1')), lang).toContain(t(lang, 'saves.conflict_ask'));
-    expect(names(s1.getAllByRole('button')), lang).toEqual([yes, no]);
+    expect(names(s1.getAllByRole('button')), lang).toEqual([no, yes]);
     const conflictYes = s1.getByRole('button', { name: yes });
     rawTap(conflictYes);
     rawTap(conflictYes);
@@ -709,6 +709,31 @@ test('menus: save asks before overwriting, one save per tap', async () => {
     expect(liveSave().hasAttribute('disabled'), lang).toBe(false);
     tap(liveSave());
     expect(onsave.mock.calls.length, lang).toBe(6);
+    cleanup();
+  }
+});
+
+test("menus: conflict ask keeps yes out of save's place", () => {
+  // K31 (principle 1): the 409 ask replaces Save's block with the question and No, and gives Yes a block of its own
+  // below it, as the overwrite ask does: the second tap of a double tap on Save meets the question or No, never Yes
+  // over another device's save.
+  for (const lang of LANGS) {
+    const [yes, no] = [t(lang, 'saves.yes'), t(lang, 'saves.no')];
+    const { container } = render(SaveLoad, {
+      slots: [],
+      lang,
+      saving: null,
+      conflict: 's1',
+      failed: null,
+      onsave: vi.fn<(slot: ManualSlot) => void>(),
+      onoverwrite: vi.fn<(slot: ManualSlot) => void>(),
+      oncancel: vi.fn<() => void>(),
+      onload: vi.fn<(slot: SaveSlot) => void>(),
+    });
+    expect(blocksUnderLabel(slotEl(container, 's1')), lang).toEqual([
+      { text: `${t(lang, 'saves.conflict_ask')} ${no}`, buttons: [no] },
+      { text: yes, buttons: [yes] },
+    ]);
     cleanup();
   }
 });
