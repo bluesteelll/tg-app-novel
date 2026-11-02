@@ -525,9 +525,9 @@ export function createGame(deps: GameDeps): Game {
 
   /**
    * The autosave of `deactivated`, `pagehide` and the yields' timers, which run outside the intent queue. While an
-   * intent runs, the runner may already be a step ahead of the position, the stage and the backlog `present` has not
-   * reached yet, and such a body resumes a level lower as a false story update; so it waits for the intent's end,
-   * when the session describes one step again.
+   * intent runs, the session may describe two steps at once (the runner and the backlog at the next one, the
+   * position, the checkpoint and the stage still at the last), and such a body resumes a level lower as a false story
+   * update; so it waits for the intent's end, when the session describes one step again.
    */
   const autosaveOutside = (s: Session, keepalive: boolean): void => {
     if (busy === null) {
