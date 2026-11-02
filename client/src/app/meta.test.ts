@@ -527,6 +527,37 @@ test('meta: accept and remove are single-flight and a 404 refreshes', async () =
   r.ctl.dispose();
 });
 
+const ROTATE_LABEL = /^POST \/api\/invite\/rotate$/;
+const NEW_CODE = 'fedcba9876543210fedcba9876543210';
+
+test('meta: rotate renders the new code', async () => {
+  const r = await booted();
+  expect(r.vm.meta?.social?.inviteCode).toBe(CODE);
+  r.server.on(ROTATE_LABEL, () => okWire({ ...ACCEPTED, inviteCode: NEW_CODE }));
+  const rotation = r.server.park(ROTATE_LABEL);
+  r.ctl.rotate();
+  r.ctl.rotate(); // a double tap: one rotation, since each one revokes the link before it
+  expect(r.vm.meta?.busy.social).toBe(true);
+  expect(r.server.count(ROTATE_LABEL)).toBe(1);
+  rotation.release();
+  await flush();
+  expect([r.vm.meta?.busy.social, r.vm.meta?.social?.inviteCode]).toEqual([false, NEW_CODE]);
+  expect(toasts(r)).toEqual([]);
+
+  // 429: the wait, in minutes; any other failure: the generic toast. The code stays the server's last one.
+  r.server.on(ROTATE_LABEL, () => httpError(429, 'rate_limited', 120));
+  r.ctl.rotate();
+  await flush();
+  expect(toasts(r)).toEqual([{ key: 'meta.share_wait', message: t('ru', 'meta.share_wait', { minutes: 2 }) }]);
+  r.vm.dismissToast('meta.share_wait');
+  r.server.on(ROTATE_LABEL, () => httpError(500, 'internal'));
+  r.ctl.rotate();
+  await flush();
+  expect(toasts(r)).toEqual([{ key: 'meta.action_failed', message: t('ru', 'meta.action_failed') }]);
+  expect([r.server.count(ROTATE_LABEL), r.vm.meta?.social?.inviteCode]).toEqual([3, NEW_CODE]);
+  r.ctl.dispose();
+});
+
 // ---------------------------------------------------------------------------------------------------------------
 // The pack purchase (F23; PP P2-P8)
 

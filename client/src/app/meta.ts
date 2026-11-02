@@ -81,6 +81,8 @@ export interface MetaController {
   sendInvite(): void;
   /** The invite prompt's Not now. */
   dismissInvite(): void;
+  /** Friends' new invite link (M10): one at a time, since each rotation revokes the link before it. */
+  rotate(): void;
   /** M14 / F18: a prepared message, or the share link; one share at a time. */
   share(story: StoryId | null): Promise<void>;
   /** The wallet's Buy (F23): the controller's one pack flow. */
@@ -338,10 +340,20 @@ export function createMetaController(d: MetaDeps): MetaController {
     }
   };
 
+  /** A 429 with its Retry-After shows the wait in whole minutes, at least one; true when it did. */
+  const waitNoted = (e: MetaError): boolean => {
+    if (e.kind !== 'rate-limited' || e.retryAfter === undefined) {
+      return false;
+    }
+    note('meta.share_wait', { minutes: Math.max(1, Math.ceil(e.retryAfter / 60)) });
+    return true;
+  };
+
   const shareFailed = (e: MetaError): void => {
-    if (e.kind === 'rate-limited' && e.retryAfter !== undefined) {
-      note('meta.share_wait', { minutes: Math.max(1, Math.ceil(e.retryAfter / 60)) });
-    } else if (e.kind === 'unavailable') {
+    if (waitNoted(e)) {
+      return;
+    }
+    if (e.kind === 'unavailable') {
       note('meta.telegram_unavailable'); // 502: the bot's username is unknown, so no link can be made
     } else {
       failed(e);
@@ -649,6 +661,18 @@ export function createMetaController(d: MetaDeps): MetaController {
     dismissInvite() {
       asking = null;
       screens.close('invite');
+    },
+    rotate() {
+      if (busy('social')) {
+        return;
+      }
+      flag('social', true);
+      void socialSync.mutate(() => social.rotate()).then((r) => {
+        flag('social', false);
+        if (!r.ok && !waitNoted(r.error)) {
+          failed(r.error);
+        }
+      });
     },
     async share(story) {
       if (sharing) {

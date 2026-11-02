@@ -218,6 +218,7 @@
               oninvite={() => void ctl?.share(null)}
               onconsent={() => ctl?.openConsent()}
               onpolicy={() => ctl?.openPolicy()}
+              onrotate={() => ctl?.rotate()}
             />
           {/if}
         {:else if o.kind === 'friend'}

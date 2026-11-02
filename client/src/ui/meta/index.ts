@@ -67,7 +67,10 @@ export type ShownError = {
 /** The completion card; `storyTitle` is the public catalog title in the UI language. */
 export type CardProps = { card: CardData; storyTitle: string; lang: Lang; onshare: () => void };
 
-/** Friends: `busy` disables Accept and Decline while one is answered; `onpolicy` opens the privacy policy (M26). */
+/**
+ * Friends: `busy` disables Accept, Decline and the new invite link while one is answered; `onpolicy` opens the privacy
+ * policy (M26); `onrotate` asks for a new invite link, which revokes the one already sent (M10).
+ */
 export type FriendsProps = {
   social: SocialData;
   lang: Lang;
@@ -78,6 +81,7 @@ export type FriendsProps = {
   oninvite: () => void;
   onconsent: () => void;
   onpolicy: () => void;
+  onrotate: () => void;
 };
 
 /** A friend's profile; `onremove` fires on the confirming tap only. */

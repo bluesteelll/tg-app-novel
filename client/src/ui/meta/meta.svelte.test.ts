@@ -95,6 +95,7 @@ const META_KEYS = [
   // friends
   'meta.friends_title',
   'meta.friends_invite',
+  'meta.friends_rotate',
   'meta.friends_visibility',
   'meta.friends_visibility_on',
   'meta.friends_visibility_off',
@@ -296,6 +297,7 @@ test('friends: requests show accept and decline', async () => {
       oninvite: vi.fn(),
       onconsent: vi.fn(),
       onpolicy: vi.fn(),
+      onrotate: vi.fn(),
     };
     const view = render(Friends, { social: SOCIAL, lang, ...calls });
     const q = within(view.container);
@@ -341,7 +343,17 @@ test('friends: accept and decline count only an armed tap', () => {
   for (const lang of LANGS) {
     const onaccept = vi.fn();
     const ondecline = vi.fn();
-    const view = render(Friends, { social: SOCIAL, lang, onaccept, ondecline, onopen: vi.fn(), oninvite: vi.fn(), onconsent: vi.fn(), onpolicy: vi.fn() });
+    const view = render(Friends, {
+      social: SOCIAL,
+      lang,
+      onaccept,
+      ondecline,
+      onopen: vi.fn(),
+      oninvite: vi.fn(),
+      onconsent: vi.fn(),
+      onpolicy: vi.fn(),
+      onrotate: vi.fn(),
+    });
     const q = within(view.container);
     const accepts = q.getAllByRole('button', { name: mt(lang, 'meta.friends_accept') });
     const declines = q.getAllByRole('button', { name: mt(lang, 'meta.friends_decline') });
@@ -363,6 +375,39 @@ test('friends: accept and decline count only an armed tap', () => {
     flushSync();
     expect(onaccept.mock.calls, lang).toEqual([[H2]]);
     expect(ondecline.mock.calls, lang).toEqual([[H4]]);
+    view.unmount();
+  }
+});
+
+test('friends: rotate asks for a new invite link', async () => {
+  for (const lang of LANGS) {
+    const onrotate = vi.fn();
+    const view = render(Friends, {
+      social: SOCIAL,
+      lang,
+      onaccept: vi.fn(),
+      ondecline: vi.fn(),
+      onopen: vi.fn(),
+      oninvite: vi.fn(),
+      onconsent: vi.fn(),
+      onpolicy: vi.fn(),
+      onrotate,
+    });
+    const q = within(view.container);
+    const rotate = q.getByRole('button', { name: mt(lang, 'meta.friends_rotate') });
+    // Rule (b): a rotation revokes the link already sent, so the tap that opened Friends rotates nothing, and neither
+    // does a click after a pointerdown on another button.
+    pointerClick(rotate);
+    down(q.getAllByRole('button', { name: mt(lang, 'meta.friends_accept') })[0] ?? document.body);
+    pointerClick(rotate);
+    flushSync();
+    expect(onrotate, lang).not.toHaveBeenCalled();
+    // A full tap and a keyboard or assistive-technology click (detail 0) each ask once.
+    tap(rotate);
+    keyClick(rotate);
+    expect(onrotate, lang).toHaveBeenCalledTimes(2);
+    await view.rerender({ busy: true });
+    expect((rotate as HTMLButtonElement).disabled, lang).toBe(true);
     view.unmount();
   }
 });
