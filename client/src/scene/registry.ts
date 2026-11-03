@@ -283,7 +283,7 @@ export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avi
       id,
       entry,
       ref,
-      geometry: textureGeometry(entry),
+      geometry: textureGeometry(entry, 'full'),
       holders: new Map([[holder, priority]]),
       controller: new AbortController(),
       outcome,
