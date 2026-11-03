@@ -36,6 +36,8 @@ export const ru = {
   'notice.the_end_title': 'Конец',
   'notice.the_end_action': 'К историям',
   'notice.the_end_card': 'Прохождение',
+  // LBI D5: a deploy under the open app; the page reloads at a safe point (a draft).
+  'notice.update_title': 'Вышло обновление. Перезапускаем…',
   // The in-play menu.
   'menu.title': 'Меню',
   'menu.saves': 'Сохранения',

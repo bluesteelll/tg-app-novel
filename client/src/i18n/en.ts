@@ -36,6 +36,8 @@ export const en: Record<UiKey, string> = {
   'notice.the_end_title': 'The End',
   'notice.the_end_action': 'Back to stories',
   'notice.the_end_card': 'Playthrough',
+  // LBI D5: a deploy under the open app; the page reloads at a safe point (a draft).
+  'notice.update_title': 'An update is out. Restarting…',
   // The in-play menu.
   'menu.title': 'Menu',
   'menu.saves': 'Saves',
