@@ -13,8 +13,8 @@ import type { AssetId } from '../../src/story/staging.ts';
 import { main } from '../assets.ts';
 import type { Encoders } from '../assets.ts';
 import { decodeChapterList, decodeStoryUsage } from '../story/emit.ts';
-import { encodeImage } from './encode.ts';
-import { assetUsage, decodeAssetFingerprints, sha256Hex, tierOf } from './manifest.ts';
+import { encodeImage, halfRgba } from './encode.ts';
+import { assetUsage, catalogImage, decodeAssetFingerprints, sha256Hex, tierOf } from './manifest.ts';
 import type { AssetUsage } from './manifest.ts';
 import { renderPlaceholder } from './placeholder.ts';
 import { synthWav } from './synth.ts';
@@ -257,6 +257,119 @@ describe('encode', () => {
       expect(Buffer.compare(asked.webp, plain.webp)).toBe(0);
     }
   });
+
+  test('encode: the half of a trimmed placeholder is its 2 x 2 average', async () => {
+    // MEMORY-PLAN 4.C (critique_r2 W5), on the stranger as placeholder.ts draws it, through M1's trim.
+    const id = 'char/stranger/neutral' as AssetId;
+    const catalog = decodeAssetCatalog(JSON.parse(readFileSync(new URL('../../../assets/catalog.json', import.meta.url), 'utf8')));
+    const entry = catalog.ok ? catalogImage(catalog.value, id) : undefined;
+    if (entry === undefined) {
+      throw new Error(`invariant: assets/catalog.json defines ${id}`);
+    }
+    const svg = utf8.encode(renderPlaceholder(id, entry).svg);
+    const e = await encodeImage(svg, { trim: true, half: { canvasH: 1536 } });
+    expect(e.trim, 'the stranger is trimmed').toBeDefined();
+    expect(e.half, 'the half asked on the 1536-px canvas').toBeDefined();
+    const { trim, half } = e;
+    if (trim === undefined || half === undefined) {
+      throw new Error('invariant: checked above');
+    }
+    // Sizes: exactly half the stored file per side, in both files.
+    expect({ w: half.w * 2, h: half.h * 2 }).toEqual({ w: e.w, h: e.h });
+    expect(await dims(half.avif)).toEqual({ w: e.w / 2, h: e.h / 2, format: 'heif' });
+    expect(await dims(half.webp)).toEqual({ w: e.w / 2, h: e.h / 2, format: 'webp' });
+
+    // Pixels: the stored box of this test's own raster of the SVG, at the reported trim.
+    const { data: canvasPx, info } = await sharp(svg).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    expect({ w: info.width, h: info.height }).toEqual({ w: trim.canvasW, h: trim.canvasH });
+    const stored = new Uint8Array(e.w * e.h * 4);
+    for (let y = 0; y < e.h; y++) {
+      const from = ((trim.y + y) * info.width + trim.x) * 4;
+      stored.set(canvasPx.subarray(from, from + e.w * 4), y * e.w * 4);
+    }
+    const ours = halfRgba(stored, e.w, e.h);
+    const px = (a: Uint8Array, i: number): number => a[i] ?? 0;
+    let worst = 0;
+    for (let y = 0; y < half.h; y++) {
+      for (let x = 0; x < half.w; x++) {
+        const top = (2 * y * e.w + 2 * x) * 4;
+        const block = [top, top + 4, top + e.w * 4, top + e.w * 4 + 4];
+        const o = (y * half.w + x) * 4;
+        const alpha = block.reduce((s, i) => s + px(stored, i + 3), 0) / 4;
+        worst = Math.max(worst, Math.abs(px(ours, o + 3) - alpha));
+        // Compared premultiplied: the mean of c·a over the block against the half's own c·a (0..255 scale).
+        for (const c of [0, 1, 2]) {
+          const mean = block.reduce((s, i) => s + px(stored, i + c) * px(stored, i + 3), 0) / (4 * 255);
+          worst = Math.max(worst, Math.abs((px(ours, o + c) * px(ours, o + 3)) / 255 - mean));
+        }
+      }
+    }
+    expect(worst, 'the largest premultiplied deviation from the 2 × 2 mean, per channel').toBeLessThanOrEqual(1);
+
+    // The file the encoder wrote is that average: the half WebP's alpha (lossless, sharp's alphaQuality defaults to
+    // 100) equals halfRgba's of the stored box px for px (critique r2 W3: no other resampler passes).
+    const written = await sharp(half.webp).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    expect({ w: written.info.width, h: written.info.height }).toEqual({ w: half.w, h: half.h });
+    const alphaAt = (x: number, y: number): number => px(written.data, (y * half.w + x) * 4 + 3);
+    let differing = 0;
+    for (let i = 0; i < half.w * half.h; i++) {
+      differing += px(written.data, i * 4 + 3) === px(ours, i * 4 + 3) ? 0 : 1;
+    }
+    expect(differing, "half WebP px whose alpha is not halfRgba's").toBe(0);
+    // Borders, read from the written file: alpha 0 on every border row and column not at the canvas edge.
+    const borders: Array<[string, Array<[number, number]>]> = [];
+    const rows = (y: number): Array<[number, number]> => Array.from({ length: half.w }, (_, x): [number, number] => [x, y]);
+    const cols = (x: number): Array<[number, number]> => Array.from({ length: half.h }, (_, y): [number, number] => [x, y]);
+    if (trim.x > 0) {
+      borders.push(['left', cols(0)]);
+    }
+    if (trim.y > 0) {
+      borders.push(['top', rows(0)]);
+    }
+    if (trim.x + e.w < trim.canvasW) {
+      borders.push(['right', cols(half.w - 1)]);
+    }
+    if (trim.y + e.h < trim.canvasH) {
+      borders.push(['bottom', rows(half.h - 1)]);
+    }
+    expect(borders.map(([side]) => side), 'the stranger is inside its canvas on three sides').toEqual(['left', 'top', 'right']);
+    for (const [side, points] of borders) {
+      expect(points.filter(([x, y]) => alphaAt(x, y) !== 0).length, `${side} border: px with alpha > 0`).toBe(0);
+    }
+
+    // The planned pair passes the decoder's exact-halving and canvas rules.
+    const ref = (name: string, bytes: Uint8Array): { url: string; bytes: number } => ({ url: `/assets/${name}`, bytes: bytes.length });
+    const raw = {
+      chapterId: 'ch1',
+      assets: {
+        [id]: {
+          kind: 'image',
+          w: e.w,
+          h: e.h,
+          decodedBytes: e.w * e.h * 4,
+          avif: ref('char-stranger-neutral-00000000.avif', e.avif),
+          webp: ref('char-stranger-neutral-00000000.webp', e.webp),
+          trim,
+          half: {
+            w: half.w,
+            h: half.h,
+            decodedBytes: half.w * half.h * 4,
+            avif: ref('char-stranger-neutral-half-00000000.avif', half.avif),
+            webp: ref('char-stranger-neutral-half-00000000.webp', half.webp),
+          },
+        },
+      },
+    };
+    expect(decodeAssetManifest(raw)).toEqual({ ok: true, value: raw });
+
+    // P1: no ask, or 'none', gives no half; the ask never moves the full files.
+    const unasked = await encodeImage(svg, { trim: true });
+    const none = await encodeImage(svg, { trim: true, half: 'none' });
+    expect([Object.hasOwn(unasked, 'half'), Object.hasOwn(none, 'half')]).toEqual([false, false]);
+    expect({ w: unasked.w, h: unasked.h, trim: unasked.trim }).toEqual({ w: e.w, h: e.h, trim });
+    expect(Buffer.compare(e.avif, unasked.avif)).toBe(0);
+    expect(Buffer.compare(e.webp, unasked.webp)).toBe(0);
+  }, 60_000);
 });
 
 // ---------------------------------------------------------------------------------------------------------------
