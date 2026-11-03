@@ -1,14 +1,15 @@
 # Architecture
 
-> The layers of tg-app-novel as merged at `a6365a8`, how data moves between them, and where each CLAUDE.md principle
+> The layers of tg-app-novel as merged at `805f382`, how data moves between them, and where each CLAUDE.md principle
 > is enforced. First version at `e5ce724`, with LS3 server-stats and LU1 meta-ui added at `6043941`, L10, L14b, LE1,
 > LP2, L13, LF1, LS4, LX and LM2 since, LF2 share-profile, LE2 gifts-referrals, L15a engine-wiring and LMD
 > meta-data at `48abfaf`, LPO privacy-operator, L15b app-e2e, L9 refunds-bot, LFU1 engine-followups and LFU2
 > client-followups at `6d77329`, LPH payments-hardening at `a4d53ef` (merged `d423cb3`), LMI meta-integration at
 > `3e35a7b`, and M1 memory-trim (merged `f1b707d`) and M2 memory-cpu-copy (merged `385d52f`) at `385d52f`, by D2
 > docs-final (MEMORY-PLAN section 11), and LFU3 client-followups (merged `48bc82a`) and M3c memory-half-tier (merged
-> `a6365a8`) at `a6365a8`, by docs-errata-8 (RULINGS 125, 127); open at `a6365a8`: LRF auto-refund and docs-errata-8
-> (RULINGS 126, 128), and the `design-animation` and `design-mechanics` rounds. Parts not
+> `a6365a8`) at `a6365a8`, by docs-errata-8 (RULINGS 125, 127), and LRF auto-refund (merged `a93fe54`) at
+> `805f382`, by docs-errata-9 (RULINGS 130, 131); open at `805f382`: docs-errata-9 (RULINGS 131) and the
+> `design-animation` and `design-mechanics` rounds. Parts not
 > built yet are marked **planned** with the lane and the plan section. Operating the bot and the server: the
 > runbooks, indexed in the [README](../README.md#documentation).
 
@@ -47,7 +48,7 @@ Each arrow is a function: `main` ([story.ts:530](../client/scripts/story.ts#L530
 
 ## Client modules
 
-What exists under `client/src/` at `a6365a8`. The boundary column is enforced by
+What exists under `client/src/` at `805f382`. The boundary column is enforced by
 [arch.test.ts](../client/src/arch.test.ts) (rules `RULE_IDS`, scopes in `applies`), not by review.
 
 | Module | Responsibility | Boundary |
@@ -113,7 +114,7 @@ components are tested in the vitest `dom` project.
 
 | Module | Responsibility |
 |---|---|
-| [main.rs](../server/src/main.rs) | `server serve` (the default): `Config::from_env`, `AppState::new`, bind `LISTEN_ADDR`, graceful shutdown. As merged (L9 `d837c8b`): before `AppState::new`, a set `STATIC_DIR` passes `static_files::check` or the start is refused, and the built client is served beside the API (`with_static`; [main.rs:93-155](../server/src/main.rs#L93)); `server setup` (`bot_setup` :60) registers the bot with Telegram and opens no database. As merged (LPH `d423cb3`, RULINGS 106): both subcommands check the bot texts right after the configuration (`bot_texts_ok` :38), so a text file that does not parse, or a draft under `TELEGRAM_ENV=prod`, refuses the start before anything is opened ("Startup refuses bad content", below the table) |
+| [main.rs](../server/src/main.rs) | `server serve` (the default): `Config::from_env`, `AppState::new`, bind `LISTEN_ADDR`, graceful shutdown. As merged (L9 `d837c8b`): before `AppState::new`, a set `STATIC_DIR` passes `static_files::check` or the start is refused, and the built client is served beside the API (`with_static`; [main.rs:93-167](../server/src/main.rs#L93)); `server setup` (`bot_setup` :60) registers the bot with Telegram and opens no database. As merged (LPH `d423cb3`, RULINGS 106): both subcommands check the bot texts right after the configuration (`bot_texts_ok` :38), so a text file that does not parse, or a draft under `TELEGRAM_ENV=prod`, refuses the start before anything is opened ("Startup refuses bad content", below the table). As merged (LRF `a93fe54`, RULINGS 130): `run` (:143) spawns the automatic refund sweep, the server's one background task, once the listener is bound; when serving ends it aborts the sweep and awaits it (:156-165), before `serve` closes the pool (:130) ([Payments](#payments-as-built)) |
 | [lib.rs](../server/src/lib.rs) | `AppState` (one constructor, `AppState::new` :71; `with_clock` / `with_catalog` / `with_gateway` seams; `share_limit` :60, the in-memory share window, LF2), `build_router` :133 (production routes only: `/api`, and `/telegram/webhook` outside it with its own 1 MiB body limit) |
 | [config.rs](../server/src/config.rs) | `Config::from_env`: secrets and settings only from the environment; the committed placeholder secrets are refused unless `TELEGRAM_ENV` is `test` and `PUBLIC_APP_URL` is a local host (:186-200) |
 | [api/mod.rs](../server/src/api/mod.rs) | the routes (:51): `/health`, `/auth`, `/entitlements`, `/chapters/{chapterId}`, `/assets/{file}`, `/saves`, `/saves/{storyId}/{slot}`, `/puzzles/{puzzleId}`, `/puzzles/{puzzleId}/attempts`, `/puzzles/{puzzleId}/hints/{tier}`, `/invoices`, `/orders/{orderId}`, `/stats`, `/stats/events`, `/stories/{storyId}/card`, `/wallet`, `/gifts` (LE2), `/invites/{code}`, `/invites/{code}/request`, `/social`, `/friends/requests/{handle}/accept`, `/friends/{handle}`, `/friends/{handle}/profile` (LF2), `/invite/rotate`, `/consents/friends_profile`, `/share` (LF2), and `/privacy` from `api/legal.rs`; a 16 KB body limit (300 KB for saves) and `Cache-Control: no-store` by default |
@@ -130,8 +131,8 @@ components are tested in the vitest `dom` project.
 | [meta.rs](../server/src/meta.rs), [api/cards.rs](../server/src/api/cards.rs), [db/achievements.rs](../server/src/db/achievements.rs) | story meta (LM2): the meta index and its rules, achievement conditions evaluated on the server (`met`, `meta.rs` :573), paid gates (`gate` :604, `visible` :637); `POST /api/stories/{storyId}/card` (`post_card`, `api/cards.rs` :48), whose unlocks are stored for display and grant nothing |
 | [telegram/gateway.rs](../server/src/telegram/gateway.rs) | `BotGateway` (:54) and `FrankensteinGateway` (built by `from_config` :208 on the base of `TELEGRAM_ENV`, LF2): the Bot API through frankenstein types, no bot framework (principle 6); since LF2 also `savePreparedInlineMessage` and the bot username from `getMe`, cached after the first success (`save_prepared_inline_message` :76, `bot_username` :82) |
 | [telegram/webhook.rs](../server/src/telegram/webhook.rs) | `POST /telegram/webhook` (`webhook` :63): the secret check, the decode into frankenstein's `Update`, the lenient payment probe, the dispatch ([Payments](#payments-as-built)). As merged (L9 `d837c8b`): the handler takes the raw `Body` and checks the secret before it reads the body; a `refunded_payment` goes to the revoke (also through the lenient probe), and a text message to the bot commands |
-| [telegram/payments.rs](../server/src/telegram/payments.rs), [db/payments.rs](../server/src/db/payments.rs) | the pre-checkout decision and its answer under their deadlines; the grant on `successful_payment`; their SQL in `db/`. As merged (L9 `d837c8b`): the unapplied-charge notice (`notify_unapplied` :117), the admin refund (`admin_refund` :200) and the revoke (`revoke` :171, `Repo::revoke` [db/payments.rs:351](../server/src/db/payments.rs#L351)) |
-| [telegram/commands.rs](../server/src/telegram/commands.rs), [telegram/texts.rs](../server/src/telegram/texts.rs), [telegram/setup.rs](../server/src/telegram/setup.rs) | the bot (L9 `d837c8b`): the commands, answered in private chats only (`on_text`, [commands.rs:81](../server/src/telegram/commands.rs#L81)); the bot texts of `server/locales/bot.{ru,en}.json`, compiled in and bounded (`LangTexts::entries`, texts.rs :152; as merged, LPH `d423cb3`: checked at startup, `startup_check` :345); `server setup`'s one `BotGateway::setup` call (`run`, setup.rs :80) ([Payments](#payments-as-built)) |
+| [telegram/payments.rs](../server/src/telegram/payments.rs), [db/payments.rs](../server/src/db/payments.rs) | the pre-checkout decision and its answer under their deadlines; the grant on `successful_payment`; their SQL in `db/`. As merged (L9 `d837c8b`): the unapplied-charge notice (`notify_unapplied` :176), the admin refund (`admin_refund` :489) and the revoke (`revoke` :460, `Repo::revoke` [db/payments.rs:402](../server/src/db/payments.rs#L402)). As merged (LRF `a93fe54`, RULINGS 130): the automatic refund of an unapplied charge: `after_grant` ([telegram/payments.rs:150](../server/src/telegram/payments.rs#L150): the notice, then the first attempt), `attempt` (:245), the sweep (`sweep_auto_refunds` :407, `run_auto_refund_sweep` :432), the admins' alert (`alert_given_up` :357) and `refund_unrecorded` (:520); their SQL: the row in the grant's transaction (`schedule_auto_refund`, db/payments.rs :705), the claim (`Repo::claim_auto_refund` :515) and the failure write (`Repo::auto_refund_failed` :542) |
+| [telegram/commands.rs](../server/src/telegram/commands.rs), [telegram/texts.rs](../server/src/telegram/texts.rs), [telegram/setup.rs](../server/src/telegram/setup.rs) | the bot (L9 `d837c8b`): the commands, answered in private chats only (`on_text`, [commands.rs:82](../server/src/telegram/commands.rs#L82)); the bot texts of `server/locales/bot.{ru,en}.json`, compiled in and bounded (`LangTexts::entries`, texts.rs :161; as merged, LPH `d423cb3`: checked at startup, `startup_check` :375); `server setup`'s one `BotGateway::setup` call (`run`, setup.rs :80); as merged (LRF `a93fe54`): `/refund <charge> <payer>` (`refund_args`, commands.rs :238) and `/paysupport`'s being-refunded state (`charge_text` :168) ([Payments](#payments-as-built)) |
 | [api/static_files.rs](../server/src/api/static_files.rs) | the built client next to the API when `STATIC_DIR` is set (L9 `d837c8b`, PP K27): `check` (:149) at startup, before the pool opens (as merged, LPH `d423cb3`: it also refuses a dot-entry, the root's `.vite` directory excepted), and `with_static` (:236), `/assets/*` immutable for a year and everything else `no-cache` ([Paid content](#paid-content-and-the-entitlement-check)) |
 | `server/dev` (`server-dev`) | the production router plus `/dev/launch` (dev-signed initData), `/dev/invoices/{slug}` and `/dev/prepared/{id}` (LF2: what a prepared share would send) on a fake gateway and `/dev/simulate-payment` through the production webhook handler (L9: also `/dev/refund`, the admin refund on the fake gateway, and `/dev/refunded-update`, Telegram's `refunded_payment` through the same handler), on a fresh database per launch ([dev/src/lib.rs:34](../server/dev/src/lib.rs#L34)); never linked into `server` |
 | `server/pgdev` | the local PostgreSQL 18 cluster per port and a database per test; a dependency of `server-dev` and a dev-dependency of `server`, never linked into the `server` binary ([server/Cargo.toml:31-33](../server/Cargo.toml#L31)) |
@@ -153,7 +154,7 @@ refusals: `startup_fails_without_story_index`, `startup_fails_when_first_chapter
 
 As merged (LPH `d423cb3`, RULINGS 106; LPH critique O3, O6), `server serve` runs in the order configuration, bot
 texts, `STATIC_DIR`, `AppState::new` ([main.rs:93-126](../server/src/main.rs#L93)). The bot texts come first
-(`bot_texts_ok` :38, `texts::startup_check`, [texts.rs:345](../server/src/telegram/texts.rs#L345)): a file that does
+(`bot_texts_ok` :38, `texts::startup_check`, [texts.rs:375](../server/src/telegram/texts.rs#L375)): a file that does
 not parse refuses the start, and so does a non-empty `drafts` list under `TELEGRAM_ENV=prod`; under `test` the drafts
 are a warning. `server setup` checks them too, right after the configuration (`bot_setup` :60). Tests:
 `startup_checks_bot_texts_first`, `prod_start_refuses_draft_bot_texts` (`server/tests/it/main.rs`),
@@ -571,7 +572,10 @@ wallet holds its Buy, so the player asks again only after the wait.
 - **The schema is the idempotency.** `payments` has the primary key `telegram_payment_charge_id`; `orders.charge_id`
   and `entitlements.charge_id` are UNIQUE and reference it ([0001_init.sql:12-60](../server/migrations/0001_init.sql#L12),
   test `schema_charge_id_unique`). The grant (below) writes through the primary keys `payments_pkey` and
-  `entitlements_pkey` (user, product), never a check-then-insert; the UNIQUE charge-id columns back them.
+  `entitlements_pkey` (user, product), never a check-then-insert; the UNIQUE charge-id columns back them. As
+  merged (LRF `a93fe54`): `0007_auto_refunds.sql` adds `auto_refunds`, keyed by the charge id and referencing
+  `payments` ([0007_auto_refunds.sql:7-21](../server/migrations/0007_auto_refunds.sql#L7)), and
+  `unrecorded_refunds`, with no FK (:24-31); test `auto_refund_schema_constraints`.
 
 Tests: `server/tests/it/payments.rs` (`invoice_price_from_catalog`, `invoice_each_post_is_a_new_order` (renamed from
 `invoice_reuses_recent_order` by LPH `d423cb3`, RULINGS 97 Q3),
@@ -593,8 +597,14 @@ sequenceDiagram
         S->>T: answerPreCheckoutQuery - ok, or a refusal text (5 s deadline)
         S-->>T: 200
     else message with successful_payment
-        S->>DB: Repo::grant - payment row, order paid, entitlement or pack credit (one transaction)
+        S->>DB: Repo::grant - payment row, order paid, entitlement or pack credit, auto_refunds row if unapplied (one transaction)
         alt committed
+            opt unapplied (as merged, LRF a93fe54)
+                S->>T: sendMessage - the payer's and the admins' notices
+                S->>DB: Repo::claim_auto_refund - the row due, its 60 s lease
+                S->>T: refundStarPayment - the first attempt, inside the same 5 s deadline
+                S->>DB: Repo::revoke settles the row, or Repo::auto_refund_failed - due again
+            end
             S-->>T: 200
         else database error
             S-->>T: 500 - Telegram redelivers
@@ -612,13 +622,15 @@ sequenceDiagram
 ```
 
 Participants: `webhook` ([webhook.rs:63](../server/src/telegram/webhook.rs#L63)), `secret_ok` (:80), `dispatch`
-(:196), `pre_checkout` (:279), `on_pre_checkout` ([telegram/payments.rs:39](../server/src/telegram/payments.rs#L39)),
-`Repo::pre_checkout` ([db/payments.rs:151](../server/src/db/payments.rs#L151)), `answer_pre_checkout`
-([telegram/payments.rs:69](../server/src/telegram/payments.rs#L69)), `message` (webhook.rs :213), `grant`
-(webhook.rs :252), `Repo::grant` ([db/payments.rs:225](../server/src/db/payments.rs#L225)); the `refunded_payment`
+(:196), `pre_checkout` (:281), `on_pre_checkout` ([telegram/payments.rs:70](../server/src/telegram/payments.rs#L70)),
+`Repo::pre_checkout` ([db/payments.rs:191](../server/src/db/payments.rs#L191)), `answer_pre_checkout`
+([telegram/payments.rs:100](../server/src/telegram/payments.rs#L100)), `message` (webhook.rs :213), `grant`
+(webhook.rs :254), `Repo::grant` ([db/payments.rs:269](../server/src/db/payments.rs#L269)); as merged (LRF
+`a93fe54`): `after_grant` ([telegram/payments.rs:150](../server/src/telegram/payments.rs#L150), called at webhook.rs :257),
+`Repo::claim_auto_refund` (db/payments.rs :515), `Repo::auto_refund_failed` (:542); the `refunded_payment`
 branch (since L9; docs-errata-6, RULINGS 107 N1): `refund`
-([webhook.rs:265-275](../server/src/telegram/webhook.rs#L265), 500 on a database error), `Repo::revoke`
-([db/payments.rs:351](../server/src/db/payments.rs#L351)); an admin `/refund` whose database step fails is retried
+([webhook.rs:267-277](../server/src/telegram/webhook.rs#L267), 500 on a database error), `Repo::revoke`
+([db/payments.rs:402](../server/src/db/payments.rs#L402)); an admin `/refund` whose database step fails is retried
 too (`message` :240-246, `on_text`'s `Err`; `Retry` is 500, :74).
 
 - **The route.** `POST /telegram/webhook` sits outside `/api` with its own body limit of 1 MiB
@@ -631,22 +643,22 @@ too (`message` :240-246, `on_text`'s `Err`; `Retry` is 500, :74).
   ([webhook.rs:67-71](../server/src/telegram/webhook.rs#L67); `webhook_secret_checked_before_body_read`,
   `server/tests/it/main.rs`). Logs never carry the body,
   the headers or the secret; they carry the charge id, a body field that is no secret (webhook.rs :151, :188, :217,
-  :259, :271).
+  :261, :273).
 - **Pre-checkout under the payer-row lock.** `Repo::pre_checkout` is one READ COMMITTED transaction
-  ([db/payments.rs:139-211](../server/src/db/payments.rs#L139)). It locks the payer's `users` row
+  ([db/payments.rs:179-251](../server/src/db/payments.rs#L179)). It locks the payer's `users` row
   (`FOR NO KEY UPDATE`), so one payer's pre-checkouts run one after another. Then one conditional UPDATE moves the
   order to `checkout`: the payer's own order, at its amount, in `XTR`, younger than 24 h, not owned, and no order of
-  the payer for the product in `checkout` within the last 120 s (`CHECKOUT_LOCK_SECS`, :20), this one included. With
+  the payer for the product in `checkout` within the last 120 s (`CHECKOUT_LOCK_SECS`, :24), this one included. With
   no row back, one read classifies the refusal: unknown order, mismatch, already owned, in progress or expired
-  (`classify` :526). The pre-checkout grants nothing.
+  (`classify` :732). The pre-checkout grants nothing.
 - **Answered within its deadline.** The database step is cut at 2 s (`PRECHECKOUT_DB_DEADLINE`,
-  [telegram/payments.rs:26](../server/src/telegram/payments.rs#L26)); running out of it is a `Temporary` refusal. The
+  [telegram/payments.rs:30](../server/src/telegram/payments.rs#L30)); running out of it is a `Temporary` refusal. The
   answer is cut at `CALL_DEADLINE`, 5 s ([gateway.rs:38](../server/src/telegram/gateway.rs#L38)). A compile-time
-  assertion keeps the two below Telegram's 10 s (payments.rs :30). A refusal carries its text in the payer's Telegram
-  language (`reject_text` :250, `payer_lang` :234). A failed or timed-out answer is logged, and the webhook still
+  assertion keeps the two below Telegram's 10 s (payments.rs :34). A refusal carries its text in the payer's Telegram
+  language (`reject_text` :585, `payer_lang` :569). A failed or timed-out answer is logged, and the webhook still
   answers 200: Telegram cancels an unanswered checkout.
 - **The grant only on `successful_payment`, in one transaction** (`Repo::grant`,
-  [db/payments.rs:213-318](../server/src/db/payments.rs#L213)). First the payment row,
+  [db/payments.rs:253-366](../server/src/db/payments.rs#L253)). First the payment row,
   `ON CONFLICT ON CONSTRAINT payments_pkey DO NOTHING`: no row back is `Duplicate`, so a redelivery or its concurrent
   twin changes nothing. Then the order turns `paid`, and a chapter product gets its entitlement
   (`ON CONFLICT ON CONSTRAINT entitlements_pkey DO NOTHING`). A pack (LE1) gets the credit of the kind and amount its
@@ -655,10 +667,57 @@ too (`message` :240-246, `on_text`'s `Err`; `Retry` is 500, :74).
   Telegram's message date.
 - **Unapplied and unknown products are recorded.** Every outcome commits, and a payment that cannot be applied is
   still a payment row, logged with its charge id (`GrantOutcome`,
-  [db/payments.rs:73-90](../server/src/db/payments.rs#L73); `on_successful_payment`,
-  [telegram/payments.rs:85-110](../server/src/telegram/payments.rs#L85)). `OrderMismatch`: no payable order of this
+  [db/payments.rs:77-94](../server/src/db/payments.rs#L77); `on_successful_payment`,
+  [telegram/payments.rs:116-141](../server/src/telegram/payments.rs#L116)). `OrderMismatch`: no payable order of this
   payer at this amount in `XTR`. `UnknownProduct`: the order is paid, with no entitlement and no credit. `AlreadyEntitled`: the
   payer owned the product already.
+- **Unapplied charges are refunded automatically** (as merged, LRF `a93fe54`; owner Q9, RULINGS 120, 130; PP K19).
+  For `OrderMismatch`, `AlreadyEntitled` and `UnknownProduct` the grant commits an `auto_refunds` row in its own
+  transaction, due at once (`schedule_auto_refund`, [db/payments.rs:705](../server/src/db/payments.rs#L705), called
+  at :310 and :362); a redelivery (`Duplicate`) schedules nothing. After the commit the webhook's `grant` calls
+  `after_grant` ([telegram/payments.rs:150](../server/src/telegram/payments.rs#L150); webhook.rs :257): the notice
+  first (`notify_unapplied` :176, the payer in their payment message's language, each admin in Russian), then one
+  attempt; a sweep pass may claim the row first, and the claim lets only one refund. The notice and the attempt's
+  `refundStarPayment` call share one `CALL_DEADLINE`; the attempt's claim, revoke (and, after an `AlreadyRefunded`
+  revoke, `settle_auto_refund`) and failure write are database steps outside it, each bounded by the pool's acquire
+  timeout 5 s ([db/mod.rs:26](../server/src/db/mod.rs#L26)) and the session's `lock_timeout` 2 s and
+  `statement_timeout` 15 s ([db/mod.rs:43-44](../server/src/db/mod.rs#L43)), so the webhook's answer can wait past
+  one deadline (LRF review M1). An attempt the deadline leaves no room for stays due, and the sweep takes it.
+  A refund that fails is retried, never
+  answered 500 (`grant`'s doc, webhook.rs :249-253).
+- **One attempt at a time** (`attempt`, telegram/payments.rs :245). The claim is one guarded `UPDATE`
+  (`Repo::claim_auto_refund`, db/payments.rs :515): only a due row is claimed, its `due_at` moved to the end of a
+  60 s lease (`AUTO_REFUND_LEASE_SECS`, telegram/payments.rs :39) and its attempts counted; a twin claimer gets no row.
+  Then `refundStarPayment` to the payment row's payer, with no transaction open, cut at the deadline; on success or
+  `CHARGE_ALREADY_REFUNDED` the guarded `revoke` records the refund and settles the row. Any other answer is the
+  failure write (`Repo::auto_refund_failed`, db/payments.rs :542), which only that attempt's claim can write, and
+  only while the row is pending: due again after the backoff, 60 s doubling to 1 h (`auto_refund_backoff`,
+  telegram/payments.rs :448). Only a refusal (`Api` or `Disabled`) counts toward the bound of 8
+  (`AUTO_REFUND_MAX_REFUSALS` :55); a timeout or a transport break is retried on the same backoff without bound
+  (:269-276). The eighth refusal gives the row up (`due_at` NULL), and its attempt alone alerts the admins
+  (`alert_given_up` :357, `admin_auto_refund_failed`); the refund is then the admin's `/refund <charge>`. An attempt
+  that dies after its claim leaves the row due again at its lease's end, and the retry meets
+  `CHARGE_ALREADY_REFUNDED` if the first call went through.
+- **The sweep, the server's one background task** (`run_auto_refund_sweep`, telegram/payments.rs :432). A pass reads
+  at most 20 due rows, the longest due first (`sweep_auto_refunds` :407, `AUTO_REFUND_SWEEP_BATCH` :61;
+  `Repo::due_auto_refunds`, db/payments.rs :578), and attempts each in turn, each call cut at its own
+  `CALL_DEADLINE`; then it sleeps 30 s (`AUTO_REFUND_SWEEP_INTERVAL`, telegram/payments.rs :58), so passes never
+  overlap. A pass that cannot read its rows is logged, and the loop goes on. `server serve` owns it: `run` spawns it
+  once the listener is bound and, when serving ends, aborts it and awaits it, before `serve` closes the pool
+  ([main.rs:156-165](../server/src/main.rs#L156), :130). An abort lands at an `.await`; an attempt cut after its
+  claim is retried after its lease. Two servers side by side (a deploy's overlap) both sweep, and the claim
+  arbitrates.
+- **Every refund path settles the row.** `Repo::revoke` clears the charge's `due_at` in its own transaction,
+  whichever path refunded: the attempt, the admin's `/refund` or Telegram's `refunded_payment` (db/payments.rs :501).
+  So a pending row always means an unrefunded payment
+  ([0007_auto_refunds.sql:4-6](../server/migrations/0007_auto_refunds.sql#L4)). `/paysupport` shows a charge whose
+  row is pending as being refunded (`charges_of`, db/payments.rs :662; `charge_text`, commands.rs :168), and one
+  whose row was given up, or one recorded before `0007`, as not applied.
+- **A refund of a charge the database does not hold** (as merged, LRF `a93fe54`; D2's restore gap). The admin's
+  `/refund <charge> <payer>` (`refund_args`, commands.rs :238): a charge the database holds keeps the admin refund,
+  whatever payer was typed; an unknown one is refunded to the named payer and recorded in `unrecorded_refunds`
+  (`refund_unrecorded`, telegram/payments.rs :520; `Repo::record_unrecorded_refund`, db/payments.rs :613), so a
+  repeat answers `refund_already` with no Bot API call. It grants and revokes nothing.
 - **The lenient payment probe.** A body that frankenstein's `Update` does not decode is read again as plain JSON
   (`probe`, [webhook.rs:97-168](../server/src/telegram/webhook.rs#L97)). A present `message.successful_payment`
   whose money fields and payer read goes through the same grant; one that does not read is 500, never acknowledged
@@ -666,8 +725,8 @@ too (`message` :240-246, `on_text`'s `Err`; `Retry` is 500, :74).
   no money moves.
 - **Database failures are redelivered or refused.** A grant that fails on the database is 500, so Telegram
   redelivers and the idempotent grant runs again (`grant`,
-  [webhook.rs:249-263](../server/src/telegram/webhook.rs#L249)). A pre-checkout whose database step fails is answered
-  as a `Temporary` refusal (:277-288).
+  [webhook.rs:249-265](../server/src/telegram/webhook.rs#L249)). A pre-checkout whose database step fails is answered
+  as a `Temporary` refusal (:279-290).
 - **Telegram strings** are bound through `without_nul` ([db/mod.rs:48](../server/src/db/mod.rs#L48)): PostgreSQL
   `text` cannot hold U+0000, so it becomes U+FFFD, the same key on every redelivery.
 - **Dev: simulated payments take the production path.** `server-dev`'s `POST /dev/simulate-payment` builds
@@ -676,41 +735,44 @@ too (`message` :240-246, `on_text`'s `Err`; `Retry` is 500, :74).
   [simulate.rs:210-351](../server/dev/src/simulate.rs#L210)).
 - **Refunds** (as merged, L9 `d837c8b`, RULINGS 96; until then a `refunded_payment` was acknowledged and logged, and
   nothing called `refund_star_payment`). The admin's `/refund <charge>` (`admin_refund`,
-  [telegram/payments.rs:200](../server/src/telegram/payments.rs#L200)) reads the payment row, calls
+  [telegram/payments.rs:489](../server/src/telegram/payments.rs#L489)) reads the payment row, calls
   `refund_star_payment` with no transaction open, cut at `CALL_DEADLINE`, then revokes on success or on
   `CHARGE_ALREADY_REFUNDED`. A `refunded_payment` update, read by frankenstein or by the lenient probe (`ProbeRefunded`,
   the charge id only, [webhook.rs:48](../server/src/telegram/webhook.rs#L48)), revokes too. Both end in
-  `payments::revoke(st, charge)` at the state's clock (:171) and `Repo::revoke`
-  ([db/payments.rs:351](../server/src/db/payments.rs#L351)): one transaction keyed by the charge's own rows; the
+  `payments::revoke(st, charge)` at the state's clock (:460) and `Repo::revoke`
+  ([db/payments.rs:402](../server/src/db/payments.rs#L402)): one transaction keyed by the charge's own rows; the
   `refunded_at IS NULL` guard (set to `GREATEST(now, paid_at)`) makes a repeat `AlreadyRefunded`. As merged (LPH
   `d423cb3`; RULINGS 96, 97 Q10, 100): a chapter's entitlement is deleted only when the payer has no other
   unrefunded charge whose own order of the chapter is `paid` and which keys no entitlement (a K18 double payment,
-  recorded `AlreadyEntitled`); otherwise it is re-keyed to the oldest such charge, `granted_at` kept (:383-431). The
+  recorded `AlreadyEntitled`); otherwise it is re-keyed to the oldest such charge, `granted_at` kept (:434-484). The
   candidates are read `FOR SHARE`, so one whose own refund is in flight is dropped. The residual (RULINGS 100,
-  accepted; the doc at :344-350): an admin `/refund` whose successor read falls inside a concurrent grant of another
+  accepted; the doc at :396-401): an admin `/refund` whose successor read falls inside a concurrent grant of another
   charge of the chapter leaves that charge paid and unapplied; both of its unapplied notices fired, and an admin
-  `/refund` of it recovers it. Every command
+  `/refund` of it recovers it. As merged (LRF `a93fe54`, RULINGS 130 Q5): the residual is closed: that charge's
+  grant committed its `auto_refunds` row, so it is refunded automatically, and the successor read skips every
+  charge with such a row (:442-443). Every command
   (`/start`, `/terms`, `/support`, `/paysupport`, `/privacy`, `/refund`) is answered in private chats only
-  ([commands.rs:81](../server/src/telegram/commands.rs#L81)).
+  ([commands.rs:82](../server/src/telegram/commands.rs#L82)).
 - **Bot commands and `server setup`** (as merged, L9 `d837c8b`; PP "Bot commands"). A command is answered in the
   sender's Telegram language (`payer_lang`), in that chat: `/start` with a button that opens the Mini App, `/terms`,
   `/support`, `/privacy` (the policy's URL), and `/paysupport` with the sender's newest charges, each flagged refunded
-  or not applied (`PAYSUPPORT_CHARGES` = 20, [commands.rs:22](../server/src/telegram/commands.rs#L22)). As merged (LPH
+  or not applied, or, as merged (LRF `a93fe54`), being refunded while its automatic refund is pending
+  (`PAYSUPPORT_CHARGES` = 20, [commands.rs:23](../server/src/telegram/commands.rs#L23)). As merged (LPH
   `d423cb3`, RULINGS 97, 106; L9 review M2): the newest twenty, newest first,
   and the total of the same statement (`Repo::charges_of`,
-  [db/payments.rs:478](../server/src/db/payments.rs#L478)). `/refund` is
-  the admins' (`ADMIN_TELEGRAM_IDS`); anyone else gets the unknown-command reply before any lookup (:92, :109-111). Each
+  [db/payments.rs:662](../server/src/db/payments.rs#L662)). `/refund` is
+  the admins' (`ADMIN_TELEGRAM_IDS`); anyone else gets the unknown-command reply before any lookup (:93, :113-116). Each
   reply is one `sendMessage` cut at `CALL_DEADLINE`; a command whose database step fails is answered 500, so Telegram
   redelivers it ([webhook.rs:240-246](../server/src/telegram/webhook.rs#L240)). As merged (LPH `d423cb3`; LPH critique
   O2): only an admin `/refund` still fails that way. A `/paysupport` whose read fails is logged and answered with the
   intro, which carries the support contact, and `paysupport_unavailable`, and the webhook answers 200: a 500 would
   hold the chat's later updates, the payer's `successful_payment` included (`paysupport`,
-  [commands.rs:207-224](../server/src/telegram/commands.rs#L207); `message`'s doc, webhook.rs :208-212). An admin
+  [commands.rs:217-234](../server/src/telegram/commands.rs#L217); `message`'s doc, webhook.rs :208-212). An admin
   `/refund` whose Bot API call timed out or broke in transport answers `refund_unknown_outcome`: not confirmed, Telegram
   may already have returned the Stars, and a repeat is safe; a refusal or a disabled gateway answers `refund_failed`;
-  neither revokes (`refund_reply`, [commands.rs:226-256](../server/src/telegram/commands.rs#L226)). The texts live in
+  neither revokes (`refund_reply`, [commands.rs:251-304](../server/src/telegram/commands.rs#L251)). The texts live in
   `server/locales/bot.{ru,en}.json`, compiled in; each text is checked against its Telegram bound and its placeholders
-  (`LangTexts::entries`, [texts.rs:152](../server/src/telegram/texts.rs#L152)); as merged (LPH), a draft refuses a
+  (`LangTexts::entries`, [texts.rs:161](../server/src/telegram/texts.rs#L161)); as merged (LPH), a draft refuses a
   production start ("Startup refuses bad content"). `server setup` (`bot_setup`,
   [main.rs:60](../server/src/main.rs#L60)) opens no database: one `BotGateway::setup` call registers the webhook with
   its secret, the command menus (English by default, Russian for `ru`, `uk`, `be`, `kk`) and the Russian menu button,
@@ -739,8 +801,12 @@ Tests: `server/tests/it/webhook.rs` (`webhook_missing_secret_401`, `webhook_wron
 `refund_rekeys_entitlement_to_other_paid_charge`, `refund_rekey_skips_charge_refunded_concurrently` (`refunds.rs`),
 `paysupport_lists_newest_twenty_with_total`, `paysupport_db_error_answers_200`,
 `refund_timeout_reply_says_outcome_unknown`, `bot_texts_startup_check_refuses_drafts_in_prod` (`bot.rs`),
-`startup_checks_bot_texts_first`, `prod_start_refuses_draft_bot_texts` (`main.rs`); every name: FEATURE_MAP "Refunds
-and the bot".
+`startup_checks_bot_texts_first`, `prod_start_refuses_draft_bot_texts` (`main.rs`). LRF `a93fe54`: eight names in
+`auto_refunds.rs` (`auto_refund_unapplied_outcomes_refunded_once`, `auto_refund_claim_exactly_once`,
+`auto_refund_bound_alerts_admins`, and five more), `refund_rekey_skips_auto_refund_charge`,
+`refund_rekey_race_new_charge_auto_refunded` (`refunds.rs`), `refund_command_unrecorded_charge`,
+`paysupport_shows_auto_refund_state` (`bot.rs`), `serve_runs_auto_refund_sweep` (`main.rs`), unit
+`auto_refund_backoff_bounded`. Every name: FEATURE_MAP "Refunds and the bot" (LRF's: "Automatic refunds").
 
 ## Player statistics as built
 
@@ -856,8 +922,14 @@ Principle 5, as far as it is built:
 | the database fails during a payment update, or is slow at pre-checkout | a failed grant answers 500 and Telegram redelivers; the pre-checkout is refused `Temporary`, at the latest when its 2 s database budget runs out | `webhook_database_error_retries_payment_and_refuses_precheckout`, `precheckout_lock_timeout_temporary` |
 | a forged webhook update with an oversized body | 401 before the body is read; only with the right secret does the 1 MiB limit answer 413 (L9) | `webhook_secret_checked_before_body_read` |
 | a refund repeated, raced, or its `refunded_payment` delivered twice | one revoke; a repeat is `AlreadyRefunded` and changes nothing (L9) | `refund_repeat_safe`, `refund_concurrent_revokes_once`, `refunded_payment_update_revokes_idempotent` |
-| a refund of the charge that keys a chapter's entitlement while the payer paid that chapter again (a K18 double payment, the later charge `AlreadyEntitled`) | the entitlement is re-keyed to the payer's oldest other unrefunded paid charge of the chapter, `granted_at` kept, so access stays; with none it is deleted; a candidate whose own refund is in flight is skipped (`FOR SHARE`). Residual (RULINGS 100, accepted): an admin `/refund` racing a concurrent grant of another charge of the chapter leaves that charge paid and unapplied, both unapplied notices sent; an admin `/refund` of it recovers it (LPH `d423cb3`) | `refund_rekeys_entitlement_to_other_paid_charge`, `refund_rekey_skips_charge_refunded_concurrently` |
+| a refund of the charge that keys a chapter's entitlement while the payer paid that chapter again (a K18 double payment, the later charge `AlreadyEntitled`) | the entitlement is re-keyed to the payer's oldest other unrefunded paid charge of the chapter, `granted_at` kept, so access stays; with none it is deleted; a candidate whose own refund is in flight is skipped (`FOR SHARE`). Residual (RULINGS 100, accepted): an admin `/refund` racing a concurrent grant of another charge of the chapter leaves that charge paid and unapplied, both unapplied notices sent; an admin `/refund` of it recovers it (LPH `d423cb3`); as merged (LRF `a93fe54`, RULINGS 130 Q5): closed, that charge is refunded automatically, and a charge with an `auto_refunds` row is never a successor | `refund_rekeys_entitlement_to_other_paid_charge`, `refund_rekey_skips_charge_refunded_concurrently`, `refund_rekey_race_new_charge_auto_refunded`, `refund_rekey_skips_auto_refund_charge` |
 | the Bot API refuses or times out on `/refund` | nothing is revoked and the entitlement stays; the admin's reply carries the failure (L9). As merged (LPH `d423cb3`): a timeout or a transport break answers `refund_unknown_outcome` (not confirmed, the Stars may be back, a repeat is safe), a refusal `refund_failed` | `refund_gateway_error_keeps_entitlement`, `refund_timeout_reply_says_outcome_unknown` |
+| a payment recorded but not applied: `OrderMismatch`, `AlreadyEntitled`, `UnknownProduct` (as merged, LRF `a93fe54`; owner Q9) | refunded automatically, once: the payer and the admins are told, the first attempt normally runs right after the notice (a sweep pass may claim the row first), its `refundStarPayment` call sharing the notice's deadline and its database steps outside it, the sweep retries; `/paysupport` shows it being refunded meanwhile; a redelivery changes nothing | `auto_refund_unapplied_outcomes_refunded_once`, `paysupport_shows_auto_refund_state` |
+| the automatic refund's call refused, timed out or hung (as merged, LRF `a93fe54`) | a hung call is cut at its deadline; the row is due again after 60 s doubling to 1 h; only refusals count, and the eighth gives the row up and alerts the admins once, the refund is then the admin's `/refund`; a timeout or a transport break never gives up | `auto_refund_failure_retried_with_backoff`, `auto_refund_hung_call_cut_at_deadline`, `auto_refund_bound_alerts_admins`, `telegram::payments::tests::auto_refund_backoff_bounded` |
+| two attempts at one due row, or the attempt's answer lost, or the server gone after the claim (as merged, LRF `a93fe54`) | the guarded claim lets one attempt through; a lost answer or a dead attempt leaves the row due at its lease's end, and the retry meets `CHARGE_ALREADY_REFUNDED` and revokes once | `auto_refund_claim_exactly_once`, `auto_refund_lost_answer_or_crash_revokes_once` |
+| an unapplied charge refunded first by the admin's `/refund` or by Telegram's `refunded_payment` (as merged, LRF `a93fe54`) | the revoke settles its row, and it is never attempted again | `auto_refund_settled_by_admin_or_telegram_refund` |
+| `server serve` stops while the sweep runs (as merged, LRF `a93fe54`) | the sweep is aborted and awaited before the pool closes; an attempt cut after its claim is retried after its lease | the sweep in the real binary: `serve_runs_auto_refund_sweep`; the shutdown: no test (LRF review M3) |
+| a restore lost charges paid after its backup (as merged, LRF `a93fe54`) | the admin's `/refund <charge> <payer>` refunds the named payer and records it in `unrecorded_refunds`; a repeat changes nothing; a charge the database holds keeps the admin refund | `refund_command_unrecorded_charge` |
 | the database fails on a `/paysupport` read | the intro and `paysupport_unavailable` are sent and the webhook answers 200, so the chat's later updates are not held; an admin `/refund`'s database failure is still 500 (as merged, LPH `d423cb3`) | `paysupport_db_error_answers_200` |
 | a `refunded_payment` whose charge id does not read | 500, so Telegram redelivers; one that frankenstein cannot decode still revokes through the probe (L9) | `webhook_refund_charge_unreadable_500`, `webhook_refund_undecodable_by_frankenstein_still_revokes` |
 | the Bot API hangs on `answerPreCheckoutQuery` | the call is cut at 5 s, the webhook answers 200, and the order stays `checkout` | `precheckout_answer_times_out_at_5s` |

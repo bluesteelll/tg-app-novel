@@ -71,7 +71,7 @@ cargo build -p server --release --locked
 2. Set the environment of the service (the variables: [bot-setup.md](bot-setup.md#steps), step 4), with
    `TELEGRAM_ENV=prod`, `STATIC_DIR` and `CONTENT_DIR` pointing at the copied directories.
 3. Stop the running server. It shuts down gracefully on Ctrl+C only, which is SIGINT on Linux
-   ([main.rs:157-164](../../server/src/main.rs#L157)): a service manager must stop it with that signal (systemd sends
+   ([main.rs:169-176](../../server/src/main.rs#L169)): a service manager must stop it with that signal (systemd sends
    SIGTERM unless the unit sets `KillSignal=SIGINT`). An update Telegram sent meanwhile is redelivered: the webhook
    answers nothing while the server is down.
 4. Back up the database while no server runs, so the backup holds every payment written so far, and check that the
@@ -104,7 +104,7 @@ cargo build -p server --release --locked
 ## Verify
 
 - The log shows `bot texts checked`, `opening database` with the target (never the password) and
-  `listening` with the address ([main.rs:41](../../server/src/main.rs#L41), :118, :151).
+  `listening` with the address ([main.rs:41](../../server/src/main.rs#L41), :118, :155).
 - `GET <PUBLIC_APP_URL>api/health` answers `ok`; `GET <PUBLIC_APP_URL>api/privacy` shows no placeholder.
 - `/assets/*` answers with `Cache-Control: public, max-age=31536000, immutable`, everything else `no-cache`
   ([static_files.rs:22-26](../../server/src/api/static_files.rs#L22)).
@@ -131,9 +131,13 @@ Start the previous binary with the previous `client/dist/` and `server/content/`
 migration, the previous binary does not know it: sqlx refuses a database with a migration it lacks (verify on a copy
 before relying on this), and there are no down migrations. A rollback across a migration then restores the step 4
 backup into a new, empty database and points the server at it. Restoring over the migrated database does not work:
-`pg_restore --clean` drops only the backup's own objects. Every migration after `0001` adds a table that references
-`users` (`0002_puzzles.sql` to `0006_achievements.sql`), and such a table, absent from the backup, blocks the drop of
-the `users` key. The migrated database stays as it is, as the source of the lists below.
+`pg_restore --clean` drops only the backup's own objects. Every migration from `0002_puzzles.sql` to
+`0006_achievements.sql` adds a table that references `users`, and such a table, absent from the backup, blocks the
+drop of the `users` key. `0007_auto_refunds.sql` adds `auto_refunds`, which references `payments`, and
+`unrecorded_refunds`, which references nothing
+([0007_auto_refunds.sql:16-17](../../server/migrations/0007_auto_refunds.sql#L16)): across `0007`, `auto_refunds`
+blocks the drop of the `payments` key the same way (read from the migrations; the runs below used a stand-in
+`0007`). The migrated database stays as it is, as the source of the lists below.
 
 A restore drops every row written since the backup. Step 4 repeats the erasures (from your erasure record) and the
 privacy decisions between the players the restored database has (saved in step 2); step 6 repeats the refunds (from
@@ -144,7 +148,7 @@ release is lost:
 - wallet balances and ledger rows: hints spent since come back, gifts and credits since are gone;
 - friend requests, friendships and referrals made since;
 - unpaid orders (an invoice of the new release is refused at pre-checkout as an unknown order,
-  [db/payments.rs:533-534](../../server/src/db/payments.rs#L533)) and handles (made again on demand);
+  [db/payments.rs:739-740](../../server/src/db/payments.rs#L739)) and handles (made again on demand);
 - the players who first opened the app since: the restored database has no `users` row for them;
 - the removals and declines that involve such a player, those of the players the restored database has among them.
   A block needs both players' `users` rows, so on their next launch the newcomer can send a request again to a
@@ -152,8 +156,9 @@ release is lost:
 
 Players see their game as it was at the backup; tell them before the restart, through your own channel. The bot has
 no message to all players: it sends only command replies
-([commands.rs:258-264](../../server/src/telegram/commands.rs#L258)) and the notice of an unapplied payment
-([payments.rs:112-117](../../server/src/telegram/payments.rs#L112)). Tell the players of the lost declines first. The migrated database lists them (a newcomer's `users.created_at` is after
+([commands.rs:306-313](../../server/src/telegram/commands.rs#L306)) and the notice of an unapplied payment
+([payments.rs:173-216](../../server/src/telegram/payments.rs#L173)); the admins also get the alert of a given-up
+automatic refund (:353-388). Tell the players of the lost declines first. The migrated database lists them (a newcomer's `users.created_at` is after
 the backup: it keeps the first login, [db/users.rs:10](../../server/src/db/users.rs#L10)):
 
 ```powershell
@@ -232,17 +237,25 @@ the backup: it keeps the first login, [db/users.rs:10](../../server/src/db/users
    refunded on the new release. Telegram has returned its Stars, but the restored database shows it paid and its
    purchase granted again. Run `/refund <CHARGE_ID>` for it ([payments-ops.md](payments-ops.md#refund-a-charge)):
    the server treats an API refusal holding `CHARGE_ALREADY_REFUNDED` as refunded and revokes
-   ([payments.rs:214-216](../../server/src/telegram/payments.rs#L214); verify: the Bot API's text for an
+   ([payments.rs:503-505](../../server/src/telegram/payments.rs#L503); verify: the Bot API's text for an
    already-refunded charge).
 
 On Linux, as in step 4 of [Steps](#steps): the same arguments after `"<PG_BIN>/psql"` and `"<PG_BIN>/pg_restore"`,
 with the here-string's SQL fed from a quoted here-document (`<<'SQL'` ... `SQL`) instead of `@'` ... `'@ |`.
 
 The charges of the list with a `paid_at` after `<BACKUP_UNIX_TIME>` were paid on the new release. They are paid in
-Telegram, but the restored database no longer knows them, and `/refund` answers `refund_unknown` for them
-([payments-ops.md](payments-ops.md#refund-a-charge)); re-entering them is not built. Once players have paid on the new
-release, prefer a fix-forward release to a restore. Keep the migrated database until every charge of the list is
-settled.
+Telegram, but the restored database no longer knows them, and `/refund <CHARGE_ID>` answers `refund_unknown` for them.
+Settle each with its payer, the list's `user_id`:
+
+```text
+/refund <CHARGE_ID> <USER_ID>
+```
+
+The server refunds the Stars to that payer and records the refund in `unrecorded_refunds`; it grants and revokes
+nothing, and a repeat is safe ([payments-ops.md](payments-ops.md#refund-a-charge-the-database-does-not-hold)). Only a
+server built from commit `a93fe54` on has this form. A rollback across `0007` runs an older binary, which has not: those
+charges can be settled only once a binary that has it runs again. Once players have paid on the new release, prefer a
+fix-forward release to a restore. Keep the migrated database until every charge of the list is settled.
 
 The docs lane D2 ran this procedure twice on a socket-only PostgreSQL 18.6 cluster with the tree's migrations
 `0001`-`0006`, a backup, and then a stand-in `0007` with a table referencing `users`:

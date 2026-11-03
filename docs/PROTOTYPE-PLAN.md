@@ -547,6 +547,12 @@ ACK 200 unless a money fact would be lost; explicit `allowed_updates = [message,
   `/paysupport`); `/paysupport` lists it as "not applied" from then on (derived: a `payments` row with no
   `entitlements` row and `refunded_at IS NULL`). The refund is the admin's `/refund` (V4 default); automatic refund
   is the owner's V4 call.
+  As merged (LRF `a93fe54`; RULINGS 120, 130; owner Q9, V4): the refund is automatic. The grant commits an
+  `auto_refunds` row with every unapplied charge (`OrderMismatch`, `AlreadyEntitled`, `UnknownProduct`;
+  `server/src/db/payments.rs:310`, `:361-362`, `schedule_auto_refund` `:705`); the notice tells the payer the Stars
+  are being refunded, one attempt follows it and a sweep in `serve` retries ("Unapplied charge" below). `/paysupport`
+  shows the charge as being refunded while the row is due (`server/src/telegram/commands.rs:168-191`), and "not
+  applied" only for a charge recorded before `0007` or one whose automatic refund was given up.
 - **Changed by META-PLAN (M19).** Step 3 branches on `parse_product_id(order.product_id)`: `Chapter` → the
   entitlement insert (L8b); `Pack` → `credit_in_tx` (a `resource_ledger` row keyed `pay:<charge>` plus the balance
   upsert, LE1), in the same transaction before the commit. "Not applied" becomes: a `payments` row with no
@@ -569,6 +575,12 @@ the same revoke, idempotent** [R2 §1.4].
   oldest other unrefunded paid charge of it (a K18 double payment, recorded `AlreadyEntitled`), so access stays. The
   admin's `refund_done` says so: "refunded. The purchase is revoked unless another payment paid for it"
   (`server/locales/bot.en.json`). The re-key, its lock and its accepted residual: "Refund." below.
+- **As merged (LRF `a93fe54`; RULINGS 120, 130; owner Q9).** A third path, the automatic refund of an unapplied
+  charge, ends in the same revoke, and the revoke settles the charge's `auto_refunds` row on every path
+  (`server/src/db/payments.rs:501`). The re-key never picks a charge with such a row, which closes the residual
+  ("Refund." below). `/refund <charge> <payer>` refunds a charge the database does not hold (D2's restore gap): it
+  records the refund in `unrecorded_refunds` and grants and revokes nothing (`refund_unrecorded`,
+  `server/src/telegram/payments.rs:520`).
 
 **K21. Dev tooling is a separate crate `server/dev` (package `server-dev`), never linked into the `server` binary.**
 - **What.** It holds the dev-signed initData launch, the fake bot gateway, simulated payments and refunds. It calls
@@ -764,7 +776,7 @@ client/playwright-report/  client/.svelte-check/  server/content/  target/
 | `story/carry.ts`, `save-codec.ts`, `resume.ts` | carry set; `SaveBodyV1` codec; exact/checkpoint/chapter-start resume | |
 | `scene/controller.ts` | `SceneController`: the Pixi `Application`, layers, context loss | the **only** importer of `pixi.js` |
 | `scene/executor.ts` | batch → timeline plan; skip/complete | the **only** importer of `gsap` |
-| `scene/registry.ts`, `loader.ts`, `preload.ts`, `layout.ts`, `render-loop.ts` | textures (holder sets, caps), decode of `FetchAsset` blobs, hint scheduling, pure layout math, on-demand frames; changed by MEMORY-PLAN (RULINGS 78; planned): + `scene/revive-flow.ts` (M2, new; pure, no Pixi or GSAP), the one owner of the revive's `AbortController` and the frame suspension after a context loss, and `layout.ts` gains the texture geometry (M1) and the size tier (M3c) ([MEMORY-PLAN section 6](MEMORY-PLAN.md#6-module-api-signatures-only)) | `Texture`/`ImageBitmap` created only in `loader.ts`/`registry.ts`; no `fetch` |
+| `scene/registry.ts`, `loader.ts`, `preload.ts`, `layout.ts`, `render-loop.ts` | textures (holder sets, caps), decode of `FetchAsset` blobs, hint scheduling, pure layout math, on-demand frames; changed by MEMORY-PLAN (RULINGS 78; planned): + `scene/revive-flow.ts` (M2, new; pure, no Pixi or GSAP), the one owner of the revive's `AbortController` and the frame suspension after a context loss, and `layout.ts` gains the texture geometry (M1) and the size tier (M3c) ([MEMORY-PLAN section 6](MEMORY-PLAN.md#6-module-api-signatures-only)); as merged (M1 `f1b707d`, M2 `385d52f`, M3c `a6365a8`; RULINGS 98, 117, 127, 129): `createReviveFlow` (`client/src/scene/revive-flow.ts:34`), `textureGeometry` (`client/src/scene/layout.ts:37`, M1) and `stageBound` / `halfFits` / `tierFor` (`layout.ts:56-80`, M3c) | `Texture`/`ImageBitmap` created only in `loader.ts`/`registry.ts`; no `fetch` |
 | `audio/unlock.ts` | create + resume `AudioContext` in the gesture (entry chunk) | |
 | `audio/manager.ts`, `bgm.ts`, `sfx.ts` | buses, BGM A/B streaming, SFX cache, lifecycle | the only users of `AudioContext` / `HTMLAudioElement` |
 | `saves/service.ts`, `pending.ts` | server saves (rev, write id, coalescing, conflict policy); DeviceStorage pending autosave | |
@@ -1450,6 +1462,8 @@ export interface SceneController {
 //   mount(host, o: { dpr: number; perfClass: PerfClass; fetchAsset: FetchAsset }) (F, L15b C12; M3c reads the class);
 //   stats() gains rebuilds, gen, openBitmaps, stale, staleFrames, reviveFailed, reviving (M2; __novelDebug only);
 //   debugForceContextLoss(mode: 'restorable' | 'hard') (M2: 'hard' = WEBGL_lose_context.loseContext())
+// as merged (M2 `385d52f`, M3c `a6365a8`; RULINGS 117, 127, 129; client/src/scene/controller.ts:27-49, :53, :77):
+//   mount, the stats() counters (+ visibleReviveMs, M2) and debugForceContextLoss(mode) as above
 // scene/registry.ts
 export interface AssetRegistry {
   acquire(id: AssetId, holder: string, o: { signal?: AbortSignal; priority: 'visible' | 'preload' }): Promise<Result<TextureHandle, AssetError>>;
@@ -1465,6 +1479,8 @@ export interface AssetRegistry {
 //   createAssetRegistry(deps: { load; variant; tier }) (tier: M3c); + current(id): TextureHandle | null and
 //   revive(gen, signal): { visible; all } (M2); + demote() (M3c); stats(): RegistryStats, the four above + keptBytes,
 //   keptMismatch, openBitmaps, stale, reviveFailed (M2); load's third argument is the TextureGeometry (M1)
+// as merged (M1 `f1b707d`, M2 `385d52f`, M3c `a6365a8`; RULINGS 98, 117, 127, 129; client/src/scene/registry.ts:64,
+//   :76-86, :104-117, :173): as above
 
 // audio/manager.ts
 export interface AudioManager {
@@ -1572,7 +1588,9 @@ pub async fn launch_database(cluster: &DevCluster, name: &DbName) -> Result<Stri
   var(--tg-content-safe-area-inset-X, 0px))`, set once by `viewport.ts` in CSS.
 - The stage canvas is full-bleed under the insets.
 - Changed by PUZZLES-PLAN (X10): the exploration hotspot layer is positioned inside the stage host (the box Pixi's
-  `resizeTo` reads), never in the padded overlay box, so its buttons and the canvas share one coordinate box.
+  `resizeTo` reads; as merged, M2 `385d52f`, RULINGS 117, 129: no `resizeTo`, the box the renderer is sized from at
+  init and the controller's `ResizeObserver` reads, `client/src/scene/controller.ts:116-134`, `:450`), never in the
+  padded overlay box, so its buttons and the canvas share one coordinate box.
 
 **Portrait-first:**
 - The stage is a column with `aspect-ratio: 9 / 16` max, centered.
@@ -1975,6 +1993,30 @@ The durable record is the data itself: `/paysupport` flags every charge of the u
 `refunded_at IS NULL` as "not applied". A redelivered duplicate is `Duplicate` and sends nothing. The remedy is the
 admin's `/refund`; automatic refund is the owner's call (V4). Changed by META-PLAN (M19): "not applied" also requires
 no `resource_ledger` row of that charge (a pack credit is an applied charge).
+As merged (LRF `a93fe54`; RULINGS 120, 130; owner Q9; LRF cut (a)): the webhook calls
+`after_grant(st, fact, outcome, lang)` (`server/src/telegram/webhook.rs:257`, `server/src/telegram/payments.rs:150`).
+`Granted` and `Duplicate` do nothing; an unapplied outcome gets the notice (`notify_unapplied`, now private, `:176`),
+then one refund attempt (a sweep pass may claim the row first). The notice and the attempt's `refundStarPayment` call
+share one `CALL_DEADLINE`; the claim, the revoke (and, after an `AlreadyRefunded` revoke, `settle_auto_refund`) and
+the failure write run outside it, each bounded by the pool's acquire timeout and the session's `lock_timeout` and
+`statement_timeout` (`server/src/db/mod.rs:26`, `:43-44`).
+The texts say the Stars are being refunded automatically
+(`payment_unapplied`) and that the automatic refund has started (`admin_unapplied`); both are drafts
+(`server/locales/bot.en.json:3`, `:20-21`). The durable record is the charge's `auto_refunds` row
+(`server/migrations/0007_auto_refunds.sql`), committed in the grant's transaction:
+- an attempt claims the row with one guarded `UPDATE` and a 60 s lease (`Repo::claim_auto_refund`,
+  `server/src/db/payments.rs:515`), calls `refundStarPayment` with no transaction open, and on success or
+  `CHARGE_ALREADY_REFUNDED` ends in the one guarded revoke, which settles the row (`:501`);
+- a failure is written with its error and a backoff of 60 s doubling to 1 h (`auto_refund_failed`, `:542`;
+  `auto_refund_backoff`, `server/src/telegram/payments.rs:448`). Only refusals (an API error or a disabled gateway)
+  count: the eighth gives the row up and alerts the admins once (`admin_auto_refund_failed`,
+  `AUTO_REFUND_MAX_REFUSALS`, `:55`); a timeout or a transport break retries on the same backoff with no bound;
+- the sweep (`run_auto_refund_sweep`, `:432`) takes up to 20 due rows every 30 s; `server serve` spawns it once
+  listening and aborts it at shutdown (`server/src/main.rs:156-165`).
+`/paysupport` shows four states: refunded, being refunded (the row due), not applied (legacy or given up), or none
+(applied) (`server/src/telegram/commands.rs:168-191`). Pinned by `auto_refund_unapplied_outcomes_refunded_once`,
+`auto_refund_claim_exactly_once`, `auto_refund_bound_alerts_admins`, `serve_runs_auto_refund_sweep` and
+`paysupport_shows_auto_refund_state` (`server/tests/it/`).
 
 **Refund.**
 1. Admin `/refund <charge_id>` (from `ADMIN_TELEGRAM_IDS`) or `POST /dev/refund` → look up the payment.
@@ -2024,6 +2066,11 @@ COMMIT;
     `/refund` of C recovers it, and nothing is granted twice. Only the admin's `/refund` (another chat) opens the
     window: Telegram's `refunded_payment` arrives in the payer's chat, serialized with C's `successful_payment`. Its
     closure (a users-row lock in `grant` and `revoke`) is carried to a later payments lane.
+    As merged (LRF `a93fe54`; RULINGS 130 Q5; owner Q9): closed by the automatic refund, the users-row lock ruled
+    unneeded. C's grant commits C's `auto_refunds` row, so C is refunded automatically, and the successor read skips
+    every charge with such a row (`server/src/db/payments.rs:442-443`), so the window no longer changes the outcome;
+    `Repo::revoke`'s doc states the closure (`:396-401`). Pinned by `refund_rekey_race_new_charge_auto_refunded` and
+    `refund_rekey_skips_auto_refund_charge` (`server/tests/it/refunds.rs`).
 
 **Bot commands:**
 - **`/start`** — a message with an inline `web_app` button (`PUBLIC_APP_URL`).
@@ -2031,7 +2078,8 @@ COMMIT;
 - **`/support`** — the support contact, plus the required note that Telegram support cannot help with purchases
   [R2 §1.5].
 - **`/paysupport`** — payment-support instructions and the user's own charge ids with dates, so they can quote them;
-  charges not applied to a purchase are flagged "not applied" (K19).
+  charges not applied to a purchase are flagged "not applied" (K19); as merged (LRF `a93fe54`, RULINGS 130): or
+  "being refunded" while their automatic refund is pending (`server/src/telegram/commands.rs:168-191`).
 - **`/privacy`** (changed by META-PLAN, M26; L9) — a short text with the privacy policy URL `<PUBLIC_APP_URL>api/privacy`
   (the same URL the owner sets in @BotFather).
 
@@ -2076,7 +2124,7 @@ As merged (LPH `d423cb3`, RULINGS 97, 106; LPH critique O2, O3, O6, review M2, M
 | Webhook never arrives (Telegram outage) | DB | `delayed` state; Check again; reload → entitlements; the payment is still recorded when Telegram redelivers |
 | Double tap on Buy | client guard + order reuse + checkout lock; as merged (LPH `d423cb3`, RULINGS 97 Q2): client guard + checkout lock + `AlreadyOwned`, no order reuse | one sheet; a second open of the same slug throws → ignored; as merged (LPH): a retry gets a new order and slug |
 | One order (one slug) opened on two devices, both press Pay | checkout lock, own order included | the second pre-checkout within 120 s of the first is refused (`InProgress`) — `precheckout_same_order_twice_refused`; concurrent: `precheckout_concurrent_same_order_one_passes` (the payer-row lock; changed by RULINGS 14) |
-| Two orders for one product paid in parallel | checkout lock (120 s) + entitlement PK | second pre-checkout refused (`InProgress`); if a charge still lands unapplied (`AlreadyEntitled` / `OrderMismatch`, e.g. a payment `pending` past the 120 s lock — E8): payer + admins notified, `/paysupport` flags it, refund per V4 — `unapplied_charge_notifies_payer_and_admin`; concurrent pre-checkouts: `precheckout_concurrent_two_orders_one_passes` (the payer-row lock; changed by RULINGS 14) |
+| Two orders for one product paid in parallel | checkout lock (120 s) + entitlement PK | second pre-checkout refused (`InProgress`); if a charge still lands unapplied (`AlreadyEntitled` / `OrderMismatch`, e.g. a payment `pending` past the 120 s lock — E8): payer + admins notified, `/paysupport` flags it, refund per V4 — `unapplied_charge_notifies_payer_and_admin`; as merged (LRF `a93fe54`, RULINGS 120, 130; owner Q9): refunded automatically, the first attempt normally right after the notice (a sweep pass may claim it first) and the sweep after it, `/paysupport` shows it being refunded — `auto_refund_unapplied_outcomes_refunded_once`, `paysupport_shows_auto_refund_state`; concurrent pre-checkouts: `precheckout_concurrent_two_orders_one_passes` (the payer-row lock; changed by RULINGS 14) |
 | Pre-checkout DB contention | `lock_timeout` 2 s (`55P03`) within `timeout(2 s)` (changed by RULINGS 14) | answer `ok=false` (Temporary), 200 |
 | Telegram API hung during the answer | `timeout(5 s)` | logged; 200; Telegram cancels the payment itself |
 | Undecodable / unknown update without a payment | — | 200 + log (no redelivery backlog) [R2 §2.3] |
@@ -2408,7 +2456,7 @@ raise to 48 / 64 MiB (steady 122.6, transient 138.6) is a PP decision on M2's de
 |---|---|---|---|---|
 | inkjs `Story` | `StoryRunner` | `StoryRunner.create` | `dispose()` on chapter change, load, new game | `game_holds_one_runner` (unit, debug counter) |
 | Pixi `Application` + canvas | `SceneController` | `mount()` | `destroy()`; rebuilt once on unrecoverable context loss | e2e: exactly one `<canvas>` |
-| `Texture` + `ImageBitmap` | `AssetRegistry` entry | first `acquire` | holder set empty → `destroy(true)` + `close()`; changed by MEMORY-PLAN (M2; RULINGS 78; planned): the decode bitmap closes right after its upload, the kept Blob is dropped at holder-set empty, and the revive bitmap and the revive `AbortController` get their own rows ([MEMORY-PLAN section 10](MEMORY-PLAN.md#10-resource-lifetime)) | `registry_returns_to_baseline`; e2e liveBytes |
+| `Texture` + `ImageBitmap` | `AssetRegistry` entry | first `acquire` | holder set empty → `destroy(true)` + `close()`; changed by MEMORY-PLAN (M2; RULINGS 78; planned): the decode bitmap closes right after its upload, the kept Blob is dropped at holder-set empty, and the revive bitmap and the revive `AbortController` get their own rows ([MEMORY-PLAN section 10](MEMORY-PLAN.md#10-resource-lifetime)); as merged (M2 `385d52f`; RULINGS 117, 129): the bitmap closes after an upload that returned a generation, and `release()` drops the kept Blob (`client/src/scene/loader.ts:66-69`, `:113-122`) | `registry_returns_to_baseline`; e2e liveBytes |
 | `Sprite` / containers | executor (per slot) | command start | after the replacing transition, `hide`, `scene`, `restore`, `destroy` | `executor_sprite_count_per_slot` (≤ 2 in transition, 1 after) |
 | GSAP timeline | executor | `apply(batch)` | `onComplete` → `kill()`; `complete()` → `progress(1)` → `kill()`; `destroy()` kills all | `executor_kills_timelines` (active = 0) |
 | GSAP ticker listener | `render-loop.ts` | first active timeline or dirty frame | when active = 0 and not dirty | `render_loop_idles` |
@@ -2966,6 +3014,15 @@ lane before M3s. Running: LRF auto-refund (server, slot B; base `b766a16`), besi
 The animation and mechanics lanes are being designed (`design-animation`, `design-mechanics`; RULINGS 124) and get
 rows when adopted.
 
+Changed by RULINGS 129-131 (as merged; docs lane `docs-errata-9`, group B): the State column is the state as of
+`805f382`, with each SHA from `git log --first-parent main`. Since `a6365a8` these merged: LRF auto-refund `a93fe54`
+(and the docs lane `docs-errata-8` as `be6c348`). The OPEN-QUESTIONS commit `805f382` (Q9 built) is not a lane.
+Running: no lane of this table; the docs lane `docs-errata-9` (base `805f382`) runs beside the two design rounds
+`design-animation` and `design-mechanics` (RULINGS 124, 131). "To go": M3s (server; its gate is met, and its cut
+follows MD1b `anim-parts-assets` in the order of `design-animation`'s draft,
+`D:/tmp/novel-orch/design/animation/characters.md` section 11.1b; RULINGS 131). The animation and mechanics lanes are
+being designed and get rows when adopted.
+
 | Lane | Slot | State | Gate to start (merged) | Re-cut |
 |---|---|---|---|---|
 | L1 client-shell | client | merged `ea8a6a2` (`f6e2624` before the rewrite) | — | — |
@@ -3022,7 +3079,7 @@ rows when adopted.
 | **LFU3** | client | merged `48bc82a` (new, RULINGS 99) | LMI (it holds `client/src/app/{boot,game,game.test,yields}.ts`, which LMI also holds). Changed by RULINGS 107 (OB-1): M2 (both hold `client/src/app/game.ts`; M2 first, then LFU3 beside M3c / D2) | new; RULINGS 107: gate + M2 |
 | **M3c memory-half-tier** | client | merged `a6365a8` (relaunched after its cut r1 block, RULINGS 120; new, MEMORY-PLAN) | M2 | new |
 | D2 docs-final | doc | merged `b766a16` | L15. Changed by META-PLAN: LMI, L9; revision 1: LPO. Changed by MEMORY-PLAN: M2. Changed by RULINGS 96: LPH (it closes L9's carried payment gaps before D2) | PUZZLES-PLAN, STORIES-PLAN; META-PLAN: the meta rows and runbooks; MEMORY-PLAN: gate + M2, the M1 / M2 map rows, two authoring-guide rules; RULINGS 96: gate + LPH |
-| **LRF auto-refund** | server | running (base `b766a16`; new, RULINGS 126, added 2026-11-03) | LPH (the server chain; LPH's residual closure (B) is one of its items), D2 (its item (b) is the restore gap D2 found, RULINGS 125) | new (owner Q9, RULINGS 120; launched in RULINGS 126) |
+| **LRF auto-refund** | server | merged `a93fe54` (new, RULINGS 126, added 2026-11-03) | LPH (the server chain; LPH's residual closure (B) is one of its items), D2 (its item (b) is the restore gap D2 found, RULINGS 125) | new (owner Q9, RULINGS 120; launched in RULINGS 126) |
 | **M3s memory-half-paid** | server | to go (new, MEMORY-PLAN) | M3c, L9 (the end of the server chain), D2 (the docs chain D1 → D2 → M3s). Changed by RULINGS 126: LRF (the server slot takes the money lane first; M3s's cut follows MD1's order in `design-animation`) | new; RULINGS 126: gate + LRF |
 
 There are 38 lanes: 12 merged, 2 running, 24 to go (changed by RULINGS 22, 23; it read "10 merged, 1 running, 1
@@ -3046,6 +3103,8 @@ Changed by RULINGS 105-111 (as of `3e35a7b`; docs lane `docs-errata-7`, group B)
 Changed by RULINGS 113-127 (as of `a6365a8`; docs lane `docs-errata-8`, group B): 58 lanes (LRF, RULINGS 126, is new)
 — 56 merged (M2 `385d52f`, LFU3 `48bc82a`, D2 `b766a16` and M3c `a6365a8` since `3e35a7b`), 1 running (LRF), 1 to go
 (M3s).
+Changed by RULINGS 129-131 (as of `805f382`; docs lane `docs-errata-9`, group B): 58 lanes — 57 merged (LRF `a93fe54`
+since `a6365a8`), 0 running, 1 to go (M3s).
 
 **Launch preference** when several lanes are ready (critical path first; changed by STORIES-PLAN):
 - client (two slots): L3c (running), L5, L11, LS1, L7, L12, LW3, L14a, L10, L13, L14b, LP2 ∥ LX, LS4, D1, N1, N2, L15,
@@ -3088,6 +3147,10 @@ Changed by RULINGS 113-127 (as of `a6365a8`; docs lane `docs-errata-8`, group B)
   server: LRF (running), then M3s. M2, LFU3, D2 and M3c have merged, so M3s's original gate (M3c, L9, D2) is met;
   RULINGS 126 adds LRF to it (running; the server slot takes the money lane first), and M3s's cut waits for MD1's
   order in `design-animation` (RULINGS 126).
+- Changed by RULINGS 129-131 (as of `805f382`; docs lane `docs-errata-9`, group B; merged lanes dropped): client:
+  none of this table's lanes is left (the animation and mechanics lanes get their places when adopted, RULINGS 124);
+  server: M3s. LRF has merged (`a93fe54`), so M3s's gate is met; its cut waits for MD1b in `design-animation`'s order
+  (RULINGS 131), so no lane of this table is ready now.
 
 After L9 the server slot takes doc / narrative / client lanes with disjoint locks.
 
@@ -3175,6 +3238,12 @@ beside them.
   RULINGS 126 adds LRF (running) to it; its cut waits for MD1's order in `design-animation` (RULINGS 124, 126).
 - No client lane of this table is left; the animation and mechanics lanes join the path when adopted.
 - M2, LFU3, D2 and M3c have merged (`385d52f`, `48bc82a`, `b766a16`, `a6365a8`).
+
+**Changed by RULINGS 129-131 — the critical path as of `805f382`** (docs lane `docs-errata-9`, group B).
+- The whole plan: M3s in the server slot. Its gate (M3c, L9, D2, LRF) is met; its cut waits for MD1b, which
+  `design-animation`'s draft orders before M3s's cut (RULINGS 131).
+- No client lane of this table is left; the animation and mechanics lanes join the path when adopted.
+- LRF has merged (`a93fe54`).
 
 ### Lanes
 
@@ -5392,7 +5461,9 @@ Notation:
     `setRootBack(fn | null)`; visible = stack non-empty or a root-back set; a press pops the overlay first.
   - Red: `screens: back walks the room path when no overlay` (predicted red: the button hidden with a root-back set).
   - `Stage.svelte` (changed by PUZZLES-PLAN revision 1, W3) renders an optional `children` snippet inside the stage
-    host element, the box Pixi's `resizeTo` reads; L15 mounts the hotspot layer there (PUZZLES-PLAN X10 "The box").
+    host element, the box Pixi's `resizeTo` reads (as merged, M2 `385d52f`, RULINGS 117, 129: no `resizeTo`, the box
+    the renderer is sized from at init and the controller's `ResizeObserver` reads,
+    `client/src/scene/controller.ts:116-134`, `:450`); L15 mounts the hotspot layer there (PUZZLES-PLAN X10 "The box").
     It also exposes the host element to its parent (L15 passes it to `createExploreController` as `deps.stageHost`).
     Red-first impossible in this lane: the misplacement it prevents is an offset by the overlay inset, which only a
     real layout shows; the gate is the L15 e2e `explore: hotspot buttons align with props under safe area and
@@ -6607,7 +6678,7 @@ Notation:
 | **Deployment / hosting** | VPS + Cloudflare (Q5); TLS; `setWebhook` on the public URL; backups of the payments DB [R2 §1.5] |
 | Subscriptions (30-day, ≤ 10,000 Stars) | the 10.2 `Update.subscription`; its own plan |
 | CloudStorage sync beyond settings/read-set | — |
-| Reconciliation with `getStarTransactions` | the nightly job compares payments [R2 §1.4]; automatic refund of unapplied charges, if the owner picks it (V4; the prototype notifies and flags them, K19) |
+| Reconciliation with `getStarTransactions` | the nightly job compares payments [R2 §1.4]; automatic refund of unapplied charges, if the owner picks it (V4; the prototype notifies and flags them, K19); as merged (LRF `a93fe54`; RULINGS 120, 130; owner Q9): the automatic refund is built (K19), the reconciliation stays later |
 | CG gallery, voice bus, WebGPU, fullscreen mode | — |
 | TS 7.1 (API) migration | when svelte-check supports it |
 | Ed25519 third-party validation | only if a token-less service must validate initData |
@@ -6649,7 +6720,7 @@ Changed by RULINGS 14 (decision section 6): the **PostgreSQL** row is deleted; P
 | V1 | Minimum iOS: Vite 8's default target means iOS ≥ 16.4 [R4]; older devices get a blank page | Keep the default, add a "device not supported" notice later |
 | V2 | Default language for users whose Telegram language is neither ru nor en | ru for `ru/uk/be/kk`, en otherwise |
 | V3 | Price of chapter 2 in Stars (Q3) | Placeholder `1` in `server/catalog.json`, marked PLACEHOLDER |
-| V4 | Refund policy: admin-only manual refunds via `/refund`; no self-service. And unapplied charges (`OrderMismatch` / `AlreadyEntitled`, e.g. a payment pending past the checkout lock, E8): refund them automatically, or notify and let the admin refund? | As designed; the `/paysupport` text explains how to ask. Unapplied charges: the payer and the admins get a bot message, `/paysupport` flags the charge, the admin refunds with `/refund` |
+| V4 | Refund policy: admin-only manual refunds via `/refund`; no self-service. And unapplied charges (`OrderMismatch` / `AlreadyEntitled`, e.g. a payment pending past the checkout lock, E8): refund them automatically, or notify and let the admin refund? | As designed; the `/paysupport` text explains how to ask. Unapplied charges: the payer and the admins get a bot message, `/paysupport` flags the charge, the admin refunds with `/refund`. As merged (LRF `a93fe54`; RULINGS 120, 130): the owner chose the automatic refund (OPEN-QUESTIONS Q9); every other refund stays the admin's `/refund` |
 | V5 | Terms, support contact, bot texts (Q4) | Placeholders in `server/locales/bot.*.json` and the UI tables |
 | V6 | Keep a copy of Telegram's `telegram-web-app.js` in `client/e2e/fixtures/` (it has no stated licence) | Keep it as a test fixture only; the alternative is a network fetch in e2e |
 | V7 | May ch2 be started from chapter select without finishing ch1 (default carry values)? | Allowed |
@@ -6747,6 +6818,8 @@ each has a default there; the policy's operator facts are placeholders until the
 | 35 | 2026-11-02 | RULINGS 105-111 (as merged: LMI `3e35a7b`, docs-errata-6 `f911011`; M2 running; main `3e35a7b`) | Docs lane `docs-errata-7`, group B: "Dependency order" — a marker paragraph and the State column as of `3e35a7b` (LMI merged since `a4d53ef`, with its SHA from `git log --first-parent main`, after its entry-budget STOP and the relaunch of RULINGS 105, the entry 38.9 KB br at the merge; M2 running, base `3e35a7b`), the lane count (57: 52 merged, 1 running, 4 to go), the launch preference without the merged lanes and the critical path from M2 (LFU3 after M2, beside M3c / D2, RULINGS 107). The planned order is otherwise unchanged. STORIES-PLAN revision 18 and META-PLAN revision 15 hold their lines. Ledger: `D:/tmp/novel-orch/docs-errata-7/ledger.md` |
 | 36 | 2026-11-03 | `D:/tmp/novel-orch/carry.md` at ORCH `a7a514f` (the docs-errata-8 spec, group A; RULINGS 113, 117), as merged on main `a6365a8` | Docs lane `docs-errata-8`, group A: docs-errata-7's open item OA-1 (the first-line and first-load rows count the meta controller chunk: the budget table's first-line label, the first-load basis and the LP2 lazy-chunks row) and its optional note N2 ("once the boot reads are in", the budget targets and K3's M27 paragraph); M2 (`385d52f`; RULINGS 112 Q3, 117): "Init" without `resizeTo`, as merged. Ledger: `D:/tmp/novel-orch/docs-errata-8/ledger.md` |
 | 37 | 2026-11-03 | RULINGS 113-127 (as merged: M2 `385d52f`, docs-errata-7 `7e74abc`, LFU3 `48bc82a`, D2 `b766a16`, M3c `a6365a8`; LRF running; main `a6365a8`) | Docs lane `docs-errata-8`, group B: "Dependency order" — a marker paragraph and the State column as of `a6365a8` (M2, LFU3, D2 and M3c merged since `3e35a7b`, with SHAs from `git log --first-parent main`; the new row LRF auto-refund, RULINGS 126, added 2026-11-03, running in the server slot; M3s's gate + LRF, its cut after MD1's order in `design-animation`), the lane count (58: 56 merged, 1 running, 1 to go), the launch preference without the merged lanes, the critical path LRF → M3s; "Test strategy": the `memory.spec.ts` row's state and M3c's fourth name, the e2e count (54 names in nine specs). The animation and mechanics lanes are being designed (RULINGS 124) and get rows when adopted. The planned order is otherwise unchanged. STORIES-PLAN revision 19 and META-PLAN revision 17 hold their lines. Ledger: `D:/tmp/novel-orch/docs-errata-8/ledger.md` |
+| 38 | 2026-11-03 | `D:/tmp/novel-orch/carry.md` at ORCH `6a83b36` (the docs-errata-9 spec, group A; RULINGS 129-131), as merged on main `805f382` | Docs lane `docs-errata-9`, group A: docs-errata-8's open item OA-1 (the stage host is no longer "the box Pixi's `resizeTo` reads": the viewport insets bullet and L15's `Stage.svelte` re-cut) and its verifiers' notes (the scene module row, the `SceneController` and `AssetRegistry` Module API notes and the `Texture` + `ImageBitmap` lifetime row, as merged by M1 `f1b707d`, M2 `385d52f` and M3c `a6365a8`); LRF (`a93fe54`; RULINGS 120, 130; owner Q9): the automatic refund of an unapplied charge in K19, "Unapplied charge", K20, the "Refund." residual (closed), `/paysupport`, the concurrency row, Later and V4. Ledger: `D:/tmp/novel-orch/docs-errata-9/ledger.md` |
+| 39 | 2026-11-03 | RULINGS 129-131 (as merged: docs-errata-8 `be6c348`, LRF `a93fe54`; no lane running; main `805f382`) | Docs lane `docs-errata-9`, group B: "Dependency order" — a marker paragraph and the State column as of `805f382` (LRF merged since `a6365a8`, with its SHA from `git log --first-parent main`; the OPEN-QUESTIONS commit `805f382` is not a lane; no lane of the table running, the docs lane beside the two design rounds `design-animation` and `design-mechanics`; M3s to go, its gate met and its cut after MD1b in `design-animation`'s order, RULINGS 131), the lane count (58: 57 merged, 0 running, 1 to go), the launch preference without the merged lanes, the critical path M3s. The planned order is otherwise unchanged. STORIES-PLAN, META-PLAN and MEMORY-PLAN still name LRF running: outside this lane's lock, listed in the ledger for the next docs lane. Ledger: `D:/tmp/novel-orch/docs-errata-9/ledger.md` |
 
 **Revision 1 (2026-10-30)** — what changed, by triage item:
 - **W1** (undecodable payment ACKed and lost): K17 (lenient `PaymentProbe` for the payment subset, 500 only when the
