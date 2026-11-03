@@ -509,6 +509,98 @@ describe('catalog manifests', () => {
     // Control: the rule is char and prop only; the decoder leaves a bg's size to the budget.
     expect(oneEntry('bg/street', image('bg-street-0a0a0a0a', { w: 1079, decodedBytes: 1079 * 2048 * 4 }))).toEqual([]);
   });
+
+  // MEMORY-PLAN 4.C: `half` is the half tier's file, exactly half the stored file per side, under its entry's prefix.
+  const halfFile = (name: string, w: number, h: number, prefix = '/api/assets/', over: RawEntry = {}): RawEntry => ({
+    w,
+    h,
+    decodedBytes: w * h * 4,
+    avif: { url: `${prefix}${name}-half-0f0f0f0f.avif`, bytes: 30_000 },
+    webp: { url: `${prefix}${name}-half-0f0f0f0f.webp`, bytes: 50_000 },
+    ...over,
+  });
+  /** An entry whose own files are public (image()'s are gated). */
+  const publicImage = (name: string, over: RawEntry = {}): RawEntry =>
+    image(name, { avif: { url: `/assets/${name}.avif`, bytes: 120_000 }, webp: { url: `/assets/${name}.webp`, bytes: 200_000 }, ...over });
+  const ALLY_HALF = halfFile('char-ally-neutral', 233, 697);
+
+  test('catalog: half tier decodes', () => {
+    const raw = {
+      chapterId: 'ch1',
+      assets: {
+        'bg/street': publicImage('bg-street-0a0a0a0a', { half: halfFile('bg-street', 540, 1024, '/assets/') }),
+        'char/ally/neutral': trimmedAlly({ half: ALLY_HALF }),
+        'prop/note': image('prop-note-0d0d0d0d', {
+          w: 494,
+          h: 494,
+          decodedBytes: 494 * 494 * 4,
+          trim: { canvasW: 512, canvasH: 512, x: 9, y: 9 },
+          half: halfFile('prop-note', 247, 247),
+        }),
+        'bg/cafe': image('bg-cafe-0a0a0a0a'),
+      },
+    };
+    const r = decodeAssetManifest(raw);
+    expect(r).toEqual({ ok: true, value: raw });
+    // An entry without a half carries no `half` key at all.
+    const cafe = r.ok ? r.value.assets['bg/cafe' as AssetId] : undefined;
+    expect(cafe).toBeDefined();
+    expect(Object.hasOwn(cafe ?? {}, 'half')).toBe(false);
+  });
+
+  test('catalog: a half that is not exactly half its file is an error value', () => {
+    const half = 'assets.char/ally/neutral.half';
+    const cases: ReadonlyArray<readonly [string, RawEntry, string]> = [
+      ['233×698 under a 466×1394 file', halfFile('char-ally-neutral', 233, 698), `${half}.h`],
+      ['a width that is not half', halfFile('char-ally-neutral', 234, 697), `${half}.w`],
+      ['decodedBytes is not w*h*4', halfFile('char-ally-neutral', 233, 697, '/api/assets/', { decodedBytes: 233 * 697 * 3 }), `${half}.decodedBytes`],
+      ['a trim of its own', halfFile('char-ally-neutral', 233, 697, '/api/assets/', { trim: ALLY_TRIM }), `${half}.trim`],
+      ['a half without webp', halfFile('char-ally-neutral', 233, 697, '/api/assets/', { webp: undefined }), `${half}.webp`],
+    ];
+    for (const [name, value, path] of cases) {
+      // JSON round trip: an `undefined` override drops the key, as a file would not have it.
+      const found = oneEntry('char/ally/neutral', JSON.parse(JSON.stringify(trimmedAlly({ half: value }))) as RawEntry);
+      expect(found, `${name}: ${JSON.stringify(found)}`).toEqual([{ file: 'assets.json', path, detail: expect.any(String) as string }]);
+    }
+    expect(oneEntry('char/ally/neutral', trimmedAlly({ half: ALLY_HALF }))).toEqual([]); // control
+  });
+
+  test('catalog: a char half off the 1536-px canvas is an error value', () => {
+    const at = (id: string): CatalogIssue => ({ file: 'assets.json', path: `assets.${id}.half`, detail: expect.any(String) as string });
+    // MEMORY-PLAN 4.C, the character canvas rule: a char on a smaller canvas loads its full file on either tier.
+    const small = image('char-ally-neutral-0c0c0c0c', {
+      w: 400,
+      h: 1100,
+      decodedBytes: 400 * 1100 * 4,
+      trim: { canvasW: 600, canvasH: 1200, x: 100, y: 50 },
+      half: halfFile('char-ally-neutral', 200, 550),
+    });
+    expect(oneEntry('char/ally/neutral', small)).toEqual([at('char/ally/neutral')]);
+    const untrimmed = image('char-ally-neutral-0c0c0c0c', { w: 768, h: 1024, decodedBytes: 768 * 1024 * 4, half: halfFile('char-ally-neutral', 384, 512) });
+    expect(oneEntry('char/ally/neutral', untrimmed)).toEqual([at('char/ally/neutral')]);
+    // Control: on the canonical canvas the half decodes.
+    expect(oneEntry('char/ally/neutral', trimmedAlly({ half: ALLY_HALF }))).toEqual([]);
+  });
+
+  test('catalog: a half on a cover or under another prefix than its file is an error value', () => {
+    const cover = image('x', {
+      w: 360,
+      h: 640,
+      decodedBytes: 360 * 640 * 4,
+      avif: { url: '/assets/cover-manor-1a2b3c4d.avif', bytes: 9_000 },
+      webp: { url: '/assets/cover-manor-1a2b3c4d.webp', bytes: 12_000 },
+      half: halfFile('cover-manor', 180, 320, '/assets/'),
+    });
+    const covers = decodeCoverManifest({ assets: { 'cover/manor': cover } });
+    expect(covers.ok ? [] : covers.error).toEqual([{ file: 'story-gen/covers.json', path: 'assets.cover/manor.half', detail: expect.any(String) as string }]);
+    // Principle 0: a public half of a gated file ships its pixels free; a gated half of a public file is a slip too.
+    const at = [{ file: 'assets.json', path: 'assets.bg/street.half', detail: expect.any(String) as string }];
+    expect(oneEntry('bg/street', image('bg-street-0a0a0a0a', { half: halfFile('bg-street', 540, 1024, '/assets/') }))).toEqual(at);
+    expect(oneEntry('bg/street', publicImage('bg-street-0a0a0a0a', { half: halfFile('bg-street', 540, 1024, '/api/assets/') }))).toEqual(at);
+    // Controls: a half under its file's own prefix decodes, gated (M3s) and public (M3c) alike.
+    expect(oneEntry('bg/street', image('bg-street-0a0a0a0a', { half: halfFile('bg-street', 540, 1024, '/api/assets/') }))).toEqual([]);
+    expect(oneEntry('bg/street', publicImage('bg-street-0a0a0a0a', { half: halfFile('bg-street', 540, 1024, '/assets/') }))).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------------------------------------------
