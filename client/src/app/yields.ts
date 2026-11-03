@@ -37,6 +37,8 @@ import type { Gift, HotspotKey, Room, RoomId, WorldPublic, WorldText } from '../
 
 /** X12: the door fade of a room batch. */
 export const ROOM_FADE_MS = 400;
+/** B-001 / X11: a take's prop fades out of the room on screen over this long; the bg already shown stays. */
+export const TAKE_FADE_MS = 300;
 /** The close-up's fade in and out (a puzzle with a `closeup`). */
 export const CLOSEUP_FADE_MS = 300;
 /** PZ F9: a `dirty` effect autosaves after this quiet time; a newer one restarts it. */
@@ -291,6 +293,7 @@ export function createYields(h: YieldsHost): Yields {
         if (name !== null) {
           vm.showToast({ kind: 'note', key: 'got', message: name, sticky: false });
         }
+        jobs.push(takeBatch); // B-001: before a `then`'s room or knot job, so the prop goes first
         return;
       }
       case 'lock':
@@ -387,6 +390,30 @@ export function createYields(h: YieldsHost): Yields {
     }
     rootShown(); // the rooms are back: the root-back returns from the path state (X12)
     controller?.roomShown(); // K47 / D20: after the batch, so the registry counts the room before its neighbours
+  };
+
+  /**
+   * B-001: a take removes its prop from the room on screen at once, not at the next room batch. It is a fade, not a
+   * cut (owner Q53: motion wherever the picture changes): a crossfade onto the bg already shown keeps the bg and fades
+   * only the props that changed. A `got` that changes no prop (a take without one, an effect's `give`, a room the stage
+   * does not show) applies nothing.
+   */
+  const takeBatch = async (): Promise<void> => {
+    const room = world.section !== null ? world.room : null;
+    const w = h.chapter()?.world ?? null;
+    const entry = w === null || room === null ? undefined : indexOf(w).rooms.get(room);
+    if (room === null || entry === undefined) {
+      return;
+    }
+    const stage = h.scene.snapshot();
+    if (stage.bg !== entry.room.bg || stage.cg !== null) {
+      return; // another picture is up: the room batch that shows the room again draws its props
+    }
+    const props = roomProps(room, entry.room, world);
+    if (sameProps(stage.props, props)) {
+      return;
+    }
+    await h.apply([{ kind: 'bg', bg: entry.room.bg, t: 'crossfade', ms: TAKE_FADE_MS }, { kind: 'props', props }], []);
   };
 
   // -------------------------------------------------------------------------------------------------------------
