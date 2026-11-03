@@ -176,16 +176,17 @@ COMMIT;
 '@ | & "<PG_BIN>\psql" "<DATABASE_URL>" -v ON_ERROR_STOP=1 -v uid=<USER_ID>
 ```
 
-`ON_ERROR_STOP` ends the session at the first failing statement, before `COMMIT`, so nothing is applied. The columns
-are the migrations' ([0002_puzzles.sql](../../server/migrations/0002_puzzles.sql),
+On Linux, call `"<PG_BIN>/psql"` with the same arguments and feed the SQL from a quoted here-document (`<<'SQL'` ...
+`SQL`) instead of `@'` ... `'@ |`. `ON_ERROR_STOP` ends the session at the first failing statement, before `COMMIT`,
+so nothing is applied. The columns are the migrations' ([0002_puzzles.sql](../../server/migrations/0002_puzzles.sql),
 [0004_economy.sql](../../server/migrations/0004_economy.sql), [0005_social.sql](../../server/migrations/0005_social.sql),
-[0006_achievements.sql](../../server/migrations/0006_achievements.sql)). The docs lane D2 ran this block once, as
+[0006_achievements.sql](../../server/migrations/0006_achievements.sql)). The docs lane D2 ran this block twice, as
 written, on a probe cluster with the tree's migrations ([deploy.md](deploy.md#roll-back), the last paragraph). Run
 the access query above first, then this, on a copy or at a quiet hour. Tell the player what was kept and why
 (payments, for accounting).
 
 Then add the erasure to your erasure record: the player's id and the time in unix seconds
-(`[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()`). Keep the record on the host with the backups, never in the
+(`[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()`; on Linux `date +%s`). Keep the record on the host with the backups, never in the
 repository: it holds player ids. The erasure leaves no dated trace in the database, and a database restore from a
 backup older than the erasure brings the rows back. A rollback then runs the erasure again from this record, before
 the server starts on the restored database ([deploy.md](deploy.md#roll-back), step 4).

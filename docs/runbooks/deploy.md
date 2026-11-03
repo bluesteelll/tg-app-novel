@@ -135,19 +135,34 @@ backup into a new, empty database and points the server at it. Restoring over th
 `users` (`0002_puzzles.sql` to `0006_achievements.sql`), and such a table, absent from the backup, blocks the drop of
 the `users` key. The migrated database stays as it is, as the source of the lists below.
 
-A restore drops every row written since the backup. Steps 2, 4 and 6 repeat the refunds, the erasures and the
-players' privacy decisions; the charges paid on the new release stay unknown to the restored database (below).
-Everything else written on the new release is lost:
+A restore drops every row written since the backup. Step 4 repeats the erasures (from your erasure record) and the
+privacy decisions between the players the restored database has (saved in step 2); step 6 repeats the refunds (from
+step 2's charges list). The charges paid on the new release stay unknown to the restored database (below). Everything else written on the new
+release is lost:
 
 - saves, puzzle progress and hint unlocks, stat events and achievement unlocks;
 - wallet balances and ledger rows: hints spent since come back, gifts and credits since are gone;
 - friend requests, friendships and referrals made since;
-- the players who first opened the app since: the restored database has no `users` row for them.
+- unpaid orders (an invoice of the new release is refused at pre-checkout as an unknown order,
+  [db/payments.rs:533-534](../../server/src/db/payments.rs#L533)) and handles (made again on demand);
+- the players who first opened the app since: the restored database has no `users` row for them;
+- the removals and declines that involve such a player, those of the players the restored database has among them.
+  A block needs both players' `users` rows, so on their next launch the newcomer can send a request again to a
+  player who said no.
 
-Players see their game as it was at the backup; tell them before the restart.
+Players see their game as it was at the backup; tell them before the restart, through your own channel. The bot has
+no message to all players: it sends only command replies
+([commands.rs:258-264](../../server/src/telegram/commands.rs#L258)) and the notice of an unapplied payment
+([payments.rs:112-117](../../server/src/telegram/payments.rs#L112)). Tell the players of the lost declines first. The migrated database lists them (a newcomer's `users.created_at` is after
+the backup: it keeps the first login, [db/users.rs:10](../../server/src/db/users.rs#L10)):
+
+```powershell
+& "<PG_BIN>\psql" "<DATABASE_URL>" -c "SELECT b.user_id AS decided_by, b.blocked_id, b.created_at FROM friend_blocks b WHERE b.created_at > <BACKUP_UNIX_TIME> AND EXISTS (SELECT 1 FROM users u WHERE u.id IN (b.user_id, b.blocked_id) AND u.created_at > <BACKUP_UNIX_TIME>) ORDER BY b.created_at"
+```
 
 1. Stop the server.
-2. From the migrated database, save two files. The first lists the charges paid or refunded since the backup (`-o`):
+2. From the migrated database, save two files. Both hold player ids: put them beside `<BACKUP_FILE>`, outside the
+   repository and the release directories. The first lists the charges paid or refunded since the backup (`-o`):
 
    ```powershell
    & "<PG_BIN>\psql" "<DATABASE_URL>" -o "<CHARGES_FILE>" -c "SELECT p.telegram_payment_charge_id, p.user_id, p.amount, p.paid_at, p.refunded_at FROM payments p WHERE p.paid_at > <BACKUP_UNIX_TIME> OR p.refunded_at > <BACKUP_UNIX_TIME> ORDER BY p.paid_at"
@@ -210,7 +225,8 @@ Players see their game as it was at the backup; tell them before the restart.
      ```
 
    Erasures go first. The file holds only what the migrated database kept, so a player who came back after an erasure
-   gets their new rows back, and no erasure removes them again.
+   gets their new rows back, and no erasure removes them again. Delete `<REAPPLY_FILE>` once it applied; keep
+   `<CHARGES_FILE>` until every charge of it is settled (below).
 5. Set `DATABASE_URL=<RESTORE_DATABASE_URL>` in the service's environment and start the previous binary.
 6. **Refunds.** A charge of the list with a `paid_at` at or before `<BACKUP_UNIX_TIME>` and a `refunded_at` was
    refunded on the new release. Telegram has returned its Stars, but the restored database shows it paid and its
@@ -247,5 +263,6 @@ The docs lane D2 ran this procedure twice on a socket-only PostgreSQL 18.6 clust
 | `static dir refused: ...` | `STATIC_DIR` overlaps `CONTENT_DIR`, holds a dot-entry or a link out of it | point it at a clean copy of `client/dist/` |
 | `startup failed: content: ...` | `server/content/` missing, stale, or `server/catalog.json` does not fit it | rebuild with `npm --prefix client run build` and copy both together |
 | `startup failed: database: ...` | the database does not exist, is unreachable, or refuses TLS | create it; check `DATABASE_URL` and `sslmode=verify-full` |
+| step 4's decisions stop at `duplicate key value violates unique constraint "invite_codes_one_active"` | an erasure since the backup is missing from the erasure record: the restored database still holds that player's old active code | the single transaction applied nothing; run the erasure for that player on `<RESTORE_DATABASE_URL>`, add it to the record, apply the file again |
 | `startup failed: migrations: ...` | a migration file changed after it was applied; or, for a previous binary, a migration it lacks | never edit an applied migration after the first deployment; add a new one; for a rollback, [Roll back](#roll-back) |
 | `bot texts refused: ...`, `privacy policy: ...` | a production value is missing | the preconditions above |
