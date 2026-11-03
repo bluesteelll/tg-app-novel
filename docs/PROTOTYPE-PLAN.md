@@ -1997,8 +1997,9 @@ As merged (LRF `a93fe54`; RULINGS 120, 130; owner Q9; LRF cut (a)): the webhook 
 `after_grant(st, fact, outcome, lang)` (`server/src/telegram/webhook.rs:257`, `server/src/telegram/payments.rs:150`).
 `Granted` and `Duplicate` do nothing; an unapplied outcome gets the notice (`notify_unapplied`, now private, `:176`),
 then one refund attempt (a sweep pass may claim the row first). The notice and the attempt's `refundStarPayment` call
-share one `CALL_DEADLINE`; the claim, the revoke and the failure write run outside it, bounded by the session's
-`lock_timeout` and `statement_timeout` (`server/src/db/mod.rs:43-44`).
+share one `CALL_DEADLINE`; the claim, the revoke (and, after an `AlreadyRefunded` revoke, `settle_auto_refund`) and
+the failure write run outside it, each bounded by the pool's acquire timeout and the session's `lock_timeout` and
+`statement_timeout` (`server/src/db/mod.rs:26`, `:43-44`).
 The texts say the Stars are being refunded automatically
 (`payment_unapplied`) and that the automatic refund has started (`admin_unapplied`); both are drafts
 (`server/locales/bot.en.json:3`, `:20-21`). The durable record is the charge's `auto_refunds` row
