@@ -1,9 +1,9 @@
 // The wallet and the hint port (META-PLAN M19-M21, "Module API"). Every number is a server answer: `GET /api/wallet`
 // or a hint use's answer. Nothing is decremented, computed or stored on the client (principle 1), and a hint text is
 // handed to the puzzle session, never kept here (PZ X7).
-import { metaError } from '../api/endpoints.ts';
-import type { MetaEndpoints, MetaError } from '../api/endpoints.ts';
 import type { WalletResponse } from '../api/generated/api.ts';
+import { metaError } from '../api/meta.ts';
+import type { MetaEndpoints, MetaError } from '../api/meta.ts';
 import type { Lang } from '../i18n/index.ts';
 import type { HintPort } from '../puzzles/session.ts';
 import type { Result } from '../story/catalog.ts';

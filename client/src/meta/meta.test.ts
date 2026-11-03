@@ -1,5 +1,10 @@
 import { expect, test, vi } from 'vitest';
 
+import type { Decoder } from '../api/decode.ts';
+import { puzzleId } from '../api/endpoints.ts';
+import samplesText from '../api/fixtures/dto-samples.json?raw';
+import type { HintUseResponse, SocialResponse, WalletResponse } from '../api/generated/api.ts';
+import type { ApiError } from '../api/http.ts';
 import {
   decodeCardResponse,
   decodeFriendProfile,
@@ -7,13 +12,8 @@ import {
   decodeInviteView,
   decodeSocialResponse,
   decodeWalletResponse,
-} from '../api/decode.ts';
-import type { Decoder } from '../api/decode.ts';
-import { puzzleId } from '../api/endpoints.ts';
-import type { MetaEndpoints, MetaError } from '../api/endpoints.ts';
-import samplesText from '../api/fixtures/dto-samples.json?raw';
-import type { HintUseResponse, SocialResponse, WalletResponse } from '../api/generated/api.ts';
-import type { ApiError } from '../api/http.ts';
+} from '../api/meta.ts';
+import type { MetaEndpoints, MetaError } from '../api/meta.ts';
 import type { Lang } from '../i18n/index.ts';
 import type { HintPort, HintPortError } from '../puzzles/session.ts';
 import type { Result, StoryId } from '../story/catalog.ts';

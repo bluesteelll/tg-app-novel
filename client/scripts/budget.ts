@@ -110,7 +110,7 @@ export const LIMITS: Limits = {
   puzzleHostChunkBr: 10_000,
   exploreUiChunkBr: 16_000,
   metaUiChunkBr: 14_000,
-  metaControllerChunkBr: 5_000,
+  metaControllerChunkBr: 6_000,
   allJsBr: 305_000,
   cssBr: 12_000,
   htmlBr: 2_000,

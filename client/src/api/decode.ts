@@ -1,34 +1,22 @@
-// The decoders of every server response DTO (PROTOTYPE-PLAN K22): the parsed JSON comes in as `unknown`, and the
+// The decoders of the server's response DTOs (PROTOTYPE-PLAN K22): the parsed JSON comes in as `unknown`, and the
 // generated type or the first problem with its JSON path comes out (`<Type><path>: <problem>`). Shapes, integers and
 // unions are checked; extra fields are ignored and never copied, so a newer server's additions pass through a deploy.
 // The types are generated/api.ts's (ts-rs from the Rust DTOs); decode.test.ts runs these over the Rust-written samples.
+// The meta DTOs' decoders are api/meta.ts's, built from the combinators exported here: only the meta controller's lazy
+// chunk reads them, so they stay out of the entry this module is in (RULINGS 137).
 import type { Result } from '../story/catalog.ts';
 import type {
   ApiErrorBody,
   AttemptResponse,
   AuthResponse,
-  BalanceDto,
-  CardAchievement,
-  CardEnding,
-  CardResponse,
   ChapterPayload,
   CreateInvoiceResponse,
   EntitlementsResponse,
   ErrorCode,
-  FriendDto,
-  FriendProfile,
-  FriendRequestDto,
-  FriendStoryDto,
-  GiftResponse,
-  HintUseResponse,
   HintView,
-  InviteState,
-  InviteView,
-  Localized,
   OrderResponse,
   OrderStatus,
   GameStatsDto,
-  PackDto,
   PostStatsResponse,
   ProductDto,
   PutSaveResponse,
@@ -38,21 +26,16 @@ import type {
   SaveListResponse,
   SaveSlot,
   SaveSummary,
-  ShareResponse,
-  SharedAchievement,
-  SharedEnding,
-  SocialResponse,
   StatRejectReason,
   StatsResponse,
   StoryStatsDto,
   UserDto,
-  WalletResponse,
 } from './generated/api.ts';
 
 /** A boundary parser: raw JSON in; a typed value, or the first problem as `<Type><path>: <problem>`, out. */
 export type Decoder<T> = (raw: unknown) => Result<T, string>;
 
-/** The response DTOs this module decodes: the keys of `DTO_DECODERS`. */
+/** The response DTOs this module and api/meta.ts decode: the keys of api/meta.ts's `DTO_DECODERS`. */
 export type DecodedDto =
   | 'ApiErrorBody'
   | 'AttemptResponse'
@@ -107,53 +90,50 @@ const STAT_REJECT_REASONS = {
   unknown_choice: true,
   rate_limited: true,
 } as const satisfies Record<StatRejectReason, true>;
-const INVITE_STATES = { open: true, requested: true, friends: true, own: true } as const satisfies Record<InviteState, true>;
 /** HintView.tier: a ladder has 1 to 3 tiers (PZ X18). */
 const TIER_MAX = 3;
-/** A friend's handle: 24 lower-case hex digits (the server's `is_handle`, META M10). */
-const HANDLE = /^[0-9a-f]{24}$/;
 
 type Raw = Readonly<Record<string, unknown>>;
 /** One value's reader; `path` is its JSON path, prefixed with the DTO name. */
-type Field<T> = (value: unknown, path: string) => Result<T, string>;
+export type Field<T> = (value: unknown, path: string) => Result<T, string>;
 /** One reader per key of `T`, in the order the keys are checked. */
 type Shape<T> = { readonly [K in keyof T]-?: Field<T[K]> };
 
 const ok = <T>(value: T): Result<T, string> => ({ ok: true, value });
-const problem = (path: string, what: string): Result<never, string> => ({ ok: false, error: `${path}: ${what}` });
+export const problem = (path: string, what: string): Result<never, string> => ({ ok: false, error: `${path}: ${what}` });
 
 function isRecord(v: unknown): v is Raw {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
 /** A short description of an unexpected value: its JSON type, and a string's first characters. */
-function shown(v: unknown): string {
+export function shown(v: unknown): string {
   if (typeof v === 'string') {
     return JSON.stringify(v.length > 40 ? `${v.slice(0, 40)}…` : v);
   }
   return v === null ? 'null' : Array.isArray(v) ? 'an array' : typeof v;
 }
 
-const str: Field<string> = (v, p) => (typeof v === 'string' ? ok(v) : problem(p, `expected a string, got ${shown(v)}`));
-const bool: Field<boolean> = (v, p) => (typeof v === 'boolean' ? ok(v) : problem(p, `expected a boolean, got ${shown(v)}`));
-const int: Field<number> = (v, p) =>
+export const str: Field<string> = (v, p) => (typeof v === 'string' ? ok(v) : problem(p, `expected a string, got ${shown(v)}`));
+export const bool: Field<boolean> = (v, p) => (typeof v === 'boolean' ? ok(v) : problem(p, `expected a boolean, got ${shown(v)}`));
+export const int: Field<number> = (v, p) =>
   typeof v === 'number' && Number.isSafeInteger(v) ? ok(v) : problem(p, `expected a safe integer, got ${shown(v)}`);
 /** Present and not `null`: an opaque document whose inner decode belongs to its consumer. */
 const document: Field<unknown> = (v, p) => (v !== null ? ok(v) : problem(p, 'expected a JSON document, got null'));
 /** Present, any value (`null` included). */
 const anyValue: Field<unknown> = (v) => ok(v);
 
-function nullable<T>(f: Field<T>): Field<T | null> {
+export function nullable<T>(f: Field<T>): Field<T | null> {
   return (v, p) => (v === null ? ok(null) : f(v, p));
 }
 
-function oneOf<T extends string>(set: Readonly<Record<T, true>>): Field<T> {
+export function oneOf<T extends string>(set: Readonly<Record<T, true>>): Field<T> {
   return (v, p) =>
     // The own-key test proves membership, which is what the cast states.
     typeof v === 'string' && Object.hasOwn(set, v) ? ok(v as T) : problem(p, `unknown value ${shown(v)}`);
 }
 
-function arrayOf<T>(f: Field<T>): Field<T[]> {
+export function arrayOf<T>(f: Field<T>): Field<T[]> {
   return (v, p) => {
     if (!Array.isArray(v)) {
       return problem(p, `expected an array, got ${shown(v)}`);
@@ -170,7 +150,7 @@ function arrayOf<T>(f: Field<T>): Field<T[]> {
   };
 }
 
-function object<T>(shape: Shape<T>): Field<T> {
+export function object<T>(shape: Shape<T>): Field<T> {
   return (v, p) => {
     if (!isRecord(v)) {
       return problem(p, `expected an object, got ${shown(v)}`);
@@ -191,29 +171,8 @@ function object<T>(shape: Shape<T>): Field<T> {
   };
 }
 
-/**
- * A list a keyed `{#each}` renders by `key`: a repeated key would throw in the overlay, so it is an error value here
- * (`<path>[i].<key>: duplicate <value>`).
- */
-function uniqueBy<T>(key: keyof T & string, list: Field<T[]>): Field<T[]> {
-  return (v, p) => {
-    const r = list(v, p);
-    if (!r.ok) {
-      return r;
-    }
-    const seen = new Set<unknown>();
-    for (const [i, item] of r.value.entries()) {
-      if (seen.has(item[key])) {
-        return problem(`${p}[${i}].${key}`, `duplicate ${shown(item[key])}`);
-      }
-      seen.add(item[key]);
-    }
-    return r;
-  };
-}
-
 /** Adds the DTO name as the root of every path. */
-function root<T>(name: DecodedDto, f: Field<T>): Decoder<T> {
+export function root<T>(name: DecodedDto, f: Field<T>): Decoder<T> {
   return (raw) => f(raw, name);
 }
 
@@ -247,37 +206,6 @@ const gameStats = object<GameStatsDto>({ storiesStarted: int, storiesTotal: int,
 const hintView: Field<HintView> = (v, p) => {
   const r = hintFields(v, p);
   return !r.ok || r.value.unlocked || r.value.text === null ? r : problem(`${p}.text`, 'text on a locked tier');
-};
-/** The grammar earns the client's `FriendHandle` brand: a numeric user id can never pass for a handle (M10, W1). */
-const handle: Field<string> = (v, p) => {
-  const r = str(v, p);
-  return !r.ok || HANDLE.test(r.value) ? r : problem(p, `expected a handle, got ${shown(r.value)}`);
-};
-const localized = object<Localized>({ ru: str, en: str });
-const cardEnding = object<CardEnding>({ name: str, title: localized, firstReachedAt: int });
-const cardAchievement = object<CardAchievement>({
-  id: str,
-  name: localized,
-  description: localized,
-  unlockedAt: int,
-  new: bool,
-});
-const balanceDto = object<BalanceDto>({ kind: str, balance: int, debt: int });
-const packDto = object<PackDto>({ productId: str, kind: str, amount: int, priceStars: int, title: localized });
-const friendDto = object<FriendDto>({ handle, firstName: str });
-const friendRequestDto = object<FriendRequestDto>({ handle, firstName: str, at: int });
-const friendStory = object<FriendStoryDto>({
-  storyId: str,
-  endingsFound: int,
-  achievementsUnlocked: int,
-  sharedEndings: uniqueBy('name', arrayOf(object<SharedEnding>({ name: str, title: localized }))),
-  sharedAchievements: uniqueBy('id', arrayOf(object<SharedAchievement>({ id: str, name: localized }))),
-});
-const friendProfileFields = object<FriendProfile>({ handle, visible: bool, stories: uniqueBy('storyId', arrayOf(friendStory)) });
-/** META M13: a hidden profile shows nothing, so stories on one are an error, never shown. */
-const friendProfile: Field<FriendProfile> = (v, p) => {
-  const r = friendProfileFields(v, p);
-  return !r.ok || r.value.visible || r.value.stories.length === 0 ? r : problem(`${p}.stories`, 'stories on a hidden profile');
 };
 
 /** Every error response's body; `current` only on `save_conflict`, omitted (not `null`) otherwise. */
@@ -360,78 +288,3 @@ export const decodeStatsResponse: Decoder<StatsResponse> = root(
   'StatsResponse',
   object<StatsResponse>({ stories: arrayOf(storyStats), game: gameStats }),
 );
-
-// The meta DTOs (META-PLAN M9-M14, M19-M21). The decoders rely on no catalog order: they cannot know the catalog.
-/** `POST /api/stories/{storyId}/card` (M9): the user's own found items only. */
-export const decodeCardResponse: Decoder<CardResponse> = root(
-  'CardResponse',
-  object<CardResponse>({
-    storyId: str,
-    runs: int,
-    chaptersCompleted: arrayOf(str),
-    endings: uniqueBy('name', arrayOf(cardEnding)),
-    achievements: uniqueBy('id', arrayOf(cardAchievement)),
-  }),
-);
-/** `GET /api/friends/{handle}/profile` (M13): no first name and no user id. */
-export const decodeFriendProfile: Decoder<FriendProfile> = root('FriendProfile', friendProfile);
-/** `POST /api/gifts` (M22): the sender's balance of the kind after the gift, or the current one on a replay. */
-export const decodeGiftResponse: Decoder<GiftResponse> = root('GiftResponse', object<GiftResponse>({ balance: int }));
-/** `POST /api/puzzles/{puzzleId}/hints/{tier}?lang` (M21). */
-export const decodeHintUseResponse: Decoder<HintUseResponse> = root(
-  'HintUseResponse',
-  object<HintUseResponse>({ balance: int, text: str }),
-);
-/** `GET /api/invites/{code}` and `POST /api/invites/{code}/request` (M10): nothing about the code's owner. */
-export const decodeInviteView: Decoder<InviteView> = root('InviteView', object<InviteView>({ state: oneOf(INVITE_STATES) }));
-/** `POST /api/share` (M14). */
-export const decodeShareResponse: Decoder<ShareResponse> = root(
-  'ShareResponse',
-  object<ShareResponse>({ link: str, text: str, preparedMessageId: nullable(str) }),
-);
-/** `GET /api/social` and the answer of every social action (M10-M12). */
-export const decodeSocialResponse: Decoder<SocialResponse> = root(
-  'SocialResponse',
-  object<SocialResponse>({
-    inviteCode: str,
-    friends: uniqueBy('handle', arrayOf(friendDto)),
-    requests: uniqueBy('handle', arrayOf(friendRequestDto)),
-    profileVisible: bool,
-  }),
-);
-/** `GET /api/wallet` (M19, M20). */
-export const decodeWalletResponse: Decoder<WalletResponse> = root(
-  'WalletResponse',
-  object<WalletResponse>({
-    balances: uniqueBy('kind', arrayOf(balanceDto)),
-    packs: uniqueBy('productId', arrayOf(packDto)),
-    hintTierCost: int,
-    // No range check: the bound is the server catalog's startup check, and the gift dialog clamps by the balance.
-    maxPerGift: int,
-  }),
-);
-
-/** Every decoder by its DTO name: the sample test's index. */
-export const DTO_DECODERS: Readonly<Record<DecodedDto, Decoder<unknown>>> = {
-  ApiErrorBody: decodeApiErrorBody,
-  AttemptResponse: decodeAttemptResponse,
-  AuthResponse: decodeAuthResponse,
-  CardResponse: decodeCardResponse,
-  ChapterPayload: decodeChapterPayload,
-  CreateInvoiceResponse: decodeCreateInvoiceResponse,
-  EntitlementsResponse: decodeEntitlementsResponse,
-  FriendProfile: decodeFriendProfile,
-  GiftResponse: decodeGiftResponse,
-  HintUseResponse: decodeHintUseResponse,
-  InviteView: decodeInviteView,
-  OrderResponse: decodeOrderResponse,
-  PostStatsResponse: decodePostStatsResponse,
-  PutSaveResponse: decodePutSaveResponse,
-  PuzzleStatus: decodePuzzleStatus,
-  SaveFull: decodeSaveFull,
-  SaveListResponse: decodeSaveListResponse,
-  ShareResponse: decodeShareResponse,
-  SocialResponse: decodeSocialResponse,
-  StatsResponse: decodeStatsResponse,
-  WalletResponse: decodeWalletResponse,
-};

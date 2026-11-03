@@ -507,9 +507,9 @@ describe('budget evaluate', () => {
     const plain = assetRows(assetInputs(), withEngine(inputs(), 50_000, 100_000));
     const meta = assetRows(assetInputs(), withMeta(3_500, 6_000));
     expect((rowOf(meta, 'first-load ch1').valueBytes ?? 0) - (rowOf(plain, 'first-load ch1').valueBytes ?? 0)).toBe(3_500);
-    // The limit: 5.0 KB br.
-    expect(rowOf(evaluate(withMeta(5_000, 6_000), LIMITS), 'meta controller chunk (br)').status).toBe('PASS');
-    expect(rowOf(evaluate(withMeta(5_001, 6_000), LIMITS), 'meta controller chunk (br)').status).toBe('FAIL');
+    // The limit: 6.0 KB br.
+    expect(rowOf(evaluate(withMeta(6_000, 6_000), LIMITS), 'meta controller chunk (br)').status).toBe('PASS');
+    expect(rowOf(evaluate(withMeta(6_001, 6_000), LIMITS), 'meta controller chunk (br)').status).toBe('FAIL');
   });
 
   test('budget: meta controller imported statically fails', () => {
@@ -664,7 +664,7 @@ describe('budget cli', () => {
     expect(r.stdout).toContain('puzzle-host chunk (br) | — | 10.0 KB | PENDING | src/app/yields.ts absent');
     expect(r.stdout).toContain('explore-ui chunk (br) | — | 16.0 KB | PENDING | src/app/yields.ts absent');
     expect(r.stdout).toContain('meta-ui chunk (br) | — | 14.0 KB | PENDING | src/app/meta.ts absent');
-    expect(r.stdout).toContain('meta controller chunk (br) | — | 5.0 KB | PENDING | src/app/meta.ts absent');
+    expect(r.stdout).toContain('meta controller chunk (br) | — | 6.0 KB | PENDING | src/app/meta.ts absent');
     expect(r.stdout).toMatch(/^budget: \d+ rows, \d+ PASS, 0 FAIL, \d+ PENDING$/m);
   }, CLI_TIMEOUT_MS);
 

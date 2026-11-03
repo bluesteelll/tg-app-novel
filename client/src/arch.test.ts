@@ -936,6 +936,205 @@ test('arch: lazy ui only by dynamic import', () => {
   expect(treeViolations().filter((v) => GROUP[v.rule] === 'lazy')).toEqual([]);
 }, TREE_TIMEOUT_MS);
 
+// RULINGS 137: the meta routes, their decoders, the controller and its services load with the controller's lazy chunk,
+// never with the entry. The `lazy-ui` rule cannot say this: it allows a static import into a lazy scope only from the
+// same directory, while the controller's chunk spans app/meta.ts, meta/ and api/meta.ts, which import each other. The
+// invariant is a property of the whole graph: no meta module is in the entry's static closure.
+
+/** The entry module: index.html's `<script type="module" src="/src/main.ts">`. */
+const ENTRY_ROOT = 'main.ts';
+/** The modules only the meta controller's lazy chunk loads (RULINGS 105, 137). */
+const META_ONLY_FILES = ['app/meta.ts', 'api/meta.ts'] as const;
+const META_ONLY_DIRS = ['meta/', 'ui/meta/'] as const;
+
+function isMetaOnly(file: string): boolean {
+  return META_ONLY_FILES.some((meta) => meta === file) || META_ONLY_DIRS.some((dir) => file.startsWith(dir));
+}
+
+/**
+ * The files a source loads with it: its import and export-from declarations except `import type` / `export type`
+ * (moduleReference's typeOnly: an inline `{ type X }` keeps the declaration). `import()` is a chunk boundary and is not
+ * followed, nor is a package. A relative or /src/ specifier resolves against the file, its `?query` dropped; a .svelte
+ * file contributes its script blocks.
+ */
+function staticTargets(file: string, text: string): string[] {
+  const script = file.endsWith('.svelte') ? splitDocument(text).script : text;
+  const sf = ts.createSourceFile(file, script, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
+  const out: string[] = [];
+  for (const node of sf.statements) {
+    const ref = ts.isImportDeclaration(node) || ts.isExportDeclaration(node) ? moduleReference(node) : undefined;
+    if (ref === undefined || ref.typeOnly || !(ref.spec.startsWith('.') || ref.spec.startsWith('/'))) {
+      continue;
+    }
+    const path = new URL(ref.spec, `file:///src/${file}`).pathname;
+    out.push(path.startsWith('/src/') ? path.slice('/src/'.length) : path);
+  }
+  return out;
+}
+
+/**
+ * The source a target names, as the bundler resolves it (like ui/meta/meta.svelte.test.ts's `sourceOf`): the file
+ * itself, `x.js` or an extensionless `x` as `x.ts`, a directory as its `index.ts`. So `'../api/meta'` is reported on
+ * its meta chain like `'../api/meta.ts'`, not only as an unresolved target.
+ */
+function sourceIn(files: Readonly<Record<string, string>>, target: string): string | undefined {
+  const stem = target.replace(/\/$/, '').replace(/\.js$/, '');
+  return [target, stem, `${stem}.ts`, `${stem}/index.ts`].find((file) => Object.hasOwn(files, file));
+}
+
+/**
+ * A breadth-first walk over the static value edges from ENTRY_ROOT: each reached file with the file that first reached
+ * it (null for the root), and every relative target that names no source of `files`.
+ */
+function entryClosure(files: Readonly<Record<string, string>>): {
+  reached: ReadonlyMap<string, string | null>;
+  unresolved: readonly string[];
+} {
+  const reached = new Map<string, string | null>();
+  const unresolved: string[] = [];
+  if (!Object.hasOwn(files, ENTRY_ROOT)) {
+    return { reached, unresolved: [ENTRY_ROOT] };
+  }
+  reached.set(ENTRY_ROOT, null);
+  const queue = [ENTRY_ROOT];
+  for (let file = queue.shift(); file !== undefined; file = queue.shift()) {
+    for (const target of staticTargets(file, files[file] ?? '')) {
+      const source = sourceIn(files, target);
+      if (source === undefined) {
+        unresolved.push(target);
+      } else if (!reached.has(source)) {
+        reached.set(source, file);
+        queue.push(source);
+      }
+    }
+  }
+  return { reached, unresolved };
+}
+
+/** The chain the entry reaches a file by: 'main.ts -> app/boot.ts -> api/meta.ts'. */
+function pathTo(reached: ReadonlyMap<string, string | null>, file: string): string {
+  const chain = [file];
+  for (let from = reached.get(file); typeof from === 'string'; from = reached.get(from)) {
+    chain.unshift(from);
+  }
+  return chain.join(' -> ');
+}
+
+/** The entry's chain to each meta-only module it holds statically: [] while the split holds. */
+function metaChains(reached: ReadonlyMap<string, string | null>): string[] {
+  return [...reached.keys()].filter(isMetaOnly).map((file) => pathTo(reached, file));
+}
+
+test('arch: the entry closure holds no meta module', () => {
+  // Non-vacuous: the walk starts where index.html does; it reaches the entry's known modules through .ts and .svelte
+  // edges; it stops at `import()` and `import type` (app/engine.ts is both: boot.ts import()s it, ui/state.svelte.ts
+  // imports its types); it resolves every edge; and the meta modules it must not reach are scanned.
+  expect(indexHtml).toContain('src="/src/main.ts"');
+  const { reached, unresolved } = entryClosure(SOURCES);
+  for (const file of ['main.ts', 'app/boot.ts', 'ui/App.svelte', 'api/endpoints.ts', 'api/decode.ts', 'api/http.ts']) {
+    expect(reached.has(file), file).toBe(true);
+  }
+  expect(reached.has('app/engine.ts')).toBe(false);
+  const keys = Object.keys(SOURCES);
+  const metaModules = ['app/meta.ts', 'api/meta.ts', 'meta/card.ts', 'meta/social.ts', 'meta/wallet.ts'];
+  for (const file of [...metaModules, 'ui/meta/index.ts']) {
+    expect(keys, file).toContain(file);
+    expect(isMetaOnly(file), file).toBe(true);
+  }
+  expect(unresolved).toEqual([]);
+  expect(metaChains(reached)).toEqual([]);
+}, TREE_TIMEOUT_MS);
+
+test('arch: entry closure fixtures', () => {
+  type Case = readonly [label: string, files: Readonly<Record<string, string>>, chains: readonly string[]];
+  const meta = 'export const createMetaEndpoints = 1;\nexport const metaError = 2;\nexport type MetaError = string;';
+  const walk = (files: Readonly<Record<string, string>>): { chains: string[]; unresolved: readonly string[] } => {
+    const { reached, unresolved } = entryClosure({ 'main.ts': "import { startApp } from './app/boot.ts';", ...files });
+    return { chains: metaChains(reached), unresolved };
+  };
+  /** A tree whose boot.ts is `source` and whose api/meta.ts exists. */
+  const boot = (source: string): Readonly<Record<string, string>> => ({ 'app/boot.ts': source, 'api/meta.ts': meta });
+  const toMeta = ['main.ts -> app/boot.ts -> api/meta.ts'];
+  const red: readonly Case[] = [
+    ['R1 a static import', boot("import { createMetaEndpoints } from '../api/meta.ts';"), toMeta],
+    [
+      'R2 a re-export in an entry module',
+      {
+        ...boot("import { createEndpoints } from '../api/endpoints.ts';"),
+        'api/endpoints.ts': "export { createMetaEndpoints } from './meta.ts';\nexport const createEndpoints = 1;",
+      },
+      ['main.ts -> app/boot.ts -> api/endpoints.ts -> api/meta.ts'],
+    ],
+    [
+      'R3 through a meta service',
+      {
+        ...boot("import { card } from '../meta/card.ts';"),
+        'meta/card.ts': "import { metaError } from '../api/meta.ts';\nexport const card = metaError;",
+      },
+      ['main.ts -> app/boot.ts -> meta/card.ts', 'main.ts -> app/boot.ts -> meta/card.ts -> api/meta.ts'],
+    ],
+    ['R4 an inline type specifier', boot("import { type MetaError } from '../api/meta.ts';"), toMeta],
+    [
+      'R5 a component script',
+      {
+        'main.ts': "import App from './ui/App.svelte';",
+        'ui/App.svelte':
+          "<script lang=\"ts\">\n  import { metaError } from '../api/meta.ts';\n</script>\n<p>{metaError}</p>",
+        'api/meta.ts': meta,
+      },
+      ['main.ts -> ui/App.svelte -> api/meta.ts'],
+    ],
+    // The bundler resolves these forms to api/meta.ts too (allowImportingTsExtensions, moduleResolution bundler).
+    ['R7 a .js specifier', boot("import { metaError } from '../api/meta.js';"), toMeta],
+    ['R8 an extensionless specifier', boot("import { metaError } from '../api/meta';"), toMeta],
+    [
+      'R9 a directory specifier',
+      { 'app/boot.ts': "import { x } from '../ui/meta';", 'ui/meta/index.ts': 'export const x = 1;' },
+      ['main.ts -> app/boot.ts -> ui/meta/index.ts'],
+    ],
+    ['R10 a side-effect import', boot("import '../api/meta.ts';"), toMeta],
+    ['R11 export star', boot("export * from '../api/meta.ts';"), toMeta],
+    ['R12 a /src/ specifier with a query', boot("import { metaError } from '/src/api/meta.ts?v=1';"), toMeta],
+  ];
+  for (const [label, files, chains] of red) {
+    expect(walk(files), label).toEqual({ chains, unresolved: [] });
+  }
+  // R6: an edge to no source is reported, so a walk cannot pass by losing its way.
+  expect(walk({ 'app/boot.ts': "import { x } from './missing.ts';" }), 'R6 a missing target').toEqual({
+    chains: [],
+    unresolved: ['app/missing.ts'],
+  });
+  const allow: readonly Case[] = [
+    [
+      'A1 the controller by import(), the routes statically from it',
+      {
+        ...boot("export const m = import('./meta.ts');"),
+        'app/meta.ts': "export { createMetaEndpoints } from '../api/meta.ts';",
+      },
+      [],
+    ],
+    [
+      'A2 type-only imports',
+      {
+        ...boot(
+          "import type { MetaError } from '../api/meta.ts';\nexport type { FriendHandle } from '../api/meta.ts';\n" +
+            "type MetaModule = typeof import('./meta.ts');",
+        ),
+        'app/meta.ts': "export { createMetaEndpoints } from '../api/meta.ts';",
+      },
+      [],
+    ],
+    [
+      'A3 a meta module nothing in the closure reaches',
+      { ...boot('export const x = 1;'), 'meta/wallet.ts': "import { metaError } from '../api/meta.ts';" },
+      [],
+    ],
+  ];
+  for (const [label, files, chains] of allow) {
+    expect(walk(files), label).toEqual({ chains, unresolved: [] });
+  }
+});
+
 test('arch: only yields.ts enters the runner', () => {
   // Non-vacuous: yields.ts is scanned, and its own runner call is found once the file is judged under a name the rule
   // does not exempt. The `runner.enter(` prefix tells that call from the section controller's `c.enter(` in the same
