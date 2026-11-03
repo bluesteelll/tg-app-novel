@@ -6,11 +6,12 @@
 import { Application, Container, Graphics, Sprite } from 'pixi.js';
 import type { ApplicationOptions, ImageSource, Texture } from 'pixi.js';
 
-import type { AssetManifest, FetchAsset, Result } from '../story/catalog.ts';
+import type { Size } from '../geom/cover.ts';
+import type { AssetManifest, FetchAsset, Result, SizeTier } from '../story/catalog.ts';
 import type { AssetId, PropId } from '../story/staging.ts';
 import { createExecutor, gsapTicker, pauseAll, resumeAll } from './executor.ts';
 import type { Executor, GroupRef, Layer, SceneSnapshot, SpriteRef, StageAdapter, VisualCommand } from './executor.ts';
-import { renderResolution } from './layout.ts';
+import { halfFits, renderResolution, stageBound, tierFor } from './layout.ts';
 import type { PerfClass } from './layout.ts';
 import { createImageLoader, probeAvif } from './loader.ts';
 import { ENSURE_HOLDER, createAssetScheduler } from './preload.ts';
@@ -88,6 +89,8 @@ type Mounted = {
   readonly resolution: number;
   /** Replaced once by the rebuild after an unrecoverable context loss. */
   app: Application;
+  /** The registry's size tier (MEMORY-PLAN 4.C): chosen at mount, demoted once to 'full' by a resize past the bound. */
+  tier: SizeTier;
   readonly registry: AssetRegistry<Texture>;
   readonly scheduler: AssetScheduler;
   readonly loop: RenderLoop;
@@ -98,6 +101,18 @@ type Mounted = {
 
 const EMPTY: SceneSnapshot = Object.freeze({ bg: null, cg: null, chars: Object.freeze([]), props: Object.freeze([]) });
 const fail = (detail: string): { ok: false; error: SceneError } => ({ ok: false, error: { kind: 'mount', detail } });
+
+/**
+ * The device's screen in CSS px (CSSOM View), the bound of every stage the session can reach (MEMORY-PLAN 4.C); null
+ * when the WebView has no `screen` or reports a side that is not a positive finite number (then the tier is full).
+ */
+function screenSize(): Size | null {
+  if (typeof screen === 'undefined') {
+    return null;
+  }
+  const { width: w, height: h } = screen;
+  return Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0 ? { w, h } : null;
+}
 
 /**
  * PROTOTYPE-PLAN "Init" [R3 §4.3], plus the accessibility layer off: it would listen for Tab and add DOM nodes. Sized
@@ -225,6 +240,12 @@ export function createSceneController(): SceneController {
     }
     c.app.renderer.resize(c.host.clientWidth, c.host.clientHeight);
     c.executor.relayout();
+    // MEMORY-PLAN 4.C, the one-way demotion: a host past the half bound (a foldable unfolded, a UA that under-reported
+    // its screen) loads the full files from now on; what is on stage keeps its half until released (I4: same layout).
+    if (c.tier === 'half' && !halfFits({ w: c.host.clientWidth, h: c.host.clientHeight }, c.resolution)) {
+      c.registry.demote();
+      c.tier = 'full';
+    }
     c.loop.requestRender();
   };
   const onLost = (): void => {
@@ -389,10 +410,12 @@ export function createSceneController(): SceneController {
       }
       host.appendChild(app.canvas);
       const layers = createLayers(app);
+      // MEMORY-PLAN 4.C: the half files only on a LOW device whose largest reachable stage passes halfFits.
+      const tier = tierFor(o.perfClass, stageBound(screenSize(), { w: host.clientWidth, h: host.clientHeight }), resolution);
       const registry = createAssetRegistry<Texture>({
         load: createImageLoader({ fetchAsset: o.fetchAsset, upload }),
         variant: avif ? 'avif' : 'webp',
-        tier: 'full',
+        tier,
       });
       const scheduler = createAssetScheduler({ registry, onError: report });
       // The current Application (the rebuild replaces it), and the only path to a frame: none while the context is lost
@@ -425,7 +448,7 @@ export function createSceneController(): SceneController {
       });
       // The renderer's only sizing after init: the host's box, whatever changed it (a window resize, Telegram's height).
       const observer = new ResizeObserver(onResize);
-      core = { host, resolution, app, registry, scheduler, loop, executor, flow, observer };
+      core = { host, resolution, app, tier, registry, scheduler, loop, executor, flow, observer };
       observer.observe(host);
       watch(app.canvas);
       if (pendingManifest !== null) {

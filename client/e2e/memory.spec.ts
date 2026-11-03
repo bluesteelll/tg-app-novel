@@ -6,6 +6,9 @@
 // MEMORY-PLAN M2 (section 11): a context loss nothing restores reaches the D13 rebuild, and the stage it draws again
 // is the one before the loss, with no image fetched again; a revive whose decode fails ends that record, and the stage
 // takes the visual again with one GET of its file; no decoded bitmap stays open once its texture is uploaded.
+// MEMORY-PLAN M3c (section 11, 4.C): a LOW phone whose largest stage passes halfFits loads the half files and lays them
+// out as the full ones; an AVERAGE phone and a LOW tablet load the full files; a resize past the bound demotes later
+// loads to the full tier.
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,7 +19,7 @@ import sharp from 'sharp';
 import { catalogImage, decodeAssetCatalog, decodeAssetManifest } from '../scripts/assets/manifest.ts';
 import { renderPlaceholder } from '../scripts/assets/placeholder.ts';
 import { t } from '../src/i18n/index.ts';
-import { backdropPlacement, charPlacement, renderResolution } from '../src/scene/layout.ts';
+import { backdropPlacement, charPlacement, halfFits, renderResolution, stageBound, tierFor } from '../src/scene/layout.ts';
 import type { ImageEntry } from '../src/story/catalog.ts';
 import type { AssetId } from '../src/story/staging.ts';
 import { atRest, expect, launch, reachLine, requests, stagePixel, test, type E2eWindow } from './helpers.ts';
@@ -41,6 +44,15 @@ const REBUILD_MS = 2_000 + 3_000;
 const IMAGE_URL = /\.(?:avif|webp)(?:\?|$)/;
 /** The placeholder head's centre on the 768×1536 char canvas (scripts/assets/placeholder.ts: cy = 0.18 h). */
 const HEAD: readonly [number, number] = [384, 276];
+/**
+ * A Telegram Android client on a LOW device (R1 §6: the class is the user agent's last token). A copy of perf.spec.ts's
+ * module-private LOW_UA: helpers.ts is frozen in this lane, so its next holder takes the one string.
+ */
+const LOW_UA =
+  'Mozilla/5.0 (Linux; Android 12; Pixel 3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 ' +
+  'Telegram-Android/11.5.3 (Google Pixel 3; Android 12; SDK 31; LOW)';
+/** MEMORY-PLAN 4.C's smallest LOW phone (MR2's table): its screen, and the stage host Telegram leaves under its chrome. */
+const LOW_PHONE = { viewport: { width: 360, height: 740 }, screen: { width: 360, height: 800 }, deviceScaleFactor: 2, userAgent: LOW_UA };
 
 type Rgba = [number, number, number, number];
 type Raster = { w: number; h: number; data: Buffer };
@@ -167,6 +179,16 @@ async function headSample(
   return { x, y, expected, bg: at(street, b.x, b.y) };
 }
 
+/** The URL paths of `urls`, in order. */
+const paths = (urls: readonly string[]): string[] => urls.map((u) => new URL(u).pathname);
+
+/** Both files of every ch1 image that ships a half: what a half-tier session never fetches. */
+function fullFilesWithHalf(): string[] {
+  const manifest = decodeAssetManifest(JSON.parse(readFileSync(path.join(CLIENT_DIR, 'src', 'story-gen', 'free', 'ch1.assets.json'), 'utf8')));
+  const entries = manifest.ok ? Object.values(manifest.value.assets) : [];
+  return entries.flatMap((e) => (e.kind === 'image' && e.half !== undefined ? [e.avif.url, e.webp.url] : []));
+}
+
 /** URL paths fetched more than once, in first-fetch order. */
 function twice(urls: readonly string[]): string[] {
   const seen = new Map<string, number>();
@@ -191,26 +213,18 @@ async function hardLoss(page: Page): Promise<string[]> {
   );
 }
 
-test('scene: trimmed character renders where its canvas puts it', async ({ page }) => {
-  test.setTimeout(90_000);
-  // Vacuity guard: the build under test ships the ally trimmed; otherwise this would test an untrimmed file.
-  const manifest = decodeAssetManifest(JSON.parse(readFileSync(path.join(CLIENT_DIR, 'src', 'story-gen', 'free', 'ch1.assets.json'), 'utf8')));
-  const entry = manifest.ok ? manifest.value.assets[ALLY] : undefined;
-  const trim = entry?.kind === 'image' ? entry.trim : undefined;
-  expect(trim, `${ALLY} in ch1.assets.json carries a trim`).toMatchObject({ canvasW: 768, canvasH: 1536 });
-  expect(entry?.kind === 'image' ? entry.h : 1536, `${ALLY}: stored height under its canvas`).toBeLessThan(1536);
-
-  const [sprite, street] = await Promise.all([placeholder(ALLY), placeholder(STREET)]);
-  expect({ w: sprite.w, h: sprite.h }, 'the sprite raster is its canvas').toEqual({ w: 768, h: 1536 });
-
-  await launch(page, 7001);
-  await firstLineAtRest(page);
+/**
+ * M1's three samples of the trimmed ally at the first line (MEMORY-PLAN §11 commit 6), each checked against the sample
+ * rule before its colour is compared. One sampler for the full and the half tier (M3c, I4): the half lays out as the
+ * full file, so the same CSS points must show the same colours.
+ */
+async function sampleAlly(page: Page, sprite: Raster, street: Raster): Promise<void> {
   const box = await page.locator('canvas').boundingBox();
   if (box === null) {
     throw new Error('no canvas');
   }
   const stage = { w: box.width, h: box.height };
-  // The executor's layout at DPR 1, perf class AVERAGE (the harness context): the slot, the height on the canvas.
+  // The executor's layout at resolution 1 (DPR 1 AVERAGE, the harness context; LOW at any DPR): the slot, the height.
   const p = charPlacement(stage, 'left', { w: sprite.w, h: sprite.h }, renderResolution(1, 'AVERAGE'));
   const s = p.h / sprite.h;
   const bg = backdropPlacement(stage);
@@ -260,6 +274,23 @@ test('scene: trimmed character renders where its canvas puts it', async ({ page 
     expect(d, `${sample.name}: expected ≈ (${expected.slice(0, 3).join(',')}) ±${TOLERANCE}, got ≈ (${got.slice(0, 3).join(',')})`).toBeLessThanOrEqual(TOLERANCE);
   }
   console.log(`memory: largest per-channel deviation ${worst} (tolerance ${TOLERANCE}; above ${TOLERANCE / 2} is flagged)`);
+}
+
+test('scene: trimmed character renders where its canvas puts it', async ({ page }) => {
+  test.setTimeout(90_000);
+  // Vacuity guard: the build under test ships the ally trimmed; otherwise this would test an untrimmed file.
+  const manifest = decodeAssetManifest(JSON.parse(readFileSync(path.join(CLIENT_DIR, 'src', 'story-gen', 'free', 'ch1.assets.json'), 'utf8')));
+  const entry = manifest.ok ? manifest.value.assets[ALLY] : undefined;
+  const trim = entry?.kind === 'image' ? entry.trim : undefined;
+  expect(trim, `${ALLY} in ch1.assets.json carries a trim`).toMatchObject({ canvasW: 768, canvasH: 1536 });
+  expect(entry?.kind === 'image' ? entry.h : 1536, `${ALLY}: stored height under its canvas`).toBeLessThan(1536);
+
+  const [sprite, street] = await Promise.all([placeholder(ALLY), placeholder(STREET)]);
+  expect({ w: sprite.w, h: sprite.h }, 'the sprite raster is its canvas').toEqual({ w: 768, h: 1536 });
+
+  await launch(page, 7001);
+  await firstLineAtRest(page);
+  await sampleAlly(page, sprite, street);
 });
 
 test('scene: an unrestored context loss rebuilds the stage', async ({ page }) => {
@@ -418,4 +449,106 @@ test('scene: no decoded bitmap outlives its upload', async ({ page }) => {
   console.log(`memory: at ${STRANGER_LINE} ${later.liveTextures} live textures, ${later.openBitmaps} open bitmaps`);
   expect(later.openBitmaps, `open bitmaps at ${STRANGER_LINE}`).toBe(0);
   expect(errors, 'no page error').toEqual([]);
+});
+
+// MEMORY-PLAN M3c: the tier at mount (critique_r2 W7, O9: `screen` set explicitly, each context in its own describe).
+
+test.describe(() => {
+  test.use(LOW_PHONE);
+
+  test('scene: a LOW phone loads half-tier files', async ({ page }) => {
+    test.setTimeout(90_000);
+    // Vacuity guard: the build ships the ally (on the canonical canvas) and the street with their halves.
+    const ally = ch1Image(ALLY);
+    const street = ch1Image(STREET);
+    expect(ally.half, `${ALLY} in ch1.assets.json carries a half`).toBeDefined();
+    expect(street.half, `${STREET} in ch1.assets.json carries a half`).toBeDefined();
+    expect(ally.trim, `${ALLY} is on the 768 x 1536 canvas`).toMatchObject({ canvasW: 768, canvasH: 1536 });
+    const [sprite, streetPx] = await Promise.all([placeholder(ALLY), placeholder(STREET)]);
+    const images = requests(page, IMAGE_URL);
+
+    await launch(page, 7005);
+    await firstLineAtRest(page);
+    const fetched = paths(images.urls);
+    console.log(`memory: LOW phone image GETs at ${FIRST_LINE}: ${fetched.join(', ')}`);
+    expect(fetched, `${ALLY} and ${STREET} load their half files`).toEqual(expect.arrayContaining([ally.half?.avif.url, street.half?.avif.url]));
+    const full = fullFilesWithHalf();
+    expect(fetched.filter((p) => full.includes(p)), 'no full file of an entry with a half').toEqual([]);
+    // I4: the half lays out as the full file, M1's samples and rule unchanged.
+    await sampleAlly(page, sprite, streetPx);
+  });
+});
+
+test.describe(() => {
+  test.use({ viewport: { width: 360, height: 740 }, screen: { width: 360, height: 800 }, deviceScaleFactor: 1 });
+
+  test('scene: an AVERAGE phone at DPR 1 loads full-tier files', async ({ page }) => {
+    test.setTimeout(90_000);
+    const ally = ch1Image(ALLY);
+    const images = requests(page, IMAGE_URL);
+    await launch(page, 7006);
+    await firstLineAtRest(page);
+    // Guard (critique_r3 O1): the stage fits the half tier at this resolution, so only the class keeps the full one.
+    const stage = await stageSize(page);
+    expect(halfFits(stageBound({ w: 360, h: 800 }, stage), renderResolution(1, 'AVERAGE')), `the half tier fits ${stage.w}x${stage.h}`).toBe(true);
+    const fetched = paths(images.urls);
+    expect(fetched, `${ALLY} loads its full file`).toContain(ally.avif.url);
+    expect(fetched.filter((p) => p.includes('-half-')), 'no half file').toEqual([]);
+  });
+});
+
+test.describe(() => {
+  test.use({ viewport: { width: 800, height: 1180 }, screen: { width: 800, height: 1280 }, deviceScaleFactor: 2, userAgent: LOW_UA });
+
+  test('scene: a LOW tablet loads full-tier files', async ({ page }) => {
+    test.setTimeout(90_000);
+    const ally = ch1Image(ALLY);
+    const images = requests(page, IMAGE_URL);
+    await launch(page, 7007);
+    await firstLineAtRest(page);
+    // Guards: LOW reached the controller (one buffer px per CSS px at DPR 2, as perf.spec.ts's LOW test reads it), and
+    // the tier rule gives the full tier on this screen.
+    const w = await page.locator('canvas').evaluate((el) => ({ buffer: (el as HTMLCanvasElement).width, css: el.clientWidth }));
+    expect(w.buffer, 'LOW: one buffer pixel per CSS pixel at DPR 2').toBe(w.css);
+    const stage = await stageSize(page);
+    expect(tierFor('LOW', stageBound({ w: 800, h: 1280 }, stage), renderResolution(2, 'LOW')), `the tier on ${stage.w}x${stage.h}`).toBe('full');
+    const fetched = paths(images.urls);
+    expect(fetched, `${ALLY} loads its full file`).toContain(ally.avif.url);
+    expect(fetched.filter((p) => p.includes('-half-')), 'no half file').toEqual([]);
+  });
+});
+
+test.describe(() => {
+  test.use(LOW_PHONE);
+
+  test('scene: a resize past the half bound loads full-tier files', async ({ page }) => {
+    test.setTimeout(120_000);
+    const ally = ch1Image(ALLY);
+    const stranger = ch1Image(STRANGER);
+    expect(stranger.half, `${STRANGER} in ch1.assets.json carries a half`).toBeDefined();
+    const [strangerPx, streetPx] = await Promise.all([placeholder(STRANGER), placeholder(STREET)]);
+    const images = requests(page, IMAGE_URL);
+
+    await launch(page, 7008);
+    await firstLineAtRest(page);
+    expect(paths(images.urls), `${ALLY} on its half at ${FIRST_LINE}`).toContain(ally.half?.avif.url);
+    expect(paths(images.urls), `${STRANGER} is not fetched before ${STRANGER_LINE}`).not.toContain(stranger.avif.url);
+    // The host grows past the bound (bg 600 / 1080 = 0.556 > 0.5 at resolution 1): later loads take the full tier.
+    await page.setViewportSize({ width: 600, height: 1100 });
+    await page.evaluate(() => (window as unknown as M2Window).__tgMock.setViewport(1100));
+    await expect.poll(() => stageSize(page), { message: 'the stage at 600 x 1100' }).toEqual({ w: 600, h: 1100 });
+
+    await reachLine(page, STRANGER_LINE);
+    await atRest(page);
+    const fetched = paths(images.urls);
+    console.log(`memory: image GETs by ${STRANGER_LINE} after the resize: ${fetched.join(', ')}`);
+    expect(fetched, `${STRANGER} loads its full file after the demotion`).toContain(stranger.avif.url);
+    expect(fetched, `${STRANGER}'s half is not fetched`).not.toContain(stranger.half?.avif.url);
+    // The layout does not depend on the tier: the stranger's head where its canvas puts it.
+    const stage = await stageSize(page);
+    const right = await headSample(page, stage, 'right', strangerPx, streetPx);
+    const got = await stagePixel(page, right.x, right.y);
+    console.log(`memory: the stranger's head after the resize: expected ${right.expected.slice(0, 3).join(',')}, got ${got.slice(0, 3).join(',')}`);
+    expect(deviation(got, right.expected), `the stranger's head: expected ≈ (${right.expected.slice(0, 3).join(',')}) ±${TOLERANCE}`).toBeLessThanOrEqual(TOLERANCE);
+  });
 });
