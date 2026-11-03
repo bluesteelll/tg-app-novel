@@ -9,7 +9,7 @@ use std::process::ExitCode;
 use server::api::static_files::{self, StaticDir};
 use server::config::{Config, TelegramEnv};
 use server::telegram::gateway::FrankensteinGateway;
-use server::telegram::{setup, texts};
+use server::telegram::{payments, setup, texts};
 use server::{AppState, build_router, db};
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
@@ -137,11 +137,15 @@ async fn serve() -> ExitCode {
     }
 }
 
+/// Serves `state` on `listen_addr` until Ctrl+C, with the automatic refund sweep (owner Q9) beside it: the sweep is
+/// spawned once the listener is bound and stopped (aborted, then awaited) when serving ends, before `serve` closes
+/// the pool. An abort lands at one of the sweep's `.await`s; an attempt cut after its claim is retried after its lease.
 async fn run(
     listen_addr: std::net::SocketAddr,
     state: AppState,
     static_dir: Option<&StaticDir>,
 ) -> std::io::Result<()> {
+    let sweep_state = state.clone();
     let app = build_router(state);
     let app = match static_dir {
         Some(dir) => static_files::with_static(app, dir),
@@ -149,9 +153,17 @@ async fn run(
     };
     let listener = TcpListener::bind(listen_addr).await?;
     info!(addr = %listener.local_addr()?, "listening");
-    axum::serve(listener, app)
+    let sweep = tokio::spawn(payments::run_auto_refund_sweep(sweep_state));
+    let served = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
-        .await
+        .await;
+    sweep.abort();
+    match sweep.await {
+        Ok(()) => {}
+        Err(e) if e.is_cancelled() => {}
+        Err(e) => error!("auto-refund sweep ended: {e}"),
+    }
+    served
 }
 
 async fn shutdown_signal() {

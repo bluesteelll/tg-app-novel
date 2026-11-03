@@ -1,6 +1,7 @@
 //! The bot's texts (PP V5, OPEN-QUESTIONS Q4): `server/locales/bot.ru.json` and `server/locales/bot.en.json`, Russian
 //! first, compiled in and parsed once. Each file is `{ "//": <note>, "drafts": [<key>...], "texts": {<key>: <text>} }`;
-//! `drafts` names the texts that are placeholders until the owner's own (`/terms`, `/support`, `/paysupport`).
+//! `drafts` names the texts that wait for the owner's VALUES step: the `/terms`, `/support` and `/paysupport`
+//! placeholders, and the payment and refund notices in engineering wording.
 //!
 //! Every text is plain (no parse mode). [`LangTexts::entries`] lists each one with its Telegram bound and its
 //! placeholders, and `bot_texts_complete_and_within_limits` checks both files against it.
@@ -52,7 +53,7 @@ pub struct BotFile {
     /// The file's own note: what is a placeholder, and whose the final texts are.
     #[serde(rename = "//")]
     pub note: String,
-    /// The keys whose texts are placeholders until the owner's VALUES step, sorted.
+    /// The keys whose texts wait for the owner's VALUES step (placeholders, engineering wording), sorted.
     pub drafts: Vec<String>,
     /// The texts.
     pub texts: LangTexts,
@@ -83,6 +84,8 @@ pub struct LangTexts {
     pub paysupport_not_applied: String,
     /// Appended to a refunded charge.
     pub paysupport_refunded: String,
+    /// Appended to a charge whose automatic refund is pending (owner Q9).
+    pub paysupport_refunding: String,
     /// After the listed charges, when more were left out: `{n}`.
     pub paysupport_more: String,
     /// `/paysupport` when the charges cannot be read now, after the intro.
@@ -95,14 +98,20 @@ pub struct LangTexts {
     pub payment_unapplied: String,
     /// To each admin about such a charge: `{charge}`, `{payer}`, `{outcome}`.
     pub admin_unapplied: String,
-    /// `/refund` without a usable charge id.
+    /// To each admin when such a charge's automatic refund is given up: `{charge}`, `{payer}`, `{attempts}`,
+    /// `{error}`.
+    pub admin_auto_refund_failed: String,
+    /// `/refund` without a usable charge id, or with a payer that is not a positive id.
     pub refund_usage: String,
     /// `/refund`: revoked: `{charge}`.
     pub refund_done: String,
     /// `/refund`: the charge was refunded before: `{charge}`.
     pub refund_already: String,
-    /// `/refund`: no payment has the charge: `{charge}`.
+    /// `/refund`: no payment has the charge, and no payer was given: `{charge}`.
     pub refund_unknown: String,
+    /// `/refund <charge> <payer>`: no payment has the charge; Telegram refunded it to the payer, and the refund is
+    /// recorded (D2): `{charge}`, `{payer}`.
+    pub refund_unrecorded_done: String,
     /// `/refund`: Telegram refused, or no call left the process (nothing changed): `{charge}`, `{error}`.
     pub refund_failed: String,
     /// `/refund`: the call timed out or broke off, so Telegram may have refunded; a repeat is safe: `{charge}`,
@@ -161,16 +170,19 @@ impl LangTexts {
             paysupport_line,
             paysupport_not_applied,
             paysupport_refunded,
+            paysupport_refunding,
             paysupport_more,
             paysupport_unavailable,
             privacy,
             unknown_command,
             payment_unapplied,
             admin_unapplied,
+            admin_auto_refund_failed,
             refund_usage,
             refund_done,
             refund_already,
             refund_unknown,
+            refund_unrecorded_done,
             refund_failed,
             refund_unknown_outcome,
             cmd_start,
@@ -224,6 +236,12 @@ impl LangTexts {
                 MESSAGE_LIMIT,
                 &[],
             ),
+            entry(
+                "paysupport_refunding",
+                paysupport_refunding,
+                MESSAGE_LIMIT,
+                &[],
+            ),
             entry("paysupport_more", paysupport_more, MESSAGE_LIMIT, &["n"]),
             entry(
                 "paysupport_unavailable",
@@ -245,10 +263,22 @@ impl LangTexts {
                 MESSAGE_LIMIT,
                 &["charge", "outcome", "payer"],
             ),
+            entry(
+                "admin_auto_refund_failed",
+                admin_auto_refund_failed,
+                MESSAGE_LIMIT,
+                &["attempts", "charge", "error", "payer"],
+            ),
             entry("refund_usage", refund_usage, MESSAGE_LIMIT, &[]),
             entry("refund_done", refund_done, MESSAGE_LIMIT, &["charge"]),
             entry("refund_already", refund_already, MESSAGE_LIMIT, &["charge"]),
             entry("refund_unknown", refund_unknown, MESSAGE_LIMIT, &["charge"]),
+            entry(
+                "refund_unrecorded_done",
+                refund_unrecorded_done,
+                MESSAGE_LIMIT,
+                &["charge", "payer"],
+            ),
             entry(
                 "refund_failed",
                 refund_failed,

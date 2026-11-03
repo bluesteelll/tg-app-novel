@@ -1,5 +1,6 @@
 //! The bot's commands (PP "Bot commands"; payments-stars: `/terms`, `/support`, `/paysupport`): `/start` with a
-//! button that opens the Mini App, `/terms`, `/support`, `/paysupport`, `/privacy`, and the admin's `/refund <charge>`.
+//! button that opens the Mini App, `/terms`, `/support`, `/paysupport`, `/privacy`, and the admin's `/refund <charge>`
+//! (or `/refund <charge> <payer>` for a charge the database does not hold, D2).
 //! Only a text message in a private chat with a sender is answered, in the sender's language (K29), in that chat: a
 //! group never sees a reply (`/paysupport` lists the sender's payments). Free text gets no reply and no Bot API call.
 //!
@@ -11,7 +12,7 @@ use crate::AppState;
 use crate::db::payments::ChargeLine;
 use crate::ids::{ChargeId, UserId};
 use crate::telegram::gateway::{CALL_DEADLINE, GatewayError, OutMessage, WebAppButton};
-use crate::telegram::payments::{self, RefundError, RevokeOutcome, payer_lang};
+use crate::telegram::payments::{self, RefundError, RevokeOutcome, UnrecordedOutcome, payer_lang};
 use crate::telegram::setup::app_url;
 use crate::telegram::texts::{self, LangTexts, fill};
 
@@ -89,7 +90,10 @@ pub async fn on_text(st: &AppState, m: &Message) -> Result<(), sqlx::Error> {
         return Ok(());
     };
     let t = texts::texts(payer_lang(from.language_code.as_deref()));
-    let admin = i64::try_from(from.id).is_ok_and(|id| st.cfg.admin_telegram_ids.contains(&id));
+    let admin = i64::try_from(from.id)
+        .ok()
+        .filter(|id| st.cfg.admin_telegram_ids.contains(id))
+        .map(UserId);
     let reply = match command {
         Command::Start => OutMessage {
             chat_id: m.chat.id,
@@ -106,19 +110,21 @@ pub async fn on_text(st: &AppState, m: &Message) -> Result<(), sqlx::Error> {
             let url = app_url(&st.cfg.public_app_url, "api/privacy");
             plain(m, fill(&t.privacy, &[("url", &url)]))
         }
-        // Anyone but an admin gets exactly the unknown-command reply, before any lookup: nothing about the charge
-        // leaks.
-        Command::Refund(_) if !admin => plain(m, t.unknown_command.clone()),
-        Command::Refund(arg) => plain(m, refund_reply(st, t, arg).await?),
+        Command::Refund(arg) => match admin {
+            // Anyone but an admin gets exactly the unknown-command reply, before any lookup: nothing about the charge
+            // leaks.
+            None => plain(m, t.unknown_command.clone()),
+            Some(admin) => plain(m, refund_reply(st, t, arg, admin).await?),
+        },
         Command::Unknown => plain(m, t.unknown_command.clone()),
     };
     send(st, reply, command.kind()).await;
     Ok(())
 }
 
-/// The `/paysupport` text: the intro, then the charges, newest first, each with its status (refunded, or recorded
-/// but not applied), as many as fit one message ([`texts::MESSAGE_LIMIT`]), then how many were left out of `total`;
-/// with no charge, the intro and `paysupport_none`.
+/// The `/paysupport` text: the intro, then the charges, newest first, each with its status (refunded, being refunded,
+/// or recorded but not applied), as many as fit one message ([`texts::MESSAGE_LIMIT`]), then how many were left out of
+/// `total`; with no charge, the intro and `paysupport_none`.
 pub fn paysupport_message(t: &LangTexts, lines: &[ChargeLine], total: i64) -> String {
     let mut out = t.paysupport.clone();
     out.push('\n');
@@ -156,7 +162,9 @@ pub fn paysupport_message(t: &LangTexts, lines: &[ChargeLine], total: i64) -> St
     out
 }
 
-/// One charge of `/paysupport`: its date, amount and id, then its status when it was refunded or not applied.
+/// One charge of `/paysupport`: its date, amount and id, then its status: refunded; being refunded (its automatic
+/// refund pending, owner Q9); not applied (recorded before `0007`, or its automatic refund given up: the admins were
+/// alerted); none when it was applied.
 fn charge_text(t: &LangTexts, line: &ChargeLine) -> String {
     let mut text = fill(
         &t.paysupport_line,
@@ -168,6 +176,8 @@ fn charge_text(t: &LangTexts, line: &ChargeLine) -> String {
     );
     let status = if line.refunded_at.is_some() {
         Some(&t.paysupport_refunded)
+    } else if line.refund_pending {
+        Some(&t.paysupport_refunding)
     } else if !line.applied {
         Some(&t.paysupport_not_applied)
     } else {
@@ -223,22 +233,58 @@ async fn paysupport(st: &AppState, from: u64, t: &LangTexts) -> String {
     }
 }
 
-/// The admin's `/refund <charge>`: the usage without a usable argument, else the admin refund's outcome in `t`. A
-/// gateway timeout or transport break says the outcome is unknown (Telegram may have refunded; a repeat is safe: it
-/// meets `CHARGE_ALREADY_REFUNDED` and revokes), an API refusal or a disabled gateway that nothing changed. A database
-/// error is `Err`: Telegram redelivers the command, and its retry meets `CHARGE_ALREADY_REFUNDED` and revokes.
+/// The `/refund` argument as (charge, payer): one word is a charge, two are a charge and its payer, a positive id
+/// (D2); anything else, or a charge over [`MAX_CHARGE_ARG`] characters, is `None`.
+fn refund_args(arg: Option<&str>) -> Option<(&str, Option<UserId>)> {
+    let mut words = arg?.split_whitespace();
+    let parsed = match (words.next(), words.next(), words.next()) {
+        (Some(charge), None, None) => (charge, None),
+        (Some(charge), Some(payer), None) => {
+            let payer = payer.parse::<i64>().ok().filter(|id| *id > 0)?;
+            (charge, Some(UserId(payer)))
+        }
+        _ => return None,
+    };
+    (parsed.0.chars().count() <= MAX_CHARGE_ARG).then_some(parsed)
+}
+
+/// The admin's `/refund <charge>` (or `/refund <charge> <payer>`), run by `admin`: the usage without a usable
+/// argument, else the admin refund's outcome in `t`. A charge the database holds keeps that path whatever payer was
+/// typed; an unknown one with a payer is refunded to that payer and recorded ([`payments::refund_unrecorded`], D2),
+/// and without one answers `refund_unknown`. A gateway timeout or transport break says the outcome is unknown
+/// (Telegram may have refunded; a repeat is safe: it meets `CHARGE_ALREADY_REFUNDED` and revokes or records), an API
+/// refusal or a disabled gateway that nothing changed. A database error is `Err`: Telegram redelivers the command, and
+/// its retry meets `CHARGE_ALREADY_REFUNDED`.
 async fn refund_reply(
     st: &AppState,
     t: &LangTexts,
     arg: Option<&str>,
+    admin: UserId,
 ) -> Result<String, sqlx::Error> {
-    let Some(charge) = arg.filter(|charge| charge.chars().count() <= MAX_CHARGE_ARG) else {
+    let Some((charge, payer)) = refund_args(arg) else {
         return Ok(t.refund_usage.clone());
     };
-    let text = match payments::admin_refund(st, &ChargeId(charge.to_owned())).await {
-        Ok(RevokeOutcome::Revoked) => fill(&t.refund_done, &[("charge", charge)]),
-        Ok(RevokeOutcome::AlreadyRefunded) => fill(&t.refund_already, &[("charge", charge)]),
-        Ok(RevokeOutcome::UnknownCharge) => fill(&t.refund_unknown, &[("charge", charge)]),
+    let charge_id = ChargeId(charge.to_owned());
+    let refunded = match payments::admin_refund(st, &charge_id).await {
+        Ok(RevokeOutcome::Revoked) => Ok(fill(&t.refund_done, &[("charge", charge)])),
+        Ok(RevokeOutcome::AlreadyRefunded) => Ok(fill(&t.refund_already, &[("charge", charge)])),
+        Ok(RevokeOutcome::UnknownCharge) => match payer {
+            None => Ok(fill(&t.refund_unknown, &[("charge", charge)])),
+            Some(payer) => match payments::refund_unrecorded(st, &charge_id, payer, admin).await {
+                Ok(UnrecordedOutcome::Refunded) => Ok(fill(
+                    &t.refund_unrecorded_done,
+                    &[("charge", charge), ("payer", &payer.0.to_string())],
+                )),
+                Ok(UnrecordedOutcome::AlreadyRefunded) => {
+                    Ok(fill(&t.refund_already, &[("charge", charge)]))
+                }
+                Err(e) => Err(e),
+            },
+        },
+        Err(e) => Err(e),
+    };
+    match refunded {
+        Ok(text) => Ok(text),
         Err(RefundError::Gateway(e)) => {
             // No wildcard arm: a new gateway error does not compile until its reply is chosen here.
             let template = match &e {
@@ -248,11 +294,13 @@ async fn refund_reply(
                 GatewayError::Api(_) | GatewayError::Disabled => &t.refund_failed,
             };
             // `GatewayError`'s text carries no request text (no token, no secret).
-            fill(template, &[("charge", charge), ("error", &e.to_string())])
+            Ok(fill(
+                template,
+                &[("charge", charge), ("error", &e.to_string())],
+            ))
         }
-        Err(RefundError::Db(e)) => return Err(e),
-    };
-    Ok(text)
+        Err(RefundError::Db(e)) => Err(e),
+    }
 }
 
 /// `sendMessage` of `reply`, cut at [`CALL_DEADLINE`]; a failure is logged with the command's name.
@@ -308,6 +356,7 @@ mod tests {
                 paid_at: 1_798_761_600,
                 refunded_at: None,
                 applied: true,
+                refund_pending: false,
             })
             .collect();
         let mut failures = Vec::new();
