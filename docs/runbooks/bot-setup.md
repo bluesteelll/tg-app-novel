@@ -17,9 +17,13 @@ The server half is one command, `server setup`; the rest is @BotFather and the h
   on Telegram Desktop open Settings, Shift + Alt + right-click "Add Account", then "Test Server"
   ([bots/features, test environment](https://core.telegram.org/bots/features#testing-your-bot)). Stars payments can be
   tested there freely ([payments-stars](https://core.telegram.org/bots/payments-stars)).
-- A host that can reach the Bot API and that Telegram can reach over HTTPS (the test environment also accepts an
-  `http://` Mini App URL, [config.rs:356-374](../../server/src/config.rs#L356)). Exposing a local machine:
-  [webhook.md](webhook.md#exposing-https).
+- A host that can reach the Bot API and that Telegram can reach over HTTPS, in both environments. The configuration
+  accepts an `http://` `PUBLIC_APP_URL` under `test` ([config.rs:356-374](../../server/src/config.rs#L356)), because
+  the test environment allows Mini App links without TLS ([bots/webapps](https://core.telegram.org/bots/webapps)). The
+  webhook does not: `setWebhook` takes an HTTPS URL ([Bot API](https://core.telegram.org/bots/api#setwebhook)), and
+  `server setup` builds the webhook URL from the same `PUBLIC_APP_URL`
+  ([setup.rs:22-35](../../server/src/telegram/setup.rs#L22)). So `PUBLIC_APP_URL` is `https://` for a working bot.
+  Exposing a local machine: [webhook.md](webhook.md#exposing-https).
 - The host clock synced by NTP. initData whose `auth_date` is more than 60 s ahead of the server clock is refused as
   `initdata_expired` ([initdata.rs:11](../../server/src/auth/initdata.rs#L11), :106-107), and "reopen the app" cannot
   help while the clock is wrong (PROTOTYPE-PLAN, the failure table's server-clock row).
@@ -42,7 +46,10 @@ The server half is one command, `server setup`; the rest is @BotFather and the h
 
 4. **Fill the server configuration** on the host. The variables are parsed in
    [server/src/config.rs](../../server/src/config.rs) (`Config::from_lookup`, :143-257) and documented in
-   [.env.example](../../.env.example):
+   [.env.example](../../.env.example). The server reads its process environment only; nothing loads a `.env` file for
+   it ([config.rs:136-138](../../server/src/config.rs#L136)). On this machine, set the variables in the shell that
+   starts the server, for example from a git-ignored file with the loader line of
+   [local-dev.md](local-dev.md#the-production-binary-on-this-machine); on a host, in the service's environment.
 
    | Variable | Value |
    |---|---|
@@ -50,13 +57,31 @@ The server half is one command, `server setup`; the rest is @BotFather and the h
    | `WEBHOOK_SECRET` | `<WEBHOOK_SECRET>`: 1-256 characters of `A-Z a-z 0-9 _ -` (:325-335) |
    | `TOKEN_KEY` | `<TOKEN_KEY>`: 32 random bytes as 64 hex characters (:337-342), not the bot token |
    | `TELEGRAM_ENV` | `test` for a test-environment bot, `prod` for the production bot (:348-354) |
-   | `PUBLIC_APP_URL` | `<PUBLIC_APP_URL>`; `https://` required under `prod` (:356-374) |
-   | `ADMIN_TELEGRAM_IDS` | the owner's Telegram user id (comma-separated positive integers): who may run `/refund` (:410-415) |
+   | `PUBLIC_APP_URL` | `<PUBLIC_APP_URL>`; `https://` (the configuration requires it under `prod`, :356-374; the webhook needs it in both environments, above) |
+   | `ADMIN_TELEGRAM_IDS` | the owner's Telegram user id (comma-separated positive integers): who may run `/refund` (:410-415); a test-environment account has its own id (below) |
    | `STATIC_DIR` | `client/dist` ([deploy.md](deploy.md#build)) |
    | `CONTENT_DIR` | `server/content` |
-   | `DATABASE_URL` | the PostgreSQL database; off loopback it must carry `sslmode=verify-full` ([db/mod.rs:160-187](../../server/src/db/mod.rs#L160)) |
+   | `DATABASE_URL` | the PostgreSQL database; off loopback it must carry `sslmode=verify-full` ([db/mod.rs:160-187](../../server/src/db/mod.rs#L160)); on this machine `pgdev`'s `tgn_local` ([.env.example:24](../../.env.example#L24), [local-dev.md](local-dev.md#the-dev-database-cluster-pgdev)) |
    | `PRIVACY_OPERATOR_FILE` | required under `prod`: [privacy-ops.md](privacy-ops.md) |
    | `TOKEN_TTL_SECS`, `INITDATA_MAX_AGE_SECS`, `LISTEN_ADDR` | optional: 900-3600 (default 1800), 1-86400 (default 86400), default `127.0.0.1:8787` |
+
+   One way to make `<TOKEN_KEY>` in Windows PowerShell 5.1 (32 random bytes as 64 hex characters); its output also
+   fits the `WEBHOOK_SECRET` rule, so run it twice, once for each:
+
+   ```powershell
+   $b = New-Object byte[] 32; [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); -join ($b | ForEach-Object { $_.ToString('x2') })
+   ```
+
+   **Your Telegram user id** for `ADMIN_TELEGRAM_IDS`: start the server once without it (it is optional, :163), open the
+   Mini App from your account, and read the `users` row it wrote (the id comes from verified initData only,
+   [0001_init.sql:3-10](../../server/migrations/0001_init.sql#L3)); then set it and restart the server:
+
+   ```powershell
+   & "<PG_BIN>\psql" "<DATABASE_URL>" -c "SELECT id, first_name FROM users ORDER BY created_at DESC LIMIT 5"
+   ```
+
+   A wrong id is accepted silently: `/refund` then answers the unknown-command reply
+   ([commands.rs:109-113](../../server/src/telegram/commands.rs#L109)).
 
    The three secrets of `.env.example` are public placeholders: the server refuses them unless `TELEGRAM_ENV=test` and
    `PUBLIC_APP_URL` is local ([config.rs:186-200](../../server/src/config.rs#L186)). Every problem is reported at once,
@@ -68,10 +93,21 @@ The server half is one command, `server setup`; the rest is @BotFather and the h
    while either file lists a draft; under `test` they log a warning
    ([main.rs:36-56](../../server/src/main.rs#L36), [texts.rs:321-338](../../server/src/telegram/texts.rs#L321)).
    The texts are compiled into the binary, so the edit needs a rebuild (a VALUES step for the owner, OPEN-QUESTIONS
-   Q4).
+   Q4). The same commit changes the test that pins the drafts: `bot_texts_complete_and_within_limits` expects
+   `drafts` to be exactly `["paysupport", "support", "terms"]` in both files
+   ([server/tests/it/bot.rs:123-127](../../server/tests/it/bot.rs#L123), :147). Without that change `cargo test`
+   fails, and a deploy needs green gates ([deploy.md](deploy.md#preconditions)).
 
-6. **Start the server** (`server serve`, [deploy.md](deploy.md#steps)) and check `GET <PUBLIC_APP_URL>api/health`
-   answers `ok`.
+6. **Start the server** and check `GET <PUBLIC_APP_URL>api/health` answers `ok`. For a test bot on this machine, from
+   the repository root, with the step 4 environment (`TELEGRAM_ENV=test`, `STATIC_DIR=client/dist`) and after
+   `npm --prefix client run build`:
+
+   ```powershell
+   cargo run -p server --release --locked -- serve
+   ```
+
+   Stop `server-dev` first, or set another `LISTEN_ADDR`: both listen on `127.0.0.1:8787` by default. On a production
+   host: [deploy.md](deploy.md#steps).
 
 7. **Run the setup** with the same environment:
 
@@ -106,7 +142,8 @@ The server half is one command, `server setup`; the rest is @BotFather and the h
 ## Roll back
 
 Point the bot elsewhere by running `server setup` from a server configured with the other `PUBLIC_APP_URL`. To stop
-updates entirely, delete the webhook with the Bot API's `deleteWebhook` (see [webhook.md](webhook.md#roll-back)).
+updates entirely, delete the webhook with the Bot API's `deleteWebhook` (the command:
+[webhook.md](webhook.md#roll-back)).
 
 ## Troubleshooting
 
@@ -114,6 +151,7 @@ updates entirely, delete the webhook with the Bot API's `deleteWebhook` (see [we
 |---|---|---|
 | `invalid configuration: BOT_TOKEN: invalid (is the committed .env.example placeholder ...)` | a placeholder secret with a reachable URL or `prod` | set a real `<BOT_TOKEN>`, `<WEBHOOK_SECRET>` and `<TOKEN_KEY>` |
 | `bot texts refused: ...` at start | `drafts` not empty under `TELEGRAM_ENV=prod` | step 5 |
-| `setup failed: bot setup: ...` | a Bot API call failed (token, URL, network); nothing after it ran | fix the cause and run `server setup` again |
+| `setup failed: bot setup: ...` | a Bot API call failed (token, an `http://` `PUBLIC_APP_URL`, network); nothing after it ran | fix the cause and run `server setup` again |
+| `server failed: ...` after `opening database` | the listen address is taken, for example by `server-dev` on `127.0.0.1:8787` ([main.rs:150](../../server/src/main.rs#L150), :134) | stop the other process, or set `LISTEN_ADDR` |
 | every open of the app ends on "reopen" (`initdata_expired`) | the host clock is ahead or behind | NTP time sync on the host |
 | `privacy policy: placeholders left under TELEGRAM_ENV=prod: ...` | the policy is not filled | [privacy-ops.md](privacy-ops.md) |

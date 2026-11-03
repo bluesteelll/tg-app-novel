@@ -40,7 +40,7 @@ flowchart LR
 
 Each arrow is a function: `main` ([story.ts:530](../client/scripts/story.ts#L530)) routes every chapter through
 `chapterPaths` ([emit.ts:133](../client/scripts/story/emit.ts#L133)); the asset tool's output directories are
-`ASSET_OUT` ([manifest.ts:34](../client/scripts/assets/manifest.ts#L34)); the server loads `server/content/` in
+`ASSET_OUT` ([manifest.ts:36](../client/scripts/assets/manifest.ts#L36)); the server loads `server/content/` in
 `ContentStore::load` ([content.rs:236](../server/src/content.rs#L236)).
 
 ## Client modules
@@ -101,7 +101,8 @@ controller says the story has a card (`hasCard`, [boot.ts:322](../client/src/app
 spec ([boot.spec.ts](../client/e2e/boot.spec.ts)) and, since L15b, the smoke, stories, purchase, perf and puzzles
 specs, 35 names in all (with M1's `memory.spec.ts`, 36; FEATURE_MAP "App shell and the app e2e"); as merged (LMI
 `3e35a7b`), with the meta and social specs ([meta.spec.ts](../client/e2e/meta.spec.ts),
-[social.spec.ts](../client/e2e/social.spec.ts)), 47 names in nine specs; the overlay
+[social.spec.ts](../client/e2e/social.spec.ts)), 47 names in nine specs; as merged (M2 `385d52f`), + 3 in
+`memory.spec.ts`, 50 names (RULINGS 117); the overlay
 components are tested in the vitest `dom` project.
 
 ## Server modules
@@ -308,7 +309,7 @@ outputs first ([story.ts:728-752](../client/scripts/story.ts#L728)).
 | `server/content/build/{fingerprints.lines,usage,fingerprints.assets}.json` | story tool, asset tool | asset tool, `budget.ts`, `scan-dist.ts` | no |
 
 Paths: `OUT` ([emit.ts:28](../client/scripts/story/emit.ts#L28)) and `ASSET_OUT`
-([manifest.ts:34](../client/scripts/assets/manifest.ts#L34)). All are git-ignored.
+([manifest.ts:36](../client/scripts/assets/manifest.ts#L36)). All are git-ignored.
 
 **Budgets** (principle 4) are enforced by `budget.ts`, `LIMITS` ([budget.ts:105](../client/scripts/budget.ts#L105)),
 among them: the entry chunk ≤ 40 KB brotli, the engine closure ≤ 230 KB, the JS before the first line ≤ 270 KB,

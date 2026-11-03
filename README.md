@@ -28,7 +28,7 @@ Start or Continue, plus the completion card, Friends and Wallet. The tree ships 
 
 | Story | Chapters | Endings |
 |---|---|---|
-| `manor`, "Elm Manor" | `ch1` free, `ch2` paid (`chapter:ch2`); both with rooms to explore and puzzles ([story/ch1/world.json](story/ch1/world.json), [story/ch2/world.json](story/ch2/world.json)) | `truth`, `ashes` (both in `ch2`) |
+| `manor`, "Elm Manor" | `ch1` free, with rooms to explore and puzzles ([story/ch1/world.json](story/ch1/world.json)); `ch2` paid (`chapter:ch2`), with one puzzle and no rooms ([story/ch2/world.json](story/ch2/world.json)) | `truth`, `ashes` (both in `ch2`) |
 | `tide`, "The Lighthouse Above the Tide" | `ch3` free, `ch4` paid (`chapter:ch4`) | `drowned` (in `ch3`), `dawn` |
 
 The titles are the English locale ([story/locales/en/story.json](story/locales/en/story.json)); Russian is the primary
@@ -55,22 +55,30 @@ The owner's steps (PROTOTYPE-PLAN D2), each detailed in a runbook:
 
 1. Create a bot in Telegram's test environment; Stars payments are tested there for free
    ([bot-setup.md](docs/runbooks/bot-setup.md#preconditions)).
-2. Set `BOT_TOKEN`, `WEBHOOK_SECRET`, `TOKEN_KEY`, `PUBLIC_APP_URL` and `ADMIN_TELEGRAM_IDS`, plus `TELEGRAM_ENV`,
+2. Set `BOT_TOKEN`, `WEBHOOK_SECRET`, `TOKEN_KEY`, `PUBLIC_APP_URL` and `ADMIN_TELEGRAM_IDS`, plus `TELEGRAM_ENV=test`,
    `DATABASE_URL` and `CONTENT_DIR` (the full table: [bot-setup.md](docs/runbooks/bot-setup.md#steps), step 4; the names
-   are parsed in [server/src/config.rs](server/src/config.rs)). Placeholders only in any file you commit.
+   are parsed in [server/src/config.rs](server/src/config.rs)). The server reads its process environment only; nothing
+   loads a `.env` file for it. Placeholders only in any file you commit. On this machine the database is `pgdev`'s
+   `tgn_local` (`cargo run -p pgdev --locked -- up`; [local-dev.md](docs/runbooks/local-dev.md#the-dev-database-cluster-pgdev)).
+   With a quick tunnel, start it first (step 5): its printed host is the `PUBLIC_APP_URL`.
 3. Build the client and the paid content: `npm --prefix client run build`.
-4. Run `server serve` with `STATIC_DIR=client/dist` ([deploy.md](docs/runbooks/deploy.md#steps)).
+4. Start the server on this machine with that environment and `STATIC_DIR=client/dist`:
+   `cargo run -p server --release --locked -- serve`
+   ([bot-setup.md](docs/runbooks/bot-setup.md#steps), step 6). A production host follows
+   [deploy.md](docs/runbooks/deploy.md#steps) instead.
 5. Expose HTTPS: a Cloudflare named tunnel, or a quick tunnel, whose URL changes on every run and is registered again
-   each time ([webhook.md](docs/runbooks/webhook.md#exposing-https)).
+   each time ([webhook.md](docs/runbooks/webhook.md#exposing-https)). The webhook needs HTTPS in the test environment
+   too.
 6. In @BotFather, set the Main Mini App to `<PUBLIC_APP_URL>` (the menu button is set by the next step), and the privacy
    policy URL to `<PUBLIC_APP_URL>api/privacy` ([bot-setup.md](docs/runbooks/bot-setup.md#steps), steps 2-3).
 7. Run `server setup`: the webhook with its secret, the command menus and the menu button
    ([webhook.md](docs/runbooks/webhook.md#registering)).
 8. Turn on 2-step verification on the owner's Telegram account.
 
-For production, also: replace the draft `/terms`, `/support` and `/paysupport` texts, and set `PRIVACY_OPERATOR_FILE`
-to the host file with the operator's identity ([privacy-ops.md](docs/runbooks/privacy-ops.md)); a production start
-refuses until both are done.
+For production, also: replace the draft `/terms`, `/support` and `/paysupport` texts; fill the privacy policy's six
+content placeholders by a template commit; and set `PRIVACY_OPERATOR_FILE` to the host file with the operator's
+identity ([privacy-ops.md](docs/runbooks/privacy-ops.md)). A production start refuses until all three are done; the
+full list is [deploy.md "Preconditions"](docs/runbooks/deploy.md#preconditions).
 
 ## Gates
 

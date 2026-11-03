@@ -21,7 +21,18 @@ Stars only: `currency = "XTR"`, an empty `provider_token`, exactly one price ite
 
 Prices live in [server/catalog.json](../../server/catalog.json), compiled into the server
 (`CATALOG_JSON`, [catalog.rs:19](../../server/src/catalog.rs#L19)): a price change is a commit, a rebuild and a
-restart ([deploy.md](deploy.md)).
+restart ([deploy.md](deploy.md)). Tests pin the compiled-in values, so the same commit changes them, or `cargo test`
+fails:
+- `invoice_price_from_catalog` ([server/tests/it/payments.rs:437](../../server/tests/it/payments.rs#L437)): the
+  compiled-in chapter price of 1 Star (:479-496);
+- `wallet_lists_balances_and_packs` ([server/tests/it/economy.rs:1767](../../server/tests/it/economy.rs#L1767)),
+  through `wallet_body` (:1739): the packs' amounts and prices, `hintTierCost` and `maxPerGift`;
+- `catalog_packs_from_economy` (economy.rs:1249): the packs and the spend, gift and referral rules;
+- the gifts suite ([server/tests/it/gifts.rs](../../server/tests/it/gifts.rs)), written on the compiled-in gift limits
+  (its header, :1-4).
+
+Run `cargo test --workspace --all-targets --no-fail-fast --locked` after the edit; a failure names the value it
+expected.
 
 - **Chapters:** product id `chapter:<ch>`. Each paid chapter costs `chapters.defaultPriceStars` unless
   `chapters.priceStars` names it. A new paid chapter needs no catalog edit. A key of `priceStars` that is not a paid
@@ -83,7 +94,7 @@ cut at 5 s and the reply at another 5 s (`CALL_DEADLINE`, [gateway.rs:38](../../
 | `refund_already` | the charge was refunded before | nothing |
 | `refund_unknown` | no payment has this charge id | check the number |
 | `refund_failed` | Telegram refused (or the gateway is disabled): nothing changed | read the error, retry |
-| `refund_unknown_outcome` | the call timed out or broke: Telegram may have refunded | repeat `/refund <CHARGE_ID>`: a repeat meets `CHARGE_ALREADY_REFUNDED` and revokes |
+| `refund_unknown_outcome` | the call timed out or broke: Telegram may have refunded | repeat `/refund <CHARGE_ID>`: the server treats an API refusal whose description holds `CHARGE_ALREADY_REFUNDED` as refunded and revokes ([payments.rs:224-229](../../server/src/telegram/payments.rs#L224); verify: the Bot API's text for an already-refunded charge, the owner's E6 run) |
 | `refund_usage` | no charge id given | add it |
 
 Sources: [commands.rs:225-256](../../server/src/telegram/commands.rs#L225),
@@ -137,4 +148,4 @@ player who wants it buys it again.
 | a player paid, the chapter stays locked | the `successful_payment` has not arrived yet, or the charge is unapplied | wait for the client's polling; check the webhook ([webhook.md](webhook.md#verify)); the first query |
 | `refund_unknown` for a number the player sent | a typo, or another bot's payment | ask for the number from `/paysupport` |
 | a hint spent on a puzzle that had just been solved | a hint use and a correct attempt raced; nothing was granted unpaid | none needed; an optional goodwill credit is not built |
-| `invoice` answers 429 `rate_limited` | more than 10 unpaid orders of this player in the rolling hour | wait for `Retry-After` (at most 3600 s) ([db/orders.rs:15-20](../../server/src/db/orders.rs#L15)) |
+| `invoice` answers 429 `rate_limited` | this player already has 10 unpaid orders in the rolling hour ([db/orders.rs:158](../../server/src/db/orders.rs#L158)) | wait for `Retry-After` (at most 3600 s) ([db/orders.rs:15-20](../../server/src/db/orders.rs#L15)) |

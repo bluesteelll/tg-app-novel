@@ -12,7 +12,11 @@ loads it from `CONTENT_DIR` and serves it only after the entitlement check
 ## Preconditions
 
 - A build machine with Node.js 22.12+ and the Rust toolchain, on a commit whose gates are green (CLAUDE.md "Gate
-  commands").
+  commands"). A commit of owner values changes the tests that pin them in the same commit: the bot-text drafts
+  ([bot-setup.md](bot-setup.md#steps), step 5), the prices and economy numbers
+  ([payments-ops.md](payments-ops.md#prices-and-products)) and the policy's placeholders
+  ([privacy-ops.md](privacy-ops.md#change-the-policy)).
+- `pg_dump` and `pg_restore` from the PostgreSQL 18 `bin` directory (`<PG_BIN>`), for the backup in step 4.
 - A host with PostgreSQL 18 and an empty or already migrated database. Off loopback, `DATABASE_URL` must say
   `sslmode=verify-full` ([db/mod.rs:160-187](../../server/src/db/mod.rs#L160)). The server creates no database: a
   missing one is a startup error ([server/src/lib.rs:63-70](../../server/src/lib.rs#L63)).
@@ -23,7 +27,7 @@ loads it from `CONTENT_DIR` and serves it only after the entitlement check
   - the policy's content placeholders filled by a template commit, and the host file named by
     `PRIVACY_OPERATOR_FILE` ([privacy-ops.md](privacy-ops.md));
   - real secrets, not the `.env.example` placeholders ([config.rs:186-200](../../server/src/config.rs#L186)).
-- Owner values that nothing refuses, so check them by hand: the chapter and pack prices and the economy numbers in
+- Owner values that no start refuses, so check them by hand: the chapter and pack prices and the economy numbers in
   `server/catalog.json` are PLACEHOLDER values (OPEN-QUESTIONS Q3, Q30-Q33; [payments-ops.md](payments-ops.md#prices-and-products));
   statistics retention is "keep, no deletion job" (Q23).
 
@@ -57,8 +61,21 @@ cargo build -p server --release --locked
    `server/content/` (for `CONTENT_DIR`). The two directories must stay disjoint.
 2. Set the environment of the service (the variables: [bot-setup.md](bot-setup.md#steps), step 4), with
    `TELEGRAM_ENV=prod`, `STATIC_DIR` and `CONTENT_DIR` pointing at the copied directories.
-3. Stop the running server (Ctrl+C or the service manager; it shuts down gracefully,
-   [main.rs:157-164](../../server/src/main.rs#L157)), then start the new one:
+3. Stop the running server. It shuts down gracefully on Ctrl+C only, which is SIGINT on Linux
+   ([main.rs:157-164](../../server/src/main.rs#L157)): a service manager must stop it with that signal (systemd sends
+   SIGTERM unless the unit sets `KillSignal=SIGINT`). An update Telegram sent meanwhile is redelivered: the webhook
+   answers nothing while the server is down.
+4. Back up the database while no server runs, so the backup holds every payment written so far, and check that the
+   file reads back. `<BACKUP_FILE>` is a path on the host outside the release directories; keep one per release:
+
+   ```powershell
+   & "<PG_BIN>\pg_dump" --format=custom --file="<BACKUP_FILE>" "<DATABASE_URL>"
+   & "<PG_BIN>\pg_restore" --list "<BACKUP_FILE>"
+   ```
+
+   The second command lists the backup's contents; an error there means no usable backup, so stop. A full check
+   restores it into a scratch database (`pg_restore --dbname="<SCRATCH_DATABASE_URL>" "<BACKUP_FILE>"`).
+5. Start the new server (`.\server.exe serve` on Windows, `./server serve` on Linux):
 
    ```powershell
    .\server.exe serve
@@ -68,7 +85,7 @@ cargo build -p server --release --locked
    ([main.rs:101-105](../../server/src/main.rs#L101)); the `STATIC_DIR` check (:106-116); then the content, the
    catalog, the privacy policy and the Bot API gateway; last the database pool and the migrations
    ([server/src/lib.rs:63-89](../../server/src/lib.rs#L63)). Pending migrations apply here, in this start.
-4. If `PUBLIC_APP_URL` or `WEBHOOK_SECRET` changed, run `.\server.exe setup` with the same environment
+6. If `PUBLIC_APP_URL` or `WEBHOOK_SECRET` changed, run `.\server.exe setup` with the same environment
    ([webhook.md](webhook.md#registering)).
 
 ## Verify
@@ -99,8 +116,19 @@ while.
 
 Start the previous binary with the previous `client/dist/` and `server/content/`. If the release applied a new
 migration, the previous binary does not know it: sqlx refuses a database with a migration it lacks (verify on a copy
-before relying on this), and there are no down migrations, so a rollback across a migration is a database restore from
-the backup taken before step 3.
+before relying on this), and there are no down migrations. A rollback across a migration is then a restore of the
+step 4 backup, with no server running:
+
+```powershell
+& "<PG_BIN>\pg_restore" --clean --if-exists --single-transaction --dbname="<DATABASE_URL>" "<BACKUP_FILE>"
+```
+
+A restore drops every row written since the backup, payments included. Those charges are paid in Telegram, but the
+restored database no longer knows them, and `/refund` answers `refund_unknown` for them
+([payments-ops.md](payments-ops.md#refund-a-charge)). Before restoring, save the payments written since the backup
+(the first query of [payments-ops.md](payments-ops.md#find-a-purchase-by-its-charge-id) with
+`WHERE p.paid_at > <backup unix time>`); re-entering them is not built. Once players have paid on the new release,
+prefer a fix-forward release to a restore.
 
 ## Troubleshooting
 

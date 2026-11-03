@@ -9,8 +9,10 @@ The server takes every bot update on one route, `POST /telegram/webhook`, outsid
 
 ## Preconditions
 
-- A running `server serve` with the bot's configuration ([deploy.md](deploy.md#steps)), reachable by Telegram at
-  `<PUBLIC_APP_URL>` over HTTPS (`http://` only in the test environment).
+- A running `server serve` with the bot's configuration ([bot-setup.md](bot-setup.md#steps), step 6; on a host
+  [deploy.md](deploy.md#steps)), reachable by Telegram at `<PUBLIC_APP_URL>` over HTTPS. That holds in the test
+  environment too: `setWebhook` takes an HTTPS URL ([Bot API](https://core.telegram.org/bots/api#setwebhook)); only
+  Mini App links may be `http://` there. One `PUBLIC_APP_URL` serves both, so an `http://` value fails `server setup`.
 - The same environment in the shell that runs `server setup`, `<BOT_TOKEN>` and `<WEBHOOK_SECRET>` included.
 
 ## Steps
@@ -61,7 +63,9 @@ For a server on the owner's machine (PROTOTYPE-PLAN D2, step 5):
   hostname changes each time you create a Quick Tunnel"
   ([Cloudflare docs](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/)).
   After each new tunnel: set `PUBLIC_APP_URL` to `https://<printed-host>/`, restart `server serve`, run
-  `server setup`, and update the Main Mini App URL in @BotFather.
+  `server setup`, and update the Main Mini App URL and the privacy policy URL (`<PUBLIC_APP_URL>api/privacy`) in
+  @BotFather ([bot-setup.md](bot-setup.md#steps), steps 2-3). For the first run, start the tunnel before you set
+  `PUBLIC_APP_URL`: `cloudflared` prints the host even while nothing listens on the port yet.
 
 `cloudflared` is not part of this repository; install it from Cloudflare. `8787` is the default `LISTEN_ADDR` port
 ([config.rs:169-176](../../server/src/config.rs#L169)).
@@ -87,9 +91,15 @@ line names the charge id only (ARCHITECTURE "Payments as built", the route).
 ## Roll back
 
 Register the previous URL by running `server setup` with the previous configuration. To stop updates entirely, call
-the Bot API's `deleteWebhook` (its `drop_pending_updates` drops what is queued,
-[Bot API](https://core.telegram.org/bots/api#deletewebhook)); never drop pending updates while a payment may be in
-them: a dropped `successful_payment` is a paid charge the server never records.
+the Bot API's `deleteWebhook` (drop `/test` for the production bot; same private-shell rule as above):
+
+```powershell
+Invoke-RestMethod "https://api.telegram.org/bot<BOT_TOKEN>/test/deleteWebhook"
+```
+
+Its `drop_pending_updates` parameter drops what is queued ([Bot API](https://core.telegram.org/bots/api#deletewebhook));
+never pass it while a payment may be in the queue: a dropped `successful_payment` is a paid charge the server never
+records.
 
 ## Troubleshooting
 
@@ -97,5 +107,5 @@ them: a dropped `successful_payment` is a paid charge the server never records.
 |---|---|---|
 | `last_error_message` mentions 401 | `WEBHOOK_SECRET` differs between the server and the registration | run `server setup` with the server's value |
 | `last_error_message` mentions 500, `pending_update_count` grows | the database refused a payment or refund write | read the server log (`error!` lines), fix the database; Telegram redelivers |
-| connection or TLS errors | the tunnel or the host is down, or the quick-tunnel host changed | restart the tunnel; after a quick tunnel, the four steps under "Exposing HTTPS" |
+| connection or TLS errors | the tunnel or the host is down, or the quick-tunnel host changed | restart the tunnel; after a quick tunnel, the steps under "Exposing HTTPS" |
 | payments hang at the Stars sheet | `pre_checkout_query` is not reaching the server, or not answered within 10 s | check the webhook state above; the pre-checkout answer is cut at 5 s ([gateway.rs:38](../../server/src/telegram/gateway.rs#L38)) |

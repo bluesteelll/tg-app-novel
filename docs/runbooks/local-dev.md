@@ -10,7 +10,10 @@ fit: [ARCHITECTURE.md](../ARCHITECTURE.md#overview). The real-bot path is [bot-s
 ## Preconditions
 
 - Node.js 22.12 or later ([client/package.json:7](../../client/package.json#L7)).
-- The Rust toolchain for the workspace ([Cargo.toml](../../Cargo.toml): `server`, `server/dev`, `server/pgdev`).
+- The Rust toolchain for the workspace ([Cargo.toml](../../Cargo.toml): `server`, `server/dev`, `server/pgdev`):
+  Rust 1.94 or later, edition 2024 ([Cargo.toml:6-7](../../Cargo.toml#L6)), and a C compiler for `aws-lc-sys`
+  ([Cargo.lock:63-64](../../Cargo.lock#L63)); on Windows the MSVC toolchain (verify: the `aws-lc-sys` build
+  requirements for your platform).
 - PostgreSQL 18 binaries: `pg_ctl` on `PATH`, or their directory in `PG_BIN`
   ([cluster.rs:49-66](../../server/pgdev/src/cluster.rs#L49)).
 - Optional, per lane or per checkout: `DEV_PG_PORT` (default 5487), `DEV_PG_ROOT` (an absolute path; default
@@ -113,14 +116,17 @@ cargo run -p pgdev --locked -- up
 `server serve` runs locally on the committed placeholders: they are accepted only with `TELEGRAM_ENV=test` and a
 `localhost`, loopback or `.invalid` `PUBLIC_APP_URL` ([config.rs:186-200](../../server/src/config.rs#L186)), which
 `.env.example` sets. The server reads its process environment only; nothing loads `.env` for it
-([config.rs:136-138](../../server/src/config.rs#L136)). From the repository root, in PowerShell:
+([config.rs:136-138](../../server/src/config.rs#L136)). From the repository root, in PowerShell, the loader line reads
+`.env.example` itself and leaves any `.env` of yours untouched:
 
 ```powershell
-Copy-Item .env.example .env
-Get-Content .env | ForEach-Object { if ($_ -match '^([A-Z_]+)=(.*)$') { Set-Item "env:$($Matches[1])" $Matches[2] } }
+Get-Content .env.example | ForEach-Object { if ($_ -match '^([A-Z_]+)=(.*)$') { Set-Item "env:$($Matches[1])" $Matches[2] } }
 cargo run -p pgdev --locked -- up
 cargo run -p server --locked -- serve
 ```
+
+The same line loads a git-ignored file of your own (for a test bot, [bot-setup.md](bot-setup.md#steps), step 4):
+replace `.env.example` with its path. The variables last for that shell only.
 
 With the placeholder token the Bot API gateway is disabled: every Bot API call fails at once and nothing reaches
 Telegram ([gateway.rs:234-243](../../server/src/telegram/gateway.rs#L234)). To serve the built client from the same
@@ -128,9 +134,22 @@ process, see [deploy.md](deploy.md#build).
 
 ## The e2e run
 
+Once per machine, install the Playwright browser the suite runs on (`chromium`,
+[playwright.config.ts:44](../../client/e2e/playwright.config.ts#L44)); `npm ci` does not download it. It is a
+download of about 150 MB (PROTOTYPE-PLAN E3):
+
+```powershell
+Push-Location client; npx playwright install chromium; Pop-Location
+```
+
+Then:
+
 ```powershell
 npm --prefix client run e2e
 ```
+
+On a cold Rust cache, build `server-dev` first (`cargo build -p server-dev --locked`): the suite waits at most 600 s
+for its `cargo run` ([playwright.config.ts:53-54](../../client/e2e/playwright.config.ts#L53)).
 
 It compiles the story and the assets, builds the client with `--mode e2e` into `client/dist-e2e/` (the dev mock
 compiled in), starts `cargo run -p server-dev --locked` (or the full command in `SERVER_DEV_CMD`) and `vite preview` on
@@ -143,7 +162,9 @@ never serve it to players ([deploy.md](deploy.md#build)).
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `server-dev` exits with `cannot bind 127.0.0.1:8787` | another `server-dev` (or another checkout) holds the port | stop it, or set `DEV_API_PORT` for both `server-dev` and `npm --prefix client run dev` |
+| `server-dev` exits with `cannot bind 127.0.0.1:8787` | another `server-dev`, another checkout or a local `server serve` holds the port | stop it, or set `DEV_API_PORT` for both `server-dev` and `npm --prefix client run dev` |
+| `server serve` exits with `server failed: ...` after `opening database` | `server-dev` (or another process) holds its `LISTEN_ADDR`, by default `127.0.0.1:8787` ([main.rs:150](../../server/src/main.rs#L150), :134) | stop `server-dev`, or set `LISTEN_ADDR` |
+| the e2e fails at the first browser launch (`Executable doesn't exist`) | the Playwright browser is not installed | the install line under "The e2e run" |
 | `cannot reset the dev database: ...` | no PostgreSQL binaries found, or the cluster cannot start | set `PG_BIN` to the PostgreSQL 18 `bin` directory; `cargo run -p pgdev --locked -- status` |
 | `startup failed: content: ...` from `server-dev` | `server/content/` is missing or stale | rerun `npm --prefix client run story` and `npm --prefix client run assets` |
 | the page shows "open in Telegram" | it was opened at `/`, not through `/dev/launch` | open `/dev/launch` |

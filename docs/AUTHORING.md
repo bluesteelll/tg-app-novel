@@ -60,7 +60,7 @@ A chapter is one compiled ink story. `story/chapters.json` lists every chapter i
 ]
 ```
 
-The decoder ([catalog.ts:447](../client/src/story/catalog.ts#L447)) and the gate enforce, all as `catalog/chapters`:
+The decoder ([catalog.ts:452](../client/src/story/catalog.ts#L452)) and the gate enforce, all as `catalog/chapters`:
 - `id` is `ch<N>` (`ch1`, `ch2`, `ch10`) and unique; `entry` is exactly `<id>/main.ink`;
 - a paid chapter has a `productId`, a free chapter has none, and no two chapters share one;
 - `next` names a later chapter of the list, or is `null` ([story.ts:570-573](../client/scripts/story.ts#L570)).
@@ -317,7 +317,11 @@ Two rules for whoever delivers character and prop art (pass them on with an asse
   ```
 
 - **Deliver every character on the canonical 768 × 1536 canvas.** This is guidance, not a gate: the build fails
-  only a character canvas larger than 768 × 1536 ([budget.ts:199-205](../client/scripts/budget.ts#L199)).
+  only a character canvas larger than 768 × 1536 ([budget.ts:199-205](../client/scripts/budget.ts#L199)). A smaller
+  canvas still costs the character on screen. The scene never draws a character larger than its file
+  ([layout.ts:51-56](../client/src/scene/layout.ts#L51)), so on a large phone a character on a 1024-px-tall canvas
+  stands at about 69 % of the height of one on the canonical canvas (MEMORY-PLAN 4.C, the character canvas rule).
+  It would also get no half-resolution tier on low-end phones (Planned (M3c)).
 
 Keep the transparent margin around the figure as it is: the asset tool cuts every character and prop file to its
 visible pixels plus 2 px and stores where that box sat on the canvas, so the sprite still stands where the full canvas

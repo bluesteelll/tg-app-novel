@@ -45,8 +45,11 @@ Under `test` without a host file, the draft is served with its placeholders visi
 
 ### Write the host file (identity facts)
 
-1. On the host, outside the repository, create a UTF-8 JSON file: one flat object, keys from the identity class only,
-   every value a string. Placeholders only in this example:
+1. On the host, outside the repository, create a UTF-8 JSON file without a byte-order mark: one flat object, keys
+   from the identity class only, every value a string. The loader parses the raw bytes
+   ([legal.rs:96](../../server/src/api/legal.rs#L96), :123-124), so a BOM makes the file "not valid JSON". Windows
+   PowerShell 5.1's `Set-Content -Encoding utf8` and `Out-File -Encoding utf8` write a BOM;
+   `[System.IO.File]::WriteAllText("<absolute path>", $text)` does not. Placeholders only in this example:
 
    ```json
    {
@@ -79,12 +82,16 @@ value is HTML-escaped.
 
 | Change | How | New version |
 |---|---|---|
-| a content value (retention, minimum age, database country, hosting provider, cross-border transfer, supervisory authority) or any other template text | a template commit: edit the HTML, set a new `policy-version` meta (the date it takes effect), append a `POLICY_PINS` row with the template's SHA-256 ([legal.rs:262-270](../../server/src/api/legal.rs#L262)); then deploy | yes |
+| a content value (retention, minimum age, database country, hosting provider, cross-border transfer, supervisory authority) or any other template text | a template commit: edit the HTML, set a new `policy-version` meta (the date it takes effect), append a `POLICY_PINS` row with the template's lower-case hex SHA-256 ([legal.rs:262-270](../../server/src/api/legal.rs#L262); the hash: `(Get-FileHash -Algorithm SHA256 server/legal/privacy-policy.html).Hash.ToLower()`); then deploy | yes |
 | a contact fix in the host file | edit the host file, restart | no |
 | the operator itself (name, form, OGRN, INN) | both: the host file and a template commit | yes |
 
-`POLICY_PINS` is append-only and checked by `cargo test` (`policy_template_pinned_per_version`): an edited row or a
-template that does not match its last row fails the gate ([legal.rs:389-397](../../server/src/api/legal.rs#L389)).
+`POLICY_PINS` is append-only. `cargo test` checks three things (`policy_template_pinned_per_version`,
+[legal.rs:389-397](../../server/src/api/legal.rs#L389); `check_pins` :284-305): the versions strictly increase, the
+last row's version is the template's meta, and the last row's hash is today's template. It compares only the last row
+with the template, so it does not catch an edited earlier row, nor a template edit whose new hash overwrites the last
+row under the same version. Review catches those: "an edited row is a review STOP" (the pin's comment, :263-264).
+Never edit a row; a template change always gets a new version and a new row.
 New consents then record the new version. The first content fill is the owner's VALUES step: until it lands, a
 production start refuses (the designed guard). In the same commit the tests that pin the placeholders visible change
 too (`privacy_draft_served_without_file_in_test` in [server/tests/it/legal.rs](../../server/tests/it/legal.rs), and
@@ -183,6 +190,7 @@ commit with a newer version (pins are append-only; never edit or remove a row). 
 |---|---|---|
 | `invalid configuration: PRIVACY_OPERATOR_FILE: missing` | prod without the variable | set it (above) |
 | `privacy policy: PRIVACY_OPERATOR_FILE cannot be read: ...` | wrong path or permissions | fix the path; the server process must read it |
+| `privacy policy: PRIVACY_OPERATOR_FILE is not valid JSON or not a JSON object` | a syntax error, a top level that is not an object, or a byte-order mark ([legal.rs:62-64](../../server/src/api/legal.rs#L62)) | fix the JSON; write the file without a BOM (step 1) |
 | `privacy policy: PRIVACY_OPERATOR_FILE: <KEY> is filled by the policy template, never by the host file` | a content key or `POLICY_VERSION` in the host file | remove it; change content by a template commit |
 | `privacy policy: PRIVACY_OPERATOR_FILE: <KEY> is not an operator identity key` | a typo or an unknown key | use the ten keys above |
 | `privacy policy: placeholders left under TELEGRAM_ENV=prod: ...` | a blank value, a missing key, or the content keys not yet filled by a template commit | fill what the message names |
