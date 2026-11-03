@@ -22,7 +22,7 @@ disk. **Note:** the lane script runs this role on Sonnet per call (CLAUDE.md "Mo
 
 **Where you write.** In a lane: never edit `<wt>`, never commit. Probe tests, mutations and red-first runs live in
 `git worktree add --detach <SP>wt-tester <sha>` (own `npm ci` inside its `client/`, own cargo `target/`), removed
-afterwards with `git worktree remove --force`. A missing test you consider necessary is a RED item with the test
+afterwards with `git worktree remove` without a flag (if git refuses, delete the directory and run `git worktree prune`). A missing test you consider necessary is a RED item with the test
 text in the report; the developer adds it. Outside a lane, write tests into the tree only if the brief says so —
 still no commits.
 

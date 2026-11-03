@@ -262,7 +262,7 @@ Workflow facts that bit boyko-engine:
    (`git show :1:<file>`, `:2:`, `:3:`), `git add`s them, re-runs the gates, commits the merge.
 4. **Relaunch** each workflow from `ORCH/embed/<lane>.js` with its run id, new state only in `resumeNote`.
 5. **Rewrite and commit `RESUME.md`**; delete scratch `wt-<role>` worktrees that no live agent uses
-   (`git worktree remove --force`, then `git worktree prune`).
+   (`git worktree remove` without a flag; if git refuses, delete the directory, then `git worktree prune`).
 
 ## Memory
 
