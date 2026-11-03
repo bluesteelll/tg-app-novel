@@ -8,6 +8,10 @@
 //! inside the built client would serve its target. No dot-entry may be in it either (critique O9: `GET /.env` would
 //! serve a host file), except the root's `.vite` directory, where the build writes its manifest. Compression is the
 //! reverse proxy's (K1).
+//!
+//! Build skew (LBI D2): the client build writes its id to [`BUILD_ID_FILE`] at its root, and [`check`] reads it, so
+//! the server knows which bundle it serves and `/api` answers name it ([`BUILD_ID_HEADER`]); a page of another build
+//! sees the difference and reloads at a safe point. A `STATIC_DIR` without a valid id refuses the start.
 
 use std::path::{Path, PathBuf};
 
@@ -25,16 +29,69 @@ const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 /// The `Cache-Control` of everything else: `index.html` names the current chunks, so it is revalidated.
 const REVALIDATE: &str = "no-cache";
 
-/// A `STATIC_DIR` that passed [`check`]: canonical, disjoint from `CONTENT_DIR`, every entry resolving inside it.
+/// The file a client build writes at its root (`client/scripts/build-id.ts` `BUILD_ID_FILE`): its [`BuildId`] and
+/// one `\n`.
+pub const BUILD_ID_FILE: &str = "build-id.txt";
+
+/// The header every `/api` response carries when the server serves a `STATIC_DIR`: its [`BuildId`]
+/// (`client/src/api/http.ts` `BUILD_ID_HEADER`).
+pub const BUILD_ID_HEADER: &str = "x-build-id";
+
+/// A build id's length in hex digits.
+const BUILD_ID_LEN: usize = 16;
+
+/// A client build's id: 16 lowercase hex digits of a hash over the build's public inputs. Not a secret, and nothing
+/// about content or entitlements (principle 0).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildId(String);
+
+impl BuildId {
+    /// `text` is exactly 16 of `[0-9a-f]`, optionally followed by one `\n` (what the build writes); anything else,
+    /// a `\r\n` or a space included, is `None`.
+    pub fn parse(text: &str) -> Option<BuildId> {
+        let id = text.strip_suffix('\n').unwrap_or(text);
+        let hex = id.len() == BUILD_ID_LEN
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+        hex.then(|| BuildId(id.to_owned()))
+    }
+
+    /// The 16 hex digits.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The id as a header value; built once, at startup.
+    pub fn header_value(&self) -> HeaderValue {
+        HeaderValue::from_str(&self.0)
+            .expect("invariant: 16 lowercase hex digits are a valid header value")
+    }
+}
+
+impl std::fmt::Display for BuildId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// A `STATIC_DIR` that passed [`check`]: canonical, disjoint from `CONTENT_DIR`, every entry resolving inside it, and
+/// the id of the client build it holds.
 #[derive(Debug, Clone)]
 pub struct StaticDir {
     root: PathBuf,
+    build_id: BuildId,
 }
 
 impl StaticDir {
     /// The canonical directory.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The id of the client build in the directory, from its [`BUILD_ID_FILE`].
+    pub fn build_id(&self) -> &BuildId {
+        &self.build_id
     }
 }
 
@@ -114,6 +171,19 @@ pub enum StaticDirError {
         /// Why.
         source: std::io::Error,
     },
+    /// `STATIC_DIR` has no [`BUILD_ID_FILE`]: a served client build always has one, and without it no `/api` answer
+    /// could tell an open page of an older build that it is stale.
+    #[error("STATIC_DIR {path}: no build-id.txt (the client build writes it)")]
+    BuildIdMissing {
+        /// The canonical `STATIC_DIR`.
+        path: PathBuf,
+    },
+    /// [`BUILD_ID_FILE`] is not 16 lowercase hex digits (and at most one `\n`).
+    #[error("STATIC_DIR {path}: build-id.txt is not 16 lowercase hex digits")]
+    BuildIdInvalid {
+        /// The canonical `STATIC_DIR`.
+        path: PathBuf,
+    },
 }
 
 /// How a canonical path relates to another, compared by components (`/a/site` and `/a/site2` are disjoint).
@@ -144,8 +214,8 @@ fn overlap(a: &Path, b: &Path) -> Overlap {
 
 /// The startup check of `static_dir` against `content_dir` (`tokio::fs` only; one caller, `server serve`): both
 /// canonicalized, `static_dir` a directory, the two disjoint both ways, then a walk of `static_dir` in which every
-/// entry must resolve inside it and none may be a dot-entry but the root's `.vite` directory. A built client is a few
-/// hundred files: the walk costs milliseconds.
+/// entry must resolve inside it and none may be a dot-entry but the root's `.vite` directory, then the build id of its
+/// [`BUILD_ID_FILE`]. A built client is a few hundred files: the walk costs milliseconds.
 pub async fn check(static_dir: &Path, content_dir: &Path) -> Result<StaticDir, StaticDirError> {
     let root = tokio::fs::canonicalize(static_dir)
         .await
@@ -186,7 +256,30 @@ pub async fn check(static_dir: &Path, content_dir: &Path) -> Result<StaticDir, S
         }
     }
     walk(&root).await?;
-    Ok(StaticDir { root })
+    let build_id = read_build_id(&root).await?;
+    Ok(StaticDir { root, build_id })
+}
+
+/// The build id in `root`'s [`BUILD_ID_FILE`], read after the walk (so the file resolves inside `root`): a missing
+/// file is [`StaticDirError::BuildIdMissing`], one that is not an id (not UTF-8 included) is
+/// [`StaticDirError::BuildIdInvalid`], any other read error [`StaticDirError::Unreadable`].
+async fn read_build_id(root: &Path) -> Result<BuildId, StaticDirError> {
+    let file = root.join(BUILD_ID_FILE);
+    let bytes = match tokio::fs::read(&file).await {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(StaticDirError::BuildIdMissing {
+                path: root.to_owned(),
+            });
+        }
+        Err(source) => return Err(StaticDirError::Unreadable { path: file, source }),
+    };
+    std::str::from_utf8(&bytes)
+        .ok()
+        .and_then(BuildId::parse)
+        .ok_or_else(|| StaticDirError::BuildIdInvalid {
+            path: root.to_owned(),
+        })
 }
 
 /// The one dot-entry `STATIC_DIR` may hold, as a real directory at its root: Vite's build manifest directory.
@@ -282,5 +375,43 @@ mod tests {
             failures.len(),
             failures.join("\n")
         );
+    }
+
+    /// LBI D2: a build id is 16 lowercase hex digits and at most one trailing `\n`, the client build's file exactly.
+    #[test]
+    fn build_id_parse_rules() {
+        let cases = [
+            ("0123456789abcdef", Some("0123456789abcdef")),
+            ("0123456789abcdef\n", Some("0123456789abcdef")),
+            ("0123456789abcde", None),
+            ("0123456789abcdef0", None),
+            ("0123456789ABCDEF", None),
+            ("0123456789abcdef\r\n", None),
+            ("0123456789abcdef\n\n", None),
+            ("0123456789abcde ", None),
+            (" 0123456789abcdef", None),
+            ("0123456789abcdeg", None),
+            ("", None),
+            ("\n", None),
+        ];
+        let failures: Vec<String> = cases
+            .iter()
+            .filter(|(text, want)| BuildId::parse(text).as_ref().map(BuildId::as_str) != *want)
+            .map(|(text, want)| {
+                format!(
+                    "{text:?}: expected {want:?}, got {:?}",
+                    BuildId::parse(text)
+                )
+            })
+            .collect();
+        assert!(
+            failures.is_empty(),
+            "{} failures:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+        let id = BuildId::parse("fedcba9876543210\n").unwrap();
+        assert_eq!(id.to_string(), "fedcba9876543210");
+        assert_eq!(id.header_value(), "fedcba9876543210");
     }
 }
