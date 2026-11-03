@@ -70,10 +70,14 @@ The player:
 - entry closure ≤ 40 KB br, unchanged; this change adds about 2.9 KB br (the meta controller, its services and
   decoders); the meta UI is one lazy chunk ≤ 14 KB br that never loads before the first line;
   as merged (LMI `3e35a7b`; RULINGS 105, 110; M27): the controller and its services are a lazy chunk ≤ 5.0 KB br
-  loaded right after auth and counted in JS before the first line; the entry measured 38.9 KB br;
+  loaded once the boot reads are in (auth among them; `client/src/app/boot.ts:585`, RULINGS 113) and counted in JS
+  before the first line; the entry measured 38.9 KB br;
 - all JS ≤ 305 KB br (was 290: + the 14 KB meta chunk, + 1 KB of slack); JS before the first line ≤ 270 KB br,
-  unchanged; first-load ≤ 800 KB per story, unchanged (+2.9 KB); time to first line ≤ 6 s, unchanged (+≈15 ms at
-  1.6 Mbps); no extra tap;
+  unchanged; first-load ≤ 800 KB per story, unchanged (+2.9 KB; as merged, LMI `3e35a7b`, RULINGS 105, 113: the
+  controller and its services left the entry for the 4.0 KB br controller chunk, which the row counts,
+  `client/scripts/budget.ts:484-490`, `:962`; the meta decoders and `createMetaEndpoints` stayed in the entry,
+  `client/src/app/boot.ts:7`, `:287`, and the entry grew 36.2 → 38.9 KB br over LMI, RULINGS 103, 110); time to
+  first line ≤ 6 s, unchanged (+≈15 ms at 1.6 Mbps); no extra tap;
 - steady memory: the meta UI is DOM, < 0.5 MiB with its data → ≤ 138.6 MiB (145.3 MB) < 150 MB (principle 4);
 - server: the card is ≤ 5 statements; a friend profile ≤ 7; a hint spend one transaction of ≤ 6 statements; a gift one
   transaction of ≤ 9 after one handle read; the stats POST gains one statement per batch (the referral probe by PK with
@@ -109,7 +113,12 @@ The player:
   (C1): the invite code it carries is also what the client presents to
   `GET` / `POST /api/invites/{code}` — a bearer capability to *ask* the code's owner, validated by the server like any
   request input; who the caller is still comes only from the bearer token.
-- **4** — the meta UI is a lazy chunk; nothing new loads before the first line except 2.9 KB br in the entry.
+- **4** — the meta UI is a lazy chunk; nothing new loads before the first line except 2.9 KB br in the entry. As
+  merged (LMI `3e35a7b`; RULINGS 105, 110, 113; M27): the controller and its services are the meta controller chunk
+  (4.0 KB br at the merge), requested before the first line and counted in JS before the first line
+  (`client/scripts/budget.ts:186`); the meta decoders, `createMetaEndpoints` and the meta gate stay in the entry
+  (`client/src/app/boot.ts:7`, `:170`, `:287`), which measured 38.9 KB br at the merge (36.2 before LMI; RULINGS 103,
+  110).
 - **5** — shares use `shareMessage` (8.0+) or `openTelegramLink`; the policy opens with `openLink` from a tap; no
   `window.open`; every overlay closes with BackButton.
 - **6** — one Bot API call (`savePreparedInlineMessage`) and one lookup (`getMe`) through frankenstein types behind
@@ -680,7 +689,8 @@ Gifts and referrals have their own caps (M22, M23). Each limit's test is in the 
 - **As merged (LE2 `ec3b29f`, RULINGS 84; review r1 M1).** The friendship is read (step 2) before the replay (step 3),
   so a retried gift whose friendship was removed after the move answers 404 `not_found`, although the gift moved once.
   Planned (LMI, the gift dialog): a 404 on a retry refreshes the wallet (`server/src/db/economy.rs:479-484`,
-  `server/src/api/gifts.rs:74`).
+  `server/src/api/gifts.rs:74`). As merged (LMI `3e35a7b`; RULINGS 110, 113): a `not-found` answer re-reads the
+  friends and the wallet, a `network` one the wallet (`client/src/app/meta.ts:631-636`).
 
 **M23. Referral: attributed on the first launch, granted on server-observed evidence, capped per inviter.**
 - **What.**
@@ -856,8 +866,8 @@ deletion on request). Not stored, ever: `last_name`, `username`, `photo_url`, `i
 - **Alternatives.** Meta UI in the entry (+≈11 KB br before the first line); one chunk per screen (seven requests for
   ≈ 1.5 KB each).
 - **Trade-off.** The first card open in a session before the prefetch finished waits for ≈ 14 KB.
-- **As merged (LMI `3e35a7b`; RULINGS 105, 110).** The controller is not in the entry: it is a lazy chunk loaded right
-  after auth, counted before the first line.
+- **As merged (LMI `3e35a7b`; RULINGS 105, 110).** The controller is not in the entry: it is a lazy chunk loaded once
+  the boot reads are in (auth among them; RULINGS 113), counted before the first line.
   - `boot.ts` imports `app/meta.ts` dynamically once the boot reads are in, beside the engine, never awaited before
     the first line (`client/src/app/boot.ts:576`). The three services ride in its chunk (only `app/meta.ts` imports
     them); the decoders and `createMetaEndpoints` stay in the entry (`boot.ts:7`, `:279`).
@@ -907,6 +917,9 @@ unchanged.**
     all ten lanes have merged. Its first run STOPPED on the entry budget (41.3 KB br over the 40.0 KB cap with the
     controller in the entry), and RULINGS 105 relaunched it with the controller as a lazy chunk (M27). M2 runs now;
     LFU3 follows M2 (RULINGS 107, OB-1), and D2 waits for M2 only.
+  - Changed by RULINGS 113-127 (as of `a6365a8`; docs lane `docs-errata-8`, group B): M2 (`385d52f`), LFU3
+    (`48bc82a`), D2 (`b766a16`) and M3c (`a6365a8`) have merged. The server slot runs LRF auto-refund (new, RULINGS
+    126), and MEMORY-PLAN's M3s follows it.
   - Why LPO is a lane of its own (revision 1, W4): the operator facts need a `Config` variable, which means editing
     the three `Config` constructors (`config.rs`, `server/dev/src/lib.rs`, `server/tests/it/common.rs`) plus
     `lib.rs` and `.env.example`; in LF1 that is 15 + 4 = 19 files, over the cap. LPO holds them with `api/legal.rs` and
@@ -1957,6 +1970,9 @@ design's lanes: none. M2 follows LMI, and LFU3 follows M2 (RULINGS 107, OB-1).
 Changed by RULINGS 105-111 (as of `3e35a7b`): merged also LMI `3e35a7b` (client; RULINGS 105, 110), so all of this
 design's lanes have merged; running M2 (client, MEMORY-PLAN); to go of this design's lanes: none. LFU3 follows M2
 (RULINGS 107, OB-1).
+Changed by RULINGS 113-127 (as of `a6365a8`): merged also M2 `385d52f`, LFU3 `48bc82a`, M3c `a6365a8` (client) and D2
+`b766a16` (docs); running LRF auto-refund (server; RULINGS 126); to go of this design's lanes: none. MEMORY-PLAN's M3s
+follows LRF in the server slot.
 
 ---
 
@@ -1969,8 +1985,8 @@ design's lanes have merged; running M2 (client, MEMORY-PLAN); to go of this desi
 | `meta controller chunk (br)` (as merged, LMI `3e35a7b`; RULINGS 105, 110; M27) | ≤ 5.0 KB br; a dynamic entry for `app/meta.ts`; PENDING until `app/meta.ts` exists, then FAIL without a dynamic entry or inside a static closure | measured 4.0 KB br at the merge (cut Q3: 3.4 + the gift and the rotation, with headroom) | `budget.ts` (LMI; `client/scripts/budget.ts:112`, `:184`): `budget: meta controller chunk counts before the first line`, `budget: meta controller imported statically fails`; 84 rows |
 | All JS in `dist/` | ≤ 305 KB br (was 290) | + 14 meta-ui + 1 slack | `budget.ts` (LMI) |
 | JS before the first line | ≤ 270 KB br, unchanged | the meta chunk is not in it; as merged (LMI `3e35a7b`; RULINGS 105): the `meta-ui` chunk is not, the controller chunk is (requested before the first line); 255.1 KB br at the merge | `budget.ts` |
-| First-load to first line, per story | ≤ 800 KB, unchanged | + 2.9 KB | `budget.ts` |
-| Time to first line | ≤ 6 s, unchanged | 2.9 KB × 8 / 1.6 Mbps ≈ 15 ms; the three boot GETs (≈ 0.5–2 KB each) are parallel and never awaited | e2e `time to first line under throttling` |
+| First-load to first line, per story | ≤ 800 KB, unchanged | + 2.9 KB; as merged (LMI `3e35a7b`; RULINGS 105, 113): `app/meta.ts` and the services moved into the controller chunk, which the row counts (`client/scripts/budget.ts:962`, the first-line JS); the decoders stayed in the entry (M27), which grew 36.2 → 38.9 KB br over LMI (RULINGS 103, 110) | `budget.ts` |
+| Time to first line | ≤ 6 s, unchanged | 2.9 KB × 8 / 1.6 Mbps ≈ 15 ms (as merged, LMI `3e35a7b`; RULINGS 105, 113: the 4.0 KB br controller chunk, requested before the first line, ≈ 20 ms, and the entry's 2.7 KB br growth over LMI, 36.2 → 38.9 per RULINGS 103 and 110, ≈ 14 ms: ≈ 34 ms in all); the three boot GETs (≈ 0.5–2 KB each) are parallel and never awaited | e2e `time to first line under throttling` |
 | Steady memory | ≤ 138.6 MiB (145.3 MB) | 138.1 (SP) + < 0.5 MiB (DOM overlays, ≤ 16 KB of card JSON, the chunk; as merged, LM2 `5a33183`, RULINGS 77; cut Q4: the card is bounded at 36 KiB, see the next row, and the total stays < 0.5 MiB) | the estimate; e2e `heap under budget` (its 48 MB limit unchanged) |
 | Card response | ≤ 16 KB; as merged (LM2 `5a33183`, RULINGS 77; cut Q4): ≤ 36 KiB (36,864 B) | 50 achievements × ≈ 250 B + 32 endings × ≈ 120 B; typically < 2 KB; as merged: the fixture's card 2,036 B (< 2,048), 34,167 B at the M4 limits (one achievement ≈ 675 B in Cyrillic); 4-byte code points could pass 36 KiB, accepted (display only; the 256 KiB `meta.json` cap holds) | `card_response_bounded` (LM2) |
 | Stats batch with choices | ≤ 16 KB body | 32 × ≈ 160 B = 5.1 KB | SP's limit |
@@ -2142,3 +2158,5 @@ lists (default: the narrative-designer drafts the demo ones above), Q21 jurisdic
 | 13 | 2026-11-02 | RULINGS 104-108 (as merged on main `a4d53ef`) | Docs lane `docs-errata-6`, group B (not a triage round): M28 and "Implementation plan" Order as of `a4d53ef` (LM1, LU1, LE1, LF1, LM2, LF2, LE2, LMD, LPO merged; LPH merged `d423cb3`, so the server chain has run to its end; LMI running, relaunched, RULINGS 105; M2 then LFU3 after LMI, RULINGS 107, OB-1). Ledger: `D:/tmp/novel-orch/docs-errata-6/ledger.md` |
 | 14 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `ba62703` (the docs-errata-7 spec, group A; RULINGS 105-111), as merged on main `3e35a7b` | Docs lane `docs-errata-7`, group A (not a triage round): LMI (`3e35a7b`; RULINGS 105, 110) — M27's controller as a lazy chunk loaded right after auth, re-imported by the next tap after a failure, awaited by an ending, counted before the first line; the budget targets and table (the `meta controller chunk (br)` row, 84 rows, the measured entry); F28's policy tap before the chunk; the e2e row (47 names in nine specs). Ledger: `D:/tmp/novel-orch/docs-errata-7/ledger.md` |
 | 15 | 2026-11-02 | RULINGS 105-111 (as merged on main `3e35a7b`) | Docs lane `docs-errata-7`, group B (not a triage round): M28 and "Implementation plan" Order as of `3e35a7b` (LMI merged `3e35a7b` after its entry-budget STOP and the relaunch of RULINGS 105, so all ten lanes of this design have merged; M2 running; LFU3 after M2, RULINGS 107, OB-1). Ledger: `D:/tmp/novel-orch/docs-errata-7/ledger.md` |
+| 16 | 2026-11-03 | `D:/tmp/novel-orch/carry.md` at ORCH `a7a514f` (the docs-errata-8 spec, group A; RULINGS 113), as merged on main `a6365a8` | Docs lane `docs-errata-8`, group A (not a triage round): docs-errata-7's open items OA-1 (principle 4, the budget targets' first-load figure and the Budgets table's first-load and time-to-first-line bases: the controller and its services left the entry for the 4.0 KB br controller chunk, which counts before the first line; the decoders and `createMetaEndpoints` stayed in the entry, 36.2 → 38.9 KB br over LMI) and OB-1 (M22: the gift retry's friends and wallet refresh as merged, LMI `3e35a7b`), and the optional note N2 ("once the boot reads are in", the budget targets and M27). Ledger: `D:/tmp/novel-orch/docs-errata-8/ledger.md` |
+| 17 | 2026-11-03 | RULINGS 113-127 (as merged on main `a6365a8`) | Docs lane `docs-errata-8`, group B (not a triage round): M28 and "Implementation plan" Order as of `a6365a8` (M2 `385d52f`, LFU3 `48bc82a`, D2 `b766a16` and M3c `a6365a8` merged; LRF auto-refund running in the server slot, new, RULINGS 126; MEMORY-PLAN's M3s after LRF). Ledger: `D:/tmp/novel-orch/docs-errata-8/ledger.md` |
