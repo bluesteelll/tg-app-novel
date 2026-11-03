@@ -1,13 +1,14 @@
 # Architecture
 
-> The layers of tg-app-novel as merged at `3e35a7b`, how data moves between them, and where each CLAUDE.md principle
+> The layers of tg-app-novel as merged at `385d52f`, how data moves between them, and where each CLAUDE.md principle
 > is enforced. First version at `e5ce724`, with LS3 server-stats and LU1 meta-ui added at `6043941`, L10, L14b, LE1,
 > LP2, L13, LF1, LS4, LX and LM2 since, LF2 share-profile, LE2 gifts-referrals, L15a engine-wiring and LMD
 > meta-data at `48abfaf`, LPO privacy-operator, L15b app-e2e, L9 refunds-bot, LFU1 engine-followups and LFU2
-> client-followups at `6d77329` (M1 memory-trim merged too; its sections are D2's, MEMORY-PLAN section 11), LPH
-> payments-hardening at `a4d53ef` (merged `d423cb3`) and LMI meta-integration at `3e35a7b`; open at `3e35a7b`: M2
-> memory-cpu-copy (its sections are D2's, MEMORY-PLAN section 11). Parts not built yet are marked **planned** with the
-> lane and the plan section.
+> client-followups at `6d77329`, LPH payments-hardening at `a4d53ef` (merged `d423cb3`), LMI meta-integration at
+> `3e35a7b`, and M1 memory-trim (merged `f1b707d`) and M2 memory-cpu-copy (merged `385d52f`) at `385d52f`, by D2
+> docs-final (MEMORY-PLAN section 11); open at `385d52f`: M3c memory-half-tier and LFU3 client-followups. Parts not
+> built yet are marked **planned** with the lane and the plan section. Operating the bot and the server: the
+> runbooks, indexed in the [README](../README.md#documentation).
 
 The design is in [PROTOTYPE-PLAN.md](PROTOTYPE-PLAN.md) (PP), [PUZZLES-PLAN.md](PUZZLES-PLAN.md) (PZ),
 [STORIES-PLAN.md](STORIES-PLAN.md) (SP) and [META-PLAN.md](META-PLAN.md); this page describes what the tree does. Where
@@ -39,20 +40,20 @@ flowchart LR
 
 Each arrow is a function: `main` ([story.ts:530](../client/scripts/story.ts#L530)) routes every chapter through
 `chapterPaths` ([emit.ts:133](../client/scripts/story/emit.ts#L133)); the asset tool's output directories are
-`ASSET_OUT` ([manifest.ts:34](../client/scripts/assets/manifest.ts#L34)); the server loads `server/content/` in
+`ASSET_OUT` ([manifest.ts:36](../client/scripts/assets/manifest.ts#L36)); the server loads `server/content/` in
 `ContentStore::load` ([content.rs:236](../server/src/content.rs#L236)).
 
 ## Client modules
 
-What exists under `client/src/` at `3e35a7b`. The boundary column is enforced by
+What exists under `client/src/` at `385d52f`. The boundary column is enforced by
 [arch.test.ts](../client/src/arch.test.ts) (rules `RULE_IDS`, scopes in `applies`), not by review.
 
 | Module | Responsibility | Boundary |
 |---|---|---|
 | [main.ts](../client/src/main.ts) | entry: dev mock install (dev and e2e only), inset variables, `expand`, `disableVerticalSwipes`, `startApp` (L15a), mount `App` with `startApp`'s handle (L15b, [main.ts:25](../client/src/main.ts#L25)), `ready` | |
 | [app/boot.ts](../client/src/app/boot.ts) | the entry's half of the two-stage boot (L15a): `startApp` (:255) creates the view model, the screen stack, the API client and the settings store; runs the boot reads in parallel (auth, the public catalog and covers, the saves list, the entitlements, the settings), retried after `BOOT_RETRY_MS` (:71); imports the engine chunk beside them; creates the stats reporter after auth; as merged (LMI `3e35a7b`, RULINGS 105), then imports the meta controller's chunk beside the engine, never awaited before the first line ([boot.ts:576](../client/src/app/boot.ts#L576)), through the meta gate `createMetaGate` (:169): one import in flight, and a failed one is imported again only by the next meta tap or ending, never on a timer; a tap before the chunk lands runs once it does, except the policy tap, which only starts the import (F28); an ending waits for the import in flight; the Game gets the gate's port before it is published (`attachMeta`, :435) and App the gate's taps (`metaTaps`, :537); owns the lifecycle, `pagehide` and session-expiry subscriptions; Home's actions unlock audio first, inside the tap | no Pixi, inkjs or GSAP: the engine is reached only through `import('./engine.ts')` (:401), budgeted by the engine and first-line rows; the meta controller only through `import('./meta.ts')` (:276, LMI), budgeted by the `meta controller chunk (br)` row and counted in the first-line row |
-| [app/engine.ts](../client/src/app/engine.ts) | the engine chunk's composition root (L15a): `createEngine` (:73) builds the scene controller, one chapter loader per role, the SaveService factory, the explore and puzzle views and the Game; the audio manager at the first start, after a Home tap; hands the overlay the in-play components (`EngineUi`, :38) | the only path to Pixi, inkjs and GSAP; `ENGINE_SRC` ([budget.ts:134](../client/scripts/budget.ts#L134)) |
-| [app/game.ts](../client/src/app/game.ts), [app/yields.ts](../client/src/app/yields.ts) | GameSession (L15a, `createGame` :356): runner steps to staging batches for the scene and the audio, views for the overlay, autosaves; one intent at a time; chapter change and the next-chapter preload, endings and the chapter reports, the ink-error floor, the autosave conflict prompt, the read-sets, the resume toasts, the chapter purchase and exit to stories. The yields (`createYields` :186): linear puzzles and exploration sections, every `import()` of the lazy families (`LAZY_CHUNKS` :63) and their prefetch after a chapter's first line. GameSession's failure model as merged (LFU1 `f637bac`; PP F3): no autosave while the session `mixes` two steps (`mixes` :562), a failed "Load it" read shows the error notice (`adoptFailed` :1491), "Return to last save" with no save exits to the stories (`returnToSave` :758), a manual save waits for a step in flight (`writeManual` :1576), and a 409's conflict ask is held until `CONFLICT_HOLD_MS` (500 ms, :207) after the tap ([Failure modes](#failure-modes)). As merged (LMI `3e35a7b`, RULINGS 105): boot's meta port (`GameMeta` :126, attached by `attachMeta` :1853) is read when called, so a session runs the same before and after the meta controller's chunk lands: a declared ending's END shows `the_end` with its card action and asks the port for the card (`onEnding`, after the stats settle; `chapterEnd` :1110), a revealed line calls its `lineShown`, an exit closes the meta overlays (`exitNow` :1387), and each new puzzle session takes the port's `hintPort()` (game.ts :1247, yields.ts :551), null until the chunk lands, so the ladder spends a usable tier only through the wallet's port | the scene, the audio and the explore controller only through their types (fakes in tests); `runner.enter` only in `yields.ts` (arch rule `runner-enter`) |
+| [app/engine.ts](../client/src/app/engine.ts) | the engine chunk's composition root (L15a): `createEngine` (:73) builds the scene controller, one chapter loader per role, the SaveService factory, the explore and puzzle views and the Game; the audio manager at the first start, after a Home tap; hands the overlay the in-play components (`EngineUi`, :38) | the only path to Pixi, inkjs and GSAP; `ENGINE_SRC` ([budget.ts:136](../client/scripts/budget.ts#L136)) |
+| [app/game.ts](../client/src/app/game.ts), [app/yields.ts](../client/src/app/yields.ts) | GameSession (L15a, `createGame` :357): runner steps to staging batches for the scene and the audio, views for the overlay, autosaves; one intent at a time; chapter change and the next-chapter preload, endings and the chapter reports, the ink-error floor, the autosave conflict prompt, the read-sets, the resume toasts, the chapter purchase and exit to stories. The yields (`createYields` :186): linear puzzles and exploration sections, every `import()` of the lazy families (`LAZY_CHUNKS` :63) and their prefetch after a chapter's first line. GameSession's failure model as merged (LFU1 `f637bac`; PP F3): no autosave while the session `mixes` two steps (`mixes` :563), a failed "Load it" read shows the error notice (`adoptFailed` :1492), "Return to last save" with no save exits to the stories (`returnToSave` :759), a manual save waits for a step in flight (`writeManual` :1577), and a 409's conflict ask is held until `CONFLICT_HOLD_MS` (500 ms, :207) after the tap ([Failure modes](#failure-modes)). As merged (LMI `3e35a7b`, RULINGS 105): boot's meta port (`GameMeta` :126, attached by `attachMeta` :1854) is read when called, so a session runs the same before and after the meta controller's chunk lands: a declared ending's END shows `the_end` with its card action and asks the port for the card (`onEnding`, after the stats settle; `chapterEnd` :1111), a revealed line calls its `lineShown`, an exit closes the meta overlays (`exitNow` :1388), and each new puzzle session takes the port's `hintPort()` (game.ts :1248, yields.ts :551), null until the chunk lands, so the ladder spends a usable tier only through the wallet's port | the scene, the audio and the explore controller only through their types (fakes in tests); `runner.enter` only in `yields.ts` (arch rule `runner-enter`) |
 | [telegram/index.ts](../client/src/telegram/index.ts), [webapp.ts](../client/src/telegram/webapp.ts) | `TelegramClient`: the one Mini App facade, errors as values, version gates. Each TWA event, the BackButton press included, has one TWA registration and the facade's own dispatch over a snapshot of its subscribers: one added during a dispatch waits for the next event, one removed is skipped, a throwing one does not stop the others (`eventHub`, [webapp.ts:229-260](../client/src/telegram/webapp.ts#L229); the `facade:` tests in `telegram.test.ts`). A CloudStorage / DeviceStorage call whose callback has not come within `STORAGE_TIMEOUT_MS` (5 s, [webapp.ts:83](../client/src/telegram/webapp.ts#L83), L15a) settles as a `timeout` error, and a later callback changes nothing (the `storage:` tests). As merged (LFU2 `6d77329`): `close()` closes the Mini App through `WebApp.close` (a no-op in the inert client, never throwing; [index.ts:43-44](../client/src/telegram/index.ts#L43)), and the facade exports the one CloudStorage value limit `CLOUD_VALUE_MAX` (4096, [webapp.ts:78](../client/src/telegram/webapp.ts#L78)) that the settings store re-exports | only `webapp.ts` and `telegram/dev/` read `window.Telegram` |
 | `telegram/{perf,viewport}.ts` | Android performance class; `--app-inset-*` CSS variables | |
 | `telegram/dev/*` | mock transport and fake Stars sheet | only under `__TG_MOCK__`; production compiles it out ([vite.config.ts:33](../client/vite.config.ts#L33)) |
@@ -62,7 +63,7 @@ What exists under `client/src/` at `3e35a7b`. The boundary column is enforced by
 | [stats/reporter.ts](../client/src/stats/reporter.ts) | the statistics reporter (LS4): the event queue, batches of at most 32, a retry with the same event ids, the queue's DeviceStorage copy ([Player statistics](#player-statistics-as-built)) | grants nothing, never throws; the copy is a cache |
 | `story/{runner,chapters,carry,resume,save-codec}.ts`, [i18n/lines.ts](../client/src/i18n/lines.ts) | the story runtime (L13): `StoryRunner` ([runner.ts:188](../client/src/story/runner.ts#L188)) turns ink's `Continue()` into steps; the chapter loader (a free chapter by its static URLs, a paid one only through `GET /api/chapters/{id}`); the carry of `g_` globals; resume at the exact step, the knot's top or the chapter start; the save body codec; the line text by language | `inkjs` only in `story/runner.ts` (arch rule `import-inkjs`); `runner.enter` only from `app/yields.ts` (`runner-enter`) |
 | `story/{tags,staging,catalog}.ts` | `parseTags`, the typed staging commands, catalog and manifest decoders | `tags.ts` is the only tag parser |
-| `scene/*` | `SceneController` (Pixi application, layers, context-loss rebuild), executor (batch → GSAP timeline), texture registry with caps, loader, preload scheduler, layout | `pixi.js` only in `scene/`; `gsap` only in `scene/executor.ts`; textures created only in `loader.ts` / `registry.ts`; no `fetch` |
+| `scene/*` | `SceneController` (Pixi application, layers, context-loss rebuild), executor (batch → GSAP timeline), texture registry with caps, loader, preload scheduler, layout; as merged (M1 `f1b707d`, M2 `385d52f`): the texture laid out as its canvas, the kept file, the revive and its flow `scene/revive-flow.ts` ([Texture memory](#texture-memory-and-the-context-loss-revive)) | `pixi.js` only in `scene/`; `gsap` only in `scene/executor.ts`; textures created only in `loader.ts` / `registry.ts`; no `fetch` |
 | `audio/*` | `unlockAudio` (in the gesture), the audio manager, two-deck BGM, SFX cache | `AudioContext` and `new Audio` only in `audio/`; no `fetch` |
 | `world/*`, `puzzles/rules/*`, `explore/{state,reduce,project,reconcile}.ts` | world types and the one decoder; puzzle rules; the pure exploration reducer, reconcile and projection | the pure-world rule (`isPureWorld`, [arch.test.ts:130](../client/src/arch.test.ts#L130)): no DOM, network, storage, Svelte, clock or randomness; value imports stay inside these files and `story/{staging,catalog,tags}.ts` |
 | [geom/cover.ts](../client/src/geom/cover.ts) | the cover transform and the room safe frame, shared by `scene/layout.ts`, `scene/executor.ts` and the story tool's world lint | no module rule of its own: the pure-world rule does not cover it ([arch.test.ts:130](../client/src/arch.test.ts#L130)); the global rules below and `pixi.js` only in `scene/` apply ([arch.test.ts:152-181](../client/src/arch.test.ts#L152)) |
@@ -74,10 +75,10 @@ What exists under `client/src/` at `3e35a7b`. The boundary column is enforced by
 | [i18n/index.ts](../client/src/i18n/index.ts), `i18n/{ru,en}.ts` | the UI string tables and `t(lang, key, params)` (:18) | `ru.ts` defines the keys; `en.ts` is typed by them, so a missing or an extra key is a compile error ([en.ts:1-6](../client/src/i18n/en.ts#L1)) |
 | `ui/{Menu,Paywall,ChapterSelect,StoryPicker,SaveLoad,Settings,Backlog,Notice,Terms}.svelte`, [settings/store.ts](../client/src/settings/store.ts) | the menus (L14b): the game menu, the paywall with the terms checkbox, chapter select per story, the story picker, save and load, settings, the backlog, notices, the terms; the settings and read-sets cached in CloudStorage | presentational, no I/O (`menus: components do no I/O`); the settings store is a cache that is never asked what is owned |
 | `puzzles/{registry,session}.ts`, `puzzles/ui/*`, `ui/puzzles/*`, [ui/puzzle-view.svelte.ts](../client/src/ui/puzzle-view.svelte.ts) | the puzzle UI (LP2): one puzzle session with its hint ladder (hint texts from the server, in memory only), one dynamic chunk per puzzle type, the puzzle host | the lazy directories `puzzles/ui/`, `ui/puzzles/`, `ui/explore/` are imported from outside only by `import()` (arch rule `lazy-ui`, [arch.test.ts:142](../client/src/arch.test.ts#L142)) and budgeted per chunk |
-| [explore/controller.ts](../client/src/explore/controller.ts), `ui/explore/*`, [ui/explore-view.svelte.ts](../client/src/ui/explore-view.svelte.ts), [ui/glyphs.ts](../client/src/ui/glyphs.ts) | the exploration UI (LX): the explore controller (hotspot views through the cover transform, 44 px minimum targets, the room path for Back, neighbour preloads), the hotspot layer, inventory, document reader and lock panel, one lazy chunk | the world only through `reduce` / `admitSection` (principle 7); one lazy chunk, guarded per file: `ui/explore/*` by the arch rule `lazy-ui` ([arch.test.ts:142](../client/src/arch.test.ts#L142) `LAZY_DIRS`), the controller as a root of the budget row `explore-ui chunk (br)` ([budget.ts:174-181](../client/scripts/budget.ts#L174), measured since `app/yields.ts` exists, L15a); the view store and `ui/glyphs.ts` are statically importable (their module comments) |
+| [explore/controller.ts](../client/src/explore/controller.ts), `ui/explore/*`, [ui/explore-view.svelte.ts](../client/src/ui/explore-view.svelte.ts), [ui/glyphs.ts](../client/src/ui/glyphs.ts) | the exploration UI (LX): the explore controller (hotspot views through the cover transform, 44 px minimum targets, the room path for Back, neighbour preloads), the hotspot layer, inventory, document reader and lock panel, one lazy chunk | the world only through `reduce` / `admitSection` (principle 7); one lazy chunk, guarded per file: `ui/explore/*` by the arch rule `lazy-ui` ([arch.test.ts:142](../client/src/arch.test.ts#L142) `LAZY_DIRS`), the controller as a root of the budget row `explore-ui chunk (br)` ([budget.ts:176-183](../client/scripts/budget.ts#L176), measured since `app/yields.ts` exists, L15a); the view store and `ui/glyphs.ts` are statically importable (their module comments) |
 | [ui/meta/index.ts](../client/src/ui/meta/index.ts), `ui/meta/*.svelte`, [i18n/meta.ts](../client/src/i18n/meta.ts) | the presentational meta overlays (completion card, friends and requests, a friend's profile, invite prompt, consent, wallet, gift) and their own string table (`mt` :142); `ui/meta/index.ts` is the one entry of one lazy chunk (META-PLAN M27). As merged (LMI `3e35a7b`): Friends gained the new invite link, which revokes the link already sent (M10), and its Accept, Decline and new link follow rule (b) of `Choices.svelte`, as the gift dialog's Send does: a pointer click counts only after a pointerdown on that button while the list is shown, so the tap that opened Friends decides nothing; a keyboard click counts ([Friends.svelte:2-8](../client/src/ui/meta/Friends.svelte#L2)) | as merged (LMI `3e35a7b`), `app/meta.ts` is the only module that loads `ui/meta/index.ts`, only by a dynamic import, prefetched once after the first line ([meta.ts:148](../client/src/app/meta.ts#L148), `lineShown` :722), and `ui/App.svelte` renders it from `vm.meta.ui`. Outside `ui/meta/` a module may reach it only by `import type`, nothing outside the chunk loads `i18n/meta.ts`, and the chunk does no I/O (`meta: one entry, no I/O, the meta table stays in the chunk`, [meta.svelte.test.ts:956-1014](../client/src/ui/meta/meta.svelte.test.ts#L956)) |
 | `meta/{card,social,wallet}.ts` | the meta data services (LMD): the completion card, one `POST /api/stories/{storyId}/card` per open and no copy kept; friends, invites, consent, a friend's profile (the first name from the friend list) and the share, the state being the last applied `SocialResponse`; the wallet with `maxPerGift` from each wallet answer, and the hint port. Social and wallet guard against a stale answer: an older response never replaces a newer state | a cache of server answers only, persisted nowhere (principle 1); as merged (LMI `3e35a7b`), only `app/meta.ts` imports them, so they load in the meta controller's chunk |
-| [app/meta.ts](../client/src/app/meta.ts) | the meta controller (as merged, LMI `3e35a7b`; META-PLAN "Module API", M27; RULINGS 105): `createMetaController` (:143), one per page, made by boot's meta gate after auth. It owns the LMD services, what the overlays render (`MetaView` :33, written to `vm.meta`) and the overlays' chunk. Its `boot` (:457) reads the friends, the wallet and the stats, none awaited by the first line; the stats give a story card its card action (`hasCard` :483), and a `startParam` invite in the `open` state the invite prompt, over Home only. At an ending (`onEnding` :514) it waits for the stats to settle, at most `CARD_SETTLE_MS` (3 s, :137), then opens the card; a timeout shows `meta.card_later`. One refresh per service is in flight and none while one of its mutations is (`syncOf` :215); Accept, Decline and Remove run one at a time, and a 404 reads the friends again (`friendCall` :315); a gift is single flight, with one request id kept across a network retry (`gift` :582); one pack purchase flow serves the wallet (`buyPack` :688); the share sends a prepared message through `shareMessage` when supported, prepares it once more on `expired`, and otherwise opens `t.me/share/url` through `openTelegramLink` (M14, `shareOnce` :364); the policy opens through `openLink` (`openPolicy` :700). An epoch, bumped by `closeOverlays`, a root change and `dispose`, drops an answer that would push an overlay over a later screen (:1-6) | an overlay renders a service's state, never a call's own answer, and nothing here unlocks anything (principle 1); its own lazy chunk, loaded only by boot's `import('./meta.ts')` ([boot.ts:276](../client/src/app/boot.ts#L276)) and budgeted by the `meta controller chunk (br)` row ([budget.ts:184](../client/scripts/budget.ts#L184)); `boot.ts` and `ui/state.svelte.ts` import only its types |
+| [app/meta.ts](../client/src/app/meta.ts) | the meta controller (as merged, LMI `3e35a7b`; META-PLAN "Module API", M27; RULINGS 105): `createMetaController` (:143), one per page, made by boot's meta gate after auth. It owns the LMD services, what the overlays render (`MetaView` :33, written to `vm.meta`) and the overlays' chunk. Its `boot` (:457) reads the friends, the wallet and the stats, none awaited by the first line; the stats give a story card its card action (`hasCard` :483), and a `startParam` invite in the `open` state the invite prompt, over Home only. At an ending (`onEnding` :514) it waits for the stats to settle, at most `CARD_SETTLE_MS` (3 s, :137), then opens the card; a timeout shows `meta.card_later`. One refresh per service is in flight and none while one of its mutations is (`syncOf` :215); Accept, Decline and Remove run one at a time, and a 404 reads the friends again (`friendCall` :315); a gift is single flight, with one request id kept across a network retry (`gift` :582); one pack purchase flow serves the wallet (`buyPack` :688); the share sends a prepared message through `shareMessage` when supported, prepares it once more on `expired`, and otherwise opens `t.me/share/url` through `openTelegramLink` (M14, `shareOnce` :364); the policy opens through `openLink` (`openPolicy` :700). An epoch, bumped by `closeOverlays`, a root change and `dispose`, drops an answer that would push an overlay over a later screen (:1-6) | an overlay renders a service's state, never a call's own answer, and nothing here unlocks anything (principle 1); its own lazy chunk, loaded only by boot's `import('./meta.ts')` ([boot.ts:276](../client/src/app/boot.ts#L276)) and budgeted by the `meta controller chunk (br)` row ([budget.ts:186](../client/scripts/budget.ts#L186)); `boot.ts` and `ui/state.svelte.ts` import only its types |
 
 Forbidden anywhere in `src/` (arch rules): `vh` units, `window.open` and dialogs, `innerHTML` / `{@html`, Service
 Workers, `document.cookie`, `<iframe`, `history` navigation, `localStorage` / `sessionStorage` outside
@@ -100,7 +101,8 @@ controller says the story has a card (`hasCard`, [boot.ts:322](../client/src/app
 spec ([boot.spec.ts](../client/e2e/boot.spec.ts)) and, since L15b, the smoke, stories, purchase, perf and puzzles
 specs, 35 names in all (with M1's `memory.spec.ts`, 36; FEATURE_MAP "App shell and the app e2e"); as merged (LMI
 `3e35a7b`), with the meta and social specs ([meta.spec.ts](../client/e2e/meta.spec.ts),
-[social.spec.ts](../client/e2e/social.spec.ts)), 47 names in nine specs; the overlay
+[social.spec.ts](../client/e2e/social.spec.ts)), 47 names in nine specs; as merged (M2 `385d52f`), + 3 in
+`memory.spec.ts`, 50 names (RULINGS 117); the overlay
 components are tested in the vitest `dom` project.
 
 ## Server modules
@@ -183,6 +185,112 @@ flowchart LR
 - **Literal tags, so the build sees every asset.** The story tool indexes each knot's assets and successors into
   `<ch>.meta.json` for preloading ([STAGING-DSL §8](STAGING-DSL.md#8-assets-and-preloading)).
 
+## Texture memory and the context-loss revive
+
+> What a texture costs, which copies of an image the client keeps, and how the scene comes back after the WebView
+> loses its GPU context (as merged, M1 `f1b707d` and M2 `385d52f`; the design: [MEMORY-PLAN.md](MEMORY-PLAN.md)).
+
+### The memory problem
+
+Principle 4 makes texture memory the budget: steady memory under 150 MB (a target), the registry's caps of 32 MiB
+(preload) and 48 MiB (visible). A WebView may drop the WebGL context at any time, most often while the Mini App is in
+the background; every GPU texture is gone then, and the scene must come back without drawing a texture that is not on
+the new context yet, and without keeping a decoded copy of every image just in case.
+
+### The memory design
+
+- **Smaller files (M1).** The asset tool cuts every `char` and `prop` image to its alpha box plus 2 px, widened to even
+  sides ([encode.ts:12](../client/scripts/assets/encode.ts#L12), `encodeImage` :75). The manifest keeps the canvas it
+  was cut from (`trim`, [catalog.ts:723](../client/src/story/catalog.ts#L723)), and `textureGeometry`
+  ([layout.ts:33-44](../client/src/scene/layout.ts#L33)) gives Pixi the canvas as `orig` and the stored box as `trim`, so
+  a trimmed sprite is sized, anchored and drawn where the full image would be. The asset tool refuses odd canvas sides
+  and a character whose expressions use different canvases ([manifest.ts:216-240](../client/scripts/assets/manifest.ts#L216)).
+- **One CPU copy (M2).** The loader uploads each texture at once to the renderer current at the call. When the upload
+  reports a GPU generation, the decoded bitmap is closed, and the fetched file (a Blob, never given a URL) is the only
+  CPU copy; on a lost context or a renderer without GL the bitmap stays open
+  ([loader.ts:22-70](../client/src/scene/loader.ts#L22)). The caps count the decoded bytes plus the kept file of every
+  record, in flight included ([registry.ts:1-15](../client/src/scene/registry.ts#L1)).
+- **The revive.** Every upload is tagged with the controller's generation: 1 at mount, one more at each
+  `webglcontextrestored` and at each rebuild ([controller.ts:213-248](../client/src/scene/controller.ts#L213)). After a
+  change, `registry.revive(gen)` brings every live record to it, one at a time, the records with a visible holder
+  first: a kept bitmap is uploaded, a closed one is decoded again from its file. The visible pass has one deadline of
+  `REVIVE_DEADLINE_MS` = 3000 ms from its start; a record that fails or is late ends
+  ([registry.ts:18-22](../client/src/scene/registry.ts#L18), :104-110, `revive` :498).
+- **Frames wait for the visible pass.** The revive flow owns the running revive's AbortController and the frame
+  suspension. Each pass that settles calls the executor's `reacquire`, and only the current revive's visible pass
+  settling `done` resumes frames ([revive-flow.ts:1-5](../client/src/scene/revive-flow.ts#L1), `createReviveFlow` :34).
+  `reacquire` removes at once a view bound to an ended record and takes its slot again; a handle is the record's
+  identity, so a view never builds on an ended record's handle
+  ([executor.ts:76-86](../client/src/scene/executor.ts#L76), `reacquire` :814; [registry.ts:99-103](../client/src/scene/registry.ts#L99)).
+- **The rebuild.** A context still lost `CONTEXT_GRACE_MS` = 2000 ms after `activated` gets a new Application on the
+  same host in one synchronous block; the registry's textures stay, the executor rebinds the stage, and the revive
+  starts under the next generation ([controller.ts:314-351](../client/src/scene/controller.ts#L314)). The stage is sized
+  only by the controller's ResizeObserver, not Pixi's `resizeTo`, whose resize could render outside the gate
+  ([controller.ts:102-106](../client/src/scene/controller.ts#L102)).
+
+```mermaid
+sequenceDiagram
+    participant W as WebView canvas
+    participant C as SceneController (scene/controller.ts)
+    participant F as ReviveFlow (scene/revive-flow.ts)
+    participant R as AssetRegistry (scene/registry.ts)
+    participant L as Decoded record (scene/loader.ts)
+    participant E as Executor (scene/executor.ts)
+    W->>C: webglcontextlost (onLost)
+    C->>F: lost() - abort the revive, suspend frames
+    alt Pixi restores the context
+        W->>C: webglcontextrestored (onRestored, gen + 1)
+    else still lost CONTEXT_GRACE_MS after activated
+        C->>C: rebuild - new Application, E.rebind, gen + 1
+    end
+    C->>F: start(gen), or lost() while deactivated
+    F->>R: revive(gen, signal)
+    R->>L: revive(gen) per record, visible holders first
+    L-->>R: uploaded, or failed / late (record ends)
+    R-->>F: visible pass settles
+    F->>E: reacquire() - drop views of ended records
+    F->>C: resume() - frames draw again (visible pass done)
+    R-->>F: all settles
+    F->>E: reacquire()
+```
+
+Participants: `onLost` / `onRestored` ([controller.ts:230-248](../client/src/scene/controller.ts#L230)), `rebuild`
+(:319), `activated` (:353), the flow's `lost` / `start` ([revive-flow.ts:44-78](../client/src/scene/revive-flow.ts#L44)),
+`AssetRegistry.revive` ([registry.ts:498](../client/src/scene/registry.ts#L498)), `Decoded.revive`
+([loader.ts:80-113](../client/src/scene/loader.ts#L80)), `Executor.rebind` / `reacquire`
+([executor.ts:765](../client/src/scene/executor.ts#L765), :814).
+
+### Memory decisions
+
+- **Keep the encoded file, not the bitmap** (MEMORY-PLAN 4.A): a file is a fraction of its decoded size, and a revive
+  pays one decode per image instead of a second network fetch.
+- **Trim on the canvas, not a new layout** (MEMORY-PLAN 4.B): the manifest and the texture keep the canvas, so the
+  staging DSL and the layout code see the same image sizes as before; even sides keep a later halving exact (the half
+  tier, M3c, planned; only the hook exists: `TextureGeometry.resolution`, always 1 on `385d52f`).
+- **One owner per revive** (MEMORY-PLAN section 8): the next `start`, `lost()`, `abort()` or `destroy()` aborts the
+  current one, so two revives never interleave.
+
+### Memory failure modes
+
+| Case | Behaviour | Pinned by |
+|---|---|---|
+| the context is lost and restored | the generation moves, the revive runs, frames resume when the visible pass is done | `revive-flow: frames resume when the visible pass is done, before all settles`; e2e `context loss recovers` |
+| the context is never restored | after the grace on `activated`, the stage is rebuilt and the textures revived on it | e2e `scene: an unrestored context loss rebuilds the stage` |
+| a record's revive fails or misses the deadline | the record ends; its views leave the stage, and the next batch acquires the image again | `registry: a revive that misses its deadline ends the record`, e2e `scene: a failed revive re-acquires the visual` |
+| a loss while deactivated | the revive waits for `activated` (the generation still moves) | [controller.ts:237-248](../client/src/scene/controller.ts#L237) |
+| a decoded bitmap after its upload | closed; the e2e finds none open | e2e `scene: no decoded bitmap outlives its upload` |
+
+`SceneController.stats()` reports the counters behind these (`SceneStats`,
+[controller.ts:26-48](../client/src/scene/controller.ts#L26)), and under `__TG_MOCK__` the debug hook forces a
+`'restorable'` or a `'hard'` loss (`debugForceContextLoss`, :71-76).
+
+### Memory trade-offs
+
+A revive costs one decode per live image, visible ones first; on a slow phone the visible pass may take most of its
+3000 ms, and the latency is not measured on a device yet (MEMORY-PLAN section 14). A host resize during a rebuild's
+`app.init` leaves the new renderer at the old size until the next resize (M2 review r1 M1, carried to the next holder of
+`controller.ts`).
+
 ## Build outputs and the gates
 
 `npm --prefix client run build` is `story → assets → vite build → budget.ts → scan-dist.ts`
@@ -201,24 +309,27 @@ outputs first ([story.ts:728-752](../client/scripts/story.ts#L728)).
 | `server/content/build/{fingerprints.lines,usage,fingerprints.assets}.json` | story tool, asset tool | asset tool, `budget.ts`, `scan-dist.ts` | no |
 
 Paths: `OUT` ([emit.ts:28](../client/scripts/story/emit.ts#L28)) and `ASSET_OUT`
-([manifest.ts:34](../client/scripts/assets/manifest.ts#L34)). All are git-ignored.
+([manifest.ts:36](../client/scripts/assets/manifest.ts#L36)). All are git-ignored.
 
-**Budgets** (principle 4) are enforced by `budget.ts`, `LIMITS` ([budget.ts:104](../client/scripts/budget.ts#L104)),
+**Budgets** (principle 4) are enforced by `budget.ts`, `LIMITS` ([budget.ts:105](../client/scripts/budget.ts#L105)),
 among them: the entry chunk ≤ 40 KB brotli, the engine closure ≤ 230 KB, the JS before the first line ≤ 270 KB,
 all JS ≤ 290 KB brotli (as merged, LMI `3e35a7b`: 305 KB), each lazy chunk (LP2: a puzzle type ≤ 8 KB, the
 puzzle host ≤ 10 KB, the explore UI ≤ 16 KB brotli; as merged, LMI `3e35a7b`, RULINGS 105: the meta UI ≤ 14 KB and the
 meta controller ≤ 5 KB, whose JS the JS before the first line counts, since boot requests it beside the engine), a chapter's story JSON ≤ 35 KB brotli, a knot's
-working set (its stage plus its successors' assets, decoded) ≤ 32 MiB, images at most 2048 px a side. At run time the
-texture registry holds a steady cap of 32 MiB and a hard cap of 48 MiB
-([registry.ts:9-13](../client/src/scene/registry.ts#L9)), and the render resolution is at most 2× DPR, 1× on a
+working set (its stage plus its successors' assets, decoded; as merged, M2 `385d52f`: plus each image's larger file,
+the copy the client keeps, and the limit is the registry's steady cap, [budget.ts:125-126](../client/scripts/budget.ts#L125))
+≤ 32 MiB, images at most 2048 px a side, judged on the canvas of a trimmed file (M1). At run time the
+texture registry holds a steady cap of 32 MiB and a hard cap of 48 MiB, counting decoded bytes and kept files (M2)
+([registry.ts:12-15](../client/src/scene/registry.ts#L12)), and the render resolution is at most 2× DPR, 1× on a
 low-performance Android ([layout.ts:19-25](../client/src/scene/layout.ts#L19)). A row whose input does not exist
 prints `PENDING`; since L15a none does: the engine root `ENGINE_SRC` and the lazy chunks' importer `YIELDS_SRC` exist
-([budget.ts:134-136](../client/scripts/budget.ts#L134)), and since LMI the meta rows' importer `META_SRC` (:138). Measured at the L15a merge (RULINGS 85): 82 rows, 82 PASS,
+([budget.ts:136-138](../client/scripts/budget.ts#L136)), and since LMI the meta rows' importer `META_SRC` (:140). Measured at the L15a merge (RULINGS 85): 82 rows, 82 PASS,
 0 PENDING; the entry closure 29.1 / 40.0 KB br, the engine closure 214.5 / 230.0, the JS before the first line
 243.6 / 270.0. LMD's merge read the entry closure at 29.1 KB again (RULINGS 87). Measured at the LMI merge (RULINGS
 110): 84 rows, 0 PENDING; the entry closure 38.9 / 40.0 KB br, the engine closure 212.2 / 230.0, the JS before the
 first line 255.1 / 270.0 with the meta controller counted, the meta UI 6.4 / 14.0, the meta controller 4.0 / 5.0, all
-JS 267.6 / 305.
+JS 267.6 / 305. Measured at the M2 merge (RULINGS 117): 84 rows, 84 PASS, 0 PENDING; the entry closure 38.9 / 40.0 KB br,
+the meta controller 4.0 / 5.0. M1's merge moved the busiest knot-set from 30.4 to 27.3 MiB of 32 (merge `f1b707d`).
 
 **The leak scan** `scan-dist.ts` reads every file of `client/dist/` (with decoded `data:` URIs) against fingerprint
 sections built from the sources: paid line IDs and paid line text samples, paid en values, paid asset names and
@@ -354,7 +465,7 @@ Tests: `server/tests/it/auth.rs` (`initdata_tampered_field`, `initdata_expired`,
 
 Principle 2: Stars only, correct or absent. Built: invoices and orders (L8a); the webhook, the pre-checkout and the
 grant (L8b); hint packs, priced by the catalog's `economy` and credited inside the grant (LE1); the client's purchase
-flow (L10; created by GameSession since L15a, [game.ts:1811](../client/src/app/game.ts#L1811); as merged, LMI `3e35a7b`, a hint pack
+flow (L10; created by GameSession since L15a, [game.ts:1812](../client/src/app/game.ts#L1812); as merged, LMI `3e35a7b`, a hint pack
 bought from the wallet has the meta controller's own flow, [meta.ts:431](../client/src/app/meta.ts#L431)). Refunds and the bot
 commands are L9 refunds-bot's (as merged, L9 `d837c8b`: built; the refund below). The invoice:
 
@@ -584,7 +695,7 @@ chapter started or completed, an ending reached, a puzzle ended, a choice made) 
 The client side (as merged, L15a): `startApp` creates the reporter (LS4 stats-client, `createStatsReporter`,
 [stats/reporter.ts:229](../client/src/stats/reporter.ts#L229)) after auth and flushes its kept queue
 ([boot.ts:567](../client/src/app/boot.ts#L567)), and GameSession records the events (`chapter_started`,
-`ending_reached`, `chapter_completed`, `choice_made`; [game.ts:840](../client/src/app/game.ts#L840)). A session starts
+`ending_reached`, `chapter_completed`, `choice_made`; [game.ts:841](../client/src/app/game.ts#L841)). A session starts
 only from Home, which `ui/App.svelte` renders (as merged, L15b `fbcfd38`).
 
 ```mermaid
@@ -668,7 +779,7 @@ Principle 5, as far as it is built:
 | height and safe areas from Telegram, never `100vh` | `applyInsetVars` ([viewport.ts:25](../client/src/telegram/viewport.ts#L25)); arch rule `vh-unit` |
 | no vertical swipe-to-close | `disableVerticalSwipes` in `boot` ([main.ts:17](../client/src/main.ts#L17)) |
 | audio only after a gesture | `unlockAudio` resumes the one `AudioContext` inside the tap ([unlock.ts:12](../client/src/audio/unlock.ts#L12)); the manager reports `needs-gesture`; `TapToStart` calls back first and synchronously inside the click, so the caller's `unlockAudio()` runs in the tap ([TapToStart.svelte:1-4](../client/src/ui/TapToStart.svelte#L1)); wired (L15a): each of Home's actions in `startApp` calls `unlockAudio()` first and synchronously ([boot.ts:465-466](../client/src/app/boot.ts#L465)), and the audio manager is created at the first start; Home is rendered by `ui/App.svelte` since L15b (`fbcfd38`), whose capture-phase listener also resumes sound that needs a gesture on any tap in play ([App.svelte:46-59](../client/src/ui/App.svelte#L46)); e2e `tap-to-start unlocks audio only after the gesture` |
-| pause on `deactivated`, check WebGL on `activated` | `TelegramClient.onLifecycle`; `AudioManager` suspend / resume; `SceneController.onActivated` rebuilds a context still lost after `CONTEXT_GRACE_MS` = 2000 ([controller.ts:52](../client/src/scene/controller.ts#L52)); wired (L15a): `startApp` subscribes `onLifecycle` ([boot.ts:593](../client/src/app/boot.ts#L593)), and GameSession's `onLifecycle` suspends the audio on `deactivated` and resumes the scene and calls `onActivated` on `activated` ([game.ts:1773-1803](../client/src/app/game.ts#L1773)); as merged (LMI `3e35a7b`), boot passes the event to the meta controller too, whose pack purchase flow takes it ([meta.ts:755-761](../client/src/app/meta.ts#L755)) |
+| pause on `deactivated`, check WebGL on `activated` | `TelegramClient.onLifecycle`; `AudioManager` suspend / resume; `SceneController.onActivated` rebuilds a context still lost after `CONTEXT_GRACE_MS` = 2000 ([controller.ts:83](../client/src/scene/controller.ts#L83)); wired (L15a): `startApp` subscribes `onLifecycle` ([boot.ts:593](../client/src/app/boot.ts#L593)), and GameSession's `onLifecycle` suspends the audio on `deactivated` and resumes the scene and calls `onActivated` on `activated` ([game.ts:1774-1804](../client/src/app/game.ts#L1774)); as merged (LMI `3e35a7b`), boot passes the event to the meta controller too, whose pack purchase flow takes it ([meta.ts:755-761](../client/src/app/meta.ts#L755)) |
 | `BackButton`, not browser history | the screen stack `createScreens` ([screens.ts:71](../client/src/ui/screens.ts#L71)) owns `TelegramClient.backButton`: visible iff an overlay is open or, at the game root, a root-back is set; a press pops the top overlay, else runs the root-back. Arch rule `history`. Created by `startApp` with the facade's `backButton` (L15a, [boot.ts:259](../client/src/app/boot.ts#L259)) |
 | no Service Worker, no `window.open` / `alert` | arch rules `service-worker`, `window-open`, `dialog`; e2e `no window.open or alert`. As merged (LMI `3e35a7b`, F28): the privacy link opens through the facade's `openLink` inside the tap; a policy tap before the meta chunk lands only starts its import ([boot.ts:541](../client/src/app/boot.ts#L541)); the share's fallback goes through `openTelegramLink`; `meta: policy opens through openLink from the tap`, e2e `meta: privacy link opens through openLink` |
 | every SDK call from the main origin | the dev and preview servers proxy `/api/`, `/dev/`, `/telegram/` to `server-dev` on one origin ([vite.config.ts:26-28](../client/vite.config.ts#L26)) |
@@ -697,7 +808,7 @@ Principle 5, as far as it is built:
 | the Bot API hangs on `answerPreCheckoutQuery` | the call is cut at 5 s, the webhook answers 200, and the order stays `checkout` | `precheckout_answer_times_out_at_5s` |
 | an update the pinned types cannot decode | a payment is still granted through the probe, or answered 500; anything else is acknowledged | `webhook_payment_undecodable_by_frankenstein_still_recorded`, `webhook_payment_fields_unreadable_500`, `webhook_undecodable_200` |
 | expired or tampered token | 401 `token_expired` / `token_invalid` | `token_expired_401`, `token_rejects_tampered_parts` |
-| WebGL context lost | rebuilt on `activated` after the grace period | `SceneController.onActivated`, called by GameSession's `onLifecycle` (L15a); e2e `context loss recovers` (L15b; since LFU2 it observes the loss before the recovery) |
+| WebGL context lost | restored: the textures revived under the new generation; never restored: rebuilt on `activated` after the grace period, then revived (as merged, M2 `385d52f`: [Texture memory](#texture-memory-and-the-context-loss-revive)) | `SceneController.onActivated`, called by GameSession's `onLifecycle` (L15a); e2e `context loss recovers` (L15b; since LFU2 it observes the loss before the recovery) and M2's `scene: an unrestored context loss rebuilds the stage`, `scene: a failed revive re-acquires the visual` |
 | a CloudStorage / DeviceStorage callback that never comes | the call settles as a `timeout` error after `STORAGE_TIMEOUT_MS` (5 s); a later callback changes nothing; a `setItem` answered "not stored" is an error (L15a) | `storage: a callback that never fires settles as a timeout`, `storage: a late callback after the timeout changes nothing`, `storage: setItem not stored is an error` |
 | a resume that fails after the chapter swap, or a deactivated / pagehide autosave during a step | GameSession writes no autosave while the session `mixes` two steps (the new chapter over the old runner at rest); an outside autosave waits for the step on screen, and one over a pending chapter start is written at once, that start being one complete body (LFU1) | `game: a resume that fails after the chapter swap writes no autosave`, `game: an outside autosave over a pending start is written at once` |
 | "Load it" or a manual load whose read fails | "Load it": the error notice, whose action exits to the stories (an expired session: the reopen notice); a manual load stays at the shown line with no notice (LFU1) | `game: a failed load it read shows the error notice`, `game: a failed manual load stays at the shown line without a notice` |
