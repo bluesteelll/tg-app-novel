@@ -351,6 +351,141 @@ fn serve_log_names_database_target_not_password() {
     report(&failures);
 }
 
+/// Owner Q9's sweep runs in the real `server serve`: a database migrated and seeded with an unapplied payment whose
+/// `auto_refunds` row is long due, then the binary started on it with the placeholder `BOT_TOKEN` (its gateway is
+/// `Disabled`: no call leaves the process, and nothing runs `server setup`) and no admin. Within 10 s of `listening`
+/// the log names a failed attempt of `c-serve`, written before it was logged: the row reads 1 attempt, 1 refusal and
+/// the gateway's text.
+#[test]
+fn serve_runs_auto_refund_sweep() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let db = rt.block_on(async {
+        let db = TestDb::create().await;
+        let st = match AppState::new(common::test_config(&db)).await {
+            Ok(st) => st,
+            Err(e) => panic!("setup: migrate {}: {e}", db.name()),
+        };
+        st.repo.close().await;
+        let mut c = PgConnection::connect(&db.url()).await.unwrap();
+        sqlx::query(
+            "INSERT INTO payments (telegram_payment_charge_id, invoice_payload, user_id, amount, currency, \
+             provider_payment_charge_id, paid_at) VALUES ('c-serve', 'o-x', 1001, 1, 'XTR', '', 1700000000)",
+        )
+        .execute(&mut c)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO auto_refunds (charge_id, created_at, attempts, refusals, due_at) \
+             VALUES ('c-serve', 1700000000, 0, 0, 1700000000)",
+        )
+        .execute(&mut c)
+        .await
+        .unwrap();
+        c.close().await.unwrap();
+        db
+    });
+    let mut child = Command::new(env!("CARGO_BIN_EXE_server"))
+        .arg("serve")
+        // Every variable `Config` reads, so none comes from the caller's environment; an empty value is unset.
+        .envs([
+            ("BOT_TOKEN", PLACEHOLDER_BOT_TOKEN),
+            ("WEBHOOK_SECRET", PLACEHOLDER_WEBHOOK_SECRET),
+            ("TOKEN_KEY", PLACEHOLDER_TOKEN_KEY_HEX),
+            ("TOKEN_TTL_SECS", "1800"),
+            ("INITDATA_MAX_AGE_SECS", "86400"),
+            ("PUBLIC_APP_URL", "http://127.0.0.1/"),
+            ("ADMIN_TELEGRAM_IDS", ""),
+            ("STATIC_DIR", ""),
+            (
+                "CONTENT_DIR",
+                concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/content"),
+            ),
+            ("DATABASE_URL", db.url().as_str()),
+            ("TELEGRAM_ENV", "test"),
+            ("LISTEN_ADDR", "127.0.0.1:0"),
+            ("PRIVACY_OPERATOR_FILE", ""),
+            ("RUST_LOG", "info"),
+            ("NO_COLOR", "1"),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (lines, received) = mpsc::channel();
+    forward_lines(child.stdout.take().unwrap(), lines.clone());
+    forward_lines(child.stderr.take().unwrap(), lines);
+
+    // Hang bounds, not timing verdicts: the server exiting closes both pipes and ends each wait at once.
+    let mut log = Vec::new();
+    let mut listening = false;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !listening {
+        match received.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(line) => {
+                listening = line.contains("listening");
+                log.push(line);
+            }
+            Err(_) => break,
+        }
+    }
+    let mut attempted = false;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while listening && !attempted {
+        match received.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(line) => {
+                attempted = line.contains("auto-refund attempt failed") && line.contains("c-serve");
+                log.push(line);
+            }
+            Err(_) => break,
+        }
+    }
+    let mut failures = Vec::new();
+    if let Err(e) = child.kill() {
+        failures.push(format!("kill server: expected Ok, got {e}"));
+    }
+    let status = child.wait().unwrap();
+    while let Ok(line) = received.recv_timeout(Duration::from_secs(5)) {
+        log.push(line);
+    }
+    let text = log.join("\n");
+    if !listening {
+        failures.push(format!(
+            "expected a `listening` line within 60 s, got {status} and the log:\n{text}"
+        ));
+    } else if !attempted {
+        failures.push(format!(
+            "no \"auto-refund attempt failed\" line for c-serve within 10 s after listening; the log:\n{text}"
+        ));
+    }
+    let row: Option<(i64, i64, Option<String>)> = rt.block_on(async {
+        let mut c = PgConnection::connect(&db.url()).await.unwrap();
+        let row = sqlx::query_as(
+            "SELECT attempts, refusals, last_error FROM auto_refunds WHERE charge_id = 'c-serve'",
+        )
+        .fetch_optional(&mut c)
+        .await
+        .unwrap();
+        c.close().await.unwrap();
+        row
+    });
+    let want = (
+        1,
+        1,
+        Some("bot api disabled: placeholder BOT_TOKEN".to_owned()),
+    );
+    if row.as_ref() != Some(&want) {
+        failures.push(format!(
+            "c-serve's row (attempts, refusals, last_error): expected {want:?}, got {row:?}"
+        ));
+    }
+    drop(rt);
+    report(&failures);
+}
+
 /// The webhook secret is checked before the body is read: a 2 MiB body with a wrong secret, or with none, is 401
 /// (not buffered first and refused 413), and only with the right secret does the 1 MiB limit answer 413.
 #[tokio::test]
