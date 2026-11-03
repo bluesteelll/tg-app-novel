@@ -788,6 +788,32 @@ describe('assets', () => {
     expect(listDir(repo, 'client/public/assets')).toEqual([]);
   });
 
+  test('assets: the tool asks the encoder to trim char and prop only', async () => {
+    // MEMORY-PLAN 4.B: only the transparent kinds are cut to their alpha box. ch1 also names a cg and a prop here, so
+    // every image namespace is encoded; the ask is recorded per id (the placeholder's label), for every encoded image.
+    const usage = { chapters: { ...REPO_USAGE.chapters, ch1: { assets: [...REPO_USAGE.chapters.ch1.assets, 'cg/letter', 'prop/note'], knots: {} } } };
+    writeRepo(repo, { 'server/content/build/usage.json': usage });
+    const asked: Record<string, boolean> = {};
+    const recording: Encoders = {
+      ...FAKE_ENCODERS,
+      encodeImage: (svg, o) => {
+        const id = /<text\b[^>]*>([^<]+)<\/text>/.exec(new TextDecoder().decode(svg))?.[1] ?? '(no label)';
+        asked[id] = o.trim;
+        return FAKE_ENCODERS.encodeImage(svg, o);
+      },
+    };
+    const r = await runTool(repo, recording);
+    expect(r.code, r.err.join('\n')).toBe(0);
+    expect(asked).toEqual({
+      'bg/archive': false,
+      'bg/cafe': false,
+      'cg/letter': false,
+      'char/ally/neutral': true,
+      'cover/manor': false,
+      'prop/note': true,
+    });
+  });
+
   test('assets: cli runs through a linked path under preserve-symlinks-main', async () => {
     // Node keeps the link's spelling for the main module under the flag; the guard canonicalises both sides, and the
     // main module's relative imports stay under scripts/, so the run happens. The real encoders (sharp) run here.
