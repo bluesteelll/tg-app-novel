@@ -3085,8 +3085,9 @@ Changed by RULINGS 113-127 (as of `a6365a8`; docs lane `docs-errata-8`, group B)
   D2 wait for M2 only, and M3s for M3c and D2.
 - Changed by RULINGS 113-127 (as of `a6365a8`; docs lane `docs-errata-8`, group B; merged lanes dropped): client:
   none of this table's lanes is left (the animation and mechanics lanes get their places when adopted, RULINGS 124);
-  server: LRF (running), then M3s. M2, LFU3, D2 and M3c have merged, so M3s's gate is met; it waits for LRF (the server
-  slot takes the money lane first) and its cut for MD1's order in `design-animation` (RULINGS 126).
+  server: LRF (running), then M3s. M2, LFU3, D2 and M3c have merged, so M3s's original gate (M3c, L9, D2) is met;
+  RULINGS 126 adds LRF to it (running; the server slot takes the money lane first), and M3s's cut waits for MD1's
+  order in `design-animation` (RULINGS 126).
 
 After L9 the server slot takes doc / narrative / client lanes with disjoint locks.
 
@@ -3170,8 +3171,8 @@ beside them.
 - LMI has merged (`3e35a7b`).
 
 **Changed by RULINGS 113-127 — the critical path as of `a6365a8`** (docs lane `docs-errata-8`, group B).
-- The whole plan: LRF (running) → M3s in the server slot (RULINGS 126). M3s's gate (M3c, L9, D2) is met; its cut
-  waits for MD1's order in `design-animation` (RULINGS 124, 126).
+- The whole plan: LRF (running) → M3s in the server slot (RULINGS 126). M3s's original gate (M3c, L9, D2) is met, and
+  RULINGS 126 adds LRF (running) to it; its cut waits for MD1's order in `design-animation` (RULINGS 124, 126).
 - No client lane of this table is left; the animation and mechanics lanes join the path when adopted.
 - M2, LFU3, D2 and M3c have merged (`385d52f`, `48bc82a`, `b766a16`, `a6365a8`).
 
