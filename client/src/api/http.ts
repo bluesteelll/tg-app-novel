@@ -2,6 +2,9 @@
 // through here. The token lives in api/session.ts's closure only. A `401 token_*` re-auths once - single flight, with
 // the same raw initData - and retries once; a refused exchange ends the session for the page, since initData is fixed.
 // `fetchAsset` is story/catalog.ts's FetchAsset: the bearer goes to `/api/` URLs only, never to a static or other host.
+// Build skew (LBI D4): every response's headers are read here before its body, so a server that now serves another
+// client build is noticed by the very answer an old decoder may refuse; `onSkew` tells the Game, and the response's own
+// result is untouched (the recovery replaces the screen later, at its safe point).
 import type { AssetFetchError, FetchAsset, Result } from '../story/catalog.ts';
 import type { Unsubscribe } from '../telegram/index.ts';
 import { decodeApiErrorBody, decodeAuthResponse } from './decode.ts';
@@ -11,6 +14,19 @@ import { createSessionStore } from './session.ts';
 import type { Session } from './session.ts';
 
 export type { Decoder } from './decode.ts';
+
+declare global {
+  /** Vite `define` (LBI D1): this bundle's build id; null in the dev server and vitest, which report no skew. */
+  const __BUILD_ID__: string | null;
+}
+
+/** The header naming the build the server serves (server/src/api/static_files.rs `BUILD_ID_HEADER`). */
+export const BUILD_ID_HEADER = 'x-build-id';
+
+/** `served` when both ids are known and differ, else null: the server now serves another build than this page's. */
+export function skewOf(own: string | null, served: string | null): string | null {
+  return own !== null && served !== null && served !== own ? served : null;
+}
 
 /**
  * Why a call failed. `http` keeps a non-JSON error (a proxy's 502) with `code` and `body` null; `retryAfter` is the
@@ -57,6 +73,10 @@ export interface Http {
   readonly fetchAsset: FetchAsset;
   /** Fires once, when the page's session ends (initData refused): the "reopen the app" screen. */
   onSessionExpired(fn: () => void): Unsubscribe;
+  /** The build the last response that named one was served by, when it is not this page's; else null. */
+  skew(): string | null;
+  /** Fires when `skew()` becomes a non-null value other than the one it last fired with. */
+  onSkew(fn: (served: string) => void): Unsubscribe;
 }
 
 /** The 401 codes a fresh token can cure; `initdata_*` cannot (the same initData would be refused again). */
@@ -135,13 +155,37 @@ function assetError(e: ApiError): AssetFetchError {
   }
 }
 
-export function createHttp(deps: { initData: string; clock: Clock; fetch?: FetchFn; timeoutMs?: number }): Http {
+/** `buildId` is this page's build (tests pass one); left out, the bundle's own `__BUILD_ID__`. */
+export function createHttp(deps: { initData: string; clock: Clock; fetch?: FetchFn; timeoutMs?: number; buildId?: string | null }): Http {
   const { initData, clock } = deps;
   // Called as a plain function: `deps.fetch(…)` would run the browser's fetch with `this = deps` (Illegal invocation).
   const send: FetchFn = deps.fetch ?? ((input, init) => globalThis.fetch(input, init));
   const timeoutMs = deps.timeoutMs ?? REQUEST_TIMEOUT_MS;
   const store = createSessionStore();
   let exchange: Promise<Result<Session, ApiError>> | null = null;
+  const own = deps.buildId === undefined ? __BUILD_ID__ : deps.buildId;
+  /** The build named by the last response that named one; a response without the header changes nothing. */
+  let served: string | null = null;
+  /** The skew `onSkew` last fired with. */
+  let reported: string | null = null;
+  const skewListeners = new Set<(served: string) => void>();
+
+  /** D4: the header of every response, the auth exchange's, the JSON calls' and the asset fetches' alike. */
+  function noteBuild(res: Response): void {
+    const named = res.headers.get(BUILD_ID_HEADER);
+    if (named === null) {
+      return;
+    }
+    served = named;
+    const skew = skewOf(own, named);
+    if (skew === null || skew === reported) {
+      return;
+    }
+    reported = skew;
+    for (const fn of [...skewListeners]) {
+      fn(skew);
+    }
+  }
 
   /** The response headers, or why not: whichever of the fetch, the timeout and an abort of `ctl` comes first. */
   function headersOf(url: string, init: RequestInit, ctl: AbortController, timeout: number | null): Promise<Result<Response, ApiError>> {
@@ -199,6 +243,7 @@ export function createHttp(deps: { initData: string; clock: Clock; fetch?: Fetch
         return head;
       }
       const res = head.value;
+      noteBuild(res);
       try {
         return asset && res.ok
           ? ok({ status: res.status, headers: res.headers, text: '', blob: await res.blob() })
@@ -307,5 +352,17 @@ export function createHttp(deps: { initData: string; clock: Clock; fetch?: Fetch
     return reply.value.blob !== null ? ok(reply.value.blob) : err({ kind: 'http', status: reply.value.status });
   };
 
-  return { auth, request, fetchAsset, onSessionExpired: (fn) => store.onExpired(fn) };
+  return {
+    auth,
+    request,
+    fetchAsset,
+    onSessionExpired: (fn) => store.onExpired(fn),
+    skew: () => skewOf(own, served),
+    onSkew(fn) {
+      skewListeners.add(fn);
+      return () => {
+        skewListeners.delete(fn);
+      };
+    },
+  };
 }
