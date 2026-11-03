@@ -8,6 +8,7 @@
 #![warn(clippy::allow_attributes_without_reason)]
 
 mod auth;
+mod auto_refunds;
 mod bindings;
 mod bot;
 mod cards;
@@ -211,9 +212,9 @@ async fn state_reopens_migrated_database() {
         .iter()
         .map(|(version, _)| *version)
         .collect();
-    if versions != [1, 2, 3, 4, 5, 6] {
+    if versions != [1, 2, 3, 4, 5, 6, 7] {
         failures.push(format!(
-            "first start: expected versions [1, 2, 3, 4, 5, 6], got {versions:?}"
+            "first start: expected versions [1, 2, 3, 4, 5, 6, 7], got {versions:?}"
         ));
     }
     match AppState::new(common::test_config(&db)).await {
