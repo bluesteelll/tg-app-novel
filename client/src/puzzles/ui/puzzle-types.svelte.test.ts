@@ -5,7 +5,8 @@ import { afterEach, expect, test, vi } from 'vitest';
 
 import { t } from '../../i18n/index.ts';
 import type { Lang } from '../../i18n/index.ts';
-import type { ItemId } from '../../world/types.ts';
+import { GLYPH_PATHS } from '../../ui/glyphs.ts';
+import type { Glyph, ItemId } from '../../world/types.ts';
 import { loadPuzzleUi } from '../registry.ts';
 import type { PuzzleUiProps } from '../registry.ts';
 import CodeLock from './CodeLock.svelte';
@@ -100,7 +101,9 @@ test('code: dial buttons at least 48 px', () => {
 
 const PIECES = ['medal_sun', 'medal_moon', 'medal_star'];
 const NAMES: Readonly<Record<string, string>> = { medal_sun: 'Sun', medal_moon: 'Moon', medal_star: 'Star' };
-const item = (id: ItemId): { name: string } | null => (Object.hasOwn(NAMES, id) ? { name: NAMES[id] ?? '' } : null);
+const GLYPHS: Readonly<Record<string, Glyph>> = { medal_sun: 'sun', medal_moon: 'moon', medal_star: 'star' };
+const item = (id: ItemId): { name: string; glyph: Glyph } | null =>
+  Object.hasOwn(NAMES, id) ? { name: NAMES[id] ?? '', glyph: GLYPHS[id] ?? 'sun' } : null;
 
 test('order: tap two slots swaps', async () => {
   for (const lang of LANGS) {
@@ -140,6 +143,29 @@ test('order: tap two slots swaps', async () => {
   }
   const { queryAllByRole } = render(OrderPuzzle, props({ params: { pieces: ['only'] }, answer: [0] }));
   expect(queryAllByRole('button')).toEqual([]);
+});
+
+test('order: each slot shows its piece glyph beside the name', async () => {
+  for (const lang of LANGS) {
+    const { getAllByRole, rerender, unmount } = render(OrderPuzzle, props({ params: { pieces: PIECES }, answer: [0, 1, 2], item, lang }));
+    /** Each slot's glyph path, or null without one; every glyph is hidden from assistive technology. */
+    const glyphs = (): Array<string | null> =>
+      getAllByRole('button').map((b) => b.querySelector('svg.glyph[aria-hidden="true"] path')?.getAttribute('d') ?? null);
+    // K46: the piece's world glyph is drawn beside its name; the button's name stays the item name.
+    expect(glyphs(), lang).toEqual([GLYPH_PATHS.sun, GLYPH_PATHS.moon, GLYPH_PATHS.star]);
+    expect(getAllByRole('button').map(shown), lang).toEqual(['Sun', 'Moon', 'Star']);
+    expect(getAllByRole('button', { name: 'Moon' }), lang).toHaveLength(1);
+    // The glyphs follow the arrangement (the answer prop), not the piece list.
+    await rerender({ answer: [2, 0, 1] });
+    expect(glyphs(), lang).toEqual([GLYPH_PATHS.star, GLYPH_PATHS.sun, GLYPH_PATHS.moon]);
+    unmount();
+  }
+  // A piece the world does not name: its id, and no glyph.
+  const { getAllByRole } = render(OrderPuzzle, props({ params: { pieces: ['medal_sun', 'stray'] }, answer: [0, 1], item }));
+  expect(getAllByRole('button').map((b) => [shown(b), b.querySelector('svg') !== null])).toEqual([
+    ['Sun', true],
+    ['stray', false],
+  ]);
 });
 
 test('registry: each type loads its own component', async () => {

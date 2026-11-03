@@ -675,7 +675,7 @@ export function createYields(h: YieldsHost): Yields {
     item: (id) => {
       const w = h.chapter()?.world ?? null;
       const item = w !== null && Object.hasOwn(w.items, id) ? w.items[id] : undefined;
-      return item === undefined ? null : { name: h.text(item.name) };
+      return item === undefined ? null : { name: h.text(item.name), glyph: item.glyph };
     },
     onchange: (a) => {
       const o = open;
