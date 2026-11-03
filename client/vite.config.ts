@@ -1,8 +1,14 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { svelteTesting } from '@testing-library/svelte/vite';
 import { defineConfig } from 'vitest/config';
 
+import { buildIdFile, buildIdOf } from './scripts/build-id.ts';
 import { tgDevMock } from './vite-plugins/tg-dev-mock.ts';
+
+const CLIENT_DIR = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * server-dev's rule (server/dev/src/main.rs `dev_addr`): unset or empty takes the default; anything else must be a
@@ -20,17 +26,25 @@ function envPort(name: string, fallback: number): number {
   return port;
 }
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ mode, command }) => {
   // K25: the dev mock exists in every mode but production (the dev server, vitest, `--mode e2e`).
   const mock = mode !== 'production';
+  // LBI D1: one id per build, compiled in and written beside the bundle; the dev server, vitest and `vite preview`
+  // (all `serve`) have none, so such a page never reports a build skew.
+  const buildId = command === 'build' ? buildIdOf(CLIENT_DIR, mode) : null;
   // K27: the page and the API share one origin; the dev and preview servers forward to server-dev.
   const api = `http://127.0.0.1:${envPort('DEV_API_PORT', 8787)}`;
   const proxy = { '/api/': api, '/dev/': api, '/telegram/': api };
   return {
     // svelteTesting() only acts under vitest (browser resolve condition, auto-cleanup); builds are unaffected.
-    plugins: [svelte(), svelteTesting(), ...(mock ? [tgDevMock()] : [])],
+    plugins: [
+      svelte(),
+      svelteTesting(),
+      ...(mock ? [tgDevMock()] : []),
+      ...(buildId === null ? [] : [buildIdFile(buildId)]),
+    ],
     // Production compiles `if (__TG_MOCK__)` and the mock chunk it imports out of the bundle.
-    define: { __TG_MOCK__: JSON.stringify(mock) },
+    define: { __TG_MOCK__: JSON.stringify(mock), __BUILD_ID__: JSON.stringify(buildId) },
     server: { proxy },
     preview: { proxy },
     build: {
