@@ -9,7 +9,6 @@ import type { Lang } from '../i18n/index.ts';
 import type { PuzzleUiProps } from '../puzzles/registry.ts';
 import type { PuzzleType } from '../puzzles/rules/index.ts';
 import type { HintLadder, PuzzleMode } from '../puzzles/session.ts';
-import type { ItemId } from '../world/types.ts';
 import type { Screen } from './screens.ts';
 
 /** The frame's status line. */
@@ -44,8 +43,8 @@ export type HintLadderUiView = HintLadder & { busy: boolean; failed: boolean };
 
 /** GameSession's answers to the frame: every one is called inside the tap that caused it. */
 export type PuzzleHostCallbacks = {
-  /** Names an `order` piece in the UI language. */
-  item: (id: ItemId) => { name: string } | null;
+  /** Names an `order` piece in the UI language, with its glyph. */
+  item: PuzzleUiProps['item'];
   onchange: (a: readonly number[]) => void;
   ontry: () => void;
   ongiveup: () => void;

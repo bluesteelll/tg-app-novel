@@ -286,7 +286,7 @@ const VALUE_IMPORTS: Readonly<Record<string, readonly string[]>> = {
   './PuzzleHost.svelte': ['../../i18n/index.ts', './HintLadder.svelte'],
   './HintLadder.svelte': ['../../i18n/index.ts'],
   '../../puzzles/ui/CodeLock.svelte': ['../../i18n/index.ts', '../rules/index.ts'],
-  '../../puzzles/ui/OrderPuzzle.svelte': ['../../i18n/index.ts', '../rules/index.ts'],
+  '../../puzzles/ui/OrderPuzzle.svelte': ['../../i18n/index.ts', '../../ui/glyphs.ts', '../rules/index.ts'],
 };
 const COMPONENTS = Object.keys(VALUE_IMPORTS);
 

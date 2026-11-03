@@ -1,11 +1,13 @@
 <script module lang="ts">
   /**
    * A full-screen notice (F1-F4, STORIES-PLAN F4′): the root view's `notice`. The callbacks live in the view, as a
-   * toast's `run` does; each new object is a new presentation. `open_in_telegram` and `reopen` have no action (the
-   * facade has no close; the body says what to do). `the_end` shows the card action iff `oncard` is given (META M9).
+   * toast's `run` does; each new object is a new presentation. `reopen`'s one action is Close (`onclose`, the facade's
+   * `close()`: the ended session is reopened from Telegram, K33); `open_in_telegram` has none (the page is outside
+   * Telegram, and its body says what to do). `the_end` shows the card action iff `oncard` is given (META M9).
    */
   export type NoticeView =
-    | { kind: 'open_in_telegram' | 'reopen' }
+    | { kind: 'open_in_telegram' }
+    | { kind: 'reopen'; onclose: () => void }
     | { kind: 'error' | 'story_error' | 'to_be_continued'; onaction: () => void }
     | { kind: 'the_end'; onaction: () => void; oncard?: () => void };
 </script>
@@ -38,7 +40,7 @@
       case 'open_in_telegram':
         return { title: 'notice.open_in_telegram_title', body: 'notice.open_in_telegram_body', action: null };
       case 'reopen':
-        return { title: 'notice.reopen_title', body: 'notice.reopen_body', action: null };
+        return { title: 'notice.reopen_title', body: 'notice.reopen_body', action: 'toast.close' };
       case 'error':
         return { title: 'notice.error_title', body: 'notice.error_body', action: 'notice.error_action' };
       case 'story_error':
@@ -62,13 +64,19 @@
     return e.detail === 0 || (armed !== null && armed.notice === notice && armed.button === button);
   }
 
+  /** The presentation's main action: Close for `reopen`, else its `onaction`; none for `open_in_telegram`. */
+  function mainOf(n: NoticeView): (() => void) | null {
+    return n.kind === 'reopen' ? n.onclose : 'onaction' in n ? n.onaction : null;
+  }
+
   function act(e: MouseEvent): void {
-    if (!('onaction' in notice) || acted === notice || !counts(e, 'action')) {
+    const run = mainOf(notice);
+    if (run === null || acted === notice || !counts(e, 'action')) {
       return;
     }
     acted = notice;
     armed = null;
-    notice.onaction();
+    run();
   }
 
   function card(e: MouseEvent): void {

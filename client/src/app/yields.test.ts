@@ -26,7 +26,7 @@ import { createScreens } from '../ui/screens.ts';
 import { createViewModel } from '../ui/state.svelte.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { HotspotKey, ItemId, WorldPublic } from '../world/types.ts';
-import { createYields } from './yields.ts';
+import { TAKE_FADE_MS, createYields } from './yields.ts';
 import type { ExploreChunk, LazyChunks, Yields } from './yields.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -172,6 +172,8 @@ function rig(o: { create?: ExploreChunk['create']; attempts?: Array<Result<Attem
   const explore = createExploreView();
   const puzzle = createPuzzleView();
   const log: string[] = [];
+  /** Every visual batch the yields apply, whole and in order. */
+  const batches: VisualCommand[][] = [];
   const events: StatEvent[] = [];
   const haptics: string[] = [];
   const holders = new Map<string, Set<string>>();
@@ -237,6 +239,7 @@ function rig(o: { create?: ExploreChunk['create']; attempts?: Array<Result<Attem
     text: (w) => w.ru,
     apply: async (visual: readonly VisualCommand[], audio: readonly AudioCommand[]) => {
       log.push(`apply:${visual.map((c) => c.kind).join(',')}|${audio.map((c) => c.kind).join(',')}`);
+      batches.push([...visual]);
       for (const c of visual) {
         if (c.kind === 'bg') {
           stage = { ...stage, bg: c.bg, props: [] };
@@ -259,7 +262,7 @@ function rig(o: { create?: ExploreChunk['create']; attempts?: Array<Result<Attem
   });
   y = yields;
   const entered: Array<{ knot: string; projection: Readonly<Record<string, unknown>> }> = [];
-  return { yields, vm, screens, explore, puzzle, log, events, haptics, holders, calls, entered, stage: () => stage };
+  return { yields, vm, screens, explore, puzzle, log, batches, events, haptics, holders, calls, entered, stage: () => stage };
 }
 
 /** Lets the promise callbacks queued so far run. */
@@ -349,6 +352,24 @@ test('yields: event return restores the room', async () => {
   expect(r.vm.screens.backVisible).toBe(true);
   const since = r.log.slice(mark);
   expect(since.indexOf('preload:room:study')).toBeGreaterThan(since.findIndex((l) => l.startsWith('apply:')));
+  r.yields.dispose();
+});
+
+test('yields: a take removes its prop from the stage', async () => {
+  const r = rig();
+  await inHall(r);
+  expect(r.stage().props.map((p) => p.prop)).toEqual(['medal']);
+  const mark = r.batches.length;
+  r.yields.layer.ontap(key('hall.medal'));
+  await settle();
+  // B-001: the taken medal leaves the room on screen at once, faded over the bg already shown (Q53), not at re-entry.
+  expect(r.stage().props).toEqual([]);
+  expect(r.batches.slice(mark)).toEqual([[{ kind: 'bg', bg: 'hall', t: 'crossfade', ms: TAKE_FADE_MS }, { kind: 'props', props: [] }]]);
+  // A take without a prop changes no picture: no batch.
+  r.yields.layer.ontap(key('hall.key'));
+  await settle();
+  expect(r.batches.length - mark).toBe(1);
+  expect(r.yields.world().taken).toEqual(['hall.medal', 'hall.key']);
   r.yields.dispose();
 });
 

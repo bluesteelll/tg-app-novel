@@ -2,7 +2,8 @@
   // The paywall (PROTOTYPE-PLAN P1-P8). It shows the purchase state it is given and never grants, prices or buys:
   // `priceStars` is the server's price, shown verbatim; Buy asks the caller (`onbuy`), whose flow creates the invoice;
   // `unlocked` comes only from the flow's server reads. Buy needs the terms box (P1), which starts unchecked on every
-  // mount, and is disabled while the invoice is being created (P2). `sheet` and `delayed` offer Check again (a lost
+  // mount, and is disabled while the invoice is being created (P2) and while the server's 429 wait lasts (`limited`:
+  // its minutes, arithmetic on the prop; the flow owns the countdown). `sheet` and `delayed` offer Check again (a lost
   // `invoice_closed`, P7). A failed price read replaces the form with Retry. The failed-payment toast is the caller's.
   import { t, type Lang, type UiKey } from '../i18n/index.ts';
   import type { PurchaseState } from '../purchase/flow.ts';
@@ -21,8 +22,13 @@
   // `state` is bound as `purchase`: a local named `state` would make `$state` read as a store subscription.
   let { chapter, priceStars, state: purchase, lang, onbuy, oncheckagain, onterms, onretry }: Props = $props();
 
-  /** What one state shows: the form (box, Terms, Buy) with an optional error, or a status line instead of it. */
-  type View = { kind: 'form'; note: UiKey | null; busy: boolean } | { kind: 'status'; note: UiKey; checkAgain: boolean };
+  /**
+   * What one state shows: the form (box, Terms, Buy) with an optional error, or a wait (`params` for its text, a polite
+   * status rather than an alert, so a minute's tick is not announced as a new error), or a status line instead of it.
+   */
+  type View =
+    | { kind: 'form'; note: UiKey | null; busy: boolean; params?: Readonly<Record<string, number>>; wait?: true }
+    | { kind: 'status'; note: UiKey; checkAgain: boolean };
   type FailReason = Extract<PurchaseState, { kind: 'failed' }>['reason'];
 
   const uid = $props.id();
@@ -35,6 +41,10 @@
         return { kind: 'form', note: null, busy: false };
       case 'requesting':
         return { kind: 'form', note: null, busy: true };
+      case 'limited': {
+        const minutes = Math.max(1, Math.ceil(s.retryAfterSecs / 60));
+        return { kind: 'form', note: 'meta.share_wait', params: { minutes }, busy: true, wait: true };
+      }
       case 'sheet':
         return { kind: 'status', note: 'paywall.sheet', checkAgain: true };
       case 'confirming':
@@ -90,8 +100,10 @@
     <p class="note error" role="alert">{t(lang, 'paywall.load_failed')}</p>
     <button type="button" onclick={() => onretry()}>{t(lang, 'paywall.retry')}</button>
   {:else}
-    {#if view.note !== null}
-      <p class="note error" role="alert">{t(lang, view.note)}</p>
+    {#if view.note !== null && view.wait === true}
+      <p class="note" role="status">{t(lang, view.note, view.params)}</p>
+    {:else if view.note !== null}
+      <p class="note error" role="alert">{t(lang, view.note, view.params)}</p>
     {/if}
     <label class="terms">
       <input type="checkbox" bind:checked={agreed} />
