@@ -118,6 +118,15 @@ pub enum AutoRefundRetry {
     Superseded,
 }
 
+/// What an admin's refund of a charge this database does not hold did (D2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnrecordedOutcome {
+    /// Telegram refunded (or answered the charge was refunded before), and the refund is recorded now.
+    Refunded,
+    /// The refund was recorded before (a repeat, or a concurrent twin that recorded first): nothing changed.
+    AlreadyRefunded,
+}
+
 /// What a revoke did (K20). Only `Revoked` wrote anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RevokeOutcome {
@@ -587,6 +596,39 @@ impl Repo {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    /// Whether a refund of `charge`, a charge `payments` does not hold, was recorded (one primary-key read).
+    pub async fn unrecorded_refund_exists(&self, charge: &ChargeId) -> Result<bool, sqlx::Error> {
+        let charge = without_nul(&charge.0);
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM unrecorded_refunds WHERE charge_id = $1)")
+            .bind(&*charge)
+            .fetch_one(&self.pool)
+            .await
+    }
+
+    /// The record of `admin`'s refund at `now` of `charge` to `payer`, a charge `payments` does not hold (D2): one row
+    /// per charge, `ON CONFLICT ON CONSTRAINT unrecorded_refunds_pkey DO NOTHING`, never a check-then-insert. Whether
+    /// this call recorded it (`false`: a twin recorded it first). It grants and revokes nothing.
+    pub async fn record_unrecorded_refund(
+        &self,
+        charge: &ChargeId,
+        payer: UserId,
+        admin: UserId,
+        now: i64,
+    ) -> Result<bool, sqlx::Error> {
+        let charge = without_nul(&charge.0);
+        let recorded: Option<String> = sqlx::query_scalar(
+            "INSERT INTO unrecorded_refunds (charge_id, user_id, admin_id, refunded_at) VALUES ($1, $2, $3, $4) \
+             ON CONFLICT ON CONSTRAINT unrecorded_refunds_pkey DO NOTHING RETURNING charge_id",
+        )
+        .bind(&*charge)
+        .bind(payer.0)
+        .bind(admin.0)
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(recorded.is_some())
     }
 
     /// The payment row of `charge` (one primary-key read), or `None` when no payment has it.

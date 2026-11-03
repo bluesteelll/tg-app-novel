@@ -1,6 +1,6 @@
 {
   "//": "PLACEHOLDER texts, English second (bot.ru.json is the primary language). The keys in drafts wait for the owner's VALUES step (OPEN-QUESTIONS Q4, PROTOTYPE-PLAN V5), which empties drafts in both files: the /terms, /support and /paysupport texts hold no real contact, name or address yet, and the payment and refund notices are engineering wording. Plain text, no parse mode; bounds in server/src/telegram/texts.rs.",
-  "drafts": ["admin_auto_refund_failed", "admin_unapplied", "payment_unapplied", "paysupport", "paysupport_refunding", "support", "terms"],
+  "drafts": ["admin_auto_refund_failed", "admin_unapplied", "payment_unapplied", "paysupport", "paysupport_refunding", "refund_unknown", "refund_unrecorded_done", "refund_usage", "support", "terms"],
   "texts": {
     "start": "Welcome! This is a visual novel right inside Telegram. Tap the button below to start playing.",
     "start_button": "Play",
@@ -20,10 +20,11 @@
     "payment_unapplied": "Payment {charge} was received, but the purchase could not be applied. Your Stars are being refunded automatically. The payment number helps if you contact us (/paysupport).",
     "admin_unapplied": "Unapplied payment {charge} from user {payer}: {outcome}. The automatic refund has started; a separate alert follows if Telegram refuses it.",
     "admin_auto_refund_failed": "The automatic refund of payment {charge} to user {payer} stopped after {attempts} attempts. Last error: {error}. Refund it by hand: /refund {charge}",
-    "refund_usage": "Usage: /refund <payment number>",
+    "refund_usage": "Usage: /refund <payment number>; for a payment the database does not hold (after a restore from a backup): /refund <payment number> <payer id>",
     "refund_done": "Payment {charge} refunded. The purchase is revoked unless another payment paid for it.",
     "refund_already": "Payment {charge} is already refunded.",
-    "refund_unknown": "Payment {charge} was not found.",
+    "refund_unknown": "Payment {charge} is not in the database. If a restore from a backup removed it, refund it with: /refund {charge} <payer id>",
+    "refund_unrecorded_done": "Payment {charge} refunded to user {payer}. It is not in the database: nothing was revoked, and the refund is recorded.",
     "refund_failed": "Could not refund payment {charge}: {error}. Nothing changed, please try again.",
     "refund_unknown_outcome": "The refund of payment {charge} is not confirmed ({error}): Telegram may already have returned the Stars. Repeat /refund {charge}; repeating is safe.",
     "cmd_start": "Start the game",

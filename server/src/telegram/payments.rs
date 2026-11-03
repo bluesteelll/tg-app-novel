@@ -23,6 +23,7 @@ use crate::telegram::texts::{self, fill};
 
 pub use crate::db::payments::{
     AutoRefundRetry, GrantOutcome, PaymentFact, PreCheckoutVerdict, RejectReason, RevokeOutcome,
+    UnrecordedOutcome,
 };
 
 /// The deadline of the pre-checkout's database step (K18).
@@ -508,6 +509,52 @@ pub async fn admin_refund(st: &AppState, charge: &ChargeId) -> Result<RevokeOutc
         }
     }
     Ok(revoke(st, charge).await?)
+}
+
+/// D2: the admin's refund of `charge`, a charge `payments` does not hold (paid after the backup a restore went back
+/// to), to `payer` as the admin names it (the restore's charges list). Only for an [`admin_refund`] that answered
+/// `UnknownCharge`: a charge the database holds keeps that path. A refund recorded before answers with no Bot API
+/// call; else `refundStarPayment` to `payer`, with no transaction open, cut at [`CALL_DEADLINE`]; then the record
+/// (`unrecorded_refunds`), when Telegram refunded or answers the charge was refunded before. Any other answer records
+/// nothing, so a repeat is safe. It grants and revokes nothing: no row of the charge exists.
+pub async fn refund_unrecorded(
+    st: &AppState,
+    charge: &ChargeId,
+    payer: UserId,
+    admin: UserId,
+) -> Result<UnrecordedOutcome, RefundError> {
+    if st.repo.unrecorded_refund_exists(charge).await? {
+        return Ok(UnrecordedOutcome::AlreadyRefunded);
+    }
+    let call = st.gateway.refund_star_payment(payer, charge.clone());
+    let refunded = match tokio::time::timeout(CALL_DEADLINE, call).await {
+        Ok(answer) => answer,
+        Err(_) => Err(GatewayError::Timeout),
+    };
+    match refunded {
+        Ok(()) => {}
+        Err(e) if already_refunded(&e) => {
+            tracing::warn!(charge = %charge.0, "refundStarPayment of an unrecorded charge: refunded before; recording");
+        }
+        Err(e) => {
+            tracing::warn!(
+                charge = %charge.0,
+                error = %e,
+                "refundStarPayment of an unrecorded charge failed; nothing recorded"
+            );
+            return Err(RefundError::Gateway(e));
+        }
+    }
+    let recorded = st
+        .repo
+        .record_unrecorded_refund(charge, payer, admin, st.clock.now())
+        .await?;
+    tracing::info!(charge = %charge.0, recorded, "refund of an unrecorded charge");
+    Ok(if recorded {
+        UnrecordedOutcome::Refunded
+    } else {
+        UnrecordedOutcome::AlreadyRefunded
+    })
 }
 
 /// Whether `e` is the Bot API saying the charge was refunded before: MTProto's `CHARGE_ALREADY_REFUNDED`, which the

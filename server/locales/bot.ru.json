@@ -1,6 +1,6 @@
 {
   "//": "PLACEHOLDER texts, Russian first (bot.en.json is the second language). The keys in drafts wait for the owner's VALUES step (OPEN-QUESTIONS Q4, PROTOTYPE-PLAN V5), which empties drafts in both files: the /terms, /support and /paysupport texts hold no real contact, name or address yet, and the payment and refund notices are engineering wording. Plain text, no parse mode; bounds in server/src/telegram/texts.rs.",
-  "drafts": ["admin_auto_refund_failed", "admin_unapplied", "payment_unapplied", "paysupport", "paysupport_refunding", "support", "terms"],
+  "drafts": ["admin_auto_refund_failed", "admin_unapplied", "payment_unapplied", "paysupport", "paysupport_refunding", "refund_unknown", "refund_unrecorded_done", "refund_usage", "support", "terms"],
   "texts": {
     "start": "Добро пожаловать! Это визуальная новелла прямо в Telegram. Нажмите кнопку ниже, чтобы начать игру.",
     "start_button": "Играть",
@@ -20,10 +20,11 @@
     "payment_unapplied": "Платёж {charge} получен, но покупку не удалось зачислить. Звёзды возвращаются вам автоматически. Номер платежа поможет при обращении (/paysupport).",
     "admin_unapplied": "Незачисленный платёж {charge} от пользователя {payer}: {outcome}. Автовозврат запущен; если Telegram откажет, придёт отдельное уведомление.",
     "admin_auto_refund_failed": "Автовозврат платежа {charge} пользователю {payer} остановлен после попыток: {attempts}. Последняя ошибка: {error}. Верните вручную: /refund {charge}",
-    "refund_usage": "Использование: /refund <номер платежа>",
+    "refund_usage": "Использование: /refund <номер платежа>; для платежа, которого нет в базе (после восстановления из резервной копии): /refund <номер платежа> <id плательщика>",
     "refund_done": "Платёж {charge} возвращён. Покупка отозвана, если её не оплатил другой платёж.",
     "refund_already": "Платёж {charge} уже возвращён.",
-    "refund_unknown": "Платёж {charge} не найден.",
+    "refund_unknown": "Платёж {charge} не найден в базе. Если его нет после восстановления из резервной копии, верните его так: /refund {charge} <id плательщика>",
+    "refund_unrecorded_done": "Платёж {charge} возвращён пользователю {payer}. Его нет в базе: ничего не отозвано, возврат записан.",
     "refund_failed": "Не удалось вернуть платёж {charge}: {error}. Ничего не изменилось, попробуйте ещё раз.",
     "refund_unknown_outcome": "Возврат платежа {charge} не подтверждён ({error}): Telegram мог уже вернуть звёзды. Повторите /refund {charge} — повтор безопасен.",
     "cmd_start": "Начать игру",

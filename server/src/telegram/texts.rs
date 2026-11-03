@@ -101,14 +101,17 @@ pub struct LangTexts {
     /// To each admin when such a charge's automatic refund is given up: `{charge}`, `{payer}`, `{attempts}`,
     /// `{error}`.
     pub admin_auto_refund_failed: String,
-    /// `/refund` without a usable charge id.
+    /// `/refund` without a usable charge id, or with a payer that is not a positive id.
     pub refund_usage: String,
     /// `/refund`: revoked: `{charge}`.
     pub refund_done: String,
     /// `/refund`: the charge was refunded before: `{charge}`.
     pub refund_already: String,
-    /// `/refund`: no payment has the charge: `{charge}`.
+    /// `/refund`: no payment has the charge, and no payer was given: `{charge}`.
     pub refund_unknown: String,
+    /// `/refund <charge> <payer>`: no payment has the charge; Telegram refunded it to the payer, and the refund is
+    /// recorded (D2): `{charge}`, `{payer}`.
+    pub refund_unrecorded_done: String,
     /// `/refund`: Telegram refused, or no call left the process (nothing changed): `{charge}`, `{error}`.
     pub refund_failed: String,
     /// `/refund`: the call timed out or broke off, so Telegram may have refunded; a repeat is safe: `{charge}`,
@@ -179,6 +182,7 @@ impl LangTexts {
             refund_done,
             refund_already,
             refund_unknown,
+            refund_unrecorded_done,
             refund_failed,
             refund_unknown_outcome,
             cmd_start,
@@ -269,6 +273,12 @@ impl LangTexts {
             entry("refund_done", refund_done, MESSAGE_LIMIT, &["charge"]),
             entry("refund_already", refund_already, MESSAGE_LIMIT, &["charge"]),
             entry("refund_unknown", refund_unknown, MESSAGE_LIMIT, &["charge"]),
+            entry(
+                "refund_unrecorded_done",
+                refund_unrecorded_done,
+                MESSAGE_LIMIT,
+                &["charge", "payer"],
+            ),
             entry(
                 "refund_failed",
                 refund_failed,
