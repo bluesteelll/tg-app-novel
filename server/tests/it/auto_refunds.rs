@@ -868,7 +868,9 @@ async fn auto_refund_lost_answer_or_crash_revokes_once() {
 /// after a refusal, is revoked by Telegram's `refunded_payment` through the webhook; (iii) `c-settled`, refunded
 /// automatically at its payment, gets `refund_already` from the admin's `/refund` with no call. Each row is settled.
 /// Control: `c-control`, refused at its payment, is due at the same `T0+60`; one sweep pass at `T0+60` refunds only
-/// it.
+/// it. (iv) `c-manual`, pending after a lost answer, has its payment's `refunded_at` written outside the revoke (a hand
+/// fix, critique O3): the sweep at its due time meets `CHARGE_ALREADY_REFUNDED`, the revoke finds it refunded, and
+/// the row is settled anyway, so the sweep at its lease's end attempts nothing.
 #[tokio::test]
 async fn auto_refund_settled_by_admin_or_telegram_refund() {
     let (st, _db, gateway) = refund_state().await;
@@ -955,6 +957,39 @@ async fn auto_refund_settled_by_admin_or_telegram_refund() {
         "control: refunded_at",
         refunded_at(&st, "c-control").await,
         Some(T0 + 60),
+    ));
+
+    gateway.lose_refund_answers(true);
+    unapplied_at(&st, T0 + 100, "c-manual", &mut failures).await;
+    gateway.lose_refund_answers(false);
+    let mut c = common::raw_db(&st).await;
+    sqlx::query(
+        "UPDATE payments SET refunded_at = $1 WHERE telegram_payment_charge_id = 'c-manual'",
+    )
+    .bind(T0 + 110)
+    .execute(&mut c)
+    .await
+    .unwrap();
+    sqlx::Connection::close(c).await.unwrap();
+    failures.extend(expect_eq(
+        "(iv) c-manual refunded by hand: due_at",
+        auto_refund_row(&st, "c-manual").await.and_then(|row| row.2),
+        Some(T0 + 160),
+    ));
+    failures.extend(expect_eq(
+        "(iv) the sweep at T0+160",
+        sweep_at(&st, T0 + 160).await,
+        tally(1, 1, 0, 0),
+    ));
+    failures.extend(expect_eq(
+        "(iv) after the sweep: due_at",
+        auto_refund_row(&st, "c-manual").await.and_then(|row| row.2),
+        None,
+    ));
+    failures.extend(expect_eq(
+        "(iv) the sweep at the lease's end",
+        sweep_at(&st, T0 + 220).await,
+        tally(0, 0, 0, 0),
     ));
     report(&failures);
 }
