@@ -2402,7 +2402,7 @@ function noIdFirstCh1(): LoadedChapter {
   return chapter('ch1', ['-> start', '=== start ===', 'No id here.', '-> END'], { start: {} });
 }
 
-test('game: return to last save with no save exits to the stories', async () => {
+test('game: return to last save after a continue resumes the continued save', async () => {
   const first = harness({ chapters: [noIdNextCh1()] });
   await startManor(first); // l001: its knot entry's autosave
   const auto = first.save().slots.get('auto');
@@ -2411,17 +2411,24 @@ test('game: return to last save with no save exits to the stories', async () => 
   if (auto === undefined) {
     return;
   }
+  // An exact resume at a line writes nothing; the save it resumed is the session's last save (LFU1 cut Q3), so the
+  // next step's error returns to it, from its checkpoint (D10), instead of exiting to the stories.
+  const h = harness({ chapters: [noIdNextCh1()], slots: new Map([['auto', auto]]) });
+  expect((await h.game.start({ kind: 'slot', story: MANOR, slot: 'auto' })).ok).toBe(true);
+  await h.game.advance();
+  const n = h.vm.notice;
+  expect(n?.kind).toBe('story_error');
+  if (n?.kind === 'story_error') {
+    n.onaction(); // Return to last save
+  }
+  await settle();
+  await settle();
+  expect([h.exits(), h.save().disposed, lineOf(h.vm)]).toEqual([0, 0, 'ch1.start.l001']);
+  h.game.dispose();
+});
+
+test('game: return to last save with no save exits to the stories', async () => {
   const parts: ReadonlyArray<readonly [string, () => Promise<Harness>]> = [
-    [
-      'continue',
-      async () => {
-        // An exact resume at a line writes nothing, so the session has no last save when the next step raises.
-        const h = harness({ chapters: [noIdNextCh1()], slots: new Map([['auto', auto]]) });
-        expect((await h.game.start({ kind: 'slot', story: MANOR, slot: 'auto' })).ok).toBe(true);
-        await h.game.advance();
-        return h;
-      },
-    ],
     [
       'new',
       async () => {
@@ -2444,10 +2451,7 @@ test('game: return to last save with no save exits to the stories', async () => 
     rows.push([part, h.exits(), h.save().disposed, lineOf(h.vm)]);
     h.game.dispose();
   }
-  expect(rows).toEqual([
-    ['continue', 1, 1, null],
-    ['new', 1, 1, null],
-  ]);
+  expect(rows).toEqual([['new', 1, 1, null]]);
 });
 
 /** Every manual save of `sv` answers the server's 409: another device saved the slot. */

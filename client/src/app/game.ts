@@ -318,7 +318,7 @@ type Session = {
   step: RunnerStep | null;
   /** The last line shown: it stays on screen above a choice set. */
   shown: Extract<RunnerStep, { kind: 'line' }> | null;
-  /** The body of the last autosave: "Return to last save" resumes it. */
+  /** The body of the last autosave, or of the save this session last resumed: "Return to last save" resumes it. */
   last: SaveBodyV1 | null;
   /**
    * W1 "Load it": the player chose the other device's autosave. The service's lane is open over their rev from that
@@ -778,10 +778,10 @@ export function createGame(deps: GameDeps): Game {
   };
 
   /**
-   * "Return to last save": the last autosave, one level lower per error in this chapter (D10): the first from its
-   * checkpoint, every later one from the chapter start, so a knot that keeps failing cannot loop. With no autosave in
-   * this session (a new game's first step, a Continue resumed at a line) it exits to the stories (triage r1 M1): the
-   * server's copy stays, and Home's Continue is the retry (RULINGS 93).
+   * "Return to last save": the last autosave or the save this session resumed (LFU1 cut Q3), one level lower per error
+   * in this chapter (D10): the first from its checkpoint, every later one from the chapter start, so a knot that keeps
+   * failing cannot loop. With neither (a new game's first step) it exits to the stories (triage r1 M1): the server's
+   * copy stays, and Home's Continue is the retry (RULINGS 93).
    */
   const returnToSave = async (s: Session): Promise<void> => {
     if (session !== s) {
@@ -928,6 +928,7 @@ export function createGame(deps: GameDeps): Game {
     s.carry = { ...body.chapterStart.carry };
     s.checkpoint = body.checkpoint;
     s.backlog = [...body.backlog];
+    s.last = body; // the server's copy this session now runs from; an autosave during `present` replaces it
     s.at = NO_AT;
     s.step = null;
     s.shown = null;
@@ -1547,9 +1548,9 @@ export function createGame(deps: GameDeps): Game {
     clearSkip();
     const resumed = await resumeBody(s, body.value);
     if (resumed.ok && session === s && s.adopting) {
-      // Their save took over. Nothing of this session was written since the choice: the server's copy is this body.
+      // Their save took over. Nothing of this session was written since the choice: the server's copy is this body,
+      // which `resumeBody` recorded as the last save.
       s.adopting = false;
-      s.last = body.value;
     }
   };
 
