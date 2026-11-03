@@ -1996,7 +1996,10 @@ no `resource_ledger` row of that charge (a pack credit is an applied charge).
 As merged (LRF `a93fe54`; RULINGS 120, 130; owner Q9; LRF cut (a)): the webhook calls
 `after_grant(st, fact, outcome, lang)` (`server/src/telegram/webhook.rs:257`, `server/src/telegram/payments.rs:150`).
 `Granted` and `Duplicate` do nothing; an unapplied outcome gets the notice (`notify_unapplied`, now private, `:176`),
-then one refund attempt, both inside one `CALL_DEADLINE`. The texts say the Stars are being refunded automatically
+then one refund attempt (a sweep pass may claim the row first). The notice and the attempt's `refundStarPayment` call
+share one `CALL_DEADLINE`; the claim, the revoke and the failure write run outside it, bounded by the session's
+`lock_timeout` and `statement_timeout` (`server/src/db/mod.rs:43-44`).
+The texts say the Stars are being refunded automatically
 (`payment_unapplied`) and that the automatic refund has started (`admin_unapplied`); both are drafts
 (`server/locales/bot.en.json:3`, `:20-21`). The durable record is the charge's `auto_refunds` row
 (`server/migrations/0007_auto_refunds.sql`), committed in the grant's transaction:
@@ -2006,7 +2009,7 @@ then one refund attempt, both inside one `CALL_DEADLINE`. The texts say the Star
 - a failure is written with its error and a backoff of 60 s doubling to 1 h (`auto_refund_failed`, `:542`;
   `auto_refund_backoff`, `server/src/telegram/payments.rs:448`). Only refusals (an API error or a disabled gateway)
   count: the eighth gives the row up and alerts the admins once (`admin_auto_refund_failed`,
-  `AUTO_REFUND_MAX_REFUSALS`, `:55`); a timeout or a transport break retries at the longest wait with no bound;
+  `AUTO_REFUND_MAX_REFUSALS`, `:55`); a timeout or a transport break retries on the same backoff with no bound;
 - the sweep (`run_auto_refund_sweep`, `:432`) takes up to 20 due rows every 30 s; `server serve` spawns it once
   listening and aborts it at shutdown (`server/src/main.rs:156-165`).
 `/paysupport` shows four states: refunded, being refunded (the row due), not applied (legacy or given up), or none
@@ -2120,7 +2123,7 @@ As merged (LPH `d423cb3`, RULINGS 97, 106; LPH critique O2, O3, O6, review M2, M
 | Webhook never arrives (Telegram outage) | DB | `delayed` state; Check again; reload → entitlements; the payment is still recorded when Telegram redelivers |
 | Double tap on Buy | client guard + order reuse + checkout lock; as merged (LPH `d423cb3`, RULINGS 97 Q2): client guard + checkout lock + `AlreadyOwned`, no order reuse | one sheet; a second open of the same slug throws → ignored; as merged (LPH): a retry gets a new order and slug |
 | One order (one slug) opened on two devices, both press Pay | checkout lock, own order included | the second pre-checkout within 120 s of the first is refused (`InProgress`) — `precheckout_same_order_twice_refused`; concurrent: `precheckout_concurrent_same_order_one_passes` (the payer-row lock; changed by RULINGS 14) |
-| Two orders for one product paid in parallel | checkout lock (120 s) + entitlement PK | second pre-checkout refused (`InProgress`); if a charge still lands unapplied (`AlreadyEntitled` / `OrderMismatch`, e.g. a payment `pending` past the 120 s lock — E8): payer + admins notified, `/paysupport` flags it, refund per V4 — `unapplied_charge_notifies_payer_and_admin`; as merged (LRF `a93fe54`, RULINGS 120, 130; owner Q9): refunded automatically, the first attempt right after the notice and the sweep after it, `/paysupport` shows it being refunded — `auto_refund_unapplied_outcomes_refunded_once`, `paysupport_shows_auto_refund_state`; concurrent pre-checkouts: `precheckout_concurrent_two_orders_one_passes` (the payer-row lock; changed by RULINGS 14) |
+| Two orders for one product paid in parallel | checkout lock (120 s) + entitlement PK | second pre-checkout refused (`InProgress`); if a charge still lands unapplied (`AlreadyEntitled` / `OrderMismatch`, e.g. a payment `pending` past the 120 s lock — E8): payer + admins notified, `/paysupport` flags it, refund per V4 — `unapplied_charge_notifies_payer_and_admin`; as merged (LRF `a93fe54`, RULINGS 120, 130; owner Q9): refunded automatically, the first attempt normally right after the notice (a sweep pass may claim it first) and the sweep after it, `/paysupport` shows it being refunded — `auto_refund_unapplied_outcomes_refunded_once`, `paysupport_shows_auto_refund_state`; concurrent pre-checkouts: `precheckout_concurrent_two_orders_one_passes` (the payer-row lock; changed by RULINGS 14) |
 | Pre-checkout DB contention | `lock_timeout` 2 s (`55P03`) within `timeout(2 s)` (changed by RULINGS 14) | answer `ok=false` (Temporary), 200 |
 | Telegram API hung during the answer | `timeout(5 s)` | logged; 200; Telegram cancels the payment itself |
 | Undecodable / unknown update without a payment | — | 200 + log (no redelivery backlog) [R2 §2.3] |

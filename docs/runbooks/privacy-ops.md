@@ -189,7 +189,7 @@ so nothing is applied. The columns are the migrations' ([0002_puzzles.sql](../..
 [0006_achievements.sql](../../server/migrations/0006_achievements.sql)). The docs lane D2 ran this block twice, as
 written, on a probe cluster with the tree's migrations ([deploy.md](deploy.md#roll-back), the last paragraph). Run
 the access query above first, then this, on a copy or at a quiet hour. Tell the player what was kept and why
-(payments, orders and refund records, for accounting).
+(payments, orders, refund records and the ledger rows of a charge, for accounting).
 
 Then add the erasure to your erasure record: the player's id and the time in unix seconds
 (`[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()`; on Linux `date +%s`). Keep the record on the host with the backups, never in the
@@ -200,8 +200,8 @@ the server starts on the restored database ([deploy.md](deploy.md#roll-back), st
 ## Verify
 
 - `GET <PUBLIC_APP_URL>api/privacy` shows no `{...}` placeholder and the version you set.
-- After an erasure, the access query returns the `users` row with an empty name, the payments, the refund records
-  and the orders, and nothing else of the player.
+- After an erasure, the access query returns the `users` row with an empty name, the payments, the refund records,
+  the orders and the ledger rows with a charge, and nothing else of the player.
 
 ## Roll back
 

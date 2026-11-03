@@ -100,7 +100,8 @@ The four states (`charge_text`, [commands.rs:165-191](../../server/src/telegram/
 | "(being refunded)" | `paysupport_refunding` | its automatic refund is pending (its `auto_refunds` row has `due_at`) | nothing: the server retries; see [An unapplied-charge notice](#an-unapplied-charge-notice) |
 | "(not applied, please contact us)" | `paysupport_not_applied` | paid, granted nothing, and no automatic refund pending: a charge recorded before migration `0007`, or one whose automatic refund was given up | refund it by hand ([below](#refund-a-charge)) |
 
-The status is checked in that order: a refunded charge shows "(refunded)" whatever else it has.
+The bot checks the marks from "(refunded)" down and shows no mark only when none of them holds: a refunded charge
+shows "(refunded)" whatever else it has ([commands.rs:165-191](../../server/src/telegram/commands.rs#L165)).
 
 ### Refund a charge
 
@@ -131,8 +132,8 @@ runs once, and the revoke settles the automatic refund
 
 Sources: [commands.rs:236-304](../../server/src/telegram/commands.rs#L236) (`refund_args`, `refund_reply`;
 `MAX_CHARGE_ARG` :20), [bot.en.json:23-29](../../server/locales/bot.en.json#L23). A non-admin's `/refund` gets the
-unknown-command reply. The `refund_*` texts are drafts until the owner's bot-text step (`drafts`,
-[bot.en.json:3](../../server/locales/bot.en.json#L3)).
+unknown-command reply. Of these replies, `refund_unknown`, `refund_unrecorded_done` and `refund_usage` are drafts
+until the owner's bot-text step (`drafts`, [bot.en.json:3](../../server/locales/bot.en.json#L3)).
 
 What the revoke does ([db/payments.rs:368-401](../../server/src/db/payments.rs#L368), `RevokeOutcome` :130-140): the
 payment gets `refunded_at`, its order turns `refunded`; a chapter's entitlement moves to the payer's oldest other
@@ -171,8 +172,10 @@ id names nothing this build grants). What happens:
 2. The payer is told the Stars are being refunded (`payment_unapplied`, in the payer's language), and every admin that
    the automatic refund has started (`admin_unapplied`, in Russian), with the charge id and the payer
    ([payments.rs:143-216](../../server/src/telegram/payments.rs#L143)).
-3. The first refund attempt runs right after the notice; the notice and the attempt share one 5 s deadline. An
-   attempt claims the row for 60 s, calls `refundStarPayment` and, on success, revokes as `/refund` does
+3. The first refund attempt normally runs right after the notice; a sweep pass that runs in between may take the row
+   first, and the claim lets only one of them refund. The notice and the attempt's `refundStarPayment` call share one
+   5 s deadline; the attempt's database steps run outside it. An attempt claims the row for 60 s, calls
+   `refundStarPayment` and, on success, revokes as `/refund` does
    ([payments.rs:232-351](../../server/src/telegram/payments.rs#L232)).
 4. A failed attempt is retried by the sweep that `server serve` runs: every 30 s, up to 20 due charges a pass
    ([payments.rs:390-443](../../server/src/telegram/payments.rs#L390); [main.rs:156-165](../../server/src/main.rs#L156)).
@@ -182,8 +185,8 @@ id names nothing this build grants). What happens:
    attempt is refused) the refund is given up, and every admin gets `admin_auto_refund_failed` once, with the charge,
    the payer, the attempts and the last error (`AUTO_REFUND_MAX_REFUSALS`,
    [payments.rs:51-55](../../server/src/telegram/payments.rs#L51), `alert_given_up` :353-388). Refund it by hand:
-   `/refund <CHARGE_ID>`. A timeout or a broken connection is not a refusal: such a charge is retried every hour and
-   stays "being refunded" until the Bot API answers.
+   `/refund <CHARGE_ID>`. A timeout or a broken connection is not a refusal: such a charge is retried on the same
+   backoff, hourly from the seventh attempt on, with no bound, and stays "being refunded" until the Bot API answers.
 
 The texts are drafts until the owner's bot-text step ([bot.en.json:3](../../server/locales/bot.en.json#L3), :20-22).
 The payer reads "being refunded" even when the first attempt has already refunded; `/paysupport` then shows

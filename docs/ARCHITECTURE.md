@@ -677,8 +677,12 @@ too (`message` :240-246, `on_text`'s `Err`; `Retry` is 500, :74).
   at :310 and :362); a redelivery (`Duplicate`) schedules nothing. After the commit the webhook's `grant` calls
   `after_grant` ([telegram/payments.rs:150](../server/src/telegram/payments.rs#L150); webhook.rs :257): the notice
   first (`notify_unapplied` :176, the payer in their payment message's language, each admin in Russian), then one
-  attempt, both inside one `CALL_DEADLINE`, so the webhook's answer waits at most one deadline past the grant. An
-  attempt the deadline leaves no room for stays due, and the sweep takes it. A refund that fails is retried, never
+  attempt; a sweep pass may claim the row first, and the claim lets only one refund. The notice and the attempt's
+  `refundStarPayment` call share one `CALL_DEADLINE`; the attempt's claim, revoke and failure write are database steps
+  outside it, bounded by the session's `lock_timeout` 2 s and `statement_timeout` 15 s
+  ([db/mod.rs:43-44](../server/src/db/mod.rs#L43)), so the webhook's answer can wait past one deadline (LRF review
+  M1). An attempt the deadline leaves no room for stays due, and the sweep takes it.
+  A refund that fails is retried, never
   answered 500 (`grant`'s doc, webhook.rs :249-253).
 - **One attempt at a time** (`attempt`, telegram/payments.rs :245). The claim is one guarded `UPDATE`
   (`Repo::claim_auto_refund`, db/payments.rs :515): only a due row is claimed, its `due_at` moved to the end of a
@@ -688,7 +692,7 @@ too (`message` :240-246, `on_text`'s `Err`; `Retry` is 500, :74).
   failure write (`Repo::auto_refund_failed`, db/payments.rs :542), which only that attempt's claim can write, and
   only while the row is pending: due again after the backoff, 60 s doubling to 1 h (`auto_refund_backoff`,
   telegram/payments.rs :448). Only a refusal (`Api` or `Disabled`) counts toward the bound of 8
-  (`AUTO_REFUND_MAX_REFUSALS` :55); a timeout or a transport break is retried at the longest wait without bound
+  (`AUTO_REFUND_MAX_REFUSALS` :55); a timeout or a transport break is retried on the same backoff without bound
   (:269-276). The eighth refusal gives the row up (`due_at` NULL), and its attempt alone alerts the admins
   (`alert_given_up` :357, `admin_auto_refund_failed`); the refund is then the admin's `/refund <charge>`. An attempt
   that dies after its claim leaves the row due again at its lease's end, and the retry meets
@@ -734,7 +738,7 @@ too (`message` :240-246, `on_text`'s `Err`; `Retry` is 500, :74).
   `refund_star_payment` with no transaction open, cut at `CALL_DEADLINE`, then revokes on success or on
   `CHARGE_ALREADY_REFUNDED`. A `refunded_payment` update, read by frankenstein or by the lenient probe (`ProbeRefunded`,
   the charge id only, [webhook.rs:48](../server/src/telegram/webhook.rs#L48)), revokes too. Both end in
-  `payments::revoke(st, charge)` at the state's clock (:171) and `Repo::revoke`
+  `payments::revoke(st, charge)` at the state's clock (:460) and `Repo::revoke`
   ([db/payments.rs:402](../server/src/db/payments.rs#L402)): one transaction keyed by the charge's own rows; the
   `refunded_at IS NULL` guard (set to `GREATEST(now, paid_at)`) makes a repeat `AlreadyRefunded`. As merged (LPH
   `d423cb3`; RULINGS 96, 97 Q10, 100): a chapter's entitlement is deleted only when the payer has no other
