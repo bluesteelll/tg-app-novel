@@ -4,6 +4,7 @@
 // Also set by `[workspace.lints.rust]`; the attribute holds even for a member that forgets `[lints] workspace`.
 #![forbid(unsafe_code)]
 
+pub mod deploy;
 pub mod fake_gateway;
 pub mod launch;
 pub mod simulate;
@@ -13,10 +14,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::Router;
+use axum::middleware::from_fn_with_state;
 use pgdev::{DbName, DevCluster, PgDevError};
 use server::config::{Config, PLACEHOLDER_BOT_TOKEN, PLACEHOLDER_WEBHOOK_SECRET, TelegramEnv};
 use server::{AppState, StartupError, build_router};
 
+use crate::deploy::ServedBuild;
 use crate::fake_gateway::FakeBotGateway;
 
 /// Where the dev app keeps its database and finds its content.
@@ -47,13 +50,17 @@ async fn dev_state(paths: &DevPaths) -> Result<(AppState, Arc<FakeBotGateway>), 
     Ok((state, fake))
 }
 
-/// The production router on `state`, plus the launch routes, the simulated payments (through the production webhook
-/// handler on `state`) and the routes that read `fake`.
+/// The production router on `state`, its `/api` answers stamped with the claimed build id (the deploy simulation), plus
+/// the launch routes, the simulated payments (through the production webhook handler on `state`), the routes that read
+/// `fake` and the one that claims a build id.
 fn dev_router(state: AppState, fake: Arc<FakeBotGateway>) -> Router {
+    let served = Arc::new(ServedBuild::default());
     build_router(state.clone())
+        .layer(from_fn_with_state(served.clone(), deploy::stamp))
         .merge(launch::routes().with_state(state.clone()))
         .merge(simulate::routes(state, fake.clone()))
         .merge(fake_gateway::routes(fake))
+        .merge(deploy::routes(served))
 }
 
 /// Recreates database `name` on `cluster` empty (`DROP … WITH (FORCE)`, which ends a previous instance's
