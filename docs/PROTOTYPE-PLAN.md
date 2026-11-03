@@ -2545,7 +2545,7 @@ All budgets are enforced by `client/scripts/budget.ts` inside `npm run build` un
 | `smoke.spec.ts` (L15) | `tap-to-start unlocks audio only after the gesture`, `play choose save reload load resumes at same line` (asserts `data-line-id`), `autosave resume after reload`, `back button closes overlays without history` (`history.length` unchanged, `web_app_setup_back_button` events recorded), `deactivated pauses audio, activated resumes` (the dev-server `/@fs` check is a vitest test, not e2e: see Paid-content protection); as merged (L15b `fbcfd38`, RULINGS 93 Q8, 94; L15b cut K30): + `saves: overwrite ask keeps yes below save` (6) |
 | `purchase.spec.ts` | `purchase unlocks chapter 2` (403 before, sheet shows the server price, 200 after, ch2 first line reacts to a ch1 choice), `cancelled purchase keeps paywall`, `failed purchase keeps paywall`, `delayed webhook unlocks after polling`, `paid twice grants once` |
 | `perf.spec.ts` | `time to first line under throttling`, `textures released on chapter change`, `heap under budget`, `context loss recovers` (debug hook calls Pixi's `forceContextLoss()`, then a pixel sample of the stage is not black); as merged (L15b `fbcfd38`, RULINGS 93 Q8, 94; lever F, L15b C12): + `scene: a LOW perf class renders at resolution 1`, `scene: an AVERAGE perf class at DPR 2 renders at resolution 2` (6) |
-| `memory.spec.ts` (changed by MEMORY-PLAN; RULINGS 78; new in M1, then M2, M3c, M3s; as of `a4d53ef`, RULINGS 107 OA1: M1 merged `f1b707d` (one name); M2, M3c, M3s planned) | `scene: trimmed character renders where its canvas puts it` (M1); `scene: no decoded bitmap outlives its upload`, `scene: an unrestored context loss rebuilds the stage`, `scene: a failed revive re-acquires the visual` (M2); `scene: a LOW phone loads half-tier files`, `scene: an AVERAGE phone at DPR 1 loads full-tier files`, `scene: a LOW tablet loads full-tier files` (M3c); `scene: a LOW phone loads half-tier files of a paid chapter` (M3s). `perf.spec.ts` keeps its four and gains L15's `scene: a LOW perf class renders at resolution 1` with its AVERAGE control ([MEMORY-PLAN section 12](MEMORY-PLAN.md#12-budgets-and-validation)) |
+| `memory.spec.ts` (changed by MEMORY-PLAN; RULINGS 78; new in M1, then M2, M3c, M3s; as of `a4d53ef`, RULINGS 107 OA1: M1 merged `f1b707d` (one name); M2, M3c, M3s planned; as of `a6365a8`, RULINGS 117, 127: M2 merged `385d52f` (three names), M3c merged `a6365a8` (four names); M3s planned) | `scene: trimmed character renders where its canvas puts it` (M1); `scene: no decoded bitmap outlives its upload`, `scene: an unrestored context loss rebuilds the stage`, `scene: a failed revive re-acquires the visual` (M2); `scene: a LOW phone loads half-tier files`, `scene: an AVERAGE phone at DPR 1 loads full-tier files`, `scene: a LOW tablet loads full-tier files` (M3c; as merged, `a6365a8`: + `scene: a resize past the half bound loads full-tier files`); `scene: a LOW phone loads half-tier files of a paid chapter` (M3s). `perf.spec.ts` keeps its four and gains L15's `scene: a LOW perf class renders at resolution 1` with its AVERAGE control ([MEMORY-PLAN section 12](MEMORY-PLAN.md#12-budgets-and-validation)) |
 | `stories.spec.ts` (L15; changed by STORIES-PLAN) | `stories: picker lists both stories with covers`, `stories: saves are per story`, `stories: second story first chapter free then paywall`, `stories: story ending shows the end and records the ending`, `stories: back button closes chapter select to the picker`, `stories: picker unmounted during play`; as merged (L15b `fbcfd38`, RULINGS 93 Q3, Q8, 94; L15b cut D30): + `stories: a locked chapter row opens the paywall without loading the chapter` (7) |
 | `puzzles.spec.ts` (L15; changed by PUZZLES-PLAN) | `explore: search item puzzle buy hint solve`, `explore: gate fail branch`, `explore: reload resumes in the same room with items`, `puzzle: hint text absent until bought`, `puzzle: paid chapter puzzle needs entitlement`, `explore: back button walks rooms then hides`, `explore: live texture bytes stay under the steady cap`, `explore: hotspot buttons align with props under safe area and landscape`; as merged (L15b `fbcfd38`, RULINGS 93 Q8, 94; L15 re-cut commit 6a): `explore: search item puzzle buy hint solve` is `explore: search item puzzle solve` and `puzzle: hint text absent until bought` is `puzzle: hint text absent while locked` (8) |
 
@@ -2553,6 +2553,8 @@ As merged (L15b `fbcfd38`, RULINGS 93 Q8, 94; L15b cut §6 Q8): the e2e suite L1
 stories 7, purchase 5, perf 6, puzzles 8 (`client/e2e/*.spec.ts`); M1 then added the first `memory.spec.ts` name (36).
 As merged (LMI `3e35a7b`; RULINGS 105 Q4, 110): LMI added `meta.spec.ts` (6) and `social.spec.ts` (5), named in
 [META-PLAN.md](META-PLAN.md), section "Test strategy": 47 names in nine specs.
+As merged (M2 `385d52f`, M3c `a6365a8`; RULINGS 117, 127): M2 added three `memory.spec.ts` names (50) and M3c four
+(54 names in nine specs); LFU3 added none.
 
 **Changed by PUZZLES-PLAN.** The unit, DOM, story and server test names of the puzzle extension (world, rules,
 reduce, softlock, cover, runner yields, session, controller, yields, arch, budget, scan, emit; schema, attempts,
@@ -2954,6 +2956,16 @@ the relaunch merged with the entry at 38.9 KB br (RULINGS 110). Running: M2 memo
 `3e35a7b`), beside the docs lane `docs-errata-7` (base `3e35a7b`). "To go": LFU3 (after M2, beside M3c / D2; RULINGS
 107), M3c (after M2), D2 (after M2) and M3s (after M3c and D2), in the planned order below.
 
+Changed by RULINGS 113-127 (as merged; docs lane `docs-errata-8`, group B): the State column is the state as of
+`a6365a8`, with each SHA from `git log --first-parent main`. Since `3e35a7b` these merged: M2 `385d52f` (and the docs
+lane `docs-errata-7` as `7e74abc`), LFU3 `48bc82a`, D2 `b766a16` and M3c `a6365a8` (relaunched after its cut r1
+block, RULINGS 120). The process-text fix `a350f5f` (RULINGS 118) and the OPEN-QUESTIONS commits are not lanes. RULINGS
+126 adds the row LRF auto-refund (server; owner Q9, RULINGS 120), added 2026-11-03: the server slot takes this money
+lane before M3s. Running: LRF auto-refund (server, slot B; base `b766a16`), beside the docs lane `docs-errata-8` (base
+`a6365a8`). "To go": M3s (server; after LRF, and its cut after MD1's order is set by `design-animation`; RULINGS 126).
+The animation and mechanics lanes are being designed (`design-animation`, `design-mechanics`; RULINGS 124) and get
+rows when adopted.
+
 | Lane | Slot | State | Gate to start (merged) | Re-cut |
 |---|---|---|---|---|
 | L1 client-shell | client | merged `ea8a6a2` (`f6e2624` before the rewrite) | — | — |
@@ -3006,11 +3018,12 @@ the relaunch merged with the entry at 38.9 KB br (RULINGS 110). Running: M2 memo
 | **client follow-ups** | client | cut in two (RULINGS 95): LFU1 `engine-followups` merged `f637bac`; LFU2 `client-followups` merged `6d77329` (new, RULINGS 80; L15 cut Q3) | L15b (its items touch `app/game.ts`, which L15b also holds; RULINGS 87) | new; RULINGS 95: scope cut in two (LFU1, LFU2) |
 | **M1 memory-trim** | client | merged `f1b707d` (new, MEMORY-PLAN) | L15 (the first rendered scene and `perf.spec.ts`; the e2e helpers) | new; RULINGS 92: + the budget-gate gap item of the client follow-ups lane |
 | **LMI meta-integration** | client | merged `3e35a7b` (relaunched after its entry-budget STOP, RULINGS 105; new, META-PLAN) | L15, LMD, LU1, LE2. Changed by MEMORY-PLAN: M1. Changed by RULINGS 92, 95: LFU1 (both hold `client/src/app/game.ts`) | new; MEMORY-PLAN: gate + M1; RULINGS 92, 95: gate + LFU1 |
-| **M2 memory-cpu-copy** | client | running (base `3e35a7b`; new, MEMORY-PLAN) | LMI (after M1; the `budget.ts` and `app/game.ts` chains) | new |
-| **LFU3** | client | to go (new, RULINGS 99) | LMI (it holds `client/src/app/{boot,game,game.test,yields}.ts`, which LMI also holds). Changed by RULINGS 107 (OB-1): M2 (both hold `client/src/app/game.ts`; M2 first, then LFU3 beside M3c / D2) | new; RULINGS 107: gate + M2 |
-| **M3c memory-half-tier** | client | to go (new, MEMORY-PLAN) | M2 | new |
-| D2 docs-final | doc | to go | L15. Changed by META-PLAN: LMI, L9; revision 1: LPO. Changed by MEMORY-PLAN: M2. Changed by RULINGS 96: LPH (it closes L9's carried payment gaps before D2) | PUZZLES-PLAN, STORIES-PLAN; META-PLAN: the meta rows and runbooks; MEMORY-PLAN: gate + M2, the M1 / M2 map rows, two authoring-guide rules; RULINGS 96: gate + LPH |
-| **M3s memory-half-paid** | server | to go (new, MEMORY-PLAN) | M3c, L9 (the end of the server chain), D2 (the docs chain D1 → D2 → M3s) | new |
+| **M2 memory-cpu-copy** | client | merged `385d52f` (new, MEMORY-PLAN) | LMI (after M1; the `budget.ts` and `app/game.ts` chains) | new |
+| **LFU3** | client | merged `48bc82a` (new, RULINGS 99) | LMI (it holds `client/src/app/{boot,game,game.test,yields}.ts`, which LMI also holds). Changed by RULINGS 107 (OB-1): M2 (both hold `client/src/app/game.ts`; M2 first, then LFU3 beside M3c / D2) | new; RULINGS 107: gate + M2 |
+| **M3c memory-half-tier** | client | merged `a6365a8` (relaunched after its cut r1 block, RULINGS 120; new, MEMORY-PLAN) | M2 | new |
+| D2 docs-final | doc | merged `b766a16` | L15. Changed by META-PLAN: LMI, L9; revision 1: LPO. Changed by MEMORY-PLAN: M2. Changed by RULINGS 96: LPH (it closes L9's carried payment gaps before D2) | PUZZLES-PLAN, STORIES-PLAN; META-PLAN: the meta rows and runbooks; MEMORY-PLAN: gate + M2, the M1 / M2 map rows, two authoring-guide rules; RULINGS 96: gate + LPH |
+| **LRF auto-refund** | server | running (base `b766a16`; new, RULINGS 126, added 2026-11-03) | LPH (the server chain; LPH's residual closure (B) is one of its items), D2 (its item (b) is the restore gap D2 found, RULINGS 125) | new (owner Q9, RULINGS 120; launched in RULINGS 126) |
+| **M3s memory-half-paid** | server | to go (new, MEMORY-PLAN) | M3c, L9 (the end of the server chain), D2 (the docs chain D1 → D2 → M3s). Changed by RULINGS 126: LRF (the server slot takes the money lane first; M3s's cut follows MD1's order in `design-animation`) | new; RULINGS 126: gate + LRF |
 
 There are 38 lanes: 12 merged, 2 running, 24 to go (changed by RULINGS 22, 23; it read "10 merged, 1 running, 1
 paused, 26 to go"); 6 are new from PUZZLES-PLAN, 3 (LDB0, LDB1, LDB2) from RULINGS 14/17 and 5 (LS1–LS4, N2) from
@@ -3030,6 +3043,9 @@ Changed by RULINGS 104-108 (as of `a4d53ef`; docs lane `docs-errata-6`, group B)
 `d423cb3` since `6d77329`), 1 running (LMI), 5 to go (M2, LFU3, M3c, D2, M3s).
 Changed by RULINGS 105-111 (as of `3e35a7b`; docs lane `docs-errata-7`, group B): 57 lanes — 52 merged (LMI
 `3e35a7b` since `a4d53ef`), 1 running (M2), 4 to go (LFU3, M3c, D2, M3s).
+Changed by RULINGS 113-127 (as of `a6365a8`; docs lane `docs-errata-8`, group B): 58 lanes (LRF, RULINGS 126, is new)
+— 56 merged (M2 `385d52f`, LFU3 `48bc82a`, D2 `b766a16` and M3c `a6365a8` since `3e35a7b`), 1 running (LRF), 1 to go
+(M3s).
 
 **Launch preference** when several lanes are ready (critical path first; changed by STORIES-PLAN):
 - client (two slots): L3c (running), L5, L11, LS1, L7, L12, LW3, L14a, L10, L13, L14b, LP2 ∥ LX, LS4, D1, N1, N2, L15,
@@ -3067,6 +3083,10 @@ Changed by RULINGS 105-111 (as of `3e35a7b`; docs lane `docs-errata-7`, group B)
 - Changed by RULINGS 105-111 (as of `3e35a7b`; docs lane `docs-errata-7`, group B; merged lanes dropped): client: M2
   (running), then LFU3 beside M3c ∥ D2 (RULINGS 107, OB-1); server: M3s. LMI has merged (`3e35a7b`), so LFU3, M3c and
   D2 wait for M2 only, and M3s for M3c and D2.
+- Changed by RULINGS 113-127 (as of `a6365a8`; docs lane `docs-errata-8`, group B; merged lanes dropped): client:
+  none of this table's lanes is left (the animation and mechanics lanes get their places when adopted, RULINGS 124);
+  server: LRF (running), then M3s. M2, LFU3, D2 and M3c have merged, so M3s's gate is met; it waits for LRF (the server
+  slot takes the money lane first) and its cut for MD1's order in `design-animation` (RULINGS 126).
 
 After L9 the server slot takes doc / narrative / client lanes with disjoint locks.
 
@@ -3148,6 +3168,12 @@ beside them.
   slot: it is idle, since D2 waits for M2 and M3s for M3c and D2 (RULINGS 111).
 - LFU3 runs after M2, beside M3c and D2 (RULINGS 107, OB-1): it is in no gate on the path, so the path does not grow.
 - LMI has merged (`3e35a7b`).
+
+**Changed by RULINGS 113-127 — the critical path as of `a6365a8`** (docs lane `docs-errata-8`, group B).
+- The whole plan: LRF (running) → M3s in the server slot (RULINGS 126). M3s's gate (M3c, L9, D2) is met; its cut
+  waits for MD1's order in `design-animation` (RULINGS 124, 126).
+- No client lane of this table is left; the animation and mechanics lanes join the path when adopted.
+- M2, LFU3, D2 and M3c have merged (`385d52f`, `48bc82a`, `b766a16`, `a6365a8`).
 
 ### Lanes
 
@@ -6719,6 +6745,7 @@ each has a default there; the policy's operator facts are placeholders until the
 | 34 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `ba62703` (the docs-errata-7 spec, group A; RULINGS 105-111), as merged on main `3e35a7b` | Docs lane `docs-errata-7`, group A: LMI (`3e35a7b`; RULINGS 105, 110) — the controller as a lazy chunk (the budget targets, K3's M27 paragraph, the `meta controller chunk (br)` budget row, the 84 rows, the e2e count of 47 in nine specs, LMI's gates); docs-errata-6's open items OA-1 (P3: no order reuse, a new order per POST, bounded) and the re-checked L9 citations of K27 (`static_files.rs`) and "Bot commands" (`commands.rs`), as merged with their SHAs and rulings. Ledger: `D:/tmp/novel-orch/docs-errata-7/ledger.md` |
 | 35 | 2026-11-02 | RULINGS 105-111 (as merged: LMI `3e35a7b`, docs-errata-6 `f911011`; M2 running; main `3e35a7b`) | Docs lane `docs-errata-7`, group B: "Dependency order" — a marker paragraph and the State column as of `3e35a7b` (LMI merged since `a4d53ef`, with its SHA from `git log --first-parent main`, after its entry-budget STOP and the relaunch of RULINGS 105, the entry 38.9 KB br at the merge; M2 running, base `3e35a7b`), the lane count (57: 52 merged, 1 running, 4 to go), the launch preference without the merged lanes and the critical path from M2 (LFU3 after M2, beside M3c / D2, RULINGS 107). The planned order is otherwise unchanged. STORIES-PLAN revision 18 and META-PLAN revision 15 hold their lines. Ledger: `D:/tmp/novel-orch/docs-errata-7/ledger.md` |
 | 36 | 2026-11-03 | `D:/tmp/novel-orch/carry.md` at ORCH `a7a514f` (the docs-errata-8 spec, group A; RULINGS 113, 117), as merged on main `a6365a8` | Docs lane `docs-errata-8`, group A: docs-errata-7's open item OA-1 (the first-line and first-load rows count the meta controller chunk: the budget table's first-line label, the first-load basis and the LP2 lazy-chunks row) and its optional note N2 ("once the boot reads are in", the budget targets and K3's M27 paragraph); M2 (`385d52f`; RULINGS 112 Q3, 117): "Init" without `resizeTo`, as merged. Ledger: `D:/tmp/novel-orch/docs-errata-8/ledger.md` |
+| 37 | 2026-11-03 | RULINGS 113-127 (as merged: M2 `385d52f`, docs-errata-7 `7e74abc`, LFU3 `48bc82a`, D2 `b766a16`, M3c `a6365a8`; LRF running; main `a6365a8`) | Docs lane `docs-errata-8`, group B: "Dependency order" — a marker paragraph and the State column as of `a6365a8` (M2, LFU3, D2 and M3c merged since `3e35a7b`, with SHAs from `git log --first-parent main`; the new row LRF auto-refund, RULINGS 126, added 2026-11-03, running in the server slot; M3s's gate + LRF, its cut after MD1's order in `design-animation`), the lane count (58: 56 merged, 1 running, 1 to go), the launch preference without the merged lanes, the critical path LRF → M3s; "Test strategy": the `memory.spec.ts` row's state and M3c's fourth name, the e2e count (54 names in nine specs). The animation and mechanics lanes are being designed (RULINGS 124) and get rows when adopted. The planned order is otherwise unchanged. STORIES-PLAN revision 19 and META-PLAN revision 17 hold their lines. Ledger: `D:/tmp/novel-orch/docs-errata-8/ledger.md` |
 
 **Revision 1 (2026-10-30)** — what changed, by triage item:
 - **W1** (undecodable payment ACKed and lost): K17 (lenient `PaymentProbe` for the payment subset, 500 only when the
