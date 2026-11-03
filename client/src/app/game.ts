@@ -87,7 +87,7 @@ export type GameDeps = {
   vm: ViewModel;
   screens: Screens;
   /** `perfClass` picks the render resolution (lever F); a facade without it renders as 'AVERAGE' (telegram/perf.ts). */
-  tg: Pick<TelegramClient, 'haptic' | 'setClosingConfirmation' | 'openInvoice'> & Partial<Pick<TelegramClient, 'perfClass'>>;
+  tg: Pick<TelegramClient, 'haptic' | 'setClosingConfirmation' | 'openInvoice' | 'close'> & Partial<Pick<TelegramClient, 'perfClass'>>;
   api: Pick<Endpoints, 'listSaves' | 'createInvoice' | 'getOrder' | 'getEntitlements' | 'getPuzzle' | 'postAttempt'>;
   catalog: ChapterCatalog;
   entitlements: Entitlements;
@@ -318,15 +318,19 @@ type Session = {
   step: RunnerStep | null;
   /** The last line shown: it stays on screen above a choice set. */
   shown: Extract<RunnerStep, { kind: 'line' }> | null;
-  /** The body of the last autosave: "Return to last save" resumes it. */
+  /** The body of the last autosave, or of the save this session last resumed: "Return to last save" resumes it. */
   last: SaveBodyV1 | null;
   /**
    * W1 "Load it": the player chose the other device's autosave. The service's lane is open over their rev from that
    * tap on, so nothing of this session is written until a body loaded from the server has resumed (principle 1).
    */
   adopting: boolean;
-  /** The manual slot whose 409 asked "Overwrite?", with the server's envelope. */
-  conflict: { slot: ManualSlot; current: SaveSummary } | null;
+  /**
+   * D-slot (RULINGS 101): each manual slot's latest 409, with the server's envelope. `asked` is null while its hold
+   * lasts, then the ask's order number: the ask shown is the slot asked first among these (`shownAsk`), so a later ask
+   * never displaces it. A No or an answer applies to its own slot only.
+   */
+  readonly conflicts: Map<ManualSlot, { readonly current: SaveSummary; readonly asked: number | null }>;
   /** The knots of the current chapter whose `preload:<knot>` holder this session requested (F2 steps 3-4). */
   readonly held: Set<KnotName>;
   /** F5's `next:<id>` holder while it is wanted (requested, or its chapter still loading); null once released. */
@@ -366,8 +370,13 @@ export function createGame(deps: GameDeps): Game {
   let sound: AudioManager | null = null;
   let autoTimer: number | null = null;
   let skipTimer: number | null = null;
-  /** A manual save's conflict ask held for CONFLICT_HOLD_MS; cleared when it fires and when the session or the screen goes. */
-  let conflictHold: number | null = null;
+  /**
+   * Each manual slot's conflict ask held for CONFLICT_HOLD_MS; one is cleared when it fires and by its slot's next
+   * answer, No or write, and every one when the session or the screen goes.
+   */
+  const conflictHolds = new Map<ManualSlot, number>();
+  /** The order of the conflict asks: the next ask's number. */
+  let askSeq = 0;
   /** The shown line is fully revealed (its `ondone` came). */
   let revealed = false;
   let paused = false;
@@ -501,11 +510,29 @@ export function createGame(deps: GameDeps): Game {
       skipTimer = null;
     }
   };
-  const clearHold = (): void => {
-    if (conflictHold !== null) {
-      clock.clearTimeout(conflictHold);
-      conflictHold = null;
+  /** One slot's held conflict ask, or with no slot every one. */
+  const clearHold = (slot?: ManualSlot): void => {
+    for (const [held, id] of conflictHolds) {
+      if (slot === undefined || held === slot) {
+        clock.clearTimeout(id);
+        conflictHolds.delete(held);
+      }
     }
+  };
+  /** D-slot: the ask shown is the earliest asked of the slots still asking. */
+  const shownAsk = (s: Session): ManualSlot | null => {
+    let shown: { slot: ManualSlot; asked: number } | null = null;
+    for (const [slot, c] of s.conflicts) {
+      if (c.asked !== null && (shown === null || c.asked < shown.asked)) {
+        shown = { slot, asked: c.asked };
+      }
+    }
+    return shown?.slot ?? null;
+  };
+  /** A slot's conflict is over: its hold and its entry go; no other slot's. */
+  const dropConflict = (s: Session, slot: ManualSlot): void => {
+    clearHold(slot);
+    s.conflicts.delete(slot);
   };
   /** F2 auto: `1200 + 40 × graphemes` ms at normal speed, scaled by the text speed. */
   const autoDelay = (text: string): number => {
@@ -751,10 +778,10 @@ export function createGame(deps: GameDeps): Game {
   };
 
   /**
-   * "Return to last save": the last autosave, one level lower per error in this chapter (D10): the first from its
-   * checkpoint, every later one from the chapter start, so a knot that keeps failing cannot loop. With no autosave in
-   * this session (a new game's first step, a Continue resumed at a line) it exits to the stories (triage r1 M1): the
-   * server's copy stays, and Home's Continue is the retry (RULINGS 93).
+   * "Return to last save": the last autosave or the save this session resumed (LFU1 cut Q3), one level lower per error
+   * in this chapter (D10): the first from its checkpoint, every later one from the chapter start, so a knot that keeps
+   * failing cannot loop. With neither (a new game's first step) it exits to the stories (triage r1 M1): the server's
+   * copy stays, and Home's Continue is the retry (RULINGS 93).
    */
   const returnToSave = async (s: Session): Promise<void> => {
     if (session !== s) {
@@ -901,6 +928,7 @@ export function createGame(deps: GameDeps): Game {
     s.carry = { ...body.chapterStart.carry };
     s.checkpoint = body.checkpoint;
     s.backlog = [...body.backlog];
+    s.last = body; // the server's copy this session now runs from; an autosave during `present` replaces it
     s.at = NO_AT;
     s.step = null;
     s.shown = null;
@@ -1184,7 +1212,7 @@ export function createGame(deps: GameDeps): Game {
   const chapterFailed = (s: Session, e: ChapterLoadError): Result<void, GameError> => {
     if (e.kind === 'session-expired') {
       endSession(s);
-      showNotice({ kind: 'reopen' });
+      showNotice({ kind: 'reopen', onclose: () => tg.close() });
     } else {
       showNotice({ kind: 'error', onaction: () => void game.exitToStories() });
     }
@@ -1328,7 +1356,7 @@ export function createGame(deps: GameDeps): Game {
       shown: null,
       last: null,
       adopting: false,
-      conflict: null,
+      conflicts: new Map(),
       held: new Set(),
       nextTag: null,
       kept: null,
@@ -1495,7 +1523,7 @@ export function createGame(deps: GameDeps): Game {
     }
     if (e?.kind === 'session-expired') {
       endSession(s);
-      showNotice({ kind: 'reopen' });
+      showNotice({ kind: 'reopen', onclose: () => tg.close() });
       return;
     }
     showNotice({ kind: 'error', onaction: () => void game.exitToStories() });
@@ -1520,9 +1548,9 @@ export function createGame(deps: GameDeps): Game {
     clearSkip();
     const resumed = await resumeBody(s, body.value);
     if (resumed.ok && session === s && s.adopting) {
-      // Their save took over. Nothing of this session was written since the choice: the server's copy is this body.
+      // Their save took over. Nothing of this session was written since the choice: the server's copy is this body,
+      // which `resumeBody` recorded as the last save.
       s.adopting = false;
-      s.last = body.value;
     }
   };
 
@@ -1545,27 +1573,32 @@ export function createGame(deps: GameDeps): Game {
     if (session !== s) {
       return;
     }
-    clearHold(); // a newer answer replaces a held ask (critique O3)
+    // A newer answer for this slot replaces its held ask (LFU1 critique O3); another slot's ask stays (RULINGS 101).
+    dropConflict(s, slot);
     if (r.ok) {
-      s.conflict = null;
-      vm.saves = { ...vm.saves, saving: null, conflict: null, failed: null };
+      vm.saves = { ...vm.saves, saving: null, conflict: shownAsk(s), failed: null };
       await refreshSlots(s);
     } else if (r.error.kind === 'conflict') {
-      s.conflict = { slot, current: r.error.current };
+      const current = r.error.current;
+      s.conflicts.set(slot, { current, asked: null });
       const ask = (): void => {
-        conflictHold = null;
-        if (session === s) {
-          vm.saves = { ...vm.saves, saving: null, conflict: slot, failed: null };
+        conflictHolds.delete(slot);
+        if (session !== s || s.conflicts.get(slot)?.current !== current) {
+          return;
         }
+        s.conflicts.set(slot, { current, asked: askSeq++ });
+        // The hold absorbed taps on its own slot only: another slot's write may be in flight.
+        const saving = vm.saves.saving === slot ? null : vm.saves.saving;
+        vm.saves = { ...vm.saves, saving, conflict: shownAsk(s), failed: null };
       };
       const left = tappedAt + CONFLICT_HOLD_MS - clock.now();
       if (left > 0) {
-        conflictHold = clock.setTimeout(ask, left);
+        conflictHolds.set(slot, clock.setTimeout(ask, left));
       } else {
         ask();
       }
     } else {
-      vm.saves = { ...vm.saves, saving: null, failed: slot };
+      vm.saves = { ...vm.saves, saving: null, conflict: shownAsk(s), failed: slot };
     }
   };
 
@@ -1581,7 +1614,10 @@ export function createGame(deps: GameDeps): Game {
     if (!waiting && body === null) {
       return; // at rest: no chapter runs, or the session describes two steps (a resume failed past the swap)
     }
-    vm.saves = { ...vm.saves, saving: slot, conflict: null, failed: null };
+    // This write's answer is the slot's next one, so its earlier ask is over (an overwrite took its envelope first).
+    // Another slot's ask stays shown; its controls are disabled while `saving` names a slot.
+    dropConflict(s, slot);
+    vm.saves = { ...vm.saves, saving: slot, conflict: shownAsk(s), failed: null };
     if (body === null) {
       while (busy !== null && mixes(s)) {
         await busy;
@@ -1591,7 +1627,7 @@ export function createGame(deps: GameDeps): Game {
       }
       body = mixes(s) ? null : bodyOf(s);
       if (body === null) {
-        vm.saves = { ...vm.saves, saving: null };
+        vm.saves = { ...vm.saves, saving: null, conflict: shownAsk(s) };
         return;
       }
     }
@@ -1719,7 +1755,7 @@ export function createGame(deps: GameDeps): Game {
         return;
       }
       clearHold(); // a held ask would show over the fresh screen, whose Yes then finds no conflict
-      s.conflict = null;
+      s.conflicts.clear(); // the fresh screen's slot list is the server's state (LFU1)
       vm.saves = { ...vm.saves, saving: null, conflict: null, failed: null };
       screens.push({ kind: 'saves' });
       await refreshSlots(s);
@@ -1736,18 +1772,23 @@ export function createGame(deps: GameDeps): Game {
     },
     async overwrite(slot) {
       const s = session;
-      const c = s?.conflict ?? null;
-      if (s === null || c === null || c.slot !== slot || vm.saves.saving !== null) {
+      const c = s?.conflicts.get(slot);
+      if (s === null || c === undefined || vm.saves.conflict !== slot || vm.saves.saving !== null) {
         return;
       }
-      await writeManual(s, slot, (w) => s.saves.overwrite(slot, w, c.current));
+      const current = c.current; // taken before the write drops the slot's ask
+      await writeManual(s, slot, (w) => s.saves.overwrite(slot, w, current));
     },
     cancelOverwrite() {
-      clearHold();
-      if (session !== null) {
-        session.conflict = null;
+      // The shown ask's No is that slot's alone (RULINGS 101): the next asked slot shows.
+      const s = session;
+      const slot = vm.saves.conflict;
+      if (s === null || slot === null) {
+        vm.saves = { ...vm.saves, conflict: null };
+        return;
       }
-      vm.saves = { ...vm.saves, conflict: null };
+      dropConflict(s, slot);
+      vm.saves = { ...vm.saves, conflict: shownAsk(s) };
     },
     load(slot) {
       const s = session;

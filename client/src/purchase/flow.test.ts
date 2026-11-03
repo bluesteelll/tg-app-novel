@@ -6,7 +6,7 @@ import type { ApiError, Clock } from '../api/http.ts';
 import type { Result } from '../story/catalog.ts';
 import type { OrderId, ProductId } from '../story/staging.ts';
 import type { InvoiceStatus, TgError } from '../telegram/index.ts';
-import { PAID_WINDOW_MS, PENDING_WINDOW_MS, chapterDelivered, createPurchaseFlow, packDelivered } from './flow.ts';
+import { LIMIT_FALLBACK_S, LIMIT_MAX_S, PAID_WINDOW_MS, PENDING_WINDOW_MS, chapterDelivered, createPurchaseFlow, packDelivered } from './flow.ts';
 import type { IsDelivered, PurchaseFlow, PurchaseState } from './flow.ts';
 
 /** Timers the test advances by hand; promise chains settle between timers, so chained timers fire in order. */
@@ -202,6 +202,60 @@ test('flow: failed invoice ends failed', async () => {
     expect(f.flow.state(), reason).toEqual({ kind: 'failed', reason });
   }
   expect(shop.polls).toEqual([]);
+});
+
+test('flow: a 429 on the invoice waits its Retry-After, then Buy again', async () => {
+  const clock = new FakeClock();
+  const shop = new FakeShop(clock);
+  const limitedBy = (retryAfter: number | null): ApiError => ({ kind: 'http', status: 429, code: 'rate_limited', body: { error: 'rate_limited' }, retryAfter });
+  shop.invoice = async () => ({ ok: false, error: limitedBy(3600) });
+  const tg = new FakeTg('paid');
+  const { flow } = flowOf(shop, tg, clock);
+  flow.buy(CH2);
+  await settle();
+  // LPH Q5: the server's bound on open orders is a state of its own with the wait, not a network failure.
+  expect([flow.state(), shop.invoices, tg.opened, shop.polls, clock.pending()]).toEqual([{ kind: 'limited', retryAfterSecs: 3600 }, 1, 0, [], 1]);
+  // Buy sends nothing while the wait lasts; the wait counts down by the minute it shows.
+  flow.buy(CH2);
+  await settle();
+  expect(shop.invoices).toBe(1);
+  await clock.advance(60_000);
+  expect(flow.state()).toEqual({ kind: 'limited', retryAfterSecs: 3540 });
+  // In the background no timer runs; back, the wait is recomputed from its end, with one timer however often.
+  flow.onDeactivated();
+  expect(clock.pending()).toBe(0);
+  await clock.advance(120_000);
+  flow.onActivated();
+  flow.onActivated();
+  expect([flow.state(), clock.pending()]).toEqual([{ kind: 'limited', retryAfterSecs: 3420 }, 1]);
+  // The wait ends: idle, and nothing is sent on its own (a 429 never retries itself); the next Buy sends.
+  await clock.advance(3_420_000);
+  expect([flow.state(), clock.pending(), shop.invoices]).toEqual([{ kind: 'idle' }, 0, 1]);
+  flow.buy(CH2);
+  await settle();
+  expect([flow.state(), shop.invoices]).toEqual([{ kind: 'limited', retryAfterSecs: 3600 }, 2]);
+  flow.dispose();
+  expect(clock.pending()).toBe(0);
+
+  // No usable Retry-After (an HTTP-date, a missing header) waits the fallback; a forged one is clamped to the window.
+  for (const [retryAfter, secs] of [
+    [null, LIMIT_FALLBACK_S],
+    [99_999, LIMIT_MAX_S],
+    [0, 1],
+  ] as const) {
+    shop.invoice = async () => ({ ok: false, error: limitedBy(retryAfter) });
+    const f = flowOf(shop, new FakeTg('paid'), clock);
+    f.flow.buy(CH2);
+    await settle();
+    expect(f.flow.state(), String(retryAfter)).toEqual({ kind: 'limited', retryAfterSecs: secs });
+    f.flow.dispose();
+  }
+  // A 429 without the bound's code is not the bound.
+  shop.invoice = async () => ({ ok: false, error: { kind: 'http', status: 429, code: 'internal', body: null, retryAfter: 30 } });
+  const other = flowOf(shop, new FakeTg('paid'), clock);
+  other.flow.buy(CH2);
+  await settle();
+  expect([other.flow.state(), clock.pending()]).toEqual([{ kind: 'failed', reason: 'network' }, 0]);
 });
 
 test('flow: window exceeded → delayed', async () => {

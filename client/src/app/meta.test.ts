@@ -437,6 +437,11 @@ test("meta: home card from stats or this session's ending", async () => {
   offline.ctl.boot();
   await flush();
   expect([offline.ctl.hasCard(MANOR), offline.onCards()]).toEqual([false, 0]);
+  // An ending reached and left before the controller could act on it (LMI critique O3): the card shows on Home, and
+  // nothing is asked for (no settle, no card POST).
+  offline.ctl.endingReached(TIDE);
+  await flush();
+  expect([offline.ctl.hasCard(TIDE), offline.onCards(), offline.settles, offline.server.count(CARD_LABEL)]).toEqual([true, 1, [], 0]);
   offline.ctl.dispose();
 });
 
@@ -616,6 +621,28 @@ test('meta: one pack flow per wallet surface', async () => {
   r.ctl.onLifecycle('activated');
   r.ctl.dispose();
   expect(flows.calls).toEqual(['deactivated', 'activated', 'dispose']);
+});
+
+test("meta: a pack's 429 shows the wait and holds Buy", async () => {
+  const r = await booted();
+  r.server.on(INVOICE_LABEL, () => httpError(429, 'rate_limited', 600));
+  r.ctl.buyPack(PACK);
+  await flush();
+  // LPH Q5: the server's bound on open orders shows its wait in whole minutes, once; never the failed-purchase toast.
+  expect([toasts(r), r.vm.meta?.purchase, r.vm.meta?.busy.wallet]).toEqual([
+    [{ key: 'meta.share_wait', message: t('ru', 'meta.share_wait', { minutes: 10 }) }],
+    { kind: 'limited', retryAfterSecs: 600 },
+    true,
+  ]);
+  // Buy sends nothing while the wait lasts, and its minute ticks show nothing more.
+  r.ctl.buyPack(PACK);
+  await flush();
+  r.clock.advance(60_000);
+  expect([r.server.count(INVOICE_LABEL), r.vm.meta?.purchase, toasts(r)]).toEqual([1, { kind: 'limited', retryAfterSecs: 540 }, []]);
+  // The wait ends: Buy again, with nothing sent on its own and no toast.
+  r.clock.advance(540_000);
+  expect([r.server.count(INVOICE_LABEL), r.vm.meta?.purchase, r.vm.meta?.busy.wallet, toasts(r)]).toEqual([1, { kind: 'idle' }, false, []]);
+  r.ctl.dispose();
 });
 
 test('meta: a stuck pack purchase is checked again from the wallet', async () => {
@@ -915,5 +942,31 @@ test('meta: gift outcome closes the dialog or shows a new error', async () => {
   expect(r.vm.meta?.gift).toBeNull();
   expect(r.server.count(WALLET_LABEL)).toBe(before + 1);
   expect(r.vm.meta?.wallet?.balances).toEqual([{ kind: 'hint', balance: 0, debt: 0 }]);
+  r.ctl.dispose();
+});
+
+test("meta: a gift's success closes only its own friend's dialog", async () => {
+  const r = rig();
+  r.server.on(SOCIAL_LABEL, () => okWire(ACCEPTED));
+  r.server.on(WALLET_LABEL, () => walletWire(3));
+  r.ctl.boot();
+  await flush();
+  // Аня's gift is sent and its answer parked; her dialog is cancelled and Ben's opened while it is in flight.
+  r.server.on(GIFT_LABEL, () => okWire(sample('GiftResponse')));
+  r.ctl.openGift(ANYA);
+  await flush();
+  const held = r.server.park(GIFT_LABEL);
+  const sent = r.ctl.gift(ANYA, HINT, 1);
+  await flush();
+  r.ctl.cancelGift();
+  r.ctl.openGift(BEN);
+  await flush();
+  const wallets = r.server.count(WALLET_LABEL);
+  held.release();
+  expect((await sent).ok).toBe(true);
+  await flush();
+  // LMI review r1 M1: Аня's success closes Аня's dialog only; Ben's stays, no longer busy, and the wallet is read once.
+  expect([kinds(r), r.vm.meta?.gift?.friend.handle, r.vm.meta?.gift?.busy]).toEqual([['gift'], BEN, false]);
+  expect(r.server.count(WALLET_LABEL)).toBe(wallets + 1);
   r.ctl.dispose();
 });

@@ -5,12 +5,13 @@ import type { Component } from 'svelte';
 
 import type { Lang } from '../i18n/index.ts';
 import type { Result } from '../story/catalog.ts';
-import type { ItemId } from '../world/types.ts';
+import type { Glyph, ItemId } from '../world/types.ts';
 import type { PuzzleType } from './rules/index.ts';
 
 /**
  * What every type UI renders from. `params` is narrowed by the type's own `PUZZLE_RULES[type].decodeParams`;
- * `answer` is the session's (the UI holds none of its own); `item` names an `order` piece in the UI language.
+ * `answer` is the session's (the UI holds none of its own); `item` names an `order` piece in the UI language, with
+ * its world glyph (K46).
  */
 export type PuzzleUiProps = {
   params: unknown;
@@ -18,7 +19,7 @@ export type PuzzleUiProps = {
   busy: boolean;
   lang: Lang;
   onchange: (a: readonly number[]) => void;
-  item: (id: ItemId) => { name: string } | null;
+  item: (id: ItemId) => { name: string; glyph: Glyph } | null;
 };
 
 /** A type UI's chunk did not load (offline, a replaced deploy); a later call runs `import()` again. */

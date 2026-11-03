@@ -36,6 +36,9 @@ import {
 } from './helpers.ts';
 
 const ru = (key: UiKey, params?: Readonly<Record<string, string | number>>): string => t('ru', key, params);
+/** The props the stage draws now, by id (the debug hook drops a removed prop when its batch starts). */
+const propIds = (page: Page): Promise<string[]> =>
+  page.evaluate(() => ((window as unknown as E2eWindow).__novelDebug?.propRects() ?? []).map((r) => r.prop));
 
 const STORY_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'story');
 const LINE_MS = 30_000;
@@ -133,6 +136,8 @@ test('explore: reload resumes in the same room with items', async ({ page, reque
   await enterManor(page);
   await walk(page, 'hall', 'to_study', 'study', 'to_hall');
   await take(page, 'study', 'medal');
+  // B-001: the taken medal fades out of the picture now, not when the study is entered again.
+  await expect.poll(() => propIds(page), { timeout: 10_000, message: "the taken medal's prop leaves the stage" }).not.toContain('medal_sun');
   const token = await devToken(request, 5003);
   await mock(page, 'minimize'); // `deactivated` writes the autosave (F3)
   await expect
@@ -147,6 +152,7 @@ test('explore: reload resumes in the same room with items', async ({ page, reque
   await expect(hotspot(page, 'study', 'drawer'), "the study's hotspots").toBeVisible({ timeout: LINE_MS });
   await expect(hotspot(page, 'study', 'to_hall')).toBeVisible();
   await expect(hotspot(page, 'study', 'medal'), 'the medal stays taken').toBeHidden();
+  await expect.poll(() => propIds(page), { timeout: 10_000, message: "the taken medal's prop stays off the stage after the resume" }).not.toContain('medal_sun');
   await page.getByRole('button', { name: ru('explore.bar_inventory') }).tap();
   await expect(page.locator('.inventory .name', { hasText: itemName('medal_sun') })).toBeVisible();
 });

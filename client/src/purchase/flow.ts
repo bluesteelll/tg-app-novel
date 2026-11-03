@@ -2,7 +2,9 @@
 // invoice on the server, the facade opens it, and the order is polled. The client never grants (principles 1-2):
 // `openInvoice`'s 'paid' only starts the poll, and `unlocked` comes only from server reads - the polled order `paid`,
 // then `isDelivered`. `tg` is typed to `openInvoice` alone, so no CloudStorage or DeviceStorage value can reach this
-// decision. One invoice creation in flight per flow: a double tap opens one sheet. States only, no player-facing text.
+// decision. One invoice creation in flight per flow: a double tap opens one sheet. The server's 429 on the invoice (its
+// bound on open orders) is a wait of its own that counts down and never retries by itself. States only, no
+// player-facing text.
 import type { Endpoints } from '../api/endpoints.ts';
 import type { CreateInvoiceResponse, OrderResponse } from '../api/generated/api.ts';
 import type { ApiError, Clock } from '../api/http.ts';
@@ -10,10 +12,14 @@ import type { Result } from '../story/catalog.ts';
 import type { OrderId, ProductId } from '../story/staging.ts';
 import type { InvoiceStatus, TelegramClient, TgError } from '../telegram/index.ts';
 
-/** PROTOTYPE-PLAN "Module API", verbatim. */
+/**
+ * PROTOTYPE-PLAN "Module API", plus `limited` (LPH Q5, LFU3 D-429): the server refused the invoice with 429
+ * `rate_limited`; `retryAfterSecs` is the wait left in whole seconds, and the flow is `idle` again at zero.
+ */
 export type PurchaseState =
   | { kind: 'idle' }
   | { kind: 'requesting' }
+  | { kind: 'limited'; retryAfterSecs: number }
   | { kind: 'sheet'; orderId: OrderId }
   | { kind: 'confirming'; orderId: OrderId; since: number }
   | { kind: 'delayed'; orderId: OrderId }
@@ -24,13 +30,13 @@ export type PurchaseState =
 export type IsDelivered = (p: ProductId) => Promise<Result<boolean, ApiError>>;
 
 export interface PurchaseFlow {
-  /** From idle, failed or unlocked; ignored while an invoice is being created, open or confirmed. */
+  /** From idle, failed or unlocked; ignored while an invoice is being created, open or confirmed, and while limited. */
   buy(p: ProductId): void;
   /** "Check again": one order poll from `delayed`, or from `sheet` when `invoice_closed` never came. */
   checkAgain(): void;
-  /** Lifecycle `activated`: polls now (confirming, delayed, sheet). */
+  /** Lifecycle `activated`: polls now (confirming, delayed, sheet); a wait (limited) is recomputed from its end. */
   onActivated(): void;
-  /** Lifecycle `deactivated`: the poll and window timers stop until `onActivated`. */
+  /** Lifecycle `deactivated`: the poll, window and wait timers stop until `onActivated`. */
   onDeactivated(): void;
   state(): PurchaseState;
   /** Timers cleared; late answers dropped; no further `onState`. */
@@ -43,6 +49,13 @@ export const POLL_DELAYS_MS: readonly number[] = [0, 500, 1000, 1500, 2000, 3000
 export const PAID_WINDOW_MS = 30_000;
 /** P7: the same after 'pending' (and after a `checkout` order found from a lost sheet). */
 export const PENDING_WINDOW_MS = 120_000;
+/** D-429: the wait when a 429 carries no usable `Retry-After` (an HTTP-date, a missing header). */
+export const LIMIT_FALLBACK_S = 60;
+/**
+ * D-429: the longest wait taken from a `Retry-After`, the server's open-order window (OPEN_ORDER_WINDOW_SECS): a forged
+ * header cannot arm a longer timer, as saves' RETRY_AFTER_MAX_MS guards theirs.
+ */
+export const LIMIT_MAX_S = 3600;
 
 /** A chapter is delivered when `GET /api/entitlements` lists it owned. */
 export function chapterDelivered(api: Pick<Endpoints, 'getEntitlements'>): IsDelivered {
@@ -81,6 +94,10 @@ export function createPurchaseFlow(deps: {
   let step = 0;
   let pollTimer: number | null = null;
   let windowTimer: number | null = null;
+  /** D-429: the wait's next tick, at the next change of the minutes it shows. */
+  let limitTimer: number | null = null;
+  /** D-429: when the wait ends, on the clock. */
+  let limitUntil = 0;
   /** A poll (the order read and its delivered check) is in flight: at most one. */
   let polling = false;
   let away = false;
@@ -99,12 +116,19 @@ export function createPurchaseFlow(deps: {
       pollTimer = null;
     }
   };
+  const clearLimit = (): void => {
+    if (limitTimer !== null) {
+      clock.clearTimeout(limitTimer);
+      limitTimer = null;
+    }
+  };
   const clearTimers = (): void => {
     cancelPoll();
     if (windowTimer !== null) {
       clock.clearTimeout(windowTimer);
       windowTimer = null;
     }
+    clearLimit();
   };
   const finish = (s: PurchaseState): void => {
     clearTimers();
@@ -123,6 +147,30 @@ export function createPurchaseFlow(deps: {
         }
       },
       Math.max(0, deadline - clock.now()),
+    );
+  }
+
+  /**
+   * D-429: the wait left, from its end, so a late timer is still exact; `idle` at zero (Buy may send again, nothing is
+   * sent here). The next tick is at the next whole-minute change of the shown value; one timer at most.
+   */
+  function tickLimit(): void {
+    clearLimit();
+    const secs = Math.ceil((limitUntil - clock.now()) / 1000);
+    if (secs <= 0) {
+      set({ kind: 'idle' });
+      return;
+    }
+    set({ kind: 'limited', retryAfterSecs: secs });
+    if (away) {
+      return;
+    }
+    limitTimer = clock.setTimeout(
+      () => {
+        limitTimer = null;
+        tickLimit();
+      },
+      (((secs - 1) % 60) + 1) * 1000,
     );
   }
 
@@ -212,6 +260,7 @@ export function createPurchaseFlow(deps: {
         return;
       case 'idle':
       case 'requesting':
+      case 'limited':
       case 'failed':
       case 'unlocked':
         return;
@@ -270,6 +319,13 @@ export function createPurchaseFlow(deps: {
         (d) => owned(mine, p, d),
         (x: unknown) => owned(mine, p, asNetwork(x)),
       );
+      return;
+    }
+    if (e.kind === 'http' && e.code === 'rate_limited') {
+      // LPH Q5: the server's bound on open orders; its wait, clamped, shows as its own state (D-429).
+      const secs = Math.min(LIMIT_MAX_S, Math.max(1, e.retryAfter ?? LIMIT_FALLBACK_S));
+      limitUntil = clock.now() + secs * 1000;
+      tickLimit();
       return;
     }
     const code = e.kind === 'http' ? e.code : null;
@@ -360,6 +416,9 @@ export function createPurchaseFlow(deps: {
       }
       if (state.kind === 'confirming' || state.kind === 'delayed' || state.kind === 'sheet') {
         poll('activated');
+      }
+      if (state.kind === 'limited') {
+        tickLimit();
       }
     },
     onDeactivated() {
