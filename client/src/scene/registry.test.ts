@@ -767,3 +767,18 @@ test('registry: a revive with no stale record settles done at once', async () =>
   expect(settled).toEqual(['visible:done', 'all:done']);
   expect(h.revives).toEqual([]);
 });
+
+test('registry: a revive that settles in time leaves no deadline timer pending', async () => {
+  vi.useFakeTimers();
+  try {
+    const h = harness();
+    await liveBgs(h, ['p'], 'preload');
+    await liveBgs(h, ['v']);
+    const r = h.registry.revive(2, noAbort());
+    expect(await r.visible).toBe('done');
+    expect(await r.all).toBe('done');
+    expect(vi.getTimerCount(), 'a settled revive must not leave a 3000 ms deadline timer pending').toBe(0);
+  } finally {
+    vi.useRealTimers();
+  }
+});
