@@ -3,7 +3,7 @@ import { expect, test } from 'vitest';
 import type { AssetEntry, AssetManifest, ImageEntry, Result } from '../story/catalog.ts';
 import type { AssetId, ChapterId } from '../story/staging.ts';
 import { PRELOAD_IN_FLIGHT, createAssetScheduler } from './preload.ts';
-import { createAssetRegistry } from './registry.ts';
+import { HARD_CAP_BYTES, createAssetRegistry } from './registry.ts';
 import type { AssetError, Decoded, LoadError, LoadImage } from './registry.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -49,8 +49,14 @@ const ch4 = manifest('ch4', {
   'char/keeper/neutral': image('keeper_neutral', 512, 512),
 });
 const LAMP = ['bg/lamp', 'char/keeper/smile', 'char/keeper/worried', 'char/keeper/neutral'].map(asId);
+// ch5: three 2048x2048 backgrounds; one live and two loading exceed HARD_CAP_BYTES, so the third admission evicts.
+const ch5 = manifest('ch5', {
+  'bg/w1': image('w1', 2048, 2048),
+  'bg/w2': image('w2', 2048, 2048),
+  'bg/w3': image('w3', 2048, 2048),
+});
 const URLS = new Map<string, ImageEntry>();
-for (const m of [ch1, ch2, ch3, ch4]) {
+for (const m of [ch1, ch2, ch3, ch4, ch5]) {
   for (const e of Object.values(m.assets)) {
     if (e.kind === 'image') {
       URLS.set(e.avif.url, e);
@@ -321,4 +327,56 @@ test('preload: a released tag aborts its joins', async () => {
   await flush();
   // room:r1's flight reports the failure once; the released join reports nothing.
   expect(h.errors).toEqual([{ kind: 'fetch', id: 'prop/a', error: { kind: 'http', status: 500 } }]);
+});
+
+test('preload: a join released and preloaded again in one turn holds again', async () => {
+  const h = harness();
+  h.s.setChapter(ch1);
+  const knot = LAMP.slice(0, 3);
+  h.s.preload('next:ch4', knot, ch4);
+  await flush();
+  expect(h.registry.stats().live).toBe(3);
+  // Joined, released and joined again before any join settles: a released join must not shadow the new one.
+  h.s.preload('preload:k', knot, ch4);
+  h.s.releasePreload('preload:k');
+  h.s.preload('preload:k', knot, ch4);
+  h.registry.releaseHolder('next:ch4');
+  expect(h.registry.stats().live, 'the second preload of the tag must hold the records').toBe(3);
+  expect(knot.map((id) => h.releasedOf(ch4, id))).toEqual([0, 0, 0]);
+  h.s.releasePreload('preload:k');
+  expect(knot.map((id) => h.releasedOf(ch4, id))).toEqual([1, 1, 1]);
+  expect(h.errors).toEqual([]);
+});
+
+test('preload: a join holder is evicted by a visible load over the hard cap', async () => {
+  const h = harness();
+  h.s.setChapter(ch5);
+  h.s.preload('room:r1', [asId('bg/w1')]);
+  await flush();
+  expect(h.registry.stats().live).toBe(1);
+  expect(3 * h.registry.stats().bytes, 'fixture shape: three ch5 backgrounds exceed the hard cap').toBeGreaterThan(HARD_CAP_BYTES);
+  // A join is a preload-priority holder (cut D2): it pins nothing against a visible load.
+  h.s.preload('preload:k', [asId('bg/w1')]);
+  await flush();
+  const r = await h.s.ensure(['bg/w2', 'bg/w3'].map(asId), live());
+  expect(r, 'the visible batch is admitted after evicting the join').toEqual({ ok: true, value: undefined });
+  expect(h.registry.stats().overCap).toBe(0);
+  expect(h.releasedOf(ch5, 'bg/w1')).toBe(1);
+});
+
+test('preload: a repeated preload while its join is outstanding adds no second join', async () => {
+  const h = harness('deferred');
+  h.s.setChapter(ch1);
+  h.s.preload('room:r1', [asId('prop/a')]);
+  h.s.preload('preload:k1', [asId('prop/a')]);
+  h.s.preload('preload:k1', [asId('prop/a')]);
+  expect(h.calls.length).toBe(1);
+  const a = h.calls[0];
+  if (a === undefined) {
+    throw new Error('invariant: the fixture started a load');
+  }
+  a.done = true;
+  a.resolve({ ok: false, error: { kind: 'fetch', error: { kind: 'http', status: 500 } } });
+  await flush();
+  expect(h.errors.length, 'one report per tag: the flight of room:r1 and the single join of preload:k1').toBe(2);
 });
