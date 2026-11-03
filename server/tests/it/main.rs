@@ -790,6 +790,36 @@ fn build_id_comes_from_static_dir() {
             failures.push(format!("check, {case}: expected {want}.., got {got}"));
         }
     }
+    // The served id is the file's: what every `/api` answer names, and what `server serve` logs before it opens the
+    // database (the deploy's check, LBI D8).
+    let site = root.join("site0");
+    let named = runtime.block_on(async {
+        let (st, _db) = common::test_state().await;
+        let dir = static_files::check(&site, &st.cfg.content_dir)
+            .await
+            .unwrap();
+        let app = server::app(st.clone(), Some(&dir));
+        let reply = call_app(
+            &app,
+            Request::get("/api/health").body(Body::empty()).unwrap(),
+        )
+        .await;
+        build_id_of(&reply)
+    });
+    if named.as_deref() != Some("fedcba9876543210") {
+        failures.push(format!(
+            "GET /api/health: expected x-build-id fedcba9876543210, got {named:?}"
+        ));
+    }
+    let log = serve_log(&site, &content);
+    let checked = line_with(&log, &["static dir checked", "build_id=fedcba9876543210"]);
+    let opening = line_with(&log, &["opening database"]);
+    if !matches!((checked, opening), (Some(c), Some(o)) if c < o) {
+        failures.push(format!(
+            "serve: expected `static dir checked build_id=fedcba9876543210` before `opening database`, got:\n{}",
+            log.join("\n")
+        ));
+    }
     report(&failures);
 }
 
@@ -971,6 +1001,132 @@ async fn call_app(app: &axum::Router, req: Request<Body>) -> common::Reply {
         headers: parts.headers,
         body: body.collect().await.unwrap().to_bytes(),
     }
+}
+
+/// A reply's `x-build-id`, as text.
+fn build_id_of(reply: &common::Reply) -> Option<String> {
+    reply
+        .headers
+        .get("x-build-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned)
+}
+
+/// LBI D3: with a served `STATIC_DIR`, every response of every `/api` route names its build id (one layer over
+/// `api::router`, so no route can miss it): each route of `routes()` and `legal::routes()` unauthenticated, as it
+/// answers (200, 400, 401, 404), a 405 and the body limit's 413 included. The page and the webhook (outside `/api`)
+/// carry none, nor does an app without a `STATIC_DIR` (tests, server-dev).
+#[tokio::test]
+async fn api_responses_carry_the_build_id() {
+    let root = scratch_dir("static-build-header");
+    let site = root.join("site");
+    std::fs::create_dir_all(&site).unwrap();
+    std::fs::write(site.join("index.html"), "<!doctype html>").unwrap();
+    write_build_id(&site);
+    let (st, _db) = common::test_state().await;
+    let dir = static_files::check(&site, &st.cfg.content_dir)
+        .await
+        .unwrap();
+    let app = server::app(st.clone(), Some(&dir));
+    let mut failures = Vec::new();
+    let routes = [
+        ("GET", "/api/health"),
+        ("POST", "/api/auth"),
+        ("GET", "/api/entitlements"),
+        ("GET", "/api/chapters/ch2"),
+        ("GET", "/api/assets/x.avif"),
+        ("GET", "/api/saves"),
+        ("GET", "/api/saves/manor/auto"),
+        ("PUT", "/api/saves/manor/auto"),
+        ("GET", "/api/puzzles/p1"),
+        ("POST", "/api/puzzles/p1/attempts"),
+        ("POST", "/api/puzzles/p1/hints/1"),
+        ("POST", "/api/invoices"),
+        ("GET", "/api/orders/o1"),
+        ("GET", "/api/stats"),
+        ("POST", "/api/stats/events"),
+        ("POST", "/api/stories/manor/card"),
+        ("GET", "/api/wallet"),
+        ("POST", "/api/gifts"),
+        ("GET", "/api/invites/abc"),
+        ("POST", "/api/invites/abc/request"),
+        ("GET", "/api/social"),
+        ("POST", "/api/friends/requests/h1/accept"),
+        ("DELETE", "/api/friends/h1"),
+        ("GET", "/api/friends/h1/profile"),
+        ("POST", "/api/invite/rotate"),
+        ("PUT", "/api/consents/friends_profile"),
+        ("POST", "/api/share"),
+        ("GET", "/api/privacy"),
+    ];
+    let mut cases: Vec<(String, Request<Body>, Option<u16>)> = routes
+        .iter()
+        .map(|(method, path)| {
+            let req = Request::builder()
+                .method(*method)
+                .uri(*path)
+                .body(Body::empty())
+                .unwrap();
+            (format!("{method} {path}"), req, None)
+        })
+        .collect();
+    cases.push((
+        "DELETE /api/health".to_owned(),
+        Request::delete("/api/health").body(Body::empty()).unwrap(),
+        Some(405),
+    ));
+    cases.push((
+        "POST /api/auth, 17 KiB".to_owned(),
+        Request::post("/api/auth")
+            .header("content-type", "application/json")
+            .body(Body::from(vec![b' '; 17 * 1024]))
+            .unwrap(),
+        Some(413),
+    ));
+    for (case, req, status) in cases {
+        let reply = call_app(&app, req).await;
+        if status.is_some_and(|want| reply.status.as_u16() != want) {
+            failures.push(format!(
+                "{case}: expected {status:?}, got {}",
+                reply.status.as_u16()
+            ));
+        }
+        if build_id_of(&reply).as_deref() != Some(SITE_BUILD_ID) {
+            failures.push(format!(
+                "{case} ({}): expected x-build-id {SITE_BUILD_ID}, got {:?}",
+                reply.status.as_u16(),
+                build_id_of(&reply)
+            ));
+        }
+    }
+    for (case, app, req) in [
+        (
+            "GET / (the page)",
+            &app,
+            Request::get("/").body(Body::empty()).unwrap(),
+        ),
+        (
+            "POST /telegram/webhook",
+            &app,
+            Request::post("/telegram/webhook")
+                .body(Body::empty())
+                .unwrap(),
+        ),
+        (
+            "GET /api/health without a STATIC_DIR",
+            &server::build_router(st.clone()),
+            Request::get("/api/health").body(Body::empty()).unwrap(),
+        ),
+    ] {
+        let reply = call_app(app, req).await;
+        if let Some(id) = build_id_of(&reply) {
+            failures.push(format!(
+                "{case} ({}): expected no x-build-id, got {id}",
+                reply.status.as_u16()
+            ));
+        }
+    }
+    report(&failures);
 }
 
 /// The client next to the API: `/` is `index.html`, revalidated (`no-cache`); a found `/assets/*` file is cached for
