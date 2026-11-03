@@ -20,11 +20,12 @@ use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::extract::rejection::JsonRejection;
 use axum::http::header::CACHE_CONTROL;
-use axum::http::{HeaderValue, StatusCode};
+use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::routing::{delete, get, post, put};
 use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::AppState;
+use crate::api::static_files::{BUILD_ID_HEADER, BuildId};
 use crate::error::ApiError;
 
 /// The body limit of every `/api` route that sets none of its own (PP "HTTP API": saves raise theirs to 300 KB).
@@ -34,17 +35,27 @@ pub const DEFAULT_BODY_LIMIT: usize = 16 * 1024;
 /// envelope and string escapes.
 pub const SAVE_REQUEST_LIMIT: usize = 300 * 1024;
 
-/// The `/api` router: bodies up to [`DEFAULT_BODY_LIMIT`] (axum's own default is 2 MB), and `Cache-Control:
-/// no-store` on every response unless a route set its own (paid content's `private, no-store`).
-pub fn router() -> Router<AppState> {
+/// The `/api` router: bodies up to [`DEFAULT_BODY_LIMIT`] (axum's own default is 2 MB), `Cache-Control: no-store` on
+/// every response unless a route set its own (paid content's `private, no-store`), and with `build_id` (the served
+/// `STATIC_DIR`'s) `x-build-id` on every response of every route, its 4xx, 405 and 413 included (LBI D3): an open page
+/// of another build learns of the deploy from whichever call it makes next. An unknown `/api/*` path is answered
+/// outside this router (no route matched), without it.
+pub fn router(build_id: Option<&BuildId>) -> Router<AppState> {
     // `Router::layer` wraps only the routes that exist when it is called, so routes are added in `routes()` and the
     // layers are applied here, after all of them.
-    routes()
+    let api = routes()
         .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT))
         .layer(SetResponseHeaderLayer::if_not_present(
             CACHE_CONTROL,
             HeaderValue::from_static("no-store"),
-        ))
+        ));
+    match build_id {
+        Some(id) => api.layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static(BUILD_ID_HEADER),
+            id.header_value(),
+        )),
+        None => api,
+    }
 }
 
 /// Every `/api` route. Add new routes here, never after the layer in `router()`.

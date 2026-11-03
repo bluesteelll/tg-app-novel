@@ -6,7 +6,7 @@ import { decodeAttemptResponse, decodeEntitlementsResponse } from './decode.ts';
 import type { DecodedDto } from './decode.ts';
 import { createEndpoints, puzzleId } from './endpoints.ts';
 import samplesText from './fixtures/dto-samples.json?raw';
-import { createHttp } from './http.ts';
+import { createHttp, skewOf } from './http.ts';
 import type { ApiError, Clock, FetchFn } from './http.ts';
 import { langOfTag } from './session.ts';
 
@@ -472,4 +472,112 @@ test('endpoints: routes carry story, slot and lang', async () => {
   expect(await api.getPuzzle(drawer, 'en', { signal: gone })).toEqual({ ok: false, error: { kind: 'aborted' } });
   expect(await api.postAttempt(drawer, [4], { signal: gone })).toEqual({ ok: false, error: { kind: 'aborted' } });
   expect(srv.seen).toHaveLength(before);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// LBI D4: the build skew, read from every response's `x-build-id` before its body
+
+/** A 200 entitlements answer naming build `id`, or no build. */
+const servedBy = (id: string | null): Response => json(200, entitlements, id === null ? {} : { 'x-build-id': id });
+
+test('http: a response from another build reports the skew once', async () => {
+  const srv = fakeServer(() => servedBy('b'));
+  const http = createHttp({ initData: RAW, clock: new FakeClock(), fetch: srv.fetch, buildId: 'a' });
+  const seen: string[] = [];
+  http.onSkew((served) => seen.push(served));
+  expect(http.skew()).toBeNull();
+  await http.request(GET_ENTITLEMENTS, decodeEntitlementsResponse);
+  await http.request(GET_ENTITLEMENTS, decodeEntitlementsResponse);
+  expect(seen).toEqual(['b']);
+  expect(http.skew()).toBe('b');
+  // An unsubscribed listener hears nothing more.
+  const off = http.onSkew((served) => seen.push(`late:${served}`));
+  off();
+  await http.request(GET_ENTITLEMENTS, decodeEntitlementsResponse);
+  expect(seen).toEqual(['b']);
+});
+
+test('http: the same build, no header or no own id is no skew', async () => {
+  expect(skewOf('a', 'b')).toBe('b');
+  for (const [own, served] of [
+    ['a', 'a'],
+    ['a', null],
+    [null, 'b'],
+    [null, null],
+  ] as const) {
+    expect(skewOf(own, served), `${own} vs ${served}`).toBeNull();
+    const srv = fakeServer(() => servedBy(served));
+    const http = createHttp({ initData: RAW, clock: new FakeClock(), fetch: srv.fetch, buildId: own });
+    const seen: string[] = [];
+    http.onSkew((s) => seen.push(s));
+    expect(await http.request(GET_ENTITLEMENTS, decodeEntitlementsResponse), `${own} vs ${served}`).toEqual({ ok: true, value: entitlements });
+    expect([http.skew(), seen], `${own} vs ${served}`).toEqual([null, []]);
+  }
+  // No buildId given: the bundle's own, which vitest defines as null (vite.config.ts), so nothing is a skew.
+  const srv = fakeServer(() => servedBy('b'));
+  const http = createHttp({ initData: RAW, clock: new FakeClock(), fetch: srv.fetch });
+  await http.request(GET_ENTITLEMENTS, decodeEntitlementsResponse);
+  expect(http.skew()).toBeNull();
+});
+
+test('http: a third build id reports again', async () => {
+  let id = 'b';
+  const srv = fakeServer(() => servedBy(id));
+  const http = createHttp({ initData: RAW, clock: new FakeClock(), fetch: srv.fetch, buildId: 'a' });
+  const seen: string[] = [];
+  http.onSkew((served) => seen.push(served));
+  await http.request(GET_ENTITLEMENTS, decodeEntitlementsResponse);
+  id = 'c'; // a second deploy while the page is still open
+  await http.request(GET_ENTITLEMENTS, decodeEntitlementsResponse);
+  expect([seen, http.skew()]).toEqual([['b', 'c'], 'c']);
+  id = 'a'; // a rollback to this page's build
+  await http.request(GET_ENTITLEMENTS, decodeEntitlementsResponse);
+  expect([seen, http.skew()]).toEqual([['b', 'c'], null]);
+});
+
+test('http: the auth exchange and asset fetches are checked', async () => {
+  const token = { token: 'tok-1', expiresAt: 1800001800, user: { id: 1001, firstName: 'Аня', languageCode: 'ru' } };
+  // The exchange alone names the build.
+  const authed = fakeServer(() => servedBy(null), () => json(200, token, { 'x-build-id': 'b' }));
+  const http = createHttp({ initData: RAW, clock: new FakeClock(), fetch: authed.fetch, buildId: 'a' });
+  const seen: string[] = [];
+  http.onSkew((served) => seen.push(served));
+  expect((await http.auth()).ok).toBe(true);
+  expect([seen, http.skew()]).toEqual([['b'], 'b']);
+  // A gated asset's blob names it; a static file names no build and changes nothing.
+  const bytes = new Uint8Array([1, 2, 3]);
+  const assets = fakeServer((s) =>
+    s.url.startsWith('/api/') ? new Response(bytes, { status: 200, headers: { 'x-build-id': 'c' } }) : new Response(bytes, { status: 200 }),
+  );
+  const http2 = createHttp({ initData: RAW, clock: new FakeClock(), fetch: assets.fetch, buildId: 'a' });
+  const seen2: string[] = [];
+  http2.onSkew((served) => seen2.push(served));
+  const signal = new AbortController().signal;
+  expect((await http2.fetchAsset('/assets/bg-room-0123abcd.avif', signal)).ok).toBe(true);
+  expect([seen2, http2.skew()]).toEqual([[], null]);
+  expect((await http2.fetchAsset('/api/assets/bg-hall-0123abcd.avif', signal)).ok).toBe(true);
+  expect([seen2, http2.skew()]).toEqual([['c'], 'c']);
+  expect((await http2.fetchAsset('/assets/bg-room-0123abcd.avif', signal)).ok).toBe(true);
+  expect([seen2, http2.skew()]).toEqual([['c'], 'c']);
+});
+
+test('http: a skewed response keeps its own result', async () => {
+  let answer: Response = servedBy('b');
+  const srv = fakeServer(() => answer);
+  const http = createHttp({ initData: RAW, clock: new FakeClock(), fetch: srv.fetch, buildId: 'a' });
+  const seen: string[] = [];
+  http.onSkew((served) => seen.push(served));
+  // A value decodes as ever.
+  expect(await http.request(GET_ENTITLEMENTS, decodeEntitlementsResponse)).toEqual({ ok: true, value: entitlements });
+  // A body the old decoder refuses stays a decode error: the recovery replaces the screen later, not this result.
+  answer = json(200, { products: [{ productId: 'chapter:ch2', half: true }] }, { 'x-build-id': 'b' });
+  const refused = await http.request(GET_ENTITLEMENTS, decodeEntitlementsResponse);
+  expect(refused.ok ? null : refused.error.kind).toBe('decode');
+  // An error stays the server's error.
+  answer = json(403, { error: 'not_entitled' }, { 'x-build-id': 'b' });
+  expect(await http.request(GET_ENTITLEMENTS, decodeEntitlementsResponse)).toEqual({
+    ok: false,
+    error: { kind: 'http', status: 403, code: 'not_entitled', body: { error: 'not_entitled' }, retryAfter: null },
+  });
+  expect([seen, http.skew()]).toEqual([['b'], 'b']);
 });

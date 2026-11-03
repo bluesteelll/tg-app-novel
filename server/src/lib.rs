@@ -24,6 +24,7 @@ use axum::routing::post;
 
 use crate::api::legal::{Policy, PolicyError};
 use crate::api::share::{RateWindow, SHARE_WINDOW_SECS, SHARES_PER_HOUR};
+use crate::api::static_files::{BuildId, StaticDir};
 use crate::auth::Keys;
 use crate::catalog::{CATALOG_JSON, Catalog};
 use crate::clock::{Clock, SystemClock};
@@ -128,11 +129,26 @@ pub enum StartupError {
     Privacy(#[from] PolicyError),
 }
 
-/// The production routes: `/api`, and Telegram's webhook with its own 1 MB body limit (outside `/api`, so none of
-/// its layers apply). Dev-only routes live in `server-dev` and are never routable here.
+/// The production routes without a served client (tests, `server-dev`): `/api` with no build id, and Telegram's
+/// webhook. Dev-only routes live in `server-dev` and are never routable here.
 pub fn build_router(state: AppState) -> Router {
+    routes(state, None)
+}
+
+/// The production app (`server serve`): the routes, every `/api` response naming `static_dir`'s build id, then the
+/// built client of `static_dir` behind them ([`api::static_files::with_static`]); without one, [`build_router`].
+pub fn app(state: AppState, static_dir: Option<&StaticDir>) -> Router {
+    match static_dir {
+        Some(dir) => api::static_files::with_static(routes(state, Some(dir.build_id())), dir),
+        None => build_router(state),
+    }
+}
+
+/// `/api` (with `build_id`'s header when given), and Telegram's webhook with its own 1 MB body limit (outside `/api`,
+/// so none of its layers apply).
+fn routes(state: AppState, build_id: Option<&BuildId>) -> Router {
     Router::new()
-        .nest("/api", api::router())
+        .nest("/api", api::router(build_id))
         .route(
             "/telegram/webhook",
             post(telegram::webhook::webhook)

@@ -443,6 +443,10 @@ export function startApp(tg: TelegramClient): AppHandle {
       });
       made.game.attachMeta(gate.port); // before the game is published, so every session runs attached
       game = made.game;
+      const served = http.skew(); // LBI D5: a skew the boot reads saw before the Game existed
+      if (served !== null) {
+        made.game.skewed(served, page);
+      }
       vm.ui = made.ui;
       return made.game;
     });
@@ -603,6 +607,21 @@ export function startApp(tg: TelegramClient): AppHandle {
   subscriptions.push(http.onSessionExpired(() => showNotice({ kind: 'reopen', onclose: () => tg.close() })));
   window.addEventListener('pagehide', onPageHide);
   subscriptions.push(() => window.removeEventListener('pagehide', onPageHide));
+  // LBI D5/D6: the Game's reload port. A hash-only `replace` navigates within the document; the reload then loads the
+  // new build with the latch in the fragment. Read by `engineOf`'s closure, which runs after this block.
+  const page = {
+    href: (): string => location.href,
+    reload: (url: string): void => {
+      location.replace(url);
+      location.reload();
+    },
+  };
+  subscriptions.push(http.onSkew((served) => game?.skewed(served, page)));
+  // LBI D4: a lazy chunk a deploy removed carries no build header; the probe's answer does. Never `preventDefault`:
+  // the failed import keeps today's error state until the recovery replaces the screen.
+  const probe = (): void => void http.fetchAsset('/api/health', new AbortController().signal);
+  window.addEventListener('vite:preloadError', probe);
+  subscriptions.push(() => window.removeEventListener('vite:preloadError', probe));
 
   if (!tg.inTelegram) {
     // F1 step 1: opened outside Telegram (or by a reply-keyboard button): nothing to sign in with.
