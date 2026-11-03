@@ -1,10 +1,11 @@
 // The texture registry (PROTOTYPE-PLAN K4, K5): one entry per asset id with a set of holders, destroyed when the set
 // empties; admission under the 32 MiB steady (preload) and 48 MiB hard (visible) caps, counting the decoded bytes and
-// the kept encoded file of every record, in flight included; the AVIF / WebP variant fixed at creation; after a GPU
+// the kept encoded file of every record, in flight included; the AVIF / WebP variant fixed at creation, and the size
+// tier (MEMORY-PLAN 4.C: an entry's half file on a LOW phone) fixed at creation until a one-way demotion; after a GPU
 // context change, the revive that brings every live texture to the current renderer (MEMORY-PLAN M2, 4.A, section 8).
 // Generic over the texture type, so it holds no Pixi value and is tested in node over a fake loader;
 // `scene/loader.ts` is the real `LoadImage`.
-import type { AssetFetchError, AssetRef, ImageEntry, Result } from '../story/catalog.ts';
+import type { AssetFetchError, AssetRef, ImageEntry, ImageFile, Result, SizeTier } from '../story/catalog.ts';
 import type { AssetId } from '../story/staging.ts';
 import { textureGeometry } from './layout.ts';
 import type { TextureGeometry } from './layout.ts';
@@ -108,6 +109,11 @@ export interface AssetRegistry<T> {
    * fails by an abort, and each pass not yet settled settles `'aborted'` then. Each pass settles exactly once.
    */
   revive(gen: number, signal: AbortSignal): { visible: Promise<ReviveEnd>; all: Promise<ReviveEnd> };
+  /**
+   * MEMORY-PLAN 4.C, the one-way demotion: every record started from now on loads its entry's full file. Live and
+   * in-flight records keep the file they started with until they end; the layout does not depend on the tier (I4).
+   */
+  demote(): void;
   stats(): RegistryStats;
   /** Releases every entry, aborting loads in flight and a running revive; later calls are no-ops. */
   destroy(): void;
@@ -116,9 +122,11 @@ export interface AssetRegistry<T> {
 type Rec<T> = {
   readonly id: AssetId;
   readonly entry: ImageEntry;
-  /** The file of the session's variant: what the load fetches and the admission reserves. */
+  /** The file of the registry's tier when the record started (the entry's half, or the entry itself): what it counts. */
+  readonly file: ImageFile;
+  /** `file` in the session's variant: what the load fetches and the admission reserves. */
   readonly ref: AssetRef;
-  /** The entry's texture geometry, computed once when the record starts. */
+  /** The file's texture geometry (its tier's resolution on the entry's canvas), computed once when the record starts. */
   readonly geometry: TextureGeometry;
   readonly holders: Map<string, Priority>;
   readonly controller: AbortController;
@@ -158,10 +166,16 @@ function deadline(): { late: Promise<'late'>; clear(): void } {
   return { late, clear: () => clearTimeout(timer) };
 }
 
-export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avif' | 'webp' }): AssetRegistry<T> {
+/**
+ * `tier` is required (critique_r2 W6): a caller that forgets it would load the full tier silently. `'half'` loads each
+ * entry's half file where it has one (MEMORY-PLAN 4.C), until `demote()`.
+ */
+export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avif' | 'webp'; tier: SizeTier }): AssetRegistry<T> {
   // Every record in the map is pending or live and counts its decodedBytes; a record leaves the map exactly once,
   // so a reservation is returned exactly once whatever order abort, release and a late settle come in.
   const records = new Map<AssetId, Rec<T>>();
+  /** The tier of records started from now on; only `demote()` changes it, to 'full'. */
+  let tier = deps.tier;
   let overCap = 0;
   let keptMismatch = 0;
   let reviveFailed = 0;
@@ -171,12 +185,12 @@ export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avi
   let reviving: { abort(): void } | null = null;
   let destroyed = false;
 
-  const refOf = (entry: ImageEntry): AssetRef => (deps.variant === 'avif' ? entry.avif : entry.webp);
+  const refOf = (file: ImageFile): AssetRef => (deps.variant === 'avif' ? file.avif : file.webp);
   /** A pending record reserves the manifest's file; a live one counts the file its loader kept, at its real size. */
   const counted = (): number => {
     let bytes = 0;
     for (const rec of records.values()) {
-      bytes += rec.entry.decodedBytes + (rec.decoded === null ? rec.ref.bytes : rec.decoded.keptBytes);
+      bytes += rec.file.decodedBytes + (rec.decoded === null ? rec.ref.bytes : rec.decoded.keptBytes);
     }
     return bytes;
   };
@@ -258,10 +272,10 @@ export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avi
       return;
     }
     const d = r.value;
-    if (d.w !== rec.entry.w || d.h !== rec.entry.h) {
+    if (d.w !== rec.file.w || d.h !== rec.file.h) {
       // The caps counted the manifest's w × h × 4; a different decode would make them a fiction.
       d.release();
-      kill(rec, { kind: 'decode', id: rec.id, detail: `decoded ${d.w}x${d.h}, manifest ${rec.entry.w}x${rec.entry.h}` });
+      kill(rec, { kind: 'decode', id: rec.id, detail: `decoded ${d.w}x${d.h}, manifest ${rec.file.w}x${rec.file.h}` });
       return;
     }
     rec.state = 'live';
@@ -274,7 +288,7 @@ export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avi
     rec.settle({ ok: true, value: rec.handle });
   };
 
-  const start = (id: AssetId, entry: ImageEntry, ref: AssetRef, holder: string, priority: Priority): Rec<T> => {
+  const start = (id: AssetId, entry: ImageEntry, file: ImageFile, ref: AssetRef, holder: string, priority: Priority): Rec<T> => {
     let settle: (r: Result<TextureHandle<T>, AssetError>) => void = () => {};
     const outcome = new Promise<Result<TextureHandle<T>, AssetError>>((resolve) => {
       settle = resolve;
@@ -282,8 +296,9 @@ export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avi
     const rec: Rec<T> = {
       id,
       entry,
+      file,
       ref,
-      geometry: textureGeometry(entry, 'full'),
+      geometry: textureGeometry(entry, file === entry ? 'full' : 'half'),
       holders: new Map([[holder, priority]]),
       controller: new AbortController(),
       outcome,
@@ -468,12 +483,14 @@ export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avi
       if (entry.w > MAX_TEXTURE_PX || entry.h > MAX_TEXTURE_PX) {
         return Promise.resolve(fail({ kind: 'too-large', id, w: entry.w, h: entry.h }));
       }
-      const ref = refOf(entry);
-      const refused = admit(id, entry.decodedBytes + ref.bytes, o.priority);
+      // The record's file is resolved once, here: a demotion later never moves a record that has started.
+      const file = tier === 'half' && entry.half !== undefined ? entry.half : entry;
+      const ref = refOf(file);
+      const refused = admit(id, file.decodedBytes + ref.bytes, o.priority);
       if (refused !== null) {
         return Promise.resolve(fail(refused));
       }
-      return waitFor(start(id, entry, ref, holder, o.priority), holder, o.signal);
+      return waitFor(start(id, entry, file, ref, holder, o.priority), holder, o.signal);
     },
     release(id, holder) {
       const rec = records.get(id);
@@ -552,6 +569,9 @@ export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avi
         },
       );
       return { visible, all };
+    },
+    demote() {
+      tier = 'full';
     },
     stats() {
       let live = 0;

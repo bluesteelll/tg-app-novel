@@ -93,7 +93,7 @@ function harness(mode: 'auto' | 'deferred' = 'auto') {
         succeed(call);
       }
     });
-  const registry = createAssetRegistry<Tex>({ load, variant: 'avif' });
+  const registry = createAssetRegistry<Tex>({ load, variant: 'avif', tier: 'full' });
   const errors: AssetError[] = [];
   const s = createAssetScheduler({
     registry,

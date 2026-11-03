@@ -1,6 +1,6 @@
 import { expect, test, vi } from 'vitest';
 
-import type { ImageEntry, Result, Trim } from '../story/catalog.ts';
+import type { HalfFile, ImageEntry, Result, SizeTier, Trim } from '../story/catalog.ts';
 import type { AssetId } from '../story/staging.ts';
 import type { TextureGeometry } from './layout.ts';
 import { createAssetRegistry } from './registry.ts';
@@ -41,7 +41,7 @@ const image = (name: string, w: number, h: number, trim?: Trim): ImageEntry => (
 const bg = (name: string): ImageEntry => image(name, 1080, 2048);
 const prop = (name: string): ImageEntry => image(name, 512, 512);
 
-function harness(variant: 'avif' | 'webp' = 'avif') {
+function harness(variant: 'avif' | 'webp' = 'avif', tier: SizeTier = 'full') {
   const calls: Call[] = [];
   const revives: Revive[] = [];
   const released = new Map<string, number>();
@@ -53,7 +53,7 @@ function harness(variant: 'avif' | 'webp' = 'avif') {
     new Promise((resolve) => {
       calls.push({ url: ref.url, bytes: ref.bytes, signal, geometry, resolve, done: false });
     });
-  const registry = createAssetRegistry<Tex>({ load, variant });
+  const registry = createAssetRegistry<Tex>({ load, variant, tier });
   const decoded = (url: string, w: number, h: number, keptBytes: number): Decoded<Tex> => {
     const d: Decoded<Tex> = {
       texture: { url },
@@ -104,10 +104,12 @@ function harness(variant: 'avif' | 'webp' = 'avif') {
       succeed(call);
     }
   };
-  /** Acquires `name` (its entry registered for the fake's decode size) and returns the pending result. */
+  /** Acquires `name` (its entry, and its half's, registered for the fake's decode size) and returns the pending result. */
   const acquire = (name: string, entry: ImageEntry, holder: string, priority: 'visible' | 'preload', signal?: AbortSignal) => {
-    sizes.set(entry.avif.url, { w: entry.w, h: entry.h });
-    sizes.set(entry.webp.url, { w: entry.w, h: entry.h });
+    for (const f of entry.half === undefined ? [entry] : [entry, entry.half]) {
+      sizes.set(f.avif.url, { w: f.w, h: f.h });
+      sizes.set(f.webp.url, { w: f.w, h: f.h });
+    }
     return registry.acquire(asId(name), holder, signal === undefined ? { entry, priority } : { entry, priority, signal });
   };
   /** Settles every held revive so far with `r`; returns how many. */
@@ -781,4 +783,62 @@ test('registry: a revive that settles in time leaves no deadline timer pending',
   } finally {
     vi.useRealTimers();
   }
+});
+
+// MEMORY-PLAN 4.C, §7 row "M3c half": a LOW registry loads, counts and lays out each entry's half file.
+
+/** `entry`'s half: half its stored px per side, in its own small files. */
+const halved = (name: string, entry: ImageEntry, avif = 40, webp = 48): ImageEntry => {
+  const half: HalfFile = {
+    w: entry.w / 2,
+    h: entry.h / 2,
+    decodedBytes: (entry.w / 2) * (entry.h / 2) * 4,
+    avif: { url: `/assets/${name}-half.avif`, bytes: avif },
+    webp: { url: `/assets/${name}-half.webp`, bytes: webp },
+  };
+  return { ...entry, half };
+};
+
+test('registry: a LOW registry counts the half file', async () => {
+  const h = harness('avif', 'half');
+  const char = halved('x_y', image('x_y', 768, 1536));
+  const pending = h.acquire('char/x/y', char, 'scene:x', 'visible');
+  // The load fetches the half, laid out at resolution 0.5 on the full canvas.
+  expect(h.calls.map((c) => c.url)).toEqual(['/assets/x_y-half.avif']);
+  expect(h.calls[0]?.geometry).toEqual({ canvas: { w: 768, h: 1536 }, orig: { x: 0, y: 0, w: 768, h: 1536 }, trim: null, resolution: 0.5 });
+  // In flight it reserves the half's decoded bytes and file: 384 × 768 × 4 + 40.
+  expect(h.registry.stats().bytes).toBe(1_179_648 + 40);
+  h.succeedAll();
+  const live = await pending;
+  // The handle reports the canvas, so the layout is the full tier's (I4).
+  expect(live.ok ? { w: live.value.w, h: live.value.h } : live.error).toEqual({ w: 768, h: 1536 });
+  expect(h.registry.stats()).toMatchObject({ live: 1, bytes: 1_179_648 + 40, keptBytes: 40, keptMismatch: 0 });
+  // An entry without a half loads its full file on the half tier.
+  const plain = h.acquire('bg/a', bg('a'), 'scene:bg', 'visible');
+  expect(h.calls.map((c) => c.url)).toEqual(['/assets/x_y-half.avif', '/assets/a.avif']);
+  expect(h.calls[1]?.geometry.resolution).toBe(1);
+  h.succeedAll();
+  expect((await plain).ok).toBe(true);
+  expect(h.registry.stats().bytes).toBe(1_179_648 + 40 + BG + F);
+});
+
+test('registry: demote applies to records started later', async () => {
+  const h = harness('avif', 'half');
+  const a = h.acquire('bg/a', halved('a', bg('a')), 'scene:a', 'visible');
+  h.succeedAll();
+  const first = await a;
+  expect(h.callsOf('/assets/a-half.avif')).toHaveLength(1);
+  h.registry.demote();
+  // A record started after the demotion loads its full file.
+  const b = h.acquire('bg/b', halved('b', bg('b')), 'scene:b', 'visible');
+  expect(h.calls.map((c) => c.url)).toEqual(['/assets/a-half.avif', '/assets/b.avif']);
+  h.succeedAll();
+  expect((await b).ok).toBe(true);
+  // A second holder joining the live half record makes no load call and gets the same handle; it still counts its half.
+  const joining = h.acquire('bg/a', halved('a', bg('a')), 'preload:k1', 'preload');
+  expect(h.calls.map((c) => c.url), 'joining the live half record makes no load call').toEqual(['/assets/a-half.avif', '/assets/b.avif']);
+  const join = await joining;
+  expect(join.ok && first.ok ? join.value === first.value : join).toBe(true);
+  expect(h.registry.stats()).toMatchObject({ live: 2, bytes: 540 * 1024 * 4 + 40 + BG + F });
+  expect(h.released.get('/assets/a-half.avif') ?? 0, 'the live half record is not ended').toBe(0);
 });

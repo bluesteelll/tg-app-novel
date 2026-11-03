@@ -652,7 +652,7 @@ function realScene(m: AssetManifest) {
       };
     });
   };
-  const registry = createAssetRegistry<string>({ load, variant: 'avif' });
+  const registry = createAssetRegistry<string>({ load, variant: 'avif', tier: 'full' });
   const scheduler = createAssetScheduler({ registry, onError: (e) => errors.push(e) });
   scheduler.setChapter(m);
   let slots = new Map<string, AssetId>();

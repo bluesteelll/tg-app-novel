@@ -392,6 +392,7 @@ export function createSceneController(): SceneController {
       const registry = createAssetRegistry<Texture>({
         load: createImageLoader({ fetchAsset: o.fetchAsset, upload }),
         variant: avif ? 'avif' : 'webp',
+        tier: 'full',
       });
       const scheduler = createAssetScheduler({ registry, onError: report });
       // The current Application (the rebuild replaces it), and the only path to a frame: none while the context is lost
