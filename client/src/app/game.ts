@@ -325,8 +325,12 @@ type Session = {
    * tap on, so nothing of this session is written until a body loaded from the server has resumed (principle 1).
    */
   adopting: boolean;
-  /** The manual slot whose 409 asked "Overwrite?", with the server's envelope. */
-  conflict: { slot: ManualSlot; current: SaveSummary } | null;
+  /**
+   * D-slot (RULINGS 101): each manual slot's latest 409, with the server's envelope. `asked` is null while its hold
+   * lasts, then the ask's order number: the ask shown is the slot asked first among these (`shownAsk`), so a later ask
+   * never displaces it. A No or an answer applies to its own slot only.
+   */
+  readonly conflicts: Map<ManualSlot, { readonly current: SaveSummary; readonly asked: number | null }>;
   /** The knots of the current chapter whose `preload:<knot>` holder this session requested (F2 steps 3-4). */
   readonly held: Set<KnotName>;
   /** F5's `next:<id>` holder while it is wanted (requested, or its chapter still loading); null once released. */
@@ -366,8 +370,13 @@ export function createGame(deps: GameDeps): Game {
   let sound: AudioManager | null = null;
   let autoTimer: number | null = null;
   let skipTimer: number | null = null;
-  /** A manual save's conflict ask held for CONFLICT_HOLD_MS; cleared when it fires and when the session or the screen goes. */
-  let conflictHold: number | null = null;
+  /**
+   * Each manual slot's conflict ask held for CONFLICT_HOLD_MS; one is cleared when it fires and by its slot's next
+   * answer, No or write, and every one when the session or the screen goes.
+   */
+  const conflictHolds = new Map<ManualSlot, number>();
+  /** The order of the conflict asks: the next ask's number. */
+  let askSeq = 0;
   /** The shown line is fully revealed (its `ondone` came). */
   let revealed = false;
   let paused = false;
@@ -501,11 +510,29 @@ export function createGame(deps: GameDeps): Game {
       skipTimer = null;
     }
   };
-  const clearHold = (): void => {
-    if (conflictHold !== null) {
-      clock.clearTimeout(conflictHold);
-      conflictHold = null;
+  /** One slot's held conflict ask, or with no slot every one. */
+  const clearHold = (slot?: ManualSlot): void => {
+    for (const [held, id] of conflictHolds) {
+      if (slot === undefined || held === slot) {
+        clock.clearTimeout(id);
+        conflictHolds.delete(held);
+      }
     }
+  };
+  /** D-slot: the ask shown is the earliest asked of the slots still asking. */
+  const shownAsk = (s: Session): ManualSlot | null => {
+    let shown: { slot: ManualSlot; asked: number } | null = null;
+    for (const [slot, c] of s.conflicts) {
+      if (c.asked !== null && (shown === null || c.asked < shown.asked)) {
+        shown = { slot, asked: c.asked };
+      }
+    }
+    return shown?.slot ?? null;
+  };
+  /** A slot's conflict is over: its hold and its entry go; no other slot's. */
+  const dropConflict = (s: Session, slot: ManualSlot): void => {
+    clearHold(slot);
+    s.conflicts.delete(slot);
   };
   /** F2 auto: `1200 + 40 × graphemes` ms at normal speed, scaled by the text speed. */
   const autoDelay = (text: string): number => {
@@ -1328,7 +1355,7 @@ export function createGame(deps: GameDeps): Game {
       shown: null,
       last: null,
       adopting: false,
-      conflict: null,
+      conflicts: new Map(),
       held: new Set(),
       nextTag: null,
       kept: null,
@@ -1545,27 +1572,32 @@ export function createGame(deps: GameDeps): Game {
     if (session !== s) {
       return;
     }
-    clearHold(); // a newer answer replaces a held ask (critique O3)
+    // A newer answer for this slot replaces its held ask (LFU1 critique O3); another slot's ask stays (RULINGS 101).
+    dropConflict(s, slot);
     if (r.ok) {
-      s.conflict = null;
-      vm.saves = { ...vm.saves, saving: null, conflict: null, failed: null };
+      vm.saves = { ...vm.saves, saving: null, conflict: shownAsk(s), failed: null };
       await refreshSlots(s);
     } else if (r.error.kind === 'conflict') {
-      s.conflict = { slot, current: r.error.current };
+      const current = r.error.current;
+      s.conflicts.set(slot, { current, asked: null });
       const ask = (): void => {
-        conflictHold = null;
-        if (session === s) {
-          vm.saves = { ...vm.saves, saving: null, conflict: slot, failed: null };
+        conflictHolds.delete(slot);
+        if (session !== s || s.conflicts.get(slot)?.current !== current) {
+          return;
         }
+        s.conflicts.set(slot, { current, asked: askSeq++ });
+        // The hold absorbed taps on its own slot only: another slot's write may be in flight.
+        const saving = vm.saves.saving === slot ? null : vm.saves.saving;
+        vm.saves = { ...vm.saves, saving, conflict: shownAsk(s), failed: null };
       };
       const left = tappedAt + CONFLICT_HOLD_MS - clock.now();
       if (left > 0) {
-        conflictHold = clock.setTimeout(ask, left);
+        conflictHolds.set(slot, clock.setTimeout(ask, left));
       } else {
         ask();
       }
     } else {
-      vm.saves = { ...vm.saves, saving: null, failed: slot };
+      vm.saves = { ...vm.saves, saving: null, conflict: shownAsk(s), failed: slot };
     }
   };
 
@@ -1581,7 +1613,10 @@ export function createGame(deps: GameDeps): Game {
     if (!waiting && body === null) {
       return; // at rest: no chapter runs, or the session describes two steps (a resume failed past the swap)
     }
-    vm.saves = { ...vm.saves, saving: slot, conflict: null, failed: null };
+    // This write's answer is the slot's next one, so its earlier ask is over (an overwrite took its envelope first).
+    // Another slot's ask stays shown; its controls are disabled while `saving` names a slot.
+    dropConflict(s, slot);
+    vm.saves = { ...vm.saves, saving: slot, conflict: shownAsk(s), failed: null };
     if (body === null) {
       while (busy !== null && mixes(s)) {
         await busy;
@@ -1591,7 +1626,7 @@ export function createGame(deps: GameDeps): Game {
       }
       body = mixes(s) ? null : bodyOf(s);
       if (body === null) {
-        vm.saves = { ...vm.saves, saving: null };
+        vm.saves = { ...vm.saves, saving: null, conflict: shownAsk(s) };
         return;
       }
     }
@@ -1719,7 +1754,7 @@ export function createGame(deps: GameDeps): Game {
         return;
       }
       clearHold(); // a held ask would show over the fresh screen, whose Yes then finds no conflict
-      s.conflict = null;
+      s.conflicts.clear(); // the fresh screen's slot list is the server's state (LFU1)
       vm.saves = { ...vm.saves, saving: null, conflict: null, failed: null };
       screens.push({ kind: 'saves' });
       await refreshSlots(s);
@@ -1736,18 +1771,23 @@ export function createGame(deps: GameDeps): Game {
     },
     async overwrite(slot) {
       const s = session;
-      const c = s?.conflict ?? null;
-      if (s === null || c === null || c.slot !== slot || vm.saves.saving !== null) {
+      const c = s?.conflicts.get(slot);
+      if (s === null || c === undefined || vm.saves.conflict !== slot || vm.saves.saving !== null) {
         return;
       }
-      await writeManual(s, slot, (w) => s.saves.overwrite(slot, w, c.current));
+      const current = c.current; // taken before the write drops the slot's ask
+      await writeManual(s, slot, (w) => s.saves.overwrite(slot, w, current));
     },
     cancelOverwrite() {
-      clearHold();
-      if (session !== null) {
-        session.conflict = null;
+      // The shown ask's No is that slot's alone (RULINGS 101): the next asked slot shows.
+      const s = session;
+      const slot = vm.saves.conflict;
+      if (s === null || slot === null) {
+        vm.saves = { ...vm.saves, conflict: null };
+        return;
       }
-      vm.saves = { ...vm.saves, conflict: null };
+      dropConflict(s, slot);
+      vm.saves = { ...vm.saves, conflict: shownAsk(s) };
     },
     load(slot) {
       const s = session;

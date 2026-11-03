@@ -2500,32 +2500,29 @@ test('game: a late answer of an earlier manual save replaces a held conflict ask
   const h = harness();
   await startManor(h);
   await h.game.advance(); // l002
-  const sv = h.save();
-  type Answer = Awaited<ReturnType<SaveService['save']>>;
-  const inFlight = new Map<ManualSlot, { w: SaveWrite; answer: (r: Answer) => void }>();
-  sv.save = (slot, w) =>
-    new Promise<Answer>((answer) => {
-      inFlight.set(slot, { w, answer });
-    });
-  // 1. s1's write in flight, the save screen left and opened again (which resets `saving`), then s2's write.
+  const inFlight = inFlightSaves(h);
+  // 1. A write to s1 in flight, the save screen left and opened again (which resets `saving`), then a second to s1.
   void h.game.save('s1');
   await settle();
+  const first = inFlight.get('s1');
   await h.game.openSaves();
-  void h.game.save('s2');
+  const timers = h.clock.pending;
+  void h.game.save('s1');
   await settle();
-  const s1 = inFlight.get('s1');
-  const s2 = inFlight.get('s2');
-  if (s1 === undefined || s2 === undefined) {
-    throw new Error('both manual writes should be in flight');
+  const second = inFlight.get('s1');
+  if (first === undefined || second === undefined || first === second) {
+    throw new Error('both manual writes to s1 should be in flight');
   }
-  // 2. s2 answers 409 inside the double-tap window, so its ask is held; then s1's earlier write lands.
-  s2.answer({ ok: false, error: { kind: 'conflict', current: summary(MANOR, 's2', s2.w) } });
+  // 2. The second write's 409 lands inside its double-tap window, so its ask is held; then the first write lands.
+  second.answer(conflictOn('s1', second.w));
   await settle();
-  s1.answer({ ok: true, value: { rev: 1, savedAt: 1 } });
+  const holding = h.clock.pending - timers;
+  first.answer({ ok: true, value: { rev: 1, savedAt: 1 } });
   await settle();
-  // 3. The held ask never shows after the newer answer.
+  // 3. The slot's newer answer replaces its held ask at once (its timer goes), and the ask never shows.
+  const afterAnswer = h.clock.pending - timers;
   h.clock.advance(CONFLICT_HOLD_MS);
-  expect([h.vm.saves.saving, h.vm.saves.conflict]).toEqual([null, null]);
+  expect([holding, afterAnswer, h.vm.saves.saving, h.vm.saves.conflict]).toEqual([1, 0, null, null]);
   h.game.dispose();
 });
 
@@ -2548,7 +2545,34 @@ const conflictOn = (slot: ManualSlot, w: SaveWrite): SaveAnswer => ({
   error: { kind: 'conflict', current: summary(MANOR, slot, w) },
 });
 
-test('game: no on a shown conflict ask drops the ask a later 409 holds', async () => {
+test("game: an answer on one slot keeps another slot's held conflict ask", async () => {
+  const h = harness();
+  await startManor(h);
+  await h.game.advance(); // l002
+  const inFlight = inFlightSaves(h);
+  // 1. s1's write in flight, the save screen left and opened again (which resets `saving`), then s2's write.
+  void h.game.save('s1');
+  await settle();
+  await h.game.openSaves();
+  void h.game.save('s2');
+  await settle();
+  const s1 = inFlight.get('s1');
+  const s2 = inFlight.get('s2');
+  if (s1 === undefined || s2 === undefined) {
+    throw new Error('both manual writes should be in flight');
+  }
+  // 2. s2 answers 409 inside the double-tap window, so its ask is held; then s1's earlier write lands.
+  s2.answer(conflictOn('s2', s2.w));
+  await settle();
+  s1.answer({ ok: true, value: { rev: 1, savedAt: 1 } });
+  await settle();
+  // 3. s1's answer is s1's alone (RULINGS 101): s2's refused write still asks when its window closes.
+  h.clock.advance(CONFLICT_HOLD_MS);
+  expect([h.vm.saves.saving, h.vm.saves.conflict, h.clock.pending]).toEqual([null, 's2', 0]);
+  h.game.dispose();
+});
+
+test("game: no on one slot's conflict ask keeps another slot's held ask", async () => {
   const h = harness();
   await startManor(h);
   await h.game.advance(); // l002
@@ -2573,10 +2597,35 @@ test('game: no on a shown conflict ask drops the ask a later 409 holds', async (
   h.clock.advance(10);
   s2.answer(conflictOn('s2', s2.w));
   await settle();
-  // 3. No on s1's ask: the held ask never shows, since its Yes would find no conflict (`overwrite` refuses it).
+  // 3. No on s1's ask is s1's alone (RULINGS 101): s2's held ask shows when its own window closes.
   h.game.cancelOverwrite();
   h.clock.advance(CONFLICT_HOLD_MS);
-  expect([shown, h.vm.saves.conflict, h.clock.pending]).toEqual(['s1', null, 0]);
+  expect([shown, h.vm.saves.conflict, h.clock.pending]).toEqual(['s1', 's2', 0]);
+  // 4. The 409s in the reverse order of their taps (critique O1): s2's lands first and is held, s1's asks at once.
+  // s2's ask, coming later, never displaces the one shown; No on s1 then shows s2.
+  await h.game.openSaves();
+  void h.game.save('s1');
+  await settle();
+  await h.game.openSaves();
+  h.clock.advance(400);
+  void h.game.save('s2');
+  await settle();
+  const r1 = inFlight.get('s1');
+  const r2 = inFlight.get('s2');
+  if (r1 === undefined || r2 === undefined || r1 === s1 || r2 === s2) {
+    throw new Error('both second manual writes should be in flight');
+  }
+  h.clock.advance(50);
+  r2.answer(conflictOn('s2', r2.w));
+  await settle();
+  h.clock.advance(150);
+  r1.answer(conflictOn('s1', r1.w));
+  await settle();
+  const first = h.vm.saves.conflict;
+  h.clock.advance(300); // s2's window closes: its ask is asked behind s1's
+  const kept = h.vm.saves.conflict;
+  h.game.cancelOverwrite();
+  expect([first, kept, h.vm.saves.conflict, h.vm.saves.saving, h.clock.pending]).toEqual(['s1', 's1', 's2', null, 0]);
   h.game.dispose();
 });
 
