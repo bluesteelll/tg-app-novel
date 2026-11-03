@@ -68,6 +68,9 @@ resource (`loader.ts:17-21, :41`), so the CPU copy equals the counted bytes (30.
 holds only what was drawn: 1 bg + 2 sprites = 17.4. Texture-related total ~= 47.8 MiB. Pixi's GC never unloads our
 sources: `TextureSource.defaultOptions.autoGarbageCollect = false` and the GCSystem returns early when
 `!resource.autoGarbageCollect` (DOCUMENTED, pixi v8.22.0 `TextureSource.ts`, `GCSystem.ts`, read 2026-11-02).
+As merged (M2 `385d52f`; RULINGS 117; M2 cut section 8): the default does not hold for our sources. `ImageSource`'s
+constructor sets `autoGarbageCollect = true` after `super(options)` (pixi.js 8.22.0 `ImageSource.mjs:6-9`), so the
+loader assigns `false` after construction (`client/src/scene/loader.ts:56-59`).
 
 **The 150 MB total** (PP:2120-2132 plus the two rows PP:64-70 adds, the gated limits; 150 MB = 143.05 MiB):
 
@@ -165,7 +168,9 @@ generation -> re-decode the Blob, `source.resource = bitmap` (a plain public fie
   -> `removeAll(true)`; lazy `_initSource`), which is the only reason PP kept the bitmap (PP:2115-2118). A Blob gives
   the same "no re-download of `no-store` paid art" property at ~3 % of the bytes (300 KB AVIF vs 8.44 MiB decoded).
   GC cannot silently re-upload from a closed bitmap: `autoGarbageCollect` is false by default (above); the loader
-  passes it explicitly so a future default change cannot flip it.
+  passes it explicitly so a future default change cannot flip it. As merged (M2 `385d52f`; RULINGS 117): the option
+  is ignored, because `ImageSource` sets the flag true after `super`; the loader assigns `source.autoGarbageCollect =
+  false` after construction (`client/src/scene/loader.ts:56-59`; section 2).
 - **Upload at decode, not at first show.** Total bytes are equal. The `texImage2D` of an 8.4 MiB texture moves off the
   first frame of the transition that shows it (the frame the player watches) onto the moment the preload decodes, which
   may fall inside another animation (critique O4). Neither is free. The device protocol (section 12) times the upload of
@@ -444,7 +449,8 @@ The tier is chosen at mount, like the AVIF/WebP variant, by perf class **and sta
   4.95-5.77 MB, i.e. 1.3-2.5 x WebP. McCurdy 2024 (CLAIMED): UASTC is "1-2x the size of JPEG or ETC1S" (critique O6).
 - **Why not now** (MR1): Pixi's KTX2 worker `fetch(url)`s with no headers (principle 0's gated `FetchAsset` cannot feed
   it; a blob: path is unverified); default transcoder on an unpinned CDN; full libktx 216 kB JS + 714 kB wasm raw,
-  brotli unmeasured, against the all-JS row (290 KB on main, 305 KB after LMI); ETC1S block artifacts and alpha problems
+  brotli unmeasured, against the all-JS row (290 KB on main, 305 KB after LMI; as merged, LMI `3e35a7b`, RULINGS 110,
+  113: 305,000 B, `client/scripts/budget.ts:114`); ETC1S block artifacts and alpha problems
   on 2D art, UASTC 1.3-2.5x WebP download (Defold 2021, MEASURED by users); no measured KTX2-vs-AVIF comparison and no
   mobile transcode time; Windows
   has only BC; forum reports, not WebKit bug-tracker entries (critique_r2 O8): UASTC->ASTC mip artifacts on Apple GPUs
@@ -511,6 +517,10 @@ export type ImageEntry = { kind: 'image' } & ImageFile & { trim?: Trim; half?: H
 export type SizeTier = 'full' | 'half';
 /** M3c: the one canvas height a char half may have (DIMS's char maximum, `budget.ts:165`); `halfFits` reads it too. */
 export const CHAR_HALF_CANVAS_H = 1536;
+// as merged (M3c `a6365a8`; RULINGS 120, 127): these types at client/src/story/catalog.ts:725-742 (ImageEntry is
+//   Extract<AssetEntry, { kind: 'image' }>, the same shape); the half rules in halfOf (:864-906), plus one more
+//   (M3c cut F3): both half files sit under the prefix of the entry's own avif file, so a public half of a gated file
+//   does not decode (:898-900; principle 0)
 ```
 
 ```rust
@@ -526,7 +536,10 @@ struct HalfProbe { avif: UrlProbe, webp: UrlProbe }
   `server/tests/fixtures/content/chapters/{ch2,ch4}/assets.json` gain `half` for their one bg each, with 4 fixture files,
   because `index_assets` requires every named file on disk (`content.rs:660-670`).
 - File names: half files get a distinct token in `assetFileName` (`manifest.ts:221-223`) so names stay injective
-  (ids never hold `-`; per-namespace segment counts rule out collisions; the cut proves it in a test).
+  (ids never hold `-`; per-namespace segment counts rule out collisions; the cut proves it in a test). As merged (M3c
+  `a6365a8`; RULINGS 127; M3c cut F5): `assetFileName(id, bytes, ext, size)` names a half
+  `<id with '/' as '-'>-half-<hash8>.<ext>` (`client/scripts/assets/manifest.ts:288-293`), proved by `assets: a half
+  file's name is distinct from every full file name`.
 
 ## 6. Module API (signatures only)
 
@@ -538,6 +551,8 @@ export function textureGeometry(entry: ImageEntry, tier: SizeTier): TextureGeome
 export function stageBound(screen: Size | null, host: Size): Size;                      // M3c: largest reachable stage
 export function halfFits(stage: Size, resolution: number): boolean;                     // M3c: no bg/cg/char half up-sampled (char term at CHAR_HALF_CANVAS_H)
 export function tierFor(perf: PerfClass, bound: Size, resolution: number): SizeTier;    // M3c: 'half' iff LOW && halfFits
+// as merged (M3c `a6365a8`; RULINGS 127): as written, client/src/scene/layout.ts:37, :56, :72, :80; the registry's
+//   `tier` and `demote()` below at client/src/scene/registry.ts:173, :573
 
 // scene/registry.ts
 /** M1: the geometry is a third argument, so a loader that ignores it still type-checks: TypeScript allows a function
@@ -550,6 +565,9 @@ export type Decoded<T> = {
   gen: number | null;                             // M2: GPU generation uploaded under; null = bitmap kept open
   revive(gen: number, signal: AbortSignal): Promise<Result<void, LoadError>>;   // M2: bring this texture to `gen`
   release(): void;
+  // as merged (M2 `385d52f`; RULINGS 112 Q4, 117; M2 cut F4): + open(): boolean, true while the current bitmap is
+  //   open (alive && bitmap.width > 0; a closed ImageBitmap reports width 0). client/src/scene/registry.ts:50-59,
+  //   loader.ts:79
 };
 export type TextureHandle<T> = { readonly id: AssetId; readonly texture: T; readonly w: number; readonly h: number }; // w,h = canvas
 /** `tier` (M3c) is required like `variant`; the two fakes gain `tier: 'full'` (M3c's lock). */
@@ -580,6 +598,7 @@ export type RegistryStats = {
   keptBytes: number;     // M2 commit 2: the kept Blob sizes of live records (inside `bytes`)
   keptMismatch: number;  // M2 commit 2: records that went live with keptBytes !== ref.bytes (cumulative, like overCap)
   openBitmaps: number;   // M2 commit 3: live records with Decoded.gen === null (bitmap open)
+                         //   as merged (M2 F4): live records whose Decoded.open() is true (registry.ts:586)
   stale: number;         // M2 commit 3: live records not at the gen of the latest revive() call; 0 before the first call
   reviveFailed: number;  // M2 commit 3: records ended by a failed or late re-decode (cumulative)
 };
@@ -625,6 +644,10 @@ export function createReviveFlow(deps: ReviveFlowDeps): ReviveFlow;
 mount(host: HTMLElement, o: { dpr: number; perfClass: PerfClass; fetchAsset: FetchAsset }): Promise<Result<void, SceneError>>;
 stats(): { /* existing */ rebuilds: number; gen: number; openBitmaps: number; stale: number; staleFrames: number;
   reviveFailed: number; reviving: boolean };      // M2; __novelDebug under __TG_MOCK__ only
+// as merged (M2 `385d52f`; RULINGS 112 Q2, Q5, Q6, 117; M2 cut F2, F3, F6, F11, F12): one exported type, `SceneStats`
+//   (client/src/scene/controller.ts:27-49), every field required; the seven above plus visibleReviveMs: number | null;
+//   liveBytes stays live texture bytes = registry bytes - keptBytes (:540); staleFrames: frames drawn while the
+//   generation whose visible revive is done lags the current one (:430-432). Detail: the M2 as-merged record, section 11 M2.
 debugForceContextLoss(mode: 'restorable' | 'hard'): void;  // M2: 'hard' = gl.getExtension('WEBGL_lose_context').loseContext()
 
 // scripts: budget.ts reads the cap through manifest.ts (the scripts' one door to src/, manifest.ts:4-5)
@@ -654,7 +677,9 @@ Steady total after the levers (PP model at the gated limits, MiB; 3.1 = covers 2
 1. The registry admits `need = decodedBytes + ref.bytes`.
 2. The loader's `fetchAsset` returns a Blob.
 3. `createImageBitmap` -> `ImageSource({ resource, alphaMode: 'premultiply-alpha-on-upload', autoGarbageCollect:
-   false, resolution })` -> `Texture({ source, orig, trim })`.
+   false, resolution })` -> `Texture({ source, orig, trim })`. As merged (M2 `385d52f`; RULINGS 117): the option is
+   ignored by `ImageSource`, so the loader assigns `source.autoGarbageCollect = false` after construction
+   (`client/src/scene/loader.ts:55-59`; section 2).
 4. `gen = upload(source)` against the renderer current at that moment. A number -> `bitmap.close()`; `null` (context
    lost, or not GL) -> the bitmap stays open (`kept`).
 5. The record goes live with the Blob, counted at `decodedBytes + blob.size`.
@@ -744,11 +769,19 @@ new one. So "h's record has ended" is `registry.current(h.id) !== h`, one map re
 **B build (M1).** 2048-px clamp -> raw scan alpha > 0 -> +2 px -> even width and height -> `extract` -> AVIF + WebP from
 the same pixels; planner writes `trim`; per-character canvas equality and even canvas sides checked; budget reads the
 result. **M3c** adds: the 2 x 2 premultiplied average of the extracted pixels -> half AVIF + WebP; planner writes `half`
-on public entries, on a char only on the 1536-px canvas (critique_r3 W1).
+on public entries, on a char only on the 1536-px canvas (critique_r3 W1). As merged (M3c `a6365a8`; RULINGS 127; M3c
+cut F4, F6): the asset tool asks per id (`halfAsk`, `client/scripts/assets/manifest.ts:128`: `'none'` for a gated id
+and for cover or audio, `'any'` for bg / cg / prop, `{ canvasH: CHAR_HALF_CANVAS_H }` for a char), the encoder halves the
+stored raw RGBA (`halfRgba`, `client/scripts/assets/encode.ts:112`), and the planner writes `half` only for a public,
+non-cover image (`manifest.ts:363-368`).
 **C mount (M3c).**
 1. `tier = tierFor(perfClass, stageBound(screen, host), resolution)`.
 2. The registry is created with `{ variant, tier }`; every entry resolves its file once, at record start.
 3. On each resize: `halfFits` fails on the new host -> `registry.demote()`, once.
+
+As merged (M3c `a6365a8`; RULINGS 127; M3c cut F9): `screenSize()` reads `globalThis.screen` once at mount (CSS px;
+null when absent or not a positive finite side, `client/src/scene/controller.ts:109`); the tier at `:414`, passed to
+the registry at `:418`; the demotion inside `onResize`, after the relayout (`:245-248`).
 
 ## 9. Concurrency and failure model
 
@@ -886,7 +919,8 @@ Ownership rules for every lane below (critique W3):
   - `client/src/scene/{revive-flow.ts,revive-flow.test.ts}`: new in M2 (critique_r4 O1, O2). The arch rules allow a
     pure `scene/` file (`arch.test.ts:152-181`: no Pixi, GSAP or fetch rule is broken).
   - D2's gate gains M2.
-- **Lock (14).**
+- **Lock (14).** As merged (M2 `385d52f`; RULINGS 112 Q1, Q2, 117): 16; the two suites this list missed are below,
+  in "As merged".
   - `client/src/scene/{loader.ts,registry.ts,registry.test.ts,controller.ts,executor.ts}` (`executor.ts` for
     `reacquire`, critique_r3 O5).
   - `client/src/scene/{revive-flow.ts,revive-flow.test.ts}` (new; critique_r4 O1, O2).
@@ -1092,7 +1126,8 @@ Ownership rules for every lane below (critique W3):
        If any image URL is already fetched twice there, the "exactly one image URL fetched twice" assertion counts GETs
        from a marker taken just before `forceContextLoss('hard')`.
      - Re-locate at cut time: an L15 e2e that asserts the whole `stats()` object with `toEqual` moves with the new
-       counters, and its spec then joins this lock with the move declared.
+       counters, and its spec then joins this lock with the move declared. As merged (M2 `385d52f`; M2 cut F14): no
+       e2e compares `stats()` whole (every read is by field), so no e2e joined the lock; the item is closed.
 
      Tester mutations:
      - `upload` captured at mount: the new asset after the rebuild samples black;
@@ -1107,6 +1142,8 @@ Ownership rules for every lane below (critique W3):
        parent: `LIMITS.knotSet = LIMITS.roomSet = 32 * MIB` (`budget.ts:91,112-113`) already equals `STEADY_CAP_BYTES`
        (`registry.ts:9`). Seen red by mutation (`knotSet: 32 * MIB + 1`) and quoted in the commit report, as commit 1's
        e2e is.
+     - As merged (M2 `6cbb685`; RULINGS 112 Q10, 117; M2 cut F9): this commit declared no `budget.test.ts` move, but
+       existing figures move on purpose by the kept file bytes (below, "As merged").
   6. e2e `scene: no decoded bitmap outlives its upload`: `stats().openBitmaps === 0` after the first line and after a
      preload settles. Seen red by mutation: skip `close()`.
 - **Pins.** Knot-set and room-set rows rise by the kept bytes (placeholders ~0.1 MiB; at the file limits <= 2.2 MiB per
@@ -1115,6 +1152,41 @@ Ownership rules for every lane below (critique W3):
   more reason M1 precedes M2: untrimmed, the busiest knot with real art at the file limits would be 30.4 + 2.15 = 32.5
   MiB, over the gate (ARITHMETIC).
 - **Gates.** check, test, build, e2e. Device measurement (section 12) is reported, not gated.
+- **As merged (M2 `385d52f`; RULINGS 112, 117; `D:/tmp/novel-orch/m2-memory-cpu-copy/cut.md` section 1b F1-F15 and
+  section 8, `impl.md`).** What the merged code does where this sketch is silent or wrong:
+  - Commits: 1 `2bfd964`, 2 `fe2b2e7`, 3 `342ac80`, the L11 carry `a24eacc` (a build that throws kills its timeline),
+    3a `3c69d34`, 3b `d918270`, 4 `6c4e9c2`, 5 `6cbb685`, 6 `3b4abe7`; then the pins `f092df3` (the 3000 ms revive
+    deadline) and `be9eb24` (the visible pass's single deadline).
+  - Lock 16 (F1, F2): + `client/src/explore/controller.test.ts`, whose `LoadImage` fake returns `Decoded` and gains the
+    M2 members (`keptBytes: ref.bytes`, `gen`, `revive`, `open: () => false`; `:646-648` on `a6365a8`) with five
+    declared byte moves; + `client/src/app/game.test.ts`, whose `SceneController` fake's `stats` gains the eight new
+    fields in one hunk (`visibleReviveMs: null` at `:349` on `a6365a8`).
+  - `SceneStats` (F2, F12): one exported type, every field required, no `Partial`
+    (`client/src/scene/controller.ts:27-49`); section 6's seven fields plus `visibleReviveMs`.
+  - `liveBytes` (F3) stays live texture bytes, the registry's `bytes - keptBytes` (`controller.ts:540`): the caps count
+    the kept files, the frozen `perf.spec.ts` bound counts decoded bytes only.
+  - `Decoded.open()` (F4): `openBitmaps` counts live records whose current bitmap is open (`registry.ts:586`,
+    `loader.ts:79`); `gen === null` alone could not catch a skipped `close()`.
+  - No `resizeTo` (F5; RULINGS 112 Q3): the renderer is sized at `app.init` and then only by the `ResizeObserver`
+    (`controller.ts:116-134`, `:236-250`, `:450`); PP "Init" carries the erratum.
+  - `staleFrames` (F6): the controller's `gen` starts at 1 and rises at `webglcontextrestored` and at a rebuild's
+    install (`:260`, `:362`); `doneGen` is the gen of the latest revive whose visible pass settled `'done'`, recorded by
+    the wrapper around `registry.revive` before the flow sees it (`:299-311`); `staleFrames` counts frames drawn
+    while `doneGen !== gen` (`:430-432`).
+  - The grace end while deactivated (F7): the live check starts a revive only when not paused, else nothing until the
+    next `activated` (`live`, `:314-322`).
+  - `visibleReviveMs` (F11): ms from the wrapper's `registry.revive` call to the visible pass `'done'`, null before the
+    first; the e2e logs it, no gate (55.6 and 59.1 ms after a rebuild in the lane's runs, `impl.md`).
+  - Commit 5's moves (F9; cut section 8 W1): the figures of three existing tests rise by the kept files, `budget: knot
+    set over 32 MiB fails`, `budget: knot-set counts carried stage` and `budget: room-set counts props and close-up`
+    (`client/scripts/budget.test.ts:941`, `:956`, `:981`; the cut said four). The build rows that sum the engine
+    closure (engine, first line, first-load ch1 / ch3) rose by +1.5 KB br, engine 212.2 -> 213.7 (cut section 8 W1).
+  - The cap's one door (F15): `budget.ts` takes `STEADY_CAP_BYTES` from `scripts/assets/manifest.ts:35-36`, which
+    re-exports it from `scene/registry.ts`; so `assets.ts` and `scan-dist.ts`, which import `manifest.ts`, load
+    `scene/registry.ts` -> `scene/layout.ts` -> `geom/cover.ts` at startup (and `story/catalog.ts` since M3c,
+    `layout.ts:6`). The CLI tests through a linked path are the cover (`budget.test.ts:700`).
+  - Pixi's GC flag (section 2): the loader assigns `autoGarbageCollect = false` after construction.
+  - The map rows for M2 were D2's (`b766a16`, FEATURE_MAP and ARCHITECTURE as merged at `385d52f`).
 
 ### M3c `memory-half-tier` (client) - after M2
 - **Goal.**
@@ -1142,7 +1214,9 @@ Ownership rules for every lane below (critique W3):
   - The two suites are here because `createAssetRegistry`'s `tier` is required (critique_r2 W6): each fake gains
     `tier: 'full'`. That change is declared, and the assertions do not change.
   - `loader.ts` is out: M1's loader already forwards `geometry.resolution`.
-  - Its doc rows go to M3s.
+  - Its doc rows go to M3s. As merged (RULINGS 127): they went to the docs lane docs-errata-8, not to M3s.
+  - As merged (M3c `a6365a8`; RULINGS 120 Q1): the lock was 16, + `client/src/explore/controller.test.ts` for one
+    `tier: 'full'` hunk (`:655`), because that suite builds the real registry.
 - **Reds** (predicted red in brackets):
   - `catalog: half tier decodes` [unknown key];
   - `catalog: a half that is not exactly half its file is an error value` (233 x 698 under a 466 x 1394 file) [it
@@ -1204,6 +1278,36 @@ Ownership rules for every lane below (critique W3):
   2, with a LOW UA (and on a LOW Android in Telegram when one is available), judged for halos, banding and softness on
   character outlines and backgrounds. Both screenshots go into the lane report.
 - **Gates.** check, test, story, build, e2e. No cargo.
+- **As merged (M3c `a6365a8`; RULINGS 120, 127; `D:/tmp/novel-orch/m3c-memory-half-tier/cut.md` section 1b F1-F15 and
+  section 9, `impl.md`).** What the merged code does where this sketch is silent or wrong:
+  - Commits: C1 `aa4b89d` (the carried pin `registry: a revive that settles in time leaves no deadline timer pending`),
+    C2 `4a92fc0` (the carried pin `assets: the tool asks the encoder to trim char and prop only`), C3 `d008bcb`
+    (decoder), C4 `80193dd` (encoder), C5 `4124adb` (planner and tool), C6 `ec27b81` (budget), C7 `deb8412` (layout),
+    C8 `48c78a4` (registry), C9 `1674bb5` (controller and the e2e); trunk syncs `768201a`, `c1d64ae`. C10 (the
+    rebuild's host box, M2 review r1 M1) was not taken: the parent probe was green (RULINGS 120 Q4); it stays carried.
+  - Tests: 23 new vitest names (985 -> 1008 with LFU3), 4 new e2e (50 -> 54); build 84 -> 88 rows. The reds above
+    are all in, plus `catalog: a half on a cover or under another prefix than its file is an error value` (F3),
+    `assets: a half file's name is distinct from every full file name` (F5), `assets: the tool asks a half for public
+    images and never for a cover`, `budget: a missing half file fails` and `budget: the half transfer row counts each
+    entry's half file`.
+  - The e2e set adds `scene: a resize past the half bound loads full-tier files` (F12), the one red that reaches the
+    controller's demotion; the paid-chapter tier e2e is M3s's. The LOW-phone test and M1's test share one sampler,
+    and `memory.spec.ts` keeps a local copy of `perf.spec.ts`'s `LOW_UA` (F11; `client/e2e/memory.spec.ts:49-55`).
+  - The encoder's half option (F4): `HalfAsk = 'none' | 'any' | { canvasH }` (`client/scripts/assets/encode.ts:22`),
+    required at the tool's seam `Encoders.encodeImage` (`client/scripts/assets.ts:36`) and optional on `encodeImage`
+    itself (absent = `'none'`, `encode.ts:169`), so every full file stays byte-identical.
+  - The transfer rows (F2): `transfer <ch> (half)` exists for every listed chapter, paid ones included; a paid
+    chapter's row counts its public halves and the full files of its gated entries (`client/scripts/budget.ts:943-951`,
+    `:1007`). Measured at the merge, half / full KB: ch1 1149.7 / 1182.0, ch2 1113.6 / 1124.2, ch3 369.1 / 384.3, ch4
+    716.9 / 724.9 (`impl.md`).
+  - The image row (F7): a half adds file, limit and I2 checks, and the row value stays the full AVIF
+    (`budget.ts:731-753`).
+  - Not as the cut said: the first-load rows rose (ch1 306.4 -> 307.5, ch3 288.7 -> 289.6 KB of 800, with LFU3; the
+    entry JS and the public manifests grow), and the entry row is 39.4 / 40.0 KB br on the merged tree (main 38.9):
+    0.6 KB left (RULINGS 127).
+  - `perf.spec.ts`'s `scene: a LOW perf class renders at resolution 1` (375 x 812, DPR 2) now loads half files; it
+    asserts only the canvas buffer width, which holds (F13).
+  - Verified under emulation only (Playwright `screen`, UA, DPR): the owner has no LOW-class Android (Q54).
 
 ### M3s `memory-half-paid` (server slot) - after M3c, after L9 (the end of the server chain) and after D2
 - **Goal.** Gated image entries of paid manifests carry `half`. The server indexes those files under the chapter's
@@ -1244,7 +1348,9 @@ Ownership rules for every lane below (critique W3):
 
 - JS: M1-M3 add < 1.5 KB brotli to the engine chunk (geometry + revive + the revive flow and the identity checks +
   `halfFits`; an estimate, which the build's per-chunk row reports). No new dependency. No change to the
-  all-JS row (`LIMITS.allJsBr`: 290,000 B on main, `budget.ts:102`; 305 KB after LMI, PP:2235). E would add a
+  all-JS row (`LIMITS.allJsBr`: 290,000 B on main, `budget.ts:102`; 305 KB after LMI, PP:2235; as merged, LMI
+  `3e35a7b`, RULINGS 110, 113: 305,000 B at `client/scripts/budget.ts:114`, PP "Budgets and validation", the "All JS in
+  `dist/`" row). E would add a
   transcoder (rejected).
 - First-load / per-chapter transfer:
   - M1: ~0 (quoted by the lane); M2: 0;
@@ -1260,6 +1366,10 @@ Ownership rules for every lane below (critique W3):
     the AVERAGE control, which runs at DPR 1 to isolate the class check (critique_r3 O1);
   - L15: `scene: a LOW perf class renders at resolution 1` and its control `scene: an AVERAGE perf class at DPR 2
     renders at resolution 2`, both at DPR 2 (4.F).
+  - As merged (M3c `a6365a8`; RULINGS 127): M3c's four are `scene: a LOW phone loads half-tier files`, `scene: an
+    AVERAGE phone at DPR 1 loads full-tier files`, `scene: a LOW tablet loads full-tier files` and `scene: a resize past
+    the half bound loads full-tier files` (M3c cut F12); `scene: a LOW phone loads half-tier files of a paid chapter`
+    stays M3s's.
 - Each new gate is seen failing: the budget reds above, plus three `node scripts/budget.ts` runs on synthetic inputs.
   Each run asserts its row and note, not only exit 1 (critique O10; PP:2259-2263 pattern):
   - a trimmed bg -> the CLI decodes each manifest first, the decoder refuses `trim` on a bg, so the `asset inputs` row
@@ -1404,7 +1514,9 @@ Ownership rules for every lane below (critique W3):
   sections 4.1-4.5; `D:/tmp/novel-orch/carry.md:82-83, :584-585`; `D:/tmp/novel-orch/RULINGS.md` 65.
 - PixiJS v8.22.0 source (DOCUMENTED):
   https://raw.githubusercontent.com/pixijs/pixijs/v8.22.0/src/rendering/renderers/shared/texture/sources/TextureSource.ts
-  (`defaultOptions.autoGarbageCollect: false`; `resource` public field; `update()`, `unload()`);
+  (`defaultOptions.autoGarbageCollect: false`; `resource` public field; `update()`, `unload()`); as merged (M2
+  `385d52f`; RULINGS 117): `ImageSource`'s constructor sets it true after `super` (pixi.js 8.22.0 `ImageSource.mjs:6-9`;
+  section 2);
   https://raw.githubusercontent.com/pixijs/pixijs/v8.22.0/src/rendering/renderers/shared/GCSystem.ts (defaults
   `gcActive: true, gcMaxUnusedTime: 60000, gcFrequency: 30000`; `if (isRecentlyUsed || !resource.autoGarbageCollect)
   return;`; sweep in `postrender`);

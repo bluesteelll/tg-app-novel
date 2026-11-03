@@ -758,6 +758,12 @@ From LW3, world texts follow §4: `id/*` and `loc/*` apply to them, and IDs are 
 
 ## 12. Complete example
 
+The globals `g_trust_ally` and `g_lied_to_ally` in this example and in §3.4 are illustrative. As merged (N1 `f53755b`,
+N2 `3587bdd`): the demo's `story/common/globals.ink` declares `g_gate_forced`, `g_manor_trust`, `g_manor_promise` and
+`g_tide_trust_keeper` instead, and the test `dsl-doc: examples lint clean` lints the examples against its own two
+declarations (`client/src/story/dsl-doc.test.ts:187`). A copy of this example on the tree declares its globals in
+`globals.ink` first.
+
 ```ink
 INCLUDE ../common/globals.ink
 VAR ch1_asked_twice = false
