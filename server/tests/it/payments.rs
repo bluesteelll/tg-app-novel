@@ -105,6 +105,8 @@ struct RecordLog {
     failure: Option<GatewayError>,
     /// The error `savePreparedInlineMessage` alone answers with, when set (and no `failure` is).
     prepare_failure: Option<GatewayError>,
+    /// The error `refundStarPayment` alone answers with, when set (and no `failure` is).
+    refund_failure: Option<GatewayError>,
     /// What the database probe read at each `createInvoiceLink`, in order.
     probes: Vec<Option<(String, Option<String>)>>,
 }
@@ -142,6 +144,12 @@ impl RecordingGateway {
     /// `savePreparedInlineMessage` from now on answers `failure` (`None`: `Ok` again); every other call is unchanged.
     pub(crate) fn fail_prepare_with(&self, failure: Option<GatewayError>) {
         self.log().prepare_failure = failure;
+    }
+
+    /// `refundStarPayment` from now on answers `failure` (`None`: `Ok` again), still recorded; every other call is
+    /// unchanged, so an unapplied payment's notice goes out while its automatic refund fails.
+    pub(crate) fn fail_refunds_with(&self, failure: Option<GatewayError>) {
+        self.log().refund_failure = failure;
     }
 
     /// Every call so far, in order.
@@ -201,6 +209,17 @@ impl RecordingGateway {
         log.calls.push(call);
         log.failure.clone().map_or(Ok(()), Err)
     }
+
+    /// Records the `refundStarPayment` of `charge` to `user` and returns its answer: the failure of every call, else
+    /// the refunds' own.
+    fn refund(&self, user: UserId, charge: ChargeId) -> Result<(), GatewayError> {
+        let mut log = self.log();
+        log.calls.push(GatewayCall::Refund { user, charge });
+        match log.failure.clone().or_else(|| log.refund_failure.clone()) {
+            Some(failure) => Err(failure),
+            None => Ok(()),
+        }
+    }
 }
 
 /// The order row `order` as a connection outside the app pool sees it: only what was committed.
@@ -242,7 +261,7 @@ impl BotGateway for RecordingGateway {
         user: UserId,
         charge: ChargeId,
     ) -> BoxFut<'_, Result<(), GatewayError>> {
-        Box::pin(async move { self.record(GatewayCall::Refund { user, charge }) })
+        Box::pin(async move { self.refund(user, charge) })
     }
 
     fn send_message(&self, msg: OutMessage) -> BoxFut<'_, Result<(), GatewayError>> {
@@ -2148,11 +2167,13 @@ async fn successful_payment_unapplied_recorded_no_grant() {
 }
 
 /// U+0000 in the charge id, the payload and the provider id (PostgreSQL `text` cannot hold it) is stored as U+FFFD:
-/// 200 and one row; the same update again is 200 and still one row (the replaced charge id is the same key).
+/// 200 and one row; the same update again is 200 and still one row (the replaced charge id is the same key). The
+/// payload names no order, so the charge is refunded automatically (owner Q9) under its stored id: one
+/// `refundStarPayment` of `charge\u{FFFD}1`, and the row revoked at `T0`.
 #[tokio::test]
 async fn successful_payment_nul_in_strings_recorded_replaced() {
     let mut failures = Vec::new();
-    let (st, _db, _gateway, Some((order, amount))) = order_for_ann(Some("ru"), &mut failures).await
+    let (st, _db, gateway, Some((order, amount))) = order_for_ann(Some("ru"), &mut failures).await
     else {
         return report(&failures);
     };
@@ -2177,11 +2198,17 @@ async fn successful_payment_nul_in_strings_recorded_replaced() {
         "XTR".to_owned(),
         "prov\u{FFFD}1".to_owned(),
         T0,
-        None,
+        Some(T0),
     );
     if payments != 1 || row.as_ref() != Some(&want) {
         failures.push(format!(
             "payments: expected the one row {want:?}, got {payments} rows, the replaced charge: {row:?}"
+        ));
+    }
+    let refunds = crate::refunds::refund_calls(&gateway);
+    if refunds != [(ANN, "charge\u{FFFD}1".to_owned())] {
+        failures.push(format!(
+            "refundStarPayment calls: expected the stored id once, got {refunds:?}"
         ));
     }
     failures.extend(expect_status("the payload with U+0000", &st, &order, "created").await);

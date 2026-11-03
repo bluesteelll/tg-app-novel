@@ -72,6 +72,16 @@ fn listed(names: &[&str]) -> String {
     format!("[{}]", names.join(", "))
 }
 
+/// The texts waiting for the owner's VALUES step, sorted: the `/terms`, `/support` and `/paysupport` placeholders, and
+/// every payment or refund notice owner Q9's lane added or reworded.
+const DRAFTS: [&str; 5] = [
+    "admin_unapplied",
+    "payment_unapplied",
+    "paysupport",
+    "support",
+    "terms",
+];
+
 /// The characters of the longest `/paysupport` of 20 charges whose ids are 64 characters, laid out as the command
 /// lays it out: the intro, a blank line, then one line per charge with the longer status after a space.
 fn longest_paysupport(file: &BotFile) -> usize {
@@ -94,7 +104,7 @@ fn longest_paysupport(file: &BotFile) -> usize {
 }
 
 /// The failure lines of one language's file: each text within its bound (1 to its limit, not blank) with exactly its
-/// placeholders; `drafts` exactly `paysupport`, `support`, `terms`, each a key; 20 charges fit one `/paysupport`.
+/// placeholders; `drafts` exactly [`DRAFTS`], each a key; 20 charges fit one `/paysupport`.
 fn file_failures(lang: &str, file: &BotFile) -> Vec<String> {
     let mut failures = Vec::new();
     let entries = file.texts.entries();
@@ -120,9 +130,9 @@ fn file_failures(lang: &str, file: &BotFile) -> Vec<String> {
             Err(why) => failures.push(format!("{} {lang}: {why}", e.key)),
         }
     }
-    if file.drafts != ["paysupport", "support", "terms"] {
+    if file.drafts != DRAFTS {
         failures.push(format!(
-            "drafts {lang}: expected [paysupport, support, terms], got {:?}",
+            "drafts {lang}: expected {DRAFTS:?}, got {:?}",
             file.drafts
         ));
     }
@@ -680,7 +690,8 @@ pub(crate) fn charge_lines<'a>(text: &'a str, intro: &str) -> Vec<&'a str> {
 }
 
 /// `/paysupport` lists the sender's own charges, newest first: an applied chapter unflagged, an unapplied charge (paid
-/// at a wrong amount) flagged, a refunded pack marked refunded. Another user's charge is not listed.
+/// at a wrong amount, so refunded automatically at `T0`, owner Q9) and a refunded pack marked refunded. Another user's
+/// charge is not listed.
 #[tokio::test]
 async fn paysupport_flags_unapplied_charge() {
     let (st, _db, gateway) = refund_state().await;
@@ -724,7 +735,7 @@ async fn paysupport_flags_unapplied_charge() {
         line
     };
     let want = vec![
-        line("c-unapplied", amount + 1, Some(&ru.paysupport_not_applied)),
+        line("c-unapplied", amount + 1, Some(&ru.paysupport_refunded)),
         line("c-refunded", 1, Some(&ru.paysupport_refunded)),
         line("c-applied", 1, None),
     ];

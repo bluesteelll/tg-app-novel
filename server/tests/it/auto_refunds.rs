@@ -1,10 +1,27 @@
 //! The automatic refund of an unapplied charge (owner Q9): its schema (`server/migrations/0007_auto_refunds.sql`)
-//! exercised with raw SQL on a connection of its own.
+//! exercised with raw SQL on a connection of its own; the first attempt right after the grant, through the webhook.
+//!
+//! Every state calls the Bot API through [`RecordingGateway`]: no test reaches Telegram.
+//!
+//! [`RecordingGateway`]: crate::payments::RecordingGateway
 
+use serde_json::{Value, json};
+use server::AppState;
+use server::ids::{ChargeId, UserId};
+use server::puzzles::Lang;
+use server::telegram::gateway::OutMessage;
+use server::telegram::texts::{self, LangTexts, fill};
 use sqlx::PgConnection;
 use sqlx::postgres::PgQueryResult;
 
-use crate::common;
+use crate::bot::raw_order;
+use crate::catalog::{ANN, T0};
+use crate::common::{self, TEST_ADMIN_ID};
+use crate::payments::GatewayCall;
+use crate::refunds::{
+    BEN, bought, entitlements_of, expect_eq, order_of, refund_calls, refund_state, refunded_at,
+};
+use crate::webhook::{order_status, payment_update, post_update};
 
 type Res = Result<PgQueryResult, sqlx::Error>;
 
@@ -164,5 +181,195 @@ async fn auto_refund_schema_constraints() {
         ("23505", "unrecorded_refunds_pkey"),
     ));
     sqlx::Connection::close(c).await.unwrap();
+    report(&failures);
+}
+
+/// An `auto_refunds` row as (attempts, refusals, due_at, last_error).
+pub(crate) type WorkRow = (i64, i64, Option<i64>, Option<String>);
+
+/// The `auto_refunds` row of `charge`, read outside the app pool.
+pub(crate) async fn auto_refund_row(st: &AppState, charge: &str) -> Option<WorkRow> {
+    let mut c = common::raw_db(st).await;
+    let row = sqlx::query_as(
+        "SELECT attempts, refusals, due_at, last_error FROM auto_refunds WHERE charge_id = $1",
+    )
+    .bind(charge)
+    .fetch_optional(&mut c)
+    .await
+    .unwrap();
+    sqlx::Connection::close(c).await.unwrap();
+    row
+}
+
+/// The charges that key an entitlement although their payment is refunded (never any), read outside the app pool.
+async fn keyed_to_refunded(st: &AppState) -> Vec<String> {
+    let mut c = common::raw_db(st).await;
+    let charges = sqlx::query_scalar(
+        "SELECT e.charge_id FROM entitlements e \
+         JOIN payments p ON p.telegram_payment_charge_id = e.charge_id \
+         WHERE p.refunded_at IS NOT NULL ORDER BY e.charge_id",
+    )
+    .fetch_all(&mut c)
+    .await
+    .unwrap();
+    sqlx::Connection::close(c).await.unwrap();
+    charges
+}
+
+/// A `successful_payment` update from `payer` with Telegram language `language`.
+fn payment_from(payer: i64, language: &str, amount: u32, order: &str, charge: &str) -> Value {
+    let mut update = payment_update(payer, "XTR", amount, order, charge, "");
+    update["message"]["from"]["language_code"] = json!(language);
+    update
+}
+
+/// The calls an unapplied payment of `charge` by `payer` makes, in order: the notice to the payer in `t`, the Russian
+/// notice to the admin naming `outcome`, then the refund to the payer.
+fn unapplied_calls(payer: i64, t: &LangTexts, charge: &str, outcome: &str) -> Vec<GatewayCall> {
+    let ru = texts::texts(Lang::Ru);
+    let admin = fill(
+        &ru.admin_unapplied,
+        &[
+            ("charge", charge),
+            ("payer", &payer.to_string()),
+            ("outcome", outcome),
+        ],
+    );
+    vec![
+        GatewayCall::Message(OutMessage {
+            chat_id: payer,
+            text: fill(&t.payment_unapplied, &[("charge", charge)]),
+            web_app_button: None,
+        }),
+        GatewayCall::Message(OutMessage {
+            chat_id: TEST_ADMIN_ID,
+            text: admin,
+            web_app_button: None,
+        }),
+        GatewayCall::Refund {
+            user: UserId(payer),
+            charge: ChargeId(charge.to_owned()),
+        },
+    ]
+}
+
+/// Owner Q9 through the webhook at `T0`: every unapplied outcome is refunded to its payer within its own update, once.
+/// `AlreadyEntitled` (ANN pays a raw second order of the chapter she owns through `c-first`), `OrderMismatch` (BEN pays
+/// his order at its amount + 1) and `UnknownProduct` (BEN's order whose product id no grammar knows) each answer 200
+/// after exactly the payer's notice in their language, the admin's Russian notice, then `refundStarPayment` to the
+/// payer; the payment is revoked at `T0` (its order `refunded`, or untouched when it matched none) and its row settled
+/// after one attempt. The applied payment makes no refund and has no row. Each update redelivered answers 200 and
+/// makes no call; ANN keeps ch2 on `c-first`; no entitlement is keyed to a refunded charge.
+#[tokio::test]
+async fn auto_refund_unapplied_outcomes_refunded_once() {
+    let (st, _db, gateway) = refund_state().await;
+    let mut failures = Vec::new();
+    if bought(&st, ANN, "chapter:ch2", "c-first", &mut failures)
+        .await
+        .is_none()
+    {
+        return report(&failures);
+    }
+    let second = "o_0123456789abcdef0123456789abcdef";
+    raw_order(&st, second, ANN, "chapter:ch2").await;
+    let Some((wrong, wrong_amount)) = order_of(&st, BEN, "chapter:ch4", &mut failures).await else {
+        return report(&failures);
+    };
+    let Some((retired, retired_amount)) = order_of(&st, BEN, "chapter:ch2", &mut failures).await
+    else {
+        return report(&failures);
+    };
+    let mut c = common::raw_db(&st).await;
+    sqlx::query("UPDATE orders SET product_id = 'retired:hint_s' WHERE id = $1")
+        .bind(&retired)
+        .execute(&mut c)
+        .await
+        .unwrap();
+    sqlx::Connection::close(c).await.unwrap();
+    failures.extend(expect_eq(
+        "applied c-first: refundStarPayment calls",
+        refund_calls(&gateway),
+        Vec::new(),
+    ));
+    failures.extend(expect_eq(
+        "applied c-first: auto_refunds row",
+        auto_refund_row(&st, "c-first").await,
+        None,
+    ));
+    let ru = texts::texts(Lang::Ru);
+    let en = texts::texts(Lang::En);
+    for (case, update, charge, calls, order, status) in [
+        (
+            "already entitled",
+            payment_from(ANN, "ru", 1, second, "c-second"),
+            "c-second",
+            unapplied_calls(ANN, ru, "c-second", "AlreadyEntitled"),
+            second.to_owned(),
+            "refunded",
+        ),
+        (
+            "order mismatch",
+            payment_from(BEN, "en", wrong_amount + 1, &wrong, "c-wrong"),
+            "c-wrong",
+            unapplied_calls(BEN, en, "c-wrong", "OrderMismatch"),
+            wrong.clone(),
+            "created",
+        ),
+        (
+            "unknown product",
+            payment_from(BEN, "en", retired_amount, &retired, "c-retired"),
+            "c-retired",
+            unapplied_calls(BEN, en, "c-retired", "UnknownProduct"),
+            retired.clone(),
+            "refunded",
+        ),
+    ] {
+        let before = gateway.calls().len();
+        let status_code = post_update(&st, &update).await.status.as_u16();
+        let got = gateway.calls().split_off(before);
+        failures.extend(expect_eq(
+            &format!("{case}: (status, gateway calls)"),
+            (status_code, got),
+            (200, calls),
+        ));
+        failures.extend(expect_eq(
+            &format!("{case}: refunded_at"),
+            refunded_at(&st, charge).await,
+            Some(T0),
+        ));
+        failures.extend(expect_eq(
+            &format!("{case}: order status"),
+            order_status(&st, &order).await,
+            status.to_owned(),
+        ));
+        failures.extend(expect_eq(
+            &format!("{case}: auto_refunds row (attempts, refusals, due_at, last_error)"),
+            auto_refund_row(&st, charge).await,
+            Some((1, 0, None, None)),
+        ));
+        let before = gateway.calls().len();
+        let status_code = post_update(&st, &update).await.status.as_u16();
+        let got = gateway.calls().split_off(before);
+        failures.extend(expect_eq(
+            &format!("{case} redelivered: (status, gateway calls)"),
+            (status_code, got),
+            (200, Vec::new()),
+        ));
+        failures.extend(expect_eq(
+            &format!("{case} redelivered: auto_refunds row"),
+            auto_refund_row(&st, charge).await,
+            Some((1, 0, None, None)),
+        ));
+    }
+    failures.extend(expect_eq(
+        "entitlements of c-first",
+        entitlements_of(&st, "c-first").await,
+        1,
+    ));
+    failures.extend(expect_eq(
+        "entitlements keyed to a refunded charge",
+        keyed_to_refunded(&st).await,
+        Vec::<String>::new(),
+    ));
     report(&failures);
 }

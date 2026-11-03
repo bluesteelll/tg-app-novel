@@ -247,12 +247,14 @@ async fn message(st: &AppState, m: &Message) -> Handled {
 }
 
 /// The grant for `fact`: 200 after the commit, whatever the outcome, an unapplied one after its notice in `lang`
-/// (the payment message's language); 500 on a database error, so Telegram redelivers and the idempotent grant runs
-/// again.
+/// (the payment message's language) and its first automatic refund attempt, both within one Bot API deadline
+/// ([`payments::after_grant`]); a refund that fails is retried by the sweep, never answered 500 (a 500 would hold the
+/// chat's later updates). 500 only on the grant's own database error, so Telegram redelivers and the idempotent grant
+/// runs again.
 async fn grant(st: &AppState, fact: &PaymentFact, lang: Lang) -> Handled {
     match payments::on_successful_payment(st, fact).await {
         Ok(outcome) => {
-            payments::notify_unapplied(st, fact, outcome, lang).await;
+            payments::after_grant(st, fact, outcome, lang).await;
             Handled::Ack
         }
         Err(e) => {

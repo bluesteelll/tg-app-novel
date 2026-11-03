@@ -1,6 +1,7 @@
 //! The bot's texts (PP V5, OPEN-QUESTIONS Q4): `server/locales/bot.ru.json` and `server/locales/bot.en.json`, Russian
 //! first, compiled in and parsed once. Each file is `{ "//": <note>, "drafts": [<key>...], "texts": {<key>: <text>} }`;
-//! `drafts` names the texts that are placeholders until the owner's own (`/terms`, `/support`, `/paysupport`).
+//! `drafts` names the texts that wait for the owner's VALUES step: the `/terms`, `/support` and `/paysupport`
+//! placeholders, and the payment and refund notices in engineering wording.
 //!
 //! Every text is plain (no parse mode). [`LangTexts::entries`] lists each one with its Telegram bound and its
 //! placeholders, and `bot_texts_complete_and_within_limits` checks both files against it.
@@ -52,7 +53,7 @@ pub struct BotFile {
     /// The file's own note: what is a placeholder, and whose the final texts are.
     #[serde(rename = "//")]
     pub note: String,
-    /// The keys whose texts are placeholders until the owner's VALUES step, sorted.
+    /// The keys whose texts wait for the owner's VALUES step (placeholders, engineering wording), sorted.
     pub drafts: Vec<String>,
     /// The texts.
     pub texts: LangTexts,

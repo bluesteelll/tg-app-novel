@@ -1,6 +1,6 @@
 {
-  "//": "PLACEHOLDER texts, English second (bot.ru.json is the primary language). The keys in drafts are placeholders with no real contact, name or address: the /terms, /support and /paysupport texts are the owner's at deploy (OPEN-QUESTIONS Q4, PROTOTYPE-PLAN V5), and that VALUES step empties drafts in both files. Plain text, no parse mode; bounds in server/src/telegram/texts.rs.",
-  "drafts": ["paysupport", "support", "terms"],
+  "//": "PLACEHOLDER texts, English second (bot.ru.json is the primary language). The keys in drafts wait for the owner's VALUES step (OPEN-QUESTIONS Q4, PROTOTYPE-PLAN V5), which empties drafts in both files: the /terms, /support and /paysupport texts hold no real contact, name or address yet, and the payment and refund notices are engineering wording. Plain text, no parse mode; bounds in server/src/telegram/texts.rs.",
+  "drafts": ["admin_unapplied", "payment_unapplied", "paysupport", "support", "terms"],
   "texts": {
     "start": "Welcome! This is a visual novel right inside Telegram. Tap the button below to start playing.",
     "start_button": "Play",
@@ -16,8 +16,8 @@
     "paysupport_unavailable": "Your payment list is unavailable right now. Please repeat /paysupport in a minute.",
     "privacy": "Privacy policy: {url}",
     "unknown_command": "Unknown command. Available commands: /start, /paysupport, /support, /terms, /privacy.",
-    "payment_unapplied": "Payment {charge} was received, but the purchase was not applied. We will sort it out: apply the purchase or refund the Stars. The payment number helps when you contact us (/paysupport).",
-    "admin_unapplied": "Unapplied payment {charge} from user {payer}: {outcome}. Check it and refund if needed: /refund {charge}",
+    "payment_unapplied": "Payment {charge} was received, but the purchase could not be applied. Your Stars are being refunded automatically. The payment number helps if you contact us (/paysupport).",
+    "admin_unapplied": "Unapplied payment {charge} from user {payer}: {outcome}. The automatic refund has started; a separate alert follows if Telegram refuses it.",
     "refund_usage": "Usage: /refund <payment number>",
     "refund_done": "Payment {charge} refunded. The purchase is revoked unless another payment paid for it.",
     "refund_already": "Payment {charge} is already refunded.",

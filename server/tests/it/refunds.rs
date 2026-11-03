@@ -18,10 +18,14 @@ use server::ids::{ChargeId, PuzzleId, UserId};
 use server::puzzles::Lang;
 use server::telegram::commands::utc_date;
 use server::telegram::gateway::GatewayError;
-use server::telegram::payments::{RefundError, RejectReason, RevokeOutcome, admin_refund, revoke};
+use server::telegram::payments::{
+    GrantOutcome, PaymentFact, RefundError, RejectReason, RevokeOutcome, admin_refund,
+    on_successful_payment, revoke,
+};
 use server::telegram::texts::{self, fill};
 use sqlx::Connection;
 
+use crate::auto_refunds::auto_refund_row;
 use crate::bot::{charge_lines, raw_order, say};
 use crate::catalog::{ANN, T0, get, own};
 use crate::common;
@@ -521,15 +525,20 @@ async fn refund_gifted_pack_keeps_friend_balance() {
 }
 
 /// An unapplied pack charge (paid at another amount: `OrderMismatch`, no `pay:` row) is still revoked, and claws
-/// back nothing: no ledger row, no balance, no debt.
+/// back nothing: no ledger row, no balance, no debt. Its automatic refund (owner Q9) is refused at the payment, so the
+/// charge is still unrefunded when the revoke runs.
 #[tokio::test]
 async fn refund_unapplied_charge_claws_back_nothing() {
-    let (st, _db, _gateway) = refund_state().await;
+    let (st, _db, gateway) = refund_state().await;
     let mut failures = Vec::new();
     let Some((order, amount)) = order_of(&st, ANN, "pack:hint_s", &mut failures).await else {
         return report(&failures);
     };
+    gateway.fail_refunds_with(Some(GatewayError::Api(
+        "Bad Request: REFUND_TEST".to_owned(),
+    )));
     pay(&st, ANN, amount + 1, &order, "c-wrong", &mut failures).await;
+    gateway.fail_refunds_with(None);
     failures.extend(expect_eq(
         "revoke",
         revoke_at(&st, T1, "c-wrong").await,
@@ -988,8 +997,9 @@ async fn keyed_to_refunded(st: &AppState) -> Vec<String> {
 }
 
 /// ANN's `chapter:ch2` paid with `c-a` at `T0` (granted), then each of `second`'s (order, charge, time) as a raw
-/// second order paid through the webhook at its time: a payment that slipped past the checkout window, recorded
-/// `AlreadyEntitled` (its order `paid`, no entitlement of its own). A setup that is not so is a failure line.
+/// second order paid at its time: a payment that slipped past the checkout window, recorded `AlreadyEntitled` (its
+/// order `paid`, no entitlement of its own) as a charge recorded before `0007` is: through the grant alone, so no
+/// automatic refund attempt runs, and with its `auto_refunds` row deleted. A setup that is not so is a failure line.
 async fn paid_twice(st: &AppState, second: &[(&str, &str, i64)], failures: &mut Vec<String>) {
     if bought(st, ANN, "chapter:ch2", "c-a", failures)
         .await
@@ -999,7 +1009,27 @@ async fn paid_twice(st: &AppState, second: &[(&str, &str, i64)], failures: &mut 
     }
     for &(order, charge, t) in second {
         raw_order(st, order, ANN, "chapter:ch2").await;
-        pay(&at(st, t), ANN, 1, order, charge, failures).await;
+        let fact = PaymentFact {
+            payer: UserId(ANN),
+            currency: "XTR".to_owned(),
+            total_amount: 1,
+            invoice_payload: order.to_owned(),
+            charge: ChargeId(charge.to_owned()),
+            provider_charge: String::new(),
+        };
+        let outcome = on_successful_payment(&at(st, t), &fact).await;
+        if !matches!(outcome, Ok(GrantOutcome::AlreadyEntitled)) {
+            failures.push(format!(
+                "setup: {charge}: expected Ok(AlreadyEntitled), got {outcome:?}"
+            ));
+        }
+        let mut c = common::raw_db(st).await;
+        sqlx::query("DELETE FROM auto_refunds WHERE charge_id = $1")
+            .bind(charge)
+            .execute(&mut c)
+            .await
+            .unwrap();
+        c.close().await.unwrap();
         let state = (
             order_status(st, order).await,
             entitlements_of(st, charge).await,
@@ -1192,6 +1222,183 @@ async fn refund_rekey_skips_charge_refunded_concurrently() {
     failures.extend(expect_eq(
         "entitlements keyed to a refunded charge",
         keyed_to_refunded(&st).await,
+        Vec::<String>::new(),
+    ));
+    report(&failures);
+}
+
+/// The payments neither refunded nor applied (no entitlement and no ledger row of the charge), read outside the app
+/// pool: a charge paid and left unapplied. Owner Q9 refunds every one of them.
+async fn paid_and_unapplied(st: &AppState) -> Vec<String> {
+    let mut c = common::raw_db(st).await;
+    let charges = sqlx::query_scalar(
+        "SELECT p.telegram_payment_charge_id FROM payments p WHERE p.refunded_at IS NULL \
+         AND NOT EXISTS (SELECT 1 FROM entitlements e WHERE e.charge_id = p.telegram_payment_charge_id) \
+         AND NOT EXISTS (SELECT 1 FROM resource_ledger l WHERE l.charge_id = p.telegram_payment_charge_id) \
+         ORDER BY 1",
+    )
+    .fetch_all(&mut c)
+    .await
+    .unwrap();
+    c.close().await.unwrap();
+    charges
+}
+
+/// Owner Q9 against the re-key (RULINGS 96): a charge with an `auto_refunds` row is never a successor. ANN pays ch2
+/// with `c-a`, then two raw second orders with `c-b` at `T0+60` and `c-c` at `T0+120` through the webhook, each
+/// `AlreadyEntitled` and its first refund attempt refused, so `c-b` stays pending; `c-c`'s row is then given up by raw
+/// SQL. Refunding `c-a` deletes the entitlement instead of re-keying it to either: no entitlement of `c-b` or `c-c`,
+/// none of (ANN, ch2), ch2 403 again, and none keyed to a refunded charge.
+#[tokio::test]
+async fn refund_rekey_skips_auto_refund_charge() {
+    let (st, _db, gateway) = refund_state().await;
+    let mut failures = Vec::new();
+    if bought(&st, ANN, "chapter:ch2", "c-a", &mut failures)
+        .await
+        .is_none()
+    {
+        return report(&failures);
+    }
+    gateway.fail_refunds_with(Some(GatewayError::Api(
+        "Bad Request: REFUND_TEST".to_owned(),
+    )));
+    for (order, charge, t) in [
+        ("o_000000000000000000000000000000b0", "c-b", T0 + 60),
+        ("o_000000000000000000000000000000c0", "c-c", T0 + 120),
+    ] {
+        raw_order(&st, order, ANN, "chapter:ch2").await;
+        pay(&at(&st, t), ANN, 1, order, charge, &mut failures).await;
+        let state = (
+            order_status(&st, order).await,
+            entitlements_of(&st, charge).await,
+        );
+        if state != ("paid".to_owned(), 0) {
+            failures.push(format!(
+                "setup: {charge}: expected AlreadyEntitled (its order paid, no entitlement of its own), got {state:?}"
+            ));
+        }
+        let row = auto_refund_row(&st, charge).await;
+        if !row.as_ref().is_some_and(|row| row.2.is_some()) {
+            failures.push(format!(
+                "setup: {charge}: expected a due auto-refund row, got {row:?}"
+            ));
+        }
+    }
+    gateway.fail_refunds_with(None);
+    let mut c = common::raw_db(&st).await;
+    sqlx::query("UPDATE auto_refunds SET due_at = NULL WHERE charge_id = 'c-c'")
+        .execute(&mut c)
+        .await
+        .unwrap();
+    c.close().await.unwrap();
+    failures.extend(expect_eq(
+        "refund of c-a",
+        revoke_at(&st, T1, "c-a").await,
+        Ok(RevokeOutcome::Revoked),
+    ));
+    for charge in ["c-b", "c-c"] {
+        failures.extend(expect_eq(
+            &format!("after refunding c-a: entitlements of {charge}"),
+            entitlements_of(&st, charge).await,
+            0,
+        ));
+    }
+    failures.extend(expect_eq(
+        "after refunding c-a: entitlements of (ANN, chapter:ch2)",
+        product_entitlements(&st, ANN, "chapter:ch2").await,
+        0,
+    ));
+    failures.extend(expect_eq(
+        "after refunding c-a: GET ch2",
+        get(&st, Some(ANN), "/api/chapters/ch2")
+            .await
+            .status
+            .as_u16(),
+        403,
+    ));
+    failures.extend(expect_eq(
+        "entitlements keyed to a refunded charge",
+        keyed_to_refunded(&st).await,
+        Vec::<String>::new(),
+    ));
+    report(&failures);
+}
+
+/// LPH's residual (RULINGS 100, closure (B) ruled covered by owner Q9), reproduced: the admin's revoke of `c-a` has
+/// read its successors (none) and waits at its order step on a held row; `c-c`'s payment of a raw second order then
+/// lands in that window: its entitlement insert meets the untouched row and is `AlreadyEntitled`. `c-c` is refunded
+/// within its own update (`refundStarPayment` to ANN, `refunded_at` set, its order `refunded`); released, the revoke
+/// of `c-a` deletes the entitlement. Nothing is left paid and unapplied, and no entitlement is keyed to a refunded
+/// charge.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refund_rekey_race_new_charge_auto_refunded() {
+    let (st, _db, gateway) = refund_state().await;
+    let mut failures = Vec::new();
+    if bought(&st, ANN, "chapter:ch2", "c-a", &mut failures)
+        .await
+        .is_none()
+    {
+        return report(&failures);
+    }
+    let order_c = "o_000000000000000000000000000000c0";
+    raw_order(&st, order_c, ANN, "chapter:ch2").await;
+    let held = hold_row(
+        &st,
+        "SELECT 1 FROM orders WHERE charge_id = $1 FOR UPDATE",
+        "c-a",
+    )
+    .await;
+    let app = st.clone();
+    let mut revoke = tokio::spawn(async move { revoke_at(&app, T1, "c-a").await });
+    let early = tokio::select! {
+        biased;
+        got = &mut revoke => Some(got.unwrap()),
+        () = common::wait_for_lock_waiter(&st) => None,
+    };
+    if early.is_some() {
+        failures.push(
+            "the revoke of c-a never waited on its order row: it finished while the row was held"
+                .to_owned(),
+        );
+    }
+    pay(&at(&st, T0 + 60), ANN, 1, order_c, "c-c", &mut failures).await;
+    failures.extend(expect_eq(
+        "c-c: refundStarPayment calls",
+        refund_calls(&gateway),
+        vec![(ANN, "c-c".to_owned())],
+    ));
+    failures.extend(expect_eq(
+        "c-c: (order status, entitlements, refunded_at)",
+        (
+            order_status(&st, order_c).await,
+            entitlements_of(&st, "c-c").await,
+            refunded_at(&st, "c-c").await,
+        ),
+        ("refunded".to_owned(), 0, Some(T0 + 60)),
+    ));
+    release(held).await;
+    let got = match early {
+        Some(got) => got,
+        None => revoke.await.unwrap(),
+    };
+    failures.extend(expect_eq(
+        "the revoke of c-a",
+        got,
+        Ok(RevokeOutcome::Revoked),
+    ));
+    failures.extend(expect_eq(
+        "entitlements of (ANN, chapter:ch2)",
+        product_entitlements(&st, ANN, "chapter:ch2").await,
+        0,
+    ));
+    failures.extend(expect_eq(
+        "entitlements keyed to a refunded charge",
+        keyed_to_refunded(&st).await,
+        Vec::<String>::new(),
+    ));
+    failures.extend(expect_eq(
+        "paid and unapplied",
+        paid_and_unapplied(&st).await,
         Vec::<String>::new(),
     ));
     report(&failures);

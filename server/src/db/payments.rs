@@ -2,11 +2,15 @@
 //! and then moves the order to `checkout` in one conditional statement (RULINGS 14, M19), the grant on
 //! `successful_payment`, written first and made idempotent by the `payments_pkey` arbiter (K19), and the revoke of a
 //! refund, made exactly-once by the payment row's `refunded_at IS NULL` guard (K20, M20), which re-keys a chapter's
-//! entitlement to another unrefunded paid charge of the payer for it instead of deleting it (RULINGS 96).
+//! entitlement to another unrefunded paid charge of the payer for it instead of deleting it (RULINGS 96). An unapplied
+//! charge's automatic refund (owner Q9) is scheduled by its grant and claimed attempt by attempt through one guarded
+//! `UPDATE` of its `auto_refunds` row; the revoke settles that row.
 //!
 //! The money-fact, decision and outcome types live here, next to the statements that bind and decide them;
 //! `telegram::payments` re-exports them, so `db/` never imports `telegram/`. Every Telegram string is bound through
 //! [`without_nul`].
+
+use sqlx::PgConnection;
 
 use crate::catalog::{ProductRef, ResourceKind, parse_product_id};
 use crate::db::economy::{
@@ -87,6 +91,29 @@ pub enum GrantOutcome {
     /// Recorded and the order paid, but its product id names no product kind this build can grant (or a pack order
     /// without its binding, which `orders_pack_binding` forbids): not applied.
     UnknownProduct,
+}
+
+impl GrantOutcome {
+    /// Whether the charge was recorded now and applied to nothing: `OrderMismatch`, `AlreadyEntitled`,
+    /// `UnknownProduct` (owner Q9 refunds each automatically). No wildcard arm: a new outcome does not compile until
+    /// it is sorted here.
+    pub fn unapplied(self) -> bool {
+        match self {
+            GrantOutcome::Granted | GrantOutcome::Duplicate => false,
+            GrantOutcome::OrderMismatch
+            | GrantOutcome::AlreadyEntitled
+            | GrantOutcome::UnknownProduct => true,
+        }
+    }
+}
+
+/// What the write of a failed auto-refund attempt did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoRefundRetry {
+    /// The row is due again at the backoff's time.
+    Scheduled,
+    /// The row was already claimed by a later attempt, or settled by a refund on another path: nothing written.
+    Superseded,
 }
 
 /// What a revoke did (K20). Only `Revoked` wrote anything.
@@ -220,6 +247,10 @@ impl Repo {
     ///    (no row → `AlreadyEntitled`); a pack → the credit of the kind and amount the order bound at invoice time
     ///    (never the catalog's current values), keyed `pay:<charge>` (M19); an id no product grammar knows →
     ///    `UnknownProduct`, the order paid with no entitlement and no credit.
+    /// 4. An unapplied outcome ([`GrantOutcome::unapplied`]) inserts the charge's `auto_refunds` row, due at `now`,
+    ///    before the commit (owner Q9): the money fact and the decision to refund it commit together, so a crash after
+    ///    the commit cannot leave an unapplied charge with no refund scheduled (a redelivery is `Duplicate` and could
+    ///    not schedule it again). The row is a new key, locked last.
     ///
     /// Every outcome commits; only an `Err` does not.
     pub async fn grant(&self, fact: &PaymentFact, now: i64) -> Result<GrantOutcome, sqlx::Error> {
@@ -263,6 +294,7 @@ impl Repo {
         .fetch_optional(&mut *tx)
         .await?;
         let Some((product, pack_kind, pack_amount)) = paid else {
+            schedule_auto_refund(&mut tx, &charge, now).await?;
             tx.commit().await?;
             return Ok(GrantOutcome::OrderMismatch);
         };
@@ -313,6 +345,9 @@ impl Repo {
             },
             None => GrantOutcome::UnknownProduct,
         };
+        if outcome.unapplied() {
+            schedule_auto_refund(&mut tx, &charge, now).await?;
+        }
         tx.commit().await?;
         Ok(outcome)
     }
@@ -326,28 +361,31 @@ impl Repo {
     ///    charge whose own order of the entitlement's product is `paid` and which keys no entitlement, i.e. a second
     ///    payment of the chapter that slipped past the checkout window (`AlreadyEntitled`, notified as unapplied). An
     ///    order is `paid` only by a grant that matched it, so its product and price are proven; an `OrderMismatch` or
-    ///    `UnknownProduct` charge, another user's, a pack's or a refunded one never qualifies. The candidates' payment
-    ///    rows are locked `FOR SHARE` (RULINGS 97 Q10): a concurrent refund of a candidate holds its row from its
-    ///    guard, so this read waits, then re-checks the row's `refunded_at` and drops it;
+    ///    `UnknownProduct` charge, another user's, a pack's or a refunded one never qualifies, and neither does a
+    ///    charge with an `auto_refunds` row (pending, given up or settled: owner Q9 refunds it, so it never keys an
+    ///    entitlement). The candidates' payment rows are locked `FOR SHARE` (RULINGS 97 Q10): a concurrent refund of a
+    ///    candidate holds its row from its guard, so this read waits, then re-checks the row's `refunded_at` and drops
+    ///    it;
     /// 3. the charge's order → `refunded`, if it has one;
     /// 4. the charge's entitlement re-keyed to the successor (`granted_at` kept: access never lapsed), or deleted
     ///    when there is none (an `AlreadyEntitled` charge keys none: the entitlement is another charge's);
     /// 5. the pack credit of the charge (its `pay:<charge>` row, never the catalog) clawed back, keyed
-    ///    `refund:<charge>`: the balance first, the rest as debt. No credit (an unapplied charge, a chapter) → none.
+    ///    `refund:<charge>`: the balance first, the rest as debt. No credit (an unapplied charge, a chapter) → none;
+    /// 6. the charge's `auto_refunds` row, if it has one, settled (`due_at` NULL): whichever path refunded the charge
+    ///    (the automatic attempt, the admin's `/refund`, Telegram's `refunded_payment`), it is never attempted again.
     ///
     /// Every undo is keyed by the charge's own rows, so an entitlement without an order is revoked too. No statistics
     /// or ledger row is deleted (ST4). The re-key grants nothing: the row this charge's `successful_payment` created
     /// moves to a charge recorded by its own `payments_pkey` insert, and `entitlements_charge_key` keeps every charge
     /// applied at most once. The lock order is all payments rows (the guard's, then the candidates'), then orders,
-    /// entitlements, the ledger key, the balance.
+    /// entitlements, the ledger key, the balance, and last the charge's own `auto_refunds` row.
     ///
-    /// Residual (RULINGS 100, accepted): a grant of a new charge C of the same chapter whose entitlement insert
-    /// (`ON CONFLICT DO NOTHING`, no payer lock) runs between step 2 and step 4 meets the committed entitlement row,
-    /// which this transaction has not touched yet, and returns `AlreadyEntitled` without waiting; step 2 could not see
-    /// C, so step 4 deletes, and C stays paid with no entitlement. Both of C's unapplied notices (payer and admins)
-    /// fired at its grant, an admin `/refund` of C recovers it, and nothing is ever granted twice. Only a refund from
-    /// another chat (the admin's `/refund`) opens the window: Telegram's `refunded_payment` arrives in the payer's
-    /// chat, serialized with C's `successful_payment`.
+    /// The residual of RULINGS 100 is closed by owner Q9 (closure (B) ruled covered): a grant of a new charge C of the
+    /// same chapter whose entitlement insert (`ON CONFLICT DO NOTHING`, no payer lock) runs between step 2 and step 4
+    /// meets the committed entitlement row and returns `AlreadyEntitled` without waiting, so step 4 deletes. C's grant
+    /// committed C's `auto_refunds` row, so C is refunded automatically (its first attempt right after its grant, the
+    /// sweep after that), never left paid and unapplied; and since step 2 skips every charge with such a row, the
+    /// window no longer changes the outcome: C is refunded whether its grant ran inside it or before step 2.
     pub async fn revoke(&self, charge: &ChargeId, now: i64) -> Result<RevokeOutcome, sqlx::Error> {
         let charge = without_nul(&charge.0);
         let mut tx = self.pool.begin().await?;
@@ -388,6 +426,8 @@ impl Repo {
              WHERE e.charge_id = $1 AND p.user_id = e.user_id AND p.refunded_at IS NULL \
              AND NOT EXISTS (SELECT 1 FROM entitlements e2 \
                              WHERE e2.charge_id = p.telegram_payment_charge_id) \
+             AND NOT EXISTS (SELECT 1 FROM auto_refunds r \
+                             WHERE r.charge_id = p.telegram_payment_charge_id) \
              ORDER BY p.paid_at, p.telegram_payment_charge_id \
              FOR SHARE OF p",
         )
@@ -444,8 +484,85 @@ impl Repo {
             // A `Duplicate` cannot follow the guard above (the key is the charge's): the clawback exists once.
             clawback_in_tx(&mut tx, &clawback).await?;
         }
+        // In the guard's transaction: `due_at IS NOT NULL` never outlives the `refunded_at` set above.
+        sqlx::query("UPDATE auto_refunds SET due_at = NULL WHERE charge_id = $1")
+            .bind(&*charge)
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await?;
         Ok(RevokeOutcome::Revoked)
+    }
+
+    /// The claim of `charge`'s next automatic refund attempt at `now`, in one autocommit statement: the row is
+    /// claimed only while it is due (`due_at <= now`), its `due_at` moved to `lease_until` and its attempts counted.
+    /// This guarded `UPDATE` is the exactly-once arbiter among attempts, never a read then a write: a twin claimer
+    /// waits on the row lock, then READ COMMITTED re-checks the committed row, finds `due_at` past `now` and gets no
+    /// row. An attempt that dies after its claim leaves the row claimable again at `lease_until`. `None`: not due,
+    /// claimed by another attempt, settled or given up. The payer comes from the payment row, never a request.
+    pub async fn claim_auto_refund(
+        &self,
+        charge: &ChargeId,
+        now: i64,
+        lease_until: i64,
+    ) -> Result<Option<(UserId, i64)>, sqlx::Error> {
+        let charge = without_nul(&charge.0);
+        let claimed: Option<(i64, i64)> = sqlx::query_as(
+            "UPDATE auto_refunds r SET due_at = $3, attempts = r.attempts + 1 \
+             FROM payments p \
+             WHERE r.charge_id = $1 AND r.due_at <= $2 AND p.telegram_payment_charge_id = r.charge_id \
+             RETURNING p.user_id, r.attempts",
+        )
+        .bind(&*charge)
+        .bind(now)
+        .bind(lease_until)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(claimed.map(|(payer, attempts)| (UserId(payer), attempts)))
+    }
+
+    /// The write of `charge`'s failed attempt number `attempt`: due again at `next_due`, `error` recorded, a refusal
+    /// counted when `refused`. Only the claim of that attempt can write it (`attempts = attempt`: a claimer whose lease
+    /// ran out cannot overwrite a newer attempt), and only while the row is pending (`due_at IS NOT NULL`: a failure
+    /// never revives a row a refund on another path settled). It never writes a settled state: `refunded_at` is the
+    /// revoke's alone.
+    pub async fn auto_refund_failed(
+        &self,
+        charge: &ChargeId,
+        attempt: i64,
+        refused: bool,
+        next_due: i64,
+        error: &str,
+    ) -> Result<AutoRefundRetry, sqlx::Error> {
+        let charge = without_nul(&charge.0);
+        let error = without_nul(error);
+        let written: Option<String> = sqlx::query_scalar(
+            "UPDATE auto_refunds SET due_at = $3, last_error = $4, refusals = refusals + $5 \
+             WHERE charge_id = $1 AND attempts = $2 AND due_at IS NOT NULL \
+             RETURNING charge_id",
+        )
+        .bind(&*charge)
+        .bind(attempt)
+        .bind(next_due)
+        .bind(&*error)
+        .bind(i64::from(refused))
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(match written {
+            Some(_) => AutoRefundRetry::Scheduled,
+            None => AutoRefundRetry::Superseded,
+        })
+    }
+
+    /// `charge`'s `auto_refunds` row settled (`due_at` NULL), for a charge the revoke found refunded already: the
+    /// revoke settles the row of every refund it records, so this only matters for a `refunded_at` written outside it
+    /// (critique O3), which would otherwise be claimed again at every lease.
+    pub async fn settle_auto_refund(&self, charge: &ChargeId) -> Result<(), sqlx::Error> {
+        let charge = without_nul(&charge.0);
+        sqlx::query("UPDATE auto_refunds SET due_at = NULL WHERE charge_id = $1")
+            .bind(&*charge)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     /// The payment row of `charge` (one primary-key read), or `None` when no payment has it.
@@ -511,6 +628,25 @@ impl Repo {
 
 /// One `charges_of` row: (charge, amount, paid_at, refunded_at, applied, the user's payment count).
 type ChargeRow = (String, i64, i64, Option<i64>, bool, i64);
+
+/// The `auto_refunds` row of the unapplied charge `charge` (already through `without_nul`), due at `now` with no
+/// attempt yet, in the grant's transaction `c`. The key cannot exist (the grant just inserted the charge's payment);
+/// `DO NOTHING` keeps a conflict from turning a recorded money fact into an error.
+async fn schedule_auto_refund(
+    c: &mut PgConnection,
+    charge: &str,
+    now: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO auto_refunds (charge_id, created_at, attempts, refusals, due_at) VALUES ($1, $2, 0, 0, $2) \
+         ON CONFLICT ON CONSTRAINT auto_refunds_pkey DO NOTHING",
+    )
+    .bind(charge)
+    .bind(now)
+    .execute(&mut *c)
+    .await?;
+    Ok(())
+}
 
 /// The idempotency key of the pack clawback of `charge` (already through `without_nul`): `refund:<charge>`.
 fn refund_key(charge: &str) -> String {
