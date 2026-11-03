@@ -96,6 +96,9 @@ pub struct LangTexts {
     pub payment_unapplied: String,
     /// To each admin about such a charge: `{charge}`, `{payer}`, `{outcome}`.
     pub admin_unapplied: String,
+    /// To each admin when such a charge's automatic refund is given up: `{charge}`, `{payer}`, `{attempts}`,
+    /// `{error}`.
+    pub admin_auto_refund_failed: String,
     /// `/refund` without a usable charge id.
     pub refund_usage: String,
     /// `/refund`: revoked: `{charge}`.
@@ -168,6 +171,7 @@ impl LangTexts {
             unknown_command,
             payment_unapplied,
             admin_unapplied,
+            admin_auto_refund_failed,
             refund_usage,
             refund_done,
             refund_already,
@@ -245,6 +249,12 @@ impl LangTexts {
                 admin_unapplied,
                 MESSAGE_LIMIT,
                 &["charge", "outcome", "payer"],
+            ),
+            entry(
+                "admin_auto_refund_failed",
+                admin_auto_refund_failed,
+                MESSAGE_LIMIT,
+                &["attempts", "charge", "error", "payer"],
             ),
             entry("refund_usage", refund_usage, MESSAGE_LIMIT, &[]),
             entry("refund_done", refund_done, MESSAGE_LIMIT, &["charge"]),

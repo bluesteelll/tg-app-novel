@@ -107,6 +107,15 @@ struct RecordLog {
     prepare_failure: Option<GatewayError>,
     /// The error `refundStarPayment` alone answers with, when set (and no `failure` is).
     refund_failure: Option<GatewayError>,
+    /// `refundStarPayment` records the call, then never answers.
+    hang_refunds: bool,
+    /// `refundStarPayment` refunds each charge at most once, as Telegram does: a charge refunded before answers
+    /// `CHARGE_ALREADY_REFUNDED`.
+    telegram_refunds: bool,
+    /// `refundStarPayment` refunds, then answers `Timeout`: Telegram's answer was lost.
+    lose_refund_answers: bool,
+    /// The charges refunded at "Telegram" while `telegram_refunds` was on, in order.
+    telegram_refunded: Vec<ChargeId>,
     /// What the database probe read at each `createInvoiceLink`, in order.
     probes: Vec<Option<(String, Option<String>)>>,
 }
@@ -150,6 +159,27 @@ impl RecordingGateway {
     /// unchanged, so an unapplied payment's notice goes out while its automatic refund fails.
     pub(crate) fn fail_refunds_with(&self, failure: Option<GatewayError>) {
         self.log().refund_failure = failure;
+    }
+
+    /// `refundStarPayment` from now on records the call and never answers (`false`: answers again).
+    pub(crate) fn hang_refunds(&self, on: bool) {
+        self.log().hang_refunds = on;
+    }
+
+    /// `refundStarPayment` from now on refunds a charge at most once and answers `CHARGE_ALREADY_REFUNDED` after
+    /// that, as Telegram does (`false`: every call answers as configured again).
+    pub(crate) fn telegram_refunds(&self, on: bool) {
+        self.log().telegram_refunds = on;
+    }
+
+    /// `refundStarPayment` from now on refunds, then answers `Timeout` (`false`: answers again).
+    pub(crate) fn lose_refund_answers(&self, on: bool) {
+        self.log().lose_refund_answers = on;
+    }
+
+    /// The charges "Telegram" refunded while [`RecordingGateway::telegram_refunds`] was on, in order.
+    pub(crate) fn telegram_refunded(&self) -> Vec<ChargeId> {
+        self.log().telegram_refunded.clone()
     }
 
     /// Every call so far, in order.
@@ -210,15 +240,34 @@ impl RecordingGateway {
         log.failure.clone().map_or(Ok(()), Err)
     }
 
-    /// Records the `refundStarPayment` of `charge` to `user` and returns its answer: the failure of every call, else
-    /// the refunds' own.
-    fn refund(&self, user: UserId, charge: ChargeId) -> Result<(), GatewayError> {
+    /// Records the `refundStarPayment` of `charge` to `user` and returns its answer (`None`: it never answers): the
+    /// failure of every call, else the refunds' own failure, else a hang, else the refund ("Telegram" refunds a
+    /// charge once while `telegram_refunds` is on) and its answer, lost or not.
+    fn refund(&self, user: UserId, charge: ChargeId) -> Option<Result<(), GatewayError>> {
         let mut log = self.log();
-        log.calls.push(GatewayCall::Refund { user, charge });
-        match log.failure.clone().or_else(|| log.refund_failure.clone()) {
-            Some(failure) => Err(failure),
-            None => Ok(()),
+        log.calls.push(GatewayCall::Refund {
+            user,
+            charge: charge.clone(),
+        });
+        if let Some(failure) = log.failure.clone().or_else(|| log.refund_failure.clone()) {
+            return Some(Err(failure));
         }
+        if log.hang_refunds {
+            return None;
+        }
+        if log.telegram_refunds {
+            if log.telegram_refunded.contains(&charge) {
+                return Some(Err(GatewayError::Api(
+                    "Bad Request: CHARGE_ALREADY_REFUNDED".to_owned(),
+                )));
+            }
+            log.telegram_refunded.push(charge);
+        }
+        Some(if log.lose_refund_answers {
+            Err(GatewayError::Timeout)
+        } else {
+            Ok(())
+        })
     }
 }
 
@@ -261,7 +310,13 @@ impl BotGateway for RecordingGateway {
         user: UserId,
         charge: ChargeId,
     ) -> BoxFut<'_, Result<(), GatewayError>> {
-        Box::pin(async move { self.refund(user, charge) })
+        Box::pin(async move {
+            // The log's guard is released inside `refund`, before a hang waits.
+            match self.refund(user, charge) {
+                Some(answer) => answer,
+                None => std::future::pending().await,
+            }
+        })
     }
 
     fn send_message(&self, msg: OutMessage) -> BoxFut<'_, Result<(), GatewayError>> {

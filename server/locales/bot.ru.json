@@ -1,6 +1,6 @@
 {
   "//": "PLACEHOLDER texts, Russian first (bot.en.json is the second language). The keys in drafts wait for the owner's VALUES step (OPEN-QUESTIONS Q4, PROTOTYPE-PLAN V5), which empties drafts in both files: the /terms, /support and /paysupport texts hold no real contact, name or address yet, and the payment and refund notices are engineering wording. Plain text, no parse mode; bounds in server/src/telegram/texts.rs.",
-  "drafts": ["admin_unapplied", "payment_unapplied", "paysupport", "support", "terms"],
+  "drafts": ["admin_auto_refund_failed", "admin_unapplied", "payment_unapplied", "paysupport", "support", "terms"],
   "texts": {
     "start": "Добро пожаловать! Это визуальная новелла прямо в Telegram. Нажмите кнопку ниже, чтобы начать игру.",
     "start_button": "Играть",
@@ -18,6 +18,7 @@
     "unknown_command": "Неизвестная команда. Доступные команды: /start, /paysupport, /support, /terms, /privacy.",
     "payment_unapplied": "Платёж {charge} получен, но покупку не удалось зачислить. Звёзды возвращаются вам автоматически. Номер платежа поможет при обращении (/paysupport).",
     "admin_unapplied": "Незачисленный платёж {charge} от пользователя {payer}: {outcome}. Автовозврат запущен; если Telegram откажет, придёт отдельное уведомление.",
+    "admin_auto_refund_failed": "Автовозврат платежа {charge} пользователю {payer} остановлен после попыток: {attempts}. Последняя ошибка: {error}. Верните вручную: /refund {charge}",
     "refund_usage": "Использование: /refund <номер платежа>",
     "refund_done": "Платёж {charge} возвращён. Покупка отозвана, если её не оплатил другой платёж.",
     "refund_already": "Платёж {charge} уже возвращён.",

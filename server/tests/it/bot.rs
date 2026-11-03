@@ -74,7 +74,8 @@ fn listed(names: &[&str]) -> String {
 
 /// The texts waiting for the owner's VALUES step, sorted: the `/terms`, `/support` and `/paysupport` placeholders, and
 /// every payment or refund notice owner Q9's lane added or reworded.
-const DRAFTS: [&str; 5] = [
+const DRAFTS: [&str; 6] = [
+    "admin_auto_refund_failed",
     "admin_unapplied",
     "payment_unapplied",
     "paysupport",

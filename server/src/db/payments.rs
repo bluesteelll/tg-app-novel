@@ -112,6 +112,8 @@ impl GrantOutcome {
 pub enum AutoRefundRetry {
     /// The row is due again at the backoff's time.
     Scheduled,
+    /// The refusals reached the bound: the row is given up (`due_at` NULL) and waits for an admin's `/refund`.
+    GaveUp,
     /// The row was already claimed by a later attempt, or settled by a refund on another path: nothing written.
     Superseded,
 }
@@ -520,11 +522,12 @@ impl Repo {
         Ok(claimed.map(|(payer, attempts)| (UserId(payer), attempts)))
     }
 
-    /// The write of `charge`'s failed attempt number `attempt`: due again at `next_due`, `error` recorded, a refusal
-    /// counted when `refused`. Only the claim of that attempt can write it (`attempts = attempt`: a claimer whose lease
-    /// ran out cannot overwrite a newer attempt), and only while the row is pending (`due_at IS NOT NULL`: a failure
-    /// never revives a row a refund on another path settled). It never writes a settled state: `refunded_at` is the
-    /// revoke's alone.
+    /// The write of `charge`'s failed attempt number `attempt`: `error` recorded, a refusal counted when `refused`, and
+    /// due again at `next_due`, or given up (`due_at` NULL) once the refusals reach `max_refusals`; a failure that is
+    /// not a refusal never gives up (critique W2). Only the claim of that attempt can write it (`attempts = attempt`:
+    /// a claimer whose lease ran out cannot overwrite a newer attempt), and only while the row is pending
+    /// (`due_at IS NOT NULL`: a failure never revives a row a refund on another path settled), so exactly one writer
+    /// sees [`AutoRefundRetry::GaveUp`]. It never writes a settled state: `refunded_at` is the revoke's alone.
     pub async fn auto_refund_failed(
         &self,
         charge: &ChargeId,
@@ -532,25 +535,44 @@ impl Repo {
         refused: bool,
         next_due: i64,
         error: &str,
+        max_refusals: i64,
     ) -> Result<AutoRefundRetry, sqlx::Error> {
         let charge = without_nul(&charge.0);
         let error = without_nul(error);
-        let written: Option<String> = sqlx::query_scalar(
-            "UPDATE auto_refunds SET due_at = $3, last_error = $4, refusals = refusals + $5 \
+        // The right-hand sides read the row as it was: `refusals + $5` is the count after this attempt.
+        let gave_up: Option<bool> = sqlx::query_scalar(
+            "UPDATE auto_refunds SET refusals = refusals + $5, last_error = $4, \
+             due_at = CASE WHEN refusals + $5 >= $6 THEN NULL ELSE $3 END \
              WHERE charge_id = $1 AND attempts = $2 AND due_at IS NOT NULL \
-             RETURNING charge_id",
+             RETURNING due_at IS NULL",
         )
         .bind(&*charge)
         .bind(attempt)
         .bind(next_due)
         .bind(&*error)
         .bind(i64::from(refused))
+        .bind(max_refusals)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(match written {
-            Some(_) => AutoRefundRetry::Scheduled,
+        Ok(match gave_up {
+            Some(false) => AutoRefundRetry::Scheduled,
+            Some(true) => AutoRefundRetry::GaveUp,
             None => AutoRefundRetry::Superseded,
         })
+    }
+
+    /// The charges whose automatic refund is due at `now`, the longest due first, at most `limit`: one plain read on
+    /// `auto_refunds_due`. Each is then claimed on its own ([`Repo::claim_auto_refund`]), so a row another sweep or
+    /// the webhook claims meanwhile is skipped there, not here.
+    pub async fn due_auto_refunds(&self, now: i64, limit: i64) -> Result<Vec<String>, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT charge_id FROM auto_refunds WHERE due_at <= $1 \
+             ORDER BY due_at, charge_id LIMIT $2",
+        )
+        .bind(now)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
     }
 
     /// `charge`'s `auto_refunds` row settled (`due_at` NULL), for a charge the revoke found refunded already: the

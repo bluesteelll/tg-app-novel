@@ -47,6 +47,18 @@ const AUTO_REFUND_FIRST_WAIT_SECS: i64 = 60;
 /// The longest wait between two automatic refund attempts, in seconds.
 const AUTO_REFUND_MAX_WAIT_SECS: i64 = 3600;
 
+/// How many refusals by the Bot API an automatic refund takes before it is given up and the admins are alerted: with
+/// every attempt refused, the eighth runs about 2 h 03 min after the first. A timeout or a transport break is not a
+/// refusal and never gives up (critique W2): an outage of the host's link is retried at the longest wait until it
+/// ends.
+pub const AUTO_REFUND_MAX_REFUSALS: i64 = 8;
+
+/// The pause between two passes of the automatic refund sweep.
+pub const AUTO_REFUND_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
+
+/// The most due rows one sweep pass attempts; the rest wait for the next pass.
+pub const AUTO_REFUND_SWEEP_BATCH: i64 = 20;
+
 /// The primary language subtags whose speakers get Russian texts (K29); every other tag, or none, gets English.
 pub(crate) const RUSSIAN_LANGS: [&str; 4] = ["ru", "uk", "be", "kk"];
 
@@ -212,6 +224,8 @@ enum Attempt {
     /// The call or the revoke failed: the row is due again at the backoff's time, or, when a database step after the
     /// call failed (logged), at its lease's end.
     Failed,
+    /// The call was refused for the [`AUTO_REFUND_MAX_REFUSALS`]th time: the row is given up and the admins alerted.
+    GaveUp,
 }
 
 /// One automatic refund attempt of `charge` (its stored id), its Bot API call cut at `deadline`:
@@ -222,7 +236,8 @@ enum Attempt {
 ///    retry meets `CHARGE_ALREADY_REFUNDED`;
 /// 4. any other answer: the failure write ([`Repo::auto_refund_failed`]), due again after
 ///    [`auto_refund_backoff`]. `Api` and `Disabled` count as refusals; a timeout or a transport break does not
-///    (Telegram may not have seen the call, and the retry is safe either way).
+///    (Telegram may not have seen the call, and the retry is safe either way). The refusal that reaches
+///    [`AUTO_REFUND_MAX_REFUSALS`] gives the row up, and its attempt alone alerts the admins.
 ///
 /// [`Repo::claim_auto_refund`]: crate::db::Repo::claim_auto_refund
 /// [`Repo::auto_refund_failed`]: crate::db::Repo::auto_refund_failed
@@ -284,9 +299,26 @@ async fn attempt(st: &AppState, charge: &ChargeId, deadline: Instant) -> Attempt
     let next_due = st.clock.now().saturating_add(auto_refund_backoff(attempts));
     match st
         .repo
-        .auto_refund_failed(charge, attempts, refused, next_due, &error)
+        .auto_refund_failed(
+            charge,
+            attempts,
+            refused,
+            next_due,
+            &error,
+            AUTO_REFUND_MAX_REFUSALS,
+        )
         .await
     {
+        Ok(AutoRefundRetry::GaveUp) => {
+            tracing::error!(
+                charge = %charge.0,
+                attempts,
+                error = %error,
+                "auto-refund given up; the admins are alerted"
+            );
+            alert_given_up(st, charge, payer, attempts, &error).await;
+            return Attempt::GaveUp;
+        }
         Ok(AutoRefundRetry::Scheduled) => {
             // Logged after the write returned: a reader of this line sees the row as written.
             tracing::warn!(
@@ -315,6 +347,98 @@ async fn attempt(st: &AppState, charge: &ChargeId, deadline: Instant) -> Attempt
         }
     }
     Attempt::Failed
+}
+
+/// The admins' alert that `charge`'s automatic refund to `payer` was given up after `attempts` attempts, the last
+/// failing with `error`: each admin in Russian, one message after another, cut at one [`CALL_DEADLINE`]. Sent once,
+/// by the attempt whose failure write gave the row up; a failure to send is logged (the row stays given up, and
+/// `/paysupport` shows the charge as not applied).
+async fn alert_given_up(
+    st: &AppState,
+    charge: &ChargeId,
+    payer: UserId,
+    attempts: i64,
+    error: &str,
+) {
+    let text = fill(
+        &texts::texts(Lang::Ru).admin_auto_refund_failed,
+        &[
+            ("charge", &charge.0),
+            ("payer", &payer.0.to_string()),
+            ("attempts", &attempts.to_string()),
+            ("error", error),
+        ],
+    );
+    let alert = async {
+        for &admin in &st.cfg.admin_telegram_ids {
+            let to_admin = OutMessage {
+                chat_id: admin,
+                text: text.clone(),
+                web_app_button: None,
+            };
+            if let Err(e) = st.gateway.send_message(to_admin).await {
+                tracing::error!(charge = %charge.0, error = %e, "auto-refund given up: an admin's alert failed");
+            }
+        }
+    };
+    if tokio::time::timeout(CALL_DEADLINE, alert).await.is_err() {
+        tracing::error!(charge = %charge.0, "auto-refund given up: the alert was cut at the deadline");
+    }
+}
+
+/// What one pass of the automatic refund sweep did: the attempts it claimed, and how each ended.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SweepTally {
+    /// Attempts claimed (a Bot API call made, or cut at its deadline).
+    pub attempted: u32,
+    /// Attempts that ended with the charge refunded and revoked.
+    pub refunded: u32,
+    /// Attempts that failed and were rescheduled (or left to their lease).
+    pub failed: u32,
+    /// Attempts that gave their row up.
+    pub given_up: u32,
+}
+
+/// One pass of the automatic refund sweep (owner Q9) at the state's clock: the due rows
+/// ([`AUTO_REFUND_SWEEP_BATCH`] at most, the longest due first), then one attempt each, one after another, each call
+/// cut at its own [`CALL_DEADLINE`]. A row claimed elsewhere meanwhile is skipped at its claim. `Err` only when the
+/// due rows cannot be read.
+pub async fn sweep_auto_refunds(st: &AppState) -> Result<SweepTally, sqlx::Error> {
+    let due = st
+        .repo
+        .due_auto_refunds(st.clock.now(), AUTO_REFUND_SWEEP_BATCH)
+        .await?;
+    let mut tally = SweepTally::default();
+    for charge in due {
+        let deadline = Instant::now() + CALL_DEADLINE;
+        let ended = match attempt(st, &ChargeId(charge), deadline).await {
+            Attempt::NotDue => continue,
+            Attempt::Refunded => &mut tally.refunded,
+            Attempt::Failed => &mut tally.failed,
+            Attempt::GaveUp => &mut tally.given_up,
+        };
+        *ended += 1;
+        tally.attempted += 1;
+    }
+    Ok(tally)
+}
+
+/// The automatic refund sweep for as long as the server serves: a pass, then [`AUTO_REFUND_SWEEP_INTERVAL`] of sleep,
+/// so passes never overlap. A pass that cannot read its rows is logged and the loop goes on. `server serve` owns it:
+/// spawned once listening, aborted at shutdown before the pool closes. An abort lands at an `.await`; an attempt cut
+/// after its claim is the crash case (its row is due again at the lease's end). Two servers side by side (a deploy's
+/// overlap) both sweep: the claim arbitrates.
+pub async fn run_auto_refund_sweep(st: AppState) {
+    loop {
+        match sweep_auto_refunds(&st).await {
+            Ok(tally) if tally == SweepTally::default() => {}
+            Ok(tally) => tracing::info!(?tally, "auto-refund sweep pass"),
+            Err(e) => {
+                tracing::error!(error = %e, "auto-refund sweep: the due rows could not be read")
+            }
+        }
+        tokio::time::sleep(AUTO_REFUND_SWEEP_INTERVAL).await;
+    }
 }
 
 /// The wait after failed automatic refund attempt number `attempt` (from 1), in seconds:
@@ -524,6 +648,33 @@ mod tests {
             .filter(|(e, want)| already_refunded(e) != *want)
             .map(|(e, want)| format!("{e:?}: expected {want}, got {}", already_refunded(e)))
             .collect();
+        report(&failures);
+    }
+
+    /// The automatic refund's waits: 60 s doubling per attempt up to an hour (60, 120, 240, 480, 960, 1920, 3600 for
+    /// attempts 1-7, 3600 for every later one, the largest attempt count included); with every attempt refused, the
+    /// eighth runs 7380 s (2 h 3 min) after the first.
+    #[test]
+    fn auto_refund_backoff_bounded() {
+        let mut failures = Vec::new();
+        for (attempt, want) in (1..).zip([60, 120, 240, 480, 960, 1920, 3600]) {
+            let got = auto_refund_backoff(attempt);
+            if got != want {
+                failures.push(format!("backoff({attempt}): expected {want}, got {got}"));
+            }
+        }
+        for attempt in (8..=12).chain([i64::MAX]) {
+            let got = auto_refund_backoff(attempt);
+            if got != 3600 {
+                failures.push(format!("backoff({attempt}): expected 3600, got {got}"));
+            }
+        }
+        let before_eighth: i64 = (1..AUTO_REFUND_MAX_REFUSALS).map(auto_refund_backoff).sum();
+        if before_eighth != 7380 {
+            failures.push(format!(
+                "the waits before the eighth attempt: expected 7380 s, got {before_eighth}"
+            ));
+        }
         report(&failures);
     }
 
