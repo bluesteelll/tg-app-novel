@@ -522,6 +522,8 @@ type Harness = {
   readonly purchases: string[];
   /** How many times the game handed Home back (onExit). */
   exits(): number;
+  /** How many times the game closed the Mini App (the facade's `close`). */
+  closes(): number;
   /** The newest session's saves. */
   save(): FakeSaves;
 };
@@ -584,6 +586,7 @@ function harness(o: HarnessOptions = {}): Harness {
   const answers = [...(o.invoice ?? [])];
   let product: string | null = null;
   let exits = 0;
+  let closes = 0;
   const chapterOf = (p: string | null): string | null => catalog().chapters.find((c) => c.productId === p)?.id ?? null;
   const deps: GameDeps = {
     vm,
@@ -595,6 +598,9 @@ function harness(o: HarnessOptions = {}): Harness {
         notify: (t) => haptics.push(`notify:${t}`),
       },
       setClosingConfirmation: () => {},
+      close: () => {
+        closes += 1;
+      },
       openInvoice: async () => {
         purchases.push('openInvoice');
         const status = answers.shift() ?? 'cancelled';
@@ -675,6 +681,7 @@ function harness(o: HarnessOptions = {}): Harness {
     owned,
     purchases,
     exits: () => exits,
+    closes: () => closes,
     save: () => {
       const s = saves.at(-1);
       if (s === undefined) {
@@ -2366,6 +2373,41 @@ test('game: a failed load it read shows the error notice', async () => {
   ]);
 });
 
+test('game: the reopen notice of an ended session closes the app', async () => {
+  const rows: unknown[] = [];
+  // "Load it" whose read finds the page's session ended (adoptFailed), then a chapter load that finds it (chapterFailed).
+  for (const part of ['adopt', 'chapter'] as const) {
+    const h = harness();
+    if (part === 'adopt') {
+      await startManor(h);
+      await h.game.advance(); // l002
+      const sv = h.save();
+      sv.load = async () => ({ ok: false, error: { kind: 'session-expired' } });
+      sv.emit({ kind: 'paused', current: THEIRS });
+      const p = h.vm.toasts.find((e) => e.key === 'save_conflict');
+      if (p?.kind === 'prompt') {
+        p.actions[0]?.run(); // Load it
+      }
+    } else {
+      h.loader.load = async () => ({ ok: false, error: { kind: 'session-expired' } });
+      void h.game.start({ kind: 'new', story: MANOR, chapter: CH1 });
+    }
+    await settle();
+    await settle();
+    // K33: the notice's Close is the facade's close, once per tap of its one action.
+    const n = h.vm.notice;
+    if (n?.kind === 'reopen') {
+      n.onclose();
+    }
+    rows.push([part, n?.kind, h.closes()]);
+    h.game.dispose();
+  }
+  expect(rows).toEqual([
+    ['adopt', 'reopen', 1],
+    ['chapter', 'reopen', 1],
+  ]);
+});
+
 test('game: a failed manual load stays at the shown line without a notice', async () => {
   const rows: unknown[] = [];
   for (const kind of ['get', 'empty', 'undecodable'] as const) {
@@ -2402,7 +2444,7 @@ function noIdFirstCh1(): LoadedChapter {
   return chapter('ch1', ['-> start', '=== start ===', 'No id here.', '-> END'], { start: {} });
 }
 
-test('game: return to last save with no save exits to the stories', async () => {
+test('game: return to last save after a continue resumes the continued save', async () => {
   const first = harness({ chapters: [noIdNextCh1()] });
   await startManor(first); // l001: its knot entry's autosave
   const auto = first.save().slots.get('auto');
@@ -2411,17 +2453,24 @@ test('game: return to last save with no save exits to the stories', async () => 
   if (auto === undefined) {
     return;
   }
+  // An exact resume at a line writes nothing; the save it resumed is the session's last save (LFU1 cut Q3), so the
+  // next step's error returns to it, from its checkpoint (D10), instead of exiting to the stories.
+  const h = harness({ chapters: [noIdNextCh1()], slots: new Map([['auto', auto]]) });
+  expect((await h.game.start({ kind: 'slot', story: MANOR, slot: 'auto' })).ok).toBe(true);
+  await h.game.advance();
+  const n = h.vm.notice;
+  expect(n?.kind).toBe('story_error');
+  if (n?.kind === 'story_error') {
+    n.onaction(); // Return to last save
+  }
+  await settle();
+  await settle();
+  expect([h.exits(), h.save().disposed, lineOf(h.vm)]).toEqual([0, 0, 'ch1.start.l001']);
+  h.game.dispose();
+});
+
+test('game: return to last save with no save exits to the stories', async () => {
   const parts: ReadonlyArray<readonly [string, () => Promise<Harness>]> = [
-    [
-      'continue',
-      async () => {
-        // An exact resume at a line writes nothing, so the session has no last save when the next step raises.
-        const h = harness({ chapters: [noIdNextCh1()], slots: new Map([['auto', auto]]) });
-        expect((await h.game.start({ kind: 'slot', story: MANOR, slot: 'auto' })).ok).toBe(true);
-        await h.game.advance();
-        return h;
-      },
-    ],
     [
       'new',
       async () => {
@@ -2444,10 +2493,7 @@ test('game: return to last save with no save exits to the stories', async () => 
     rows.push([part, h.exits(), h.save().disposed, lineOf(h.vm)]);
     h.game.dispose();
   }
-  expect(rows).toEqual([
-    ['continue', 1, 1, null],
-    ['new', 1, 1, null],
-  ]);
+  expect(rows).toEqual([['new', 1, 1, null]]);
 });
 
 /** Every manual save of `sv` answers the server's 409: another device saved the slot. */
@@ -2500,32 +2546,29 @@ test('game: a late answer of an earlier manual save replaces a held conflict ask
   const h = harness();
   await startManor(h);
   await h.game.advance(); // l002
-  const sv = h.save();
-  type Answer = Awaited<ReturnType<SaveService['save']>>;
-  const inFlight = new Map<ManualSlot, { w: SaveWrite; answer: (r: Answer) => void }>();
-  sv.save = (slot, w) =>
-    new Promise<Answer>((answer) => {
-      inFlight.set(slot, { w, answer });
-    });
-  // 1. s1's write in flight, the save screen left and opened again (which resets `saving`), then s2's write.
+  const inFlight = inFlightSaves(h);
+  // 1. A write to s1 in flight, the save screen left and opened again (which resets `saving`), then a second to s1.
   void h.game.save('s1');
   await settle();
+  const first = inFlight.get('s1');
   await h.game.openSaves();
-  void h.game.save('s2');
+  const timers = h.clock.pending;
+  void h.game.save('s1');
   await settle();
-  const s1 = inFlight.get('s1');
-  const s2 = inFlight.get('s2');
-  if (s1 === undefined || s2 === undefined) {
-    throw new Error('both manual writes should be in flight');
+  const second = inFlight.get('s1');
+  if (first === undefined || second === undefined || first === second) {
+    throw new Error('both manual writes to s1 should be in flight');
   }
-  // 2. s2 answers 409 inside the double-tap window, so its ask is held; then s1's earlier write lands.
-  s2.answer({ ok: false, error: { kind: 'conflict', current: summary(MANOR, 's2', s2.w) } });
+  // 2. The second write's 409 lands inside its double-tap window, so its ask is held; then the first write lands.
+  second.answer(conflictOn('s1', second.w));
   await settle();
-  s1.answer({ ok: true, value: { rev: 1, savedAt: 1 } });
+  const holding = h.clock.pending - timers;
+  first.answer({ ok: true, value: { rev: 1, savedAt: 1 } });
   await settle();
-  // 3. The held ask never shows after the newer answer.
+  // 3. The slot's newer answer replaces its held ask at once (its timer goes), and the ask never shows.
+  const afterAnswer = h.clock.pending - timers;
   h.clock.advance(CONFLICT_HOLD_MS);
-  expect([h.vm.saves.saving, h.vm.saves.conflict]).toEqual([null, null]);
+  expect([holding, afterAnswer, h.vm.saves.saving, h.vm.saves.conflict]).toEqual([1, 0, null, null]);
   h.game.dispose();
 });
 
@@ -2548,7 +2591,34 @@ const conflictOn = (slot: ManualSlot, w: SaveWrite): SaveAnswer => ({
   error: { kind: 'conflict', current: summary(MANOR, slot, w) },
 });
 
-test('game: no on a shown conflict ask drops the ask a later 409 holds', async () => {
+test("game: an answer on one slot keeps another slot's held conflict ask", async () => {
+  const h = harness();
+  await startManor(h);
+  await h.game.advance(); // l002
+  const inFlight = inFlightSaves(h);
+  // 1. s1's write in flight, the save screen left and opened again (which resets `saving`), then s2's write.
+  void h.game.save('s1');
+  await settle();
+  await h.game.openSaves();
+  void h.game.save('s2');
+  await settle();
+  const s1 = inFlight.get('s1');
+  const s2 = inFlight.get('s2');
+  if (s1 === undefined || s2 === undefined) {
+    throw new Error('both manual writes should be in flight');
+  }
+  // 2. s2 answers 409 inside the double-tap window, so its ask is held; then s1's earlier write lands.
+  s2.answer(conflictOn('s2', s2.w));
+  await settle();
+  s1.answer({ ok: true, value: { rev: 1, savedAt: 1 } });
+  await settle();
+  // 3. s1's answer is s1's alone (RULINGS 101): s2's refused write still asks when its window closes.
+  h.clock.advance(CONFLICT_HOLD_MS);
+  expect([h.vm.saves.saving, h.vm.saves.conflict, h.clock.pending]).toEqual([null, 's2', 0]);
+  h.game.dispose();
+});
+
+test("game: no on one slot's conflict ask keeps another slot's held ask", async () => {
   const h = harness();
   await startManor(h);
   await h.game.advance(); // l002
@@ -2573,10 +2643,35 @@ test('game: no on a shown conflict ask drops the ask a later 409 holds', async (
   h.clock.advance(10);
   s2.answer(conflictOn('s2', s2.w));
   await settle();
-  // 3. No on s1's ask: the held ask never shows, since its Yes would find no conflict (`overwrite` refuses it).
+  // 3. No on s1's ask is s1's alone (RULINGS 101): s2's held ask shows when its own window closes.
   h.game.cancelOverwrite();
   h.clock.advance(CONFLICT_HOLD_MS);
-  expect([shown, h.vm.saves.conflict, h.clock.pending]).toEqual(['s1', null, 0]);
+  expect([shown, h.vm.saves.conflict, h.clock.pending]).toEqual(['s1', 's2', 0]);
+  // 4. The 409s in the reverse order of their taps (critique O1): s2's lands first and is held, s1's asks at once.
+  // s2's ask, coming later, never displaces the one shown; No on s1 then shows s2.
+  await h.game.openSaves();
+  void h.game.save('s1');
+  await settle();
+  await h.game.openSaves();
+  h.clock.advance(400);
+  void h.game.save('s2');
+  await settle();
+  const r1 = inFlight.get('s1');
+  const r2 = inFlight.get('s2');
+  if (r1 === undefined || r2 === undefined || r1 === s1 || r2 === s2) {
+    throw new Error('both second manual writes should be in flight');
+  }
+  h.clock.advance(50);
+  r2.answer(conflictOn('s2', r2.w));
+  await settle();
+  h.clock.advance(150);
+  r1.answer(conflictOn('s1', r1.w));
+  await settle();
+  const first = h.vm.saves.conflict;
+  h.clock.advance(300); // s2's window closes: its ask is asked behind s1's
+  const kept = h.vm.saves.conflict;
+  h.game.cancelOverwrite();
+  expect([first, kept, h.vm.saves.conflict, h.vm.saves.saving, h.clock.pending]).toEqual(['s1', 's1', 's2', null, 0]);
   h.game.dispose();
 });
 
@@ -2765,6 +2860,8 @@ type MetaRig = {
   land(): Promise<void>;
   /** The import in flight fails. */
   fail(): Promise<void>;
+  /** How often the controller asked Home to redraw its card buttons. */
+  cards(): number;
 };
 
 /** Boot's gate over the harness's view model and stack, wired as boot.ts wires it (its `make` and `note`). */
@@ -2796,6 +2893,7 @@ function metaRig(h: Harness, bind: (gate: MetaGate) => void = () => {}): MetaRig
   const waiting: Array<(v: 'drained' | 'timeout') => void> = [];
   let loads = 0;
   let made = 0;
+  let cards = 0;
   let flight: { resolve: (m: MetaModule) => void; reject: (e: unknown) => void } | null = null;
   const gate = createMetaGate({
     load: () => {
@@ -2804,6 +2902,7 @@ function metaRig(h: Harness, bind: (gate: MetaGate) => void = () => {}): MetaRig
         flight = { resolve, reject };
       });
     },
+    root: () => h.screens.view().root,
     make: (m) => {
       made += 1;
       const c = m.createMetaController({
@@ -2822,7 +2921,9 @@ function metaRig(h: Harness, bind: (gate: MetaGate) => void = () => {}): MetaRig
         clock: h.clock,
         newId: () => 'id-1',
         host: 'example.test',
-        onCards: () => {},
+        onCards: () => {
+          cards += 1;
+        },
         // The overlays are never rendered here: the controller only hands the module to App.svelte.
         loadUi: () => Promise.resolve({} as MetaUi),
       });
@@ -2855,6 +2956,7 @@ function metaRig(h: Harness, bind: (gate: MetaGate) => void = () => {}): MetaRig
       flight?.reject(new Error('offline'));
       await settle();
     },
+    cards: () => cards,
   };
 }
 
@@ -3047,8 +3149,67 @@ test('game: exit closes the meta overlays', async () => {
   b.m.gate.dispose();
 });
 
+test('boot: an ending left before the meta chunk lands still marks its card', async () => {
+  const { h, m } = metaHarness();
+  // The stats read stays unanswered, so only this session's ending can give tide its card (the sample has none).
+  m.on(/^GET \/api\/stats$/, () => new Promise<MetaWire>(() => {}));
+  void m.gate.ready(); // the boot's import, still in flight at the end
+  await drowned(h);
+  await h.game.exitToStories(); // the end is left before the chunk lands
+  await m.land();
+  m.drain();
+  await settle();
+  // LMI critique O3: no card is asked for, but the ending was reached in this session, so Home's card button shows.
+  expect([m.gate.current()?.hasCard(TIDE), m.cards(), m.settles, cardPosts(m)]).toEqual([true, 1, [], []]);
+  h.game.dispose();
+  m.gate.dispose();
+});
+
 /** Longer than any retry timer a gate could hide (RULINGS 105: never on a timer). */
 const LONG_WAIT_MS = 10 * 60_000;
+/** A root that never changes: the gate's waiting taps all run. */
+const ROOT = Object.freeze({ kind: 'home' });
+
+test('boot: a waiting meta tap is dropped when the root changes', async () => {
+  const module = await import('./meta.ts');
+  const ctl = { dispose: () => {} } as MetaController;
+  const flights: Array<{ resolve: (m: MetaModule) => void; reject: (e: unknown) => void }> = [];
+  const notes: string[] = [];
+  const runs: string[] = [];
+  let root: object = { kind: 'home' };
+  const gateOf = (): MetaGate =>
+    createMetaGate({
+      load: () => new Promise<MetaModule>((resolve, reject) => flights.push({ resolve, reject })),
+      make: () => ctl,
+      note: (key) => notes.push(key),
+      root: () => root,
+    });
+  // 1. A Friends tap waits on the chunk while the player goes Home -> a story -> Home: another root (identity, not
+  // kind), so the tap is dropped when the chunk lands, with no toast; the chunk stays in for the next tap.
+  const gate = gateOf();
+  gate.tap(() => runs.push('friends'));
+  root = { kind: 'home' };
+  flights.shift()?.resolve(module);
+  await settle();
+  expect([runs, notes, gate.current()]).toEqual([[], [], ctl]);
+  // 2. The root unchanged: the waiting taps run, an in-task one still only imports (F28).
+  const kept = gateOf();
+  kept.tap(() => runs.push('friends'));
+  kept.tap(() => runs.push('policy'), { inTask: true });
+  flights.shift()?.resolve(module);
+  await settle();
+  expect(runs).toEqual(['friends']);
+  // 3. A failed import under another root: nothing to tell; the player tapped on a screen that is gone.
+  const failed = gateOf();
+  failed.tap(() => runs.push('wallet'));
+  root = { kind: 'game' };
+  flights.shift()?.reject(new Error('offline'));
+  await settle();
+  expect([runs, notes]).toEqual([['friends'], []]);
+  gate.dispose();
+  kept.dispose();
+  failed.dispose();
+});
 
 test('boot: meta chunk import retried by the next tap, single flight', async () => {
   const module = await import('./meta.ts');
@@ -3077,6 +3238,7 @@ test('boot: meta chunk import retried by the next tap, single flight', async () 
         return ctl;
       },
       note: (key) => notes.push(key),
+      root: () => ROOT,
     });
     // The boot's import fails silently, and nothing imports again without a tap, however long the page stays open.
     void gate.ready();
@@ -3118,6 +3280,7 @@ test('boot: meta chunk import retried by the next tap, single flight', async () 
         return ctl;
       },
       note: (key) => notes.push(key),
+      root: () => ROOT,
     });
     void late.ready();
     const ending = late.port.onEnding(TIDE);

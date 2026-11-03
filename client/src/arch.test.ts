@@ -138,11 +138,15 @@ function isPureWorld(file: string): boolean {
 
 // PUZZLES-PLAN X14: each lazy family is its own dynamic chunk, never in the entry or the engine's static closure. A
 // file under one of these directories is imported statically only from inside the same directory; anywhere else
-// only through `import()` (app/yields.ts and puzzles/registry.ts hold those).
-const LAZY_DIRS = ['puzzles/ui/', 'ui/puzzles/', 'ui/explore/'] as const;
+// only through `import()` (app/yields.ts and puzzles/registry.ts hold those). The meta overlays (`ui/meta/`) and the
+// meta controller (`app/meta.ts`, a lazy root file: RULINGS 105, LMI cut Q8) are lazy the same way; boot.ts and the
+// controller hold their `import()` calls.
+const LAZY_DIRS = ['puzzles/ui/', 'ui/puzzles/', 'ui/explore/', 'ui/meta/'] as const;
+const LAZY_ROOT_FILES = ['app/meta.ts'] as const;
 
+/** The lazy scope a file is in: its lazy directory, or the lazy root file itself. */
 function lazyDirOf(file: string): string | undefined {
-  return LAZY_DIRS.find((dir) => file.startsWith(dir));
+  return LAZY_DIRS.find((dir) => file.startsWith(dir)) ?? LAZY_ROOT_FILES.find((root) => file === root);
 }
 
 /** The only caller of `runner.enter` (PZ "Modules": `yields.ts` routes every yield and calls `project` first). */
@@ -926,6 +930,9 @@ test('arch: lazy ui only by dynamic import', () => {
     'puzzles/ui/CodeLock.svelte',
     'puzzles/ui/OrderPuzzle.svelte',
   ]);
+  // The meta chunks (RULINGS 105): boot imports the controller, the controller its overlays, each by `import()`.
+  expect(dynamicLazyTargets('app/boot.ts', SOURCES['app/boot.ts'] ?? '')).toEqual(['app/meta.ts']);
+  expect(dynamicLazyTargets('app/meta.ts', SOURCES['app/meta.ts'] ?? '')).toEqual(['ui/meta/index.ts']);
   expect(treeViolations().filter((v) => GROUP[v.rule] === 'lazy')).toEqual([]);
 }, TREE_TIMEOUT_MS);
 
@@ -1146,6 +1153,9 @@ const RED: Record<RuleId, readonly Fixture[]> = {
     ['app/game.ts', "import { type Props } from '../puzzles/ui/OrderPuzzle.svelte';"],
     // One lazy family's directory is outside another's.
     ['ui/explore/ExploreView.svelte', "<script lang=\"ts\">\n  import HintLadder from '../puzzles/HintLadder.svelte';\n</script>\n<HintLadder />"],
+    // The meta controller (a lazy root file) and its overlays (RULINGS 105; LMI cut Q8).
+    ['app/game.ts', "import { createMetaController } from './meta.ts';"],
+    ['ui/App.svelte', "<script lang=\"ts\">\n  import Wallet from './meta/Wallet.svelte';\n</script>\n<Wallet />"],
   ],
   'runner-enter': [
     ['app/game.ts', 'runner.enter(k, p);'],
@@ -1253,6 +1263,10 @@ const ALLOW: ReadonlyArray<readonly [RuleId, readonly Fixture[]]> = [
       ['ui/puzzles/PuzzleHost.svelte', "<script lang=\"ts\">\n  import HintLadder from './HintLadder.svelte';\n</script>\n<HintLadder />"],
       // Erased: a type import from a lazy directory loads nothing.
       ['app/yields.ts', "import type CodeLock from '../puzzles/ui/CodeLock.svelte';\nexport type { PuzzleUiProps } from '../puzzles/ui/Types.ts';"],
+      // The meta controller by `import()` only, its types anywhere, and its overlays among themselves.
+      ['app/boot.ts', "const m = import('./meta.ts');"],
+      ['ui/state.svelte.ts', "import type { MetaView } from '../app/meta.ts';"],
+      ['ui/meta/Friends.svelte', '<script lang="ts">\n  import { x } from \'./index.ts\';\n</script>'],
     ],
   ],
   [

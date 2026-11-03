@@ -1,10 +1,14 @@
 <script lang="ts">
   // The `order` puzzle (PUZZLES-PLAN X17): one slot per piece; a tap selects a slot, a tap on another swaps their
   // pieces, a tap on the selected slot deselects it. Selection shows as a thicker border, a ✓ glyph and
-  // `aria-pressed`, never colour alone. Presentational: the arrangement is the `answer` prop (the piece index per
-  // slot) and every swap leaves as a fresh array through `onchange`; only the selection is held here. Params that do
-  // not decode as an order puzzle render nothing actionable.
+  // `aria-pressed`, never colour alone. Each piece shows its item's world glyph beside its name (K46), drawn as the
+  // explore UI draws it (data from ui/glyphs.ts, hidden from assistive technology: the name is the button's name).
+  // Presentational: the arrangement is the `answer` prop (the piece index per slot) and every swap leaves as a fresh
+  // array through `onchange`; only the selection is held here. Params that do not decode as an order puzzle render
+  // nothing actionable.
   import { t } from '../../i18n/index.ts';
+  import { GLYPH_PATHS, GLYPH_VIEWBOX } from '../../ui/glyphs.ts';
+  import type { Glyph } from '../../world/types.ts';
   import type { PuzzleUiProps } from '../registry.ts';
   import { PUZZLE_RULES } from '../rules/index.ts';
 
@@ -16,10 +20,16 @@
   });
   let selected: number | null = $state(null);
 
-  /** The piece's item name in the UI language; its id if the world has no such item (the story gate refuses that). */
-  function nameOf(piece: number): string {
+  /**
+   * The piece's item name in the UI language and its glyph; its id and no glyph if the world has no such item (the
+   * story gate refuses that).
+   */
+  function pieceOf(piece: number): { name: string; glyph: Glyph | null } {
     const id = pieces?.[piece];
-    return id === undefined ? '' : (item(id)?.name ?? id);
+    if (id === undefined) {
+      return { name: '', glyph: null };
+    }
+    return item(id) ?? { name: id, glyph: null };
   }
 
   function tap(slot: number): void {
@@ -48,6 +58,7 @@
   <p class="how">{t(lang, 'puzzle.swap')}</p>
   <ol class="slots">
     {#each answer as piece, slot (slot)}
+      {@const shown = pieceOf(piece)}
       <li>
         <button
           type="button"
@@ -57,7 +68,10 @@
           disabled={busy}
           onclick={() => tap(slot)}
         >
-          <span class="name">{nameOf(piece)}</span>
+          {#if shown.glyph !== null}
+            <svg class="glyph" viewBox={GLYPH_VIEWBOX} aria-hidden="true"><path d={GLYPH_PATHS[shown.glyph]} /></svg>
+          {/if}
+          <span class="name">{shown.name}</span>
           {#if selected === slot}
             <span class="check" aria-hidden="true">✓</span>
           {/if}
@@ -87,6 +101,11 @@
 
   .slot {
     position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
     min-width: 72px;
     min-height: 72px;
     padding: 8px;
@@ -107,6 +126,14 @@
 
   .slot:disabled {
     opacity: 0.5;
+  }
+
+  .glyph {
+    flex: none;
+    width: 28px;
+    height: 28px;
+    fill: currentColor;
+    fill-rule: evenodd;
   }
 
   .check {
