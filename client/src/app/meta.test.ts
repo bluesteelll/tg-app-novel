@@ -437,6 +437,11 @@ test("meta: home card from stats or this session's ending", async () => {
   offline.ctl.boot();
   await flush();
   expect([offline.ctl.hasCard(MANOR), offline.onCards()]).toEqual([false, 0]);
+  // An ending reached and left before the controller could act on it (LMI critique O3): the card shows on Home, and
+  // nothing is asked for (no settle, no card POST).
+  offline.ctl.endingReached(TIDE);
+  await flush();
+  expect([offline.ctl.hasCard(TIDE), offline.onCards(), offline.settles, offline.server.count(CARD_LABEL)]).toEqual([true, 1, [], 0]);
   offline.ctl.dispose();
 });
 

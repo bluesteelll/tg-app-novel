@@ -60,6 +60,11 @@ export interface MetaController {
   openCard(story: StoryId): Promise<Result<void, MetaError>>;
   /** F16: the stats settle (3 s), then the card, or the toast; never rejects. */
   onEnding(story: StoryId): Promise<void>;
+  /**
+   * This session reached an ending of `story` and left it before the card could be asked for (LMI critique O3):
+   * Home's card button shows (F17); no card POST.
+   */
+  endingReached(story: StoryId): void;
   openFriends(): void;
   openProfile(h: FriendHandle): void;
   openConsent(): void;
@@ -510,6 +515,10 @@ export function createMetaController(d: MetaDeps): MetaController {
         }
       });
       return run;
+    },
+    endingReached(story) {
+      ended.add(story);
+      d.onCards();
     },
     async onEnding(story) {
       ended.add(story);

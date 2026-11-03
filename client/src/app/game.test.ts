@@ -2818,6 +2818,8 @@ type MetaRig = {
   land(): Promise<void>;
   /** The import in flight fails. */
   fail(): Promise<void>;
+  /** How often the controller asked Home to redraw its card buttons. */
+  cards(): number;
 };
 
 /** Boot's gate over the harness's view model and stack, wired as boot.ts wires it (its `make` and `note`). */
@@ -2849,6 +2851,7 @@ function metaRig(h: Harness, bind: (gate: MetaGate) => void = () => {}): MetaRig
   const waiting: Array<(v: 'drained' | 'timeout') => void> = [];
   let loads = 0;
   let made = 0;
+  let cards = 0;
   let flight: { resolve: (m: MetaModule) => void; reject: (e: unknown) => void } | null = null;
   const gate = createMetaGate({
     load: () => {
@@ -2857,6 +2860,7 @@ function metaRig(h: Harness, bind: (gate: MetaGate) => void = () => {}): MetaRig
         flight = { resolve, reject };
       });
     },
+    root: () => h.screens.view().root,
     make: (m) => {
       made += 1;
       const c = m.createMetaController({
@@ -2875,7 +2879,9 @@ function metaRig(h: Harness, bind: (gate: MetaGate) => void = () => {}): MetaRig
         clock: h.clock,
         newId: () => 'id-1',
         host: 'example.test',
-        onCards: () => {},
+        onCards: () => {
+          cards += 1;
+        },
         // The overlays are never rendered here: the controller only hands the module to App.svelte.
         loadUi: () => Promise.resolve({} as MetaUi),
       });
@@ -2908,6 +2914,7 @@ function metaRig(h: Harness, bind: (gate: MetaGate) => void = () => {}): MetaRig
       flight?.reject(new Error('offline'));
       await settle();
     },
+    cards: () => cards,
   };
 }
 
@@ -3100,8 +3107,67 @@ test('game: exit closes the meta overlays', async () => {
   b.m.gate.dispose();
 });
 
+test('boot: an ending left before the meta chunk lands still marks its card', async () => {
+  const { h, m } = metaHarness();
+  // The stats read stays unanswered, so only this session's ending can give tide its card (the sample has none).
+  m.on(/^GET \/api\/stats$/, () => new Promise<MetaWire>(() => {}));
+  void m.gate.ready(); // the boot's import, still in flight at the end
+  await drowned(h);
+  await h.game.exitToStories(); // the end is left before the chunk lands
+  await m.land();
+  m.drain();
+  await settle();
+  // LMI critique O3: no card is asked for, but the ending was reached in this session, so Home's card button shows.
+  expect([m.gate.current()?.hasCard(TIDE), m.cards(), m.settles, cardPosts(m)]).toEqual([true, 1, [], []]);
+  h.game.dispose();
+  m.gate.dispose();
+});
+
 /** Longer than any retry timer a gate could hide (RULINGS 105: never on a timer). */
 const LONG_WAIT_MS = 10 * 60_000;
+/** A root that never changes: the gate's waiting taps all run. */
+const ROOT = Object.freeze({ kind: 'home' });
+
+test('boot: a waiting meta tap is dropped when the root changes', async () => {
+  const module = await import('./meta.ts');
+  const ctl = { dispose: () => {} } as MetaController;
+  const flights: Array<{ resolve: (m: MetaModule) => void; reject: (e: unknown) => void }> = [];
+  const notes: string[] = [];
+  const runs: string[] = [];
+  let root: object = { kind: 'home' };
+  const gateOf = (): MetaGate =>
+    createMetaGate({
+      load: () => new Promise<MetaModule>((resolve, reject) => flights.push({ resolve, reject })),
+      make: () => ctl,
+      note: (key) => notes.push(key),
+      root: () => root,
+    });
+  // 1. A Friends tap waits on the chunk while the player goes Home -> a story -> Home: another root (identity, not
+  // kind), so the tap is dropped when the chunk lands, with no toast; the chunk stays in for the next tap.
+  const gate = gateOf();
+  gate.tap(() => runs.push('friends'));
+  root = { kind: 'home' };
+  flights.shift()?.resolve(module);
+  await settle();
+  expect([runs, notes, gate.current()]).toEqual([[], [], ctl]);
+  // 2. The root unchanged: the waiting taps run, an in-task one still only imports (F28).
+  const kept = gateOf();
+  kept.tap(() => runs.push('friends'));
+  kept.tap(() => runs.push('policy'), { inTask: true });
+  flights.shift()?.resolve(module);
+  await settle();
+  expect(runs).toEqual(['friends']);
+  // 3. A failed import under another root: nothing to tell; the player tapped on a screen that is gone.
+  const failed = gateOf();
+  failed.tap(() => runs.push('wallet'));
+  root = { kind: 'game' };
+  flights.shift()?.reject(new Error('offline'));
+  await settle();
+  expect([runs, notes]).toEqual([['friends'], []]);
+  gate.dispose();
+  kept.dispose();
+  failed.dispose();
+});
 
 test('boot: meta chunk import retried by the next tap, single flight', async () => {
   const module = await import('./meta.ts');
@@ -3130,6 +3196,7 @@ test('boot: meta chunk import retried by the next tap, single flight', async () 
         return ctl;
       },
       note: (key) => notes.push(key),
+      root: () => ROOT,
     });
     // The boot's import fails silently, and nothing imports again without a tap, however long the page stays open.
     void gate.ready();
@@ -3171,6 +3238,7 @@ test('boot: meta chunk import retried by the next tap, single flight', async () 
         return ctl;
       },
       note: (key) => notes.push(key),
+      root: () => ROOT,
     });
     void late.ready();
     const ending = late.port.onEnding(TIDE);

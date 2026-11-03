@@ -155,6 +155,7 @@ export type MetaGate = {
   /**
    * A tap that needs the controller: `run` now, or once a new import (single flight) lands; a failed import shows
    * `meta.action_failed`. `inTask`: `run` only inside the tap's own task (F28); before the chunk the tap only imports.
+   * A tap that waited is dropped, silently, when the stack's root changed meanwhile: it was made on a screen now gone.
    */
   tap(run: (m: MetaController) => void, o?: { inTask: boolean }): void;
   /** The Game's port, read when called: `onEnding` waits for the import; the others are no-ops before it. */
@@ -170,6 +171,8 @@ export function createMetaGate(d: {
   load: () => Promise<MetaModule>;
   make: (m: MetaModule) => MetaController;
   note: (key: UiKey) => void;
+  /** The stack's root now; compared by identity, since every `setRoot` freezes a new one (ui/screens.ts). */
+  root: () => object;
 }): MetaGate {
   let current: MetaController | null = null;
   let flight: Promise<MetaController | null> | null = null;
@@ -209,9 +212,10 @@ export function createMetaGate(d: {
         run(m);
         return;
       }
+      const at = d.root();
       void ready().then((c) => {
-        if (disposed) {
-          return;
+        if (disposed || d.root() !== at) {
+          return; // the page, or the screen the tap was made on, is gone (LMI fix_r1): the player taps again
         }
         if (c === null) {
           d.note('meta.action_failed');
@@ -228,8 +232,12 @@ export function createMetaGate(d: {
         }
         const left = leaves;
         const c = await ready();
-        if (disposed || leaves !== left) {
-          return; // the end (or the page) was left while the chunk loaded: no card
+        if (disposed) {
+          return;
+        }
+        if (leaves !== left) {
+          c?.endingReached(story); // the end was left while the chunk loaded: no card, but Home's card button (F17)
+          return;
         }
         if (c === null) {
           d.note('meta.card_later'); // the end stays; its card action imports again
@@ -296,6 +304,7 @@ export function startApp(tg: TelegramClient): AppHandle {
       return c;
     },
     note: (key) => vm.showToast({ kind: 'note', key, message: t(vm.lang, key), sticky: false }),
+    root: () => screens.view().root,
   });
   let engine: Promise<Game | null> | null = null;
   /** The boot list, handed to the first session that asks; later sessions list again. */
