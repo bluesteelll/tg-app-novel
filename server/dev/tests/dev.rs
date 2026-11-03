@@ -890,3 +890,110 @@ async fn dev_prepared_message_readable() {
     }
     report(&failures);
 }
+
+/// `POST /dev/build-id` with `body` as JSON.
+async fn claim_build(dev: &DevApp, body: &str) -> Reply {
+    let req = Request::post("/dev/build-id")
+        .header(CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_owned()))
+        .unwrap();
+    call(dev, req).await
+}
+
+/// LBI C3, the deploy simulation: a fresh dev app claims no build, so no answer carries `x-build-id`. `POST
+/// /dev/build-id` claims one, which every `/api/` answer then carries (a 200 and a 401 alike), a later claim replaces
+/// and `null` clears. Only `/api/` answers carry it: not the webhook's 401 nor an unknown path (both inside the
+/// stamped production router), nor `/dev/launch`. An id that is not 16 hex digits, and a body that is not JSON, are
+/// 400 and change nothing.
+#[tokio::test]
+async fn dev_build_id_simulates_a_deploy() {
+    let dev = dev_app().await;
+    let build = HeaderName::from_static("x-build-id");
+    let mut failures = Vec::new();
+    let mut expect_id = async |case: &str, req: Request<Body>, want: Option<&str>| {
+        let reply = call(&dev, req).await;
+        let got = header(&reply, build.clone());
+        if got != want {
+            failures.push(format!(
+                "{case} ({}): expected x-build-id {want:?}, got {got:?}",
+                reply.status
+            ));
+        }
+    };
+    let health = || Request::get("/api/health").body(Body::empty()).unwrap();
+    expect_id("a fresh app: GET /api/health", health(), None).await;
+
+    let claimed = claim_build(&dev, r#"{"id":"0123456789abcdef"}"#).await;
+    let id = Some("0123456789abcdef");
+    expect_id("claimed: GET /api/health", health(), id).await;
+    expect_id(
+        "claimed: GET /api/entitlements (401)",
+        Request::get("/api/entitlements")
+            .body(Body::empty())
+            .unwrap(),
+        id,
+    )
+    .await;
+    expect_id(
+        "claimed: POST /telegram/webhook (401)",
+        Request::post("/telegram/webhook")
+            .body(Body::empty())
+            .unwrap(),
+        None,
+    )
+    .await;
+    expect_id(
+        "claimed: GET /nope",
+        Request::get("/nope").body(Body::empty()).unwrap(),
+        None,
+    )
+    .await;
+    expect_id(
+        "claimed: GET /dev/launch",
+        Request::get("/dev/launch").body(Body::empty()).unwrap(),
+        None,
+    )
+    .await;
+
+    let replaced = claim_build(&dev, r#"{"id":"ffffffffffffffff"}"#).await;
+    expect_id(
+        "replaced: GET /api/health",
+        health(),
+        Some("ffffffffffffffff"),
+    )
+    .await;
+    let refused = [
+        claim_build(&dev, r#"{"id":"XYZ"}"#).await,
+        claim_build(&dev, "not json").await,
+    ];
+    expect_id(
+        "after two refused claims: GET /api/health",
+        health(),
+        Some("ffffffffffffffff"),
+    )
+    .await;
+    let cleared = claim_build(&dev, r#"{"id":null}"#).await;
+    expect_id("cleared: GET /api/health", health(), None).await;
+
+    for (case, reply, want) in [
+        ("claim 0123456789abcdef", &claimed, StatusCode::NO_CONTENT),
+        ("claim ffffffffffffffff", &replaced, StatusCode::NO_CONTENT),
+        ("claim XYZ", &refused[0], StatusCode::BAD_REQUEST),
+        (
+            "claim with a non-JSON body",
+            &refused[1],
+            StatusCode::BAD_REQUEST,
+        ),
+        ("claim null", &cleared, StatusCode::NO_CONTENT),
+    ] {
+        if reply.status != want || header(reply, CACHE_CONTROL) != Some("no-store") {
+            failures.push(format!(
+                "{case}: expected {want} no-store, got {} {:?} {}",
+                reply.status,
+                header(reply, CACHE_CONTROL),
+                body_text(reply)
+            ));
+        }
+    }
+    report(&failures);
+}

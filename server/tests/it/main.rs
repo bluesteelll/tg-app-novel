@@ -546,6 +546,17 @@ fn dir_link(link: &Path, target: &Path) {
     std::os::unix::fs::symlink(target, link).unwrap();
 }
 
+/// The file the client build writes (`client/scripts/build-id.ts`), named here as the client names it.
+const BUILD_ID_FILE: &str = "build-id.txt";
+
+/// The build id of every fixture site that is meant to pass [`static_files::check`].
+const SITE_BUILD_ID: &str = "0123456789abcdef";
+
+/// `site`'s `build-id.txt` as the client build writes it: [`SITE_BUILD_ID`] and one `\n`.
+fn write_build_id(site: &Path) {
+    std::fs::write(site.join(BUILD_ID_FILE), format!("{SITE_BUILD_ID}\n")).unwrap();
+}
+
 /// The real `server serve` with `static_dir` and `content_dir` (every other variable set; the database a closed port,
 /// so a start that gets that far fails there): its log, until it exits (bounded at 60 s, then killed).
 fn serve_log(static_dir: &Path, content_dir: &Path) -> Vec<String> {
@@ -608,6 +619,7 @@ fn static_dir_must_not_contain_content_dir() {
         std::fs::create_dir_all(dir).unwrap();
     }
     std::fs::write(site.join("index.html"), "<!doctype html>").unwrap();
+    write_build_id(&site);
     std::fs::write(content.join("paid.json"), "{}").unwrap();
     dir_link(&linked.join("paid"), &content);
     let mut failures = Vec::new();
@@ -636,6 +648,7 @@ fn static_dir_must_not_contain_content_dir() {
         ));
     }
     std::fs::create_dir_all(root.join("site2")).unwrap();
+    write_build_id(&root.join("site2"));
     let disjoint = serve_log(&root.join("site2"), &content);
     if !disjoint
         .iter()
@@ -726,6 +739,7 @@ fn static_dir_refuses_dot_entries() {
         let path = site.join(file);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(site.join("index.html"), "<!doctype html>").unwrap();
+        write_build_id(&site);
         std::fs::write(&path, "{}").unwrap();
         let got = match runtime.block_on(static_files::check(&site, &content)) {
             Ok(dir) => format!("Ok({})", dir.root().display()),
@@ -734,6 +748,77 @@ fn static_dir_refuses_dot_entries() {
         if !got.starts_with(want) {
             failures.push(format!("check, {case}: expected {want}.., got {got}"));
         }
+    }
+    report(&failures);
+}
+
+/// LBI D2: `check` takes the client build's id from `STATIC_DIR/build-id.txt` (after the walk), never from anything
+/// else: the file's 16 hex digits; a missing file and one that is not an id refuse the directory.
+#[test]
+fn build_id_comes_from_static_dir() {
+    let root = scratch_dir("static-build-id");
+    let content = root.join("content");
+    std::fs::create_dir_all(&content).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let mut failures = Vec::new();
+    for (i, (case, file, want)) in [
+        (
+            "the build's file",
+            Some("fedcba9876543210\n"),
+            "BuildId(\"fedcba9876543210\")",
+        ),
+        ("a missing build-id.txt", None, "BuildIdMissing"),
+        ("uppercase hex", Some("0123456789ABCDEF"), "BuildIdInvalid"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let site = root.join(format!("site{i}"));
+        std::fs::create_dir_all(&site).unwrap();
+        std::fs::write(site.join("index.html"), "<!doctype html>").unwrap();
+        if let Some(text) = file {
+            std::fs::write(site.join(BUILD_ID_FILE), text).unwrap();
+        }
+        let got = match runtime.block_on(static_files::check(&site, &content)) {
+            Ok(dir) => format!("{dir:?}"),
+            Err(e) => format!("{e:?}"),
+        };
+        if !got.contains(want) {
+            failures.push(format!("check, {case}: expected {want}.., got {got}"));
+        }
+    }
+    // The served id is the file's: what every `/api` answer names, and what `server serve` logs before it opens the
+    // database (the deploy's check, LBI D8).
+    let site = root.join("site0");
+    let named = runtime.block_on(async {
+        let (st, _db) = common::test_state().await;
+        let dir = static_files::check(&site, &st.cfg.content_dir)
+            .await
+            .unwrap();
+        let app = server::app(st.clone(), Some(&dir));
+        let reply = call_app(
+            &app,
+            Request::get("/api/health").body(Body::empty()).unwrap(),
+        )
+        .await;
+        build_id_of(&reply)
+    });
+    if named.as_deref() != Some("fedcba9876543210") {
+        failures.push(format!(
+            "GET /api/health: expected x-build-id fedcba9876543210, got {named:?}"
+        ));
+    }
+    let log = serve_log(&site, &content);
+    let checked = line_with(&log, &["static dir checked", "build_id=fedcba9876543210"]);
+    let opening = line_with(&log, &["opening database"]);
+    if !matches!((checked, opening), (Some(c), Some(o)) if c < o) {
+        failures.push(format!(
+            "serve: expected `static dir checked build_id=fedcba9876543210` before `opening database`, got:\n{}",
+            log.join("\n")
+        ));
     }
     report(&failures);
 }
@@ -858,6 +943,7 @@ fn startup_checks_bot_texts_first() {
     let site = root.join("site");
     std::fs::create_dir_all(&site).unwrap();
     std::fs::write(site.join("index.html"), "<!doctype html>").unwrap();
+    write_build_id(&site);
     let content = Path::new(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/content"
@@ -917,6 +1003,132 @@ async fn call_app(app: &axum::Router, req: Request<Body>) -> common::Reply {
     }
 }
 
+/// A reply's `x-build-id`, as text.
+fn build_id_of(reply: &common::Reply) -> Option<String> {
+    reply
+        .headers
+        .get("x-build-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned)
+}
+
+/// LBI D3: with a served `STATIC_DIR`, every response of every `/api` route names its build id (one layer over
+/// `api::router`, so no route can miss it): each route of `routes()` and `legal::routes()` unauthenticated, as it
+/// answers (200, 400, 401, 404), a 405 and the body limit's 413 included. The page and the webhook (outside `/api`)
+/// carry none, nor does an app without a `STATIC_DIR` (tests, server-dev).
+#[tokio::test]
+async fn api_responses_carry_the_build_id() {
+    let root = scratch_dir("static-build-header");
+    let site = root.join("site");
+    std::fs::create_dir_all(&site).unwrap();
+    std::fs::write(site.join("index.html"), "<!doctype html>").unwrap();
+    write_build_id(&site);
+    let (st, _db) = common::test_state().await;
+    let dir = static_files::check(&site, &st.cfg.content_dir)
+        .await
+        .unwrap();
+    let app = server::app(st.clone(), Some(&dir));
+    let mut failures = Vec::new();
+    let routes = [
+        ("GET", "/api/health"),
+        ("POST", "/api/auth"),
+        ("GET", "/api/entitlements"),
+        ("GET", "/api/chapters/ch2"),
+        ("GET", "/api/assets/x.avif"),
+        ("GET", "/api/saves"),
+        ("GET", "/api/saves/manor/auto"),
+        ("PUT", "/api/saves/manor/auto"),
+        ("GET", "/api/puzzles/p1"),
+        ("POST", "/api/puzzles/p1/attempts"),
+        ("POST", "/api/puzzles/p1/hints/1"),
+        ("POST", "/api/invoices"),
+        ("GET", "/api/orders/o1"),
+        ("GET", "/api/stats"),
+        ("POST", "/api/stats/events"),
+        ("POST", "/api/stories/manor/card"),
+        ("GET", "/api/wallet"),
+        ("POST", "/api/gifts"),
+        ("GET", "/api/invites/abc"),
+        ("POST", "/api/invites/abc/request"),
+        ("GET", "/api/social"),
+        ("POST", "/api/friends/requests/h1/accept"),
+        ("DELETE", "/api/friends/h1"),
+        ("GET", "/api/friends/h1/profile"),
+        ("POST", "/api/invite/rotate"),
+        ("PUT", "/api/consents/friends_profile"),
+        ("POST", "/api/share"),
+        ("GET", "/api/privacy"),
+    ];
+    let mut cases: Vec<(String, Request<Body>, Option<u16>)> = routes
+        .iter()
+        .map(|(method, path)| {
+            let req = Request::builder()
+                .method(*method)
+                .uri(*path)
+                .body(Body::empty())
+                .unwrap();
+            (format!("{method} {path}"), req, None)
+        })
+        .collect();
+    cases.push((
+        "DELETE /api/health".to_owned(),
+        Request::delete("/api/health").body(Body::empty()).unwrap(),
+        Some(405),
+    ));
+    cases.push((
+        "POST /api/auth, 17 KiB".to_owned(),
+        Request::post("/api/auth")
+            .header("content-type", "application/json")
+            .body(Body::from(vec![b' '; 17 * 1024]))
+            .unwrap(),
+        Some(413),
+    ));
+    for (case, req, status) in cases {
+        let reply = call_app(&app, req).await;
+        if status.is_some_and(|want| reply.status.as_u16() != want) {
+            failures.push(format!(
+                "{case}: expected {status:?}, got {}",
+                reply.status.as_u16()
+            ));
+        }
+        if build_id_of(&reply).as_deref() != Some(SITE_BUILD_ID) {
+            failures.push(format!(
+                "{case} ({}): expected x-build-id {SITE_BUILD_ID}, got {:?}",
+                reply.status.as_u16(),
+                build_id_of(&reply)
+            ));
+        }
+    }
+    for (case, app, req) in [
+        (
+            "GET / (the page)",
+            &app,
+            Request::get("/").body(Body::empty()).unwrap(),
+        ),
+        (
+            "POST /telegram/webhook",
+            &app,
+            Request::post("/telegram/webhook")
+                .body(Body::empty())
+                .unwrap(),
+        ),
+        (
+            "GET /api/health without a STATIC_DIR",
+            &server::build_router(st.clone()),
+            Request::get("/api/health").body(Body::empty()).unwrap(),
+        ),
+    ] {
+        let reply = call_app(app, req).await;
+        if let Some(id) = build_id_of(&reply) {
+            failures.push(format!(
+                "{case} ({}): expected no x-build-id, got {id}",
+                reply.status.as_u16()
+            ));
+        }
+    }
+    report(&failures);
+}
+
 /// The client next to the API: `/` is `index.html`, revalidated (`no-cache`); a found `/assets/*` file is cached for
 /// a year (`immutable`), a missing one is 404 without that; encoded traversals are 404 and never reach the file
 /// beside the directory; `/api` routes keep their own answers, an unknown `/api` path is 404 (no SPA fallback); a
@@ -930,6 +1142,7 @@ async fn static_dir_serves_client_with_cache_headers() {
     std::fs::create_dir_all(site.join("assets")).unwrap();
     std::fs::write(site.join("index.html"), INDEX).unwrap();
     std::fs::write(site.join("assets").join("app-1a2b3c4d.js"), "export {};").unwrap();
+    write_build_id(&site);
     std::fs::write(root.join("secret.txt"), SECRET).unwrap();
     let (st, _db) = common::test_state().await;
     let dir = static_files::check(&site, &st.cfg.content_dir)

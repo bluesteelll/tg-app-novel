@@ -82,6 +82,47 @@ export interface Entitlements {
   refresh(): Promise<Result<readonly ProductDto[], ApiError>>;
 }
 
+/** What boot lends the Game for a build-skew reload (LBI D6): the page's URL and its reload; tests pass fakes. */
+export type ReloadPort = { href(): string; reload(url: string): void };
+
+/** Why a build-skew recovery waits (LBI D5 step 2), in the order they are checked. */
+export type ReloadBlocker = 'intent' | 'background' | 'purchase' | 'attempt' | 'save' | 'gift';
+
+/** `href`'s part before the fragment and the fragment's `&`-separated params, byte for byte. */
+function fragmentParams(href: string): { base: string; params: string[] } {
+  const at = href.indexOf('#');
+  const fragment = at < 0 ? '' : href.slice(at + 1);
+  return { base: at < 0 ? href : href.slice(0, at), params: fragment === '' ? [] : fragment.split('&') };
+}
+
+const isLatch = (param: string): boolean => param === RELOADED_FOR || param.startsWith(`${RELOADED_FOR}=`);
+
+/**
+ * LBI D6: the build id this tab reloaded for, from `href`'s fragment, or null. The fragment survives
+ * `location.reload()` and needs no web storage; a Mini App opened again gets a fresh URL without it.
+ */
+export function reloadedFor(href: string): string | null {
+  const param = fragmentParams(href).params.find(isLatch);
+  if (param === undefined) {
+    return null;
+  }
+  const value = param.slice(RELOADED_FOR.length + 1);
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value; // not written by withReloadedFor: compared as it stands
+  }
+}
+
+/** `href` with the latch set to `served`: every other fragment param byte for byte, an existing latch replaced in place. */
+export function withReloadedFor(href: string, served: string): string {
+  const { base, params } = fragmentParams(href);
+  const latch = `${RELOADED_FOR}=${encodeURIComponent(served)}`;
+  const at = params.findIndex(isLatch);
+  const next = at < 0 ? [...params, latch] : params.flatMap((p, i) => (i === at ? [latch] : isLatch(p) ? [] : [p]));
+  return `${base}#${next.join('&')}`;
+}
+
 /** The Game's collaborators; the engine wires the real ones (app/engine.ts), the tests fakes. */
 export type GameDeps = {
   vm: ViewModel;
@@ -178,6 +219,13 @@ export interface Game {
   screensChanged(v: ScreensView): void;
   /** Boot's meta port, attached before the game is published; a game without one shows no card and no hint port. */
   attachMeta(m: GameMeta): void;
+  /**
+   * LBI D5: the server now serves build `served`, not this page's. At the next safe point (no intent, not in the
+   * background, no invoice open or being confirmed, no attempt awaiting its answer, no manual save or gift in flight)
+   * the step on screen is autosaved, the update notice covers every control, and `page` reloads into the new build
+   * once the autosave is flushed. One recovery per page; none for a build this tab already reloaded for (D6).
+   */
+  skewed(served: string, page: ReloadPort): void;
   /** The explore layer's callbacks, for the current session's yields. */
   readonly exploreActions: ExploreLayerActions;
   /** The puzzle host's callbacks, for the current session's yields. */
@@ -205,6 +253,14 @@ export const EXIT_FLUSH_MS = 2000;
  * (300 ms, from the first tap's up to the second's down) plus the second press's down to click.
  */
 export const CONFLICT_HOLD_MS = 500;
+/** LBI D5: how often a recovery that waits for its safe point looks again. */
+export const RELOAD_POLL_MS = 500;
+/** LBI D6: the fragment parameter recording the build id this tab reloaded for (outside Telegram's `tgWebApp*`). */
+export const RELOADED_FOR = 'novelReloadedFor';
+/** LBI D4: the server's answer to this names the build it serves; the probe after a chapter file failed to load. */
+const BUILD_PROBE_URL = '/api/health';
+/** LBI D5: the purchase states of an invoice being created, open or confirmed; a reload would cut the hand-off. */
+const PURCHASE_OPEN: ReadonlySet<PurchaseState['kind']> = new Set(['requesting', 'sheet', 'confirming', 'delayed']);
 /** Every holder family the session requests besides the stage: knot preloads, F5, the explore rooms. */
 const EXIT_RELEASES: readonly string[] = ['preload:', 'next:', 'room:'];
 const IDLE: PurchaseState = Object.freeze({ kind: 'idle' });
@@ -350,6 +406,9 @@ type Session = {
 /** The paywall's purchase: its chapter, its flow once Buy ran, and the story a pre-session unlock starts (D17). */
 type Offer = { readonly chapter: ChapterId; readonly product: ProductId | null; readonly start: StoryId | null; flow: PurchaseFlow | null };
 
+/** LBI D5: a recovery waiting for its safe point: the build to reload into, through boot's port. */
+type Recovery = { readonly served: string; readonly page: ReloadPort };
+
 type DebugHook = {
   stats(): unknown;
   lineId(): LineId | null;
@@ -393,6 +452,11 @@ export function createGame(deps: GameDeps): Game {
    * longer has to, at the latest when the intent ends.
    */
   let deferred: { s: Session; keepalive: boolean } | null = null;
+  /** LBI D5: the build a recovery waits to reload into (one per page), and its poll timer. */
+  let recovery: Recovery | null = null;
+  let reloadTimer: number | null = null;
+  /** LBI D5 'attempt': the puzzle attempts sent through the yields and not yet answered. */
+  let attemptsInFlight = 0;
 
   // -------------------------------------------------------------------------------------------------------------
   // Intents
@@ -1215,6 +1279,9 @@ export function createGame(deps: GameDeps): Game {
       showNotice({ kind: 'reopen', onclose: () => tg.close() });
     } else {
       showNotice({ kind: 'error', onaction: () => void game.exitToStories() });
+      // LBI D4: a chapter file a deploy removed answers without the build header; the probe's answer carries it, and a
+      // skew it shows reaches `skewed` through boot. Its own result is not needed (it never rejects).
+      void deps.fetchAsset(BUILD_PROBE_URL, new AbortController().signal);
     }
     return err({ kind: 'chapter', error: e });
   };
@@ -1261,12 +1328,29 @@ export function createGame(deps: GameDeps): Game {
     });
   };
 
+  /**
+   * LBI D5 'attempt': the yields' puzzle calls, each attempt counted until its answer, so a recovery never reloads
+   * between the two. The answer's continuation (a solved puzzle queues its outcome as an intent) runs in microtasks,
+   * before the recovery's next timer task looks again.
+   */
+  const yieldsApi: YieldsHost['api'] = {
+    getPuzzle: (id, lang, o) => deps.api.getPuzzle(id, lang, o),
+    postAttempt: async (id, answer, o) => {
+      attemptsInFlight += 1;
+      try {
+        return await deps.api.postAttempt(id, answer, o);
+      } finally {
+        attemptsInFlight -= 1;
+      }
+    },
+  };
+
   /** The session's side of its yields; every method runs after the session exists. */
   const yieldsHost = (of: () => Session): YieldsHost => ({
     vm,
     screens,
     tg,
-    api: deps.api,
+    api: yieldsApi,
     scene,
     explore: deps.explore,
     puzzle: deps.puzzle,
@@ -1635,6 +1719,73 @@ export function createGame(deps: GameDeps): Game {
   };
 
   // -------------------------------------------------------------------------------------------------------------
+  // Build skew (LBI D5): the reload into the new build, at a safe point
+
+  /**
+   * What a reload would cut now, or null at a safe point. A deactivated page waits for `activated`: the player would
+   * not see the notice, and the flush may be throttled. The grant of an open invoice is the server's on
+   * `successful_payment` either way (principle 2); waiting keeps the flow's poll, and with it the paywall's state, so no
+   * reloaded paywall offers Buy for a payment still being confirmed (`delayed` included, critique W1). A hint is not
+   * waited for: a tier unlocked before debits nothing again.
+   */
+  const reloadBlocker = (): ReloadBlocker | null => {
+    if (busy !== null) {
+      return 'intent';
+    }
+    if (paused) {
+      return 'background';
+    }
+    if (PURCHASE_OPEN.has(offer?.flow?.state().kind ?? 'idle') || PURCHASE_OPEN.has(vm.meta?.purchase.kind ?? 'idle')) {
+      return 'purchase';
+    }
+    if (attemptsInFlight > 0) {
+      return 'attempt';
+    }
+    if (vm.saves.saving !== null) {
+      return 'save';
+    }
+    if (vm.meta?.gift?.busy === true) {
+      return 'gift';
+    }
+    return null;
+  };
+
+  /**
+   * D5 step 3, in this one timer task once nothing blocks: the autosave of this exact point (by its own rules: an
+   * adopting or mixed session writes nothing, a pending paid start writes its body), then the update notice as the
+   * root, which covers every control so no Buy or attempt can start; then the flush and the reload.
+   */
+  const reloadTick = (): void => {
+    reloadTimer = null;
+    const r = recovery;
+    if (r === null || disposed) {
+      return;
+    }
+    if (reloadBlocker() !== null) {
+      reloadTimer = clock.setTimeout(reloadTick, RELOAD_POLL_MS);
+      return;
+    }
+    clearAuto();
+    clearSkip();
+    const s = session;
+    if (s !== null) {
+      autosave(s);
+    }
+    showNotice({ kind: 'update' });
+    void reloadAfterFlush(r, s); // its end is the reload; nothing awaits it
+  };
+
+  /** The exit's rule (EXIT_FLUSH_MS, else the pending cache keeps the autosave), then the reload with the latch set. */
+  const reloadAfterFlush = async (r: Recovery, s: Session | null): Promise<void> => {
+    if (s !== null) {
+      await s.saves.flush({ timeoutMs: EXIT_FLUSH_MS });
+    }
+    if (!disposed) {
+      r.page.reload(withReloadedFor(r.page.href(), r.served));
+    }
+  };
+
+  // -------------------------------------------------------------------------------------------------------------
   // The debug hook (D22)
 
   if (__TG_MOCK__) {
@@ -1895,6 +2046,13 @@ export function createGame(deps: GameDeps): Game {
     attachMeta(m) {
       meta = m;
     },
+    skewed(served, page) {
+      if (disposed || recovery !== null || reloadedFor(page.href()) === served) {
+        return; // the latch: this tab already reloaded for `served`, so today's error states stay (D6)
+      }
+      recovery = { served, page };
+      reloadTimer = clock.setTimeout(reloadTick, 0); // checked in a task of its own, never inside the response path
+    },
     exploreActions: {
       ontap: (key) => session?.yields.layer.ontap(key),
       oninsert: (key, item) => session?.yields.layer.oninsert(key, item),
@@ -1935,6 +2093,11 @@ export function createGame(deps: GameDeps): Game {
       clearAuto();
       clearSkip();
       clearHold();
+      if (reloadTimer !== null) {
+        clock.clearTimeout(reloadTimer);
+        reloadTimer = null;
+      }
+      recovery = null;
       hostWaiters = [];
       if (__TG_MOCK__) {
         delete (globalThis as typeof globalThis & { __novelDebug?: DebugHook }).__novelDebug;

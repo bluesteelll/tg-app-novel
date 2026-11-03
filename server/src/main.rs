@@ -10,7 +10,7 @@ use server::api::static_files::{self, StaticDir};
 use server::config::{Config, TelegramEnv};
 use server::telegram::gateway::FrankensteinGateway;
 use server::telegram::{payments, setup, texts};
-use server::{AppState, build_router, db};
+use server::{AppState, db};
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -107,7 +107,11 @@ async fn serve() -> ExitCode {
     let static_dir = match &cfg.static_dir {
         None => None,
         Some(dir) => match static_files::check(dir, &cfg.content_dir).await {
-            Ok(dir) => Some(dir),
+            Ok(dir) => {
+                // The deploy check (LBI D8): this id is what every `/api` answer names, and must equal the dist's file.
+                info!(build_id = %dir.build_id(), "static dir checked");
+                Some(dir)
+            }
             Err(e) => {
                 error!("static dir refused: {e}");
                 return ExitCode::FAILURE;
@@ -146,11 +150,7 @@ async fn run(
     static_dir: Option<&StaticDir>,
 ) -> std::io::Result<()> {
     let sweep_state = state.clone();
-    let app = build_router(state);
-    let app = match static_dir {
-        Some(dir) => static_files::with_static(app, dir),
-        None => app,
-    };
+    let app = server::app(state, static_dir);
     let listener = TcpListener::bind(listen_addr).await?;
     info!(addr = %listener.local_addr()?, "listening");
     let sweep = tokio::spawn(payments::run_auto_refund_sweep(sweep_state));

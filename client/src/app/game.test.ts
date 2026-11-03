@@ -23,13 +23,15 @@ import { createSettingsStore } from '../settings/store.ts';
 import type { CloudPort, SettingsStore } from '../settings/store.ts';
 import type { StatEvent } from '../stats/reporter.ts';
 import type { PuzzleUiProps } from '../puzzles/registry.ts';
+import { PENDING_WINDOW_MS } from '../purchase/flow.ts';
+import type { PurchaseState } from '../purchase/flow.ts';
 import type { ChapterLoader } from '../story/chapters.ts';
 import { decodeChapterMeta } from '../story/catalog.ts';
 import type { AssetEntry, AssetManifest, ChapterCatalog, LoadedChapter, Result, StoryId } from '../story/catalog.ts';
 import { liveRunners } from '../story/runner.ts';
 import { decodeSave, encodeSave } from '../story/save-codec.ts';
 import { EMPTY_SNAPSHOT } from '../story/staging.ts';
-import type { AssetId, ChapterId, ProductId, StoryVersion } from '../story/staging.ts';
+import type { AssetId, ChapterId, OrderId, ProductId, StoryVersion } from '../story/staging.ts';
 import type { InvoiceStatus } from '../telegram/index.ts';
 import { createExploreView } from '../ui/explore-view.svelte.ts';
 import type { ExploreViewStore } from '../ui/explore-view.svelte.ts';
@@ -43,9 +45,9 @@ import { createViewModel } from '../ui/state.svelte.ts';
 import type { ViewModel } from '../ui/state.svelte.ts';
 import { createMetaGate, newestAuto } from './boot.ts';
 import type { MetaGate } from './boot.ts';
-import { CONFLICT_HOLD_MS, createGame } from './game.ts';
-import type { Entitlements, Game, GameDeps } from './game.ts';
-import type { MetaController, MetaDeps, MetaUi } from './meta.ts';
+import { CONFLICT_HOLD_MS, createGame, reloadedFor, withReloadedFor } from './game.ts';
+import type { Entitlements, Game, GameDeps, ReloadPort } from './game.ts';
+import type { MetaController, MetaDeps, MetaUi, MetaView } from './meta.ts';
 import type { ExploreChunk, LazyChunks } from './yields.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -521,6 +523,8 @@ type Harness = {
   owned: Set<string>;
   /** The purchase calls in order: createInvoice, openInvoice, getOrder, getEntitlements, and the list's refresh. */
   readonly purchases: string[];
+  /** Every URL the game asked `fetchAsset` for, in order (LBI: the build-id probe). */
+  readonly assetUrls: string[];
   /** How many times the game handed Home back (onExit). */
   exits(): number;
   /** How many times the game closed the Mini App (the facade's `close`). */
@@ -537,6 +541,8 @@ type HarnessOptions = {
   slots?: ReadonlyMap<SaveSlot, SaveFull>;
   /** openInvoice's answers in order (then 'cancelled'); 'paid' also grants, as the webhook does on the server. */
   invoice?: readonly InvoiceStatus[];
+  /** Holds every openInvoice answer until it settles: the native sheet stays open meanwhile. */
+  invoiceGate?: Promise<void>;
   /** The lazy families; the default imports none (a yield with no chunks is a test bug). */
   chunks?: LazyChunks;
   /** postAttempt's answer; the default is a network error. */
@@ -584,6 +590,7 @@ function harness(o: HarnessOptions = {}): Harness {
   };
   const fail: ApiError = { kind: 'network', detail: 'offline in the unit test' };
   const purchases: string[] = [];
+  const assetUrls: string[] = [];
   const answers = [...(o.invoice ?? [])];
   let product: string | null = null;
   let exits = 0;
@@ -604,6 +611,9 @@ function harness(o: HarnessOptions = {}): Harness {
       },
       openInvoice: async () => {
         purchases.push('openInvoice');
+        if (o.invoiceGate !== undefined) {
+          await o.invoiceGate;
+        }
         const status = answers.shift() ?? 'cancelled';
         const ch = chapterOf(product);
         if (status === 'paid' && ch !== null) {
@@ -650,7 +660,10 @@ function harness(o: HarnessOptions = {}): Harness {
     audio: () => audio,
     unlock: () => {},
     loaders: { current: loader, next: loader, en: loader },
-    fetchAsset: async () => ({ ok: false, error: { kind: 'network', detail: 'no assets in the unit test' } }),
+    fetchAsset: async (url) => {
+      assetUrls.push(url);
+      return { ok: false, error: { kind: 'network', detail: 'no assets in the unit test' } };
+    },
     dpr: () => 2,
     accountLang: 'ru',
     onExit: () => {
@@ -681,6 +694,7 @@ function harness(o: HarnessOptions = {}): Harness {
     loader,
     owned,
     purchases,
+    assetUrls,
     exits: () => exits,
     closes: () => closes,
     save: () => {
@@ -3294,4 +3308,265 @@ test('boot: meta chunk import retried by the next tap, single flight', async () 
   } finally {
     vi.useRealTimers();
   }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// LBI D5-D6: a deploy under the open page; the reload into the new build at a safe point, and the latch
+
+/** A build the server serves after a deploy, other than this page's. */
+const SKEW = 'ffffffffffffffff';
+/** A Mini App URL as Telegram opens it: the launch params in the fragment, percent-encoded twice over. */
+const HREF =
+  'https://app.example/?v=1#tgWebAppData=query_id%3DAAH1%26user%3D%257B%2522id%2522%253A1001%257D%26hash%3D0123abcd' +
+  '&tgWebAppVersion=9.6&tgWebAppThemeParams=%7B%22bg_color%22%3A%22%2317212b%22%7D';
+
+/** Boot's port over a fake `location`: each reload is recorded, and the page's URL becomes the reloaded one. */
+function fakePage(href = HREF): ReloadPort & { readonly reloads: string[] } {
+  const reloads: string[] = [];
+  let now = href;
+  return {
+    reloads,
+    href: () => now,
+    reload: (url) => {
+      reloads.push(url);
+      now = url;
+    },
+  };
+}
+
+/** `ms` of the fake clock in 100 ms steps, the fakes' answers settling between them. */
+async function pass(h: Harness, ms: number): Promise<void> {
+  for (let left = ms; left > 0; left -= 100) {
+    h.clock.advance(Math.min(100, left));
+    await settle();
+  }
+}
+
+/** The meta overlays' view as the controller writes it; the recovery reads only `purchase` and `gift.busy`. */
+function metaView(o: Partial<MetaView> = {}): MetaView {
+  return {
+    ui: null,
+    card: null,
+    social: null,
+    profile: null,
+    wallet: null,
+    purchase: { kind: 'idle' },
+    invite: null,
+    gift: null,
+    busy: { social: false, consent: false, invite: false, wallet: false },
+    ...o,
+  };
+}
+
+type GiftView = NonNullable<MetaView['gift']>;
+const giftView = (busy: boolean): GiftView => ({
+  friend: { handle: 'f1' as GiftView['friend']['handle'], firstName: 'Аня' },
+  kind: 'hint' as GiftView['kind'],
+  balance: 3,
+  maxAmount: null,
+  error: null,
+  busy,
+});
+
+test('game: skew reloads at a safe point with the step autosaved', async () => {
+  const h = harness();
+  await startManor(h);
+  await h.game.advance(); // l002
+  let flushed: (v: 'saved' | 'pending') => void = () => {};
+  h.save().flush = () =>
+    new Promise((resolve) => {
+      flushed = resolve;
+    });
+  const page = fakePage();
+  const before = h.save().autosaves.length;
+  h.game.skewed(SKEW, page);
+  // Nothing inside the response path that reported it: the safe point is looked for in a timer task.
+  expect([h.save().autosaves.length, h.vm.notice, page.reloads]).toEqual([before, null, []]);
+  h.clock.advance(0);
+  await settle();
+  // In that task: the autosave of the line on screen, then the update notice as the root over every control.
+  expect(h.save().autosaves.slice(before).map((w) => w.lineId)).toEqual(['ch1.arrival.l002']);
+  expect([h.vm.notice?.kind, h.vm.screens.root.kind, h.vm.screens.overlays]).toEqual(['update', 'notice', []]);
+  expect(page.reloads, 'no reload before the flush settles').toEqual([]);
+  flushed('saved');
+  await settle();
+  expect(page.reloads).toEqual([`${HREF}&novelReloadedFor=${SKEW}`]);
+  // One recovery per page: a later skew signal starts no second one.
+  h.game.skewed('eeeeeeeeeeeeeeee', page);
+  await pass(h, 2000);
+  expect(page.reloads).toHaveLength(1);
+  h.game.dispose();
+});
+
+test('game: skew waits for an open invoice', async () => {
+  let open: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  const h = harness({ chapters: [manorCh1(), manorCh2()], invoice: ['pending'], invoiceGate: gate });
+  await playManorCh1(h);
+  await h.game.advance(); // END: ch2's pending start and the paywall
+  h.game.buy();
+  await settle();
+  expect(h.vm.paywall?.state.kind).toBe('sheet');
+  const page = fakePage();
+  h.game.skewed(SKEW, page);
+  await pass(h, 3000);
+  expect([page.reloads, h.vm.notice], 'the sheet is open').toEqual([[], null]);
+  open(); // Telegram closes the sheet: pending
+  await settle();
+  expect(h.vm.paywall?.state.kind).toBe('confirming');
+  await pass(h, 5000);
+  expect([page.reloads, h.vm.notice], 'the order is being confirmed').toEqual([[], null]);
+  // Critique W1: the window ends with the payment still unconfirmed; the paywall shows Check again, never Buy.
+  await pass(h, PENDING_WINDOW_MS);
+  expect(h.vm.paywall?.state.kind).toBe('delayed');
+  await pass(h, 5000);
+  expect([page.reloads, h.vm.notice], 'the payment is delayed').toEqual([[], null]);
+  h.owned.add('ch2'); // the webhook's grant lands on the server
+  h.game.checkAgain();
+  await settle();
+  await settle();
+  expect(lineOf(h.vm)).toBe('ch2.study.l001');
+  await pass(h, 1000);
+  // After the unlock and the chapter's start: one reload, from the new chapter's first line.
+  expect(page.reloads).toHaveLength(1);
+  expect(h.save().autosaves.at(-1)?.lineId).toBe('ch2.study.l001');
+  h.game.dispose();
+});
+
+test("game: skew waits for a puzzle attempt's answer", async () => {
+  const held = heldAttempt();
+  const w = worldChunks();
+  const h = harness({ chapters: [worldCh1('puzzle')], chunks: w.chunks, attempt: held.attempt });
+  await startManor(h);
+  await h.game.advance(); // l002, the cabinet
+  await h.game.advance(); // the puzzle yield
+  await settle();
+  h.game.puzzleActions.ontry(); // an attempt in flight
+  expect(held.sent()).toBe(1);
+  const page = fakePage();
+  h.game.skewed(SKEW, page);
+  await pass(h, 3000);
+  expect([page.reloads, h.vm.notice], 'the attempt awaits its answer').toEqual([[], null]);
+  held.answer({ ok: true, value: { correct: true, solved: true } });
+  await settle();
+  await pass(h, 1000);
+  // The answer's outcome ran as an intent to its end first: the reload's autosave is past the puzzle.
+  expect(page.reloads).toHaveLength(1);
+  expect(h.save().autosaves.at(-1)?.lineId).toBe('ch1.after.l003');
+  h.game.dispose();
+});
+
+test('game: skew waits for a manual save and a gift in flight', async () => {
+  const h = harness();
+  await startManor(h);
+  await h.game.advance(); // l002
+  const inFlight = inFlightSaves(h);
+  void h.game.save('s1');
+  await settle();
+  expect(h.vm.saves.saving).toBe('s1');
+  const page = fakePage();
+  h.game.skewed(SKEW, page);
+  await pass(h, 2000);
+  expect([page.reloads, h.vm.notice], 'the manual save is in flight').toEqual([[], null]);
+  h.vm.meta = metaView({ gift: giftView(true) }); // a gift sent from the friends overlay meanwhile
+  inFlight.get('s1')?.answer({ ok: true, value: { rev: 1, savedAt: 1 } });
+  await settle();
+  expect(h.vm.saves.saving).toBeNull();
+  await pass(h, 2000);
+  expect([page.reloads, h.vm.notice], 'the gift is in flight').toEqual([[], null]);
+  h.vm.meta = metaView({ gift: giftView(false) });
+  await pass(h, 1000);
+  expect(page.reloads).toHaveLength(1);
+  h.game.dispose();
+});
+
+test('game: skew waits while the app is in the background', async () => {
+  const h = harness();
+  await startManor(h);
+  h.game.onLifecycle('deactivated');
+  const page = fakePage();
+  h.game.skewed(SKEW, page);
+  await pass(h, 3000);
+  expect([page.reloads, h.vm.notice], 'deactivated').toEqual([[], null]);
+  h.game.onLifecycle('activated');
+  await pass(h, 1000);
+  expect(page.reloads).toHaveLength(1);
+  expect(h.vm.notice?.kind).toBe('update');
+  h.game.dispose();
+});
+
+test("game: skew waits for the wallet's purchase", async () => {
+  const h = harness(); // Home: no session to autosave
+  const page = fakePage();
+  const open: PurchaseState[] = [
+    { kind: 'requesting' },
+    { kind: 'sheet', orderId: 'o1' as OrderId },
+    { kind: 'confirming', orderId: 'o1' as OrderId, since: 0 },
+    { kind: 'delayed', orderId: 'o1' as OrderId },
+  ];
+  h.vm.meta = metaView({ purchase: open[0] });
+  h.game.skewed(SKEW, page);
+  for (const purchase of open) {
+    h.vm.meta = metaView({ purchase });
+    await pass(h, 2000);
+    expect([page.reloads, h.vm.notice], purchase.kind).toEqual([[], null]);
+  }
+  h.vm.meta = metaView({ purchase: { kind: 'unlocked', product: 'pack:hints' as ProductId } });
+  await pass(h, 1000);
+  expect(page.reloads).toEqual([`${HREF}&novelReloadedFor=${SKEW}`]);
+  h.game.dispose();
+});
+
+test("game: skew latch keeps today's handling in a reloaded tab", async () => {
+  const first = harness();
+  await startManor(first);
+  const page1 = fakePage();
+  first.game.skewed(SKEW, page1);
+  await pass(first, 1000);
+  expect(page1.reloads).toHaveLength(1);
+  first.game.dispose();
+  // The reloaded tab came back on the old bundle, and the server still serves SKEW: no notice, no second reload.
+  const reloaded = page1.reloads[0] ?? '';
+  const h = harness();
+  await startManor(h);
+  const page2 = fakePage(reloaded);
+  h.game.skewed(SKEW, page2);
+  await pass(h, 3000);
+  expect([page2.reloads, h.vm.notice, h.vm.screens.root.kind]).toEqual([[], null, 'game']);
+  // A later deploy recovers once more; the latch names it now.
+  h.game.skewed('eeeeeeeeeeeeeeee', page2);
+  await pass(h, 1000);
+  expect(page2.reloads).toEqual([`${HREF}&novelReloadedFor=eeeeeeeeeeeeeeee`]);
+  h.game.dispose();
+});
+
+test('game: the latch fragment keeps the launch params', () => {
+  expect(reloadedFor(HREF)).toBeNull();
+  const once = withReloadedFor(HREF, SKEW);
+  expect(once).toBe(`${HREF}&novelReloadedFor=${SKEW}`);
+  expect(reloadedFor(once)).toBe(SKEW);
+  // A second skew replaces the value; the launch params stay byte for byte, in place.
+  expect(withReloadedFor(once, 'eeeeeeeeeeeeeeee')).toBe(`${HREF}&novelReloadedFor=eeeeeeeeeeeeeeee`);
+  expect(withReloadedFor('https://a/#x=1&novelReloadedFor=aaaa&y=2&novelReloadedFor=bbbb', 'cccc')).toBe(
+    'https://a/#x=1&novelReloadedFor=cccc&y=2',
+  );
+  // No fragment, or an empty one.
+  expect(withReloadedFor('https://a/', SKEW)).toBe(`https://a/#novelReloadedFor=${SKEW}`);
+  expect(withReloadedFor('https://a/#', SKEW)).toBe(`https://a/#novelReloadedFor=${SKEW}`);
+  // Only the parameter itself, never one that merely starts with its name.
+  expect(reloadedFor('https://a/#novelReloadedForX=1&tgWebAppVersion=9.6')).toBeNull();
+  expect(reloadedFor(withReloadedFor('https://a/#x=1', 'a b&c'))).toBe('a b&c');
+});
+
+test('game: a chapter that fails to load probes the build id', async () => {
+  const h = harness(); // ch3 is in the catalog, and no loader serves it
+  await startManor(h);
+  expect(h.assetUrls, 'a chapter that loads probes nothing').toEqual([]);
+  await h.game.exitToStories();
+  expect((await h.game.start({ kind: 'new', story: TIDE, chapter: CH3 })).ok).toBe(false);
+  expect(h.vm.notice?.kind).toBe('error');
+  expect(h.assetUrls).toEqual(['/api/health']);
+  h.game.dispose();
 });
