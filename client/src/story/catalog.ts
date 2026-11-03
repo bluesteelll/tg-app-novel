@@ -721,9 +721,23 @@ export type AssetRef = { url: string; bytes: number };
  * the stored `w × h` sits on it. Absent: the stored file is the canvas.
  */
 export type Trim = { canvasW: number; canvasH: number; x: number; y: number };
-/** `w`, `h` and `decodedBytes = w × h × 4` are the stored file's, trimmed or not (what the caps count). */
+/** One stored image file in its two variants: `w`, `h` and `decodedBytes = w × h × 4` are its px (what the caps count). */
+export type ImageFile = { w: number; h: number; decodedBytes: number; avif: AssetRef; webp: AssetRef };
+/**
+ * MEMORY-PLAN 4.C: the half tier's file, exactly half its entry's stored file per side. It has no trim of its own: it
+ * is laid out on the entry's canvas at the entry's trim rect, at resolution 0.5.
+ */
+export type HalfFile = ImageFile;
+/** Which file of an image entry a session loads: the stored file, or its half (a LOW phone, MEMORY-PLAN 4.C). */
+export type SizeTier = 'full' | 'half';
+/**
+ * MEMORY-PLAN 4.C, the character canvas rule: a char entry has a half only on this canvas height (DIMS's char maximum),
+ * so the half tier's predicate (scene/layout.ts `halfFits`) holds for every char half it admits.
+ */
+export const CHAR_HALF_CANVAS_H = 1536;
+/** An image's own file is the stored one, trimmed or not; `half` (bg, cg, char, prop) its half-tier file. */
 export type AssetEntry =
-  | { kind: 'image'; w: number; h: number; decodedBytes: number; avif: AssetRef; webp: AssetRef; trim?: Trim }
+  | ({ kind: 'image' } & ImageFile & { trim?: Trim; half?: HalfFile })
   | { kind: 'audio'; role: 'bgm' | 'sfx'; durationMs: number; file: AssetRef; codec: 'm4a' | 'wav' };
 export type ImageEntry = Extract<AssetEntry, { kind: 'image' }>;
 /** `<ch>.assets.json`: every asset the chapter names, at the tier of its file. */
@@ -751,6 +765,8 @@ const IMAGE_NAMESPACES: readonly string[] = ['bg', 'cg', 'char', 'prop', 'cover'
  * decoder, the asset tool and the budget read; bg, cg and cover are opaque and never trimmed.
  */
 export const TRIMMED_NAMESPACES: readonly string[] = ['char', 'prop'];
+/** MEMORY-PLAN 4.C: the kinds a scene draws from the registry, so the ones with a half tier; a cover never has one. */
+const HALF_NAMESPACES: readonly string[] = ['bg', 'cg', 'char', 'prop'];
 
 function positiveInt(value: unknown, path: string, report: Report): number | null {
   if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
@@ -836,6 +852,59 @@ function assetRef(value: unknown, path: string, ext: string | null, prefixes: re
   return bytes === null ? null : { url, bytes };
 }
 
+/** What an image entry's own decode gives its half's checks; null where that part did not decode. */
+type HalfContext = { w: number | null; h: number | null; canvasH: number | null; prefix: string | null };
+
+/**
+ * An image entry's `half` (MEMORY-PLAN 4.C, §5): bg, cg, char and prop entries only; exactly w, h, decodedBytes, avif,
+ * webp; half the stored file per side, `decodedBytes = w × h × 4`; a char's only on the CHAR_HALF_CANVAS_H canvas; its
+ * files under the prefix of the entry's own file. Principle 0: the half's pixels are its file's, so a public half of a
+ * gated file would ship that art free, and scan-dist cannot see it (another name, other bytes).
+ */
+function halfOf(value: unknown, path: string, ns: string, full: HalfContext, prefixes: readonly string[], report: Report): HalfFile | null {
+  if (!HALF_NAMESPACES.includes(ns)) {
+    report(path, `only ${HALF_NAMESPACES.join(', ')} entries have a half`);
+    return null;
+  }
+  if (!isObject(value)) {
+    report(path, 'not an object');
+    return null;
+  }
+  let ok = true;
+  const issue: Report = (p, detail) => {
+    ok = false;
+    report(p, detail);
+  };
+  exactKeys(value, ['w', 'h', 'decodedBytes', 'avif', 'webp'], path, issue);
+  const field = <T>(key: string, decode: (v: unknown, p: string) => T | null): T | null =>
+    Object.hasOwn(value, key) ? decode(value[key], `${path}.${key}`) : null;
+  const int = (v: unknown, p: string): number | null => positiveInt(v, p, issue);
+  const w = field('w', int);
+  const h = field('h', int);
+  const decodedBytes = field('decodedBytes', int);
+  if (w !== null && h !== null && decodedBytes !== null && decodedBytes !== w * h * 4) {
+    issue(`${path}.decodedBytes`, `${decodedBytes} is not w × h × 4 = ${w * h * 4} (RGBA)`);
+  }
+  for (const [key, side, stored] of [['w', w, full.w], ['h', h, full.h]] as const) {
+    if (side !== null && stored !== null && side * 2 !== stored) {
+      issue(`${path}.${key}`, `${side} is not half the stored ${stored} (the half tier halves exactly)`);
+    }
+  }
+  const avif = field('avif', (v, p) => assetRef(v, p, 'avif', prefixes, issue));
+  const webp = field('webp', (v, p) => assetRef(v, p, 'webp', prefixes, issue));
+  if (ns === 'char' && full.canvasH !== null && full.canvasH !== CHAR_HALF_CANVAS_H) {
+    issue(path, `a char half needs the ${CHAR_HALF_CANVAS_H}-px canvas, this one is ${full.canvasH} px high`);
+  }
+  const outside = [avif, webp].filter((ref) => ref !== null && full.prefix !== null && !ref.url.startsWith(full.prefix));
+  if (outside.length > 0) {
+    issue(path, `its files are not under ${String(full.prefix)}, its entry's (a half keeps its file's tier)`);
+  }
+  if (!ok || w === null || h === null || decodedBytes === null || avif === null || webp === null) {
+    return null;
+  }
+  return { w, h, decodedBytes, avif, webp };
+}
+
 /** One manifest entry; its kind (and an audio entry's role) must be its id's namespace's. */
 function assetEntry(id: string, value: unknown, path: string, prefixes: readonly string[], report: Report): AssetEntry | null {
   if (!isObject(value)) {
@@ -857,7 +926,7 @@ function assetEntry(id: string, value: unknown, path: string, prefixes: readonly
     Object.hasOwn(value, key) ? decode(value[key], `${path}.${key}`) : null;
   const int = (v: unknown, p: string): number | null => positiveInt(v, p, report);
   if (kind === 'image') {
-    exactKeys(value, ['kind', 'w', 'h', 'decodedBytes', 'avif', 'webp'], path, report, ['trim']);
+    exactKeys(value, ['kind', 'w', 'h', 'decodedBytes', 'avif', 'webp'], path, report, ['trim', 'half']);
     const w = field('w', int);
     const h = field('h', int);
     const decodedBytes = field('decodedBytes', int);
@@ -874,10 +943,17 @@ function assetEntry(id: string, value: unknown, path: string, prefixes: readonly
     const trim = Object.hasOwn(value, 'trim') ? trimOf(value['trim'], `${path}.trim`, trimmed, w, h, report) : undefined;
     const avif = field('avif', (v, p) => assetRef(v, p, 'avif', prefixes, report));
     const webp = field('webp', (v, p) => assetRef(v, p, 'webp', prefixes, report));
-    if (w === null || h === null || decodedBytes === null || avif === null || webp === null || trim === null) {
+    const context: HalfContext = {
+      w,
+      h,
+      canvasH: trim === undefined ? h : (trim?.canvasH ?? null),
+      prefix: avif === null ? null : (prefixes.find((p) => avif.url.startsWith(p)) ?? null),
+    };
+    const half = Object.hasOwn(value, 'half') ? halfOf(value['half'], `${path}.half`, ns, context, prefixes, report) : undefined;
+    if (w === null || h === null || decodedBytes === null || avif === null || webp === null || trim === null || half === null) {
       return null;
     }
-    return { kind, w, h, decodedBytes, avif, webp, ...(trim === undefined ? {} : { trim }) };
+    return { kind, w, h, decodedBytes, avif, webp, ...(trim === undefined ? {} : { trim }), ...(half === undefined ? {} : { half }) };
   }
   exactKeys(value, ['kind', 'role', 'durationMs', 'file', 'codec'], path, report);
   const role = value['role'];
@@ -928,7 +1004,8 @@ function manifestEntries(
  * Decodes a chapter's `assets.json` (free: story-gen/free/<ch>.assets.json; paid: server/content/chapters/<ch>/):
  * exact keys per kind, URLs `/assets/<file>` or `/api/assets/<file>` with the server's file-name rule and the slot's
  * extension (`avif`, `webp`, `file` = `.<codec>`), `decodedBytes = w × h × 4`, kinds and roles per namespace, even
- * sides and the optional `trim` on char and prop entries only (`trimOf`). A cover belongs to no chapter (covers.json).
+ * sides and the optional `trim` on char and prop entries only (`trimOf`), the optional `half` (`halfOf`). A cover belongs
+ * to no chapter (covers.json).
  * Every problem is reported.
  */
 export function decodeAssetManifest(raw: unknown): Result<AssetManifest, CatalogIssue[]> {

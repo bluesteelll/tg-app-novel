@@ -204,7 +204,7 @@ function harness(size: Size = S390, loop: RenderLoop = quietLoop()) {
       }
     });
   };
-  const registry = createAssetRegistry<Tex>({ load, variant: 'avif' });
+  const registry = createAssetRegistry<Tex>({ load, variant: 'avif', tier: 'full' });
   const resolve = (id: AssetId): Result<ImageEntry, AssetError> => {
     const e = Object.hasOwn(ENTRIES, id) ? ENTRIES[id] : undefined;
     return e === undefined ? { ok: false, error: { kind: 'missing-id', id } } : { ok: true, value: e };

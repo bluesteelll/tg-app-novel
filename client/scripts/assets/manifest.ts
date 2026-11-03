@@ -5,7 +5,7 @@
 // relative imports stay under scripts/ (emit.ts, the `--preserve-symlinks-main` CLI tests).
 import { createHash } from 'node:crypto';
 
-import { ASSET_ID_RE, TRIMMED_NAMESPACES, decodeAssetManifest } from '../../src/story/catalog.ts';
+import { ASSET_ID_RE, CHAR_HALF_CANVAS_H, TRIMMED_NAMESPACES, decodeAssetManifest } from '../../src/story/catalog.ts';
 import type {
   AssetCatalog,
   AssetEntry,
@@ -13,13 +13,16 @@ import type {
   CatalogImage,
   ChapterListEntry,
   CoverManifest,
+  HalfFile,
   ImageEntry,
   Result,
+  SizeTier,
   Trim,
 } from '../../src/story/catalog.ts';
 import type { AssetId, ChapterId } from '../../src/story/staging.ts';
 import { decodeWorldSource } from '../../src/world/decode.ts';
 import type { StoryUsage } from '../story/emit.ts';
+import type { EncodedHalf, HalfAsk } from './encode.ts';
 import { imageKind } from './placeholder.ts';
 
 export {
@@ -117,6 +120,32 @@ export function tierOf(id: AssetId, usage: AssetUsage, chapters: readonly Chapte
   return users.length > 0 ? 'paid' : 'unused';
 }
 
+/**
+ * MEMORY-PLAN 4.C: which half the asset tool asks the encoder for. Public scene images only: a gated half waits for
+ * M3s (the server indexes no half), and a cover is drawn by Home, never by the registry. A char's half only on the
+ * canonical canvas (the character canvas rule); the encoder sees the clamped canvas, so the ask is a height, not a yes.
+ */
+export function halfAsk(id: AssetId, tier: Tier): HalfAsk {
+  const kind = imageKind(id);
+  if (tier !== 'public' || kind === null) {
+    return 'none';
+  }
+  switch (kind) {
+    case 'bg':
+    case 'cg':
+    case 'prop':
+      return 'any';
+    case 'char':
+      return { canvasH: CHAR_HALF_CANVAS_H };
+    case 'cover':
+      return 'none';
+    default: {
+      const unhandled: never = kind;
+      throw new Error(`invariant: unhandled image kind ${String(unhandled)}`);
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // The catalog, by asset id
 
@@ -203,9 +232,12 @@ export function tierAll(
 // ---------------------------------------------------------------------------------------------------------------
 // The plan
 
-/** An encoded asset: an image as AVIF + WebP with sharp's dimensions (and a char or prop's trim), or a clip as WAV. */
+/**
+ * An encoded asset: an image as AVIF + WebP with sharp's dimensions (and a char or prop's trim, and the half pair when
+ * the encoder made one), or a clip as WAV.
+ */
 export type Encoded =
-  | { kind: 'image'; avif: Uint8Array; webp: Uint8Array; w: number; h: number; trim?: Trim }
+  | { kind: 'image'; avif: Uint8Array; webp: Uint8Array; w: number; h: number; trim?: Trim; half?: EncodedHalf }
   | { kind: 'audio'; role: 'bgm' | 'sfx'; wav: Uint8Array; durationMs: number };
 
 /**
@@ -252,9 +284,13 @@ export function sha256Hex(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-/** `<ns>-<id parts joined by ->-<hash8>.<ext>`: injective (ids never hold '-'), and inside the server's name rule. */
-export function assetFileName(id: AssetId, bytes: Uint8Array, ext: 'avif' | 'webp' | 'wav'): string {
-  return `${id.replaceAll('/', '-')}-${sha256Hex(bytes).slice(0, 8)}.${ext}`;
+/**
+ * `<ns>-<id parts joined by ->[-half]-<hash8>.<ext>`, inside the server's name rule. Injective: ids never hold '-' and
+ * each namespace has a fixed number of parts (char 3, every other 2), so a half name has one segment more than its full
+ * name and its first segment still names its namespace.
+ */
+export function assetFileName(id: AssetId, bytes: Uint8Array, ext: 'avif' | 'webp' | 'wav', size: SizeTier): string {
+  return `${id.replaceAll('/', '-')}${size === 'half' ? '-half' : ''}-${sha256Hex(bytes).slice(0, 8)}.${ext}`;
 }
 
 /** The repo-relative file a manifest URL names, or null for a URL outside both prefixes. */
@@ -312,8 +348,8 @@ export function planAssets(input: {
     }
     const dir = tier === 'paid' ? ASSET_OUT.paid : ASSET_OUT.public;
     const urlPrefix = tier === 'paid' ? GATED_URL : PUBLIC_URL;
-    const file = (bytes: Uint8Array, ext: 'avif' | 'webp' | 'wav'): { url: string; bytes: number } => {
-      const name = assetFileName(id, bytes, ext);
+    const file = (bytes: Uint8Array, ext: 'avif' | 'webp' | 'wav', size: SizeTier = 'full'): { url: string; bytes: number } => {
+      const name = assetFileName(id, bytes, ext, size);
       const path = `${dir}/${name}`;
       if (tier === 'paid' && (path.startsWith('client/') || urlPrefix !== GATED_URL)) {
         throw new Error(`invariant: paid-only ${id} is never planned under client/ (principle 0)`);
@@ -324,21 +360,30 @@ export function planAssets(input: {
       }
       return { url: `${urlPrefix}${name}`, bytes: bytes.length };
     };
+    // MEMORY-PLAN 4.C, the tier gate: a half only for a public scene image (a gated half waits for M3s, which serves
+    // it; a cover is never drawn by the registry), whatever the encoder returned. Its files sit beside the full ones.
+    const halfOf = (h: EncodedHalf | undefined): HalfFile | undefined =>
+      h === undefined || tier !== 'public' || id.startsWith('cover/')
+        ? undefined
+        : { w: h.w, h: h.h, decodedBytes: h.w * h.h * 4, avif: file(h.avif, 'avif', 'half'), webp: file(h.webp, 'webp', 'half') };
     // An image's w, h and decodedBytes are its stored px; a trimmed file's trim follows webp (MEMORY-PLAN §5).
-    entries.set(
-      id,
-      enc.kind === 'image'
-        ? {
-            kind: 'image',
-            w: enc.w,
-            h: enc.h,
-            decodedBytes: enc.w * enc.h * 4,
-            avif: file(enc.avif, 'avif'),
-            webp: file(enc.webp, 'webp'),
-            ...(enc.trim === undefined ? {} : { trim: enc.trim }),
-          }
-        : { kind: 'audio', role: enc.role, durationMs: enc.durationMs, file: file(enc.wav, 'wav'), codec: 'wav' },
-    );
+    if (enc.kind === 'image') {
+      const avif = file(enc.avif, 'avif');
+      const webp = file(enc.webp, 'webp');
+      const half = halfOf(enc.half);
+      entries.set(id, {
+        kind: 'image',
+        w: enc.w,
+        h: enc.h,
+        decodedBytes: enc.w * enc.h * 4,
+        avif,
+        webp,
+        ...(enc.trim === undefined ? {} : { trim: enc.trim }),
+        ...(half === undefined ? {} : { half }),
+      });
+    } else {
+      entries.set(id, { kind: 'audio', role: enc.role, durationMs: enc.durationMs, file: file(enc.wav, 'wav'), codec: 'wav' });
+    }
   }
   for (const ch of input.chapters) {
     const assets = sortedRecord(

@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 import type { AssetId } from '../src/story/staging.ts';
 import { encodeImage } from './assets/encode.ts';
-import type { EncodedImage } from './assets/encode.ts';
+import type { EncodedImage, HalfAsk } from './assets/encode.ts';
 import {
   ASSET_OUT,
   TRIMMED_NAMESPACES,
@@ -18,6 +18,7 @@ import {
   catalogAudio,
   catalogImage,
   decodeAssetCatalog,
+  halfAsk,
   planAssets,
   tierAll,
 } from './assets/manifest.ts';
@@ -28,10 +29,11 @@ import { decodeChapterList, decodeStoryUsage } from './story/emit.ts';
 
 /**
  * The encoders, injectable so planner and CLI tests stay fast (the real ones are the default). `trim`: cut the image
- * to its alpha box (char and prop, MEMORY-PLAN 4.B).
+ * to its alpha box (char and prop, MEMORY-PLAN 4.B); `half`: which half pair to make (manifest.ts `halfAsk`, MEMORY-PLAN
+ * 4.C), required here so the tool cannot drop the ask.
  */
 export type Encoders = {
-  encodeImage: (input: Uint8Array, o: { trim: boolean }) => Promise<EncodedImage>;
+  encodeImage: (input: Uint8Array, o: { trim: boolean; half: HalfAsk }) => Promise<EncodedImage>;
   synthWav: typeof synthWav;
 };
 
@@ -128,7 +130,8 @@ export async function main(argv: readonly string[], root: string, encoders: Enco
     if (image !== undefined) {
       const svg = renderPlaceholder(id, image).svg;
       const trim = TRIMMED_NAMESPACES.includes(id.slice(0, id.indexOf('/')));
-      encoded.set(id, { kind: 'image', ...(await encoders.encodeImage(new TextEncoder().encode(svg), { trim })) });
+      const half = halfAsk(id, tier);
+      encoded.set(id, { kind: 'image', ...(await encoders.encodeImage(new TextEncoder().encode(svg), { trim, half })) });
     } else if (audio !== undefined && 'placeholder' in audio) {
       const role = id.startsWith('bgm/') ? 'bgm' : 'sfx';
       encoded.set(id, { kind: 'audio', role, ...encoders.synthWav(role, audio.placeholder) });
