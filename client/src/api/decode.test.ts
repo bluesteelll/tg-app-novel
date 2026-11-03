@@ -2,14 +2,15 @@ import { expect, test } from 'vitest';
 
 import type { Result, StoryId } from '../story/catalog.ts';
 import type { ChapterId, PuzzleLocalId } from '../story/staging.ts';
-import { DTO_DECODERS, decodeApiErrorBody, decodePostStatsResponse, decodePuzzleStatus, decodeStatsResponse } from './decode.ts';
+import { decodeApiErrorBody, decodePostStatsResponse, decodePuzzleStatus, decodeStatsResponse } from './decode.ts';
 import type { DecodedDto, Decoder } from './decode.ts';
-import { createEndpoints, createMetaEndpoints, metaError, puzzleId } from './endpoints.ts';
-import type { FriendHandle, MetaEndpoints, MetaError } from './endpoints.ts';
+import { createEndpoints, puzzleId } from './endpoints.ts';
 import samplesText from './fixtures/dto-samples.json?raw';
 import type { ErrorCode, StatEventDto, StatRejectReason } from './generated/api.ts';
 import { createHttp } from './http.ts';
 import type { ApiError, ApiRequest, Clock, FetchFn, Http } from './http.ts';
+import { DTO_DECODERS, createMetaEndpoints, metaError } from './meta.ts';
+import type { FriendHandle, MetaEndpoints, MetaError } from './meta.ts';
 
 // The DTOs this module decodes, listed here and never read from the file's keys: another lane's new samples (LF1's
 // social DTOs, say) neither break nor silently extend this test.

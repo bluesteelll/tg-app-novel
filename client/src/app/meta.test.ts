@@ -5,11 +5,12 @@
 import { expect, test } from 'vitest';
 
 import type { Decoder } from '../api/decode.ts';
-import { createEndpoints, createMetaEndpoints, puzzleId } from '../api/endpoints.ts';
-import type { FriendHandle } from '../api/endpoints.ts';
+import { createEndpoints, puzzleId } from '../api/endpoints.ts';
 import samplesText from '../api/fixtures/dto-samples.json?raw';
 import type { ErrorCode } from '../api/generated/api.ts';
 import type { ApiError, ApiRequest, Clock, Http } from '../api/http.ts';
+import { createMetaEndpoints } from '../api/meta.ts';
+import type { FriendHandle } from '../api/meta.ts';
 import { t } from '../i18n/index.ts';
 import type { ResourceKind } from '../meta/wallet.ts';
 import { createPurchaseFlow, packDelivered } from '../purchase/flow.ts';
