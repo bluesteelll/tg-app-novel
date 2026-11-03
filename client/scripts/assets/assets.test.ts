@@ -13,8 +13,8 @@ import type { AssetId } from '../../src/story/staging.ts';
 import { main } from '../assets.ts';
 import type { Encoders } from '../assets.ts';
 import { decodeChapterList, decodeStoryUsage } from '../story/emit.ts';
-import { encodeImage } from './encode.ts';
-import { assetUsage, decodeAssetFingerprints, sha256Hex, tierOf } from './manifest.ts';
+import { encodeImage, halfRgba } from './encode.ts';
+import { ASSET_FILE_RE, assetFileName, assetUsage, catalogImage, decodeAssetFingerprints, halfAsk, sha256Hex, tierOf } from './manifest.ts';
 import type { AssetUsage } from './manifest.ts';
 import { renderPlaceholder } from './placeholder.ts';
 import { synthWav } from './synth.ts';
@@ -257,6 +257,119 @@ describe('encode', () => {
       expect(Buffer.compare(asked.webp, plain.webp)).toBe(0);
     }
   });
+
+  test('encode: the half of a trimmed placeholder is its 2 x 2 average', async () => {
+    // MEMORY-PLAN 4.C (critique_r2 W5), on the stranger as placeholder.ts draws it, through M1's trim.
+    const id = 'char/stranger/neutral' as AssetId;
+    const catalog = decodeAssetCatalog(JSON.parse(readFileSync(new URL('../../../assets/catalog.json', import.meta.url), 'utf8')));
+    const entry = catalog.ok ? catalogImage(catalog.value, id) : undefined;
+    if (entry === undefined) {
+      throw new Error(`invariant: assets/catalog.json defines ${id}`);
+    }
+    const svg = utf8.encode(renderPlaceholder(id, entry).svg);
+    const e = await encodeImage(svg, { trim: true, half: { canvasH: 1536 } });
+    expect(e.trim, 'the stranger is trimmed').toBeDefined();
+    expect(e.half, 'the half asked on the 1536-px canvas').toBeDefined();
+    const { trim, half } = e;
+    if (trim === undefined || half === undefined) {
+      throw new Error('invariant: checked above');
+    }
+    // Sizes: exactly half the stored file per side, in both files.
+    expect({ w: half.w * 2, h: half.h * 2 }).toEqual({ w: e.w, h: e.h });
+    expect(await dims(half.avif)).toEqual({ w: e.w / 2, h: e.h / 2, format: 'heif' });
+    expect(await dims(half.webp)).toEqual({ w: e.w / 2, h: e.h / 2, format: 'webp' });
+
+    // Pixels: the stored box of this test's own raster of the SVG, at the reported trim.
+    const { data: canvasPx, info } = await sharp(svg).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    expect({ w: info.width, h: info.height }).toEqual({ w: trim.canvasW, h: trim.canvasH });
+    const stored = new Uint8Array(e.w * e.h * 4);
+    for (let y = 0; y < e.h; y++) {
+      const from = ((trim.y + y) * info.width + trim.x) * 4;
+      stored.set(canvasPx.subarray(from, from + e.w * 4), y * e.w * 4);
+    }
+    const ours = halfRgba(stored, e.w, e.h);
+    const px = (a: Uint8Array, i: number): number => a[i] ?? 0;
+    let worst = 0;
+    for (let y = 0; y < half.h; y++) {
+      for (let x = 0; x < half.w; x++) {
+        const top = (2 * y * e.w + 2 * x) * 4;
+        const block = [top, top + 4, top + e.w * 4, top + e.w * 4 + 4];
+        const o = (y * half.w + x) * 4;
+        const alpha = block.reduce((s, i) => s + px(stored, i + 3), 0) / 4;
+        worst = Math.max(worst, Math.abs(px(ours, o + 3) - alpha));
+        // Compared premultiplied: the mean of c·a over the block against the half's own c·a (0..255 scale).
+        for (const c of [0, 1, 2]) {
+          const mean = block.reduce((s, i) => s + px(stored, i + c) * px(stored, i + 3), 0) / (4 * 255);
+          worst = Math.max(worst, Math.abs((px(ours, o + c) * px(ours, o + 3)) / 255 - mean));
+        }
+      }
+    }
+    expect(worst, 'the largest premultiplied deviation from the 2 × 2 mean, per channel').toBeLessThanOrEqual(1);
+
+    // The file the encoder wrote is that average: the half WebP's alpha (lossless, sharp's alphaQuality defaults to
+    // 100) equals halfRgba's of the stored box px for px (critique r2 W3: no other resampler passes).
+    const written = await sharp(half.webp).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    expect({ w: written.info.width, h: written.info.height }).toEqual({ w: half.w, h: half.h });
+    const alphaAt = (x: number, y: number): number => px(written.data, (y * half.w + x) * 4 + 3);
+    let differing = 0;
+    for (let i = 0; i < half.w * half.h; i++) {
+      differing += px(written.data, i * 4 + 3) === px(ours, i * 4 + 3) ? 0 : 1;
+    }
+    expect(differing, "half WebP px whose alpha is not halfRgba's").toBe(0);
+    // Borders, read from the written file: alpha 0 on every border row and column not at the canvas edge.
+    const borders: Array<[string, Array<[number, number]>]> = [];
+    const rows = (y: number): Array<[number, number]> => Array.from({ length: half.w }, (_, x): [number, number] => [x, y]);
+    const cols = (x: number): Array<[number, number]> => Array.from({ length: half.h }, (_, y): [number, number] => [x, y]);
+    if (trim.x > 0) {
+      borders.push(['left', cols(0)]);
+    }
+    if (trim.y > 0) {
+      borders.push(['top', rows(0)]);
+    }
+    if (trim.x + e.w < trim.canvasW) {
+      borders.push(['right', cols(half.w - 1)]);
+    }
+    if (trim.y + e.h < trim.canvasH) {
+      borders.push(['bottom', rows(half.h - 1)]);
+    }
+    expect(borders.map(([side]) => side), 'the stranger is inside its canvas on three sides').toEqual(['left', 'top', 'right']);
+    for (const [side, points] of borders) {
+      expect(points.filter(([x, y]) => alphaAt(x, y) !== 0).length, `${side} border: px with alpha > 0`).toBe(0);
+    }
+
+    // The planned pair passes the decoder's exact-halving and canvas rules.
+    const ref = (name: string, bytes: Uint8Array): { url: string; bytes: number } => ({ url: `/assets/${name}`, bytes: bytes.length });
+    const raw = {
+      chapterId: 'ch1',
+      assets: {
+        [id]: {
+          kind: 'image',
+          w: e.w,
+          h: e.h,
+          decodedBytes: e.w * e.h * 4,
+          avif: ref('char-stranger-neutral-00000000.avif', e.avif),
+          webp: ref('char-stranger-neutral-00000000.webp', e.webp),
+          trim,
+          half: {
+            w: half.w,
+            h: half.h,
+            decodedBytes: half.w * half.h * 4,
+            avif: ref('char-stranger-neutral-half-00000000.avif', half.avif),
+            webp: ref('char-stranger-neutral-half-00000000.webp', half.webp),
+          },
+        },
+      },
+    };
+    expect(decodeAssetManifest(raw)).toEqual({ ok: true, value: raw });
+
+    // P1: no ask, or 'none', gives no half; the ask never moves the full files.
+    const unasked = await encodeImage(svg, { trim: true });
+    const none = await encodeImage(svg, { trim: true, half: 'none' });
+    expect([Object.hasOwn(unasked, 'half'), Object.hasOwn(none, 'half')]).toEqual([false, false]);
+    expect({ w: unasked.w, h: unasked.h, trim: unasked.trim }).toEqual({ w: e.w, h: e.h, trim });
+    expect(Buffer.compare(e.avif, unasked.avif)).toBe(0);
+    expect(Buffer.compare(e.webp, unasked.webp)).toBe(0);
+  }, 60_000);
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -509,6 +622,98 @@ describe('catalog manifests', () => {
     // Control: the rule is char and prop only; the decoder leaves a bg's size to the budget.
     expect(oneEntry('bg/street', image('bg-street-0a0a0a0a', { w: 1079, decodedBytes: 1079 * 2048 * 4 }))).toEqual([]);
   });
+
+  // MEMORY-PLAN 4.C: `half` is the half tier's file, exactly half the stored file per side, under its entry's prefix.
+  const halfFile = (name: string, w: number, h: number, prefix = '/api/assets/', over: RawEntry = {}): RawEntry => ({
+    w,
+    h,
+    decodedBytes: w * h * 4,
+    avif: { url: `${prefix}${name}-half-0f0f0f0f.avif`, bytes: 30_000 },
+    webp: { url: `${prefix}${name}-half-0f0f0f0f.webp`, bytes: 50_000 },
+    ...over,
+  });
+  /** An entry whose own files are public (image()'s are gated). */
+  const publicImage = (name: string, over: RawEntry = {}): RawEntry =>
+    image(name, { avif: { url: `/assets/${name}.avif`, bytes: 120_000 }, webp: { url: `/assets/${name}.webp`, bytes: 200_000 }, ...over });
+  const ALLY_HALF = halfFile('char-ally-neutral', 233, 697);
+
+  test('catalog: half tier decodes', () => {
+    const raw = {
+      chapterId: 'ch1',
+      assets: {
+        'bg/street': publicImage('bg-street-0a0a0a0a', { half: halfFile('bg-street', 540, 1024, '/assets/') }),
+        'char/ally/neutral': trimmedAlly({ half: ALLY_HALF }),
+        'prop/note': image('prop-note-0d0d0d0d', {
+          w: 494,
+          h: 494,
+          decodedBytes: 494 * 494 * 4,
+          trim: { canvasW: 512, canvasH: 512, x: 9, y: 9 },
+          half: halfFile('prop-note', 247, 247),
+        }),
+        'bg/cafe': image('bg-cafe-0a0a0a0a'),
+      },
+    };
+    const r = decodeAssetManifest(raw);
+    expect(r).toEqual({ ok: true, value: raw });
+    // An entry without a half carries no `half` key at all.
+    const cafe = r.ok ? r.value.assets['bg/cafe' as AssetId] : undefined;
+    expect(cafe).toBeDefined();
+    expect(Object.hasOwn(cafe ?? {}, 'half')).toBe(false);
+  });
+
+  test('catalog: a half that is not exactly half its file is an error value', () => {
+    const half = 'assets.char/ally/neutral.half';
+    const cases: ReadonlyArray<readonly [string, RawEntry, string]> = [
+      ['233×698 under a 466×1394 file', halfFile('char-ally-neutral', 233, 698), `${half}.h`],
+      ['a width that is not half', halfFile('char-ally-neutral', 234, 697), `${half}.w`],
+      ['decodedBytes is not w*h*4', halfFile('char-ally-neutral', 233, 697, '/api/assets/', { decodedBytes: 233 * 697 * 3 }), `${half}.decodedBytes`],
+      ['a trim of its own', halfFile('char-ally-neutral', 233, 697, '/api/assets/', { trim: ALLY_TRIM }), `${half}.trim`],
+      ['a half without webp', halfFile('char-ally-neutral', 233, 697, '/api/assets/', { webp: undefined }), `${half}.webp`],
+    ];
+    for (const [name, value, path] of cases) {
+      // JSON round trip: an `undefined` override drops the key, as a file would not have it.
+      const found = oneEntry('char/ally/neutral', JSON.parse(JSON.stringify(trimmedAlly({ half: value }))) as RawEntry);
+      expect(found, `${name}: ${JSON.stringify(found)}`).toEqual([{ file: 'assets.json', path, detail: expect.any(String) as string }]);
+    }
+    expect(oneEntry('char/ally/neutral', trimmedAlly({ half: ALLY_HALF }))).toEqual([]); // control
+  });
+
+  test('catalog: a char half off the 1536-px canvas is an error value', () => {
+    const at = (id: string): CatalogIssue => ({ file: 'assets.json', path: `assets.${id}.half`, detail: expect.any(String) as string });
+    // MEMORY-PLAN 4.C, the character canvas rule: a char on a smaller canvas loads its full file on either tier.
+    const small = image('char-ally-neutral-0c0c0c0c', {
+      w: 400,
+      h: 1100,
+      decodedBytes: 400 * 1100 * 4,
+      trim: { canvasW: 600, canvasH: 1200, x: 100, y: 50 },
+      half: halfFile('char-ally-neutral', 200, 550),
+    });
+    expect(oneEntry('char/ally/neutral', small)).toEqual([at('char/ally/neutral')]);
+    const untrimmed = image('char-ally-neutral-0c0c0c0c', { w: 768, h: 1024, decodedBytes: 768 * 1024 * 4, half: halfFile('char-ally-neutral', 384, 512) });
+    expect(oneEntry('char/ally/neutral', untrimmed)).toEqual([at('char/ally/neutral')]);
+    // Control: on the canonical canvas the half decodes.
+    expect(oneEntry('char/ally/neutral', trimmedAlly({ half: ALLY_HALF }))).toEqual([]);
+  });
+
+  test('catalog: a half on a cover or under another prefix than its file is an error value', () => {
+    const cover = image('x', {
+      w: 360,
+      h: 640,
+      decodedBytes: 360 * 640 * 4,
+      avif: { url: '/assets/cover-manor-1a2b3c4d.avif', bytes: 9_000 },
+      webp: { url: '/assets/cover-manor-1a2b3c4d.webp', bytes: 12_000 },
+      half: halfFile('cover-manor', 180, 320, '/assets/'),
+    });
+    const covers = decodeCoverManifest({ assets: { 'cover/manor': cover } });
+    expect(covers.ok ? [] : covers.error).toEqual([{ file: 'story-gen/covers.json', path: 'assets.cover/manor.half', detail: expect.any(String) as string }]);
+    // Principle 0: a public half of a gated file ships its pixels free; a gated half of a public file is a slip too.
+    const at = [{ file: 'assets.json', path: 'assets.bg/street.half', detail: expect.any(String) as string }];
+    expect(oneEntry('bg/street', image('bg-street-0a0a0a0a', { half: halfFile('bg-street', 540, 1024, '/assets/') }))).toEqual(at);
+    expect(oneEntry('bg/street', publicImage('bg-street-0a0a0a0a', { half: halfFile('bg-street', 540, 1024, '/api/assets/') }))).toEqual(at);
+    // Controls: a half under its file's own prefix decodes, gated (M3s) and public (M3c) alike.
+    expect(oneEntry('bg/street', image('bg-street-0a0a0a0a', { half: halfFile('bg-street', 540, 1024, '/api/assets/') }))).toEqual([]);
+    expect(oneEntry('bg/street', publicImage('bg-street-0a0a0a0a', { half: halfFile('bg-street', 540, 1024, '/assets/') }))).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -584,6 +789,16 @@ function trimmingFakes(over: Readonly<Record<string, { w: number; h: number; tri
     },
   };
 }
+
+/** FAKE_ENCODERS that return a half pair for every image, whatever the ask: the planner's tier gate is what decides. */
+const HALVING_FAKES: Encoders = {
+  ...FAKE_ENCODERS,
+  encodeImage: async (svg, o) => {
+    const e = await FAKE_ENCODERS.encodeImage(svg, o);
+    const tag = sha256Hex(svg).slice(0, 16);
+    return { ...e, half: { avif: utf8.encode(`half avif ${tag}`), webp: utf8.encode(`half webp ${tag}`), w: e.w / 2, h: e.h / 2 } };
+  },
+};
 
 async function runTool(root: string, encoders = FAKE_ENCODERS): Promise<{ code: number; out: string[]; err: string[] }> {
   const out: string[] = [];
@@ -671,20 +886,30 @@ describe('assets', () => {
 
   test('assets: paid manifest keeps the server fixture keys', async () => {
     writeRepo(repo);
-    expect((await runTool(repo)).code).toBe(0);
+    // Every image encoded with a half: the planner keeps the public ones (bg/cafe) and drops the gated one (bg/archive).
+    expect((await runTool(repo, HALVING_FAKES)).code).toBe(0);
     const planned = JSON.parse(readRel(repo, 'server/content/chapters/ch2/assets.json')) as { assets: Record<string, RawEntry> };
     expect(decodeAssetManifest(planned)).toEqual({ ok: true, value: planned });
     const committed = fixture('ch2') as { assets: Record<string, RawEntry> };
-    // Per kind, the entry keys and each URL slot's keys equal the committed fixture's: what AssetProbe reads.
+    // Per kind, the entry keys and each URL slot's keys equal the committed fixture's: what AssetProbe reads. `half` is
+    // set aside: the probe ignores it and the fixtures have none until M3s.
     const shape = (m: { assets: Record<string, RawEntry> }): Record<string, string> => {
       const out: Record<string, string> = {};
-      for (const e of Object.values(m.assets)) {
+      for (const entry of Object.values(m.assets)) {
+        const e = Object.fromEntries(Object.entries(entry).filter(([k]) => k !== 'half'));
         const slots = Object.entries(e).filter(([, v]) => typeof v === 'object' && v !== null);
         out[String(e['kind'])] = JSON.stringify([Object.keys(e).sort(), slots.map(([k, v]) => [k, Object.keys(v as object).sort()])]);
       }
       return out;
     };
     expect(shape(planned)).toEqual(shape(committed));
+    // Every half a paid manifest names is a public file (M3c): the server indexes none.
+    const halfUrls = Object.values(planned.assets).flatMap((e) => {
+      const half = e['half'] as { avif: { url: string }; webp: { url: string } } | undefined; // decoded above
+      return half === undefined ? [] : [half.avif.url, half.webp.url];
+    });
+    expect(halfUrls, 'the halves in planned ch2').toHaveLength(2);
+    expect(halfUrls.filter((u) => !u.startsWith('/assets/'))).toEqual([]);
     const gated = Object.values(planned.assets).flatMap((e) =>
       Object.values(e).flatMap((v) => (typeof v === 'object' && v !== null && 'url' in v ? [String(v.url)] : [])),
     );
@@ -788,6 +1013,115 @@ describe('assets', () => {
     expect(listDir(repo, 'client/public/assets')).toEqual([]);
   });
 
+  test('assets: the tool asks the encoder to trim char and prop only', async () => {
+    // MEMORY-PLAN 4.B: only the transparent kinds are cut to their alpha box. ch1 also names a cg and a prop here, so
+    // every image namespace is encoded; the ask is recorded per id (the placeholder's label), for every encoded image.
+    const usage = { chapters: { ...REPO_USAGE.chapters, ch1: { assets: [...REPO_USAGE.chapters.ch1.assets, 'cg/letter', 'prop/note'], knots: {} } } };
+    writeRepo(repo, { 'server/content/build/usage.json': usage });
+    const asked: Record<string, boolean> = {};
+    const recording: Encoders = {
+      ...FAKE_ENCODERS,
+      encodeImage: (svg, o) => {
+        const id = /<text\b[^>]*>([^<]+)<\/text>/.exec(new TextDecoder().decode(svg))?.[1] ?? '(no label)';
+        asked[id] = o.trim;
+        return FAKE_ENCODERS.encodeImage(svg, o);
+      },
+    };
+    const r = await runTool(repo, recording);
+    expect(r.code, r.err.join('\n')).toBe(0);
+    expect(asked).toEqual({
+      'bg/archive': false,
+      'bg/cafe': false,
+      'cg/letter': false,
+      'char/ally/neutral': true,
+      'cover/manor': false,
+      'prop/note': true,
+    });
+  });
+
+  test('assets: a char on a canvas shorter than 1536 px gets no half', async () => {
+    // MEMORY-PLAN 4.C, the character canvas rule, through the tool's ask and the real encoder. The asset CLI admits
+    // placeholders only, so the off-canonical source is a PNG built here: an opaque rect on transparency.
+    const ask = halfAsk('char/ally/neutral' as AssetId, 'public');
+    expect(ask).toEqual({ canvasH: 1536 });
+    const sprite = (w: number, h: number): Promise<Buffer> =>
+      sharp({ create: { width: w, height: h, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
+        .composite([{ input: { create: { width: w / 2, height: h / 2, channels: 4, background: { r: 200, g: 90, b: 60, alpha: 1 } } }, left: w / 4, top: h / 4 }])
+        .png()
+        .toBuffer();
+    const small = await encodeImage(await sprite(600, 1200), { trim: true, half: ask });
+    expect(small.trim, 'the small sprite is trimmed').toMatchObject({ canvasW: 600, canvasH: 1200 });
+    expect(Object.hasOwn(small, 'half'), 'no half off the 1536-px canvas').toBe(false);
+    // Control: the canonical canvas gets a half of exactly half its stored size.
+    const canonical = await encodeImage(await sprite(768, 1536), { trim: true, half: ask });
+    expect(canonical.half && { w: canonical.half.w * 2, h: canonical.half.h * 2 }).toEqual({ w: canonical.w, h: canonical.h });
+  }, 30_000);
+
+  test('assets: a paid manifest names no gated half file', async () => {
+    // The halving fake returns a half for every image whatever the ask, so this pins the planner's tier gate alone.
+    writeRepo(repo);
+    const r = await runTool(repo, HALVING_FAKES);
+    expect(r.code, r.err.join('\n')).toBe(0);
+    type Planned = { assets: Record<string, RawEntry> };
+    const ch1 = JSON.parse(readRel(repo, 'client/src/story-gen/free/ch1.assets.json')) as Planned;
+    const ch2 = JSON.parse(readRel(repo, 'server/content/chapters/ch2/assets.json')) as Planned;
+    expect(Object.hasOwn(ch2.assets['bg/archive'] ?? {}, 'half'), 'the gated bg/archive has no half').toBe(false);
+    const cafeHalf = ch2.assets['bg/cafe']?.['half'] as { avif: { url: string }; webp: { url: string } } | undefined; // decoded by the planner
+    expect(cafeHalf, 'the public bg/cafe has a half').toBeDefined();
+    expect([cafeHalf?.avif.url, cafeHalf?.webp.url]).toEqual([
+      expect.stringMatching(/^\/assets\/bg-cafe-half-[0-9a-f]{8}\.avif$/) as string,
+      expect.stringMatching(/^\/assets\/bg-cafe-half-[0-9a-f]{8}\.webp$/) as string,
+    ]);
+    expect(ch2.assets['bg/cafe'], 'one entry per id in every manifest').toEqual(ch1.assets['bg/cafe']);
+    const halves = (rel: string): string[] => listDir(repo, rel).filter((n) => n.includes('-half-'));
+    expect(halves('client/public/assets').length, 'the public halves').toBeGreaterThan(0);
+    expect(halves('server/content/assets')).toEqual([]);
+    expect(readRel(repo, 'server/content/build/fingerprints.assets.json')).not.toContain('-half-');
+    const covers = JSON.parse(readRel(repo, 'client/src/story-gen/covers.json')) as Planned;
+    expect(Object.hasOwn(covers.assets['cover/manor'] ?? {}, 'half'), 'a cover has no half').toBe(false);
+  });
+
+  test('assets: the tool asks a half for public images and never for a cover', async () => {
+    writeRepo(repo);
+    const asked: Record<string, unknown> = {};
+    const recording: Encoders = {
+      ...FAKE_ENCODERS,
+      encodeImage: (svg, o) => {
+        const id = /<text\b[^>]*>([^<]+)<\/text>/.exec(new TextDecoder().decode(svg))?.[1] ?? '(no label)';
+        asked[id] = o.half;
+        return FAKE_ENCODERS.encodeImage(svg, o);
+      },
+    };
+    const r = await runTool(repo, recording);
+    expect(r.code, r.err.join('\n')).toBe(0);
+    expect(asked).toEqual({ 'bg/archive': 'none', 'bg/cafe': 'any', 'char/ally/neutral': { canvasH: 1536 }, 'cover/manor': 'none' });
+  });
+
+  test("assets: a half file's name is distinct from every full file name", () => {
+    // MEMORY-PLAN §5: every id of every namespace, the edge ids whose parts read "half" among them, for the same bytes.
+    const ids = ['bg/cafe', 'bg/half', 'cg/letter', 'char/ally/neutral', 'char/half/half', 'char/ally/half', 'prop/half', 'cover/manor', 'bgm/half', 'sfx/door'];
+    const bytes = utf8.encode('the same bytes');
+    const names = new Map<string, string>();
+    for (const id of ids) {
+      for (const size of ['full', 'half'] as const) {
+        const ext = id.startsWith('bgm/') || id.startsWith('sfx/') ? 'wav' : 'avif';
+        const name = assetFileName(id as AssetId, bytes, ext, size);
+        expect(name, `${id} ${size}`).toMatch(ASSET_FILE_RE);
+        expect(names.has(name), `${name} is made once`).toBe(false);
+        names.set(name, `${id} ${size}`);
+      }
+    }
+    expect(names.size).toBe(ids.length * 2);
+    // Parsing a name by its namespace's part count recovers its id and size: the names are injective.
+    for (const [name, made] of names) {
+      const segments = name.slice(0, name.lastIndexOf('-')).split('-');
+      const parts = segments[0] === 'char' ? 3 : 2;
+      const rest = segments.slice(parts);
+      const size = rest.length === 0 ? 'full' : rest.join('-') === 'half' ? 'half' : `unparsed ${rest.join('-')}`;
+      expect(`${segments.slice(0, parts).join('/')} ${size}`, name).toBe(made);
+    }
+  });
+
   test('assets: cli runs through a linked path under preserve-symlinks-main', async () => {
     // Node keeps the link's spelling for the main module under the flag; the guard canonicalises both sides, and the
     // main module's relative imports stay under scripts/, so the run happens. The real encoders (sharp) run here.
@@ -805,7 +1139,8 @@ describe('assets', () => {
         encoding: 'utf8',
       });
       expect(r.status, r.stdout + r.stderr).toBe(0);
-      expect(r.stdout).toMatch(/^assets: 1 public, 0 paid, 0 unused, 0 covers; 5 files written, 0 stale removed$/m);
+      // The public bg's full and half pairs, the manifest, covers.json and the fingerprints.
+      expect(r.stdout).toMatch(/^assets: 1 public, 0 paid, 0 unused, 0 covers; 7 files written, 0 stale removed$/m);
     } finally {
       unlinkSync(link); // the link only: afterEach's recursive delete never meets a way into client/scripts
     }
@@ -815,5 +1150,10 @@ describe('assets', () => {
     expect(cafe?.kind === 'image' && [cafe.w, cafe.h, cafe.decodedBytes]).toEqual([1080, 2048, 1080 * 2048 * 4]);
     const name = cafe?.kind === 'image' ? cafe.avif.url.slice('/assets/'.length) : '';
     expect(await dims(readFileSync(join(repo, 'client', 'public', 'assets', name)))).toEqual({ w: 1080, h: 2048, format: 'heif' });
+    // The half pair (MEMORY-PLAN 4.C): 540 × 1024, and its AVIF reads back at that size.
+    const half = cafe?.kind === 'image' ? cafe.half : undefined;
+    expect(half && [half.w, half.h, half.decodedBytes]).toEqual([540, 1024, 540 * 1024 * 4]);
+    const halfName = half === undefined ? '' : half.avif.url.slice('/assets/'.length);
+    expect(await dims(readFileSync(join(repo, 'client', 'public', 'assets', halfName)))).toEqual({ w: 540, h: 1024, format: 'heif' });
   }, 30_000);
 });

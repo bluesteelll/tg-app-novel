@@ -728,11 +728,29 @@ function imageRow(a: AssetInputs, id: AssetId, e: ImageEntry, conflict: string |
     v.push(`WebP ${kbText(e.webp.bytes)} over ${kbText(limit.webp)}`);
   }
   v.push(...fileProblems(a, e.avif), ...fileProblems(a, e.webp));
+  // MEMORY-PLAN §7, the half tier: its files exist at their size and within the kind's limits, and a LOW record counts
+  // no more than its full one (I2), so every gate the full tier passes bounds the LOW count too.
+  const h = e.half;
+  if (h !== undefined) {
+    if (h.avif.bytes > limit.avif) {
+      v.push(`half AVIF ${kbText(h.avif.bytes)} over ${kbText(limit.avif)}`);
+    }
+    if (h.webp.bytes > limit.webp) {
+      v.push(`half WebP ${kbText(h.webp.bytes)} over ${kbText(limit.webp)}`);
+    }
+    v.push(...fileProblems(a, h.avif), ...fileProblems(a, h.webp));
+    const low = h.decodedBytes + Math.max(h.avif.bytes, h.webp.bytes);
+    const full = e.decodedBytes + Math.max(e.avif.bytes, e.webp.bytes);
+    if (low > full) {
+      v.push(`half counts ${low} B > the full file's ${full} B (I2: a LOW record must not count more than its full record)`);
+    }
+  }
   if (conflict !== undefined) {
     v.push(conflict);
   }
   const size = t === undefined ? `${e.w}×${e.h}` : `${e.w}×${e.h} in ${t.canvasW}×${t.canvasH}`;
-  const note = v.length > 0 ? v.join('; ') : `${size}, WebP ${kbText(e.webp.bytes)}`;
+  const halfNote = h === undefined ? '' : `; half ${h.w}×${h.h}, WebP ${kbText(h.webp.bytes)}`;
+  const note = v.length > 0 ? v.join('; ') : `${size}, WebP ${kbText(e.webp.bytes)}${halfNote}`;
   return { name, valueBytes: e.avif.bytes, limitBytes: limit.avif, status: v.length > 0 ? 'FAIL' : 'PASS', note, unit: 'KB' };
 }
 
@@ -919,6 +937,21 @@ function transferRow(c: ChapterInputs, limits: Limits): Row {
 }
 
 /**
+ * MEMORY-PLAN §7, §12: what a LOW phone on the half tier downloads for the chapter, each image's half where it has
+ * one, else its full file (a gated image, a char off the canonical canvas); one row per chapter, paid ones included.
+ */
+function transferHalfRow(c: ChapterInputs, limits: Limits): Row {
+  const name = `transfer ${c.id} (half)`;
+  if (c.manifest === null) {
+    return failed(name, limits.transfer, 'manifest missing');
+  }
+  const entries = Object.values(c.manifest.value.assets);
+  const halves = entries.filter((e) => e.kind === 'image' && e.half !== undefined).length;
+  const bytes = entries.reduce((s, e) => s + (e.kind === 'image' ? (e.half ?? e).avif.bytes : e.file.bytes), 0);
+  return measured(name, bytes, limits.transfer, `${entries.length} assets, ${halves} on their half (images as AVIF)`);
+}
+
+/**
  * First-load to the first line, per story (STORIES-PLAN "Budgets and validation"): the head of every chain (a free
  * chapter that no `next` names). The JS is entry + engine closures; PENDING while the engine source is absent.
  */
@@ -971,7 +1004,7 @@ export function evaluateAssets(dist: BudgetInputs, a: AssetInputs, limits: Limit
   for (const c of a.chapters) {
     rows.push(sizedRow(`story json ${c.id}`, c.story, limits.storyRaw, limits.storyBr, 'story missing'));
     rows.push(sizedRow(`en table ${c.id}`, c.en, limits.enRaw, null, 'en table missing'));
-    rows.push(transferRow(c, limits));
+    rows.push(transferRow(c, limits), transferHalfRow(c, limits));
     const knot = firstKnotAvif(c);
     rows.push(
       knot.ok
@@ -1194,7 +1227,7 @@ export function readAssetInputs(root: string): AssetInputs {
   const refs = [
     ...chapters.flatMap((c) => Object.values(c.manifest?.value.assets ?? {})),
     ...Object.values(covers?.value.assets ?? {}),
-  ].flatMap((e) => (e.kind === 'image' ? [e.avif, e.webp] : [e.file]));
+  ].flatMap((e) => (e.kind === 'image' ? [e.avif, e.webp, ...(e.half === undefined ? [] : [e.half.avif, e.half.webp])] : [e.file]));
   for (const ref of refs) {
     const rel = urlPath(ref.url);
     if (rel !== null && existsSync(abs(rel)) && statSync(abs(rel)).isFile()) {
