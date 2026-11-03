@@ -111,14 +111,19 @@ too (`privacy_draft_served_without_file_in_test` in [server/tests/it/legal.rs](.
 
 The policy promises an answer within 10 working days (152-FZ art. 20) and one month under GDPR art. 12
 ([META-PLAN.md](../META-PLAN.md) M26, the policy's rights section). What is stored, per table, is the inventory in
-META-PLAN "Privacy"; nothing else is kept (no IP addresses in tables, no username, no phone). Read one player's rows
-(`<USER_ID>` is their Telegram user id, a number):
+META-PLAN "Privacy", plus the two refund tables of
+[0007_auto_refunds.sql](../../server/migrations/0007_auto_refunds.sql), which that inventory predates: `auto_refunds`
+(a charge's automatic refund, found through its payment) and `unrecorded_refunds` (a refund of a charge the database
+does not hold, with the payer's id). Nothing else is kept (no IP addresses in tables, no username, no phone). Read one
+player's rows (`<USER_ID>` is their Telegram user id, a number):
 
 ```powershell
 @'
 SELECT * FROM users WHERE id = :uid;
 SELECT story_id, slot, rev, chapter_id, line_id, saved_at FROM saves WHERE user_id = :uid;
 SELECT * FROM payments WHERE user_id = :uid;
+SELECT r.* FROM auto_refunds r JOIN payments p ON p.telegram_payment_charge_id = r.charge_id WHERE p.user_id = :uid;
+SELECT * FROM unrecorded_refunds WHERE user_id = :uid;
 SELECT * FROM orders WHERE user_id = :uid;
 SELECT * FROM entitlements WHERE user_id = :uid;
 SELECT * FROM stat_events WHERE user_id = :uid ORDER BY received_at;
@@ -148,8 +153,9 @@ are not on the server.
 
 The erase command is a later lane; until it exists, run the designed order by hand (META-PLAN "Privacy", Erasure):
 one transaction, children first, no cascades. Payments and orders stay for accounting, so the `users` row is
-anonymised, not deleted; ledger rows with a charge stay with their payment. Check the player's id twice: this cannot be
-undone.
+anonymised, not deleted; ledger rows with a charge stay with their payment. The refund records stay too, as accounting
+records like `payments`: the block touches neither `auto_refunds` nor `unrecorded_refunds`. Check the player's id
+twice: this cannot be undone.
 
 ```powershell
 @'
@@ -183,7 +189,7 @@ so nothing is applied. The columns are the migrations' ([0002_puzzles.sql](../..
 [0006_achievements.sql](../../server/migrations/0006_achievements.sql)). The docs lane D2 ran this block twice, as
 written, on a probe cluster with the tree's migrations ([deploy.md](deploy.md#roll-back), the last paragraph). Run
 the access query above first, then this, on a copy or at a quiet hour. Tell the player what was kept and why
-(payments, for accounting).
+(payments, orders and refund records, for accounting).
 
 Then add the erasure to your erasure record: the player's id and the time in unix seconds
 (`[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()`; on Linux `date +%s`). Keep the record on the host with the backups, never in the
@@ -194,8 +200,8 @@ the server starts on the restored database ([deploy.md](deploy.md#roll-back), st
 ## Verify
 
 - `GET <PUBLIC_APP_URL>api/privacy` shows no `{...}` placeholder and the version you set.
-- After an erasure, the access query returns the `users` row with an empty name, the payments and orders, and nothing
-  else of the player.
+- After an erasure, the access query returns the `users` row with an empty name, the payments, the refund records
+  and the orders, and nothing else of the player.
 
 ## Roll back
 

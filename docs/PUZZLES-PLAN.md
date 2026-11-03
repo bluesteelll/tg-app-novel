@@ -539,7 +539,10 @@ throw.**
     `cover: hotspot rect follows the bg cover transform`).
   - **The box.** The math agrees only if both sides use one box: the **stage host**, the element of `Stage.svelte`
     (L14a). It is the full-bleed 9:16 column, pillar-boxed in landscape (PP "Portrait-first"), and Pixi's `resizeTo`
-    and the controller's `ResizeObserver` both read it.
+    and the controller's `ResizeObserver` both read it. As merged (M2 `385d52f`; RULINGS 117, 129): no `resizeTo`;
+    the scene controller sizes the renderer from this box at init and then by its own `ResizeObserver`
+    (`client/src/scene/controller.ts:116-134`, `:450`), and the explore controller observes the same box
+    (`client/src/explore/controller.ts:339`).
     - The hotspot layer (`ExploreView`'s root) is absolutely positioned inside that element, at `inset: 0`, never in
       the overlay box padded by `--app-inset-*`.
     - `controller.resize()` receives that element's content-box size.
@@ -1497,6 +1500,8 @@ export interface ExploreController {
 export function createExploreController(deps: { world: WorldPublic; manifest: AssetManifest;
   scene: Pick<SceneController, 'preload' | 'releasePreload'>; view: ExploreViewStore; text: (t: WorldText) => string;
   stageHost: HTMLElement }): ExploreController;                 // the Stage.svelte element: Pixi's resizeTo box, observed for resize()
+// as merged (M2 `385d52f`, RULINGS 117, 129): no resizeTo; stageHost is the box the scene renderer is sized from at
+//   init and by the scene controller's ResizeObserver (client/src/scene/controller.ts:116-134, :450)
 // as merged (LX `a9e991c`, RULINGS 75; cut Q3, impl limitation 1; client/src/explore/controller.ts:25-63,
 //   client/src/ui/explore-view.svelte.ts:13-82):
 //   HotspotView lives in the view store module ui/explore-view.svelte.ts (ExploreViewStore { layer, panel, hotspots,
@@ -1752,19 +1757,19 @@ The lanes are cut in PROTOTYPE-PLAN.md "THE LANE CUT" (dependency order, locks, 
 
 | Budget | Limit | Basis | Enforced by |
 |---|---|---|---|
-| JS before the first line (entry + engine closures) | ≤ 270 KB br (PP's all-JS limit, now scoped) | PP K3; lazy chunks never load before the first line | `budget.ts` (L5 renames the row) |
+| JS before the first line (entry + engine closures; as merged, LMI `3e35a7b`, RULINGS 105, 129: + the meta controller chunk, `client/scripts/budget.ts:484-490`, `:505`) | ≤ 270 KB br (PP's all-JS limit, now scoped) | PP K3; lazy chunks never load before the first line (as merged, LMI `3e35a7b`, RULINGS 105, 129: except the meta controller chunk, `firstLine: true`, `client/scripts/budget.ts:186`) | `budget.ts` (L5 renames the row) |
 | All JS in `dist/` | ≤ 290 KB br (was 270) | + 4 lazy chunk families ≈ 20 KB br | `budget.ts` |
 | Puzzle type chunk (JS + CSS), each | ≤ 8 KB br, a dynamic entry, absent from the entry and engine static closures | X14 | `budget.ts` (LP2), keyed on the importer as the engine row keys on `src/app/engine.ts`: PENDING while `src/app/yields.ts` (the importer of every lazy family, L15) does not exist, whatever the lazy sources; once it exists, PENDING for a family whose sources are absent, FAIL if a source exists with no dynamic entry, or if it is in a static closure — `budget: puzzle ui in engine closure fails`, `budget: lazy row pending until its importer exists`, `budget: lazy row fails without dynamic entry once its importer exists` |
 | Puzzle-host chunk | ≤ 10 KB br, same rules | | `budget.ts` (LP2) |
 | Explore-ui chunk | ≤ 16 KB br, same rules | | `budget.ts` (LP2) |
-| As merged (LP2 `88d0964`, RULINGS 67; cut Q4, D9; `client/scripts/budget.ts:135-150,346-352`) | three lazy rows: `puzzle-type chunk (br)` is one row that measures the largest type chunk (`CodeLock`, `OrderPuzzle`, each ≤ 8 KB br), `puzzle-host chunk (br)` (`PuzzleHost.svelte`) and `explore-ui chunk (br)` (keyed on `src/explore/controller.ts` + `src/ui/explore/ExploreView.svelte`, the union); the engine closure's dynamic walk stops at a lazy root, so the engine, first-line and first-load rows never count a lazy chunk | X14 | `budget.ts` (LP2) |
+| As merged (LP2 `88d0964`, RULINGS 67; cut Q4, D9; `client/scripts/budget.ts:135-150,346-352`) | three lazy rows: `puzzle-type chunk (br)` is one row that measures the largest type chunk (`CodeLock`, `OrderPuzzle`, each ≤ 8 KB br), `puzzle-host chunk (br)` (`PuzzleHost.svelte`) and `explore-ui chunk (br)` (keyed on `src/explore/controller.ts` + `src/ui/explore/ExploreView.svelte`, the union); the engine closure's dynamic walk stops at a lazy root, so the engine, first-line and first-load rows never count a lazy chunk (as merged, LMI `3e35a7b`, RULINGS 105, 129: except the meta controller chunk, which the first-line and first-load rows count, `client/scripts/budget.ts:186`) | X14 | `budget.ts` (LP2) |
 | Engine closure | ≤ 230 KB br (unchanged; about 7 KB of pure world/puzzle code joins it) | | `budget.ts` (risk: about 8 KB headroom left; measured first in L15) |
 | World JSON per chapter (public) | ≤ 32 KB raw, ≤ 8 KB br | | `budget.ts` (L5) |
 | Prop image | ≤ 512×512, AVIF ≤ 60 KB, WebP ≤ 90 KB; ≤ 8 per room | ≤ 1 MiB decoded | `budget.ts` (L5) + `world/props-per-room` |
 | `budget/room-set` | per room R: decoded bg(R) + props(R) + max(largest neighbour bg, largest close-up in R) ≤ 32 MiB | X13: one neighbour always fits; a puzzle with a close-up fits after the release | `budget.ts` (L5): FAIL if a chapter's world has sections and `usage.json` has no `rooms` for it — `budget: room-set counts props and close-up` |
 | Knot working set | unchanged, with event knots' carried stage seeded from triggering rooms | K5, K9 | `budget/knot-set` |
 | Per-chapter transfer | ≤ 6 MB (unchanged): ch1 + 3 room bgs (≤ 900 KB AVIF) + 4 props (≤ 240 KB) + 1 close-up (≤ 300 KB) | | `budget.ts` |
-| First load | ≤ 800 KB (unchanged); counts the entry + engine closures (not all JS) + ch1 story/meta/manifest | exploration is not in the first knot | `budget.ts` |
+| First load | ≤ 800 KB (unchanged); counts the entry + engine closures (not all JS; as merged, LMI `3e35a7b`, RULINGS 105, 129: + the meta controller chunk, `client/scripts/budget.ts:962`) + ch1 story/meta/manifest | exploration is not in the first knot | `budget.ts` |
 | Live textures while exploring | ≤ 32 MiB steady: 29.3 MiB with two neighbours; 20.9 MiB with a close-up open | X13 | registry caps + e2e `explore: live texture bytes stay under the steady cap` |
 | Steady memory | PP's 135.5 MiB total holds: textures stay cap-bounded; world data and sessions < 0.5 MB heap | | e2e `heap under budget` (PP) |
 | Attempt latency | one request per Try; no budget gate | verify the p95 on device (L15) | — |
@@ -2110,6 +2115,7 @@ so no line moved. What it means for this design:
 | 14 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `874d685` (the docs-errata-5 spec, group A; RULINGS 89-103), as merged on main `6d77329` | Docs lane `docs-errata-5`, group A (not a triage round): L15b (`fbcfd38`) — the e2e list as merged (`explore: search item puzzle solve`, `puzzle: hint text absent while locked`). Ledger: `D:/tmp/novel-orch/docs-errata-5/ledger.md` |
 | 15 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `a190136` (the docs-errata-6 spec, group A; RULINGS 97-108), as merged on main `a4d53ef` | Docs lane `docs-errata-6`, group A (not a triage round): LPH (`d423cb3`; RULINGS 97 Q2) — H2's "order reuse": a new order per POST, bounded. Ledger: `D:/tmp/novel-orch/docs-errata-6/ledger.md` |
 | 16 | 2026-11-02 | `D:/tmp/novel-orch/carry.md` at ORCH `ba62703` (the docs-errata-7 spec, group A; RULINGS 105-111), as merged on main `3e35a7b` | Docs lane `docs-errata-7`, group A (not a triage round): docs-errata-6's OA-2 — the `POST /api/invoices (changed)` row's Idempotency cell, as merged (LPH `d423cb3`; RULINGS 97 Q2): a new order per POST, bounded. Ledger: `D:/tmp/novel-orch/docs-errata-7/ledger.md` |
+| 17 | 2026-11-03 | `D:/tmp/novel-orch/carry.md` at ORCH `6a83b36` (the docs-errata-9 spec, group A; RULINGS 129-131), as merged on main `805f382` | Docs lane `docs-errata-9`, group A (not a triage round): docs-errata-8's open item OA-1 — X10 "The box", the `createExploreController` `stageHost` comment and revision 1's W3 list, as merged (M2 `385d52f`; RULINGS 117): no `resizeTo`; its verifiers' note — the budgets' first-line, LP2 lazy-chunks and first-load rows count the meta controller chunk (LMI `3e35a7b`; RULINGS 105). Ledger: `D:/tmp/novel-orch/docs-errata-9/ledger.md` |
 
 **Revision 1 (2026-10-30)** — what changed, by triage item:
 - **W1** (a fully slotted lock's puzzle cannot be reopened after Back or a reload): "Lock" (the tap rule: every slot
@@ -2124,7 +2130,9 @@ so no line moved. What it means for this design:
   example; `world/types.ts` note; F7 steps 2 and 4; tests `reduce: take runs its then once`,
   `reduce: lock opening runs onOpen once`.
 - **W3** (the hotspot layer's box is not named): X10 "The box" (the stage host, the `Stage.svelte` element that
-  Pixi's `resizeTo` and the `ResizeObserver` read); `createExploreController` `deps.stageHost`; `resize()` doc;
+  Pixi's `resizeTo` and the `ResizeObserver` read; as merged, M2 `385d52f`, RULINGS 117, 129: no `resizeTo`, the
+  box the renderer is sized from and the `ResizeObserver`s read, X10 "The box"); `createExploreController`
+  `deps.stageHost`; `resize()` doc;
   `SceneController.debugPropRects()` (mock builds only); resource-lifetime row; e2e
   `explore: hotspot buttons align with props under safe area and landscape`; seen-red row (L15).
 - **W4** (BackButton during event knots; no path-state output): X12 (the locked reverse exit clears the path,
