@@ -623,6 +623,28 @@ test('meta: one pack flow per wallet surface', async () => {
   expect(flows.calls).toEqual(['deactivated', 'activated', 'dispose']);
 });
 
+test("meta: a pack's 429 shows the wait and holds Buy", async () => {
+  const r = await booted();
+  r.server.on(INVOICE_LABEL, () => httpError(429, 'rate_limited', 600));
+  r.ctl.buyPack(PACK);
+  await flush();
+  // LPH Q5: the server's bound on open orders shows its wait in whole minutes, once; never the failed-purchase toast.
+  expect([toasts(r), r.vm.meta?.purchase, r.vm.meta?.busy.wallet]).toEqual([
+    [{ key: 'meta.share_wait', message: t('ru', 'meta.share_wait', { minutes: 10 }) }],
+    { kind: 'limited', retryAfterSecs: 600 },
+    true,
+  ]);
+  // Buy sends nothing while the wait lasts, and its minute ticks show nothing more.
+  r.ctl.buyPack(PACK);
+  await flush();
+  r.clock.advance(60_000);
+  expect([r.server.count(INVOICE_LABEL), r.vm.meta?.purchase, toasts(r)]).toEqual([1, { kind: 'limited', retryAfterSecs: 540 }, []]);
+  // The wait ends: Buy again, with nothing sent on its own and no toast.
+  r.clock.advance(540_000);
+  expect([r.server.count(INVOICE_LABEL), r.vm.meta?.purchase, r.vm.meta?.busy.wallet, toasts(r)]).toEqual([1, { kind: 'idle' }, false, []]);
+  r.ctl.dispose();
+});
+
 test('meta: a stuck pack purchase is checked again from the wallet', async () => {
   // A sheet whose close never arrives (P7): a Buy tap shows the page is back, the order poll frees the flow.
   const flows = spiedFlows();

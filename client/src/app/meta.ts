@@ -178,6 +178,8 @@ export function createMetaController(d: MetaDeps): MetaController {
   let sharing = false;
   let flow: PurchaseFlow | null = null;
   let flowLoad: Promise<PurchaseFlow | null> | null = null;
+  /** The pack flow's last state kind: the 429 wait is noted once, on entering it (D-429). */
+  let purchaseKind: PurchaseState['kind'] = 'idle';
   /** A gift's request id per (to, kind, amount), until a definitive answer (META-PLAN's resource lifetime). */
   const giftIds = new Map<string, string>();
   let giftFlight: Promise<Result<void, MetaError>> | null = null;
@@ -424,11 +426,17 @@ export function createMetaController(d: MetaDeps): MetaController {
   };
 
   const purchased = (s: PurchaseState): void => {
-    set({ purchase: s, busy: { ...(vm.meta ?? idle).busy, wallet: s.kind === 'requesting' || s.kind === 'confirming' } });
+    const was = purchaseKind;
+    purchaseKind = s.kind;
+    const busy = s.kind === 'requesting' || s.kind === 'confirming' || s.kind === 'limited';
+    set({ purchase: s, busy: { ...(vm.meta ?? idle).busy, wallet: busy } });
     if (s.kind === 'unlocked') {
       void walletSync.hard(); // M19: the order turned paid with the credit; the wallet shows the server's balance
     } else if (s.kind === 'failed' && s.reason !== 'cancelled') {
       note('toast.purchase_failed');
+    } else if (s.kind === 'limited' && was !== 'limited') {
+      // LPH Q5 (D-429): the server's bound, once on entering the wait; its minute ticks show nothing more.
+      note('meta.share_wait', { minutes: Math.max(1, Math.ceil(s.retryAfterSecs / 60)) });
     }
   };
 

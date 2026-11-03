@@ -800,8 +800,15 @@ test('menus: paywall needs terms checkbox', async () => {
 test('menus: paywall shows the purchase states', () => {
   const orderId = 'order-1' as OrderId;
   const product = 'chapter:ch2' as ProductId;
-  /** Each P1-P8 state: the note it shows, whether the form (box, Terms, Buy) shows, Buy busy, and Check again. */
-  const rows: ReadonlyArray<{ state: PurchaseState; note: UiKey | null; form: boolean; busy?: boolean; check?: boolean }> = [
+  /** Each P1-P8 state: the note it shows (with its params), whether the form (box, Terms, Buy) shows, Buy busy, and Check again. */
+  const rows: ReadonlyArray<{
+    state: PurchaseState;
+    note: UiKey | null;
+    params?: Readonly<Record<string, number>>;
+    form: boolean;
+    busy?: boolean;
+    check?: boolean;
+  }> = [
     { state: { kind: 'idle' }, note: null, form: true },
     { state: { kind: 'failed', reason: 'cancelled' }, note: null, form: true },
     { state: { kind: 'failed', reason: 'failed' }, note: null, form: true },
@@ -813,6 +820,9 @@ test('menus: paywall shows the purchase states', () => {
     { state: { kind: 'failed', reason: 'telegram' }, note: 'paywall.error_telegram', form: true },
     { state: { kind: 'failed', reason: 'unknown-product' }, note: 'paywall.unavailable', form: false },
     { state: { kind: 'unlocked', product }, note: 'paywall.unlocked', form: false },
+    // LPH Q5: the server's 429 on the invoice; the wait in whole minutes, Buy held until the flow is idle again.
+    { state: { kind: 'limited', retryAfterSecs: 3600 }, note: 'meta.share_wait', params: { minutes: 60 }, form: true, busy: true },
+    { state: { kind: 'limited', retryAfterSecs: 61 }, note: 'meta.share_wait', params: { minutes: 2 }, form: true, busy: true },
   ];
   const NOTES: readonly UiKey[] = [
     'paywall.sheet',
@@ -823,6 +833,7 @@ test('menus: paywall shows the purchase states', () => {
     'paywall.unavailable',
     'paywall.unlocked',
     'paywall.load_failed',
+    'meta.share_wait',
   ];
   for (const lang of LANGS) {
     for (const row of rows) {
@@ -832,12 +843,13 @@ test('menus: paywall shows the purchase states', () => {
       expect(shown(getByRole('heading')), where).toBe('The Cellar');
       expect(shown(container), where).toContain(t(lang, 'paywall.body'));
       expect(
-        NOTES.filter((key) => shown(container).includes(t(lang, key))),
+        NOTES.filter((key) => shown(container).includes(t(lang, key, row.params))),
         where,
       ).toEqual(row.note === null ? [] : [row.note]);
       const buy = queryByRole('button', { name: t(lang, 'paywall.buy', { n: PRICE }) });
       expect([queryByRole('checkbox') !== null, buy !== null], where).toEqual([row.form, row.form]);
-      expect(numbersIn(container), where).toEqual(row.form ? [String(PRICE)] : []);
+      const noted = Object.values(row.params ?? {}).map(String); // a note's numbers stand above the price
+      expect(numbersIn(container), where).toEqual(row.form ? [...noted, String(PRICE)] : []);
       if (buy !== null) {
         inputOf(getByRole('checkbox')).click();
         flushSync();
