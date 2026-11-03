@@ -158,6 +158,8 @@ pub struct ChargeLine {
     pub refunded_at: Option<i64>,
     /// Whether it granted anything: an entitlement or a ledger row of the charge (M19's "unapplied" is neither).
     pub applied: bool,
+    /// Whether its automatic refund is pending (owner Q9): its `auto_refunds` row is still due.
+    pub refund_pending: bool,
 }
 
 /// An order as the refusal classification reads it: (user_id, amount, status, created_at, the product owned by the
@@ -612,8 +614,9 @@ impl Repo {
     }
 
     /// `user`'s newest `limit` payments, newest first (`paid_at`, then the charge id, descending), each with whether
-    /// it granted anything (an entitlement or a ledger row of the charge: both are indexed by charge), and how many
-    /// payments `user` has in all; one statement on `payments_by_user`.
+    /// it granted anything (an entitlement or a ledger row of the charge: both are indexed by charge) and whether its
+    /// automatic refund is pending (its `auto_refunds` row, by primary key, still due), and how many payments `user`
+    /// has in all; one statement on `payments_by_user`.
     pub async fn charges_of(
         &self,
         user: UserId,
@@ -623,6 +626,8 @@ impl Repo {
             "SELECT p.telegram_payment_charge_id, p.amount, p.paid_at, p.refunded_at, \
              EXISTS (SELECT 1 FROM entitlements e WHERE e.charge_id = p.telegram_payment_charge_id) \
              OR EXISTS (SELECT 1 FROM resource_ledger l WHERE l.charge_id = p.telegram_payment_charge_id), \
+             EXISTS (SELECT 1 FROM auto_refunds r \
+                     WHERE r.charge_id = p.telegram_payment_charge_id AND r.due_at IS NOT NULL), \
              count(*) OVER () \
              FROM payments p WHERE p.user_id = $1 \
              ORDER BY p.paid_at DESC, p.telegram_payment_charge_id DESC LIMIT $2",
@@ -631,16 +636,17 @@ impl Repo {
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
-        let total = rows.first().map_or(0, |row| row.5);
+        let total = rows.first().map_or(0, |row| row.6);
         let lines = rows
             .into_iter()
             .map(
-                |(charge, amount, paid_at, refunded_at, applied, _)| ChargeLine {
+                |(charge, amount, paid_at, refunded_at, applied, refund_pending, _)| ChargeLine {
                     charge,
                     amount,
                     paid_at,
                     refunded_at,
                     applied,
+                    refund_pending,
                 },
             )
             .collect();
@@ -648,8 +654,8 @@ impl Repo {
     }
 }
 
-/// One `charges_of` row: (charge, amount, paid_at, refunded_at, applied, the user's payment count).
-type ChargeRow = (String, i64, i64, Option<i64>, bool, i64);
+/// One `charges_of` row: (charge, amount, paid_at, refunded_at, applied, refund_pending, the user's payment count).
+type ChargeRow = (String, i64, i64, Option<i64>, bool, bool, i64);
 
 /// The `auto_refunds` row of the unapplied charge `charge` (already through `without_nul`), due at `now` with no
 /// attempt yet, in the grant's transaction `c`. The key cannot exist (the grant just inserted the charge's payment);

@@ -30,7 +30,7 @@ use crate::catalog::{ANN, T0, own};
 use crate::common::{self, TEST_ADMIN_ID};
 use crate::payments::{GatewayCall, RecordingGateway, invoice_state, refusal};
 use crate::refunds::{
-    BEN, T1, bought, entitlements_of, expect_eq, order_of, pay, refund_calls, refund_state,
+    BEN, T1, at, bought, entitlements_of, expect_eq, order_of, pay, refund_calls, refund_state,
     refunded_at, revoke_at,
 };
 use crate::webhook::{payment_update, post_update, pre_checkout_update};
@@ -74,17 +74,18 @@ fn listed(names: &[&str]) -> String {
 
 /// The texts waiting for the owner's VALUES step, sorted: the `/terms`, `/support` and `/paysupport` placeholders, and
 /// every payment or refund notice owner Q9's lane added or reworded.
-const DRAFTS: [&str; 6] = [
+const DRAFTS: [&str; 7] = [
     "admin_auto_refund_failed",
     "admin_unapplied",
     "payment_unapplied",
     "paysupport",
+    "paysupport_refunding",
     "support",
     "terms",
 ];
 
 /// The characters of the longest `/paysupport` of 20 charges whose ids are 64 characters, laid out as the command
-/// lays it out: the intro, a blank line, then one line per charge with the longer status after a space.
+/// lays it out: the intro, a blank line, then one line per charge with the longest status after a space.
 fn longest_paysupport(file: &BotFile) -> usize {
     let t = &file.texts;
     let charge = "c".repeat(64);
@@ -100,7 +101,8 @@ fn longest_paysupport(file: &BotFile) -> usize {
         .paysupport_not_applied
         .chars()
         .count()
-        .max(t.paysupport_refunded.chars().count());
+        .max(t.paysupport_refunded.chars().count())
+        .max(t.paysupport_refunding.chars().count());
     t.paysupport.chars().count() + 1 + 20 * (1 + line.chars().count() + 1 + status)
 }
 
@@ -757,6 +759,77 @@ async fn paysupport_flags_unapplied_charge() {
     if text.contains("charge-1002") {
         failures.push("another user's charge is listed".to_owned());
     }
+    report(&failures);
+}
+
+/// `/paysupport` shows an unapplied charge's automatic refund (owner Q9), ANN's charges paid a second apart, newest
+/// first, each unapplied one at a payload that names no order: `c-applied` (a bought chapter) unflagged, `c-done`
+/// (refunded automatically at its payment) refunded, `c-pending` (its refund refused, so still due) being refunded,
+/// `c-given-up` (its row given up, by raw SQL) and `c-legacy` (no row: recorded before `0007`) not applied.
+#[tokio::test]
+async fn paysupport_shows_auto_refund_state() {
+    let (st, _db, gateway) = refund_state().await;
+    let mut failures = Vec::new();
+    if bought(&st, ANN, "chapter:ch2", "c-applied", &mut failures)
+        .await
+        .is_none()
+    {
+        return report(&failures);
+    }
+    let unknown = "o_00000000000000000000000000000001";
+    pay(&at(&st, T0 + 1), ANN, 1, unknown, "c-done", &mut failures).await;
+    gateway.fail_refunds_with(Some(GatewayError::Api(
+        "Bad Request: REFUND_TEST".to_owned(),
+    )));
+    for (charge, t) in [
+        ("c-pending", T0 + 2),
+        ("c-given-up", T0 + 3),
+        ("c-legacy", T0 + 4),
+    ] {
+        pay(&at(&st, t), ANN, 1, unknown, charge, &mut failures).await;
+    }
+    gateway.fail_refunds_with(None);
+    let mut c = common::raw_db(&st).await;
+    for sql in [
+        "UPDATE auto_refunds SET due_at = NULL WHERE charge_id = 'c-given-up'",
+        "DELETE FROM auto_refunds WHERE charge_id = 'c-legacy'",
+    ] {
+        sqlx::query(sql).execute(&mut c).await.unwrap();
+    }
+    sqlx::Connection::close(c).await.unwrap();
+    let ru = texts::texts(Lang::Ru);
+    let line = |charge: &str, status: Option<&str>| {
+        let mut line = fill(
+            &ru.paysupport_line,
+            &[("date", &utc_date(T0)), ("charge", charge), ("amount", "1")],
+        );
+        if let Some(status) = status {
+            line.push(' ');
+            line.push_str(status);
+        }
+        line
+    };
+    let want = [
+        line("c-legacy", Some(&ru.paysupport_not_applied)),
+        line("c-given-up", Some(&ru.paysupport_not_applied)),
+        line("c-pending", Some(&ru.paysupport_refunding)),
+        line("c-done", Some(&ru.paysupport_refunded)),
+        line("c-applied", None),
+    ];
+    let (status, sent) = say(&st, &gateway, ANN, Some("ru"), "/paysupport").await;
+    let text = sent.first().map(|msg| msg.text.clone()).unwrap_or_default();
+    let got: Vec<String> = charge_lines(&text, &ru.paysupport)
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    for (want, got) in want.iter().zip(&got) {
+        failures.extend(expect_eq("a charge line", got, want));
+    }
+    failures.extend(expect_eq(
+        "/paysupport (status, messages, charge lines)",
+        (status, sent.len(), got.len()),
+        (200, 1, want.len()),
+    ));
     report(&failures);
 }
 

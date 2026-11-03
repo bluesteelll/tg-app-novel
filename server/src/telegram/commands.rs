@@ -116,9 +116,9 @@ pub async fn on_text(st: &AppState, m: &Message) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
-/// The `/paysupport` text: the intro, then the charges, newest first, each with its status (refunded, or recorded
-/// but not applied), as many as fit one message ([`texts::MESSAGE_LIMIT`]), then how many were left out of `total`;
-/// with no charge, the intro and `paysupport_none`.
+/// The `/paysupport` text: the intro, then the charges, newest first, each with its status (refunded, being refunded,
+/// or recorded but not applied), as many as fit one message ([`texts::MESSAGE_LIMIT`]), then how many were left out of
+/// `total`; with no charge, the intro and `paysupport_none`.
 pub fn paysupport_message(t: &LangTexts, lines: &[ChargeLine], total: i64) -> String {
     let mut out = t.paysupport.clone();
     out.push('\n');
@@ -156,7 +156,9 @@ pub fn paysupport_message(t: &LangTexts, lines: &[ChargeLine], total: i64) -> St
     out
 }
 
-/// One charge of `/paysupport`: its date, amount and id, then its status when it was refunded or not applied.
+/// One charge of `/paysupport`: its date, amount and id, then its status: refunded; being refunded (its automatic
+/// refund pending, owner Q9); not applied (recorded before `0007`, or its automatic refund given up: the admins were
+/// alerted); none when it was applied.
 fn charge_text(t: &LangTexts, line: &ChargeLine) -> String {
     let mut text = fill(
         &t.paysupport_line,
@@ -168,6 +170,8 @@ fn charge_text(t: &LangTexts, line: &ChargeLine) -> String {
     );
     let status = if line.refunded_at.is_some() {
         Some(&t.paysupport_refunded)
+    } else if line.refund_pending {
+        Some(&t.paysupport_refunding)
     } else if !line.applied {
         Some(&t.paysupport_not_applied)
     } else {
@@ -308,6 +312,7 @@ mod tests {
                 paid_at: 1_798_761_600,
                 refunded_at: None,
                 applied: true,
+                refund_pending: false,
             })
             .collect();
         let mut failures = Vec::new();

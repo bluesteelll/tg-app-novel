@@ -1,6 +1,6 @@
 {
   "//": "PLACEHOLDER texts, English second (bot.ru.json is the primary language). The keys in drafts wait for the owner's VALUES step (OPEN-QUESTIONS Q4, PROTOTYPE-PLAN V5), which empties drafts in both files: the /terms, /support and /paysupport texts hold no real contact, name or address yet, and the payment and refund notices are engineering wording. Plain text, no parse mode; bounds in server/src/telegram/texts.rs.",
-  "drafts": ["admin_auto_refund_failed", "admin_unapplied", "payment_unapplied", "paysupport", "support", "terms"],
+  "drafts": ["admin_auto_refund_failed", "admin_unapplied", "payment_unapplied", "paysupport", "paysupport_refunding", "support", "terms"],
   "texts": {
     "start": "Welcome! This is a visual novel right inside Telegram. Tap the button below to start playing.",
     "start_button": "Play",
@@ -12,6 +12,7 @@
     "paysupport_line": "{date}: {amount} Stars, payment {charge}",
     "paysupport_not_applied": "(not applied, please contact us)",
     "paysupport_refunded": "(refunded)",
+    "paysupport_refunding": "(being refunded)",
     "paysupport_more": "…and {n} more payments.",
     "paysupport_unavailable": "Your payment list is unavailable right now. Please repeat /paysupport in a minute.",
     "privacy": "Privacy policy: {url}",

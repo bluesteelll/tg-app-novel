@@ -84,6 +84,8 @@ pub struct LangTexts {
     pub paysupport_not_applied: String,
     /// Appended to a refunded charge.
     pub paysupport_refunded: String,
+    /// Appended to a charge whose automatic refund is pending (owner Q9).
+    pub paysupport_refunding: String,
     /// After the listed charges, when more were left out: `{n}`.
     pub paysupport_more: String,
     /// `/paysupport` when the charges cannot be read now, after the intro.
@@ -165,6 +167,7 @@ impl LangTexts {
             paysupport_line,
             paysupport_not_applied,
             paysupport_refunded,
+            paysupport_refunding,
             paysupport_more,
             paysupport_unavailable,
             privacy,
@@ -226,6 +229,12 @@ impl LangTexts {
             entry(
                 "paysupport_refunded",
                 paysupport_refunded,
+                MESSAGE_LIMIT,
+                &[],
+            ),
+            entry(
+                "paysupport_refunding",
+                paysupport_refunding,
                 MESSAGE_LIMIT,
                 &[],
             ),
