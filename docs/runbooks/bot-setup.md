@@ -27,6 +27,8 @@ The server half is one command, `server setup`; the rest is @BotFather and the h
 - The host clock synced by NTP. initData whose `auth_date` is more than 60 s ahead of the server clock is refused as
   `initdata_expired` ([initdata.rs:11](../../server/src/auth/initdata.rs#L11), :106-107), and "reopen the app" cannot
   help while the clock is wrong (PROTOTYPE-PLAN, the failure table's server-clock row).
+- For a test bot run on this machine (steps 6-7): the tools of [local-dev.md](local-dev.md#preconditions) (Node.js,
+  the Rust toolchain, the PostgreSQL 18 binaries) and `npm --prefix client ci` once.
 
 ## Steps
 
@@ -72,9 +74,10 @@ The server half is one command, `server setup`; the rest is @BotFather and the h
    $b = New-Object byte[] 32; [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); -join ($b | ForEach-Object { $_.ToString('x2') })
    ```
 
-   **Your Telegram user id** for `ADMIN_TELEGRAM_IDS`: start the server once without it (it is optional, :163), open the
-   Mini App from your account, and read the `users` row it wrote (the id comes from verified initData only,
-   [0001_init.sql:3-10](../../server/migrations/0001_init.sql#L3)); then set it and restart the server:
+   **Your Telegram user id** for `ADMIN_TELEGRAM_IDS`: leave it unset for now (it is optional, :163) and do steps 6
+   and 7. Then open the Mini App from your account with the bot's menu button, which step 7 sets, and read the `users`
+   row it wrote (the id comes from verified initData only,
+   [0001_init.sql:3-10](../../server/migrations/0001_init.sql#L3)). Set the id and restart the server:
 
    ```powershell
    & "<PG_BIN>\psql" "<DATABASE_URL>" -c "SELECT id, first_name FROM users ORDER BY created_at DESC LIMIT 5"

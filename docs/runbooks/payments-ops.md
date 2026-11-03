@@ -22,12 +22,19 @@ Stars only: `currency = "XTR"`, an empty `provider_token`, exactly one price ite
 Prices live in [server/catalog.json](../../server/catalog.json), compiled into the server
 (`CATALOG_JSON`, [catalog.rs:19](../../server/src/catalog.rs#L19)): a price change is a commit, a rebuild and a
 restart ([deploy.md](deploy.md)). Tests pin the compiled-in values, so the same commit changes them, or `cargo test`
-fails:
+fails. Among them (the list is not complete; `cargo test` is the rule):
 - `invoice_price_from_catalog` ([server/tests/it/payments.rs:437](../../server/tests/it/payments.rs#L437)): the
   compiled-in chapter price of 1 Star (:479-496);
+- `catalog_default_price_applies_to_every_paid_chapter`
+  ([server/tests/it/catalog.rs:223](../../server/tests/it/catalog.rs#L223)): every paid chapter of the shipped file at
+  `defaultPriceStars`, so a `priceStars` entry fails it;
 - `wallet_lists_balances_and_packs` ([server/tests/it/economy.rs:1767](../../server/tests/it/economy.rs#L1767)),
   through `wallet_body` (:1739): the packs' amounts and prices, `hintTierCost` and `maxPerGift`;
 - `catalog_packs_from_economy` (economy.rs:1249): the packs and the spend, gift and referral rules;
+- the `hint_s` pack at 3 hints for 1 Star: `invoice_pack_price_from_catalog` (economy.rs:1394, also the pack's
+  invoice titles), `invoice_pack_binds_catalog_at_invoice` (:1652), and the pack-credit tests that pay 1 Star for it
+  (`pack_credit_uses_amount_bound_at_order` :1067, `pack_credit_once_on_duplicate_payment` :1124,
+  `pack_grant_credits_in_the_grant_transaction` :1187);
 - the gifts suite ([server/tests/it/gifts.rs](../../server/tests/it/gifts.rs)), written on the compiled-in gift limits
   (its header, :1-4).
 
@@ -94,7 +101,7 @@ cut at 5 s and the reply at another 5 s (`CALL_DEADLINE`, [gateway.rs:38](../../
 | `refund_already` | the charge was refunded before | nothing |
 | `refund_unknown` | no payment has this charge id | check the number |
 | `refund_failed` | Telegram refused (or the gateway is disabled): nothing changed | read the error, retry |
-| `refund_unknown_outcome` | the call timed out or broke: Telegram may have refunded | repeat `/refund <CHARGE_ID>`: the server treats an API refusal whose description holds `CHARGE_ALREADY_REFUNDED` as refunded and revokes ([payments.rs:224-229](../../server/src/telegram/payments.rs#L224); verify: the Bot API's text for an already-refunded charge, the owner's E6 run) |
+| `refund_unknown_outcome` | the call timed out or broke: Telegram may have refunded | repeat `/refund <CHARGE_ID>`: the server treats an API refusal whose description holds `CHARGE_ALREADY_REFUNDED` as refunded and revokes ([payments.rs:225-230](../../server/src/telegram/payments.rs#L225); verify: the Bot API's text for an already-refunded charge, the owner's E6 run) |
 | `refund_usage` | no charge id given | add it |
 
 Sources: [commands.rs:225-256](../../server/src/telegram/commands.rs#L225),

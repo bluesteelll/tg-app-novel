@@ -47,9 +47,10 @@ Under `test` without a host file, the draft is served with its placeholders visi
 
 1. On the host, outside the repository, create a UTF-8 JSON file without a byte-order mark: one flat object, keys
    from the identity class only, every value a string. The loader parses the raw bytes
-   ([legal.rs:96](../../server/src/api/legal.rs#L96), :123-124), so a BOM makes the file "not valid JSON". Windows
+   ([legal.rs:96](../../server/src/api/legal.rs#L96), :123-125), so a BOM makes the file "not valid JSON". Windows
    PowerShell 5.1's `Set-Content -Encoding utf8` and `Out-File -Encoding utf8` write a BOM;
-   `[System.IO.File]::WriteAllText("<absolute path>", $text)` does not. Placeholders only in this example:
+   `[System.IO.File]::WriteAllText` does not (the PowerShell block below the example). Placeholders only in this
+   example:
 
    ```json
    {
@@ -66,9 +67,18 @@ Under `test` without a host file, the draft is served with its placeholders visi
    }
    ```
 
+   Paste the object with your values between the here-string's lines; its closing `'@` starts its line:
+
+   ```powershell
+   $text = @'
+   <the JSON object above, with your values>
+   '@
+   [System.IO.File]::WriteAllText("<absolute path>", $text)
+   ```
+
 2. Set `PRIVACY_OPERATOR_FILE=<absolute path of that file>` in the server's environment and restart `server serve`.
 
-The loader's rules ([legal.rs:114-140](../../server/src/api/legal.rs#L114), `PolicyError` :55-78): a file that is
+The loader's rules ([legal.rs:114-140](../../server/src/api/legal.rs#L114), `PolicyError` :56-77): a file that is
 not JSON or not an object, a value that is not a string, a key outside the identity class, a content key or
 `POLICY_VERSION` each refuse the start, naming the key and never the value. A blank value fills nothing: its
 placeholder stays, so prod refuses. A key written twice keeps its last value (probed by the LPO lane; carry). Every
@@ -171,7 +181,8 @@ are the migrations' ([0002_puzzles.sql](../../server/migrations/0002_puzzles.sql
 [0004_economy.sql](../../server/migrations/0004_economy.sql), [0005_social.sql](../../server/migrations/0005_social.sql),
 [0006_achievements.sql](../../server/migrations/0006_achievements.sql)). This script was checked against them by
 reading, not run (the docs lane runs no database): run the access query above first, then this, on a copy or at a
-quiet hour. Tell the player what was kept and why (payments, for accounting).
+quiet hour. Tell the player what was kept and why (payments, for accounting). A database restore from a backup older
+than the erasure brings the rows back: run the erasure again after it ([deploy.md](deploy.md#roll-back)).
 
 ## Verify
 
