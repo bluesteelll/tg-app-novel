@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
 import { STEADY_CAP_BYTES } from '../src/scene/registry.ts';
-import type { AssetCatalog, AssetEntry, ImageEntry } from '../src/story/catalog.ts';
+import type { AssetCatalog, AssetEntry, HalfFile, ImageEntry } from '../src/story/catalog.ts';
 import type { AssetId, ChapterId, TrackId } from '../src/story/staging.ts';
 import { decodeAssetCatalog, decodeAssetManifest, decodeChapterMeta, decodeCoverManifest, urlPath } from './assets/manifest.ts';
 import { ENGINE_SRC, LIMITS, evaluate, evaluateAssets, formatRows, readAssetInputs, readInputs } from './budget.ts';
@@ -820,7 +820,7 @@ function assetInputs(specs: readonly ChapterSpec[] = baseSpecs(), covers: Record
   const coverManifest = decodedOrThrow(decodeCoverManifest({ assets: covers }), 'covers');
   const fileBytes = new Map<string, number>();
   for (const e of [...specs.flatMap((s) => Object.values(s.assets)), ...Object.values(covers)]) {
-    for (const ref of e.kind === 'image' ? [e.avif, e.webp] : [e.file]) {
+    for (const ref of e.kind === 'image' ? [e.avif, e.webp, ...(e.half === undefined ? [] : [e.half.avif, e.half.webp])] : [e.file]) {
       fileBytes.set(urlPath(ref.url) ?? ref.url, ref.bytes);
     }
   }
@@ -1207,6 +1207,73 @@ describe('budget assets', () => {
     expect(roomRow.note).toContain("not in ch1's manifest: cg/drawer");
     const fits = { ...room, closeups: [] };
     expect(rowOf(assetRows({ ...a, rooms: { 'ch1/hall/main': fits } as unknown as AssetInputs['rooms'] }), 'room-set ch1/hall/main').status).toBe('PASS');
+  });
+
+  // MEMORY-PLAN 4.C, §7: an image's half-tier file, exactly half its stored size, beside it under the same prefix.
+  const halfFile = (name: string, w: number, h: number, avif = 30_000, webp = 45_000): HalfFile => ({
+    w,
+    h,
+    decodedBytes: w * h * 4,
+    avif: { url: `/assets/${name}-half-0f0f0f0f.avif`, bytes: avif },
+    webp: { url: `/assets/${name}-half-0f0f0f0f.webp`, bytes: webp },
+  });
+  const cafeWithHalf = (avif?: number, webp?: number): ChapterSpec[] =>
+    specsWith('ch1', (s) => (s.assets['bg/cafe'] = { ...bg('cafe'), half: halfFile('bg-cafe', 540, 1024, avif, webp) }));
+
+  test('budget: a half whose LOW count exceeds its full count fails', () => {
+    // I2 needs small files: a full-size bg's half would need files over 6.7 MB. A 4×4 prop (64 B decoded, 10 B files)
+    // with a 2×2 half (16 B) in 100 B files counts 116 B on a LOW phone against 74 B on the full tier.
+    const tiny = (half: HalfFile): ChapterSpec[] =>
+      specsWith('ch1', (s) => {
+        s.assets['prop/note'] = { ...img('prop-note-0d0d0d0d', 4, 4, 10, 10), half };
+        s.knots['street']?.assets.push('prop/note');
+      });
+    const row = rowOf(assetRows(assetInputs(tiny(halfFile('prop-note', 2, 2, 100, 100)))), 'image prop/note');
+    expect(row.status).toBe('FAIL');
+    expect(row.note).toBe("half counts 116 B > the full file's 74 B (I2: a LOW record must not count more than its full record)");
+    // Control: a half in 10 B files counts 26 B.
+    expect(rowOf(assetRows(assetInputs(tiny(halfFile('prop-note', 2, 2, 10, 10)))), 'image prop/note').status).toBe('PASS');
+  });
+
+  test("budget: a half file over its kind's file limit fails", () => {
+    const avif = rowOf(assetRows(assetInputs(cafeWithHalf(300_001))), 'image bg/cafe');
+    expect(avif.status).toBe('FAIL');
+    expect(avif.note).toContain('half AVIF 300.0 KB over 300.0 KB');
+    const webp = rowOf(assetRows(assetInputs(cafeWithHalf(30_000, 450_001))), 'image bg/cafe');
+    expect(webp.status).toBe('FAIL');
+    expect(webp.note).toContain('half WebP 450.0 KB over 450.0 KB');
+    // Control: a half within the limits passes, and its row reads the full AVIF, its note the half.
+    const fits = rowOf(assetRows(assetInputs(cafeWithHalf())), 'image bg/cafe');
+    expect(fits).toMatchObject({ status: 'PASS', valueBytes: 100_000, note: '1080×2048, WebP 150.0 KB; half 540×1024, WebP 45.0 KB' });
+  });
+
+  test('budget: a missing half file fails', () => {
+    const a = assetInputs(cafeWithHalf());
+    const rel = 'client/public/assets/bg-cafe-half-0f0f0f0f.avif';
+    expect(a.fileBytes.get(rel), 'the fixture states the half file').toBe(30_000);
+    const missing = new Map(a.fileBytes);
+    missing.delete(rel);
+    const gone = rowOf(assetRows({ ...a, fileBytes: missing }), 'image bg/cafe');
+    expect(gone.status).toBe('FAIL');
+    expect(gone.note).toContain(`${rel} missing`);
+    const resized = rowOf(assetRows({ ...a, fileBytes: new Map([...a.fileBytes, [rel, 29_999]]) }), 'image bg/cafe');
+    expect(resized.status).toBe('FAIL');
+    expect(resized.note).toContain(`${rel} is 29999 B on disk, the manifest says 30000`);
+  });
+
+  test("budget: the half transfer row counts each entry's half file", () => {
+    const rows = assetRows(assetInputs(cafeWithHalf()));
+    const full = rowOf(rows, 'transfer ch1');
+    const half = rowOf(rows, 'transfer ch1 (half)');
+    // bg/cafe's half AVIF replaces its full one; every other entry counts its full file.
+    expect(half.valueBytes).toBe((full.valueBytes ?? 0) - 100_000 + 30_000);
+    expect(half).toMatchObject({ limitBytes: 6_000_000, status: 'PASS' });
+    // A chapter with no half counts what its full row counts.
+    expect(rowOf(rows, 'transfer ch2 (half)').valueBytes).toBe(rowOf(rows, 'transfer ch2').valueBytes);
+    // A chapter without a manifest cannot be summed.
+    const a = assetInputs();
+    const noManifest = assetRows({ ...a, chapters: a.chapters.map((c) => (c.id === 'ch2' ? { ...c, manifest: null } : c)) });
+    expect(rowOf(noManifest, 'transfer ch2 (half)')).toMatchObject({ status: 'FAIL', note: 'manifest missing' });
   });
 
   test('budget: asset rows pending without their subject', () => {
