@@ -3,7 +3,7 @@
 > Fill the privacy policy's placeholders, change the policy, and answer a player's access or deletion request.
 > Run it before the first production start, at every policy change, and when a request about personal data arrives.
 
-The policy page is `GET /api/privacy`, public and tokenless ([legal.rs:212-215](../../server/src/api/legal.rs#L212)); the
+The policy page is `GET /api/privacy`, public and tokenless ([legal.rs:213-216](../../server/src/api/legal.rs#L213)); the
 bot's `/privacy` links it, and @BotFather's privacy policy URL points at it ([bot-setup.md](bot-setup.md#steps),
 step 3). The design is META-PLAN M25-M26 and its section
 [Privacy](../META-PLAN.md#privacy-personal-data-inventory-lawful-bases-erasure); the code map is the FEATURE_MAP row
@@ -78,7 +78,7 @@ Under `test` without a host file, the draft is served with its placeholders visi
 
 2. Set `PRIVACY_OPERATOR_FILE=<absolute path of that file>` in the server's environment and restart `server serve`.
 
-The loader's rules ([legal.rs:114-140](../../server/src/api/legal.rs#L114), `PolicyError` :56-77): a file that is
+The loader's rules ([legal.rs:121-143](../../server/src/api/legal.rs#L121), `PolicyError` :56-77): a file that is
 not JSON or not an object, a value that is not a string, a key outside the identity class, a content key or
 `POLICY_VERSION` each refuse the start, naming the key and never the value. A blank value fills nothing: its
 placeholder stays, so prod refuses. A key written twice keeps its last value (probed by the LPO lane; carry). Every
@@ -92,7 +92,7 @@ value is HTML-escaped.
 
 | Change | How | New version |
 |---|---|---|
-| a content value (retention, minimum age, database country, hosting provider, cross-border transfer, supervisory authority) or any other template text | a template commit: edit the HTML, set a new `policy-version` meta (the date it takes effect), append a `POLICY_PINS` row with the template's lower-case hex SHA-256 ([legal.rs:262-270](../../server/src/api/legal.rs#L262); the hash: `(Get-FileHash -Algorithm SHA256 server/legal/privacy-policy.html).Hash.ToLower()`); then deploy | yes |
+| a content value (retention, minimum age, database country, hosting provider, cross-border transfer, supervisory authority) or any other template text | a template commit: edit the HTML, set a new `policy-version` meta (the date it takes effect), append a `POLICY_PINS` row with the template's lower-case hex SHA-256 ([legal.rs:263-270](../../server/src/api/legal.rs#L263); the hash: `(Get-FileHash -Algorithm SHA256 server/legal/privacy-policy.html).Hash.ToLower()`); then deploy | yes |
 | a contact fix in the host file | edit the host file, restart | no |
 | the operator itself (name, form, OGRN, INN) | both: the host file and a template commit | yes |
 
@@ -179,10 +179,16 @@ COMMIT;
 `ON_ERROR_STOP` ends the session at the first failing statement, before `COMMIT`, so nothing is applied. The columns
 are the migrations' ([0002_puzzles.sql](../../server/migrations/0002_puzzles.sql),
 [0004_economy.sql](../../server/migrations/0004_economy.sql), [0005_social.sql](../../server/migrations/0005_social.sql),
-[0006_achievements.sql](../../server/migrations/0006_achievements.sql)). This script was checked against them by
-reading, not run (the docs lane runs no database): run the access query above first, then this, on a copy or at a
-quiet hour. Tell the player what was kept and why (payments, for accounting). A database restore from a backup older
-than the erasure brings the rows back: run the erasure again after it ([deploy.md](deploy.md#roll-back)).
+[0006_achievements.sql](../../server/migrations/0006_achievements.sql)). The docs lane D2 ran this block once, as
+written, on a probe cluster with the tree's migrations ([deploy.md](deploy.md#roll-back), the last paragraph). Run
+the access query above first, then this, on a copy or at a quiet hour. Tell the player what was kept and why
+(payments, for accounting).
+
+Then add the erasure to your erasure record: the player's id and the time in unix seconds
+(`[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()`). Keep the record on the host with the backups, never in the
+repository: it holds player ids. The erasure leaves no dated trace in the database, and a database restore from a
+backup older than the erasure brings the rows back. A rollback then runs the erasure again from this record, before
+the server starts on the restored database ([deploy.md](deploy.md#roll-back), step 4).
 
 ## Verify
 

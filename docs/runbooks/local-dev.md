@@ -129,7 +129,7 @@ The same line loads a git-ignored file of your own (for a test bot, [bot-setup.m
 replace `.env.example` with its path. The variables last for that shell only.
 
 With the placeholder token the Bot API gateway is disabled: every Bot API call fails at once and nothing reaches
-Telegram ([gateway.rs:234-243](../../server/src/telegram/gateway.rs#L234)). To serve the built client from the same
+Telegram ([gateway.rs:235-243](../../server/src/telegram/gateway.rs#L235)). To serve the built client from the same
 process, see [deploy.md](deploy.md#build).
 
 ## The e2e run

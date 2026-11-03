@@ -135,14 +135,56 @@ backup into a new, empty database and points the server at it. Restoring over th
 `users` (`0002_puzzles.sql` to `0006_achievements.sql`), and such a table, absent from the backup, blocks the drop of
 the `users` key. The migrated database stays as it is, as the source of the lists below.
 
+A restore drops every row written since the backup. Steps 2, 4 and 6 repeat the refunds, the erasures and the
+players' privacy decisions; the charges paid on the new release stay unknown to the restored database (below).
+Everything else written on the new release is lost:
+
+- saves, puzzle progress and hint unlocks, stat events and achievement unlocks;
+- wallet balances and ledger rows: hints spent since come back, gifts and credits since are gone;
+- friend requests, friendships and referrals made since;
+- the players who first opened the app since: the restored database has no `users` row for them.
+
+Players see their game as it was at the backup; tell them before the restart.
+
 1. Stop the server.
-2. From the migrated database, save the charges paid or refunded since the backup to a file (`-o`):
+2. From the migrated database, save two files. The first lists the charges paid or refunded since the backup (`-o`):
 
    ```powershell
    & "<PG_BIN>\psql" "<DATABASE_URL>" -o "<CHARGES_FILE>" -c "SELECT p.telegram_payment_charge_id, p.user_id, p.amount, p.paid_at, p.refunded_at FROM payments p WHERE p.paid_at > <BACKUP_UNIX_TIME> OR p.refunded_at > <BACKUP_UNIX_TIME> ORDER BY p.paid_at"
    ```
 
-3. Create the empty database and restore into it. `<RESTORE_DB>` is a new name of lower-case letters, digits and `_`;
+   The second, `<REAPPLY_FILE>`, holds the players' privacy decisions since the backup as SQL statements for the
+   restored database, one line per decision:
+
+   ```powershell
+   @'
+   SELECT s FROM (
+     SELECT 1 AS k, id AS o, format('INSERT INTO consents (user_id, purpose, granted, policy_version, text_version, at) SELECT %1$L::bigint, %2$L, %3$L::boolean, %4$L, %5$L, %6$L::bigint WHERE EXISTS (SELECT 1 FROM users WHERE id = %1$L::bigint);', user_id, purpose, granted, policy_version, text_version, at) AS s
+       FROM consents WHERE at > :t
+     UNION ALL
+     SELECT 2, created_at, format('DELETE FROM friendships WHERE user_lo = %1$L::bigint AND user_hi = %2$L::bigint; DELETE FROM friend_requests WHERE (from_id = %3$L::bigint AND to_id = %4$L::bigint) OR (from_id = %4$L::bigint AND to_id = %3$L::bigint); INSERT INTO friend_blocks (user_id, blocked_id, created_at) SELECT %3$L::bigint, %4$L::bigint, %5$L::bigint WHERE EXISTS (SELECT 1 FROM users WHERE id = %3$L::bigint) AND EXISTS (SELECT 1 FROM users WHERE id = %4$L::bigint) ON CONFLICT ON CONSTRAINT friend_blocks_pkey DO NOTHING;', least(user_id, blocked_id), greatest(user_id, blocked_id), user_id, blocked_id, created_at)
+       FROM friend_blocks WHERE created_at > :t
+     UNION ALL
+     SELECT CASE WHEN revoked_at IS NULL THEN 4 ELSE 3 END, created_at, format('INSERT INTO invite_codes (code, user_id, created_at, revoked_at) SELECT %1$L, %2$L::bigint, %3$L::bigint, %4$L::bigint WHERE EXISTS (SELECT 1 FROM users WHERE id = %2$L::bigint) ON CONFLICT ON CONSTRAINT invite_codes_pkey DO UPDATE SET revoked_at = EXCLUDED.revoked_at;', code, user_id, created_at, revoked_at)
+       FROM invite_codes WHERE created_at > :t OR revoked_at > :t
+   ) r ORDER BY k, o;
+   '@ | & "<PG_BIN>\psql" "<DATABASE_URL>" -At -v ON_ERROR_STOP=1 -v t=<BACKUP_UNIX_TIME> -o "<REAPPLY_FILE>"
+   ```
+
+   The here-string's closing `'@` starts its line. The statements repeat what the server wrote:
+   - every `friends_profile` consent row since the backup, a withdrawal among them: the latest row wins
+     ([db/social.rs:590-631](../../server/src/db/social.rs#L590));
+   - every removal or decline that still stands: the friendship and the requests between the two deleted, the durable
+     block inserted, as `remove` does ([db/social.rs:501-542](../../server/src/db/social.rs#L501)). A block that
+     stands means the pair made no friendship after it: only the blocker's own request lifts it (`ask`, :374);
+   - every invite code created or revoked since, so a rotated link stays dead
+     ([db/social.rs:544-588](../../server/src/db/social.rs#L544)). The revoked codes come first, so a player never
+     holds two active codes (`invite_codes_one_active`, [0005_social.sql:15](../../server/migrations/0005_social.sql#L15)).
+
+   A statement for a player whom the restored database lacks inserts nothing: that player first opened the app since
+   the backup, and the restore drops all of their rows.
+3. Create the empty database and restore into it. `<RESTORE_DB>` is a new name that starts with a letter, then
+   lower-case letters, digits and `_`, and is not an SQL key word (for example `tgn_restore_20261103`).
    `<RESTORE_DATABASE_URL>` is `<DATABASE_URL>` with its database name replaced by `<RESTORE_DB>`:
 
    ```powershell
@@ -150,19 +192,35 @@ the `users` key. The migrated database stays as it is, as the source of the list
    & "<PG_BIN>\pg_restore" --exit-on-error --single-transaction --no-owner --dbname="<RESTORE_DATABASE_URL>" "<BACKUP_FILE>"
    ```
 
-   Where the role may not create a database, create `<RESTORE_DB>` in the host's panel and run only the second
-   command. `--single-transaction` restores all or nothing; `--no-owner` makes the connecting role own what it
-   restores.
-4. Set `DATABASE_URL=<RESTORE_DATABASE_URL>` in the service's environment and start the previous binary.
-5. Repeat what the restore undid:
-   - **Refunds.** A charge of the list with a `paid_at` at or before `<BACKUP_UNIX_TIME>` and a `refunded_at` was
-     refunded on the new release. Telegram has returned its Stars, but the restored database shows it paid and its
-     purchase granted again. Run `/refund <CHARGE_ID>` for it ([payments-ops.md](payments-ops.md#refund-a-charge)):
-     the server treats an API refusal holding `CHARGE_ALREADY_REFUNDED` as refunded and revokes
-     ([payments.rs:214-216](../../server/src/telegram/payments.rs#L214); verify: the Bot API's text for an
-     already-refunded charge).
+   Where the role may not create a database, create `<RESTORE_DB>` in the host's panel, owned by the role that
+   `<DATABASE_URL>` connects as, and run only the second command. Since PostgreSQL 15 only the database's owner may
+   create tables in its `public` schema by default
+   ([PostgreSQL 15 release notes](https://www.postgresql.org/docs/release/15.0/)), so a database owned by another role
+   refuses the restore. `--single-transaction` restores all or nothing; `--no-owner` makes the connecting role own what
+   it restores.
+4. Before any player can reach the restored database, repeat the erasures, then the decisions:
    - **Erasures.** Every deletion request answered since the backup was undone: the restore brought the player's rows
-     back. Run each erasure again ([privacy-ops.md](privacy-ops.md#answer-a-deletion-request-manual-erasure)).
+     back. Run the erasure again for each entry of your erasure record dated after `<BACKUP_UNIX_TIME>`
+     ([privacy-ops.md](privacy-ops.md#answer-a-deletion-request-manual-erasure)), with `<RESTORE_DATABASE_URL>` in
+     place of `<DATABASE_URL>`.
+   - **Decisions.** Apply the file in one transaction:
+
+     ```powershell
+     & "<PG_BIN>\psql" "<RESTORE_DATABASE_URL>" -v ON_ERROR_STOP=1 --single-transaction -f "<REAPPLY_FILE>"
+     ```
+
+   Erasures go first. The file holds only what the migrated database kept, so a player who came back after an erasure
+   gets their new rows back, and no erasure removes them again.
+5. Set `DATABASE_URL=<RESTORE_DATABASE_URL>` in the service's environment and start the previous binary.
+6. **Refunds.** A charge of the list with a `paid_at` at or before `<BACKUP_UNIX_TIME>` and a `refunded_at` was
+   refunded on the new release. Telegram has returned its Stars, but the restored database shows it paid and its
+   purchase granted again. Run `/refund <CHARGE_ID>` for it ([payments-ops.md](payments-ops.md#refund-a-charge)):
+   the server treats an API refusal holding `CHARGE_ALREADY_REFUNDED` as refunded and revokes
+   ([payments.rs:214-216](../../server/src/telegram/payments.rs#L214); verify: the Bot API's text for an
+   already-refunded charge).
+
+On Linux, as in step 4 of [Steps](#steps): the same arguments after `"<PG_BIN>/psql"` and `"<PG_BIN>/pg_restore"`,
+with the here-string's SQL fed from a quoted here-document (`<<'SQL'` ... `SQL`) instead of `@'` ... `'@ |`.
 
 The charges of the list with a `paid_at` after `<BACKUP_UNIX_TIME>` were paid on the new release. They are paid in
 Telegram, but the restored database no longer knows them, and `/refund` answers `refund_unknown` for them
@@ -170,11 +228,17 @@ Telegram, but the restored database no longer knows them, and `/refund` answers 
 release, prefer a fix-forward release to a restore. Keep the migrated database until every charge of the list is
 settled.
 
-This procedure was run once by the docs lane D2 on a socket-only PostgreSQL 18.6 cluster: the tree's migrations
-`0001`-`0006`, a backup, then a stand-in `0007` with a table referencing `users`, a refund and an erasure. The restore
-into a new database exited 0 with the backup's tables, rows and a stand-in migration history, and the list showed both charges.
-`pg_restore --clean --if-exists --single-transaction` over the migrated database stopped at `cannot drop constraint
-users_pkey on table public.users because other objects depend on it` and changed nothing.
+The docs lane D2 ran this procedure twice on a socket-only PostgreSQL 18.6 cluster with the tree's migrations
+`0001`-`0006`, a backup, and then a stand-in `0007` with a table referencing `users`:
+
+- The first run made a refund and an erasure as SQL stand-ins of their database effects. The restore into a new
+  database exited 0 with the backup's tables, rows and a stand-in migration history, and the list showed both charges.
+  `pg_restore --clean --if-exists --single-transaction` over the migrated database stopped at `cannot drop constraint
+  users_pkey on table public.users because other objects depend on it` and changed nothing.
+- The second run executed the PowerShell blocks of steps 2 to 4 and the privacy-ops erasure script as written. Before
+  it, the migrated database got a consent withdrawal, a removal, two invite rotations, an erasure, the erased player's
+  return and a new player. The restored database then gave the migrated one's answers for every decision, and held
+  nothing of the new player. The `/refund` repeat of step 6 was not run.
 
 ## Troubleshooting
 

@@ -67,7 +67,7 @@ The player quotes the payment number that `/paysupport` lists (the `telegram_pay
 ```
 
 Replace `<CHARGE_ID>` inside the quotes with the number as the player sent it. `applied` is the rule `/paysupport` uses: an entitlement or a ledger row keyed by the charge
-([db/payments.rs:474-496](../../server/src/db/payments.rs#L474)). Times are unix seconds. The tables:
+([db/payments.rs:475-496](../../server/src/db/payments.rs#L475)). Times are unix seconds. The tables:
 [0001_init.sql](../../server/migrations/0001_init.sql) (`payments`, `orders`, `entitlements`) and
 [0004_economy.sql](../../server/migrations/0004_economy.sql) (`resource_ledger`).
 
@@ -76,7 +76,7 @@ Replace `<CHARGE_ID>` inside the quotes with the number as the player sent it. `
 `/paysupport` is the player's own command: it lists the sender's newest charges, newest first, at most 20 and as many
 as fit one message, then how many more there are of the total; each charge has its date, amount and number, and a
 mark when it was refunded or "not applied, please contact us"
-([commands.rs:118-178](../../server/src/telegram/commands.rs#L118), `PAYSUPPORT_CHARGES` :22). When the database
+([commands.rs:119-178](../../server/src/telegram/commands.rs#L119), `PAYSUPPORT_CHARGES` :22). When the database
 read fails, the bot answers the intro and "repeat in a minute" ([commands.rs:207-222](../../server/src/telegram/commands.rs#L207)).
 The intro text is a draft until the owner writes the real support contact ([bot-setup.md](bot-setup.md#steps), step 5).
 
@@ -104,7 +104,7 @@ cut at 5 s and the reply at another 5 s (`CALL_DEADLINE`, [gateway.rs:38](../../
 | `refund_unknown_outcome` | the call timed out or broke: Telegram may have refunded | repeat `/refund <CHARGE_ID>`: the server treats an API refusal whose description holds `CHARGE_ALREADY_REFUNDED` as refunded and revokes ([payments.rs:225-230](../../server/src/telegram/payments.rs#L225); verify: the Bot API's text for an already-refunded charge, the owner's E6 run) |
 | `refund_usage` | no charge id given | add it |
 
-Sources: [commands.rs:225-256](../../server/src/telegram/commands.rs#L225),
+Sources: [commands.rs:226-256](../../server/src/telegram/commands.rs#L226),
 [bot.en.json:21-26](../../server/locales/bot.en.json#L21). A non-admin's `/refund` gets the unknown-command reply.
 
 What the revoke does ([db/payments.rs:94-102](../../server/src/db/payments.rs#L94)): the payment gets `refunded_at`,
