@@ -87,7 +87,7 @@ export type GameDeps = {
   vm: ViewModel;
   screens: Screens;
   /** `perfClass` picks the render resolution (lever F); a facade without it renders as 'AVERAGE' (telegram/perf.ts). */
-  tg: Pick<TelegramClient, 'haptic' | 'setClosingConfirmation' | 'openInvoice'> & Partial<Pick<TelegramClient, 'perfClass'>>;
+  tg: Pick<TelegramClient, 'haptic' | 'setClosingConfirmation' | 'openInvoice' | 'close'> & Partial<Pick<TelegramClient, 'perfClass'>>;
   api: Pick<Endpoints, 'listSaves' | 'createInvoice' | 'getOrder' | 'getEntitlements' | 'getPuzzle' | 'postAttempt'>;
   catalog: ChapterCatalog;
   entitlements: Entitlements;
@@ -1212,7 +1212,7 @@ export function createGame(deps: GameDeps): Game {
   const chapterFailed = (s: Session, e: ChapterLoadError): Result<void, GameError> => {
     if (e.kind === 'session-expired') {
       endSession(s);
-      showNotice({ kind: 'reopen' });
+      showNotice({ kind: 'reopen', onclose: () => tg.close() });
     } else {
       showNotice({ kind: 'error', onaction: () => void game.exitToStories() });
     }
@@ -1523,7 +1523,7 @@ export function createGame(deps: GameDeps): Game {
     }
     if (e?.kind === 'session-expired') {
       endSession(s);
-      showNotice({ kind: 'reopen' });
+      showNotice({ kind: 'reopen', onclose: () => tg.close() });
       return;
     }
     showNotice({ kind: 'error', onaction: () => void game.exitToStories() });

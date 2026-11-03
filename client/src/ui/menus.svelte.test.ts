@@ -141,7 +141,7 @@ test('i18n: puzzle and explore keys declared', () => {
 /** Each kind's title, body and actions (cut §1c). */
 const NOTICE_COPY: ReadonlyArray<readonly [NoticeView['kind'], UiKey, UiKey | null, readonly UiKey[]]> = [
   ['open_in_telegram', 'notice.open_in_telegram_title', 'notice.open_in_telegram_body', []],
-  ['reopen', 'notice.reopen_title', 'notice.reopen_body', []],
+  ['reopen', 'notice.reopen_title', 'notice.reopen_body', ['toast.close']],
   ['error', 'notice.error_title', 'notice.error_body', ['notice.error_action']],
   ['story_error', 'notice.story_error_title', 'notice.story_error_body', ['notice.story_error_action']],
   ['to_be_continued', 'notice.to_be_continued_title', null, ['notice.to_be_continued_action']],
@@ -152,8 +152,9 @@ const NOTICE_COPY: ReadonlyArray<readonly [NoticeView['kind'], UiKey, UiKey | nu
 function noticeOf(kind: NoticeView['kind'], onaction: () => void): NoticeView {
   switch (kind) {
     case 'open_in_telegram':
-    case 'reopen':
       return { kind };
+    case 'reopen':
+      return { kind, onclose: onaction };
     case 'error':
     case 'story_error':
     case 'to_be_continued':
@@ -189,6 +190,29 @@ test('menus: notice kinds show their actions', async () => {
       }
       cleanup();
     }
+  }
+});
+
+test('menus: reopen offers close, which calls its port', async () => {
+  for (const lang of LANGS) {
+    const onclose = vi.fn();
+    const { getByRole, queryAllByRole, rerender } = render(Notice, { notice: { kind: 'reopen', onclose }, lang });
+    // K33: the ended session's notice closes the Mini App through its port, labelled with the toast's Close.
+    expect(names(queryAllByRole('button')), lang).toEqual([t(lang, 'toast.close')]);
+    tap(getByRole('button'));
+    tap(getByRole('button'));
+    expect(onclose, lang).toHaveBeenCalledTimes(1);
+    // Rule (b) on a new presentation: a release without its press does not count, a keyboard activation does.
+    await rerender({ notice: { kind: 'reopen', onclose } });
+    pointerClick(getByRole('button'));
+    expect(onclose, lang).toHaveBeenCalledTimes(1);
+    keyClick(getByRole('button'));
+    expect(onclose, lang).toHaveBeenCalledTimes(2);
+    cleanup();
+    // Outside Telegram there is no Mini App to close: no button.
+    const outside = render(Notice, { notice: { kind: 'open_in_telegram' }, lang });
+    expect(outside.queryAllByRole('button'), lang).toEqual([]);
+    cleanup();
   }
 });
 

@@ -557,7 +557,7 @@ export function startApp(tg: TelegramClient): AppHandle {
     }
     if (!r.ok) {
       if (r.error.kind === 'expired') {
-        showNotice({ kind: 'reopen' });
+        showNotice({ kind: 'reopen', onclose: () => tg.close() });
       } else {
         console.error('boot: the boot reads failed', r.error.detail);
         showNotice({ kind: 'error', onaction: () => void boot() });
@@ -600,7 +600,7 @@ export function startApp(tg: TelegramClient): AppHandle {
   };
 
   subscriptions.push(tg.onLifecycle(onLifecycle));
-  subscriptions.push(http.onSessionExpired(() => showNotice({ kind: 'reopen' })));
+  subscriptions.push(http.onSessionExpired(() => showNotice({ kind: 'reopen', onclose: () => tg.close() })));
   window.addEventListener('pagehide', onPageHide);
   subscriptions.push(() => window.removeEventListener('pagehide', onPageHide));
 

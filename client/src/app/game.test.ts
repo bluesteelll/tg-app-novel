@@ -522,6 +522,8 @@ type Harness = {
   readonly purchases: string[];
   /** How many times the game handed Home back (onExit). */
   exits(): number;
+  /** How many times the game closed the Mini App (the facade's `close`). */
+  closes(): number;
   /** The newest session's saves. */
   save(): FakeSaves;
 };
@@ -584,6 +586,7 @@ function harness(o: HarnessOptions = {}): Harness {
   const answers = [...(o.invoice ?? [])];
   let product: string | null = null;
   let exits = 0;
+  let closes = 0;
   const chapterOf = (p: string | null): string | null => catalog().chapters.find((c) => c.productId === p)?.id ?? null;
   const deps: GameDeps = {
     vm,
@@ -595,6 +598,9 @@ function harness(o: HarnessOptions = {}): Harness {
         notify: (t) => haptics.push(`notify:${t}`),
       },
       setClosingConfirmation: () => {},
+      close: () => {
+        closes += 1;
+      },
       openInvoice: async () => {
         purchases.push('openInvoice');
         const status = answers.shift() ?? 'cancelled';
@@ -675,6 +681,7 @@ function harness(o: HarnessOptions = {}): Harness {
     owned,
     purchases,
     exits: () => exits,
+    closes: () => closes,
     save: () => {
       const s = saves.at(-1);
       if (s === undefined) {
@@ -2363,6 +2370,41 @@ test('game: a failed load it read shows the error notice', async () => {
     ['empty', 'error', 'notice', [], 1, 1],
     ['undecodable', 'error', 'notice', [], 1, 1],
     ['expired', 'reopen', 'notice', [], 0, 1],
+  ]);
+});
+
+test('game: the reopen notice of an ended session closes the app', async () => {
+  const rows: unknown[] = [];
+  // "Load it" whose read finds the page's session ended (adoptFailed), then a chapter load that finds it (chapterFailed).
+  for (const part of ['adopt', 'chapter'] as const) {
+    const h = harness();
+    if (part === 'adopt') {
+      await startManor(h);
+      await h.game.advance(); // l002
+      const sv = h.save();
+      sv.load = async () => ({ ok: false, error: { kind: 'session-expired' } });
+      sv.emit({ kind: 'paused', current: THEIRS });
+      const p = h.vm.toasts.find((e) => e.key === 'save_conflict');
+      if (p?.kind === 'prompt') {
+        p.actions[0]?.run(); // Load it
+      }
+    } else {
+      h.loader.load = async () => ({ ok: false, error: { kind: 'session-expired' } });
+      void h.game.start({ kind: 'new', story: MANOR, chapter: CH1 });
+    }
+    await settle();
+    await settle();
+    // K33: the notice's Close is the facade's close, once per tap of its one action.
+    const n = h.vm.notice;
+    if (n?.kind === 'reopen') {
+      n.onclose();
+    }
+    rows.push([part, n?.kind, h.closes()]);
+    h.game.dispose();
+  }
+  expect(rows).toEqual([
+    ['adopt', 'reopen', 1],
+    ['chapter', 'reopen', 1],
   ]);
 });
 
