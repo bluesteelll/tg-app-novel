@@ -1,16 +1,16 @@
 // Friends, invites, consent, the friend profile and the share text (META-PLAN M10-M14, "Module API"). The server is
 // the truth: the state is the last applied `SocialResponse` and nothing else, persisted nowhere (principle 1). Friends
 // are addressed by handle only; a friend's first name comes from the friend list, never from the profile (M13).
-import { metaError } from '../api/endpoints.ts';
-import type { FriendHandle, MetaEndpoints, MetaError } from '../api/endpoints.ts';
 import type { FriendProfile, InviteView, ShareResponse, SocialResponse } from '../api/generated/api.ts';
 import type { ApiError } from '../api/http.ts';
+import { metaError } from '../api/meta.ts';
+import type { FriendHandle, MetaEndpoints, MetaError } from '../api/meta.ts';
 import type { Lang } from '../i18n/index.ts';
 import type { ConsentTextVersion } from '../i18n/meta.ts';
 import type { EndingName, Result, StoryId } from '../story/catalog.ts';
 import type { AchievementId } from './card.ts';
 
-export type { FriendHandle } from '../api/endpoints.ts';
+export type { FriendHandle } from '../api/meta.ts';
 export type { InviteView } from '../api/generated/api.ts';
 
 /** META-PLAN `FriendView`: a friend or a requester. */

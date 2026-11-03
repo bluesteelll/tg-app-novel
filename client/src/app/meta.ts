@@ -4,9 +4,10 @@
 // own answer (the services order the answers; principle 1), and nothing here unlocks anything: the card, the wallet and
 // the friends are the server's. An epoch, bumped by `closeOverlays`, a root change and `dispose`, drops an answer that
 // would push an overlay over a later screen.
-import { metaError } from '../api/endpoints.ts';
-import type { Endpoints, FriendHandle, MetaEndpoints, MetaError } from '../api/endpoints.ts';
+import type { Endpoints } from '../api/endpoints.ts';
 import type { Clock } from '../api/http.ts';
+import { metaError } from '../api/meta.ts';
+import type { FriendHandle, MetaEndpoints, MetaError } from '../api/meta.ts';
 import { t } from '../i18n/index.ts';
 import type { UiKey } from '../i18n/index.ts';
 import type { ConsentTextVersion } from '../i18n/meta.ts';
@@ -24,6 +25,10 @@ import type { Lifecycle, TelegramClient } from '../telegram/index.ts';
 import type { CardData, FriendData, ProfileData, ShownError, SocialData, WalletData } from '../ui/meta/index.ts';
 import type { Screen, ScreenKind, Screens, ScreensView } from '../ui/screens.ts';
 import type { ViewModel } from '../ui/state.svelte.ts';
+
+// Boot builds `MetaDeps.meta` from this chunk's module, so the meta routes and their decoders never enter the entry
+// (RULINGS 137).
+export { createMetaEndpoints } from '../api/meta.ts';
 
 /** The meta overlays' chunk (M27): imported only here, and only dynamically. */
 export type MetaUi = typeof import('../ui/meta/index.ts');

@@ -1,9 +1,9 @@
 // The completion card (META-PLAN M9, "Module API"): one `POST /api/stories/{storyId}/card` per open, its texts picked
 // in the UI language. Stateless: nothing outlives the promise, so a card is never cached and every open shows the
 // server's answer (principle 1).
-import { metaError } from '../api/endpoints.ts';
-import type { MetaEndpoints, MetaError } from '../api/endpoints.ts';
 import type { CardResponse } from '../api/generated/api.ts';
+import { metaError } from '../api/meta.ts';
+import type { MetaEndpoints, MetaError } from '../api/meta.ts';
 import type { Lang } from '../i18n/index.ts';
 import type { EndingName, Result, StoryId } from '../story/catalog.ts';
 import type { ChapterId } from '../story/staging.ts';

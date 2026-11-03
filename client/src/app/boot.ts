@@ -4,7 +4,7 @@
 // Home tap unlocks audio synchronously, inside the tap (principle 5), then waits for the engine and starts the story.
 // It owns the page's subscriptions: the lifecycle, `pagehide`, the session's expiry. After auth it imports the meta
 // controller's chunk beside the engine (RULINGS 105); the gate below is the one way to it.
-import { createEndpoints, createMetaEndpoints } from '../api/endpoints.ts';
+import { createEndpoints } from '../api/endpoints.ts';
 import type { Endpoints } from '../api/endpoints.ts';
 import type { ProductDto, SaveListResponse, SaveSummary } from '../api/generated/api.ts';
 import { createHttp, systemClock } from '../api/http.ts';
@@ -284,7 +284,7 @@ export function startApp(tg: TelegramClient): AppHandle {
     load: () => import('./meta.ts'),
     make: (m) => {
       const c = m.createMetaController({
-        meta: createMetaEndpoints(http),
+        meta: m.createMetaEndpoints(http), // from the controller's chunk: the meta routes stay out of the entry (RULINGS 137)
         api,
         tg,
         screens,
