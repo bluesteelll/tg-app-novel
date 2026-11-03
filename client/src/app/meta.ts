@@ -603,7 +603,10 @@ export function createMetaController(d: MetaDeps): MetaController {
           }
           if (error === null) {
             giftLanded(to, null);
-            screens.close('gift');
+            // Only the dialog opened for this friend closes (LMI review r1 M1): another friend's stays open.
+            if (screens.view().overlays.some((s) => s.kind === 'gift' && s.to === to)) {
+              screens.close('gift');
+            }
             void walletSync.hard(); // the debit; the balance shown is the wallet's, never this answer's
             return OK;
           }

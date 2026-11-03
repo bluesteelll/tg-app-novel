@@ -917,3 +917,29 @@ test('meta: gift outcome closes the dialog or shows a new error', async () => {
   expect(r.vm.meta?.wallet?.balances).toEqual([{ kind: 'hint', balance: 0, debt: 0 }]);
   r.ctl.dispose();
 });
+
+test("meta: a gift's success closes only its own friend's dialog", async () => {
+  const r = rig();
+  r.server.on(SOCIAL_LABEL, () => okWire(ACCEPTED));
+  r.server.on(WALLET_LABEL, () => walletWire(3));
+  r.ctl.boot();
+  await flush();
+  // Аня's gift is sent and its answer parked; her dialog is cancelled and Ben's opened while it is in flight.
+  r.server.on(GIFT_LABEL, () => okWire(sample('GiftResponse')));
+  r.ctl.openGift(ANYA);
+  await flush();
+  const held = r.server.park(GIFT_LABEL);
+  const sent = r.ctl.gift(ANYA, HINT, 1);
+  await flush();
+  r.ctl.cancelGift();
+  r.ctl.openGift(BEN);
+  await flush();
+  const wallets = r.server.count(WALLET_LABEL);
+  held.release();
+  expect((await sent).ok).toBe(true);
+  await flush();
+  // LMI review r1 M1: Аня's success closes Аня's dialog only; Ben's stays, no longer busy, and the wallet is read once.
+  expect([kinds(r), r.vm.meta?.gift?.friend.handle, r.vm.meta?.gift?.busy]).toEqual([['gift'], BEN, false]);
+  expect(r.server.count(WALLET_LABEL)).toBe(wallets + 1);
+  r.ctl.dispose();
+});
