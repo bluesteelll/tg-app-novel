@@ -1,7 +1,8 @@
 // Asset scheduling over the registry (PROTOTYPE-PLAN "Per-chapter manifest", "Preload", F4, F5): the current
 // chapter's manifest, id resolution (in `from` when given, so the next chapter's ids resolve in its own manifest),
-// background preloads under a tag (`preload:<knot>`, `next:<chapterId>`, `room:<roomId>`) with two fetches in flight,
-// and the blocking `ensure` of a batch's assets under the holder `ensure`. Pure over the registry: no Pixi, no fetch.
+// background preloads under a tag (`preload:<knot>`, `next:<chapterId>`, `room:<roomId>`) with two fetches in flight
+// (an item whose record is live or in flight joins it at once, outside the slots: QO19, S36 step 1b), and the blocking
+// `ensure` of a batch's assets under the holder `ensure`. Pure over the registry: no Pixi, no fetch.
 import type { AssetManifest, ImageEntry, Result } from '../story/catalog.ts';
 import type { AssetId } from '../story/staging.ts';
 import type { AssetError, AssetRegistry, SceneError } from './registry.ts';
@@ -18,9 +19,13 @@ export interface AssetScheduler {
   /** Swaps the manifest; releases every `preload:*`, every `next:*` except `next:<m.chapterId>`, and `ensure`. */
   setChapter(m: AssetManifest): void;
   resolve(id: AssetId, from?: AssetManifest): Result<ImageEntry, AssetError>;
-  /** Background, at preload priority; an id that does not resolve is reported and skipped. */
+  /**
+   * Background, at preload priority; an id that does not resolve is reported and skipped. An id whose record is live or
+   * in flight joins it at once (its holder added before this returns; no slot, no byte); any other id queues for one of
+   * the PRELOAD_IN_FLIGHT slots.
+   */
   preload(tag: string, ids: readonly AssetId[], from?: AssetManifest): void;
-  /** Drops queued and in-flight preloads of the tag and releases its holder; a trailing `:` names a family. */
+  /** Drops queued, joining and in-flight preloads of the tag and releases its holder; a trailing `:` names a family. */
   releasePreload(tag: string): void;
   /** Loads a batch's assets at visible priority; resolves once every one is live or failed. */
   ensure(ids: readonly AssetId[], signal: AbortSignal): Promise<Result<void, SceneError>>;
@@ -38,6 +43,8 @@ export function createAssetScheduler<T>(deps: { registry: AssetRegistry<T>; onEr
   let manifest: AssetManifest | null = null;
   let queue: Item[] = [];
   let inFlight: Flight[] = [];
+  /** Items that joined a live or in-flight record inside preload(), until their acquire settles. */
+  let joins: Flight[] = [];
   /** Every tag preload() was given and not released since. */
   const tags = new Set<string>();
   let dead = false;
@@ -54,8 +61,30 @@ export function createAssetScheduler<T>(deps: { registry: AssetRegistry<T>; onEr
     return { ok: true, value: entry };
   };
 
+  const report = (r: Result<unknown, AssetError>): void => {
+    // A preload over the steady cap is expected (K5) and an aborted one was released on purpose.
+    if (!r.ok && r.error.kind !== 'aborted' && r.error.kind !== 'over-cap') {
+      deps.onError(r.error);
+    }
+  };
+
+  /**
+   * The fetches the preloads hold: every flight, plus each id a join waits on in flight that no flight covers (its
+   * flight was released, the join kept the fetch), once per id. So two fetches in flight at most stays true for
+   * fetches, and a join at a fetch its own flight still covers counts nothing.
+   */
+  const busy = (): number => {
+    const carried = new Set<AssetId>();
+    for (const j of joins) {
+      if (!inFlight.some((f) => f.id === j.id) && registry.state(j.id) === 'pending') {
+        carried.add(j.id);
+      }
+    }
+    return inFlight.length + carried.size;
+  };
+
   const pump = (): void => {
-    while (!dead && inFlight.length < PRELOAD_IN_FLIGHT) {
+    while (!dead && busy() < PRELOAD_IN_FLIGHT) {
       const item = queue.shift();
       if (item === undefined) {
         return;
@@ -66,21 +95,35 @@ export function createAssetScheduler<T>(deps: { registry: AssetRegistry<T>; onEr
       // Not awaited: the slot frees when the acquire settles, whichever way.
       void registry.acquire(item.id, item.tag, o).then((r) => {
         inFlight = inFlight.filter((f) => f !== flight);
-        // A preload over the steady cap is expected (K5) and an aborted one was released on purpose.
-        if (!r.ok && r.error.kind !== 'aborted' && r.error.kind !== 'over-cap') {
-          deps.onError(r.error);
-        }
+        report(r);
         pump();
       });
     }
   };
 
+  /**
+   * Joins the item's live or in-flight record now: the registry adds the holder synchronously, at no byte and never
+   * refused, so a same-turn release of the record's other holders cannot end it. The tag's release aborts it.
+   */
+  const join = (item: Item): void => {
+    const j: Flight = { ...item, controller: new AbortController() };
+    joins.push(j);
+    const o = { entry: item.entry, priority: 'preload' as const, signal: j.controller.signal };
+    // Not awaited: a join holds no slot of its own; a fetch it carried (busy) frees when it settles.
+    void registry.acquire(item.id, item.tag, o).then((r) => {
+      joins = joins.filter((x) => x !== j);
+      report(r);
+      pump();
+    });
+  };
+
   const releasePreload = (pattern: string): void => {
     queue = queue.filter((i) => !matches(i.tag, pattern));
-    for (const f of inFlight.filter((x) => matches(x.tag, pattern))) {
+    for (const f of [...inFlight, ...joins].filter((x) => matches(x.tag, pattern))) {
       f.controller.abort();
     }
     inFlight = inFlight.filter((x) => !matches(x.tag, pattern));
+    joins = joins.filter((x) => !matches(x.tag, pattern));
     for (const t of [...tags]) {
       if (matches(t, pattern)) {
         tags.delete(t);
@@ -118,8 +161,14 @@ export function createAssetScheduler<T>(deps: { registry: AssetRegistry<T>; onEr
           continue;
         }
         const known = (x: Item): boolean => x.tag === tag && x.id === id;
-        if (!queue.some(known) && !inFlight.some(known)) {
+        if (queue.some(known) || inFlight.some(known) || joins.some(known)) {
+          continue;
+        }
+        // Read and joined in one synchronous turn: the record cannot end between the two.
+        if (registry.state(id) === 'none') {
           queue.push({ tag, id, entry: r.value });
+        } else {
+          join({ tag, id, entry: r.value });
         }
       }
       pump();
@@ -146,10 +195,11 @@ export function createAssetScheduler<T>(deps: { registry: AssetRegistry<T>; onEr
       }
       dead = true;
       queue = [];
-      for (const f of inFlight) {
+      for (const f of [...inFlight, ...joins]) {
         f.controller.abort();
       }
       inFlight = [];
+      joins = [];
       for (const t of tags) {
         registry.releaseHolder(t);
       }
