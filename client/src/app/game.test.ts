@@ -44,7 +44,7 @@ import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { HotspotKey, ItemId, WorldPublic } from '../world/types.ts';
 import { createViewModel } from '../ui/state.svelte.ts';
 import type { ViewModel } from '../ui/state.svelte.ts';
-import { createMetaGate, newestAuto } from './boot.ts';
+import { createMetaGate, HOME_IDLE_MS, newestAuto } from './boot.ts';
 import type { MetaGate } from './boot.ts';
 import { CONFLICT_HOLD_MS, createGame, reloadedFor, withReloadedFor } from './game.ts';
 import type { Entitlements, Game, GameDeps, ReloadPort } from './game.ts';
@@ -2959,6 +2959,7 @@ function metaRig(h: Harness, bind: (gate: MetaGate) => void = () => {}): MetaRig
     },
     note: (key) => h.vm.showToast({ kind: 'note', key, message: key, sticky: false }),
     onCards: redraw,
+    clock: h.clock,
   });
   bind(gate);
   return {
@@ -3234,7 +3235,7 @@ test('game: a presented step tells the meta port', async () => {
 });
 
 /** The gate over a load the test settles by hand, and a controller stub the gate only hands out and disposes. */
-function bareGate(o: { root?: () => object } = {}): {
+function bareGate(o: { root?: () => object; clock?: FakeClock } = {}): {
   gate: MetaGate;
   flights: Array<{ resolve: (m: MetaModule) => void; reject: (e: unknown) => void }>;
   loads(): number;
@@ -3252,6 +3253,7 @@ function bareGate(o: { root?: () => object } = {}): {
     note: () => {},
     root: o.root ?? (() => ROOT),
     onCards: () => {},
+    clock: o.clock ?? new FakeClock(),
   });
   return { gate, flights, loads: () => loads, runs };
 }
@@ -3317,10 +3319,76 @@ test('boot: the hint port waits for the meta chunk', async () => {
   b.m.gate.dispose();
 });
 
+test('boot: Home idle imports the meta chunk once the engine is in', async () => {
+  // LFL T5: HOME_IDLE_MS after both Home and the engine import settled, and only while that Home is still the root.
+  const clock = new FakeClock();
+  let root: object = { kind: 'home' };
+  const g = bareGate({ root: () => root, clock });
+  // 1. Home alone, however long: the engine is not in, so a Start tap may still be on its way.
+  g.gate.homeShown();
+  clock.advance(HOME_IDLE_MS);
+  expect(g.loads(), 'Home without the engine').toBe(0);
+  // 2. The engine settles: the wait counts from it.
+  g.gate.engineSettled();
+  clock.advance(HOME_IDLE_MS - 1);
+  expect(g.loads(), 'one ms short').toBe(0);
+  clock.advance(1);
+  expect(g.loads(), 'Home idle').toBe(1);
+  g.gate.dispose();
+
+  // 3. The root changes before the wait ends (a Start tap): nothing, however long.
+  const left = bareGate({ root: () => root, clock });
+  left.gate.homeShown();
+  left.gate.engineSettled();
+  clock.advance(HOME_IDLE_MS - 1);
+  root = { kind: 'game' };
+  clock.advance(LONG_WAIT_MS);
+  expect(left.loads(), 'Home left').toBe(0);
+  left.gate.dispose();
+
+  // 4. Home shown again (a new root) restarts the wait; 5. a failed idle import arms no timer again.
+  root = { kind: 'home' };
+  const again = bareGate({ root: () => root, clock });
+  again.gate.engineSettled();
+  again.gate.homeShown();
+  clock.advance(HOME_IDLE_MS - 500);
+  root = { kind: 'home' };
+  again.gate.homeShown();
+  clock.advance(HOME_IDLE_MS - 1);
+  expect(again.loads(), 'the wait restarted at the second Home').toBe(0);
+  clock.advance(1);
+  expect(again.loads(), 'the second Home idle').toBe(1);
+  again.flights.shift()?.reject(new Error('offline'));
+  await settle();
+  again.gate.homeShown();
+  again.gate.engineSettled();
+  expect(clock.pending, 'no timer after a failed import').toBe(0);
+  clock.advance(LONG_WAIT_MS);
+  expect(again.loads()).toBe(1);
+  again.gate.dispose();
+});
+
+test('boot: a launch parameter imports the meta chunk at boot', () => {
+  // LFL T4: an invite's prompt shows over the first Home, so its launch imports at once; no parameter, no import.
+  const invited = bareGate();
+  invited.gate.launched('fCODE');
+  expect(invited.loads()).toBe(1);
+  invited.gate.dispose();
+  const plain = bareGate();
+  plain.gate.launched(null);
+  expect(plain.loads()).toBe(0);
+  plain.gate.dispose();
+});
+
 /** Longer than any retry timer a gate could hide (RULINGS 105: never on a timer). */
 const LONG_WAIT_MS = 10 * 60_000;
 /** A root that never changes: the gate's waiting taps all run. */
 const ROOT = Object.freeze({ kind: 'home' });
+/** The global timers as a gate's clock: under `vi.useFakeTimers` a gate timer is one the test counts and runs. */
+const PAGE_TIMERS: Pick<Clock, 'setTimeout' | 'clearTimeout'> = {
+  setTimeout: (fn, ms) => Number(setTimeout(fn, ms)),
+  clearTimeout: (id) => clearTimeout(id),
+};
 
 test('boot: a waiting meta tap is dropped when the root changes', async () => {
   const module = await import('./meta.ts');
@@ -3336,6 +3404,7 @@ test('boot: a waiting meta tap is dropped when the root changes', async () => {
       note: (key) => notes.push(key),
       root: () => root,
       onCards: () => {},
+      clock: new FakeClock(),
     });
   // 1. A Friends tap waits on the chunk while the player goes Home -> a story -> Home: another root (identity, not
   // kind), so the tap is dropped when the chunk lands, with no toast; the chunk stays in for the next tap.
@@ -3393,6 +3462,7 @@ test('boot: meta chunk import retried by the next tap, single flight', async () 
       note: (key) => notes.push(key),
       root: () => ROOT,
       onCards: () => {},
+      clock: PAGE_TIMERS,
     });
     // The boot's import fails silently, and nothing imports again without a tap, however long the page stays open.
     void gate.ready();
@@ -3436,6 +3506,7 @@ test('boot: meta chunk import retried by the next tap, single flight', async () 
       note: (key) => notes.push(key),
       root: () => ROOT,
       onCards: () => {},
+      clock: PAGE_TIMERS,
     });
     void late.ready();
     const ending = late.port.onEnding(TIDE);

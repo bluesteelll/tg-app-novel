@@ -2,13 +2,13 @@
 // Pixi, inkjs or GSAP, and meanwhile, in parallel, imports the engine chunk, exchanges initData for the server's token,
 // fetches the public catalog and covers, lists every story's saves, reads the entitlements and loads the settings. A
 // Home tap unlocks audio synchronously, inside the tap (principle 5), then waits for the engine and starts the story.
-// It owns the page's subscriptions: the lifecycle, `pagehide`, the session's expiry. After auth it imports the meta
-// controller's chunk beside the engine (RULINGS 105); the gate below is the one way to it.
+// It owns the page's subscriptions: the lifecycle, `pagehide`, the session's expiry. The meta controller's chunk is
+// requested by the gate below, the one way to it, never on the way to the first line (RULINGS 105, 149; LFL).
 import { createEndpoints } from '../api/endpoints.ts';
 import type { Endpoints } from '../api/endpoints.ts';
 import type { ProductDto, SaveListResponse, SaveSummary } from '../api/generated/api.ts';
 import { createHttp, systemClock } from '../api/http.ts';
-import type { ApiError, Http } from '../api/http.ts';
+import type { ApiError, Clock, Http } from '../api/http.ts';
 import type { Session } from '../api/session.ts';
 import { unlockAudio } from '../audio/unlock.ts';
 import { t } from '../i18n/index.ts';
@@ -144,8 +144,11 @@ function describe(e: ApiError): string {
 /** The engine module, imported in parallel with the boot reads (F1 step 3). */
 type EngineModule = typeof import('./engine.ts');
 
-/** The meta controller's module (RULINGS 105): imported after auth, beside the engine; never awaited before the first line. */
+/** The meta controller's module (RULINGS 105, LFL): imported by the gate's triggers; never awaited before the first line. */
 type MetaModule = typeof import('./meta.ts');
+
+/** LFL T5: Home idle this long after both Home and the engine import settled, Home still the root: the chunk loads. */
+export const HOME_IDLE_MS = 2000;
 
 /** Boot's stats read after auth (LFL B1): Home's card buttons and the controller share it, one GET per page. */
 export type StatsRead = ReturnType<Endpoints['getStats']>;
@@ -171,12 +174,21 @@ export type MetaGate = {
    * forwards (LFL HP) and `lineShown` is told to the controller once it is in; the others are no-ops before it.
    */
   readonly port: GameMeta;
+  /** LFL T4: the launch's start parameter; any (an invite: its prompt shows over the first Home) imports at once. */
+  launched(param: string | null): void;
+  /** Home is the root (LFL T5 records it); a held invite prompt shows over it. */
+  homeShown(): void;
+  /** LFL T5: the engine import settled, landed or failed. */
+  engineSettled(): void;
   dispose(): void;
 };
 
 /**
- * The gate (RULINGS 105): one import in flight, as `importEngine`'s; a failed one is never retried on a timer or by a
- * step, only by the next tap, ending or hint use. `make` runs once, and only while the gate is not disposed.
+ * The gate (RULINGS 105, 149): the one owner of when the controller's chunk is requested, never on the path that taps
+ * Start as soon as it can (the first-line budget row leaves the chunk out): at the session's first step (T1), a meta
+ * tap, an ending, a hint use, a launch parameter (T4), or Home idle (T5). One import in flight, as `importEngine`'s; a
+ * failed one is never retried on a timer, by a step or at Home, only by the next tap, ending or hint use. `make` runs
+ * once, and only while the gate is not disposed.
  */
 export function createMetaGate(d: {
   load: () => Promise<MetaModule>;
@@ -187,6 +199,8 @@ export function createMetaGate(d: {
   root: () => object;
   /** Home's card buttons follow `hasCard` again (boot's stats read answered). */
   onCards: () => void;
+  /** T5's timer. */
+  clock: Pick<Clock, 'setTimeout' | 'clearTimeout'>;
 }): MetaGate {
   let current: MetaController | null = null;
   let flight: Promise<MetaController | null> | null = null;
@@ -200,12 +214,24 @@ export function createMetaGate(d: {
   let attempted = false;
   /** A line was revealed before the controller: it is told once it is made (the overlays' prefetch). */
   let lineSeen = false;
+  /** T5: the Home root last shown, whether the engine import settled, and the idle timer. */
+  let home: object | null = null;
+  let engineIn = false;
+  let idle: number | null = null;
+
+  const disarm = (): void => {
+    if (idle !== null) {
+      d.clock.clearTimeout(idle);
+      idle = null;
+    }
+  };
 
   const ready = (): Promise<MetaController | null> => {
     if (current !== null) {
       return Promise.resolve(current);
     }
     attempted = true;
+    disarm();
     flight ??= d.load().then(
       (m) => {
         if (!disposed && current === null) {
@@ -226,11 +252,29 @@ export function createMetaGate(d: {
     return flight;
   };
 
-  /** A non-tap trigger (LFL T1, HP): imports only if nothing was tried yet; a failure stays silent (RULINGS 105). */
+  /** A non-tap trigger (LFL T1, T4, T5, HP): imports only if nothing was tried yet; a failure stays silent (RULINGS 105). */
   const request = (): void => {
     if (!attempted && !disposed) {
       void ready(); // the failure is logged by `ready`; the next tap, ending or hint use imports again
     }
+  };
+
+  /**
+   * T5, restarted by each of its two events, so it fires HOME_IDLE_MS after the later one, and only on the Home it was
+   * armed on: a Start tap sets the game root within the engine's own task chain, so the TTFL path never reaches it.
+   */
+  const arm = (): void => {
+    disarm();
+    const at = home;
+    if (attempted || disposed || at === null || !engineIn) {
+      return;
+    }
+    idle = d.clock.setTimeout(() => {
+      idle = null;
+      if (d.root() === at) {
+        request();
+      }
+    }, HOME_IDLE_MS);
   };
 
   const tap = (run: (m: MetaController) => void, o?: { inTask: boolean }): void => {
@@ -332,7 +376,22 @@ export function createMetaGate(d: {
         current?.closeOverlays();
       },
     },
+    launched(param) {
+      if (param !== null) {
+        request(); // the format is the controller's to check (an invite is `f<code>`)
+      }
+    },
+    homeShown() {
+      home = d.root();
+      current?.homeShown();
+      arm();
+    },
+    engineSettled() {
+      engineIn = true;
+      arm();
+    },
     dispose() {
+      disarm();
       disposed = true;
       current?.dispose();
       current = null;
@@ -389,6 +448,7 @@ export function startApp(tg: TelegramClient): AppHandle {
     note: (key) => vm.showToast({ kind: 'note', key, message: t(vm.lang, key), sticky: false }),
     root: () => screens.view().root,
     onCards: redrawCards,
+    clock: systemClock,
   });
   let engine: Promise<Game | null> | null = null;
   /** The boot list, handed to the first session that asks; later sessions list again. */
@@ -424,7 +484,7 @@ export function startApp(tg: TelegramClient): AppHandle {
     screens.setRoot({ kind: 'home' });
     tg.setClosingConfirmation(false);
     homeBusy = false;
-    gate.current()?.homeShown(); // a held invite prompt shows over Home
+    gate.homeShown(); // LFL T5's Home; a held invite prompt shows over it
   };
 
   const entitlements: Entitlements = {
@@ -672,7 +732,9 @@ export function startApp(tg: TelegramClient): AppHandle {
     }
     // LFL B1: Home's card buttons from boot's own read (its endpoint is in the entry already); the controller gets it too.
     gate.stats(api.getStats());
-    void gate.ready(); // beside the engine; a failure is silent here and imported again by the next meta tap
+    // The controller's chunk is not requested here (LFL): only an invite's launch asks for it now (T4); otherwise the
+    // session's first step, a meta tap or Home idle does, so the engine download has the link to itself.
+    gate.launched(tg.startParam());
     showHome(d);
     void engineOf(d); // created ahead of the tap; a failure shows at the tap
   };
@@ -713,7 +775,7 @@ export function startApp(tg: TelegramClient): AppHandle {
     // F1 step 1: opened outside Telegram (or by a reply-keyboard button): nothing to sign in with.
     showNotice({ kind: 'open_in_telegram' });
   } else {
-    void importEngine(); // in parallel with the reads; its failure shows at the tap
+    void importEngine().then(() => gate.engineSettled()); // in parallel with the reads; its failure shows at the tap
     void boot(); // the outcome is on screen: Home, Reopen or the error notice
   }
 
