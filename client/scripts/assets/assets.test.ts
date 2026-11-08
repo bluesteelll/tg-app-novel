@@ -886,35 +886,43 @@ describe('assets', () => {
 
   test('assets: paid manifest keeps the server fixture keys', async () => {
     writeRepo(repo);
-    // Every image encoded with a half: the planner keeps the public ones (bg/cafe) and drops the gated one (bg/archive).
+    // Every image encoded with a half: the planner keeps every scene image's half, public (bg/cafe) and gated
+    // (bg/archive, served by the server since M3s).
     expect((await runTool(repo, HALVING_FAKES)).code).toBe(0);
     const planned = JSON.parse(readRel(repo, 'server/content/chapters/ch2/assets.json')) as { assets: Record<string, RawEntry> };
     expect(decodeAssetManifest(planned)).toEqual({ ok: true, value: planned });
     const committed = fixture('ch2') as { assets: Record<string, RawEntry> };
-    // Per kind, the entry keys and each URL slot's keys equal the committed fixture's: what AssetProbe reads. `half` is
-    // set aside: the probe ignores it and the fixtures have none until M3s.
-    const shape = (m: { assets: Record<string, RawEntry> }): Record<string, string> => {
-      const out: Record<string, string> = {};
+    // Per kind, the set of distinct entry shapes (the entry keys and each URL or `half` slot's keys) equals the
+    // committed fixture's: what AssetProbe and HalfProbe read. Every entry counts, not the last one of its kind.
+    const shape = (m: { assets: Record<string, RawEntry> }): Record<string, string[]> => {
+      const out: Record<string, Set<string>> = {};
       for (const entry of Object.values(m.assets)) {
-        const e = Object.fromEntries(Object.entries(entry).filter(([k]) => k !== 'half'));
-        const slots = Object.entries(e).filter(([, v]) => typeof v === 'object' && v !== null);
-        out[String(e['kind'])] = JSON.stringify([Object.keys(e).sort(), slots.map(([k, v]) => [k, Object.keys(v as object).sort()])]);
+        const slots = Object.entries(entry).filter(([, v]) => typeof v === 'object' && v !== null);
+        const one = JSON.stringify([Object.keys(entry).sort(), slots.map(([k, v]) => [k, Object.keys(v as object).sort()])]);
+        (out[String(entry['kind'])] ??= new Set()).add(one);
       }
-      return out;
+      return Object.fromEntries(Object.entries(out).map(([kind, set]) => [kind, [...set].sort()]));
     };
     expect(shape(planned)).toEqual(shape(committed));
-    // Every half a paid manifest names is a public file (M3c): the server indexes none.
+    type Half = { avif: { url: string }; webp: { url: string } }; // decoded above
+    // Every half sits under its own entry's prefix (F3): bg/cafe's under /assets/, bg/archive's under /api/assets/.
     const halfUrls = Object.values(planned.assets).flatMap((e) => {
-      const half = e['half'] as { avif: { url: string }; webp: { url: string } } | undefined; // decoded above
-      return half === undefined ? [] : [half.avif.url, half.webp.url];
+      const half = e['half'] as Half | undefined;
+      const own = (e['avif'] as { url: string } | undefined)?.url ?? '';
+      const prefix = own.startsWith('/api/assets/') ? '/api/assets/' : '/assets/';
+      return half === undefined ? [] : [half.avif.url, half.webp.url].map((url) => ({ url, prefix }));
     });
-    expect(halfUrls, 'the halves in planned ch2').toHaveLength(2);
-    expect(halfUrls.filter((u) => !u.startsWith('/assets/'))).toEqual([]);
-    const gated = Object.values(planned.assets).flatMap((e) =>
-      Object.values(e).flatMap((v) => (typeof v === 'object' && v !== null && 'url' in v ? [String(v.url)] : [])),
-    );
-    expect(gated.filter((u) => u.startsWith('/api/assets/'))).toHaveLength(3);
-    for (const url of gated.filter((u) => u.startsWith('/api/assets/'))) {
+    expect(halfUrls, 'the halves in planned ch2').toHaveLength(4);
+    expect(halfUrls.filter(({ url, prefix }) => !url.startsWith(prefix)), 'a half outside its entry prefix').toEqual([]);
+    const gated = Object.values(planned.assets)
+      .flatMap((e) => {
+        const half = e['half'] as Half | undefined;
+        const top = Object.values(e).flatMap((v) => (typeof v === 'object' && v !== null && 'url' in v ? [String(v.url)] : []));
+        return half === undefined ? top : [...top, half.avif.url, half.webp.url];
+      })
+      .filter((u) => u.startsWith('/api/assets/'));
+    expect(gated, 'the gated URLs: bg/archive full and half, bgm/mystery').toHaveLength(5);
+    for (const url of gated) {
       const name = url.slice('/api/assets/'.length);
       expect(name).toMatch(/^[a-z0-9][a-z0-9_-]*\.(avif|webp|m4a|wav)$/); // server/src/content.rs gated_asset_type
       expect(existsSync(join(repo, 'server', 'content', 'assets', name)), name).toBe(true);
@@ -1057,16 +1065,23 @@ describe('assets', () => {
     expect(canonical.half && { w: canonical.half.w * 2, h: canonical.half.h * 2 }).toEqual({ w: canonical.w, h: canonical.h });
   }, 30_000);
 
-  test('assets: a paid manifest names no gated half file', async () => {
-    // The halving fake returns a half for every image whatever the ask, so this pins the planner's tier gate alone.
+  test("assets: a gated image's half is gated beside it", async () => {
+    // The halving fake returns a half for every image whatever the ask, so this pins the planner's half gate alone: a
+    // gated image's half takes its file's directory, URL prefix and fingerprints (principle 0, M3s); a cover has none.
     writeRepo(repo);
     const r = await runTool(repo, HALVING_FAKES);
     expect(r.code, r.err.join('\n')).toBe(0);
     type Planned = { assets: Record<string, RawEntry> };
+    type Half = { avif: { url: string }; webp: { url: string } }; // decoded by the planner
     const ch1 = JSON.parse(readRel(repo, 'client/src/story-gen/free/ch1.assets.json')) as Planned;
     const ch2 = JSON.parse(readRel(repo, 'server/content/chapters/ch2/assets.json')) as Planned;
-    expect(Object.hasOwn(ch2.assets['bg/archive'] ?? {}, 'half'), 'the gated bg/archive has no half').toBe(false);
-    const cafeHalf = ch2.assets['bg/cafe']?.['half'] as { avif: { url: string }; webp: { url: string } } | undefined; // decoded by the planner
+    expect(Object.hasOwn(ch2.assets['bg/archive'] ?? {}, 'half'), 'the gated bg/archive has a half').toBe(true);
+    const archiveHalf = ch2.assets['bg/archive']?.['half'] as Half | undefined;
+    expect([archiveHalf?.avif.url, archiveHalf?.webp.url]).toEqual([
+      expect.stringMatching(/^\/api\/assets\/bg-archive-half-[0-9a-f]{8}\.avif$/) as string,
+      expect.stringMatching(/^\/api\/assets\/bg-archive-half-[0-9a-f]{8}\.webp$/) as string,
+    ]);
+    const cafeHalf = ch2.assets['bg/cafe']?.['half'] as Half | undefined;
     expect(cafeHalf, 'the public bg/cafe has a half').toBeDefined();
     expect([cafeHalf?.avif.url, cafeHalf?.webp.url]).toEqual([
       expect.stringMatching(/^\/assets\/bg-cafe-half-[0-9a-f]{8}\.avif$/) as string,
@@ -1075,8 +1090,18 @@ describe('assets', () => {
     expect(ch2.assets['bg/cafe'], 'one entry per id in every manifest').toEqual(ch1.assets['bg/cafe']);
     const halves = (rel: string): string[] => listDir(repo, rel).filter((n) => n.includes('-half-'));
     expect(halves('client/public/assets').length, 'the public halves').toBeGreaterThan(0);
-    expect(halves('server/content/assets')).toEqual([]);
-    expect(readRel(repo, 'server/content/build/fingerprints.assets.json')).not.toContain('-half-');
+    const shapes = (names: readonly string[]): string[] => names.map((n) => n.replace(/-[0-9a-f]{8}\./, '-<hash8>.')).sort();
+    expect(shapes(halves('server/content/assets')), 'the gated halves').toEqual(['bg-archive-half-<hash8>.avif', 'bg-archive-half-<hash8>.webp']);
+    expect(listDir(repo, 'client/public/assets').filter((n) => n.startsWith('bg-archive-')), 'no bg/archive file is public').toEqual([]);
+    const fp = decodeAssetFingerprints(JSON.parse(readRel(repo, 'server/content/build/fingerprints.assets.json')));
+    const archive = fp.ok ? fp.value.files.filter((f) => f.asset === 'bg/archive') : [];
+    expect(archive.map((f) => f.name).sort(), "bg/archive's four files are fingerprinted").toEqual(
+      listDir(repo, 'server/content/assets').filter((n) => n.startsWith('bg-archive-')),
+    );
+    expect(archive).toHaveLength(4);
+    for (const f of archive) {
+      expect(f.sha256, f.name).toBe(sha256Hex(readFileSync(join(repo, 'server', 'content', 'assets', f.name))));
+    }
     const covers = JSON.parse(readRel(repo, 'client/src/story-gen/covers.json')) as Planned;
     expect(Object.hasOwn(covers.assets['cover/manor'] ?? {}, 'half'), 'a cover has no half').toBe(false);
   });
@@ -1094,7 +1119,7 @@ describe('assets', () => {
     };
     const r = await runTool(repo, recording);
     expect(r.code, r.err.join('\n')).toBe(0);
-    expect(asked).toEqual({ 'bg/archive': 'none', 'bg/cafe': 'any', 'char/ally/neutral': { canvasH: 1536 }, 'cover/manor': 'none' });
+    expect(asked).toEqual({ 'bg/archive': 'any', 'bg/cafe': 'any', 'char/ally/neutral': { canvasH: 1536 }, 'cover/manor': 'none' });
   });
 
   test("assets: a half file's name is distinct from every full file name", () => {

@@ -121,13 +121,14 @@ export function tierOf(id: AssetId, usage: AssetUsage, chapters: readonly Chapte
 }
 
 /**
- * MEMORY-PLAN 4.C: which half the asset tool asks the encoder for. Public scene images only: a gated half waits for
- * M3s (the server indexes no half), and a cover is drawn by Home, never by the registry. A char's half only on the
- * canonical canvas (the character canvas rule); the encoder sees the clamped canvas, so the ask is a height, not a yes.
+ * MEMORY-PLAN 4.C: which half the asset tool asks the encoder for. Scene images of either tier: a public half is a
+ * static file, a gated one is served by the server after the entitlement check, under its full file's prefix (M3s, F3);
+ * a cover is drawn by Home, never by the registry. A char's half only on the canonical canvas (the character canvas
+ * rule); the encoder sees the clamped canvas, so the ask is a height, not a yes.
  */
 export function halfAsk(id: AssetId, tier: Tier): HalfAsk {
   const kind = imageKind(id);
-  if (tier !== 'public' || kind === null) {
+  if (tier === 'unused' || kind === null) {
     return 'none';
   }
   switch (kind) {
@@ -360,10 +361,12 @@ export function planAssets(input: {
       }
       return { url: `${urlPrefix}${name}`, bytes: bytes.length };
     };
-    // MEMORY-PLAN 4.C, the tier gate: a half only for a public scene image (a gated half waits for M3s, which serves
-    // it; a cover is never drawn by the registry), whatever the encoder returned. Its files sit beside the full ones.
+    // MEMORY-PLAN 4.C, the cover gate: a half for every scene image, public or gated, whatever the encoder returned (a
+    // cover is never drawn by the registry). Its files sit beside the full ones, under the entry's own dir and URL
+    // prefix through `file` (F3): a gated half is a gated file, fingerprinted, served by the server only after the
+    // entitlement check (M3s).
     const halfOf = (h: EncodedHalf | undefined): HalfFile | undefined =>
-      h === undefined || tier !== 'public' || id.startsWith('cover/')
+      h === undefined || id.startsWith('cover/')
         ? undefined
         : { w: h.w, h: h.h, decodedBytes: h.w * h.h * 4, avif: file(h.avif, 'avif', 'half'), webp: file(h.webp, 'webp', 'half') };
     // An image's w, h and decodedBytes are its stored px; a trimmed file's trim follows webp (MEMORY-PLAN §5).
