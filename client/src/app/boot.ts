@@ -13,6 +13,7 @@ import type { Session } from '../api/session.ts';
 import { unlockAudio } from '../audio/unlock.ts';
 import { t } from '../i18n/index.ts';
 import type { UiKey } from '../i18n/index.ts';
+import type { HintPort } from '../puzzles/session.ts';
 import { summaryOf } from '../saves/service.ts';
 import { createSettingsStore } from '../settings/store.ts';
 import type { Settings, SettingsStore } from '../settings/store.ts';
@@ -165,14 +166,17 @@ export type MetaGate = {
    * A tap that waited is dropped, silently, when the stack's root changed meanwhile: it was made on a screen now gone.
    */
   tap(run: (m: MetaController) => void, o?: { inTask: boolean }): void;
-  /** The Game's port, read when called: `onEnding` waits for the import; the others are no-ops before it. */
+  /**
+   * The Game's port, read when called: `onEnding` waits for the import, `stepShown` asks for it (LFL T1), `hintPort`
+   * forwards (LFL HP) and `lineShown` is told to the controller once it is in; the others are no-ops before it.
+   */
   readonly port: GameMeta;
   dispose(): void;
 };
 
 /**
- * The gate (RULINGS 105): one import in flight, as `importEngine`'s; a failed one is never retried on a timer, only by
- * the next tap or ending. `make` runs once, and only while the gate is not disposed.
+ * The gate (RULINGS 105): one import in flight, as `importEngine`'s; a failed one is never retried on a timer or by a
+ * step, only by the next tap, ending or hint use. `make` runs once, and only while the gate is not disposed.
  */
 export function createMetaGate(d: {
   load: () => Promise<MetaModule>;
@@ -192,15 +196,24 @@ export function createMetaGate(d: {
   let statsRead: StatsRead | null = null;
   /** The stories with an ending in boot's stats read (F17), for Home before the controller is in. */
   const ended = new Set<string>();
+  /** An import was started on this page: the non-tap triggers ask once, and never again after a failure. */
+  let attempted = false;
+  /** A line was revealed before the controller: it is told once it is made (the overlays' prefetch). */
+  let lineSeen = false;
 
   const ready = (): Promise<MetaController | null> => {
     if (current !== null) {
       return Promise.resolve(current);
     }
+    attempted = true;
     flight ??= d.load().then(
       (m) => {
-        if (!disposed) {
-          current ??= d.make(m, statsRead);
+        if (!disposed && current === null) {
+          const c = d.make(m, statsRead);
+          current = c;
+          if (lineSeen) {
+            c.lineShown();
+          }
         }
         return current;
       },
@@ -211,6 +224,58 @@ export function createMetaGate(d: {
       },
     );
     return flight;
+  };
+
+  /** A non-tap trigger (LFL T1, HP): imports only if nothing was tried yet; a failure stays silent (RULINGS 105). */
+  const request = (): void => {
+    if (!attempted && !disposed) {
+      void ready(); // the failure is logged by `ready`; the next tap, ending or hint use imports again
+    }
+  };
+
+  const tap = (run: (m: MetaController) => void, o?: { inTask: boolean }): void => {
+    const m = current;
+    if (disposed) {
+      return;
+    }
+    if (m !== null) {
+      run(m);
+      return;
+    }
+    const at = d.root();
+    void ready().then((c) => {
+      if (disposed || d.root() !== at) {
+        return; // the page, or the screen the tap was made on, is gone (LMI fix_r1): the player taps again
+      }
+      if (c === null) {
+        d.note('meta.action_failed');
+      } else if (o?.inTask !== true) {
+        run(c);
+      }
+    }); // a tap has no caller; the outcome is on screen
+  };
+
+  /**
+   * LFL HP: the puzzle's hint port, never null. Its cost and balance are unknown (null) until the controller is in; a
+   * use waits for the chunk, then spends through the controller's wallet port, resolved once per port.
+   */
+  const hintPort = (): HintPort => {
+    request();
+    let inner: HintPort | null = null;
+    const port = (): HintPort | null => {
+      inner ??= current?.hintPort() ?? null;
+      return inner;
+    };
+    return {
+      balance: () => port()?.balance() ?? null,
+      tierCost: () => port()?.tierCost() ?? null,
+      async use(puzzle, tier, lang) {
+        const c = await ready();
+        const p = c === null || disposed ? null : port();
+        return p === null ? { ok: false, error: { kind: 'network' } } : p.use(puzzle, tier, lang);
+      },
+      getMore: () => tap((m) => m.openWallet()),
+    };
   };
 
   return {
@@ -234,27 +299,7 @@ export function createMetaGate(d: {
       }); // the read has no caller to answer; Home's buttons show its outcome
     },
     ready,
-    tap(run, o) {
-      const m = current;
-      if (disposed) {
-        return;
-      }
-      if (m !== null) {
-        run(m);
-        return;
-      }
-      const at = d.root();
-      void ready().then((c) => {
-        if (disposed || d.root() !== at) {
-          return; // the page, or the screen the tap was made on, is gone (LMI fix_r1): the player taps again
-        }
-        if (c === null) {
-          d.note('meta.action_failed');
-        } else if (o?.inTask !== true) {
-          run(c);
-        }
-      }); // a tap has no caller; the outcome is on screen
-    },
+    tap,
     port: {
       async onEnding(story) {
         const m = current;
@@ -276,8 +321,12 @@ export function createMetaGate(d: {
         }
         await c.onEnding(story);
       },
-      hintPort: () => current?.hintPort() ?? null,
-      lineShown: () => current?.lineShown(),
+      hintPort,
+      stepShown: request,
+      lineShown: () => {
+        lineSeen = true;
+        current?.lineShown();
+      },
       closeOverlays: () => {
         leaves += 1;
         current?.closeOverlays();
