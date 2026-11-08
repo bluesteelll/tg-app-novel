@@ -380,3 +380,41 @@ test('preload: a repeated preload while its join is outstanding adds no second j
   await flush();
   expect(h.errors.length, 'one report per tag: the flight of room:r1 and the single join of preload:k1').toBe(2);
 });
+
+test('preload: a settled join is forgotten, so its tag preloads again', async () => {
+  const h = harness('deferred');
+  h.s.setChapter(ch1);
+  h.s.preload('preload:k', [asId('prop/a')]);
+  h.s.preload('room:r1', [asId('prop/a')]);
+  const a = h.calls[0];
+  if (a === undefined) {
+    throw new Error('invariant: the fixture started a load');
+  }
+  // The joined fetch fails: the registry ends the record while room:r1 is still a tracked tag (roomShown re-issues it).
+  a.done = true;
+  a.resolve({ ok: false, error: { kind: 'fetch', error: { kind: 'http', status: 500 } } });
+  await flush();
+  expect(h.registry.state(asId('prop/a'))).toBe('none');
+  h.s.preload('room:r1', [asId('prop/a')]);
+  expect(h.callsOf(urlOf(ch1, 'prop/a')), 'a later show of the room fetches its bg again').toBe(2);
+});
+
+test('preload: a family release drops released joins too', async () => {
+  const h = harness('deferred');
+  h.s.setChapter(ch1);
+  h.s.preload('room:r1', [asId('prop/a')]);
+  h.s.preload('preload:k', [asId('prop/a')]);
+  // setChapter releases the `preload:` family; the same tag is joined again in the same turn.
+  h.s.setChapter(ch1);
+  h.s.preload('preload:k', [asId('prop/a')]);
+  h.s.releasePreload('room:r1');
+  const a = h.calls[0];
+  if (a === undefined) {
+    throw new Error('invariant: the fixture started a load');
+  }
+  expect(a.signal.aborted, 'the re-joined tag keeps the fetch alive after room:r1 let go').toBe(false);
+  h.succeed(a);
+  await flush();
+  expect(h.registry.stats().live).toBe(1);
+  expect(h.errors).toEqual([]);
+});
