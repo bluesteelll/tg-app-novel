@@ -515,3 +515,15 @@ test("preload: a join waiting on a stale record's revive carries no slot", async
   expect(errors).toEqual([]);
   s.destroy();
 });
+
+test('preload: two joins of different tags on one carried fetch cost one slot', async () => {
+  const h = harness('deferred');
+  h.s.setChapter(ch1);
+  // GameSession's enterKnot order: knots j and k share art in flight, entering k releases preload:j (step 3), then the
+  // hold of a knot n after k shares the same art (step 4). Two tags carry one fetch, so it costs one slot, not two.
+  h.s.preload('preload:j', [asId('prop/a')]);
+  h.s.preload('preload:k', [asId('prop/a')]);
+  h.s.releasePreload('preload:j');
+  h.s.preload('preload:n', [asId('prop/a'), asId('prop/b'), asId('prop/c')]);
+  expect(h.calls.map((c) => c.url)).toEqual([urlOf(ch1, 'prop/a'), urlOf(ch1, 'prop/b')]);
+});
