@@ -8,7 +8,8 @@
 // takes the visual again with one GET of its file; no decoded bitmap stays open once its texture is uploaded.
 // MEMORY-PLAN M3c (section 11, 4.C): a LOW phone whose largest stage passes halfFits loads the half files and lays them
 // out as the full ones; an AVERAGE phone and a LOW tablet load the full files; a resize past the bound demotes later
-// loads to the full tier.
+// loads to the full tier. M3s: a LOW phone that owns a paid chapter loads its gated images' half files, which the
+// server answers only after the entitlement check.
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,9 +21,9 @@ import { catalogImage, decodeAssetCatalog, decodeAssetManifest } from '../script
 import { renderPlaceholder } from '../scripts/assets/placeholder.ts';
 import { t } from '../src/i18n/index.ts';
 import { backdropPlacement, charPlacement, halfFits, renderResolution, stageBound, tierFor } from '../src/scene/layout.ts';
-import type { ImageEntry } from '../src/story/catalog.ts';
+import type { AssetManifest, ImageEntry } from '../src/story/catalog.ts';
 import type { AssetId } from '../src/story/staging.ts';
-import { atRest, expect, launch, reachLine, requests, stagePixel, test, type E2eWindow } from './helpers.ts';
+import { atRest, catalogTitle, devToken, expect, grantChapter, launch, plantPending, reachLine, requests, stagePixel, test, type E2eWindow } from './helpers.ts';
 
 const E2E_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_DIR = path.resolve(E2E_DIR, '..');
@@ -34,6 +35,14 @@ const STREET = 'bg/street' as AssetId; // `# scene: street`
 const STRANGER = 'char/stranger/neutral' as AssetId;
 const FIRST_LINE = 'ch1.arrival.a001';
 const STRANGER_LINE = 'ch1.arrival.a005';
+/** story/ch2/main.ink `archive_cabinet`: `# scene: archive` (paid-only, so gated) beside the public stranger. */
+const ARCHIVE = 'bg/archive' as AssetId;
+const CH2_FIRST_LINE = 'ch2.archive_cabinet.c002';
+/**
+ * What ch1 carries into ch2 on the trust path (story/common/globals.ink). A copy of purchase.spec.ts's module-private
+ * CARRY: helpers.ts is frozen in this lane, so its next holder takes the one value.
+ */
+const CH2_CARRY = { g_gate_forced: false, g_manor_trust: 2, g_manor_promise: true, g_tide_trust_keeper: 0 } as const;
 /** MEMORY-PLAN §11 commit 6: the sample rule's margin and the colour tolerances, per RGB channel. */
 const MARGIN_CSS = 4;
 const TOLERANCE = 12;
@@ -124,6 +133,25 @@ function ch1Image(id: AssetId): ImageEntry {
   const entry = manifest.ok ? manifest.value.assets[id] : undefined;
   if (entry?.kind !== 'image') {
     throw new Error(`ch1.assets.json has no image ${id}`);
+  }
+  return entry;
+}
+
+/** ch2's paid manifest as the build under test wrote it for the server (`server/content`, which server-dev serves). */
+function ch2Manifest(): AssetManifest {
+  const file = path.join(CLIENT_DIR, '..', 'server', 'content', 'chapters', 'ch2', 'assets.json');
+  const manifest = decodeAssetManifest(JSON.parse(readFileSync(file, 'utf8')));
+  if (!manifest.ok) {
+    throw new Error(`${file} does not decode`);
+  }
+  return manifest.value;
+}
+
+/** An image entry of ch2's paid manifest. */
+function ch2Image(id: AssetId): ImageEntry {
+  const entry = ch2Manifest().assets[id];
+  if (entry?.kind !== 'image') {
+    throw new Error(`ch2's paid manifest has no image ${id}`);
   }
   return entry;
 }
@@ -479,6 +507,53 @@ test.describe(() => {
   });
 });
 
+// MEMORY-PLAN M3s: the same LOW phone in a paid chapter it owns loads the gated images' half files.
+
+test.describe(() => {
+  test.use(LOW_PHONE);
+
+  test('scene: a LOW phone loads half-tier files of a paid chapter', async ({ page, request }) => {
+    test.setTimeout(120_000);
+    // Vacuity guards: the build under test gave the gated bg/archive a half under the gated prefix (F3), and the public
+    // stranger a public one.
+    const archive = ch2Image(ARCHIVE);
+    const stranger = ch2Image(STRANGER);
+    expect(archive.half, `${ARCHIVE} in ch2's paid manifest carries a half`).toBeDefined();
+    expect(archive.half?.avif.url, `${ARCHIVE}'s half is a gated file`).toMatch(/^\/api\/assets\//);
+    expect(stranger.half?.avif.url, `${STRANGER}'s half is a public file`).toMatch(/^\/assets\//);
+    const halfUrl = archive.half?.avif.url ?? '';
+    // The purchase as a payment arrives (server-dev's simulated payment through the real webhook), then F4's pending
+    // start of ch2, so Home's Continue opens the owned chapter at its first line.
+    await grantChapter(request, 7009, 'chapter:ch2');
+    await plantPending(request, 7009, 'ch2', CH2_CARRY);
+    const images = requests(page, IMAGE_URL);
+    const answers: Array<[number, string | undefined]> = [];
+    page.on('response', (r) => {
+      if (new URL(r.url()).pathname === halfUrl) {
+        answers.push([r.status(), r.headers()['content-type']]);
+      }
+    });
+
+    await launch(page, 7009);
+    const resume = page.getByRole('button', { name: t('ru', 'tap.continue_story', { story: catalogTitle('manor') }) });
+    await expect(resume).toBeVisible({ timeout: LINE_MS });
+    await resume.tap();
+    await expect(page.locator(`.dialogue[data-line-id="${CH2_FIRST_LINE}"]`)).toBeVisible({ timeout: LINE_MS });
+    await atRest(page);
+    const fetched = paths(images.urls);
+    console.log(`memory: LOW phone image GETs at ${CH2_FIRST_LINE}: ${fetched.join(', ')}`);
+    expect(fetched, `${ARCHIVE} loads its gated half file`).toContain(halfUrl);
+    const full = Object.values(ch2Manifest().assets).flatMap((e) => (e.kind === 'image' && e.half !== undefined ? [e.avif.url, e.webp.url] : []));
+    expect(fetched.filter((p) => full.includes(p)), 'no full file of a ch2 entry with a half').toEqual([]);
+    // LOW phones get the half tier of paid art: the owner's GETs of the gated half are 200 AVIF.
+    expect(answers, `GET ${halfUrl}`).toContainEqual([200, 'image/avif']);
+    expect(answers.filter(([status]) => status !== 200), `GET ${halfUrl}: no refusal`).toEqual([]);
+    // Principle 0: a player without the entitlement gets a 403 for the same file.
+    const denied = await request.get(halfUrl, { headers: { Authorization: `Bearer ${await devToken(request, 7010)}` } });
+    expect(denied.status(), `GET ${halfUrl} without the entitlement`).toBe(403);
+  });
+});
+
 test.describe(() => {
   test.use({ viewport: { width: 360, height: 740 }, screen: { width: 360, height: 800 }, deviceScaleFactor: 1 });
 
@@ -532,7 +607,12 @@ test.describe(() => {
     await launch(page, 7008);
     await firstLineAtRest(page);
     expect(paths(images.urls), `${ALLY} on its half at ${FIRST_LINE}`).toContain(ally.half?.avif.url);
-    expect(paths(images.urls), `${STRANGER} is not fetched before ${STRANGER_LINE}`).not.toContain(stranger.avif.url);
+    // Neither tier's file: on the half tier the full URL is never fetched before the demotion, so the half URL is the
+    // one this guard can see (M3c review r1 M1).
+    expect(
+      paths(images.urls).filter((p) => p === stranger.avif.url || p === stranger.half?.avif.url),
+      `${STRANGER} is not fetched before ${STRANGER_LINE}`,
+    ).toEqual([]);
     // The host grows past the bound (bg 600 / 1080 = 0.556 > 0.5 at resolution 1): later loads take the full tier.
     await page.setViewportSize({ width: 600, height: 1100 });
     await page.evaluate(() => (window as unknown as M2Window).__tgMock.setViewport(1100));
