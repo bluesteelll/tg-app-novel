@@ -146,10 +146,17 @@ type EngineModule = typeof import('./engine.ts');
 /** The meta controller's module (RULINGS 105): imported after auth, beside the engine; never awaited before the first line. */
 type MetaModule = typeof import('./meta.ts');
 
+/** Boot's stats read after auth (LFL B1): Home's card buttons and the controller share it, one GET per page. */
+export type StatsRead = ReturnType<Endpoints['getStats']>;
+
 /** The meta controller behind its lazy chunk (META-PLAN M27; RULINGS 105): Home, the end and the puzzles reach it here. */
 export type MetaGate = {
   /** The controller once its chunk landed; null before, and after a failed import until a later one lands. */
   current(): MetaController | null;
+  /** Home's card flag (F17): the controller's once it is in, else the endings of boot's own stats read (LFL B1). */
+  hasCard(story: StoryId): boolean;
+  /** Boot's stats read, handed once; Home's card buttons redraw when it answers, and the controller is given it. */
+  stats(read: StatsRead): void;
   /** The controller, importing its chunk when it is not in (one import in flight); null when that import failed. */
   ready(): Promise<MetaController | null>;
   /**
@@ -169,16 +176,22 @@ export type MetaGate = {
  */
 export function createMetaGate(d: {
   load: () => Promise<MetaModule>;
-  make: (m: MetaModule) => MetaController;
+  /** `stats` is boot's read when it was handed (the controller then reads no stats of its own), else null. */
+  make: (m: MetaModule, stats: StatsRead | null) => MetaController;
   note: (key: UiKey) => void;
   /** The stack's root now; compared by identity, since every `setRoot` freezes a new one (ui/screens.ts). */
   root: () => object;
+  /** Home's card buttons follow `hasCard` again (boot's stats read answered). */
+  onCards: () => void;
 }): MetaGate {
   let current: MetaController | null = null;
   let flight: Promise<MetaController | null> | null = null;
   let disposed = false;
   /** Bumped when the session leaves: an ending that waited on the import is dropped. */
   let leaves = 0;
+  let statsRead: StatsRead | null = null;
+  /** The stories with an ending in boot's stats read (F17), for Home before the controller is in. */
+  const ended = new Set<string>();
 
   const ready = (): Promise<MetaController | null> => {
     if (current !== null) {
@@ -187,7 +200,7 @@ export function createMetaGate(d: {
     flight ??= d.load().then(
       (m) => {
         if (!disposed) {
-          current ??= d.make(m);
+          current ??= d.make(m, statsRead);
         }
         return current;
       },
@@ -202,6 +215,24 @@ export function createMetaGate(d: {
 
   return {
     current: () => current,
+    hasCard: (story) => (current !== null ? current.hasCard(story) : ended.has(story)),
+    stats(read) {
+      if (statsRead !== null) {
+        return;
+      }
+      statsRead = read;
+      void read.then((r) => {
+        if (disposed || !r.ok) {
+          return; // F17: no card button until an ending of this session
+        }
+        for (const s of r.value.stories) {
+          if (s.endingsReached.length > 0) {
+            ended.add(s.storyId);
+          }
+        }
+        d.onCards();
+      }); // the read has no caller to answer; Home's buttons show its outcome
+    },
     ready,
     tap(run, o) {
       const m = current;
@@ -280,12 +311,19 @@ export function startApp(tg: TelegramClient): AppHandle {
   const subscriptions: Unsubscribe[] = [];
   let reporter: StatsReporter | null = null;
   let data: BootData | null = null;
+  /** The stats answered (boot's read or the controller's): Home's card buttons follow `gate.hasCard` again. */
+  const redrawCards = (): void => {
+    if (data !== null && screens.view().root.kind === 'home') {
+      vm.cards = cardsOf(data);
+    }
+  };
   const gate = createMetaGate({
     load: () => import('./meta.ts'),
-    make: (m) => {
+    make: (m, stats) => {
       const c = m.createMetaController({
         meta: m.createMetaEndpoints(http), // from the controller's chunk: the meta routes stay out of the entry (RULINGS 137)
         api,
+        stats: () => stats ?? api.getStats(),
         tg,
         screens,
         vm,
@@ -294,17 +332,14 @@ export function startApp(tg: TelegramClient): AppHandle {
         clock: systemClock,
         newId: () => crypto.randomUUID(),
         host: location.host,
-        onCards: () => {
-          if (data !== null && screens.view().root.kind === 'home') {
-            vm.cards = cardsOf(data);
-          }
-        },
+        onCards: redrawCards,
       });
       c.boot();
       return c;
     },
     note: (key) => vm.showToast({ kind: 'note', key, message: t(vm.lang, key), sticky: false }),
     root: () => screens.view().root,
+    onCards: redrawCards,
   });
   let engine: Promise<Game | null> | null = null;
   /** The boot list, handed to the first session that asks; later sessions list again. */
@@ -328,7 +363,7 @@ export function startApp(tg: TelegramClient): AppHandle {
         cover: cover === undefined ? null : { avif: cover.avif.url, webp: cover.webp.url },
         continue: summaryOf(d.list, s.id, 'auto') !== null,
         eager: i < 3,
-        card: gate.current()?.hasCard(s.id) ?? false, // the stats arrive later: the controller's onCards redraws
+        card: gate.hasCard(s.id), // the stats arrive later: their answer redraws (redrawCards)
       };
     });
 
@@ -586,6 +621,8 @@ export function startApp(tg: TelegramClient): AppHandle {
       });
       reporter.flush();
     }
+    // LFL B1: Home's card buttons from boot's own read (its endpoint is in the entry already); the controller gets it too.
+    gate.stats(api.getStats());
     void gate.ready(); // beside the engine; a failure is silent here and imported again by the next meta tap
     showHome(d);
     void engineOf(d); // created ahead of the tap; a failure shows at the tap

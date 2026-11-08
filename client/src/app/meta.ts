@@ -1,9 +1,9 @@
-// The meta controller (META-PLAN "Module API", M9-M14, M19-M24, M27; F16-F23, F28): one per page, created by boot
-// after auth. It owns the LMD services, what the meta overlays render (`vm.meta`), the wallet's one pack purchase flow
-// and the overlays' lazy chunk (prefetched after the first line). An overlay renders a service's state, never a call's
-// own answer (the services order the answers; principle 1), and nothing here unlocks anything: the card, the wallet and
-// the friends are the server's. An epoch, bumped by `closeOverlays`, a root change and `dispose`, drops an answer that
-// would push an overlay over a later screen.
+// The meta controller (META-PLAN "Module API", M9-M14, M19-M24, M27; F16-F23, F28): one per page, created by boot's
+// gate (app/boot.ts says when), with boot's own stats read (LFL B1). It owns the LMD services, what the meta overlays
+// render (`vm.meta`), the wallet's one pack purchase flow and the overlays' lazy chunk (prefetched after the first
+// line). An overlay renders a service's state, never a call's own answer (the services order the answers; principle
+// 1), and nothing here unlocks anything: the card, the wallet and the friends are the server's. An epoch, bumped by
+// `closeOverlays`, a root change and `dispose`, drops an answer that would push an overlay over a later screen.
 import type { Endpoints } from '../api/endpoints.ts';
 import type { Clock } from '../api/http.ts';
 import { metaError } from '../api/meta.ts';
@@ -57,7 +57,7 @@ export type MetaView = {
 };
 
 export interface MetaController {
-  /** The boot reads at once (social, wallet, stats, and the launch link's invite); never awaited (F17, F19). */
+  /** The boot reads at once (social, wallet, boot's stats read, and the launch link's invite); never awaited (F17, F19). */
   boot(): void;
   /** An ending of `story` in the stats, or reached in this session (F17). */
   hasCard(story: StoryId): boolean;
@@ -116,7 +116,9 @@ export interface MetaController {
 
 export type MetaDeps = {
   meta: MetaEndpoints;
-  api: Pick<Endpoints, 'getStats' | 'createInvoice' | 'getOrder'>;
+  api: Pick<Endpoints, 'createInvoice' | 'getOrder'>;
+  /** Boot's stats read after auth (LFL B1): the answer Home's card buttons came from, so one stats GET per page. */
+  stats: () => ReturnType<Endpoints['getStats']>;
   tg: Pick<TelegramClient, 'supportsShareMessage' | 'shareMessage' | 'openTelegramLink' | 'openLink' | 'startParam' | 'openInvoice'>;
   screens: Pick<Screens, 'push' | 'close' | 'view'>;
   vm: ViewModel;
@@ -475,7 +477,7 @@ export function createMetaController(d: MetaDeps): MetaController {
     boot() {
       void socialSync.soft();
       void walletSync.soft();
-      void d.api.getStats().then((r) => {
+      void d.stats().then((r) => {
         if (!alive || !r.ok) {
           return; // F17: no card button until an ending of this session
         }

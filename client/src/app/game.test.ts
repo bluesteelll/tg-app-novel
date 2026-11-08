@@ -9,6 +9,7 @@ import { compileChapter } from '../../scripts/story/compile.ts';
 import { GLOBALS_PATH } from '../../scripts/story/lint.ts';
 import type { Decoder } from '../api/decode.ts';
 import { createEndpoints } from '../api/endpoints.ts';
+import type { Endpoints } from '../api/endpoints.ts';
 import { createMetaEndpoints } from '../api/meta.ts';
 import samplesText from '../api/fixtures/dto-samples.json?raw';
 import type { AttemptResponse, ProductDto, PuzzleStatus, SaveFull, SaveListResponse, SaveSlot, SaveSummary } from '../api/generated/api.ts';
@@ -2875,8 +2876,10 @@ type MetaRig = {
   land(): Promise<void>;
   /** The import in flight fails. */
   fail(): Promise<void>;
-  /** How often the controller asked Home to redraw its card buttons. */
+  /** How often the gate or the controller asked Home to redraw its card buttons. */
   cards(): number;
+  /** The endpoints over the rig's http: boot's own stats read is made through them (LFL B1). */
+  api: Endpoints;
 };
 
 /** Boot's gate over the harness's view model and stack, wired as boot.ts wires it (its `make` and `note`). */
@@ -2910,6 +2913,10 @@ function metaRig(h: Harness, bind: (gate: MetaGate) => void = () => {}): MetaRig
   let made = 0;
   let cards = 0;
   let flight: { resolve: (m: MetaModule) => void; reject: (e: unknown) => void } | null = null;
+  const api = createEndpoints(http);
+  const redraw = (): void => {
+    cards += 1;
+  };
   const gate = createMetaGate({
     load: () => {
       loads += 1;
@@ -2918,11 +2925,12 @@ function metaRig(h: Harness, bind: (gate: MetaGate) => void = () => {}): MetaRig
       });
     },
     root: () => h.screens.view().root,
-    make: (m) => {
+    make: (m, stats) => {
       made += 1;
       const c = m.createMetaController({
         meta: createMetaEndpoints(http),
-        api: createEndpoints(http),
+        api,
+        stats: () => stats ?? api.getStats(),
         tg: META_TG,
         screens: h.screens,
         vm: h.vm,
@@ -2936,9 +2944,7 @@ function metaRig(h: Harness, bind: (gate: MetaGate) => void = () => {}): MetaRig
         clock: h.clock,
         newId: () => 'id-1',
         host: 'example.test',
-        onCards: () => {
-          cards += 1;
-        },
+        onCards: redraw,
         // The overlays are never rendered here: the controller only hands the module to App.svelte.
         loadUi: () => Promise.resolve({} as MetaUi),
       });
@@ -2946,6 +2952,7 @@ function metaRig(h: Harness, bind: (gate: MetaGate) => void = () => {}): MetaRig
       return c;
     },
     note: (key) => h.vm.showToast({ kind: 'note', key, message: key, sticky: false }),
+    onCards: redraw,
   });
   bind(gate);
   return {
@@ -2972,6 +2979,7 @@ function metaRig(h: Harness, bind: (gate: MetaGate) => void = () => {}): MetaRig
       await settle();
     },
     cards: () => cards,
+    api,
   };
 }
 
@@ -3180,6 +3188,25 @@ test('boot: an ending left before the meta chunk lands still marks its card', as
   m.gate.dispose();
 });
 
+const statsGets = (m: MetaRig): string[] => m.sent.filter((x) => x === 'GET /api/stats');
+
+test("boot: Home card buttons from boot's stats before the meta chunk", async () => {
+  // LFL B1: boot hands the gate its own stats read after auth; Home's card buttons need no controller chunk.
+  const { h, m } = metaHarness();
+  m.gate.stats(m.api.getStats());
+  await settle();
+  // StatsResponse[0]: manor has its endings, tide none.
+  expect([m.gate.hasCard(MANOR), m.gate.hasCard(TIDE), m.cards(), m.loads()]).toEqual([true, false, 1, 0]);
+  // The chunk lands: the controller answers from now on (an ending of this session, which boot's read lacks), and it
+  // was handed the same read, so the page made one stats GET in all.
+  void m.gate.ready();
+  await m.land();
+  m.gate.current()?.endingReached(TIDE);
+  expect([m.gate.hasCard(MANOR), m.gate.hasCard(TIDE), m.made(), statsGets(m)]).toEqual([true, true, 1, ['GET /api/stats']]);
+  h.game.dispose();
+  m.gate.dispose();
+});
+
 /** Longer than any retry timer a gate could hide (RULINGS 105: never on a timer). */
 const LONG_WAIT_MS = 10 * 60_000;
 /** A root that never changes: the gate's waiting taps all run. */
@@ -3198,6 +3225,7 @@ test('boot: a waiting meta tap is dropped when the root changes', async () => {
       make: () => ctl,
       note: (key) => notes.push(key),
       root: () => root,
+      onCards: () => {},
     });
   // 1. A Friends tap waits on the chunk while the player goes Home -> a story -> Home: another root (identity, not
   // kind), so the tap is dropped when the chunk lands, with no toast; the chunk stays in for the next tap.
@@ -3254,6 +3282,7 @@ test('boot: meta chunk import retried by the next tap, single flight', async () 
       },
       note: (key) => notes.push(key),
       root: () => ROOT,
+      onCards: () => {},
     });
     // The boot's import fails silently, and nothing imports again without a tap, however long the page stays open.
     void gate.ready();
@@ -3296,6 +3325,7 @@ test('boot: meta chunk import retried by the next tap, single flight', async () 
       },
       note: (key) => notes.push(key),
       root: () => ROOT,
+      onCards: () => {},
     });
     void late.ready();
     const ending = late.port.onEnding(TIDE);
