@@ -418,3 +418,100 @@ test('preload: a family release drops released joins too', async () => {
   expect(h.registry.stats().live).toBe(1);
   expect(h.errors).toEqual([]);
 });
+
+test('preload: a settled join forgets only itself, so its siblings keep their carried slot', async () => {
+  const h = harness('deferred');
+  h.s.setChapter(ch1);
+  const two = LAMP.slice(0, 2);
+  // The handover (QO19): next:ch4 flies two files, the knot's hold joins both, then next:ch4 lets go in the same turn.
+  h.s.preload('next:ch4', two, ch4);
+  h.s.preload('preload:k', two, ch4);
+  h.s.preload('room:r1', [asId('prop/r1')]);
+  h.s.preload('room:r2', [asId('prop/a')]);
+  h.s.releasePreload('next:ch4');
+  expect(h.calls.length).toBe(2);
+  const first = h.calls[0];
+  if (first === undefined) {
+    throw new Error('invariant: the fixture started a load');
+  }
+  h.succeed(first);
+  await flush();
+  // the second lamp file is still carried by its join: one slot for it, one for r1, so r2 waits
+  expect(h.calls.map((c) => c.url)).toEqual([
+    urlOf(ch4, 'bg/lamp'),
+    urlOf(ch4, 'char/keeper/smile'),
+    urlOf(ch1, 'prop/r1'),
+  ]);
+});
+
+test("preload: a join waiting on a stale record's revive carries no slot", async () => {
+  // Its own registry: the loader's revive is deferred, so a live record stays stale while its join waits on it.
+  const calls: Call[] = [];
+  const revives: (() => void)[] = [];
+  const load: LoadImage<Tex> = (ref, signal) =>
+    new Promise((resolve) => {
+      calls.push({ url: ref.url, bytes: ref.bytes, signal, resolve, done: false });
+    });
+  const decodedOf = (url: string, keptBytes: number): Decoded<Tex> => {
+    const e = URLS.get(url);
+    if (e === undefined) {
+      throw new Error('invariant: a fixture url');
+    }
+    const d: Decoded<Tex> = {
+      texture: { url },
+      w: e.w,
+      h: e.h,
+      keptBytes,
+      gen: 1,
+      open: () => false,
+      revive: (gen) =>
+        new Promise((resolve) => {
+          revives.push(() => {
+            d.gen = gen;
+            resolve({ ok: true, value: undefined });
+          });
+        }),
+      release: () => {},
+    };
+    return d;
+  };
+  const registry = createAssetRegistry<Tex>({ load, variant: 'avif', tier: 'full' });
+  const errors: AssetError[] = [];
+  const s = createAssetScheduler({
+    registry,
+    onError: (e) => {
+      errors.push(e);
+    },
+  });
+  s.setChapter(ch1);
+  s.preload('room:r1', [asId('prop/a')]);
+  const a = calls[0];
+  if (a === undefined) {
+    throw new Error('invariant: the fixture started a load');
+  }
+  a.done = true;
+  a.resolve({ ok: true, value: decodedOf(a.url, a.bytes) });
+  await flush();
+  expect(registry.state(asId('prop/a'))).toBe('live');
+  // The context came back: a revive to generation 2 runs; prop/a stays stale until its (deferred) revive resolves.
+  const passes = registry.revive(2, live());
+  await flush();
+  expect(registry.stats().stale).toBe(1);
+  expect(revives.length).toBe(1);
+  // GameSession's hold: the knot's art, one of it resident but stale, the rest not loaded.
+  s.preload('preload:k', [asId('prop/a')]);
+  s.preload('room:r2', [asId('prop/b'), asId('prop/c')]);
+  await flush();
+  expect(calls.map((c) => c.url), 'a revive is no fetch: both slots stay free').toEqual([
+    urlOf(ch1, 'prop/a'),
+    urlOf(ch1, 'prop/b'),
+    urlOf(ch1, 'prop/c'),
+  ]);
+  for (const r of revives) {
+    r();
+  }
+  await passes.all;
+  await flush();
+  expect(errors).toEqual([]);
+  s.destroy();
+});
