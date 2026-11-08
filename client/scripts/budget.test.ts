@@ -495,18 +495,21 @@ describe('budget evaluate', () => {
     };
   }
 
-  test('budget: meta controller chunk counts before the first line', () => {
-    // RULINGS 105: boot import()s the controller after auth, beside the engine. Its chunk is requested before the first
-    // line and counted there, once; the overlays it import()s load later. Neither is the engine's.
+  test('budget: meta controller chunk outside the first line', () => {
+    // RULINGS 149 (LFL): the controller's chunk is requested at the session's first step, a meta tap, an ending, a
+    // launch parameter or Home idle, never on the path that taps Start as soon as it can. The first-line row is the
+    // entry and engine closures; the controller is counted once, through its own row, and the overlays it import()s
+    // load later. Neither is the engine's.
     const rows = evaluate(withMeta(3_500, 6_000), LIMITS);
     expect(rowOf(rows, 'engine closure JS (br)')).toMatchObject({ status: 'PASS', valueBytes: 150_000 });
-    expect(rowOf(rows, 'JS before the first line (br)').valueBytes).toBe(12_000 + 150_000 + 3_500);
+    expect(rowOf(rows, 'JS before the first line (br)').valueBytes).toBe(12_000 + 150_000);
+    expect(rowOf(rows, 'JS before the first line (br)').note).toBe('entry + engine closures');
     expect(rowOf(rows, 'meta controller chunk (br)')).toMatchObject({ status: 'PASS', valueBytes: 3_500 });
     expect(rowOf(rows, 'meta-ui chunk (br)')).toMatchObject({ status: 'PASS', valueBytes: 6_000 });
-    // First-load to the first line counts the controller too, and only it.
+    // First-load to the first line counts neither.
     const plain = assetRows(assetInputs(), withEngine(inputs(), 50_000, 100_000));
     const meta = assetRows(assetInputs(), withMeta(3_500, 6_000));
-    expect((rowOf(meta, 'first-load ch1').valueBytes ?? 0) - (rowOf(plain, 'first-load ch1').valueBytes ?? 0)).toBe(3_500);
+    expect((rowOf(meta, 'first-load ch1').valueBytes ?? 0) - (rowOf(plain, 'first-load ch1').valueBytes ?? 0)).toBe(0);
     // The limit: 6.0 KB br.
     expect(rowOf(evaluate(withMeta(6_000, 6_000), LIMITS), 'meta controller chunk (br)').status).toBe('PASS');
     expect(rowOf(evaluate(withMeta(6_001, 6_000), LIMITS), 'meta controller chunk (br)').status).toBe('FAIL');
