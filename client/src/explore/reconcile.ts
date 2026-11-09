@@ -133,23 +133,47 @@ export function inSectionReach(w: WorldPublicBody, s: WorldState, section: Secti
   return r.result === 'found' ? 'yes' : r.result === 'cap' ? 'cap' : 'no';
 }
 
+type Admitted = { state: WorldState; effects: ExploreEffect[] };
+
+/** The search said 'yes': the outcome stands, S leaves `unproved`, and the save notices the change. */
+function proved(out: Admitted, section: SectionId): Admitted {
+  const state = { ...out.state, unproved: out.state.unproved.filter((x) => x !== section) };
+  const dirty = out.effects.some((e) => e.kind === 'dirty');
+  return { state, effects: dirty ? out.effects : [...out.effects, { kind: 'dirty' }] };
+}
+
+/** The search said 'no' or 'cap': S restarts (a `reset` effect, then `sectionEntry` and its entry effects). */
+function restart(w: WorldPublicBody, s: WorldState, section: SectionId): Admitted {
+  const restarted = reduce(w, resetSection(w, s, section), enter(section));
+  return { state: restarted.state, effects: [{ kind: 'reset', section }, ...restarted.effects] };
+}
+
 /**
- * X9 step 5, the explore controller's only way to enter a section. S not in `unproved`: plain `reduce`. Otherwise
- * enter with `reduce` and search the entered state: 'yes' keeps it, 'no' / 'cap' restarts S (a `reset` effect,
- * then `sectionEntry` and its entry effects). S leaves `unproved` either way.
+ * X9 step 5, the explore controller's way to enter a section with no event knot pending. S not in `unproved`: plain
+ * `reduce`. Otherwise enter with `reduce` and search the entered state: 'yes' keeps it, 'no' / 'cap' restarts S. S
+ * leaves `unproved` either way.
  */
-export function admitSection(w: WorldPublicBody, s: WorldState, section: SectionId): { state: WorldState; effects: ExploreEffect[] } {
+export function admitSection(w: WorldPublicBody, s: WorldState, section: SectionId): Admitted {
   const entered = reduce(w, s, enter(section));
   if (!s.unproved.includes(section)) {
     return entered;
   }
-  if (inSectionReach(w, entered.state, section, RESUME_STATE_CAP) === 'yes') {
-    const state = { ...entered.state, unproved: entered.state.unproved.filter((x) => x !== section) };
-    const dirty = entered.effects.some((e) => e.kind === 'dirty');
-    return { state, effects: dirty ? entered.effects : [...entered.effects, { kind: 'dirty' }] };
+  return inSectionReach(w, entered.state, section, RESUME_STATE_CAP) === 'yes' ? proved(entered, section) : restart(w, s, section);
+}
+
+/**
+ * The event knot's return into section S (engine plan §3.4: step 4 at the first entry, the event return included).
+ * S not in `unproved`, no knot pending, or S not the state's current section: plain `reduce(event-returned)`.
+ * Otherwise the saved state itself is searched, its pending knot included: 'yes' returns as `event-returned` does,
+ * 'no' / 'cap' restarts S (`resetSection` drops the knot, so it never resumes on a reset state). S leaves `unproved`
+ * either way.
+ */
+export function admitEvent(w: WorldPublicBody, s: WorldState, section: SectionId): Admitted {
+  const returned = reduce(w, s, { kind: 'event-returned', section });
+  if (!s.unproved.includes(section) || s.pendingStory.length === 0 || s.section !== section) {
+    return returned;
   }
-  const restarted = reduce(w, resetSection(w, s, section), enter(section));
-  return { state: restarted.state, effects: [{ kind: 'reset', section }, ...restarted.effects] };
+  return inSectionReach(w, s, section, RESUME_STATE_CAP) === 'yes' ? proved(returned, section) : restart(w, s, section);
 }
 
 /** The effects of the trigger a `fired` entry records, or undefined when the current world has no such trigger. */
@@ -285,9 +309,10 @@ function normalize(w: WorldPublicBody, s: WorldState, knots: ReadonlySet<KnotNam
 
 /**
  * The load-time reconcile of X9. The same world version → the state unchanged (the same object). Otherwise steps
- * 1-3 (`normalize`), step 4 (the current section is kept only if the current world can produce it from the section's
- * entry; else it restarts and `reset` names it), and step 5 (every other section joins `unproved`, proved at its
- * next entry by `admitSection`). `dropped` lists every `<field>:<id>` the world no longer has.
+ * 1-3 (`normalize`) and step 5: every section joins `unproved`, the current one included. Step 4 runs at each
+ * section's first entry instead (engine plan §3.4), through `admitSection`, or `admitEvent` when an event knot is
+ * pending, so the load searches nothing and `reset` is always null. `dropped` lists every `<field>:<id>` the world
+ * no longer has.
  */
 export function reconcile(
   w: WorldPublic,
@@ -299,13 +324,7 @@ export function reconcile(
     return { state: s, dropped: [], reset: null };
   }
   const dropped: string[] = [];
-  let state = normalize(w, s, knots, dropped);
-  const current = state.section;
-  let reset: SectionId | null = null;
-  if (current !== null && inSectionReach(w, state, current, RESUME_STATE_CAP) !== 'yes') {
-    state = resetSection(w, state, current);
-    reset = current;
-  }
-  const unproved = [...worldIndex(w).sections.keys()].filter((sid) => sid !== current).sort();
-  return { state: { ...state, unproved }, dropped, reset };
+  const state = normalize(w, s, knots, dropped);
+  const unproved = [...worldIndex(w).sections.keys()].sort();
+  return { state: { ...state, unproved }, dropped, reset: null };
 }

@@ -718,13 +718,15 @@ test('reconcile: unprovable state restarts the section', () => {
   const s = run(v1, EMPTY_WORLD_STATE, enterAction('manor'), tap('hall.to_cellar'), returned('manor'), tap('cellar.star')).state;
   expect(inSectionReach(v2, s, MANOR, RESUME_STATE_CAP)).toBe('no');
   const r = reconcile(v2, s, MANOR_KNOTS, V1);
-  expect(r.reset).toBe('manor');
-  expect(r.state.section).toBeNull();
-  expect(r.state.room).toBeNull();
-  expect(r.state.held).toEqual([]);
-  expect(r.state.taken).toEqual([]);
-  expect(r.state.fired).toEqual([]);
-  expect(reduce(v2, frozen(r.state), enterAction('manor')).state).toEqual(sectionEntry(v2, EMPTY_WORLD_STATE, MANOR));
+  // The load searches nothing (engine plan §3.4): the section restarts at its first entry.
+  expect(r.reset).toBeNull();
+  expect(r.state.unproved).toEqual(['manor']);
+  const a = admitSection(v2, frozen(r.state), MANOR);
+  expect(a.effects[0]).toEqual({ kind: 'reset', section: 'manor' });
+  expect(a.state.held).toEqual([]);
+  expect(a.state.taken).toEqual([]);
+  expect(a.state.fired).toEqual([]);
+  expect(a.state).toEqual(sectionEntry(v2, EMPTY_WORLD_STATE, MANOR));
 });
 
 /** The round-2 triage world: a lever opens the vault in v1; in v2 the altar does, and the vault has a shrine. */
@@ -755,13 +757,17 @@ test('reconcile: a dead end reachable from the reconciled state restarts the sec
   expect(s.open).toEqual(['hall.to_vault']);
   const v2 = stamped(temple(2), V2);
   const r = reconcile(v2, s, new Set([kn('temple_out')]), V1);
-  expect(r.reset).toBe('temple');
+  expect(r.reset).toBeNull();
   expect(r.dropped).toEqual(['fired:then:hall.lever']);
-  expect(r.state.section).toBeNull();
-  expect(r.state.open).toEqual([]);
-  expect(r.state.unproved).toEqual([]);
+  // Kept as saved until the section's first entry proves it.
+  expect(r.state.section).toBe('temple');
+  expect(r.state.open).toEqual(['hall.to_vault']);
+  expect(r.state.unproved).toEqual(['temple']);
+  const a = admitSection(v2, frozen(r.state), TEMPLE);
+  expect(a.effects[0]).toEqual({ kind: 'reset', section: 'temple' });
+  expect(a.state.open).toEqual([]);
   // The restart is the state the build proved.
-  expect(reduce(v2, frozen(r.state), enterAction('temple')).state).toEqual(sectionEntry(v2, EMPTY_WORLD_STATE, TEMPLE));
+  expect(a.state).toEqual(sectionEntry(v2, EMPTY_WORLD_STATE, TEMPLE));
 });
 
 test("reconcile: reset section fires the start room's onEnter on resume", () => {
@@ -783,11 +789,12 @@ test("reconcile: reset section fires the start room's onEnter on resume", () => 
   const s = run(crypt(1), EMPTY_WORLD_STATE, enterAction('crypt'), tap('tomb.torch')).state;
   const v2 = stamped(crypt(2), V2);
   const r = reconcile(v2, s, new Set([kn('crypt_out')]), V1);
-  expect(r.reset).toBe('crypt');
-  const resumed = reduce(v2, frozen(r.state), enterAction('crypt'));
+  expect(r.reset).toBeNull();
+  const resumed = admitSection(v2, frozen(r.state), sec('crypt'));
   expect(resumed.effects).toContainEqual({ kind: 'got', gift: { item: 'torch' } });
   expect(resumed.state.held).toEqual(['torch']);
-  expect(resumed.effects[0]).toEqual({ kind: 'room', room: 'tomb', sfx: null });
+  expect(resumed.effects[0]).toEqual({ kind: 'reset', section: 'crypt' });
+  expect(resumed.effects[1]).toEqual({ kind: 'room', room: 'tomb', sfx: null });
   expect(exitable(v2, resumed.state, sec('crypt'))).toBe(true);
 });
 
@@ -838,7 +845,8 @@ test('reconcile: a version change marks every other section unproved and keeps t
   expect(s.section).toBe('yard');
   const v2 = stamped(house(2, true), V2);
   const r = reconcile(v2, s, HOUSE_KNOTS, V1);
-  expect(r.state.unproved).toEqual(['house']);
+  // The current section is marked too: its proof waits for its first entry like every other's (engine plan §3.4).
+  expect(r.state.unproved).toEqual(['house', 'yard']);
   expect(r.reset).toBeNull();
   expect(r.state.section).toBe('yard');
   expect(r.state.room).toBe('yard');
@@ -846,6 +854,21 @@ test('reconcile: a version change marks every other section unproved and keeps t
   expect(r.state.open).toEqual(['hall.to_vault']);
   const admitted = admitSection(v2, frozen({ ...r.state, section: null }), sec('house'));
   expect(admitted.effects[0]).toEqual({ kind: 'reset', section: 'house' });
+});
+
+test('reconcile: a re-versioned save leaves every section unproved', () => {
+  // A save the new world can produce: only `unproved` changes, the current section included.
+  const provable = reconcile(stamped(manor(), V2), at('hall'), MANOR_KNOTS, V1);
+  expect(provable.state.unproved).toEqual(['manor']);
+  expect(provable.reset).toBeNull();
+  expect([provable.state.section, provable.state.room]).toEqual(['manor', 'hall']);
+  // One it cannot (the cellar behind v2's lever door): the load keeps it as saved and searches nothing.
+  const v2 = stamped(manor({ leverCellar: true }), V2);
+  const s = run(manor(), EMPTY_WORLD_STATE, enterAction('manor'), tap('hall.to_cellar'), returned('manor'), tap('cellar.star')).state;
+  const r = reconcile(v2, s, MANOR_KNOTS, V1);
+  expect(r.reset).toBeNull();
+  expect([r.state.section, r.state.room]).toEqual(['manor', 'cellar']);
+  expect(r.state.unproved).toEqual(['manor']);
 });
 
 // ---------------------------------------------------------------------------------------------------------------

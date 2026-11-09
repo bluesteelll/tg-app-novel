@@ -5,6 +5,7 @@ import { expect, test } from 'vitest';
 
 import { compileChapter } from '../../scripts/story/compile.ts';
 import { GLOBALS_PATH } from '../../scripts/story/lint.ts';
+import { admitSection } from '../explore/reconcile.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { WorldState } from '../explore/state.ts';
 import { decodeWorldPublic } from '../world/decode.ts';
@@ -17,7 +18,7 @@ import { StoryRunner, liveRunners } from './runner.ts';
 import type { RunnerError, RunnerStep } from './runner.ts';
 import type { SaveBodyV1 } from './save-codec.ts';
 import { EMPTY_SNAPSHOT } from './staging.ts';
-import type { AssetIndex, ChapterId, KnotName, StagingSnapshot, StoryVersion, VarName } from './staging.ts';
+import type { AssetIndex, ChapterId, KnotName, SectionId, StagingSnapshot, StoryVersion, VarName } from './staging.ts';
 
 // The fixtures name their ids directly; each matches its grammar.
 const CH1 = 'ch1' as ChapterId;
@@ -326,6 +327,8 @@ function yardWorld(version: string): WorldPublic {
   return w.value;
 }
 
+const YARD = 'yard' as SectionId;
+
 test('resume: every level reconciles the world', () => {
   const W_SAVED = '0000000000000000';
   const W_NOW = 'aaaaaaaaaaaaaaaa';
@@ -342,14 +345,19 @@ test('resume: every level reconciles the world', () => {
   const v1 = chapter(STORY_V1, KNOTS, V1, { world });
   const saved = { ...playAndSave(v1, 4), world: unprovable, worldVersion: W_SAVED };
 
+  // The load keeps the save and marks the section unproved; its first entry restarts it (engine plan §3.4).
   const exact = resumed(resume(saved, v1, ASSETS));
   expect(exact.level).toBe('exact');
-  expect(exact.reset).toBe('yard');
+  expect(exact.reset).toBeNull();
+  expect([exact.world.section, exact.world.unproved]).toEqual(['yard', ['yard']]);
+  expect(admitSection(world, exact.world, YARD).effects[0]).toEqual({ kind: 'reset', section: 'yard' });
   exact.runner.dispose();
 
   const checkpoint = resumed(resume(saved, chapter(STORY_V2, KNOTS, V2, { world }), ASSETS));
   expect(checkpoint.level).toBe('checkpoint');
-  expect(checkpoint.reset).toBe('yard');
+  expect(checkpoint.reset).toBeNull();
+  expect([checkpoint.world.section, checkpoint.world.unproved]).toEqual(['yard', ['yard']]);
+  expect(admitSection(world, checkpoint.world, YARD).effects[0]).toEqual({ kind: 'reset', section: 'yard' });
   checkpoint.runner.dispose();
 
   const same = resumed(resume({ ...saved, worldVersion: W_NOW }, v1, ASSETS));
