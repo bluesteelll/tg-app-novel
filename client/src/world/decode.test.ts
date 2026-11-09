@@ -1,5 +1,7 @@
 import { expect, test } from 'vitest';
 
+import type { IssueReport, MechanicData, OwnedRaw } from '../mechanics/contract.ts';
+import { MECHANIC_DATA } from '../mechanics/data/index.ts';
 import { PUZZLE_TYPES } from '../puzzles/rules/index.ts';
 import type { PuzzleTypeData } from '../puzzles/rules/index.ts';
 import type { ChapterId, LineId, PuzzleLocalId, SectionId } from '../story/staging.ts';
@@ -328,7 +330,7 @@ test('toPublic: strips solution and hints, keeps tier count', () => {
   expect(text).not.toContain('"hints"');
   expect(text).not.toContain('ch1.drawer.h1aa');
   const back = decodeWorldPublic({ ...structuredClone(pub), version: '0123456789abcdef' });
-  expect(back).toEqual({ ok: true, value: { ...pub, version: '0123456789abcdef' } });
+  expect(back).toEqual({ ok: true, value: { ...pub, version: '0123456789abcdef', mods: { core: null } } });
 });
 
 test('toServer: answer shape from the type rules', () => {
@@ -401,4 +403,106 @@ test("toServer: a fixture type's answer shape comes from the types its world was
   });
   // Without them the emitter knows PUZZLE_TYPES only, as production does.
   expect(() => toServer(r.value, {}, chapter)).toThrow("invariant: the story tool decodes its worlds with PUZZLE_TYPES, not 'chime'");
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The composed decoder (engine plan §3.2): owned keys reach their module as `OwnedAt`s, unowned keys stay unknown
+
+const HALL = 'sections.manor.rooms.hall';
+const GATE = `${HALL}.hotspots.2`;
+const SAY = t('ch1.manor.sy01', 'Тихо.');
+
+/**
+ * A fixture data half owning one key per place: its data is the `OwnedAt`s it got, a `say` decoded through the kernel's
+ * text decoder (`DecodeCtx.text`); `encode` gives them back.
+ */
+const PROBE: MechanicData<'probe', OwnedRaw> = {
+  id: 'probe',
+  rules: 'none',
+  owns: { world: ['probe_w'], item: ['probe_i'], room: ['probe_r'], hotspot: ['say'], slot: ['probe_s'], effect: ['probe_e'] },
+  decode: (raw, ctx) => {
+    const error: WorldIssue[] = [];
+    const report: IssueReport = (path, reason, detail) => {
+      error.push({ path, reason, detail });
+    };
+    const value = raw.map((a) => (Object.hasOwn(a.raw, 'say') ? { ...a, raw: { ...a.raw, say: ctx.text(a.raw['say'], `${a.path}.say`, report) } } : a));
+    return error.length === 0 ? { ok: true, value } : { ok: false, error };
+  },
+  encode: (d) => d,
+  normalize: (_w, s) => s,
+};
+const PROBED = { mechanics: [...MECHANIC_DATA, PROBE] };
+
+/** The manor with one key of the probe at each place: the effect in the middle of the gate lock's onFail. */
+function probed(): Record<string, unknown> {
+  const raw = manorSource();
+  raw['probe_w'] = 1;
+  node(raw, 'items.medal_sun')['probe_i'] = 2;
+  node(raw, HALL)['probe_r'] = 3;
+  node(raw, `${GATE}.lock.slots.0`)['probe_s'] = 4;
+  const onFail = node(raw, `${GATE}.lock`)['onFail'] as unknown[]; // the fixture's effect list
+  onFail.splice(1, 0, { probe_e: 5 });
+  node(raw, `${HALL}.hotspots.3`)['say'] = SAY;
+  return raw;
+}
+
+test('world: an owned key reaches its module and nothing else', () => {
+  const r = decodeWorldSource(probed(), PROBED);
+  expect(issues(r)).toEqual([]);
+  if (!r.ok) {
+    throw new Error('invariant: no issue, so the world decoded');
+  }
+  const w = r.value;
+  const mods: Readonly<Record<string, unknown>> = w.mods;
+  // In walk order: the world, the items, then per room the room, its triggers, its hotspots with their locks.
+  const owned = [
+    { place: 'world', id: '', path: '', raw: { probe_w: 1 } },
+    { place: 'item', id: 'medal_sun', path: 'items.medal_sun', raw: { probe_i: 2 } },
+    { place: 'room', id: 'hall', path: HALL, raw: { probe_r: 3 } },
+    { place: 'slot', id: 'hall.gate#0', path: `${GATE}.lock.slots.0`, raw: { probe_s: 4 } },
+    { place: 'effect', id: 'fail:hall.gate#1', path: `${GATE}.lock.onFail.1`, raw: { probe_e: 5 } },
+    { place: 'hotspot', id: 'hall.inscription', path: `${HALL}.hotspots.3`, raw: { say: SAY } },
+  ];
+  expect(mods['probe']).toEqual(owned);
+  expect(mods['core']).toBeNull();
+  expect(Object.keys(mods)).toEqual(['core', 'probe']);
+  // The kernel value is the plain manor's: no place keeps an owned key, the gate's onFail keeps its two kernel effects.
+  expect(w).toEqual({ ...decoded(), mods: w.mods });
+  // Emission puts every key back where it was written, after the kernel's keys, and the effect at its source index.
+  const body = toPublic(w, PROBED);
+  const expected = structuredClone(toPublic(decoded())) as unknown as Record<string, unknown>; // the plain public body, as JSON
+  expected['probe_w'] = 1;
+  node(expected, 'items.medal_sun')['probe_i'] = 2;
+  node(expected, HALL)['probe_r'] = 3;
+  node(expected, `${GATE}.lock.slots.0`)['probe_s'] = 4;
+  (node(expected, `${GATE}.lock`)['onFail'] as unknown[]).splice(1, 0, { probe_e: 5 }); // the body's effect list
+  node(expected, `${HALL}.hotspots.3`)['say'] = SAY;
+  expect(JSON.stringify(body)).toBe(JSON.stringify(expected));
+  // The source world is untouched, and its public decode gives the module the same data.
+  expect(w).toEqual({ ...decoded(), mods: w.mods });
+  const back = decodeWorldPublic({ ...structuredClone(body), version: '0123456789abcdef' }, PROBED);
+  const backMods: Readonly<Record<string, unknown>> | undefined = back.ok ? back.value.mods : undefined;
+  expect(backMods?.['probe']).toEqual(owned);
+  // Decoded with the probe but holding none of its keys, the world emits today's body.
+  const plain = decodeWorldSource(manorSource(), PROBED);
+  expect(plain.ok && JSON.stringify(toPublic(plain.value, PROBED))).toBe(JSON.stringify(toPublic(decoded())));
+});
+
+test('world: an unowned key is still refused', () => {
+  expect(issues(decodeWorldSource(probed()))).toEqual(
+    [
+      'probe_w shape',
+      'items.medal_sun.probe_i shape',
+      `${HALL}.probe_r shape`,
+      `${GATE}.lock.slots.0.probe_s shape`,
+      `${GATE}.lock.onFail.1 shape`,
+      `${HALL}.hotspots.3.say shape`,
+    ].sort(),
+  );
+  // A key the probe owns at one place is an unknown key at every other.
+  const raw = manorSource();
+  node(raw, 'items.medal_sun')['say'] = SAY;
+  node(raw, `${HALL}.hotspots.3`)['probe_i'] = 2;
+  node(raw, `${HALL}.hotspots.0`)['probe_e'] = 5;
+  expect(issues(decodeWorldSource(raw, PROBED))).toEqual(['items.medal_sun.say shape', `${HALL}.hotspots.3.probe_i shape`, `${HALL}.hotspots.0.probe_e shape`].sort());
 });

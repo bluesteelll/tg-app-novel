@@ -9,6 +9,8 @@ import { expect, test } from 'vitest';
 import { RESUME_STATE_CAP } from '../../src/explore/reduce.ts';
 import type { Step } from '../../src/explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../../src/explore/state.ts';
+import type { IssueReport, MechanicData, OwnedAt, OwnedRaw } from '../../src/mechanics/contract.ts';
+import { MECHANIC_DATA } from '../../src/mechanics/data/index.ts';
 import { searchSection, sectionEntry } from '../../src/mechanics/rules/search.ts';
 import type { SearchOptions } from '../../src/mechanics/rules/search.ts';
 import { PUZZLE_TYPES } from '../../src/puzzles/rules/index.ts';
@@ -17,6 +19,7 @@ import { assetIndex, decodeAssetCatalog } from '../../src/story/catalog.ts';
 import type { AssetCatalog } from '../../src/story/catalog.ts';
 import type { ChapterId, KnotName, PuzzleLocalId, SectionId, VarName } from '../../src/story/staging.ts';
 import { decodeWorldSource, toPublic } from '../../src/world/decode.ts';
+import type { DecodeOptions, WorldIssue } from '../../src/world/decode.ts';
 import { compileChapter } from './compile.ts';
 import { buildGraph } from './graph.ts';
 import type { ChapterGraph, GraphFacts, WorldRef } from './graph.ts';
@@ -1233,4 +1236,60 @@ test("story: the build's answer bound never exceeds the server's MAX_ANSWER_LEN"
   const m = /pub const MAX_ANSWER_LEN: usize = (\d+);/.exec(rust);
   expect(m, 'server/src/puzzles/mod.rs: pub const MAX_ANSWER_LEN: usize = <n>;').not.toBeNull();
   expect(MAX_ANSWER_LEN).toBeLessThanOrEqual(Number(m?.[1]));
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM3c: the composed decoder's module texts (engine plan §3.2 "Module texts")
+
+/**
+ * A fixture module owning hotspot `say` (a text) and `uses` (a list of `{ say }`): its data is the `OwnedAt`s it got,
+ * every text decoded through the kernel's line-ID text decoder (`DecodeCtx.text`).
+ */
+const PROBE: MechanicData<'probe', OwnedRaw> = {
+  id: 'probe',
+  rules: 'none',
+  owns: { hotspot: ['say', 'uses'] },
+  decode: (raw, ctx) => {
+    const error: WorldIssue[] = [];
+    const report: IssueReport = (path, reason, detail) => {
+      error.push({ path, reason, detail });
+    };
+    const value = raw.map((a): OwnedAt => {
+      const out: Record<string, unknown> = { ...a.raw };
+      if (Object.hasOwn(a.raw, 'say')) {
+        out['say'] = ctx.text(a.raw['say'], `${a.path}.say`, report);
+      }
+      if (Object.hasOwn(a.raw, 'uses')) {
+        out['uses'] = list(a.raw['uses']).map((u, i) => ({ say: ctx.text(u['say'], `${a.path}.uses.${i}.say`, report) }));
+      }
+      return { ...a, raw: out };
+    });
+    return error.length === 0 ? { ok: true, value } : { ok: false, error };
+  },
+  encode: (d) => d,
+  normalize: (_w, s) => s,
+};
+const PROBED: DecodeOptions = { mechanics: [...MECHANIC_DATA, PROBE] };
+
+test("world: a module text decodes with the kernel's line-ID rule", () => {
+  const sayOn = (say: Json): { w: Json; findings: Finding[] } => {
+    const w = base();
+    spot(w, 'hall', 'inscription')['say'] = say;
+    return { w, findings: decodeWorldFile({ file: FILE, text: `${JSON.stringify(w, null, 2)}\n` }, PROBED).findings };
+  };
+  // A module text without its ID: `id/missing` at the text's source line, as a kernel text's.
+  const missing = sayOn({ ru: 'Тихо.' });
+  expect(missing.findings).toEqual([
+    {
+      code: 'id/missing',
+      severity: 'E',
+      file: FILE,
+      line: jsonLine(missing.w, '"say": {'),
+      message: 'sections.manor.rooms.hall.hotspots.2.say.id: missing: every world text carries a line ID (STAGING-DSL §4)',
+    },
+  ]);
+  const malformed = sayOn({ id: 'ch1.Manor.sy01', ru: 'Тихо.' });
+  expect(malformed.findings.map((f) => `${f.code} ${f.line}`)).toEqual([`id/format ${jsonLine(malformed.w, '"id": "ch1.Manor.sy01"')}`]);
+  // The control: a text with its ID decodes, and only the probe's registry admits the key.
+  expect(sayOn({ id: 'ch1.manor.sy01', ru: 'Тихо.' }).findings).toEqual([]);
 });

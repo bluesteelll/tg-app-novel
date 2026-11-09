@@ -14,7 +14,7 @@ import type { PuzzleTypeData } from '../../src/puzzles/rules/index.ts';
 import type { AssetCatalog } from '../../src/story/catalog.ts';
 import type { KnotName, PuzzleLocalId, Rect, SectionId, VarName } from '../../src/story/staging.ts';
 import { decodeWorldSource, toPublic } from '../../src/world/decode.ts';
-import type { WorldIssue } from '../../src/world/decode.ts';
+import type { DecodeOptions, WorldIssue } from '../../src/world/decode.ts';
 import type {
   DocId,
   Effect,
@@ -214,14 +214,15 @@ function issueCode(issue: WorldIssue, raw: unknown): LintCode {
 
 /**
  * Decodes `story/<ch>/world.json` (`file` is the findings' file): the world, or null with every issue as a finding
- * (`world/schema`, `world/hint-count`, `id/missing`, `id/format`), never the first only.
+ * (`world/schema`, `world/hint-count`, `id/missing`, `id/format`), never the first only. `o`: the registries to decode
+ * with (a test's fixture module beside the real ones; a module text's issues map as a kernel text's).
  */
-export function decodeWorldFile(f: { file: string; text: string }): { world: WorldSource | null; findings: Finding[] } {
+export function decodeWorldFile(f: { file: string; text: string }, o: DecodeOptions = {}): { world: WorldSource | null; findings: Finding[] } {
   const parsed = parseJson(f.text);
   if (!parsed.ok) {
     return { world: null, findings: [finding('world/schema', f.file, 0, `not JSON: ${parsed.error}`)] };
   }
-  const r = decodeWorldSource(parsed.value);
+  const r = decodeWorldSource(parsed.value, o);
   if (r.ok) {
     return { world: r.value, findings: [] };
   }
@@ -668,8 +669,9 @@ export function lintWorld(
     }
   }
 
-  // The soft-lock check per section, then one more search per proved section for what no reachable state touches.
-  const pub = toPublic(w);
+  // The soft-lock check per section, then one more search per proved section for what no reachable state touches. The
+  // proof world carries the decoded `mods`, as the explore controller's does: a module's rules read their data there.
+  const pub = { ...toPublic(w), mods: w.mods };
   const checks = checkWorld(pub, file);
   for (const c of checks) {
     out.push(...c.findings.map((f) => ({ ...f, line: lineOf(lines, `sections.${c.section}`) })));

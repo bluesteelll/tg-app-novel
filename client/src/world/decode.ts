@@ -3,8 +3,15 @@
 // reported once, never the first only (lint `world/schema`). Keys are strict: an unknown key is an issue, and every
 // key of the format is required except `take.then`, `lock.onOpen` and a source puzzle's `clues` (default []), and the
 // world's `renamed` (absent = none).
+// The composed decoder (engine plan §3.2): a place (the world, an item, a room, a hotspot, a slot, an effect) also
+// admits the keys the data registry's modules own there; each owned value goes to its module's `decode` as an
+// `OwnedAt` with its source path, the results to `world.mods`, and `toPublic` writes them back through `encode`. A key
+// owned at one place is still unknown at every other.
 // References between ids (an exit's room, a slot's item, a clue's fact) are not resolved here: that is
 // `world/unknown-ref` (LW3) and `world/clue-reachable` (GM1d). Pure (X4).
+import type { DecodeCtx, OwnedAt, Place } from '../mechanics/contract.ts';
+import { MECHANIC_DATA } from '../mechanics/data/index.ts';
+import type { DataRegistry } from '../mechanics/data/index.ts';
 import { PUZZLE_TYPES, puzzleInstance } from '../puzzles/rules/index.ts';
 import type { PuzzleTypeData, PuzzleTypes } from '../puzzles/rules/index.ts';
 import { KNOT_NAME_RE } from '../story/catalog.ts';
@@ -49,6 +56,7 @@ import type {
   ServerPuzzle,
   ServerPuzzleContent,
   SourcePuzzle,
+  WorldMods,
   WorldPublic,
   WorldPublicBody,
   WorldSource,
@@ -71,6 +79,17 @@ type Reason = WorldIssue['reason'];
 type Report = (path: string, reason: Reason, detail: string) => void;
 /** A decoder returns undefined exactly when it reported at least one issue; null is a valid value of its own. */
 type Decoder<T> = (v: unknown, path: string, report: Report) => T | undefined;
+/** A list or record entry's decoder: it also gets the entry's index or key. */
+type Entry<T, K> = (v: unknown, path: string, report: Report, key: K) => T | undefined;
+
+/**
+ * One decode's view of its data registry (the composed decoder): the keys the modules own at a place, admitted beside
+ * the kernel's, and `take`, which hands a place object's owned keys to their modules (`OwnedAt`, in walk order).
+ */
+type Owners = {
+  readonly keys: (place: Place) => readonly string[];
+  readonly take: (place: Place, id: string, path: string, v: Raw) => void;
+};
 
 // PUZZLES-PLAN "Identifiers"; the same pattern as story/catalog.ts's private one. It rules out `__proto__`.
 const ID_RE = /^[a-z][a-z0-9_]*$/;
@@ -141,7 +160,7 @@ function nullable<T>(decode: Decoder<T>): Decoder<T | null> {
   return (v, path, report) => (v === null ? null : decode(v, path, report));
 }
 
-function list<T>(item: Decoder<T>): Decoder<T[]> {
+function list<T>(item: Entry<T, number>): Decoder<T[]> {
   return (v, path, report) => {
     if (!Array.isArray(v)) {
       report(path, 'shape', 'not an array');
@@ -150,7 +169,7 @@ function list<T>(item: Decoder<T>): Decoder<T[]> {
     const out: T[] = [];
     let ok = true;
     v.forEach((entry: unknown, i) => {
-      const decoded = item(entry, at(path, i), report);
+      const decoded = item(entry, at(path, i), report, i);
       if (decoded === undefined) {
         ok = false;
       } else {
@@ -162,7 +181,7 @@ function list<T>(item: Decoder<T>): Decoder<T[]> {
 }
 
 /** An object keyed by ids: every key must match `keys` (an id; a hotspot key in `renamed.hotspots`). */
-function record<K extends string, T>(entry: Decoder<T>, keys: RegExp = ID_RE): Decoder<Record<K, T>> {
+function record<K extends string, T>(entry: Entry<T, K>, keys: RegExp = ID_RE): Decoder<Record<K, T>> {
   return (v, path, report) => {
     if (!isObject(v)) {
       report(path, 'shape', 'not an object');
@@ -176,7 +195,7 @@ function record<K extends string, T>(entry: Decoder<T>, keys: RegExp = ID_RE): D
         ok = false;
         continue;
       }
-      const decoded = entry(value, at(path, key), report);
+      const decoded = entry(value, at(path, key), report, key as K); // it passed `keys`, the brand's whole contract
       if (decoded === undefined) {
         ok = false;
       } else {
@@ -229,24 +248,37 @@ function text(missingId: Reason): Decoder<WorldText> {
 }
 
 const worldText = text('line-id');
-const effects = list<Effect>((v, path, report) => {
-  const pair = oneKey(v, ['give', 'unlock', 'story'], path, report);
-  if (pair === undefined) {
-    return undefined;
-  }
-  const [kind, value] = pair;
-  const p = at(path, kind);
-  if (kind === 'give') {
-    const give = itemId(value, p, report);
-    return give === undefined ? undefined : { give };
-  }
-  if (kind === 'unlock') {
-    const unlock = matching<HotspotKey>(HOTSPOT_KEY_RE)(value, p, report);
-    return unlock === undefined ? undefined : { unlock };
-  }
-  const story = knotName(value, p, report);
-  return story === undefined ? undefined : { story };
-});
+
+/**
+ * A trigger's effects. An effect whose one key a module owns goes to that module as `<trigger>#<its source index>` and
+ * stays out of the kernel's list, which keeps the source order of the rest; issue paths keep source indices.
+ */
+function effects(o: Owners, trigger: string): Decoder<Effect[]> {
+  const own = o.keys('effect');
+  const decode = list<Effect | null>((v, path, report, j) => {
+    const pair = oneKey(v, ['give', 'unlock', 'story', ...own], path, report);
+    if (pair === undefined) {
+      return undefined;
+    }
+    const [kind, value] = pair;
+    const p = at(path, kind);
+    if (own.includes(kind)) {
+      o.take('effect', `${trigger}#${j}`, path, { [kind]: value });
+      return null;
+    }
+    if (kind === 'give') {
+      const give = itemId(value, p, report);
+      return give === undefined ? undefined : { give };
+    }
+    if (kind === 'unlock') {
+      const unlock = matching<HotspotKey>(HOTSPOT_KEY_RE)(value, p, report);
+      return unlock === undefined ? undefined : { unlock };
+    }
+    const story = knotName(value, p, report);
+    return story === undefined ? undefined : { story };
+  });
+  return (v, path, report) => decode(v, path, report)?.filter((e) => e !== null);
+}
 
 const gift: Decoder<Gift> = (v, path, report) => {
   const pair = oneKey(v, ['item', 'doc'], path, report);
@@ -290,146 +322,173 @@ const rect: Decoder<Rect> = (v, path, report) => {
   return [x, y, w, h];
 };
 
-const slot: Decoder<LockSlot> = (v, path, report) => {
-  if (!isObject(v)) {
-    report(path, 'shape', 'not a { accepts } slot');
-    return undefined;
-  }
-  const keysOk = exactKeys(v, ['accepts'], path, report);
-  const accepts = field(v, 'accepts', path, report, itemId);
-  return keysOk && accepts !== undefined ? { accepts } : undefined;
-};
+/** A slot of the lock of hotspot `key`; its id is `<key>#<index>`. */
+function slot(o: Owners, key: string): Entry<LockSlot, number> {
+  const own = o.keys('slot');
+  return (v, path, report, j) => {
+    if (!isObject(v)) {
+      report(path, 'shape', 'not a { accepts } slot');
+      return undefined;
+    }
+    o.take('slot', `${key}#${j}`, path, v);
+    const keysOk = exactKeys(v, ['accepts'], path, report, own);
+    const accepts = field(v, 'accepts', path, report, itemId);
+    return keysOk && accepts !== undefined ? { accepts } : undefined;
+  };
+}
 
-const lock: Decoder<Lock> = (v, path, report) => {
-  if (!isObject(v)) {
-    report(path, 'shape', 'not a lock object (or null)');
-    return undefined;
-  }
-  const keysOk = exactKeys(v, ['slots', 'puzzle', 'locked', 'onFail'], path, report, ['onOpen']);
-  const slots = field(v, 'slots', path, report, list(slot));
-  const puzzle = field(v, 'puzzle', path, report, nullable(matching<PuzzleLocalId>(ID_RE)));
-  const locked = field(v, 'locked', path, report, worldText);
-  const onOpen = Object.hasOwn(v, 'onOpen') ? field(v, 'onOpen', path, report, effects) : [];
-  const onFail = field(v, 'onFail', path, report, effects);
-  if (!keysOk || slots === undefined || puzzle === undefined || locked === undefined || onOpen === undefined || onFail === undefined) {
-    return undefined;
-  }
-  return { slots, puzzle, locked, onOpen, onFail };
-};
+/** The lock of hotspot `key`: its triggers are `open:<key>` and `fail:<key>`. */
+function lock(o: Owners, key: string): Decoder<Lock> {
+  return (v, path, report) => {
+    if (!isObject(v)) {
+      report(path, 'shape', 'not a lock object (or null)');
+      return undefined;
+    }
+    const keysOk = exactKeys(v, ['slots', 'puzzle', 'locked', 'onFail'], path, report, ['onOpen']);
+    const slots = field(v, 'slots', path, report, list(slot(o, key)));
+    const puzzle = field(v, 'puzzle', path, report, nullable(matching<PuzzleLocalId>(ID_RE)));
+    const locked = field(v, 'locked', path, report, worldText);
+    const onOpen = Object.hasOwn(v, 'onOpen') ? field(v, 'onOpen', path, report, effects(o, `open:${key}`)) : [];
+    const onFail = field(v, 'onFail', path, report, effects(o, `fail:${key}`));
+    if (!keysOk || slots === undefined || puzzle === undefined || locked === undefined || onOpen === undefined || onFail === undefined) {
+      return undefined;
+    }
+    return { slots, puzzle, locked, onOpen, onFail };
+  };
+}
 
 const HOTSPOT_COMMON = ['id', 'kind', 'rect', 'label'] as const;
 const propId = nullable(matching<PropId>(ID_RE));
 
-const hotspot: Decoder<Hotspot> = (v, path, report) => {
-  if (!isObject(v)) {
-    report(path, 'shape', 'not a hotspot object');
-    return undefined;
-  }
-  const get = <T>(key: string, decode: Decoder<T>): T | undefined => field(v, key, path, report, decode);
-  const id = get('id', matching<HotspotId>(ID_RE));
-  const r = get('rect', rect);
-  const label = get('label', worldText);
-  const kind = v['kind'];
-  switch (kind) {
-    case 'look': {
-      const keysOk = exactKeys(v, [...HOTSPOT_COMMON, 'look', 'then'], path, report);
-      const look = get('look', worldText);
-      const then = get('then', effects);
-      return keysOk && id !== undefined && r !== undefined && label !== undefined && look !== undefined && then !== undefined
-        ? { id, kind, rect: r, label, look, then }
-        : undefined;
-    }
-    case 'take': {
-      const keysOk = exactKeys(v, [...HOTSPOT_COMMON, 'gives', 'prop'], path, report, ['then']);
-      const gives = get('gives', gift);
-      const prop = get('prop', propId);
-      const then = Object.hasOwn(v, 'then') ? get('then', effects) : [];
-      return keysOk && id !== undefined && r !== undefined && label !== undefined && gives !== undefined && prop !== undefined && then !== undefined
-        ? { id, kind, rect: r, label, gives, prop, then }
-        : undefined;
-    }
-    case 'exit': {
-      const keysOk = exactKeys(v, [...HOTSPOT_COMMON, 'to', 'lock', 'sfx'], path, report);
-      const to = get('to', exitTarget);
-      const lk = get('lock', nullable(lock));
-      const sfx = get('sfx', nullable(matching<SfxId>(ID_RE)));
-      return keysOk && id !== undefined && r !== undefined && label !== undefined && to !== undefined && lk !== undefined && sfx !== undefined
-        ? { id, kind, rect: r, label, to, lock: lk, sfx }
-        : undefined;
-    }
-    case 'object': {
-      const keysOk = exactKeys(v, [...HOTSPOT_COMMON, 'lock', 'then', 'look', 'prop'], path, report);
-      const lk = get('lock', nullable(lock));
-      const then = get('then', effects);
-      const look = get('look', nullable(worldText));
-      const prop = get('prop', propId);
-      return keysOk && id !== undefined && r !== undefined && label !== undefined && lk !== undefined && then !== undefined && look !== undefined && prop !== undefined
-        ? { id, kind, rect: r, label, lock: lk, then, look, prop }
-        : undefined;
-    }
-    default:
-      report(at(path, 'kind'), 'shape', `${show(kind)} is not look, take, exit or object`);
+/** A hotspot of room `room`: its id is its HotspotKey; its `then` is the trigger `then:<key>`. */
+function hotspot(o: Owners, room: RoomId): Decoder<Hotspot> {
+  const own = o.keys('hotspot');
+  return (v, path, report) => {
+    if (!isObject(v)) {
+      report(path, 'shape', 'not a hotspot object');
       return undefined;
-  }
-};
-
-const room: Decoder<Room> = (v, path, report) => {
-  if (!isObject(v)) {
-    report(path, 'shape', 'not a room object');
-    return undefined;
-  }
-  const keysOk = exactKeys(v, ['bg', 'title', 'onEnter', 'hotspots'], path, report);
-  const bg = field(v, 'bg', path, report, matching<BgId>(ID_RE));
-  const title = field(v, 'title', path, report, worldText);
-  const onEnter = field(v, 'onEnter', path, report, effects);
-  const hotspots = field(v, 'hotspots', path, report, list(hotspot));
-  let unique = true;
-  // A HotspotKey names one hotspot only while ids are unique within their room.
-  hotspots?.forEach((h, i) => {
-    if (hotspots.findIndex((o) => o.id === h.id) !== i) {
-      report(at(at(at(path, 'hotspots'), i), 'id'), 'id', `hotspot id '${h.id}' repeats in this room`);
-      unique = false;
     }
-  });
-  if (!keysOk || !unique || bg === undefined || title === undefined || onEnter === undefined || hotspots === undefined) {
-    return undefined;
-  }
-  return { bg, title, onEnter, hotspots };
-};
+    const get = <T>(key: string, decode: Decoder<T>): T | undefined => field(v, key, path, report, decode);
+    const id = get('id', matching<HotspotId>(ID_RE));
+    const key = `${room}.${id ?? ''}`;
+    o.take('hotspot', key, path, v);
+    const then = effects(o, `then:${key}`);
+    const r = get('rect', rect);
+    const label = get('label', worldText);
+    const kind = v['kind'];
+    switch (kind) {
+      case 'look': {
+        const keysOk = exactKeys(v, [...HOTSPOT_COMMON, 'look', 'then'], path, report, own);
+        const look = get('look', worldText);
+        const th = get('then', then);
+        return keysOk && id !== undefined && r !== undefined && label !== undefined && look !== undefined && th !== undefined
+          ? { id, kind, rect: r, label, look, then: th }
+          : undefined;
+      }
+      case 'take': {
+        const keysOk = exactKeys(v, [...HOTSPOT_COMMON, 'gives', 'prop'], path, report, ['then', ...own]);
+        const gives = get('gives', gift);
+        const prop = get('prop', propId);
+        const th = Object.hasOwn(v, 'then') ? get('then', then) : [];
+        return keysOk && id !== undefined && r !== undefined && label !== undefined && gives !== undefined && prop !== undefined && th !== undefined
+          ? { id, kind, rect: r, label, gives, prop, then: th }
+          : undefined;
+      }
+      case 'exit': {
+        const keysOk = exactKeys(v, [...HOTSPOT_COMMON, 'to', 'lock', 'sfx'], path, report, own);
+        const to = get('to', exitTarget);
+        const lk = get('lock', nullable(lock(o, key)));
+        const sfx = get('sfx', nullable(matching<SfxId>(ID_RE)));
+        return keysOk && id !== undefined && r !== undefined && label !== undefined && to !== undefined && lk !== undefined && sfx !== undefined
+          ? { id, kind, rect: r, label, to, lock: lk, sfx }
+          : undefined;
+      }
+      case 'object': {
+        const keysOk = exactKeys(v, [...HOTSPOT_COMMON, 'lock', 'then', 'look', 'prop'], path, report, own);
+        // `then` before the lock: a module's owned values arrive per hotspot as `then`, then the lock's parts.
+        const th = get('then', then);
+        const lk = get('lock', nullable(lock(o, key)));
+        const look = get('look', nullable(worldText));
+        const prop = get('prop', propId);
+        return keysOk && id !== undefined && r !== undefined && label !== undefined && lk !== undefined && th !== undefined && look !== undefined && prop !== undefined
+          ? { id, kind, rect: r, label, lock: lk, then: th, look, prop }
+          : undefined;
+      }
+      default:
+        report(at(path, 'kind'), 'shape', `${show(kind)} is not look, take, exit or object`);
+        return undefined;
+    }
+  };
+}
 
-const section: Decoder<Section> = (v, path, report) => {
-  if (!isObject(v)) {
-    report(path, 'shape', 'not a section object');
-    return undefined;
-  }
-  const keysOk = exactKeys(v, ['start', 'bgm', 'rooms'], path, report);
-  const start = field(v, 'start', path, report, matching<RoomId>(ID_RE));
-  const bgm = field(v, 'bgm', path, report, nullable(matching<TrackId>(ID_RE)));
-  const rooms = field(v, 'rooms', path, report, record<RoomId, Room>(room));
-  return keysOk && start !== undefined && bgm !== undefined && rooms !== undefined ? { start, bgm, rooms } : undefined;
-};
+/** A room: its id is its key; its `onEnter` is the trigger `enter:<room>`. */
+function room(o: Owners): Entry<Room, RoomId> {
+  const own = o.keys('room');
+  return (v, path, report, id) => {
+    if (!isObject(v)) {
+      report(path, 'shape', 'not a room object');
+      return undefined;
+    }
+    o.take('room', id, path, v);
+    const keysOk = exactKeys(v, ['bg', 'title', 'onEnter', 'hotspots'], path, report, own);
+    const bg = field(v, 'bg', path, report, matching<BgId>(ID_RE));
+    const title = field(v, 'title', path, report, worldText);
+    const onEnter = field(v, 'onEnter', path, report, effects(o, `enter:${id}`));
+    const hotspots = field(v, 'hotspots', path, report, list(hotspot(o, id)));
+    let unique = true;
+    // A HotspotKey names one hotspot only while ids are unique within their room.
+    hotspots?.forEach((h, i) => {
+      if (hotspots.findIndex((x) => x.id === h.id) !== i) {
+        report(at(at(at(path, 'hotspots'), i), 'id'), 'id', `hotspot id '${h.id}' repeats in this room`);
+        unique = false;
+      }
+    });
+    if (!keysOk || !unique || bg === undefined || title === undefined || onEnter === undefined || hotspots === undefined) {
+      return undefined;
+    }
+    return { bg, title, onEnter, hotspots };
+  };
+}
+
+function section(o: Owners): Decoder<Section> {
+  return (v, path, report) => {
+    if (!isObject(v)) {
+      report(path, 'shape', 'not a section object');
+      return undefined;
+    }
+    const keysOk = exactKeys(v, ['start', 'bgm', 'rooms'], path, report);
+    const start = field(v, 'start', path, report, matching<RoomId>(ID_RE));
+    const bgm = field(v, 'bgm', path, report, nullable(matching<TrackId>(ID_RE)));
+    const rooms = field(v, 'rooms', path, report, record<RoomId, Room>(room(o)));
+    return keysOk && start !== undefined && bgm !== undefined && rooms !== undefined ? { start, bgm, rooms } : undefined;
+  };
+}
 
 function isGlyph(v: unknown): v is Glyph {
   return GLYPHS.some((g) => g === v);
 }
 
-const item: Decoder<Item> = (v, path, report) => {
-  if (!isObject(v)) {
-    report(path, 'shape', 'not an item object');
-    return undefined;
-  }
-  const keysOk = exactKeys(v, ['name', 'desc', 'glyph'], path, report);
-  const name = field(v, 'name', path, report, worldText);
-  const desc = field(v, 'desc', path, report, worldText);
-  const glyph = field<Glyph>(v, 'glyph', path, report, (g, p, r) => {
-    if (isGlyph(g)) {
-      return g;
+function item(o: Owners): Entry<Item, ItemId> {
+  const own = o.keys('item');
+  return (v, path, report, id) => {
+    if (!isObject(v)) {
+      report(path, 'shape', 'not an item object');
+      return undefined;
     }
-    r(p, 'shape', `${show(g)} is not one of ${GLYPHS.join(', ')}`);
-    return undefined;
-  });
-  return keysOk && name !== undefined && desc !== undefined && glyph !== undefined ? { name, desc, glyph } : undefined;
-};
+    o.take('item', id, path, v);
+    const keysOk = exactKeys(v, ['name', 'desc', 'glyph'], path, report, own);
+    const name = field(v, 'name', path, report, worldText);
+    const desc = field(v, 'desc', path, report, worldText);
+    const glyph = field<Glyph>(v, 'glyph', path, report, (g, p, r) => {
+      if (isGlyph(g)) {
+        return g;
+      }
+      r(p, 'shape', `${show(g)} is not one of ${GLYPHS.join(', ')}`);
+      return undefined;
+    });
+    return keysOk && name !== undefined && desc !== undefined && glyph !== undefined ? { name, desc, glyph } : undefined;
+  };
+}
 
 const doc: Decoder<Doc> = (v, path, report) => {
   if (!isObject(v)) {
@@ -635,7 +694,46 @@ const TOP_OPTIONAL = ['renamed'] as const;
 
 type Decoded<P> = Omit<WorldSource, 'puzzles'> & { readonly puzzles: Readonly<Record<PuzzleLocalId, P>> };
 
-function decodeWorld<P>(raw: Raw, puzzle: Decoder<P>, report: Report): Decoded<P> | undefined {
+/**
+ * The kernel's line-ID text decoder as a module sees it (`DecodeCtx.text`): a text with an issue (reported through the
+ * module's `report`) comes back empty, and the module's error result keeps it out of every decoded world.
+ */
+// The empty ID is no LineId: it stands in only beside a reported issue, so no decoded world ever holds it.
+const CTX: DecodeCtx = { text: (v, path, report) => worldText(v, path, report) ?? { id: '' as LineId, ru: '' } };
+
+/** Every registry module's `decode` over its owned values (`[]` when it owns none present, so `mods` has every id). */
+function decodeMods(mechanics: DataRegistry, owned: readonly OwnedAt[][], report: Report): WorldMods | undefined {
+  const mods: Record<string, unknown> = {};
+  let ok = true;
+  mechanics.forEach((m, i) => {
+    const r = m.decode(owned[i] ?? [], CTX);
+    if (r.ok) {
+      mods[m.id] = r.value;
+    } else {
+      ok = false;
+      for (const e of r.error) {
+        report(e.path, e.reason, e.detail);
+      }
+    }
+  });
+  return ok ? (mods as WorldMods) : undefined; // each registry module's data under its id: ModsOf the registry
+}
+
+/** The world: `top` its required top-level keys, `mechanics` the data registry whose modules own keys in its places. */
+function decodeWorld<P>(raw: Raw, top: readonly string[], puzzle: Decoder<P>, report: Report, mechanics: DataRegistry): Decoded<P> | undefined {
+  const owned = mechanics.map((): OwnedAt[] => []);
+  const o: Owners = {
+    keys: (place) => mechanics.flatMap((m) => m.owns[place] ?? []),
+    take: (place, id, path, v) =>
+      mechanics.forEach((m, i) => {
+        const keys = Object.entries(v).filter(([k]) => m.owns[place]?.includes(k));
+        if (keys.length > 0) {
+          owned[i]?.push({ place, id, path, raw: Object.fromEntries(keys) });
+        }
+      }),
+  };
+  const keysOk = exactKeys(raw, top, '', report, [...TOP_OPTIONAL, ...o.keys('world')]);
+  o.take('world', '', '', raw);
   const get = <T>(key: string, decode: Decoder<T>): T | undefined => field(raw, key, '', report, decode);
   const format = get<1>('format', (f, p, r) => {
     if (f === 1) {
@@ -644,16 +742,17 @@ function decodeWorld<P>(raw: Raw, puzzle: Decoder<P>, report: Report): Decoded<P
     r(p, 'shape', `${show(f)}: the world format is 1`);
     return undefined;
   });
-  const items = get('items', record<ItemId, Item>(item));
+  const items = get('items', record<ItemId, Item>(item(o)));
   const docs = get('docs', record<DocId, Doc>(doc));
   const puzzles = get('puzzles', record<PuzzleLocalId, P>(puzzle));
-  const sections = get('sections', record<SectionId, Section>(section));
+  const sections = get('sections', record<SectionId, Section>(section(o)));
   const renamed = Object.hasOwn(raw, 'renamed') ? get('renamed', renames) : null;
-  if (format === undefined || items === undefined || docs === undefined || puzzles === undefined || sections === undefined || renamed === undefined) {
+  const mods = decodeMods(mechanics, owned, report);
+  if (!keysOk || format === undefined || items === undefined || docs === undefined || puzzles === undefined || sections === undefined || renamed === undefined || mods === undefined) {
     return undefined;
   }
   // An absent `renamed` stays absent: the value (and so the world version) of a world that never renamed is unchanged.
-  return renamed === null ? { format, items, docs, puzzles, sections } : { format, items, docs, puzzles, sections, renamed };
+  return renamed === null ? { format, items, docs, puzzles, sections, mods } : { format, items, docs, puzzles, sections, renamed, mods };
 }
 
 function collect<T>(raw: unknown, decode: (raw: Raw, report: Report) => T | undefined): Result<T, WorldIssue[]> {
@@ -673,25 +772,23 @@ function collect<T>(raw: unknown, decode: (raw: Raw, report: Report) => T | unde
   return { ok: true, value };
 }
 
-/** What a world decoder reads puzzle types from: `PUZZLE_TYPES` unless a test passes a fixture type beside them. */
-export type DecodeOptions = { readonly types?: PuzzleTypes };
+/**
+ * What a world decoder reads puzzle types (`PUZZLE_TYPES`) and the modules that own keys in its places
+ * (`MECHANIC_DATA`) from, unless a test passes fixtures beside them.
+ */
+export type DecodeOptions = { readonly types?: PuzzleTypes; readonly mechanics?: DataRegistry };
 
 /** `story/<ch>/world.json`: puzzles carry `solution` and `hints`. */
 export function decodeWorldSource(raw: unknown, o: DecodeOptions = {}): Result<WorldSource, WorldIssue[]> {
-  return collect(raw, (w, report) => {
-    const keysOk = exactKeys(w, TOP_KEYS, '', report, TOP_OPTIONAL);
-    const world = decodeWorld(w, sourcePuzzle(o.types ?? PUZZLE_TYPES), report);
-    return keysOk ? world : undefined;
-  });
+  return collect(raw, (w, report) => decodeWorld(w, TOP_KEYS, sourcePuzzle(o.types ?? PUZZLE_TYPES), report, o.mechanics ?? MECHANIC_DATA));
 }
 
 /** A public world (story-gen or a paid payload): refuses `solution` / `hints`, requires the stamped `version`. */
 export function decodeWorldPublic(raw: unknown, o: DecodeOptions = {}): Result<WorldPublic, WorldIssue[]> {
   return collect(raw, (w, report): WorldPublic | undefined => {
-    const keysOk = exactKeys(w, [...TOP_KEYS, 'version'], '', report, TOP_OPTIONAL);
-    const world = decodeWorld(w, publicPuzzle(o.types ?? PUZZLE_TYPES), report);
+    const world = decodeWorld(w, [...TOP_KEYS, 'version'], publicPuzzle(o.types ?? PUZZLE_TYPES), report, o.mechanics ?? MECHANIC_DATA);
     const version = field(w, 'version', '', report, matching<string>(VERSION_RE, 'shape'));
-    return keysOk && world !== undefined && version !== undefined ? { ...world, version } : undefined;
+    return world !== undefined && version !== undefined ? { ...world, version } : undefined;
   });
 }
 
@@ -746,17 +843,58 @@ function resolved(r: Renames): Renames | null {
 }
 
 /**
- * The public body (no `version`: LW3's emit stamps it): `solution` and `hints` stripped, the tier count kept, the
- * renames resolved (§5.3). A world with no rename has no `renamed` key, so its value and version are as before.
+ * `node` with `raw` merged into the object at `keys` after its own keys, each object and list on the way copied (the
+ * source world's are never written); with `insert`, `raw` (an effect) goes into the list at `keys` at its last key.
  */
-export function toPublic(w: WorldSource): WorldPublicBody {
+function putBack(node: unknown, keys: readonly string[], raw: Raw, insert: boolean): unknown {
+  const [k, ...rest] = keys;
+  if (k === undefined) {
+    return { ...(node as Raw), ...raw }; // an encoded place: an object of the body
+  }
+  if (Array.isArray(node)) {
+    const copy: unknown[] = [...node];
+    if (insert && rest.length === 0) {
+      copy.splice(Number(k), 0, raw);
+    } else {
+      copy[Number(k)] = putBack(copy[Number(k)], rest, raw, insert);
+    }
+    return copy;
+  }
+  const obj = node as Raw; // an encoded place's path walks the body's objects and lists
+  return { ...obj, [k]: putBack(obj[k], rest, raw, insert) };
+}
+
+/** An owned effect's source index (the last key of its path); -1 for every other place. */
+function effectIndex(a: OwnedAt): number {
+  return a.place === 'effect' ? Number(a.path.slice(a.path.lastIndexOf('.') + 1)) : -1;
+}
+
+/**
+ * The public body (no `version`: LW3's emit stamps it): `solution` and `hints` stripped, the tier count kept, the
+ * renames resolved (§5.3). A world with no rename has no `renamed` key, so its value and version are as before. Each
+ * registry module's `encode(w.mods[id])` goes back into its places (`o.mechanics`: the registry `w` was decoded with):
+ * owned keys after the kernel's keys of their place, an owned effect into its list at its source index. While no world
+ * has a module key every `encode` returns [], and the body is the kernel's own object, byte for byte.
+ */
+export function toPublic(w: WorldSource, o: DecodeOptions = {}): WorldPublicBody {
   const puzzles: Record<PuzzleLocalId, PublicPuzzle> = {};
   for (const [pid, p] of entriesOf(w.puzzles)) {
     puzzles[pid] = { ...makeBody(p, p), hintTiers: tiersOf(p.hints) };
   }
-  const body: WorldPublicBody = { format: 1, items: w.items, docs: w.docs, puzzles, sections: w.sections };
+  const kernel: WorldPublicBody = { format: 1, items: w.items, docs: w.docs, puzzles, sections: w.sections };
   const renamed = w.renamed === undefined ? null : resolved(w.renamed);
-  return renamed === null ? body : { ...body, renamed };
+  const body = renamed === null ? kernel : { ...kernel, renamed };
+  const mods: Readonly<Record<string, unknown>> = w.mods;
+  const owned = (o.mechanics ?? MECHANIC_DATA).flatMap((m) => {
+    if (!Object.hasOwn(mods, m.id)) {
+      throw new Error(`invariant: toPublic takes the registry its world was decoded with, which has no '${m.id}'`);
+    }
+    return m.encode(mods[m.id]);
+  });
+  // Effects in ascending source index (a stable sort keeps the other places first): each lands where it was written.
+  const order = [...owned].sort((a, b) => effectIndex(a) - effectIndex(b));
+  // The modules' keys sit in the body's own places: the result is a WorldPublicBody with them.
+  return order.reduce<unknown>((out, a) => putBack(out, a.path === '' ? [] : a.path.split('.'), a.raw, a.place === 'effect'), body) as WorldPublicBody;
 }
 
 function bilingual(t: WorldText, en: Readonly<Record<LineId, string>>): { ru: string; en: string } {
