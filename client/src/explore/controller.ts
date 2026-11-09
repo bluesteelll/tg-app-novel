@@ -1,17 +1,19 @@
 // The explore controller (docs/PUZZLES-PLAN.md X10, X12, X13, X16 and "Modules"; the LX cut D2-D13): the runtime
 // side of a section. Player actions go through the one reducer, the views it writes are what the explore layer
 // shows, and every reducer effect leaves through `onEffect` to GameSession (app/yields.ts, L15). It reaches the world
-// only through `reduce` / `admitSection` (principle 7) and lives in the explore-ui chunk with the components (X14).
+// only through `reduce` / `admitSection` / `admitEvent` (principle 7) and lives in the explore-ui chunk with the
+// components (X14), the one importer of the rules half (mechanics/rules/, the `rules-lazy` arch rule).
 import { ROOM_SOURCE, cover, minTarget, toStage } from '../geom/cover.ts';
 import type { Size } from '../geom/cover.ts';
+import { reduce } from '../mechanics/rules/core.ts';
+import { admitEvent, admitSection } from '../mechanics/rules/search.ts';
 import type { SceneController } from '../scene/controller.ts';
 import type { AssetManifest } from '../story/catalog.ts';
 import type { AssetId, BgId, SectionId } from '../story/staging.ts';
 import type { Unsubscribe } from '../telegram/index.ts';
 import type { DocView, ExploreViewStore, HotspotView, ItemView, LockView } from '../ui/explore-view.svelte.ts';
 import type { DocId, HotspotKey, ItemId, Lock, RoomId, WorldPublic, WorldText } from '../world/types.ts';
-import { admitSection } from './reconcile.ts';
-import { hotspotKey, lockOf, reduce, worldIndex } from './reduce.ts';
+import { hotspotKey, lockOf, worldIndex } from './reduce.ts';
 import type { ExploreAction, ExploreEffect } from './reduce.ts';
 import { EMPTY_WORLD_STATE } from './state.ts';
 import type { WorldState } from './state.ts';
@@ -23,7 +25,10 @@ export const REVEAL_MS = 2000;
 
 /** Owned by GameSession, one per chapter (PZ "Resource lifetime"). */
 export interface ExploreController {
-  /** An explore yield: `admitSection` with an empty `pendingStory` (an unproved section is proved first, X9), else `event-returned`. */
+  /**
+   * An explore yield: `admitSection` with an empty `pendingStory`, else `admitEvent` (the knot's return); an unproved
+   * section is proved first either way (X9; engine plan §3.4).
+   */
   enter(section: SectionId, state: WorldState): void;
   /** Taps, inserts and puzzle results; `enter-section` / `event-returned` take `enter`'s route, never `reduce` directly. */
   dispatch(a: ExploreAction): void;
@@ -308,10 +313,15 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
     }
   };
 
-  /** D5: the one route into a section; the reducer's `enter-section` is reached only through `admitSection`. */
+  /**
+   * D5: the one route into a section; the reducer's `enter-section` and `event-returned` are reached only through
+   * `admitSection` / `admitEvent`. An event return that restarted the section (a `reset`, which `reduce` never emits)
+   * restarts the path like an entry; a plain return keeps it.
+   */
   const admit = (section: SectionId, s: WorldState): void => {
     if (s.pendingStory.length > 0) {
-      settle(reduce(world, s, { kind: 'event-returned', section }), { kind: 'event' });
+      const out = admitEvent(world, s, section);
+      settle(out, out.effects[0]?.kind === 'reset' ? { kind: 'admit' } : { kind: 'event' });
     } else {
       settle(admitSection(world, s, section), { kind: 'admit' });
     }

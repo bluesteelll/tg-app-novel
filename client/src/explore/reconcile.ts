@@ -1,155 +1,16 @@
-// Saves across story updates (docs/PUZZLES-PLAN.md X9): reconcile a loaded world state with the current world, the
-// one section search shared with the build's soft-lock checker, and the guarded section entry. Never throws on save
-// data. Pure (X4).
+// Saves across story updates (docs/PUZZLES-PLAN.md X9): reconcile a loaded world state with the current world at the
+// load (steps 0-3, every section unproved). Engine code: the section search and the guarded section entries that
+// prove a section at its first entry are the rules half (mechanics/rules/search.ts, engine plan §3.4). Never throws
+// on save data. Pure (X4).
 import type { KnotName, PuzzleLocalId, SectionId } from '../story/staging.ts';
 import type { Effect, HotspotKey, ItemId, RoomId, WorldPublic, WorldPublicBody } from '../world/types.ts';
-import { RESUME_STATE_CAP, lockOf, reduce, sectionKey, sectionScope, successors, worldIndex } from './reduce.ts';
-import type { ExploreAction, ExploreEffect, Successor, WorldIndex } from './reduce.ts';
+import { lockOf, worldIndex } from './reduce.ts';
+import type { WorldIndex } from './reduce.ts';
 import type { PuzzleRun, WorldState } from './state.ts';
 
 /** A record's own entries keyed by its id brand (a save's keys are checked against the world before any use). */
 function entriesOf<K extends string, V>(r: Readonly<Record<K, V>>): Array<[K, V]> {
   return Object.entries(r) as Array<[K, V]>; // keys of a WorldState record are ids of their kind
-}
-
-function outside<T extends string>(list: readonly T[], keys: ReadonlySet<T>): T[] {
-  return list.filter((x) => !keys.has(x));
-}
-
-/**
- * Restarts section S: every key of S's rooms and hotspots leaves taken / examined / open / slots / fired / visited,
- * the runs of S's lock puzzles and the items and docs S gives are removed, `section` and `room` become null,
- * `lastRoom[S]` and `pendingStory` are cleared, and S leaves `unproved`. Callers pass a state whose section is S or
- * null, so the cleared `section` / `room` / `pendingStory` are never another section's.
- */
-export function resetSection(w: WorldPublicBody, s: WorldState, section: SectionId): WorldState {
-  const scope = sectionScope(w, section);
-  const slots: Record<HotspotKey, ReadonlyArray<ItemId | null>> = {};
-  for (const [key, cells] of entriesOf(s.slots)) {
-    if (!scope.hotspots.has(key)) {
-      slots[key] = cells;
-    }
-  }
-  const dropRuns = new Set<PuzzleLocalId>(scope.puzzles);
-  const puzzles: Record<PuzzleLocalId, PuzzleRun> = {};
-  for (const [p, run] of entriesOf(s.puzzles)) {
-    if (!dropRuns.has(p)) {
-      puzzles[p] = run;
-    }
-  }
-  const lastRoom: Record<SectionId, RoomId> = {};
-  for (const [sid, rid] of entriesOf(s.lastRoom)) {
-    if (sid !== section) {
-      lastRoom[sid] = rid;
-    }
-  }
-  return {
-    ...s,
-    section: null,
-    room: null,
-    lastRoom,
-    visited: outside(s.visited, scope.rooms),
-    held: outside(s.held, scope.items),
-    used: outside(s.used, scope.items),
-    docs: outside(s.docs, scope.docs),
-    taken: outside(s.taken, scope.hotspots),
-    examined: outside(s.examined, scope.hotspots),
-    slots,
-    open: outside(s.open, scope.hotspots),
-    fired: outside(s.fired, scope.fired),
-    pendingStory: [],
-    puzzles,
-    unproved: s.unproved.filter((x) => x !== section),
-  };
-}
-
-function enter(section: SectionId): ExploreAction {
-  return { kind: 'enter-section', section };
-}
-
-/** `reduce(w, resetSection(w, s, S), enter-section S).state`: the start of both searches (build: s = empty). */
-export function sectionEntry(w: WorldPublicBody, s: WorldState, section: SectionId): WorldState {
-  return reduce(w, resetSection(w, s, section), enter(section)).state;
-}
-
-export type SearchOptions = {
-  /** Stop with 'found' when a state with this `sectionKey` is discovered. */
-  readonly target?: string;
-  /**
-   * Every edge: `from` and `to` are discovery indices (0 = start); `to` is null for a `leaves` successor, which is a
-   * goal edge and never enqueued; `isNew` marks the edge that discovered `to`.
-   */
-  readonly onEdge?: (from: number, succ: Successor, to: number | null, isNew: boolean) => void;
-};
-export type SearchResult = { readonly result: 'found' | 'exhausted' | 'cap'; readonly states: number };
-
-/**
- * THE section search of the soft-lock checker and the resume (X9 "one cap"): a BFS over `successors` from `start`,
- * deduplicated by `sectionKey(S)`. Discovering a (cap+1)-th distinct state stops with 'cap', so the runtime never
- * searches past a count the build accepted.
- */
-export function searchSection(w: WorldPublicBody, start: WorldState, section: SectionId, cap: number, opts: SearchOptions = {}): SearchResult {
-  const seen = new Map<string, number>();
-  const queue: WorldState[] = [start];
-  const startKey = sectionKey(w, start, section);
-  seen.set(startKey, 0);
-  if (startKey === opts.target) {
-    return { result: 'found', states: 1 };
-  }
-  for (let from = 0; from < queue.length; from++) {
-    const state = queue[from];
-    if (state === undefined) {
-      break;
-    }
-    for (const succ of successors(w, state)) {
-      if (succ.leaves) {
-        opts.onEdge?.(from, succ, null, false);
-        continue;
-      }
-      const key = sectionKey(w, succ.state, section);
-      const known = seen.get(key);
-      if (known !== undefined) {
-        opts.onEdge?.(from, succ, known, false);
-        continue;
-      }
-      if (seen.size + 1 > cap) {
-        return { result: 'cap', states: seen.size };
-      }
-      const to = seen.size;
-      seen.set(key, to);
-      queue.push(succ.state);
-      opts.onEdge?.(from, succ, to, true);
-      if (key === opts.target) {
-        return { result: 'found', states: seen.size };
-      }
-    }
-  }
-  return { result: 'exhausted', states: seen.size };
-}
-
-/** Whether the current world can produce `s` from S's entry: 'yes' when the search meets `sectionKey(s)`. */
-export function inSectionReach(w: WorldPublicBody, s: WorldState, section: SectionId, cap: number): 'yes' | 'no' | 'cap' {
-  const r = searchSection(w, sectionEntry(w, s, section), section, cap, { target: sectionKey(w, s, section) });
-  return r.result === 'found' ? 'yes' : r.result === 'cap' ? 'cap' : 'no';
-}
-
-/**
- * X9 step 5, the explore controller's only way to enter a section. S not in `unproved`: plain `reduce`. Otherwise
- * enter with `reduce` and search the entered state: 'yes' keeps it, 'no' / 'cap' restarts S (a `reset` effect,
- * then `sectionEntry` and its entry effects). S leaves `unproved` either way.
- */
-export function admitSection(w: WorldPublicBody, s: WorldState, section: SectionId): { state: WorldState; effects: ExploreEffect[] } {
-  const entered = reduce(w, s, enter(section));
-  if (!s.unproved.includes(section)) {
-    return entered;
-  }
-  if (inSectionReach(w, entered.state, section, RESUME_STATE_CAP) === 'yes') {
-    const state = { ...entered.state, unproved: entered.state.unproved.filter((x) => x !== section) };
-    const dirty = entered.effects.some((e) => e.kind === 'dirty');
-    return { state, effects: dirty ? entered.effects : [...entered.effects, { kind: 'dirty' }] };
-  }
-  const restarted = reduce(w, resetSection(w, s, section), enter(section));
-  return { state: restarted.state, effects: [{ kind: 'reset', section }, ...restarted.effects] };
 }
 
 /** The effects of the trigger a `fired` entry records, or undefined when the current world has no such trigger. */
@@ -285,9 +146,10 @@ function normalize(w: WorldPublicBody, s: WorldState, knots: ReadonlySet<KnotNam
 
 /**
  * The load-time reconcile of X9. The same world version → the state unchanged (the same object). Otherwise steps
- * 1-3 (`normalize`), step 4 (the current section is kept only if the current world can produce it from the section's
- * entry; else it restarts and `reset` names it), and step 5 (every other section joins `unproved`, proved at its
- * next entry by `admitSection`). `dropped` lists every `<field>:<id>` the world no longer has.
+ * 1-3 (`normalize`) and step 5: every section joins `unproved`, the current one included. Step 4 runs at each
+ * section's first entry instead (engine plan §3.4), through `admitSection`, or `admitEvent` when an event knot is
+ * pending, so the load searches nothing and `reset` is always null. `dropped` lists every `<field>:<id>` the world
+ * no longer has.
  */
 export function reconcile(
   w: WorldPublic,
@@ -299,13 +161,7 @@ export function reconcile(
     return { state: s, dropped: [], reset: null };
   }
   const dropped: string[] = [];
-  let state = normalize(w, s, knots, dropped);
-  const current = state.section;
-  let reset: SectionId | null = null;
-  if (current !== null && inSectionReach(w, state, current, RESUME_STATE_CAP) !== 'yes') {
-    state = resetSection(w, state, current);
-    reset = current;
-  }
-  const unproved = [...worldIndex(w).sections.keys()].filter((sid) => sid !== current).sort();
-  return { state: { ...state, unproved }, dropped, reset };
+  const state = normalize(w, s, knots, dropped);
+  const unproved = [...worldIndex(w).sections.keys()].sort();
+  return { state: { ...state, unproved }, dropped, reset: null };
 }

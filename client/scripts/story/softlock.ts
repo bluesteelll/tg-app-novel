@@ -2,11 +2,12 @@
 // section, every state the player can reach from the section's entry can still reach a `leave`. It runs the
 // runtime's own successor relation and search kernel from the runtime's start, with the runtime's one cap (X4, X9),
 // so the build proves exactly what a resume can meet. LW3 wires it into the story gate. No node:*, like lint.ts.
-import { searchSection, sectionEntry } from '../../src/explore/reconcile.ts';
-import { RESUME_STATE_CAP, actions, reduce } from '../../src/explore/reduce.ts';
+import { RESUME_STATE_CAP } from '../../src/explore/reduce.ts';
 import type { ExploreAction, Step } from '../../src/explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../../src/explore/state.ts';
 import type { WorldState } from '../../src/explore/state.ts';
+import { actions, reduce } from '../../src/mechanics/rules/core.ts';
+import { searchSection, sectionEntry } from '../../src/mechanics/rules/search.ts';
 import type { PuzzleLocalId, SectionId } from '../../src/story/staging.ts';
 import type { WorldPublicBody } from '../../src/world/types.ts';
 import { LINT_CODES } from './lint.ts';
