@@ -952,6 +952,7 @@ function worldSource(ch: string, leave: string): WorldJson {
         giveUp: false,
         solution: [1, 8, 4, 7],
         hints: [t('drawer', 'Год упоминается в письме из кабинета.'), t('drawer', 'Код: один, восемь, четыре, семь.')],
+        clues: [{ doc: 'letter' }],
       },
       cabinet: {
         type: 'code',
@@ -1109,7 +1110,9 @@ test('emit: clues never reach the public world', () => {
   expect(source.puzzles['drawer' as keyof WorldSource['puzzles']]?.clues).toEqual([{ doc: 'letter' }]);
   // Every planned output, the public world and the server puzzle content among them, is the world's without clues.
   const { plan } = emitFixture(LIST, [MANOR], new Map([[CH1_ENTRY.id, source]]));
-  const bare = emitFixture(LIST, [MANOR], new Map([[CH1_ENTRY.id, decodedWorld(worldSource('ch1', 'cafe'))]])).plan;
+  const bareRaw = worldSource('ch1', 'cafe');
+  delete objectAt(bareRaw, 'puzzles.drawer')['clues'];
+  const bare = emitFixture(LIST, [MANOR], new Map([[CH1_ENTRY.id, decodedWorld(bareRaw)]])).plan;
   expect(planned(plan, CH1_WORLD)).toBe(planned(bare, CH1_WORLD));
   expect(planned(plan, 'server/content/puzzles/ch1.json')).toBe(planned(bare, 'server/content/puzzles/ch1.json'));
   expect(plan).toEqual(bare);

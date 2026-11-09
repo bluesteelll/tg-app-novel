@@ -6,15 +6,18 @@ import { readFileSync } from 'node:fs';
 
 import { expect, test } from 'vitest';
 
+import { PUZZLE_TYPES } from '../../src/puzzles/rules/index.ts';
+import type { PuzzleTypeData, PuzzleTypes } from '../../src/puzzles/rules/index.ts';
 import { assetIndex, decodeAssetCatalog } from '../../src/story/catalog.ts';
 import type { AssetCatalog } from '../../src/story/catalog.ts';
 import type { ChapterId, KnotName, PuzzleLocalId, VarName } from '../../src/story/staging.ts';
-import { toPublic } from '../../src/world/decode.ts';
+import { decodeWorldSource, toPublic } from '../../src/world/decode.ts';
 import { compileChapter } from './compile.ts';
 import { buildGraph } from './graph.ts';
 import type { ChapterGraph, GraphFacts, WorldRef } from './graph.ts';
 import { GLOBALS_PATH, LINT_CODES } from './lint.ts';
 import type { Finding, LintCode, Severity, SourceChapter } from './lint.ts';
+import { clueFindings } from './mechanics/clues.ts';
 import { MECHANIC_LINTS } from './mechanics/index.ts';
 import type { MechanicLintCode, WorldLint, WorldLintInput } from './mechanics/index.ts';
 import { PUZZLE_LINTS } from './puzzles/index.ts';
@@ -87,6 +90,7 @@ function base(): Json {
         giveUp: false,
         solution: [1, 8, 4, 7],
         hints: [t('drawer', 'Год упоминается в письме.'), t('drawer', 'Перечитайте письмо из кабинета.'), t('drawer', 'Код: один, восемь, четыре, семь.')],
+        clues: [{ doc: 'letter' }],
       },
       gate: {
         type: 'order',
@@ -98,6 +102,7 @@ function base(): Json {
         giveUp: false,
         solution: [1, 0, 2],
         hints: [t('gate', 'Порядок записан в дневнике.'), t('gate', 'Луна идёт перед солнцем.'), t('gate', 'Луна, солнце, звезда.')],
+        clues: [{ examined: 'hall.inscription' }],
       },
     },
     sections: {
@@ -514,7 +519,7 @@ test('lint: world/cross-section-effect allows a cross-room unlock inside a secti
 test('lint: world/puzzle-multi-lock red on fixture', () => {
   // Across sections: the round-5 triage's keypad on courtyard's shed and on tower's gate.
   const across = mini({
-    puzzles: { keypad: codePuzzle() },
+    puzzles: { keypad: { ...codePuzzle(), clues: [{ visited: 'yard' }] } },
     sections: {
       courtyard: { start: 'yard', rooms: { yard: [object('shed', lockOf([], 'keypad')), leave('to_tower', 'to_tower')] } },
       tower: {
@@ -526,7 +531,7 @@ test('lint: world/puzzle-multi-lock red on fixture', () => {
   const a = lint(across, { knots: null });
   expect(errors(a)).toEqual([expect.objectContaining({ code: 'world/puzzle-multi-lock', message: "puzzle 'keypad' is the puzzle of 2 locks: yard.shed, hall.gate (X15: one lock per puzzle)" })]);
   // Within one section: two zero-slot object locks beside a lock-free leave.
-  const within = mini({ puzzles: { keypad: codePuzzle() }, sections: { s: { start: 'r', rooms: { r: [object('a', lockOf([], 'keypad')), object('b', lockOf([], 'keypad')), leave('out')] } } } });
+  const within = mini({ puzzles: { keypad: { ...codePuzzle(), clues: [{ visited: 'r' }] } }, sections: { s: { start: 'r', rooms: { r: [object('a', lockOf([], 'keypad')), object('b', lockOf([], 'keypad')), leave('out')] } } } });
   expect(errors(lint(within, { knots: null }))).toEqual([expect.objectContaining({ code: 'world/puzzle-multi-lock', message: expect.stringContaining('2 locks: r.a, r.b') })]);
 });
 
@@ -928,4 +933,76 @@ test('story: module and type lint codes are unique and none is a DSL code', () =
   type InputVar = WorldLintInput['declared'] extends ReadonlyMap<VarName, infer V> ? V : never;
   type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
   expect(true satisfies Same<VarLiteral, InputVar>).toBe(true);
+});
+
+/** The 1-based line of the first line of a fixture's two-space JSON text that starts with `start` (trimmed). */
+function jsonLine(w: Json, start: string): number {
+  const i = `${JSON.stringify(w, null, 2)}\n`.split('\n').findIndex((l) => l.trimStart().startsWith(start));
+  if (i < 0) {
+    throw new Error(`invariant: the fixture text has a line starting with ${start}`);
+  }
+  return i + 1;
+}
+
+/** A fixture reach type whose own UI draws its goal (§7.3, I4), decoded beside the real types. */
+const SHOWN: PuzzleTypeData<string, unknown> = Object.freeze({
+  type: 'tiles',
+  check: 'reach',
+  goal: 'shown',
+  presentation: 'view',
+  wrong: 'none',
+  commit: 'control',
+  decodeParams: (raw: unknown) => ({ ok: true, value: raw }) as const,
+  answerShape: () => ({ len: 4, max: 9 }),
+  initial: () => [0, 0, 0, 0],
+  startShown: () => [0, 0, 0, 0],
+  workFits: () => true,
+});
+
+/**
+ * A fixture world decoded with `types`, as a per-world pass's input (lintWorld's own rules know the real types only).
+ * Its line lookup numbers each path in the order it is first asked for, so a test asks for the path it expects.
+ */
+function passInput(w: Json, types: PuzzleTypes): WorldLintInput {
+  const text = `${JSON.stringify(w, null, 2)}\n`;
+  const r = decodeWorldSource(JSON.parse(text), { types });
+  if (!r.ok) {
+    throw new Error(`invariant: the fixture decodes: ${JSON.stringify(r.error)}`);
+  }
+  const asked: string[] = [];
+  const line = (path: string): number => {
+    const i = asked.indexOf(path);
+    return i >= 0 ? i + 1 : asked.push(path);
+  };
+  return { chapter: CH1, file: FILE, text, world: r.value, catalog: CATALOG, knots: KNOTS, yielded: null, declared: new Map(), line };
+}
+
+const NO_CLUE = 'declares no clue: clues names the fact that shows its answer (§7.3, I4)';
+
+test('story: a secret puzzle without clues is refused', () => {
+  const w = base();
+  delete at(w, 'puzzles.drawer')['clues'];
+  delete at(w, 'puzzles.gate')['clues'];
+  // Both are secret goals a lock holds: the drawer's code and the gate's order.
+  expect(of(lint(w), 'world/clue-declared')).toEqual([
+    { code: 'world/clue-declared', severity: 'E', file: FILE, line: jsonLine(w, '"drawer": {'), message: `puzzle 'drawer' (code, a secret goal) ${NO_CLUE}` },
+    { code: 'world/clue-declared', severity: 'E', file: FILE, line: jsonLine(w, '"gate": {'), message: `puzzle 'gate' (order, a secret goal) ${NO_CLUE}` },
+  ]);
+  // A linear secret puzzle (no lock; a puzzle tag yields it): its clue is the story's (RULINGS 180 Q1-A).
+  const linear = withCabinet(base());
+  expect(of(lint(linear, { yielded: new Set(['cabinet'] as PuzzleLocalId[]) }), 'world/clue-declared')).toEqual([]); // a fixture id
+  expect(of(lint(base()), 'world/clue-declared')).toEqual([]);
+});
+
+test('story: a shown-goal puzzle with a clue is refused', () => {
+  const types: PuzzleTypes = [...PUZZLE_TYPES, SHOWN];
+  const w = base();
+  at(w, 'puzzles.drawer')['type'] = 'tiles';
+  const input = passInput(w, types);
+  expect(clueFindings(input, types)).toEqual([
+    { code: 'world/reach-has-clue', severity: 'E', file: FILE, line: input.line('puzzles.drawer.clues'), message: "puzzle 'drawer' (tiles) draws its goal: it declares no clue (§7.3)" },
+  ]);
+  // Without the clue the shown goal is clean, and a lock holding it asks for none.
+  delete at(w, 'puzzles.drawer')['clues'];
+  expect(clueFindings(passInput(w, types), types)).toEqual([]);
 });
