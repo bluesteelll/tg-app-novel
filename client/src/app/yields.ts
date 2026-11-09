@@ -305,6 +305,31 @@ export function createYields(h: YieldsHost): Yields {
     return r.ok;
   };
 
+  /**
+   * D13 and §8.1 "Loading": the lazy chunks the chapter's world needs and the stage, once per chapter, ahead of the
+   * first wait they cover; after the first line (so these bytes never compete with the first knot's images), at a
+   * resume onto a yield, ahead of a yield step's transition, and after a section's first room. Not awaited: a failure
+   * surfaces at the yield, which imports again.
+   */
+  const prefetch = (): void => {
+    const w = prefetched ? null : (h.chapter()?.world ?? null);
+    if (w === null) {
+      return;
+    }
+    prefetched = true;
+    const sections = Object.keys(w.sections).length > 0;
+    const puzzles = Object.keys(w.puzzles).length > 0;
+    if (sections) {
+      void h.chunks.explore();
+    }
+    if (puzzles) {
+      void h.chunks.puzzleHost();
+    }
+    if (sections || puzzles) {
+      void loadStage();
+    }
+  };
+
   /** A room batch to run (D9): its move cue, built at the effect, and the cues of the entry that pushed it (D8). */
   type RoomJob = { readonly room: RoomId; readonly sfx: Extract<ExploreEffect, { kind: 'room' }>['sfx']; readonly move: CueEvent; cues: readonly CueEvent[] };
   /**
@@ -564,6 +589,7 @@ export function createYields(h: YieldsHost): Yields {
     }
     rootShown(); // the rooms are back: the root-back returns from the path state (X12)
     controller?.roomShown(); // K47 / D20: after the batch, so the registry counts the room before its neighbours
+    prefetch(); // a session resumed into a room has the host before its first lock tap
   };
 
   /**
@@ -970,10 +996,8 @@ export function createYields(h: YieldsHost): Yields {
   };
 
   return {
-    ahead() {
-      // Nothing to get ready yet: GameSession calls it so GM3s can load the yield's chunks during the transition
-      // without another edit of game.ts (engine plan GM3w).
-    },
+    // The step's pictures are loaded: the yield's chunks download while its transition runs (§8.1 "Loading").
+    ahead: prefetch,
     async onYield(y) {
       if (dead) {
         return;
@@ -984,21 +1008,7 @@ export function createYields(h: YieldsHost): Yields {
         await openSection(y.section);
       }
     },
-    lineShown() {
-      const w = prefetched ? null : (h.chapter()?.world ?? null);
-      if (w === null) {
-        return;
-      }
-      prefetched = true;
-      // D13: after the first line, so these bytes never compete with the first knot's images; the module cache keeps
-      // them for the yield. Not awaited: a failure surfaces at the yield, which imports again.
-      if (Object.keys(w.sections).length > 0) {
-        void h.chunks.explore();
-      }
-      if (Object.keys(w.puzzles).length > 0) {
-        void h.chunks.puzzleHost();
-      }
-    },
+    lineShown: prefetch,
     world: () => world,
     restore(next, reset, at) {
       dropPuzzle();
@@ -1014,6 +1024,9 @@ export function createYields(h: YieldsHost): Yields {
       resumed = at?.kind === 'explore';
       if (reset !== null) {
         vm.showToast({ kind: 'note', key: 'area_reset', message: t(vm.lang, 'explore.area_reset'), sticky: false });
+      }
+      if (at !== null) {
+        prefetch(); // no line shows before the resumed yield
       }
     },
     chapterChanged() {

@@ -1013,3 +1013,34 @@ test("yields: a section's first entry holds a motion while its chunk loads", asy
   expect(keysOf(r).slice(0, 3)).toEqual(['ui-state:waiting', 'ui-state:waited', 'ui-state:waiting']);
   r.yields.dispose();
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// Loading the lazy chunks ahead (engine plan §8.1 "Loading"; D13)
+
+test('yields: a resume onto a yield prefetches its chunks', async () => {
+  const r = rig();
+  // A resume onto a story line: its first line prefetches, as a fresh start's does.
+  r.yields.restore(EMPTY_WORLD_STATE, null, null);
+  expect([r.calls.explore, r.calls.host, r.calls.stage]).toEqual([0, 0, 0]);
+  // A resume onto a yield shows no line first: the yield's chunks and the stage are requested at once.
+  r.yields.restore(EMPTY_WORLD_STATE, null, { kind: 'explore', section: MANOR });
+  expect([r.calls.explore, r.calls.host, r.calls.stage]).toEqual([1, 1, 1]);
+  await settle();
+  expect(r.vm.cueStage?.component).toBe(STAGE);
+  r.yields.dispose();
+});
+
+test('yields: a yield step prefetches its chunks ahead of its transition', async () => {
+  const r = rig();
+  r.yields.ahead({ kind: 'puzzle', puzzle: DRAWER, then: AFTER });
+  expect([r.calls.explore, r.calls.host, r.calls.stage]).toEqual([1, 1, 1]);
+  await settle();
+  // Once per chapter; the stage, once in, stays for the session.
+  r.yields.ahead({ kind: 'explore', section: MANOR });
+  r.yields.lineShown();
+  expect([r.calls.explore, r.calls.host, r.calls.stage]).toEqual([1, 1, 1]);
+  r.yields.chapterChanged();
+  r.yields.ahead({ kind: 'explore', section: MANOR });
+  expect([r.calls.explore, r.calls.host, r.calls.stage]).toEqual([2, 2, 1]);
+  r.yields.dispose();
+});
