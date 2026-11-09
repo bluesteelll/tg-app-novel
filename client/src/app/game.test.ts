@@ -24,7 +24,7 @@ import { createSettingsStore } from '../settings/store.ts';
 import type { CloudPort, SettingsStore } from '../settings/store.ts';
 import type { StatEvent } from '../stats/reporter.ts';
 import type { PuzzleUiProps } from '../puzzles/registry.ts';
-import { PENDING_WINDOW_MS } from '../purchase/flow.ts';
+import { PAID_WINDOW_MS, PENDING_WINDOW_MS } from '../purchase/flow.ts';
 import type { PurchaseState } from '../purchase/flow.ts';
 import type { ChapterLoader } from '../story/chapters.ts';
 import { decodeChapterMeta } from '../story/catalog.ts';
@@ -2884,8 +2884,15 @@ type MetaRig = {
   api: Endpoints;
 };
 
-/** Boot's gate over the harness's view model and stack, wired as boot.ts wires it (its `make` and `note`). */
-function metaRig(h: Harness, bind: (gate: MetaGate) => void = () => {}): MetaRig {
+/**
+ * Boot's gate over the harness's view model and stack, wired as boot.ts wires it (its `make` and `note`); Telegram's
+ * invoice sheet closes as `openInvoice` says ('cancelled' by default).
+ */
+function metaRig(
+  h: Harness,
+  bind: (gate: MetaGate) => void = () => {},
+  openInvoice: MetaDeps['tg']['openInvoice'] = META_TG.openInvoice,
+): MetaRig {
   const sent: string[] = [];
   const own: Array<readonly [RegExp, () => MetaWire | Promise<MetaWire>]> = [];
   const http: Pick<Http, 'request'> = {
@@ -2934,7 +2941,7 @@ function metaRig(h: Harness, bind: (gate: MetaGate) => void = () => {}): MetaRig
         meta: createMetaEndpoints(http),
         api,
         stats: () => stats ?? api.getStats(),
-        tg: META_TG,
+        tg: { ...META_TG, openInvoice },
         screens: h.screens,
         vm: h.vm,
         reporter: {
@@ -2992,12 +2999,16 @@ function metaRig(h: Harness, bind: (gate: MetaGate) => void = () => {}): MetaRig
 }
 
 /** A tide harness whose screens reach the gate's controller, as boot's `onView` does, with the gate attached. */
-function metaHarness(o: HarnessOptions = {}): { h: Harness; m: MetaRig } {
+function metaHarness(o: HarnessOptions = {}, openInvoice?: MetaDeps['tg']['openInvoice']): { h: Harness; m: MetaRig } {
   let gate: MetaGate | null = null;
   const h = harness({ chapters: [tideCh3()], ...o, onView: (v) => gate?.current()?.screensChanged(v) });
-  const m = metaRig(h, (g) => {
-    gate = g;
-  });
+  const m = metaRig(
+    h,
+    (g) => {
+      gate = g;
+    },
+    openInvoice,
+  );
   h.game.attachMeta(m.gate.port);
   return { h, m };
 }
@@ -3064,8 +3075,8 @@ test('game: card failure keeps the end', async () => {
   h.game.dispose();
   m.gate.dispose();
 
-  // (b) The meta chunk does not load: the boot's import fails silently, the ending's own import fails with the toast,
-  // and the end's card action imports again.
+  // (b) The meta chunk does not load: a non-tap trigger's import (the session's first step) fails silently, the
+  // ending's own import fails with the toast, and the end's card action imports again.
   const b = metaHarness();
   void b.m.gate.ready();
   await b.m.fail();
@@ -3086,7 +3097,7 @@ test('game: card failure keeps the end', async () => {
 
 test('game: an ending while the meta chunk loads gets its card', async () => {
   const { h, m } = metaHarness();
-  void m.gate.ready(); // the boot's import, still in flight at the end
+  void m.gate.ready(); // a non-tap trigger's import (the session's first step), still in flight at the end
   await drowned(h);
   expect(typeof cardAction(h)).toBe('function');
   expect([m.loads(), m.made(), cardPosts(m), m.settles]).toEqual([1, 0, [], []]);
@@ -3184,7 +3195,7 @@ test('boot: an ending left before the meta chunk lands still marks its card', as
   const { h, m } = metaHarness();
   // The stats read stays unanswered, so only this session's ending can give tide its card (the sample has none).
   m.on(/^GET \/api\/stats$/, () => new Promise<MetaWire>(() => {}));
-  void m.gate.ready(); // the boot's import, still in flight at the end
+  void m.gate.ready(); // a non-tap trigger's import (the session's first step), still in flight at the end
   await drowned(h);
   await h.game.exitToStories(); // the end is left before the chunk lands
   await m.land();
@@ -3478,7 +3489,8 @@ test('boot: meta chunk import retried by the next tap, single flight', async () 
       onCards: () => {},
       clock: PAGE_TIMERS,
     });
-    // The boot's import fails silently, and nothing imports again without a tap, however long the page stays open.
+    // A non-tap trigger's import (the session's first step, a launch parameter, Home idle) fails silently, and nothing
+    // imports again without a tap, however long the page stays open.
     void gate.ready();
     flights.shift()?.reject(new Error('offline'));
     await settle();
@@ -3567,7 +3579,7 @@ async function pass(h: Harness, ms: number): Promise<void> {
   }
 }
 
-/** The meta overlays' view as the controller writes it; the recovery reads only `purchase` and `gift.busy`. */
+/** The meta overlays' view as the controller writes it; the recovery reads only `purchase`, `purchaseLeft` and `gift.busy`. */
 function metaView(o: Partial<MetaView> = {}): MetaView {
   return {
     ui: null,
@@ -3576,6 +3588,7 @@ function metaView(o: Partial<MetaView> = {}): MetaView {
     profile: null,
     wallet: null,
     purchase: { kind: 'idle' },
+    purchaseLeft: false,
     invite: null,
     gift: null,
     busy: { social: false, consent: false, invite: false, wallet: false },
@@ -3742,6 +3755,84 @@ test("game: skew waits for the wallet's purchase", async () => {
   await pass(h, 1000);
   expect(page.reloads).toEqual([`${HREF}&novelReloadedFor=${SKEW}`]);
   h.game.dispose();
+});
+
+const PACK_ID = 'pack:hint_s' as ProductId;
+
+/**
+ * LRB: Home with the real meta controller and screens, the wallet open and a pack's Buy tapped until the flow reads
+ * `kind`; the invoice is created, Telegram's sheet closes as `sheet` says, and every order poll reads `checkout` (the
+ * webhook is not in yet). The purchase module is imported at the first Buy, so the wait runs in real macrotasks.
+ */
+async function packBought(
+  sheet: MetaDeps['tg']['openInvoice'],
+  kind: PurchaseState['kind'],
+): Promise<{ h: Harness; m: MetaRig }> {
+  const { h, m } = metaHarness({}, sheet);
+  m.on(/^POST \/api\/invoices$/, () => ({ ok: true, body: metaSample('CreateInvoiceResponse') }));
+  m.on(/^GET \/api\/orders\//, () => ({
+    ok: true,
+    body: { orderId: 'o_0123456789abcdef0123456789abcdef', productId: PACK_ID, status: 'checkout' },
+  }));
+  void m.gate.ready();
+  await m.land();
+  const ctl = m.gate.current();
+  ctl?.openWallet();
+  await settle();
+  expect(overlayKinds(h)).toEqual(['wallet']);
+  ctl?.buyPack(PACK_ID);
+  for (let i = 0; i < 50 && h.vm.meta?.purchase.kind !== kind; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  expect(h.vm.meta?.purchase.kind).toBe(kind);
+  return { h, m };
+}
+
+test('game: skew does not wait for a pack purchase delayed after the wallet closed', async () => {
+  const { h, m } = await packBought(() => Promise.resolve({ ok: true, value: 'paid' }), 'confirming');
+  const page = fakePage();
+  h.game.skewed(SKEW, page);
+  await pass(h, 2000);
+  expect([page.reloads, h.vm.notice], 'confirming, the wallet open').toEqual([[], null]);
+  h.screens.back(); // the player leaves the wallet
+  await pass(h, 2000);
+  expect([page.reloads, h.vm.notice], 'confirming, the wallet closed').toEqual([[], null]);
+  // The 30 s window ends with the order still in checkout: `delayed`, nothing of it on screen.
+  await pass(h, PAID_WINDOW_MS);
+  expect(page.reloads).toEqual([`${HREF}&novelReloadedFor=${SKEW}`]);
+  expect([h.vm.meta?.purchase.kind, h.vm.notice?.kind]).toEqual(['delayed', 'update']);
+  h.game.dispose();
+  m.gate.dispose();
+});
+
+test('game: skew waits for a delayed pack purchase until the wallet closes', async () => {
+  const { h, m } = await packBought(() => Promise.resolve({ ok: true, value: 'paid' }), 'confirming');
+  await pass(h, PAID_WINDOW_MS);
+  expect([h.vm.meta?.purchase.kind, overlayKinds(h)]).toEqual(['delayed', ['wallet']]);
+  const page = fakePage();
+  h.game.skewed(SKEW, page);
+  await pass(h, 3000);
+  expect([page.reloads, h.vm.notice], 'delayed, the wallet open').toEqual([[], null]);
+  h.screens.back(); // the player leaves the wallet
+  await pass(h, 1000);
+  expect(page.reloads).toEqual([`${HREF}&novelReloadedFor=${SKEW}`]);
+  expect(h.vm.notice?.kind).toBe('update');
+  h.game.dispose();
+  m.gate.dispose();
+});
+
+test('game: skew waits for a pack sheet until the player leaves the wallet', async () => {
+  // Telegram's sheet never answers: it is open, or its close was lost (P7).
+  const { h, m } = await packBought(() => new Promise(() => {}), 'sheet');
+  const page = fakePage();
+  h.game.skewed(SKEW, page);
+  await pass(h, 3000);
+  expect([page.reloads, h.vm.notice], 'the sheet, the wallet open').toEqual([[], null]);
+  h.screens.back(); // the player's Back reached the page, so the modal sheet is closed
+  await pass(h, 1000);
+  expect([page.reloads, h.vm.meta?.purchase.kind]).toEqual([[`${HREF}&novelReloadedFor=${SKEW}`], 'sheet']);
+  h.game.dispose();
+  m.gate.dispose();
 });
 
 test("game: skew latch keeps today's handling in a reloaded tab", async () => {

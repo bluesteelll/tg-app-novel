@@ -1,7 +1,8 @@
 // LBI's deploy e2e (cut C8; D4-D6): server-dev's `POST /dev/build-id` makes every /api answer name another build, as
 // a deploy under an open app would. The page reloads once, at a safe point and after its autosave, into a URL that
-// carries the latch, and resumes the saved line; a lazy chunk the deploy removed is answered by the build probe.
-// Neither test reads the page's own id from the bundle: `dist-e2e/build-id.txt` is the e2e build's id (D1).
+// carries the latch, and resumes the saved line; a lazy chunk the deploy removed is answered by the build probe; a
+// wallet pack purchase the player left in `delayed` does not hold the reload (LRB). No test reads the page's own id
+// from the bundle: `dist-e2e/build-id.txt` is the e2e build's id (D1).
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,9 +10,11 @@ import { fileURLToPath } from 'node:url';
 import type { APIRequestContext, Page, Request, Response } from '@playwright/test';
 
 import { t, type UiKey } from '../src/i18n/index.ts';
-import { catalogTitle, chunkFile, expect, holdRequests, launch, lineId, reachLine, test, type E2eWindow } from './helpers.ts';
+import { mt, type MetaKey } from '../src/i18n/meta.ts';
+import { catalogTitle, chunkFile, expect, holdRequests, launch, lineId, reachLine, test, walletOf, type E2eWindow } from './helpers.ts';
 
 const ru = (key: UiKey, params?: Readonly<Record<string, string | number>>): string => t('ru', key, params);
+const meta = (key: MetaKey, params?: Readonly<Record<string, string | number>>): string => mt('ru', key, params);
 
 const CLIENT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LINE_MS = 30_000;
@@ -39,9 +42,16 @@ async function claim(request: APIRequestContext, id: string | null): Promise<voi
   expect(res.status(), `POST /dev/build-id ${String(id)}`).toBe(204);
 }
 
-function mock(page: Page, action: 'minimize' | 'restore'): Promise<void> {
+function mock(page: Page, action: 'minimize' | 'restore' | 'pressBack'): Promise<void> {
   return page.evaluate((a) => (window as unknown as E2eWindow).__tgMock[a](), action);
 }
+
+/** The 3-hint pack's title as the server's catalog sells it (server/catalog.json, read in Node). */
+const PACK_TITLE = (JSON.parse(readFileSync(path.resolve(CLIENT_DIR, '..', 'server', 'catalog.json'), 'utf8')) as {
+  economy: { packs: { hint_s: { title: { ru: string } } } };
+}).economy.packs.hint_s.title.ru;
+/** server-dev's longest webhook delay is 60 s: this one lands after the 30 s window ends the pack's `confirming`. */
+const WEBHOOK_DELAY_MS = 50_000;
 
 const updateNotice = (page: Page) => page.getByRole('heading', { name: ru('notice.update_title') });
 
@@ -220,6 +230,62 @@ test('a chunk gone after a deploy probes the build id', async ({ page, request }
   await expect.poll(loaded.count, { timeout: LINE_MS, message: 'the reload after the flush' }).toBe(1);
   expect(page.url(), 'the latch in the fragment').toContain(LATCH);
   await page.waitForFunction(() => '__tgMock' in window);
+  await page.waitForTimeout(QUIET_MS);
+  expect(loaded.count(), 'one reload, no second').toBe(1);
+  releaseStats();
+});
+
+test('deploy skew does not wait for a delayed pack purchase the player left', async ({ page, request }) => {
+  test.setTimeout(150_000);
+  await claim(request, ownBuild());
+  expect(await walletOf(request, 9603), 'the hint balance before').toBe(0);
+  const traffic = apiTraffic(page);
+  await launch(page, 9603);
+  await page.getByRole('button', { name: ru('stories.wallet'), exact: true }).tap();
+  const w = page.getByRole('region', { name: meta('meta.wallet_title') });
+  await expect(w).toBeVisible({ timeout: LINE_MS });
+  await w.getByRole('checkbox', { name: meta('meta.wallet_terms_agree') }).check();
+  const buy = w.getByRole('listitem').filter({ hasText: PACK_TITLE }).getByRole('button', { name: meta('meta.wallet_buy', { stars: 1 }) });
+
+  // The preset sheet presses Pay; its simulated payment reaches the webhook only after the 30 s window, so the
+  // pack's flow goes `delayed` while the server holds the order in checkout.
+  await page.evaluate(() => (window as unknown as E2eWindow).__tgMock.setInvoiceOutcome('paid'));
+  await page.route('**/dev/simulate-payment', async (route) => {
+    const body: unknown = route.request().postDataJSON();
+    const sent = typeof body === 'object' && body !== null ? body : {};
+    await route.continue({ postData: JSON.stringify({ ...sent, webhookDelayMs: WEBHOOK_DELAY_MS }) });
+  });
+  const simulated = page.waitForResponse((r) => new URL(r.url()).pathname === '/dev/simulate-payment');
+  await buy.tap();
+  expect((await simulated).status(), 'the simulated payment, its webhook delayed').toBe(200);
+  // Critique O1: after the sheet's close, Buy is disabled while the order is confirmed, and enabled again only in
+  // `delayed` (the window ended with the order in checkout).
+  await expect(buy, 'confirming').toBeDisabled({ timeout: LINE_MS });
+  await expect(buy, 'delayed').toBeEnabled({ timeout: 40_000 });
+
+  // Critique O4: nothing in flight when the "deploy" lands, so the Check again's answer is the first to name it.
+  const releaseStats = await holdStats(page);
+  await expect.poll(() => traffic.inFlight(), { timeout: LINE_MS, message: 'no /api answer in flight before the deploy' }).toBe(0);
+  await claim(request, NEW_BUILD);
+  const loaded = loads(page);
+  const checked = page.waitForResponse((r) => new URL(r.url()).pathname.startsWith('/api/orders/'));
+  await buy.tap(); // `delayed`: Check again, one order poll
+  expect((await checked).headers()['x-build-id'], "the order poll's answer names the new build").toBe(NEW_BUILD);
+  await page.waitForTimeout(QUIET_MS);
+  await expect(updateNotice(page), 'no notice while the wallet shows the pack being confirmed').toHaveCount(0);
+  expect(loaded.count(), 'no reload while the wallet is open').toBe(0);
+
+  // The player leaves the wallet: nothing of the flow is on screen, so the recovery reloads. At Home there is no
+  // autosave to flush, so the reload follows the notice in the same task: the load and its latch are the proof.
+  await mock(page, 'pressBack');
+  await expect.poll(loaded.count, { timeout: LINE_MS, message: 'the reload after the wallet closed' }).toBe(1);
+  expect(page.url(), 'the latch in the fragment').toContain(LATCH);
+  await page.waitForFunction(() => '__tgMock' in window);
+
+  // The credit is the server's, with the webhook about 50 s after the payment; the reloaded wallet reads it.
+  await expect.poll(() => walletOf(request, 9603), { timeout: 45_000, message: "the webhook's credit" }).toBe(3);
+  await page.getByRole('button', { name: ru('stories.wallet'), exact: true }).tap();
+  await expect(w).toContainText(meta('meta.wallet_balance', { kind: meta('meta.kind_hint'), n: 3 }), { timeout: LINE_MS });
   await page.waitForTimeout(QUIET_MS);
   expect(loaded.count(), 'one reload, no second').toBe(1);
   releaseStats();

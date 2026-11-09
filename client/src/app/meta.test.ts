@@ -707,6 +707,121 @@ test('meta: a stuck pack purchase is checked again from the wallet', async () =>
   paid.ctl.dispose();
 });
 
+test("meta: leaving the wallet ends the pack flow's reload hold", async () => {
+  // LRB D2-D4: the Game's build-skew reload waits for a pack flow only while the player is on it. `requesting` and
+  // `confirming` always hold (bounded); `delayed` holds while the wallet is open; `sheet` until the player's Back on
+  // the wallet shows Telegram's modal sheet closed. A programmatic close (a root change) proves nothing about the sheet.
+  const sheet = deferred<Result<InvoiceStatus, TgError>>();
+  const r = await booted({ openInvoice: () => sheet.promise });
+  r.server.on(ORDER_LABEL, () => okWire({ orderId: ORDER, productId: PACK, status: 'checkout' }));
+  const invoice = r.server.park(INVOICE_LABEL);
+  const seen: Array<[string, string | undefined, boolean | undefined]> = [];
+  const step = (label: string): void => {
+    seen.push([label, r.vm.meta?.purchase.kind, r.vm.meta?.purchaseLeft]);
+  };
+  r.ctl.openWallet();
+  await flush();
+  step('wallet open');
+  r.ctl.buyPack(PACK);
+  await flush();
+  step('buy');
+  r.screens.back();
+  step('back while requesting');
+  invoice.release();
+  await flush();
+  step('invoice answered, the sheet open');
+  r.screens.push({ kind: 'wallet' });
+  step('push wallet');
+  r.screens.setRoot({ kind: 'game' });
+  step('root changed');
+  r.screens.push({ kind: 'wallet' });
+  step('push wallet');
+  r.screens.back();
+  step('back');
+  r.screens.push({ kind: 'wallet' });
+  step('reopen');
+  r.screens.back();
+  step('back');
+  sheet.resolve({ ok: true, value: 'paid' });
+  await flush();
+  step('sheet closed paid');
+  r.clock.advance(30_000);
+  await flush();
+  step('window over');
+  r.screens.push({ kind: 'wallet' });
+  step('push wallet');
+  r.screens.back();
+  step('back');
+  expect(seen).toEqual([
+    ['wallet open', 'idle', false],
+    ['buy', 'requesting', false],
+    ['back while requesting', 'requesting', false],
+    ['invoice answered, the sheet open', 'sheet', false],
+    ['push wallet', 'sheet', false],
+    ['root changed', 'sheet', false],
+    ['push wallet', 'sheet', false],
+    ['back', 'sheet', true],
+    ['reopen', 'sheet', false],
+    ['back', 'sheet', true],
+    ['sheet closed paid', 'confirming', false],
+    ['window over', 'delayed', true],
+    ['push wallet', 'delayed', false],
+    ['back', 'delayed', true],
+  ]);
+  r.ctl.dispose();
+});
+
+test("meta: the sheet's leave flag does not outlive its sheet", async () => {
+  // LRB D3: the player's Back proves only its own sheet closed. Sheet 1 is left by Back and ends; sheet 2 opens with
+  // the wallet open, and a programmatic close (a root change: a session notice, the Game's error notice) under it
+  // must not read as "left", or the build-skew reload cuts the invoice sheet the player is looking at. Each step keeps
+  // the kind and the overlay count, so a rig that misses a state is told apart from a stale flag.
+  const sheets = [deferred<Result<InvoiceStatus, TgError>>(), deferred<Result<InvoiceStatus, TgError>>()];
+  let opened = 0;
+  const r = await booted({
+    openInvoice: () => {
+      const sheet = sheets[opened];
+      opened += 1;
+      return sheet === undefined ? Promise.resolve({ ok: true, value: 'cancelled' }) : sheet.promise;
+    },
+  });
+  r.server.on(ORDER_LABEL, () => okWire({ orderId: ORDER, productId: PACK, status: 'checkout' }));
+  const seen: Array<[string, string | undefined, boolean | undefined, number]> = [];
+  const step = (label: string): void => {
+    seen.push([label, r.vm.meta?.purchase.kind, r.vm.meta?.purchaseLeft, r.screens.view().overlays.length]);
+  };
+  r.ctl.openWallet();
+  await flush();
+  step('wallet open');
+  r.ctl.buyPack(PACK);
+  await flush();
+  step('sheet 1');
+  r.screens.back();
+  step('back on sheet 1');
+  sheets[0]?.resolve({ ok: true, value: 'cancelled' });
+  await flush();
+  step('sheet 1 cancelled');
+  r.ctl.openWallet();
+  await flush();
+  step('wallet reopened');
+  r.ctl.buyPack(PACK);
+  await flush();
+  step('sheet 2');
+  r.screens.setRoot({ kind: 'game' });
+  step('root changed');
+  expect(seen).toEqual([
+    ['wallet open', 'idle', false, 1],
+    ['sheet 1', 'sheet', false, 1],
+    ['back on sheet 1', 'sheet', true, 0],
+    ['sheet 1 cancelled', 'failed', false, 0],
+    ['wallet reopened', 'failed', false, 1],
+    ['sheet 2', 'sheet', false, 1],
+    ['root changed', 'sheet', false, 0],
+  ]);
+  expect(opened).toBe(2);
+  r.ctl.dispose();
+});
+
 // ---------------------------------------------------------------------------------------------------------------
 // Links, the share and the lazy chunk (F18, F28, M27)
 

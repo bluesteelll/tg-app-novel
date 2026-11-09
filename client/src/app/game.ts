@@ -226,7 +226,8 @@ export interface Game {
   attachMeta(m: GameMeta): void;
   /**
    * LBI D5: the server now serves build `served`, not this page's. At the next safe point (no intent, not in the
-   * background, no invoice open or being confirmed, no attempt awaiting its answer, no manual save or gift in flight)
+   * background, no invoice the player is looking at open or being confirmed, no attempt awaiting its answer, no manual
+   * save or gift in flight)
    * the step on screen is autosaved, the update notice covers every control, and `page` reloads into the new build
    * once the autosave is flushed. One recovery per page; none for a build this tab already reloaded for (D6).
    */
@@ -1736,8 +1737,16 @@ export function createGame(deps: GameDeps): Game {
    * What a reload would cut now, or null at a safe point. A deactivated page waits for `activated`: the player would
    * not see the notice, and the flush may be throttled. The grant of an open invoice is the server's on
    * `successful_payment` either way (principle 2); waiting keeps the flow's poll, and with it the paywall's state, so no
-   * reloaded paywall offers Buy for a payment still being confirmed (`delayed` included, critique W1). A hint is not
-   * waited for: a tier unlocked before debits nothing again.
+   * reloaded paywall offers Buy for a payment still being confirmed (`delayed` included, critique W1).
+   * The wallet's pack flow is waited for only while the player is on it (LRB): an invoice being created or confirmed,
+   * the wallet open, or a sheet no Back on the wallet has shown closed. One the player left (`purchaseLeft`) holds
+   * nothing: it moves only on the wallet's Check again or `activated`. After that reload the wallet reads the balance
+   * again and the credit shows once the webhook lands, but its Buy is a new purchase, not Check again: the server
+   * refuses a second pre-checkout of the pack for CHECKOUT_LOCK_SECS (120 s), and a later one charges and credits a
+   * second pack. Accepted (LRB critique W1): a pack is consumable and every charge is credited, against a hold for the
+   * page's life. A gift is waited for only while its dialog shows it sending (`gift.busy`); one the player closed, and a
+   * request id kept for a retry, are not: once sent the move is the server's, and the dialog reads the balance again
+   * before any resend. A hint is not waited for: a tier unlocked before debits nothing again.
    */
   const reloadBlocker = (): ReloadBlocker | null => {
     if (busy !== null) {
@@ -1746,7 +1755,11 @@ export function createGame(deps: GameDeps): Game {
     if (paused) {
       return 'background';
     }
-    if (PURCHASE_OPEN.has(offer?.flow?.state().kind ?? 'idle') || PURCHASE_OPEN.has(vm.meta?.purchase.kind ?? 'idle')) {
+    const wallet = vm.meta;
+    if (
+      PURCHASE_OPEN.has(offer?.flow?.state().kind ?? 'idle') ||
+      (PURCHASE_OPEN.has(wallet?.purchase.kind ?? 'idle') && wallet?.purchaseLeft !== true)
+    ) {
       return 'purchase';
     }
     if (attemptsInFlight > 0) {

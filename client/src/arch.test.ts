@@ -1235,6 +1235,158 @@ test('arch: boot hand-over fixtures', () => {
   }
 });
 
+// LRB (c), LFL's carried NOTED: the controller the gate makes reads boot's stats read when one was handed (one stats GET
+// per page, LFL B1) and its own read only without one. The gate's side (the read passed to `make`) is pinned by
+// `boot: Home card buttons from boot's stats before the meta chunk`; no test runs `startApp`, and the unit rigs build
+// their own `make`, so its `make` is read from the source.
+
+/** What `metaStatsGaps` reports, one string per missing piece. */
+const META_STATS_GAPS = {
+  make: 'no make in the gate',
+  controller: 'no createMetaController in make',
+  boots: "stats is not boot's read",
+  fallback: 'no own read as the fallback',
+} as const;
+
+/** `e` without its parentheses. */
+function unparenthesized(e: ts.Expression): ts.Expression {
+  return ts.isParenthesizedExpression(e) ? unparenthesized(e.expression) : e;
+}
+
+/** A property of `o` by its name: an assignment, a shorthand or a method. */
+function propertyOf(o: ts.ObjectLiteralExpression, name: string): ts.ObjectLiteralElementLike | undefined {
+  return o.properties.find((p) => p.name !== undefined && ts.isIdentifier(p.name) && p.name.text === name);
+}
+
+/** The function a property holds: `make: (m, stats) => ...`, `make: function (m, stats) {...}` or `make(m, stats) {...}`. */
+function functionOf(p: ts.ObjectLiteralElementLike | undefined): ts.ArrowFunction | ts.FunctionExpression | ts.MethodDeclaration | undefined {
+  if (p !== undefined && ts.isMethodDeclaration(p)) {
+    return p;
+  }
+  const f = p !== undefined && ts.isPropertyAssignment(p) ? unparenthesized(p.initializer) : undefined;
+  return f !== undefined && (ts.isArrowFunction(f) || ts.isFunctionExpression(f)) ? f : undefined;
+}
+
+/** The name of a function's `i`-th parameter; null for a missing or destructured one. */
+function paramName(f: { readonly parameters: ts.NodeArray<ts.ParameterDeclaration> }, i: number): string | null {
+  const p = f.parameters[i];
+  return p !== undefined && ts.isIdentifier(p.name) ? p.name.text : null;
+}
+
+/** The first call under `node` whose callee prints as `callee`; a nested function's calls run elsewhere, so not there. */
+function ownCall(node: ts.Node, callee: string): ts.CallExpression | undefined {
+  let found: ts.CallExpression | undefined;
+  const visit = (n: ts.Node): void => {
+    if (found !== undefined || ts.isFunctionLike(n)) {
+      return;
+    }
+    if (ts.isCallExpression(n) && callShape(n.expression) === callee) {
+      found = n;
+      return;
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(node);
+  return found;
+}
+
+/**
+ * What `startApp`'s gate does not give the meta controller: [] while the `gate` variable's `createMetaGate({ make })`
+ * takes boot's read as `make`'s second parameter P and builds `<first parameter>.createMetaController({ stats })` with
+ * `stats: () => P ?? api.getStats()` (a property assignment; parentheses, layout and comments aside).
+ */
+function metaStatsGaps(text: string): string[] {
+  const sf = ts.createSourceFile('app/boot.ts', text, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
+  const startApp = sf.statements.find(
+    (s): s is ts.FunctionDeclaration => ts.isFunctionDeclaration(s) && s.name?.text === 'startApp',
+  );
+  const own: readonly ts.Statement[] = startApp?.body?.statements ?? [];
+  const gate = own
+    .filter(ts.isVariableStatement)
+    .flatMap((s) => [...s.declarationList.declarations])
+    .find((d) => ts.isIdentifier(d.name) && d.name.text === 'gate')?.initializer;
+  const deps = gate !== undefined && ts.isCallExpression(gate) && callShape(gate.expression) === 'createMetaGate' ? gate.arguments[0] : undefined;
+  const make = deps !== undefined && ts.isObjectLiteralExpression(deps) ? functionOf(propertyOf(deps, 'make')) : undefined;
+  if (make?.body === undefined) {
+    return [META_STATS_GAPS.make];
+  }
+  const module = paramName(make, 0);
+  const read = paramName(make, 1);
+  const controllerDeps = (module === null ? undefined : ownCall(make.body, `${module}.createMetaController`))?.arguments[0];
+  if (controllerDeps === undefined || !ts.isObjectLiteralExpression(controllerDeps)) {
+    return [META_STATS_GAPS.controller];
+  }
+  const stats = propertyOf(controllerDeps, 'stats');
+  const arrow = stats !== undefined && ts.isPropertyAssignment(stats) ? unparenthesized(stats.initializer) : undefined;
+  if (arrow === undefined || !ts.isArrowFunction(arrow) || arrow.parameters.length > 0 || ts.isBlock(arrow.body)) {
+    return [META_STATS_GAPS.boots, META_STATS_GAPS.fallback];
+  }
+  const body = unparenthesized(arrow.body);
+  // One operand: boot's read with no fallback, or the own read with nothing handed.
+  const [left, right] =
+    ts.isBinaryExpression(body) && body.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+      ? [unparenthesized(body.left), unparenthesized(body.right)]
+      : [body, body];
+  const gaps: string[] = [];
+  if (read === null || !ts.isIdentifier(left) || left.text !== read) {
+    gaps.push(META_STATS_GAPS.boots);
+  }
+  if (callShape(right) !== 'api.getStats()') {
+    gaps.push(META_STATS_GAPS.fallback);
+  }
+  return gaps;
+}
+
+test('arch: boot gives the meta controller its stats read, its own read the fallback', () => {
+  // Non-vacuous: boot.ts is scanned, and a `make` that drops either half is judged red (the fixtures below).
+  expect(Object.keys(SOURCES)).toContain('app/boot.ts');
+  expect(metaStatsGaps(SOURCES['app/boot.ts'] ?? '')).toEqual([]);
+});
+
+test('arch: boot meta stats fixtures', () => {
+  type Case = readonly [label: string, source: string, gaps: readonly string[]];
+  const { make, controller, boots, fallback } = META_STATS_GAPS;
+  /** A startApp whose gate has `entry` among its deps. */
+  const app = (entry: string): string =>
+    `export function startApp(tg) {\n  const api = createEndpoints(http);\n  const gate = createMetaGate({\n` +
+    `    load: () => import('./meta.ts'),\n${entry}\n    note: (key) => toast(key),\n  });\n}`;
+  /** A gate `make` with `params` that builds the controller with the `stats` property `stats`. */
+  const made = (params: string, stats: string): string =>
+    app(
+      `    make: (${params}) => {\n      const c = m.createMetaController({\n        api,\n        ${stats}\n        tg,\n      });\n` +
+        '      c.boot();\n      return c;\n    },',
+    );
+  const red: readonly Case[] = [
+    ["R1 boot's read not handed", made('m, stats', 'stats: () => api.getStats(),'), [boots]],
+    ['R2 no own read as the fallback', made('m, stats', 'stats: () => stats ?? NEVER,'), [fallback]],
+    ["R3 another value instead of boot's read", made('m, stats', 'stats: () => other ?? api.getStats(),'), [boots]],
+    ["R4 make's read renamed, stats still reads stats", made('m, read', 'stats: () => stats ?? api.getStats(),'), [boots]],
+    ['R5 shorthand stats', made('m, stats', 'stats,'), [boots, fallback]],
+    ['R6 one-parameter make', made('m', 'stats: () => stats ?? api.getStats(),'), [boots]],
+    [
+      'R7 createMetaController in another function of startApp',
+      'export function startApp(tg) {\n  const build = (m, stats) => m.createMetaController({ stats: () => stats ?? api.getStats() });\n' +
+        '  const gate = createMetaGate({\n    make: (m, stats) => build(m, stats),\n  });\n}',
+      [controller],
+    ],
+    ['R8 no make', app(''), [make]],
+  ];
+  for (const [label, source, gaps] of red) {
+    expect(metaStatsGaps(source), label).toEqual(gaps);
+  }
+  const allow: readonly Case[] = [
+    [
+      'A1 comments, layout and parentheses',
+      made('m, stats', "stats: () =>\n          // boot's read, else the controller's own\n          ((stats) ?? (\n            api.getStats() /* LFL B1 */\n          )),"),
+      [],
+    ],
+    ['A2 a consistently renamed second parameter', made('m, read', 'stats: () => read ?? api.getStats(),'), []],
+  ];
+  for (const [label, source, gaps] of allow) {
+    expect(metaStatsGaps(source), label).toEqual(gaps);
+  }
+});
+
 test('arch: only yields.ts enters the runner', () => {
   // Non-vacuous: yields.ts is scanned, and its own runner call is found once the file is judged under a name the rule
   // does not exempt. The `runner.enter(` prefix tells that call from the section controller's `c.enter(` in the same
