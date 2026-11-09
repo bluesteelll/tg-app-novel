@@ -117,9 +117,9 @@ re-located at each holder's cut.
 | GM4u | GM4 (`yields.ts`), GM3u (`ExploreView.svelte`), GM3b (`story/ch1/world.json`) | - |
 | GM5 | GM4u (`yields.ts`, the explore view files, the e2e), GM3 (`motions.ts`), GM1b (`spike-p2.test.ts`) | - |
 | GM5q (round 4; only if P2-b demands it) | GM5 (`spike-p2.test.ts`, P2-b), GM4 (`mechanics/view.test.ts`), GM3 (`explore.test.ts`), GM1d (`rules/search.ts`); all earlier than GM5 already | - |
-| GM5f | GM5 (index files, `motions.ts`, `spike-p2.test.ts`), GM5q when it runs (`spike-p2.test.ts`, `explore.test.ts`), GM2b (`reconcile.ts`) | GM7r |
+| GM5f | GM5 (index files, `motions.ts`, `spike-p2.test.ts`), GM5q when it runs (`spike-p2.test.ts`, `explore.test.ts`), GM2b (`reconcile.ts`); Changed by RULINGS 190 (as of `837b1ed`; docs lane `docs-errata-12`, group A, fix round 1): GM2b also on `mechanics/core.ts` (GM2b cut Q1), and never beside per-player GM6c1b (`mechanics/core.ts`) | GM7r |
 | GM7r | GM5 (`yields.ts`), GM3p (`puzzle-view.svelte.ts`, `PuzzleHost.svelte`, `puzzle-host.svelte.test.ts`), GM1c (`session.ts`, `registry.ts`); never beside per-player GM6c2 | GM5f |
-| GM7p | GM7r (`registry.ts`), GM1d (`clues.ts`, `shape.ts`), GM1c (`scripts/story/puzzles/index.ts`, round 4), GM4g (`budget.ts`), GM3u (`arch.test.ts`), GM3p (`puzzle-types.svelte.test.ts`); **per-player GM6k** | GM8i |
+| GM7p | GM7r (`registry.ts`), GM1d (`clues.ts`, `shape.ts`), GM3c (`clues.ts`; **Ruled: RULINGS 192**, the `clues.ts` row), GM1c (`scripts/story/puzzles/index.ts`, round 4), GM4g (`budget.ts`), GM3u (`arch.test.ts`), GM3p (`puzzle-types.svelte.test.ts`); **per-player GM6k** | GM8i |
 | GM7g | GM7p (`scripts/story/puzzles/index.ts` and every other shared file), GM7r (`session.test.ts`); **per-player GM6s1** | GM8i |
 | GM8i | GM5f (index files, `motions.ts`), GM4 (`controller.ts`), GM3c (`rules/conditions.ts`); **per-player GM6a** | GM7p, GM7g |
 | GM8h | GM8i, GM7g (`registry.ts`, `session.test.ts`, round 5: `rules/index.ts`), GM7r (`session.ts`, `puzzle-view.svelte.ts`, `PuzzleHost.svelte`, round 5: `reachEdge`, `Open.reach`), GM5 (`ExploreView.svelte`, `explore.svelte.test.ts`, `yields.ts`); never beside per-player GM6c2 / GM6c4 | - |
@@ -181,7 +181,7 @@ the table is the error to fix (the rule of this section's first paragraph).
 | `client/scripts/story/puzzles/index.ts` (round 4, `PUZZLE_LINTS`) | GM1c (new, the `code` / `order` lines) -> GM7p -> GM7g -> GM8a -> GM8b (one line per type). **Ruled: RULINGS 178** — Q7' option B: per-player GM6c1a also holds the file for one hunk (`PuzzleTypeLint.domainFits?(p: P, d: Domain): string \| null` beside the TypeScript `Domain` type it defines), never beside GM7p / GM7g / GM8a / GM8b (whichever holds the file first holds it to its merge) |
 | `client/src/mechanics/contract.ts` (round 4) | GM1b (new) -> GM3m (`MechanicData.controls?`) |
 | `client/scripts/story/lint.ts` (round 4; round 5, per-player R-E23) | **GM1d** (one hunk: `Finding.code`'s union) **-> SH12b** (reconcile r1: the one-line removal of `budget/knot-set`; was: A(`lint.ts`) (rev. 3: MA1b -> MD3) never beside it); no other lane of either design edits it (per-player round 5 dropped GM6c1b's hunk; every module, type and per-player code lives in its own file's `codes`, §3.2) |
-| `client/scripts/story/mechanics/core.ts` (round 4) | GM1b (new) -> GM2b (the four `renamed` codes and lints) -> per-player GM6c1b (lifts `world/renamed-puzzles`, E-P13) |
+| `client/scripts/story/mechanics/core.ts` (round 4) | GM1b (new) -> GM2b (the four `renamed` codes and lints) -> per-player GM6c1b (lifts `world/renamed-puzzles`, E-P13); Changed by RULINGS 190 (as of `837b1ed`; docs lane `docs-errata-12`, group A, fix round 1): **GM5f** holds it after GM2b, one hunk (`world/renamed-target` reads the declared flags for `renamed.flags`, which it refuses until then; GM2b cut Q1), by launch against per-player GM6c1b, never beside it |
 | `client/src/cues/stage/motions.ts` (round 3 m1) | GM3m -> GM3 -> GM5 -> GM5f -> GM8i -> SH10 (reconcile r1: MR1 adds every key's `scene` motion and sets `ScenePending = never`) (control motions come from `UI_MOTIONS` and each `ControlDecl`, so no type or UI lane holds it) |
 | `client/src/cues/stage/motions.test.ts` (reconcile r1, new row) | GM3m (I-7's `FRAME_OPEN_MS` case) -> GM3 -> GM5 -> GM5f -> GM8i -> SH10, with `motions.ts` |
 | `client/src/cues/controls.test.ts` | GM3u -> GM3p |
@@ -201,7 +201,7 @@ the table is the error to fix (the rule of this section's first paragraph).
 | `client/scripts/story/world.test.ts` | GM1d -> GM2b -> GM3c (round 6: the walk's tests) -> GM9p; per-player GM6c1b by launch, never beside (round 5, R-E23) |
 | `client/scripts/story/world.ts` (round 6, W1; per-player R-E25) | GM1a -> GM1b -> GM1c -> GM2b -> GM3c (`WorldTextLine`, the walk over `MECHANIC_TEXTS`); no later lane of either design (module texts arrive through `MECHANIC_TEXTS`, per-player's text rules read the walk's lines in `values.ts`) |
 | `client/scripts/story/mechanics/texts.ts` (round 6, new) | GM3c only (the types, `KERNEL_TEXT_ROLES`, `TEXTS_LINT`); later lanes import its types |
-| `client/scripts/story/mechanics/clues.ts` (GM1d, new) | **Ruled: RULINGS 192** — GM1d (new) -> GM3c (commit (2b), `clues` widened to `Cond[]`) -> GM7p, one at a time (the GM7p row names GM1d; GM3c held it between them) |
+| `client/scripts/story/mechanics/clues.ts` (GM1d, new) | **Ruled: RULINGS 192** — GM1d (new) -> GM3c (commit (2b), `clues` widened to `Cond[]`) -> GM7p, one at a time (the GM7p row names GM1d and, fix round 1, GM3c; GM3c held it between them) |
 | `client/scripts/story/puzzles/shape.ts` | GM1d -> GM7g |
 | `client/src/mechanics/data/index.ts`, `rules/index.ts` | GM1b -> GM3c (data) -> GM3 -> GM3b -> GM4 -> GM5 -> GM5f -> GM8i -> GM9p (data) -> per-player GM6d2 (data) |
 | `client/src/ui/state.svelte.ts` | GM3s (one field and the slot types); per-player GM6c3 by launch |

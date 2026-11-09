@@ -23,6 +23,12 @@ export interface StageAdapter<T> {
 type View<T> = { readonly slot: string; readonly handle: TextureHandle<T>; readonly node: GroupRef; readonly sprite: SpriteRef };
 ```
 
+Changed by RULINGS 188 (as of `837b1ed`; docs lane `docs-errata-12`, group A, fix round 1), a sketch erratum: the
+sketch's `View.node: GroupRef` predates reconcile P2's `AnchorRef`. As merged (GM6a `23e1d31`, cut Q2), `View<T>` has
+no node (`client/src/scene/executor.ts:215`); a bg or CG view is a `BackdropView<T>` with `node: AnchorRef` (`:217`), a
+prop anchor is a `PropAnchor<T>` record with `node: AnchorRef`, its `rect` and its views in `content` order (`:225`),
+and a char view keeps its char group (`CharView<T>`, `:218`). `AnchorRef` is `:49`, `StageAdapter.anchor` `:62`.
+
 - **Placement.** The anchor at the view's box origin (stage px), scale 1; `depth`, `motion`, `content` at the identity
   inside it; the art sprite at (0, 0) of `content` with the box size. `propRects()` keeps reporting the sprite box, so
   `debugPropRects` and the e2e are unchanged (the three inner nodes are the identity until SH8 / SH10 write them).
@@ -42,7 +48,7 @@ type View<T> = { readonly slot: string; readonly handle: TextureHandle<T>; reado
   anchor (same `at`), faded in / out inside it.
   **Ruled: RULINGS 188** — D5.1, adopted in its general form: "a target key with no anchor takes over an anchor that
   shows one of its props, when the target does not name that anchor's key; re-keyed, nothing created, dropped or
-  faded" (`syncProps`' first loop, `client/src/scene/executor.ts:543-549`; it keeps a format-1 save's at-less props on
+  faded" (`syncProps`' first loop, `client/src/scene/executor.ts:543-561`: the rule at `:543-545`, the loop at `:554-561`; it keeps a format-1 save's at-less props on
   screen at the first at-keyed batch). An adopted anchor keeps its creation label (the bare prop id, a debug label in the
   Pixi tree) until a rebind re-creates it under its key. GM3s's at-aware `sameProps`, if it makes one, keeps or replaces
   D5.1 in the same lane, never drops it.

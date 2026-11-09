@@ -221,6 +221,13 @@ export interface PuzzleTypeLint<P> {
     ```
     (`PUZZLE_LINTS` is `client/scripts/story/puzzles/index.ts`, GM1c, round 4 m5; a test passes a fixture registry of
     the same type.)
+    Changed by RULINGS 183 (as of `837b1ed`; docs lane `docs-errata-12`, group A, fix round 1): as merged (GM1d
+    `794181b`, cut Q7 / D8 and the addendum's Deviation 2), both functions take a structural registry and the data
+    types, with the real ones as defaults, so a fixture type can be keyed: `postedLength(p, lints: PuzzleLintRegistry =
+    PUZZLE_LINTS, types: PuzzleTypes = PUZZLE_TYPES)` (`client/scripts/story/puzzles/shape.ts:31`) and
+    `answerLenIssues(w, lints, types): WorldIssue[]` (`:44`); `answerLenFindings(input, lints, types)` (`:57`) is
+    exported beside them and turns each issue into the `world/answer-len` finding `SHAPE_LINT` registers. The sketch's
+    `typeof PUZZLE_LINTS` and `Issue[]` are the round-4 record.
   - lint `world/answer-len`: `1 <= postedLength(p) <= MAX_ANSWER_LEN` for every puzzle, per-player ones included (their
     domain length is `answerShape(p).len`, per-player.md `world/per-player-domain`); seen red in GM1d on a fixture type
     whose answer is 17 entries (the registry parameter, as GM3c's fixture module), pinned in GM7p on a real path whose

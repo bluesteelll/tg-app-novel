@@ -42,6 +42,14 @@ designs hold (m9).
      sits at the anchor's origin` (the sprite's global box equals the placement box, not twice its origin); predicted
      red on the parent: TypeError, `adapter.anchor is not a function`; a different red (an import error from
      `pixi.js`) is the STOP above.
+     Changed by RULINGS 188 (as of `837b1ed`; docs lane `docs-errata-12`, group A, fix round 1), a design erratum
+     (`gm6a-scene-anchors/cut.md` Q1): commit 1's executor calls the adapter's `anchor`, and `check` needs the Pixi
+     implementation there, so the Pixi `anchor` and every anchor lifetime path land in commit 1 (`6a9f7d0`); commits 3
+     and 4 (`3e34f13`, `e51c055`) are test-only, their reds the lane's named mutations (commit 4's also red on main
+     `794181b`), not `adapter.anchor is not a function`; commit 2's E-P1 red "two anchors" is mutation M-6a-2b's. As
+     merged (`23e1d31`): commits 1-4 (`6a9f7d0`, `83a4821`, `3e34f13`, `e51c055`), then the review fix `bd2343b` (D5.1,
+     RULINGS 188, [§6.1](06-labels-on-the-art.md#61-anchor-nodes-lane-gm6a-behaviour-identical)) and the test pins
+     `53ce3d2`, `99ee808`.
 - **Gates:** check, test, build (engine row; ARITHMETIC +0.13 KB br, one figure, r3 m4; reconcile P2: +0.15;
   MEASURED in the log; the first-line row quoted base -> HEAD at the cut, §10 "Ledgers"), e2e full (pixel samples,
   memory, perf unchanged).

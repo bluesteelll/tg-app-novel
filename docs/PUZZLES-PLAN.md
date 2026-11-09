@@ -386,8 +386,11 @@ the explore-ui chunk. The marks below flag each sentence that places step 4 at t
          when a rename merged two items or the world gives the item twice), so a lock that keeps the item never loses
          it ([client/src/explore/reconcile.ts:42-62](../client/src/explore/reconcile.ts#L42), `giveBack`, which
          step 0 of [engine §5.3](plans/engine/05-world-data-and-save-format.md#53-renamed-the-client-half-lane-gm2b)
-         shares). A refinement of "every other filled item": it differs only on a world that gives an item twice, and
-         step 4 still judges the result;
+         shares). A refinement of "every other filled item": it differs whenever two cells hold one id, on a save
+         whose items a rename merged (step 0 runs before normalize, so items `a` in one lock and `b` in another that
+         merge to `c` reach this step as two cells holding `c`, and `c` stays `used` while either lock keeps it; the test
+         `reconcile: two lost cells that held one merged item give it back once`, `client/src/explore/explore.test.ts:981`)
+         and on a world that gives an item twice; step 4 still judges the result;
       3. **gifts**: a `taken` hotspot or a fired trigger is undone (it gives again) when an item or doc it gives is
          in none of `held`, `used`, `docs`;
       4. **the guarantee (membership)** for the current section S (the state's `section`; none when it is null):
