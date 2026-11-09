@@ -11,6 +11,7 @@ import type { Step } from '../../src/explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../../src/explore/state.ts';
 import type { IssueReport, MechanicData, OwnedAt, OwnedRaw } from '../../src/mechanics/contract.ts';
 import { MECHANIC_DATA } from '../../src/mechanics/data/index.ts';
+import type { DataRegistry } from '../../src/mechanics/data/index.ts';
 import { searchSection, sectionEntry } from '../../src/mechanics/rules/search.ts';
 import type { SearchOptions } from '../../src/mechanics/rules/search.ts';
 import { PUZZLE_TYPES } from '../../src/puzzles/rules/index.ts';
@@ -26,6 +27,8 @@ import type { ChapterGraph, GraphFacts, WorldRef } from './graph.ts';
 import { GLOBALS_PATH, LINT_CODES } from './lint.ts';
 import type { Finding, LintCode, Severity, SourceChapter } from './lint.ts';
 import { clueFindings } from './mechanics/clues.ts';
+import { CONDITIONS_LINT, condFindings } from './mechanics/conditions.ts';
+import type { CondSite } from './mechanics/conditions.ts';
 import { MECHANIC_LINTS } from './mechanics/index.ts';
 import type { MechanicLintCode, WorldLint, WorldLintInput } from './mechanics/index.ts';
 import { PUZZLE_LINTS } from './puzzles/index.ts';
@@ -946,6 +949,9 @@ test('story: module and type lint codes are unique and none is a DSL code', () =
     'world/reach-has-clue E',
     'world/clue-reachable E',
     'world/answer-len E',
+    'world/cross-section-cond E',
+    'world/visual-only-atom E',
+    'world/cond-size E',
   ]);
   // The registry restates world.ts's VarLiteral (its types stay out of the app program): one type (tsc).
   type InputVar = WorldLintInput['declared'] extends ReadonlyMap<VarName, infer V> ? V : never;
@@ -1318,4 +1324,109 @@ test('story: an all clue holds only when its conjuncts hold in one reached state
   expect(of(lint(gateClue({ all: [{ doc: 'diar' }] })), 'world/clue-reachable').map((f) => f.message)).toEqual([`puzzle 'gate': clue {"all":[{"doc":"diar"}]} names no doc of this world`]);
   const negated = { all: [{ has: 'medal_sun' }, { not: { doc: 'diar' } }] };
   expect(of(lint(gateClue(negated)), 'world/clue-reachable').map((f) => f.message)).toEqual([`puzzle 'gate': clue ${JSON.stringify(negated)} names no doc of this world`]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM3c: the condition lints (engine plan §4 "Two scopes", "Limits")
+
+/** A data module declaring atom `part`, visual only (as GM8i's), its value any string. */
+const PART: MechanicData<'part_probe', null> = {
+  id: 'part_probe',
+  rules: 'none',
+  owns: { atoms: ['part'] },
+  atoms: { part: { decode: (v) => v, gating: false } },
+  decode: () => ({ ok: true, value: null }),
+  encode: () => [],
+  normalize: (_w, s) => s,
+};
+
+/** base() plus section `yard`: a room with a take giving an item, a take giving a doc and a lock holding a puzzle. */
+function yardWorld(): Json {
+  const w = base();
+  obj(w['items'])['lamp'] = { name: t('lamp', 'Лампа'), desc: t('lamp', 'Старая лампа.'), glyph: 'key' };
+  obj(w['docs'])['note'] = { title: t('note', 'Записка'), body: [t('note', 'Во дворе.')] };
+  obj(w['puzzles'])['shed'] = { ...codePuzzle(), clues: [{ doc: 'note' }] };
+  obj(w['sections'])['yard'] = {
+    start: 'yard',
+    bgm: null,
+    rooms: {
+      yard: {
+        bg: 'yard',
+        title: t('yard', 'Двор'),
+        onEnter: [],
+        hotspots: [
+          { ...take('lamp', { item: 'lamp' }), rect: [100, 300, 200, 200] },
+          { ...take('note', { doc: 'note' }), rect: [400, 300, 200, 200] },
+          { ...object('shed', lockOf([], 'shed')), rect: [700, 300, 200, 200] },
+        ],
+      },
+    },
+  };
+  return w;
+}
+
+const MANOR = { gating: 'manor' as SectionId }; // the fixture's section
+
+test('story: a gating condition reading another section is refused', () => {
+  const input = passInput(yardWorld(), PUZZLE_TYPES);
+  const where = 'sections.manor.rooms.hall.hotspots.2.when';
+  const site = (cond: Json, scope: CondSite['scope'] = MANOR): CondSite => ({ cond, path: where, scope });
+  const said = (sites: readonly CondSite[], data?: DataRegistry): string[] => condFindings(input, sites, data).map((f) => `${f.code} ${f.severity} ${f.message}`);
+  const cross = (atom: Json, kind: string): string =>
+    `world/cross-section-cond E ${where}: ${JSON.stringify(atom)} names no ${kind} of section manor: a gating condition reads only its own section (§4)`;
+  // Every kernel atom naming one of yard's ids, in a gating condition of manor: one finding each.
+  const yard: ReadonlyArray<readonly [Json, string]> = [
+    [{ visited: 'yard' }, 'room'],
+    [{ taken: 'yard.lamp' }, 'hotspot'],
+    [{ examined: 'yard.lamp' }, 'hotspot'],
+    [{ open: 'yard.shed' }, 'hotspot'],
+    [{ held: 'lamp' }, 'item'],
+    [{ used: 'lamp' }, 'item'],
+    [{ has: 'lamp' }, 'item'],
+    [{ doc: 'note' }, 'doc'],
+    [{ solved: 'shed' }, 'puzzle'],
+    [{ failed: 'shed' }, 'puzzle'],
+  ];
+  for (const [atom, kind] of yard) {
+    expect(said([site(atom)]), JSON.stringify(atom)).toEqual([cross(atom, kind)]);
+  }
+  // Nested in every combinator, each atom once; a missing id the same way.
+  const nested = { all: [{ any: [{ visited: 'yard' }, { has: 'medal_sun' }] }, { not: { doc: 'note' } }, { not: { visited: 'attic' } }] };
+  expect(said([site(nested)])).toEqual([cross({ visited: 'yard' }, 'room'), cross({ doc: 'note' }, 'doc'), cross({ visited: 'attic' }, 'room')]);
+  // Manor's own ids: rooms, hotspot keys, the items and docs it gives (a take, a give effect), its lock puzzles.
+  const own = [{ visited: 'cellar' }, { taken: 'study.medal' }, { examined: 'hall.inscription' }, { open: 'hall.gate' }, { has: 'medal_moon' }, { doc: 'diary' }, { solved: 'drawer' }, { failed: 'gate' }];
+  expect(said([site({ all: own })])).toEqual([]);
+  // A visual condition reads any id of the chapter; a clue is scoped by world/clue-reachable.
+  expect(said([site(nested, 'visual'), site(nested, 'clue')])).toEqual([]);
+  // A visual-only module atom in a gating condition; in a visual one it is fine.
+  const data: DataRegistry = [...MECHANIC_DATA, PART];
+  expect(said([site({ any: [{ part: 'x' }, { has: 'medal_sun' }] })], data)).toEqual([
+    `world/visual-only-atom E ${where}: {"part":"x"} is a visual-only atom: a gating condition never reads it (§4)`,
+  ]);
+  expect(said([site({ part: 'x' }, 'visual')], data)).toEqual([]);
+  // Every finding at the site's line.
+  expect(condFindings(input, [site({ visited: 'yard' })]).map((f) => [f.file, f.line])).toEqual([[FILE, input.line(where)]]);
+});
+
+test('story: a condition deeper than 4 or with more than 16 atoms is refused', () => {
+  const input = passInput(base(), PUZZLE_TYPES);
+  const where = 'puzzles.gate.clues.0';
+  const nots = (n: number): Json => Array.from({ length: n }).reduce<Json>((c) => ({ not: c }), { has: 'medal_sun' });
+  const wide = (n: number): Json => ({ all: Array.from({ length: n }, () => ({ has: 'medal_sun' })) });
+  const size = (depth: number, atoms: number): string =>
+    `world/cond-size E ${where}: the condition is ${depth} deep with ${atoms} atoms: at most 4 deep and 16 atoms (bounded evaluation, §4)`;
+  for (const scope of [MANOR, 'visual', 'clue'] as const) {
+    const said = (cond: Json): string[] => condFindings(input, [{ cond, path: where, scope }]).map((f) => `${f.code} ${f.severity} ${f.message}`);
+    expect(said(nots(3)), JSON.stringify(scope)).toEqual([]);
+    expect(said(nots(4)), JSON.stringify(scope)).toEqual([size(5, 1)]);
+    expect(said(wide(16)), JSON.stringify(scope)).toEqual([]);
+    expect(said(wide(17)), JSON.stringify(scope)).toEqual([size(2, 17)]);
+  }
+  // The registry's pass reads every clue as a site of scope clue, at the clue's line.
+  const w = base();
+  at(w, 'puzzles.gate')['clues'] = [nots(4)];
+  const pass = passInput(w, PUZZLE_TYPES);
+  const found = 'lint' in CONDITIONS_LINT ? CONDITIONS_LINT.lint(pass) : [];
+  expect(found.map((f) => `${f.code} ${f.line}`)).toEqual([`world/cond-size ${pass.line(where)}`]);
+  expect(of(lint(w), 'world/cond-size').map((f) => f.line)).toEqual([clueLine(w, 'gate', 0)]);
 });
