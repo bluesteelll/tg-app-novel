@@ -766,6 +766,7 @@ export function createGame(deps: GameDeps): Game {
         break;
       case 'yield':
         s.at = { lineId: null, knot: step.knot, yield: step.yield };
+        s.yields.ahead(step.yield);
         break;
       case 'end':
         break;

@@ -123,6 +123,8 @@ export type YieldsHost = {
 };
 
 export interface Yields {
+  /** A yield step's pictures are loaded and its transition starts; `onYield` follows once the step is on screen. */
+  ahead(y: YieldCommand): void;
   /** A `yield` step is on screen, after its batch and its autosave. */
   onYield(y: YieldCommand): Promise<void>;
   /** D13: the chapter's first line is shown: the lazy chunks its world needs are prefetched (not awaited). */
@@ -797,6 +799,10 @@ export function createYields(h: YieldsHost): Yields {
   };
 
   return {
+    ahead() {
+      // Nothing to get ready yet: GameSession calls it so GM3s can load the yield's chunks during the transition
+      // without another edit of game.ts (engine plan GM3w).
+    },
     async onYield(y) {
       if (dead) {
         return;

@@ -32,7 +32,7 @@ import type { AssetEntry, AssetManifest, ChapterCatalog, LoadedChapter, Result, 
 import { liveRunners } from '../story/runner.ts';
 import { decodeSave, encodeSave } from '../story/save-codec.ts';
 import { EMPTY_SNAPSHOT } from '../story/staging.ts';
-import type { AssetId, BgId, ChapterId, OrderId, ProductId, PuzzleLocalId, StoryVersion } from '../story/staging.ts';
+import type { AssetId, BgId, ChapterId, OrderId, ProductId, PuzzleLocalId, StoryVersion, YieldCommand } from '../story/staging.ts';
 import type { InvoiceStatus } from '../telegram/index.ts';
 import { createExploreView } from '../ui/explore-view.svelte.ts';
 import type { ExploreViewStore } from '../ui/explore-view.svelte.ts';
@@ -2327,6 +2327,123 @@ test('game: apply reports the batch start for an empty command list', async () =
   const started = vi.fn();
   await sessionHost().apply([], [], started);
   expect(started).toHaveBeenCalledTimes(1);
+  h.game.dispose();
+});
+
+/** The newest session's Yields. */
+function sessionYields(): Yields {
+  const y = seam.yields.at(-1);
+  if (y === undefined) {
+    throw new Error('invariant: a session was started');
+  }
+  return y;
+}
+
+/** worldCh1('explore') whose explore yield also sets the background, so the yield step's batch waits on a load. */
+function aheadCh1(): LoadedChapter {
+  return chapter(
+    'ch1',
+    [
+      ...WORLD_INK_VARS,
+      '-> start',
+      '=== start ===',
+      '# scene: hall',
+      'Start. #id:ch1.start.l001',
+      '# bg: study',
+      '# explore: manor',
+      '-> DONE',
+      '=== study_event ===',
+      'Event. #id:ch1.study_event.l004',
+      '# explore: manor',
+      '-> DONE',
+    ],
+    { start: { assets: ['bg/hall', 'bg/study'], next: [] }, study_event: {} },
+    { assets: ['bg/study', 'prop/medal', 'cg/drawer_close'], vars: WORLD_VARS, world: gameWorld() },
+  );
+}
+
+test('game: a yield step tells yields ahead of its transition', async () => {
+  stubObserver();
+  const w = worldChunks();
+  const h = harness({ chapters: [aheadCh1()], chunks: w.chunks });
+  await startManor(h); // l001
+  // Wrapped by assignment, not vi.spyOn, so a Yields without `ahead` reads as an order, not as a throw.
+  const y = sessionYields();
+  const ahead = y.ahead;
+  const onYield = y.onYield;
+  const order: string[] = [];
+  const told: YieldCommand[] = [];
+  const shown: YieldCommand[] = [];
+  y.ahead = (c) => {
+    order.push('ahead');
+    told.push(c);
+    ahead.call(y, c);
+  };
+  y.onYield = (c) => {
+    order.push('onYield');
+    shown.push(c);
+    return onYield.call(y, c);
+  };
+  const releaseLoads = holdEnsure(h.scene);
+  const releaseEnd = holdBatchEnds(h.scene);
+  const step = h.game.advance(); // the explore yield: bg/study loads, then its transition runs
+  await settle();
+  expect(order).toEqual([]);
+  releaseLoads();
+  await settle();
+  // The step's pictures are loaded and its transition runs: yields hears of the yield before it is on screen.
+  expect(order).toEqual(['ahead']);
+  releaseEnd();
+  await step;
+  await settle();
+  expect(order).toEqual(['ahead', 'onYield']);
+  expect(told).toEqual(shown);
+  expect(told.map((c) => c.kind)).toEqual(['explore']);
+  h.game.dispose();
+  vi.unstubAllGlobals();
+  // A line and a choice set are not yields: no `ahead`.
+  const m = harness();
+  await startManor(m); // l001
+  const my = sessionYields();
+  const mineAhead = my.ahead;
+  let toldLines = 0;
+  my.ahead = (c) => {
+    toldLines += 1;
+    mineAhead.call(my, c);
+  };
+  await m.game.advance(); // l002
+  await m.game.advance(); // the choice set
+  await m.game.choose(0); // l003
+  expect(lineOf(m.vm)).toBe('ch1.arrival.l003');
+  expect(toldLines).toBe(0);
+  m.game.dispose();
+});
+
+test('game: a tap during a batch completes it and runs no intent', async () => {
+  const h = harness();
+  await startManor(h); // l001
+  const host = sessionHost();
+  const completes = (): number => h.scene.calls.filter((c) => c === 'complete').length;
+  const releaseEnd = holdBatchEnds(h.scene);
+  const step = h.game.advance(); // l002: its batch's transition is held
+  await settle();
+  const before = completes();
+  const intent = vi.fn(async () => {});
+  let tapEnded = false;
+  const tap = host.tap(intent).then(() => {
+    tapEnded = true;
+  });
+  // At once: the batch in flight is completed, and the tap waits on it instead of running.
+  expect(completes()).toBe(before + 1);
+  await settle();
+  expect([intent.mock.calls.length, tapEnded]).toEqual([0, false]);
+  releaseEnd();
+  await step;
+  await tap;
+  await settle();
+  // The batch's end ends the tap; its intent never runs (a hotspot is tappable again only at rest).
+  expect(intent).not.toHaveBeenCalled();
+  expect(lineOf(h.vm)).toBe('ch1.arrival.l002');
   h.game.dispose();
 });
 
