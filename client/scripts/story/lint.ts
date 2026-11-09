@@ -7,6 +7,8 @@ import type { AssetIndex, ChapterId, TagError } from '../../src/story/staging.ts
 import { LINE_ID_RE, SPEAKER_RE, YIELD_KINDS, parseTags, tagKind } from '../../src/story/tags.ts';
 import { classify, findUnescaped, unescapeInk } from './classify.ts';
 import type { Divert, LineClass, RawTag, SourceLine } from './classify.ts';
+import type { MechanicLintCode } from './mechanics/index.ts';
+import type { PuzzleLintCode } from './puzzles/index.ts';
 
 export type Severity = 'E' | 'W';
 
@@ -103,8 +105,11 @@ export const LINT_CODES = {
 } as const satisfies Readonly<Record<string, Severity>>;
 export type LintCode = keyof typeof LINT_CODES;
 
-/** `line` is 1-based; 0 means the whole file (a JSON catalog finding). */
-export type Finding = { code: LintCode; severity: Severity; file: string; line: number; message: string };
+/**
+ * `line` is 1-based; 0 means the whole file (a JSON catalog finding). `code` is the DSL's (LINT_CODES) or a module's
+ * or a puzzle type's, each from its own registry's table (engine plan §3.2).
+ */
+export type Finding = { code: LintCode | MechanicLintCode | PuzzleLintCode; severity: Severity; file: string; line: number; message: string };
 
 /** How a parser error value reads as a lint code. */
 export const TAG_REASON_CODE: Readonly<Record<TagError['reason'], LintCode>> = {

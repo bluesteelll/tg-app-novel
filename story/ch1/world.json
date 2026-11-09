@@ -45,7 +45,8 @@
       "maxAttempts": 3,
       "giveUp": false,
       "solution": [1, 0, 2],
-      "hints": []
+      "hints": [],
+      "clues": [ { "examined": "hall.inscription" } ]
     },
     "drawer": {
       "type": "code",
@@ -60,7 +61,8 @@
         { "id": "ch1.drawer.h001", "ru": "Код записан где-то в доме, но не в кабинете." },
         { "id": "ch1.drawer.h002", "ru": "Найди в подвале дневник Павла: в нём есть год." },
         { "id": "ch1.drawer.h003", "ru": "Код: 1-8-4-7." }
-      ]
+      ],
+      "clues": [ { "doc": "diary" } ]
     }
   },
   "sections": {

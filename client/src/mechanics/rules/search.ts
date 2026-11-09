@@ -4,7 +4,7 @@
 // only the explore controller imports (the `rules-lazy` arch rule); the story tool runs the same functions. Never
 // throws on save data. Pure.
 import { RESUME_STATE_CAP, lockOf, own, runOf, sectionScope, worldIndex } from '../../explore/reduce.ts';
-import type { ExploreAction, ExploreEffect, Successor } from '../../explore/reduce.ts';
+import type { ExploreAction, ExploreEffect, Step, Successor } from '../../explore/reduce.ts';
 import type { PuzzleOutcome, PuzzleRun, WorldState } from '../../explore/state.ts';
 import type { PuzzleLocalId, SectionId } from '../../story/staging.ts';
 import type { HotspotKey, ItemId, Lock, RoomId, WorldPublicBody } from '../../world/types.ts';
@@ -317,13 +317,18 @@ export type SearchOptions = {
    * goal edge and never enqueued; `isNew` marks the edge that discovered `to`.
    */
   readonly onEdge?: (from: number, succ: Successor, to: number | null, isNew: boolean) => void;
+  /**
+   * A step the search never takes: never enqueued, never reported (the build's clue check removes a puzzle's end).
+   * Absent: every step. No runtime caller passes it.
+   */
+  readonly exclude?: (step: Step) => boolean;
 };
 export type SearchResult = { readonly result: 'found' | 'exhausted' | 'cap'; readonly states: number };
 
 /**
- * THE section search of the soft-lock checker and the resume (X9 "one cap"): a BFS over `successors` from `start`,
- * deduplicated by `sectionKey(S)`. Discovering a (cap+1)-th distinct state stops with 'cap', so the runtime never
- * searches past a count the build accepted.
+ * THE section search of the soft-lock checker and the resume (X9 "one cap"): a BFS over `successors` from `start`
+ * (but the steps `opts.exclude` accepts), deduplicated by `sectionKey(S)`. Discovering a (cap+1)-th distinct state
+ * stops with 'cap', so the runtime never searches past a count the build accepted.
  */
 export function searchSection(w: WorldPublicBody, start: WorldState, section: SectionId, cap: number, opts: SearchOptions = {}): SearchResult {
   const seen = new Map<string, number>();
@@ -339,6 +344,9 @@ export function searchSection(w: WorldPublicBody, start: WorldState, section: Se
       break;
     }
     for (const succ of successors(w, state, opts.rules)) {
+      if (opts.exclude?.(succ.step) === true) {
+        continue;
+      }
       if (succ.leaves) {
         opts.onEdge?.(from, succ, null, false);
         continue;
