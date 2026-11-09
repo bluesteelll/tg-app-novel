@@ -3,7 +3,9 @@
 // fetches the public catalog and covers, lists every story's saves, reads the entitlements and loads the settings. A
 // Home tap unlocks audio synchronously, inside the tap (principle 5), then waits for the engine and starts the story.
 // It owns the page's subscriptions: the lifecycle, `pagehide`, the session's expiry. The meta controller's chunk is
-// requested by the gate below, the one way to it, never on the way to the first line (RULINGS 105, 149; LFL).
+// requested by the gate below, the one way to it, and never on the path that taps Start as soon as it can: at the
+// session's first step, a meta tap, an ending, a hint use, a launch parameter (right after auth) or Home idle (RULINGS
+// 105, 149; LFL).
 import { createEndpoints } from '../api/endpoints.ts';
 import type { Endpoints } from '../api/endpoints.ts';
 import type { ProductDto, SaveListResponse, SaveSummary } from '../api/generated/api.ts';

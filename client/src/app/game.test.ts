@@ -3075,8 +3075,8 @@ test('game: card failure keeps the end', async () => {
   h.game.dispose();
   m.gate.dispose();
 
-  // (b) The meta chunk does not load: the boot's import fails silently, the ending's own import fails with the toast,
-  // and the end's card action imports again.
+  // (b) The meta chunk does not load: a non-tap trigger's import (the session's first step) fails silently, the
+  // ending's own import fails with the toast, and the end's card action imports again.
   const b = metaHarness();
   void b.m.gate.ready();
   await b.m.fail();
@@ -3097,7 +3097,7 @@ test('game: card failure keeps the end', async () => {
 
 test('game: an ending while the meta chunk loads gets its card', async () => {
   const { h, m } = metaHarness();
-  void m.gate.ready(); // the boot's import, still in flight at the end
+  void m.gate.ready(); // a non-tap trigger's import (the session's first step), still in flight at the end
   await drowned(h);
   expect(typeof cardAction(h)).toBe('function');
   expect([m.loads(), m.made(), cardPosts(m), m.settles]).toEqual([1, 0, [], []]);
@@ -3195,7 +3195,7 @@ test('boot: an ending left before the meta chunk lands still marks its card', as
   const { h, m } = metaHarness();
   // The stats read stays unanswered, so only this session's ending can give tide its card (the sample has none).
   m.on(/^GET \/api\/stats$/, () => new Promise<MetaWire>(() => {}));
-  void m.gate.ready(); // the boot's import, still in flight at the end
+  void m.gate.ready(); // a non-tap trigger's import (the session's first step), still in flight at the end
   await drowned(h);
   await h.game.exitToStories(); // the end is left before the chunk lands
   await m.land();
@@ -3489,7 +3489,8 @@ test('boot: meta chunk import retried by the next tap, single flight', async () 
       onCards: () => {},
       clock: PAGE_TIMERS,
     });
-    // The boot's import fails silently, and nothing imports again without a tap, however long the page stays open.
+    // A non-tap trigger's import (the session's first step, a launch parameter, Home idle) fails silently, and nothing
+    // imports again without a tap, however long the page stays open.
     void gate.ready();
     flights.shift()?.reject(new Error('offline'));
     await settle();
