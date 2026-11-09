@@ -8,8 +8,9 @@ import type { ChapterId, LineId, StoryVersion } from '../story/staging.ts';
 import type { TgError } from '../telegram/index.ts';
 import { decodePending, encodePending } from './pending.ts';
 import type { DeviceStore, PendingEntry } from './pending.ts';
-import { KEEPALIVE_BODY_MAX, createSaveService, summaryOf } from './service.ts';
+import { KEEPALIVE_BODY_MAX, createSaveService } from './service.ts';
 import type { SaveService, SaveState, SaveWrite } from './service.ts';
+import { summaryOf } from './summary.ts';
 
 /** Timers the test advances by hand; promise chains settle between timers, so chained timers fire in order. */
 class FakeClock implements Clock {
