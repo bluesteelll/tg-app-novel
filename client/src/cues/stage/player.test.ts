@@ -472,6 +472,15 @@ test('cues: puzzle checking breathes until its frame settles', () => {
   lost.player.dispose();
   expect(running(lost)).toEqual([]);
   expect(lost.layer.children).toHaveLength(0);
+  // A checking cue the bus captured before the stage unmounted and flushed after it starts no loop and leaves no
+  // ghost: nothing would dispose them again.
+  const late = fixture();
+  const flushed = late.player.capture(eventOf(cueOf('puzzle:checking')));
+  late.player.dispose();
+  late.player.run(flushed);
+  vi.advanceTimersByTime(5000);
+  expect(late.records).toEqual([]);
+  expect(late.layer.children).toHaveLength(0);
   // The loop's ends are the state gate's settling keys and the frame's close.
   expect(CUE_MOTIONS['puzzle:checking'].until).toEqual([
     'puzzle:wrong',
