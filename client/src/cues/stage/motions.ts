@@ -204,6 +204,11 @@ export const CUE_MOTIONS: { readonly [K in Exclude<CueKey, ControlKey>]: MotionS
   'puzzle:ladder': row('glint', 420, 'ladder'),
   'puzzle:hint-failed': row('wobble', 360, 'alert', { haptic: 'error' }),
   'puzzle:load-failed': row('wobble', 360, 'notice', { haptic: 'error' }),
+  // Core's module cues (RULINGS 194): a look, a lock that refuses a tap, an item that does not fit, a section reset.
+  'module:core:look': row('glint', 420, 'box'),
+  'module:core:locked': row('shake', 360, 'box', { haptic: 'error' }),
+  'module:core:refused': row('wobble', 360, 'box', { haptic: 'error' }),
+  'module:core:reset': row('sweep-back', 600, 'stage'),
 };
 
 /** Control keys: a default per trigger kind and overrides for the core controls; a type or module control takes its

@@ -10,6 +10,12 @@ import type { ExploreAction } from '../../explore/reduce.ts';
 import type { MechanicRules } from '../contract.ts';
 import { actions, applyCore, reads } from './core.ts';
 
-const core = { id: 'core', actions, apply: applyCore, reads, cues: [] } satisfies MechanicRules<'core', ExploreAction, never>;
+const core = {
+  id: 'core',
+  actions,
+  apply: applyCore,
+  reads,
+  cues: ['look', 'locked', 'refused', 'reset'] as const,
+} satisfies MechanicRules<'core', ExploreAction, 'look' | 'locked' | 'refused' | 'reset'>;
 
 export const MECHANIC_RULES = [core] as const;
