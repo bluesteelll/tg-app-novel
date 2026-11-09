@@ -79,7 +79,11 @@ export type Limits = {
   metaUiChunkBr: number;
   /** RULINGS 105, 149: the meta controller's chunk, requested by boot's gate (from its measurement, at most 6 KB). */
   metaControllerChunkBr: number;
-  /** Engine plan §11: JS + CSS of the cue stage's chunk (GM3s), which app/yields.ts import()s. */
+  /**
+   * Engine plan §11: JS + CSS of the cue stage's chunk (GM3s), which app/yields.ts import()s. RULINGS 201 set it from
+   * the first measured row; past 7.5 KB the row is a review trigger, not a split: the lane that crosses it attributes
+   * the row by module in its report, and a split is proposed only if it removes a request or bytes from a load path.
+   */
   cueStageChunkBr: number;
   allJsBr: number;
   cssBr: number;
@@ -116,7 +120,7 @@ export const LIMITS: Limits = {
   exploreUiChunkBr: 16_000,
   metaUiChunkBr: 14_000,
   metaControllerChunkBr: 6_000,
-  cueStageChunkBr: 6_000,
+  cueStageChunkBr: 8_500,
   allJsBr: 305_000,
   cssBr: 12_000,
   htmlBr: 2_000,

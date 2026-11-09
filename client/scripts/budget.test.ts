@@ -414,15 +414,15 @@ describe('budget evaluate', () => {
       valueBytes: null,
       note: `no source of ${CUE_STAGE}`,
     });
-    // Its own dynamic chunk, JS and CSS beyond the entry, against 6.0 KB.
-    expect(LIMITS.cueStageChunkBr).toBe(6_000);
+    // Its own dynamic chunk, JS and CSS beyond the entry, against 8.5 KB (RULINGS 201).
+    expect(LIMITS.cueStageChunkBr).toBe(8_500);
     expect(row(withLazy(inputs(), { [CUE_STAGE]: { js: 3_000, css: 300 } }))).toMatchObject({
       status: 'PASS',
       valueBytes: 3_300,
       limitBytes: LIMITS.cueStageChunkBr,
     });
-    expect(row(withLazy(inputs(), { [CUE_STAGE]: { js: 6_000 } }))).toMatchObject({ status: 'PASS', valueBytes: 6_000 });
-    expect(row(withLazy(inputs(), { [CUE_STAGE]: { js: 6_001 } }))).toMatchObject({ status: 'FAIL', valueBytes: 6_001 });
+    expect(row(withLazy(inputs(), { [CUE_STAGE]: { js: 8_500 } }))).toMatchObject({ status: 'PASS', valueBytes: 8_500 });
+    expect(row(withLazy(inputs(), { [CUE_STAGE]: { js: 8_501 } }))).toMatchObject({ status: 'FAIL', valueBytes: 8_501 });
     // The engine reaches it by import() only: the engine row does not count it (nor a chunk split off its directory),
     // its own row does, without the Pixi chunk the engine already loaded.
     const base = withEngine(inputs(), 50_000, 179_000);
@@ -703,7 +703,7 @@ describe('budget cli', () => {
     expect(r.stdout).toContain('puzzle-type chunk (br) | — | 8.0 KB | PENDING | src/app/yields.ts absent');
     expect(r.stdout).toContain('puzzle-host chunk (br) | — | 10.0 KB | PENDING | src/app/yields.ts absent');
     expect(r.stdout).toContain('explore-ui chunk (br) | — | 16.0 KB | PENDING | src/app/yields.ts absent');
-    expect(r.stdout).toContain('cue-stage chunk (br) | — | 6.0 KB | PENDING | src/app/yields.ts absent');
+    expect(r.stdout).toContain('cue-stage chunk (br) | — | 8.5 KB | PENDING | src/app/yields.ts absent');
     expect(r.stdout).toContain('meta-ui chunk (br) | — | 14.0 KB | PENDING | src/app/meta.ts absent');
     expect(r.stdout).toContain('meta controller chunk (br) | — | 6.0 KB | PENDING | src/app/meta.ts absent');
     expect(r.stdout).toMatch(/^budget: \d+ rows, \d+ PASS, 0 FAIL, \d+ PENDING$/m);
