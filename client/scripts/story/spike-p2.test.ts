@@ -6,8 +6,12 @@ import { RESUME_STATE_CAP } from '../../src/explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../../src/explore/state.ts';
 import { searchSection, sectionEntry } from '../../src/mechanics/rules/search.ts';
 import type { SearchResult } from '../../src/mechanics/rules/search.ts';
-import type { SectionId } from '../../src/story/staging.ts';
+import { decodeAssetCatalog } from '../../src/story/catalog.ts';
+import type { ChapterId, SectionId } from '../../src/story/staging.ts';
 import { decodeWorldSource, toPublic } from '../../src/world/decode.ts';
+import type { SourceChapter } from './lint.ts';
+import type { WorldLint, WorldLintInput } from './mechanics/index.ts';
+import { decodeWorldFile, lintWorld } from './world.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
 // Spike P2-a (engine plan §7.6, GM1b): how far today's kernel's state count grows at ch1's density when later
@@ -209,4 +213,59 @@ test('spike p2: the emulated mix is measured', () => {
       expect(m.states, name).toBeGreaterThanOrEqual(1);
     }
   }
+}, 60_000);
+
+// ---------------------------------------------------------------------------------------------------------------
+// The world lint registry (engine plan §3.2, GM1b): `lintWorld` runs every per-world entry of MECHANIC_LINTS with the
+// world runner's inputs and its line lookup. Here, not in world.test.ts, because this is the lane's scripts test file.
+
+const CH1: SourceChapter = { id: 'ch1' as ChapterId, paid: false, entry: 'ch1/main.ink' }; // a fixture chapter id
+const FILE = 'story/ch1/world.json';
+
+function repoText(path: string): string {
+  const text = readFileSync(new URL(`../../../${path}`, import.meta.url), 'utf8');
+  return text.startsWith(String.fromCharCode(0xfeff)) ? text.slice(1) : text;
+}
+
+test("story: lintWorld runs every per-world mechanics lint at the author's line", () => {
+  const catalog = decodeAssetCatalog(JSON.parse(repoText('assets/catalog.json')));
+  if (!catalog.ok) {
+    throw new Error('invariant: the committed catalog decodes');
+  }
+  const inputOf = (text: string): Parameters<typeof lintWorld>[0] => {
+    const decoded = decodeWorldFile({ file: FILE, text });
+    if (decoded.world === null) {
+      throw new Error(`invariant: the world decodes: ${JSON.stringify(decoded.findings)}`);
+    }
+    return { chapter: CH1, file: FILE, text, world: decoded.world, catalog: catalog.value, knots: null, yielded: null, declared: new Map() };
+  };
+  // A per-world pass that reports at an item's path, and a story-level entry the world runner never calls.
+  const text = `${JSON.stringify(generated(1, 'base'), null, 2)}\n`;
+  const input = inputOf(text);
+  const calls: WorldLintInput[] = [];
+  const perWorld: WorldLint<'world/schema'> = {
+    id: 'probe',
+    codes: { 'world/schema': 'E' },
+    lint: (i) => {
+      calls.push(i);
+      return [{ code: 'world/schema', severity: 'E', file: i.file, line: i.line('items.i2'), message: 'probe: items.i2' }];
+    },
+  };
+  const storyLevel: WorldLint<'world/state-cap'> = { id: 'story-pass', codes: { 'world/state-cap': 'E' }, runsFrom: 'story' };
+  expect('lint' in storyLevel).toBe(false);
+  const r = lintWorld(input, [perWorld, storyLevel]);
+  const itemLine = text.split('\n').findIndex((l) => l.trimStart().startsWith('"i2": {')) + 1;
+  expect(itemLine).toBeGreaterThan(1);
+  expect(r.findings.filter((f) => f.message.startsWith('probe:'))).toEqual([
+    { code: 'world/schema', severity: 'E', file: FILE, line: itemLine, message: 'probe: items.i2' },
+  ]);
+  expect(calls).toHaveLength(1);
+  expect(calls[0]?.world).toBe(input.world);
+  expect(calls[0]?.text).toBe(text);
+  // A module finding sorts with the kernel's: by line, code and message.
+  const order = r.findings.map((f) => `${String(f.line).padStart(6, '0')}\t${f.code}\t${f.message}`);
+  expect(order).toEqual([...order].sort());
+  // The default registry on the real ch1: core's entry adds no finding to today's.
+  const ch1 = inputOf(repoText(FILE));
+  expect(lintWorld(ch1)).toEqual(lintWorld(ch1, []));
 }, 60_000);
