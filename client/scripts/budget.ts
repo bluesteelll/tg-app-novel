@@ -66,7 +66,10 @@ export type BudgetInputs = {
 export type Limits = {
   entryJsBr: number;
   engineJsBr: number;
-  /** PUZZLES-PLAN: entry + engine closures, what loads before the first line. */
+  /**
+   * PUZZLES-PLAN: entry + engine closures, what loads before the first line on the path that taps Start as soon as it
+   * can (the meta controller's chunk is requested after it: RULINGS 149).
+   */
   firstLineJsBr: number;
   /** PUZZLES-PLAN "Budgets": JS + CSS of each puzzle type chunk, of the puzzle host, of the explore UI. */
   puzzleTypeChunkBr: number;
@@ -74,7 +77,7 @@ export type Limits = {
   exploreUiChunkBr: number;
   /** META-PLAN "Budgets": JS + CSS of the meta overlays' chunk. */
   metaUiChunkBr: number;
-  /** RULINGS 105: the meta controller's chunk, requested before the first line (from its measurement, at most 6 KB). */
+  /** RULINGS 105, 149: the meta controller's chunk, requested by boot's gate (from its measurement, at most 6 KB). */
   metaControllerChunkBr: number;
   allJsBr: number;
   cssBr: number;
@@ -136,12 +139,12 @@ export const LIMITS: Limits = {
 export const ENGINE_SRC = 'src/app/engine.ts';
 /** The importer of the puzzle and explore families (PUZZLES-PLAN X14): their rows are PENDING until it exists (W7). */
 export const YIELDS_SRC = 'src/app/yields.ts';
-/** The meta controller (META-PLAN M27; RULINGS 105): boot import()s it after auth, and it import()s the overlays. */
+/** The meta controller (META-PLAN M27; RULINGS 105, 149): boot's gate import()s it, and it import()s the overlays. */
 export const META_SRC = 'src/app/meta.ts';
 
 /**
- * One lazy chunk family: its roots (manifest `src`), its limit, whether the largest root or their union counts, the
- * source whose absence keeps its row PENDING, and whether it is requested before the first line.
+ * One lazy chunk family: its roots (manifest `src`), its limit, whether the largest root or their union counts, and the
+ * source whose absence keeps its row PENDING.
  */
 export type LazyFamily = {
   name: string;
@@ -149,12 +152,11 @@ export type LazyFamily = {
   limit: 'puzzleTypeChunkBr' | 'puzzleHostChunkBr' | 'exploreUiChunkBr' | 'metaUiChunkBr' | 'metaControllerChunkBr';
   measure: 'largest' | 'union';
   importer: typeof YIELDS_SRC | typeof META_SRC;
-  /** Requested beside the engine (RULINGS 105): the first-line and first-load rows count its JS. */
-  firstLine: boolean;
 };
 /**
- * PUZZLES-PLAN X14, META-PLAN M27: every family is a dynamic chunk, never in the entry or the engine closure. The meta
- * controller loads before the first line but outside both closures, so it is counted there once, through its row.
+ * PUZZLES-PLAN X14, META-PLAN M27: every family is a dynamic chunk, never in the entry or the engine closure, and none
+ * is requested before the first line on the path that taps Start as soon as it can (RULINGS 149 moved the meta
+ * controller out of that set): each is counted once, through its own row.
  */
 export const LAZY_FAMILIES: readonly LazyFamily[] = [
   {
@@ -163,7 +165,6 @@ export const LAZY_FAMILIES: readonly LazyFamily[] = [
     limit: 'puzzleTypeChunkBr',
     measure: 'largest',
     importer: YIELDS_SRC,
-    firstLine: false,
   },
   {
     name: 'puzzle-host chunk (br)',
@@ -171,7 +172,6 @@ export const LAZY_FAMILIES: readonly LazyFamily[] = [
     limit: 'puzzleHostChunkBr',
     measure: 'largest',
     importer: YIELDS_SRC,
-    firstLine: false,
   },
   {
     name: 'explore-ui chunk (br)',
@@ -179,11 +179,10 @@ export const LAZY_FAMILIES: readonly LazyFamily[] = [
     limit: 'exploreUiChunkBr',
     measure: 'union',
     importer: YIELDS_SRC,
-    firstLine: false,
   },
-  { name: 'meta-ui chunk (br)', roots: ['src/ui/meta/index.ts'], limit: 'metaUiChunkBr', measure: 'largest', importer: META_SRC, firstLine: false },
+  { name: 'meta-ui chunk (br)', roots: ['src/ui/meta/index.ts'], limit: 'metaUiChunkBr', measure: 'largest', importer: META_SRC },
   // Its own root is its importer: boot.ts always exists, so the row is PENDING exactly while the controller is absent.
-  { name: 'meta controller chunk (br)', roots: [META_SRC], limit: 'metaControllerChunkBr', measure: 'largest', importer: META_SRC, firstLine: true },
+  { name: 'meta controller chunk (br)', roots: [META_SRC], limit: 'metaControllerChunkBr', measure: 'largest', importer: META_SRC },
 ];
 const LAZY_ROOTS: ReadonlySet<string> = new Set(LAZY_FAMILIES.flatMap((f) => f.roots));
 /** The arch rule's lazy directories: a chunk from one of them loads after the first line, listed root or not. */
@@ -465,10 +464,12 @@ function engineRow(inputs: BudgetInputs, entryClosure: Closure | null, sizes: Re
 }
 
 /**
- * Entry + engine closures, and the lazy chunks requested beside them (the meta controller): what loads before the first
- * line. While the engine source does not exist the sum is partial: PENDING, or FAIL when the entry alone is already over
- * (a partial PASS would be a 0 KB pass). A pending or failed early chunk adds nothing: its code is then in a closure
- * counted here, or not built, and its own row says so.
+ * Entry + engine closures: what loads before the first line on the path that taps Start as soon as it can. The meta
+ * controller's chunk is not counted (RULINGS 149): boot's gate requests it at the session's first step, a meta tap, an
+ * ending, a hint use, a launch parameter or Home idle (the engine in + 2 s, Home still the root), so never on that
+ * path; the stated exception is a launch with a start parameter (an invite), which requests it after auth. Its own row
+ * counts it. While the engine source does not exist the sum is partial: PENDING, or FAIL when the entry alone is
+ * already over (a partial PASS would be a 0 KB pass).
  */
 function firstLineJs(
   inputs: BudgetInputs,
@@ -481,13 +482,10 @@ function firstLineJs(
     return { ok: false, problem: `entry closure: ${e.problem}` };
   }
   const g = engineMeasure(inputs, entryClosure, sizes);
-  const early = LAZY_FAMILIES.filter((f) => f.firstLine)
-    .map((f) => lazyMeasure(inputs, f, entryClosure, sizes))
-    .reduce((sum, m) => sum + (m.kind === 'ok' ? m.js : 0), 0);
   if (g === null) {
-    return { ok: true, bytes: e.bytes + early, partial: true };
+    return { ok: true, bytes: e.bytes, partial: true };
   }
-  return g.ok ? { ok: true, bytes: e.bytes + g.bytes + early, partial: false } : { ok: false, problem: `engine closure: ${g.problem}` };
+  return g.ok ? { ok: true, bytes: e.bytes + g.bytes, partial: false } : { ok: false, problem: `engine closure: ${g.problem}` };
 }
 
 function firstLineRow(
@@ -502,7 +500,7 @@ function firstLineRow(
   if (!js.ok) {
     return failed(name, limits.firstLineJsBr, js.problem);
   }
-  return partialRow(name, js.bytes, limits.firstLineJsBr, js.partial, 'entry + engine closures + meta controller chunk');
+  return partialRow(name, js.bytes, limits.firstLineJsBr, js.partial, 'entry + engine closures');
 }
 
 /** A sum that lacks the engine while its source is absent: PENDING (with the partial value) unless already over. */
@@ -514,8 +512,8 @@ function partialRow(name: string, bytes: number, limit: number, partial: boolean
   return { name, valueBytes: bytes, limitBytes: limit, status: bytes > limit ? 'FAIL' : 'PENDING', note: why, unit: 'KB' };
 }
 
-/** A lazy family's bytes (JS + CSS, and the JS alone), or why it is not measured yet, or why it cannot be. */
-type LazyMeasure = { kind: 'pending'; note: string } | { kind: 'failed'; problem: string } | { kind: 'ok'; bytes: number; js: number; note: string };
+/** A lazy family's bytes (JS + CSS), or why it is not measured yet, or why it cannot be. */
+type LazyMeasure = { kind: 'pending'; note: string } | { kind: 'failed'; problem: string } | { kind: 'ok'; bytes: number; note: string };
 
 /**
  * A lazy family, keyed on its importer like the engine row on `app/engine.ts` (PUZZLES-PLAN W7): PENDING while the
@@ -588,11 +586,10 @@ function lazyMeasure(inputs: BudgetInputs, family: LazyFamily, entryClosure: Clo
   if (family.measure === 'union') {
     const union = new Set(perRoot.flatMap((r) => [...r.keys]));
     const { bytes } = chunkBytes(manifest, union, sizes);
-    return { kind: 'ok', bytes, js: jsBytes(manifest, union, sizes).bytes, note: `${union.size} chunks of ${present.length} roots` };
+    return { kind: 'ok', bytes, note: `${union.size} chunks of ${present.length} roots` };
   }
   const largest = sized.reduce((a, b) => (b.bytes > a.bytes ? b : a));
-  const js = jsBytes(manifest, largest.keys, sizes).bytes;
-  return { kind: 'ok', bytes: largest.bytes, js, note: `largest: ${largest.root}, ${largest.keys.size} chunks` };
+  return { kind: 'ok', bytes: largest.bytes, note: `largest: ${largest.root}, ${largest.keys.size} chunks` };
 }
 
 function lazyRow(inputs: BudgetInputs, family: LazyFamily, entryClosure: Closure | null, sizes: ReadonlyMap<string, number>, limits: Limits): Row {

@@ -4,8 +4,10 @@
 // test parks or replaces the answer, so every answer goes through its decoder as at the real edge.
 import { expect, test } from 'vitest';
 
+import { decodeStatsResponse } from '../api/decode.ts';
 import type { Decoder } from '../api/decode.ts';
 import { createEndpoints, puzzleId } from '../api/endpoints.ts';
+import type { Endpoints } from '../api/endpoints.ts';
 import samplesText from '../api/fixtures/dto-samples.json?raw';
 import type { ErrorCode } from '../api/generated/api.ts';
 import type { ApiError, ApiRequest, Clock, Http } from '../api/http.ts';
@@ -210,6 +212,8 @@ type RigOptions = {
   openLink?: (url: string) => Result<void, TgError>;
   openInvoice?: (url: string) => Promise<Result<InvoiceStatus, TgError>>;
   loadPurchase?: () => Promise<{ createPurchaseFlow: typeof createPurchaseFlow; packDelivered: typeof packDelivered }>;
+  /** Boot's stats read (LFL B1); the default reads through the fake server, as boot does. */
+  stats?: () => ReturnType<Endpoints['getStats']>;
 };
 
 type Rig = {
@@ -248,9 +252,11 @@ function rig(o: RigOptions = {}): Rig {
     },
   });
   vm.screens = screens.view();
+  const api = createEndpoints(server.http);
   ctl = createMetaController({
     meta: createMetaEndpoints(server.http),
-    api: createEndpoints(server.http),
+    api,
+    stats: o.stats ?? (() => api.getStats()),
     tg: {
       supportsShareMessage: () => o.native ?? true,
       shareMessage: (id) => {
@@ -444,6 +450,21 @@ test("meta: home card from stats or this session's ending", async () => {
   await flush();
   expect([offline.ctl.hasCard(TIDE), offline.onCards(), offline.settles, offline.server.count(CARD_LABEL)]).toEqual([true, 1, [], 0]);
   offline.ctl.dispose();
+});
+
+test("meta: the stats come from boot's read", async () => {
+  // LFL B1: boot read the stats for Home's card buttons after auth; the controller takes that answer, so one GET per
+  // page. The canned read is StatsResponse[0] (manor ended), handed without the fake server.
+  const canned = decodeStatsResponse(sample('StatsResponse'));
+  if (!canned.ok) {
+    throw new Error('StatsResponse[0] does not decode');
+  }
+  const r = rig({ stats: () => Promise.resolve({ ok: true, value: canned.value }) });
+  r.ctl.boot();
+  await flush();
+  expect(r.server.count(/^GET \/api\/stats$/)).toBe(0);
+  expect([r.ctl.hasCard(MANOR), r.ctl.hasCard(TIDE), r.onCards()]).toEqual([true, false, 1]);
+  r.ctl.dispose();
 });
 
 // ---------------------------------------------------------------------------------------------------------------

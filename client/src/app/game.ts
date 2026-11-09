@@ -167,8 +167,13 @@ export type GameDeps = {
 export type GameMeta = {
   /** A declared ending was reached (F16): the stats settle, then the card over the end; never rejects. */
   onEnding(story: StoryId): Promise<void>;
-  /** The puzzle session's hint port (M21), or null while the controller is not in. */
+  /** The puzzle session's hint port (M21), or null for none; boot's gate forwards to the controller's (LFL HP). */
   hintPort(): HintPort | null;
+  /**
+   * A step is on screen (a line, choices, a yield or the end), or D11's paywall over the empty stage, which no step
+   * follows: the controller's chunk is requested once (LFL T1).
+   */
+  stepShown(): void;
   /** A line was revealed: the meta overlays' chunk is fetched once. */
   lineShown(): void;
   /** The session leaves: no meta answer of before pushes an overlay. */
@@ -766,6 +771,9 @@ export function createGame(deps: GameDeps): Game {
         return _never;
       }
     }
+    // LFL T1: only now, with the step's batch loaded and its view set, so nothing before it shares the link with the
+    // meta controller's chunk (RULINGS 149).
+    meta?.stepShown();
     if (step.kind !== 'end') {
       s.torn = false; // the stage, the position and (below, in the same turn) the checkpoint are this step's
     }
@@ -969,6 +977,9 @@ export function createGame(deps: GameDeps): Game {
           s.shown = null;
           s.yields.restore(EMPTY_WORLD_STATE, null, null); // no rooms under the paywall; a pending body has no world
           pendingPaid(s, body, false);
+          // LFL T1 (fix_r1 I1): this paywall is the session's first screen and no step follows it, so the controller's
+          // chunk is asked for here as at a step; its Terms -> policy link and the Menu's meta taps run on the first tap.
+          meta?.stepShown();
           return ok(undefined);
         }
         return chapterFailed(s, loaded.error);

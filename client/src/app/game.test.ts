@@ -8,7 +8,8 @@ import { expect, test, vi } from 'vitest';
 import { compileChapter } from '../../scripts/story/compile.ts';
 import { GLOBALS_PATH } from '../../scripts/story/lint.ts';
 import type { Decoder } from '../api/decode.ts';
-import { createEndpoints } from '../api/endpoints.ts';
+import { createEndpoints, puzzleId } from '../api/endpoints.ts';
+import type { Endpoints } from '../api/endpoints.ts';
 import { createMetaEndpoints } from '../api/meta.ts';
 import samplesText from '../api/fixtures/dto-samples.json?raw';
 import type { AttemptResponse, ProductDto, PuzzleStatus, SaveFull, SaveListResponse, SaveSlot, SaveSummary } from '../api/generated/api.ts';
@@ -31,7 +32,7 @@ import type { AssetEntry, AssetManifest, ChapterCatalog, LoadedChapter, Result, 
 import { liveRunners } from '../story/runner.ts';
 import { decodeSave, encodeSave } from '../story/save-codec.ts';
 import { EMPTY_SNAPSHOT } from '../story/staging.ts';
-import type { AssetId, ChapterId, OrderId, ProductId, StoryVersion } from '../story/staging.ts';
+import type { AssetId, ChapterId, OrderId, ProductId, PuzzleLocalId, StoryVersion } from '../story/staging.ts';
 import type { InvoiceStatus } from '../telegram/index.ts';
 import { createExploreView } from '../ui/explore-view.svelte.ts';
 import type { ExploreViewStore } from '../ui/explore-view.svelte.ts';
@@ -43,7 +44,7 @@ import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { HotspotKey, ItemId, WorldPublic } from '../world/types.ts';
 import { createViewModel } from '../ui/state.svelte.ts';
 import type { ViewModel } from '../ui/state.svelte.ts';
-import { createMetaGate, newestAuto } from './boot.ts';
+import { createMetaGate, HOME_IDLE_MS, newestAuto } from './boot.ts';
 import type { MetaGate } from './boot.ts';
 import { CONFLICT_HOLD_MS, createGame, reloadedFor, withReloadedFor } from './game.ts';
 import type { Entitlements, Game, GameDeps, ReloadPort } from './game.ts';
@@ -2875,8 +2876,12 @@ type MetaRig = {
   land(): Promise<void>;
   /** The import in flight fails. */
   fail(): Promise<void>;
-  /** How often the controller asked Home to redraw its card buttons. */
+  /** How often the gate or the controller asked Home to redraw its card buttons. */
   cards(): number;
+  /** How often the controller loaded the overlays' chunk. */
+  uiLoads(): number;
+  /** The endpoints over the rig's http: boot's own stats read is made through them (LFL B1). */
+  api: Endpoints;
 };
 
 /** Boot's gate over the harness's view model and stack, wired as boot.ts wires it (its `make` and `note`). */
@@ -2909,7 +2914,12 @@ function metaRig(h: Harness, bind: (gate: MetaGate) => void = () => {}): MetaRig
   let loads = 0;
   let made = 0;
   let cards = 0;
+  let uiLoads = 0;
   let flight: { resolve: (m: MetaModule) => void; reject: (e: unknown) => void } | null = null;
+  const api = createEndpoints(http);
+  const redraw = (): void => {
+    cards += 1;
+  };
   const gate = createMetaGate({
     load: () => {
       loads += 1;
@@ -2918,11 +2928,12 @@ function metaRig(h: Harness, bind: (gate: MetaGate) => void = () => {}): MetaRig
       });
     },
     root: () => h.screens.view().root,
-    make: (m) => {
+    make: (m, stats) => {
       made += 1;
       const c = m.createMetaController({
         meta: createMetaEndpoints(http),
-        api: createEndpoints(http),
+        api,
+        stats: () => stats ?? api.getStats(),
         tg: META_TG,
         screens: h.screens,
         vm: h.vm,
@@ -2936,16 +2947,19 @@ function metaRig(h: Harness, bind: (gate: MetaGate) => void = () => {}): MetaRig
         clock: h.clock,
         newId: () => 'id-1',
         host: 'example.test',
-        onCards: () => {
-          cards += 1;
-        },
+        onCards: redraw,
         // The overlays are never rendered here: the controller only hands the module to App.svelte.
-        loadUi: () => Promise.resolve({} as MetaUi),
+        loadUi: () => {
+          uiLoads += 1;
+          return Promise.resolve({} as MetaUi);
+        },
       });
       c.boot();
       return c;
     },
     note: (key) => h.vm.showToast({ kind: 'note', key, message: key, sticky: false }),
+    onCards: redraw,
+    clock: h.clock,
   });
   bind(gate);
   return {
@@ -2972,6 +2986,8 @@ function metaRig(h: Harness, bind: (gate: MetaGate) => void = () => {}): MetaRig
       await settle();
     },
     cards: () => cards,
+    uiLoads: () => uiLoads,
+    api,
   };
 }
 
@@ -3180,10 +3196,213 @@ test('boot: an ending left before the meta chunk lands still marks its card', as
   m.gate.dispose();
 });
 
+const statsGets = (m: MetaRig): string[] => m.sent.filter((x) => x === 'GET /api/stats');
+
+test("boot: Home card buttons from boot's stats before the meta chunk", async () => {
+  // LFL B1: boot hands the gate its own stats read after auth; Home's card buttons need no controller chunk.
+  const { h, m } = metaHarness();
+  m.gate.stats(m.api.getStats());
+  await settle();
+  // StatsResponse[0]: manor has its endings, tide none.
+  expect([m.gate.hasCard(MANOR), m.gate.hasCard(TIDE), m.cards(), m.loads()]).toEqual([true, false, 1, 0]);
+  // The chunk lands: the controller answers from now on (an ending of this session, which boot's read lacks), and it
+  // was handed the same read, so the page made one stats GET in all.
+  void m.gate.ready();
+  await m.land();
+  m.gate.current()?.endingReached(TIDE);
+  expect([m.gate.hasCard(MANOR), m.gate.hasCard(TIDE), m.made(), statsGets(m)]).toEqual([true, true, 1, ['GET /api/stats']]);
+  h.game.dispose();
+  m.gate.dispose();
+});
+
+test('game: a presented step tells the meta port', async () => {
+  // LFL T1: the controller's chunk is asked for once the session's first step is on screen, never before (RULINGS 149,
+  // W2): while the first batch's images load, nothing is requested.
+  const { h, m } = metaHarness();
+  const release = holdEnsure(h.scene);
+  const started = h.game.start({ kind: 'new', story: TIDE, chapter: CH3 });
+  await settle();
+  expect([lineOf(h.vm), m.loads()], 'the first batch still loads: no step, no import').toEqual([null, 0]);
+  release();
+  expect((await started).ok).toBe(true);
+  expect([lineOf(h.vm), m.loads()]).toEqual(['ch3.shore.l001', 1]);
+  // A later step joins the import already made.
+  await h.game.advance();
+  await settle();
+  expect([h.vm.choices === null, m.loads()]).toEqual([false, 1]);
+  h.game.dispose();
+  m.gate.dispose();
+});
+
+test('game: a continue into a pending paid start asks for the meta chunk at its paywall', async () => {
+  // LFL fix_r1 I1: D11's paywall over the empty stage is the session's first screen and no step follows it, so the
+  // chunk is asked for there as at a step; the paywall's Terms -> policy link then opens on its first tap.
+  const { h, m } = metaHarness({ chapters: [manorCh1(), manorCh2()], slots: new Map([['auto', pendingCh2()]]) });
+  expect((await h.game.start({ kind: 'slot', story: MANOR, slot: 'auto' })).ok).toBe(true);
+  expect([h.vm.screens.root.kind, overlayKinds(h), m.loads()]).toEqual(['game', ['paywall'], 1]);
+  await m.land();
+  const taps: string[] = [];
+  m.gate.tap(() => taps.push('policy'), { inTask: true });
+  expect([m.made(), taps]).toEqual([1, ['policy']]);
+  h.game.dispose();
+  m.gate.dispose();
+});
+
+/** The gate over a load the test settles by hand, and a controller stub the gate only hands out and disposes. */
+function bareGate(o: { root?: () => object; clock?: FakeClock } = {}): {
+  gate: MetaGate;
+  flights: Array<{ resolve: (m: MetaModule) => void; reject: (e: unknown) => void }>;
+  loads(): number;
+  runs: string[];
+} {
+  const flights: Array<{ resolve: (m: MetaModule) => void; reject: (e: unknown) => void }> = [];
+  const runs: string[] = [];
+  let loads = 0;
+  const gate = createMetaGate({
+    load: () => {
+      loads += 1;
+      return new Promise<MetaModule>((resolve, reject) => flights.push({ resolve, reject }));
+    },
+    make: () => ({ dispose: () => {} }) as MetaController,
+    note: () => {},
+    root: o.root ?? (() => ROOT),
+    onCards: () => {},
+    clock: o.clock ?? new FakeClock(),
+  });
+  return { gate, flights, loads: () => loads, runs };
+}
+
+test('boot: the meta chunk waits for the first step', async () => {
+  const g = bareGate();
+  expect(g.loads(), 'nothing is imported when the gate is made').toBe(0);
+  g.gate.port.stepShown();
+  g.gate.port.stepShown();
+  expect(g.loads(), 'the first step imports once').toBe(1);
+  g.flights.shift()?.reject(new Error('offline'));
+  await settle();
+  // RULINGS 105: a failed import is never retried by a step; a tap imports again.
+  g.gate.port.stepShown();
+  expect(g.loads(), 'a step after the failure').toBe(1);
+  g.gate.tap(() => g.runs.push('friends'));
+  expect(g.loads(), 'a tap after the failure').toBe(2);
+  g.gate.dispose();
+});
+
+test('boot: a line shown before the meta chunk lands prefetches the overlays', async () => {
+  const { h, m } = metaHarness();
+  m.gate.port.lineShown(); // the first line revealed while the chunk is still on its way
+  void m.gate.ready();
+  await m.land();
+  expect(m.uiLoads(), "the overlays' chunk, fetched once the controller is in").toBe(1);
+  m.gate.port.lineShown();
+  expect(m.uiLoads(), 'once per page').toBe(1);
+  h.game.dispose();
+  m.gate.dispose();
+});
+
+test('boot: the hint port waits for the meta chunk', async () => {
+  const drawer = puzzleId(CH1, 'drawer' as PuzzleLocalId);
+  const { h, m } = metaHarness();
+  m.on(WALLET_ROUTE, () => ({ ok: true, body: { balances: [{ kind: 'hint', balance: 3, debt: 0 }], packs: [], hintTierCost: 1, maxPerGift: 3 } }));
+  // Before the chunk: a port all the same, its cost and balance unknown (the ladder hides Use and Get more).
+  const port = m.gate.port.hintPort();
+  expect(port).not.toBeNull();
+  if (port === null) {
+    return;
+  }
+  expect([port.balance(), port.tierCost(), m.loads()]).toEqual([null, null, 1]);
+  // A use waits for the chunk, then spends through the controller's wallet port: one POST.
+  const used = port.use(drawer, 1, 'ru');
+  await m.land();
+  expect(await used).toEqual({ ok: true, value: { text: 'Look under the rug.', balance: 2 } });
+  expect([m.sent.filter((x) => HINT_ROUTE.test(x)), port.tierCost(), port.balance()]).toEqual([['POST /api/puzzles/ch1.drawer/hints/1'], 1, 2]);
+  // Get more opens the wallet.
+  port.getMore();
+  await settle();
+  expect(overlayKinds(h)).toEqual(['wallet']);
+  h.game.dispose();
+  m.gate.dispose();
+
+  // The chunk does not load: the use answers `network` (the session shows its hint failure).
+  const b = metaHarness();
+  const offline = b.m.gate.port.hintPort();
+  const failed = offline?.use(drawer, 1, 'ru');
+  await b.m.fail();
+  expect(await failed).toEqual({ ok: false, error: { kind: 'network' } });
+  b.h.game.dispose();
+  b.m.gate.dispose();
+});
+
+test('boot: Home idle imports the meta chunk once the engine is in', async () => {
+  // LFL T5: HOME_IDLE_MS after both Home and the engine import settled, and only while that Home is still the root.
+  const clock = new FakeClock();
+  let root: object = { kind: 'home' };
+  const g = bareGate({ root: () => root, clock });
+  // 1. Home alone, however long: the engine is not in, so a Start tap may still be on its way.
+  g.gate.homeShown();
+  clock.advance(HOME_IDLE_MS);
+  expect(g.loads(), 'Home without the engine').toBe(0);
+  // 2. The engine settles: the wait counts from it.
+  g.gate.engineSettled();
+  clock.advance(HOME_IDLE_MS - 1);
+  expect(g.loads(), 'one ms short').toBe(0);
+  clock.advance(1);
+  expect(g.loads(), 'Home idle').toBe(1);
+  g.gate.dispose();
+
+  // 3. The root changes before the wait ends (a Start tap): nothing, however long.
+  const left = bareGate({ root: () => root, clock });
+  left.gate.homeShown();
+  left.gate.engineSettled();
+  clock.advance(HOME_IDLE_MS - 1);
+  root = { kind: 'game' };
+  clock.advance(LONG_WAIT_MS);
+  expect(left.loads(), 'Home left').toBe(0);
+  left.gate.dispose();
+
+  // 4. Home shown again (a new root) restarts the wait; 5. a failed idle import arms no timer again.
+  root = { kind: 'home' };
+  const again = bareGate({ root: () => root, clock });
+  again.gate.engineSettled();
+  again.gate.homeShown();
+  clock.advance(HOME_IDLE_MS - 500);
+  root = { kind: 'home' };
+  again.gate.homeShown();
+  clock.advance(HOME_IDLE_MS - 1);
+  expect(again.loads(), 'the wait restarted at the second Home').toBe(0);
+  clock.advance(1);
+  expect(again.loads(), 'the second Home idle').toBe(1);
+  again.flights.shift()?.reject(new Error('offline'));
+  await settle();
+  again.gate.homeShown();
+  again.gate.engineSettled();
+  expect(clock.pending, 'no timer after a failed import').toBe(0);
+  clock.advance(LONG_WAIT_MS);
+  expect(again.loads()).toBe(1);
+  again.gate.dispose();
+});
+
+test('boot: a launch parameter imports the meta chunk at boot', () => {
+  // LFL T4: an invite's prompt shows over the first Home, so its launch imports at once; no parameter, no import.
+  const invited = bareGate();
+  invited.gate.launched('fCODE');
+  expect(invited.loads()).toBe(1);
+  invited.gate.dispose();
+  const plain = bareGate();
+  plain.gate.launched(null);
+  expect(plain.loads()).toBe(0);
+  plain.gate.dispose();
+});
+
 /** Longer than any retry timer a gate could hide (RULINGS 105: never on a timer). */
 const LONG_WAIT_MS = 10 * 60_000;
 /** A root that never changes: the gate's waiting taps all run. */
 const ROOT = Object.freeze({ kind: 'home' });
+/** The global timers as a gate's clock: under `vi.useFakeTimers` a gate timer is one the test counts and runs. */
+const PAGE_TIMERS: Pick<Clock, 'setTimeout' | 'clearTimeout'> = {
+  setTimeout: (fn, ms) => Number(setTimeout(fn, ms)),
+  clearTimeout: (id) => clearTimeout(id),
+};
 
 test('boot: a waiting meta tap is dropped when the root changes', async () => {
   const module = await import('./meta.ts');
@@ -3198,6 +3417,8 @@ test('boot: a waiting meta tap is dropped when the root changes', async () => {
       make: () => ctl,
       note: (key) => notes.push(key),
       root: () => root,
+      onCards: () => {},
+      clock: new FakeClock(),
     });
   // 1. A Friends tap waits on the chunk while the player goes Home -> a story -> Home: another root (identity, not
   // kind), so the tap is dropped when the chunk lands, with no toast; the chunk stays in for the next tap.
@@ -3254,6 +3475,8 @@ test('boot: meta chunk import retried by the next tap, single flight', async () 
       },
       note: (key) => notes.push(key),
       root: () => ROOT,
+      onCards: () => {},
+      clock: PAGE_TIMERS,
     });
     // The boot's import fails silently, and nothing imports again without a tap, however long the page stays open.
     void gate.ready();
@@ -3296,6 +3519,8 @@ test('boot: meta chunk import retried by the next tap, single flight', async () 
       },
       note: (key) => notes.push(key),
       root: () => ROOT,
+      onCards: () => {},
+      clock: PAGE_TIMERS,
     });
     void late.ready();
     const ending = late.port.onEnding(TIDE);

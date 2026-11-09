@@ -2,17 +2,18 @@
 // Pixi, inkjs or GSAP, and meanwhile, in parallel, imports the engine chunk, exchanges initData for the server's token,
 // fetches the public catalog and covers, lists every story's saves, reads the entitlements and loads the settings. A
 // Home tap unlocks audio synchronously, inside the tap (principle 5), then waits for the engine and starts the story.
-// It owns the page's subscriptions: the lifecycle, `pagehide`, the session's expiry. After auth it imports the meta
-// controller's chunk beside the engine (RULINGS 105); the gate below is the one way to it.
+// It owns the page's subscriptions: the lifecycle, `pagehide`, the session's expiry. The meta controller's chunk is
+// requested by the gate below, the one way to it, never on the way to the first line (RULINGS 105, 149; LFL).
 import { createEndpoints } from '../api/endpoints.ts';
 import type { Endpoints } from '../api/endpoints.ts';
 import type { ProductDto, SaveListResponse, SaveSummary } from '../api/generated/api.ts';
 import { createHttp, systemClock } from '../api/http.ts';
-import type { ApiError, Http } from '../api/http.ts';
+import type { ApiError, Clock, Http } from '../api/http.ts';
 import type { Session } from '../api/session.ts';
 import { unlockAudio } from '../audio/unlock.ts';
 import { t } from '../i18n/index.ts';
 import type { UiKey } from '../i18n/index.ts';
+import type { HintPort } from '../puzzles/session.ts';
 import { summaryOf } from '../saves/service.ts';
 import { createSettingsStore } from '../settings/store.ts';
 import type { Settings, SettingsStore } from '../settings/store.ts';
@@ -143,13 +144,23 @@ function describe(e: ApiError): string {
 /** The engine module, imported in parallel with the boot reads (F1 step 3). */
 type EngineModule = typeof import('./engine.ts');
 
-/** The meta controller's module (RULINGS 105): imported after auth, beside the engine; never awaited before the first line. */
+/** The meta controller's module (RULINGS 105, LFL): imported by the gate's triggers; never awaited before the first line. */
 type MetaModule = typeof import('./meta.ts');
+
+/** LFL T5: Home idle this long after both Home and the engine import settled, Home still the root: the chunk loads. */
+export const HOME_IDLE_MS = 2000;
+
+/** Boot's stats read after auth (LFL B1): Home's card buttons and the controller share it, one GET per page. */
+export type StatsRead = ReturnType<Endpoints['getStats']>;
 
 /** The meta controller behind its lazy chunk (META-PLAN M27; RULINGS 105): Home, the end and the puzzles reach it here. */
 export type MetaGate = {
   /** The controller once its chunk landed; null before, and after a failed import until a later one lands. */
   current(): MetaController | null;
+  /** Home's card flag (F17): the controller's once it is in, else the endings of boot's own stats read (LFL B1). */
+  hasCard(story: StoryId): boolean;
+  /** Boot's stats read, handed once; Home's card buttons redraw when it answers, and the controller is given it. */
+  stats(read: StatsRead): void;
   /** The controller, importing its chunk when it is not in (one import in flight); null when that import failed. */
   ready(): Promise<MetaController | null>;
   /**
@@ -158,36 +169,77 @@ export type MetaGate = {
    * A tap that waited is dropped, silently, when the stack's root changed meanwhile: it was made on a screen now gone.
    */
   tap(run: (m: MetaController) => void, o?: { inTask: boolean }): void;
-  /** The Game's port, read when called: `onEnding` waits for the import; the others are no-ops before it. */
+  /**
+   * The Game's port, read when called: `onEnding` waits for the import, `stepShown` asks for it (LFL T1), `hintPort`
+   * forwards (LFL HP) and `lineShown` is told to the controller once it is in; the others are no-ops before it.
+   */
   readonly port: GameMeta;
+  /** LFL T4: the launch's start parameter; any (an invite: its prompt shows over the first Home) imports at once. */
+  launched(param: string | null): void;
+  /** Home is the root (LFL T5 records it); a held invite prompt shows over it. */
+  homeShown(): void;
+  /** LFL T5: the engine import settled, landed or failed. */
+  engineSettled(): void;
   dispose(): void;
 };
 
 /**
- * The gate (RULINGS 105): one import in flight, as `importEngine`'s; a failed one is never retried on a timer, only by
- * the next tap or ending. `make` runs once, and only while the gate is not disposed.
+ * The gate (RULINGS 105, 149): the one owner of when the controller's chunk is requested, never on the path that taps
+ * Start as soon as it can (the first-line budget row leaves the chunk out): at the session's first step (T1), a meta
+ * tap, an ending, a hint use, a launch parameter (T4), or Home idle (T5). One import in flight, as `importEngine`'s; a
+ * failed one is never retried on a timer, by a step or at Home, only by the next tap, ending or hint use. `make` runs
+ * once, and only while the gate is not disposed.
  */
 export function createMetaGate(d: {
   load: () => Promise<MetaModule>;
-  make: (m: MetaModule) => MetaController;
+  /** `stats` is boot's read when it was handed (the controller then reads no stats of its own), else null. */
+  make: (m: MetaModule, stats: StatsRead | null) => MetaController;
   note: (key: UiKey) => void;
   /** The stack's root now; compared by identity, since every `setRoot` freezes a new one (ui/screens.ts). */
   root: () => object;
+  /** Home's card buttons follow `hasCard` again (boot's stats read answered). */
+  onCards: () => void;
+  /** T5's timer. */
+  clock: Pick<Clock, 'setTimeout' | 'clearTimeout'>;
 }): MetaGate {
   let current: MetaController | null = null;
   let flight: Promise<MetaController | null> | null = null;
   let disposed = false;
   /** Bumped when the session leaves: an ending that waited on the import is dropped. */
   let leaves = 0;
+  let statsRead: StatsRead | null = null;
+  /** The stories with an ending in boot's stats read (F17), for Home before the controller is in. */
+  const ended = new Set<string>();
+  /** An import was started on this page: the non-tap triggers ask once, and never again after a failure. */
+  let attempted = false;
+  /** A line was revealed before the controller: it is told once it is made (the overlays' prefetch). */
+  let lineSeen = false;
+  /** T5: the Home root last shown, whether the engine import settled, and the idle timer. */
+  let home: object | null = null;
+  let engineIn = false;
+  let idle: number | null = null;
+
+  const disarm = (): void => {
+    if (idle !== null) {
+      d.clock.clearTimeout(idle);
+      idle = null;
+    }
+  };
 
   const ready = (): Promise<MetaController | null> => {
     if (current !== null) {
       return Promise.resolve(current);
     }
+    attempted = true;
+    disarm();
     flight ??= d.load().then(
       (m) => {
-        if (!disposed) {
-          current ??= d.make(m);
+        if (!disposed && current === null) {
+          const c = d.make(m, statsRead);
+          current = c;
+          if (lineSeen) {
+            c.lineShown();
+          }
         }
         return current;
       },
@@ -200,30 +252,98 @@ export function createMetaGate(d: {
     return flight;
   };
 
+  /** A non-tap trigger (LFL T1, T4, T5, HP): imports only if nothing was tried yet; a failure stays silent (RULINGS 105). */
+  const request = (): void => {
+    if (!attempted && !disposed) {
+      void ready(); // the failure is logged by `ready`; the next tap, ending or hint use imports again
+    }
+  };
+
+  /**
+   * T5, restarted by each of its two events, so it fires HOME_IDLE_MS after the later one, and only on the Home it was
+   * armed on: a Start tap sets the game root within the engine's own task chain, so the TTFL path never reaches it.
+   */
+  const arm = (): void => {
+    disarm();
+    const at = home;
+    if (attempted || disposed || at === null || !engineIn) {
+      return;
+    }
+    idle = d.clock.setTimeout(() => {
+      idle = null;
+      if (d.root() === at) {
+        request();
+      }
+    }, HOME_IDLE_MS);
+  };
+
+  const tap = (run: (m: MetaController) => void, o?: { inTask: boolean }): void => {
+    const m = current;
+    if (disposed) {
+      return;
+    }
+    if (m !== null) {
+      run(m);
+      return;
+    }
+    const at = d.root();
+    void ready().then((c) => {
+      if (disposed || d.root() !== at) {
+        return; // the page, or the screen the tap was made on, is gone (LMI fix_r1): the player taps again
+      }
+      if (c === null) {
+        d.note('meta.action_failed');
+      } else if (o?.inTask !== true) {
+        run(c);
+      }
+    }); // a tap has no caller; the outcome is on screen
+  };
+
+  /**
+   * LFL HP: the puzzle's hint port, never null. Its cost and balance are unknown (null) until the controller is in; a
+   * use waits for the chunk, then spends through the controller's wallet port, resolved once per port.
+   */
+  const hintPort = (): HintPort => {
+    request();
+    let inner: HintPort | null = null;
+    const port = (): HintPort | null => {
+      inner ??= current?.hintPort() ?? null;
+      return inner;
+    };
+    return {
+      balance: () => port()?.balance() ?? null,
+      tierCost: () => port()?.tierCost() ?? null,
+      async use(puzzle, tier, lang) {
+        const c = await ready();
+        const p = c === null || disposed ? null : port();
+        return p === null ? { ok: false, error: { kind: 'network' } } : p.use(puzzle, tier, lang);
+      },
+      getMore: () => tap((m) => m.openWallet()),
+    };
+  };
+
   return {
     current: () => current,
-    ready,
-    tap(run, o) {
-      const m = current;
-      if (disposed) {
+    hasCard: (story) => (current !== null ? current.hasCard(story) : ended.has(story)),
+    stats(read) {
+      if (statsRead !== null) {
         return;
       }
-      if (m !== null) {
-        run(m);
-        return;
-      }
-      const at = d.root();
-      void ready().then((c) => {
-        if (disposed || d.root() !== at) {
-          return; // the page, or the screen the tap was made on, is gone (LMI fix_r1): the player taps again
+      statsRead = read;
+      void read.then((r) => {
+        if (disposed || !r.ok) {
+          return; // F17: no card button until an ending of this session
         }
-        if (c === null) {
-          d.note('meta.action_failed');
-        } else if (o?.inTask !== true) {
-          run(c);
+        for (const s of r.value.stories) {
+          if (s.endingsReached.length > 0) {
+            ended.add(s.storyId);
+          }
         }
-      }); // a tap has no caller; the outcome is on screen
+        d.onCards();
+      }); // the read has no caller to answer; Home's buttons show its outcome
     },
+    ready,
+    tap,
     port: {
       async onEnding(story) {
         const m = current;
@@ -245,14 +365,33 @@ export function createMetaGate(d: {
         }
         await c.onEnding(story);
       },
-      hintPort: () => current?.hintPort() ?? null,
-      lineShown: () => current?.lineShown(),
+      hintPort,
+      stepShown: request,
+      lineShown: () => {
+        lineSeen = true;
+        current?.lineShown();
+      },
       closeOverlays: () => {
         leaves += 1;
         current?.closeOverlays();
       },
     },
+    launched(param) {
+      if (param !== null) {
+        request(); // the format is the controller's to check (an invite is `f<code>`)
+      }
+    },
+    homeShown() {
+      home = d.root();
+      current?.homeShown();
+      arm();
+    },
+    engineSettled() {
+      engineIn = true;
+      arm();
+    },
     dispose() {
+      disarm();
       disposed = true;
       current?.dispose();
       current = null;
@@ -280,12 +419,19 @@ export function startApp(tg: TelegramClient): AppHandle {
   const subscriptions: Unsubscribe[] = [];
   let reporter: StatsReporter | null = null;
   let data: BootData | null = null;
+  /** The stats answered (boot's read or the controller's): Home's card buttons follow `gate.hasCard` again. */
+  const redrawCards = (): void => {
+    if (data !== null && screens.view().root.kind === 'home') {
+      vm.cards = cardsOf(data);
+    }
+  };
   const gate = createMetaGate({
     load: () => import('./meta.ts'),
-    make: (m) => {
+    make: (m, stats) => {
       const c = m.createMetaController({
         meta: m.createMetaEndpoints(http), // from the controller's chunk: the meta routes stay out of the entry (RULINGS 137)
         api,
+        stats: () => stats ?? api.getStats(),
         tg,
         screens,
         vm,
@@ -294,17 +440,15 @@ export function startApp(tg: TelegramClient): AppHandle {
         clock: systemClock,
         newId: () => crypto.randomUUID(),
         host: location.host,
-        onCards: () => {
-          if (data !== null && screens.view().root.kind === 'home') {
-            vm.cards = cardsOf(data);
-          }
-        },
+        onCards: redrawCards,
       });
       c.boot();
       return c;
     },
     note: (key) => vm.showToast({ kind: 'note', key, message: t(vm.lang, key), sticky: false }),
     root: () => screens.view().root,
+    onCards: redrawCards,
+    clock: systemClock,
   });
   let engine: Promise<Game | null> | null = null;
   /** The boot list, handed to the first session that asks; later sessions list again. */
@@ -328,7 +472,7 @@ export function startApp(tg: TelegramClient): AppHandle {
         cover: cover === undefined ? null : { avif: cover.avif.url, webp: cover.webp.url },
         continue: summaryOf(d.list, s.id, 'auto') !== null,
         eager: i < 3,
-        card: gate.current()?.hasCard(s.id) ?? false, // the stats arrive later: the controller's onCards redraws
+        card: gate.hasCard(s.id), // the stats arrive later: their answer redraws (redrawCards)
       };
     });
 
@@ -340,7 +484,7 @@ export function startApp(tg: TelegramClient): AppHandle {
     screens.setRoot({ kind: 'home' });
     tg.setClosingConfirmation(false);
     homeBusy = false;
-    gate.current()?.homeShown(); // a held invite prompt shows over Home
+    gate.homeShown(); // LFL T5's Home; a held invite prompt shows over it
   };
 
   const entitlements: Entitlements = {
@@ -586,7 +730,11 @@ export function startApp(tg: TelegramClient): AppHandle {
       });
       reporter.flush();
     }
-    void gate.ready(); // beside the engine; a failure is silent here and imported again by the next meta tap
+    // LFL B1: Home's card buttons from boot's own read (its endpoint is in the entry already); the controller gets it too.
+    gate.stats(api.getStats());
+    // The controller's chunk is not requested here (LFL): only an invite's launch asks for it now (T4); otherwise the
+    // session's first step, a meta tap or Home idle does, so the engine download has the link to itself.
+    gate.launched(tg.startParam());
     showHome(d);
     void engineOf(d); // created ahead of the tap; a failure shows at the tap
   };
@@ -627,7 +775,7 @@ export function startApp(tg: TelegramClient): AppHandle {
     // F1 step 1: opened outside Telegram (or by a reply-keyboard button): nothing to sign in with.
     showNotice({ kind: 'open_in_telegram' });
   } else {
-    void importEngine(); // in parallel with the reads; its failure shows at the tap
+    void importEngine().then(() => gate.engineSettled()); // in parallel with the reads; its failure shows at the tap
     void boot(); // the outcome is on screen: Home, Reopen or the error notice
   }
 

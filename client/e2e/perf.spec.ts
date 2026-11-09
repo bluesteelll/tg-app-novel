@@ -132,6 +132,54 @@ test('time to first line under throttling', async ({ page, browser, baseURL, vie
   await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 });
   const throttled = await timeToFirstLine(page, 4002);
 
+  // RULINGS 149 (LFL G2): on this path the meta controller's chunk is requested only once the first step is on screen,
+  // so after ch1's story JSON and after every image of the first batch (`stage` awaits them before the step's view is
+  // set): the images of ch1's first knot requested before the line showed, by the story tool's free outputs (read in
+  // Node; casts of its own outputs, whose shapes its gate checks). A resource entry exists once its response ended.
+  const lineAt = await page.evaluate(() => performance.now());
+  const free = path.resolve(E2E_DIR, '..', 'src', 'story-gen', 'free');
+  const ch1Meta = JSON.parse(readFileSync(path.join(free, 'ch1.meta.json'), 'utf8')) as { firstKnot: string; knots: Record<string, { assets: string[] }> };
+  type Variant = { avif: { url: string }; webp: { url: string } };
+  const ch1Assets = JSON.parse(readFileSync(path.join(free, 'ch1.assets.json'), 'utf8')) as {
+    assets: Record<string, { kind: string } & Partial<Variant> & { half?: Variant }>;
+  };
+  const firstKnotImages = new Set(
+    (ch1Meta.knots[ch1Meta.firstKnot]?.assets ?? []).flatMap((id) => {
+      const a = ch1Assets.assets[id];
+      return a?.kind === 'image' ? [a.avif?.url, a.webp?.url, a.half?.avif.url, a.half?.webp.url].filter((u): u is string => u !== undefined) : [];
+    }),
+  );
+  const metaChunk = `/${chunkFile('src/app/meta.ts')}`;
+  const timings = (): Promise<Array<{ path: string; start: number; end: number }>> =>
+    page.evaluate(() =>
+      performance
+        .getEntriesByType('resource')
+        .filter((r): r is PerformanceResourceTiming => r instanceof PerformanceResourceTiming)
+        .map((r) => ({ path: new URL(r.name).pathname, start: r.startTime, end: r.responseEnd })),
+    );
+  let entries = await timings();
+  await expect
+    .poll(
+      async () => {
+        entries = await timings();
+        return entries.some((e) => e.path === metaChunk);
+      },
+      { timeout: 10_000, message: "the meta controller chunk's resource entry" },
+    )
+    .toBe(true);
+  const chunkStart = entries.find((e) => e.path === metaChunk)?.start ?? 0;
+  const ch1Story = entries.find((e) => /^\/assets\/ch1\.story-[^/]+\.json$/.test(e.path));
+  const batch = entries.filter((e) => firstKnotImages.has(e.path) && e.start < lineAt);
+  console.log(
+    `G2: the meta controller chunk requested at ${chunkStart.toFixed(0)} ms; ch1's story JSON ended at ` +
+      `${ch1Story?.end.toFixed(0) ?? 'none'} ms; first batch ${batch.map((e) => `${e.path} ended ${e.end.toFixed(0)} ms`).join(', ')}`,
+  );
+  expect(ch1Story, "ch1's story JSON on this path").toBeDefined();
+  expect(batch.length, "ch1's first-batch images on this path").toBeGreaterThan(0);
+  expect(chunkStart, "the meta controller chunk is requested after the first line's chapter and its first batch's images").toBeGreaterThanOrEqual(
+    Math.max(ch1Story?.end ?? Number.POSITIVE_INFINITY, ...batch.map((e) => e.end)),
+  );
+
   // Critique W5: the throttle was live. The engine chunk's bytes cannot arrive faster than the emulated link.
   const timing = await engineTiming(page, engine);
   const floorMs = (0.9 * timing.encodedBodySize * 1000) / DOWN_BPS;
