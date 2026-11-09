@@ -64,12 +64,17 @@ pub async fn post_attempt(
     let def = puzzles::entitled_puzzle(&st, user, &id).await?;
     // The body is judged only past the gate: a paid puzzle is 403 whatever the request carries.
     let Json(req) = req.map_err(body_rejection)?;
-    match puzzles::attempt(&st, user, def, &req.answer).await? {
-        AttemptOutcome::Answered { correct, solved } => Ok(Json(AttemptResponse {
+    match puzzles::attempt(&st, user, def, &req.answer, req.run).await? {
+        AttemptOutcome::Answered {
             correct,
             solved,
-            attempts_left: None,
-            spent: false,
+            attempts_left,
+            spent,
+        } => Ok(Json(AttemptResponse {
+            correct,
+            solved,
+            attempts_left,
+            spent,
         })),
         AttemptOutcome::RateLimited { retry_after_secs } => {
             Err(ApiError::RateLimited { retry_after_secs })

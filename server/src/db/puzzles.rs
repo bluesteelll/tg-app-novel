@@ -3,15 +3,19 @@
 //! `puzzle_values` (`0008_puzzle_values.sql`), each player's value of a per-player puzzle and its run.
 //!
 //! Every statement binds the token's user and the puzzle's storage key ([`PuzzleKey`], per-player §3.8: the id the
-//! puzzle first shipped under, so a rename keeps its rows). No solution reaches this module: the caller checks the
-//! answer against the content and passes whether it was correct, so the window is decided before that fact is used.
+//! puzzle first shipped under, so a rename keeps its rows). A static solution never reaches this module: the caller
+//! checks the answer against the content and passes whether it was correct, so the window is decided before that fact
+//! is used. A per-player value is read and compared only here, after the window decision, under its row lock
+//! (per-player §3.5).
+
+use std::fmt;
 
 use sqlx::PgConnection;
 
 use crate::db::Repo;
 use crate::ids::{PuzzleKey, UserId};
 use crate::puzzles::values::{Domain, DomainHash, ValueRow};
-use crate::puzzles::{ATTEMPT_WINDOW_MAX, ATTEMPT_WINDOW_SECS};
+use crate::puzzles::{ATTEMPT_WINDOW_MAX, ATTEMPT_WINDOW_SECS, attempts_left};
 
 /// One per-player puzzle of a values call: its storage key, its domain, and a value drawn from it before the
 /// transaction, stored only when the player has no row yet. No `Debug`: `drawn` is a player's value.
@@ -101,28 +105,121 @@ async fn chapter_values(
     rows.into_iter().map(value_row).collect()
 }
 
+/// What [`Repo::record_attempt`] judges an answer against (per-player §3.5).
+pub enum Expected<'a> {
+    /// The caller compared the answer with the static solution: whether it was right.
+    Static {
+        /// The answer is the solution.
+        correct: bool,
+    },
+    /// The player's value decides, read under its row lock once the window admits the attempt.
+    PerPlayer {
+        /// The answer, already checked against the puzzle's shape.
+        answer: &'a [u16],
+        /// The content's domain of the puzzle.
+        domain: &'a Domain,
+        /// The author's cap on wrong answers per run; `None` without one.
+        cap: Option<u8>,
+        /// The run the client answers; `None` when it sent none.
+        run: Option<i64>,
+        /// A value of `domain`, drawn before the transaction, used only for an absent row.
+        drawn: Vec<u16>,
+    },
+}
+
+// The answer and the drawn value are a player's secret: neither is printed (per-player §3.1, m12).
+impl fmt::Debug for Expected<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Expected::Static { correct } => {
+                f.debug_struct("Static").field("correct", correct).finish()
+            }
+            Expected::PerPlayer {
+                domain, cap, run, ..
+            } => f
+                .debug_struct("PerPlayer")
+                .field("answer", &format_args!("<redacted>"))
+                .field("domain", domain)
+                .field("cap", cap)
+                .field("run", run)
+                .field("drawn", &format_args!("<redacted>"))
+                .finish(),
+        }
+    }
+}
+
 /// What [`Repo::record_attempt`] recorded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AttemptRecord {
-    /// The attempt is past the window's limit: it was counted, and its answer was not applied.
-    pub limited: bool,
-    /// When `limited`, the seconds until the window ends, in `1..=ATTEMPT_WINDOW_SECS`; 0 otherwise.
-    pub retry_after_secs: i64,
-    /// Whether the puzzle is solved once this attempt is recorded.
-    pub solved: bool,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttemptRecord {
+    /// The attempt is past the window's limit: it was counted, and its answer was neither applied nor compared.
+    Limited {
+        /// The seconds until the window ends, in `1..=ATTEMPT_WINDOW_SECS`.
+        retry_after_secs: i64,
+        /// The puzzle is solved (by an earlier answer).
+        solved: bool,
+    },
+    /// The answer was judged.
+    Answered {
+        /// The answer is the solution or the player's value.
+        correct: bool,
+        /// The puzzle is solved once this attempt is recorded.
+        solved: bool,
+        /// A capped per-player puzzle's wrong answers left in the run; `None` otherwise.
+        attempts_left: Option<u8>,
+        /// This answer spent the run.
+        spent: bool,
+    },
+    /// A per-player answer whose run is absent or not current, or whose run is spent: nothing compared, no wrong
+    /// answer counted; the player's current row.
+    ValueChanged(ValueRow),
+}
+
+/// The one-row read of a value inside the caller's transaction (per-player §3.5 step 3): insert-if-absent with
+/// `drawn` (run 1, live), then the row under `FOR UPDATE`, held to the commit.
+async fn current_value(
+    tx: &mut PgConnection,
+    user: UserId,
+    puzzle: &PuzzleKey,
+    domain: &Domain,
+    drawn: &[u16],
+    now: i64,
+) -> Result<ValueRow, sqlx::Error> {
+    let value: Vec<i64> = drawn.iter().map(|&entry| i64::from(entry)).collect();
+    sqlx::query(
+        "INSERT INTO puzzle_values (user_id, puzzle_id, run, wrong, issued_at, domain, value) \
+         VALUES ($1, $2, 1, 0, $3, $4, $5) ON CONFLICT (user_id, puzzle_id) DO NOTHING",
+    )
+    .bind(user.0)
+    .bind(&puzzle.0)
+    .bind(now)
+    .bind(&domain.hash().0)
+    .bind(&value)
+    .execute(&mut *tx)
+    .await?;
+    let columns: ValueColumns = sqlx::query_as(
+        "SELECT puzzle_id, run, wrong, issued_at, spent_at, domain, value FROM puzzle_values \
+         WHERE user_id = $1 AND puzzle_id = $2 FOR UPDATE",
+    )
+    .bind(user.0)
+    .bind(&puzzle.0)
+    .fetch_one(&mut *tx)
+    .await?;
+    value_row(columns)
 }
 
 impl Repo {
-    /// Counts one attempt of `user` on the puzzle keyed `puzzle` at `now`, then applies `correct` unless the window is
-    /// full. One READ COMMITTED transaction: the upsert counts first and holds the (user, puzzle) row lock to the
-    /// commit, so two attempts serialize (a first-ever pair's second insert waits on the first, then takes the update
-    /// path) and the window count is exact. A window older than [`ATTEMPT_WINDOW_SECS`] restarts at `now` with this attempt.
-    /// Past [`ATTEMPT_WINDOW_MAX`] the count commits and `correct` is neither applied nor returned.
+    /// Counts one attempt of `user` on the puzzle keyed `puzzle` at `now`, then judges it by `expected` unless the
+    /// window is full. One READ COMMITTED transaction: the upsert counts first and holds the (user, puzzle) row lock to
+    /// the commit, so two attempts serialize (a first-ever pair's second insert waits on the first, then takes the
+    /// update path) and the window count is exact. A window older than [`ATTEMPT_WINDOW_SECS`] restarts at `now` with
+    /// this attempt. Past [`ATTEMPT_WINDOW_MAX`] the count commits, the answer is neither applied nor returned, and no
+    /// value is read. A per-player answer is compared with the player's row, read under its lock (per-player §3.5),
+    /// only when it names the row's run and the run is live; otherwise the row is returned and nothing compared.
     pub async fn record_attempt(
         &self,
         user: UserId,
         puzzle: &PuzzleKey,
-        correct: bool,
+        expected: Expected<'_>,
         now: i64,
     ) -> Result<AttemptRecord, sqlx::Error> {
         let mut tx = self.pool.begin().await?;
@@ -148,12 +245,33 @@ impl Repo {
             // Already in range unless the clock stepped back since the window began; the clamp keeps the header sane.
             let retry_after_secs =
                 (window_start + ATTEMPT_WINDOW_SECS - now).clamp(1, ATTEMPT_WINDOW_SECS);
-            return Ok(AttemptRecord {
-                limited: true,
+            return Ok(AttemptRecord::Limited {
                 retry_after_secs,
                 solved: solved_at.is_some(),
             });
         }
+        let (correct, attempts_left) = match expected {
+            Expected::Static { correct } => (correct, None),
+            Expected::PerPlayer {
+                answer,
+                domain,
+                cap,
+                run,
+                drawn,
+            } => {
+                let row = current_value(&mut tx, user, puzzle, domain, &drawn, now).await?;
+                // A runless answer comes from a device that shows no value of this puzzle: it is handed the value,
+                // never judged against one it did not display (§3.5 step 4).
+                if run != Some(row.run) || row.spent_at.is_some() {
+                    tx.commit().await?;
+                    return Ok(AttemptRecord::ValueChanged(row));
+                }
+                (
+                    answer == row.value.as_slice(),
+                    attempts_left(cap, row.wrong),
+                )
+            }
+        };
         let solved = if correct {
             // Set once: a later correct answer keeps the first solve's time. `GREATEST` keeps the solve at or after
             // the first attempt when the clock stepped back between them (`puzzle_progress_solved_after_first`).
@@ -171,10 +289,11 @@ impl Repo {
             solved_at.is_some()
         };
         tx.commit().await?;
-        Ok(AttemptRecord {
-            limited: false,
-            retry_after_secs: 0,
+        Ok(AttemptRecord::Answered {
+            correct,
             solved,
+            attempts_left,
+            spent: false,
         })
     }
 

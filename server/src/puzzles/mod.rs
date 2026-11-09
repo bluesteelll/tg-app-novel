@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use crate::AppState;
 use crate::api::dto::{HintView, PlayerValue, PuzzleStatus, ValuesResponse};
 use crate::content::{Answer, Localized, PuzzleDef};
-use crate::db::puzzles::ValueIssue;
+use crate::db::puzzles::{AttemptRecord, Expected, ValueIssue};
 use crate::error::ApiError;
 use crate::ids::{ChapterId, PuzzleId, UserId};
 use crate::puzzles::values::{Domain, ValueRow};
@@ -72,27 +72,44 @@ pub enum AnswerError {
     Range,
 }
 
-/// Whether `answer` is `def`'s static solution, once it fits the puzzle's shape; never for a per-player puzzle.
-pub fn check_answer(def: &PuzzleDef, answer: &[u16]) -> Result<bool, AnswerError> {
+/// Whether `answer` fits `def`'s public shape: `answer_len` entries (at most [`MAX_ANSWER_LEN`]), each at most
+/// `answer_max`. Both kinds of puzzle check it before any count.
+fn fits_shape(def: &PuzzleDef, answer: &[u16]) -> Result<(), AnswerError> {
     if answer.len() > MAX_ANSWER_LEN || answer.len() != def.answer_len {
         return Err(AnswerError::Length);
     }
     if answer.iter().any(|&value| value > def.answer_max) {
         return Err(AnswerError::Range);
     }
+    Ok(())
+}
+
+/// Whether `answer` is `def`'s static solution, once it fits the puzzle's shape; never for a per-player puzzle.
+pub fn check_answer(def: &PuzzleDef, answer: &[u16]) -> Result<bool, AnswerError> {
+    fits_shape(def, answer)?;
     Ok(matches!(&def.answer, Answer::Static(solution) if answer == solution.as_slice()))
+}
+
+/// The wrong answers left in a run under the author's cap `cap` after `wrong` of them; `None` without a cap.
+pub(crate) fn attempts_left(cap: Option<u8>, wrong: i64) -> Option<u8> {
+    // 0 <= cap - wrong <= cap <= 9: the conversion keeps every value.
+    cap.map(|m| u8::try_from((i64::from(m) - wrong).max(0)).unwrap_or(0))
 }
 
 /// What an attempt answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttemptOutcome {
-    /// The attempt was in the window: whether this answer is the solution, and whether the puzzle is solved (by this
-    /// answer or an earlier one).
+    /// The attempt was in the window: whether this answer is the solution (or the player's value), and whether the
+    /// puzzle is solved (by this answer or an earlier one).
     Answered {
         /// This answer is the solution.
         correct: bool,
         /// The puzzle is solved.
         solved: bool,
+        /// A capped per-player puzzle's wrong answers left in the run; `None` otherwise.
+        attempts_left: Option<u8>,
+        /// This answer spent the run.
+        spent: bool,
     },
     /// The window is full: the attempt was counted, its answer neither applied nor revealed.
     RateLimited {
@@ -132,8 +149,7 @@ fn player_value(row: &ValueRow, cap: Option<u8>) -> PlayerValue {
     PlayerValue {
         value: row.value.clone(),
         run: row.run,
-        // 0 <= cap - wrong <= cap <= 9: the conversion keeps every value.
-        attempts_left: cap.map(|m| u8::try_from((i64::from(m) - row.wrong).max(0)).unwrap_or(0)),
+        attempts_left: attempts_left(cap, row.wrong),
         spent: row.spent_at.is_some(),
     }
 }
@@ -187,35 +203,58 @@ pub async fn player_values(
     Ok(ValuesResponse { values })
 }
 
-/// One attempt of `user` on the gated `def`: the shape check (400, not counted), then the window, then the answer.
+/// One attempt of `user` on the gated `def`: the shape check (400, not counted, both kinds), then the window, then the
+/// answer: a static puzzle's against its solution (`run` ignored), a per-player puzzle's against the player's value of
+/// the run `run` (per-player §3.5), a stale, absent or spent run answering 409 `value_changed` with the current one.
 pub async fn attempt(
     st: &AppState,
     user: UserId,
     def: &PuzzleDef,
     answer: &[u16],
+    run: Option<i64>,
 ) -> Result<AttemptOutcome, ApiError> {
-    // A per-player answer is compared with the player's own value only, which no path reads yet.
-    if matches!(def.answer, Answer::PerPlayer { .. }) {
-        return Err(ApiError::NotFound);
-    }
     let correct = check_answer(def, answer).map_err(|e| match e {
         AnswerError::Length => ApiError::BadRequest("answer length does not fit the puzzle"),
         AnswerError::Range => ApiError::BadRequest("answer value above the puzzle's maximum"),
     })?;
-    let record = st
+    let (expected, cap) = match &def.answer {
+        Answer::Static(_) => (Expected::Static { correct }, None),
+        Answer::PerPlayer {
+            domain,
+            max_attempts,
+        } => (
+            Expected::PerPlayer {
+                answer,
+                domain,
+                cap: *max_attempts,
+                run,
+                // Drawn before the transaction; stored only when the player has no row yet.
+                drawn: drawn(domain),
+            },
+            *max_attempts,
+        ),
+    };
+    match st
         .repo
-        .record_attempt(user, &def.key, correct, st.clock.now())
-        .await?;
-    Ok(if record.limited {
-        AttemptOutcome::RateLimited {
-            retry_after_secs: record.retry_after_secs,
-        }
-    } else {
-        AttemptOutcome::Answered {
+        .record_attempt(user, &def.key, expected, st.clock.now())
+        .await?
+    {
+        AttemptRecord::Limited {
+            retry_after_secs, ..
+        } => Ok(AttemptOutcome::RateLimited { retry_after_secs }),
+        AttemptRecord::Answered {
             correct,
-            solved: record.solved,
-        }
-    })
+            solved,
+            attempts_left,
+            spent,
+        } => Ok(AttemptOutcome::Answered {
+            correct,
+            solved,
+            attempts_left,
+            spent,
+        }),
+        AttemptRecord::ValueChanged(row) => Err(ApiError::ValueChanged(player_value(&row, cap))),
+    }
 }
 
 /// The status of the gated `def` for `user`: solved or not, and every tier of the puzzle's hint ladder, with the
