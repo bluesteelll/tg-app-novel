@@ -418,6 +418,16 @@ test('yields: a take removes its prop from the stage', async () => {
   r.yields.dispose();
 });
 
+test("yields: a room batch's props carry their anchor key", async () => {
+  const r = rig();
+  await inHall(r);
+  // Engine plan §5.2 / R-A4: a prop's anchor is its hotspot key, `<room>.<hotspot>`, so the saved stage keeps it.
+  const medal = [{ prop: 'medal', rect: [100, 200, 200, 200], at: 'hall.medal' }];
+  expect(r.stage().props).toEqual(medal);
+  expect(r.batches.flat().filter((c) => c.kind === 'props')).toEqual([{ kind: 'props', props: medal }]);
+  r.yields.dispose();
+});
+
 test('yields: back during an event knot does not move rooms', async () => {
   const r = rig();
   await inHall(r);

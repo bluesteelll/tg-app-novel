@@ -9,7 +9,7 @@ import { carryInto } from './carry.ts';
 import type { InkScalar, LoadedChapter, Result } from './catalog.ts';
 import { StoryRunner } from './runner.ts';
 import type { RunnerError, RunnerStep, StartPoint } from './runner.ts';
-import type { SaveBodyV1 } from './save-codec.ts';
+import type { SaveBody } from './save-codec.ts';
 import { EMPTY_SNAPSHOT } from './staging.ts';
 import type { AssetIndex, ChapterId, KnotName, SectionId, StagingSnapshot, VarName } from './staging.ts';
 
@@ -68,7 +68,7 @@ function started(ch: LoadedChapter, start: StartPoint, assets: AssetIndex): Resu
 }
 
 /** The saved world as the current world can play it (X9); a chapter without a world plays none. */
-function reconciled(body: SaveBodyV1, ch: LoadedChapter): World {
+function reconciled(body: SaveBody, ch: LoadedChapter): World {
   if (ch.world === null) {
     return { world: EMPTY_WORLD_STATE, reset: null, dropped: [] };
   }
@@ -91,7 +91,7 @@ function declaredVars(vars: Readonly<Record<VarName, InkScalar>>, declared: read
   return out;
 }
 
-function chapterStart(body: SaveBodyV1, ch: LoadedChapter, assets: AssetIndex, pendingStart: boolean, storyUpdated: boolean): Result<Resumed, ResumeError> {
+function chapterStart(body: SaveBody, ch: LoadedChapter, assets: AssetIndex, pendingStart: boolean, storyUpdated: boolean): Result<Resumed, ResumeError> {
   const at = started(ch, { kind: 'fresh', carry: carryInto(body.chapterStart.carry, ch.meta) }, assets);
   if (!at.ok) {
     return { ok: false, error: { kind: 'runner', error: at.error } };
@@ -104,7 +104,7 @@ function chapterStart(body: SaveBodyV1, ch: LoadedChapter, assets: AssetIndex, p
  * `body` back into a runner of `ch`, from `minLevel` (`'exact'` by default; the error floor passes a lower one) down
  * to the chapter start. Only the floor failing is an error, besides a body of another chapter.
  */
-export function resume(body: SaveBodyV1, ch: LoadedChapter, assets: AssetIndex, o: { minLevel?: ResumeLevel } = {}): Result<Resumed, ResumeError> {
+export function resume(body: SaveBody, ch: LoadedChapter, assets: AssetIndex, o: { minLevel?: ResumeLevel } = {}): Result<Resumed, ResumeError> {
   if (body.chapterId !== ch.id) {
     return { ok: false, error: { kind: 'wrong-chapter', body: body.chapterId, chapter: ch.id } };
   }
