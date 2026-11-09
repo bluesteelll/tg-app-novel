@@ -4,7 +4,10 @@
   // construction; the bar; and the panel GameSession opens over them (`panel`, in step with the screens stack). The
   // inventory stays mounted under the document reader, so Back returns to the tab it was on. Presentational: views
   // in through the view store, read where they are used (never copied, so each write shows), taps out through
-  // callbacks. GameSession (L15) mounts it as a child of the Stage host, which is its containing block.
+  // callbacks. GameSession (L15) mounts it as a child of the Stage host, which is its containing block. Its root is the
+  // explore family's cue root (engine plan §8.3): its controls emit to the session's bus, and the cue stage plays its
+  // entrance and exit; the sheets carry their panel markers (§8.5 "Cue targets").
+  import { cueRoot, SHEET_PANELS } from '../../cues/root.ts';
   import { t } from '../../i18n/index.ts';
   import type { ExploreLayerProps } from '../explore-view.svelte.ts';
   import { EXIT_PATH, GLYPH_VIEWBOX } from '../glyphs.ts';
@@ -24,7 +27,7 @@
   const covered = $derived(inventoryOpen || (view.panel?.kind === 'lock' && view.lock !== null));
 </script>
 
-<div class="layer">
+<div class="layer" use:cueRoot={view.oncue} data-cue-root>
   <div class="room" inert={covered}>
     {#each view.hotspots as h (h.key)}
       <button
@@ -51,17 +54,17 @@
     </div>
   </div>
   {#if inventoryOpen}
-    <div class="sheet" inert={reading !== null}>
+    <div class="sheet" data-cue-panel={SHEET_PANELS.inventory} inert={reading !== null}>
       <Inventory {lang} items={view.items} docs={view.docs} onread={actions.onread} />
     </div>
   {/if}
   {#if reading !== null}
-    <div class="sheet">
+    <div class="sheet" data-cue-panel={SHEET_PANELS.reader}>
       <DocumentReader {lang} doc={reading} onclose={actions.onclose} />
     </div>
   {/if}
   {#if view.panel?.kind === 'lock' && view.lock !== null}
-    <div class="sheet">
+    <div class="sheet" data-cue-panel={SHEET_PANELS.lock}>
       <LockPanel {lang} lock={view.lock} items={view.items} oninsert={actions.oninsert} />
     </div>
   {/if}

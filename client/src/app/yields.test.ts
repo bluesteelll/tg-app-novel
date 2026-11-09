@@ -784,9 +784,14 @@ test('yields: dispose leaves no cue subscriber', async () => {
   const before = r.cues.length;
   listener.fn?.(looked);
   expect(r.cues.length).toBe(before + 1);
+  // D1: the explore root's emit is this session's bus, and the session clears its own at dispose.
+  const tapped: CueEvent = { cue: { kind: 'ui', control: 'hotspot', item: null, index: null }, box: null, point: null, diff: [], el: null };
+  r.explore.oncue?.(tapped);
+  expect(r.cues.at(-1)).toBe(tapped);
   r.yields.dispose();
   listener.fn?.(looked);
-  expect(r.cues.length).toBe(before + 1);
+  expect(r.cues.length).toBe(before + 2);
+  expect(r.explore.oncue).toBeUndefined();
 });
 
 test('yields: a disposed session clears the cue stage slot', async () => {

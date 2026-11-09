@@ -280,6 +280,7 @@ export function createYields(h: YieldsHost): Yields {
 
   const bus = createCueBus();
   h.sceneCues?.(bus.subscribe);
+  explore.oncue = bus.emit; // D1: the explore root's controls emit to this session's bus
   /** Plans the stage dropped at its unmount: orphans the bus cannot see. */
   let dropped = 0;
   let slot: CueStageSlot | null = null;
@@ -1078,6 +1079,9 @@ export function createYields(h: YieldsHost): Yields {
       bus.dispose();
       if (slot !== null && vm.cueStage === slot) {
         vm.cueStage = null;
+      }
+      if (explore.oncue === bus.emit) {
+        explore.oncue = undefined;
       }
       if (dirtyTimer !== null) {
         h.clock.clearTimeout(dirtyTimer);
