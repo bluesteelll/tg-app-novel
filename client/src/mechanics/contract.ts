@@ -143,6 +143,9 @@ export interface MechanicRules<Id extends string, A extends { readonly kind: str
   reads(w: KernelWorld, section: SectionId): readonly FactAtom[];
   /** Module cue names; each `module:<id>:<name>` needs a cue motion. */
   readonly cues: readonly C[];
+  /** A tap on a hotspot that carries a key this module owns (`owns.hotspot`): core's `tap` hands it over before its own
+   *  kinds, so the UI always dispatches `tap` and `actions` lists that tap once (core already does). False: not mine. */
+  tap?(w: KernelWorld, s: WorldState, at: HotspotKey, out: Writer): boolean;
   /** Its share of the room's derived picture. */
   visuals?(w: KernelWorld, s: WorldState, room: RoomId): readonly PropView[];
   /** Evaluates an atom kind its data half declared. */

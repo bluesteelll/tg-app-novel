@@ -8,8 +8,8 @@ import type { ExploreAction, ExploreEffect, Successor } from '../../explore/redu
 import type { PuzzleOutcome, PuzzleRun, WorldState } from '../../explore/state.ts';
 import type { PuzzleLocalId, SectionId } from '../../story/staging.ts';
 import type { HotspotKey, ItemId, Lock, RoomId, WorldPublicBody } from '../../world/types.ts';
-import type { RulesRegistry } from '../contract.ts';
-import { actions, reduce } from './core.ts';
+import type { RulesRegistry, SectionAction } from '../contract.ts';
+import { reduce } from './core.ts';
 import { MECHANIC_RULES } from './index.ts';
 
 /** A record's own entries keyed by its id brand (a save's keys are checked against the world before any use). */
@@ -23,27 +23,31 @@ function entriesOf<K extends string, V>(r: Readonly<Record<K, V>>): Array<[K, V]
 const hasLeave = (effects: readonly ExploreEffect[]): boolean => effects.some((e) => e.kind === 'leave');
 
 /**
- * THE successor relation of the soft-lock checker, the seeded playthroughs and reconcile: every action through
- * `reduce`; an action whose effects open puzzle p expands into `closed` (the post-action state: Back, or a reload,
- * since the puzzle is an overlay) and one successor per outcome (`solved`; `failed` when p has `maxAttempts`).
+ * THE successor relation of the soft-lock checker, the seeded playthroughs and reconcile: every module's actions, core
+ * first, through `reduce`; an action whose effects open puzzle p expands into `closed` (the post-action state: Back,
+ * or a reload, since the puzzle is an overlay) and one successor per outcome (`solved`; `failed` when p has
+ * `maxAttempts`).
  */
-export function successors(w: WorldPublicBody, s: WorldState): Successor[] {
+export function successors(w: WorldPublicBody, s: WorldState, rules: RulesRegistry = MECHANIC_RULES): Successor[] {
   const out: Successor[] = [];
-  for (const a of actions(w, s)) {
-    const r = reduce(w, s, a);
-    const opened = r.effects.find((e) => e.kind === 'puzzle');
-    if (opened === undefined) {
-      out.push({ step: a, state: r.state, leaves: hasLeave(r.effects) });
-      continue;
-    }
-    const puzzle = opened.puzzle;
-    out.push({ step: { kind: 'closed', puzzle }, state: r.state, leaves: false });
-    const limited = (worldIndex(w).puzzles.get(puzzle)?.maxAttempts ?? null) !== null;
-    const outcomes: PuzzleOutcome[] = limited ? ['solved', 'failed'] : ['solved'];
-    for (const outcome of outcomes) {
-      const step: ExploreAction = { kind: 'puzzle-ended', puzzle, outcome };
-      const end = reduce(w, r.state, step);
-      out.push({ step, state: end.state, leaves: hasLeave(end.effects) });
+  for (const m of rules) {
+    for (const action of m.actions(w, s)) {
+      const a = action as SectionAction; // the registry widens each module's actions to { kind }; they are SectionAction's
+      const r = reduce(w, s, a, rules);
+      const opened = r.effects.find((e) => e.kind === 'puzzle');
+      if (opened === undefined) {
+        out.push({ step: a, state: r.state, leaves: hasLeave(r.effects) });
+        continue;
+      }
+      const puzzle = opened.puzzle;
+      out.push({ step: { kind: 'closed', puzzle }, state: r.state, leaves: false });
+      const limited = (worldIndex(w).puzzles.get(puzzle)?.maxAttempts ?? null) !== null;
+      const outcomes: PuzzleOutcome[] = limited ? ['solved', 'failed'] : ['solved'];
+      for (const outcome of outcomes) {
+        const step: ExploreAction = { kind: 'puzzle-ended', puzzle, outcome };
+        const end = reduce(w, r.state, step, rules);
+        out.push({ step, state: end.state, leaves: hasLeave(end.effects) });
+      }
     }
   }
   return out;
@@ -303,7 +307,7 @@ export function sectionEntry(w: WorldPublicBody, s: WorldState, section: Section
 export type SearchOptions = {
   /** Stop with 'found' when a state with this `sectionKey` is discovered. */
   readonly target?: string;
-  /** The rules registry whose reads key the states (default: MECHANIC_RULES; a fixture registry in tests). */
+  /** The rules registry whose actions, hooks and reads the search runs (default: MECHANIC_RULES; a fixture in tests). */
   readonly rules?: RulesRegistry;
   /**
    * Every edge: `from` and `to` are discovery indices (0 = start); `to` is null for a `leaves` successor, which is a
@@ -331,7 +335,7 @@ export function searchSection(w: WorldPublicBody, start: WorldState, section: Se
     if (state === undefined) {
       break;
     }
-    for (const succ of successors(w, state)) {
+    for (const succ of successors(w, state, opts.rules)) {
       if (succ.leaves) {
         opts.onEdge?.(from, succ, null, false);
         continue;

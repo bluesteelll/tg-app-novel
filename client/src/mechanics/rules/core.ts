@@ -18,7 +18,7 @@ import type { Draft, ExploreAction, ExploreEffect, HotspotEntry, WorldIndex } fr
 import type { PuzzleOutcome, WorldState } from '../../explore/state.ts';
 import type { PuzzleLocalId, SectionId, SfxId } from '../../story/staging.ts';
 import type { Hotspot, HotspotKey, ItemId, Lock, RoomId, WorldPublicBody } from '../../world/types.ts';
-import type { FactAtom, SectionAction } from '../contract.ts';
+import type { FactAtom, RulesRegistry, SectionAction } from '../contract.ts';
 import { MECHANIC_RULES } from './index.ts';
 import { added, createWriter, fire, openKey } from './writer.ts';
 import type { KernelWriter } from './writer.ts';
@@ -109,10 +109,17 @@ function lockTap(d: Draft, key: HotspotKey, lock: Lock): void {
   }
 }
 
-function tap(d: Draft, key: HotspotKey): void {
+function tap(out: KernelWriter, key: HotspotKey): void {
+  const d = out.draft;
   const entry = here(d, key);
   if (entry === undefined) {
     return;
+  }
+  // A module that owns a key of this hotspot handles the tap instead of core's kinds.
+  for (const m of out.rules) {
+    if (m.tap?.(out.world, d.s, key, out) === true) {
+      return;
+    }
   }
   const h = entry.hotspot;
   switch (h.kind) {
@@ -245,7 +252,7 @@ export function applyCore(_w: WorldPublicBody, a: ExploreAction, out: KernelWrit
     case 'event-returned':
       return eventReturned(d, a.section);
     case 'tap':
-      return tap(d, a.hotspot);
+      return tap(out, a.hotspot);
     case 'insert':
       return insert(d, a.hotspot, a.item);
     case 'attempt-failed':
@@ -260,11 +267,19 @@ export function applyCore(_w: WorldPublicBody, a: ExploreAction, out: KernelWrit
   }
 }
 
-/** The one writer of WorldState while a section is current (a linear puzzle's run: the kernel's `runReduce`). */
-export function reduce(w: WorldPublicBody, s: WorldState, a: SectionAction): { state: WorldState; effects: ExploreEffect[] } {
+/**
+ * The one writer of WorldState while a section is current (a linear puzzle's run: the kernel's `runReduce`). `rules`
+ * is the registry whose hooks run (a fixture registry in tests).
+ */
+export function reduce(
+  w: WorldPublicBody,
+  s: WorldState,
+  a: SectionAction,
+  rules: RulesRegistry = MECHANIC_RULES,
+): { state: WorldState; effects: ExploreEffect[] } {
   const d: Draft = { s, effects: [], ix: worldIndex(w) };
   const idle = s.pendingStory.length === 0;
-  applyCore(w, a, createWriter(d, w, MECHANIC_RULES));
+  applyCore(w, a, createWriter(d, w, rules));
   const head = d.s.pendingStory[0];
   if (idle && head !== undefined) {
     d.effects.push({ kind: 'story', knot: head });

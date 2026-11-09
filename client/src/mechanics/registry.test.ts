@@ -8,9 +8,11 @@ import type { KnotName, PuzzleLocalId, SectionId } from '../story/staging.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { DocId, HotspotKey, ItemId, RoomId, WorldPublicBody } from '../world/types.ts';
 import { KERNEL_FACT_KINDS } from './contract.ts';
-import type { Cause, MechanicData, MechanicId } from './contract.ts';
+import type { Cause, MechanicData, MechanicId, MechanicRules, Writer } from './contract.ts';
 import { MECHANIC_DATA } from './data/index.ts';
+import { reduce } from './rules/core.ts';
 import { MECHANIC_RULES } from './rules/index.ts';
+import { successors } from './rules/search.ts';
 import { createWriter } from './rules/writer.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -21,6 +23,7 @@ let lineCounter = 0;
 const txt = (owner = 'w'): Json => ({ id: `ch1.${owner}.${(lineCounter++).toString(36).padStart(4, '0')}`, ru: owner });
 const RECT = [100, 200, 200, 200];
 const look = (id: string, then: Json[] = []): Json => ({ id, kind: 'look', rect: RECT, label: txt(), look: txt(id), then });
+const object = (id: string, then: Json[] = []): Json => ({ id, kind: 'object', rect: RECT, label: txt(), lock: null, then, look: txt(id), prop: null });
 const room = (hotspots: Json[], onEnter: Json[] = []): Json => ({ bg: 'room', title: txt(), onEnter, hotspots });
 const code = (dials: number, maxAttempts: number | null = null): Json => ({
   type: 'code',
@@ -222,4 +225,66 @@ test('mechanics: the rules registry loads from either module first', async () =>
   vi.resetModules();
   const indexFirst = await import('./rules/index.ts');
   checkGraph(indexFirst, await import('./rules/core.ts'));
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The hooks (engine plan §3.2): fixture modules through the registry parameter.
+
+const [CORE] = MECHANIC_RULES;
+const DIRTY = { kind: 'dirty' } as const;
+
+test('mechanics: a hotspot a module claims routes its tap to the module', () => {
+  // The statue is an object whose `then` gives a coin with a look text: core's tap would show the text and give it.
+  const w = world({ hall: room([object('statue', [{ give: 'coin' }]), look('vase')]) }, { items: ['coin'] });
+  const cause: Cause = { verb: 'tap', at: k('hall.statue'), item: null, via: null };
+  const writers: Writer[] = [];
+  const probe: MechanicRules<'probe', never, never> = {
+    id: 'probe',
+    actions: () => [],
+    apply: () => undefined,
+    reads: () => [],
+    cues: [],
+    tap: (_w, s, at, out) => {
+      if (at !== k('hall.statue')) {
+        return false;
+      }
+      writers.push(out);
+      out.set('examined', [...s.examined, at], cause);
+      return true;
+    },
+  };
+  const registry = [CORE, probe];
+  const s = at('hall');
+  const r = reduce(w, s, tap('hall.statue'), registry);
+  expect(r.effects).toEqual([DIRTY]);
+  expect(r.state.examined).toEqual(['hall.statue']);
+  expect(r.state.held).toEqual([]);
+  const [out] = writers;
+  expect(writers).toHaveLength(1);
+  expect(out !== undefined && 'changes' in out ? out.changes : undefined).toEqual([{ kind: 'examined', id: 'hall.statue', change: 'added', cause }]);
+  // Any other hotspot: core's rules, unchanged.
+  expect(reduce(w, s, tap('hall.vase'), registry)).toEqual(reduce(w, s, tap('hall.vase')));
+  expect(writers).toHaveLength(1);
+});
+
+test('search: a claimed hotspot has one tap edge', () => {
+  const w = world({ hall: room([object('statue', [{ give: 'coin' }]), look('vase')]) }, { items: ['coin'] });
+  const probe: MechanicRules<'probe', never, never> = {
+    id: 'probe',
+    actions: () => [],
+    apply: () => undefined,
+    reads: () => [],
+    cues: [],
+    tap: (_w, s, at, out) => {
+      if (at !== k('hall.statue')) {
+        return false;
+      }
+      out.set('examined', [...s.examined, at], { verb: 'tap', at, item: null, via: null });
+      return true;
+    },
+  };
+  const edges = successors(w, at('hall'), [CORE, probe]).filter((x) => x.step.kind === 'tap' && x.step.hotspot === k('hall.statue'));
+  expect(edges).toHaveLength(1);
+  expect(edges[0]?.state.examined).toEqual(['hall.statue']);
+  expect(edges[0]?.state.held).toEqual([]);
 });
