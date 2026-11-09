@@ -15,7 +15,7 @@ import type { AssetInputs, BudgetInputs, ChapterInputs, DistFile, ManifestChunk,
 import { decodeChapterList, decodeStoryUsage } from './story/emit.ts';
 
 /** The lazy family rows (PUZZLES-PLAN X14, "Budgets"). */
-const LAZY_ROWS = ['puzzle-type chunk (br)', 'puzzle-host chunk (br)', 'explore-ui chunk (br)'];
+const LAZY_ROWS = ['puzzle-type chunk (br)', 'puzzle-host chunk (br)', 'explore-ui chunk (br)', 'cue-stage chunk (br)'];
 /** The meta families' rows (META-PLAN M27, "Budgets"; RULINGS 105): app/meta.ts is their importer. */
 const META_ROWS = ['meta-ui chunk (br)', 'meta controller chunk (br)'];
 
@@ -104,7 +104,8 @@ const ORDER = 'src/puzzles/ui/OrderPuzzle.svelte';
 const HOST = 'src/ui/puzzles/PuzzleHost.svelte';
 const CONTROLLER = 'src/explore/controller.ts';
 const EXPLORE_VIEW = 'src/ui/explore/ExploreView.svelte';
-const ALL_LAZY: ReadonlySet<string> = new Set([CODE_LOCK, ORDER, HOST, CONTROLLER, EXPLORE_VIEW]);
+const CUE_STAGE = 'src/cues/stage/index.ts';
+const ALL_LAZY: ReadonlySet<string> = new Set([CODE_LOCK, ORDER, HOST, CONTROLLER, EXPLORE_VIEW, CUE_STAGE]);
 const META_UI = 'src/ui/meta/index.ts';
 const META_CTL = 'src/app/meta.ts';
 
@@ -404,6 +405,42 @@ describe('budget evaluate', () => {
     expect(gone.note).toContain('assets/PuzzleHost-z.js');
   });
 
+  test('budget: the cue-stage family is measured and refused over its limit', () => {
+    // Engine plan §11: the cue stage is its own lazy family, which app/yields.ts import()s (GM3s).
+    const row = (b: BudgetInputs): Row => rowOf(evaluate(b, LIMITS), 'cue-stage chunk (br)');
+    // The importer exists and the root's source does not (before the stage lands): PENDING, never a 0 KB PASS.
+    expect(row(inputs({ yieldsSourceExists: true, lazySources: new Set([HOST]) }))).toMatchObject({
+      status: 'PENDING',
+      valueBytes: null,
+      note: `no source of ${CUE_STAGE}`,
+    });
+    // Its own dynamic chunk, JS and CSS beyond the entry, against 6.0 KB.
+    expect(LIMITS.cueStageChunkBr).toBe(6_000);
+    expect(row(withLazy(inputs(), { [CUE_STAGE]: { js: 3_000, css: 300 } }))).toMatchObject({
+      status: 'PASS',
+      valueBytes: 3_300,
+      limitBytes: LIMITS.cueStageChunkBr,
+    });
+    expect(row(withLazy(inputs(), { [CUE_STAGE]: { js: 6_000 } }))).toMatchObject({ status: 'PASS', valueBytes: 6_000 });
+    expect(row(withLazy(inputs(), { [CUE_STAGE]: { js: 6_001 } }))).toMatchObject({ status: 'FAIL', valueBytes: 6_001 });
+    // The engine reaches it by import() only: the engine row does not count it (nor a chunk split off its directory),
+    // its own row does, without the Pixi chunk the engine already loaded.
+    const base = withEngine(inputs(), 50_000, 179_000);
+    const manifest = { ...base.manifest };
+    const engine = manifest[ENGINE_SRC];
+    if (engine === undefined) {
+      throw new Error('invariant: withEngine adds the engine chunk');
+    }
+    const player = 'src/cues/stage/player.ts';
+    manifest[ENGINE_SRC] = { ...engine, dynamicImports: [CUE_STAGE, player] };
+    manifest[CUE_STAGE] = { file: 'assets/index-s.js', src: CUE_STAGE, isDynamicEntry: true, imports: ['_pixi-e.js'] };
+    manifest[player] = { file: 'assets/player-s.js', src: player, isDynamicEntry: true };
+    const files = [...base.files, file('assets/index-s.js', 3_000), file('assets/player-s.js', 1_000)];
+    const rows = evaluate({ ...base, manifest, files, yieldsSourceExists: true, lazySources: new Set([CUE_STAGE]) }, LIMITS);
+    expect(rowOf(rows, 'engine closure JS (br)')).toMatchObject({ status: 'PASS', valueBytes: 229_000 });
+    expect(rowOf(rows, 'cue-stage chunk (br)')).toMatchObject({ status: 'PASS', valueBytes: 3_000 });
+  });
+
   test('budget: engine row excludes the lazy chunks', () => {
     // yields.ts lives in the engine closure and import()s the lazy families: those load after the first line.
     const base = withEngine(inputs(), 50_000, 179_000);
@@ -548,11 +585,11 @@ describe('budget evaluate', () => {
 
   test('budget: every row is printed', () => {
     // A failing manifest does not stop later rows (no bail). PENDING: the engine row, the first-line row while the
-    // engine is absent, the three lazy rows while app/yields.ts is, and the two meta rows while app/meta.ts is; with no
+    // engine is absent, the four lazy rows while app/yields.ts is, and the two meta rows while app/meta.ts is; with no
     // manifest the first-line row FAILs.
     const cases: ReadonlyArray<readonly [BudgetInputs, number]> = [
-      [inputs(), 7],
-      [inputs({ manifest: null }), 6],
+      [inputs(), 8],
+      [inputs({ manifest: null }), 7],
     ];
     for (const [input, pendingRows] of cases) {
       const rows = evaluate(input, LIMITS);
@@ -666,6 +703,7 @@ describe('budget cli', () => {
     expect(r.stdout).toContain('puzzle-type chunk (br) | — | 8.0 KB | PENDING | src/app/yields.ts absent');
     expect(r.stdout).toContain('puzzle-host chunk (br) | — | 10.0 KB | PENDING | src/app/yields.ts absent');
     expect(r.stdout).toContain('explore-ui chunk (br) | — | 16.0 KB | PENDING | src/app/yields.ts absent');
+    expect(r.stdout).toContain('cue-stage chunk (br) | — | 6.0 KB | PENDING | src/app/yields.ts absent');
     expect(r.stdout).toContain('meta-ui chunk (br) | — | 14.0 KB | PENDING | src/app/meta.ts absent');
     expect(r.stdout).toContain('meta controller chunk (br) | — | 6.0 KB | PENDING | src/app/meta.ts absent');
     expect(r.stdout).toMatch(/^budget: \d+ rows, \d+ PASS, 0 FAIL, \d+ PENDING$/m);
@@ -1361,7 +1399,7 @@ describe('budget assets', () => {
       ]) {
         expect(r.stdout).toMatch(row);
       }
-      expect(r.stdout).toMatch(/^budget: \d+ rows, \d+ PASS, 0 FAIL, 10 PENDING$/m);
+      expect(r.stdout).toMatch(/^budget: \d+ rows, \d+ PASS, 0 FAIL, 11 PENDING$/m);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

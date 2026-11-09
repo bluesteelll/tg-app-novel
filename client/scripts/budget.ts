@@ -79,6 +79,8 @@ export type Limits = {
   metaUiChunkBr: number;
   /** RULINGS 105, 149: the meta controller's chunk, requested by boot's gate (from its measurement, at most 6 KB). */
   metaControllerChunkBr: number;
+  /** Engine plan §11: JS + CSS of the cue stage's chunk (GM3s), which app/yields.ts import()s. */
+  cueStageChunkBr: number;
   allJsBr: number;
   cssBr: number;
   htmlBr: number;
@@ -114,6 +116,7 @@ export const LIMITS: Limits = {
   exploreUiChunkBr: 16_000,
   metaUiChunkBr: 14_000,
   metaControllerChunkBr: 6_000,
+  cueStageChunkBr: 6_000,
   allJsBr: 305_000,
   cssBr: 12_000,
   htmlBr: 2_000,
@@ -149,7 +152,7 @@ export const META_SRC = 'src/app/meta.ts';
 export type LazyFamily = {
   name: string;
   roots: readonly string[];
-  limit: 'puzzleTypeChunkBr' | 'puzzleHostChunkBr' | 'exploreUiChunkBr' | 'metaUiChunkBr' | 'metaControllerChunkBr';
+  limit: 'puzzleTypeChunkBr' | 'puzzleHostChunkBr' | 'exploreUiChunkBr' | 'cueStageChunkBr' | 'metaUiChunkBr' | 'metaControllerChunkBr';
   measure: 'largest' | 'union';
   importer: typeof YIELDS_SRC | typeof META_SRC;
 };
@@ -180,13 +183,14 @@ export const LAZY_FAMILIES: readonly LazyFamily[] = [
     measure: 'union',
     importer: YIELDS_SRC,
   },
+  { name: 'cue-stage chunk (br)', roots: ['src/cues/stage/index.ts'], limit: 'cueStageChunkBr', measure: 'largest', importer: YIELDS_SRC },
   { name: 'meta-ui chunk (br)', roots: ['src/ui/meta/index.ts'], limit: 'metaUiChunkBr', measure: 'largest', importer: META_SRC },
   // Its own root is its importer: boot.ts always exists, so the row is PENDING exactly while the controller is absent.
   { name: 'meta controller chunk (br)', roots: [META_SRC], limit: 'metaControllerChunkBr', measure: 'largest', importer: META_SRC },
 ];
 const LAZY_ROOTS: ReadonlySet<string> = new Set(LAZY_FAMILIES.flatMap((f) => f.roots));
 /** The arch rule's lazy directories: a chunk from one of them loads after the first line, listed root or not. */
-const LAZY_DIRS = ['src/puzzles/ui/', 'src/ui/puzzles/', 'src/ui/explore/'];
+const LAZY_DIRS = ['src/puzzles/ui/', 'src/ui/puzzles/', 'src/ui/explore/', 'src/cues/stage/'];
 
 function isLazySrc(src: string | undefined): boolean {
   return src !== undefined && (LAZY_ROOTS.has(src) || LAZY_DIRS.some((dir) => src.startsWith(dir)));
