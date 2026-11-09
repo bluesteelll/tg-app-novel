@@ -9,6 +9,7 @@ import type { AssetCatalog } from '../../../src/story/catalog.ts';
 import type { KnotName, PuzzleLocalId, VarName } from '../../../src/story/staging.ts';
 import type { WorldSource } from '../../../src/world/types.ts';
 import type { Finding, Severity, SourceChapter } from '../lint.ts';
+import { SHAPE_LINT } from '../puzzles/shape.ts';
 import { CLUES_LINT } from './clues.ts';
 import { CORE_LINT } from './core.ts';
 
@@ -43,7 +44,7 @@ export type WorldLint<C extends string> = {
   | { readonly runsFrom: 'story' }
 );
 
-export const MECHANIC_LINTS = [CORE_LINT, CLUES_LINT] as const satisfies readonly WorldLint<string>[];
+export const MECHANIC_LINTS = [CORE_LINT, CLUES_LINT, SHAPE_LINT] as const satisfies readonly WorldLint<string>[];
 
 type CodesOf<L> = L extends { readonly codes: infer C } ? keyof C & string : never;
 /** Every code of every MECHANIC_LINTS entry. */

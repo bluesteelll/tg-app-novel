@@ -26,7 +26,8 @@ import { clueFindings } from './mechanics/clues.ts';
 import { MECHANIC_LINTS } from './mechanics/index.ts';
 import type { MechanicLintCode, WorldLint, WorldLintInput } from './mechanics/index.ts';
 import { PUZZLE_LINTS } from './puzzles/index.ts';
-import type { PuzzleLintCode } from './puzzles/index.ts';
+import type { PuzzleLintCode, PuzzleTypeLint } from './puzzles/index.ts';
+import { MAX_ANSWER_LEN, answerLenFindings, answerLenIssues } from './puzzles/shape.ts';
 import { decodeWorldFile, lintWorld } from './world.ts';
 import type { SectionReport, VarLiteral } from './world.ts';
 
@@ -933,7 +934,12 @@ test('story: module and type lint codes are unique and none is a DSL code', () =
   const tables: readonly CodeTable[] = [...MECHANIC_LINTS, ...Object.values(PUZZLE_LINTS).map((l) => ({ id: 'type', codes: l.codes }))];
   // The keys of a registry entry's codes are MechanicLintCode or PuzzleLintCode by those types' definitions.
   const registered = tables.flatMap((t) => (Object.entries(t.codes) as Array<[MechanicLintCode | PuzzleLintCode, Severity]>).map(([code, s]) => finding(code, s)));
-  expect(registered.map((f) => `${f.code} ${f.severity}`)).toEqual(['world/clue-declared E', 'world/reach-has-clue E', 'world/clue-reachable E']);
+  expect(registered.map((f) => `${f.code} ${f.severity}`)).toEqual([
+    'world/clue-declared E',
+    'world/reach-has-clue E',
+    'world/clue-reachable E',
+    'world/answer-len E',
+  ]);
   // The registry restates world.ts's VarLiteral (its types stay out of the app program): one type (tsc).
   type InputVar = WorldLintInput['declared'] extends ReadonlyMap<VarName, infer V> ? V : never;
   type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
@@ -1100,4 +1106,69 @@ test('search: an excluded step is never taken', () => {
   expect(cut.states).toBeLessThan(all.states);
   // An exclusion that accepts nothing is the option-less search, edge for edge.
   expect(walk({ exclude: () => false })).toEqual(all);
+});
+
+/** `params.n` of a fixture type's instance (its params decode as written). */
+function nOf(params: unknown): number {
+  const n = (params as { n?: unknown }).n; // a fixture type's params: { n }
+  if (typeof n !== 'number') {
+    throw new Error('invariant: a fixture instance writes params.n');
+  }
+  return n;
+}
+
+/** A commit type posting `params.n` entries, and a reach type whose lint half solves to `params.n` entries. */
+const POSTS: PuzzleTypeData<string, unknown> = Object.freeze({
+  type: 'posts',
+  check: 'commit',
+  goal: 'secret',
+  presentation: 'overlay',
+  wrong: 'posted',
+  commit: 'control',
+  decodeParams: (raw: unknown) => ({ ok: true, value: raw }) as const,
+  answerShape: (p: unknown) => ({ len: nOf(p), max: 9 }),
+  initial: (p: unknown) => Array.from({ length: nOf(p) }, () => 0),
+  startShown: (p: unknown) => Array.from({ length: nOf(p) }, () => 0),
+});
+const REACHES: PuzzleTypeData<string, unknown> = Object.freeze({ ...SHOWN, type: 'reaches' });
+const LENGTH_TYPES: PuzzleTypes = [...PUZZLE_TYPES, POSTS, REACHES];
+const LENGTH_LINTS: Readonly<Record<string, PuzzleTypeLint<unknown>>> = {
+  ...PUZZLE_LINTS,
+  posts: { countSolutions: () => 1 },
+  reaches: { solve: (p: unknown) => Array.from({ length: nOf(p) }, () => 1), countSolutions: () => 1 },
+};
+
+/** base() whose drawer is a fixture type posting `n` entries, decoded with LENGTH_TYPES. */
+function lengthWorld(type: 'posts' | 'reaches', n: number): Json {
+  const w = base();
+  at(w, 'puzzles.drawer')['type'] = type;
+  at(w, 'puzzles.drawer')['params'] = { n };
+  return w;
+}
+
+test('story: an answer longer than MAX_ANSWER_LEN is refused', () => {
+  const issues = (type: 'posts' | 'reaches', n: number) => answerLenIssues(passInput(lengthWorld(type, n), LENGTH_TYPES).world, LENGTH_LINTS, LENGTH_TYPES);
+  const long = (n: number) => [{ path: 'puzzles.drawer.params', reason: 'range', detail: `puzzle 'drawer' posts ${n} entries: 1..16 (the server refuses longer, §7.4)` }];
+  expect(issues('posts', 17)).toEqual(long(17));
+  expect(issues('posts', 16)).toEqual([]);
+  expect(issues('posts', 1)).toEqual([]);
+  expect(issues('posts', 0)).toEqual(long(0));
+  expect(issues('reaches', 17)).toEqual(long(17));
+  expect(issues('reaches', 16)).toEqual([]);
+  // The pass reports each at the author's line of the puzzle's params.
+  const input = passInput(lengthWorld('posts', 17), LENGTH_TYPES);
+  expect(answerLenFindings(input, LENGTH_LINTS, LENGTH_TYPES)).toEqual([
+    { code: 'world/answer-len', severity: 'E', file: FILE, line: input.line('puzzles.drawer.params'), message: long(17)[0]?.detail },
+  ]);
+  // The real code and order worlds post within the bound, through the registry too.
+  const decoded = decodeWorldSource(base());
+  expect(decoded.ok && answerLenIssues(decoded.value)).toEqual([]);
+  expect(of(lint(base()), 'world/answer-len')).toEqual([]);
+});
+
+test("story: the build's answer bound never exceeds the server's MAX_ANSWER_LEN", () => {
+  const rust = readFileSync(new URL('../../../server/src/puzzles/mod.rs', import.meta.url), 'utf8');
+  const m = /pub const MAX_ANSWER_LEN: usize = (\d+);/.exec(rust);
+  expect(m, 'server/src/puzzles/mod.rs: pub const MAX_ANSWER_LEN: usize = <n>;').not.toBeNull();
+  expect(MAX_ANSWER_LEN).toBeLessThanOrEqual(Number(m?.[1]));
 });
