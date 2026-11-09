@@ -22,7 +22,7 @@ use crate::api::dto::{CardAchievement, CardEnding, CardResponse, Localized};
 use crate::auth::AuthUser;
 use crate::content;
 use crate::error::ApiError;
-use crate::ids::{ProductId, StoryId};
+use crate::ids::{ProductId, PuzzleId, PuzzleKey, StoryId};
 use crate::meta::{self, met, visible};
 
 /// The headers of a 200: the card carries paid-gated texts, so no shared cache stores it and no browser sniffs
@@ -62,7 +62,17 @@ pub async fn post_card(
     let puzzles = if story_meta.puzzles.is_empty() {
         Vec::new()
     } else {
-        st.repo.card_puzzles(user, &story_meta.puzzles).await?
+        // The meta index names puzzles by id; their rows are stored under each puzzle's key (per-player §3.8). Every
+        // meta puzzle is a live puzzle (a meta load rule), so nothing is skipped; a miss would drop a fact, not panic.
+        let keyed: Vec<(PuzzleId, PuzzleKey)> = story_meta
+            .puzzles
+            .iter()
+            .filter_map(|id| {
+                let def = st.content.puzzle(id)?;
+                Some((id.clone(), def.key.clone()))
+            })
+            .collect();
+        st.repo.card_puzzles(user, &keyed).await?
     };
     let facts = meta::facts(story, &stats, &puzzles);
     // Met and visible now: an achievement is stored, and `new: true` sent, only beside the item it marks. In meta

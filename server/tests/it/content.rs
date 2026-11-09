@@ -107,11 +107,45 @@ pub(crate) async fn read_json(path: &Path) -> Value {
 /// `AppState::new` on a fresh database with `dir` as the content. Bind the guard, never `_`.
 pub(crate) async fn state_on(dir: &Path) -> (Result<AppState, StartupError>, TestDb) {
     let db = TestDb::create().await;
+    (state_on_db(dir, &db).await, db)
+}
+
+/// `AppState::new` on the database `db` with `dir` as the content: one start of a release on a database another
+/// start already used (a rollback, a forward deploy). Close the previous state's pool first: one process per database
+/// (`lib.rs`, the in-memory share window).
+pub(crate) async fn state_on_db(dir: &Path, db: &TestDb) -> Result<AppState, StartupError> {
     let cfg = Config {
         content_dir: dir.to_path_buf(),
-        ..common::test_config(&db)
+        ..common::test_config(db)
     };
-    (AppState::new(cfg).await, db)
+    AppState::new(cfg).await
+}
+
+/// The fixture as the release after a rename (per-player §3.8 "Rollback and re-deploy"): ch1's `drawer` is now
+/// `desk`, stored under the key it first shipped under, `ch1.drawer` (format 2), and `meta.json`'s `drawer_no_hints`
+/// names `ch1.desk` (a meta condition names a live puzzle id). ch2 to ch4 stay the committed format 1.
+pub(crate) async fn renamed_copy() -> FixtureCopy {
+    let copy = FixtureCopy::new();
+    copy.edit_json("puzzles/ch1.json", |v| {
+        v["format"] = json!(2);
+        let puzzles = v["puzzles"].as_object_mut().unwrap();
+        let mut desk = puzzles.remove("drawer").unwrap();
+        desk["key"] = json!("ch1.drawer");
+        puzzles.insert("desk".to_owned(), desk);
+    })
+    .await;
+    copy.edit_json("meta.json", |v| {
+        for achievement in v["stories"]["manor"]["achievements"]
+            .as_array_mut()
+            .unwrap()
+        {
+            if achievement["when"]["puzzle"] == "ch1.drawer" {
+                achievement["when"]["puzzle"] = json!("ch1.desk");
+            }
+        }
+    })
+    .await;
+    copy
 }
 
 /// The content error a start was refused with, or the failure line when it started or failed otherwise.
@@ -403,7 +437,8 @@ async fn puzzle_index_loaded() {
             "solution",
             json!([1, 8, 4, 10]),
         ),
-        ("unknown puzzle type", "type", json!("jigsaw")),
+        // Any label of the grammar is valid (per-player §3.3: an opaque type): this one is outside it.
+        ("type outside the label grammar", "type", json!("Jigsaw")),
     ];
     for (case, key, value) in refusals {
         let copy = FixtureCopy::new();
@@ -429,6 +464,278 @@ async fn puzzle_index_loaded() {
         Ok(ContentError::Invalid { path, .. }) if path.ends_with("puzzles/ch9.json") => {}
         Ok(other) => failures.push(format!("puzzles/ch9.json: expected Invalid, got {other}")),
         Err(failure) => failures.push(failure),
+    }
+    report(&failures);
+}
+
+/// A puzzle never renamed is stored under its own id (per-player §3.8 "The key"): every puzzle of the fixture has
+/// key = id, so every row on main is already keyed correctly.
+#[tokio::test]
+async fn content_puzzle_key_defaults_to_id() {
+    let (st, _db) = common::test_state().await;
+    let got: Vec<(&str, &str)> = st
+        .content
+        .puzzles()
+        .iter()
+        .map(|p| (p.id.0.as_str(), p.key.0.as_str()))
+        .collect();
+    let want = [("ch1.drawer", "ch1.drawer"), ("ch2.cabinet", "ch2.cabinet")];
+    assert!(
+        got == want,
+        "puzzles() as (id, key): expected {want:?}, got {got:?}"
+    );
+}
+
+/// `Content(Invalid)` on the file whose path ends in `file` with exactly `reason`, else a failure line: a refusal
+/// for another rule (today's `format 2, expected 1` included) is a red, not a pass.
+fn expect_invalid(
+    case: &str,
+    started: Result<AppState, StartupError>,
+    file: &str,
+    reason: &str,
+) -> Option<String> {
+    match content_error(case, started) {
+        Ok(ContentError::Invalid { path, reason: got })
+            if path.ends_with(file) && got == reason =>
+        {
+            None
+        }
+        Ok(other) => Some(format!(
+            "{case}: expected a refusal on {file}: {reason}, got {other}"
+        )),
+        Err(failure) => Some(failure),
+    }
+}
+
+/// Makes the puzzle file `v` format 2 and gives its puzzle `local` the key `key`.
+fn keyed(v: &mut Value, local: &str, key: &str) {
+    v["format"] = json!(2);
+    v["puzzles"][local]["key"] = json!(key);
+}
+
+/// Every puzzle of `st` as (id, key), in index order.
+fn ids_and_keys(st: &AppState) -> Vec<(String, String)> {
+    st.content
+        .puzzles()
+        .iter()
+        .map(|p| (p.id.0.clone(), p.key.0.clone()))
+        .collect()
+}
+
+/// A rename (format 2, per-player §3.3, §3.8): ch1's `drawer` is served as `ch1.desk` and stored under its first key
+/// `ch1.drawer`; the old id is no route id any more; a puzzle without a `key` keeps its id as the key.
+#[tokio::test]
+async fn content_loads_a_renamed_key() {
+    let copy = renamed_copy().await;
+    let (started, _db) = state_on(copy.path()).await;
+    let st = match started {
+        Ok(st) => st,
+        Err(e) => panic!("the renamed copy: expected Ok, got {e}"),
+    };
+    let mut failures = Vec::new();
+    let got = ids_and_keys(&st);
+    let want = [("ch1.desk", "ch1.drawer"), ("ch2.cabinet", "ch2.cabinet")];
+    if got != want.map(|(id, key)| (id.to_owned(), key.to_owned())) {
+        failures.push(format!(
+            "puzzles() as (id, key): expected {want:?}, got {got:?}"
+        ));
+    }
+    match st.content.puzzle(&puzzle("ch1.desk")) {
+        Some(p) if p.key.0 == "ch1.drawer" && p.solution == [1, 8, 4, 7] => {}
+        Some(p) => failures.push(format!(
+            "puzzle(ch1.desk): expected key ch1.drawer and the drawer's solution, got key {} and {:?}",
+            p.key.0, p.solution
+        )),
+        None => failures.push("puzzle(ch1.desk): expected Some".to_owned()),
+    }
+    if st.content.puzzle(&puzzle("ch1.drawer")).is_some() {
+        failures.push("puzzle(ch1.drawer): expected None (a key is no route id)".to_owned());
+    }
+    report(&failures);
+}
+
+/// Across the whole content no two puzzles share a key (per-player §3.3): two chapters' puzzles both keyed `ch1.old`
+/// (no live id, so only this rule applies) refuse the start, on the later puzzle's file.
+#[tokio::test]
+async fn content_refuses_two_puzzles_one_key() {
+    let copy = FixtureCopy::new();
+    copy.edit_json("puzzles/ch1.json", |v| keyed(v, "drawer", "ch1.old"))
+        .await;
+    copy.edit_json("puzzles/ch2.json", |v| keyed(v, "cabinet", "ch1.old"))
+        .await;
+    let (started, _db) = state_on(copy.path()).await;
+    let failures: Vec<String> = expect_invalid(
+        "two puzzles keyed ch1.old",
+        started,
+        "puzzles/ch2.json",
+        "puzzle ch2.cabinet: key ch1.old is also the key of ch1.drawer",
+    )
+    .into_iter()
+    .collect();
+    report(&failures);
+}
+
+/// No key is another live puzzle's id (per-player §3.3): drawer keyed `ch2.cabinet` refuses the start although every
+/// key is distinct (cabinet's is `ch2.box`), on drawer's file, which the index reads before the id it names.
+#[tokio::test]
+async fn content_refuses_key_equal_to_another_live_id() {
+    let copy = FixtureCopy::new();
+    copy.edit_json("puzzles/ch1.json", |v| keyed(v, "drawer", "ch2.cabinet"))
+        .await;
+    copy.edit_json("puzzles/ch2.json", |v| keyed(v, "cabinet", "ch2.box"))
+        .await;
+    let (started, _db) = state_on(copy.path()).await;
+    let failures: Vec<String> = expect_invalid(
+        "drawer keyed ch2.cabinet",
+        started,
+        "puzzles/ch1.json",
+        "puzzle ch1.drawer: key ch2.cabinet is the id of the live puzzle ch2.cabinet",
+    )
+    .into_iter()
+    .collect();
+    report(&failures);
+}
+
+/// The type is an opaque label (per-player §3.3): a type no client rule had when the server was built loads, in
+/// format 1 too, up to the grammar's 32 characters.
+#[tokio::test]
+async fn content_accepts_an_unknown_type_label() {
+    let longest = format!("s{}", "_".repeat(31));
+    let copy = FixtureCopy::new();
+    copy.edit_json("puzzles/ch1.json", |v| {
+        v["puzzles"]["drawer"]["type"] = json!("slider")
+    })
+    .await;
+    copy.edit_json("puzzles/ch2.json", |v| {
+        v["puzzles"]["cabinet"]["type"] = json!(longest)
+    })
+    .await;
+    let (started, _db) = state_on(copy.path()).await;
+    let failures: Vec<String> = match started {
+        Ok(st) => {
+            let got = ids_and_keys(&st);
+            let want = [("ch1.drawer", "ch1.drawer"), ("ch2.cabinet", "ch2.cabinet")];
+            (got != want.map(|(id, key)| (id.to_owned(), key.to_owned())))
+                .then(|| format!("puzzles(): expected {want:?}, got {got:?}"))
+                .into_iter()
+                .collect()
+        }
+        Err(e) => vec![format!(
+            "types slider and a 32-character label: expected Ok, got {e}"
+        )],
+    };
+    report(&failures);
+}
+
+/// Format 1 still loads beside format 2 (per-player §3.3 row 1: format 1 is today's entry exactly): with ch1 in
+/// format 2, ch2 to ch4 are the committed format-1 files, and ch2's cabinet loads as today with its id as its key.
+#[tokio::test]
+async fn content_still_loads_format_1() {
+    let copy = renamed_copy().await;
+    let (started, _db) = state_on(copy.path()).await;
+    let st = match started {
+        Ok(st) => st,
+        Err(e) => panic!("ch1 in format 2, ch2 to ch4 in format 1: expected Ok, got {e}"),
+    };
+    let mut failures = Vec::new();
+    match st.content.puzzle(&puzzle("ch2.cabinet")) {
+        Some(p) => {
+            let got = (
+                p.key.0.as_str(),
+                p.chapter.0.as_str(),
+                p.answer_len,
+                p.answer_max,
+                p.solution.as_slice(),
+                p.hints.len(),
+            );
+            if got != ("ch2.cabinet", "ch2", 3, 2, &[2, 0, 1][..], 3)
+                || p.title.en != "Archive cabinet"
+            {
+                failures.push(format!(
+                    "puzzle(ch2.cabinet): got {got:?}, title {:?}",
+                    p.title
+                ));
+            }
+        }
+        None => failures.push("puzzle(ch2.cabinet): expected Some".to_owned()),
+    }
+    let got = ids_and_keys(&st);
+    if got.len() != 2 {
+        failures.push(format!(
+            "puzzles(): expected desk and cabinet only, got {got:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// The other load rules of format 2 (per-player §3.3): the format is 1 or 2; a `key` needs format 2 (format 1 is
+/// today's entry exactly); a key is a puzzle id of the 0002 grammar; the type label is at most 32 characters. Controls:
+/// a format-2 file without a key, and a key equal to its own id, load with the id as the key.
+#[tokio::test]
+async fn content_refuses_a_bad_key_or_format() {
+    type Edit = fn(&mut Value);
+    let cases: [(&str, Edit, &str); 6] = [
+        (
+            "format 3",
+            |v| v["format"] = json!(3),
+            "format 3, expected 1 or 2",
+        ),
+        (
+            "a key in format 1",
+            |v| v["puzzles"]["drawer"]["key"] = json!("ch1.drawer"),
+            "puzzle ch1.drawer: key needs format 2",
+        ),
+        (
+            "key drawer",
+            |v| keyed(v, "drawer", "drawer"),
+            "puzzle ch1.drawer: key \"drawer\" is not a puzzle id",
+        ),
+        (
+            "key ch1.Drawer",
+            |v| keyed(v, "drawer", "ch1.Drawer"),
+            "puzzle ch1.drawer: key \"ch1.Drawer\" is not a puzzle id",
+        ),
+        (
+            "key ch0.a",
+            |v| keyed(v, "drawer", "ch0.a"),
+            "puzzle ch1.drawer: key \"ch0.a\" is not a puzzle id",
+        ),
+        (
+            "a 33-character type",
+            |v| v["puzzles"]["drawer"]["type"] = json!(format!("s{}", "_".repeat(32))),
+            "puzzle ch1.drawer: the type is outside the label grammar",
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (case, edit, reason) in cases {
+        let copy = FixtureCopy::new();
+        copy.edit_json("puzzles/ch1.json", edit).await;
+        let (started, _db) = state_on(copy.path()).await;
+        failures.extend(expect_invalid(case, started, "puzzles/ch1.json", reason));
+    }
+    let controls: [(&str, Edit); 2] = [
+        ("format 2 without a key", |v| v["format"] = json!(2)),
+        ("a key equal to its own id", |v| {
+            keyed(v, "drawer", "ch1.drawer")
+        }),
+    ];
+    for (case, edit) in controls {
+        let copy = FixtureCopy::new();
+        copy.edit_json("puzzles/ch1.json", edit).await;
+        let (started, _db) = state_on(copy.path()).await;
+        match started {
+            Ok(st) => {
+                let got = ids_and_keys(&st);
+                if got.first().map(|(id, key)| (id.as_str(), key.as_str()))
+                    != Some(("ch1.drawer", "ch1.drawer"))
+                {
+                    failures.push(format!(
+                        "{case} (control): expected ch1.drawer keyed ch1.drawer, got {got:?}"
+                    ));
+                }
+            }
+            Err(e) => failures.push(format!("{case} (control): expected Ok, got {e}")),
+        }
     }
     report(&failures);
 }

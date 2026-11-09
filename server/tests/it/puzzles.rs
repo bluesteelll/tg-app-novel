@@ -4,6 +4,7 @@
 //!
 //! Hint unlock rows are inserted by raw SQL: the server has no writer for them in this lane.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -12,11 +13,14 @@ use axum::http::Request;
 use axum::http::header::{
     AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, HeaderName, RETRY_AFTER, X_CONTENT_TYPE_OPTIONS,
 };
+use serde_json::{Value, json};
 use server::AppState;
+use server::catalog::ResourceKind;
 use server::clock::FixedClock;
 use server::db::POOL_MAX_CONNECTIONS;
+use server::db::economy::{Entry, Reason, credit_in_tx};
 use server::db::puzzles::AttemptRecord;
-use server::ids::{PuzzleId, UserId};
+use server::ids::{PuzzleKey, UserId};
 use server::puzzles::ATTEMPT_WINDOW_SECS;
 use sqlx::postgres::PgQueryResult;
 use sqlx::{Connection, PgConnection};
@@ -24,6 +28,7 @@ use tokio::task::JoinSet;
 
 use crate::catalog::{ANN, T0, bearer, get, own, state_with_users};
 use crate::common;
+use crate::content::{FIXTURE, renamed_copy, state_on, state_on_db};
 
 /// A second player.
 const BEN: i64 = 1002;
@@ -396,8 +401,9 @@ async fn progress_row(
     row
 }
 
-fn pid(id: &str) -> PuzzleId {
-    PuzzleId::parse(id).unwrap()
+/// The storage key of the puzzle `id` names: key = id for a puzzle never renamed (per-player §3.8).
+fn pid(id: &str) -> PuzzleKey {
+    PuzzleKey::parse(id).unwrap()
 }
 
 /// An attempt in the window, answered: not limited, no retry time.
@@ -1062,5 +1068,210 @@ async fn hint_text_403_for_unowned_paid_chapter() {
             &[Some("The folders are not sorted by colour."), None, None],
         ),
     ));
+    report(&failures);
+}
+
+/// `st` at `T0` with the `users` rows of `users`, as `state_with_users` makes them.
+async fn at_t0_with_users(st: AppState, users: &[i64]) -> AppState {
+    let st = st.with_clock(Arc::new(FixedClock(T0)));
+    for &id in users {
+        st.repo
+            .upsert_user(UserId(id), "Ann", None, T0)
+            .await
+            .unwrap();
+    }
+    st
+}
+
+/// Credits `amount` hints to `user`: a committed `referral_invitee` seed keyed `fund:<user>:<amount>` (the
+/// `economy::fund` pattern).
+async fn fund(st: &AppState, user: i64, amount: i64) {
+    let kind = ResourceKind("hint".to_owned());
+    let mut c = common::raw_db(st).await;
+    sqlx::raw_sql("BEGIN ISOLATION LEVEL READ COMMITTED")
+        .execute(&mut c)
+        .await
+        .unwrap();
+    let seed = Entry {
+        user: UserId(user),
+        kind: &kind,
+        amount,
+        reason: Reason::ReferralInvitee,
+        idem_key: format!("fund:{user}:{amount}"),
+        charge_id: None,
+        counterpart: None,
+        r#ref: None,
+        at: T0,
+    };
+    credit_in_tx(&mut c, &seed).await.unwrap();
+    sqlx::raw_sql("COMMIT").execute(&mut c).await.unwrap();
+    c.close().await.unwrap();
+}
+
+/// `user`'s ledger idempotency keys, in key order.
+async fn ledger_keys(st: &AppState, user: i64) -> Vec<String> {
+    let mut c = common::raw_db(st).await;
+    let keys = sqlx::query_scalar(
+        "SELECT idem_key FROM resource_ledger WHERE user_id = $1 ORDER BY idem_key",
+    )
+    .bind(user)
+    .fetch_all(&mut c)
+    .await
+    .unwrap();
+    c.close().await.unwrap();
+    keys
+}
+
+/// `POST /api/puzzles/{id}/hints/{tier}?lang=en` as `user`: (status, body as JSON).
+async fn post_hint(st: &AppState, user: i64, id: &str, tier: u8) -> (u16, Value) {
+    let req = Request::post(format!("/api/puzzles/{id}/hints/{tier}?lang=en"))
+        .header(AUTHORIZATION, bearer(st, user))
+        .body(Body::empty())
+        .unwrap();
+    let reply = common::call(st, req).await;
+    let body = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
+    (reply.status.as_u16(), body)
+}
+
+/// The mismatch of a hint use against a 200 with `balance` and `text`.
+fn expect_hint(case: &str, got: (u16, Value), balance: i64, text: &str) -> Option<String> {
+    let want = (200, json!({ "balance": balance, "text": text }));
+    (got != want).then(|| format!("{case}: expected {want:?}, got {got:?}"))
+}
+
+/// A renamed puzzle is served from the rows its old id wrote (per-player §3.8): release N wrote ANN's solve and tier-1
+/// unlock and BEN's tier-1 unlock under `ch1.drawer`; release N+1 serves the puzzle as `ch1.desk`, keyed
+/// `ch1.drawer`. ANN's status is solved with tier 1 open; BEN's tier 1 is `AlreadyUnlocked` (200, no debit, no new
+/// ledger row); the old id is no route any more. BEN stays unsolved: a solved puzzle refuses every hint use.
+#[tokio::test]
+async fn rename_serves_rows_under_the_key() {
+    let copy = renamed_copy().await;
+    let (started, _db) = state_on(copy.path()).await;
+    let st = match started {
+        Ok(st) => at_t0_with_users(st, &[ANN, BEN]).await,
+        Err(e) => panic!("release N+1 (the renamed copy): expected Ok, got {e}"),
+    };
+    let mut c = common::raw_db(&st).await;
+    let solved = Progress {
+        solved_at: Some(T0),
+        ..progress(ANN, "ch1.drawer")
+    };
+    insert_progress(&mut c, solved).await.unwrap();
+    insert_unlock(&mut c, ANN, "ch1.drawer", 1, T0)
+        .await
+        .unwrap();
+    insert_unlock(&mut c, BEN, "ch1.drawer", 1, T0)
+        .await
+        .unwrap();
+    c.close().await.unwrap();
+    fund(&st, BEN, 5).await;
+    let mut failures = Vec::new();
+    let reply = get(&st, Some(ANN), "/api/puzzles/ch1.desk?lang=en").await;
+    failures.extend(expect_reply(
+        "ANN's status of ch1.desk",
+        &reply,
+        200,
+        &status_body("ch1.desk", true, &[Some(DRAWER_HINTS[0].1), None, None]),
+    ));
+    failures.extend(expect_hint(
+        "BEN's tier 1 of ch1.desk",
+        post_hint(&st, BEN, "ch1.desk", 1).await,
+        5,
+        DRAWER_HINTS[0].1,
+    ));
+    let keys = ledger_keys(&st, BEN).await;
+    if keys != ["fund:1002:5"] {
+        failures.push(format!(
+            "BEN's ledger: expected only the fund row, got {keys:?}"
+        ));
+    }
+    let reply = get(&st, Some(ANN), "/api/puzzles/ch1.drawer?lang=en").await;
+    failures.extend(expect_error(
+        "the old id ch1.drawer",
+        &reply,
+        404,
+        "not_found",
+    ));
+    report(&failures);
+}
+
+/// A rollback and the next forward start serve the same rows (per-player §3.8 "Rollback and re-deploy"), on one
+/// database, one process at a time: under N+1 BEN buys tier 1 of `ch1.desk`; rolled back to N, `ch1.drawer` shows it
+/// and BEN buys tier 2; forward to N+1 again, `ch1.desk` shows both and tier 2 is `AlreadyUnlocked`. One debit per
+/// tier, both keyed by `ch1.drawer`.
+#[tokio::test]
+async fn rollback_then_forward_keeps_unlocks() {
+    let db = common::TestDb::create().await;
+    let renamed = renamed_copy().await;
+    let releases = [
+        ("N+1", renamed.path()),
+        ("N", Path::new(FIXTURE)),
+        ("N+1 again", renamed.path()),
+    ];
+    let mut failures = Vec::new();
+    for (at, (release, dir)) in releases.into_iter().enumerate() {
+        let st = match state_on_db(dir, &db).await {
+            Ok(st) => at_t0_with_users(st, &[BEN]).await,
+            Err(e) => {
+                failures.push(format!("start {release}: expected Ok, got {e}"));
+                break;
+            }
+        };
+        match at {
+            0 => {
+                fund(&st, BEN, 5).await;
+                failures.extend(expect_hint(
+                    "N+1: BEN buys tier 1 of ch1.desk",
+                    post_hint(&st, BEN, "ch1.desk", 1).await,
+                    4,
+                    DRAWER_HINTS[0].1,
+                ));
+            }
+            1 => {
+                let reply = get(&st, Some(BEN), "/api/puzzles/ch1.drawer?lang=en").await;
+                failures.extend(expect_reply(
+                    "N: BEN's status of ch1.drawer",
+                    &reply,
+                    200,
+                    &status_body("ch1.drawer", false, &[Some(DRAWER_HINTS[0].1), None, None]),
+                ));
+                failures.extend(expect_hint(
+                    "N: BEN buys tier 2 of ch1.drawer",
+                    post_hint(&st, BEN, "ch1.drawer", 2).await,
+                    3,
+                    DRAWER_HINTS[1].1,
+                ));
+            }
+            _ => {
+                let reply = get(&st, Some(BEN), "/api/puzzles/ch1.desk?lang=en").await;
+                failures.extend(expect_reply(
+                    "N+1 again: BEN's status of ch1.desk",
+                    &reply,
+                    200,
+                    &status_body(
+                        "ch1.desk",
+                        false,
+                        &[Some(DRAWER_HINTS[0].1), Some(DRAWER_HINTS[1].1), None],
+                    ),
+                ));
+                failures.extend(expect_hint(
+                    "N+1 again: BEN's tier 2 of ch1.desk",
+                    post_hint(&st, BEN, "ch1.desk", 2).await,
+                    3,
+                    DRAWER_HINTS[1].1,
+                ));
+                let keys = ledger_keys(&st, BEN).await;
+                let want = [
+                    "fund:1002:5",
+                    "hint:1002:ch1.drawer:1",
+                    "hint:1002:ch1.drawer:2",
+                ];
+                if keys != want {
+                    failures.push(format!("BEN's ledger: expected {want:?}, got {keys:?}"));
+                }
+            }
+        }
+        st.repo.close().await;
+    }
     report(&failures);
 }

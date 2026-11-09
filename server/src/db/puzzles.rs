@@ -1,11 +1,12 @@
 //! The puzzle tables (`0002_puzzles.sql`): `puzzle_progress`, the attempt window and the solve of each (user,
 //! puzzle), and `hint_unlocks`, read here only (its one writer is the hint spend of a later lane).
 //!
-//! Every statement binds the token's user and the puzzle id. No solution reaches this module: the caller checks the
+//! Every statement binds the token's user and the puzzle's storage key ([`PuzzleKey`], per-player §3.8: the id the
+//! puzzle first shipped under, so a rename keeps its rows). No solution reaches this module: the caller checks the
 //! answer against the content and passes whether it was correct, so the window is decided before that fact is used.
 
 use crate::db::Repo;
-use crate::ids::{PuzzleId, UserId};
+use crate::ids::{PuzzleKey, UserId};
 use crate::puzzles::{ATTEMPT_WINDOW_MAX, ATTEMPT_WINDOW_SECS};
 
 /// What [`Repo::record_attempt`] recorded.
@@ -20,15 +21,15 @@ pub struct AttemptRecord {
 }
 
 impl Repo {
-    /// Counts one attempt of `user` on `puzzle` at `now`, then applies `correct` unless the window is full. One READ
-    /// COMMITTED transaction: the upsert counts first and holds the (user, puzzle) row lock to the commit, so two
-    /// attempts serialize (a first-ever pair's second insert waits on the first, then takes the update path) and the
-    /// window count is exact. A window older than [`ATTEMPT_WINDOW_SECS`] restarts at `now` with this attempt.
+    /// Counts one attempt of `user` on the puzzle keyed `puzzle` at `now`, then applies `correct` unless the window is
+    /// full. One READ COMMITTED transaction: the upsert counts first and holds the (user, puzzle) row lock to the
+    /// commit, so two attempts serialize (a first-ever pair's second insert waits on the first, then takes the update
+    /// path) and the window count is exact. A window older than [`ATTEMPT_WINDOW_SECS`] restarts at `now` with this attempt.
     /// Past [`ATTEMPT_WINDOW_MAX`] the count commits and `correct` is neither applied nor returned.
     pub async fn record_attempt(
         &self,
         user: UserId,
-        puzzle: &PuzzleId,
+        puzzle: &PuzzleKey,
         correct: bool,
         now: i64,
     ) -> Result<AttemptRecord, sqlx::Error> {
@@ -85,8 +86,8 @@ impl Repo {
         })
     }
 
-    /// Whether `user` solved `puzzle`.
-    pub async fn is_solved(&self, user: UserId, puzzle: &PuzzleId) -> Result<bool, sqlx::Error> {
+    /// Whether `user` solved the puzzle keyed `puzzle`.
+    pub async fn is_solved(&self, user: UserId, puzzle: &PuzzleKey) -> Result<bool, sqlx::Error> {
         sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM puzzle_progress \
              WHERE user_id = $1 AND puzzle_id = $2 AND solved_at IS NOT NULL)",
@@ -97,11 +98,11 @@ impl Repo {
         .await
     }
 
-    /// The hint tiers of `puzzle` that `user` unlocked, ascending.
+    /// The hint tiers of the puzzle keyed `puzzle` that `user` unlocked, ascending.
     pub async fn unlocked_tiers(
         &self,
         user: UserId,
-        puzzle: &PuzzleId,
+        puzzle: &PuzzleKey,
     ) -> Result<Vec<u8>, sqlx::Error> {
         let tiers: Vec<i64> = sqlx::query_scalar(
             "SELECT tier FROM hint_unlocks WHERE user_id = $1 AND puzzle_id = $2 ORDER BY tier",

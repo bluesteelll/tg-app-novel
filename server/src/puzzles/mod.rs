@@ -119,7 +119,7 @@ pub async fn attempt(
     })?;
     let record = st
         .repo
-        .record_attempt(user, &def.id, correct, st.clock.now())
+        .record_attempt(user, &def.key, correct, st.clock.now())
         .await?;
     Ok(if record.limited {
         AttemptOutcome::RateLimited {
@@ -141,8 +141,8 @@ pub async fn status(
     def: &PuzzleDef,
     lang: Lang,
 ) -> Result<PuzzleStatus, ApiError> {
-    let solved = st.repo.is_solved(user, &def.id).await?;
-    let unlocked = st.repo.unlocked_tiers(user, &def.id).await?;
+    let solved = st.repo.is_solved(user, &def.key).await?;
+    let unlocked = st.repo.unlocked_tiers(user, &def.key).await?;
     let hints = def
         .hints
         .iter()

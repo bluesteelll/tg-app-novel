@@ -2,10 +2,14 @@
 //! Every rejected case sits next to a control insert that must succeed on the same parent rows, so a red names the
 //! constraint, not a missing parent or a typo.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use sqlx::PgConnection;
+use server::db::{
+    Clause, ERASURE_ORDER, ErasureStep, NON_FK_USER_COLUMNS, NOT_USER_COLUMNS, UserColumn,
+};
 use sqlx::postgres::PgQueryResult;
+use sqlx::{Connection, PgConnection};
 
 use crate::common;
 
@@ -591,5 +595,307 @@ async fn pool_session_settings() {
             got.server_version_num
         ));
     }
+    report(&failures);
+}
+
+/// A (table, column) of the schema.
+type Column = (String, String);
+
+/// What the erasure gates read of the migrated schema (per-player §3.9): every column of the schema's tables, the
+/// columns with an FK to `users(id)`, and the BIGINT user-like columns (named `user_*` or `*_id`) with no FK at all.
+struct SchemaFacts {
+    columns: BTreeSet<Column>,
+    fk_to_users: BTreeSet<Column>,
+    unkeyed_user_like: BTreeSet<Column>,
+}
+
+impl SchemaFacts {
+    /// `U`: the FK columns to `users`, the declared non-FK user columns and the root (`users`, `id`).
+    fn user_columns(&self, non_fk: &[UserColumn]) -> BTreeSet<Column> {
+        let mut u = self.fk_to_users.clone();
+        u.extend(
+            non_fk
+                .iter()
+                .map(|d| (d.table.to_owned(), d.column.to_owned())),
+        );
+        u.insert(("users".to_owned(), "id".to_owned()));
+        u
+    }
+}
+
+/// `user_*` or `*_id`: the names a user id column is given.
+fn user_like(column: &str) -> bool {
+    column.starts_with("user_") || column.ends_with("_id")
+}
+
+/// The schema facts of a migrated test database, in one read of the catalog (static SQL, a raw connection).
+async fn schema_facts() -> SchemaFacts {
+    let (st, _db) = common::test_state().await;
+    let mut c = common::raw_db(&st).await;
+    let rows: Vec<(String, String, bool, bool, bool)> = sqlx::query_as(
+        "SELECT t.relname::text, a.attname::text, a.atttypid = 'int8'::regtype, \
+         EXISTS (SELECT 1 FROM pg_constraint k WHERE k.contype = 'f' AND k.conrelid = a.attrelid \
+                 AND a.attnum = ANY (k.conkey) AND k.confrelid = 'users'::regclass), \
+         EXISTS (SELECT 1 FROM pg_constraint k WHERE k.contype = 'f' AND k.conrelid = a.attrelid \
+                 AND a.attnum = ANY (k.conkey)) \
+         FROM pg_attribute a JOIN pg_class t ON t.oid = a.attrelid \
+         JOIN pg_namespace n ON n.oid = t.relnamespace \
+         WHERE n.nspname = current_schema() AND t.relkind IN ('r', 'p') AND a.attnum > 0 AND NOT a.attisdropped \
+         ORDER BY 1, 2",
+    )
+    .fetch_all(&mut c)
+    .await
+    .unwrap();
+    c.close().await.unwrap();
+    let mut facts = SchemaFacts {
+        columns: BTreeSet::new(),
+        fk_to_users: BTreeSet::new(),
+        unkeyed_user_like: BTreeSet::new(),
+    };
+    for (table, column, bigint, to_users, any_fk) in rows {
+        let at = (table, column);
+        if to_users {
+            facts.fk_to_users.insert(at.clone());
+        }
+        if bigint && !any_fk && user_like(&at.1) {
+            facts.unkeyed_user_like.insert(at.clone());
+        }
+        facts.columns.insert(at);
+    }
+    facts
+}
+
+/// The column a clause names.
+fn clause_column(clause: &Clause) -> &'static str {
+    match *clause {
+        Clause::Delete { column, .. }
+        | Clause::Null { column }
+        | Clause::Anonymize { column, .. }
+        | Clause::Keep { column, .. } => column,
+    }
+}
+
+/// The members of `U` no clause of their table's step names, and any table with two steps.
+fn uncovered(order: &[ErasureStep], facts: &SchemaFacts) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut tables = BTreeSet::new();
+    for step in order {
+        if !tables.insert(step.table) {
+            found.push(format!("{}: two ERASURE_ORDER steps", step.table));
+        }
+    }
+    let fk = &facts.fk_to_users;
+    for (t, c) in facts.user_columns(NON_FK_USER_COLUMNS) {
+        let covered = order
+            .iter()
+            .filter(|step| step.table == t)
+            .flat_map(|step| step.clauses)
+            .any(|clause| clause_column(clause) == c);
+        if !covered {
+            let what = if fk.contains(&(t.clone(), c.clone())) {
+                "references users"
+            } else if (t.as_str(), c.as_str()) == ("users", "id") {
+                "is the users root"
+            } else {
+                "is a declared non-FK user column"
+            };
+            found.push(format!(
+                "{t}.{c} {what} but no ERASURE_ORDER clause covers it"
+            ));
+        }
+    }
+    found
+}
+
+/// The clauses of `order` that name a (table, column) outside `U`.
+fn stale(order: &[ErasureStep], facts: &SchemaFacts) -> Vec<String> {
+    let u = facts.user_columns(NON_FK_USER_COLUMNS);
+    order
+        .iter()
+        .flat_map(|step| {
+            step.clauses
+                .iter()
+                .map(move |clause| (step.table, clause_column(clause)))
+        })
+        .filter(|&(t, c)| !u.contains(&(t.to_owned(), c.to_owned())))
+        .map(|(t, c)| {
+            format!("{t}.{c}: an ERASURE_ORDER clause names a column outside the user columns")
+        })
+        .collect()
+}
+
+/// The breaks of the root rule: `users` is the last step, it is exactly one `Anonymize { column: "id" }` over columns
+/// `users` has, and no other step names `users` or anonymises.
+fn root_breaks(order: &[ErasureStep], facts: &SchemaFacts) -> Vec<String> {
+    let mut found = Vec::new();
+    let Some(at) = order.iter().position(|step| step.table == "users") else {
+        return vec!["ERASURE_ORDER has no users step".to_owned()];
+    };
+    if let Some(next) = order.get(at + 1) {
+        found.push(format!(
+            "users is not the last ERASURE_ORDER step ({} follows it)",
+            next.table
+        ));
+    }
+    match order[at].clauses {
+        [Clause::Anonymize { column: "id", set }] => {
+            for &(column, _) in *set {
+                if !facts
+                    .columns
+                    .contains(&("users".to_owned(), column.to_owned()))
+                {
+                    found.push(format!(
+                        "users.{column}: the users step sets a column users does not have"
+                    ));
+                }
+            }
+        }
+        _ => found.push("the users step is not exactly one Anonymize of id".to_owned()),
+    }
+    for (i, step) in order.iter().enumerate() {
+        if i != at && step.table == "users" {
+            found.push("a second ERASURE_ORDER step names users".to_owned());
+        }
+        if i != at
+            && step
+                .clauses
+                .iter()
+                .any(|clause| matches!(clause, Clause::Anonymize { .. }))
+        {
+            found.push(format!("{}: only the users step anonymises", step.table));
+        }
+    }
+    found
+}
+
+/// The BIGINT user-like columns without an FK that neither declaration names, and the declarations that name no
+/// column or a column with an FK to `users` (stale).
+fn undeclared(facts: &SchemaFacts, non_fk: &[UserColumn], not_user: &[UserColumn]) -> Vec<String> {
+    let declared: BTreeSet<Column> = non_fk
+        .iter()
+        .chain(not_user)
+        .map(|d| (d.table.to_owned(), d.column.to_owned()))
+        .collect();
+    let mut found: Vec<String> = facts
+        .unkeyed_user_like
+        .difference(&declared)
+        .map(|(t, c)| format!("{t}.{c}: a BIGINT user-like column without an FK, not declared"))
+        .collect();
+    for (t, c) in &declared {
+        let at = (t.clone(), c.clone());
+        if !facts.columns.contains(&at) {
+            found.push(format!(
+                "{t}.{c}: declared, but the schema has no such column"
+            ));
+        } else if facts.fk_to_users.contains(&at) {
+            found.push(format!("{t}.{c}: declared, but it has an FK to users"));
+        }
+    }
+    found
+}
+
+/// The failure line of a seeded control that does not give exactly `want`: a checker that always passes fails here.
+fn control(case: &str, got: Vec<String>, want: &str) -> Option<String> {
+    (got != [want]).then(|| format!("{case} (seeded control): expected [{want:?}], got {got:?}"))
+}
+
+/// Every user column of the schema is named by a clause of its table's one step (per-player §3.9 W2), so the Later
+/// erasure leaves no row of the user behind. Control: the order without `hint_unlocks`.
+#[tokio::test]
+async fn erasure_order_covers_every_user_table() {
+    let facts = schema_facts().await;
+    let mut failures = uncovered(ERASURE_ORDER, &facts);
+    let without: Vec<ErasureStep> = ERASURE_ORDER
+        .iter()
+        .copied()
+        .filter(|step| step.table != "hint_unlocks")
+        .collect();
+    failures.extend(control(
+        "ERASURE_ORDER without hint_unlocks",
+        uncovered(&without, &facts),
+        "hint_unlocks.user_id references users but no ERASURE_ORDER clause covers it",
+    ));
+    report(&failures);
+}
+
+/// No clause names a column outside the user columns (a renamed or dropped column, a typo). Control: the
+/// `hint_unlocks` step with a clause on `player_id`.
+#[tokio::test]
+async fn erasure_order_names_no_stale_column() {
+    let facts = schema_facts().await;
+    let mut failures = stale(ERASURE_ORDER, &facts);
+    let seeded: Vec<ErasureStep> = ERASURE_ORDER
+        .iter()
+        .map(|&step| {
+            if step.table == "hint_unlocks" {
+                ErasureStep {
+                    table: "hint_unlocks",
+                    clauses: &[
+                        Clause::Delete {
+                            column: "user_id",
+                            filter: None,
+                        },
+                        Clause::Delete {
+                            column: "player_id",
+                            filter: None,
+                        },
+                    ],
+                }
+            } else {
+                step
+            }
+        })
+        .collect();
+    failures.extend(control(
+        "a clause on hint_unlocks.player_id",
+        stale(&seeded, &facts),
+        "hint_unlocks.player_id: an ERASURE_ORDER clause names a column outside the user columns",
+    ));
+    report(&failures);
+}
+
+/// The `users` row is the root, anonymised last (it stays for `payments` and `orders`, META-PLAN "Erasure"). Control:
+/// `users` moved before `entitlements`.
+#[tokio::test]
+async fn erasure_order_ends_with_the_users_root() {
+    let facts = schema_facts().await;
+    let mut failures = root_breaks(ERASURE_ORDER, &facts);
+    let mut moved: Vec<ErasureStep> = ERASURE_ORDER
+        .iter()
+        .copied()
+        .filter(|step| step.table != "users")
+        .collect();
+    let at = moved.iter().position(|step| step.table == "entitlements");
+    match (at, ERASURE_ORDER.last()) {
+        (Some(at), Some(&root)) => {
+            moved.insert(at, root);
+            failures.extend(control(
+                "users moved before entitlements",
+                root_breaks(&moved, &facts),
+                "users is not the last ERASURE_ORDER step (entitlements follows it)",
+            ));
+        }
+        _ => failures.push("seeded control: no entitlements step or an empty order".to_owned()),
+    }
+    report(&failures);
+}
+
+/// Every BIGINT user-like column without an FK is declared, as a user column or not, and every declaration names a
+/// column of the schema without an FK to `users` (per-player §3.9 W2): a future table keyed like `payments` cannot
+/// escape the order. Control: [`NON_FK_USER_COLUMNS`] without `payments.user_id`.
+#[tokio::test]
+async fn erasure_non_fk_user_columns_are_declared() {
+    let facts = schema_facts().await;
+    let mut failures = undeclared(&facts, NON_FK_USER_COLUMNS, NOT_USER_COLUMNS);
+    let without: Vec<UserColumn> = NON_FK_USER_COLUMNS
+        .iter()
+        .copied()
+        .filter(|d| (d.table, d.column) != ("payments", "user_id"))
+        .collect();
+    failures.extend(control(
+        "NON_FK_USER_COLUMNS without payments.user_id",
+        undeclared(&facts, &without, NOT_USER_COLUMNS),
+        "payments.user_id: a BIGINT user-like column without an FK, not declared",
+    ));
     report(&failures);
 }
