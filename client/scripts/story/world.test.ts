@@ -935,6 +935,10 @@ test('story: module and type lint codes are unique and none is a DSL code', () =
   // The keys of a registry entry's codes are MechanicLintCode or PuzzleLintCode by those types' definitions.
   const registered = tables.flatMap((t) => (Object.entries(t.codes) as Array<[MechanicLintCode | PuzzleLintCode, Severity]>).map(([code, s]) => finding(code, s)));
   expect(registered.map((f) => `${f.code} ${f.severity}`)).toEqual([
+    'world/renamed-target E',
+    'world/renamed-source E',
+    'world/renamed-cycle E',
+    'world/renamed-puzzles E',
     'world/clue-declared E',
     'world/reach-has-clue E',
     'world/clue-reachable E',
@@ -944,6 +948,64 @@ test('story: module and type lint codes are unique and none is a DSL code', () =
   type InputVar = WorldLintInput['declared'] extends ReadonlyMap<VarName, infer V> ? V : never;
   type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
   expect(true satisfies Same<VarLiteral, InputVar>).toBe(true);
+});
+
+/** The demo manor with a `renamed` map (engine plan §5.3), appended after its sections. */
+function renamedBase(renamed: Json): Json {
+  return { ...base(), renamed };
+}
+
+/** The `world/renamed-*` findings of a lint run. */
+function renamedOf(findings: readonly Finding[]): Finding[] {
+  return findings.filter((f) => f.code.startsWith('world/renamed-'));
+}
+
+/** The vars the clean manor's ink declares (`world: a clean world raises no finding`). */
+const MANOR_VARS = { pz_drawer: 'int', pz_gate_hints: 'int', it_medal_sun: 'bool', dc_letter: 'bool' } as const;
+
+test('story: a rename to a missing target / of a live source / in a cycle is refused', () => {
+  const target = renamedBase({ items: { medal_old: 'medal_gone' } });
+  expect(renamedOf(lint(target))).toEqual([
+    { code: 'world/renamed-target', severity: 'E', file: FILE, line: jsonLine(target, '"medal_old"'), message: "renamed.items: 'medal_old' ends at 'medal_gone', which is not in this world (§5.3)" },
+  ]);
+  const source = renamedBase({ items: { medal_sun: 'medal_moon' } });
+  expect(renamedOf(lint(source))).toEqual([
+    {
+      code: 'world/renamed-source',
+      severity: 'E',
+      file: FILE,
+      line: jsonLine(source, '"medal_sun": "medal_moon"'),
+      message: "renamed.items: 'medal_sun' is still in this world: a rename's source is an id it no longer has (§5.3)",
+    },
+  ]);
+  // A cycle: one finding per entry, and no target finding for a chain that ends nowhere.
+  const cycle = renamedBase({ docs: { old_a: 'old_b', old_b: 'old_a' } });
+  const ends = (from: string): string => `renamed.docs: the chain from '${from}' returns to itself and ends at no id (§5.3)`;
+  expect(renamedOf(lint(cycle))).toEqual([
+    { code: 'world/renamed-cycle', severity: 'E', file: FILE, line: jsonLine(cycle, '"old_a"'), message: ends('old_a') },
+    { code: 'world/renamed-cycle', severity: 'E', file: FILE, line: jsonLine(cycle, '"old_b"'), message: ends('old_b') },
+  ]);
+  // No world declares a flag before module `flags` (GM5f): every flag target is missing.
+  const flag = renamedBase({ flags: { fl_a: 'fl_b' } });
+  expect(renamedOf(lint(flag)).map((f) => `${f.code} ${f.line}`)).toEqual([`world/renamed-target ${jsonLine(flag, '"fl_a"')}`]);
+  // The clean control: a chain to a live doc, a room, a section and a hotspot renamed onto live ones raise nothing.
+  const clean = renamedBase({ docs: { a: 'b', b: 'letter' }, rooms: { attic: 'hall' }, sections: { house: 'manor' }, hotspots: { 'hall.old_gate': 'hall.gate' } });
+  expect(run(clean, { declared: MANOR_VARS }).findings).toEqual([]);
+});
+
+test('story: renamed.puzzles is refused', () => {
+  // R-E4: the server keys stored puzzles by their id until per-player GM6c1b; `old_drawer` is gone and `drawer` is
+  // live, so the refusal is the only finding.
+  const w = renamedBase({ puzzles: { old_drawer: 'drawer' } });
+  expect(renamedOf(lint(w))).toEqual([
+    {
+      code: 'world/renamed-puzzles',
+      severity: 'E',
+      file: FILE,
+      line: jsonLine(w, '"old_drawer"'),
+      message: "renamed.puzzles: 'old_drawer' is refused until stored puzzles are re-keyed (R-E4, per-player GM6c1b)",
+    },
+  ]);
 });
 
 /** The 1-based line of the first line of a fixture's two-space JSON text that starts with `start` (trimmed). */

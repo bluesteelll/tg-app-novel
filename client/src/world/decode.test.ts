@@ -1,7 +1,9 @@
 import { expect, test } from 'vitest';
 
+import { PUZZLE_TYPES } from '../puzzles/rules/index.ts';
+import type { PuzzleTypeData } from '../puzzles/rules/index.ts';
 import type { ChapterId, LineId, PuzzleLocalId, SectionId } from '../story/staging.ts';
-import { decodeWorldPublic, decodeWorldSource, toPublic, toServer } from './decode.ts';
+import { decodeWorldPublic, decodeWorldSource, finalTarget, toPublic, toServer } from './decode.ts';
 import type { WorldIssue } from './decode.ts';
 import type { Hotspot, RoomId, WorldSource } from './types.ts';
 
@@ -274,6 +276,42 @@ test("world: a source puzzle's clues decode", () => {
   expect(issues(decodeWorldPublic(pub))).toEqual(['puzzles.drawer.clues shape']);
 });
 
+test("decode: a world's renamed map decodes in the source and the public world", () => {
+  // Every kind of engine plan §5.1, a hotspot key, a chain: the source keeps the map as written.
+  const map = {
+    items: { medal_old: 'medal_mid', medal_mid: 'medal_sun' },
+    docs: { note: 'letter' },
+    rooms: { attic: 'hall' },
+    sections: { house: 'manor' },
+    hotspots: { 'hall.old_gate': 'hall.gate' },
+    flags: { fl_a: 'fl_b' },
+    puzzles: { old_drawer: 'drawer' },
+  };
+  const raw = { ...manorSource(), renamed: map };
+  expect(issues(decodeWorldSource(raw))).toEqual([]);
+  expect(decoded(raw).renamed).toEqual(map);
+  // A public world carries one as well (the build's resolved map).
+  const pub = decodeWorldPublic({ ...publicRaw(), renamed: map });
+  expect(pub.ok && pub.value.renamed).toEqual(map);
+  // Absent stays absent: no key in either decoded value.
+  expect(Object.hasOwn(decoded(), 'renamed')).toBe(false);
+  const bare = decodeWorldPublic(publicRaw());
+  expect(bare.ok && Object.hasOwn(bare.value, 'renamed')).toBe(false);
+  // Every issue in one pass: an unknown kind, a key out of its grammar, an id where a hotspot key belongs, a non-string.
+  const bad = { ...manorSource(), renamed: { bogus: {}, items: { Bad: 'x' }, hotspots: { hall: 'hall.gate' }, rooms: { a: 7 } } };
+  expect(issues(decodeWorldSource(bad))).toEqual(['renamed.bogus shape', 'renamed.hotspots.hall id', 'renamed.items.Bad id', 'renamed.rooms.a id']);
+  expect(issues(decodeWorldSource({ ...manorSource(), renamed: [] }))).toEqual(['renamed shape']);
+  expect(issues(decodeWorldPublic({ ...publicRaw(), renamed: { hotspots: { 'hall.gate': 'gate' } } }))).toEqual(['renamed.hotspots.hall.gate id']);
+});
+
+test('finalTarget: a map is read by own keys only', () => {
+  // `constructor` and `toString` are ids the grammar allows, and a decoded map is a plain object: a chain may end at
+  // a prototype-named id, and a prototype-named id with no entry of its own is no rename.
+  const map: Readonly<Record<string, string>> = { a_old: 'b_old', b_old: 'constructor' };
+  expect(finalTarget(map, 'a_old')).toBe('constructor');
+  expect(finalTarget(map, 'toString')).toBe('toString');
+});
+
 test('toPublic: strips solution and hints, keeps tier count', () => {
   const raw = manorSource();
   node(raw, 'puzzles.gate')['hints'] = [t('ch1.gate.h1aa', 'Надпись.'), t('ch1.gate.h2bb', 'Луна первой.')];
@@ -314,4 +352,53 @@ test('toServer: answer shape from the type rules', () => {
     { ru: 'Дневник из подвала.', en: 'Дневник из подвала.' },
     { ru: 'Код: 1-8-4-7.', en: 'Код: 1-8-4-7.' },
   ]);
+});
+
+/** A fixture commit type beside the real ones (engine plan §7.1 round 5): its params pass through, its answer is 2 x 0..5. */
+const CHIME: PuzzleTypeData<string, unknown> = Object.freeze({
+  type: 'chime',
+  check: 'commit',
+  goal: 'secret',
+  presentation: 'overlay',
+  wrong: 'posted',
+  commit: 'control',
+  decodeParams: (raw: unknown) => ({ ok: true, value: raw }) as const,
+  answerShape: () => ({ len: 2, max: 5 }),
+  initial: () => [0, 0],
+  startShown: () => null,
+});
+
+test("toServer: a fixture type's answer shape comes from the types its world was decoded with", () => {
+  // Only the chime: decode does not resolve lock refs, so the manor's locks may name puzzles the world lacks.
+  const raw = manorSource();
+  raw['puzzles'] = {
+    chime: {
+      type: 'chime',
+      title: t('ch1.chime.t1tl', 'Колокольчики'),
+      prompt: t('ch1.chime.p1rm', 'Два звона.'),
+      closeup: null,
+      params: { bells: 2 },
+      maxAttempts: null,
+      giveUp: false,
+      solution: [1, 4],
+      hints: [t('ch1.chime.h1aa', 'Слушайте.')],
+    },
+  };
+  const types = [...PUZZLE_TYPES, CHIME];
+  const r = decodeWorldSource(raw, { types });
+  if (!r.ok) {
+    throw new Error(`invariant: the fixture decodes with its types: ${JSON.stringify(r.error)}`);
+  }
+  const chapter = 'ch1' as ChapterId; // the fixture's chapter
+  const server = toServer(r.value, {}, chapter, undefined, { types });
+  expect(server.puzzles[pid('chime')]).toEqual({
+    type: 'chime',
+    answerLen: 2,
+    answerMax: 5,
+    solution: [1, 4],
+    title: { ru: 'Колокольчики', en: 'Колокольчики' },
+    hints: [{ ru: 'Слушайте.', en: 'Слушайте.' }],
+  });
+  // Without them the emitter knows PUZZLE_TYPES only, as production does.
+  expect(() => toServer(r.value, {}, chapter)).toThrow("invariant: the story tool decodes its worlds with PUZZLE_TYPES, not 'chime'");
 });
