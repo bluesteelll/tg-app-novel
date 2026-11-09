@@ -31,6 +31,8 @@ import type { WorldNeedles } from './emit.ts';
 import type { StoryLine } from './graph.ts';
 import { LINT_CODES } from './lint.ts';
 import type { Finding, LintCode, SourceChapter } from './lint.ts';
+import { MECHANIC_LINTS } from './mechanics/index.ts';
+import type { WorldLint } from './mechanics/index.ts';
 import { checkWorld } from './softlock.ts';
 
 /** `story/<ch>/<WORLD_FILE>`: the chapter's world source (PUZZLES-PLAN "World data"). */
@@ -408,20 +410,24 @@ export function worldFingerprints(w: { world: WorldSource; paid: boolean; en: Re
 
 /**
  * Every `world/*` finding of a decoded world (PUZZLES-PLAN "Lint codes"; `world/linear-requires` holds by
- * construction, RULINGS 21 Q6) plus `id/chapter-prefix` of its texts, sorted by line, code and message; and the
- * soft-lock verdict per section. `knots` null: effect knots are not judged (the chapter did not compile); `yielded`
- * null: linear puzzles are not judged unreachable.
+ * construction, RULINGS 21 Q6) plus `id/chapter-prefix` of its texts and every per-world pass of the mechanics lint
+ * registry (`lints`; a fixture registry in tests), sorted by line, code and message; and the soft-lock verdict per
+ * section. `knots` null: effect knots are not judged (the chapter did not compile); `yielded` null: linear puzzles are
+ * not judged unreachable.
  */
-export function lintWorld(input: {
-  chapter: SourceChapter;
-  file: string;
-  text: string;
-  world: WorldSource;
-  catalog: AssetCatalog;
-  knots: ReadonlySet<KnotName> | null;
-  yielded: ReadonlySet<PuzzleLocalId> | null;
-  declared: ReadonlyMap<VarName, VarLiteral>;
-}): { findings: Finding[]; sections: SectionReport[] } {
+export function lintWorld(
+  input: {
+    chapter: SourceChapter;
+    file: string;
+    text: string;
+    world: WorldSource;
+    catalog: AssetCatalog;
+    knots: ReadonlySet<KnotName> | null;
+    yielded: ReadonlySet<PuzzleLocalId> | null;
+    declared: ReadonlyMap<VarName, VarLiteral>;
+  },
+  lints: readonly WorldLint<string>[] = MECHANIC_LINTS,
+): { findings: Finding[]; sections: SectionReport[] } {
   const { chapter, file, world: w, catalog } = input;
   const lines = pathLines(input.text);
   const out: Finding[] = [];
@@ -736,6 +742,13 @@ export function lintWorld(input: {
     states: c.states,
     ok: c.findings.length === 0,
   }));
+  // The mechanics' per-world passes, at the author's lines; a story-level entry runs from story.ts instead.
+  for (const l of lints) {
+    if ('lint' in l) {
+      out.push(...l.lint({ ...input, line: (path) => lineOf(lines, path) }));
+    }
+  }
+
   const order = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
   out.sort((a, b) => a.line - b.line || order(a.code, b.code) || order(a.message, b.message));
   return { findings: out, sections };
