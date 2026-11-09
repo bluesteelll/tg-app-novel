@@ -488,6 +488,57 @@ test('world: an owned key reaches its module and nothing else', () => {
   expect(plain.ok && JSON.stringify(toPublic(plain.value, PROBED))).toBe(JSON.stringify(toPublic(decoded())));
 });
 
+/** A second key-owning data half: `say` at the room, a key name the probe owns at the hotspot. */
+const ECHO: MechanicData<'echo', OwnedRaw> = {
+  id: 'echo',
+  rules: 'none',
+  owns: { room: ['say'] },
+  decode: (raw) => ({ ok: true, value: raw }),
+  encode: (d) => d,
+  normalize: (_w, s) => s,
+};
+const ECHOED = { mechanics: [...MECHANIC_DATA, PROBE, ECHO] };
+
+test('world: two key-owning modules each get only their own keys at their own places', () => {
+  const raw = probed();
+  const say = t('ch1.manor.sy02', 'Шорох.');
+  node(raw, HALL)['say'] = say;
+  // A second probe effect beside the first: the gate lock's onFail is [kernel, probe, probe, kernel] in the source.
+  (node(raw, `${GATE}.lock`)['onFail'] as unknown[]).splice(2, 0, { probe_e: 6 }); // the fixture's effect list
+  const r = decodeWorldSource(raw, ECHOED);
+  expect(issues(r)).toEqual([]);
+  if (!r.ok) {
+    throw new Error('invariant: no issue, so the world decoded');
+  }
+  const mods: Readonly<Record<string, unknown>> = r.value.mods;
+  expect(mods['echo']).toEqual([{ place: 'room', id: 'hall', path: HALL, raw: { say } }]);
+  // The probe's room value keeps only its own key; each module effect is numbered by its own source index.
+  expect(mods['probe']).toEqual([
+    { place: 'world', id: '', path: '', raw: { probe_w: 1 } },
+    { place: 'item', id: 'medal_sun', path: 'items.medal_sun', raw: { probe_i: 2 } },
+    { place: 'room', id: 'hall', path: HALL, raw: { probe_r: 3 } },
+    { place: 'slot', id: 'hall.gate#0', path: `${GATE}.lock.slots.0`, raw: { probe_s: 4 } },
+    { place: 'effect', id: 'fail:hall.gate#1', path: `${GATE}.lock.onFail.1`, raw: { probe_e: 5 } },
+    { place: 'effect', id: 'fail:hall.gate#2', path: `${GATE}.lock.onFail.2`, raw: { probe_e: 6 } },
+    { place: 'hotspot', id: 'hall.inscription', path: `${HALL}.hotspots.3`, raw: { say: SAY } },
+  ]);
+  expect(Object.keys(mods)).toEqual(['core', 'probe', 'echo']);
+  expect(r.value).toEqual({ ...decoded(), mods: r.value.mods });
+  // Both modules' room keys follow the kernel's in registry order; both effects land at their source indices.
+  const body = toPublic(r.value, ECHOED);
+  const expected = structuredClone(toPublic(decoded())) as unknown as Record<string, unknown>; // the plain public body, as JSON
+  expected['probe_w'] = 1;
+  node(expected, 'items.medal_sun')['probe_i'] = 2;
+  node(expected, HALL)['probe_r'] = 3;
+  node(expected, HALL)['say'] = say;
+  node(expected, `${GATE}.lock.slots.0`)['probe_s'] = 4;
+  (node(expected, `${GATE}.lock`)['onFail'] as unknown[]).splice(1, 0, { probe_e: 5 }, { probe_e: 6 }); // the body's effect list
+  node(expected, `${HALL}.hotspots.3`)['say'] = SAY;
+  expect(JSON.stringify(body)).toBe(JSON.stringify(expected));
+  const back = decodeWorldPublic({ ...structuredClone(body), version: '0123456789abcdef' }, ECHOED);
+  expect(back.ok && back.value.mods).toEqual(mods);
+});
+
 test('world: an unowned key is still refused', () => {
   expect(issues(decodeWorldSource(probed()))).toEqual(
     [
