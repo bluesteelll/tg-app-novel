@@ -1,8 +1,9 @@
 // The puzzle overlay's view store (docs/PUZZLES-PLAN.md X14 and "Modules"; PROTOTYPE-PLAN L15 commit 3): what
 // App.svelte renders for an open puzzle, written only by GameSession (app/yields.ts, L15). It holds views and the
 // loaded puzzle-host component, never a session, a runner or a Pixi object (principle 7). Every field is
-// `$state.raw` and is replaced, never mutated. It is statically importable: the lazy components appear here as types
-// only, and their values arrive through `yields.ts`'s `import()` (the `lazy-ui` arch rule).
+// `$state.raw` and is replaced, never mutated; `covers` is derived from `frame`. It is statically importable: the lazy
+// components appear here as types only, and their values arrive through `yields.ts`'s `import()` (the `lazy-ui` arch
+// rule).
 import type { Component } from 'svelte';
 
 import type { Lang } from '../i18n/index.ts';
@@ -54,6 +55,24 @@ export type PuzzleHostCallbacks = {
   ongetmore: () => void;
 };
 
+/**
+ * The host's callbacks over whichever yields `get` names at each call (engine plan GM3w): Game's are these over its
+ * current session's, so a later session's host is reached and none once the session has ended (`item` then names no
+ * piece). One explicit forwarder per callback, so a lane adding a callback edits this file only.
+ */
+export function forwardHost(get: () => PuzzleHostCallbacks | undefined): PuzzleHostCallbacks {
+  return {
+    item: (id) => get()?.item(id) ?? null,
+    onchange: (a) => get()?.onchange(a),
+    ontry: () => get()?.ontry(),
+    ongiveup: () => get()?.ongiveup(),
+    onhint: () => get()?.onhint(),
+    onretry: () => get()?.onretry(),
+    onusehint: (tier) => get()?.onusehint(tier),
+    ongetmore: () => get()?.ongetmore(),
+  };
+}
+
 /** The props of the puzzle-host chunk's component (`ui/puzzles/PuzzleHost.svelte`). */
 export type PuzzleHostProps = { lang: Lang; frame: PuzzleFrameView | null; ladder: HintLadderUiView | null } & PuzzleHostCallbacks;
 
@@ -64,17 +83,35 @@ export interface PuzzleView {
   frame: PuzzleFrameView | null;
   /** The hint ladder while it is open. */
   ladder: HintLadderUiView | null;
+  /**
+   * `coversStage(frame)`, answered at each read: App reads it here, so the entry imports nothing of this module
+   * (GM3w cut D1).
+   */
+  readonly covers: boolean;
 }
 
 class PuzzleViewState implements PuzzleView {
   host: Component<PuzzleHostProps> | null = $state.raw(null);
   frame: PuzzleFrameView | null = $state.raw(null);
   ladder: HintLadderUiView | null = $state.raw(null);
+
+  get covers(): boolean {
+    return coversStage(this.frame);
+  }
 }
 
 /** An empty store: no host loaded, no puzzle open. */
 export function createPuzzleView(): PuzzleView {
   return new PuzzleViewState();
+}
+
+/**
+ * The frame covers the stage: the stage layer under it is inert and App renders the frame layer (engine plan GM3w).
+ * Every frame does today; a device drawn inside the room will not. A plain `boolean`, not a type predicate, so no
+ * caller's narrowing changes when the body does.
+ */
+export function coversStage(f: PuzzleFrameView | null): boolean {
+  return f !== null;
 }
 
 /**

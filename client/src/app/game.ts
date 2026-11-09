@@ -52,6 +52,7 @@ import { forwardLayer } from '../ui/explore-view.svelte.ts';
 import type { ExploreLayerActions, ExploreViewStore } from '../ui/explore-view.svelte.ts';
 import type { NoticeView } from '../ui/Notice.svelte';
 import type { SlotView } from '../ui/SaveLoad.svelte';
+import { forwardHost } from '../ui/puzzle-view.svelte.ts';
 import type { PuzzleHostCallbacks, PuzzleView } from '../ui/puzzle-view.svelte.ts';
 import type { Screens, ScreensView } from '../ui/screens.ts';
 import type { ChoiceSet, LineView, PlayMode, ViewModel } from '../ui/state.svelte.ts';
@@ -2079,16 +2080,7 @@ export function createGame(deps: GameDeps): Game {
       reloadTimer = clock.setTimeout(reloadTick, 0); // checked in a task of its own, never inside the response path
     },
     exploreActions: forwardLayer(() => session?.yields.layer),
-    puzzleActions: {
-      item: (id) => session?.yields.host.item(id) ?? null,
-      onchange: (a) => session?.yields.host.onchange(a),
-      ontry: () => session?.yields.host.ontry(),
-      ongiveup: () => session?.yields.host.ongiveup(),
-      onhint: () => session?.yields.host.onhint(),
-      onretry: () => session?.yields.host.onretry(),
-      onusehint: (tier) => session?.yields.host.onusehint(tier),
-      ongetmore: () => session?.yields.host.ongetmore(),
-    },
+    puzzleActions: forwardHost(() => session?.yields.host),
     exitToStories() {
       if (disposed || exiting || session === null) {
         return DONE;
