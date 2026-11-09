@@ -6,15 +6,28 @@ import { readFileSync } from 'node:fs';
 
 import { expect, test } from 'vitest';
 
+import { RESUME_STATE_CAP } from '../../src/explore/reduce.ts';
+import type { Step } from '../../src/explore/reduce.ts';
+import { EMPTY_WORLD_STATE } from '../../src/explore/state.ts';
+import { searchSection, sectionEntry } from '../../src/mechanics/rules/search.ts';
+import type { SearchOptions } from '../../src/mechanics/rules/search.ts';
+import { PUZZLE_TYPES } from '../../src/puzzles/rules/index.ts';
+import type { PuzzleTypeData, PuzzleTypes } from '../../src/puzzles/rules/index.ts';
 import { assetIndex, decodeAssetCatalog } from '../../src/story/catalog.ts';
 import type { AssetCatalog } from '../../src/story/catalog.ts';
-import type { ChapterId, KnotName, PuzzleLocalId, VarName } from '../../src/story/staging.ts';
-import { toPublic } from '../../src/world/decode.ts';
+import type { ChapterId, KnotName, PuzzleLocalId, SectionId, VarName } from '../../src/story/staging.ts';
+import { decodeWorldSource, toPublic } from '../../src/world/decode.ts';
 import { compileChapter } from './compile.ts';
 import { buildGraph } from './graph.ts';
 import type { ChapterGraph, GraphFacts, WorldRef } from './graph.ts';
-import { GLOBALS_PATH } from './lint.ts';
-import type { Finding, LintCode, SourceChapter } from './lint.ts';
+import { GLOBALS_PATH, LINT_CODES } from './lint.ts';
+import type { Finding, LintCode, Severity, SourceChapter } from './lint.ts';
+import { clueFindings } from './mechanics/clues.ts';
+import { MECHANIC_LINTS } from './mechanics/index.ts';
+import type { MechanicLintCode, WorldLint, WorldLintInput } from './mechanics/index.ts';
+import { PUZZLE_LINTS } from './puzzles/index.ts';
+import type { PuzzleLintCode, PuzzleTypeLint } from './puzzles/index.ts';
+import { MAX_ANSWER_LEN, answerLenFindings, answerLenIssues } from './puzzles/shape.ts';
 import { decodeWorldFile, lintWorld } from './world.ts';
 import type { SectionReport, VarLiteral } from './world.ts';
 
@@ -83,6 +96,7 @@ function base(): Json {
         giveUp: false,
         solution: [1, 8, 4, 7],
         hints: [t('drawer', 'Год упоминается в письме.'), t('drawer', 'Перечитайте письмо из кабинета.'), t('drawer', 'Код: один, восемь, четыре, семь.')],
+        clues: [{ doc: 'letter' }],
       },
       gate: {
         type: 'order',
@@ -94,6 +108,7 @@ function base(): Json {
         giveUp: false,
         solution: [1, 0, 2],
         hints: [t('gate', 'Порядок записан в дневнике.'), t('gate', 'Луна идёт перед солнцем.'), t('gate', 'Луна, солнце, звезда.')],
+        clues: [{ examined: 'hall.inscription' }],
       },
     },
     sections: {
@@ -274,7 +289,7 @@ function lint(w: Json, opts: LintOptions = {}): Finding[] {
   return run(w, opts).findings;
 }
 
-function of(findings: readonly Finding[], code: LintCode): Finding[] {
+function of(findings: readonly Finding[], code: Finding['code']): Finding[] {
   return findings.filter((f) => f.code === code);
 }
 
@@ -510,7 +525,7 @@ test('lint: world/cross-section-effect allows a cross-room unlock inside a secti
 test('lint: world/puzzle-multi-lock red on fixture', () => {
   // Across sections: the round-5 triage's keypad on courtyard's shed and on tower's gate.
   const across = mini({
-    puzzles: { keypad: codePuzzle() },
+    puzzles: { keypad: { ...codePuzzle(), clues: [{ visited: 'yard' }] } },
     sections: {
       courtyard: { start: 'yard', rooms: { yard: [object('shed', lockOf([], 'keypad')), leave('to_tower', 'to_tower')] } },
       tower: {
@@ -522,7 +537,7 @@ test('lint: world/puzzle-multi-lock red on fixture', () => {
   const a = lint(across, { knots: null });
   expect(errors(a)).toEqual([expect.objectContaining({ code: 'world/puzzle-multi-lock', message: "puzzle 'keypad' is the puzzle of 2 locks: yard.shed, hall.gate (X15: one lock per puzzle)" })]);
   // Within one section: two zero-slot object locks beside a lock-free leave.
-  const within = mini({ puzzles: { keypad: codePuzzle() }, sections: { s: { start: 'r', rooms: { r: [object('a', lockOf([], 'keypad')), object('b', lockOf([], 'keypad')), leave('out')] } } } });
+  const within = mini({ puzzles: { keypad: { ...codePuzzle(), clues: [{ visited: 'r' }] } }, sections: { s: { start: 'r', rooms: { r: [object('a', lockOf([], 'keypad')), object('b', lockOf([], 'keypad')), leave('out')] } } } });
   expect(errors(lint(within, { knots: null }))).toEqual([expect.objectContaining({ code: 'world/puzzle-multi-lock', message: expect.stringContaining('2 locks: r.a, r.b') })]);
 });
 
@@ -872,4 +887,288 @@ test('graph: then= knot is a successor, section knots are reachability edges onl
     "knot 'manor_out' is not reachable from '-> start'",
   ]);
   expect(of(bare.findings, 'graph/no-end')).toHaveLength(1);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM1d: the module and type lint codes (engine plan §3.2), the clue lints (§7.3, I4) and the answer bound (§7.4)
+
+type CodeTable = { readonly id: string; readonly codes: Readonly<Record<string, Severity>> };
+type TypeCodeTables = Readonly<Record<string, { readonly codes: Readonly<Record<string, Severity>> }>>;
+
+/**
+ * Every clash among the lint codes of the world lint registry (per-world and story-level entries alike, R-E22) and the
+ * puzzle type lint registry: a code two entries own, or a code of the DSL's table. Registries as parameters, so a
+ * fixture entry shows the checker is not vacuous.
+ */
+function codeClashes(mechanics: readonly CodeTable[], types: TypeCodeTables, dsl: Readonly<Record<string, Severity>> = LINT_CODES): string[] {
+  const owner = new Map<string, string>();
+  const out: string[] = [];
+  const tables = [...mechanics, ...Object.entries(types).map(([type, l]) => ({ id: `type ${type}`, codes: l.codes }))];
+  for (const t of tables) {
+    for (const code of Object.keys(t.codes)) {
+      if (Object.hasOwn(dsl, code)) {
+        out.push(`${code} is a DSL code (LINT_CODES)`);
+      }
+      const first = owner.get(code);
+      if (first === undefined) {
+        owner.set(code, t.id);
+      } else {
+        out.push(`${code} in ${first} and ${t.id}`);
+      }
+    }
+  }
+  return out;
+}
+
+test('story: module and type lint codes are unique and none is a DSL code', () => {
+  expect(codeClashes(MECHANIC_LINTS, PUZZLE_LINTS)).toEqual([]);
+  // A per-world entry repeating a DSL code; a story-level entry repeating a module's code; a type repeating one.
+  const dsl: WorldLint<'world/softlock'> = { id: 'probe', codes: { 'world/softlock': 'E' }, lint: () => [] };
+  expect(codeClashes([...MECHANIC_LINTS, dsl], PUZZLE_LINTS)).toEqual(['world/softlock is a DSL code (LINT_CODES)']);
+  const storyLevel: WorldLint<'world/clue-declared'> = { id: 'story-pass', codes: { 'world/clue-declared': 'E' }, runsFrom: 'story' };
+  expect(codeClashes([...MECHANIC_LINTS, storyLevel], PUZZLE_LINTS)).toEqual(['world/clue-declared in clues and story-pass']);
+  const typed = { ...PUZZLE_LINTS, code: { ...PUZZLE_LINTS.code, codes: { 'world/clue-reachable': 'E' } } } as const;
+  expect(codeClashes(MECHANIC_LINTS, typed)).toEqual(['world/clue-reachable in clues and type code']);
+  // Every registered code is a Finding's code (tsc), at its own table's severity.
+  const finding = (code: MechanicLintCode | PuzzleLintCode, severity: Severity): Finding => ({ code, severity, file: FILE, line: 1, message: code });
+  const tables: readonly CodeTable[] = [...MECHANIC_LINTS, ...Object.values(PUZZLE_LINTS).map((l) => ({ id: 'type', codes: l.codes }))];
+  // The keys of a registry entry's codes are MechanicLintCode or PuzzleLintCode by those types' definitions.
+  const registered = tables.flatMap((t) => (Object.entries(t.codes) as Array<[MechanicLintCode | PuzzleLintCode, Severity]>).map(([code, s]) => finding(code, s)));
+  expect(registered.map((f) => `${f.code} ${f.severity}`)).toEqual([
+    'world/clue-declared E',
+    'world/reach-has-clue E',
+    'world/clue-reachable E',
+    'world/answer-len E',
+  ]);
+  // The registry restates world.ts's VarLiteral (its types stay out of the app program): one type (tsc).
+  type InputVar = WorldLintInput['declared'] extends ReadonlyMap<VarName, infer V> ? V : never;
+  type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+  expect(true satisfies Same<VarLiteral, InputVar>).toBe(true);
+});
+
+/** The 1-based line of the first line of a fixture's two-space JSON text that starts with `start` (trimmed). */
+function jsonLine(w: Json, start: string): number {
+  const i = `${JSON.stringify(w, null, 2)}\n`.split('\n').findIndex((l) => l.trimStart().startsWith(start));
+  if (i < 0) {
+    throw new Error(`invariant: the fixture text has a line starting with ${start}`);
+  }
+  return i + 1;
+}
+
+/** A fixture reach type whose own UI draws its goal (§7.3, I4), decoded beside the real types. */
+const SHOWN: PuzzleTypeData<string, unknown> = Object.freeze({
+  type: 'tiles',
+  check: 'reach',
+  goal: 'shown',
+  presentation: 'view',
+  wrong: 'none',
+  commit: 'control',
+  decodeParams: (raw: unknown) => ({ ok: true, value: raw }) as const,
+  answerShape: () => ({ len: 4, max: 9 }),
+  initial: () => [0, 0, 0, 0],
+  startShown: () => [0, 0, 0, 0],
+  workFits: () => true,
+});
+
+/**
+ * A fixture world decoded with `types`, as a per-world pass's input (lintWorld's own rules know the real types only).
+ * Its line lookup numbers each path in the order it is first asked for, so a test asks for the path it expects.
+ */
+function passInput(w: Json, types: PuzzleTypes): WorldLintInput {
+  const text = `${JSON.stringify(w, null, 2)}\n`;
+  const r = decodeWorldSource(JSON.parse(text), { types });
+  if (!r.ok) {
+    throw new Error(`invariant: the fixture decodes: ${JSON.stringify(r.error)}`);
+  }
+  const asked: string[] = [];
+  const line = (path: string): number => {
+    const i = asked.indexOf(path);
+    return i >= 0 ? i + 1 : asked.push(path);
+  };
+  return { chapter: CH1, file: FILE, text, world: r.value, catalog: CATALOG, knots: KNOTS, yielded: null, declared: new Map(), line };
+}
+
+const NO_CLUE = 'declares no clue: clues names the fact that shows its answer (§7.3, I4)';
+
+test('story: a secret puzzle without clues is refused', () => {
+  const w = base();
+  delete at(w, 'puzzles.drawer')['clues'];
+  delete at(w, 'puzzles.gate')['clues'];
+  // Both are secret goals a lock holds: the drawer's code and the gate's order.
+  expect(of(lint(w), 'world/clue-declared')).toEqual([
+    { code: 'world/clue-declared', severity: 'E', file: FILE, line: jsonLine(w, '"drawer": {'), message: `puzzle 'drawer' (code, a secret goal) ${NO_CLUE}` },
+    { code: 'world/clue-declared', severity: 'E', file: FILE, line: jsonLine(w, '"gate": {'), message: `puzzle 'gate' (order, a secret goal) ${NO_CLUE}` },
+  ]);
+  // A linear secret puzzle (no lock; a puzzle tag yields it): its clue is the story's (RULINGS 180 Q1-A).
+  const linear = withCabinet(base());
+  expect(of(lint(linear, { yielded: new Set(['cabinet'] as PuzzleLocalId[]) }), 'world/clue-declared')).toEqual([]); // a fixture id
+  expect(of(lint(base()), 'world/clue-declared')).toEqual([]);
+});
+
+test('story: a shown-goal puzzle with a clue is refused', () => {
+  const types: PuzzleTypes = [...PUZZLE_TYPES, SHOWN];
+  const w = base();
+  at(w, 'puzzles.drawer')['type'] = 'tiles';
+  const input = passInput(w, types);
+  expect(clueFindings(input, types)).toEqual([
+    { code: 'world/reach-has-clue', severity: 'E', file: FILE, line: input.line('puzzles.drawer.clues'), message: "puzzle 'drawer' (tiles) draws its goal: it declares no clue (§7.3)" },
+  ]);
+  // Without the clue the shown goal is clean, and a lock holding it asks for none.
+  delete at(w, 'puzzles.drawer')['clues'];
+  expect(clueFindings(passInput(w, types), types)).toEqual([]);
+});
+
+/** The line of clue `i` of puzzle `pid` in a fixture's JSON text: each clue is a one-key object over three lines. */
+function clueLine(w: Json, pid: string, i: number): number {
+  const lines = `${JSON.stringify(w, null, 2)}\n`.split('\n');
+  const owner = lines.findIndex((l) => l.trimStart().startsWith(`"${pid}": {`));
+  const clues = lines.findIndex((l, n) => n > owner && l.trimStart().startsWith('"clues": ['));
+  if (owner < 0 || clues < 0) {
+    throw new Error(`invariant: the fixture puzzle ${pid} has clues`);
+  }
+  return clues + 2 + 3 * i;
+}
+
+test('story: a clue behind its own puzzle is refused', () => {
+  // The diary inside its own drawer: the drawer's code moves onto the cellar door, and the diary lies in the cellar.
+  const behind = (maxAttempts: number | null, onFail: Json[]): Json => {
+    const w = base();
+    spot(w, 'study', 'drawer')['lock'] = null;
+    spot(w, 'hall', 'to_cellar')['lock'] = { slots: [], puzzle: 'drawer', locked: t('manor', 'Дверь в подвал заперта.'), onOpen: [], onFail };
+    at(w, 'puzzles.drawer')['maxAttempts'] = maxAttempts;
+    at(w, 'puzzles.drawer')['clues'] = [{ doc: 'diary' }];
+    return w;
+  };
+  const unseen = (w: Json, pid: string, clue: Json): Finding => ({
+    code: 'world/clue-reachable',
+    severity: 'E',
+    file: FILE,
+    line: clueLine(w, pid, 0),
+    message: `puzzle '${pid}': clue ${JSON.stringify(clue)} holds in no state of section manor reached before '${pid}' is solved or failed (§7.3)`,
+  });
+  const inside = behind(null, []);
+  expect(of(lint(inside), 'world/clue-reachable')).toEqual([unseen(inside, 'drawer', { doc: 'diary' })]);
+  // Limited, and its failure opens the door itself (world/fail-without-effect's usual form): while the drawer can still
+  // be solved, the diary stays behind it (critique W1).
+  const limited = behind(3, [{ unlock: 'hall.to_cellar' }]);
+  expect(of(lint(limited), 'world/clue-reachable')).toEqual([unseen(limited, 'drawer', { doc: 'diary' })]);
+  // The control: the letter lies in the study, before the door.
+  const before = behind(null, []);
+  at(before, 'puzzles.drawer')['clues'] = [{ doc: 'letter' }];
+  expect(of(lint(before), 'world/clue-reachable')).toEqual([]);
+  // The gate's inscription is a look, a fact the section key does not hold: seen at the edge that sets it (D4).
+  expect(of(lint(base()), 'world/clue-reachable')).toEqual([]);
+  // A fact only the puzzle's own end writes: its outcome, or its lock opened by its onFail.
+  for (const clue of [{ solved: 'gate' }, { failed: 'gate' }, { open: 'hall.gate' }]) {
+    const w = base();
+    at(w, 'puzzles.gate')['clues'] = [clue];
+    expect(of(lint(w), 'world/clue-reachable'), JSON.stringify(clue)).toEqual([unseen(w, 'gate', clue)]);
+  }
+});
+
+test('story: a clue naming no fact of its world is refused', () => {
+  const w = base();
+  at(w, 'puzzles.drawer')['clues'] = [{ doc: 'diar' }, { examined: 'hall.nothing' }, { solved: 'ghost' }];
+  expect(of(lint(w), 'world/clue-reachable').map((f) => `${f.line} ${f.message}`)).toEqual([
+    `${clueLine(w, 'drawer', 0)} puzzle 'drawer': clue {"doc":"diar"} names no doc of this world`,
+    `${clueLine(w, 'drawer', 1)} puzzle 'drawer': clue {"examined":"hall.nothing"} names no hotspot of this world`,
+    `${clueLine(w, 'drawer', 2)} puzzle 'drawer': clue {"solved":"ghost"} names no puzzle of this world`,
+  ]);
+  // A linear puzzle's atoms too; whether they hold is the story's order (GM9p), so a named fact passes.
+  const linear = withCabinet(base());
+  const yielded = new Set(['cabinet'] as PuzzleLocalId[]); // a fixture id
+  at(linear, 'puzzles.cabinet')['clues'] = [{ visited: 'attic' }, { has: 'lamp' }, { doc: 'diary' }];
+  expect(of(lint(linear, { yielded }), 'world/clue-reachable').map((f) => f.message)).toEqual([
+    `puzzle 'cabinet': clue {"visited":"attic"} names no room of this world`,
+    `puzzle 'cabinet': clue {"has":"lamp"} names no item of this world`,
+  ]);
+});
+
+test('search: an excluded step is never taken', () => {
+  const decoded = decodeWorldSource(base());
+  if (!decoded.ok) {
+    throw new Error(`invariant: the fixture decodes: ${JSON.stringify(decoded.error)}`);
+  }
+  const pub = toPublic(decoded.value);
+  const manor = 'manor' as SectionId; // the fixture's section
+  const start = sectionEntry(pub, EMPTY_WORLD_STATE, manor);
+  const walk = (opts: SearchOptions): { states: number; result: string; steps: Step[] } => {
+    const steps: Step[] = [];
+    const r = searchSection(pub, start, manor, RESUME_STATE_CAP, { ...opts, onEdge: (_from, succ) => steps.push(succ.step) });
+    return { states: r.states, result: r.result, steps };
+  };
+  const solvedDrawer = (st: Step): boolean => st.kind === 'puzzle-ended' && st.puzzle === 'drawer' && st.outcome === 'solved';
+  const all = walk({});
+  expect(all.steps.filter(solvedDrawer).length).toBeGreaterThan(0);
+  const cut = walk({ exclude: solvedDrawer });
+  expect(cut.steps.filter(solvedDrawer)).toEqual([]);
+  expect(cut.result).toBe('exhausted');
+  expect(cut.states).toBeLessThan(all.states);
+  // An exclusion that accepts nothing is the option-less search, edge for edge.
+  expect(walk({ exclude: () => false })).toEqual(all);
+});
+
+/** `params.n` of a fixture type's instance (its params decode as written). */
+function nOf(params: unknown): number {
+  const n = (params as { n?: unknown }).n; // a fixture type's params: { n }
+  if (typeof n !== 'number') {
+    throw new Error('invariant: a fixture instance writes params.n');
+  }
+  return n;
+}
+
+/** A commit type posting `params.n` entries, and a reach type whose lint half solves to `params.n` entries. */
+const POSTS: PuzzleTypeData<string, unknown> = Object.freeze({
+  type: 'posts',
+  check: 'commit',
+  goal: 'secret',
+  presentation: 'overlay',
+  wrong: 'posted',
+  commit: 'control',
+  decodeParams: (raw: unknown) => ({ ok: true, value: raw }) as const,
+  answerShape: (p: unknown) => ({ len: nOf(p), max: 9 }),
+  initial: (p: unknown) => Array.from({ length: nOf(p) }, () => 0),
+  startShown: (p: unknown) => Array.from({ length: nOf(p) }, () => 0),
+});
+const REACHES: PuzzleTypeData<string, unknown> = Object.freeze({ ...SHOWN, type: 'reaches' });
+const LENGTH_TYPES: PuzzleTypes = [...PUZZLE_TYPES, POSTS, REACHES];
+const LENGTH_LINTS: Readonly<Record<string, PuzzleTypeLint<unknown>>> = {
+  ...PUZZLE_LINTS,
+  posts: { countSolutions: () => 1 },
+  reaches: { solve: (p: unknown) => Array.from({ length: nOf(p) }, () => 1), countSolutions: () => 1 },
+};
+
+/** base() whose drawer is a fixture type posting `n` entries, decoded with LENGTH_TYPES. */
+function lengthWorld(type: 'posts' | 'reaches', n: number): Json {
+  const w = base();
+  at(w, 'puzzles.drawer')['type'] = type;
+  at(w, 'puzzles.drawer')['params'] = { n };
+  return w;
+}
+
+test('story: an answer longer than MAX_ANSWER_LEN is refused', () => {
+  const issues = (type: 'posts' | 'reaches', n: number) => answerLenIssues(passInput(lengthWorld(type, n), LENGTH_TYPES).world, LENGTH_LINTS, LENGTH_TYPES);
+  const long = (n: number) => [{ path: 'puzzles.drawer.params', reason: 'range', detail: `puzzle 'drawer' posts ${n} entries: 1..16 (the server refuses longer, §7.4)` }];
+  expect(issues('posts', 17)).toEqual(long(17));
+  expect(issues('posts', 16)).toEqual([]);
+  expect(issues('posts', 1)).toEqual([]);
+  expect(issues('posts', 0)).toEqual(long(0));
+  expect(issues('reaches', 17)).toEqual(long(17));
+  expect(issues('reaches', 16)).toEqual([]);
+  // The pass reports each at the author's line of the puzzle's params.
+  const input = passInput(lengthWorld('posts', 17), LENGTH_TYPES);
+  expect(answerLenFindings(input, LENGTH_LINTS, LENGTH_TYPES)).toEqual([
+    { code: 'world/answer-len', severity: 'E', file: FILE, line: input.line('puzzles.drawer.params'), message: long(17)[0]?.detail },
+  ]);
+  // The real code and order worlds post within the bound, through the registry too.
+  const decoded = decodeWorldSource(base());
+  expect(decoded.ok && answerLenIssues(decoded.value)).toEqual([]);
+  expect(of(lint(base()), 'world/answer-len')).toEqual([]);
+});
+
+test("story: the build's answer bound never exceeds the server's MAX_ANSWER_LEN", () => {
+  const rust = readFileSync(new URL('../../../server/src/puzzles/mod.rs', import.meta.url), 'utf8');
+  const m = /pub const MAX_ANSWER_LEN: usize = (\d+);/.exec(rust);
+  expect(m, 'server/src/puzzles/mod.rs: pub const MAX_ANSWER_LEN: usize = <n>;').not.toBeNull();
+  expect(MAX_ANSWER_LEN).toBeLessThanOrEqual(Number(m?.[1]));
 });
