@@ -1,14 +1,19 @@
 // The world lint registry (engine plan §3.2 "Lint codes"; build only): every mechanic's lint pass the story gate runs
 // over a chapter world, each with its own codes, so no lane adds to LINT_CODES (lint.ts) or the DSL's code table. Pure,
-// no node:*: world.ts imports it and scan-dist.ts imports world.ts. Its imports from world.ts and lint.ts are
-// `import type`, erased at run time, so the value graph is world.ts -> index.ts -> the lint files with no edge back.
+// no node:*: world.ts imports it and scan-dist.ts imports world.ts. Its imports from lint.ts are `import type`, erased
+// at run time, so the value graph is world.ts -> index.ts -> the lint files with no edge back. It imports nothing from
+// world.ts, not even a type: lint.ts's `Finding` takes this module's codes, so the app program (src/story/dsl-doc.test.ts
+// -> lint.ts) compiles every file this one reaches, and world.ts type-imports emit.ts, which imports node:crypto.
 // Each module lane appends its entry.
 import type { AssetCatalog } from '../../../src/story/catalog.ts';
 import type { KnotName, PuzzleLocalId, VarName } from '../../../src/story/staging.ts';
 import type { WorldSource } from '../../../src/world/types.ts';
 import type { Finding, Severity, SourceChapter } from '../lint.ts';
-import type { VarLiteral } from '../world.ts';
+import { CLUES_LINT } from './clues.ts';
 import { CORE_LINT } from './core.ts';
+
+/** world.ts's `VarLiteral`, restated (see the header); world.test.ts pins the two to one type. */
+type VarLiteral = 'int' | 'float' | 'bool' | 'string' | 'other';
 
 /** What the world runner, inside `lintWorld`, hands every per-world pass: `lintWorld`'s own inputs and its line
  *  lookup (the 1-based line of a dotted path, else of its nearest written ancestor, else 0), so a pass reports at the
@@ -38,7 +43,7 @@ export type WorldLint<C extends string> = {
   | { readonly runsFrom: 'story' }
 );
 
-export const MECHANIC_LINTS = [CORE_LINT] as const satisfies readonly WorldLint<string>[];
+export const MECHANIC_LINTS = [CORE_LINT, CLUES_LINT] as const satisfies readonly WorldLint<string>[];
 
 type CodesOf<L> = L extends { readonly codes: infer C } ? keyof C & string : never;
 /** Every code of every MECHANIC_LINTS entry. */

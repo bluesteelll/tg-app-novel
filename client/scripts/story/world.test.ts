@@ -13,8 +13,12 @@ import { toPublic } from '../../src/world/decode.ts';
 import { compileChapter } from './compile.ts';
 import { buildGraph } from './graph.ts';
 import type { ChapterGraph, GraphFacts, WorldRef } from './graph.ts';
-import { GLOBALS_PATH } from './lint.ts';
-import type { Finding, LintCode, SourceChapter } from './lint.ts';
+import { GLOBALS_PATH, LINT_CODES } from './lint.ts';
+import type { Finding, LintCode, Severity, SourceChapter } from './lint.ts';
+import { MECHANIC_LINTS } from './mechanics/index.ts';
+import type { MechanicLintCode, WorldLint, WorldLintInput } from './mechanics/index.ts';
+import { PUZZLE_LINTS } from './puzzles/index.ts';
+import type { PuzzleLintCode } from './puzzles/index.ts';
 import { decodeWorldFile, lintWorld } from './world.ts';
 import type { SectionReport, VarLiteral } from './world.ts';
 
@@ -274,7 +278,7 @@ function lint(w: Json, opts: LintOptions = {}): Finding[] {
   return run(w, opts).findings;
 }
 
-function of(findings: readonly Finding[], code: LintCode): Finding[] {
+function of(findings: readonly Finding[], code: Finding['code']): Finding[] {
   return findings.filter((f) => f.code === code);
 }
 
@@ -872,4 +876,56 @@ test('graph: then= knot is a successor, section knots are reachability edges onl
     "knot 'manor_out' is not reachable from '-> start'",
   ]);
   expect(of(bare.findings, 'graph/no-end')).toHaveLength(1);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM1d: the module and type lint codes (engine plan §3.2), the clue lints (§7.3, I4) and the answer bound (§7.4)
+
+type CodeTable = { readonly id: string; readonly codes: Readonly<Record<string, Severity>> };
+type TypeCodeTables = Readonly<Record<string, { readonly codes: Readonly<Record<string, Severity>> }>>;
+
+/**
+ * Every clash among the lint codes of the world lint registry (per-world and story-level entries alike, R-E22) and the
+ * puzzle type lint registry: a code two entries own, or a code of the DSL's table. Registries as parameters, so a
+ * fixture entry shows the checker is not vacuous.
+ */
+function codeClashes(mechanics: readonly CodeTable[], types: TypeCodeTables, dsl: Readonly<Record<string, Severity>> = LINT_CODES): string[] {
+  const owner = new Map<string, string>();
+  const out: string[] = [];
+  const tables = [...mechanics, ...Object.entries(types).map(([type, l]) => ({ id: `type ${type}`, codes: l.codes }))];
+  for (const t of tables) {
+    for (const code of Object.keys(t.codes)) {
+      if (Object.hasOwn(dsl, code)) {
+        out.push(`${code} is a DSL code (LINT_CODES)`);
+      }
+      const first = owner.get(code);
+      if (first === undefined) {
+        owner.set(code, t.id);
+      } else {
+        out.push(`${code} in ${first} and ${t.id}`);
+      }
+    }
+  }
+  return out;
+}
+
+test('story: module and type lint codes are unique and none is a DSL code', () => {
+  expect(codeClashes(MECHANIC_LINTS, PUZZLE_LINTS)).toEqual([]);
+  // A per-world entry repeating a DSL code; a story-level entry repeating a module's code; a type repeating one.
+  const dsl: WorldLint<'world/softlock'> = { id: 'probe', codes: { 'world/softlock': 'E' }, lint: () => [] };
+  expect(codeClashes([...MECHANIC_LINTS, dsl], PUZZLE_LINTS)).toEqual(['world/softlock is a DSL code (LINT_CODES)']);
+  const storyLevel: WorldLint<'world/clue-declared'> = { id: 'story-pass', codes: { 'world/clue-declared': 'E' }, runsFrom: 'story' };
+  expect(codeClashes([...MECHANIC_LINTS, storyLevel], PUZZLE_LINTS)).toEqual(['world/clue-declared in clues and story-pass']);
+  const typed = { ...PUZZLE_LINTS, code: { ...PUZZLE_LINTS.code, codes: { 'world/clue-reachable': 'E' } } } as const;
+  expect(codeClashes(MECHANIC_LINTS, typed)).toEqual(['world/clue-reachable in clues and type code']);
+  // Every registered code is a Finding's code (tsc), at its own table's severity.
+  const finding = (code: MechanicLintCode | PuzzleLintCode, severity: Severity): Finding => ({ code, severity, file: FILE, line: 1, message: code });
+  const tables: readonly CodeTable[] = [...MECHANIC_LINTS, ...Object.values(PUZZLE_LINTS).map((l) => ({ id: 'type', codes: l.codes }))];
+  // The keys of a registry entry's codes are MechanicLintCode or PuzzleLintCode by those types' definitions.
+  const registered = tables.flatMap((t) => (Object.entries(t.codes) as Array<[MechanicLintCode | PuzzleLintCode, Severity]>).map(([code, s]) => finding(code, s)));
+  expect(registered.map((f) => `${f.code} ${f.severity}`)).toEqual(['world/clue-declared E', 'world/reach-has-clue E', 'world/clue-reachable E']);
+  // The registry restates world.ts's VarLiteral (its types stay out of the app program): one type (tsc).
+  type InputVar = WorldLintInput['declared'] extends ReadonlyMap<VarName, infer V> ? V : never;
+  type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+  expect(true satisfies Same<VarLiteral, InputVar>).toBe(true);
 });
