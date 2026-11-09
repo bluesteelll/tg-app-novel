@@ -1,6 +1,6 @@
 // The shot list, the step flow, the shot lints, build/shots.json and the art list (docs/plans/shots §2-3, lane SH2).
 // Fixtures are built in-test on the committed catalog and cast; a fixture may be lint-dirty.
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 
 import { expect, test } from 'vitest';
 
@@ -21,6 +21,8 @@ import { SHOT_LINT_CODES, faceNeeds, lintShots } from './lint.ts';
 import type { Plane, ShotFinding } from './lint.ts';
 import { decodeShotList, effectiveCatalog, effectiveShots, impliedPlaceholders } from './list.ts';
 import type { EffectiveShot, ShotList } from './list.ts';
+import { decodeShotUsage, encodeShotUsage, parseShotFileId, shotUsage } from './usage.ts';
+import type { ChapterShots, ShotUsage } from './usage.ts';
 
 type Json = Readonly<Record<string, unknown>>;
 
@@ -89,16 +91,16 @@ function sectionsOf(g: ChapterGraph): NonNullable<ChapterGraph['sections']> {
 
 type Built = { graph: ChapterGraph; files: readonly string[]; sources: ReadonlyMap<string, string>; assets: AssetIndex };
 
-/** A fixture chapter (ch1, one entry file after the globals INCLUDE) graphed against `catalog`, with `w` as its world. */
-function chapter(body: readonly string[], catalog: AssetCatalog = COMMITTED.catalog, w?: WorldPublicBody): Built {
-  const entry = 'ch1/main.ink';
+/** A fixture chapter (`id`, one entry file after the globals INCLUDE) graphed against `catalog`, with `w` as its world. */
+function chapter(body: readonly string[], catalog: AssetCatalog = COMMITTED.catalog, w?: WorldPublicBody, id: ChapterId = CH1): Built {
+  const entry = `${id}/main.ink`;
   const sources = new Map([
     [entry, ['INCLUDE ../common/globals.ink', ...body, ''].join('\n')],
     [GLOBALS_PATH, 'VAR g_x = 0\n'],
   ]);
   const files = [entry, GLOBALS_PATH];
   const assets = assetIndex(catalog);
-  const { graph } = buildGraph({ chapter: { id: CH1, paid: false, entry }, files, sources, assets, world: w === undefined ? undefined : { kind: 'ok', body: w } });
+  const { graph } = buildGraph({ chapter: { id, paid: false, entry }, files, sources, assets, world: w === undefined ? undefined : { kind: 'ok', body: w } });
   return { graph, files, sources, assets };
 }
 
@@ -320,9 +322,9 @@ test('graph: the chapter graph exposes its section edges, seeds and rooms', () =
 // Commit 2: the step graph of a chapter
 
 /** The step flow of a fixture chapter. */
-function flowOf(body: readonly string[], catalog: AssetCatalog = COMMITTED.catalog, w?: WorldPublicBody): { flow: ChapterFlow; findings: ShotFinding[]; built: Built } {
-  const built = chapter(body, catalog, w);
-  const r = buildFlow({ chapter: CH1, files: built.files, sources: built.sources, graph: built.graph, assets: built.assets, cast: COMMITTED.cast, ...(w === undefined ? {} : { world: w }) });
+function flowOf(body: readonly string[], catalog: AssetCatalog = COMMITTED.catalog, w?: WorldPublicBody, id: ChapterId = CH1): { flow: ChapterFlow; findings: ShotFinding[]; built: Built } {
+  const built = chapter(body, catalog, w, id);
+  const r = buildFlow({ chapter: id, files: built.files, sources: built.sources, graph: built.graph, assets: built.assets, cast: COMMITTED.cast, ...(w === undefined ? {} : { world: w }) });
   return { ...r, built };
 }
 
@@ -1402,4 +1404,168 @@ test("flow: a room window lists its own openers before its neighbours' onEnter o
   });
   expect(lookAt(l, 'r:cellar')).toMatchObject({ cur: ['bg/cellar', 'prop/medal_star'], possible: ['bg/cafe_ally_cu', 'sheet/cafe_ally_cu'], near: 2 });
   expect(lookAt(l, 'r:study')).toMatchObject({ possible: [], near: 0 });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Commit 7: build/shots.json
+
+const CH2: ChapterId = 'ch2' as ChapterId; // the second fixture chapter
+
+/** build/shots.json over fixture chapters (`[id, body, world?]`) under a shot list. */
+function usageOf(chs: ReadonlyArray<readonly [ChapterId, readonly string[], WorldPublicBody?]>, list: ShotList = CAFE_SHOTS): ShotUsage {
+  const catalog = effectiveCatalog(COMMITTED.catalog, list);
+  const worlds = chs.flatMap(([, , w]) => (w === undefined ? [] : [w]));
+  const shots = effectiveShots(catalog, list, worlds);
+  const chapters = chs.map(([id, body, w]) => {
+    const { flow, built } = flowOf(body, catalog, w, id);
+    return { id, flow, world: w ?? null, rooms: w === undefined ? new Map() : roomEvents(w, sectionsOf(built.graph), new Map()) };
+  });
+  return shotUsage(chapters, shots);
+}
+
+function chapterOf(u: ShotUsage, id: ChapterId): ChapterShots {
+  const c = u.chapters[id];
+  if (c === undefined) {
+    throw new Error(`invariant: the usage has chapter ${id}`);
+  }
+  return c;
+}
+
+const STAGED = [
+  '-> k',
+  '=== k ===',
+  '# scene: cafe_wide',
+  'ally: Привет. #id:ch1.k.a001',
+  '# bg: cafe_ally_cu',
+  '# face: ally smile',
+  '# cam: push to=ally z=120',
+  'ally: Ха. #id:ch1.k.a002',
+  '# anim: ally nod',
+  'Кивок. #id:ch1.k.a003',
+  '-> END',
+];
+
+test('shots: build shots.json lists every need with its line IDs', () => {
+  const u = usageOf([[CH1, STAGED]]);
+  const ch = chapterOf(u, CH1);
+  expect(ch.shots).toEqual({
+    cafe_ally_cu: {
+      cast: { ally: { view: 'face', rest: 'neutral', figure: true } },
+      faces: { ally: [{ expr: 'smile', talk: true, lines: ['ch1.k.a002', 'ch1.k.a003'] }] },
+      frame: 'close',
+      loc: 'cafe',
+      camTargets: ['ally'],
+      motions: ['nod'],
+      room: null,
+    },
+    cafe_wide: {
+      cast: { ally: { view: 'face', rest: 'neutral', figure: false }, stranger: { view: 'face', rest: 'neutral', figure: false } },
+      faces: { ally: [{ expr: 'neutral', talk: true, lines: ['ch1.k.a001'] }], stranger: [{ expr: 'neutral', talk: false, lines: ['ch1.k.a001'] }] },
+      frame: 'wide',
+      loc: 'cafe',
+      camTargets: [],
+      motions: [],
+      room: null,
+    },
+  });
+  expect(ch.sprites).toBe(false);
+  expect(Object.keys(ch.look).sort()).toEqual(['ch1.k.a001', 'ch1.k.a002', 'ch1.k.a003', 'k:k']);
+  expect(ch.look['ch1.k.a001' as StepKey]).toMatchObject({ certain: ['bg/cafe_ally_cu', 'face/cafe_ally_cu/ally/smile', 'sheet/cafe_ally_cu', 'talk/cafe_ally_cu/ally/smile'] });
+  expect(ch.entry['ch1.k.a002' as StepKey]).toEqual([['bg/cafe_ally_cu', 'face/cafe_ally_cu/ally/smile', 'sheet/cafe_ally_cu']]);
+  // The file decodes to what was encoded.
+  const text = encodeShotUsage(u);
+  expect(decodeShotUsage(JSON.parse(text))).toEqual({ ok: true, value: JSON.parse(text) });
+  // A legacy chapter names its sprites; a room's shot names its room.
+  const legacy = chapterOf(usageOf([[CH1, MANOR.flatMap((l) => (l === '# scene: hall' ? [l, '# show: ally neutral at=left'] : [l])), manorWorld()]]), CH1);
+  expect(legacy.sprites).toBe(true);
+  expect(Object.entries(legacy.shots).map(([s, n]) => [s, n.frame, n.room])).toEqual([
+    ['cellar', 'room', 'cellar'],
+    ['hall', 'room', 'hall'],
+    ['street', 'wide', null],
+    ['study', 'room', 'study'],
+  ]);
+  expect(legacy.assets).toEqual(['bg/cellar', 'bg/hall', 'bg/street', 'bg/study']);
+});
+
+test('shots: outputs are byte-identical across runs', () => {
+  const two = (order: 'ab' | 'ba'): string => {
+    const a = [CH1, STAGED] as const;
+    const b = [CH2, ['-> k', '=== k ===', '# scene: cafe_ots', 'ally: Да. #id:ch2.k.a001', '-> END']] as const;
+    return encodeShotUsage(usageOf(order === 'ab' ? [a, b] : [b, a]));
+  };
+  const first = two('ab');
+  expect(two('ab')).toBe(first);
+  expect(two('ba')).toBe(first); // the chapter order of the input does not matter
+  expect(first.endsWith('}\n')).toBe(true);
+  const parsed = JSON.parse(first) as { chapters: Record<string, { shots: Record<string, object> }> };
+  expect(Object.keys(parsed.chapters)).toEqual(['ch1', 'ch2']);
+  expect(Object.keys(parsed.chapters['ch1']?.shots['cafe_wide'] ?? {})).toEqual(['camTargets', 'cast', 'faces', 'frame', 'loc', 'motions', 'room']);
+});
+
+test('shots: build shots.json lists every shot file each chapter needs', () => {
+  // A shared shot; the worried face only in the paid chapter: its own file, so the asset tool gates it alone.
+  const u = usageOf([
+    [CH1, ['-> k', '=== k ===', '# scene: cafe_ally_cu', 'ally: Привет. #id:ch1.k.a001', '# scene: street_wide', 'Улица. #id:ch1.k.a002', '-> END']],
+    [CH2, ['-> k', '=== k ===', '# scene: cafe_ally_cu', '# face: ally worried', 'Ох. #id:ch2.k.a001', '-> END']],
+  ]);
+  expect(chapterOf(u, CH1).assets).toEqual(['bg/cafe_ally_cu', 'bg/street_wide', 'sheet/cafe_ally_cu', 'talk/cafe_ally_cu/ally/neutral']);
+  expect(chapterOf(u, CH2).assets).toEqual(['bg/cafe_ally_cu', 'face/cafe_ally_cu/ally/worried', 'sheet/cafe_ally_cu']);
+});
+
+test('shots: a talk file is listed only where its character speaks in that expression', () => {
+  const u = usageOf([
+    [CH1, ['-> k', '=== k ===', '# scene: street_wide', 'Улица. #id:ch1.k.a000', '# scene: cafe_ally_cu', '# face: ally smile', 'ally: Ха. #id:ch1.k.a001', '-> END']],
+    [CH2, ['-> k', '=== k ===', '# scene: street_wide', 'Улица. #id:ch2.k.a000', '# scene: cafe_ally_cu', '# face: ally smile', 'Тишина. #id:ch2.k.a001', '-> END']],
+  ]);
+  expect(chapterOf(u, CH1).assets).toContain('talk/cafe_ally_cu/ally/smile');
+  expect(chapterOf(u, CH1).look['ch1.k.a000' as StepKey]?.certain).toContain('talk/cafe_ally_cu/ally/smile');
+  const ch2 = chapterOf(u, CH2);
+  expect(ch2.assets).toEqual(['bg/cafe_ally_cu', 'bg/street_wide', 'face/cafe_ally_cu/ally/smile', 'sheet/cafe_ally_cu']);
+  // No window of the silent chapter holds a talk file: one it does not list is one its tier may not grant.
+  const held = Object.values(ch2.look).flatMap((w) => [...w.cur, ...w.certain, ...w.possible, ...w.d2, ...w.d3]);
+  expect(held.length).toBeGreaterThan(0); // non-vacuity
+  expect(held.filter((a) => a.startsWith('talk/'))).toEqual([]);
+});
+
+test('shots: a shot-file id that names no shot, cast member or expression of its need is refused', () => {
+  expect(parseShotFileId('bg/cafe_wide')).toEqual({ ns: 'bg', shot: 'cafe_wide' });
+  expect(parseShotFileId('sheet/cafe_wide')).toEqual({ ns: 'sheet', shot: 'cafe_wide' });
+  expect(parseShotFileId('face/cafe_wide/ally/smile')).toEqual({ ns: 'face', shot: 'cafe_wide', char: 'ally', expr: 'smile' });
+  expect(parseShotFileId('talk/cafe_wide/ally/smile')).toEqual({ ns: 'talk', shot: 'cafe_wide', char: 'ally', expr: 'smile' });
+  for (const bad of ['face/cafe_wide/ally', 'face/cafe_wide/ally/smile/x', 'bg/Cafe', 'sheet/a/b', 'char/ally/smile', 'cg/letter', 'bg/']) {
+    expect(parseShotFileId(bad), bad).toBeNull();
+  }
+  const raw = JSON.parse(encodeShotUsage(usageOf([[CH1, STAGED]]))) as {
+    chapters: { ch1: { assets: string[]; look: Record<string, Record<string, string[]>>; entry: Record<string, string[][]> } };
+  };
+  const ch = raw.chapters.ch1;
+  const n = ch.assets.length;
+  ch.assets.push('prop/medal_sun', 'face/cafe_ally_cu/stranger/smile', 'face/cafe_ally_cu/ally/worried', 'bg/cafe_ally_cu');
+  ch.look['ch1.k.a001']?.['possible']?.push('face/cafe_ally_cu/ally/worried', 'cg/letter', 'prop/medal_sun', 'char/ally/smile');
+  ch.entry['ch1.k.a001']?.[0]?.push('bg/archive');
+  ch.look['x:y'] = {};
+  const look = ch.look['ch1.k.a001']?.['possible']?.length ?? 0;
+  expect(decodeShotUsage(raw)).toEqual({
+    ok: false,
+    error: [
+      `chapters.ch1.assets.${n}: "prop/medal_sun" is not a shot file of the chapter's needs`,
+      `chapters.ch1.assets.${n + 1}: "face/cafe_ally_cu/stranger/smile" is not a shot file of the chapter's needs`,
+      `chapters.ch1.assets.${n + 2}: "face/cafe_ally_cu/ally/worried" is not a shot file of the chapter's needs`,
+      `chapters.ch1.look.ch1.k.a001.possible.${look - 4}: "face/cafe_ally_cu/ally/worried" is not an asset id or a shot file of the chapter's needs`,
+      'chapters.ch1.look.x:y: not a window key with an object',
+      `chapters.ch1.entry.ch1.k.a001.0.${(ch.entry['ch1.k.a001']?.[0]?.length ?? 0) - 1}: "bg/archive" is not an asset id or a shot file of the chapter's needs`,
+    ],
+  });
+});
+
+test('shots: only the flow names the legacy kinds', () => {
+  // rev. 5 (W3): SH12a removes `show` / `hide` from flow.ts alone; the fixtures of shots.test.ts name them and are not read.
+  const dir = new URL('./', import.meta.url);
+  const sources = readdirSync(dir).filter((f) => f.endsWith('.ts') && f !== 'flow.ts' && f !== 'shots.test.ts');
+  expect(sources).toEqual(expect.arrayContaining(['lint.ts', 'list.ts', 'usage.ts']));
+  const LEGACY = /['"`](?:show|hide)['"`]/;
+  for (const f of sources) {
+    expect(LEGACY.test(readFileSync(new URL(f, dir), 'utf8')), f).toBe(false);
+  }
+  expect(LEGACY.test(readFileSync(new URL('flow.ts', dir), 'utf8'))).toBe(true); // non-vacuity: the pattern finds them
 });

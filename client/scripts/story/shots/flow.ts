@@ -90,6 +90,11 @@ export type FlowInput = {
   world?: WorldPublicBody;
 };
 
+/** Some batch names a legacy sprite (`show:` / `hide:`): the chapter keeps its knot-set rows until restaged (§3.6). */
+export function namesSprites(flow: ChapterFlow): boolean {
+  return [...flow.steps.values()].some((s) => s.batches.some((b) => b.commands.some((p) => p.cmd.kind === 'show' || p.cmd.kind === 'hide')));
+}
+
 /** `k:<knot>`. */
 export function knotKey(knot: KnotName): StepKey {
   return `k:${knot}`;
@@ -867,8 +872,8 @@ export function crossCheck(flow: ChapterFlow, transitions: ReadonlySet<string>, 
 
 /** Per room of the chapter's world: the shot it draws and its picture files beyond the plate (props, decor states). */
 export type RoomFiles = ReadonlyMap<RoomId, { readonly shot: BgId; readonly room: readonly AssetId[] }>;
-/** What the shot files are: the effective shots and the talk files (`<shot>/<char>/<expr>`: some chapter has the
- *  character speak in that expression in that shot, §2.6). */
+/** What the shot files are: the effective shots and the talk files (`<shot>/<char>/<expr>`: the chapter has the
+ *  character speak in that expression in that shot, §2.6; usage.ts lists exactly those). */
 export type ShotFiles = { readonly shots: ReadonlyMap<BgId, EffectiveShot>; readonly talk: ReadonlySet<string> };
 /**
  * A window's lookahead (§3.4): `cur` the files in effect; `certain` the next appearance's files on every path, at the
