@@ -1275,3 +1275,75 @@ async fn rollback_then_forward_keeps_unlocks() {
     }
     report(&failures);
 }
+
+/// A correct answer to a renamed puzzle is stored under its storage key (GM6k review M1): release N+1 serves the
+/// puzzle as `ch1.desk`, keyed `ch1.drawer`. ANN answers `ch1.desk` correctly; the solve row is `ch1.drawer`'s and
+/// none is the live id's, so every reader keyed by the storage key sees the solve: the status is solved, the card
+/// unlocks `drawer_no_hints` (its meta names `ch1.desk`), and the solved puzzle sells no hint. The hint is asked last,
+/// so a wrongly sold one cannot change the card.
+#[tokio::test]
+async fn rename_attempt_solves_under_the_key() {
+    let copy = renamed_copy().await;
+    let (started, _db) = state_on(copy.path()).await;
+    let st = match started {
+        Ok(st) => at_t0_with_users(st, &[ANN]).await,
+        Err(e) => panic!("release N+1 (the renamed copy): expected Ok, got {e}"),
+    };
+    fund(&st, ANN, 5).await;
+    let mut failures = Vec::new();
+    let reply = post_attempt(&st, ANN, "ch1.desk", SOLUTION).await;
+    failures.extend(expect_reply(
+        "ANN answers ch1.desk",
+        &reply,
+        200,
+        r#"{"correct":true,"solved":true}"#,
+    ));
+    for (key, want) in [
+        ("ch1.drawer", Some((1, 1, T0, Some(T0)))),
+        ("ch1.desk", None),
+    ] {
+        let row = progress_row(&st, ANN, key).await;
+        if row != want {
+            failures.push(format!(
+                "puzzle_progress under {key}: expected {want:?}, got {row:?}"
+            ));
+        }
+    }
+    let reply = get(&st, Some(ANN), "/api/puzzles/ch1.desk?lang=en").await;
+    failures.extend(expect_reply(
+        "ANN's status of ch1.desk",
+        &reply,
+        200,
+        &status_body("ch1.desk", true, &[None, None, None]),
+    ));
+    let req = Request::post("/api/stories/manor/card")
+        .header(AUTHORIZATION, bearer(&st, ANN))
+        .body(Body::empty())
+        .unwrap();
+    let reply = common::call(&st, req).await;
+    let card: Value = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
+    let ids: Vec<&str> = card["achievements"]
+        .as_array()
+        .map(|all| all.iter().filter_map(|a| a["id"].as_str()).collect())
+        .unwrap_or_default();
+    if (reply.status.as_u16(), ids.as_slice()) != (200, ["drawer_no_hints"].as_slice()) {
+        failures.push(format!(
+            "ANN's manor card: expected 200 with the achievements [\"drawer_no_hints\"], got {} with {ids:?}",
+            reply.status.as_u16()
+        ));
+    }
+    let hint = post_hint(&st, ANN, "ch1.desk", 1).await;
+    let want = (409, json!({ "error": "hint_unavailable" }));
+    if hint != want {
+        failures.push(format!(
+            "ANN's tier 1 of the solved ch1.desk: expected {want:?}, got {hint:?}"
+        ));
+    }
+    let keys = ledger_keys(&st, ANN).await;
+    if keys != ["fund:1001:5"] {
+        failures.push(format!(
+            "ANN's ledger: expected only the fund row, got {keys:?}"
+        ));
+    }
+    report(&failures);
+}
