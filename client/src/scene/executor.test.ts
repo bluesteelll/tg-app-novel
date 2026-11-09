@@ -2,6 +2,7 @@ import { gsap } from 'gsap/gsap-core';
 import { expect, test, vi } from 'vitest';
 
 import type { Size } from '../geom/cover.ts';
+import type { AnchorKey } from '../mechanics/contract.ts';
 import type { ImageEntry, Result } from '../story/catalog.ts';
 import type { AssetId, BgId, CgId, CharId, ExprId, PropId, Rect, Slot } from '../story/staging.ts';
 import { createExecutor } from './executor.ts';
@@ -175,7 +176,24 @@ function recordingStage(size: Size, freed: ReadonlySet<Tex> = new Set()) {
     }
     return ids.map(node);
   };
-  return { adapter, log, alphas, live, inGroup, anchors, rolesAbove, worldAlpha, worldBox, drawOrder, stage };
+  /** An anchor's `content` node. */
+  const contentOf = (a: Node): Node => {
+    const c = below(a).find((d) => d.role === 'content');
+    if (c === undefined) {
+      throw new Error(`stage: ${a.key} has no content node`);
+    }
+    return c;
+  };
+  return { adapter, log, alphas, live, inGroup, anchors, rolesAbove, worldAlpha, worldBox, drawOrder, contentOf, stage };
+}
+
+/** The one node of a list (a test reads a single anchor or sprite). */
+function one(xs: readonly Node[]): Node {
+  const [x] = xs;
+  if (x === undefined || xs.length !== 1) {
+    throw new Error(`expected one node, got ${xs.length}`);
+  }
+  return x;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -202,6 +220,10 @@ const ENTRIES: Readonly<Record<string, ImageEntry>> = {
   'cg/letter': image('cg_letter', 1080, 2048),
   'prop/lamp': image('prop_lamp', 512, 512),
   'prop/key': image('prop_key', 256, 256),
+  // A drawer, its open state (the same anchor, another image) and a patch drawn over it (per-player GM6a, E-P1).
+  'prop/drawer': image('prop_drawer', 300, 200),
+  'prop/drawer_open': image('prop_drawer_open', 300, 260),
+  'prop/glint': image('prop_glint', 100, 100),
 };
 const urlOf = (id: string): string => ENTRIES[id]?.avif.url ?? `missing:${id}`;
 
@@ -383,12 +405,21 @@ const hide = (c: string, t: 'fade' | 'cut' = 'fade', ms = 300): VisualCommand =>
   t,
   ms,
 });
-const props = (...ps: ReadonlyArray<readonly [string, Rect]>): VisualCommand => ({
+/** `[prop, rect]`, or with its anchor key and part as the world gives them (`<room>.<hotspot>`, absent part: base). */
+const props = (...ps: ReadonlyArray<readonly [string, Rect, string?, ('base' | 'patch')?]>): VisualCommand => ({
   kind: 'props',
-  props: ps.map(([prop, rect]) => ({ prop: prop as PropId, rect })),
+  props: ps.map(([prop, rect, at, part]) => ({
+    prop: prop as PropId,
+    rect,
+    ...(at === undefined ? {} : { at: at as AnchorKey }),
+    ...(part === undefined ? {} : { part }),
+  })),
 });
 const LAMP: Rect = [500, 900, 100, 100];
 const KEY: Rect = [200, 1200, 120, 80];
+const DRAWER: Rect = [300, 1500, 300, 200];
+const DRAWER_OPEN: Rect = [300, 1500, 300, 260];
+const GLINT: Rect = [380, 1540, 100, 100];
 const NOW = { instant: false };
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -478,6 +509,7 @@ test('executor: scene t=fade applies shows while black', async () => {
     'destroy:cg:letter',
     'drop:cg/letter',
     'destroy:props:lamp',
+    'drop:lamp',
     'destroy:bg:street',
     'drop:bg/street',
     'anchor:bg:bg/cafe',
@@ -634,9 +666,8 @@ test('executor: props survive restore', async () => {
     props: [{ prop: 'lamp' as PropId, rect: LAMP }],
   };
   await h.ex.restore(saved);
-  const lamp = h.live('props');
-  expect(lamp.length).toBe(1);
-  expect(lamp[0]?.p).toMatchObject({ ...propPlacement(S390, LAMP), alpha: 1 });
+  const lamp = one(h.live('props'));
+  expect({ ...h.worldBox(lamp), alpha: h.worldAlpha(lamp) }).toEqual({ ...propPlacement(S390, LAMP), alpha: 1 });
   expect(h.ex.snapshot().props).toEqual(saved.props);
   expect(h.ex.snapshot()).toEqual(saved);
   expect(h.live('bg').length).toBe(1);
@@ -827,7 +858,7 @@ test('executor: prop rects in stage px', async () => {
     { prop: 'key', ...propPlacement(small, KEY) },
   ]);
   // The sprites moved with them.
-  expect(h.live('props').map((x) => ({ x: x.p.x, y: x.p.y, w: x.p.w, h: x.p.h }))).toEqual([
+  expect(h.live('props').map(h.worldBox)).toEqual([
     propPlacement(small, LAMP),
     propPlacement(small, KEY),
   ]);
@@ -1107,11 +1138,176 @@ test('executor: a bg crossfade fades the anchors, not the sprites', async () => 
 
 test("executor: an anchor's art lives in its content node", async () => {
   const h = harness();
-  await h.ex.apply([bg('cafe', 'cut'), cg('letter', 'cut')], NOW);
-  const arts = [...h.live('bg'), ...h.live('cg')];
-  expect(arts.length).toBe(2);
+  await h.ex.apply([bg('cafe', 'cut'), cg('letter', 'cut'), props(['lamp', LAMP, 'room.lamp'])], NOW);
+  const arts = [...h.live('bg'), ...h.live('cg'), ...h.live('props')];
+  expect(arts.length).toBe(3);
   for (const art of arts) {
     expect(h.rolesAbove(art)).toEqual(['content', 'motion', 'depth', 'anchor', 'layer']);
   }
   h.ex.destroy();
+});
+
+test("executor: a prop's box is its anchor's position and its sprite's size", async () => {
+  const h = harness();
+  await h.ex.apply([bg('room', 'cut'), props(['lamp', LAMP, 'room.lamp'], ['key', KEY])], NOW);
+  const box = propPlacement(S390, LAMP);
+  // The anchor at the box's origin, the art at (0, 0) of `content` with the box's size: drawn at the box, not twice
+  // its origin.
+  const anchor = one(h.anchors('props').filter((x) => x.key === 'room.lamp'));
+  expect({ x: anchor.p.x, y: anchor.p.y }).toEqual({ x: box.x, y: box.y });
+  const lamp = one(h.live('props').filter((x) => x.key === 'lamp'));
+  expect(h.rolesAbove(lamp)[0]).toBe('content');
+  expect({ x: lamp.p.x ?? 0, y: lamp.p.y ?? 0, w: lamp.p.w, h: lamp.p.h }).toEqual({ x: 0, y: 0, w: box.w, h: box.h });
+  expect(h.worldBox(lamp)).toEqual(box);
+  // propRects reports the stage boxes, in the command's order.
+  expect(h.ex.propRects()).toEqual([
+    { prop: 'lamp', ...box },
+    { prop: 'key', ...propPlacement(S390, KEY) },
+  ]);
+  h.ex.destroy();
+});
+
+test("executor: a taken prop's anchor fades out with its sprite", async () => {
+  const h = harness();
+  await h.ex.apply([bg('room', 'cut'), props(['lamp', LAMP, 'room.lamp'], ['key', KEY, 'room.key'])], NOW);
+  const kept = one(h.anchors('props').filter((x) => x.key === 'room.key'));
+  const keyBox = h.worldBox(one(h.live('props').filter((x) => x.key === 'key')));
+  h.alphas.length = 0;
+  h.log.length = 0;
+  // A take: the room's crossfade onto the bg it shows, without the lamp.
+  const take = h.ex.apply([bg('room', 'crossfade', 300), props(['key', KEY, 'room.key'])], NOW);
+  await flush();
+  advance(150);
+  // Only the taken prop's anchor is written: half faded; its sprite keeps its own alpha.
+  expect(h.alphas.filter((w) => w.role !== 'anchor' || w.key !== 'room.lamp')).toEqual([]);
+  expect(one(h.anchors('props').filter((x) => x.key === 'room.lamp')).p.alpha).toBeCloseTo(0.5, 6);
+  expect(one(h.live('props').filter((x) => x.key === 'lamp')).p.alpha).toBe(undefined);
+  h.ex.complete();
+  await take;
+  expect(h.log.filter((x) => /^(anchor|create|destroy|drop):/.test(x))).toEqual(['destroy:props:lamp', 'drop:room.lamp']);
+  expect(h.alphas.filter((w) => w.key !== 'room.lamp')).toEqual([]);
+  expect(h.anchors('props')).toEqual([kept]);
+  const key = one(h.live('props'));
+  expect({ ...h.worldBox(key), alpha: h.worldAlpha(key) }).toEqual({ ...keyBox, alpha: 1 });
+  expect(h.releasedOf('prop/lamp')).toBe(1);
+  h.ex.destroy();
+});
+
+test('executor: a prop whose image changes at the same anchor crossfades inside it', async () => {
+  const h = harness();
+  await h.ex.apply([bg('room', 'cut'), props(['drawer', DRAWER, 'room.drawer'])], NOW);
+  const anchor = one(h.anchors('props'));
+  h.alphas.length = 0;
+  h.log.length = 0;
+  // E-P1: the open drawer at the same anchor.
+  const swap = h.ex.apply([bg('room', 'crossfade', 300), props(['drawer_open', DRAWER_OPEN, 'room.drawer'])], NOW);
+  await flush();
+  advance(150);
+  expect(h.anchors('props')).toEqual([anchor]);
+  // The new image under the old one at full alpha, the old one fading out over it.
+  const mid = h.drawOrder(h.contentOf(anchor));
+  expect(mid.map((x) => x.key)).toEqual(['drawer_open', 'drawer']);
+  expect(h.worldAlpha(mid[0])).toBe(1);
+  expect(h.worldAlpha(mid[1])).toBeCloseTo(0.5, 6);
+  expect(h.alphas.filter((w) => w.role === 'anchor')).toEqual([]);
+  h.ex.complete();
+  await swap;
+  expect(h.drawOrder(h.contentOf(anchor)).map((x) => x.key)).toEqual(['drawer_open']);
+  expect(h.log.filter((x) => /^(anchor|drop):/.test(x))).toEqual([]);
+  expect(h.log.filter((x) => x.startsWith('destroy:'))).toEqual(['destroy:props:drawer']);
+  expect(h.ex.propRects()).toEqual([{ prop: 'drawer_open', ...propPlacement(S390, DRAWER_OPEN) }]);
+  expect(h.worldBox(one(h.live('props')))).toEqual(propPlacement(S390, DRAWER_OPEN));
+  h.ex.destroy();
+});
+
+test('executor: a patch is a child of its base anchor', async () => {
+  const h = harness();
+  await h.ex.apply([bg('room', 'cut'), props(['drawer', DRAWER, 'room.drawer'])], NOW);
+  const anchor = one(h.anchors('props'));
+  const origin = propPlacement(S390, DRAWER);
+  const box = propPlacement(S390, GLINT);
+  h.alphas.length = 0;
+  h.log.length = 0;
+  // The patch fades in inside the base's anchor, above the base, at its box minus the anchor's origin.
+  const add = h.ex.apply([bg('room', 'crossfade', 300), props(['drawer', DRAWER, 'room.drawer'], ['glint', GLINT, 'room.drawer', 'patch'])], NOW);
+  await flush();
+  advance(150);
+  expect(h.anchors('props')).toEqual([anchor]);
+  const content = h.contentOf(anchor);
+  expect(h.drawOrder(content).map((x) => x.key)).toEqual(['drawer', 'glint']);
+  const glint = one(h.live('props').filter((x) => x.key === 'glint'));
+  expect({ x: glint.p.x, y: glint.p.y, w: glint.p.w, h: glint.p.h }).toEqual({ x: box.x - origin.x, y: box.y - origin.y, w: box.w, h: box.h });
+  expect(glint.p.alpha).toBeCloseTo(0.5, 6);
+  expect(anchor.p.alpha).toBe(1);
+  h.ex.complete();
+  await add;
+  expect(glint.p.alpha).toBe(1);
+  expect(h.ex.propRects()).toEqual([
+    { prop: 'drawer', ...origin },
+    { prop: 'glint', ...box },
+  ]);
+  // The patch fades out inside the anchor; the anchor stays.
+  const remove = h.ex.apply([bg('room', 'crossfade', 300), props(['drawer', DRAWER, 'room.drawer'])], NOW);
+  await flush();
+  advance(150);
+  expect(glint.p.alpha).toBeCloseTo(0.5, 6);
+  expect(anchor.p.alpha).toBe(1);
+  h.ex.complete();
+  await remove;
+  expect(h.drawOrder(content).map((x) => x.key)).toEqual(['drawer']);
+  expect(h.anchors('props')).toEqual([anchor]);
+  expect(h.alphas.filter((w) => w.role === 'anchor')).toEqual([]);
+  expect(h.log.filter((x) => /^(anchor|create|destroy|drop):/.test(x))).toEqual(['create:props:glint', 'destroy:props:glint']);
+  h.ex.destroy();
+});
+
+test("executor: prop anchors follow the command's order", async () => {
+  // (A) A state image at the same anchor keeps the anchor's place in the props layer (it is not drawn last).
+  const a = harness();
+  await a.ex.apply([bg('room', 'cut'), props(['drawer', DRAWER, 'room.drawer'], ['lamp', LAMP, 'room.lamp'])], NOW);
+  await a.ex.apply([bg('room', 'crossfade', 300), props(['drawer_open', DRAWER_OPEN, 'room.drawer'], ['lamp', LAMP, 'room.lamp'])], { instant: true });
+  expect(a.drawOrder('props').map((x) => x.key)).toEqual(['room.drawer', 'room.lamp']);
+  a.ex.destroy();
+  // (B) A new anchor named before a kept one is drawn before (under) it: the layer's order is the command's.
+  const b = harness();
+  await b.ex.apply([bg('room', 'cut'), props(['lamp', LAMP, 'room.lamp'])], NOW);
+  await b.ex.apply([bg('room', 'crossfade', 300), props(['key', KEY, 'room.key'], ['lamp', LAMP, 'room.lamp'])], { instant: true });
+  expect(b.drawOrder('props').map((x) => x.key)).toEqual(['room.key', 'room.lamp']);
+  expect(b.ex.propRects().map((r) => r.prop)).toEqual(['key', 'lamp']);
+  b.ex.destroy();
+});
+
+test('executor: a placement that gains its at keeps its anchor', async () => {
+  // A format-1 save's props have no `at` (keyed by prop); the room's at-keyed placements of the same props take those
+  // anchors over (D5.1): nothing is created, dropped or faded.
+  const h = harness();
+  await h.ex.apply([bg('room', 'cut'), props(['lamp', LAMP], ['key', KEY])], NOW);
+  const before = h.anchors('props');
+  expect(before.map((x) => x.key)).toEqual(['lamp', 'key']);
+  h.alphas.length = 0;
+  h.log.length = 0;
+  const gain = h.ex.apply([bg('room', 'crossfade', 300), props(['lamp', LAMP, 'room.lamp'], ['key', KEY, 'room.key'])], NOW);
+  await flush();
+  h.ex.complete();
+  await gain;
+  expect(h.anchors('props')).toEqual(before);
+  expect(h.log.filter((x) => /^(anchor|create|destroy|drop):/.test(x))).toEqual([]);
+  expect(h.alphas).toEqual([]);
+  h.ex.destroy();
+  // The format-1 resume's first take: the kept prop's anchor is taken over untouched; only the taken one fades out.
+  const r = harness();
+  await r.ex.apply([bg('room', 'cut'), props(['lamp', LAMP], ['key', KEY])], NOW);
+  const key = one(r.anchors('props').filter((x) => x.key === 'key'));
+  r.alphas.length = 0;
+  r.log.length = 0;
+  const take = r.ex.apply([bg('room', 'crossfade', 300), props(['key', KEY, 'room.key'])], NOW);
+  await flush();
+  advance(150);
+  expect(r.alphas.filter((w) => w.key !== 'lamp')).toEqual([]);
+  r.ex.complete();
+  await take;
+  expect(r.anchors('props')).toEqual([key]);
+  expect(r.log.filter((x) => /^(anchor|create|destroy|drop):/.test(x))).toEqual(['destroy:props:lamp', 'drop:lamp']);
+  expect(r.worldAlpha(one(r.live('props')))).toBe(1);
+  r.ex.destroy();
 });

@@ -140,6 +140,7 @@ export function createLayers(app: Pick<Application, 'stage'>): Layers {
   fx.visible = false;
   const layers: Layers = { bg: new Container(), props: new Container(), chars: new Container(), cg: new Container(), fx };
   layers.chars.sortableChildren = true;
+  layers.props.sortableChildren = true;
   app.stage.eventMode = 'none';
   app.stage.addChild(layers.bg, layers.props, layers.chars, layers.cg, layers.fx);
   return layers;
