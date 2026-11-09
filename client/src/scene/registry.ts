@@ -84,6 +84,8 @@ export type RegistryStats = {
   stale: number;
   reviveFailed: number;
 };
+/** An id's record as `state(id)` reports it: decoded (revived or not), its load in flight, or no record. */
+export type RecordState = 'live' | 'pending' | 'none';
 
 export interface AssetRegistry<T> {
   /**
@@ -102,6 +104,12 @@ export interface AssetRegistry<T> {
    * handle is the entry's identity: a revive keeps it, and an ended entry's handle is never current again.
    */
   current(id: AssetId): TextureHandle<T> | null;
+  /**
+   * The id's entry: `'live'` while decoded (revived or not), `'pending'` while its load is in flight, else `'none'` (never
+   * acquired, ended, refused). An acquire of an id that is not `'none'` joins its entry: no bytes, never refused. A pure
+   * read: it adds no holder and moves no byte.
+   */
+  state(id: AssetId): RecordState;
   /**
    * Brings every live entry not at `gen` to it, one at a time: entries with a visible holder first (`visible` settles
    * `'done'` once each is revived or ended, at the latest REVIVE_DEADLINE_MS after the pass started), then the rest
@@ -511,6 +519,11 @@ export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avi
     current(id) {
       const rec = records.get(id);
       return rec?.state === 'live' ? rec.handle : null;
+    },
+    state(id) {
+      // The map holds pending and live records only (kill / end delete), so a dead one is never reported.
+      const s = records.get(id)?.state;
+      return s === 'live' || s === 'pending' ? s : 'none';
     },
     revive(gen, signal) {
       reviving?.abort();
