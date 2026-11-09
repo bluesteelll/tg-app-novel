@@ -35,7 +35,7 @@ use tokio::task::JoinSet;
 
 use crate::catalog::{ANN, T0, bearer, get, own, state_with_users};
 use crate::common;
-use crate::content::{FIXTURE, read_json, renamed_copy, state_on, state_on_db};
+use crate::content::{FIXTURE, FixtureCopy, read_json, renamed_copy, state_on, state_on_db};
 
 /// A second player.
 const BEN: i64 = 1002;
@@ -512,7 +512,8 @@ async fn schema_puzzle_values_pk() {
 /// Each CHECK of `puzzle_values` (per-player §3.1) refuses its own violation, by (23514, constraint), and allows the
 /// boundary beside it: the `PuzzleId` grammar; a 16-hex lower-case domain hash; a one-dimensional value of 1..64
 /// entries with no NULL, each a u16; a run from 1; wrong answers from 0; a spend never before the draw; a real draw
-/// time.
+/// time. The length bound is built from `MAX_ANSWER_LEN`: the CHECK's 64 and the cap are one bound, so moving
+/// either alone reds a case here.
 #[tokio::test]
 async fn schema_puzzle_values_checks() {
     let (_st, _db, mut c) = schema_db().await;
@@ -561,9 +562,9 @@ async fn schema_puzzle_values_checks() {
             "puzzle_values_value_shape",
         ),
         (
-            "value of 65 entries",
+            "value of MAX_ANSWER_LEN + 1 entries",
             ValueSql {
-                value: array_of(65, "1"),
+                value: array_of(MAX_ANSWER_LEN + 1, "1"),
                 ..value_row(ANN, "ch1.v_long")
             },
             "puzzle_values_value_shape",
@@ -639,9 +640,9 @@ async fn schema_puzzle_values_checks() {
     }
     let allowed = [
         (
-            "value of 64 entries",
+            "value of MAX_ANSWER_LEN entries",
             ValueSql {
-                value: array_of(64, "1"),
+                value: array_of(MAX_ANSWER_LEN, "1"),
                 ..value_row(ANN, "ch1.c_long")
             },
         ),
@@ -1097,7 +1098,7 @@ async fn attempt_wrong_returns_false() {
 }
 
 /// A malformed id, a body that is not an answer, and an answer outside the puzzle's shape (`answerLen` 4,
-/// `answerMax` 9, at most 16 entries) are each 400 `bad_request`, and none is counted.
+/// `answerMax` 9, at most 64 entries) are each 400 `bad_request`, and none is counted.
 #[tokio::test]
 async fn attempt_wrong_shape_400() {
     let (st, _db) = state_with_users(&[ANN]).await;
@@ -1145,6 +1146,74 @@ async fn attempt_wrong_shape_400() {
     let row = progress_row(&st, ANN, "ch1.drawer").await.map(|r| r.0);
     if row != Some(1) {
         failures.push(format!("control: expected attempts 1, got {row:?}"));
+    }
+    report(&failures);
+}
+
+/// A copy of the fixture whose `ch1.drawer` takes 64 entries (`answerLen` 64, `answerMax` 9; the solution is
+/// `[1, 8, 4, 7]` 16 times), and that solution.
+async fn long_drawer_copy() -> (FixtureCopy, Vec<u16>) {
+    let solution = [1u16, 8, 4, 7].repeat(16);
+    let copy = FixtureCopy::new();
+    copy.edit_json("puzzles/ch1.json", |v| {
+        let drawer = &mut v["puzzles"]["drawer"];
+        drawer["answerLen"] = json!(64);
+        drawer["solution"] = json!(solution);
+    })
+    .await;
+    (copy, solution)
+}
+
+/// `{"answer": answer}` as a request body.
+fn answer_body(answer: &[u16]) -> String {
+    json!({ "answer": answer }).to_string()
+}
+
+/// `st` on `copy` at `T0` with ANN's `users` row.
+async fn state_with_ann_on(copy: &FixtureCopy) -> (AppState, common::TestDb) {
+    let (started, db) = state_on(copy.path()).await;
+    match started {
+        Ok(st) => (at_t0_with_users(st, &[ANN]).await, db),
+        Err(e) => panic!("the 64-entry copy: expected Ok, got {e}"),
+    }
+}
+
+/// An answer takes up to `MAX_ANSWER_LEN` = 64 entries (per-player §3.3; engine R-E12): the 64-entry solution of a
+/// 64-entry puzzle solves it.
+#[tokio::test]
+async fn attempt_answer_len_64_accepted() {
+    let (copy, solution) = long_drawer_copy().await;
+    let (st, _db) = state_with_ann_on(&copy).await;
+    let mut failures = Vec::new();
+    let reply = post_attempt(&st, ANN, "ch1.drawer", &answer_body(&solution)).await;
+    failures.extend(expect_reply(
+        "64 entries",
+        &reply,
+        200,
+        r#"{"correct":true,"solved":true}"#,
+    ));
+    let row = progress_row(&st, ANN, "ch1.drawer").await;
+    if row != Some((1, 1, T0, Some(T0))) {
+        failures.push(format!(
+            "64 entries: expected (attempts 1, window 1, start T0, solved at T0), got {row:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// One entry more than the 64-entry puzzle takes is 400 `bad_request`, and it is not counted.
+#[tokio::test]
+async fn attempt_answer_len_65_400() {
+    let (copy, solution) = long_drawer_copy().await;
+    let (st, _db) = state_with_ann_on(&copy).await;
+    let mut failures = Vec::new();
+    let mut answer = solution;
+    answer.push(1);
+    let reply = post_attempt(&st, ANN, "ch1.drawer", &answer_body(&answer)).await;
+    failures.extend(expect_error("65 entries", &reply, 400, "bad_request"));
+    let row = progress_row(&st, ANN, "ch1.drawer").await;
+    if row.is_some() {
+        failures.push(format!("65 entries: expected no row, got {row:?}"));
     }
     report(&failures);
 }
@@ -2178,6 +2247,13 @@ fn values_a_misshapen_domain_is_refused_at_parse() {
             domain_file(ranges(0, 16, 4), true, &[]),
             4,
             16,
+            "distinct needs answerMax <= 15 and answerLen <= 16",
+        ),
+        (
+            "distinct with answerLen 17",
+            domain_file(ranges(0, 15, 17), true, &[]),
+            17,
+            15,
             "distinct needs answerMax <= 15 and answerLen <= 16",
         ),
     ];
