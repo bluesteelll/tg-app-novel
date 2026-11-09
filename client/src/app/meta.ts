@@ -42,6 +42,11 @@ export type MetaView = {
   profile: ProfileData | null;
   wallet: WalletData | null;
   purchase: PurchaseState;
+  /**
+   * The player left the pack flow (LRB D1-D3): the wallet is closed and the flow is `delayed`, or `sheet` after the
+   * player's Back on the wallet in that state. Read by the Game's build-skew reload rule, never rendered.
+   */
+  purchaseLeft: boolean;
   invite: { code: string } | null;
   /** The gift dialog: the kind's balance and the per-gift maximum follow the wallet's state; `busy` while one is sent. */
   gift: {
@@ -145,6 +150,20 @@ export function policyUrl(host: string): string {
   return `https://${host}/api/privacy`;
 }
 
+/**
+ * `next` is `prev` with only its top overlay, of `kind`, popped: what BackButton's press does (`screens.back`). A push
+ * makes a new overlay object, a root change a new root, so neither passes the identity checks (LRB D3).
+ */
+function popped(prev: ScreensView, next: ScreensView, kind: ScreenKind): boolean {
+  const n = next.overlays.length;
+  return (
+    next.root === prev.root &&
+    prev.overlays.length === n + 1 &&
+    prev.overlays[n]?.kind === kind &&
+    next.overlays.every((s, i) => s === prev.overlays[i])
+  );
+}
+
 /** F16: how long the ending's events may take to reach the server before the card is asked for. */
 export const CARD_SETTLE_MS = 3000;
 const SHARE_PROMPT = 'meta.share_prompt';
@@ -166,6 +185,7 @@ export function createMetaController(d: MetaDeps): MetaController {
     profile: null,
     wallet: null,
     purchase: { kind: 'idle' },
+    purchaseLeft: false,
     invite: null,
     gift: null,
     busy: { social: false, consent: false, invite: false, wallet: false },
@@ -174,6 +194,8 @@ export function createMetaController(d: MetaDeps): MetaController {
   let epoch = 0;
   let root = screens.view().root.kind;
   let open: ReadonlySet<ScreenKind> = new Set();
+  /** The stack's last view: the player's Back on the wallet is told from a programmatic close by it (LRB D3). */
+  let last: ScreensView = screens.view();
   /** The stories with a card: an ending in the stats or reached here (F17). */
   const ended = new Set<string>();
   let ui: Promise<MetaUi | null> | null = null;
@@ -187,6 +209,12 @@ export function createMetaController(d: MetaDeps): MetaController {
   let flowLoad: Promise<PurchaseFlow | null> | null = null;
   /** The pack flow's last state kind: the 429 wait is noted once, on entering it (D-429). */
   let purchaseKind: PurchaseState['kind'] = 'idle';
+  /**
+   * The player's Back on the wallet while the flow is `sheet` (LRB D3): no input reaches the page under Telegram's
+   * modal sheet, so that sheet is closed. Cleared by every flow state. A programmatic `close('wallet')` with the wallet
+   * on top would count as that Back (the same view); `src/` has none.
+   */
+  let sheetLeft = false;
   /** A gift's request id per (to, kind, amount), until a definitive answer (META-PLAN's resource lifetime). */
   const giftIds = new Map<string, string>();
   let giftFlight: Promise<Result<void, MetaError>> | null = null;
@@ -432,11 +460,20 @@ export function createMetaController(d: MetaDeps): MetaController {
     }
   };
 
+  /**
+   * LRB D2-D4: nothing of a `delayed` flow is on screen without the wallet (it moves only on Check again or
+   * `activated`); a `sheet` is left once the player's Back showed it closed; `requesting` and `confirming` are bounded
+   * by their timeouts, so they hold whatever the wallet shows.
+   */
+  const purchaseLeft = (): boolean =>
+    !open.has('wallet') && (purchaseKind === 'delayed' || (purchaseKind === 'sheet' && sheetLeft));
+
   const purchased = (s: PurchaseState): void => {
     const was = purchaseKind;
     purchaseKind = s.kind;
+    sheetLeft = false;
     const busy = s.kind === 'requesting' || s.kind === 'confirming' || s.kind === 'limited';
-    set({ purchase: s, busy: { ...(vm.meta ?? idle).busy, wallet: busy } });
+    set({ purchase: s, purchaseLeft: purchaseLeft(), busy: { ...(vm.meta ?? idle).busy, wallet: busy } });
     if (s.kind === 'unlocked') {
       void walletSync.hard(); // M19: the order turned paid with the credit; the wallet shows the server's balance
     } else if (s.kind === 'failed' && s.reason !== 'cancelled') {
@@ -758,10 +795,18 @@ export function createMetaController(d: MetaDeps): MetaController {
         root = v.root.kind;
         epoch += 1;
       }
+      if (popped(last, v, 'wallet') && purchaseKind === 'sheet') {
+        sheetLeft = true;
+      }
+      last = v;
       const was = open;
       const now = new Set(v.overlays.map((s) => s.kind));
       const closed = (k: ScreenKind): boolean => was.has(k) && !now.has(k);
       open = now;
+      const left = purchaseLeft();
+      if (left !== (vm.meta ?? idle).purchaseLeft) {
+        set({ purchaseLeft: left });
+      }
       if (closed('card')) {
         set({ card: null });
       }

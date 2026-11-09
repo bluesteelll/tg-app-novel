@@ -3567,7 +3567,7 @@ async function pass(h: Harness, ms: number): Promise<void> {
   }
 }
 
-/** The meta overlays' view as the controller writes it; the recovery reads only `purchase` and `gift.busy`. */
+/** The meta overlays' view as the controller writes it; the recovery reads only `purchase`, `purchaseLeft` and `gift.busy`. */
 function metaView(o: Partial<MetaView> = {}): MetaView {
   return {
     ui: null,
@@ -3576,6 +3576,7 @@ function metaView(o: Partial<MetaView> = {}): MetaView {
     profile: null,
     wallet: null,
     purchase: { kind: 'idle' },
+    purchaseLeft: false,
     invite: null,
     gift: null,
     busy: { social: false, consent: false, invite: false, wallet: false },
