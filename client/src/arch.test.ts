@@ -33,16 +33,18 @@ const RULE_IDS = [
   'lazy-ui',
   'rules-lazy',
   'runner-enter',
+  'waapi',
 ] as const;
 
 type RuleId = (typeof RULE_IDS)[number];
-type Group = 'pattern' | 'boundary' | 'pure' | 'lazy' | 'runner';
+type Group = 'pattern' | 'boundary' | 'pure' | 'lazy' | 'runner' | 'scene';
 type Violation = { rule: RuleId; file: string; line: number; excerpt: string };
 type Fixture = readonly [file: string, source: string];
 
 /**
  * "Forbidden anywhere in src/", "import boundaries" of the plan's module map, the pure world layer (X4), the lazy
- * chunk families (X14) and the one caller of `runner.enter` (PZ "Modules"), each judged by its own tree test.
+ * chunk families (X14), the one caller of `runner.enter` (PZ "Modules") and the owners of DOM motion (engine plan
+ * §3.5 `waapi`), each judged by its own tree test.
  */
 const GROUP: Record<RuleId, Group> = {
   'vh-unit': 'pattern',
@@ -71,6 +73,7 @@ const GROUP: Record<RuleId, Group> = {
   'lazy-ui': 'lazy',
   'rules-lazy': 'lazy',
   'runner-enter': 'runner',
+  waapi: 'scene',
 };
 
 /** Paths are relative to src/; index.html sits one level up. */
@@ -109,6 +112,10 @@ const PURE_WORLD_FILES = [
   'explore/reconcile.ts',
   'mechanics/rules/core.ts',
   'mechanics/rules/search.ts',
+  // The cue channel's types, bus and visibility data (engine plan §3.5): the engine and the gates read them.
+  'cues/types.ts',
+  'cues/bus.ts',
+  'cues/visible.ts',
 ] as const;
 const PURE_WORLD_DEPS = new Set(['story/staging.ts', 'story/catalog.ts', 'story/tags.ts']);
 const PURE_WORLD_GLOBALS = new Set([
@@ -161,16 +168,34 @@ function lazyDirOf(file: string): string | undefined {
 
 /**
  * The chunk halves of the engine: the mechanics rules (engine plan §3.3, §3.5: the reducer's rules, the successor
- * relation, the section key, the searches) are explore-ui chunk code, and the puzzle types' play halves (§7.1) are
- * their type UI's chunk code. A value reference into one comes only from inside its directory and from its listed
- * importers (a trailing `/` names a directory); `import()` counts too, since the budget's engine walk follows dynamic
- * imports and a chunk an engine module imports would be counted in the engine row. `import type` loads nothing and is
- * allowed anywhere.
+ * relation, the section key, the searches) are explore-ui chunk code, the puzzle types' play halves (§7.1) are their
+ * type UI's chunk code, the cue stage is its own lazy family and the cue root action lives in the two family roots'
+ * chunks. A value reference into one comes only from inside its path and from its listed importers (a trailing `/`
+ * names a directory); `import()` counts too, since the budget's engine walk follows dynamic imports and a chunk an
+ * engine module imports would be counted in the engine row, unless the entry is a lazy family of its own, which the
+ * engine reaches by `import()` only. `import type` loads nothing and is allowed anywhere.
  */
-const RULES_LAZY: ReadonlyArray<{ readonly dir: string; readonly importers: readonly string[] }> = [
-  { dir: 'mechanics/rules/', importers: ['explore/controller.ts'] },
-  { dir: 'puzzles/play/', importers: ['puzzles/ui/'] },
+const RULES_LAZY: ReadonlyArray<{
+  readonly path: string;
+  readonly importers: readonly string[];
+  readonly importCall: 'allowed' | 'refused';
+}> = [
+  { path: 'mechanics/rules/', importers: ['explore/controller.ts'], importCall: 'refused' },
+  { path: 'puzzles/play/', importers: ['puzzles/ui/'], importCall: 'refused' },
+  // The cue stage: its own chunk, which `app/yields.ts` loads by `import()` (GM3s).
+  { path: 'cues/stage/', importers: [], importCall: 'allowed' },
+  // The cue root action: in each family root's chunk, imported statically by the families only.
+  { path: 'cues/root.ts', importers: ['ui/explore/', 'ui/puzzles/', 'puzzles/ui/'], importCall: 'refused' },
 ];
+
+/** A resolved `/src/...` target inside a `RULES_LAZY` path: a directory by prefix (a bare directory resolves to its
+ *  index.ts), a file exactly (an extensionless specifier resolves to it too; `cues/root.tsx` is another file). */
+function inRulesLazy(target: string, path: string): boolean {
+  if (path.endsWith('/')) {
+    return `${target}/`.startsWith(`/src/${path}`);
+  }
+  return target === `/src/${path}` || `${target}.ts` === `/src/${path}`;
+}
 
 function isRulesImporter(file: string, importers: readonly string[]): boolean {
   return importers.some((i) => (i.endsWith('/') ? file.startsWith(i) : file === i));
@@ -178,6 +203,10 @@ function isRulesImporter(file: string, importers: readonly string[]): boolean {
 
 /** The only caller of `runner.enter` (PZ "Modules": `yields.ts` routes every yield and calls `project` first). */
 const RUNNER_ENTRY_FILE = 'app/yields.ts';
+
+/** The owners of DOM motion (engine plan §3.5 rule `waapi`; per-player R-E11, R-E18): the cue player and per-player's
+ *  value and toast motions, so every `.animate(` has one owner. Svelte's `animate:` / `in:` / `out:` are directives. */
+const WAAPI_FILES: readonly string[] = ['cues/stage/player.ts', 'ui/value-motion.ts', 'ui/toast-motion.ts'];
 
 /** Where a rule applies; everything outside is the rule's exemption. */
 function applies(rule: RuleId, file: string): boolean {
@@ -206,6 +235,8 @@ function applies(rule: RuleId, file: string): boolean {
       return isPureWorld(file);
     case 'runner-enter':
       return file !== RUNNER_ENTRY_FILE;
+    case 'waapi':
+      return !WAAPI_FILES.includes(file);
     default:
       return true;
   }
@@ -241,6 +272,8 @@ const MARKUP_RULES: ReadonlyArray<readonly [RuleId, RegExp]> = [
   ['texture-create', /\bcreateImageBitmap\b/g],
   // Name-based on purpose (cut Q5): a receiver-name heuristic is bypassed by a rename.
   ['runner-enter', /\.\s*enter\s*\(/g],
+  // A markup expression's `.animate(`; Svelte's `animate:` directive has no dot before it.
+  ['waapi', /\.\s*animate\s*\(/g],
 ];
 
 function violations(files: Readonly<Record<string, string>>): Violation[] {
@@ -579,6 +612,10 @@ function checkCall(ctx: Ctx, node: ts.CallExpression): void {
   if (m !== undefined && m.name === 'enter') {
     report(ctx, 'runner-enter', node);
   }
+  // `el.animate(`, `el?.animate(`, `el['animate'](`: any receiver, as `runner-enter`.
+  if (m !== undefined && m.name === 'animate') {
+    report(ctx, 'waapi', node);
+  }
   const arg = node.arguments[0];
   if (m !== undefined && m.name === 'createElement' && arg !== undefined && ts.isStringLiteralLike(arg)) {
     const tag = arg.text.toLowerCase();
@@ -647,11 +684,13 @@ function checkImport(ctx: Ctx, node: ts.Node): void {
     if (isStatic && lazy !== undefined && !ctx.file.startsWith(lazy)) {
       report(ctx, 'lazy-ui', node);
     }
-    // Any value reference into a chunk half, `import()` included, from outside it and its importers. The trailing
-    // slash makes a bare directory (`../mechanics/rules`, which resolves to its index.ts) match, and a sibling such as
-    // `mechanics/rulesets.ts` not.
-    for (const { dir, importers } of RULES_LAZY) {
-      if (`${target}/`.startsWith(`/src/${dir}`) && !ctx.file.startsWith(dir) && !isRulesImporter(ctx.file, importers)) {
+    // Any value reference into a chunk half, `import()` included unless the entry allows it, from outside it and its
+    // importers. The trailing slash makes a bare directory (`../mechanics/rules`, which resolves to its index.ts)
+    // match, and a sibling such as `mechanics/rulesets.ts` not.
+    const isImportCall = ts.isCallExpression(node);
+    for (const { path, importers, importCall } of RULES_LAZY) {
+      const outside = !isRulesImporter(ctx.file, [path]) && !isRulesImporter(ctx.file, importers);
+      if (inRulesLazy(target, path) && outside && !(isImportCall && importCall === 'allowed')) {
         report(ctx, 'rules-lazy', node);
       }
     }
@@ -1561,6 +1600,16 @@ test('arch: boot meta stats fixtures', () => {
   }
 });
 
+test('arch: only the motion owners call animate', () => {
+  // Non-vacuous: the cue player is scanned, and its own `.animate(` calls are found once the file is judged under a
+  // name the rule does not exempt.
+  const owner = 'cues/stage/player.ts';
+  expect(Object.keys(SOURCES)).toContain(owner);
+  const probe = violations({ 'cues/stage/player.as-judged.ts': SOURCES[owner] ?? '' }).filter((v) => v.rule === 'waapi');
+  expect(probe).not.toEqual([]);
+  expect(treeViolations().filter((v) => GROUP[v.rule] === 'scene')).toEqual([]);
+}, TREE_TIMEOUT_MS);
+
 test('arch: only yields.ts enters the runner', () => {
   // Non-vacuous: yields.ts is scanned, and its own runner call is found once the file is judged under a name the rule
   // does not exempt. The `runner.enter(` prefix tells that call from the section controller's `c.enter(` in the same
@@ -1772,6 +1821,11 @@ const RED: Record<RuleId, readonly Fixture[]> = {
     ['mechanics/rules/writer.ts', 'const t = Date.now();'],
     // A type's play half no list names: the directory alone makes it pure.
     ['puzzles/play/path.ts', 'const t = Date.now();'],
+    // The cue channel's pure three: no clock, no DOM, no Svelte, no value import of the stage chunk.
+    ['cues/bus.ts', 'const t = setTimeout(flush, 0);'],
+    ['cues/visible.ts', 'const r = document.body;'],
+    ['cues/types.ts', "import type { Component } from 'svelte';"],
+    ['cues/bus.ts', "import { createCuePlayer } from './stage/player.ts';"],
   ],
   'lazy-ui': [
     ['app/yields.ts', "import CodeLock from '../puzzles/ui/CodeLock.svelte';"],
@@ -1807,12 +1861,27 @@ const RED: Record<RuleId, readonly Fixture[]> = {
     // A type's play half is its UI chunk's: the engine never loads one, statically or by `import()`.
     ['puzzles/session.ts', "import { CODE_PLAY } from './play/code.ts';"],
     ['app/yields.ts', "const m = import('../puzzles/play/order.ts');"],
+    // The cue stage is reached by `import()` only, and the cue root action only from the families.
+    ['app/yields.ts', "import { CUE_MOTIONS } from '../cues/stage/motions.ts';"],
+    ['app/yields.ts', "import { cueRoot } from '../cues/root.ts';"],
+    ['ui/App.svelte', "<script lang=\"ts\">\n  import { cueRoot } from '../cues/root.ts';\n</script>"],
+    ['cues/types.ts', "export { createCuePlayer } from './stage/player.ts';"],
+    ['app/yields.ts', "import { type CuePlan } from '../cues/stage/player.ts';"],
+    // A file entry: its extensionless specifier resolves to it, and `import()` counts for it.
+    ['app/yields.ts', "import { cueRoot } from '../cues/root';"],
+    ['app/yields.ts', "const m = import('../cues/root.ts');"],
   ],
   'runner-enter': [
     ['app/game.ts', 'runner.enter(k, p);'],
     ['app/game.ts', 'this.runner?.enter(k, p);'],
     ['explore/controller.ts', "r['enter'](k, {});"],
     ['ui/A.svelte', '<button onclick={() => runner.enter(k, p)}>x</button>'],
+  ],
+  waapi: [
+    ['ui/explore/Ribbon.svelte', 'el.animate([{opacity: 0}, {opacity: 1}], 200);'],
+    ['scene/x.ts', 'const a = el.animate(kf, 200);'],
+    ['ui/x.ts', "el['animate'](kf, 200);"],
+    ['ui/A.svelte', '<script lang="ts">\n  el.animate(kf, 200);\n</script>'],
   ],
 };
 
@@ -1906,6 +1975,9 @@ const ALLOW: ReadonlyArray<readonly [RuleId, readonly Fixture[]]> = [
       ['world/decode.ts', 'const o = { document: 1 }; const d = w.docs;'],
       ['explore/reconcile.ts', "import { reduce } from './reduce.ts';\nconst n = s.date + o.random();"],
       ['mechanics/rules/core.ts', "import { worldIndex } from '../../explore/reduce.ts';"],
+      // The pure three among themselves; the player (stage chunk) keeps its timers and observer.
+      ['cues/visible.ts', "import { FRAME_OPEN_MS } from './types.ts';"],
+      ['cues/stage/player.ts', 'const t = setTimeout(run, 120);\nconst o = new MutationObserver(watch);'],
     ],
   ],
   [
@@ -1940,6 +2012,16 @@ const ALLOW: ReadonlyArray<readonly [RuleId, readonly Fixture[]]> = [
       // Erased: a type import loads nothing; a sibling sharing the directory's prefix is not a play half.
       ['puzzles/session.ts', "import type { X } from './play/code.ts';"],
       ['puzzles/session.ts', "import { x } from './playback.ts';"],
+      // The families import the cue root action; the engine loads the stage by `import()`, or names its types.
+      ['ui/explore/ExploreView.svelte', "<script lang=\"ts\">\n  import { cueRoot } from '../../cues/root.ts';\n</script>"],
+      ['ui/puzzles/PuzzleHost.svelte', "<script lang=\"ts\">\n  import { cueRoot } from '../../cues/root.ts';\n</script>"],
+      ['puzzles/ui/CodeLock.svelte', "<script lang=\"ts\">\n  import { cueRoot } from '../../cues/root.ts';\n</script>"],
+      ['app/yields.ts', "const m = import('../cues/stage/index.ts');"],
+      ['app/yields.ts', "import type { CuePlan } from '../cues/stage/player.ts';"],
+      // The stage among itself and with the pure three; a sibling file sharing the root action's name is not it.
+      ['cues/stage/index.ts', "import { createCuePlayer } from './player.ts';"],
+      ['cues/stage/player.ts', "import { LAYER_MOTIONS } from '../visible.ts';"],
+      ['app/yields.ts', "import { x } from '../cues/root.tsx';"],
     ],
   ],
   [
@@ -1948,6 +2030,16 @@ const ALLOW: ReadonlyArray<readonly [RuleId, readonly Fixture[]]> = [
       ['app/yields.ts', 'const r = runner.enter(then, projection);'],
       ['story/runner.ts', 'class R { enter(k: string): void {} }'],
       ['app/game.ts', '// GameSession never calls runner.enter( itself: yields.ts does.\nexport const x = 1;'],
+    ],
+  ],
+  [
+    'waapi',
+    [
+      ['cues/stage/player.ts', 'const a = el.animate(kf, { duration: ms, fill });'],
+      ['ui/value-motion.ts', 'el.animate(kf, 200);'],
+      ['ui/toast-motion.ts', 'el.animate([{opacity: 0}, {opacity: 1}], 200);'],
+      // Svelte's `animate:` directive is no call.
+      ['ui/A.svelte', '<div animate:flip></div>'],
     ],
   ],
 ];

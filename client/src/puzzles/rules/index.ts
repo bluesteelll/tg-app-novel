@@ -2,6 +2,7 @@
 // shared by the world decoder, the story lint, the server content emitter and the session. Pure (X4). Every answer is
 // an array of small integers, so the server compares it with the solution without knowing the type (X5). A type's
 // play half (`puzzles/play/`, its UI chunk) and lint half (`scripts/story/puzzles/`, the build) live beside it.
+import type { ControlDecl } from '../../cues/types.ts';
 import type { PuzzleRun } from '../../explore/state.ts';
 import type { Result } from '../../story/catalog.ts';
 import { CODE_RULES } from './code.ts';
@@ -35,6 +36,11 @@ export interface PuzzleTypeData<T extends string, P> {
   workFits?(p: P, work: readonly number[]): boolean;
   /** A shown-goal device that demonstrates its goal: the parts to play, in order. Absent: no demonstration. */
   demo?(p: P): readonly number[];
+  /** The type UI's controls and triggers (engine plan §8.3); `ControlCue` derives from these, so a type lane never edits
+   *  cues/types.ts, and each control's motion is `UI_MOTIONS`' default or its `motion`, so it never edits motions.ts.
+   *  `code` / `order` declare none (their controls are `CORE_CONTROLS`). A type that declares controls keeps its
+   *  literal type (`satisfies`): annotated as `PuzzleTypeData<...>`, its names would widen out of `ControlCue`. */
+  readonly controls?: readonly ControlDecl[];
 }
 
 /** The runtime type registry's shape: production reads `PUZZLE_TYPES`, a test passes a fixture type beside them. */
