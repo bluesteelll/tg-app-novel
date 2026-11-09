@@ -1135,6 +1135,136 @@ test('arch: entry closure fixtures', () => {
   }
 });
 
+// RULINGS 158 (L1): the save service and its pending cache load with the engine chunk (app/engine.ts is their one value
+// importer); the entry reads only `summaryOf`, from saves/summary.ts. A static edge from any entry module back to
+// either file - a value import, an inline type specifier, a re-export through the split module - puts both into the
+// entry chunk again with `check` green, so the invariant is stated on the same walk as the meta split above.
+
+/** The save modules only the engine chunk loads (RULINGS 158). */
+const ENGINE_SAVE_FILES = ['saves/service.ts', 'saves/pending.ts'] as const;
+
+/** The entry's chain to each engine-only save module it holds statically: [] while the split holds. */
+function saveChains(reached: ReadonlyMap<string, string | null>): string[] {
+  return ENGINE_SAVE_FILES.filter((file) => reached.has(file)).map((file) => pathTo(reached, file));
+}
+
+test('arch: the entry closure holds no save service module', () => {
+  // Non-vacuous: the walk reaches boot and stops at its `import()` of the engine; both save modules exist and are live
+  // on the engine's side (the engine imports the service, the service its pending cache); every edge resolves; and the
+  // split's own module is on the entry, straight from boot.
+  const { reached, unresolved } = entryClosure(SOURCES);
+  expect(reached.has('app/boot.ts')).toBe(true);
+  expect(reached.has('app/engine.ts')).toBe(false);
+  expect(reached.has('app/game.ts')).toBe(false);
+  const keys = Object.keys(SOURCES);
+  for (const file of ENGINE_SAVE_FILES) {
+    expect(keys, file).toContain(file);
+  }
+  expect(staticTargets('app/engine.ts', SOURCES['app/engine.ts'] ?? '')).toContain('saves/service.ts');
+  expect(staticTargets('saves/service.ts', SOURCES['saves/service.ts'] ?? '')).toContain('saves/pending.ts');
+  expect(unresolved).toEqual([]);
+  expect(saveChains(reached)).toEqual([]);
+  expect(reached.get('saves/summary.ts')).toBe('app/boot.ts');
+}, TREE_TIMEOUT_MS);
+
+test('arch: entry closure save service fixtures', () => {
+  type Case = readonly [label: string, files: Readonly<Record<string, string>>, chains: readonly string[]];
+  const walk = (files: Readonly<Record<string, string>>): { chains: string[]; unresolved: readonly string[] } => {
+    const { reached, unresolved } = entryClosure({ 'main.ts': "import { startApp } from './app/boot.ts';", ...files });
+    return { chains: saveChains(reached), unresolved };
+  };
+  // The save modules as the split leaves them: the service value-imports its pending cache and the summary; the
+  // pending cache names the service's types only.
+  const service =
+    "import { createPendingStore } from './pending.ts';\nimport { summaryOf } from './summary.ts';\n" +
+    'export type SaveState = string;\nexport type SaveWrite = string;\nexport type ManualSlot = string;\n' +
+    'export const createSaveService = [createPendingStore, summaryOf];';
+  const saves: Readonly<Record<string, string>> = {
+    'saves/service.ts': service,
+    'saves/pending.ts':
+      "import type { SaveWrite } from './service.ts';\nexport type DeviceStore = SaveWrite;\n" +
+      'export const createPendingStore = 1;',
+    'saves/summary.ts': 'export const summaryOf = 1;',
+  };
+  /** A tree whose boot.ts is `source`, beside the save modules. */
+  const boot = (source: string): Readonly<Record<string, string>> => ({ ...saves, 'app/boot.ts': source });
+  const viaBoot = [
+    'main.ts -> app/boot.ts -> saves/service.ts',
+    'main.ts -> app/boot.ts -> saves/service.ts -> saves/pending.ts',
+  ];
+  const red: readonly Case[] = [
+    [
+      "S1 the named mutation's shape",
+      {
+        ...boot("import { summaryOf } from '../saves/service.ts';"),
+        'saves/service.ts': `${service}\nexport { summaryOf } from './summary.ts';`,
+      },
+      viaBoot,
+    ],
+    ['S2 an inline type specifier', boot("import { type SaveState } from '../saves/service.ts';"), viaBoot],
+    [
+      'S3 the pending cache alone',
+      boot("import { type DeviceStore } from '../saves/pending.ts';"),
+      ['main.ts -> app/boot.ts -> saves/pending.ts'],
+    ],
+    [
+      'S4 through the split module',
+      {
+        ...boot("import { summaryOf } from '../saves/summary.ts';"),
+        'saves/summary.ts': "export const summaryOf = 1;\nexport { createSaveService } from './service.ts';",
+      },
+      [
+        'main.ts -> app/boot.ts -> saves/summary.ts -> saves/service.ts',
+        'main.ts -> app/boot.ts -> saves/summary.ts -> saves/service.ts -> saves/pending.ts',
+      ],
+    ],
+    [
+      'S5 a component script',
+      {
+        ...saves,
+        'main.ts': "import App from './ui/App.svelte';",
+        'ui/App.svelte':
+          "<script lang=\"ts\">\n  import { createSaveService } from '../saves/service.ts';\n</script>\n" +
+          '<p>{createSaveService.length}</p>',
+      },
+      [
+        'main.ts -> ui/App.svelte -> saves/service.ts',
+        'main.ts -> ui/App.svelte -> saves/service.ts -> saves/pending.ts',
+      ],
+    ],
+  ];
+  for (const [label, files, chains] of red) {
+    expect(walk(files), label).toEqual({ chains, unresolved: [] });
+  }
+  const allow: readonly Case[] = [
+    [
+      'B1 the split: the summary statically, the service from the engine by import()',
+      {
+        ...boot("import { summaryOf } from '../saves/summary.ts';\nexport const engine = import('./engine.ts');"),
+        'app/engine.ts':
+          "import { createSaveService } from '../saves/service.ts';\nexport const e = createSaveService;",
+      },
+      [],
+    ],
+    [
+      'B2 type-only imports',
+      {
+        ...boot(
+          "import type { SaveWrite } from '../saves/service.ts';\n" +
+            "export type { ManualSlot } from '../saves/service.ts';\n" +
+            "import { createStatsReporter } from '../stats/reporter.ts';",
+        ),
+        'stats/reporter.ts':
+          "import type { DeviceStore } from '../saves/pending.ts';\nexport const createStatsReporter = 1;",
+      },
+      [],
+    ],
+  ];
+  for (const [label, files, chains] of allow) {
+    expect(walk(files), label).toEqual({ chains, unresolved: [] });
+  }
+});
+
 // LFL B1 / T4 (RULINGS 149): boot no longer imports the meta controller's chunk after auth, so its after-auth step hands
 // the gate what Home and a launch need before the chunk: boot's own stats read (Home's card buttons) and the launch's
 // start parameter (an invite imports the chunk at once). Each is one call in `startApp`'s `boot`, and no other test runs
