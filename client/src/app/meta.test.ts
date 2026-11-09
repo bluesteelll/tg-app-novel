@@ -771,6 +771,57 @@ test("meta: leaving the wallet ends the pack flow's reload hold", async () => {
   r.ctl.dispose();
 });
 
+test("meta: the sheet's leave flag does not outlive its sheet", async () => {
+  // LRB D3: the player's Back proves only its own sheet closed. Sheet 1 is left by Back and ends; sheet 2 opens with
+  // the wallet open, and a programmatic close (a root change: a session notice, the Game's error notice) under it
+  // must not read as "left", or the build-skew reload cuts the invoice sheet the player is looking at. Each step keeps
+  // the kind and the overlay count, so a rig that misses a state is told apart from a stale flag.
+  const sheets = [deferred<Result<InvoiceStatus, TgError>>(), deferred<Result<InvoiceStatus, TgError>>()];
+  let opened = 0;
+  const r = await booted({
+    openInvoice: () => {
+      const sheet = sheets[opened];
+      opened += 1;
+      return sheet === undefined ? Promise.resolve({ ok: true, value: 'cancelled' }) : sheet.promise;
+    },
+  });
+  r.server.on(ORDER_LABEL, () => okWire({ orderId: ORDER, productId: PACK, status: 'checkout' }));
+  const seen: Array<[string, string | undefined, boolean | undefined, number]> = [];
+  const step = (label: string): void => {
+    seen.push([label, r.vm.meta?.purchase.kind, r.vm.meta?.purchaseLeft, r.screens.view().overlays.length]);
+  };
+  r.ctl.openWallet();
+  await flush();
+  step('wallet open');
+  r.ctl.buyPack(PACK);
+  await flush();
+  step('sheet 1');
+  r.screens.back();
+  step('back on sheet 1');
+  sheets[0]?.resolve({ ok: true, value: 'cancelled' });
+  await flush();
+  step('sheet 1 cancelled');
+  r.ctl.openWallet();
+  await flush();
+  step('wallet reopened');
+  r.ctl.buyPack(PACK);
+  await flush();
+  step('sheet 2');
+  r.screens.setRoot({ kind: 'game' });
+  step('root changed');
+  expect(seen).toEqual([
+    ['wallet open', 'idle', false, 1],
+    ['sheet 1', 'sheet', false, 1],
+    ['back on sheet 1', 'sheet', true, 0],
+    ['sheet 1 cancelled', 'failed', false, 0],
+    ['wallet reopened', 'failed', false, 1],
+    ['sheet 2', 'sheet', false, 1],
+    ['root changed', 'sheet', false, 0],
+  ]);
+  expect(opened).toBe(2);
+  r.ctl.dispose();
+});
+
 // ---------------------------------------------------------------------------------------------------------------
 // Links, the share and the lazy chunk (F18, F28, M27)
 
