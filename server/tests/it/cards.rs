@@ -1092,8 +1092,9 @@ const SOCIAL_CALLS: [&str; 2] = ["endings_by_story", "unlocks_by_story"];
 /// Achievements grant nothing (M6, principle 1): the repository is named only by `db/achievements.rs`, by the card
 /// route in `api/cards.rs` (which leaves the table's name to `db/`) and by `api/social.rs` for the two grouped reads
 /// alone ([`SOCIAL_CALLS`]: LF2's friend profile and the share's counts, which `api/share.rs` takes from
-/// `api/social.rs`), in `server` and `server-dev` alike. Each allowed file must name each of its words, so a move
-/// cannot pass with an empty scan.
+/// `api/social.rs`), in `server` and `server-dev` alike. The erasure order in `db/mod.rs` (per-player §3.9) names the
+/// table as data only: it reads and grants nothing. Each allowed file must name each of its words, so a move cannot
+/// pass with an empty scan.
 #[test]
 fn achievements_repo_called_only_from_cards_api() {
     let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -1115,6 +1116,7 @@ fn achievements_repo_called_only_from_cards_api() {
             "src/db/achievements.rs" => &ACHIEVEMENTS_REPO_WORDS,
             "src/api/cards.rs" => &CARD_CALLS,
             "src/api/social.rs" => &SOCIAL_CALLS,
+            "src/db/mod.rs" => &["achievement_unlocks"],
             _ => &[],
         };
         for (line, word) in
@@ -1127,9 +1129,13 @@ fn achievements_repo_called_only_from_cards_api() {
             }
         }
     }
-    let presence = std::iter::once(("src/db/achievements.rs", "achievement_unlocks"))
-        .chain(CARD_CALLS.iter().map(|&call| ("src/api/cards.rs", call)))
-        .chain(SOCIAL_CALLS.iter().map(|&call| ("src/api/social.rs", call)));
+    let presence = [
+        ("src/db/achievements.rs", "achievement_unlocks"),
+        ("src/db/mod.rs", "achievement_unlocks"),
+    ]
+    .into_iter()
+    .chain(CARD_CALLS.iter().map(|&call| ("src/api/cards.rs", call)))
+    .chain(SOCIAL_CALLS.iter().map(|&call| ("src/api/social.rs", call)));
     for (file, word) in presence {
         if !seen.iter().any(|(f, w)| f == file && *w == word) {
             failures.push(format!("{file} does not name {word}"));
