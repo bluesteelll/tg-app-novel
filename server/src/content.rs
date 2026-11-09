@@ -205,6 +205,18 @@ pub enum Answer {
     },
 }
 
+impl PuzzleDef {
+    /// The local part of the id (`drawer` of `ch1.drawer`): the name a hint placeholder uses and the key of the
+    /// values route.
+    pub fn local(&self) -> &str {
+        // The `PuzzleId` grammar holds exactly one dot.
+        self.id
+            .0
+            .split_once('.')
+            .map_or(self.id.0.as_str(), |(_, local)| local)
+    }
+}
+
 /// A paid chapter's files as the build wrote them, held raw. No `Debug`: this is the sold content.
 pub struct PaidChapter {
     /// The chapter id.
@@ -321,6 +333,13 @@ impl ContentStore {
     /// Every puzzle: story order, chain order, then local id order.
     pub fn puzzles(&self) -> &[PuzzleDef] {
         &self.puzzles
+    }
+
+    /// The per-player puzzles of the chapter `ch`, in local id order.
+    pub fn chapter_per_player(&self, ch: &ChapterId) -> impl Iterator<Item = &PuzzleDef> {
+        self.puzzles
+            .iter()
+            .filter(move |p| &p.chapter == ch && matches!(p.answer, Answer::PerPlayer { .. }))
     }
 
     /// The gated asset with exactly this file name: the only asset lookup, so a request never becomes a path.

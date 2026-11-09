@@ -1,5 +1,6 @@
 //! `/api/puzzles`: answer attempts, a puzzle's status with its hint ladder, and the hint use that unlocks a tier from
-//! the balance (META-PLAN M21). Thin handlers: the id, the tier and `lang` are parsed here; the gate
+//! the balance (META-PLAN M21); and `/api/chapters/{chapterId}/values`, a chapter's per-player values (per-player
+//! §3.4). Thin handlers: the id, the tier and `lang` are parsed here; the gate
 //! ([`puzzles::entitled_puzzle`]) and the rules live in `puzzles`, the spend in `db/economy.rs`.
 //!
 //! A malformed id is 400 `bad_request` (PUZZLES-PLAN "HTTP API additions"): puzzle ids are not secret, public worlds
@@ -19,7 +20,7 @@ use crate::auth::AuthUser;
 use crate::content::Localized;
 use crate::db::economy::SpendOutcome;
 use crate::error::ApiError;
-use crate::ids::PuzzleId;
+use crate::ids::{ChapterId, PuzzleId};
 use crate::puzzles::{self, AttemptOutcome, Lang};
 
 /// The headers of a status 200: an unlocked hint's text is sold content, so no shared cache stores it and no browser
@@ -91,6 +92,24 @@ pub async fn get_status(
     let def = puzzles::entitled_puzzle(&st, user, &id).await?;
     let status = puzzles::status(&st, user, def, lang).await?;
     Ok((sold_headers(), Json(status)).into_response())
+}
+
+/// `GET /api/chapters/{chapterId}/values` (per-player §3.4): the player's value of each per-player puzzle of the
+/// chapter, by local id, issued at the first call; `{}` for a chapter without one. The checks run in a fixed order
+/// (token, id grammar, chapter known, entitlement); the 200 is `private, no-store` + `nosniff`: the values are the
+/// player's alone.
+pub async fn get_values(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    id: Result<Path<String>, PathRejection>,
+) -> Result<Response, ApiError> {
+    let Ok(Path(raw)) = id else {
+        return Err(ApiError::BadRequest("chapter id is not text"));
+    };
+    let ch =
+        ChapterId::parse(&raw).ok_or(ApiError::BadRequest("chapter id outside the grammar"))?;
+    let values = puzzles::player_values(&st, user, &ch).await?;
+    Ok((sold_headers(), Json(values)).into_response())
 }
 
 /// The hint tier of a path segment: exactly `1`, `2` or `3`, one spelling per tier (no `01`, no `+1`).

@@ -65,6 +65,7 @@ fn routes() -> Router<AppState> {
         .route("/auth", post(auth::post_auth))
         .route("/entitlements", get(entitlements::get_entitlements))
         .route("/chapters/{chapter_id}", get(content::get_chapter))
+        .route("/chapters/{chapter_id}/values", get(puzzles::get_values))
         .route("/assets/{file}", get(content::get_asset))
         .route("/saves", get(saves::list_saves))
         // A route's own limit runs inside the router-wide default and overrides it.

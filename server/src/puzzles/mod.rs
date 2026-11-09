@@ -4,15 +4,20 @@
 //! Principle 0: a solution never leaves this module and the content store, and every route reaches a puzzle only
 //! through [`entitled_puzzle`], so a paid chapter's puzzle answers 403 to a user without the chapter.
 //!
-//! [`values`] holds the per-player values' domain, draw and renderer (per-player §3.2); no route reads it yet.
+//! [`values`] holds the per-player values' domain, draw and renderer (per-player §3.2); [`player_values`] issues a
+//! chapter's values to their player (§3.4).
 
 pub mod values;
 
+use std::collections::BTreeMap;
+
 use crate::AppState;
-use crate::api::dto::{HintView, PuzzleStatus};
+use crate::api::dto::{HintView, PlayerValue, PuzzleStatus, ValuesResponse};
 use crate::content::{Answer, Localized, PuzzleDef};
+use crate::db::puzzles::ValueIssue;
 use crate::error::ApiError;
-use crate::ids::{PuzzleId, UserId};
+use crate::ids::{ChapterId, PuzzleId, UserId};
+use crate::puzzles::values::{Domain, ValueRow};
 
 /// The length of an attempt window, in seconds (X5).
 pub const ATTEMPT_WINDOW_SECS: i64 = 600;
@@ -111,6 +116,75 @@ pub async fn entitled_puzzle<'a>(
         return Err(ApiError::NotEntitled);
     }
     Ok(def)
+}
+
+/// One value of `domain` from the OS source, drawn before a transaction (per-player §3.5: one `getrandom` call of a
+/// few bytes per entry, non-blocking).
+fn drawn(domain: &Domain) -> Vec<u16> {
+    values::draw(domain, &mut values::os_rng()).expect(
+        "invariant: a parsed domain accepts >= 1/16 of tuples, so DRAW_MAX_ROUNDS rounds of the OS source end with a value",
+    )
+}
+
+/// `row` as the routes answer it (per-player §3.4): the wrong answers left under the author's cap (`None` without
+/// one), and whether the run is spent.
+fn player_value(row: &ValueRow, cap: Option<u8>) -> PlayerValue {
+    PlayerValue {
+        value: row.value.clone(),
+        run: row.run,
+        // 0 <= cap - wrong <= cap <= 9: the conversion keeps every value.
+        attempts_left: cap.map(|m| u8::try_from((i64::from(m) - row.wrong).max(0)).unwrap_or(0)),
+        spent: row.spent_at.is_some(),
+    }
+}
+
+/// `user`'s values of the per-player puzzles of chapter `ch`, by local id, each issued at the first call (per-player
+/// §3.4). The checks run in a fixed order: the chapter is known (404), then a paid chapter's entitlement (403, the
+/// rule of [`entitled_puzzle`] per chapter), so nothing of a paid chapter is read or written for a non-buyer.
+pub async fn player_values(
+    st: &AppState,
+    user: UserId,
+    ch: &ChapterId,
+) -> Result<ValuesResponse, ApiError> {
+    if st.content.story_of(ch).is_none() {
+        return Err(ApiError::NotFound);
+    }
+    // Invariant: no value of a paid chapter is issued or read for the user before this entitlement row is seen.
+    if let Some(chapter) = st.content.paid_chapter(ch)
+        && !st.repo.is_entitled(user, &chapter.product).await?
+    {
+        return Err(ApiError::NotEntitled);
+    }
+    let defs: Vec<(&PuzzleDef, &Domain, Option<u8>)> = st
+        .content
+        .chapter_per_player(ch)
+        .filter_map(|def| match &def.answer {
+            Answer::PerPlayer {
+                domain,
+                max_attempts,
+            } => Some((def, domain, *max_attempts)),
+            Answer::Static(_) => None,
+        })
+        .collect();
+    let mut values = BTreeMap::new();
+    if defs.is_empty() {
+        return Ok(ValuesResponse { values });
+    }
+    let set: Vec<ValueIssue<'_>> = defs
+        .iter()
+        .map(|&(def, domain, _)| ValueIssue {
+            puzzle: &def.key,
+            domain,
+            drawn: drawn(domain),
+        })
+        .collect();
+    let rows = st.repo.issue_values(user, &set, st.clock.now()).await?;
+    for row in &rows {
+        if let Some(&(def, _, cap)) = defs.iter().find(|(def, _, _)| def.key == row.puzzle) {
+            values.insert(def.local().to_owned(), player_value(row, cap));
+        }
+    }
+    Ok(ValuesResponse { values })
 }
 
 /// One attempt of `user` on the gated `def`: the shape check (400, not counted), then the window, then the answer.

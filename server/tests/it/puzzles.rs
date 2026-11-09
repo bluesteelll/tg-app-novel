@@ -2,10 +2,11 @@
 //! `/api/puzzles`): the schema's constraints on raw SQL, the per-(user, puzzle) attempt window, the server-checked
 //! answer, and the hint ladder whose texts are served only for unlocked tiers of a puzzle the user may open
 //! (principle 0); the per-player values table's constraints and measured row size (per-player §3.1), and the values
-//! domain, its draw and its renderer, held to the shared vectors `tests/fixtures/values/vectors.json` (§3.2).
+//! domain, its draw and its renderer, held to the shared vectors `tests/fixtures/values/vectors.json` (§3.2); content
+//! format 2's per-player puzzles (§3.3) and the values route (§3.4), on `tests/fixtures/values/content-v2.json`.
 //!
 //! Hint unlock rows are inserted by raw SQL: the server has no writer for them in this lane. `puzzle_values` rows
-//! are too: the server writes none until the values routes.
+//! are written by the values route, and by raw SQL where a case needs a row no route writes.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -2672,5 +2673,325 @@ async fn content_refuses_answer_len_over_64() {
         )),
     }
     c.close().await.unwrap();
+    report(&failures);
+}
+
+/// A started content-v2 copy (changed by `edit`) at `T0` with the `users` rows of ANN and BEN. Keep the copy while the
+/// state serves.
+async fn v2_state(edit: impl FnOnce(&mut Value)) -> (FixtureCopy, AppState, common::TestDb) {
+    let copy = v2_copy(edit).await;
+    let (started, db) = state_on(copy.path()).await;
+    match started {
+        Ok(st) => (copy, at_t0_with_users(st, &[ANN, BEN]).await, db),
+        Err(e) => panic!("the content-v2 copy: expected Ok, got {e}"),
+    }
+}
+
+/// A second per-player puzzle of content-v2's `ch1`: `safe`, `[0, 9]^4`, capped at 3, stored under its own id.
+fn with_safe(v: &mut Value) {
+    v["puzzles"]["safe"] = json!({
+        "type": "code", "answerLen": 4, "answerMax": 9,
+        "perPlayer": { "positions": [[0, 9], [0, 9], [0, 9], [0, 9]], "distinct": false, "exclude": [] },
+        "maxAttempts": 3,
+        "title": { "ru": "Сейф", "en": "The safe" },
+        "hints": []
+    });
+}
+
+/// The fixture's paid `ch2.cabinet` made per-player (format 2): `[0, 9]^4`, no cap. Its own `[0, 2]^3` holds 27
+/// values, under the floor.
+fn per_player_cabinet(v: &mut Value) {
+    v["format"] = json!(2);
+    let cabinet = &mut v["puzzles"]["cabinet"];
+    cabinet["answerLen"] = json!(4);
+    cabinet["answerMax"] = json!(9);
+    cabinet.as_object_mut().unwrap().remove("solution");
+    cabinet["perPlayer"] = json!({
+        "positions": [[0, 9], [0, 9], [0, 9], [0, 9]], "distinct": false, "exclude": []
+    });
+    cabinet["maxAttempts"] = Value::Null;
+}
+
+/// `GET /api/chapters/{ch}/values` as `user`.
+async fn get_values(st: &AppState, user: i64, ch: &str) -> common::Reply {
+    get(st, Some(user), &format!("/api/chapters/{ch}/values")).await
+}
+
+/// A `puzzle_values` row read back raw: (puzzle_id, run, wrong, issued_at, spent_at, domain, value).
+type StoredValue = (String, i64, i64, i64, Option<i64>, String, Vec<i64>);
+
+/// `user`'s `puzzle_values` rows, in key order.
+async fn stored_values(st: &AppState, user: i64) -> Vec<StoredValue> {
+    let mut c = common::raw_db(st).await;
+    let rows = sqlx::query_as(
+        "SELECT puzzle_id, run, wrong, issued_at, spent_at, domain, value FROM puzzle_values \
+         WHERE user_id = $1 ORDER BY puzzle_id",
+    )
+    .bind(user)
+    .fetch_all(&mut c)
+    .await
+    .unwrap();
+    c.close().await.unwrap();
+    rows
+}
+
+/// The mismatch of `reply` against `status` with a body equal to `want` as JSON (the server's field order is not
+/// `json!`'s).
+fn expect_json(case: &str, reply: &common::Reply, status: u16, want: &Value) -> Option<String> {
+    let got: Value = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
+    (reply.status.as_u16() != status || &got != want).then(|| {
+        format!(
+            "{case}: expected {status} {want}, got {} {:?}",
+            reply.status.as_u16(),
+            body_text(reply)
+        )
+    })
+}
+
+/// `v` lies in content-v2's drawer domain: four entries of `[0, 9]`, not `[0, 0, 0, 0]`.
+fn in_drawer_domain(v: &[i64]) -> bool {
+    v.len() == 4 && v.iter().all(|x| (0..=9).contains(x)) && v != [0, 0, 0, 0]
+}
+
+/// A live, uncapped run-1 value as the routes answer it.
+fn live_value(value: &[i64]) -> Value {
+    json!({ "value": value, "run": 1, "attemptsLeft": null, "spent": false })
+}
+
+/// The values route issues a player's value once (per-player §3.4): the first call draws and stores it (run 1, in the
+/// domain, under the content's hash), a second call answers the same row unchanged, and another player gets a row of
+/// their own.
+#[tokio::test]
+async fn values_issued_once_per_user() {
+    let (_copy, st, _db) = v2_state(|_| {}).await;
+    let mut failures = Vec::new();
+    let first = get_values(&st, ANN, "ch1").await;
+    let rows = stored_values(&st, ANN).await;
+    let issued = match rows.as_slice() {
+        [(key, 1, 0, T0, None, domain, value)]
+            if key == "ch1.desk_drawer" && domain == DOMAIN_HASH && in_drawer_domain(value) =>
+        {
+            value.clone()
+        }
+        other => {
+            failures.push(format!(
+                "ANN's rows after the first call: expected one run-1 row in the drawer's domain, got {other:?}"
+            ));
+            Vec::new()
+        }
+    };
+    let want = json!({ "values": { "drawer": live_value(&issued) } });
+    failures.extend(expect_json("ANN's first call", &first, 200, &want));
+    let again = get_values(&st, ANN, "ch1").await;
+    failures.extend(expect_json("ANN's second call", &again, 200, &want));
+    let after = stored_values(&st, ANN).await;
+    if after != rows {
+        failures.push(format!(
+            "ANN's rows after the second call: expected unchanged {rows:?}, got {after:?}"
+        ));
+    }
+    let ben = get_values(&st, BEN, "ch1").await;
+    match stored_values(&st, BEN).await.as_slice() {
+        [(key, 1, 0, T0, None, _, value)]
+            if key == "ch1.desk_drawer" && in_drawer_domain(value) =>
+        {
+            let want = json!({ "values": { "drawer": live_value(value) } });
+            failures.extend(expect_json("BEN's call", &ben, 200, &want));
+        }
+        other => failures.push(format!(
+            "BEN's rows: expected one run-1 row of his own, got {other:?}"
+        )),
+    }
+    report(&failures);
+}
+
+/// Sixteen first calls at once issue one row (the primary key arbitrates, never a check-then-insert): every body
+/// holds the stored value.
+#[tokio::test]
+async fn values_issue_concurrent_one_row() {
+    let (_copy, st, _db) = v2_state(|_| {}).await;
+    let mut tasks = JoinSet::new();
+    for _ in 0..16 {
+        let st = st.clone();
+        tasks.spawn(async move { get_values(&st, ANN, "ch1").await });
+    }
+    let mut replies = Vec::new();
+    while let Some(joined) = tasks.join_next().await {
+        replies.push(joined.unwrap());
+    }
+    let mut failures = Vec::new();
+    match stored_values(&st, ANN).await.as_slice() {
+        [(key, 1, 0, T0, None, _, value)] if key == "ch1.desk_drawer" => {
+            let want = json!({ "values": { "drawer": live_value(value) } });
+            for (i, reply) in replies.iter().enumerate() {
+                failures.extend(expect_json(&format!("call {i}"), reply, 200, &want));
+            }
+        }
+        other => failures.push(format!("ANN's rows: expected exactly one, got {other:?}")),
+    }
+    report(&failures);
+}
+
+/// Two tabs issue a chapter's two per-player values at once, 30 times over for a fresh player each: both statements
+/// take the rows in key order, so neither waits crosswise (no 40P01 and no 500), and each player ends with both rows.
+#[tokio::test]
+async fn values_issue_two_tabs_no_deadlock() {
+    let (_copy, st, _db) = v2_state(with_safe).await;
+    let mut failures = Vec::new();
+    for round in 0..30 {
+        let user = 3000 + round;
+        st.repo
+            .upsert_user(UserId(user), "Ann", None, T0)
+            .await
+            .unwrap();
+        let mut tasks = JoinSet::new();
+        for _ in 0..2 {
+            let st = st.clone();
+            tasks.spawn(async move { get_values(&st, user, "ch1").await });
+        }
+        while let Some(joined) = tasks.join_next().await {
+            let reply = joined.unwrap();
+            if reply.status.as_u16() != 200 {
+                failures.push(format!(
+                    "round {round}: expected 200, got {} {:?}",
+                    reply.status.as_u16(),
+                    body_text(&reply)
+                ));
+            }
+        }
+        let keys: Vec<String> = stored_values(&st, user)
+            .await
+            .into_iter()
+            .map(|row| row.0)
+            .collect();
+        if keys != ["ch1.desk_drawer", "ch1.safe"] {
+            failures.push(format!(
+                "round {round}: expected the rows ch1.desk_drawer and ch1.safe, got {keys:?}"
+            ));
+        }
+    }
+    report(&failures);
+}
+
+/// A paid chapter's values answer 403 to a player without the chapter, before any row is written (principle 0); with
+/// the entitlement, 200 and the row.
+#[tokio::test]
+async fn values_paid_chapter_403_without_entitlement() {
+    let copy = FixtureCopy::new();
+    copy.edit_json("puzzles/ch2.json", per_player_cabinet).await;
+    let (started, _db) = state_on(copy.path()).await;
+    let st = match started {
+        Ok(st) => at_t0_with_users(st, &[ANN]).await,
+        Err(e) => panic!("the per-player cabinet: expected Ok, got {e}"),
+    };
+    let mut failures = Vec::new();
+    let reply = get_values(&st, ANN, "ch2").await;
+    failures.extend(expect_error(
+        "ANN without chapter:ch2",
+        &reply,
+        403,
+        "not_entitled",
+    ));
+    let rows = stored_values(&st, ANN).await;
+    if !rows.is_empty() {
+        failures.push(format!(
+            "ANN without chapter:ch2: expected no row, got {rows:?}"
+        ));
+    }
+    own(&st, ANN, "chapter:ch2").await;
+    let reply = get_values(&st, ANN, "ch2").await;
+    match stored_values(&st, ANN).await.as_slice() {
+        [(key, 1, 0, T0, None, _, value)] if key == "ch2.cabinet" => {
+            let want = json!({ "values": { "cabinet": live_value(value) } });
+            failures.extend(expect_json("ANN with chapter:ch2", &reply, 200, &want));
+        }
+        other => failures.push(format!(
+            "ANN with chapter:ch2: expected one row of ch2.cabinet, got {other:?}"
+        )),
+    }
+    report(&failures);
+}
+
+/// The values 200 is `private, no-store` + `nosniff` (a player's values are theirs alone); a malformed chapter id is
+/// 400, an unknown one 404, a paid one without the chapter 403, each with the router's `no-store`.
+#[tokio::test]
+async fn values_private_no_store() {
+    let (_copy, st, _db) = v2_state(|_| {}).await;
+    let mut failures = Vec::new();
+    let reply = get_values(&st, ANN, "ch1").await;
+    let got = (
+        reply.status.as_u16(),
+        header(&reply, CACHE_CONTROL),
+        header(&reply, X_CONTENT_TYPE_OPTIONS),
+    );
+    if got != (200, Some("private, no-store"), Some("nosniff")) {
+        failures.push(format!(
+            "values 200: expected (200, private, no-store, nosniff), got {got:?}"
+        ));
+    }
+    for (ch, status, code) in [
+        ("Ch1", 400, "bad_request"),
+        ("ch1.drawer", 400, "bad_request"),
+        ("ch9", 404, "not_found"),
+        ("ch2", 403, "not_entitled"),
+    ] {
+        let reply = get_values(&st, ANN, ch).await;
+        failures.extend(expect_error(ch, &reply, status, code));
+        let cache = header(&reply, CACHE_CONTROL);
+        if cache != Some("no-store") {
+            failures.push(format!("{ch}: expected no-store, got {cache:?}"));
+        }
+    }
+    report(&failures);
+}
+
+/// A chapter without per-player puzzles answers an empty set and writes nothing.
+#[tokio::test]
+async fn values_empty_for_a_chapter_without_per_player() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    let mut failures = Vec::new();
+    let reply = get_values(&st, ANN, "ch1").await;
+    failures.extend(expect_reply(
+        "the committed ch1",
+        &reply,
+        200,
+        r#"{"values":{}}"#,
+    ));
+    let rows = stored_values(&st, ANN).await;
+    if !rows.is_empty() {
+        failures.push(format!("the committed ch1: expected no row, got {rows:?}"));
+    }
+    report(&failures);
+}
+
+/// A value is stored under the puzzle's storage key and answered under its local id (per-player §3.8): content-v2's
+/// drawer is keyed `ch1.desk_drawer`.
+#[tokio::test]
+async fn values_row_follows_the_key() {
+    let (_copy, st, _db) = v2_state(|_| {}).await;
+    let mut failures = Vec::new();
+    let reply = get_values(&st, ANN, "ch1").await;
+    let body: Value = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
+    let locals: Vec<&str> = body["values"]
+        .as_object()
+        .map(|values| values.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    if (reply.status.as_u16(), locals.as_slice()) != (200, ["drawer"].as_slice()) {
+        failures.push(format!(
+            "the body: expected 200 with the key drawer, got {} {:?}",
+            reply.status.as_u16(),
+            body_text(&reply)
+        ));
+    }
+    let keys: Vec<String> = stored_values(&st, ANN)
+        .await
+        .into_iter()
+        .map(|row| row.0)
+        .collect();
+    if keys != ["ch1.desk_drawer"] {
+        failures.push(format!(
+            "the rows: expected one under ch1.desk_drawer, got {keys:?}"
+        ));
+    }
     report(&failures);
 }
