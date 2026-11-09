@@ -2,6 +2,7 @@
 // shared by the world decoder, the story lint, the server content emitter and the session. Pure (X4). Every answer is
 // an array of small integers, so the server compares it with the solution without knowing the type (X5). A type's
 // play half (`puzzles/play/`, its UI chunk) and lint half (`scripts/story/puzzles/`, the build) live beside it.
+import type { PuzzleRun } from '../../explore/state.ts';
 import type { Result } from '../../story/catalog.ts';
 import { CODE_RULES } from './code.ts';
 import { ORDER_RULES } from './order.ts';
@@ -53,8 +54,48 @@ export const PUZZLE_RULES: { readonly [T in PuzzleType]: PuzzleTypeData<T, Param
   order: ORDER_RULES,
 });
 
-export function isPuzzleType(v: unknown): v is PuzzleType {
-  return v === 'code' || v === 'order';
+/** One puzzle as the runtime sees its type, built once from the type's data half: no consumer switches on type. */
+export type PuzzleInstance = {
+  readonly type: PuzzleType;
+  readonly shape: { len: number; max: number };
+  readonly check: 'commit' | 'reach';
+  readonly goal: 'secret' | 'shown';
+  readonly presentation: 'overlay' | 'view';
+  readonly wrong: 'none' | 'posted' | 'local';
+  readonly commit: 'control' | 'full';
+  initial(): readonly number[];
+  /** The answer a session starts from (the session's constructor calls it). */
+  start(run: PuzzleRun): readonly number[];
+  /** The demonstration order, or null. */
+  demo(): readonly number[] | null;
+};
+
+/** The instance of one puzzle from its type's data half: the one runtime place that builds an instance. */
+export function instanceOf(data: PuzzleTypeData<string, unknown>, params: unknown): PuzzleInstance {
+  const initial = (): readonly number[] => data.initial(params);
+  return Object.freeze({
+    // A type outside PuzzleType is a test's fixture, passed as `types` (engine plan §7.1 round 5).
+    type: data.type as PuzzleType,
+    shape: data.answerShape(params),
+    check: data.check,
+    goal: data.goal,
+    presentation: data.presentation,
+    wrong: data.wrong,
+    commit: data.commit,
+    initial,
+    // Every type starts from `initial()`: no type saves a working configuration yet (round 5 m1; GM8h adds `run.work`).
+    start: initial,
+    demo: () => data.demo?.(params) ?? null,
+  });
+}
+
+/** The instance of a decoded puzzle, its type looked up in `types`; null for a type `types` lacks (decode refused it). */
+export function puzzleInstance(
+  p: { readonly type: string; readonly params: unknown },
+  types: PuzzleTypes = PUZZLE_TYPES,
+): PuzzleInstance | null {
+  const data = types.find((t) => t.type === p.type);
+  return data === undefined ? null : instanceOf(data, p.params);
 }
 
 /** The play half of one puzzle type (`puzzles/play/<type>.ts`): loaded with the type's UI chunk only. */

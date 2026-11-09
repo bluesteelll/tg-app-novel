@@ -1,7 +1,9 @@
 import { expect, test } from 'vitest';
 
 import { PUZZLE_LINTS } from '../../../scripts/story/puzzles/index.ts';
-import type { ItemId } from '../../world/types.ts';
+import type { ChapterId, LineId, PuzzleLocalId } from '../../story/staging.ts';
+import { decodeWorldPublic, decodeWorldSource, toServer } from '../../world/decode.ts';
+import type { ItemId, SourcePuzzle } from '../../world/types.ts';
 import { CODE_PLAY } from '../play/code.ts';
 import { ORDER_PLAY } from '../play/order.ts';
 import { PUZZLE_UI } from '../registry.ts';
@@ -167,4 +169,102 @@ test('puzzles: a full-commit type is a view commit type and a demonstration show
   // A full-commit device (`ritual`'s shape) and a shown reach view (`sequence`'s) are both valid.
   const ritual = { ...COMMIT, commit: 'full', presentation: 'view', workFits: () => true } as const;
   expect(shapeProblems([COMMIT, REACH_VIEW, ritual])).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The runtime seam for fixture types (engine plan §7.1 round 5) and the build's hint renderer, through the decoder.
+
+const GATE = 'gate' as PuzzleLocalId;
+/** What the fixture type's `decodeParams` returns: its own object, so a decoded world is seen to keep it. */
+const TUMBLER_PARAMS = Object.freeze({ pins: 3 });
+/** A fixture type outside PUZZLE_TYPES: three pins, each down (0) or up (1). */
+const TUMBLER: PuzzleTypeData<'tumbler', typeof TUMBLER_PARAMS> = {
+  type: 'tumbler',
+  check: 'commit',
+  goal: 'secret',
+  presentation: 'overlay',
+  wrong: 'posted',
+  commit: 'control',
+  decodeParams: (raw) =>
+    JSON.stringify(raw) === '{"pins":3}' ? { ok: true, value: TUMBLER_PARAMS } : { ok: false, error: 'a tumbler has { "pins": 3 }' },
+  answerShape: () => ({ len: 3, max: 1 }),
+  initial: () => [1, 1, 1],
+  startShown: () => [1, 1, 1],
+};
+
+test('puzzles: a fixture type passed as types decodes in a world', () => {
+  const types: PuzzleTypes = [...PUZZLE_TYPES, TUMBLER];
+  const gate = {
+    type: 'tumbler',
+    title: { id: 'ch1.gate.0001', ru: 'Засов' },
+    prompt: { id: 'ch1.gate.0002', ru: 'Штифты' },
+    closeup: null,
+    params: { pins: 3 },
+    maxAttempts: null,
+    giveUp: false,
+  };
+  const body = { format: 1, items: {}, docs: {}, sections: {} };
+  const publicRaw = { ...body, version: '0123456789abcdef', puzzles: { gate: { ...gate, hintTiers: 0 } } };
+  const sourceRaw = { ...body, puzzles: { gate: { ...gate, solution: [0, 1, 0], hints: [] } } };
+  for (const r of [decodeWorldPublic(publicRaw, { types }), decodeWorldSource(sourceRaw, { types })]) {
+    if (!r.ok) {
+      throw new Error(`expected the fixture world to decode: ${JSON.stringify(r.error)}`);
+    }
+    expect(r.value.puzzles[GATE]?.type).toBe('tumbler');
+    expect(r.value.puzzles[GATE]?.params).toBe(TUMBLER_PARAMS);
+  }
+  // Without `types` the decoder knows PUZZLE_TYPES only, and names them.
+  const issue = { ok: false, error: [{ path: 'puzzles.gate.type', reason: 'shape', detail: '"tumbler" is not code or order' }] };
+  expect(decodeWorldPublic(publicRaw)).toEqual(issue);
+  expect(decodeWorldSource(sourceRaw)).toEqual(issue);
+});
+
+test('puzzles: toServer passes hint texts through the renderer it is given', () => {
+  const drawer = {
+    type: 'code',
+    title: { id: 'ch1.drawer.0001', ru: 'Ящик' },
+    prompt: { id: 'ch1.drawer.0002', ru: 'Код' },
+    closeup: null,
+    params: { dials: 3 },
+    maxAttempts: null,
+    giveUp: false,
+    solution: [1, 2, 3],
+    hints: [
+      { id: 'ch1.drawer.0003', ru: 'один' },
+      { id: 'ch1.drawer.0004', ru: 'два' },
+    ],
+  };
+  const src = decodeWorldSource({ format: 1, items: {}, docs: {}, sections: {}, puzzles: { drawer } });
+  if (!src.ok) {
+    throw new Error(`expected the world to decode: ${JSON.stringify(src.error)}`);
+  }
+  const en = { ['ch1.drawer.0001' as LineId]: 'Drawer', ['ch1.drawer.0003' as LineId]: 'one' }; // fixture ids
+  const chapter = 'ch1' as ChapterId;
+  const plain = toServer(src.value, en, chapter);
+  // The default renderer is the identity: the bilingual texts as they are (a missing en falls back to ru).
+  expect(plain.puzzles['drawer' as PuzzleLocalId]?.hints).toEqual([
+    { ru: 'один', en: 'one' },
+    { ru: 'два', en: 'два' },
+  ]);
+  const seen: SourcePuzzle[] = [];
+  const upper = (p: SourcePuzzle, hints: readonly { ru: string; en: string }[]): readonly { ru: string; en: string }[] => {
+    seen.push(p);
+    return hints.map((h) => ({ ru: h.ru.toUpperCase(), en: h.en }));
+  };
+  const rendered = toServer(src.value, en, chapter, upper);
+  // Only the hints change; the renderer saw the source puzzle.
+  const plainDrawer = plain.puzzles['drawer' as PuzzleLocalId];
+  expect(rendered).toEqual({
+    ...plain,
+    puzzles: {
+      drawer: {
+        ...plainDrawer,
+        hints: [
+          { ru: 'ОДИН', en: 'one' },
+          { ru: 'ДВА', en: 'два' },
+        ],
+      },
+    },
+  });
+  expect(seen).toEqual([src.value.puzzles['drawer' as PuzzleLocalId]]);
 });
