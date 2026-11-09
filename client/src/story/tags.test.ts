@@ -39,10 +39,10 @@ function reasons(r: ParsedTags): string[] {
 
 test('tags: every form from STAGING-DSL parses', () => {
   const forms: ReadonlyArray<readonly [string, unknown]> = [
-    ['bg: cafe', { kind: 'bg', bg: 'cafe', t: 'crossfade', ms: 500 }],
-    ['bg:cafe', { kind: 'bg', bg: 'cafe', t: 'crossfade', ms: 500 }],
-    ['bg : cafe', { kind: 'bg', bg: 'cafe', t: 'crossfade', ms: 500 }],
-    ['  bg:\tcafe  ', { kind: 'bg', bg: 'cafe', t: 'crossfade', ms: 500 }],
+    ['bg: cafe', { kind: 'bg', bg: 'cafe', t: 'cut', ms: 500 }],
+    ['bg:cafe', { kind: 'bg', bg: 'cafe', t: 'cut', ms: 500 }],
+    ['bg : cafe', { kind: 'bg', bg: 'cafe', t: 'cut', ms: 500 }],
+    ['  bg:\tcafe  ', { kind: 'bg', bg: 'cafe', t: 'cut', ms: 500 }],
     ['bg: room t=fade ms=900', { kind: 'bg', bg: 'room', t: 'fade', ms: 900 }],
     ['bg: street ms=0 t=cut', { kind: 'bg', bg: 'street', t: 'cut', ms: 0 }],
     ['scene: cafe', { kind: 'scene', bg: 'cafe', t: 'fade', ms: 800 }],
@@ -79,6 +79,26 @@ test('tags: every form from STAGING-DSL parses', () => {
   const line = { lineId: 'ch1.cafe.k3x9', commands: [{ kind: 'sfx', sfx: 'door', vol: 100 }], errors: [] };
   expect(parse('sfx: door', 'id:ch1.cafe.k3x9')).toEqual(line);
   expect(parse('id:ch1.cafe.k3x9', 'sfx: door')).toEqual(line);
+});
+
+test('tags: bg parses with a cut by default', () => {
+  // The shots plan's cut verb (OQ6): a `bg` without `t` replaces the shot at once; `ms` keeps its default.
+  const [c] = parse('bg: cafe').commands;
+  expect(c?.kind === 'bg' ? c.t : c?.kind).toBe('cut');
+  expect(parse('bg: cafe')).toEqual({ lineId: null, commands: [{ kind: 'bg', bg: 'cafe', t: 'cut', ms: 500 }], errors: [] });
+});
+
+test('tags: bg t=crossfade takes its ms', () => {
+  expect(parse('bg: cafe t=crossfade ms=700')).toEqual({
+    lineId: null,
+    commands: [{ kind: 'bg', bg: 'cafe', t: 'crossfade', ms: 700 }],
+    errors: [],
+  });
+  expect(parse('bg: cafe t=crossfade')).toEqual({
+    lineId: null,
+    commands: [{ kind: 'bg', bg: 'cafe', t: 'crossfade', ms: 500 }],
+    errors: [],
+  });
 });
 
 test('tags: unknown kind is an error value', () => {

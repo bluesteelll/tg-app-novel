@@ -227,7 +227,7 @@ preload-visible).
 | Kind | Syntax | Consumer | Assets | Typed command `kind` |
 |---|---|---|---|---|
 | `id` | `id:<lineId>` | overlay / i18n / saves | — | (not a command: `ParsedTags.lineId`) |
-| `bg` | `bg:<bg> [t=crossfade\|fade\|cut] [ms=N]` | scene | `bg/<bg>` | `bg` |
+| `bg` | `bg:<bg> [t=cut\|crossfade\|fade] [ms=N]` | scene | `bg/<bg>` | `bg` |
 | `scene` | `scene:<bg> [t=fade\|cut] [ms=N]` | scene | `bg/<bg>` | `scene` |
 | `show` | `show:<char> <expr> [at=left\|center\|right] [t=fade\|cut] [ms=N]` | scene | `char/<char>/<expr>` | `show` |
 | `hide` | `hide:<char>\|all [t=fade\|cut] [ms=N]` | scene | — | `hide` |
@@ -255,12 +255,13 @@ The door was open. #id:ch1.room.d00r
 
 ### `bg`
 
-- **Syntax:** `bg:<bg> [t=crossfade|fade|cut] [ms=N]`
+- **Syntax:** `bg:<bg> [t=cut|crossfade|fade] [ms=N]`
 - **Arguments:** `<bg>` — a key of `bg` in `assets/catalog.json`.
-- **Options:** `t` default `crossfade`; `ms` default `500`, range 0–10000.
-  - `crossfade`: the new background fades in **over** the old one (no dip), then the old one is destroyed.
-  - `fade`: through black — black fades in (ms/2), the background is swapped, black fades out (ms/2).
+- **Options:** `t` default `cut` (the shots plan's cut verb); `ms` default `500`, range 0–10000.
   - `cut`: instant.
+  - `crossfade`: the new background fades in **over** the old one (no dip), then the old one is destroyed (today's
+    dissolve; the exact dissolve between shots is the shots plan's SH6).
+  - `fade`: through black — black fades in (ms/2), the background is swapped, black fades out (ms/2).
 - **Effect:** replaces the background; characters and CG stay.
 - **Validation:** `tag/unknown-asset`; `batch/conflict` with another `bg` or a `scene` in the same batch.
 - **Typed:** `{ kind: 'bg'; bg: BgId; t: 'crossfade' | 'fade' | 'cut'; ms: number }`

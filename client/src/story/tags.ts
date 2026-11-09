@@ -213,7 +213,7 @@ function command(tag: string, kind: CommandKind, rawArgs: string | undefined, as
     case 'bg': {
       const a = readArgs(tag, kind, rawArgs, 1, ['t', 'ms']);
       if ('reason' in a) return a;
-      const t = choice(tag, a.options, 't', ['crossfade', 'fade', 'cut'] as const, 'crossfade');
+      const t = choice(tag, a.options, 't', ['crossfade', 'fade', 'cut'] as const, 'cut');
       if (typeof t === 'object') return t;
       const ms = intOption(tag, a.options, 'ms', 500, MS_MAX);
       if (typeof ms === 'object') return ms;

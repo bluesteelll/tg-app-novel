@@ -1492,3 +1492,26 @@ test('executor: destroy leaves no anchor alive', async () => {
   expect(h.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
   expect(h.registry.stats().live).toBe(0);
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// The shots plan's SH1 kinds on today's stage: the cut verb, a face, the camera held in the snapshot.
+
+test('executor: a bg cut replaces the shot at once', async () => {
+  const h = harness();
+  await h.ex.apply([bg('cafe', 'cut')], NOW);
+  h.log.length = 0;
+  const cut = track(h.ex.apply([bg('street', 'cut')], NOW));
+  await flush();
+  // No time passed: the batch ended without a timeline, the old shot gone with its anchor.
+  expect(cut.done).toBe(true);
+  expect(h.ex.stats().activeTimelines).toBe(0);
+  expect(h.live('bg').map((x) => x.key)).toEqual(['street']);
+  expect(h.log.filter((x) => /^(anchor|create|destroy|drop):/.test(x))).toEqual([
+    'destroy:bg:cafe',
+    'drop:bg/cafe',
+    'anchor:bg:bg/street',
+    'create:bg:street',
+  ]);
+  expect(h.releasedOf('bg/cafe')).toBe(1);
+  h.ex.destroy();
+});
