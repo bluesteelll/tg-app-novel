@@ -544,6 +544,13 @@ export interface PuzzleTypeLint<P> {
   configuration: states, ms per section (quiet machine only), with and without the place quotient. Assertions are the
   design's claims: `spike p2: views at 2 per room fit the cap at ch1 density`, `spike p2: visual-only flags add no
   states`; the full mix is reported, not asserted.
+  Changed by RULINGS 171 (as of `9a83251`; docs lane `docs-errata-10`, group A): P2-a ran in GM1b (`03a00bc`). Its
+  generator follows ch1 as counted on `ef8b4dc`: 3 rooms, 11 hotspots, 2 locks, **both with a puzzle** (2 lock
+  puzzles, not the 1 above), 3 items, 2 docs (GM1b cut D11 / Q7). States (MEASURED, eight seeds, a quiet machine):
+  base 406-528; views 1,174-1,456 (`spike p2: views at 2 per room fit the cap at ch1 density` holds); flags 896-1,410;
+  kept tools 1,516-1,840; recipes 3,276-4,140; clue facts 1,516-1,840; the full mix reaches `cap` on every seed
+  (reported, not asserted), the input GM4's cut reads; the real ch1 406, with views 1,174 (x2.89, the arithmetic's
+  x3). No place quotient exists before GM5q, so P2-a has no "with the quotient" row.
 - **Responses, in order:** (1) the place quotient for views (synthesis §3.7, seen red on a gated view entry; round 4
   m6: it changes `sectionKey` in `mechanics/rules/search.ts`, outside GM5's lock, so a P2-b result past the cap is a
   STOP item at GM5's cut and the quotient is the conditional lane **GM5q**, §12); (2)

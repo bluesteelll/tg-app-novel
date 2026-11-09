@@ -1,6 +1,6 @@
 # Engine plan: the mechanics engine and the cue channel
 
-**Planned; adopted 2026-11-09 at main `3c62a86`; nothing built yet**; lane cuts re-locate every code citation on their own base.
+**Planned; adopted 2026-11-09 at main `3c62a86`; nothing built yet**; lane cuts re-locate every code citation on their own base. Changed by RULINGS 159-173 (as of `9a83251`; docs lane `docs-errata-10`, group B): built since: GM1a `mech-run-split` (`ef8b4dc`, RULINGS 165) and GM1b `mech-registry` (`03a00bc`, RULINGS 171); no engine lane runs; the next, GM1c and GM2a, start after per-player GM6s2 merges (RULINGS 170, 173); the state of every lane is the status block of [§12 Order and conflicts](12f-order-and-conflicts.md#order-and-conflicts).
 
 ## Provenance
 

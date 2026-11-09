@@ -77,6 +77,13 @@ designs hold (m9).
      `content_still_loads_format_1`, `rename_serves_rows_under_the_key`, `rollback_then_forward_keeps_unlocks`,
      `card_counts_a_renamed_puzzle_solved`. Red: `format 2, expected 1` (`content.rs:793-795`); a red that is an
      unsolved status or a second ledger row means a route still keys by the id.
+     Changed by RULINGS 163 (as of `9a83251`; docs lane `docs-errata-10`, group A), a design erratum: the lane's real
+     red (GM6k `de38af6`, `gm6k-puzzle-keys/impl.md` commit 2): on commit 1's loader a file that carries `key` is
+     refused at parse, before the format check (`PuzzleEntry` is `deny_unknown_fields`), with `not the expected JSON:
+     data error at line 22, column 11`, e.g. `content_refuses_two_puzzles_one_key`: `expected a refusal on
+     puzzles/ch2.json: puzzle ch2.cabinet: key ch1.old is also the key of ch1.drawer, got ...puzzles\ch1.json: not the
+     expected JSON: data error at line 22, column 11`; `format 2, expected 1` is the red only of a format-2 file
+     without `key`.
   3. `ERASURE_ORDER`, `NON_FK_USER_COLUMNS`, `NOT_USER_COLUMNS` and the four gates of §3.9 (W2). Order: first
      `erasure_non_fk_user_columns_are_declared` with `NON_FK_USER_COLUMNS` empty, red on **the real tree's** three
      undeclared columns, `payments.user_id`, `unrecorded_refunds.user_id`, `unrecorded_refunds.admin_id` (r3 m2; a
@@ -102,6 +109,7 @@ designs hold (m9).
   `server/src/puzzles/mod.rs` (`pub mod values`, the constant), `server/src/db/mod.rs` (`ERASURE_ORDER` +=
   `puzzle_values`), `server/tests/it/puzzles.rs`, `server/tests/it/schema.rs`, `server/tests/fixtures/values/vectors.json`
   (new), `docs/META-PLAN.md`, `docs/runbooks/privacy-ops.md`.
+  **Ruled since: RULINGS 163 / 164** — `docs/META-PLAN.md` left the lock as a carry for a docs lane (`docs-adopt` held it), and the lock took `server/tests/it/main.rs` (one hunk: the migration-versions pin to `[1..8]`), 9 files.
 - **Commits (4):**
   1. migration + its erasure clause: `schema_puzzle_values_pk`, `schema_puzzle_values_checks` (each CHECK by
      `(SQLSTATE, constraint)`), `values_row_size_measured` (R12). Red: `relation "puzzle_values" does not exist`; with
@@ -140,6 +148,7 @@ designs hold (m9).
   16 > ~15 on purpose: `bindings_are_fresh`, `dto_samples_are_fresh` and `decode: rust dto samples decode` tie
   `dto.rs` to the four client api files byte for byte, so the contract moves as one unit; the server-only half is
   GM6s1 already (m4's split taken).
+  **Ruled since: RULINGS 170** — the lock grew to 22 with five compile-forced files, static values only: `server/tests/it/content.rs` (it reads `PuzzleDef.solution`), `server/dev/src/simulate.rs` (an `ApiErrorBody` literal), `client/src/app/game.test.ts`, `client/src/app/yields.test.ts` and `client/src/puzzles/session.test.ts` (`AttemptResponse` / `PuzzleStatus` literals).
 - **Commits (7), the DTO change in exactly one (W3):**
   1. content format 2 per-player: `content_loads_format_2_per_player_puzzle` (the content-v2 fixture),
      `content_refuses_per_player_below_floor`, `content_refuses_hint_placeholder_of_another_puzzle`,

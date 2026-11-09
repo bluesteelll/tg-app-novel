@@ -5,19 +5,23 @@
    Recommendation: launch it right after GM2a merges, and forward §12 R-A1-R-A6, R-A9 and R-A10 to `design-shots`
    (RULINGS 132) before its first scene lane is cut. **Reconcile P2:** the shots design answered them (I-4, I-8, I-9;
    §12.1 statuses); GM6a goes before SH1 (so before SH4) and builds `AnchorRef` (`anchor > depth > motion > content`).
+   **Ruled: RULINGS 172** — GM6a after GM2a, as the one order states ([engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts)).
 2. **Story commits inside GM6c4 and GM6d2** (ch1 drawer mark, clue and hints; the view label) by the
    `narrative-designer` role, so the e2e exercises real content; GM6c4's story edit and its e2e-helper edit share one
    commit, so `e2e full` is never red at a commit boundary. Recommendation: yes, with the light story workflow (one
    writer pass, one mechanical verifier); OQ1 / OQ7 defaults until the owner answers.
+   **Ruled: RULINGS 172** — accepted (the light story workflow); OQ1 / OQ7 defaults until the owner answers OPEN-QUESTIONS Q58.
 3. **server-dev for GM6c4 / GM6d2 e2e:** the prebuilt `bin/server-dev-*.exe` must be built from GM6s2's merge or later
    (values routes, format 2). Recommendation: build it at the GM6s2 merge, as for LPO / LPH; GM6k's own e2e uses a
    `server-dev` built from the lane.
+   **Ruled: RULINGS 172** — the values-route `server-dev` is built at GM6s2's merge.
 4. **Lane count and sizes:** twelve lanes (round 1: seven; round 2: eleven): GM6s split into GM6s1 (9 files) and
    GM6s2 (16 files, one contract unit: the byte pins tie `dto.rs` to the four client api files, W3); GM6c1 into GM6c1a /
    GM6c1b (13 in round 5: `lint.ts` out, `mechanics/{core,index}.ts` and `world.test.ts` in); GM6c2 into GM6c2 / GM6c3 /
    GM6c4 (store, ink text, world text: three subsystems, each <= 14 files; GM6c4 14 in round 5); GM6k at 15 (W1); GM6t
    new (5); GM6d2 15 in round 6 (`mechanics/texts.ts`, r5 W1), **14 in round 7** (`MECHANIC_TEXTS` lives in
    `mechanics/index.ts`, E-P16 (a)). Recommendation: accept; GM6s2's 16th file is its new `endpoints.test.ts`.
+   **Ruled: RULINGS 172** — accepted (the lane count and sizes).
 5. **`app/game.ts` chain:** GM2a -> GM3w -> MD2 -> MA1a -> MA1b -> GM6c2 -> GM6c3 -> GM6d1 -> GM9r, one at a time
    (`characters.md` §11.7; engine.md §12 to adopt it, R-E19). Recommendation: hold it in that order with the
    animation names replaced by `design-shots`' once ruled (RULINGS 132); the next lane syncs main first.
@@ -28,6 +32,7 @@
    Q4: no planned owner today). GM6c3 edits the first three's text rendering, `ui/typewriter.ts` and
    `ui/state.svelte.ts`; GM6t gives `Toast` its motion. Recommendation: rule the overlay half as engine.md Q4 asks,
    forward R-A6 / R-A7 to it, and run GM6c3 and GM6t before its cuts or after its merge, never beside it.
+   **Ruled: RULINGS 172** — as engine §15 item 4: the overlay motion owner is a later lane after GM3s; no design now.
 7. **engine.md text updates.** R-E15, R-E16, R-E18-R-E24 are applied or accepted in engine.md round 5; **R-E25**
    (adopted with two changes) and **R-E26** (accepted) are in engine.md round 6 (§14.2 [engine §14.2 Answers to per-player.md §12](../engine/14-interface-requests.md#142-answers-to-per-playermd-12)), and this file
    mirrors them (E-P16, §12.2). Round 7 asked **R-E27** (the figures +2.85 / 8.49; the constant `LABELS_TEXTS`;
@@ -45,6 +50,7 @@
    send all three to the engine track's reconcile round; R-E32 and R-E33 before GM3b's cut (the method's shape and
    `stateHold`'s empty-diff answer are GM3b's). **Reconcile r3:** all three answered by engine.md's reconcile r2
    (§12.1 statuses).
+   **Ruled: RULINGS 172** — closed: applied in engine.md's rounds.
 8. **The entry lever (RULINGS 127, m8).** GM6s2 (~+0.09 KB br) and GM6t (~+0.26) add entry code; the lever (moving
    `MetaEndpoints` and its decoders out of the entry, `endpoints.ts:189-193`) touches `api/endpoints.ts`,
    `api/decode.ts`, `app/boot.ts`, `app/meta.ts` and four test files (Grep `MetaEndpoints|createMetaEndpoints`), so as
@@ -80,6 +86,7 @@
     a difference is a STOP item, settled in engine.md's row. An `engine.md:N` cite inside a lane text that no round-7
     patch names is a round-5 number; the cut re-locates it (this is a cite, never an order). Apply E-P16 with this
     round **before GM6c1a's and GM6d2's cuts** (critique_perplayer_r6's orchestrator item) and forward R-E27.
+    **Ruled: RULINGS 172** — accepted as a cut-brief check.
 14. **R-E28 and GM3p's round-7 contracts before GM6c2's cut (round 8).** GM6c2 now relies on GM3p's `setLadder`, its
     busy-reply test and its state gate (E-P17), and on one attempt starter `post(o)` that GM7r / GM8h must call
     (R-E28). Recommendation: send R-E28 to the engine track before GM7r's and GM8h's cuts; GM6c2's cut checks that
@@ -91,6 +98,7 @@
     orchestrator item is met; GM6c2's cut now checks GM3p merged with `setLadder`, the state gate **and `post(o)`**
     with its pin, and GM3w with `retrying` (E-P18), else STOP. Send R-E29 to the engine track's round 9 (the figures;
     `ui/value-motion.ts` named under its RULINGS 135 (b) rule), before GM6c3's cut.
+    **Ruled: RULINGS 172** — accepted as a cut-brief check.
 15. **RULINGS 135 (a) at GM6c2's cut.** The cut re-reads `game.ts`'s world installations at its parent (Grep
     `yields\.restore\(` and `chapterChanged\(`): the design relies on exactly two `restore` sites, the paywall's (which
     `chapterLeft()` replaces) and the resumed body's (a world of `s.ch`). A third site, or a `restore` of a world that
@@ -104,12 +112,14 @@
     P3/P4:** on main `acc4e0d` the two assignments are `:891` (`enterChapter`) and `:2116` (`setLang`, guarded at
     `:2115`), the two `restore` sites `:970` (paywall) and `:989`; "every surface" now holds literally, since every
     value surface renders through yields' wrapper (r10 m2, §5.2 "One render path").
+    **Ruled: RULINGS 172** — accepted as a cut-brief check.
 16. **Predicted reds of game-level pins (critique_perplayer_r10 open question 2; RULINGS 135's "a class that recurs").**
     r7 m2, r8 m3, r9 m1 and r10 m1 each corrected a predicted red the named mutation did not produce. Recommendation
     (taken in this file from this revision): a game-level pin names its failing input as a **full-design revert**
     ("round N's `chapter()`", as M-P10d) unless the design traced the mutation through the production dependencies the
     test runs; its red is stated as "expected", and **the tester's mutation run at the lane is the oracle** for the
     exact red; a different red is a finding for the lane, not a design round. Rule it for both tracks.
+    **Ruled: RULINGS 172** — accepted (taken in this file).
 17. **L1 / L2 return (reconcile P4; RULINGS 142).** With LFL merged (`cec347c`, +265 B on the entry), the planned
     entry lanes leave **0.55 KB br**, 48 B above the return line: the condition is not met by the estimates, but a lane
     48 B over its estimate meets it. Recommendation: keep L1 / L2 shelved; every entry lane (GM3s, GM6s2, GM6t, the
@@ -122,7 +132,7 @@
     longer exists. Reconcile r3: engine.md's reconcile r2 books GM3w's entry at +0.01, so the margin reads 0.538 KB
     br, 38 B above the line (Ledger 2); the recommendation and the STOP rule are unchanged, and this revision adds no
     entry byte.
-    **Ruled since: RULINGS 158** — L1 is unshelved (RULINGS 142's return condition: 38,988 B + 510 B = 39,498 B, 502 B left against the 500 B line, inside the build's own churn) as lane `l1-entry-summary` (`summaryOf` into `saves/summary.ts`; entry -1.59, first line +0.21, CLAIM at `cdca9d4`); L2 stays shelved. The cut/build crossing rule above stands for every later entry-adding lane, read against the row after L1 merges.
+    **Ruled since: RULINGS 158** — L1 is unshelved (RULINGS 142's return condition: 38,988 B + 510 B = 39,498 B, 502 B left against the 500 B line, inside the build's own churn) as lane `l1-entry-summary` (`summaryOf` into `saves/summary.ts`; entry -1.59, first line +0.21, CLAIM at `cdca9d4`); L2 stays shelved. The cut/build crossing rule above stands for every later entry-adding lane, read against the row after L1 merges. Changed by RULINGS 159 (as of `9a83251`; docs lane `docs-errata-10`, group A): L1 merged `eec24fe`; entry 37,338 B MEASURED, 2,662 B left; first line 254,288 B MEASURED.
 21. **E-P25-E-P28 (engine.md reconcile revision 1).** Announced (`design/mechanics/engine.md` line 392 at tag `designs-adopted-2026-11-09` (history: the header's reconcile revision 1 summary) as read) but their §14.3 rows were not
     yet written when this revision closed; only E-P28's rule is visible ([engine §8.1 The cue union and the bus](../engine/08a-cue-union-and-bus.md#81-the-cue-union-and-the-bus): a new promise-returning
     host member needs a `HOST_WAITS` row), answered in §12.2. Recommendation: forward the written rows to this track's
@@ -173,3 +183,4 @@
 20. **GM6c2's lock 10 and `requests.test.ts` (reconcile P1).** GM6c2 now holds `client/src/requests.test.ts` (four
     rows, two `WaitRow`s, one `VIEW_FILES` entry). Recommendation: accept; engine.md §12 gains the row `GM3p -> ... ->
     GM6c2` (E-P23 (a) names it), and any other lane adding a row there runs by launch, never beside.
+    **Ruled: RULINGS 172** — accepted as a cut-brief check.

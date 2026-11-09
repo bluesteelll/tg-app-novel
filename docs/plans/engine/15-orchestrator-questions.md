@@ -4,12 +4,14 @@
    `loadFree` awaits it before the first line (`chapters.ts:210-216`); the en table likewise when the UI language is en.
    Recommendation: add `<ch> world` (and the en table) to the row in **GM4g** (it holds `budget.ts`), red-first on a
    chapter whose world pushes the sum over.
+   **Ruled: RULINGS 172** — accepted: GM4g adds `<ch> world` (and the en table) to the first-load row.
 2. **GM2a holds `app/game.ts`** for type references and four literals, no behaviour (§5.2). Recommendation: accept
    (RULINGS 120's one-hunk precedent, scaled to a mechanical rename) and launch GM2a before the first A(`game.ts`) lane's
    cut (round 4: rev. 3's MD2; whichever lane `design-shots` or an adopted animation design puts on `game.ts`,
    RULINGS 132); if one is cut first, GM2a waits for its merge. Reconcile r1: that lane is **SH1** (§12 "Order and
-   conflicts"); LFL and LRB have merged (LRB `3c62a86`, RULINGS 157) and L1 (RULINGS 158) comes before GM2a on `game.ts`, so GM2a starts after L1 and before
+   conflicts"); LFL and LRB have merged (LRB `3c62a86`, RULINGS 157) and L1 (RULINGS 158; merged `eec24fe`, RULINGS 159) comes before GM2a on `game.ts`, so GM2a starts after L1 and before
    SH1's cut.
+   **Ruled: RULINGS 172** — accepted (RULINGS 120's one-hunk precedent): GM2a holds `app/game.ts`.
 3. **Story commits** in GM1d, GM3b, GM4u, GM9r (one key or one demo object each; round 3 m8: GM4 holds no story file,
    GM9p has none; round 5 m2: GM3b adds one catalog prop, GM4u and GM9r their en table entries) and, round 4, **GM8d**
    (the first world of «Прилив» ch3 with one demo puzzle per new type; round 5 W1: a new choice set whose option 1
@@ -18,6 +20,7 @@
    placeholder props and one placeholder bg in `assets/catalog.json`) by the
    `narrative-designer` role, as per-player.md GM6c4 does. Recommendation: accept; GM8d's content is MVP placeholder
    (one writer pass, one mechanical verifier), and owner Q15g may move it.
+   **Ruled: RULINGS 172** — accepted: the story commits ride their lanes by the `narrative-designer` role (MVP placeholder workflow).
 4. **The overlay UI has no motion owner (m7).** RULINGS 116 and 124 plan the character half and the room half of
    `design-animation` only, and RULINGS 132 (round 4) replaces the character half with `design-shots`, which also
    covers the room half where rooms are shots; none of them names the overlay UI. The dialogue box, choices, story
@@ -27,17 +30,21 @@
    `data-cue` gate and §8.5's motion gate as its enforcement over those directories, and per-player R-A6's constraint
    (keep `ValueText` and the reveal rule) in its brief. The stage-level layer (GM3s) already sits above every layer
    those components use, so no second cue mechanism is needed.
+   **Ruled: RULINGS 172** — the overlay motion owner is a later lane after GM3s; no design now (RULINGS 132 stopped the character half).
 5. **Lane count:** 29 lanes in round 4 (+ GM8d) and the conditional GM5q (runs only if P2-b at GM5's cut shows a
    view-heavy section past the cap); each <= 15 files but GM1c and GM3 (16 each, with their reasons; round 3 corrected
    round 2's "27", round 3's own count was 28). Recommendation: one workflow run per lane; the world chain runs one lane
    at a time, with GM2a / GM3m / GM3w beside it; the small lanes (GM3w, GM4g, GM4u, GM5q, GM7r, GM8h, GM8d; 4-10 files
    each) keep their own cut and review, never merged into a neighbour.
+   **Ruled: RULINGS 172** — accepted: one workflow run per lane; the world chain one lane at a time.
 6. **A state-cap raise** stays out of these lanes; decide it only on P2-b plus a budget-Android timing of the runtime
    search (§7.6). Recommendation: no raise now.
+   **Ruled: RULINGS 172** — no state-cap raise now.
 7. **Q11's chapter-select gating is unscheduled.** OPEN-QUESTIONS Q11 (RESOLVED 2026-11-02) says "a code change follows
    (chapter select keeps a chapter locked until the previous one is finished)"; `boot.ts:528-533` still starts any
    owned chapter new. GM9r's builder keeps a required item held on that path either way (required items are injected).
    Recommendation: schedule the gating as its own small client lane; it does not block this programme.
+   **Ruled: RULINGS 172** — Q11's chapter-select gating is its own small later client lane; it does not block this programme.
 8. **Mirror the two tracks' shared-file tables before the first GM lane launches** (critique_engine_r2, orchestrator
    question). This file's §12 order table and holder table are complete for its lanes as of round 3; per-player.md §9
    still lists round-1 engine holders (E-P10). Recommendation: until per-player.md mirrors them, take each file's
@@ -56,12 +63,14 @@
    MEASURES the entry row before / after; a delta past +0.05 + 0.5 KB br is a STOP item to the orchestrator, with the
    fallback already designed (§3.5: the cue player's WAAPI motions on the layer root plus a ghost element for the outro,
    no Svelte transition), so the STOP costs a commit, not a redesign.
+   **Ruled: RULINGS 172** — accepted: GM3s's build measures the transition runtime on the entry row.
 10. **The authoring doc for module and type lint codes** (round 4, found while resolving). STAGING-DSL §11 is the table
     of `LINT_CODES` and is pinned by `dsl-doc: lint table equals lint codes` (`client/src/story/dsl-doc.test.ts:139-152`,
     86 rows); the module and type codes (§3.2 `MECHANIC_LINTS` / `PUZZLE_LINTS`) are deliberately outside it.
     Recommendation: the adoption docs lane (§3.6 step 11's docs lane, doc-writer) adds a hand table of module and
     type codes to the authoring guide with its own doc test over `MECHANIC_LINTS` / `PUZZLE_LINTS`; no lane of this
     design edits STAGING-DSL §11 or `dsl-doc.test.ts`.
+    **Ruled: RULINGS 172** — the lint-code authoring doc goes to a later docs lane.
 11. **The test world of critique_engine_r3 W2** (the critic's orchestrator question). The engineering part is decided
     here: the demo content ships in the placeholder story (GM8d, «Прилив» ch3), because the e2e builds from the real
     story (`client/package.json:17`: `npm run story && ... vite build --mode e2e`), so an e2e-only chapter would need a
@@ -126,6 +135,7 @@
     with no frame on it; a room cut back without its labels), so neither is dropped. **Recommendation: rule the programme target to 1.75 KB br** (0.04 left); it bounds this
     design's own estimate, not a gate, and the per-lane STOP rule (a lane > 0.5 KB br over its estimate stops at its
     cut) and §11.1's rows stay the enforced limits.
+    **Ruled: RULINGS 172** — the 1.5 KB br envelope stays a target; §11.1's ledger is the gate.
 13. **The recurring class of RULINGS 135** (critique_engine_r9 W1 / W2: "a motion resolved where its target does not
     exist", the third and fourth path after round 8's W1). Resolved here as RULINGS 135 (a)'s form: two rules for the
     two lifetimes found (a frame cue waits for its frame to be on screen; a `ribbon` target with no live ribbon lands at
@@ -184,6 +194,7 @@
     what that reach leaves unseen is **B3** (a promise-returning member reached only through a type argument, an index
     signature or a declaration outside `client/src`'s `.ts` files), §8.1 point 11, with no instance on `cec347c` and no
     planned one. The frame-on-screen edge (RC-W5) is a void host member, no wait. No new question for this class.
+    **Ruled: RULINGS 172** — accepted: the class invariant is recorded as recommended (a counted fallback is a defect at the cut).
 14. **Two edges of the state batch's residency and hold (round 14; the critic's questions, critique_engine_r13
     `:268-270`).**
     (a) **The revive clause (m3).** RULINGS 148 m1 reads "none, no hold"; its premise was that such a batch loads
@@ -234,7 +245,7 @@
     lanes to watch: GM3w (bound +0.04) and GM3s (0.05 estimate: a measured delta above ~0.09 crosses).
     `entryJsBr` is `client/scripts/budget.ts:109` on `cec347c`. Recommendation unchanged.
     **Adoption (main `3c62a86`, docs-adopt):** §11.1 re-based on the measured bytes: first line 265.58 / 270.0, entry 39.50 / 40.0 (0.502 left), all JS 301.84 / 305.0 (re-set by GM7p, RULINGS 158), engine closure 226.08 / 230.0.
-    **Ruled since: RULINGS 158** — L1 is unshelved (RULINGS 142's return condition: 38,988 B + 510 B = 39,498 B, 502 B left against the 500 B line, inside the build's own churn) as lane `l1-entry-summary` (`summaryOf` into `saves/summary.ts`; entry -1.59, first line +0.21, CLAIM at `cdca9d4`); L2 stays shelved. The cut/build crossing rule above stands for every later entry-adding lane, read against the row after L1 merges.
+    **Ruled since: RULINGS 158** — L1 is unshelved (RULINGS 142's return condition: 38,988 B + 510 B = 39,498 B, 502 B left against the 500 B line, inside the build's own churn) as lane `l1-entry-summary` (`summaryOf` into `saves/summary.ts`; entry -1.59, first line +0.21, CLAIM at `cdca9d4`); L2 stays shelved. The cut/build crossing rule above stands for every later entry-adding lane, read against the row after L1 merges. Changed by RULINGS 159 (as of `9a83251`; docs lane `docs-errata-10`, group A): L1 merged `eec24fe`; entry 37,338 B MEASURED, 2,662 B left; first line 254,288 B MEASURED.
 16. **All JS against its LIMIT (reconcile r1).** With LFL, the three designs' measured-base projection is **300.99 /
     305.0 KB br** (271,939 B MEASURED, `test_r2.md:69`, + 29.05 ARITHMETIC over CLAIM estimates) before EN's four
     puzzle-type chunks (GM7p, GM7g, GM8a, GM8b), each ~1.6 KB br by the measured `puzzle-type` chunk on main

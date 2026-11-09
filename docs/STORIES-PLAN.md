@@ -1124,6 +1124,14 @@ while LDB1 ran; LDB1 and LDB2 had merged before the design landed, and the merge
   - to go, of this design's lanes: none. The three adopted plans' lanes are planned (RULINGS 158), in their one
     order:
     [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts).
+- **As of `9a83251`** (changed by RULINGS 159-173; docs lane `docs-errata-10`, group B; SHAs from `git log --first-parent
+  main`):
+  - merged since `3c62a86`: L1 `l1-entry-summary` `eec24fe` (RULINGS 159), the docs lane `docs-adopt` as `f509b05`
+    (RULINGS 172), and from the adopted plans GM6k `fd62933`, GM1a `ef8b4dc`, GM6s1 `81a15b0` and GM1b `03a00bc` (PP
+    "Dependency order");
+  - running: GM6s2 `gm6s2-values-routes` (server; lock 22, RULINGS 169, 170), beside the docs lane `docs-errata-10`;
+  - to go, of this design's lanes: none. The adopted plans' next client lanes, GM1c and GM2a, wait for GM6s2 (shared
+    test files, RULINGS 170, 173); the rest follow the one order above.
 
 **Order** (RULINGS 8 rolling, RULINGS 18 three slots; as of `66c92c4`, changed by RULINGS 22, 23: LDB1 and LDB2
 merged, so the server chain starts at L6b): server L6b → LS2 → L6c → L8a → L8b → LS3 → L9; client (two slots)
@@ -1162,6 +1170,10 @@ Changed by RULINGS 132-158 (as of `3c62a86`; docs lane `docs-adopt`, group B): L
 stopped the character half of `design-animation`; M3s ran after LBI, RULINGS 143 QO4, 146). Client L1
 `l1-entry-summary` runs (RULINGS 158). The three adopted plans' lanes are planned (RULINGS 158), in their one order:
 [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts).
+Changed by RULINGS 159-173 (as of `9a83251`; docs lane `docs-errata-10`, group B): client L1 `l1-entry-summary` has
+merged (`eec24fe`), so no lane of the plan is left. From the adopted plans, GM6k `fd62933`, GM1a `ef8b4dc`, GM6s1
+`81a15b0` and GM1b `03a00bc` have merged and GM6s2 runs (server, lock 22, RULINGS 169, 170); the next client lanes,
+GM1c and GM2a, start after GM6s2 merges (RULINGS 170, 173); the rest follow the one order above.
 
 **Collision locks added** (PP "Collision locks"): `0001` L2 → LDB1 → LS2; `0003` LS3; the serialized server files
 L6b → LS2 → L6c → L8a → L8b → LS3 → L9; `ids.rs` L6b (`StoryId` with `PuzzleId`); `lint.ts` / `dsl-doc.test.ts` /

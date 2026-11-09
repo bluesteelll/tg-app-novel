@@ -1,6 +1,9 @@
 # Plans
 
 The three designs adopted 2026-11-09 (RULINGS 152, 153, 158) as plans: planned, nothing built yet.
+Changed by RULINGS 159-173 (as of `9a83251`; docs lane `docs-errata-10`, group B): built since: engine GM1a
+(`ef8b4dc`) and GM1b (`03a00bc`), per-player GM6k (`fd62933`) and GM6s1 (`81a15b0`); per-player GM6s2 runs; no shots
+lane has started; the rest is planned, in the one order below.
 
 - [engine](engine/README.md) — the mechanics engine: module contract, world data, puzzle types, the cue union and bus, lanes GM1a-GM9r.
 - [per-player](per-player/README.md) — per-player codes and labels on the art: the server half, the values store, labels, lanes GM6a-GM6d2.

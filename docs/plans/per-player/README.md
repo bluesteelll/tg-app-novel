@@ -1,6 +1,6 @@
 # Per-player plan: per-player codes and labels on the art
 
-**Planned; adopted 2026-11-09 at main `3c62a86`; nothing built yet**; lane cuts re-locate every code citation on their own base.
+**Planned; adopted 2026-11-09 at main `3c62a86`; nothing built yet**; lane cuts re-locate every code citation on their own base. Changed by RULINGS 159-173 (as of `9a83251`; docs lane `docs-errata-10`, group B): built since: GM6k `puzzle-keys` (`fd62933`, RULINGS 163) and GM6s1 `values-domain` (`81a15b0`, RULINGS 168); GM6s2 `values-routes` runs (lock 22, RULINGS 169, 170); the rest is planned, in the one order of [engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts).
 
 ## Provenance
 
@@ -14,7 +14,7 @@
 - Labels per [labels-and-owner-values.md](labels-and-owner-values.md); the term table is [§10 Ledgers](10-budgets-and-validation.md#ledgers-reconcile-p4-rulings-143-qo10-145-149-152-shots-i-13-reconcile-r2-one-ledger-enginemd-111), the sums are [engine §11.1 The shared ledgers](../engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13) (one owner per figure).
 - The one lane order of all three plans: [engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts).
 
-Owner questions (§13): **open** — OQ1-OQ7 were never put to the owner (no OPEN-QUESTIONS row, no RULINGS line; RULINGS 154 resolves Q15a-h, the new types' half, and Q57 only); the §13 defaults are the design's defaults, not the owner's answers. They gate GM6c2 (OQ4: `i18n/values.ts`'s three strings), GM6c4 (OQ1-OQ3: ch1's per-player puzzle, its cap and its tier-3 text) and GM6d2 (OQ7: the label look); OQ5 (the compensation credit) and OQ6 (the privacy policy's wording) gate no lane. T1-T9 are told, not asked.
+Owner questions (§13): **open** — OQ1-OQ7 were never put to the owner (no OPEN-QUESTIONS row, no RULINGS line; RULINGS 154 resolves Q15a-h, the new types' half, and Q57 only); the §13 defaults are the design's defaults, not the owner's answers. Changed by RULINGS 172 (as of `9a83251`; docs lane `docs-errata-10`, group A): OQ1-OQ7 are now put to the owner as [OPEN-QUESTIONS Q58](../../OPEN-QUESTIONS.md) (main `9a83251`), with the §13 defaults; the defaults are in use until the owner answers. They gate GM6c2 (OQ4: `i18n/values.ts`'s three strings), GM6c4 (OQ1-OQ3: ch1's per-player puzzle, its cap and its tier-3 text) and GM6d2 (OQ7: the label look); OQ5 (the compensation credit) and OQ6 (the privacy policy's wording) gate no lane. T1-T9 are told, not asked.
 
 ## Keys
 

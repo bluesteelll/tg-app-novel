@@ -338,6 +338,14 @@ Changed by the engine plan (adopted 2026-11-09, RULINGS 158; planned, not built)
 (GM2a), and a story update's renames reach the saved world through `renamed` (GM2b) —
 [engine §5.2 Save format 2 (lane GM2a)](plans/engine/05-world-data-and-save-format.md#52-save-format-2-lane-gm2a),
 [engine §5.3 `renamed`, the client half (lane GM2b)](plans/engine/05-world-data-and-save-format.md#53-renamed-the-client-half-lane-gm2b).
+Changed by RULINGS 162, 165 (as of `9a83251`; docs lane `docs-errata-10`, group A): as merged (GM1a `ef8b4dc`; engine
+§3.4, R15), step 4 runs at a section's first entry, not at the load. `reconcile` runs steps 1-3 and puts every section
+into `unproved`, the current one included, so the load searches nothing and `reset` is always null
+([client/src/explore/reconcile.ts:146-167](../client/src/explore/reconcile.ts#L146)). The first entry proves the
+section: `admitSection` at `enter-section`, or `admitEvent` when the save resumes inside an event knot of the current
+section (the saved state itself is searched, its pending knot included; `no` or `cap` restarts the section and drops
+the knot), both in [client/src/mechanics/rules/search.ts](../client/src/mechanics/rules/search.ts) (`:393`, `:408`),
+the explore-ui chunk. The marks below flag each sentence that places step 4 at the load.
 - **What:**
   - `SaveBodyV1` gains `world: WorldState`, `worldVersion` and `at.yield`. L13 has not started, so the codec is born
     with them and there is no format bump.
@@ -381,7 +389,7 @@ Changed by the engine plan (adopted 2026-11-09, RULINGS 158; planned, not built)
            start with the same key, and `world/state-cap` fails any section above `RESUME_STATE_CAP`. So `'cap'`
            means a world no build checked, and the reset fails safe.
       5. **every other section** (revision 3): `unproved` becomes the set of every section of the current world
-         except the one step 4 checked. Their progress was produced by the old world, and nothing has proved it
+         except the one step 4 checked (as merged, GM1a `ef8b4dc`, RULINGS 165: every section, the current one included). Their progress was produced by the old world, and nothing has proved it
          under this one. A section left through a `leave` and entered again later, or left behind while the player
          is in another section, would otherwise come back unchecked. Each of them is proved before the player can
          act in it, at its next `enter-section`, by `admitSection(world, state, S)`:
@@ -394,7 +402,9 @@ Changed by the engine plan (adopted 2026-11-09, RULINGS 158; planned, not built)
 
          `admitSection` runs only at `enter-section S`, which comes from an explore yield with an empty
          `pendingStory`. There `section` is null (chapter start, or after a `leave`) or S itself (a resume). A
-         current section is never in `unproved`: step 4 checked it at the load, or `admitSection` at its entry. So
+         current section is never in `unproved`: step 4 checked it at the load, or `admitSection` at its entry (as merged, GM1a `ef8b4dc`, RULINGS 165:
+         a resumed current section is in `unproved` until its first entry proves it, through `admitSection` or
+         `admitEvent`). So
          the reset of step 5 never meets another current section: no path resets a section that is not current
          while a different one is.
 
@@ -422,7 +432,8 @@ Changed by the engine plan (adopted 2026-11-09, RULINGS 158; planned, not built)
          So the keys `sectionKey(S)` reads (S's hotspot keys in `taken` / `open` / `slots` / `fired`, the run of each
          puzzle attached to one of S's locks, the items and docs S gives) are written only by actions in S's rooms
          and by S's own triggers (`onEnter` of S's rooms; `then` / `onOpen` / `onFail` of S's hotspots), and at load
-         by reconcile, which checks its own result (step 4 for the current section, step 5 for the rest). A
+         by reconcile, which checks its own result (step 4 for the current section, step 5 for the rest; as merged, GM1a `ef8b4dc`, RULINGS 165:
+         reconcile writes `unproved` only, and the first entry runs the check). A
          `puzzle-ended p` is one of those actions: p opens only from a tap or insert on p's one lock, a hotspot of
          S, and the action writes p's run and that lock's `open` and `fired` keys (its `onOpen`, the hotspot's
          `then`, its `onFail`), all keys of S. Those actions and triggers run only while S is current: the current
@@ -442,7 +453,8 @@ Changed by the engine plan (adopted 2026-11-09, RULINGS 158; planned, not built)
       `lastRoom`;
     - `reduce` writes every step of play, and its steps are `successors`. The one other writer during play is
       `admitSection`, which composes `reduce` and `resetSection` at the entry of a section in `unproved`;
-    - after a version change, reconcile keeps the current section's state only on `'yes'` (step 4) and puts every
+    - after a version change, reconcile keeps the current section's state only on `'yes'` (step 4; as merged, GM1a `ef8b4dc`, RULINGS 165: the
+      current section joins `unproved` too, and its first entry keeps the state only on `'yes'`) and puts every
       other section into `unproved` (step 5). `admitSection` takes a section out of `unproved` only on `'yes'`, or
       by restarting it from its entry.
 
@@ -461,12 +473,14 @@ Changed by the engine plan (adopted 2026-11-09, RULINGS 158; planned, not built)
       50-58 ms in quiet-like runs and 130-158 ms beside LDB1's cargo, against 75 ms unthrottled (≤ 300 ms at CPU
       4×). `RESUME_STATE_CAP` stays 5,000. Re-measure on a quiet machine before LX / L13 rely on it:
       `cd client && npx vitest run scripts/story/softlock -t "just under" --reporter=verbose`.
-    - Each search runs on the main thread with no input pending. Step 4 runs behind the resume loading state. Step
+    - Each search runs on the main thread with no input pending. Step 4 runs behind the resume loading state (as merged, GM1a `ef8b4dc`, RULINGS 165: no search runs at the load; the current
+      section's search runs at its first entry, like step 5's). Step
       5 runs inside the explore yield, before the room batch starts, so no hotspot is on screen yet; it delays that
       section's door fade by at most the same 300 ms.
     - A load runs at most one search (the current section) and an entry at most one (the entered section), so no
       single point exceeds the budget, whatever the chapter's section count. After a rules update each section is
-      searched at most once per loaded save: at the load if it is current, otherwise at its first entry. It is not
+      searched at most once per loaded save: at the load if it is current, otherwise at its first entry (as merged, GM1a `ef8b4dc`, RULINGS 165:
+      at its first entry in both cases). It is not
       searched per resume.
   - **Chapter-start fallback** (K12 level 3) resets the world to empty.
   - **Exact resume at a yield** rebuilds the yield step from `at.yield`. It does not rely on inkjs re-exposing tags
@@ -998,6 +1012,10 @@ export type WorldState = {
 export const EMPTY_WORLD_STATE: WorldState;           // frozen
 
 // explore/reduce.ts — pure; the ONLY writer of WorldState during play (admitSection composes it with resetSection, X9)
+// as merged (GM1a `ef8b4dc`, RULINGS 165): reduce, actions and the reducer rules live in mechanics/rules/core.ts;
+// successors, sectionKey, resetSection, sectionEntry, inSectionReach, admitSection and admitEvent in
+// mechanics/rules/search.ts (the explore-ui chunk, kept off the engine closure by the arch rule rules-lazy); explore/reduce.ts
+// keeps RESUME_STATE_CAP, RULES_VERSION, the world index and runReduce, the run rules alone for a puzzle no lock holds
 // erratum (RULINGS 21 Q3; as merged, 38bc717): every pure function below takes WorldPublicBody, the body without
 // version (the build checker runs on toPublic(source), which has none); only reconcile takes
 // WorldPublic, because it compares w.version. WorldPublic is assignable to WorldPublicBody.
@@ -1042,6 +1060,8 @@ export const RULES_VERSION = 1;          // erratum (RULINGS 21 Q2, PE7): hand-b
 export function project(w: WorldPublicBody, s: WorldState, declared: ReadonlySet<VarName>): Record<VarName, InkScalar>;
 // explore/reconcile.ts — X9; same version → identity; otherwise normalize, then the membership guarantee for the
 // current section (step 4) and `unproved` = every other section (step 5)
+// as merged (GM1a `ef8b4dc`, RULINGS 165): normalize, then `unproved` = every section; reset is always null; step 4 runs
+// at the first entry: admitSection, or admitEvent(w, s, S) for an event knot's return (both mechanics/rules/search.ts)
 export function reconcile(w: WorldPublic, s: WorldState, knots: ReadonlySet<KnotName>, savedVersion: string | null):
   { state: WorldState; dropped: string[]; reset: SectionId | null };   // reset: the current section restarted (toast)
 export function admitSection(w: WorldPublicBody, s: WorldState, section: SectionId): { state: WorldState; effects: ExploreEffect[] };
@@ -1320,7 +1340,9 @@ impl Catalog {
 pub fn parse_product_id(s: &str) -> Option<ProductRef>;            // "chapter:ch2" | "hint:ch1.drawer:2"
 
 // puzzles/mod.rs (L6c)
-pub const ATTEMPT_WINDOW_SECS: i64 = 600;  pub const ATTEMPT_WINDOW_MAX: i64 = 20;  pub const MAX_ANSWER_LEN: usize = 16;
+pub const ATTEMPT_WINDOW_SECS: i64 = 600;  pub const ATTEMPT_WINDOW_MAX: i64 = 20;  pub const MAX_ANSWER_LEN: usize = 64;
+// Changed by RULINGS 164, 168 (as of `9a83251`; docs lane `docs-errata-10`, group A): MAX_ANSWER_LEN 16 -> 64, as merged
+// (GM6s1 `81a15b0`, server/src/puzzles/mod.rs:28); a 65-entry answer is a 400 (attempt_answer_len_65_400)
 pub enum Lang { Ru, En }
 #[derive(Debug, thiserror::Error)] pub enum AnswerError { #[error("answer length")] Length, #[error("answer value")] Range }
 pub fn check_answer(def: &PuzzleDef, answer: &[u16]) -> Result<bool, AnswerError>;
@@ -1471,7 +1493,7 @@ Common rules as in PP (bearer, JSON camelCase, `no-store`, 16 KB default body li
 | Method + path | Auth | Request | 200 response | Errors | Idempotency; caching |
 |---|---|---|---|---|---|
 | `GET /api/puzzles/{puzzleId}?lang=ru\|en` | bearer | — | `PuzzleStatus { puzzleId, solved, hints: HintTier[] }`, `HintTier { tier, productId, priceStars, owned, text: string\|null }` (`text` only when owned) | 400 `bad_request` (id or lang), 403 `not_entitled` (a paid chapter's puzzle without the chapter), 404 `not_found` | read; `private, no-store` |
-| `POST /api/puzzles/{puzzleId}/attempts` | bearer | `AttemptRequest { answer: number[] }` (≤ 16 entries, each ≤ 65535) | `AttemptResponse { correct, solved }` | 400 (shape: `answerLen` / `answerMax`), 403, 404, 429 `rate_limited` + `Retry-After` | the result is a pure function of the answer; a retry counts once more toward the window (bounded, accepted); `no-store` |
+| `POST /api/puzzles/{puzzleId}/attempts` | bearer | `AttemptRequest { answer: number[] }` (≤ 16 entries, each ≤ 65535; as merged, GM6s1 `81a15b0`, RULINGS 168: ≤ 64 entries, `MAX_ANSWER_LEN`) | `AttemptResponse { correct, solved }` | 400 (shape: `answerLen` / `answerMax`), 403, 404, 429 `rate_limited` + `Retry-After` | the result is a pure function of the answer; a retry counts once more toward the window (bounded, accepted); `no-store` |
 | `POST /api/invoices` (changed) | bearer | `CreateInvoiceRequest { productId }`: `chapter:<ch>` or `hint:<puzzleId>:<tier>` | as PP | as PP + 409 `hint_unavailable` (tier order, solved, paid chapter not owned) | as PP (reuse a `created` order < 1 h; as merged, LPH `d423cb3`, RULINGS 97 Q2: a new order per POST, bounded) |
 | `GET /api/entitlements` (changed) | bearer | — | chapter products only | as PP | read |
 | `GET /api/chapters/{id}` (changed) | bearer | — | `ChapterPayload` + `world: unknown` (the paid public world, or `null`) | as PP | as PP |
@@ -1484,6 +1506,13 @@ Changed by the per-player plan (adopted 2026-11-09, RULINGS 158; planned, not bu
 `server/content/puzzles/<ch>.json` gains format 2 (an optional `key` and an opaque `type` in GM6k, `perPlayer` and
 `maxAttempts` in GM6s2); the emitter writes the lowest format that expresses the chapter —
 [per-player §3.3 Content format 2](plans/per-player/03-server-half.md#33-content-format-2).
+Changed by RULINGS 163 (as of `9a83251`; docs lane `docs-errata-10`, group A): as merged (GM6k `fd62933`), the server
+loads format 1 or 2 (any other is refused: `format <n>, expected 1 or 2`,
+[server/src/content.rs:836-841](../server/src/content.rs#L836)); format 2 adds the optional `key`, the puzzle's
+storage key (a puzzle id; absent = the puzzle's own id; in a format-1 file it is refused, `:849-862`), and no two
+puzzles share a key (`check_keys` :809); `type` is an opaque label checked against `^[a-z][a-z0-9_]{0,31}$`
+(`is_type_label` :425), no longer the closed `code | order` set. A format-1 file still loads unchanged. `perPlayer` and
+`maxAttempts` stay GM6s2's (planned).
 
 ```jsonc
 // server/content/puzzles/<ch>.json — emitted by the story tool for EVERY chapter (free ones included)
