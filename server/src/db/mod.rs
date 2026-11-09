@@ -307,6 +307,10 @@ pub const ERASURE_ORDER: &[ErasureStep] = &[
         clauses: &[DELETE_USER_ROWS],
     },
     ErasureStep {
+        table: "puzzle_values",
+        clauses: &[DELETE_USER_ROWS],
+    },
+    ErasureStep {
         table: "puzzle_progress",
         clauses: &[DELETE_USER_ROWS],
     },

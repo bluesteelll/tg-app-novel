@@ -212,9 +212,9 @@ async fn state_reopens_migrated_database() {
         .iter()
         .map(|(version, _)| *version)
         .collect();
-    if versions != [1, 2, 3, 4, 5, 6, 7] {
+    if versions != [1, 2, 3, 4, 5, 6, 7, 8] {
         failures.push(format!(
-            "first start: expected versions [1, 2, 3, 4, 5, 6, 7], got {versions:?}"
+            "first start: expected versions [1, 2, 3, 4, 5, 6, 7, 8], got {versions:?}"
         ));
     }
     match AppState::new(common::test_config(&db)).await {

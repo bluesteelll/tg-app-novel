@@ -1,8 +1,11 @@
-//! Puzzles (`server/migrations/0002_puzzles.sql`, `db/puzzles.rs`, `puzzles/`, `/api/puzzles`): the schema's
-//! constraints on raw SQL, the per-(user, puzzle) attempt window, the server-checked answer, and the hint ladder whose
-//! texts are served only for unlocked tiers of a puzzle the user may open (principle 0).
+//! Puzzles (`server/migrations/0002_puzzles.sql`, `0008_puzzle_values.sql`, `db/puzzles.rs`, `puzzles/`,
+//! `/api/puzzles`): the schema's constraints on raw SQL, the per-(user, puzzle) attempt window, the server-checked
+//! answer, and the hint ladder whose texts are served only for unlocked tiers of a puzzle the user may open
+//! (principle 0); the per-player values table's constraints and measured row size (per-player §3.1), and the values
+//! domain, its draw and its renderer, held to the shared vectors `tests/fixtures/values/vectors.json` (§3.2).
 //!
-//! Hint unlock rows are inserted by raw SQL: the server has no writer for them in this lane.
+//! Hint unlock rows are inserted by raw SQL: the server has no writer for them in this lane. `puzzle_values` rows
+//! are too: the server writes none until the values routes.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -13,6 +16,7 @@ use axum::http::Request;
 use axum::http::header::{
     AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, HeaderName, RETRY_AFTER, X_CONTENT_TYPE_OPTIONS,
 };
+use serde::Deserialize;
 use serde_json::{Value, json};
 use server::AppState;
 use server::catalog::ResourceKind;
@@ -21,14 +25,17 @@ use server::db::POOL_MAX_CONNECTIONS;
 use server::db::economy::{Entry, Reason, credit_in_tx};
 use server::db::puzzles::AttemptRecord;
 use server::ids::{PuzzleKey, UserId};
-use server::puzzles::ATTEMPT_WINDOW_SECS;
+use server::puzzles::values::{
+    Domain, DomainError, DomainFile, DrawError, ValueRow, draw, os_rng, render,
+};
+use server::puzzles::{ATTEMPT_WINDOW_SECS, MAX_ANSWER_LEN};
 use sqlx::postgres::PgQueryResult;
 use sqlx::{Connection, PgConnection};
 use tokio::task::JoinSet;
 
 use crate::catalog::{ANN, T0, bearer, get, own, state_with_users};
 use crate::common;
-use crate::content::{FIXTURE, renamed_copy, state_on, state_on_db};
+use crate::content::{FIXTURE, FixtureCopy, read_json, renamed_copy, state_on, state_on_db};
 
 /// A second player.
 const BEN: i64 = 1002;
@@ -378,6 +385,346 @@ async fn schema_hint_unlocks_tier_range() {
     ];
     failures.extend(results.into_iter().filter_map(Result::err));
     report(&failures);
+}
+
+/// The domain hash of `[0, 9]^4` without `[0, 0, 0, 0]` (per-player §3.2's encoding, from an independent oracle).
+const DOMAIN_HASH: &str = "bd058b756eb7a107";
+
+/// A `puzzle_values` row as raw SQL writes it; [`value_row`] is a valid one for every case to change. `value` is SQL
+/// array text, cast in the statement, so a case can send what no Rust type holds (two dimensions, a NULL entry).
+struct ValueSql<'a> {
+    user: i64,
+    puzzle: &'a str,
+    run: i64,
+    wrong: i64,
+    issued_at: i64,
+    spent_at: Option<i64>,
+    domain: &'a str,
+    value: String,
+}
+
+fn value_row(user: i64, puzzle: &str) -> ValueSql<'_> {
+    ValueSql {
+        user,
+        puzzle,
+        run: 1,
+        wrong: 0,
+        issued_at: T0,
+        spent_at: None,
+        domain: DOMAIN_HASH,
+        value: "{1,8,4,7}".to_owned(),
+    }
+}
+
+async fn insert_value(c: &mut PgConnection, v: ValueSql<'_>) -> Res {
+    sqlx::query(
+        "INSERT INTO puzzle_values (user_id, run, wrong, issued_at, spent_at, puzzle_id, domain, value) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text::bigint[])",
+    )
+    .bind(v.user)
+    .bind(v.run)
+    .bind(v.wrong)
+    .bind(v.issued_at)
+    .bind(v.spent_at)
+    .bind(v.puzzle)
+    .bind(v.domain)
+    .bind(v.value)
+    .execute(&mut *c)
+    .await
+}
+
+/// `n` entries of `entry` as SQL array text.
+fn array_of(n: usize, entry: &str) -> String {
+    format!("{{{}}}", vec![entry; n].join(","))
+}
+
+/// One value per (user, puzzle): a second row for the pair is refused; the same user on another puzzle and another
+/// user on the same puzzle are not. The user must exist. `ON CONFLICT (user_id, puzzle_id) DO NOTHING`, the
+/// insert-if-absent arbiter (per-player §3.1), writes nothing over a stored value.
+#[tokio::test]
+async fn schema_puzzle_values_pk() {
+    let (_st, _db, mut c) = schema_db().await;
+    let mut failures = Vec::new();
+    let results = [
+        expect_ok(
+            "ANN ch1.drawer",
+            insert_value(&mut c, value_row(ANN, "ch1.drawer")).await,
+        ),
+        expect_err(
+            "ANN ch1.drawer again",
+            insert_value(&mut c, value_row(ANN, "ch1.drawer")).await,
+            ("23505", "puzzle_values_pkey"),
+        ),
+        expect_ok(
+            "ANN ch1.cabinet",
+            insert_value(&mut c, value_row(ANN, "ch1.cabinet")).await,
+        ),
+        expect_ok(
+            "BEN ch1.drawer",
+            insert_value(&mut c, value_row(BEN, "ch1.drawer")).await,
+        ),
+        expect_err(
+            "no such user",
+            insert_value(&mut c, value_row(999, "ch1.drawer")).await,
+            ("23503", "puzzle_values_user_fk"),
+        ),
+    ];
+    failures.extend(results.into_iter().filter_map(Result::err));
+    let arbiter = sqlx::query(
+        "INSERT INTO puzzle_values (user_id, run, wrong, issued_at, spent_at, puzzle_id, domain, value) \
+         VALUES ($1, 1, 0, $2, NULL, 'ch1.drawer', $3, '{9,9,9,9}') ON CONFLICT (user_id, puzzle_id) DO NOTHING",
+    )
+    .bind(ANN)
+    .bind(T0 + 5)
+    .bind(DOMAIN_HASH)
+    .execute(&mut c)
+    .await;
+    match arbiter {
+        Ok(done) if done.rows_affected() == 0 => {}
+        Ok(done) => failures.push(format!(
+            "arbiter on ANN ch1.drawer: expected 0 rows, got {}",
+            done.rows_affected()
+        )),
+        Err(e) => failures.push(format!(
+            "arbiter on ANN ch1.drawer: expected 0 rows, got {}",
+            describe(&e)
+        )),
+    }
+    let stored: Result<Vec<i64>, sqlx::Error> = sqlx::query_scalar(
+        "SELECT value FROM puzzle_values WHERE user_id = $1 AND puzzle_id = 'ch1.drawer'",
+    )
+    .bind(ANN)
+    .fetch_one(&mut c)
+    .await;
+    match stored {
+        Ok(value) if value == [1, 8, 4, 7] => {}
+        Ok(value) => failures.push(format!(
+            "ANN ch1.drawer after the arbiter: expected [1, 8, 4, 7], got {value:?}"
+        )),
+        Err(e) => failures.push(format!(
+            "ANN ch1.drawer after the arbiter: expected [1, 8, 4, 7], got {}",
+            describe(&e)
+        )),
+    }
+    report(&failures);
+}
+
+/// Each CHECK of `puzzle_values` (per-player §3.1) refuses its own violation, by (23514, constraint), and allows the
+/// boundary beside it: the `PuzzleId` grammar; a 16-hex lower-case domain hash; a one-dimensional value of 1..64
+/// entries with no NULL, each a u16; a run from 1; wrong answers from 0; a spend never before the draw; a real draw
+/// time. The length bound is built from `MAX_ANSWER_LEN`: the CHECK's 64 and the cap are one bound, so moving
+/// either alone reds a case here.
+#[tokio::test]
+async fn schema_puzzle_values_checks() {
+    let (_st, _db, mut c) = schema_db().await;
+    let mut failures = Vec::new();
+    let refused = [
+        (
+            "id Ch1.drawer",
+            value_row(ANN, "Ch1.drawer"),
+            "puzzle_values_id_shape",
+        ),
+        (
+            "id ch1.a-b",
+            value_row(ANN, "ch1.a-b"),
+            "puzzle_values_id_shape",
+        ),
+        (
+            "domain in upper-case hex",
+            ValueSql {
+                domain: "BD058B756EB7A107",
+                ..value_row(ANN, "ch1.d_upper")
+            },
+            "puzzle_values_domain_shape",
+        ),
+        (
+            "domain of 15 hex",
+            ValueSql {
+                domain: "bd058b756eb7a10",
+                ..value_row(ANN, "ch1.d_short")
+            },
+            "puzzle_values_domain_shape",
+        ),
+        (
+            "domain of 17 hex",
+            ValueSql {
+                domain: "bd058b756eb7a1070",
+                ..value_row(ANN, "ch1.d_long")
+            },
+            "puzzle_values_domain_shape",
+        ),
+        (
+            "value {}",
+            ValueSql {
+                value: "{}".to_owned(),
+                ..value_row(ANN, "ch1.v_empty")
+            },
+            "puzzle_values_value_shape",
+        ),
+        (
+            "value of MAX_ANSWER_LEN + 1 entries",
+            ValueSql {
+                value: array_of(MAX_ANSWER_LEN + 1, "1"),
+                ..value_row(ANN, "ch1.v_long")
+            },
+            "puzzle_values_value_shape",
+        ),
+        (
+            "value in two dimensions",
+            ValueSql {
+                value: "{{1,2},{3,4}}".to_owned(),
+                ..value_row(ANN, "ch1.v_grid")
+            },
+            "puzzle_values_value_shape",
+        ),
+        (
+            "value with a NULL entry",
+            ValueSql {
+                value: "{1,NULL,3}".to_owned(),
+                ..value_row(ANN, "ch1.v_null")
+            },
+            "puzzle_values_value_shape",
+        ),
+        (
+            "entry 65536",
+            ValueSql {
+                value: "{1,65536,4,7}".to_owned(),
+                ..value_row(ANN, "ch1.v_big")
+            },
+            "puzzle_values_value_range",
+        ),
+        (
+            "entry -1",
+            ValueSql {
+                value: "{1,-1,4,7}".to_owned(),
+                ..value_row(ANN, "ch1.v_negative")
+            },
+            "puzzle_values_value_range",
+        ),
+        (
+            "run 0",
+            ValueSql {
+                run: 0,
+                ..value_row(ANN, "ch1.run_zero")
+            },
+            "puzzle_values_run_positive",
+        ),
+        (
+            "wrong -1",
+            ValueSql {
+                wrong: -1,
+                ..value_row(ANN, "ch1.wrong_negative")
+            },
+            "puzzle_values_wrong_nonneg",
+        ),
+        (
+            "spent_at = issued_at - 1",
+            ValueSql {
+                spent_at: Some(T0 - 1),
+                ..value_row(ANN, "ch1.spent_early")
+            },
+            "puzzle_values_spent_after",
+        ),
+        (
+            "issued_at 0",
+            ValueSql {
+                issued_at: 0,
+                ..value_row(ANN, "ch1.issued_zero")
+            },
+            "puzzle_values_time_positive",
+        ),
+    ];
+    for (case, row, constraint) in refused {
+        failures
+            .extend(expect_err(case, insert_value(&mut c, row).await, ("23514", constraint)).err());
+    }
+    let allowed = [
+        (
+            "value of MAX_ANSWER_LEN entries",
+            ValueSql {
+                value: array_of(MAX_ANSWER_LEN, "1"),
+                ..value_row(ANN, "ch1.c_long")
+            },
+        ),
+        (
+            "entries 0 and 65535",
+            ValueSql {
+                value: "{0,65535}".to_owned(),
+                ..value_row(ANN, "ch1.c_range")
+            },
+        ),
+        (
+            "run 1, wrong 0",
+            ValueSql {
+                run: 1,
+                wrong: 0,
+                ..value_row(ANN, "ch1.c_counts")
+            },
+        ),
+        (
+            "spent_at = issued_at",
+            ValueSql {
+                spent_at: Some(T0),
+                ..value_row(ANN, "ch1.c_spent")
+            },
+        ),
+        (
+            "issued_at 1",
+            ValueSql {
+                issued_at: 1,
+                ..value_row(ANN, "ch1.c_issued")
+            },
+        ),
+    ];
+    for (case, row) in allowed {
+        failures.extend(expect_ok(case, insert_value(&mut c, row).await).err());
+    }
+    report(&failures);
+}
+
+/// R12, measured (per-player §3.1): 1,000 users with one four-entry value each, inserted in key order and vacuumed,
+/// take at most 256 B per row of `puzzle_values`, heap and primary key together (the arithmetic estimate is ~212 B).
+/// The figure is printed (`--nocapture`).
+#[tokio::test]
+async fn values_row_size_measured() {
+    let (st, _db) = common::test_state().await;
+    let mut c = common::raw_db(&st).await;
+    sqlx::query(
+        "INSERT INTO users (id, first_name, created_at, last_seen_at) \
+         SELECT g, 'Ann', $1, $1 FROM generate_series(1, 1000) g",
+    )
+    .bind(T0)
+    .execute(&mut c)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO puzzle_values (user_id, run, wrong, issued_at, spent_at, puzzle_id, domain, value) \
+         SELECT g, 1, 0, $1, NULL, 'ch1.drawer', $2, '{1,8,4,7}' FROM generate_series(1, 1000) g ORDER BY g",
+    )
+    .bind(T0)
+    .bind(DOMAIN_HASH)
+    .execute(&mut c)
+    .await
+    .unwrap();
+    sqlx::raw_sql("VACUUM (ANALYZE) puzzle_values")
+        .execute(&mut c)
+        .await
+        .unwrap();
+    let (heap, index): (i64, i64) = sqlx::query_as(
+        "SELECT pg_relation_size('puzzle_values'), pg_indexes_size('puzzle_values')",
+    )
+    .fetch_one(&mut c)
+    .await
+    .unwrap();
+    c.close().await.unwrap();
+    let per_row = (heap + index) / 1000;
+    println!(
+        "puzzle_values: {per_row} B per row (heap {heap} B + primary key {index} B, 1,000 four-entry rows)"
+    );
+    assert!(
+        per_row <= 256,
+        "puzzle_values: expected at most 256 B per row, got {per_row} (heap {heap} B, primary key {index} B)"
+    );
 }
 
 /// `puzzle_progress`'s counters of (user, puzzle), read on a raw connection: (attempts, window_attempts,
@@ -751,7 +1098,7 @@ async fn attempt_wrong_returns_false() {
 }
 
 /// A malformed id, a body that is not an answer, and an answer outside the puzzle's shape (`answerLen` 4,
-/// `answerMax` 9, at most 16 entries) are each 400 `bad_request`, and none is counted.
+/// `answerMax` 9, at most 64 entries) are each 400 `bad_request`, and none is counted.
 #[tokio::test]
 async fn attempt_wrong_shape_400() {
     let (st, _db) = state_with_users(&[ANN]).await;
@@ -799,6 +1146,74 @@ async fn attempt_wrong_shape_400() {
     let row = progress_row(&st, ANN, "ch1.drawer").await.map(|r| r.0);
     if row != Some(1) {
         failures.push(format!("control: expected attempts 1, got {row:?}"));
+    }
+    report(&failures);
+}
+
+/// A copy of the fixture whose `ch1.drawer` takes 64 entries (`answerLen` 64, `answerMax` 9; the solution is
+/// `[1, 8, 4, 7]` 16 times), and that solution.
+async fn long_drawer_copy() -> (FixtureCopy, Vec<u16>) {
+    let solution = [1u16, 8, 4, 7].repeat(16);
+    let copy = FixtureCopy::new();
+    copy.edit_json("puzzles/ch1.json", |v| {
+        let drawer = &mut v["puzzles"]["drawer"];
+        drawer["answerLen"] = json!(64);
+        drawer["solution"] = json!(solution);
+    })
+    .await;
+    (copy, solution)
+}
+
+/// `{"answer": answer}` as a request body.
+fn answer_body(answer: &[u16]) -> String {
+    json!({ "answer": answer }).to_string()
+}
+
+/// `st` on `copy` at `T0` with ANN's `users` row.
+async fn state_with_ann_on(copy: &FixtureCopy) -> (AppState, common::TestDb) {
+    let (started, db) = state_on(copy.path()).await;
+    match started {
+        Ok(st) => (at_t0_with_users(st, &[ANN]).await, db),
+        Err(e) => panic!("the 64-entry copy: expected Ok, got {e}"),
+    }
+}
+
+/// An answer takes up to `MAX_ANSWER_LEN` = 64 entries (per-player §3.3; engine R-E12): the 64-entry solution of a
+/// 64-entry puzzle solves it.
+#[tokio::test]
+async fn attempt_answer_len_64_accepted() {
+    let (copy, solution) = long_drawer_copy().await;
+    let (st, _db) = state_with_ann_on(&copy).await;
+    let mut failures = Vec::new();
+    let reply = post_attempt(&st, ANN, "ch1.drawer", &answer_body(&solution)).await;
+    failures.extend(expect_reply(
+        "64 entries",
+        &reply,
+        200,
+        r#"{"correct":true,"solved":true}"#,
+    ));
+    let row = progress_row(&st, ANN, "ch1.drawer").await;
+    if row != Some((1, 1, T0, Some(T0))) {
+        failures.push(format!(
+            "64 entries: expected (attempts 1, window 1, start T0, solved at T0), got {row:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// One entry more than the 64-entry puzzle takes is 400 `bad_request`, and it is not counted.
+#[tokio::test]
+async fn attempt_answer_len_65_400() {
+    let (copy, solution) = long_drawer_copy().await;
+    let (st, _db) = state_with_ann_on(&copy).await;
+    let mut failures = Vec::new();
+    let mut answer = solution;
+    answer.push(1);
+    let reply = post_attempt(&st, ANN, "ch1.drawer", &answer_body(&answer)).await;
+    failures.extend(expect_error("65 entries", &reply, 400, "bad_request"));
+    let row = progress_row(&st, ANN, "ch1.drawer").await;
+    if row.is_some() {
+        failures.push(format!("65 entries: expected no row, got {row:?}"));
     }
     report(&failures);
 }
@@ -1272,6 +1687,584 @@ async fn rollback_then_forward_keeps_unlocks() {
             }
         }
         st.repo.close().await;
+    }
+    report(&failures);
+}
+
+/// A correct answer to a renamed puzzle is stored under its storage key (GM6k review M1): release N+1 serves the
+/// puzzle as `ch1.desk`, keyed `ch1.drawer`. ANN answers `ch1.desk` correctly; the solve row is `ch1.drawer`'s and
+/// none is the live id's, so every reader keyed by the storage key sees the solve: the status is solved, the card
+/// unlocks `drawer_no_hints` (its meta names `ch1.desk`), and the solved puzzle sells no hint. The hint is asked last,
+/// so a wrongly sold one cannot change the card.
+#[tokio::test]
+async fn rename_attempt_solves_under_the_key() {
+    let copy = renamed_copy().await;
+    let (started, _db) = state_on(copy.path()).await;
+    let st = match started {
+        Ok(st) => at_t0_with_users(st, &[ANN]).await,
+        Err(e) => panic!("release N+1 (the renamed copy): expected Ok, got {e}"),
+    };
+    fund(&st, ANN, 5).await;
+    let mut failures = Vec::new();
+    let reply = post_attempt(&st, ANN, "ch1.desk", SOLUTION).await;
+    failures.extend(expect_reply(
+        "ANN answers ch1.desk",
+        &reply,
+        200,
+        r#"{"correct":true,"solved":true}"#,
+    ));
+    for (key, want) in [
+        ("ch1.drawer", Some((1, 1, T0, Some(T0)))),
+        ("ch1.desk", None),
+    ] {
+        let row = progress_row(&st, ANN, key).await;
+        if row != want {
+            failures.push(format!(
+                "puzzle_progress under {key}: expected {want:?}, got {row:?}"
+            ));
+        }
+    }
+    let reply = get(&st, Some(ANN), "/api/puzzles/ch1.desk?lang=en").await;
+    failures.extend(expect_reply(
+        "ANN's status of ch1.desk",
+        &reply,
+        200,
+        &status_body("ch1.desk", true, &[None, None, None]),
+    ));
+    let req = Request::post("/api/stories/manor/card")
+        .header(AUTHORIZATION, bearer(&st, ANN))
+        .body(Body::empty())
+        .unwrap();
+    let reply = common::call(&st, req).await;
+    let card: Value = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
+    let ids: Vec<&str> = card["achievements"]
+        .as_array()
+        .map(|all| all.iter().filter_map(|a| a["id"].as_str()).collect())
+        .unwrap_or_default();
+    if (reply.status.as_u16(), ids.as_slice()) != (200, ["drawer_no_hints"].as_slice()) {
+        failures.push(format!(
+            "ANN's manor card: expected 200 with the achievements [\"drawer_no_hints\"], got {} with {ids:?}",
+            reply.status.as_u16()
+        ));
+    }
+    let hint = post_hint(&st, ANN, "ch1.desk", 1).await;
+    let want = (409, json!({ "error": "hint_unavailable" }));
+    if hint != want {
+        failures.push(format!(
+            "ANN's tier 1 of the solved ch1.desk: expected {want:?}, got {hint:?}"
+        ));
+    }
+    let keys = ledger_keys(&st, ANN).await;
+    if keys != ["fund:1001:5"] {
+        failures.push(format!(
+            "ANN's ledger: expected only the fund row, got {keys:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// The shared value vectors (per-player §3.2): the server's renderer and domain parser are held to the same file as
+/// the client's.
+const VECTORS: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/values/vectors.json"
+);
+
+/// The fewest `render` cases the vectors hold: an emptied list fails instead of passing on zero cases.
+const RENDER_CASES_MIN: usize = 9;
+
+/// The fewest `domains` cases the vectors hold.
+const DOMAIN_CASES_MIN: usize = 12;
+
+/// The vectors file; every key is required and no other is allowed, so a renamed key fails loudly.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Vectors {
+    #[serde(rename = "about")]
+    _about: String,
+    render: Vec<RenderCase>,
+    domains: Vec<DomainCase>,
+}
+
+/// A `render` case: `template` rendered for the puzzle `own` holding `value` of `answerMax` `max` is `text`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RenderCase {
+    template: String,
+    own: String,
+    value: Vec<u16>,
+    max: u16,
+    text: String,
+}
+
+/// A `domains` case: the oracle's size of `domain`, and whether it passes the entropy floor and the acceptance.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct DomainCase {
+    domain: DomainFile,
+    answer_len: usize,
+    answer_max: u16,
+    size: u64,
+    floor: bool,
+    acceptance: bool,
+}
+
+async fn vectors() -> Vectors {
+    serde_json::from_value(read_json(Path::new(VECTORS)).await).unwrap()
+}
+
+/// `[lo, hi]` at each of `n` positions.
+fn ranges(lo: u16, hi: u16, n: usize) -> Vec<(u16, u16)> {
+    vec![(lo, hi); n]
+}
+
+fn domain_file(positions: Vec<(u16, u16)>, distinct: bool, exclude: &[&[u16]]) -> DomainFile {
+    DomainFile {
+        positions,
+        distinct,
+        exclude: exclude.iter().map(|e| e.to_vec()).collect(),
+    }
+}
+
+/// A well-formed test domain: as many entries as `positions`, each at most `answer_max`.
+fn domain(
+    positions: Vec<(u16, u16)>,
+    distinct: bool,
+    exclude: &[&[u16]],
+    answer_max: u16,
+) -> Domain {
+    let len = positions.len();
+    match Domain::parse(domain_file(positions, distinct, exclude), len, answer_max) {
+        Ok(d) => d,
+        Err(e) => panic!("a test domain: expected Ok, got {e:?}"),
+    }
+}
+
+/// splitmix64 (Steele, Lea and Flood, 2014): a seeded test source, the high 32 bits of each output.
+fn splitmix(seed: u64) -> impl FnMut() -> u32 {
+    let mut state = seed;
+    move || {
+        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        u32::try_from((z ^ (z >> 31)) >> 32).unwrap()
+    }
+}
+
+/// A source that yields `seq` in order, then 0.
+fn scripted(seq: &[u32]) -> impl FnMut() -> u32 + '_ {
+    let mut next = seq.iter().copied();
+    move || next.next().unwrap_or(0)
+}
+
+/// `draw` is uniform over a small domain (per-player §3.2): `[0, 9]^3` (1,000 cells), 10^5 draws from a seeded source,
+/// each in the domain, and Pearson's chi-square over the cells at most 1,250 (999 degrees of freedom: mean 999, sd
+/// ~44.7). A position that never draws its top value leaves 271 cells empty (~37,000).
+#[test]
+fn values_draw_is_uniform_over_a_small_domain() {
+    let d = domain(ranges(0, 9, 3), false, &[], 9);
+    let mut rng = splitmix(0x5EED_6D51);
+    let mut cells = vec![0u32; 1000];
+    let mut failures = Vec::new();
+    for _ in 0..100_000 {
+        match draw(&d, &mut rng) {
+            Ok(v) if d.contains(&v) => {
+                let cell = v.iter().fold(0usize, |at, &x| at * 10 + usize::from(x));
+                cells[cell] += 1;
+            }
+            other => {
+                failures.push(format!(
+                    "a draw: expected a value of the domain, got {other:?}"
+                ));
+                break;
+            }
+        }
+    }
+    let expected = 100.0_f64;
+    let chi2: f64 = cells
+        .iter()
+        .map(|&o| (f64::from(o) - expected).powi(2) / expected)
+        .sum();
+    let empty = cells.iter().filter(|&&o| o == 0).count();
+    println!("values: chi-square {chi2:.1} over 1,000 cells, {empty} empty");
+    if chi2 > 1250.0 {
+        failures.push(format!(
+            "chi-square over 1,000 cells: expected at most 1250, got {chi2:.1} ({empty} cells empty)"
+        ));
+    }
+    report(&failures);
+}
+
+/// Each position draws by rejection on u32, never `% n` alone (per-player §3.2): for n = 10 the zone is
+/// 2^32 - 2^32 % 10 = 4,294,967,290, so `u32::MAX` and 4,294,967,290 are rejected and 4,294,967,289 (9 mod 10) is
+/// the first entry.
+#[test]
+fn values_draw_rejects_the_top_of_the_u32_range() {
+    let d = domain(ranges(0, 9, 4), false, &[], 9);
+    let seq = [u32::MAX, 4_294_967_290, 4_294_967_289, 1, 2, 3];
+    let got = draw(&d, &mut scripted(&seq));
+    assert_eq!(
+        got,
+        Ok(vec![9, 1, 2, 3]),
+        "a draw over [0, 9]^4 from {seq:?}"
+    );
+}
+
+/// A draw is never an excluded tuple (the code's initial `0000` is one) nor, in an all-distinct domain, a tuple
+/// with a repeat: the whole tuple is drawn again. A source that only repeats an excluded tuple gives up after
+/// exactly 4 x 4,096 calls. `contains` is the same rule; one draw from the OS source lies in the domain.
+#[test]
+fn values_draw_never_returns_initial_or_an_excluded_value() {
+    let mut failures = Vec::new();
+    let excl = domain(ranges(0, 9, 4), false, &[&[0, 0, 0, 0]], 9);
+    let got = draw(&excl, &mut scripted(&[0, 0, 0, 0, 1, 8, 4, 7]));
+    if got != Ok(vec![1, 8, 4, 7]) {
+        failures.push(format!(
+            "excluding 0000, from 0,0,0,0,1,8,4,7: expected Ok([1, 8, 4, 7]), got {got:?}"
+        ));
+    }
+    let distinct = domain(ranges(0, 9, 4), true, &[], 9);
+    let got = draw(&distinct, &mut scripted(&[3, 3, 1, 2, 3, 1, 2, 4]));
+    if got != Ok(vec![3, 1, 2, 4]) {
+        failures.push(format!(
+            "all distinct, from 3,3,1,2,3,1,2,4: expected Ok([3, 1, 2, 4]), got {got:?}"
+        ));
+    }
+    let mut calls = 0u32;
+    let got = draw(&excl, &mut || {
+        calls += 1;
+        0
+    });
+    if got != Err(DrawError::Exhausted) || calls != 4 * 4096 {
+        failures.push(format!(
+            "excluding 0000, from a constant 0: expected Err(Exhausted) after 16384 calls, got {got:?} after {calls}"
+        ));
+    }
+    let cases: [(&str, &Domain, &[u16], bool); 6] = [
+        ("the excluded 0000", &excl, &[0, 0, 0, 0], false),
+        ("three entries", &excl, &[1, 8, 4], false),
+        ("an entry above its range", &excl, &[1, 8, 4, 10], false),
+        ("a repeat, all distinct", &distinct, &[3, 3, 1, 2], false),
+        ("the drawn 1847", &excl, &[1, 8, 4, 7], true),
+        (
+            "the drawn 3124, all distinct",
+            &distinct,
+            &[3, 1, 2, 4],
+            true,
+        ),
+    ];
+    for (case, d, v, want) in cases {
+        if d.contains(v) != want {
+            failures.push(format!("contains {case}: expected {want}"));
+        }
+    }
+    match draw(&excl, &mut os_rng()) {
+        Ok(v) if excl.contains(&v) => {}
+        other => failures.push(format!(
+            "a draw from os_rng: expected a value of the domain, got {other:?}"
+        )),
+    }
+    report(&failures);
+}
+
+/// Each `domains` case of the shared vectors parses as its oracle says: `Ok` with its size when it passes the
+/// floor and the acceptance, `Floor` with its size under 1,000 values, `Sparse` under 1/16 of the position product.
+/// Server only: the size saturates to u64 instead of overflowing (`[0, 65535]^16` is no JS-exact number).
+#[tokio::test]
+async fn values_domain_sizes_match_the_vectors() {
+    let cases = vectors().await.domains;
+    let mut failures = Vec::new();
+    if cases.len() < DOMAIN_CASES_MIN {
+        failures.push(format!(
+            "domains: expected at least {DOMAIN_CASES_MIN} cases, got {}",
+            cases.len()
+        ));
+    }
+    for (at, case) in cases.into_iter().enumerate() {
+        let want = if !case.floor {
+            Err(DomainError::Floor { size: case.size })
+        } else if !case.acceptance {
+            Err(DomainError::Sparse)
+        } else {
+            Ok(case.size)
+        };
+        let got = Domain::parse(case.domain, case.answer_len, case.answer_max).map(|d| d.size());
+        if got != want {
+            failures.push(format!("domains[{at}]: expected {want:?}, got {got:?}"));
+        }
+    }
+    let got =
+        Domain::parse(domain_file(ranges(0, 65535, 16), false, &[]), 16, 65535).map(|d| d.size());
+    if got != Ok(u64::MAX) {
+        failures.push(format!("[0, 65535]^16: expected Ok(u64::MAX), got {got:?}"));
+    }
+    report(&failures);
+}
+
+/// Each `render` case of the shared vectors renders to its oracle's text (per-player §5.1: the join rule, entry
+/// indices, a literal `$`). Server only: a placeholder that is not one of `own`'s stays verbatim (another puzzle, a
+/// malformed or out-of-range index, an unclosed `$code(`); content's load rule refuses such texts first.
+#[tokio::test]
+async fn values_render_matches_the_vectors() {
+    let cases = vectors().await.render;
+    let mut failures = Vec::new();
+    if cases.len() < RENDER_CASES_MIN {
+        failures.push(format!(
+            "render: expected at least {RENDER_CASES_MIN} cases, got {}",
+            cases.len()
+        ));
+    }
+    for (at, case) in cases.iter().enumerate() {
+        let got = render(&case.template, &case.own, &case.value, case.max);
+        if got != case.text {
+            failures.push(format!(
+                "render[{at}] {:?}: expected {:?}, got {got:?}",
+                case.template, case.text
+            ));
+        }
+    }
+    for template in [
+        "Код: $code(cabinet).",
+        "$code(drawer.0)",
+        "$code(drawer.01)",
+        "$code(drawer.5)",
+        "$code(drawer.100)",
+        "Код: $code(drawer",
+        "$code(Drawer)",
+        "$code(drawer_x)",
+        "$code(drawer.1x)",
+        "$code()",
+    ] {
+        let got = render(template, "drawer", &[1, 8, 4, 7], 9);
+        if got != template {
+            failures.push(format!(
+                "verbatim {template:?}: expected it unchanged, got {got:?}"
+            ));
+        }
+    }
+    report(&failures);
+}
+
+/// A domain under 1/16 of its position product is refused at parse (per-player §3.2): all-distinct `[0, 15]^16`
+/// (16! of 16^16) and `[0, 15]^9` (16!/7! = 4,151,347,200 of 16^9, just under 1/16); `[0, 15]^8` (0.12) parses.
+#[test]
+fn values_a_sparse_domain_is_refused_at_parse() {
+    let mut failures = Vec::new();
+    for (n, want) in [
+        (16, Err(DomainError::Sparse)),
+        (9, Err(DomainError::Sparse)),
+        (8, Ok(518_918_400)),
+    ] {
+        let got = Domain::parse(domain_file(ranges(0, 15, n), true, &[]), n, 15).map(|d| d.size());
+        if got != want {
+            failures.push(format!(
+                "all distinct [0, 15]^{n}: expected {want:?}, got {got:?}"
+            ));
+        }
+    }
+    report(&failures);
+}
+
+/// m12 (per-player §3.1 "Log redaction"): the `Debug` of a `Domain` excluding `[1, 8, 4, 7]` and of a `ValueRow`
+/// holding it prints neither `1847` nor `1, 8, 4, 7`; the row prints `value: <redacted>`.
+#[test]
+fn values_debug_output_redacts_the_code() {
+    let d = domain(ranges(0, 9, 4), false, &[&[1, 8, 4, 7]], 9);
+    let row = ValueRow {
+        puzzle: pid("ch1.drawer"),
+        run: 1,
+        wrong: 0,
+        issued_at: T0,
+        spent_at: None,
+        domain: d.hash().clone(),
+        value: vec![1, 8, 4, 7],
+    };
+    let mut failures = Vec::new();
+    let shown = [
+        ("Domain", format!("{d:?}")),
+        ("ValueRow", format!("{row:?}")),
+    ];
+    for (what, text) in &shown {
+        for secret in ["1847", "1, 8, 4, 7"] {
+            if text.contains(secret) {
+                failures.push(format!("{what}'s Debug carries {secret:?}: {text}"));
+            }
+        }
+    }
+    if !shown[1].1.contains("value: <redacted>") {
+        failures.push(format!(
+            "ValueRow's Debug: expected value: <redacted>, got {}",
+            shown[1].1
+        ));
+    }
+    report(&failures);
+}
+
+/// The domain hash is the canonical encoding's (per-player §3.2): 16 lower-case hex, the oracle's for two domains
+/// (one whose excludes differ in numeric and string order), unmoved by the order or repetition of the excludes, and
+/// moved by a bound, by `distinct` and by another exclude.
+#[test]
+fn values_domain_hash_is_canonical() {
+    let hash = |positions: Vec<(u16, u16)>, distinct: bool, exclude: &[&[u16]], max: u16| {
+        domain(positions, distinct, exclude, max).hash().0.clone()
+    };
+    let mut failures = Vec::new();
+    let base = hash(ranges(0, 9, 4), false, &[&[0, 0, 0, 0]], 9);
+    let numeric = hash(
+        ranges(0, 15, 4),
+        false,
+        &[&[10, 0, 0, 0], &[9, 0, 0, 0]],
+        15,
+    );
+    for (case, got, want) in [
+        ("[0, 9]^4 without 0000", &base, "bd058b756eb7a107"),
+        (
+            "[0, 15]^4 without 10.0.0.0, 9.0.0.0",
+            &numeric,
+            "c304cc282413339d",
+        ),
+    ] {
+        if got != want {
+            failures.push(format!("{case}: expected the oracle's {want}, got {got}"));
+        }
+    }
+    let two = hash(ranges(0, 9, 4), false, &[&[0, 0, 0, 0], &[1, 2, 3, 4]], 9);
+    let same = [
+        (
+            "reordered excludes",
+            hash(ranges(0, 9, 4), false, &[&[1, 2, 3, 4], &[0, 0, 0, 0]], 9),
+        ),
+        (
+            "a repeated exclude",
+            hash(
+                ranges(0, 9, 4),
+                false,
+                &[&[1, 2, 3, 4], &[0, 0, 0, 0], &[1, 2, 3, 4]],
+                9,
+            ),
+        ),
+    ];
+    for (case, got) in &same {
+        if *got != two {
+            failures.push(format!("{case}: expected {two}, got {got}"));
+        }
+    }
+    let moved = [
+        (
+            "a bound",
+            hash(
+                vec![(0, 8), (0, 9), (0, 9), (0, 9)],
+                false,
+                &[&[0, 0, 0, 0]],
+                9,
+            ),
+        ),
+        ("distinct", hash(ranges(0, 9, 4), true, &[&[0, 0, 0, 0]], 9)),
+        (
+            "another exclude",
+            hash(ranges(0, 9, 4), false, &[&[0, 0, 0, 1]], 9),
+        ),
+    ];
+    for (case, got) in &moved {
+        if *got == base {
+            failures.push(format!("{case}: expected a hash other than {base}"));
+        }
+    }
+    let all = [&base, &numeric, &two]
+        .into_iter()
+        .chain(same.iter().map(|(_, h)| h))
+        .chain(moved.iter().map(|(_, h)| h));
+    for h in all {
+        if h.len() != 16
+            || !h
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            failures.push(format!("{h}: expected 16 lower-case hex"));
+        }
+    }
+    report(&failures);
+}
+
+/// Each structure rule of `Domain::parse` refuses its own misfit with its own text (per-player §3.2 "Anything else
+/// is `DomainError::Shape`"). Lengths over the cap are built from `MAX_ANSWER_LEN`, so the cases hold when it moves.
+#[test]
+fn values_a_misshapen_domain_is_refused_at_parse() {
+    let over = MAX_ANSWER_LEN + 1;
+    let cases = [
+        (
+            "answerLen 0",
+            domain_file(vec![], false, &[]),
+            0,
+            9,
+            "answerLen is outside 1..=MAX_ANSWER_LEN",
+        ),
+        (
+            "answerLen MAX_ANSWER_LEN + 1",
+            domain_file(ranges(0, 9, over), false, &[]),
+            over,
+            9,
+            "answerLen is outside 1..=MAX_ANSWER_LEN",
+        ),
+        (
+            "three positions for answerLen 4",
+            domain_file(ranges(0, 9, 3), false, &[]),
+            4,
+            9,
+            "positions do not match answerLen",
+        ),
+        (
+            "lo 5 above hi 4",
+            domain_file(vec![(5, 4), (0, 9), (0, 9), (0, 9)], false, &[]),
+            4,
+            9,
+            "a position's lo is above its hi",
+        ),
+        (
+            "hi 10 above answerMax 9",
+            domain_file(vec![(0, 10), (0, 9), (0, 9), (0, 9)], false, &[]),
+            4,
+            9,
+            "a position's hi is above answerMax",
+        ),
+        (
+            "an exclude of three entries",
+            domain_file(ranges(0, 9, 4), false, &[&[0, 0, 0]]),
+            4,
+            9,
+            "an exclude does not match answerLen",
+        ),
+        (
+            "an exclude entry 10 above answerMax 9",
+            domain_file(ranges(0, 9, 4), false, &[&[0, 0, 0, 10]]),
+            4,
+            9,
+            "an exclude entry is above answerMax",
+        ),
+        (
+            "distinct with answerMax 16",
+            domain_file(ranges(0, 16, 4), true, &[]),
+            4,
+            16,
+            "distinct needs answerMax <= 15 and answerLen <= 16",
+        ),
+        (
+            "distinct with answerLen 17",
+            domain_file(ranges(0, 15, 17), true, &[]),
+            17,
+            15,
+            "distinct needs answerMax <= 15 and answerLen <= 16",
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (case, file, len, max, rule) in cases {
+        let got = Domain::parse(file, len, max).map(|d| d.size());
+        if got != Err(DomainError::Shape(rule)) {
+            failures.push(format!(
+                "{case}: expected Err(Shape({rule:?})), got {got:?}"
+            ));
+        }
     }
     report(&failures);
 }
