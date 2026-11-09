@@ -1376,13 +1376,14 @@ export function createGame(deps: GameDeps): Game {
     chapter: () => of().ch,
     runner: () => of().runner,
     text: (w) => of().lines.text(w.id, w.ru, vm.lang),
-    apply: async (visual, audio) => {
+    apply: async (visual, audio, started) => {
       const s = of();
       const instant = vm.mode === 'skip';
       const shown = await stage(s, visual, instant);
       if (session !== s) {
         return;
       }
+      started?.();
       audioOnce().apply(audio, { instant });
       await shown.done;
     },

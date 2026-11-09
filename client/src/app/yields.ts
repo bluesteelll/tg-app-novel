@@ -102,8 +102,13 @@ export type YieldsHost = {
   runner(): Pick<StoryRunner, 'enter'> | null;
   /** A world line in the UI language (the chapter's tables). */
   text(w: WorldText): string;
-  /** A batch the yields built (a room, a close-up) through `ensure`, the scene and the audio; resolves at its end. */
-  apply(visual: readonly VisualCommand[], audio: readonly AudioCommand[]): Promise<void>;
+  /**
+   * A batch the yields built (a room, a close-up) through `ensure`, the scene and the audio; resolves at its end.
+   * `started` runs once when the batch starts, after its loads and before its audio, an empty batch included: where a
+   * cue that goes with the batch's transition is emitted (engine plan GM3w). A batch whose session ended during its
+   * loads never starts, so its `started` never runs.
+   */
+  apply(visual: readonly VisualCommand[], audio: readonly AudioCommand[], started?: () => void): Promise<void>;
   bgm(): StagingSnapshot['bgm'];
   /** After `runner.enter`: the story's next step, shown (and its own yield, if it stops at one). */
   continueStory(): Promise<void>;

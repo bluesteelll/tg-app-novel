@@ -32,7 +32,7 @@ import type { AssetEntry, AssetManifest, ChapterCatalog, LoadedChapter, Result, 
 import { liveRunners } from '../story/runner.ts';
 import { decodeSave, encodeSave } from '../story/save-codec.ts';
 import { EMPTY_SNAPSHOT } from '../story/staging.ts';
-import type { AssetId, ChapterId, OrderId, ProductId, PuzzleLocalId, StoryVersion } from '../story/staging.ts';
+import type { AssetId, BgId, ChapterId, OrderId, ProductId, PuzzleLocalId, StoryVersion } from '../story/staging.ts';
 import type { InvoiceStatus } from '../telegram/index.ts';
 import { createExploreView } from '../ui/explore-view.svelte.ts';
 import type { ExploreViewStore } from '../ui/explore-view.svelte.ts';
@@ -49,7 +49,24 @@ import type { MetaGate } from './boot.ts';
 import { CONFLICT_HOLD_MS, createGame, reloadedFor, withReloadedFor } from './game.ts';
 import type { Entitlements, Game, GameDeps, ReloadPort } from './game.ts';
 import type { MetaController, MetaDeps, MetaUi, MetaView } from './meta.ts';
-import type { ExploreChunk, LazyChunks } from './yields.ts';
+import type { ExploreChunk, LazyChunks, Yields, YieldsHost } from './yields.ts';
+
+// GM3w: each session's YieldsHost and Yields, as createYields received and made them; every other export of yields.ts
+// is the real one, so the game runs the real yields (Game exposes neither, and its tests reach `apply`, `tap` and
+// `ahead` through them).
+const seam = vi.hoisted(() => ({ hosts: [] as YieldsHost[], yields: [] as Yields[] }));
+vi.mock('./yields.ts', async (importOriginal) => {
+  const real = await importOriginal<typeof import('./yields.ts')>();
+  return {
+    ...real,
+    createYields: (h: YieldsHost): Yields => {
+      const y = real.createYields(h);
+      seam.hosts.push(h);
+      seam.yields.push(y);
+      return y;
+    },
+  };
+});
 
 // ---------------------------------------------------------------------------------------------------------------
 // Fixtures: chapters
@@ -2231,6 +2248,86 @@ test('game: a deactivated during the end batch keeps the last exact save', async
   }
   // the end step never sets the position: a body of it would resume a level lower as a false story update
   expect(resumed).toEqual(['ch1.garden.l006', true, [], 'ch1.garden.l006']);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM3w: when a yields batch starts, a yield step's `ahead`, and a tap during a batch (engine plan GM3w)
+
+/** The newest session's YieldsHost, as GameSession gave it to its yields. */
+function sessionHost(): YieldsHost {
+  const host = seam.hosts.at(-1);
+  if (host === undefined) {
+    throw new Error('invariant: a session was started');
+  }
+  return host;
+}
+
+/** Holds the end of every batch applied from now until the release; the fake stage still takes each batch at once. */
+function holdBatchEnds(scene: FakeScene): () => void {
+  const apply = scene.apply;
+  const ends: Array<() => void> = [];
+  scene.apply = (batch, o) => {
+    void apply(batch, o); // the fake stage takes the batch; only its end is held
+    return new Promise<void>((resolve) => {
+      ends.push(resolve);
+    });
+  };
+  return () => {
+    scene.apply = apply;
+    for (const end of ends.splice(0)) {
+      end();
+    }
+  };
+}
+
+const bgCut = (bg: string): VisualCommand => ({ kind: 'bg', bg: bg as BgId, t: 'cut', ms: 0 });
+
+test('game: apply reports the batch start after its loads', async () => {
+  const h = harness();
+  await startManor(h); // l001
+  const host = sessionHost();
+  let releaseLoads = holdEnsure(h.scene);
+  const releaseEnd = holdBatchEnds(h.scene);
+  const n = h.audio.applied.length;
+  const audioSeen: number[] = [];
+  const started = vi.fn(() => {
+    audioSeen.push(h.audio.applied.length);
+  });
+  let ended = false;
+  const batch = host.apply([bgCut('garden')], [], started).then(() => {
+    ended = true;
+  });
+  await settle();
+  expect(started).not.toHaveBeenCalled(); // its loads are held
+  releaseLoads();
+  await settle();
+  // The batch has started: once, before its audio, while its transition still runs.
+  expect(started).toHaveBeenCalledTimes(1);
+  expect(audioSeen).toEqual([n]);
+  expect(ended).toBe(false);
+  releaseEnd();
+  await batch;
+  expect(started).toHaveBeenCalledTimes(1);
+  expect(h.audio.applied.length).toBe(n + 1);
+  // A session that ends while its batch loads: the batch never starts.
+  releaseLoads = holdEnsure(h.scene);
+  const late = vi.fn();
+  const dead = host.apply([bgCut('hall')], [], late);
+  await settle();
+  h.game.dispose();
+  releaseLoads();
+  await dead;
+  await settle();
+  expect(late).not.toHaveBeenCalled();
+});
+
+test('game: apply reports the batch start for an empty command list', async () => {
+  const h = harness();
+  await startManor(h);
+  const started = vi.fn();
+  await sessionHost().apply([], [], started);
+  expect(started).toHaveBeenCalledTimes(1);
+  h.game.dispose();
 });
 
 // ---------------------------------------------------------------------------------------------------------------
