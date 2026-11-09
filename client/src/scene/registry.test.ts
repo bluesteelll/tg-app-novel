@@ -713,6 +713,51 @@ test('registry: a revived record keeps its handle', async () => {
   expect(join.ok ? join.value : null).toBe(a);
 });
 
+test('registry: state reports live, pending and none', async () => {
+  // What the scheduler reads to join a record at once (QO19): the record's own state, never a flight list's.
+  const h = harness();
+  const state = (name: string): string => h.registry.state(asId(name));
+  expect(state('bg/a')).toBe('none');
+  const a = h.acquire('bg/a', bg('a'), 'scene:a', 'visible');
+  expect(state('bg/a')).toBe('pending');
+  h.succeedAll();
+  expect((await a).ok).toBe(true);
+  expect(state('bg/a')).toBe('live');
+  // Not yet revived (stale) is still live, and the read moves no stats field.
+  h.setReviveMode('hold');
+  const r = h.registry.revive(2, noAbort());
+  const before = h.registry.stats();
+  expect(before.stale).toBe(1);
+  expect(state('bg/a')).toBe('live');
+  expect(state('bg/none')).toBe('none');
+  expect(h.registry.stats()).toEqual(before);
+  h.settleRevives();
+  expect(await r.all).toBe('done');
+  h.registry.release(asId('bg/a'), 'scene:a');
+  expect(state('bg/a')).toBe('none');
+  // Withdrawn in flight by its only holder's signal.
+  const c = new AbortController();
+  const b = h.acquire('bg/b', bg('b'), 'preload:k1', 'preload', c.signal);
+  expect(state('bg/b')).toBe('pending');
+  c.abort();
+  expect((await b).ok).toBe(false);
+  expect(state('bg/b')).toBe('none');
+  // A load that fails.
+  const f = h.acquire('bg/f', bg('f'), 'scene:f', 'visible');
+  const call = h.callsOf('/assets/f.avif')[0];
+  if (call === undefined) {
+    throw new Error('invariant: the acquire started a load');
+  }
+  call.resolve({ ok: false, error: { kind: 'fetch', error: { kind: 'http', status: 500 } } });
+  expect(await f).toMatchObject({ ok: false, error: { kind: 'fetch' } });
+  expect(state('bg/f')).toBe('none');
+  // A preload refused over the steady cap.
+  const big: ImageEntry = { ...image('big', 2048, 2048), decodedBytes: 33_554_432 };
+  expect(await h.acquire('bg/big', big, 'preload:k1', 'preload')).toMatchObject({ ok: false, error: { kind: 'over-cap' } });
+  expect(state('bg/big')).toBe('none');
+  expect(h.registry.stats()).toEqual(ZERO);
+});
+
 test('registry: visible and all settle aborted when the revive is aborted', async () => {
   const h = harness();
   await liveBgs(h, ['p'], 'preload');

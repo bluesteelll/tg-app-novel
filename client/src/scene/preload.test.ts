@@ -3,7 +3,7 @@ import { expect, test } from 'vitest';
 import type { AssetEntry, AssetManifest, ImageEntry, Result } from '../story/catalog.ts';
 import type { AssetId, ChapterId } from '../story/staging.ts';
 import { PRELOAD_IN_FLIGHT, createAssetScheduler } from './preload.ts';
-import { createAssetRegistry } from './registry.ts';
+import { HARD_CAP_BYTES, createAssetRegistry } from './registry.ts';
 import type { AssetError, Decoded, LoadError, LoadImage } from './registry.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -41,8 +41,22 @@ const ch2 = manifest('ch2', {
   'prop/e': image('prop_e', 512, 512),
 });
 const ch3 = manifest('ch3', { 'prop/n3': image('prop_n3', 512, 512) });
+// ch4: the next chapter of a handover (QO19); its first knot's art, the background gated.
+const ch4 = manifest('ch4', {
+  'bg/lamp': image('lamp', 1080, 2048, true),
+  'char/keeper/smile': image('keeper_smile', 512, 512),
+  'char/keeper/worried': image('keeper_worried', 512, 512),
+  'char/keeper/neutral': image('keeper_neutral', 512, 512),
+});
+const LAMP = ['bg/lamp', 'char/keeper/smile', 'char/keeper/worried', 'char/keeper/neutral'].map(asId);
+// ch5: three 2048x2048 backgrounds; one live and two loading exceed HARD_CAP_BYTES, so the third admission evicts.
+const ch5 = manifest('ch5', {
+  'bg/w1': image('w1', 2048, 2048),
+  'bg/w2': image('w2', 2048, 2048),
+  'bg/w3': image('w3', 2048, 2048),
+});
 const URLS = new Map<string, ImageEntry>();
-for (const m of [ch1, ch2, ch3]) {
+for (const m of [ch1, ch2, ch3, ch4, ch5]) {
   for (const e of Object.values(m.assets)) {
     if (e.kind === 'image') {
       URLS.set(e.avif.url, e);
@@ -219,4 +233,297 @@ test('preload: setChapter releases preload and other next holders', async () => 
   expect(h.registry.stats().live).toBe(2);
   h.s.destroy();
   expect(h.registry.stats()).toEqual({ live: 0, bytes: 0, pending: 0, overCap: 0, keptBytes: 0, keptMismatch: 0, openBitmaps: 0, stale: 0, reviveFailed: 0 });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// QO19 / S36 step 1b: an item whose record is live or in flight joins at once, inside preload() and outside the slots.
+
+test('preload: a join takes no slot', async () => {
+  const h = harness('deferred');
+  h.s.setChapter(ch1);
+  const knot = LAMP.slice(0, 3);
+  h.s.preload('next:ch4', knot, ch4);
+  h.succeedAll();
+  await flush();
+  h.succeedAll();
+  await flush();
+  expect(h.registry.stats().live).toBe(3);
+  // Both slots busy with fetches elsewhere.
+  h.s.preload('room:r1', ['prop/a', 'prop/b'].map(asId));
+  expect(h.calls.length).toBe(5);
+  const bytes0 = h.registry.stats().bytes;
+  h.s.preload('preload:k', knot, ch4);
+  // A join costs no fetch and no byte.
+  expect(h.calls.length).toBe(5);
+  expect(h.registry.stats().bytes).toBe(bytes0);
+  // Every holder was added inside the call: the other tag's release, in the same turn, ends nothing.
+  h.registry.releaseHolder('next:ch4');
+  expect(h.registry.stats().live).toBe(3);
+  expect(knot.map((id) => h.releasedOf(ch4, id))).toEqual([0, 0, 0]);
+  // The owner's release ends them.
+  h.s.releasePreload('preload:k');
+  expect(knot.map((id) => h.releasedOf(ch4, id))).toEqual([1, 1, 1]);
+  expect(h.errors).toEqual([]);
+});
+
+test('preload: a handover keeps every landed file', async () => {
+  const h = harness();
+  h.s.setChapter(ch1);
+  h.s.preload('next:ch4', LAMP, ch4);
+  await flush();
+  expect(h.registry.stats().live).toBe(4);
+  expect(LAMP.map((id) => h.callsOf(urlOf(ch4, id)))).toEqual([1, 1, 1, 1]);
+  // setChapter keeps next:ch4 (F4); GameSession's first knot holds its art, then releases the tag, in one turn.
+  h.s.setChapter(ch4);
+  h.s.preload('preload:lamp', LAMP);
+  h.s.releasePreload('next:ch4');
+  await flush();
+  expect(LAMP.map((id) => h.callsOf(urlOf(ch4, id)))).toEqual([1, 1, 1, 1]);
+  expect(LAMP.map((id) => h.releasedOf(ch4, id))).toEqual([0, 0, 0, 0]);
+  expect(h.registry.stats().live).toBe(4);
+  expect(h.errors).toEqual([]);
+});
+
+test('preload: a joined fetch keeps its slot after its tag is released', async () => {
+  const h = harness('deferred');
+  h.s.setChapter(ch1);
+  const two = LAMP.slice(0, 2);
+  h.s.preload('next:ch4', two, ch4);
+  expect(h.calls.length).toBe(2);
+  h.s.preload('preload:k', two, ch4);
+  h.s.preload('room:r1', [asId('prop/r1')]);
+  h.s.releasePreload('next:ch4');
+  // The joins keep both fetches, and each carries its slot: two fetches in flight at most, r1 waits.
+  expect(h.calls.length).toBe(2);
+  expect(h.calls.map((c) => c.signal.aborted)).toEqual([false, false]);
+  const first = h.calls[0];
+  if (first === undefined) {
+    throw new Error('invariant: the fixture started a load');
+  }
+  h.succeed(first);
+  await flush();
+  expect(h.calls.map((c) => c.url)).toEqual([urlOf(ch4, 'bg/lamp'), urlOf(ch4, 'char/keeper/smile'), urlOf(ch1, 'prop/r1')]);
+  h.succeedAll();
+  await flush();
+  expect(h.registry.stats().live).toBe(3);
+  expect(h.errors).toEqual([]);
+});
+
+test('preload: a released tag aborts its joins', async () => {
+  const h = harness('deferred');
+  h.s.setChapter(ch1);
+  h.s.preload('room:r1', [asId('prop/a')]);
+  h.s.preload('preload:k1', [asId('prop/a')]);
+  // A join at a fetch its own flight still covers counts no slot (no double count): prop/b starts at once.
+  h.s.preload('room:r2', [asId('prop/b')]);
+  expect(h.calls.map((c) => c.url)).toEqual([urlOf(ch1, 'prop/a'), urlOf(ch1, 'prop/b')]);
+  h.s.releasePreload('preload:k1');
+  const a = h.calls[0];
+  if (a === undefined) {
+    throw new Error('invariant: the fixture started a load');
+  }
+  a.done = true;
+  a.resolve({ ok: false, error: { kind: 'fetch', error: { kind: 'http', status: 500 } } });
+  await flush();
+  // room:r1's flight reports the failure once; the released join reports nothing.
+  expect(h.errors).toEqual([{ kind: 'fetch', id: 'prop/a', error: { kind: 'http', status: 500 } }]);
+});
+
+test('preload: a join released and preloaded again in one turn holds again', async () => {
+  const h = harness();
+  h.s.setChapter(ch1);
+  const knot = LAMP.slice(0, 3);
+  h.s.preload('next:ch4', knot, ch4);
+  await flush();
+  expect(h.registry.stats().live).toBe(3);
+  // Joined, released and joined again before any join settles: a released join must not shadow the new one.
+  h.s.preload('preload:k', knot, ch4);
+  h.s.releasePreload('preload:k');
+  h.s.preload('preload:k', knot, ch4);
+  h.registry.releaseHolder('next:ch4');
+  expect(h.registry.stats().live, 'the second preload of the tag must hold the records').toBe(3);
+  expect(knot.map((id) => h.releasedOf(ch4, id))).toEqual([0, 0, 0]);
+  h.s.releasePreload('preload:k');
+  expect(knot.map((id) => h.releasedOf(ch4, id))).toEqual([1, 1, 1]);
+  expect(h.errors).toEqual([]);
+});
+
+test('preload: a join holder is evicted by a visible load over the hard cap', async () => {
+  const h = harness();
+  h.s.setChapter(ch5);
+  h.s.preload('room:r1', [asId('bg/w1')]);
+  await flush();
+  expect(h.registry.stats().live).toBe(1);
+  expect(3 * h.registry.stats().bytes, 'fixture shape: three ch5 backgrounds exceed the hard cap').toBeGreaterThan(HARD_CAP_BYTES);
+  // A join is a preload-priority holder (cut D2): it pins nothing against a visible load.
+  h.s.preload('preload:k', [asId('bg/w1')]);
+  await flush();
+  const r = await h.s.ensure(['bg/w2', 'bg/w3'].map(asId), live());
+  expect(r, 'the visible batch is admitted after evicting the join').toEqual({ ok: true, value: undefined });
+  expect(h.registry.stats().overCap).toBe(0);
+  expect(h.releasedOf(ch5, 'bg/w1')).toBe(1);
+});
+
+test('preload: a repeated preload while its join is outstanding adds no second join', async () => {
+  const h = harness('deferred');
+  h.s.setChapter(ch1);
+  h.s.preload('room:r1', [asId('prop/a')]);
+  h.s.preload('preload:k1', [asId('prop/a')]);
+  h.s.preload('preload:k1', [asId('prop/a')]);
+  expect(h.calls.length).toBe(1);
+  const a = h.calls[0];
+  if (a === undefined) {
+    throw new Error('invariant: the fixture started a load');
+  }
+  a.done = true;
+  a.resolve({ ok: false, error: { kind: 'fetch', error: { kind: 'http', status: 500 } } });
+  await flush();
+  expect(h.errors.length, 'one report per tag: the flight of room:r1 and the single join of preload:k1').toBe(2);
+});
+
+test('preload: a settled join is forgotten, so its tag preloads again', async () => {
+  const h = harness('deferred');
+  h.s.setChapter(ch1);
+  h.s.preload('preload:k', [asId('prop/a')]);
+  h.s.preload('room:r1', [asId('prop/a')]);
+  const a = h.calls[0];
+  if (a === undefined) {
+    throw new Error('invariant: the fixture started a load');
+  }
+  // The joined fetch fails: the registry ends the record while room:r1 is still a tracked tag (roomShown re-issues it).
+  a.done = true;
+  a.resolve({ ok: false, error: { kind: 'fetch', error: { kind: 'http', status: 500 } } });
+  await flush();
+  expect(h.registry.state(asId('prop/a'))).toBe('none');
+  h.s.preload('room:r1', [asId('prop/a')]);
+  expect(h.callsOf(urlOf(ch1, 'prop/a')), 'a later show of the room fetches its bg again').toBe(2);
+});
+
+test('preload: a family release drops released joins too', async () => {
+  const h = harness('deferred');
+  h.s.setChapter(ch1);
+  h.s.preload('room:r1', [asId('prop/a')]);
+  h.s.preload('preload:k', [asId('prop/a')]);
+  // setChapter releases the `preload:` family; the same tag is joined again in the same turn.
+  h.s.setChapter(ch1);
+  h.s.preload('preload:k', [asId('prop/a')]);
+  h.s.releasePreload('room:r1');
+  const a = h.calls[0];
+  if (a === undefined) {
+    throw new Error('invariant: the fixture started a load');
+  }
+  expect(a.signal.aborted, 'the re-joined tag keeps the fetch alive after room:r1 let go').toBe(false);
+  h.succeed(a);
+  await flush();
+  expect(h.registry.stats().live).toBe(1);
+  expect(h.errors).toEqual([]);
+});
+
+test('preload: a settled join forgets only itself, so its siblings keep their carried slot', async () => {
+  const h = harness('deferred');
+  h.s.setChapter(ch1);
+  const two = LAMP.slice(0, 2);
+  // The handover (QO19): next:ch4 flies two files, the knot's hold joins both, then next:ch4 lets go in the same turn.
+  h.s.preload('next:ch4', two, ch4);
+  h.s.preload('preload:k', two, ch4);
+  h.s.preload('room:r1', [asId('prop/r1')]);
+  h.s.preload('room:r2', [asId('prop/a')]);
+  h.s.releasePreload('next:ch4');
+  expect(h.calls.length).toBe(2);
+  const first = h.calls[0];
+  if (first === undefined) {
+    throw new Error('invariant: the fixture started a load');
+  }
+  h.succeed(first);
+  await flush();
+  // the second lamp file is still carried by its join: one slot for it, one for r1, so r2 waits
+  expect(h.calls.map((c) => c.url)).toEqual([
+    urlOf(ch4, 'bg/lamp'),
+    urlOf(ch4, 'char/keeper/smile'),
+    urlOf(ch1, 'prop/r1'),
+  ]);
+});
+
+test("preload: a join waiting on a stale record's revive carries no slot", async () => {
+  // Its own registry: the loader's revive is deferred, so a live record stays stale while its join waits on it.
+  const calls: Call[] = [];
+  const revives: (() => void)[] = [];
+  const load: LoadImage<Tex> = (ref, signal) =>
+    new Promise((resolve) => {
+      calls.push({ url: ref.url, bytes: ref.bytes, signal, resolve, done: false });
+    });
+  const decodedOf = (url: string, keptBytes: number): Decoded<Tex> => {
+    const e = URLS.get(url);
+    if (e === undefined) {
+      throw new Error('invariant: a fixture url');
+    }
+    const d: Decoded<Tex> = {
+      texture: { url },
+      w: e.w,
+      h: e.h,
+      keptBytes,
+      gen: 1,
+      open: () => false,
+      revive: (gen) =>
+        new Promise((resolve) => {
+          revives.push(() => {
+            d.gen = gen;
+            resolve({ ok: true, value: undefined });
+          });
+        }),
+      release: () => {},
+    };
+    return d;
+  };
+  const registry = createAssetRegistry<Tex>({ load, variant: 'avif', tier: 'full' });
+  const errors: AssetError[] = [];
+  const s = createAssetScheduler({
+    registry,
+    onError: (e) => {
+      errors.push(e);
+    },
+  });
+  s.setChapter(ch1);
+  s.preload('room:r1', [asId('prop/a')]);
+  const a = calls[0];
+  if (a === undefined) {
+    throw new Error('invariant: the fixture started a load');
+  }
+  a.done = true;
+  a.resolve({ ok: true, value: decodedOf(a.url, a.bytes) });
+  await flush();
+  expect(registry.state(asId('prop/a'))).toBe('live');
+  // The context came back: a revive to generation 2 runs; prop/a stays stale until its (deferred) revive resolves.
+  const passes = registry.revive(2, live());
+  await flush();
+  expect(registry.stats().stale).toBe(1);
+  expect(revives.length).toBe(1);
+  // GameSession's hold: the knot's art, one of it resident but stale, the rest not loaded.
+  s.preload('preload:k', [asId('prop/a')]);
+  s.preload('room:r2', [asId('prop/b'), asId('prop/c')]);
+  await flush();
+  expect(calls.map((c) => c.url), 'a revive is no fetch: both slots stay free').toEqual([
+    urlOf(ch1, 'prop/a'),
+    urlOf(ch1, 'prop/b'),
+    urlOf(ch1, 'prop/c'),
+  ]);
+  for (const r of revives) {
+    r();
+  }
+  await passes.all;
+  await flush();
+  expect(errors).toEqual([]);
+  s.destroy();
+});
+
+test('preload: two joins of different tags on one carried fetch cost one slot', async () => {
+  const h = harness('deferred');
+  h.s.setChapter(ch1);
+  // GameSession's enterKnot order: knots j and k share art in flight, entering k releases preload:j (step 3), then the
+  // hold of a knot n after k shares the same art (step 4). Two tags carry one fetch, so it costs one slot, not two.
+  h.s.preload('preload:j', [asId('prop/a')]);
+  h.s.preload('preload:k', [asId('prop/a')]);
+  h.s.releasePreload('preload:j');
+  h.s.preload('preload:n', [asId('prop/a'), asId('prop/b'), asId('prop/c')]);
+  expect(h.calls.map((c) => c.url)).toEqual([urlOf(ch1, 'prop/a'), urlOf(ch1, 'prop/b')]);
 });

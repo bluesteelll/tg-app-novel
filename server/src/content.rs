@@ -1,6 +1,7 @@
 //! The server's content, loaded once from `CONTENT_DIR` in `AppState::new`: the story index (`stories.json`), the
-//! paid chapters (`chapters/<ch>/`), the puzzle index (`puzzles/<ch>.json`), the gated asset index (`assets/`) and
-//! the meta index (`meta.json`: ending titles, achievements, the choice vocabulary; its rules live in `meta.rs`).
+//! paid chapters (`chapters/<ch>/`), the puzzle index (`puzzles/<ch>.json`), the gated asset index (`assets/`, full
+//! and half-tier files) and the meta index (`meta.json`: ending titles, achievements, the choice vocabulary; its rules
+//! live in `meta.rs`).
 //!
 //! Principle 0: paid chapter JSON, paid worlds, puzzle solutions and meta texts live here and leave only through
 //! routes that check an entitlement first. No paid type derives `Debug`, so none of them reaches a log line, and a [`ContentError`]
@@ -205,7 +206,7 @@ pub struct PaidChapter {
     pub world: Option<Box<RawValue>>,
 }
 
-/// A gated asset file: one a paid chapter's manifest names under `/api/assets/`.
+/// A gated asset file: one a paid chapter's manifest names under `/api/assets/`, a full or a half-tier file.
 #[derive(Debug, Clone)]
 pub struct AssetFile {
     /// `<content dir>/assets/<file>`, proven a regular file at startup.
@@ -367,6 +368,15 @@ struct AssetProbe {
     avif: Option<UrlProbe>,
     webp: Option<UrlProbe>,
     file: Option<UrlProbe>,
+    half: Option<HalfProbe>,
+}
+
+/// An image entry's half-tier pair (MEMORY-PLAN 4.C): its sizes are the client's, so only the URLs are read. A gated
+/// entry's half is a gated file like its full one, owned by the same chapter product.
+#[derive(Deserialize)]
+struct HalfProbe {
+    avif: UrlProbe,
+    webp: UrlProbe,
 }
 
 #[derive(Deserialize)]
@@ -655,8 +665,8 @@ async fn load_paid_chapter(
     })
 }
 
-/// Adds the gated files `chapter`'s manifest names to `assets`, each owned by the chapter's product. A public URL
-/// (`/assets/<file>`) is a static file of the client build and is skipped.
+/// Adds the gated files `chapter`'s manifest names to `assets`, full and half tier alike, each owned by the chapter's
+/// product. A public URL (`/assets/<file>`) is a static file of the client build and is skipped.
 async fn index_assets(
     dir: &Path,
     chapter: &PaidChapter,
@@ -669,9 +679,11 @@ async fn index_assets(
         return Err(invalid(&path, format!("chapterId is not {}", chapter.id.0)));
     }
     for (asset, entry) in &manifest.assets {
+        // A half-tier URL passes the same prefix, name, on-disk and owner rules as its entry's full file.
         for url in [&entry.avif, &entry.webp, &entry.file]
             .into_iter()
             .flatten()
+            .chain(entry.half.iter().flat_map(|h| [&h.avif, &h.webp]))
         {
             if url.url.starts_with("/assets/") {
                 continue;
