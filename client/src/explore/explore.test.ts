@@ -952,6 +952,24 @@ test('reconcile: step 0 maps renamed items, docs, rooms, sections and hotspots b
   const tiny = world({ items: ['constructor', 'medal_sun'], sections: { manor: { start: 'hall', rooms: { hall: room([take('a', { item: 'constructor' })]) } } } });
   const plain = reconcile(stamped({ ...tiny, renamed: { items: { [it('medal_old')]: it('medal_sun') } } }, V2), at('hall', { held: [it('constructor'), it('medal_old')] }), MANOR_KNOTS, V1);
   expect([plain.dropped, plain.state.held]).toEqual([[], ['constructor', 'medal_sun']]);
+
+  // An item merge leaves the item in a lock or in hand, never both, so it never fills a second lock.
+  const comet = (hotspots: Readonly<Record<HotspotKey, HotspotKey>> = {}) =>
+    stamped({ ...bare, renamed: { items: { [it('medal_old')]: it('medal_comet'), [it('medal_star')]: it('medal_comet') }, hotspots } }, V2);
+  // (a) A held id merged onto one a lock holds goes; the lock keeps the item.
+  const inLock = reconcile(comet(), at('hall', { held: [it('medal_old')], used: [it('medal_star')], slots: { [k('hall.gate')]: [null, null, it('medal_star')] } }, 'estate'), MANOR_KNOTS, V1);
+  expect([inLock.state.held, inLock.state.used]).toEqual([[], ['medal_comet']]);
+  expect([inLock.dropped, inLock.state.slots]).toEqual([['held:medal_old'], { 'hall.gate': [null, null, 'medal_comet'] }]);
+  // (b) Step 0's give-back of a slot key merged away skips an item the kept key's cell still holds.
+  const twoKeys = at('hall', { used: [it('medal_old'), it('medal_star')], slots: { [k('hall.gate_old')]: [null, null, it('medal_old')], [k('hall.gate')]: [null, null, it('medal_star')] } }, 'estate');
+  const keyMerge = reconcile(comet({ [k('hall.gate_old')]: k('hall.gate') }), twoKeys, MANOR_KNOTS, V1);
+  expect([keyMerge.state.held, keyMerge.state.used, keyMerge.state.slots]).toEqual([[], ['medal_comet'], { 'hall.gate': [null, null, 'medal_comet'] }]);
+  expect(keyMerge.dropped).toEqual(['slots:hall.gate']);
+  // (c) Normalize's give-back of a cell that no longer fits skips an item another kept cell still holds: the gate's
+  // cell 0 (it accepts the sun) and cell 2 both held a medal that became the comet.
+  const misfit = reconcile(comet(), at('hall', { used: [it('medal_old'), it('medal_moon'), it('medal_star')], slots: { [k('hall.gate')]: [it('medal_old'), it('medal_moon'), it('medal_star')] } }, 'estate'), MANOR_KNOTS, V1);
+  expect([misfit.state.held, misfit.state.used, misfit.state.slots]).toEqual([[], ['medal_comet', 'medal_moon'], { 'hall.gate': [null, 'medal_moon', 'medal_comet'] }]);
+  expect(misfit.dropped).toEqual([]);
 });
 
 test('reconcile: unprovable state restarts the section', () => {
