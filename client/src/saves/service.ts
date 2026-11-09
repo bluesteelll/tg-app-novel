@@ -13,6 +13,7 @@ import type { ChapterId, LineId, StoryVersion } from '../story/staging.ts';
 import type { Unsubscribe } from '../telegram/index.ts';
 import { createPendingStore, shouldUpload } from './pending.ts';
 import type { DeviceStore } from './pending.ts';
+import { summaryOf } from './summary.ts';
 
 export type ManualSlot = Exclude<SaveSlot, 'auto'>;
 /** One body to store, with the envelope the server lists. */
@@ -78,11 +79,6 @@ export const KEEPALIVE_BODY_MAX = 49_152;
 
 const SLOTS: readonly SaveSlot[] = ['auto', 's1', 's2', 's3'];
 const utf8 = new TextEncoder();
-
-/** The summary of (story, slot) in the boot list: a lookup by key, never by position (the order is the collation's). */
-export function summaryOf(list: SaveListResponse, story: StoryId, slot: SaveSlot): SaveSummary | null {
-  return list.slots.find((s) => s.storyId === story && s.slot === slot) ?? null;
-}
 
 /** 128 random bits as hex: `crypto.getRandomValues` needs no secure context, unlike `randomUUID`. */
 function randomId(): string {
