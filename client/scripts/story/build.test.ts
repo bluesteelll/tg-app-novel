@@ -1102,6 +1102,23 @@ test('emit: public world has no solution or hint fields', () => {
   expect(hints.filter((h) => !server.includes(h.ru) || !server.includes(`en ${h.id}`))).toEqual([]);
 });
 
+test('emit: clues never reach the public world', () => {
+  const raw = worldSource('ch1', 'cafe');
+  objectAt(raw, 'puzzles.drawer')['clues'] = [{ doc: 'letter' }];
+  const source = decodedWorld(raw);
+  expect(source.puzzles['drawer' as keyof WorldSource['puzzles']]?.clues).toEqual([{ doc: 'letter' }]);
+  // Every planned output, the public world and the server puzzle content among them, is the world's without clues.
+  const { plan } = emitFixture(LIST, [MANOR], new Map([[CH1_ENTRY.id, source]]));
+  const bare = emitFixture(LIST, [MANOR], new Map([[CH1_ENTRY.id, decodedWorld(worldSource('ch1', 'cafe'))]])).plan;
+  expect(planned(plan, CH1_WORLD)).toBe(planned(bare, CH1_WORLD));
+  expect(planned(plan, 'server/content/puzzles/ch1.json')).toBe(planned(bare, 'server/content/puzzles/ch1.json'));
+  expect(plan).toEqual(bare);
+  const text = planned(plan, CH1_WORLD);
+  expect(text).not.toContain('"clues"');
+  const decoded = decodeWorldPublic(JSON.parse(text));
+  expect(decoded.ok && decoded.value.version).toBe(worldVersion(toPublic(source)));
+});
+
 test('emit: server puzzle content matches the server fixture shape', () => {
   const source = decodedWorld(worldSource('ch1', 'cafe'));
   const { plan } = emitFixture(LIST, [MANOR], new Map([[CH1_ENTRY.id, source]]));

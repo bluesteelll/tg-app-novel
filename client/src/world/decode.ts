@@ -1,8 +1,9 @@
 // The one decoder of world JSON (docs/PUZZLES-PLAN.md "World data", X7): the source `story/<ch>/world.json` and the
 // public world the client loads, plus the two projections the story tool emits from a decoded source. Every issue is
 // reported once, never the first only (lint `world/schema`). Keys are strict: an unknown key is an issue, and every
-// key of the format is required except `take.then` and `lock.onOpen` (default []). References between ids (an exit's
-// room, a slot's item) are not resolved here: that is `world/unknown-ref` (LW3). Pure (X4).
+// key of the format is required except `take.then`, `lock.onOpen` and a source puzzle's `clues` (default []).
+// References between ids (an exit's room, a slot's item, a clue's fact) are not resolved here: that is
+// `world/unknown-ref` (LW3) and `world/clue-reachable` (GM1d). Pure (X4).
 import { PUZZLE_TYPES, puzzleInstance } from '../puzzles/rules/index.ts';
 import type { PuzzleTypeData, PuzzleTypes } from '../puzzles/rules/index.ts';
 import { KNOT_NAME_RE } from '../story/catalog.ts';
@@ -23,6 +24,7 @@ import type {
 import { LINE_ID_RE } from '../story/tags.ts';
 import { GLYPHS } from './types.ts';
 import type {
+  ClueAtom,
   Doc,
   DocId,
   Effect,
@@ -526,16 +528,61 @@ const hintTexts: Decoder<WorldText[]> = (v, path, report) => {
   return list(text('hint-count'))(v, path, report);
 };
 
+/** A clue's kinds: the kernel fact atoms of the condition grammar (engine plan §4). */
+const CLUE_KINDS = ['held', 'used', 'has', 'doc', 'taken', 'examined', 'open', 'visited', 'solved', 'failed'] as const;
+
+/** One clue atom: exactly one key, its id in that kind's grammar; whether the fact exists is `world/clue-reachable`. */
+const clue: Decoder<ClueAtom> = (v, path, report) => {
+  const pair = oneKey(v, CLUE_KINDS, path, report);
+  if (pair === undefined) {
+    return undefined;
+  }
+  const [kind, value] = pair;
+  const p = at(path, kind);
+  const atom = <T>(decode: Decoder<T>, make: (id: T) => ClueAtom): ClueAtom | undefined => {
+    const id = decode(value, p, report);
+    return id === undefined ? undefined : make(id);
+  };
+  const hotspotKey = matching<HotspotKey>(HOTSPOT_KEY_RE);
+  const puzzleId = matching<PuzzleLocalId>(ID_RE);
+  switch (kind) {
+    case 'held':
+      return atom(itemId, (held) => ({ held }));
+    case 'used':
+      return atom(itemId, (used) => ({ used }));
+    case 'has':
+      return atom(itemId, (has) => ({ has }));
+    case 'doc':
+      return atom(matching<DocId>(ID_RE), (doc) => ({ doc }));
+    case 'taken':
+      return atom(hotspotKey, (taken) => ({ taken }));
+    case 'examined':
+      return atom(hotspotKey, (examined) => ({ examined }));
+    case 'open':
+      return atom(hotspotKey, (open) => ({ open }));
+    case 'visited':
+      return atom(matching<RoomId>(ID_RE), (visited) => ({ visited }));
+    case 'solved':
+      return atom(puzzleId, (solved) => ({ solved }));
+    default:
+      return atom(puzzleId, (failed) => ({ failed })); // oneKey admits CLUE_KINDS only: the last one, 'failed'
+  }
+};
+
 const sourcePuzzle = (types: PuzzleTypes): Decoder<SourcePuzzle> => (v, path, report) => {
   if (!isObject(v)) {
     report(path, 'shape', 'not a puzzle object');
     return undefined;
   }
-  const keysOk = exactKeys(v, [...PUZZLE_KEYS, ...SECRET_KEYS], path, report);
+  const keysOk = exactKeys(v, [...PUZZLE_KEYS, ...SECRET_KEYS], path, report, ['clues']);
   const body = puzzleBody(v, path, report, types);
   const sol = field(v, 'solution', path, report, solution);
   const hints = field(v, 'hints', path, report, hintTexts);
-  return keysOk && body !== undefined && sol !== undefined && hints !== undefined ? { ...body, solution: sol, hints } : undefined;
+  const clues = Object.hasOwn(v, 'clues') ? field(v, 'clues', path, report, list(clue)) : [];
+  if (!keysOk || body === undefined || sol === undefined || hints === undefined || clues === undefined) {
+    return undefined;
+  }
+  return { ...body, solution: sol, hints, clues };
 };
 
 const hintTiers: Decoder<HintTiers> = (v, path, report) => {
