@@ -1,0 +1,25 @@
+## 13. Owner questions (values only, each with a default)
+
+| # | Question | Default |
+|---|---|---|
+| OQ1 | Which demo puzzles are per-player (O1, the author marks)? | ch1 `drawer` (4 dials, 9,999 values), with its diary clue (`ch1.diary.b002`) reworded so it no longer names a year (a random code cannot be "the year the house was built"), and its tier-2 hint (`ch1.drawer.h002`, "в нём есть год") reworded likewise; ch2 `cabinet` (3 dials) cannot qualify |
+| OQ2 | O2 acts only on a puzzle with an attempt cap. Should per-player puzzles carry one? | No rule: the author sets `maxAttempts` per puzzle as today; ch1 `drawer` stays uncapped, so its code never changes |
+| OQ3 | Tier-3 hint of a per-player puzzle (Q15, this half): price and wording | the same tier price as every hint (`hintTierCost`, one unit per tier); ru «Код: $code(<puzzle>).», en "The code: $code(<puzzle>)." (a 4-digit code reads `1847`; per-digit placeholders give today's `1-8-4-7` style if wanted) |
+| OQ4 | Wording of three new player-facing UI strings | values failed: «Не удалось загрузить код.» + «Повторить» / "Could not load the code." + "Retry"; value changed: «Код изменился — загляни в записи ещё раз.» / "The code has changed: look at your clues again." |
+| OQ5 | After launch, a story update may retire a puzzle on which players bought hints; the build refuses that until a compensation step exists (m7, §3.8). What should the step credit those players? | the hint units each spent on that puzzle's unlocked tiers, credited once per unlock row (idempotent on the unlock row), at the release that retires it |
+| OQ6 | Does the privacy policy's "puzzle progress and opened hints" cover the codes drawn per player, or must it name them? | name them at the next policy version ("the codes drawn for your puzzles"), with the lawyer items Q38-Q40 |
+| OQ7 | The look of code labels on the art (art direction) | three styles on system fonts: `brass` (engraved metal), `ink` (handwriting on paper), `chalk`; a custom font later |
+
+**Told, not asked** (consequences of rulings already made, for the owner's information, as O3 / O4 / O7 were):
+
+| # | Item |
+|---|---|
+| T1 | A forced re-draw outside O2's trigger: when a story update changes a per-player puzzle's shape so that a player's value no longer fits (a 4-digit code cannot open a 5-dial lock), that value is re-drawn at once. A value that still fits is kept (§3.5 step 3) |
+| T2 | The attempt cap counts guesses per value, not per save: loading an older slot does not give back guesses already spent on the same value; only a re-draw does (§3.6) |
+| T3 | Codes never appear in look texts (the short messages after tapping an object): such a clue is a zoom view with the code drawn on the art, a document, or an item description (§4) |
+| T4 | After the first production release, a puzzle that has shipped can be renamed or moved but not deleted until the compensation step of OQ5 exists; before launch, deleting puzzles is free (§3.8, m7) |
+| T5 | In the backlog, a line from an earlier chapter shows its code as a dotted mark (`····`), not the digits: the code belonged to that chapter's puzzle, which is behind the player, and showing the current chapter's code there would be wrong (§5.2, W5). Fetching the earlier chapter's code instead was weighed and not taken (r3 m6): the client keeps only the current chapter's world, so it no longer knows that puzzle's shape (`answerMax` decides `1847` vs `12-7-30`), which needs either the earlier world (a chapter document fetch per backlog open, up to its 8 KB br LIMIT) or a new `max` field in every values response (a DTO change); the backlog is restored from the save after every reload, so the fetch repeats per session; and the digits open nothing (a placeholder names only its own chapter's puzzles, carried texts cannot name another chapter, engine.md R-E10). Say so if the backlog should show the digits anyway; it is one small later lane |
+| T6 | Every toast (not only the new ones) gains entry, exit and replace motion (GM6t, W6) |
+| T7 | A code mark on the art (`····` while the code loads or cannot load) shimmers at the scene's capped ambient rate, and holds still after a minute with no tap, like the characters' idle motion (the battery rule whose question `characters.md` §13 Q2 asks); the next tap starts it again (§6.3, r3 W3) |
+| T8 | When the story loops back to a puzzle whose attempts were used up in the meantime (in a replay or on another device): a puzzle the player **gave up on** starts again with a **new code**, as any restart under O2 does; a puzzle the player **solved** starts again with the **same code** and fresh attempts (a solved code is never re-drawn by O2, §3.6's re-draw row). A save that holds the puzzle solved, failed or given up shows the last code and changes nothing until the story plays the puzzle again (§3.6, rounds 8-9; round 9, r8 m2: round 8 said "a new code" for both) |
+| T9 | While the codes cannot load, a Try is not judged: the first Try loads the code instead (the answer is not counted), and the player tries again with the code now shown (§3.5 step 4, round 8) |

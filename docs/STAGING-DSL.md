@@ -7,6 +7,12 @@ the narrowed `-> DONE` ([PUZZLES-PLAN.md](PUZZLES-PLAN.md), lane LW1). §9 also 
 the story meta file `story/meta.json` ([META-PLAN.md](META-PLAN.md), lane LM1); the tag language is unchanged. The
 rules marked "from LW3" in §8 and §11 are the contract lane LW3 implements.
 
+Changed by the shots plan (adopted 2026-11-09, RULINGS 158; planned, not built): SH1, SH2 and SH3b add the shot tags,
+typed commands, lints and flow analysis, and SH12a takes the sprite kinds `show` / `hide` out; this file changes with
+those lanes, together with the parser it documents —
+[shots §3 The story DSL](plans/shots/03-story-dsl.md#3-the-story-dsl),
+[shots §9.13 SH12a `sprites-out`](plans/shots/09e-lanes-sh11-sh12b.md#913-sh12a-sprites-out-client-the-kinds-atomic-rev-4-split-w6).
+
 - **One parser.** `client/src/story/tags.ts` (`parseTags`) is used by the story gate (`npm --prefix client run
   story`) and by the runtime. Nothing else parses tags (CLAUDE.md principle 7; enforced by `client/src/arch.test.ts`).
 - **Two-way check.** `client/src/story/dsl-doc.test.ts` reads this file: the `### \`<kind>\`` headings under
