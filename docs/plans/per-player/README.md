@@ -1,0 +1,54 @@
+# Per-player plan: per-player codes and labels on the art
+
+**Planned; adopted 2026-11-09 at main `3c62a86`; nothing built yet**; lane cuts re-locate every code citation on their own base.
+
+## Provenance
+
+- Source: `design/mechanics/per-player.md` in the orchestration repo, frozen at tag `designs-adopted-2026-11-09` (`5533440`), sha256 `eb09c6e0…`: round 10 + reconcile revision 4. Dated 2026-11-03; rounds 1-2 cite main `5c702c4` (code `48bc82a`), round 3 reads `a6365a8`, later rounds name their commit in place; its inputs were `research/mechanics/synthesis.md` rev 2, the synthesis critique r2, RULINGS 120-128, PUZZLES-PLAN X5-X9, META-PLAN "Privacy", MEMORY-PLAN §4.B / §11 and engine round 2.
+- Approved by `design/mechanics/critique_perplayer_r10.md` (RULINGS 148) and `design/reconcile/critique_perplayer_r4.md` (RULINGS 158); adopted by RULINGS 152, 153, 158.
+- History, kept at the tag and not adopted: the header's round summaries and §17-§29 (the revision patch logs).
+
+## Reading rule
+
+- Code citations are `file:line` on the commit each round read (stated in place): a lane cut re-locates them on its own base. Design citations are links to the section they meant.
+- Labels per [labels-and-owner-values.md](labels-and-owner-values.md); the term table is [§10 Ledgers](10-budgets-and-validation.md#ledgers-reconcile-p4-rulings-143-qo10-145-149-152-shots-i-13-reconcile-r2-one-ledger-enginemd-111), the sums are [engine §11.1 The shared ledgers](../engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13) (one owner per figure).
+- The one lane order of all three plans: [engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts).
+
+Owner questions (§13): **open** — OQ1-OQ7 were never put to the owner (no OPEN-QUESTIONS row, no RULINGS line; RULINGS 154 resolves Q15a-h, the new types' half, and Q57 only); the §13 defaults are the design's defaults, not the owner's answers. They gate GM6c2 (OQ4: `i18n/values.ts`'s three strings), GM6c4 (OQ1-OQ3: ch1's per-player puzzle, its cap and its tier-3 text) and GM6d2 (OQ7: the label look); OQ5 (the compensation credit) and OQ6 (the privacy policy's wording) gate no lane. T1-T9 are told, not asked.
+
+## Keys
+
+| Key | Meaning | Where |
+|---|---|---|
+| MEASURED / ARITHMETIC / CLAIM / LIMIT / CODE | the label of every figure: measured (source named), computed (shown), claimed (a doc, a plan estimate, a page), a constant of our tree, read in source | [labels and owner values](labels-and-owner-values.md) |
+| EN | the engine plan (`design/mechanics/engine.md`); `GM<n>` is one of its lanes | [engine plan](../engine/README.md) |
+| PPL | this plan (`design/mechanics/per-player.md`) | this directory |
+| SH | the shots plan (`design/shots/proposal.md`); `SH<n>` is one of its lanes | [shots plan](../shots/README.md) |
+| `file:line` | a code line on the commit its round names (`5c702c4` / `48bc82a` for rounds 1-2, `a6365a8` for round 3; later rounds state theirs) | the repository at that commit |
+
+## Files
+
+| File | Contents |
+|---|---|
+| [labels-and-owner-values.md](labels-and-owner-values.md) | the labels of every figure and the owner values this plan builds on |
+| [00-decision-table.md](00-decision-table.md) | §0 Decision table |
+| [01-current-state.md](01-current-state.md) | §1 Current state on main |
+| [02-goal-and-constraints.md](02-goal-and-constraints.md) | §2 Goal and constraints |
+| [03-server-half.md](03-server-half.md) | §3 Server half (3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8, 3.9, 3.10) |
+| [04-mark-and-lints.md](04-mark-and-lints.md) | §4 O1: the mark and the lints |
+| [05-client-half.md](05-client-half.md) | §5 Client half (5.1, 5.2, 5.3, 5.4, 5.5, 5.6) |
+| [06-labels-on-the-art.md](06-labels-on-the-art.md) | §6 I1: labels on the art (6.1, 6.2, 6.3, 6.4, 6.5, 6.6) |
+| [07-concurrency-and-failure.md](07-concurrency-and-failure.md) | §7 Concurrency and failure model |
+| [08-resource-lifetime.md](08-resource-lifetime.md) | §8 Resource lifetime |
+| [09a-lanes-gm6a-gm6s2.md](09a-lanes-gm6a-gm6s2.md) | §9 Lanes; lanes GM6a, GM6k, GM6s1, GM6s2 |
+| [09b-lanes-gm6c1a-gm6c2.md](09b-lanes-gm6c1a-gm6c2.md) | lanes GM6c1a, GM6c1b, GM6c2 |
+| [09c-lanes-gm6c3-gm6c4.md](09c-lanes-gm6c3-gm6c4.md) | lanes GM6c3, GM6t, GM6c4 |
+| [09d-lanes-gm6d1-gm6d2.md](09d-lanes-gm6d1-gm6d2.md) | lanes GM6d1, GM6d2 |
+| [09e-order-and-shared-files.md](09e-order-and-shared-files.md) | §9 Order (9) |
+| [10-budgets-and-validation.md](10-budgets-and-validation.md) | §10 Budgets and validation |
+| [11-contract-changes.md](11-contract-changes.md) | §11 Where M3c changes a contract this design relies on (11.1) |
+| [12-interface-requests.md](12-interface-requests.md) | §12 Interface requests to engine.md (12.1, 12.2, 12.3) |
+| [13-owner-questions.md](13-owner-questions.md) | §13 Owner questions |
+| [14-orchestrator-questions.md](14-orchestrator-questions.md) | §14 Questions for the orchestrator |
+| [15-readiness-checklist.md](15-readiness-checklist.md) | §15 Readiness checklist |
+| [16-critique-r2-items.md](16-critique-r2-items.md) | §16 Critique r2 items for this track |
