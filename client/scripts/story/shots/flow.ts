@@ -10,7 +10,7 @@
 // shot pass that names the legacy kinds `show` / `hide` (rev. 5, W3: SH12a removes them here alone). Pure, no node:*,
 // no inkjs; tags are read only through `parseTags`.
 import type { Cast } from '../../../src/story/catalog.ts';
-import type { AssetIndex, BgId, CgId, ChapterId, CharId, ExprId, KnotName, LineId, SpeakerId, StagingCommand, YieldCommand } from '../../../src/story/staging.ts';
+import type { AssetId, AssetIndex, BgId, CgId, ChapterId, CharId, ExprId, KnotName, LineId, SpeakerId, StagingCommand, YieldCommand } from '../../../src/story/staging.ts';
 import { YIELD_KINDS, parseTags, tagKind } from '../../../src/story/tags.ts';
 import type { RoomId, WorldPublicBody } from '../../../src/world/types.ts';
 import { classify } from '../classify.ts';
@@ -18,6 +18,7 @@ import type { Divert, LineClass, RawTag, SourceLine } from '../classify.ts';
 import type { ChapterGraph } from '../graph.ts';
 import { shotFinding } from './lint.ts';
 import type { ShotFinding } from './lint.ts';
+import type { EffectiveShot } from './list.ts';
 
 /** A presented step's key (§3.4): a line ID, or `k:<knot>` for a knot entry. */
 export type StepKey = LineId | `k:${KnotName}`;
@@ -47,6 +48,10 @@ export type Cut = BgId | CgId | null;
 export type Batch = { readonly from: readonly StepKey[]; readonly commands: readonly Placed[]; readonly effect: Effect; readonly cut: Cut };
 export type StepFlow = {
   readonly key: StepKey;
+  /** A text line, a choice of a choice set, or a knot entry. */
+  readonly kind: 'line' | 'choice' | 'knot';
+  /** A choice's set (every choice of it, itself included: one window); [] for a line or a knot entry. */
+  readonly set: readonly StepKey[];
   /** Where the line or choice is (a knot entry: its knot header), story-relative. */
   readonly file: string;
   readonly line: number;
@@ -148,7 +153,9 @@ class Builder {
   readonly findings: ShotFinding[] = [];
   readonly #reported = new Set<string>();
   /** Per step: where it is, its own commands and how its walk continues. */
-  readonly nodes = new Map<StepKey, { file: string; line: number; speaker: CharId | null; cont: () => State[] }>();
+  readonly nodes = new Map<StepKey, { kind: StepFlow['kind']; file: string; line: number; speaker: CharId | null; cont: () => State[] }>();
+  /** Per choice, the choices of its set. */
+  readonly sets = new Map<StepKey, Set<StepKey>>();
   readonly #queue: StepKey[] = [];
   /** Per step, per batch signature: the batch. */
   readonly into = new Map<StepKey, Map<string, { from: Set<StepKey>; commands: readonly Placed[] }>>();
@@ -274,7 +281,7 @@ class Builder {
   }
 
   /** Registers a step and queues its walk; a known step keeps its first place. */
-  #ensure(key: StepKey, at: { file: string; line: number; speaker: CharId | null }, cont: () => State[]): void {
+  #ensure(key: StepKey, at: { kind: StepFlow['kind']; file: string; line: number; speaker: CharId | null }, cont: () => State[]): void {
     if (!this.nodes.has(key)) {
       this.nodes.set(key, { ...at, cont });
       this.#queue.push(key);
@@ -316,7 +323,7 @@ class Builder {
 
   #knotEntry(key: StepKey, knot: string, at: { f: number; i: number } | undefined): void {
     const header = at === undefined ? undefined : this.#files[at.f]?.lines[at.i];
-    this.#ensure(key, { file: this.#files[at?.f ?? 0]?.name ?? '', line: header?.line ?? 0, speaker: null }, () => {
+    this.#ensure(key, { kind: 'knot', file: this.#files[at?.f ?? 0]?.name ?? '', line: header?.line ?? 0, speaker: null }, () => {
       const top = this.#knotTop(knot, []);
       return top === null ? [] : [top];
     });
@@ -427,7 +434,7 @@ class Builder {
     if ((said.text !== '' || said.speaker !== null) && id !== null) {
       this.#edge(from, id, [...s.pending, ...own]);
       const after: State = { ...s, inline: false, fresh: false, pending: [] };
-      this.#ensure(id, { file, line, speaker: this.#speaker(said.speaker) }, () => this.#after(after, said.diverts));
+      this.#ensure(id, { kind: 'line', file, line, speaker: this.#speaker(said.speaker) }, () => this.#after(after, said.diverts));
       return [];
     }
     // A tag-only or unkeyed line: its commands join the next displayed step's batch (STAGING-DSL §3.5).
@@ -468,6 +475,7 @@ class Builder {
     }
     const out: State[] = [];
     const file = this.#files[s.f]?.name ?? '';
+    const shown = new Set<StepKey>();
     for (const m of members) {
       const c = lines[m]?.cls;
       if (c?.kind !== 'choice') {
@@ -481,10 +489,17 @@ class Builder {
       if (hasText && id !== null) {
         // The set's batch runs with the choices (§3.5): every choice of the set gets it, one window.
         this.#edge(from, id, [...s.pending, ...own]);
-        this.#ensure(id, { file, line: lines[m]?.line ?? 0, speaker: null }, () => this.#after(branch, c.diverts));
+        this.#ensure(id, { kind: 'choice', file, line: lines[m]?.line ?? 0, speaker: null }, () => this.#after(branch, c.diverts));
+        shown.add(id);
       } else {
         // A fallback choice is never shown: the runtime follows it when no other is offered, the batch carried along.
         out.push(...this.#after({ ...branch, pending: [...s.pending, ...trailing] }, c.diverts));
+      }
+    }
+    for (const id of shown) {
+      const set = this.sets.get(id) ?? this.sets.set(id, new Set()).get(id);
+      for (const other of shown) {
+        set?.add(other);
       }
     }
     return out;
@@ -791,6 +806,8 @@ export function buildFlow(input: FlowInput): { flow: ChapterFlow; findings: Shot
     const batches: Batch[] = (raw.get(key) ?? []).map((x) => ({ ...x, effect: batchOut(key, x) ?? UNREACHED, cut: cutOf(x.commands) }));
     steps.set(key, {
       key,
+      kind: node.kind,
+      set: [...(b.sets.get(key) ?? [])].sort(order),
       file: node.file,
       line: node.line,
       next: [...(b.next.get(key) ?? [])].sort(order),
@@ -821,6 +838,235 @@ export function crossCheck(flow: ChapterFlow, transitions: ReadonlySet<string>, 
       const where = from ?? flow.steps.get(b as StepKey); // the same lookup
       out.push(shotFinding('flow/edge-missing', where?.file ?? entry, where?.line ?? 0, `the seeded runs went from '${a}' to '${b}', which the step flow lacks (§14)`));
     }
+  }
+  return out;
+}
+
+/** Per room of the chapter's world: the shot it draws and its picture files beyond the plate (props, decor states). */
+export type RoomFiles = ReadonlyMap<RoomId, { readonly shot: BgId; readonly room: readonly AssetId[] }>;
+/** What the shot files are: the effective shots and the talk files (`<shot>/<char>/<expr>`: some chapter has the
+ *  character speak in that expression in that shot, §2.6). */
+export type ShotFiles = { readonly shots: ReadonlyMap<BgId, EffectiveShot>; readonly talk: ReadonlySet<string> };
+/**
+ * A window's lookahead (§3.4): `cur` the files in effect; `certain` the next appearance's files on every path, at the
+ * least distance `certainDist` (presented steps; 0 when nothing is certain); `possible` the other next-appearance
+ * files (`near` of them first: at a story step all of them, rev. 6 m3); `d2`, `d3` the two appearances after;
+ * `labels` a room is in effect (its label bound).
+ */
+export type Lookahead = {
+  readonly cur: readonly AssetId[];
+  readonly certain: readonly AssetId[];
+  readonly certainDist: number;
+  readonly possible: readonly AssetId[];
+  readonly near: number;
+  readonly d2: readonly AssetId[];
+  readonly d3: readonly AssetId[];
+  readonly labels: boolean;
+};
+export type LookInput = { readonly flow: ChapterFlow; readonly files: ShotFiles; readonly rooms: RoomFiles };
+
+function asset(id: string): AssetId {
+  return id as AssetId; // a shot-file or catalog id built from decoded ids (usage.ts checks every id on decode)
+}
+
+/** The files of shot `s` with the faces of `e` (talk only when `talk`): plate, sheet, face and talk files (§2.6). */
+function shotFiles(s: BgId, e: Effect, files: ShotFiles, talk: boolean): AssetId[] {
+  const shot = files.shots.get(s);
+  const out = [asset(`bg/${s}`)];
+  if ((shot?.cast.length ?? 0) > 0) {
+    out.push(asset(`sheet/${s}`));
+  }
+  for (const m of shot?.cast ?? []) {
+    if (m.view !== 'face') {
+      continue;
+    }
+    for (const x of e.faces.get(m.char) ?? AT_REST) {
+      const expr = x ?? m.rest;
+      if (expr !== m.rest) {
+        out.push(asset(`face/${s}/${m.char}/${expr}`));
+      }
+      if (talk && files.talk.has(`${s}/${m.char}/${expr}`)) {
+        out.push(asset(`talk/${s}/${m.char}/${expr}`));
+      }
+    }
+  }
+  return out;
+}
+
+/** The room pictures in effect with shot `s`: the props and decor of each room in effect that draws it. */
+function roomOf(s: BgId, e: Effect, rooms: RoomFiles): AssetId[] {
+  return [...e.room].flatMap((r) => {
+    const room = r === null ? undefined : rooms.get(r);
+    return room !== undefined && room.shot === s ? room.room : [];
+  });
+}
+
+/**
+ * The files a batch makes visible (§3.4 "Appearances"): a `bg:` / `scene:` cut brings the new shot's plate, sheet, the
+ * face files of its face members in effect and their talk files, and a room's props when it is a room's shot; a
+ * `face:` without a cut brings that face file and its talk file in each shot in effect; a `cg:` brings the CG. A speaker
+ * change brings nothing; legacy sprites are the knot-set's.
+ */
+export function appears(b: Batch, input: Omit<LookInput, 'flow'>): AssetId[] {
+  const out = new Set<AssetId>();
+  const cut = b.commands.find((p) => p.cmd.kind === 'scene' || p.cmd.kind === 'bg')?.cmd;
+  if (cut?.kind === 'scene' || cut?.kind === 'bg') {
+    for (const a of [...shotFiles(cut.bg, b.effect, input.files, true), ...roomOf(cut.bg, b.effect, input.rooms)]) {
+      out.add(a);
+    }
+  } else {
+    for (const p of b.commands) {
+      if (p.cmd.kind !== 'face') {
+        continue;
+      }
+      const { char, expr } = p.cmd;
+      for (const s of b.effect.shots) {
+        const m = input.files.shots.get(s)?.cast.find((x) => x.char === char && x.view === 'face');
+        if (m === undefined) {
+          continue;
+        }
+        if (expr !== m.rest) {
+          out.add(asset(`face/${s}/${char}/${expr}`));
+        }
+        if (input.files.talk.has(`${s}/${char}/${expr}`)) {
+          out.add(asset(`talk/${s}/${char}/${expr}`));
+        }
+      }
+    }
+  }
+  for (const p of b.commands) {
+    if (p.cmd.kind === 'cg' && p.cmd.cg !== null) {
+      out.add(asset(`cg/${p.cmd.cg}`));
+    }
+  }
+  return [...out].sort(order);
+}
+
+/**
+ * A step's entry alternatives (§3.4 "Entry alternatives", rev. 3 C1): one per possible top image - a CG of the
+ * may-set alone, else a shot of the may-set with its drawn files (plate, sheet, the face files in effect; a room's
+ * props) and, in a legacy chapter, every sprite in effect. Talk files are motion, never awaited.
+ */
+export function entryOf(e: Effect, input: Omit<LookInput, 'flow'>): AssetId[][] {
+  const out: AssetId[][] = [];
+  for (const c of [...e.cg].sort()) {
+    if (c !== null) {
+      out.push([asset(`cg/${c}`)]);
+    }
+  }
+  if (e.cg.has(null) || e.cg.size === 0) {
+    const sprites = [...e.sprites].flatMap(([c, xs]) => [...xs].map((x) => asset(`char/${c}/${x}`)));
+    for (const s of [...e.shots].sort()) {
+      out.push([...new Set([...shotFiles(s, e, input.files, false), ...roomOf(s, e, input.rooms), ...sprites])].sort(order));
+    }
+  }
+  return out;
+}
+
+/** A lookahead edge: the successor and the files the way into it makes visible; `to: null` = the path ends there. */
+type LookEdge = { readonly to: StepKey | null; readonly files: ReadonlySet<AssetId> };
+
+/** Story-step lookahead edges: per step, its successors with the files the way into each makes visible. */
+function lookEdges(input: LookInput): Map<StepKey, LookEdge[]> {
+  const own = new Map<StepKey, LookEdge[]>();
+  for (const step of input.flow.steps.values()) {
+    const out: LookEdge[] = [];
+    for (const n of step.next) {
+      const to = input.flow.steps.get(n as StepKey); // a step key: an `r:` window has no step
+      for (const b of to?.batches.filter((x) => x.from.includes(step.key)) ?? []) {
+        out.push({ to: to?.key ?? null, files: new Set(appears(b, input)) });
+      }
+    }
+    // A step with no successor ends its paths: kept as an edge so that a choice set's union still sees the end.
+    own.set(step.key, out.length > 0 ? out : [{ to: null, files: new Set() }]);
+  }
+  // A choice set is one window: each choice looks into every branch of its set.
+  const edges = new Map<StepKey, LookEdge[]>();
+  for (const step of input.flow.steps.values()) {
+    const keys = step.set.length > 0 ? step.set : [step.key];
+    edges.set(step.key, keys.flatMap((k) => own.get(k) ?? []));
+  }
+  return edges;
+}
+
+function sameSet<T>(a: ReadonlySet<T> | null, b: ReadonlySet<T> | null): boolean {
+  return a === b || (a !== null && b !== null && a.size === b.size && [...a].every((x) => b.has(x)));
+}
+
+/**
+ * The lookahead of every step (§3.4 D_n): over every path from a step, `d1` = the first later appearance, `certain` =
+ * the files in the `d1` appearance of every path (a path that ends with none makes it empty), `possible` = the other
+ * `d1` files, `d2` / `d3` the two appearances after. Fixpoints: the unions grow from empty, `certain` shrinks from
+ * every file, the distance shrinks from infinity.
+ */
+export function lookahead(input: LookInput): Map<WindowKey, Lookahead> {
+  const edges = lookEdges(input);
+  const keys = [...input.flow.steps.keys()];
+  const any1 = new Map<StepKey, ReadonlySet<AssetId>>(keys.map((k) => [k, new Set()]));
+  const d2 = new Map<StepKey, ReadonlySet<AssetId>>(keys.map((k) => [k, new Set()]));
+  const d3 = new Map<StepKey, ReadonlySet<AssetId>>(keys.map((k) => [k, new Set()]));
+  const all1 = new Map<StepKey, ReadonlySet<AssetId> | null>(keys.map((k) => [k, null])); // null: every file (not yet narrowed)
+  const dist = new Map<StepKey, number>(keys.map((k) => [k, Number.POSITIVE_INFINITY]));
+  const none: ReadonlySet<AssetId> = new Set();
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const k of keys) {
+      const out = edges.get(k) ?? [];
+      const nAny = new Set<AssetId>();
+      const nD2 = new Set<AssetId>();
+      const nD3 = new Set<AssetId>();
+      let nAll: ReadonlySet<AssetId> | null = null;
+      let nDist = Number.POSITIVE_INFINITY;
+      for (const e of out) {
+        if (e.to === null) {
+          nAll = none; // a path that ends with no appearance shares none
+          continue;
+        }
+        const appeared = e.files.size > 0;
+        for (const a of appeared ? e.files : (any1.get(e.to) ?? none)) {
+          nAny.add(a);
+        }
+        for (const a of appeared ? (any1.get(e.to) ?? none) : (d2.get(e.to) ?? none)) {
+          nD2.add(a);
+        }
+        for (const a of appeared ? (d2.get(e.to) ?? none) : (d3.get(e.to) ?? none)) {
+          nD3.add(a);
+        }
+        const first = appeared ? e.files : (all1.get(e.to) ?? null);
+        nAll = nAll === null ? first : first === null ? nAll : new Set([...nAll].filter((a) => first.has(a)));
+        nDist = Math.min(nDist, appeared ? 1 : 1 + (dist.get(e.to) ?? Number.POSITIVE_INFINITY));
+      }
+      if (!sameSet(nAny, any1.get(k) ?? null) || !sameSet(nD2, d2.get(k) ?? null) || !sameSet(nD3, d3.get(k) ?? null) || !sameSet(nAll, all1.get(k) ?? null) || nDist !== dist.get(k)) {
+        any1.set(k, nAny);
+        d2.set(k, nD2);
+        d3.set(k, nD3);
+        all1.set(k, nAll);
+        dist.set(k, nDist);
+        changed = true;
+      }
+    }
+  }
+  const out = new Map<WindowKey, Lookahead>();
+  for (const step of input.flow.steps.values()) {
+    const k = step.key;
+    const certain = [...(all1.get(k) ?? none)].sort(order);
+    const possible = [...(any1.get(k) ?? none)].filter((a) => !certain.includes(a)).sort(order);
+    const cur = new Set(entryOf(step.effect, input).flat());
+    for (const s of step.effect.shots) {
+      for (const a of shotFiles(s, step.effect, input.files, true)) {
+        cur.add(a);
+      }
+    }
+    out.set(k, {
+      cur: [...cur].sort(order),
+      certain,
+      certainDist: certain.length > 0 ? (dist.get(k) ?? 0) : 0,
+      possible,
+      near: possible.length,
+      d2: [...(d2.get(k) ?? none)].sort(order),
+      d3: [...(d3.get(k) ?? none)].sort(order),
+      labels: [...step.effect.room].some((r) => r !== null),
+    });
   }
   return out;
 }

@@ -15,9 +15,9 @@ import type { ChapterGraph } from '../graph.ts';
 import { GLOBALS_PATH } from '../lint.ts';
 import { playChapter } from '../playthrough.ts';
 import type { ChapterPlay } from '../playthrough.ts';
-import { buildFlow, crossCheck } from './flow.ts';
-import type { ChapterFlow, StepKey } from './flow.ts';
-import { SHOT_LINT_CODES, lintShots } from './lint.ts';
+import { buildFlow, crossCheck, entryOf, lookahead } from './flow.ts';
+import type { ChapterFlow, Lookahead, RoomFiles, ShotFiles, StepKey } from './flow.ts';
+import { SHOT_LINT_CODES, faceNeeds, lintShots } from './lint.ts';
 import type { Plane, ShotFinding } from './lint.ts';
 import { decodeShotList, effectiveCatalog, effectiveShots, impliedPlaceholders } from './list.ts';
 import type { EffectiveShot, ShotList } from './list.ts';
@@ -988,4 +988,229 @@ test('shots: a face, anim or cam target on a legacy chapter fails even with its 
     "shot/char-absent story/ch1/main.ink:9 'anim: ally nod': ally is not in the cast of shot 'street' (on some path) (§14)",
     "shot/char-absent story/ch1/main.ink:11 'cam: pan to=ally': ally is not in the cast of shot 'street' (on some path) (§14)",
   ]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Commit 6a: the story-step lookahead
+
+type Looked = { flow: ChapterFlow; look: ReadonlyMap<string, Lookahead>; files: ShotFiles; rooms: RoomFiles };
+
+/** One fixture chapter's flow and lookahead under a shot list; the talk files are the chapter's own spoken faces. */
+function looked(body: readonly string[], opts: { list?: ShotList; w?: WorldPublicBody; rooms?: RoomFiles } = {}): Looked {
+  const list = opts.list ?? CAFE_SHOTS;
+  const catalog = effectiveCatalog(COMMITTED.catalog, list);
+  const { flow } = flowOf(body, catalog, opts.w);
+  const shots = effectiveShots(catalog, list, opts.w === undefined ? [] : [opts.w]);
+  const talk = new Set(
+    faceNeeds(flow, shots)
+      .filter((n) => n.talk)
+      .map((n) => `${n.shot}/${n.char}/${n.expr}`),
+  );
+  const files = { shots, talk };
+  const rooms = opts.rooms ?? new Map();
+  return { flow, look: lookahead({ flow, files, rooms }), files, rooms };
+}
+
+function lookAt(l: Looked, key: string): Lookahead {
+  const v = l.look.get(key);
+  if (v === undefined) {
+    throw new Error(`invariant: the lookahead has window ${key}`);
+  }
+  return v;
+}
+
+function entryAt(l: Looked, key: string): string[][] {
+  const s = l.flow.steps.get(key as StepKey); // a fixture key
+  if (s === undefined) {
+    throw new Error(`invariant: the flow has step ${key}`);
+  }
+  return entryOf(s.effect, l);
+}
+
+/** A cafe choice: a close-up, an over-the-shoulder, the street; the gather after it. */
+const THREE_WAYS = [
+  '-> k',
+  '=== k ===',
+  '# scene: cafe_wide',
+  'Кафе. #id:ch1.k.a001',
+  '* [Ближе #id:ch1.k.c001]',
+  '    # bg: cafe_ally_cu',
+  '    ally: Привет. #id:ch1.k.a002',
+  '* [Через плечо #id:ch1.k.c002]',
+  '    # bg: cafe_ots',
+  '    ally: Да? #id:ch1.k.a003',
+  '* [Уйти #id:ch1.k.c003]',
+  '    # scene: street_wide',
+  '    Улица. #id:ch1.k.a004',
+  '- Потом. #id:ch1.k.a005',
+  '-> END',
+];
+
+test("flow: d1 of a choice lists each branch's first cut", () => {
+  const l = looked(THREE_WAYS);
+  const branches = [
+    'bg/cafe_ally_cu',
+    'bg/cafe_ots',
+    'bg/street_wide',
+    'sheet/cafe_ally_cu',
+    'sheet/cafe_ots',
+    'talk/cafe_ally_cu/ally/neutral', // ally speaks at rest in the close-up
+    'talk/cafe_ots/ally/smile', // and at the over-the-shoulder's rest (smile)
+  ];
+  // The step before the choice and every choice of the set (one window) look into every branch.
+  for (const key of ['ch1.k.a001', 'ch1.k.c001', 'ch1.k.c002', 'ch1.k.c003']) {
+    expect(lookAt(l, key), key).toMatchObject({ certain: [], certainDist: 0, possible: branches, d2: [], d3: [] });
+  }
+  expect(l.flow.steps.get('ch1.k.c002' as StepKey)).toMatchObject({ kind: 'choice', set: ['ch1.k.c001', 'ch1.k.c002', 'ch1.k.c003'] });
+  expect(l.flow.steps.get('ch1.k.a001' as StepKey)).toMatchObject({ kind: 'line', set: [] });
+});
+
+test("flow: a line after a knot's last cut looks into the next knot", () => {
+  const l = looked(['-> a', '=== a ===', '# scene: cafe_wide', 'Кафе. #id:ch1.a.a001', 'Ещё. #id:ch1.a.a002', '-> b', '=== b ===', '# scene: street_wide', 'Улица. #id:ch1.b.b001', '-> END']);
+  expect(lookAt(l, 'ch1.a.a002')).toMatchObject({ certain: ['bg/street_wide'], certainDist: 1, possible: [] });
+  expect(lookAt(l, 'ch1.a.a001')).toMatchObject({ certain: ['bg/street_wide'], certainDist: 2, possible: [] });
+  expect(lookAt(l, 'k:a')).toMatchObject({ certain: ['bg/cafe_wide', 'sheet/cafe_wide'], certainDist: 1, d2: ['bg/street_wide'] });
+  expect(lookAt(l, 'ch1.b.b001')).toMatchObject({ certain: [], possible: [], d2: [] });
+});
+
+/** A CG over the cafe, then the CG off. */
+const LETTER = ['-> k', '=== k ===', '# scene: cafe_wide', 'Кафе. #id:ch1.k.a001', '# cg: letter', 'Письмо. #id:ch1.k.a002', '# cg: off', 'Дальше. #id:ch1.k.a003', '-> END'];
+
+test('flow: a cg counts as an image change', () => {
+  const l = looked(LETTER);
+  expect(lookAt(l, 'ch1.k.a001')).toMatchObject({ certain: ['cg/letter'], certainDist: 1 });
+  expect(l.flow.steps.get('ch1.k.a002' as StepKey)?.cut).toBe('letter');
+  // Off brings back the shot that stayed resident under the CG: nothing new appears.
+  expect(lookAt(l, 'ch1.k.a002')).toMatchObject({ certain: [], possible: [] });
+});
+
+test('flow: a step under a CG enters at the CG alone', () => {
+  const l = looked(LETTER);
+  expect(entryAt(l, 'ch1.k.a002')).toEqual([['cg/letter']]);
+  // The shot under the CG stays in effect: it is resident, not an entry alternative.
+  expect(lookAt(l, 'ch1.k.a002').cur).toEqual(['bg/cafe_wide', 'cg/letter', 'sheet/cafe_wide']);
+  expect(entryAt(l, 'ch1.k.a003')).toEqual([['bg/cafe_wide', 'sheet/cafe_wide']]);
+  // A CG on one path only: the CG and the shot are two alternatives.
+  const one = looked(['-> k', '=== k ===', '# scene: cafe_wide', 'Кафе. #id:ch1.k.a001', '* [Письмо #id:ch1.k.c001]', '    # cg: letter', '    Письмо. #id:ch1.k.a002', '* [Нет #id:ch1.k.c002]', '- Дальше. #id:ch1.k.a003', '-> END']);
+  expect(entryAt(one, 'ch1.k.a003')).toEqual([['cg/letter'], ['bg/cafe_wide', 'sheet/cafe_wide']]);
+});
+
+test("flow: a gather's entry lists one alternative per possible shot", () => {
+  const l = looked(THREE_WAYS);
+  expect(entryAt(l, 'ch1.k.a005')).toEqual([['bg/cafe_ally_cu', 'sheet/cafe_ally_cu'], ['bg/cafe_ots', 'sheet/cafe_ots'], ['bg/street_wide']]);
+  // The step's files in effect: every alternative, and the talk file of each visible face that has one.
+  expect(lookAt(l, 'ch1.k.a005').cur).toEqual([
+    'bg/cafe_ally_cu',
+    'bg/cafe_ots',
+    'bg/street_wide',
+    'sheet/cafe_ally_cu',
+    'sheet/cafe_ots',
+    'talk/cafe_ally_cu/ally/neutral',
+    'talk/cafe_ots/ally/smile',
+  ]);
+});
+
+test("flow: a legacy step's entry lists the sprites in effect", () => {
+  const l = looked(['-> k', '=== k ===', '# scene: street', '# show: ally neutral at=left', 'Улица. #id:ch1.k.a001', '# show: stranger smile at=right', 'Двое. #id:ch1.k.a002', '-> END']);
+  expect(entryAt(l, 'ch1.k.a001')).toEqual([['bg/street', 'char/ally/neutral']]);
+  expect(entryAt(l, 'ch1.k.a002')).toEqual([['bg/street', 'char/ally/neutral', 'char/stranger/smile']]);
+  expect(lookAt(l, 'ch1.k.a002').cur).toEqual(['bg/street', 'char/ally/neutral', 'char/stranger/smile']);
+  // A sprite is the knot-set's row, not an appearance (§3.4 "Window bytes").
+  expect(lookAt(l, 'ch1.k.a001')).toMatchObject({ certain: [], possible: [] });
+});
+
+test('flow: a choice whose replies open on different shots lists them as possible, not certain', () => {
+  const l = looked([
+    '-> k',
+    '=== k ===',
+    '# scene: cafe_wide',
+    'Кафе. #id:ch1.k.a001',
+    '* [Ближе #id:ch1.k.c001]',
+    '    # bg: cafe_ally_cu',
+    '    Близко. #id:ch1.k.a002',
+    '* [Плечо #id:ch1.k.c002]',
+    '    # bg: cafe_ots',
+    '    Плечо. #id:ch1.k.a003',
+    '* [Ждать #id:ch1.k.c003]',
+    '- Потом. #id:ch1.k.a004',
+    '# bg: street_wide',
+    'Улица. #id:ch1.k.a005',
+    '-> END',
+  ]);
+  // The waiting reply opens on nothing: its first appearance is the street, two steps on.
+  expect(lookAt(l, 'ch1.k.a001')).toMatchObject({
+    certain: [],
+    certainDist: 0,
+    possible: ['bg/cafe_ally_cu', 'bg/cafe_ots', 'bg/street_wide', 'sheet/cafe_ally_cu', 'sheet/cafe_ots'],
+    d2: ['bg/street_wide'],
+    d3: [],
+  });
+  expect(lookAt(l, 'ch1.k.a004')).toMatchObject({ certain: ['bg/street_wide'], certainDist: 1, possible: [] });
+});
+
+test('flow: a step whose every path opens on one shot lists it as certain with its distance', () => {
+  const body = [
+    '-> k',
+    '=== k ===',
+    '# scene: cafe_wide',
+    'Кафе. #id:ch1.k.a001',
+    '* [Да #id:ch1.k.c001]',
+    '    Да. #id:ch1.k.a002',
+    '* [Нет #id:ch1.k.c002]',
+    '- Потом. #id:ch1.k.a003',
+    '# bg: cafe_ally_cu',
+    '# face: ally smile',
+    'Близко. #id:ch1.k.a004',
+    '-> END',
+  ];
+  const l = looked(body);
+  const cu = ['bg/cafe_ally_cu', 'face/cafe_ally_cu/ally/smile', 'sheet/cafe_ally_cu'];
+  // The shortest way: the choice "Нет", the gather, the close-up.
+  expect(lookAt(l, 'ch1.k.a001')).toMatchObject({ certain: cu, certainDist: 3, possible: [] });
+  expect(lookAt(l, 'ch1.k.c001')).toMatchObject({ certain: cu, certainDist: 2, possible: [] });
+  expect(lookAt(l, 'ch1.k.a003')).toMatchObject({ certain: cu, certainDist: 1, possible: [] });
+  // A reply that ends the chapter shares nothing: the close-up is only possible.
+  const exit = looked([...body.slice(0, 7), '* [Уйти #id:ch1.k.c003]', '    -> END', ...body.slice(7)]);
+  expect(lookAt(exit, 'ch1.k.a001')).toMatchObject({ certain: [], certainDist: 0, possible: cu });
+  expect(lookAt(exit, 'ch1.k.c003')).toMatchObject({ certain: [], possible: cu });
+});
+
+test('flow: a face change is an appearance of its face file', () => {
+  const l = looked(['-> k', '=== k ===', '# scene: cafe_ally_cu', 'ally: Привет. #id:ch1.k.a001', '# face: ally smile', 'ally: Ха. #id:ch1.k.a002', '# face: ally neutral', 'Тишина. #id:ch1.k.a003', '-> END']);
+  expect(lookAt(l, 'ch1.k.a001')).toMatchObject({ certain: ['face/cafe_ally_cu/ally/smile', 'talk/cafe_ally_cu/ally/smile'], certainDist: 1 });
+  // Back to rest: the plate's face, no face file; its talk file (ally speaks at rest at a001) comes with it.
+  expect(lookAt(l, 'ch1.k.a002')).toMatchObject({ certain: ['talk/cafe_ally_cu/ally/neutral'], certainDist: 1 });
+  expect(lookAt(l, 'ch1.k.a002').cur).toEqual(['bg/cafe_ally_cu', 'face/cafe_ally_cu/ally/smile', 'sheet/cafe_ally_cu', 'talk/cafe_ally_cu/ally/smile']);
+});
+
+test('flow: a cut lists the talk file of every visible face whose expression has one', () => {
+  const l = looked([
+    '-> k',
+    '=== k ===',
+    '# scene: street_wide',
+    'Улица. #id:ch1.k.a001',
+    '# scene: cafe_wide',
+    '# face: ally smile',
+    'ally: Привет. #id:ch1.k.a002',
+    'stranger: Здравствуй. #id:ch1.k.a003',
+    '# bg: cafe_ally_cu',
+    'Близко. #id:ch1.k.a004',
+    '-> END',
+  ]);
+  // The stranger is silent at the cut but speaks at rest later in this shot: its talk file comes with the cut.
+  expect(lookAt(l, 'ch1.k.a001')).toMatchObject({
+    certain: ['bg/cafe_wide', 'face/cafe_wide/ally/smile', 'sheet/cafe_wide', 'talk/cafe_wide/ally/smile', 'talk/cafe_wide/stranger/neutral'],
+    certainDist: 1,
+  });
+  // Faces persist across the cut; nobody speaks in the close-up, so it has no talk file.
+  expect(lookAt(l, 'ch1.k.a003')).toMatchObject({ certain: ['bg/cafe_ally_cu', 'face/cafe_ally_cu/ally/smile', 'sheet/cafe_ally_cu'], certainDist: 1 });
+});
+
+test("flow: a story step's near covers all its possible files", () => {
+  const l = looked(THREE_WAYS);
+  expect(lookAt(l, 'ch1.k.a001').possible.length).toBeGreaterThan(0); // non-vacuity
+  for (const [key, v] of l.look) {
+    expect(v.near, key).toBe(v.possible.length);
+    expect(v.labels, key).toBe(false); // no room in effect
+  }
 });
