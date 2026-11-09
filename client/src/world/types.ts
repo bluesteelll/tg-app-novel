@@ -2,6 +2,7 @@
 // writes, and the public world the client loads. Types plus the one glyph list; world/decode.ts is the only decoder.
 // Pure (X4, `arch: pure world modules`): the runtime and the story tool import it alike.
 import type { FlagId, ModsOf } from '../mechanics/contract.ts';
+import type { Cond } from '../mechanics/data/conditions.ts';
 import type { MECHANIC_DATA } from '../mechanics/data/index.ts';
 import type { ParamsOf, PuzzleType } from '../puzzles/rules/index.ts';
 import type {
@@ -104,25 +105,14 @@ export type PuzzleBody = {
   [T in PuzzleType]: { readonly type: T; readonly params: ParamsOf<T> } & PuzzleCommon;
 }[PuzzleType];
 /**
- * A clue (engine plan §7.3, I4): one kernel fact atom of the condition grammar (§4) that shows the player a secret
- * goal once it holds. Source-only: never in a public world or the server content. GM3c widens `clues` to `Cond[]`.
+ * The source puzzle: `solution` and `hints` are server-only (X7); `clues` is the build's (engine plan §7.3, I4): each a
+ * condition (§4) that shows the player a secret goal once it holds. Source-only: never in a public world or the server
+ * content.
  */
-export type ClueAtom =
-  | { readonly held: ItemId }
-  | { readonly used: ItemId }
-  | { readonly has: ItemId }
-  | { readonly doc: DocId }
-  | { readonly taken: HotspotKey }
-  | { readonly examined: HotspotKey }
-  | { readonly open: HotspotKey }
-  | { readonly visited: RoomId }
-  | { readonly solved: PuzzleLocalId }
-  | { readonly failed: PuzzleLocalId };
-/** The source puzzle: `solution` and `hints` are server-only (X7); `clues` is the build's (§7.3). */
 export type SourcePuzzle = PuzzleBody & {
   readonly solution: readonly number[];
   readonly hints: readonly WorldText[];
-  readonly clues: readonly ClueAtom[];
+  readonly clues: readonly Cond[];
 };
 export type HintTiers = 0 | 1 | 2 | 3;
 /** The public puzzle: the hint count only. */

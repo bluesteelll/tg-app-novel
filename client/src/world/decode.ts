@@ -10,6 +10,8 @@
 // References between ids (an exit's room, a slot's item, a clue's fact) are not resolved here: that is
 // `world/unknown-ref` (LW3) and `world/clue-reachable` (GM1d). Pure (X4).
 import type { DecodeCtx, OwnedAt, Place } from '../mechanics/contract.ts';
+import { decodeCond } from '../mechanics/data/conditions.ts';
+import type { Cond } from '../mechanics/data/conditions.ts';
 import { MECHANIC_DATA } from '../mechanics/data/index.ts';
 import type { DataRegistry } from '../mechanics/data/index.ts';
 import { PUZZLE_TYPES, puzzleInstance } from '../puzzles/rules/index.ts';
@@ -32,7 +34,6 @@ import type {
 import { LINE_ID_RE } from '../story/tags.ts';
 import { GLYPHS } from './types.ts';
 import type {
-  ClueAtom,
   Doc,
   DocId,
   Effect,
@@ -248,6 +249,13 @@ function text(missingId: Reason): Decoder<WorldText> {
 }
 
 const worldText = text('line-id');
+
+/**
+ * The kernel's line-ID text decoder as a module sees it (`DecodeCtx.text`): a text with an issue (reported through the
+ * module's `report`) comes back empty, and the module's error result keeps it out of every decoded world.
+ */
+// The empty ID is no LineId: it stands in only beside a reported issue, so no decoded world ever holds it.
+const CTX: DecodeCtx = { text: (v, path, report) => worldText(v, path, report) ?? { id: '' as LineId, ru: '' } };
 
 /**
  * A trigger's effects. An effect whose one key a module owns goes to that module as `<trigger>#<its source index>` and
@@ -589,48 +597,12 @@ const hintTexts: Decoder<WorldText[]> = (v, path, report) => {
   return list(text('hint-count'))(v, path, report);
 };
 
-/** A clue's kinds: the kernel fact atoms of the condition grammar (engine plan §4). */
-const CLUE_KINDS = ['held', 'used', 'has', 'doc', 'taken', 'examined', 'open', 'visited', 'solved', 'failed'] as const;
-
-/** One clue atom: exactly one key, its id in that kind's grammar; whether the fact exists is `world/clue-reachable`. */
-const clue: Decoder<ClueAtom> = (v, path, report) => {
-  const pair = oneKey(v, CLUE_KINDS, path, report);
-  if (pair === undefined) {
-    return undefined;
-  }
-  const [kind, value] = pair;
-  const p = at(path, kind);
-  const atom = <T>(decode: Decoder<T>, make: (id: T) => ClueAtom): ClueAtom | undefined => {
-    const id = decode(value, p, report);
-    return id === undefined ? undefined : make(id);
-  };
-  const hotspotKey = matching<HotspotKey>(HOTSPOT_KEY_RE);
-  const puzzleId = matching<PuzzleLocalId>(ID_RE);
-  switch (kind) {
-    case 'held':
-      return atom(itemId, (held) => ({ held }));
-    case 'used':
-      return atom(itemId, (used) => ({ used }));
-    case 'has':
-      return atom(itemId, (has) => ({ has }));
-    case 'doc':
-      return atom(matching<DocId>(ID_RE), (doc) => ({ doc }));
-    case 'taken':
-      return atom(hotspotKey, (taken) => ({ taken }));
-    case 'examined':
-      return atom(hotspotKey, (examined) => ({ examined }));
-    case 'open':
-      return atom(hotspotKey, (open) => ({ open }));
-    case 'visited':
-      return atom(matching<RoomId>(ID_RE), (visited) => ({ visited }));
-    case 'solved':
-      return atom(puzzleId, (solved) => ({ solved }));
-    default:
-      return atom(puzzleId, (failed) => ({ failed })); // oneKey admits CLUE_KINDS only: the last one, 'failed'
-  }
-};
-
-const sourcePuzzle = (types: PuzzleTypes): Decoder<SourcePuzzle> => (v, path, report) => {
+/**
+ * A source puzzle; `mechanics` is the registry the world is decoded with, whose module atoms a clue may name. Each clue
+ * is a condition (engine plan §4, §7.3) through the grammar's decoder, its issues re-reported as they come; whether
+ * its facts exist and hold is `world/clue-reachable` (GM1d).
+ */
+const sourcePuzzle = (types: PuzzleTypes, mechanics: DataRegistry): Decoder<SourcePuzzle> => (v, path, report) => {
   if (!isObject(v)) {
     report(path, 'shape', 'not a puzzle object');
     return undefined;
@@ -639,6 +611,16 @@ const sourcePuzzle = (types: PuzzleTypes): Decoder<SourcePuzzle> => (v, path, re
   const body = puzzleBody(v, path, report, types);
   const sol = field(v, 'solution', path, report, solution);
   const hints = field(v, 'hints', path, report, hintTexts);
+  const clue: Decoder<Cond> = (c, p, r) => {
+    const d = decodeCond(c, CTX, p, mechanics);
+    if (d.ok) {
+      return d.value;
+    }
+    for (const e of d.error) {
+      r(e.path, e.reason, e.detail);
+    }
+    return undefined;
+  };
   const clues = Object.hasOwn(v, 'clues') ? field(v, 'clues', path, report, list(clue)) : [];
   if (!keysOk || body === undefined || sol === undefined || hints === undefined || clues === undefined) {
     return undefined;
@@ -693,13 +675,6 @@ const TOP_KEYS = ['format', 'items', 'docs', 'puzzles', 'sections'] as const;
 const TOP_OPTIONAL = ['renamed'] as const;
 
 type Decoded<P> = Omit<WorldSource, 'puzzles'> & { readonly puzzles: Readonly<Record<PuzzleLocalId, P>> };
-
-/**
- * The kernel's line-ID text decoder as a module sees it (`DecodeCtx.text`): a text with an issue (reported through the
- * module's `report`) comes back empty, and the module's error result keeps it out of every decoded world.
- */
-// The empty ID is no LineId: it stands in only beside a reported issue, so no decoded world ever holds it.
-const CTX: DecodeCtx = { text: (v, path, report) => worldText(v, path, report) ?? { id: '' as LineId, ru: '' } };
 
 /** Every registry module's `decode` over its owned values (`[]` when it owns none present, so `mods` has every id). */
 function decodeMods(mechanics: DataRegistry, owned: readonly OwnedAt[][], report: Report): WorldMods | undefined {
@@ -780,7 +755,8 @@ export type DecodeOptions = { readonly types?: PuzzleTypes; readonly mechanics?:
 
 /** `story/<ch>/world.json`: puzzles carry `solution` and `hints`. */
 export function decodeWorldSource(raw: unknown, o: DecodeOptions = {}): Result<WorldSource, WorldIssue[]> {
-  return collect(raw, (w, report) => decodeWorld(w, TOP_KEYS, sourcePuzzle(o.types ?? PUZZLE_TYPES), report, o.mechanics ?? MECHANIC_DATA));
+  const mechanics = o.mechanics ?? MECHANIC_DATA;
+  return collect(raw, (w, report) => decodeWorld(w, TOP_KEYS, sourcePuzzle(o.types ?? PUZZLE_TYPES, mechanics), report, mechanics));
 }
 
 /** A public world (story-gen or a paid payload): refuses `solution` / `hints`, requires the stamped `version`. */

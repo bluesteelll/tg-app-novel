@@ -1293,3 +1293,29 @@ test("world: a module text decodes with the kernel's line-ID rule", () => {
   // The control: a text with its ID decodes, and only the probe's registry admits the key.
   expect(sayOn({ id: 'ch1.manor.sy01', ru: 'Тихо.' }).findings).toEqual([]);
 });
+
+test('story: an all clue holds only when its conjuncts hold in one reached state', () => {
+  const gateClue = (clue: Json): Json => {
+    const w = base();
+    at(w, 'puzzles.gate')['clues'] = [clue];
+    return w;
+  };
+  // Each conjunct is reached, never both at once: inserting the medal into the gate uses it.
+  const apart = { all: [{ held: 'medal_sun' }, { used: 'medal_sun' }] };
+  const w = gateClue(apart);
+  expect(of(lint(w), 'world/clue-reachable')).toEqual([
+    {
+      code: 'world/clue-reachable',
+      severity: 'E',
+      file: FILE,
+      line: clueLine(w, 'gate', 0),
+      message: `puzzle 'gate': clue ${JSON.stringify(apart)} holds in no state of section manor reached before 'gate' is solved or failed (§7.3)`,
+    },
+  ]);
+  // Both in one state: the medal in hand after reading the inscription.
+  expect(of(lint(gateClue({ all: [{ has: 'medal_sun' }, { examined: 'hall.inscription' }] })), 'world/clue-reachable')).toEqual([]);
+  // The existence check reads every atom, nested ones and a `not`'s included, and names the first missing one.
+  expect(of(lint(gateClue({ all: [{ doc: 'diar' }] })), 'world/clue-reachable').map((f) => f.message)).toEqual([`puzzle 'gate': clue {"all":[{"doc":"diar"}]} names no doc of this world`]);
+  const negated = { all: [{ has: 'medal_sun' }, { not: { doc: 'diar' } }] };
+  expect(of(lint(gateClue(negated)), 'world/clue-reachable').map((f) => f.message)).toEqual([`puzzle 'gate': clue ${JSON.stringify(negated)} names no doc of this world`]);
+});

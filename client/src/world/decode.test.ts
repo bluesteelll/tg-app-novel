@@ -506,3 +506,17 @@ test('world: an unowned key is still refused', () => {
   node(raw, `${HALL}.hotspots.0`)['probe_e'] = 5;
   expect(issues(decodeWorldSource(raw, PROBED))).toEqual(['items.medal_sun.say shape', `${HALL}.hotspots.3.probe_i shape`, `${HALL}.hotspots.0.probe_e shape`].sort());
 });
+
+test('world: a clue is a condition', () => {
+  // Combinators nest atoms (engine plan §4); the decoded clue is the condition as written.
+  const clue = { all: [{ doc: 'diary' }, { not: { open: 'hall.gate' } }, { any: [{ has: 'medal_sun' }, { visited: 'cellar' }] }] };
+  const raw = manorSource();
+  node(raw, 'puzzles.drawer')['clues'] = [clue, { examined: 'hall.inscription' }];
+  expect(decoded(raw).puzzles[pid('drawer')]?.clues).toEqual([clue, { examined: 'hall.inscription' }]);
+  // A combinator's fault is reported at its own path, every one in one pass.
+  const bad = manorSource();
+  node(bad, 'puzzles.drawer')['clues'] = [{ all: [] }, { not: { doc: 'Diary' } }, { any: [{ open: 'drawer' }, { flag: 'f' }] }];
+  expect(issues(decodeWorldSource(bad))).toEqual(
+    ['puzzles.drawer.clues.0.all shape', 'puzzles.drawer.clues.1.not.doc id', 'puzzles.drawer.clues.2.any.0.open id', 'puzzles.drawer.clues.2.any.1 shape'].sort(),
+  );
+});
