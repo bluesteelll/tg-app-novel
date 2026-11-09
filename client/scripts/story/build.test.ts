@@ -1122,6 +1122,38 @@ test('emit: clues never reach the public world', () => {
   expect(decoded.ok && decoded.value.version).toBe(worldVersion(toPublic(source)));
 });
 
+test('story: a rename chain resolves to its final target', () => {
+  // A free and a paid world, each with an item chain (a_old -> b_old -> key), a doc and a hotspot chain: the planned
+  // world carries every entry resolved to its final target, so the load maps an id with one lookup (engine plan §5.3).
+  const renamed = { items: { a_old: 'b_old', b_old: 'key' }, docs: { note: 'letter' }, hotspots: { 'hall.old_key': 'hall.mid_key', 'hall.mid_key': 'hall.key' } };
+  const ends = { items: { a_old: 'key', b_old: 'key' }, docs: { note: 'letter' }, hotspots: { 'hall.old_key': 'hall.key', 'hall.mid_key': 'hall.key' } };
+  const ch1 = decodedWorld({ ...worldSource('ch1', 'cafe'), renamed });
+  const ch2 = decodedWorld({ ...worldSource('ch2', 'archive'), renamed });
+  const { plan } = emitFixture(
+    LIST,
+    [MANOR],
+    new Map([
+      [CH1_ENTRY.id, ch1],
+      [CH2_ENTRY.id, ch2],
+    ]),
+  );
+  for (const [path, source] of [
+    [CH1_WORLD, ch1],
+    [CH2_WORLD, ch2],
+  ] as const) {
+    const world = JSON.parse(planned(plan, path)) as Record<string, unknown>; // a planned world: a JSON object
+    expect(world['renamed'], path).toEqual(ends);
+    expect(world['version'], path).toBe(worldVersion(toPublic(source)));
+  }
+  // The renames enter the version: a rename is a change a save reconciles.
+  expect(worldVersion(toPublic(ch1))).not.toBe(worldVersion(toPublic(decodedWorld(worldSource('ch1', 'cafe')))));
+  // An empty map is no map: the planned text of a world without the key, with no `renamed` key in it.
+  const empty = emitFixture(LIST, [MANOR], new Map([[CH1_ENTRY.id, decodedWorld({ ...worldSource('ch1', 'cafe'), renamed: {} })]])).plan;
+  const none = emitFixture(LIST, [MANOR], new Map([[CH1_ENTRY.id, decodedWorld(worldSource('ch1', 'cafe'))]])).plan;
+  expect(planned(empty, CH1_WORLD)).toBe(planned(none, CH1_WORLD));
+  expect(Object.hasOwn(JSON.parse(planned(empty, CH1_WORLD)) as object, 'renamed')).toBe(false); // a planned world: an object
+});
+
 test('emit: server puzzle content matches the server fixture shape', () => {
   const source = decodedWorld(worldSource('ch1', 'cafe'));
   const { plan } = emitFixture(LIST, [MANOR], new Map([[CH1_ENTRY.id, source]]));

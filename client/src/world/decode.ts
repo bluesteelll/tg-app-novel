@@ -712,13 +712,51 @@ function entriesOf<K extends string, V>(r: Readonly<Record<K, V>>): Array<[K, V]
   return Object.entries(r) as Array<[K, V]>; // the keys of a decoded record are its ids
 }
 
-/** The public body (no `version`: LW3's emit stamps it): `solution` and `hints` stripped, the tier count kept. */
+/**
+ * Where a rename chain from `from` ends (engine plan §5.3): the map followed while it has an own entry; null on a
+ * cycle. The one walker of emit and lint (`world/renamed-target`, `world/renamed-cycle`): the client never walks one.
+ */
+export function finalTarget<K extends string>(map: Readonly<Record<K, K>>, from: K): K | null {
+  const seen = new Set<K>();
+  let at = from;
+  while (Object.hasOwn(map, at)) {
+    if (seen.has(at)) {
+      return null;
+    }
+    seen.add(at);
+    at = map[at] ?? at; // an own entry, so never undefined; a repeat is caught as a cycle above
+  }
+  return at;
+}
+
+/** `renamed` with every chain resolved to its final target; a cycle's entries and a kind left empty are left out. */
+function resolved(r: Renames): Renames | null {
+  const out: Record<string, Readonly<Record<string, string>>> = {};
+  for (const kind of RENAME_KINDS) {
+    const map: Readonly<Record<string, string>> = r[kind] ?? {};
+    const ends = Object.keys(map).flatMap((from) => {
+      const to = finalTarget(map, from);
+      return to === null ? [] : [[from, to] as const];
+    });
+    if (ends.length > 0) {
+      out[kind] = Object.fromEntries(ends);
+    }
+  }
+  return Object.keys(out).length === 0 ? null : (out as Renames); // each kind's ids are the decoded map's own
+}
+
+/**
+ * The public body (no `version`: LW3's emit stamps it): `solution` and `hints` stripped, the tier count kept, the
+ * renames resolved (§5.3). A world with no rename has no `renamed` key, so its value and version are as before.
+ */
 export function toPublic(w: WorldSource): WorldPublicBody {
   const puzzles: Record<PuzzleLocalId, PublicPuzzle> = {};
   for (const [pid, p] of entriesOf(w.puzzles)) {
     puzzles[pid] = { ...makeBody(p, p), hintTiers: tiersOf(p.hints) };
   }
-  return { format: 1, items: w.items, docs: w.docs, puzzles, sections: w.sections };
+  const body: WorldPublicBody = { format: 1, items: w.items, docs: w.docs, puzzles, sections: w.sections };
+  const renamed = w.renamed === undefined ? null : resolved(w.renamed);
+  return renamed === null ? body : { ...body, renamed };
 }
 
 function bilingual(t: WorldText, en: Readonly<Record<LineId, string>>): { ru: string; en: string } {
