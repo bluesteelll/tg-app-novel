@@ -1,6 +1,6 @@
 import { expect, test, vi } from 'vitest';
 
-import { worldIndex } from '../explore/reduce.ts';
+import { RESUME_STATE_CAP, runOf, worldIndex } from '../explore/reduce.ts';
 import type { Draft, ExploreAction } from '../explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { WorldState } from '../explore/state.ts';
@@ -8,11 +8,11 @@ import type { KnotName, PuzzleLocalId, SectionId } from '../story/staging.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { DocId, HotspotKey, ItemId, RoomId, WorldPublicBody } from '../world/types.ts';
 import { KERNEL_FACT_KINDS } from './contract.ts';
-import type { Cause, MechanicData, MechanicId, MechanicRules, Writer } from './contract.ts';
+import type { Cause, MechanicData, MechanicId, MechanicRules, RulesRegistry, Writer } from './contract.ts';
 import { MECHANIC_DATA } from './data/index.ts';
 import { reduce } from './rules/core.ts';
 import { MECHANIC_RULES } from './rules/index.ts';
-import { successors } from './rules/search.ts';
+import { searchSection, sectionEntry, successors } from './rules/search.ts';
 import { createWriter } from './rules/writer.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -23,7 +23,18 @@ let lineCounter = 0;
 const txt = (owner = 'w'): Json => ({ id: `ch1.${owner}.${(lineCounter++).toString(36).padStart(4, '0')}`, ru: owner });
 const RECT = [100, 200, 200, 200];
 const look = (id: string, then: Json[] = []): Json => ({ id, kind: 'look', rect: RECT, label: txt(), look: txt(id), then });
-const object = (id: string, then: Json[] = []): Json => ({ id, kind: 'object', rect: RECT, label: txt(), lock: null, then, look: txt(id), prop: null });
+const object = (id: string, then: Json[] = [], lock: Json | null = null): Json => ({ id, kind: 'object', rect: RECT, label: txt(), lock, then, look: txt(id), prop: null });
+const exit = (id: string, to: string | { story: string }): Json => ({
+  id,
+  kind: 'exit',
+  rect: RECT,
+  label: txt(),
+  to: typeof to === 'string' ? { room: to } : to,
+  lock: null,
+  sfx: null,
+});
+/** A zero-slot lock that opens with its puzzle. */
+const puzzleLock = (puzzle: string): Json => ({ slots: [], puzzle, locked: txt(), onOpen: [], onFail: [] });
 const room = (hotspots: Json[], onEnter: Json[] = []): Json => ({ bg: 'room', title: txt(), onEnter, hotspots });
 const code = (dials: number, maxAttempts: number | null = null): Json => ({
   type: 'code',
@@ -58,6 +69,7 @@ const k = (s: string) => s as HotspotKey;
 const rm = (s: string) => s as RoomId;
 const it = (s: string) => s as ItemId;
 const pz = (s: string) => s as PuzzleLocalId;
+const kn = (s: string) => s as KnotName;
 const tap = (hotspot: string): ExploreAction => ({ kind: 'tap', hotspot: k(hotspot) });
 
 /** A state in `roomId` of section `s`. */
@@ -287,4 +299,98 @@ test('search: a claimed hotspot has one tap edge', () => {
   expect(edges).toHaveLength(1);
   expect(edges[0]?.state.examined).toEqual(['hall.statue']);
   expect(edges[0]?.state.held).toEqual([]);
+});
+
+/** A fixture module that logs every arrival with the `fired` entries the state holds when the hook runs. */
+function arrivalLogger(): { module: MechanicRules<'logger', never, never>; calls: () => Array<{ room: string; fired: readonly string[] }> } {
+  const log: Array<{ room: string; fired: readonly string[] }> = [];
+  return {
+    module: {
+      id: 'logger',
+      actions: () => [],
+      apply: () => undefined,
+      reads: () => [],
+      cues: [],
+      arrived: (_w, s, room) => {
+        log.push({ room, fired: s.fired });
+      },
+    },
+    calls: () => log.splice(0),
+  };
+}
+
+test('mechanics: an arrival hook runs once per room effect, after onEnter, and never while an event knot is pending', () => {
+  const w = world(
+    {
+      hall: room([exit('to_den', 'den'), exit('to_crypt', 'crypt'), exit('out', { story: 'end' })], [{ give: 'lamp' }]),
+      den: room([exit('back', 'hall')], [{ give: 'map' }]),
+      crypt: room([exit('back', 'hall')], [{ story: 'crypt_voice' }]),
+    },
+    { items: ['lamp', 'map'] },
+  );
+  const { module, calls } = arrivalLogger();
+  const registry = [CORE, module];
+  const step = (s: WorldState, a: ExploreAction): WorldState => reduce(w, s, a, registry).state;
+  // The section's entry arrives in its start room, after the room's onEnter.
+  const entered = step(EMPTY_WORLD_STATE, { kind: 'enter-section', section: S });
+  expect(calls().map((c) => c.room)).toEqual(['hall']);
+  // A resume of the current section.
+  expect(step(entered, { kind: 'enter-section', section: S })).toBe(entered);
+  expect(calls()).toEqual([{ room: 'hall', fired: ['enter:hall'] }]);
+  // A move.
+  const den = step(entered, tap('hall.to_den'));
+  expect(calls()).toEqual([{ room: 'den', fired: ['enter:hall', 'enter:den'] }]);
+  // A move whose onEnter queues an event knot arrives when the knot returns, once.
+  const crypt = step(step(den, tap('den.back')), tap('hall.to_crypt'));
+  expect(calls().map((c) => c.room)).toEqual(['hall']);
+  expect(crypt.pendingStory).toEqual(['crypt_voice']);
+  step(crypt, { kind: 'event-returned', section: S });
+  expect(calls()).toEqual([{ room: 'crypt', fired: ['enter:hall', 'enter:den', 'enter:crypt'] }]);
+});
+
+test('mechanics: a puzzle end runs no arrival hook', () => {
+  const w = world({ hall: room([object('chest', [], puzzleLock('chest')), exit('to_den', 'den')]), den: room([exit('back', 'hall')]) }, { puzzles: { chest: code(2) } });
+  const { module, calls } = arrivalLogger();
+  const registry = [CORE, module];
+  // The hook is live in this world: a move arrives.
+  reduce(w, at('hall'), tap('hall.to_den'), registry);
+  expect(calls().map((c) => c.room)).toEqual(['den']);
+  // A lock puzzle's end opens its lock and pushes no room effect.
+  const solved = reduce(w, at('hall'), { kind: 'puzzle-ended', puzzle: pz('chest'), outcome: 'solved' }, registry);
+  expect(solved.state.open).toEqual(['hall.chest']);
+  expect(calls()).toEqual([]);
+});
+
+test('search: an arrival hook adds no state', () => {
+  // The vault's onEnter queues a knot, and its chest is a zero-slot lock with a puzzle: a hook that opens that puzzle on
+  // arrival reaches only the states the chest's own tap reaches, so the section's state count is unchanged.
+  const w = world(
+    {
+      hall: room([exit('to_vault', 'vault'), exit('out', { story: 'end' })]),
+      vault: room([object('chest', [{ give: 'gem' }], puzzleLock('chest')), exit('back', 'hall')], [{ story: 'vault_voice' }]),
+    },
+    { items: ['gem'], puzzles: { chest: code(2, 2) } },
+  );
+  const chest = k('vault.chest');
+  const opener: MechanicRules<'opener', never, never> = {
+    id: 'opener',
+    actions: () => [],
+    apply: () => undefined,
+    reads: () => [],
+    cues: [],
+    arrived: (_w, s, room, out) => {
+      if (room === rm('vault') && !s.open.includes(chest) && runOf(s, pz('chest')).outcome === null) {
+        out.effect({ kind: 'puzzle', puzzle: pz('chest'), hotspot: chest });
+      }
+    },
+  };
+  const search = (rules: RulesRegistry) => searchSection(w, sectionEntry(w, EMPTY_WORLD_STATE, S, rules), S, RESUME_STATE_CAP, { rules });
+  const plain = search([CORE]);
+  expect(plain.result).toBe('exhausted');
+  expect(search([CORE, opener])).toEqual(plain);
+  // The hook is live: the knot's return into the vault opens the chest's puzzle, so that edge expands into `closed`.
+  const waiting = { ...at('vault'), pendingStory: [kn('vault_voice')], fired: ['enter:vault'] };
+  const kinds = (rules: RulesRegistry) => successors(w, waiting, rules).map((x) => x.step.kind);
+  expect(kinds([CORE])).toEqual(['event-returned']);
+  expect(kinds([CORE, opener])).toEqual(['closed', 'puzzle-ended', 'puzzle-ended']);
 });

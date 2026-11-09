@@ -146,11 +146,22 @@ export interface MechanicRules<Id extends string, A extends { readonly kind: str
   /** A tap on a hotspot that carries a key this module owns (`owns.hotspot`): core's `tap` hands it over before its own
    *  kinds, so the UI always dispatches `tap` and `actions` lists that tap once (core already does). False: not mine. */
   tap?(w: KernelWorld, s: WorldState, at: HotspotKey, out: Writer): boolean;
+  /** Runs once per `room` effect into `room`, after the room's `onEnter` trigger and only when no event knot is
+   *  pending: core calls it at its three `room` pushes (a move or a section's entry, a resume, an event return). It
+   *  writes no state: `ArrivalOut` offers only a `puzzle` effect and a module cue, so the proof's states are unchanged
+   *  and `actions` never lists it. A puzzle end pushes no `room` effect, so it never re-arrives. */
+  arrived?(w: KernelWorld, s: WorldState, room: RoomId, out: ArrivalOut): void;
   /** Its share of the room's derived picture. */
   visuals?(w: KernelWorld, s: WorldState, room: RoomId): readonly PropView[];
   /** Evaluates an atom kind its data half declared. */
   holds?(w: KernelWorld, s: WorldState, atom: { readonly kind: string; readonly value: unknown }): boolean;
 }
+
+/** What an arrival may do: open a puzzle (the same states a hotspot's own tap reaches) and play a module cue. */
+export type ArrivalOut = {
+  effect(e: Extract<ExploreEffect, { kind: 'puzzle' }>): void;
+  cue(module: MechanicId, name: string, at: HotspotKey | null): void;
+};
 
 /** The rules registry as the kernel walks it: each module's actions are widened to their `kind`, so the registry's
  *  type never refers back to the tuple it is built from. */

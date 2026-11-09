@@ -7,7 +7,7 @@ import type { Draft, ExploreEffect } from '../../explore/reduce.ts';
 import type { PuzzleRun, WorldState } from '../../explore/state.ts';
 import type { PuzzleLocalId } from '../../story/staging.ts';
 import type { Effect, HotspotKey, ItemId, WorldPublicBody } from '../../world/types.ts';
-import type { Cause, FactKind, KernelFactKind, ListField, MechanicId, RulesRegistry, TriggerKey, Writer } from '../contract.ts';
+import type { ArrivalOut, Cause, FactKind, KernelFactKind, ListField, MechanicId, RulesRegistry, TriggerKey, Writer } from '../contract.ts';
 
 export function added<T>(list: readonly T[], v: T): readonly T[] {
   return list.includes(v) ? list : [...list, v];
@@ -173,4 +173,16 @@ class DraftWriter implements KernelWriter {
 /** The writer of one `reduce` call over its draft. */
 export function createWriter(d: Draft, w: WorldPublicBody, rules: RulesRegistry): KernelWriter {
   return new DraftWriter(d, w, rules);
+}
+
+/** The arrival hook's narrow view of the writer: a `puzzle` effect into the draft, a module cue into the record. */
+export function arrivalOut(out: KernelWriter): ArrivalOut {
+  return {
+    effect: (e) => {
+      out.effect(e);
+    },
+    cue: (module, name, at) => {
+      out.cue(module, name, at, null);
+    },
+  };
 }

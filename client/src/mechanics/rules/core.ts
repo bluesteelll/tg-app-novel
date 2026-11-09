@@ -18,9 +18,9 @@ import type { Draft, ExploreAction, ExploreEffect, HotspotEntry, WorldIndex } fr
 import type { PuzzleOutcome, WorldState } from '../../explore/state.ts';
 import type { PuzzleLocalId, SectionId, SfxId } from '../../story/staging.ts';
 import type { Hotspot, HotspotKey, ItemId, Lock, RoomId, WorldPublicBody } from '../../world/types.ts';
-import type { FactAtom, RulesRegistry, SectionAction } from '../contract.ts';
+import type { ArrivalOut, FactAtom, RulesRegistry, SectionAction } from '../contract.ts';
 import { MECHANIC_RULES } from './index.ts';
-import { added, createWriter, fire, openKey } from './writer.ts';
+import { added, arrivalOut, createWriter, fire, openKey } from './writer.ts';
 import type { KernelWriter } from './writer.ts';
 
 function removed<T>(list: readonly T[], v: T): readonly T[] {
@@ -43,7 +43,21 @@ function openAt(d: Draft, key: HotspotKey, hotspot: Hotspot): void {
   }
 }
 
-function arrive(d: Draft, room: RoomId, sfx: SfxId | null): void {
+/** The arrival hook of every module, once per `room` effect: after the room's onEnter, never while a knot is pending. */
+function arrived(out: KernelWriter, room: RoomId): void {
+  if (out.draft.s.pendingStory.length > 0) {
+    return;
+  }
+  let view: ArrivalOut | null = null;
+  for (const m of out.rules) {
+    if (m.arrived !== undefined) {
+      m.arrived(out.world, out.draft.s, room, (view ??= arrivalOut(out)));
+    }
+  }
+}
+
+function arrive(out: KernelWriter, room: RoomId, sfx: SfxId | null): void {
+  const d = out.draft;
   const entry = d.ix.rooms.get(room);
   const section = d.s.section;
   if (entry === undefined || section === null) {
@@ -56,15 +70,18 @@ function arrive(d: Draft, room: RoomId, sfx: SfxId | null): void {
   set(d, 'visited', added(d.s.visited, room));
   d.effects.push({ kind: 'room', room, sfx });
   fire(d, `enter:${room}`, entry.room.onEnter);
+  arrived(out, room);
 }
 
-function enterSection(d: Draft, sid: SectionId): void {
+function enterSection(out: KernelWriter, sid: SectionId): void {
+  const d = out.draft;
   const section = d.ix.sections.get(sid);
   if (section === undefined) {
     return;
   }
   if (d.s.section === sid && d.s.room !== null) {
     d.effects.push({ kind: 'room', room: d.s.room, sfx: null }); // a resume
+    arrived(out, d.s.room);
     return;
   }
   const last = own(d.s.lastRoom, sid);
@@ -73,10 +90,11 @@ function enterSection(d: Draft, sid: SectionId): void {
     return;
   }
   set(d, 'section', sid);
-  arrive(d, room, null);
+  arrive(out, room, null);
 }
 
-function eventReturned(d: Draft, sid: SectionId): void {
+function eventReturned(out: KernelWriter, sid: SectionId): void {
+  const d = out.draft;
   if (d.s.pendingStory.length === 0 || d.s.section !== sid) {
     return;
   }
@@ -87,6 +105,7 @@ function eventReturned(d: Draft, sid: SectionId): void {
     d.effects.push({ kind: 'story', knot: next });
   } else if (d.s.room !== null) {
     d.effects.push({ kind: 'room', room: d.s.room, sfx: null });
+    arrived(out, d.s.room);
   }
 }
 
@@ -150,7 +169,7 @@ function tap(out: KernelWriter, key: HotspotKey): void {
       if (h.lock !== null && !d.s.open.includes(key)) {
         lockTap(d, key, h.lock);
       } else if ('room' in h.to) {
-        arrive(d, h.to.room, h.sfx);
+        arrive(out, h.to.room, h.sfx);
       } else {
         // I-W's re-entry rule: a leave changes only `section` (sectionKey ignores it and lastRoom).
         set(d, 'section', null);
@@ -248,9 +267,9 @@ export function applyCore(_w: WorldPublicBody, a: ExploreAction, out: KernelWrit
   const d = out.draft;
   switch (a.kind) {
     case 'enter-section':
-      return enterSection(d, a.section);
+      return enterSection(out, a.section);
     case 'event-returned':
-      return eventReturned(d, a.section);
+      return eventReturned(out, a.section);
     case 'tap':
       return tap(out, a.hotspot);
     case 'insert':

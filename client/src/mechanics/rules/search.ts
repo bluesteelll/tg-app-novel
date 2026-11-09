@@ -299,9 +299,12 @@ function enter(section: SectionId): ExploreAction {
   return { kind: 'enter-section', section };
 }
 
-/** `reduce(w, resetSection(w, s, S), enter-section S).state`: the start of both searches (build: s = empty). */
-export function sectionEntry(w: WorldPublicBody, s: WorldState, section: SectionId): WorldState {
-  return reduce(w, resetSection(w, s, section), enter(section)).state;
+/**
+ * `reduce(w, resetSection(w, s, S), enter-section S).state`: the start of both searches (build: s = empty). `rules` is
+ * the registry whose hooks the entry runs (a fixture registry in tests; `searchSection` takes it in its options).
+ */
+export function sectionEntry(w: WorldPublicBody, s: WorldState, section: SectionId, rules: RulesRegistry = MECHANIC_RULES): WorldState {
+  return reduce(w, resetSection(w, s, section), enter(section), rules).state;
 }
 
 export type SearchOptions = {
