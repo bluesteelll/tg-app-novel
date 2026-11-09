@@ -4,6 +4,7 @@
 // Types and constants only: it value-imports nothing, and its registry references are `import type`, so no chunk pays
 // for what it declares beyond the constants a module reads. Pure.
 import type { Field } from '../api/decode.ts';
+import type { ControlDecl } from '../cues/types.ts';
 import type { ExploreEffect } from '../explore/reduce.ts';
 import type { PuzzleRun, WorldState } from '../explore/state.ts';
 import type { Result } from '../story/catalog.ts';
@@ -62,6 +63,7 @@ export const SILENT_FIELDS = {
   room: 'every change is a move cue',
   lastRoom: 'bookkeeping of the move',
   unproved: 'bookkeeping of reconcile',
+  flags: 'no rule sets a flag until module `flags` (GM5f) owns the `flag` fact kind, which then carries its changes',
 } as const;
 
 /** 'carry': an item the chapter start gave (§6.6). */
@@ -130,6 +132,11 @@ export interface MechanicData<Id extends string, D, Sl = never> {
   readonly atoms?: { readonly [kind: string]: { readonly decode: Decoder<unknown>; readonly gating: boolean } };
   /** Saved state beyond facts. Its key must be in the save format's field list; adding one is a format bump. */
   readonly slice?: { readonly key: string; readonly initial: Sl; readonly read: Field<Sl>; normalize(w: KernelWorld, s: Sl): Sl };
+  /** The DOM controls this module's UI adds, with their trigger (engine plan §8.3); `ui:<name>` keys derive from them.
+   *  A control plays `UI_MOTIONS`' default unless it names its own preset; `haptic` adds touch feedback on top (§8.5).
+   *  Data, in the engine half, so the cue stage resolves a control's motion without importing any rules half. A module
+   *  that declares controls keeps its literal type (`satisfies`), or `ControlCue` cannot read their names. */
+  readonly controls?: readonly ControlDecl[];
 }
 
 /** CHUNK half, mechanics/rules/<id>.ts (explore-ui family). Never value-imported by the engine. */
