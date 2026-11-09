@@ -41,8 +41,8 @@ function renamedId<K extends string>(map: Readonly<Record<K, K>> | undefined, id
 
 /**
  * The items of cells that went (a lost lock, a cell that no longer fits, a slot key a rename merged away) go used →
- * held in order, but one a kept cell still holds stays used: a rename can merge two items onto one (step 0), and an
- * item is in a lock or in hand, never both.
+ * held in order, but one a kept cell still holds stays used: two cells can hold one id (a rename merged two items onto
+ * one, step 0, or the world gives the item twice), and a give-back never takes an item out of a lock that keeps it.
  */
 function giveBack(
   held: readonly ItemId[],
@@ -66,8 +66,9 @@ function giveBack(
  * final targets, so one lookup per id. A hotspot moves by its own entry only (a room's rename carries none of its
  * hotspots, so a room merged into a live one never lands on that room's hotspots). The lists stay sets in
  * first-occurrence order; of two saved keys that land on one, the first in save order stays and the other goes to
- * `dropped`, a dropped slot's items back to held through `giveBack`, as normalize's. An item merge keeps one item in
- * one place: a held id merged onto one `used` holds goes to `dropped` (the lock keeps the item). Puzzle keys stay
+ * `dropped`, a dropped slot's items back to held through `giveBack`, as normalize's. An item merge never puts one item
+ * in a lock and in hand: a held id the map merges with a different id `used` holds goes to `dropped` (the lock keeps
+ * the item); one id the save has in both lists stays in both (a world that gives the item twice). Puzzle keys stay
  * (R-E4, per-player GM6c1b); `unproved` is replaced right after. A world without `renamed`: the state itself.
  */
 function renameIds(w: WorldPublicBody, s: WorldState, dropped: string[]): WorldState {
@@ -80,11 +81,13 @@ function renameIds(w: WorldPublicBody, s: WorldState, dropped: string[]): WorldS
   const held = ids(
     r.items,
     s.held.filter((x) => {
-      const inLock = used.includes(renamedId(r.items, x));
-      if (inLock) {
+      // Only an overlap the map made: one id saved in both lists is a world's second copy, kept as the save has it.
+      const to = renamedId(r.items, x);
+      const merged = s.used.some((u) => u !== x && renamedId(r.items, u) === to);
+      if (merged) {
         dropped.push(`held:${x}`);
       }
-      return !inLock;
+      return !merged;
     }),
   );
   const slots: Record<HotspotKey, ReadonlyArray<ItemId | null>> = {};

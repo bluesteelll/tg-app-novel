@@ -985,6 +985,20 @@ test('reconcile: two lost cells that held one merged item give it back once', ()
   expect(r.dropped).toEqual(['slots:hall.gone_a', 'slots:hall.gone_b']);
 });
 
+test('reconcile: step 0 keeps an item the save both holds and uses when no rename merged it', () => {
+  // A world that gives one item twice reaches a state that holds it while a lock holds it too; step 0 drops a held id
+  // only for an overlap the item map made (two saved ids, one target).
+  const saved = at('hall', { held: [it('medal_sun')], used: [it('medal_sun')], slots: { [k('hall.gate')]: [it('medal_sun'), null, null] } });
+  const r = reconcile(stamped({ ...manor(), renamed: { hotspots: { [k('hall.sign')]: k('hall.inscription') } } }, V2), saved, MANOR_KNOTS, V1);
+  expect([r.state.held, r.state.used, r.dropped]).toEqual([['medal_sun'], ['medal_sun'], []]);
+  // As on the same world without `renamed`.
+  expect(r.state).toEqual(reconcile(stamped(manor(), V2), saved, MANOR_KNOTS, V1).state);
+  // One saved id in both lists that the map renames is still the save's own overlap: it moves, nothing drops.
+  const star = at('hall', { held: [it('medal_star')], used: [it('medal_star')], slots: { [k('hall.gate')]: [null, null, it('medal_star')] } });
+  const moved = reconcile(stamped({ ...manor({ star: 'medal_comet' }), renamed: { items: { [it('medal_star')]: it('medal_comet') } } }, V2), star, MANOR_KNOTS, V1);
+  expect([moved.state.held, moved.state.used, moved.state.slots, moved.dropped]).toEqual([['medal_comet'], ['medal_comet'], { 'hall.gate': [null, null, 'medal_comet'] }, []]);
+});
+
 test('reconcile: unprovable state restarts the section', () => {
   const v1 = manor();
   const v2 = stamped(manor({ leverCellar: true }), V2);
