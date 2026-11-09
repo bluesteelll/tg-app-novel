@@ -136,7 +136,7 @@ pub async fn post_hint(
     let cost = st.catalog.economy().hint_tier_cost;
     let spent = st
         .repo
-        .spend_hint(user, &def.id, tier, cost, st.clock.now())
+        .spend_hint(user, &def.key, tier, cost, st.clock.now())
         .await?;
     let balance = match spent {
         SpendOutcome::Unlocked { balance } | SpendOutcome::AlreadyUnlocked { balance } => balance,

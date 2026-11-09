@@ -3,6 +3,10 @@
 //!
 //! Principle 0: a solution never leaves this module and the content store, and every route reaches a puzzle only
 //! through [`entitled_puzzle`], so a paid chapter's puzzle answers 403 to a user without the chapter.
+//!
+//! [`values`] holds the per-player values' domain, draw and renderer (per-player §3.2); no route reads it yet.
+
+pub mod values;
 
 use crate::AppState;
 use crate::api::dto::{HintView, PuzzleStatus};
@@ -17,8 +21,11 @@ pub const ATTEMPT_WINDOW_SECS: i64 = 600;
 /// then takes days to brute-force).
 pub const ATTEMPT_WINDOW_MAX: i64 = 20;
 
-/// The most answer entries a request may carry, whatever the puzzle.
-pub const MAX_ANSWER_LEN: usize = 16;
+/// The most answer entries a request may carry, whatever the puzzle: 64 (per-player §3.3; engine R-E12), so a 5 x 5
+/// grid (25 entries) fits and a request stays under ~400 B. It is also the bound of a stored per-player value
+/// (`puzzle_values_value_shape` in `0008_puzzle_values.sql`); the content's load rule for `answerLen` follows with
+/// the values routes.
+pub const MAX_ANSWER_LEN: usize = 64;
 
 /// The language of a hint text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,7 +126,7 @@ pub async fn attempt(
     })?;
     let record = st
         .repo
-        .record_attempt(user, &def.id, correct, st.clock.now())
+        .record_attempt(user, &def.key, correct, st.clock.now())
         .await?;
     Ok(if record.limited {
         AttemptOutcome::RateLimited {
@@ -141,8 +148,8 @@ pub async fn status(
     def: &PuzzleDef,
     lang: Lang,
 ) -> Result<PuzzleStatus, ApiError> {
-    let solved = st.repo.is_solved(user, &def.id).await?;
-    let unlocked = st.repo.unlocked_tiers(user, &def.id).await?;
+    let solved = st.repo.is_solved(user, &def.key).await?;
+    let unlocked = st.repo.unlocked_tiers(user, &def.key).await?;
     let hints = def
         .hints
         .iter()

@@ -241,3 +241,234 @@ impl<'a> UrlParts<'a> {
         Some(UrlParts { host, path, query })
     }
 }
+
+/// One table's step of a user's erasure (per-player §3.9): what happens to each user column of `table`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ErasureStep {
+    /// The table.
+    pub table: &'static str,
+    /// One clause per rule; a column with a mixed rule has several.
+    pub clauses: &'static [Clause],
+}
+
+/// What a user's erasure does with one column of a step's table (per-player §3.9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Clause {
+    /// DELETE the rows whose `column` is the user, narrowed by `filter` (a fixed SQL predicate, never user input).
+    Delete {
+        /// The user column.
+        column: &'static str,
+        /// The fixed predicate that narrows the delete; `None` deletes every row of the user.
+        filter: Option<&'static str>,
+    },
+    /// SET `column` = NULL where it names the user (another user's row, or a role that must survive).
+    Null {
+        /// The user column.
+        column: &'static str,
+    },
+    /// Overwrite the user's own row (`users` stays for `payments` / `orders`).
+    Anonymize {
+        /// The column that names the row: the user's id.
+        column: &'static str,
+        /// (column, fixed SQL value) pairs written over the row.
+        set: &'static [(&'static str, &'static str)],
+    },
+    /// The rows stay, on purpose, for the stated reason.
+    Keep {
+        /// The user column.
+        column: &'static str,
+        /// Why the rows stay.
+        reason: &'static str,
+    },
+}
+
+/// The clause of a table whose rows all belong to the user named in `user_id`.
+const DELETE_USER_ROWS: Clause = Clause::Delete {
+    column: "user_id",
+    filter: None,
+};
+
+/// LPO's erasure order as data (META-PLAN "Erasure"; per-player §3.9): one step per table, children first, one
+/// transaction per user, no cascades; the order the Later `erase-user` command runs. `payments`, `unrecorded_refunds`
+/// and `orders` are kept for accounting, so the `users` row is anonymised last instead of deleted. `auto_refunds` has
+/// no user column (it is keyed by `charge_id`, an FK to `payments`, `0007_auto_refunds.sql`): it is in no step and
+/// stays with its payment. The gates in `tests/it/schema.rs` hold it to the migrated schema.
+pub const ERASURE_ORDER: &[ErasureStep] = &[
+    ErasureStep {
+        table: "achievement_unlocks",
+        clauses: &[DELETE_USER_ROWS],
+    },
+    ErasureStep {
+        table: "stat_events",
+        clauses: &[DELETE_USER_ROWS],
+    },
+    ErasureStep {
+        table: "hint_unlocks",
+        clauses: &[DELETE_USER_ROWS],
+    },
+    ErasureStep {
+        table: "puzzle_values",
+        clauses: &[DELETE_USER_ROWS],
+    },
+    ErasureStep {
+        table: "puzzle_progress",
+        clauses: &[DELETE_USER_ROWS],
+    },
+    ErasureStep {
+        table: "saves",
+        clauses: &[DELETE_USER_ROWS],
+    },
+    ErasureStep {
+        table: "consents",
+        clauses: &[DELETE_USER_ROWS],
+    },
+    ErasureStep {
+        table: "friend_requests",
+        clauses: &[
+            Clause::Delete {
+                column: "from_id",
+                filter: None,
+            },
+            Clause::Delete {
+                column: "to_id",
+                filter: None,
+            },
+        ],
+    },
+    ErasureStep {
+        table: "friendships",
+        clauses: &[
+            Clause::Delete {
+                column: "user_lo",
+                filter: None,
+            },
+            Clause::Delete {
+                column: "user_hi",
+                filter: None,
+            },
+        ],
+    },
+    ErasureStep {
+        table: "friend_blocks",
+        clauses: &[
+            DELETE_USER_ROWS,
+            Clause::Delete {
+                column: "blocked_id",
+                filter: None,
+            },
+        ],
+    },
+    ErasureStep {
+        table: "user_handles",
+        clauses: &[DELETE_USER_ROWS],
+    },
+    ErasureStep {
+        table: "invite_codes",
+        clauses: &[DELETE_USER_ROWS],
+    },
+    ErasureStep {
+        table: "referrals",
+        clauses: &[
+            Clause::Delete {
+                column: "invitee_id",
+                filter: None,
+            },
+            Clause::Null {
+                column: "inviter_id",
+            },
+        ],
+    },
+    ErasureStep {
+        table: "resource_ledger",
+        clauses: &[
+            Clause::Null {
+                column: "counterpart_id",
+            },
+            Clause::Delete {
+                column: "user_id",
+                filter: Some("charge_id IS NULL"),
+            },
+            Clause::Keep {
+                column: "user_id",
+                reason: "rows with a charge_id stay with their payment",
+            },
+        ],
+    },
+    ErasureStep {
+        table: "resource_balances",
+        clauses: &[DELETE_USER_ROWS],
+    },
+    ErasureStep {
+        table: "entitlements",
+        clauses: &[DELETE_USER_ROWS],
+    },
+    ErasureStep {
+        table: "payments",
+        clauses: &[Clause::Keep {
+            column: "user_id",
+            reason: "accounting",
+        }],
+    },
+    ErasureStep {
+        table: "unrecorded_refunds",
+        clauses: &[
+            Clause::Keep {
+                column: "user_id",
+                reason: "accounting: Stars returned to this payer",
+            },
+            Clause::Keep {
+                column: "admin_id",
+                reason: "audit: the admin who returned them",
+            },
+        ],
+    },
+    ErasureStep {
+        table: "orders",
+        clauses: &[Clause::Keep {
+            column: "user_id",
+            reason: "accounting",
+        }],
+    },
+    ErasureStep {
+        table: "users",
+        clauses: &[Clause::Anonymize {
+            column: "id",
+            set: &[("first_name", "''"), ("language_code", "NULL")],
+        }],
+    },
+];
+
+/// A column named in a declaration of user-like columns: the table, the column, and why it is declared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UserColumn {
+    /// The table.
+    pub table: &'static str,
+    /// The column.
+    pub column: &'static str,
+    /// Why it is declared.
+    pub why: &'static str,
+}
+
+/// User-id columns that carry no FK to `users(id)`, each with why (per-player §3.9, W2). The schema gate fails for an
+/// undeclared one, so a future table keyed like `payments` cannot escape [`ERASURE_ORDER`].
+pub const NON_FK_USER_COLUMNS: &[UserColumn] = &[
+    UserColumn {
+        table: "payments",
+        column: "user_id",
+        why: "the payer; no FK so a payment row is never refused (0001_init.sql:15)",
+    },
+    // LRF (0007_auto_refunds.sql:26-27): both are Telegram user ids, so both are user columns, and both are kept.
+    UserColumn {
+        table: "unrecorded_refunds",
+        column: "user_id",
+        why: "the payer an admin named; no FK, the users row may be gone",
+    },
+    UserColumn {
+        table: "unrecorded_refunds",
+        column: "admin_id",
+        why: "the admin who ran /refund; an operator id, not necessarily a users row",
+    },
+];
+
+/// BIGINT columns that look like a user id (named `user_*` or `*_id`) without an FK, and are not one. Empty today.
+pub const NOT_USER_COLUMNS: &[UserColumn] = &[];

@@ -1,8 +1,8 @@
 import { expect, test } from 'vitest';
 
-import { inSectionReach, searchSection, sectionEntry } from '../../src/explore/reconcile.ts';
 import { RESUME_STATE_CAP } from '../../src/explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../../src/explore/state.ts';
+import { inSectionReach, searchSection, sectionEntry } from '../../src/mechanics/rules/search.ts';
 import type { SectionId } from '../../src/story/staging.ts';
 import { decodeWorldSource, toPublic } from '../../src/world/decode.ts';
 import type { RoomId, WorldPublicBody } from '../../src/world/types.ts';

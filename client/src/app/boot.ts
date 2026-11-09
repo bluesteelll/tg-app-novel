@@ -16,7 +16,7 @@ import { unlockAudio } from '../audio/unlock.ts';
 import { t } from '../i18n/index.ts';
 import type { UiKey } from '../i18n/index.ts';
 import type { HintPort } from '../puzzles/session.ts';
-import { summaryOf } from '../saves/service.ts';
+import { summaryOf } from '../saves/summary.ts';
 import { createSettingsStore } from '../settings/store.ts';
 import type { Settings, SettingsStore } from '../settings/store.ts';
 import { createStatsReporter } from '../stats/reporter.ts';

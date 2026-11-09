@@ -13,10 +13,11 @@ import type { Story as InkStory } from 'inkjs/engine/Story';
 import type { AbstractValue } from 'inkjs/engine/Value';
 
 import { project } from '../../src/explore/project.ts';
-import { reduce, successors } from '../../src/explore/reduce.ts';
 import type { ExploreAction } from '../../src/explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../../src/explore/state.ts';
 import type { PuzzleOutcome, WorldState } from '../../src/explore/state.ts';
+import { reduce } from '../../src/mechanics/rules/core.ts';
+import { successors } from '../../src/mechanics/rules/search.ts';
 import { CHAPTER_ID_RE, KNOT_NAME_RE } from '../../src/story/catalog.ts';
 import type { Cast, ChapterListEntry, InkScalar } from '../../src/story/catalog.ts';
 import type { AssetIndex, ChapterId, KnotName, ParsedTags, PuzzleLocalId, SectionId, StagingCommand, VarName, YieldCommand } from '../../src/story/staging.ts';

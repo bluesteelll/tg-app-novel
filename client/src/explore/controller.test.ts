@@ -5,16 +5,18 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 import { ROOM_SOURCE, cover, minTarget, toStage } from '../geom/cover.ts';
 import type { Size } from '../geom/cover.ts';
+import { sectionEntry } from '../mechanics/rules/search.ts';
 import { createAssetScheduler } from '../scene/preload.ts';
 import { STEADY_CAP_BYTES, createAssetRegistry } from '../scene/registry.ts';
 import type { AssetError, LoadImage } from '../scene/registry.ts';
 import type { AssetEntry, AssetManifest, ImageEntry } from '../story/catalog.ts';
-import type { AssetId, ChapterId, SectionId } from '../story/staging.ts';
+import type { AssetId, ChapterId, KnotName, SectionId } from '../story/staging.ts';
 import type { ExploreViewStore } from '../ui/explore-view.svelte.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { HotspotKey, ItemId, RoomId, WorldPublic, WorldText } from '../world/types.ts';
 import { MIN_TARGET_PX, REVEAL_MS, createExploreController } from './controller.ts';
 import type { ExploreController, ExploreControllerDeps } from './controller.ts';
+import { reconcile } from './reconcile.ts';
 import type { ExploreAction, ExploreEffect } from './reduce.ts';
 import { EMPTY_WORLD_STATE } from './state.ts';
 import type { WorldState } from './state.ts';
@@ -378,6 +380,85 @@ test('controller: enter admits an unproved section', () => {
   ]);
   expect(y.c.state().open).not.toContain('hall.to_vault');
   expect(y.c.state().unproved).toEqual([]);
+});
+
+test('controller: a save the new world cannot produce resets at its first entry', () => {
+  // Saved in the house over v1 with the vault opened by the lever; v2 opens it only through the key's own `then`.
+  const v1 = harness(house(1));
+  v1.c.enter(sec('house'), EMPTY_WORLD_STATE);
+  v1.c.dispatch(tap('hall.lever'));
+  const s: WorldState = v1.c.state();
+  expect([s.section, s.room, s.open]).toEqual(['house', 'hall', ['hall.to_vault']]);
+  // The load keeps the section as saved (engine plan §3.4); the controller's first entry proves it.
+  const r = reconcile(house(2), s, new Set(['garden' as KnotName]), V1);
+  const h = harness(house(2));
+  h.c.enter(sec('house'), r.state);
+  expect(h.effects[0]).toEqual({ kind: 'reset', section: 'house' });
+  expect(h.effects[1]).toEqual({ kind: 'room', room: 'hall', sfx: null });
+  expect(h.c.state().open).not.toContain('hall.to_vault');
+  expect(h.c.state().unproved).toEqual([]);
+});
+
+/** A cellar whose onEnter runs an event knot; v2 locks the way in with a key no hotspot gives. */
+function cellar(version: 1 | 2): WorldPublic {
+  return world(
+    {
+      items: { k: 'key' },
+      sections: {
+        crypt: {
+          start: 'hall',
+          rooms: {
+            hall: room('hall', [
+              exit('to_side', 'side'),
+              exit('to_cellar', 'cellar', { lock: version === 2 ? lock(['k']) : null }),
+              exit('out', { story: 'crypt_out' }),
+            ]),
+            side: room('side', [exit('to_hall', 'hall')]),
+            cellar: room('cellar', [exit('to_hall', 'hall')], [{ story: 'crypt_voice' }]),
+          },
+        },
+      },
+    },
+    version === 1 ? V1 : V2,
+  );
+}
+
+test('controller: inside an event knot the return proves the section', () => {
+  const CRYPT = sec('crypt');
+  // Saved over v1 inside the cellar's onEnter knot: the knot's return is the first entry after the load.
+  const v1 = harness(cellar(1));
+  v1.c.enter(CRYPT, EMPTY_WORLD_STATE);
+  v1.c.dispatch(tap('hall.to_cellar'));
+  const saved: WorldState = { ...v1.c.state(), unproved: [CRYPT] }; // as reconcile leaves it after a version change
+  expect([saved.room, saved.pendingStory]).toEqual(['cellar', ['crypt_voice']]);
+  // (a) v2 cannot produce it: the return restarts the section, and the path restarts with it. The controller walked
+  // first, so a path kept by mistake would still report walkable.
+  const v2 = cellar(2);
+  const h = harness(v2);
+  h.c.enter(CRYPT, EMPTY_WORLD_STATE);
+  const calls: boolean[] = [];
+  h.c.onPath((walkable) => calls.push(walkable));
+  h.c.dispatch(tap('hall.to_side'));
+  expect(calls).toEqual([false, true]);
+  const before = h.effects.length;
+  h.c.enter(CRYPT, saved);
+  expect(h.effects[before]).toEqual({ kind: 'reset', section: 'crypt' });
+  expect(h.effects.slice(before + 1)).toEqual([{ kind: 'room', room: 'hall', sfx: null }, { kind: 'dirty' }]);
+  expect(h.c.state()).toEqual(sectionEntry(v2, EMPTY_WORLD_STATE, CRYPT));
+  expect(h.c.state().pendingStory).toEqual([]);
+  expect(calls).toEqual([false, true, false]);
+  // (b) The same save on v1 under a new version: proved, so the knot returns as it does today and the path is kept.
+  const y = harness({ ...cellar(1), version: V2 });
+  y.c.enter(CRYPT, EMPTY_WORLD_STATE);
+  const kept: boolean[] = [];
+  y.c.onPath((walkable) => kept.push(walkable));
+  y.c.dispatch(tap('hall.to_side'));
+  const from = y.effects.length;
+  y.c.enter(CRYPT, saved);
+  expect(y.effects.slice(from)).toEqual([{ kind: 'room', room: 'cellar', sfx: null }, { kind: 'dirty' }]);
+  expect(y.c.state().pendingStory).toEqual([]);
+  expect(y.c.state().unproved).toEqual([]);
+  expect(kept).toEqual([false, true]);
 });
 
 // ---------------------------------------------------------------------------------------------------------------
