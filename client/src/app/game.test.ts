@@ -3234,6 +3234,20 @@ test('game: a presented step tells the meta port', async () => {
   m.gate.dispose();
 });
 
+test('game: a continue into a pending paid start asks for the meta chunk at its paywall', async () => {
+  // LFL fix_r1 I1: D11's paywall over the empty stage is the session's first screen and no step follows it, so the
+  // chunk is asked for there as at a step; the paywall's Terms -> policy link then opens on its first tap.
+  const { h, m } = metaHarness({ chapters: [manorCh1(), manorCh2()], slots: new Map([['auto', pendingCh2()]]) });
+  expect((await h.game.start({ kind: 'slot', story: MANOR, slot: 'auto' })).ok).toBe(true);
+  expect([h.vm.screens.root.kind, overlayKinds(h), m.loads()]).toEqual(['game', ['paywall'], 1]);
+  await m.land();
+  const taps: string[] = [];
+  m.gate.tap(() => taps.push('policy'), { inTask: true });
+  expect([m.made(), taps]).toEqual([1, ['policy']]);
+  h.game.dispose();
+  m.gate.dispose();
+});
+
 /** The gate over a load the test settles by hand, and a controller stub the gate only hands out and disposes. */
 function bareGate(o: { root?: () => object; clock?: FakeClock } = {}): {
   gate: MetaGate;
