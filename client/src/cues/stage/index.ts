@@ -345,6 +345,7 @@ export function mountStage(layer: HTMLElement, p: CueStageProps): () => void {
       if (!pending.delete(plan)) {
         return;
       }
+      // Belt and braces: on every client path a root's removal reaches the observer's sweep first (cut addendum, C11).
       sweep();
       moved = false;
       player.run(plan);
