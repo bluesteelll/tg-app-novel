@@ -539,6 +539,38 @@ test('world: two key-owning modules each get only their own keys at their own pl
   expect(back.ok && back.value.mods).toEqual(mods);
 });
 
+/** A second effect-owning data half, registered after the probe: its effect is written before the probe's below. */
+const ECHOFX: MechanicData<'echofx', OwnedRaw> = {
+  id: 'echofx',
+  rules: 'none',
+  owns: { effect: ['echo_e'] },
+  decode: (raw) => ({ ok: true, value: raw }),
+  encode: (d) => d,
+  normalize: (_w, s) => s,
+};
+const FXED = { mechanics: [...MECHANIC_DATA, PROBE, ECHOFX] };
+
+test('world: effects of two modules interleaved in one list are emitted in source order whatever the registry order', () => {
+  const raw = manorSource();
+  // The later-registered module's effect first: the gate lock's onFail is [kernel, echofx, probe, kernel] in the source.
+  (node(raw, `${GATE}.lock`)['onFail'] as unknown[]).splice(1, 0, { echo_e: 1 }, { probe_e: 2 }); // the fixture's effect list
+  const r = decodeWorldSource(raw, FXED);
+  expect(issues(r)).toEqual([]);
+  if (!r.ok) {
+    throw new Error('invariant: no issue, so the world decoded');
+  }
+  const mods: Readonly<Record<string, unknown>> = r.value.mods;
+  expect(mods['echofx']).toEqual([{ place: 'effect', id: 'fail:hall.gate#1', path: `${GATE}.lock.onFail.1`, raw: { echo_e: 1 } }]);
+  expect(mods['probe']).toEqual([{ place: 'effect', id: 'fail:hall.gate#2', path: `${GATE}.lock.onFail.2`, raw: { probe_e: 2 } }]);
+  // Encoded in registry order (the probe's effect, then echofx's), each effect still lands at its source index.
+  const body = toPublic(r.value, FXED);
+  const expected = structuredClone(toPublic(decoded())) as unknown as Record<string, unknown>; // the plain public body, as JSON
+  (node(expected, `${GATE}.lock`)['onFail'] as unknown[]).splice(1, 0, { echo_e: 1 }, { probe_e: 2 }); // the body's effect list
+  expect(JSON.stringify(body)).toBe(JSON.stringify(expected));
+  const back = decodeWorldPublic({ ...structuredClone(body), version: '0123456789abcdef' }, FXED);
+  expect(back.ok && back.value.mods).toEqual(mods);
+});
+
 test('world: an unowned key is still refused', () => {
   expect(issues(decodeWorldSource(probed()))).toEqual(
     [
