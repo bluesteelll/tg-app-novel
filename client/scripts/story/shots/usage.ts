@@ -136,9 +136,14 @@ function sortKeys(v: unknown): unknown {
   return v;
 }
 
-/** The file's text: every object's keys sorted (arrays keep their order: `possible` is near-first), two-space JSON. */
+/** Two-space JSON with every object's keys sorted (arrays keep their order), so two runs write the same bytes. */
+export function encodeSorted(value: unknown): string {
+  return `${JSON.stringify(sortKeys(value), null, 2)}\n`;
+}
+
+/** The file's text (`possible` keeps its near-first order). */
 export function encodeShotUsage(u: ShotUsage): string {
-  return `${JSON.stringify(sortKeys(u), null, 2)}\n`;
+  return encodeSorted(u);
 }
 
 // ---------------------------------------------------------------------------------------------------------------

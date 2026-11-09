@@ -15,6 +15,8 @@ import type { ChapterGraph } from '../graph.ts';
 import { GLOBALS_PATH } from '../lint.ts';
 import { playChapter } from '../playthrough.ts';
 import type { ChapterPlay } from '../playthrough.ts';
+import { artList, artListMarkdown, encodeArtList } from './art-list.ts';
+import type { ArtList, ArtShot } from './art-list.ts';
 import { buildFlow, crossCheck, entries, entryOf, eventReturns, lookahead, roomEvents } from './flow.ts';
 import type { ChapterFlow, Lookahead, RoomEvents, ShotFiles, StepKey } from './flow.ts';
 import { SHOT_LINT_CODES, faceNeeds, lintShots } from './lint.ts';
@@ -1568,4 +1570,152 @@ test('shots: only the flow names the legacy kinds', () => {
     expect(LEGACY.test(readFileSync(new URL(f, dir), 'utf8')), f).toBe(false);
   }
   expect(LEGACY.test(readFileSync(new URL('flow.ts', dir), 'utf8'))).toBe(true); // non-vacuity: the pattern finds them
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Commit 8: the art list
+
+/** The art list of a fixture story (`[id, paid, body]` in story order) under a shot list. */
+function artOf(chs: ReadonlyArray<readonly [ChapterId, boolean, readonly string[]]>, list: ShotList = CAFE_SHOTS): ArtList {
+  const catalog = effectiveCatalog(COMMITTED.catalog, list);
+  const shots = effectiveShots(catalog, list, []);
+  const flows = chs.map(([id, paid, body]) => ({ id, paid, flow: flowOf(body, catalog, undefined, id).flow }));
+  const u = shotUsage(
+    flows.map((c) => ({ id: c.id, flow: c.flow, world: null, rooms: new Map() })),
+    shots,
+  );
+  return artList({ story: 'demo', chapters: flows.map((c) => ({ ...c, usage: chapterOf(u, c.id) })), list, shots, catalog: COMMITTED.catalog });
+}
+
+function artShot(a: ArtList, id: string): ArtShot {
+  const s = a.shots.find((x) => x.id === id);
+  if (s === undefined) {
+    throw new Error(`invariant: the art list has shot ${id}`);
+  }
+  return s;
+}
+
+const FACE_MASKS = [
+  { mask: 'mask.fig', typical: false },
+  { mask: 'mask.head', typical: false },
+  { mask: 'hair.1', typical: false },
+  { mask: 'hair.2', typical: true },
+];
+const BACK_MASKS = FACE_MASKS.filter((m) => m.mask !== 'mask.head');
+const derived = (x: string, talk: boolean): Array<{ state: string; conditional: boolean }> => [
+  { state: x, conditional: false },
+  ...['half', 'closed', 'accent', ...(talk ? ['talk1', 'talk2'] : [])].map((d) => ({ state: `${x}.${d}`, conditional: true })),
+];
+
+test('art-list: a shot lists its cast, needed expressions with lines, speakers and an hours estimate', () => {
+  const a = artOf([
+    [CH1, false, STAGED],
+    [CH2, true, ['-> k', '=== k ===', '# scene: cafe_ally_cu', '# face: ally worried', 'ally: Ох. #id:ch2.k.a001', '-> END']],
+  ]);
+  expect(artShot(a, 'cafe_ally_cu')).toEqual({
+    id: 'cafe_ally_cu',
+    loc: 'cafe',
+    frame: 'close',
+    declared: true,
+    drawn: false,
+    chapters: ['ch1', 'ch2'],
+    steps: 3,
+    cast: [
+      {
+        char: 'ally',
+        view: 'face',
+        rest: 'neutral',
+        figure: true,
+        masks: FACE_MASKS,
+        restSet: ['half', 'closed', 'accent'],
+        needs: [
+          { expr: 'smile', talk: true, lines: ['ch1.k.a002', 'ch1.k.a003'], states: derived('smile', true) },
+          { expr: 'worried', talk: true, lines: ['ch2.k.a001'], states: derived('worried', true) },
+        ],
+      },
+    ],
+    camTargets: ['ally'],
+    motions: ['nod'],
+    files: [
+      { id: 'bg/cafe_ally_cu', tier: 'public' },
+      { id: 'face/cafe_ally_cu/ally/smile', tier: 'public' },
+      { id: 'face/cafe_ally_cu/ally/worried', tier: 'gated' }, // only the paid chapter needs it
+      { id: 'sheet/cafe_ally_cu', tier: 'public' },
+      { id: 'talk/cafe_ally_cu/ally/smile', tier: 'public' },
+      { id: 'talk/cafe_ally_cu/ally/worried', tier: 'gated' },
+    ],
+    // 3 rest-set states + 2 expressions: each alone (lower) or with its 5 derived states (upper).
+    states: { lower: 5, upper: 15 },
+    minutes: { lower: 92 + 9 + 1 + 4 * 5, upper: 92 + 9 + 1 + 4 * 15 },
+  });
+  expect(artShot(a, 'cafe_wide')).toMatchObject({ steps: 1, states: { lower: 8, upper: 8 }, minutes: { lower: 144, upper: 144 } });
+  expect(a.toDraw).toEqual(['cafe_wide', 'cafe_ally_cu']); // no catalog art, in order of first use
+  expect(a.toStage).toEqual([]);
+  expect(a.locs).toEqual([{ id: 'cafe', light: null, shots: ['cafe_wide', 'cafe_ally_cu'] }]);
+  expect(a.chapters).toEqual([
+    { id: 'ch1', paid: false, shots: 2, fresh: ['cafe_wide', 'cafe_ally_cu'], minutes: { lower: 266, upper: 306 }, extra: 0, marginal: { lower: 0, upper: 0 } },
+    { id: 'ch2', paid: true, shots: 1, fresh: [], minutes: { lower: 0, upper: 0 }, extra: 0, marginal: { lower: 0, upper: 0 } },
+  ]);
+  const md = artListMarkdown(a);
+  expect(md).toContain('### Shot `cafe_ally_cu`');
+  expect(md).toContain('    - `smile` (2 lines: ch1.k.a002, ch1.k.a003; speaks): smile; then');
+  expect(md).toContain('- face states 5-15; estimate 122-162 min (2.0-2.7 h)');
+  expect(md).toContain('| ch2 | paid | 1 | 0 | 0-0 min (0.0-0.0 h) | 0 (+0-0 min (0.0-0.0 h)) |');
+  expect(JSON.parse(encodeArtList(a))).toEqual(JSON.parse(JSON.stringify(a)));
+});
+
+test('art-list: a small face in a wide lists its full set', () => {
+  // No reduction for a small face (S30): the stranger speaks in the wide, at rest and in a smile.
+  const a = artOf([[CH1, false, ['-> k', '=== k ===', '# scene: cafe_wide', 'stranger: Добрый вечер. #id:ch1.k.a001', '# face: stranger smile', 'stranger: Рад видеть. #id:ch1.k.a002', '-> END']]]);
+  const wide = artShot(a, 'cafe_wide');
+  expect(wide.cast.find((m) => m.char === 'stranger')).toEqual({
+    char: 'stranger',
+    view: 'face',
+    rest: 'neutral',
+    figure: false,
+    masks: FACE_MASKS,
+    restSet: ['half', 'closed', 'accent', 'talk1', 'talk2'],
+    needs: [
+      { expr: 'neutral', talk: true, lines: ['ch1.k.a001'], states: [] },
+      { expr: 'smile', talk: true, lines: ['ch1.k.a002'], states: derived('smile', true) },
+    ],
+  });
+  expect(wide.cast.find((m) => m.char === 'ally')).toMatchObject({ restSet: ['half', 'closed', 'accent'], needs: [{ expr: 'neutral', talk: false, lines: ['ch1.k.a001', 'ch1.k.a002'], states: [] }] });
+  expect(wide.states).toEqual({ lower: 3 + 5 + 1, upper: 3 + 5 + 6 });
+});
+
+test("art-list: an expression's derived states are listed as conditional on its boxes", () => {
+  const a = artOf([
+    [
+      CH1,
+      false,
+      ['-> k', '=== k ===', '# scene: cafe_ally_cu', '# face: ally smile', 'Улыбка. #id:ch1.k.a001', '# face: ally worried', 'ally: Ох. #id:ch1.k.a002', '-> END'],
+    ],
+  ]);
+  const ally = artShot(a, 'cafe_ally_cu').cast[0];
+  // A talk pair only where it speaks in that expression; every derived state only if the expression changes that box.
+  expect(ally?.needs).toEqual([
+    { expr: 'smile', talk: false, lines: ['ch1.k.a001'], states: derived('smile', false) },
+    { expr: 'worried', talk: true, lines: ['ch1.k.a002'], states: derived('worried', true) },
+  ]);
+  expect(artListMarkdown(a)).toContain(
+    '    - `smile` (1 line: ch1.k.a001): smile; then smile.half, smile.closed, smile.accent: each only if smile changes that box; else the rest state is reused',
+  );
+  // The second non-rest expression of one face in one shot is an extra one, at +4-24 min.
+  expect(a.chapters[0]).toMatchObject({ extra: 1, marginal: { lower: 4, upper: 24 } });
+});
+
+test('art-list: every cast member lists its figure mask and hair locks', () => {
+  const a = artOf([[CH1, false, ['-> k', '=== k ===', '# scene: cafe_ots', 'ally: Да? #id:ch1.k.a001', '# scene: street_wide', 'Улица. #id:ch1.k.a002', '-> END']]]);
+  const ots = artShot(a, 'cafe_ots');
+  expect(ots.cast.map((m) => [m.char, m.view, m.masks, m.restSet])).toEqual([
+    ['stranger', 'back', BACK_MASKS, []],
+    ['ally', 'face', FACE_MASKS, ['half', 'closed', 'accent', 'talk1', 'talk2']],
+  ]);
+  expect(ots.cast[0]?.needs).toEqual([]); // a back view carries no face state
+  expect(ots.minutes).toEqual({ lower: 92 + 2 * 9 + 1 + 4 * 5, upper: 92 + 2 * 9 + 1 + 4 * 5 });
+  expect(artShot(a, 'street_wide')).toMatchObject({ cast: [], minutes: { lower: 92, upper: 92 } });
+  const md = artListMarkdown(a);
+  expect(md).toContain('    - masks: mask.fig, hair.1, hair.2 (typical)\n    - no face states (no face is visible)');
+  expect(md).toContain('    - masks: mask.fig, mask.head, hair.1, hair.2 (typical)');
 });
