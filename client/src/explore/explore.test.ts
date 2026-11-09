@@ -123,6 +123,9 @@ type ManorVariant = {
   leverCellar?: boolean;
   /** The golden fixture: the drawer's onOpen and then stories, a take's then, a remote unlock of an object. */
   golden?: boolean;
+  /** v2 of step 0 (engine plan §5.3): the diary is `journal`, the cellar `crypt`, the section `estate`, the drawer
+   *  hotspot `desk` (its puzzle stays `drawer`), the inscription `plaque`. */
+  renamedIds?: boolean;
 };
 
 /** The demo section of PUZZLES-PLAN "Demo content outline" (ch1 `manor`), and its v2 edits. */
@@ -130,24 +133,26 @@ function manor(v: ManorVariant = {}): WorldPublicBody {
   const star = v.star ?? 'medal_star';
   const medals = ['medal_sun', 'medal_moon', star];
   const golden = v.golden === true;
+  const renamed = v.renamedIds === true;
+  const [diary, cellar] = renamed ? ['journal', 'crypt'] : ['diary', 'cellar'];
   return world({
     items: medals,
-    docs: ['letter', 'diary'],
+    docs: ['letter', diary],
     puzzles: { drawer: code(4), gate: order(medals, 3) },
     sections: {
-      manor: {
+      [renamed ? 'estate' : 'manor']: {
         start: 'hall',
         rooms: {
           hall: room([
             exit('to_study', 'study', null, 'door'),
-            exit('to_cellar', 'cellar', v.leverCellar === true ? lock([]) : null),
+            exit('to_cellar', cellar, v.leverCellar === true ? lock([]) : null),
             exit('gate', { story: 'manor_out' }, lock(v.gate ?? medals, 'gate', [{ story: 'manor_gate_forced' }, { unlock: 'hall.gate' }])),
-            look('inscription'),
+            look(renamed ? 'plaque' : 'inscription'),
           ]),
           study: room([
             take('medal', { item: 'medal_sun' }),
             object(
-              'drawer',
+              renamed ? 'desk' : 'drawer',
               lock([], 'drawer', [], golden ? [{ story: 'drawer_open' }] : []),
               golden ? [{ give: 'medal_moon' }, { story: 'drawer_then' }] : [{ give: 'medal_moon' }],
             ),
@@ -156,10 +161,10 @@ function manor(v: ManorVariant = {}): WorldPublicBody {
             ...(v.leverCellar === true ? [object('lever', null, [{ unlock: 'hall.to_cellar' }])] : []),
             exit('to_hall', 'hall'),
           ]),
-          cellar: room(
+          [cellar]: room(
             [
               take('star', { item: star }),
-              take('diary', { doc: 'diary' }),
+              take('diary', { doc: diary }),
               ...(golden ? [object('lever', null, [{ unlock: 'study.cabinet' }])] : []),
               exit('to_hall', 'hall'),
             ],
@@ -818,6 +823,135 @@ test('reconcile: renamed held item keeps the section exitable', () => {
   // The gift is re-armed under its new id, and a way out exists.
   expect(run(v2, r.state, tap('hall.to_cellar'), returned('manor'), tap('cellar.star')).state.held).toEqual(['medal_comet']);
   expect(exitable(v2, r.state, MANOR)).toBe(true);
+});
+
+test('reconcile: step 0 maps renamed items, docs, rooms, sections and hotspots before normalize', () => {
+  // A save played on v1: the inscription read, both docs, the star in the gate's slot, the drawer open by its puzzle
+  // (its then gave the moon), back in the cellar. Its lists are out of sorted order on purpose.
+  const s = run(
+    manor(),
+    EMPTY_WORLD_STATE,
+    enterAction('manor'),
+    tap('hall.inscription'),
+    tap('hall.to_cellar'),
+    returned('manor'),
+    tap('cellar.star'),
+    tap('cellar.diary'),
+    tap('cellar.to_hall'),
+    tap('hall.to_study'),
+    tap('study.medal'),
+    tap('study.drawer'),
+    ended('drawer', 'solved'),
+    tap('study.letter'),
+    tap('study.to_hall'),
+    insert('hall.gate', 'medal_star'),
+    tap('hall.to_cellar'),
+  ).state;
+  expect([s.room, s.held, s.used, s.open, s.fired]).toEqual(['cellar', ['medal_sun', 'medal_moon'], ['medal_star'], ['study.drawer'], ['enter:cellar', 'then:study.drawer']]);
+  // v2 renames one id of every kind step 0 maps; the cellar's hotspots move by their own entries (a room's rename
+  // carries none). The map is the public world's: resolved, one lookup per id.
+  const bare = manor({ star: 'medal_comet', renamedIds: true });
+  const renamed = {
+    items: { [it('medal_star')]: it('medal_comet') },
+    docs: { [dc('diary')]: dc('journal') },
+    rooms: { [rm('cellar')]: rm('crypt') },
+    sections: { [MANOR]: sec('estate') },
+    hotspots: {
+      [k('hall.inscription')]: k('hall.plaque'),
+      [k('study.drawer')]: k('study.desk'),
+      [k('cellar.star')]: k('crypt.star'),
+      [k('cellar.diary')]: k('crypt.diary'),
+      [k('cellar.to_hall')]: k('crypt.to_hall'),
+    },
+  };
+  const v2 = stamped({ ...bare, renamed }, V2);
+  const r = reconcile(v2, s, MANOR_KNOTS, V1);
+  expect(r.dropped).toEqual([]);
+  // Every field holds the new ids, in the save's order; the run and the rest pass.
+  expect(r.state).toEqual({
+    ...s,
+    section: 'estate',
+    room: 'crypt',
+    lastRoom: { estate: 'crypt' },
+    visited: ['hall', 'crypt', 'study'],
+    held: ['medal_sun', 'medal_moon'],
+    used: ['medal_comet'],
+    docs: ['journal', 'letter'],
+    taken: ['crypt.star', 'crypt.diary', 'study.medal', 'study.letter'],
+    examined: ['hall.plaque'],
+    slots: { 'hall.gate': [null, null, 'medal_comet'] },
+    open: ['study.desk'],
+    fired: ['enter:crypt', 'then:study.desk'],
+    unproved: ['estate'],
+  });
+  expect(r.reset).toBeNull();
+  // No restart: the renamed state is one v2 reaches.
+  expect(inSectionReach(v2, r.state, sec('estate'), RESUME_STATE_CAP)).toBe('yes');
+
+  // The control: the same v2 without `renamed` drops the old ids as normalize always has, and keeps the rest in order.
+  const control = reconcile(stamped(bare, V2), s, MANOR_KNOTS, V1);
+  expect(control.dropped).toEqual([
+    'used:medal_star',
+    'docs:diary',
+    'taken:cellar.star',
+    'taken:cellar.diary',
+    'examined:hall.inscription',
+    'open:study.drawer',
+    'fired:enter:cellar',
+    'fired:then:study.drawer',
+    'visited:cellar',
+    'lastRoom:manor',
+    'section:manor',
+    'room:cellar',
+  ]);
+  expect([control.state.held, control.state.visited, control.state.taken]).toEqual([['medal_sun', 'medal_moon'], ['hall', 'study'], ['study.medal', 'study.letter']]);
+
+  // Merges: two held ids onto one keep one entry; of two slot keys (or two lastRoom sections) onto one, the first in
+  // save order stays and the other is dropped, its slot's item back in held; flags map too.
+  const merging = stamped(
+    {
+      ...bare,
+      renamed: {
+        items: { [it('medal_old')]: it('medal_comet'), [it('medal_star')]: it('medal_comet') },
+        sections: { [sec('house')]: sec('estate'), [MANOR]: sec('estate') },
+        hotspots: { [k('hall.gate_old')]: k('hall.gate') },
+        flags: { [fl('fl_old')]: fl('fl_new') },
+      },
+    },
+    V2,
+  );
+  const saved = frozen({
+    ...structuredClone(EMPTY_WORLD_STATE),
+    section: MANOR,
+    room: rm('hall'),
+    lastRoom: { [sec('house')]: rm('study'), [MANOR]: rm('hall') },
+    visited: [rm('hall')],
+    held: [it('medal_old'), it('medal_star')],
+    used: [it('medal_moon'), it('medal_sun')],
+    slots: { [k('hall.gate_old')]: [null, it('medal_moon'), null], [k('hall.gate')]: [it('medal_sun'), null, null] },
+    flags: [fl('fl_old'), fl('fl_keep')],
+  });
+  const m = reconcile(merging, saved, MANOR_KNOTS, V1);
+  expect(m.dropped).toEqual(['slots:hall.gate', 'lastRoom:manor']);
+  expect([m.state.held, m.state.used, m.state.slots, m.state.lastRoom, m.state.section, m.state.flags]).toEqual([
+    ['medal_comet', 'medal_sun'],
+    ['medal_moon'],
+    { 'hall.gate': [null, 'medal_moon', null] },
+    { estate: 'study' },
+    'estate',
+    ['fl_new', 'fl_keep'],
+  ]);
+
+  // A room's rename moves the room, never its hotspots onto the target's: the study has its own drawer, so a merged
+  // attic's open `attic.drawer` is dropped (and its lock re-arms), not carried onto `study.drawer`.
+  const merged = reconcile(stamped({ ...manor(), renamed: { rooms: { [rm('attic')]: rm('study') } } }, V2), at('attic', { open: [k('attic.drawer')], fired: ['then:attic.drawer'] }), MANOR_KNOTS, V1);
+  expect(merged.dropped).toEqual(['open:attic.drawer', 'fired:then:attic.drawer']);
+  expect([merged.state.room, merged.state.visited, merged.state.lastRoom, merged.state.open, merged.state.fired]).toEqual(['study', ['study'], { manor: 'study' }, [], []]);
+
+  // A map is read by own keys only: an item named `constructor` is no rename.
+  const tiny = world({ items: ['constructor', 'medal_sun'], sections: { manor: { start: 'hall', rooms: { hall: room([take('a', { item: 'constructor' })]) } } } });
+  const plain = reconcile(stamped({ ...tiny, renamed: { items: { [it('medal_old')]: it('medal_sun') } } }, V2), at('hall', { held: [it('constructor'), it('medal_old')] }), MANOR_KNOTS, V1);
+  expect([plain.dropped, plain.state.held]).toEqual([[], ['constructor', 'medal_sun']]);
 });
 
 test('reconcile: unprovable state restarts the section', () => {

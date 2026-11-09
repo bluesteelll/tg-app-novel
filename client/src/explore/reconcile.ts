@@ -34,6 +34,85 @@ function triggerOf(ix: WorldIndex, fired: string): readonly Effect[] | undefined
   }
 }
 
+/** `id` through one rename map: its own entry (a map is a plain object and `constructor` is an id), else `id`. */
+function renamedId<K extends string>(map: Readonly<Record<K, K>> | undefined, id: K): K {
+  return map !== undefined && Object.hasOwn(map, id) ? (map[id] ?? id) : id;
+}
+
+/**
+ * Step 0 (engine plan §5.3): every id the state holds, through the world's `renamed` map, which the build resolved to
+ * final targets, so one lookup per id. A hotspot moves by its own entry only (a room's rename carries none of its
+ * hotspots, so a room merged into a live one never lands on that room's hotspots). The lists stay sets in
+ * first-occurrence order; of two saved keys that land on one, the first in save order stays and the other goes to
+ * `dropped`, a dropped slot's items back to held as normalize gives them. Puzzle keys stay (R-E4, per-player GM6c1b);
+ * `unproved` is replaced right after. A world without `renamed`: the state itself.
+ */
+function renameIds(w: WorldPublicBody, s: WorldState, dropped: string[]): WorldState {
+  const r = w.renamed;
+  if (r === undefined) {
+    return s;
+  }
+  const ids = <K extends string>(map: Readonly<Record<K, K>> | undefined, list: readonly K[]): K[] => [...new Set(list.map((x) => renamedId(map, x)))];
+  let held = ids(r.items, s.held);
+  let used = ids(r.items, s.used);
+  const slots: Record<HotspotKey, ReadonlyArray<ItemId | null>> = {};
+  for (const [key, cells] of entriesOf(s.slots)) {
+    const to = renamedId(r.hotspots, key);
+    const items = cells.map((c) => (c === null ? null : renamedId(r.items, c)));
+    if (!Object.hasOwn(slots, to)) {
+      slots[to] = items;
+      continue;
+    }
+    dropped.push(`slots:${key}`);
+    for (const item of items) {
+      if (item !== null) {
+        used = used.filter((x) => x !== item);
+        held = held.includes(item) ? held : [...held, item];
+      }
+    }
+  }
+  const lastRoom: Record<SectionId, RoomId> = {};
+  for (const [sid, rid] of entriesOf(s.lastRoom)) {
+    const to = renamedId(r.sections, sid);
+    if (Object.hasOwn(lastRoom, to)) {
+      dropped.push(`lastRoom:${sid}`);
+    } else {
+      lastRoom[to] = renamedId(r.rooms, rid);
+    }
+  }
+  const trigger = (f: string): string => {
+    const colon = f.indexOf(':');
+    const kind = colon < 0 ? '' : f.slice(0, colon);
+    const target = f.slice(colon + 1);
+    switch (kind) {
+      case 'enter':
+        return `enter:${renamedId(r.rooms, target as RoomId)}`; // a kernel trigger's target, matched by its id below
+      case 'then':
+      case 'open':
+      case 'fail':
+        return `${kind}:${renamedId(r.hotspots, target as HotspotKey)}`; // as above: a hotspot key or a miss
+      default:
+        return f; // a module's trigger: its own normalize keeps or drops it
+    }
+  };
+  return {
+    ...s,
+    section: s.section === null ? null : renamedId(r.sections, s.section),
+    room: s.room === null ? null : renamedId(r.rooms, s.room),
+    lastRoom,
+    visited: ids(r.rooms, s.visited),
+    held,
+    used,
+    docs: ids(r.docs, s.docs),
+    taken: ids(r.hotspots, s.taken),
+    examined: ids(r.hotspots, s.examined),
+    slots,
+    open: ids(r.hotspots, s.open),
+    fired: [...new Set(s.fired.map(trigger))],
+    flags: ids(r.flags, s.flags),
+  };
+}
+
 /**
  * Steps 1-3: drop the ids the world no longer has, fit the slots to the current locks, re-arm lost gifts. A run goes
  * whole: its `work` stays with a puzzle the world keeps and goes with one it lost (engine plan §5.2). `flags` pass
@@ -149,11 +228,12 @@ function normalize(w: WorldPublicBody, s: WorldState, knots: ReadonlySet<KnotNam
 }
 
 /**
- * The load-time reconcile of X9. The same world version → the state unchanged (the same object). Otherwise steps
- * 1-3 (`normalize`) and step 5: every section joins `unproved`, the current one included. Step 4 runs at each
- * section's first entry instead (engine plan §3.4), through `admitSection`, or `admitEvent` when an event knot is
- * pending, so the load searches nothing and `reset` is always null. `dropped` lists every `<field>:<id>` the world
- * no longer has; a kept run's `work` and the `flags` pass unchanged (engine plan §5.2).
+ * The load-time reconcile of X9. The same world version → the state unchanged (the same object). Otherwise step 0
+ * (`renameIds`), steps 1-3 (`normalize`) and step 5: every section joins `unproved`, the current one included.
+ * Step 4 runs at each section's first entry instead (engine plan §3.4), through `admitSection`, or `admitEvent` when
+ * an event knot is pending, so the load searches nothing and `reset` is always null. `dropped` lists every
+ * `<field>:<id>` the world no longer has and every key a rename merged away; a kept run's `work` and the `flags` pass
+ * unchanged but for step 0's renames (engine plan §5.2).
  */
 export function reconcile(
   w: WorldPublic,
@@ -165,7 +245,7 @@ export function reconcile(
     return { state: s, dropped: [], reset: null };
   }
   const dropped: string[] = [];
-  const state = normalize(w, s, knots, dropped);
+  const state = normalize(w, renameIds(w, s, dropped), knots, dropped);
   const unproved = [...worldIndex(w).sections.keys()].sort();
   return { state: { ...state, unproved }, dropped, reset: null };
 }

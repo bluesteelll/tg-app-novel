@@ -274,6 +274,34 @@ test("world: a source puzzle's clues decode", () => {
   expect(issues(decodeWorldPublic(pub))).toEqual(['puzzles.drawer.clues shape']);
 });
 
+test("decode: a world's renamed map decodes in the source and the public world", () => {
+  // Every kind of engine plan §5.1, a hotspot key, a chain: the source keeps the map as written.
+  const map = {
+    items: { medal_old: 'medal_mid', medal_mid: 'medal_sun' },
+    docs: { note: 'letter' },
+    rooms: { attic: 'hall' },
+    sections: { house: 'manor' },
+    hotspots: { 'hall.old_gate': 'hall.gate' },
+    flags: { fl_a: 'fl_b' },
+    puzzles: { old_drawer: 'drawer' },
+  };
+  const raw = { ...manorSource(), renamed: map };
+  expect(issues(decodeWorldSource(raw))).toEqual([]);
+  expect(decoded(raw).renamed).toEqual(map);
+  // A public world carries one as well (the build's resolved map).
+  const pub = decodeWorldPublic({ ...publicRaw(), renamed: map });
+  expect(pub.ok && pub.value.renamed).toEqual(map);
+  // Absent stays absent: no key in either decoded value.
+  expect(Object.hasOwn(decoded(), 'renamed')).toBe(false);
+  const bare = decodeWorldPublic(publicRaw());
+  expect(bare.ok && Object.hasOwn(bare.value, 'renamed')).toBe(false);
+  // Every issue in one pass: an unknown kind, a key out of its grammar, an id where a hotspot key belongs, a non-string.
+  const bad = { ...manorSource(), renamed: { bogus: {}, items: { Bad: 'x' }, hotspots: { hall: 'hall.gate' }, rooms: { a: 7 } } };
+  expect(issues(decodeWorldSource(bad))).toEqual(['renamed.bogus shape', 'renamed.hotspots.hall id', 'renamed.items.Bad id', 'renamed.rooms.a id']);
+  expect(issues(decodeWorldSource({ ...manorSource(), renamed: [] }))).toEqual(['renamed shape']);
+  expect(issues(decodeWorldPublic({ ...publicRaw(), renamed: { hotspots: { 'hall.gate': 'gate' } } }))).toEqual(['renamed.hotspots.hall.gate id']);
+});
+
 test('toPublic: strips solution and hints, keeps tier count', () => {
   const raw = manorSource();
   node(raw, 'puzzles.gate')['hints'] = [t('ch1.gate.h1aa', 'Надпись.'), t('ch1.gate.h2bb', 'Луна первой.')];
