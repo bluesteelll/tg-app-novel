@@ -407,6 +407,7 @@ test('save: a camera state outside the grammar fails at its path', () => {
     ['save.staging.cam.z', false, { kind: 'push', to: 'ally' }],
     ['save.staging.cam.to', false, { kind: 'push', to: 'Bad Name', z: 120 }],
     ['save.staging.cam.to', false, { kind: 'pan', to: 7 }],
+    ['save.staging.cam.to', false, { kind: 'pan', to: 'Bad Name' }],
     ['save.staging.cam.kind', false, { kind: 'zoom' }],
     ['save.staging.cam', false, null],
     ['save.checkpoint.staging.cam.z', true, { kind: 'push', to: 'ally', z: 131 }],
