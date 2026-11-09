@@ -423,7 +423,8 @@ export function planEmit(input: EmitInput): ReadonlyMap<string, string> {
     put(paths.en, pretty(Object.fromEntries(Object.entries(en).filter(([id]) => !hints.has(id as LineId))))); // keys of the en table
     if (b.world !== null) {
       const world: WorldPublic = { ...b.world, version: worldVersion(b.world) };
-      put(paths.world, pretty(world));
+      // Compact (engine plan §5.4): the world ships as emitted; its version hashes the value, never this text.
+      put(paths.world, JSON.stringify(world));
     }
     const server: ServerPuzzleContent = source === undefined ? { format: 1, chapterId: b.ch.id, puzzles: {} } : toServer(source, en, b.ch.id);
     put(`${OUT.puzzles}/${b.ch.id}.json`, pretty(server));

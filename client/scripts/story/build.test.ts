@@ -1154,6 +1154,39 @@ test('story: a rename chain resolves to its final target', () => {
   expect(Object.hasOwn(JSON.parse(planned(empty, CH1_WORLD)) as object, 'renamed')).toBe(false); // a planned world: an object
 });
 
+test('emit: the public world is compact and keeps its version', () => {
+  // Engine plan §5.4: the world ships as emitted, so it is emitted compact; its version hashes the value, never the
+  // text, so it is the version of the value the pretty-printed world carried.
+  const ch1 = decodedWorld(worldSource('ch1', 'cafe'));
+  const ch2 = decodedWorld(worldSource('ch2', 'archive'));
+  const { plan, compiled } = emitFixture(
+    LIST,
+    [MANOR],
+    new Map([
+      [CH1_ENTRY.id, ch1],
+      [CH2_ENTRY.id, ch2],
+    ]),
+  );
+  for (const [path, source] of [
+    [CH1_WORLD, ch1],
+    [CH2_WORLD, ch2],
+  ] as const) {
+    const text = planned(plan, path);
+    expect(text, path).not.toContain('\n');
+    expect(text, path).toBe(JSON.stringify(JSON.parse(text)));
+    expect(JSON.parse(text), path).toEqual({ ...toPublic(source), version: worldVersion(toPublic(source)) });
+  }
+  // Every other output keeps its format: story.json is the compiled JSON verbatim (its bytes are the story version),
+  // the rest two-space JSON ending in a newline.
+  expect(planned(plan, 'client/src/story-gen/free/ch1.story.json')).toBe(compiled.get(CH1_ENTRY.id)?.json);
+  expect(planned(plan, CH2_STORY)).toBe(compiled.get(CH2_ENTRY.id)?.json);
+  const others = [...plan].filter(([path]) => !path.endsWith('world.json') && !path.endsWith('story.json'));
+  expect(others.length).toBeGreaterThan(8);
+  for (const [path, text] of others) {
+    expect(text, path).toBe(`${JSON.stringify(JSON.parse(text), null, 2)}\n`);
+  }
+});
+
 test('emit: server puzzle content matches the server fixture shape', () => {
   const source = decodedWorld(worldSource('ch1', 'cafe'));
   const { plan } = emitFixture(LIST, [MANOR], new Map([[CH1_ENTRY.id, source]]));
