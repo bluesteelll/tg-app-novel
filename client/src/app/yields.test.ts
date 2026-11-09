@@ -8,7 +8,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import type { AttemptResponse, PuzzleStatus } from '../api/generated/api.ts';
 import type { ApiError, Clock } from '../api/http.ts';
 import type { AudioCommand } from '../audio/manager.ts';
-import type { CueEvent } from '../cues/types.ts';
+import type { Cue, CueEvent } from '../cues/types.ts';
 import { createExploreController } from '../explore/controller.ts';
 import type { ExploreController } from '../explore/controller.ts';
 import type { ExploreEffect } from '../explore/reduce.ts';
@@ -16,6 +16,7 @@ import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { WorldState } from '../explore/state.ts';
 import type { PuzzleUiProps } from '../puzzles/registry.ts';
 import type { HintPort } from '../puzzles/session.ts';
+import type { SceneStats } from '../scene/controller.ts';
 import type { VisualCommand } from '../scene/executor.ts';
 import type { StatEvent } from '../stats/reporter.ts';
 import { decodeChapterMeta } from '../story/catalog.ts';
@@ -30,8 +31,9 @@ import { createViewModel } from '../ui/state.svelte.ts';
 import type { CueStageProps } from '../ui/state.svelte.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { HotspotKey, ItemId, WorldPublic } from '../world/types.ts';
-import { TAKE_FADE_MS, coreCue, createYields } from './yields.ts';
+import { TAKE_FADE_MS, coreCue, createYields, heldBy } from './yields.ts';
 import type { ExploreChunk, LazyChunks, Yields, YieldsHost } from './yields.ts';
+import yieldsSource from './yields.ts?raw';
 
 // ---------------------------------------------------------------------------------------------------------------
 // Fixtures: a world in the source format (decoded and stamped, as controller.test.ts does) and its chapter
@@ -96,7 +98,7 @@ function cueWorld(): WorldPublic {
       coin: { name: txt('Монета'), desc: txt('d'), glyph: 'sun' },
     },
     docs: { letter: { title: txt('Письмо'), body: [txt('текст')] } },
-    puzzles: { gate: code(null, null) },
+    puzzles: { gate: code(null, null), drawer: code('drawer_close', 2) },
     sections: {
       manor: {
         start: 'hall',
@@ -114,6 +116,7 @@ function cueWorld(): WorldPublic {
               { id: 'letter', kind: 'take', rect: RECT, label: txt('letter'), gives: { doc: 'letter' }, prop: null, then: [] },
               box('box', lockOf(['medal'], 'gate')),
               look('desk'),
+              box('chest', lockOf([], 'drawer')),
               { id: 'out', kind: 'exit', rect: RECT, label: txt('out'), to: { story: 'after' }, lock: null, sfx: null },
             ],
           },
@@ -221,7 +224,28 @@ type RigOptions = {
   world?: WorldPublic;
   /** The explore loader settles only after it. */
   exploreGate?: Promise<void>;
+  /** Each batch starts only when the test releases it (`release`): its loads are slow. */
+  late?: boolean;
 };
+
+/** A scene's counters with every field idle but the two the batch hold reads. */
+function sceneStats(s: { stale: number; reviving: boolean }): SceneStats {
+  return {
+    liveTextures: 0,
+    liveBytes: 0,
+    pendingLoads: 0,
+    activeTimelines: 0,
+    overCap: 0,
+    rebuilds: 0,
+    gen: 1,
+    openBitmaps: 0,
+    stale: s.stale,
+    staleFrames: 0,
+    reviveFailed: 0,
+    reviving: s.reviving,
+    visibleReviveMs: null,
+  };
+}
 
 function rig(o: RigOptions = {}) {
   const clock = new FakeClock();
@@ -250,6 +274,10 @@ function rig(o: RigOptions = {}) {
   let sceneCalls = 0;
   /** The puzzle frame's type UI at each call of the stage loader. */
   const frameUi: unknown[] = [];
+  /** The scene's revive state, which the batch hold reads. */
+  const revive = { stale: 0, reviving: false };
+  /** The starts of the late batches, oldest first. */
+  const starts: Array<() => void> = [];
   const answers = [...(o.attempts ?? [])];
   const ch = manorChapter(o.world);
   const chunks: LazyChunks = {
@@ -298,6 +326,7 @@ function rig(o: RigOptions = {}) {
         }
       },
       snapshot: () => stage,
+      stats: () => sceneStats(revive),
     },
     explore,
     puzzle,
@@ -316,7 +345,7 @@ function rig(o: RigOptions = {}) {
       },
     }),
     text: (w) => w.ru,
-    apply: async (visual: readonly VisualCommand[], audio: readonly AudioCommand[]) => {
+    apply: async (visual: readonly VisualCommand[], audio: readonly AudioCommand[], started?: () => void) => {
       log.push(`apply:${visual.map((c) => c.kind).join(',')}|${audio.map((c) => c.kind).join(',')}`);
       batches.push([...visual]);
       for (const c of visual) {
@@ -328,6 +357,10 @@ function rig(o: RigOptions = {}) {
           stage = { ...stage, cg: c.cg };
         }
       }
+      if (o.late === true) {
+        await new Promise<void>((resolve) => starts.push(resolve));
+      }
+      started?.();
     },
     bgm: () => null,
     continueStory: async () => {
@@ -363,6 +396,9 @@ function rig(o: RigOptions = {}) {
     cues,
     frameUi,
     sceneCalls: () => sceneCalls,
+    revive,
+    /** Starts the oldest late batch. */
+    release: (): void => starts.shift()?.(),
     stage: () => stage,
   };
 }
@@ -777,4 +813,203 @@ test("yields: a module cue's name is one its rules half declares", () => {
   expect(coreCue('look', key('hall.desk'), null)).toEqual({ kind: 'module', module: 'core', name: 'look', at: 'hall.desk', item: null });
   // @ts-expect-error -- `opened` is no cue of core's rules half (a puzzle key): refused by type.
   expect(coreCue('opened', null, null).name).toBe('opened');
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The batch site and the moves (engine plan §8.1 "The frame's flags and its ends", point 11; rounds 4, 5, 12-14)
+
+/** A cue's key, as the cue stage keys its motion. */
+function keyOf(c: Cue): string {
+  switch (c.kind) {
+    case 'fact':
+      return `fact:${c.fact.kind}:${c.change}`;
+    case 'move':
+      return `move:${c.how}`;
+    case 'module':
+      return `module:${c.module}:${c.name}`;
+    case 'ui':
+      return `ui:${c.control}`;
+    case 'ui-state':
+      return `ui-state:${c.name}`;
+    case 'puzzle':
+      return `puzzle:${c.name}`;
+    default: {
+      const never: never = c;
+      return never;
+    }
+  }
+}
+
+/** The keys the bus carried from the `from`-th cue on. */
+const keysOf = (r: Rig, from = 0): string[] => r.cues.slice(from).map((e) => keyOf(e.cue));
+
+/** The rooms of the cue world, entered with a late batch released. */
+async function inLateHall(r: Rig): Promise<void> {
+  const entering = r.yields.onYield({ kind: 'explore', section: MANOR });
+  await settle();
+  r.release();
+  await entering;
+  expect(r.explore.layer).not.toBeNull();
+}
+
+test('yields: every batch goes through held', () => {
+  // The one batch site: every `h.apply(` of yields.ts is held's (GM3p's request walk replaces this pin by declaration).
+  const sites = [...yieldsSource.matchAll(/\bh\.apply\(/g)].map((m) => m.index);
+  expect(sites.length).toBe(1);
+  const start = yieldsSource.indexOf('export function heldBy(');
+  const end = yieldsSource.indexOf('\n}\n', start);
+  expect(start).toBeGreaterThan(-1);
+  expect(sites[0]).toBeGreaterThan(start);
+  expect(sites[0]).toBeLessThan(end);
+});
+
+test('yields: a batch that waits on a load emits waiting, then waited', async () => {
+  const r = rig({ world: cueWorld(), late: true });
+  await inLateHall(r);
+  // The take batch: the hold opens at the taken hotspot's box and closes when the batch starts.
+  const medal = boxOf(r, 'hall.medal');
+  let mark = r.cues.length;
+  r.yields.layer.ontap(key('hall.medal'));
+  await settle();
+  expect(keysOf(r, mark)).toEqual(['fact:held:added', 'ui-state:waiting']);
+  expect(r.cues.at(-1)?.box).toEqual(medal);
+  r.release();
+  await settle();
+  expect(keysOf(r, mark)).toEqual(['fact:held:added', 'ui-state:waiting', 'ui-state:waited']);
+  // The room batch: at the exit's box (the move cues have their own tests).
+  const door = boxOf(r, 'hall.to_cellar');
+  mark = r.cues.length;
+  r.yields.layer.ontap(key('hall.to_cellar'));
+  await settle();
+  expect(keysOf(r, mark)).toEqual(['ui-state:waiting']);
+  expect(r.cues.at(-1)?.box).toEqual(door);
+  r.release();
+  await settle();
+  expect(keysOf(r, mark).slice(0, 2)).toEqual(['ui-state:waiting', 'ui-state:waited']);
+  r.yields.layer.ontap(key('cellar.to_hall'));
+  await settle();
+  r.release();
+  await settle();
+  // The close-up in (an exploration puzzle's), then out at its X8 Back (`onEnd`'s closed branch): at the centre.
+  mark = r.cues.length;
+  r.yields.layer.ontap(key('hall.chest'));
+  await settle();
+  expect(keysOf(r, mark)).toEqual(['ui-state:waiting']);
+  expect(r.cues.at(-1)?.box).toBeNull();
+  r.release();
+  await settle();
+  expect(keysOf(r, mark)).toEqual(['ui-state:waiting', 'ui-state:waited']);
+  expect(r.puzzle.frame?.mode).toBe('explore');
+  mark = r.cues.length;
+  r.screens.back();
+  await settle();
+  expect(keysOf(r, mark)).toEqual(['ui-state:waiting']);
+  r.release();
+  await settle();
+  expect(keysOf(r, mark)).toEqual(['ui-state:waiting', 'ui-state:waited']);
+  expect(r.stage().cg).toBeNull();
+  r.yields.dispose();
+
+  // The close-up out at a run's end (`ended`): a linear puzzle solved.
+  const p = rig({ late: true, attempts: [{ ok: true, value: { correct: true, solved: true, attemptsLeft: null, spent: false } }] });
+  const opening = p.yields.onYield({ kind: 'puzzle', puzzle: DRAWER, then: AFTER });
+  await settle();
+  p.release();
+  await opening;
+  mark = p.cues.length;
+  p.yields.host.ontry();
+  await settle();
+  expect(keysOf(p, mark)).toEqual(['ui-state:waiting']);
+  expect(p.cues.at(-1)?.box).toBeNull();
+  p.release();
+  await settle();
+  expect(keysOf(p, mark)).toEqual(['ui-state:waiting', 'ui-state:waited']);
+  expect(p.entered.map((e) => e.knot)).toEqual(['after']);
+  p.yields.dispose();
+
+  // `'no-load'`: a batch that adds no image holds nothing, unless a revive runs or a texture is stale (the stage's
+  // `ensure` then waits on it): then it holds at the centre.
+  const emitted: CueEvent[] = [];
+  const revive = { stale: 0, reviving: false };
+  const held = heldBy(
+    {
+      apply: async (_visual, _audio, started) => {
+        started?.();
+      },
+      scene: { preload: () => {}, releasePreload: () => {}, snapshot: () => ({ bg: null, cg: null, chars: [], bgm: null, props: [] }), stats: () => sceneStats(revive) },
+    },
+    (e) => emitted.push(e),
+  );
+  const noLoad = async (s: { stale: number; reviving: boolean }): Promise<Array<Pick<CueEvent, 'cue' | 'box'>>> => {
+    Object.assign(revive, s);
+    emitted.length = 0;
+    await held([], [], 'no-load');
+    return emitted.map((e) => ({ cue: e.cue, box: e.box }));
+  };
+  const pair = [
+    { cue: { kind: 'ui-state', name: 'waiting', panel: null, item: null }, box: null },
+    { cue: { kind: 'ui-state', name: 'waited', panel: null, item: null }, box: null },
+  ];
+  expect(await noLoad({ stale: 0, reviving: false })).toEqual([]);
+  expect(await noLoad({ stale: 0, reviving: true })).toEqual(pair);
+  expect(await noLoad({ stale: 1, reviving: false })).toEqual(pair);
+  expect(await noLoad({ stale: 0, reviving: false })).toEqual([]);
+});
+
+test('yields: a move cue plays when its batch starts', async () => {
+  const r = rig({ world: cueWorld(), late: true });
+  await inLateHall(r);
+  const door = boxOf(r, 'hall.to_cellar');
+  let mark = r.cues.length;
+  r.yields.layer.ontap(key('hall.to_cellar'));
+  await settle();
+  // Built at the effect, while the hall is current; nothing of it plays while the batch loads.
+  expect(keysOf(r, mark).filter((k) => k.startsWith('move:'))).toEqual([]);
+  r.release();
+  await settle();
+  const move = r.cues.slice(mark).find((e) => e.cue.kind === 'move');
+  expect(move).toEqual({ cue: { kind: 'move', from: 'hall', to: 'cellar', via: 'hall.to_cellar', how: 'walk' }, box: door, point: null, diff: [], el: null });
+  // Back to the hall, then out of the section: `move:leave` at the exit's box, at once (no batch).
+  r.yields.layer.ontap(key('cellar.to_hall'));
+  await settle();
+  r.release();
+  await settle();
+  const out = boxOf(r, 'hall.out');
+  mark = r.cues.length;
+  r.yields.layer.ontap(key('hall.out'));
+  await settle();
+  expect(r.cues.slice(mark).map((e) => ({ cue: e.cue, box: e.box }))).toEqual([
+    { cue: { kind: 'move', from: 'hall', to: null, via: 'hall.out', how: 'leave' }, box: out },
+  ]);
+  expect(r.explore.layer).toBeNull();
+  r.yields.dispose();
+});
+
+test("yields: a moving dispatch's cues play after its move cue", async () => {
+  // The cellar's onEnter gives a coin: the gift's cue rides the move's batch and plays after its move cue.
+  const r = rig({ world: cueWorld(), late: true });
+  await inLateHall(r);
+  const mark = r.cues.length;
+  r.yields.layer.ontap(key('hall.to_cellar'));
+  await settle();
+  expect(keysOf(r, mark)).toEqual(['ui-state:waiting']);
+  r.release();
+  await settle();
+  expect(keysOf(r, mark)).toEqual(['ui-state:waiting', 'ui-state:waited', 'move:walk', 'fact:held:added']);
+  r.yields.dispose();
+});
+
+test("yields: a section's first entry holds a motion while its chunk loads", async () => {
+  let open = (): void => {};
+  const r = rig({ exploreGate: new Promise<void>((resolve) => (open = resolve)) });
+  const entering = r.yields.onYield({ kind: 'explore', section: MANOR });
+  await settle();
+  // The explore chunk loads: one hold, at the centre.
+  expect(keysOf(r)).toEqual(['ui-state:waiting']);
+  expect(r.cues[0]?.box).toBeNull();
+  open();
+  await entering;
+  // It ends when the import settles, before the section's first room batch holds its own.
+  expect(keysOf(r).slice(0, 3)).toEqual(['ui-state:waiting', 'ui-state:waited', 'ui-state:waiting']);
+  r.yields.dispose();
 });

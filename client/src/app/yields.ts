@@ -13,7 +13,7 @@ import type { Clock } from '../api/http.ts';
 import type { AudioCommand } from '../audio/manager.ts';
 import { createCueBus } from '../cues/bus.ts';
 import type { CueBus } from '../cues/bus.ts';
-import type { Cue, CueEvent } from '../cues/types.ts';
+import type { Cue, CueEvent, MoveHow } from '../cues/types.ts';
 import type { ExploreController, createExploreController } from '../explore/controller.ts';
 import { project } from '../explore/project.ts';
 import { runReduce, worldIndex } from '../explore/reduce.ts';
@@ -96,7 +96,7 @@ export type YieldsHost = {
   screens: Screens;
   tg: Pick<TelegramClient, 'haptic'>;
   api: Pick<Endpoints, 'getPuzzle' | 'postAttempt'>;
-  scene: Pick<SceneController, 'preload' | 'releasePreload' | 'snapshot'>;
+  scene: Pick<SceneController, 'preload' | 'releasePreload' | 'snapshot' | 'stats'>;
   explore: ExploreViewStore;
   puzzle: PuzzleView;
   reporter: Pick<StatsReporter, 'record'>;
@@ -207,6 +207,37 @@ let frameSeq = 0;
 /** A cue as the yields emit it: no pointer, no visual diff, no element (no control cue is theirs). */
 const cueEvent = (cue: Cue, box: Box | null): CueEvent => ({ cue, box, point: null, diff: [], el: null });
 
+/** A wait of the views (engine plan §8.1 point 11): the room batch's hold, `panel: null`. */
+const waitCue = (name: 'waiting' | 'waited', box: Box | null): CueEvent => cueEvent({ kind: 'ui-state', name, panel: null, item: null }, box);
+
+/** Where a batch's load hold plays (its `via` box; null: the stage centre) and what plays when the batch starts. */
+export type HeldAt = { readonly box: Box | null; readonly atStart?: () => void };
+
+/**
+ * The one site that applies a visual batch for the views (engine plan §8.1 "The frame's flags and its ends"):
+ * `ui-state:waiting` before `h.apply`, and from that apply's `started` (called once per apply, an empty batch included)
+ * `waited`, then `at.atStart` (a room batch's move cue and its entry's cues). `'no-load'` (a batch that adds no image)
+ * holds nothing while no texture is stale and no revive runs; otherwise `ensure` may wait, so it holds at the centre.
+ * A batch whose session ended never starts: the bus is gone with it.
+ */
+export function heldBy(
+  h: Pick<YieldsHost, 'apply' | 'scene'>,
+  emit: (e: CueEvent) => void,
+): (visual: readonly VisualCommand[], audio: readonly AudioCommand[], at: HeldAt | 'no-load') => Promise<void> {
+  return (visual, audio, at) => {
+    const hold: HeldAt | null = at !== 'no-load' ? at : h.scene.stats().stale === 0 && !h.scene.stats().reviving ? null : { box: null };
+    if (hold !== null) {
+      emit(waitCue('waiting', hold.box));
+    }
+    return h.apply(visual, audio, () => {
+      if (hold !== null) {
+        emit(waitCue('waited', hold.box));
+        hold.atStart?.();
+      }
+    });
+  };
+}
+
 /** Core's cue names: its rules half's `cues` (a type read: the rules stay in the explore-ui chunk). */
 type CoreCueName = (typeof MECHANIC_RULES)[0]['cues'][number];
 /** The one builder of the yields' module cues: only a name core declares, so its motion row exists (GM3m review M2). */
@@ -274,10 +305,19 @@ export function createYields(h: YieldsHost): Yields {
     return r.ok;
   };
 
-  /** One controller entry (D8): its cause, the box of the hotspot it acts on, and the cues it maps. */
-  type Scope = { readonly cause: Cause; readonly box: Box | null; readonly cues: CueEvent[] | null };
-  const AT_ONCE: Scope = { cause: cause('trigger'), box: null, cues: null };
+  /** A room batch to run (D9): its move cue, built at the effect, and the cues of the entry that pushed it (D8). */
+  type RoomJob = { readonly room: RoomId; readonly sfx: Extract<ExploreEffect, { kind: 'room' }>['sfx']; readonly move: CueEvent; cues: readonly CueEvent[] };
+  /**
+   * One controller entry (D8): its cause, the box of the hotspot it acts on, how a move it makes enters its room, the
+   * cues it maps, and the first room job it pushes, which carries them to its batch's start (§8.1 round 5).
+   */
+  type Scope = { readonly cause: Cause; readonly box: Box | null; readonly how: MoveHow; readonly cues: CueEvent[] | null; job: RoomJob | null };
+  const AT_ONCE: Scope = { cause: cause('trigger'), box: null, how: 'walk', cues: null, job: null };
   let scope = AT_ONCE;
+  /** The room the last batch showed: a move's `from`. */
+  let shown: RoomId | null = null;
+  /** The next section entry is the resume onto its yield. */
+  let resumed = false;
   /** A world cue of the entry in scope, on its hotspot's box. */
   const send = (cue: Cue): void => {
     const e = cueEvent(cue, scope.box);
@@ -288,16 +328,21 @@ export function createYields(h: YieldsHost): Yields {
     }
   };
   /** Runs one controller entry; the box is read before it, while the hotspot it acts on is still shown. */
-  const scoped = <T>(cause: Cause, run: () => T): T => {
-    const s: Scope = { cause, box: explore.hotspots.find((v) => v.key === cause.at)?.css ?? null, cues: [] };
+  const scoped = <T>(cause: Cause, run: () => T, how: MoveHow = 'walk'): T => {
+    const s: Scope = { cause, box: explore.hotspots.find((v) => v.key === cause.at)?.css ?? null, how, cues: [], job: null };
     scope = s;
     const out = run();
     scope = AT_ONCE;
-    for (const e of s.cues ?? []) {
-      bus.emit(e);
+    if (s.job !== null) {
+      s.job.cues = s.cues ?? [];
+    } else {
+      for (const e of s.cues ?? []) {
+        bus.emit(e);
+      }
     }
     return out;
   };
+  const held = heldBy(h, bus.emit);
 
   const drain = async (): Promise<void> => {
     for (let job = jobs.shift(); job !== undefined; job = jobs.shift()) {
@@ -379,9 +424,16 @@ export function createYields(h: YieldsHost): Yields {
     }
     const w = h.chapter()?.world ?? null;
     switch (e.kind) {
-      case 'room':
-        jobs.push(() => roomBatch(e.room, e.sfx));
+      case 'room': {
+        // D9: from the room the last batch showed, by the entry's hotspot (an exit) or by its kind (Back: none).
+        const move = cueEvent({ kind: 'move', from: shown, to: e.room, via: scope.cause.at, how: scope.how }, scope.box);
+        const job: RoomJob = { room: e.room, sfx: e.sfx, move, cues: [] };
+        if (scope.cues !== null) {
+          scope.job ??= job;
+        }
+        jobs.push(() => roomBatch(job));
         return;
+      }
       case 'look':
         vm.showToast({ kind: 'note', key: 'look', message: h.text(e.text), sticky: false });
         send(coreCue('look', scope.cause.at, null));
@@ -394,7 +446,8 @@ export function createYields(h: YieldsHost): Yields {
         if (name !== null) {
           vm.showToast({ kind: 'note', key: 'got', message: name, sticky: false });
         }
-        jobs.push(takeBatch); // B-001: before a `then`'s room or knot job, so the prop goes first
+        const box = scope.box;
+        jobs.push(() => takeBatch(box)); // B-001: before a `then`'s room or knot job, so the prop goes first
         return;
       }
       case 'lock':
@@ -411,6 +464,7 @@ export function createYields(h: YieldsHost): Yields {
         toStory(e.knot);
         return;
       case 'leave':
+        send({ kind: 'move', from: shown, to: null, via: scope.cause.at, how: 'leave' });
         toStory(e.knot);
         return;
       case 'refused':
@@ -473,11 +527,19 @@ export function createYields(h: YieldsHost): Yields {
   // -------------------------------------------------------------------------------------------------------------
   // Room batches (F7 step 1, X11, X12, D20)
 
-  const roomBatch = async (room: RoomId, sfx: Extract<ExploreEffect, { kind: 'room' }>['sfx']): Promise<void> => {
+  const roomBatch = async (j: RoomJob): Promise<void> => {
+    const { room, sfx } = j;
+    // §8.1 round 5: the move cue, then the cues of the entry that moved, when the batch starts.
+    const atStart = (): void => {
+      for (const e of [j.move, ...j.cues]) {
+        bus.emit(e);
+      }
+    };
     const ch = h.chapter();
     const w = ch?.world ?? null;
     const entry = w === null ? undefined : indexOf(w).rooms.get(room);
     if (w === null || entry === undefined) {
+      atStart(); // no batch: nothing holds them back
       return;
     }
     const props = roomProps(room, entry.room, world);
@@ -494,8 +556,9 @@ export function createYields(h: YieldsHost): Yields {
     if (sfx !== null) {
       audio.push({ kind: 'sfx', sfx, vol: 1 });
     }
+    shown = room;
     explore.layer = inEvent() ? null : layerComponent; // an onEnter event hides the rooms it moved into
-    await h.apply(visual, audio);
+    await held(visual, audio, { box: j.move.box, atStart });
     if (dead) {
       return;
     }
@@ -509,7 +572,7 @@ export function createYields(h: YieldsHost): Yields {
    * only the props that changed. A `got` that changes no prop (a take without one, an effect's `give`, a room the stage
    * does not show) applies nothing.
    */
-  const takeBatch = async (): Promise<void> => {
+  const takeBatch = async (box: Box | null): Promise<void> => {
     const room = world.section !== null ? world.room : null;
     const w = h.chapter()?.world ?? null;
     const entry = w === null || room === null ? undefined : indexOf(w).rooms.get(room);
@@ -524,7 +587,7 @@ export function createYields(h: YieldsHost): Yields {
     if (sameProps(stage.props, props)) {
       return;
     }
-    await h.apply([{ kind: 'bg', bg: entry.room.bg, t: 'crossfade', ms: TAKE_FADE_MS }, { kind: 'props', props }], []);
+    await held([{ kind: 'bg', bg: entry.room.bg, t: 'crossfade', ms: TAKE_FADE_MS }, { kind: 'props', props }], [], { box });
   };
 
   // -------------------------------------------------------------------------------------------------------------
@@ -558,7 +621,10 @@ export function createYields(h: YieldsHost): Yields {
     }
     let c = controller;
     if (c === null) {
+      // §8.1 point 11: the section's first chunk import is a wait of the views; it ends when the import settles.
+      bus.emit(waitCue('waiting', null));
       const [chunk, staged] = await Promise.all([h.chunks.explore(), loadStage()]);
+      bus.emit(waitCue('waited', null));
       if (dead || h.chapter() !== ch) {
         return;
       }
@@ -582,8 +648,10 @@ export function createYields(h: YieldsHost): Yields {
       );
     }
     const entering = c;
+    const how = inEvent() ? 'return' : resumed ? 'resume' : 'enter';
+    resumed = false;
     // admitSection, or admitEvent while an event knot is pending
-    scoped(cause(inEvent() ? 'return' : 'enter'), () => entering.enter(section, world));
+    scoped(cause(how === 'return' ? 'return' : 'enter'), () => entering.enter(section, world), how);
     world = c.state();
     await drain();
   };
@@ -640,7 +708,7 @@ export function createYields(h: YieldsHost): Yields {
       h.reporter.record({ kind: 'puzzle_ended', chapterId: ch.id, storyVersion: ch.meta.storyVersion, puzzle: local, outcome });
     }
     if (closeup) {
-      await h.apply([{ kind: 'cg', cg: null, t: 'fade', ms: CLOSEUP_FADE_MS }], []);
+      await held([{ kind: 'cg', cg: null, t: 'fade', ms: CLOSEUP_FADE_MS }], [], { box: null });
       if (dead) {
         return;
       }
@@ -663,7 +731,7 @@ export function createYields(h: YieldsHost): Yields {
       // X8: an exploration close records no outcome; the close-up goes, the rooms' neighbours come back.
       void h.queue(async () => {
         if (o.closeup) {
-          await h.apply([{ kind: 'cg', cg: null, t: 'fade', ms: CLOSEUP_FADE_MS }], []);
+          await held([{ kind: 'cg', cg: null, t: 'fade', ms: CLOSEUP_FADE_MS }], [], { box: null });
         }
         controller?.roomShown();
       });
@@ -698,7 +766,7 @@ export function createYields(h: YieldsHost): Yields {
     open = o;
     o.session.onEnd((e) => onEnd(o, e));
     if (p.closeup !== null) {
-      await h.apply([{ kind: 'cg', cg: p.closeup, t: 'fade', ms: CLOSEUP_FADE_MS }], []);
+      await held([{ kind: 'cg', cg: p.closeup, t: 'fade', ms: CLOSEUP_FADE_MS }], [], { box: null });
       if (open !== o) {
         return;
       }
@@ -942,6 +1010,8 @@ export function createYields(h: YieldsHost): Yields {
       explore.layer = null;
       screens.setRootBack(null);
       world = next;
+      shown = null;
+      resumed = at?.kind === 'explore';
       if (reset !== null) {
         vm.showToast({ kind: 'note', key: 'area_reset', message: t(vm.lang, 'explore.area_reset'), sticky: false });
       }
@@ -951,6 +1021,8 @@ export function createYields(h: YieldsHost): Yields {
       disposeController();
       jobs.length = 0;
       world = EMPTY_WORLD_STATE;
+      shown = null;
+      resumed = false;
       prefetched = false;
       if (dirtyTimer !== null) {
         h.clock.clearTimeout(dirtyTimer);
