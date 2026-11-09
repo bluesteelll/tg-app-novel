@@ -3,7 +3,7 @@
 //! body's shape on the Rust side reaches the client's tests. Every optional field is sampled both absent (or null)
 //! and present, and every value of the five wire unions at least once.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -13,10 +13,10 @@ use server::api::dto::{
     AttemptResponse, AuthResponse, BalanceDto, CardAchievement, CardEnding, CardResponse,
     ChapterPayload, CreateInvoiceResponse, EntitlementsResponse, FriendDto, FriendProfile,
     FriendRequestDto, FriendStoryDto, GameStatsDto, GiftResponse, HintUseResponse, HintView,
-    InviteView, Localized, OrderResponse, PackDto, PostStatsResponse, ProductDto, PutSaveResponse,
-    PuzzleStatus, RejectedEvent, SaveFull, SaveListResponse, SaveSummary, ShareResponse,
-    SharedAchievement, SharedEnding, SocialResponse, StatRejectReason, StatsResponse,
-    StoryStatsDto, UserDto, WalletResponse, ts_bindings,
+    InviteView, Localized, OrderResponse, PackDto, PlayerValue, PostStatsResponse, ProductDto,
+    PutSaveResponse, PuzzleStatus, RejectedEvent, SaveFull, SaveListResponse, SaveSummary,
+    ShareResponse, SharedAchievement, SharedEnding, SocialResponse, StatRejectReason,
+    StatsResponse, StoryStatsDto, UserDto, ValuesResponse, WalletResponse, ts_bindings,
 };
 use server::db::orders::OrderStatus;
 use server::db::social::InviteState;
@@ -28,10 +28,11 @@ use ts_rs::TS;
 const REGENERATE: &str = "regenerate: cargo test -p server --test it dto_samples::write_dto_samples -- --ignored --exact";
 
 /// The exported request bodies and the types only they carry: the client only sends them, so it decodes none.
-const REQUESTS: [&str; 11] = [
+const REQUESTS: [&str; 12] = [
     "AuthRequest",
     "PutSaveRequest",
     "AttemptRequest",
+    "RestartRequest",
     "CreateInvoiceRequest",
     "PostStatsRequest",
     "StatEventDto",
@@ -70,7 +71,7 @@ const NESTED: [&str; 23] = [
 ];
 
 /// Every error code, each at its index in [`code_index`].
-const ERROR_CODES: [ErrorCode; 18] = [
+const ERROR_CODES: [ErrorCode; 19] = [
     ErrorCode::BadRequest,
     ErrorCode::InitdataInvalid,
     ErrorCode::InitdataExpired,
@@ -89,6 +90,7 @@ const ERROR_CODES: [ErrorCode; 18] = [
     ErrorCode::InsufficientBalance,
     ErrorCode::LimitReached,
     ErrorCode::Internal,
+    ErrorCode::ValueChanged,
 ];
 
 /// The index of `code` in [`ERROR_CODES`]: no wildcard arm, so a new code does not compile until it is sampled.
@@ -112,6 +114,7 @@ fn code_index(code: ErrorCode) -> usize {
         ErrorCode::InsufficientBalance => 15,
         ErrorCode::LimitReached => 16,
         ErrorCode::Internal => 17,
+        ErrorCode::ValueChanged => 18,
     }
 }
 
@@ -302,31 +305,105 @@ fn samples() -> Value {
             value(&AttemptResponse {
                 correct: true,
                 solved: true,
+                attempts_left: None,
+                spent: false,
             }),
             value(&AttemptResponse {
                 correct: false,
                 solved: false,
+                attempts_left: None,
+                spent: false,
+            }),
+            // A capped per-player puzzle's final wrong answer: it spent the run.
+            value(&AttemptResponse {
+                correct: false,
+                solved: false,
+                attempts_left: Some(0),
+                spent: true,
             }),
         ],
     );
     put(
         "PuzzleStatus",
-        vec![value(&PuzzleStatus {
-            puzzle_id: "ch1.drawer".to_owned(),
-            solved: false,
-            hints: vec![
-                HintView {
-                    tier: 1,
-                    unlocked: true,
-                    text: Some("Look under the rug.".to_owned()),
-                },
-                HintView {
-                    tier: 2,
-                    unlocked: false,
-                    text: None,
-                },
-            ],
-        })],
+        vec![
+            value(&PuzzleStatus {
+                puzzle_id: "ch1.drawer".to_owned(),
+                solved: false,
+                hints: vec![
+                    HintView {
+                        tier: 1,
+                        unlocked: true,
+                        text: Some("Look under the rug.".to_owned()),
+                    },
+                    HintView {
+                        tier: 2,
+                        unlocked: false,
+                        text: None,
+                    },
+                ],
+                value_run: None,
+            }),
+            // A per-player puzzle: tier 3 rendered with run 4's value.
+            value(&PuzzleStatus {
+                puzzle_id: "ch1.safe".to_owned(),
+                solved: false,
+                hints: vec![
+                    HintView {
+                        tier: 1,
+                        unlocked: false,
+                        text: None,
+                    },
+                    HintView {
+                        tier: 2,
+                        unlocked: false,
+                        text: None,
+                    },
+                    HintView {
+                        tier: 3,
+                        unlocked: true,
+                        text: Some("The code: 3095.".to_owned()),
+                    },
+                ],
+                value_run: Some(4),
+            }),
+        ],
+    );
+    // Invented values: a live capped run, an uncapped one, a spent one.
+    let live = PlayerValue {
+        value: vec![1, 8, 4, 7],
+        run: 1,
+        attempts_left: Some(2),
+        spent: false,
+    };
+    let uncapped = PlayerValue {
+        value: vec![12, 7, 30],
+        run: 2,
+        attempts_left: None,
+        spent: false,
+    };
+    let spent = PlayerValue {
+        value: vec![3, 0, 9, 5],
+        run: 3,
+        attempts_left: Some(0),
+        spent: true,
+    };
+    put(
+        "PlayerValue",
+        vec![value(&live), value(&uncapped), value(&spent)],
+    );
+    put(
+        "ValuesResponse",
+        vec![
+            value(&ValuesResponse {
+                values: BTreeMap::new(),
+            }),
+            value(&ValuesResponse {
+                values: BTreeMap::from([
+                    ("dial".to_owned(), uncapped.clone()),
+                    ("drawer".to_owned(), live.clone()),
+                ]),
+            }),
+        ],
     );
     put(
         "CreateInvoiceResponse",
@@ -580,12 +657,19 @@ fn samples() -> Value {
             value(&ApiErrorBody {
                 error,
                 current: None,
+                value: None,
             })
         })
         .collect();
     errors.push(value(&ApiErrorBody {
         error: ErrorCode::SaveConflict,
         current: Some(summary(SaveSlot::S1, 2, Some("ch1.k2.l4"))),
+        value: None,
+    }));
+    errors.push(value(&ApiErrorBody {
+        error: ErrorCode::ValueChanged,
+        current: None,
+        value: Some(spent),
     }));
     put("ApiErrorBody", errors);
     Value::Object(map)

@@ -2,10 +2,11 @@
 //! `/api/puzzles`): the schema's constraints on raw SQL, the per-(user, puzzle) attempt window, the server-checked
 //! answer, and the hint ladder whose texts are served only for unlocked tiers of a puzzle the user may open
 //! (principle 0); the per-player values table's constraints and measured row size (per-player §3.1), and the values
-//! domain, its draw and its renderer, held to the shared vectors `tests/fixtures/values/vectors.json` (§3.2).
+//! domain, its draw and its renderer, held to the shared vectors `tests/fixtures/values/vectors.json` (§3.2); content
+//! format 2's per-player puzzles (§3.3) and the values route (§3.4), on `tests/fixtures/values/content-v2.json`.
 //!
 //! Hint unlock rows are inserted by raw SQL: the server has no writer for them in this lane. `puzzle_values` rows
-//! are too: the server writes none until the values routes.
+//! are written by the values route, and by raw SQL where a case needs a row no route writes.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -18,24 +19,29 @@ use axum::http::header::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use server::AppState;
+use server::api::dto::PlayerValue;
 use server::catalog::ResourceKind;
 use server::clock::FixedClock;
+use server::content::{Answer, ContentError, PuzzleDef};
 use server::db::POOL_MAX_CONNECTIONS;
 use server::db::economy::{Entry, Reason, credit_in_tx};
-use server::db::puzzles::AttemptRecord;
-use server::ids::{PuzzleKey, UserId};
+use server::db::puzzles::{AttemptRecord, Expected};
+use server::error::ApiError;
+use server::ids::{PuzzleId, PuzzleKey, UserId};
 use server::puzzles::values::{
     Domain, DomainError, DomainFile, DrawError, ValueRow, draw, os_rng, render,
 };
 use server::puzzles::{ATTEMPT_WINDOW_SECS, MAX_ANSWER_LEN};
+use server::{AppState, StartupError};
 use sqlx::postgres::PgQueryResult;
 use sqlx::{Connection, PgConnection};
 use tokio::task::JoinSet;
 
 use crate::catalog::{ANN, T0, bearer, get, own, state_with_users};
 use crate::common;
-use crate::content::{FIXTURE, FixtureCopy, read_json, renamed_copy, state_on, state_on_db};
+use crate::content::{
+    FIXTURE, FixtureCopy, content_error, read_json, renamed_copy, state_on, state_on_db,
+};
 
 /// A second player.
 const BEN: i64 = 1002;
@@ -753,11 +759,12 @@ fn pid(id: &str) -> PuzzleKey {
     PuzzleKey::parse(id).unwrap()
 }
 
-/// An attempt in the window, answered: not limited, no retry time.
-const OPEN: AttemptRecord = AttemptRecord {
-    limited: false,
-    retry_after_secs: 0,
+/// An attempt in the window, answered: a wrong static answer.
+const OPEN: AttemptRecord = AttemptRecord::Answered {
+    correct: false,
     solved: false,
+    attempts_left: None,
+    spent: false,
 };
 
 /// The 21st attempt in a window is limited until the window ends; the count is per (user, puzzle).
@@ -769,7 +776,12 @@ async fn attempt_rate_limited_after_20_in_window() {
     for call in 1..=20 {
         let got = st
             .repo
-            .record_attempt(UserId(ANN), &drawer, false, T0)
+            .record_attempt(
+                UserId(ANN),
+                &drawer,
+                Expected::Static { correct: false },
+                T0,
+            )
             .await
             .unwrap();
         if got != OPEN {
@@ -778,11 +790,15 @@ async fn attempt_rate_limited_after_20_in_window() {
     }
     let got = st
         .repo
-        .record_attempt(UserId(ANN), &drawer, false, T0)
+        .record_attempt(
+            UserId(ANN),
+            &drawer,
+            Expected::Static { correct: false },
+            T0,
+        )
         .await
         .unwrap();
-    let want = AttemptRecord {
-        limited: true,
+    let want = AttemptRecord::Limited {
         retry_after_secs: ATTEMPT_WINDOW_SECS,
         solved: false,
     };
@@ -801,7 +817,12 @@ async fn attempt_rate_limited_after_20_in_window() {
     ] {
         let got = st
             .repo
-            .record_attempt(UserId(user), &pid(puzzle), false, T0)
+            .record_attempt(
+                UserId(user),
+                &pid(puzzle),
+                Expected::Static { correct: false },
+                T0,
+            )
             .await
             .unwrap();
         if got != OPEN {
@@ -820,17 +841,26 @@ async fn attempt_window_resets_after_600s() {
     let mut failures = Vec::new();
     for _ in 0..20 {
         st.repo
-            .record_attempt(UserId(ANN), &drawer, false, T0)
+            .record_attempt(
+                UserId(ANN),
+                &drawer,
+                Expected::Static { correct: false },
+                T0,
+            )
             .await
             .unwrap();
     }
     let got = st
         .repo
-        .record_attempt(UserId(ANN), &drawer, false, T0 + 599)
+        .record_attempt(
+            UserId(ANN),
+            &drawer,
+            Expected::Static { correct: false },
+            T0 + 599,
+        )
         .await
         .unwrap();
-    let want = AttemptRecord {
-        limited: true,
+    let want = AttemptRecord::Limited {
         retry_after_secs: 1,
         solved: false,
     };
@@ -839,7 +869,12 @@ async fn attempt_window_resets_after_600s() {
     }
     let got = st
         .repo
-        .record_attempt(UserId(ANN), &drawer, false, T0 + 600)
+        .record_attempt(
+            UserId(ANN),
+            &drawer,
+            Expected::Static { correct: false },
+            T0 + 600,
+        )
         .await
         .unwrap();
     if got != OPEN {
@@ -898,8 +933,13 @@ async fn collide(
     for _ in 0..25 {
         let repo = st.repo.clone();
         tasks.spawn(async move {
-            repo.record_attempt(UserId(user), &pid("ch1.drawer"), false, T0)
-                .await
+            repo.record_attempt(
+                UserId(user),
+                &pid("ch1.drawer"),
+                Expected::Static { correct: false },
+                T0,
+            )
+            .await
         });
     }
     // Every pool connection blocked on the held row, well inside the app's 2 s `lock_timeout`.
@@ -909,9 +949,13 @@ async fn collide(
     let (mut open, mut limited, mut errors) = (0, 0, Vec::new());
     while let Some(joined) = tasks.join_next().await {
         match joined.unwrap() {
-            Ok(record) if record.limited => {
+            Ok(
+                record @ AttemptRecord::Limited {
+                    retry_after_secs, ..
+                },
+            ) => {
                 limited += 1;
-                if record.retry_after_secs != ATTEMPT_WINDOW_SECS {
+                if retry_after_secs != ATTEMPT_WINDOW_SECS {
                     errors.push(format!(
                         "limited record: expected retry 600, got {record:?}"
                     ));
@@ -963,7 +1007,12 @@ async fn attempt_concurrent_window_exact() {
 
     // BEN's pair exists with one attempt in the window before the collision.
     st.repo
-        .record_attempt(UserId(BEN), &pid("ch1.drawer"), false, T0)
+        .record_attempt(
+            UserId(BEN),
+            &pid("ch1.drawer"),
+            Expected::Static { correct: false },
+            T0,
+        )
         .await
         .unwrap();
     let (open, limited, waiters, errors) = collide(
@@ -1043,7 +1092,7 @@ async fn attempt_correct_marks_solved() {
         "correct at T0",
         &reply,
         200,
-        r#"{"correct":true,"solved":true}"#,
+        r#"{"correct":true,"solved":true,"attemptsLeft":null,"spent":false}"#,
     ));
     let solved_at = progress_row(&st, ANN, "ch1.drawer").await.map(|r| r.3);
     if solved_at != Some(Some(T0)) {
@@ -1057,7 +1106,7 @@ async fn attempt_correct_marks_solved() {
         "correct again at T0+10",
         &reply,
         200,
-        r#"{"correct":true,"solved":true}"#,
+        r#"{"correct":true,"solved":true,"attemptsLeft":null,"spent":false}"#,
     ));
     let solved_at = progress_row(&st, ANN, "ch1.drawer").await.map(|r| r.3);
     if solved_at != Some(Some(T0)) {
@@ -1071,7 +1120,7 @@ async fn attempt_correct_marks_solved() {
         "wrong at T0+20",
         &reply,
         200,
-        r#"{"correct":false,"solved":true}"#,
+        r#"{"correct":false,"solved":true,"attemptsLeft":null,"spent":false}"#,
     ));
     report(&failures);
 }
@@ -1086,7 +1135,7 @@ async fn attempt_wrong_returns_false() {
         "wrong",
         &reply,
         200,
-        r#"{"correct":false,"solved":false}"#,
+        r#"{"correct":false,"solved":false,"attemptsLeft":null,"spent":false}"#,
     ));
     let row = progress_row(&st, ANN, "ch1.drawer").await;
     if row != Some((1, 1, T0, None)) {
@@ -1141,7 +1190,7 @@ async fn attempt_wrong_shape_400() {
         "control: a well-formed wrong answer",
         &reply,
         200,
-        r#"{"correct":false,"solved":false}"#,
+        r#"{"correct":false,"solved":false,"attemptsLeft":null,"spent":false}"#,
     ));
     let row = progress_row(&st, ANN, "ch1.drawer").await.map(|r| r.0);
     if row != Some(1) {
@@ -1190,7 +1239,7 @@ async fn attempt_answer_len_64_accepted() {
         "64 entries",
         &reply,
         200,
-        r#"{"correct":true,"solved":true}"#,
+        r#"{"correct":true,"solved":true,"attemptsLeft":null,"spent":false}"#,
     ));
     let row = progress_row(&st, ANN, "ch1.drawer").await;
     if row != Some((1, 1, T0, Some(T0))) {
@@ -1248,14 +1297,14 @@ async fn attempt_paid_chapter_403_without_entitlement() {
         "BEN owns chapter:ch2",
         &reply,
         200,
-        r#"{"correct":true,"solved":true}"#,
+        r#"{"correct":true,"solved":true,"attemptsLeft":null,"spent":false}"#,
     ));
     let reply = post_attempt(&st, ANN, "ch1.drawer", WRONG).await;
     failures.extend(expect_reply(
         "ANN, free ch1.drawer",
         &reply,
         200,
-        r#"{"correct":false,"solved":false}"#,
+        r#"{"correct":false,"solved":false,"attemptsLeft":null,"spent":false}"#,
     ));
     report(&failures);
 }
@@ -1284,7 +1333,7 @@ async fn attempt_limited_correct_answer_429_not_solved() {
             &format!("wrong {call}"),
             &reply,
             200,
-            r#"{"correct":false,"solved":false}"#,
+            r#"{"correct":false,"solved":false,"attemptsLeft":null,"spent":false}"#,
         ));
     }
     let reply = post_attempt(&st, ANN, "ch1.drawer", SOLUTION).await;
@@ -1314,8 +1363,8 @@ async fn unlock(st: &AppState, user: i64, puzzle: &str, tier: i64) {
     c.close().await.unwrap();
 }
 
-/// The exact wire text of a status: `puzzleId`, `solved`, then one hint per tier (tier 1 first) that is unlocked
-/// with its text when `tiers` holds one, locked with `null` otherwise.
+/// The exact wire text of a static puzzle's status: `puzzleId`, `solved`, then one hint per tier (tier 1 first) that is
+/// unlocked with its text when `tiers` holds one, locked with `null` otherwise, and `valueRun` null.
 fn status_body(id: &str, solved: bool, tiers: &[Option<&str>]) -> String {
     let hints: Vec<String> = tiers
         .iter()
@@ -1329,7 +1378,7 @@ fn status_body(id: &str, solved: bool, tiers: &[Option<&str>]) -> String {
         })
         .collect();
     format!(
-        r#"{{"puzzleId":"{id}","solved":{solved},"hints":[{}]}}"#,
+        r#"{{"puzzleId":"{id}","solved":{solved},"hints":[{}],"valueRun":null}}"#,
         hints.join(",")
     )
 }
@@ -1393,7 +1442,7 @@ async fn puzzle_hint_text_only_when_unlocked() {
         "ANN solves",
         &reply,
         200,
-        r#"{"correct":true,"solved":true}"#,
+        r#"{"correct":true,"solved":true,"attemptsLeft":null,"spent":false}"#,
     ));
     let reply = get(&st, Some(ANN), "/api/puzzles/ch1.drawer?lang=en").await;
     failures.extend(expect_reply(
@@ -1711,7 +1760,7 @@ async fn rename_attempt_solves_under_the_key() {
         "ANN answers ch1.desk",
         &reply,
         200,
-        r#"{"correct":true,"solved":true}"#,
+        r#"{"correct":true,"solved":true,"attemptsLeft":null,"spent":false}"#,
     ));
     for (key, want) in [
         ("ch1.drawer", Some((1, 1, T0, Some(T0)))),
@@ -2264,6 +2313,1875 @@ fn values_a_misshapen_domain_is_refused_at_parse() {
             failures.push(format!(
                 "{case}: expected Err(Shape({rule:?})), got {got:?}"
             ));
+        }
+    }
+    report(&failures);
+}
+
+/// `tests/fixtures/values/content-v2.json`: per-player §3.3's example made loadable, a format-2 `ch1` with the static
+/// `gate` (`[1, 0, 2]`) and the per-player `drawer` stored under `ch1.desk_drawer` (`[0, 9]^4` without `[0, 0, 0, 0]`,
+/// no cap, tier 3 `The code: $code(drawer).`).
+const CONTENT_V2: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/values/content-v2.json"
+);
+
+/// A copy of the fixture whose `puzzles/ch1.json` is content-v2 changed by `edit`.
+async fn v2_copy(edit: impl FnOnce(&mut Value)) -> FixtureCopy {
+    let mut v2 = read_json(Path::new(CONTENT_V2)).await;
+    edit(&mut v2);
+    let copy = FixtureCopy::new();
+    copy.write_json("puzzles/ch1.json", &v2);
+    copy
+}
+
+/// The mismatch of a start against a refusal of `puzzles/ch1.json` with exactly `reason`.
+fn expect_refusal(
+    case: &str,
+    started: Result<AppState, StartupError>,
+    reason: &str,
+) -> Option<String> {
+    if started.is_ok() {
+        return Some(format!(
+            "{case}: expected a refusal on puzzles/ch1.json: {reason}, got Ok"
+        ));
+    }
+    match content_error(case, started) {
+        Ok(ContentError::Invalid { path, reason: got })
+            if path.ends_with("puzzles/ch1.json") && got == reason =>
+        {
+            None
+        }
+        Ok(other) => Some(format!(
+            "{case}: expected a refusal on puzzles/ch1.json: {reason}, got {other}"
+        )),
+        Err(failure) => Some(failure),
+    }
+}
+
+/// The puzzle `id` names in `st`'s content.
+fn def<'a>(st: &'a AppState, id: &str) -> Option<&'a PuzzleDef> {
+    st.content.puzzle(&PuzzleId::parse(id).unwrap())
+}
+
+/// Content format 2 holds a per-player puzzle beside a static one (per-player §3.3): `ch1.gate` keeps its solution;
+/// `ch1.drawer` is drawn per player, stored under its key, uncapped, from the 9,999-value domain whose hash the
+/// independent oracle gives.
+#[tokio::test]
+async fn content_loads_format_2_per_player_puzzle() {
+    let copy = v2_copy(|_| {}).await;
+    let (started, _db) = state_on(copy.path()).await;
+    let st = match started {
+        Ok(st) => st,
+        Err(e) => panic!("start refused: {e}"),
+    };
+    let mut failures = Vec::new();
+    match def(&st, "ch1.gate").map(|p| (p.key.0.as_str(), &p.answer)) {
+        Some(("ch1.gate", Answer::Static(solution))) if solution.as_slice() == [1, 0, 2] => {}
+        Some((key, Answer::Static(solution))) => failures.push(format!(
+            "ch1.gate: expected key ch1.gate and the solution [1, 0, 2], got key {key} and {solution:?}"
+        )),
+        Some((_, Answer::PerPlayer { .. })) => {
+            failures.push("ch1.gate: expected a static puzzle, got a per-player one".to_owned());
+        }
+        None => failures.push("ch1.gate: expected Some".to_owned()),
+    }
+    match def(&st, "ch1.drawer").map(|p| (p.key.0.as_str(), &p.answer)) {
+        Some((
+            key,
+            Answer::PerPlayer {
+                domain,
+                max_attempts,
+            },
+        )) => {
+            let got = (key, *max_attempts, domain.hash().0.as_str(), domain.size());
+            let want = ("ch1.desk_drawer", None, DOMAIN_HASH, 9_999);
+            if got != want {
+                failures.push(format!(
+                    "ch1.drawer as (key, maxAttempts, domain hash, size): expected {want:?}, got {got:?}"
+                ));
+            }
+        }
+        Some((_, Answer::Static(_))) => {
+            failures.push("ch1.drawer: expected a per-player puzzle, got a static one".to_owned());
+        }
+        None => failures.push("ch1.drawer: expected Some".to_owned()),
+    }
+    report(&failures);
+}
+
+/// A per-player domain parses through `Domain::parse` at load (per-player §3.3, defence in depth behind the build
+/// lint): under the entropy floor or too sparse to draw is a refusal naming the puzzle and the count, never a value.
+/// Control: exactly the floor loads.
+#[tokio::test]
+async fn content_refuses_per_player_below_floor() {
+    type Edit = fn(&mut Value);
+    let cases: [(&str, Edit, &str); 2] = [
+        (
+            "3 x [0, 9] without [0, 0, 0]",
+            |v| {
+                let drawer = &mut v["puzzles"]["drawer"];
+                drawer["answerLen"] = json!(3);
+                drawer["perPlayer"] = json!({
+                    "positions": [[0, 9], [0, 9], [0, 9]], "distinct": false, "exclude": [[0, 0, 0]]
+                });
+            },
+            "puzzle ch1.drawer: perPlayer: 999 values, under 1000",
+        ),
+        (
+            "9 distinct of [0, 15]",
+            |v| {
+                let drawer = &mut v["puzzles"]["drawer"];
+                drawer["answerLen"] = json!(9);
+                drawer["answerMax"] = json!(15);
+                drawer["perPlayer"] = json!({
+                    "positions": vec![[0, 15]; 9], "distinct": true, "exclude": []
+                });
+            },
+            "puzzle ch1.drawer: perPlayer: too sparse to draw",
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (case, edit, reason) in cases {
+        let copy = v2_copy(edit).await;
+        let (started, _db) = state_on(copy.path()).await;
+        failures.extend(expect_refusal(case, started, reason));
+    }
+    let copy = v2_copy(|v| {
+        let drawer = &mut v["puzzles"]["drawer"];
+        drawer["answerLen"] = json!(3);
+        drawer["perPlayer"] = json!({
+            "positions": [[0, 9], [0, 9], [0, 9]], "distinct": false, "exclude": []
+        });
+    })
+    .await;
+    let (started, _db) = state_on(copy.path()).await;
+    match started
+        .as_ref()
+        .map(|st| def(st, "ch1.drawer").map(|p| &p.answer))
+    {
+        Ok(Some(Answer::PerPlayer { domain, .. })) if domain.size() == 1_000 => {}
+        Ok(_) => failures
+            .push("3 x [0, 9] (control): expected a per-player drawer of 1,000 values".to_owned()),
+        Err(e) => failures.push(format!("3 x [0, 9] (control): expected Ok, got {e}")),
+    }
+    report(&failures);
+}
+
+/// Every `$code(` of a hint text names this puzzle, `$code(<local>)` or `$code(<local>.<n>)` with `n` in
+/// `1..=answerLen` (per-player §3.3, §5.1), in both languages, and only a per-player puzzle's hints hold one: anything
+/// else would reach a buyer verbatim. Controls: an entry placeholder and a literal `$` load.
+#[tokio::test]
+async fn content_refuses_hint_placeholder_of_another_puzzle() {
+    let drawer_rule = "holds a placeholder other than $code(drawer) or $code(drawer.1..=4)";
+    let cases: [(&str, &str, usize, &str); 5] = [
+        (
+            "$code(gate) in drawer's tier 3",
+            "drawer",
+            3,
+            "The code: $code(gate).",
+        ),
+        (
+            "index 5 of 4",
+            "drawer",
+            3,
+            "The last digit: $code(drawer.5).",
+        ),
+        (
+            "an unclosed placeholder",
+            "drawer",
+            3,
+            "The code: $code(drawer",
+        ),
+        (
+            "an upper-case local id",
+            "drawer",
+            3,
+            "The code: $code(Drawer).",
+        ),
+        (
+            "a placeholder in static gate's hint",
+            "gate",
+            1,
+            "The order: $code(gate).",
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (case, local, tier, text) in cases {
+        for lang in ["ru", "en"] {
+            let copy = v2_copy(|v| {
+                let hints = &mut v["puzzles"][local]["hints"];
+                if hints.as_array().is_some_and(Vec::is_empty) {
+                    *hints = json!([{ "ru": "Порядок.", "en": "The order." }]);
+                }
+                hints[tier - 1][lang] = json!(text);
+            })
+            .await;
+            let reason = if local == "gate" {
+                format!(
+                    "puzzle ch1.gate: hint {tier} ({lang}) holds a placeholder, and only a per-player puzzle's hints may"
+                )
+            } else {
+                format!("puzzle ch1.drawer: hint {tier} ({lang}) {drawer_rule}")
+            };
+            let (started, _db) = state_on(copy.path()).await;
+            failures.extend(expect_refusal(
+                &format!("{case} ({lang})"),
+                started,
+                &reason,
+            ));
+        }
+    }
+    for (case, text) in [
+        ("an entry placeholder", "The last digit: $code(drawer.4)."),
+        ("a literal $", "Цена $5, код $code(drawer)."),
+    ] {
+        let copy = v2_copy(|v| v["puzzles"]["drawer"]["hints"][2]["ru"] = json!(text)).await;
+        let (started, _db) = state_on(copy.path()).await;
+        if let Err(e) = started {
+            failures.push(format!("{case} (control): expected Ok, got {e}"));
+        }
+    }
+    report(&failures);
+}
+
+/// Format 2's answer rules (per-player §3.3): exactly one of `solution` and `perPlayer`; `maxAttempts` (null or 1..9)
+/// present iff `perPlayer`; format 1 holds neither. Control: a cap of 9 loads.
+#[tokio::test]
+async fn content_refuses_max_attempts_without_per_player() {
+    type Edit = fn(&mut Value);
+    let cases: [(&str, Edit, &str); 7] = [
+        (
+            "static gate with maxAttempts 3",
+            |v| v["puzzles"]["gate"]["maxAttempts"] = json!(3),
+            "puzzle ch1.gate: maxAttempts without perPlayer",
+        ),
+        (
+            "per-player drawer without maxAttempts",
+            |v| {
+                v["puzzles"]["drawer"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("maxAttempts");
+            },
+            "puzzle ch1.drawer: perPlayer needs maxAttempts (null or 1..=9)",
+        ),
+        (
+            "maxAttempts 0",
+            |v| v["puzzles"]["drawer"]["maxAttempts"] = json!(0),
+            "puzzle ch1.drawer: maxAttempts is outside 1..=9",
+        ),
+        (
+            "maxAttempts 10",
+            |v| v["puzzles"]["drawer"]["maxAttempts"] = json!(10),
+            "puzzle ch1.drawer: maxAttempts is outside 1..=9",
+        ),
+        (
+            "both solution and perPlayer",
+            |v| v["puzzles"]["drawer"]["solution"] = json!([1, 8, 4, 7]),
+            "puzzle ch1.drawer: exactly one of solution and perPlayer",
+        ),
+        (
+            "neither solution nor perPlayer",
+            |v| {
+                v["puzzles"]["gate"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("solution");
+            },
+            "puzzle ch1.gate: exactly one of solution and perPlayer",
+        ),
+        (
+            "perPlayer in format 1",
+            |v| {
+                v["format"] = json!(1);
+                v["puzzles"]["drawer"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("key");
+            },
+            "puzzle ch1.drawer: perPlayer needs format 2",
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (case, edit, reason) in cases {
+        let copy = v2_copy(edit).await;
+        let (started, _db) = state_on(copy.path()).await;
+        failures.extend(expect_refusal(case, started, reason));
+    }
+    let copy = v2_copy(|v| v["puzzles"]["drawer"]["maxAttempts"] = json!(9)).await;
+    let (started, _db) = state_on(copy.path()).await;
+    match started
+        .as_ref()
+        .map(|st| def(st, "ch1.drawer").map(|p| &p.answer))
+    {
+        Ok(Some(Answer::PerPlayer {
+            max_attempts: Some(9),
+            ..
+        })) => {}
+        Ok(_) => {
+            failures.push("maxAttempts 9 (control): expected a drawer capped at 9".to_owned());
+        }
+        Err(e) => failures.push(format!("maxAttempts 9 (control): expected Ok, got {e}")),
+    }
+    report(&failures);
+}
+
+/// `answerLen` is at most `MAX_ANSWER_LEN` for every puzzle, static or per-player (per-player §3.3; RULINGS 164 Q5:
+/// the constant, never a literal). Control: a per-player drawer of `MAX_ANSWER_LEN` positions loads, and a value drawn
+/// from it is stored whole in `puzzle_values` (the table's own bound, migration 0008), so the load rule and the table
+/// agree.
+#[tokio::test]
+async fn content_refuses_answer_len_over_64() {
+    let over = MAX_ANSWER_LEN + 1;
+    let reason = |id: &str| format!("puzzle {id}: answerLen is above {MAX_ANSWER_LEN}");
+    let mut failures = Vec::new();
+    let copy = v2_copy(|v| {
+        let gate = &mut v["puzzles"]["gate"];
+        gate["answerLen"] = json!(over);
+        gate["solution"] = json!(vec![0; over]);
+    })
+    .await;
+    let (started, _db) = state_on(copy.path()).await;
+    failures.extend(expect_refusal(
+        "a static gate of MAX_ANSWER_LEN + 1",
+        started,
+        &reason("ch1.gate"),
+    ));
+    let copy = v2_copy(|v| {
+        let drawer = &mut v["puzzles"]["drawer"];
+        drawer["answerLen"] = json!(over);
+        drawer["perPlayer"] =
+            json!({ "positions": vec![[0, 9]; over], "distinct": false, "exclude": [] });
+    })
+    .await;
+    let (started, _db) = state_on(copy.path()).await;
+    failures.extend(expect_refusal(
+        "a per-player drawer of MAX_ANSWER_LEN + 1",
+        started,
+        &reason("ch1.drawer"),
+    ));
+
+    let copy = v2_copy(|v| {
+        let drawer = &mut v["puzzles"]["drawer"];
+        drawer["answerLen"] = json!(MAX_ANSWER_LEN);
+        drawer["perPlayer"] =
+            json!({ "positions": vec![[0, 9]; MAX_ANSWER_LEN], "distinct": false, "exclude": [] });
+    })
+    .await;
+    let (started, _db) = state_on(copy.path()).await;
+    let st = match started {
+        Ok(st) => at_t0_with_users(st, &[ANN]).await,
+        Err(e) => panic!("a per-player drawer of MAX_ANSWER_LEN (control): expected Ok, got {e}"),
+    };
+    let drawn = match def(&st, "ch1.drawer").map(|p| &p.answer) {
+        Some(Answer::PerPlayer { domain, .. }) => draw(domain, &mut os_rng()).unwrap(),
+        _ => panic!("the control's drawer: expected a per-player puzzle"),
+    };
+    let mut c = common::raw_db(&st).await;
+    let text = format!(
+        "{{{}}}",
+        drawn
+            .iter()
+            .map(u16::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let stored = insert_value(
+        &mut c,
+        ValueSql {
+            value: text,
+            ..value_row(ANN, "ch1.desk_drawer")
+        },
+    )
+    .await;
+    match stored {
+        Ok(_) => {
+            let len: Option<i32> = sqlx::query_scalar(
+                "SELECT cardinality(value) FROM puzzle_values WHERE user_id = $1 AND puzzle_id = $2",
+            )
+            .bind(ANN)
+            .bind("ch1.desk_drawer")
+            .fetch_one(&mut c)
+            .await
+            .unwrap();
+            if len != i32::try_from(MAX_ANSWER_LEN).ok() {
+                failures.push(format!(
+                    "the control's value: expected {MAX_ANSWER_LEN} entries stored, got {len:?}"
+                ));
+            }
+        }
+        Err(e) => failures.push(format!(
+            "the control's value of {} entries: expected Ok, got {}",
+            drawn.len(),
+            describe(&e)
+        )),
+    }
+    c.close().await.unwrap();
+    report(&failures);
+}
+
+/// A started content-v2 copy (changed by `edit`) at `T0` with the `users` rows of ANN and BEN. Keep the copy while the
+/// state serves.
+async fn v2_state(edit: impl FnOnce(&mut Value)) -> (FixtureCopy, AppState, common::TestDb) {
+    let copy = v2_copy(edit).await;
+    let (started, db) = state_on(copy.path()).await;
+    match started {
+        Ok(st) => (copy, at_t0_with_users(st, &[ANN, BEN]).await, db),
+        Err(e) => panic!("the content-v2 copy: expected Ok, got {e}"),
+    }
+}
+
+/// A second per-player puzzle of content-v2's `ch1`: `safe`, `[0, 9]^4`, capped at 3, stored under its own id.
+fn with_safe(v: &mut Value) {
+    v["puzzles"]["safe"] = json!({
+        "type": "code", "answerLen": 4, "answerMax": 9,
+        "perPlayer": { "positions": [[0, 9], [0, 9], [0, 9], [0, 9]], "distinct": false, "exclude": [] },
+        "maxAttempts": 3,
+        "title": { "ru": "Сейф", "en": "The safe" },
+        "hints": []
+    });
+}
+
+/// The fixture's paid `ch2.cabinet` made per-player (format 2): `[0, 9]^4`, no cap. Its own `[0, 2]^3` holds 27
+/// values, under the floor.
+fn per_player_cabinet(v: &mut Value) {
+    v["format"] = json!(2);
+    let cabinet = &mut v["puzzles"]["cabinet"];
+    cabinet["answerLen"] = json!(4);
+    cabinet["answerMax"] = json!(9);
+    cabinet.as_object_mut().unwrap().remove("solution");
+    cabinet["perPlayer"] = json!({
+        "positions": [[0, 9], [0, 9], [0, 9], [0, 9]], "distinct": false, "exclude": []
+    });
+    cabinet["maxAttempts"] = Value::Null;
+}
+
+/// `GET /api/chapters/{ch}/values` as `user`.
+async fn get_values(st: &AppState, user: i64, ch: &str) -> common::Reply {
+    get(st, Some(user), &format!("/api/chapters/{ch}/values")).await
+}
+
+/// A `puzzle_values` row read back raw: (puzzle_id, run, wrong, issued_at, spent_at, domain, value).
+type StoredValue = (String, i64, i64, i64, Option<i64>, String, Vec<i64>);
+
+/// `user`'s `puzzle_values` rows, in key order.
+async fn stored_values(st: &AppState, user: i64) -> Vec<StoredValue> {
+    let mut c = common::raw_db(st).await;
+    let rows = sqlx::query_as(
+        "SELECT puzzle_id, run, wrong, issued_at, spent_at, domain, value FROM puzzle_values \
+         WHERE user_id = $1 ORDER BY puzzle_id",
+    )
+    .bind(user)
+    .fetch_all(&mut c)
+    .await
+    .unwrap();
+    c.close().await.unwrap();
+    rows
+}
+
+/// The mismatch of `reply` against `status` with a body equal to `want` as JSON (the server's field order is not
+/// `json!`'s).
+fn expect_json(case: &str, reply: &common::Reply, status: u16, want: &Value) -> Option<String> {
+    let got: Value = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
+    (reply.status.as_u16() != status || &got != want).then(|| {
+        format!(
+            "{case}: expected {status} {want}, got {} {:?}",
+            reply.status.as_u16(),
+            body_text(reply)
+        )
+    })
+}
+
+/// `v` lies in content-v2's drawer domain: four entries of `[0, 9]`, not `[0, 0, 0, 0]`.
+fn in_drawer_domain(v: &[i64]) -> bool {
+    v.len() == 4 && v.iter().all(|x| (0..=9).contains(x)) && v != [0, 0, 0, 0]
+}
+
+/// A live, uncapped run-1 value as the routes answer it.
+fn live_value(value: &[i64]) -> Value {
+    json!({ "value": value, "run": 1, "attemptsLeft": null, "spent": false })
+}
+
+/// The values route issues a player's value once (per-player §3.4): the first call draws and stores it (run 1, in the
+/// domain, under the content's hash), a second call answers the same row unchanged, and another player gets a row of
+/// their own.
+#[tokio::test]
+async fn values_issued_once_per_user() {
+    let (_copy, st, _db) = v2_state(|_| {}).await;
+    let mut failures = Vec::new();
+    let first = get_values(&st, ANN, "ch1").await;
+    let rows = stored_values(&st, ANN).await;
+    let issued = match rows.as_slice() {
+        [(key, 1, 0, T0, None, domain, value)]
+            if key == "ch1.desk_drawer" && domain == DOMAIN_HASH && in_drawer_domain(value) =>
+        {
+            value.clone()
+        }
+        other => {
+            failures.push(format!(
+                "ANN's rows after the first call: expected one run-1 row in the drawer's domain, got {other:?}"
+            ));
+            Vec::new()
+        }
+    };
+    let want = json!({ "values": { "drawer": live_value(&issued) } });
+    failures.extend(expect_json("ANN's first call", &first, 200, &want));
+    let again = get_values(&st, ANN, "ch1").await;
+    failures.extend(expect_json("ANN's second call", &again, 200, &want));
+    let after = stored_values(&st, ANN).await;
+    if after != rows {
+        failures.push(format!(
+            "ANN's rows after the second call: expected unchanged {rows:?}, got {after:?}"
+        ));
+    }
+    let ben = get_values(&st, BEN, "ch1").await;
+    match stored_values(&st, BEN).await.as_slice() {
+        [(key, 1, 0, T0, None, _, value)]
+            if key == "ch1.desk_drawer" && in_drawer_domain(value) =>
+        {
+            let want = json!({ "values": { "drawer": live_value(value) } });
+            failures.extend(expect_json("BEN's call", &ben, 200, &want));
+        }
+        other => failures.push(format!(
+            "BEN's rows: expected one run-1 row of his own, got {other:?}"
+        )),
+    }
+    report(&failures);
+}
+
+/// Sixteen first calls at once issue one row (the primary key arbitrates, never a check-then-insert): every body
+/// holds the stored value.
+#[tokio::test]
+async fn values_issue_concurrent_one_row() {
+    let (_copy, st, _db) = v2_state(|_| {}).await;
+    let mut tasks = JoinSet::new();
+    for _ in 0..16 {
+        let st = st.clone();
+        tasks.spawn(async move { get_values(&st, ANN, "ch1").await });
+    }
+    let mut replies = Vec::new();
+    while let Some(joined) = tasks.join_next().await {
+        replies.push(joined.unwrap());
+    }
+    let mut failures = Vec::new();
+    match stored_values(&st, ANN).await.as_slice() {
+        [(key, 1, 0, T0, None, _, value)] if key == "ch1.desk_drawer" => {
+            let want = json!({ "values": { "drawer": live_value(value) } });
+            for (i, reply) in replies.iter().enumerate() {
+                failures.extend(expect_json(&format!("call {i}"), reply, 200, &want));
+            }
+        }
+        other => failures.push(format!("ANN's rows: expected exactly one, got {other:?}")),
+    }
+    report(&failures);
+}
+
+/// Two tabs issue a chapter's two per-player values at once, 30 times over for a fresh player each: both statements
+/// take the rows in key order, so neither waits crosswise (no 40P01 and no 500), and each player ends with both rows.
+#[tokio::test]
+async fn values_issue_two_tabs_no_deadlock() {
+    let (_copy, st, _db) = v2_state(with_safe).await;
+    let mut failures = Vec::new();
+    for round in 0..30 {
+        let user = 3000 + round;
+        st.repo
+            .upsert_user(UserId(user), "Ann", None, T0)
+            .await
+            .unwrap();
+        let mut tasks = JoinSet::new();
+        for _ in 0..2 {
+            let st = st.clone();
+            tasks.spawn(async move { get_values(&st, user, "ch1").await });
+        }
+        while let Some(joined) = tasks.join_next().await {
+            let reply = joined.unwrap();
+            if reply.status.as_u16() != 200 {
+                failures.push(format!(
+                    "round {round}: expected 200, got {} {:?}",
+                    reply.status.as_u16(),
+                    body_text(&reply)
+                ));
+            }
+        }
+        let keys: Vec<String> = stored_values(&st, user)
+            .await
+            .into_iter()
+            .map(|row| row.0)
+            .collect();
+        if keys != ["ch1.desk_drawer", "ch1.safe"] {
+            failures.push(format!(
+                "round {round}: expected the rows ch1.desk_drawer and ch1.safe, got {keys:?}"
+            ));
+        }
+    }
+    report(&failures);
+}
+
+/// A paid chapter's values answer 403 to a player without the chapter, before any row is written (principle 0); with
+/// the entitlement, 200 and the row.
+#[tokio::test]
+async fn values_paid_chapter_403_without_entitlement() {
+    let copy = FixtureCopy::new();
+    copy.edit_json("puzzles/ch2.json", per_player_cabinet).await;
+    let (started, _db) = state_on(copy.path()).await;
+    let st = match started {
+        Ok(st) => at_t0_with_users(st, &[ANN]).await,
+        Err(e) => panic!("the per-player cabinet: expected Ok, got {e}"),
+    };
+    let mut failures = Vec::new();
+    let reply = get_values(&st, ANN, "ch2").await;
+    failures.extend(expect_error(
+        "ANN without chapter:ch2",
+        &reply,
+        403,
+        "not_entitled",
+    ));
+    let rows = stored_values(&st, ANN).await;
+    if !rows.is_empty() {
+        failures.push(format!(
+            "ANN without chapter:ch2: expected no row, got {rows:?}"
+        ));
+    }
+    own(&st, ANN, "chapter:ch2").await;
+    let reply = get_values(&st, ANN, "ch2").await;
+    match stored_values(&st, ANN).await.as_slice() {
+        [(key, 1, 0, T0, None, _, value)] if key == "ch2.cabinet" => {
+            let want = json!({ "values": { "cabinet": live_value(value) } });
+            failures.extend(expect_json("ANN with chapter:ch2", &reply, 200, &want));
+        }
+        other => failures.push(format!(
+            "ANN with chapter:ch2: expected one row of ch2.cabinet, got {other:?}"
+        )),
+    }
+    report(&failures);
+}
+
+/// The values 200 is `private, no-store` + `nosniff` (a player's values are theirs alone); a malformed chapter id is
+/// 400, an unknown one 404, a paid one without the chapter 403, each with the router's `no-store`.
+#[tokio::test]
+async fn values_private_no_store() {
+    let (_copy, st, _db) = v2_state(|_| {}).await;
+    let mut failures = Vec::new();
+    let reply = get_values(&st, ANN, "ch1").await;
+    let got = (
+        reply.status.as_u16(),
+        header(&reply, CACHE_CONTROL),
+        header(&reply, X_CONTENT_TYPE_OPTIONS),
+    );
+    if got != (200, Some("private, no-store"), Some("nosniff")) {
+        failures.push(format!(
+            "values 200: expected (200, private, no-store, nosniff), got {got:?}"
+        ));
+    }
+    for (ch, status, code) in [
+        ("Ch1", 400, "bad_request"),
+        ("ch1.drawer", 400, "bad_request"),
+        ("ch9", 404, "not_found"),
+        ("ch2", 403, "not_entitled"),
+    ] {
+        let reply = get_values(&st, ANN, ch).await;
+        failures.extend(expect_error(ch, &reply, status, code));
+        let cache = header(&reply, CACHE_CONTROL);
+        if cache != Some("no-store") {
+            failures.push(format!("{ch}: expected no-store, got {cache:?}"));
+        }
+    }
+    report(&failures);
+}
+
+/// A chapter without per-player puzzles answers an empty set and writes nothing.
+#[tokio::test]
+async fn values_empty_for_a_chapter_without_per_player() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    let mut failures = Vec::new();
+    let reply = get_values(&st, ANN, "ch1").await;
+    failures.extend(expect_reply(
+        "the committed ch1",
+        &reply,
+        200,
+        r#"{"values":{}}"#,
+    ));
+    let rows = stored_values(&st, ANN).await;
+    if !rows.is_empty() {
+        failures.push(format!("the committed ch1: expected no row, got {rows:?}"));
+    }
+    report(&failures);
+}
+
+/// A value is stored under the puzzle's storage key and answered under its local id (per-player §3.8): content-v2's
+/// drawer is keyed `ch1.desk_drawer`.
+#[tokio::test]
+async fn values_row_follows_the_key() {
+    let (_copy, st, _db) = v2_state(|_| {}).await;
+    let mut failures = Vec::new();
+    let reply = get_values(&st, ANN, "ch1").await;
+    let body: Value = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
+    let locals: Vec<&str> = body["values"]
+        .as_object()
+        .map(|values| values.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    if (reply.status.as_u16(), locals.as_slice()) != (200, ["drawer"].as_slice()) {
+        failures.push(format!(
+            "the body: expected 200 with the key drawer, got {} {:?}",
+            reply.status.as_u16(),
+            body_text(&reply)
+        ));
+    }
+    let keys: Vec<String> = stored_values(&st, ANN)
+        .await
+        .into_iter()
+        .map(|row| row.0)
+        .collect();
+    if keys != ["ch1.desk_drawer"] {
+        failures.push(format!(
+            "the rows: expected one under ch1.desk_drawer, got {keys:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// `{"answer": answer}` with `"run": run` when given: an attempt's body.
+fn run_body(answer: &[i64], run: Option<i64>) -> String {
+    match run {
+        Some(run) => json!({ "answer": answer, "run": run }),
+        None => json!({ "answer": answer }),
+    }
+    .to_string()
+}
+
+/// An attempt's 200 body.
+fn answered(correct: bool, solved: bool, attempts_left: Option<i64>, spent: bool) -> Value {
+    json!({ "correct": correct, "solved": solved, "attemptsLeft": attempts_left, "spent": spent })
+}
+
+/// A 409 `value_changed` body carrying the run `run` of `value`.
+fn value_changed(value: &[i64], run: i64, attempts_left: Option<i64>, spent: bool) -> Value {
+    json!({
+        "error": "value_changed",
+        "value": { "value": value, "run": run, "attemptsLeft": attempts_left, "spent": spent }
+    })
+}
+
+/// `user`'s value of the puzzle stored under `key` (content-v2's ch1, run 1), issued through the values route.
+async fn issued(st: &AppState, user: i64, key: &str) -> Vec<i64> {
+    let reply = get_values(st, user, "ch1").await;
+    assert_eq!(
+        reply.status.as_u16(),
+        200,
+        "the values call: {}",
+        body_text(&reply)
+    );
+    let rows = stored_values(st, user).await;
+    match rows.iter().find(|row| row.0 == key) {
+        Some(row) => row.6.clone(),
+        None => panic!("the values call stored no {key} row: {rows:?}"),
+    }
+}
+
+/// `user`'s drawer value of content-v2's ch1 (run 1), issued through the values route.
+async fn issued_drawer(st: &AppState, user: i64) -> Vec<i64> {
+    issued(st, user, "ch1.desk_drawer").await
+}
+
+/// `st` with its clock at `t`.
+fn at(st: &AppState, t: i64) -> AppState {
+    st.clone().with_clock(Arc::new(FixedClock(t)))
+}
+
+/// A value of the drawer's domain other than `v`: its first entry moved by one (never `[0, 0, 0, 0]`).
+fn another_drawer_value(v: &[i64]) -> Vec<i64> {
+    let mut other = v.to_vec();
+    other[0] = (other[0] + 1) % 10;
+    if other == [0, 0, 0, 0] {
+        other[0] = 2;
+    }
+    other
+}
+
+/// `user`'s (wrong, spent_at) of the row stored under `key`.
+async fn wrong_and_spent(st: &AppState, user: i64, key: &str) -> Option<(i64, Option<i64>)> {
+    stored_values(st, user)
+        .await
+        .into_iter()
+        .find(|row| row.0 == key)
+        .map(|row| (row.2, row.4))
+}
+
+/// A per-player answer is compared with the player's own value (per-player §3.5): ANN's value with her run solves her
+/// drawer, stored under its key; BEN's answer of another value than his own is wrong.
+#[tokio::test]
+async fn attempt_per_player_compares_own_value() {
+    let (_copy, st, _db) = v2_state(|_| {}).await;
+    let mut failures = Vec::new();
+    let ann = issued_drawer(&st, ANN).await;
+    let reply = post_attempt(&st, ANN, "ch1.drawer", &run_body(&ann, Some(1))).await;
+    failures.extend(expect_json(
+        "ANN's own value, run 1",
+        &reply,
+        200,
+        &answered(true, true, None, false),
+    ));
+    let row = progress_row(&st, ANN, "ch1.desk_drawer").await;
+    if row != Some((1, 1, T0, Some(T0))) {
+        failures.push(format!(
+            "ANN's progress under ch1.desk_drawer: expected (1, 1, T0, solved at T0), got {row:?}"
+        ));
+    }
+    let ben = issued_drawer(&st, BEN).await;
+    let reply = post_attempt(
+        &st,
+        BEN,
+        "ch1.drawer",
+        &run_body(&another_drawer_value(&ben), Some(1)),
+    )
+    .await;
+    failures.extend(expect_json(
+        "BEN, a value not his own",
+        &reply,
+        200,
+        &answered(false, false, None, false),
+    ));
+    report(&failures);
+}
+
+/// A runless attempt before any values call issues the player's value and answers 409 `value_changed` with it
+/// (per-player §3.5 step 4): nothing compared, the attempt counted by the window.
+#[tokio::test]
+async fn attempt_per_player_before_fetch_issues_value() {
+    let (_copy, st, _db) = v2_state(|_| {}).await;
+    let mut failures = Vec::new();
+    let reply = post_attempt(&st, ANN, "ch1.drawer", &run_body(&[1, 8, 4, 7], None)).await;
+    match stored_values(&st, ANN).await.as_slice() {
+        [(key, 1, 0, T0, None, _, value)]
+            if key == "ch1.desk_drawer" && in_drawer_domain(value) =>
+        {
+            failures.extend(expect_json(
+                "a runless first attempt",
+                &reply,
+                409,
+                &value_changed(value, 1, None, false),
+            ));
+        }
+        other => failures.push(format!(
+            "ANN's rows after the attempt: expected one run-1 drawer row, got {other:?}"
+        )),
+    }
+    let row = progress_row(&st, ANN, "ch1.desk_drawer").await;
+    if row != Some((1, 1, T0, None)) {
+        failures.push(format!(
+            "ANN's progress: expected (1, 1, T0, unsolved), got {row:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// The right value sent with no run is not compared (per-player §3.5 step 4, round 8): 409 `value_changed` with the
+/// live row, no wrong answer counted and nothing solved.
+#[tokio::test]
+async fn attempt_without_run_409_not_compared() {
+    let (_copy, st, _db) = v2_state(|_| {}).await;
+    let mut failures = Vec::new();
+    let ann = issued_drawer(&st, ANN).await;
+    let reply = post_attempt(&st, ANN, "ch1.drawer", &run_body(&ann, None)).await;
+    failures.extend(expect_json(
+        "the right value without a run",
+        &reply,
+        409,
+        &value_changed(&ann, 1, None, false),
+    ));
+    let got = (
+        wrong_and_spent(&st, ANN, "ch1.desk_drawer").await,
+        progress_row(&st, ANN, "ch1.desk_drawer").await,
+    );
+    if got != (Some((0, None)), Some((1, 1, T0, None))) {
+        failures.push(format!(
+            "after the runless attempt: expected (wrong 0, live) and (1, 1, T0, unsolved), got {got:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// An answer for a run that is no longer current is not compared, even when it is right: 409 `value_changed` with the
+/// current run, `wrong` unchanged, nothing solved.
+#[tokio::test]
+async fn attempt_stale_run_409_value_changed_not_counted() {
+    let (_copy, st, _db) = v2_state(|_| {}).await;
+    let mut failures = Vec::new();
+    let ann = issued_drawer(&st, ANN).await;
+    let mut c = common::raw_db(&st).await;
+    sqlx::query("UPDATE puzzle_values SET run = 2 WHERE user_id = $1")
+        .bind(ANN)
+        .execute(&mut c)
+        .await
+        .unwrap();
+    c.close().await.unwrap();
+    let reply = post_attempt(&st, ANN, "ch1.drawer", &run_body(&ann, Some(1))).await;
+    failures.extend(expect_json(
+        "the right value for run 1 of a run-2 row",
+        &reply,
+        409,
+        &value_changed(&ann, 2, None, false),
+    ));
+    let got = (
+        wrong_and_spent(&st, ANN, "ch1.desk_drawer").await,
+        progress_row(&st, ANN, "ch1.desk_drawer").await,
+    );
+    if got != (Some((0, None)), Some((1, 1, T0, None))) {
+        failures.push(format!(
+            "after the stale attempt: expected (wrong 0, live) and (1, 1, T0, unsolved), got {got:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// The window counts an attempt before any value is read (per-player §3.5 steps 1-2): the 21st attempt in the window
+/// is 429 and issues no value.
+#[tokio::test]
+async fn attempt_window_counts_before_value_read() {
+    let (_copy, st, _db) = v2_state(|_| {}).await;
+    let mut c = common::raw_db(&st).await;
+    let full = Progress {
+        attempts: 20,
+        window_attempts: 20,
+        ..progress(ANN, "ch1.desk_drawer")
+    };
+    insert_progress(&mut c, full).await.unwrap();
+    c.close().await.unwrap();
+    let mut failures = Vec::new();
+    let reply = post_attempt(&st, ANN, "ch1.drawer", &run_body(&[1, 8, 4, 7], Some(1))).await;
+    failures.extend(expect_error("attempt 21", &reply, 429, "rate_limited"));
+    let rows = stored_values(&st, ANN).await;
+    if !rows.is_empty() {
+        failures.push(format!(
+            "after the 429: expected no value row, got {rows:?}"
+        ));
+    }
+    let row = progress_row(&st, ANN, "ch1.desk_drawer").await;
+    if row != Some((21, 21, T0, None)) {
+        failures.push(format!(
+            "after the 429: expected (21, 21, T0, unsolved), got {row:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// The 409 `value_changed` carries a player's value: `private, no-store` + `nosniff`, as a status 200.
+#[tokio::test]
+async fn attempt_409_carries_private_no_store() {
+    let (_copy, st, _db) = v2_state(|_| {}).await;
+    let ann = issued_drawer(&st, ANN).await;
+    let reply = post_attempt(&st, ANN, "ch1.drawer", &run_body(&ann, None)).await;
+    let got = (
+        reply.status.as_u16(),
+        header(&reply, CACHE_CONTROL),
+        header(&reply, X_CONTENT_TYPE_OPTIONS),
+    );
+    assert!(
+        got == (409, Some("private, no-store"), Some("nosniff")),
+        "the 409: expected (409, private, no-store, nosniff), got {got:?}"
+    );
+}
+
+/// A `run` sent for a static puzzle is ignored (per-player §3.4, m11): the answer is compared with the solution as
+/// for any request, on the committed fixture and on content-v2's static gate.
+#[tokio::test]
+async fn attempt_static_ignores_run() {
+    let mut failures = Vec::new();
+    let (st, _db) = state_with_users(&[ANN]).await;
+    let reply = post_attempt(&st, ANN, "ch1.drawer", &run_body(&[1, 8, 4, 7], Some(7))).await;
+    failures.extend(expect_json(
+        "the static drawer with run 7",
+        &reply,
+        200,
+        &answered(true, true, None, false),
+    ));
+    let (_copy, st, _db2) = v2_state(|_| {}).await;
+    let reply = post_attempt(&st, ANN, "ch1.gate", &run_body(&[1, 0, 2], Some(3))).await;
+    failures.extend(expect_json(
+        "content-v2's static gate with run 3",
+        &reply,
+        200,
+        &answered(true, true, None, false),
+    ));
+    report(&failures);
+}
+
+/// No `Debug` of a type that holds a player's value prints it (per-player §3.1 "Log redaction", m12): `PlayerValue`,
+/// `Expected`, `AttemptRecord::ValueChanged` and `ApiError::ValueChanged`, each built with `[1, 8, 4, 7]`.
+#[test]
+fn attempt_debug_redacts_the_code() {
+    let code = vec![1u16, 8, 4, 7];
+    let d = domain(ranges(0, 9, 4), false, &[&[0, 0, 0, 0]], 9);
+    let value = PlayerValue {
+        value: code.clone(),
+        run: 2,
+        attempts_left: Some(1),
+        spent: false,
+    };
+    let row = ValueRow {
+        puzzle: pid("ch1.drawer"),
+        run: 2,
+        wrong: 2,
+        issued_at: T0,
+        spent_at: None,
+        domain: d.hash().clone(),
+        value: code.clone(),
+    };
+    let printed = [
+        ("PlayerValue", format!("{value:?}")),
+        (
+            "Expected",
+            format!(
+                "{:?}",
+                Expected::PerPlayer {
+                    answer: &code,
+                    domain: &d,
+                    cap: Some(3),
+                    run: Some(2),
+                    drawn: code.clone(),
+                }
+            ),
+        ),
+        (
+            "AttemptRecord::ValueChanged",
+            format!("{:?}", AttemptRecord::ValueChanged(row)),
+        ),
+        (
+            "ApiError::ValueChanged",
+            format!("{:?}", ApiError::ValueChanged(value.clone())),
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (name, text) in printed {
+        for secret in ["1847", "1, 8, 4, 7"] {
+            if text.contains(secret) {
+                failures.push(format!("{name}: {text:?} carries {secret:?}"));
+            }
+        }
+    }
+    report(&failures);
+}
+
+/// A capped run is spent by its final wrong answer (per-player §3.5 step 5): ANN's three wrong answers on `safe` (cap 3)
+/// leave 2, 1, then 0 attempts, the third with `spent: true` and `spent_at` its time. BEN's third comes with the clock
+/// stepped back before his value's draw: `spent_at` stays at the draw (`GREATEST`, D6), never a 500.
+#[tokio::test]
+async fn attempt_final_wrong_spends_run() {
+    let (_copy, st, _db) = v2_state(with_safe).await;
+    let mut failures = Vec::new();
+    let ann = issued(&st, ANN, "ch1.safe").await;
+    let wrong = run_body(&another_drawer_value(&ann), Some(1));
+    for (case, t, left, spent) in [
+        ("first wrong", T0, 2, false),
+        ("second wrong", T0 + 1, 1, false),
+        ("third wrong", T0 + 2, 0, true),
+    ] {
+        let reply = post_attempt(&at(&st, t), ANN, "ch1.safe", &wrong).await;
+        failures.extend(expect_json(
+            case,
+            &reply,
+            200,
+            &answered(false, false, Some(left), spent),
+        ));
+    }
+    let got = wrong_and_spent(&st, ANN, "ch1.safe").await;
+    if got != Some((3, Some(T0 + 2))) {
+        failures.push(format!(
+            "ANN's safe row: expected (wrong 3, spent at T0 + 2), got {got:?}"
+        ));
+    }
+    let ben = issued(&st, BEN, "ch1.safe").await;
+    let wrong = run_body(&another_drawer_value(&ben), Some(1));
+    for t in [T0, T0] {
+        post_attempt(&at(&st, t), BEN, "ch1.safe", &wrong).await;
+    }
+    let reply = post_attempt(&at(&st, T0 - 100), BEN, "ch1.safe", &wrong).await;
+    failures.extend(expect_json(
+        "BEN's third wrong, the clock 100 s before his draw",
+        &reply,
+        200,
+        &answered(false, false, Some(0), true),
+    ));
+    let got = wrong_and_spent(&st, BEN, "ch1.safe").await;
+    if got != Some((3, Some(T0))) {
+        failures.push(format!(
+            "BEN's safe row: expected (wrong 3, spent at the draw T0), got {got:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// A spent run is never answered (per-player §3.5 step 4, W1): after the final wrong answer, even the right value for
+/// that run is 409 `value_changed` with the spent row; `wrong` stays 3 and nothing is solved.
+#[tokio::test]
+async fn attempt_on_spent_run_409_not_compared() {
+    let (_copy, st, _db) = v2_state(with_safe).await;
+    let mut failures = Vec::new();
+    let ann = issued(&st, ANN, "ch1.safe").await;
+    let wrong = run_body(&another_drawer_value(&ann), Some(1));
+    for _ in 0..3 {
+        post_attempt(&st, ANN, "ch1.safe", &wrong).await;
+    }
+    let reply = post_attempt(&st, ANN, "ch1.safe", &run_body(&ann, Some(1))).await;
+    failures.extend(expect_json(
+        "the right value on the spent run 1",
+        &reply,
+        409,
+        &value_changed(&ann, 1, Some(0), true),
+    ));
+    let got = (
+        wrong_and_spent(&st, ANN, "ch1.safe").await,
+        progress_row(&st, ANN, "ch1.safe").await,
+    );
+    if got != (Some((3, Some(T0))), Some((4, 4, T0, None))) {
+        failures.push(format!(
+            "after the 4th answer: expected (wrong 3, spent at T0) and (4, 4, T0, unsolved), got {got:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// An uncapped run counts every wrong answer and is never spent: 25 wrong answers on content-v2's drawer across two
+/// windows (20 at T0, 5 at T0 + 600) each answer `attemptsLeft: null, spent: false`; the row holds `wrong` 25 and no
+/// `spent_at`.
+#[tokio::test]
+async fn attempt_uncapped_never_spends() {
+    let (_copy, st, _db) = v2_state(|_| {}).await;
+    let mut failures = Vec::new();
+    let ann = issued_drawer(&st, ANN).await;
+    let wrong = run_body(&another_drawer_value(&ann), Some(1));
+    let later = at(&st, T0 + 600);
+    for n in 1..=25 {
+        let reply = post_attempt(
+            if n <= 20 { &st } else { &later },
+            ANN,
+            "ch1.drawer",
+            &wrong,
+        )
+        .await;
+        failures.extend(expect_json(
+            &format!("wrong answer {n}"),
+            &reply,
+            200,
+            &answered(false, false, None, false),
+        ));
+    }
+    let got = wrong_and_spent(&st, ANN, "ch1.desk_drawer").await;
+    if got != Some((25, None)) {
+        failures.push(format!(
+            "the drawer row: expected (wrong 25, live), got {got:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// A solved puzzle keeps counting in replays (per-player §3.5 "Solved puzzles"): ANN solves `safe` with her value, then
+/// three wrong answers of the same run spend it, the third answering `solved: true, attemptsLeft: 0, spent: true`; the
+/// solve stays.
+#[tokio::test]
+async fn attempt_solved_replay_counts_and_spends() {
+    let (_copy, st, _db) = v2_state(with_safe).await;
+    let mut failures = Vec::new();
+    let ann = issued(&st, ANN, "ch1.safe").await;
+    let reply = post_attempt(&st, ANN, "ch1.safe", &run_body(&ann, Some(1))).await;
+    failures.extend(expect_json(
+        "the solve",
+        &reply,
+        200,
+        &answered(true, true, Some(3), false),
+    ));
+    let wrong = run_body(&another_drawer_value(&ann), Some(1));
+    for (case, left, spent) in [
+        ("replay wrong 1", 2, false),
+        ("replay wrong 2", 1, false),
+        ("replay wrong 3", 0, true),
+    ] {
+        let reply = post_attempt(&st, ANN, "ch1.safe", &wrong).await;
+        failures.extend(expect_json(
+            case,
+            &reply,
+            200,
+            &answered(false, true, Some(left), spent),
+        ));
+    }
+    let got = (
+        wrong_and_spent(&st, ANN, "ch1.safe").await,
+        progress_row(&st, ANN, "ch1.safe").await.map(|row| row.3),
+    );
+    if got != (Some((3, Some(T0))), Some(Some(T0))) {
+        failures.push(format!(
+            "the solved replay: expected (wrong 3, spent at T0) and solved at T0, got {got:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// `POST /api/puzzles/{id}/restart` as `user` with `body` sent as `application/json`.
+async fn post_restart(st: &AppState, user: i64, id: &str, body: &str) -> common::Reply {
+    let req = Request::post(format!("/api/puzzles/{id}/restart"))
+        .header(AUTHORIZATION, bearer(st, user))
+        .header(CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_owned()))
+        .unwrap();
+    common::call(st, req).await
+}
+
+/// `{"from": from}`: a restart's body.
+fn from_body(from: i64) -> String {
+    json!({ "from": from }).to_string()
+}
+
+/// A value of `with_safe`'s domain: four entries of `[0, 9]`.
+fn in_safe_domain(v: &[i64]) -> bool {
+    v.len() == 4 && v.iter().all(|x| (0..=9).contains(x))
+}
+
+/// Spends `user`'s run `run` of `safe` (cap 3) with three answers of a value other than `value`.
+async fn spend_safe(st: &AppState, user: i64, value: &[i64], run: i64) {
+    let wrong = run_body(&another_drawer_value(value), Some(run));
+    for n in 1..=3 {
+        let reply = post_attempt(st, user, "ch1.safe", &wrong).await;
+        assert_eq!(
+            reply.status.as_u16(),
+            200,
+            "wrong answer {n} of run {run}: {}",
+            body_text(&reply)
+        );
+    }
+}
+
+/// A restart of an unsolved spent run re-draws (per-player §3.6): run 2, `wrong` 0, live, issued at the restart, a
+/// value of the domain, answered as the 200 under the sold pair (no inequality with the old value: p = 1/10,000).
+#[tokio::test]
+async fn restart_redraws_spent_run() {
+    let (_copy, st, _db) = v2_state(with_safe).await;
+    let mut failures = Vec::new();
+    let ann = issued(&st, ANN, "ch1.safe").await;
+    spend_safe(&st, ANN, &ann, 1).await;
+    let reply = post_restart(&at(&st, T0 + 10), ANN, "ch1.safe", &from_body(1)).await;
+    let rows = stored_values(&st, ANN).await;
+    match rows.iter().find(|row| row.0 == "ch1.safe") {
+        Some((_, 2, 0, issued_at, None, _, value)) if *issued_at == T0 + 10 && in_safe_domain(value) => {
+            let want = json!({ "value": value, "run": 2, "attemptsLeft": 3, "spent": false });
+            failures.extend(expect_json("the restart from 1", &reply, 200, &want));
+        }
+        other => failures.push(format!(
+            "the safe row after the restart: expected run 2, wrong 0, live, issued at T0 + 10, in the domain, got \
+             {other:?}"
+        )),
+    }
+    let got = (
+        header(&reply, CACHE_CONTROL),
+        header(&reply, X_CONTENT_TYPE_OPTIONS),
+    );
+    if got != (Some("private, no-store"), Some("nosniff")) {
+        failures.push(format!(
+            "the restart 200: expected private, no-store + nosniff, got {got:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// A restart of a live run changes nothing and answers the current run.
+#[tokio::test]
+async fn restart_live_run_noop() {
+    let (_copy, st, _db) = v2_state(with_safe).await;
+    let mut failures = Vec::new();
+    let ann = issued(&st, ANN, "ch1.safe").await;
+    let before = stored_values(&st, ANN).await;
+    let reply = post_restart(&at(&st, T0 + 10), ANN, "ch1.safe", &from_body(1)).await;
+    let want = json!({ "value": ann, "run": 1, "attemptsLeft": 3, "spent": false });
+    failures.extend(expect_json(
+        "the restart of the live run 1",
+        &reply,
+        200,
+        &want,
+    ));
+    let after = stored_values(&st, ANN).await;
+    if after != before {
+        failures.push(format!(
+            "the rows: expected unchanged {before:?}, got {after:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// `from` is the guard (per-player §3.4): a restart from a run that is no longer current changes nothing, even when the
+/// current run is spent, and answers the current run.
+#[tokio::test]
+async fn restart_stale_from_returns_current() {
+    let (_copy, st, _db) = v2_state(with_safe).await;
+    let mut failures = Vec::new();
+    let ann = issued(&st, ANN, "ch1.safe").await;
+    spend_safe(&st, ANN, &ann, 1).await;
+    let reply = post_restart(&st, ANN, "ch1.safe", &from_body(1)).await;
+    assert_eq!(
+        reply.status.as_u16(),
+        200,
+        "the restart from 1: {}",
+        body_text(&reply)
+    );
+    let second: Vec<i64> = match stored_values(&st, ANN)
+        .await
+        .iter()
+        .find(|row| row.0 == "ch1.safe")
+    {
+        Some(row) => row.6.clone(),
+        None => panic!("no safe row after the restart"),
+    };
+    spend_safe(&st, ANN, &second, 2).await;
+    let before = stored_values(&st, ANN).await;
+    let reply = post_restart(&st, ANN, "ch1.safe", &from_body(1)).await;
+    let want = json!({ "value": second, "run": 2, "attemptsLeft": 0, "spent": true });
+    failures.extend(expect_json(
+        "a restart from 1 over the spent run 2",
+        &reply,
+        200,
+        &want,
+    ));
+    let after = stored_values(&st, ANN).await;
+    if after != before {
+        failures.push(format!(
+            "the rows: expected unchanged {before:?}, got {after:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// Eight concurrent restarts from the spent run 1 (two tabs, retries) re-draw once (per-player §3.6 "Race"): the row
+/// lock serializes them, the first moves the run to 2, the rest see run 2 and change nothing; every body is run 2
+/// with the same value.
+#[tokio::test]
+async fn restart_concurrent_one_redraw() {
+    let (_copy, st, _db) = v2_state(with_safe).await;
+    let mut failures = Vec::new();
+    let ann = issued(&st, ANN, "ch1.safe").await;
+    spend_safe(&st, ANN, &ann, 1).await;
+    let mut tasks = JoinSet::new();
+    for _ in 0..8 {
+        let st = st.clone();
+        tasks.spawn(async move { post_restart(&st, ANN, "ch1.safe", &from_body(1)).await });
+    }
+    let mut bodies = Vec::new();
+    while let Some(joined) = tasks.join_next().await {
+        let reply = joined.unwrap();
+        let body: Value = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
+        bodies.push((reply.status.as_u16(), body));
+    }
+    match stored_values(&st, ANN)
+        .await
+        .iter()
+        .find(|row| row.0 == "ch1.safe")
+    {
+        Some((_, 2, 0, _, None, _, value)) => {
+            let want = json!({ "value": value, "run": 2, "attemptsLeft": 3, "spent": false });
+            for (i, (status, body)) in bodies.iter().enumerate() {
+                if (*status, body) != (200, &want) {
+                    failures.push(format!(
+                        "restart {i}: expected 200 {want}, got {status} {body}"
+                    ));
+                }
+            }
+        }
+        other => failures.push(format!(
+            "the safe row after 8 restarts: expected run 2, wrong 0, live, got {other:?}"
+        )),
+    }
+    report(&failures);
+}
+
+/// A restart of a solved spent run starts a new run on the same value (per-player §3.6 "re-draw"): ANN solves `safe`,
+/// spends the run in a replay, restarts: run 2, `wrong` 0, live, the value and its draw time kept.
+#[tokio::test]
+async fn restart_solved_keeps_value_new_run() {
+    let (_copy, st, _db) = v2_state(with_safe).await;
+    let mut failures = Vec::new();
+    let ann = issued(&st, ANN, "ch1.safe").await;
+    let reply = post_attempt(&st, ANN, "ch1.safe", &run_body(&ann, Some(1))).await;
+    failures.extend(expect_json(
+        "the solve",
+        &reply,
+        200,
+        &answered(true, true, Some(3), false),
+    ));
+    spend_safe(&st, ANN, &ann, 1).await;
+    let reply = post_restart(&at(&st, T0 + 10), ANN, "ch1.safe", &from_body(1)).await;
+    let want = json!({ "value": ann, "run": 2, "attemptsLeft": 3, "spent": false });
+    failures.extend(expect_json(
+        "the restart of the solved run 1",
+        &reply,
+        200,
+        &want,
+    ));
+    let row = stored_values(&st, ANN)
+        .await
+        .into_iter()
+        .find(|row| row.0 == "ch1.safe")
+        .map(|row| (row.1, row.2, row.3, row.4, row.6));
+    if row != Some((2, 0, T0, None, ann.clone())) {
+        failures.push(format!(
+            "the safe row: expected (run 2, wrong 0, issued at T0, live, the same value), got {row:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// A static puzzle has no run to restart: 404 `not_found`, before its body is judged, and nothing is stored; a
+/// per-player puzzle's malformed body is 400.
+#[tokio::test]
+async fn restart_static_puzzle_404() {
+    let (_copy, st, _db) = v2_state(|_| {}).await;
+    let mut failures = Vec::new();
+    for (case, body) in [
+        ("the static gate", from_body(1)),
+        ("the static gate, a malformed body", "{}".to_owned()),
+    ] {
+        let reply = post_restart(&st, ANN, "ch1.gate", &body).await;
+        failures.extend(expect_error(case, &reply, 404, "not_found"));
+    }
+    let reply = post_restart(&st, ANN, "ch1.drawer", "{}").await;
+    failures.extend(expect_error(
+        "the per-player drawer, a malformed body",
+        &reply,
+        400,
+        "bad_request",
+    ));
+    let rows = stored_values(&st, ANN).await;
+    if !rows.is_empty() {
+        failures.push(format!("after the restarts: expected no row, got {rows:?}"));
+    }
+    report(&failures);
+}
+
+/// The entitlement gate comes before the per-player check (per-player §3.4, m11): the fixture's static paid
+/// `ch2.cabinet` answers 403 to a non-buyer, so no one learns which paid puzzles are per-player, and 404 to a buyer.
+#[tokio::test]
+async fn restart_paid_puzzle_403_before_per_player_404() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    let mut failures = Vec::new();
+    let reply = post_restart(&st, ANN, "ch2.cabinet", &from_body(1)).await;
+    failures.extend(expect_error(
+        "ANN without chapter:ch2",
+        &reply,
+        403,
+        "not_entitled",
+    ));
+    own(&st, ANN, "chapter:ch2").await;
+    let reply = post_restart(&st, ANN, "ch2.cabinet", &from_body(1)).await;
+    failures.extend(expect_error(
+        "ANN with chapter:ch2",
+        &reply,
+        404,
+        "not_found",
+    ));
+    report(&failures);
+}
+
+/// A hash of no domain the content holds: a row drawn under an older content (per-player §3.5 step 3, T1).
+const OLD_HASH: &str = "0123456789abcdef";
+
+/// content-v2's drawer tier-3 template in English.
+const DRAWER_TIER3_EN: &str = "The code: $code(drawer).";
+
+/// `with_safe`'s tier-3 template in English.
+const SAFE_TIER3_EN: &str = "The code: $code(safe).";
+
+/// `with_safe` with a three-tier ladder whose tier 3 names the safe's value.
+fn with_safe_hints(v: &mut Value) {
+    with_safe(v);
+    v["puzzles"]["safe"]["hints"] = json!([
+        { "ru": "Сейф за картиной.", "en": "The safe is behind the painting." },
+        { "ru": "Код записан в дневнике.", "en": "The code is in the diary." },
+        { "ru": "Код: $code(safe).", "en": SAFE_TIER3_EN }
+    ]);
+}
+
+/// `value` as the u16 entries the renderer takes.
+fn entries(value: &[i64]) -> Vec<u16> {
+    value.iter().map(|&x| u16::try_from(x).unwrap()).collect()
+}
+
+/// `template` rendered with the value `value` of the puzzle whose local id is `own` (answerMax 9).
+fn rendered(template: &str, own: &str, value: &[i64]) -> String {
+    render(template, own, &entries(value), 9)
+}
+
+/// `GET /api/puzzles/{id}?lang=en` as `user`: (status, body as JSON).
+async fn status_json(st: &AppState, user: i64, id: &str) -> (u16, Value) {
+    let reply = get(st, Some(user), &format!("/api/puzzles/{id}?lang=en")).await;
+    let body = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
+    (reply.status.as_u16(), body)
+}
+
+/// The mismatch of a status against a 200 whose tier `tier` holds `text` and whose `valueRun` is `run`.
+fn expect_tier(
+    case: &str,
+    got: &(u16, Value),
+    tier: usize,
+    text: &str,
+    run: Value,
+) -> Option<String> {
+    let (status, body) = got;
+    let ok =
+        *status == 200 && body["hints"][tier - 1]["text"] == json!(text) && body["valueRun"] == run;
+    (!ok).then(|| {
+        format!(
+            "{case}: expected 200 with tier {tier} {text:?} and valueRun {run}, got {status} {body}"
+        )
+    })
+}
+
+/// `user`'s stored row of `key`.
+async fn stored_row(st: &AppState, user: i64, key: &str) -> Option<StoredValue> {
+    stored_values(st, user)
+        .await
+        .into_iter()
+        .find(|row| row.0 == key)
+}
+
+/// A drawer row of `user` written by raw SQL under `OLD_HASH`: run `run`, `wrong` 2, drawn at T0 - 100, holding
+/// `value` (SQL array text).
+async fn old_drawer_row(st: &AppState, user: i64, run: i64, value: &str) {
+    let mut c = common::raw_db(st).await;
+    insert_value(
+        &mut c,
+        ValueSql {
+            run,
+            wrong: 2,
+            issued_at: T0 - 100,
+            domain: OLD_HASH,
+            value: value.to_owned(),
+            ..value_row(user, "ch1.desk_drawer")
+        },
+    )
+    .await
+    .unwrap();
+    c.close().await.unwrap();
+}
+
+/// Tier 3 of a per-player puzzle is rendered with the player's own value (per-player §3.7): ANN's status shows hers,
+/// and BEN's hint use, with no value yet, issues his and shows it.
+#[tokio::test]
+async fn hint_tier3_renders_own_value() {
+    let (_copy, st, _db) = v2_state(|_| {}).await;
+    let mut failures = Vec::new();
+    let ann = issued_drawer(&st, ANN).await;
+    for tier in 1..=3 {
+        unlock(&st, ANN, "ch1.desk_drawer", tier).await;
+    }
+    let got = status_json(&st, ANN, "ch1.drawer").await;
+    failures.extend(expect_tier(
+        "ANN's status",
+        &got,
+        3,
+        &rendered(DRAWER_TIER3_EN, "drawer", &ann),
+        json!(1),
+    ));
+    fund(&st, BEN, 10).await;
+    for tier in 1..=2 {
+        unlock(&st, BEN, "ch1.desk_drawer", tier).await;
+    }
+    let (status, body) = post_hint(&st, BEN, "ch1.drawer", 3).await;
+    match stored_row(&st, BEN, "ch1.desk_drawer").await {
+        Some((_, 1, 0, T0, None, _, ben)) if in_drawer_domain(&ben) => {
+            let want = rendered(DRAWER_TIER3_EN, "drawer", &ben);
+            if (status, &body["text"]) != (200, &json!(want)) {
+                failures.push(format!(
+                    "BEN's hint use: expected 200 with {want:?}, got {status} {body}"
+                ));
+            }
+        }
+        other => failures.push(format!(
+            "BEN's hint use ({status} {body}): expected a run-1 drawer row issued, got {other:?}"
+        )),
+    }
+    report(&failures);
+}
+
+/// MONEY (per-player §3.6): a tier bought with hint units survives a restart and shows the new run's value. ANN buys
+/// tier 3 of `safe`, spends the run by three wrong answers and restarts; her status renders tier 3 with run 2's value,
+/// and using tier 3 again is `AlreadyUnlocked`: 200 with that text, the balance unchanged, no ledger row.
+#[tokio::test]
+async fn hint_unlock_survives_restart_shows_new_value() {
+    let (_copy, st, _db) = v2_state(with_safe_hints).await;
+    let mut failures = Vec::new();
+    fund(&st, ANN, 10).await;
+    let first = issued(&st, ANN, "ch1.safe").await;
+    for tier in 1..=2 {
+        unlock(&st, ANN, "ch1.safe", tier).await;
+    }
+    let (status, body) = post_hint(&st, ANN, "ch1.safe", 3).await;
+    let balance = body["balance"].as_i64();
+    let want = rendered(SAFE_TIER3_EN, "safe", &first);
+    if (status, &body["text"]) != (200, &json!(want)) || balance.is_none() {
+        failures.push(format!(
+            "the purchase of tier 3: expected 200 with {want:?} and a balance, got {status} {body}"
+        ));
+    }
+    spend_safe(&st, ANN, &first, 1).await;
+    let reply = post_restart(&st, ANN, "ch1.safe", &from_body(1)).await;
+    assert_eq!(
+        reply.status.as_u16(),
+        200,
+        "the restart: {}",
+        body_text(&reply)
+    );
+    let second = match stored_row(&st, ANN, "ch1.safe").await {
+        Some((_, 2, 0, _, None, _, value)) => value,
+        other => panic!("the safe row after the restart: expected run 2, got {other:?}"),
+    };
+    let keys = ledger_keys(&st, ANN).await;
+    let want = rendered(SAFE_TIER3_EN, "safe", &second);
+    let got = status_json(&st, ANN, "ch1.safe").await;
+    failures.extend(expect_tier(
+        "the status after the restart",
+        &got,
+        3,
+        &want,
+        json!(2),
+    ));
+    let got = post_hint(&st, ANN, "ch1.safe", 3).await;
+    failures.extend(expect_hint(
+        "tier 3 used again after the restart",
+        got,
+        balance.unwrap_or(-1),
+        &want,
+    ));
+    let after = ledger_keys(&st, ANN).await;
+    if after != keys {
+        failures.push(format!(
+            "the ledger: expected no new row after the restart, {keys:?}, got {after:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// A per-player status names the run its texts were rendered with (per-player §3.4): run 1 issued by the status itself,
+/// then the run the row holds; a static puzzle's is null.
+#[tokio::test]
+async fn status_reports_value_run() {
+    let (_copy, st, _db) = v2_state(|_| {}).await;
+    let mut failures = Vec::new();
+    let (status, body) = status_json(&st, ANN, "ch1.drawer").await;
+    if (status, &body["valueRun"]) != (200, &json!(1)) {
+        failures.push(format!(
+            "the first status: expected 200 with valueRun 1, got {status} {body}"
+        ));
+    }
+    let mut c = common::raw_db(&st).await;
+    sqlx::query("UPDATE puzzle_values SET run = 4 WHERE user_id = $1")
+        .bind(ANN)
+        .execute(&mut c)
+        .await
+        .unwrap();
+    c.close().await.unwrap();
+    let (status, body) = status_json(&st, ANN, "ch1.drawer").await;
+    if (status, &body["valueRun"]) != (200, &json!(4)) {
+        failures.push(format!(
+            "the status of run 4: expected 200 with valueRun 4, got {status} {body}"
+        ));
+    }
+    let (status, body) = status_json(&st, ANN, "ch1.gate").await;
+    if (status, &body["valueRun"]) != (200, &Value::Null) {
+        failures.push(format!(
+            "the static gate: expected 200 with valueRun null, got {status} {body}"
+        ));
+    }
+    report(&failures);
+}
+
+/// The first status after a content update never renders a value outside the new domain (per-player §3.7, m10): a
+/// row under an older hash holding `[0, 0, 0, 0]`, which the drawer excludes, is re-drawn first (run 3, the content's
+/// hash) and tier 3 shows the new value.
+#[tokio::test]
+async fn status_after_domain_change_renders_a_fitting_value() {
+    let (_copy, st, _db) = v2_state(|_| {}).await;
+    let mut failures = Vec::new();
+    old_drawer_row(&st, ANN, 2, "{0,0,0,0}").await;
+    for tier in 1..=3 {
+        unlock(&st, ANN, "ch1.desk_drawer", tier).await;
+    }
+    let got = status_json(&st, ANN, "ch1.drawer").await;
+    match stored_row(&st, ANN, "ch1.desk_drawer").await {
+        Some((_, 3, 0, T0, None, hash, value)) if hash == DOMAIN_HASH && in_drawer_domain(&value) => {
+            failures.extend(expect_tier(
+                "the status after the update",
+                &got,
+                3,
+                &rendered(DRAWER_TIER3_EN, "drawer", &value),
+                json!(3),
+            ));
+        }
+        other => failures.push(format!(
+            "the drawer row after the status ({got:?}): expected run 3, wrong 0, issued at T0, live, the content's \
+             hash, in the domain, got {other:?}"
+        )),
+    }
+    report(&failures);
+}
+
+/// A value that fits the new domain is kept (per-player §3.5 step 3): the values call moves only the row's hash; run,
+/// `wrong`, the draw time and the value stay.
+#[tokio::test]
+async fn values_domain_change_keeps_fitting_value() {
+    let (_copy, st, _db) = v2_state(|_| {}).await;
+    let mut failures = Vec::new();
+    old_drawer_row(&st, ANN, 3, "{1,8,4,7}").await;
+    let reply = get_values(&st, ANN, "ch1").await;
+    let want = json!({ "values": {
+        "drawer": { "value": [1, 8, 4, 7], "run": 3, "attemptsLeft": null, "spent": false }
+    } });
+    failures.extend(expect_json("the values call", &reply, 200, &want));
+    let row = stored_row(&st, ANN, "ch1.desk_drawer").await;
+    let want = (
+        "ch1.desk_drawer".to_owned(),
+        3,
+        2,
+        T0 - 100,
+        None,
+        DOMAIN_HASH.to_owned(),
+        vec![1, 8, 4, 7],
+    );
+    if row.as_ref() != Some(&want) {
+        failures.push(format!("the drawer row: expected {want:?}, got {row:?}"));
+    }
+    report(&failures);
+}
+
+/// A value outside the new domain is re-drawn in a new run (per-player §3.5 step 3, T1): run 4, `wrong` 0, live,
+/// issued now under the content's hash, a value of the domain, answered by the values call.
+#[tokio::test]
+async fn values_domain_change_redraws_misfit_new_run() {
+    let (_copy, st, _db) = v2_state(|_| {}).await;
+    let mut failures = Vec::new();
+    old_drawer_row(&st, ANN, 3, "{0,0,0,0}").await;
+    let reply = get_values(&st, ANN, "ch1").await;
+    match stored_row(&st, ANN, "ch1.desk_drawer").await {
+        Some((_, 4, 0, T0, None, hash, value)) if hash == DOMAIN_HASH && in_drawer_domain(&value) => {
+            let want = json!({ "values": {
+                "drawer": { "value": value, "run": 4, "attemptsLeft": null, "spent": false }
+            } });
+            failures.extend(expect_json("the values call", &reply, 200, &want));
+        }
+        other => failures.push(format!(
+            "the drawer row after the values call: expected run 4, wrong 0, issued at T0, live, the content's hash, \
+             in the domain, got {other:?}"
+        )),
+    }
+    report(&failures);
+}
+
+/// The domain rule runs once whichever path sees a changed domain first (per-player §3.5, r3 m8): a misfit row under
+/// an older hash is held by a raw transaction while a values call (its guarded update) and an attempt (its locked
+/// read) both queue on it; once released, the row ends at run 2 exactly, and both answers name that run and value.
+/// Eight rounds, one player each, in both queue orders: the first waiter takes the row first, so in the even rounds the
+/// attempt applies the rule and the values call's guard misses (the case an unguarded update re-draws twice), and in
+/// the odd rounds the values call applies it and the attempt reads the moved row.
+#[tokio::test]
+async fn values_domain_change_races_an_attempt_redraws_once() {
+    let (_copy, st, _db) = v2_state(|_| {}).await;
+    let mut failures = Vec::new();
+    for round in 0..8 {
+        let user = 4000 + round;
+        st.repo
+            .upsert_user(UserId(user), "Ann", None, T0)
+            .await
+            .unwrap();
+        let mut c = common::raw_db(&st).await;
+        insert_value(
+            &mut c,
+            ValueSql {
+                domain: OLD_HASH,
+                value: "{0,0,0,0}".to_owned(),
+                ..value_row(user, "ch1.desk_drawer")
+            },
+        )
+        .await
+        .unwrap();
+        c.close().await.unwrap();
+        let mut holder = common::raw_db(&st).await;
+        let mut poll = common::raw_db(&st).await;
+        sqlx::raw_sql("BEGIN ISOLATION LEVEL READ COMMITTED")
+            .execute(&mut holder)
+            .await
+            .unwrap();
+        sqlx::query(
+            "SELECT 1 FROM puzzle_values WHERE user_id = $1 AND puzzle_id = 'ch1.desk_drawer' FOR UPDATE",
+        )
+        .bind(user)
+        .execute(&mut holder)
+        .await
+        .unwrap();
+        let spawn_values = || {
+            let st = st.clone();
+            tokio::spawn(async move { get_values(&st, user, "ch1").await })
+        };
+        let spawn_attempt = || {
+            let st = st.clone();
+            tokio::spawn(async move {
+                post_attempt(&st, user, "ch1.drawer", &run_body(&[1, 2, 3, 4], Some(1))).await
+            })
+        };
+        // Each wait stays well inside the app's 2 s `lock_timeout`.
+        let within = Duration::from_millis(800);
+        let attempt_first = round % 2 == 0;
+        let (values, attempt, first, both) = if attempt_first {
+            let attempt = spawn_attempt();
+            let first = lock_waiters(&mut poll, 1, within).await;
+            let values = spawn_values();
+            (
+                values,
+                attempt,
+                first,
+                lock_waiters(&mut poll, 2, within).await,
+            )
+        } else {
+            let values = spawn_values();
+            let first = lock_waiters(&mut poll, 1, within).await;
+            let attempt = spawn_attempt();
+            (
+                values,
+                attempt,
+                first,
+                lock_waiters(&mut poll, 2, within).await,
+            )
+        };
+        sqlx::raw_sql("COMMIT").execute(&mut holder).await.unwrap();
+        holder.close().await.unwrap();
+        poll.close().await.unwrap();
+        let (values, attempt) = (values.await.unwrap(), attempt.await.unwrap());
+        if first < 1 || both < 2 {
+            let order = if attempt_first {
+                "the attempt, then the values call"
+            } else {
+                "the values call, then the attempt"
+            };
+            failures.push(format!(
+                "round {round}: expected {order} queued on the held row, got {first} then {both} waiting"
+            ));
+        }
+        match stored_row(&st, user, "ch1.desk_drawer").await {
+            Some((_, 2, 0, _, None, hash, value)) if hash == DOMAIN_HASH && in_drawer_domain(&value) => {
+                let want = json!({ "values": { "drawer": {
+                    "value": value, "run": 2, "attemptsLeft": null, "spent": false
+                } } });
+                failures.extend(expect_json(
+                    &format!("round {round}: the values call"),
+                    &values,
+                    200,
+                    &want,
+                ));
+                failures.extend(expect_json(
+                    &format!("round {round}: the attempt of run 1"),
+                    &attempt,
+                    409,
+                    &value_changed(&value, 2, None, false),
+                ));
+            }
+            other => failures.push(format!(
+                "round {round}: expected one re-draw (run 2, wrong 0, live, the content's hash), got {other:?}"
+            )),
         }
     }
     report(&failures);

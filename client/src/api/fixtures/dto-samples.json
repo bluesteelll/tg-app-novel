@@ -55,6 +55,9 @@
       "error": "internal"
     },
     {
+      "error": "value_changed"
+    },
+    {
       "current": {
         "chapterId": "ch1",
         "lineId": "ch1.k2.l4",
@@ -66,16 +69,40 @@
         "writeId": "w-s1"
       },
       "error": "save_conflict"
+    },
+    {
+      "error": "value_changed",
+      "value": {
+        "attemptsLeft": 0,
+        "run": 3,
+        "spent": true,
+        "value": [
+          3,
+          0,
+          9,
+          5
+        ]
+      }
     }
   ],
   "AttemptResponse": [
     {
+      "attemptsLeft": null,
       "correct": true,
-      "solved": true
+      "solved": true,
+      "spent": false
     },
     {
+      "attemptsLeft": null,
       "correct": false,
-      "solved": false
+      "solved": false,
+      "spent": false
+    },
+    {
+      "attemptsLeft": 0,
+      "correct": false,
+      "solved": false,
+      "spent": true
     }
   ],
   "AuthResponse": [
@@ -308,6 +335,40 @@
       "status": "refunded"
     }
   ],
+  "PlayerValue": [
+    {
+      "attemptsLeft": 2,
+      "run": 1,
+      "spent": false,
+      "value": [
+        1,
+        8,
+        4,
+        7
+      ]
+    },
+    {
+      "attemptsLeft": null,
+      "run": 2,
+      "spent": false,
+      "value": [
+        12,
+        7,
+        30
+      ]
+    },
+    {
+      "attemptsLeft": 0,
+      "run": 3,
+      "spent": true,
+      "value": [
+        3,
+        0,
+        9,
+        5
+      ]
+    }
+  ],
   "PostStatsResponse": [
     {
       "duplicates": 1,
@@ -366,7 +427,30 @@
         }
       ],
       "puzzleId": "ch1.drawer",
-      "solved": false
+      "solved": false,
+      "valueRun": null
+    },
+    {
+      "hints": [
+        {
+          "text": null,
+          "tier": 1,
+          "unlocked": false
+        },
+        {
+          "text": null,
+          "tier": 2,
+          "unlocked": false
+        },
+        {
+          "text": "The code: 3095.",
+          "tier": 3,
+          "unlocked": true
+        }
+      ],
+      "puzzleId": "ch1.safe",
+      "solved": false,
+      "valueRun": 4
     }
   ],
   "SaveFull": [
@@ -507,6 +591,36 @@
         "storiesTotal": 0
       },
       "stories": []
+    }
+  ],
+  "ValuesResponse": [
+    {
+      "values": {}
+    },
+    {
+      "values": {
+        "dial": {
+          "attemptsLeft": null,
+          "run": 2,
+          "spent": false,
+          "value": [
+            12,
+            7,
+            30
+          ]
+        },
+        "drawer": {
+          "attemptsLeft": 2,
+          "run": 1,
+          "spent": false,
+          "value": [
+            1,
+            8,
+            4,
+            7
+          ]
+        }
+      }
     }
   ],
   "WalletResponse": [

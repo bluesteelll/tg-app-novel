@@ -27,6 +27,7 @@ const NAMES: readonly DecodedDto[] = [
   'HintUseResponse',
   'InviteView',
   'OrderResponse',
+  'PlayerValue',
   'PostStatsResponse',
   'PutSaveResponse',
   'PuzzleStatus',
@@ -35,6 +36,7 @@ const NAMES: readonly DecodedDto[] = [
   'ShareResponse',
   'SocialResponse',
   'StatsResponse',
+  'ValuesResponse',
   'WalletResponse',
 ];
 
@@ -65,7 +67,10 @@ function samplesOf(name: DecodedDto): readonly unknown[] {
 const REMOVE = Symbol('remove');
 type Step = string | number;
 
-/** A deep copy of `sample` with the value at `path` replaced, or removed for `REMOVE`. */
+/**
+ * A deep copy of `sample` with the value at `path` replaced, or removed for `REMOVE`. The value is an own property, as
+ * JSON.parse makes one: an assignment to `__proto__` would set the prototype instead.
+ */
 function edited(sample: unknown, path: readonly Step[], value: unknown): unknown {
   const copy: unknown = structuredClone(sample);
   let node: unknown = copy;
@@ -80,7 +85,7 @@ function edited(sample: unknown, path: readonly Step[], value: unknown): unknown
   if (value === REMOVE) {
     delete target[last];
   } else {
-    target[last] = value;
+    Object.defineProperty(target, last, { value, enumerable: true, writable: true, configurable: true });
   }
   return copy;
 }
@@ -101,9 +106,12 @@ const MALFORMED: readonly Malformed[] = [
   { dto: 'ApiErrorBody', sample: 0, path: ['error'], value: REMOVE, error: 'ApiErrorBody.error: missing' },
   { dto: 'ApiErrorBody', sample: 0, path: ['error'], value: 7, error: 'ApiErrorBody.error: ' },
   { dto: 'ApiErrorBody', sample: 0, path: ['error'], value: 'teapot', error: 'ApiErrorBody.error: ' },
-  { dto: 'ApiErrorBody', sample: 18, path: ['current', 'rev'], value: '2', error: 'ApiErrorBody.current.rev: ' },
+  { dto: 'ApiErrorBody', sample: 19, path: ['current', 'rev'], value: '2', error: 'ApiErrorBody.current.rev: ' },
+  { dto: 'ApiErrorBody', sample: 20, path: ['value', 'run'], value: '3', error: 'ApiErrorBody.value.run: ' },
   { dto: 'AttemptResponse', sample: 0, path: ['correct'], value: REMOVE, error: 'AttemptResponse.correct: missing' },
   { dto: 'AttemptResponse', sample: 0, path: ['solved'], value: 'yes', error: 'AttemptResponse.solved: ' },
+  { dto: 'AttemptResponse', sample: 2, path: ['attemptsLeft'], value: '2', error: 'AttemptResponse.attemptsLeft: ' },
+  { dto: 'AttemptResponse', sample: 0, path: ['spent'], value: REMOVE, error: 'AttemptResponse.spent: missing' },
   { dto: 'AuthResponse', sample: 0, path: ['token'], value: REMOVE, error: 'AuthResponse.token: missing' },
   { dto: 'AuthResponse', sample: 0, path: ['expiresAt'], value: '1800001800', error: 'AuthResponse.expiresAt: ' },
   { dto: 'AuthResponse', sample: 0, path: ['user', 'languageCode'], value: 5, error: 'AuthResponse.user.languageCode: ' },
@@ -152,6 +160,8 @@ const MALFORMED: readonly Malformed[] = [
   { dto: 'OrderResponse', sample: 0, path: ['status'], value: REMOVE, error: 'OrderResponse.status: missing' },
   { dto: 'OrderResponse', sample: 0, path: ['productId'], value: 3, error: 'OrderResponse.productId: ' },
   { dto: 'OrderResponse', sample: 0, path: ['status'], value: 'shipped', error: 'OrderResponse.status: ' },
+  { dto: 'PlayerValue', sample: 0, path: ['value'], value: REMOVE, error: 'PlayerValue.value: missing' },
+  { dto: 'PlayerValue', sample: 1, path: ['run'], value: '3', error: 'PlayerValue.run: ' },
   { dto: 'PostStatsResponse', sample: 0, path: ['recorded'], value: REMOVE, error: 'PostStatsResponse.recorded: missing' },
   { dto: 'PostStatsResponse', sample: 0, path: ['duplicates'], value: '1', error: 'PostStatsResponse.duplicates: ' },
   { dto: 'PostStatsResponse', sample: 0, path: ['rejected', 5, 'reason'], value: 'too_old', error: 'PostStatsResponse.rejected[5].reason: ' },
@@ -163,6 +173,7 @@ const MALFORMED: readonly Malformed[] = [
   { dto: 'PuzzleStatus', sample: 0, path: ['hints', 0, 'tier'], value: 4, error: 'PuzzleStatus.hints[0].tier: ' },
   // M21: `text` only when unlocked; a locked tier that carries text is an error value, never shown.
   { dto: 'PuzzleStatus', sample: 0, path: ['hints', 1, 'text'], value: 'The key is in the clock.', error: 'PuzzleStatus.hints[1].text: ' },
+  { dto: 'PuzzleStatus', sample: 1, path: ['valueRun'], value: '4', error: 'PuzzleStatus.valueRun: ' },
   { dto: 'SaveFull', sample: 0, path: ['body'], value: REMOVE, error: 'SaveFull.body: missing' },
   { dto: 'SaveFull', sample: 0, path: ['summary', 'rev'], value: '3', error: 'SaveFull.summary.rev: ' },
   { dto: 'SaveFull', sample: 0, path: ['summary', 'slot'], value: 's9', error: 'SaveFull.summary.slot: ' },
@@ -179,6 +190,22 @@ const MALFORMED: readonly Malformed[] = [
   { dto: 'StatsResponse', sample: 0, path: ['stories', 0, 'started'], value: 'yes', error: 'StatsResponse.stories[0].started: ' },
   { dto: 'StatsResponse', sample: 0, path: ['stories', 0, 'chaptersCompleted', 0], value: 1, error: 'StatsResponse.stories[0].chaptersCompleted[0]: ' },
   { dto: 'StatsResponse', sample: 0, path: ['stories', 1, 'endingsReached'], value: null, error: 'StatsResponse.stories[1].endingsReached: ' },
+  { dto: 'ValuesResponse', sample: 1, path: ['values', 'drawer', 'spent'], value: REMOVE, error: 'ValuesResponse.values.drawer.spent: missing' },
+  // A key is a puzzle's local id: a prototype key never reaches the store that indexes by it.
+  {
+    dto: 'ValuesResponse',
+    sample: 1,
+    path: ['values', 'Drawer'],
+    value: copyOf('ValuesResponse', 1, ['values', 'drawer']),
+    error: 'ValuesResponse.values.Drawer: not a puzzle local id',
+  },
+  {
+    dto: 'ValuesResponse',
+    sample: 1,
+    path: ['values', '__proto__'],
+    value: copyOf('ValuesResponse', 1, ['values', 'drawer']),
+    error: 'ValuesResponse.values.__proto__: not a puzzle local id',
+  },
   { dto: 'WalletResponse', sample: 0, path: ['balances', 1], value: { kind: 'hint', balance: 0, debt: 0 }, error: 'WalletResponse.balances[1].kind: duplicate' },
   { dto: 'WalletResponse', sample: 0, path: ['packs', 1, 'productId'], value: 'pack:hint_s', error: 'WalletResponse.packs[1].productId: duplicate' },
   { dto: 'WalletResponse', sample: 0, path: ['hintTierCost'], value: REMOVE, error: 'WalletResponse.hintTierCost: missing' },
@@ -244,6 +271,7 @@ test('decode: puzzle status with unlocked hints', () => {
         { tier: 1, unlocked: true, text: 'Look under the rug.' },
         { tier: 2, unlocked: false, text: null },
       ],
+      valueRun: null,
     },
   });
   expect(r.ok && r.value.hints[1]?.text).toBe(null);
@@ -493,6 +521,7 @@ test('endpoints: api errors map to meta errors', async () => {
     insufficient_balance: 409,
     limit_reached: 409,
     internal: 500,
+    value_changed: 409,
   };
   const EXPECTED: Readonly<Record<ErrorCode, MetaError>> = {
     bad_request: { kind: 'unavailable' },
@@ -513,6 +542,7 @@ test('endpoints: api errors map to meta errors', async () => {
     insufficient_balance: { kind: 'insufficient' },
     limit_reached: { kind: 'limit' },
     internal: { kind: 'network' },
+    value_changed: { kind: 'unavailable' },
   };
   const seen = new Set<ErrorCode>();
   for (const raw of samplesOf('ApiErrorBody')) {

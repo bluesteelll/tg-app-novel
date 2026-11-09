@@ -1,5 +1,6 @@
 //! `/api/puzzles`: answer attempts, a puzzle's status with its hint ladder, and the hint use that unlocks a tier from
-//! the balance (META-PLAN M21). Thin handlers: the id, the tier and `lang` are parsed here; the gate
+//! the balance (META-PLAN M21), and the restart of a per-player puzzle's spent run; and
+//! `/api/chapters/{chapterId}/values`, a chapter's per-player values (per-player §3.4). Thin handlers: the id, the tier and `lang` are parsed here; the gate
 //! ([`puzzles::entitled_puzzle`]) and the rules live in `puzzles`, the spend in `db/economy.rs`.
 //!
 //! A malformed id is 400 `bad_request` (PUZZLES-PLAN "HTTP API additions"): puzzle ids are not secret, public worlds
@@ -14,17 +15,17 @@ use axum::response::{IntoResponse, Response};
 
 use crate::AppState;
 use crate::api::body_rejection;
-use crate::api::dto::{AttemptRequest, AttemptResponse, HintUseResponse};
+use crate::api::dto::{AttemptRequest, AttemptResponse, HintUseResponse, RestartRequest};
 use crate::auth::AuthUser;
-use crate::content::Localized;
+use crate::content::Answer;
 use crate::db::economy::SpendOutcome;
 use crate::error::ApiError;
-use crate::ids::PuzzleId;
+use crate::ids::{ChapterId, PuzzleId};
 use crate::puzzles::{self, AttemptOutcome, Lang};
 
 /// The headers of a status 200: an unlocked hint's text is sold content, so no shared cache stores it and no browser
-/// sniffs another type into it (the paid-content pair of `api/content.rs`).
-fn sold_headers() -> [(HeaderName, HeaderValue); 2] {
+/// sniffs another type into it (the paid-content pair of `api/content.rs`). A player's value travels under it too.
+pub(crate) fn sold_headers() -> [(HeaderName, HeaderValue); 2] {
     [
         (CACHE_CONTROL, HeaderValue::from_static("private, no-store")),
         (X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff")),
@@ -63,14 +64,43 @@ pub async fn post_attempt(
     let def = puzzles::entitled_puzzle(&st, user, &id).await?;
     // The body is judged only past the gate: a paid puzzle is 403 whatever the request carries.
     let Json(req) = req.map_err(body_rejection)?;
-    match puzzles::attempt(&st, user, def, &req.answer).await? {
-        AttemptOutcome::Answered { correct, solved } => {
-            Ok(Json(AttemptResponse { correct, solved }))
-        }
+    match puzzles::attempt(&st, user, def, &req.answer, req.run).await? {
+        AttemptOutcome::Answered {
+            correct,
+            solved,
+            attempts_left,
+            spent,
+        } => Ok(Json(AttemptResponse {
+            correct,
+            solved,
+            attempts_left,
+            spent,
+        })),
         AttemptOutcome::RateLimited { retry_after_secs } => {
             Err(ApiError::RateLimited { retry_after_secs })
         }
     }
+}
+
+/// `POST /api/puzzles/{puzzleId}/restart` with `{ "from": run }` (per-player §3.6): the current run of the player's
+/// value after the restart, a spent run `from` replaced by a new one. The checks run in a fixed order (token, id
+/// grammar, puzzle known, entitlement, per-player, body), so a non-buyer cannot learn which paid puzzles are
+/// per-player (m11); the 200 is `private, no-store` + `nosniff`: the value is the player's alone.
+pub async fn post_restart(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    id: Result<Path<String>, PathRejection>,
+    req: Result<Json<RestartRequest>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    let id = puzzle_id(id)?;
+    let def = puzzles::entitled_puzzle(&st, user, &id).await?;
+    // Before the body: a static puzzle is 404 whatever the request carries.
+    if !matches!(def.answer, Answer::PerPlayer { .. }) {
+        return Err(ApiError::NotFound);
+    }
+    let Json(req) = req.map_err(body_rejection)?;
+    let value = puzzles::restart(&st, user, def, req.from).await?;
+    Ok((sold_headers(), Json(value)).into_response())
 }
 
 /// `GET /api/puzzles/{puzzleId}?lang=ru|en`: whether the user solved the puzzle, and its hint ladder with the texts of
@@ -90,6 +120,24 @@ pub async fn get_status(
     Ok((sold_headers(), Json(status)).into_response())
 }
 
+/// `GET /api/chapters/{chapterId}/values` (per-player §3.4): the player's value of each per-player puzzle of the
+/// chapter, by local id, issued at the first call; `{}` for a chapter without one. The checks run in a fixed order
+/// (token, id grammar, chapter known, entitlement); the 200 is `private, no-store` + `nosniff`: the values are the
+/// player's alone.
+pub async fn get_values(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    id: Result<Path<String>, PathRejection>,
+) -> Result<Response, ApiError> {
+    let Ok(Path(raw)) = id else {
+        return Err(ApiError::BadRequest("chapter id is not text"));
+    };
+    let ch =
+        ChapterId::parse(&raw).ok_or(ApiError::BadRequest("chapter id outside the grammar"))?;
+    let values = puzzles::player_values(&st, user, &ch).await?;
+    Ok((sold_headers(), Json(values)).into_response())
+}
+
 /// The hint tier of a path segment: exactly `1`, `2` or `3`, one spelling per tier (no `01`, no `+1`).
 fn hint_tier(raw: &str) -> Option<u8> {
     match raw {
@@ -97,14 +145,6 @@ fn hint_tier(raw: &str) -> Option<u8> {
         "2" => Some(2),
         "3" => Some(3),
         _ => None,
-    }
-}
-
-/// `localized` in `lang`: the rule of the status route's texts (`puzzles::text`, private there).
-fn hint_text(localized: &Localized, lang: Lang) -> &str {
-    match lang {
-        Lang::Ru => &localized.ru,
-        Lang::En => &localized.en,
     }
 }
 
@@ -143,9 +183,8 @@ pub async fn post_hint(
         SpendOutcome::Insufficient => return Err(ApiError::InsufficientBalance),
         SpendOutcome::Unavailable => return Err(ApiError::HintUnavailable),
     };
-    let body = HintUseResponse {
-        balance,
-        text: hint_text(hint, lang).to_owned(),
-    };
+    // Rendered after the spend commits, from the player's current row (per-player §3.7).
+    let text = puzzles::rendered_hint(&st, user, def, hint, lang).await?;
+    let body = HintUseResponse { balance, text };
     Ok((sold_headers(), Json(body)).into_response())
 }

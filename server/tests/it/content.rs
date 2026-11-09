@@ -13,7 +13,7 @@ use axum::http::Request;
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, HeaderName, X_CONTENT_TYPE_OPTIONS};
 use serde_json::{Value, json};
 use server::config::Config;
-use server::content::{ContentError, ContentStore};
+use server::content::{Answer, ContentError, ContentStore, PuzzleDef};
 use server::ids::{ChapterId, ProductId, PuzzleId, StoryId};
 use server::meta::Condition;
 use server::{AppState, StartupError};
@@ -185,6 +185,14 @@ fn chapter(id: &str) -> ChapterId {
 
 fn puzzle(id: &str) -> PuzzleId {
     PuzzleId(id.to_owned())
+}
+
+/// The solution of a static puzzle; a per-player one is a test bug.
+fn static_solution(p: &PuzzleDef) -> &[u16] {
+    match &p.answer {
+        Answer::Static(s) => s,
+        Answer::PerPlayer { .. } => panic!("expected a static puzzle"),
+    }
 }
 
 /// The fixture's two stories, their chains, endings, paid chapters, worlds and gated asset files.
@@ -372,7 +380,7 @@ async fn puzzle_index_loaded() {
                 p.chapter.0.as_str(),
                 p.answer_len,
                 p.answer_max,
-                p.solution.as_slice(),
+                static_solution(p),
                 p.hints.len(),
             );
             if got != ("ch1", 4, 9, &[1, 8, 4, 7][..], 3) || p.title.en != "Desk drawer" {
@@ -390,7 +398,7 @@ async fn puzzle_index_loaded() {
                 p.chapter.0.as_str(),
                 p.answer_len,
                 p.answer_max,
-                p.solution.as_slice(),
+                static_solution(p),
                 p.hints.len(),
             );
             if got != ("ch2", 3, 2, &[2, 0, 1][..], 3) || p.title.ru != "Шкаф в архиве" {
@@ -541,10 +549,10 @@ async fn content_loads_a_renamed_key() {
         ));
     }
     match st.content.puzzle(&puzzle("ch1.desk")) {
-        Some(p) if p.key.0 == "ch1.drawer" && p.solution == [1, 8, 4, 7] => {}
+        Some(p) if p.key.0 == "ch1.drawer" && static_solution(p) == [1, 8, 4, 7] => {}
         Some(p) => failures.push(format!(
             "puzzle(ch1.desk): expected key ch1.drawer and the drawer's solution, got key {} and {:?}",
-            p.key.0, p.solution
+            p.key.0, static_solution(p)
         )),
         None => failures.push("puzzle(ch1.desk): expected Some".to_owned()),
     }
@@ -645,7 +653,7 @@ async fn content_still_loads_format_1() {
                 p.chapter.0.as_str(),
                 p.answer_len,
                 p.answer_max,
-                p.solution.as_slice(),
+                static_solution(p),
                 p.hints.len(),
             );
             if got != ("ch2.cabinet", "ch2", 3, 2, &[2, 0, 1][..], 3)
