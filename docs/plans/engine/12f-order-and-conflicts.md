@@ -32,7 +32,7 @@ to §9.14 (I-2): `budget.ts` / `budget.test.ts` read `{SH3a, GM3s}` by launch, t
 and §9.14's order would hold the whole GM3 chain (GM3s gates GM3, GM3u, GM3p, GM3b) behind the shot chain's start;
 SH3b depends on SH3a and edits the same file, so it follows both. Roles: **MR1 = SH10**, **MR2 = SH8 + SH9**, **MA1's
 executor duties = SH7** (§8.7). Rev. 3's lanes (MD1a, MD1b, MD2, MD3, MA1a, MA1b, MA2) no longer exist. Merged lanes
-are shown as merged; LRB merged as `3c62a86` (RULINGS 157); L1 (`l1-entry-summary`, RULINGS 158) comes after it on
+are shown as merged; LRB merged as `3c62a86` (RULINGS 157); L1 (`l1-entry-summary`, RULINGS 158; merged `eec24fe`, RULINGS 159) comes after it on
 `game.ts`, `boot.ts` and `arch.test.ts`. Line numbers that LFL moved (`game.ts`, `budget.ts`, `boot.ts`, `arch.test.ts`) are
 re-located at each holder's cut.
 
@@ -41,7 +41,7 @@ re-located at each holder's cut.
 | GM1a | M3c (merged) | - |
 | GM1b | GM1a | - |
 | GM1c | GM1b (`scripts/story/world.ts`), GM1a (`arch.test.ts`) | GM2a |
-| GM2a | GM1b (`reconcile.ts`, `explore.test.ts`), GM1a (`yields.ts`, `resume.test.ts`); reconcile r1: LFL (merged) and LRB (merged `3c62a86`) on `game.ts`, `game.test.ts`; L1 (RULINGS 158) on `game.ts`; before SH1 (`game.ts`, `staging.ts`, the `scene/*` field) | GM1c |
+| GM2a | GM1b (`reconcile.ts`, `explore.test.ts`), GM1a (`yields.ts`, `resume.test.ts`); reconcile r1: LFL (merged) and LRB (merged `3c62a86`) on `game.ts`, `game.test.ts`; L1 (RULINGS 158; merged `eec24fe`, RULINGS 159) on `game.ts`; before SH1 (`game.ts`, `staging.ts`, the `scene/*` field) | GM1c |
 | GM1d | GM1c (`world/{types,decode}.ts`); reconcile r1: SH12b after it on `lint.ts` (round 4: GM1d holds `lint.ts`'s one `Finding.code` hunk); SH2 never beside (`story.ts`, if GM1d's verify item takes it) | GM3m, GM3w |
 | GM3m | GM1c (`arch.test.ts`, `puzzles/rules/index.ts`), GM1b (`mechanics/contract.ts`) | GM1d, GM2b, GM3c, GM3w |
 | GM3w | GM2a (`game.ts`, `game.test.ts`, `yields.ts`); reconcile r1: before SH1 on `game.ts` (design-shots I-2: SH1's cut follows GM3w's merge) | GM1d, GM2b, GM3c, GM3m |
@@ -78,7 +78,7 @@ the table is the error to fix (the rule of this section's first paragraph).
 
 | Lane | After (shared file or dependency) | Beside |
 |---|---|---|
-| SH1 | GM2a (`staging.ts`, `game.ts`, the `scene/*` field), GM3w (`game.ts`), per-player GM6a (`scene/*`); LFL, LRB (merged) on `game.ts`, `game.test.ts`; L1 (RULINGS 158) on `game.ts`; first holder of `graph.ts`, `tags.ts`, `dsl-doc.test.ts`, `STAGING-DSL.md` | none on `scene/*` or `game.ts` |
+| SH1 | GM2a (`staging.ts`, `game.ts`, the `scene/*` field), GM3w (`game.ts`), per-player GM6a (`scene/*`); LFL, LRB (merged) on `game.ts`, `game.test.ts`; L1 (RULINGS 158; merged `eec24fe`, RULINGS 159) on `game.ts`; first holder of `graph.ts`, `tags.ts`, `dsl-doc.test.ts`, `STAGING-DSL.md` | none on `scene/*` or `game.ts` |
 | SH2 | SH1 (`graph.ts`, `STAGING-DSL.md`); never beside GM1d, GM2b, GM3c, GM9p, per-player GM6c1a, GM6c1b (`client/scripts/story.ts`), never beside GM1a or GM3 (`playthrough.ts`) | M3s (merged: moot) |
 | SH3a | M3s (merged; `scripts/assets/manifest.ts`, `assets.test.ts`); LEL, LFL (merged) on `budget.ts`, `budget.test.ts`; GM3s by launch, never beside (I-2, the change above); reconcile r2 (RC-W3): **SH2** (its tiers read `build/shots.json`'s `assets`, which SH2's `shots/usage.ts` creates, [shots §9.3 SH3a `shot-assets`](../shots/09b-lanes-sh3a-sh3b.md#93-sh3a-shot-assets-client-asset-tool-the-contract-placeholders-tiers-scan-dist), [shots §9.3 SH3a `shot-assets`](../shots/09b-lanes-sh3a-sh3b.md#93-sh3a-shot-assets-client-asset-tool-the-contract-placeholders-tiers-scan-dist); its Order, [shots §9.3 SH3a `shot-assets`](../shots/09b-lanes-sh3a-sh3b.md#93-sh3a-shot-assets-client-asset-tool-the-contract-placeholders-tiers-scan-dist)) | - |
 | SH3b | SH3a and GM3s (`budget.ts`, `budget.test.ts`), SH2 (`shots/lint.ts`, `STAGING-DSL.md`) | SH3c; SH4 if SH4 waits only for SH3a |
@@ -106,9 +106,9 @@ the table is the error to fix (the rule of this section's first paragraph).
 |---|---|
 | `client/src/explore/controller.ts`, `controller.test.ts` | GM1a -> GM3 (test only) -> GM3b -> GM4 -> GM8i -> per-player GM6c4 -> SH9 (reconcile r1, design-shots I-16: `shotImages` in the neighbour preload, one hunk; never beside) |
 | `client/src/app/yields.ts`, `yields.test.ts` | GM1a -> GM2a -> GM3w (`yields.ts` only: the `apply` dep's type, round 4, and `retrying: false` in `openPuzzle`'s frame literal, round 8; named in round 9, critique_engine_r8 drift) -> GM3s -> GM3 -> GM3u -> GM3p -> GM3b -> GM4 -> GM4u -> GM5 -> GM7r -> GM8h -> GM9r; per-player GM6c2, GM6c4, GM6d2 by launch, never beside one of these |
-| `client/src/app/game.ts` | reconcile r1: LBI, LFL (merged) -> LRB (merged `3c62a86`, RULINGS 157) -> L1 (`l1-entry-summary`, RULINGS 158) -> GM2a -> GM3w (two hunks, round 4) -> SH1 -> SH5a -> SH5b -> SH7 -> per-player GM6c2 -> GM6c3 -> GM6d1 -> GM9r, one at a time (was: GM2a -> GM3w -> A(`game.ts`) (rev. 3: MD2 -> MA1a -> MA1b) -> per-player GM6c2 -> GM6c3 -> GM6d1 -> GM9r) |
+| `client/src/app/game.ts` | reconcile r1: LBI, LFL (merged) -> LRB (merged `3c62a86`, RULINGS 157) -> L1 (`l1-entry-summary`, RULINGS 158; merged `eec24fe`, RULINGS 159) -> GM2a -> GM3w (two hunks, round 4) -> SH1 -> SH5a -> SH5b -> SH7 -> per-player GM6c2 -> GM6c3 -> GM6d1 -> GM9r, one at a time (was: GM2a -> GM3w -> A(`game.ts`) (rev. 3: MD2 -> MA1a -> MA1b) -> per-player GM6c2 -> GM6c3 -> GM6d1 -> GM9r) |
 | `client/src/app/game.test.ts` (reconcile r1, new row) | LEL, LBI, LFL (merged) -> LRB (merged `3c62a86`) -> the `game.ts` row's holders that test it, in that row's order -> SH12a (`reduceStage`, the `# show:` fixture) |
-| `client/src/app/boot.ts`, `client/src/app/meta.ts`, `meta.test.ts` (reconcile r1, new row) | LEL, LBI, LFL (merged) -> LRB (merged `3c62a86`) -> L1 (`l1-entry-summary`, RULINGS 158; `boot.ts`); no GM, GM6 or SH lane holds them |
+| `client/src/app/boot.ts`, `client/src/app/meta.ts`, `meta.test.ts` (reconcile r1, new row) | LEL, LBI, LFL (merged) -> LRB (merged `3c62a86`) -> L1 (`l1-entry-summary`, RULINGS 158; merged `eec24fe`, RULINGS 159; `boot.ts`); no GM, GM6 or SH lane holds them |
 | `client/src/ui/App.svelte` | GM3w (round 8: also the `.host-failed` Retry's `disabled={frame.retrying}`) -> GM3s (round 7: the `.host-failed` block's cue markers) -> per-player GM6t (one prop, per-player round 4); nothing later of this design (round 3 W1: `coversStage` from GM3w on is the only seam; GM8h narrows it in `puzzle-view.svelte.ts`) |
 | `client/src/geom/cover.ts` (round 7, m1) | GM3c only (`HOTSPOT_MIN_SOURCE_PX` moved in); later lanes import it; no per-player lane holds it (verify at GM3c's cut against the shot design's locks, which read it) |
 | `client/src/ui/explore/ExploreView.svelte`, `explore.svelte.test.ts` | GM3w -> GM3s -> GM3u -> GM4u -> GM5 -> GM8h (round 3 W1) -> per-player GM6c4 |
@@ -157,7 +157,7 @@ the table is the error to fix (the rule of this section's first paragraph).
 | `client/src/scene/loader.ts` (reconcile r1) | SH5a -> SH5b |
 | `client/src/scene/layout.ts`, `layout.test.ts` (reconcile r1) | SH12b (in the `scene/*` tail) |
 | `client/src/scene/motion/*` (reconcile r1, new directory) | SH7 (creates it) -> SH8 -> SH9 -> SH10 (`index.ts` in each), strict, inside the `scene/*` row |
-| `client/src/arch.test.ts` | GM1a -> GM1c -> GM3m -> GM3s -> GM3u -> GM7p -> GM7g -> GM8a -> GM8b; reconcile r1: LEL, LFL (merged) -> LRB (merged `3c62a86`; its cut took it: `metaStatsGaps`) -> L1 (`l1-entry-summary`, RULINGS 158) before GM1a; SH6 by launch, never beside any of them (was: A(`arch.test.ts`) (rev. 3: MD2 after GM1a) never beside any of them) |
+| `client/src/arch.test.ts` | GM1a -> GM1c -> GM3m -> GM3s -> GM3u -> GM7p -> GM7g -> GM8a -> GM8b; reconcile r1: LEL, LFL (merged) -> LRB (merged `3c62a86`; its cut took it: `metaStatsGaps`) -> L1 (`l1-entry-summary`, RULINGS 158; merged `eec24fe`, RULINGS 159) before GM1a; SH6 by launch, never beside any of them (was: A(`arch.test.ts`) (rev. 3: MD2 after GM1a) never beside any of them) |
 | `story/ch1/world.json` | GM1d -> GM3b -> GM4u -> GM9r (with `story/ch2/world.json`, `story/items.json`) -> per-player GM6c4 -> GM6d2, one at a time; reconcile r1 (design-shots I-18): every holder's cut checks that `gate`'s `"closeup": null` (`story/ch1/world.json:43`) and its `onFail` `manor_gate_forced` (`:89`) still stand, or names the replacement room event; SH11 reads it, no SH lane edits it |
 | `client/src/requests.test.ts` (round 13; reconcile r1 adds SH7; reconcile r2, R-E35) | GM3p (new) -> {per-player GM6c2 (E-P23; its `SITE_MEMBERS` row, E-P29), SH7 (its `scene/motion/` `import()` row; GM3p is always merged by then), every later lane that adds a start, a `HOST_WAITS` row or a `SITE_MEMBERS` row} by launch, never beside (§12 head; r1 let two holders with disjoint rows run beside each other, withdrawn) |
 | `client/src/story/staging.ts` (reconcile r1) | GM2a (`PropPlacement.at`, `StagingSnapshot.cam`, I-1) -> SH1 (the `cam` command) -> SH12a |
@@ -301,7 +301,7 @@ the table is the error to fix (the rule of this section's first paragraph).
   and the rule "GM2a and GM3w start after LFL merges" is met. **LRB** (RULINGS 156), merged as `3c62a86` (RULINGS 157), whose envelope
   (`game.ts`, `game.test.ts`, `meta.ts`, `meta.test.ts`, `boot.ts`, maybe `arch.test.ts`, `build-skew.spec.ts`)
   made it the holder of `game.ts` / `game.test.ts` before GM2a and, its cut having taken `arch.test.ts`, before GM1a
-  there; L1 (RULINGS 158) comes after it on `game.ts`, `boot.ts` and `arch.test.ts`; no GM, GM6 or SH lane starts on those files beside it. **Beside pairs re-checked** against the SH locks:
+  there; L1 (RULINGS 158; merged `eec24fe`, RULINGS 159) comes after it on `game.ts`, `boot.ts` and `arch.test.ts`; no GM, GM6 or SH lane starts on those files beside it. **Beside pairs re-checked** against the SH locks:
   GM2a ∥ GM1c unchanged (no SH lane runs before SH1, which follows GM2a); GM3c ∥ GM3s (neither holds an SH file); SH9 ∥
   engine lanes off `scene/*`, `motions.ts`, `catalog.json`, and SH10 ∥ engine lanes off `scene/*`, `motions.ts`, as
   §9.14 states; every other GM `Beside` pair is unchanged. Lane cap 3 holds.

@@ -118,7 +118,7 @@ clause) and §14 Q24.
   < 0.5 KB br STOPs at its cut, L1 (entry -1.75 KB br, first line +0.07; RULINGS 140, `RULINGS.md:2988-2990`) runs
   as the next lane on its files and merges first, then the stopped lane resumes; `entryJsBr` (`budget.ts:106`,
   40,000) is never raised; crossing 40.0 itself is a build-gate FAIL. L2 (-0.48) stays shelved with it.
-  **Ruled since: RULINGS 158** — L1 is unshelved (RULINGS 142's return condition: 38,988 B + 510 B = 39,498 B, 502 B left against the 500 B line, inside the build's own churn) as lane `l1-entry-summary` (`summaryOf` into `saves/summary.ts`; entry -1.59, first line +0.21, CLAIM at `cdca9d4`); L2 stays shelved. The cut/build crossing rule above stands for every later entry-adding lane, read against the row after L1 merges.
+  **Ruled since: RULINGS 158** — L1 is unshelved (RULINGS 142's return condition: 38,988 B + 510 B = 39,498 B, 502 B left against the 500 B line, inside the build's own churn) as lane `l1-entry-summary` (`summaryOf` into `saves/summary.ts`; entry -1.59, first line +0.21, CLAIM at `cdca9d4`); L2 stays shelved. The cut/build crossing rule above stands for every later entry-adding lane, read against the row after L1 merges. Changed by RULINGS 159 (as of `9a83251`; docs lane `docs-errata-10`, group A): L1 merged `eec24fe`; entry 37,338 B MEASURED, 2,662 B left; first line 254,288 B MEASURED.
 - **All JS:** this file's +3.524 (r2: +3.504) is inside §11.1's projection with the difference above; every GM6 client lane quotes
   the row at its cut (shots I-13); the ruling the third EN type chunk needs is engine.md §15 item 16's. Reconcile r4:
   on `3c62a86` the three designs' terms read 301.76-301.86 and GM7p + GM7g's rows 304.96-305.06 (above), so the

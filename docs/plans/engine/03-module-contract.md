@@ -357,8 +357,8 @@ export const HOTSPOT_MIN_SOURCE_PX = 150;
 
 | Lane | engine | explore-ui (4.9 MEASURED) | cue stage (new family) | note |
 |---|---|---|---|---|
-| GM1a | -2.3 | +2.3 -> 7.2 | - | `reduce.ts:264-659` + `reconcile.ts:19-153` move out (~530 lines) |
-| GM1b | +0.3 | +0.25 -> 7.45 | - | registries, `data/core`, writer, derived key; round 4: the `arrived` hook calls (~8 lines, chunk) |
+| GM1a | -2.3 | +2.3 -> 7.2 | - | `reduce.ts:264-659` + `reconcile.ts:19-153` move out (~530 lines). Changed by RULINGS 162, 165 (as of `9a83251`; docs lane `docs-errata-10`, group A): MEASURED at GM1a's merge (`ef8b4dc`, exact bytes main -> HEAD): engine -1,908 B, explore-ui 4,912 -> 7,205 B (+2,293), entry -60 B, first line -1,968 B, all JS +334 B; these replace the -2.3 / +2.3 estimates ([§11.1](11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13)) |
+| GM1b | +0.3 | +0.25 -> 7.45 | - | registries, `data/core`, writer, derived key; round 4: the `arrived` hook calls (~8 lines, chunk). Changed by RULINGS 171 (as of `9a83251`; docs lane `docs-errata-10`, group A): MEASURED at GM1b's merge (`03a00bc`, exact bytes main -> HEAD): engine -38 B, explore-ui 7,205 -> 8,395 B (+1,190 against +0.25), entry -33 B, first line -71 B, all JS +1,119 B; these replace the +0.3 / +0.25 estimates; the explore-ui row binds only at the 14.0 split line (the STOP rules below; RULINGS 171) ([§11.1](11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13)) |
 | GM1c | +0.13 | 0 | - | `PuzzleInstance` with `start` and `commit` (round 4, ~6 lines); switch sites removed |
 | GM1d | 0 | 0 | - | build-only |
 | GM2a | +0.33 (reconcile r1: was +0.3; design-shots I-1's `cam` reader, ~6 lines x 4.3 B = 25.8 B, +0.03) | 0 | - | format chain, upgrader, `at`; reconcile r1: `StagingSnapshot.cam` (§5.2) |

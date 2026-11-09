@@ -17,6 +17,7 @@
   the section` (red: the event route returns no `reset`); (4) build log P1.
 - **Gates:** check, test, story (states unchanged: ch1 406), build (engine and explore-ui rows MEASURED vs ledger),
   e2e full (behaviour-identical).
+  **Ruled since: RULINGS 162** — the build rows read by the design's own STOP rule (§3.5): GM1a stops only if the engine or the first line falls by less than 1.8 KB br, the dist probe finds rules code in an engine or entry chunk, or the entry rises by more than 50 B; GM1a merged `ef8b4dc` at engine -1,908 B, first line -1,968 B, entry -60 B (RULINGS 165).
 - **Conflicts:** first holder of `explore/**` after LFU3's freeze; `yields.ts` free since LFU3.
 
 ### GM1b `mech-registry`
@@ -32,6 +33,7 @@
   `client/src/mechanics/registry.test.ts`, `client/scripts/story/mechanics/{index,core}.ts`,
   `client/scripts/story/spike-p2.test.ts`; `client/src/mechanics/rules/{core,search}.ts`;
   `client/src/explore/{reduce,reconcile}.ts`; `client/scripts/story/world.ts`; `client/src/explore/explore.test.ts`.
+  **Ruled since: RULINGS 166** — the lock grew to 16 with `client/src/arch.test.ts`, for one hunk: the `rules-lazy` rule matches a bare-directory specifier (GM1a's review M2, live once `rules/index.ts` exists), with a red fixture and a named mutation.
 - **Commits:** (1) `mechanics: every key has one owner`, `mechanics: data and rules registries align` (red: TS2307
   module missing; mutation: swap two tuple entries -> red); (2) writer: `writer: a set records the added and removed
   members`; (3) derived key: `search: derived sectionKey equals the hand key on ch1 and ch2` (pin), then
@@ -46,6 +48,7 @@
   world whose hook opens its room's zero-slot lock puzzle on arrival proves the same state count as without the hook;
   ch1 / ch2 stay at their counts).
 - **Gates:** check, test, story, build.
+  **Ruled since: RULINGS 171** — the explore-ui row (7,205 -> 8,395 B br, +1,190 against the +0.25 term) binds only at §3.5's 14.0 KB br split line, and the "line + 0.5" rule is the engine delta's (215,042 -> 215,004 B): GM1b passed and merged `03a00bc`.
 - **Beside:** none (it opens the module contract every later lane reads).
 
 ### GM1c `mech-puzzle-instance`
@@ -120,7 +123,7 @@
   (body literals `:584-592`), `client/src/explore/explore.test.ts` (WorldState literals; re-located at the cut).
 - **Reconcile r1 (design-shots I-1):** `StagingSnapshot.cam?: CamState` and the types `CamTarget` / `CamState` in
   `staging.ts` (held), read by the codec's optional-key rule (§5.2); no lock change (14). After LFL (merged `cec347c`)
-  and LRB (merged `3c62a86`, RULINGS 157) on `game.ts` / `game.test.ts`, and L1 (`l1-entry-summary`, RULINGS 158) on `game.ts`; its `game.ts` type references are re-located on the
+  and LRB (merged `3c62a86`, RULINGS 157) on `game.ts` / `game.test.ts`, and L1 (`l1-entry-summary`, RULINGS 158; merged `eec24fe`, RULINGS 159) on `game.ts`; its `game.ts` type references are re-located on the
   parent at the cut (LFL moved `game.ts` lines).
 - **Commits:** (1) `save: a format-1 body upgrades to format 2` (golden; red: `unknown-format`); (2) `save: format 2
   round-trips` (with and without `run.work`, with `chapterStart.items`; reconcile r1: with and without
