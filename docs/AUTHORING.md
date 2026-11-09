@@ -773,6 +773,34 @@ A section with more than 5,000 states is `world/state-cap`: split it into smalle
 `world/unreachable` (W). Both are rows of [STAGING-DSL §11](STAGING-DSL.md#11-what-the-story-lint-enforces), second table, like
 `world/softlock`.
 
+### Module and type lint codes
+
+STAGING-DSL §11 lists the codes of `LINT_CODES` only. The mechanics engine's world passes and the puzzle types declare
+their own codes, outside that table, so a new mechanic never edits it
+([engine §3.2](plans/engine/03-module-contract.md#32-the-two-halves-and-the-registries), "Lint codes"). The gate prints
+them like any other finding. As merged at `837b1ed` (every one is an error, E):
+
+| Code | Registered by | What the gate refuses |
+|---|---|---|
+| `world/renamed-target` | `core` ([mechanics/core.ts:12](../client/scripts/story/mechanics/core.ts#L12)) | a `renamed` chain that ends at an id this world does not have |
+| `world/renamed-source` | `core` | a `renamed` source id that is still in this world |
+| `world/renamed-cycle` | `core` | a `renamed` chain that returns to itself |
+| `world/renamed-puzzles` | `core` | any `renamed.puzzles` entry (refused until per-player GM6c1b re-keys stored puzzles) |
+| `world/clue-declared` | `clues` ([mechanics/clues.ts:23](../client/scripts/story/mechanics/clues.ts#L23)) | a secret-goal puzzle that a lock holds and that declares no clue |
+| `world/reach-has-clue` | `clues` | a clue on a puzzle whose goal the screen shows |
+| `world/clue-reachable` | `clues` | a clue that names no fact of this world, or holds in no state of the lock's section reached before the puzzle is solved or failed |
+| `world/answer-len` | `puzzle-shape` ([puzzles/shape.ts:22](../client/scripts/story/puzzles/shape.ts#L22)) | a puzzle whose posted answer is outside 1..16 entries |
+| `world/cross-section-cond` | `conditions` ([mechanics/conditions.ts:21](../client/scripts/story/mechanics/conditions.ts#L21)) | a gating condition atom naming an id outside its section |
+| `world/visual-only-atom` | `conditions` | a visual-only module atom inside a gating condition |
+| `world/cond-size` | `conditions` | a condition deeper than 4 or with more than 16 atoms (clues included) |
+| `world/text-unwalked` | `texts` ([mechanics/texts.ts:76](../client/scripts/story/mechanics/texts.ts#L76)) | a text inside a module's data that no text walker returns |
+
+The registry is `MECHANIC_LINTS` ([mechanics/index.ts:56](../client/scripts/story/mechanics/index.ts#L56)). The
+puzzle types' own tables in `PUZZLE_LINTS` ([puzzles/index.ts:30](../client/scripts/story/puzzles/index.ts#L30)) are
+empty for `code` and `order`: their `world/solution*` codes are STAGING-DSL §11's. The test `story: module and type
+lint codes are unique and none is a DSL code` ([world.test.ts:933](../client/scripts/story/world.test.ts#L933)) keeps
+each code in one table. This table is written by hand; no test compares it with the registries.
+
 ## Part 3: stories
 
 ### `story/stories.json`
@@ -879,6 +907,13 @@ E story/locales/en/story.json:0 catalog/stories chapters.ch2: paid chapter ch2's
   ([0001_init.sql:68](../server/migrations/0001_init.sql#L68)), and a paid chapter's product is `chapter:<id>`
   ([catalog.rs:26](../server/src/catalog.rs#L26)), so its buyers' entitlements follow the id. This is advice, not a
   lint rule.
+- **A world id renamed after shipping goes into the world's `renamed` key**, an optional sixth top-level key: per kind
+  (`items`, `docs`, `rooms`, `sections`, `hotspots`), the old id -> the new one, so a saved world follows the rename
+  ([world/types.ts:121-136](../client/src/world/types.ts#L121); [engine §5.3](plans/engine/05-world-data-and-save-format.md#53-renamed-the-client-half-lane-gm2b)).
+  **A room's rename moves no hotspot:** list `"<old room>.<id>": "<new room>.<id>"` under `hotspots` for every
+  hotspot the room keeps. No lint can see a forgotten entry; a save then loses that hotspot's progress. The four
+  `world/renamed-*` codes are in [Module and type lint codes](#module-and-type-lint-codes); `flags` and `puzzles`
+  entries are refused for now.
 
 ## Part 4: story meta
 

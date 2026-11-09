@@ -22,6 +22,8 @@ as of 9a83251: GM6k merged fd62933 (RULINGS 163) -> GM6s1 merged 81a15b0 (RULING
               RULINGS 169 / 170); engine GM1a ef8b4dc and GM1b 03a00bc merged, GM1c / GM2a wait for GM6s2
 as of 9b4fd25: GM6s2 merged 2815340 (RULINGS 176): the server chain GM6k -> GM6s1 -> GM6s2 is done; engine GM1c
               8c2fa03 and GM2a 9b4fd25 merged, GM1d and GM3w running; GM6a next when a client slot frees (RULINGS 182)
+as of 837b1ed: GM6a merged 23e1d31 (RULINGS 188; D5.1 adopted); engine GM1d 794181b, GM3w 508bd36, GM2b 1782d6d,
+              GM3m a3f0678 and GM3c 837b1ed merged; engine GM3s and shots SH1 running; no lane of this plan runs
 reconcile r2: (E-P26, engine.md §12 "Order and conflicts" engine §12 Order and conflicts owns every row below; mirrored)
 reconcile:    scene/*: M3c, LHJ (merged) -> GM2a's field -> GM6a -> SH1 -> SH4 -> SH5a -> SH5b -> SH6 -> SH7 -> SH8 ->
               {GM6d1, SH9, SH10, SH12a, SH12b, the carried preload-priority lane} one at a time by launch (GM6a before
@@ -72,6 +74,14 @@ new; it states the server slot's state (SHAs from `git log --first-parent main`)
 idle slot runs the docs lane `docs-errata-11` (RULINGS 182). GM6a's predecessor, GM2a's field on `scene/*`, merged as
 `9b4fd25` (RULINGS 181); GM6a starts when a client slot frees (GM1d and GM3w hold both), and with GM3w it gates SH1
 (RULINGS 182). The world chain row's "GM6c1a (after GM6s2)" is met on that edge.
+
+Changed by RULINGS 183-197 (as of `837b1ed`; docs lane `docs-errata-12`, group B): the block's `as of 837b1ed:` row is
+new (SHAs from `git log --first-parent main`). GM6a merged as `23e1d31` (RULINGS 188, with the take-over rule D5.1
+adopted into §6.1), so the `scene/*` row's next holder is SH1, which runs (RULINGS 196). The server slot still holds no
+lane of this plan; it runs the docs lane `docs-errata-12` (RULINGS 197). GM3c merged as `837b1ed`, so the `world
+texts:` row's "GM6c1a after GM3c" is met; GM6c1a still waits for GM4 on the world chain. The `App.svelte` row's GM6t
+follows GM3s, which runs (RULINGS 194, 195). The status block of the one order is
+[engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts).
 
 Until GM6d2, per-player codes show in documents, item descriptions, ink lines, choices and the tier-3 hint (synthesis
 §6.4 item 4), which needs no label on the art.

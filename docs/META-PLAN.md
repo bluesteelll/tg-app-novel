@@ -973,6 +973,10 @@ unchanged.**
     per-player routes, which issue `puzzle_values` rows from this release on, this plan's "Privacy"), GM1c
     (`8c2fa03`) and GM2a (`9b4fd25`) have merged, so the per-player server chain is done; GM1d and GM3w run (client,
     RULINGS 179, 180, 182); the rest follow the one order above.
+  - Changed by RULINGS 183-197 (as of `837b1ed`; docs lane `docs-errata-12`, group B): GM1d (`794181b`), GM3w
+    (`508bd36`), per-player GM6a (`23e1d31`), GM2b (`1782d6d`), GM3m (`a3f0678`) and GM3c (`837b1ed`) have merged; GM3s
+    and shots SH1 run (client, RULINGS 194-196); the engine-closure lever lane (new, RULINGS 195, 196) follows GM3s,
+    before GM3; the rest follow the one order above.
   - Why LPO is a lane of its own (revision 1, W4): the operator facts need a `Config` variable, which means editing
     the three `Config` constructors (`config.rs`, `server/dev/src/lib.rs`, `server/tests/it/common.rs`) plus
     `lib.rs` and `.env.example`; in LF1 that is 15 + 4 = 19 files, over the cap. LPO holds them with `api/legal.rs` and
@@ -2068,6 +2072,12 @@ GM6s2 `2815340` (server; the per-player server chain is done) and GM1c `8c2fa03`
 docs lane `docs-errata-10` `5977df5`; running GM1d and GM3w (client; RULINGS 179, 180, 182) beside the docs lane
 `docs-errata-11` (in the idle server slot); to go of this design's lanes: none. Next, when a client slot frees,
 per-player GM6a and GM3m; the rest follow the one order above.
+Changed by RULINGS 183-197 (as of `837b1ed`; docs lane `docs-errata-12`, group B): merged also, from the adopted plans,
+GM1d `794181b`, GM3w `508bd36`, per-player GM6a `23e1d31`, GM2b `1782d6d`, GM3m `a3f0678` and GM3c `837b1ed`
+(client), with the docs lane `docs-errata-11` `e2d2d13`; running GM3s and shots SH1 (client; RULINGS 194-196) beside
+the docs lane `docs-errata-12` (in the idle server slot, RULINGS 197); to go of this design's lanes: none. Next, the
+engine-closure lever lane (new, RULINGS 195, 196) after GM3s, then GM3; SH2 after SH1; the rest follow the one order
+above.
 
 ---
 
