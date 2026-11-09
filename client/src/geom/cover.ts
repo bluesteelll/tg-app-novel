@@ -21,6 +21,12 @@ export const HOTSPOT_SAFE_FRAME: { x0: 80; x1: 1000; y0: 160; y1: 1760 } = Objec
   y1: 1760,
 });
 
+/**
+ * `world/hotspot-small`: a hotspot side under this many source px is under 44 CSS px at a 0.296 scale (320 x 568). The
+ * build reads it (the story gate; GM8i's `world/device-parts-frame`), no chunk does.
+ */
+export const HOTSPOT_MIN_SOURCE_PX = 150;
+
 /** Scales `source` to cover `stage` (no letterbox) and centres it; the overflow is cropped evenly. */
 export function cover(stage: Size, source: Size): Cover {
   const scale = Math.max(stage.w / source.w, stage.h / source.h);
