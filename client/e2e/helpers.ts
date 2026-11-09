@@ -21,7 +21,7 @@ import type { PutSaveRequest } from '../src/api/generated/api.ts';
 import { EMPTY_WORLD_STATE } from '../src/explore/state.ts';
 import { t } from '../src/i18n/index.ts';
 import type { InkScalar } from '../src/story/catalog.ts';
-import { encodeSave, type SaveBodyV1 } from '../src/story/save-codec.ts';
+import { SAVE_FORMAT, encodeSave, type SaveBody } from '../src/story/save-codec.ts';
 import { EMPTY_SNAPSHOT, type ChapterId, type StoryVersion, type VarName } from '../src/story/staging.ts';
 import type { MockControls, MockEvent } from '../src/telegram/dev/mock-transport.ts';
 
@@ -581,15 +581,15 @@ export async function plantPending(
     throw new Error(`${previous}.meta.json has no storyVersion`);
   }
   // The brands are the story decoders'; this body is built from the build's own ids, as the game builds it.
-  const body: SaveBodyV1 = {
-    format: 1,
+  const body: SaveBody = {
+    format: SAVE_FORMAT,
     chapterId: chapterId as ChapterId,
     storyVersion: storyVersion as StoryVersion,
     ink: null,
     at: { lineId: null, knot: null, yield: null },
     staging: EMPTY_SNAPSHOT,
     checkpoint: null,
-    chapterStart: { carry: carry as Record<VarName, InkScalar> },
+    chapterStart: { carry: carry as Record<VarName, InkScalar>, items: [] },
     backlog: [],
     world: EMPTY_WORLD_STATE,
     worldVersion: null,

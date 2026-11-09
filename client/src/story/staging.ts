@@ -1,5 +1,6 @@
 // Branded ids and the typed staging commands of docs/STAGING-DSL.md §6 (PROTOTYPE-PLAN.md "TS types").
 // Types only, plus the one empty snapshot value; `parseTags` (story/tags.ts) is the only parser of tags into commands.
+import type { AnchorKey } from '../mechanics/contract.ts';
 
 type Brand<T, B extends string> = T & { readonly __brand: B };
 export type ChapterId = Brand<string, 'ChapterId'>;
@@ -24,7 +25,14 @@ export type PropId = Brand<string, 'PropId'>;
 export type Slot = 'left' | 'center' | 'right';
 /** x, y, width, height in integer source px of the 1080×2048 background space. */
 export type Rect = readonly [x: number, y: number, w: number, h: number];
-export type PropPlacement = { readonly prop: PropId; readonly rect: Rect };
+export type PropPlacement = {
+  readonly prop: PropId;
+  readonly rect: Rect;
+  /** The stable anchor (per-player GM6a keys anchors by it; absent: keyed by prop, today's behaviour). */
+  readonly at?: AnchorKey;
+  /** Absent: the base picture. */
+  readonly part?: 'base' | 'patch';
+};
 
 export type StagingCommand =
   | { kind: 'bg'; bg: BgId; t: 'crossfade' | 'fade' | 'cut'; ms: number }
@@ -64,6 +72,14 @@ export interface AssetIndex {
   hasSfx(id: string): boolean;
 }
 
+/** What a camera push aims at (engine plan §5.2, design-shots I-1). */
+export type CamTarget = CharId | 'center';
+/** The camera state a shot holds; design-shots SH1 adds the `cam` command that writes it. */
+export type CamState =
+  | { readonly kind: 'rest' }
+  | { readonly kind: 'push'; readonly to: CamTarget; readonly z: number } // z: integer percent, 105..130
+  | { readonly kind: 'pan'; readonly to: CharId | 'left' | 'right' };
+
 /** "Commands in effect" per slot [R3 §1.3]. */
 export type StagingSnapshot = {
   bg: BgId | null;
@@ -71,6 +87,8 @@ export type StagingSnapshot = {
   chars: ReadonlyArray<{ char: CharId; expr: ExprId; at: Slot }>; // z-order = array order
   bgm: { track: TrackId; vol: number } | null;
   props: readonly PropPlacement[];
+  /** Absent: at rest, as every stage before format 2. */
+  readonly cam?: CamState;
 };
 
 // Frozen: every "new game" starts from this one shared value, so a write through it would leak into the next.

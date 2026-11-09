@@ -17,6 +17,7 @@ import type { ExploreAction, ExploreEffect } from '../explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { PuzzleOutcome, PuzzleRun, WorldState } from '../explore/state.ts';
 import { t } from '../i18n/index.ts';
+import type { AnchorKey } from '../mechanics/contract.ts';
 import { loadPuzzleUi } from '../puzzles/registry.ts';
 import type { ChunkError } from '../puzzles/registry.ts';
 import { createPuzzleSession } from '../puzzles/session.ts';
@@ -154,14 +155,18 @@ export interface Yields {
 const runOf = (s: WorldState, p: PuzzleLocalId): PuzzleRun =>
   (Object.hasOwn(s.puzzles, p) ? s.puzzles[p] : undefined) ?? { outcome: null, attempts: 0, hintsOpened: 0 };
 
-/** X11: the props a room shows, at their hotspot rects; a taken `take` is gone from the picture. */
+/**
+ * X11: the props a room shows, at their hotspot rects, each anchored at its hotspot key (engine plan §5.2, R-A4); a
+ * taken `take` is gone from the picture.
+ */
 function roomProps(room: RoomId, r: Room, s: WorldState): PropPlacement[] {
   const out: PropPlacement[] = [];
   for (const h of r.hotspots) {
     if ((h.kind === 'take' || h.kind === 'object') && h.prop !== null) {
-      const taken = h.kind === 'take' && s.taken.includes(`${room}.${h.id}` as HotspotKey); // reduce.ts `hotspotKey`
+      const key = `${room}.${h.id}`; // reduce.ts `hotspotKey`, the `<room>.<hotspot>` form of an AnchorKey
+      const taken = h.kind === 'take' && s.taken.includes(key as HotspotKey);
       if (!taken) {
-        out.push({ prop: h.prop, rect: h.rect });
+        out.push({ prop: h.prop, rect: h.rect, at: key as AnchorKey });
       }
     }
   }
@@ -471,7 +476,7 @@ export function createYields(h: YieldsHost): Yields {
         }),
       );
     }
-    c.enter(section, world); // admitSection, or event-returned while an event knot is pending
+    c.enter(section, world); // admitSection, or admitEvent while an event knot is pending
     world = c.state();
     await drain();
   };

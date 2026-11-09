@@ -34,7 +34,11 @@ function triggerOf(ix: WorldIndex, fired: string): readonly Effect[] | undefined
   }
 }
 
-/** Steps 1-3: drop the ids the world no longer has, fit the slots to the current locks, re-arm lost gifts. */
+/**
+ * Steps 1-3: drop the ids the world no longer has, fit the slots to the current locks, re-arm lost gifts. A run goes
+ * whole: its `work` stays with a puzzle the world keeps and goes with one it lost (engine plan §5.2). `flags` pass
+ * unchanged: their drop is the flags module's own `normalize`.
+ */
 function normalize(w: WorldPublicBody, s: WorldState, knots: ReadonlySet<KnotName>, dropped: string[]): WorldState {
   const ix = worldIndex(w);
   const keep = <T extends string>(field: string, list: readonly T[], ok: (x: T) => boolean): T[] =>
@@ -149,7 +153,7 @@ function normalize(w: WorldPublicBody, s: WorldState, knots: ReadonlySet<KnotNam
  * 1-3 (`normalize`) and step 5: every section joins `unproved`, the current one included. Step 4 runs at each
  * section's first entry instead (engine plan §3.4), through `admitSection`, or `admitEvent` when an event knot is
  * pending, so the load searches nothing and `reset` is always null. `dropped` lists every `<field>:<id>` the world
- * no longer has.
+ * no longer has; a kept run's `work` and the `flags` pass unchanged (engine plan §5.2).
  */
 export function reconcile(
   w: WorldPublic,
