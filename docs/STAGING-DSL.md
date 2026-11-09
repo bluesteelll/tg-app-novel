@@ -10,8 +10,9 @@ the story meta file `story/meta.json` ([META-PLAN.md](META-PLAN.md), lane LM1); 
 rules marked "from LW3" in §8 and §11 are the contract lane LW3 implements.
 
 Changed by the shots plan (adopted 2026-11-09, RULINGS 158): SH1 added the shot tags and typed commands (v3, drawn by
-later lanes); planned, not built: SH2 and SH3b add lints and flow analysis, and SH12a takes the sprite kinds `show` /
-`hide` out; this file changes with those lanes, together with the parser it documents —
+later lanes); SH2 added the shot list, the step flow, the shot lints and their outputs (§14); planned, not built: SH3b
+adds the budget lints, and SH12a takes the sprite kinds `show` / `hide` out; this file changes with those lanes,
+together with the parser it documents —
 [shots §3 The story DSL](plans/shots/03-story-dsl.md#3-the-story-dsl),
 [shots §9.13 SH12a `sprites-out`](plans/shots/09e-lanes-sh11-sh12b.md#913-sh12a-sprites-out-client-the-kinds-atomic-rev-4-split-w6).
 
@@ -416,7 +417,8 @@ The archive was colder than I remembered. #id:ch2.archive.c0ld
   `face` is a `show` without `at`: the expression crossfade (new sprite over the old one). A `face` of a character
   that is not on stage changes nothing. The build names the expression's sprite like a `show`'s (the chapter's
   manifest and the knot's preload); the drawn faces of shots come with the shots plan (SH2–SH4).
-- **Validation:** `tag/unknown-asset` (character or expression).
+- **Validation:** `tag/unknown-asset` (character or expression); with a shot list, `shot/char-absent` (the character
+  is not in the cast of a shot that may be in effect) and `shot/back-view` (§14).
 - **Typed:** `{ kind: 'face'; char: CharId; expr: ExprId; ms: number | null }` (`null` = the default)
 
 ```ink
@@ -441,7 +443,8 @@ ally: But I am glad you came. #id:ch1.cafe.f4c1
   held in the stage state only; the shots plan's SH6 draws it.
 - **Validation:** `tag/missing-arg` (`pan` without `to`); `tag/bad-arg` (an unknown move, `z` out of range, an option
   the move does not take); `tag/unknown-asset` (a `to` that is neither a character nor its move's own word: `center`
-  for `push`, `left` / `right` for `pan`).
+  for `push`, `left` / `right` for `pan`); with a shot list, a character `to` is checked by `shot/char-absent` and
+  `shot/back-view` (§14).
 - **Typed:** `{ kind: 'cam'; cam: { kind: 'push'; to: CharId | 'center'; z: number } | { kind: 'pan'; to: CharId |
   'left' | 'right' } | { kind: 'pull' }; ms: number | null }` (`null` = the move's default)
 
@@ -476,7 +479,8 @@ ally: He is lying again. #think #id:ch1.cafe.th1k
 - **Options:** `ms` range 0–10000; default: the motion's own (the shots plan's SH8 sets them).
 - **Effect:** a one-shot motion of the character; it is not part of the stage state (a load does not replay it).
   Routed to the scene; the shots plan's SH8 draws it.
-- **Validation:** `tag/unknown-asset` (character), `tag/bad-arg` (a motion outside the list).
+- **Validation:** `tag/unknown-asset` (character), `tag/bad-arg` (a motion outside the list); with a shot list,
+  `shot/char-absent` and `shot/motion-unsupported` (`hop` / `bounce` without a figure plane, §14).
 - **Typed:** `{ kind: 'anim'; char: CharId; motion: Motion; ms: number | null }`
 
 ```ink
@@ -761,7 +765,7 @@ meta.
 ## 11. What the story lint enforces
 
 `npm --prefix client run story` runs, in order: catalog checks → source lint → compile (inkjs compiler, build time
-only) → knot graph → localization → seeded playthroughs → emit. It prints every finding (it never stops at the first)
+only) → knot graph → localization → seeded playthroughs → the shot pass (§14) → emit. It prints every finding (it never stops at the first)
 and exits non-zero if any **E** remains. `--strict` turns every **W** into an **E** (release builds). From LW3 the knot
 graph also checks the yield edges, and each chapter's `world.json` is checked by the world lint and the soft-lock
 check (the second table below).
@@ -1009,3 +1013,33 @@ be in effect after its batch's cut.
 | `art/pending` | W | a needed face state (shot, character, expression) has no art: the shot's bg is a placeholder; the message names the lines that need it (E under `--strict`, as every W) |
 | `flow/edge-missing` | E | a seeded playthrough made a step transition the step flow lacks (only transitions some run makes fail) |
 | `flow/unsupported` | E | a construct the step flow does not model: a thread `<-`, a divert to no knot, stitch or label, a choice or a gather inside a conditional or sequence block |
+
+### 14.4 What the shot pass writes and reports
+
+- **Opt-in.** The pass runs only when `story/shots.json` exists. Without it there is no shot finding, no
+  `server/content/build/shots.json` (a clean run deletes a stale one) and no art list, and the report line reads
+  `shots: not checked (no story/shots.json)`. With it, the implied placeholders join the catalog from the catalog
+  checks on, so every later stage parses a declared shot.
+- **Report.** After the `play:` lines: `shots: <n> steps, <m> shots, <e> E`: the steps of the listed chapters' flows,
+  the shots some listed chapter shows, and the shot pass's errors (`--strict` counts its warnings).
+- **`server/content/build/shots.json`** (build-only, never served; written on a clean run beside `usage.json`, keys
+  sorted, the same bytes on every run). Per chapter:
+  - `shots`: each shot it shows with its need: the cast, the face states with their lines and whether the character
+    speaks in them, camera targets, motions, and the room that draws the shot;
+  - `assets`: every shot-family file the chapter needs: `bg/<s>`, `sheet/<s>` for a shot with a cast,
+    `face/<s>/<c>/<x>` for a state other than the rest, and `talk/<s>/<c>/<x>` where the character speaks in it;
+  - `look`: each window's lookahead (a step, or a room `r:<room>` of an explore section): `cur` (the files on stage),
+    `certain` (the next appearance on every path) at `certainDist` steps, `possible` (the other next-appearance
+    files; a room window lists its own knots' openers first, `near` of them, then the `onEnter` openers of the rooms
+    its exits lead to), `d2` / `d3` (the two appearances after) and `labels` (a room is in effect). An event knot's
+    last step returns to its room's window, or runs the event co-fired after it;
+  - `entry`: per window, one alternative per possible top image (a room window: its room);
+  - `sprites`: the chapter still names `show:` / `hide:`.
+
+  The asset tool reads it with `decodeShotUsage` (`client/scripts/story/shots/usage.ts`), which checks every shot-file
+  id against the chapter's needs.
+- **`--art-list`** (`npm --prefix client run story -- --art-list`): a clean run also writes
+  `target/art-list/<story>.md` and `.json` per story of `story/stories.json`. Per location: its light note and its
+  shots in order of first use. Per shot: its cast and masks, the face states to draw (an expression's derived states
+  only where it changes that box), camera targets, motions and an hours estimate. Then "to draw" (no catalog art),
+  "to stage" (not in `story/shots.json`) and the chapter totals.

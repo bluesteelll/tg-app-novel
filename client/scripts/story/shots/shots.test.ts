@@ -1,6 +1,10 @@
 // The shot list, the step flow, the shot lints, build/shots.json and the art list (docs/plans/shots §2-3, lane SH2).
 // Fixtures are built in-test on the committed catalog and cast; a fixture may be lint-dirty.
-import { readFileSync, readdirSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { expect, test } from 'vitest';
 
@@ -1719,3 +1723,115 @@ test('art-list: every cast member lists its figure mask and hair locks', () => {
   expect(md).toContain('    - masks: mask.fig, hair.1, hair.2 (typical)\n    - no face states (no face is visible)');
   expect(md).toContain('    - masks: mask.fig, mask.head, hair.1, hair.2 (typical)');
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// Commit 9: the shot pass in the story tool
+
+const STORY_SCRIPT = fileURLToPath(new URL('../../story.ts', import.meta.url));
+const CLIENT_DIR = fileURLToPath(new URL('../../..', import.meta.url));
+/** A spawned Node loads inkjs/full and compiles: allow for a loaded machine instead of retrying. */
+const CLI_TIMEOUT_MS = 60_000;
+
+/** A clean, emitting fixture repo (never the committed story): one free chapter in the cafe, then the street. */
+function shotRepo(shots: Json | null): Record<string, string> {
+  const table = (o: Json): string => `${JSON.stringify(o, null, 2)}\n`;
+  const names = (ru: boolean): Json => ({
+    names: ru ? { ally: 'Подруга', stranger: 'Незнакомец', voice: 'Голос' } : { ally: 'Ally', stranger: 'Stranger', voice: 'Voice' },
+    chapters: { ch1: ru ? 'Глава 1' : 'Chapter 1' },
+    stories: { manor: ru ? 'Усадьба' : 'The Manor' },
+    teasers: { manor: ru ? 'Черновик истории для проверки сборки.' : 'A draft story for the build check.' },
+  });
+  return {
+    'assets/catalog.json': readFileSync(new URL('../../../../assets/catalog.json', import.meta.url), 'utf8'),
+    'story/cast.json': JSON.stringify({ ally: { char: 'ally' }, stranger: { char: 'stranger' }, voice: { char: null } }),
+    'story/chapters.json': JSON.stringify([{ id: 'ch1', entry: 'ch1/main.ink', paid: false, next: null }]),
+    'story/stories.json': JSON.stringify([{ id: 'manor', first: 'ch1', cover: 'cover/manor', endings: {} }]),
+    'story/common/globals.ink': 'VAR g_x = 0\n',
+    'story/ch1/main.ink': [
+      'INCLUDE ../common/globals.ink',
+      '-> cafe',
+      '=== cafe ===',
+      '# scene: cafe',
+      'ally: Привет. #id:ch1.cafe.a001',
+      '# face: ally smile',
+      'ally: Ха. #id:ch1.cafe.a002',
+      '# scene: street',
+      'Улица. #id:ch1.cafe.a003',
+      '-> END',
+      '',
+    ].join('\n'),
+    'story/locales/en/ch1.json': table({
+      'ch1.cafe.a001': { ru: 'Привет.', en: 'Hi.' },
+      'ch1.cafe.a002': { ru: 'Ха.', en: 'Ha.' },
+      'ch1.cafe.a003': { ru: 'Улица.', en: 'The street.' },
+    }),
+    'story/locales/ru/story.json': table(names(true)),
+    'story/locales/en/story.json': table(names(false)),
+    ...(shots === null ? {} : { 'story/shots.json': JSON.stringify(shots) }),
+  };
+}
+
+/** The cafe is a two-shot of the ally (declared); the street stays an implied cast-less shot. */
+const CAFE_TWO = { locs: [{ id: 'cafe', light: 'warm lamps, rain outside' }], shots: [{ id: 'cafe', loc: 'cafe', frame: 'two', cast: [{ char: 'ally', view: 'face', rest: 'neutral' }] }] };
+
+function withShotRepo(files: Readonly<Record<string, string>>, body: (root: string) => void): void {
+  const root = mkdtempSync(join(tmpdir(), 'story-shots-'));
+  try {
+    for (const [rel, text] of Object.entries(files)) {
+      const abs = join(root, ...rel.split('/'));
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(abs, text);
+    }
+    body(root);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function runStory(root: string, args: readonly string[] = []): { status: number | null; stdout: string; stderr: string } {
+  const r = spawnSync(process.execPath, [STORY_SCRIPT, '--root', root, ...args], { cwd: CLIENT_DIR, encoding: 'utf8' });
+  return { status: r.status, stdout: r.stdout, stderr: r.stderr };
+}
+
+const SHOT_USAGE_ABS = (root: string): string => join(root, 'server', 'content', 'build', 'shots.json');
+
+test(
+  'story: the shot pass reports, writes build/shots.json and the art list on request',
+  () => {
+    withShotRepo(shotRepo(CAFE_TWO), (root) => {
+      const r = runStory(root, ['--art-list']);
+      expect(r.status, r.stdout + r.stderr).toBe(0);
+      expect(r.stdout).toMatch(/^play: ch1: [^\n]*\nshots: 4 steps, 2 shots, 0 E\n/m);
+      expect(r.stdout.split('\n').filter((l) => /^[EW] /.test(l))).toEqual([
+        'W story/ch1/main.ink:5 art/pending shot cafe lacks ally.neutral (needed by ch1.cafe.a001) (§14)',
+        'W story/ch1/main.ink:7 art/pending shot cafe lacks ally.smile (needed by ch1.cafe.a002) (§14)',
+        "W story/shots.json:0 shot/undeclared shot 'street' (used by ch1) is not declared: an implied cast-less shot, frame wide (§14)",
+      ]);
+      const usage = decodeShotUsage(JSON.parse(readFileSync(SHOT_USAGE_ABS(root), 'utf8')));
+      expect(usage.ok).toBe(true);
+      expect(usage.ok ? usage.value.chapters[CH1]?.assets : null).toEqual(['bg/cafe', 'bg/street', 'face/cafe/ally/smile', 'sheet/cafe', 'talk/cafe/ally/neutral', 'talk/cafe/ally/smile']);
+      const md = readFileSync(join(root, 'target', 'art-list', 'manor.md'), 'utf8');
+      expect(md).toContain('### Shot `cafe`');
+      expect(md).toContain('Light: warm lamps, rain outside');
+      expect(md).toContain('- `street` (wide): not in story/shots.json (an implied cast-less shot)');
+      expect((JSON.parse(readFileSync(join(root, 'target', 'art-list', 'manor.json'), 'utf8')) as { story: string }).story).toBe('manor');
+      // Without the list (D1): not checked, and a clean run deletes the stale file.
+      rmSync(join(root, 'story', 'shots.json'));
+      const off = runStory(root);
+      expect(off.status, off.stdout + off.stderr).toBe(0);
+      expect(off.stdout).toMatch(/^shots: not checked \(no story\/shots\.json\)$/m);
+      expect(off.stdout).toMatch(/^story: 0 errors, 0 warnings$/m);
+      expect(existsSync(SHOT_USAGE_ABS(root))).toBe(false);
+    });
+    // A list that does not decode is an error: nothing is written.
+    withShotRepo(shotRepo({ ...CAFE_TWO, shots: [{ ...CAFE_TWO.shots[0], frame: 'huge' }] }), (root) => {
+      const r = runStory(root, ['--art-list']);
+      expect(r.status, r.stdout + r.stderr).toBe(1);
+      expect(r.stdout).toMatch(/^E story\/shots\.json:0 shot\/list shots\.0\.frame: "huge" is not one of wide, medium, close, ots, two, insert, room$/m);
+      expect(r.stdout).toMatch(/^shots: not checked \(story\/shots\.json or the catalog has errors\)$/m);
+      expect(existsSync(SHOT_USAGE_ABS(root))).toBe(false);
+      expect(existsSync(join(root, 'target'))).toBe(false);
+    });
+  },
+  CLI_TIMEOUT_MS,
+);
