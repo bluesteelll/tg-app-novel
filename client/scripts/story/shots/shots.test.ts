@@ -9,10 +9,13 @@ import type { AssetCatalog, Cast } from '../../../src/story/catalog.ts';
 import type { AssetIndex, BgId, ChapterId, KnotName } from '../../../src/story/staging.ts';
 import { decodeWorldSource, toPublic } from '../../../src/world/decode.ts';
 import type { WorldPublicBody } from '../../../src/world/types.ts';
+import { compileChapter } from '../compile.ts';
 import { buildGraph, carriedStage } from '../graph.ts';
 import type { ChapterGraph } from '../graph.ts';
 import { GLOBALS_PATH } from '../lint.ts';
-import { buildFlow } from './flow.ts';
+import { playChapter } from '../playthrough.ts';
+import type { ChapterPlay } from '../playthrough.ts';
+import { buildFlow, crossCheck } from './flow.ts';
 import type { ChapterFlow, StepKey } from './flow.ts';
 import type { ShotFinding } from './lint.ts';
 import { decodeShotList, effectiveCatalog, effectiveShots, impliedPlaceholders } from './list.ts';
@@ -497,4 +500,86 @@ test('flow: a conditional block without an else can skip its arms', () => {
   expect(nextOf(flow, 'ch1.k.a002')).toEqual(['ch1.k.a003', 'ch1.k.a004', 'ch1.k.a005', 'ch1.k.a006']);
   expect(nextOf(flow, 'ch1.k.a003')).toEqual(['ch1.k.a005', 'ch1.k.a006']);
   expect(nextOf(flow, 'ch1.k.a005')).toEqual(['ch1.k.a007']);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Commit 3: the playthroughs' step transitions and the cross-check
+
+/** The fixture chapter compiled and played `runs` times (with its world, through its yields). */
+function played(built: Built, runs: number, w?: WorldPublicBody): ChapterPlay {
+  const compiled = compileChapter({ id: CH1, paid: false, entry: 'ch1/main.ink' }, (key) => built.sources.get(key) ?? null);
+  if (compiled.compiled === null) {
+    throw new Error(`invariant: the fixture compiles: ${JSON.stringify(compiled.findings)}`);
+  }
+  const r = playChapter({
+    chapter: { id: CH1, paid: false, entry: 'ch1/main.ink' },
+    json: compiled.compiled.json,
+    graph: built.graph,
+    assets: built.assets,
+    cast: COMMITTED.cast,
+    en: new Map(),
+    staticIds: new Set(built.graph.lines.map((l) => l.id)),
+    allow: new Map(),
+    carry: null,
+    runs,
+    ...(w === undefined ? {} : { world: w }),
+  });
+  return r.play;
+}
+
+const CHOICE = [
+  '-> k',
+  '=== k ===',
+  'А. #id:ch1.k.a001',
+  '* [Б #id:ch1.k.c001]',
+  '    Б1. #id:ch1.k.a002',
+  '* [В #id:ch1.k.c002]',
+  '    В1. #id:ch1.k.a003',
+  '- Г. #id:ch1.k.a004',
+  '-> END',
+];
+
+test('playthrough: a run records its step transitions', () => {
+  const play = played(chapter(CHOICE), 20);
+  // A choice set is one step: every offered choice is a transition, and the run goes on from the picked one.
+  expect(play.transitions).toEqual(
+    new Set([
+      'k:k→ch1.k.a001',
+      'ch1.k.a001→ch1.k.c001',
+      'ch1.k.a001→ch1.k.c002',
+      'ch1.k.c001→ch1.k.a002',
+      'ch1.k.c002→ch1.k.a003',
+      'ch1.k.a002→ch1.k.a004',
+      'ch1.k.a003→ch1.k.a004',
+    ]),
+  );
+  // Through the world's yields: a knot the explore enters is `k:<knot>`.
+  const w = manorWorld();
+  const manor = played(chapter(MANOR, COMMITTED.catalog, w), 40, w);
+  expect([...manor.transitions]).toEqual(
+    expect.arrayContaining(['k:arrive→ch1.arrive.a001', 'ch1.arrive.a001→k:cellar_voice', 'k:cellar_voice→ch1.cellar_voice.v001', 'k:out→ch1.out.o001']),
+  );
+});
+
+test('flow: every observed step transition is an edge', () => {
+  const choice = chapter(CHOICE);
+  const flow = buildFlow({ chapter: CH1, files: choice.files, sources: choice.sources, graph: choice.graph, assets: choice.assets, cast: COMMITTED.cast }).flow;
+  expect(crossCheck(flow, played(choice, 20).transitions, 'ch1/main.ink')).toEqual([]);
+  // The explore yields: a run enters any section knot after its walk, and an event's end leads on.
+  const w = manorWorld();
+  const manor = chapter(MANOR, COMMITTED.catalog, w);
+  const manorFlow = buildFlow({ chapter: CH1, files: manor.files, sources: manor.sources, graph: manor.graph, assets: manor.assets, cast: COMMITTED.cast }).flow;
+  const seen = played(manor, 40, w).transitions;
+  expect(seen.size).toBeGreaterThan(5); // non-vacuity: the runs walked the section
+  expect(crossCheck(manorFlow, seen, 'ch1/main.ink')).toEqual([]);
+  // A transition the flow lacks fails at the step it leaves.
+  expect(crossCheck(flow, new Set(['ch1.k.a001→ch1.k.a004']), 'ch1/main.ink')).toEqual([
+    {
+      code: 'flow/edge-missing',
+      severity: 'E',
+      file: 'ch1/main.ink',
+      line: 4,
+      message: "the seeded runs went from 'ch1.k.a001' to 'ch1.k.a004', which the step flow lacks (§14)",
+    },
+  ]);
 });

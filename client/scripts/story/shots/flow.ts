@@ -603,3 +603,22 @@ export function buildFlow(input: FlowInput): { flow: ChapterFlow; findings: Shot
   const first = input.graph.firstKnot === null ? null : knotKey(input.graph.firstKnot);
   return { flow: { chapter: input.chapter, first, steps }, findings: b.findings };
 }
+
+/**
+ * The cross-check (§3.4): every step transition a seeded run made (`ChapterPlay.transitions`, `"<from>→<to>"`) must be an
+ * edge of the flow (`next` or `explore`), else `flow/edge-missing` at the step it leaves (the chapter's entry file when
+ * the flow has no such step). Fail-closed only for transitions some run observed (rev. 2, m5).
+ */
+export function crossCheck(flow: ChapterFlow, transitions: ReadonlySet<string>, entry: string): ShotFinding[] {
+  const out: ShotFinding[] = [];
+  for (const t of [...transitions].sort(order)) {
+    const [a = '', b = ''] = t.split('→');
+    const from = flow.steps.get(a as StepKey); // a lookup key: a missing step is the finding
+    const known = from !== undefined && (from.next.some((n) => n === b) || from.explore.some((n) => n === b));
+    if (!known) {
+      const where = from ?? flow.steps.get(b as StepKey); // the same lookup
+      out.push(shotFinding('flow/edge-missing', where?.file ?? entry, where?.line ?? 0, `the seeded runs went from '${a}' to '${b}', which the step flow lacks (§14)`));
+    }
+  }
+  return out;
+}
