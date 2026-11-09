@@ -1746,7 +1746,7 @@ export function createGame(deps: GameDeps): Game {
    * the wallet open, or a sheet no Back on the wallet has shown closed. One the player left (`purchaseLeft`) holds
    * nothing: it moves only on the wallet's Check again or `activated`. After that reload the wallet reads the balance
    * again and the credit shows once the webhook lands, but its Buy is a new purchase, not Check again: the server
-   * refuses a second pre-checkout of the pack for CHECKOUT_LOCK_SECS (120 s), and a later one charges and credits a
+   * refuses a second pre-checkout of the pack for up to CHECKOUT_LOCK_SECS (120 s), and a later one charges and credits a
    * second pack. Accepted (LRB critique W1): a pack is consumable and every charge is credited, against a hold for the
    * page's life. A gift is waited for only while its dialog shows it sending (`gift.busy`); one the player closed, and a
    * request id kept for a retry, are not: once sent the move is the server's, and the dialog reads the balance again
