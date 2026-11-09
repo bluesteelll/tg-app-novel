@@ -294,11 +294,12 @@ const FULL: SaveBody = {
   chapterStart: { carry: {}, items: ['brass_key' as ItemId] },
   world: { ...WORLD, flags: ['fl_seen' as FlagId], puzzles: { ['cabinet' as PuzzleLocalId]: WORKED, ['safe' as PuzzleLocalId]: SAFE } },
 };
-/** The stage with each camera state of §5.2. */
+/** The stage with each camera state of §5.2; a push at both ends of its zoom range (105..130, both inclusive). */
 const CAMMED: readonly StagingSnapshot[] = [
   { ...STAGE, cam: { kind: 'rest' } },
   { ...STAGE, cam: { kind: 'push', to: 'ally' as CharId, z: 120 } },
   { ...STAGE, cam: { kind: 'push', to: 'center', z: 105 } },
+  { ...STAGE, cam: { kind: 'push', to: 'ally' as CharId, z: 130 } },
   { ...STAGE, cam: { kind: 'pan', to: 'left' } },
 ];
 
