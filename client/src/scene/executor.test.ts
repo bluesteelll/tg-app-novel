@@ -402,7 +402,18 @@ const cg = (c: string | null, t: 'fade' | 'cut' = 'fade', ms = 500): VisualComma
   ms,
 });
 const wait = (ms: number): VisualCommand => ({ kind: 'wait', ms });
-const face = (c: string, e: string, ms: number | null = null): VisualCommand => ({ kind: 'face', char: c as CharId, expr: e as ExprId, ms });
+const face = (c: string, e: string, ms: number | null = null): VisualCommand => ({
+  kind: 'face',
+  char: c as CharId,
+  expr: e as ExprId,
+  ms,
+});
+/** A camera move as the parser types it (`ms: null`: the move's default). */
+const camera = (move: Extract<VisualCommand, { kind: 'cam' }>['cam'], ms: number | null = null): VisualCommand => ({
+  kind: 'cam',
+  cam: move,
+  ms,
+});
 const hide = (c: string, t: 'fade' | 'cut' = 'fade', ms = 300): VisualCommand => ({
   kind: 'hide',
   char: c === 'all' ? 'all' : (c as CharId),
@@ -1550,5 +1561,46 @@ test('executor: a face changes the expression of a character on stage and nothin
   expect(h.ex.snapshot().chars).toEqual([{ char: 'ally', expr: 'worried', at: 'left' }]);
   expect(h.inGroup('stranger')).toEqual([]);
   expect(h.log.filter((x) => /^(anchor|group|create|destroy|drop):/.test(x))).toEqual([]);
+  h.ex.destroy();
+});
+
+test('executor: a cam move persists in the snapshot until the next cut', async () => {
+  const h = harness();
+  await h.ex.apply([bg('cafe', 'cut'), show('ally', 'neutral', 'left', 'cut')], NOW);
+  const push = { kind: 'push', to: 'ally' as CharId, z: 120 } as const;
+  await h.ex.apply([camera(push)], NOW);
+  expect(h.ex.snapshot().cam).toEqual(push);
+  // A show, a CG and a wait keep the framing; nothing draws it yet (the shots plan's SH6).
+  await h.ex.apply([show('stranger', 'serious', 'right', 'cut')], NOW);
+  await h.ex.apply([cg('letter', 'cut')], NOW);
+  await h.ex.apply([wait(100)], { instant: true });
+  expect(h.ex.snapshot().cam).toEqual(push);
+  // A pull is the rest framing: the key is absent, as in every stage without a move.
+  await h.ex.apply([camera({ kind: 'pull' })], NOW);
+  expect('cam' in h.ex.snapshot()).toBe(false);
+  // A restored stage keeps its framing (the copy path) until a bg cut; a bg and a cam in one batch set the new one.
+  const pan = { kind: 'pan', to: 'left' } as const;
+  await h.ex.restore({ ...h.ex.snapshot(), cam: pan });
+  expect(h.ex.snapshot().cam).toEqual(pan);
+  await h.ex.apply([cg('letter', 'cut')], NOW);
+  expect(h.ex.snapshot().cam).toEqual(pan);
+  await h.ex.apply([bg('street', 'cut')], NOW);
+  expect('cam' in h.ex.snapshot()).toBe(false);
+  await h.ex.apply([bg('cafe', 'cut'), camera(push)], NOW);
+  expect(h.ex.snapshot().cam).toEqual(push);
+  h.ex.destroy();
+});
+
+test('executor: a scene resets the camera', async () => {
+  const h = harness();
+  await h.ex.apply([bg('cafe', 'cut')], NOW);
+  const push = { kind: 'push', to: 'center', z: 110 } as const;
+  await h.ex.apply([camera(push)], NOW);
+  expect(h.ex.snapshot().cam).toEqual(push);
+  await h.ex.apply([scene('street', 'cut')], NOW);
+  expect('cam' in h.ex.snapshot()).toBe(false);
+  // A scene with a cam: the scene resets, then the batch's move is the new framing.
+  await h.ex.apply([scene('cafe', 'cut'), camera({ kind: 'pan', to: 'right' })], NOW);
+  expect(h.ex.snapshot().cam).toEqual({ kind: 'pan', to: 'right' });
   h.ex.destroy();
 });

@@ -41,6 +41,7 @@ export function splitBatch(cmds: readonly StagingCommand[]): { visual: VisualCom
       case 'cg':
       case 'wait':
       case 'face':
+      case 'cam':
         visual.push(c);
         break;
       case 'puzzle':

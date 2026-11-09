@@ -628,3 +628,48 @@ test('tags: face of an unknown expression is unknown-asset', () => {
     expect(parseTags(['face: stranger serious'], index).errors).toEqual([]);
   }
 });
+
+test('tags: cam push takes to and z within 105..130', () => {
+  const forms: ReadonlyArray<readonly [string, unknown]> = [
+    ['cam: push', { kind: 'cam', cam: { kind: 'push', to: 'center', z: 110 }, ms: null }],
+    ['cam: push to=ally z=120 ms=2000', { kind: 'cam', cam: { kind: 'push', to: 'ally', z: 120 }, ms: 2000 }],
+    ['cam:push z=105 to=center', { kind: 'cam', cam: { kind: 'push', to: 'center', z: 105 }, ms: null }],
+    ['cam: push z=130', { kind: 'cam', cam: { kind: 'push', to: 'center', z: 130 }, ms: null }],
+    ['cam: pull', { kind: 'cam', cam: { kind: 'pull' }, ms: null }],
+    ['cam: pull ms=1200', { kind: 'cam', cam: { kind: 'pull' }, ms: 1200 }],
+  ];
+  for (const [tag, command] of forms) {
+    expect(parse(tag), tag).toEqual({ lineId: null, commands: [command], errors: [] });
+  }
+  const cases: ReadonlyArray<readonly [string, string]> = [
+    ['cam: push z=104', 'bad-arg'],
+    ['cam: push z=131', 'bad-arg'],
+    ['cam: push z=1x', 'bad-arg'],
+    ['cam: push t=cut', 'bad-arg'],
+    ['cam: pull z=110', 'bad-arg'],
+    ['cam: pull to=ally', 'bad-arg'],
+    ['cam: zoom', 'bad-arg'],
+    ['cam: push pull', 'bad-arg'],
+    ['cam:', 'missing-arg'],
+    ['cam: push to=nobody', 'unknown-asset'],
+    // A reserved word is valid only for its own move.
+    ['cam: push to=left', 'unknown-asset'],
+  ];
+  for (const [tag, reason] of cases) {
+    const r = parse(tag);
+    expect(reasons(r), tag).toEqual([reason]);
+    expect(r.commands, tag).toEqual([]);
+  }
+});
+
+test('tags: cam pan needs to', () => {
+  expect(reasons(parse('cam: pan'))).toEqual(['missing-arg']);
+  expect(reasons(parse('cam: pan ms=1800'))).toEqual(['missing-arg']);
+  for (const to of ['left', 'right', 'ally']) {
+    expect(parse(`cam: pan to=${to}`), to).toEqual({ lineId: null, commands: [{ kind: 'cam', cam: { kind: 'pan', to }, ms: null }], errors: [] });
+  }
+  expect(parse('cam: pan to=stranger ms=900').commands).toEqual([{ kind: 'cam', cam: { kind: 'pan', to: 'stranger' }, ms: 900 }]);
+  expect(reasons(parse('cam: pan to=ally z=110'))).toEqual(['bad-arg']);
+  expect(reasons(parse('cam: pan to=center'))).toEqual(['unknown-asset']);
+  expect(reasons(parse('cam: pan to=nobody'))).toEqual(['unknown-asset']);
+});

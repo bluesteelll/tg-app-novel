@@ -236,6 +236,7 @@ preload-visible).
 | `sfx` | `sfx:<sfx> [vol=N]` | audio | `sfx/<sfx>` | `sfx` |
 | `wait` | `wait:<ms>` | scene (batch timing) | — | `wait` |
 | `face` | `face:<char> <expr> [ms=N]` | scene | `char/<char>/<expr>` | `face` |
+| `cam` | `cam:push [to=<char>\|center] [z=N] [ms=N]`, `cam:pull [ms=N]`, `cam:pan to=<char>\|left\|right [ms=N]` | scene (held in the stage state) | — | `cam` |
 | `puzzle` | `puzzle:<puzzle> then=<knot>` | GameSession → PuzzleSession | — (the close-up comes from world data) | `puzzle` |
 | `explore` | `explore:<section>` | GameSession → ExploreController | — (rooms come from world data) | `explore` |
 
@@ -418,6 +419,33 @@ The archive was colder than I remembered. #id:ch2.archive.c0ld
 ally: I did not expect you here. #id:ch1.cafe.f4c0
 # face: ally smile
 ally: But I am glad you came. #id:ch1.cafe.f4c1
+```
+
+### `cam`
+
+- **Syntax:** `cam:push [to=<char>|center] [z=N] [ms=N]`, `cam:pull [ms=N]`, `cam:pan to=<char>|left|right [ms=N]`
+- **Arguments:** the move — `push`, `pull` or `pan`.
+- **Options** (each move takes only its own; `ms` range 0–10000; the default durations are the owner's to tune):
+  - `push`: `to` default `center`, or a character of the catalog; `z` default `110`, range 105–130 (percent);
+    `ms` default `2400`.
+  - `pull`: back to the rest framing; `ms` default `1200`.
+  - `pan`: `to` required — `left`, `right` or a character of the catalog; `ms` default `1800`.
+- **Effect:** sets the shot's framing. It holds until the next `cam: pull`, `bg` or `scene`, each of which returns to
+  rest (a `cam` in the same batch then sets the new framing), and it is saved with the stage. Today the framing is
+  held in the stage state only; the shots plan's SH6 draws it.
+- **Validation:** `tag/missing-arg` (`pan` without `to`); `tag/bad-arg` (an unknown move, `z` out of range, an option
+  the move does not take); `tag/unknown-asset` (a `to` that is neither a character nor its move's own word: `center`
+  for `push`, `left` / `right` for `pan`).
+- **Typed:** `{ kind: 'cam'; cam: { kind: 'push'; to: CharId | 'center'; z: number } | { kind: 'pan'; to: CharId |
+  'left' | 'right' } | { kind: 'pull' }; ms: number | null }` (`null` = the move's default)
+
+```ink
+=== cam_example ===
+# show: ally worried at=left
+# cam: push to=ally z=120
+ally: There is something I never told you. #id:ch1.cafe.c4m0
+# cam: pull
+She looked away. #id:ch1.cafe.c4m1
 ```
 
 ### `puzzle`

@@ -113,6 +113,7 @@ function assetOf(c: StagingCommand): AssetId | null {
       return `sfx/${c.sfx}` as AssetId;
     case 'hide':
     case 'wait':
+    case 'cam':
     case 'puzzle':
     case 'explore':
       return null;

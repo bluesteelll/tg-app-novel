@@ -45,6 +45,7 @@ export type StagingCommand =
   | { kind: 'wait'; ms: number }
   // The shot kinds (docs/plans/shots §3.2); `ms: null` = the per-kind default of whoever draws it.
   | { kind: 'face'; char: CharId; expr: ExprId; ms: number | null }
+  | { kind: 'cam'; cam: Exclude<CamState, { kind: 'rest' }> | { kind: 'pull' }; ms: number | null }
   | { kind: 'puzzle'; puzzle: PuzzleLocalId; then: KnotName }
   | { kind: 'explore'; section: SectionId };
 
@@ -76,7 +77,7 @@ export interface AssetIndex {
 
 /** What a camera push aims at (engine plan §5.2, design-shots I-1). */
 export type CamTarget = CharId | 'center';
-/** The camera state a shot holds; design-shots SH1 adds the `cam` command that writes it. */
+/** The camera state a shot holds; the `cam` command writes it (a `pull`, a `bg` or a `scene` back to rest). */
 export type CamState =
   | { readonly kind: 'rest' }
   | { readonly kind: 'push'; readonly to: CamTarget; readonly z: number } // z: integer percent, 105..130

@@ -3,6 +3,7 @@
 import type {
   AssetIndex,
   BgId,
+  CamTarget,
   CgId,
   CharId,
   ExprId,
@@ -24,7 +25,7 @@ export const YIELD_KINDS = ['puzzle', 'explore'] as const;
 export type YieldKind = (typeof YIELD_KINDS)[number];
 
 /** Every tag kind of STAGING-DSL §6, in table order: `id` is the line ID, the rest are the command kinds. */
-export const TAG_KINDS = ['id', 'bg', 'scene', 'show', 'hide', 'cg', 'bgm', 'sfx', 'wait', 'face', ...YIELD_KINDS] as const;
+export const TAG_KINDS = ['id', 'bg', 'scene', 'show', 'hide', 'cg', 'bgm', 'sfx', 'wait', 'face', 'cam', ...YIELD_KINDS] as const;
 export type TagKind = (typeof TAG_KINDS)[number];
 
 type SameUnion<A, B> = [A] extends [B] ? ([B] extends [A] ? A : never) : never;
@@ -152,6 +153,11 @@ function msOrNull(tag: string, options: Options): number | null | TagError {
   return options.has('ms') ? intOption(tag, options, 'ms', 0, MS_MAX) : null;
 }
 
+/** `value` when it is one of `allowed`, else bad-arg; `label` is how the detail names it. */
+function pick<T extends string>(tag: string, label: string, value: string, allowed: readonly T[]): T | TagError {
+  return allowed.find((a) => a === value) ?? fail(tag, 'bad-arg', `${label} is not one of ${allowed.join(', ')}`);
+}
+
 function choice<T extends string>(
   tag: string,
   options: Options,
@@ -160,11 +166,7 @@ function choice<T extends string>(
   fallback: T,
 ): T | TagError {
   const value = options.get(name);
-  if (value === undefined) {
-    return fallback;
-  }
-  const hit = allowed.find((a) => a === value);
-  return hit ?? fail(tag, 'bad-arg', `${name}=${value} is not one of ${allowed.join(', ')}`);
+  return value === undefined ? fallback : pick(tag, `${name}=${value}`, value, allowed);
 }
 
 function unknownAsset(tag: string, what: string): TagError {
@@ -214,6 +216,9 @@ function yieldCommand(tag: string, kind: YieldKindTie, rawArgs: string | undefin
 
 const SLOTS: readonly Slot[] = ['left', 'center', 'right'];
 const FADE_CUT = ['fade', 'cut'] as const;
+const CAM_MOVES = ['push', 'pull', 'pan'] as const;
+/** `never` when CAM_MOVES and the `cam` command's moves drift apart, which fails `check` where a move is picked. */
+type CamMove = SameUnion<(typeof CAM_MOVES)[number], Extract<StagingCommand, { kind: 'cam' }>['cam']['kind']>;
 
 /**
  * One command tag after its kind is known: arg shape first, then values, then the catalog (§6, §8). Reserved words
@@ -317,6 +322,31 @@ function command(tag: string, kind: CommandKind, rawArgs: string | undefined, as
       if (unknown !== null) return unknown;
       return { kind: 'command', command: { kind, char: char as CharId, expr: expr as ExprId, ms } };
     }
+    case 'cam': {
+      const a = readArgs(tag, kind, rawArgs, 1, ['to', 'z', 'ms']);
+      if ('reason' in a) return a;
+      const [name] = a.positional as [string];
+      const move: CamMove | TagError = pick(tag, `'${name}'`, name, CAM_MOVES);
+      if (typeof move === 'object') return move;
+      // Each move takes only its own options: a pan has no z, a pull neither a target nor a z.
+      const b = readArgs(tag, kind, rawArgs, 1, move === 'push' ? ['to', 'z', 'ms'] : move === 'pan' ? ['to', 'ms'] : ['ms']);
+      if ('reason' in b) return b;
+      const ms = msOrNull(tag, b.options);
+      if (typeof ms === 'object' && ms !== null) return ms;
+      if (move === 'pull') return { kind: 'command', command: { kind, cam: { kind: move }, ms } };
+      const to = b.options.get('to') ?? (move === 'push' ? 'center' : undefined);
+      if (to === undefined) return fail(tag, 'missing-arg', "'cam: pan' requires to=<char>|left|right (§6)");
+      // Reserved words are valid only for their own move; any other target is a character of the catalog.
+      const reserved = move === 'push' ? to === 'center' : to === 'left' || to === 'right';
+      const unknown = reserved ? null : unknownChar(tag, assets, to);
+      if (unknown !== null) return unknown;
+      // The brands are earned above: a reserved word of the move, or a character the catalog lists.
+      if (move === 'pan') return { kind: 'command', command: { kind, cam: { kind: move, to: to as CharId | 'left' | 'right' }, ms } };
+      const zoom = b.options.get('z');
+      const z = zoom === undefined ? 110 : int(tag, 'z', zoom, 105, 130);
+      if (typeof z === 'object') return z;
+      return { kind: 'command', command: { kind, cam: { kind: move, to: to as CamTarget, z }, ms } };
+    }
     case 'puzzle':
     case 'explore':
       return yieldCommand(tag, kind, rawArgs);
@@ -364,6 +394,7 @@ function conflictsOneWay(a: StagingCommand, b: StagingCommand): boolean {
     case 'hide':
     case 'sfx':
     case 'face':
+    case 'cam':
       return false;
     case 'puzzle':
     case 'explore':

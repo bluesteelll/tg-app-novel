@@ -16,6 +16,7 @@ const ALL: { [K in StagingCommand['kind']]: Extract<StagingCommand, { kind: K }>
   sfx: { kind: 'sfx', sfx: 'door' as SfxId, vol: 100 },
   wait: { kind: 'wait', ms: 1200 },
   face: { kind: 'face', char: 'ally' as CharId, expr: 'smile' as ExprId, ms: null },
+  cam: { kind: 'cam', cam: { kind: 'push', to: 'ally' as CharId, z: 120 }, ms: null },
   puzzle: { kind: 'puzzle', puzzle: 'cabinet' as PuzzleLocalId, then: 'after' as KnotName },
   explore: { kind: 'explore', section: 'manor' as SectionId },
 };
@@ -23,7 +24,7 @@ const ALL: { [K in StagingCommand['kind']]: Extract<StagingCommand, { kind: K }>
 test('stage-route: splitBatch routes every command kind', () => {
   const r = splitBatch(Object.values(ALL));
   // The scene's and the audio's, each in the batch's order; a yield is its step's own, so neither list holds it.
-  expect(r.visual).toEqual([ALL.bg, ALL.scene, ALL.show, ALL.hide, ALL.cg, ALL.wait, ALL.face]);
+  expect(r.visual).toEqual([ALL.bg, ALL.scene, ALL.show, ALL.hide, ALL.cg, ALL.wait, ALL.face, ALL.cam]);
   expect(r.audio).toEqual([ALL.bgm, ALL.sfx]);
 });
 
@@ -46,6 +47,6 @@ test("stage-route: imageIds lists a batch's images", () => {
   ]);
   // On a sprite stage a face names its expression's sprite, as a show does (it is ensured before the line).
   expect(imageIds([ALL.face])).toEqual(['char/ally/smile']);
-  // A hide, a CG taken off and a wait name no image.
-  expect(imageIds([ALL.hide, off, ALL.wait])).toEqual([]);
+  // A hide, a CG taken off, a wait and a camera move name no image.
+  expect(imageIds([ALL.hide, off, ALL.wait, ALL.cam])).toEqual([]);
 });

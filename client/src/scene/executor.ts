@@ -33,7 +33,7 @@ export function resumeAll(): void {
 
 /** The commands the scene executes; audio and yields stay with GameSession (§7 steps 1 and 5). */
 export type VisualCommand =
-  | Extract<StagingCommand, { kind: 'bg' | 'scene' | 'show' | 'hide' | 'cg' | 'wait' | 'face' }>
+  | Extract<StagingCommand, { kind: 'bg' | 'scene' | 'show' | 'hide' | 'cg' | 'wait' | 'face' | 'cam' }>
   | PropsCommand;
 export type SceneSnapshot = Omit<StagingSnapshot, 'bgm'>;
 
@@ -154,9 +154,13 @@ function find<K extends VisualCommand['kind']>(
   return cmds.find((c): c is Extract<VisualCommand, { kind: K }> => c.kind === kind);
 }
 
-/** The end state of a batch (§7 order): scene clears, bg replaces (and clears props), hides, shows, faces, cg, props. */
+/**
+ * The end state of a batch (§7 order): scene clears, bg replaces (and clears props), hides, shows, faces, cam, cg,
+ * props. The camera holds until the next cut: a scene or a bg resets it to rest, the absent key (a stage without a
+ * move stays byte-identical in snapshots and saves); then the batch's cam sets it, a pull back to rest.
+ */
 function reduce(s: SceneSnapshot, cmds: readonly VisualCommand[]): SceneSnapshot {
-  let { bg, cg } = s;
+  let { bg, cg, cam } = s;
   let chars = [...s.chars];
   let props = [...s.props];
   const scene = find(cmds, 'scene');
@@ -165,11 +169,13 @@ function reduce(s: SceneSnapshot, cmds: readonly VisualCommand[]): SceneSnapshot
     cg = null;
     chars = [];
     props = [];
+    cam = undefined;
   }
   const bgCmd = find(cmds, 'bg');
   if (bgCmd !== undefined) {
     bg = bgCmd.bg;
     props = [];
+    cam = undefined;
   }
   for (const c of cmds) {
     if (c.kind === 'hide') {
@@ -195,6 +201,10 @@ function reduce(s: SceneSnapshot, cmds: readonly VisualCommand[]): SceneSnapshot
       chars = chars.map((x) => (x.char === c.char ? { ...x, expr: c.expr } : x));
     }
   }
+  const camCmd = find(cmds, 'cam');
+  if (camCmd !== undefined) {
+    cam = camCmd.cam.kind === 'pull' ? undefined : camCmd.cam;
+  }
   const cgCmd = find(cmds, 'cg');
   if (cgCmd !== undefined) {
     cg = cgCmd.cg;
@@ -204,10 +214,17 @@ function reduce(s: SceneSnapshot, cmds: readonly VisualCommand[]): SceneSnapshot
     const byProp = new Map(propsCmd.props.map((p) => [p.prop, p]));
     props = [...byProp.values()];
   }
-  return { bg, cg, chars, props };
+  return { bg, cg, chars, props, ...(cam && { cam }) };
 }
 
-const copy = (s: SceneSnapshot): SceneSnapshot => ({ bg: s.bg, cg: s.cg, chars: [...s.chars], props: [...s.props] });
+/** A snapshot's own copy; the camera key only when it is set, so a restore and every snapshot keep it as read. */
+const copy = (s: SceneSnapshot): SceneSnapshot => ({
+  bg: s.bg,
+  cg: s.cg,
+  chars: [...s.chars],
+  props: [...s.props],
+  ...(s.cam && { cam: s.cam }),
+});
 
 // ---------------------------------------------------------------------------------------------------------------
 // The executor

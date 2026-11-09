@@ -49,3 +49,11 @@ test('graph: a face names its expression and keeps its character', () => {
   expect(node.assets).toEqual(['char/ally/smile']);
   expect(node.clears).toEqual(CLEARS_NOTHING);
 });
+
+test('graph: a cam names no asset', () => {
+  for (const tag of ['cam: push to=ally z=120', 'cam: pull', 'cam: pan to=left']) {
+    const node = knotWith(tag);
+    expect(node.assets, tag).toEqual([]);
+    expect(node.clears, tag).toEqual(CLEARS_NOTHING);
+  }
+});
