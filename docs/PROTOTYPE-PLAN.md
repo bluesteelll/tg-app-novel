@@ -1328,6 +1328,14 @@ Changed by the engine plan (adopted 2026-11-09, RULINGS 158; planned, not built)
 (GM2a; `decodeSave` decodes an older format and upgrades it), with `chapterStart.items` for carried items (GM9r) —
 [engine §5.2 Save format 2 (lane GM2a)](plans/engine/05-world-data-and-save-format.md#52-save-format-2-lane-gm2a),
 [engine §6.6 `carry`: items across chapters](plans/engine/06-mechanics-as-modules.md#66-carry-items-across-chapters-required-allowed-gm9p-proof-gm9r-runtime-o6--r9).
+Changed by RULINGS 181 (as of `9b4fd25`; docs lane `docs-errata-11`, group A): as merged (GM2a `9b4fd25`), the body is
+format 2 (`SAVE_FORMAT`, [client/src/story/save-codec.ts:40](../client/src/story/save-codec.ts#L40)). `decodeSave` (:430)
+reads a format-1 body with format 1's frozen decoder and upgrades it (`upgradeV1` :417: `world.flags` and
+`chapterStart.items` empty, every other field kept); any other format is `unknown-format`. Format 2 adds
+`world.flags`, `run.work`, `chapterStart.items` (written `[]` until GM9r fills it), a prop's anchor key `at` and the
+camera state a shot holds (`staging.cam`, in `staging` and `checkpoint.staging`), each optional key absent or read
+strictly; `SAVE_FIELDS` (:134) lists the world keys per format. The golden body is a real ch1 format-1 save
+(`client/src/story/fixtures/save-1-ch1.json`). The resume steps below are unchanged; `SaveBodyV1` is format 1's type.
 
 `SaveBodyV1` is defined above. Algorithm (`story/resume.ts`), actor: client:
 

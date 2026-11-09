@@ -90,7 +90,10 @@ export type CamState =
   captured at GM2a's cut from today's codec.
 - **Format 1's decoder is frozen** (kept for the upgrade); within a format the codec stays strict on every declared
   key; unknown keys stay ignored (`save-codec.ts:3-4`), which is why every shape change bumps.
-- **A newer format** -> `unknown-format` -> the start fails without a write (`game.ts:1507-1510`).
+- **A newer format** -> `unknown-format` -> the start fails without a write (`game.ts:1507-1510`). Changed by RULINGS
+  181 (as of `9b4fd25`; docs lane `docs-errata-11`, group A): as merged (GM2a `9b4fd25`), the start's decode is
+  `game.ts:1603-1606` (`begin`: `unreadable-save`, no write) and the load's `:1637-1642` (`loadSlot`: logged, the
+  adopt fails).
 - **`game.ts`:** 12 type references to `SaveBody`, two `format:` literals to `SAVE_FORMAT`, two `chapterStart`
   literals gain `items: []`. No behaviour change. This is why GM2a precedes the cut of the first animation / shot lane
   that holds `game.ts` (rev. 3 named MD2 / MA1a; RULINGS 132 re-sets them; orchestrator Q2; reconcile r1: that lane

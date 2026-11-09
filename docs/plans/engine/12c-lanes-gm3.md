@@ -220,6 +220,10 @@
   booked +0.01, bound **+0.04** KB br, a STOP item above it, since the entry ledger's margin to L1 / L2's line is
   0.038 and GM3w alone may not cross it, §11.1 Ledger 2; the engine row stays within 0.05), e2e full
   (behaviour-identical).
+  **Ruled since: RULINGS 182** — the entry bound +0.04 is superseded: L1 has merged (RULINGS 159), and on `9b4fd25` the
+  entry projection is 37.929 / 40.0, 1.571 above the 0.5 KB line ([§11.1](11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13)), so the entry STOPs only by
+  Ledger 2's crossing rule, §3.5's STOP rule or the 40.0 LIMIT, and is quoted; the engine row within 0.05 KB stays
+  GM3w's own gate, a STOP item unless the tester shows the excess is chunk-hash churn.
 
 ### GM3s `mech-cue-stage` (new)
 - **Goal:** §8.1's one stage-level layer and its loading, §8.3's `cueRoot` on the explore root, the outros, today's

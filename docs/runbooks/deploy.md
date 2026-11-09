@@ -227,6 +227,10 @@ step 2's charges list). The charges paid on the new release stay unknown to the 
 release is lost:
 
 - saves, puzzle progress and hint unlocks, stat events and achievement unlocks;
+- the drawn codes: the `puzzle_values` rows written since (the server writes them from GM6s2 `2815340` on: the values
+  route, a per-player attempt, a restart, a status). A player without a row is drawn a new code at the next such call
+  ([puzzles/mod.rs:161](../../server/src/puzzles/mod.rs#L161), issued if absent), so a code read before the restore
+  may no longer open its puzzle;
 - wallet balances and ledger rows: hints spent since come back, gifts and credits since are gone;
 - friend requests, friendships and referrals made since;
 - unpaid orders (an invoice of the new release is refused at pre-checkout as an unknown order,

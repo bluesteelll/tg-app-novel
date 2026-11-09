@@ -2203,6 +2203,9 @@ server tests only.
 
 Still open from before (not decided here): Q22's other screens and community percentages, Q26 the real achievement
 lists (default: the narrative-designer drafts the demo ones above), Q21 jurisdiction and hosting.
+Changed by RULINGS 175 (as of `9b4fd25`; docs lane `docs-errata-11`, group A): Q26 and Q22 are resolved with their
+defaults (the owner, 2026-11-09, main `967a8da`: Q26 the narrative-designer's drafts per demo story in
+`story/meta.json`; Q22 the foundation and the completion card); Q21 holds its default, its owner step before production.
 
 ---
 

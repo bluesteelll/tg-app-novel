@@ -186,6 +186,12 @@ pub struct PlayerValue { pub value: Vec<u16>, #[ts(type = "number")] pub run: i6
 // so `check` fails until both are mapped).
 ```
 
+Changed by RULINGS 176 (as of `9b4fd25`; docs lane `docs-errata-11`, group A): as merged (GM6s2 `2815340`), ts-rs 12
+generates `ValuesResponse` as `values: { [key in string]: PlayerValue }`, without `?`
+([client/src/api/generated/api.ts:347-351](../../../client/src/api/generated/api.ts#L347); GM6s2's cut expected
+`[key in string]?:`); it is pinned as generated (`bindings_are_fresh`), and `decodeValuesResponse` accepts any own key
+of the local-id grammar ([client/src/api/decode.ts:328](../../../client/src/api/decode.ts#L328)).
+
 ```ts
 // client/src/api/endpoints.ts (GM6s2, the contract commit): the calls; decoders in api/decode.ts.
 getValues(chapter: ChapterId, o?: { signal?: AbortSignal }): Promise<Result<ValuesResponse, ApiError>>;

@@ -155,6 +155,13 @@ designs hold (m9).
      `content_refuses_max_attempts_without_per_player`, `content_refuses_answer_len_over_64`. Red: ``unknown field
      `perPlayer` ``. Until commit 4 the attempt route answers a per-player def 404 and the status route renders its
      templates unrendered (arms inside the lane, replaced by commits 4 and 7, never merged).
+     Changed by RULINGS 170, 176 (as of `9b4fd25`; docs lane `docs-errata-11`, group A), a design erratum: the lane's
+     real red (GM6s2 `131e1bb`, `gm6s2-values-routes/impl.md` commit 1, cut Q2): `JsonFault` prints no serde message
+     (`server/src/content.rs:101`, its `Display` :126), so a format-2 entry is refused at parse with `not the expected JSON: data error at line
+     L, column C` at its first unknown key in the written file (sorted, so `maxAttempts` before `perPlayer`), e.g.
+     `content_loads_format_2_per_player_puzzle`: `start refused: content: <copy>/puzzles/ch1.json: not the expected
+     JSON: data error at line 23, column 19`; ``unknown field `perPlayer` `` is serde's text, which the start never
+     prints.
   2. **the HTTP contract, both sides, one commit:** `dto.rs` (every new and changed DTO, `ApiErrorBody.value`),
      `error.rs` (`ValueChanged`), `dto_samples.rs` (samples for `ValuesResponse`, `PlayerValue`, `RestartRequest`, the
      new fields, `value_changed`), `api.ts` regenerated (`write_bindings`), `dto-samples.json` regenerated, `decode.ts`
@@ -197,4 +204,7 @@ designs hold (m9).
   ARITHMETIC ~+0.09 KB br, ~21 lines; reconcile P4: the entry, first-line and all-JS rows quoted base -> HEAD at the
   cut against §10 "Ledgers", STOP if a sum crosses its LIMIT), e2e full through the kit (the attempt DTO gained fields; old clients ignore them,
   `decode.ts:3`; the server ignores unknown request fields, `dto.rs:179`).
+  **Ruled since: RULINGS 176** — merged `2815340`: the entry +317 B against its +0.09 term is a PASS by engine §3.5's
+  STOP rule (a measured delta beyond its term by more than 0.5 KB br; 227 B over), 37,562 / 40,000 B, 2,018 B left
+  after the still-planned +420 B; the measured +317 replaces the term in engine §11.1's ledger.
 - **Conflicts:** the server files after GM6k / GM6s1; the client api files: no lane of either design holds them.
