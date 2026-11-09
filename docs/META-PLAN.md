@@ -965,6 +965,10 @@ unchanged.**
     of PP's table is left to go; L1 `l1-entry-summary` runs (client; RULINGS 158). The three adopted plans' lanes are
     planned (RULINGS 158), in their one order:
     [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts).
+  - Changed by RULINGS 159-173 (as of `9a83251`; docs lane `docs-errata-10`, group B): L1 has merged (`eec24fe`), so
+    every lane of PP's table has merged. From the adopted plans, GM6k (`fd62933`), GM1a (`ef8b4dc`), GM6s1 (`81a15b0`;
+    `puzzle_values` and its erasure step, this plan's "Privacy") and GM1b (`03a00bc`) have merged; GM6s2 runs (server,
+    lock 22, RULINGS 169, 170); the rest follow the one order above.
   - Why LPO is a lane of its own (revision 1, W4): the operator facts need a `Config` variable, which means editing
     the three `Config` constructors (`config.rs`, `server/dev/src/lib.rs`, `server/tests/it/common.rs`) plus
     `lib.rs` and `.env.example`; in LF1 that is 15 + 4 = 19 files, over the cap. LPO holds them with `api/legal.rs` and
@@ -1892,7 +1896,7 @@ Additions to PP's section.
 | Orders, payments, entitlements | `orders`, `payments`, `entitlements` | purchases, refunds | contract + a legal obligation (accounting), items 5 and 2 / 6(1)(b), (c) | the player; admins (`/refund`) | keep; payments kept after erasure |
 | Refund records (`0007`) | `auto_refunds` (a charge's automatic refund, keyed by its payment's charge id), `unrecorded_refunds` (a refund of a charge the database does not hold: the payer's id and the admin's id) | refund handling; accounting | as `payments`: a legal obligation (accounting), item 2 / 6(1)(c) (INTERPRETATION, lawyer item) | admins | keep; kept after erasure, like `payments` |
 | Statistics incl. choices | `stat_events` | the card; later the aggregate "X % chose" | the card: contract / 6(1)(b); the aggregate: legitimate interest, item 7 / 6(1)(f) with an objection right | the player (the card); aggregates only | keep |
-| Puzzle progress, hint unlocks | `puzzle_progress`, `hint_unlocks` | puzzles, the card | contract / 6(1)(b) | the player | keep |
+| Puzzle progress, hint unlocks, per-player codes (the code drawn per per-player puzzle, its run and the number of wrong answers in it) | `puzzle_progress`, `hint_unlocks`, `puzzle_values` | puzzles, the card | contract / 6(1)(b) | the player | keep |
 | Achievement unlocks | `achievement_unlocks` | the card, friend profiles | contract / 6(1)(b); shown to friends by consent / 6(1)(a) | the player; friends with consent | keep |
 | Balances, the ledger (incl. gift and referral counterparts) | `resource_balances`, `resource_ledger` | the economy; refund handling; anti-abuse | contract / 6(1)(b); anti-abuse 6(1)(f) | the player | keep |
 | Invite codes, friend requests, friendships, friend blocks, user handles (revision 1) | `invite_codes`, `friend_requests`, `friendships`, `friend_blocks`, `user_handles` | the friends feature; a block keeps a decline or removal final; a handle addresses a user without their Telegram id | contract (the feature the player uses) / 6(1)(b) | a request: its recipient (the requester's first name and handle); a friendship: the two parties; a block: nobody (the blocked side sees `requested`); a code: its owner | until removed; blocks and handles keep (Q23) |
@@ -1907,6 +1911,8 @@ Additions to PP's section.
 The "Puzzle progress, hint unlocks" row above: changed by the per-player plan (adopted 2026-11-09, RULINGS 158;
 planned, not built): the player's drawn values (`puzzle_values`) join this inventory beside it, and GM6s1 writes that
 row — [per-player §3.9 R13: erasure](plans/per-player/03-server-half.md#39-r13-erasure).
+Changed by RULINGS 168 (as of `9a83251`; docs lane `docs-errata-10`, group A): as merged (GM6s1 `81a15b0`), the row
+above names `puzzle_values` ([0008_puzzle_values.sql](../server/migrations/0008_puzzle_values.sql)).
 
 Not stored: `last_name`, `username`, `photo_url`, `is_premium`, `allows_write_to_pm`, `chat_instance`, `chat_type`, the
 phone, contacts, IP addresses in tables. What friends see is M13; what a share holds is M14; what the invite link
@@ -1916,7 +1922,7 @@ user sees. The friend circle every friends-only item reaches is exactly the acco
 and the accounts that accepted the player's request.
 
 **Erasure (designed; the command is a Later lane before production).** One transaction per user, children first (no
-cascades, decision §4.1): `achievement_unlocks`, `stat_events`, `hint_unlocks`, `puzzle_progress`, `saves`, `consents`,
+cascades, decision §4.1): `achievement_unlocks`, `stat_events`, `hint_unlocks`, `puzzle_values`, `puzzle_progress`, `saves`, `consents`,
 `friend_requests` (both directions), `friendships` (both columns), `friend_blocks` (both columns), `user_handles`,
 `invite_codes`, `referrals` (as invitee: delete; as
 inviter: `inviter_id = NULL`), `resource_ledger` (other users' rows naming this user: `counterpart_id = NULL`; own rows
@@ -1929,6 +1935,12 @@ The refund records (`auto_refunds`, `unrecorded_refunds`) stay as accounting rec
 Changed by the per-player plan (adopted 2026-11-09, RULINGS 158; planned, not built): the order becomes data
 (`ERASURE_ORDER`, one step per table, children first) with `puzzle_values` after `hint_unlocks` and `users` the root
 step, last (anonymised) — [per-player §3.9 R13: erasure](plans/per-player/03-server-half.md#39-r13-erasure).
+Changed by RULINGS 163, 168 (as of `9a83251`; docs lane `docs-errata-10`, group A): as merged (GM6k `fd62933`, GM6s1
+`81a15b0`), the order above is data, `ERASURE_ORDER` in [server/src/db/mod.rs](../server/src/db/mod.rs#L296), the same
+order with `puzzle_values` between `hint_unlocks` and `puzzle_progress`, held to the migrated schema by the four erasure
+gates in [server/tests/it/schema.rs](../server/tests/it/schema.rs) (`erasure_order_covers_every_user_table`,
+`erasure_order_names_no_stale_column`, `erasure_order_ends_with_the_users_root`,
+`erasure_non_fk_user_columns_are_declared`).
 
 ---
 
@@ -2042,6 +2054,11 @@ MEMORY-PLAN's M3s `a5f887b` (server; M3s's cut no longer after MD1's order, RULI
 (client, RULINGS 158); to go of this design's lanes: none. The three adopted plans' lanes are planned (RULINGS
 158), in their one order:
 [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts).
+Changed by RULINGS 159-173 (as of `9a83251`; docs lane `docs-errata-10`, group B): merged also L1 `l1-entry-summary`
+`eec24fe` (client), and from the adopted plans GM6k `fd62933` and GM6s1 `81a15b0` (server) and GM1a `ef8b4dc` and
+GM1b `03a00bc` (client), with the docs lane `docs-adopt` `f509b05`; running GM6s2 (server, lock 22, RULINGS 169, 170)
+beside the docs lane `docs-errata-10`; to go of this design's lanes: none. The next client lanes, GM1c and GM2a, wait
+for GM6s2 (shared test files, RULINGS 170, 173); the rest follow the one order above.
 
 ---
 

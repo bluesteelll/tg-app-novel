@@ -116,7 +116,7 @@ META-PLAN "Privacy", plus the two refund tables of
 (a charge's automatic refund, found through its payment) and `unrecorded_refunds` (a refund of a charge the database
 does not hold, with the payer's id). The per-player puzzle codes are in `puzzle_values`
 ([0008_puzzle_values.sql](../../server/migrations/0008_puzzle_values.sql)): per per-player puzzle, the code drawn for
-the player, its run and the run's wrong answers. Nothing else is kept (no IP addresses in tables, no username, no
+the player, its run and the number of wrong answers in the run. Nothing else is kept (no IP addresses in tables, no username, no
 phone). Read one player's rows (`<USER_ID>` is their Telegram user id, a number):
 
 ```powershell

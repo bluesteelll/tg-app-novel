@@ -203,7 +203,11 @@ it ([server/dev/src/deploy.rs:1-5](../../server/dev/src/deploy.rs#L1), :49-51). 
 
 ## Roll back
 
-Start the previous binary with the previous `client/dist/` and `server/content/`. If the release applied a new
+Start the previous binary with the previous `client/dist/` and `server/content/`. A puzzle renamed or moved to
+another chapter needs no step here: the server keeps every puzzle's rows (progress, hint unlocks, the ledger's hint
+keys) under its storage key, the id it first shipped under (`key` in `server/content/puzzles/<ch>.json`), so a
+rollback and the next forward start serve the same rows, a puzzle new in the rolled-back release keeps its rows until
+a release serves it again, and no start is refused or restore needed for them. If the release applied a new
 migration, the previous binary does not know it: sqlx refuses a database with a migration it lacks (verify on a copy
 before relying on this), and there are no down migrations. A rollback across a migration then restores the step 4
 backup into a new, empty database and points the server at it. Restoring over the migrated database does not work:
@@ -213,7 +217,9 @@ drop of the `users` key. `0007_auto_refunds.sql` adds `auto_refunds`, which refe
 `unrecorded_refunds`, which references nothing
 ([0007_auto_refunds.sql:16-17](../../server/migrations/0007_auto_refunds.sql#L16)): across `0007`, `auto_refunds`
 blocks the drop of the `payments` key the same way (read from the migrations; the runs below used a stand-in
-`0007`). The migrated database stays as it is, as the source of the lists below.
+`0007`). `0008_puzzle_values.sql` adds `puzzle_values`, which references `users`
+([0008_puzzle_values.sql:20](../../server/migrations/0008_puzzle_values.sql#L20)), and blocks the drop of the `users`
+key as `0002`-`0006`'s tables do. The migrated database stays as it is, as the source of the lists below.
 
 A restore drops every row written since the backup. Step 4 repeats the erasures (from your erasure record) and the
 privacy decisions between the players the restored database has (saved in step 2); step 6 repeats the refunds (from
