@@ -141,6 +141,7 @@ impl IntoResponse for SimError {
                 Json(ApiErrorBody {
                     error: ErrorCode::Internal,
                     current: None,
+                    value: None,
                 }),
             )
                 .into_response(),

@@ -213,7 +213,7 @@ function rig(o: RigOptions = {}) {
       getPuzzle: async () => (o.status === undefined ? { ok: false, error: { kind: 'network', detail: 'none' } } : { ok: true, value: o.status }),
       postAttempt: async () => {
         calls.attempts += 1;
-        return answers.shift() ?? { ok: true, value: { correct: false, solved: false } };
+        return answers.shift() ?? { ok: true, value: { correct: false, solved: false, attemptsLeft: null, spent: false } };
       },
     },
     scene: {
@@ -295,7 +295,7 @@ const roomOf = (r: Rig): string | null => r.yields.world().room;
 // Linear puzzles (F6, X8, D18)
 
 test('yields: puzzle end projects then enters', async () => {
-  const r = rig({ attempts: [{ ok: true, value: { correct: true, solved: true } }] });
+  const r = rig({ attempts: [{ ok: true, value: { correct: true, solved: true, attemptsLeft: null, spent: false } }] });
   await r.yields.onYield({ kind: 'puzzle', puzzle: DRAWER, then: AFTER });
   expect(r.puzzle.frame?.mode).toBe('linear');
   r.yields.host.ontry();
@@ -309,7 +309,7 @@ test('yields: puzzle end projects then enters', async () => {
 });
 
 test('yields: puzzle end clears the close-up', async () => {
-  const r = rig({ attempts: [{ ok: true, value: { correct: true, solved: true } }] });
+  const r = rig({ attempts: [{ ok: true, value: { correct: true, solved: true, attemptsLeft: null, spent: false } }] });
   await r.yields.onYield({ kind: 'puzzle', puzzle: DRAWER, then: AFTER });
   expect(r.stage().cg).toBe('drawer_close');
   r.yields.host.ontry();
@@ -353,7 +353,7 @@ test('yields: a linear hint use counts in the world', async () => {
     },
     getMore: () => {},
   };
-  const r = rig({ status: { puzzleId: 'ch1.drawer', solved: false, hints: [{ tier: 1, unlocked: false, text: null }] }, hints: port });
+  const r = rig({ status: { puzzleId: 'ch1.drawer', solved: false, hints: [{ tier: 1, unlocked: false, text: null }], valueRun: null }, hints: port });
   await r.yields.onYield({ kind: 'puzzle', puzzle: DRAWER, then: AFTER });
   r.yields.host.onhint();
   await settle();

@@ -8,6 +8,9 @@
 //!
 //! Social bodies name another user by handle only, never by Telegram id (META-PLAN M10, W1).
 
+use std::collections::BTreeMap;
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use ts_rs::TS;
@@ -180,8 +183,13 @@ pub struct ChapterPayload<'a> {
 #[derive(Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AttemptRequest {
-    /// The answer: the puzzle's `answerLen` values, each at most its `answerMax` (at most 16, each at most 65535).
+    /// The answer: the puzzle's `answerLen` values, each at most its `answerMax` (at most 64, each at most 65535).
     pub answer: Vec<u16>,
+    /// A per-player puzzle's run the answer was given for: the newest run the client knows. Absent or not the current
+    /// run, the answer is not compared (409 `value_changed`); ignored for a static puzzle.
+    #[serde(default)]
+    #[ts(optional, type = "number")]
+    pub run: Option<i64>,
 }
 
 /// `POST /api/puzzles/{puzzleId}/attempts` response.
@@ -192,6 +200,57 @@ pub struct AttemptResponse {
     pub correct: bool,
     /// Whether the puzzle is solved, by this answer or an earlier one.
     pub solved: bool,
+    /// A capped per-player puzzle: the wrong answers its run has left after this one; `null` for a static or an
+    /// uncapped puzzle (serialized, not omitted).
+    pub attempts_left: Option<u8>,
+    /// Whether this answer spent the run (its final wrong answer); `false` for every other answer.
+    pub spent: bool,
+}
+
+/// A player's value of one per-player puzzle, with its run (per-player §3.4): an entry of `ValuesResponse`, the
+/// restart's answer and the `value` of a 409 `value_changed`. The value is the player's secret: the server's `Debug`
+/// of it redacts the value (§3.1 "Log redaction").
+#[derive(Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayerValue {
+    /// The value, one entry per answer position.
+    pub value: Vec<u16>,
+    /// The run: 1 at the first draw, +1 at each restart and each forced re-draw.
+    #[ts(type = "number")]
+    pub run: i64,
+    /// A capped puzzle: the wrong answers the run has left; `null` without a cap (serialized, not omitted).
+    pub attempts_left: Option<u8>,
+    /// Whether the run is spent: its final wrong answer was given.
+    pub spent: bool,
+}
+
+impl fmt::Debug for PlayerValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PlayerValue")
+            .field("run", &self.run)
+            .field("attempts_left", &self.attempts_left)
+            .field("spent", &self.spent)
+            .field("value", &format_args!("<redacted>"))
+            .finish()
+    }
+}
+
+/// `GET /api/chapters/{chapterId}/values` response: the player's value of each per-player puzzle of the chapter, by
+/// the puzzle's local id; empty for a chapter without one.
+// No `Debug`: the values are the player's secrets.
+#[derive(Serialize, TS)]
+pub struct ValuesResponse {
+    /// Local id -> the player's value.
+    pub values: BTreeMap<String, PlayerValue>,
+}
+
+/// `POST /api/puzzles/{puzzleId}/restart` request: the run the client saw spent. Unknown fields are ignored.
+#[derive(Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RestartRequest {
+    /// The spent run to restart: a repeat, a stale run or a live one changes nothing.
+    #[ts(type = "number")]
+    pub from: i64,
 }
 
 /// `GET /api/puzzles/{puzzleId}?lang=ru|en` response: whether the user solved the puzzle, and its hint ladder.
@@ -205,6 +264,9 @@ pub struct PuzzleStatus {
     pub solved: bool,
     /// Every tier of the puzzle's hint ladder, tier 1 first; empty for a puzzle without hints.
     pub hints: Vec<HintView>,
+    /// A per-player puzzle: the run whose value the hint texts were rendered with; `null` for a static puzzle.
+    #[ts(type = "number | null")]
+    pub value_run: Option<i64>,
 }
 
 /// A hint tier as the user sees it.
@@ -668,6 +730,9 @@ pub fn ts_bindings() -> String {
         export::<AttemptResponse>(&cfg),
         export::<HintView>(&cfg),
         export::<PuzzleStatus>(&cfg),
+        export::<PlayerValue>(&cfg),
+        export::<ValuesResponse>(&cfg),
+        export::<RestartRequest>(&cfg),
         export::<OrderStatus>(&cfg),
         export::<CreateInvoiceRequest>(&cfg),
         export::<CreateInvoiceResponse>(&cfg),

@@ -23,8 +23,8 @@ use crate::ids::PuzzleId;
 use crate::puzzles::{self, AttemptOutcome, Lang};
 
 /// The headers of a status 200: an unlocked hint's text is sold content, so no shared cache stores it and no browser
-/// sniffs another type into it (the paid-content pair of `api/content.rs`).
-fn sold_headers() -> [(HeaderName, HeaderValue); 2] {
+/// sniffs another type into it (the paid-content pair of `api/content.rs`). A player's value travels under it too.
+pub(crate) fn sold_headers() -> [(HeaderName, HeaderValue); 2] {
     [
         (CACHE_CONTROL, HeaderValue::from_static("private, no-store")),
         (X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff")),
@@ -64,9 +64,12 @@ pub async fn post_attempt(
     // The body is judged only past the gate: a paid puzzle is 403 whatever the request carries.
     let Json(req) = req.map_err(body_rejection)?;
     match puzzles::attempt(&st, user, def, &req.answer).await? {
-        AttemptOutcome::Answered { correct, solved } => {
-            Ok(Json(AttemptResponse { correct, solved }))
-        }
+        AttemptOutcome::Answered { correct, solved } => Ok(Json(AttemptResponse {
+            correct,
+            solved,
+            attempts_left: None,
+            spent: false,
+        })),
         AttemptOutcome::RateLimited { retry_after_secs } => {
             Err(ApiError::RateLimited { retry_after_secs })
         }

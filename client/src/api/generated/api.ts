@@ -13,7 +13,7 @@ export type StoryId = string;
 /**
  * The stable wire codes of every error, consumed by the client's decoders.
  */
-export type ErrorCode = "bad_request" | "initdata_invalid" | "initdata_expired" | "token_missing" | "token_invalid" | "token_expired" | "not_entitled" | "not_found" | "unknown_product" | "already_owned" | "save_conflict" | "payload_too_large" | "telegram_unavailable" | "rate_limited" | "hint_unavailable" | "insufficient_balance" | "limit_reached" | "internal";
+export type ErrorCode = "bad_request" | "initdata_invalid" | "initdata_expired" | "token_missing" | "token_invalid" | "token_expired" | "not_entitled" | "not_found" | "unknown_product" | "already_owned" | "save_conflict" | "payload_too_large" | "telegram_unavailable" | "rate_limited" | "hint_unavailable" | "insufficient_balance" | "limit_reached" | "internal" | "value_changed";
 
 /**
  * The JSON body of every error response.
@@ -27,7 +27,11 @@ error: ErrorCode,
  * `save_conflict` only: the stored row the write conflicted with. Omitted, not `null`, when absent, so every
  * other error stays `{"error": "<code>"}`.
  */
-current?: SaveSummary, };
+current?: SaveSummary, 
+/**
+ * `value_changed` only: the player's current value of the puzzle. Omitted, not `null`, when absent.
+ */
+value?: PlayerValue, };
 
 /**
  * `POST /api/auth` request. Unknown fields (a client-sent `userId`, say) are ignored, never trusted.
@@ -244,9 +248,14 @@ world: unknown, };
  */
 export type AttemptRequest = { 
 /**
- * The answer: the puzzle's `answerLen` values, each at most its `answerMax` (at most 16, each at most 65535).
+ * The answer: the puzzle's `answerLen` values, each at most its `answerMax` (at most 64, each at most 65535).
  */
-answer: Array<number>, };
+answer: Array<number>, 
+/**
+ * A per-player puzzle's run the answer was given for: the newest run the client knows. Absent or not the current
+ * run, the answer is not compared (409 `value_changed`); ignored for a static puzzle.
+ */
+run?: number, };
 
 /**
  * `POST /api/puzzles/{puzzleId}/attempts` response.
@@ -259,7 +268,16 @@ correct: boolean,
 /**
  * Whether the puzzle is solved, by this answer or an earlier one.
  */
-solved: boolean, };
+solved: boolean, 
+/**
+ * A capped per-player puzzle: the wrong answers its run has left after this one; `null` for a static or an
+ * uncapped puzzle (serialized, not omitted).
+ */
+attemptsLeft: number | null, 
+/**
+ * Whether this answer spent the run (its final wrong answer); `false` for every other answer.
+ */
+spent: boolean, };
 
 /**
  * A hint tier as the user sees it.
@@ -293,7 +311,53 @@ solved: boolean,
 /**
  * Every tier of the puzzle's hint ladder, tier 1 first; empty for a puzzle without hints.
  */
-hints: Array<HintView>, };
+hints: Array<HintView>, 
+/**
+ * A per-player puzzle: the run whose value the hint texts were rendered with; `null` for a static puzzle.
+ */
+valueRun: number | null, };
+
+/**
+ * A player's value of one per-player puzzle, with its run (per-player §3.4): an entry of `ValuesResponse`, the
+ * restart's answer and the `value` of a 409 `value_changed`. The value is the player's secret: the server's `Debug`
+ * of it redacts the value (§3.1 "Log redaction").
+ */
+export type PlayerValue = { 
+/**
+ * The value, one entry per answer position.
+ */
+value: Array<number>, 
+/**
+ * The run: 1 at the first draw, +1 at each restart and each forced re-draw.
+ */
+run: number, 
+/**
+ * A capped puzzle: the wrong answers the run has left; `null` without a cap (serialized, not omitted).
+ */
+attemptsLeft: number | null, 
+/**
+ * Whether the run is spent: its final wrong answer was given.
+ */
+spent: boolean, };
+
+/**
+ * `GET /api/chapters/{chapterId}/values` response: the player's value of each per-player puzzle of the chapter, by
+ * the puzzle's local id; empty for a chapter without one.
+ */
+export type ValuesResponse = { 
+/**
+ * Local id -> the player's value.
+ */
+values: { [key in string]: PlayerValue }, };
+
+/**
+ * `POST /api/puzzles/{puzzleId}/restart` request: the run the client saw spent. Unknown fields are ignored.
+ */
+export type RestartRequest = { 
+/**
+ * The spent run to restart: a repeat, a stale run or a live one changes nothing.
+ */
+from: number, };
 
 /**
  * An order's status: the `orders.status` values (`orders_status_known`), and their wire form in `OrderResponse`.

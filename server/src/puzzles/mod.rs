@@ -171,5 +171,6 @@ pub async fn status(
         puzzle_id: def.id.0.clone(),
         solved,
         hints,
+        value_run: None,
     })
 }

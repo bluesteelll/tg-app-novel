@@ -1539,7 +1539,7 @@ function heldAttempt(): HeldAttempt {
   };
 }
 
-const WRONG: Result<AttemptResponse, ApiError> = { ok: true, value: { correct: false, solved: false } };
+const WRONG: Result<AttemptResponse, ApiError> = { ok: true, value: { correct: false, solved: false, attemptsLeft: null, spent: false } };
 const hk = (k: string): HotspotKey => k as HotspotKey;
 
 test('game_holds_one_explore_controller', async () => {
@@ -3112,7 +3112,7 @@ test('game: an ending while the meta chunk loads gets its card', async () => {
 
 test('game: puzzle hints use the attached port', async () => {
   const w = worldChunks();
-  const status: PuzzleStatus = { puzzleId: 'ch1.drawer', solved: false, hints: [{ tier: 1, unlocked: false, text: null }] };
+  const status: PuzzleStatus = { puzzleId: 'ch1.drawer', solved: false, hints: [{ tier: 1, unlocked: false, text: null }], valueRun: null };
   const { h, m } = metaHarness({ chapters: [worldCh1('puzzle')], chunks: w.chunks, status: () => Promise.resolve({ ok: true, value: status }) });
   m.on(WALLET_ROUTE, () => ({ ok: true, body: { balances: [{ kind: 'hint', balance: 3, debt: 0 }], packs: [], hintTierCost: 1, maxPerGift: 3 } }));
   void m.gate.ready();
@@ -3687,7 +3687,7 @@ test("game: skew waits for a puzzle attempt's answer", async () => {
   h.game.skewed(SKEW, page);
   await pass(h, 3000);
   expect([page.reloads, h.vm.notice], 'the attempt awaits its answer').toEqual([[], null]);
-  held.answer({ ok: true, value: { correct: true, solved: true } });
+  held.answer({ ok: true, value: { correct: true, solved: true, attemptsLeft: null, spent: false } });
   await settle();
   await pass(h, 1000);
   // The answer's outcome ran as an intent to its end first: the reload's autosave is past the puzzle.

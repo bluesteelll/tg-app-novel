@@ -14,12 +14,14 @@ import {
   decodeCreateInvoiceResponse,
   decodeEntitlementsResponse,
   decodeOrderResponse,
+  decodePlayerValue,
   decodePostStatsResponse,
   decodePutSaveResponse,
   decodePuzzleStatus,
   decodeSaveFull,
   decodeSaveListResponse,
   decodeStatsResponse,
+  decodeValuesResponse,
   int,
   nullable,
   object,
@@ -183,6 +185,7 @@ export const DTO_DECODERS: Readonly<Record<DecodedDto, Decoder<unknown>>> = {
   HintUseResponse: decodeHintUseResponse,
   InviteView: decodeInviteView,
   OrderResponse: decodeOrderResponse,
+  PlayerValue: decodePlayerValue,
   PostStatsResponse: decodePostStatsResponse,
   PutSaveResponse: decodePutSaveResponse,
   PuzzleStatus: decodePuzzleStatus,
@@ -191,6 +194,7 @@ export const DTO_DECODERS: Readonly<Record<DecodedDto, Decoder<unknown>>> = {
   ShareResponse: decodeShareResponse,
   SocialResponse: decodeSocialResponse,
   StatsResponse: decodeStatsResponse,
+  ValuesResponse: decodeValuesResponse,
   WalletResponse: decodeWalletResponse,
 };
 
@@ -224,6 +228,7 @@ const META_KINDS = {
   insufficient_balance: 'insufficient',
   limit_reached: 'limit',
   internal: 'network',
+  value_changed: 'unavailable',
 } as const satisfies Record<ErrorCode, MetaError['kind']>;
 
 /** A proxy's error without the server's JSON body: only the status speaks. */

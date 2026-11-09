@@ -11,12 +11,14 @@ import {
   decodeCreateInvoiceResponse,
   decodeEntitlementsResponse,
   decodeOrderResponse,
+  decodePlayerValue,
   decodePostStatsResponse,
   decodePutSaveResponse,
   decodePuzzleStatus,
   decodeSaveFull,
   decodeSaveListResponse,
   decodeStatsResponse,
+  decodeValuesResponse,
 } from './decode.ts';
 import type {
   AttemptResponse,
@@ -24,6 +26,7 @@ import type {
   CreateInvoiceResponse,
   EntitlementsResponse,
   OrderResponse,
+  PlayerValue,
   PostStatsResponse,
   PutSaveRequest,
   PutSaveResponse,
@@ -33,6 +36,7 @@ import type {
   SaveSlot,
   StatEventDto,
   StatsResponse,
+  ValuesResponse,
 } from './generated/api.ts';
 import type { ApiError, Http } from './http.ts';
 
@@ -55,8 +59,19 @@ export interface Endpoints {
   getOrder(order: OrderId): Promise<Result<OrderResponse, ApiError>>;
   getChapter(chapter: ChapterId, o?: { signal?: AbortSignal }): Promise<Result<ChapterPayload, ApiError>>;
   getPuzzle(id: PuzzleId, lang: Lang, o?: { signal?: AbortSignal }): Promise<Result<PuzzleStatus, ApiError>>;
-  /** A 429 is `ApiError` http with `retryAfter`. */
-  postAttempt(id: PuzzleId, answer: readonly number[], o?: { signal?: AbortSignal }): Promise<Result<AttemptResponse, ApiError>>;
+  /** The player's value of each per-player puzzle of the chapter, by local id; the first call issues them. */
+  getValues(chapter: ChapterId, o?: { signal?: AbortSignal }): Promise<Result<ValuesResponse, ApiError>>;
+  /** The current run after a restart of the spent run `from`; a repeat, a stale or a live run changes nothing. */
+  restartPuzzle(id: PuzzleId, from: number): Promise<Result<PlayerValue, ApiError>>;
+  /**
+   * A 429 is `ApiError` http with `retryAfter`. `run`, a per-player puzzle's newest run the client knows, is sent only
+   * when given; a 409 `value_changed` carries the current run in its body.
+   */
+  postAttempt(
+    id: PuzzleId,
+    answer: readonly number[],
+    o?: { signal?: AbortSignal; run?: number },
+  ): Promise<Result<AttemptResponse, ApiError>>;
   /**
    * 1 to 32 events, the body at most 16 KiB (the stats reporter bounds both); `keepalive` for the `pagehide` best
    * effort. A 429 is `ApiError` http with `retryAfter`.
@@ -84,9 +99,17 @@ export function createEndpoints(http: Pick<Http, 'request'>): Endpoints {
       http.request({ method: 'GET', path: `/api/chapters/${seg(chapter)}`, signal: o?.signal }, decodeChapterPayload),
     getPuzzle: (id, lang, o) =>
       http.request({ method: 'GET', path: `/api/puzzles/${seg(id)}?lang=${lang}`, signal: o?.signal }, decodePuzzleStatus),
+    getValues: (chapter, o) =>
+      http.request({ method: 'GET', path: `/api/chapters/${seg(chapter)}/values`, signal: o?.signal }, decodeValuesResponse),
+    restartPuzzle: (id, from) => http.request({ method: 'POST', path: `/api/puzzles/${seg(id)}/restart`, body: { from } }, decodePlayerValue),
     postAttempt: (id, answer, o) =>
       http.request(
-        { method: 'POST', path: `/api/puzzles/${seg(id)}/attempts`, body: { answer: [...answer] }, signal: o?.signal },
+        {
+          method: 'POST',
+          path: `/api/puzzles/${seg(id)}/attempts`,
+          body: o?.run === undefined ? { answer: [...answer] } : { answer: [...answer], run: o.run },
+          signal: o?.signal,
+        },
         decodeAttemptResponse,
       ),
     postStatEvents: (events, o) =>

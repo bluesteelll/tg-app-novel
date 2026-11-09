@@ -107,6 +107,7 @@ function status(solved: boolean, texts: Readonly<Record<number, string>> = {}, t
     puzzleId: 'ch1.gate',
     solved,
     hints: Array.from({ length: tiers }, (_, i) => ({ tier: i + 1, unlocked: (i + 1) in texts, text: texts[i + 1] ?? null })),
+    valueRun: null,
   };
 }
 
@@ -122,7 +123,7 @@ function fakePort(balance: number | null = 2, cost: number | null = 1): FakePort
 function rig(o: { puzzle?: Partial<RawPuzzle>; mode?: PuzzleMode; run?: Partial<PuzzleRun>; port?: 'none' | FakePort; lang?: Lang } = {}): Rig {
   const api: Api = {
     getPuzzle: vi.fn<Endpoints['getPuzzle']>(() => Promise.resolve(ok(status(false)))).mockName('getPuzzle'),
-    postAttempt: vi.fn<Endpoints['postAttempt']>(() => Promise.resolve(ok({ correct: false, solved: false }))).mockName('postAttempt'),
+    postAttempt: vi.fn<Endpoints['postAttempt']>(() => Promise.resolve(ok({ correct: false, solved: false, attemptsLeft: null, spent: false }))).mockName('postAttempt'),
   };
   const port = o.port === undefined || o.port === 'none' ? fakePort() : o.port;
   const dispatch = vi.fn<(a: ExploreAction) => void>().mockName('dispatch');
@@ -145,8 +146,8 @@ function rig(o: { puzzle?: Partial<RawPuzzle>; mode?: PuzzleMode; run?: Partial<
   return { s: r.value, api, dispatch, ends, port };
 }
 
-const WRONG: Result<AttemptResponse, ApiError> = ok({ correct: false, solved: false });
-const CORRECT: Result<AttemptResponse, ApiError> = ok({ correct: true, solved: true });
+const WRONG: Result<AttemptResponse, ApiError> = ok({ correct: false, solved: false, attemptsLeft: null, spent: false });
+const CORRECT: Result<AttemptResponse, ApiError> = ok({ correct: true, solved: true, attemptsLeft: null, spent: false });
 const FAILED_ATTEMPT = { kind: 'attempt-failed', puzzle: 'gate' };
 
 // ---------------------------------------------------------------------------------------------------------------

@@ -9,7 +9,8 @@ use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use ts_rs::TS;
 
-use crate::api::dto::SaveSummary;
+use crate::api::dto::{PlayerValue, SaveSummary};
+use crate::api::puzzles::sold_headers;
 
 /// Every error a handler returns. The `match` in `into_response` has no wildcard, so a new variant does not compile
 /// until it is mapped.
@@ -70,6 +71,10 @@ pub enum ApiError {
     /// A count limit is reached (the friend cap).
     #[error("limit reached")]
     LimitReached,
+    /// A per-player answer that was not compared (per-player §3.5 step 4): it names no run or not the current one, or
+    /// the current run is spent. Carries the current run, so the client shows the value it lacks.
+    #[error("value changed")]
+    ValueChanged(PlayerValue),
     /// A database failure: logged, answered with a generic 500.
     #[error(transparent)]
     Db(#[from] sqlx::Error),
@@ -115,6 +120,8 @@ pub enum ErrorCode {
     LimitReached,
     /// `internal`
     Internal,
+    /// `value_changed`
+    ValueChanged,
 }
 
 /// The JSON body of every error response.
@@ -128,11 +135,16 @@ pub struct ApiErrorBody {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub current: Option<SaveSummary>,
+    /// `value_changed` only: the player's current value of the puzzle. Omitted, not `null`, when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub value: Option<PlayerValue>,
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let mut current = None;
+        let mut value = None;
         let mut retry_after: Option<i64> = None;
         let (status, error) = match self {
             ApiError::BadRequest(_) => (StatusCode::BAD_REQUEST, ErrorCode::BadRequest),
@@ -164,13 +176,31 @@ impl IntoResponse for ApiError {
             ApiError::HintUnavailable => (StatusCode::CONFLICT, ErrorCode::HintUnavailable),
             ApiError::InsufficientBalance => (StatusCode::CONFLICT, ErrorCode::InsufficientBalance),
             ApiError::LimitReached => (StatusCode::CONFLICT, ErrorCode::LimitReached),
+            ApiError::ValueChanged(row) => {
+                // The client shows the value it lacks from the body (per-player §3.4).
+                value = Some(row);
+                (StatusCode::CONFLICT, ErrorCode::ValueChanged)
+            }
             ApiError::Db(e) => {
                 // The cause goes to the log only: SQL errors can name tables, paths and values.
                 tracing::error!(error = %e, "database error");
                 (StatusCode::INTERNAL_SERVER_ERROR, ErrorCode::Internal)
             }
         };
-        let mut response = (status, Json(ApiErrorBody { error, current })).into_response();
+        // A player's value is sold content, as a hint text: the status 200's pair, never a shared cache.
+        let sold = value.is_some();
+        let mut response = (
+            status,
+            Json(ApiErrorBody {
+                error,
+                current,
+                value,
+            }),
+        )
+            .into_response();
+        if sold {
+            response.headers_mut().extend(sold_headers());
+        }
         if let Some(secs) = retry_after {
             response
                 .headers_mut()
@@ -373,6 +403,7 @@ mod tests {
                 ErrorCode::InsufficientBalance => "insufficient_balance",
                 ErrorCode::LimitReached => "limit_reached",
                 ErrorCode::Internal => "internal",
+                ErrorCode::ValueChanged => "value_changed",
             }
         }
         let all = [
@@ -394,6 +425,7 @@ mod tests {
             ErrorCode::InsufficientBalance,
             ErrorCode::LimitReached,
             ErrorCode::Internal,
+            ErrorCode::ValueChanged,
         ];
         let mut failures = Vec::new();
         for code in all {
@@ -406,6 +438,7 @@ mod tests {
         let body = serde_json::to_string(&ApiErrorBody {
             error: ErrorCode::NotFound,
             current: None,
+            value: None,
         })
         .unwrap();
         if body != r#"{"error":"not_found"}"# {

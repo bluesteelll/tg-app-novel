@@ -17,6 +17,7 @@ import type {
   OrderResponse,
   OrderStatus,
   GameStatsDto,
+  PlayerValue,
   PostStatsResponse,
   ProductDto,
   PutSaveResponse,
@@ -30,6 +31,7 @@ import type {
   StatsResponse,
   StoryStatsDto,
   UserDto,
+  ValuesResponse,
 } from './generated/api.ts';
 
 /** A boundary parser: raw JSON in; a typed value, or the first problem as `<Type><path>: <problem>`, out. */
@@ -49,6 +51,7 @@ export type DecodedDto =
   | 'HintUseResponse'
   | 'InviteView'
   | 'OrderResponse'
+  | 'PlayerValue'
   | 'PostStatsResponse'
   | 'PutSaveResponse'
   | 'PuzzleStatus'
@@ -57,6 +60,7 @@ export type DecodedDto =
   | 'ShareResponse'
   | 'SocialResponse'
   | 'StatsResponse'
+  | 'ValuesResponse'
   | 'WalletResponse';
 
 // Exhaustive by type: a code, status, slot or reason added to api.ts fails `check` here until it is listed.
@@ -79,6 +83,7 @@ const ERROR_CODES = {
   insufficient_balance: true,
   limit_reached: true,
   internal: true,
+  value_changed: true,
 } as const satisfies Record<ErrorCode, true>;
 const ORDER_STATUSES = { created: true, checkout: true, paid: true, refunded: true } as const satisfies Record<OrderStatus, true>;
 const SAVE_SLOTS = { auto: true, s1: true, s2: true, s3: true } as const satisfies Record<SaveSlot, true>;
@@ -92,6 +97,8 @@ const STAT_REJECT_REASONS = {
 } as const satisfies Record<StatRejectReason, true>;
 /** HintView.tier: a ladder has 1 to 3 tiers (PZ X18). */
 const TIER_MAX = 3;
+/** A puzzle's local id, the key of `ValuesResponse.values` (PUZZLES-PLAN "PuzzleId"). */
+const LOCAL_ID_RE = /^[a-z][a-z0-9_]*$/;
 
 type Raw = Readonly<Record<string, unknown>>;
 /** One value's reader; `path` is its JSON path, prefixed with the DTO name. */
@@ -202,20 +209,58 @@ const storyStats = object<StoryStatsDto>({
   endingsReached: arrayOf(str),
 });
 const gameStats = object<GameStatsDto>({ storiesStarted: int, storiesTotal: int, endingsReached: int });
+const playerValue = object<PlayerValue>({ value: arrayOf(int), run: int, attemptsLeft: nullable(int), spent: bool });
+/** Values by puzzle local id: a key outside the grammar (`__proto__` included) is an error, never a key. */
+function byLocalId<T>(f: Field<T>): Field<Record<string, T>> {
+  return (v, p) => {
+    if (!isRecord(v)) {
+      return problem(p, `expected an object, got ${shown(v)}`);
+    }
+    const out: Record<string, T> = {};
+    for (const [key, item] of Object.entries(v)) {
+      if (!LOCAL_ID_RE.test(key)) {
+        return problem(`${p}.${key}`, 'not a puzzle local id');
+      }
+      const r = f(item, `${p}.${key}`);
+      if (!r.ok) {
+        return r;
+      }
+      out[key] = r.value;
+    }
+    return ok(out);
+  };
+}
 /** META M21: `text` only when unlocked, so a locked tier that carries text is an error, never shown. */
 const hintView: Field<HintView> = (v, p) => {
   const r = hintFields(v, p);
   return !r.ok || r.value.unlocked || r.value.text === null ? r : problem(`${p}.text`, 'text on a locked tier');
 };
 
-/** Every error response's body; `current` only on `save_conflict`, omitted (not `null`) otherwise. */
+/**
+ * Every error response's body; `current` only on `save_conflict`, `value` only on `value_changed`, each omitted (not
+ * `null`) otherwise.
+ */
 export function decodeApiErrorBody(raw: unknown): Result<ApiErrorBody, string> {
   const head = object<Pick<ApiErrorBody, 'error'>>({ error: oneOf(ERROR_CODES) })(raw, 'ApiErrorBody');
-  if (!head.ok || !isRecord(raw) || !Object.hasOwn(raw, 'current')) {
+  if (!head.ok || !isRecord(raw)) {
     return head;
   }
-  const current = saveSummary(raw['current'], 'ApiErrorBody.current');
-  return current.ok ? ok({ error: head.value.error, current: current.value }) : current;
+  const body: ApiErrorBody = { error: head.value.error };
+  if (Object.hasOwn(raw, 'current')) {
+    const current = saveSummary(raw['current'], 'ApiErrorBody.current');
+    if (!current.ok) {
+      return current;
+    }
+    body.current = current.value;
+  }
+  if (Object.hasOwn(raw, 'value')) {
+    const value = playerValue(raw['value'], 'ApiErrorBody.value');
+    if (!value.ok) {
+      return value;
+    }
+    body.value = value.value;
+  }
+  return ok(body);
 }
 
 /** `POST /api/auth`. */
@@ -270,12 +315,19 @@ export const decodeChapterPayload: Decoder<ChapterPayload> = root(
 /** `GET /api/puzzles/{puzzleId}?lang`. */
 export const decodePuzzleStatus: Decoder<PuzzleStatus> = root(
   'PuzzleStatus',
-  object<PuzzleStatus>({ puzzleId: str, solved: bool, hints: arrayOf(hintView) }),
+  object<PuzzleStatus>({ puzzleId: str, solved: bool, hints: arrayOf(hintView), valueRun: nullable(int) }),
 );
 /** `POST /api/puzzles/{puzzleId}/attempts`. */
 export const decodeAttemptResponse: Decoder<AttemptResponse> = root(
   'AttemptResponse',
-  object<AttemptResponse>({ correct: bool, solved: bool }),
+  object<AttemptResponse>({ correct: bool, solved: bool, attemptsLeft: nullable(int), spent: bool }),
+);
+/** `POST /api/puzzles/{puzzleId}/restart`: the current run after the call. */
+export const decodePlayerValue: Decoder<PlayerValue> = root('PlayerValue', playerValue);
+/** `GET /api/chapters/{chapterId}/values`: the player's value of each per-player puzzle of the chapter. */
+export const decodeValuesResponse: Decoder<ValuesResponse> = root(
+  'ValuesResponse',
+  object<ValuesResponse>({ values: byLocalId(playerValue) }),
 );
 
 /** `POST /api/stats/events`: every event of the batch is counted as recorded or a duplicate, or listed as rejected. */

@@ -1046,7 +1046,7 @@ async fn attempt_correct_marks_solved() {
         "correct at T0",
         &reply,
         200,
-        r#"{"correct":true,"solved":true}"#,
+        r#"{"correct":true,"solved":true,"attemptsLeft":null,"spent":false}"#,
     ));
     let solved_at = progress_row(&st, ANN, "ch1.drawer").await.map(|r| r.3);
     if solved_at != Some(Some(T0)) {
@@ -1060,7 +1060,7 @@ async fn attempt_correct_marks_solved() {
         "correct again at T0+10",
         &reply,
         200,
-        r#"{"correct":true,"solved":true}"#,
+        r#"{"correct":true,"solved":true,"attemptsLeft":null,"spent":false}"#,
     ));
     let solved_at = progress_row(&st, ANN, "ch1.drawer").await.map(|r| r.3);
     if solved_at != Some(Some(T0)) {
@@ -1074,7 +1074,7 @@ async fn attempt_correct_marks_solved() {
         "wrong at T0+20",
         &reply,
         200,
-        r#"{"correct":false,"solved":true}"#,
+        r#"{"correct":false,"solved":true,"attemptsLeft":null,"spent":false}"#,
     ));
     report(&failures);
 }
@@ -1089,7 +1089,7 @@ async fn attempt_wrong_returns_false() {
         "wrong",
         &reply,
         200,
-        r#"{"correct":false,"solved":false}"#,
+        r#"{"correct":false,"solved":false,"attemptsLeft":null,"spent":false}"#,
     ));
     let row = progress_row(&st, ANN, "ch1.drawer").await;
     if row != Some((1, 1, T0, None)) {
@@ -1144,7 +1144,7 @@ async fn attempt_wrong_shape_400() {
         "control: a well-formed wrong answer",
         &reply,
         200,
-        r#"{"correct":false,"solved":false}"#,
+        r#"{"correct":false,"solved":false,"attemptsLeft":null,"spent":false}"#,
     ));
     let row = progress_row(&st, ANN, "ch1.drawer").await.map(|r| r.0);
     if row != Some(1) {
@@ -1193,7 +1193,7 @@ async fn attempt_answer_len_64_accepted() {
         "64 entries",
         &reply,
         200,
-        r#"{"correct":true,"solved":true}"#,
+        r#"{"correct":true,"solved":true,"attemptsLeft":null,"spent":false}"#,
     ));
     let row = progress_row(&st, ANN, "ch1.drawer").await;
     if row != Some((1, 1, T0, Some(T0))) {
@@ -1251,14 +1251,14 @@ async fn attempt_paid_chapter_403_without_entitlement() {
         "BEN owns chapter:ch2",
         &reply,
         200,
-        r#"{"correct":true,"solved":true}"#,
+        r#"{"correct":true,"solved":true,"attemptsLeft":null,"spent":false}"#,
     ));
     let reply = post_attempt(&st, ANN, "ch1.drawer", WRONG).await;
     failures.extend(expect_reply(
         "ANN, free ch1.drawer",
         &reply,
         200,
-        r#"{"correct":false,"solved":false}"#,
+        r#"{"correct":false,"solved":false,"attemptsLeft":null,"spent":false}"#,
     ));
     report(&failures);
 }
@@ -1287,7 +1287,7 @@ async fn attempt_limited_correct_answer_429_not_solved() {
             &format!("wrong {call}"),
             &reply,
             200,
-            r#"{"correct":false,"solved":false}"#,
+            r#"{"correct":false,"solved":false,"attemptsLeft":null,"spent":false}"#,
         ));
     }
     let reply = post_attempt(&st, ANN, "ch1.drawer", SOLUTION).await;
@@ -1317,8 +1317,8 @@ async fn unlock(st: &AppState, user: i64, puzzle: &str, tier: i64) {
     c.close().await.unwrap();
 }
 
-/// The exact wire text of a status: `puzzleId`, `solved`, then one hint per tier (tier 1 first) that is unlocked
-/// with its text when `tiers` holds one, locked with `null` otherwise.
+/// The exact wire text of a static puzzle's status: `puzzleId`, `solved`, then one hint per tier (tier 1 first) that is
+/// unlocked with its text when `tiers` holds one, locked with `null` otherwise, and `valueRun` null.
 fn status_body(id: &str, solved: bool, tiers: &[Option<&str>]) -> String {
     let hints: Vec<String> = tiers
         .iter()
@@ -1332,7 +1332,7 @@ fn status_body(id: &str, solved: bool, tiers: &[Option<&str>]) -> String {
         })
         .collect();
     format!(
-        r#"{{"puzzleId":"{id}","solved":{solved},"hints":[{}]}}"#,
+        r#"{{"puzzleId":"{id}","solved":{solved},"hints":[{}],"valueRun":null}}"#,
         hints.join(",")
     )
 }
@@ -1396,7 +1396,7 @@ async fn puzzle_hint_text_only_when_unlocked() {
         "ANN solves",
         &reply,
         200,
-        r#"{"correct":true,"solved":true}"#,
+        r#"{"correct":true,"solved":true,"attemptsLeft":null,"spent":false}"#,
     ));
     let reply = get(&st, Some(ANN), "/api/puzzles/ch1.drawer?lang=en").await;
     failures.extend(expect_reply(
@@ -1714,7 +1714,7 @@ async fn rename_attempt_solves_under_the_key() {
         "ANN answers ch1.desk",
         &reply,
         200,
-        r#"{"correct":true,"solved":true}"#,
+        r#"{"correct":true,"solved":true,"attemptsLeft":null,"spent":false}"#,
     ));
     for (key, want) in [
         ("ch1.drawer", Some((1, 1, T0, Some(T0)))),
