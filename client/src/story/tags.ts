@@ -435,17 +435,18 @@ function conflictsOneWay(a: StagingCommand, b: StagingCommand): boolean {
       return b.kind === 'scene' || b.kind === 'hide' || b.kind === 'cg';
     case 'show':
       return (b.kind === 'show' && b.char === a.char) || (b.kind === 'hide' && (b.char === 'all' || b.char === a.char));
+    case 'face':
+      return b.kind === 'face' && b.char === a.char;
     case 'cg':
     case 'bgm':
     case 'wait':
+    case 'cam':
+    case 'fx':
       return b.kind === a.kind;
     case 'hide':
     case 'sfx':
-    case 'face':
-    case 'cam':
     case 'think':
     case 'anim':
-    case 'fx':
       return false;
     case 'puzzle':
     case 'explore':

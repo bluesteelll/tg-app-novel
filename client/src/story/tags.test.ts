@@ -725,3 +725,55 @@ test('tags: fx is shake or flash', () => {
     expect(r.commands, tag).toEqual([]);
   }
 });
+
+/** The pair conflicts on its second tag (§7); both commands stay in the batch, as for the existing kinds. */
+function expectConflict(first: string, second: string): void {
+  const r = parse(first, second);
+  expect(r.errors, `${first} + ${second}`).toEqual([{ tag: second, reason: 'conflict', detail: expect.any(String) }]);
+  expect(r.commands, `${first} + ${second}`).toHaveLength(2);
+}
+
+test('tags: two faces of one character conflict', () => {
+  expectConflict('face: ally smile', 'face: ally worried');
+  expectConflict('face: ally smile', 'face: ally smile ms=300');
+  // Faces of two characters, a face beside a show of its character, a scene with a face, two anims of one character.
+  const allowed: ReadonlyArray<readonly string[]> = [
+    ['face: ally smile', 'face: stranger serious'],
+    ['show: ally neutral at=left', 'face: ally smile'],
+    ['face: ally smile', 'show: ally neutral'],
+    ['scene: cafe', 'show: ally neutral', 'face: ally worried'],
+    ['anim: ally nod', 'anim: ally sigh', 'face: ally smile'],
+  ];
+  for (const tags of allowed) {
+    expect(parse(...tags).errors, tags.join(' + ')).toEqual([]);
+  }
+});
+
+test('tags: two cam moves conflict', () => {
+  expectConflict('cam: push', 'cam: pull');
+  expectConflict('cam: pan to=left', 'cam: push to=ally z=120');
+  // A camera move beside the cut it follows, a scene, a CG; two thinks.
+  const allowed: ReadonlyArray<readonly string[]> = [
+    ['bg: cafe', 'cam: push'],
+    ['scene: cafe', 'cam: pull'],
+    ['cg: letter', 'cam: pan to=right'],
+    ['think', 'think', 'cam: push'],
+  ];
+  for (const tags of allowed) {
+    expect(parse(...tags).errors, tags.join(' + ')).toEqual([]);
+  }
+});
+
+test('tags: two fx in one batch conflict', () => {
+  expectConflict('fx: shake', 'fx: flash');
+  expectConflict('fx: shake', 'fx: shake ms=300');
+  // An fx beside a sound, a motion, a camera move; two anims of two characters.
+  const allowed: ReadonlyArray<readonly string[]> = [
+    ['fx: shake', 'sfx: door', 'anim: ally tremble'],
+    ['fx: flash', 'cam: push', 'bg: cafe'],
+    ['anim: ally hop', 'anim: stranger bounce', 'fx: flash'],
+  ];
+  for (const tags of allowed) {
+    expect(parse(...tags).errors, tags.join(' + ')).toEqual([]);
+  }
+});
