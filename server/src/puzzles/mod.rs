@@ -5,7 +5,8 @@
 //! through [`entitled_puzzle`], so a paid chapter's puzzle answers 403 to a user without the chapter.
 //!
 //! [`values`] holds the per-player values' domain, draw and renderer (per-player §3.2); [`player_values`] issues a
-//! chapter's values to their player (§3.4); [`restart`] starts a new run of a spent one (§3.6).
+//! chapter's values to their player (§3.4); [`restart`] starts a new run of a spent one (§3.6); a per-player puzzle's
+//! hint texts are rendered with the player's current value ([`status`], [`rendered_hint`], §3.7).
 
 pub mod values;
 
@@ -280,8 +281,49 @@ pub async fn restart(
     Ok(player_value(&row, *max_attempts))
 }
 
+/// `user`'s current row of the gated `def` when it is per-player (per-player §3.7): issued if absent, the domain rule
+/// applied, in a short transaction of its own; `None` for a static puzzle.
+async fn render_row(
+    st: &AppState,
+    user: UserId,
+    def: &PuzzleDef,
+) -> Result<Option<ValueRow>, ApiError> {
+    let Answer::PerPlayer { domain, .. } = &def.answer else {
+        return Ok(None);
+    };
+    let row = st
+        .repo
+        .value_for_render(user, &def.key, domain, drawn(domain), st.clock.now())
+        .await?;
+    Ok(Some(row))
+}
+
+/// `hint` in `lang` as `def`'s player reads it: a per-player puzzle's template rendered with `row`'s value (its own
+/// placeholders only, the load rule's promise); a static puzzle's text as authored.
+fn hint_text(def: &PuzzleDef, hint: &Localized, lang: Lang, row: Option<&ValueRow>) -> String {
+    let template = text(hint, lang);
+    match row {
+        Some(row) => values::render(template, def.local(), &row.value, def.answer_max),
+        None => template.to_owned(),
+    }
+}
+
+/// The text of `hint`, a tier of the gated `def` that `user` just unlocked or had unlocked, in `lang` (per-player
+/// §3.7): rendered with the player's current value for a per-player puzzle. Called after the spend commits.
+pub async fn rendered_hint(
+    st: &AppState,
+    user: UserId,
+    def: &PuzzleDef,
+    hint: &Localized,
+    lang: Lang,
+) -> Result<String, ApiError> {
+    let row = render_row(st, user, def).await?;
+    Ok(hint_text(def, hint, lang, row.as_ref()))
+}
+
 /// The status of the gated `def` for `user`: solved or not, and every tier of the puzzle's hint ladder, with the
-/// text in `lang` only for a tier the user unlocked. An unlock row past the current ladder is ignored.
+/// text in `lang` only for a tier the user unlocked. An unlock row past the current ladder is ignored. A per-player
+/// puzzle's texts are rendered with the player's current run, which `value_run` names.
 pub async fn status(
     st: &AppState,
     user: UserId,
@@ -290,6 +332,7 @@ pub async fn status(
 ) -> Result<PuzzleStatus, ApiError> {
     let solved = st.repo.is_solved(user, &def.key).await?;
     let unlocked = st.repo.unlocked_tiers(user, &def.key).await?;
+    let row = render_row(st, user, def).await?;
     let hints = def
         .hints
         .iter()
@@ -299,7 +342,7 @@ pub async fn status(
             HintView {
                 tier,
                 unlocked: open,
-                text: open.then(|| text(hint, lang).to_owned()),
+                text: open.then(|| hint_text(def, hint, lang, row.as_ref())),
             }
         })
         .collect();
@@ -307,6 +350,6 @@ pub async fn status(
         puzzle_id: def.id.0.clone(),
         solved,
         hints,
-        value_run: None,
+        value_run: row.map(|row| row.run),
     })
 }

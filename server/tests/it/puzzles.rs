@@ -3777,3 +3777,382 @@ async fn restart_paid_puzzle_403_before_per_player_404() {
     ));
     report(&failures);
 }
+
+/// A hash of no domain the content holds: a row drawn under an older content (per-player §3.5 step 3, T1).
+const OLD_HASH: &str = "0123456789abcdef";
+
+/// content-v2's drawer tier-3 template in English.
+const DRAWER_TIER3_EN: &str = "The code: $code(drawer).";
+
+/// `with_safe`'s tier-3 template in English.
+const SAFE_TIER3_EN: &str = "The code: $code(safe).";
+
+/// `with_safe` with a three-tier ladder whose tier 3 names the safe's value.
+fn with_safe_hints(v: &mut Value) {
+    with_safe(v);
+    v["puzzles"]["safe"]["hints"] = json!([
+        { "ru": "Сейф за картиной.", "en": "The safe is behind the painting." },
+        { "ru": "Код записан в дневнике.", "en": "The code is in the diary." },
+        { "ru": "Код: $code(safe).", "en": SAFE_TIER3_EN }
+    ]);
+}
+
+/// `value` as the u16 entries the renderer takes.
+fn entries(value: &[i64]) -> Vec<u16> {
+    value.iter().map(|&x| u16::try_from(x).unwrap()).collect()
+}
+
+/// `template` rendered with the value `value` of the puzzle whose local id is `own` (answerMax 9).
+fn rendered(template: &str, own: &str, value: &[i64]) -> String {
+    render(template, own, &entries(value), 9)
+}
+
+/// `GET /api/puzzles/{id}?lang=en` as `user`: (status, body as JSON).
+async fn status_json(st: &AppState, user: i64, id: &str) -> (u16, Value) {
+    let reply = get(st, Some(user), &format!("/api/puzzles/{id}?lang=en")).await;
+    let body = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
+    (reply.status.as_u16(), body)
+}
+
+/// The mismatch of a status against a 200 whose tier `tier` holds `text` and whose `valueRun` is `run`.
+fn expect_tier(
+    case: &str,
+    got: &(u16, Value),
+    tier: usize,
+    text: &str,
+    run: Value,
+) -> Option<String> {
+    let (status, body) = got;
+    let ok =
+        *status == 200 && body["hints"][tier - 1]["text"] == json!(text) && body["valueRun"] == run;
+    (!ok).then(|| {
+        format!(
+            "{case}: expected 200 with tier {tier} {text:?} and valueRun {run}, got {status} {body}"
+        )
+    })
+}
+
+/// `user`'s stored row of `key`.
+async fn stored_row(st: &AppState, user: i64, key: &str) -> Option<StoredValue> {
+    stored_values(st, user)
+        .await
+        .into_iter()
+        .find(|row| row.0 == key)
+}
+
+/// A drawer row of `user` written by raw SQL under `OLD_HASH`: run `run`, `wrong` 2, drawn at T0 - 100, holding
+/// `value` (SQL array text).
+async fn old_drawer_row(st: &AppState, user: i64, run: i64, value: &str) {
+    let mut c = common::raw_db(st).await;
+    insert_value(
+        &mut c,
+        ValueSql {
+            run,
+            wrong: 2,
+            issued_at: T0 - 100,
+            domain: OLD_HASH,
+            value: value.to_owned(),
+            ..value_row(user, "ch1.desk_drawer")
+        },
+    )
+    .await
+    .unwrap();
+    c.close().await.unwrap();
+}
+
+/// Tier 3 of a per-player puzzle is rendered with the player's own value (per-player §3.7): ANN's status shows hers,
+/// and BEN's hint use, with no value yet, issues his and shows it.
+#[tokio::test]
+async fn hint_tier3_renders_own_value() {
+    let (_copy, st, _db) = v2_state(|_| {}).await;
+    let mut failures = Vec::new();
+    let ann = issued_drawer(&st, ANN).await;
+    for tier in 1..=3 {
+        unlock(&st, ANN, "ch1.desk_drawer", tier).await;
+    }
+    let got = status_json(&st, ANN, "ch1.drawer").await;
+    failures.extend(expect_tier(
+        "ANN's status",
+        &got,
+        3,
+        &rendered(DRAWER_TIER3_EN, "drawer", &ann),
+        json!(1),
+    ));
+    fund(&st, BEN, 10).await;
+    for tier in 1..=2 {
+        unlock(&st, BEN, "ch1.desk_drawer", tier).await;
+    }
+    let (status, body) = post_hint(&st, BEN, "ch1.drawer", 3).await;
+    match stored_row(&st, BEN, "ch1.desk_drawer").await {
+        Some((_, 1, 0, T0, None, _, ben)) if in_drawer_domain(&ben) => {
+            let want = rendered(DRAWER_TIER3_EN, "drawer", &ben);
+            if (status, &body["text"]) != (200, &json!(want)) {
+                failures.push(format!(
+                    "BEN's hint use: expected 200 with {want:?}, got {status} {body}"
+                ));
+            }
+        }
+        other => failures.push(format!(
+            "BEN's hint use ({status} {body}): expected a run-1 drawer row issued, got {other:?}"
+        )),
+    }
+    report(&failures);
+}
+
+/// MONEY (per-player §3.6): a tier bought with hint units survives a restart and shows the new run's value. ANN buys
+/// tier 3 of `safe`, spends the run by three wrong answers and restarts; her status renders tier 3 with run 2's value,
+/// and using tier 3 again is `AlreadyUnlocked`: 200 with that text, the balance unchanged, no ledger row.
+#[tokio::test]
+async fn hint_unlock_survives_restart_shows_new_value() {
+    let (_copy, st, _db) = v2_state(with_safe_hints).await;
+    let mut failures = Vec::new();
+    fund(&st, ANN, 10).await;
+    let first = issued(&st, ANN, "ch1.safe").await;
+    for tier in 1..=2 {
+        unlock(&st, ANN, "ch1.safe", tier).await;
+    }
+    let (status, body) = post_hint(&st, ANN, "ch1.safe", 3).await;
+    let balance = body["balance"].as_i64();
+    let want = rendered(SAFE_TIER3_EN, "safe", &first);
+    if (status, &body["text"]) != (200, &json!(want)) || balance.is_none() {
+        failures.push(format!(
+            "the purchase of tier 3: expected 200 with {want:?} and a balance, got {status} {body}"
+        ));
+    }
+    spend_safe(&st, ANN, &first, 1).await;
+    let reply = post_restart(&st, ANN, "ch1.safe", &from_body(1)).await;
+    assert_eq!(
+        reply.status.as_u16(),
+        200,
+        "the restart: {}",
+        body_text(&reply)
+    );
+    let second = match stored_row(&st, ANN, "ch1.safe").await {
+        Some((_, 2, 0, _, None, _, value)) => value,
+        other => panic!("the safe row after the restart: expected run 2, got {other:?}"),
+    };
+    let keys = ledger_keys(&st, ANN).await;
+    let want = rendered(SAFE_TIER3_EN, "safe", &second);
+    let got = status_json(&st, ANN, "ch1.safe").await;
+    failures.extend(expect_tier(
+        "the status after the restart",
+        &got,
+        3,
+        &want,
+        json!(2),
+    ));
+    let got = post_hint(&st, ANN, "ch1.safe", 3).await;
+    failures.extend(expect_hint(
+        "tier 3 used again after the restart",
+        got,
+        balance.unwrap_or(-1),
+        &want,
+    ));
+    let after = ledger_keys(&st, ANN).await;
+    if after != keys {
+        failures.push(format!(
+            "the ledger: expected no new row after the restart, {keys:?}, got {after:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// A per-player status names the run its texts were rendered with (per-player §3.4): run 1 issued by the status itself,
+/// then the run the row holds; a static puzzle's is null.
+#[tokio::test]
+async fn status_reports_value_run() {
+    let (_copy, st, _db) = v2_state(|_| {}).await;
+    let mut failures = Vec::new();
+    let (status, body) = status_json(&st, ANN, "ch1.drawer").await;
+    if (status, &body["valueRun"]) != (200, &json!(1)) {
+        failures.push(format!(
+            "the first status: expected 200 with valueRun 1, got {status} {body}"
+        ));
+    }
+    let mut c = common::raw_db(&st).await;
+    sqlx::query("UPDATE puzzle_values SET run = 4 WHERE user_id = $1")
+        .bind(ANN)
+        .execute(&mut c)
+        .await
+        .unwrap();
+    c.close().await.unwrap();
+    let (status, body) = status_json(&st, ANN, "ch1.drawer").await;
+    if (status, &body["valueRun"]) != (200, &json!(4)) {
+        failures.push(format!(
+            "the status of run 4: expected 200 with valueRun 4, got {status} {body}"
+        ));
+    }
+    let (status, body) = status_json(&st, ANN, "ch1.gate").await;
+    if (status, &body["valueRun"]) != (200, &Value::Null) {
+        failures.push(format!(
+            "the static gate: expected 200 with valueRun null, got {status} {body}"
+        ));
+    }
+    report(&failures);
+}
+
+/// The first status after a content update never renders a value outside the new domain (per-player §3.7, m10): a
+/// row under an older hash holding `[0, 0, 0, 0]`, which the drawer excludes, is re-drawn first (run 3, the content's
+/// hash) and tier 3 shows the new value.
+#[tokio::test]
+async fn status_after_domain_change_renders_a_fitting_value() {
+    let (_copy, st, _db) = v2_state(|_| {}).await;
+    let mut failures = Vec::new();
+    old_drawer_row(&st, ANN, 2, "{0,0,0,0}").await;
+    for tier in 1..=3 {
+        unlock(&st, ANN, "ch1.desk_drawer", tier).await;
+    }
+    let got = status_json(&st, ANN, "ch1.drawer").await;
+    match stored_row(&st, ANN, "ch1.desk_drawer").await {
+        Some((_, 3, 0, T0, None, hash, value)) if hash == DOMAIN_HASH && in_drawer_domain(&value) => {
+            failures.extend(expect_tier(
+                "the status after the update",
+                &got,
+                3,
+                &rendered(DRAWER_TIER3_EN, "drawer", &value),
+                json!(3),
+            ));
+        }
+        other => failures.push(format!(
+            "the drawer row after the status ({got:?}): expected run 3, wrong 0, issued at T0, live, the content's \
+             hash, in the domain, got {other:?}"
+        )),
+    }
+    report(&failures);
+}
+
+/// A value that fits the new domain is kept (per-player §3.5 step 3): the values call moves only the row's hash; run,
+/// `wrong`, the draw time and the value stay.
+#[tokio::test]
+async fn values_domain_change_keeps_fitting_value() {
+    let (_copy, st, _db) = v2_state(|_| {}).await;
+    let mut failures = Vec::new();
+    old_drawer_row(&st, ANN, 3, "{1,8,4,7}").await;
+    let reply = get_values(&st, ANN, "ch1").await;
+    let want = json!({ "values": {
+        "drawer": { "value": [1, 8, 4, 7], "run": 3, "attemptsLeft": null, "spent": false }
+    } });
+    failures.extend(expect_json("the values call", &reply, 200, &want));
+    let row = stored_row(&st, ANN, "ch1.desk_drawer").await;
+    let want = (
+        "ch1.desk_drawer".to_owned(),
+        3,
+        2,
+        T0 - 100,
+        None,
+        DOMAIN_HASH.to_owned(),
+        vec![1, 8, 4, 7],
+    );
+    if row.as_ref() != Some(&want) {
+        failures.push(format!("the drawer row: expected {want:?}, got {row:?}"));
+    }
+    report(&failures);
+}
+
+/// A value outside the new domain is re-drawn in a new run (per-player §3.5 step 3, T1): run 4, `wrong` 0, live,
+/// issued now under the content's hash, a value of the domain, answered by the values call.
+#[tokio::test]
+async fn values_domain_change_redraws_misfit_new_run() {
+    let (_copy, st, _db) = v2_state(|_| {}).await;
+    let mut failures = Vec::new();
+    old_drawer_row(&st, ANN, 3, "{0,0,0,0}").await;
+    let reply = get_values(&st, ANN, "ch1").await;
+    match stored_row(&st, ANN, "ch1.desk_drawer").await {
+        Some((_, 4, 0, T0, None, hash, value)) if hash == DOMAIN_HASH && in_drawer_domain(&value) => {
+            let want = json!({ "values": {
+                "drawer": { "value": value, "run": 4, "attemptsLeft": null, "spent": false }
+            } });
+            failures.extend(expect_json("the values call", &reply, 200, &want));
+        }
+        other => failures.push(format!(
+            "the drawer row after the values call: expected run 4, wrong 0, issued at T0, live, the content's hash, \
+             in the domain, got {other:?}"
+        )),
+    }
+    report(&failures);
+}
+
+/// The domain rule runs once whichever path sees a changed domain first (per-player §3.5, r3 m8): a misfit row under
+/// an older hash is held by a raw transaction while a values call (its guarded update) and an attempt (its locked
+/// read) both wait on it; once released, the row ends at run 2 exactly, and both answers name that run and value.
+/// Eight rounds, one player each.
+#[tokio::test]
+async fn values_domain_change_races_an_attempt_redraws_once() {
+    let (_copy, st, _db) = v2_state(|_| {}).await;
+    let mut failures = Vec::new();
+    for round in 0..8 {
+        let user = 4000 + round;
+        st.repo
+            .upsert_user(UserId(user), "Ann", None, T0)
+            .await
+            .unwrap();
+        let mut c = common::raw_db(&st).await;
+        insert_value(
+            &mut c,
+            ValueSql {
+                domain: OLD_HASH,
+                value: "{0,0,0,0}".to_owned(),
+                ..value_row(user, "ch1.desk_drawer")
+            },
+        )
+        .await
+        .unwrap();
+        c.close().await.unwrap();
+        let mut holder = common::raw_db(&st).await;
+        let mut poll = common::raw_db(&st).await;
+        sqlx::raw_sql("BEGIN ISOLATION LEVEL READ COMMITTED")
+            .execute(&mut holder)
+            .await
+            .unwrap();
+        sqlx::query(
+            "SELECT 1 FROM puzzle_values WHERE user_id = $1 AND puzzle_id = 'ch1.desk_drawer' FOR UPDATE",
+        )
+        .bind(user)
+        .execute(&mut holder)
+        .await
+        .unwrap();
+        let values = {
+            let st = st.clone();
+            tokio::spawn(async move { get_values(&st, user, "ch1").await })
+        };
+        let attempt = {
+            let st = st.clone();
+            tokio::spawn(async move {
+                post_attempt(&st, user, "ch1.drawer", &run_body(&[1, 2, 3, 4], Some(1))).await
+            })
+        };
+        let waiters = lock_waiters(&mut poll, 2, Duration::from_millis(1500)).await;
+        sqlx::raw_sql("COMMIT").execute(&mut holder).await.unwrap();
+        holder.close().await.unwrap();
+        poll.close().await.unwrap();
+        let (values, attempt) = (values.await.unwrap(), attempt.await.unwrap());
+        if waiters < 2 {
+            failures.push(format!(
+                "round {round}: expected the values call and the attempt waiting on the held row, got {waiters}"
+            ));
+        }
+        match stored_row(&st, user, "ch1.desk_drawer").await {
+            Some((_, 2, 0, _, None, hash, value)) if hash == DOMAIN_HASH && in_drawer_domain(&value) => {
+                let want = json!({ "values": { "drawer": {
+                    "value": value, "run": 2, "attemptsLeft": null, "spent": false
+                } } });
+                failures.extend(expect_json(
+                    &format!("round {round}: the values call"),
+                    &values,
+                    200,
+                    &want,
+                ));
+                failures.extend(expect_json(
+                    &format!("round {round}: the attempt of run 1"),
+                    &attempt,
+                    409,
+                    &value_changed(&value, 2, None, false),
+                ));
+            }
+            other => failures.push(format!(
+                "round {round}: expected one re-draw (run 2, wrong 0, live, the content's hash), got {other:?}"
+            )),
+        }
+    }
+    report(&failures);
+}

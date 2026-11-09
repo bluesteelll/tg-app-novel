@@ -68,10 +68,83 @@ fn array_literal(value: &[u16]) -> String {
     text
 }
 
+/// How a stored row meets a content domain other than the one it records (per-player §3.5 step 3, T1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DomainUpdate {
+    /// The value lies in the new domain: only the row's hash moves.
+    KeepValue,
+    /// The value does not: a forced re-draw (a new value, `run + 1`, `wrong` 0, live, issued now).
+    Redraw,
+}
+
+/// The domain rule, pure: `None` when `row` records `domain`'s hash; [`DomainUpdate::KeepValue`] when `domain` holds
+/// the row's value; else [`DomainUpdate::Redraw`].
+fn domain_rule(row: &ValueRow, domain: &Domain) -> Option<DomainUpdate> {
+    if row.domain == *domain.hash() {
+        None
+    } else if domain.contains(&row.value) {
+        Some(DomainUpdate::KeepValue)
+    } else {
+        Some(DomainUpdate::Redraw)
+    }
+}
+
+/// `row` after the domain rule against the content's `domain`, inside the caller's transaction: unchanged when it
+/// records `domain`'s hash; else one update guarded by the hash the row was read with (`AND domain = $old`), the
+/// re-draw using `drawn`. `None` when the guard matched no row: another path applied the rule first and holds or
+/// committed the newer row (READ COMMITTED re-checks an `UPDATE`'s `WHERE` against the newest version after a wait),
+/// so the rule runs once per domain change whichever path sees it first (per-player §3.5, r3 m8).
+async fn follow_domain(
+    tx: &mut PgConnection,
+    user: UserId,
+    row: ValueRow,
+    domain: &Domain,
+    drawn: &[u16],
+    now: i64,
+) -> Result<Option<ValueRow>, sqlx::Error> {
+    let Some(update) = domain_rule(&row, domain) else {
+        return Ok(Some(row));
+    };
+    let columns: Option<ValueColumns> = match update {
+        DomainUpdate::KeepValue => {
+            sqlx::query_as(
+                "UPDATE puzzle_values SET domain = $3 \
+                 WHERE user_id = $1 AND puzzle_id = $2 AND domain = $4 \
+                 RETURNING puzzle_id, run, wrong, issued_at, spent_at, domain, value",
+            )
+            .bind(user.0)
+            .bind(&row.puzzle.0)
+            .bind(&domain.hash().0)
+            .bind(&row.domain.0)
+            .fetch_optional(&mut *tx)
+            .await?
+        }
+        DomainUpdate::Redraw => {
+            let value: Vec<i64> = drawn.iter().map(|&entry| i64::from(entry)).collect();
+            sqlx::query_as(
+                "UPDATE puzzle_values SET domain = $3, value = $5, run = run + 1, wrong = 0, spent_at = NULL, \
+                 issued_at = $6 WHERE user_id = $1 AND puzzle_id = $2 AND domain = $4 \
+                 RETURNING puzzle_id, run, wrong, issued_at, spent_at, domain, value",
+            )
+            .bind(user.0)
+            .bind(&row.puzzle.0)
+            .bind(&domain.hash().0)
+            .bind(&row.domain.0)
+            .bind(&value)
+            .bind(now)
+            .fetch_optional(&mut *tx)
+            .await?
+        }
+    };
+    columns.map(value_row).transpose()
+}
+
 /// The values route's read inside the caller's transaction (per-player §3.4, §3.5): one statement issues the absent
 /// rows of `set`, inserted in key order with the primary key as the arbiter (never a check-then-insert), so two
-/// issuers of one chapter meet the unique-index waits in the same order; then one plain select reads the rows, in key
-/// order.
+/// issuers of one chapter meet the unique-index waits in the same order; one plain select reads the rows, in key
+/// order; then, in key order, each row the domain rule moves takes its guarded update ([`follow_domain`]), and a row
+/// whose guard missed is read again. Its only waits are those, all in key order, and none holds progress: no cycle
+/// with an attempt (progress, then one value row) or a restart (one value row).
 async fn chapter_values(
     tx: &mut PgConnection,
     user: UserId,
@@ -102,7 +175,30 @@ async fn chapter_values(
     .bind(&keys)
     .fetch_all(&mut *tx)
     .await?;
-    rows.into_iter().map(value_row).collect()
+    let mut out = Vec::with_capacity(rows.len());
+    for columns in rows {
+        let row = value_row(columns)?;
+        let Some(issue) = set.iter().find(|v| *v.puzzle == row.puzzle) else {
+            out.push(row);
+            continue;
+        };
+        if let Some(row) = follow_domain(tx, user, row, issue.domain, &issue.drawn, now).await? {
+            out.push(row);
+            continue;
+        }
+        let again: Option<ValueColumns> = sqlx::query_as(
+            "SELECT puzzle_id, run, wrong, issued_at, spent_at, domain, value FROM puzzle_values \
+             WHERE user_id = $1 AND puzzle_id = $2",
+        )
+        .bind(user.0)
+        .bind(&issue.puzzle.0)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(columns) = again {
+            out.push(value_row(columns)?);
+        }
+    }
+    Ok(out)
 }
 
 /// What [`Repo::record_attempt`] judges an answer against (per-player §3.5).
@@ -175,7 +271,9 @@ pub enum AttemptRecord {
 }
 
 /// The one-row read of a value inside the caller's transaction (per-player §3.5 step 3): insert-if-absent with
-/// `drawn` (run 1, live), then the row under `FOR UPDATE`, held to the commit.
+/// `drawn` (run 1, live), then the row under `FOR UPDATE`, held to the commit, then the domain rule against `domain`
+/// ([`follow_domain`], `drawn` again for a re-draw). The attempt, the restart and the hint rendering read through it
+/// (m10).
 async fn current_value(
     tx: &mut PgConnection,
     user: UserId,
@@ -204,7 +302,11 @@ async fn current_value(
     .bind(&puzzle.0)
     .fetch_one(&mut *tx)
     .await?;
-    value_row(columns)
+    let row = value_row(columns)?;
+    // Under the row lock the guard always holds; a miss would mean the row vanished under it, answered as a 500.
+    follow_domain(tx, user, row, domain, drawn, now)
+        .await?
+        .ok_or(sqlx::Error::RowNotFound)
 }
 
 impl Repo {
@@ -367,8 +469,25 @@ impl Repo {
         value_row(columns)
     }
 
-    /// `user`'s values of `set` (one chapter's per-player puzzles), each issued if absent, in key order: one READ
-    /// COMMITTED transaction ([`chapter_values`]). N calls give the same rows.
+    /// `user`'s current row of the per-player puzzle keyed `puzzle` for rendering its texts (per-player §3.7): issued
+    /// if absent and the domain rule applied ([`current_value`]), in one short READ COMMITTED transaction of its own,
+    /// so a hint's text is rendered after its spend commits.
+    pub async fn value_for_render(
+        &self,
+        user: UserId,
+        puzzle: &PuzzleKey,
+        domain: &Domain,
+        drawn: Vec<u16>,
+        now: i64,
+    ) -> Result<ValueRow, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        let row = current_value(&mut tx, user, puzzle, domain, &drawn, now).await?;
+        tx.commit().await?;
+        Ok(row)
+    }
+
+    /// `user`'s values of `set` (one chapter's per-player puzzles), each issued if absent and moved by the domain rule
+    /// once, in key order: one READ COMMITTED transaction ([`chapter_values`]). N calls give the same rows.
     pub async fn issue_values(
         &self,
         user: UserId,

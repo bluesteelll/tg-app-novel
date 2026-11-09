@@ -17,7 +17,7 @@ use crate::AppState;
 use crate::api::body_rejection;
 use crate::api::dto::{AttemptRequest, AttemptResponse, HintUseResponse, RestartRequest};
 use crate::auth::AuthUser;
-use crate::content::{Answer, Localized};
+use crate::content::Answer;
 use crate::db::economy::SpendOutcome;
 use crate::error::ApiError;
 use crate::ids::{ChapterId, PuzzleId};
@@ -148,14 +148,6 @@ fn hint_tier(raw: &str) -> Option<u8> {
     }
 }
 
-/// `localized` in `lang`: the rule of the status route's texts (`puzzles::text`, private there).
-fn hint_text(localized: &Localized, lang: Lang) -> &str {
-    match lang {
-        Lang::Ru => &localized.ru,
-        Lang::En => &localized.en,
-    }
-}
-
 /// `POST /api/puzzles/{puzzleId}/hints/{tier}?lang=ru|en` (M21): unlocks a tier of the puzzle's hint ladder by spending
 /// `spend.hintTier` hints from the balance, and answers the tier's text. The checks run in a fixed order (token, id
 /// grammar, tier, `lang`, puzzle known, entitlement, then the tier within the puzzle's ladder, after the gate so a paid
@@ -191,9 +183,8 @@ pub async fn post_hint(
         SpendOutcome::Insufficient => return Err(ApiError::InsufficientBalance),
         SpendOutcome::Unavailable => return Err(ApiError::HintUnavailable),
     };
-    let body = HintUseResponse {
-        balance,
-        text: hint_text(hint, lang).to_owned(),
-    };
+    // Rendered after the spend commits, from the player's current row (per-player §3.7).
+    let text = puzzles::rendered_hint(&st, user, def, hint, lang).await?;
+    let body = HintUseResponse { balance, text };
     Ok((sold_headers(), Json(body)).into_response())
 }
