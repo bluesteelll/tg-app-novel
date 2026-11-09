@@ -1,6 +1,7 @@
 // Architecture rules over the raw sources of src/ (and index.html). The lanes that add a rule (LW2, LP2) keep this
 // file's contract: every rule has a red fixture, every exemption has an allow fixture, and detection is AST-based for
 // TypeScript: a comment such as `// never 100vh` or a method named `confirm` must not trip a rule.
+import { parse } from 'svelte/compiler';
 import ts from 'typescript';
 import { expect, test } from 'vitest';
 
@@ -34,6 +35,7 @@ const RULE_IDS = [
   'rules-lazy',
   'runner-enter',
   'waapi',
+  'svelte-action',
 ] as const;
 
 type RuleId = (typeof RULE_IDS)[number];
@@ -74,6 +76,7 @@ const GROUP: Record<RuleId, Group> = {
   'rules-lazy': 'lazy',
   'runner-enter': 'runner',
   waapi: 'scene',
+  'svelte-action': 'pattern',
 };
 
 /** Paths are relative to src/; index.html sits one level up. */
@@ -282,6 +285,9 @@ function violations(files: Readonly<Record<string, string>>): Violation[] {
     if (file.endsWith('.ts')) {
       scanScript(file, text, out);
     } else if (file.endsWith('.svelte') || file.endsWith('.html')) {
+      if (file.endsWith('.svelte')) {
+        scanActions(file, text, out);
+      }
       const parts = splitDocument(text);
       scanScript(file, parts.script, out);
       scanText(file, parts.markup, MARKUP_RULES, out);
@@ -290,6 +296,39 @@ function violations(files: Readonly<Record<string, string>>): Violation[] {
     }
   }
   return out;
+}
+
+/**
+ * Rule `svelte-action` (RULINGS 201 E1): the first `use:` directive anywhere brings Svelte's action runtime into the
+ * entry chunk (~0.22 KB br measured, with or without an argument), so a family root attaches `cueRoot` in an
+ * `$effect` on its bound element instead. Judged on the compiler's own tree (Svelte 5's modern AST names the directive
+ * `UseDirective`), so a comment, a text or an attribute value spelling `use:` (`module:use:said`) is none; a source
+ * the compiler refuses is reported, so the rule never passes a file it did not read.
+ */
+function scanActions(file: string, text: string, out: Violation[]): void {
+  if (!applies('svelte-action', file)) {
+    return;
+  }
+  let fragment: unknown;
+  try {
+    fragment = parse(text, { modern: true }).fragment;
+  } catch (e) {
+    out.push({ rule: 'svelte-action', file, line: 1, excerpt: `not parsed: ${String(e).slice(0, 80)}` });
+    return;
+  }
+  const walk = (node: unknown): void => {
+    if (typeof node !== 'object' || node === null) {
+      return;
+    }
+    const n = node as { type?: unknown; start?: unknown };
+    if (n.type === 'UseDirective' && typeof n.start === 'number') {
+      out.push({ rule: 'svelte-action', file, ...lineAt(text, n.start) });
+    }
+    for (const v of Object.values(node)) {
+      walk(v);
+    }
+  };
+  walk(fragment);
 }
 
 /** Keeps offsets and line numbers: every character except a newline becomes a space. */
@@ -1878,6 +1917,12 @@ const RED: Record<RuleId, readonly Fixture[]> = {
     ['explore/controller.ts', "r['enter'](k, {});"],
     ['ui/A.svelte', '<button onclick={() => runner.enter(k, p)}>x</button>'],
   ],
+  'svelte-action': [
+    // The explore root before RULINGS 201 E1, the argument-free form (the same runtime), and one inside a block.
+    ['ui/explore/ExploreView.svelte', '<div class="layer" use:cueRoot={view.oncue} data-cue-root></div>'],
+    ['ui/puzzles/PuzzleHost.svelte', '<div class="frame" use:cueRoot data-cue-root="frame"></div>'],
+    ['ui/A.svelte', '{#if open}\n  <section><button use:tip={label}>x</button></section>\n{/if}'],
+  ],
   waapi: [
     ['ui/explore/Ribbon.svelte', 'el.animate([{opacity: 0}, {opacity: 1}], 200);'],
     ['scene/x.ts', 'const a = el.animate(kf, 200);'],
@@ -2041,6 +2086,15 @@ const ALLOW: ReadonlyArray<readonly [RuleId, readonly Fixture[]]> = [
       ['ui/toast-motion.ts', 'el.animate([{opacity: 0}, {opacity: 1}], 200);'],
       // Svelte's `animate:` directive is no call.
       ['ui/A.svelte', '<div animate:flip></div>'],
+    ],
+  ],
+  [
+    'svelte-action',
+    [
+      // A bound root; `use:` spelled in a comment, a text, an attribute value and a script string.
+      ['ui/App.svelte', '<div class="app" bind:this={rootEl}></div>'],
+      ['ui/explore/ExploreView.svelte', '<!-- use:cueRoot -->\n<p title="module:use:said">use:said</p>'],
+      ['ui/A.svelte', "<script lang=\"ts\">\n  const key = 'module:use:said';\n</script>\n<p>{key}</p>"],
     ],
   ],
 ];

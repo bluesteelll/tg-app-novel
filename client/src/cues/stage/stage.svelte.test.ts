@@ -550,6 +550,32 @@ function layerProps(): ExploreLayerProps {
   };
 }
 
+test("cues: the explore root attaches in an effect and emits to the view's oncue", async () => {
+  // RULINGS 201 E1: ExploreView's root is the family's cue root without a `use:` action; its effect attaches the
+  // root's listeners and stamps its birth, a second effect hands it the view's emit, and unmount detaches it.
+  const props = layerProps();
+  const first: CueEvent[] = [];
+  props.view.oncue = (e) => first.push(e);
+  const { unmount } = render(ExploreView, props);
+  await settle();
+  const layer = document.querySelector<HTMLElement>('[data-cue-root]');
+  expect(Number.isFinite(Number(layer?.dataset.cueBorn))).toBe(true);
+  const tap = element('button', { 'data-cue': 'hotspot' }, HOTSPOT, layer ?? document.body);
+  tap.click();
+  expect(first.map((e) => [e.cue, e.el])).toEqual([[{ kind: 'ui', control: 'hotspot', item: null, index: null }, tap]]);
+  // A new emit (the next session's bus) reaches the next taps; the old one gets none.
+  const next: CueEvent[] = [];
+  props.view.oncue = (e) => next.push(e);
+  await settle();
+  tap.click();
+  expect([first.length, next.length]).toEqual([1, 1]);
+  // Unmounted: the listeners are gone with the root.
+  unmount();
+  await settle();
+  tap.click();
+  expect([first.length, next.length]).toEqual([1, 1]);
+});
+
 test('stage: a panel the write opens slides in after its flush and a panel it closes slides out on its ghost', async () => {
   const s = mounted();
   const props = layerProps();
