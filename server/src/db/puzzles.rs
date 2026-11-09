@@ -316,6 +316,57 @@ impl Repo {
         })
     }
 
+    /// The current run of `user`'s value of the puzzle keyed `puzzle` after a restart request from run `from`
+    /// (per-player §3.6), in one READ COMMITTED transaction: the row `FOR UPDATE` ([`current_value`], issued first if
+    /// absent); when its run is `from` and spent, a new run starts: re-drawn (`drawn`, of `domain`, issued `now`)
+    /// for an unsolved puzzle, on the same value and its draw time for a solved one (`solved_at` read without a lock:
+    /// only an attempt sets it, under the progress lock this path never takes). Otherwise nothing changes: `from` is
+    /// the guard, so a repeat, a stale `from` or a live run answers the current row.
+    pub async fn restart_value(
+        &self,
+        user: UserId,
+        puzzle: &PuzzleKey,
+        domain: &Domain,
+        drawn: Vec<u16>,
+        from: i64,
+        now: i64,
+    ) -> Result<ValueRow, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        let row = current_value(&mut tx, user, puzzle, domain, &drawn, now).await?;
+        if row.run != from || row.spent_at.is_none() {
+            tx.commit().await?;
+            return Ok(row);
+        }
+        let solved: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM puzzle_progress \
+             WHERE user_id = $1 AND puzzle_id = $2 AND solved_at IS NOT NULL)",
+        )
+        .bind(user.0)
+        .bind(&puzzle.0)
+        .fetch_one(&mut *tx)
+        .await?;
+        let (issued_at, hash, value) = if solved {
+            (row.issued_at, row.domain, row.value)
+        } else {
+            (now, domain.hash().clone(), drawn)
+        };
+        let value: Vec<i64> = value.iter().map(|&entry| i64::from(entry)).collect();
+        let columns: ValueColumns = sqlx::query_as(
+            "UPDATE puzzle_values SET run = run + 1, wrong = 0, spent_at = NULL, issued_at = $3, domain = $4, \
+             value = $5 WHERE user_id = $1 AND puzzle_id = $2 \
+             RETURNING puzzle_id, run, wrong, issued_at, spent_at, domain, value",
+        )
+        .bind(user.0)
+        .bind(&puzzle.0)
+        .bind(issued_at)
+        .bind(&hash.0)
+        .bind(&value)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        value_row(columns)
+    }
+
     /// `user`'s values of `set` (one chapter's per-player puzzles), each issued if absent, in key order: one READ
     /// COMMITTED transaction ([`chapter_values`]). N calls give the same rows.
     pub async fn issue_values(

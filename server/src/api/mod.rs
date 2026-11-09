@@ -77,6 +77,7 @@ fn routes() -> Router<AppState> {
         )
         .route("/puzzles/{puzzle_id}", get(puzzles::get_status))
         .route("/puzzles/{puzzle_id}/attempts", post(puzzles::post_attempt))
+        .route("/puzzles/{puzzle_id}/restart", post(puzzles::post_restart))
         .route(
             "/puzzles/{puzzle_id}/hints/{tier}",
             post(puzzles::post_hint),

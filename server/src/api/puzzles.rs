@@ -1,6 +1,6 @@
 //! `/api/puzzles`: answer attempts, a puzzle's status with its hint ladder, and the hint use that unlocks a tier from
-//! the balance (META-PLAN M21); and `/api/chapters/{chapterId}/values`, a chapter's per-player values (per-player
-//! §3.4). Thin handlers: the id, the tier and `lang` are parsed here; the gate
+//! the balance (META-PLAN M21), and the restart of a per-player puzzle's spent run; and
+//! `/api/chapters/{chapterId}/values`, a chapter's per-player values (per-player §3.4). Thin handlers: the id, the tier and `lang` are parsed here; the gate
 //! ([`puzzles::entitled_puzzle`]) and the rules live in `puzzles`, the spend in `db/economy.rs`.
 //!
 //! A malformed id is 400 `bad_request` (PUZZLES-PLAN "HTTP API additions"): puzzle ids are not secret, public worlds
@@ -15,9 +15,9 @@ use axum::response::{IntoResponse, Response};
 
 use crate::AppState;
 use crate::api::body_rejection;
-use crate::api::dto::{AttemptRequest, AttemptResponse, HintUseResponse};
+use crate::api::dto::{AttemptRequest, AttemptResponse, HintUseResponse, RestartRequest};
 use crate::auth::AuthUser;
-use crate::content::Localized;
+use crate::content::{Answer, Localized};
 use crate::db::economy::SpendOutcome;
 use crate::error::ApiError;
 use crate::ids::{ChapterId, PuzzleId};
@@ -80,6 +80,27 @@ pub async fn post_attempt(
             Err(ApiError::RateLimited { retry_after_secs })
         }
     }
+}
+
+/// `POST /api/puzzles/{puzzleId}/restart` with `{ "from": run }` (per-player §3.6): the current run of the player's
+/// value after the restart, a spent run `from` replaced by a new one. The checks run in a fixed order (token, id
+/// grammar, puzzle known, entitlement, per-player, body), so a non-buyer cannot learn which paid puzzles are
+/// per-player (m11); the 200 is `private, no-store` + `nosniff`: the value is the player's alone.
+pub async fn post_restart(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    id: Result<Path<String>, PathRejection>,
+    req: Result<Json<RestartRequest>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    let id = puzzle_id(id)?;
+    let def = puzzles::entitled_puzzle(&st, user, &id).await?;
+    // Before the body: a static puzzle is 404 whatever the request carries.
+    if !matches!(def.answer, Answer::PerPlayer { .. }) {
+        return Err(ApiError::NotFound);
+    }
+    let Json(req) = req.map_err(body_rejection)?;
+    let value = puzzles::restart(&st, user, def, req.from).await?;
+    Ok((sold_headers(), Json(value)).into_response())
 }
 
 /// `GET /api/puzzles/{puzzleId}?lang=ru|en`: whether the user solved the puzzle, and its hint ladder with the texts of

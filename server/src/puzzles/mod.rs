@@ -5,7 +5,7 @@
 //! through [`entitled_puzzle`], so a paid chapter's puzzle answers 403 to a user without the chapter.
 //!
 //! [`values`] holds the per-player values' domain, draw and renderer (per-player §3.2); [`player_values`] issues a
-//! chapter's values to their player (§3.4).
+//! chapter's values to their player (§3.4); [`restart`] starts a new run of a spent one (§3.6).
 
 pub mod values;
 
@@ -255,6 +255,29 @@ pub async fn attempt(
         }),
         AttemptRecord::ValueChanged(row) => Err(ApiError::ValueChanged(player_value(&row, cap))),
     }
+}
+
+/// The current run of `user`'s value of the gated `def` after a restart request from run `from` (per-player §3.6): a
+/// spent run `from` starts a new one (re-drawn, or on the same value once solved); anything else answers the current
+/// run unchanged. 404 `not_found` for a static puzzle: it has no run.
+pub async fn restart(
+    st: &AppState,
+    user: UserId,
+    def: &PuzzleDef,
+    from: i64,
+) -> Result<PlayerValue, ApiError> {
+    let Answer::PerPlayer {
+        domain,
+        max_attempts,
+    } = &def.answer
+    else {
+        return Err(ApiError::NotFound);
+    };
+    let row = st
+        .repo
+        .restart_value(user, &def.key, domain, drawn(domain), from, st.clock.now())
+        .await?;
+    Ok(player_value(&row, *max_attempts))
 }
 
 /// The status of the gated `def` for `user`: solved or not, and every tier of the puzzle's hint ladder, with the

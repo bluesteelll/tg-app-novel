@@ -3516,3 +3516,264 @@ async fn attempt_solved_replay_counts_and_spends() {
     }
     report(&failures);
 }
+
+/// `POST /api/puzzles/{id}/restart` as `user` with `body` sent as `application/json`.
+async fn post_restart(st: &AppState, user: i64, id: &str, body: &str) -> common::Reply {
+    let req = Request::post(format!("/api/puzzles/{id}/restart"))
+        .header(AUTHORIZATION, bearer(st, user))
+        .header(CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_owned()))
+        .unwrap();
+    common::call(st, req).await
+}
+
+/// `{"from": from}`: a restart's body.
+fn from_body(from: i64) -> String {
+    json!({ "from": from }).to_string()
+}
+
+/// A value of `with_safe`'s domain: four entries of `[0, 9]`.
+fn in_safe_domain(v: &[i64]) -> bool {
+    v.len() == 4 && v.iter().all(|x| (0..=9).contains(x))
+}
+
+/// Spends `user`'s run `run` of `safe` (cap 3) with three answers of a value other than `value`.
+async fn spend_safe(st: &AppState, user: i64, value: &[i64], run: i64) {
+    let wrong = run_body(&another_drawer_value(value), Some(run));
+    for n in 1..=3 {
+        let reply = post_attempt(st, user, "ch1.safe", &wrong).await;
+        assert_eq!(
+            reply.status.as_u16(),
+            200,
+            "wrong answer {n} of run {run}: {}",
+            body_text(&reply)
+        );
+    }
+}
+
+/// A restart of an unsolved spent run re-draws (per-player §3.6): run 2, `wrong` 0, live, issued at the restart, a
+/// value of the domain, answered as the 200 under the sold pair (no inequality with the old value: p = 1/10,000).
+#[tokio::test]
+async fn restart_redraws_spent_run() {
+    let (_copy, st, _db) = v2_state(with_safe).await;
+    let mut failures = Vec::new();
+    let ann = issued(&st, ANN, "ch1.safe").await;
+    spend_safe(&st, ANN, &ann, 1).await;
+    let reply = post_restart(&at(&st, T0 + 10), ANN, "ch1.safe", &from_body(1)).await;
+    let rows = stored_values(&st, ANN).await;
+    match rows.iter().find(|row| row.0 == "ch1.safe") {
+        Some((_, 2, 0, issued_at, None, _, value)) if *issued_at == T0 + 10 && in_safe_domain(value) => {
+            let want = json!({ "value": value, "run": 2, "attemptsLeft": 3, "spent": false });
+            failures.extend(expect_json("the restart from 1", &reply, 200, &want));
+        }
+        other => failures.push(format!(
+            "the safe row after the restart: expected run 2, wrong 0, live, issued at T0 + 10, in the domain, got \
+             {other:?}"
+        )),
+    }
+    let got = (
+        header(&reply, CACHE_CONTROL),
+        header(&reply, X_CONTENT_TYPE_OPTIONS),
+    );
+    if got != (Some("private, no-store"), Some("nosniff")) {
+        failures.push(format!(
+            "the restart 200: expected private, no-store + nosniff, got {got:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// A restart of a live run changes nothing and answers the current run.
+#[tokio::test]
+async fn restart_live_run_noop() {
+    let (_copy, st, _db) = v2_state(with_safe).await;
+    let mut failures = Vec::new();
+    let ann = issued(&st, ANN, "ch1.safe").await;
+    let before = stored_values(&st, ANN).await;
+    let reply = post_restart(&at(&st, T0 + 10), ANN, "ch1.safe", &from_body(1)).await;
+    let want = json!({ "value": ann, "run": 1, "attemptsLeft": 3, "spent": false });
+    failures.extend(expect_json(
+        "the restart of the live run 1",
+        &reply,
+        200,
+        &want,
+    ));
+    let after = stored_values(&st, ANN).await;
+    if after != before {
+        failures.push(format!(
+            "the rows: expected unchanged {before:?}, got {after:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// `from` is the guard (per-player §3.4): a restart from a run that is no longer current changes nothing, even when the
+/// current run is spent, and answers the current run.
+#[tokio::test]
+async fn restart_stale_from_returns_current() {
+    let (_copy, st, _db) = v2_state(with_safe).await;
+    let mut failures = Vec::new();
+    let ann = issued(&st, ANN, "ch1.safe").await;
+    spend_safe(&st, ANN, &ann, 1).await;
+    let reply = post_restart(&st, ANN, "ch1.safe", &from_body(1)).await;
+    assert_eq!(
+        reply.status.as_u16(),
+        200,
+        "the restart from 1: {}",
+        body_text(&reply)
+    );
+    let second: Vec<i64> = match stored_values(&st, ANN)
+        .await
+        .iter()
+        .find(|row| row.0 == "ch1.safe")
+    {
+        Some(row) => row.6.clone(),
+        None => panic!("no safe row after the restart"),
+    };
+    spend_safe(&st, ANN, &second, 2).await;
+    let before = stored_values(&st, ANN).await;
+    let reply = post_restart(&st, ANN, "ch1.safe", &from_body(1)).await;
+    let want = json!({ "value": second, "run": 2, "attemptsLeft": 0, "spent": true });
+    failures.extend(expect_json(
+        "a restart from 1 over the spent run 2",
+        &reply,
+        200,
+        &want,
+    ));
+    let after = stored_values(&st, ANN).await;
+    if after != before {
+        failures.push(format!(
+            "the rows: expected unchanged {before:?}, got {after:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// Eight concurrent restarts from the spent run 1 (two tabs, retries) re-draw once (per-player §3.6 "Race"): the row
+/// lock serializes them, the first moves the run to 2, the rest see run 2 and change nothing; every body is run 2
+/// with the same value.
+#[tokio::test]
+async fn restart_concurrent_one_redraw() {
+    let (_copy, st, _db) = v2_state(with_safe).await;
+    let mut failures = Vec::new();
+    let ann = issued(&st, ANN, "ch1.safe").await;
+    spend_safe(&st, ANN, &ann, 1).await;
+    let mut tasks = JoinSet::new();
+    for _ in 0..8 {
+        let st = st.clone();
+        tasks.spawn(async move { post_restart(&st, ANN, "ch1.safe", &from_body(1)).await });
+    }
+    let mut bodies = Vec::new();
+    while let Some(joined) = tasks.join_next().await {
+        let reply = joined.unwrap();
+        let body: Value = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
+        bodies.push((reply.status.as_u16(), body));
+    }
+    match stored_values(&st, ANN)
+        .await
+        .iter()
+        .find(|row| row.0 == "ch1.safe")
+    {
+        Some((_, 2, 0, _, None, _, value)) => {
+            let want = json!({ "value": value, "run": 2, "attemptsLeft": 3, "spent": false });
+            for (i, (status, body)) in bodies.iter().enumerate() {
+                if (*status, body) != (200, &want) {
+                    failures.push(format!(
+                        "restart {i}: expected 200 {want}, got {status} {body}"
+                    ));
+                }
+            }
+        }
+        other => failures.push(format!(
+            "the safe row after 8 restarts: expected run 2, wrong 0, live, got {other:?}"
+        )),
+    }
+    report(&failures);
+}
+
+/// A restart of a solved spent run starts a new run on the same value (per-player §3.6 "re-draw"): ANN solves `safe`,
+/// spends the run in a replay, restarts: run 2, `wrong` 0, live, the value and its draw time kept.
+#[tokio::test]
+async fn restart_solved_keeps_value_new_run() {
+    let (_copy, st, _db) = v2_state(with_safe).await;
+    let mut failures = Vec::new();
+    let ann = issued(&st, ANN, "ch1.safe").await;
+    let reply = post_attempt(&st, ANN, "ch1.safe", &run_body(&ann, Some(1))).await;
+    failures.extend(expect_json(
+        "the solve",
+        &reply,
+        200,
+        &answered(true, true, Some(3), false),
+    ));
+    spend_safe(&st, ANN, &ann, 1).await;
+    let reply = post_restart(&at(&st, T0 + 10), ANN, "ch1.safe", &from_body(1)).await;
+    let want = json!({ "value": ann, "run": 2, "attemptsLeft": 3, "spent": false });
+    failures.extend(expect_json(
+        "the restart of the solved run 1",
+        &reply,
+        200,
+        &want,
+    ));
+    let row = stored_values(&st, ANN)
+        .await
+        .into_iter()
+        .find(|row| row.0 == "ch1.safe")
+        .map(|row| (row.1, row.2, row.3, row.4, row.6));
+    if row != Some((2, 0, T0, None, ann.clone())) {
+        failures.push(format!(
+            "the safe row: expected (run 2, wrong 0, issued at T0, live, the same value), got {row:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// A static puzzle has no run to restart: 404 `not_found`, before its body is judged, and nothing is stored; a
+/// per-player puzzle's malformed body is 400.
+#[tokio::test]
+async fn restart_static_puzzle_404() {
+    let (_copy, st, _db) = v2_state(|_| {}).await;
+    let mut failures = Vec::new();
+    for (case, body) in [
+        ("the static gate", from_body(1)),
+        ("the static gate, a malformed body", "{}".to_owned()),
+    ] {
+        let reply = post_restart(&st, ANN, "ch1.gate", &body).await;
+        failures.extend(expect_error(case, &reply, 404, "not_found"));
+    }
+    let reply = post_restart(&st, ANN, "ch1.drawer", "{}").await;
+    failures.extend(expect_error(
+        "the per-player drawer, a malformed body",
+        &reply,
+        400,
+        "bad_request",
+    ));
+    let rows = stored_values(&st, ANN).await;
+    if !rows.is_empty() {
+        failures.push(format!("after the restarts: expected no row, got {rows:?}"));
+    }
+    report(&failures);
+}
+
+/// The entitlement gate comes before the per-player check (per-player §3.4, m11): the fixture's static paid
+/// `ch2.cabinet` answers 403 to a non-buyer, so no one learns which paid puzzles are per-player, and 404 to a buyer.
+#[tokio::test]
+async fn restart_paid_puzzle_403_before_per_player_404() {
+    let (st, _db) = state_with_users(&[ANN]).await;
+    let mut failures = Vec::new();
+    let reply = post_restart(&st, ANN, "ch2.cabinet", &from_body(1)).await;
+    failures.extend(expect_error(
+        "ANN without chapter:ch2",
+        &reply,
+        403,
+        "not_entitled",
+    ));
+    own(&st, ANN, "chapter:ch2").await;
+    let reply = post_restart(&st, ANN, "ch2.cabinet", &from_body(1)).await;
+    failures.extend(expect_error(
+        "ANN with chapter:ch2",
+        &reply,
+        404,
+        "not_found",
+    ));
+    report(&failures);
+}
