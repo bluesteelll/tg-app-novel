@@ -49,13 +49,14 @@ ledger ([shots §10 Budgets and validation](../shots/10-budgets-and-validation.m
   RULINGS 171 reads it). The case tables below stay as the adoption's record at `3c62a86`.
 - **Main `9b4fd25`, MEASURED** (Changed by RULINGS 176, 178, 181 (as of `9b4fd25`; docs lane `docs-errata-11`, group
   A); `9b4fd25` is GM2a's merge): entry 37,509, engine 215,336, first line 252,845, explore-ui 8,395, puzzle-type
-  1,618, all JS 274,362 B (exact bytes, `budget.ts`'s evaluate at GM2a's merge check, RULINGS 181). Per lane, main ->
+  1,616, all JS 274,362 B (exact bytes, `budget.ts`'s evaluate at GM2a's merge check, RULINGS 181; the puzzle-type
+  figure from that check's row, which RULINGS 181 does not quote). Per lane, main ->
   merge (exact bytes): **GM6s2** `2815340` entry **+317** (37,245 -> 37,562) in place of Ledger 2's +0.09 term, a PASS
   by §3.5's STOP rule (227 B over the term, under its 0.5 KB; RULINGS 176), engine -17, first line +300, puzzle-type
   +25, meta controller +14, explore-ui +1, all JS +329; **GM1c** `8c2fa03` entry -60, engine +16 against §3.5's +0.13,
   first line -44, puzzle-type 1,639 -> 1,618 (-21, its gate 0.1 KB), explore-ui 8,396 -> 8,392, all JS -77 (RULINGS
   178); **GM2a** `9b4fd25` entry +7, engine +333 against §3.5's +0.33, first line +340, explore-ui 8,392 -> 8,395 (+3),
-  all JS +363 (RULINGS 181). The remaining terms (ARITHMETIC): EN engine 3.71 - 0.13 - 0.33 = **+3.25** (GM1d-GM9r);
+  puzzle-type 1,618 -> 1,616 (-2), all JS +363 (RULINGS 181). The remaining terms (ARITHMETIC): EN engine 3.71 - 0.13 - 0.33 = **+3.25** (GM1d-GM9r);
   EN all JS 12.89 - 0.13 - 0.33 = 12.43; PPL entry 0.35 - 0.09 = 0.26 (GM6t); PPL all JS 3.524 - 0.09 - 0.004 = 3.430.
   On this base (ARITHMETIC; every other term as in the ledgers below): first line 252.845 + (3.25 + 0.05 + 0.01 + 3.13
   + 0.26 + 6.25 = 12.95) = **265.795** / 270.0 (4.205 left, PASS; the peak, SH7's -0.2 last, 265.995); entry 37.509 +

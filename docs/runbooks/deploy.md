@@ -228,7 +228,7 @@ release is lost:
 
 - saves, puzzle progress and hint unlocks, stat events and achievement unlocks;
 - the drawn codes: the `puzzle_values` rows written since (the server writes them from GM6s2 `2815340` on: the values
-  route, a per-player attempt, a restart, a status). A player without a row is drawn a new code at the next such call
+  route, a per-player attempt, a restart, a status, a hint use). A player without a row is drawn a new code at the next such call
   ([puzzles/mod.rs:161](../../server/src/puzzles/mod.rs#L161), issued if absent), so a code read before the restore
   may no longer open its puzzle;
 - wallet balances and ledger rows: hints spent since come back, gifts and credits since are gone;

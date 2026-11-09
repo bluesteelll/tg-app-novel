@@ -505,8 +505,13 @@ gated half on a LOW phone, where that image fails and nothing leaks (M3s cut Q4;
 `paid_chapter_403_without_entitlement`, `paid_chapter_200_with_entitlement`, `free_chapter_not_served_by_api`,
 `asset_path_traversal_404`, `paid_responses_private_no_store` (`server/tests/it/content.rs`). Puzzle attempts and
 hint texts of a paid chapter need the same entitlement (`attempt_paid_chapter_403_without_entitlement`,
-`hint_text_403_for_unowned_paid_chapter`, `server/tests/it/puzzles.rs`), and so does a hint bought from the balance
-(LE1, `hint_spend_paid_chapter_403`, `server/tests/it/economy.rs`). The completion card (LM2) lists an ending title or
+`hint_text_403_for_unowned_paid_chapter`, `server/tests/it/puzzles.rs`); so do a paid chapter's per-player values
+(as merged, GM6s2 `2815340`: `GET /api/chapters/{id}/values` issues or reads no value before the entitlement row,
+`player_values`, [puzzles/mod.rs:161](../server/src/puzzles/mod.rs#L161), `values_paid_chapter_403_without_entitlement`)
+and a restart (`POST /api/puzzles/{id}/restart` checks the entitlement before the per-player 404, `post_restart`,
+[api/puzzles.rs:89](../server/src/api/puzzles.rs#L89), `restart_paid_puzzle_403_before_per_player_404`, both in
+`server/tests/it/puzzles.rs`); and so does a hint bought from the balance (LE1, `hint_spend_paid_chapter_403`,
+`server/tests/it/economy.rs`). The completion card (LM2) lists an ending title or
 an achievement gated on a paid chapter only for a user who owns that chapter now (`visible`,
 [meta.rs:637](../server/src/meta.rs#L637); `card_paid_titles_need_entitlement`, `server/tests/it/cards.rs`). A
 friend's profile (LF2) shows a title only when both found it and the viewer owns every chapter it is gated on
