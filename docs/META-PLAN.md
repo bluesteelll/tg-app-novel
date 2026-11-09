@@ -969,6 +969,10 @@ unchanged.**
     every lane of PP's table has merged. From the adopted plans, GM6k (`fd62933`), GM1a (`ef8b4dc`), GM6s1 (`81a15b0`;
     `puzzle_values` and its erasure step, this plan's "Privacy") and GM1b (`03a00bc`) have merged; GM6s2 runs (server,
     lock 22, RULINGS 169, 170); the rest follow the one order above.
+  - Changed by RULINGS 174-182 (as of `9b4fd25`; docs lane `docs-errata-11`, group B): GM6s2 (`2815340`; the
+    per-player routes, which issue `puzzle_values` rows from this release on, this plan's "Privacy"), GM1c
+    (`8c2fa03`) and GM2a (`9b4fd25`) have merged, so the per-player server chain is done; GM1d and GM3w run (client,
+    RULINGS 179, 180, 182); the rest follow the one order above.
   - Why LPO is a lane of its own (revision 1, W4): the operator facts need a `Config` variable, which means editing
     the three `Config` constructors (`config.rs`, `server/dev/src/lib.rs`, `server/tests/it/common.rs`) plus
     `lib.rs` and `.env.example`; in LF1 that is 15 + 4 = 19 files, over the cap. LPO holds them with `api/legal.rs` and
@@ -2059,6 +2063,11 @@ Changed by RULINGS 159-173 (as of `9a83251`; docs lane `docs-errata-10`, group B
 GM1b `03a00bc` (client), with the docs lane `docs-adopt` `f509b05`; running GM6s2 (server, lock 22, RULINGS 169, 170)
 beside the docs lane `docs-errata-10`; to go of this design's lanes: none. The next client lanes, GM1c and GM2a, wait
 for GM6s2 (shared test files, RULINGS 170, 173); the rest follow the one order above.
+Changed by RULINGS 174-182 (as of `9b4fd25`; docs lane `docs-errata-11`, group B): merged also, from the adopted plans,
+GM6s2 `2815340` (server; the per-player server chain is done) and GM1c `8c2fa03` and GM2a `9b4fd25` (client), with the
+docs lane `docs-errata-10` `5977df5`; running GM1d and GM3w (client; RULINGS 179, 180, 182) beside the docs lane
+`docs-errata-11` (in the idle server slot); to go of this design's lanes: none. Next, when a client slot frees,
+per-player GM6a and GM3m; the rest follow the one order above.
 
 ---
 

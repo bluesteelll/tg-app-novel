@@ -20,6 +20,8 @@ MA1b / MA2) are struck and quoted in §27. One row differs on purpose and is str
 reconcile:    server slot: (LRF, M3s merged) GM6k -> GM6s1 -> GM6s2 (the entry lever LEL merged, RULINGS 141)
 as of 9a83251: GM6k merged fd62933 (RULINGS 163) -> GM6s1 merged 81a15b0 (RULINGS 168) -> GM6s2 running (lock 22,
               RULINGS 169 / 170); engine GM1a ef8b4dc and GM1b 03a00bc merged, GM1c / GM2a wait for GM6s2
+as of 9b4fd25: GM6s2 merged 2815340 (RULINGS 176): the server chain GM6k -> GM6s1 -> GM6s2 is done; engine GM1c
+              8c2fa03 and GM2a 9b4fd25 merged, GM1d and GM3w running; GM6a next when a client slot frees (RULINGS 182)
 reconcile r2: (E-P26, engine.md §12 "Order and conflicts" engine §12 Order and conflicts owns every row below; mirrored)
 reconcile:    scene/*: M3c, LHJ (merged) -> GM2a's field -> GM6a -> SH1 -> SH4 -> SH5a -> SH5b -> SH6 -> SH7 -> SH8 ->
               {GM6d1, SH9, SH10, SH12a, SH12b, the carried preload-priority lane} one at a time by launch (GM6a before
@@ -63,6 +65,13 @@ new; it states the server slot's state (SHAs from `git log --first-parent main`)
 engine GM1c and GM2a, hold `client/src/puzzles/session.test.ts` and `client/src/app/{game,yields}.test.ts`, which
 GM6s2's lock holds, so they start after it merges (RULINGS 170, 173); the status block of the one order is
 [engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts).
+
+Changed by RULINGS 174-182 (as of `9b4fd25`; docs lane `docs-errata-11`, group B): the block's `as of 9b4fd25:` row is
+new; it states the server slot's state (SHAs from `git log --first-parent main`). GM6s2 merged as `2815340` (RULINGS
+176), so no lane of this plan holds the server slot (GM6k, GM6s1 and GM6s2 are this plan's only server lanes), and the
+idle slot runs the docs lane `docs-errata-11` (RULINGS 182). GM6a's predecessor, GM2a's field on `scene/*`, merged as
+`9b4fd25` (RULINGS 181); GM6a starts when a client slot frees (GM1d and GM3w hold both), and with GM3w it gates SH1
+(RULINGS 182). The world chain row's "GM6c1a (after GM6s2)" is met on that edge.
 
 Until GM6d2, per-player codes show in documents, item descriptions, ink lines, choices and the tier-3 hint (synthesis
 §6.4 item 4), which needs no label on the art.

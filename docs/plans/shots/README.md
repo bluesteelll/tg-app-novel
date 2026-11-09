@@ -1,6 +1,6 @@
 # Shots plan: drawn-shot staging (`design-shots`)
 
-**Planned; adopted 2026-11-09 at main `3c62a86`; nothing built yet**; lane cuts re-locate every code citation on their own base. Changed by RULINGS 159-173 (as of `9a83251`; docs lane `docs-errata-10`, group B): still nothing of this plan built or running; its first lane, SH1, follows engine GM2a and GM3w and per-player GM6a in the one order of [engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts).
+**Planned; adopted 2026-11-09 at main `3c62a86`; nothing built yet**; lane cuts re-locate every code citation on their own base. Changed by RULINGS 159-173 (as of `9a83251`; docs lane `docs-errata-10`, group B): still nothing of this plan built or running; its first lane, SH1, follows engine GM2a and GM3w and per-player GM6a in the one order of [engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts). Changed by RULINGS 174-182 (as of `9b4fd25`; docs lane `docs-errata-11`, group B): still nothing of this plan built or running; GM2a has merged (`9b4fd25`, RULINGS 181) and GM3w runs (RULINGS 182), so SH1 waits for GM3w and per-player GM6a, which is next when a client slot frees.
 
 ## Provenance
 
