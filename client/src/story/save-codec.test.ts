@@ -387,6 +387,10 @@ test('save: the upgrader chain is total', () => {
   expect(read.world.puzzles).toStrictEqual({ cabinet: { outcome: null, attempts: 1, hintsOpened: 0 } });
   expect(read.staging.props).toStrictEqual([{ prop: 'drawer', rect: [1, 2, 3, 4] }]);
   expect(Object.hasOwn(read.staging, 'cam')).toBe(false);
+  // A format-1 body at a pending chapter start keeps its carried vars: `chapterStart` is the one key the upgrade
+  // rebuilds rather than spreads, and ch1's golden carries nothing.
+  const carry = { g_x: 1, g_name: 'Ann', g_seen: true } as Vars;
+  expect(decodedOf(JSON.stringify({ ...v1, chapterStart: { carry } })).chapterStart).toStrictEqual({ carry, items: [] });
   // Format 1's paths are kept.
   const held = JSON.parse(SAMPLES[1]) as Record<string, unknown>;
   at(held, 'world')['held'] = [1];
