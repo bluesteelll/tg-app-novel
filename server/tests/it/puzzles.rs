@@ -1,8 +1,10 @@
-//! Puzzles (`server/migrations/0002_puzzles.sql`, `db/puzzles.rs`, `puzzles/`, `/api/puzzles`): the schema's
-//! constraints on raw SQL, the per-(user, puzzle) attempt window, the server-checked answer, and the hint ladder whose
-//! texts are served only for unlocked tiers of a puzzle the user may open (principle 0).
+//! Puzzles (`server/migrations/0002_puzzles.sql`, `0008_puzzle_values.sql`, `db/puzzles.rs`, `puzzles/`,
+//! `/api/puzzles`): the schema's constraints on raw SQL, the per-(user, puzzle) attempt window, the server-checked
+//! answer, and the hint ladder whose texts are served only for unlocked tiers of a puzzle the user may open
+//! (principle 0); the per-player values table's constraints and measured row size (per-player §3.1).
 //!
-//! Hint unlock rows are inserted by raw SQL: the server has no writer for them in this lane.
+//! Hint unlock rows are inserted by raw SQL: the server has no writer for them in this lane. `puzzle_values` rows
+//! are too: the server writes none until the values routes.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -378,6 +380,345 @@ async fn schema_hint_unlocks_tier_range() {
     ];
     failures.extend(results.into_iter().filter_map(Result::err));
     report(&failures);
+}
+
+/// The domain hash of `[0, 9]^4` without `[0, 0, 0, 0]` (per-player §3.2's encoding, from an independent oracle).
+const DOMAIN_HASH: &str = "bd058b756eb7a107";
+
+/// A `puzzle_values` row as raw SQL writes it; [`value_row`] is a valid one for every case to change. `value` is SQL
+/// array text, cast in the statement, so a case can send what no Rust type holds (two dimensions, a NULL entry).
+struct ValueSql<'a> {
+    user: i64,
+    puzzle: &'a str,
+    run: i64,
+    wrong: i64,
+    issued_at: i64,
+    spent_at: Option<i64>,
+    domain: &'a str,
+    value: String,
+}
+
+fn value_row(user: i64, puzzle: &str) -> ValueSql<'_> {
+    ValueSql {
+        user,
+        puzzle,
+        run: 1,
+        wrong: 0,
+        issued_at: T0,
+        spent_at: None,
+        domain: DOMAIN_HASH,
+        value: "{1,8,4,7}".to_owned(),
+    }
+}
+
+async fn insert_value(c: &mut PgConnection, v: ValueSql<'_>) -> Res {
+    sqlx::query(
+        "INSERT INTO puzzle_values (user_id, run, wrong, issued_at, spent_at, puzzle_id, domain, value) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text::bigint[])",
+    )
+    .bind(v.user)
+    .bind(v.run)
+    .bind(v.wrong)
+    .bind(v.issued_at)
+    .bind(v.spent_at)
+    .bind(v.puzzle)
+    .bind(v.domain)
+    .bind(v.value)
+    .execute(&mut *c)
+    .await
+}
+
+/// `n` entries of `entry` as SQL array text.
+fn array_of(n: usize, entry: &str) -> String {
+    format!("{{{}}}", vec![entry; n].join(","))
+}
+
+/// One value per (user, puzzle): a second row for the pair is refused; the same user on another puzzle and another
+/// user on the same puzzle are not. The user must exist. `ON CONFLICT (user_id, puzzle_id) DO NOTHING`, the
+/// insert-if-absent arbiter (per-player §3.1), writes nothing over a stored value.
+#[tokio::test]
+async fn schema_puzzle_values_pk() {
+    let (_st, _db, mut c) = schema_db().await;
+    let mut failures = Vec::new();
+    let results = [
+        expect_ok(
+            "ANN ch1.drawer",
+            insert_value(&mut c, value_row(ANN, "ch1.drawer")).await,
+        ),
+        expect_err(
+            "ANN ch1.drawer again",
+            insert_value(&mut c, value_row(ANN, "ch1.drawer")).await,
+            ("23505", "puzzle_values_pkey"),
+        ),
+        expect_ok(
+            "ANN ch1.cabinet",
+            insert_value(&mut c, value_row(ANN, "ch1.cabinet")).await,
+        ),
+        expect_ok(
+            "BEN ch1.drawer",
+            insert_value(&mut c, value_row(BEN, "ch1.drawer")).await,
+        ),
+        expect_err(
+            "no such user",
+            insert_value(&mut c, value_row(999, "ch1.drawer")).await,
+            ("23503", "puzzle_values_user_fk"),
+        ),
+    ];
+    failures.extend(results.into_iter().filter_map(Result::err));
+    let arbiter = sqlx::query(
+        "INSERT INTO puzzle_values (user_id, run, wrong, issued_at, spent_at, puzzle_id, domain, value) \
+         VALUES ($1, 1, 0, $2, NULL, 'ch1.drawer', $3, '{9,9,9,9}') ON CONFLICT (user_id, puzzle_id) DO NOTHING",
+    )
+    .bind(ANN)
+    .bind(T0 + 5)
+    .bind(DOMAIN_HASH)
+    .execute(&mut c)
+    .await;
+    match arbiter {
+        Ok(done) if done.rows_affected() == 0 => {}
+        Ok(done) => failures.push(format!(
+            "arbiter on ANN ch1.drawer: expected 0 rows, got {}",
+            done.rows_affected()
+        )),
+        Err(e) => failures.push(format!(
+            "arbiter on ANN ch1.drawer: expected 0 rows, got {}",
+            describe(&e)
+        )),
+    }
+    let stored: Result<Vec<i64>, sqlx::Error> = sqlx::query_scalar(
+        "SELECT value FROM puzzle_values WHERE user_id = $1 AND puzzle_id = 'ch1.drawer'",
+    )
+    .bind(ANN)
+    .fetch_one(&mut c)
+    .await;
+    match stored {
+        Ok(value) if value == [1, 8, 4, 7] => {}
+        Ok(value) => failures.push(format!(
+            "ANN ch1.drawer after the arbiter: expected [1, 8, 4, 7], got {value:?}"
+        )),
+        Err(e) => failures.push(format!(
+            "ANN ch1.drawer after the arbiter: expected [1, 8, 4, 7], got {}",
+            describe(&e)
+        )),
+    }
+    report(&failures);
+}
+
+/// Each CHECK of `puzzle_values` (per-player §3.1) refuses its own violation, by (23514, constraint), and allows the
+/// boundary beside it: the `PuzzleId` grammar; a 16-hex lower-case domain hash; a one-dimensional value of 1..64
+/// entries with no NULL, each a u16; a run from 1; wrong answers from 0; a spend never before the draw; a real draw
+/// time.
+#[tokio::test]
+async fn schema_puzzle_values_checks() {
+    let (_st, _db, mut c) = schema_db().await;
+    let mut failures = Vec::new();
+    let refused = [
+        (
+            "id Ch1.drawer",
+            value_row(ANN, "Ch1.drawer"),
+            "puzzle_values_id_shape",
+        ),
+        (
+            "id ch1.a-b",
+            value_row(ANN, "ch1.a-b"),
+            "puzzle_values_id_shape",
+        ),
+        (
+            "domain in upper-case hex",
+            ValueSql {
+                domain: "BD058B756EB7A107",
+                ..value_row(ANN, "ch1.d_upper")
+            },
+            "puzzle_values_domain_shape",
+        ),
+        (
+            "domain of 15 hex",
+            ValueSql {
+                domain: "bd058b756eb7a10",
+                ..value_row(ANN, "ch1.d_short")
+            },
+            "puzzle_values_domain_shape",
+        ),
+        (
+            "domain of 17 hex",
+            ValueSql {
+                domain: "bd058b756eb7a1070",
+                ..value_row(ANN, "ch1.d_long")
+            },
+            "puzzle_values_domain_shape",
+        ),
+        (
+            "value {}",
+            ValueSql {
+                value: "{}".to_owned(),
+                ..value_row(ANN, "ch1.v_empty")
+            },
+            "puzzle_values_value_shape",
+        ),
+        (
+            "value of 65 entries",
+            ValueSql {
+                value: array_of(65, "1"),
+                ..value_row(ANN, "ch1.v_long")
+            },
+            "puzzle_values_value_shape",
+        ),
+        (
+            "value in two dimensions",
+            ValueSql {
+                value: "{{1,2},{3,4}}".to_owned(),
+                ..value_row(ANN, "ch1.v_grid")
+            },
+            "puzzle_values_value_shape",
+        ),
+        (
+            "value with a NULL entry",
+            ValueSql {
+                value: "{1,NULL,3}".to_owned(),
+                ..value_row(ANN, "ch1.v_null")
+            },
+            "puzzle_values_value_shape",
+        ),
+        (
+            "entry 65536",
+            ValueSql {
+                value: "{1,65536,4,7}".to_owned(),
+                ..value_row(ANN, "ch1.v_big")
+            },
+            "puzzle_values_value_range",
+        ),
+        (
+            "entry -1",
+            ValueSql {
+                value: "{1,-1,4,7}".to_owned(),
+                ..value_row(ANN, "ch1.v_negative")
+            },
+            "puzzle_values_value_range",
+        ),
+        (
+            "run 0",
+            ValueSql {
+                run: 0,
+                ..value_row(ANN, "ch1.run_zero")
+            },
+            "puzzle_values_run_positive",
+        ),
+        (
+            "wrong -1",
+            ValueSql {
+                wrong: -1,
+                ..value_row(ANN, "ch1.wrong_negative")
+            },
+            "puzzle_values_wrong_nonneg",
+        ),
+        (
+            "spent_at = issued_at - 1",
+            ValueSql {
+                spent_at: Some(T0 - 1),
+                ..value_row(ANN, "ch1.spent_early")
+            },
+            "puzzle_values_spent_after",
+        ),
+        (
+            "issued_at 0",
+            ValueSql {
+                issued_at: 0,
+                ..value_row(ANN, "ch1.issued_zero")
+            },
+            "puzzle_values_time_positive",
+        ),
+    ];
+    for (case, row, constraint) in refused {
+        failures
+            .extend(expect_err(case, insert_value(&mut c, row).await, ("23514", constraint)).err());
+    }
+    let allowed = [
+        (
+            "value of 64 entries",
+            ValueSql {
+                value: array_of(64, "1"),
+                ..value_row(ANN, "ch1.c_long")
+            },
+        ),
+        (
+            "entries 0 and 65535",
+            ValueSql {
+                value: "{0,65535}".to_owned(),
+                ..value_row(ANN, "ch1.c_range")
+            },
+        ),
+        (
+            "run 1, wrong 0",
+            ValueSql {
+                run: 1,
+                wrong: 0,
+                ..value_row(ANN, "ch1.c_counts")
+            },
+        ),
+        (
+            "spent_at = issued_at",
+            ValueSql {
+                spent_at: Some(T0),
+                ..value_row(ANN, "ch1.c_spent")
+            },
+        ),
+        (
+            "issued_at 1",
+            ValueSql {
+                issued_at: 1,
+                ..value_row(ANN, "ch1.c_issued")
+            },
+        ),
+    ];
+    for (case, row) in allowed {
+        failures.extend(expect_ok(case, insert_value(&mut c, row).await).err());
+    }
+    report(&failures);
+}
+
+/// R12, measured (per-player §3.1): 1,000 users with one four-entry value each, inserted in key order and vacuumed,
+/// take at most 256 B per row of `puzzle_values`, heap and primary key together (the arithmetic estimate is ~212 B).
+/// The figure is printed (`--nocapture`).
+#[tokio::test]
+async fn values_row_size_measured() {
+    let (st, _db) = common::test_state().await;
+    let mut c = common::raw_db(&st).await;
+    sqlx::query(
+        "INSERT INTO users (id, first_name, created_at, last_seen_at) \
+         SELECT g, 'Ann', $1, $1 FROM generate_series(1, 1000) g",
+    )
+    .bind(T0)
+    .execute(&mut c)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO puzzle_values (user_id, run, wrong, issued_at, spent_at, puzzle_id, domain, value) \
+         SELECT g, 1, 0, $1, NULL, 'ch1.drawer', $2, '{1,8,4,7}' FROM generate_series(1, 1000) g ORDER BY g",
+    )
+    .bind(T0)
+    .bind(DOMAIN_HASH)
+    .execute(&mut c)
+    .await
+    .unwrap();
+    sqlx::raw_sql("VACUUM (ANALYZE) puzzle_values")
+        .execute(&mut c)
+        .await
+        .unwrap();
+    let (heap, index): (i64, i64) = sqlx::query_as(
+        "SELECT pg_relation_size('puzzle_values'), pg_indexes_size('puzzle_values')",
+    )
+    .fetch_one(&mut c)
+    .await
+    .unwrap();
+    c.close().await.unwrap();
+    let per_row = (heap + index) / 1000;
+    println!(
+        "puzzle_values: {per_row} B per row (heap {heap} B + primary key {index} B, 1,000 four-entry rows)"
+    );
+    assert!(
+        per_row <= 256,
+        "puzzle_values: expected at most 256 B per row, got {per_row} (heap {heap} B, primary key {index} B)"
+    );
 }
 
 /// `puzzle_progress`'s counters of (user, puzzle), read on a raw connection: (attempts, window_attempts,
