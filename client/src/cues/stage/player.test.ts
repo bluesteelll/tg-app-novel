@@ -354,6 +354,13 @@ test('player: an emit motion whose element leaves continues on its ghost from th
     expect(moved?.el.isConnected).toBe(false);
     expect(observers.size).toBe(0);
     expect(f.player.fallbacks()).toBe(0);
+    // A stage that unmounts while a watched motion runs stops observing.
+    const again = element('button', { 'data-cue': 'give-up-yes' }, { x: 10, y: 20, w: 80, h: 30 });
+    emit(f, eventOf(cueOf('ui:give-up-yes'), again, { x: 10, y: 20, w: 80, h: 30 }));
+    expect(observers.size).toBe(1);
+    f.player.dispose();
+    expect(running(f)).toEqual([]);
+    expect(observers.size).toBe(0);
   } finally {
     vi.unstubAllGlobals();
   }
@@ -455,6 +462,16 @@ test('cues: puzzle checking breathes until its frame settles', () => {
     expect(running(f), key).toEqual([]);
     f.player.dispose();
   }
+  // With no frame on screen the loop breathes on a centre ghost, which a stage that unmounts removes with the loop.
+  document.body.replaceChildren();
+  const lost = fixture();
+  emit(lost, eventOf(cueOf('puzzle:checking')));
+  vi.advanceTimersByTime(5000);
+  expect(running(lost)).toHaveLength(1);
+  expect(lost.layer.children).toHaveLength(1);
+  lost.player.dispose();
+  expect(running(lost)).toEqual([]);
+  expect(lost.layer.children).toHaveLength(0);
   // The loop's ends are the state gate's settling keys and the frame's close.
   expect(CUE_MOTIONS['puzzle:checking'].until).toEqual([
     'puzzle:wrong',
@@ -491,16 +508,20 @@ test('cues: a waiting hold shows only past its delay and ends at waited', () => 
   vi.advanceTimersByTime(3000);
   expect(running(f)).toEqual([]);
   expect(f.layer.children).toHaveLength(0);
-  // A stage that unmounts ends a shown hold and a pending one.
+  // A stage that unmounts ends a shown hold (its ghost removed) and a pending one (its timer cleared: no ghost later).
   emit(f, eventOf(cueOf('ui-state:waiting')));
   vi.advanceTimersByTime(WAIT_DELAY_MS + 1);
+  expect(f.layer.children).toHaveLength(1);
   f.player.dispose();
   expect(running(f)).toEqual([]);
+  expect(f.layer.children).toHaveLength(0);
   const g = fixture();
   emit(g, eventOf(cueOf('ui-state:waiting')));
   g.player.dispose();
   vi.advanceTimersByTime(3000);
   expect(g.records).toEqual([]);
+  expect(g.ghosts).toEqual([]);
+  expect(g.layer.children).toHaveLength(0);
   expect(f.player.fallbacks() + g.player.fallbacks()).toBe(0);
 });
 
