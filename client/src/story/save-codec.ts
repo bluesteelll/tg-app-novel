@@ -1,22 +1,31 @@
-// The save body (PROTOTYPE-PLAN "Save format and resume", PUZZLES-PLAN X9): the format is the client's, the server
-// stores it opaque. Every field is checked by shape and id grammar on read; anything unreadable is an error value,
-// never a throw (principle 1: validated at the edge). Unknown keys are ignored and never copied, so a body from a newer
-// build within format 1 still loads; an incompatible change bumps `format`. Pure: no clock, storage or network.
-import type { PuzzleOutcome, PuzzleRun, WorldState } from '../explore/state.ts';
+// The save body (PROTOTYPE-PLAN "Save format and resume", PUZZLES-PLAN X9, engine plan §5.2): the format is the
+// client's, the server stores it opaque. Every field is checked by shape and id grammar on read; anything unreadable is
+// an error value, never a throw (principle 1: validated at the edge). Unknown keys are ignored and never copied, so a
+// body from a newer build within one format still loads; an incompatible change bumps `format`. A body of an older
+// format is read by that format's frozen decoder and upgraded, so `decodeSave` returns the current format only.
+// Pure: no clock, storage or network.
+import type { PuzzleOutcome, WorldState } from '../explore/state.ts';
+import type { FlagId } from '../mechanics/contract.ts';
 import type { DocId, HotspotKey, ItemId, RoomId } from '../world/types.ts';
 import { CHAPTER_ID_RE, KNOT_NAME_RE } from './catalog.ts';
 import type { InkScalar, Result } from './catalog.ts';
 import type {
+  BgId,
+  CgId,
   ChapterId,
+  CharId,
+  ExprId,
   KnotName,
   LineId,
-  PropPlacement,
+  PropId,
   PuzzleLocalId,
+  Rect,
   SectionId,
   Slot,
   SpeakerId,
   StagingSnapshot,
   StoryVersion,
+  TrackId,
   VarName,
   YieldCommand,
 } from './staging.ts';
@@ -24,9 +33,11 @@ import { LINE_ID_RE } from './tags.ts';
 
 /** One backlog line; `chosen` is the choice taken right after it. */
 export type BacklogEntry = { lineId: LineId; speaker: SpeakerId | null; ru: string; chosen?: LineId };
-/** The opaque save body, format 1. */
-export type SaveBodyV1 = {
-  format: 1;
+/** The format this build writes; `decodeSave` reads it and every older one. */
+export const SAVE_FORMAT = 2;
+/** The opaque save body, format 2. */
+export type SaveBody = {
+  format: typeof SAVE_FORMAT;
   chapterId: ChapterId;
   storyVersion: StoryVersion;
   /** story.state.toJson(); null = the chapter is not started yet (a paywall pending). */
@@ -36,14 +47,90 @@ export type SaveBodyV1 = {
   staging: StagingSnapshot;
   /** The last knot entry. */
   checkpoint: { knot: KnotName; vars: Record<VarName, InkScalar>; staging: StagingSnapshot } | null;
-  /** The values carried INTO this chapter. */
-  chapterStart: { carry: Record<VarName, InkScalar> };
+  /** The values and the items carried INTO this chapter (`items`: no chapter carries one yet). */
+  chapterStart: { carry: Record<VarName, InkScalar>; items: readonly ItemId[] };
   /** The last BACKLOG_MAX lines. */
   backlog: ReadonlyArray<BacklogEntry>;
   /** EMPTY_WORLD_STATE for a chapter without a world. */
   world: WorldState;
   /** The public world's `version` at save time; null without a world. */
   worldVersion: string | null;
+};
+
+// Format 1, frozen (engine plan §5.2): its shapes and its decoder stay as format 1 wrote them, so every format-1 body a
+// player holds reads as it always did and then upgrades. A new key belongs to the next format, never here.
+/** A puzzle run, format 1. */
+export type PuzzleRunV1 = { readonly outcome: PuzzleOutcome | null; readonly attempts: number; readonly hintsOpened: number };
+/** A prop placement, format 1. */
+export type PropPlacementV1 = { readonly prop: PropId; readonly rect: Rect };
+/** The stage, format 1. */
+export type StagingSnapshotV1 = {
+  bg: BgId | null;
+  cg: CgId | null;
+  chars: ReadonlyArray<{ char: CharId; expr: ExprId; at: Slot }>;
+  bgm: { track: TrackId; vol: number } | null;
+  props: readonly PropPlacementV1[];
+};
+/** The world, format 1. */
+export type WorldStateV1 = {
+  readonly format: 1;
+  readonly section: SectionId | null;
+  readonly room: RoomId | null;
+  readonly lastRoom: Readonly<Record<SectionId, RoomId>>;
+  readonly visited: readonly RoomId[];
+  readonly held: readonly ItemId[];
+  readonly used: readonly ItemId[];
+  readonly docs: readonly DocId[];
+  readonly taken: readonly HotspotKey[];
+  readonly examined: readonly HotspotKey[];
+  readonly slots: Readonly<Record<HotspotKey, ReadonlyArray<ItemId | null>>>;
+  readonly open: readonly HotspotKey[];
+  readonly fired: readonly string[];
+  readonly pendingStory: readonly KnotName[];
+  readonly puzzles: Readonly<Record<PuzzleLocalId, PuzzleRunV1>>;
+  readonly unproved: readonly SectionId[];
+};
+/** The opaque save body, format 1. */
+export type SaveBodyV1 = {
+  format: 1;
+  chapterId: ChapterId;
+  storyVersion: StoryVersion;
+  ink: string | null;
+  at: { lineId: LineId | null; knot: KnotName | null; yield: YieldCommand | null };
+  staging: StagingSnapshotV1;
+  checkpoint: { knot: KnotName; vars: Record<VarName, InkScalar>; staging: StagingSnapshotV1 } | null;
+  chapterStart: { carry: Record<VarName, InkScalar> };
+  backlog: ReadonlyArray<BacklogEntry>;
+  world: WorldStateV1;
+  worldVersion: string | null;
+};
+
+const FIELDS_1 = [
+  'format',
+  'section',
+  'room',
+  'lastRoom',
+  'visited',
+  'held',
+  'used',
+  'docs',
+  'taken',
+  'examined',
+  'slots',
+  'open',
+  'fired',
+  'pendingStory',
+  'puzzles',
+  'unproved',
+] as const;
+/**
+ * The keys of a save's `world` per format (engine plan §3.2, §3.6): a mechanic's `slice` is saved under its key there,
+ * so every slice key is in the current format's list (`mechanics: slice keys pinned to SAVE_FORMAT`), and a new one is
+ * a format bump with its upgrader.
+ */
+export const SAVE_FIELDS: { readonly 1: readonly (keyof WorldStateV1)[]; readonly 2: readonly (keyof WorldState)[] } = {
+  1: FIELDS_1,
+  2: [...FIELDS_1, 'flags'],
 };
 /** The backlog lines a body keeps. */
 export const BACKLOG_MAX = 50;
@@ -163,7 +250,7 @@ const scalar: Field<InkScalar> = (v, p) =>
 const vars = recordOf<VarName, InkScalar>(scalar);
 
 /** x, y, w, h: integer source px. */
-const rect: Field<PropPlacement['rect']> = (v, p) => {
+const rect: Field<Rect> = (v, p) => {
   const r = arrayOf(count)(v, p);
   if (!r.ok) {
     return r;
@@ -178,12 +265,12 @@ const volume: Field<number> = (v, p) => {
   return !r.ok || r.value <= 100 ? r : problem(p, `expected a volume 0..100, got ${r.value}`);
 };
 
-const staging = object<StagingSnapshot>({
+const stagingV1 = object<StagingSnapshotV1>({
   bg: nullable(matching(NAME_RE, 'a bg id')),
   cg: nullable(matching(NAME_RE, 'a cg id')),
   chars: arrayOf(object({ char: matching(NAME_RE, 'a character id'), expr: matching(NAME_RE, 'an expression id'), at: oneOf(SLOTS) })),
-  bgm: nullable(object<NonNullable<StagingSnapshot['bgm']>>({ track: matching(NAME_RE, 'a track id'), vol: volume })),
-  props: arrayOf(object<PropPlacement>({ prop: matching(NAME_RE, 'a prop id'), rect })),
+  bgm: nullable(object<NonNullable<StagingSnapshotV1['bgm']>>({ track: matching(NAME_RE, 'a track id'), vol: volume })),
+  props: arrayOf(object<PropPlacementV1>({ prop: matching(NAME_RE, 'a prop id'), rect })),
 });
 
 const backlogEntry: Field<BacklogEntry> = (v, p) => {
@@ -219,7 +306,7 @@ const yieldCommand: Field<YieldCommand> = (v, p) => {
   }
 };
 
-const puzzleRun = object<PuzzleRun>({ outcome: nullable(oneOf(OUTCOMES)), attempts: count, hintsOpened: count });
+const puzzleRunV1 = object<PuzzleRunV1>({ outcome: nullable(oneOf(OUTCOMES)), attempts: count, hintsOpened: count });
 /**
  * A world id, structural only: any string. Reconcile drops the ids the current world lacks (X9 step 1), which is
  * where the brand is earned; a grammar check here would refuse a save that reconcile can still repair.
@@ -227,7 +314,7 @@ const puzzleRun = object<PuzzleRun>({ outcome: nullable(oneOf(OUTCOMES)), attemp
 function worldId<T extends string>(): Field<T> {
   return (v, p) => (typeof v === 'string' ? ok(v as T) : problem(p, `expected a string, got ${shown(v)}`));
 }
-const world = object<WorldState>({
+const worldV1Shape: Shape<WorldStateV1> = {
   format: literal(1),
   section: nullable(worldId<SectionId>()),
   room: nullable(worldId<RoomId>()),
@@ -242,31 +329,49 @@ const world = object<WorldState>({
   open: arrayOf(worldId<HotspotKey>()),
   fired: arrayOf(str),
   pendingStory: arrayOf(worldId<KnotName>()),
-  puzzles: recordOf<PuzzleLocalId, PuzzleRun>(puzzleRun),
+  puzzles: recordOf<PuzzleLocalId, PuzzleRunV1>(puzzleRunV1),
   unproved: arrayOf(worldId<SectionId>()),
-});
+};
 
-const body = object<SaveBodyV1>({
+const bodyV1Shape: Shape<SaveBodyV1> = {
   format: literal(1),
   chapterId: matching<ChapterId>(CHAPTER_ID_RE, 'a chapter id'),
   storyVersion: matching<StoryVersion>(HEX16_RE, 'a story version (16 hex)'),
   ink: nullable(str),
   at: object<SaveBodyV1['at']>({ lineId: nullable(lineId), knot: nullable(knotName), yield: nullable(yieldCommand) }),
-  staging,
-  checkpoint: nullable(object({ knot: knotName, vars, staging })),
+  staging: stagingV1,
+  checkpoint: nullable(object({ knot: knotName, vars, staging: stagingV1 })),
   chapterStart: object({ carry: vars }),
   backlog,
-  world,
+  world: object(worldV1Shape),
   worldVersion: nullable(matching(HEX16_RE, 'a world version (16 hex)')),
+};
+const bodyV1 = object(bodyV1Shape);
+
+// Format 2: format 1's readers, and the keys format 2 changed or added.
+const world = object<WorldState>({ ...worldV1Shape, format: literal(SAVE_FORMAT), flags: arrayOf(worldId<FlagId>()) });
+const body = object<SaveBody>({
+  ...bodyV1Shape,
+  format: literal(SAVE_FORMAT),
+  chapterStart: object<SaveBody['chapterStart']>({ carry: vars, items: arrayOf(worldId<ItemId>()) }),
+  world,
 });
 
+/** Format 1 -> 2: no flag set, no item carried; every other field is the format-1 value. */
+function upgradeV1(b: SaveBodyV1): SaveBody {
+  return { ...b, format: SAVE_FORMAT, chapterStart: { ...b.chapterStart, items: [] }, world: { ...b.world, format: SAVE_FORMAT, flags: [] } };
+}
+
 /** The body as JSON, its backlog cut to the last BACKLOG_MAX entries. */
-export function encodeSave(b: SaveBodyV1): string {
+export function encodeSave(b: SaveBody): string {
   return JSON.stringify({ ...b, backlog: b.backlog.slice(-BACKLOG_MAX) });
 }
 
-/** The body, or `malformed` (not JSON, a wrong shape or id, naming the path) or `unknown-format`. */
-export function decodeSave(raw: string): Result<SaveBodyV1, SaveDecodeError> {
+/**
+ * The body in SAVE_FORMAT (a format-1 body read by format 1's decoder, then upgraded), or `malformed` (not JSON, a
+ * wrong shape or id, naming the path) or `unknown-format` (no format this build reads: a newer build's body).
+ */
+export function decodeSave(raw: string): Result<SaveBody, SaveDecodeError> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -276,8 +381,13 @@ export function decodeSave(raw: string): Result<SaveBodyV1, SaveDecodeError> {
   if (!isRecord(parsed)) {
     return { ok: false, error: { kind: 'malformed', detail: `save: expected an object, got ${shown(parsed)}` } };
   }
-  if (parsed['format'] !== 1) {
-    return { ok: false, error: { kind: 'unknown-format', detail: `save.format: ${shown(parsed['format'])}, this build reads 1` } };
+  const format = parsed['format'];
+  if (format === 1) {
+    const r = bodyV1(parsed, 'save');
+    return r.ok ? { ok: true, value: upgradeV1(r.value) } : { ok: false, error: { kind: 'malformed', detail: r.error } };
+  }
+  if (format !== SAVE_FORMAT) {
+    return { ok: false, error: { kind: 'unknown-format', detail: `save.format: ${shown(format)}, this build reads 1..${SAVE_FORMAT}` } };
   }
   const r = body(parsed, 'save');
   return r.ok ? r : { ok: false, error: { kind: 'malformed', detail: r.error } };

@@ -16,7 +16,7 @@ import { resume } from './resume.ts';
 import type { ResumeError, Resumed } from './resume.ts';
 import { StoryRunner, liveRunners } from './runner.ts';
 import type { RunnerError, RunnerStep } from './runner.ts';
-import type { SaveBodyV1 } from './save-codec.ts';
+import type { SaveBody } from './save-codec.ts';
 import { EMPTY_SNAPSHOT } from './staging.ts';
 import type { AssetIndex, ChapterId, KnotName, SectionId, StagingSnapshot, StoryVersion, VarName } from './staging.ts';
 
@@ -98,16 +98,16 @@ const STORY_V2 = STORY_V1.filter((line) => !line.includes('m004'));
 const STORY_V3 = STORY_V1.map((line) => line.replace('-> k', '-> k_new').replace('=== k ===', '=== k_new ==='));
 const KNOTS = ['start', 'k'];
 
-function body(fields: Partial<SaveBodyV1>): SaveBodyV1 {
+function body(fields: Partial<SaveBody>): SaveBody {
   return {
-    format: 1,
+    format: 2,
     chapterId: CH1,
     storyVersion: V1,
     ink: null,
     at: { lineId: null, knot: null, yield: null },
     staging: EMPTY_SNAPSHOT,
     checkpoint: null,
-    chapterStart: { carry: {} },
+    chapterStart: { carry: {}, items: [] },
     backlog: [],
     world: EMPTY_WORLD_STATE,
     worldVersion: null,
@@ -147,9 +147,9 @@ function shown(s: RunnerStep): unknown {
  * Plays `ch` from a fresh start through `steps` displayed steps (choosing 0 at a choice set) and writes the body
  * GameSession would write at the last one: the ink state, `at`, and the checkpoint of the last knot entry.
  */
-function playAndSave(ch: LoadedChapter, steps: number, carry: Readonly<Record<VarName, InkScalar>> = {}): SaveBodyV1 {
+function playAndSave(ch: LoadedChapter, steps: number, carry: Readonly<Record<VarName, InkScalar>> = {}): SaveBody {
   const r = ok(StoryRunner.create(ch, { kind: 'fresh', carry }, ASSETS));
-  let checkpoint: SaveBodyV1['checkpoint'] = null;
+  let checkpoint: SaveBody['checkpoint'] = null;
   let last: RunnerStep | null = null;
   for (let i = 0; i < steps; i += 1) {
     if (last?.kind === 'choices') {
@@ -164,7 +164,7 @@ function playAndSave(ch: LoadedChapter, steps: number, carry: Readonly<Record<Va
     throw new Error('invariant: the fixture walk stands at a line, a choice set or a yield');
   }
   const at = { lineId: last.kind === 'line' ? last.lineId : null, knot: last.knot, yield: last.kind === 'yield' ? last.yield : null };
-  const saved = body({ storyVersion: ch.meta.storyVersion, ink: r.inkState(), at, staging: STAGE, checkpoint, chapterStart: { carry: { ...carry } } });
+  const saved = body({ storyVersion: ch.meta.storyVersion, ink: r.inkState(), at, staging: STAGE, checkpoint, chapterStart: { carry: { ...carry }, items: [] } });
   r.dispose();
   return saved;
 }
@@ -274,7 +274,7 @@ test('resume: pending chapter start uses the carry', () => {
   const v1 = chapter(STORY_V1, KNOTS, V1);
   // Written at the previous chapter's end, before this chapter was bought; a global a story update removed is not
   // written (it would be an undeclared VAR).
-  const saved = body({ chapterStart: { carry: { g_x: 1, g_gone: 5 } as Record<VarName, InkScalar> }, checkpoint: null });
+  const saved = body({ chapterStart: { carry: { g_x: 1, g_gone: 5 } as Record<VarName, InkScalar>, items: [] }, checkpoint: null });
   const r = resumed(resume(saved, v1, ASSETS));
   expect(r.level).toBe('chapter-start');
   expect(r.pendingStart).toBe(true);
@@ -393,7 +393,7 @@ test('resume: a same-version exact load that fails falls back to checkpoint', ()
   const saved = playAndSave(v1, 6); // at "Picked.", inside the choice's container; checkpoint k
   expect(saved.at.lineId).toBe('ch1.k.m007');
   /** One resume that must step down to the checkpoint, leave exactly one runner live, and never throw. */
-  const fallsBack = (b: SaveBodyV1, ch: LoadedChapter): void => {
+  const fallsBack = (b: SaveBody, ch: LoadedChapter): void => {
     const before = liveRunners();
     const r = resumed(resume(b, ch, ASSETS));
     expect.soft(r.level).toBe('checkpoint');
@@ -418,7 +418,7 @@ test('resume: a same-version exact load that fails falls back to checkpoint', ()
   expect(liveRunners()).toBe(before);
   fallsBack(saved, noChoice);
   // (3) A position the save's `at` does not describe.
-  fallsBack({ ...saved, at: { ...saved.at, lineId: 'ch1.k.zz99' as SaveBodyV1['at']['lineId'] } }, v1);
+  fallsBack({ ...saved, at: { ...saved.at, lineId: 'ch1.k.zz99' as SaveBody['at']['lineId'] } }, v1);
   // (1) An unloadable state: inkjs throws "ink save format incorrect".
   fallsBack({ ...saved, ink: '{}' }, v1);
 });

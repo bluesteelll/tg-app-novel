@@ -30,8 +30,8 @@ import { resume } from '../story/resume.ts';
 import type { ResumeError, ResumeLevel } from '../story/resume.ts';
 import { liveRunners, StoryRunner } from '../story/runner.ts';
 import type { RunnerError, RunnerStep } from '../story/runner.ts';
-import { BACKLOG_MAX, decodeSave, encodeSave } from '../story/save-codec.ts';
-import type { BacklogEntry, SaveBodyV1 } from '../story/save-codec.ts';
+import { BACKLOG_MAX, SAVE_FORMAT, decodeSave, encodeSave } from '../story/save-codec.ts';
+import type { BacklogEntry, SaveBody } from '../story/save-codec.ts';
 import { EMPTY_SNAPSHOT } from '../story/staging.ts';
 import type {
   AssetId,
@@ -278,7 +278,7 @@ const TAG_ERROR_TOAST = '__novelDebug:tag-error';
 const ok = <T>(value: T): Result<T, never> => ({ ok: true, value });
 const err = <E>(error: E): Result<never, E> => ({ ok: false, error });
 const DONE: Promise<void> = Promise.resolve();
-const NO_AT: SaveBodyV1['at'] = Object.freeze({ lineId: null, knot: null, yield: null });
+const NO_AT: SaveBody['at'] = Object.freeze({ lineId: null, knot: null, yield: null });
 const MANUAL_SLOTS: readonly SaveSlot[] = ['auto', 's1', 's2', 's3'];
 const IMAGE_ID = /^(?:bg|cg|char|prop)\//;
 
@@ -366,11 +366,11 @@ type Session = {
   runner: StoryRunner | null;
   /** The values carried INTO the current chapter. */
   carry: Record<VarName, InkScalar>;
-  checkpoint: SaveBodyV1['checkpoint'];
+  checkpoint: SaveBody['checkpoint'];
   backlog: BacklogEntry[];
   /** The ru text of every choice shown this session, for the backlog's "your choice". */
   readonly choiceText: Map<LineId, string>;
-  at: SaveBodyV1['at'];
+  at: SaveBody['at'];
   /**
    * The session may describe two steps at once: the runner, the chapter, the world or the stage has moved and
    * `present` has not yet set the position (an `end` step never does). Set at every move, cleared by `present`.
@@ -381,7 +381,7 @@ type Session = {
   /** The last line shown: it stays on screen above a choice set. */
   shown: Extract<RunnerStep, { kind: 'line' }> | null;
   /** The body of the last autosave, or of the save this session last resumed: "Return to last save" resumes it. */
-  last: SaveBodyV1 | null;
+  last: SaveBody | null;
   /**
    * W1 "Load it": the player chose the other device's autosave. The service's lane is open over their rev from that
    * tap on, so nothing of this session is written until a body loaded from the server has resumed (principle 1).
@@ -402,7 +402,7 @@ type Session = {
   /** The new chapter's first knot, whose entry turns `next:<id>` into `preload:<knot>` (F4 step 4, F2 step 1). */
   handover: KnotName | null;
   /** D11: the saved start of a paid chapter the player does not own; the paywall's chapter. */
-  pending: SaveBodyV1 | null;
+  pending: SaveBody | null;
   /** D10: the runtime errors of the current chapter, which walk "Return to last save" down the resume levels. */
   inkErrors: number;
   /** The yields of this session: the world, the explore controller, the open puzzle (PZ "Resource lifetime"). */
@@ -628,7 +628,7 @@ export function createGame(deps: GameDeps): Game {
   const stagingNow = (): StagingSnapshot => ({ ...scene.snapshot(), bgm: sound?.currentBgm() ?? null });
 
   /** The body an autosave or a manual save writes now; null when no chapter is running. */
-  const bodyOf = (s: Session): SaveBodyV1 | null => {
+  const bodyOf = (s: Session): SaveBody | null => {
     if (s.pending !== null) {
       return s.pending;
     }
@@ -638,20 +638,20 @@ export function createGame(deps: GameDeps): Game {
       return null;
     }
     return {
-      format: 1,
+      format: SAVE_FORMAT,
       chapterId: ch.id,
       storyVersion: ch.meta.storyVersion,
       ink: runner.inkState(),
       at: s.at,
       staging: stagingNow(),
       checkpoint: s.checkpoint,
-      chapterStart: { carry: { ...s.carry } },
+      chapterStart: { carry: { ...s.carry }, items: [] },
       backlog: s.backlog.slice(-BACKLOG_MAX),
       world: worldOf(s),
       worldVersion: ch.world?.version ?? null,
     };
   };
-  const writeOf = (b: SaveBodyV1): SaveWrite => ({ chapterId: b.chapterId, storyVersion: b.storyVersion, lineId: b.at.lineId, body: encodeSave(b) });
+  const writeOf = (b: SaveBody): SaveWrite => ({ chapterId: b.chapterId, storyVersion: b.storyVersion, lineId: b.at.lineId, body: encodeSave(b) });
 
   /**
    * `bodyOf` would compose a body of two steps: the session is `torn` and its fields are what it composes from. A
@@ -708,7 +708,7 @@ export function createGame(deps: GameDeps): Game {
   // -------------------------------------------------------------------------------------------------------------
   // The world (PUZZLES-PLAN; yields.ts from C6)
 
-  const worldOf = (s: Session): SaveBodyV1['world'] => s.yields.world();
+  const worldOf = (s: Session): SaveBody['world'] => s.yields.world();
 
   // -------------------------------------------------------------------------------------------------------------
   // Steps
@@ -955,7 +955,7 @@ export function createGame(deps: GameDeps): Game {
   };
 
   /** A save body back into the session (F3 step 6): its chapter, a runner at the level resume reaches, its stage. */
-  const resumeBody = async (s: Session, body: SaveBodyV1, minLevel?: ResumeLevel): Promise<Result<void, GameError>> => {
+  const resumeBody = async (s: Session, body: SaveBody, minLevel?: ResumeLevel): Promise<Result<void, GameError>> => {
     dropNext(s);
     let ch = s.ch !== null && s.ch.id === body.chapterId ? s.ch : null;
     if (ch === null) {
@@ -1200,7 +1200,7 @@ export function createGame(deps: GameDeps): Game {
   };
 
   /** D11 / F4 step 3: the chapter's start is the save (`ink: null`), and the paywall opens over the game. */
-  const pendingPaid = (s: Session, body: SaveBodyV1, write: boolean): void => {
+  const pendingPaid = (s: Session, body: SaveBody, write: boolean): void => {
     s.runner?.dispose();
     s.runner = null;
     s.pending = body;
@@ -1244,8 +1244,8 @@ export function createGame(deps: GameDeps): Game {
       showNotice({ kind: 'error', onaction: () => void game.exitToStories() }); // the catalog decoder admits no such chain
       return;
     }
-    const pending = (): SaveBodyV1 => ({
-      format: 1,
+    const pending = (): SaveBody => ({
+      format: SAVE_FORMAT,
       chapterId: id,
       // The next chapter's version is unknown before its load; resume reads none for an `ink: null` body.
       storyVersion: ch.meta.storyVersion,
@@ -1253,7 +1253,7 @@ export function createGame(deps: GameDeps): Game {
       at: NO_AT,
       staging: EMPTY_SNAPSHOT,
       checkpoint: null,
-      chapterStart: { carry },
+      chapterStart: { carry, items: [] },
       backlog: s.backlog.slice(-BACKLOG_MAX),
       world: EMPTY_WORLD_STATE,
       worldVersion: null,

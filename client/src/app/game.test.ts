@@ -1148,14 +1148,14 @@ test('game: an unowned next chapter saves its pending start and opens the paywal
 /** A body as F4 step 3 writes it at ch1's END while ch2 was not owned. */
 function pendingCh2(): SaveFull {
   const body = {
-    format: 1,
+    format: 2,
     chapterId: 'ch2',
     storyVersion: V_CH1,
     ink: null,
     at: { lineId: null, knot: null, yield: null },
     staging: { bg: null, cg: null, chars: [], bgm: null, props: [] },
     checkpoint: null,
-    chapterStart: { carry: { g_x: 1 } },
+    chapterStart: { carry: { g_x: 1 }, items: [] },
     backlog: [],
     world: EMPTY_WORLD_STATE,
     worldVersion: null,
