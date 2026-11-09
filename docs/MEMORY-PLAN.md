@@ -1346,8 +1346,9 @@ Ownership rules for every lane below (critique W3):
   - The transfer rows (F2): `transfer <ch> (half)` exists for every listed chapter, paid ones included; a paid
     chapter's row counts its public halves and the full files of its gated entries (`client/scripts/budget.ts:943-951`,
     `:1007`). As merged (M3s `a5f887b`, RULINGS 151; M3s cut F4): a paid chapter's row counts each image's half
-    wherever the entry has one, public or gated, and no longer the full files of gated entries (`transferHalfRow`
-    `budget.ts:940-949`, its call `:1004`). Measured at the merge, half / full KB: ch1 1149.7 / 1182.0, ch2 1113.6 / 1124.2, ch3 369.1 / 384.3, ch4
+    wherever the entry has one, public or gated, and no longer the full file of a gated entry that has one
+    (`transferHalfRow` `budget.ts:940-949`, its call `:1004`); an image without a half, such as a char off the half
+    canvas (`manifest.ts:139-140`), still counts its full file (`(e.half ?? e).avif.bytes`, `budget.ts:947`). Measured at the merge, half / full KB: ch1 1149.7 / 1182.0, ch2 1113.6 / 1124.2, ch3 369.1 / 384.3, ch4
     716.9 / 724.9 (`impl.md`).
   - The image row (F7): a half adds file, limit and I2 checks, and the row value stays the full AVIF
     (`budget.ts:731-753`).
@@ -1381,6 +1382,12 @@ Ownership rules for every lane below (critique W3):
   `server/tests/fixtures/content/assets/<bg half name>.{avif,webp}` (named by M3c's `assetFileName` token),
   `client/scripts/assets/{manifest.ts,assets.test.ts}`, `client/e2e/memory.spec.ts`, `docs/FEATURE_MAP.md`,
   `docs/ARCHITECTURE.md`.
+  - As merged (M3s `a5f887b`; RULINGS 146, 151; M3s cut Q1): docs were not in the lock (RULINGS 127, 146). The 13
+    files were the eleven code and fixture files above plus `client/scripts/scan-dist.{ts,test.ts}`, the scan prefix
+    rule for gated halves (RULINGS 120 Q5). The M3c map rows went to docs-errata-8 (above); the M3s rows to the docs
+    lane `docs-adopt`. The scan's red is `scan: a public half of a gated id fails`, and the M3c invariant
+    `assets: a paid manifest names no gated half file` became `assets: a gated image's half is gated beside it` (a
+    declared rename, cut Q1).
 - **Reds** (predicted red in brackets):
   - `content: half-tier gated file is served to an owner` [404];
   - `content: half-tier gated file is refused without the entitlement` (the existing gated rule);
