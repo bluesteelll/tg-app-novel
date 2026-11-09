@@ -1010,6 +1010,11 @@ test('reconcile: a slot key merged away gives back every item of its cells but t
   expect([r.state.held, r.state.used, r.state.slots, r.dropped]).toEqual([['medal_moon'], ['medal_comet'], { 'hall.gate': [null, null, 'medal_comet'] }, ['slots:hall.gate_old']]);
 });
 
+test('reconcile: a lost cell of an item the save also holds leaves it once in held and out of used', () => {
+  const r = reconcile(stamped(manor(), V2), at('hall', { held: [it('medal_sun')], used: [it('medal_sun')], slots: { [k('hall.gone')]: [it('medal_sun')] } }), MANOR_KNOTS, V1);
+  expect([r.state.held, r.state.used, r.state.slots, r.dropped]).toEqual([['medal_sun'], [], {}, ['slots:hall.gone']]);
+});
+
 test('reconcile: unprovable state restarts the section', () => {
   const v1 = manor();
   const v2 = stamped(manor({ leverCellar: true }), V2);
