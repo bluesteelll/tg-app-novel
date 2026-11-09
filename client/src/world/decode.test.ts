@@ -3,7 +3,7 @@ import { expect, test } from 'vitest';
 import { PUZZLE_TYPES } from '../puzzles/rules/index.ts';
 import type { PuzzleTypeData } from '../puzzles/rules/index.ts';
 import type { ChapterId, LineId, PuzzleLocalId, SectionId } from '../story/staging.ts';
-import { decodeWorldPublic, decodeWorldSource, toPublic, toServer } from './decode.ts';
+import { decodeWorldPublic, decodeWorldSource, finalTarget, toPublic, toServer } from './decode.ts';
 import type { WorldIssue } from './decode.ts';
 import type { Hotspot, RoomId, WorldSource } from './types.ts';
 
@@ -302,6 +302,14 @@ test("decode: a world's renamed map decodes in the source and the public world",
   expect(issues(decodeWorldSource(bad))).toEqual(['renamed.bogus shape', 'renamed.hotspots.hall id', 'renamed.items.Bad id', 'renamed.rooms.a id']);
   expect(issues(decodeWorldSource({ ...manorSource(), renamed: [] }))).toEqual(['renamed shape']);
   expect(issues(decodeWorldPublic({ ...publicRaw(), renamed: { hotspots: { 'hall.gate': 'gate' } } }))).toEqual(['renamed.hotspots.hall.gate id']);
+});
+
+test('finalTarget: a map is read by own keys only', () => {
+  // `constructor` and `toString` are ids the grammar allows, and a decoded map is a plain object: a chain may end at
+  // a prototype-named id, and a prototype-named id with no entry of its own is no rename.
+  const map: Readonly<Record<string, string>> = { a_old: 'b_old', b_old: 'constructor' };
+  expect(finalTarget(map, 'a_old')).toBe('constructor');
+  expect(finalTarget(map, 'toString')).toBe('toString');
 });
 
 test('toPublic: strips solution and hints, keeps tier count', () => {
