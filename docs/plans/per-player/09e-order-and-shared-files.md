@@ -22,9 +22,9 @@ reconcile r2: (E-P26, engine.md §12 "Order and conflicts" engine §12 Order and
 reconcile:    scene/*: M3c, LHJ (merged) -> GM2a's field -> GM6a -> SH1 -> SH4 -> SH5a -> SH5b -> SH6 -> SH7 -> SH8 ->
               {GM6d1, SH9, SH10, SH12a, SH12b, the carried preload-priority lane} one at a time by launch (GM6a before
               SH4 and every shot lane; GM6d1 after SH7's loop and SH8)
-reconcile:    game.ts: LBI, LFL (merged) -> LRB (in flight, RULINGS 156) -> GM2a -> GM3w -> SH1 -> SH5a -> SH5b -> SH7 ->
+reconcile:    game.ts: LBI, LFL (merged) -> LRB (merged 3c62a86, RULINGS 157) -> L1 (RULINGS 158) -> GM2a -> GM3w -> SH1 -> SH5a -> SH5b -> SH7 ->
               GM6c2 -> GM6c3 -> GM6d1 -> GM9r, one at a time
-reconcile:    game.test.ts: LEL, LBI, LFL (merged) -> LRB (in flight) -> the game.ts row's holders that test it, in that
+reconcile:    game.test.ts: LEL, LBI, LFL (merged) -> LRB (merged 3c62a86) -> the game.ts row's holders that test it, in that
               row's order -> SH12a
 reconcile:    requests.test.ts (new by GM3p): GM3p -> {GM6c2, SH7, every later lane that adds a start or a HOST_WAITS
               row} by launch, never beside (engine.md §12's row allows "disjoint rows may run beside"; this file keeps
@@ -86,8 +86,8 @@ the two tables differing on any file of its lock stops and asks the orchestrator
 | File | Holders in order (this file's lanes in bold) |
 |---|---|
 | `client/src/app/yields.ts`, `yields.test.ts` | engine.md §12 ([engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts)): GM1a -> GM2a -> GM3w (`yields.ts` only) -> GM3s -> GM3 -> GM3u -> GM3p -> GM3b -> GM4 -> GM4u -> GM5 -> GM7r -> GM8h -> GM9r; **GM6c2**, **GM6c4**, **GM6d2** by launch, never beside one of these; the later of **GM6c2** / GM8h wires E-P12; the later of **GM6c2** / GM7r wires the countdown zero's non-posting branch to `settle` (round 7, R-E27 (d)); every `session.attempt()` site goes through GM3p's `post(o)` from GM3p on (GM7r / GM8h call it from their first commit; GM6c2 adds `o.trying = true` inside it; round 9, E-P18 (b): R-E28 accepted with GM3p as the lander, [engine §14.2 Answers to per-player.md §12](../engine/14-interface-requests.md#142-answers-to-per-playermd-12) as read, so round 8's "the later lane routes it" and its STOP rule lapse; pin `yields: every attempt starts through post`) |
-| `client/src/app/game.ts` | engine.md §12 ([engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts)): LBI, LFL (merged) -> LRB (in flight, RULINGS 156) -> GM2a -> GM3w -> SH1 -> SH5a -> SH5b -> SH7 -> **GM6c2** -> **GM6c3** -> **GM6d1** -> GM9r, one at a time (reconcile r2) |
-| `client/src/app/game.test.ts` | engine.md §12 ([engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts)): LEL, LBI, LFL (merged) -> LRB (in flight) -> the `game.ts` row's holders that test it (**GM6c2**, **GM6c3**, **GM6d1** among them), in that row's order -> SH12a (reconcile r2) |
+| `client/src/app/game.ts` | engine.md §12 ([engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts)): LBI, LFL (merged) -> LRB (merged `3c62a86`, RULINGS 157) -> L1 (RULINGS 158) -> GM2a -> GM3w -> SH1 -> SH5a -> SH5b -> SH7 -> **GM6c2** -> **GM6c3** -> **GM6d1** -> GM9r, one at a time (reconcile r2) |
+| `client/src/app/game.test.ts` | engine.md §12 ([engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts)): LEL, LBI, LFL (merged) -> LRB (merged `3c62a86`) -> the `game.ts` row's holders that test it (**GM6c2**, **GM6c3**, **GM6d1** among them), in that row's order -> SH12a (reconcile r2) |
 | `client/src/puzzles/session.ts`, `session.test.ts` | engine.md §12: GM1c -> GM7r -> GM7g (test) -> GM8h; **GM6c2** never beside GM7r / GM7g / GM8h (E-P10) |
 | `client/src/scene/*` | engine.md §12 ([engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts)): M3c, LHJ (merged) -> GM2a's field -> **GM6a** -> SH1 -> SH4 -> SH5a -> SH5b -> SH6 -> SH7 -> SH8 -> {**GM6d1**, SH9, SH10, SH12a, SH12b, the carried preload-priority lane} one at a time by launch; no `scene/*` lane beside another (reconcile r2) |
 | `client/src/world/{types,decode}.ts`, `decode.test.ts` | engine.md §12 ([engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts)): GM1c -> GM1d -> GM2b -> GM3c -> **GM6c1a** |
@@ -117,7 +117,7 @@ the two tables differing on any file of its lock stops and asks the orchestrator
 | `client/e2e/values.spec.ts` | **GM6c4** -> **GM6d2**; no SH lane edits it, and SH10's `e2e full` runs it: GM6d2's zoom predicate holds under GM4's scaling zoom and SH10's push + dissolve (reconcile r2, m5), so the two lanes need no order on this file |
 | `client/src/ui/typewriter.ts`, `ui/{DialogueBox,Choices,Backlog}.svelte` | **GM6c3**; an overlay half's lanes by launch, if one is ruled (orchestrator Q6) |
 | `client/src/ui/Toast.svelte`, `ui/screens.svelte.test.ts`, `ui/toast-motion.ts` | **GM6t** |
-| `client/src/api/*` (generated `api.ts`, `decode.ts`, `endpoints.ts`, their tests and fixtures) | LEL (merged `7b37278`, RULINGS 141) -> **GM6s2**; LRB (in flight) leaves `client/src/api/**` untouched (`lrb-reload-bounds/spec.md:54`, critique_perplayer_r1) (reconcile r2) |
+| `client/src/api/*` (generated `api.ts`, `decode.ts`, `endpoints.ts`, their tests and fixtures) | LEL (merged `7b37278`, RULINGS 141) -> **GM6s2**; LRB (merged `3c62a86`) left `client/src/api/**` untouched (`lrb-reload-bounds/spec.md:54`, critique_perplayer_r1) (reconcile r2) |
 | `client/src/api/meta.ts` | LEL (merged) -> **GM6s2** (`META_KINDS`' `value_changed` row; reconcile r1, listed as a row in r2) |
 | `client/src/requests.test.ts` (new by GM3p) | engine.md §12 ([engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts)): GM3p -> {**GM6c2** (E-P23 (a)), SH7 (its `scene/motion/` `import()` row, if GM3p has merged), every later lane that adds a start or a `HOST_WAITS` row} by launch; **this file: never beside** (engine.md's "disjoint rows may run beside" is not taken: the lane rule is never two lanes on one file at once; R-E35) |
 | `server/src/content.rs`, `server/tests/it/content.rs` | M3s by launch, never beside **GM6k** -> **GM6s1** (`it/content.rs` only if touched) -> **GM6s2** |

@@ -31,7 +31,7 @@ the same table; merged as main `cec347c`, whose merge build shows the same rows 
 engine **215,052** (+37), first line **254,004** (-4,819; the row's definition becomes "entry + engine closures": the
 meta controller chunk leaves it), meta controller 5,109, all JS **271,939** (+301). (Round 1's figures, 39,012 /
 254,036 / 271,949 at `58c2226`, `test_r1.md:54-58`, are superseded by round 2's.) The LIMITs are
-`client/scripts/budget.ts:106` (`entryJsBr` 40,000), `:108` (`firstLineJsBr` 270,000), `:114` (`allJsBr` 305,000).
+`client/scripts/budget.ts:106` (`entryJsBr` 40,000), `:108` (`firstLineJsBr` 270,000), `:114` (`allJsBr` 305,000). **Adoption (main `3c62a86`, docs-adopt):** these bases stay as the record; the adoption base's exact bytes (MEASURED, RULINGS 158) are the "Reconcile r4" paragraph's below.
 
 **This file's terms in engine.md §11.1 (ARITHMETIC at 4.3 B br per line, CLAIM-based estimates until each lane's
 build measures; reconcile r2).** The other designs' terms (EN, shots) are §11.1's rows and are not restated here.
@@ -78,17 +78,24 @@ and its difference against §11.1's "with R-E36" rows is **0** on all four ledge
 **LRB** merged as `3c62a86` after reconcile r3 (`.git/refs/heads/main`); its merge build reads entry 39.0, engine
 215.1, first line 254.1, meta controller 5.2, all JS 272.1 KB br (MEASURED, rounded,
 `D:/tmp/novel-orch/lrb-reload-bounds/merge/build.log:92-100`; no byte table exists, `lrb-reload-bounds/test_r2.md:60`).
-Re-basing §11.1 on it is the engine track's (critique_engine_r2 m1); read on the rounding intervals (ARITHMETIC,
-engine.md's to print, mirrored for the cuts; the planned lanes as §11.1 sums them: EN +1.71 engine / +0.06 entry /
-+13.44 all JS, this file +3.13 / +0.35 / +3.524, SH +6.25 first line / +0.10 entry / +12.75 all JS):
-- **First line:** 254.05-254.15 + 11.50 = **265.55-265.65** (4.35-4.45 left, PASS; r3 read 265.504 on `cec347c`).
-- **Entry:** LRB's tester held the row ("must not move", 39.0 -> 39.0, `lrb-reload-bounds/test_r2.md:26`), so 38,952 B
-  stays the base (CLAIM since LRB) and Ledger 2 reads **39.462**, **0.538** left, **38 B** above L1 / L2's return line,
-  until the next entry-adding cut reads the exact bytes; this file's +0.35 enters through GM6s2 (+0.09) and GM6t
-  (+0.26) only.
-- **Engine closure:** 215.05-215.15 + 10.99 = **226.04-226.14** (3.86-3.96 left).
-- **All JS:** 272.05-272.15 + 29.714 = **301.76-301.86** (3.14-3.24 left); + EN's GM7p and GM7g (3.2) =
-  **304.96-305.06**, at the LIMIT within CLAIM noise; + GM8a = 306.56-306.66 (FAIL; engine.md §15 item 16's ruling).
+**Adoption (main `3c62a86`, docs-adopt; RULINGS 158):** LRB merged as `3c62a86`; the adoption measured it
+(`docs-adopt/measure-bytes.txt`, `budget.ts`'s own evaluate on a scratch build): entry 38,988, engine 215,087, first line
+254,075, meta controller 5,242, all JS 272,130 B (MEASURED). [engine §11.1 The shared ledgers](../engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13) is re-based on these bytes (critique_engine_r2 m1), so the
+ranges below are exact (ARITHMETIC on the MEASURED bytes, engine.md's to print, mirrored for the cuts; the planned lanes as §11.1
+sums them: EN +1.71 engine / +0.06 entry / +13.44 all JS, this file +3.13 / +0.35 / +3.524, SH +6.25 first line / +0.10
+entry / +12.75 all JS; reconcile r4's readings on the rounding intervals stay in each bullet as the record):
+- **First line:** 254.075 + 11.50 = **265.575** (4.425 left, PASS; reconcile r4 read 254.05-254.15 + 11.50 = 265.55-265.65,
+  4.35-4.45 left; r3 read 265.504 on `cec347c`).
+- **Entry:** 38.988 (MEASURED, no longer CLAIM) + 0.51 = **39.498**, **0.502** left, **2 B** above L1 / L2's return line
+  (RULINGS 158 unshelved L1: "The reading" below, [§14 Questions for the orchestrator](14-orchestrator-questions.md#14-questions-for-the-orchestrator-engineering-each-with-a-recommendation) Q17); this file's +0.35 enters through GM6s2 (+0.09) and GM6t
+  (+0.26) only. Reconcile r4 read: LRB's tester held the row ("must not move", 39.0 -> 39.0, `lrb-reload-bounds/test_r2.md:26`),
+  so 38,952 B stayed the base (CLAIM since LRB) and Ledger 2 read 39.462, 0.538 left, 38 B above the line.
+- **Engine closure:** 215.087 + 10.99 = **226.077** (3.923 left; reconcile r4 read 215.05-215.15 + 10.99 = 226.04-226.14,
+  3.86-3.96 left).
+- **All JS:** 272.130 + 29.714 = **301.844** (3.156 left); + EN's GM7p and GM7g (2 x 1.625, the MEASURED `puzzle-type`
+  chunk) = **305.094**, 0.094 over the LIMIT; + GM8a = 306.719 (FAIL without the re-set; [engine §15 Questions for the orchestrator](../engine/15-orchestrator-questions.md#15-questions-for-the-orchestrator-engineering-each-with-a-recommendation) item 16's
+  ruling, RULINGS 158: GM7p re-sets `allJsBr` once). Reconcile r4 read 272.05-272.15 + 29.714 = 301.76-301.86 (3.14-3.24
+  left), 304.96-305.06 after GM7p and GM7g, 306.56-306.66 after GM8a.
 - **Without LFL** (history; LFL is main since `cec347c`): 270.327 first line (FAIL) and 39.197 entry, unchanged.
 
 No GM6 verdict flips. What a crossing does to a GM6 lane is "Per-lane quote" below (reconcile r4 clarifies its all-JS
@@ -111,6 +118,7 @@ clause) and §14 Q24.
   < 0.5 KB br STOPs at its cut, L1 (entry -1.75 KB br, first line +0.07; RULINGS 140, `RULINGS.md:2988-2990`) runs
   as the next lane on its files and merges first, then the stopped lane resumes; `entryJsBr` (`budget.ts:106`,
   40,000) is never raised; crossing 40.0 itself is a build-gate FAIL. L2 (-0.48) stays shelved with it.
+  **Ruled since: RULINGS 158** — L1 is unshelved (RULINGS 142's return condition: 38,988 B + 510 B = 39,498 B, 502 B left against the 500 B line, inside the build's own churn) as lane `l1-entry-summary` (`summaryOf` into `saves/summary.ts`; entry -1.59, first line +0.21, CLAIM at `cdca9d4`); L2 stays shelved. The cut/build crossing rule above stands for every later entry-adding lane, read against the row after L1 merges.
 - **All JS:** this file's +3.524 (r2: +3.504) is inside §11.1's projection with the difference above; every GM6 client lane quotes
   the row at its cut (shots I-13); the ruling the third EN type chunk needs is engine.md §15 item 16's. Reconcile r4:
   on `3c62a86` the three designs' terms read 301.76-301.86 and GM7p + GM7g's rows 304.96-305.06 (above), so the

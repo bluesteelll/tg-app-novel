@@ -158,7 +158,7 @@
   SH5a -> SH5b -> SH7 -> GM6c2 -> GM6c3 -> GM6d1 -> GM9r` (the shot lanes replace MD2 / MA1a / MA1b); the shot lanes
   rework `stage()` / `present()` before this lane, so its cut re-locates the five hunks below on its parent; and
   `client/src/requests.test.ts` (GM3p's request walk) is held after GM3p, the lane that creates it. **Reconcile r2
-  (E-P26):** the chain's head is `LBI, LFL (merged) -> LRB (in flight, RULINGS 156) -> GM2a`, so LRB's `game.ts`
+  (E-P26):** the chain's head is `LBI, LFL (merged) -> LRB (merged 3c62a86, RULINGS 157) -> L1 (RULINGS 158) -> GM2a`, so LRB's `game.ts`
   hunks move this lane's lines again; RULINGS 156 names `reloadBlocker()` (`game.ts:1742-1762` on `cec347c`) and
   `meta.ts`, outside the five hunks below (CLAIM from the ruling; the cut re-locates by symbol on its parent);
   `requests.test.ts` is held by launch, never beside another holder (R-E35).

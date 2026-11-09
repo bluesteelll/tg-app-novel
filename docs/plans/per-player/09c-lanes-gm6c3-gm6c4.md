@@ -110,7 +110,7 @@ export function stackOf(prev: readonly ToastSlot[], next: readonly ToastEntry[],
   beside today's `reducedMotion` pass at `App.svelte:86`), and the entry lever (RULINGS 127: it adds entry code;
   reconcile P4: merged, LEL `7b37278`, RULINGS 141; this lane is the largest entry delta of the three designs, so its
   cut quotes the entry row base -> HEAD against §10 "Ledgers" and STOPs if the sum crosses 40.0, or if the headroom
-  after it is < 0.5 KB br while L1 / L2 are still shelved, RULINGS 142).
+  after it is < 0.5 KB br while L1 / L2 are still shelved, RULINGS 142). **Ruled since: RULINGS 158** — L1 is unshelved as lane `l1-entry-summary`; L2 stays shelved; GM6t's cut reads this condition against the entry row of [§10 Ledgers](10-budgets-and-validation.md#ledgers-reconcile-p4-rulings-143-qo10-145-149-152-shots-i-13-reconcile-r2-one-ledger-enginemd-111) after L1.
   **Before** GM6c4, the first lane that shows either toast to a player. Never beside a lane holding `ui/App.svelte`,
   `ui/Toast.svelte` or `ui/screens.svelte.test.ts`. It touches no file of the values lanes, so it may run any time in
   that window.

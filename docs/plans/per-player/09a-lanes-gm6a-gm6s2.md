@@ -86,7 +86,7 @@ designs hold (m9).
      `hint_unlocks.player_id`, `erasure_order_ends_with_the_users_root` on `users` moved before `entitlements`; then
      green on the full list (`payments`, `unrecorded_refunds` and `orders` kept, `users` anonymised last). LRF is
      merged, so its clauses are in this commit from the start (§3.9).
-  4. `deploy.md`'s rollback paragraph: one sentence (§3.8).
+  4. `deploy.md`'s rollback paragraph: one sentence (§3.8). **Ruled since: RULINGS 160 / 161** — the sentence is a carry for a docs lane after GM6k merges (`docs-adopt` held `deploy.md`); GM6k's lock drops `deploy.md` and takes `server/tests/it/stats.rs` (the erasure order's allow-list row), 15 files.
 - **Gates:** `cargo fmt --all --check`, clippy `-D warnings`, `cargo test --workspace --all-targets --no-fail-fast`
   (names counted; PostgreSQL 18 slot), e2e full through the kit with a `server-dev` built from the lane (routes
   behaviour-identical).

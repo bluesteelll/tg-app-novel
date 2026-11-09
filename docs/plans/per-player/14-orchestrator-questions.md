@@ -23,6 +23,7 @@
    animation names replaced by `design-shots`' once ruled (RULINGS 132); the next lane syncs main first.
    **Reconcile P2:** the adopted row is `GM2a -> GM3w -> SH1 -> SH5a -> SH5b -> SH7 -> GM6c2 -> GM6c3 -> GM6d1 ->
    GM9r` (shots I-2, §9.14); `game.test.ts` continues `-> SH12a`.
+   **Ruled: RULINGS 153** — the one order ([engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts)) replaces this chain.
 6. **An overlay half** would own the motion of `DialogueBox`, `Choices`, `Backlog` and `Toast` (engine.md §8.2, §15
    Q4: no planned owner today). GM6c3 edits the first three's text rendering, `ui/typewriter.ts` and
    `ui/state.svelte.ts`; GM6t gives `Toast` its motion. Recommendation: rule the overlay half as engine.md Q4 asks,
@@ -55,7 +56,9 @@
    141); GM6s2's lock is 17 (+ `client/src/api/meta.ts`, where LEL moved `META_KINDS`; `tsc` forces its
    `value_changed` row). Recommendation: accept 17 (the contract unit plus the one file `tsc` forces; splitting the
    `META_KINDS` row from the `ErrorCode` it maps would leave a red `check` between two lanes).
+   **Ruled: RULINGS 137** — the lever ran as its own lane and merged: LEL (`7b37278`, RULINGS 141).
 9. **LRF before GM6k (W1).** Done: LRF merged `a93fe54`; GM6k's erasure data names its two tables (§3.9, r3 m2).
+   **Ruled: RULINGS 130** — done: LRF auto-refund merged `a93fe54`.
 10. **LRF's erasure rule in the docs (r3 m2).** **Resolved (round 5):** docs-errata-9 merged `525dd68` (RULINGS 133)
     with the rule in `docs/runbooks/privacy-ops.md` (access `:113-117`, `:125-126`; erasure keeps both tables,
     `:155-157`); META-PLAN's inventory still predates them, as `privacy-ops.md:114-115` says. GM6s1's docs commit adds
@@ -63,11 +66,13 @@
 11. **GM6k vs M3s (RULINGS 132).** Both hold `server/src/content.rs` and `server/tests/it/content.rs`; M3s's order is
     re-set by `design-shots`. Recommendation: GM6k goes first when it is ready and M3s is not cut; never beside;
     the later cut re-locates (§9 "Order").
+    **Ruled: RULINGS 151, 160** — M3s went first (merged `a5f887b`); GM6k launched after it, from the frozen design, before this adoption merged (RULINGS 160).
 12. **The animation / shot chain (r3 W2, RULINGS 132).** This file now orders its lanes against `characters.md` rev.
     3's chain and states the invariants a successor must keep (§9 "Order", R-A10). Recommendation: when
     `design-shots` names its scene and `game.ts` lanes, have engine.md §12 replace MD2 / MA1a / MA1b / MA2 by them
     in one edit and check GM6a, GM6c2, GM6d1 against the invariants at their cuts. **Reconcile P2:** named (shots
     §9.14, I-2); §9 "Order" carries the `reconcile:` rows; engine.md §12 adopts them by I-2.
+    **Ruled: RULINGS 153** — the one order: [engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts).
 13. **The two shared-file tables before a GM6 cut (r4 m3).** engine.md round 6 applied R-E25's rows
     (`scripts/story/world.ts`, `scripts/story/mechanics/texts.ts`, [engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts)), so its rows
     ([engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts)) and §9 "Shared files" agree in round 7 (E-P16 (e) mirrored). Recommendation: each GM6 cut brief
@@ -117,11 +122,13 @@
     longer exists. Reconcile r3: engine.md's reconcile r2 books GM3w's entry at +0.01, so the margin reads 0.538 KB
     br, 38 B above the line (Ledger 2); the recommendation and the STOP rule are unchanged, and this revision adds no
     entry byte.
+    **Ruled since: RULINGS 158** — L1 is unshelved (RULINGS 142's return condition: 38,988 B + 510 B = 39,498 B, 502 B left against the 500 B line, inside the build's own churn) as lane `l1-entry-summary` (`summaryOf` into `saves/summary.ts`; entry -1.59, first line +0.21, CLAIM at `cdca9d4`); L2 stays shelved. The cut/build crossing rule above stands for every later entry-adding lane, read against the row after L1 merges.
 21. **E-P25-E-P28 (engine.md reconcile revision 1).** Announced (`design/mechanics/engine.md` line 392 at tag `designs-adopted-2026-11-09` (history: the header's reconcile revision 1 summary) as read) but their §14.3 rows were not
     yet written when this revision closed; only E-P28's rule is visible ([engine §8.1 The cue union and the bus](../engine/08a-cue-union-and-bus.md#81-the-cue-union-and-the-bus): a new promise-returning
     host member needs a `HOST_WAITS` row), answered in §12.2. Recommendation: forward the written rows to this track's
     next reconcile round; no GM6 cut starts before they are answered. **Reconcile r2: resolved** (written at
     [engine §14.3 Interface requests to per-player.md](../engine/14-interface-requests.md#143-interface-requests-to-per-playermd-reconcile); answered in §12.2, E-P25 with one input corrected, E-P26 with one row stricter).
+    **Ruled: RULINGS 153, 158** — answered inside design-reconcile ([engine §14.2 Answers to per-player.md §12](../engine/14-interface-requests.md#142-answers-to-per-playermd-12); [engine §14.3 Interface requests to per-player.md](../engine/14-interface-requests.md#143-interface-requests-to-per-playermd-reconcile); [§12.2 Answers to engine.md §14.1 and §14.3](12-interface-requests.md#122-answers-to-enginemd-141-and-143-rounds-1-14-reconcile-revision-1-answers-e-p20-e-p24-reconcile-revision-2-answers-e-p25-e-p28-reconcile-revision-3-answers-e-p29-e-p30)).
 22. **Requests of reconcile revision 2 (R-E31 restated, R-E33 restated, R-E34, R-E35; R-S2).** Recommendation: send
     R-E31 / R-E33 / R-E34 / R-E35 to the engine track's next round (R-E31 before the docs adoption lane copies §11.1,
     so the adopted ledger reads this file's terms; R-E33 and R-E32 before GM3b's cut; R-E34 before GM6c2's cut);
@@ -132,6 +139,7 @@
     not copy §11.1's PPL row or I-11's `propsFor` shape before R-E31 / R-E32 are answered) is therefore resolved: the
     docs adoption lane copies engine.md's reconcile-r2 §11.1 (whose PPL input is this file's term table) and I-11's
     `roomFor` shape (GM3b, R-E32 adopted), with this file's reconcile-r3 term table as that input (+3.13, R-E36).
+    **Ruled: RULINGS 153, 158** — answered inside design-reconcile ([engine §14.2 Answers to per-player.md §12](../engine/14-interface-requests.md#142-answers-to-per-playermd-12); [engine §14.3 Interface requests to per-player.md](../engine/14-interface-requests.md#143-interface-requests-to-per-playermd-reconcile); [§12.2 Answers to engine.md §14.1 and §14.3](12-interface-requests.md#122-answers-to-enginemd-141-and-143-rounds-1-14-reconcile-revision-1-answers-e-p20-e-p24-reconcile-revision-2-answers-e-p25-e-p28-reconcile-revision-3-answers-e-p29-e-p30)).
 23. **Requests of reconcile revision 3 (R-E36, R-S3).** Recommendation: R-E36 (a) to the engine track's next round,
     or, if none runs before the docs lane, to the docs lane as §11.1's own documented term move (+0.02 on Ledgers 1, 3,
     4; no lane STOPs on it, [engine §11.1 The shared ledgers](../engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13) as last read); R-E36 (b) with it (one sentence beside I-6's answer;
@@ -143,6 +151,7 @@
     cite this file by section (that critic's open question 2; critique_engine_r2 m3). Recommendation: R-E37 to the
     engine track's next round; if the docs lane runs first, it builds the shots errata list from §30 item 18 **plus**
     this file's §12.1 rows R-S1-R-S3 (R-S3's text is R-E37 (a)'s), and re-locates every `per-player.md:N` by section.
+    **Ruled: RULINGS 158** — R-E36 taken ([engine §14.2 Answers to per-player.md §12](../engine/14-interface-requests.md#142-answers-to-per-playermd-12)); R-E37: (a) R-S3 joined [engine §30 Shots errata from reconcile](../engine/30-shots-errata.md#30-shots-errata-from-reconcile) item 18 at the adoption, (b) the adoption cites this file by section.
 24. **Reconcile r4: what the parallel rounds leave open.** (a) engine.md's own reconcile revision 3 was being written
     beside this revision (engine.md read as its reconcile r2 with the late additions, `design/mechanics/engine.md` lines 11325-11352 at tag `designs-adopted-2026-11-09` (history: §32, the reconcile r2 late additions); Grep
     `E-P3[1-9]` finds nothing), so any request it adds is for this track's next round; no GM6 cut starts before it is
@@ -151,13 +160,16 @@
     directs; GM6 lanes do not STOP on the type-chunk rows (§10 "Per-lane quote", reconcile r4), so the ruling gates EN's
     lanes, not this file's. (c) The entry base is CLAIM since LRB (rounded 39.0, no byte table): GM6s2's and GM6t's
     cuts read the exact entry bytes on their parent before quoting the 38 B margin.
+    **Ruled: RULINGS 158** — (b) `allJsBr` is re-set once, by GM7p ([engine §15 Questions for the orchestrator](../engine/15-orchestrator-questions.md#15-questions-for-the-orchestrator-engineering-each-with-a-recommendation) item 16); (c) the entry base is MEASURED at `3c62a86`: 38,988 B ([§10 Ledgers](10-budgets-and-validation.md#ledgers-reconcile-p4-rulings-143-qo10-145-149-152-shots-i-13-reconcile-r2-one-ledger-enginemd-111)).
 18. **R-S1 to the shots design (reconcile P2).** SH8's drive steps a depth list a later scene lane can enter (the bg
     labels' depth nodes, GM6d1). Recommendation: forward it with I-9's answer before SH8's cut; it adds no lane and
     ~2 lines to SH8 (the list's add / remove), or GM6d1 STOPs at its cut.
+    **Ruled: RULINGS 158** — R-S1 is applied to the shots plan at the adoption ([shots §9.9 SH8 `shot-motion`](../shots/09d-lanes-sh6-sh10.md#99-sh8-shot-motion-client-runtime)).
 19. **R-E32 into SH5a's text.** SH5a's `withRoomProps` appends `roomFor(bg)`'s commands verbatim (props, then labels
     once GM6d2 lands), not a `props` command it builds. Recommendation: forward with R-E32 before SH5a's cut; the
     function's name is engine.md's to settle (GM3b), SH5a's text follows it. **Reconcile r3: resolved** (engine.md
     names it `roomFor` and carries it into SH5a's text through its §30 item 6, [engine §30 Shots errata from reconcile](../engine/30-shots-errata.md#30-shots-errata-from-reconcile), [engine §30 Shots errata from reconcile](../engine/30-shots-errata.md#30-shots-errata-from-reconcile) as last read).
+    **Ruled: RULINGS 158** — `roomFor` is applied to the shots plan at the adoption ([shots §5.8 Preload policy for cuts](../shots/05b-preload-memory-download.md#58-preload-policy-for-cuts-sh5a-windows-sh5b-entry); [shots §9.6 SH5a `shot-preload`](../shots/09c-lanes-sh4-sh5b.md#96-sh5a-shot-preload-client-runtime-windows-warm-rooms)).
 20. **GM6c2's lock 10 and `requests.test.ts` (reconcile P1).** GM6c2 now holds `client/src/requests.test.ts` (four
     rows, two `WaitRow`s, one `VIEW_FILES` entry). Recommendation: accept; engine.md §12 gains the row `GM3p -> ... ->
     GM6c2` (E-P23 (a) names it), and any other lane adding a row there runs by launch, never beside.
