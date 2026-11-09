@@ -91,15 +91,18 @@ The server half is one command, `server setup`; the rest is @BotFather and the h
    by variable name and rule, never by value ([config.rs:91-132](../../server/src/config.rs#L91)).
 
 5. **Replace the draft bot texts before a production start.** `server/locales/bot.ru.json` and `bot.en.json` list
-   `paysupport`, `support` and `terms` under `drafts` ([bot.en.json:3](../../server/locales/bot.en.json#L3)): they are
-   placeholders with no real contact. Under `TELEGRAM_ENV=prod`, `server serve` and `server setup` refuse to start
-   while either file lists a draft; under `test` they log a warning
-   ([main.rs:36-56](../../server/src/main.rs#L36), [texts.rs:321-338](../../server/src/telegram/texts.rs#L321)).
+   ten keys under `drafts` ([bot.en.json:3](../../server/locales/bot.en.json#L3)): `admin_auto_refund_failed`,
+   `admin_unapplied`, `payment_unapplied`, `paysupport`, `paysupport_refunding`, `refund_unknown`,
+   `refund_unrecorded_done`, `refund_usage`, `support` and `terms`. The `/terms`, `/support` and `/paysupport` texts
+   are placeholders with no real contact; the payment and refund notices are engineering wording. Under
+   `TELEGRAM_ENV=prod`, `server serve` and `server setup` refuse to start while either file lists a draft; under
+   `test` they log a warning ([main.rs:36-56](../../server/src/main.rs#L36),
+   [texts.rs:349-380](../../server/src/telegram/texts.rs#L349)).
    The texts are compiled into the binary, so the edit needs a rebuild (a VALUES step for the owner, OPEN-QUESTIONS
-   Q4). The same commit changes the test that pins the drafts: `bot_texts_complete_and_within_limits` expects
-   `drafts` to be exactly `["paysupport", "support", "terms"]` in both files
-   ([server/tests/it/bot.rs:123-127](../../server/tests/it/bot.rs#L123), :147). Without that change `cargo test`
-   fails, and a deploy needs green gates ([deploy.md](deploy.md#preconditions)).
+   Q4). The same commit changes the test that pins the drafts: `bot_texts_complete_and_within_limits`
+   ([server/tests/it/bot.rs:163](../../server/tests/it/bot.rs#L163)) expects `drafts` to be exactly the ten keys of
+   `DRAFTS` in both files ([bot.rs:77-88](../../server/tests/it/bot.rs#L77), compared at :139). Without that change
+   `cargo test` fails, and a deploy needs green gates ([deploy.md](deploy.md#preconditions)).
 
 6. **Start the server** and check `GET <PUBLIC_APP_URL>api/health` answers `ok`. For a test bot on this machine, from
    the repository root, with the step 4 environment (`TELEGRAM_ENV=test`, `STATIC_DIR=client/dist`) and after

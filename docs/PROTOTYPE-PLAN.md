@@ -72,6 +72,11 @@ records chapter, ending and puzzle facts per story ([STORIES-PLAN "Goal"](STORIE
   As merged (LMI `3e35a7b`; RULINGS 105, 110; META-PLAN M27): the controller is a lazy chunk ≤ 5.0 KB br loaded
   once the boot reads are in (auth among them; `client/src/app/boot.ts:585`, RULINGS 113) and counted in JS before
   the first line; the entry measured 38.9 KB br.
+  As merged (LEL `7b37278`, RULINGS 137, 141; LFL `cec347c`, RULINGS 149, 155): the meta decoders and
+  `createMetaEndpoints` live in `client/src/api/meta.ts`, in the controller chunk; its limit is 6.0 KB br
+  (`client/scripts/budget.ts:116`); boot's gate requests it at the session's first step, a meta tap, an ending, a
+  hint use, a launch parameter or Home idle (`client/src/app/boot.ts:189-194`), and JS before the first line is the
+  entry + engine closures again, without it (`client/scripts/budget.ts:466-503`).
 - Changed by MEMORY-PLAN (RULINGS 78): the steady memory per lever at the gated limits, MiB: today 138.6 (LOW with
   F: 129.6); after M2 106.6 (LOW with F: 97.6); on LOW phones with F + M2 + M3c the planned set gives ≤ 75.2 (75.8 with
   the 10.15 MiB bound of the 5-image busiest knot), and the cap-bounded worst case stays 97.6. M2 also lowers the
@@ -194,6 +199,14 @@ research is newer and verified (brief), so it wins, and the deviation is recorde
   the first line; the next tap that needs
   it re-imports it after a failure, and an ending awaits it (`createMetaGate`, `client/src/app/boot.ts:169-253`).
   Its row `meta controller chunk (br)` ≤ 5.0 KB br is counted in JS before the first line (META-PLAN M27).
+  As merged (LEL `7b37278`; RULINGS 137, 141): the meta decoders and `createMetaEndpoints` moved from the entry to
+  `client/src/api/meta.ts`, which only the controller chunk imports (`client/src/app/meta.ts:9`, `:31`); the row's
+  limit is 6.0 KB br (`client/scripts/budget.ts:116`). As merged (LFL `cec347c`; RULINGS 149, 155): the chunk is no
+  longer imported once the boot reads are in; the gate (`client/src/app/boot.ts:189-195`) requests it at the
+  session's first step (T1), a meta tap, an ending, a hint use, a launch parameter (T4) or Home idle (T5,
+  `HOME_IDLE_MS` = 2000, `:153`); boot reads the stats itself (B1, `:736`), the hint port forwards before the chunk
+  lands (HP, `:304-325`), and JS before the first line no longer counts the chunk. RULINGS 105's "right after auth"
+  and "`hintPort()` null until the chunk" are superseded (RULINGS 149).
 
 **K4. Own image loader, not Pixi `Assets`.**
 - **What.** `scene/loader.ts`: the injected `FetchAsset` (implemented by `api/http.ts`: bearer and the single-flight
@@ -1186,7 +1199,7 @@ CREATE TABLE saves (
   here).** The comment `-- one per product; revoke = DELETE` on `entitlements_pkey` (`0001_init.sql:57`, copied
   above) now reads "revoke = DELETE or a re-key": a revoke whose chapter another unrefunded paid charge of the payer
   paid re-keys the row to that charge (`UPDATE entitlements SET charge_id`, `Repo::revoke`,
-  `server/src/db/payments.rs:351`; PP "Refund.").
+  `server/src/db/payments.rs:402`, moved by LRF `a93fe54` from :351; PP "Refund.").
 - **Every FK column is indexed** by a UNIQUE or a leading PK/index column: `orders.user_id` by
   `orders_by_user_product`, `entitlements.user_id` and `saves.user_id` by their PKs, both `charge_id` columns by their
   UNIQUEs. PostgreSQL does not index referencing columns by itself.
@@ -1568,6 +1581,15 @@ pub mod telegram::payments {
                                                  // gateway errors logged, never fail the webhook (L9)
   pub async fn revoke(st: &AppState, charge: &ChargeId, now: i64) -> Result<RevokeOutcome, sqlx::Error>;
   pub async fn admin_refund(st: &AppState, charge: &ChargeId) -> Result<RevokeOutcome, RefundError>; }
+// As merged (LRF `a93fe54`; RULINGS 130; signatures re-read at `3c62a86`, `server/src/telegram/payments.rs`):
+// `notify_unapplied` is private and takes `lang` and a `deadline: Instant` (:176); the webhook calls `after_grant`;
+// `revoke` takes no `now` (it reads the state's clock); the sweep and the restore-gap refund are public too.
+//   pub async fn after_grant(st: &AppState, fact: &PaymentFact, outcome: GrantOutcome, lang: Lang);        // :150
+//   pub async fn sweep_auto_refunds(st: &AppState) -> Result<SweepTally, sqlx::Error>;                     // :407
+//   pub async fn run_auto_refund_sweep(st: AppState);                                                       // :432
+//   pub async fn revoke(st: &AppState, charge: &ChargeId) -> Result<RevokeOutcome, sqlx::Error>;            // :460
+//   pub async fn refund_unrecorded(st: &AppState, charge: &ChargeId, payer: UserId, admin: UserId)
+//       -> Result<UnrecordedOutcome, RefundError>;                                                         // :520
 
 // server-dev lib (server/dev/src/lib.rs)
 // changed by RULINGS 14 (decision §3.5; as merged, fee9da7)
@@ -1999,7 +2021,7 @@ payer, outcome), each under the gateway's 5 s timeout; a gateway error is logged
 As merged (L9 `d837c8b`, RULINGS 96; L9 cut Q6, critique O8): `notify_unapplied(st, fact, outcome, lang)` tells the
 payer in `lang` (the payment message's language) and each admin in Russian; `UnknownProduct` is notified like
 `OrderMismatch` and `AlreadyEntitled`; and one `CALL_DEADLINE` (5 s) cuts the whole notice, its messages sent one after
-another, not each call (`server/src/telegram/payments.rs:112-162`).
+another, not each call (`server/src/telegram/payments.rs:112-162`; moved by LRF `a93fe54`: the notice is `:176`).
 The durable record is the data itself: `/paysupport` flags every charge of the user that has no `entitlements` row and
 `refunded_at IS NULL` as "not applied". A redelivered duplicate is `Duplicate` and sends nothing. The remedy is the
 admin's `/refund`; automatic refund is the owner's call (V4). Changed by META-PLAN (M19): "not applied" also requires
@@ -2057,15 +2079,19 @@ COMMIT;
   grant would break `payments_refunded_after_paid`), then the order, then `DELETE FROM entitlements WHERE charge_id`,
   then the clawback. Every undo is keyed by the charge's own rows, whatever the order says; the `match` on
   `parse_product_id` has no wildcard arm, a tripwire that stops a new product kind from compiling until its undo is
-  reviewed. `payments::revoke(st, charge)` reads the state's clock (`server/src/telegram/payments.rs:171`), and both
+  reviewed. `payments::revoke(st, charge)` reads the state's clock (`server/src/telegram/payments.rs:460`,
+  moved by LRF `a93fe54` from :171), and both
   refund paths end there.
-- **As merged (LPH `d423cb3`; RULINGS 96, 97 Q10, 100).** `Repo::revoke` (now `server/src/db/payments.rs:351`) no
+- **As merged (LPH `d423cb3`; RULINGS 96, 97 Q10, 100).** `Repo::revoke` (now `server/src/db/payments.rs:402`;
+  :351 before LRF `a93fe54`) no
   longer always runs the `DELETE FROM entitlements` above. Between the guard and the order it reads the charge
   entitlement's successor: the payer's oldest other unrefunded charge whose own order of that product is `paid` and
-  which keys no entitlement, i.e. a second payment of the chapter recorded `AlreadyEntitled` (`:383-397`). The
+  which keys no entitlement, i.e. a second payment of the chapter recorded `AlreadyEntitled`
+  (`:434-449`; :383-397 before LRF). The
   candidates' payment rows are read `FOR SHARE`, so a concurrent refund of one makes this read wait and drop it
   (RULINGS 97 Q10). With a successor the entitlement is re-keyed to it, `granted_at` kept (access never lapsed); with
-  none it is deleted (`:411-431`). The re-key grants nothing: `entitlements_charge_key` keeps every charge applied at
+  none it is deleted (`:464-484`; :411-431 before LRF).
+  The re-key grants nothing: `entitlements_charge_key` keeps every charge applied at
   most once. The admin's `refund_done` reads "Payment {charge} refunded. The purchase is revoked unless another
   payment paid for it." in English (`server/locales/bot.en.json`; the Russian text changed with it). Pinned by
   `refund_rekeys_entitlement_to_other_paid_charge` and `refund_rekey_skips_charge_refunded_concurrently`
@@ -2098,8 +2124,9 @@ Texts come from `server/locales/bot.{ru,en}.json` by `from.language_code`. `serv
 `setMyCommands` (ru, en, default), the webhook (`secret_token`, explicit `allowed_updates`) and the menu button
 [R2 §1.5–1.6].
 As merged (L9 `d837c8b`, RULINGS 96; L9 cut Q6): a command is answered only in a private chat with a sender, so
-`/refund` outside one is ignored (`server/src/telegram/commands.rs:77-87`, moved by LPH `d423cb3` from :77-84,
-re-checked at `3e35a7b`); `server setup` sets the English menu as the
+`/refund` outside one is ignored (`server/src/telegram/commands.rs:86-88`, moved by LRF `a93fe54` from :77-87
+(LPH `d423cb3`: from :77-84),
+re-checked at `3c62a86`); `server setup` sets the English menu as the
 default set and the Russian one for `ru`, `uk`, `be` and `kk` (no `en` set; `server/src/telegram/setup.rs:37-60`,
 `RUSSIAN_LANGS` in `telegram/payments.rs:33`), and the menu button text is Russian.
 As merged (LPH `d423cb3`, RULINGS 97, 106; LPH critique O2, O3, O6, review M2, M3):
@@ -2112,15 +2139,17 @@ As merged (LPH `d423cb3`, RULINGS 97, 106; LPH critique O2, O3, O6, review M2, M
   `bot_texts_startup_check_refuses_drafts_in_prod` (`server/tests/it/bot.rs`).
 - **`/paysupport`** lists the sender's newest twenty charges (`PAYSUPPORT_CHARGES`,
   `server/src/telegram/commands.rs:22`; newest first by `paid_at`, then the charge id) and says how many more there
-  are (the total from the same statement, `Repo::charges_of`, `server/src/db/payments.rs:478`). A database error is
+  are (the total from the same statement, `Repo::charges_of`, `server/src/db/payments.rs:662`, :478 before LRF).
+  A database error is
   logged and answered with the intro and `paysupport_unavailable` ("… Please repeat /paysupport in a minute."), and
   the webhook answers 200: a 500 would hold the chat's later updates, the payer's `successful_payment` included
-  (`paysupport`, commands.rs:210). An admin `/refund` whose database step fails stays 500. Pinned by
+  (`paysupport`, commands.rs:220; :210 before LRF). An admin `/refund` whose database step fails stays 500. Pinned by
   `paysupport_lists_newest_twenty_with_total` and `paysupport_db_error_answers_200` (`server/tests/it/bot.rs`).
 - **A `/refund` that timed out.** A gateway timeout or a broken transport on `refundStarPayment` answers
   `refund_unknown_outcome`: the refund is not confirmed, Telegram may already have returned the Stars, and a repeat
   of `/refund` is safe (it meets `CHARGE_ALREADY_REFUNDED` and revokes). Only an API refusal or a disabled gateway
-  answers `refund_failed` ("Nothing changed"). Nothing is revoked in either case (`refund_reply`, commands.rs:230).
+  answers `refund_failed` ("Nothing changed"). Nothing is revoked in either case
+  (`refund_reply`, commands.rs:258; :230 before LRF).
   Pinned by `refund_timeout_reply_says_outcome_unknown` (`server/tests/it/bot.rs`).
 
 ---
@@ -2513,14 +2542,14 @@ All budgets are enforced by `client/scripts/budget.ts` inside `npm run build` un
 | Engine closure JS (`app/engine.ts` dynamic entry + imports) | ≤ 230 KB br | Pixi 145.1 + inkjs 26.6 + GSAP 24.3 = 196 KB [R4] + our scene/story/audio | `budget.ts`: PENDING while `src/app/engine.ts` does not exist (before L15); once it exists, FAIL if the manifest has no `isDynamicEntry` chunk for it (never a 0 KB PASS) — `budget: engine row fails when dynamic entry missing` |
 | All JS in `dist/` | ≤ 290 KB br (changed by PUZZLES-PLAN: was 270; + about 20 KB of lazy puzzle and explore chunks that never load before the first line). Changed by META-PLAN: ≤ 305 KB br (+ the 14 KB meta-ui chunk + 1 KB slack; LMI) | R4 recommends ≤ 260 KB for one bundle; +10 for the split overhead | `budget.ts` |
 | `meta-ui` lazy chunk (changed by META-PLAN) | ≤ 14 KB br; a dynamic entry imported only by `app/meta.ts`; PENDING until `app/meta.ts` exists, then FAIL without a dynamic entry or inside a static closure | [META-PLAN.md](META-PLAN.md), section "Budgets and validation" | `budget.ts` (LMI): `budget: meta ui in entry closure fails`, `budget: meta row pending until its importer exists` |
-| `meta controller chunk (br)` (as merged, LMI `3e35a7b`; RULINGS 105, 110) | ≤ 5.0 KB br; a dynamic entry for `app/meta.ts`, counted in JS before the first line; 4.0 KB br at the merge | [META-PLAN.md](META-PLAN.md), M27 and "Budgets and validation" | `budget.ts` (LMI): `budget: meta controller chunk counts before the first line`, `budget: meta controller imported statically fails`; 84 rows |
-| JS before the first line (entry + engine closures; as merged, LMI `3e35a7b`, RULINGS 105, 113: + the meta controller chunk, `client/scripts/budget.ts:484-490`, `:505`) | ≤ 270 KB br (changed by PUZZLES-PLAN: the old all-JS limit, now scoped to what loads before the first line) | as above | `budget.ts` (L5) |
+| `meta controller chunk (br)` (as merged, LMI `3e35a7b`; RULINGS 105, 110) | ≤ 5.0 KB br; a dynamic entry for `app/meta.ts`, counted in JS before the first line; 4.0 KB br at the merge; as merged (LEL `7b37278`, RULINGS 141): ≤ 6.0 KB br (`client/scripts/budget.ts:116`); as merged (LFL `cec347c`, RULINGS 149, 155): not counted in JS before the first line | [META-PLAN.md](META-PLAN.md), M27 and "Budgets and validation" | `budget.ts` (LMI): `budget: meta controller chunk counts before the first line`, `budget: meta controller imported statically fails`; 84 rows |
+| JS before the first line (entry + engine closures; as merged, LMI `3e35a7b`, RULINGS 105, 113: + the meta controller chunk, `client/scripts/budget.ts:484-490`, `:505`; as merged, LFL `cec347c`, RULINGS 149, 155: entry + engine closures again, without that chunk, `client/scripts/budget.ts:466-503`) | ≤ 270 KB br (changed by PUZZLES-PLAN: the old all-JS limit, now scoped to what loads before the first line) | as above | `budget.ts` (L5) |
 | Lazy chunks, world JSON, props, `budget/room-set` | changed by PUZZLES-PLAN: puzzle type ≤ 8 KB br each, puzzle host ≤ 10, explore UI ≤ 16 (dynamic entries, never in a static closure; PENDING until `src/app/yields.ts` exists, then FAIL without a dynamic entry); as merged (LP2 `88d0964`, RULINGS 67; cut Q4): three lazy rows, the puzzle-type row measuring the largest type chunk, and the engine closure's walk stops at a lazy root, so the engine, first-line and first-load rows never count a lazy chunk (as merged, LMI `3e35a7b`, RULINGS 105, 113: except the meta controller chunk, which the first-line and first-load rows count, `firstLine: true`, `client/scripts/budget.ts:186`); world ≤ 32 KB raw / 8 KB br; prop ≤ 512 px; room-set ≤ 32 MiB | [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section "Budgets and validation" | `budget.ts` (L5, LP2) |
 | CSS total | ≤ 12 KB br | | `budget.ts` |
 | `index.html` | ≤ 2 KB br | | `budget.ts` |
 | Story JSON per chapter | ≤ 160 KB raw and ≤ 35 KB br | ink JSON is verbose, compresses well [R4 §4.3] | `budget.ts` (free from `story-gen`, paid from `server/content`) |
 | en table per chapter | ≤ 48 KB raw | | `budget.ts` |
-| First-load to first line (static estimate) | ≤ 800 KB transfer | the entry + engine closures (changed by PUZZLES-PLAN: lazy chunks excluded; was "all JS"; as merged, LMI `3e35a7b`, RULINGS 105, 113: + the meta controller chunk, `client/scripts/budget.ts:962`) + CSS + html + TWA 16.2 KB [R1] + ch1 story/meta/manifest + first knot's images (AVIF); audio excluded (it streams, never blocks the first line) | `budget.ts` |
+| First-load to first line (static estimate) | ≤ 800 KB transfer | the entry + engine closures (changed by PUZZLES-PLAN: lazy chunks excluded; was "all JS"; as merged, LMI `3e35a7b`, RULINGS 105, 113: + the meta controller chunk, `client/scripts/budget.ts:962`; as merged, LFL `cec347c`, RULINGS 149, 155: without it again, `:952-953`) + CSS + html + TWA 16.2 KB [R1] + ch1 story/meta/manifest + first knot's images (AVIF); audio excluded (it streams, never blocks the first line) | `budget.ts` |
 | First-load per story, covers (changed by STORIES-PLAN) | the row above for every story's first chapter (a free chapter no `next` names), plus `catalog.json`, `covers.json` and the 3 largest cover AVIFs, ≤ 800 KB; cover exactly 360×640, AVIF ≤ 24 KB, WebP ≤ 36 KB | [STORIES-PLAN.md](STORIES-PLAN.md), section "Budgets and validation" | `budget.ts` (L5): `budget: first-load row per story`, `budget: cover over 24 KB fails` |
 | First knot images | ≤ 450 KB | | `budget.ts` |
 | Image dimensions | ≤ 2048 px each side; bg/cg exactly 1080×2048; sprites ≤ 768×1536. Changed by MEMORY-PLAN (M1): a trimmed sprite's dimensions are checked on its canvas; `trim` only on char/prop, inside the canvas, with even stored sides on char/prop — `budget: a trimmed background fails`, `budget: a char canvas over 768x1536 fails` | principle 4 | `assets.ts` writes dims from sharp metadata; `budget.ts` checks |
@@ -6210,6 +6239,8 @@ Notation:
   As merged (LMI `3e35a7b`; RULINGS 105, 110): the controller is a lazy chunk (META-PLAN M27) with its own row,
   `meta controller chunk (br)` ≤ 5.0 KB br, counted in JS before the first line, so `build` prints 84 rows; the e2e is
   nine specs, 47 names.
+  As merged since (LEL `7b37278`, RULINGS 141; LFL `cec347c`, RULINGS 149, 155): the row's limit is 6.0 KB br
+  (`client/scripts/budget.ts:116`), and JS before the first line no longer counts the chunk.
 - **Seen red once:** the `meta-ui` row with a static import of `CompletionCard.svelte` from `app/boot.ts` (scratch) →
   FAIL.
 - **Tester mutations:** await a boot GET before the first line; open the card before `settle`; draw a new gift id per

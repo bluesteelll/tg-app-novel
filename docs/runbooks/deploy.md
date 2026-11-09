@@ -68,6 +68,16 @@ cargo build -p server --release --locked
 
 1. Copy to the host, keeping the layout the configuration names: the binary, `client/dist/` (for `STATIC_DIR`) and
    `server/content/` (for `CONTENT_DIR`). The two directories must stay disjoint.
+   - **The binary and `server/content/` ship together**, both from this commit's build. At startup the server
+     indexes every gated file the paid chapters' manifests name, half-tier files included, and refuses to start when
+     one is missing: `startup failed: content: cannot read <path>: ...`
+     ([content.rs:668-727](../../server/src/content.rs#L668), :37; pinned by
+     `startup_fails_when_manifest_names_missing_half_file`,
+     [server/tests/it/content.rs:522](../../server/tests/it/content.rs#L522)). A binary from before M3s (`a5f887b`)
+     with newer content ignores the gated half files: a LOW phone then gets a 404 for those images, and nothing leaks
+     (M3s cut Q3, Q4; RULINGS 151).
+   - **`client/dist/`**: keep the previous release's `assets/` files, and replace `index.html` and `build-id.txt` only
+     at step 5 ([Clients open during a deploy](#clients-open-during-a-deploy), items 2 and 3).
 2. Set the environment of the service (the variables: [bot-setup.md](bot-setup.md#steps), step 4), with
    `TELEGRAM_ENV=prod`, `STATIC_DIR` and `CONTENT_DIR` pointing at the copied directories.
 3. Stop the running server. It shuts down gracefully on Ctrl+C only, which is SIGINT on Linux
@@ -106,6 +116,8 @@ cargo build -p server --release --locked
 - The log shows `bot texts checked`, `opening database` with the target (never the password) and
   `listening` with the address ([main.rs:41](../../server/src/main.rs#L41), :118, :155).
 - `GET <PUBLIC_APP_URL>api/health` answers `ok`; `GET <PUBLIC_APP_URL>api/privacy` shows no placeholder.
+- The build id: the `static dir checked` line's `build_id` and the `x-build-id` header of `api/health` equal
+  `client/dist/build-id.txt` ([Clients open during a deploy](#clients-open-during-a-deploy), item 5).
 - `/assets/*` answers with `Cache-Control: public, max-age=31536000, immutable`, everything else `no-cache`
   ([static_files.rs:22-26](../../server/src/api/static_files.rs#L22)).
 - Open the bot, start a free chapter, buy a paid one (in the test environment first).
@@ -119,11 +131,75 @@ in place; from the first deployment on they are append-only: a schema change is 
 
 ## Clients open during a deploy
 
-A client bundle built before a change of the chapter manifest's format rejects the new key and fails to load the
-chapter until the player reopens the Mini App (`decodeChapter` returns `malformed('assets')`,
-[story/chapters.ts:127-130](../../client/src/story/chapters.ts#L127)). Nothing forces a reload yet, and the story
-version does not tell the old session. After a release that changes the manifest format, expect "reopen" reports for a
-while.
+A Mini App left open across a deploy runs the old client bundle against the new server. Each client build carries an
+id, the server names the id it serves on every `/api` answer, and an open page of another build reloads into the new
+one at its next safe point (as merged: LBI `fe996a0`, RULINGS 145; the wallet rule LRB `3c62a86`, RULINGS 157).
+
+How it works:
+
+- **The id.** `npm --prefix client run build` writes `client/dist/build-id.txt`: 16 lowercase hex digits, a hash of
+  the build's inputs (the sources with the generated story, `public/` with the encoded assets, the lockfile, the
+  configs and the build mode), and compiles the same id into the bundle
+  ([build-id.ts:39-62](../../client/scripts/build-id.ts#L39), [vite.config.ts:34](../../client/vite.config.ts#L34),
+  :47). One tree gives one id. It is not a secret and reads no paid content.
+- **The server.** `server serve` reads the id from `STATIC_DIR` after the directory walk
+  ([static_files.rs:259](../../server/src/api/static_files.rs#L259), :266-283). A missing or malformed file refuses
+  the start, before the database opens: `static dir refused: STATIC_DIR <path>: no build-id.txt (the client build
+  writes it)` or `... build-id.txt is not 16 lowercase hex digits` (:176, :182). The log line `static dir checked`
+  carries it as `build_id` ([main.rs:112](../../server/src/main.rs#L112)). Every `/api` answer, errors included, then
+  carries `x-build-id: <id>` ([api/mod.rs:38-58](../../server/src/api/mod.rs#L38)); static files and the webhook do
+  not.
+- **The page.** The client reads the header of every response and compares it with its own id
+  ([http.ts:173-187](../../client/src/api/http.ts#L173)). A lazy chunk or a free chapter file that the deploy removed
+  answers without the header, so a failed chunk import (`vite:preloadError`) or a failed chapter load sends
+  `GET /api/health` as a probe ([boot.ts:770-774](../../client/src/app/boot.ts#L770),
+  [game.ts:1288-1298](../../client/src/app/game.ts#L1288)). A difference the boot reads saw before the game engine
+  loaded is handed to the Game when it is made ([boot.ts:592-595](../../client/src/app/boot.ts#L592)).
+- **The reload.** The Game waits for a safe point and looks again every 500 ms
+  ([game.ts:1751-1774](../../client/src/app/game.ts#L1751), :263). It waits while a step, a chapter load or a resume
+  runs, while the app is in the background, while an invoice is being created, open or confirmed (the paywall's, or
+  the wallet's pack purchase while the player is on the wallet), while a puzzle attempt waits for its answer, and
+  while a manual save or a gift is being sent. A pack flow the player left, a gift dialog the player closed and a hint
+  do not hold the reload. At the safe point the Game autosaves that point, shows "An update is out. Restarting…"
+  (`notice.update_title`), flushes the save (an unacknowledged one stays in the pending cache) and reloads
+  ([game.ts:1777-1810](../../client/src/app/game.ts#L1777)). The player continues from the server's autosave.
+- **The latch.** The reload adds `novelReloadedFor=<id>` to the URL fragment and keeps Telegram's parameters byte for
+  byte. A reloaded page that sees the same id again does not reload a second time: today's error states stay
+  ([game.ts:104-124](../../client/src/app/game.ts#L104), :2073-2079). A Mini App opened again starts from a fresh URL.
+- **Not covered.** A page whose game engine never loaded (no Game exists, for example a boot that ended in the error
+  notice) does not reload. Item 2 below keeps its old files loadable (LBI cut Q4, accepted). The page's own id is a
+  constant of the bundle, so every release with any input change renames the entry and the chunks that import it, and
+  returning players download them again.
+
+What the deploy must do:
+
+1. Ship `client/dist/build-id.txt` with the rest of `client/dist/` ([Build](#build) writes it).
+2. Keep the previous release's `assets/` files reachable. Merge the new `client/dist/assets/*` into the served
+   `assets/` directory without deleting old files: the names carry a content hash and never collide, and `/assets/*`
+   is served `immutable`. Prune only files older than two releases and older than the longest session
+   (`INITDATA_MAX_AGE_SECS`, 86400 s by default, [config.rs:155](../../server/src/config.rs#L155)). This lets an old
+   page, one with no Game among them, keep loading its chunks; the probe is the backstop when it is not done.
+3. Replace `index.html` and `build-id.txt` together with the restart ([Steps](#steps), step 5), never before. A server
+   still running on the old id against the new files makes every new session reload once (the latch stops a loop).
+4. A reverse proxy in front of the server passes the `x-build-id` response header and keeps `index.html` `no-cache`.
+5. Verify: the `build_id` of the `static dir checked` log line equals the file, and the health route names it:
+
+   ```powershell
+   Get-Content client/dist/build-id.txt
+   (Invoke-WebRequest -UseBasicParsing "<PUBLIC_APP_URL>api/health").Headers["x-build-id"]
+   ```
+
+   On Linux: `cat client/dist/build-id.txt` and `curl -s -D - -o /dev/null "<PUBLIC_APP_URL>api/health"` (the
+   `x-build-id` line). Verify: the reload is seen in Chromium only (the e2e and the dev mock); check it once on
+   Telegram iOS and Desktop.
+
+A rollback is the previous binary with the previous `client/dist/` and its `build-id.txt` together
+([Roll back](#roll-back)): pages opened on the newer release reload once into the older build.
+
+To rehearse the client side on this machine: `server-dev` serves no client files, so it claims a build id by hand.
+`POST /dev/build-id` with `{"id": "<16 hex digits>"}` puts the header on every `/api` answer, `{"id": null}` clears
+it ([server/dev/src/deploy.rs:1-5](../../server/dev/src/deploy.rs#L1), :49-51). The e2e
+`client/e2e/build-skew.spec.ts` drives it.
 
 ## Roll back
 
@@ -273,8 +349,8 @@ The docs lane D2 ran this procedure twice on a socket-only PostgreSQL 18.6 clust
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `static dir refused: ...` | `STATIC_DIR` overlaps `CONTENT_DIR`, holds a dot-entry or a link out of it | point it at a clean copy of `client/dist/` |
-| `startup failed: content: ...` | `server/content/` missing, stale, or `server/catalog.json` does not fit it | rebuild with `npm --prefix client run build` and copy both together |
+| `static dir refused: ...` | `STATIC_DIR` overlaps `CONTENT_DIR`, holds a dot-entry or a link out of it; or its `build-id.txt` is missing or not 16 lowercase hex digits | point it at a clean copy of `client/dist/`, `build-id.txt` included |
+| `startup failed: content: ...` | `server/content/` missing, stale, or `server/catalog.json` does not fit it; `cannot read <path>`: a file a paid manifest names, a half-tier file included, is missing (content from another build than the binary) | rebuild with `npm --prefix client run build` and copy both together |
 | `startup failed: database: ...` | the database does not exist, is unreachable, or refuses TLS | create it; check `DATABASE_URL` and `sslmode=verify-full` |
 | step 4's decisions stop at `duplicate key value violates unique constraint "invite_codes_one_active"` | an erasure since the backup is missing from the erasure record: the restored database still holds that player's old active code | the single transaction applied nothing; run the erasure for that player on `<RESTORE_DATABASE_URL>`, add it to the record, apply the file again |
 | `startup failed: migrations: ...` | a migration file changed after it was applied; or, for a previous binary, a migration it lacks | never edit an applied migration after the first deployment; add a new one; for a rollback, [Roll back](#roll-back) |
