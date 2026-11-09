@@ -7,12 +7,14 @@
 import { RESUME_STATE_CAP, hotspotKey, lockOf } from '../../src/explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../../src/explore/state.ts';
 import type { WorldState } from '../../src/explore/state.ts';
-import { HOTSPOT_SAFE_FRAME } from '../../src/geom/cover.ts';
+import { HOTSPOT_MIN_SOURCE_PX, HOTSPOT_SAFE_FRAME } from '../../src/geom/cover.ts';
+import type { MechanicId } from '../../src/mechanics/contract.ts';
+import type { Cond } from '../../src/mechanics/data/conditions.ts';
 import { searchSection, sectionEntry } from '../../src/mechanics/rules/search.ts';
 import { PUZZLE_RULES } from '../../src/puzzles/rules/index.ts';
 import type { PuzzleTypeData } from '../../src/puzzles/rules/index.ts';
 import type { AssetCatalog } from '../../src/story/catalog.ts';
-import type { KnotName, PuzzleLocalId, Rect, SectionId, VarName } from '../../src/story/staging.ts';
+import type { KnotName, LineId, PuzzleLocalId, Rect, SectionId, VarName } from '../../src/story/staging.ts';
 import { decodeWorldSource, toPublic } from '../../src/world/decode.ts';
 import type { DecodeOptions, WorldIssue } from '../../src/world/decode.ts';
 import type {
@@ -32,8 +34,10 @@ import type { WorldNeedles } from './emit.ts';
 import type { StoryLine } from './graph.ts';
 import { LINT_CODES } from './lint.ts';
 import type { Finding, LintCode, SourceChapter } from './lint.ts';
-import { MECHANIC_LINTS } from './mechanics/index.ts';
+import { MECHANIC_LINTS, MECHANIC_TEXTS } from './mechanics/index.ts';
 import type { WorldLint } from './mechanics/index.ts';
+import { KERNEL_TEXT_ROLES } from './mechanics/texts.ts';
+import type { KernelTextField, ModuleText, PlacePaths, TextRegistry, TextRole } from './mechanics/texts.ts';
 import { PUZZLE_LINTS } from './puzzles/index.ts';
 import type { PuzzleTypeLint } from './puzzles/index.ts';
 import { checkWorld } from './softlock.ts';
@@ -42,6 +46,12 @@ import { checkWorld } from './softlock.ts';
 export const WORLD_FILE = 'world.json';
 /** A world text as a line of the locale checks: `path` is its dotted JSON path; `hint` marks a hint tier's text. */
 export type WorldLine = StoryLine & { hint: boolean; path: string };
+/**
+ * A world line with how the player meets it (engine plan §3.2 "Module texts", R-E25): `role`, and `reach`, the
+ * conditions any one of which lets the player read it. A subtype, so a `WorldLine` reader is unchanged;
+ * `hint === (role === 'hint')`.
+ */
+export type WorldTextLine = WorldLine & { readonly role: TextRole; readonly reach: readonly Cond[] };
 /** The literal type of a VAR's declared value (`world/var-type`). */
 export type VarLiteral = 'int' | 'float' | 'bool' | 'string' | 'other';
 /** One section's soft-lock verdict; `states` is null when the search hit RESUME_STATE_CAP. */
@@ -49,8 +59,6 @@ export type SectionReport = { section: SectionId; rooms: number; states: number 
 
 /** PUZZLES-PLAN `world/title-long`: the invoice title `Подсказка 3: <title>` must fit 32 chars. */
 const TITLE_GRAPHEMES = 18;
-/** `world/hotspot-small`: 44 CSS px at a 0.296 scale (320×568). */
-const HOTSPOT_MIN_PX = 150;
 /** `world/props-per-room`. */
 const PROPS_PER_ROOM = 8;
 const BOM = String.fromCharCode(0xfeff);
@@ -321,42 +329,89 @@ function overlaps(a: Rect, b: Rect): boolean {
 // ---------------------------------------------------------------------------------------------------------------
 // The world texts
 
-/** Every world text in file order, with its dotted path; `file` and `text` are the source's, for the lines. */
-export function worldLines(w: WorldSource, file: string, text: string): WorldLine[] {
-  const lines = pathLines(text);
-  const out: WorldLine[] = [];
-  const add = (t: WorldText, path: string, hint = false): void => {
-    out.push({ id: t.id, text: t.ru, file, line: lineOf(lines, path), hint, path });
+/** The source paths of the world's places, for the module walkers (an unknown place: '', so its line is 0). */
+function placePaths(p: Places): PlacePaths {
+  return {
+    room: (r) => p.roomOf.get(r)?.path ?? '',
+    hotspot: (k) => p.spots.find((s) => s.key === k)?.spath ?? '',
+    item: (i) => `items.${i}`,
+    slot: (k, index) => {
+      const l = p.locks.find((x) => x.key === k);
+      return l === undefined ? '' : `${l.lpath}.slots.${index}`;
+    },
   };
+}
+
+/** One module text with the module whose walker returned it. */
+type ModuleLine = { readonly module: MechanicId; readonly text: ModuleText };
+
+/** The module half of the walk: each non-null walker of `texts`, in its key order, over its module's decoded data. */
+function moduleTextsOf(w: WorldSource, texts: TextRegistry): ModuleLine[] {
+  const mods: Readonly<Record<string, unknown>> = w.mods;
+  let at: PlacePaths | null = null; // built at the first walker: no module walks today
+  const out: ModuleLine[] = [];
+  for (const [id, walker] of Object.entries(texts)) {
+    if (walker !== null && Object.hasOwn(mods, id)) {
+      at ??= placePaths(placesOf(w));
+      // Module `id`'s walker reads `w.mods[id]`, its own decode's result (MECHANIC_TEXTS types each walker by it).
+      const data = mods[id] as never;
+      const module = id as MechanicId; // a registry key is a module id
+      out.push(...walker(w, data, at).map((text) => ({ module, text })));
+    }
+  }
+  return out;
+}
+
+/** The kernel texts in today's order with their roles, then the module texts; `file` and `text` are the source's. */
+function linesOf(w: WorldSource, file: string, text: string, modules: readonly ModuleLine[]): WorldTextLine[] {
+  const lines = pathLines(text);
+  const out: WorldTextLine[] = [];
+  const add = (t: WorldText, path: string, field: KernelTextField, reach: readonly Cond[] = []): void => {
+    const role = KERNEL_TEXT_ROLES[field].role;
+    out.push({ id: t.id, text: t.ru, file, line: lineOf(lines, path), hint: role === 'hint', path, role, reach });
+  };
+  const reach = (field: KernelTextField, c: Cond): readonly Cond[] => (KERNEL_TEXT_ROLES[field].reach === null ? [] : [c]);
   for (const [id, item] of entriesOf(w.items)) {
-    add(item.name, `items.${id}.name`);
-    add(item.desc, `items.${id}.desc`);
+    add(item.name, `items.${id}.name`, 'item.name');
+    add(item.desc, `items.${id}.desc`, 'item.desc', reach('item.desc', { has: id }));
   }
   for (const [id, doc] of entriesOf(w.docs)) {
-    add(doc.title, `docs.${id}.title`);
-    doc.body.forEach((t, i) => add(t, `docs.${id}.body.${i}`));
+    add(doc.title, `docs.${id}.title`, 'doc.title');
+    doc.body.forEach((t, i) => add(t, `docs.${id}.body.${i}`, 'doc.body', reach('doc.body', { doc: id })));
   }
   for (const [id, p] of entriesOf(w.puzzles)) {
-    add(p.title, `puzzles.${id}.title`);
-    add(p.prompt, `puzzles.${id}.prompt`);
-    p.hints.forEach((t, i) => add(t, `puzzles.${id}.hints.${i}`, true));
+    add(p.title, `puzzles.${id}.title`, 'puzzle.title');
+    add(p.prompt, `puzzles.${id}.prompt`, 'puzzle.prompt');
+    p.hints.forEach((t, i) => add(t, `puzzles.${id}.hints.${i}`, 'puzzle.hints'));
   }
   for (const r of placesOf(w).rooms) {
-    add(r.value.title, `${r.path}.title`);
+    add(r.value.title, `${r.path}.title`, 'room.title');
     r.value.hotspots.forEach((h, i) => {
       const path = `${r.path}.hotspots.${i}`;
-      add(h.label, `${path}.label`);
+      add(h.label, `${path}.label`, 'hotspot.label');
       const lock = lockOf(h);
       if (lock !== null) {
-        add(lock.locked, `${path}.lock.locked`);
+        add(lock.locked, `${path}.lock.locked`, 'lock.locked');
       }
       const look = h.kind === 'look' || h.kind === 'object' ? h.look : null;
       if (look !== null) {
-        add(look, `${path}.look`);
+        add(look, `${path}.look`, 'hotspot.look');
       }
     });
   }
+  for (const { text: m } of modules) {
+    out.push({ id: m.text.id, text: m.text.ru, file, line: lineOf(lines, m.path), hint: false, path: m.path, role: m.role, reach: m.reach });
+  }
   return out;
+}
+
+/**
+ * Every world text with its dotted path (`file` and `text` are the source's, for the lines): the kernel's in today's
+ * order with their roles (`KERNEL_TEXT_ROLES`), then every module's from its walker (`texts`: MECHANIC_TEXTS, or a
+ * test's fixture modules beside it). The one walk every text pass reads.
+ */
+export function worldLines(w: WorldSource, file: string, text: string, texts: TextRegistry = MECHANIC_TEXTS): WorldTextLine[] {
+  return linesOf(w, file, text, moduleTextsOf(w, texts));
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -425,6 +480,7 @@ export function lintWorld(
     declared: ReadonlyMap<VarName, VarLiteral>;
   },
   lints: readonly WorldLint<string>[] = MECHANIC_LINTS,
+  texts: TextRegistry = MECHANIC_TEXTS,
 ): { findings: Finding[]; sections: SectionReport[] } {
   const { chapter, file, world: w, catalog } = input;
   const lines = pathLines(input.text);
@@ -557,8 +613,8 @@ export function lintWorld(
       if (x < frame.x0 || y < frame.y0 || x + rw > frame.x1 || y + rh > frame.y1) {
         report('world/hotspot-frame', `${s.spath}.rect`, `${s.key} [${s.hotspot.rect.join(', ')}] leaves the safe frame x ${frame.x0}–${frame.x1}, y ${frame.y0}–${frame.y1}`);
       }
-      if (rw < HOTSPOT_MIN_PX || rh < HOTSPOT_MIN_PX) {
-        report('world/hotspot-small', `${s.spath}.rect`, `${s.key} is ${rw}×${rh}: under ${HOTSPOT_MIN_PX}×${HOTSPOT_MIN_PX} source px (a 44 CSS px target)`);
+      if (rw < HOTSPOT_MIN_SOURCE_PX || rh < HOTSPOT_MIN_SOURCE_PX) {
+        report('world/hotspot-small', `${s.spath}.rect`, `${s.key} is ${rw}×${rh}: under ${HOTSPOT_MIN_SOURCE_PX}×${HOTSPOT_MIN_SOURCE_PX} source px (a 44 CSS px target)`);
       }
       for (const o of spots.slice(0, i)) {
         if (overlaps(o.hotspot.rect, s.hotspot.rect)) {
@@ -662,8 +718,9 @@ export function lintWorld(
     varType(`dc_${id}`, 'bool', `docs.${id}`);
   }
 
-  // Line IDs belong to the chapter (STAGING-DSL §4).
-  for (const l of worldLines(w, file, input.text)) {
+  // Line IDs belong to the chapter (STAGING-DSL §4), a module's too: one module walk feeds this and the texts gate.
+  const modules = moduleTextsOf(w, texts);
+  for (const l of linesOf(w, file, input.text, modules)) {
     if (!l.id.startsWith(`${chapter.id}.`)) {
       report('id/chapter-prefix', l.path, `'${l.id}' is in a world of ${chapter.id} (§4)`);
     }
@@ -741,10 +798,13 @@ export function lintWorld(
     states: c.states,
     ok: c.findings.length === 0,
   }));
-  // The mechanics' per-world passes, at the author's lines; a story-level entry runs from story.ts instead.
+  // The mechanics' per-world passes, at the author's lines, with the line IDs each module's walker returned (every
+  // `texts` id; a `null` entry walks none); a story-level entry runs from story.ts instead.
+  const walked = (id: string): ReadonlySet<LineId> => new Set(modules.filter((m) => m.module === id).map((m) => m.text.text.id));
+  const moduleLines = new Map(Object.keys(texts).map((id) => [id as MechanicId, walked(id)] as const)); // registry keys are module ids
   for (const l of lints) {
     if ('lint' in l) {
-      out.push(...l.lint({ ...input, line: (path) => lineOf(lines, path) }));
+      out.push(...l.lint({ ...input, line: (path) => lineOf(lines, path), moduleLines }));
     }
   }
 

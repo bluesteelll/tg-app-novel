@@ -1,18 +1,23 @@
 // The world lint registry (engine plan §3.2 "Lint codes"; build only): every mechanic's lint pass the story gate runs
-// over a chapter world, each with its own codes, so no lane adds to LINT_CODES (lint.ts) or the DSL's code table. Pure,
-// no node:*: world.ts imports it and scan-dist.ts imports world.ts. Its imports from lint.ts are `import type`, erased
-// at run time, so the value graph is world.ts -> index.ts -> the lint files with no edge back. It imports nothing from
-// world.ts, not even a type: lint.ts's `Finding` takes this module's codes, so the app program (src/story/dsl-doc.test.ts
-// -> lint.ts) compiles every file this one reaches, and world.ts type-imports emit.ts, which imports node:crypto.
-// Each module lane appends its entry.
+// over a chapter world, each with its own codes, so no lane adds to LINT_CODES (lint.ts) or the DSL's code table; and
+// beside it the module text walkers (§3.2 "Module texts"). Pure, no node:*: world.ts imports it and scan-dist.ts imports
+// world.ts. Its imports from lint.ts are `import type`, erased at run time, so the value graph is world.ts -> index.ts
+// -> the lint files with no edge back. Neither it nor any file in this directory (the lint files, texts.ts) imports
+// anything from world.ts, not even a type: lint.ts's `Finding` takes this module's codes, so the app program
+// (src/story/dsl-doc.test.ts -> lint.ts) compiles every file this one reaches, and world.ts type-imports emit.ts, which
+// imports node:crypto. Each module lane appends its entries.
+import type { DataOf, MechanicId } from '../../../src/mechanics/contract.ts';
+import type { MECHANIC_DATA } from '../../../src/mechanics/data/index.ts';
 import type { AssetCatalog } from '../../../src/story/catalog.ts';
-import type { KnotName, PuzzleLocalId, VarName } from '../../../src/story/staging.ts';
+import type { KnotName, LineId, PuzzleLocalId, VarName } from '../../../src/story/staging.ts';
 import type { WorldSource } from '../../../src/world/types.ts';
 import type { Finding, Severity, SourceChapter } from '../lint.ts';
 import { SHAPE_LINT } from '../puzzles/shape.ts';
 import { CLUES_LINT } from './clues.ts';
 import { CONDITIONS_LINT } from './conditions.ts';
 import { CORE_LINT } from './core.ts';
+import { TEXTS_LINT } from './texts.ts';
+import type { TextWalker } from './texts.ts';
 
 /** world.ts's `VarLiteral`, restated (see the header); world.test.ts pins the two to one type. */
 type VarLiteral = 'int' | 'float' | 'bool' | 'string' | 'other';
@@ -30,6 +35,9 @@ export type WorldLintInput = {
   readonly yielded: ReadonlySet<PuzzleLocalId> | null;
   readonly declared: ReadonlyMap<VarName, VarLiteral>;
   readonly line: (path: string) => number;
+  /** The line IDs each module's text walker returned for this world, from the one module walk `worldLines` shares
+   *  (world.ts `moduleTextsOf`): every MECHANIC_TEXTS id, a `null` entry an empty set. `TEXTS_LINT` reads only this. */
+  readonly moduleLines: ReadonlyMap<MechanicId, ReadonlySet<LineId>>;
 };
 
 export type WorldLint<C extends string> = {
@@ -45,7 +53,13 @@ export type WorldLint<C extends string> = {
   | { readonly runsFrom: 'story' }
 );
 
-export const MECHANIC_LINTS = [CORE_LINT, CLUES_LINT, SHAPE_LINT, CONDITIONS_LINT] as const satisfies readonly WorldLint<string>[];
+export const MECHANIC_LINTS = [CORE_LINT, CLUES_LINT, SHAPE_LINT, CONDITIONS_LINT, TEXTS_LINT] as const satisfies readonly WorldLint<string>[];
+
+/**
+ * Each data module's text walker (engine plan §3.2 "Module texts"), exhaustive over MECHANIC_DATA ids (an id without
+ * an entry fails `check`); null: the module owns no text, and `world/text-unwalked` refuses one in its data.
+ */
+export const MECHANIC_TEXTS: { readonly [M in (typeof MECHANIC_DATA)[number] as M['id']]: TextWalker<DataOf<M>> | null } = { core: null };
 
 type CodesOf<L> = L extends { readonly codes: infer C } ? keyof C & string : never;
 /** Every code of every MECHANIC_LINTS entry. */
