@@ -133,7 +133,8 @@ function appOptions(host: HTMLElement, resolution: number): Partial<ApplicationO
   };
 }
 
-function createLayers(app: Application): Layers {
+/** The stage's layers, bottom to top (the Application's stage, or a bare Container in a test). */
+export function createLayers(app: Pick<Application, 'stage'>): Layers {
   const fx = new Graphics().rect(0, 0, 1, 1).fill(0x000000);
   fx.alpha = 0;
   fx.visible = false;
@@ -145,23 +146,41 @@ function createLayers(app: Application): Layers {
 }
 
 /** The executor's stage over Pixi: every display object it creates is destroyed through destroy / dropGroup. */
-function pixiAdapter(app: Application, layers: Layers): StageAdapter<Texture> {
+export function pixiAdapter(app: Pick<Application, 'screen'>, layers: Layers): StageAdapter<Texture> {
   let n = 0;
   const sprites = new Map<number, Sprite>();
   const groups = new Map<number, Container>();
+  /** An anchor's id -> the ids of its three inner nodes, forgotten with it (no entry outlives its Container). */
+  const inner = new Map<number, readonly number[]>();
   const node = (t: SpriteRef | GroupRef): Container | undefined => ('sprite' in t ? sprites.get(t.sprite) : groups.get(t.group));
+  const add = (c: Container): GroupRef => {
+    n += 1;
+    groups.set(n, c);
+    return { group: n };
+  };
   return {
     size: () => ({ w: app.screen.width, h: app.screen.height }),
     group(char) {
-      n += 1;
       const c = new Container({ label: char });
       layers.chars.addChild(c);
-      groups.set(n, c);
-      return { group: n };
+      return add(c);
+    },
+    anchor(layer, label) {
+      const anchor = new Container({ label });
+      const depth = anchor.addChild(new Container());
+      const motion = depth.addChild(new Container());
+      const content = motion.addChild(new Container({ sortableChildren: true }));
+      layers[layer].addChild(anchor);
+      const ref = { anchor: add(anchor), depth: add(depth), motion: add(motion), content: add(content) };
+      inner.set(ref.anchor.group, [ref.depth.group, ref.motion.group, ref.content.group]);
+      return ref;
     },
     dropGroup(g) {
       const c = groups.get(g.group);
-      groups.delete(g.group);
+      for (const k of [g.group, ...(inner.get(g.group) ?? [])]) {
+        groups.delete(k);
+      }
+      inner.delete(g.group);
       c?.destroy({ children: true });
     },
     sprite(layer: Layer, tex, g) {

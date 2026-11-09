@@ -40,11 +40,23 @@ const track = (p: Promise<void>): { done: boolean } => {
 };
 
 // ---------------------------------------------------------------------------------------------------------------
-// A recording stage: live sprites per layer and per character group, an event log, and a throw on any write to a
-// destroyed object or on a sprite over a released texture (Pixi would crash, or draw a dead texture, there).
+// A recording stage: every node (a character group, the four nodes of an anchor, a sprite) with its parent, an event
+// log, the alpha writes, and a throw on any write to a destroyed node, on a sprite over a released texture (Pixi would
+// crash, or draw a dead texture, there) and on a drop over a live sprite (the executor destroys the art first).
 
 type Tex = { readonly url: string };
-type Node = { kind: 'sprite' | 'group'; layer: Layer | 'group'; key: string; group: number | null; alive: boolean; p: Placement; tex: Tex | null };
+type Role = 'char' | 'anchor' | 'depth' | 'motion' | 'content' | 'sprite';
+/** `parent`: null for a node at the top of its layer. */
+type Node = {
+  readonly id: number;
+  readonly role: Role;
+  readonly layer: Layer;
+  readonly key: string;
+  readonly parent: number | null;
+  alive: boolean;
+  p: Placement;
+  readonly tex: Tex | null;
+};
 
 const S390: Size = { w: 390, h: 844 };
 
@@ -52,7 +64,11 @@ const S390: Size = { w: 390, h: 844 };
 function recordingStage(size: Size, freed: ReadonlySet<Tex> = new Set()) {
   let n = 0;
   const log: string[] = [];
+  /** Every `set` that wrote an alpha: its target's role and key. */
+  const alphas: Array<{ role: Role; key: string; alpha: number }> = [];
   const nodes = new Map<number, Node>();
+  /** The live children of each parent (a node, or a layer for its top nodes) in Pixi's array order. */
+  const kids = new Map<number | Layer, number[]>();
   const stage = { size };
   const node = (k: number): Node => {
     const x = nodes.get(k);
@@ -61,19 +77,45 @@ function recordingStage(size: Size, freed: ReadonlySet<Tex> = new Set()) {
     }
     return x;
   };
+  const add = (role: Role, layer: Layer, key: string, parent: number | null, tex: Tex | null): number => {
+    n += 1;
+    nodes.set(n, { id: n, role, layer, key, parent, alive: true, p: {}, tex });
+    kids.set(parent ?? layer, [...(kids.get(parent ?? layer) ?? []), n]);
+    return n;
+  };
+  const kill = (x: Node): void => {
+    x.alive = false;
+    kids.set(x.parent ?? x.layer, (kids.get(x.parent ?? x.layer) ?? []).filter((k) => k !== x.id));
+  };
+  const below = (x: Node): Node[] => (kids.get(x.id) ?? []).map(node).flatMap((c) => [c, ...below(c)]);
+  const up = (x: Node): Node[] => (x.parent === null ? [] : [node(x.parent), ...up(node(x.parent))]);
   // chars sprites log their character, every other sprite its asset name.
   const keyOf = (layer: Layer, id: AssetId): string => (layer === 'chars' ? (id.split('/')[1] ?? id) : (id.split('/').pop() ?? id));
   const adapter: StageAdapter<Tex> = {
     size: () => stage.size,
     group(char) {
-      n += 1;
-      nodes.set(n, { kind: 'group', layer: 'group', key: char, group: null, alive: true, p: {}, tex: null });
       log.push(`group:${char}`);
-      return { group: n };
+      return { group: add('char', 'chars', char, null, null) };
+    },
+    anchor(layer, label) {
+      log.push(`anchor:${layer}:${label}`);
+      const anchor = add('anchor', layer, label, null, null);
+      const depth = add('depth', layer, label, anchor, null);
+      const motion = add('motion', layer, label, depth, null);
+      return { anchor: { group: anchor }, depth: { group: depth }, motion: { group: motion }, content: { group: add('content', layer, label, motion, null) } };
     },
     dropGroup(g) {
       const x = node(g.group);
-      x.alive = false;
+      if (x.role !== 'char' && x.role !== 'anchor') {
+        throw new Error(`stage: drop of an anchor's inner ${x.role} node`);
+      }
+      const art = below(x).find((d) => d.role === 'sprite');
+      if (art !== undefined) {
+        throw new Error(`stage: drop of ${x.key} with the live sprite ${art.key}`);
+      }
+      for (const d of [x, ...below(x)]) {
+        kill(d);
+      }
       log.push(`drop:${x.key}`);
     },
     sprite(layer, tex, g) {
@@ -83,30 +125,57 @@ function recordingStage(size: Size, freed: ReadonlySet<Tex> = new Set()) {
       if (g !== undefined) {
         node(g.group);
       }
-      n += 1;
       const key = keyOf(layer, tex.id);
-      nodes.set(n, { kind: 'sprite', layer, key, group: g?.group ?? null, alive: true, p: {}, tex: tex.texture });
       log.push(`create:${layer}:${key}`);
-      return { sprite: n };
+      return { sprite: add('sprite', layer, key, g?.group ?? null, tex.texture) };
     },
     destroy(s) {
       const x = node(s.sprite);
-      x.alive = false;
+      if (x.role !== 'sprite') {
+        throw new Error(`stage: destroy of a ${x.role} node`);
+      }
+      kill(x);
       log.push(`destroy:${x.layer}:${x.key}`);
     },
     set(target, p) {
-      Object.assign(node('sprite' in target ? target.sprite : target.group).p, p);
+      const x = node('sprite' in target ? target.sprite : target.group);
+      if (p.alpha !== undefined) {
+        alphas.push({ role: x.role, key: x.key, alpha: p.alpha });
+      }
+      Object.assign(x.p, p);
     },
     fx(alpha) {
       log.push(`fx:${alpha}`);
     },
   };
-  const live = (layer: Layer): Node[] => [...nodes.values()].filter((x) => x.kind === 'sprite' && x.alive && x.layer === layer);
-  const inGroup = (char: string): Node[] => {
-    const groups = [...nodes.entries()].filter(([, x]) => x.kind === 'group' && x.alive && x.key === char).map(([k]) => k);
-    return [...nodes.values()].filter((x) => x.kind === 'sprite' && x.alive && x.group !== null && groups.includes(x.group));
+  const live = (layer: Layer): Node[] => [...nodes.values()].filter((x) => x.role === 'sprite' && x.alive && x.layer === layer);
+  const inGroup = (char: string): Node[] =>
+    [...nodes.values()].filter((x) => x.role === 'sprite' && x.alive && x.parent !== null && node(x.parent).role === 'char' && node(x.parent).key === char);
+  /** The live anchors of a layer, in creation order. */
+  const anchors = (layer: Layer): Node[] => [...nodes.values()].filter((x) => x.role === 'anchor' && x.alive && x.layer === layer);
+  /** The roles above a node, nearest first, ending at its layer. */
+  const rolesAbove = (x: Node): Array<Role | 'layer'> => [...up(x).map((y) => y.role), 'layer'];
+  /** The alpha a node draws with: its own times every ancestor's (Pixi multiplies a container's alpha down). */
+  const worldAlpha = (x: Node | undefined): number | undefined => (x === undefined ? undefined : [x, ...up(x)].reduce((a, y) => a * (y.p.alpha ?? 1), 1));
+  /** Where a node draws in stage px: its x, y plus every ancestor's (no ancestor scales); its own w, h. */
+  const worldBox = (x: Node): Placement => {
+    const all = [x, ...up(x)];
+    return { x: all.reduce((s, y) => s + (y.p.x ?? 0), 0), y: all.reduce((s, y) => s + (y.p.y ?? 0), 0), w: x.p.w, h: x.p.h };
   };
-  return { adapter, log, live, inGroup, stage };
+  /**
+   * A parent's children in draw order, bottom first. A sortable parent (the props and chars layers, every `content`) is
+   * sorted the way Pixi sorts at a render: its children array, in place and stably, by z (a tie keeps the array's
+   * current order, which an earlier sort may have changed).
+   */
+  const drawOrder = (parent: Node | Layer): Node[] => {
+    const at = typeof parent === 'string' ? parent : parent.id;
+    const ids = kids.get(at) ?? [];
+    if (typeof parent === 'string' ? parent === 'props' || parent === 'chars' : parent.role === 'content') {
+      ids.sort((a, b) => (node(a).p.z ?? 0) - (node(b).p.z ?? 0));
+    }
+    return ids.map(node);
+  };
+  return { adapter, log, alphas, live, inGroup, anchors, rolesAbove, worldAlpha, worldBox, drawOrder, stage };
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -407,8 +476,11 @@ test('executor: scene t=fade applies shows while black', async () => {
     'destroy:chars:stranger',
     'drop:stranger',
     'destroy:cg:letter',
+    'drop:cg/letter',
     'destroy:props:lamp',
     'destroy:bg:street',
+    'drop:bg/street',
+    'anchor:bg:bg/cafe',
     'create:bg:cafe',
     'group:ally',
     'create:chars:ally',
@@ -419,7 +491,7 @@ test('executor: scene t=fade applies shows while black', async () => {
 
 test('executor: fade through black changes the stage only at black', async () => {
   const h = harness();
-  const isChange = (x: string): boolean => /^(create|destroy|group|drop):/.test(x);
+  const isChange = (x: string): boolean => /^(create|destroy|group|anchor|drop):/.test(x);
   /** The last black-rect write before the first stage change. */
   const fxBeforeChange = (): string | undefined =>
     h.log
@@ -441,6 +513,8 @@ test('executor: fade through black changes the stage only at black', async () =>
     'destroy:chars:stranger',
     'drop:stranger',
     'destroy:bg:street',
+    'drop:bg/street',
+    'anchor:bg:bg/cafe',
     'create:bg:cafe',
     'group:ally',
     'create:chars:ally',
@@ -456,7 +530,7 @@ test('executor: fade through black changes the stage only at black', async () =>
   expect(h.log.some(isChange)).toBe(false);
   advance(100);
   expect(fxBeforeChange()).toBe('fx:1');
-  expect(h.log.filter(isChange)).toEqual(['destroy:bg:cafe', 'create:bg:room']);
+  expect(h.log.filter(isChange)).toEqual(['destroy:bg:cafe', 'drop:bg/cafe', 'anchor:bg:bg/room', 'create:bg:room']);
   h.ex.complete();
   await fade;
   h.ex.destroy();
@@ -488,11 +562,11 @@ test('executor: complete jumps to the end state and ends the wait', async () => 
   });
   await flush();
   expect(h.ex.stats().activeTimelines).toBe(1);
-  expect(h.live('bg')[0]?.p.alpha).toBe(0);
+  expect(h.worldAlpha(h.live('bg')[0])).toBe(0);
   h.ex.complete();
   await Promise.resolve();
   expect(settled).toBe(true);
-  expect(h.live('bg').map((x) => x.p.alpha)).toEqual([1]);
+  expect(h.live('bg').map(h.worldAlpha)).toEqual([1]);
   expect(h.ex.stats().activeTimelines).toBe(0);
   h.ex.destroy();
 });
@@ -531,7 +605,7 @@ test('executor: skip mode and an early complete ignore the wait', async () => {
   h.ex.complete();
   await flush();
   expect(early.done).toBe(true);
-  expect(h.live('bg').map((x) => ({ key: x.key, alpha: x.p.alpha }))).toEqual([{ key: 'street', alpha: 1 }]);
+  expect(h.live('bg').map((x) => ({ key: x.key, alpha: h.worldAlpha(x) }))).toEqual([{ key: 'street', alpha: 1 }]);
   expect(h.ex.stats().activeTimelines).toBe(0);
   h.ex.destroy();
 });
@@ -716,16 +790,15 @@ test('render_loop_idles', async () => {
 test('executor: rebind re-creates the stage on a new adapter', async () => {
   const h = harness();
   await h.ex.apply([bg('room', 'cut'), show('ally', 'neutral', 'left', 'cut'), props(['lamp', LAMP])], NOW);
-  const box = (x: { p: Placement }): Placement => ({ x: x.p.x, y: x.p.y, w: x.p.w, h: x.p.h });
-  const before = [...h.live('bg'), ...h.inGroup('ally'), ...h.live('props')].map(box);
+  const before = [...h.live('bg'), ...h.inGroup('ally'), ...h.live('props')].map(h.worldBox);
   const loaded = ['bg/room', 'char/ally/neutral', 'prop/lamp'].map(h.loadsOf);
   // The old stage died with its Application (context loss): nothing is destroyed on it, everything is made anew.
   const fresh = recordingStage(S390, h.freed);
   h.ex.rebind(fresh.adapter);
   const after = [...fresh.live('bg'), ...fresh.inGroup('ally'), ...fresh.live('props')];
   expect(after.length).toBe(3);
-  expect(after.map(box)).toEqual(before);
-  expect(after.map((x) => x.p.alpha)).toEqual([1, 1, 1]);
+  expect(after.map(fresh.worldBox)).toEqual(before);
+  expect(after.map(fresh.worldAlpha)).toEqual([1, 1, 1]);
   expect(fresh.log.filter((e) => e.startsWith('destroy:'))).toEqual([]);
   // Every holder is kept: no load, no release.
   expect(['bg/room', 'char/ally/neutral', 'prop/lamp'].map(h.loadsOf)).toEqual(loaded);
@@ -1001,5 +1074,44 @@ test('executor: with the revive flow, frames resume at the deadline while a batc
   expect(spy.errors).toEqual([]);
   expect(resume).toHaveBeenCalledTimes(1);
   flow.destroy();
+  h.ex.destroy();
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Per-player GM6a (§6.1): every bg, CG and prop sits in an anchor of four nested nodes (anchor > depth > motion >
+// content); the batch motions write the `anchor`, the art lives in `content`.
+
+test('executor: a bg crossfade fades the anchors, not the sprites', async () => {
+  const h = harness();
+  await h.ex.apply([bg('cafe', 'cut')], NOW);
+  h.alphas.length = 0;
+  h.log.length = 0;
+  const batch = h.ex.apply([bg('street', 'crossfade', 500), cg('letter', 'fade', 500)], NOW);
+  await flush();
+  advance(250);
+  // Every alpha the batch wrote went to an anchor; no art sprite's own alpha was written.
+  expect(h.alphas.length).toBeGreaterThan(0);
+  expect(h.alphas.filter((w) => w.role !== 'anchor')).toEqual([]);
+  expect(h.anchors('bg').map((x) => x.key)).toEqual(['bg/cafe', 'bg/street']);
+  expect(h.anchors('bg')[1]?.p.alpha).toBeCloseTo(0.5, 6);
+  expect(h.anchors('cg')[0]?.p.alpha).toBeCloseTo(0.5, 6);
+  expect([...h.live('bg'), ...h.live('cg')].map((x) => x.p.alpha)).toEqual([undefined, undefined, undefined]);
+  h.ex.complete();
+  await batch;
+  // One bg anchor left; the old one was dropped after its sprite was destroyed.
+  expect(h.anchors('bg').map((x) => x.key)).toEqual(['bg/street']);
+  expect(h.log.filter((x) => /^(destroy|drop):/.test(x))).toEqual(['destroy:bg:cafe', 'drop:bg/cafe']);
+  expect([...h.live('bg'), ...h.live('cg')].map(h.worldAlpha)).toEqual([1, 1]);
+  h.ex.destroy();
+});
+
+test("executor: an anchor's art lives in its content node", async () => {
+  const h = harness();
+  await h.ex.apply([bg('cafe', 'cut'), cg('letter', 'cut')], NOW);
+  const arts = [...h.live('bg'), ...h.live('cg')];
+  expect(arts.length).toBe(2);
+  for (const art of arts) {
+    expect(h.rolesAbove(art)).toEqual(['content', 'motion', 'depth', 'anchor', 'layer']);
+  }
   h.ex.destroy();
 });

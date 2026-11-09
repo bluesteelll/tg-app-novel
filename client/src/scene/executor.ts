@@ -39,8 +39,14 @@ export type SceneSnapshot = Omit<StagingSnapshot, 'bgm'>;
 
 /** An adapter-owned sprite; the executor only hands it back. */
 export type SpriteRef = { readonly sprite: number };
-/** An adapter-owned container for one character's sprites (≤ 2 during an expression swap). */
+/** An adapter-owned container: one character's sprites (≤ 2 during an expression swap), or a node of an anchor. */
 export type GroupRef = { readonly group: number };
+/**
+ * One anchor (per-player §6.1, reconcile P2): four nested nodes, each with one writer. `anchor`: the executor
+ * (placement, batch fades); `depth`: SH8's parallax; `motion`: SH10's cue tweens (both identity until then); `content`:
+ * the art.
+ */
+export type AnchorRef = { readonly anchor: GroupRef; readonly depth: GroupRef; readonly motion: GroupRef; readonly content: GroupRef };
 export type Layer = 'bg' | 'props' | 'chars' | 'cg';
 /** Stage px. A `chars` sprite is anchored at its bottom centre, every other sprite at its top left; `z` orders groups. */
 export type Placement = { x?: number; y?: number; w?: number; h?: number; alpha?: number; z?: number };
@@ -49,9 +55,11 @@ export type Placement = { x?: number; y?: number; w?: number; h?: number; alpha?
 export interface StageAdapter<T> {
   size(): Size;
   group(char: CharId): GroupRef;
-  /** Destroys the container; its sprites were destroyed before. */
+  /** A new anchor on top of its layer; its art goes in `content`. */
+  anchor(layer: 'bg' | 'props' | 'cg', label: string): AnchorRef;
+  /** Destroys the container (a char group, or an anchor with its three inner nodes); its sprites were destroyed before. */
   dropGroup(g: GroupRef): void;
-  /** A new sprite on top of its layer (or of the group); the texture stays the registry's. */
+  /** A new sprite on top of its layer (or of the group: a char group, an anchor's `content`); the texture stays the registry's. */
   sprite(layer: Layer, tex: TextureHandle<T>, g?: GroupRef): SpriteRef;
   destroy(s: SpriteRef): void;
   set(target: SpriteRef | GroupRef, p: Placement): void;
@@ -200,6 +208,8 @@ type Hold<T> = Promise<Result<TextureHandle<T>, AssetError>>;
  */
 type Held<T> = { readonly hold: Hold<T>; bound: TextureHandle<T> | null };
 type View<T> = { readonly slot: string; readonly handle: TextureHandle<T>; readonly sprite: SpriteRef };
+/** A bg or a CG in its own anchor (a crossfade holds two). */
+type BackdropView<T> = View<T> & { readonly node: AnchorRef };
 type CharView<T> = { readonly char: CharId; readonly group: GroupRef; at: Slot; view: View<T> };
 /** `box`: where the sprite was last placed, in stage px (propRects). */
 type PropView<T> = View<T> & { readonly prop: PropId; rect: Rect; box: Box };
@@ -231,8 +241,8 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
   let destroyed = false;
   let fxAlpha = 0;
   // What the stage shows (a skipped visual is absent here while the logical stage names it).
-  let bg: View<T> | null = null;
-  let cg: View<T> | null = null;
+  let bg: BackdropView<T> | null = null;
+  let cg: BackdropView<T> | null = null;
   const chars = new Map<CharId, CharView<T>>();
   const props = new Map<PropId, PropView<T>>();
 
@@ -325,6 +335,11 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
   const destroyView = (v: View<T>): void => {
     adapter.destroy(v.sprite);
   };
+  /** The sprite, then its anchor (dropGroup's order). */
+  const destroyBackdrop = (v: BackdropView<T>): void => {
+    destroyView(v);
+    adapter.dropGroup(v.node.anchor);
+  };
   const retireNow = (r: Retiree<T>): void => {
     if (!retiring.delete(r)) {
       return;
@@ -343,10 +358,20 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     return () => retireNow(r);
   };
 
-  // Placement in the current stage size (layout.ts): backdrops cover ROOM_SOURCE, props take the same transform.
-  const placeBackdrop = (v: View<T>): void => {
+  // Placement in the current stage size (layout.ts): backdrops cover ROOM_SOURCE, props take the same transform. An
+  // anchor sits at its art's origin and the art at (0, 0) of `content` with its size, so the art's box is unchanged.
+  const placeBackdrop = (v: BackdropView<T>): void => {
     const c = backdropPlacement(adapter.size());
-    adapter.set(v.sprite, { x: c.offsetX, y: c.offsetY, w: ROOM_SOURCE.w * c.scale, h: ROOM_SOURCE.h * c.scale });
+    adapter.set(v.node.anchor, { x: c.offsetX, y: c.offsetY });
+    adapter.set(v.sprite, { w: ROOM_SOURCE.w * c.scale, h: ROOM_SOURCE.h * c.scale });
+  };
+  /** A bg or a CG: its anchor on top of the layer, at `alpha`, then the art in its `content`. */
+  const backdrop = (layer: 'bg' | 'cg', h: TextureHandle<T>, alpha: number): BackdropView<T> => {
+    const node = adapter.anchor(layer, h.id);
+    const v: BackdropView<T> = { slot: layer, handle: h, node, sprite: adapter.sprite(layer, h, node.content) };
+    placeBackdrop(v);
+    adapter.set(node.anchor, { alpha });
+    return v;
   };
   const placeProp = (v: PropView<T>): void => {
     v.box = propPlacement(adapter.size(), v.rect);
@@ -452,12 +477,6 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       tl.to(p, { a: 0, duration: half, onUpdate: write }, half);
     };
 
-    const backdrop = (layer: 'bg' | 'cg', h: TextureHandle<T>, alpha: number): View<T> => {
-      const v: View<T> = { slot: layer, handle: h, sprite: adapter.sprite(layer, h) };
-      placeBackdrop(v);
-      adapter.set(v.sprite, { alpha });
-      return v;
-    };
     const newProp = (p: { prop: PropId; rect: Rect }, h: TextureHandle<T>, alpha: number): void => {
       const v: PropView<T> = {
         slot: propSlot(p.prop),
@@ -492,7 +511,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         return;
       }
       if (bg !== null) {
-        destroyView(bg);
+        destroyBackdrop(bg);
         bg = null;
       }
       if (h !== undefined) {
@@ -534,7 +553,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
           }
         }
         if (cg !== null) {
-          destroyView(cg);
+          destroyBackdrop(cg);
           cg = null;
         }
         const keptProps = new Set(target.props.map((p) => p.prop));
@@ -573,7 +592,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
           // New over old, never a symmetric fade (K7); the old one is destroyed when the new one is opaque.
           const old = bg;
           bg = backdrop('bg', h, 0);
-          fade(bg.sprite, 0, 1, bgCmd.ms, old === null ? undefined : retire([old], null));
+          fade(bg.node.anchor, 0, 1, bgCmd.ms, old === null ? undefined : retire([old], old.node.anchor));
         }
         syncProps(bgCmd.ms);
       } else {
@@ -626,10 +645,10 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         const h = handleFor('cg');
         if (cgId === null && old !== null) {
           cg = null;
-          fade(old.sprite, 1, 0, ms, retire([old], null));
+          fade(old.node.anchor, 1, 0, ms, retire([old], old.node.anchor));
         } else if (h !== undefined) {
           cg = backdrop('cg', h, 0);
-          fade(cg.sprite, 0, 1, ms, old === null ? undefined : retire([old], null));
+          fade(cg.node.anchor, 0, 1, ms, old === null ? undefined : retire([old], old.node.anchor));
         }
       }
     }
@@ -776,17 +795,12 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         adapter.set(sprite, { alpha: 1 });
         return { ...v, sprite };
       };
+      // Each view's anchor first, then its art in it.
       if (bg !== null) {
-        bg = ended(bg.handle) ? null : again(bg, 'bg');
-        if (bg !== null) {
-          placeBackdrop(bg);
-        }
+        bg = ended(bg.handle) ? null : backdrop('bg', bg.handle, 1);
       }
       if (cg !== null) {
-        cg = ended(cg.handle) ? null : again(cg, 'cg');
-        if (cg !== null) {
-          placeBackdrop(cg);
-        }
+        cg = ended(cg.handle) ? null : backdrop('cg', cg.handle, 1);
       }
       for (const cv of [...chars.values()]) {
         if (ended(cv.view.handle)) {
@@ -819,11 +833,11 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         // No transition may write to a view after it is gone: every running batch ends first (its retirees with it).
         complete();
         if (bg !== null && ended(bg.handle)) {
-          destroyView(bg);
+          destroyBackdrop(bg);
           bg = null;
         }
         if (cg !== null && ended(cg.handle)) {
-          destroyView(cg);
+          destroyBackdrop(cg);
           cg = null;
         }
         for (const cv of [...chars.values()]) {
@@ -898,7 +912,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       props.clear();
       for (const v of [bg, cg]) {
         if (v !== null) {
-          destroyView(v);
+          destroyBackdrop(v);
         }
       }
       bg = null;
