@@ -4,6 +4,8 @@
 // `Element.prototype.animate` that returns a fake `Animation` on vitest's fake clock.
 import { cleanup, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
+import { parse } from 'svelte/compiler';
+import type { AST } from 'svelte/compiler';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 import type { Box } from '../../geom/cover.ts';
@@ -12,6 +14,7 @@ import type { PuzzleLocalId } from '../../story/staging.ts';
 import { createExploreView } from '../../ui/explore-view.svelte.ts';
 import type { ExploreLayerProps } from '../../ui/explore-view.svelte.ts';
 import ExploreView from '../../ui/explore/ExploreView.svelte';
+import appSource from '../../ui/App.svelte?raw';
 import { createPuzzleView } from '../../ui/puzzle-view.svelte.ts';
 import type { ScreenKind } from '../../ui/screens.ts';
 import type { CueStageProps } from '../../ui/state.svelte.ts';
@@ -762,4 +765,68 @@ test("stage: an end motion continues on the wrapper's clone inside its root's gh
   expect(s.layer.querySelectorAll('.cue-ghost:not(.cue-root-ghost)')).toHaveLength(0);
   expect(s.fallbacks()).toBe(0);
   expect(s.played()).toEqual(['puzzle:failed', 'ui:puzzle-try']);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// App's cue layer and the frame's notice (§8.1, §8.5), read on the compiler's own tree
+
+/** A markup element or a component on the compiler's tree. */
+type MarkupEl = AST.RegularElement | AST.Component;
+
+/** Every element and component under `node`, in document order. */
+function elementsOf(node: unknown): MarkupEl[] {
+  const out: MarkupEl[] = [];
+  const walk = (n: unknown): void => {
+    if (typeof n !== 'object' || n === null) {
+      return;
+    }
+    const t = (n as { type?: unknown }).type;
+    if (t === 'RegularElement' || t === 'Component') {
+      out.push(n as MarkupEl);
+    }
+    for (const v of Object.values(n)) {
+      walk(v);
+    }
+  };
+  walk(node);
+  return out;
+}
+
+test("stage: App's host-failed notice and Retry carry their cue markers", () => {
+  const ast = parse(appSource, { modern: true });
+  const els = elementsOf(ast.fragment);
+  /** An element's attributes as written. */
+  const attrs = (el: MarkupEl | undefined): string[] => (el?.attributes ?? []).map((a) => appSource.slice(a.start, a.end));
+  const byClass = (cls: string): MarkupEl[] => els.filter((el) => attrs(el).includes(`class="${cls}"`));
+  // The frame's load notice is its panel's notice (§8.5 "Cue targets"); its Retry is a control outside every root.
+  const [failed, ...moreFailed] = byClass('host-failed');
+  expect(moreFailed).toEqual([]);
+  expect(attrs(failed)).toEqual(expect.arrayContaining(['data-cue-notice', 'data-cue-panel="puzzle"']));
+  const retry = elementsOf(failed?.fragment).find((el) => el.name === 'button');
+  expect(attrs(retry)).toEqual(expect.arrayContaining(['data-cue="puzzle-retry"', 'disabled={frame.retrying}']));
+  // The stage layer stays inert under a frame (GM3w tester T1).
+  expect(els.filter((el) => attrs(el).includes("inert={root !== 'game' || covered || ui.puzzle.covers}"))).toHaveLength(1);
+  // One cue layer, after the frame layer and before Home's: its stage gets the slot's props and the reduced setting.
+  const [frameLayer] = byClass('layer frame-layer');
+  const [cueLayer, ...moreCue] = byClass('layer cue-layer');
+  expect(moreCue).toEqual([]);
+  expect((cueLayer?.start ?? 0) > (frameLayer?.start ?? Infinity)).toBe(true);
+  expect(appSource.indexOf("{#if root === 'home'}")).toBeGreaterThan(cueLayer?.end ?? Infinity);
+  const stage = elementsOf(cueLayer?.fragment).filter((el) => el.type === 'Component');
+  expect(stage).toHaveLength(1);
+  expect(attrs(stage[0]).sort()).toEqual(
+    [
+      'dropped={cue.dropped}',
+      'haptic={cue.haptic}',
+      'host={cue.host}',
+      'orphans={cue.orphans}',
+      'reduced={vm.reducedMotion}',
+      'subscribe={cue.subscribe}',
+    ].sort(),
+  );
+  // The layer itself takes no tap (critique O2): every tap reaches the layers below it.
+  const rules = (ast.css?.children ?? []).filter((r): r is AST.CSS.Rule => r.type === 'Rule');
+  const cueRule = rules.find((r) => appSource.slice(r.prelude.start, r.prelude.end).trim() === '.cue-layer');
+  const decls = (cueRule?.block.children ?? []).filter((d): d is AST.CSS.Declaration => d.type === 'Declaration');
+  expect(decls.map((d) => [d.property, d.value])).toEqual([['pointer-events', 'none']]);
 });

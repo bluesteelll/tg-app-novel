@@ -472,7 +472,7 @@ export function createYields(h: YieldsHost): Yields {
         send(coreCue('look', scope.cause.at, null));
         return;
       case 'got': {
-        h.tg.haptic.notify('success'); // K51
+        // K51's success haptic is the cue's (its row's haptic, played by the cue stage on top of its motion: D6).
         const g = e.gift;
         send({ kind: 'fact', fact: 'item' in g ? { kind: 'held', id: g.item } : { kind: 'doc', id: g.doc }, change: 'added', cause: scope.cause });
         const name = w === null ? null : giftName(g, w);
@@ -501,7 +501,7 @@ export function createYields(h: YieldsHost): Yields {
         toStory(e.knot);
         return;
       case 'refused':
-        h.tg.haptic.notify('error'); // K51
+        // K51's error haptic is the cue's, as the take's (D6).
         send(coreCue('refused', scope.cause.at, scope.cause.item));
         return;
       case 'reset':

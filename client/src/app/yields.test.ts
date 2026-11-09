@@ -500,7 +500,8 @@ test('yields: event return restores the room', async () => {
   await inHall(r);
   expect(r.stage().bg).toBe('hall');
   expect(r.stage().props.map((p) => p.prop)).toEqual(['medal']);
-  // K51: a take is a success haptic; an item that does not fit the box's slot is an error haptic.
+  // K51: a take is a success haptic and an item that does not fit the box's slot an error haptic, both the cue stage's
+  // on top of their cues' motions ("stage: a haptic plays only on top of a motion"): yields plays none of its own.
   r.yields.layer.ontap(key('hall.key'));
   await settle();
   r.yields.layer.ontap(key('hall.box'));
@@ -508,7 +509,7 @@ test('yields: event return restores the room', async () => {
   expect(r.explore.panel).toEqual({ kind: 'lock' });
   r.yields.layer.oninsert(key('hall.box'), 'key' as ItemId);
   await settle();
-  expect(r.haptics).toEqual(['notify:success', 'notify:error']);
+  expect(r.haptics).toEqual([]);
   r.screens.back(); // the lock panel closes with Back
   expect(r.explore.panel).toBeNull();
   // Into the study: its onEnter runs an event knot; the rooms hide for it.

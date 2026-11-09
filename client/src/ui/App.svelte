@@ -5,7 +5,9 @@
   // (`vm.meta.ui`, META M27); every other component is the engine's (`vm.ui`); each renders once its chunk is in.
   // Home's, the Menu's and the Terms' meta taps go through boot's gate (`app.metaTaps`), so they are always given.
   // The Stage mounts with the engine and stays for the page's life (one Pixi Application; the scene itself mounts at
-  // the first start), under the opaque Home and notice layers. Every layer is full-bleed: each
+  // the first start), under the opaque Home and notice layers. The cue layer (engine plan §8.1) sits above the frame
+  // layer and below Home, the overlays and the toasts, once the session has loaded the cue stage's chunk; it takes no
+  // tap. Every layer is full-bleed: each
   // component pads itself past the safe area, and the hotspot layer lives inside the Stage host, the box the canvas
   // and the hotspot rects share. Below the top overlay every layer is inert. Player-facing words come from the UI
   // tables only (principle 8).
@@ -97,13 +99,29 @@
           {@const Host = puzzleHost}
           <Host lang={vm.lang} {frame} ladder={ui.puzzle.ladder} {...game.puzzleActions} />
         {:else if hostFailed}
-          <section class="host-failed" role="alert">
+          <section class="host-failed" role="alert" data-cue-notice data-cue-panel="puzzle">
             <p>{t(vm.lang, 'puzzle.load_failed')}</p>
-            <button type="button" disabled={frame.retrying} onclick={() => game?.puzzleActions.onretry()}>{t(vm.lang, 'puzzle.retry')}</button>
+            <button type="button" data-cue="puzzle-retry" disabled={frame.retrying} onclick={() => game?.puzzleActions.onretry()}>
+              {t(vm.lang, 'puzzle.retry')}
+            </button>
           </section>
         {/if}
       </div>
     {/if}
+  {/if}
+
+  {#if vm.cueStage !== null}
+    {@const cue = vm.cueStage}
+    <div class="layer cue-layer">
+      <cue.component
+        subscribe={cue.subscribe}
+        orphans={cue.orphans}
+        dropped={cue.dropped}
+        host={cue.host}
+        haptic={cue.haptic}
+        reduced={vm.reducedMotion}
+      />
+    </div>
   {/if}
 
   {#if root === 'home'}
@@ -287,9 +305,15 @@
     inset: 0;
   }
 
-  /* The frame layer passes taps through and its two blocks take them back, so a frame that leaves the stage
-     uncovered leaves the room tappable around it (engine plan GM3w); both blocks are full-bleed today. */
+  /* The frame layer passes taps (engine plan 08b "The frame wrapper passes taps"): its two blocks take them back
+     while they are on screen, and a leaving frame is gone at once, its ghost on the cue layer, which takes no tap, so
+     the room answers at once. */
   .frame-layer {
+    pointer-events: none;
+  }
+
+  /* The cue layer only plays motions on its ghosts: every tap reaches the layers below it (its stage is inert too). */
+  .cue-layer {
     pointer-events: none;
   }
 
