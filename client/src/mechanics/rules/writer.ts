@@ -7,7 +7,7 @@ import type { Draft, ExploreEffect } from '../../explore/reduce.ts';
 import type { PuzzleRun, WorldState } from '../../explore/state.ts';
 import type { PuzzleLocalId } from '../../story/staging.ts';
 import type { Effect, HotspotKey, ItemId, WorldPublicBody } from '../../world/types.ts';
-import type { Cause, ListField, MechanicId, RulesRegistry, TriggerKey, Writer } from '../contract.ts';
+import type { Cause, FactKind, KernelFactKind, ListField, MechanicId, RulesRegistry, TriggerKey, Writer } from '../contract.ts';
 
 export function added<T>(list: readonly T[], v: T): readonly T[] {
   return list.includes(v) ? list : [...list, v];
@@ -46,13 +46,30 @@ export function openKey(d: Draft, key: HotspotKey): void {
 
 /** A module cue as the writer recorded it. */
 export type ModuleCue = { readonly module: MechanicId; readonly name: string; readonly at: HotspotKey | null; readonly item: ItemId | null };
+/** One fact entering or leaving the state through the writer, with the cause the rule gave. */
+export type FactChange = { readonly kind: FactKind; readonly id: string; readonly change: 'added' | 'removed'; readonly cause: Cause };
 
 /** The kernel's writer: the module-facing `Writer` plus what core's rules and hooks reach through it. */
 export type KernelWriter = Writer & {
   readonly draft: Draft;
   readonly world: WorldPublicBody;
   readonly rules: RulesRegistry;
+  /** Every fact change a `set` or `run` made, in order. */
+  readonly changes: readonly FactChange[];
   readonly cues: readonly ModuleCue[];
+};
+
+/** The fact kind of each list field's members. */
+const FACT_OF: { readonly [F in ListField]: KernelFactKind } = {
+  visited: 'visited',
+  held: 'held',
+  used: 'used',
+  docs: 'doc',
+  taken: 'taken',
+  examined: 'examined',
+  open: 'open',
+  fired: 'fired',
+  pendingStory: 'story',
 };
 
 const NONE: readonly never[] = Object.freeze([]);
@@ -70,6 +87,7 @@ class DraftWriter implements KernelWriter {
   readonly draft: Draft;
   readonly world: WorldPublicBody;
   readonly rules: RulesRegistry;
+  #changes: FactChange[] | null = null;
   #cues: ModuleCue[] | null = null;
 
   constructor(d: Draft, w: WorldPublicBody, rules: RulesRegistry) {
@@ -82,20 +100,61 @@ class DraftWriter implements KernelWriter {
     return this.draft.s;
   }
 
+  get changes(): readonly FactChange[] {
+    return this.#changes ?? NONE;
+  }
+
   get cues(): readonly ModuleCue[] {
     return this.#cues ?? NONE;
   }
 
-  set<K extends ListField>(field: K, value: WorldState[K], _cause: Cause): void {
-    if (!sameList<unknown>(this.draft.s[field], value)) {
-      set(this.draft, field, value);
-    }
+  #record(kind: FactKind, id: string, change: FactChange['change'], cause: Cause): void {
+    (this.#changes ??= []).push({ kind, id, change, cause });
   }
 
-  run(puzzle: PuzzleLocalId, run: PuzzleRun, _cause: Cause): void {
-    if (!sameRun(runOf(this.draft.s, puzzle), run)) {
-      setRun(this.draft, puzzle, run);
+  /** Records the removed members in their old order, then the added members in their new order. */
+  set<K extends ListField>(field: K, value: WorldState[K], cause: Cause): void {
+    const before: readonly string[] = this.draft.s[field];
+    if (sameList<string>(before, value)) {
+      return;
     }
+    const kind = FACT_OF[field];
+    const now = new Set<string>(value);
+    const was = new Set<string>(before);
+    for (const x of before) {
+      if (!now.has(x)) {
+        this.#record(kind, x, 'removed', cause);
+      }
+    }
+    for (const x of value) {
+      if (!was.has(x)) {
+        this.#record(kind, x, 'added', cause);
+      }
+    }
+    set(this.draft, field, value);
+  }
+
+  /** Records the outcome that left and the one that came, then a changed attempt or hint count. */
+  run(puzzle: PuzzleLocalId, run: PuzzleRun, cause: Cause): void {
+    const before = runOf(this.draft.s, puzzle);
+    if (sameRun(before, run)) {
+      return;
+    }
+    if (before.outcome !== run.outcome) {
+      if (before.outcome !== null) {
+        this.#record(before.outcome, puzzle, 'removed', cause);
+      }
+      if (run.outcome !== null) {
+        this.#record(run.outcome, puzzle, 'added', cause);
+      }
+    }
+    if (before.attempts !== run.attempts) {
+      this.#record('attempt', puzzle, run.attempts > before.attempts ? 'added' : 'removed', cause);
+    }
+    if (before.hintsOpened !== run.hintsOpened) {
+      this.#record('hint', puzzle, run.hintsOpened > before.hintsOpened ? 'added' : 'removed', cause);
+    }
+    setRun(this.draft, puzzle, run);
   }
 
   fire(trigger: TriggerKey, effects: readonly Effect[], _cause: Cause): void {

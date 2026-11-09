@@ -1,15 +1,17 @@
 import { expect, test, vi } from 'vitest';
 
-import type { ExploreAction } from '../explore/reduce.ts';
+import { worldIndex } from '../explore/reduce.ts';
+import type { Draft, ExploreAction } from '../explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { WorldState } from '../explore/state.ts';
-import type { SectionId } from '../story/staging.ts';
+import type { KnotName, PuzzleLocalId, SectionId } from '../story/staging.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
-import type { HotspotKey, RoomId, WorldPublicBody } from '../world/types.ts';
+import type { DocId, HotspotKey, ItemId, RoomId, WorldPublicBody } from '../world/types.ts';
 import { KERNEL_FACT_KINDS } from './contract.ts';
-import type { MechanicData } from './contract.ts';
+import type { Cause, MechanicData, MechanicId } from './contract.ts';
 import { MECHANIC_DATA } from './data/index.ts';
 import { MECHANIC_RULES } from './rules/index.ts';
+import { createWriter } from './rules/writer.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
 // Fixture worlds: written in the source format and decoded (the same builder shape as explore/explore.test.ts).
@@ -20,6 +22,17 @@ const txt = (owner = 'w'): Json => ({ id: `ch1.${owner}.${(lineCounter++).toStri
 const RECT = [100, 200, 200, 200];
 const look = (id: string, then: Json[] = []): Json => ({ id, kind: 'look', rect: RECT, label: txt(), look: txt(id), then });
 const room = (hotspots: Json[], onEnter: Json[] = []): Json => ({ bg: 'room', title: txt(), onEnter, hotspots });
+const code = (dials: number, maxAttempts: number | null = null): Json => ({
+  type: 'code',
+  title: txt(),
+  prompt: txt(),
+  closeup: null,
+  params: { dials },
+  maxAttempts,
+  giveUp: false,
+  solution: new Array<number>(dials).fill(1),
+  hints: [txt()],
+});
 
 /** A one-section world (`s`, starting in `hall`) over the given rooms. */
 function world(rooms: Record<string, Json>, spec: { items?: string[]; puzzles?: Record<string, Json> } = {}): WorldPublicBody {
@@ -40,6 +53,8 @@ function world(rooms: Record<string, Json>, spec: { items?: string[]; puzzles?: 
 const S = 's' as SectionId;
 const k = (s: string) => s as HotspotKey;
 const rm = (s: string) => s as RoomId;
+const it = (s: string) => s as ItemId;
+const pz = (s: string) => s as PuzzleLocalId;
 const tap = (hotspot: string): ExploreAction => ({ kind: 'tap', hotspot: k(hotspot) });
 
 /** A state in `roomId` of section `s`. */
@@ -147,6 +162,48 @@ test('mechanics: data and rules registries align', () => {
     'rules entry 1: labels, data expects b',
     'rules entry 2: b, data expects (none)',
   ]);
+});
+
+test('writer: a set records the added and removed members', () => {
+  const w = world({ hall: room([look('statue')]) }, { items: ['a', 'b', 'c'], puzzles: { p: code(2) } });
+  const s = at('hall', { held: [it('a'), it('b')] });
+  const d: Draft = { s, effects: [], ix: worldIndex(w) };
+  const out = createWriter(d, w, MECHANIC_RULES);
+  const cause: Cause = { verb: 'tap', at: k('hall.statue'), item: null, via: null };
+  // Removed members in the old order, then added members in the new order, each with the cause.
+  out.set('held', [it('a'), it('c')], cause);
+  expect(out.changes).toEqual([
+    { kind: 'held', id: 'b', change: 'removed', cause },
+    { kind: 'held', id: 'c', change: 'added', cause },
+  ]);
+  expect(out.state.held).toEqual(['a', 'c']);
+  expect(d.s).toBe(out.state);
+  // The fact kinds of the renamed fields.
+  out.set('docs', ['letter' as DocId], cause);
+  out.set('pendingStory', ['voice' as KnotName], cause);
+  expect(out.changes.slice(2)).toEqual([
+    { kind: 'doc', id: 'letter', change: 'added', cause },
+    { kind: 'story', id: 'voice', change: 'added', cause },
+  ]);
+  // An unchanged value records nothing and keeps the state object.
+  const before = out.state;
+  out.set('held', [it('a'), it('c')], cause);
+  out.run(pz('p'), { outcome: null, attempts: 0, hintsOpened: 0 }, cause);
+  expect(out.changes).toHaveLength(4);
+  expect(out.state).toBe(before);
+  // A run: its outcome, attempts and hints opened.
+  const solve: Cause = { verb: 'solve', at: null, item: null, via: null };
+  out.run(pz('p'), { outcome: 'solved', attempts: 1, hintsOpened: 0 }, solve);
+  expect(out.changes.slice(4)).toEqual([
+    { kind: 'solved', id: 'p', change: 'added', cause: solve },
+    { kind: 'attempt', id: 'p', change: 'added', cause: solve },
+  ]);
+  expect(out.state.puzzles).toEqual({ p: { outcome: 'solved', attempts: 1, hintsOpened: 0 } });
+  // Effects land in the draft; module cues are recorded.
+  out.effect({ kind: 'lock', hotspot: k('hall.statue') });
+  expect(d.effects).toEqual([{ kind: 'lock', hotspot: 'hall.statue' }]);
+  out.cue('probe' as MechanicId, 'turned', k('hall.statue'), it('a'));
+  expect(out.cues).toEqual([{ module: 'probe', name: 'turned', at: 'hall.statue', item: 'a' }]);
 });
 
 test('mechanics: the rules registry loads from either module first', async () => {
