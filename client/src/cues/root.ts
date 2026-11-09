@@ -6,11 +6,19 @@
 // code, in each family root's chunk (`rules-lazy`).
 import type { ScreenKind } from '../ui/screens.ts';
 import type { ItemId } from '../world/types.ts';
-import { CUE_TRIGGERS } from './types.ts';
-import type { ControlCue, CueEvent } from './types.ts';
+import type { ControlCue, CUE_TRIGGERS, CueEvent } from './types.ts';
 
 /** The root's emit: the session's bus; none until a session gives one. */
 export type CueEmit = ((e: CueEvent) => void) | undefined;
+
+/** `never` when the two tuples drift apart (order included), which fails `check` at `ROOT_TRIGGERS`. */
+type SameTuple<A, B> = [A] extends [B] ? ([B] extends [A] ? A : never) : never;
+const TRIGGERS = ['click', 'pointerdown', 'input', 'change', 'keydown'] as const;
+/**
+ * The root's own copy of `CUE_TRIGGERS` (RULINGS 201 E2): a value import of `cues/types.ts` here and in the cue stage
+ * would give the two lazy chunks a shared chunk and the player one request more. Tied to it by type and by a test.
+ */
+export const ROOT_TRIGGERS: SameTuple<typeof TRIGGERS, typeof CUE_TRIGGERS> = TRIGGERS;
 
 /**
  * The explore sheets' `data-cue-panel` values, each a screen kind (§8.5 "Cue targets", `panel`). Named here, not
@@ -42,7 +50,7 @@ export function cueRoot(node: HTMLElement, emit: CueEmit): { update(next: CueEmi
       el,
     });
   };
-  for (const t of CUE_TRIGGERS) {
+  for (const t of ROOT_TRIGGERS) {
     node.addEventListener(t, on, true);
   }
   // F4: the stage may first see this root a flush late (both mount in one flush); it enters from this time.
@@ -52,7 +60,7 @@ export function cueRoot(node: HTMLElement, emit: CueEmit): { update(next: CueEmi
       current = next;
     },
     destroy() {
-      for (const t of CUE_TRIGGERS) {
+      for (const t of ROOT_TRIGGERS) {
         node.removeEventListener(t, on, true);
       }
     },

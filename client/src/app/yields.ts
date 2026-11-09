@@ -88,6 +88,13 @@ export const LAZY_CHUNKS: LazyChunks = {
     }
   },
   puzzleUi: loadPuzzleUi,
+  cueStage: async () => {
+    try {
+      return { ok: true, value: (await import('../cues/stage/index.ts')).CueStage };
+    } catch (e) {
+      return chunkError(e);
+    }
+  },
 };
 
 /** What GameSession gives its yields: the views, the ports, and its own steps. */

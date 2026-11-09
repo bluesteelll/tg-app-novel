@@ -158,7 +158,7 @@ function isPureWorld(file: string): boolean {
 // only through `import()` (app/yields.ts and puzzles/registry.ts hold those). The meta overlays (`ui/meta/`) and the
 // meta controller (`app/meta.ts`, a lazy root file: RULINGS 105, LMI cut Q8) are lazy the same way; boot.ts and the
 // controller hold their `import()` calls.
-const LAZY_DIRS = ['puzzles/ui/', 'ui/puzzles/', 'ui/explore/', 'ui/meta/'] as const;
+const LAZY_DIRS = ['puzzles/ui/', 'ui/puzzles/', 'ui/explore/', 'ui/meta/', 'cues/stage/'] as const;
 const LAZY_ROOT_FILES = ['app/meta.ts'] as const;
 
 /** The lazy scope a file is in: its lazy directory, or the lazy root file itself. */
@@ -974,6 +974,7 @@ const LAZY_COMPONENTS = [
   'ui/explore/Inventory.svelte',
   'ui/explore/DocumentReader.svelte',
   'ui/explore/LockPanel.svelte',
+  'cues/stage/CueStage.svelte',
 ] as const;
 
 /** The files under a lazy directory that a source's literal `import()` calls load. */
