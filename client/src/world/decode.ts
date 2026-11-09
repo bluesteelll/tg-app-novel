@@ -1,7 +1,8 @@
 // The one decoder of world JSON (docs/PUZZLES-PLAN.md "World data", X7): the source `story/<ch>/world.json` and the
 // public world the client loads, plus the two projections the story tool emits from a decoded source. Every issue is
 // reported once, never the first only (lint `world/schema`). Keys are strict: an unknown key is an issue, and every
-// key of the format is required except `take.then`, `lock.onOpen` and a source puzzle's `clues` (default []).
+// key of the format is required except `take.then`, `lock.onOpen` and a source puzzle's `clues` (default []), and the
+// world's `renamed` (absent = none).
 // References between ids (an exit's room, a slot's item, a clue's fact) are not resolved here: that is
 // `world/unknown-ref` (LW3) and `world/clue-reachable` (GM1d). Pure (X4).
 import { PUZZLE_TYPES, puzzleInstance } from '../puzzles/rules/index.ts';
@@ -41,6 +42,7 @@ import type {
   LockSlot,
   PublicPuzzle,
   PuzzleBody,
+  Renames,
   Room,
   RoomId,
   Section,
@@ -159,8 +161,8 @@ function list<T>(item: Decoder<T>): Decoder<T[]> {
   };
 }
 
-/** An object keyed by ids: every key must be id-shaped. */
-function record<K extends string, T>(entry: Decoder<T>): Decoder<Record<K, T>> {
+/** An object keyed by ids: every key must match `keys` (an id; a hotspot key in `renamed.hotspots`). */
+function record<K extends string, T>(entry: Decoder<T>, keys: RegExp = ID_RE): Decoder<Record<K, T>> {
   return (v, path, report) => {
     if (!isObject(v)) {
       report(path, 'shape', 'not an object');
@@ -169,8 +171,8 @@ function record<K extends string, T>(entry: Decoder<T>): Decoder<Record<K, T>> {
     const out: Record<string, T> = {};
     let ok = true;
     for (const [key, value] of Object.entries(v)) {
-      if (!ID_RE.test(key)) {
-        report(at(path, key), 'id', `'${key}' is not an id ${ID_RE.source}`);
+      if (!keys.test(key)) {
+        report(at(path, key), 'id', `'${key}' is not an id ${keys.source}`);
         ok = false;
         continue;
       }
@@ -181,7 +183,7 @@ function record<K extends string, T>(entry: Decoder<T>): Decoder<Record<K, T>> {
         out[key] = decoded;
       }
     }
-    return ok ? (out as Record<K, T>) : undefined; // every key passed ID_RE, the brand's whole contract
+    return ok ? (out as Record<K, T>) : undefined; // every key passed `keys`, the brand's whole contract
   };
 }
 
@@ -604,7 +606,32 @@ const publicPuzzle = (types: PuzzleTypes): Decoder<PublicPuzzle> => (v, path, re
   return keysOk && body !== undefined && tiers !== undefined ? { ...body, hintTiers: tiers } : undefined;
 };
 
+/** The kinds of `renamed` (engine plan §5.1, the kernel's key), in the order a decoded map keeps them. */
+export const RENAME_KINDS = ['items', 'docs', 'rooms', 'sections', 'hotspots', 'flags', 'puzzles'] as const satisfies readonly (keyof Renames)[];
+
+/** `renamed`: per kind, old id -> new id, both in the kind's grammar (a hotspot's is `<room>.<hotspot>`). */
+const renames: Decoder<Renames> = (v, path, report) => {
+  if (!isObject(v)) {
+    report(path, 'shape', 'not an object');
+    return undefined;
+  }
+  let ok = exactKeys(v, [], path, report, RENAME_KINDS);
+  const out: Record<string, Readonly<Record<string, string>>> = {};
+  for (const kind of RENAME_KINDS) {
+    const re = kind === 'hotspots' ? HOTSPOT_KEY_RE : ID_RE;
+    const map = Object.hasOwn(v, kind) ? field(v, kind, path, report, record<string, string>(matching<string>(re), re)) : null;
+    if (map === undefined) {
+      ok = false;
+    } else if (map !== null) {
+      out[kind] = map;
+    }
+  }
+  return ok ? (out as Renames) : undefined; // each kind's keys and values passed that kind's pattern, its brand's contract
+};
+
 const TOP_KEYS = ['format', 'items', 'docs', 'puzzles', 'sections'] as const;
+/** The world's optional keys (absent = none). */
+const TOP_OPTIONAL = ['renamed'] as const;
 
 type Decoded<P> = Omit<WorldSource, 'puzzles'> & { readonly puzzles: Readonly<Record<PuzzleLocalId, P>> };
 
@@ -621,10 +648,12 @@ function decodeWorld<P>(raw: Raw, puzzle: Decoder<P>, report: Report): Decoded<P
   const docs = get('docs', record<DocId, Doc>(doc));
   const puzzles = get('puzzles', record<PuzzleLocalId, P>(puzzle));
   const sections = get('sections', record<SectionId, Section>(section));
-  if (format === undefined || items === undefined || docs === undefined || puzzles === undefined || sections === undefined) {
+  const renamed = Object.hasOwn(raw, 'renamed') ? get('renamed', renames) : null;
+  if (format === undefined || items === undefined || docs === undefined || puzzles === undefined || sections === undefined || renamed === undefined) {
     return undefined;
   }
-  return { format, items, docs, puzzles, sections };
+  // An absent `renamed` stays absent: the value (and so the world version) of a world that never renamed is unchanged.
+  return renamed === null ? { format, items, docs, puzzles, sections } : { format, items, docs, puzzles, sections, renamed };
 }
 
 function collect<T>(raw: unknown, decode: (raw: Raw, report: Report) => T | undefined): Result<T, WorldIssue[]> {
@@ -645,12 +674,12 @@ function collect<T>(raw: unknown, decode: (raw: Raw, report: Report) => T | unde
 }
 
 /** What a world decoder reads puzzle types from: `PUZZLE_TYPES` unless a test passes a fixture type beside them. */
-type DecodeOptions = { readonly types?: PuzzleTypes };
+export type DecodeOptions = { readonly types?: PuzzleTypes };
 
 /** `story/<ch>/world.json`: puzzles carry `solution` and `hints`. */
 export function decodeWorldSource(raw: unknown, o: DecodeOptions = {}): Result<WorldSource, WorldIssue[]> {
   return collect(raw, (w, report) => {
-    const keysOk = exactKeys(w, TOP_KEYS, '', report);
+    const keysOk = exactKeys(w, TOP_KEYS, '', report, TOP_OPTIONAL);
     const world = decodeWorld(w, sourcePuzzle(o.types ?? PUZZLE_TYPES), report);
     return keysOk ? world : undefined;
   });
@@ -659,7 +688,7 @@ export function decodeWorldSource(raw: unknown, o: DecodeOptions = {}): Result<W
 /** A public world (story-gen or a paid payload): refuses `solution` / `hints`, requires the stamped `version`. */
 export function decodeWorldPublic(raw: unknown, o: DecodeOptions = {}): Result<WorldPublic, WorldIssue[]> {
   return collect(raw, (w, report): WorldPublic | undefined => {
-    const keysOk = exactKeys(w, [...TOP_KEYS, 'version'], '', report);
+    const keysOk = exactKeys(w, [...TOP_KEYS, 'version'], '', report, TOP_OPTIONAL);
     const world = decodeWorld(w, publicPuzzle(o.types ?? PUZZLE_TYPES), report);
     const version = field(w, 'version', '', report, matching<string>(VERSION_RE, 'shape'));
     return keysOk && world !== undefined && version !== undefined ? { ...world, version } : undefined;
@@ -683,13 +712,51 @@ function entriesOf<K extends string, V>(r: Readonly<Record<K, V>>): Array<[K, V]
   return Object.entries(r) as Array<[K, V]>; // the keys of a decoded record are its ids
 }
 
-/** The public body (no `version`: LW3's emit stamps it): `solution` and `hints` stripped, the tier count kept. */
+/**
+ * Where a rename chain from `from` ends (engine plan §5.3): the map followed while it has an own entry; null on a
+ * cycle. The one walker of emit and lint (`world/renamed-target`, `world/renamed-cycle`): the client never walks one.
+ */
+export function finalTarget<K extends string>(map: Readonly<Record<K, K>>, from: K): K | null {
+  const seen = new Set<K>();
+  let at = from;
+  while (Object.hasOwn(map, at)) {
+    if (seen.has(at)) {
+      return null;
+    }
+    seen.add(at);
+    at = map[at] ?? at; // an own entry, so never undefined; a repeat is caught as a cycle above
+  }
+  return at;
+}
+
+/** `renamed` with every chain resolved to its final target; a cycle's entries and a kind left empty are left out. */
+function resolved(r: Renames): Renames | null {
+  const out: Record<string, Readonly<Record<string, string>>> = {};
+  for (const kind of RENAME_KINDS) {
+    const map: Readonly<Record<string, string>> = r[kind] ?? {};
+    const ends = Object.keys(map).flatMap((from) => {
+      const to = finalTarget(map, from);
+      return to === null ? [] : [[from, to] as const];
+    });
+    if (ends.length > 0) {
+      out[kind] = Object.fromEntries(ends);
+    }
+  }
+  return Object.keys(out).length === 0 ? null : (out as Renames); // each kind's ids are the decoded map's own
+}
+
+/**
+ * The public body (no `version`: LW3's emit stamps it): `solution` and `hints` stripped, the tier count kept, the
+ * renames resolved (§5.3). A world with no rename has no `renamed` key, so its value and version are as before.
+ */
 export function toPublic(w: WorldSource): WorldPublicBody {
   const puzzles: Record<PuzzleLocalId, PublicPuzzle> = {};
   for (const [pid, p] of entriesOf(w.puzzles)) {
     puzzles[pid] = { ...makeBody(p, p), hintTiers: tiersOf(p.hints) };
   }
-  return { format: 1, items: w.items, docs: w.docs, puzzles, sections: w.sections };
+  const body: WorldPublicBody = { format: 1, items: w.items, docs: w.docs, puzzles, sections: w.sections };
+  const renamed = w.renamed === undefined ? null : resolved(w.renamed);
+  return renamed === null ? body : { ...body, renamed };
 }
 
 function bilingual(t: WorldText, en: Readonly<Record<LineId, string>>): { ru: string; en: string } {
@@ -698,21 +765,23 @@ function bilingual(t: WorldText, en: Readonly<Record<LineId, string>>): { ru: st
 }
 
 /** The build's hint texts of one puzzle after rendering (a type's lint half; `src/` may not import `scripts/`). */
-type HintRenderer = (p: SourcePuzzle, hints: readonly { ru: string; en: string }[]) => readonly { ru: string; en: string }[];
+export type HintRenderer = (p: SourcePuzzle, hints: readonly { ru: string; en: string }[]) => readonly { ru: string; en: string }[];
 
 /**
  * `server/content/puzzles/<ch>.json`: the answer shape from the type's data half, the solution, titles and hints, the
- * hints through `renderHints` (the identity by default).
+ * hints through `renderHints` (the identity by default). `o` is what the world was decoded with: its types hold
+ * each puzzle's data half (`PUZZLE_TYPES` by default; a test's fixture type beside them).
  */
 export function toServer(
   w: WorldSource,
   en: Readonly<Record<LineId, string>>,
   chapter: ChapterId,
   renderHints: HintRenderer = (_p, hints) => hints,
+  o: DecodeOptions = {},
 ): ServerPuzzleContent {
   const puzzles: Record<PuzzleLocalId, ServerPuzzle> = {};
   for (const [pid, p] of entriesOf(w.puzzles)) {
-    const instance = puzzleInstance(p);
+    const instance = puzzleInstance(p, o.types);
     if (instance === null) {
       throw new Error(`invariant: the story tool decodes its worlds with PUZZLE_TYPES, not '${p.type}'`);
     }

@@ -6,21 +6,27 @@
 // chapter; the hint texts never leave server/content. From LM1 the server meta (META-PLAN "Server formats"): the
 // choice vocabulary, the ending titles and the achievements, server-only (M7). Builds a plan (path → text); IO stays in
 // story.ts. compile.ts, graph.ts and meta.ts come in as types only, so scan-dist.ts, which imports the decoders below,
-// never loads inkjs/full or the graph code; stories.ts adds no module lint.ts does not already load.
+// never loads inkjs/full or the graph code; stories.ts adds no module lint.ts does not already load. The puzzle type
+// registries (the data halves and puzzles/index.ts's lint halves) render the server hints: world.ts already loads both.
 import { createHash } from 'node:crypto';
 
 import { RULES_VERSION, lockOf } from '../../src/explore/reduce.ts';
+import { PUZZLE_TYPES } from '../../src/puzzles/rules/index.ts';
+import type { PuzzleTypes } from '../../src/puzzles/rules/index.ts';
 import { ASSET_ID_RE, CHAPTER_ID_RE, KNOT_NAME_RE } from '../../src/story/catalog.ts';
 import type { Cast, ChapterCatalog, ChapterListEntry, ChapterMeta, EndingName, Result, StoryId } from '../../src/story/catalog.ts';
 import type { AssetId, ChapterId, KnotName, LineId, ProductId, SpeakerId, StoryVersion } from '../../src/story/staging.ts';
 import { LINE_ID_RE } from '../../src/story/tags.ts';
 import { toPublic, toServer } from '../../src/world/decode.ts';
+import type { HintRenderer } from '../../src/world/decode.ts';
 import type { ServerPuzzleContent, WorldPublic, WorldPublicBody, WorldSource } from '../../src/world/types.ts';
 import type { CompiledChapter } from './compile.ts';
 import type { ChapterGraph } from './graph.ts';
 import { LINT_CODES } from './lint.ts';
 import type { Finding } from './lint.ts';
 import type { AchievementId, ChoiceMap, LangText, MetaCondition, MetaSource, StoryMeta } from './meta.ts';
+import { PUZZLE_LINTS } from './puzzles/index.ts';
+import type { PuzzleTypeLint } from './puzzles/index.ts';
 import { endingKnots } from './stories.ts';
 import type { StoryPlan } from './stories.ts';
 
@@ -188,6 +194,12 @@ type EmitInput = {
    * server meta when given (story.ts always gives it; default none).
    */
   meta?: { source: MetaSource; choices: ReadonlyMap<ChapterId, ChoiceMap> };
+  /**
+   * The puzzle types the worlds were decoded with and their lint halves (default the build's PUZZLE_TYPES and
+   * PUZZLE_LINTS): the server content reads each answer shape from the first and renders the hints through the second
+   * (engine plan §7.1). A test passes a fixture type beside the real ones.
+   */
+  puzzleTypes?: { readonly types: PuzzleTypes; readonly lints: Readonly<Record<string, PuzzleTypeLint<unknown>>> };
 };
 type Built = { ch: ChapterListEntry; compiled: CompiledChapter; graph: ChapterGraph; firstKnot: KnotName; world: WorldPublicBody | null };
 
@@ -404,6 +416,9 @@ export function planEmit(input: EmitInput): ReadonlyMap<string, string> {
     out.set(path, text);
   };
   const endings = endingKnots(input.stories);
+  const { types, lints }: NonNullable<EmitInput['puzzleTypes']> = input.puzzleTypes ?? { types: PUZZLE_TYPES, lints: PUZZLE_LINTS };
+  // A type's lint half renders its server hints; one without renderHints (code, order) keeps them as written.
+  const renderHints: HintRenderer = (p, hints) => lints[p.type]?.renderHints?.(p.params, hints) ?? hints;
   if (OUT.puzzles.startsWith('client/')) {
     throw new Error('invariant: the server puzzle content, which holds solutions and hints, is never routed under client/ (X7)');
   }
@@ -423,9 +438,10 @@ export function planEmit(input: EmitInput): ReadonlyMap<string, string> {
     put(paths.en, pretty(Object.fromEntries(Object.entries(en).filter(([id]) => !hints.has(id as LineId))))); // keys of the en table
     if (b.world !== null) {
       const world: WorldPublic = { ...b.world, version: worldVersion(b.world) };
-      put(paths.world, pretty(world));
+      // Compact (engine plan §5.4): the world ships as emitted; its version hashes the value, never this text.
+      put(paths.world, JSON.stringify(world));
     }
-    const server: ServerPuzzleContent = source === undefined ? { format: 1, chapterId: b.ch.id, puzzles: {} } : toServer(source, en, b.ch.id);
+    const server: ServerPuzzleContent = source === undefined ? { format: 1, chapterId: b.ch.id, puzzles: {} } : toServer(source, en, b.ch.id, renderHints, { types });
     put(`${OUT.puzzles}/${b.ch.id}.json`, pretty(server));
   }
   put(`${OUT.storyGen}/catalog.json`, pretty(catalog(built, input)));

@@ -1,6 +1,7 @@
 // The world shapes of docs/PUZZLES-PLAN.md "World data": the source `story/<ch>/world.json` the narrative-designer
 // writes, and the public world the client loads. Types plus the one glyph list; world/decode.ts is the only decoder.
 // Pure (X4, `arch: pure world modules`): the runtime and the story tool import it alike.
+import type { FlagId } from '../mechanics/contract.ts';
 import type { ParamsOf, PuzzleType } from '../puzzles/rules/index.ts';
 import type {
   BgId,
@@ -126,12 +127,31 @@ export type HintTiers = 0 | 1 | 2 | 3;
 /** The public puzzle: the hint count only. */
 export type PublicPuzzle = PuzzleBody & { readonly hintTiers: HintTiers };
 
+/**
+ * `renamed` (engine plan §5.3): per kind, an id the world no longer has -> the id that replaced it. In a source world
+ * the entries may chain (a -> b, b -> c); `toPublic` resolves each to its final target (a -> c, b -> c), so the load
+ * maps an id with one lookup. A hotspot moves by its own entry only: a room's rename carries none of its hotspots.
+ */
+export type Renames = {
+  readonly items?: Readonly<Record<ItemId, ItemId>>;
+  readonly docs?: Readonly<Record<DocId, DocId>>;
+  readonly rooms?: Readonly<Record<RoomId, RoomId>>;
+  readonly sections?: Readonly<Record<SectionId, SectionId>>;
+  /** Keys and values `<room>.<hotspot>`. */
+  readonly hotspots?: Readonly<Record<HotspotKey, HotspotKey>>;
+  readonly flags?: Readonly<Record<FlagId, FlagId>>;
+  /** Refused by `world/renamed-puzzles` until per-player GM6c1b (R-E4): no load maps a puzzle key yet. */
+  readonly puzzles?: Readonly<Record<PuzzleLocalId, PuzzleLocalId>>;
+};
+
 type World<P> = {
   readonly format: 1;
   readonly items: Readonly<Record<ItemId, Item>>;
   readonly docs: Readonly<Record<DocId, Doc>>;
   readonly puzzles: Readonly<Record<PuzzleLocalId, P>>;
   readonly sections: Readonly<Record<SectionId, Section>>;
+  /** Absent: no id of the world was ever renamed, and the world's value and version are those of a world without it. */
+  readonly renamed?: Renames;
 };
 export type WorldSource = World<SourcePuzzle>;
 /** The public world as `toPublic` returns it; the story tool (LW3) stamps `version` on emit. */

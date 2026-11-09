@@ -11,6 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { expect, test } from 'vitest';
 
 import { RULES_VERSION } from '../../src/explore/reduce.ts';
+import { PUZZLE_TYPES } from '../../src/puzzles/rules/index.ts';
+import type { PuzzleTypeData } from '../../src/puzzles/rules/index.ts';
 import { assetIndex, decodeAssetCatalog, decodeCast, decodeChapterCatalog, decodeChapterMeta, storyOf } from '../../src/story/catalog.ts';
 import type { Cast, ChapterListEntry, StoryId } from '../../src/story/catalog.ts';
 import type { AssetId, AssetIndex, ChapterId, KnotName, LineId, ProductId } from '../../src/story/staging.ts';
@@ -27,6 +29,8 @@ import { GLOBALS_PATH, lintSources } from './lint.ts';
 import type { Finding, LintCode, SourceChapter } from './lint.ts';
 import { choicePoints } from './meta.ts';
 import type { ChoiceMap, MetaSource } from './meta.ts';
+import { PUZZLE_LINTS } from './puzzles/index.ts';
+import type { PuzzleTypeLint } from './puzzles/index.ts';
 import type { StoryPlan } from './stories.ts';
 
 function readRepoJson(path: string): unknown {
@@ -512,16 +516,20 @@ type EmitFixture = {
   choices: Map<ChapterId, ChoiceMap>;
 };
 
+/** What planEmit reads puzzle types and their lint halves from (its default: the build's registries). */
+type EmitPuzzleTypes = NonNullable<Parameters<typeof planEmit>[0]['puzzleTypes']>;
+
 /**
  * Compiles and graphs the two-chapter fixture (both lint-clean) and plans its outputs for `stories`, with `worlds`
- * (default none) as the chapters' decoded world sources and `meta` (default EMIT_META) beside the chapters' choice
- * points, computed as story.ts computes them.
+ * (default none) as the chapters' decoded world sources, `meta` (default EMIT_META) beside the chapters' choice
+ * points, computed as story.ts computes them, and `puzzleTypes` (default the build's registries).
  */
 function emitFixture(
   list: readonly ChapterListEntry[] = LIST,
   stories: readonly StoryPlan[] = [MANOR],
   worlds?: ReadonlyMap<ChapterId, WorldSource>,
   meta: MetaSource = EMIT_META,
+  puzzleTypes?: EmitPuzzleTypes,
 ): EmitFixture {
   const chapters = list.map((ch): SourceChapter => ({ id: ch.id, paid: ch.paid, entry: ch.entry }));
   expect(lintSources({ files: EMIT_SOURCES, chapters, assets: COMMITTED.assets, cast: COMMITTED.cast }), 'lint-clean').toEqual([]);
@@ -543,7 +551,8 @@ function emitFixture(
   const idsOf = (ch: ChapterId): string[] => [...(graphs.get(ch)?.lines ?? []).map((l) => l.id), ...worldTexts(worlds?.get(ch)).map((x) => x.id)];
   const en = new Map(list.map((ch) => [ch.id, Object.fromEntries(idsOf(ch.id).map((id) => [id, `en ${id}`]))]));
   const input = { chapters: list, compiled, graphs, cast: COMMITTED.cast, names: NAMES, en, stories, meta: { source: meta, choices } };
-  return { plan: planEmit(worlds === undefined ? input : { ...input, worlds }), compiled, graphs, choices };
+  const withWorlds = worlds === undefined ? input : { ...input, worlds };
+  return { plan: planEmit(puzzleTypes === undefined ? withWorlds : { ...withWorlds, puzzleTypes }), compiled, graphs, choices };
 }
 
 function planned(plan: ReadonlyMap<string, string>, path: string): string {
@@ -1120,6 +1129,130 @@ test('emit: clues never reach the public world', () => {
   expect(text).not.toContain('"clues"');
   const decoded = decodeWorldPublic(JSON.parse(text));
   expect(decoded.ok && decoded.value.version).toBe(worldVersion(toPublic(source)));
+});
+
+test('story: a rename chain resolves to its final target', () => {
+  // A free and a paid world, each with an item chain (a_old -> b_old -> key), a doc and a hotspot chain: the planned
+  // world carries every entry resolved to its final target, so the load maps an id with one lookup (engine plan §5.3).
+  const renamed = { items: { a_old: 'b_old', b_old: 'key' }, docs: { note: 'letter' }, hotspots: { 'hall.old_key': 'hall.mid_key', 'hall.mid_key': 'hall.key' } };
+  const ends = { items: { a_old: 'key', b_old: 'key' }, docs: { note: 'letter' }, hotspots: { 'hall.old_key': 'hall.key', 'hall.mid_key': 'hall.key' } };
+  const ch1 = decodedWorld({ ...worldSource('ch1', 'cafe'), renamed });
+  const ch2 = decodedWorld({ ...worldSource('ch2', 'archive'), renamed });
+  const { plan } = emitFixture(
+    LIST,
+    [MANOR],
+    new Map([
+      [CH1_ENTRY.id, ch1],
+      [CH2_ENTRY.id, ch2],
+    ]),
+  );
+  for (const [path, source] of [
+    [CH1_WORLD, ch1],
+    [CH2_WORLD, ch2],
+  ] as const) {
+    const world = JSON.parse(planned(plan, path)) as Record<string, unknown>; // a planned world: a JSON object
+    expect(world['renamed'], path).toEqual(ends);
+    expect(world['version'], path).toBe(worldVersion(toPublic(source)));
+  }
+  // The renames enter the version: a rename is a change a save reconciles.
+  expect(worldVersion(toPublic(ch1))).not.toBe(worldVersion(toPublic(decodedWorld(worldSource('ch1', 'cafe')))));
+  // An empty map is no map: the planned text of a world without the key, with no `renamed` key in it.
+  const empty = emitFixture(LIST, [MANOR], new Map([[CH1_ENTRY.id, decodedWorld({ ...worldSource('ch1', 'cafe'), renamed: {} })]])).plan;
+  const none = emitFixture(LIST, [MANOR], new Map([[CH1_ENTRY.id, decodedWorld(worldSource('ch1', 'cafe'))]])).plan;
+  expect(planned(empty, CH1_WORLD)).toBe(planned(none, CH1_WORLD));
+  expect(Object.hasOwn(JSON.parse(planned(empty, CH1_WORLD)) as object, 'renamed')).toBe(false); // a planned world: an object
+});
+
+test('emit: the public world is compact and keeps its version', () => {
+  // Engine plan §5.4: the world ships as emitted, so it is emitted compact; its version hashes the value, never the
+  // text, so it is the version of the value the pretty-printed world carried.
+  const ch1 = decodedWorld(worldSource('ch1', 'cafe'));
+  const ch2 = decodedWorld(worldSource('ch2', 'archive'));
+  const { plan, compiled } = emitFixture(
+    LIST,
+    [MANOR],
+    new Map([
+      [CH1_ENTRY.id, ch1],
+      [CH2_ENTRY.id, ch2],
+    ]),
+  );
+  for (const [path, source] of [
+    [CH1_WORLD, ch1],
+    [CH2_WORLD, ch2],
+  ] as const) {
+    const text = planned(plan, path);
+    expect(text, path).not.toContain('\n');
+    expect(text, path).toBe(JSON.stringify(JSON.parse(text)));
+    expect(JSON.parse(text), path).toEqual({ ...toPublic(source), version: worldVersion(toPublic(source)) });
+  }
+  // Every other output keeps its format: story.json is the compiled JSON verbatim (its bytes are the story version),
+  // the rest two-space JSON ending in a newline.
+  expect(planned(plan, 'client/src/story-gen/free/ch1.story.json')).toBe(compiled.get(CH1_ENTRY.id)?.json);
+  expect(planned(plan, CH2_STORY)).toBe(compiled.get(CH2_ENTRY.id)?.json);
+  const others = [...plan].filter(([path]) => !path.endsWith('world.json') && !path.endsWith('story.json'));
+  expect(others.length).toBeGreaterThan(8);
+  for (const [path, text] of others) {
+    expect(text, path).toBe(`${JSON.stringify(JSON.parse(text), null, 2)}\n`);
+  }
+});
+
+/** A fixture commit type beside the real ones (engine plan §7.1 round 5): its params pass through, its answer is 2 x 0..5. */
+const CHIME: PuzzleTypeData<string, unknown> = Object.freeze({
+  type: 'chime',
+  check: 'commit',
+  goal: 'secret',
+  presentation: 'overlay',
+  wrong: 'posted',
+  commit: 'control',
+  decodeParams: (raw: unknown) => ({ ok: true, value: raw }) as const,
+  answerShape: () => ({ len: 2, max: 5 }),
+  initial: () => [0, 0],
+  startShown: () => null,
+});
+/** Its lint half: one solution, and server hints rendered upper-case at build time. */
+const CHIME_LINT: PuzzleTypeLint<unknown> = {
+  countSolutions: () => 1,
+  renderHints: (_p, hints) => hints.map((h) => ({ ru: h.ru.toUpperCase(), en: h.en.toUpperCase() })),
+};
+
+test("emit: server hints pass through the type's renderHints", () => {
+  // The cafe manor plus a yielded chime with two hints, decoded and planned with the fixture type beside the real ones.
+  const raw = worldSource('ch1', 'cafe');
+  const chime = {
+    type: 'chime',
+    title: { id: 'ch1.chime.t001', ru: 'Колокольчики' },
+    prompt: { id: 'ch1.chime.p001', ru: 'Два звона.' },
+    closeup: null,
+    params: { bells: 2 },
+    maxAttempts: null,
+    giveUp: false,
+    solution: [1, 4],
+    hints: [
+      { id: 'ch1.chime.h001', ru: 'Слушайте левый.' },
+      { id: 'ch1.chime.h002', ru: 'Потом правый.' },
+    ],
+  };
+  raw['puzzles'] = { ...objectAt(raw, 'puzzles'), chime };
+  const types = [...PUZZLE_TYPES, CHIME];
+  const decoded = decodeWorldSource(raw, { types });
+  if (!decoded.ok) {
+    throw new Error(`invariant: the fixture world decodes with its types: ${JSON.stringify(decoded.error)}`);
+  }
+  const lints = { ...PUZZLE_LINTS, chime: CHIME_LINT };
+  const { plan } = emitFixture(LIST, [MANOR], new Map([[CH1_ENTRY.id, decoded.value]]), EMIT_META, { types, lints });
+  type Puzzles = { puzzles: Record<string, { hints: unknown }> };
+  const server = JSON.parse(planned(plan, 'server/content/puzzles/ch1.json')) as Puzzles; // the server puzzle content
+  expect(server.puzzles['chime']?.hints).toEqual([
+    { ru: 'СЛУШАЙТЕ ЛЕВЫЙ.', en: 'EN CH1.CHIME.H001' },
+    { ru: 'ПОТОМ ПРАВЫЙ.', en: 'EN CH1.CHIME.H002' },
+  ]);
+  // A type without renderHints (code) keeps its hints: the drawer and the cabinet are byte for byte the entries of
+  // the same world without the chime, planned under the default registry.
+  const plain = JSON.parse(planned(emitFixture(LIST, [MANOR], new Map([[CH1_ENTRY.id, decodedWorld(worldSource('ch1', 'cafe'))]])).plan, 'server/content/puzzles/ch1.json')) as Puzzles; // as above
+  for (const pid of ['drawer', 'cabinet']) {
+    expect(JSON.stringify(server.puzzles[pid]), pid).toBe(JSON.stringify(plain.puzzles[pid]));
+  }
+  expect(Object.keys(server.puzzles)).toEqual(['drawer', 'cabinet', 'chime']);
 });
 
 test('emit: server puzzle content matches the server fixture shape', () => {
