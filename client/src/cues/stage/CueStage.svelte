@@ -42,6 +42,13 @@
     box-sizing: border-box;
   }
 
+  /* A plain ghost (a box- or stage-site drawing): a soft light, so a preset that moves only transform and opacity shows
+     on any box from the 56 px edge landing to the whole stage (RULINGS 203; CLAIM defaults, judged on device). Static:
+     a reduced preset fades it like any ghost. */
+  .cue-stage :global(.cue-ghost.cue-plain) {
+    background: radial-gradient(closest-side, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0.2) 60%, rgba(255, 255, 255, 0));
+  }
+
   /* A hit area's painted ghost: the reveal outline's stroke and a soft glow (§8.5 "Hit areas", CLAIM defaults). */
   .cue-stage :global(.cue-ghost.cue-hit) {
     outline: 2px solid rgba(255, 255, 255, 0.9);

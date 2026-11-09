@@ -145,7 +145,9 @@ export function resolveTarget(t: CueTarget, e: CueEvent, layer: Element): Resolv
 }
 
 /** A ghost on the stage layer at `box`: a clone of `of` (ids and `data-cue*` stripped over its subtree, so no resolver
- *  and no root scan ever finds one), or a plain box; inert and passing taps either way. */
+ *  and no root scan ever finds one), or a plain box; inert and passing taps either way. A plain box (`cue-plain`) and a
+ *  hit area's clone (`cue-hit`) paint nothing of their own while a preset moves only transform and opacity, so each
+ *  carries the class CueStage paints (RULINGS 203). */
 export function ghostOf(box: Box, of: Element | null, layer: Element): HTMLElement {
   // A clone of an element is an element; an SVG one has the same `style` and attributes.
   const g = (of?.cloneNode(true) ?? document.createElement('div')) as HTMLElement;
@@ -157,6 +159,11 @@ export function ghostOf(box: Box, of: Element | null, layer: Element): HTMLEleme
     }
   }
   g.classList.add('cue-ghost');
+  if (of === null) {
+    g.classList.add('cue-plain');
+  } else if (of.closest('[data-cue-hit]') !== null) {
+    g.classList.add('cue-hit');
+  }
   g.setAttribute('inert', '');
   // Inline, so no rule the clone keeps from its original moves it (a width and a height leave `right` and `bottom` unused).
   g.style.cssText += `;position:absolute;left:${box.x}px;top:${box.y}px;width:${box.w}px;height:${box.h}px;margin:0;pointer-events:none`;

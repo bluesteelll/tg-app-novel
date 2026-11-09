@@ -25,6 +25,7 @@ import { cueRoot, ROOT_TRIGGERS } from '../root.ts';
 import { CUE_TRIGGERS } from '../types.ts';
 import type { Cue, CueEvent } from '../types.ts';
 import { LAYER_MOTIONS } from '../visible.ts';
+import stageSource from './CueStage.svelte?raw';
 import { CueStage, ghostOf, landing, resolveTarget } from './index.ts';
 import type { CueTarget } from './motions.ts';
 import { WAIT_DELAY_MS } from './player.ts';
@@ -514,6 +515,90 @@ test("stage: no target resolves inside a root's ghost", async () => {
   // ghostOf strips a plain clone the same way.
   const g = ghostOf(HOTSPOT, element('button', { 'data-cue': 'hotspot', 'data-cue-hit': '', id: 'h' }), s.layer);
   expect([g.id, g.getAttribute('data-cue'), g.hasAttribute('data-cue-hit'), g.hasAttribute('inert'), g.style.pointerEvents]).toEqual(['', null, false, true, 'none']);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The ghost style (RULINGS 203: every ghost a cue row reaches paints something its preset's keyframes make visible)
+
+/** The properties that paint a box with no content of its own. */
+const PAINT_PROPS = ['background', 'background-image', 'background-color', 'box-shadow', 'outline', 'border'];
+
+/** Every colour's alpha in a CSS value (`rgb()` / `rgba()` and hex); `none` and `transparent` name none. */
+function alphasOf(value: string): number[] {
+  return [...value.toLowerCase().matchAll(/rgba?\(([^)]*)\)|#([0-9a-f]{3,8})\b/g)].map(([, fn, hex = '']) => {
+    if (fn !== undefined) {
+      const a = fn.split(/[\s,/]+/).filter((x) => x !== '')[3];
+      return a === undefined ? 1 : parseFloat(a) / (a.endsWith('%') ? 100 : 1);
+    }
+    const a = hex.length === 4 ? hex.slice(3).repeat(2) : hex.length === 8 ? hex.slice(6) : 'ff';
+    return parseInt(a, 16) / 255;
+  });
+}
+
+/** The classes a selector requires of the element it styles (its last compound, `:global(...)` read through); null
+ *  when the compound asks for anything else (a type, an attribute, a state), which no ghost is promised. */
+function subjectOf(c: AST.CSS.ComplexSelector): string[] | null {
+  const out: string[] = [];
+  for (const s of c.children.at(-1)?.selectors ?? []) {
+    const inner = s.type === 'PseudoClassSelector' && s.name === 'global' && s.args?.children.length === 1 ? s.args.children[0] : undefined;
+    const got = s.type === 'ClassSelector' ? [s.name] : inner === undefined ? null : subjectOf(inner);
+    if (got === null) {
+      return null;
+    }
+    out.push(...got);
+  }
+  return out;
+}
+
+test('stage: a plain ghost paints', async () => {
+  const layer = element('div', { 'data-cue-stage': '' }, STAGE);
+  // (i) A plain box (no element to clone) carries the paint class.
+  expect([...ghostOf(EDGE, null, layer).classList]).toEqual(['cue-ghost', 'cue-plain']);
+  // (ii) CueStage's own CSS paints that class: a rule styling `.cue-ghost.cue-plain` declares a paint whose colour shows,
+  // a soft light (peak alpha <= 0.5) with no motion of its own, so a reduced preset fades it like any ghost.
+  const ast = parse(stageSource, { modern: true });
+  const rules = (ast.css?.children ?? []).filter((r): r is AST.CSS.Rule => r.type === 'Rule');
+  const plainRules = rules.filter((r) =>
+    r.prelude.children.some((c) => {
+      const classes = subjectOf(c);
+      return classes !== null && classes.includes('cue-plain') && classes.every((k) => k === 'cue-ghost' || k === 'cue-plain');
+    }),
+  );
+  const decls = plainRules.flatMap((r) => r.block.children.filter((d): d is AST.CSS.Declaration => d.type === 'Declaration'));
+  const paint = decls.filter((d) => PAINT_PROPS.includes(d.property) && alphasOf(d.value).some((a) => a > 0));
+  expect(paint.map((d) => d.property)).not.toEqual([]);
+  expect(Math.max(...paint.flatMap((d) => alphasOf(d.value)))).toBeLessThanOrEqual(0.5);
+  expect(decls.filter((d) => /^(animation|transition)/.test(d.property))).toEqual([]);
+  // The reader is not vacuous: it finds the hit area's paint, and a transparent one is no paint.
+  expect(rules.some((r) => r.prelude.children.some((c) => subjectOf(c)?.join('.') === 'cue-ghost.cue-hit'))).toBe(true);
+  expect(alphasOf('transparent')).toEqual([]);
+  expect(alphasOf('radial-gradient(rgba(255, 255, 255, 0), #fff0)')).toEqual([0, 0]);
+  // (iii) A clone of a hit area, or of an element inside one, is the hit area's painted ghost; a clone of anything else
+  // and a root's ghost (a clone of the painted room) keep their own paint.
+  const hit = element('button', { 'data-cue': 'hotspot', 'data-cue-hit': '' });
+  const label = element('span', {}, HOTSPOT, hit);
+  expect([ghostOf(HOTSPOT, hit, layer), ghostOf(HOTSPOT, label, layer)].map((g) => g.classList.contains('cue-hit'))).toEqual([true, true]);
+  const others = [element('button', { 'data-cue': 'bar-inventory' }), element('div', { 'data-cue-root': '' }, ROOT)];
+  expect(others.map((of) => [...ghostOf(HOTSPOT, of, layer).classList])).toEqual([['cue-ghost'], ['cue-ghost']]);
+  // (iv) Through the real stage: each effect cue of review r1 M1 plays on plain ghosts only (no ribbon, no inventory).
+  document.body.replaceChildren();
+  const s = mounted();
+  const core = (name: string): Cue => ({ kind: 'module', module: 'core' as MechanicId, name, at: null, item: null });
+  const cues: [Cue, Box | null][] = [
+    [core('look'), HOTSPOT],
+    [core('refused'), HOTSPOT],
+    [core('reset'), null],
+    [{ kind: 'move', from: null, to: null, via: null, how: 'walk' }, null],
+    [held(), HOTSPOT],
+    [added('doc', 'letter'), HOTSPOT],
+  ];
+  for (const [cue, box] of cues) {
+    s.bus.emit(event(cue, box));
+    await settle();
+  }
+  expect(s.played()).toEqual(['module:core:look', 'module:core:refused', 'module:core:reset', 'move:walk', 'fact:held:added', 'fact:doc:added']);
+  expect(cueMotions().length).toBeGreaterThanOrEqual(cues.length);
+  expect(cueMotions().filter((r) => !r.el.classList.contains('cue-plain'))).toEqual([]);
 });
 
 test('stage: a wait hold over a panel with a notice plays on the notice', async () => {
