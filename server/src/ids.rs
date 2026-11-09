@@ -68,6 +68,20 @@ impl PuzzleId {
     }
 }
 
+/// A puzzle's storage key: the full id under which it first shipped (per-player §3.8). Every puzzle row
+/// (`puzzle_progress`, `hint_unlocks`) and the hint spend's ledger keys are stored under it, so a rename keeps them.
+/// Its own type, with no conversion from [`PuzzleId`], so a repository call handed a route id does not compile.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PuzzleKey(pub String);
+
+impl PuzzleKey {
+    /// The key `s` spells: the [`PuzzleId`] grammar, the one grammar of both.
+    pub fn parse(s: &str) -> Option<PuzzleKey> {
+        PuzzleId::parse(s).map(|id| PuzzleKey(id.0))
+    }
+}
+
 /// `^ch[1-9][0-9]*$`.
 fn is_chapter_id(s: &str) -> bool {
     let Some(number) = s.strip_prefix("ch") else {

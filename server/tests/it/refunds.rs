@@ -14,7 +14,7 @@ use server::AppState;
 use server::catalog::{GiftRules, ResourceKind};
 use server::clock::FixedClock;
 use server::db::economy::GiftMove;
-use server::ids::{ChargeId, PuzzleId, UserId};
+use server::ids::{ChargeId, PuzzleKey, UserId};
 use server::puzzles::Lang;
 use server::telegram::commands::utc_date;
 use server::telegram::gateway::GatewayError;
@@ -418,7 +418,7 @@ async fn refund_spent_pack_records_debt() {
     {
         return report(&failures);
     }
-    let drawer = PuzzleId("ch1.drawer".to_owned());
+    let drawer = PuzzleKey("ch1.drawer".to_owned());
     for tier in [1, 2] {
         if let Err(e) = st.repo.spend_hint(UserId(ANN), &drawer, tier, 1, T0).await {
             failures.push(format!("spend tier {tier}: expected Ok, got {e}"));

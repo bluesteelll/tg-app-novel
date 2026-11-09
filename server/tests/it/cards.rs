@@ -25,7 +25,7 @@ use ts_rs::TS;
 
 use crate::catalog::{ANN, T0, bearer, own, state_with_users};
 use crate::common;
-use crate::content::{FixtureCopy, state_on};
+use crate::content::{FixtureCopy, renamed_copy, state_on};
 use crate::stats::{code_identifiers, rust_files};
 
 /// A second player.
@@ -790,6 +790,38 @@ async fn card_puzzle_no_hints_condition() {
     report(&failures);
 }
 
+/// A renamed puzzle's solve counts on the card (per-player §3.8): BEN solved the drawer, without a hint, under
+/// `ch1.drawer`; the release that renames it to `ch1.desk` (keyed `ch1.drawer`, and `drawer_no_hints` naming
+/// `ch1.desk`) reads that row through the key and lists `drawer_no_hints` as new.
+#[tokio::test]
+async fn card_counts_a_renamed_puzzle_solved() {
+    let copy = renamed_copy().await;
+    let (started, _db) = state_on(copy.path()).await;
+    let st = match started {
+        Ok(st) => st.with_clock(Arc::new(FixedClock(T0))),
+        Err(e) => panic!("the renamed copy: expected Ok, got {e}"),
+    };
+    st.repo
+        .upsert_user(UserId(BEN), "Ben", None, T0)
+        .await
+        .unwrap();
+    solved(&st, BEN, "ch1.drawer", &[]).await;
+    let failures: Vec<String> = expect_card(
+        "BEN: solved ch1.drawer without a hint, served as ch1.desk",
+        &post_card(&st, Some(BEN), "manor").await,
+        &card(
+            "manor",
+            0,
+            &[],
+            vec![],
+            vec![achievement("drawer_no_hints", T0, true)],
+        ),
+    )
+    .into_iter()
+    .collect();
+    report(&failures);
+}
+
 /// What the current meta does not hold is not shown (M6, ST6): a stored unlock of a retired achievement id, an ending
 /// the index no longer declares (`gone`), and an ending recorded in a chapter the index no longer places it in
 /// (`ashes` in ch1); none of them counts toward an achievement. The live items stay listed.
@@ -1060,8 +1092,9 @@ const SOCIAL_CALLS: [&str; 2] = ["endings_by_story", "unlocks_by_story"];
 /// Achievements grant nothing (M6, principle 1): the repository is named only by `db/achievements.rs`, by the card
 /// route in `api/cards.rs` (which leaves the table's name to `db/`) and by `api/social.rs` for the two grouped reads
 /// alone ([`SOCIAL_CALLS`]: LF2's friend profile and the share's counts, which `api/share.rs` takes from
-/// `api/social.rs`), in `server` and `server-dev` alike. Each allowed file must name each of its words, so a move
-/// cannot pass with an empty scan.
+/// `api/social.rs`), in `server` and `server-dev` alike. The erasure order in `db/mod.rs` (per-player §3.9) names the
+/// table as data only: it reads and grants nothing. Each allowed file must name each of its words, so a move cannot
+/// pass with an empty scan.
 #[test]
 fn achievements_repo_called_only_from_cards_api() {
     let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -1083,6 +1116,7 @@ fn achievements_repo_called_only_from_cards_api() {
             "src/db/achievements.rs" => &ACHIEVEMENTS_REPO_WORDS,
             "src/api/cards.rs" => &CARD_CALLS,
             "src/api/social.rs" => &SOCIAL_CALLS,
+            "src/db/mod.rs" => &["achievement_unlocks"],
             _ => &[],
         };
         for (line, word) in
@@ -1095,9 +1129,13 @@ fn achievements_repo_called_only_from_cards_api() {
             }
         }
     }
-    let presence = std::iter::once(("src/db/achievements.rs", "achievement_unlocks"))
-        .chain(CARD_CALLS.iter().map(|&call| ("src/api/cards.rs", call)))
-        .chain(SOCIAL_CALLS.iter().map(|&call| ("src/api/social.rs", call)));
+    let presence = [
+        ("src/db/achievements.rs", "achievement_unlocks"),
+        ("src/db/mod.rs", "achievement_unlocks"),
+    ]
+    .into_iter()
+    .chain(CARD_CALLS.iter().map(|&call| ("src/api/cards.rs", call)))
+    .chain(SOCIAL_CALLS.iter().map(|&call| ("src/api/social.rs", call)));
     for (file, word) in presence {
         if !seen.iter().any(|(f, w)| f == file && *w == word) {
             failures.push(format!("{file} does not name {word}"));
