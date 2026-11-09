@@ -1215,6 +1215,16 @@ chapter's carry), paid chapters and paid metas absent from `dist/` (PP T1).
 
 ## Demo content outline
 
+Changed by the shots and engine plans (adopted 2026-11-09, RULINGS 158; planned, not built): SH11 restages the manor
+chapters (and ch3) into shots, SH4, SH6 and SH8 stage `story/ch4/main.ink`; GM8d gives ch3 its first world and GM9r
+puts the carried demo item into the manor worlds —
+[shots §9.12 SH11 `shot-content-manor`](plans/shots/09e-lanes-sh11-sh12b.md#912-sh11-shot-content-manor-content--e2e),
+[shots §9.5 SH4 `shot-view`](plans/shots/09c-lanes-sh4-sh5b.md#95-sh4-shot-view-client-runtime),
+[shots §9.7 SH6 `shot-cuts`](plans/shots/09d-lanes-sh6-sh10.md#97-sh6-shot-cuts-client-runtime),
+[shots §9.9 SH8 `shot-motion`](plans/shots/09d-lanes-sh6-sh10.md#99-sh8-shot-motion-client-runtime),
+[engine §12 GM8d `mech-type-demos`](plans/engine/12e-lanes-gm7-gm9.md#gm8d-mech-type-demos-new-in-round-4-critique_engine_r3-w2),
+[engine §12 GM9r `mech-carry-runtime`](plans/engine/12e-lanes-gm7-gm9.md#gm9r-mech-carry-runtime).
+
 **Story A `manor`** (cast `ally`, `stranger`, `voice`; lane N1): ch1 free and ch2 paid as in PZ "Demo content
 outline". Changed by this design: ch2's `archive_after` diverts on `pz_cabinet` to one of two ending knots, each with
 `-> END` and declared in `story/stories.json`:

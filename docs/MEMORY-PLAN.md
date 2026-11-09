@@ -103,6 +103,11 @@ Textures + their CPU copies are 64 of 138.6 MiB (46 %); each MiB of texture save
 - `LIMITS.knotSet`, `LIMITS.roomSet` (`budget.ts:112-113`) and `STEADY_CAP_BYTES` (`registry.ts:9`) are three literals
   for one invariant.
 - The next chapter's first knot (`next:*`) is outside the knot-set gate, bounded at runtime only (carry.md:82).
+
+  Changed by the shots plan (adopted 2026-11-09, RULINGS 158; planned, not built): under the step windows a refused
+  `need` item or `warm` fetch may evict a `next:*` holder and no gate counts it (RULINGS 138 (a)); its loss gives the
+  half-tier entry at the handover —
+  [shots §5.8 Preload policy for cuts](plans/shots/05b-preload-memory-download.md#58-preload-policy-for-cuts-sh5a-windows-sh5b-entry).
 - Exploration rooms sit at 29.3 MiB with two neighbours (PZ X13 :614-618).
 
 ## 3. Context and constraints
@@ -284,6 +289,12 @@ The manifest entry keeps `w`, `h`, `decodedBytes = w x h x 4` of the **stored** 
 
 ### 4.C Half tier on Android LOW phones
 
+Changed by the shots plan (adopted 2026-11-09, RULINGS 158; planned, not built): SH5b adds the half-tier entry at a
+chapter handover; its entry preview draws half files on AVERAGE / HIGH phones until the upgrade lands, a bounded
+exception to I6 (QO11, RULINGS 143) —
+[shots §5.8 Preload policy for cuts](plans/shots/05b-preload-memory-download.md#58-preload-policy-for-cuts-sh5a-windows-sh5b-entry),
+[shots §13 Questions for the orchestrator](plans/shots/13-orchestrator-questions.md#13-questions-for-the-orchestrator-engineering-each-with-a-recommendation).
+
 **What.** Every bg, cg and prop, and every char on the canonical 768 x 1536 canvas, gets a second file pair at exactly
 0.5 x per side of its **stored** file (bg 540 x 1024; a 466 x 1394 trimmed placeholder sprite gives 233 x 697). A char
 on a smaller canvas, which DIMS allows (`budget.ts:165`, `exact: false`), gets no half and loads its full file on either
@@ -426,6 +437,13 @@ The tier is chosen at mount, like the AVIF/WebP variant, by perf class **and sta
   - that the test device's UA carries the class and that `screen.*` reports CSS px there.
 
 ### 4.D Layered sprites (body + trimmed face parts) - deferred
+
+Changed by the shots plan (adopted 2026-11-09, RULINGS 158; planned, not built): staging moves to drawn shots with no
+character sprites (owner Q56); SH12a takes `show:` / `hide:` out and SH12b the sprite residue —
+[shots §2 The shot model](plans/shots/02-shot-model.md#2-the-shot-model),
+[shots §0 Decision table](plans/shots/00-decision-table.md#0-decision-table),
+[shots §9.13 SH12a `sprites-out`](plans/shots/09e-lanes-sh11-sh12b.md#913-sh12a-sprites-out-client-the-kinds-atomic-rev-4-split-w6),
+[shots §9.13b SH12b `sprites-residue`](plans/shots/09e-lanes-sh11-sh12b.md#913b-sh12b-sprites-residue-client-rev-4-split).
 
 - **What it would change.** Catalog `chars.<c>` gains a body (or bodies per pose) and part groups; each expression
   maps to a part set (Ren'Py attributes / Naninovel composition map, MR3); `show:<char> <expr>` is unchanged (principle
@@ -659,6 +677,11 @@ export const LIMITS: Limits = { /* ... */ knotSet: STEADY_CAP_BYTES, roomSet: ST
 
 ## 7. Caps and the knot-set gate after each lever
 
+Changed by the shots and engine plans (adopted 2026-11-09, RULINGS 158; planned, not built): SH3b adds the gates
+`budget/step-window` and `budget/entry-step`; GM4g adds the room-set's transition-pair term —
+[shots §9.4 SH3b `shot-budget`](plans/shots/09b-lanes-sh3a-sh3b.md#94-sh3b-shot-budget-client-budget),
+[engine §12 GM4g `mech-room-set-pair`](plans/engine/12d-lanes-gm4-gm5.md#gm4g-mech-room-set-pair-new).
+
 | | Registry (runtime invariant) | `budget/knot-set` (static gate) | Equivalence (I2) |
 |---|---|---|---|
 | Today | counts `entry.decodedBytes` of live + in-flight records; 32 steady / 48 hard | sum of `decodedBytes` (own) + `carriedBound` | equal per knot |
@@ -675,6 +698,12 @@ Steady total after the levers (PP model at the gated limits, MiB; 3.1 = covers 2
   busiest knot's bound, 4.C). The cap-bounded worst case stays 32, which gives 97.6.
 
 ## 8. Critical flows
+
+Changed by the shots and engine plans (adopted 2026-11-09, RULINGS 158; planned, not built): shot content preloads
+through step windows (`need`, `warm`, `hope`, `eventRoom`; the event's own room is evicted last), and a room's
+`state:<room>` holders follow `room:*`'s keep set —
+[shots §5.8 Preload policy for cuts](plans/shots/05b-preload-memory-download.md#58-preload-policy-for-cuts-sh5a-windows-sh5b-entry),
+[engine §6.4 `visual`: state-derived room pictures](plans/engine/06-mechanics-as-modules.md#64-visual-state-derived-room-pictures-gm3b-replaces-lfu3s-b-001-fix).
 
 **A1 load (M2).**
 1. The registry admits `need = decodedBytes + ref.bytes`.
@@ -828,6 +857,13 @@ A dead-bound hold entry keeps a reference to the ended handle's JS object until 
 and Blob were already freed when the record ended, so it holds no counted bytes.
 
 ## 11. Lane cut sketches
+
+Changed by the engine and shots plans (adopted 2026-11-09, RULINGS 158; planned, not built): a preload priority (a
+refusal signal or a priority-ordered eviction in `scene/{registry,preload}.ts`) is carried as a MEMORY-PLAN lane in
+the `scene/*` tail after SH8, launched only if a budget-Android e2e shows the case (RULINGS 152 Q14 (b); engine §15
+item 14) —
+[engine §15 Questions for the orchestrator](plans/engine/15-orchestrator-questions.md#15-questions-for-the-orchestrator-engineering-each-with-a-recommendation),
+[engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts).
 
 Each fits one subsystem, <= ~15 files, red-first per commit, budgets in the build gate. Line numbers are re-located
 at cut time.
@@ -1348,6 +1384,11 @@ Ownership rules for every lane below (critique W3):
   - e2e with a server-dev built in the lane.
 
 ## 12. Budgets and validation
+
+Changed by the engine plan (adopted 2026-11-09, RULINGS 158; planned, not built): the three plans' bytes against the
+entry, engine-closure, first-line and all-JS rows are kept in one ledger per row, re-based on main `3c62a86` (RULINGS
+143 QO10, 158) —
+[engine §11.1 The shared ledgers](plans/engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13).
 
 - JS: M1-M3 add < 1.5 KB brotli to the engine chunk (geometry + revive + the revive flow and the identity checks +
   `halfFits`; an estimate, which the build's per-chunk row reports). No new dependency. No change to the

@@ -286,6 +286,11 @@ with their texts inline in ru and en.**
   | `{ "chapter": <ChapterId> }` | that chapter was completed (SP F12: `chapter_completed`, or an ending in it) | stat rows |
   | `{ "puzzle": <PuzzleId> [, "hints": 0] }` | the puzzle is solved; with `hints: 0`, no hint tier of it was unlocked | `puzzle_progress.solved_at`, `hint_unlocks` |
   | `{ "all": [c1 … c4] }` | 2–4 conditions of the kinds above (no nested `all`) all hold | — |
+
+  The `{ "puzzle": <PuzzleId> }` row above: changed by the per-player plan (adopted 2026-11-09, RULINGS 158; planned,
+  not built): the condition keeps the route id; the achievements read (`card_puzzles`) translates the meta index's ids
+  to storage keys and maps the rows back (GM6k) —
+  [per-player §3.8 I2: stable storage keys](plans/per-player/03-server-half.md#38-i2-stable-storage-keys-lanes-gm6k-gm6c1b).
 - **Why.** These are the owner's examples (all endings found, a puzzle without hints, a specific choice) plus the
   facts already recorded. Puzzle facts come from the server's own tables, so the "without hints" achievement is not
   even client-reported. `all` with no nesting keeps evaluation linear and the lint finite; no `any`/`not` until a
@@ -305,6 +310,10 @@ with their texts inline in ru and en.**
     `5a33183`, RULINGS 77; cut D5, Q9): the insert takes the met **and visible** achievements (`meta::visible` with the
     owned set read in this request), so `new: true` only ever comes in a response that shows the item; a refunded
     player's met paid item is not stored until it is visible again.
+
+    Changed by the per-player plan (adopted 2026-11-09, RULINGS 158; planned, not built): the puzzle facts are read by
+    storage key, which the achievements read (`card_puzzles`) translates from the meta index's route ids (GM6k) —
+    [per-player §3.8 I2: stable storage keys](plans/per-player/03-server-half.md#38-i2-stable-storage-keys-lanes-gm6k-gm6c1b).
   - An unlock stays once stored: a later edit of the condition or a refund does not remove it (it can be hidden, M7).
     An achievement id absent from the current meta is not shown (retired).
   - A friend's view (M13) reads that friend's **persisted** unlocks only; it never evaluates for someone else.
@@ -644,6 +653,11 @@ Gifts and referrals have their own caps (M22, M23). Each limit's test is in the 
 - **What.**
   - `hint_unlocks (user_id, puzzle_id, tier 1–3, unlocked_at)`, PK (user, puzzle, tier), created in L6c's `0002` (L6c
     re-cut); it replaces the `hint:<puzzle>:<tier>` entitlements of PZ X6.
+
+    Changed by the per-player plan (adopted 2026-11-09, RULINGS 158; planned, not built): `puzzle_id` holds the
+    puzzle's stable storage key (key = id for today's rows), every repository call (`spend_hint` included) takes the
+    key, and the debit key is `hint:<user>:<key>:<tier>` (GM6k) —
+    [per-player §3.8 I2: stable storage keys](plans/per-player/03-server-half.md#38-i2-stable-storage-keys-lanes-gm6k-gm6c1b).
   - `GET /api/puzzles/{puzzleId}?lang` (L6c) returns `hints: [{ tier, unlocked, text | null }]` (`text` only when
     unlocked).
   - `POST /api/puzzles/{puzzleId}/hints/{tier}?lang` (LE1), after the edge checks (puzzle known; tier within its
@@ -1227,6 +1241,11 @@ CREATE TABLE hint_unlocks (                     -- META-PLAN M21: replaces the h
 );
 -- user_id leads the PK: the FK is indexed.
 ```
+
+Changed by the per-player plan (adopted 2026-11-09, RULINGS 158; planned, not built): `hint_unlocks.puzzle_id` holds
+the puzzle's stable storage key (key = id for every existing row, so no migration; GM6k) —
+[per-player §3.8 I2: stable storage keys](plans/per-player/03-server-half.md#38-i2-stable-storage-keys-lanes-gm6k-gm6c1b),
+[per-player §3.10 Migrations](plans/per-player/03-server-half.md#310-migrations).
 
 `server/migrations/0003_stats.sql` (LS3, re-cut) — two constraints change, one is new:
 
@@ -1850,6 +1869,10 @@ Additions to PP's section.
 | Server logs (user ids on errors) | the host | operations, security | legitimate interest / 6(1)(f) | admins | the host's rotation (MV18) |
 | Shared messages | Telegram (sent by the player from their own account) | the player's own disclosure | — (the player's act; Telegram's policy) | the chat | Telegram |
 
+The "Puzzle progress, hint unlocks" row above: changed by the per-player plan (adopted 2026-11-09, RULINGS 158;
+planned, not built): the player's drawn values (`puzzle_values`) join this inventory beside it, and GM6s1 writes that
+row — [per-player §3.9 R13: erasure](plans/per-player/03-server-half.md#39-r13-erasure).
+
 Not stored: `last_name`, `username`, `photo_url`, `is_premium`, `allows_write_to_pm`, `chat_instance`, `chat_type`, the
 phone, contacts, IP addresses in tables. What friends see is M13; what a share holds is M14; what the invite link
 reveals (revision 1, C1): nothing about the inviter — its holder may only ask, the inviter sees the asker's first name
@@ -1866,6 +1889,10 @@ without a `charge_id`: delete; own rows with a `charge_id` stay with their payme
 `entitlements`; then, because `payments` and `orders` are kept for accounting, the `users` row is anonymised
 (`first_name = ''`, `language_code = NULL`) instead of deleted. Telegram §4.2(a) asks for deletion on request: until the
 command exists, the D2 runbook `privacy-ops` describes the same order as a manual procedure.
+
+Changed by the per-player plan (adopted 2026-11-09, RULINGS 158; planned, not built): the order becomes data
+(`ERASURE_ORDER`, one step per table, children first) with `puzzle_values` after `hint_unlocks` and `users` the root
+step, last (anonymised) — [per-player §3.9 R13: erasure](plans/per-player/03-server-half.md#39-r13-erasure).
 
 ---
 
@@ -1992,6 +2019,11 @@ follows LRF in the server slot.
 | Stats batch with choices | ≤ 16 KB body | 32 × ≈ 160 B = 5.1 KB | SP's limit |
 | `server/content/meta.json` | ≤ 256 KB raw (a startup check) | ≈ 40 B per option: ≈ 3 KB for the demo, ≈ 60 KB for 10 chapters × 150 options; texts ≤ 36 KB per story | `startup_fails_when_meta_too_large` (LM2) |
 | Server statements | card ≤ 5; profile ≤ 7 (as merged, LF2 `d0c7870`, RULINGS 79: ≤ 8, M13); spend ≤ 6 (1 tx); gift ≤ 9 (1 tx) + 1 handle read; an invite request ≤ 6 (1 tx); the stats POST + 1 per batch (the referral probe with its evidence, revision 1 W5) + 1 only over the choice budget (first picks, revision 1 W2); pre-checkout 2 (was 3) | at the Q21 p99 RTT of 160 ms: the card ≤ 0.8 s, a spend ≤ 1 s, the stats POST ≤ 0.8 s worst case (5 statements) | the lane tests |
+
+The "JS before the first line" row above: changed by the engine plan (adopted 2026-11-09, RULINGS 158; planned, not
+built): the three plans' bytes against this row and the entry, meta-controller and all-JS rows are kept in one ledger
+per row, re-based on main `3c62a86` (RULINGS 143 QO10, 158) —
+[engine §11.1 The shared ledgers](plans/engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13).
 
 **Vacuous-green guards.** The meta-ui row is PENDING, never PASS, until `app/meta.ts` exists; `scan-dist`'s meta set
 fails when `story/meta.json` is missing or has zero texts of ≥ 12 code points while any story declares an ending

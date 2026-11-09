@@ -229,6 +229,12 @@ research is newer and verified (brief), so it wins, and the deviation is recorde
   - The caps make principle 4 a runtime invariant. 32 / 48 MiB come from the steady total at the gated limits
     ([Steady total](#scene-controller-and-asset-registry): 135.5 MiB = 142.1 MB < 150 MB, CPU bitmaps counted).
   - Arithmetic: 1080×2048×4 = 8.4 MiB per background; ≤ 768×1536×4 = 4.5 MiB per sprite.
+
+    Changed by the shots plan (adopted 2026-11-09, RULINGS 158; planned, not built): character sprites leave the scene
+    (SH12a, SH12b); a shot's memory is counted in the shots plan's ledger —
+    [shots §5.1 Shot view](plans/shots/05a-runtime.md#51-shot-view-sh4-clientsrcsceneshot-viewts-pure),
+    [shots §5.9 Memory ledger and arithmetic](plans/shots/05b-preload-memory-download.md#59-memory-ledger-and-arithmetic-gate-counts--decoded--the-larger-kept-file-budgetts806-808),
+    [shots §9.13 SH12a `sprites-out`](plans/shots/09e-lanes-sh11-sh12b.md#913-sh12a-sprites-out-client-the-kinds-atomic-rev-4-split-w6).
 - **Alternatives.** A plain refcount (double-release bugs); an LRU cache (no deterministic release point); letting a
   visible load exceed the hard cap (unbounded memory on an un-gated path).
 - **Trade-off.** Preload can be refused on art-heavy knots; the budget gate catches that statically, carried stage
@@ -1305,6 +1311,11 @@ Consequences:
 
 ### Save format and resume
 
+Changed by the engine plan (adopted 2026-11-09, RULINGS 158; planned, not built): the save body becomes format 2
+(GM2a; `decodeSave` decodes an older format and upgrades it), with `chapterStart.items` for carried items (GM9r) —
+[engine §5.2 Save format 2 (lane GM2a)](plans/engine/05-world-data-and-save-format.md#52-save-format-2-lane-gm2a),
+[engine §6.6 `carry`: items across chapters](plans/engine/06-mechanics-as-modules.md#66-carry-items-across-chapters-required-allowed-gm9p-proof-gm9r-runtime-o6--r9).
+
 `SaveBodyV1` is defined above. Algorithm (`story/resume.ts`), actor: client:
 
 1. **Load the chapter.** Free: static. Paid: `GET /api/chapters/{id}`, where `403` → paywall screen (the save stays).
@@ -2245,6 +2256,12 @@ unreachable at startup" down are the PostgreSQL failure model; the test names ar
 
 ## Scene controller and asset registry
 
+Changed by the shots plan (adopted 2026-11-09, RULINGS 158; planned, not built): the shot view adds a shot root with
+its own layers; `chars` stays a legacy layer until SH12a takes the sprite kinds out —
+[shots §5.1 Shot view](plans/shots/05a-runtime.md#51-shot-view-sh4-clientsrcsceneshot-viewts-pure),
+[shots §5.9 Memory ledger and arithmetic](plans/shots/05b-preload-memory-download.md#59-memory-ledger-and-arithmetic-gate-counts--decoded--the-larger-kept-file-budgetts806-808),
+[shots §9.13 SH12a `sprites-out`](plans/shots/09e-lanes-sh11-sh12b.md#913-sh12a-sprites-out-client-the-kinds-atomic-rev-4-split-w6).
+
 **Layers.** One Pixi `Application` (`scene/controller.ts`):
 - `bg` (≤ 2 sprites during a crossfade);
 - `chars` (one container per character, ≤ 2 sprites during an expression swap);
@@ -2518,6 +2535,11 @@ All budgets are enforced by `client/scripts/budget.ts` inside `npm run build` un
 | JS heap after ch2 start | ≤ 48 MB (CDP `Performance.getMetrics` `JSHeapUsedSize`) | | e2e `heap under budget` |
 | Time to first line | ≤ 6 s from navigation (tap issued at once), CPU 4× (`Emulation.setCPUThrottlingRate`), 1.6 Mbps down / 150 ms RTT (`Network.emulateNetworkConditions`), on `dist-e2e` | about 0.4 MB at 200 KB/s ≈ 2 s + parse + auth | e2e `time to first line under throttling` |
 | Render resolution | `min(DPR, 2)`, LOW → 1 | principle 4 | `layout.test.ts` |
+
+The "JS before the first line" row above: changed by the engine plan (adopted 2026-11-09, RULINGS 158; planned, not
+built): the three plans' bytes against this row and the entry, engine-closure and all-JS rows are kept in one ledger
+per row, re-based on main `3c62a86` (RULINGS 143 QO10, 158) —
+[engine §11.1 The shared ledgers](plans/engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13).
 
 **Red once:**
 - `budget.test.ts` feeds synthetic inputs and expects FAIL rows: 300 KB entry, 4096 px image, WAV without
@@ -2918,6 +2940,11 @@ are in):
 
 ### Dependency order (RULINGS 8: no wave barriers; changed by PUZZLES-PLAN)
 
+Changed by the adopted plans (RULINGS 158): the engine, per-player and shots plans' lanes enter the table below as one
+block row of planned lanes (adopted 2026-11-09, RULINGS 158; planned, not built). No per-lane order is copied here:
+their one order is [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts). GM1a
+and GM6k launched from the frozen designs before this adoption merged (RULINGS 160).
+
 A lane starts as soon as every lane in its "Gate to start" is merged and a slot is free. The slots are one client
 slot and one server slot, or two client / doc / narrative lanes with disjoint locks once the server chain has ended;
 never more than 2 lanes. "Re-cut" marks a lane whose scope this revision changes (its entry below says how).
@@ -3081,6 +3108,7 @@ being designed and get rows when adopted.
 | D2 docs-final | doc | merged `b766a16` | L15. Changed by META-PLAN: LMI, L9; revision 1: LPO. Changed by MEMORY-PLAN: M2. Changed by RULINGS 96: LPH (it closes L9's carried payment gaps before D2) | PUZZLES-PLAN, STORIES-PLAN; META-PLAN: the meta rows and runbooks; MEMORY-PLAN: gate + M2, the M1 / M2 map rows, two authoring-guide rules; RULINGS 96: gate + LPH |
 | **LRF auto-refund** | server | merged `a93fe54` (new, RULINGS 126, added 2026-11-03) | LPH (the server chain; LPH's residual closure (B) is one of its items), D2 (its item (b) is the restore gap D2 found, RULINGS 125) | new (owner Q9, RULINGS 120; launched in RULINGS 126) |
 | **M3s memory-half-paid** | server | to go (new, MEMORY-PLAN) | M3c, L9 (the end of the server chain), D2 (the docs chain D1 → D2 → M3s). Changed by RULINGS 126: LRF (the server slot takes the money lane first; M3s's cut follows MD1's order in `design-animation`) | new; RULINGS 126: gate + LRF |
+| **The three plans' lanes** (engine GM1a-GM9r: 29 + GM5q if P2-b demands it; per-player GM6a-GM6d2: 12; shots SH1-SH12b: 16) | client / server | planned (adopted 2026-11-09, RULINGS 158) | the one order: [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts) (GM1a and GM6k launched first, from the frozen designs, before this adoption merged: RULINGS 160) | new |
 
 There are 38 lanes: 12 merged, 2 running, 24 to go (changed by RULINGS 22, 23; it read "10 merged, 1 running, 1
 paused, 26 to go"); 6 are new from PUZZLES-PLAN, 3 (LDB0, LDB1, LDB2) from RULINGS 14/17 and 5 (LS1–LS4, N2) from

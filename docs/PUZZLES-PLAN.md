@@ -211,6 +211,12 @@ to end, locally against the mock Telegram environment:
 - **Trade-off.** These modules must stay DOM-free and fetch-free (arch rule `arch: pure world modules`).
 
 **X5. Solutions are checked on the server. The client gets presentation parameters only.**
+Changed by the per-player plan (adopted 2026-11-09, RULINGS 158; planned, not built): a per-player puzzle's answer is
+drawn for each player by the server inside a domain the world marks and the build lints (O1); a per-player puzzle's
+own values reach its player before solving (O4, accepted, RULINGS 123) —
+[per-player §3.2 The domain and the draw](plans/per-player/03-server-half.md#32-the-domain-and-the-draw),
+[per-player §4 O1: the mark and the lints](plans/per-player/04-mark-and-lints.md#4-o1-the-mark-and-the-lints-synthesis-46),
+[per-player §3.7 O3 and O4](plans/per-player/03-server-half.md#37-o3-and-o4).
 - **What:**
   - `POST /api/puzzles/{puzzleId}/attempts { answer: number[] }` → `{ correct, solved }`.
   - Every answer is an array of small integers: code digits, or piece indices for `order`. So the server compares
@@ -265,6 +271,12 @@ to end, locally against the mock Telegram environment:
     indexed statement, three instead of two; still within K18's 2 s DB timeout.
 
 **X7. Hint text and solutions are server-only build output.** (Changed by META-PLAN: kept; a tier's text is served once a `hint_unlocks` row exists, META-PLAN M21.)
+Changed by the per-player plan (adopted 2026-11-09, RULINGS 158; planned, not built): a per-player puzzle's clue and
+hint texts carry `$code(…)` placeholders rendered with the player's own values, and its tier-3 hint shows the player's
+code (O3) —
+[per-player §5.1 Placeholder grammar and the renderer](plans/per-player/05-client-half.md#51-placeholder-grammar-and-the-renderer),
+[per-player §5.3 Clue surfaces and TRUTH](plans/per-player/05-client-half.md#53-clue-surfaces-and-truth),
+[per-player §3.7 O3 and O4](plans/per-player/03-server-half.md#37-o3-and-o4).
 - **What:**
   - The story tool splits `world.json`:
     - **public part** (no `solution`, no `hints`; `hintTiers` only) → `client/src/story-gen/free/<ch>.world.json`
@@ -288,6 +300,12 @@ to end, locally against the mock Telegram environment:
   types.
 
 **X8. Failure, retry and abandonment.**
+Changed by the per-player and engine plans (adopted 2026-11-09, RULINGS 158; planned, not built): for a per-player
+puzzle the server counts the attempt cap, a 200 with `spent: true` ends the run and a restart re-draws (O2), while
+"the server does not enforce `maxAttempts`" stays true for static puzzles; X8's overlay close applies to overlay
+sessions, and a view session closes when the player leaves its room —
+[per-player §3.6 O2: the re-draw](plans/per-player/03-server-half.md#36-o2-the-re-draw),
+[engine §7.5 Devices: lifecycle, attempts, working state](plans/engine/07-puzzle-types.md#75-devices-lifecycle-attempts-working-state-m6-m7-w2-round-3-w1-w2-m9-m10-gm8i-module-gm8h-host).
 - **Exploration puzzles** (attached to a lock):
   - Closing the panel (BackButton) records no outcome; the player can return any time (RE/SH: unlimited tries)
     [P1 §3]. The mechanism: a tap on a lock whose slots are all filled and whose puzzle has no outcome reopens the
@@ -316,6 +334,10 @@ to end, locally against the mock Telegram environment:
 
 **X9. Saves: a save restores the start of an open puzzle; world state lives in the save body; reconcile, never
 throw.**
+Changed by the engine plan (adopted 2026-11-09, RULINGS 158; planned, not built): the save body becomes format 2
+(GM2a), and a story update's renames reach the saved world through `renamed` (GM2b) —
+[engine §5.2 Save format 2 (lane GM2a)](plans/engine/05-world-data-and-save-format.md#52-save-format-2-lane-gm2a),
+[engine §5.3 `renamed`, the client half (lane GM2b)](plans/engine/05-world-data-and-save-format.md#53-renamed-the-client-half-lane-gm2b).
 - **What:**
   - `SaveBodyV1` gains `world: WorldState`, `worldVersion` and `at.yield`. L13 has not started, so the codec is born
     with them and there is no format bump.
@@ -562,6 +584,11 @@ throw.**
 - **Trade-off.** Rects only (polygons Later). Overlapping rects are a lint warning (`world/hotspot-overlap`).
 
 **X11. Props: a new asset kind `prop/<id>`, drawn in the background's coordinate space.**
+Changed by the engine and shots plans (adopted 2026-11-09, RULINGS 158; planned, not built): a state image is a prop
+variant drawn at a stable anchor (`visual`), and props, decor and device parts are anchors in plate px inside `world`
+(S25) —
+[engine §6.4 `visual`: state-derived room pictures](plans/engine/06-mechanics-as-modules.md#64-visual-state-derived-room-pictures-gm3b-replaces-lfu3s-b-001-fix),
+[shots §0 Decision table](plans/shots/00-decision-table.md#0-decision-table).
 - **What:**
   - **Asset.** ≤ 512×512 px, so ≤ 1 MiB decoded; AVIF ≤ 60 KB.
   - **Use.** A `take` or `object` hotspot may name a prop. It is shown at the hotspot rect until taken. Taken items
@@ -576,6 +603,9 @@ throw.**
 - **Trade-off.** One more catalog namespace (L5, `catalog.ts`). At most 8 props per room (lint).
 
 **X12. Navigation: exits are hotspots; exits are symmetric; BackButton walks the room path.**
+Changed by the engine plan (adopted 2026-11-09, RULINGS 158; planned, not built): with views, a zoom-in pushes the
+room on the path, a zoom-out truncates it, and Back leaves a view (O5) —
+[engine §6.3 `view`: full-screen zoom views](plans/engine/06-mechanics-as-modules.md#63-view-full-screen-zoom-views-gm4-o5).
 - **What:**
   - **Exits.** Doors are `exit` hotspots, as the owner asked [spec 3b]. Every room→room exit has a reverse exit
     (`world/one-way-exit`), so there is no one-way door inside a section [P4 rec. 5]. Every room→room exit leads to
@@ -612,6 +642,12 @@ throw.**
 
 **X13. Room preload: neighbours decoded in exit order within the steady cap. The door fade covers an on-demand
 load.**
+Changed by the engine and shots plans (adopted 2026-11-09, RULINGS 158; planned, not built): a room's `state:<room>`
+holders follow `room:*`'s keep set; shot content preloads through step windows; SH9 adds a room's shot images to the
+neighbour preload (I-16, one `controller.ts` hunk) —
+[engine §6.4 `visual`: state-derived room pictures](plans/engine/06-mechanics-as-modules.md#64-visual-state-derived-room-pictures-gm3b-replaces-lfu3s-b-001-fix),
+[shots §5.8 Preload policy for cuts](plans/shots/05b-preload-memory-download.md#58-preload-policy-for-cuts-sh5a-windows-sh5b-entry),
+[shots §9.10 SH9 `shot-ambient`](plans/shots/09d-lanes-sh6-sh10.md#910-sh9-shot-ambient-client-runtime-the-mr2-ambient-role).
 - **What:**
   - On entering room R, the controller requests `preload('room:<N>', [bg(N), props(N)])` for each neighbour N in
     exit order. The registry refuses a preload that would pass 32 MiB (K5), so the rest load on the tap behind the
@@ -656,6 +692,10 @@ load.**
   same directory).
 
 **X15. Sections are self-contained; linear puzzles take no items.**
+Changed by the engine plan (adopted 2026-11-09, RULINGS 158; planned, not built): condition atoms enter `sectionKey`
+(lint `world/cross-section-cond`), and `combine`'s inputs and product belong to one section, with X15's rule kept for
+lock slots — [engine §4 Condition grammar](plans/engine/04-condition-grammar.md#4-condition-grammar),
+[engine §6.2 `combine`](plans/engine/06-mechanics-as-modules.md#62-combine-gm5-r11).
 - **What:**
   - An item obtained in section A may not be required (by a slot or a puzzle) in section B (`world/cross-section-item`).
   - A trigger writes only its own section (`world/cross-section-effect`, revision 4). An `{ unlock: key }` effect in
@@ -721,6 +761,9 @@ load.**
   and one over the exits (0 runtime bytes).
 
 **X16. Inventory: chapter-scoped, no slot limit, glyph icons.**
+Changed by the engine plan (adopted 2026-11-09, RULINGS 158; planned, not built): `carry` lets items cross chapters, a
+required item included (O6, R9; GM9p proof, GM9r runtime) —
+[engine §6.6 `carry`: items across chapters](plans/engine/06-mechanics-as-modules.md#66-carry-items-across-chapters-required-allowed-gm9p-proof-gm9r-runtime-o6--r9).
 - **What:**
   - Items and documents live in `WorldState` for the chapter, reset at a chapter change. Cross-chapter consequences
     go through `g_` carry variables, written by ink from the projection.
@@ -732,6 +775,10 @@ load.**
 - **Trade-off.** Placeholder look.
 
 **X17. The two prototype types: `code` and `order`.**
+Changed by the engine plan (adopted 2026-11-09, RULINGS 158; planned, not built): `path`, `grid`, `levers`, `setting`,
+`sequence` and `ritual` join `code` and `order`, each with the run-site split for types —
+[engine §7 Puzzle types](plans/engine/07-puzzle-types.md#7-puzzle-types),
+[engine §7.1 The run-site split for types](plans/engine/07-puzzle-types.md#71-the-run-site-split-for-types-m2).
 - **`code`:**
   - `params: { dials: 2..6 }`, each dial 0–9; the initial state is all zeros.
   - The answer is the digit per dial.
@@ -771,6 +818,11 @@ load.**
 
 ### Identifiers
 
+Changed by the per-player plan (adopted 2026-11-09, RULINGS 158; planned, not built): the server keeps a puzzle's rows
+under a stable storage key (`PuzzleKey`: the full id the puzzle first shipped under, so key = id for today's content);
+every repository call takes the key and `PuzzleId` stays the route id —
+[per-player §3.8 I2: stable storage keys](plans/per-player/03-server-half.md#38-i2-stable-storage-keys-lanes-gm6k-gm6c1b).
+
 | Id | Shape | Scope | Example |
 |---|---|---|---|
 | `SectionId`, `RoomId`, `HotspotId`, `ItemId`, `DocId`, `PuzzleLocalId`, `PropId` | `[a-z][a-z0-9_]*` | unique per chapter (rooms across all sections of the chapter; `world/duplicate-id`) | `manor`, `hall`, `gate`, `medal_sun` |
@@ -785,6 +837,11 @@ Reserved:
 - a puzzle id may be attached to at most one lock (`world/puzzle-multi-lock`, revision 5).
 
 ### World data — `story/<ch>/world.json` (source, written by the narrative-designer)
+
+Changed by the engine plan (adopted 2026-11-09, RULINGS 158; planned, not built): each engine module owns its own
+world keys with defaults, with no world-format bump —
+[engine §5.1 World JSON: keys per module](plans/engine/05-world-data-and-save-format.md#51-world-json-keys-per-module-no-world-format-bump),
+[engine §6 The owner's mechanics as modules](plans/engine/06-mechanics-as-modules.md#6-the-owners-mechanics-as-modules).
 
 ```jsonc
 {
@@ -891,6 +948,11 @@ the soft-lock checker and the seeded playthroughs cover them through the shared 
 
 ### Puzzle types (`client/src/puzzles/rules/`)
 
+Changed by the engine plan (adopted 2026-11-09, RULINGS 158; planned, not built): new types `path` and `grid` (GM7p,
+GM7g), `levers` and `setting` (GM8a), `sequence` and `ritual` (GM8b), each with the run-site split for types —
+[engine §7 Puzzle types](plans/engine/07-puzzle-types.md#7-puzzle-types),
+[engine §7.1 The run-site split for types](plans/engine/07-puzzle-types.md#71-the-run-site-split-for-types-m2).
+
 ```ts
 export type PuzzleType = 'code' | 'order';
 export interface PuzzleRules<P> {
@@ -907,6 +969,12 @@ export const PUZZLE_RULES: { readonly code: PuzzleRules<CodeParams>; readonly or
 ```
 
 ### World state and the reducer contract (`client/src/explore/`)
+
+Changed by the engine plan (adopted 2026-11-09, RULINGS 158; planned, not built): the world rules become modules on a
+kernel, each with a data half in the engine chunk and a rules half in the lazy explore chunk, held by registries, and
+every condition follows one grammar —
+[engine §3 The module contract](plans/engine/03-module-contract.md#3-the-module-contract),
+[engine §4 Condition grammar](plans/engine/04-condition-grammar.md#4-condition-grammar).
 
 ```ts
 // explore/state.ts
@@ -1298,6 +1366,13 @@ pub enum RejectReason { UnknownOrder, Mismatch, AlreadyOwned, InProgress, Expire
 
 ### SQL — `server/migrations/0002_puzzles.sql` (L6c; `0001` is the PostgreSQL schema of LDB1)
 
+Changed by the per-player plan (adopted 2026-11-09, RULINGS 158; planned, not built): a new table `puzzle_values`
+(`0008_puzzle_values.sql`, GM6s1); `puzzle_progress` and `hint_unlocks` hold the stable storage key in `puzzle_id`
+(key = id for every existing row, so no data migration) —
+[per-player §3.1 Table `puzzle_values`](plans/per-player/03-server-half.md#31-table-puzzle_values),
+[per-player §3.8 I2: stable storage keys](plans/per-player/03-server-half.md#38-i2-stable-storage-keys-lanes-gm6k-gm6c1b),
+[per-player §3.10 Migrations](plans/per-player/03-server-half.md#310-migrations).
+
 PostgreSQL dialect (RULINGS 14; `D:/tmp/novel-orch/design/db/decision.md` DB-3, §4.6): every integer is `BIGINT`
 (Rust `i64`; sqlx's `i64` is `INT8` with no widening), times are unix seconds, every constraint is named so the tests
 assert `(SQLSTATE, constraint())`, no `STRICT`.
@@ -1387,6 +1462,10 @@ RETURNING id;
 
 ### HTTP API additions
 
+Changed by the per-player plan (adopted 2026-11-09, RULINGS 158; planned, not built): new routes
+`GET /api/chapters/{chapterId}/values` and `POST /api/puzzles/{puzzleId}/restart`; the attempt and status routes
+change — [per-player §3.4 HTTP API](plans/per-player/03-server-half.md#34-http-api).
+
 Common rules as in PP (bearer, JSON camelCase, `no-store`, 16 KB default body limit).
 
 | Method + path | Auth | Request | 200 response | Errors | Idempotency; caching |
@@ -1400,6 +1479,11 @@ Common rules as in PP (bearer, JSON camelCase, `no-store`, 16 KB default body li
 No dev route is added: the fake Stars sheet and `/dev/simulate-payment` work for any order slug.
 
 ### Server formats (story tool → server; the committed fixtures are the contract)
+
+Changed by the per-player plan (adopted 2026-11-09, RULINGS 158; planned, not built):
+`server/content/puzzles/<ch>.json` gains format 2 (an optional `key` and an opaque `type` in GM6k, `perPlayer` and
+`maxAttempts` in GM6s2); the emitter writes the lowest format that expresses the chapter —
+[per-player §3.3 Content format 2](plans/per-player/03-server-half.md#33-content-format-2).
 
 ```jsonc
 // server/content/puzzles/<ch>.json — emitted by the story tool for EVERY chapter (free ones included)
@@ -1437,6 +1521,13 @@ one file.
 ---
 
 ## Module API
+
+Changed by the engine plan (adopted 2026-11-09, RULINGS 158; planned, not built): a puzzle type splits into a data
+half in the engine chunk and a play half in its own lazy chunk, each module's rules half runs in the explore chunk
+(the run sites), and the puzzle host reports through the cue channel —
+[engine §3.2 The two halves and the registries](plans/engine/03-module-contract.md#32-the-two-halves-and-the-registries),
+[engine §3.3 Run sites (today's importers)](plans/engine/03-module-contract.md#33-run-sites-todays-importers),
+[engine §8 The cue channel](plans/engine/08a-cue-union-and-bus.md#8-the-cue-channel).
 
 ```ts
 // puzzles/session.ts (LP2) — one per open puzzle; GameSession (yields.ts) creates and disposes it
@@ -1689,6 +1780,12 @@ postAttempt(id: PuzzleId, answer: readonly number[]): Promise<Result<AttemptResp
 
 ### Modules (new; PP "Module map" points here)
 
+Changed by the engine plan (adopted 2026-11-09, RULINGS 158; planned, not built): the mechanics kernel and its modules
+(`client/src/mechanics/`: engine halves in `data/<id>.ts`, chunk halves in `rules/<id>.ts`, with their registries) and
+the cue channel join these modules —
+[engine §3.2 The two halves and the registries](plans/engine/03-module-contract.md#32-the-two-halves-and-the-registries),
+[engine §8 The cue channel](plans/engine/08a-cue-union-and-bus.md#8-the-cue-channel).
+
 | Module | Responsibility | Boundary |
 |---|---|---|
 | `client/src/world/{types,decode}.ts` | world shapes, branded ids, source/public decoders, `toPublic`, `toServer` | pure (no DOM, no fetch); imported by the app and `scripts/story/` |
@@ -1774,6 +1871,11 @@ The lanes are cut in PROTOTYPE-PLAN.md "THE LANE CUT" (dependency order, locks, 
 | Steady memory | PP's 135.5 MiB total holds: textures stay cap-bounded; world data and sessions < 0.5 MB heap | | e2e `heap under budget` (PP) |
 | Attempt latency | one request per Try; no budget gate | verify the p95 on device (L15) | — |
 | Resume search after a rules update | ≤ 300 ms at CPU 4× (the LOW proxy) per search, worst case a full enumeration of `RESUME_STATE_CAP` = 5,000 states; one search at the load (the current section) and one at the first entry of each other section, never two at one point | X9: estimate ≈ 60 µs per state at 4× | `world/state-cap` bounds the states at build (LW3; `softlock: section above RESUME_STATE_CAP fails the build`, LW2); the time is verified in LW2 seen working (quiet machine) and on a LOW Android in L15 if available; LW2's measurement is provisional (RULINGS 21 Q7: 50-58 ms quiet-like, 130-158 ms under load, budget 75 ms unthrottled), re-measured on a quiet machine before LX / L13 rely on it |
+
+The "JS before the first line" row above: changed by the engine plan (adopted 2026-11-09, RULINGS 158; planned, not
+built): the three plans' bytes against the first-line, all-JS, engine-closure and puzzle-type rows are kept in one
+ledger per row, re-based on main `3c62a86` (RULINGS 143 QO10, 158) —
+[engine §11.1 The shared ledgers](plans/engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13).
 
 **Red once:** budget.test.ts feeds:
 - a manifest with `CodeLock.svelte` in the engine's static closure;
@@ -1920,6 +2022,13 @@ renames above.
 ---
 
 ## Demo content outline (for the narrative-designer, lane N1; ch1–ch2 are story `manor`, changed by STORIES-PLAN)
+
+Changed by the engine and per-player plans (adopted 2026-11-09, RULINGS 158; planned, not built): the `tide` story's
+ch3 gains its first world with one demo puzzle of each new type (GM8d; RULINGS 154); ch1 gains its first per-player
+puzzle (GM6c4) and its first label on the art (GM6d2) —
+[engine §12 GM8d `mech-type-demos`](plans/engine/12e-lanes-gm7-gm9.md#gm8d-mech-type-demos-new-in-round-4-critique_engine_r3-w2),
+[per-player §9 GM6c4 `values-world-text`](plans/per-player/09c-lanes-gm6c3-gm6c4.md#gm6c4-values-world-text-client--story),
+[per-player §9 GM6d2 `labels-world`](plans/per-player/09d-lanes-gm6d1-gm6d2.md#gm6d2-labels-world-client--story).
 
 **Chapter 1 (free)** — the exploration section `manor`, three rooms. The `ally` speaker narrates.
 

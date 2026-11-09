@@ -14,7 +14,8 @@
 > runbooks, indexed in the [README](../README.md#documentation).
 
 The design is in [PROTOTYPE-PLAN.md](PROTOTYPE-PLAN.md) (PP), [PUZZLES-PLAN.md](PUZZLES-PLAN.md) (PZ),
-[STORIES-PLAN.md](STORIES-PLAN.md) (SP) and [META-PLAN.md](META-PLAN.md); this page describes what the tree does. Where
+[STORIES-PLAN.md](STORIES-PLAN.md) (SP) and [META-PLAN.md](META-PLAN.md), and the adopted plans,
+[docs/plans/README.md](plans/README.md) (planned, not built); this page describes what the tree does. Where
 is a given file: [FEATURE_MAP.md](FEATURE_MAP.md). The ink tag language: [STAGING-DSL.md](STAGING-DSL.md).
 
 ## Overview

@@ -14,8 +14,9 @@
 > [runbooks](runbooks/local-dev.md), indexed in the [README](../README.md#documentation).
 
 Rows come from the "docs/FEATURE_MAP.md entries" sections of [PROTOTYPE-PLAN.md](PROTOTYPE-PLAN.md),
-[PUZZLES-PLAN.md](PUZZLES-PLAN.md), [STORIES-PLAN.md](STORIES-PLAN.md) and [META-PLAN.md](META-PLAN.md), cut to what
-has merged. Paths are repo-relative; client source paths are under `client/src/` unless they start with `client/`.
+[PUZZLES-PLAN.md](PUZZLES-PLAN.md), [STORIES-PLAN.md](STORIES-PLAN.md) and [META-PLAN.md](META-PLAN.md), and the
+adopted plans, [docs/plans/README.md](plans/README.md) (planned, not built), cut to what has merged. Paths are
+repo-relative; client source paths are under `client/src/` unless they start with `client/`.
 Tests are named by file and by a few exact test names; vitest names start with the module prefix shown. How the
 parts connect: [ARCHITECTURE.md](ARCHITECTURE.md). How a writer uses the story tool: [AUTHORING.md](AUTHORING.md).
 
