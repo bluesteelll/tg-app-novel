@@ -3,12 +3,14 @@
 // prove an unproved section at its first entry. The rules half of the mechanics engine: explore-ui chunk code that
 // only the explore controller imports (the `rules-lazy` arch rule); the story tool runs the same functions. Never
 // throws on save data. Pure.
-import { RESUME_STATE_CAP, own, runOf, sectionScope, worldIndex } from '../../explore/reduce.ts';
+import { RESUME_STATE_CAP, lockOf, own, runOf, sectionScope, worldIndex } from '../../explore/reduce.ts';
 import type { ExploreAction, ExploreEffect, Successor } from '../../explore/reduce.ts';
 import type { PuzzleOutcome, PuzzleRun, WorldState } from '../../explore/state.ts';
 import type { PuzzleLocalId, SectionId } from '../../story/staging.ts';
-import type { HotspotKey, ItemId, RoomId, WorldPublicBody } from '../../world/types.ts';
+import type { HotspotKey, ItemId, Lock, RoomId, WorldPublicBody } from '../../world/types.ts';
+import type { RulesRegistry } from '../contract.ts';
 import { actions, reduce } from './core.ts';
+import { MECHANIC_RULES } from './index.ts';
 
 /** A record's own entries keyed by its id brand (a save's keys are checked against the world before any use). */
 function entriesOf<K extends string, V>(r: Readonly<Record<K, V>>): Array<[K, V]> {
@@ -59,33 +61,180 @@ function setPart(list: readonly string[], keep: ReadonlySet<string>): string {
 }
 
 /**
- * The canonical key of `s` restricted to section S, the one dedup key of both searches: room, pendingStory (an
- * ordered queue), S's keys in taken / open / slots / fired, the outcomes of S's lock puzzles, the items and docs S
- * gives in held / used / docs. The set-valued fields are sorted, so the order play added them in never splits one
- * state into two. Abstracted (read by no rule): examined, visited, attempts, hints opened; ignored: section,
- * lastRoom, unproved, everything outside S (X15). Ids never hold `|`, `;`, `=` or `,`, so the joins are unambiguous.
+ * Every fact the registry's gating rules read in one section, grouped by kernel kind: what `sectionKey` encodes. The
+ * groups of the four kinds no core rule reads are null until a module reads them, so core's key keeps its bytes.
  */
-export function sectionKey(w: WorldPublicBody, s: WorldState, section: SectionId): string {
-  const scope = sectionScope(w, section);
+type KeyPlan = {
+  readonly taken: ReadonlySet<string>;
+  readonly open: ReadonlySet<string>;
+  /** The locks read by `slot`, sorted by key. */
+  readonly slots: ReadonlyArray<{ readonly key: HotspotKey; readonly lock: Lock }>;
+  readonly fired: ReadonlySet<string>;
+  /** The puzzles read by `solved`, `failed` or `abandoned`, sorted: each one's whole outcome is read. */
+  readonly outcomes: readonly PuzzleLocalId[];
+  readonly held: ReadonlySet<string>;
+  readonly used: ReadonlySet<string>;
+  readonly docs: ReadonlySet<string>;
+  readonly examined: ReadonlySet<string> | null;
+  readonly visited: ReadonlySet<string> | null;
+  readonly attempts: readonly PuzzleLocalId[] | null;
+  readonly hints: readonly PuzzleLocalId[] | null;
+};
+
+// Built once per (registry, world, section): the searches call `sectionKey` once per successor.
+const PLANS = new WeakMap<RulesRegistry, WeakMap<WorldPublicBody, Map<SectionId, KeyPlan>>>();
+
+const sortedIds = <T extends string>(ids: ReadonlySet<T>): T[] => [...ids].sort();
+
+function keyPlan(w: WorldPublicBody, section: SectionId, rules: RulesRegistry): KeyPlan {
+  let perRegistry = PLANS.get(rules);
+  if (perRegistry === undefined) {
+    perRegistry = new WeakMap();
+    PLANS.set(rules, perRegistry);
+  }
+  let perWorld = perRegistry.get(w);
+  if (perWorld === undefined) {
+    perWorld = new Map();
+    perRegistry.set(w, perWorld);
+  }
+  const cached = perWorld.get(section);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const ix = worldIndex(w);
+  const taken = new Set<string>();
+  const open = new Set<string>();
+  const slots = new Set<HotspotKey>();
+  const fired = new Set<string>();
+  const outcomes = new Set<PuzzleLocalId>();
+  const held = new Set<string>();
+  const used = new Set<string>();
+  const docs = new Set<string>();
+  let examined: Set<string> | null = null;
+  let visited: Set<string> | null = null;
+  let attempts: Set<PuzzleLocalId> | null = null;
+  let hints: Set<PuzzleLocalId> | null = null;
+  for (const m of rules) {
+    for (const atom of m.reads(w, section)) {
+      const id = atom.id;
+      switch (atom.kind) {
+        case 'taken':
+          taken.add(id);
+          break;
+        case 'open':
+          open.add(id);
+          break;
+        case 'slot':
+          slots.add(id as HotspotKey); // a slot atom's id is its lock's hotspot key
+          break;
+        case 'fired':
+          fired.add(id);
+          break;
+        case 'solved':
+        case 'failed':
+        case 'abandoned':
+          outcomes.add(id as PuzzleLocalId); // an outcome atom's id is its puzzle
+          break;
+        case 'held':
+          held.add(id);
+          break;
+        case 'used':
+          used.add(id);
+          break;
+        case 'doc':
+          docs.add(id);
+          break;
+        case 'examined':
+          (examined ??= new Set()).add(id);
+          break;
+        case 'visited':
+          (visited ??= new Set()).add(id);
+          break;
+        case 'attempt':
+          (attempts ??= new Set()).add(id as PuzzleLocalId); // a run atom's id is its puzzle
+          break;
+        case 'hint':
+          (hints ??= new Set()).add(id as PuzzleLocalId);
+          break;
+        case 'story':
+          break; // the queue is always in the key, whole
+        default: {
+          // A module fact kind has no WorldState storage before its module declares a save slice.
+          const kind: never = atom.kind;
+          throw new Error(`invariant: ${m.id} reads a '${String(kind)}' fact, which the section key cannot encode`);
+        }
+      }
+    }
+  }
+  const locks = sortedIds(slots).map((key) => {
+    const entry = ix.hotspots.get(key);
+    const lock = entry === undefined ? null : lockOf(entry.hotspot);
+    if (lock === null) {
+      throw new Error(`invariant: a slot atom names a lock, not '${key}'`);
+    }
+    return { key, lock };
+  });
+  const plan: KeyPlan = {
+    taken,
+    open,
+    slots: locks,
+    fired,
+    outcomes: sortedIds(outcomes),
+    held,
+    used,
+    docs,
+    examined,
+    visited,
+    attempts: attempts === null ? null : sortedIds(attempts),
+    hints: hints === null ? null : sortedIds(hints),
+  };
+  perWorld.set(section, plan);
+  return plan;
+}
+
+/**
+ * The canonical key of `s` restricted to section S, the one dedup key of both searches, derived from the facts every
+ * module of `rules` reads in S (engine plan §3.2): room, pendingStory (an ordered queue), then the read facts in
+ * taken / open / slots / fired, the outcomes of the read puzzles, held / used / docs, and examined / visited /
+ * attempts / hints only when some module reads them. Core reads S's keys of the first eight, so its key abstracts
+ * examined, visited, attempts and hints opened and ignores section, lastRoom, unproved and everything outside S
+ * (X15). The set-valued fields are sorted, so the order play added them in never splits one state into two. Ids
+ * never hold `|`, `;`, `=` or `,`, so the joins are unambiguous.
+ */
+export function sectionKey(w: WorldPublicBody, s: WorldState, section: SectionId, rules: RulesRegistry = MECHANIC_RULES): string {
+  const plan = keyPlan(w, section, rules);
   const slots: string[] = [];
-  for (const { key, lock } of scope.locks) {
+  for (const { key, lock } of plan.slots) {
     const stored = own(s.slots, key);
     if (stored !== undefined && stored.some((c) => c !== null)) {
       slots.push(`${key}=${lock.slots.map((_, i) => stored[i] ?? '').join(',')}`);
     }
   }
-  return [
+  const parts = [
     s.room ?? '',
     s.pendingStory.join(','),
-    setPart(s.taken, scope.hotspots),
-    setPart(s.open, scope.hotspots),
+    setPart(s.taken, plan.taken),
+    setPart(s.open, plan.open),
     slots.join(';'),
-    setPart(s.fired, scope.fired),
-    scope.puzzles.map((p) => runOf(s, p).outcome ?? '').join(','),
-    setPart(s.held, scope.items),
-    setPart(s.used, scope.items),
-    setPart(s.docs, scope.docs),
-  ].join('|');
+    setPart(s.fired, plan.fired),
+    plan.outcomes.map((p) => runOf(s, p).outcome ?? '').join(','),
+    setPart(s.held, plan.held),
+    setPart(s.used, plan.used),
+    setPart(s.docs, plan.docs),
+  ];
+  if (plan.examined !== null) {
+    parts.push(setPart(s.examined, plan.examined));
+  }
+  if (plan.visited !== null) {
+    parts.push(setPart(s.visited, plan.visited));
+  }
+  if (plan.attempts !== null) {
+    parts.push(plan.attempts.map((p) => runOf(s, p).attempts).join(','));
+  }
+  if (plan.hints !== null) {
+    parts.push(plan.hints.map((p) => runOf(s, p).hintsOpened).join(','));
+  }
+  return parts.join('|');
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -154,6 +303,8 @@ export function sectionEntry(w: WorldPublicBody, s: WorldState, section: Section
 export type SearchOptions = {
   /** Stop with 'found' when a state with this `sectionKey` is discovered. */
   readonly target?: string;
+  /** The rules registry whose reads key the states (default: MECHANIC_RULES; a fixture registry in tests). */
+  readonly rules?: RulesRegistry;
   /**
    * Every edge: `from` and `to` are discovery indices (0 = start); `to` is null for a `leaves` successor, which is a
    * goal edge and never enqueued; `isNew` marks the edge that discovered `to`.
@@ -170,7 +321,7 @@ export type SearchResult = { readonly result: 'found' | 'exhausted' | 'cap'; rea
 export function searchSection(w: WorldPublicBody, start: WorldState, section: SectionId, cap: number, opts: SearchOptions = {}): SearchResult {
   const seen = new Map<string, number>();
   const queue: WorldState[] = [start];
-  const startKey = sectionKey(w, start, section);
+  const startKey = sectionKey(w, start, section, opts.rules);
   seen.set(startKey, 0);
   if (startKey === opts.target) {
     return { result: 'found', states: 1 };
@@ -185,7 +336,7 @@ export function searchSection(w: WorldPublicBody, start: WorldState, section: Se
         opts.onEdge?.(from, succ, null, false);
         continue;
       }
-      const key = sectionKey(w, succ.state, section);
+      const key = sectionKey(w, succ.state, section, opts.rules);
       const known = seen.get(key);
       if (known !== undefined) {
         opts.onEdge?.(from, succ, known, false);

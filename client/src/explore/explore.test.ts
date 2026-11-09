@@ -1,13 +1,15 @@
 import { expect, test } from 'vitest';
 
+import type { FactAtom, FactKind, MechanicRules } from '../mechanics/contract.ts';
 import { actions, reduce } from '../mechanics/rules/core.ts';
+import { MECHANIC_RULES } from '../mechanics/rules/index.ts';
 import { admitSection, inSectionReach, searchSection, sectionEntry, sectionKey, successors } from '../mechanics/rules/search.ts';
 import type { KnotName, PuzzleLocalId, SectionId, VarName } from '../story/staging.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { DocId, HotspotKey, ItemId, RoomId, WorldPublic, WorldPublicBody } from '../world/types.ts';
 import { project } from './project.ts';
 import { reconcile } from './reconcile.ts';
-import { RESUME_STATE_CAP, RULES_VERSION, runReduce } from './reduce.ts';
+import { RESUME_STATE_CAP, RULES_VERSION, own, runOf, runReduce, sectionScope, worldIndex } from './reduce.ts';
 import type { ExploreAction, ExploreEffect } from './reduce.ts';
 import { EMPTY_WORLD_STATE } from './state.ts';
 import type { WorldState } from './state.ts';
@@ -1021,3 +1023,260 @@ test('reduce: rules golden pinned to RULES_VERSION', () => {
   const off = reached.filter((s) => sectionKey(w, sectionEntry(w, s, MANOR), MANOR) !== keys[0]);
   expect(off.length, `the first: ${off.slice(0, 2).map((s) => sectionKey(w, s, MANOR)).join(' / ')}`).toBe(0);
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// The derived section key (engine plan §3.2, §12 GM1b commit 3): built from every module's `reads`, byte for byte the
+// hand-written key while core is the only module (the golden above hashes key strings).
+
+/** The hand-written key of the searches before the registry (mechanics/rules/search.ts at ef8b4dc): the oracle. */
+function handKey(w: WorldPublicBody, s: WorldState, section: SectionId): string {
+  const scope = sectionScope(w, section);
+  const part = <T extends string>(list: readonly T[], keep: ReadonlySet<T>): string => {
+    const members = list.filter((x) => keep.has(x));
+    return members.length > 1 ? members.sort().join(',') : (members[0] ?? '');
+  };
+  const slots: string[] = [];
+  for (const { key, lock: l } of scope.locks) {
+    const stored = own(s.slots, key);
+    if (stored !== undefined && stored.some((c) => c !== null)) {
+      slots.push(`${key}=${l.slots.map((_, i) => stored[i] ?? '').join(',')}`);
+    }
+  }
+  return [
+    s.room ?? '',
+    s.pendingStory.join(','),
+    part(s.taken, scope.hotspots),
+    part(s.open, scope.hotspots),
+    slots.join(';'),
+    part(s.fired, scope.fired),
+    scope.puzzles.map((p) => runOf(s, p).outcome ?? '').join(','),
+    part(s.held, scope.items),
+    part(s.used, scope.items),
+    part(s.docs, scope.docs),
+  ].join('|');
+}
+
+/** Every chapter's source world (story/<ch>/world.json), as the story tool reads it. */
+const STORY_WORLDS = import.meta.glob<string>('../../../story/*/world.json', { eager: true, query: '?raw', import: 'default' });
+
+const [CORE] = MECHANIC_RULES;
+/** A fixture module that only reads: its `reads` returns `atoms` in every section. */
+const reader = (...atoms: FactAtom[]): MechanicRules<'reader', never, never> => ({
+  id: 'reader',
+  actions: () => [],
+  apply: () => undefined,
+  reads: () => atoms,
+  cues: [],
+});
+
+test('search: derived sectionKey equals the hand key on ch1 and ch2', () => {
+  const chapters = Object.entries(STORY_WORLDS).map(([path, text]): [string, WorldPublicBody] => {
+    const r = decodeWorldSource(JSON.parse(text));
+    if (!r.ok) {
+      throw new Error(`invariant: ${path} decodes: ${JSON.stringify(r.error)}`);
+    }
+    return [path.replace('../../../', ''), toPublic(r.value)];
+  });
+  expect(chapters.map(([path]) => path)).toEqual(expect.arrayContaining(['story/ch1/world.json', 'story/ch2/world.json']));
+  // Every state each section's search discovers, in every chapter and in the golden fixture. No count of story content
+  // is pinned here (the story gate prints those): the two keys must split the states alike, and some must be seen.
+  let searched = 0;
+  for (const [path, w] of [...chapters, ['the golden manor fixture', manor({ golden: true })] as const]) {
+    const sections = Object.keys(w.sections) as SectionId[];
+    if (sections.length === 0) {
+      console.log(`sectionKey pin: ${path} has no section`);
+    }
+    for (const S of sections) {
+      const start = sectionEntry(w, EMPTY_WORLD_STATE, S);
+      const reached: WorldState[] = [start];
+      const r = searchSection(w, start, S, RESUME_STATE_CAP, {
+        onEdge: (_from, succ, to, isNew) => {
+          if (isNew && to !== null) {
+            reached.push(succ.state);
+          }
+        },
+      });
+      const off = reached.filter((s) => sectionKey(w, s, S) !== handKey(w, s, S));
+      expect(off.slice(0, 2).map((s) => `${sectionKey(w, s, S)} / ${handKey(w, s, S)}`), `${path} ${S}`).toEqual([]);
+      expect(new Set(reached.map((s) => handKey(w, s, S))).size, `${path} ${S}`).toBe(r.states);
+      searched += r.states;
+    }
+  }
+  expect(searched).toBeGreaterThan(0);
+  // The key is the registry's: a module that reads one more fact splits the states that differ in it.
+  const w = manor();
+  const s = at('hall');
+  const turned = frozen({ ...s, fired: ['turn:hall.inscription'] });
+  expect(sectionKey(w, turned, MANOR)).toBe(sectionKey(w, s, MANOR));
+  const registry = [CORE, reader({ kind: 'fired', id: 'turn:hall.inscription' })];
+  expect(sectionKey(w, turned, MANOR, registry)).not.toBe(sectionKey(w, s, MANOR, registry));
+});
+
+test("search: a module's read of every kernel fact kind enters the derived key", () => {
+  // Core reads 8 of the 15 kernel kinds. Each other kind a module may read has its rule: `examined`, `visited`,
+  // `attempt` and `hint` add a part (only when some module reads them, so core's key stays byte-identical); `failed` /
+  // `abandoned` name a puzzle whose whole outcome joins the outcome part; `story` adds nothing, since the queue is
+  // always in the key; a kind with no kernel storage is a bug and throws.
+  const w = world({
+    items: ['key'],
+    puzzles: { lin: code(2, 2), lk: code(2) },
+    sections: {
+      s: { start: 'r', rooms: { r: room([look('glass'), object('box', lock(['key'], 'lk')), exit('out', { story: 'end' })]), r2: room([exit('back', 'r')]) } },
+    },
+  });
+  const S = sec('s');
+  const s = at('r', {}, 's');
+  const cases: ReadonlyArray<readonly [FactAtom, Partial<WorldState>]> = [
+    [{ kind: 'examined', id: 'r.glass' }, { examined: [k('r.glass')] }],
+    [{ kind: 'visited', id: 'r2' }, { visited: [rm('r'), rm('r2')] }],
+    [{ kind: 'attempt', id: 'lk' }, { puzzles: { [pz('lk')]: { outcome: null, attempts: 1, hintsOpened: 0 } } }],
+    [{ kind: 'hint', id: 'lin' }, { puzzles: { [pz('lin')]: { outcome: null, attempts: 0, hintsOpened: 1 } } }],
+    [{ kind: 'failed', id: 'lin' }, { puzzles: { [pz('lin')]: { outcome: 'failed', attempts: 0, hintsOpened: 0 } } }],
+    [{ kind: 'abandoned', id: 'lin' }, { puzzles: { [pz('lin')]: { outcome: 'abandoned', attempts: 0, hintsOpened: 0 } } }],
+  ];
+  for (const [atom, patch] of cases) {
+    const t = frozen({ ...s, ...patch });
+    expect(sectionKey(w, t, S), atom.kind).toBe(sectionKey(w, s, S));
+    const registry = [CORE, reader(atom)];
+    expect(sectionKey(w, t, S, registry), atom.kind).not.toBe(sectionKey(w, s, S, registry));
+  }
+  // Read by core already: a module's `failed` of a lock puzzle changes no key, nor does `story`.
+  const queued = frozen({ ...s, pendingStory: [kn('x')] });
+  for (const atom of [{ kind: 'failed', id: 'lk' }, { kind: 'story', id: 'x' }] as const) {
+    for (const t of [s, queued]) {
+      expect(sectionKey(w, t, S, [CORE, reader(atom)]), atom.kind).toBe(sectionKey(w, t, S));
+    }
+  }
+  expect(() => sectionKey(w, s, S, [CORE, reader({ kind: 'flag' as FactKind, id: 'lit' })])).toThrow(/invariant/);
+});
+
+/** mulberry32 (test-local): a seeded generator, so a red names a reproducible state. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+test('search: equal section keys have equal successor keys', () => {
+  // Soundness of the key both searches deduplicate by: two states with one key have the same steps to the same keys.
+  // Each random state comes with twins: one that differs only in what the key abstracts (examined, visited, attempts,
+  // hints, lastRoom, unproved, list order, another section's facts), so pairs with one key always exist; and one per
+  // fact kind the key reads, toggling one fact of S, so a key that drops a kind merges a pair whose steps differ (held,
+  // taken, open, slot, fired and solved gate a rule; used and doc gate none, so the pin above is their guard).
+  const w = manor({ golden: true });
+  const ix = worldIndex(w);
+  const scope = sectionScope(w, MANOR);
+  const rooms = [...scope.rooms];
+  const hotspots = [...scope.hotspots];
+  const takes = hotspots.filter((key) => ix.hotspots.get(key)?.hotspot.kind === 'take');
+  const items = [...scope.items];
+  const docs = [...scope.docs];
+  const fired = [...scope.fired];
+  const lockKeys = scope.locks.map((l) => l.key);
+  const slotted = scope.locks.filter((l) => l.lock.slots.length > 0);
+  const knots = ['manor_cellar_voice', 'drawer_open'].map(kn);
+  const lines = (s: WorldState): string =>
+    successors(w, s)
+      .map((x) => `${JSON.stringify(x.step)}\t${x.leaves ? 'LEAVE' : sectionKey(w, x.state, MANOR)}`)
+      .sort()
+      .join('\n');
+  const toggled = <T>(list: readonly T[], x: T): T[] => (list.includes(x) ? list.filter((y) => y !== x) : [...list, x]);
+  let compared = 0;
+  for (const seed of [1, 2, 3, 4]) {
+    const rnd = mulberry32(seed);
+    const some = <T>(xs: readonly T[]): T[] => xs.filter(() => rnd() < 0.5);
+    const pick = <T>(xs: readonly T[]): T => {
+      const x = xs[Math.floor(rnd() * xs.length)];
+      if (x === undefined) {
+        throw new Error('invariant: a pick from a non-empty list');
+      }
+      return x;
+    };
+    const groups = new Map<string, string>();
+    const visit = (s: WorldState): void => {
+      const key = sectionKey(w, s, MANOR);
+      const got = lines(s);
+      const first = groups.get(key);
+      if (first === undefined) {
+        groups.set(key, got);
+      } else {
+        compared++;
+        expect(got, `seed ${seed}, key ${key}`).toBe(first);
+      }
+    };
+    for (let n = 0; n < 200; n++) {
+      const slots: Record<HotspotKey, Array<ItemId | null>> = {};
+      for (const { key, lock: l } of slotted) {
+        if (rnd() < 0.6) {
+          slots[key] = l.slots.map((slot) => (rnd() < 0.5 ? slot.accepts : null));
+        }
+      }
+      const runs: Record<PuzzleLocalId, { outcome: 'solved' | 'failed' | null; attempts: number; hintsOpened: number }> = {};
+      for (const p of scope.puzzles) {
+        if (rnd() < 0.6) {
+          runs[p] = { outcome: pick(['solved', 'failed', null] as const), attempts: 0, hintsOpened: 0 };
+        }
+      }
+      const s: WorldState = frozen({
+        ...structuredClone(EMPTY_WORLD_STATE),
+        section: MANOR,
+        room: pick(rooms),
+        held: some(items),
+        used: some(items),
+        docs: some(docs),
+        taken: some(hotspots),
+        slots,
+        open: some(lockKeys),
+        fired: some(fired),
+        pendingStory: rnd() < 0.2 ? [pick(knots)] : [],
+        puzzles: runs,
+      });
+      visit(s);
+      // What the key abstracts.
+      visit(
+        frozen({
+          ...s,
+          lastRoom: { [MANOR]: pick(rooms), [sec('yard')]: rm('yard') },
+          visited: some(rooms),
+          examined: some(hotspots),
+          held: [...s.held].reverse().concat([it('yard_coin')]),
+          used: [...s.used].reverse(),
+          docs: [...s.docs].reverse(),
+          taken: [...s.taken].reverse().concat([k('yard.chest')]),
+          open: [...s.open].reverse(),
+          fired: [...s.fired].reverse().concat(['enter:yard']),
+          puzzles: Object.fromEntries(scope.puzzles.map((p) => [p, { ...runOf(s, p), attempts: pick([0, 1, 2]), hintsOpened: pick([0, 1, 2]) }])),
+          unproved: [MANOR],
+        }),
+      );
+      // One fact of each kind the key reads.
+      const slot = pick(slotted);
+      const cell = Math.floor(rnd() * slot.lock.slots.length);
+      const cells = slot.lock.slots.map((x, i) => {
+        const c = own(s.slots, slot.key)?.[i] ?? null;
+        return i !== cell ? c : c === null ? x.accepts : null;
+      });
+      const p = pick(scope.puzzles);
+      const patches: Array<Partial<WorldState>> = [
+        { held: toggled(s.held, pick(items)) },
+        { used: toggled(s.used, pick(items)) },
+        { docs: toggled(s.docs, pick(docs)) },
+        { taken: toggled(s.taken, pick(takes)) },
+        { open: toggled(s.open, pick(lockKeys)) },
+        { fired: toggled(s.fired, pick(fired)) },
+        { slots: { ...s.slots, [slot.key]: cells } },
+        { puzzles: { ...s.puzzles, [p]: { ...runOf(s, p), outcome: runOf(s, p).outcome === null ? 'solved' : null } } },
+      ];
+      for (const patch of patches) {
+        visit(frozen({ ...s, ...patch }));
+      }
+    }
+  }
+  // Every random state's abstract twin shares its key, so at least that many pairs were compared.
+  expect(compared).toBeGreaterThanOrEqual(4 * 200);
+}, 60_000);
