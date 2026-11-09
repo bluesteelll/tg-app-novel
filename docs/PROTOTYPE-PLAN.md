@@ -72,6 +72,11 @@ records chapter, ending and puzzle facts per story ([STORIES-PLAN "Goal"](STORIE
   As merged (LMI `3e35a7b`; RULINGS 105, 110; META-PLAN M27): the controller is a lazy chunk ≤ 5.0 KB br loaded
   once the boot reads are in (auth among them; `client/src/app/boot.ts:585`, RULINGS 113) and counted in JS before
   the first line; the entry measured 38.9 KB br.
+  As merged (LEL `7b37278`, RULINGS 137, 141; LFL `cec347c`, RULINGS 149, 155): the meta decoders and
+  `createMetaEndpoints` live in `client/src/api/meta.ts`, in the controller chunk; its limit is 6.0 KB br
+  (`client/scripts/budget.ts:116`); boot's gate requests it at the session's first step, a meta tap, an ending, a
+  hint use, a launch parameter or Home idle (`client/src/app/boot.ts:189-194`), and JS before the first line is the
+  entry + engine closures again, without it (`client/scripts/budget.ts:466-503`).
 - Changed by MEMORY-PLAN (RULINGS 78): the steady memory per lever at the gated limits, MiB: today 138.6 (LOW with
   F: 129.6); after M2 106.6 (LOW with F: 97.6); on LOW phones with F + M2 + M3c the planned set gives ≤ 75.2 (75.8 with
   the 10.15 MiB bound of the 5-image busiest knot), and the cap-bounded worst case stays 97.6. M2 also lowers the
@@ -194,6 +199,14 @@ research is newer and verified (brief), so it wins, and the deviation is recorde
   the first line; the next tap that needs
   it re-imports it after a failure, and an ending awaits it (`createMetaGate`, `client/src/app/boot.ts:169-253`).
   Its row `meta controller chunk (br)` ≤ 5.0 KB br is counted in JS before the first line (META-PLAN M27).
+  As merged (LEL `7b37278`; RULINGS 137, 141): the meta decoders and `createMetaEndpoints` moved from the entry to
+  `client/src/api/meta.ts`, which only the controller chunk imports (`client/src/app/meta.ts:9`, `:31`); the row's
+  limit is 6.0 KB br (`client/scripts/budget.ts:116`). As merged (LFL `cec347c`; RULINGS 149, 155): the chunk is no
+  longer imported once the boot reads are in; the gate (`client/src/app/boot.ts:189-195`) requests it at the
+  session's first step (T1), a meta tap, an ending, a hint use, a launch parameter (T4) or Home idle (T5,
+  `HOME_IDLE_MS` = 2000, `:153`); boot reads the stats itself (B1, `:736`), the hint port forwards before the chunk
+  lands (HP, `:304-325`), and JS before the first line no longer counts the chunk. RULINGS 105's "right after auth"
+  and "`hintPort()` null until the chunk" are superseded (RULINGS 149).
 
 **K4. Own image loader, not Pixi `Assets`.**
 - **What.** `scene/loader.ts`: the injected `FetchAsset` (implemented by `api/http.ts`: bearer and the single-flight
@@ -229,6 +242,12 @@ research is newer and verified (brief), so it wins, and the deviation is recorde
   - The caps make principle 4 a runtime invariant. 32 / 48 MiB come from the steady total at the gated limits
     ([Steady total](#scene-controller-and-asset-registry): 135.5 MiB = 142.1 MB < 150 MB, CPU bitmaps counted).
   - Arithmetic: 1080×2048×4 = 8.4 MiB per background; ≤ 768×1536×4 = 4.5 MiB per sprite.
+
+    Changed by the shots plan (adopted 2026-11-09, RULINGS 158; planned, not built): character sprites leave the scene
+    (SH12a, SH12b); a shot's memory is counted in the shots plan's ledger —
+    [shots §5.1 Shot view](plans/shots/05a-runtime.md#51-shot-view-sh4-clientsrcsceneshot-viewts-pure),
+    [shots §5.9 Memory ledger and arithmetic](plans/shots/05b-preload-memory-download.md#59-memory-ledger-and-arithmetic-gate-counts--decoded--the-larger-kept-file-budgetts806-808),
+    [shots §9.13 SH12a `sprites-out`](plans/shots/09e-lanes-sh11-sh12b.md#913-sh12a-sprites-out-client-the-kinds-atomic-rev-4-split-w6).
 - **Alternatives.** A plain refcount (double-release bugs); an LRU cache (no deterministic release point); letting a
   visible load exceed the hard cap (unbounded memory on an un-gated path).
 - **Trade-off.** Preload can be refused on art-heavy knots; the budget gate catches that statically, carried stage
@@ -1180,7 +1199,7 @@ CREATE TABLE saves (
   here).** The comment `-- one per product; revoke = DELETE` on `entitlements_pkey` (`0001_init.sql:57`, copied
   above) now reads "revoke = DELETE or a re-key": a revoke whose chapter another unrefunded paid charge of the payer
   paid re-keys the row to that charge (`UPDATE entitlements SET charge_id`, `Repo::revoke`,
-  `server/src/db/payments.rs:351`; PP "Refund.").
+  `server/src/db/payments.rs:402`, moved by LRF `a93fe54` from :351; PP "Refund.").
 - **Every FK column is indexed** by a UNIQUE or a leading PK/index column: `orders.user_id` by
   `orders_by_user_product`, `entitlements.user_id` and `saves.user_id` by their PKs, both `charge_id` columns by their
   UNIQUEs. PostgreSQL does not index referencing columns by itself.
@@ -1304,6 +1323,11 @@ Consequences:
 - The directory is free-only by construction and by the scanner (R4 §3: a glob over a mixed directory leaks).
 
 ### Save format and resume
+
+Changed by the engine plan (adopted 2026-11-09, RULINGS 158; planned, not built): the save body becomes format 2
+(GM2a; `decodeSave` decodes an older format and upgrades it), with `chapterStart.items` for carried items (GM9r) —
+[engine §5.2 Save format 2 (lane GM2a)](plans/engine/05-world-data-and-save-format.md#52-save-format-2-lane-gm2a),
+[engine §6.6 `carry`: items across chapters](plans/engine/06-mechanics-as-modules.md#66-carry-items-across-chapters-required-allowed-gm9p-proof-gm9r-runtime-o6--r9).
 
 `SaveBodyV1` is defined above. Algorithm (`story/resume.ts`), actor: client:
 
@@ -1557,6 +1581,15 @@ pub mod telegram::payments {
                                                  // gateway errors logged, never fail the webhook (L9)
   pub async fn revoke(st: &AppState, charge: &ChargeId, now: i64) -> Result<RevokeOutcome, sqlx::Error>;
   pub async fn admin_refund(st: &AppState, charge: &ChargeId) -> Result<RevokeOutcome, RefundError>; }
+// As merged (LRF `a93fe54`; RULINGS 130; signatures re-read at `3c62a86`, `server/src/telegram/payments.rs`):
+// `notify_unapplied` is private and takes `lang` and a `deadline: Instant` (:176); the webhook calls `after_grant`;
+// `revoke` takes no `now` (it reads the state's clock); the sweep and the restore-gap refund are public too.
+//   pub async fn after_grant(st: &AppState, fact: &PaymentFact, outcome: GrantOutcome, lang: Lang);        // :150
+//   pub async fn sweep_auto_refunds(st: &AppState) -> Result<SweepTally, sqlx::Error>;                     // :407
+//   pub async fn run_auto_refund_sweep(st: AppState);                                                       // :432
+//   pub async fn revoke(st: &AppState, charge: &ChargeId) -> Result<RevokeOutcome, sqlx::Error>;            // :460
+//   pub async fn refund_unrecorded(st: &AppState, charge: &ChargeId, payer: UserId, admin: UserId)
+//       -> Result<UnrecordedOutcome, RefundError>;                                                         // :520
 
 // server-dev lib (server/dev/src/lib.rs)
 // changed by RULINGS 14 (decision §3.5; as merged, fee9da7)
@@ -1988,7 +2021,7 @@ payer, outcome), each under the gateway's 5 s timeout; a gateway error is logged
 As merged (L9 `d837c8b`, RULINGS 96; L9 cut Q6, critique O8): `notify_unapplied(st, fact, outcome, lang)` tells the
 payer in `lang` (the payment message's language) and each admin in Russian; `UnknownProduct` is notified like
 `OrderMismatch` and `AlreadyEntitled`; and one `CALL_DEADLINE` (5 s) cuts the whole notice, its messages sent one after
-another, not each call (`server/src/telegram/payments.rs:112-162`).
+another, not each call (`server/src/telegram/payments.rs:112-162`; moved by LRF `a93fe54`: the notice is `:176`).
 The durable record is the data itself: `/paysupport` flags every charge of the user that has no `entitlements` row and
 `refunded_at IS NULL` as "not applied". A redelivered duplicate is `Duplicate` and sends nothing. The remedy is the
 admin's `/refund`; automatic refund is the owner's call (V4). Changed by META-PLAN (M19): "not applied" also requires
@@ -2046,20 +2079,24 @@ COMMIT;
   grant would break `payments_refunded_after_paid`), then the order, then `DELETE FROM entitlements WHERE charge_id`,
   then the clawback. Every undo is keyed by the charge's own rows, whatever the order says; the `match` on
   `parse_product_id` has no wildcard arm, a tripwire that stops a new product kind from compiling until its undo is
-  reviewed. `payments::revoke(st, charge)` reads the state's clock (`server/src/telegram/payments.rs:171`), and both
+  reviewed. `payments::revoke(st, charge)` reads the state's clock (`server/src/telegram/payments.rs:460`,
+  moved by LRF `a93fe54` from :171), and both
   refund paths end there.
-- **As merged (LPH `d423cb3`; RULINGS 96, 97 Q10, 100).** `Repo::revoke` (now `server/src/db/payments.rs:351`) no
+- **As merged (LPH `d423cb3`; RULINGS 96, 97 Q10, 100).** `Repo::revoke` (now `server/src/db/payments.rs:402`;
+  :351 before LRF `a93fe54`) no
   longer always runs the `DELETE FROM entitlements` above. Between the guard and the order it reads the charge
   entitlement's successor: the payer's oldest other unrefunded charge whose own order of that product is `paid` and
-  which keys no entitlement, i.e. a second payment of the chapter recorded `AlreadyEntitled` (`:383-397`). The
+  which keys no entitlement, i.e. a second payment of the chapter recorded `AlreadyEntitled`
+  (`:434-449`; :383-397 before LRF). The
   candidates' payment rows are read `FOR SHARE`, so a concurrent refund of one makes this read wait and drop it
   (RULINGS 97 Q10). With a successor the entitlement is re-keyed to it, `granted_at` kept (access never lapsed); with
-  none it is deleted (`:411-431`). The re-key grants nothing: `entitlements_charge_key` keeps every charge applied at
+  none it is deleted (`:464-484`; :411-431 before LRF).
+  The re-key grants nothing: `entitlements_charge_key` keeps every charge applied at
   most once. The admin's `refund_done` reads "Payment {charge} refunded. The purchase is revoked unless another
   payment paid for it." in English (`server/locales/bot.en.json`; the Russian text changed with it). Pinned by
   `refund_rekeys_entitlement_to_other_paid_charge` and `refund_rekey_skips_charge_refunded_concurrently`
   (`server/tests/it/refunds.rs`).
-  - **Residual (RULINGS 100, accepted; `Repo::revoke`'s doc, `:344-350`).** A grant of a new charge C of the same
+  - **Residual (RULINGS 100, accepted; `Repo::revoke`'s doc, `:344-350` before LRF, which replaced it with the closure below).** A grant of a new charge C of the same
     chapter whose entitlement insert (`ON CONFLICT DO NOTHING`, no payer lock) runs between the successor read and the
     delete meets the committed row and returns `AlreadyEntitled`; the read could not see C, so the revoke deletes, and
     C stays paid with no entitlement. Both of C's unapplied notices (payer and admins) fired at its grant, an admin
@@ -2087,29 +2124,32 @@ Texts come from `server/locales/bot.{ru,en}.json` by `from.language_code`. `serv
 `setMyCommands` (ru, en, default), the webhook (`secret_token`, explicit `allowed_updates`) and the menu button
 [R2 §1.5–1.6].
 As merged (L9 `d837c8b`, RULINGS 96; L9 cut Q6): a command is answered only in a private chat with a sender, so
-`/refund` outside one is ignored (`server/src/telegram/commands.rs:77-87`, moved by LPH `d423cb3` from :77-84,
-re-checked at `3e35a7b`); `server setup` sets the English menu as the
+`/refund` outside one is ignored (`server/src/telegram/commands.rs:86-88`, moved by LRF `a93fe54` from :77-87
+(LPH `d423cb3`: from :77-84),
+re-checked at `3c62a86`); `server setup` sets the English menu as the
 default set and the Russian one for `ru`, `uk`, `be` and `kk` (no `en` set; `server/src/telegram/setup.rs:37-60`,
-`RUSSIAN_LANGS` in `telegram/payments.rs:33`), and the menu button text is Russian.
+`RUSSIAN_LANGS` in `telegram/payments.rs:64`, :33 before LRF), and the menu button text is Russian.
 As merged (LPH `d423cb3`, RULINGS 97, 106; LPH critique O2, O3, O6, review M2, M3):
 - **Startup order.** `server serve` and `server setup` check the bot texts right after the configuration, before
   anything else is opened or built (`bot_texts_ok`, `server/src/main.rs:38`, called at :68 and :103;
-  `texts::startup_check`, `server/src/telegram/texts.rs:345`). A text file that does not pass the check refuses the
+  `texts::startup_check`, `server/src/telegram/texts.rs:375`, :345 before LRF). A text file that does not pass the check refuses the
   start, and so does, under `TELEGRAM_ENV=prod`, a non-empty `drafts` list in either file; drafts under test are a
   warning. `serve` then checks `STATIC_DIR`, then builds `AppState` (content, catalog, privacy policy, gateway, pool).
   Pinned by `startup_checks_bot_texts_first`, `prod_start_refuses_draft_bot_texts` (`server/tests/it/main.rs`) and
   `bot_texts_startup_check_refuses_drafts_in_prod` (`server/tests/it/bot.rs`).
 - **`/paysupport`** lists the sender's newest twenty charges (`PAYSUPPORT_CHARGES`,
-  `server/src/telegram/commands.rs:22`; newest first by `paid_at`, then the charge id) and says how many more there
-  are (the total from the same statement, `Repo::charges_of`, `server/src/db/payments.rs:478`). A database error is
+  `server/src/telegram/commands.rs:23`, :22 before LRF; newest first by `paid_at`, then the charge id) and says how many more there
+  are (the total from the same statement, `Repo::charges_of`, `server/src/db/payments.rs:662`, :478 before LRF).
+  A database error is
   logged and answered with the intro and `paysupport_unavailable` ("… Please repeat /paysupport in a minute."), and
   the webhook answers 200: a 500 would hold the chat's later updates, the payer's `successful_payment` included
-  (`paysupport`, commands.rs:210). An admin `/refund` whose database step fails stays 500. Pinned by
+  (`paysupport`, commands.rs:220; :210 before LRF). An admin `/refund` whose database step fails stays 500. Pinned by
   `paysupport_lists_newest_twenty_with_total` and `paysupport_db_error_answers_200` (`server/tests/it/bot.rs`).
 - **A `/refund` that timed out.** A gateway timeout or a broken transport on `refundStarPayment` answers
   `refund_unknown_outcome`: the refund is not confirmed, Telegram may already have returned the Stars, and a repeat
   of `/refund` is safe (it meets `CHARGE_ALREADY_REFUNDED` and revokes). Only an API refusal or a disabled gateway
-  answers `refund_failed` ("Nothing changed"). Nothing is revoked in either case (`refund_reply`, commands.rs:230).
+  answers `refund_failed` ("Nothing changed"). Nothing is revoked in either case
+  (`refund_reply`, commands.rs:258; :230 before LRF).
   Pinned by `refund_timeout_reply_says_outcome_unknown` (`server/tests/it/bot.rs`).
 
 ---
@@ -2244,6 +2284,12 @@ unreachable at startup" down are the PostgreSQL failure model; the test names ar
 ---
 
 ## Scene controller and asset registry
+
+Changed by the shots plan (adopted 2026-11-09, RULINGS 158; planned, not built): the shot view adds a shot root with
+its own layers; `chars` stays a legacy layer until SH12a takes the sprite kinds out —
+[shots §5.1 Shot view](plans/shots/05a-runtime.md#51-shot-view-sh4-clientsrcsceneshot-viewts-pure),
+[shots §5.9 Memory ledger and arithmetic](plans/shots/05b-preload-memory-download.md#59-memory-ledger-and-arithmetic-gate-counts--decoded--the-larger-kept-file-budgetts806-808),
+[shots §9.13 SH12a `sprites-out`](plans/shots/09e-lanes-sh11-sh12b.md#913-sh12a-sprites-out-client-the-kinds-atomic-rev-4-split-w6).
 
 **Layers.** One Pixi `Application` (`scene/controller.ts`):
 - `bg` (≤ 2 sprites during a crossfade);
@@ -2496,14 +2542,14 @@ All budgets are enforced by `client/scripts/budget.ts` inside `npm run build` un
 | Engine closure JS (`app/engine.ts` dynamic entry + imports) | ≤ 230 KB br | Pixi 145.1 + inkjs 26.6 + GSAP 24.3 = 196 KB [R4] + our scene/story/audio | `budget.ts`: PENDING while `src/app/engine.ts` does not exist (before L15); once it exists, FAIL if the manifest has no `isDynamicEntry` chunk for it (never a 0 KB PASS) — `budget: engine row fails when dynamic entry missing` |
 | All JS in `dist/` | ≤ 290 KB br (changed by PUZZLES-PLAN: was 270; + about 20 KB of lazy puzzle and explore chunks that never load before the first line). Changed by META-PLAN: ≤ 305 KB br (+ the 14 KB meta-ui chunk + 1 KB slack; LMI) | R4 recommends ≤ 260 KB for one bundle; +10 for the split overhead | `budget.ts` |
 | `meta-ui` lazy chunk (changed by META-PLAN) | ≤ 14 KB br; a dynamic entry imported only by `app/meta.ts`; PENDING until `app/meta.ts` exists, then FAIL without a dynamic entry or inside a static closure | [META-PLAN.md](META-PLAN.md), section "Budgets and validation" | `budget.ts` (LMI): `budget: meta ui in entry closure fails`, `budget: meta row pending until its importer exists` |
-| `meta controller chunk (br)` (as merged, LMI `3e35a7b`; RULINGS 105, 110) | ≤ 5.0 KB br; a dynamic entry for `app/meta.ts`, counted in JS before the first line; 4.0 KB br at the merge | [META-PLAN.md](META-PLAN.md), M27 and "Budgets and validation" | `budget.ts` (LMI): `budget: meta controller chunk counts before the first line`, `budget: meta controller imported statically fails`; 84 rows |
-| JS before the first line (entry + engine closures; as merged, LMI `3e35a7b`, RULINGS 105, 113: + the meta controller chunk, `client/scripts/budget.ts:484-490`, `:505`) | ≤ 270 KB br (changed by PUZZLES-PLAN: the old all-JS limit, now scoped to what loads before the first line) | as above | `budget.ts` (L5) |
+| `meta controller chunk (br)` (as merged, LMI `3e35a7b`; RULINGS 105, 110) | ≤ 5.0 KB br; a dynamic entry for `app/meta.ts`, counted in JS before the first line; 4.0 KB br at the merge; as merged (LEL `7b37278`, RULINGS 141): ≤ 6.0 KB br (`client/scripts/budget.ts:116`); as merged (LFL `cec347c`, RULINGS 149, 155): not counted in JS before the first line | [META-PLAN.md](META-PLAN.md), M27 and "Budgets and validation" | `budget.ts` (LMI): `budget: meta controller chunk counts before the first line`, `budget: meta controller imported statically fails`; 84 rows |
+| JS before the first line (entry + engine closures; as merged, LMI `3e35a7b`, RULINGS 105, 113: + the meta controller chunk, `client/scripts/budget.ts:484-490`, `:505`; as merged, LFL `cec347c`, RULINGS 149, 155: entry + engine closures again, without that chunk, `client/scripts/budget.ts:466-503`) | ≤ 270 KB br (changed by PUZZLES-PLAN: the old all-JS limit, now scoped to what loads before the first line) | as above | `budget.ts` (L5) |
 | Lazy chunks, world JSON, props, `budget/room-set` | changed by PUZZLES-PLAN: puzzle type ≤ 8 KB br each, puzzle host ≤ 10, explore UI ≤ 16 (dynamic entries, never in a static closure; PENDING until `src/app/yields.ts` exists, then FAIL without a dynamic entry); as merged (LP2 `88d0964`, RULINGS 67; cut Q4): three lazy rows, the puzzle-type row measuring the largest type chunk, and the engine closure's walk stops at a lazy root, so the engine, first-line and first-load rows never count a lazy chunk (as merged, LMI `3e35a7b`, RULINGS 105, 113: except the meta controller chunk, which the first-line and first-load rows count, `firstLine: true`, `client/scripts/budget.ts:186`); world ≤ 32 KB raw / 8 KB br; prop ≤ 512 px; room-set ≤ 32 MiB | [PUZZLES-PLAN.md](PUZZLES-PLAN.md), section "Budgets and validation" | `budget.ts` (L5, LP2) |
 | CSS total | ≤ 12 KB br | | `budget.ts` |
 | `index.html` | ≤ 2 KB br | | `budget.ts` |
 | Story JSON per chapter | ≤ 160 KB raw and ≤ 35 KB br | ink JSON is verbose, compresses well [R4 §4.3] | `budget.ts` (free from `story-gen`, paid from `server/content`) |
 | en table per chapter | ≤ 48 KB raw | | `budget.ts` |
-| First-load to first line (static estimate) | ≤ 800 KB transfer | the entry + engine closures (changed by PUZZLES-PLAN: lazy chunks excluded; was "all JS"; as merged, LMI `3e35a7b`, RULINGS 105, 113: + the meta controller chunk, `client/scripts/budget.ts:962`) + CSS + html + TWA 16.2 KB [R1] + ch1 story/meta/manifest + first knot's images (AVIF); audio excluded (it streams, never blocks the first line) | `budget.ts` |
+| First-load to first line (static estimate) | ≤ 800 KB transfer | the entry + engine closures (changed by PUZZLES-PLAN: lazy chunks excluded; was "all JS"; as merged, LMI `3e35a7b`, RULINGS 105, 113: + the meta controller chunk, `client/scripts/budget.ts:962`; as merged, LFL `cec347c`, RULINGS 149, 155: without it again, `:952-953`) + CSS + html + TWA 16.2 KB [R1] + ch1 story/meta/manifest + first knot's images (AVIF); audio excluded (it streams, never blocks the first line) | `budget.ts` |
 | First-load per story, covers (changed by STORIES-PLAN) | the row above for every story's first chapter (a free chapter no `next` names), plus `catalog.json`, `covers.json` and the 3 largest cover AVIFs, ≤ 800 KB; cover exactly 360×640, AVIF ≤ 24 KB, WebP ≤ 36 KB | [STORIES-PLAN.md](STORIES-PLAN.md), section "Budgets and validation" | `budget.ts` (L5): `budget: first-load row per story`, `budget: cover over 24 KB fails` |
 | First knot images | ≤ 450 KB | | `budget.ts` |
 | Image dimensions | ≤ 2048 px each side; bg/cg exactly 1080×2048; sprites ≤ 768×1536. Changed by MEMORY-PLAN (M1): a trimmed sprite's dimensions are checked on its canvas; `trim` only on char/prop, inside the canvas, with even stored sides on char/prop — `budget: a trimmed background fails`, `budget: a char canvas over 768x1536 fails` | principle 4 | `assets.ts` writes dims from sharp metadata; `budget.ts` checks |
@@ -2518,6 +2564,11 @@ All budgets are enforced by `client/scripts/budget.ts` inside `npm run build` un
 | JS heap after ch2 start | ≤ 48 MB (CDP `Performance.getMetrics` `JSHeapUsedSize`) | | e2e `heap under budget` |
 | Time to first line | ≤ 6 s from navigation (tap issued at once), CPU 4× (`Emulation.setCPUThrottlingRate`), 1.6 Mbps down / 150 ms RTT (`Network.emulateNetworkConditions`), on `dist-e2e` | about 0.4 MB at 200 KB/s ≈ 2 s + parse + auth | e2e `time to first line under throttling` |
 | Render resolution | `min(DPR, 2)`, LOW → 1 | principle 4 | `layout.test.ts` |
+
+The "JS before the first line" row above: changed by the engine plan (adopted 2026-11-09, RULINGS 158; planned, not
+built): the three plans' bytes against this row and the entry, engine-closure and all-JS rows are kept in one ledger
+per row, re-based on main `3c62a86` (RULINGS 143 QO10, 158) —
+[engine §11.1 The shared ledgers](plans/engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13).
 
 **Red once:**
 - `budget.test.ts` feeds synthetic inputs and expects FAIL rows: 300 KB entry, 4096 px image, WAV without
@@ -2918,6 +2969,11 @@ are in):
 
 ### Dependency order (RULINGS 8: no wave barriers; changed by PUZZLES-PLAN)
 
+Changed by the adopted plans (RULINGS 158): the engine, per-player and shots plans' lanes enter the table below as one
+block row of planned lanes (adopted 2026-11-09, RULINGS 158; planned, not built). No per-lane order is copied here:
+their one order is [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts). GM1a
+and GM6k launched from the frozen designs before this adoption merged (RULINGS 160).
+
 A lane starts as soon as every lane in its "Gate to start" is merged and a slot is free. The slots are one client
 slot and one server slot, or two client / doc / narrative lanes with disjoint locks once the server chain has ended;
 never more than 2 lanes. "Re-cut" marks a lane whose scope this revision changes (its entry below says how).
@@ -3023,6 +3079,20 @@ follows MD1b `anim-parts-assets` in the order of `design-animation`'s draft,
 `D:/tmp/novel-orch/design/animation/characters.md` section 11.1b; RULINGS 131). The animation and mechanics lanes are
 being designed and get rows when adopted.
 
+Changed by RULINGS 132-158 (as of `3c62a86`; docs lane `docs-adopt`, group B): the State column is the state as of
+`3c62a86`, with each SHA from `git log --first-parent main`. Since `805f382` these merged: the docs lane
+`docs-errata-9` as `525dd68`, LEL entry-lever `7b37278`, LBI build-skew `fe996a0`, LHJ handover-join `972f773`, M3s
+memory-half-paid `a5f887b`, LFL first-line `cec347c` and LRB reload-bounds `3c62a86`. The docs commits `d31f720`,
+`cdca9d4`, `ddc08db`, `a9f28e3`, `acc4e0d` and `df0e12c` (owner answers and questions in OPEN-QUESTIONS, one ARCHITECTURE row)
+are not lanes. LEL, LBI, LHJ, LFL, LRB and L1 are new rows (RULINGS 137, 144, 146, 156, 158). M3s's wait for
+MD1b is superseded: RULINGS 132 stopped the character half of `design-animation` (its MD lanes no longer exist),
+replaced by `design-shots` (RULINGS 132, 143); M3s ran in the server slot after LBI (RULINGS 143 QO4, 146) and
+merged (RULINGS 151). Running: L1 `l1-entry-summary` (client; RULINGS 158 unshelved the entry lever L1), beside
+the docs lane `docs-adopt` (base `3c62a86`; the three designs adopted as plans, RULINGS 158). "To go": no lane of
+this table; the planned lanes of the three plans (the block row below), L2 (shelved, RULINGS 142, 158) and the
+preload-priority lane (carried, RULINGS 152 Q14 (b)). GM1a and GM6k launched from the frozen designs before this
+adoption merged (RULINGS 160).
+
 | Lane | Slot | State | Gate to start (merged) | Re-cut |
 |---|---|---|---|---|
 | L1 client-shell | client | merged `ea8a6a2` (`f6e2624` before the rewrite) | — | — |
@@ -3080,7 +3150,14 @@ being designed and get rows when adopted.
 | **M3c memory-half-tier** | client | merged `a6365a8` (relaunched after its cut r1 block, RULINGS 120; new, MEMORY-PLAN) | M2 | new |
 | D2 docs-final | doc | merged `b766a16` | L15. Changed by META-PLAN: LMI, L9; revision 1: LPO. Changed by MEMORY-PLAN: M2. Changed by RULINGS 96: LPH (it closes L9's carried payment gaps before D2) | PUZZLES-PLAN, STORIES-PLAN; META-PLAN: the meta rows and runbooks; MEMORY-PLAN: gate + M2, the M1 / M2 map rows, two authoring-guide rules; RULINGS 96: gate + LPH |
 | **LRF auto-refund** | server | merged `a93fe54` (new, RULINGS 126, added 2026-11-03) | LPH (the server chain; LPH's residual closure (B) is one of its items), D2 (its item (b) is the restore gap D2 found, RULINGS 125) | new (owner Q9, RULINGS 120; launched in RULINGS 126) |
-| **M3s memory-half-paid** | server | to go (new, MEMORY-PLAN) | M3c, L9 (the end of the server chain), D2 (the docs chain D1 → D2 → M3s). Changed by RULINGS 126: LRF (the server slot takes the money lane first; M3s's cut follows MD1's order in `design-animation`) | new; RULINGS 126: gate + LRF |
+| **M3s memory-half-paid** | server | merged `a5f887b` (new, MEMORY-PLAN) | M3c, L9 (the end of the server chain), D2 (the docs chain D1 → D2 → M3s). Changed by RULINGS 126: LRF (the server slot takes the money lane first; M3s's cut follows MD1's order in `design-animation`; superseded: RULINGS 132 stopped the character half of `design-animation`, and M3s ran after LBI, RULINGS 143 QO4, 146) | new; RULINGS 126: gate + LRF |
+| **LEL entry-lever** | client | merged `7b37278` (new, RULINGS 137; merged RULINGS 141) | — (needs neither design; shares `client/src/app/boot.ts` with LBI, the second to merge syncs main: RULINGS 137) | new (RULINGS 137; cut r1 relaunched, RULINGS 139; its 1.0 KB STOP waived, RULINGS 140) |
+| **LBI build-skew** | client + server | merged `fe996a0` (new, RULINGS 137; merged RULINGS 145) | — (needs neither design; shares `client/src/app/boot.ts` with LEL: RULINGS 137) | new (RULINGS 137; carry C7) |
+| **LHJ handover-join** | client | merged `972f773` (new, RULINGS 144; merged RULINGS 150) | — (QO19, a defect on main fixed before SH5a: RULINGS 143; its lock is disjoint from LBI's: RULINGS 144) | new (RULINGS 143 QO19, 144) |
+| **LFL first-line** | client | merged `cec347c` (new, RULINGS 146; its cut ruled in RULINGS 149; merged RULINGS 155) | LBI (both hold `client/src/app/{boot,game}.ts`: RULINGS 142) | new (RULINGS 142, 146) |
+| **LRB reload-bounds** | client | merged `3c62a86` (new, RULINGS 156; merged RULINGS 157) | LFL (LBI's carry for the next `game.ts` + `meta.ts` holder: RULINGS 149 Q9, 156) | new (RULINGS 156) |
+| **L1 entry-summary** (`l1-entry-summary`: the entry lever L1, not L1 client-shell) | client | running (new, RULINGS 158: unshelved by RULINGS 142's return condition) | LRB (`client/src/app/{boot,game}.ts`, `client/src/arch.test.ts`: [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts)) | new (RULINGS 158) |
+| **The three plans' lanes** (engine GM1a-GM9r: 29 + GM5q if P2-b demands it; per-player GM6a-GM6d2: 12; shots SH1-SH12b: 16) | client / server | planned (adopted 2026-11-09, RULINGS 158) | the one order: [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts) (GM1a and GM6k launched first, from the frozen designs, before this adoption merged: RULINGS 160) | new |
 
 There are 38 lanes: 12 merged, 2 running, 24 to go (changed by RULINGS 22, 23; it read "10 merged, 1 running, 1
 paused, 26 to go"); 6 are new from PUZZLES-PLAN, 3 (LDB0, LDB1, LDB2) from RULINGS 14/17 and 5 (LS1–LS4, N2) from
@@ -3105,6 +3182,12 @@ Changed by RULINGS 113-127 (as of `a6365a8`; docs lane `docs-errata-8`, group B)
 (M3s).
 Changed by RULINGS 129-131 (as of `805f382`; docs lane `docs-errata-9`, group B): 58 lanes — 57 merged (LRF `a93fe54`
 since `a6365a8`), 0 running, 1 to go (M3s).
+Changed by RULINGS 132-158 (as of `3c62a86`; docs lane `docs-adopt`, group B): 64 lanes in the table (LEL, LBI, LHJ,
+LFL, LRB and L1 are new) — 63 merged (M3s `a5f887b`, LEL `7b37278`, LBI `fe996a0`, LHJ `972f773`, LFL `cec347c` and
+LRB `3c62a86` since `805f382`), 1 running (L1), 0 to go; plus the planned block of the three plans (57 lanes +
+GM5q), ordered in
+[engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts);
+GM1a and GM6k launched from it (RULINGS 160).
 
 **Launch preference** when several lanes are ready (critical path first; changed by STORIES-PLAN):
 - client (two slots): L3c (running), L5, L11, LS1, L7, L12, LW3, L14a, L10, L13, L14b, LP2 ∥ LX, LS4, D1, N1, N2, L15,
@@ -3151,6 +3234,13 @@ since `a6365a8`), 0 running, 1 to go (M3s).
   none of this table's lanes is left (the animation and mechanics lanes get their places when adopted, RULINGS 124);
   server: M3s. LRF has merged (`a93fe54`), so M3s's gate is met; its cut waits for MD1b in `design-animation`'s order
   (RULINGS 131), so no lane of this table is ready now.
+- Changed by RULINGS 132-158 (as of `3c62a86`; docs lane `docs-adopt`, group B), merged lanes dropped: client:
+  L1 `l1-entry-summary` (running; RULINGS 158); server: none of this table's lanes is left (M3s merged `a5f887b`;
+  its MD1b wait superseded, RULINGS 132, 143). Launched since the lane base: client L1 `l1-entry-summary` (RULINGS
+  158); GM1a (client) and GM6k (server), both from the frozen designs before this adoption merged (RULINGS 160;
+  GM6k's `deploy.md` sentence is a carry for a docs lane after GM6k merges, RULINGS 160 / 161); the rest by the one
+  order:
+  [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts).
 
 After L9 the server slot takes doc / narrative / client lanes with disjoint locks.
 
@@ -3244,6 +3334,16 @@ beside them.
   `design-animation`'s draft orders before M3s's cut (RULINGS 131).
 - No client lane of this table is left; the animation and mechanics lanes join the path when adopted.
 - LRF has merged (`a93fe54`).
+
+**Changed by RULINGS 132-158 — the critical path as of `3c62a86`** (docs lane `docs-adopt`, group B).
+- No lane of this table is left to go: M3s has merged (`a5f887b`, RULINGS 151). Its wait for MD1b is superseded
+  (RULINGS 132 stopped the character half of `design-animation`; M3s ran after LBI, RULINGS 143 QO4, 146). L1
+  `l1-entry-summary` runs (RULINGS 158).
+- The whole plan's path is the planned lanes of the three adopted plans in their one order, from GM1a (after M3c,
+  merged) on; this file copies no per-lane order:
+  [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts).
+  GM1a and GM6k launched from the frozen designs before this adoption merged (RULINGS 160).
+- LEL, LBI, LHJ, M3s, LFL and LRB have merged (`7b37278`, `fe996a0`, `972f773`, `a5f887b`, `cec347c`, `3c62a86`).
 
 ### Lanes
 
@@ -6182,6 +6282,8 @@ Notation:
   As merged (LMI `3e35a7b`; RULINGS 105, 110): the controller is a lazy chunk (META-PLAN M27) with its own row,
   `meta controller chunk (br)` ≤ 5.0 KB br, counted in JS before the first line, so `build` prints 84 rows; the e2e is
   nine specs, 47 names.
+  As merged since (LEL `7b37278`, RULINGS 141; LFL `cec347c`, RULINGS 149, 155): the row's limit is 6.0 KB br
+  (`client/scripts/budget.ts:116`), and JS before the first line no longer counts the chunk.
 - **Seen red once:** the `meta-ui` row with a static import of `CompletionCard.svelte` from `app/boot.ts` (scratch) →
   FAIL.
 - **Tester mutations:** await a boot GET before the first line; open the card before `settle`; draw a new gift id per
@@ -6820,6 +6922,7 @@ each has a default there; the policy's operator facts are placeholders until the
 | 37 | 2026-11-03 | RULINGS 113-127 (as merged: M2 `385d52f`, docs-errata-7 `7e74abc`, LFU3 `48bc82a`, D2 `b766a16`, M3c `a6365a8`; LRF running; main `a6365a8`) | Docs lane `docs-errata-8`, group B: "Dependency order" — a marker paragraph and the State column as of `a6365a8` (M2, LFU3, D2 and M3c merged since `3e35a7b`, with SHAs from `git log --first-parent main`; the new row LRF auto-refund, RULINGS 126, added 2026-11-03, running in the server slot; M3s's gate + LRF, its cut after MD1's order in `design-animation`), the lane count (58: 56 merged, 1 running, 1 to go), the launch preference without the merged lanes, the critical path LRF → M3s; "Test strategy": the `memory.spec.ts` row's state and M3c's fourth name, the e2e count (54 names in nine specs). The animation and mechanics lanes are being designed (RULINGS 124) and get rows when adopted. The planned order is otherwise unchanged. STORIES-PLAN revision 19 and META-PLAN revision 17 hold their lines. Ledger: `D:/tmp/novel-orch/docs-errata-8/ledger.md` |
 | 38 | 2026-11-03 | `D:/tmp/novel-orch/carry.md` at ORCH `6a83b36` (the docs-errata-9 spec, group A; RULINGS 129-131), as merged on main `805f382` | Docs lane `docs-errata-9`, group A: docs-errata-8's open item OA-1 (the stage host is no longer "the box Pixi's `resizeTo` reads": the viewport insets bullet and L15's `Stage.svelte` re-cut) and its verifiers' notes (the scene module row, the `SceneController` and `AssetRegistry` Module API notes and the `Texture` + `ImageBitmap` lifetime row, as merged by M1 `f1b707d`, M2 `385d52f` and M3c `a6365a8`); LRF (`a93fe54`; RULINGS 120, 130; owner Q9): the automatic refund of an unapplied charge in K19, "Unapplied charge", K20, the "Refund." residual (closed), `/paysupport`, the concurrency row, Later and V4. Ledger: `D:/tmp/novel-orch/docs-errata-9/ledger.md` |
 | 39 | 2026-11-03 | RULINGS 129-131 (as merged: docs-errata-8 `be6c348`, LRF `a93fe54`; no lane running; main `805f382`) | Docs lane `docs-errata-9`, group B: "Dependency order" — a marker paragraph and the State column as of `805f382` (LRF merged since `a6365a8`, with its SHA from `git log --first-parent main`; the OPEN-QUESTIONS commit `805f382` is not a lane; no lane of the table running, the docs lane beside the two design rounds `design-animation` and `design-mechanics`; M3s to go, its gate met and its cut after MD1b in `design-animation`'s order, RULINGS 131), the lane count (58: 57 merged, 0 running, 1 to go), the launch preference without the merged lanes, the critical path M3s. The planned order is otherwise unchanged. STORIES-PLAN, META-PLAN and MEMORY-PLAN still name LRF running: outside this lane's lock, listed in the ledger for the next docs lane. Ledger: `D:/tmp/novel-orch/docs-errata-9/ledger.md` |
+| 40 | 2026-11-09 | RULINGS 132-158 (as merged: docs-errata-9 `525dd68`, LEL `7b37278`, LBI `fe996a0`, LHJ `972f773`, M3s `a5f887b`, LFL `cec347c`, LRB `3c62a86`; L1 running; main `3c62a86`); the three designs frozen at ORCH tag `designs-adopted-2026-11-09` (RULINGS 158); `D:/tmp/novel-orch/carry.md` at ORCH `e66fb81` (group A) | Docs lane `docs-adopt` (RULINGS 153, 158; not a triage round). Group I: "Changed by" notes where the adopted plans ([docs/plans](plans/README.md), planned, not built) supersede or extend this plan (the sprite-memory item, "Scene controller and asset registry", "Save format and resume", the "JS before the first line" row), and in "Dependency order" a paragraph and the block row of the three plans' lanes (their one order is engine §12; GM1a and GM6k launched from the frozen designs, RULINGS 160). Group A: docs-errata-9's OA-1 (the `telegram::payments` Module API "As merged (LRF)" lines; fourteen citations into LRF's moved lines re-pointed) and the LEL / LFL carries (the budget bullet, K3, the meta controller chunk, first-line and first-load rows and LMI's gates as merged; RULINGS 105's two statements superseded, RULINGS 149). Group B: "Dependency order" — a marker paragraph and the State column as of `3c62a86` (M3s merged; LEL, LBI, LHJ, LFL and LRB new and merged; L1 `l1-entry-summary` new and running; M3s's MD1b wait superseded, RULINGS 132, 143), the lane count (64: 63 merged, 1 running, 0 to go; plus the planned block, 57 lanes + GM5q), the launch preference and the critical path (the one order of engine §12 from GM1a). Ledger: `D:/tmp/novel-orch/docs-adopt/ledger.md` |
 
 **Revision 1 (2026-10-30)** — what changed, by triage item:
 - **W1** (undecodable payment ACKed and lost): K17 (lenient `PaymentProbe` for the payment subset, 500 only when the

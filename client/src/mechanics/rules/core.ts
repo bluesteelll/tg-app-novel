@@ -6,19 +6,22 @@
 // the runtime, the soft-lock checker and the seeded playthroughs call these same functions, so the build proves the
 // rules the player runs.
 //
+// Module `core` of the rules registry: rules/index.ts builds its entry from `actions`, `applyCore` and `reads`, and
+// `reduce` hands every action a writer over the registry (rules/writer.ts), the other modules' write path.
+//
 // An action that changes no state returns the same state object and no `dirty`, but keeps the effects its rule emits
 // (a lock panel, a reopened puzzle, a re-read text, a resume `room`, `refused`). A change ends with exactly one
 // `dirty`. A reference the story gate would reject (a missing room, item or hotspot) makes the action a no-op, never
 // a throw.
-import { hotspotKey, lockOf, own, runOf, runStep, set, setRun, worldIndex } from '../../explore/reduce.ts';
+import { hotspotKey, lockOf, own, runOf, runStep, sectionScope, set, setRun, worldIndex } from '../../explore/reduce.ts';
 import type { Draft, ExploreAction, ExploreEffect, HotspotEntry, WorldIndex } from '../../explore/reduce.ts';
 import type { PuzzleOutcome, WorldState } from '../../explore/state.ts';
 import type { PuzzleLocalId, SectionId, SfxId } from '../../story/staging.ts';
-import type { Effect, Hotspot, HotspotKey, ItemId, Lock, RoomId, WorldPublicBody } from '../../world/types.ts';
-
-function added<T>(list: readonly T[], v: T): readonly T[] {
-  return list.includes(v) ? list : [...list, v];
-}
+import type { Hotspot, HotspotKey, ItemId, Lock, RoomId, WorldPublicBody } from '../../world/types.ts';
+import type { ArrivalOut, FactAtom, RulesRegistry, SectionAction } from '../contract.ts';
+import { MECHANIC_RULES } from './index.ts';
+import { added, arrivalOut, createWriter, fire, openKey } from './writer.ts';
+import type { KernelWriter } from './writer.ts';
 
 function removed<T>(list: readonly T[], v: T): readonly T[] {
   return list.includes(v) ? list.filter((x) => x !== v) : list;
@@ -27,37 +30,6 @@ function removed<T>(list: readonly T[], v: T): readonly T[] {
 function cellsOf(s: WorldState, key: HotspotKey, lock: Lock): Array<ItemId | null> {
   const stored = own(s.slots, key);
   return lock.slots.map((_, i) => stored?.[i] ?? null);
-}
-
-/** Every trigger fires at most once; an empty one is never recorded, so it adds no state. */
-function fire(d: Draft, firedKey: string, effects: readonly Effect[]): void {
-  if (effects.length === 0 || d.s.fired.includes(firedKey)) {
-    return;
-  }
-  set(d, 'fired', [...d.s.fired, firedKey]);
-  for (const e of effects) {
-    if ('give' in e) {
-      if (d.ix.items.has(e.give)) {
-        set(d, 'held', added(d.s.held, e.give));
-        d.effects.push({ kind: 'got', gift: { item: e.give } });
-      }
-    } else if ('unlock' in e) {
-      openKey(d, e.unlock);
-    } else {
-      set(d, 'pendingStory', [...d.s.pendingStory, e.story]);
-    }
-  }
-}
-
-/** A key entering `open` runs its lock's `onOpen` once, whatever the cause. */
-function openKey(d: Draft, key: HotspotKey): void {
-  const entry = d.ix.hotspots.get(key);
-  const lock = entry === undefined ? null : lockOf(entry.hotspot);
-  if (lock === null || d.s.open.includes(key)) {
-    return;
-  }
-  set(d, 'open', [...d.s.open, key]);
-  fire(d, `open:${key}`, lock.onOpen);
 }
 
 /**
@@ -71,7 +43,21 @@ function openAt(d: Draft, key: HotspotKey, hotspot: Hotspot): void {
   }
 }
 
-function arrive(d: Draft, room: RoomId, sfx: SfxId | null): void {
+/** The arrival hook of every module, once per `room` effect: after the room's onEnter, never while a knot is pending. */
+function arrived(out: KernelWriter, room: RoomId): void {
+  if (out.draft.s.pendingStory.length > 0) {
+    return;
+  }
+  let view: ArrivalOut | null = null;
+  for (const m of out.rules) {
+    if (m.arrived !== undefined) {
+      m.arrived(out.world, out.draft.s, room, (view ??= arrivalOut(out)));
+    }
+  }
+}
+
+function arrive(out: KernelWriter, room: RoomId, sfx: SfxId | null): void {
+  const d = out.draft;
   const entry = d.ix.rooms.get(room);
   const section = d.s.section;
   if (entry === undefined || section === null) {
@@ -84,15 +70,18 @@ function arrive(d: Draft, room: RoomId, sfx: SfxId | null): void {
   set(d, 'visited', added(d.s.visited, room));
   d.effects.push({ kind: 'room', room, sfx });
   fire(d, `enter:${room}`, entry.room.onEnter);
+  arrived(out, room);
 }
 
-function enterSection(d: Draft, sid: SectionId): void {
+function enterSection(out: KernelWriter, sid: SectionId): void {
+  const d = out.draft;
   const section = d.ix.sections.get(sid);
   if (section === undefined) {
     return;
   }
   if (d.s.section === sid && d.s.room !== null) {
     d.effects.push({ kind: 'room', room: d.s.room, sfx: null }); // a resume
+    arrived(out, d.s.room);
     return;
   }
   const last = own(d.s.lastRoom, sid);
@@ -101,10 +90,11 @@ function enterSection(d: Draft, sid: SectionId): void {
     return;
   }
   set(d, 'section', sid);
-  arrive(d, room, null);
+  arrive(out, room, null);
 }
 
-function eventReturned(d: Draft, sid: SectionId): void {
+function eventReturned(out: KernelWriter, sid: SectionId): void {
+  const d = out.draft;
   if (d.s.pendingStory.length === 0 || d.s.section !== sid) {
     return;
   }
@@ -115,6 +105,7 @@ function eventReturned(d: Draft, sid: SectionId): void {
     d.effects.push({ kind: 'story', knot: next });
   } else if (d.s.room !== null) {
     d.effects.push({ kind: 'room', room: d.s.room, sfx: null });
+    arrived(out, d.s.room);
   }
 }
 
@@ -137,10 +128,17 @@ function lockTap(d: Draft, key: HotspotKey, lock: Lock): void {
   }
 }
 
-function tap(d: Draft, key: HotspotKey): void {
+function tap(out: KernelWriter, key: HotspotKey): void {
+  const d = out.draft;
   const entry = here(d, key);
   if (entry === undefined) {
     return;
+  }
+  // A module that owns a key of this hotspot handles the tap instead of core's kinds.
+  for (const m of out.rules) {
+    if (m.tap?.(out.world, d.s, key, out) === true) {
+      return;
+    }
   }
   const h = entry.hotspot;
   switch (h.kind) {
@@ -171,7 +169,7 @@ function tap(d: Draft, key: HotspotKey): void {
       if (h.lock !== null && !d.s.open.includes(key)) {
         lockTap(d, key, h.lock);
       } else if ('room' in h.to) {
-        arrive(d, h.to.room, h.sfx);
+        arrive(out, h.to.room, h.sfx);
       } else {
         // I-W's re-entry rule: a leave changes only `section` (sectionKey ignores it and lastRoom).
         set(d, 'section', null);
@@ -264,14 +262,16 @@ function puzzleEnded(d: Draft, p: PuzzleLocalId, outcome: PuzzleOutcome): void {
   }
 }
 
-function apply(d: Draft, a: ExploreAction): void {
+/** Core's `apply`: its rules write the draft directly (the writer is the write path of the other modules). */
+export function applyCore(_w: WorldPublicBody, a: ExploreAction, out: KernelWriter): void {
+  const d = out.draft;
   switch (a.kind) {
     case 'enter-section':
-      return enterSection(d, a.section);
+      return enterSection(out, a.section);
     case 'event-returned':
-      return eventReturned(d, a.section);
+      return eventReturned(out, a.section);
     case 'tap':
-      return tap(d, a.hotspot);
+      return tap(out, a.hotspot);
     case 'insert':
       return insert(d, a.hotspot, a.item);
     case 'attempt-failed':
@@ -286,11 +286,19 @@ function apply(d: Draft, a: ExploreAction): void {
   }
 }
 
-/** The one writer of WorldState while a section is current (a linear puzzle's run: the kernel's `runReduce`). */
-export function reduce(w: WorldPublicBody, s: WorldState, a: ExploreAction): { state: WorldState; effects: ExploreEffect[] } {
+/**
+ * The one writer of WorldState while a section is current (a linear puzzle's run: the kernel's `runReduce`). `rules`
+ * is the registry whose hooks run (a fixture registry in tests).
+ */
+export function reduce(
+  w: WorldPublicBody,
+  s: WorldState,
+  a: SectionAction,
+  rules: RulesRegistry = MECHANIC_RULES,
+): { state: WorldState; effects: ExploreEffect[] } {
   const d: Draft = { s, effects: [], ix: worldIndex(w) };
   const idle = s.pendingStory.length === 0;
-  apply(d, a);
+  applyCore(w, a, createWriter(d, w, rules));
   const head = d.s.pendingStory[0];
   if (idle && head !== undefined) {
     d.effects.push({ kind: 'story', knot: head });
@@ -299,6 +307,36 @@ export function reduce(w: WorldPublicBody, s: WorldState, a: ExploreAction): { s
     d.effects.push({ kind: 'dirty' });
   }
   return { state: d.s, effects: d.effects };
+}
+
+/**
+ * Every fact core's gating rules read in `section`, the atoms `sectionKey` is derived from: from S's scope (the one
+ * definition the key and `resetSection` share), `taken` and `open` per hotspot, `slot` per lock (by key), `fired` per
+ * trigger S can write, `solved` per lock puzzle (its whole outcome), `held` and `used` per item S gives, `doc` per doc
+ * S gives. `examined` and `visited` stay out: no core rule reads them.
+ */
+export function reads(w: WorldPublicBody, section: SectionId): readonly FactAtom[] {
+  const scope = sectionScope(w, section);
+  const atoms: FactAtom[] = [];
+  for (const key of scope.hotspots) {
+    atoms.push({ kind: 'taken', id: key }, { kind: 'open', id: key });
+  }
+  for (const { key } of scope.locks) {
+    atoms.push({ kind: 'slot', id: key });
+  }
+  for (const fired of scope.fired) {
+    atoms.push({ kind: 'fired', id: fired });
+  }
+  for (const p of scope.puzzles) {
+    atoms.push({ kind: 'solved', id: p });
+  }
+  for (const item of scope.items) {
+    atoms.push({ kind: 'held', id: item }, { kind: 'used', id: item });
+  }
+  for (const doc of scope.docs) {
+    atoms.push({ kind: 'doc', id: doc });
+  }
+  return atoms;
 }
 
 // ---------------------------------------------------------------------------------------------------------------

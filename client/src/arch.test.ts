@@ -633,8 +633,10 @@ function checkImport(ctx: Ctx, node: ts.Node): void {
     if (isStatic && lazy !== undefined && !ctx.file.startsWith(lazy)) {
       report(ctx, 'lazy-ui', node);
     }
-    // Any value reference into the rules half, `import()` included, from outside it and its importers.
-    if (target.startsWith(`/src/${RULES_DIR}`) && !ctx.file.startsWith(RULES_DIR) && !RULES_IMPORTERS.includes(ctx.file)) {
+    // Any value reference into the rules half, `import()` included, from outside it and its importers. The trailing
+    // slash makes a bare directory (`../mechanics/rules`, which resolves to its index.ts) match, and a sibling such as
+    // `mechanics/rulesets.ts` not.
+    if (`${target}/`.startsWith(`/src/${RULES_DIR}`) && !ctx.file.startsWith(RULES_DIR) && !RULES_IMPORTERS.includes(ctx.file)) {
       report(ctx, 'rules-lazy', node);
     }
   }
@@ -1776,6 +1778,9 @@ const RED: Record<RuleId, readonly Fixture[]> = {
     ['app/yields.ts', "const m = import('../mechanics/rules/core.ts');"],
     // Only the controller reaches the rules; the components stay presentational.
     ['ui/explore/ExploreView.svelte', "<script lang=\"ts\">\n  import { actions } from '../../mechanics/rules/core.ts';\n</script>"],
+    // A bare directory resolves to its index.ts, so the rules registry would load unseen (GM1a review M2).
+    ['story/chapters.ts', "import { MECHANIC_RULES } from '../mechanics/rules';"],
+    ['mechanics/data/index.ts', "import { MECHANIC_RULES } from '../rules';"],
   ],
   'runner-enter': [
     ['app/game.ts', 'runner.enter(k, p);'],
@@ -1899,6 +1904,8 @@ const ALLOW: ReadonlyArray<readonly [RuleId, readonly Fixture[]]> = [
       // Erased: a type import, or a type query, loads nothing.
       ['app/yields.ts', "import type { SearchResult } from '../mechanics/rules/search.ts';"],
       ['explore/reconcile.ts', "import type { SearchResult } from '../mechanics/rules/search.ts';\ntype D = import('../mechanics/rules/core.ts').Draft;"],
+      // A sibling whose name only shares the directory's prefix is not the rules half.
+      ['story/chapters.ts', "import { x } from '../mechanics/rulesets.ts';"],
     ],
   ],
   [

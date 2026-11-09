@@ -40,6 +40,11 @@ out of `client/e2e/helpers.ts`, section 14 item 7), M2 14, M3c 15, M3s 13 files.
 As of `a6365a8` (docs lane `docs-errata-8`, group B; RULINGS 117, 125-127): M1 (`f1b707d`), M2 (`385d52f`), M3c
 (`a6365a8`) and D2 (`b766a16`) have merged; M3s is to go, in the server slot after LRF auto-refund (running, RULINGS
 126), and its cut follows MD1's order in `design-animation`.
+Changed by RULINGS 132-158 (as of `3c62a86`; docs lane `docs-adopt`, group B): LRF (`a93fe54`) and M3s (`a5f887b`,
+RULINGS 151) have merged, so every lane this plan launched has merged; its preload-priority scene lane is carried, not launched
+(RULINGS 152 Q14 (b), section 11). "Its cut follows MD1's order in
+`design-animation`" is superseded: RULINGS 132 stopped the character half of `design-animation` (its MD lanes no
+longer exist), and M3s ran in the server slot after LBI (RULINGS 143 QO4, 146).
 
 ## 1. Goal
 
@@ -103,6 +108,11 @@ Textures + their CPU copies are 64 of 138.6 MiB (46 %); each MiB of texture save
 - `LIMITS.knotSet`, `LIMITS.roomSet` (`budget.ts:112-113`) and `STEADY_CAP_BYTES` (`registry.ts:9`) are three literals
   for one invariant.
 - The next chapter's first knot (`next:*`) is outside the knot-set gate, bounded at runtime only (carry.md:82).
+
+  Changed by the shots plan (adopted 2026-11-09, RULINGS 158; planned, not built): under the step windows a refused
+  `need` item or `warm` fetch may evict a `next:*` holder and no gate counts it (RULINGS 138 (a)); its loss gives the
+  half-tier entry at the handover —
+  [shots §5.8 Preload policy for cuts](plans/shots/05b-preload-memory-download.md#58-preload-policy-for-cuts-sh5a-windows-sh5b-entry).
 - Exploration rooms sit at 29.3 MiB with two neighbours (PZ X13 :614-618).
 
 ## 3. Context and constraints
@@ -284,6 +294,12 @@ The manifest entry keeps `w`, `h`, `decodedBytes = w x h x 4` of the **stored** 
 
 ### 4.C Half tier on Android LOW phones
 
+Changed by the shots plan (adopted 2026-11-09, RULINGS 158; planned, not built): SH5b adds the half-tier entry at a
+chapter handover; its entry preview draws half files on AVERAGE / HIGH phones until the upgrade lands, a bounded
+exception to I6 (QO11, RULINGS 143) —
+[shots §5.8 Preload policy for cuts](plans/shots/05b-preload-memory-download.md#58-preload-policy-for-cuts-sh5a-windows-sh5b-entry),
+[shots §13 Questions for the orchestrator](plans/shots/13-orchestrator-questions.md#13-questions-for-the-orchestrator-engineering-each-with-a-recommendation).
+
 **What.** Every bg, cg and prop, and every char on the canonical 768 x 1536 canvas, gets a second file pair at exactly
 0.5 x per side of its **stored** file (bg 540 x 1024; a 466 x 1394 trimmed placeholder sprite gives 233 x 697). A char
 on a smaller canvas, which DIMS allows (`budget.ts:165`, `exact: false`), gets no half and loads its full file on either
@@ -406,8 +422,10 @@ The tier is chosen at mount, like the AVIF/WebP variant, by perf class **and sta
   - Other devices: unchanged.
 - **Download.** LOW phones fetch only half files; AVIF bytes do not scale with pixel count and no measurement exists
   for our art (MR2:144-147). Build: +2 files per image; paid fingerprints +2 per paid image (`manifest.ts:286-289`), from
-  M3s on.
-- **Risk.** The server indexes gated files only from `avif`/`webp`/`file` (`content.rs:352-356, :638-642`). It needs
+  M3s on (as merged, M3s `a5f887b`, RULINGS 151: `manifest.ts:359-361`).
+- **Risk.** (Historical since M3s: as merged, M3s `a5f887b`, RULINGS 151, the server reads a gated entry's `half`, `AssetProbe` /
+  `HalfProbe` `content.rs:367-380`, and indexes it under its full file's rules, `index_assets` `:670-727`, the on-disk
+  check `:705-715`.) The server indexes gated files only from `avif`/`webp`/`file` (`content.rs:352-356, :638-642`). It needs
   every named file on disk (`:660-670`) and ignores a nested `half`. So:
   - M3c writes `half` on every **public** image entry (a char only on the 1536-px canvas), in free and paid manifests
     alike: an id's entry must be
@@ -426,6 +444,13 @@ The tier is chosen at mount, like the AVIF/WebP variant, by perf class **and sta
   - that the test device's UA carries the class and that `screen.*` reports CSS px there.
 
 ### 4.D Layered sprites (body + trimmed face parts) - deferred
+
+Changed by the shots plan (adopted 2026-11-09, RULINGS 158; planned, not built): staging moves to drawn shots with no
+character sprites (owner Q56); SH12a takes `show:` / `hide:` out and SH12b the sprite residue —
+[shots §2 The shot model](plans/shots/02-shot-model.md#2-the-shot-model),
+[shots §0 Decision table](plans/shots/00-decision-table.md#0-decision-table),
+[shots §9.13 SH12a `sprites-out`](plans/shots/09e-lanes-sh11-sh12b.md#913-sh12a-sprites-out-client-the-kinds-atomic-rev-4-split-w6),
+[shots §9.13b SH12b `sprites-residue`](plans/shots/09e-lanes-sh11-sh12b.md#913b-sh12b-sprites-residue-client-rev-4-split).
 
 - **What it would change.** Catalog `chars.<c>` gains a body (or bodies per pose) and part groups; each expression
   maps to a part set (Ren'Py attributes / Naninovel composition map, MR3); `show:<char> <expr>` is unchanged (principle
@@ -537,7 +562,8 @@ struct HalfProbe { avif: UrlProbe, webp: UrlProbe }
 - `trim` needs no server change: `AssetProbe` ignores unknown fields (no `deny_unknown_fields`, `content.rs:351-356`).
 - `half` on a **gated** entry exists only from M3s on (M3c writes it on public entries only, section 11). M3s's committed fixtures
   `server/tests/fixtures/content/chapters/{ch2,ch4}/assets.json` gain `half` for their one bg each, with 4 fixture files,
-  because `index_assets` requires every named file on disk (`content.rs:660-670`).
+  because `index_assets` requires every named file on disk (`content.rs:660-670`; as merged, M3s `a5f887b`, RULINGS 151: `:670-727`, the
+  on-disk check `:705-715`).
 - File names: half files get a distinct token in `assetFileName` (`manifest.ts:221-223`) so names stay injective
   (ids never hold `-`; per-namespace segment counts rule out collisions; the cut proves it in a test). As merged (M3c
   `a6365a8`; RULINGS 127; M3c cut F5): `assetFileName(id, bytes, ext, size)` names a half
@@ -659,12 +685,17 @@ export const LIMITS: Limits = { /* ... */ knotSet: STEADY_CAP_BYTES, roomSet: ST
 
 ## 7. Caps and the knot-set gate after each lever
 
+Changed by the shots and engine plans (adopted 2026-11-09, RULINGS 158; planned, not built): SH3b adds the gates
+`budget/step-window` and `budget/entry-step`; GM4g adds the room-set's transition-pair term —
+[shots §9.4 SH3b `shot-budget`](plans/shots/09b-lanes-sh3a-sh3b.md#94-sh3b-shot-budget-client-budget),
+[engine §12 GM4g `mech-room-set-pair`](plans/engine/12d-lanes-gm4-gm5.md#gm4g-mech-room-set-pair-new).
+
 | | Registry (runtime invariant) | `budget/knot-set` (static gate) | Equivalence (I2) |
 |---|---|---|---|
 | Today | counts `entry.decodedBytes` of live + in-flight records; 32 steady / 48 hard | sum of `decodedBytes` (own) + `carriedBound` | equal per knot |
 | M1 trim | unchanged code; counts trimmed `decodedBytes` | unchanged code; DIMS (`budget.ts:162-168`) checked on the canvas; new decoder checks: trim only on char/prop, inside the canvas, even stored sides on char/prop | equal |
 | M2 cpu-copy | reserves `decodedBytes + ref.bytes` of the chosen variant at admission; counts `decodedBytes + blob.size` once live (a different size is counted and reported in `keptMismatch`, not refused; critique O8) | the shared `decoded()` helper (`budget.ts:666-668`) counts `decodedBytes + max(avif.bytes, webp.bytes)`, so the knot-set **and room-set** rows (`budget.ts:701-759`) both move by the file bytes; `LIMITS.knotSet = LIMITS.roomSet = STEADY_CAP_BYTES` (one source; critique O2) | static >= runtime for a host that serves the build's bytes |
-| M3c half | counts the file of the tier current when the record starts (`rec.file`; `demote()` changes later records only) | stays on the full tier. The decoder enforces the exact halving: `half.w x 2 = w`, `half.h x 2 = h`, `half.decodedBytes = w/2 x h/2 x 4` (critique_r2 W5), and a char `half` only on the 1536-px canvas (critique_r3 W1). Image rows add: half files exist at their manifest sizes and within the kind's file limits; per entry, `half.decodedBytes + max(half avif, half webp) <= decodedBytes + max(avif, webp)`, which is the exact I2 condition, not a proxy. The `transfer <ch> (half)` rows (6 MB) are a **measurement** of what a half-tier session downloads per chapter (the half file where an entry has one, else the full; from M3c, gated halves from M3s), not counted as a guard (critique_r2 O4) | per entry the LOW count <= the full count, so the gate bounds LOW too (for room-set as for knot-set) |
+| M3c half | counts the file of the tier current when the record starts (`rec.file`; `demote()` changes later records only) | stays on the full tier. The decoder enforces the exact halving: `half.w x 2 = w`, `half.h x 2 = h`, `half.decodedBytes = w/2 x h/2 x 4` (critique_r2 W5), and a char `half` only on the 1536-px canvas (critique_r3 W1). Image rows add: half files exist at their manifest sizes and within the kind's file limits; per entry, `half.decodedBytes + max(half avif, half webp) <= decodedBytes + max(avif, webp)`, which is the exact I2 condition, not a proxy. The `transfer <ch> (half)` rows (6 MB) are a **measurement** of what a half-tier session downloads per chapter (the half file where an entry has one, else the full; from M3c, gated halves from M3s; done, as merged, M3s `a5f887b`, RULINGS 151), not counted as a guard (critique_r2 O4) | per entry the LOW count <= the full count, so the gate bounds LOW too (for room-set as for knot-set) |
 | Caps | 32 / 48 MiB through M1-M3 | 32 MiB | - |
 | After M2 is measured | candidate 48 / 64 MiB: steady 48 + 12 + 45.8 + 13.7 + 3.1 = 122.6, transient 64 + 12 + 45.8 + 13.7 + 3.1 = 138.6 < 143.05 | follows `STEADY_CAP_BYTES` | a PP decision on measured numbers, not in M2 |
 
@@ -675,6 +706,12 @@ Steady total after the levers (PP model at the gated limits, MiB; 3.1 = covers 2
   busiest knot's bound, 4.C). The cap-bounded worst case stays 32, which gives 97.6.
 
 ## 8. Critical flows
+
+Changed by the shots and engine plans (adopted 2026-11-09, RULINGS 158; planned, not built): shot content preloads
+through step windows (`need`, `warm`, `hope`, `eventRoom`; the event's own room is evicted last), and a room's
+`state:<room>` holders follow `room:*`'s keep set —
+[shots §5.8 Preload policy for cuts](plans/shots/05b-preload-memory-download.md#58-preload-policy-for-cuts-sh5a-windows-sh5b-entry),
+[engine §6.4 `visual`: state-derived room pictures](plans/engine/06-mechanics-as-modules.md#64-visual-state-derived-room-pictures-gm3b-replaces-lfu3s-b-001-fix).
 
 **A1 load (M2).**
 1. The registry admits `need = decodedBytes + ref.bytes`.
@@ -810,7 +847,7 @@ the registry at `:418`; the demotion inside `onResize`, after the relayout (`:24
 | Story update between sessions | manifests are per build; geometry is per file |
 | Perf class absent | AVERAGE (R1 section 6) -> full tier |
 | Viewport change / fullscreen / unfold | `halfFits` re-tested on the new host; false -> `registry.demote()`: later records load the full tier, live half records stay until released (I4: layout is tier-independent) |
-| Gated image on a LOW phone before M3s | its entry has no `half`: the full file loads (inside the caps; gated as today); no 404 path exists |
+| Gated image on a LOW phone before M3s | its entry has no `half`: the full file loads (inside the caps; gated as today); no 404 path exists (historical: as merged, M3s `a5f887b`, RULINGS 151, a gated scene image has its half, served only after the entitlement check) |
 | `screen` dimensions absent or not positive | counted as an unbounded screen -> full tier |
 
 ## 10. Resource lifetime
@@ -828,6 +865,13 @@ A dead-bound hold entry keeps a reference to the ended handle's JS object until 
 and Blob were already freed when the record ended, so it holds no counted bytes.
 
 ## 11. Lane cut sketches
+
+Changed by the engine and shots plans (adopted 2026-11-09, RULINGS 158; planned, not built): a preload priority (a
+refusal signal or a priority-ordered eviction in `scene/{registry,preload}.ts`) is carried as a MEMORY-PLAN lane in
+the `scene/*` tail after SH8, launched only if a budget-Android e2e shows the case (RULINGS 152 Q14 (b); engine §15
+item 14) —
+[engine §15 Questions for the orchestrator](plans/engine/15-orchestrator-questions.md#15-questions-for-the-orchestrator-engineering-each-with-a-recommendation),
+[engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts).
 
 Each fits one subsystem, <= ~15 files, red-first per commit, budgets in the build gate. Line numbers are re-located
 at cut time.
@@ -1206,7 +1250,7 @@ Ownership rules for every lane below (critique W3):
     fixtures do not move.
   - `assets: paid manifest keeps the server fixture keys` (`assets.test.ts:542-567`) compares shapes with `half` set
     aside, and gains the assertion that every `half` URL in a paid manifest is public. M3s restores the full
-    comparison.
+    comparison (as merged, M3s `a5f887b`, RULINGS 151: restored, `half` slots included, `assets.test.ts:887-930`).
 - **Chains.** `budget.ts` ... -> M2 -> M3c; `catalog.ts` L13 -> M1 -> M3c; the asset-tool files M1 -> M3c -> M3s
   (`manifest.ts` M1 -> M2 -> M3c -> M3s); `scene/{registry,registry.test,controller,preload.test,executor.test}.ts`
   M2 -> M3c; `scene/{layout,layout.test}.ts` M1 -> M3c; `memory.spec.ts` M2 -> M3c -> M3s. No `loader.ts`.
@@ -1301,8 +1345,14 @@ Ownership rules for every lane below (critique W3):
     itself (absent = `'none'`, `encode.ts:169`), so every full file stays byte-identical.
   - The transfer rows (F2): `transfer <ch> (half)` exists for every listed chapter, paid ones included; a paid
     chapter's row counts its public halves and the full files of its gated entries (`client/scripts/budget.ts:943-951`,
-    `:1007`). Measured at the merge, half / full KB: ch1 1149.7 / 1182.0, ch2 1113.6 / 1124.2, ch3 369.1 / 384.3, ch4
-    716.9 / 724.9 (`impl.md`).
+    `:1007`). Measured at the M3c merge, half / full KB: ch1 1149.7 / 1182.0, ch2 1113.6 / 1124.2, ch3 369.1 / 384.3,
+    ch4 716.9 / 724.9 (`impl.md`).
+    As merged (M3s `a5f887b`, RULINGS 151; M3s cut F4): a paid chapter's row counts each image's half wherever the
+    entry has one, public or gated, and no longer the full file of a gated entry that has one (`transferHalfRow`
+    `budget.ts:940-949`, its call `:1004`); an image without a half, such as a char off the half canvas
+    (`manifest.ts:139-140`), still counts its full file (`(e.half ?? e).avif.bytes`, `budget.ts:947`). Measured at the
+    M3s merge, half KB: ch2 1113.6 -> 1104.1, ch4 716.9 -> 715.8; ch1, ch3 and every other row unchanged (RULINGS 151;
+    `D:/tmp/novel-orch/m3s-memory-half-paid/impl.md`).
   - The image row (F7): a half adds file, limit and I2 checks, and the row value stays the full AVIF
     (`budget.ts:731-753`).
   - Not as the cut said: the first-load rows rose (ch1 306.4 -> 307.5, ch3 288.7 -> 289.6 KB of 800, with LFU3; the
@@ -1317,13 +1367,14 @@ Ownership rules for every lane below (critique W3):
   product and serves them only after the entitlement check. LOW phones get the half tier of paid art.
 - **Why one server-slot lane, after M3c (W3, O7).**
   - The paid manifest's shape is pinned to the committed server fixtures (`assets.test.ts:542-567`), and the server
-    needs every file a fixture names on disk (`content.rs:660-670`). So the planner's gated branch, the server index
+    needs every file a fixture names on disk (`content.rs:660-670`; as merged, M3s `a5f887b`, RULINGS 151: `assets.test.ts:887-930`,
+    `content.rs:670-727`, the on-disk check `:705-715`). So the planner's gated branch, the server index
     and the fixtures change together, and that needs cargo and the PostgreSQL slot.
   - The client decoder already knows `half` (M3c), so `catalog: asset manifest decodes the server fixtures`
-    (`assets.test.ts:312-327`) stays green when the fixtures gain it.
+    (`assets.test.ts:312-327`; as merged, M3s `a5f887b`, RULINGS 151: `:458-473`) stays green when the fixtures gain it.
   - After L9 it delays no planned server lane, because the server chain has ended (PP:2620-2621).
   - Round 1's "new fixture chapter" is dropped. A chapter exists for the server only through the shared
-    `stories.json` (O7); negative cases use `FixtureCopy::edit_json` (`server/tests/it/content.rs:72-77`).
+    `stories.json` (O7); negative cases use `FixtureCopy::edit_json` (`server/tests/it/content.rs:72-77`; as merged, M3s `a5f887b`, RULINGS 151: `:74-79`).
 - **Chains.**
   - `server/src/content.rs`: L6b -> LM2 -> M3s (PP:2588).
   - `server/tests/it/content.rs`, `server/tests/fixtures/content/chapters/{ch2,ch4}/assets.json`: -> M3s.
@@ -1334,6 +1385,12 @@ Ownership rules for every lane below (critique W3):
   `server/tests/fixtures/content/assets/<bg half name>.{avif,webp}` (named by M3c's `assetFileName` token),
   `client/scripts/assets/{manifest.ts,assets.test.ts}`, `client/e2e/memory.spec.ts`, `docs/FEATURE_MAP.md`,
   `docs/ARCHITECTURE.md`.
+  - As merged (M3s `a5f887b`; RULINGS 146, 151; M3s cut Q1): docs were not in the lock (RULINGS 127, 146). The 13
+    files were the eleven code and fixture files above plus `client/scripts/scan-dist.{ts,test.ts}`, the scan prefix
+    rule for gated halves (RULINGS 120 Q5). The M3c map rows went to docs-errata-8 (above); the M3s rows to the docs
+    lane `docs-adopt`. The scan's red is `scan: a public half of a gated id fails`, and the M3c invariant
+    `assets: a paid manifest names no gated half file` became `assets: a gated image's half is gated beside it` (a
+    declared rename, cut Q1).
 - **Reds** (predicted red in brackets):
   - `content: half-tier gated file is served to an owner` [404];
   - `content: half-tier gated file is refused without the entitlement` (the existing gated rule);
@@ -1349,6 +1406,11 @@ Ownership rules for every lane below (critique W3):
 
 ## 12. Budgets and validation
 
+Changed by the engine plan (adopted 2026-11-09, RULINGS 158; planned, not built): the three plans' bytes against the
+entry, engine-closure, first-line and all-JS rows are kept in one ledger per row, re-based on main `3c62a86` (RULINGS
+143 QO10, 158) —
+[engine §11.1 The shared ledgers](plans/engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13).
+
 - JS: M1-M3 add < 1.5 KB brotli to the engine chunk (geometry + revive + the revive flow and the identity checks +
   `halfFits`; an estimate, which the build's per-chunk row reports). No new dependency. No change to the
   all-JS row (`LIMITS.allJsBr`: 290,000 B on main, `budget.ts:102`; 305 KB after LMI, PP:2235; as merged, LMI
@@ -1358,7 +1420,8 @@ Ownership rules for every lane below (critique W3):
 - First-load / per-chapter transfer:
   - M1: ~0 (quoted by the lane); M2: 0;
   - M3c adds the `transfer <ch> (half)` rows (6 MB) and keeps the first-load row on the full tier (worst case);
-  - M3s moves the paid `(half)` rows to gated halves.
+  - M3s moves the paid `(half)` rows to gated halves (done: as merged, M3s `a5f887b`, RULINGS 151; the paid `(half)` rows count the gated
+    halves).
 - Memory:
   - knot-set and room-set <= 32 MiB (kept bytes counted from M2); registry caps 32/48;
   - e2e `textures released on chapter change` and `heap under budget` unchanged;
@@ -1493,7 +1556,7 @@ Ownership rules for every lane below (critique W3):
   SQL: N/A (no persistent state). Endpoints: N/A except M3s's index (auth, `private, no-store` unchanged).
 - [x] DSL: no new tags; D keeps expressions as the authoring unit. Line IDs: N/A (no new lines).
 - [x] Payments/grant: N/A. Paid art: no gated half file is named before the server serves it (M3s changes the gated
-  branch, the index and the fixtures together); every new gated file is fingerprinted (`manifest.ts:286-289`); the
+  branch, the index and the fixtures together); every new gated file is fingerprinted (`manifest.ts:286-289`; as merged, M3s `a5f887b`, RULINGS 151: `:359-361`); the
   kept Blob is never given a URL; scan-dist unchanged.
 - [x] WebView: context check on `activated` kept and extended (revive); no Service Worker, `window.open`, `alert`.
 - [x] Textures <= 2048 px; resolution <= 2x DPR (LOW 1 via F); a release point per texture, bitmap and Blob; peak and
