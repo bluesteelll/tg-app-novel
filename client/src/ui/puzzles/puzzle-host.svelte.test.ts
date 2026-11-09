@@ -10,10 +10,13 @@ import { t } from '../../i18n/index.ts';
 import type { Lang } from '../../i18n/index.ts';
 import CodeLock from '../../puzzles/ui/CodeLock.svelte';
 import type { HintTierView } from '../../puzzles/session.ts';
-import { backScreen, createPuzzleView } from '../puzzle-view.svelte.ts';
-import type { HintLadderUiView, PuzzleFrameView, PuzzleHostProps } from '../puzzle-view.svelte.ts';
+import type { ItemId } from '../../world/types.ts';
+import { backScreen, coversStage, createPuzzleView, forwardHost } from '../puzzle-view.svelte.ts';
+import type { HintLadderUiView, PuzzleFrameView, PuzzleHostCallbacks, PuzzleHostProps } from '../puzzle-view.svelte.ts';
+import appSource from '../App.svelte?raw';
 import HintLadder from './HintLadder.svelte';
 import PuzzleHost from './PuzzleHost.svelte';
+import puzzleHostSource from './PuzzleHost.svelte?raw';
 
 // svelteTesting()'s auto-cleanup does not reach the `dom` project (L14a), so each test unmounts what it rendered here.
 afterEach(() => cleanup());
@@ -65,6 +68,7 @@ function frameOf(over: Partial<PuzzleFrameView> = {}): PuzzleFrameView {
     hintTiers: 3,
     ui: CodeLock,
     loadFailed: false,
+    retrying: false,
     ...over,
   };
 }
@@ -272,6 +276,135 @@ test('hint ladder: no port shows no use button', async () => {
   expect(onusehint.mock.calls).toEqual([[2]]);
   await host.rerender({ ladder: null });
   expect(shown(host.container)).not.toContain(t('en', 'hint.title'));
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM3w: Game's host callbacks are forwarders over the current session's yields, and the frame's cover rule (engine
+// plan GM3w)
+
+/** A PuzzleHostCallbacks that records each call as [tag, callback, ...arguments]; `item` names a piece after `tag`. */
+function recordingHost(tag: string, calls: unknown[][]): PuzzleHostCallbacks {
+  return {
+    item: (id) => {
+      calls.push([tag, 'item', id]);
+      return { name: `${tag} ${id}`, glyph: 'sun' };
+    },
+    onchange: (a) => {
+      calls.push([tag, 'onchange', a]);
+    },
+    ontry: () => {
+      calls.push([tag, 'ontry']);
+    },
+    ongiveup: () => {
+      calls.push([tag, 'ongiveup']);
+    },
+    onhint: () => {
+      calls.push([tag, 'onhint']);
+    },
+    onretry: () => {
+      calls.push([tag, 'onretry']);
+    },
+    onusehint: (tier) => {
+      calls.push([tag, 'onusehint', tier]);
+    },
+    ongetmore: () => {
+      calls.push([tag, 'ongetmore']);
+    },
+  };
+}
+
+/** Every callback once, in a fixed order, with fixed arguments; answers what `item` named. */
+function callEveryCallback(c: PuzzleHostCallbacks): ReturnType<PuzzleHostCallbacks['item']> {
+  const named = c.item('medal' as ItemId);
+  c.onchange([1, 2]);
+  c.ontry();
+  c.ongiveup();
+  c.onhint();
+  c.onretry();
+  c.onusehint(2);
+  c.ongetmore();
+  return named;
+}
+
+/** What `callEveryCallback` records on a host tagged `tag`. */
+const everyCallbackOn = (tag: string): unknown[][] => [
+  [tag, 'item', 'medal'],
+  [tag, 'onchange', [1, 2]],
+  [tag, 'ontry'],
+  [tag, 'ongiveup'],
+  [tag, 'onhint'],
+  [tag, 'onretry'],
+  [tag, 'onusehint', 2],
+  [tag, 'ongetmore'],
+];
+
+test("puzzle-view: forwardHost reaches the current session's host and nothing after it ends", () => {
+  const calls: unknown[][] = [];
+  let current: PuzzleHostCallbacks | undefined = recordingHost('a', calls);
+  const forward = forwardHost(() => current);
+  // One forwarder per callback, no more: a lane adding a callback edits the forwarder and this list.
+  expect(Object.keys(forward).sort()).toEqual(['item', 'onchange', 'ongetmore', 'ongiveup', 'onhint', 'onretry', 'ontry', 'onusehint']);
+  expect(callEveryCallback(forward)).toEqual({ name: 'a medal', glyph: 'sun' });
+  expect(calls).toEqual(everyCallbackOn('a'));
+  // A later session: the same forwarders reach its host only (the getter runs at each call, never at creation).
+  calls.length = 0;
+  current = recordingHost('b', calls);
+  expect(callEveryCallback(forward)).toEqual({ name: 'b medal', glyph: 'sun' });
+  expect(calls).toEqual(everyCallbackOn('b'));
+  // The session ended: every forwarder returns without a throw, reaches nothing, and `item` names no piece.
+  calls.length = 0;
+  current = undefined;
+  let named: ReturnType<PuzzleHostCallbacks['item']> | undefined;
+  expect(() => {
+    named = callEveryCallback(forward);
+  }).not.toThrow();
+  expect(named).toBeNull();
+  expect(calls).toEqual([]);
+});
+
+test('puzzle-view: coversStage is true for every frame today', () => {
+  expect(coversStage(null)).toBe(false);
+  // A linear or an exploration puzzle, its type chunk loading or failed, an ended one: each covers the stage.
+  const frames = [frameOf(), frameOf({ mode: 'explore' }), frameOf({ ui: null }), frameOf({ ui: null, loadFailed: true }), frameOf({ line: 'solved' })];
+  expect(frames.map((f) => coversStage(f))).toEqual([true, true, true, true, true]);
+  // The store answers it for its frame at each read (App reads it there), following every write of the frame.
+  const view = createPuzzleView();
+  expect(view.covers).toBe(false);
+  view.frame = frameOf();
+  expect(view.covers).toBe(true);
+  view.frame = null;
+  expect(view.covers).toBe(false);
+});
+
+/**
+ * The declarations of every rule of a component's <style> whose selector list holds exactly `selector` (a copy of
+ * explore.svelte.test.ts's reader, narrowed to whole selectors so `.host-failed p` does not count as `.host-failed`).
+ */
+function declarationsOf(source: string, selector: string): Map<string, string> {
+  const style = [...source.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style\s*>/gi)].map((m) => m[1] ?? '').join('\n');
+  const out = new Map<string, string>();
+  for (const m of style.replace(/\/\*[\s\S]*?\*\//g, ' ').matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (!(m[1] ?? '').split(',').some((s) => s.trim() === selector)) {
+      continue;
+    }
+    for (const decl of (m[2] ?? '').split(';')) {
+      const [prop, ...value] = decl.split(':');
+      if (prop !== undefined && value.length > 0) {
+        out.set(prop.trim(), value.join(':').trim());
+      }
+    }
+  }
+  return out;
+}
+
+test('puzzle host: the frame layer takes taps only on the frame and the load notice', () => {
+  // happy-dom computes no cascade: the rules are read from the sources. App's frame layer passes every tap through and
+  // the two blocks it can hold take them back; both are full-bleed, so every tap they took they still take.
+  expect(declarationsOf(appSource, '.frame-layer').get('pointer-events')).toBe('none');
+  expect(declarationsOf(appSource, '.host-failed').get('pointer-events')).toBe('auto');
+  expect(declarationsOf(puzzleHostSource, '.frame').get('pointer-events')).toBe('auto');
+  // The rule has one element: the wrapper of the frame layer.
+  expect([...appSource.matchAll(/class="layer frame-layer"/g)]).toHaveLength(1);
 });
 
 // ---------------------------------------------------------------------------------------------------------------
