@@ -1,6 +1,6 @@
 ### GM1a `mech-run-split`
 - **Goal:** §3.3-§3.5 behaviour-identical (`RULES_VERSION = 1`); spike P1 (engine / explore-ui before and after).
-- **After:** M3c merged (m1: `explore/controller.test.ts`, RULINGS 120); design adopted.
+- **After:** M3c merged (m1: `explore/controller.test.ts`, RULINGS 120); design adopted. **Ruled since: RULINGS 160** — GM1a starts from the frozen design (tag `designs-adopted-2026-11-09`), cited by section, before this adoption merges.
 - **Lock (15):** new `client/src/mechanics/rules/core.ts`, `client/src/mechanics/rules/search.ts`;
   `client/src/explore/{reduce,reconcile,controller}.ts`; `client/src/app/yields.ts` (`act`, imports);
   `client/src/arch.test.ts`; `client/src/explore/{explore,controller}.test.ts`; `client/src/app/yields.test.ts`;
@@ -120,7 +120,7 @@
   (body literals `:584-592`), `client/src/explore/explore.test.ts` (WorldState literals; re-located at the cut).
 - **Reconcile r1 (design-shots I-1):** `StagingSnapshot.cam?: CamState` and the types `CamTarget` / `CamState` in
   `staging.ts` (held), read by the codec's optional-key rule (§5.2); no lock change (14). After LFL (merged `cec347c`)
-  and LRB (in flight, RULINGS 156) on `game.ts` / `game.test.ts`; its `game.ts` type references are re-located on the
+  and LRB (merged `3c62a86`, RULINGS 157) on `game.ts` / `game.test.ts`, and L1 (`l1-entry-summary`, RULINGS 158) on `game.ts`; its `game.ts` type references are re-located on the
   parent at the cut (LFL moved `game.ts` lines).
 - **Commits:** (1) `save: a format-1 body upgrades to format 2` (golden; red: `unknown-format`); (2) `save: format 2
   round-trips` (with and without `run.work`, with `chapterStart.items`; reconcile r1: with and without

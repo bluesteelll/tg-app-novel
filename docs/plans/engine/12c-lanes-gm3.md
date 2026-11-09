@@ -622,8 +622,8 @@
   item if the orchestrator keeps the 1.5 target), e2e full (the round-3 e2e `mechanics: a tap on the room right after a puzzle closes reaches the room`
   now runs over the 480 ms `frameOut`); round 13: the request walk's program time MEASURED and recorded in the cut
   (60 s timeout; over 30 s is a STOP item), and its 51 rows re-located on the cut's parent (LFL, in flight, may move
-  `boot.ts` / `app/meta.ts` lines and functions; reconcile r1: LFL merged as `cec347c`, and LRB, in flight, holds
-  the same files, RULINGS 156: the rows follow the walk's red-first output, the design's list is §1's);
+  `boot.ts` / `app/meta.ts` lines and functions; reconcile r1: LFL merged as `cec347c`, and LRB (RULINGS 156) held
+  the same files, merged as `3c62a86` (RULINGS 157): the rows follow the walk's red-first output, the design's list is §1's);
   round 14: 62 rows (the 11 transport rows of §1), the program time measured with the re-type check in it.
 
 ### GM3b `mech-state-visuals`

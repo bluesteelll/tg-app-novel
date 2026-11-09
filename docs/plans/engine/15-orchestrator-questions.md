@@ -8,7 +8,7 @@
    (RULINGS 120's one-hunk precedent, scaled to a mechanical rename) and launch GM2a before the first A(`game.ts`) lane's
    cut (round 4: rev. 3's MD2; whichever lane `design-shots` or an adopted animation design puts on `game.ts`,
    RULINGS 132); if one is cut first, GM2a waits for its merge. Reconcile r1: that lane is **SH1** (§12 "Order and
-   conflicts"); LFL has merged and LRB holds `game.ts` now (RULINGS 156), so GM2a starts after LRB merges and before
+   conflicts"); LFL and LRB have merged (LRB `3c62a86`, RULINGS 157) and L1 (RULINGS 158) comes before GM2a on `game.ts`, so GM2a starts after L1 and before
    SH1's cut.
 3. **Story commits** in GM1d, GM3b, GM4u, GM9r (one key or one demo object each; round 3 m8: GM4 holds no story file,
    GM9p has none; round 5 m2: GM3b adds one catalog prop, GM4u and GM9r their en table entries) and, round 4, **GM8d**
@@ -49,6 +49,7 @@
    rows and asked for five more (R-E23, applied here); what remains is E-P15 (b) (the two en tables, the catalog with
    GM3b, `rules/index.ts` with GM8h, `spike-p2.test.ts`, GM5q on `explore.test.ts`); the critic's note stands: check
    both tables at the first GM6 cut.
+   **Ruled: RULINGS 153** — one combined order and shared-file table ([§12 Order and conflicts](12f-order-and-conflicts.md#order-and-conflicts); [per-player §9 Order](../per-player/09e-order-and-shared-files.md#order) / [per-player §9 Shared files](../per-player/09e-order-and-shared-files.md#shared-files-w4-m9) mirror it).
 9. **Where Rolldown puts Svelte's transition runtime** (round 4; critique_perplayer_r3 W1, per-player R-E21). GM3s
    adds the first `in:` / `out:` directives of the client (on `ExploreView.svelte` in the lazy explore-ui chunk; no
    directive exists in `client/src/**/*.svelte` today, per-player.md's Grep). Recommendation: GM3s's build gate
@@ -68,6 +69,7 @@
     test. The value part (whether the owner wants these demos visible in the placeholder story) is owner Q15g, default
     yes. Recommendation: accept; if the owner says no, GM8d's cut moves the same files under an e2e-only story root
     with a `scan-dist` canary, as a STOP item then.
+    **Ruled: RULINGS 154** — the demo puzzles live in «Прилив» ch3 (GM8d).
 12. **The engine envelope is at its bound** (round 8). This design's own programme target, engine growth <= 1.5 KB br
     (§2), now holds +1.50 (ARITHMETIC, §3.5), 0.00 left; the enforced gates are the build rows (engine 215.70 /
     230.0, first line 261.61 / 270.0 with per-player's +2.91) and the per-lane STOP rule (> +0.5 over a lane's line).
@@ -231,6 +233,8 @@
     every later entry-adding lane's cut STOPs until L1 has merged; a delta past 40.0 is the lane's own STOP. The first
     lanes to watch: GM3w (bound +0.04) and GM3s (0.05 estimate: a measured delta above ~0.09 crosses).
     `entryJsBr` is `client/scripts/budget.ts:109` on `cec347c`. Recommendation unchanged.
+    **Adoption (main `3c62a86`, docs-adopt):** §11.1 re-based on the measured bytes: first line 265.58 / 270.0, entry 39.50 / 40.0 (0.502 left), all JS 301.84 / 305.0 (re-set by GM7p, RULINGS 158), engine closure 226.08 / 230.0.
+    **Ruled since: RULINGS 158** — L1 is unshelved (RULINGS 142's return condition: 38,988 B + 510 B = 39,498 B, 502 B left against the 500 B line, inside the build's own churn) as lane `l1-entry-summary` (`summaryOf` into `saves/summary.ts`; entry -1.59, first line +0.21, CLAIM at `cdca9d4`); L2 stays shelved. The cut/build crossing rule above stands for every later entry-adding lane, read against the row after L1 merges.
 16. **All JS against its LIMIT (reconcile r1).** With LFL, the three designs' measured-base projection is **300.99 /
     305.0 KB br** (271,939 B MEASURED, `test_r2.md:69`, + 29.05 ARITHMETIC over CLAIM estimates) before EN's four
     puzzle-type chunks (GM7p, GM7g, GM8a, GM8b), each ~1.6 KB br by the measured `puzzle-type` chunk on main
@@ -245,3 +249,5 @@
     305.0** with LFL (271.939 + 29.694; 3.37 left), 304.83 after GM7p and GM7g (0.17 left) and **306.43 after GM8a**
     (FAIL, -1.43), 308.03 after GM8b; the third type chunk still crosses. Recommendation unchanged; the ruling is
     needed before GM8a's cut, and GM7g's cut quotes a 0.17 margin.
+    **Adoption (main `3c62a86`, docs-adopt):** §11.1 re-based on the measured bytes: first line 265.58 / 270.0, entry 39.50 / 40.0 (0.502 left), all JS 301.84 / 305.0 (re-set by GM7p, RULINGS 158), engine closure 226.08 / 230.0.
+    **Ruled: RULINGS 158** — `allJsBr` is re-set once, by GM7p (the `budget.ts` holder before GM7g in the one order), to GM7p's measured HEAD + the remaining planned puzzle-type chunks (GM7g, GM8a, GM8b at 1.6 KB br each, the measured `puzzle-type` chunk) + 5.0 KB br, rounded up to a whole KB; GM7p's cut quotes the arithmetic and the orchestrator confirms it in a RULINGS line at that cut; no other lane raises it (the row bounds no download).

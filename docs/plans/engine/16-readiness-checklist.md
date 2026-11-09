@@ -164,7 +164,7 @@
       two with a change, two with a precision; I-17 not applicable by RULINGS 154; none refused), each in its body
       place with its test and named mutation (**M-RCk**-**M-RCs**); R2 one order for the GM, GM6 and SH lanes (§12:
       A(f) retired, §9.14 adopted with I-2's `budget.ts` change, merged lanes shown merged, LFL merged as `cec347c`,
-      LRB in flight; every shared file of two lanes of either design in one row, never two holders at once); R3
+      LRB merged (`3c62a86`, at the adoption); every shared file of two lanes of either design in one row, never two holders at once); R3
       RULINGS 152 as worded: the predicate `stats().stale === 0 && !stats().reviving` with M-R14j's new fixture and
       **M-RCa**, Q14 (b) accepted with the preload-priority lane carried in the `scene/*` tail, the batch site bound to
       `held`'s declaration, `HOST_WAITS`, the constraint comparison and the widening (**M-RCb**-**M-RCj**,

@@ -52,6 +52,7 @@ engineering; none narrows motion.
    **39.46 / 40.0**, all JS **301.63 / 305.0**, engine closure 226.02 / 230.0, EN at +1.71 and PPL at its own +3.11,
    not +1.53 / +3.00; r1 read 265.34, 39.45, 300.99, 225.89); every SH lane quotes §11.1's rows at its cut. The
    "engine row ... ~225.2 / 230.0" ([shots §10 Budgets and validation](../shots/10-budgets-and-validation.md#10-budgets-and-validation-summary)) reads 226.02.
+   **Adoption (main `3c62a86`, docs-adopt):** §11.1 re-based on the measured bytes: first line 265.58 / 270.0, entry 39.50 / 40.0 (0.502 left), all JS 301.84 / 305.0 (re-set by GM7p, RULINGS 158), engine closure 226.08 / 230.0.
 8. **I-14** ([shots §11 Interface requests to engine.md](../shots/11-interface-requests.md#11-interface-requests-to-enginemd-and-through-the-orchestrator-to-per-playermd)): "`room:<r>` holders" reads "`room:<r>` and `state:<r>` holders" (EN's state preload
    follows `room:*`'s keep set, RULINGS 148 W2); EN's next `roomShown` re-requests both.
 9. **SH3a's decoders stay out of the entry:** `client/src/story/catalog.ts` is in the entry closure (`boot.ts:21`
@@ -62,7 +63,7 @@ engineering; none narrows motion.
    and L1 then lands before the next entry-adding lane (engine §15 item 15); the +0.15 STOP stays SH3a's own bound.
 10. **§9.14 as a whole** is superseded by engine §12 "Order and conflicts" (the one order across the three designs);
     §9.14 stays as the record of the shots' proposal. Its "Running lanes" paragraph (LBI, LEL) reads: LEL, LBI, LHJ,
-    M3s, LFL merged; LRB in flight on `game.ts` / `game.test.ts` / `meta.ts` / `boot.ts` (RULINGS 156).
+    M3s, LFL merged; LRB merged (`3c62a86`, RULINGS 157) on `game.ts` / `game.test.ts` / `meta.ts` / `boot.ts` (RULINGS 156).
 11. **SH7 and the request walk:** ~~if GM3p has merged before SH7's cut~~ (reconcile r2: GM3p has always merged by
     then, since SH5a needs GM3b, which follows GM3p), SH7's `import()` of `scene/motion/` is an
     unlisted start in `client/src/requests.test.ts`; SH7 holds that file for its one row (and its `WAIT_CASES` case if
@@ -83,6 +84,7 @@ engineering; none narrows motion.
     §11.1)"; §10's JS table gains the line "SH10 `scene` ids | 0.5 | cue-stage chunk".
 14. **All JS:** the third of EN's new puzzle-type chunks crosses 305.0 on §11.1's projection; engine §15 item 16 asks
     the orchestrator for the ruling; SH lanes quote the row.
+    **Ruled: RULINGS 158** — `allJsBr` is re-set once, by GM7p (the `budget.ts` holder before GM7g in the one order), to GM7p's measured HEAD + the remaining planned puzzle-type chunks (GM7g, GM8a, GM8b at 1.6 KB br each, the measured `puzzle-type` chunk) + 5.0 KB br, rounded up to a whole KB; GM7p's cut quotes the arithmetic and the orchestrator confirms it in a RULINGS line at that cut; no other lane raises it (the row bounds no download).
 15. **I-4 / I-9, targets:** ~~`SceneTargets` members resolve to their anchor's `motion` node, so SH10's tweens write
     only `motion` nodes (never `anchor`, the executor's, or `depth`, SH8's).~~ (reconcile r2, RC-m2) `prop(AnchorKey)`,
     `bg` and `closeup` resolve to their anchor's `motion` node, so SH10's tweens there write only `motion` nodes (never
@@ -104,7 +106,7 @@ engineering; none narrows motion.
     per-player owns their text and status (`per-player.md` §12.1): **R-S1** ([per-player §12.1 Requests from this file](../per-player/12-interface-requests.md#121-requests-from-this-file-status-after-enginemd-round-9-as-read-2026-11-03-reconcile-revision-1-round-14-as-read-2026-11-09-reconcile-revision-2-enginemds-reconcile-revision-1-as-read-2026-11-09-reconcile-revision-3-enginemds-reconcile-revision-2-as-read-2026-11-09)): SH8's drive steps a
     depth list the executor holds, one entry per `depth` node with its rect centre, to which GM6d1 adds one entry per
     bg label view; **R-S2** ([per-player §12.1 Requests from this file](../per-player/12-interface-requests.md#121-requests-from-this-file-status-after-enginemd-round-9-as-read-2026-11-03-reconcile-revision-1-round-14-as-read-2026-11-09-reconcile-revision-2-enginemds-reconcile-revision-1-as-read-2026-11-09-reconcile-revision-3-enginemds-reconcile-revision-2-as-read-2026-11-09)): SH12b's `client/scripts/story/shots/lint.ts` gains the E rule
-    `shot/plane-over-label` beside `shot/plane-over-hotspot` ([shots §3.3 Lints](../shots/03-story-dsl.md#33-lints)). Per-player's §14 Q19 (SH5a names
+    `shot/plane-over-label` beside `shot/plane-over-hotspot` ([shots §3.3 Lints](../shots/03-story-dsl.md#33-lints)). **R-S3** ([per-player §12.1 R-S3](../per-player/12-interface-requests.md#121-requests-from-this-file-status-after-enginemd-round-9-as-read-2026-11-03-reconcile-revision-1-round-14-as-read-2026-11-09-reconcile-revision-2-enginemds-reconcile-revision-1-as-read-2026-11-09-reconcile-revision-3-enginemds-reconcile-revision-2-as-read-2026-11-09)): SH1, SH5a, SH5b and SH7, which rework `present()` / `stage()`, keep a story step's visual batch applied (`scene.apply`, the snapshot move) inside the step's intent, the `withRoomProps` cut back included (`game.ts:723`, `:744`, `:789` on `3c62a86`); detector: per-player GM6d1's `game: a tap while a step's batch loads completes it and starts no step` (M-PR3c), which lands after SH7; per-player owns the text and status ([per-player §12.1 R-S3](../per-player/12-interface-requests.md#121-requests-from-this-file-status-after-enginemd-round-9-as-read-2026-11-03-reconcile-revision-1-round-14-as-read-2026-11-09-reconcile-revision-2-enginemds-reconcile-revision-1-as-read-2026-11-09-reconcile-revision-3-enginemds-reconcile-revision-2-as-read-2026-11-09)). Per-player's §14 Q19 (SH5a names
     `roomFor`) is item 6 here. None touches an engine contract.
 19. **SH5a's figure (RC-O1):** SH5a's +1.3 (`proposal.md` §10 JS table, rev. 7's 0.1 at [shots §10 Budgets and validation](../shots/10-budgets-and-validation.md#10-budgets-and-validation-summary)) includes the
     synchronous joins and `registry.state` that LHJ landed (`preload.ts:163-172`, `registry.ts:523-527`), so up to 0.1
