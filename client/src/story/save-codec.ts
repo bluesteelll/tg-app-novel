@@ -4,13 +4,15 @@
 // body from a newer build within one format still loads; an incompatible change bumps `format`. A body of an older
 // format is read by that format's frozen decoder and upgraded, so `decodeSave` returns the current format only.
 // Pure: no clock, storage or network.
-import type { PuzzleOutcome, WorldState } from '../explore/state.ts';
-import type { FlagId } from '../mechanics/contract.ts';
+import type { PuzzleOutcome, PuzzleRun, WorldState } from '../explore/state.ts';
+import type { AnchorKey, FlagId } from '../mechanics/contract.ts';
 import type { DocId, HotspotKey, ItemId, RoomId } from '../world/types.ts';
 import { CHAPTER_ID_RE, KNOT_NAME_RE } from './catalog.ts';
 import type { InkScalar, Result } from './catalog.ts';
 import type {
   BgId,
+  CamState,
+  CamTarget,
   CgId,
   ChapterId,
   CharId,
@@ -18,6 +20,7 @@ import type {
   KnotName,
   LineId,
   PropId,
+  PropPlacement,
   PuzzleLocalId,
   Rect,
   SectionId,
@@ -145,7 +148,10 @@ const OUTCOMES: Readonly<Record<PuzzleOutcome, true>> = { solved: true, failed: 
 type Raw = Readonly<Record<string, unknown>>;
 /** One value's reader; `path` is its JSON path from `save`. */
 type Field<T> = (value: unknown, path: string) => Result<T, string>;
-type Shape<T> = { readonly [K in keyof T]-?: Field<T[K]> };
+/** An optional key's reader (`optional`): an absent key yields no key, a present one is read strictly. */
+type Optional<T> = { readonly optional: Field<T> };
+/** A reader per key: a required key takes a Field, an optional one an Optional, and neither passes for the other. */
+type Shape<T> = { readonly [K in keyof T]-?: {} extends Pick<T, K> ? Optional<Exclude<T[K], undefined>> : Field<T[K]> };
 
 const ok = <T>(value: T): Result<T, string> => ({ ok: true, value });
 const problem = (path: string, what: string): Result<never, string> => ({ ok: false, error: `${path}: ${what}` });
@@ -181,6 +187,10 @@ function oneOf<T extends string>(set: Readonly<Record<T, true>>): Field<T> {
 
 function nullable<T>(f: Field<T>): Field<T | null> {
   return (v, p) => (v === null ? ok(null) : f(v, p));
+}
+
+function optional<T>(f: Field<T>): Optional<T> {
+  return { optional: f };
 }
 
 function arrayOf<T>(f: Field<T>): Field<T[]> {
@@ -219,24 +229,31 @@ function recordOf<K extends string, T>(f: Field<T>): Field<Record<K, T>> {
   };
 }
 
-/** Exactly the shape's keys are read; any other key is ignored and never copied. */
+/**
+ * Exactly the shape's keys are read; any other key is ignored and never copied. A required key that is absent is
+ * `missing`; an absent optional key yields no key in the result (never `undefined`), a `null` is not absent.
+ */
 function object<T>(shape: Shape<T>): Field<T> {
   return (v, p) => {
     if (!isRecord(v)) {
       return problem(p, `expected an object, got ${shown(v)}`);
     }
     const out: Record<string, unknown> = {};
-    for (const [key, field] of Object.entries<Field<unknown>>(shape)) {
+    for (const [key, entry] of Object.entries<Field<unknown> | Optional<unknown>>(shape)) {
+      const required = typeof entry === 'function';
       if (!Object.hasOwn(v, key)) {
-        return problem(`${p}.${key}`, 'missing');
+        if (required) {
+          return problem(`${p}.${key}`, 'missing');
+        }
+        continue;
       }
-      const r = field(v[key], `${p}.${key}`);
+      const r = (required ? entry : entry.optional)(v[key], `${p}.${key}`);
       if (!r.ok) {
         return r;
       }
       out[key] = r.value;
     }
-    // Every key of the shape, and so of T, was read into `out` by its own reader.
+    // Every required key of the shape, and every optional one present, was read into `out` by its own reader.
     return ok(out as T);
   };
 }
@@ -265,13 +282,15 @@ const volume: Field<number> = (v, p) => {
   return !r.ok || r.value <= 100 ? r : problem(p, `expected a volume 0..100, got ${r.value}`);
 };
 
-const stagingV1 = object<StagingSnapshotV1>({
+const placementV1Shape: Shape<PropPlacementV1> = { prop: matching(NAME_RE, 'a prop id'), rect };
+const stagingV1Shape: Shape<StagingSnapshotV1> = {
   bg: nullable(matching(NAME_RE, 'a bg id')),
   cg: nullable(matching(NAME_RE, 'a cg id')),
   chars: arrayOf(object({ char: matching(NAME_RE, 'a character id'), expr: matching(NAME_RE, 'an expression id'), at: oneOf(SLOTS) })),
   bgm: nullable(object<NonNullable<StagingSnapshotV1['bgm']>>({ track: matching(NAME_RE, 'a track id'), vol: volume })),
-  props: arrayOf(object<PropPlacementV1>({ prop: matching(NAME_RE, 'a prop id'), rect })),
-});
+  props: arrayOf(object(placementV1Shape)),
+};
+const stagingV1 = object(stagingV1Shape);
 
 const backlogEntry: Field<BacklogEntry> = (v, p) => {
   const head = object<Omit<BacklogEntry, 'chosen'>>({ lineId, speaker: nullable(matching<SpeakerId>(NAME_RE, 'a speaker id')), ru: str })(v, p);
@@ -306,7 +325,7 @@ const yieldCommand: Field<YieldCommand> = (v, p) => {
   }
 };
 
-const puzzleRunV1 = object<PuzzleRunV1>({ outcome: nullable(oneOf(OUTCOMES)), attempts: count, hintsOpened: count });
+const puzzleRunV1Shape: Shape<PuzzleRunV1> = { outcome: nullable(oneOf(OUTCOMES)), attempts: count, hintsOpened: count };
 /**
  * A world id, structural only: any string. Reconcile drops the ids the current world lacks (X9 step 1), which is
  * where the brand is earned; a grammar check here would refuse a save that reconcile can still repair.
@@ -329,7 +348,7 @@ const worldV1Shape: Shape<WorldStateV1> = {
   open: arrayOf(worldId<HotspotKey>()),
   fired: arrayOf(str),
   pendingStory: arrayOf(worldId<KnotName>()),
-  puzzles: recordOf<PuzzleLocalId, PuzzleRunV1>(puzzleRunV1),
+  puzzles: recordOf<PuzzleLocalId, PuzzleRunV1>(object(puzzleRunV1Shape)),
   unproved: arrayOf(worldId<SectionId>()),
 };
 
@@ -349,10 +368,47 @@ const bodyV1Shape: Shape<SaveBodyV1> = {
 const bodyV1 = object(bodyV1Shape);
 
 // Format 2: format 1's readers, and the keys format 2 changed or added.
-const world = object<WorldState>({ ...worldV1Shape, format: literal(SAVE_FORMAT), flags: arrayOf(worldId<FlagId>()) });
+/** `<room>.<hotspot>` or `<room>~<decor>` (AnchorKey). */
+const ANCHOR_RE = /^[a-z][a-z0-9_]*[.~][a-z][a-z0-9_]*$/;
+const PARTS: Readonly<Record<NonNullable<PropPlacement['part']>, true>> = { base: true, patch: true };
+/** A push's zoom: an integer percent, 105..130. */
+const zoom: Field<number> = (v, p) => {
+  const r = count(v, p);
+  return !r.ok || (r.value >= 105 && r.value <= 130) ? r : problem(p, `expected a zoom 105..130, got ${r.value}`);
+};
+const cam: Field<CamState> = (v, p) => {
+  if (!isRecord(v)) {
+    return problem(p, `expected a camera state, got ${shown(v)}`);
+  }
+  switch (v['kind']) {
+    case 'rest':
+      return object<Extract<CamState, { kind: 'rest' }>>({ kind: literal('rest') })(v, p);
+    case 'push':
+      return object<Extract<CamState, { kind: 'push' }>>({ kind: literal('push'), to: matching<CamTarget>(NAME_RE, 'a camera target'), z: zoom })(v, p);
+    case 'pan':
+      return object<Extract<CamState, { kind: 'pan' }>>({ kind: literal('pan'), to: matching(NAME_RE, 'a camera target') })(v, p);
+    default:
+      return problem(`${p}.kind`, `expected 'rest', 'push' or 'pan', got ${shown(v['kind'])}`);
+  }
+};
+const placement = object<PropPlacement>({
+  ...placementV1Shape,
+  at: optional(matching<AnchorKey>(ANCHOR_RE, 'an anchor key')),
+  part: optional(oneOf(PARTS)),
+});
+const staging = object<StagingSnapshot>({ ...stagingV1Shape, props: arrayOf(placement), cam: optional(cam) });
+const puzzleRun = object<PuzzleRun>({ ...puzzleRunV1Shape, work: optional(arrayOf(count)) });
+const world = object<WorldState>({
+  ...worldV1Shape,
+  format: literal(SAVE_FORMAT),
+  puzzles: recordOf<PuzzleLocalId, PuzzleRun>(puzzleRun),
+  flags: arrayOf(worldId<FlagId>()),
+});
 const body = object<SaveBody>({
   ...bodyV1Shape,
   format: literal(SAVE_FORMAT),
+  staging,
+  checkpoint: nullable(object({ knot: knotName, vars, staging })),
   chapterStart: object<SaveBody['chapterStart']>({ carry: vars, items: arrayOf(worldId<ItemId>()) }),
   world,
 });

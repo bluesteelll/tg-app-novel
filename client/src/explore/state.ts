@@ -8,7 +8,16 @@ import type { DocId, HotspotKey, ItemId, RoomId } from '../world/types.ts';
 
 export type PuzzleOutcome = 'solved' | 'failed' | 'abandoned';
 /** One puzzle's run: the dials and the arrangement are not saved, attempts and hints opened are (X9). */
-export type PuzzleRun = { readonly outcome: PuzzleOutcome | null; readonly attempts: number; readonly hintsOpened: number };
+export type PuzzleRun = {
+  readonly outcome: PuzzleOutcome | null;
+  readonly attempts: number;
+  readonly hintsOpened: number;
+  /**
+   * A view-presented device's working configuration (engine plan §5.2), outside the proof key. Optional: absent = none,
+   * so every run written before it stays valid.
+   */
+  readonly work?: readonly number[];
+};
 
 /**
  * The lists are sets (the reducer never adds an element twice; `sectionKey` sorts them), kept in the order play
