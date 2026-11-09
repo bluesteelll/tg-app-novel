@@ -17,17 +17,24 @@ done:      M3c (a6365a8), docs-errata-8 (be6c348), LRF (a93fe54), docs (d31f720,
            after docs-errata-10 (main 9b4fd25): docs-errata-10 (5977df5, RULINGS 174), docs 967a8da (every open
            question's default adopted, Q58 resolved, RULINGS 175), GM6s2 (2815340, RULINGS 176; the per-player
            server chain GM6k -> GM6s1 -> GM6s2 is done), GM1c (8c2fa03, RULINGS 178), GM2a (9b4fd25, RULINGS 181)
-in flight: (as of 9b4fd25) GM1d gm1d-mech-clues (RULINGS 179 / 180; base 8c2fa03, launched beside GM2a; lock 11:
-           client/src/world/{types,decode}.ts, decode.test.ts, scripts/story/{lint,world.test,build.test}.ts,
-           scripts/story/mechanics/{clues,index}.ts, scripts/story/puzzles/shape.ts, mechanics/rules/search.ts,
-           story/ch1/world.json), GM3w gm3w-ui-wiring (RULINGS 182; lock 10: app/{game,yields}.ts, game.test.ts,
-           ui/{App.svelte,explore-view.svelte.ts,puzzle-view.svelte.ts}, ui/explore/{ExploreView.svelte,
-           explore.svelte.test.ts}, ui/puzzles/{PuzzleHost.svelte,puzzle-host.svelte.test.ts}), docs-errata-11
-           (RULINGS 182; docs only, in the idle server slot)
-next:      per-player GM6a (after GM2a's field; with GM3w it gates SH1) and GM3m (after GM1c, GM1b) when a client
-           slot frees (RULINGS 182); GM2b after GM1d; SH1 after GM3w and GM6a
+           after docs-errata-11 (main 837b1ed): GM1d (794181b, RULINGS 183), docs-errata-11 (e2d2d13, RULINGS 185),
+           GM3w (508bd36, RULINGS 186), per-player GM6a (23e1d31, RULINGS 188; D5.1 adopted), GM2b (1782d6d,
+           RULINGS 190), GM3m (a3f0678, RULINGS 193), GM3c (837b1ed, RULINGS 196)
+in flight: (as of 837b1ed) GM3s gm3s-mech-cue-stage (RULINGS 194 / 195; base a3f0678, launched beside GM3c; lock
+           18: cues/stage/{index.ts,CueStage.svelte,stage.svelte.test.ts,motions.ts}, cues/root.ts,
+           ui/{state.svelte.ts,App.svelte,explore-view.svelte.ts}, ui/explore/{ExploreView.svelte,
+           explore.svelte.test.ts}, app/{yields,yields.test}.ts, scripts/{budget,budget.test}.ts, arch.test.ts,
+           e2e/mechanics.spec.ts, mechanics/{rules/index.ts,registry.test.ts}), shots SH1 sh1-shot-dsl (RULINGS
+           196; base 837b1ed; lock 12: story/{tags,tags.test,staging,dsl-doc.test}.ts, docs/STAGING-DSL.md,
+           scripts/story/graph.ts, graph-shot.test.ts, app/game.ts, app/stage-route{,.test}.ts,
+           scene/{executor,executor.test}.ts), docs-errata-12 (RULINGS 197; docs only, in the idle server slot)
+next:      the engine-closure lever lane (RULINGS 195 / 196; Ledger 4's headroom 0.873 KB on 837b1ed, under the
+           1.0 KB trigger) in the first client slot after GM3s merges, before GM3 or any later engine-adding lane;
+           GM3 after GM3s and the lever (GM3c and GM3m merged); SH2 after SH1
 carried:   L2, the entry lever (shelved, RULINGS 142 / 158; return line: entry headroom < 0.5 KB br, §15 item 15);
-           the preload-priority lane (RULINGS 152 Q14 (b); scene/{registry,preload}.ts, the scene/* tail)
+           the preload-priority lane (RULINGS 152 Q14 (b); scene/{registry,preload}.ts, the scene/* tail);
+           the lever's candidate P (purchase/flow.ts, ~-1.52 KB br) unless game.ts is free when the lever lane
+           starts (SH1 merged; RULINGS 196)
 stopped:   the character half of design-animation (RULINGS 132), replaced by design-shots (RULINGS 143)
 LFL's nine files: client/src/app/{boot,game,meta,game.test,meta.test}.ts, client/scripts/{budget,budget.test}.ts,
            client/e2e/perf.spec.ts, client/src/arch.test.ts (lfl-first-line/test_r2.md:85-86)
@@ -54,6 +61,24 @@ and the `next:` line read "GM1c and GM2a (Beside), after GM6s2 merges: GM1c hold
 app/{game,yields}.test.ts, all in GM6s2's lock (RULINGS 170, 173)". GM1d ran beside GM2a, a pair the order table
 does not list (lock-disjoint, checked at launch: RULINGS 179), and now runs beside GM3w, a pair it lists (GM1d's row:
 Beside GM3m, GM3w). The rows below keep GM6s2, GM1c and GM2a as the predecessors they name; all three have merged.
+
+Changed by RULINGS 183-197 (as of `837b1ed`; docs lane `docs-errata-12`, group B): the block above is the state at
+`837b1ed` (SHAs from `git log --first-parent main`). GM1d, `docs-errata-11`, GM3w, per-player GM6a, GM2b, GM3m and
+GM3c moved to `done:`; the `in flight:` line read "(as of 9b4fd25) GM1d gm1d-mech-clues (RULINGS 179 / 180; base
+8c2fa03, launched beside GM2a; lock 11: client/src/world/{types,decode}.ts, decode.test.ts,
+scripts/story/{lint,world.test,build.test}.ts, scripts/story/mechanics/{clues,index}.ts, scripts/story/puzzles/shape.ts,
+mechanics/rules/search.ts, story/ch1/world.json), GM3w gm3w-ui-wiring (RULINGS 182; lock 10: app/{game,yields}.ts,
+game.test.ts, ui/{App.svelte,explore-view.svelte.ts,puzzle-view.svelte.ts}, ui/explore/{ExploreView.svelte,
+explore.svelte.test.ts}, ui/puzzles/{PuzzleHost.svelte,puzzle-host.svelte.test.ts}), docs-errata-11 (RULINGS 182; docs
+only, in the idle server slot)", the `next:` line read "per-player GM6a (after GM2a's field; with GM3w it gates SH1)
+and GM3m (after GM1c, GM1b) when a client slot frees (RULINGS 182); GM2b after GM1d; SH1 after GM3w and GM6a", and the
+`carried:` line ended at the preload-priority lane. GM3s's lock is the plan's 14 plus four named hunks (RULINGS 194,
+195). GM3s launched beside GM3c, a pair the table lists (GM3s's row: Beside GM3c), and now runs beside SH1, whose row
+keeps only `scene/*` and `game.ts` lanes off its side (GM3s holds neither; an `arch.test.ts` or `budget*.ts` hunk in SH1
+is a STOP, RULINGS 196); SH1 started on `837b1ed` with its predecessors GM2a, GM3w and GM6a merged. The
+engine-closure lever lane is new (RULINGS 195, 196): no row below names it yet; its cut designs it (architect +
+critic, both candidates re-measured) and takes its place in this order. The rows below keep GM1d, GM3w, GM6a, GM2b,
+GM3m and GM3c as the predecessors they name; all six have merged.
 
 **The one order across the three designs (reconcile r1; RULINGS 143, 152, 153; design-shots §9.14 and I-2,
 adopted with one change; it replaces the paragraph "Animation and shot lanes" that earlier sections cite).** The **A(f)** placeholders of rounds 4-14 ("every lane of an adopted animation or shot design
