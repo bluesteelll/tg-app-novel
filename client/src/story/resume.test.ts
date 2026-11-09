@@ -5,9 +5,9 @@ import { expect, test } from 'vitest';
 
 import { compileChapter } from '../../scripts/story/compile.ts';
 import { GLOBALS_PATH } from '../../scripts/story/lint.ts';
-import { admitSection } from '../explore/reconcile.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { WorldState } from '../explore/state.ts';
+import { admitSection } from '../mechanics/rules/search.ts';
 import { decodeWorldPublic } from '../world/decode.ts';
 import type { WorldPublic } from '../world/types.ts';
 import { assetIndex, decodeAssetCatalog, decodeChapterMeta } from './catalog.ts';

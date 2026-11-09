@@ -105,6 +105,8 @@ const PURE_WORLD_FILES = [
   'explore/reduce.ts',
   'explore/project.ts',
   'explore/reconcile.ts',
+  'mechanics/rules/core.ts',
+  'mechanics/rules/search.ts',
 ] as const;
 const PURE_WORLD_DEPS = new Set(['story/staging.ts', 'story/catalog.ts', 'story/tags.ts']);
 const PURE_WORLD_GLOBALS = new Set([
@@ -950,6 +952,10 @@ test('arch: lazy ui only by dynamic import', () => {
   // The meta chunks (RULINGS 105): boot imports the controller, the controller its overlays, each by `import()`.
   expect(dynamicLazyTargets('app/boot.ts', SOURCES['app/boot.ts'] ?? '')).toEqual(['app/meta.ts']);
   expect(dynamicLazyTargets('app/meta.ts', SOURCES['app/meta.ts'] ?? '')).toEqual(['ui/meta/index.ts']);
+  // `rules-lazy`'s allow side on the tree: the explore controller, its one importer, loads both rules files.
+  expect(staticTargets('explore/controller.ts', SOURCES['explore/controller.ts'] ?? '')).toEqual(
+    expect.arrayContaining(['mechanics/rules/core.ts', 'mechanics/rules/search.ts']),
+  );
   expect(treeViolations().filter((v) => GROUP[v.rule] === 'lazy')).toEqual([]);
 }, TREE_TIMEOUT_MS);
 

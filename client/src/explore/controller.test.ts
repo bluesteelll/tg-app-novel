@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 import { ROOM_SOURCE, cover, minTarget, toStage } from '../geom/cover.ts';
 import type { Size } from '../geom/cover.ts';
+import { sectionEntry } from '../mechanics/rules/search.ts';
 import { createAssetScheduler } from '../scene/preload.ts';
 import { STEADY_CAP_BYTES, createAssetRegistry } from '../scene/registry.ts';
 import type { AssetError, LoadImage } from '../scene/registry.ts';
@@ -15,7 +16,7 @@ import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { HotspotKey, ItemId, RoomId, WorldPublic, WorldText } from '../world/types.ts';
 import { MIN_TARGET_PX, REVEAL_MS, createExploreController } from './controller.ts';
 import type { ExploreController, ExploreControllerDeps } from './controller.ts';
-import { reconcile, sectionEntry } from './reconcile.ts';
+import { reconcile } from './reconcile.ts';
 import type { ExploreAction, ExploreEffect } from './reduce.ts';
 import { EMPTY_WORLD_STATE } from './state.ts';
 import type { WorldState } from './state.ts';

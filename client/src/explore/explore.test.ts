@@ -1,11 +1,13 @@
 import { expect, test } from 'vitest';
 
+import { actions, reduce } from '../mechanics/rules/core.ts';
+import { admitSection, inSectionReach, searchSection, sectionEntry, sectionKey, successors } from '../mechanics/rules/search.ts';
 import type { KnotName, PuzzleLocalId, SectionId, VarName } from '../story/staging.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { DocId, HotspotKey, ItemId, RoomId, WorldPublic, WorldPublicBody } from '../world/types.ts';
 import { project } from './project.ts';
-import { admitSection, inSectionReach, reconcile, searchSection, sectionEntry } from './reconcile.ts';
-import { RESUME_STATE_CAP, RULES_VERSION, actions, reduce, sectionKey, successors } from './reduce.ts';
+import { reconcile } from './reconcile.ts';
+import { RESUME_STATE_CAP, RULES_VERSION, runReduce } from './reduce.ts';
 import type { ExploreAction, ExploreEffect } from './reduce.ts';
 import { EMPTY_WORLD_STATE } from './state.ts';
 import type { WorldState } from './state.ts';
@@ -446,6 +448,59 @@ test('reduce: an action that changes no state keeps its effects', () => {
   const reHint = reduce(w, hinted, { kind: 'hint-opened', puzzle: pz('drawer'), tier: 1 });
   expect(reHint.state).toBe(hinted);
   expect(reHint.effects).toEqual([]);
+});
+
+test("explore: runReduce leaves a lock puzzle's outcome alone", () => {
+  // (a) The gate is a lock puzzle with a hint tier: the run reducer (a linear puzzle's writer) changes nothing of it,
+  // while the explore rules record each action. The contrast keeps a guard misplaced into the shared run step visible.
+  const w = manor();
+  const s = at('hall');
+  const gate = pz('gate');
+  const onLock = [
+    { kind: 'attempt-failed', puzzle: gate },
+    { kind: 'hint-opened', puzzle: gate, tier: 1 },
+    { kind: 'puzzle-ended', puzzle: gate, outcome: 'solved' },
+  ] as const;
+  for (const a of onLock) {
+    const r = runReduce(w, s, a);
+    expect(r.state, JSON.stringify(a)).toBe(s);
+    expect(r.effects, JSON.stringify(a)).toEqual([]);
+  }
+  const [failed, hint, solved] = onLock.map((a) => reduce(w, s, a));
+  expect(failed?.state.puzzles).toEqual({ gate: { outcome: null, attempts: 1, hintsOpened: 0 } });
+  expect(hint?.state.puzzles).toEqual({ gate: { outcome: null, attempts: 0, hintsOpened: 1 } });
+  expect(solved?.state.puzzles).toEqual({ gate: { outcome: 'solved', attempts: 0, hintsOpened: 0 } });
+  expect(solved?.state.open).toEqual(['hall.gate']);
+  // A puzzle the world lacks is a no-op too.
+  const absent = runReduce(w, s, { kind: 'attempt-failed', puzzle: pz('safe') });
+  expect(absent.state).toBe(s);
+  expect(absent.effects).toEqual([]);
+  // (b) A puzzle no lock holds: step for step the same state and effects as the explore rules.
+  const linear = world({
+    puzzles: { lin: code(2, 2) },
+    sections: { s: { start: 'r', rooms: { r: room([exit('out', { story: 'end' })]) } } },
+  });
+  const lin = pz('lin');
+  const steps = [
+    { kind: 'attempt-failed', puzzle: lin },
+    { kind: 'attempt-failed', puzzle: lin },
+    { kind: 'hint-opened', puzzle: lin, tier: 1 },
+    { kind: 'hint-opened', puzzle: lin, tier: 1 },
+    { kind: 'hint-opened', puzzle: lin, tier: 3 },
+    { kind: 'hint-opened', puzzle: lin, tier: 0 },
+    { kind: 'hint-opened', puzzle: lin, tier: 2 },
+    { kind: 'puzzle-ended', puzzle: lin, outcome: 'failed' },
+    { kind: 'puzzle-ended', puzzle: lin, outcome: 'failed' },
+    { kind: 'puzzle-ended', puzzle: lin, outcome: 'abandoned' },
+    { kind: 'puzzle-ended', puzzle: lin, outcome: 'solved' },
+  ] as const;
+  let state = frozen(structuredClone(EMPTY_WORLD_STATE));
+  for (const a of steps) {
+    const ran = runReduce(linear, state, a);
+    expect(ran, JSON.stringify(a)).toEqual(reduce(linear, state, a));
+    state = frozen(ran.state);
+  }
+  expect(state.puzzles).toEqual({ lin: { outcome: 'solved', attempts: 2, hintsOpened: 2 } });
 });
 
 test('actions: enumerates enabled taps and inserts', () => {

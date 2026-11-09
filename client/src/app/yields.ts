@@ -12,7 +12,7 @@ import type { Clock } from '../api/http.ts';
 import type { AudioCommand } from '../audio/manager.ts';
 import type { ExploreController, createExploreController } from '../explore/controller.ts';
 import { project } from '../explore/project.ts';
-import { reduce, worldIndex } from '../explore/reduce.ts';
+import { runReduce, worldIndex } from '../explore/reduce.ts';
 import type { ExploreAction, ExploreEffect } from '../explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { PuzzleOutcome, PuzzleRun, WorldState } from '../explore/state.ts';
@@ -325,7 +325,8 @@ export function createYields(h: YieldsHost): Yields {
 
   /**
    * One action through the one writer: the controller while a section is current (K53, so an exploration puzzle's
-   * results reach the lock), else `reduce` here (a linear puzzle, which no section holds).
+   * results reach the lock), else the kernel's `runReduce` here (a linear puzzle's run, which no section holds). Taps
+   * and inserts come only from the explore layer, which exists only with a controller, so nothing else is written here.
    */
   const act = (a: ExploreAction): void => {
     const c = controller;
@@ -336,10 +337,10 @@ export function createYields(h: YieldsHost): Yields {
       return;
     }
     const w = h.chapter()?.world ?? null;
-    if (w === null) {
+    if (w === null || (a.kind !== 'attempt-failed' && a.kind !== 'hint-opened' && a.kind !== 'puzzle-ended')) {
       return;
     }
-    const out = reduce(w, world, a);
+    const out = runReduce(w, world, a);
     world = out.state;
     for (const e of out.effects) {
       effect(e);

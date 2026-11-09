@@ -2,17 +2,18 @@
 // side of a section. Player actions go through the one reducer, the views it writes are what the explore layer
 // shows, and every reducer effect leaves through `onEffect` to GameSession (app/yields.ts, L15). It reaches the world
 // only through `reduce` / `admitSection` / `admitEvent` (principle 7) and lives in the explore-ui chunk with the
-// components (X14).
+// components (X14), the one importer of the rules half (mechanics/rules/, the `rules-lazy` arch rule).
 import { ROOM_SOURCE, cover, minTarget, toStage } from '../geom/cover.ts';
 import type { Size } from '../geom/cover.ts';
+import { reduce } from '../mechanics/rules/core.ts';
+import { admitEvent, admitSection } from '../mechanics/rules/search.ts';
 import type { SceneController } from '../scene/controller.ts';
 import type { AssetManifest } from '../story/catalog.ts';
 import type { AssetId, BgId, SectionId } from '../story/staging.ts';
 import type { Unsubscribe } from '../telegram/index.ts';
 import type { DocView, ExploreViewStore, HotspotView, ItemView, LockView } from '../ui/explore-view.svelte.ts';
 import type { DocId, HotspotKey, ItemId, Lock, RoomId, WorldPublic, WorldText } from '../world/types.ts';
-import { admitEvent, admitSection } from './reconcile.ts';
-import { hotspotKey, lockOf, reduce, worldIndex } from './reduce.ts';
+import { hotspotKey, lockOf, worldIndex } from './reduce.ts';
 import type { ExploreAction, ExploreEffect } from './reduce.ts';
 import { EMPTY_WORLD_STATE } from './state.ts';
 import type { WorldState } from './state.ts';
