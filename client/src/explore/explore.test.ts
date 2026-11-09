@@ -999,6 +999,11 @@ test('reconcile: step 0 keeps an item the save both holds and uses when no renam
   expect([moved.state.held, moved.state.used, moved.state.slots, moved.dropped]).toEqual([['medal_comet'], ['medal_comet'], { 'hall.gate': [null, null, 'medal_comet'] }, []]);
 });
 
+test('reconcile: a lost lock with two items gives both back', () => {
+  const r = reconcile(stamped(manor(), V2), at('hall', { used: [it('medal_sun'), it('medal_moon')], slots: { [k('hall.gone')]: [it('medal_sun'), it('medal_moon')] } }), MANOR_KNOTS, V1);
+  expect([r.state.held, r.state.used, r.state.slots, r.dropped]).toEqual([['medal_sun', 'medal_moon'], [], {}, ['slots:hall.gone']]);
+});
+
 test('reconcile: unprovable state restarts the section', () => {
   const v1 = manor();
   const v2 = stamped(manor({ leverCellar: true }), V2);
