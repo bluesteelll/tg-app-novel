@@ -3079,6 +3079,20 @@ follows MD1b `anim-parts-assets` in the order of `design-animation`'s draft,
 `D:/tmp/novel-orch/design/animation/characters.md` section 11.1b; RULINGS 131). The animation and mechanics lanes are
 being designed and get rows when adopted.
 
+Changed by RULINGS 132-158 (as of `3c62a86`; docs lane `docs-adopt`, group B): the State column is the state as of
+`3c62a86`, with each SHA from `git log --first-parent main`. Since `805f382` these merged: the docs lane
+`docs-errata-9` as `525dd68`, LEL entry-lever `7b37278`, LBI build-skew `fe996a0`, LHJ handover-join `972f773`, M3s
+memory-half-paid `a5f887b`, LFL first-line `cec347c` and LRB reload-bounds `3c62a86`. The docs commits `cdca9d4`,
+`ddc08db`, `a9f28e3`, `acc4e0d` and `df0e12c` (owner answers and questions in OPEN-QUESTIONS, one ARCHITECTURE row)
+are not lanes. LEL, LBI, LHJ, LFL, LRB and L1 are new rows (RULINGS 137, 144, 146, 156, 158). M3s's wait for
+MD1b is superseded: RULINGS 132 stopped the character half of `design-animation` (its MD lanes no longer exist),
+replaced by `design-shots` (RULINGS 132, 143); M3s ran in the server slot after LBI (RULINGS 143 QO4, 146) and
+merged (RULINGS 151). Running: L1 `l1-entry-summary` (client; RULINGS 158 unshelved the entry lever L1), beside
+the docs lane `docs-adopt` (base `3c62a86`; the three designs adopted as plans, RULINGS 158). "To go": no lane of
+this table; the planned lanes of the three plans (the block row below), L2 (shelved, RULINGS 142, 158) and the
+preload-priority lane (carried, RULINGS 152 Q14 (b)). GM1a and GM6k launched from the frozen designs before this
+adoption merged (RULINGS 160).
+
 | Lane | Slot | State | Gate to start (merged) | Re-cut |
 |---|---|---|---|---|
 | L1 client-shell | client | merged `ea8a6a2` (`f6e2624` before the rewrite) | — | — |
@@ -3136,7 +3150,13 @@ being designed and get rows when adopted.
 | **M3c memory-half-tier** | client | merged `a6365a8` (relaunched after its cut r1 block, RULINGS 120; new, MEMORY-PLAN) | M2 | new |
 | D2 docs-final | doc | merged `b766a16` | L15. Changed by META-PLAN: LMI, L9; revision 1: LPO. Changed by MEMORY-PLAN: M2. Changed by RULINGS 96: LPH (it closes L9's carried payment gaps before D2) | PUZZLES-PLAN, STORIES-PLAN; META-PLAN: the meta rows and runbooks; MEMORY-PLAN: gate + M2, the M1 / M2 map rows, two authoring-guide rules; RULINGS 96: gate + LPH |
 | **LRF auto-refund** | server | merged `a93fe54` (new, RULINGS 126, added 2026-11-03) | LPH (the server chain; LPH's residual closure (B) is one of its items), D2 (its item (b) is the restore gap D2 found, RULINGS 125) | new (owner Q9, RULINGS 120; launched in RULINGS 126) |
-| **M3s memory-half-paid** | server | to go (new, MEMORY-PLAN) | M3c, L9 (the end of the server chain), D2 (the docs chain D1 → D2 → M3s). Changed by RULINGS 126: LRF (the server slot takes the money lane first; M3s's cut follows MD1's order in `design-animation`) | new; RULINGS 126: gate + LRF |
+| **M3s memory-half-paid** | server | merged `a5f887b` (new, MEMORY-PLAN) | M3c, L9 (the end of the server chain), D2 (the docs chain D1 → D2 → M3s). Changed by RULINGS 126: LRF (the server slot takes the money lane first; M3s's cut follows MD1's order in `design-animation`; superseded: RULINGS 132 stopped the character half of `design-animation`, and M3s ran after LBI, RULINGS 143 QO4, 146) | new; RULINGS 126: gate + LRF |
+| **LEL entry-lever** | client | merged `7b37278` (new, RULINGS 137; merged RULINGS 141) | — (needs neither design; shares `client/src/app/boot.ts` with LBI, the second to merge syncs main: RULINGS 137) | new (RULINGS 137; cut r1 relaunched, RULINGS 139; its 1.0 KB STOP waived, RULINGS 140) |
+| **LBI build-skew** | client + server | merged `fe996a0` (new, RULINGS 137; merged RULINGS 145) | — (needs neither design; shares `client/src/app/boot.ts` with LEL: RULINGS 137) | new (RULINGS 137; carry C7) |
+| **LHJ handover-join** | client | merged `972f773` (new, RULINGS 144; merged RULINGS 150) | — (QO19, a defect on main fixed before SH5a: RULINGS 143; its lock is disjoint from LBI's: RULINGS 144) | new (RULINGS 143 QO19, 144) |
+| **LFL first-line** | client | merged `cec347c` (new, RULINGS 146; its cut ruled in RULINGS 149; merged RULINGS 155) | LBI (both hold `client/src/app/{boot,game}.ts`: RULINGS 142) | new (RULINGS 142, 146) |
+| **LRB reload-bounds** | client | merged `3c62a86` (new, RULINGS 156; merged RULINGS 157) | LFL (LBI's carry for the next `game.ts` + `meta.ts` holder: RULINGS 149 Q9, 156) | new (RULINGS 156) |
+| **L1 entry-summary** (`l1-entry-summary`: the entry lever L1, not L1 client-shell) | client | running (new, RULINGS 158: unshelved by RULINGS 142's return condition) | LRB (`client/src/app/{boot,game}.ts`, `client/src/arch.test.ts`: [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts)) | new (RULINGS 158) |
 | **The three plans' lanes** (engine GM1a-GM9r: 29 + GM5q if P2-b demands it; per-player GM6a-GM6d2: 12; shots SH1-SH12b: 16) | client / server | planned (adopted 2026-11-09, RULINGS 158) | the one order: [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts) (GM1a and GM6k launched first, from the frozen designs, before this adoption merged: RULINGS 160) | new |
 
 There are 38 lanes: 12 merged, 2 running, 24 to go (changed by RULINGS 22, 23; it read "10 merged, 1 running, 1
@@ -3162,6 +3182,12 @@ Changed by RULINGS 113-127 (as of `a6365a8`; docs lane `docs-errata-8`, group B)
 (M3s).
 Changed by RULINGS 129-131 (as of `805f382`; docs lane `docs-errata-9`, group B): 58 lanes — 57 merged (LRF `a93fe54`
 since `a6365a8`), 0 running, 1 to go (M3s).
+Changed by RULINGS 132-158 (as of `3c62a86`; docs lane `docs-adopt`, group B): 64 lanes in the table (LEL, LBI, LHJ,
+LFL, LRB and L1 are new) — 63 merged (M3s `a5f887b`, LEL `7b37278`, LBI `fe996a0`, LHJ `972f773`, LFL `cec347c` and
+LRB `3c62a86` since `805f382`), 1 running (L1), 0 to go; plus the planned block of the three plans (57 lanes +
+GM5q), ordered in
+[engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts);
+GM1a and GM6k launched from it (RULINGS 160).
 
 **Launch preference** when several lanes are ready (critical path first; changed by STORIES-PLAN):
 - client (two slots): L3c (running), L5, L11, LS1, L7, L12, LW3, L14a, L10, L13, L14b, LP2 ∥ LX, LS4, D1, N1, N2, L15,
@@ -3208,6 +3234,13 @@ since `a6365a8`), 0 running, 1 to go (M3s).
   none of this table's lanes is left (the animation and mechanics lanes get their places when adopted, RULINGS 124);
   server: M3s. LRF has merged (`a93fe54`), so M3s's gate is met; its cut waits for MD1b in `design-animation`'s order
   (RULINGS 131), so no lane of this table is ready now.
+- Changed by RULINGS 132-158 (as of `3c62a86`; docs lane `docs-adopt`, group B), merged lanes dropped: client:
+  L1 `l1-entry-summary` (running; RULINGS 158); server: none of this table's lanes is left (M3s merged `a5f887b`;
+  its MD1b wait superseded, RULINGS 132, 143). Launched since the lane base: client L1 `l1-entry-summary` (RULINGS
+  158); GM1a (client) and GM6k (server), both from the frozen designs before this adoption merged (RULINGS 160;
+  GM6k's `deploy.md` sentence is a carry for a docs lane after GM6k merges, RULINGS 160 / 161); the rest by the one
+  order:
+  [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts).
 
 After L9 the server slot takes doc / narrative / client lanes with disjoint locks.
 
@@ -3301,6 +3334,16 @@ beside them.
   `design-animation`'s draft orders before M3s's cut (RULINGS 131).
 - No client lane of this table is left; the animation and mechanics lanes join the path when adopted.
 - LRF has merged (`a93fe54`).
+
+**Changed by RULINGS 132-158 — the critical path as of `3c62a86`** (docs lane `docs-adopt`, group B).
+- No lane of this table is left to go: M3s has merged (`a5f887b`, RULINGS 151). Its wait for MD1b is superseded
+  (RULINGS 132 stopped the character half of `design-animation`; M3s ran after LBI, RULINGS 143 QO4, 146). L1
+  `l1-entry-summary` runs (RULINGS 158).
+- The whole plan's path is the planned lanes of the three adopted plans in their one order, from GM1a (after M3c,
+  merged) on; this file copies no per-lane order:
+  [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts).
+  GM1a and GM6k launched from the frozen designs before this adoption merged (RULINGS 160).
+- LEL, LBI, LHJ, M3s, LFL and LRB have merged (`7b37278`, `fe996a0`, `972f773`, `a5f887b`, `cec347c`, `3c62a86`).
 
 ### Lanes
 
@@ -6879,6 +6922,7 @@ each has a default there; the policy's operator facts are placeholders until the
 | 37 | 2026-11-03 | RULINGS 113-127 (as merged: M2 `385d52f`, docs-errata-7 `7e74abc`, LFU3 `48bc82a`, D2 `b766a16`, M3c `a6365a8`; LRF running; main `a6365a8`) | Docs lane `docs-errata-8`, group B: "Dependency order" — a marker paragraph and the State column as of `a6365a8` (M2, LFU3, D2 and M3c merged since `3e35a7b`, with SHAs from `git log --first-parent main`; the new row LRF auto-refund, RULINGS 126, added 2026-11-03, running in the server slot; M3s's gate + LRF, its cut after MD1's order in `design-animation`), the lane count (58: 56 merged, 1 running, 1 to go), the launch preference without the merged lanes, the critical path LRF → M3s; "Test strategy": the `memory.spec.ts` row's state and M3c's fourth name, the e2e count (54 names in nine specs). The animation and mechanics lanes are being designed (RULINGS 124) and get rows when adopted. The planned order is otherwise unchanged. STORIES-PLAN revision 19 and META-PLAN revision 17 hold their lines. Ledger: `D:/tmp/novel-orch/docs-errata-8/ledger.md` |
 | 38 | 2026-11-03 | `D:/tmp/novel-orch/carry.md` at ORCH `6a83b36` (the docs-errata-9 spec, group A; RULINGS 129-131), as merged on main `805f382` | Docs lane `docs-errata-9`, group A: docs-errata-8's open item OA-1 (the stage host is no longer "the box Pixi's `resizeTo` reads": the viewport insets bullet and L15's `Stage.svelte` re-cut) and its verifiers' notes (the scene module row, the `SceneController` and `AssetRegistry` Module API notes and the `Texture` + `ImageBitmap` lifetime row, as merged by M1 `f1b707d`, M2 `385d52f` and M3c `a6365a8`); LRF (`a93fe54`; RULINGS 120, 130; owner Q9): the automatic refund of an unapplied charge in K19, "Unapplied charge", K20, the "Refund." residual (closed), `/paysupport`, the concurrency row, Later and V4. Ledger: `D:/tmp/novel-orch/docs-errata-9/ledger.md` |
 | 39 | 2026-11-03 | RULINGS 129-131 (as merged: docs-errata-8 `be6c348`, LRF `a93fe54`; no lane running; main `805f382`) | Docs lane `docs-errata-9`, group B: "Dependency order" — a marker paragraph and the State column as of `805f382` (LRF merged since `a6365a8`, with its SHA from `git log --first-parent main`; the OPEN-QUESTIONS commit `805f382` is not a lane; no lane of the table running, the docs lane beside the two design rounds `design-animation` and `design-mechanics`; M3s to go, its gate met and its cut after MD1b in `design-animation`'s order, RULINGS 131), the lane count (58: 57 merged, 0 running, 1 to go), the launch preference without the merged lanes, the critical path M3s. The planned order is otherwise unchanged. STORIES-PLAN, META-PLAN and MEMORY-PLAN still name LRF running: outside this lane's lock, listed in the ledger for the next docs lane. Ledger: `D:/tmp/novel-orch/docs-errata-9/ledger.md` |
+| 40 | 2026-11-09 | RULINGS 132-158 (as merged: docs-errata-9 `525dd68`, LEL `7b37278`, LBI `fe996a0`, LHJ `972f773`, M3s `a5f887b`, LFL `cec347c`, LRB `3c62a86`; L1 running; main `3c62a86`); the three designs frozen at ORCH tag `designs-adopted-2026-11-09` (RULINGS 158); `D:/tmp/novel-orch/carry.md` at ORCH `e66fb81` (group A) | Docs lane `docs-adopt` (RULINGS 153, 158; not a triage round). Group I: "Changed by" notes where the adopted plans ([docs/plans](plans/README.md), planned, not built) supersede or extend this plan (the sprite-memory item, "Scene controller and asset registry", "Save format and resume", the "JS before the first line" row), and in "Dependency order" a paragraph and the block row of the three plans' lanes (their one order is engine §12; GM1a and GM6k launched from the frozen designs, RULINGS 160). Group A: docs-errata-9's OA-1 (the `telegram::payments` Module API "As merged (LRF)" lines; ten citations into LRF's moved lines re-pointed) and the LEL / LFL carries (the budget bullet, K3, the meta controller chunk, first-line and first-load rows and LMI's gates as merged; RULINGS 105's two statements superseded, RULINGS 149). Group B: "Dependency order" — a marker paragraph and the State column as of `3c62a86` (M3s merged; LEL, LBI, LHJ, LFL and LRB new and merged; L1 `l1-entry-summary` new and running; M3s's MD1b wait superseded, RULINGS 132, 143), the lane count (64: 63 merged, 1 running, 0 to go; plus the planned block, 57 lanes + GM5q), the launch preference and the critical path (the one order of engine §12 from GM1a). Ledger: `D:/tmp/novel-orch/docs-adopt/ledger.md` |
 
 **Revision 1 (2026-10-30)** — what changed, by triage item:
 - **W1** (undecodable payment ACKed and lost): K17 (lenient `PaymentProbe` for the payment subset, 500 only when the

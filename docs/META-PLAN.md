@@ -960,6 +960,11 @@ unchanged.**
   - Changed by RULINGS 113-127 (as of `a6365a8`; docs lane `docs-errata-8`, group B): M2 (`385d52f`), LFU3
     (`48bc82a`), D2 (`b766a16`) and M3c (`a6365a8`) have merged. The server slot runs LRF auto-refund (new, RULINGS
     126), and MEMORY-PLAN's M3s follows it.
+  - Changed by RULINGS 132-158 (as of `3c62a86`; docs lane `docs-adopt`, group B): LRF (`a93fe54`) and
+    MEMORY-PLAN's M3s (`a5f887b`; its cut no longer after MD1's order, RULINGS 132, 143 QO4) have merged, so no lane
+    of PP's table is left to go; L1 `l1-entry-summary` runs (client; RULINGS 158). The three adopted plans' lanes are
+    planned (RULINGS 158), in their one order:
+    [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts).
   - Why LPO is a lane of its own (revision 1, W4): the operator facts need a `Config` variable, which means editing
     the three `Config` constructors (`config.rs`, `server/dev/src/lib.rs`, `server/tests/it/common.rs`) plus
     `lib.rs` and `.env.example`; in LF1 that is 15 + 4 = 19 files, over the cap. LPO holds them with `api/legal.rs` and
@@ -2031,6 +2036,12 @@ design's lanes have merged; running M2 (client, MEMORY-PLAN); to go of this desi
 Changed by RULINGS 113-127 (as of `a6365a8`): merged also M2 `385d52f`, LFU3 `48bc82a`, M3c `a6365a8` (client) and D2
 `b766a16` (docs); running LRF auto-refund (server; RULINGS 126); to go of this design's lanes: none. MEMORY-PLAN's M3s
 follows LRF in the server slot.
+Changed by RULINGS 132-158 (as of `3c62a86`; docs lane `docs-adopt`, group B): merged also LRF `a93fe54` and
+MEMORY-PLAN's M3s `a5f887b` (server; M3s's cut no longer after MD1's order, RULINGS 132, 143 QO4), and LEL
+`7b37278`, LBI `fe996a0`, LHJ `972f773`, LFL `cec347c` and LRB `3c62a86` (client); running L1 `l1-entry-summary`
+(client, RULINGS 158); to go of this design's lanes: none. The three adopted plans' lanes are planned (RULINGS
+158), in their one order:
+[engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts).
 
 ---
 
@@ -2223,3 +2234,4 @@ lists (default: the narrative-designer drafts the demo ones above), Q21 jurisdic
 | 15 | 2026-11-02 | RULINGS 105-111 (as merged on main `3e35a7b`) | Docs lane `docs-errata-7`, group B (not a triage round): M28 and "Implementation plan" Order as of `3e35a7b` (LMI merged `3e35a7b` after its entry-budget STOP and the relaunch of RULINGS 105, so all ten lanes of this design have merged; M2 running; LFU3 after M2, RULINGS 107, OB-1). Ledger: `D:/tmp/novel-orch/docs-errata-7/ledger.md` |
 | 16 | 2026-11-03 | `D:/tmp/novel-orch/carry.md` at ORCH `a7a514f` (the docs-errata-8 spec, group A; RULINGS 113), as merged on main `a6365a8` | Docs lane `docs-errata-8`, group A (not a triage round): docs-errata-7's open items OA-1 (principle 4, the budget targets' first-load figure and the Budgets table's first-load and time-to-first-line bases: the controller and its services left the entry for the 4.0 KB br controller chunk, which counts before the first line; the decoders and `createMetaEndpoints` stayed in the entry, 36.2 → 38.9 KB br over LMI) and OB-1 (M22: the gift retry's friends and wallet refresh as merged, LMI `3e35a7b`), and the optional note N2 ("once the boot reads are in", the budget targets and M27). Ledger: `D:/tmp/novel-orch/docs-errata-8/ledger.md` |
 | 17 | 2026-11-03 | RULINGS 113-127 (as merged on main `a6365a8`) | Docs lane `docs-errata-8`, group B (not a triage round): M28 and "Implementation plan" Order as of `a6365a8` (M2 `385d52f`, LFU3 `48bc82a`, D2 `b766a16` and M3c `a6365a8` merged; LRF auto-refund running in the server slot, new, RULINGS 126; MEMORY-PLAN's M3s after LRF). Ledger: `D:/tmp/novel-orch/docs-errata-8/ledger.md` |
+| 18 | 2026-11-09 | RULINGS 132-158 (as merged on main `3c62a86`); `D:/tmp/novel-orch/carry.md` at ORCH `e66fb81` (group A) | Docs lane `docs-adopt` (not a triage round): group I — "Changed by" notes where the per-player and engine plans supersede or extend this design (planned, not built: the achievement condition and card facts on puzzle keys, `hint_unlocks`, the privacy inventory and erasure, the "JS before the first line" row); group A — the LEL / LFL carries (the meta routes and decoders in `client/src/api/meta.ts`, the controller limit 6.0 KB br, the chunk's triggers and boot's stats read, the first line = entry + engine closures; RULINGS 105's two statements superseded, RULINGS 149) and docs-errata-9's open item (the refund records `auto_refunds` / `unrecorded_refunds` in the privacy inventory and the erasure paragraph); group B — M28 and "Implementation plan" Order as of `3c62a86` (LRF `a93fe54` and MEMORY-PLAN's M3s `a5f887b` merged, M3s's cut not after MD1's order, RULINGS 132, 143; LEL, LBI, LHJ, LFL and LRB merged; L1 running; the three plans' lanes planned in engine §12's one order). Ledger: `D:/tmp/novel-orch/docs-adopt/ledger.md` |

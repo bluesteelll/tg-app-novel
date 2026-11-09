@@ -40,6 +40,10 @@ out of `client/e2e/helpers.ts`, section 14 item 7), M2 14, M3c 15, M3s 13 files.
 As of `a6365a8` (docs lane `docs-errata-8`, group B; RULINGS 117, 125-127): M1 (`f1b707d`), M2 (`385d52f`), M3c
 (`a6365a8`) and D2 (`b766a16`) have merged; M3s is to go, in the server slot after LRF auto-refund (running, RULINGS
 126), and its cut follows MD1's order in `design-animation`.
+Changed by RULINGS 132-158 (as of `3c62a86`; docs lane `docs-adopt`, group B): LRF (`a93fe54`) and M3s (`a5f887b`,
+RULINGS 151) have merged, so every lane of this plan has merged. "Its cut follows MD1's order in
+`design-animation`" is superseded: RULINGS 132 stopped the character half of `design-animation` (its MD lanes no
+longer exist), and M3s ran in the server slot after LBI (RULINGS 143 QO4, 146).
 
 ## 1. Goal
 

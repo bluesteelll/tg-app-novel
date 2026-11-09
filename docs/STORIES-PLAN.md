@@ -1114,6 +1114,16 @@ while LDB1 ran; LDB1 and LDB2 had merged before the design landed, and the merge
     `b766a16` and M3c `a6365a8` (relaunched after its cut r1 block, RULINGS 120);
   - running: LRF auto-refund (server; new, RULINGS 126, added 2026-11-03, before M3s; PP "Dependency order");
   - to go, of this design's lanes: none.
+- **As of `3c62a86`** (changed by RULINGS 132-158; docs lane `docs-adopt`, group B; SHAs from `git log --first-parent
+  main`):
+  - merged since `a6365a8`: LRF auto-refund `a93fe54` (and the docs lanes `docs-errata-8` as `be6c348` and
+    `docs-errata-9` as `525dd68`), LEL `7b37278`, LBI `fe996a0`, LHJ `972f773`, MEMORY-PLAN's M3s `a5f887b` (its cut
+    no longer after MD1's order: RULINGS 132 stopped the character half of `design-animation`; M3s ran after LBI,
+    RULINGS 143 QO4, 146), LFL `cec347c` and LRB `3c62a86` (PP "Dependency order");
+  - running: L1 `l1-entry-summary` (client; RULINGS 158), beside the docs lane `docs-adopt`;
+  - to go, of this design's lanes: none. The three adopted plans' lanes are planned (RULINGS 158), in their one
+    order:
+    [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts).
 
 **Order** (RULINGS 8 rolling, RULINGS 18 three slots; as of `66c92c4`, changed by RULINGS 22, 23: LDB1 and LDB2
 merged, so the server chain starts at L6b): server L6b → LS2 → L6c → L8a → L8b → LS3 → L9; client (two slots)
@@ -1147,6 +1157,11 @@ beside D2), and LFU3 after M2, beside M3c / D2 (RULINGS 107, OB-1).
 Changed by RULINGS 113-127 (as of `a6365a8`): client M2 `385d52f`, LFU3 `48bc82a` and M3c `a6365a8` and the docs
 lane D2 `b766a16` have merged, so no client lane of the plan is left; the server chain continues LRF (running; RULINGS
 126) → MEMORY-PLAN's M3s, whose cut follows MD1's order in `design-animation` (RULINGS 124, 126).
+Changed by RULINGS 132-158 (as of `3c62a86`; docs lane `docs-adopt`, group B): LRF `a93fe54` and MEMORY-PLAN's M3s
+`a5f887b` have merged, so the server chain has run to its end; M3s's cut did not wait for MD1's order (RULINGS 132
+stopped the character half of `design-animation`; M3s ran after LBI, RULINGS 143 QO4, 146). Client L1
+`l1-entry-summary` runs (RULINGS 158). The three adopted plans' lanes are planned (RULINGS 158), in their one order:
+[engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts).
 
 **Collision locks added** (PP "Collision locks"): `0001` L2 → LDB1 → LS2; `0003` LS3; the serialized server files
 L6b → LS2 → L6c → L8a → L8b → LS3 → L9; `ids.rs` L6b (`StoryId` with `PuzzleId`); `lint.ts` / `dsl-doc.test.ts` /
@@ -1336,6 +1351,7 @@ Totals: 2 stories, 4 chapters (2 free, 2 paid), 4 endings (`truth`, `ashes`, `dr
 | 17 | 2026-11-02 | RULINGS 104-108 (as merged on main `a4d53ef`) | Docs lane `docs-errata-6`, group B (not a triage round): "Implementation plan" — "Running and merged lanes" and "Order" as of `a4d53ef` (LPH merged `d423cb3`; LMI running, relaunched, RULINGS 105; the LFU3 / M2 order ruled by RULINGS 107, OB-1: M2 first, then LFU3 after M2, beside M3c / D2; D2 waits for M2 only). Ledger: `D:/tmp/novel-orch/docs-errata-6/ledger.md` |
 | 18 | 2026-11-02 | RULINGS 105-111 (as merged on main `3e35a7b`) | Docs lane `docs-errata-7`, group B (not a triage round): "Implementation plan" — "Running and merged lanes" and "Order" as of `3e35a7b` (LMI merged `3e35a7b`, relaunched after its entry-budget STOP, RULINGS 105; M2 running; LFU3 after M2, beside M3c / D2, RULINGS 107). Ledger: `D:/tmp/novel-orch/docs-errata-7/ledger.md` |
 | 19 | 2026-11-03 | RULINGS 113-127 (as merged on main `a6365a8`) | Docs lane `docs-errata-8`, group B (not a triage round): "Implementation plan" — "Running and merged lanes" and "Order" as of `a6365a8` (M2 `385d52f`, LFU3 `48bc82a`, D2 `b766a16` and M3c `a6365a8` merged, M3c relaunched after its cut r1 block, RULINGS 120; LRF auto-refund running, new, RULINGS 126; M3s after LRF, its cut after MD1's order in `design-animation`). Ledger: `D:/tmp/novel-orch/docs-errata-8/ledger.md` |
+| 20 | 2026-11-09 | RULINGS 132-158 (as merged on main `3c62a86`); RULINGS 158 (the three designs adopted as plans) | Docs lane `docs-adopt` (not a triage round): group I — a "Changed by" note under "Demo content outline" (the shots and engine plans restage the demo chapters; planned, not built); group B — "Implementation plan": "Running and merged lanes" and "Order" as of `3c62a86` (LRF `a93fe54`, LEL `7b37278`, LBI `fe996a0`, LHJ `972f773`, M3s `a5f887b`, LFL `cec347c` and LRB `3c62a86` merged; L1 `l1-entry-summary` running; M3s's cut did not wait for MD1's order, RULINGS 132, 143; the three plans' lanes planned in engine §12's one order). Ledger: `D:/tmp/novel-orch/docs-adopt/ledger.md` |
 
 **Revision 1 (2026-10-31)** — what changed, by triage item:
 - **W1** (LS1 moved merged test pins it did not declare; commit 6 left the real-tree `story` gate red): PP "LS1" —
