@@ -100,6 +100,31 @@ test('cues: every cue key has a visible motion', () => {
   console.log(`scene motions pending: ${pending} of ${all.length} keys (MR1)`);
 });
 
+/** The properties reduced motion may change (opacity and colour) and the ones it never animates (travel). */
+const CALM = ['opacity', 'color', 'backgroundColor'] as const;
+const TRAVEL_PROPS = ['transform', 'translate', 'scale', 'rotate', 'offsetPath', 'offsetDistance'] as const;
+
+test('cues: reduced motion keeps every key visible', () => {
+  const problems: string[] = [];
+  const check = (label: string, kf: readonly Keyframe[]): void => {
+    if (!CALM.some((p) => new Set(kf.map((f) => String(f[p] ?? ''))).size > 1)) {
+      problems.push(`${label}: changes no opacity or colour`);
+    }
+    for (const p of TRAVEL_PROPS) {
+      if (kf.some((f) => f[p] !== undefined)) {
+        problems.push(`${label}: animates ${p}`);
+      }
+    }
+  };
+  for (const [label, spec] of everySpec()) {
+    check(`${label} reduced ${spec.reduced}`, PRESETS[spec.reduced]);
+  }
+  for (const [name, layer] of LAYERS) {
+    check(`LAYER_MOTIONS.${name} reduced`, layer.reduced.keyframes);
+  }
+  expect(problems).toEqual([]);
+});
+
 const END_ROWS = ['puzzle:solved', 'puzzle:failed', 'puzzle:closed'] as const satisfies readonly CueKey[];
 
 test("cues: a frame's end motion ends before its frame leaves", () => {
