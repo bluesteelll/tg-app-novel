@@ -7,7 +7,7 @@
 import { lockOf, worldIndex } from '../../src/explore/reduce.ts';
 import type { AssetId, AssetIndex, ChapterId, CharId, KnotName, LineId, SectionId, StagingCommand, VarName, YieldCommand } from '../../src/story/staging.ts';
 import { parseTags, tagKind } from '../../src/story/tags.ts';
-import type { Room, WorldPublicBody } from '../../src/world/types.ts';
+import type { Room, RoomId, WorldPublicBody } from '../../src/world/types.ts';
 import { classify, openingTagLines, unescapeInk } from './classify.ts';
 import type { Divert, LineClass, RawTag, SourceLine } from './classify.ts';
 import { GLOBALS_PATH, LINT_CODES, tagsOf } from './lint.ts';
@@ -45,6 +45,12 @@ export type ChapterGraph = {
   lines: readonly StoryLine[];
   /** Per knot, the images a predecessor may leave on stage that the knot does not clear or name (sorted). */
   carried: ReadonlyMap<KnotName, readonly AssetId[]>;
+  /**
+   * The explore yields' section edges, seeds and rooms (docs/plans/shots §3.4, the shot flow's input): always set by
+   * `buildGraph`; optional only so that a hand-built graph of an older test still types (a missing field read by the
+   * shot pass is a bug, never "no sections").
+   */
+  sections?: ChapterSections;
 };
 /**
  * The chapter's world as the graph sees it: none (no world.json), invalid (it failed `world/schema`: the
@@ -68,7 +74,11 @@ export type GraphFacts = {
   read: ReadonlySet<string>;
 };
 /** An explore yield's section knots: reachability edges from the yielding knot, and their entry stage. */
-type SectionEdges = { edges: ReadonlyMap<KnotName, readonly KnotName[]>; seeds: ReadonlyMap<KnotName, readonly AssetId[]> };
+export type SectionEdges = { edges: ReadonlyMap<KnotName, readonly KnotName[]>; seeds: ReadonlyMap<KnotName, readonly AssetId[]> };
+/** The section edges, and per section knot the rooms that name it as an event and as a leave (sorted ids). */
+export type ChapterSections = SectionEdges & {
+  rooms: ReadonlyMap<KnotName, { readonly events: readonly RoomId[]; readonly leaves: readonly RoomId[] }>;
+};
 
 function finding(code: LintCode, file: string, line: number, message: string): Finding {
   return { code, severity: LINT_CODES[code], file, line, message };
@@ -588,6 +598,7 @@ export function buildGraph(input: {
   };
   const edges = new Map<KnotName, Set<KnotName>>();
   const seeds = new Map<KnotName, Set<AssetId>>();
+  const roomsOf = new Map<KnotName, { events: Set<RoomId>; leaves: Set<RoomId> }>();
   for (const { knot, file, line, cmd } of sites) {
     if (knot !== null) {
       yields.set(knot, [...(yields.get(knot) ?? []), cmd]);
@@ -629,6 +640,20 @@ export function buildGraph(input: {
           seed.add(a);
         }
         seeds.set(k, seed);
+      }
+      // The same `knotsOf` result, each Room mapped to its id by identity: the shot flow's room windows and returns.
+      const idOf = new Map<Room, RoomId>(Object.entries(body?.sections[cmd.section]?.rooms ?? {}).map(([id, r]) => [r, id as RoomId])); // decoded room ids
+      for (const [kind, named] of [['events', events], ['leaves', leaves]] as const) {
+        for (const [k, rooms] of named) {
+          if (!scopes.has(k)) {
+            continue;
+          }
+          const into = roomsOf.get(k) ?? { events: new Set<RoomId>(), leaves: new Set<RoomId>() };
+          for (const id of rooms.flatMap((r) => idOf.get(r) ?? [])) {
+            into[kind].add(id);
+          }
+          roomsOf.set(k, into);
+        }
       }
     }
   }
@@ -708,6 +733,10 @@ export function buildGraph(input: {
       vars: [...vars].sort(),
       lines,
       carried,
+      sections: {
+        ...sectionEdges,
+        rooms: new Map([...roomsOf].map(([k, r]) => [k, { events: [...r.events].sort(), leaves: [...r.leaves].sort() }])),
+      },
     },
     findings,
     facts: { yields, declared, ...varUse(parsed, vars, globals) },
