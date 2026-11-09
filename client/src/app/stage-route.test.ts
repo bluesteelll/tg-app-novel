@@ -17,6 +17,9 @@ const ALL: { [K in StagingCommand['kind']]: Extract<StagingCommand, { kind: K }>
   wait: { kind: 'wait', ms: 1200 },
   face: { kind: 'face', char: 'ally' as CharId, expr: 'smile' as ExprId, ms: null },
   cam: { kind: 'cam', cam: { kind: 'push', to: 'ally' as CharId, z: 120 }, ms: null },
+  think: { kind: 'think' },
+  anim: { kind: 'anim', char: 'ally' as CharId, motion: 'nod', ms: null },
+  fx: { kind: 'fx', fx: 'flash', ms: 300 },
   puzzle: { kind: 'puzzle', puzzle: 'cabinet' as PuzzleLocalId, then: 'after' as KnotName },
   explore: { kind: 'explore', section: 'manor' as SectionId },
 };
@@ -24,7 +27,7 @@ const ALL: { [K in StagingCommand['kind']]: Extract<StagingCommand, { kind: K }>
 test('stage-route: splitBatch routes every command kind', () => {
   const r = splitBatch(Object.values(ALL));
   // The scene's and the audio's, each in the batch's order; a yield is its step's own, so neither list holds it.
-  expect(r.visual).toEqual([ALL.bg, ALL.scene, ALL.show, ALL.hide, ALL.cg, ALL.wait, ALL.face, ALL.cam]);
+  expect(r.visual).toEqual([ALL.bg, ALL.scene, ALL.show, ALL.hide, ALL.cg, ALL.wait, ALL.face, ALL.cam, ALL.anim, ALL.fx]);
   expect(r.audio).toEqual([ALL.bgm, ALL.sfx]);
 });
 
@@ -47,6 +50,16 @@ test("stage-route: imageIds lists a batch's images", () => {
   ]);
   // On a sprite stage a face names its expression's sprite, as a show does (it is ensured before the line).
   expect(imageIds([ALL.face])).toEqual(['char/ally/smile']);
-  // A hide, a CG taken off, a wait and a camera move name no image.
-  expect(imageIds([ALL.hide, off, ALL.wait, ALL.cam])).toEqual([]);
+  // A hide, a CG taken off, a wait, a camera move and the one-shots name no image.
+  expect(imageIds([ALL.hide, off, ALL.wait, ALL.cam, ALL.anim, ALL.fx])).toEqual([]);
+});
+
+test('stage-route: think goes to the session, anim and fx to the scene', () => {
+  const r = splitBatch([ALL.anim, ALL.think, ALL.bgm, ALL.fx]);
+  expect(r.think).toBe(true);
+  expect(r.visual).toEqual([ALL.anim, ALL.fx]);
+  expect(r.audio).toEqual([ALL.bgm]);
+  // A batch without it: the line is spoken as usual.
+  expect(splitBatch([ALL.anim, ALL.bgm]).think).toBe(false);
+  expect(splitBatch([]).think).toBe(false);
 });

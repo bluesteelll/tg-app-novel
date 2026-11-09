@@ -24,10 +24,14 @@ export function manifestIndex(m: AssetManifest): AssetIndex {
   };
 }
 
-/** A batch's commands by consumer (F2): the scene's, the audio's; a yield is its step's own, never a command here. */
-export function splitBatch(cmds: readonly StagingCommand[]): { visual: VisualCommand[]; audio: AudioCommand[] } {
+/**
+ * A batch's commands by consumer (F2): the scene's, the audio's, and `think` for the session (a line nobody speaks
+ * aloud: the shots plan's SH7 reads it); a yield is its step's own, never a command here.
+ */
+export function splitBatch(cmds: readonly StagingCommand[]): { visual: VisualCommand[]; audio: AudioCommand[]; think: boolean } {
   const visual: VisualCommand[] = [];
   const audio: AudioCommand[] = [];
+  let think = false;
   for (const c of cmds) {
     switch (c.kind) {
       case 'bgm':
@@ -42,7 +46,12 @@ export function splitBatch(cmds: readonly StagingCommand[]): { visual: VisualCom
       case 'wait':
       case 'face':
       case 'cam':
+      case 'anim':
+      case 'fx':
         visual.push(c);
+        break;
+      case 'think':
+        think = true;
         break;
       case 'puzzle':
       case 'explore':
@@ -53,7 +62,7 @@ export function splitBatch(cmds: readonly StagingCommand[]): { visual: VisualCom
       }
     }
   }
-  return { visual, audio };
+  return { visual, audio, think };
 }
 
 /** The image asset ids a visual batch shows (STAGING-DSL §8), for `ensure`. */

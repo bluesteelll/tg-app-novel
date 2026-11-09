@@ -57,3 +57,11 @@ test('graph: a cam names no asset', () => {
     expect(node.clears, tag).toEqual(CLEARS_NOTHING);
   }
 });
+
+test('graph: think, anim and fx name no asset', () => {
+  for (const tag of ['think', 'anim: ally nod', 'fx: shake']) {
+    const node = knotWith(tag);
+    expect(node.assets, tag).toEqual([]);
+    expect(node.clears, tag).toEqual(CLEARS_NOTHING);
+  }
+});

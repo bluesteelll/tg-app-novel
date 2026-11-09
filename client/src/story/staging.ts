@@ -23,6 +23,8 @@ export type PuzzleLocalId = Brand<string, 'PuzzleLocalId'>;
 export type SectionId = Brand<string, 'SectionId'>;
 export type PropId = Brand<string, 'PropId'>;
 export type Slot = 'left' | 'center' | 'right';
+/** An `anim` one-shot (docs/plans/shots §3.1); `hop` and `bounce` need a figure plane. */
+export type Motion = 'nod' | 'shake' | 'lean_in' | 'lean_back' | 'sigh' | 'tremble' | 'hop' | 'bounce';
 /** x, y, width, height in integer source px of the 1080×2048 background space. */
 export type Rect = readonly [x: number, y: number, w: number, h: number];
 export type PropPlacement = {
@@ -46,6 +48,9 @@ export type StagingCommand =
   // The shot kinds (docs/plans/shots §3.2); `ms: null` = the per-kind default of whoever draws it.
   | { kind: 'face'; char: CharId; expr: ExprId; ms: number | null }
   | { kind: 'cam'; cam: Exclude<CamState, { kind: 'rest' }> | { kind: 'pull' }; ms: number | null }
+  | { kind: 'think' }
+  | { kind: 'anim'; char: CharId; motion: Motion; ms: number | null }
+  | { kind: 'fx'; fx: 'shake' | 'flash'; ms: number | null }
   | { kind: 'puzzle'; puzzle: PuzzleLocalId; then: KnotName }
   | { kind: 'explore'; section: SectionId };
 

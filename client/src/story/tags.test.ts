@@ -102,7 +102,7 @@ test('tags: bg t=crossfade takes its ms', () => {
 });
 
 test('tags: unknown kind is an error value', () => {
-  for (const tag of ['fx: boom', 'speaker: ally', 'music: calm', 'wait2: 100', 'bgx', 'idd: ch1.cafe.k3x9']) {
+  for (const tag of ['shot: cafe', 'speaker: ally', 'music: calm', 'wait2: 100', 'bgx', 'idd: ch1.cafe.k3x9']) {
     const r = parse(tag);
     expect(r.errors, tag).toEqual([{ tag, reason: 'unknown-kind', detail: expect.any(String) }]);
     expect(r.commands, tag).toEqual([]);
@@ -672,4 +672,56 @@ test('tags: cam pan needs to', () => {
   expect(reasons(parse('cam: pan to=ally z=110'))).toEqual(['bad-arg']);
   expect(reasons(parse('cam: pan to=center'))).toEqual(['unknown-asset']);
   expect(reasons(parse('cam: pan to=nobody'))).toEqual(['unknown-asset']);
+});
+
+test('tags: think takes no argument', () => {
+  for (const tag of ['think', 'think:', ' think : ']) {
+    expect(parse(tag), JSON.stringify(tag)).toEqual({ lineId: null, commands: [{ kind: 'think' }], errors: [] });
+  }
+  for (const tag of ['think: now', 'think: ms=1', 'think: ally']) {
+    const r = parse(tag);
+    expect(reasons(r), tag).toEqual(['bad-arg']);
+    expect(r.commands, tag).toEqual([]);
+  }
+});
+
+test('tags: anim names a closed motion', () => {
+  for (const motion of ['nod', 'shake', 'lean_in', 'lean_back', 'sigh', 'tremble', 'hop', 'bounce']) {
+    expect(parse(`anim: ally ${motion}`), motion).toEqual({
+      lineId: null,
+      commands: [{ kind: 'anim', char: 'ally', motion, ms: null }],
+      errors: [],
+    });
+  }
+  expect(parse('anim: stranger sigh ms=900').commands).toEqual([{ kind: 'anim', char: 'stranger', motion: 'sigh', ms: 900 }]);
+  const cases: ReadonlyArray<readonly [string, string]> = [
+    ['anim: ally dance', 'bad-arg'],
+    ['anim: ally nod at=left', 'bad-arg'],
+    ['anim: ally nod shake', 'bad-arg'],
+    ['anim: ally', 'missing-arg'],
+    ['anim: nobody nod', 'unknown-asset'],
+    ['anim: voice nod', 'unknown-asset'],
+  ];
+  for (const [tag, reason] of cases) {
+    const r = parse(tag);
+    expect(reasons(r), tag).toEqual([reason]);
+    expect(r.commands, tag).toEqual([]);
+  }
+});
+
+test('tags: fx is shake or flash', () => {
+  expect(parse('fx: shake')).toEqual({ lineId: null, commands: [{ kind: 'fx', fx: 'shake', ms: null }], errors: [] });
+  expect(parse('fx:flash ms=300')).toEqual({ lineId: null, commands: [{ kind: 'fx', fx: 'flash', ms: 300 }], errors: [] });
+  const cases: ReadonlyArray<readonly [string, string]> = [
+    ['fx: boom', 'bad-arg'],
+    ['fx: shake flash', 'bad-arg'],
+    ['fx: shake vol=50', 'bad-arg'],
+    ['fx:', 'missing-arg'],
+    ['fx', 'missing-arg'],
+  ];
+  for (const [tag, reason] of cases) {
+    const r = parse(tag);
+    expect(reasons(r), tag).toEqual([reason]);
+    expect(r.commands, tag).toEqual([]);
+  }
 });

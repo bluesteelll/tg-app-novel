@@ -9,6 +9,7 @@ import type {
   ExprId,
   KnotName,
   LineId,
+  Motion,
   ParsedTags,
   PuzzleLocalId,
   SectionId,
@@ -25,7 +26,24 @@ export const YIELD_KINDS = ['puzzle', 'explore'] as const;
 export type YieldKind = (typeof YIELD_KINDS)[number];
 
 /** Every tag kind of STAGING-DSL §6, in table order: `id` is the line ID, the rest are the command kinds. */
-export const TAG_KINDS = ['id', 'bg', 'scene', 'show', 'hide', 'cg', 'bgm', 'sfx', 'wait', 'face', 'cam', ...YIELD_KINDS] as const;
+export const TAG_KINDS = [
+  'id',
+  'bg',
+  'scene',
+  'show',
+  'hide',
+  'cg',
+  'bgm',
+  'sfx',
+  'wait',
+  // The shot kinds (docs/plans/shots §3.1).
+  'face',
+  'cam',
+  'think',
+  'anim',
+  'fx',
+  ...YIELD_KINDS,
+] as const;
 export type TagKind = (typeof TAG_KINDS)[number];
 
 type SameUnion<A, B> = [A] extends [B] ? ([B] extends [A] ? A : never) : never;
@@ -84,7 +102,8 @@ function fail(tag: string, reason: TagError['reason'], detail: string): TagError
 
 /**
  * Splits args into positionals and options and checks their shape: the grammar (§2), the positional count and the
- * option names. On success `positional.length === arity`, which is what makes the tuple casts in `command` exact.
+ * option names. On success `positional.length === arity`, which is what makes the tuple casts in `command` exact; a
+ * kind of arity 0 (`think`) takes no args at all, with or without its colon.
  * `id` takes its one positional verbatim: it is checked against LINE_ID_RE (§4), not against §2's `positional`.
  */
 function readArgs(
@@ -97,7 +116,7 @@ function readArgs(
   const text = (args ?? '').trim();
   const count = `'${kind}' takes ${arity} argument${arity === 1 ? '' : 's'}`;
   if (text === '') {
-    return fail(tag, 'missing-arg', count);
+    return arity === 0 ? { positional: [], options: new Map() } : fail(tag, 'missing-arg', count);
   }
   const positional: string[] = [];
   const pairs: Array<readonly [string, string]> = [];
@@ -219,6 +238,12 @@ const FADE_CUT = ['fade', 'cut'] as const;
 const CAM_MOVES = ['push', 'pull', 'pan'] as const;
 /** `never` when CAM_MOVES and the `cam` command's moves drift apart, which fails `check` where a move is picked. */
 type CamMove = SameUnion<(typeof CAM_MOVES)[number], Extract<StagingCommand, { kind: 'cam' }>['cam']['kind']>;
+const MOTIONS = ['nod', 'shake', 'lean_in', 'lean_back', 'sigh', 'tremble', 'hop', 'bounce'] as const;
+/** `never` when MOTIONS and Motion drift apart, which fails `check` where a motion is picked. */
+type MotionTie = SameUnion<(typeof MOTIONS)[number], Motion>;
+const FX = ['shake', 'flash'] as const;
+/** `never` when FX and the `fx` command's effects drift apart, which fails `check` where an effect is picked. */
+type FxTie = SameUnion<(typeof FX)[number], Extract<StagingCommand, { kind: 'fx' }>['fx']>;
 
 /**
  * One command tag after its kind is known: arg shape first, then values, then the catalog (§6, §8). Reserved words
@@ -347,6 +372,29 @@ function command(tag: string, kind: CommandKind, rawArgs: string | undefined, as
       if (typeof z === 'object') return z;
       return { kind: 'command', command: { kind, cam: { kind: move, to: to as CamTarget, z }, ms } };
     }
+    case 'think': {
+      const a = readArgs(tag, kind, rawArgs, 0, []);
+      return 'reason' in a ? a : { kind: 'command', command: { kind } };
+    }
+    case 'anim': {
+      const a = readArgs(tag, kind, rawArgs, 2, ['ms']);
+      if ('reason' in a) return a;
+      const ms = msOrNull(tag, a.options);
+      if (typeof ms === 'object' && ms !== null) return ms;
+      const [char, name] = a.positional as [string, string];
+      const motion: MotionTie | TagError = pick(tag, `'${name}'`, name, MOTIONS);
+      if (typeof motion === 'object') return motion;
+      return unknownChar(tag, assets, char) ?? { kind: 'command', command: { kind, char: char as CharId, motion, ms } };
+    }
+    case 'fx': {
+      const a = readArgs(tag, kind, rawArgs, 1, ['ms']);
+      if ('reason' in a) return a;
+      const ms = msOrNull(tag, a.options);
+      if (typeof ms === 'object' && ms !== null) return ms;
+      const [name] = a.positional as [string];
+      const fx: FxTie | TagError = pick(tag, `'${name}'`, name, FX);
+      return typeof fx === 'object' ? fx : { kind: 'command', command: { kind, fx, ms } };
+    }
     case 'puzzle':
     case 'explore':
       return yieldCommand(tag, kind, rawArgs);
@@ -395,6 +443,9 @@ function conflictsOneWay(a: StagingCommand, b: StagingCommand): boolean {
     case 'sfx':
     case 'face':
     case 'cam':
+    case 'think':
+    case 'anim':
+    case 'fx':
       return false;
     case 'puzzle':
     case 'explore':

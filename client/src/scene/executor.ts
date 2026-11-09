@@ -31,9 +31,12 @@ export function resumeAll(): void {
   gsap.globalTimeline.resume();
 }
 
-/** The commands the scene executes; audio and yields stay with GameSession (§7 steps 1 and 5). */
+/**
+ * The commands the scene executes; audio, yields and `think` stay with GameSession (§7 steps 1 and 5). `anim` and `fx`
+ * are one-shots nothing draws yet (the shots plan's SH8): reduce and compose pass over them.
+ */
 export type VisualCommand =
-  | Extract<StagingCommand, { kind: 'bg' | 'scene' | 'show' | 'hide' | 'cg' | 'wait' | 'face' | 'cam' }>
+  | Extract<StagingCommand, { kind: 'bg' | 'scene' | 'show' | 'hide' | 'cg' | 'wait' | 'face' | 'cam' | 'anim' | 'fx' }>
   | PropsCommand;
 export type SceneSnapshot = Omit<StagingSnapshot, 'bgm'>;
 

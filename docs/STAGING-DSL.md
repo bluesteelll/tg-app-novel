@@ -237,6 +237,9 @@ preload-visible).
 | `wait` | `wait:<ms>` | scene (batch timing) | — | `wait` |
 | `face` | `face:<char> <expr> [ms=N]` | scene | `char/<char>/<expr>` | `face` |
 | `cam` | `cam:push [to=<char>\|center] [z=N] [ms=N]`, `cam:pull [ms=N]`, `cam:pan to=<char>\|left\|right [ms=N]` | scene (held in the stage state) | — | `cam` |
+| `think` | `think` | GameSession | — | `think` |
+| `anim` | `anim:<char> <motion> [ms=N]` | scene | — | `anim` |
+| `fx` | `fx:shake\|flash [ms=N]` | scene | — | `fx` |
 | `puzzle` | `puzzle:<puzzle> then=<knot>` | GameSession → PuzzleSession | — (the close-up comes from world data) | `puzzle` |
 | `explore` | `explore:<section>` | GameSession → ExploreController | — (rooms come from world data) | `explore` |
 
@@ -446,6 +449,51 @@ ally: But I am glad you came. #id:ch1.cafe.f4c1
 ally: There is something I never told you. #id:ch1.cafe.c4m0
 # cam: pull
 She looked away. #id:ch1.cafe.c4m1
+```
+
+### `think`
+
+- **Syntax:** `think` — no arguments and no options (`think:` with nothing after the colon is the same tag).
+- **Placement:** on a text line.
+- **Effect:** the line is a thought: the speaker's mouth stays still and nobody is cued as a listener. GameSession
+  takes it from the batch (it is not a scene command); the shots plan's SH7 acts on it.
+- **Validation:** `tag/bad-arg` for any argument or option.
+- **Typed:** `{ kind: 'think' }`
+
+```ink
+=== think_example ===
+ally: He is lying again. #think #id:ch1.cafe.th1k
+```
+
+### `anim`
+
+- **Syntax:** `anim:<char> <motion> [ms=N]`
+- **Arguments:** `<char>` — a character of the catalog; `<motion>` — one of `nod`, `shake`, `lean_in`, `lean_back`,
+  `sigh`, `tremble`, `hop`, `bounce` (`hop` and `bounce` need a figure plane).
+- **Options:** `ms` range 0–10000; default: the motion's own (the shots plan's SH8 sets them).
+- **Effect:** a one-shot motion of the character; it is not part of the stage state (a load does not replay it).
+  Routed to the scene; the shots plan's SH8 draws it.
+- **Validation:** `tag/unknown-asset` (character), `tag/bad-arg` (a motion outside the list).
+- **Typed:** `{ kind: 'anim'; char: CharId; motion: Motion; ms: number | null }`
+
+```ink
+=== anim_example ===
+# anim: ally nod
+ally: Fine. Let us go. #id:ch1.cafe.n0d1
+```
+
+### `fx`
+
+- **Syntax:** `fx:shake|flash [ms=N]`
+- **Options:** `ms` range 0–10000; default: the effect's own (the shots plan's SH8 sets them).
+- **Effect:** a one-shot screen effect; it is not part of the stage state. Routed to the scene; the shots plan's SH8
+  draws it.
+- **Validation:** `tag/bad-arg` (an effect other than `shake` or `flash`).
+- **Typed:** `{ kind: 'fx'; fx: 'shake' | 'flash'; ms: number | null }`
+
+```ink
+=== fx_example ===
+The door slammed. #fx: shake #sfx: door #id:ch1.room.s14m
 ```
 
 ### `puzzle`

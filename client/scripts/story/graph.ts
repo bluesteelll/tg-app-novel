@@ -23,7 +23,7 @@ export type KnotNode = {
   /** Where the knot's header is. */
   file: string;
   line: number;
-  /** Every asset its literal tags name (sorted); `hide`, `wait`, `cg: off` and `bgm: stop` name none. */
+  /** Every asset its literal tags name (sorted); `hide`, `wait`, `cg: off`, `bgm: stop`, `cam`, `think`, `anim` and `fx` name none. */
   assets: readonly AssetId[];
   /** Successor knots (sorted): every other or same knot a divert written inside it names, and a `then=` knot. */
   next: readonly KnotName[];
@@ -114,6 +114,9 @@ function assetOf(c: StagingCommand): AssetId | null {
     case 'hide':
     case 'wait':
     case 'cam':
+    case 'think':
+    case 'anim':
+    case 'fx':
     case 'puzzle':
     case 'explore':
       return null;
