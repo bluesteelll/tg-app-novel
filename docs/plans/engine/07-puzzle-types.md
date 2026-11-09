@@ -165,6 +165,15 @@ export interface PuzzleTypeLint<P> {
   **Ruled: RULINGS 180** — `world/clue-declared` and `world/clue-reachable` judge the secret puzzles a lock holds (a
   linear puzzle has no section entry to search from; its clue is the story's, and a clue in an earlier chapter, ch2
   `cabinet` -> ch1 `letter`, is GM9p's cross-chapter pass).
+  Changed by RULINGS 183 (as of `837b1ed`; docs lane `docs-errata-12`, group A): as merged (GM1d `794181b`, critique
+  W1), `world/clue-reachable`'s search removes **every** `puzzle-ended` step of the puzzle, the solved **and** the
+  failed edge (`closed` stays: Back leaves the puzzle open), through the search option `SearchOptions.exclude`
+  (`client/scripts/story/mechanics/clues.ts:132`, `client/src/mechanics/rules/search.ts:324`), so a clue that only the
+  puzzle's failure reveals (a self-unlocking `onFail`) is refused. Since GM3c (`837b1ed`, RULINGS 192) a clue is a
+  condition (§4), not an atom: `clues: Cond[]` decodes through `decodeCond`, and a clue holds when its whole condition
+  holds in one reached state (an `all` clue: every conjunct in that one state); "clue atom" above reads "clue".
+  **Ruled: RULINGS 183** — X15's intended error: a clue held only from another section of the same chapter is refused,
+  since each section is provable alone from its entry (PUZZLES-PLAN "every move stays inside its section").
 - **Rejected:** per-press feedback for `ritual` (it leaks the answer one press at a time, `length x parts` probes);
   ruling sequence answers public (it would sell hints whose answer ships, I4).
 
@@ -221,6 +230,10 @@ export interface PuzzleTypeLint<P> {
     test cannot pass vacuously) and asserts client <= server; seen red on the mutation client = 17. It is `<=` on
     purpose: per-player GM6s1's raise to 64 (a server-slot lane) leaves the client suite green, and **GM7g** raises the
     client bound to 64 after it (a 5 x 5 grid posts 25);
+    Changed by RULINGS 179, 183 (as of `837b1ed`; docs lane `docs-errata-12`, group A): as merged (GM1d `794181b`),
+    the server constant is `MAX_ANSWER_LEN = 64` at `server/src/puzzles/mod.rs:34` (GM6s1 raised it; this bullet's
+    `:21`, 16, is the round-3 reading), so the pin is seen red on the mutation client = 65, not 17; the build bound
+    stays 16 until GM7g (`client/scripts/story/puzzles/shape.ts:20`);
   - the per-type decode bounds (§7.2) keep every non-board type at <= 12 entries; `path` (<= 49 cells) and `grid`
     (<= 36) are bounded by the lint, so an author's 5 x 5 visit-all path fails `npm run story` until GM7g, never a POST;
   - per-player GM6s2's load rule `answer_len <= MAX_ANSWER_LEN` ([per-player §3.3 Content format 2](../per-player/03-server-half.md#33-content-format-2)) is the server's own second line;

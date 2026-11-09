@@ -33,6 +33,12 @@ LFL's nine files: client/src/app/{boot,game,meta,game.test,meta.test}.ts, client
            client/e2e/perf.spec.ts, client/src/arch.test.ts (lfl-first-line/test_r2.md:85-86)
 ```
 
+**Ruled: RULINGS 190, 195, 196** — the `next:` line gains the engine-closure lever lane (Ledger 4's headroom 0.873 KB
+on `837b1ed`, under the 1.0 KB trigger): it runs in the first client slot after GM3s merges, before GM3 or any later
+engine-adding lane; the `carried:` line gains its second candidate, P (`purchase/flow.ts`, ~-1.52 KB br), which joins
+the lever only if `game.ts` is free (SH1 merged) and otherwise stays the next lever
+([§11.1 Ledger 4](11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13)).
+
 Changed by RULINGS 159-173 (as of `9a83251`; docs lane `docs-errata-10`, group B): the block above is the state at
 `9a83251` (SHAs from `git log --first-parent main`). L1, GM6k, GM1a, GM6s1, GM1b and `docs-adopt` moved to `done:`;
 the `in flight:` line read "(as of 3c62a86) docs-adopt (RULINGS 158; docs only), L1 l1-entry-summary (RULINGS 158;
@@ -162,7 +168,7 @@ the table is the error to fix (the rule of this section's first paragraph).
 | `assets/catalog.json` (round 4; round 5 m2) | GM3b (one prop `drawer_open`) -> GM8d (five placeholder props and the bg `fog_gallery`); reconcile r1: SH9 (loop props, ambient) by launch, never beside either (was: A(`assets/catalog.json`)) |
 | `story/locales/en/ch1.json` (round 5, m2) | GM4u (the demo view's title and labels) -> GM9r (the carried item's texts) -> per-player GM6c4 -> GM6d2 (by launch, never beside), the order of `story/ch1/world.json`'s row; GM1d and GM3b add no ch1 text (`clues` are conditions, a visual state has no text) |
 | `story/locales/en/ch2.json` (round 5, m2) | GM9r only (the required item's `name` / `desc` and the door's label) |
-| `client/scripts/story.ts` (round 5, m6; per-player R-E23) | GM1d only if its cut's verify item (§3.2: a `Finding.code` reader in `story.ts` that needs the wider union) finds one, then GM9p (the cross-chapter pass); per-player GM6c1a, GM6c1b by launch, never beside GM9p (their mutual order is per-player.md's) (this row, not `lint.ts`, now keeps GM9p and GM6c1b apart); reconcile r1: SH2 never beside GM1d, GM2b, GM3c, GM9p, GM6c1a, GM6c1b |
+| `client/scripts/story.ts` (round 5, m6; per-player R-E23) | GM1d only if its cut's verify item (§3.2: a `Finding.code` reader in `story.ts` that needs the wider union) finds one, then GM9p (the cross-chapter pass); per-player GM6c1a, GM6c1b by launch, never beside GM9p (their mutual order is per-player.md's) (this row, not `lint.ts`, now keeps GM9p and GM6c1b apart); reconcile r1: SH2 never beside GM1d, GM2b, GM3c, GM9p, GM6c1a, GM6c1b. Changed by RULINGS 183 (as of `837b1ed`; docs lane `docs-errata-12`, group A): GM1d took no hunk here (its cut's verify item found no `Finding.code` reader that needs the wider union; merged `794181b` without `story.ts`), so the row starts at GM9p |
 | `client/scripts/story/spike-p2.test.ts` (round 5, m6) | GM1b (new) -> GM5 -> GM5q (when it runs) -> GM5f |
 | `client/src/mechanics/rules/search.ts` (round 4) | GM1a -> GM1b -> GM1d -> GM5q (when it runs) |
 | `client/src/explore/reconcile.ts`, `explore.test.ts` (round 3 m1) | GM1a -> GM1b -> GM2a -> GM2b -> GM3 (test) -> GM5q (test, when it runs; round 5 m6) -> GM5f; per-player GM6c1b never beside |
@@ -170,6 +176,7 @@ the table is the error to fix (the rule of this section's first paragraph).
 | `client/scripts/story/world.test.ts` | GM1d -> GM2b -> GM3c (round 6: the walk's tests) -> GM9p; per-player GM6c1b by launch, never beside (round 5, R-E23) |
 | `client/scripts/story/world.ts` (round 6, W1; per-player R-E25) | GM1a -> GM1b -> GM1c -> GM2b -> GM3c (`WorldTextLine`, the walk over `MECHANIC_TEXTS`); no later lane of either design (module texts arrive through `MECHANIC_TEXTS`, per-player's text rules read the walk's lines in `values.ts`) |
 | `client/scripts/story/mechanics/texts.ts` (round 6, new) | GM3c only (the types, `KERNEL_TEXT_ROLES`, `TEXTS_LINT`); later lanes import its types |
+| `client/scripts/story/mechanics/clues.ts` (GM1d, new) | **Ruled: RULINGS 192** — GM1d (new) -> GM3c (commit (2b), `clues` widened to `Cond[]`) -> GM7p, one at a time (the GM7p row names GM1d; GM3c held it between them) |
 | `client/scripts/story/puzzles/shape.ts` | GM1d -> GM7g |
 | `client/src/mechanics/data/index.ts`, `rules/index.ts` | GM1b -> GM3c (data) -> GM3 -> GM3b -> GM4 -> GM5 -> GM5f -> GM8i -> GM9p (data) -> per-player GM6d2 (data) |
 | `client/src/ui/state.svelte.ts` | GM3s (one field and the slot types); per-player GM6c3 by launch |
@@ -177,7 +184,7 @@ the table is the error to fix (the rule of this section's first paragraph).
 | `client/src/i18n/mechanics.ts` (round 4, new) | GM3u (new, with its parity test) -> GM7r (`mech.content_updated`) |
 | `client/scripts/budget.ts`, `budget.test.ts` | reconcile r1: M3c, LEL, LFL (merged) -> {SH3a (the `LIMITS.image` and DIMS Records), GM3s} by launch, never beside -> SH3b (the sheet helper, two budget codes) -> GM4g -> GM7p -> per-player GM6d2 -> SH12b (`knotRows`, by launch, never beside) (was: M3c (merged) -> A(`budget.ts`) (rev. 3: MD1b) / GM3s (by launch, never beside) -> GM4g -> GM7p -> per-player GM6d2 -> the MR2 role (DIMS rows)) |
 | `client/src/world/{types,decode}.ts` | GM1c -> GM1d -> GM2b -> GM3c (composed decoder) -> per-player GM6c1a; after GM3c no module lane edits them |
-| `client/scripts/story/emit.ts` | (reconcile r1: no SH lane holds it, §9.14; "A(`emit.ts`) (rev. 3: MD1a) ->" removed) GM2b (compact, the `renderHints` call site) -> GM3b -> GM4g -> GM4 -> per-player GM6c1a -> GM6c1b -> GM6d2 (round 1 listed GM1d, whose strip lives in `toPublic`, `world/decode.ts:660`, not in `emit.ts`) |
+| `client/scripts/story/emit.ts` | (reconcile r1: no SH lane holds it, §9.14; "A(`emit.ts`) (rev. 3: MD1a) ->" removed) GM2b (compact, the `renderHints` call site) -> GM3b -> GM4g -> GM4 -> per-player GM6c1a -> GM6c1b -> GM6d2 (round 1 listed GM1d, whose strip lives in `toPublic`, `world/decode.ts:660`, not in `emit.ts`). Changed by RULINGS 183 (as of `837b1ed`; docs lane `docs-errata-12`, group A): `toPublic` is `client/src/world/decode.ts:855` on `837b1ed` (`:640` on `9b4fd25`, `:687` on `794181b`); GM1d stripped `clues` there and edited no `emit.ts` line |
 | `client/scripts/story/mechanics/index.ts` | every module lane in the world chain order (one `MECHANIC_LINTS` line each, and from GM3c on one `MECHANIC_TEXTS` line each, `null` for a module without texts, round 6 W1: GM3c `core: null` plus the `TEXTS_LINT` line of `MECHANIC_LINTS`, GM3 `use`, GM3b `visual`, GM4 `view`, GM5 `combine`, GM5f `flags`, GM8i `devices`, GM9p `carry`, per-player GM6d2 `labels`); per-player GM6c1a (R-E16, round 4: one line `VALUES_LINT`, after GM1d, then by launch, never beside a later holder: GM3c, GM3, GM3b, GM4, GM5, GM5f, GM8i, GM9p) -> per-player GM6c1b (round 5, R-E23: one line `KEY_LINT`, a `runsFrom: 'story'` entry, by launch, never beside a module lane) -> per-player GM6d2 |
 | `client/scripts/story/graph.ts` (round 4) | reconcile r1: SH1 -> SH2 (`sections`) -> GM9p (`mustPass`) -> SH12a, never beside (was: A(`graph.ts`) (rev. 3: MD1a) -> GM9p (`mustPass`); rev. 3's MA1b by launch, never beside GM9p) |
 | `client/src/scene/*` | none of this file's lanes (views use today's crossfade); reconcile r1: M3c, LHJ (merged) -> GM2a's field -> per-player GM6a -> SH1 (executor, `executor.test.ts`) -> SH4 -> SH5a -> SH5b -> SH6 -> SH7 -> SH8 -> {per-player GM6d1, SH9, SH10, SH12a, SH12b, the carried preload-priority lane} one at a time by launch (was: M3c (merged) -> GM2a's field -> per-player GM6a -> A(`scene/*`) (rev. 3: MD2 -> MA1a -> MA1b -> MA2) -> {per-player GM6d1, the MR1 -> MR2 roles}) |
@@ -191,7 +198,7 @@ the table is the error to fix (the rule of this section's first paragraph).
 | `client/src/requests.test.ts` (round 13; reconcile r1 adds SH7; reconcile r2, R-E35) | GM3p (new) -> {per-player GM6c2 (E-P23; its `SITE_MEMBERS` row, E-P29), SH7 (its `scene/motion/` `import()` row; GM3p is always merged by then), every later lane that adds a start, a `HOST_WAITS` row or a `SITE_MEMBERS` row} by launch, never beside (§12 head; r1 let two holders with disjoint rows run beside each other, withdrawn) |
 | `client/src/story/staging.ts` (reconcile r1) | GM2a (`PropPlacement.at`, `StagingSnapshot.cam`, I-1) -> SH1 (the `cam` command) -> SH12a |
 | `client/src/story/tags.ts`, `tags.test.ts` (reconcile r1) | SH1 -> SH12a |
-| `client/scripts/story/dsl-doc.test.ts` (reconcile r1) | SH1 -> SH12a -> SH12b (GM1d reads its 86-row pin, edits none) |
+| `client/scripts/story/dsl-doc.test.ts` (reconcile r1) | SH1 -> SH12a -> SH12b (GM1d reads its 86-row pin, edits none). Changed by RULINGS 183 (as of `837b1ed`; docs lane `docs-errata-12`, group A): the file is `client/src/story/dsl-doc.test.ts` (the path the other plan sections cite, §3.2); no file exists under `client/scripts/story/` by that name |
 | `docs/STAGING-DSL.md` (reconcile r1) | SH1 -> SH2 -> SH3b -> SH12a -> SH12b; the docs adoption lane (RULINGS 153) before or after them, never beside |
 | `client/src/story/catalog.ts` (reconcile r1) | no planned holder; it is in the entry closure (`client/src/app/boot.ts:21`), so a lane that adds to it quotes the entry ledger (§11.1; §30 item 9) |
 | `client/src/story/shots.ts` (reconcile r1, new) | SH3a only (SH5a imports `ShotWindow` / `stepWindow`, SH9 `shotImages`) |

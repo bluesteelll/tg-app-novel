@@ -64,6 +64,36 @@ ledger ([shots §10 Budgets and validation](../shots/10-budgets-and-validation.m
   (12.43 + 3.430 + 12.75 = 28.61) = **302.972** / 305.0 (2.028 left), + GM7p and GM7g (2 x 1.625) 306.222 before
   RULINGS 158's re-set at GM7p (unchanged); engine closure 215.336 + (3.25 + 3.13 + 6.15 = 12.53) = **227.866** /
   230.0 (2.134 left); explore-ui 8.395 + 5.06 = **13.455**, ~13.45 / 16.0 (GM1c's and GM2a's explore-ui terms were 0).
+- **Main `837b1ed`, MEASURED** (Changed by RULINGS 183, 186, 188, 190, 193, 196 (as of `837b1ed`; docs lane
+  `docs-errata-12`, group A); `837b1ed` is GM3c's merge): entry 37,486, engine 217,077, first line 254,563, explore-ui
+  8,433, all JS 276,107 B (exact bytes, `budget.ts`'s evaluate at GM3c's merge check, RULINGS 196). Per lane, main ->
+  merge (each lane's own measurement, as its ruling quotes it): **GM1d** `794181b` entry +42 (churn), engine +96
+  (churn across the closure; its term 0), first line +138, explore-ui +20, puzzle-type +22, all JS +165 (the tester's
+  two trees on one machine, `gm1d-mech-clues/test_r1.md:76`; RULINGS 183); **GM3w** `508bd36` entry -14, engine
+  **+15.8** (mean of 4 builds per tree; one build +80) against its +0.03 term, first line +66, explore-ui +19,
+  puzzle-host +21, all JS +81 (RULINGS 186); **per-player GM6a** `23e1d31` engine **+469.6** (mean of 4, 215,546.2 ->
+  216,015.8) against its +0.15 term (320 B over, 180 B under the term + 0.5 KB STOP line: a PASS), entry -10.8, first
+  line +458.8, all JS +431.8 (means; RULINGS 188); **GM2b** `1782d6d` entry -60, engine **+400** against +0.1 (a PASS:
+  300 B over the term, under term + 0.5), first line +340, all JS +331, world ch1 br 1,719 -> 1,506 and raw 10,779 ->
+  5,253, ch2 br 286 -> 255 and raw 569 -> 394 (4 builds per tree, identical; RULINGS 190; §5.4); **GM3m** `a3f0678`
+  no row moves (entry -5, engine -20, first line -25, all JS -78: nothing mounted; its +0.16 engine and +2.75
+  cue-stage terms are measured with GM3s's build; RULINGS 193); **GM3c** `837b1ed` entry +7, engine **+605** against
+  +0.2 (405 B over the term, inside the 0.5 KB STOP margin), first line +612, explore-ui -1, all JS +605
+  (deterministic over 4 builds per tree; RULINGS 196), and its explore-ui +0.3 moves to GM3 (cut Q5, RULINGS 192). The
+  remaining terms (ARITHMETIC): EN engine 3.25 - 0 (GM1d) - 0.03 (GM3w) - 0.1 (GM2b) - 0.2 (GM3c) = **+2.92**
+  (GM3m's +0.16 stays planned); PPL engine 3.13 - 0.15 (GM6a) = **+2.98**; the entry terms 0.05 (GM3s) + 0.26 (GM6t)
+  + 0.10 (SH3a) = 0.41 (GM3w's 0.01 merged); EN all JS 12.43 - 0.03 - 0.01 (GM3w) - 0.1 (GM2b) - 0.2 (GM3c) = 12.09;
+  PPL all JS 3.430 - 0.15 = 3.280; EN explore-ui 5.06 (GM3c's +0.3 moved to GM3, not removed). On this base
+  (ARITHMETIC; every other term as in the ledgers below): first line 254.563 + (2.92 + 0.05 + 2.98 + 0.26 + 6.25 =
+  12.46) = **267.023** / 270.0 (2.977 left, PASS; the peak, SH7's -0.2 last, 267.223); entry 37.486 + 0.41 =
+  **37.896** / 40.0 (2.104 left, 1.604 above L1 / L2's 0.5 line); all JS 276.107 + (12.09 + 3.280 + 12.75 = 28.12) =
+  **304.227** / 305.0 (0.773 left), + GM7p and GM7g (2 x 1.625) 307.477 before RULINGS 158's re-set at GM7p
+  (unchanged); engine closure 217.077 + (2.92 + 2.98 + 6.15 = 12.05) = **229.127** / 230.0 (**0.873 left**, under
+  RULINGS 195's 1.0 KB trigger: Ledger 4 below); explore-ui 8.433 + 5.06 = **13.493** / 16.0 (0.507 under §3.5's 14.0
+  split line). The ledgers' running figures between these merges are the rulings' (RULINGS 188: 228.366 at
+  `23e1d31`; 190: 228.742 at `1782d6d`).
+  **Ruled: RULINGS 186** — a row judged against a bound tighter than the chunk-hash churn (tens of bytes) is judged on
+  the mean of at least 4 builds per tree, never on one build.
 - **Main, MEASURED:** exact bytes on `df0e12c` (code identical to `acc4e0d` and `a5f887b`: the two later commits are
   docs) from `lfl-first-line/test_r2.md:65-69` (budget.ts's own evaluate): entry 38,687, engine 215,015, first line
   258,823 (entry + engine + meta controller chunk, the pre-LFL row, `m3s-memory-half-paid/merge/build.log:94`), all
@@ -176,6 +206,16 @@ pass 40.0 is that lane's own STOP. `entryJsBr` is never raised.
 **Ledger 4: engine closure JS (br)**, LIMIT 230.0 (`engineJsBr`): main `3c62a86` 215.087 (MEASURED) + 1.71 + 3.13 + 6.15 = **226.077** / 230.0, 3.923 left; the peak before SH7's -0.2 is 226.277 (3.723 left) (ARITHMETIC; the adoption, R-E36 taken; reconcile r2 read 226.02 on LFL's 215.052 and PPL +3.11). (Reconcile r1
 read 225.89 on EN +1.69 and PPL +3.00.) The shots' own figure, ~225.2
 ([shots §10 Budgets and validation](../shots/10-budgets-and-validation.md#10-budgets-and-validation-summary)), used EN's +1.53 and the 214.5 base; superseded here.
+
+**Ruled: RULINGS 190, 195, 196** — Ledger 4 is the budget to watch: when its measured headroom falls under 1.0 KB, an
+engine-closure lever lane (a lazily reachable module moved out of the closure, chosen on measured module bytes, a
+guard each, the engine row measured main -> HEAD; designed by its own cut, architect + critic) runs before the next
+lane that adds engine bytes. On `837b1ed` the projection is 229.127 / 230.0 (0.873 left, the `837b1ed` bullet above),
+so the lever runs in the first client slot after GM3s merges and before GM3 or any later engine-adding lane; its
+candidates are LFL's Q6 S (`puzzles/session.ts` imported by `yields.ts`, ~-1.19 KB br) and P (`purchase/flow.ts`
+imported by `game.ts` on a paywall, ~-1.52 KB br; it joins only if `game.ts` is free, SH1 merged, else it stays the
+next lever). Every cut quotes Ledger 4 with its own line-by-line engine estimate; a cut whose projection crosses
+230.0 STOPs.
 
 **One owner per figure (reconcile r2, RC-W1).** This section owns the sums, headrooms and verdicts of the three
 designs; each design owns its own lane terms (EN §3.5, per-player §10 "Ledgers", the shots §9 / §10 with this

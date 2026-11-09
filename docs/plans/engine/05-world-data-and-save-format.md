@@ -119,6 +119,20 @@ export type CamState =
   finds none), declared in the core lint file's `codes` (`client/scripts/story/mechanics/core.ts`, §3.2), not in
   `LINT_CODES`. Append-only is an authoring rule; the golden body with a pre-rename id catches a removed entry for its
   fixtures.
+- Changed by RULINGS 190 (as of `837b1ed`; docs lane `docs-errata-12`, group A): as merged (GM2b `1782d6d`; step 0 is
+  `renameIds`, `client/src/explore/reconcile.ts:74`, the lints `client/scripts/story/mechanics/core.ts:12-17`):
+  - **A room's rename moves no hotspot** (cut Q6): a hotspot moves by its own entry only, so the author lists
+    `<old room>.<id> -> <new room>.<id>` under `hotspots` for every hotspot kept. No lint can see a forgotten entry (it
+    needs the previous world); the authoring guide states the rule
+    ([AUTHORING "Rules that protect players' saves"](../../AUTHORING.md#rules-that-protect-players-saves)).
+  - **An item merge leaves the item in a lock or in hand, never both** (review I1): a held id that the map merges with
+    a different id `used` holds is dropped from `held` and reported as `held:<saved id>` in `dropped`, and the lock
+    keeps the item; one id the save has in both lists stays in both (a world that gives the item twice) unless a
+    different saved `used` id merges onto it (triage r3 M1: then it leaves `held` too). One
+    give-back serves step 0 and normalize (`giveBack`, `reconcile.ts:47`): the items of cells that went return used ->
+    held, but an item a kept cell still holds stays used.
+  - `renamed.flags` decodes and maps, but `world/renamed-target` refuses every flags entry until module `flags`
+    declares flags (GM5f; cut Q1).
 
 ### 5.4 World JSON bytes (R6)
 
@@ -134,5 +148,11 @@ export type CamState =
   emission 32 / (0.98 x 0.70..0.75) ≈ 44-47 (ARITHMETIC on the CLAIM share); the br row binds near 51 (8 / 0.155). New
   keys per hotspot lower all three. GM2b's build log MEASURES the compact raw bytes; GM4's reports bytes per hotspot
   with views and states.
+- Changed by RULINGS 190 (as of `837b1ed`; docs lane `docs-errata-12`, group A): **MEASURED** at GM2b's merge
+  (`1782d6d`, 4 builds per tree, identical): ch1 raw 10,779 -> 5,253 B and br 1,719 -> 1,506 B; ch2 raw 569 -> 394 B,
+  br 286 -> 255 B. Indentation is **51.3 %** of ch1's raw bytes ((10,779 - 5,253) / 10,779), not the CLAIM 25-30 %, so
+  the **br row binds first** now, and the capacity arithmetic changes (ARITHMETIC, ch1's 11 hotspots): raw 5.253 / 11
+  = ~0.478 KB per hotspot, 32 / 0.478 ≈ 67 hotspots; br 1.506 / 11 = ~0.137 KB per hotspot, 8 / 0.137 ≈ 58. The
+  "raw row binds first (m6)" paragraph above is the pretty-printed record.
 - **Decision:** rows unchanged. A chapter that outgrows them splits (authoring). The world sits on the
   time-to-first-line path (fetched with the story, `chapters.ts:210-216`), so its br bytes are first-line bytes.

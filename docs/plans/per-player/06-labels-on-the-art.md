@@ -40,10 +40,21 @@ type View<T> = { readonly slot: string; readonly handle: TextureHandle<T>; reado
   image changes at the same `at` swaps the image **inside** the anchor with a crossfade (the old sprite fades out over
   the new one); the anchor, its position and its labels stay. A `part: 'patch'` placement is a child sprite of its base's
   anchor (same `at`), faded in / out inside it.
+  **Ruled: RULINGS 188** — D5.1, adopted in its general form: "a target key with no anchor takes over an anchor that
+  shows one of its props, when the target does not name that anchor's key; re-keyed, nothing created, dropped or
+  faded" (`syncProps`' first loop, `client/src/scene/executor.ts:543-549`; it keeps a format-1 save's at-less props on
+  screen at the first at-keyed batch). An adopted anchor keeps its creation label (the bare prop id, a debug label in the
+  Pixi tree) until a rebind re-creates it under its key. GM3s's at-aware `sameProps`, if it makes one, keeps or replaces
+  D5.1 in the same lane, never drops it.
 - **The props layer follows the command's order (E-P7).** After every `props` command the executor re-indexes the prop
   anchors in the layer to the command's array order (engine.md §5.2: decor `z`, then hotspot order); an anchor that
   stays is moved, not re-created, so a drawer's open image stays at its index and never covers decor drawn in front of
-  it (today a new view is appended on top, `executor.ts:461-473`, `:515-524`). Inside a prop anchor's `content`: the base
+  it (today a new view is appended on top, `executor.ts:461-473`, `:515-524`). Changed by RULINGS 188 (as of `837b1ed`; docs lane
+  `docs-errata-12`, group A): as merged (GM6a `23e1d31`, critique W2), the anchors map is rebuilt in the command's order
+  at every sync (adoptions and arrivals included), `orderProps` writes z from the map's order (an anchor's z is its
+  index; in a `content` the base 0, an old base 1 while it fades out, patch i 2 + i), and `rebind` re-creates the prop
+  anchors in the map's order, each anchor before its art, and ends with `orderProps()`, so the fresh stage holds the
+  old one's draw order (`client/src/scene/executor.ts:404`, `:865`, `:911`). Inside a prop anchor's `content`: the base
   sprite, then its patch, then its labels, so a label always draws over the art it is written on. **Reconcile r2
   (critique_perplayer_r1 open question 1):** inside the **bg anchor's** (the shot root's) `content`, a bg label's node
   (its depth node, §6.2) sits **directly above the plate** (the plate sprite today, SH8's mesh later: `content`'s first
