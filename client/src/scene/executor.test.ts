@@ -1424,6 +1424,47 @@ test('executor: rebind re-creates each anchor before its sprite', async () => {
   h.ex.destroy();
 });
 
+test('executor: reacquire drops every anchor it empties, at once', async () => {
+  const h = harness();
+  await h.ex.apply(
+    [
+      bg('cafe', 'cut'),
+      cg('letter', 'cut'),
+      props(['drawer', DRAWER, 'room.drawer'], ['glint', GLINT, 'room.drawer', 'patch'], ['lamp', LAMP, 'room.lamp'], ['key', KEY, 'room.key']),
+    ],
+    NOW,
+  );
+  const drawer = one(h.anchors('props').filter((x) => x.key === 'room.drawer'));
+  // One revive ends the bg, the CG, the lamp (its anchor's only art) and the glint (a patch beside its base).
+  for (const id of ['bg/cafe', 'cg/letter', 'prop/lamp', 'prop/glint']) {
+    h.failRevive(id);
+  }
+  h.setGen(2);
+  expect(await h.registry.revive(2, noAbort()).visible).toBe('done');
+  h.log.length = 0;
+  h.ex.reacquire();
+  // Synchronously: each ended backdrop goes with its anchor, the emptied prop anchor is dropped, the drawer's stays.
+  expect(h.log.filter((x) => /^(destroy|drop):/.test(x))).toEqual([
+    'destroy:bg:cafe',
+    'drop:bg/cafe',
+    'destroy:cg:letter',
+    'drop:cg/letter',
+    'destroy:props:glint',
+    'destroy:props:lamp',
+    'drop:room.lamp',
+  ]);
+  expect([...h.anchors('bg'), ...h.anchors('cg')]).toEqual([]);
+  expect(h.anchors('props').map((x) => x.key)).toEqual(['room.drawer', 'room.key']);
+  expect(h.drawOrder(h.contentOf(drawer)).map((x) => x.key)).toEqual(['drawer']);
+  // The re-take shows each one again in an anchor of its own, the props in the command's order.
+  await flush();
+  expect([...h.anchors('bg'), ...h.anchors('cg')].map((x) => x.key)).toEqual(['bg/cafe', 'cg/letter']);
+  expect(h.drawOrder('props').map((x) => x.key)).toEqual(['room.drawer', 'room.lamp', 'room.key']);
+  expect(h.drawOrder(h.contentOf(drawer)).map((x) => x.key)).toEqual(['drawer', 'glint']);
+  h.ex.destroy();
+  expect(h.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
+});
+
 test('executor: destroy leaves no anchor alive', async () => {
   const h = harness();
   await h.ex.apply([bg('cafe', 'cut')], NOW);
