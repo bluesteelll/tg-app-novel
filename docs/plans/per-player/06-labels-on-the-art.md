@@ -48,7 +48,7 @@ and a char view keeps its char group (`CharView<T>`, `:218`). `AnchorRef` is `:4
   anchor (same `at`), faded in / out inside it.
   **Ruled: RULINGS 188** — D5.1, adopted in its general form: "a target key with no anchor takes over an anchor that
   shows one of its props, when the target does not name that anchor's key; re-keyed, nothing created, dropped or
-  faded" (`syncProps`' first loop, `client/src/scene/executor.ts:543-561`: the rule at `:543-545`, the loop at `:554-561`; it keeps a format-1 save's at-less props on
+  faded" (`syncProps`' first loop, `client/src/scene/executor.ts:543-561`: the rule at `:543-544`, the loop at `:554-561`; it keeps a format-1 save's at-less props on
   screen at the first at-keyed batch). An adopted anchor keeps its creation label (the bare prop id, a debug label in the
   Pixi tree) until a rebind re-creates it under its key. GM3s's at-aware `sameProps`, if it makes one, keeps or replaces
   D5.1 in the same lane, never drops it.

@@ -151,7 +151,7 @@ Open at `837b1ed` (RULINGS 196, 197): the client lanes GM3s `gm3s-mech-cue-stage
 (merged `508bd36`), GM6a scene-anchors (merged `23e1d31`), GM2b mech-renamed (merged `1782d6d`), GM3m mech-cue-gate
 (merged `a3f0678`) and GM3c mech-conditions (merged `837b1ed`) are under [Built features](#built-features) (the
 "World tooling", "Exploration model", "Mechanics engine", "Cue motions", "Scene", "Puzzle UI", "Exploration UI",
-"GameSession" and "Client architecture rules" rows, and the rows their items changed: "Puzzle rules" and the build
+"GameSession" and "Client architecture rules" rows, and the rows their items changed, among them "Puzzle rules" and the build
 gate row).
 
 - **The adopted plans' features** (the mechanics engine, per-player values and labels, drawn-shot staging): the
