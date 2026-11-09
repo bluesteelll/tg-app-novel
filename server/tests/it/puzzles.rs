@@ -1,7 +1,8 @@
 //! Puzzles (`server/migrations/0002_puzzles.sql`, `0008_puzzle_values.sql`, `db/puzzles.rs`, `puzzles/`,
 //! `/api/puzzles`): the schema's constraints on raw SQL, the per-(user, puzzle) attempt window, the server-checked
 //! answer, and the hint ladder whose texts are served only for unlocked tiers of a puzzle the user may open
-//! (principle 0); the per-player values table's constraints and measured row size (per-player §3.1).
+//! (principle 0); the per-player values table's constraints and measured row size (per-player §3.1), and the values
+//! domain, its draw and its renderer, held to the shared vectors `tests/fixtures/values/vectors.json` (§3.2).
 //!
 //! Hint unlock rows are inserted by raw SQL: the server has no writer for them in this lane. `puzzle_values` rows
 //! are too: the server writes none until the values routes.
@@ -15,6 +16,7 @@ use axum::http::Request;
 use axum::http::header::{
     AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, HeaderName, RETRY_AFTER, X_CONTENT_TYPE_OPTIONS,
 };
+use serde::Deserialize;
 use serde_json::{Value, json};
 use server::AppState;
 use server::catalog::ResourceKind;
@@ -23,14 +25,17 @@ use server::db::POOL_MAX_CONNECTIONS;
 use server::db::economy::{Entry, Reason, credit_in_tx};
 use server::db::puzzles::AttemptRecord;
 use server::ids::{PuzzleKey, UserId};
-use server::puzzles::ATTEMPT_WINDOW_SECS;
+use server::puzzles::values::{
+    Domain, DomainError, DomainFile, DrawError, ValueRow, draw, os_rng, render,
+};
+use server::puzzles::{ATTEMPT_WINDOW_SECS, MAX_ANSWER_LEN};
 use sqlx::postgres::PgQueryResult;
 use sqlx::{Connection, PgConnection};
 use tokio::task::JoinSet;
 
 use crate::catalog::{ANN, T0, bearer, get, own, state_with_users};
 use crate::common;
-use crate::content::{FIXTURE, renamed_copy, state_on, state_on_db};
+use crate::content::{FIXTURE, read_json, renamed_copy, state_on, state_on_db};
 
 /// A second player.
 const BEN: i64 = 1002;
@@ -1685,6 +1690,505 @@ async fn rename_attempt_solves_under_the_key() {
         failures.push(format!(
             "ANN's ledger: expected only the fund row, got {keys:?}"
         ));
+    }
+    report(&failures);
+}
+
+/// The shared value vectors (per-player §3.2): the server's renderer and domain parser are held to the same file as
+/// the client's.
+const VECTORS: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/values/vectors.json"
+);
+
+/// The fewest `render` cases the vectors hold: an emptied list fails instead of passing on zero cases.
+const RENDER_CASES_MIN: usize = 9;
+
+/// The fewest `domains` cases the vectors hold.
+const DOMAIN_CASES_MIN: usize = 12;
+
+/// The vectors file; every key is required and no other is allowed, so a renamed key fails loudly.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Vectors {
+    #[serde(rename = "about")]
+    _about: String,
+    render: Vec<RenderCase>,
+    domains: Vec<DomainCase>,
+}
+
+/// A `render` case: `template` rendered for the puzzle `own` holding `value` of `answerMax` `max` is `text`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RenderCase {
+    template: String,
+    own: String,
+    value: Vec<u16>,
+    max: u16,
+    text: String,
+}
+
+/// A `domains` case: the oracle's size of `domain`, and whether it passes the entropy floor and the acceptance.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct DomainCase {
+    domain: DomainFile,
+    answer_len: usize,
+    answer_max: u16,
+    size: u64,
+    floor: bool,
+    acceptance: bool,
+}
+
+async fn vectors() -> Vectors {
+    serde_json::from_value(read_json(Path::new(VECTORS)).await).unwrap()
+}
+
+/// `[lo, hi]` at each of `n` positions.
+fn ranges(lo: u16, hi: u16, n: usize) -> Vec<(u16, u16)> {
+    vec![(lo, hi); n]
+}
+
+fn domain_file(positions: Vec<(u16, u16)>, distinct: bool, exclude: &[&[u16]]) -> DomainFile {
+    DomainFile {
+        positions,
+        distinct,
+        exclude: exclude.iter().map(|e| e.to_vec()).collect(),
+    }
+}
+
+/// A well-formed test domain: as many entries as `positions`, each at most `answer_max`.
+fn domain(
+    positions: Vec<(u16, u16)>,
+    distinct: bool,
+    exclude: &[&[u16]],
+    answer_max: u16,
+) -> Domain {
+    let len = positions.len();
+    match Domain::parse(domain_file(positions, distinct, exclude), len, answer_max) {
+        Ok(d) => d,
+        Err(e) => panic!("a test domain: expected Ok, got {e:?}"),
+    }
+}
+
+/// splitmix64 (Steele, Lea and Flood, 2014): a seeded test source, the high 32 bits of each output.
+fn splitmix(seed: u64) -> impl FnMut() -> u32 {
+    let mut state = seed;
+    move || {
+        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        u32::try_from((z ^ (z >> 31)) >> 32).unwrap()
+    }
+}
+
+/// A source that yields `seq` in order, then 0.
+fn scripted(seq: &[u32]) -> impl FnMut() -> u32 + '_ {
+    let mut next = seq.iter().copied();
+    move || next.next().unwrap_or(0)
+}
+
+/// `draw` is uniform over a small domain (per-player §3.2): `[0, 9]^3` (1,000 cells), 10^5 draws from a seeded source,
+/// each in the domain, and Pearson's chi-square over the cells at most 1,250 (999 degrees of freedom: mean 999, sd
+/// ~44.7). A position that never draws its top value leaves 271 cells empty (~37,000).
+#[test]
+fn values_draw_is_uniform_over_a_small_domain() {
+    let d = domain(ranges(0, 9, 3), false, &[], 9);
+    let mut rng = splitmix(0x5EED_6D51);
+    let mut cells = vec![0u32; 1000];
+    let mut failures = Vec::new();
+    for _ in 0..100_000 {
+        match draw(&d, &mut rng) {
+            Ok(v) if d.contains(&v) => {
+                let cell = v.iter().fold(0usize, |at, &x| at * 10 + usize::from(x));
+                cells[cell] += 1;
+            }
+            other => {
+                failures.push(format!(
+                    "a draw: expected a value of the domain, got {other:?}"
+                ));
+                break;
+            }
+        }
+    }
+    let expected = 100.0_f64;
+    let chi2: f64 = cells
+        .iter()
+        .map(|&o| (f64::from(o) - expected).powi(2) / expected)
+        .sum();
+    let empty = cells.iter().filter(|&&o| o == 0).count();
+    println!("values: chi-square {chi2:.1} over 1,000 cells, {empty} empty");
+    if chi2 > 1250.0 {
+        failures.push(format!(
+            "chi-square over 1,000 cells: expected at most 1250, got {chi2:.1} ({empty} cells empty)"
+        ));
+    }
+    report(&failures);
+}
+
+/// Each position draws by rejection on u32, never `% n` alone (per-player §3.2): for n = 10 the zone is
+/// 2^32 - 2^32 % 10 = 4,294,967,290, so `u32::MAX` and 4,294,967,290 are rejected and 4,294,967,289 (9 mod 10) is
+/// the first entry.
+#[test]
+fn values_draw_rejects_the_top_of_the_u32_range() {
+    let d = domain(ranges(0, 9, 4), false, &[], 9);
+    let seq = [u32::MAX, 4_294_967_290, 4_294_967_289, 1, 2, 3];
+    let got = draw(&d, &mut scripted(&seq));
+    assert_eq!(
+        got,
+        Ok(vec![9, 1, 2, 3]),
+        "a draw over [0, 9]^4 from {seq:?}"
+    );
+}
+
+/// A draw is never an excluded tuple (the code's initial `0000` is one) nor, in an all-distinct domain, a tuple
+/// with a repeat: the whole tuple is drawn again. A source that only repeats an excluded tuple gives up after
+/// exactly 4 x 4,096 calls. `contains` is the same rule; one draw from the OS source lies in the domain.
+#[test]
+fn values_draw_never_returns_initial_or_an_excluded_value() {
+    let mut failures = Vec::new();
+    let excl = domain(ranges(0, 9, 4), false, &[&[0, 0, 0, 0]], 9);
+    let got = draw(&excl, &mut scripted(&[0, 0, 0, 0, 1, 8, 4, 7]));
+    if got != Ok(vec![1, 8, 4, 7]) {
+        failures.push(format!(
+            "excluding 0000, from 0,0,0,0,1,8,4,7: expected Ok([1, 8, 4, 7]), got {got:?}"
+        ));
+    }
+    let distinct = domain(ranges(0, 9, 4), true, &[], 9);
+    let got = draw(&distinct, &mut scripted(&[3, 3, 1, 2, 3, 1, 2, 4]));
+    if got != Ok(vec![3, 1, 2, 4]) {
+        failures.push(format!(
+            "all distinct, from 3,3,1,2,3,1,2,4: expected Ok([3, 1, 2, 4]), got {got:?}"
+        ));
+    }
+    let mut calls = 0u32;
+    let got = draw(&excl, &mut || {
+        calls += 1;
+        0
+    });
+    if got != Err(DrawError::Exhausted) || calls != 4 * 4096 {
+        failures.push(format!(
+            "excluding 0000, from a constant 0: expected Err(Exhausted) after 16384 calls, got {got:?} after {calls}"
+        ));
+    }
+    let cases: [(&str, &Domain, &[u16], bool); 6] = [
+        ("the excluded 0000", &excl, &[0, 0, 0, 0], false),
+        ("three entries", &excl, &[1, 8, 4], false),
+        ("an entry above its range", &excl, &[1, 8, 4, 10], false),
+        ("a repeat, all distinct", &distinct, &[3, 3, 1, 2], false),
+        ("the drawn 1847", &excl, &[1, 8, 4, 7], true),
+        (
+            "the drawn 3124, all distinct",
+            &distinct,
+            &[3, 1, 2, 4],
+            true,
+        ),
+    ];
+    for (case, d, v, want) in cases {
+        if d.contains(v) != want {
+            failures.push(format!("contains {case}: expected {want}"));
+        }
+    }
+    match draw(&excl, &mut os_rng()) {
+        Ok(v) if excl.contains(&v) => {}
+        other => failures.push(format!(
+            "a draw from os_rng: expected a value of the domain, got {other:?}"
+        )),
+    }
+    report(&failures);
+}
+
+/// Each `domains` case of the shared vectors parses as its oracle says: `Ok` with its size when it passes the
+/// floor and the acceptance, `Floor` with its size under 1,000 values, `Sparse` under 1/16 of the position product.
+/// Server only: the size saturates to u64 instead of overflowing (`[0, 65535]^16` is no JS-exact number).
+#[tokio::test]
+async fn values_domain_sizes_match_the_vectors() {
+    let cases = vectors().await.domains;
+    let mut failures = Vec::new();
+    if cases.len() < DOMAIN_CASES_MIN {
+        failures.push(format!(
+            "domains: expected at least {DOMAIN_CASES_MIN} cases, got {}",
+            cases.len()
+        ));
+    }
+    for (at, case) in cases.into_iter().enumerate() {
+        let want = if !case.floor {
+            Err(DomainError::Floor { size: case.size })
+        } else if !case.acceptance {
+            Err(DomainError::Sparse)
+        } else {
+            Ok(case.size)
+        };
+        let got = Domain::parse(case.domain, case.answer_len, case.answer_max).map(|d| d.size());
+        if got != want {
+            failures.push(format!("domains[{at}]: expected {want:?}, got {got:?}"));
+        }
+    }
+    let got =
+        Domain::parse(domain_file(ranges(0, 65535, 16), false, &[]), 16, 65535).map(|d| d.size());
+    if got != Ok(u64::MAX) {
+        failures.push(format!("[0, 65535]^16: expected Ok(u64::MAX), got {got:?}"));
+    }
+    report(&failures);
+}
+
+/// Each `render` case of the shared vectors renders to its oracle's text (per-player §5.1: the join rule, entry
+/// indices, a literal `$`). Server only: a placeholder that is not one of `own`'s stays verbatim (another puzzle, a
+/// malformed or out-of-range index, an unclosed `$code(`); content's load rule refuses such texts first.
+#[tokio::test]
+async fn values_render_matches_the_vectors() {
+    let cases = vectors().await.render;
+    let mut failures = Vec::new();
+    if cases.len() < RENDER_CASES_MIN {
+        failures.push(format!(
+            "render: expected at least {RENDER_CASES_MIN} cases, got {}",
+            cases.len()
+        ));
+    }
+    for (at, case) in cases.iter().enumerate() {
+        let got = render(&case.template, &case.own, &case.value, case.max);
+        if got != case.text {
+            failures.push(format!(
+                "render[{at}] {:?}: expected {:?}, got {got:?}",
+                case.template, case.text
+            ));
+        }
+    }
+    for template in [
+        "Код: $code(cabinet).",
+        "$code(drawer.0)",
+        "$code(drawer.01)",
+        "$code(drawer.5)",
+        "$code(drawer.100)",
+        "Код: $code(drawer",
+        "$code(Drawer)",
+        "$code(drawer_x)",
+        "$code(drawer.1x)",
+        "$code()",
+    ] {
+        let got = render(template, "drawer", &[1, 8, 4, 7], 9);
+        if got != template {
+            failures.push(format!(
+                "verbatim {template:?}: expected it unchanged, got {got:?}"
+            ));
+        }
+    }
+    report(&failures);
+}
+
+/// A domain under 1/16 of its position product is refused at parse (per-player §3.2): all-distinct `[0, 15]^16`
+/// (16! of 16^16) and `[0, 15]^9` (16!/7! = 4,151,347,200 of 16^9, just under 1/16); `[0, 15]^8` (0.12) parses.
+#[test]
+fn values_a_sparse_domain_is_refused_at_parse() {
+    let mut failures = Vec::new();
+    for (n, want) in [
+        (16, Err(DomainError::Sparse)),
+        (9, Err(DomainError::Sparse)),
+        (8, Ok(518_918_400)),
+    ] {
+        let got = Domain::parse(domain_file(ranges(0, 15, n), true, &[]), n, 15).map(|d| d.size());
+        if got != want {
+            failures.push(format!(
+                "all distinct [0, 15]^{n}: expected {want:?}, got {got:?}"
+            ));
+        }
+    }
+    report(&failures);
+}
+
+/// m12 (per-player §3.1 "Log redaction"): the `Debug` of a `Domain` excluding `[1, 8, 4, 7]` and of a `ValueRow`
+/// holding it prints neither `1847` nor `1, 8, 4, 7`; the row prints `value: <redacted>`.
+#[test]
+fn values_debug_output_redacts_the_code() {
+    let d = domain(ranges(0, 9, 4), false, &[&[1, 8, 4, 7]], 9);
+    let row = ValueRow {
+        puzzle: pid("ch1.drawer"),
+        run: 1,
+        wrong: 0,
+        issued_at: T0,
+        spent_at: None,
+        domain: d.hash().clone(),
+        value: vec![1, 8, 4, 7],
+    };
+    let mut failures = Vec::new();
+    let shown = [
+        ("Domain", format!("{d:?}")),
+        ("ValueRow", format!("{row:?}")),
+    ];
+    for (what, text) in &shown {
+        for secret in ["1847", "1, 8, 4, 7"] {
+            if text.contains(secret) {
+                failures.push(format!("{what}'s Debug carries {secret:?}: {text}"));
+            }
+        }
+    }
+    if !shown[1].1.contains("value: <redacted>") {
+        failures.push(format!(
+            "ValueRow's Debug: expected value: <redacted>, got {}",
+            shown[1].1
+        ));
+    }
+    report(&failures);
+}
+
+/// The domain hash is the canonical encoding's (per-player §3.2): 16 lower-case hex, the oracle's for two domains
+/// (one whose excludes differ in numeric and string order), unmoved by the order or repetition of the excludes, and
+/// moved by a bound, by `distinct` and by another exclude.
+#[test]
+fn values_domain_hash_is_canonical() {
+    let hash = |positions: Vec<(u16, u16)>, distinct: bool, exclude: &[&[u16]], max: u16| {
+        domain(positions, distinct, exclude, max).hash().0.clone()
+    };
+    let mut failures = Vec::new();
+    let base = hash(ranges(0, 9, 4), false, &[&[0, 0, 0, 0]], 9);
+    let numeric = hash(
+        ranges(0, 15, 4),
+        false,
+        &[&[10, 0, 0, 0], &[9, 0, 0, 0]],
+        15,
+    );
+    for (case, got, want) in [
+        ("[0, 9]^4 without 0000", &base, "bd058b756eb7a107"),
+        (
+            "[0, 15]^4 without 10.0.0.0, 9.0.0.0",
+            &numeric,
+            "c304cc282413339d",
+        ),
+    ] {
+        if got != want {
+            failures.push(format!("{case}: expected the oracle's {want}, got {got}"));
+        }
+    }
+    let two = hash(ranges(0, 9, 4), false, &[&[0, 0, 0, 0], &[1, 2, 3, 4]], 9);
+    let same = [
+        (
+            "reordered excludes",
+            hash(ranges(0, 9, 4), false, &[&[1, 2, 3, 4], &[0, 0, 0, 0]], 9),
+        ),
+        (
+            "a repeated exclude",
+            hash(
+                ranges(0, 9, 4),
+                false,
+                &[&[1, 2, 3, 4], &[0, 0, 0, 0], &[1, 2, 3, 4]],
+                9,
+            ),
+        ),
+    ];
+    for (case, got) in &same {
+        if *got != two {
+            failures.push(format!("{case}: expected {two}, got {got}"));
+        }
+    }
+    let moved = [
+        (
+            "a bound",
+            hash(
+                vec![(0, 8), (0, 9), (0, 9), (0, 9)],
+                false,
+                &[&[0, 0, 0, 0]],
+                9,
+            ),
+        ),
+        ("distinct", hash(ranges(0, 9, 4), true, &[&[0, 0, 0, 0]], 9)),
+        (
+            "another exclude",
+            hash(ranges(0, 9, 4), false, &[&[0, 0, 0, 1]], 9),
+        ),
+    ];
+    for (case, got) in &moved {
+        if *got == base {
+            failures.push(format!("{case}: expected a hash other than {base}"));
+        }
+    }
+    let all = [&base, &numeric, &two]
+        .into_iter()
+        .chain(same.iter().map(|(_, h)| h))
+        .chain(moved.iter().map(|(_, h)| h));
+    for h in all {
+        if h.len() != 16
+            || !h
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            failures.push(format!("{h}: expected 16 lower-case hex"));
+        }
+    }
+    report(&failures);
+}
+
+/// Each structure rule of `Domain::parse` refuses its own misfit with its own text (per-player §3.2 "Anything else
+/// is `DomainError::Shape`"). Lengths over the cap are built from `MAX_ANSWER_LEN`, so the cases hold when it moves.
+#[test]
+fn values_a_misshapen_domain_is_refused_at_parse() {
+    let over = MAX_ANSWER_LEN + 1;
+    let cases = [
+        (
+            "answerLen 0",
+            domain_file(vec![], false, &[]),
+            0,
+            9,
+            "answerLen is outside 1..=MAX_ANSWER_LEN",
+        ),
+        (
+            "answerLen MAX_ANSWER_LEN + 1",
+            domain_file(ranges(0, 9, over), false, &[]),
+            over,
+            9,
+            "answerLen is outside 1..=MAX_ANSWER_LEN",
+        ),
+        (
+            "three positions for answerLen 4",
+            domain_file(ranges(0, 9, 3), false, &[]),
+            4,
+            9,
+            "positions do not match answerLen",
+        ),
+        (
+            "lo 5 above hi 4",
+            domain_file(vec![(5, 4), (0, 9), (0, 9), (0, 9)], false, &[]),
+            4,
+            9,
+            "a position's lo is above its hi",
+        ),
+        (
+            "hi 10 above answerMax 9",
+            domain_file(vec![(0, 10), (0, 9), (0, 9), (0, 9)], false, &[]),
+            4,
+            9,
+            "a position's hi is above answerMax",
+        ),
+        (
+            "an exclude of three entries",
+            domain_file(ranges(0, 9, 4), false, &[&[0, 0, 0]]),
+            4,
+            9,
+            "an exclude does not match answerLen",
+        ),
+        (
+            "an exclude entry 10 above answerMax 9",
+            domain_file(ranges(0, 9, 4), false, &[&[0, 0, 0, 10]]),
+            4,
+            9,
+            "an exclude entry is above answerMax",
+        ),
+        (
+            "distinct with answerMax 16",
+            domain_file(ranges(0, 16, 4), true, &[]),
+            4,
+            16,
+            "distinct needs answerMax <= 15 and answerLen <= 16",
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (case, file, len, max, rule) in cases {
+        let got = Domain::parse(file, len, max).map(|d| d.size());
+        if got != Err(DomainError::Shape(rule)) {
+            failures.push(format!(
+                "{case}: expected Err(Shape({rule:?})), got {got:?}"
+            ));
+        }
     }
     report(&failures);
 }

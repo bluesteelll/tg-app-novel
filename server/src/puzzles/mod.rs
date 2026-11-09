@@ -3,6 +3,10 @@
 //!
 //! Principle 0: a solution never leaves this module and the content store, and every route reaches a puzzle only
 //! through [`entitled_puzzle`], so a paid chapter's puzzle answers 403 to a user without the chapter.
+//!
+//! [`values`] holds the per-player values' domain, draw and renderer (per-player §3.2); no route reads it yet.
+
+pub mod values;
 
 use crate::AppState;
 use crate::api::dto::{HintView, PuzzleStatus};
