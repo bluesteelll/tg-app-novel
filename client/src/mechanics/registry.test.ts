@@ -151,14 +151,12 @@ test('mechanics: data and rules registries align', () => {
 
 test('mechanics: the rules registry loads from either module first', async () => {
   // core.ts and rules/index.ts import each other (core's `reduce` runs the registry's hooks; the registry holds core's
-  // entry). Each load order must leave the registry whole: index.ts reads only core.ts's function declarations.
+  // entry). Each load order must leave the registry whole: index.ts reads only core.ts's function declarations. Node
+  // and the bundle throw on a `const` read across the cycle before it is initialized; vitest's module runner reads it
+  // as undefined, so every member of the entry is compared, not only the functions.
   const w = world({ hall: room([look('statue')]) });
   const checkGraph = (index: typeof import('./rules/index.ts'), core: typeof import('./rules/core.ts')): void => {
-    const [entry] = index.MECHANIC_RULES;
-    expect(entry.id).toBe('core');
-    expect(entry.actions).toBe(core.actions);
-    expect(entry.apply).toBe(core.applyCore);
-    expect(entry.reads).toBe(core.reads);
+    expect(index.MECHANIC_RULES).toStrictEqual([{ id: 'core', actions: core.actions, apply: core.applyCore, reads: core.reads, cues: [] }]);
     expect(core.reduce(w, at('hall'), tap('hall.statue')).effects.map((e) => e.kind)).toEqual(['look', 'dirty']);
   };
   vi.resetModules();
