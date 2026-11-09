@@ -10,6 +10,7 @@ import type { WorldState } from '../../src/explore/state.ts';
 import { HOTSPOT_SAFE_FRAME } from '../../src/geom/cover.ts';
 import { searchSection, sectionEntry } from '../../src/mechanics/rules/search.ts';
 import { PUZZLE_RULES } from '../../src/puzzles/rules/index.ts';
+import type { PuzzleTypeData } from '../../src/puzzles/rules/index.ts';
 import type { AssetCatalog } from '../../src/story/catalog.ts';
 import type { KnotName, PuzzleLocalId, Rect, SectionId, VarName } from '../../src/story/staging.ts';
 import { decodeWorldSource, toPublic } from '../../src/world/decode.ts';
@@ -33,6 +34,8 @@ import { LINT_CODES } from './lint.ts';
 import type { Finding, LintCode, SourceChapter } from './lint.ts';
 import { MECHANIC_LINTS } from './mechanics/index.ts';
 import type { WorldLint } from './mechanics/index.ts';
+import { PUZZLE_LINTS } from './puzzles/index.ts';
+import type { PuzzleTypeLint } from './puzzles/index.ts';
 import { checkWorld } from './softlock.ts';
 
 /** `story/<ch>/<WORLD_FILE>`: the chapter's world source (PUZZLES-PLAN "World data"). */
@@ -302,16 +305,10 @@ function sameMembers(a: readonly string[], b: readonly string[]): boolean {
 /** Whether `s` is the puzzle's initial state, and else why `validateSolution` refuses it (null: valid). */
 function solutionCheck(p: SourcePuzzle): { initial: boolean; problem: string | null } {
   const same = (a: readonly number[]): boolean => a.length === p.solution.length && a.every((v, i) => v === p.solution[i]);
-  switch (p.type) {
-    case 'code':
-      return { initial: same(PUZZLE_RULES.code.initial(p.params)), problem: PUZZLE_RULES.code.validateSolution(p.params, p.solution) };
-    case 'order':
-      return { initial: same(PUZZLE_RULES.order.initial(p.params)), problem: PUZZLE_RULES.order.validateSolution(p.params, p.solution) };
-    default: {
-      const never: never = p;
-      return never;
-    }
-  }
+  // Both halves of the puzzle's own type read `p.params`, which that type's `decodeParams` returned.
+  const data: PuzzleTypeData<string, unknown> = PUZZLE_RULES[p.type];
+  const lint: PuzzleTypeLint<unknown> = PUZZLE_LINTS[p.type];
+  return { initial: same(data.initial(p.params)), problem: lint.validateSolution?.(p.params, p.solution) ?? null };
 }
 
 function overlaps(a: Rect, b: Rect): boolean {

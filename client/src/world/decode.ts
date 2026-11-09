@@ -3,10 +3,8 @@
 // reported once, never the first only (lint `world/schema`). Keys are strict: an unknown key is an issue, and every
 // key of the format is required except `take.then` and `lock.onOpen` (default []). References between ids (an exit's
 // room, a slot's item) are not resolved here: that is `world/unknown-ref` (LW3). Pure (X4).
-import { PUZZLE_RULES, isPuzzleType } from '../puzzles/rules/index.ts';
-import type { CodeParams } from '../puzzles/rules/code.ts';
-import type { PuzzleType } from '../puzzles/rules/index.ts';
-import type { OrderParams } from '../puzzles/rules/order.ts';
+import { PUZZLE_TYPES, puzzleInstance } from '../puzzles/rules/index.ts';
+import type { PuzzleTypeData, PuzzleTypes } from '../puzzles/rules/index.ts';
 import { KNOT_NAME_RE } from '../story/catalog.ts';
 import type { Result } from '../story/catalog.ts';
 import type {
@@ -440,49 +438,27 @@ const doc: Decoder<Doc> = (v, path, report) => {
   return keysOk && title !== undefined && body !== undefined ? { title, body } : undefined;
 };
 
-type Typed = { readonly type: 'code'; readonly params: CodeParams } | { readonly type: 'order'; readonly params: OrderParams };
+/** A puzzle's type and the `params` its own data half decoded. */
+type Typed = { readonly type: string; readonly params: unknown };
 type Common = Omit<PuzzleBody, 'type' | 'params'>;
 
 /** The puzzle body in the format's key order (LW3 hashes the emitted public JSON for `version`, X9). */
 function makeBody(t: Typed, c: Common): PuzzleBody {
   const { title, prompt, closeup, maxAttempts, giveUp } = c;
-  switch (t.type) {
-    case 'code':
-      return { type: t.type, title, prompt, closeup, params: t.params, maxAttempts, giveUp };
-    case 'order':
-      return { type: t.type, title, prompt, closeup, params: t.params, maxAttempts, giveUp };
-    default: {
-      const never: never = t;
-      return never;
-    }
-  }
+  // `params` is what the type's own `decodeParams` returned (`typedParams`), so the pair is a PuzzleBody member; a
+  // type outside PuzzleType is a test's fixture, passed as `types` (engine plan §7.1 round 5).
+  return { type: t.type, title, prompt, closeup, params: t.params, maxAttempts, giveUp } as PuzzleBody;
 }
 
-/** `params` through `PUZZLE_RULES[type].decodeParams` (X17: dials 2..6, pieces 2..5). */
-function typedParams(type: PuzzleType): Decoder<Typed> {
+/** `params` through the type's own `decodeParams` (X17: dials 2..6, pieces 2..5). */
+function typedParams(data: PuzzleTypeData<string, unknown>): Decoder<Typed> {
   return (v, path, report) => {
-    switch (type) {
-      case 'code': {
-        const r = PUZZLE_RULES.code.decodeParams(v);
-        if (r.ok) {
-          return { type, params: r.value };
-        }
-        report(path, 'shape', r.error);
-        return undefined;
-      }
-      case 'order': {
-        const r = PUZZLE_RULES.order.decodeParams(v);
-        if (r.ok) {
-          return { type, params: r.value };
-        }
-        report(path, 'shape', r.error);
-        return undefined;
-      }
-      default: {
-        const never: never = type;
-        return never;
-      }
+    const r = data.decodeParams(v);
+    if (r.ok) {
+      return { type: data.type, params: r.value };
     }
+    report(path, 'shape', r.error);
+    return undefined;
   };
 }
 
@@ -511,17 +487,18 @@ const boolean: Decoder<boolean> = (v, path, report) => {
 
 const PUZZLE_KEYS = ['type', 'title', 'prompt', 'closeup', 'params', 'maxAttempts', 'giveUp'] as const;
 
-/** The type-independent half of a puzzle (its keys are checked by the caller). */
-function puzzleBody(v: Raw, path: string, report: Report): PuzzleBody | undefined {
+/** The type-independent half of a puzzle, its type looked up in `types` (its keys are checked by the caller). */
+function puzzleBody(v: Raw, path: string, report: Report, types: PuzzleTypes): PuzzleBody | undefined {
   const get = <T>(key: string, decode: Decoder<T>): T | undefined => field(v, key, path, report, decode);
-  const type = get<PuzzleType>('type', (t, p, r) => {
-    if (isPuzzleType(t)) {
-      return t;
+  const data = get<PuzzleTypeData<string, unknown>>('type', (t, p, r) => {
+    const found = types.find((d) => d.type === t);
+    if (found !== undefined) {
+      return found;
     }
-    r(p, 'shape', `${show(t)} is not code or order`);
+    r(p, 'shape', `${show(t)} is not ${types.map((d) => d.type).join(' or ')}`);
     return undefined;
   });
-  const typed = type === undefined ? undefined : get('params', typedParams(type));
+  const typed = data === undefined ? undefined : get('params', typedParams(data));
   const title = get('title', worldText);
   const prompt = get('prompt', worldText);
   const closeup = get('closeup', nullable(matching<CgId>(ID_RE)));
@@ -549,13 +526,13 @@ const hintTexts: Decoder<WorldText[]> = (v, path, report) => {
   return list(text('hint-count'))(v, path, report);
 };
 
-const sourcePuzzle: Decoder<SourcePuzzle> = (v, path, report) => {
+const sourcePuzzle = (types: PuzzleTypes): Decoder<SourcePuzzle> => (v, path, report) => {
   if (!isObject(v)) {
     report(path, 'shape', 'not a puzzle object');
     return undefined;
   }
   const keysOk = exactKeys(v, [...PUZZLE_KEYS, ...SECRET_KEYS], path, report);
-  const body = puzzleBody(v, path, report);
+  const body = puzzleBody(v, path, report, types);
   const sol = field(v, 'solution', path, report, solution);
   const hints = field(v, 'hints', path, report, hintTexts);
   return keysOk && body !== undefined && sol !== undefined && hints !== undefined ? { ...body, solution: sol, hints } : undefined;
@@ -569,13 +546,13 @@ const hintTiers: Decoder<HintTiers> = (v, path, report) => {
   return undefined;
 };
 
-const publicPuzzle: Decoder<PublicPuzzle> = (v, path, report) => {
+const publicPuzzle = (types: PuzzleTypes): Decoder<PublicPuzzle> => (v, path, report) => {
   if (!isObject(v)) {
     report(path, 'shape', 'not a puzzle object');
     return undefined;
   }
   const keysOk = exactKeys(v, [...PUZZLE_KEYS, 'hintTiers'], path, report, [], SECRET_KEYS);
-  const body = puzzleBody(v, path, report);
+  const body = puzzleBody(v, path, report, types);
   const tiers = field(v, 'hintTiers', path, report, hintTiers);
   return keysOk && body !== undefined && tiers !== undefined ? { ...body, hintTiers: tiers } : undefined;
 };
@@ -620,20 +597,23 @@ function collect<T>(raw: unknown, decode: (raw: Raw, report: Report) => T | unde
   return { ok: true, value };
 }
 
+/** What a world decoder reads puzzle types from: `PUZZLE_TYPES` unless a test passes a fixture type beside them. */
+type DecodeOptions = { readonly types?: PuzzleTypes };
+
 /** `story/<ch>/world.json`: puzzles carry `solution` and `hints`. */
-export function decodeWorldSource(raw: unknown): Result<WorldSource, WorldIssue[]> {
+export function decodeWorldSource(raw: unknown, o: DecodeOptions = {}): Result<WorldSource, WorldIssue[]> {
   return collect(raw, (w, report) => {
     const keysOk = exactKeys(w, TOP_KEYS, '', report);
-    const world = decodeWorld(w, sourcePuzzle, report);
+    const world = decodeWorld(w, sourcePuzzle(o.types ?? PUZZLE_TYPES), report);
     return keysOk ? world : undefined;
   });
 }
 
 /** A public world (story-gen or a paid payload): refuses `solution` / `hints`, requires the stamped `version`. */
-export function decodeWorldPublic(raw: unknown): Result<WorldPublic, WorldIssue[]> {
+export function decodeWorldPublic(raw: unknown, o: DecodeOptions = {}): Result<WorldPublic, WorldIssue[]> {
   return collect(raw, (w, report): WorldPublic | undefined => {
     const keysOk = exactKeys(w, [...TOP_KEYS, 'version'], '', report);
-    const world = decodeWorld(w, publicPuzzle, report);
+    const world = decodeWorld(w, publicPuzzle(o.types ?? PUZZLE_TYPES), report);
     const version = field(w, 'version', '', report, matching<string>(VERSION_RE, 'shape'));
     return keysOk && world !== undefined && version !== undefined ? { ...world, version } : undefined;
   });
@@ -665,36 +645,37 @@ export function toPublic(w: WorldSource): WorldPublicBody {
   return { format: 1, items: w.items, docs: w.docs, puzzles, sections: w.sections };
 }
 
-function answerShape(p: PuzzleBody): { len: number; max: number } {
-  switch (p.type) {
-    case 'code':
-      return PUZZLE_RULES.code.answerShape(p.params);
-    case 'order':
-      return PUZZLE_RULES.order.answerShape(p.params);
-    default: {
-      const never: never = p;
-      return never;
-    }
-  }
-}
-
 function bilingual(t: WorldText, en: Readonly<Record<LineId, string>>): { ru: string; en: string } {
   // A missing en entry is `loc/missing-en`; the server's startup check needs a non-empty title either way.
   return { ru: t.ru, en: Object.hasOwn(en, t.id) ? (en[t.id] ?? t.ru) : t.ru };
 }
 
-/** `server/content/puzzles/<ch>.json`: the answer shape from the type rules, the solution, titles and hints. */
-export function toServer(w: WorldSource, en: Readonly<Record<LineId, string>>, chapter: ChapterId): ServerPuzzleContent {
+/** The build's hint texts of one puzzle after rendering (a type's lint half; `src/` may not import `scripts/`). */
+type HintRenderer = (p: SourcePuzzle, hints: readonly { ru: string; en: string }[]) => readonly { ru: string; en: string }[];
+
+/**
+ * `server/content/puzzles/<ch>.json`: the answer shape from the type's data half, the solution, titles and hints, the
+ * hints through `renderHints` (the identity by default).
+ */
+export function toServer(
+  w: WorldSource,
+  en: Readonly<Record<LineId, string>>,
+  chapter: ChapterId,
+  renderHints: HintRenderer = (_p, hints) => hints,
+): ServerPuzzleContent {
   const puzzles: Record<PuzzleLocalId, ServerPuzzle> = {};
   for (const [pid, p] of entriesOf(w.puzzles)) {
-    const shape = answerShape(p);
+    const instance = puzzleInstance(p);
+    if (instance === null) {
+      throw new Error(`invariant: the story tool decodes its worlds with PUZZLE_TYPES, not '${p.type}'`);
+    }
     puzzles[pid] = {
       type: p.type,
-      answerLen: shape.len,
-      answerMax: shape.max,
+      answerLen: instance.shape.len,
+      answerMax: instance.shape.max,
       solution: [...p.solution],
       title: bilingual(p.title, en),
-      hints: p.hints.map((h) => bilingual(h, en)),
+      hints: renderHints(p, p.hints.map((h) => bilingual(h, en))),
     };
   }
   return { format: 1, chapterId: chapter, puzzles };

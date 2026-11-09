@@ -15,7 +15,8 @@ import type { Result } from '../story/catalog.ts';
 import type { ChapterId, PuzzleLocalId } from '../story/staging.ts';
 import type { Unsubscribe } from '../telegram/index.ts';
 import type { PublicPuzzle, WorldPublic } from '../world/types.ts';
-import { PUZZLE_RULES } from './rules/index.ts';
+import { puzzleInstance, shapeProblem } from './rules/index.ts';
+import type { PuzzleInstance, PuzzleTypes } from './rules/index.ts';
 
 /** An exploration puzzle is an overlay that closes; a linear puzzle is a mode with no BackButton (X8). */
 export type PuzzleMode = 'linear' | 'explore';
@@ -100,6 +101,8 @@ export type PuzzleSessionDeps = {
   run: PuzzleRun;
   lang: () => Lang;
   dispatch: (a: ExploreAction) => void;
+  /** The puzzle type registry, `PUZZLE_TYPES` when absent; a test passes a fixture type beside them. */
+  types?: PuzzleTypes;
 };
 
 /** A puzzle id the world does not hold: GameSession shows the story-error notice. */
@@ -131,38 +134,13 @@ function puzzleError(e: ApiError): PuzzleError {
   }
 }
 
-function initialAnswer(p: PublicPuzzle): readonly number[] {
-  switch (p.type) {
-    case 'code':
-      return PUZZLE_RULES.code.initial(p.params);
-    case 'order':
-      return PUZZLE_RULES.order.initial(p.params);
-    default: {
-      const never: never = p;
-      return never;
-    }
-  }
-}
-
-function validAnswer(p: PublicPuzzle, a: readonly number[]): boolean {
-  switch (p.type) {
-    case 'code':
-      return PUZZLE_RULES.code.validAnswer(p.params, a);
-    case 'order':
-      return PUZZLE_RULES.order.validAnswer(p.params, a);
-    default: {
-      const never: never = p;
-      return never;
-    }
-  }
-}
-
 class Session implements PuzzleSession {
   readonly id: PuzzleId;
   readonly local: PuzzleLocalId;
   readonly mode: PuzzleMode;
   readonly #deps: PuzzleSessionDeps;
   readonly #puzzle: PublicPuzzle;
+  readonly #instance: PuzzleInstance;
   #answer: readonly number[];
   /** The saved run's attempts plus this session's wrong answers. */
   #attempts: number;
@@ -184,13 +162,14 @@ class Session implements PuzzleSession {
   readonly #texts = new Map<number, string>();
   readonly #listeners = new Set<(e: PuzzleEnd) => void>();
 
-  constructor(deps: PuzzleSessionDeps, puzzle: PublicPuzzle) {
+  constructor(deps: PuzzleSessionDeps, puzzle: PublicPuzzle, instance: PuzzleInstance) {
     this.#deps = deps;
     this.#puzzle = puzzle;
+    this.#instance = instance;
     this.id = puzzleId(deps.chapter, deps.puzzle);
     this.local = deps.puzzle;
     this.mode = deps.mode;
-    this.#answer = initialAnswer(puzzle);
+    this.#answer = instance.start(deps.run);
     this.#attempts = deps.run.attempts;
     this.#hintsOpened = deps.run.hintsOpened;
   }
@@ -213,7 +192,8 @@ class Session implements PuzzleSession {
       return err({ kind: 'busy' });
     }
     const answer = this.#answer;
-    if (!validAnswer(this.#puzzle, answer)) {
+    // Type-agnostic: the shape the server checks too; whether an answer may be tried is the type UI's (its play half).
+    if (shapeProblem(answer, this.#instance.shape) !== null) {
       return err({ kind: 'invalid' });
     }
     const abort = new AbortController();
@@ -451,11 +431,15 @@ class Session implements PuzzleSession {
   }
 }
 
-/** A session for `deps.puzzle`, or `unknown-puzzle` when the world holds no such own entry. */
+/**
+ * A session for `deps.puzzle`, or `unknown-puzzle` when the world holds no such own entry, or its type is not in
+ * `deps.types` (the decoder refused such a puzzle, so only a test's world reaches that).
+ */
 export function createPuzzleSession(deps: PuzzleSessionDeps): Result<PuzzleSession, SessionError> {
   const puzzle = Object.hasOwn(deps.world.puzzles, deps.puzzle) ? deps.world.puzzles[deps.puzzle] : undefined;
-  if (puzzle === undefined) {
+  const instance = puzzle === undefined ? null : puzzleInstance(puzzle, deps.types);
+  if (puzzle === undefined || instance === null) {
     return err({ kind: 'unknown-puzzle', puzzle: deps.puzzle });
   }
-  return ok(new Session(deps, puzzle));
+  return ok(new Session(deps, puzzle, instance));
 }

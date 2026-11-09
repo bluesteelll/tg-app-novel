@@ -14,7 +14,9 @@ import type { Lang } from '../i18n/index.ts';
 import type { Result } from '../story/catalog.ts';
 import type { ChapterId, PuzzleLocalId } from '../story/staging.ts';
 import { decodeWorldPublic } from '../world/decode.ts';
-import type { WorldPublic } from '../world/types.ts';
+import type { ItemId, WorldPublic } from '../world/types.ts';
+import { PUZZLE_TYPES, puzzleInstance } from './rules/index.ts';
+import type { ParamsOf, PuzzleType, PuzzleTypeData, PuzzleTypes } from './rules/index.ts';
 import { createPuzzleSession } from './session.ts';
 import type { HintPort, HintPortError, PuzzleEnd, PuzzleMode, PuzzleSession } from './session.ts';
 
@@ -120,7 +122,18 @@ function fakePort(balance: number | null = 2, cost: number | null = 1): FakePort
   };
 }
 
-function rig(o: { puzzle?: Partial<RawPuzzle>; mode?: PuzzleMode; run?: Partial<PuzzleRun>; port?: 'none' | FakePort; lang?: Lang } = {}): Rig {
+type RigOptions = {
+  puzzle?: Partial<RawPuzzle>;
+  /** A world built by hand instead of `worldWith(puzzle)`. */
+  world?: WorldPublic;
+  types?: PuzzleTypes;
+  mode?: PuzzleMode;
+  run?: Partial<PuzzleRun>;
+  port?: 'none' | FakePort;
+  lang?: Lang;
+};
+
+function rig(o: RigOptions = {}): Rig {
   const api: Api = {
     getPuzzle: vi.fn<Endpoints['getPuzzle']>(() => Promise.resolve(ok(status(false)))).mockName('getPuzzle'),
     postAttempt: vi.fn<Endpoints['postAttempt']>(() => Promise.resolve(ok({ correct: false, solved: false, attemptsLeft: null, spent: false }))).mockName('postAttempt'),
@@ -130,7 +143,8 @@ function rig(o: { puzzle?: Partial<RawPuzzle>; mode?: PuzzleMode; run?: Partial<
   const r = createPuzzleSession({
     api,
     hints: o.port === 'none' ? null : port,
-    world: worldWith(o.puzzle),
+    world: o.world ?? worldWith(o.puzzle),
+    types: o.types,
     chapter: CHAPTER,
     puzzle: pz('gate'),
     mode: o.mode ?? 'explore',
@@ -362,6 +376,99 @@ test('session: unknown puzzle is an error value', () => {
     });
     expect(r, id).toEqual({ ok: false, error: { kind: 'unknown-puzzle', puzzle: id } });
   }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Instances (engine plan §7.1): the session reads its puzzle's type only through the instance its type's data half
+// builds, from the registry the deps name.
+
+/** Sample params per type: a type added to PUZZLE_TYPES without a sample fails tsc here. */
+const SAMPLE_PARAMS: { readonly [T in PuzzleType]: ParamsOf<T> } = {
+  code: { dials: 4 },
+  order: { pieces: ['sun', 'moon', 'star'] as ItemId[] }, // a fixture's ids, as decoded
+};
+
+test('session: an instance answers initial and shape for every type', () => {
+  for (const type of PUZZLE_TYPES) {
+    const params = SAMPLE_PARAMS[type.type];
+    // Widened as the decoder holds it: `params` is this type's own sample.
+    const data: PuzzleTypeData<string, unknown> = type;
+    const instance = puzzleInstance({ type: type.type, params });
+    if (instance === null) {
+      throw new Error(`expected an instance of ${type.type}`);
+    }
+    const { shape, check, goal, presentation, wrong, commit } = instance;
+    expect({ type: instance.type, shape, check, goal, presentation, wrong, commit, initial: instance.initial(), demo: instance.demo() }, type.type).toEqual({
+      type: data.type,
+      shape: data.answerShape(params),
+      check: data.check,
+      goal: data.goal,
+      presentation: data.presentation,
+      wrong: data.wrong,
+      commit: data.commit,
+      initial: data.initial(params),
+      demo: null,
+    });
+  }
+});
+
+test("session: a session starts from the instance's start answer", () => {
+  // A run with attempts and an opened hint: every type starts from its initial answer (no saved work yet).
+  const run: PuzzleRun = { outcome: null, attempts: 2, hintsOpened: 1 };
+  const cases: ReadonlyArray<readonly [Partial<RawPuzzle>, readonly number[]]> = [
+    [{}, [0, 0, 0, 0]],
+    [{ type: 'order', params: { pieces: ['sun', 'moon', 'star'] } }, [0, 1, 2]],
+  ];
+  for (const [puzzle, start] of cases) {
+    const gate = worldWith(puzzle).puzzles[pz('gate')];
+    expect(gate === undefined ? null : puzzleInstance(gate)?.start(run)).toEqual(start);
+    expect(rig({ puzzle, run }).s.answer()).toEqual(start);
+  }
+});
+
+/** A fixture type outside PUZZLE_TYPES: three pins, each down (0) or up (1), all up at the start. */
+const TUMBLER: PuzzleTypeData<'tumbler', { readonly pins: number }> = {
+  type: 'tumbler',
+  check: 'commit',
+  goal: 'secret',
+  presentation: 'overlay',
+  wrong: 'posted',
+  commit: 'control',
+  decodeParams: () => ({ ok: true, value: { pins: 3 } }),
+  answerShape: () => ({ len: 3, max: 1 }),
+  initial: () => [1, 1, 1],
+  startShown: () => [1, 1, 1],
+};
+
+test('session: a fixture type passed as types opens a session', async () => {
+  // The decoded code world with its gate re-typed by hand, not through the decoder, so only the session's seam is
+  // under test. The cast: a fixture's type lies outside PuzzleType, and only a test builds such a world.
+  const base = worldWith();
+  const world = { ...base, puzzles: { gate: { ...base.puzzles[pz('gate')], type: 'tumbler', params: { pins: 3 } } } } as unknown as WorldPublic;
+  const types: PuzzleTypes = [...PUZZLE_TYPES, TUMBLER];
+  const { s, api } = rig({ world, types });
+  expect(s.answer()).toEqual([1, 1, 1]);
+  s.setAnswer([1, 0, 1]);
+  expect(await s.attempt()).toEqual(ok({ kind: 'wrong', attemptsLeft: null }));
+  expect(api.postAttempt.mock.calls).toEqual([['ch1.gate', [1, 0, 1], { signal: expect.any(AbortSignal) }]]);
+  // The fixture's own shape refuses a pin out of its range before any request.
+  s.setAnswer([2, 0, 1]);
+  expect(await s.attempt()).toEqual(err({ kind: 'invalid' }));
+  expect(api.postAttempt).toHaveBeenCalledTimes(1);
+  // Without `types` the registry is PUZZLE_TYPES: no instance, so no session.
+  expect(puzzleInstance({ type: 'tumbler', params: { pins: 3 } })).toBeNull();
+  const r = createPuzzleSession({
+    api,
+    hints: null,
+    world,
+    chapter: CHAPTER,
+    puzzle: pz('gate'),
+    mode: 'explore',
+    run: { outcome: null, attempts: 0, hintsOpened: 0 },
+    lang: () => 'ru',
+    dispatch: () => {},
+  });
+  expect(r).toEqual({ ok: false, error: { kind: 'unknown-puzzle', puzzle: 'gate' } });
 });
 
 // ---------------------------------------------------------------------------------------------------------------

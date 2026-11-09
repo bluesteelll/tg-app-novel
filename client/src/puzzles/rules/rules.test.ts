@@ -1,23 +1,32 @@
 import { expect, test } from 'vitest';
 
-import type { ItemId } from '../../world/types.ts';
-import { PUZZLE_RULES } from './index.ts';
+import { PUZZLE_LINTS } from '../../../scripts/story/puzzles/index.ts';
+import type { ChapterId, LineId, PuzzleLocalId } from '../../story/staging.ts';
+import { decodeWorldPublic, decodeWorldSource, toServer } from '../../world/decode.ts';
+import type { ItemId, SourcePuzzle } from '../../world/types.ts';
+import { CODE_PLAY } from '../play/code.ts';
+import { ORDER_PLAY } from '../play/order.ts';
+import { PUZZLE_UI } from '../registry.ts';
+import { PUZZLE_RULES, PUZZLE_TYPES } from './index.ts';
+import type { PuzzleTypeData, PuzzleTypes } from './index.ts';
 
 const code = PUZZLE_RULES.code;
 const order = PUZZLE_RULES.order;
+const codeLint = PUZZLE_LINTS.code;
+const orderLint = PUZZLE_LINTS.order;
 const DIALS4 = { dials: 4 };
 const MEDALS = { pieces: ['medal_sun', 'medal_moon', 'medal_star'] as ItemId[] }; // a fixture's ids, as decoded
 
 test('rules: code validateSolution rejects out-of-range', () => {
-  expect(code.validateSolution(DIALS4, [1, 8, 4, 10])).not.toBeNull();
-  expect(code.validateSolution(DIALS4, [1, 8, 4, -1])).not.toBeNull();
-  expect(code.validateSolution(DIALS4, [1, 8, 4, 7.5])).not.toBeNull();
-  expect(code.validateSolution(DIALS4, [1, 8, 4])).not.toBeNull();
-  expect(code.validateSolution(DIALS4, [1, 8, 4, 7, 0])).not.toBeNull();
+  expect(codeLint.validateSolution(DIALS4, [1, 8, 4, 10])).not.toBeNull();
+  expect(codeLint.validateSolution(DIALS4, [1, 8, 4, -1])).not.toBeNull();
+  expect(codeLint.validateSolution(DIALS4, [1, 8, 4, 7.5])).not.toBeNull();
+  expect(codeLint.validateSolution(DIALS4, [1, 8, 4])).not.toBeNull();
+  expect(codeLint.validateSolution(DIALS4, [1, 8, 4, 7, 0])).not.toBeNull();
   // The control: an in-range solution of the right length.
-  expect(code.validateSolution(DIALS4, [1, 8, 4, 7])).toBeNull();
-  expect(code.validAnswer(DIALS4, [1, 8, 4, 10])).toBe(false);
-  expect(code.validAnswer(DIALS4, [9, 9, 9, 9])).toBe(true);
+  expect(codeLint.validateSolution(DIALS4, [1, 8, 4, 7])).toBeNull();
+  expect(CODE_PLAY.validAnswer(DIALS4, [1, 8, 4, 10])).toBe(false);
+  expect(CODE_PLAY.validAnswer(DIALS4, [9, 9, 9, 9])).toBe(true);
 });
 
 test('rules: code initial is all zeros', () => {
@@ -30,11 +39,11 @@ test('rules: code initial is all zeros', () => {
 });
 
 test('rules: order solution must be a permutation', () => {
-  expect(order.validateSolution(MEDALS, [0, 0, 1])).not.toBeNull();
-  expect(order.validateSolution(MEDALS, [0, 1, 3])).not.toBeNull();
-  expect(order.validateSolution(MEDALS, [1, 0])).not.toBeNull();
+  expect(orderLint.validateSolution(MEDALS, [0, 0, 1])).not.toBeNull();
+  expect(orderLint.validateSolution(MEDALS, [0, 1, 3])).not.toBeNull();
+  expect(orderLint.validateSolution(MEDALS, [1, 0])).not.toBeNull();
   // The control: the demo gate's order (the moon before the sun, the star last).
-  expect(order.validateSolution(MEDALS, [1, 0, 2])).toBeNull();
+  expect(orderLint.validateSolution(MEDALS, [1, 0, 2])).toBeNull();
   expect(order.initial(MEDALS)).toEqual([0, 1, 2]);
   expect(order.answerShape(MEDALS)).toEqual({ len: 3, max: 2 });
   expect(order.decodeParams({ pieces: ['medal_sun', 'medal_sun'] }).ok).toBe(false);
@@ -43,12 +52,219 @@ test('rules: order solution must be a permutation', () => {
 
 test('rules: solution equal to initial rejected', () => {
   // Both fixtures are shape-valid answers, so only the "differs from initial" rule can reject them.
-  expect(code.validAnswer(DIALS4, [0, 0, 0, 0])).toBe(true);
-  const sameCode = code.validateSolution(DIALS4, [0, 0, 0, 0]);
+  expect(CODE_PLAY.validAnswer(DIALS4, [0, 0, 0, 0])).toBe(true);
+  const sameCode = codeLint.validateSolution(DIALS4, [0, 0, 0, 0]);
   expect(sameCode).not.toBeNull();
   expect(sameCode).toContain('initial');
-  expect(order.validAnswer(MEDALS, [0, 1, 2])).toBe(true);
-  const sameOrder = order.validateSolution(MEDALS, [0, 1, 2]);
+  expect(ORDER_PLAY.validAnswer(MEDALS, [0, 1, 2])).toBe(true);
+  const sameOrder = orderLint.validateSolution(MEDALS, [0, 1, 2]);
   expect(sameOrder).not.toBeNull();
   expect(sameOrder).toContain('initial');
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The type registry (engine plan §7.1, §7.3): the pins every type's data half keeps, each checked against fixtures
+// that break it, so a checker that lost a rule is red here and not only on a future type.
+
+/** A valid commit type to break one field at a time: an overlay with a secret goal, posted wrong answers. */
+const COMMIT: PuzzleTypeData<string, unknown> = Object.freeze({
+  type: 'fixture',
+  check: 'commit',
+  goal: 'secret',
+  presentation: 'overlay',
+  wrong: 'posted',
+  commit: 'control',
+  decodeParams: (raw: unknown) => ({ ok: true, value: raw }) as const,
+  answerShape: () => ({ len: 3, max: 1 }),
+  initial: () => [0, 0, 0],
+  startShown: () => [0, 0, 0],
+});
+/** A valid reach view type: a shown goal, no wrong state, a saved working configuration, a demonstration. */
+const REACH_VIEW: PuzzleTypeData<string, unknown> = Object.freeze({
+  ...COMMIT,
+  check: 'reach',
+  goal: 'shown',
+  presentation: 'view',
+  wrong: 'none',
+  workFits: () => true,
+  demo: () => [0, 1],
+});
+const fixture = (over: Partial<PuzzleTypeData<string, unknown>>): PuzzleTypes => [{ ...COMMIT, ...over }];
+
+/** Round 3: where a type's wrong input is known follows from when it posts. */
+function wrongProblems(types: PuzzleTypes): string[] {
+  return types.flatMap((t) => {
+    if (t.check === 'commit' && t.wrong !== 'posted') {
+      return [`${t.type}: a commit type posts its wrong answers, wrong is '${t.wrong}'`];
+    }
+    if (t.check === 'reach' && t.wrong === 'posted') {
+      return [`${t.type}: a reach type posts no wrong answer, wrong is 'posted'`];
+    }
+    return [];
+  });
+}
+
+/** Round 4 and §7.3 (I4): a full commit is a view's, a demonstration never plays a secret, a view saves its work. */
+function shapeProblems(types: PuzzleTypes): string[] {
+  return types.flatMap((t) => {
+    const out: string[] = [];
+    if (t.commit === 'full' && (t.check !== 'commit' || t.presentation !== 'view')) {
+      out.push(`${t.type}: commit 'full' needs check 'commit' and presentation 'view'`);
+    }
+    if (t.demo !== undefined && t.goal !== 'shown') {
+      out.push(`${t.type}: a demonstration plays a ${t.goal} goal`);
+    }
+    if ((t.workFits !== undefined) !== (t.presentation === 'view')) {
+      out.push(`${t.type}: workFits ${t.workFits === undefined ? 'missing on a view' : 'on an overlay'}`);
+    }
+    if ((t.check === 'reach') !== (t.goal === 'shown')) {
+      out.push(`${t.type}: check '${t.check}' with goal '${t.goal}' (reach iff shown)`);
+    }
+    return out;
+  });
+}
+
+test('puzzles: every type has a data half, a loader and a lint', () => {
+  const types = PUZZLE_TYPES.map((t) => t.type);
+  expect(new Set(types).size).toBe(types.length);
+  const sorted = [...types].sort();
+  expect(sorted).toEqual(['code', 'order']);
+  expect(Object.keys(PUZZLE_RULES).sort()).toEqual(sorted);
+  expect(Object.keys(PUZZLE_UI).sort()).toEqual(sorted);
+  expect(Object.keys(PUZZLE_LINTS).sort()).toEqual(sorted);
+  for (const t of PUZZLE_TYPES) {
+    // The keyed view is the registry's own object, not a copy that could drift from it.
+    expect(PUZZLE_RULES[t.type], t.type).toBe(t);
+    expect(PUZZLE_UI[t.type], t.type).toBeTypeOf('function');
+    // `code` and `order` save no working configuration and demonstrate nothing (§7.2).
+    expect('workFits' in t, t.type).toBe(false);
+    expect('demo' in t, t.type).toBe(false);
+  }
+  // Their start configuration is shown before any input (§7.1 `startShown`; per-player's floor excludes it).
+  expect(code.startShown(DIALS4)).toEqual(code.initial(DIALS4));
+  expect(order.startShown(MEDALS)).toEqual(order.initial(MEDALS));
+});
+
+test('puzzles: a commit type posts its wrong answers; a reach type has none or a local one', () => {
+  expect(wrongProblems(PUZZLE_TYPES)).toEqual([]);
+  // The checker against its own fixtures: each breaks the rule once; the valid ones pass.
+  expect(wrongProblems(fixture({ wrong: 'none' }))).toEqual(["fixture: a commit type posts its wrong answers, wrong is 'none'"]);
+  expect(wrongProblems(fixture({ wrong: 'local' }))).toEqual(["fixture: a commit type posts its wrong answers, wrong is 'local'"]);
+  expect(wrongProblems([{ ...REACH_VIEW, wrong: 'posted' }])).toEqual(["fixture: a reach type posts no wrong answer, wrong is 'posted'"]);
+  expect(wrongProblems([COMMIT, REACH_VIEW, { ...REACH_VIEW, wrong: 'local' }])).toEqual([]);
+});
+
+test('puzzles: a full-commit type is a view commit type and a demonstration shows only a shown goal', () => {
+  expect(shapeProblems(PUZZLE_TYPES)).toEqual([]);
+  // The checker against its own fixtures: each breaks one rule; the valid ones pass.
+  expect(shapeProblems(fixture({ demo: () => [0] }))).toEqual(['fixture: a demonstration plays a secret goal']);
+  expect(shapeProblems(fixture({ commit: 'full' }))).toEqual(["fixture: commit 'full' needs check 'commit' and presentation 'view'"]);
+  expect(shapeProblems([{ ...REACH_VIEW, commit: 'full' }])).toEqual(["fixture: commit 'full' needs check 'commit' and presentation 'view'"]);
+  expect(shapeProblems(fixture({ workFits: () => true }))).toEqual(['fixture: workFits on an overlay']);
+  expect(shapeProblems(fixture({ presentation: 'view' }))).toEqual(['fixture: workFits missing on a view']);
+  expect(shapeProblems(fixture({ goal: 'shown' }))).toEqual(["fixture: check 'commit' with goal 'shown' (reach iff shown)"]);
+  expect(shapeProblems([{ ...REACH_VIEW, goal: 'secret', demo: undefined }])).toEqual([
+    "fixture: check 'reach' with goal 'secret' (reach iff shown)",
+  ]);
+  // A full-commit device (`ritual`'s shape) and a shown reach view (`sequence`'s) are both valid.
+  const ritual = { ...COMMIT, commit: 'full', presentation: 'view', workFits: () => true } as const;
+  expect(shapeProblems([COMMIT, REACH_VIEW, ritual])).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The runtime seam for fixture types (engine plan §7.1 round 5) and the build's hint renderer, through the decoder.
+
+const GATE = 'gate' as PuzzleLocalId;
+/** What the fixture type's `decodeParams` returns: its own object, so a decoded world is seen to keep it. */
+const TUMBLER_PARAMS = Object.freeze({ pins: 3 });
+/** A fixture type outside PUZZLE_TYPES: three pins, each down (0) or up (1). */
+const TUMBLER: PuzzleTypeData<'tumbler', typeof TUMBLER_PARAMS> = {
+  type: 'tumbler',
+  check: 'commit',
+  goal: 'secret',
+  presentation: 'overlay',
+  wrong: 'posted',
+  commit: 'control',
+  decodeParams: (raw) =>
+    JSON.stringify(raw) === '{"pins":3}' ? { ok: true, value: TUMBLER_PARAMS } : { ok: false, error: 'a tumbler has { "pins": 3 }' },
+  answerShape: () => ({ len: 3, max: 1 }),
+  initial: () => [1, 1, 1],
+  startShown: () => [1, 1, 1],
+};
+
+test('puzzles: a fixture type passed as types decodes in a world', () => {
+  const types: PuzzleTypes = [...PUZZLE_TYPES, TUMBLER];
+  const gate = {
+    type: 'tumbler',
+    title: { id: 'ch1.gate.0001', ru: 'Засов' },
+    prompt: { id: 'ch1.gate.0002', ru: 'Штифты' },
+    closeup: null,
+    params: { pins: 3 },
+    maxAttempts: null,
+    giveUp: false,
+  };
+  const body = { format: 1, items: {}, docs: {}, sections: {} };
+  const publicRaw = { ...body, version: '0123456789abcdef', puzzles: { gate: { ...gate, hintTiers: 0 } } };
+  const sourceRaw = { ...body, puzzles: { gate: { ...gate, solution: [0, 1, 0], hints: [] } } };
+  for (const r of [decodeWorldPublic(publicRaw, { types }), decodeWorldSource(sourceRaw, { types })]) {
+    if (!r.ok) {
+      throw new Error(`expected the fixture world to decode: ${JSON.stringify(r.error)}`);
+    }
+    expect(r.value.puzzles[GATE]?.type).toBe('tumbler');
+    expect(r.value.puzzles[GATE]?.params).toBe(TUMBLER_PARAMS);
+  }
+  // Without `types` the decoder knows PUZZLE_TYPES only, and names them.
+  const issue = { ok: false, error: [{ path: 'puzzles.gate.type', reason: 'shape', detail: '"tumbler" is not code or order' }] };
+  expect(decodeWorldPublic(publicRaw)).toEqual(issue);
+  expect(decodeWorldSource(sourceRaw)).toEqual(issue);
+});
+
+test('puzzles: toServer passes hint texts through the renderer it is given', () => {
+  const drawer = {
+    type: 'code',
+    title: { id: 'ch1.drawer.0001', ru: 'Ящик' },
+    prompt: { id: 'ch1.drawer.0002', ru: 'Код' },
+    closeup: null,
+    params: { dials: 3 },
+    maxAttempts: null,
+    giveUp: false,
+    solution: [1, 2, 3],
+    hints: [
+      { id: 'ch1.drawer.0003', ru: 'один' },
+      { id: 'ch1.drawer.0004', ru: 'два' },
+    ],
+  };
+  const src = decodeWorldSource({ format: 1, items: {}, docs: {}, sections: {}, puzzles: { drawer } });
+  if (!src.ok) {
+    throw new Error(`expected the world to decode: ${JSON.stringify(src.error)}`);
+  }
+  const en = { ['ch1.drawer.0001' as LineId]: 'Drawer', ['ch1.drawer.0003' as LineId]: 'one' }; // fixture ids
+  const chapter = 'ch1' as ChapterId;
+  const plain = toServer(src.value, en, chapter);
+  // The default renderer is the identity: the bilingual texts as they are (a missing en falls back to ru).
+  expect(plain.puzzles['drawer' as PuzzleLocalId]?.hints).toEqual([
+    { ru: 'один', en: 'one' },
+    { ru: 'два', en: 'два' },
+  ]);
+  const seen: SourcePuzzle[] = [];
+  const upper = (p: SourcePuzzle, hints: readonly { ru: string; en: string }[]): readonly { ru: string; en: string }[] => {
+    seen.push(p);
+    return hints.map((h) => ({ ru: h.ru.toUpperCase(), en: h.en }));
+  };
+  const rendered = toServer(src.value, en, chapter, upper);
+  // Only the hints change; the renderer saw the source puzzle.
+  const plainDrawer = plain.puzzles['drawer' as PuzzleLocalId];
+  expect(rendered).toEqual({
+    ...plain,
+    puzzles: {
+      drawer: {
+        ...plainDrawer,
+        hints: [
+          { ru: 'ОДИН', en: 'one' },
+          { ru: 'ДВА', en: 'два' },
+        ],
+      },
+    },
+  });
+  expect(seen).toEqual([src.value.puzzles['drawer' as PuzzleLocalId]]);
 });
