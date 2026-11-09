@@ -5,6 +5,7 @@ import { expect, test } from 'vitest';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { PuzzleRun, WorldState } from '../explore/state.ts';
 import type { AnchorKey, FlagId } from '../mechanics/contract.ts';
+import { MECHANIC_DATA } from '../mechanics/data/index.ts';
 import type { ItemId } from '../world/types.ts';
 import type { InkScalar } from './catalog.ts';
 import GOLDEN from './fixtures/save-1-ch1.json?raw';
@@ -412,4 +413,19 @@ test('save: a camera state outside the grammar fails at its path', () => {
     expect(r.ok ? 'decoded' : r.error.kind, label).toBe('malformed');
     expect(r.ok ? '' : r.error.detail, label).toMatch(new RegExp(`^${path.replace(/[.[\]]/g, '\\$&')}: `));
   }
+});
+
+/** The slice keys of `registry` that the current format does not save (engine plan §3.2: a slice lives in `world`). */
+function unsaved(registry: ReadonlyArray<{ readonly id: string; readonly slice?: { readonly key: string } }>): string[] {
+  const saved: readonly string[] = SAVE_FIELDS[SAVE_FORMAT];
+  return registry.flatMap((m) => (m.slice === undefined || saved.includes(m.slice.key) ? [] : [m.slice.key]));
+}
+
+test('mechanics: slice keys pinned to SAVE_FORMAT', () => {
+  expect(unsaved(MECHANIC_DATA)).toEqual([]);
+  // No module declares a slice yet, so the guard is shown live on fixture modules: a key the format lacks fails it
+  // (a slice is a format bump), a key it has passes.
+  const sliced = (key: string) => ({ id: 'fixture', slice: { key } });
+  expect(unsaved([...MECHANIC_DATA, sliced('rotations')])).toEqual(['rotations']);
+  expect(unsaved([...MECHANIC_DATA, sliced('flags')])).toEqual([]);
 });
