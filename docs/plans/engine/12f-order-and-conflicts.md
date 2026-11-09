@@ -14,11 +14,18 @@ done:      M3c (a6365a8), docs-errata-8 (be6c348), LRF (a93fe54), docs (d31f720,
            after the adoption (main 9a83251): L1 l1-entry-summary (eec24fe, RULINGS 159), GM6k (fd62933,
            RULINGS 163), GM1a (ef8b4dc, RULINGS 165), GM6s1 (81a15b0, RULINGS 168), GM1b (03a00bc, RULINGS 171),
            docs-adopt (f509b05, RULINGS 172), docs 9a83251 (Q58: per-player OQ1-OQ7 asked)
-in flight: (as of 9a83251) GM6s2 gm6s2-values-routes (RULINGS 169 / 170; lock 22: server/src/{content,error}.rs,
-           the puzzle repository / domain / route, the client api contract, client/src/app/{game,yields}.test.ts,
-           client/src/puzzles/session.test.ts), docs-errata-10 (RULINGS 173; docs only)
-next:      GM1c and GM2a (Beside), after GM6s2 merges: GM1c holds puzzles/session.test.ts, GM2a
-           app/{game,yields}.test.ts, all in GM6s2's lock (RULINGS 170, 173)
+           after docs-errata-10 (main 9b4fd25): docs-errata-10 (5977df5, RULINGS 174), docs 967a8da (every open
+           question's default adopted, Q58 resolved, RULINGS 175), GM6s2 (2815340, RULINGS 176; the per-player
+           server chain GM6k -> GM6s1 -> GM6s2 is done), GM1c (8c2fa03, RULINGS 178), GM2a (9b4fd25, RULINGS 181)
+in flight: (as of 9b4fd25) GM1d gm1d-mech-clues (RULINGS 179 / 180; base 8c2fa03, launched beside GM2a; lock 11:
+           client/src/world/{types,decode}.ts, decode.test.ts, scripts/story/{lint,world.test,build.test}.ts,
+           scripts/story/mechanics/{clues,index}.ts, scripts/story/puzzles/shape.ts, mechanics/rules/search.ts,
+           story/ch1/world.json), GM3w gm3w-ui-wiring (RULINGS 182; lock 10: app/{game,yields}.ts, game.test.ts,
+           ui/{App.svelte,explore-view.svelte.ts,puzzle-view.svelte.ts}, ui/explore/{ExploreView.svelte,
+           explore.svelte.test.ts}, ui/puzzles/{PuzzleHost.svelte,puzzle-host.svelte.test.ts}), docs-errata-11
+           (RULINGS 182; docs only, in the idle server slot)
+next:      per-player GM6a (after GM2a's field; with GM3w it gates SH1) and GM3m (after GM1c, GM1b) when a client
+           slot frees (RULINGS 182); GM2b after GM1d; SH1 after GM3w and GM6a
 carried:   L2, the entry lever (shelved, RULINGS 142 / 158; return line: entry headroom < 0.5 KB br, §15 item 15);
            the preload-priority lane (RULINGS 152 Q14 (b); scene/{registry,preload}.ts, the scene/* tail)
 stopped:   the character half of design-animation (RULINGS 132), replaced by design-shots (RULINGS 143)
@@ -31,6 +38,16 @@ Changed by RULINGS 159-173 (as of `9a83251`; docs lane `docs-errata-10`, group B
 the `in flight:` line read "(as of 3c62a86) docs-adopt (RULINGS 158; docs only), L1 l1-entry-summary (RULINGS 158;
 client/src/saves/**, client/src/app/{boot,game}.ts, client/src/arch.test.ts)"; the `next:` line is new. The rows
 below keep GM1a, GM1b, GM6k and GM6s1 as the predecessors they name; all four have merged.
+
+Changed by RULINGS 174-182 (as of `9b4fd25`; docs lane `docs-errata-11`, group B): the block above is the state at
+`9b4fd25` (SHAs from `git log --first-parent main`). `docs-errata-10`, the docs commit `967a8da`, GM6s2, GM1c and GM2a
+moved to `done:`; the `in flight:` line read "(as of 9a83251) GM6s2 gm6s2-values-routes (RULINGS 169 / 170; lock 22:
+server/src/{content,error}.rs, the puzzle repository / domain / route, the client api contract,
+client/src/app/{game,yields}.test.ts, client/src/puzzles/session.test.ts), docs-errata-10 (RULINGS 173; docs only)",
+and the `next:` line read "GM1c and GM2a (Beside), after GM6s2 merges: GM1c holds puzzles/session.test.ts, GM2a
+app/{game,yields}.test.ts, all in GM6s2's lock (RULINGS 170, 173)". GM1d ran beside GM2a, a pair the order table
+does not list (lock-disjoint, checked at launch: RULINGS 179), and now runs beside GM3w, a pair it lists (GM1d's row:
+Beside GM3m, GM3w). The rows below keep GM6s2, GM1c and GM2a as the predecessors they name; all three have merged.
 
 **The one order across the three designs (reconcile r1; RULINGS 143, 152, 153; design-shots §9.14 and I-2,
 adopted with one change; it replaces the paragraph "Animation and shot lanes" that earlier sections cite).** The **A(f)** placeholders of rounds 4-14 ("every lane of an adopted animation or shot design
@@ -130,7 +147,7 @@ the table is the error to fix (the rule of this section's first paragraph).
 | `client/src/puzzles/session.ts`, `session.test.ts` | GM1c -> GM7r -> GM7g (test) -> GM8h (round 3 W2); per-player GM6c2 never beside GM7r / GM7g / GM8h |
 | `client/src/puzzles/rules/index.ts`, `rules.test.ts`, `puzzles/ui/puzzle-types.svelte.test.ts` | GM1c -> GM3m (`rules/index.ts` only: `PuzzleTypeData.controls?`, round 4) -> GM3p (the svelte test) -> GM7p -> GM7g -> GM8h (`rules/index.ts` only: `instanceOf`'s `work` branch, round 5 m1) -> GM8a -> GM8b |
 | `client/src/puzzles/play/reach.ts`, `reach.test.ts` (round 5, W3) | GM7r (new); later type UIs import it, no lane edits it |
-| `client/scripts/story/puzzles/index.ts` (round 4, `PUZZLE_LINTS`) | GM1c (new, the `code` / `order` lines) -> GM7p -> GM7g -> GM8a -> GM8b (one line per type) |
+| `client/scripts/story/puzzles/index.ts` (round 4, `PUZZLE_LINTS`) | GM1c (new, the `code` / `order` lines) -> GM7p -> GM7g -> GM8a -> GM8b (one line per type). **Ruled: RULINGS 178** — Q7' option B: per-player GM6c1a also holds the file for one hunk (`PuzzleTypeLint.domainFits?(p: P, d: Domain): string \| null` beside the TypeScript `Domain` type it defines), never beside GM7p / GM7g / GM8a / GM8b (whichever holds the file first holds it to its merge) |
 | `client/src/mechanics/contract.ts` (round 4) | GM1b (new) -> GM3m (`MechanicData.controls?`) |
 | `client/scripts/story/lint.ts` (round 4; round 5, per-player R-E23) | **GM1d** (one hunk: `Finding.code`'s union) **-> SH12b** (reconcile r1: the one-line removal of `budget/knot-set`; was: A(`lint.ts`) (rev. 3: MA1b -> MD3) never beside it); no other lane of either design edits it (per-player round 5 dropped GM6c1b's hunk; every module, type and per-player code lives in its own file's `codes`, §3.2) |
 | `client/scripts/story/mechanics/core.ts` (round 4) | GM1b (new) -> GM2b (the four `renamed` codes and lints) -> per-player GM6c1b (lifts `world/renamed-puzzles`, E-P13) |

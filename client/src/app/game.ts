@@ -48,15 +48,17 @@ import type {
 } from '../story/staging.ts';
 import type { Lifecycle, TelegramClient } from '../telegram/index.ts';
 import type { BacklogLine } from '../ui/Backlog.svelte';
-import type { ExploreViewStore } from '../ui/explore-view.svelte.ts';
+import { forwardLayer } from '../ui/explore-view.svelte.ts';
+import type { ExploreLayerActions, ExploreViewStore } from '../ui/explore-view.svelte.ts';
 import type { NoticeView } from '../ui/Notice.svelte';
 import type { SlotView } from '../ui/SaveLoad.svelte';
+import { forwardHost } from '../ui/puzzle-view.svelte.ts';
 import type { PuzzleHostCallbacks, PuzzleView } from '../ui/puzzle-view.svelte.ts';
 import type { Screens, ScreensView } from '../ui/screens.ts';
 import type { ChoiceSet, LineView, PlayMode, ViewModel } from '../ui/state.svelte.ts';
 import { graphemes, GRAPHEMES_PER_SECOND } from '../ui/typewriter.ts';
 import { createYields, LAZY_CHUNKS } from './yields.ts';
-import type { ExploreLayerActions, LazyChunks, Yields, YieldsHost } from './yields.ts';
+import type { LazyChunks, Yields, YieldsHost } from './yields.ts';
 
 /** What a session starts from: a chapter of the story from its start, or a save slot of the story. */
 export type StartFrom = { kind: 'new'; story: StoryId; chapter: ChapterId } | { kind: 'slot'; story: StoryId; slot: SaveSlot };
@@ -764,6 +766,7 @@ export function createGame(deps: GameDeps): Game {
         break;
       case 'yield':
         s.at = { lineId: null, knot: step.knot, yield: step.yield };
+        s.yields.ahead(step.yield);
         break;
       case 'end':
         break;
@@ -1374,13 +1377,14 @@ export function createGame(deps: GameDeps): Game {
     chapter: () => of().ch,
     runner: () => of().runner,
     text: (w) => of().lines.text(w.id, w.ru, vm.lang),
-    apply: async (visual, audio) => {
+    apply: async (visual, audio, started) => {
       const s = of();
       const instant = vm.mode === 'skip';
       const shown = await stage(s, visual, instant);
       if (session !== s) {
         return;
       }
+      started?.();
       audioOnce().apply(audio, { instant });
       await shown.done;
     },
@@ -1742,7 +1746,7 @@ export function createGame(deps: GameDeps): Game {
    * the wallet open, or a sheet no Back on the wallet has shown closed. One the player left (`purchaseLeft`) holds
    * nothing: it moves only on the wallet's Check again or `activated`. After that reload the wallet reads the balance
    * again and the credit shows once the webhook lands, but its Buy is a new purchase, not Check again: the server
-   * refuses a second pre-checkout of the pack for CHECKOUT_LOCK_SECS (120 s), and a later one charges and credits a
+   * refuses a second pre-checkout of the pack for up to CHECKOUT_LOCK_SECS (120 s), and a later one charges and credits a
    * second pack. Accepted (LRB critique W1): a pack is consumable and every charge is credited, against a hold for the
    * page's life. A gift is waited for only while its dialog shows it sending (`gift.busy`); one the player closed, and a
    * request id kept for a retry, are not: once sent the move is the server's, and the dialog reads the balance again
@@ -2077,24 +2081,8 @@ export function createGame(deps: GameDeps): Game {
       recovery = { served, page };
       reloadTimer = clock.setTimeout(reloadTick, 0); // checked in a task of its own, never inside the response path
     },
-    exploreActions: {
-      ontap: (key) => session?.yields.layer.ontap(key),
-      oninsert: (key, item) => session?.yields.layer.oninsert(key, item),
-      oninventory: () => session?.yields.layer.oninventory(),
-      onread: (doc) => session?.yields.layer.onread(doc),
-      onreveal: () => session?.yields.layer.onreveal(),
-      onclose: () => session?.yields.layer.onclose(),
-    },
-    puzzleActions: {
-      item: (id) => session?.yields.host.item(id) ?? null,
-      onchange: (a) => session?.yields.host.onchange(a),
-      ontry: () => session?.yields.host.ontry(),
-      ongiveup: () => session?.yields.host.ongiveup(),
-      onhint: () => session?.yields.host.onhint(),
-      onretry: () => session?.yields.host.onretry(),
-      onusehint: (tier) => session?.yields.host.onusehint(tier),
-      ongetmore: () => session?.yields.host.ongetmore(),
-    },
+    exploreActions: forwardLayer(() => session?.yields.layer),
+    puzzleActions: forwardHost(() => session?.yields.host),
     exitToStories() {
       if (disposed || exiting || session === null) {
         return DONE;

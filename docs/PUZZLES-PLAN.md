@@ -306,6 +306,12 @@ puzzle the server counts the attempt cap, a 200 with `spent: true` ends the run 
 sessions, and a view session closes when the player leaves its room —
 [per-player §3.6 O2: the re-draw](plans/per-player/03-server-half.md#36-o2-the-re-draw),
 [engine §7.5 Devices: lifecycle, attempts, working state](plans/engine/07-puzzle-types.md#75-devices-lifecycle-attempts-working-state-m6-m7-w2-round-3-w1-w2-m9-m10-gm8i-module-gm8h-host).
+Changed by RULINGS 176 (as of `9b4fd25`; docs lane `docs-errata-11`, group A): the server half is built (GM6s2 `2815340`): for a per-player puzzle the server counts the wrong answers of a run and
+spends a capped run (`maxAttempts` 1..9, or `null` for no cap; the 200 carries `attemptsLeft` and `spent: true` on the
+final wrong answer, [server/src/puzzles/mod.rs:95](../server/src/puzzles/mod.rs#L95) `attempts_left`, `record_attempt`
+[server/src/db/puzzles.rs:321](../server/src/db/puzzles.rs#L321)); an answer on a spent run is not compared (409
+`value_changed`), and `POST /api/puzzles/{puzzleId}/restart` re-draws it (`restart`, `puzzles/mod.rs` :264). No client
+lane calls it yet (the GM6c lanes); a static puzzle's cap stays the client's, as above.
 - **Exploration puzzles** (attached to a lock):
   - Closing the panel (BackButton) records no outcome; the player can return any time (RE/SH: unlimited tries)
     [P1 §3]. The mechanism: a tap on a lock whose slots are all filled and whose puzzle has no outcome reopens the
@@ -1492,8 +1498,8 @@ Common rules as in PP (bearer, JSON camelCase, `no-store`, 16 KB default body li
 
 | Method + path | Auth | Request | 200 response | Errors | Idempotency; caching |
 |---|---|---|---|---|---|
-| `GET /api/puzzles/{puzzleId}?lang=ru\|en` | bearer | — | `PuzzleStatus { puzzleId, solved, hints: HintTier[] }`, `HintTier { tier, productId, priceStars, owned, text: string\|null }` (`text` only when owned) | 400 `bad_request` (id or lang), 403 `not_entitled` (a paid chapter's puzzle without the chapter), 404 `not_found` | read; `private, no-store` |
-| `POST /api/puzzles/{puzzleId}/attempts` | bearer | `AttemptRequest { answer: number[] }` (≤ 16 entries, each ≤ 65535; as merged, GM6s1 `81a15b0`, RULINGS 168: ≤ 64 entries, `MAX_ANSWER_LEN`) | `AttemptResponse { correct, solved }` | 400 (shape: `answerLen` / `answerMax`), 403, 404, 429 `rate_limited` + `Retry-After` | the result is a pure function of the answer; a retry counts once more toward the window (bounded, accepted); `no-store` |
+| `GET /api/puzzles/{puzzleId}?lang=ru\|en` | bearer | — | `PuzzleStatus { puzzleId, solved, hints: HintTier[] }`, `HintTier { tier, productId, priceStars, owned, text: string\|null }` (`text` only when owned); Changed by RULINGS 176 (as of `9b4fd25`; docs lane `docs-errata-11`, group A): as merged (GM6s2 `2815340`), `PuzzleStatus` + `valueRun: number \| null`; for a per-player puzzle the status issues the player's `puzzle_values` row when absent and renders the owned tiers' `$code(..)` with its value, `valueRun` naming that run (never null for one; `status`, `server/src/puzzles/mod.rs:327`) | 400 `bad_request` (id or lang), 403 `not_entitled` (a paid chapter's puzzle without the chapter), 404 `not_found` | read; `private, no-store` |
+| `POST /api/puzzles/{puzzleId}/attempts` | bearer | `AttemptRequest { answer: number[] }` (≤ 16 entries, each ≤ 65535; as merged, GM6s1 `81a15b0`, RULINGS 168: ≤ 64 entries, `MAX_ANSWER_LEN`) | `AttemptResponse { correct, solved }`; Changed by RULINGS 176 (as of `9b4fd25`; docs lane `docs-errata-11`, group A): as merged (GM6s2 `2815340`), `AttemptRequest` + `run?: number` (a per-player puzzle's run; ignored for a static one) and `AttemptResponse` + `attemptsLeft: number \| null`, `spent: boolean` | 400 (shape: `answerLen` / `answerMax`), 403, 404, 429 `rate_limited` + `Retry-After`; as merged (GM6s2): 409 `value_changed` with `value: PlayerValue` (a per-player puzzle's missing, stale or spent run: not compared, not counted) | the result is a pure function of the answer; a retry counts once more toward the window (bounded, accepted); `no-store` |
 | `POST /api/invoices` (changed) | bearer | `CreateInvoiceRequest { productId }`: `chapter:<ch>` or `hint:<puzzleId>:<tier>` | as PP | as PP + 409 `hint_unavailable` (tier order, solved, paid chapter not owned) | as PP (reuse a `created` order < 1 h; as merged, LPH `d423cb3`, RULINGS 97 Q2: a new order per POST, bounded) |
 | `GET /api/entitlements` (changed) | bearer | — | chapter products only | as PP | read |
 | `GET /api/chapters/{id}` (changed) | bearer | — | `ChapterPayload` + `world: unknown` (the paid public world, or `null`) | as PP | as PP |
@@ -1513,6 +1519,14 @@ storage key (a puzzle id; absent = the puzzle's own id; in a format-1 file it is
 puzzles share a key (`check_keys` :809); `type` is an opaque label checked against `^[a-z][a-z0-9_]{0,31}$`
 (`is_type_label` :425), no longer the closed `code | order` set. A format-1 file still loads unchanged. `perPlayer` and
 `maxAttempts` stay GM6s2's (planned).
+Changed by RULINGS 176 (as of `9b4fd25`; docs lane `docs-errata-11`, group A): as merged (GM6s2 `2815340`), format 2's per-player half: an entry holds exactly one of `solution` and
+`perPlayer` (the domain, `Domain::parse`); `maxAttempts` is present exactly with `perPlayer`, `null` (no cap) or 1..9;
+format 1 holds neither ([server/src/content.rs:478-529](../server/src/content.rs#L478) `entry_answer`). A hint text may
+hold a placeholder only in a per-player puzzle, and only its own: `$code(<local>)` or `$code(<local>.<n>)`, `n` in
+1..`answerLen` (`placeholder_misfit` :534). Every puzzle, static or per-player, is refused at the load with an
+`answerLen` above `MAX_ANSWER_LEN` (64; :1040-1042). The server fixture of a format-2 chapter is
+`server/tests/fixtures/values/content-v2.json` (a static `gate`, a per-player `drawer`); the emitter still writes
+format 1 until GM6c1a marks a puzzle per-player.
 
 ```jsonc
 // server/content/puzzles/<ch>.json — emitted by the story tool for EVERY chapter (free ones included)
@@ -2152,7 +2166,7 @@ The cabinet has three dials and a dusty label. #id:ch2.archive_cabinet.c001
 | Q15 (new) | Refund policy text for consumed hints in `/terms`; an EU withdrawal-waiver checkbox (Directive 2011/83/EU art. 16(m)) [P3 §1b]; Russian consumer law (not researched) | Hints are "delivered on purchase"; admin-only refunds (Q9); no waiver checkbox; terms confirmation once per session before the first hint purchase |
 | Q16 (new) | May a failed puzzle be retried after its fail branch? | No for exploration locks (the fail branch is final for that run); linear: the story decides per puzzle |
 | Q17 (new) | Exploration help: hotspot reveal and "where next" — free, or paid? An "advanced" mode without reveal? | Reveal free; no paid exploration hints; no advanced mode |
-| Q18 (new) | Demo size: rooms per section; a map screen | 3 rooms, no map (Later). Engineering bound (r2, X9): a section has at most `RESUME_STATE_CAP` = 5,000 abstract states (about 4 rooms with 6 items); a larger area is authored as several sections. Engineering bound (r4, X15): a shortcut or a shared gift between areas makes them one section (`world/cross-section-effect`). Engineering bound (r6, X15): a walkable door between two sections is a `leave` exit and an `explore` yield, or the areas are one section (`world/cross-section-exit`) |
+| Q18 (new) | Demo size: rooms per section; a map screen | 3 rooms, no map (Later). Engineering bound (r2, X9): a section has at most `RESUME_STATE_CAP` = 5,000 abstract states (about 4 rooms with 6 items); a larger area is authored as several sections. Engineering bound (r4, X15): a shortcut or a shared gift between areas makes them one section (`world/cross-section-effect`). Engineering bound (r6, X15): a walkable door between two sections is a `leave` exit and an `explore` yield, or the areas are one section (`world/cross-section-exit`) Changed by RULINGS 175 (as of `9b4fd25`; docs lane `docs-errata-11`, group A): resolved, the default adopted by the owner (3 rooms per section, no map, a section under 5,000 states; OPEN-QUESTIONS Q18, main `967a8da`). |
 | Q19 (new) | Riddle levels / per-player randomized codes (protects a shared solution) [P1 §1b] | None in the prototype (fixed authored answers) |
 | Q20 (new) | Item icon art vs glyphs | Glyphs in the prototype; item art Later |
 

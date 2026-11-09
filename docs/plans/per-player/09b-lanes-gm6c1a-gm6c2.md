@@ -23,6 +23,10 @@
   given the world's lines, the graph's `yields` and the sources map, `:319`, `:626`, `:664`; `ChapterWorld.lines`
   typed `readonly WorldTextLine[]`, `:302`; re-located at the cut), `client/scripts/story/build.test.ts` (the format-2
   emit case). No `lint.ts`, STAGING-DSL §11, `dsl-doc.test.ts`, `world.ts` or `graph.ts`.
+  **Ruled since: RULINGS 178** — Q7' option B: the lock gains `client/scripts/story/puzzles/index.ts` (13) for one hunk,
+  `PuzzleTypeLint.domainFits?(p: P, d: Domain): string | null` beside the TypeScript `Domain` type this lane defines (§4,
+  the mark / `ServerDomain` shape; engine §7.1); GM1c shipped `PuzzleTypeLint` without it. Never beside GM7p / GM7g /
+  GM8a / GM8b on that file ([engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts)).
 - **Commits (6):** (1) `placeholders` / `renderText` / `lineChapter`: `values: render matches the server vectors`,
   `values: a malformed placeholder renders still`, `values: runs concatenate to the text`, `values: a line id gives its
   chapter` (red: module missing); (2) decode: `world: a

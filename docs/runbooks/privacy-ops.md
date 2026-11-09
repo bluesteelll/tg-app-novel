@@ -111,8 +111,8 @@ too (`privacy_draft_served_without_file_in_test` in [server/tests/it/legal.rs](.
 
 The policy promises an answer within 10 working days (152-FZ art. 20) and one month under GDPR art. 12
 ([META-PLAN.md](../META-PLAN.md) M26, the policy's rights section). What is stored, per table, is the inventory in
-META-PLAN "Privacy", plus the two refund tables of
-[0007_auto_refunds.sql](../../server/migrations/0007_auto_refunds.sql), which that inventory predates: `auto_refunds`
+META-PLAN "Privacy"; its "Refund records" row holds the two refund tables of
+[0007_auto_refunds.sql](../../server/migrations/0007_auto_refunds.sql): `auto_refunds`
 (a charge's automatic refund, found through its payment) and `unrecorded_refunds` (a refund of a charge the database
 does not hold, with the payer's id). The per-player puzzle codes are in `puzzle_values`
 ([0008_puzzle_values.sql](../../server/migrations/0008_puzzle_values.sql)): per per-player puzzle, the code drawn for

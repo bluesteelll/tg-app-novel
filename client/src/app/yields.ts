@@ -29,7 +29,7 @@ import type { LoadedChapter, Result } from '../story/catalog.ts';
 import type { RunnerError, StoryRunner } from '../story/runner.ts';
 import type { KnotName, PropPlacement, PuzzleLocalId, SectionId, StagingSnapshot, VarName, YieldCommand } from '../story/staging.ts';
 import type { TelegramClient } from '../telegram/index.ts';
-import type { ExploreLayerProps, ExploreViewStore } from '../ui/explore-view.svelte.ts';
+import type { ExploreLayerActions, ExploreLayerProps, ExploreViewStore } from '../ui/explore-view.svelte.ts';
 import { backScreen } from '../ui/puzzle-view.svelte.ts';
 import type { PuzzleFrameView, PuzzleHostCallbacks, PuzzleHostProps, PuzzleView } from '../ui/puzzle-view.svelte.ts';
 import type { Screens, ScreensView } from '../ui/screens.ts';
@@ -102,8 +102,13 @@ export type YieldsHost = {
   runner(): Pick<StoryRunner, 'enter'> | null;
   /** A world line in the UI language (the chapter's tables). */
   text(w: WorldText): string;
-  /** A batch the yields built (a room, a close-up) through `ensure`, the scene and the audio; resolves at its end. */
-  apply(visual: readonly VisualCommand[], audio: readonly AudioCommand[]): Promise<void>;
+  /**
+   * A batch the yields built (a room, a close-up) through `ensure`, the scene and the audio; resolves at its end.
+   * `started` runs once when the batch starts, after its loads and before its audio, an empty batch included: where a
+   * cue that goes with the batch's transition is emitted (engine plan GM3w). A batch whose session ended during its
+   * loads never starts, so its `started` never runs.
+   */
+  apply(visual: readonly VisualCommand[], audio: readonly AudioCommand[], started?: () => void): Promise<void>;
   bgm(): StagingSnapshot['bgm'];
   /** After `runner.enter`: the story's next step, shown (and its own yield, if it stops at one). */
   continueStory(): Promise<void>;
@@ -117,10 +122,9 @@ export type YieldsHost = {
   queue(fn: () => Promise<void>): Promise<void>;
 };
 
-/** The explore layer's callbacks (App renders the layer with them). */
-export type ExploreLayerActions = Pick<ExploreLayerProps, 'ontap' | 'oninventory' | 'onreveal' | 'onread' | 'oninsert' | 'onclose'>;
-
 export interface Yields {
+  /** A yield step's pictures are loaded and its transition starts; `onYield` follows once the step is on screen. */
+  ahead(y: YieldCommand): void;
   /** A `yield` step is on screen, after its batch and its autosave. */
   onYield(y: YieldCommand): Promise<void>;
   /** D13: the chapter's first line is shown: the lazy chunks its world needs are prefetched (not awaited). */
@@ -612,6 +616,7 @@ export function createYields(h: YieldsHost): Yields {
       hintTiers: p.hintTiers,
       ui: null,
       loadFailed: false,
+      retrying: false,
     };
     puzzle.frame = frame;
     const overlay = backScreen(frame);
@@ -794,6 +799,10 @@ export function createYields(h: YieldsHost): Yields {
   };
 
   return {
+    ahead() {
+      // Nothing to get ready yet: GameSession calls it so GM3s can load the yield's chunks during the transition
+      // without another edit of game.ts (engine plan GM3w).
+    },
     async onYield(y) {
       if (dead) {
         return;

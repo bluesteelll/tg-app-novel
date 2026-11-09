@@ -11,10 +11,12 @@
    commit, so `e2e full` is never red at a commit boundary. Recommendation: yes, with the light story workflow (one
    writer pass, one mechanical verifier); OQ1 / OQ7 defaults until the owner answers.
    **Ruled: RULINGS 172** — accepted (the light story workflow); OQ1 / OQ7 defaults until the owner answers OPEN-QUESTIONS Q58.
+   Changed by RULINGS 175 (as of `9b4fd25`; docs lane `docs-errata-11`, group A): the owner answered Q58 with the defaults (OQ1-OQ7 resolved, final; [§13](13-owner-questions.md#13-owner-questions-values-only-each-with-a-default)).
 3. **server-dev for GM6c4 / GM6d2 e2e:** the prebuilt `bin/server-dev-*.exe` must be built from GM6s2's merge or later
    (values routes, format 2). Recommendation: build it at the GM6s2 merge, as for LPO / LPH; GM6k's own e2e uses a
    `server-dev` built from the lane.
    **Ruled: RULINGS 172** — the values-route `server-dev` is built at GM6s2's merge.
+   **Ruled since: RULINGS 176** — closed: the values-route `server-dev` was built at GM6s2's merge (`bin/server-dev-2815340.exe`, main `2815340`; it serves the values and restart routes).
 4. **Lane count and sizes:** twelve lanes (round 1: seven; round 2: eleven): GM6s split into GM6s1 (9 files) and
    GM6s2 (16 files, one contract unit: the byte pins tie `dto.rs` to the four client api files, W3); GM6c1 into GM6c1a /
    GM6c1b (13 in round 5: `lint.ts` out, `mechanics/{core,index}.ts` and `world.test.ts` in); GM6c2 into GM6c2 / GM6c3 /
