@@ -101,6 +101,8 @@ const PURE_WORLD_FILES = [
   'puzzles/rules/index.ts',
   'puzzles/rules/code.ts',
   'puzzles/rules/order.ts',
+  'puzzles/play/code.ts',
+  'puzzles/play/order.ts',
   'explore/state.ts',
   'explore/reduce.ts',
   'explore/project.ts',
@@ -137,6 +139,8 @@ function isPureWorld(file: string): boolean {
     file.startsWith('puzzles/rules/') ||
     // The mechanics engine (engine plan §3.5): both halves run in the build's proofs as they run in play.
     file.startsWith('mechanics/') ||
+    // The puzzle types' play halves (engine plan §3.5, §7.1): pure as their data halves.
+    file.startsWith('puzzles/play/') ||
     (PURE_WORLD_FILES as readonly string[]).includes(file) ||
     PURE_WORLD_DEPS.has(file)
   );
@@ -156,13 +160,21 @@ function lazyDirOf(file: string): string | undefined {
 }
 
 /**
- * The rules half of the mechanics engine (engine plan §3.3, §3.5: the reducer's rules, the successor relation, the
- * section key, the searches) is explore-ui chunk code. A value reference to it comes only from inside it and from its
- * listed importers; `import()` counts too, since the budget's engine walk follows dynamic imports and a rules chunk an
- * engine module imports would be counted in the engine row. `import type` loads nothing and is allowed anywhere.
+ * The chunk halves of the engine: the mechanics rules (engine plan §3.3, §3.5: the reducer's rules, the successor
+ * relation, the section key, the searches) are explore-ui chunk code, and the puzzle types' play halves (§7.1) are
+ * their type UI's chunk code. A value reference into one comes only from inside its directory and from its listed
+ * importers (a trailing `/` names a directory); `import()` counts too, since the budget's engine walk follows dynamic
+ * imports and a chunk an engine module imports would be counted in the engine row. `import type` loads nothing and is
+ * allowed anywhere.
  */
-const RULES_DIR = 'mechanics/rules/';
-const RULES_IMPORTERS: readonly string[] = ['explore/controller.ts'];
+const RULES_LAZY: ReadonlyArray<{ readonly dir: string; readonly importers: readonly string[] }> = [
+  { dir: 'mechanics/rules/', importers: ['explore/controller.ts'] },
+  { dir: 'puzzles/play/', importers: ['puzzles/ui/'] },
+];
+
+function isRulesImporter(file: string, importers: readonly string[]): boolean {
+  return importers.some((i) => (i.endsWith('/') ? file.startsWith(i) : file === i));
+}
 
 /** The only caller of `runner.enter` (PZ "Modules": `yields.ts` routes every yield and calls `project` first). */
 const RUNNER_ENTRY_FILE = 'app/yields.ts';
@@ -633,11 +645,13 @@ function checkImport(ctx: Ctx, node: ts.Node): void {
     if (isStatic && lazy !== undefined && !ctx.file.startsWith(lazy)) {
       report(ctx, 'lazy-ui', node);
     }
-    // Any value reference into the rules half, `import()` included, from outside it and its importers. The trailing
+    // Any value reference into a chunk half, `import()` included, from outside it and its importers. The trailing
     // slash makes a bare directory (`../mechanics/rules`, which resolves to its index.ts) match, and a sibling such as
     // `mechanics/rulesets.ts` not.
-    if (`${target}/`.startsWith(`/src/${RULES_DIR}`) && !ctx.file.startsWith(RULES_DIR) && !RULES_IMPORTERS.includes(ctx.file)) {
-      report(ctx, 'rules-lazy', node);
+    for (const { dir, importers } of RULES_LAZY) {
+      if (`${target}/`.startsWith(`/src/${dir}`) && !ctx.file.startsWith(dir) && !isRulesImporter(ctx.file, importers)) {
+        report(ctx, 'rules-lazy', node);
+      }
     }
   }
   if (spec === 'svelte' || spec.startsWith('svelte/') || /\.svelte(?:\.ts)?$/.test(spec)) {
@@ -1751,6 +1765,8 @@ const RED: Record<RuleId, readonly Fixture[]> = {
     ['world/decode.ts', "import { z } from 'zod';"],
     // A mechanics file no list names: the directory alone makes it pure.
     ['mechanics/rules/writer.ts', 'const t = Date.now();'],
+    // A type's play half no list names: the directory alone makes it pure.
+    ['puzzles/play/path.ts', 'const t = Date.now();'],
   ],
   'lazy-ui': [
     ['app/yields.ts', "import CodeLock from '../puzzles/ui/CodeLock.svelte';"],
@@ -1781,6 +1797,9 @@ const RED: Record<RuleId, readonly Fixture[]> = {
     // A bare directory resolves to its index.ts, so the rules registry would load unseen (GM1a review M2).
     ['story/chapters.ts', "import { MECHANIC_RULES } from '../mechanics/rules';"],
     ['mechanics/data/index.ts', "import { MECHANIC_RULES } from '../rules';"],
+    // A type's play half is its UI chunk's: the engine never loads one, statically or by `import()`.
+    ['puzzles/session.ts', "import { CODE_PLAY } from './play/code.ts';"],
+    ['app/yields.ts', "const m = import('../puzzles/play/order.ts');"],
   ],
   'runner-enter': [
     ['app/game.ts', 'runner.enter(k, p);'],
@@ -1906,6 +1925,12 @@ const ALLOW: ReadonlyArray<readonly [RuleId, readonly Fixture[]]> = [
       ['explore/reconcile.ts', "import type { SearchResult } from '../mechanics/rules/search.ts';\ntype D = import('../mechanics/rules/core.ts').Draft;"],
       // A sibling whose name only shares the directory's prefix is not the rules half.
       ['story/chapters.ts', "import { x } from '../mechanics/rulesets.ts';"],
+      // A type UI loads its play half; the play halves among themselves and with the data halves.
+      ['puzzles/ui/CodeLock.svelte', "<script lang=\"ts\">\n  import { CODE_PLAY } from '../play/code.ts';\n</script>"],
+      ['puzzles/play/order.ts', "import { shapeProblem } from '../rules/index.ts';\nimport { x } from './code.ts';"],
+      // Erased: a type import loads nothing; a sibling sharing the directory's prefix is not a play half.
+      ['puzzles/session.ts', "import type { X } from './play/code.ts';"],
+      ['puzzles/session.ts', "import { x } from './playback.ts';"],
     ],
   ],
   [
