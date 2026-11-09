@@ -25,7 +25,7 @@ use ts_rs::TS;
 
 use crate::catalog::{ANN, T0, bearer, own, state_with_users};
 use crate::common;
-use crate::content::{FixtureCopy, state_on};
+use crate::content::{FixtureCopy, renamed_copy, state_on};
 use crate::stats::{code_identifiers, rust_files};
 
 /// A second player.
@@ -787,6 +787,38 @@ async fn card_puzzle_no_hints_condition() {
             vec![achievement("drawer_no_hints", T0, true)],
         ),
     ));
+    report(&failures);
+}
+
+/// A renamed puzzle's solve counts on the card (per-player §3.8): BEN solved the drawer, without a hint, under
+/// `ch1.drawer`; the release that renames it to `ch1.desk` (keyed `ch1.drawer`, and `drawer_no_hints` naming
+/// `ch1.desk`) reads that row through the key and lists `drawer_no_hints` as new.
+#[tokio::test]
+async fn card_counts_a_renamed_puzzle_solved() {
+    let copy = renamed_copy().await;
+    let (started, _db) = state_on(copy.path()).await;
+    let st = match started {
+        Ok(st) => st.with_clock(Arc::new(FixedClock(T0))),
+        Err(e) => panic!("the renamed copy: expected Ok, got {e}"),
+    };
+    st.repo
+        .upsert_user(UserId(BEN), "Ben", None, T0)
+        .await
+        .unwrap();
+    solved(&st, BEN, "ch1.drawer", &[]).await;
+    let failures: Vec<String> = expect_card(
+        "BEN: solved ch1.drawer without a hint, served as ch1.desk",
+        &post_card(&st, Some(BEN), "manor").await,
+        &card(
+            "manor",
+            0,
+            &[],
+            vec![],
+            vec![achievement("drawer_no_hints", T0, true)],
+        ),
+    )
+    .into_iter()
+    .collect();
     report(&failures);
 }
 

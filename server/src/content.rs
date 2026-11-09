@@ -394,6 +394,8 @@ struct WorldProbe {
 }
 
 /// `puzzles/<ch>.json` as the story tool writes it (PUZZLES-PLAN "Server formats"); the fixture is the contract.
+/// Format 1 is that entry exactly; format 2 (per-player §3.3) adds the optional `key`. The story tool writes the
+/// lowest format that expresses the chapter.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct PuzzleFile {
@@ -405,9 +407,12 @@ struct PuzzleFile {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct PuzzleEntry {
-    // Checked, not kept: the answer check is type-agnostic, but an unknown type is a producer the server predates.
+    // Checked against the label grammar, not kept: the answer check is type-agnostic, so the type is an opaque label
+    // and a new client type needs no server edit (per-player §3.3).
     #[serde(rename = "type")]
-    _kind: PuzzleKind,
+    kind: String,
+    /// Format 2: the storage key, when it is not the puzzle's own id (a renamed or moved puzzle).
+    key: Option<String>,
     answer_len: usize,
     answer_max: u16,
     solution: Vec<u16>,
@@ -415,12 +420,10 @@ struct PuzzleEntry {
     hints: Vec<Localized>,
 }
 
-/// The puzzle types of the client's rules (`client/src/puzzles/rules/`).
-#[derive(Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum PuzzleKind {
-    Code,
-    Order,
+/// `^[a-z][a-z0-9_]{0,31}$`: a puzzle type label (per-player §3.3), the grammar of an ending name, held apart because
+/// the doc of [`is_ending_name`] names who shares that one.
+fn is_type_label(s: &str) -> bool {
+    s.len() <= 32 && is_local_id(s)
 }
 
 /// The server-only keys of a puzzle, which a public world must not carry (PUZZLES-PLAN X5, X7).
@@ -795,7 +798,34 @@ async fn load_puzzles(dir: &Path, stories: &[StoryDef]) -> Result<Vec<PuzzleDef>
             load_puzzle_file(&path, &chapter.id, &mut puzzles).await?;
         }
     }
+    check_keys(&puzzles_dir, &puzzles)?;
     Ok(puzzles)
+}
+
+/// The key rules over the whole content (per-player §3.3, §3.8: one key per puzzle, one puzzle per key): no two
+/// puzzles share a key, and no key is another live puzzle's id (its rows would meet that puzzle's). Run after every
+/// file, so a key naming a puzzle of a later chapter is seen; a refusal names the file of the puzzle that breaks it
+/// (the later holder of a shared key), with ids and keys only.
+fn check_keys(puzzles_dir: &Path, puzzles: &[PuzzleDef]) -> Result<(), ContentError> {
+    let ids: HashSet<&str> = puzzles.iter().map(|p| p.id.0.as_str()).collect();
+    let mut holders: HashMap<&str, &str> = HashMap::new();
+    for p in puzzles {
+        let file = || puzzles_dir.join(format!("{}.json", p.chapter.0));
+        let (id, key) = (p.id.0.as_str(), p.key.0.as_str());
+        if let Some(first) = holders.insert(key, id) {
+            return Err(invalid(
+                &file(),
+                format!("puzzle {id}: key {key} is also the key of {first}"),
+            ));
+        }
+        if key != id && ids.contains(key) {
+            return Err(invalid(
+                &file(),
+                format!("puzzle {id}: key {key} is the id of the live puzzle {key}"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 async fn load_puzzle_file(
@@ -804,8 +834,11 @@ async fn load_puzzle_file(
     puzzles: &mut Vec<PuzzleDef>,
 ) -> Result<(), ContentError> {
     let file: PuzzleFile = parse(path, &read_text(path).await?)?;
-    if file.format != 1 {
-        return Err(invalid(path, format!("format {}, expected 1", file.format)));
+    if !(1..=2).contains(&file.format) {
+        return Err(invalid(
+            path,
+            format!("format {}, expected 1 or 2", file.format),
+        ));
     }
     if file.chapter_id != chapter.0 {
         return Err(invalid(path, format!("chapterId is not {}", chapter.0)));
@@ -814,7 +847,24 @@ async fn load_puzzle_file(
         let Some(id) = PuzzleId::parse(&format!("{}.{local}", chapter.0)) else {
             return Err(invalid(path, format!("{local:?} is not a puzzle id")));
         };
-        let rule = if entry.answer_len == 0 || entry.solution.len() != entry.answer_len {
+        let key = match entry.key {
+            None => PuzzleKey(id.0.clone()),
+            Some(_) if file.format == 1 => {
+                return Err(invalid(
+                    path,
+                    format!("puzzle {}: key needs format 2", id.0),
+                ));
+            }
+            Some(raw) => PuzzleKey::parse(&raw).ok_or_else(|| {
+                invalid(
+                    path,
+                    format!("puzzle {}: key {raw:?} is not a puzzle id", id.0),
+                )
+            })?,
+        };
+        let rule = if !is_type_label(&entry.kind) {
+            Some("the type is outside the label grammar")
+        } else if entry.answer_len == 0 || entry.solution.len() != entry.answer_len {
             Some("the solution's length must be answerLen, at least 1")
         } else if entry.solution.iter().any(|&v| v > entry.answer_max) {
             Some("a solution value is above answerMax")
@@ -833,7 +883,7 @@ async fn load_puzzle_file(
             return Err(invalid(path, format!("puzzle {}: {rule}", id.0)));
         }
         puzzles.push(PuzzleDef {
-            key: PuzzleKey(id.0.clone()),
+            key,
             id,
             chapter: chapter.clone(),
             answer_len: entry.answer_len,
