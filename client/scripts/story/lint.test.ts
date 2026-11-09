@@ -63,7 +63,7 @@ test('lint: tag/syntax red on fixture', () => {
 
 test('lint: tag/unknown-kind red on fixture', () => {
   // Line 4: a tag after a closing `}` is a tag of the compiled story too.
-  const f = lintSources(story(['# fx: boom', 'Text. #id:ch1.start.a001', '{ g_trust:', '    In. #id:ch1.start.a002', '} # fx: boom']));
+  const f = lintSources(story(['# shot: cafe', 'Text. #id:ch1.start.a001', '{ g_trust:', '    In. #id:ch1.start.a002', '} # shot: cafe']));
   expectAt(f, 'tag/unknown-kind', [0, 4]);
 });
 

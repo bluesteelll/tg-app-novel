@@ -108,6 +108,12 @@ through `oncue` and never through the root listener (W5).
   `pointer-events: none` -> red, the tap is swallowed). verify at GM3s's cut: Svelte 5's transitions in the vitest
   environment (they need `Element.animate`); fallback: the e2e asserts the layer root is still attached >= 100 ms after
   the hide.
+  Changed by RULINGS 186 (as of `837b1ed`; docs lane `docs-errata-12`, group A): as merged (GM3w `508bd36`, cut D4),
+  the wrapper carries its own class, `frame-layer` (`client/src/ui/App.svelte:95`; `.layer` is shared by every App
+  layer), with `.frame-layer { pointer-events: none; }` (`:292-294`); `.host-failed` (`:336`) and PuzzleHost's `.frame`
+  (`client/src/ui/puzzles/PuzzleHost.svelte:129`) take `pointer-events: auto`. The comment above the rule
+  (`App.svelte:290-291`) gives a reason the frame layer's `{#if}` guard rules out today; the rule serves this outro tap
+  (GM3w review M1, carried to GM3s, a comment only).
 - **The catcher (R17):** `<div class="bare" data-cue="bare-art">` is the first child of `.room`, `inset: 0`, under the
   hotspot buttons; it emits `ui:bare-art` with the point and calls `ondeselect`; it dispatches no action. Tests
   `explore: a tap on bare art emits one bare-art cue and no action`, `explore: a tap on a hotspot edge dispatches the
@@ -222,6 +228,12 @@ maximum (RULINGS 114, 122). The haptic column adds touch feedback **on top of** 
 Value spans and code labels are per-player's (`ui/value-motion.ts`, the executor's label crossfade; R-E3 withdrawn in
 per-player round 2): their motion is theirs, gated with this file's `MIN_VISIBLE_MS` and `keyframesVisible` (E-P8).
 
+- Changed by RULINGS 193 (as of `837b1ed`; docs lane `docs-errata-12`, group A): two rows of the table ship as
+  recorded deviations, visual CLAIM defaults (GM3m `a3f0678`, triage r1 M4, never blocking): `fact:abandoned:added`
+  plays `iris-back` on target `box`, not the frame's `iris` out (`client/src/cues/stage/motions.ts:157`; the frame may
+  be gone at a flush, and `puzzle:closed` already irises it); `fact:fired:added` / `:removed` play `pulse` /
+  `pulse-back` on `box` only (`motions.ts:147-148`): the room triggers' `sweep` has no field in `MotionSpec`, which
+  varies a row by cause (`byCause`) only.
 - **Fallback:** a cue whose box cannot be resolved plays its preset on the stage centre, still visible. Round 10
   (critique_engine_r9 W1, W2; restated, round 9's "not a path a designed cue takes" was false on two paths): a
   fallback is **a counted defect** (`fallbacks()`, `data-cue-fallbacks`, §8.1 point 10), and the designed cues avoid

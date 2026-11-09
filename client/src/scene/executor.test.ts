@@ -402,6 +402,18 @@ const cg = (c: string | null, t: 'fade' | 'cut' = 'fade', ms = 500): VisualComma
   ms,
 });
 const wait = (ms: number): VisualCommand => ({ kind: 'wait', ms });
+const face = (c: string, e: string, ms: number | null = null): VisualCommand => ({
+  kind: 'face',
+  char: c as CharId,
+  expr: e as ExprId,
+  ms,
+});
+/** A camera move as the parser types it (`ms: null`: the move's default). */
+const camera = (move: Extract<VisualCommand, { kind: 'cam' }>['cam'], ms: number | null = null): VisualCommand => ({
+  kind: 'cam',
+  cam: move,
+  ms,
+});
 const hide = (c: string, t: 'fade' | 'cut' = 'fade', ms = 300): VisualCommand => ({
   kind: 'hide',
   char: c === 'all' ? 'all' : (c as CharId),
@@ -1491,4 +1503,179 @@ test('executor: destroy leaves no anchor alive', async () => {
   // No anchor, inner node (depth, motion, content) or sprite outlives the executor (plan 08 row 6).
   expect(h.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
   expect(h.registry.stats().live).toBe(0);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The shots plan's SH1 kinds on today's stage: the cut verb, a face, the camera held in the snapshot.
+
+test('executor: a bg cut replaces the shot at once', async () => {
+  const h = harness();
+  await h.ex.apply([bg('cafe', 'cut')], NOW);
+  h.log.length = 0;
+  const cut = track(h.ex.apply([bg('street', 'cut')], NOW));
+  await flush();
+  // No time passed: the batch ended without a timeline, the old shot gone with its anchor.
+  expect(cut.done).toBe(true);
+  expect(h.ex.stats().activeTimelines).toBe(0);
+  expect(h.live('bg').map((x) => x.key)).toEqual(['street']);
+  expect(h.log.filter((x) => /^(anchor|create|destroy|drop):/.test(x))).toEqual([
+    'destroy:bg:cafe',
+    'drop:bg/cafe',
+    'anchor:bg:bg/street',
+    'create:bg:street',
+  ]);
+  expect(h.releasedOf('bg/cafe')).toBe(1);
+  h.ex.destroy();
+});
+
+test('executor: a face changes the expression of a character on stage and nothing else', async () => {
+  const h = harness();
+  await h.ex.apply([bg('cafe', 'cut'), show('ally', 'neutral', 'left', 'cut'), show('stranger', 'serious', 'right', 'cut')], NOW);
+  const shown = [...h.live('bg'), ...h.inGroup('stranger')];
+  h.log.length = 0;
+  const swap = track(h.ex.apply([face('ally', 'worried')], NOW));
+  // The logical stage at batch start: ally's expression changed, her slot and the z-order kept.
+  expect(h.ex.snapshot().chars).toEqual([
+    { char: 'ally', expr: 'worried', at: 'left' },
+    { char: 'stranger', expr: 'serious', at: 'right' },
+  ]);
+  await flush();
+  // The expression crossfade of a show: the new sprite over the old one in ally's group, 200 ms by default.
+  advance(150);
+  await flush();
+  expect(swap.done).toBe(false);
+  expect(h.inGroup('ally').map((x) => x.key)).toEqual(['ally', 'ally']);
+  advance(100);
+  await flush();
+  expect(swap.done).toBe(true);
+  expect(h.inGroup('ally').length).toBe(1);
+  expect(h.releasedOf('char/ally/neutral')).toBe(1);
+  // Nothing else moved: the bg and the stranger keep their sprites, no anchor or group was made or dropped.
+  expect([...h.live('bg'), ...h.inGroup('stranger')]).toEqual(shown);
+  expect(h.log.filter((x) => /^(anchor|group|drop):/.test(x))).toEqual([]);
+  expect(h.log.filter((x) => /^(create|destroy):/.test(x))).toEqual(['create:chars:ally', 'destroy:chars:ally']);
+  // A face of a character not on stage adds no one.
+  await h.ex.apply([hide('stranger', 'cut')], NOW);
+  h.log.length = 0;
+  await h.ex.apply([face('stranger', 'serious')], NOW);
+  expect(h.ex.snapshot().chars).toEqual([{ char: 'ally', expr: 'worried', at: 'left' }]);
+  expect(h.inGroup('stranger')).toEqual([]);
+  expect(h.log.filter((x) => /^(anchor|group|create|destroy|drop):/.test(x))).toEqual([]);
+  h.ex.destroy();
+});
+
+test('executor: a cam move persists in the snapshot until the next cut', async () => {
+  const h = harness();
+  await h.ex.apply([bg('cafe', 'cut'), show('ally', 'neutral', 'left', 'cut')], NOW);
+  const push = { kind: 'push', to: 'ally' as CharId, z: 120 } as const;
+  await h.ex.apply([camera(push)], NOW);
+  expect(h.ex.snapshot().cam).toEqual(push);
+  // A show, a CG and a wait keep the framing; nothing draws it yet (the shots plan's SH6).
+  await h.ex.apply([show('stranger', 'serious', 'right', 'cut')], NOW);
+  await h.ex.apply([cg('letter', 'cut')], NOW);
+  await h.ex.apply([wait(100)], { instant: true });
+  expect(h.ex.snapshot().cam).toEqual(push);
+  // A pull is the rest framing: the key is absent, as in every stage without a move.
+  await h.ex.apply([camera({ kind: 'pull' })], NOW);
+  expect('cam' in h.ex.snapshot()).toBe(false);
+  // A restored stage keeps its framing (the copy path) until a bg cut; a bg and a cam in one batch set the new one.
+  const pan = { kind: 'pan', to: 'left' } as const;
+  await h.ex.restore({ ...h.ex.snapshot(), cam: pan });
+  expect(h.ex.snapshot().cam).toEqual(pan);
+  await h.ex.apply([cg('letter', 'cut')], NOW);
+  expect(h.ex.snapshot().cam).toEqual(pan);
+  await h.ex.apply([bg('street', 'cut')], NOW);
+  expect('cam' in h.ex.snapshot()).toBe(false);
+  await h.ex.apply([bg('cafe', 'cut'), camera(push)], NOW);
+  expect(h.ex.snapshot().cam).toEqual(push);
+  h.ex.destroy();
+});
+
+test('executor: a scene resets the camera', async () => {
+  const h = harness();
+  await h.ex.apply([bg('cafe', 'cut')], NOW);
+  const push = { kind: 'push', to: 'center', z: 110 } as const;
+  await h.ex.apply([camera(push)], NOW);
+  expect(h.ex.snapshot().cam).toEqual(push);
+  await h.ex.apply([scene('street', 'cut')], NOW);
+  expect('cam' in h.ex.snapshot()).toBe(false);
+  // A scene with a cam: the scene resets, then the batch's move is the new framing.
+  await h.ex.apply([scene('cafe', 'cut'), camera({ kind: 'pan', to: 'right' })], NOW);
+  expect(h.ex.snapshot().cam).toEqual({ kind: 'pan', to: 'right' });
+  h.ex.destroy();
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Item 2 (b) of the shots plan's SH1 (GM6a's cut Q6, RULINGS 196, 198 W2, 200): a build that throws after it made an
+// anchor or a sprite leaves nothing it made untracked, and no kept anchor tracks a view that is gone.
+
+/** `adapter.sprite` throws for one asset id (keyed on the texture, so a crossfade's other sprites do not shift it). */
+function throwOn(h: ReturnType<typeof harness>, id: string): void {
+  const sprite = h.adapter.sprite.bind(h.adapter);
+  h.adapter.sprite = (layer, tex, g) => {
+    if (tex.id === id) {
+      throw new Error(`stage: a bug in the build of ${id}`);
+    }
+    return sprite(layer, tex, g);
+  };
+}
+
+/** Applies a batch whose build throws: the chain's catch logs it once and the apply still settles. */
+async function applyFailing(h: ReturnType<typeof harness>, cmds: readonly VisualCommand[]): Promise<void> {
+  const spy = spyErrors();
+  const applied = track(h.ex.apply(cmds, NOW));
+  await flush();
+  spy.restore();
+  expect(spy.errors.map((e) => e[0])).toEqual(['scene: batch failed']);
+  expect(applied.done).toBe(true);
+}
+
+test('executor: a build whose view creation throws after the anchor leaves no anchor in its layer', async () => {
+  // (a) A backdrop: the bg's anchor is made, then its sprite throws.
+  const a = harness();
+  throwOn(a, 'bg/cafe');
+  await applyFailing(a, [bg('cafe', 'crossfade', 500)]);
+  expect(a.anchors('bg').map((x) => x.key)).toEqual([]);
+  a.ex.destroy();
+  expect(a.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
+
+  // (b) Two new prop anchors, the second one's sprite throws: neither anchor nor the first sprite stays.
+  const b = harness();
+  await b.ex.apply([bg('room', 'cut')], NOW);
+  throwOn(b, 'prop/key');
+  await applyFailing(b, [props(['lamp', LAMP, 'room.lamp'], ['key', KEY, 'room.key'])]);
+  expect(b.anchors('props').map((x) => x.key)).toEqual([]);
+  expect(b.live('props')).toEqual([]);
+  b.ex.destroy();
+  expect(b.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
+
+  // (c) A kept anchor gains a patch, then its next patch throws: the anchor keeps only what it showed.
+  const c = harness();
+  await c.ex.apply([bg('room', 'cut'), props(['drawer', DRAWER, 'room.drawer'])], NOW);
+  const drawer = c.anchors('props');
+  throwOn(c, 'prop/key');
+  await applyFailing(c, [
+    bg('room', 'crossfade', 300),
+    props(['drawer', DRAWER, 'room.drawer'], ['glint', GLINT, 'room.drawer', 'patch'], ['key', KEY, 'room.drawer', 'patch']),
+  ]);
+  expect(c.live('props').map((x) => x.key)).toEqual(['drawer']);
+  expect(c.anchors('props')).toEqual(drawer);
+  expect(() => c.ex.destroy()).not.toThrow();
+  expect(c.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
+
+  // (d) A kept anchor whose base swaps (its old image leaves) and whose new image throws, after another kept anchor
+  // gained a patch: the leaving view is not tracked once it is gone, the other anchor's new sprite is live and tracked.
+  const d = harness();
+  await d.ex.apply([bg('room', 'cut'), props(['lamp', LAMP, 'room.lamp'], ['drawer', DRAWER, 'room.drawer'])], NOW);
+  const kept = d.anchors('props');
+  throwOn(d, 'prop/drawer_open');
+  await applyFailing(d, [
+    bg('room', 'crossfade', 300),
+    props(['lamp', LAMP, 'room.lamp'], ['glint', GLINT, 'room.lamp', 'patch'], ['drawer_open', DRAWER_OPEN, 'room.drawer']),
+  ]);
+  expect(d.ex.propRects().map((r) => r.prop)).toEqual(['lamp', 'glint']);
+  expect(d.live('props').map((x) => x.key)).toEqual(['lamp', 'glint']);
+  expect(d.anchors('props')).toEqual(kept);
+  expect(() => d.ex.destroy()).not.toThrow();
+  expect(d.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
 });

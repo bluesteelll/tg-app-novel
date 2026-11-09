@@ -1,15 +1,17 @@
 # Staging DSL — the ink tag language
 
-Version: **DSL v2** (prototype). Status: DSL v1 was designed in [PROTOTYPE-PLAN.md](PROTOTYPE-PLAN.md) and
+Version: **DSL v3** (prototype). Status: DSL v1 was designed in [PROTOTYPE-PLAN.md](PROTOTYPE-PLAN.md) and
 implemented by lanes L3a (parser + lint) and L3b (story build). DSL v2 adds the `puzzle` / `explore` yield tags and
-the narrowed `-> DONE` ([PUZZLES-PLAN.md](PUZZLES-PLAN.md), lane LW1). §9 also describes the story list
+the narrowed `-> DONE` ([PUZZLES-PLAN.md](PUZZLES-PLAN.md), lane LW1). DSL v3 adds the shot kinds `face`, `cam`,
+`think`, `anim`, `fx` and makes `cut` the default `t` of `bg` (the shots plan, lane SH1); the ink subset (§10) is
+unchanged. §9 also describes the story list
 `story/stories.json` ([STORIES-PLAN.md](STORIES-PLAN.md), lane LS1); the tag language is unchanged. §9 also describes
 the story meta file `story/meta.json` ([META-PLAN.md](META-PLAN.md), lane LM1); the tag language is unchanged. The
 rules marked "from LW3" in §8 and §11 are the contract lane LW3 implements.
 
-Changed by the shots plan (adopted 2026-11-09, RULINGS 158; planned, not built): SH1, SH2 and SH3b add the shot tags,
-typed commands, lints and flow analysis, and SH12a takes the sprite kinds `show` / `hide` out; this file changes with
-those lanes, together with the parser it documents —
+Changed by the shots plan (adopted 2026-11-09, RULINGS 158): SH1 added the shot tags and typed commands (v3, drawn by
+later lanes); planned, not built: SH2 and SH3b add lints and flow analysis, and SH12a takes the sprite kinds `show` /
+`hide` out; this file changes with those lanes, together with the parser it documents —
 [shots §3 The story DSL](plans/shots/03-story-dsl.md#3-the-story-dsl),
 [shots §9.13 SH12a `sprites-out`](plans/shots/09e-lanes-sh11-sh12b.md#913-sh12a-sprites-out-client-the-kinds-atomic-rev-4-split-w6).
 
@@ -36,6 +38,7 @@ ink line + its tags ──parseTags──> { lineId, commands: StagingCommand[] 
      scene controller     audio manager           overlay (Svelte)
   bg / scene / show /     bgm / sfx            text, speaker plate, choices
   hide / cg / wait                              (reads lineId + speaker)
+  face / cam / anim / fx
 ```
 
 - The story never touches Pixi or audio; the scene and the overlay never read ink variables (principle 7). The only
@@ -75,7 +78,7 @@ Rules:
 |---|---|
 | Case | Kinds, ids and option names are lowercase ASCII. `# BG: Cafe` → `tag/syntax`. |
 | Numbers | Integers only, no units, no decimals: `ms=500`, `vol=80`. Ranges are per tag (§6). |
-| Positional args | Exact count per tag; missing → `tag/missing-arg`, extra → `tag/bad-arg`. |
+| Positional args | Exact count per tag; missing → `tag/missing-arg`, extra → `tag/bad-arg`. A kind with none (`think`) is written bare or with an empty colon: `think` and `think:` are the same tag. |
 | Options | Each at most once (`tag/bad-arg: duplicate option`); unknown option → `tag/bad-arg`. Order is free. Options are optional, except `then` of `puzzle` (§6): missing → `tag/missing-arg`. |
 | Literal only | A `{` anywhere in a tag → `tag/dynamic` (source lint). |
 | Reserved words | `all` (hide), `off` (cg), `stop` (bgm) are not valid asset ids (catalog lint). |
@@ -227,7 +230,7 @@ preload-visible).
 | Kind | Syntax | Consumer | Assets | Typed command `kind` |
 |---|---|---|---|---|
 | `id` | `id:<lineId>` | overlay / i18n / saves | — | (not a command: `ParsedTags.lineId`) |
-| `bg` | `bg:<bg> [t=crossfade\|fade\|cut] [ms=N]` | scene | `bg/<bg>` | `bg` |
+| `bg` | `bg:<bg> [t=cut\|crossfade\|fade] [ms=N]` | scene | `bg/<bg>` | `bg` |
 | `scene` | `scene:<bg> [t=fade\|cut] [ms=N]` | scene | `bg/<bg>` | `scene` |
 | `show` | `show:<char> <expr> [at=left\|center\|right] [t=fade\|cut] [ms=N]` | scene | `char/<char>/<expr>` | `show` |
 | `hide` | `hide:<char>\|all [t=fade\|cut] [ms=N]` | scene | — | `hide` |
@@ -235,6 +238,11 @@ preload-visible).
 | `bgm` | `bgm:<track>\|stop [fade=N] [vol=N]` | audio | `bgm/<track>` | `bgm` |
 | `sfx` | `sfx:<sfx> [vol=N]` | audio | `sfx/<sfx>` | `sfx` |
 | `wait` | `wait:<ms>` | scene (batch timing) | — | `wait` |
+| `face` | `face:<char> <expr> [ms=N]` | scene | `char/<char>/<expr>` | `face` |
+| `cam` | `cam:push [to=<char>\|center] [z=N] [ms=N]`, `cam:pull [ms=N]`, `cam:pan to=<char>\|left\|right [ms=N]` | scene (held in the stage state) | — | `cam` |
+| `think` | `think` | GameSession | — | `think` |
+| `anim` | `anim:<char> <motion> [ms=N]` | scene | — | `anim` |
+| `fx` | `fx:shake\|flash [ms=N]` | scene | — | `fx` |
 | `puzzle` | `puzzle:<puzzle> then=<knot>` | GameSession → PuzzleSession | — (the close-up comes from world data) | `puzzle` |
 | `explore` | `explore:<section>` | GameSession → ExploreController | — (rooms come from world data) | `explore` |
 
@@ -255,12 +263,13 @@ The door was open. #id:ch1.room.d00r
 
 ### `bg`
 
-- **Syntax:** `bg:<bg> [t=crossfade|fade|cut] [ms=N]`
+- **Syntax:** `bg:<bg> [t=cut|crossfade|fade] [ms=N]`
 - **Arguments:** `<bg>` — a key of `bg` in `assets/catalog.json`.
-- **Options:** `t` default `crossfade`; `ms` default `500`, range 0–10000.
-  - `crossfade`: the new background fades in **over** the old one (no dip), then the old one is destroyed.
-  - `fade`: through black — black fades in (ms/2), the background is swapped, black fades out (ms/2).
+- **Options:** `t` default `cut` (the shots plan's cut verb); `ms` default `500`, range 0–10000.
   - `cut`: instant.
+  - `crossfade`: the new background fades in **over** the old one (no dip), then the old one is destroyed (today's
+    dissolve; the exact dissolve between shots is the shots plan's SH6).
+  - `fade`: through black — black fades in (ms/2), the background is swapped, black fades out (ms/2).
 - **Effect:** replaces the background; characters and CG stay.
 - **Validation:** `tag/unknown-asset`; `batch/conflict` with another `bg` or a `scene` in the same batch.
 - **Typed:** `{ kind: 'bg'; bg: BgId; t: 'crossfade' | 'fade' | 'cut'; ms: number }`
@@ -398,6 +407,98 @@ Someone knocked. #sfx: door #id:ch1.room.kn0c
 The archive was colder than I remembered. #id:ch2.archive.c0ld
 ```
 
+### `face`
+
+- **Syntax:** `face:<char> <expr> [ms=N]`
+- **Arguments:** `<char>` and `<expr>` as for `show`.
+- **Options:** `ms` default `200`, range 0–10000.
+- **Effect:** changes the expression of a character on stage; its slot and z-order stay. On today's sprite stage a
+  `face` is a `show` without `at`: the expression crossfade (new sprite over the old one). A `face` of a character
+  that is not on stage changes nothing. The build names the expression's sprite like a `show`'s (the chapter's
+  manifest and the knot's preload); the drawn faces of shots come with the shots plan (SH2–SH4).
+- **Validation:** `tag/unknown-asset` (character or expression).
+- **Typed:** `{ kind: 'face'; char: CharId; expr: ExprId; ms: number | null }` (`null` = the default)
+
+```ink
+=== face_example ===
+# show: ally neutral at=left
+ally: I did not expect you here. #id:ch1.cafe.f4c0
+# face: ally smile
+ally: But I am glad you came. #id:ch1.cafe.f4c1
+```
+
+### `cam`
+
+- **Syntax:** `cam:push [to=<char>|center] [z=N] [ms=N]`, `cam:pull [ms=N]`, `cam:pan to=<char>|left|right [ms=N]`
+- **Arguments:** the move — `push`, `pull` or `pan`.
+- **Options** (each move takes only its own; `ms` range 0–10000; the default durations are the owner's to tune):
+  - `push`: `to` default `center`, or a character of the catalog; `z` default `110`, range 105–130 (percent);
+    `ms` default `2400`.
+  - `pull`: back to the rest framing; `ms` default `1200`.
+  - `pan`: `to` required — `left`, `right` or a character of the catalog; `ms` default `1800`.
+- **Effect:** sets the shot's framing. It holds until the next `cam: pull`, `bg` or `scene`, each of which returns to
+  rest (a `cam` in the same batch then sets the new framing), and it is saved with the stage. Today the framing is
+  held in the stage state only; the shots plan's SH6 draws it.
+- **Validation:** `tag/missing-arg` (`pan` without `to`); `tag/bad-arg` (an unknown move, `z` out of range, an option
+  the move does not take); `tag/unknown-asset` (a `to` that is neither a character nor its move's own word: `center`
+  for `push`, `left` / `right` for `pan`).
+- **Typed:** `{ kind: 'cam'; cam: { kind: 'push'; to: CharId | 'center'; z: number } | { kind: 'pan'; to: CharId |
+  'left' | 'right' } | { kind: 'pull' }; ms: number | null }` (`null` = the move's default)
+
+```ink
+=== cam_example ===
+# show: ally worried at=left
+# cam: push to=ally z=120
+ally: There is something I never told you. #id:ch1.cafe.c4m0
+# cam: pull
+She looked away. #id:ch1.cafe.c4m1
+```
+
+### `think`
+
+- **Syntax:** `think` — no arguments and no options (`think:` with nothing after the colon is the same tag).
+- **Placement:** on a text line.
+- **Effect:** the line is a thought: the speaker's mouth stays still and nobody is cued as a listener. GameSession
+  takes it from the batch (it is not a scene command); the shots plan's SH7 acts on it.
+- **Validation:** `tag/bad-arg` for any argument or option.
+- **Typed:** `{ kind: 'think' }`
+
+```ink
+=== think_example ===
+ally: He is lying again. #think #id:ch1.cafe.th1k
+```
+
+### `anim`
+
+- **Syntax:** `anim:<char> <motion> [ms=N]`
+- **Arguments:** `<char>` — a character of the catalog; `<motion>` — one of `nod`, `shake`, `lean_in`, `lean_back`,
+  `sigh`, `tremble`, `hop`, `bounce` (`hop` and `bounce` need a figure plane).
+- **Options:** `ms` range 0–10000; default: the motion's own (the shots plan's SH8 sets them).
+- **Effect:** a one-shot motion of the character; it is not part of the stage state (a load does not replay it).
+  Routed to the scene; the shots plan's SH8 draws it.
+- **Validation:** `tag/unknown-asset` (character), `tag/bad-arg` (a motion outside the list).
+- **Typed:** `{ kind: 'anim'; char: CharId; motion: Motion; ms: number | null }`
+
+```ink
+=== anim_example ===
+# anim: ally nod
+ally: Fine. Let us go. #id:ch1.cafe.n0d1
+```
+
+### `fx`
+
+- **Syntax:** `fx:shake|flash [ms=N]`
+- **Options:** `ms` range 0–10000; default: the effect's own (the shots plan's SH8 sets them).
+- **Effect:** a one-shot screen effect; it is not part of the stage state. Routed to the scene; the shots plan's SH8
+  draws it.
+- **Validation:** `tag/bad-arg` (an effect other than `shake` or `flash`).
+- **Typed:** `{ kind: 'fx'; fx: 'shake' | 'flash'; ms: number | null }`
+
+```ink
+=== fx_example ===
+The door slammed. #fx: shake #sfx: door #id:ch1.room.s14m
+```
+
 ### `puzzle`
 
 - **Syntax:** `puzzle:<puzzle> then=<knot>` — `then` is required (`tag/missing-arg` without it).
@@ -452,8 +553,13 @@ fixed:
 1. **Audio** — `bgm` and `sfx` start at batch start (in parallel with the visuals).
 2. **`scene`** — with `t=fade`: fade to black (ms/2); while black: hide all characters, remove the CG, set the
    background, and apply every `show` of the batch instantly; then fade from black (ms/2). With `t=cut`: all instant.
-3. **Visual commands** — `bg`, `show`, `hide`, `cg` start **together** (one GSAP timeline) and the batch waits for the
-   longest one.
+3. **Visual commands** — `bg`, `show`, `hide`, `face`, `cg` start **together** (one GSAP timeline) and the batch
+   waits for the longest one. A `face` applies after the batch's `hide` and `show`: the expression change of a
+   character on stage (a `show` without `at`). A `cam` sets the framing after the batch's `scene` or `bg` returned it
+   to rest; it is held in the stage state, not drawn yet (the shots plan's SH6). `anim` and `fx` reach the scene and
+   are not drawn yet (SH8); `think` stays with GameSession (SH7). The shots plan's drawn order is
+   [shots §3.1](plans/shots/03-story-dsl.md#3-the-story-dsl): `scene`, `bg`, `face`, `cam`, `cg`, props,
+   `anim` / `fx`, `wait`.
 4. **`wait`** — holds after step 3.
 5. **Text** — the overlay starts the typewriter (or shows the choices). A yield step (§6 `puzzle`, `explore`) has no
    text: after steps 1–4, GameSession hands control to the puzzle or the rooms.
@@ -463,11 +569,12 @@ fixed:
 - **Skip mode and loading a save** run every transition with duration 0.
 - **The logical stage state changes at batch start**, so a save taken mid-transition records the end state.
 - **Conflicts** (`batch/conflict`, error) — two commands for the same target in one batch: two `bg`; `bg` + `scene`;
-  `scene` + `hide` or `cg`; two `show`, or `show` + `hide`, of one character; two `cg`; two `bgm`; two `wait`; two
-  yields (`puzzle` and `explore`, two `puzzle`, two `explore`). As merged (L13 `06dc6a3`, RULINGS 58 Q16): at
-  runtime a conflict can also appear in a batch merged from tag-only steps (§3.5). `parseTags` reports it as
+  `scene` + `hide` or `cg`; two `show`, or `show` + `hide`, of one character; two `face` of one character; two `cam`;
+  two `fx`; two `cg`; two `bgm`; two `wait`; two yields (`puzzle` and `explore`, two `puzzle`, two `explore`). `think`
+  and `anim` never conflict, and a `face` beside a `show` of its character is allowed. As merged (L13 `06dc6a3`,
+  RULINGS 58 Q16): at runtime a conflict can also appear in a batch merged from tag-only steps (§3.5). `parseTags` reports it as
   `conflict` and keeps both commands; the story runner returns its non-terminal `tags` error, and the step it holds
-  carries both commands, so the scene applies them in order (`client/src/story/tags.ts:384-389`,
+  carries both commands, so the scene applies them in order (`client/src/story/tags.ts:489-494`,
   `client/src/story/runner.ts:496-509`).
 
 ---

@@ -23,7 +23,7 @@ export type KnotNode = {
   /** Where the knot's header is. */
   file: string;
   line: number;
-  /** Every asset its literal tags name (sorted); `hide`, `wait`, `cg: off` and `bgm: stop` name none. */
+  /** Every asset its literal tags name (sorted); `hide`, `wait`, `cg: off`, `bgm: stop`, `cam`, `think`, `anim` and `fx` name none. */
   assets: readonly AssetId[];
   /** Successor knots (sorted): every other or same knot a divert written inside it names, and a `then=` knot. */
   next: readonly KnotName[];
@@ -103,6 +103,7 @@ function assetOf(c: StagingCommand): AssetId | null {
     case 'scene':
       return `bg/${c.bg}` as AssetId;
     case 'show':
+    case 'face': // on a sprite stage a face shows its expression's sprite (the runtime ensures it from the manifest)
       return `char/${c.char}/${c.expr}` as AssetId;
     case 'cg':
       return c.cg === null ? null : (`cg/${c.cg}` as AssetId);
@@ -112,6 +113,10 @@ function assetOf(c: StagingCommand): AssetId | null {
       return `sfx/${c.sfx}` as AssetId;
     case 'hide':
     case 'wait':
+    case 'cam':
+    case 'think':
+    case 'anim':
+    case 'fx':
     case 'puzzle':
     case 'explore':
       return null;
@@ -142,6 +147,7 @@ function clearsOf(opening: readonly SourceLine[], assets: AssetIndex): Clears {
       } else if (c.kind === 'cg') {
         cg = true;
       } else if (c.kind === 'show') {
+        // A face clears nothing: its character's old expression still draws during the crossfade.
         chars.add(c.char);
       } else if (c.kind === 'hide') {
         if (c.char === 'all') {

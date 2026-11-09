@@ -2,13 +2,17 @@
 // and the per-section soft-lock check of world.ts, and the yield edges of graph.ts. Fixture worlds are inline JSON
 // in the source format; the clean base is the demo manor of PUZZLES-PLAN "World data", which each red fixture
 // mutates in one place. The catalog is the committed one.
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 
 import { RESUME_STATE_CAP } from '../../src/explore/reduce.ts';
 import type { Step } from '../../src/explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../../src/explore/state.ts';
+import { HOTSPOT_MIN_SOURCE_PX } from '../../src/geom/cover.ts';
+import type { IssueReport, MechanicData, OwnedAt, OwnedRaw } from '../../src/mechanics/contract.ts';
+import { MECHANIC_DATA } from '../../src/mechanics/data/index.ts';
+import type { DataRegistry } from '../../src/mechanics/data/index.ts';
 import { searchSection, sectionEntry } from '../../src/mechanics/rules/search.ts';
 import type { SearchOptions } from '../../src/mechanics/rules/search.ts';
 import { PUZZLE_TYPES } from '../../src/puzzles/rules/index.ts';
@@ -17,18 +21,24 @@ import { assetIndex, decodeAssetCatalog } from '../../src/story/catalog.ts';
 import type { AssetCatalog } from '../../src/story/catalog.ts';
 import type { ChapterId, KnotName, PuzzleLocalId, SectionId, VarName } from '../../src/story/staging.ts';
 import { decodeWorldSource, toPublic } from '../../src/world/decode.ts';
+import type { DecodeOptions, WorldIssue } from '../../src/world/decode.ts';
+import type { HotspotKey, WorldSource, WorldText } from '../../src/world/types.ts';
 import { compileChapter } from './compile.ts';
 import { buildGraph } from './graph.ts';
 import type { ChapterGraph, GraphFacts, WorldRef } from './graph.ts';
 import { GLOBALS_PATH, LINT_CODES } from './lint.ts';
+import { checkLocales, decodeEnTable, decodeNameTable } from './locales.ts';
 import type { Finding, LintCode, Severity, SourceChapter } from './lint.ts';
 import { clueFindings } from './mechanics/clues.ts';
-import { MECHANIC_LINTS } from './mechanics/index.ts';
+import { CONDITIONS_LINT, condFindings } from './mechanics/conditions.ts';
+import type { CondSite } from './mechanics/conditions.ts';
+import { MECHANIC_LINTS, MECHANIC_TEXTS } from './mechanics/index.ts';
 import type { MechanicLintCode, WorldLint, WorldLintInput } from './mechanics/index.ts';
+import type { ModuleText, TextRegistry, TextWalker } from './mechanics/texts.ts';
 import { PUZZLE_LINTS } from './puzzles/index.ts';
 import type { PuzzleLintCode, PuzzleTypeLint } from './puzzles/index.ts';
 import { MAX_ANSWER_LEN, answerLenFindings, answerLenIssues } from './puzzles/shape.ts';
-import { decodeWorldFile, lintWorld } from './world.ts';
+import { decodeWorldFile, lintWorld, worldLines } from './world.ts';
 import type { SectionReport, VarLiteral } from './world.ts';
 
 function readRepoJson(path: string): unknown {
@@ -943,6 +953,10 @@ test('story: module and type lint codes are unique and none is a DSL code', () =
     'world/reach-has-clue E',
     'world/clue-reachable E',
     'world/answer-len E',
+    'world/cross-section-cond E',
+    'world/visual-only-atom E',
+    'world/cond-size E',
+    'world/text-unwalked E',
   ]);
   // The registry restates world.ts's VarLiteral (its types stay out of the app program): one type (tsc).
   type InputVar = WorldLintInput['declared'] extends ReadonlyMap<VarName, infer V> ? V : never;
@@ -1047,7 +1061,7 @@ function passInput(w: Json, types: PuzzleTypes): WorldLintInput {
     const i = asked.indexOf(path);
     return i >= 0 ? i + 1 : asked.push(path);
   };
-  return { chapter: CH1, file: FILE, text, world: r.value, catalog: CATALOG, knots: KNOTS, yielded: null, declared: new Map(), line };
+  return { chapter: CH1, file: FILE, text, world: r.value, catalog: CATALOG, knots: KNOTS, yielded: null, declared: new Map(), line, moduleLines: new Map() };
 }
 
 const NO_CLUE = 'declares no clue: clues names the fact that shows its answer (§7.3, I4)';
@@ -1233,4 +1247,442 @@ test("story: the build's answer bound never exceeds the server's MAX_ANSWER_LEN"
   const m = /pub const MAX_ANSWER_LEN: usize = (\d+);/.exec(rust);
   expect(m, 'server/src/puzzles/mod.rs: pub const MAX_ANSWER_LEN: usize = <n>;').not.toBeNull();
   expect(MAX_ANSWER_LEN).toBeLessThanOrEqual(Number(m?.[1]));
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM3c: the composed decoder's module texts (engine plan §3.2 "Module texts")
+
+/**
+ * A fixture module owning hotspot `say` (a text) and `uses` (a list of `{ say }`): its data is the `OwnedAt`s it got,
+ * every text decoded through the kernel's line-ID text decoder (`DecodeCtx.text`).
+ */
+const PROBE: MechanicData<'probe', OwnedRaw> = {
+  id: 'probe',
+  rules: 'none',
+  owns: { hotspot: ['say', 'uses'] },
+  decode: (raw, ctx) => {
+    const error: WorldIssue[] = [];
+    const report: IssueReport = (path, reason, detail) => {
+      error.push({ path, reason, detail });
+    };
+    const value = raw.map((a): OwnedAt => {
+      const out: Record<string, unknown> = { ...a.raw };
+      if (Object.hasOwn(a.raw, 'say')) {
+        out['say'] = ctx.text(a.raw['say'], `${a.path}.say`, report);
+      }
+      if (Object.hasOwn(a.raw, 'uses')) {
+        out['uses'] = list(a.raw['uses']).map((u, i) => ({ say: ctx.text(u['say'], `${a.path}.uses.${i}.say`, report) }));
+      }
+      return { ...a, raw: out };
+    });
+    return error.length === 0 ? { ok: true, value } : { ok: false, error };
+  },
+  encode: (d) => d,
+  normalize: (_w, s) => s,
+};
+const PROBED: DecodeOptions = { mechanics: [...MECHANIC_DATA, PROBE] };
+
+test("world: a module text decodes with the kernel's line-ID rule", () => {
+  const sayOn = (say: Json): { w: Json; findings: Finding[] } => {
+    const w = base();
+    spot(w, 'hall', 'inscription')['say'] = say;
+    return { w, findings: decodeWorldFile({ file: FILE, text: `${JSON.stringify(w, null, 2)}\n` }, PROBED).findings };
+  };
+  // A module text without its ID: `id/missing` at the text's source line, as a kernel text's.
+  const missing = sayOn({ ru: 'Тихо.' });
+  expect(missing.findings).toEqual([
+    {
+      code: 'id/missing',
+      severity: 'E',
+      file: FILE,
+      line: jsonLine(missing.w, '"say": {'),
+      message: 'sections.manor.rooms.hall.hotspots.2.say.id: missing: every world text carries a line ID (STAGING-DSL §4)',
+    },
+  ]);
+  const malformed = sayOn({ id: 'ch1.Manor.sy01', ru: 'Тихо.' });
+  expect(malformed.findings.map((f) => `${f.code} ${f.line}`)).toEqual([`id/format ${jsonLine(malformed.w, '"id": "ch1.Manor.sy01"')}`]);
+  // The control: a text with its ID decodes, and only the probe's registry admits the key.
+  expect(sayOn({ id: 'ch1.manor.sy01', ru: 'Тихо.' }).findings).toEqual([]);
+});
+
+test('story: an all clue holds only when its conjuncts hold in one reached state', () => {
+  const gateClue = (clue: Json): Json => {
+    const w = base();
+    at(w, 'puzzles.gate')['clues'] = [clue];
+    return w;
+  };
+  // Each conjunct is reached, never both at once: inserting the medal into the gate uses it.
+  const apart = { all: [{ held: 'medal_sun' }, { used: 'medal_sun' }] };
+  const w = gateClue(apart);
+  expect(of(lint(w), 'world/clue-reachable')).toEqual([
+    {
+      code: 'world/clue-reachable',
+      severity: 'E',
+      file: FILE,
+      line: clueLine(w, 'gate', 0),
+      message: `puzzle 'gate': clue ${JSON.stringify(apart)} holds in no state of section manor reached before 'gate' is solved or failed (§7.3)`,
+    },
+  ]);
+  // Both in one state: the medal in hand after reading the inscription.
+  expect(of(lint(gateClue({ all: [{ has: 'medal_sun' }, { examined: 'hall.inscription' }] })), 'world/clue-reachable')).toEqual([]);
+  // The existence check reads every atom, nested ones and a `not`'s included, and names the first missing one.
+  expect(of(lint(gateClue({ all: [{ doc: 'diar' }] })), 'world/clue-reachable').map((f) => f.message)).toEqual([`puzzle 'gate': clue {"all":[{"doc":"diar"}]} names no doc of this world`]);
+  const negated = { all: [{ has: 'medal_sun' }, { not: { doc: 'diar' } }] };
+  expect(of(lint(gateClue(negated)), 'world/clue-reachable').map((f) => f.message)).toEqual([`puzzle 'gate': clue ${JSON.stringify(negated)} names no doc of this world`]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM3c: the condition lints (engine plan §4 "Two scopes", "Limits")
+
+/** A data module declaring atom `part`, visual only (as GM8i's), its value any string. */
+const PART: MechanicData<'part_probe', null> = {
+  id: 'part_probe',
+  rules: 'none',
+  owns: { atoms: ['part'] },
+  atoms: { part: { decode: (v) => v, gating: false } },
+  decode: () => ({ ok: true, value: null }),
+  encode: () => [],
+  normalize: (_w, s) => s,
+};
+
+/** base() plus section `yard`: a room with a take giving an item, a take giving a doc and a lock holding a puzzle. */
+function yardWorld(): Json {
+  const w = base();
+  obj(w['items'])['lamp'] = { name: t('lamp', 'Лампа'), desc: t('lamp', 'Старая лампа.'), glyph: 'key' };
+  obj(w['docs'])['note'] = { title: t('note', 'Записка'), body: [t('note', 'Во дворе.')] };
+  obj(w['puzzles'])['shed'] = { ...codePuzzle(), clues: [{ doc: 'note' }] };
+  obj(w['sections'])['yard'] = {
+    start: 'yard',
+    bgm: null,
+    rooms: {
+      yard: {
+        bg: 'yard',
+        title: t('yard', 'Двор'),
+        onEnter: [],
+        hotspots: [
+          { ...take('lamp', { item: 'lamp' }), rect: [100, 300, 200, 200] },
+          { ...take('note', { doc: 'note' }), rect: [400, 300, 200, 200] },
+          { ...object('shed', lockOf([], 'shed')), rect: [700, 300, 200, 200] },
+        ],
+      },
+    },
+  };
+  return w;
+}
+
+const MANOR = { gating: 'manor' as SectionId }; // the fixture's section
+
+test('story: a gating condition reading another section is refused', () => {
+  const input = passInput(yardWorld(), PUZZLE_TYPES);
+  const where = 'sections.manor.rooms.hall.hotspots.2.when';
+  const site = (cond: Json, scope: CondSite['scope'] = MANOR): CondSite => ({ cond, path: where, scope });
+  const said = (sites: readonly CondSite[], data?: DataRegistry): string[] => condFindings(input, sites, data).map((f) => `${f.code} ${f.severity} ${f.message}`);
+  const cross = (atom: Json, kind: string): string =>
+    `world/cross-section-cond E ${where}: ${JSON.stringify(atom)} names no ${kind} of section manor: a gating condition reads only its own section (§4)`;
+  // Every kernel atom naming one of yard's ids, in a gating condition of manor: one finding each.
+  const yard: ReadonlyArray<readonly [Json, string]> = [
+    [{ visited: 'yard' }, 'room'],
+    [{ taken: 'yard.lamp' }, 'hotspot'],
+    [{ examined: 'yard.lamp' }, 'hotspot'],
+    [{ open: 'yard.shed' }, 'hotspot'],
+    [{ held: 'lamp' }, 'item'],
+    [{ used: 'lamp' }, 'item'],
+    [{ has: 'lamp' }, 'item'],
+    [{ doc: 'note' }, 'doc'],
+    [{ solved: 'shed' }, 'puzzle'],
+    [{ failed: 'shed' }, 'puzzle'],
+  ];
+  for (const [atom, kind] of yard) {
+    expect(said([site(atom)]), JSON.stringify(atom)).toEqual([cross(atom, kind)]);
+  }
+  // Nested in every combinator, each atom once; a missing id the same way.
+  const nested = { all: [{ any: [{ visited: 'yard' }, { has: 'medal_sun' }] }, { not: { doc: 'note' } }, { not: { visited: 'attic' } }] };
+  expect(said([site(nested)])).toEqual([cross({ visited: 'yard' }, 'room'), cross({ doc: 'note' }, 'doc'), cross({ visited: 'attic' }, 'room')]);
+  // Manor's own ids: rooms, hotspot keys, the items and docs it gives (a take, a give effect), its lock puzzles.
+  const own = [{ visited: 'cellar' }, { taken: 'study.medal' }, { examined: 'hall.inscription' }, { open: 'hall.gate' }, { has: 'medal_moon' }, { doc: 'diary' }, { solved: 'drawer' }, { failed: 'gate' }];
+  expect(said([site({ all: own })])).toEqual([]);
+  // A visual condition reads any id of the chapter; a clue is scoped by world/clue-reachable.
+  expect(said([site(nested, 'visual'), site(nested, 'clue')])).toEqual([]);
+  // A visual-only module atom in a gating condition; in a visual one it is fine.
+  const data: DataRegistry = [...MECHANIC_DATA, PART];
+  expect(said([site({ any: [{ part: 'x' }, { has: 'medal_sun' }] })], data)).toEqual([
+    `world/visual-only-atom E ${where}: {"part":"x"} is a visual-only atom: a gating condition never reads it (§4)`,
+  ]);
+  expect(said([site({ part: 'x' }, 'visual')], data)).toEqual([]);
+  // Every finding at the site's line.
+  expect(condFindings(input, [site({ visited: 'yard' })]).map((f) => [f.file, f.line])).toEqual([[FILE, input.line(where)]]);
+});
+
+test('story: a condition deeper than 4 or with more than 16 atoms is refused', () => {
+  const input = passInput(base(), PUZZLE_TYPES);
+  const where = 'puzzles.gate.clues.0';
+  const nots = (n: number): Json => Array.from({ length: n }).reduce<Json>((c) => ({ not: c }), { has: 'medal_sun' });
+  const wide = (n: number): Json => ({ all: Array.from({ length: n }, () => ({ has: 'medal_sun' })) });
+  const size = (depth: number, atoms: number): string =>
+    `world/cond-size E ${where}: the condition is ${depth} deep with ${atoms} atoms: at most 4 deep and 16 atoms (bounded evaluation, §4)`;
+  for (const scope of [MANOR, 'visual', 'clue'] as const) {
+    const said = (cond: Json): string[] => condFindings(input, [{ cond, path: where, scope }]).map((f) => `${f.code} ${f.severity} ${f.message}`);
+    expect(said(nots(3)), JSON.stringify(scope)).toEqual([]);
+    expect(said(nots(4)), JSON.stringify(scope)).toEqual([size(5, 1)]);
+    expect(said(wide(16)), JSON.stringify(scope)).toEqual([]);
+    expect(said(wide(17)), JSON.stringify(scope)).toEqual([size(2, 17)]);
+  }
+  // The registry's pass reads every clue as a site of scope clue, at the clue's line.
+  const w = base();
+  at(w, 'puzzles.gate')['clues'] = [nots(4)];
+  const pass = passInput(w, PUZZLE_TYPES);
+  const found = 'lint' in CONDITIONS_LINT ? CONDITIONS_LINT.lint(pass) : [];
+  expect(found.map((f) => `${f.code} ${f.line}`)).toEqual([`world/cond-size ${pass.line(where)}`]);
+  expect(of(lint(w), 'world/cond-size').map((f) => f.line)).toEqual([clueLine(w, 'gate', 0)]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM3c: the one walk of world texts (engine plan §3.2 "Module texts"), its gate, and the hotspot minimum's home
+
+/** The probe's texts at their source paths: its hotspot `say` and every `uses` entry's `say`, all toasts. */
+const PROBE_WALKER: TextWalker<OwnedRaw> = (_w, d, places) =>
+  d.flatMap((a): ModuleText[] => {
+    const path = places.hotspot(a.id as HotspotKey); // the probe owns hotspot keys only: its id is a HotspotKey
+    const say = a.raw['say'] as WorldText | undefined; // the probe's decode made every say a text
+    const uses = (a.raw['uses'] ?? []) as ReadonlyArray<{ readonly say: WorldText }>; // likewise, inside its list
+    return [
+      ...(say === undefined ? [] : [{ text: say, path: `${path}.say`, role: 'toast' as const, reach: [] }]),
+      ...uses.map((u, i) => ({ text: u.say, path: `${path}.uses.${i}.say`, role: 'toast' as const, reach: [] })),
+    ];
+  });
+
+/** The fixture world as text, decoded with the probe. */
+function probeWorld(w: Json): { text: string; world: WorldSource } {
+  const text = `${JSON.stringify(w, null, 2)}\n`;
+  const decoded = decodeWorldFile({ file: FILE, text }, PROBED);
+  if (decoded.world === null) {
+    throw new Error(`invariant: the probe world decodes: ${JSON.stringify(decoded.findings)}`);
+  }
+  return { text, world: decoded.world };
+}
+
+/** lintWorld over a world decoded with the probe, with `lints` and `texts` as given. */
+function lintProbe(w: Json, lints: readonly WorldLint<string>[], texts: TextRegistry): Finding[] {
+  const { text, world } = probeWorld(w);
+  return lintWorld({ chapter: CH1, file: FILE, text, world, catalog: CATALOG, knots: KNOTS, yielded: null, declared: new Map() }, lints, texts).findings;
+}
+
+/** base() whose inscription says `say` through the probe. */
+function saying(): { w: Json; say: Json } {
+  const w = base();
+  const say = t('manor', 'Тихо.');
+  spot(w, 'hall', 'inscription')['say'] = say;
+  return { w, say };
+}
+
+test('story: a module text is a world line with its role', () => {
+  const { w, say } = saying();
+  const { text, world } = probeWorld(w);
+  const lines = worldLines(world, FILE, text, { ...MECHANIC_TEXTS, probe: PROBE_WALKER });
+  // The kernel's lines first, unchanged; then the module's text at its source path and line.
+  expect(lines.slice(0, -1)).toEqual(worldLines(world, FILE, text));
+  expect(lines.at(-1)).toEqual({
+    id: say['id'],
+    text: 'Тихо.',
+    file: FILE,
+    line: jsonLine(w, '"say": {'),
+    hint: false,
+    path: 'sections.manor.rooms.hall.hotspots.2.say',
+    role: 'toast',
+    reach: [],
+  });
+});
+
+/** R-E9's table, restated: each kernel field's role and reach. */
+const KERNEL_ROLES: Readonly<Record<string, readonly [string, 'has' | 'doc' | null]>> = {
+  'item.name': ['name', null],
+  'item.desc': ['read', 'has'],
+  'doc.title': ['name', null],
+  'doc.body': ['read', 'doc'],
+  'puzzle.title': ['name', null],
+  'puzzle.prompt': ['name', null],
+  'puzzle.hints': ['hint', null],
+  'room.title': ['name', null],
+  'hotspot.label': ['name', null],
+  'lock.locked': ['toast', null],
+  'hotspot.look': ['toast', null],
+};
+
+/**
+ * Today's kernel walk over a world's raw JSON, field by field in the kernel's order (items' name and desc, docs' title
+ * and body, puzzles' title, prompt and hints, then per room its title and per hotspot its label, lock text and look):
+ * `[id, path, line, hint, role, reach]`. A committed world writes each text on one line, so its line holds its ID.
+ */
+function kernelOracle(raw: Json, text: string): unknown[][] {
+  const fileLines = text.split('\n');
+  const out: unknown[][] = [];
+  const add = (v: unknown, path: string, field: string, owner = ''): void => {
+    const id = String(obj(v)['id']);
+    const [role, reach] = KERNEL_ROLES[field] ?? ['?', null];
+    const line = fileLines.findIndex((l) => l.includes(`"${id}"`)) + 1;
+    out.push([id, path, line, role === 'hint', role, reach === null ? [] : [{ [reach]: owner }]]);
+  };
+  for (const [id, item] of Object.entries(obj(raw['items']))) {
+    add(obj(item)['name'], `items.${id}.name`, 'item.name');
+    add(obj(item)['desc'], `items.${id}.desc`, 'item.desc', id);
+  }
+  for (const [id, doc] of Object.entries(obj(raw['docs']))) {
+    add(obj(doc)['title'], `docs.${id}.title`, 'doc.title');
+    list(obj(doc)['body']).forEach((b, i) => add(b, `docs.${id}.body.${i}`, 'doc.body', id));
+  }
+  for (const [id, p] of Object.entries(obj(raw['puzzles']))) {
+    add(obj(p)['title'], `puzzles.${id}.title`, 'puzzle.title');
+    add(obj(p)['prompt'], `puzzles.${id}.prompt`, 'puzzle.prompt');
+    list(obj(p)['hints']).forEach((h, i) => add(h, `puzzles.${id}.hints.${i}`, 'puzzle.hints'));
+  }
+  for (const [sid, s] of Object.entries(obj(raw['sections']))) {
+    for (const [rid, r] of Object.entries(obj(obj(s)['rooms']))) {
+      const room = `sections.${sid}.rooms.${rid}`;
+      add(obj(r)['title'], `${room}.title`, 'room.title');
+      list(obj(r)['hotspots']).forEach((h, i) => {
+        const path = `${room}.hotspots.${i}`;
+        add(h['label'], `${path}.label`, 'hotspot.label');
+        if (h['lock'] !== null && h['lock'] !== undefined) {
+          add(obj(h['lock'])['locked'], `${path}.lock.locked`, 'lock.locked');
+        }
+        if (h['look'] !== null && h['look'] !== undefined) {
+          add(h['look'], `${path}.look`, 'hotspot.look');
+        }
+      });
+    }
+  }
+  return out;
+}
+
+test("story: the kernel's world lines keep their order and gain their roles", () => {
+  for (const ch of ['ch1', 'ch2']) {
+    const file = `story/${ch}/world.json`;
+    const text = readFileSync(new URL(`../../../${file}`, import.meta.url), 'utf8');
+    const decoded = decodeWorldFile({ file, text });
+    if (decoded.world === null) {
+      throw new Error(`invariant: ${file} decodes`);
+    }
+    const lines = worldLines(decoded.world, file, text);
+    const oracle = kernelOracle(obj(readRepoJson(file)), text);
+    expect(oracle.length, file).toBeGreaterThan(0);
+    expect(lines.map((l) => [l.id, l.path, l.line, l.hint, l.role, l.reach]), file).toEqual(oracle);
+    expect(lines.every((l) => l.file === file && l.hint === (l.role === 'hint')), file).toBe(true);
+  }
+});
+
+test("story: a module text's en entry is checked", () => {
+  const { w, say } = saying();
+  const { text, world } = probeWorld(w);
+  const id = String(say['id']);
+  const lines = worldLines(world, 'ch1/world.json', text, { ...MECHANIC_TEXTS, probe: PROBE_WALKER });
+  const { graph } = graphWith(manorInk());
+  const check = (en: Readonly<Record<string, { ru: string; en: string }>>): Finding[] =>
+    checkLocales({
+      chapters: null,
+      graphs: new Map([[CH1.id, graph]]),
+      en: new Map([['ch1', decodeEnTable('locales/en/ch1.json', JSON.stringify(en)).table]]),
+      names: { ru: decodeNameTable('locales/ru/story.json', null).table, en: decodeNameTable('locales/en/story.json', null).table },
+      cast: {},
+      retired: new Set(),
+      stories: [],
+      worlds: new Map([[CH1.id, lines]]),
+    }).findings.filter((f) => f.message.includes(id));
+  // No en entry: loc/missing-en at the text's source line, as a kernel text's.
+  expect(check({})).toEqual([
+    { code: 'loc/missing-en', severity: LINT_CODES['loc/missing-en'], file: 'ch1/world.json', line: jsonLine(w, '"say": {'), message: `'${id}' has no entry in story/locales/en/ch1.json (run --sync-locales)` },
+  ]);
+  // With it: the entry names a line, so it is no orphan.
+  expect(check({ [id]: { ru: 'Тихо.', en: 'Quiet.' } })).toEqual([]);
+});
+
+test('mechanics: every module declares its texts', () => {
+  expect(Object.keys(MECHANIC_TEXTS)).toEqual(MECHANIC_DATA.map((d) => d.id));
+});
+
+test('story: an undeclared module text is refused', () => {
+  const w = base();
+  const say = t('manor', 'Тихо.');
+  spot(w, 'hall', 'inscription')['uses'] = [{ say }];
+  // The probe's entry is null, and its data holds a text inside a list.
+  expect(of(lintProbe(w, MECHANIC_LINTS, { ...MECHANIC_TEXTS, probe: null }), 'world/text-unwalked')).toEqual([
+    {
+      code: 'world/text-unwalked',
+      severity: 'E',
+      file: FILE,
+      line: jsonLine(w, `"id": "${String(say['id'])}"`),
+      message: `'${String(say['id'])}' is a text of module probe that no text walker returns: walk it in MECHANIC_TEXTS (§3.2)`,
+    },
+  ]);
+  // Walked, it is a world line and the gate is silent.
+  expect(of(lintProbe(w, MECHANIC_LINTS, { ...MECHANIC_TEXTS, probe: PROBE_WALKER }), 'world/text-unwalked')).toEqual([]);
+});
+
+test("story: the texts gate reads each module's walked lines", () => {
+  const { w, say } = saying();
+  const seen: WorldLintInput[] = [];
+  const capture: WorldLint<never> = {
+    id: 'capture',
+    codes: {},
+    lint: (input) => {
+      seen.push(input);
+      return [];
+    },
+  };
+  const walked = lintProbe(w, [...MECHANIC_LINTS, capture], { ...MECHANIC_TEXTS, probe: PROBE_WALKER });
+  expect(seen).toHaveLength(1);
+  const moduleLines: ReadonlyMap<string, ReadonlySet<string>> | undefined = seen[0]?.moduleLines;
+  expect([...(moduleLines?.keys() ?? [])]).toEqual(['core', 'probe']);
+  expect(moduleLines?.get('probe')).toEqual(new Set([say['id']]));
+  expect(moduleLines?.get('core')).toEqual(new Set());
+  expect(of(walked, 'world/text-unwalked')).toEqual([]);
+  // A walker that misses its text: the gate reports it.
+  const blind: TextWalker<OwnedRaw> = () => [];
+  expect(of(lintProbe(w, MECHANIC_LINTS, { ...MECHANIC_TEXTS, probe: blind }), 'world/text-unwalked').map((f) => f.line)).toEqual([
+    jsonLine(w, `"id": "${String(say['id'])}"`),
+  ]);
+});
+
+test('texts: texts.ts value-imports nothing from mechanics/index.ts or world.ts', async () => {
+  const dir = new URL('./mechanics/', import.meta.url);
+  const files = readdirSync(dir)
+    .filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'))
+    .sort();
+  // Never vacuous: every lint file and the registry this rule exists for is read.
+  expect(files).toEqual(expect.arrayContaining(['clues.ts', 'conditions.ts', 'core.ts', 'index.ts', 'texts.ts']));
+  for (const f of files) {
+    const src = readFileSync(new URL(f, dir), 'utf8');
+    // world.ts: nothing, not even a type (it type-imports emit.ts, which imports node:crypto: index.ts's header).
+    expect(src, f).not.toMatch(/['"]\.\.?\/world\.ts['"]/);
+    // index.ts: types only, erased at run time, so the registry's value graph has no edge back into it.
+    for (const m of src.matchAll(/^(?:import|export)\b[^;]*?['"]\.\/index\.ts['"]/gm)) {
+      expect(m[0], f).toMatch(/^(?:import|export) type\b/);
+    }
+    expect(src, f).not.toMatch(/import\(\s*['"]\.\/index\.ts['"]\s*\)/);
+  }
+  // Loaded first, alone, texts.ts resolves its gate: no binding of index.ts is read at its top level.
+  vi.resetModules();
+  const texts = await import('./mechanics/texts.ts');
+  expect('lint' in texts.TEXTS_LINT && typeof texts.TEXTS_LINT.lint).toBe('function');
+});
+
+test('story: the hotspot minimum is one constant', () => {
+  expect(HOTSPOT_MIN_SOURCE_PX).toBe(150);
+  const sized = (rw: number, rh: number): Finding[] => {
+    const w = base();
+    spot(w, 'hall', 'inscription')['rect'] = [400, 400, rw, rh];
+    return of(lint(w), 'world/hotspot-small');
+  };
+  expect(sized(149, 150)).toEqual([expect.objectContaining({ severity: 'W', message: 'hall.inscription is 149×150: under 150×150 source px (a 44 CSS px target)' })]);
+  expect(sized(150, 149)).toHaveLength(1);
+  expect(sized(150, 150)).toEqual([]);
+  // world.ts keeps no minimum of its own.
+  expect(readFileSync(new URL('./world.ts', import.meta.url), 'utf8')).not.toMatch(/=\s*150\b/);
+  // The committed ch1 has no hotspot under it.
+  const text = readFileSync(new URL('../../../story/ch1/world.json', import.meta.url), 'utf8');
+  const decoded = decodeWorldFile({ file: FILE, text });
+  if (decoded.world === null) {
+    throw new Error('invariant: story/ch1/world.json decodes');
+  }
+  const ch1 = lintWorld({ chapter: CH1, file: FILE, text, world: decoded.world, catalog: CATALOG, knots: null, yielded: null, declared: new Map() });
+  expect(of(ch1.findings, 'world/hotspot-small')).toEqual([]);
 });

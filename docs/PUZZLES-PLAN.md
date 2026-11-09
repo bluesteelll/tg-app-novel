@@ -381,6 +381,19 @@ the explore-ui chunk. The marks below flag each sentence that places step 4 at t
       2. **slot shape**: for each lock in `slots` that is not open, the entry is resized to the lock's current slot
          count. A filled item stays only where the slot at that index still `accepts` it; every other filled item
          (and every item of a lock that lost its slots) goes `used → held`;
+         Changed by RULINGS 190 (as of `837b1ed`; docs lane `docs-errata-12`, group A): as merged (GM2b `1782d6d`,
+         triage r2), the give-back skips an item a kept cell still holds: it stays `used` (two cells can hold one id
+         when a rename merged two items or the world gives the item twice), so a lock that keeps the item never loses
+         it ([client/src/explore/reconcile.ts:42-62](../client/src/explore/reconcile.ts#L42), `giveBack`, which
+         step 0 of [engine §5.3](plans/engine/05-world-data-and-save-format.md#53-renamed-the-client-half-lane-gm2b)
+         shares). A refinement of "every other filled item": it differs only where a kept cell and a given-back
+         cell hold one id, on a save whose items a rename merged (step 0 runs before normalize, so items `a` in one lock
+         and `b` in another that merge to `c` reach this step as two cells holding `c`, and `c` stays `used` while either
+         lock keeps it; the pin is case (c) of the test `reconcile: step 0 maps renamed items, docs, rooms, sections and
+         hotspots before normalize`, `client/src/explore/explore.test.ts:968-972`, the test at `:828`; when both cells
+         are lost the two texts agree, and `reconcile: two lost cells that held one merged item give it back once`,
+         `:981`, pins that the item goes back once) and on a world that gives an item twice; step 4 still judges the
+         result;
       3. **gifts**: a `taken` hotspot or a fired trigger is undone (it gives again) when an item or doc it gives is
          in none of `held`, `used`, `docs`;
       4. **the guarantee (membership)** for the current section S (the state's `section`; none when it is null):
@@ -927,6 +940,16 @@ world keys with defaults, with no world-format bump —
   take / object `prop`, object `lock`, object `look`, lock `puzzle`, puzzle `closeup`, puzzle `maxAttempts`.
 - References are not resolved by the decoder: an undefined room or item is `world/unknown-ref` (LW3). A hotspot id
   repeated within one room is an `'id'` issue: a `HotspotKey` names one hotspot.
+
+Changed by RULINGS 180, 183, 192 (as of `837b1ed`; docs lane `docs-errata-12`, group A): as merged (GM1d `794181b`;
+GM3c `837b1ed`), a source puzzle has one more key, `clues`, optional (default `[]`) and source-only like `solution`
+and `hints`: a list of conditions ([engine §4](plans/engine/04-condition-grammar.md#4-condition-grammar)), each of
+which shows the player the puzzle's secret goal once it holds, e.g. `"clues": [ { "doc": "diary" } ]` on `drawer`
+and `"clues": [ { "examined": "hall.inscription" } ]` on `gate` (`story/ch1/world.json:65`, `:49`). `toPublic`
+never writes it and the server content never holds it ([client/src/world/decode.ts](../client/src/world/decode.ts)
+`sourcePuzzle` :605, `toPublic` :855; `SourcePuzzle.clues`, `client/src/world/types.ts:115`). The clue lints
+(`world/clue-declared`, `world/reach-has-clue`, `world/clue-reachable`) are
+[engine §7.3](plans/engine/07-puzzle-types.md#73-i4-secret-goals-never-ship).
 
 **Hotspot kinds:**
 

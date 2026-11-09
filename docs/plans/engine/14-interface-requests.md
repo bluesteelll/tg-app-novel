@@ -4,7 +4,7 @@
 
 | # | Request | Why |
 |---|---|---|
-| E-P1 | GM6a keys prop anchors by `PropPlacement.at` when present (else `prop`), and swaps a changed image inside the same anchor with a crossfade; a `part: 'patch'` placement is a child sprite of its base anchor. Test `executor: a prop whose image changes at the same anchor crossfades inside it` | R-A4; GM3b's states change images per anchor |
+| E-P1 | GM6a keys prop anchors by `PropPlacement.at` when present (else `prop`), and swaps a changed image inside the same anchor with a crossfade; a `part: 'patch'` placement is a child sprite of its base anchor. Test `executor: a prop whose image changes at the same anchor crossfades inside it`. **Ruled: RULINGS 188** — the keying rule gains D5.1 in its general form: "a target key with no anchor takes over an anchor that shows one of its props, when the target does not name that anchor's key; re-keyed, nothing created, dropped or faded"; an adopted anchor keeps its creation label until a rebind ([per-player §6.1](../per-player/06-labels-on-the-art.md#61-anchor-nodes-lane-gm6a-behaviour-identical)) | R-A4; GM3b's states change images per anchor |
 | E-P2 | GM6d2's room-set terms use this file's transition-pair formula (§6.3): `labels(R)` and `labels(n)` of the same neighbour `n` that maximises `bg(n) + props(n) + labels(n)` | one formula, one owner per term (GM4 props, GM6d2 labels) |
 | E-P3 | ~~GM6c1's `world/clue-reachable` calls this file's search~~ **settled (per-player §12.2):** reachability is GM1d's `world/clue-reachable` for every secret puzzle; per-player adds `world/clue-shows-value` | one search implementation (X4) |
 | E-P4 | ~~`values` cues through `CueBus.emit`~~ **lapsed** with R-E3's withdrawal (per-player round 2) | - |

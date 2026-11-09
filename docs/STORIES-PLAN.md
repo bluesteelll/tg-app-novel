@@ -1142,6 +1142,15 @@ while LDB1 ran; LDB1 and LDB2 had merged before the design landed, and the merge
     `docs-errata-11`;
   - to go, of this design's lanes: none. The adopted plans' next lanes, per-player GM6a and GM3m, start when a client
     slot frees (RULINGS 182); the rest follow the one order above.
+- **As of `837b1ed`** (changed by RULINGS 183-197; docs lane `docs-errata-12`, group B; SHAs from `git log --first-parent
+  main`):
+  - merged since `9b4fd25`: from the adopted plans GM1d `794181b` (RULINGS 183), GM3w `508bd36` (RULINGS 186),
+    per-player GM6a `23e1d31` (RULINGS 188), GM2b `1782d6d` (RULINGS 190), GM3m `a3f0678` (RULINGS 193) and GM3c
+    `837b1ed` (RULINGS 196), and the docs lane `docs-errata-11` as `e2d2d13` (RULINGS 185) (PP "Dependency order");
+  - running: GM3s `gm3s-mech-cue-stage` (client; RULINGS 194, 195) and shots SH1 `sh1-shot-dsl` (client; RULINGS
+    196), beside the docs lane `docs-errata-12` (in the idle server slot, RULINGS 197);
+  - to go, of this design's lanes: none. The adopted plans' next lanes: the engine-closure lever lane (new, RULINGS
+    195, 196) after GM3s, then GM3; SH2 after SH1; the rest follow the one order above.
 
 **Order** (RULINGS 8 rolling, RULINGS 18 three slots; as of `66c92c4`, changed by RULINGS 22, 23: LDB1 and LDB2
 merged, so the server chain starts at L6b): server L6b → LS2 → L6c → L8a → L8b → LS3 → L9; client (two slots)
@@ -1188,6 +1197,10 @@ Changed by RULINGS 174-182 (as of `9b4fd25`; docs lane `docs-errata-11`, group B
 `2815340` (the last of the per-player server chain), GM1c `8c2fa03` and GM2a `9b4fd25` have merged; GM1d and GM3w run
 (client; RULINGS 179, 180, 182); per-player GM6a and GM3m start when a client slot frees, GM2b after GM1d; the rest
 follow the one order above.
+Changed by RULINGS 183-197 (as of `837b1ed`; docs lane `docs-errata-12`, group B): from the adopted plans, GM1d
+`794181b`, GM3w `508bd36`, per-player GM6a `23e1d31`, GM2b `1782d6d`, GM3m `a3f0678` and GM3c `837b1ed` have merged;
+GM3s and shots SH1 run (client; RULINGS 194-196); the engine-closure lever lane (new, RULINGS 195, 196) follows GM3s,
+then GM3; SH2 follows SH1; the rest follow the one order above.
 
 **Collision locks added** (PP "Collision locks"): `0001` L2 → LDB1 → LS2; `0003` LS3; the serialized server files
 L6b → LS2 → L6c → L8a → L8b → LS3 → L9; `ids.rs` L6b (`StoryId` with `PuzzleId`); `lint.ts` / `dsl-doc.test.ts` /
