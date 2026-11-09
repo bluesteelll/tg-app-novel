@@ -62,6 +62,7 @@ export const SILENT_FIELDS = {
   room: 'every change is a move cue',
   lastRoom: 'bookkeeping of the move',
   unproved: 'bookkeeping of reconcile',
+  flags: 'no rule sets a flag until module `flags` (GM5f) owns the `flag` fact kind, which then carries its changes',
 } as const;
 
 /** 'carry': an item the chapter start gave (§6.6). */

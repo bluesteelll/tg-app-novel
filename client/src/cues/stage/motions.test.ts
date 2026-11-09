@@ -2,7 +2,10 @@
 // outro, and the data the stage and its later lanes read stays coupled.
 import { expect, test } from 'vitest';
 
-import { KERNEL_FACT_KINDS } from '../../mechanics/contract.ts';
+import { EMPTY_WORLD_STATE } from '../../explore/state.ts';
+import type { WorldState } from '../../explore/state.ts';
+import { KERNEL_FACT_KINDS, SILENT_FIELDS } from '../../mechanics/contract.ts';
+import type { FactKind } from '../../mechanics/contract.ts';
 import { MECHANIC_DATA } from '../../mechanics/data/index.ts';
 import { MECHANIC_RULES } from '../../mechanics/rules/index.ts';
 import { CORE_CONTROLS, FRAME_OPEN_MS, MIN_VISIBLE_MS, MOVE_HOWS, PUZZLE_CUES, UI_STATE_CUES } from '../types.ts';
@@ -158,4 +161,51 @@ test("cues: a frame's end motion ends before its frame leaves", () => {
 test("motions: the puzzle frame's entrance lasts FRAME_OPEN_MS", () => {
   expect(LAYER_MOTIONS.in.ms).toBe(FRAME_OPEN_MS);
   expect(LAYER_MOTIONS.in.reduced.ms).toBeLessThanOrEqual(FRAME_OPEN_MS);
+});
+
+/** Each WorldState field with the fact kinds whose changes it carries; a silent field carries none (tsc: every field,
+ *  and no other). */
+const FIELD_FACTS = {
+  format: [],
+  section: [],
+  room: [],
+  lastRoom: [],
+  visited: ['visited'],
+  held: ['held'],
+  used: ['used'],
+  docs: ['doc'],
+  taken: ['taken'],
+  examined: ['examined'],
+  slots: ['slot'],
+  open: ['open'],
+  fired: ['fired'],
+  pendingStory: ['story'],
+  puzzles: ['solved', 'failed', 'abandoned', 'attempt', 'hint'],
+  unproved: [],
+  flags: [],
+} as const satisfies Record<keyof WorldState, readonly FactKind[]>;
+
+test('cues: every world field is a fact kind or silent', () => {
+  const table: Readonly<Record<string, readonly string[]>> = FIELD_FACTS;
+  const silent: Readonly<Record<string, string>> = SILENT_FIELDS;
+  const kinds = new Set(factKinds());
+  // Non-vacuous: the real state's fields and the test's table, so a field either side adds is judged.
+  const fields = [...new Set([...Object.keys(EMPTY_WORLD_STATE), ...Object.keys(table)])];
+  expect(fields.length).toBeGreaterThan(15);
+  const problems: string[] = [];
+  for (const field of fields) {
+    const facts = table[field] ?? [];
+    const isSilent = Object.hasOwn(silent, field);
+    if (facts.length > 0 && isSilent) {
+      problems.push(`${field}: both a fact field and silent`);
+    } else if (facts.length === 0 && !isSilent) {
+      problems.push(`${field}: neither a fact kind field nor silent`);
+    }
+    for (const kind of facts) {
+      if (!kinds.has(kind)) {
+        problems.push(`${field}: ${kind} is no fact kind`);
+      }
+    }
+  }
+  expect(problems).toEqual([]);
 });
