@@ -236,6 +236,44 @@ test('decode: take then and lock onOpen default to empty', () => {
   expect(issues(decodeWorldSource(look))).toEqual(['sections.manor.rooms.hall.hotspots.3.then shape']);
 });
 
+test("world: a source puzzle's clues decode", () => {
+  const raw = manorSource();
+  node(raw, 'puzzles.drawer')['clues'] = [{ doc: 'diary' }];
+  node(raw, 'puzzles.gate')['clues'] = [{ examined: 'hall.inscription' }, { has: 'medal_moon' }];
+  const w = decoded(raw);
+  expect(w.puzzles[pid('drawer')]?.clues).toEqual([{ doc: 'diary' }]);
+  expect(w.puzzles[pid('gate')]?.clues).toEqual([{ examined: 'hall.inscription' }, { has: 'medal_moon' }]);
+  // The key is optional: none written, none declared.
+  expect(decoded().puzzles[pid('drawer')]?.clues).toEqual(NONE);
+  // Every kernel fact atom of the condition grammar (engine plan §4) is a clue.
+  const atoms = [
+    { held: 'medal_sun' },
+    { used: 'medal_sun' },
+    { has: 'medal_sun' },
+    { doc: 'letter' },
+    { taken: 'study.medal' },
+    { examined: 'hall.inscription' },
+    { open: 'hall.gate' },
+    { visited: 'cellar' },
+    { solved: 'gate' },
+    { failed: 'gate' },
+  ];
+  const every = manorSource();
+  node(every, 'puzzles.drawer')['clues'] = atoms;
+  expect(decoded(every).puzzles[pid('drawer')]?.clues).toEqual(atoms);
+  // Every issue in one pass: not a list, two keys, an unknown kind, an id out of grammar, a key without its room.
+  const bad = manorSource();
+  node(bad, 'puzzles.drawer')['clues'] = {};
+  node(bad, 'puzzles.gate')['clues'] = [{ doc: 'diary', has: 'x' }, { flag: 'f' }, { doc: 'Diary' }, { open: 'drawer' }];
+  expect(issues(decodeWorldSource(bad))).toEqual(
+    ['puzzles.drawer.clues shape', 'puzzles.gate.clues.0 shape', 'puzzles.gate.clues.1 shape', 'puzzles.gate.clues.2.doc id', 'puzzles.gate.clues.3.open id'].sort(),
+  );
+  // A public world never carries them.
+  const pub = publicRaw();
+  node(pub, 'puzzles.drawer')['clues'] = [{ doc: 'diary' }];
+  expect(issues(decodeWorldPublic(pub))).toEqual(['puzzles.drawer.clues shape']);
+});
+
 test('toPublic: strips solution and hints, keeps tier count', () => {
   const raw = manorSource();
   node(raw, 'puzzles.gate')['hints'] = [t('ch1.gate.h1aa', 'Надпись.'), t('ch1.gate.h2bb', 'Луна первой.')];
