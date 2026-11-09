@@ -506,7 +506,8 @@ test("explore: runReduce leaves a lock puzzle's outcome alone", () => {
 test('explore: a repeated outcome and an abandoned lock puzzle change nothing', () => {
   // The step-for-step comparison above cannot fail on the shared run step (both sides take it), so each no-op is
   // pinned against the state object itself: a repeated outcome of a linear puzzle saves nothing again (the D18 branch
-  // re-sends `failed` for a run at its limit), and a lock puzzle cannot be abandoned (X8).
+  // re-sends `failed` for a run at its limit), a hint tier read again (the session re-reads a held tier as the same
+  // `hint-opened`) saves nothing either, and a lock puzzle cannot be abandoned (X8).
   const linear = world({
     puzzles: { lin: code(2, 2) },
     sections: { s: { start: 'r', rooms: { r: room([exit('out', { story: 'end' })]) } } },
@@ -518,6 +519,15 @@ test('explore: a repeated outcome and an abandoned lock puzzle change nothing', 
   for (const step of [runReduce, reduce]) {
     const again = step(linear, ended1, failed);
     expect(again.state, step.name).toBe(ended1);
+    expect(again.effects, step.name).toEqual([]);
+  }
+  const hint = { kind: 'hint-opened', puzzle: pz('lin'), tier: 1 } as const;
+  const hinted = runReduce(linear, frozen(structuredClone(EMPTY_WORLD_STATE)), hint);
+  expect(hinted.effects).toEqual([DIRTY]);
+  const opened = frozen(hinted.state);
+  for (const step of [runReduce, reduce]) {
+    const again = step(linear, opened, hint);
+    expect(again.state, step.name).toBe(opened);
     expect(again.effects, step.name).toEqual([]);
   }
   const s = at('hall');
