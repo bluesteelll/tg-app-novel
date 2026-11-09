@@ -674,7 +674,7 @@ function collect<T>(raw: unknown, decode: (raw: Raw, report: Report) => T | unde
 }
 
 /** What a world decoder reads puzzle types from: `PUZZLE_TYPES` unless a test passes a fixture type beside them. */
-type DecodeOptions = { readonly types?: PuzzleTypes };
+export type DecodeOptions = { readonly types?: PuzzleTypes };
 
 /** `story/<ch>/world.json`: puzzles carry `solution` and `hints`. */
 export function decodeWorldSource(raw: unknown, o: DecodeOptions = {}): Result<WorldSource, WorldIssue[]> {
@@ -765,21 +765,23 @@ function bilingual(t: WorldText, en: Readonly<Record<LineId, string>>): { ru: st
 }
 
 /** The build's hint texts of one puzzle after rendering (a type's lint half; `src/` may not import `scripts/`). */
-type HintRenderer = (p: SourcePuzzle, hints: readonly { ru: string; en: string }[]) => readonly { ru: string; en: string }[];
+export type HintRenderer = (p: SourcePuzzle, hints: readonly { ru: string; en: string }[]) => readonly { ru: string; en: string }[];
 
 /**
  * `server/content/puzzles/<ch>.json`: the answer shape from the type's data half, the solution, titles and hints, the
- * hints through `renderHints` (the identity by default).
+ * hints through `renderHints` (the identity by default). `o` is what the world was decoded with: its types hold
+ * each puzzle's data half (`PUZZLE_TYPES` by default; a test's fixture type beside them).
  */
 export function toServer(
   w: WorldSource,
   en: Readonly<Record<LineId, string>>,
   chapter: ChapterId,
   renderHints: HintRenderer = (_p, hints) => hints,
+  o: DecodeOptions = {},
 ): ServerPuzzleContent {
   const puzzles: Record<PuzzleLocalId, ServerPuzzle> = {};
   for (const [pid, p] of entriesOf(w.puzzles)) {
-    const instance = puzzleInstance(p);
+    const instance = puzzleInstance(p, o.types);
     if (instance === null) {
       throw new Error(`invariant: the story tool decodes its worlds with PUZZLE_TYPES, not '${p.type}'`);
     }

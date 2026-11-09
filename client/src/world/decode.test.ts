@@ -1,5 +1,7 @@
 import { expect, test } from 'vitest';
 
+import { PUZZLE_TYPES } from '../puzzles/rules/index.ts';
+import type { PuzzleTypeData } from '../puzzles/rules/index.ts';
 import type { ChapterId, LineId, PuzzleLocalId, SectionId } from '../story/staging.ts';
 import { decodeWorldPublic, decodeWorldSource, toPublic, toServer } from './decode.ts';
 import type { WorldIssue } from './decode.ts';
@@ -342,4 +344,53 @@ test('toServer: answer shape from the type rules', () => {
     { ru: 'Дневник из подвала.', en: 'Дневник из подвала.' },
     { ru: 'Код: 1-8-4-7.', en: 'Код: 1-8-4-7.' },
   ]);
+});
+
+/** A fixture commit type beside the real ones (engine plan §7.1 round 5): its params pass through, its answer is 2 x 0..5. */
+const CHIME: PuzzleTypeData<string, unknown> = Object.freeze({
+  type: 'chime',
+  check: 'commit',
+  goal: 'secret',
+  presentation: 'overlay',
+  wrong: 'posted',
+  commit: 'control',
+  decodeParams: (raw: unknown) => ({ ok: true, value: raw }) as const,
+  answerShape: () => ({ len: 2, max: 5 }),
+  initial: () => [0, 0],
+  startShown: () => null,
+});
+
+test("toServer: a fixture type's answer shape comes from the types its world was decoded with", () => {
+  // Only the chime: decode does not resolve lock refs, so the manor's locks may name puzzles the world lacks.
+  const raw = manorSource();
+  raw['puzzles'] = {
+    chime: {
+      type: 'chime',
+      title: t('ch1.chime.t1tl', 'Колокольчики'),
+      prompt: t('ch1.chime.p1rm', 'Два звона.'),
+      closeup: null,
+      params: { bells: 2 },
+      maxAttempts: null,
+      giveUp: false,
+      solution: [1, 4],
+      hints: [t('ch1.chime.h1aa', 'Слушайте.')],
+    },
+  };
+  const types = [...PUZZLE_TYPES, CHIME];
+  const r = decodeWorldSource(raw, { types });
+  if (!r.ok) {
+    throw new Error(`invariant: the fixture decodes with its types: ${JSON.stringify(r.error)}`);
+  }
+  const chapter = 'ch1' as ChapterId; // the fixture's chapter
+  const server = toServer(r.value, {}, chapter, undefined, { types });
+  expect(server.puzzles[pid('chime')]).toEqual({
+    type: 'chime',
+    answerLen: 2,
+    answerMax: 5,
+    solution: [1, 4],
+    title: { ru: 'Колокольчики', en: 'Колокольчики' },
+    hints: [{ ru: 'Слушайте.', en: 'Слушайте.' }],
+  });
+  // Without them the emitter knows PUZZLE_TYPES only, as production does.
+  expect(() => toServer(r.value, {}, chapter)).toThrow("invariant: the story tool decodes its worlds with PUZZLE_TYPES, not 'chime'");
 });
