@@ -2,6 +2,7 @@
 // controller's boxes, the reveal outline, the bar, and the reader rules over the explore components (copies of
 // L14b's readers as ui/puzzles/puzzle-host.svelte.test.ts holds them; RULINGS 55 accepts copies).
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
+import { flushSync } from 'svelte';
 import ts from 'typescript';
 import { afterEach, expect, test, vi } from 'vitest';
 
@@ -9,8 +10,18 @@ import { t } from '../../i18n/index.ts';
 import type { Lang } from '../../i18n/index.ts';
 import type { DocId, HotspotKey, ItemId } from '../../world/types.ts';
 import { createExploreView, forwardLayer } from '../explore-view.svelte.ts';
-import type { DocView, ExploreLayerActions, ExploreLayerProps, HotspotView, ItemView, LockView } from '../explore-view.svelte.ts';
+import type {
+  DocView,
+  ExploreLayerActions,
+  ExploreLayerProps,
+  ExploreViewStore,
+  HotspotView,
+  ItemView,
+  LockView,
+} from '../explore-view.svelte.ts';
 import { GLYPH_PATHS } from '../glyphs.ts';
+import { createPuzzleView } from '../puzzle-view.svelte.ts';
+import type { PuzzleHostCallbacks } from '../puzzle-view.svelte.ts';
 import ExploreView from './ExploreView.svelte';
 import exploreViewSource from './ExploreView.svelte?raw';
 
@@ -29,22 +40,43 @@ function spots(lang: Lang): HotspotView[] {
   ];
 }
 
-function layerProps(over: Partial<ExploreLayerProps> = {}): ExploreLayerProps {
+/** What a test sets: the language, the view store's fields and the layer's callbacks, each by name. */
+type LayerOver = { lang?: Lang } & Partial<Pick<ExploreViewStore, 'hotspots' | 'reveal' | 'items' | 'docs' | 'lock' | 'panel'>> &
+  Partial<ExploreLayerActions>;
+
+/** The layer's props over a new view store with `over` written into it; a test writes the store as GameSession does. */
+function layerProps(over: LayerOver = {}): ExploreLayerProps {
+  const lang = over.lang ?? 'en';
+  const view = createExploreView();
+  view.hotspots = over.hotspots ?? spots(lang);
+  view.reveal = over.reveal ?? false;
+  view.items = over.items ?? [];
+  view.docs = over.docs ?? [];
+  view.lock = over.lock ?? null;
+  view.panel = over.panel ?? null;
+  const puzzleActions: PuzzleHostCallbacks = {
+    item: () => null,
+    onchange: () => {},
+    ontry: () => {},
+    ongiveup: () => {},
+    onhint: () => {},
+    onretry: () => {},
+    onusehint: () => {},
+    ongetmore: () => {},
+  };
   return {
-    lang: 'en',
-    hotspots: spots(over.lang ?? 'en'),
-    reveal: false,
-    items: [],
-    docs: [],
-    lock: null,
-    panel: null,
-    ontap: () => {},
-    oninventory: () => {},
-    onreveal: () => {},
-    onread: () => {},
-    oninsert: () => {},
-    onclose: () => {},
-    ...over,
+    lang,
+    view,
+    actions: {
+      ontap: over.ontap ?? (() => {}),
+      oninventory: over.oninventory ?? (() => {}),
+      onreveal: over.onreveal ?? (() => {}),
+      onread: over.onread ?? (() => {}),
+      oninsert: over.oninsert ?? (() => {}),
+      onclose: over.onclose ?? (() => {}),
+    },
+    puzzle: createPuzzleView(),
+    puzzleActions,
   };
 }
 
@@ -73,18 +105,21 @@ test('explore view: reveal shows outlines', async () => {
   expect([store.layer, store.panel, store.hotspots, store.reveal]).toEqual([null, null, [], false]);
   for (const lang of LANGS) {
     const onreveal = vi.fn();
-    const { container, getByRole, rerender, unmount } = render(ExploreView, layerProps({ lang, onreveal }));
+    const props = layerProps({ lang, onreveal });
+    const { container, getByRole, unmount } = render(ExploreView, props);
     expect(container.querySelectorAll('.hotspot'), lang).toHaveLength(3);
     expect(container.querySelectorAll('.revealed'), lang).toHaveLength(0);
     await fireEvent.click(getByRole('button', { name: t(lang, 'explore.bar_reveal') }));
     expect(onreveal, lang).toHaveBeenCalledTimes(1);
     // GameSession writes the controller's 2 s outline into the store; every spot shows, the examined one marked.
-    await rerender({ reveal: true });
+    props.view.reveal = true;
+    flushSync();
     const shownSpots = [...container.querySelectorAll('.hotspot')];
     expect(shownSpots.every((b) => b.classList.contains('revealed')), lang).toBe(true);
     expect(shownSpots.filter((b) => b.classList.contains('done')).map((b) => b.getAttribute('aria-label')), lang).toEqual([`${lang} inscription`]);
     expect(shownSpots.filter((b) => b.classList.contains('locked')).map((b) => b.getAttribute('aria-label')), lang).toEqual([`${lang} gate`]);
-    await rerender({ reveal: false });
+    props.view.reveal = false;
+    flushSync();
     expect(container.querySelectorAll('.revealed'), lang).toHaveLength(0);
     unmount();
   }
@@ -139,10 +174,8 @@ test('inventory: documents re-readable', async () => {
   for (const lang of LANGS) {
     const onread = vi.fn<(doc: DocId) => void>();
     const onclose = vi.fn();
-    const { container, getByRole, queryByRole, rerender, unmount } = render(
-      ExploreView,
-      layerProps({ lang, items: [SUN], docs: [LETTER, DIARY], panel: { kind: 'inventory' }, onread, onclose }),
-    );
+    const props = layerProps({ lang, items: [SUN], docs: [LETTER, DIARY], panel: { kind: 'inventory' }, onread, onclose });
+    const { container, getByRole, queryByRole, unmount } = render(ExploreView, props);
     // The items tab first: each row shows its glyph, its name and its description.
     const rows = [...container.querySelectorAll('.item')];
     expect(rows.map((r) => [glyphsIn(r), (r.textContent ?? '').replace(/\s+/g, ' ').trim()]), lang).toEqual([
@@ -154,19 +187,23 @@ test('inventory: documents re-readable', async () => {
     await fireEvent.click(getByRole('button', { name: LETTER.title }));
     expect(onread.mock.calls, lang).toEqual([['letter']]);
     // GameSession opens the reader: the title and every paragraph.
-    await rerender({ panel: { kind: 'doc', doc: LETTER.id } });
+    props.view.panel = { kind: 'doc', doc: LETTER.id };
+    flushSync();
     const reader = container.querySelector('.reader');
     expect(reader?.querySelector('h2')?.textContent, lang).toBe(LETTER.title);
     expect([...(reader?.querySelectorAll('p') ?? [])].map((p) => p.textContent), lang).toEqual(LETTER.body);
     await fireEvent.click(getByRole('button', { name: t(lang, 'doc.close') }));
     expect(onclose, lang).toHaveBeenCalledTimes(1);
     // Back in the inventory the document is still there, on the same tab, and reads again.
-    await rerender({ panel: { kind: 'inventory' } });
+    props.view.panel = { kind: 'inventory' };
+    flushSync();
     expect(container.querySelector('.reader'), lang).toBeNull();
     await fireEvent.click(getByRole('button', { name: LETTER.title }));
     expect(onread.mock.calls, lang).toEqual([['letter'], ['letter']]);
     // Empty tabs say so.
-    await rerender({ items: [], docs: [] });
+    props.view.items = [];
+    props.view.docs = [];
+    flushSync();
     expect(getByRole('tabpanel').textContent?.trim(), lang).toBe(t(lang, 'inv.empty'));
     await fireEvent.click(getByRole('tab', { name: t(lang, 'inv.items') }));
     expect(getByRole('tabpanel').textContent?.trim(), lang).toBe(t(lang, 'inv.empty'));
@@ -185,17 +222,16 @@ test('lock panel: wrong item refused right item inserts', async () => {
   });
   for (const lang of LANGS) {
     const oninsert = vi.fn<(key: HotspotKey, item: ItemId) => void>();
-    const { container, getByRole, queryByRole, rerender, unmount } = render(
-      ExploreView,
-      layerProps({ lang, items: [COIN, SUN], lock: gate(), panel: { kind: 'lock' }, oninsert }),
-    );
+    const props = layerProps({ lang, items: [COIN, SUN], lock: gate(), panel: { kind: 'lock' }, oninsert });
+    const { container, getByRole, queryByRole, unmount } = render(ExploreView, props);
     const slotTexts = (): string[] => [...container.querySelectorAll('.slot')].map((s) => (s.textContent ?? '').trim());
     expect(container.querySelector('.lock h2')?.textContent, lang).toBe('The gate');
     expect(slotTexts(), lang).toEqual([1, 2, 3].map(() => t(lang, 'lock.slot_empty')));
     // A wrong item: the panel asks; the controller refuses.
     await fireEvent.click(getByRole('button', { name: COIN.name }));
     expect(oninsert.mock.calls, lang).toEqual([['hall.gate', 'coin']]);
-    await rerender({ lock: gate({ refused: true }) });
+    props.view.lock = gate({ refused: true });
+    flushSync();
     expect(getByRole('alert').textContent?.trim(), lang).toBe(t(lang, 'lock.no_fit'));
     expect(slotTexts(), lang).toEqual([1, 2, 3].map(() => t(lang, 'lock.slot_empty')));
     // The right item fills its slot and leaves the held list.
@@ -204,7 +240,9 @@ test('lock panel: wrong item refused right item inserts', async () => {
       ['hall.gate', 'coin'],
       ['hall.gate', 'medal_sun'],
     ]);
-    await rerender({ lock: gate({ slots: [SUN, null, null] }), items: [COIN] });
+    props.view.lock = gate({ slots: [SUN, null, null] });
+    props.view.items = [COIN];
+    flushSync();
     const first = container.querySelector('.slot');
     expect(first === null ? [] : glyphsIn(first), lang).toEqual([GLYPH_PATHS.sun]);
     expect(slotTexts(), lang).toEqual(['Sun medal', t(lang, 'lock.slot_empty'), t(lang, 'lock.slot_empty')]);

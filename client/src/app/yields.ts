@@ -609,6 +609,7 @@ export function createYields(h: YieldsHost): Yields {
       hintTiers: p.hintTiers,
       ui: null,
       loadFailed: false,
+      retrying: false,
     };
     puzzle.frame = frame;
     const overlay = backScreen(frame);

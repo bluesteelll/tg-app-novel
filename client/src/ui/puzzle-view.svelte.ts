@@ -25,7 +25,11 @@ export type PuzzleFrameView = {
   prompt: string;
   params: unknown;
   answer: readonly number[];
-  /** An attempt is in flight. */
+  /**
+   * The frame waits for an answer that settles it: an attempt in flight (yields' `ontry` sets it; the attempt's reply
+   * clears it, in `attempted`, or in `countdown` for a 429). Try and the type UI's input are off while it holds. Never
+   * the chunk's state: that is `retrying`.
+   */
   busy: boolean;
   line: PuzzleLine;
   attemptsLeft: number | null;
@@ -37,6 +41,12 @@ export type PuzzleFrameView = {
   /** The type UI; null while its chunk loads or after it failed to load. */
   ui: Component<PuzzleUiProps> | null;
   loadFailed: boolean;
+  /**
+   * A Retry's import of the host and type chunks is in flight: the notice stays, with Retry disabled. Never `busy`.
+   * Starts false (`openPuzzle`); nothing sets it yet, so both Retry buttons stay enabled (engine plan GM3w): yields'
+   * `onretry` and `loadPuzzleUis` become its writers in GM3p.
+   */
+  retrying: boolean;
 };
 
 /** The ladder as the session answered it, with the use in flight and its failure. */

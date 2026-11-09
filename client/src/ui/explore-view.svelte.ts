@@ -8,6 +8,7 @@ import type { Component } from 'svelte';
 import type { Box } from '../geom/cover.ts';
 import type { Lang } from '../i18n/index.ts';
 import type { DocId, Glyph, Hotspot, HotspotKey, ItemId } from '../world/types.ts';
+import type { PuzzleHostCallbacks, PuzzleView } from './puzzle-view.svelte.ts';
 
 /** One hotspot button: `css` is its box in stage-host px, already cover-mapped and grown to the minimum target. */
 export type HotspotView = {
@@ -40,15 +41,21 @@ export type LockView = {
 /** The panel open over the rooms; `doc` names the document the reader shows. */
 export type ExplorePanel = { kind: 'inventory' } | { kind: 'doc'; doc: DocId } | { kind: 'lock' } | null;
 
-/** The props of the explore-ui chunk's root component (`ui/explore/ExploreView.svelte`). */
+/**
+ * The props of the explore-ui chunk's root component (`ui/explore/ExploreView.svelte`): the view store itself, so a
+ * later view field needs no App edit, and the layer's callbacks. `puzzle` and `puzzleActions` are the puzzle
+ * overlay's store and callbacks, for a device drawn inside the room; nothing reads them yet (engine plan GM3w).
+ */
 export type ExploreLayerProps = {
   lang: Lang;
-  hotspots: readonly HotspotView[];
-  reveal: boolean;
-  items: readonly ItemView[];
-  docs: readonly DocView[];
-  lock: LockView | null;
-  panel: ExplorePanel;
+  view: ExploreViewStore;
+  actions: ExploreLayerActions;
+  puzzle: PuzzleView;
+  puzzleActions: PuzzleHostCallbacks;
+};
+
+/** The explore layer's callbacks (App renders the layer with them). */
+export type ExploreLayerActions = {
   ontap: (key: HotspotKey) => void;
   oninventory: () => void;
   onreveal: () => void;
@@ -56,9 +63,6 @@ export type ExploreLayerProps = {
   oninsert: (key: HotspotKey, item: ItemId) => void;
   onclose: () => void;
 };
-
-/** The explore layer's callbacks (App renders the layer with them). */
-export type ExploreLayerActions = Pick<ExploreLayerProps, 'ontap' | 'oninventory' | 'onreveal' | 'onread' | 'oninsert' | 'onclose'>;
 
 /**
  * The layer's callbacks over whichever yields `get` names at each call (engine plan GM3w): Game's are these over its

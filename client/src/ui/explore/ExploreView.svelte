@@ -3,8 +3,8 @@
   // placed in stage-host px by the controller's cover-mapped boxes, so the buttons and the canvas agree by
   // construction; the bar; and the panel GameSession opens over them (`panel`, in step with the screens stack). The
   // inventory stays mounted under the document reader, so Back returns to the tab it was on. Presentational: views
-  // in through props, taps out through callbacks. GameSession (L15) mounts it as a child of the Stage host, which is
-  // its containing block.
+  // in through the view store, read where they are used (never copied, so each write shows), taps out through
+  // callbacks. GameSession (L15) mounts it as a child of the Stage host, which is its containing block.
   import { t } from '../../i18n/index.ts';
   import type { ExploreLayerProps } from '../explore-view.svelte.ts';
   import { EXIT_PATH, GLYPH_VIEWBOX } from '../glyphs.ts';
@@ -12,39 +12,25 @@
   import Inventory from './Inventory.svelte';
   import LockPanel from './LockPanel.svelte';
 
-  let {
-    lang,
-    hotspots,
-    reveal,
-    items,
-    docs,
-    lock,
-    panel,
-    ontap,
-    oninventory,
-    onreveal,
-    onread,
-    oninsert,
-    onclose,
-  }: ExploreLayerProps = $props();
+  let { lang, view, actions }: ExploreLayerProps = $props();
 
   /** The document the reader shows; null when the panel names no document the inventory holds. */
   const reading = $derived.by(() => {
-    const p = panel;
-    return p?.kind === 'doc' ? (docs.find((d) => d.id === p.doc) ?? null) : null;
+    const p = view.panel;
+    return p?.kind === 'doc' ? (view.docs.find((d) => d.id === p.doc) ?? null) : null;
   });
-  const inventoryOpen = $derived(panel?.kind === 'inventory' || panel?.kind === 'doc');
+  const inventoryOpen = $derived(view.panel?.kind === 'inventory' || view.panel?.kind === 'doc');
   /** A panel covers the rooms: their buttons leave the tab order and the accessibility tree. */
-  const covered = $derived(inventoryOpen || (panel?.kind === 'lock' && lock !== null));
+  const covered = $derived(inventoryOpen || (view.panel?.kind === 'lock' && view.lock !== null));
 </script>
 
 <div class="layer">
   <div class="room" inert={covered}>
-    {#each hotspots as h (h.key)}
+    {#each view.hotspots as h (h.key)}
       <button
         type="button"
         class="hotspot"
-        class:revealed={reveal}
+        class:revealed={view.reveal}
         class:done={h.done}
         class:locked={h.locked}
         aria-label={h.label}
@@ -52,7 +38,7 @@
         style:top="{h.css.y}px"
         style:width="{h.css.w}px"
         style:height="{h.css.h}px"
-        onclick={() => ontap(h.key)}
+        onclick={() => actions.ontap(h.key)}
       >
         {#if h.kind === 'exit'}
           <svg class="exit-glyph" viewBox={GLYPH_VIEWBOX} aria-hidden="true"><path d={EXIT_PATH} /></svg>
@@ -60,23 +46,23 @@
       </button>
     {/each}
     <div class="bar">
-      <button type="button" class="bar-button" onclick={oninventory}>{t(lang, 'explore.bar_inventory')}</button>
-      <button type="button" class="bar-button" onclick={onreveal}>{t(lang, 'explore.bar_reveal')}</button>
+      <button type="button" class="bar-button" onclick={actions.oninventory}>{t(lang, 'explore.bar_inventory')}</button>
+      <button type="button" class="bar-button" onclick={actions.onreveal}>{t(lang, 'explore.bar_reveal')}</button>
     </div>
   </div>
   {#if inventoryOpen}
     <div class="sheet" inert={reading !== null}>
-      <Inventory {lang} {items} {docs} {onread} />
+      <Inventory {lang} items={view.items} docs={view.docs} onread={actions.onread} />
     </div>
   {/if}
   {#if reading !== null}
     <div class="sheet">
-      <DocumentReader {lang} doc={reading} {onclose} />
+      <DocumentReader {lang} doc={reading} onclose={actions.onclose} />
     </div>
   {/if}
-  {#if panel?.kind === 'lock' && lock !== null}
+  {#if view.panel?.kind === 'lock' && view.lock !== null}
     <div class="sheet">
-      <LockPanel {lang} {lock} {items} {oninsert} />
+      <LockPanel {lang} lock={view.lock} items={view.items} oninsert={actions.oninsert} />
     </div>
   {/if}
 </div>

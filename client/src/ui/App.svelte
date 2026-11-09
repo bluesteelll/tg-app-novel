@@ -62,20 +62,11 @@
 
 <div class="app" bind:this={rootEl}>
   {#if ui !== null && game !== null}
-    <div class="layer" inert={root !== 'game' || covered || frame !== null}>
+    <div class="layer" inert={root !== 'game' || covered || ui.puzzle.covers}>
       <ui.Stage onhost={(el) => game?.attachStage(el)}>
         {#if root === 'game' && ui.explore.layer !== null}
           {@const Layer = ui.explore.layer}
-          <Layer
-            lang={vm.lang}
-            hotspots={ui.explore.hotspots}
-            reveal={ui.explore.reveal}
-            items={ui.explore.items}
-            docs={ui.explore.docs}
-            lock={ui.explore.lock}
-            panel={ui.explore.panel}
-            {...game.exploreActions}
-          />
+          <Layer lang={vm.lang} view={ui.explore} actions={game.exploreActions} puzzle={ui.puzzle} puzzleActions={game.puzzleActions} />
         {/if}
       </ui.Stage>
       {#if root === 'game'}
@@ -100,15 +91,15 @@
         />
       {/if}
     </div>
-    {#if root === 'game' && frame !== null}
-      <div class="layer" inert={covered}>
+    {#if root === 'game' && frame !== null && ui.puzzle.covers}
+      <div class="layer frame-layer" inert={covered}>
         {#if puzzleHost !== null}
           {@const Host = puzzleHost}
           <Host lang={vm.lang} {frame} ladder={ui.puzzle.ladder} {...game.puzzleActions} />
         {:else if hostFailed}
           <section class="host-failed" role="alert">
             <p>{t(vm.lang, 'puzzle.load_failed')}</p>
-            <button type="button" onclick={() => game?.puzzleActions.onretry()}>{t(vm.lang, 'puzzle.retry')}</button>
+            <button type="button" disabled={frame.retrying} onclick={() => game?.puzzleActions.onretry()}>{t(vm.lang, 'puzzle.retry')}</button>
           </section>
         {/if}
       </div>
@@ -296,6 +287,12 @@
     inset: 0;
   }
 
+  /* The frame layer passes taps through and its two blocks take them back, so a frame that leaves the stage
+     uncovered leaves the room tappable around it (engine plan GM3w); both blocks are full-bleed today. */
+  .frame-layer {
+    pointer-events: none;
+  }
+
   /* The cards scroll in a box of their own. TapToStart's column is aligned to its end, so content taller than its
      frame would overflow past the top edge, where no scroll reaches (unsafe flex-end overflow), and take Continue
      with it. */
@@ -336,6 +333,7 @@
     background: var(--tg-theme-bg-color, #17171c);
     color: var(--tg-theme-text-color, #fff);
     text-align: center;
+    pointer-events: auto;
   }
 
   .host-failed p {

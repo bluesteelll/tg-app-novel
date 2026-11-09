@@ -70,7 +70,7 @@
     <div class="body">
       {#if frame.loadFailed}
         <p class="failed" role="alert">{t(lang, 'puzzle.load_failed')}</p>
-        <button type="button" onclick={() => onretry()}>{t(lang, 'puzzle.retry')}</button>
+        <button type="button" disabled={frame.retrying} onclick={() => onretry()}>{t(lang, 'puzzle.retry')}</button>
       {:else if frame.ui !== null}
         {@const Ui = frame.ui}
         {#key frame.id}
@@ -125,6 +125,8 @@
       calc(var(--app-inset-bottom, 0px) + 16px) calc(var(--app-inset-left, 0px) + 20px);
     background: var(--tg-theme-bg-color, #17171c);
     color: var(--tg-theme-text-color, #fff);
+    /* App's frame layer passes taps through; the frame takes them back. */
+    pointer-events: auto;
   }
 
   h2,

@@ -13,8 +13,10 @@ import type { HintTierView } from '../../puzzles/session.ts';
 import type { ItemId } from '../../world/types.ts';
 import { backScreen, coversStage, createPuzzleView, forwardHost } from '../puzzle-view.svelte.ts';
 import type { HintLadderUiView, PuzzleFrameView, PuzzleHostCallbacks, PuzzleHostProps } from '../puzzle-view.svelte.ts';
+import appSource from '../App.svelte?raw';
 import HintLadder from './HintLadder.svelte';
 import PuzzleHost from './PuzzleHost.svelte';
+import puzzleHostSource from './PuzzleHost.svelte?raw';
 
 // svelteTesting()'s auto-cleanup does not reach the `dom` project (L14a), so each test unmounts what it rendered here.
 afterEach(() => cleanup());
@@ -66,6 +68,7 @@ function frameOf(over: Partial<PuzzleFrameView> = {}): PuzzleFrameView {
     hintTiers: 3,
     ui: CodeLock,
     loadFailed: false,
+    retrying: false,
     ...over,
   };
 }
@@ -371,6 +374,37 @@ test('puzzle-view: coversStage is true for every frame today', () => {
   expect(view.covers).toBe(true);
   view.frame = null;
   expect(view.covers).toBe(false);
+});
+
+/**
+ * The declarations of every rule of a component's <style> whose selector list holds exactly `selector` (a copy of
+ * explore.svelte.test.ts's reader, narrowed to whole selectors so `.host-failed p` does not count as `.host-failed`).
+ */
+function declarationsOf(source: string, selector: string): Map<string, string> {
+  const style = [...source.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style\s*>/gi)].map((m) => m[1] ?? '').join('\n');
+  const out = new Map<string, string>();
+  for (const m of style.replace(/\/\*[\s\S]*?\*\//g, ' ').matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (!(m[1] ?? '').split(',').some((s) => s.trim() === selector)) {
+      continue;
+    }
+    for (const decl of (m[2] ?? '').split(';')) {
+      const [prop, ...value] = decl.split(':');
+      if (prop !== undefined && value.length > 0) {
+        out.set(prop.trim(), value.join(':').trim());
+      }
+    }
+  }
+  return out;
+}
+
+test('puzzle host: the frame layer takes taps only on the frame and the load notice', () => {
+  // happy-dom computes no cascade: the rules are read from the sources. App's frame layer passes every tap through and
+  // the two blocks it can hold take them back; both are full-bleed, so every tap they took they still take.
+  expect(declarationsOf(appSource, '.frame-layer').get('pointer-events')).toBe('none');
+  expect(declarationsOf(appSource, '.host-failed').get('pointer-events')).toBe('auto');
+  expect(declarationsOf(puzzleHostSource, '.frame').get('pointer-events')).toBe('auto');
+  // The rule has one element: the wrapper of the frame layer.
+  expect([...appSource.matchAll(/class="layer frame-layer"/g)]).toHaveLength(1);
 });
 
 // ---------------------------------------------------------------------------------------------------------------
