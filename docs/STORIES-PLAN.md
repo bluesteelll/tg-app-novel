@@ -1132,6 +1132,16 @@ while LDB1 ran; LDB1 and LDB2 had merged before the design landed, and the merge
   - running: GM6s2 `gm6s2-values-routes` (server; lock 22, RULINGS 169, 170), beside the docs lane `docs-errata-10`;
   - to go, of this design's lanes: none. The adopted plans' next client lanes, GM1c and GM2a, wait for GM6s2 (shared
     test files, RULINGS 170, 173); the rest follow the one order above.
+- **As of `9b4fd25`** (changed by RULINGS 174-182; docs lane `docs-errata-11`, group B; SHAs from `git log --first-parent
+  main`):
+  - merged since `9a83251`: the docs lane `docs-errata-10` as `5977df5` (RULINGS 174), and from the adopted plans GM6s2
+    `2815340` (RULINGS 176; the per-player server chain is done), GM1c `8c2fa03` (RULINGS 178) and GM2a `9b4fd25`
+    (RULINGS 181) (PP "Dependency order"); the docs commit `967a8da` (every open question's default, RULINGS 175) is not
+    a lane;
+  - running: GM1d `gm1d-mech-clues` and GM3w `gm3w-ui-wiring` (client; RULINGS 179, 180, 182), beside the docs lane
+    `docs-errata-11`;
+  - to go, of this design's lanes: none. The adopted plans' next lanes, per-player GM6a and GM3m, start when a client
+    slot frees (RULINGS 182); the rest follow the one order above.
 
 **Order** (RULINGS 8 rolling, RULINGS 18 three slots; as of `66c92c4`, changed by RULINGS 22, 23: LDB1 and LDB2
 merged, so the server chain starts at L6b): server L6b → LS2 → L6c → L8a → L8b → LS3 → L9; client (two slots)
@@ -1174,6 +1184,10 @@ Changed by RULINGS 159-173 (as of `9a83251`; docs lane `docs-errata-10`, group B
 merged (`eec24fe`), so no lane of the plan is left. From the adopted plans, GM6k `fd62933`, GM1a `ef8b4dc`, GM6s1
 `81a15b0` and GM1b `03a00bc` have merged and GM6s2 runs (server, lock 22, RULINGS 169, 170); the next client lanes,
 GM1c and GM2a, start after GM6s2 merges (RULINGS 170, 173); the rest follow the one order above.
+Changed by RULINGS 174-182 (as of `9b4fd25`; docs lane `docs-errata-11`, group B): from the adopted plans, GM6s2
+`2815340` (the last of the per-player server chain), GM1c `8c2fa03` and GM2a `9b4fd25` have merged; GM1d and GM3w run
+(client; RULINGS 179, 180, 182); per-player GM6a and GM3m start when a client slot frees, GM2b after GM1d; the rest
+follow the one order above.
 
 **Collision locks added** (PP "Collision locks"): `0001` L2 → LDB1 → LS2; `0003` LS3; the serialized server files
 L6b → LS2 → L6c → L8a → L8b → LS3 → L9; `ids.rs` L6b (`StoryId` with `PuzzleId`); `lint.ts` / `dsl-doc.test.ts` /

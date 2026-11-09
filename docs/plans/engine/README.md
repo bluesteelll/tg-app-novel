@@ -1,6 +1,6 @@
 # Engine plan: the mechanics engine and the cue channel
 
-**Planned; adopted 2026-11-09 at main `3c62a86`; nothing built yet**; lane cuts re-locate every code citation on their own base. Changed by RULINGS 159-173 (as of `9a83251`; docs lane `docs-errata-10`, group B): built since: GM1a `mech-run-split` (`ef8b4dc`, RULINGS 165) and GM1b `mech-registry` (`03a00bc`, RULINGS 171); no engine lane runs; the next, GM1c and GM2a, start after per-player GM6s2 merges (RULINGS 170, 173); the state of every lane is the status block of [§12 Order and conflicts](12f-order-and-conflicts.md#order-and-conflicts).
+**Planned; adopted 2026-11-09 at main `3c62a86`; nothing built yet**; lane cuts re-locate every code citation on their own base. Changed by RULINGS 159-173 (as of `9a83251`; docs lane `docs-errata-10`, group B): built since: GM1a `mech-run-split` (`ef8b4dc`, RULINGS 165) and GM1b `mech-registry` (`03a00bc`, RULINGS 171); no engine lane runs; the next, GM1c and GM2a, start after per-player GM6s2 merges (RULINGS 170, 173); the state of every lane is the status block of [§12 Order and conflicts](12f-order-and-conflicts.md#order-and-conflicts). Changed by RULINGS 174-182 (as of `9b4fd25`; docs lane `docs-errata-11`, group B): built since also GM1c `mech-puzzle-instance` (`8c2fa03`, RULINGS 178) and GM2a `mech-save-v2` (`9b4fd25`, RULINGS 181); GM1d `mech-clues` (RULINGS 179, 180) and GM3w `mech-ui-wiring` (RULINGS 182) run; GM3m next when a client slot frees, GM2b after GM1d; the state of every lane is the same status block.
 
 ## Provenance
 
