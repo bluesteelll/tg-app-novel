@@ -639,8 +639,10 @@ function checkImport(ctx: Ctx, node: ts.Node): void {
     if (/^\/src\/(?:story|scene|audio)\//.test(target)) {
       report(ctx, 'ui-imports', node);
     }
-    // A static value import or export-from into a lazy directory, from outside it; `import()` is allowed anywhere.
-    const lazy = target.startsWith('/src/') ? lazyDirOf(target.slice('/src/'.length)) : undefined;
+    // A static value import or export-from into a lazy directory, from outside it; `import()` is allowed anywhere. A
+    // bare directory (`../ui/meta`, which resolves to its index.ts) matches with the slash added; `ui/metadata.ts` not.
+    const rel = target.startsWith('/src/') ? target.slice('/src/'.length) : undefined;
+    const lazy = rel === undefined ? undefined : (lazyDirOf(rel) ?? lazyDirOf(`${rel}/`));
     const isStatic = ts.isImportDeclaration(node) || ts.isExportDeclaration(node);
     if (isStatic && lazy !== undefined && !ctx.file.startsWith(lazy)) {
       report(ctx, 'lazy-ui', node);
@@ -979,6 +981,9 @@ test('arch: lazy ui only by dynamic import', () => {
 // never with the entry. The `lazy-ui` rule cannot say this: it allows a static import into a lazy scope only from the
 // same directory, while the controller's chunk spans app/meta.ts, meta/ and api/meta.ts, which import each other. The
 // invariant is a property of the whole graph: no meta module is in the entry's static closure.
+// Its limit: the walk reads import and export declarations only, so an eager `.ts` `import.meta.glob` in an entry
+// module would load modules with the entry unseen here. The budget's entry row still measures them; `globOrigins` is
+// where a glob-aware walk would start.
 
 /** The entry module: index.html's `<script type="module" src="/src/main.ts">`. */
 const ENTRY_ROOT = 'main.ts';
@@ -1780,6 +1785,8 @@ const RED: Record<RuleId, readonly Fixture[]> = {
     // The meta controller (a lazy root file) and its overlays (RULINGS 105; LMI cut Q8).
     ['app/game.ts', "import { createMetaController } from './meta.ts';"],
     ['ui/App.svelte', "<script lang=\"ts\">\n  import Wallet from './meta/Wallet.svelte';\n</script>\n<Wallet />"],
+    // A bare lazy directory resolves to its index.ts (`src/ui/meta/index.ts` exists), so it loads the overlays eagerly.
+    ['app/yields.ts', "import { x } from '../ui/meta';"],
   ],
   'rules-lazy': [
     ['story/chapters.ts', "import { MECHANIC_RULES } from '../mechanics/rules/index.ts';"],
@@ -1912,6 +1919,8 @@ const ALLOW: ReadonlyArray<readonly [RuleId, readonly Fixture[]]> = [
       ['app/boot.ts', "const m = import('./meta.ts');"],
       ['ui/state.svelte.ts', "import type { MetaView } from '../app/meta.ts';"],
       ['ui/meta/Friends.svelte', '<script lang="ts">\n  import { x } from \'./index.ts\';\n</script>'],
+      // A sibling whose name only shares a lazy directory's prefix is not in it.
+      ['app/yields.ts', "import { x } from '../ui/metadata.ts';"],
     ],
   ],
   [
