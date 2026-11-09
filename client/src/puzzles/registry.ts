@@ -9,7 +9,7 @@ import type { Glyph, ItemId } from '../world/types.ts';
 import type { PuzzleType } from './rules/index.ts';
 
 /**
- * What every type UI renders from. `params` is narrowed by the type's own `PUZZLE_RULES[type].decodeParams`;
+ * What every type UI renders from. `params` is narrowed by its type's data half's `decodeParams` (`PUZZLE_TYPES`);
  * `answer` is the session's (the UI holds none of its own); `item` names an `order` piece in the UI language, with
  * its world glyph (K46).
  */
@@ -29,20 +29,26 @@ function detailOf(e: unknown): string {
   return e instanceof Error ? e.message || e.name : String(e);
 }
 
-/** The component of puzzle type `t`, loaded on first use. */
-export async function loadPuzzleUi(t: PuzzleType): Promise<Result<Component<PuzzleUiProps>, ChunkError>> {
-  try {
-    switch (t) {
-      case 'code':
-        return { ok: true, value: (await import('./ui/CodeLock.svelte')).default };
-      case 'order':
-        return { ok: true, value: (await import('./ui/OrderPuzzle.svelte')).default };
-      default: {
-        const never: never = t;
-        return never;
-      }
+type UiLoader = () => Promise<Result<Component<PuzzleUiProps>, ChunkError>>;
+
+/** A type UI's loader: its module's component, or the chunk error when `import()` rejects. */
+function loader(load: () => Promise<{ default: Component<PuzzleUiProps> }>): UiLoader {
+  return async () => {
+    try {
+      return { ok: true, value: (await load()).default };
+    } catch (e) {
+      return { ok: false, error: { kind: 'chunk', detail: detailOf(e) } };
     }
-  } catch (e) {
-    return { ok: false, error: { kind: 'chunk', detail: detailOf(e) } };
-  }
+  };
+}
+
+/** One loader per puzzle type (engine plan §7.1); a type without one is a tsc error. */
+export const PUZZLE_UI: { readonly [T in PuzzleType]: UiLoader } = Object.freeze({
+  code: loader(() => import('./ui/CodeLock.svelte')),
+  order: loader(() => import('./ui/OrderPuzzle.svelte')),
+});
+
+/** The component of puzzle type `t`, loaded on first use. */
+export function loadPuzzleUi(t: PuzzleType): Promise<Result<Component<PuzzleUiProps>, ChunkError>> {
+  return PUZZLE_UI[t]();
 }
