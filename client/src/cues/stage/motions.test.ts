@@ -245,7 +245,7 @@ test('cues: a declared control resolves its motion', () => {
   // A core control plays its override, or the control default.
   expect(uiMotion('bare-art', declared)).toBe(UI_MOTIONS.overrides['bare-art']);
   expect(uiMotion('puzzle-try', declared)).toBe(UI_MOTIONS.control);
-  // The registries declare no control today: the default resolves the core controls as before.
-  expect(declaredControls()).toEqual([]);
+  // With no list passed, a core control resolves through the registries' declarations to its override. Nothing here
+  // pins which controls the registries declare: a type or module lane adds its own without touching this file.
   expect(uiMotion('ribbon-item')).toBe(UI_MOTIONS.overrides['ribbon-item']);
 });
