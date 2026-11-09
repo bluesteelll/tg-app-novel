@@ -1015,6 +1015,12 @@ test('reconcile: a lost cell of an item the save also holds leaves it once in he
   expect([r.state.held, r.state.used, r.state.slots, r.dropped]).toEqual([['medal_sun'], [], {}, ['slots:hall.gone']]);
 });
 
+test('reconcile: step 0 drops a held id that is already the target of a rename it merges with a used id', () => {
+  const w = stamped({ ...manor({ star: 'medal_comet', renamedIds: true }), renamed: { items: { [it('medal_old')]: it('medal_comet'), [it('medal_star')]: it('medal_comet') } } }, V2);
+  const r = reconcile(w, at('hall', { held: [it('medal_comet')], used: [it('medal_old')], slots: { [k('hall.gate')]: [null, null, it('medal_old')] } }, 'estate'), MANOR_KNOTS, V1);
+  expect([r.state.held, r.state.used, r.state.slots, r.dropped]).toEqual([[], ['medal_comet'], { 'hall.gate': [null, null, 'medal_comet'] }, ['held:medal_comet']]);
+});
+
 test('reconcile: unprovable state restarts the section', () => {
   const v1 = manor();
   const v2 = stamped(manor({ leverCellar: true }), V2);
