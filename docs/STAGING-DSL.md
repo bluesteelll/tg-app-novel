@@ -235,6 +235,7 @@ preload-visible).
 | `bgm` | `bgm:<track>\|stop [fade=N] [vol=N]` | audio | `bgm/<track>` | `bgm` |
 | `sfx` | `sfx:<sfx> [vol=N]` | audio | `sfx/<sfx>` | `sfx` |
 | `wait` | `wait:<ms>` | scene (batch timing) | — | `wait` |
+| `face` | `face:<char> <expr> [ms=N]` | scene | `char/<char>/<expr>` | `face` |
 | `puzzle` | `puzzle:<puzzle> then=<knot>` | GameSession → PuzzleSession | — (the close-up comes from world data) | `puzzle` |
 | `explore` | `explore:<section>` | GameSession → ExploreController | — (rooms come from world data) | `explore` |
 
@@ -397,6 +398,26 @@ Someone knocked. #sfx: door #id:ch1.room.kn0c
 # scene: archive
 # wait: 1200
 The archive was colder than I remembered. #id:ch2.archive.c0ld
+```
+
+### `face`
+
+- **Syntax:** `face:<char> <expr> [ms=N]`
+- **Arguments:** `<char>` and `<expr>` as for `show`.
+- **Options:** `ms` default `200`, range 0–10000.
+- **Effect:** changes the expression of a character on stage; its slot and z-order stay. On today's sprite stage a
+  `face` is a `show` without `at`: the expression crossfade (new sprite over the old one). A `face` of a character
+  that is not on stage changes nothing. The build names the expression's sprite like a `show`'s (the chapter's
+  manifest and the knot's preload); the drawn faces of shots come with the shots plan (SH2–SH4).
+- **Validation:** `tag/unknown-asset` (character or expression).
+- **Typed:** `{ kind: 'face'; char: CharId; expr: ExprId; ms: number | null }` (`null` = the default)
+
+```ink
+=== face_example ===
+# show: ally neutral at=left
+ally: I did not expect you here. #id:ch1.cafe.f4c0
+# face: ally smile
+ally: But I am glad you came. #id:ch1.cafe.f4c1
 ```
 
 ### `puzzle`

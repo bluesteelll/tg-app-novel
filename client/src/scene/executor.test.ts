@@ -402,6 +402,7 @@ const cg = (c: string | null, t: 'fade' | 'cut' = 'fade', ms = 500): VisualComma
   ms,
 });
 const wait = (ms: number): VisualCommand => ({ kind: 'wait', ms });
+const face = (c: string, e: string, ms: number | null = null): VisualCommand => ({ kind: 'face', char: c as CharId, expr: e as ExprId, ms });
 const hide = (c: string, t: 'fade' | 'cut' = 'fade', ms = 300): VisualCommand => ({
   kind: 'hide',
   char: c === 'all' ? 'all' : (c as CharId),
@@ -1513,5 +1514,41 @@ test('executor: a bg cut replaces the shot at once', async () => {
     'create:bg:street',
   ]);
   expect(h.releasedOf('bg/cafe')).toBe(1);
+  h.ex.destroy();
+});
+
+test('executor: a face changes the expression of a character on stage and nothing else', async () => {
+  const h = harness();
+  await h.ex.apply([bg('cafe', 'cut'), show('ally', 'neutral', 'left', 'cut'), show('stranger', 'serious', 'right', 'cut')], NOW);
+  const shown = [...h.live('bg'), ...h.inGroup('stranger')];
+  h.log.length = 0;
+  const swap = track(h.ex.apply([face('ally', 'worried')], NOW));
+  // The logical stage at batch start: ally's expression changed, her slot and the z-order kept.
+  expect(h.ex.snapshot().chars).toEqual([
+    { char: 'ally', expr: 'worried', at: 'left' },
+    { char: 'stranger', expr: 'serious', at: 'right' },
+  ]);
+  await flush();
+  // The expression crossfade of a show: the new sprite over the old one in ally's group, 200 ms by default.
+  advance(150);
+  await flush();
+  expect(swap.done).toBe(false);
+  expect(h.inGroup('ally').map((x) => x.key)).toEqual(['ally', 'ally']);
+  advance(100);
+  await flush();
+  expect(swap.done).toBe(true);
+  expect(h.inGroup('ally').length).toBe(1);
+  expect(h.releasedOf('char/ally/neutral')).toBe(1);
+  // Nothing else moved: the bg and the stranger keep their sprites, no anchor or group was made or dropped.
+  expect([...h.live('bg'), ...h.inGroup('stranger')]).toEqual(shown);
+  expect(h.log.filter((x) => /^(anchor|group|drop):/.test(x))).toEqual([]);
+  expect(h.log.filter((x) => /^(create|destroy):/.test(x))).toEqual(['create:chars:ally', 'destroy:chars:ally']);
+  // A face of a character not on stage adds no one.
+  await h.ex.apply([hide('stranger', 'cut')], NOW);
+  h.log.length = 0;
+  await h.ex.apply([face('stranger', 'serious')], NOW);
+  expect(h.ex.snapshot().chars).toEqual([{ char: 'ally', expr: 'worried', at: 'left' }]);
+  expect(h.inGroup('stranger')).toEqual([]);
+  expect(h.log.filter((x) => /^(anchor|group|create|destroy|drop):/.test(x))).toEqual([]);
   h.ex.destroy();
 });

@@ -587,3 +587,44 @@ test('catalog: lookups ignore inherited properties', () => {
   }
   expect(index.hasExpr('ally', 'smile')).toBe(true);
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// The shot kinds (docs/plans/shots §3.1-3.2, lane SH1).
+
+test('tags: face names a known character and expression', () => {
+  expect(parse('face: ally smile')).toEqual({
+    lineId: null,
+    commands: [{ kind: 'face', char: 'ally', expr: 'smile', ms: null }],
+    errors: [],
+  });
+  expect(parse('face:stranger serious ms=300')).toEqual({
+    lineId: null,
+    commands: [{ kind: 'face', char: 'stranger', expr: 'serious', ms: 300 }],
+    errors: [],
+  });
+  const cases: ReadonlyArray<readonly [string, string]> = [
+    ['face: ally', 'missing-arg'],
+    ['face:', 'missing-arg'],
+    ['face: ally smile at=left', 'bad-arg'],
+    ['face: ally smile t=cut', 'bad-arg'],
+    ['face: ally smile worried', 'bad-arg'],
+    ['face: ally smile ms=10001', 'bad-arg'],
+  ];
+  for (const [tag, reason] of cases) {
+    const r = parse(tag);
+    expect(reasons(r), tag).toEqual([reason]);
+    expect(r.commands, tag).toEqual([]);
+  }
+});
+
+test('tags: face of an unknown expression is unknown-asset', () => {
+  for (const index of [DEMO, assetIndex(committedCatalog())]) {
+    // An expression the character lacks, a character the catalog lacks, a speaker with no sprites, a reserved word.
+    for (const tag of ['face: ally grin', 'face: nobody smile', 'face: voice neutral', 'face: all smile']) {
+      const r = parseTags([tag], index);
+      expect(reasons(r), tag).toEqual(['unknown-asset']);
+      expect(r.commands, tag).toEqual([]);
+    }
+    expect(parseTags(['face: stranger serious'], index).errors).toEqual([]);
+  }
+});

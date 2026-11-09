@@ -24,7 +24,7 @@ export const YIELD_KINDS = ['puzzle', 'explore'] as const;
 export type YieldKind = (typeof YIELD_KINDS)[number];
 
 /** Every tag kind of STAGING-DSL §6, in table order: `id` is the line ID, the rest are the command kinds. */
-export const TAG_KINDS = ['id', 'bg', 'scene', 'show', 'hide', 'cg', 'bgm', 'sfx', 'wait', ...YIELD_KINDS] as const;
+export const TAG_KINDS = ['id', 'bg', 'scene', 'show', 'hide', 'cg', 'bgm', 'sfx', 'wait', 'face', ...YIELD_KINDS] as const;
 export type TagKind = (typeof TAG_KINDS)[number];
 
 type SameUnion<A, B> = [A] extends [B] ? ([B] extends [A] ? A : never) : never;
@@ -147,6 +147,11 @@ function intOption(tag: string, options: Options, name: string, fallback: number
   return value === undefined ? fallback : int(tag, name, value, 0, max);
 }
 
+/** An `ms` with no fixed default: null when omitted, so whoever draws the command applies its own per-case one. */
+function msOrNull(tag: string, options: Options): number | null | TagError {
+  return options.has('ms') ? intOption(tag, options, 'ms', 0, MS_MAX) : null;
+}
+
 function choice<T extends string>(
   tag: string,
   options: Options,
@@ -164,6 +169,12 @@ function choice<T extends string>(
 
 function unknownAsset(tag: string, what: string): TagError {
   return fail(tag, 'unknown-asset', `${what} is not in assets/catalog.json`);
+}
+
+/** A character of the catalog, then (when given) one of its expressions; null when both are known. */
+function unknownChar(tag: string, assets: AssetIndex, char: string, expr?: string): TagError | null {
+  if (!assets.hasChar(char)) return unknownAsset(tag, `character '${char}'`);
+  return expr === undefined || assets.hasExpr(char, expr) ? null : unknownAsset(tag, `expression '${expr}' of '${char}'`);
 }
 
 function badName(tag: string, what: string, value: string): TagError {
@@ -239,11 +250,11 @@ function command(tag: string, kind: CommandKind, rawArgs: string | undefined, as
       if (typeof at === 'object' && at !== null) return at;
       const t = choice(tag, a.options, 't', FADE_CUT, 'fade');
       if (typeof t === 'object') return t;
-      const ms = a.options.has('ms') ? intOption(tag, a.options, 'ms', 0, MS_MAX) : null;
+      const ms = msOrNull(tag, a.options);
       if (typeof ms === 'object' && ms !== null) return ms;
       const [char, expr] = a.positional as [string, string];
-      if (!assets.hasChar(char)) return unknownAsset(tag, `character '${char}'`);
-      if (!assets.hasExpr(char, expr)) return unknownAsset(tag, `expression '${expr}' of '${char}'`);
+      const unknown = unknownChar(tag, assets, char, expr);
+      if (unknown !== null) return unknown;
       return { kind: 'command', command: { kind, char: char as CharId, expr: expr as ExprId, at, t, ms } };
     }
     case 'hide': {
@@ -296,6 +307,16 @@ function command(tag: string, kind: CommandKind, rawArgs: string | undefined, as
       if (typeof ms === 'object') return ms;
       return { kind: 'command', command: { kind, ms } };
     }
+    case 'face': {
+      const a = readArgs(tag, kind, rawArgs, 2, ['ms']);
+      if ('reason' in a) return a;
+      const ms = msOrNull(tag, a.options);
+      if (typeof ms === 'object' && ms !== null) return ms;
+      const [char, expr] = a.positional as [string, string];
+      const unknown = unknownChar(tag, assets, char, expr);
+      if (unknown !== null) return unknown;
+      return { kind: 'command', command: { kind, char: char as CharId, expr: expr as ExprId, ms } };
+    }
     case 'puzzle':
     case 'explore':
       return yieldCommand(tag, kind, rawArgs);
@@ -342,6 +363,7 @@ function conflictsOneWay(a: StagingCommand, b: StagingCommand): boolean {
       return b.kind === a.kind;
     case 'hide':
     case 'sfx':
+    case 'face':
       return false;
     case 'puzzle':
     case 'explore':

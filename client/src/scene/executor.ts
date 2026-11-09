@@ -33,7 +33,7 @@ export function resumeAll(): void {
 
 /** The commands the scene executes; audio and yields stay with GameSession (§7 steps 1 and 5). */
 export type VisualCommand =
-  | Extract<StagingCommand, { kind: 'bg' | 'scene' | 'show' | 'hide' | 'cg' | 'wait' }>
+  | Extract<StagingCommand, { kind: 'bg' | 'scene' | 'show' | 'hide' | 'cg' | 'wait' | 'face' }>
   | PropsCommand;
 export type SceneSnapshot = Omit<StagingSnapshot, 'bgm'>;
 
@@ -154,7 +154,7 @@ function find<K extends VisualCommand['kind']>(
   return cmds.find((c): c is Extract<VisualCommand, { kind: K }> => c.kind === kind);
 }
 
-/** The end state of a batch (§7 order): scene clears, bg replaces (and clears props), hides, shows, cg, props. */
+/** The end state of a batch (§7 order): scene clears, bg replaces (and clears props), hides, shows, faces, cg, props. */
 function reduce(s: SceneSnapshot, cmds: readonly VisualCommand[]): SceneSnapshot {
   let { bg, cg } = s;
   let chars = [...s.chars];
@@ -186,6 +186,13 @@ function reduce(s: SceneSnapshot, cmds: readonly VisualCommand[]): SceneSnapshot
       } else {
         chars[i] = next;
       }
+    }
+  }
+  // Shots plan §3.1 step 3: a face changes the expression of a character on stage (slot and z-order kept); a face
+  // of a character not on stage changes nothing.
+  for (const c of cmds) {
+    if (c.kind === 'face') {
+      chars = chars.map((x) => (x.char === c.char ? { ...x, expr: c.expr } : x));
     }
   }
   const cgCmd = find(cmds, 'cg');
@@ -690,8 +697,11 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         }
       }
       for (const c of target.chars) {
-        const show = b.cmds.find((x) => x.kind === 'show' && x.char === c.char);
-        const ms = (byDefault: number): number => (show?.kind !== 'show' || show.t === 'cut' ? 0 : (show.ms ?? byDefault));
+        // A face is a show without `at` or `t`: the expression crossfade, 200 ms by default.
+        const show = b.cmds.find(
+          (x): x is Extract<VisualCommand, { kind: 'show' | 'face' }> => (x.kind === 'show' || x.kind === 'face') && x.char === c.char,
+        );
+        const ms = (byDefault: number): number => (show === undefined || (show.kind === 'show' && show.t === 'cut') ? 0 : (show.ms ?? byDefault));
         const cv = chars.get(c.char);
         const id = want.get(charSlot(c.char));
         const h = handleFor(charSlot(c.char));

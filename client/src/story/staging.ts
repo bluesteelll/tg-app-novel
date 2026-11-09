@@ -43,6 +43,8 @@ export type StagingCommand =
   | { kind: 'bgm'; track: TrackId | null; fadeMs: number; vol: number }
   | { kind: 'sfx'; sfx: SfxId; vol: number }
   | { kind: 'wait'; ms: number }
+  // The shot kinds (docs/plans/shots §3.2); `ms: null` = the per-kind default of whoever draws it.
+  | { kind: 'face'; char: CharId; expr: ExprId; ms: number | null }
   | { kind: 'puzzle'; puzzle: PuzzleLocalId; then: KnotName }
   | { kind: 'explore'; section: SectionId };
 

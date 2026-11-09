@@ -40,6 +40,7 @@ export function splitBatch(cmds: readonly StagingCommand[]): { visual: VisualCom
       case 'hide':
       case 'cg':
       case 'wait':
+      case 'face':
         visual.push(c);
         break;
       case 'puzzle':
@@ -61,7 +62,8 @@ export function imageIds(cmds: readonly VisualCommand[]): AssetId[] {
   for (const c of cmds) {
     if (c.kind === 'bg' || c.kind === 'scene') {
       out.push(`bg/${c.bg}` as AssetId);
-    } else if (c.kind === 'show') {
+    } else if (c.kind === 'show' || c.kind === 'face') {
+      // On a sprite stage a face is a show without `at`: its expression's sprite, ensured before the line.
       out.push(`char/${c.char}/${c.expr}` as AssetId);
     } else if (c.kind === 'cg' && c.cg !== null) {
       out.push(`cg/${c.cg}` as AssetId);
