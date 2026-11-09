@@ -57,4 +57,13 @@ test('bus: a hold past CUE_HOLD_MAX counts the dropped cues as orphans', () => {
   bus.dispose();
   expect(bus.orphans()).toBe(5);
   expect(got).toHaveLength(CUE_HOLD_MAX);
+  // A cue a yield emits after the session's teardown reaches no subscriber, live or replayed, and is not held.
+  const scene: (number | null)[] = [];
+  bus.subscribe('scene', (e) => scene.push(indexOf(e)));
+  bus.emit(event(103));
+  const late: (number | null)[] = [];
+  bus.subscribe('overlay', (e) => late.push(indexOf(e)));
+  expect(late).toEqual([]);
+  expect(scene).toEqual([]);
+  expect(bus.orphans()).toBe(5);
 });
