@@ -503,6 +503,29 @@ test("explore: runReduce leaves a lock puzzle's outcome alone", () => {
   expect(state.puzzles).toEqual({ lin: { outcome: 'solved', attempts: 2, hintsOpened: 2 } });
 });
 
+test('explore: a repeated outcome and an abandoned lock puzzle change nothing', () => {
+  // The step-for-step comparison above cannot fail on the shared run step (both sides take it), so each no-op is
+  // pinned against the state object itself: a repeated outcome of a linear puzzle saves nothing again (the D18 branch
+  // re-sends `failed` for a run at its limit), and a lock puzzle cannot be abandoned (X8).
+  const linear = world({
+    puzzles: { lin: code(2, 2) },
+    sections: { s: { start: 'r', rooms: { r: room([exit('out', { story: 'end' })]) } } },
+  });
+  const failed = { kind: 'puzzle-ended', puzzle: pz('lin'), outcome: 'failed' } as const;
+  const first = runReduce(linear, frozen(structuredClone(EMPTY_WORLD_STATE)), failed);
+  expect(first.effects).toEqual([DIRTY]);
+  const ended1 = frozen(first.state);
+  for (const step of [runReduce, reduce]) {
+    const again = step(linear, ended1, failed);
+    expect(again.state, step.name).toBe(ended1);
+    expect(again.effects, step.name).toEqual([]);
+  }
+  const s = at('hall');
+  const abandoned = reduce(manor(), s, ended('gate', 'abandoned'));
+  expect(abandoned.state).toBe(s);
+  expect(abandoned.effects).toEqual([]);
+});
+
 test('actions: enumerates enabled taps and inserts', () => {
   const w = manor();
   const hall = at('hall', { held: [it('medal_sun'), it('medal_star')] });
