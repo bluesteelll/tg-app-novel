@@ -1,0 +1,32 @@
+{
+  "about": "Shared per-player value vectors (per-player 3.2, 5.1): read by server/tests/it/puzzles.rs and the client's value tests; computed by an independent oracle; every size < 2^53.",
+  "render": [
+    {"template": "Код: $code(drawer).", "own": "drawer", "value": [1, 8, 4, 7], "max": 9, "text": "Код: 1847."},
+    {"template": "Code: $code(drawer).", "own": "drawer", "value": [1, 8, 4, 7], "max": 9, "text": "Code: 1847."},
+    {"template": "Набрать $code(dial) на сейфе.", "own": "dial", "value": [12, 7, 30], "max": 30, "text": "Набрать 12-7-30 на сейфе."},
+    {"template": "Dial $code(dial).", "own": "dial", "value": [10, 0, 3], "max": 10, "text": "Dial 10-0-3."},
+    {"template": "Код: $code(drawer).", "own": "drawer", "value": [0, 9, 0, 5], "max": 9, "text": "Код: 0905."},
+    {"template": "Первая цифра — $code(drawer.1), последняя — $code(drawer.4).", "own": "drawer", "value": [1, 8, 4, 7], "max": 9, "text": "Первая цифра — 1, последняя — 7."},
+    {"template": "$code(drawer.1)$code(drawer.2)", "own": "drawer", "value": [1, 8, 4, 7], "max": 9, "text": "18"},
+    {"template": "Цена $5 за $code(drawer)", "own": "drawer", "value": [1, 8, 4, 7], "max": 9, "text": "Цена $5 за 1847"},
+    {"template": "$$code(drawer)", "own": "drawer", "value": [1, 8, 4, 7], "max": 9, "text": "$1847"},
+    {"template": "Последняя клетка: $code(grid.12).", "own": "grid", "value": [3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5, 8], "max": 9, "text": "Последняя клетка: 8."},
+    {"template": "Второй диск: $code(dial.2).", "own": "dial", "value": [12, 7, 30], "max": 30, "text": "Второй диск: 7."},
+    {"template": "$code(drawer) и снова $code(drawer)", "own": "drawer", "value": [1, 8, 4, 7], "max": 9, "text": "1847 и снова 1847"},
+    {"template": "Без кода.", "own": "drawer", "value": [1, 8, 4, 7], "max": 9, "text": "Без кода."}
+  ],
+  "domains": [
+    {"domain": {"positions": [[0, 9], [0, 9], [0, 9], [0, 9]], "distinct": false, "exclude": [[0, 0, 0, 0]]}, "answerLen": 4, "answerMax": 9, "size": 9999, "floor": true, "acceptance": true},
+    {"domain": {"positions": [[0, 9], [0, 9], [0, 9]], "distinct": false, "exclude": [[0, 0, 0]]}, "answerLen": 3, "answerMax": 9, "size": 999, "floor": false, "acceptance": true},
+    {"domain": {"positions": [[0, 9], [0, 9], [0, 9]], "distinct": false, "exclude": []}, "answerLen": 3, "answerMax": 9, "size": 1000, "floor": true, "acceptance": true},
+    {"domain": {"positions": [[0, 9], [0, 9], [0, 9], [0, 9]], "distinct": true, "exclude": []}, "answerLen": 4, "answerMax": 9, "size": 5040, "floor": true, "acceptance": true},
+    {"domain": {"positions": [[0, 9], [0, 9], [0, 9], [0, 9]], "distinct": true, "exclude": [[0, 0, 0, 0], [0, 1, 2, 3]]}, "answerLen": 4, "answerMax": 9, "size": 5039, "floor": true, "acceptance": true},
+    {"domain": {"positions": [[1, 9], [0, 9], [0, 9], [0, 9]], "distinct": false, "exclude": [[0, 0, 0, 0]]}, "answerLen": 4, "answerMax": 9, "size": 9000, "floor": true, "acceptance": true},
+    {"domain": {"positions": [[0, 9], [0, 9], [0, 9], [0, 9]], "distinct": false, "exclude": [[0, 0, 0, 0], [0, 0, 0, 0]]}, "answerLen": 4, "answerMax": 9, "size": 9999, "floor": true, "acceptance": true},
+    {"domain": {"positions": [[0, 3], [0, 3], [0, 3], [0, 3], [0, 3]], "distinct": false, "exclude": []}, "answerLen": 5, "answerMax": 3, "size": 1024, "floor": true, "acceptance": true},
+    {"domain": {"positions": [[0, 15], [0, 15], [0, 15], [0, 15], [0, 15], [0, 15], [0, 15], [0, 15]], "distinct": true, "exclude": []}, "answerLen": 8, "answerMax": 15, "size": 518918400, "floor": true, "acceptance": true},
+    {"domain": {"positions": [[0, 15], [0, 15], [0, 15], [0, 15], [0, 15], [0, 15], [0, 15], [0, 15], [0, 15]], "distinct": true, "exclude": []}, "answerLen": 9, "answerMax": 15, "size": 4151347200, "floor": true, "acceptance": false},
+    {"domain": {"positions": [[0, 15], [0, 15], [0, 15], [0, 15], [0, 15], [0, 15], [0, 15], [0, 15], [0, 15], [0, 15], [0, 15], [0, 15], [0, 15], [0, 15], [0, 15], [0, 15]], "distinct": true, "exclude": []}, "answerLen": 16, "answerMax": 15, "size": 20922789888000, "floor": true, "acceptance": false},
+    {"domain": {"positions": [[0, 65535], [0, 65535]], "distinct": false, "exclude": []}, "answerLen": 2, "answerMax": 65535, "size": 4294967296, "floor": true, "acceptance": true}
+  ]
+}
