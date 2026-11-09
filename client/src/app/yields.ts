@@ -29,7 +29,7 @@ import type { LoadedChapter, Result } from '../story/catalog.ts';
 import type { RunnerError, StoryRunner } from '../story/runner.ts';
 import type { KnotName, PropPlacement, PuzzleLocalId, SectionId, StagingSnapshot, VarName, YieldCommand } from '../story/staging.ts';
 import type { TelegramClient } from '../telegram/index.ts';
-import type { ExploreLayerProps, ExploreViewStore } from '../ui/explore-view.svelte.ts';
+import type { ExploreLayerActions, ExploreLayerProps, ExploreViewStore } from '../ui/explore-view.svelte.ts';
 import { backScreen } from '../ui/puzzle-view.svelte.ts';
 import type { PuzzleFrameView, PuzzleHostCallbacks, PuzzleHostProps, PuzzleView } from '../ui/puzzle-view.svelte.ts';
 import type { Screens, ScreensView } from '../ui/screens.ts';
@@ -116,9 +116,6 @@ export type YieldsHost = {
   /** An intent that must run: after the batch in flight. */
   queue(fn: () => Promise<void>): Promise<void>;
 };
-
-/** The explore layer's callbacks (App renders the layer with them). */
-export type ExploreLayerActions = Pick<ExploreLayerProps, 'ontap' | 'oninventory' | 'onreveal' | 'onread' | 'oninsert' | 'onclose'>;
 
 export interface Yields {
   /** A `yield` step is on screen, after its batch and its autosave. */

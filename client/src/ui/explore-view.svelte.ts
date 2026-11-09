@@ -57,6 +57,25 @@ export type ExploreLayerProps = {
   onclose: () => void;
 };
 
+/** The explore layer's callbacks (App renders the layer with them). */
+export type ExploreLayerActions = Pick<ExploreLayerProps, 'ontap' | 'oninventory' | 'onreveal' | 'onread' | 'oninsert' | 'onclose'>;
+
+/**
+ * The layer's callbacks over whichever yields `get` names at each call (engine plan GM3w): Game's are these over its
+ * current session's, so a later session's layer is reached and none once the session has ended. One explicit
+ * forwarder per action, so a lane adding an action edits this file only.
+ */
+export function forwardLayer(get: () => ExploreLayerActions | undefined): ExploreLayerActions {
+  return {
+    ontap: (key) => get()?.ontap(key),
+    oninsert: (key, item) => get()?.oninsert(key, item),
+    oninventory: () => get()?.oninventory(),
+    onread: (doc) => get()?.onread(doc),
+    onreveal: () => get()?.onreveal(),
+    onclose: () => get()?.onclose(),
+  };
+}
+
 /** The store; App.svelte renders `layer` with these fields once `yields.ts` has loaded it. */
 export interface ExploreViewStore {
   /** The explore-ui chunk's root component once `yields.ts` has loaded it. */

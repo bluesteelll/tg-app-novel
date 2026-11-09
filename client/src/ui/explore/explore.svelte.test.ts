@@ -8,8 +8,8 @@ import { afterEach, expect, test, vi } from 'vitest';
 import { t } from '../../i18n/index.ts';
 import type { Lang } from '../../i18n/index.ts';
 import type { DocId, HotspotKey, ItemId } from '../../world/types.ts';
-import { createExploreView } from '../explore-view.svelte.ts';
-import type { DocView, ExploreLayerProps, HotspotView, ItemView, LockView } from '../explore-view.svelte.ts';
+import { createExploreView, forwardLayer } from '../explore-view.svelte.ts';
+import type { DocView, ExploreLayerActions, ExploreLayerProps, HotspotView, ItemView, LockView } from '../explore-view.svelte.ts';
 import { GLYPH_PATHS } from '../glyphs.ts';
 import ExploreView from './ExploreView.svelte';
 import exploreViewSource from './ExploreView.svelte?raw';
@@ -213,6 +213,73 @@ test('lock panel: wrong item refused right item inserts', async () => {
     expect(getByRole('button', { name: COIN.name }), lang).toBeDefined();
     unmount();
   }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM3w: Game's layer callbacks are forwarders over the current session's yields (engine plan GM3w)
+
+/** An ExploreLayerActions that records each call as [tag, action, ...arguments]. */
+function recordingLayer(tag: string, calls: unknown[][]): ExploreLayerActions {
+  return {
+    ontap: (key) => {
+      calls.push([tag, 'ontap', key]);
+    },
+    oninsert: (key, item) => {
+      calls.push([tag, 'oninsert', key, item]);
+    },
+    oninventory: () => {
+      calls.push([tag, 'oninventory']);
+    },
+    onread: (doc) => {
+      calls.push([tag, 'onread', doc]);
+    },
+    onreveal: () => {
+      calls.push([tag, 'onreveal']);
+    },
+    onclose: () => {
+      calls.push([tag, 'onclose']);
+    },
+  };
+}
+
+/** Every action once, in a fixed order, with fixed arguments. */
+function callEveryAction(a: ExploreLayerActions): void {
+  a.ontap(k('hall.gate'));
+  a.oninsert(k('hall.gate'), 'coin' as ItemId);
+  a.oninventory();
+  a.onread('letter' as DocId);
+  a.onreveal();
+  a.onclose();
+}
+
+/** What `callEveryAction` records on a layer tagged `tag`. */
+const everyActionOn = (tag: string): unknown[][] => [
+  [tag, 'ontap', 'hall.gate'],
+  [tag, 'oninsert', 'hall.gate', 'coin'],
+  [tag, 'oninventory'],
+  [tag, 'onread', 'letter'],
+  [tag, 'onreveal'],
+  [tag, 'onclose'],
+];
+
+test("explore-view: forwardLayer reaches the current session's layer and nothing after it ends", () => {
+  const calls: unknown[][] = [];
+  let current: ExploreLayerActions | undefined = recordingLayer('a', calls);
+  const forward = forwardLayer(() => current);
+  // One forwarder per action, no more: a lane adding an action edits the forwarder and this list.
+  expect(Object.keys(forward).sort()).toEqual(['onclose', 'oninsert', 'oninventory', 'onread', 'onreveal', 'ontap']);
+  callEveryAction(forward);
+  expect(calls).toEqual(everyActionOn('a'));
+  // A later session: the same forwarders reach its layer only (the getter runs at each call, never at creation).
+  calls.length = 0;
+  current = recordingLayer('b', calls);
+  callEveryAction(forward);
+  expect(calls).toEqual(everyActionOn('b'));
+  // The session ended: every forwarder returns without a throw and reaches nothing.
+  calls.length = 0;
+  current = undefined;
+  expect(() => callEveryAction(forward)).not.toThrow();
+  expect(calls).toEqual([]);
 });
 
 // ---------------------------------------------------------------------------------------------------------------
