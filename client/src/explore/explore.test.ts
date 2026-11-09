@@ -536,6 +536,25 @@ test('explore: a repeated outcome and an abandoned lock puzzle change nothing', 
   expect(abandoned.effects).toEqual([]);
 });
 
+test('explore: a fractional hint tier changes nothing', () => {
+  // Tiers are whole: 1.5 lies inside the 2-tier range and above the 1 opened, so only the integer guard of the run
+  // step keeps it from being stored as `hintsOpened: 1.5` (GM1a tester r3 N9). Both writers share that step.
+  const linear = world({
+    puzzles: { lin: code(2, 2) },
+    sections: { s: { start: 'r', rooms: { r: room([exit('out', { story: 'end' })]) } } },
+  });
+  const lin = pz('lin');
+  const fractional = { kind: 'hint-opened', puzzle: lin, tier: 1.5 } as const;
+  const opened = frozen({ ...structuredClone(EMPTY_WORLD_STATE), puzzles: { [lin]: { outcome: null, attempts: 0, hintsOpened: 1 } } });
+  const ran = runReduce(linear, opened, fractional);
+  expect(ran.state).toBe(opened);
+  expect(ran.effects).toEqual([]);
+  const inSection = at('r', { puzzles: { [lin]: { outcome: null, attempts: 0, hintsOpened: 1 } } }, 's');
+  const reduced = reduce(linear, inSection, fractional);
+  expect(reduced.state).toBe(inSection);
+  expect(reduced.effects).toEqual([]);
+});
+
 test('actions: enumerates enabled taps and inserts', () => {
   const w = manor();
   const hall = at('hall', { held: [it('medal_sun'), it('medal_star')] });
