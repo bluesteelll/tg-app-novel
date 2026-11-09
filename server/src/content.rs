@@ -16,12 +16,14 @@ use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
 use serde::de::{DeserializeOwned, IgnoredAny};
+use serde::{Deserialize, Deserializer};
 use serde_json::value::RawValue;
 
 use crate::ids::{ChapterId, ProductId, PuzzleId, PuzzleKey, StoryId, is_local_id};
 use crate::meta::{MetaFile, MetaIndex};
+use crate::puzzles::MAX_ANSWER_LEN;
+use crate::puzzles::values::{Domain, DomainFile};
 
 /// The most hint tiers a puzzle has (PUZZLES-PLAN X18); a puzzle may have none (the producer's `HintTiers` is
 /// `0 | 1 | 2 | 3`).
@@ -180,12 +182,27 @@ pub struct PuzzleDef {
     pub answer_len: usize,
     /// The largest value of an answer entry.
     pub answer_max: u16,
-    /// The solution, `answer_len` values, each at most `answer_max`.
-    pub solution: Vec<u16>,
+    /// What an answer is compared with: the solution, or each player's own value.
+    pub answer: Answer,
     /// The puzzle title.
     pub title: Localized,
     /// The hint texts, tier 1 first; at most [`MAX_HINT_TIERS`].
     pub hints: Vec<Localized>,
+}
+
+/// How the server knows a puzzle's answer (per-player §3.3). No `Debug`: a static answer is secret, and a domain's
+/// excluded tuples are the content's.
+pub enum Answer {
+    /// The build's solution, `answer_len` values, each at most `answer_max`: compared before the attempt transaction.
+    Static(Vec<u16>),
+    /// Drawn per player: each player's value is the answer, stored in `puzzle_values` (per-player §3.1).
+    PerPlayer {
+        /// The values a player's value is drawn from.
+        domain: Domain,
+        /// The author's cap, the server's final-attempt rule (per-player §3.6): the wrong answers that spend a run,
+        /// `1..=9`; `None` never spends one.
+        max_attempts: Option<u8>,
+    },
 }
 
 /// A paid chapter's files as the build wrote them, held raw. No `Debug`: this is the sold content.
@@ -394,8 +411,8 @@ struct WorldProbe {
 }
 
 /// `puzzles/<ch>.json` as the story tool writes it (PUZZLES-PLAN "Server formats"); the fixture is the contract.
-/// Format 1 is that entry exactly; format 2 (per-player §3.3) adds the optional `key`. The story tool writes the
-/// lowest format that expresses the chapter.
+/// Format 1 is that entry exactly; format 2 (per-player §3.3) adds the optional `key`, and `perPlayer` with its
+/// `maxAttempts` in place of a `solution`. The story tool writes the lowest format that expresses the chapter.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct PuzzleFile {
@@ -415,9 +432,144 @@ struct PuzzleEntry {
     key: Option<String>,
     answer_len: usize,
     answer_max: u16,
-    solution: Vec<u16>,
+    /// A static puzzle's solution; exactly one of this and `per_player`.
+    solution: Option<Vec<u16>>,
+    /// Format 2: the domain each player's value is drawn from.
+    per_player: Option<DomainFile>,
+    /// Format 2, present exactly with `per_player`: `null` (no cap) or the cap. Absent (`None`), `null` (`Some(None)`)
+    /// and a number are three states.
+    #[serde(default, deserialize_with = "present")]
+    max_attempts: Option<Option<u8>>,
     title: Localized,
     hints: Vec<Localized>,
+}
+
+/// A key that is present, `null` or not: `Some` of its value, so `#[serde(default)]` alone gives `None` for an absent
+/// key.
+fn present<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Option<u8>>, D::Error> {
+    Option::<u8>::deserialize(d).map(Some)
+}
+
+/// The largest `maxAttempts` of a per-player puzzle (per-player §3.3: `null` or 1..9).
+const MAX_ATTEMPTS_CAP: u8 = 9;
+
+/// The opening of a value placeholder in a hint text (per-player §5.1).
+const PLACEHOLDER_OPEN: &str = "$code(";
+
+/// The answer of one entry under the answer rules of format 2 (per-player §3.3), in order: format 1 holds neither
+/// `perPlayer` nor `maxAttempts`; exactly one of `solution` and `perPlayer`; `maxAttempts` present exactly with
+/// `perPlayer`, `null` or in `1..=MAX_ATTEMPTS_CAP`; `perPlayer` through [`Domain::parse`] (its text names a size or a
+/// shape rule, never a value); a solution of `answer_len` values, at least 1, each at most `answer_max`. The refusal
+/// is the rule's text.
+fn entry_answer(
+    format: u32,
+    answer_len: usize,
+    answer_max: u16,
+    solution: Option<Vec<u16>>,
+    per_player: Option<DomainFile>,
+    max_attempts: Option<Option<u8>>,
+) -> Result<Answer, String> {
+    if format == 1 && per_player.is_some() {
+        return Err("perPlayer needs format 2".to_owned());
+    }
+    if format == 1 && max_attempts.is_some() {
+        return Err("maxAttempts needs format 2".to_owned());
+    }
+    match (solution, per_player) {
+        (Some(_), Some(_)) | (None, None) => {
+            Err("exactly one of solution and perPlayer".to_owned())
+        }
+        (Some(solution), None) => {
+            if max_attempts.is_some() {
+                Err("maxAttempts without perPlayer".to_owned())
+            } else if answer_len == 0 || solution.len() != answer_len {
+                Err("the solution's length must be answerLen, at least 1".to_owned())
+            } else if solution.iter().any(|&v| v > answer_max) {
+                Err("a solution value is above answerMax".to_owned())
+            } else {
+                Ok(Answer::Static(solution))
+            }
+        }
+        (None, Some(raw)) => {
+            let Some(max_attempts) = max_attempts else {
+                return Err(format!(
+                    "perPlayer needs maxAttempts (null or 1..={MAX_ATTEMPTS_CAP})"
+                ));
+            };
+            if max_attempts.is_some_and(|m| !(1..=MAX_ATTEMPTS_CAP).contains(&m)) {
+                return Err(format!("maxAttempts is outside 1..={MAX_ATTEMPTS_CAP}"));
+            }
+            let domain = Domain::parse(raw, answer_len, answer_max)
+                .map_err(|e| format!("perPlayer: {e}"))?;
+            Ok(Answer::PerPlayer {
+                domain,
+                max_attempts,
+            })
+        }
+    }
+}
+
+/// The first hint text whose placeholders are not all this puzzle's own (per-player §5.1): only a per-player puzzle's
+/// hints hold one (a static puzzle's would reach a buyer verbatim), and each is `$code(<local>)` or
+/// `$code(<local>.<n>)` with `n` in `1..=answer_len`. The text names the tier and the language, never the hint.
+fn placeholder_misfit(
+    hints: &[Localized],
+    per_player: bool,
+    local: &str,
+    answer_len: usize,
+) -> Option<String> {
+    for (hint, tier) in hints.iter().zip(1u8..) {
+        for (lang, text) in [("ru", &hint.ru), ("en", &hint.en)] {
+            if !text.contains(PLACEHOLDER_OPEN) {
+                continue;
+            }
+            if !per_player {
+                return Some(format!(
+                    "hint {tier} ({lang}) holds a placeholder, and only a per-player puzzle's hints may"
+                ));
+            }
+            if !placeholders_fit(text, local, answer_len) {
+                return Some(format!(
+                    "hint {tier} ({lang}) holds a placeholder other than $code({local}) or \
+                     $code({local}.1..={answer_len})"
+                ));
+            }
+        }
+    }
+    None
+}
+
+/// Every `$code(` of `text` opens `$code(<local>)` or `$code(<local>.<n>)`, `n` spelt `[1-9][0-9]?` and at most
+/// `answer_len`: the grammar `values::render` replaces, so no placeholder of a loaded text stays verbatim.
+fn placeholders_fit(text: &str, local: &str, answer_len: usize) -> bool {
+    let mut rest = text;
+    while let Some((_, inner)) = rest.split_once(PLACEHOLDER_OPEN) {
+        let Some((body, after)) = inner.split_once(')') else {
+            return false;
+        };
+        let fits = match body.split_once('.') {
+            None => body == local,
+            Some((own, index)) => {
+                own == local && entry_index(index).is_some_and(|n| n <= answer_len)
+            }
+        };
+        if !fits {
+            return false;
+        }
+        rest = after;
+    }
+    true
+}
+
+/// The 1-based entry index `s` spells: `[1-9][0-9]?`.
+fn entry_index(s: &str) -> Option<usize> {
+    match s.as_bytes() {
+        [ones @ b'1'..=b'9'] => Some(usize::from(ones - b'0')),
+        [tens @ b'1'..=b'9', ones @ b'0'..=b'9'] => {
+            Some(usize::from(tens - b'0') * 10 + usize::from(ones - b'0'))
+        }
+        _ => None,
+    }
 }
 
 /// `^[a-z][a-z0-9_]{0,31}$`: a puzzle type label (per-player §3.3), the grammar of an ending name, held apart because
@@ -862,25 +1014,37 @@ async fn load_puzzle_file(
                 )
             })?,
         };
-        let rule = if !is_type_label(&entry.kind) {
-            Some("the type is outside the label grammar")
-        } else if entry.answer_len == 0 || entry.solution.len() != entry.answer_len {
-            Some("the solution's length must be answerLen, at least 1")
-        } else if entry.solution.iter().any(|&v| v > entry.answer_max) {
-            Some("a solution value is above answerMax")
-        } else if entry.hints.len() > MAX_HINT_TIERS {
-            Some("more than 3 hints")
+        let refuse = |rule: &str| invalid(path, format!("puzzle {}: {rule}", id.0));
+        if !is_type_label(&entry.kind) {
+            return Err(refuse("the type is outside the label grammar"));
+        }
+        // Every puzzle, static or per-player: a longer answer is refused by the route and by `puzzle_values`.
+        if entry.answer_len > MAX_ANSWER_LEN {
+            return Err(refuse(&format!("answerLen is above {MAX_ANSWER_LEN}")));
+        }
+        let answer = entry_answer(
+            file.format,
+            entry.answer_len,
+            entry.answer_max,
+            entry.solution,
+            entry.per_player,
+            entry.max_attempts,
+        )
+        .map_err(|rule| refuse(&rule))?;
+        let per_player = matches!(answer, Answer::PerPlayer { .. });
+        let rule = if entry.hints.len() > MAX_HINT_TIERS {
+            Some("more than 3 hints".to_owned())
         } else if [&entry.title]
             .into_iter()
             .chain(&entry.hints)
             .any(|text| text.ru.is_empty() || text.en.is_empty())
         {
-            Some("an empty title or hint text")
+            Some("an empty title or hint text".to_owned())
         } else {
-            None
+            placeholder_misfit(&entry.hints, per_player, &local, entry.answer_len)
         };
         if let Some(rule) = rule {
-            return Err(invalid(path, format!("puzzle {}: {rule}", id.0)));
+            return Err(refuse(&rule));
         }
         puzzles.push(PuzzleDef {
             key,
@@ -888,7 +1052,7 @@ async fn load_puzzle_file(
             chapter: chapter.clone(),
             answer_len: entry.answer_len,
             answer_max: entry.answer_max,
-            solution: entry.solution,
+            answer,
             title: entry.title,
             hints: entry.hints,
         });

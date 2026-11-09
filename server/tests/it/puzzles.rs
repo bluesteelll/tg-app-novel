@@ -18,24 +18,27 @@ use axum::http::header::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use server::AppState;
 use server::catalog::ResourceKind;
 use server::clock::FixedClock;
+use server::content::{Answer, ContentError, PuzzleDef};
 use server::db::POOL_MAX_CONNECTIONS;
 use server::db::economy::{Entry, Reason, credit_in_tx};
 use server::db::puzzles::AttemptRecord;
-use server::ids::{PuzzleKey, UserId};
+use server::ids::{PuzzleId, PuzzleKey, UserId};
 use server::puzzles::values::{
     Domain, DomainError, DomainFile, DrawError, ValueRow, draw, os_rng, render,
 };
 use server::puzzles::{ATTEMPT_WINDOW_SECS, MAX_ANSWER_LEN};
+use server::{AppState, StartupError};
 use sqlx::postgres::PgQueryResult;
 use sqlx::{Connection, PgConnection};
 use tokio::task::JoinSet;
 
 use crate::catalog::{ANN, T0, bearer, get, own, state_with_users};
 use crate::common;
-use crate::content::{FIXTURE, FixtureCopy, read_json, renamed_copy, state_on, state_on_db};
+use crate::content::{
+    FIXTURE, FixtureCopy, content_error, read_json, renamed_copy, state_on, state_on_db,
+};
 
 /// A second player.
 const BEN: i64 = 1002;
@@ -2266,5 +2269,408 @@ fn values_a_misshapen_domain_is_refused_at_parse() {
             ));
         }
     }
+    report(&failures);
+}
+
+/// `tests/fixtures/values/content-v2.json`: per-player §3.3's example made loadable, a format-2 `ch1` with the static
+/// `gate` (`[1, 0, 2]`) and the per-player `drawer` stored under `ch1.desk_drawer` (`[0, 9]^4` without `[0, 0, 0, 0]`,
+/// no cap, tier 3 `The code: $code(drawer).`).
+const CONTENT_V2: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/values/content-v2.json"
+);
+
+/// A copy of the fixture whose `puzzles/ch1.json` is content-v2 changed by `edit`.
+async fn v2_copy(edit: impl FnOnce(&mut Value)) -> FixtureCopy {
+    let mut v2 = read_json(Path::new(CONTENT_V2)).await;
+    edit(&mut v2);
+    let copy = FixtureCopy::new();
+    copy.write_json("puzzles/ch1.json", &v2);
+    copy
+}
+
+/// The mismatch of a start against a refusal of `puzzles/ch1.json` with exactly `reason`.
+fn expect_refusal(
+    case: &str,
+    started: Result<AppState, StartupError>,
+    reason: &str,
+) -> Option<String> {
+    if started.is_ok() {
+        return Some(format!(
+            "{case}: expected a refusal on puzzles/ch1.json: {reason}, got Ok"
+        ));
+    }
+    match content_error(case, started) {
+        Ok(ContentError::Invalid { path, reason: got })
+            if path.ends_with("puzzles/ch1.json") && got == reason =>
+        {
+            None
+        }
+        Ok(other) => Some(format!(
+            "{case}: expected a refusal on puzzles/ch1.json: {reason}, got {other}"
+        )),
+        Err(failure) => Some(failure),
+    }
+}
+
+/// The puzzle `id` names in `st`'s content.
+fn def<'a>(st: &'a AppState, id: &str) -> Option<&'a PuzzleDef> {
+    st.content.puzzle(&PuzzleId::parse(id).unwrap())
+}
+
+/// Content format 2 holds a per-player puzzle beside a static one (per-player §3.3): `ch1.gate` keeps its solution;
+/// `ch1.drawer` is drawn per player, stored under its key, uncapped, from the 9,999-value domain whose hash the
+/// independent oracle gives.
+#[tokio::test]
+async fn content_loads_format_2_per_player_puzzle() {
+    let copy = v2_copy(|_| {}).await;
+    let (started, _db) = state_on(copy.path()).await;
+    let st = match started {
+        Ok(st) => st,
+        Err(e) => panic!("start refused: {e}"),
+    };
+    let mut failures = Vec::new();
+    match def(&st, "ch1.gate").map(|p| (p.key.0.as_str(), &p.answer)) {
+        Some(("ch1.gate", Answer::Static(solution))) if solution.as_slice() == [1, 0, 2] => {}
+        Some((key, Answer::Static(solution))) => failures.push(format!(
+            "ch1.gate: expected key ch1.gate and the solution [1, 0, 2], got key {key} and {solution:?}"
+        )),
+        Some((_, Answer::PerPlayer { .. })) => {
+            failures.push("ch1.gate: expected a static puzzle, got a per-player one".to_owned());
+        }
+        None => failures.push("ch1.gate: expected Some".to_owned()),
+    }
+    match def(&st, "ch1.drawer").map(|p| (p.key.0.as_str(), &p.answer)) {
+        Some((
+            key,
+            Answer::PerPlayer {
+                domain,
+                max_attempts,
+            },
+        )) => {
+            let got = (key, *max_attempts, domain.hash().0.as_str(), domain.size());
+            let want = ("ch1.desk_drawer", None, DOMAIN_HASH, 9_999);
+            if got != want {
+                failures.push(format!(
+                    "ch1.drawer as (key, maxAttempts, domain hash, size): expected {want:?}, got {got:?}"
+                ));
+            }
+        }
+        Some((_, Answer::Static(_))) => {
+            failures.push("ch1.drawer: expected a per-player puzzle, got a static one".to_owned());
+        }
+        None => failures.push("ch1.drawer: expected Some".to_owned()),
+    }
+    report(&failures);
+}
+
+/// A per-player domain parses through `Domain::parse` at load (per-player §3.3, defence in depth behind the build
+/// lint): under the entropy floor or too sparse to draw is a refusal naming the puzzle and the count, never a value.
+/// Control: exactly the floor loads.
+#[tokio::test]
+async fn content_refuses_per_player_below_floor() {
+    type Edit = fn(&mut Value);
+    let cases: [(&str, Edit, &str); 2] = [
+        (
+            "3 x [0, 9] without [0, 0, 0]",
+            |v| {
+                let drawer = &mut v["puzzles"]["drawer"];
+                drawer["answerLen"] = json!(3);
+                drawer["perPlayer"] = json!({
+                    "positions": [[0, 9], [0, 9], [0, 9]], "distinct": false, "exclude": [[0, 0, 0]]
+                });
+            },
+            "puzzle ch1.drawer: perPlayer: 999 values, under 1000",
+        ),
+        (
+            "9 distinct of [0, 15]",
+            |v| {
+                let drawer = &mut v["puzzles"]["drawer"];
+                drawer["answerLen"] = json!(9);
+                drawer["answerMax"] = json!(15);
+                drawer["perPlayer"] = json!({
+                    "positions": vec![[0, 15]; 9], "distinct": true, "exclude": []
+                });
+            },
+            "puzzle ch1.drawer: perPlayer: too sparse to draw",
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (case, edit, reason) in cases {
+        let copy = v2_copy(edit).await;
+        let (started, _db) = state_on(copy.path()).await;
+        failures.extend(expect_refusal(case, started, reason));
+    }
+    let copy = v2_copy(|v| {
+        let drawer = &mut v["puzzles"]["drawer"];
+        drawer["answerLen"] = json!(3);
+        drawer["perPlayer"] = json!({
+            "positions": [[0, 9], [0, 9], [0, 9]], "distinct": false, "exclude": []
+        });
+    })
+    .await;
+    let (started, _db) = state_on(copy.path()).await;
+    match started
+        .as_ref()
+        .map(|st| def(st, "ch1.drawer").map(|p| &p.answer))
+    {
+        Ok(Some(Answer::PerPlayer { domain, .. })) if domain.size() == 1_000 => {}
+        Ok(_) => failures
+            .push("3 x [0, 9] (control): expected a per-player drawer of 1,000 values".to_owned()),
+        Err(e) => failures.push(format!("3 x [0, 9] (control): expected Ok, got {e}")),
+    }
+    report(&failures);
+}
+
+/// Every `$code(` of a hint text names this puzzle, `$code(<local>)` or `$code(<local>.<n>)` with `n` in
+/// `1..=answerLen` (per-player §3.3, §5.1), in both languages, and only a per-player puzzle's hints hold one: anything
+/// else would reach a buyer verbatim. Controls: an entry placeholder and a literal `$` load.
+#[tokio::test]
+async fn content_refuses_hint_placeholder_of_another_puzzle() {
+    let drawer_rule = "holds a placeholder other than $code(drawer) or $code(drawer.1..=4)";
+    let cases: [(&str, &str, usize, &str); 5] = [
+        (
+            "$code(gate) in drawer's tier 3",
+            "drawer",
+            3,
+            "The code: $code(gate).",
+        ),
+        (
+            "index 5 of 4",
+            "drawer",
+            3,
+            "The last digit: $code(drawer.5).",
+        ),
+        (
+            "an unclosed placeholder",
+            "drawer",
+            3,
+            "The code: $code(drawer",
+        ),
+        (
+            "an upper-case local id",
+            "drawer",
+            3,
+            "The code: $code(Drawer).",
+        ),
+        (
+            "a placeholder in static gate's hint",
+            "gate",
+            1,
+            "The order: $code(gate).",
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (case, local, tier, text) in cases {
+        for lang in ["ru", "en"] {
+            let copy = v2_copy(|v| {
+                let hints = &mut v["puzzles"][local]["hints"];
+                if hints.as_array().is_some_and(Vec::is_empty) {
+                    *hints = json!([{ "ru": "Порядок.", "en": "The order." }]);
+                }
+                hints[tier - 1][lang] = json!(text);
+            })
+            .await;
+            let reason = if local == "gate" {
+                format!(
+                    "puzzle ch1.gate: hint {tier} ({lang}) holds a placeholder, and only a per-player puzzle's hints may"
+                )
+            } else {
+                format!("puzzle ch1.drawer: hint {tier} ({lang}) {drawer_rule}")
+            };
+            let (started, _db) = state_on(copy.path()).await;
+            failures.extend(expect_refusal(
+                &format!("{case} ({lang})"),
+                started,
+                &reason,
+            ));
+        }
+    }
+    for (case, text) in [
+        ("an entry placeholder", "The last digit: $code(drawer.4)."),
+        ("a literal $", "Цена $5, код $code(drawer)."),
+    ] {
+        let copy = v2_copy(|v| v["puzzles"]["drawer"]["hints"][2]["ru"] = json!(text)).await;
+        let (started, _db) = state_on(copy.path()).await;
+        if let Err(e) = started {
+            failures.push(format!("{case} (control): expected Ok, got {e}"));
+        }
+    }
+    report(&failures);
+}
+
+/// Format 2's answer rules (per-player §3.3): exactly one of `solution` and `perPlayer`; `maxAttempts` (null or 1..9)
+/// present iff `perPlayer`; format 1 holds neither. Control: a cap of 9 loads.
+#[tokio::test]
+async fn content_refuses_max_attempts_without_per_player() {
+    type Edit = fn(&mut Value);
+    let cases: [(&str, Edit, &str); 7] = [
+        (
+            "static gate with maxAttempts 3",
+            |v| v["puzzles"]["gate"]["maxAttempts"] = json!(3),
+            "puzzle ch1.gate: maxAttempts without perPlayer",
+        ),
+        (
+            "per-player drawer without maxAttempts",
+            |v| {
+                v["puzzles"]["drawer"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("maxAttempts");
+            },
+            "puzzle ch1.drawer: perPlayer needs maxAttempts (null or 1..=9)",
+        ),
+        (
+            "maxAttempts 0",
+            |v| v["puzzles"]["drawer"]["maxAttempts"] = json!(0),
+            "puzzle ch1.drawer: maxAttempts is outside 1..=9",
+        ),
+        (
+            "maxAttempts 10",
+            |v| v["puzzles"]["drawer"]["maxAttempts"] = json!(10),
+            "puzzle ch1.drawer: maxAttempts is outside 1..=9",
+        ),
+        (
+            "both solution and perPlayer",
+            |v| v["puzzles"]["drawer"]["solution"] = json!([1, 8, 4, 7]),
+            "puzzle ch1.drawer: exactly one of solution and perPlayer",
+        ),
+        (
+            "neither solution nor perPlayer",
+            |v| {
+                v["puzzles"]["gate"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("solution");
+            },
+            "puzzle ch1.gate: exactly one of solution and perPlayer",
+        ),
+        (
+            "perPlayer in format 1",
+            |v| {
+                v["format"] = json!(1);
+                v["puzzles"]["drawer"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("key");
+            },
+            "puzzle ch1.drawer: perPlayer needs format 2",
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (case, edit, reason) in cases {
+        let copy = v2_copy(edit).await;
+        let (started, _db) = state_on(copy.path()).await;
+        failures.extend(expect_refusal(case, started, reason));
+    }
+    let copy = v2_copy(|v| v["puzzles"]["drawer"]["maxAttempts"] = json!(9)).await;
+    let (started, _db) = state_on(copy.path()).await;
+    match started
+        .as_ref()
+        .map(|st| def(st, "ch1.drawer").map(|p| &p.answer))
+    {
+        Ok(Some(Answer::PerPlayer {
+            max_attempts: Some(9),
+            ..
+        })) => {}
+        Ok(_) => {
+            failures.push("maxAttempts 9 (control): expected a drawer capped at 9".to_owned());
+        }
+        Err(e) => failures.push(format!("maxAttempts 9 (control): expected Ok, got {e}")),
+    }
+    report(&failures);
+}
+
+/// `answerLen` is at most `MAX_ANSWER_LEN` for every puzzle, static or per-player (per-player §3.3; RULINGS 164 Q5:
+/// the constant, never a literal). Control: a per-player drawer of `MAX_ANSWER_LEN` positions loads, and a value drawn
+/// from it is stored whole in `puzzle_values` (the table's own bound, migration 0008), so the load rule and the table
+/// agree.
+#[tokio::test]
+async fn content_refuses_answer_len_over_64() {
+    let over = MAX_ANSWER_LEN + 1;
+    let reason = |id: &str| format!("puzzle {id}: answerLen is above {MAX_ANSWER_LEN}");
+    let mut failures = Vec::new();
+    let copy = v2_copy(|v| {
+        let gate = &mut v["puzzles"]["gate"];
+        gate["answerLen"] = json!(over);
+        gate["solution"] = json!(vec![0; over]);
+    })
+    .await;
+    let (started, _db) = state_on(copy.path()).await;
+    failures.extend(expect_refusal(
+        "a static gate of MAX_ANSWER_LEN + 1",
+        started,
+        &reason("ch1.gate"),
+    ));
+    let copy = v2_copy(|v| {
+        let drawer = &mut v["puzzles"]["drawer"];
+        drawer["answerLen"] = json!(over);
+        drawer["perPlayer"] =
+            json!({ "positions": vec![[0, 9]; over], "distinct": false, "exclude": [] });
+    })
+    .await;
+    let (started, _db) = state_on(copy.path()).await;
+    failures.extend(expect_refusal(
+        "a per-player drawer of MAX_ANSWER_LEN + 1",
+        started,
+        &reason("ch1.drawer"),
+    ));
+
+    let copy = v2_copy(|v| {
+        let drawer = &mut v["puzzles"]["drawer"];
+        drawer["answerLen"] = json!(MAX_ANSWER_LEN);
+        drawer["perPlayer"] =
+            json!({ "positions": vec![[0, 9]; MAX_ANSWER_LEN], "distinct": false, "exclude": [] });
+    })
+    .await;
+    let (started, _db) = state_on(copy.path()).await;
+    let st = match started {
+        Ok(st) => at_t0_with_users(st, &[ANN]).await,
+        Err(e) => panic!("a per-player drawer of MAX_ANSWER_LEN (control): expected Ok, got {e}"),
+    };
+    let drawn = match def(&st, "ch1.drawer").map(|p| &p.answer) {
+        Some(Answer::PerPlayer { domain, .. }) => draw(domain, &mut os_rng()).unwrap(),
+        _ => panic!("the control's drawer: expected a per-player puzzle"),
+    };
+    let mut c = common::raw_db(&st).await;
+    let text = format!(
+        "{{{}}}",
+        drawn
+            .iter()
+            .map(u16::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let stored = insert_value(
+        &mut c,
+        ValueSql {
+            value: text,
+            ..value_row(ANN, "ch1.desk_drawer")
+        },
+    )
+    .await;
+    match stored {
+        Ok(_) => {
+            let len: Option<i32> = sqlx::query_scalar(
+                "SELECT cardinality(value) FROM puzzle_values WHERE user_id = $1 AND puzzle_id = $2",
+            )
+            .bind(ANN)
+            .bind("ch1.desk_drawer")
+            .fetch_one(&mut c)
+            .await
+            .unwrap();
+            if len != i32::try_from(MAX_ANSWER_LEN).ok() {
+                failures.push(format!(
+                    "the control's value: expected {MAX_ANSWER_LEN} entries stored, got {len:?}"
+                ));
+            }
+        }
+        Err(e) => failures.push(format!(
+            "the control's value of {} entries: expected Ok, got {}",
+            drawn.len(),
+            describe(&e)
+        )),
+    }
+    c.close().await.unwrap();
     report(&failures);
 }

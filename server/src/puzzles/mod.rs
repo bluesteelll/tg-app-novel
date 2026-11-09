@@ -10,7 +10,7 @@ pub mod values;
 
 use crate::AppState;
 use crate::api::dto::{HintView, PuzzleStatus};
-use crate::content::{Localized, PuzzleDef};
+use crate::content::{Answer, Localized, PuzzleDef};
 use crate::error::ApiError;
 use crate::ids::{PuzzleId, UserId};
 
@@ -23,8 +23,8 @@ pub const ATTEMPT_WINDOW_MAX: i64 = 20;
 
 /// The most answer entries a request may carry, whatever the puzzle: 64 (per-player §3.3; engine R-E12), so a 5 x 5
 /// grid (25 entries) fits and a request stays under ~400 B. It is also the bound of a stored per-player value
-/// (`puzzle_values_value_shape` in `0008_puzzle_values.sql`); the content's load rule for `answerLen` follows with
-/// the values routes.
+/// (`puzzle_values_value_shape` in `0008_puzzle_values.sql`) and of every puzzle's `answerLen` (the content's load
+/// rule).
 pub const MAX_ANSWER_LEN: usize = 64;
 
 /// The language of a hint text.
@@ -67,7 +67,7 @@ pub enum AnswerError {
     Range,
 }
 
-/// Whether `answer` is `def`'s solution, once it fits the puzzle's shape.
+/// Whether `answer` is `def`'s static solution, once it fits the puzzle's shape; never for a per-player puzzle.
 pub fn check_answer(def: &PuzzleDef, answer: &[u16]) -> Result<bool, AnswerError> {
     if answer.len() > MAX_ANSWER_LEN || answer.len() != def.answer_len {
         return Err(AnswerError::Length);
@@ -75,7 +75,7 @@ pub fn check_answer(def: &PuzzleDef, answer: &[u16]) -> Result<bool, AnswerError
     if answer.iter().any(|&value| value > def.answer_max) {
         return Err(AnswerError::Range);
     }
-    Ok(answer == def.solution.as_slice())
+    Ok(matches!(&def.answer, Answer::Static(solution) if answer == solution.as_slice()))
 }
 
 /// What an attempt answered.
@@ -120,6 +120,10 @@ pub async fn attempt(
     def: &PuzzleDef,
     answer: &[u16],
 ) -> Result<AttemptOutcome, ApiError> {
+    // A per-player answer is compared with the player's own value only, which no path reads yet.
+    if matches!(def.answer, Answer::PerPlayer { .. }) {
+        return Err(ApiError::NotFound);
+    }
     let correct = check_answer(def, answer).map_err(|e| match e {
         AnswerError::Length => ApiError::BadRequest("answer length does not fit the puzzle"),
         AnswerError::Range => ApiError::BadRequest("answer value above the puzzle's maximum"),
