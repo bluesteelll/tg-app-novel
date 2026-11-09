@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest';
 
-import type { FactAtom, FactKind, MechanicRules } from '../mechanics/contract.ts';
+import type { FactAtom, FactKind, FlagId, MechanicRules } from '../mechanics/contract.ts';
 import { actions, reduce } from '../mechanics/rules/core.ts';
 import { MECHANIC_RULES } from '../mechanics/rules/index.ts';
 import { admitSection, inSectionReach, searchSection, sectionEntry, sectionKey, successors } from '../mechanics/rules/search.ts';
@@ -12,7 +12,7 @@ import { reconcile } from './reconcile.ts';
 import { RESUME_STATE_CAP, RULES_VERSION, own, runOf, runReduce, sectionScope, worldIndex } from './reduce.ts';
 import type { ExploreAction, ExploreEffect } from './reduce.ts';
 import { EMPTY_WORLD_STATE } from './state.ts';
-import type { WorldState } from './state.ts';
+import type { PuzzleRun, WorldState } from './state.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
 // Fixture worlds: written in the source format and decoded, so every fixture is a world the decoder accepts.
@@ -978,6 +978,29 @@ test('reconcile: a re-versioned save leaves every section unproved', () => {
   expect(r.reset).toBeNull();
   expect([r.state.section, r.state.room]).toEqual(['manor', 'cellar']);
   expect(r.state.unproved).toEqual(['manor']);
+});
+
+const fl = (s: string) => s as FlagId; // a fixture flag id
+
+test('reconcile: a saved work goes only with a puzzle the world lost', () => {
+  // Engine plan §5.2: a run's `work` is part of its run, so it stays with a kept puzzle and goes with a lost one;
+  // `flags` pass (the flags module's own normalize drops theirs).
+  const kept: PuzzleRun = { outcome: null, attempts: 1, hintsOpened: 0, work: [2, 0] };
+  const lost: PuzzleRun = { outcome: 'solved', attempts: 0, hintsOpened: 0, work: [1] };
+  const s = at('study', { puzzles: { [pz('drawer')]: kept, [pz('safe')]: lost }, flags: [fl('fl_a')] });
+  const r = reconcile(stamped(manor(), V2), s, MANOR_KNOTS, V1);
+  expect(r.state.puzzles).toEqual({ drawer: kept });
+  expect(r.dropped).toEqual(['puzzles:safe']);
+  expect(r.state.flags).toEqual(['fl_a']);
+});
+
+test('search: work and flags stay outside the section key', () => {
+  // Engine plan §5.2: a device's working configuration and the flags are no part of the proof key.
+  const w = manor();
+  const s = at('study', { puzzles: { [pz('drawer')]: { outcome: null, attempts: 1, hintsOpened: 0 } } });
+  const key = sectionKey(w, s, MANOR);
+  expect(sectionKey(w, frozen({ ...s, puzzles: { [pz('drawer')]: { outcome: null, attempts: 1, hintsOpened: 0, work: [2, 0] } } }), MANOR)).toBe(key);
+  expect(sectionKey(w, frozen({ ...s, flags: [fl('fl_a')] }), MANOR)).toBe(key);
 });
 
 // ---------------------------------------------------------------------------------------------------------------
