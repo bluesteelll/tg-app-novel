@@ -8,11 +8,12 @@ import { KERNEL_FACT_KINDS, SILENT_FIELDS } from '../../mechanics/contract.ts';
 import type { FactKind } from '../../mechanics/contract.ts';
 import { MECHANIC_DATA } from '../../mechanics/data/index.ts';
 import { MECHANIC_RULES } from '../../mechanics/rules/index.ts';
+import type { PuzzleTypeData } from '../../puzzles/rules/index.ts';
 import { CORE_CONTROLS, FRAME_OPEN_MS, MIN_VISIBLE_MS, MOVE_HOWS, PUZZLE_CUES, UI_STATE_CUES } from '../types.ts';
 import type { ControlCue, CueKey } from '../types.ts';
 import { keyframesVisible, LAYER_MOTIONS } from '../visible.ts';
 import type { LayerMotion } from '../visible.ts';
-import { CUE_MOTIONS, UI_MOTIONS, uiMotion } from './motions.ts';
+import { CUE_MOTIONS, declaredControls, UI_MOTIONS, uiMotion } from './motions.ts';
 import type { MotionSpec, WithMotion } from './motions.ts';
 import { PRESET_SITE, PRESETS } from './presets.ts';
 
@@ -39,9 +40,10 @@ function nonControlKeys(): string[] {
   ];
 }
 
-/** Every control name the registries declare (the core list; type and module controls join it). */
+/** Every control name: the core list and every type's and module's declared controls. */
 function controls(): ControlCue[] {
-  return [...CORE_CONTROLS];
+  // A declared name is a `ControlCue` by derivation from the same registries.
+  return [...CORE_CONTROLS, ...declaredControls().map((d) => d.name as ControlCue)];
 }
 
 /** A row's first motion, each cause variant and every `with` entry, each as its own spec. */
@@ -208,4 +210,42 @@ test('cues: every world field is a fact kind or silent', () => {
     }
   }
   expect(problems).toEqual([]);
+});
+
+/** A fixture type that declares its controls, with its literal type kept (`satisfies`). */
+const FIXTURE_TYPE = {
+  type: 'fixture',
+  check: 'commit',
+  goal: 'secret',
+  presentation: 'overlay',
+  wrong: 'posted',
+  commit: 'control',
+  decodeParams: () => ({ ok: true, value: null }),
+  answerShape: () => ({ len: 1, max: 1 }),
+  initial: () => [0],
+  startShown: () => null,
+  controls: [
+    { name: 'fixture-pull', on: 'pointerdown', motion: 'wobble', haptic: 'light' },
+    { name: 'fixture-trace', on: 'gesture' },
+  ],
+} as const satisfies PuzzleTypeData<'fixture', null>;
+
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+/** The names a registry would derive `ControlCue` from (tsc: a widened `string` is a compile error here). */
+const DERIVED: Equal<(typeof FIXTURE_TYPE)['controls'][number]['name'], 'fixture-pull' | 'fixture-trace'> = true;
+
+test('cues: a declared control resolves its motion', () => {
+  expect(DERIVED).toBe(true);
+  const declared = FIXTURE_TYPE.controls;
+  // A fixture type's names join `ControlCue` only through the registry; the test passes its type's controls.
+  const pull = uiMotion('fixture-pull' as ControlCue, declared);
+  expect(pull).toEqual({ ...UI_MOTIONS.control, preset: 'wobble', haptic: 'light' });
+  // A gesture control without its own preset plays the gesture default.
+  expect(uiMotion('fixture-trace' as ControlCue, declared)).toEqual(UI_MOTIONS.gesture);
+  // A core control plays its override, or the control default.
+  expect(uiMotion('bare-art', declared)).toBe(UI_MOTIONS.overrides['bare-art']);
+  expect(uiMotion('puzzle-try', declared)).toBe(UI_MOTIONS.control);
+  // The registries declare no control today: the default resolves the core controls as before.
+  expect(declaredControls()).toEqual([]);
+  expect(uiMotion('ribbon-item')).toBe(UI_MOTIONS.overrides['ribbon-item']);
 });

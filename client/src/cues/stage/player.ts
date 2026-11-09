@@ -4,6 +4,7 @@
 // GM3s's CueStage, which supplies the DOM-facing deps. Every Animation, ghost, timer and the one MutationObserver it
 // creates ends at its motion's end, its key, its `waited` or `dispose`.
 import type { Box } from '../../geom/cover.ts';
+import type { ScreenKind } from '../../ui/screens.ts';
 import type { CueEvent, CueKey, Haptic } from '../types.ts';
 import { cueKey, motionOf } from './motions.ts';
 import type { CueTarget, MotionSpec, WithMotion } from './motions.ts';
@@ -70,7 +71,7 @@ type Run = {
 };
 /** A motion played again at each end until it is ended (a `puzzle:checking` loop, a wait hold). */
 type Loop = { run: Run | null; ended: boolean; readonly el: Element; readonly ghost: boolean };
-/** A wait hold: pending until `WAIT_DELAY_MS`, then shown as a loop on `at`. */
+/** A wait hold: pending until `WAIT_DELAY_MS`, then shown as a loop on `at`; one per panel (null: the room batch). */
 type Hold = { timer: ReturnType<typeof setTimeout> | null; loop: Loop | null; at: Found | null };
 
 const NOTHING: Caught = { el: null, box: null };
@@ -97,7 +98,7 @@ function travelled(kf: readonly Keyframe[], d: { x: number; y: number }, toward:
 export function createCuePlayer(deps: CuePlayerDeps): CuePlayer {
   const runs = new Set<Run>();
   const loops = new Map<string, { readonly loop: Loop; readonly until: readonly CueKey[] }>();
-  let hold: Hold | null = null;
+  const holds = new Map<ScreenKind | null, Hold>();
   let observer: MutationObserver | null = null;
   let counted = 0;
   let disposed = false;
@@ -265,8 +266,13 @@ export function createCuePlayer(deps: CuePlayerDeps): CuePlayer {
     return { at: centre(e), landing: true };
   };
 
-  const startHold = (e: CueEvent): void => {
-    endHold();
+  /** The shown hold of a panel: where its `waited` settles. */
+  const shownAt = (panel: ScreenKind | null): Found | null => {
+    const h = holds.get(panel);
+    return h !== undefined && h.timer === null ? h.at : null;
+  };
+  const startHold = (e: CueEvent, panel: ScreenKind | null): void => {
+    endHold(panel);
     const h: Hold = { timer: null, loop: null, at: null };
     h.timer = setTimeout(() => {
       h.timer = null;
@@ -278,13 +284,13 @@ export function createCuePlayer(deps: CuePlayerDeps): CuePlayer {
       h.at = at;
       h.loop = loop(m, at, e, landing);
     }, WAIT_DELAY_MS);
-    hold = h;
+    holds.set(panel, h);
   };
-  /** Ends the hold; true when it was shown (its `waited` then settles where it played). */
-  const endHold = (): boolean => {
-    const h = hold;
-    hold = null;
-    if (h === null) {
+  /** Ends a panel's hold; true when it was shown (its `waited` then settles where it played). */
+  const endHold = (panel: ScreenKind | null): boolean => {
+    const h = holds.get(panel);
+    holds.delete(panel);
+    if (h === undefined) {
       return false;
     }
     if (h.timer !== null) {
@@ -299,7 +305,7 @@ export function createCuePlayer(deps: CuePlayerDeps): CuePlayer {
     capture(e) {
       if (e.cue.kind === 'ui-state' && e.cue.name === 'waited') {
         // The element (or box) its own hold played on, with its box now: a notice the flush removes settles on its ghost.
-        const at = hold !== null && hold.timer === null ? hold.at : null;
+        const at = shownAt(e.cue.panel);
         const caught = at === null || at.el === null ? at : { el: at.el, box: deps.boxOf(at.el) };
         return { e, caught: [caught] };
       }
@@ -320,13 +326,13 @@ export function createCuePlayer(deps: CuePlayerDeps): CuePlayer {
         }
       }
       if (e.cue.kind === 'ui-state' && e.cue.name === 'waiting') {
-        startHold(e);
+        startHold(e, e.cue.panel);
         return;
       }
       if (e.cue.kind === 'ui-state' && e.cue.name === 'waited') {
         // Caught at the emit; a hold shown between the emit and this run settles where it plays.
-        const at = found(plan.caught[0] ?? NOTHING) ?? (hold !== null && hold.timer === null ? hold.at : null);
-        if (endHold() && at !== null) {
+        const at = found(plan.caught[0] ?? NOTHING) ?? shownAt(e.cue.panel);
+        if (endHold(e.cue.panel) && at !== null) {
           play(motionOf(e.cue), at, e, true);
         }
         return;
@@ -374,7 +380,9 @@ export function createCuePlayer(deps: CuePlayerDeps): CuePlayer {
     },
     dispose() {
       disposed = true;
-      endHold();
+      for (const panel of [...holds.keys()]) {
+        endHold(panel);
+      }
       for (const { loop: l } of loops.values()) {
         stop(l);
       }

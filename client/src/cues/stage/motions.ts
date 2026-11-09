@@ -1,8 +1,11 @@
 // The presenter table (engine plan §8.4, §8.5): every cue key's default overlay motion, the control defaults and the
 // targets they play on. Cue-stage chunk code: the stage reads it, the gates' tests check it (`motions.test.ts`).
-import type { Haptic, Cue, CueKey, ControlCue } from '../types.ts';
+import type { Haptic, Cue, CueKey, ControlCue, ControlDecl } from '../types.ts';
 import { CORE_CONTROLS } from '../types.ts';
 import type { CauseVerb } from '../../mechanics/contract.ts';
+import { MECHANIC_DATA } from '../../mechanics/data/index.ts';
+import { PUZZLE_TYPES } from '../../puzzles/rules/index.ts';
+import type { PuzzleTypes } from '../../puzzles/rules/index.ts';
 import type { PresetId } from './presets.ts';
 
 /** Where a motion plays; the DOM targets are found by `CUE_TARGET_ATTRS` (§8.5 "Cue targets"). */
@@ -223,8 +226,22 @@ function isCoreControl(control: ControlCue): control is (typeof CORE_CONTROLS)[n
   return (CORE_CONTROLS as readonly string[]).includes(control);
 }
 
-/** The one resolver the player and the gate share: override -> default by trigger kind. */
-export function uiMotion(control: ControlCue): MotionSpec {
+/** Every control the registries declare: the puzzle types' data halves and the modules' (both engine). */
+export function declaredControls(): readonly ControlDecl[] {
+  const types: PuzzleTypes = PUZZLE_TYPES;
+  // `core` is a literal `satisfies` type without `controls`; the widening names `id`, so its target is no weak type.
+  const modules: readonly { readonly id: string; readonly controls?: readonly ControlDecl[] }[] = MECHANIC_DATA;
+  return [...types, ...modules].flatMap((m) => m.controls ?? []);
+}
+
+/** The one resolver the player and the gate share: declaration (`declared`, the registries' by default) -> override ->
+ *  default by trigger kind. A declared control plays its own preset and haptic over its trigger kind's default. */
+export function uiMotion(control: ControlCue, declared: readonly ControlDecl[] = declaredControls()): MotionSpec {
+  const decl = declared.find((d) => d.name === control);
+  if (decl !== undefined) {
+    const base = decl.on === 'gesture' ? UI_MOTIONS.gesture : UI_MOTIONS.control;
+    return { ...base, preset: decl.motion ?? base.preset, haptic: decl.haptic ?? base.haptic };
+  }
   return (isCoreControl(control) ? UI_MOTIONS.overrides[control] : undefined) ?? UI_MOTIONS.control;
 }
 

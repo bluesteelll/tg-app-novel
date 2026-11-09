@@ -14,7 +14,7 @@ import type { ScreenKind } from '../../ui/screens.ts';
 import type { ItemId, RoomId } from '../../world/types.ts';
 import { CORE_CONTROLS, MOVE_HOWS, PUZZLE_CUES, UI_STATE_CUES } from '../types.ts';
 import type { ControlCue, Cue, CueEvent, CueKey, MoveHow, PuzzleCue, UiStateCue } from '../types.ts';
-import { CHECKING_ENDS, CUE_MOTIONS } from './motions.ts';
+import { CHECKING_ENDS, CUE_MOTIONS, declaredControls } from './motions.ts';
 import type { CueTarget } from './motions.ts';
 import { createCuePlayer, WAIT_DELAY_MS } from './player.ts';
 import type { CuePlayer, Resolved } from './player.ts';
@@ -95,7 +95,7 @@ type Fixture = {
 };
 
 /** A player over the document: `ribbon` / `inventory` with nothing live land at `edge`; `box` is the event's box,
- *  else `centre`; `stage` the stage box; `point` and `edge` their boxes; any other DOM target with nothing live (ghosts
+ *  else its panel's element when it names one, else `centre`; `stage` the stage box; `point` and `edge` their boxes; any other DOM target with nothing live (ghosts
  *  on the stage layer skipped) is null. */
 function fixture(opts: { readonly reduced?: boolean; readonly resolve?: (t: CueTarget, e: CueEvent) => Resolved } = {}): Fixture {
   const records: Rec[] = [];
@@ -106,8 +106,14 @@ function fixture(opts: { readonly reduced?: boolean; readonly resolve?: (t: CueT
   document.body.append(layer);
   const resolveDefault = (t: CueTarget, e: CueEvent): Resolved => {
     switch (t) {
-      case 'box':
+      case 'box': {
+        // A box-less hold of a panel plays on the panel (§8.5 "Cue targets", `box` row).
+        if (e.box === null && e.cue.kind === 'ui-state' && e.cue.panel !== null) {
+          const panel = document.querySelector(`[data-cue-panel="${e.cue.panel}"]`);
+          return panel === null ? null : { el: panel };
+        }
         return { box: e.box ?? CENTRE };
+      }
       case 'stage':
         return { box: STAGE };
       case 'point':
@@ -208,7 +214,7 @@ async function microtasks(): Promise<void> {
 }
 
 function controlKeys(): string[] {
-  return CORE_CONTROLS.map((c) => `ui:${c}`);
+  return [...CORE_CONTROLS, ...declaredControls().map((d) => d.name)].map((c) => `ui:${c}`);
 }
 
 function nonControlKeys(): string[] {
@@ -505,5 +511,38 @@ test('cues: a with motion whose target is missing is skipped and the first motio
   emit(f, eventOf(cueOf('puzzle:renewed')));
   expect(f.records.map((r) => r.el)).toEqual([wrapper]);
   expect(f.ghosts).toEqual([]);
+  expect(f.player.fallbacks()).toBe(0);
+});
+
+test('cues: two waiting holds end at their own waited', () => {
+  const f = fixture();
+  const ladder = element('div', { 'data-cue-panel': 'hints' }, { x: 0, y: 400, w: 400, h: 200 });
+  const room = (name: string): CueEvent => eventOf(cueOf(name, { panel: null }), null, HOTSPOT);
+  const hints = (name: string): CueEvent => eventOf(cueOf(name, { panel: 'hints' }), null, null);
+  emit(f, room('ui-state:waiting'));
+  vi.advanceTimersByTime(WAIT_DELAY_MS + 1);
+  const [roomRing] = f.ghosts;
+  expect(roomRing?.box).toEqual(HOTSPOT);
+  emit(f, hints('ui-state:waiting'));
+  vi.advanceTimersByTime(WAIT_DELAY_MS + 1);
+  const breathing = (): Element[] => running(f).map((r) => r.el);
+  expect(breathing()).toEqual([roomRing?.el, ladder]);
+  // The ladder's waited ends the ladder's hold only.
+  emit(f, hints('ui-state:waited'));
+  expect(breathing()).toContain(roomRing?.el);
+  expect(running(f).filter((r) => r.el === ladder && r.ms === CUE_MOTIONS['ui-state:waiting'].ms)).toEqual([]);
+  // A ladder cleared while its request is out: its waited is caught before the clear's flush and ends its hold.
+  emit(f, hints('ui-state:waiting'));
+  vi.advanceTimersByTime(WAIT_DELAY_MS + 1);
+  const clearing = f.player.capture(hints('ui-state:waited'));
+  ladder.remove();
+  f.player.run(clearing);
+  vi.advanceTimersByTime(CUE_MOTIONS['ui-state:waited'].ms + 1);
+  expect(breathing()).toEqual([roomRing?.el]);
+  // The room's waited ends the room's.
+  emit(f, room('ui-state:waited'));
+  vi.advanceTimersByTime(3000);
+  expect(running(f)).toEqual([]);
+  expect(f.layer.children).toHaveLength(0);
   expect(f.player.fallbacks()).toBe(0);
 });
