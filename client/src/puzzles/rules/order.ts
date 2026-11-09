@@ -1,8 +1,9 @@
 // The `order` puzzle (X17): `pieces` are 2..5 distinct items in their listed (initial) order; the answer is the piece
-// index per slot, a permutation that differs from the identity.
+// index per slot, a permutation that differs from the identity. The data half (engine plan §7.1): a commit type on an
+// overlay whose secret goal the server checks.
 import type { Result } from '../../story/catalog.ts';
 import type { ItemId } from '../../world/types.ts';
-import type { PuzzleRules } from './index.ts';
+import type { PuzzleTypeData } from './index.ts';
 
 export type OrderParams = { readonly pieces: readonly ItemId[] };
 
@@ -10,14 +11,6 @@ const PIECES_MIN = 2;
 const PIECES_MAX = 5;
 // PUZZLES-PLAN "Identifiers": an item id (world/decode.ts keeps the same pattern).
 const ITEM_ID_RE = /^[a-z][a-z0-9_]*$/;
-
-function shapeProblem(a: readonly number[], len: number, max: number): string | null {
-  if (a.length !== len) {
-    return `length ${a.length}, expected ${len}`;
-  }
-  const bad = a.findIndex((v) => !Number.isInteger(v) || v < 0 || v > max);
-  return bad === -1 ? null : `${String(a[bad])} at index ${bad} is out of range: an integer in 0..${max}`;
-}
 
 function decodeParams(raw: unknown): Result<OrderParams, string> {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
@@ -46,21 +39,20 @@ function decodeParams(raw: unknown): Result<OrderParams, string> {
   return { ok: true, value: { pieces: out } };
 }
 
-export const ORDER_RULES: PuzzleRules<OrderParams> = Object.freeze({
+function initial(p: OrderParams): readonly number[] {
+  return p.pieces.map((_, i) => i);
+}
+
+export const ORDER_RULES: PuzzleTypeData<'order', OrderParams> = Object.freeze({
   type: 'order',
+  check: 'commit',
+  goal: 'secret',
+  presentation: 'overlay',
+  wrong: 'posted',
+  commit: 'control',
   decodeParams,
   answerShape: (p: OrderParams) => ({ len: p.pieces.length, max: p.pieces.length - 1 }),
-  initial: (p: OrderParams): readonly number[] => p.pieces.map((_, i) => i),
-  validateSolution(p: OrderParams, s: readonly number[]): string | null {
-    const n = p.pieces.length;
-    const shape = shapeProblem(s, n, n - 1);
-    if (shape !== null) {
-      return shape;
-    }
-    if (new Set(s).size !== n) {
-      return `not a permutation of 0..${n - 1}: an index repeats`;
-    }
-    return s.every((v, i) => v === i) ? 'the solution equals the initial state (the listed order)' : null;
-  },
-  validAnswer: (p: OrderParams, a: readonly number[]) => shapeProblem(a, p.pieces.length, p.pieces.length - 1) === null,
+  initial,
+  // The pieces show in their listed order before any input.
+  startShown: initial,
 });

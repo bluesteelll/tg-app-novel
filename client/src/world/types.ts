@@ -1,9 +1,7 @@
 // The world shapes of docs/PUZZLES-PLAN.md "World data": the source `story/<ch>/world.json` the narrative-designer
 // writes, and the public world the client loads. Types plus the one glyph list; world/decode.ts is the only decoder.
 // Pure (X4, `arch: pure world modules`): the runtime and the story tool import it alike.
-import type { CodeParams } from '../puzzles/rules/code.ts';
-import type { PuzzleType } from '../puzzles/rules/index.ts';
-import type { OrderParams } from '../puzzles/rules/order.ts';
+import type { ParamsOf, PuzzleType } from '../puzzles/rules/index.ts';
 import type {
   BgId,
   CgId,
@@ -91,7 +89,6 @@ export type Section = {
 export type Item = { readonly name: WorldText; readonly desc: WorldText; readonly glyph: Glyph };
 export type Doc = { readonly title: WorldText; readonly body: readonly WorldText[] };
 
-type PuzzleParams = { readonly code: CodeParams; readonly order: OrderParams };
 type PuzzleCommon = {
   readonly title: WorldText;
   readonly prompt: WorldText;
@@ -100,9 +97,9 @@ type PuzzleCommon = {
   readonly maxAttempts: number | null;
   readonly giveUp: boolean;
 };
-/** One puzzle instance, discriminated by `type`; `params` is what `PUZZLE_RULES[type].decodeParams` returns. */
+/** One puzzle instance, discriminated by `type`; `params` is what its type's data half's `decodeParams` returns. */
 export type PuzzleBody = {
-  [T in PuzzleType]: { readonly type: T; readonly params: PuzzleParams[T] } & PuzzleCommon;
+  [T in PuzzleType]: { readonly type: T; readonly params: ParamsOf<T> } & PuzzleCommon;
 }[PuzzleType];
 /** The source puzzle: `solution` and `hints` are server-only (X7). */
 export type SourcePuzzle = PuzzleBody & { readonly solution: readonly number[]; readonly hints: readonly WorldText[] };

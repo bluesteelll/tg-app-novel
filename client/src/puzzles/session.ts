@@ -15,7 +15,7 @@ import type { Result } from '../story/catalog.ts';
 import type { ChapterId, PuzzleLocalId } from '../story/staging.ts';
 import type { Unsubscribe } from '../telegram/index.ts';
 import type { PublicPuzzle, WorldPublic } from '../world/types.ts';
-import { PUZZLE_RULES } from './rules/index.ts';
+import { PUZZLE_RULES, shapeProblem } from './rules/index.ts';
 
 /** An exploration puzzle is an overlay that closes; a linear puzzle is a mode with no BackButton (X8). */
 export type PuzzleMode = 'linear' | 'explore';
@@ -147,9 +147,9 @@ function initialAnswer(p: PublicPuzzle): readonly number[] {
 function validAnswer(p: PublicPuzzle, a: readonly number[]): boolean {
   switch (p.type) {
     case 'code':
-      return PUZZLE_RULES.code.validAnswer(p.params, a);
+      return shapeProblem(a, PUZZLE_RULES.code.answerShape(p.params)) === null;
     case 'order':
-      return PUZZLE_RULES.order.validAnswer(p.params, a);
+      return shapeProblem(a, PUZZLE_RULES.order.answerShape(p.params)) === null;
     default: {
       const never: never = p;
       return never;
