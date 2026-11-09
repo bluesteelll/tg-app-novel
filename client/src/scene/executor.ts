@@ -540,8 +540,9 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     };
     /**
      * Props to the target over `ms` (§6.1, E-P1, E-P7), its placements grouped by anchor key in the command's order.
-     * An at-keyed placement takes over its prop's at-less anchor (a format-1 save's) and fades nothing; an anchor the
-     * target does not name, or with nothing it can show, fades out whole; in a kept anchor a view whose prop is gone
+     * A key with no anchor takes over an anchor that shows one of its props, when the target does not name that
+     * anchor's key: re-keyed, not faded (a format-1 save's at-less keys against the room's `at`, either way). An anchor
+     * the target does not name, or with nothing it can show, fades out whole; in a kept anchor a view whose prop is gone
      * fades out (an old base over the new one), a new base goes under the old one and a new patch fades in above it; a
      * new anchor fades in with its art.
      */
@@ -551,10 +552,9 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         byKey.set(p.at ?? p.prop, [...(byKey.get(p.at ?? p.prop) ?? []), p]);
       }
       for (const [k, ps] of byKey) {
-        for (const p of ps) {
-          const a = anchors.get(p.prop);
-          if (a !== undefined && p.at !== undefined && !anchors.has(k) && !byKey.has(p.prop)) {
-            anchors.delete(p.prop);
+        for (const [j, a] of [...anchors]) {
+          if (!anchors.has(k) && !byKey.has(j) && a.views.some((v) => ps.some((p) => p.prop === v.prop))) {
+            anchors.delete(j);
             anchors.set(k, a);
           }
         }

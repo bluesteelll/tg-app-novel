@@ -1314,6 +1314,55 @@ test('executor: a placement that gains its at keeps its anchor', async () => {
   r.ex.destroy();
 });
 
+test('executor: a placement that loses its at keeps its anchor', async () => {
+  // The other direction (review r1 I1): a format-1 save restored over the room's at-keyed props places the same props
+  // without `at`; they take those anchors over and stay on screen: nothing is created, dropped or faded.
+  const h = harness();
+  await h.ex.apply([bg('room', 'cut'), props(['lamp', LAMP, 'room.lamp'], ['key', KEY, 'room.key'])], NOW);
+  const before = h.anchors('props');
+  const boxes = h.live('props').map(h.worldBox);
+  h.alphas.length = 0;
+  h.log.length = 0;
+  await h.ex.restore({ bg: 'room' as BgId, cg: null, chars: [], props: [{ prop: 'lamp' as PropId, rect: LAMP }, { prop: 'key' as PropId, rect: KEY }] });
+  expect(h.live('props').map((x) => x.key), 'after the restore').toEqual(['lamp', 'key']);
+  expect(h.anchors('props')).toEqual(before);
+  expect(h.live('props').map(h.worldBox)).toEqual(boxes);
+  expect(h.ex.propRects().map((r) => r.prop)).toEqual(['lamp', 'key']);
+  expect(h.log.filter((x) => /^(anchor|create|destroy|drop):/.test(x))).toEqual([]);
+  expect(h.alphas).toEqual([]);
+  // The take that follows sends the room's at-keyed placements again, without the lamp: the kept prop's anchor is
+  // taken over untouched; only the taken one fades out.
+  const key = one(h.anchors('props').filter((x) => x.key === 'room.key'));
+  const take = h.ex.apply([bg('room', 'crossfade', 300), props(['key', KEY, 'room.key'])], NOW);
+  await flush();
+  advance(150);
+  expect(h.alphas.filter((w) => w.key !== 'room.lamp')).toEqual([]);
+  h.ex.complete();
+  await take;
+  expect(h.anchors('props')).toEqual([key]);
+  expect(h.log.filter((x) => /^(anchor|create|destroy|drop):/.test(x))).toEqual(['destroy:props:lamp', 'drop:room.lamp']);
+  expect(h.worldAlpha(one(h.live('props')))).toBe(1);
+  h.ex.destroy();
+});
+
+test('executor: an anchor the target names is never taken over', async () => {
+  // A patch moved out to its own key: the base's anchor, which the target still names, keeps the base.
+  const h = harness();
+  await h.ex.apply([bg('room', 'cut'), props(['drawer', DRAWER, 'room.drawer'], ['glint', GLINT, 'room.drawer', 'patch'])], NOW);
+  const drawer = one(h.anchors('props'));
+  await h.ex.apply([bg('room', 'crossfade', 300), props(['drawer', DRAWER, 'room.drawer'], ['glint', GLINT, 'room.glint'])], { instant: true });
+  expect(h.drawOrder(h.contentOf(drawer)).map((x) => x.key)).toEqual(['drawer']);
+  h.ex.destroy();
+  // A prop moved into a key that has its anchor: that anchor is never replaced in the map (it would outlive destroy).
+  const m = harness();
+  await m.ex.apply([bg('room', 'cut'), props(['drawer', DRAWER, 'room.drawer'], ['glint', GLINT, 'room.glint'])], NOW);
+  const base = one(m.anchors('props').filter((x) => x.key === 'room.drawer'));
+  await m.ex.apply([bg('room', 'crossfade', 300), props(['drawer', DRAWER, 'room.drawer'], ['glint', GLINT, 'room.drawer', 'patch'])], { instant: true });
+  expect(m.drawOrder(m.contentOf(base)).map((x) => x.key)).toEqual(['drawer']);
+  m.ex.destroy();
+  expect(m.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
+});
+
 test('executor: rebind re-creates each anchor before its sprite', async () => {
   const h = harness();
   await h.ex.apply([bg('room', 'cut'), cg('letter', 'cut'), show('ally', 'neutral', 'left', 'cut'), props(['lamp', LAMP, 'room.lamp'])], NOW);
