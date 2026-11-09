@@ -7,7 +7,14 @@
       "h": 1080,
       "decodedBytes": 8294400,
       "avif": { "url": "/api/assets/bg-lamp_room-4e5f6a7b.avif", "bytes": 26 },
-      "webp": { "url": "/api/assets/bg-lamp_room-4e5f6a7b.webp", "bytes": 26 }
+      "webp": { "url": "/api/assets/bg-lamp_room-4e5f6a7b.webp", "bytes": 26 },
+      "half": {
+        "w": 960,
+        "h": 540,
+        "decodedBytes": 2073600,
+        "avif": { "url": "/api/assets/bg-lamp_room-half-5a6b7c8d.avif", "bytes": 31 },
+        "webp": { "url": "/api/assets/bg-lamp_room-half-5a6b7c8d.webp", "bytes": 31 }
+      }
     },
     "bgm/storm": {
       "kind": "audio",

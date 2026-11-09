@@ -516,6 +516,41 @@ async fn startup_fails_when_manifest_names_missing_asset() {
     report(&failures);
 }
 
+/// A paid manifest whose gated entry names a half-tier file that is not in `assets/`, or whose half URL breaks the
+/// gated name rule: the half is read with the same checks as its full file (MEMORY-PLAN §11 M3s).
+#[tokio::test]
+async fn startup_fails_when_manifest_names_missing_half_file() {
+    let mut failures = Vec::new();
+
+    let copy = FixtureCopy::new();
+    copy.remove("assets/bg-lamp_room-half-5a6b7c8d.webp");
+    let (started, _db) = state_on(copy.path()).await;
+    failures.extend(expect_missing(
+        "no bg-lamp_room half webp",
+        started,
+        "assets/bg-lamp_room-half-5a6b7c8d.webp",
+    ));
+
+    let case = "ch2 bg/archive half avif URL outside the gated name rule";
+    let copy = FixtureCopy::new();
+    copy.edit_json("chapters/ch2/assets.json", |v| {
+        v["assets"]["bg/archive"]["half"]["avif"]["url"] =
+            json!("/api/assets/BG-archive-half.avif");
+    })
+    .await;
+    let (started, _db) = state_on(copy.path()).await;
+    match content_error(case, started) {
+        Ok(ContentError::Invalid { path, reason })
+            if path.ends_with("chapters/ch2/assets.json")
+                && reason.contains("BG-archive-half.avif") => {}
+        Ok(other) => failures.push(format!(
+            "{case}: expected Invalid on chapters/ch2/assets.json naming the half, got {other}"
+        )),
+        Err(failure) => failures.push(failure),
+    }
+    report(&failures);
+}
+
 /// A paid public world carrying a puzzle's server-only `solution` or `hints` (PUZZLES-PLAN X5, X7).
 #[tokio::test]
 async fn startup_fails_when_world_carries_solution() {
@@ -1198,6 +1233,125 @@ async fn paid_chapter_200_with_entitlement() {
                 body_text(&reply)
             ));
         }
+    }
+    report(&failures);
+}
+
+/// A gated image's half-tier file is indexed under its chapter's product, as its full file is, and its owner gets it
+/// exactly as the build wrote it, private and `nosniff` (MEMORY-PLAN §11 M3s: LOW phones get the half tier of paid art).
+#[tokio::test]
+async fn half_tier_gated_file_served_to_owner() {
+    let (st, _db) = state_with_users(&[ANN, BEN]).await;
+    own(&st, ANN, "chapter:ch2").await;
+    own(&st, BEN, "chapter:ch4").await;
+    let mut failures = Vec::new();
+    for (user, product, file, content_type) in [
+        (
+            ANN,
+            "chapter:ch2",
+            "bg-archive-half-1c2d3e4f.avif",
+            "image/avif",
+        ),
+        (
+            ANN,
+            "chapter:ch2",
+            "bg-archive-half-1c2d3e4f.webp",
+            "image/webp",
+        ),
+        (
+            BEN,
+            "chapter:ch4",
+            "bg-lamp_room-half-5a6b7c8d.avif",
+            "image/avif",
+        ),
+        (
+            BEN,
+            "chapter:ch4",
+            "bg-lamp_room-half-5a6b7c8d.webp",
+            "image/webp",
+        ),
+    ] {
+        let owners = vec![ProductId(product.to_owned())];
+        match st.content.asset(file) {
+            Some(asset) => {
+                if asset.content_type != content_type || asset.owners != owners {
+                    failures.push(format!(
+                        "asset({file}): expected {content_type} owned by {owners:?}, got {} owned by {:?}",
+                        asset.content_type, asset.owners
+                    ));
+                }
+                if !asset.path.ends_with(Path::new("assets").join(file)) {
+                    failures.push(format!("asset({file}): path {}", asset.path.display()));
+                }
+            }
+            None => failures.push(format!("asset({file}): expected Some")),
+        }
+        let reply = get(&st, Some(user), &format!("/api/assets/{file}")).await;
+        let want = tokio::fs::read(Path::new(FIXTURE).join("assets").join(file))
+            .await
+            .unwrap();
+        let got = (
+            reply.status.as_u16(),
+            header(&reply, CONTENT_TYPE),
+            header(&reply, CACHE_CONTROL),
+            header(&reply, X_CONTENT_TYPE_OPTIONS),
+        );
+        let expected = (
+            200,
+            Some(content_type),
+            Some("private, no-store"),
+            Some("nosniff"),
+        );
+        if got != expected || reply.body.as_ref() != want.as_slice() {
+            failures.push(format!(
+                "user {user}: {file}: expected 200 {content_type} with the fixture bytes, got {got:?} {:?}",
+                body_text(&reply)
+            ));
+        }
+    }
+    report(&failures);
+}
+
+/// A gated half without its chapter's entitlement is the same 403 as its full file, for a player with no rows and
+/// for the owner of another chapter; without a token it is the 401 every id gets (principle 0).
+#[tokio::test]
+async fn half_tier_gated_file_refused_without_entitlement() {
+    let (st, _db) = state_with_users(&[ANN, BEN]).await;
+    own(&st, BEN, "chapter:ch4").await;
+    let mut failures = Vec::new();
+    for (user, file) in [
+        (ANN, "bg-archive-half-1c2d3e4f.avif"),
+        (BEN, "bg-archive-half-1c2d3e4f.avif"),
+        (ANN, "bg-lamp_room-half-5a6b7c8d.webp"),
+    ] {
+        let reply = get(&st, Some(user), &format!("/api/assets/{file}")).await;
+        failures.extend(expect_error(
+            &format!("user {user}: {file}"),
+            &reply,
+            403,
+            "not_entitled",
+        ));
+    }
+    let reply = get(&st, None, "/api/assets/bg-archive-half-1c2d3e4f.avif").await;
+    failures.extend(expect_error(
+        "no token: bg-archive half",
+        &reply,
+        401,
+        "token_missing",
+    ));
+    // Control: the refusals are the entitlement's, not a missing file's.
+    let reply = get(
+        &st,
+        Some(BEN),
+        "/api/assets/bg-lamp_room-half-5a6b7c8d.avif",
+    )
+    .await;
+    if reply.status.as_u16() != 200 {
+        failures.push(format!(
+            "control: chapter:ch4 owner: bg-lamp_room half avif: expected 200, got {} {:?}",
+            reply.status.as_u16(),
+            body_text(&reply)
+        ));
     }
     report(&failures);
 }

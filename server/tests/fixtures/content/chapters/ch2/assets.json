@@ -7,7 +7,14 @@
       "h": 1080,
       "decodedBytes": 8294400,
       "avif": { "url": "/api/assets/bg-archive-0a1b2c3d.avif", "bytes": 24 },
-      "webp": { "url": "/api/assets/bg-archive-0a1b2c3d.webp", "bytes": 24 }
+      "webp": { "url": "/api/assets/bg-archive-0a1b2c3d.webp", "bytes": 24 },
+      "half": {
+        "w": 960,
+        "h": 540,
+        "decodedBytes": 2073600,
+        "avif": { "url": "/api/assets/bg-archive-half-1c2d3e4f.avif", "bytes": 29 },
+        "webp": { "url": "/api/assets/bg-archive-half-1c2d3e4f.webp", "bytes": 29 }
+      }
     },
     "sfx/door": {
       "kind": "audio",

@@ -506,6 +506,22 @@ describe('scan assets', () => {
     expect(clean.code, clean.lines.join('\n')).toBe(0);
   });
 
+  test('scan: a public half of a gated id fails', () => {
+    setup();
+    // A gated image's half file (`<id>-half-<hash8>`, M3s) copied into dist from an older build: its name holds one
+    // segment more than the paid id's shape and its bytes match no paid file (RULINGS 120 Q5, M3c critique O4).
+    const other = Uint8Array.from([9, 9, 9]);
+    const avif = scanDist('dist-a', { 'assets/bg-archive-half-0123abcd.avif': other });
+    expect(avif.code, avif.lines.join('\n')).toBe(1);
+    expect(avif.lines).toContainEqual('scan: paid-asset bg/archive in assets/bg-archive-half-0123abcd.avif (via prefix)');
+    const webp = scanDist('dist-b', { 'assets/bg-archive-half-89abcdef.webp': other });
+    expect(webp.code, webp.lines.join('\n')).toBe(1);
+    expect(webp.lines).toContainEqual('scan: paid-asset bg/archive in assets/bg-archive-half-89abcdef.webp (via prefix)');
+    // Controls: a public id's half, and a public id whose own name is `half`, are no copy of a paid file.
+    const clean = scanDist('dist-c', { 'assets/bg-cafe-half-0a1b2c3d.avif': other, 'assets/bg-half-0a1b2c3d.avif': other });
+    expect(clean.code, clean.lines.join('\n')).toBe(0);
+  });
+
   test('scan: paid-only asset with empty files section fails', () => {
     setup({ 'server/content/build/fingerprints.assets.json': JSON.stringify({ files: [] }) });
     expect(reasons()).toEqual(['files-empty']);
