@@ -12,6 +12,9 @@ import type { WorldPublicBody } from '../../../src/world/types.ts';
 import { buildGraph, carriedStage } from '../graph.ts';
 import type { ChapterGraph } from '../graph.ts';
 import { GLOBALS_PATH } from '../lint.ts';
+import { buildFlow } from './flow.ts';
+import type { ChapterFlow, StepKey } from './flow.ts';
+import type { ShotFinding } from './lint.ts';
 import { decodeShotList, effectiveCatalog, effectiveShots, impliedPlaceholders } from './list.ts';
 import type { ShotList } from './list.ts';
 
@@ -307,4 +310,191 @@ test('graph: the chapter graph exposes its section edges, seeds and rooms', () =
   const first = graph.firstKnot;
   expect(first).toBe('arrive');
   expect(carriedStage(graph.knots, knot('arrive'), sectionsOf(graph))).toEqual(graph.carried);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Commit 2: the step graph of a chapter
+
+/** The step flow of a fixture chapter. */
+function flowOf(body: readonly string[], catalog: AssetCatalog = COMMITTED.catalog, w?: WorldPublicBody): { flow: ChapterFlow; findings: ShotFinding[]; built: Built } {
+  const built = chapter(body, catalog, w);
+  const r = buildFlow({ chapter: CH1, files: built.files, sources: built.sources, graph: built.graph, assets: built.assets, cast: COMMITTED.cast });
+  return { ...r, built };
+}
+
+/** A step's successors (the step must exist). */
+function nextOf(flow: ChapterFlow, key: string): readonly string[] {
+  const s = flow.steps.get(key as StepKey); // a fixture key
+  if (s === undefined) {
+    throw new Error(`invariant: the flow has step ${key}: ${[...flow.steps.keys()].join(', ')}`);
+  }
+  return s.next;
+}
+
+test("flow: a choice's branches each reach their first line", () => {
+  const { flow, findings } = flowOf([
+    '-> k',
+    '=== k ===',
+    'Перед. #id:ch1.k.a001',
+    '* [А #id:ch1.k.c001]',
+    '    После А. #id:ch1.k.a002',
+    '* [Б #id:ch1.k.c002]',
+    '    После Б. #id:ch1.k.a003',
+    '+ {g_x > 0} [В #id:ch1.k.c003]',
+    '    -> END',
+    '- Сбор. #id:ch1.k.a004',
+    '-> END',
+  ]);
+  expect(findings).toEqual([]);
+  expect(flow.first).toBe('k:k');
+  expect(nextOf(flow, 'k:k')).toEqual(['ch1.k.a001']);
+  // A sticky, conditional choice counts: the set offers every choice it may show.
+  expect(nextOf(flow, 'ch1.k.a001')).toEqual(['ch1.k.c001', 'ch1.k.c002', 'ch1.k.c003']);
+  expect(nextOf(flow, 'ch1.k.c001')).toEqual(['ch1.k.a002']);
+  expect(nextOf(flow, 'ch1.k.c002')).toEqual(['ch1.k.a003']);
+  expect(nextOf(flow, 'ch1.k.c003')).toEqual([]);
+});
+
+test('flow: a gather joins its branches', () => {
+  const { flow } = flowOf([
+    '-> k',
+    '=== k ===',
+    '* [А #id:ch1.k.c001]',
+    '    А1. #id:ch1.k.a001',
+    '    ** [А-а #id:ch1.k.c003]',
+    '        А-а. #id:ch1.k.a002',
+    '    ** [А-б #id:ch1.k.c004]',
+    '* [Б #id:ch1.k.c002]',
+    '    -> other',
+    '- Сбор. #id:ch1.k.a003',
+    '-> END',
+    '=== other ===',
+    'Другое. #id:ch1.other.a004',
+    '-> END',
+  ]);
+  expect(nextOf(flow, 'k:k')).toEqual(['ch1.k.c001', 'ch1.k.c002']);
+  expect(nextOf(flow, 'ch1.k.a001')).toEqual(['ch1.k.c003', 'ch1.k.c004']);
+  // A depth-2 branch with no depth-2 gather flows to the depth-1 gather; an empty branch too.
+  expect(nextOf(flow, 'ch1.k.a002')).toEqual(['ch1.k.a003']);
+  expect(nextOf(flow, 'ch1.k.c004')).toEqual(['ch1.k.a003']);
+  // A branch that diverts away never reaches the gather.
+  expect(nextOf(flow, 'ch1.k.c002')).toEqual(['ch1.other.a004']);
+  expect(nextOf(flow, 'ch1.k.a003')).toEqual([]);
+});
+
+test("flow: a divert enters the knot's first step", () => {
+  const { flow } = flowOf([
+    '-> a',
+    '=== a ===',
+    'А. #id:ch1.a.a001',
+    '-> b',
+    '=== b ===',
+    '# scene: street',
+    'Б. #id:ch1.b.b001',
+    '-> c',
+    '=== c ===',
+    '* [В #id:ch1.c.c001]',
+    '    -> END',
+    '* [Г #id:ch1.c.c002]',
+    '    -> d',
+    '=== d ===',
+    '= first',
+    'Д. #id:ch1.d.d001',
+    '-> END',
+  ]);
+  expect(nextOf(flow, 'ch1.a.a001')).toEqual(['ch1.b.b001']);
+  // The knot's opening tag lines are its first step's batch.
+  expect(flow.steps.get('ch1.b.b001' as StepKey)?.batches.map((b) => [b.from, b.commands.map((c) => `${c.cmd.kind}@${c.line}`)])).toEqual([
+    [['ch1.a.a001'], ['scene@7']],
+  ]);
+  // A knot whose first step is a choice set; a knot with no content of its own enters its first stitch.
+  expect(nextOf(flow, 'ch1.b.b001')).toEqual(['ch1.c.c001', 'ch1.c.c002']);
+  expect(nextOf(flow, 'ch1.c.c002')).toEqual(['ch1.d.d001']);
+});
+
+test('flow: a tunnel returns to every caller', () => {
+  const { flow } = flowOf([
+    '-> a',
+    '=== a ===',
+    'А. #id:ch1.a.a001',
+    '-> t ->',
+    'А2. #id:ch1.a.a002',
+    '-> b',
+    '=== b ===',
+    'Б. #id:ch1.b.b001',
+    '-> t ->',
+    'Б2. #id:ch1.b.b002',
+    '-> END',
+    '=== t ===',
+    'Т. #id:ch1.t.t001',
+    '->->',
+  ]);
+  expect(nextOf(flow, 'ch1.a.a001')).toEqual(['ch1.t.t001']);
+  expect(nextOf(flow, 'ch1.b.b001')).toEqual(['ch1.t.t001']);
+  expect(nextOf(flow, 'ch1.t.t001')).toEqual(['ch1.a.a002', 'ch1.b.b002']);
+});
+
+test('flow: a thread is unsupported', () => {
+  const { findings } = flowOf(['-> a', '=== a ===', 'А. #id:ch1.a.a001', '<- t', '-> END', '=== t ===', 'Т. #id:ch1.t.t001', '-> DONE']);
+  expect(findings).toEqual([
+    { code: 'flow/unsupported', severity: 'E', file: 'ch1/main.ink', line: 5, message: "thread '<- t': the step flow does not model it (§14)" },
+  ]);
+});
+
+test('flow: every arm of a conditional block reaches the line after it', () => {
+  const { flow } = flowOf([
+    '-> k',
+    '=== k ===',
+    'Перед. #id:ch1.k.a001',
+    '{',
+    '- g_x > 1:',
+    '    Много. #id:ch1.k.a002',
+    '- g_x == 1:',
+    '    Один. #id:ch1.k.a003',
+    '- else:',
+    '    Ноль. #id:ch1.k.a004',
+    '}',
+    '{ g_x > 0:',
+    '    Есть. #id:ch1.k.a005',
+    '- else:',
+    '    Нет. #id:ch1.k.a006',
+    '}',
+    'После. #id:ch1.k.a007',
+    '-> END',
+  ]);
+  // A switch with an else: every arm, and no way around it.
+  expect(nextOf(flow, 'ch1.k.a001')).toEqual(['ch1.k.a002', 'ch1.k.a003', 'ch1.k.a004']);
+  for (const arm of ['ch1.k.a002', 'ch1.k.a003', 'ch1.k.a004']) {
+    expect(nextOf(flow, arm), arm).toEqual(['ch1.k.a005', 'ch1.k.a006']);
+  }
+  expect(nextOf(flow, 'ch1.k.a005')).toEqual(['ch1.k.a007']);
+  expect(nextOf(flow, 'ch1.k.a006')).toEqual(['ch1.k.a007']);
+});
+
+test('flow: a conditional block without an else can skip its arms', () => {
+  const { flow } = flowOf([
+    '-> k',
+    '=== k ===',
+    'Перед. #id:ch1.k.a001',
+    '{ g_x > 0:',
+    '    Есть. #id:ch1.k.a002',
+    '}',
+    '{',
+    '- g_x == 1:',
+    '    Один. #id:ch1.k.a003',
+    '- g_x == 2:',
+    '    Два. #id:ch1.k.a004',
+    '}',
+    '{ stopping:',
+    '- Раз. #id:ch1.k.a005',
+    '- Снова. #id:ch1.k.a006',
+    '}',
+    'После. #id:ch1.k.a007',
+    '-> END',
+  ]);
+  // Each block without an else may run no arm; a stopping sequence always runs one.
+  expect(nextOf(flow, 'ch1.k.a001')).toEqual(['ch1.k.a002', 'ch1.k.a003', 'ch1.k.a004', 'ch1.k.a005', 'ch1.k.a006']);
+  expect(nextOf(flow, 'ch1.k.a002')).toEqual(['ch1.k.a003', 'ch1.k.a004', 'ch1.k.a005', 'ch1.k.a006']);
+  expect(nextOf(flow, 'ch1.k.a003')).toEqual(['ch1.k.a005', 'ch1.k.a006']);
+  expect(nextOf(flow, 'ch1.k.a005')).toEqual(['ch1.k.a007']);
 });
