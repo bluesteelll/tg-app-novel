@@ -17,9 +17,10 @@ import { playChapter } from '../playthrough.ts';
 import type { ChapterPlay } from '../playthrough.ts';
 import { buildFlow, crossCheck } from './flow.ts';
 import type { ChapterFlow, StepKey } from './flow.ts';
-import type { ShotFinding } from './lint.ts';
+import { SHOT_LINT_CODES, lintShots } from './lint.ts';
+import type { Plane, ShotFinding } from './lint.ts';
 import { decodeShotList, effectiveCatalog, effectiveShots, impliedPlaceholders } from './list.ts';
-import type { ShotList } from './list.ts';
+import type { EffectiveShot, ShotList } from './list.ts';
 
 type Json = Readonly<Record<string, unknown>>;
 
@@ -737,4 +738,254 @@ test("flow: a batch before a conditional block runs with every arm's first line"
     expect(flow.steps.get(arm as StepKey)?.cut, arm).toBe('street');
   }
   expect(effectAt(flow, 'ch1.b.o003').shots).toEqual(['street']);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Commit 5: the shot lints and STAGING-DSL §14
+
+/** A cafe with three cast shots (none in the committed catalog: implied placeholders) and a cast-less street shot. */
+const CAFE_SHOTS = shotList({
+  locs: [
+    { id: 'cafe', light: null },
+    { id: 'street', light: null },
+  ],
+  shots: [
+    { id: 'cafe_wide', loc: 'cafe', frame: 'wide', cast: [{ char: 'ally', view: 'face', rest: 'neutral' }, { char: 'stranger', view: 'face', rest: 'neutral' }] },
+    { id: 'cafe_ally_cu', loc: 'cafe', frame: 'close', cast: [{ char: 'ally', view: 'face', rest: 'neutral', figure: true }] },
+    { id: 'cafe_ots', loc: 'cafe', frame: 'ots', cast: [{ char: 'stranger', view: 'back', rest: 'neutral' }, { char: 'ally', view: 'face', rest: 'smile' }] },
+    { id: 'street_wide', loc: 'street', frame: 'wide', cast: [] },
+    { id: 'spare_cu', loc: 'cafe', frame: 'close', cast: [{ char: 'keeper', view: 'face', rest: 'neutral' }] },
+  ],
+});
+const CAFE_CATALOG = effectiveCatalog(COMMITTED.catalog, CAFE_SHOTS);
+
+type Linted = { flow: ChapterFlow; findings: ShotFinding[]; shots: ReadonlyMap<BgId, EffectiveShot> };
+
+/** One fixture chapter's flow under a shot list, and the shot lints over it. */
+function linted(body: readonly string[], opts: { list?: ShotList; w?: WorldPublicBody; planes?: ReadonlyMap<BgId, readonly Plane[]> } = {}): Linted {
+  const list = opts.list ?? CAFE_SHOTS;
+  const catalog = effectiveCatalog(COMMITTED.catalog, list);
+  const { flow } = flowOf(body, catalog, opts.w);
+  const shots = effectiveShots(catalog, list, opts.w === undefined ? [] : [opts.w]);
+  const findings = lintShots({ chapters: [{ id: CH1, flow, world: opts.w ?? null }], shots, catalog: COMMITTED.catalog, planes: opts.planes ?? new Map() });
+  return { flow, findings, shots };
+}
+
+/** The findings of some codes as `code file:line message`. */
+function shown(findings: readonly ShotFinding[], ...codes: string[]): string[] {
+  return findings.filter((f) => codes.includes(f.code)).map((f) => `${f.code} ${f.file}:${f.line} ${f.message}`);
+}
+
+test('shots: a face of a character absent from the shot fails', () => {
+  const { findings } = linted(['-> k', '=== k ===', '# scene: cafe_ally_cu', 'ally: Привет. #id:ch1.k.a001', '# face: stranger smile', 'Тишина. #id:ch1.k.a002', '-> END']);
+  expect(shown(findings, 'shot/char-absent')).toEqual([
+    "shot/char-absent story/ch1/main.ink:6 'face: stranger smile': stranger is not in the cast of shot 'cafe_ally_cu' (on some path) (§14)",
+  ]);
+  expect(findings.find((f) => f.code === 'shot/char-absent')?.severity).toBe('E');
+});
+
+test("shots: a face in the batch of a cut names the new shot's cast", () => {
+  const { findings } = linted([
+    '-> k',
+    '=== k ===',
+    '# scene: cafe_ally_cu',
+    'ally: Привет. #id:ch1.k.a001',
+    '# bg: cafe_wide',
+    '# face: stranger serious',
+    'stranger: Здравствуй. #id:ch1.k.a002',
+    '# bg: cafe_ally_cu',
+    '# face: stranger smile',
+    'Тишина. #id:ch1.k.a003',
+    '-> END',
+  ]);
+  // The cut runs first (§3.1 batch order): stranger is cast in cafe_wide, the shot after the cut; not in cafe_ally_cu.
+  expect(shown(findings, 'shot/char-absent')).toEqual([
+    "shot/char-absent story/ch1/main.ink:10 'face: stranger smile': stranger is not in the cast of shot 'cafe_ally_cu' (on some path) (§14)",
+  ]);
+});
+
+test('shots: an off-screen speaker passes', () => {
+  const { findings } = linted(['-> k', '=== k ===', '# scene: cafe_ally_cu', 'voice: Кто там? #id:ch1.k.a001', 'radio: Приём. #id:ch1.k.a002', 'stranger: Я здесь. #id:ch1.k.a003', '-> END']);
+  expect(shown(findings, 'shot/char-absent', 'shot/back-view')).toEqual([]);
+});
+
+test('shots: a show in a shot chapter fails', () => {
+  // Any character: ally is in the cast and still has no sprite in a shot chapter.
+  const { findings } = linted(['-> k', '=== k ===', '# scene: cafe_wide', 'Кафе. #id:ch1.k.a001', '# show: ally smile at=left', 'Улыбка. #id:ch1.k.a002', '-> END']);
+  expect(shown(findings, 'shot/sprite-in-shot-chapter')).toEqual([
+    "shot/sprite-in-shot-chapter story/ch1/main.ink:7 ch1 shows shot 'cafe_wide', which has a cast: a shot chapter has no sprites (§14)",
+  ]);
+});
+
+test('shots: a show in a legacy chapter passes', () => {
+  const { findings } = linted(['-> k', '=== k ===', '# scene: street', '# show: ally smile at=left', 'Улица. #id:ch1.k.a001', '# hide: ally', 'Ушла. #id:ch1.k.a002', '-> END']);
+  expect(findings.filter((f) => f.severity === 'E')).toEqual([]);
+  expect(shown(findings, 'shot/sprite-in-shot-chapter')).toEqual([]);
+});
+
+test('shots: a front plane over a hotspot warns', () => {
+  const list = shotList({ locs: [{ id: 'hall', light: null }], shots: [{ id: 'hall', loc: 'hall', frame: 'room', cast: [] }] });
+  const w = manorWorld();
+  const planes = new Map<BgId, readonly Plane[]>([
+    [
+      bg('hall'),
+      [
+        { at: [450, 600, 100, 100], front: true }, // over the gate [400, 500, 300, 700]
+        { at: [0, 0, 50, 50], front: true }, // over nothing
+        { at: [400, 500, 300, 700], front: false }, // a back plane draws below the props
+      ],
+    ],
+  ]);
+  const { findings } = linted(MANOR, { list, w, planes });
+  expect(shown(findings, 'shot/plane-over-hotspot')).toEqual(['shot/plane-over-hotspot story/ch1/world.json:0 a front plane of \'hall\' at [450, 600, 100, 100] covers hotspot s.hall.gate (§14)']);
+  expect(findings.find((f) => f.code === 'shot/plane-over-hotspot')?.severity).toBe('W');
+});
+
+test('shots: an undeclared shot warns', () => {
+  const { findings } = linted(['-> k', '=== k ===', '# scene: street', 'Улица. #id:ch1.k.a001', '# scene: cafe_wide', 'Кафе. #id:ch1.k.a002', '-> END']);
+  expect(shown(findings, 'shot/undeclared')).toEqual([
+    "shot/undeclared story/shots.json:0 shot 'street' (used by ch1) is not declared: an implied cast-less shot, frame wide (§14)",
+  ]);
+  expect(findings.find((f) => f.code === 'shot/undeclared')?.severity).toBe('W');
+});
+
+test('shots: a view whose bg is declared as an insert fails', () => {
+  // No zoom view exists on this tree (no `view` key yet): a view is a room of a section, so the fixture is a room.
+  const insert = shotList({ locs: [{ id: 'hall', light: null }], shots: [{ id: 'hall', loc: 'hall', frame: 'insert', cast: [] }] });
+  const w = manorWorld();
+  expect(shown(linted(MANOR, { list: insert, w }).findings, 'shot/room-frame')).toEqual([
+    "shot/room-frame story/ch1/world.json:0 room s.hall draws 'hall', which story/shots.json declares frame insert: a room's shot is frame room (§14)",
+  ]);
+  const room = shotList({ locs: [{ id: 'hall', light: null }], shots: [{ id: 'hall', loc: 'hall', frame: 'room', cast: [] }] });
+  expect(shown(linted(MANOR, { list: room, w }).findings, 'shot/room-frame')).toEqual([]);
+});
+
+/** The rows of STAGING-DSL §14 that start with a code (`| \`code\` | sev |`). */
+function docCodes(): Array<[string, string]> {
+  const lines = readFileSync(new URL('../../../../docs/STAGING-DSL.md', import.meta.url), 'utf8').split(/\r?\n/);
+  const start = lines.findIndex((l) => l.startsWith('## 14.'));
+  if (start < 0) {
+    throw new Error('invariant: STAGING-DSL.md has a section 14');
+  }
+  const end = lines.findIndex((l, i) => i > start && l.startsWith('## '));
+  return lines.slice(start + 1, end < 0 ? lines.length : end).flatMap((l) => {
+    const m = /^\| `([^`]+)` \| (E|W) \|/.exec(l);
+    return m === null ? [] : [[m[1] ?? '', m[2] ?? ''] as [string, string]];
+  });
+}
+
+test("shots: the doc's shot lint table equals the codes", () => {
+  const rows = docCodes();
+  expect(rows.length).toBeGreaterThanOrEqual(10); // non-vacuity; no fixed count, so SH3b adds its rows with no test edit
+  expect(new Map(rows)).toEqual(new Map(Object.entries(SHOT_LINT_CODES)));
+  expect(rows.length).toBe(new Set(rows.map(([code]) => code)).size); // one row per code
+});
+
+test('shots: a face or a cam target on a back view fails', () => {
+  const { findings } = linted([
+    '-> k',
+    '=== k ===',
+    '# scene: cafe_ots',
+    'Кафе. #id:ch1.k.a001',
+    '# face: stranger smile',
+    'Улыбка. #id:ch1.k.a002',
+    '# cam: push to=stranger z=120',
+    'Ближе. #id:ch1.k.a003',
+    '# cam: push to=ally',
+    '# face: ally worried',
+    'ally: Ой. #id:ch1.k.a004',
+    '-> END',
+  ]);
+  expect(shown(findings, 'shot/back-view', 'shot/char-absent')).toEqual([
+    "shot/back-view story/ch1/main.ink:6 'face: stranger smile': stranger is a back view in shot 'cafe_ots' (§14)",
+    "shot/back-view story/ch1/main.ink:8 'cam: push to=stranger': stranger is a back view in shot 'cafe_ots' (§14)",
+  ]);
+});
+
+test('shots: a hop for a member without a figure plane fails', () => {
+  const { findings } = linted([
+    '-> k',
+    '=== k ===',
+    '# scene: cafe_wide',
+    '# anim: ally hop',
+    'Прыжок. #id:ch1.k.a001',
+    '# anim: stranger nod',
+    'Кивок. #id:ch1.k.a002',
+    '# bg: cafe_ally_cu',
+    '# anim: ally bounce',
+    'Ещё. #id:ch1.k.a003',
+    '-> END',
+  ]);
+  expect(shown(findings, 'shot/motion-unsupported', 'shot/char-absent')).toEqual([
+    "shot/motion-unsupported story/ch1/main.ink:5 'anim: ally hop': ally has no figure plane in shot 'cafe_wide' (figure: true) (§14)",
+  ]);
+});
+
+test('shots: a cut to another location without a scene warns', () => {
+  const { findings } = linted([
+    '-> k',
+    '=== k ===',
+    '# scene: cafe_wide',
+    'Кафе. #id:ch1.k.a001',
+    '# bg: cafe_ally_cu',
+    'Ближе. #id:ch1.k.a002',
+    '# bg: street_wide',
+    'Улица. #id:ch1.k.a003',
+    '# scene: cafe_wide',
+    'Снова кафе. #id:ch1.k.a004',
+    '-> END',
+  ]);
+  expect(shown(findings, 'shot/loc-change')).toEqual([
+    "shot/loc-change story/ch1/main.ink:8 'bg: street_wide' cuts from location cafe ('cafe_ally_cu') to street without a scene (§14)",
+  ]);
+});
+
+test('shots: a used shot without a catalog entry warns', () => {
+  const { findings } = linted(['-> k', '=== k ===', '# scene: cafe_wide', 'Кафе. #id:ch1.k.a001', '-> END']);
+  // spare_cu is declared with no catalog entry too, but no chapter uses it.
+  expect(shown(findings, 'shot/implied-placeholder')).toEqual([
+    "shot/implied-placeholder story/shots.json:0 shot 'cafe_wide' (used by ch1) has no assets/catalog.json entry: an implied placeholder, art pending (§14)",
+  ]);
+});
+
+test('shots: a needed face state on a placeholder shot is pending art', () => {
+  const { findings } = linted([
+    '-> k',
+    '=== k ===',
+    '# scene: cafe_ally_cu',
+    'ally: Привет. #id:ch1.k.a001',
+    '# face: ally smile',
+    'ally: Ха. #id:ch1.k.a002',
+    'Тишина. #id:ch1.k.a003',
+    '-> END',
+  ]);
+  expect(shown(findings, 'art/pending')).toEqual([
+    'art/pending story/ch1/main.ink:5 shot cafe_ally_cu lacks ally.neutral (needed by ch1.k.a001) (§14)',
+    'art/pending story/ch1/main.ink:7 shot cafe_ally_cu lacks ally.smile (needed by ch1.k.a002, ch1.k.a003) (§14)',
+  ]);
+});
+
+test('shots: a face, anim or cam target on a legacy chapter fails even with its sprite shown', () => {
+  // D4 (carries b, c): a legacy chapter's shots are cast-less; the rule reads no sprite.
+  const { findings } = linted([
+    '-> k',
+    '=== k ===',
+    '# scene: street',
+    '# show: ally neutral at=left',
+    'Улица. #id:ch1.k.a001',
+    '# face: ally smile',
+    'Улыбка. #id:ch1.k.a002',
+    '# anim: ally nod',
+    'Кивок. #id:ch1.k.a003',
+    '# cam: pan to=ally',
+    'Взгляд. #id:ch1.k.a004',
+    '# cam: push',
+    'Ближе. #id:ch1.k.a005',
+    '-> END',
+  ]);
+  expect(shown(findings, 'shot/char-absent')).toEqual([
+    "shot/char-absent story/ch1/main.ink:7 'face: ally smile': ally is not in the cast of shot 'street' (on some path) (§14)",
+    "shot/char-absent story/ch1/main.ink:9 'anim: ally nod': ally is not in the cast of shot 'street' (on some path) (§14)",
+    "shot/char-absent story/ch1/main.ink:11 'cam: pan to=ally': ally is not in the cast of shot 'street' (on some path) (§14)",
+  ]);
 });

@@ -945,3 +945,67 @@ A new tag, option or default is a design change:
 4. The doc test (`dsl-doc.test.ts`) proves the two-way match.
 
 Bump the DSL version line at the top. Removing or renaming a tag requires migrating every chapter in the same lane.
+
+---
+
+## 14. Shots: the shot list, the step flow and the shot lints
+
+Built by the shots plan's SH2 ([shots §2](plans/shots/02-shot-model.md#2-the-shot-model),
+[§3.3-3.6](plans/shots/03-story-dsl.md#33-lints)): the story tool's shot pass. It reads tags only through
+`parseTags`; its lints have their own registry, `SHOT_LINT_CODES` in `client/scripts/story/shots/lint.ts`, which the
+table below mirrors (`shots: the doc's shot lint table equals the codes` holds the two in step), so §11's table and
+its doc test stay untouched.
+
+### 14.1 The shot list `story/shots.json`
+
+```json
+{ "locs": [ { "id": "cafe", "light": "warm lamps, rain outside" } ],
+  "shots": [ { "id": "cafe_ots_ally", "loc": "cafe", "frame": "ots",
+               "cast": [ { "char": "stranger", "view": "back", "rest": "neutral" },
+                         { "char": "ally", "view": "face", "rest": "smile", "figure": false } ] } ] }
+```
+
+- **Locations** (`locs`): an id (`[a-z][a-z0-9_]*`) and its light note (the owner's art direction, `null` until
+  written). The shots of one scene share a location.
+- **Shots**: an id (`[a-z][a-z0-9_]*`, by convention `<loc>_<frame>[_<subject>]`), its location, a `frame` (`wide`,
+  `medium`, `close`, `ots`, `two`, `insert`, `room`) and its `cast`, back to front: per member a catalog character,
+  its `view` (`face`: the face is visible and its states change; `back`: a back or a shoulder, hair only), its `rest`
+  expression (one of the character's catalog expressions: the face drawn into the plate) and `figure` (optional,
+  default `false`: the whole figure is cut out as a plane, which `anim: hop | bounce` need).
+- **Implied shots.** A shot the list declares without an `assets/catalog.json` bg gets an implied placeholder (hue =
+  FNV-1a 32 of its id mod 360), so its `bg:` / `scene:` parse; `shot/implied-placeholder` warns while it is used. A
+  catalog bg the list does not declare is an implied cast-less shot: `frame: room` where a room of some listed
+  chapter's world draws it, else `wide`, its location its own id; `shot/undeclared` warns while it is used.
+- **Legacy and shot chapters.** A chapter whose every shot is cast-less is a legacy chapter: it keeps its `show:` /
+  `hide:` sprites until it is restaged. A chapter that shows a shot with a cast is a shot chapter: it has no sprites.
+
+### 14.2 The step flow
+
+The shot pass builds each compiled chapter's step flow (`client/scripts/story/shots/flow.ts`): the steps the runtime
+presents, keyed by a line's ID, each choice's ID, or `k:<knot>` for a knot entry (the first knot, a puzzle's `then`,
+an explore section's knots). Choices and gathers follow their weave depth, diverts enter a knot's first step, a
+conditional or sequence block takes every arm (and skips them when no arm must run), a yield leads to its `then` knot
+or its section's knots. Every step transition a seeded playthrough makes must be an edge of the flow
+(`flow/edge-missing`). Over the flow, what may be on stage at each step (the shot, the faces, the CG, the room, the
+legacy sprites) is a union over every path: `scene:` resets the faces to each member's rest, `bg:` cuts inside the
+scene and keeps them, `face:` sets one character's expression; a chapter starts on the empty stage, a section's knot
+on its room. So a `face:`, an `anim:` or a `cam:` with a character target must name a member of every shot that may
+be in effect after its batch's cut.
+
+### 14.3 Shot lint codes
+
+| Code | Sev | Rule |
+|---|---|---|
+| `shot/undeclared` | W | a `bg:` / `scene:` or a world room names a catalog bg that `story/shots.json` does not declare: an implied cast-less shot (§14.1); one finding per shot, naming the chapters that use it |
+| `shot/room-frame` | E | a world room (or view) draws a bg that `story/shots.json` declares with a `frame` other than `room` |
+| `shot/list` | E | `story/shots.json` does not decode: an unknown or missing key, a wrong type, an id not `[a-z][a-z0-9_]*`, a duplicate location, shot or cast character, an unknown location, a character outside the catalog, a `rest` outside its expressions, a `view` other than `face` / `back`, an unknown `frame`; every problem is reported |
+| `shot/char-absent` | E | a `face:`, an `anim:` or a `cam: … to=<char>` names a character that is not in the cast of a shot that may be in effect after its batch's cut, or no shot is in effect on any path; a legacy chapter's shots are cast-less, so there each of these tags fails, a sprite shown or not |
+| `shot/back-view` | E | a `face:` or a `cam: … to=<char>` names a cast member whose `view` is `back` |
+| `shot/motion-unsupported` | E | an `anim: <char> hop` or `bounce` for a cast member without `figure: true` |
+| `shot/sprite-in-shot-chapter` | E | a `show:` / `hide:` in a shot chapter (§14.1), whatever the character |
+| `shot/loc-change` | W | a `bg:` cuts to a shot of another location without a `scene:` |
+| `shot/plane-over-hotspot` | W | a front plane of a room's shot covers a hotspot rect of that room (the tap still works) |
+| `shot/implied-placeholder` | W | a used shot has no `assets/catalog.json` entry: an implied placeholder, art pending |
+| `art/pending` | W | a needed face state (shot, character, expression) has no art: the shot's bg is a placeholder; the message names the lines that need it (E under `--strict`, as every W) |
+| `flow/edge-missing` | E | a seeded playthrough made a step transition the step flow lacks (only transitions some run makes fail) |
+| `flow/unsupported` | E | a construct the step flow does not model: a thread `<-`, a divert to no knot, stitch or label, a choice or a gather inside a conditional or sequence block |
