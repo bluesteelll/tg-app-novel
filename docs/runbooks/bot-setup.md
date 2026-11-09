@@ -84,7 +84,7 @@ The server half is one command, `server setup`; the rest is @BotFather and the h
    ```
 
    A wrong id is accepted silently: `/refund` then answers the unknown-command reply
-   ([commands.rs:109-113](../../server/src/telegram/commands.rs#L109)).
+   ([commands.rs:113-116](../../server/src/telegram/commands.rs#L113)).
 
    The three secrets of `.env.example` are public placeholders: the server refuses them unless `TELEGRAM_ENV=test` and
    `PUBLIC_APP_URL` is local ([config.rs:186-200](../../server/src/config.rs#L186)). Every problem is reported at once,
@@ -140,7 +140,7 @@ The server half is one command, `server setup`; the rest is @BotFather and the h
 - `/start` in the bot chat answers with a button that opens the Mini App
   ([commands.rs:81-101](../../server/src/telegram/commands.rs#L81)); the menu button opens it too.
 - `/terms`, `/support`, `/paysupport` and `/privacy` answer; `/refund` from a non-admin gets the unknown-command reply
-  ([commands.rs:109-113](../../server/src/telegram/commands.rs#L109)).
+  ([commands.rs:113-116](../../server/src/telegram/commands.rs#L113)).
 - Opening the Mini App reaches Home; a purchase in the test environment unlocks the chapter (the flow:
   [payments-ops.md](payments-ops.md)).
 - The webhook state: [webhook.md](webhook.md#verify).
@@ -158,6 +158,6 @@ updates entirely, delete the webhook with the Bot API's `deleteWebhook` (the com
 | `invalid configuration: BOT_TOKEN: invalid (is the committed .env.example placeholder ...)` | a placeholder secret with a reachable URL or `prod` | set a real `<BOT_TOKEN>`, `<WEBHOOK_SECRET>` and `<TOKEN_KEY>` |
 | `bot texts refused: ...` at start | `drafts` not empty under `TELEGRAM_ENV=prod` | step 5 |
 | `setup failed: bot setup: ...` | a Bot API call failed (token, an `http://` `PUBLIC_APP_URL`, network); nothing after it ran | fix the cause and run `server setup` again |
-| `server failed: ...` after `opening database` | the listen address is taken, for example by `server-dev` on `127.0.0.1:8787` ([main.rs:150](../../server/src/main.rs#L150), :134) | stop the other process, or set `LISTEN_ADDR` |
+| `server failed: ...` after `opening database` | the listen address is taken, for example by `server-dev` on `127.0.0.1:8787` ([main.rs:154](../../server/src/main.rs#L154), :138) | stop the other process, or set `LISTEN_ADDR` |
 | every open of the app ends on "reopen" (`initdata_expired`) | the host clock is ahead or behind | NTP time sync on the host |
 | `privacy policy: placeholders left under TELEGRAM_ENV=prod: ...` | the policy is not filled | [privacy-ops.md](privacy-ops.md) |

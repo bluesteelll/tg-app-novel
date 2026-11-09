@@ -2063,8 +2063,8 @@ MEMORY-PLAN's M3s `a5f887b` (server; M3s's cut no longer after MD1's order, RULI
 | Server statements | card ≤ 5; profile ≤ 7 (as merged, LF2 `d0c7870`, RULINGS 79: ≤ 8, M13); spend ≤ 6 (1 tx); gift ≤ 9 (1 tx) + 1 handle read; an invite request ≤ 6 (1 tx); the stats POST + 1 per batch (the referral probe with its evidence, revision 1 W5) + 1 only over the choice budget (first picks, revision 1 W2); pre-checkout 2 (was 3) | at the Q21 p99 RTT of 160 ms: the card ≤ 0.8 s, a spend ≤ 1 s, the stats POST ≤ 0.8 s worst case (5 statements) | the lane tests |
 
 The "JS before the first line" row above: changed by the engine plan (adopted 2026-11-09, RULINGS 158; planned, not
-built): the three plans' bytes against this row and the entry, meta-controller and all-JS rows are kept in one ledger
-per row, re-based on main `3c62a86` (RULINGS 143 QO10, 158) —
+built): the three plans' bytes against this row and the entry, engine-closure and all-JS rows are kept in one ledger
+per row (per-player's meta-controller term counts in the all-JS ledger; the meta controller chunk keeps its own row), re-based on main `3c62a86` (RULINGS 143 QO10, 158) —
 [engine §11.1 The shared ledgers](plans/engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13).
 
 **Vacuous-green guards.** The meta-ui row is PENDING, never PASS, until `app/meta.ts` exists; `scan-dist`'s meta set

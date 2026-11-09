@@ -21,7 +21,7 @@ loads it from `CONTENT_DIR` and serves it only after the entitlement check
   the host's panel).
 - A host with PostgreSQL 18 and an empty or already migrated database. Off loopback, `DATABASE_URL` must say
   `sslmode=verify-full` ([db/mod.rs:160-187](../../server/src/db/mod.rs#L160)). The server creates no database: a
-  missing one is a startup error ([server/src/lib.rs:63-70](../../server/src/lib.rs#L63)).
+  missing one is a startup error ([server/src/lib.rs:65-72](../../server/src/lib.rs#L65)).
 - The same URL for the PostgreSQL tools. They are libpq clients, and libpq differs from the server's driver in two
   ways. With `verify-full` and no `sslrootcert`, libpq looks for the root certificate in `~/.postgresql/root.crt`
   (`%APPDATA%\postgresql\root.crt` on Windows) and fails if it cannot verify the server
@@ -60,9 +60,9 @@ cargo build -p server --release --locked
   [share.rs:43](../../server/src/api/share.rs#L43), [legal.rs:19](../../server/src/api/legal.rs#L19),
   [db/mod.rs:82](../../server/src/db/mod.rs#L82)). A change to any of them needs a new binary.
 - Serve `client/dist/` only. Never `client/dist-e2e/`: that build has the dev mock compiled in
-  ([vite.config.ts:24-33](../../client/vite.config.ts#L24)). `STATIC_DIR` is checked at startup: it must not be, or
+  ([vite.config.ts:30-31](../../client/vite.config.ts#L30), :43, :46-47). `STATIC_DIR` is checked at startup: it must not be, or
   contain, or sit inside `CONTENT_DIR`, no entry may resolve outside it, and no dot-entry may be in it except the
-  root's `.vite` directory ([static_files.rs:145-149](../../server/src/api/static_files.rs#L145)).
+  root's `.vite` directory ([static_files.rs:215-219](../../server/src/api/static_files.rs#L215)).
 
 ## Steps
 
@@ -105,21 +105,21 @@ cargo build -p server --release --locked
    ```
 
    Startup order, each step refusing the start on failure: the configuration; the bot texts
-   ([main.rs:101-105](../../server/src/main.rs#L101)); the `STATIC_DIR` check (:106-116); then the content, the
+   ([main.rs:101-105](../../server/src/main.rs#L101)); the `STATIC_DIR` check (:106-120); then the content, the
    catalog, the privacy policy and the Bot API gateway; last the database pool and the migrations
-   ([server/src/lib.rs:63-89](../../server/src/lib.rs#L63)). Pending migrations apply here, in this start.
+   ([server/src/lib.rs:65-94](../../server/src/lib.rs#L65)). Pending migrations apply here, in this start.
 6. If `PUBLIC_APP_URL` or `WEBHOOK_SECRET` changed, run `.\server.exe setup` with the same environment
    ([webhook.md](webhook.md#registering)).
 
 ## Verify
 
 - The log shows `bot texts checked`, `opening database` with the target (never the password) and
-  `listening` with the address ([main.rs:41](../../server/src/main.rs#L41), :118, :155).
+  `listening` with the address ([main.rs:41](../../server/src/main.rs#L41), :122, :155).
 - `GET <PUBLIC_APP_URL>api/health` answers `ok`; `GET <PUBLIC_APP_URL>api/privacy` shows no placeholder.
 - The build id: the `static dir checked` line's `build_id` and the `x-build-id` header of `api/health` equal
   `client/dist/build-id.txt` ([Clients open during a deploy](#clients-open-during-a-deploy), item 5).
 - `/assets/*` answers with `Cache-Control: public, max-age=31536000, immutable`, everything else `no-cache`
-  ([static_files.rs:22-26](../../server/src/api/static_files.rs#L22)).
+  ([static_files.rs:26-30](../../server/src/api/static_files.rs#L26)).
 - Open the bot, start a free chapter, buy a paid one (in the test environment first).
 
 ## Migrations
@@ -146,9 +146,9 @@ How it works:
   ([static_files.rs:259](../../server/src/api/static_files.rs#L259), :266-283). A missing or malformed file refuses
   the start, before the database opens: `static dir refused: STATIC_DIR <path>: no build-id.txt (the client build
   writes it)` or `... build-id.txt is not 16 lowercase hex digits` (:176, :182). The log line `static dir checked`
-  carries it as `build_id` ([main.rs:112](../../server/src/main.rs#L112)). Every `/api` answer, errors included, then
-  carries `x-build-id: <id>` ([api/mod.rs:38-58](../../server/src/api/mod.rs#L38)); static files and the webhook do
-  not.
+  carries it as `build_id` ([main.rs:112](../../server/src/main.rs#L112)). Every answer of an `/api` route, errors
+  included, then carries `x-build-id: <id>` ([api/mod.rs:38-58](../../server/src/api/mod.rs#L38)); static files, the webhook and an unknown
+  `/api/*` path (no route matched) do not.
 - **The page.** The client reads the header of every response and compares it with its own id
   ([http.ts:173-187](../../client/src/api/http.ts#L173)). A lazy chunk or a free chapter file that the deploy removed
   answers without the header, so a failed chunk import (`vite:preloadError`) or a failed chapter load sends

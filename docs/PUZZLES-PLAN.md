@@ -1873,8 +1873,8 @@ The lanes are cut in PROTOTYPE-PLAN.md "THE LANE CUT" (dependency order, locks, 
 | Resume search after a rules update | ≤ 300 ms at CPU 4× (the LOW proxy) per search, worst case a full enumeration of `RESUME_STATE_CAP` = 5,000 states; one search at the load (the current section) and one at the first entry of each other section, never two at one point | X9: estimate ≈ 60 µs per state at 4× | `world/state-cap` bounds the states at build (LW3; `softlock: section above RESUME_STATE_CAP fails the build`, LW2); the time is verified in LW2 seen working (quiet machine) and on a LOW Android in L15 if available; LW2's measurement is provisional (RULINGS 21 Q7: 50-58 ms quiet-like, 130-158 ms under load, budget 75 ms unthrottled), re-measured on a quiet machine before LX / L13 rely on it |
 
 The "JS before the first line" row above: changed by the engine plan (adopted 2026-11-09, RULINGS 158; planned, not
-built): the three plans' bytes against the first-line, all-JS, engine-closure and puzzle-type rows are kept in one
-ledger per row, re-based on main `3c62a86` (RULINGS 143 QO10, 158) —
+built): the three plans' bytes against the entry, engine-closure, first-line and all-JS rows are kept in one ledger
+per row (a new puzzle-type chunk counts in the all-JS ledger and keeps its own per-chunk row), re-based on main `3c62a86` (RULINGS 143 QO10, 158) —
 [engine §11.1 The shared ledgers](plans/engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13).
 
 **Red once:** budget.test.ts feeds:
