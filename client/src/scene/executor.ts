@@ -410,10 +410,20 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     adapter.set(v.node.anchor, { x: c.offsetX, y: c.offsetY });
     adapter.set(v.sprite, { w: ROOM_SOURCE.w * c.scale, h: ROOM_SOURCE.h * c.scale });
   };
-  /** A bg or a CG: its anchor on top of the layer, at `alpha`, then the art in its `content`. */
+  /**
+   * A bg or a CG: its anchor on top of the layer, at `alpha`, then the art in its `content`. A sprite that throws takes
+   * its fresh anchor with it, so a failed build leaves no anchor in the layer (the shots plan's SH1 item 2 (b)).
+   */
   const backdrop = (layer: 'bg' | 'cg', h: TextureHandle<T>, alpha: number): BackdropView<T> => {
     const node = adapter.anchor(layer, h.id);
-    const v: BackdropView<T> = { slot: layer, handle: h, node, sprite: adapter.sprite(layer, h, node.content) };
+    let sprite: SpriteRef;
+    try {
+      sprite = adapter.sprite(layer, h, node.content);
+    } catch (e) {
+      adapter.dropGroup(node.anchor);
+      throw e;
+    }
+    const v: BackdropView<T> = { slot: layer, handle: h, node, sprite };
     placeBackdrop(v);
     adapter.set(node.anchor, { alpha });
     return v;
@@ -596,52 +606,71 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         }
       }
       const next: Array<[string, PropAnchor<T>]> = [];
-      for (const [k, ps] of byKey) {
-        const kept = anchors.get(k);
-        const live = ps.filter((p) => can(kept, p));
-        const first = live.find((p) => p.part !== 'patch') ?? live[0];
-        if (first === undefined) {
-          continue;
-        }
-        const a: PropAnchor<T> = kept ?? { node: adapter.anchor('props', k), rect: first.rect, views: [] };
-        let baseLeaves = false;
-        const views: PropView<T>[] = [];
-        for (const v of a.views) {
-          const p = ps.find((x) => x.prop === v.prop);
-          if (p === undefined) {
-            if (v.part === 'base') {
-              baseLeaves = true;
-              adapter.set(v.sprite, { z: 1 });
-            }
-            fade(v.sprite, 1, 0, ms, retire([v], null));
-          } else {
-            v.rect = p.rect;
-            views.push(v);
+      // What this pass makes, for the unmake when a sprite throws (the shots plan's SH1 item 2 (b), RULINGS 198 W2).
+      const made: PropView<T>[] = [];
+      const fresh: AnchorRef[] = [];
+      try {
+        for (const [k, ps] of byKey) {
+          const kept = anchors.get(k);
+          const live = ps.filter((p) => can(kept, p));
+          const first = live.find((p) => p.part !== 'patch') ?? live[0];
+          if (first === undefined) {
+            continue;
           }
-        }
-        for (const p of live) {
-          const h = handleFor(propSlot(p.prop));
-          if (h !== undefined && !views.some((v) => v.prop === p.prop)) {
-            const v: PropView<T> = {
-              slot: propSlot(p.prop),
-              handle: h,
-              sprite: adapter.sprite('props', h, a.node.content),
-              prop: p.prop,
-              part: p.part ?? 'base',
-              rect: p.rect,
-              box: propPlacement(adapter.size(), p.rect),
-            };
-            views.push(v);
-            if (kept !== undefined && (v.part === 'patch' || !baseLeaves)) {
-              fade(v.sprite, 0, 1, ms);
+          const a: PropAnchor<T> = kept ?? { node: adapter.anchor('props', k), rect: first.rect, views: [] };
+          if (kept === undefined) {
+            fresh.push(a.node);
+          }
+          let baseLeaves = false;
+          const views: PropView<T>[] = [];
+          for (const v of a.views) {
+            const p = ps.find((x) => x.prop === v.prop);
+            if (p === undefined) {
+              if (v.part === 'base') {
+                baseLeaves = true;
+                adapter.set(v.sprite, { z: 1 });
+              }
+              fade(v.sprite, 1, 0, ms, retire([v], null));
+            } else {
+              v.rect = p.rect;
+              views.push(v);
             }
           }
+          // A leaving view is retiring now: if a sprite below throws, the anchor must not track it once it is destroyed
+          // (critique r2 W1, RULINGS 200).
+          a.views = [...views];
+          for (const p of live) {
+            const h = handleFor(propSlot(p.prop));
+            if (h !== undefined && !views.some((v) => v.prop === p.prop)) {
+              const v: PropView<T> = {
+                slot: propSlot(p.prop),
+                handle: h,
+                sprite: adapter.sprite('props', h, a.node.content),
+                prop: p.prop,
+                part: p.part ?? 'base',
+                rect: p.rect,
+                box: propPlacement(adapter.size(), p.rect),
+              };
+              views.push(v);
+              made.push(v);
+              if (kept !== undefined && (v.part === 'patch' || !baseLeaves)) {
+                fade(v.sprite, 0, 1, ms);
+              }
+            }
+          }
+          a.views = [...views.filter((v) => v.part === 'base'), ...views.filter((v) => v.part === 'patch')];
+          if (kept === undefined) {
+            fade(a.node.anchor, 0, 1, ms);
+          }
+          next.push([k, a]);
         }
-        a.views = [...views.filter((v) => v.part === 'base'), ...views.filter((v) => v.part === 'patch')];
-        if (kept === undefined) {
-          fade(a.node.anchor, 0, 1, ms);
-        }
-        next.push([k, a]);
+      } catch (e) {
+        // A sprite this pass made that no anchor still in `anchors` tracks is destroyed, then every anchor it made is
+        // dropped; a kept anchor keeps the views assigned to it. The views it retired go at finish().
+        const tracked = new Set([...anchors.values()].flatMap((a) => a.views));
+        made.filter((v) => !tracked.has(v)).forEach(destroyView);
+        fresh.forEach((n) => adapter.dropGroup(n.anchor));
+        throw e;
       }
       anchors.clear();
       for (const [k, a] of next) {

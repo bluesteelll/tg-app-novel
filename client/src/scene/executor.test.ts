@@ -1604,3 +1604,78 @@ test('executor: a scene resets the camera', async () => {
   expect(h.ex.snapshot().cam).toEqual({ kind: 'pan', to: 'right' });
   h.ex.destroy();
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// Item 2 (b) of the shots plan's SH1 (GM6a's cut Q6, RULINGS 196, 198 W2, 200): a build that throws after it made an
+// anchor or a sprite leaves nothing it made untracked, and no kept anchor tracks a view that is gone.
+
+/** `adapter.sprite` throws for one asset id (keyed on the texture, so a crossfade's other sprites do not shift it). */
+function throwOn(h: ReturnType<typeof harness>, id: string): void {
+  const sprite = h.adapter.sprite.bind(h.adapter);
+  h.adapter.sprite = (layer, tex, g) => {
+    if (tex.id === id) {
+      throw new Error(`stage: a bug in the build of ${id}`);
+    }
+    return sprite(layer, tex, g);
+  };
+}
+
+/** Applies a batch whose build throws: the chain's catch logs it once and the apply still settles. */
+async function applyFailing(h: ReturnType<typeof harness>, cmds: readonly VisualCommand[]): Promise<void> {
+  const spy = spyErrors();
+  const applied = track(h.ex.apply(cmds, NOW));
+  await flush();
+  spy.restore();
+  expect(spy.errors.map((e) => e[0])).toEqual(['scene: batch failed']);
+  expect(applied.done).toBe(true);
+}
+
+test('executor: a build whose view creation throws after the anchor leaves no anchor in its layer', async () => {
+  // (a) A backdrop: the bg's anchor is made, then its sprite throws.
+  const a = harness();
+  throwOn(a, 'bg/cafe');
+  await applyFailing(a, [bg('cafe', 'crossfade', 500)]);
+  expect(a.anchors('bg').map((x) => x.key)).toEqual([]);
+  a.ex.destroy();
+  expect(a.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
+
+  // (b) Two new prop anchors, the second one's sprite throws: neither anchor nor the first sprite stays.
+  const b = harness();
+  await b.ex.apply([bg('room', 'cut')], NOW);
+  throwOn(b, 'prop/key');
+  await applyFailing(b, [props(['lamp', LAMP, 'room.lamp'], ['key', KEY, 'room.key'])]);
+  expect(b.anchors('props').map((x) => x.key)).toEqual([]);
+  expect(b.live('props')).toEqual([]);
+  b.ex.destroy();
+  expect(b.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
+
+  // (c) A kept anchor gains a patch, then its next patch throws: the anchor keeps only what it showed.
+  const c = harness();
+  await c.ex.apply([bg('room', 'cut'), props(['drawer', DRAWER, 'room.drawer'])], NOW);
+  const drawer = c.anchors('props');
+  throwOn(c, 'prop/key');
+  await applyFailing(c, [
+    bg('room', 'crossfade', 300),
+    props(['drawer', DRAWER, 'room.drawer'], ['glint', GLINT, 'room.drawer', 'patch'], ['key', KEY, 'room.drawer', 'patch']),
+  ]);
+  expect(c.live('props').map((x) => x.key)).toEqual(['drawer']);
+  expect(c.anchors('props')).toEqual(drawer);
+  expect(() => c.ex.destroy()).not.toThrow();
+  expect(c.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
+
+  // (d) A kept anchor whose base swaps (its old image leaves) and whose new image throws, after another kept anchor
+  // gained a patch: the leaving view is not tracked once it is gone, the other anchor's new sprite is live and tracked.
+  const d = harness();
+  await d.ex.apply([bg('room', 'cut'), props(['lamp', LAMP, 'room.lamp'], ['drawer', DRAWER, 'room.drawer'])], NOW);
+  const kept = d.anchors('props');
+  throwOn(d, 'prop/drawer_open');
+  await applyFailing(d, [
+    bg('room', 'crossfade', 300),
+    props(['lamp', LAMP, 'room.lamp'], ['glint', GLINT, 'room.lamp', 'patch'], ['drawer_open', DRAWER_OPEN, 'room.drawer']),
+  ]);
+  expect(d.ex.propRects().map((r) => r.prop)).toEqual(['lamp', 'glint']);
+  expect(d.live('props').map((x) => x.key)).toEqual(['lamp', 'glint']);
+  expect(d.anchors('props')).toEqual(kept);
+  expect(() => d.ex.destroy()).not.toThrow();
+  expect(d.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
+});
