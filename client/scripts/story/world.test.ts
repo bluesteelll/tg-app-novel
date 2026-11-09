@@ -6,11 +6,16 @@ import { readFileSync } from 'node:fs';
 
 import { expect, test } from 'vitest';
 
+import { RESUME_STATE_CAP } from '../../src/explore/reduce.ts';
+import type { Step } from '../../src/explore/reduce.ts';
+import { EMPTY_WORLD_STATE } from '../../src/explore/state.ts';
+import { searchSection, sectionEntry } from '../../src/mechanics/rules/search.ts';
+import type { SearchOptions } from '../../src/mechanics/rules/search.ts';
 import { PUZZLE_TYPES } from '../../src/puzzles/rules/index.ts';
 import type { PuzzleTypeData, PuzzleTypes } from '../../src/puzzles/rules/index.ts';
 import { assetIndex, decodeAssetCatalog } from '../../src/story/catalog.ts';
 import type { AssetCatalog } from '../../src/story/catalog.ts';
-import type { ChapterId, KnotName, PuzzleLocalId, VarName } from '../../src/story/staging.ts';
+import type { ChapterId, KnotName, PuzzleLocalId, SectionId, VarName } from '../../src/story/staging.ts';
 import { decodeWorldSource, toPublic } from '../../src/world/decode.ts';
 import { compileChapter } from './compile.ts';
 import { buildGraph } from './graph.ts';
@@ -1005,4 +1010,94 @@ test('story: a shown-goal puzzle with a clue is refused', () => {
   // Without the clue the shown goal is clean, and a lock holding it asks for none.
   delete at(w, 'puzzles.drawer')['clues'];
   expect(clueFindings(passInput(w, types), types)).toEqual([]);
+});
+
+/** The line of clue `i` of puzzle `pid` in a fixture's JSON text: each clue is a one-key object over three lines. */
+function clueLine(w: Json, pid: string, i: number): number {
+  const lines = `${JSON.stringify(w, null, 2)}\n`.split('\n');
+  const owner = lines.findIndex((l) => l.trimStart().startsWith(`"${pid}": {`));
+  const clues = lines.findIndex((l, n) => n > owner && l.trimStart().startsWith('"clues": ['));
+  if (owner < 0 || clues < 0) {
+    throw new Error(`invariant: the fixture puzzle ${pid} has clues`);
+  }
+  return clues + 2 + 3 * i;
+}
+
+test('story: a clue behind its own puzzle is refused', () => {
+  // The diary inside its own drawer: the drawer's code moves onto the cellar door, and the diary lies in the cellar.
+  const behind = (maxAttempts: number | null, onFail: Json[]): Json => {
+    const w = base();
+    spot(w, 'study', 'drawer')['lock'] = null;
+    spot(w, 'hall', 'to_cellar')['lock'] = { slots: [], puzzle: 'drawer', locked: t('manor', 'Дверь в подвал заперта.'), onOpen: [], onFail };
+    at(w, 'puzzles.drawer')['maxAttempts'] = maxAttempts;
+    at(w, 'puzzles.drawer')['clues'] = [{ doc: 'diary' }];
+    return w;
+  };
+  const unseen = (w: Json, pid: string, clue: Json): Finding => ({
+    code: 'world/clue-reachable',
+    severity: 'E',
+    file: FILE,
+    line: clueLine(w, pid, 0),
+    message: `puzzle '${pid}': clue ${JSON.stringify(clue)} holds in no state of section manor reached before '${pid}' is solved or failed (§7.3)`,
+  });
+  const inside = behind(null, []);
+  expect(of(lint(inside), 'world/clue-reachable')).toEqual([unseen(inside, 'drawer', { doc: 'diary' })]);
+  // Limited, and its failure opens the door itself (world/fail-without-effect's usual form): while the drawer can still
+  // be solved, the diary stays behind it (critique W1).
+  const limited = behind(3, [{ unlock: 'hall.to_cellar' }]);
+  expect(of(lint(limited), 'world/clue-reachable')).toEqual([unseen(limited, 'drawer', { doc: 'diary' })]);
+  // The control: the letter lies in the study, before the door.
+  const before = behind(null, []);
+  at(before, 'puzzles.drawer')['clues'] = [{ doc: 'letter' }];
+  expect(of(lint(before), 'world/clue-reachable')).toEqual([]);
+  // The gate's inscription is a look, a fact the section key does not hold: seen at the edge that sets it (D4).
+  expect(of(lint(base()), 'world/clue-reachable')).toEqual([]);
+  // A fact only the puzzle's own end writes: its outcome, or its lock opened by its onFail.
+  for (const clue of [{ solved: 'gate' }, { failed: 'gate' }, { open: 'hall.gate' }]) {
+    const w = base();
+    at(w, 'puzzles.gate')['clues'] = [clue];
+    expect(of(lint(w), 'world/clue-reachable'), JSON.stringify(clue)).toEqual([unseen(w, 'gate', clue)]);
+  }
+});
+
+test('story: a clue naming no fact of its world is refused', () => {
+  const w = base();
+  at(w, 'puzzles.drawer')['clues'] = [{ doc: 'diar' }, { examined: 'hall.nothing' }, { solved: 'ghost' }];
+  expect(of(lint(w), 'world/clue-reachable').map((f) => `${f.line} ${f.message}`)).toEqual([
+    `${clueLine(w, 'drawer', 0)} puzzle 'drawer': clue {"doc":"diar"} names no doc of this world`,
+    `${clueLine(w, 'drawer', 1)} puzzle 'drawer': clue {"examined":"hall.nothing"} names no hotspot of this world`,
+    `${clueLine(w, 'drawer', 2)} puzzle 'drawer': clue {"solved":"ghost"} names no puzzle of this world`,
+  ]);
+  // A linear puzzle's atoms too; whether they hold is the story's order (GM9p), so a named fact passes.
+  const linear = withCabinet(base());
+  const yielded = new Set(['cabinet'] as PuzzleLocalId[]); // a fixture id
+  at(linear, 'puzzles.cabinet')['clues'] = [{ visited: 'attic' }, { has: 'lamp' }, { doc: 'diary' }];
+  expect(of(lint(linear, { yielded }), 'world/clue-reachable').map((f) => f.message)).toEqual([
+    `puzzle 'cabinet': clue {"visited":"attic"} names no room of this world`,
+    `puzzle 'cabinet': clue {"has":"lamp"} names no item of this world`,
+  ]);
+});
+
+test('search: an excluded step is never taken', () => {
+  const decoded = decodeWorldSource(base());
+  if (!decoded.ok) {
+    throw new Error(`invariant: the fixture decodes: ${JSON.stringify(decoded.error)}`);
+  }
+  const pub = toPublic(decoded.value);
+  const manor = 'manor' as SectionId; // the fixture's section
+  const start = sectionEntry(pub, EMPTY_WORLD_STATE, manor);
+  const walk = (opts: SearchOptions): { states: number; result: string; steps: Step[] } => {
+    const steps: Step[] = [];
+    const r = searchSection(pub, start, manor, RESUME_STATE_CAP, { ...opts, onEdge: (_from, succ) => steps.push(succ.step) });
+    return { states: r.states, result: r.result, steps };
+  };
+  const solvedDrawer = (st: Step): boolean => st.kind === 'puzzle-ended' && st.puzzle === 'drawer' && st.outcome === 'solved';
+  const all = walk({});
+  expect(all.steps.filter(solvedDrawer).length).toBeGreaterThan(0);
+  const cut = walk({ exclude: solvedDrawer });
+  expect(cut.steps.filter(solvedDrawer)).toEqual([]);
+  expect(cut.result).toBe('exhausted');
+  expect(cut.states).toBeLessThan(all.states);
+  // An exclusion that accepts nothing is the option-less search, edge for edge.
+  expect(walk({ exclude: () => false })).toEqual(all);
 });
