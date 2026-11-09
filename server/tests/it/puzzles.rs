@@ -4074,8 +4074,10 @@ async fn values_domain_change_redraws_misfit_new_run() {
 
 /// The domain rule runs once whichever path sees a changed domain first (per-player §3.5, r3 m8): a misfit row under
 /// an older hash is held by a raw transaction while a values call (its guarded update) and an attempt (its locked
-/// read) both wait on it; once released, the row ends at run 2 exactly, and both answers name that run and value.
-/// Eight rounds, one player each.
+/// read) both queue on it; once released, the row ends at run 2 exactly, and both answers name that run and value.
+/// Eight rounds, one player each, in both queue orders: the first waiter takes the row first, so in the even rounds the
+/// attempt applies the rule and the values call's guard misses (the case an unguarded update re-draws twice), and in
+/// the odd rounds the values call applies it and the attempt reads the moved row.
 #[tokio::test]
 async fn values_domain_change_races_an_attempt_redraws_once() {
     let (_copy, st, _db) = v2_state(|_| {}).await;
@@ -4111,24 +4113,52 @@ async fn values_domain_change_races_an_attempt_redraws_once() {
         .execute(&mut holder)
         .await
         .unwrap();
-        let values = {
+        let spawn_values = || {
             let st = st.clone();
             tokio::spawn(async move { get_values(&st, user, "ch1").await })
         };
-        let attempt = {
+        let spawn_attempt = || {
             let st = st.clone();
             tokio::spawn(async move {
                 post_attempt(&st, user, "ch1.drawer", &run_body(&[1, 2, 3, 4], Some(1))).await
             })
         };
-        let waiters = lock_waiters(&mut poll, 2, Duration::from_millis(1500)).await;
+        // Each wait stays well inside the app's 2 s `lock_timeout`.
+        let within = Duration::from_millis(800);
+        let attempt_first = round % 2 == 0;
+        let (values, attempt, first, both) = if attempt_first {
+            let attempt = spawn_attempt();
+            let first = lock_waiters(&mut poll, 1, within).await;
+            let values = spawn_values();
+            (
+                values,
+                attempt,
+                first,
+                lock_waiters(&mut poll, 2, within).await,
+            )
+        } else {
+            let values = spawn_values();
+            let first = lock_waiters(&mut poll, 1, within).await;
+            let attempt = spawn_attempt();
+            (
+                values,
+                attempt,
+                first,
+                lock_waiters(&mut poll, 2, within).await,
+            )
+        };
         sqlx::raw_sql("COMMIT").execute(&mut holder).await.unwrap();
         holder.close().await.unwrap();
         poll.close().await.unwrap();
         let (values, attempt) = (values.await.unwrap(), attempt.await.unwrap());
-        if waiters < 2 {
+        if first < 1 || both < 2 {
+            let order = if attempt_first {
+                "the attempt, then the values call"
+            } else {
+                "the values call, then the attempt"
+            };
             failures.push(format!(
-                "round {round}: expected the values call and the attempt waiting on the held row, got {waiters}"
+                "round {round}: expected {order} queued on the held row, got {first} then {both} waiting"
             ));
         }
         match stored_row(&st, user, "ch1.desk_drawer").await {
