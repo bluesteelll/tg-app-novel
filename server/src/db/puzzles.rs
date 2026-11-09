@@ -5,8 +5,8 @@
 //! Every statement binds the token's user and the puzzle's storage key ([`PuzzleKey`], per-player §3.8: the id the
 //! puzzle first shipped under, so a rename keeps its rows). A static solution never reaches this module: the caller
 //! checks the answer against the content and passes whether it was correct, so the window is decided before that fact
-//! is used. A per-player value is read and compared only here, after the window decision, under its row lock
-//! (per-player §3.5).
+//! is used. A per-player value is read, compared and counted only here, after the window decision, under its row
+//! lock (per-player §3.5).
 
 use std::fmt;
 
@@ -214,7 +214,8 @@ impl Repo {
     /// update path) and the window count is exact. A window older than [`ATTEMPT_WINDOW_SECS`] restarts at `now` with
     /// this attempt. Past [`ATTEMPT_WINDOW_MAX`] the count commits, the answer is neither applied nor returned, and no
     /// value is read. A per-player answer is compared with the player's row, read under its lock (per-player §3.5),
-    /// only when it names the row's run and the run is live; otherwise the row is returned and nothing compared.
+    /// only when it names the row's run and the run is live; otherwise the row is returned and nothing compared. A
+    /// wrong per-player answer counts in the row, and the one that reaches the author's cap spends the run.
     pub async fn record_attempt(
         &self,
         user: UserId,
@@ -250,8 +251,8 @@ impl Repo {
                 solved: solved_at.is_some(),
             });
         }
-        let (correct, attempts_left) = match expected {
-            Expected::Static { correct } => (correct, None),
+        let (correct, attempts_left, spent) = match expected {
+            Expected::Static { correct } => (correct, None, false),
             Expected::PerPlayer {
                 answer,
                 domain,
@@ -266,10 +267,28 @@ impl Repo {
                     tx.commit().await?;
                     return Ok(AttemptRecord::ValueChanged(row));
                 }
-                (
-                    answer == row.value.as_slice(),
-                    attempts_left(cap, row.wrong),
-                )
+                if answer == row.value.as_slice() {
+                    (true, attempts_left(cap, row.wrong), false)
+                } else {
+                    // Every wrong answer of a run counts, a solved puzzle's replay too; the final one under the cap
+                    // spends the run. `GREATEST` keeps `spent_at` at or after the draw when the clock stepped back
+                    // since (`puzzle_values_spent_after`), so it stays a 200, never a 500.
+                    let wrong = row.wrong + 1;
+                    let spends = cap.is_some_and(|m| wrong >= i64::from(m));
+                    sqlx::query(
+                        "UPDATE puzzle_values SET wrong = $3, \
+                         spent_at = CASE WHEN $4 THEN GREATEST($5, issued_at) ELSE NULL END \
+                         WHERE user_id = $1 AND puzzle_id = $2",
+                    )
+                    .bind(user.0)
+                    .bind(&puzzle.0)
+                    .bind(wrong)
+                    .bind(spends)
+                    .bind(now)
+                    .execute(&mut *tx)
+                    .await?;
+                    (false, attempts_left(cap, wrong), spends)
+                }
             }
         };
         let solved = if correct {
@@ -293,7 +312,7 @@ impl Repo {
             correct,
             solved,
             attempts_left,
-            spent: false,
+            spent,
         })
     }
 

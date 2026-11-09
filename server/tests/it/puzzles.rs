@@ -3063,8 +3063,8 @@ fn value_changed(value: &[i64], run: i64, attempts_left: Option<i64>, spent: boo
     })
 }
 
-/// `user`'s drawer value of content-v2's ch1 (run 1), issued through the values route.
-async fn issued_drawer(st: &AppState, user: i64) -> Vec<i64> {
+/// `user`'s value of the puzzle stored under `key` (content-v2's ch1, run 1), issued through the values route.
+async fn issued(st: &AppState, user: i64, key: &str) -> Vec<i64> {
     let reply = get_values(st, user, "ch1").await;
     assert_eq!(
         reply.status.as_u16(),
@@ -3073,10 +3073,20 @@ async fn issued_drawer(st: &AppState, user: i64) -> Vec<i64> {
         body_text(&reply)
     );
     let rows = stored_values(st, user).await;
-    match rows.iter().find(|row| row.0 == "ch1.desk_drawer") {
+    match rows.iter().find(|row| row.0 == key) {
         Some(row) => row.6.clone(),
-        None => panic!("the values call stored no drawer row: {rows:?}"),
+        None => panic!("the values call stored no {key} row: {rows:?}"),
     }
+}
+
+/// `user`'s drawer value of content-v2's ch1 (run 1), issued through the values route.
+async fn issued_drawer(st: &AppState, user: i64) -> Vec<i64> {
+    issued(st, user, "ch1.desk_drawer").await
+}
+
+/// `st` with its clock at `t`.
+fn at(st: &AppState, t: i64) -> AppState {
+    st.clone().with_clock(Arc::new(FixedClock(t)))
 }
 
 /// A value of the drawer's domain other than `v`: its first entry moved by one (never `[0, 0, 0, 0]`).
@@ -3349,6 +3359,160 @@ fn attempt_debug_redacts_the_code() {
                 failures.push(format!("{name}: {text:?} carries {secret:?}"));
             }
         }
+    }
+    report(&failures);
+}
+
+/// A capped run is spent by its final wrong answer (per-player §3.5 step 5): ANN's three wrong answers on `safe` (cap 3)
+/// leave 2, 1, then 0 attempts, the third with `spent: true` and `spent_at` its time. BEN's third comes with the clock
+/// stepped back before his value's draw: `spent_at` stays at the draw (`GREATEST`, D6), never a 500.
+#[tokio::test]
+async fn attempt_final_wrong_spends_run() {
+    let (_copy, st, _db) = v2_state(with_safe).await;
+    let mut failures = Vec::new();
+    let ann = issued(&st, ANN, "ch1.safe").await;
+    let wrong = run_body(&another_drawer_value(&ann), Some(1));
+    for (case, t, left, spent) in [
+        ("first wrong", T0, 2, false),
+        ("second wrong", T0 + 1, 1, false),
+        ("third wrong", T0 + 2, 0, true),
+    ] {
+        let reply = post_attempt(&at(&st, t), ANN, "ch1.safe", &wrong).await;
+        failures.extend(expect_json(
+            case,
+            &reply,
+            200,
+            &answered(false, false, Some(left), spent),
+        ));
+    }
+    let got = wrong_and_spent(&st, ANN, "ch1.safe").await;
+    if got != Some((3, Some(T0 + 2))) {
+        failures.push(format!(
+            "ANN's safe row: expected (wrong 3, spent at T0 + 2), got {got:?}"
+        ));
+    }
+    let ben = issued(&st, BEN, "ch1.safe").await;
+    let wrong = run_body(&another_drawer_value(&ben), Some(1));
+    for t in [T0, T0] {
+        post_attempt(&at(&st, t), BEN, "ch1.safe", &wrong).await;
+    }
+    let reply = post_attempt(&at(&st, T0 - 100), BEN, "ch1.safe", &wrong).await;
+    failures.extend(expect_json(
+        "BEN's third wrong, the clock 100 s before his draw",
+        &reply,
+        200,
+        &answered(false, false, Some(0), true),
+    ));
+    let got = wrong_and_spent(&st, BEN, "ch1.safe").await;
+    if got != Some((3, Some(T0))) {
+        failures.push(format!(
+            "BEN's safe row: expected (wrong 3, spent at the draw T0), got {got:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// A spent run is never answered (per-player §3.5 step 4, W1): after the final wrong answer, even the right value for
+/// that run is 409 `value_changed` with the spent row; `wrong` stays 3 and nothing is solved.
+#[tokio::test]
+async fn attempt_on_spent_run_409_not_compared() {
+    let (_copy, st, _db) = v2_state(with_safe).await;
+    let mut failures = Vec::new();
+    let ann = issued(&st, ANN, "ch1.safe").await;
+    let wrong = run_body(&another_drawer_value(&ann), Some(1));
+    for _ in 0..3 {
+        post_attempt(&st, ANN, "ch1.safe", &wrong).await;
+    }
+    let reply = post_attempt(&st, ANN, "ch1.safe", &run_body(&ann, Some(1))).await;
+    failures.extend(expect_json(
+        "the right value on the spent run 1",
+        &reply,
+        409,
+        &value_changed(&ann, 1, Some(0), true),
+    ));
+    let got = (
+        wrong_and_spent(&st, ANN, "ch1.safe").await,
+        progress_row(&st, ANN, "ch1.safe").await,
+    );
+    if got != (Some((3, Some(T0))), Some((4, 4, T0, None))) {
+        failures.push(format!(
+            "after the 4th answer: expected (wrong 3, spent at T0) and (4, 4, T0, unsolved), got {got:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// An uncapped run counts every wrong answer and is never spent: 25 wrong answers on content-v2's drawer across two
+/// windows (20 at T0, 5 at T0 + 600) each answer `attemptsLeft: null, spent: false`; the row holds `wrong` 25 and no
+/// `spent_at`.
+#[tokio::test]
+async fn attempt_uncapped_never_spends() {
+    let (_copy, st, _db) = v2_state(|_| {}).await;
+    let mut failures = Vec::new();
+    let ann = issued_drawer(&st, ANN).await;
+    let wrong = run_body(&another_drawer_value(&ann), Some(1));
+    let later = at(&st, T0 + 600);
+    for n in 1..=25 {
+        let reply = post_attempt(
+            if n <= 20 { &st } else { &later },
+            ANN,
+            "ch1.drawer",
+            &wrong,
+        )
+        .await;
+        failures.extend(expect_json(
+            &format!("wrong answer {n}"),
+            &reply,
+            200,
+            &answered(false, false, None, false),
+        ));
+    }
+    let got = wrong_and_spent(&st, ANN, "ch1.desk_drawer").await;
+    if got != Some((25, None)) {
+        failures.push(format!(
+            "the drawer row: expected (wrong 25, live), got {got:?}"
+        ));
+    }
+    report(&failures);
+}
+
+/// A solved puzzle keeps counting in replays (per-player §3.5 "Solved puzzles"): ANN solves `safe` with her value, then
+/// three wrong answers of the same run spend it, the third answering `solved: true, attemptsLeft: 0, spent: true`; the
+/// solve stays.
+#[tokio::test]
+async fn attempt_solved_replay_counts_and_spends() {
+    let (_copy, st, _db) = v2_state(with_safe).await;
+    let mut failures = Vec::new();
+    let ann = issued(&st, ANN, "ch1.safe").await;
+    let reply = post_attempt(&st, ANN, "ch1.safe", &run_body(&ann, Some(1))).await;
+    failures.extend(expect_json(
+        "the solve",
+        &reply,
+        200,
+        &answered(true, true, Some(3), false),
+    ));
+    let wrong = run_body(&another_drawer_value(&ann), Some(1));
+    for (case, left, spent) in [
+        ("replay wrong 1", 2, false),
+        ("replay wrong 2", 1, false),
+        ("replay wrong 3", 0, true),
+    ] {
+        let reply = post_attempt(&st, ANN, "ch1.safe", &wrong).await;
+        failures.extend(expect_json(
+            case,
+            &reply,
+            200,
+            &answered(false, true, Some(left), spent),
+        ));
+    }
+    let got = (
+        wrong_and_spent(&st, ANN, "ch1.safe").await,
+        progress_row(&st, ANN, "ch1.safe").await.map(|row| row.3),
+    );
+    if got != (Some((3, Some(T0))), Some(Some(T0))) {
+        failures.push(format!(
+            "the solved replay: expected (wrong 3, spent at T0) and solved at T0, got {got:?}"
+        ));
     }
     report(&failures);
 }
