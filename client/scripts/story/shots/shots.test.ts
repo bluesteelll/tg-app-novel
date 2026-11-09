@@ -321,7 +321,7 @@ test('graph: the chapter graph exposes its section edges, seeds and rooms', () =
 /** The step flow of a fixture chapter. */
 function flowOf(body: readonly string[], catalog: AssetCatalog = COMMITTED.catalog, w?: WorldPublicBody): { flow: ChapterFlow; findings: ShotFinding[]; built: Built } {
   const built = chapter(body, catalog, w);
-  const r = buildFlow({ chapter: CH1, files: built.files, sources: built.sources, graph: built.graph, assets: built.assets, cast: COMMITTED.cast });
+  const r = buildFlow({ chapter: CH1, files: built.files, sources: built.sources, graph: built.graph, assets: built.assets, cast: COMMITTED.cast, ...(w === undefined ? {} : { world: w }) });
   return { ...r, built };
 }
 
@@ -582,4 +582,159 @@ test('flow: every observed step transition is an edge', () => {
       message: "the seeded runs went from 'ch1.k.a001' to 'ch1.k.a004', which the step flow lacks (§14)",
     },
   ]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Commit 4: what may be on stage at each step
+
+/** A step's effect, as sorted plain lists (faces and sprites `char=expr,...`; a null as '-'). */
+function effectAt(flow: ChapterFlow, key: string): { shots: string[]; faces: string[]; cg: string[]; room: string[]; sprites: string[] } {
+  const s = flow.steps.get(key as StepKey); // a fixture key
+  if (s === undefined) {
+    throw new Error(`invariant: the flow has step ${key}`);
+  }
+  const e = s.effect;
+  const list = (x: ReadonlySet<string | null>): string[] => [...x].map((v) => v ?? '-').sort();
+  const map = (m: ReadonlyMap<string, ReadonlySet<string | null>>): string[] => [...m].map(([k, v]) => `${k}=${list(v).join(',')}`).sort();
+  return { shots: list(e.shots), faces: map(e.faces), cg: list(e.cg), room: list(e.room), sprites: map(e.sprites) };
+}
+
+test('flow: the shot in effect after a gather is the union of its branches', () => {
+  const { flow } = flowOf([
+    '-> k',
+    '=== k ===',
+    '# scene: room',
+    'Комната. #id:ch1.k.a001',
+    '* [Кафе #id:ch1.k.c001]',
+    '    # bg: cafe',
+    '    Кафе. #id:ch1.k.a002',
+    '* [Улица #id:ch1.k.c002]',
+    '    # bg: street',
+    '    Улица. #id:ch1.k.a003',
+    '* [Остаться #id:ch1.k.c003]',
+    '- Дальше. #id:ch1.k.a004',
+    '-> END',
+  ]);
+  expect(effectAt(flow, 'ch1.k.a002').shots).toEqual(['cafe']);
+  expect(effectAt(flow, 'ch1.k.a003').shots).toEqual(['street']);
+  expect(effectAt(flow, 'ch1.k.a004').shots).toEqual(['cafe', 'room', 'street']);
+});
+
+test('flow: faces persist across cuts until a scene', () => {
+  const { flow } = flowOf([
+    '-> k',
+    '=== k ===',
+    '# scene: cafe',
+    '# face: ally smile',
+    'Кафе. #id:ch1.k.a001',
+    '# bg: street',
+    'Улица. #id:ch1.k.a002',
+    '* [Грустно #id:ch1.k.c001]',
+    '    # face: ally worried',
+    '    ally: Ох. #id:ch1.k.a003',
+    '* [Ничего #id:ch1.k.c002]',
+    '- Дальше. #id:ch1.k.a004',
+    '# scene: room',
+    'Комната. #id:ch1.k.a005',
+    '-> END',
+  ]);
+  expect(effectAt(flow, 'ch1.k.a001').faces).toEqual(['ally=smile']);
+  expect(effectAt(flow, 'ch1.k.a002')).toMatchObject({ shots: ['street'], faces: ['ally=smile'] }); // a cut keeps faces (S4)
+  expect(effectAt(flow, 'ch1.k.a004').faces).toEqual(['ally=smile,worried']);
+  expect(effectAt(flow, 'ch1.k.a005').faces).toEqual([]); // a scene puts every face back at rest
+  // A path where no face was set joins as the rest state.
+  const joined = flowOf([
+    '-> k',
+    '=== k ===',
+    '# scene: cafe',
+    'Кафе. #id:ch1.k.a001',
+    '* [Улыбка #id:ch1.k.c001]',
+    '    # face: ally smile',
+    '    ally: Ха. #id:ch1.k.a002',
+    '* [Ничего #id:ch1.k.c002]',
+    '- Дальше. #id:ch1.k.a003',
+    '-> END',
+  ]).flow;
+  expect(effectAt(joined, 'ch1.k.a003').faces).toEqual(['ally=-,smile']);
+});
+
+test("flow: a chapter's first step starts on the empty stage", () => {
+  const { flow } = flowOf(['-> k', '=== k ===', '# face: ally smile', 'ally: Привет. #id:ch1.k.a001', '# scene: cafe', 'Кафе. #id:ch1.k.a002', '-> END']);
+  const empty = { shots: [], faces: [], cg: ['-'], room: ['-'], sprites: [] };
+  expect(effectAt(flow, 'k:k')).toEqual(empty);
+  // No shot on any path: the face names no cast (shot/char-absent judges it).
+  expect(effectAt(flow, 'ch1.k.a001')).toEqual({ ...empty, faces: ['ally=smile'] });
+  expect(effectAt(flow, 'ch1.k.a002')).toEqual({ ...empty, shots: ['cafe'] });
+});
+
+test("flow: a section knot starts with its room's shot and props", () => {
+  const w = manorWorld();
+  const { flow } = flowOf(MANOR, COMMITTED.catalog, w);
+  // The event knot runs over the cellar (its room, whose props come with it), never the arrival's hall.
+  expect(effectAt(flow, 'k:cellar_voice')).toMatchObject({ shots: ['cellar'], room: ['cellar'] });
+  expect(effectAt(flow, 'ch1.cellar_voice.v001')).toMatchObject({ shots: ['cellar'], room: ['cellar'], cg: ['-'] });
+  expect(effectAt(flow, 'k:gate_forced')).toMatchObject({ shots: ['hall'], room: ['hall'] });
+  // The leave knot opens on its own scene: the street, no room.
+  expect(effectAt(flow, 'ch1.out.o001')).toMatchObject({ shots: ['street'], room: ['-'] });
+  // The arrival's scene is a room's shot: its room is in effect.
+  expect(effectAt(flow, 'ch1.arrive.a001')).toMatchObject({ shots: ['hall'], room: ['hall'] });
+});
+
+test("flow: a cut back to a room's shot puts its room in effect", () => {
+  const w = manorWorld();
+  const body = MANOR.map((l) => (l === 'Хруст. #id:ch1.gate_forced.f001' ? '# bg: cafe\nХруст. #id:ch1.gate_forced.f001\n# bg: hall\nСнова зал. #id:ch1.gate_forced.f002' : l));
+  const { flow } = flowOf(body.join('\n').split('\n'), COMMITTED.catalog, w);
+  expect(effectAt(flow, 'ch1.gate_forced.f001')).toMatchObject({ shots: ['cafe'], room: ['-'] });
+  expect(effectAt(flow, 'ch1.gate_forced.f002')).toMatchObject({ shots: ['hall'], room: ['hall'] });
+});
+
+test('flow: a legacy show is in effect until a hide or a scene', () => {
+  const { flow } = flowOf([
+    '-> k',
+    '=== k ===',
+    '# scene: cafe',
+    '# show: ally neutral at=left',
+    'Кафе. #id:ch1.k.a001',
+    '# show: ally smile',
+    '# show: stranger neutral at=right',
+    'Улыбка. #id:ch1.k.a002',
+    '# hide: ally',
+    'Ушла. #id:ch1.k.a003',
+    '# bg: street',
+    'Улица. #id:ch1.k.a004',
+    '# scene: room',
+    'Комната. #id:ch1.k.a005',
+    '-> END',
+  ]);
+  expect(effectAt(flow, 'ch1.k.a001').sprites).toEqual(['ally=neutral']);
+  expect(effectAt(flow, 'ch1.k.a002').sprites).toEqual(['ally=smile', 'stranger=neutral']);
+  expect(effectAt(flow, 'ch1.k.a003').sprites).toEqual(['stranger=neutral']);
+  expect(effectAt(flow, 'ch1.k.a004').sprites).toEqual(['stranger=neutral']); // a cut keeps sprites
+  expect(effectAt(flow, 'ch1.k.a005').sprites).toEqual([]);
+});
+
+test("flow: a batch before a conditional block runs with every arm's first line", () => {
+  // ch1's manor_out shape: the knot's opening scene runs with whichever arm's line shows first.
+  const { flow } = flowOf([
+    '-> a',
+    '=== a ===',
+    '# scene: room',
+    'Комната. #id:ch1.a.a001',
+    '-> b',
+    '=== b ===',
+    '# scene: street',
+    '# show: ally neutral at=left',
+    '{ g_x == 1:',
+    '    Открыто. #id:ch1.b.o001',
+    '- else:',
+    '    Сломано. #id:ch1.b.o002',
+    '}',
+    'Дальше. #id:ch1.b.o003',
+    '-> END',
+  ]);
+  for (const arm of ['ch1.b.o001', 'ch1.b.o002']) {
+    expect(effectAt(flow, arm), arm).toMatchObject({ shots: ['street'], sprites: ['ally=neutral'] });
+    expect(flow.steps.get(arm as StepKey)?.cut, arm).toBe('street');
+  }
+  expect(effectAt(flow, 'ch1.b.o003').shots).toEqual(['street']);
 });

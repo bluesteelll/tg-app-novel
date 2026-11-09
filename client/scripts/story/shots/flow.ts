@@ -5,11 +5,14 @@
 // CFG rules: weave depth for choices and gathers; diverts enter a knot's first step; tunnels add call and every-return
 // edges; conditional and sequence blocks take every arm (and skip them when no arm must run); sticky and fallback
 // choices count; END and DONE end a path; a yield leads to its `then` knot, an explore yield to its section's knots
-// (cross-check only, `explore`). Pure, no node:*, no inkjs; tags are read only through `parseTags`.
+// (cross-check only, `explore`). The may-analysis: what may be on stage after each step's batch, a forward union to a
+// fixpoint from the seeds (the first knot: the empty stage; a section knot: its rooms). It is the only code of the
+// shot pass that names the legacy kinds `show` / `hide` (rev. 5, W3: SH12a removes them here alone). Pure, no node:*,
+// no inkjs; tags are read only through `parseTags`.
 import type { Cast } from '../../../src/story/catalog.ts';
-import type { AssetIndex, ChapterId, CharId, KnotName, LineId, SpeakerId, StagingCommand, YieldCommand } from '../../../src/story/staging.ts';
+import type { AssetIndex, BgId, CgId, ChapterId, CharId, ExprId, KnotName, LineId, SpeakerId, StagingCommand, YieldCommand } from '../../../src/story/staging.ts';
 import { YIELD_KINDS, parseTags, tagKind } from '../../../src/story/tags.ts';
-import type { RoomId } from '../../../src/world/types.ts';
+import type { RoomId, WorldPublicBody } from '../../../src/world/types.ts';
 import { classify } from '../classify.ts';
 import type { Divert, LineClass, RawTag, SourceLine } from '../classify.ts';
 import type { ChapterGraph } from '../graph.ts';
@@ -22,8 +25,26 @@ export type StepKey = LineId | `k:${KnotName}`;
 export type WindowKey = StepKey | `r:${RoomId}`;
 /** A staging command with the story-relative file and 1-based line of its tag. */
 export type Placed = { readonly cmd: StagingCommand; readonly file: string; readonly line: number };
-/** One way into a step: the steps it follows that way (none for a seeded entry) and the batch it runs. */
-export type Batch = { readonly from: readonly StepKey[]; readonly commands: readonly Placed[] };
+/**
+ * What may be on stage at a step, after its batch (may-sets over every path): the shot, the face expressions a `face:`
+ * left since the last scene (null: the character's rest in the shot), the CG (null: none), the room whose props are on
+ * stage (null: none) and the legacy sprites of `show:` (rev. 3, W5; empty in a shot chapter).
+ */
+export type Effect = {
+  readonly shots: ReadonlySet<BgId>;
+  readonly faces: ReadonlyMap<CharId, ReadonlySet<ExprId | null>>;
+  readonly cg: ReadonlySet<CgId | null>;
+  readonly room: ReadonlySet<RoomId | null>;
+  readonly sprites: ReadonlyMap<CharId, ReadonlySet<ExprId>>;
+};
+/** The stage a chapter starts on (§2.2: a handover restores the empty snapshot). */
+export const EMPTY_EFFECT: Effect = { shots: new Set(), faces: new Map(), cg: new Set([null]), room: new Set([null]), sprites: new Map() };
+/** A step no path reaches: nothing at all. */
+const UNREACHED: Effect = { shots: new Set(), faces: new Map(), cg: new Set(), room: new Set(), sprites: new Map() };
+/** The image change a batch makes: its shot cut (`scene:` / `bg:`), else a CG it shows, else none. */
+export type Cut = BgId | CgId | null;
+/** One way into a step: the steps it follows that way (none for a seeded entry), the batch it runs, and after it. */
+export type Batch = { readonly from: readonly StepKey[]; readonly commands: readonly Placed[]; readonly effect: Effect; readonly cut: Cut };
 export type StepFlow = {
   readonly key: StepKey;
   /** Where the line or choice is (a knot entry: its knot header), story-relative. */
@@ -35,6 +56,10 @@ export type StepFlow = {
   readonly explore: readonly StepKey[];
   /** One batch per distinct command list into the step (a tag-only line on one path only makes two). */
   readonly batches: readonly Batch[];
+  /** The union of the batches' effects. */
+  readonly effect: Effect;
+  /** The first batch's image change that is not null (a batch's own is `Batch.cut`). */
+  readonly cut: Cut;
   /** The speaker's character; null for narration, an off-screen speaker and a choice. */
   readonly speaker: CharId | null;
   /** Some batch into the step carries `think`. */
@@ -55,6 +80,8 @@ export type FlowInput = {
   /** The effective catalog's index (`effectiveCatalog`), so a declared shot parses. */
   assets: AssetIndex;
   cast: Cast;
+  /** The chapter's public world (default none): which rooms a shot draws, a section knot's seed. */
+  world?: WorldPublicBody;
 };
 
 /** `k:<knot>`. */
@@ -577,6 +604,153 @@ class Builder {
 
 const order = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
+function union<T>(a: ReadonlySet<T>, b: ReadonlySet<T>): Set<T> {
+  return new Set([...a, ...b]);
+}
+
+function joinMap<K, V>(a: ReadonlyMap<K, ReadonlySet<V>>, b: ReadonlyMap<K, ReadonlySet<V>>, absent: ReadonlySet<V>): Map<K, ReadonlySet<V>> {
+  const out = new Map<K, ReadonlySet<V>>();
+  for (const k of new Set([...a.keys(), ...b.keys()])) {
+    out.set(k, union(a.get(k) ?? absent, b.get(k) ?? absent));
+  }
+  return out;
+}
+
+const AT_REST: ReadonlySet<ExprId | null> = new Set([null]);
+const NO_SPRITE: ReadonlySet<ExprId> = new Set();
+const AT_NO_ROOM: ReadonlySet<RoomId | null> = new Set([null]);
+
+/** The may-join of two effects: a face no `face:` set on one path is at rest there. */
+export function joinEffects(a: Effect, b: Effect): Effect {
+  return {
+    shots: union(a.shots, b.shots),
+    faces: joinMap(a.faces, b.faces, AT_REST),
+    cg: union(a.cg, b.cg),
+    room: union(a.room, b.room),
+    sprites: joinMap(a.sprites, b.sprites, NO_SPRITE),
+  };
+}
+
+function joinAll(effects: readonly Effect[]): Effect | undefined {
+  return effects.reduce<Effect | undefined>((acc, e) => (acc === undefined ? e : joinEffects(acc, e)), undefined);
+}
+
+function effectKey(e: Effect): string {
+  const set = (s: ReadonlySet<string | null>): string[] => [...s].map((x) => x ?? '').sort(order);
+  const map = (m: ReadonlyMap<string, ReadonlySet<string | null>>): string[] => [...m].map(([k, v]) => `${k}=${set(v).join(',')}`).sort(order);
+  return JSON.stringify([set(e.shots), map(e.faces), set(e.cg), set(e.room), map(e.sprites)]);
+}
+
+/**
+ * A batch's transfer, in the executor's batch order (`executor.ts` `reduce`; cut D5): `scene` (faces to rest, no CG,
+ * no sprites), `bg` (faces and the CG persist), `hide`, `show`, `face`, `cg`. The room in effect is the room whose bg
+ * the shot is (I-11 restores its props at runtime), else none. Only here are the legacy kinds named (rev. 5, W3).
+ */
+function transfer(e: Effect, commands: readonly Placed[], roomsOf: (bg: BgId) => ReadonlySet<RoomId | null>): Effect {
+  let { shots, faces, cg, room, sprites } = e;
+  const cmds = commands.map((p) => p.cmd);
+  const scene = cmds.find((c) => c.kind === 'scene');
+  if (scene?.kind === 'scene') {
+    shots = new Set([scene.bg]);
+    faces = new Map();
+    cg = new Set([null]);
+    room = roomsOf(scene.bg);
+    sprites = new Map();
+  }
+  const cut = cmds.find((c) => c.kind === 'bg');
+  if (cut?.kind === 'bg') {
+    shots = new Set([cut.bg]);
+    room = roomsOf(cut.bg);
+  }
+  const shown = new Map(sprites);
+  for (const c of cmds) {
+    if (c.kind === 'hide') {
+      if (c.char === 'all') {
+        shown.clear();
+      } else {
+        shown.delete(c.char);
+      }
+    }
+  }
+  for (const c of cmds) {
+    if (c.kind === 'show') {
+      shown.set(c.char, new Set([c.expr]));
+    }
+  }
+  const facing = new Map(faces);
+  for (const c of cmds) {
+    if (c.kind === 'face') {
+      facing.set(c.char, new Set([c.expr])); // a face changes no sprite: on a legacy chapter it is shot/char-absent (D4)
+    }
+  }
+  const shownCg = cmds.find((c) => c.kind === 'cg');
+  if (shownCg?.kind === 'cg') {
+    cg = new Set([shownCg.cg]);
+  }
+  return { shots, faces: facing, cg, room, sprites: shown };
+}
+
+/** A batch's image change: its shot cut, else a CG it shows, else null. */
+function cutOf(commands: readonly Placed[]): Cut {
+  for (const p of commands) {
+    if (p.cmd.kind === 'scene' || p.cmd.kind === 'bg') {
+      return p.cmd.bg;
+    }
+  }
+  for (const p of commands) {
+    if (p.cmd.kind === 'cg' && p.cmd.cg !== null) {
+      return p.cmd.cg;
+    }
+  }
+  return null;
+}
+
+/** Per bg, the rooms of the chapter's world that draw it (none: `{ null }`). */
+function roomIndex(world: WorldPublicBody | undefined): (bg: BgId) => ReadonlySet<RoomId | null> {
+  const by = new Map<string, Set<RoomId | null>>();
+  for (const s of Object.values(world?.sections ?? {})) {
+    for (const [id, r] of Object.entries(s.rooms)) {
+      (by.get(r.bg) ?? by.set(r.bg, new Set()).get(r.bg))?.add(id as RoomId); // a decoded room id
+    }
+  }
+  return (bg) => by.get(bg) ?? AT_NO_ROOM;
+}
+
+/**
+ * The seeds (§3.4 "May-analysis"): the first knot's entry starts on the empty stage (§2.2); a section knot's entry on
+ * the shot and room of each room that names it, as `carriedStage` seeds it (`graph.ts`), so the stage of the step
+ * before the yield never flows into it.
+ */
+function seedEffects(input: FlowInput, raw: ReadonlyMap<StepKey, ReadonlyArray<{ from: readonly StepKey[] }>>): Map<StepKey, Effect> {
+  const sections = graphSections(input.graph);
+  const bgOf = new Map<string, BgId>();
+  for (const s of Object.values(input.world?.sections ?? {})) {
+    for (const [id, r] of Object.entries(s.rooms)) {
+      bgOf.set(id, r.bg);
+    }
+  }
+  const out = new Map<StepKey, Effect>();
+  for (const [key, batches] of raw) {
+    if (!batches.some((x) => x.from.length === 0)) {
+      continue;
+    }
+    const knot = key.slice('k:'.length);
+    const parts: Effect[] = knot === input.graph.firstKnot ? [EMPTY_EFFECT] : [];
+    const named = sections.rooms.get(knot as KnotName); // a lookup key
+    for (const room of [...(named?.events ?? []), ...(named?.leaves ?? [])]) {
+      const bg = bgOf.get(room);
+      if (bg !== undefined) {
+        parts.push({ ...EMPTY_EFFECT, shots: new Set([bg]), room: new Set([room]) });
+      }
+    }
+    const seed = joinAll(parts);
+    if (seed !== undefined) {
+      out.set(key, seed);
+    }
+  }
+  return out;
+}
+
 /**
  * The step flow of one compiled chapter (§3.4): every presented step reachable from the first knot's entry, with its
  * successors and its batches; `flow/unsupported` for a construct the flow does not model (a thread, a divert to no
@@ -586,9 +760,35 @@ const order = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 export function buildFlow(input: FlowInput): { flow: ChapterFlow; findings: ShotFinding[] } {
   const b = new Builder(input);
   b.run(input.graph.firstKnot);
+  const keys = [...b.nodes.keys()].sort(order);
+  const raw = new Map(keys.map((k) => [k, [...(b.into.get(k)?.values() ?? [])].map((x) => ({ from: [...x.from].sort(order), commands: x.commands }))]));
+  const roomsOf = roomIndex(input.world);
+  const seeds = seedEffects(input, raw);
+  // The forward may-analysis: a union to a fixpoint (every transfer is monotone, every set finite).
+  const effects = new Map<StepKey, Effect>();
+  const batchOut = (key: StepKey, x: { from: readonly StepKey[]; commands: readonly Placed[] }): Effect | undefined => {
+    const seed = x.from.length === 0 ? seeds.get(key) : undefined;
+    const into = joinAll([...x.from.flatMap((f) => effects.get(f) ?? []), ...(seed === undefined ? [] : [seed])]);
+    return into === undefined ? undefined : transfer(into, x.commands, roomsOf);
+  };
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const key of keys) {
+      const out = joinAll((raw.get(key) ?? []).flatMap((x) => batchOut(key, x) ?? []));
+      const before = effects.get(key);
+      if (out !== undefined && (before === undefined || effectKey(before) !== effectKey(out))) {
+        effects.set(key, out);
+        changed = true;
+      }
+    }
+  }
   const steps = new Map<StepKey, StepFlow>();
-  for (const [key, node] of [...b.nodes].sort(([x], [y]) => order(x, y))) {
-    const batches: Batch[] = [...(b.into.get(key)?.values() ?? [])].map((x) => ({ from: [...x.from].sort(order), commands: x.commands }));
+  for (const key of keys) {
+    const node = b.nodes.get(key);
+    if (node === undefined) {
+      continue;
+    }
+    const batches: Batch[] = (raw.get(key) ?? []).map((x) => ({ ...x, effect: batchOut(key, x) ?? UNREACHED, cut: cutOf(x.commands) }));
     steps.set(key, {
       key,
       file: node.file,
@@ -596,6 +796,8 @@ export function buildFlow(input: FlowInput): { flow: ChapterFlow; findings: Shot
       next: [...(b.next.get(key) ?? [])].sort(order),
       explore: [...(b.explore.get(key) ?? [])].sort(order),
       batches,
+      effect: effects.get(key) ?? UNREACHED,
+      cut: batches.find((x) => x.cut !== null)?.cut ?? null,
       speaker: node.speaker,
       think: batches.some((x) => x.commands.some((c) => c.cmd.kind === 'think')),
     });
