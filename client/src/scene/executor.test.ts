@@ -1,13 +1,14 @@
 import { gsap } from 'gsap/gsap-core';
 import { expect, test, vi } from 'vitest';
 
+import { ROOM_SOURCE } from '../geom/cover.ts';
 import type { Size } from '../geom/cover.ts';
 import type { AnchorKey } from '../mechanics/contract.ts';
 import type { ImageEntry, Result } from '../story/catalog.ts';
 import type { AssetId, BgId, CgId, CharId, ExprId, PropId, Rect, Slot } from '../story/staging.ts';
 import { createExecutor } from './executor.ts';
 import type { Layer, Placement, StageAdapter, VisualCommand } from './executor.ts';
-import { propPlacement } from './layout.ts';
+import { backdropPlacement, propPlacement } from './layout.ts';
 import { REVIVE_DEADLINE_MS, createAssetRegistry } from './registry.ts';
 import type { AssetError, Decoded, LoadError, LoadImage } from './registry.ts';
 import { createRenderLoop } from './render-loop.ts';
@@ -1145,6 +1146,25 @@ test("executor: an anchor's art lives in its content node", async () => {
   expect(arts.length).toBe(3);
   for (const art of arts) {
     expect(h.rolesAbove(art)).toEqual(['content', 'motion', 'depth', 'anchor', 'layer']);
+  }
+  h.ex.destroy();
+});
+
+test('executor: a bg and a CG draw at the cover box, offset by their anchors', async () => {
+  const h = harness();
+  await h.ex.apply([bg('cafe', 'cut'), cg('letter', 'cut')], NOW);
+  // The phone stage cuts the cover box at the sides, the small one at the top and bottom: a lost or a doubled offset
+  // moves the art on either.
+  for (const size of [S390, { w: 320, h: 568 }]) {
+    h.stage.size = size;
+    h.ex.relayout();
+    const c = backdropPlacement(size);
+    expect(c.offsetX !== 0 || c.offsetY !== 0).toBe(true);
+    for (const layer of ['bg', 'cg'] as const) {
+      const art = one(h.live(layer));
+      expect(h.worldBox(art), layer).toEqual({ x: c.offsetX, y: c.offsetY, w: ROOM_SOURCE.w * c.scale, h: ROOM_SOURCE.h * c.scale });
+      expect({ x: art.p.x ?? 0, y: art.p.y ?? 0 }, `${layer}: the art has no offset of its own`).toEqual({ x: 0, y: 0 });
+    }
   }
   h.ex.destroy();
 });
