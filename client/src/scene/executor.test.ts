@@ -152,6 +152,8 @@ function recordingStage(size: Size, freed: ReadonlySet<Tex> = new Set()) {
   const live = (layer: Layer): Node[] => [...nodes.values()].filter((x) => x.role === 'sprite' && x.alive && x.layer === layer);
   const inGroup = (char: string): Node[] =>
     [...nodes.values()].filter((x) => x.role === 'sprite' && x.alive && x.parent !== null && node(x.parent).role === 'char' && node(x.parent).key === char);
+  /** Every live node of every role, in creation order. */
+  const liveNodes = (): Node[] => [...nodes.values()].filter((x) => x.alive);
   /** The live anchors of a layer, in creation order. */
   const anchors = (layer: Layer): Node[] => [...nodes.values()].filter((x) => x.role === 'anchor' && x.alive && x.layer === layer);
   /** The roles above a node, nearest first, ending at its layer. */
@@ -184,7 +186,7 @@ function recordingStage(size: Size, freed: ReadonlySet<Tex> = new Set()) {
     }
     return c;
   };
-  return { adapter, log, alphas, live, inGroup, anchors, rolesAbove, worldAlpha, worldBox, drawOrder, contentOf, stage };
+  return { adapter, log, alphas, live, inGroup, liveNodes, anchors, rolesAbove, worldAlpha, worldBox, drawOrder, contentOf, stage };
 }
 
 /** The one node of a list (a test reads a single anchor or sprite). */
@@ -1310,4 +1312,73 @@ test('executor: a placement that gains its at keeps its anchor', async () => {
   expect(r.log.filter((x) => /^(anchor|create|destroy|drop):/.test(x))).toEqual(['destroy:props:lamp', 'drop:lamp']);
   expect(r.worldAlpha(one(r.live('props')))).toBe(1);
   r.ex.destroy();
+});
+
+test('executor: rebind re-creates each anchor before its sprite', async () => {
+  const h = harness();
+  await h.ex.apply([bg('room', 'cut'), cg('letter', 'cut'), show('ally', 'neutral', 'left', 'cut'), props(['lamp', LAMP, 'room.lamp'])], NOW);
+  // E-P7 case B with a patch: a new anchor named before the kept one.
+  await h.ex.apply(
+    [bg('room', 'crossfade', 300), props(['drawer', DRAWER, 'room.drawer'], ['glint', GLINT, 'room.drawer', 'patch'], ['lamp', LAMP, 'room.lamp'])],
+    { instant: true },
+  );
+  /** The props layer in draw order with each anchor's z, and its content in draw order with each sprite's z. */
+  const drawn = (s: ReturnType<typeof recordingStage>): unknown[] =>
+    s.drawOrder('props').map((a) => [a.key, a.p.z, s.drawOrder(s.contentOf(a)).map((x) => [x.key, x.p.z])]);
+  const before = drawn(h);
+  expect(before).toEqual([
+    ['room.drawer', 0, [['drawer', 0], ['glint', 2]]],
+    ['room.lamp', 1, [['lamp', 0]]],
+  ]);
+  const fresh = recordingStage(S390, h.freed);
+  h.ex.rebind(fresh.adapter);
+  // Each anchor first, then its own art, with no other anchor between; nothing destroyed or dropped.
+  expect(fresh.log.filter((x) => /^(anchor|group|create):/.test(x))).toEqual([
+    'anchor:bg:bg/room',
+    'create:bg:room',
+    'anchor:cg:cg/letter',
+    'create:cg:letter',
+    'group:ally',
+    'create:chars:ally',
+    'anchor:props:room.drawer',
+    'create:props:drawer',
+    'create:props:glint',
+    'anchor:props:room.lamp',
+    'create:props:lamp',
+  ]);
+  for (const art of [...fresh.live('bg'), ...fresh.live('cg'), ...fresh.live('props')]) {
+    expect(fresh.rolesAbove(art)).toEqual(['content', 'motion', 'depth', 'anchor', 'layer']);
+  }
+  expect(fresh.log.filter((x) => /^(destroy|drop):/.test(x))).toEqual([]);
+  // The new stage draws the props as the old one did, with the same z (critique W2).
+  expect(drawn(fresh)).toEqual(before);
+  h.ex.destroy();
+});
+
+test('executor: destroy leaves no anchor alive', async () => {
+  const h = harness();
+  await h.ex.apply([bg('cafe', 'cut')], NOW);
+  // A completed bg crossfade: its old anchor was retired with its sprite.
+  const crossfade = h.ex.apply([bg('street', 'crossfade', 500)], NOW);
+  await flush();
+  advance(600);
+  await crossfade;
+  await h.ex.apply([bg('street', 'cut'), props(['drawer', DRAWER, 'room.drawer'], ['lamp', LAMP, 'room.lamp'])], NOW);
+  // In flight: an in-anchor image change with a patch fading in, a prop anchor leaving, one arriving, a CG fading in.
+  void h.ex.apply(
+    [
+      bg('street', 'crossfade', 300),
+      cg('letter', 'fade', 500),
+      props(['drawer_open', DRAWER_OPEN, 'room.drawer'], ['glint', GLINT, 'room.drawer', 'patch'], ['key', KEY, 'room.key']),
+    ],
+    NOW,
+  );
+  await flush();
+  advance(150);
+  expect(h.ex.stats().activeTimelines).toBe(1);
+  expect(h.anchors('props').map((x) => x.key)).toEqual(['room.drawer', 'room.lamp', 'room.key']);
+  h.ex.destroy();
+  // No anchor, inner node (depth, motion, content) or sprite outlives the executor (plan 08 row 6).
+  expect(h.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
+  expect(h.registry.stats().live).toBe(0);
 });
