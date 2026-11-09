@@ -3093,6 +3093,19 @@ this table; the planned lanes of the three plans (the block row below), L2 (shel
 preload-priority lane (carried, RULINGS 152 Q14 (b)). GM1a and GM6k launched from the frozen designs before this
 adoption merged (RULINGS 160).
 
+Changed by RULINGS 159-173 (as of `9a83251`; docs lane `docs-errata-10`, group B): the State column is the state as
+of `9a83251`, with each SHA from `git log --first-parent main`. Since `3c62a86` these merged: L1 entry-summary
+`eec24fe` (RULINGS 159), the last lane of this table; from the planned block of the three plans, GM6k puzzle-keys
+`fd62933` (RULINGS 163), GM1a mech-run-split `ef8b4dc` (RULINGS 165), GM6s1 values-domain `81a15b0` (RULINGS 168) and
+GM1b mech-registry `03a00bc` (RULINGS 171); and the docs lane `docs-adopt` as `f509b05` (RULINGS 172). The
+OPEN-QUESTIONS commit `9a83251` (Q58, the per-player owner questions) is not a lane. Running: GM6s2 values-routes
+(server; base `81a15b0`, lock 22: RULINGS 169, 170), beside the docs lane `docs-errata-10` (base `9a83251`, RULINGS
+173). "To go": no lane of this table; the rest of the planned block, in the one order of
+[engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts). Its next client lanes,
+GM1c and GM2a (a Beside pair), wait for GM6s2: GM1c holds `client/src/puzzles/session.test.ts` and GM2a
+`client/src/app/{game,yields}.test.ts`, which GM6s2's lock 22 also holds (RULINGS 170, 173). L2 stays shelved and the
+preload-priority lane carried.
+
 | Lane | Slot | State | Gate to start (merged) | Re-cut |
 |---|---|---|---|---|
 | L1 client-shell | client | merged `ea8a6a2` (`f6e2624` before the rewrite) | — | — |
@@ -3157,7 +3170,7 @@ adoption merged (RULINGS 160).
 | **LFL first-line** | client | merged `cec347c` (new, RULINGS 146; its cut ruled in RULINGS 149; merged RULINGS 155) | LBI (both hold `client/src/app/{boot,game}.ts`: RULINGS 142) | new (RULINGS 142, 146) |
 | **LRB reload-bounds** | client | merged `3c62a86` (new, RULINGS 156; merged RULINGS 157) | LFL (LBI's carry for the next `game.ts` + `meta.ts` holder: RULINGS 149 Q9, 156) | new (RULINGS 156) |
 | **L1 entry-summary** (`l1-entry-summary`: the entry lever L1, not L1 client-shell) | client | merged `eec24fe` (new, RULINGS 158: unshelved by RULINGS 142's return condition; merged RULINGS 159) | LRB (`client/src/app/{boot,game}.ts`, `client/src/arch.test.ts`: [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts)) | new (RULINGS 158) |
-| **The three plans' lanes** (engine GM1a-GM9r: 29 + GM5q if P2-b demands it; per-player GM6a-GM6d2: 12; shots SH1-SH12b: 16) | client / server | planned (adopted 2026-11-09, RULINGS 158) | the one order: [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts) (GM1a and GM6k launched first, from the frozen designs, before this adoption merged: RULINGS 160) | new |
+| **The three plans' lanes** (engine GM1a-GM9r: 29 + GM5q if P2-b demands it; per-player GM6a-GM6d2: 12; shots SH1-SH12b: 16) | client / server | planned (adopted 2026-11-09, RULINGS 158). Changed by RULINGS 159-173 (as of `9a83251`; docs lane `docs-errata-10`, group B): GM6k merged `fd62933`, GM1a `ef8b4dc`, GM6s1 `81a15b0`, GM1b `03a00bc`; GM6s2 running (lock 22, RULINGS 170); the rest planned | the one order: [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts) (GM1a and GM6k launched first, from the frozen designs, before this adoption merged: RULINGS 160) | new |
 
 There are 38 lanes: 12 merged, 2 running, 24 to go (changed by RULINGS 22, 23; it read "10 merged, 1 running, 1
 paused, 26 to go"); 6 are new from PUZZLES-PLAN, 3 (LDB0, LDB1, LDB2) from RULINGS 14/17 and 5 (LS1–LS4, N2) from
@@ -3188,6 +3201,10 @@ LRB `3c62a86` since `805f382`), 1 running (L1), 0 to go; plus the planned block 
 GM5q), ordered in
 [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts);
 GM1a and GM6k launched from it (RULINGS 160).
+Changed by RULINGS 159-173 (as of `9a83251`; docs lane `docs-errata-10`, group B): 64 lanes in the table — 64 merged
+(L1 `eec24fe` since `3c62a86`), 0 running, 0 to go; plus the planned block of the three plans (57 lanes + GM5q) — 4
+merged (GM6k `fd62933`, GM1a `ef8b4dc`, GM6s1 `81a15b0`, GM1b `03a00bc`), 1 running (GM6s2), 52 to go, and GM5q only
+if P2-b demands it.
 
 **Launch preference** when several lanes are ready (critical path first; changed by STORIES-PLAN):
 - client (two slots): L3c (running), L5, L11, LS1, L7, L12, LW3, L14a, L10, L13, L14b, LP2 ∥ LX, LS4, D1, N1, N2, L15,
@@ -3240,6 +3257,13 @@ GM1a and GM6k launched from it (RULINGS 160).
   158); GM1a (client) and GM6k (server), both from the frozen designs before this adoption merged (RULINGS 160;
   GM6k's `deploy.md` sentence is a carry for a docs lane after GM6k merges, RULINGS 160 / 161); the rest by the one
   order:
+  [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts).
+- Changed by RULINGS 159-173 (as of `9a83251`; docs lane `docs-errata-10`, group B), merged lanes dropped: no lane of
+  this table is left (L1 merged `eec24fe`). From the planned block: server GM6s2 (running; RULINGS 169, 170), the last
+  of the server chain GM6k → GM6s1 → GM6s2 (GM6k `fd62933` and GM6s1 `81a15b0` merged); client: none running, since
+  GM1a (`ef8b4dc`) and GM1b (`03a00bc`) merged and the next pair, GM1c ∥ GM2a, holds files GM6s2 holds
+  (`client/src/puzzles/session.test.ts`; `client/src/app/{game,yields}.test.ts`), so both start after GM6s2 merges
+  (RULINGS 170, 173); the client slot meanwhile runs the docs lane `docs-errata-10`. The rest by the one order:
   [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts).
 
 After L9 the server slot takes doc / narrative / client lanes with disjoint locks.
@@ -3344,6 +3368,17 @@ beside them.
   [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts).
   GM1a and GM6k launched from the frozen designs before this adoption merged (RULINGS 160).
 - LEL, LBI, LHJ, M3s, LFL and LRB have merged (`7b37278`, `fe996a0`, `972f773`, `a5f887b`, `cec347c`, `3c62a86`).
+
+**Changed by RULINGS 159-173 — the critical path as of `9a83251`** (docs lane `docs-errata-10`, group B).
+- No lane of this table is left: L1 `l1-entry-summary` has merged (`eec24fe`, RULINGS 159).
+- The whole plan's path is the planned block in its one order:
+  [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts).
+  It runs through GM6s2 (running; server, lock 22, RULINGS 169, 170): the next client pair GM1c ∥ GM2a holds
+  `client/src/puzzles/session.test.ts` and `client/src/app/{game,yields}.test.ts`, which GM6s2 also holds, so it
+  starts when GM6s2 merges (RULINGS 173); GM6a and the SH lanes follow GM2a (the `scene/*` and `game.ts` rows of the
+  one order).
+- GM6k, GM1a, GM6s1 and GM1b have merged (`fd62933`, `ef8b4dc`, `81a15b0`, `03a00bc`), and the docs lane `docs-adopt`
+  (`f509b05`).
 
 ### Lanes
 

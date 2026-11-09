@@ -965,6 +965,10 @@ unchanged.**
     of PP's table is left to go; L1 `l1-entry-summary` runs (client; RULINGS 158). The three adopted plans' lanes are
     planned (RULINGS 158), in their one order:
     [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts).
+  - Changed by RULINGS 159-173 (as of `9a83251`; docs lane `docs-errata-10`, group B): L1 has merged (`eec24fe`), so
+    every lane of PP's table has merged. From the adopted plans, GM6k (`fd62933`), GM1a (`ef8b4dc`), GM6s1 (`81a15b0`;
+    `puzzle_values` and its erasure step, this plan's "Privacy") and GM1b (`03a00bc`) have merged; GM6s2 runs (server,
+    lock 22, RULINGS 169, 170); the rest follow the one order above.
   - Why LPO is a lane of its own (revision 1, W4): the operator facts need a `Config` variable, which means editing
     the three `Config` constructors (`config.rs`, `server/dev/src/lib.rs`, `server/tests/it/common.rs`) plus
     `lib.rs` and `.env.example`; in LF1 that is 15 + 4 = 19 files, over the cap. LPO holds them with `api/legal.rs` and
@@ -2050,6 +2054,11 @@ MEMORY-PLAN's M3s `a5f887b` (server; M3s's cut no longer after MD1's order, RULI
 (client, RULINGS 158); to go of this design's lanes: none. The three adopted plans' lanes are planned (RULINGS
 158), in their one order:
 [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts).
+Changed by RULINGS 159-173 (as of `9a83251`; docs lane `docs-errata-10`, group B): merged also L1 `l1-entry-summary`
+`eec24fe` (client), and from the adopted plans GM6k `fd62933` and GM6s1 `81a15b0` (server) and GM1a `ef8b4dc` and
+GM1b `03a00bc` (client), with the docs lane `docs-adopt` `f509b05`; running GM6s2 (server, lock 22, RULINGS 169, 170)
+beside the docs lane `docs-errata-10`; to go of this design's lanes: none. The next client lanes, GM1c and GM2a, wait
+for GM6s2 (shared test files, RULINGS 170, 173); the rest follow the one order above.
 
 ---
 

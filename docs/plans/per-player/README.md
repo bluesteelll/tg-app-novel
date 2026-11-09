@@ -1,6 +1,6 @@
 # Per-player plan: per-player codes and labels on the art
 
-**Planned; adopted 2026-11-09 at main `3c62a86`; nothing built yet**; lane cuts re-locate every code citation on their own base.
+**Planned; adopted 2026-11-09 at main `3c62a86`; nothing built yet**; lane cuts re-locate every code citation on their own base. Changed by RULINGS 159-173 (as of `9a83251`; docs lane `docs-errata-10`, group B): built since: GM6k `puzzle-keys` (`fd62933`, RULINGS 163) and GM6s1 `values-domain` (`81a15b0`, RULINGS 168); GM6s2 `values-routes` runs (lock 22, RULINGS 169, 170); the rest is planned, in the one order of [engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts).
 
 ## Provenance
 

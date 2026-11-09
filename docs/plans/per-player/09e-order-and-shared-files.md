@@ -18,6 +18,8 @@ MA1b / MA2) are struck and quoted in §27. One row differs on purpose and is str
 
 ```
 reconcile:    server slot: (LRF, M3s merged) GM6k -> GM6s1 -> GM6s2 (the entry lever LEL merged, RULINGS 141)
+as of 9a83251: GM6k merged fd62933 (RULINGS 163) -> GM6s1 merged 81a15b0 (RULINGS 168) -> GM6s2 running (lock 22,
+              RULINGS 169 / 170); engine GM1a ef8b4dc and GM1b 03a00bc merged, GM1c / GM2a wait for GM6s2
 reconcile r2: (E-P26, engine.md §12 "Order and conflicts" engine §12 Order and conflicts owns every row below; mirrored)
 reconcile:    scene/*: M3c, LHJ (merged) -> GM2a's field -> GM6a -> SH1 -> SH4 -> SH5a -> SH5b -> SH6 -> SH7 -> SH8 ->
               {GM6d1, SH9, SH10, SH12a, SH12b, the carried preload-priority lane} one at a time by launch (GM6a before
@@ -55,6 +57,12 @@ runtime:      GM6c2 (after GM6c1a, GM6s2, GM3m, GM3p, and the game.ts chain) -> 
 overlay:      GM6t (after GM3m with R-E18, GM3s, the entry lever; before GM6c4)
 ```
 Cited in the block above: [engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts).
+
+Changed by RULINGS 159-173 (as of `9a83251`; docs lane `docs-errata-10`, group B): the block's `as of 9a83251:` row is
+new; it states the server slot's state (SHAs from `git log --first-parent main`). GM6s2's next client neighbours,
+engine GM1c and GM2a, hold `client/src/puzzles/session.test.ts` and `client/src/app/{game,yields}.test.ts`, which
+GM6s2's lock holds, so they start after it merges (RULINGS 170, 173); the status block of the one order is
+[engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts).
 
 Until GM6d2, per-player codes show in documents, item descriptions, ink lines, choices and the tier-3 hint (synthesis
 §6.4 item 4), which needs no label on the art.

@@ -11,14 +11,26 @@ done:      M3c (a6365a8), docs-errata-8 (be6c348), LRF (a93fe54), docs (d31f720,
            docs acc4e0d / df0e12c (Q15a-h, Q57: every default adopted, RULINGS 154),
            LFL (cec347c, RULINGS 155: merged while this revision was written, .git/logs/HEAD:112)
            adoption (main 3c62a86): LRB (3c62a86, RULINGS 157; it took arch.test.ts)
-in flight: (as of 3c62a86) docs-adopt (RULINGS 158; docs only), L1 l1-entry-summary (RULINGS 158;
-           client/src/saves/**, client/src/app/{boot,game}.ts, client/src/arch.test.ts)
+           after the adoption (main 9a83251): L1 l1-entry-summary (eec24fe, RULINGS 159), GM6k (fd62933,
+           RULINGS 163), GM1a (ef8b4dc, RULINGS 165), GM6s1 (81a15b0, RULINGS 168), GM1b (03a00bc, RULINGS 171),
+           docs-adopt (f509b05, RULINGS 172), docs 9a83251 (Q58: per-player OQ1-OQ7 asked)
+in flight: (as of 9a83251) GM6s2 gm6s2-values-routes (RULINGS 169 / 170; lock 22: server/src/{content,error}.rs,
+           the puzzle repository / domain / route, the client api contract, client/src/app/{game,yields}.test.ts,
+           client/src/puzzles/session.test.ts), docs-errata-10 (RULINGS 173; docs only)
+next:      GM1c and GM2a (Beside), after GM6s2 merges: GM1c holds puzzles/session.test.ts, GM2a
+           app/{game,yields}.test.ts, all in GM6s2's lock (RULINGS 170, 173)
 carried:   L2, the entry lever (shelved, RULINGS 142 / 158; return line: entry headroom < 0.5 KB br, §15 item 15);
            the preload-priority lane (RULINGS 152 Q14 (b); scene/{registry,preload}.ts, the scene/* tail)
 stopped:   the character half of design-animation (RULINGS 132), replaced by design-shots (RULINGS 143)
 LFL's nine files: client/src/app/{boot,game,meta,game.test,meta.test}.ts, client/scripts/{budget,budget.test}.ts,
            client/e2e/perf.spec.ts, client/src/arch.test.ts (lfl-first-line/test_r2.md:85-86)
 ```
+
+Changed by RULINGS 159-173 (as of `9a83251`; docs lane `docs-errata-10`, group B): the block above is the state at
+`9a83251` (SHAs from `git log --first-parent main`). L1, GM6k, GM1a, GM6s1, GM1b and `docs-adopt` moved to `done:`;
+the `in flight:` line read "(as of 3c62a86) docs-adopt (RULINGS 158; docs only), L1 l1-entry-summary (RULINGS 158;
+client/src/saves/**, client/src/app/{boot,game}.ts, client/src/arch.test.ts)"; the `next:` line is new. The rows
+below keep GM1a, GM1b, GM6k and GM6s1 as the predecessors they name; all four have merged.
 
 **The one order across the three designs (reconcile r1; RULINGS 143, 152, 153; design-shots §9.14 and I-2,
 adopted with one change; it replaces the paragraph "Animation and shot lanes" that earlier sections cite).** The **A(f)** placeholders of rounds 4-14 ("every lane of an adopted animation or shot design
