@@ -1,15 +1,17 @@
 # Staging DSL — the ink tag language
 
-Version: **DSL v2** (prototype). Status: DSL v1 was designed in [PROTOTYPE-PLAN.md](PROTOTYPE-PLAN.md) and
+Version: **DSL v3** (prototype). Status: DSL v1 was designed in [PROTOTYPE-PLAN.md](PROTOTYPE-PLAN.md) and
 implemented by lanes L3a (parser + lint) and L3b (story build). DSL v2 adds the `puzzle` / `explore` yield tags and
-the narrowed `-> DONE` ([PUZZLES-PLAN.md](PUZZLES-PLAN.md), lane LW1). §9 also describes the story list
+the narrowed `-> DONE` ([PUZZLES-PLAN.md](PUZZLES-PLAN.md), lane LW1). DSL v3 adds the shot kinds `face`, `cam`,
+`think`, `anim`, `fx` and makes `cut` the default `t` of `bg` (the shots plan, lane SH1); the ink subset (§10) is
+unchanged. §9 also describes the story list
 `story/stories.json` ([STORIES-PLAN.md](STORIES-PLAN.md), lane LS1); the tag language is unchanged. §9 also describes
 the story meta file `story/meta.json` ([META-PLAN.md](META-PLAN.md), lane LM1); the tag language is unchanged. The
 rules marked "from LW3" in §8 and §11 are the contract lane LW3 implements.
 
-Changed by the shots plan (adopted 2026-11-09, RULINGS 158; planned, not built): SH1, SH2 and SH3b add the shot tags,
-typed commands, lints and flow analysis, and SH12a takes the sprite kinds `show` / `hide` out; this file changes with
-those lanes, together with the parser it documents —
+Changed by the shots plan (adopted 2026-11-09, RULINGS 158): SH1 added the shot tags and typed commands (v3, drawn by
+later lanes); planned, not built: SH2 and SH3b add lints and flow analysis, and SH12a takes the sprite kinds `show` /
+`hide` out; this file changes with those lanes, together with the parser it documents —
 [shots §3 The story DSL](plans/shots/03-story-dsl.md#3-the-story-dsl),
 [shots §9.13 SH12a `sprites-out`](plans/shots/09e-lanes-sh11-sh12b.md#913-sh12a-sprites-out-client-the-kinds-atomic-rev-4-split-w6).
 
@@ -36,6 +38,7 @@ ink line + its tags ──parseTags──> { lineId, commands: StagingCommand[] 
      scene controller     audio manager           overlay (Svelte)
   bg / scene / show /     bgm / sfx            text, speaker plate, choices
   hide / cg / wait                              (reads lineId + speaker)
+  face / cam / anim / fx
 ```
 
 - The story never touches Pixi or audio; the scene and the overlay never read ink variables (principle 7). The only
@@ -75,7 +78,7 @@ Rules:
 |---|---|
 | Case | Kinds, ids and option names are lowercase ASCII. `# BG: Cafe` → `tag/syntax`. |
 | Numbers | Integers only, no units, no decimals: `ms=500`, `vol=80`. Ranges are per tag (§6). |
-| Positional args | Exact count per tag; missing → `tag/missing-arg`, extra → `tag/bad-arg`. |
+| Positional args | Exact count per tag; missing → `tag/missing-arg`, extra → `tag/bad-arg`. A kind with none (`think`) is written bare or with an empty colon: `think` and `think:` are the same tag. |
 | Options | Each at most once (`tag/bad-arg: duplicate option`); unknown option → `tag/bad-arg`. Order is free. Options are optional, except `then` of `puzzle` (§6): missing → `tag/missing-arg`. |
 | Literal only | A `{` anywhere in a tag → `tag/dynamic` (source lint). |
 | Reserved words | `all` (hide), `off` (cg), `stop` (bgm) are not valid asset ids (catalog lint). |
@@ -550,8 +553,13 @@ fixed:
 1. **Audio** — `bgm` and `sfx` start at batch start (in parallel with the visuals).
 2. **`scene`** — with `t=fade`: fade to black (ms/2); while black: hide all characters, remove the CG, set the
    background, and apply every `show` of the batch instantly; then fade from black (ms/2). With `t=cut`: all instant.
-3. **Visual commands** — `bg`, `show`, `hide`, `cg` start **together** (one GSAP timeline) and the batch waits for the
-   longest one.
+3. **Visual commands** — `bg`, `show`, `hide`, `face`, `cg` start **together** (one GSAP timeline) and the batch
+   waits for the longest one. A `face` applies after the batch's `hide` and `show`: the expression change of a
+   character on stage (a `show` without `at`). A `cam` sets the framing after the batch's `scene` or `bg` returned it
+   to rest; it is held in the stage state, not drawn yet (the shots plan's SH6). `anim` and `fx` reach the scene and
+   are not drawn yet (SH8); `think` stays with GameSession (SH7). The shots plan's drawn order is
+   [shots §3.1](plans/shots/03-story-dsl.md#3-the-story-dsl): `scene`, `bg`, `face`, `cam`, `cg`, props,
+   `anim` / `fx`, `wait`.
 4. **`wait`** — holds after step 3.
 5. **Text** — the overlay starts the typewriter (or shows the choices). A yield step (§6 `puzzle`, `explore`) has no
    text: after steps 1–4, GameSession hands control to the puzzle or the rooms.
@@ -561,11 +569,12 @@ fixed:
 - **Skip mode and loading a save** run every transition with duration 0.
 - **The logical stage state changes at batch start**, so a save taken mid-transition records the end state.
 - **Conflicts** (`batch/conflict`, error) — two commands for the same target in one batch: two `bg`; `bg` + `scene`;
-  `scene` + `hide` or `cg`; two `show`, or `show` + `hide`, of one character; two `cg`; two `bgm`; two `wait`; two
-  yields (`puzzle` and `explore`, two `puzzle`, two `explore`). As merged (L13 `06dc6a3`, RULINGS 58 Q16): at
-  runtime a conflict can also appear in a batch merged from tag-only steps (§3.5). `parseTags` reports it as
+  `scene` + `hide` or `cg`; two `show`, or `show` + `hide`, of one character; two `face` of one character; two `cam`;
+  two `fx`; two `cg`; two `bgm`; two `wait`; two yields (`puzzle` and `explore`, two `puzzle`, two `explore`). `think`
+  and `anim` never conflict, and a `face` beside a `show` of its character is allowed. As merged (L13 `06dc6a3`,
+  RULINGS 58 Q16): at runtime a conflict can also appear in a batch merged from tag-only steps (§3.5). `parseTags` reports it as
   `conflict` and keeps both commands; the story runner returns its non-terminal `tags` error, and the step it holds
-  carries both commands, so the scene applies them in order (`client/src/story/tags.ts:384-389`,
+  carries both commands, so the scene applies them in order (`client/src/story/tags.ts:489-494`,
   `client/src/story/runner.ts:496-509`).
 
 ---
