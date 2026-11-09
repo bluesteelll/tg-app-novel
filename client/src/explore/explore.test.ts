@@ -1,11 +1,13 @@
 import { expect, test } from 'vitest';
 
+import { actions, reduce } from '../mechanics/rules/core.ts';
+import { admitSection, inSectionReach, searchSection, sectionEntry, sectionKey, successors } from '../mechanics/rules/search.ts';
 import type { KnotName, PuzzleLocalId, SectionId, VarName } from '../story/staging.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { DocId, HotspotKey, ItemId, RoomId, WorldPublic, WorldPublicBody } from '../world/types.ts';
 import { project } from './project.ts';
-import { admitSection, inSectionReach, reconcile, searchSection, sectionEntry } from './reconcile.ts';
-import { RESUME_STATE_CAP, RULES_VERSION, actions, reduce, sectionKey, successors } from './reduce.ts';
+import { reconcile } from './reconcile.ts';
+import { RESUME_STATE_CAP, RULES_VERSION, runReduce } from './reduce.ts';
 import type { ExploreAction, ExploreEffect } from './reduce.ts';
 import { EMPTY_WORLD_STATE } from './state.ts';
 import type { WorldState } from './state.ts';
@@ -448,6 +450,92 @@ test('reduce: an action that changes no state keeps its effects', () => {
   expect(reHint.effects).toEqual([]);
 });
 
+test("explore: runReduce leaves a lock puzzle's outcome alone", () => {
+  // (a) The gate is a lock puzzle with a hint tier: the run reducer (a linear puzzle's writer) changes nothing of it,
+  // while the explore rules record each action. The contrast keeps a guard misplaced into the shared run step visible.
+  const w = manor();
+  const s = at('hall');
+  const gate = pz('gate');
+  const onLock = [
+    { kind: 'attempt-failed', puzzle: gate },
+    { kind: 'hint-opened', puzzle: gate, tier: 1 },
+    { kind: 'puzzle-ended', puzzle: gate, outcome: 'solved' },
+  ] as const;
+  for (const a of onLock) {
+    const r = runReduce(w, s, a);
+    expect(r.state, JSON.stringify(a)).toBe(s);
+    expect(r.effects, JSON.stringify(a)).toEqual([]);
+  }
+  const [failed, hint, solved] = onLock.map((a) => reduce(w, s, a));
+  expect(failed?.state.puzzles).toEqual({ gate: { outcome: null, attempts: 1, hintsOpened: 0 } });
+  expect(hint?.state.puzzles).toEqual({ gate: { outcome: null, attempts: 0, hintsOpened: 1 } });
+  expect(solved?.state.puzzles).toEqual({ gate: { outcome: 'solved', attempts: 0, hintsOpened: 0 } });
+  expect(solved?.state.open).toEqual(['hall.gate']);
+  // A puzzle the world lacks is a no-op too.
+  const absent = runReduce(w, s, { kind: 'attempt-failed', puzzle: pz('safe') });
+  expect(absent.state).toBe(s);
+  expect(absent.effects).toEqual([]);
+  // (b) A puzzle no lock holds: step for step the same state and effects as the explore rules.
+  const linear = world({
+    puzzles: { lin: code(2, 2) },
+    sections: { s: { start: 'r', rooms: { r: room([exit('out', { story: 'end' })]) } } },
+  });
+  const lin = pz('lin');
+  const steps = [
+    { kind: 'attempt-failed', puzzle: lin },
+    { kind: 'attempt-failed', puzzle: lin },
+    { kind: 'hint-opened', puzzle: lin, tier: 1 },
+    { kind: 'hint-opened', puzzle: lin, tier: 1 },
+    { kind: 'hint-opened', puzzle: lin, tier: 3 },
+    { kind: 'hint-opened', puzzle: lin, tier: 0 },
+    { kind: 'hint-opened', puzzle: lin, tier: 2 },
+    { kind: 'puzzle-ended', puzzle: lin, outcome: 'failed' },
+    { kind: 'puzzle-ended', puzzle: lin, outcome: 'failed' },
+    { kind: 'puzzle-ended', puzzle: lin, outcome: 'abandoned' },
+    { kind: 'puzzle-ended', puzzle: lin, outcome: 'solved' },
+  ] as const;
+  let state = frozen(structuredClone(EMPTY_WORLD_STATE));
+  for (const a of steps) {
+    const ran = runReduce(linear, state, a);
+    expect(ran, JSON.stringify(a)).toEqual(reduce(linear, state, a));
+    state = frozen(ran.state);
+  }
+  expect(state.puzzles).toEqual({ lin: { outcome: 'solved', attempts: 2, hintsOpened: 2 } });
+});
+
+test('explore: a repeated outcome and an abandoned lock puzzle change nothing', () => {
+  // The step-for-step comparison above cannot fail on the shared run step (both sides take it), so each no-op is
+  // pinned against the state object itself: a repeated outcome of a linear puzzle saves nothing again (the D18 branch
+  // re-sends `failed` for a run at its limit), a hint tier read again (the session re-reads a held tier as the same
+  // `hint-opened`) saves nothing either, and a lock puzzle cannot be abandoned (X8).
+  const linear = world({
+    puzzles: { lin: code(2, 2) },
+    sections: { s: { start: 'r', rooms: { r: room([exit('out', { story: 'end' })]) } } },
+  });
+  const failed = { kind: 'puzzle-ended', puzzle: pz('lin'), outcome: 'failed' } as const;
+  const first = runReduce(linear, frozen(structuredClone(EMPTY_WORLD_STATE)), failed);
+  expect(first.effects).toEqual([DIRTY]);
+  const ended1 = frozen(first.state);
+  for (const step of [runReduce, reduce]) {
+    const again = step(linear, ended1, failed);
+    expect(again.state, step.name).toBe(ended1);
+    expect(again.effects, step.name).toEqual([]);
+  }
+  const hint = { kind: 'hint-opened', puzzle: pz('lin'), tier: 1 } as const;
+  const hinted = runReduce(linear, frozen(structuredClone(EMPTY_WORLD_STATE)), hint);
+  expect(hinted.effects).toEqual([DIRTY]);
+  const opened = frozen(hinted.state);
+  for (const step of [runReduce, reduce]) {
+    const again = step(linear, opened, hint);
+    expect(again.state, step.name).toBe(opened);
+    expect(again.effects, step.name).toEqual([]);
+  }
+  const s = at('hall');
+  const abandoned = reduce(manor(), s, ended('gate', 'abandoned'));
+  expect(abandoned.state).toBe(s);
+  expect(abandoned.effects).toEqual([]);
+});
+
 test('actions: enumerates enabled taps and inserts', () => {
   const w = manor();
   const hall = at('hall', { held: [it('medal_sun'), it('medal_star')] });
@@ -718,13 +806,15 @@ test('reconcile: unprovable state restarts the section', () => {
   const s = run(v1, EMPTY_WORLD_STATE, enterAction('manor'), tap('hall.to_cellar'), returned('manor'), tap('cellar.star')).state;
   expect(inSectionReach(v2, s, MANOR, RESUME_STATE_CAP)).toBe('no');
   const r = reconcile(v2, s, MANOR_KNOTS, V1);
-  expect(r.reset).toBe('manor');
-  expect(r.state.section).toBeNull();
-  expect(r.state.room).toBeNull();
-  expect(r.state.held).toEqual([]);
-  expect(r.state.taken).toEqual([]);
-  expect(r.state.fired).toEqual([]);
-  expect(reduce(v2, frozen(r.state), enterAction('manor')).state).toEqual(sectionEntry(v2, EMPTY_WORLD_STATE, MANOR));
+  // The load searches nothing (engine plan §3.4): the section restarts at its first entry.
+  expect(r.reset).toBeNull();
+  expect(r.state.unproved).toEqual(['manor']);
+  const a = admitSection(v2, frozen(r.state), MANOR);
+  expect(a.effects[0]).toEqual({ kind: 'reset', section: 'manor' });
+  expect(a.state.held).toEqual([]);
+  expect(a.state.taken).toEqual([]);
+  expect(a.state.fired).toEqual([]);
+  expect(a.state).toEqual(sectionEntry(v2, EMPTY_WORLD_STATE, MANOR));
 });
 
 /** The round-2 triage world: a lever opens the vault in v1; in v2 the altar does, and the vault has a shrine. */
@@ -755,13 +845,17 @@ test('reconcile: a dead end reachable from the reconciled state restarts the sec
   expect(s.open).toEqual(['hall.to_vault']);
   const v2 = stamped(temple(2), V2);
   const r = reconcile(v2, s, new Set([kn('temple_out')]), V1);
-  expect(r.reset).toBe('temple');
+  expect(r.reset).toBeNull();
   expect(r.dropped).toEqual(['fired:then:hall.lever']);
-  expect(r.state.section).toBeNull();
-  expect(r.state.open).toEqual([]);
-  expect(r.state.unproved).toEqual([]);
+  // Kept as saved until the section's first entry proves it.
+  expect(r.state.section).toBe('temple');
+  expect(r.state.open).toEqual(['hall.to_vault']);
+  expect(r.state.unproved).toEqual(['temple']);
+  const a = admitSection(v2, frozen(r.state), TEMPLE);
+  expect(a.effects[0]).toEqual({ kind: 'reset', section: 'temple' });
+  expect(a.state.open).toEqual([]);
   // The restart is the state the build proved.
-  expect(reduce(v2, frozen(r.state), enterAction('temple')).state).toEqual(sectionEntry(v2, EMPTY_WORLD_STATE, TEMPLE));
+  expect(a.state).toEqual(sectionEntry(v2, EMPTY_WORLD_STATE, TEMPLE));
 });
 
 test("reconcile: reset section fires the start room's onEnter on resume", () => {
@@ -783,11 +877,12 @@ test("reconcile: reset section fires the start room's onEnter on resume", () => 
   const s = run(crypt(1), EMPTY_WORLD_STATE, enterAction('crypt'), tap('tomb.torch')).state;
   const v2 = stamped(crypt(2), V2);
   const r = reconcile(v2, s, new Set([kn('crypt_out')]), V1);
-  expect(r.reset).toBe('crypt');
-  const resumed = reduce(v2, frozen(r.state), enterAction('crypt'));
+  expect(r.reset).toBeNull();
+  const resumed = admitSection(v2, frozen(r.state), sec('crypt'));
   expect(resumed.effects).toContainEqual({ kind: 'got', gift: { item: 'torch' } });
   expect(resumed.state.held).toEqual(['torch']);
-  expect(resumed.effects[0]).toEqual({ kind: 'room', room: 'tomb', sfx: null });
+  expect(resumed.effects[0]).toEqual({ kind: 'reset', section: 'crypt' });
+  expect(resumed.effects[1]).toEqual({ kind: 'room', room: 'tomb', sfx: null });
   expect(exitable(v2, resumed.state, sec('crypt'))).toBe(true);
 });
 
@@ -838,7 +933,8 @@ test('reconcile: a version change marks every other section unproved and keeps t
   expect(s.section).toBe('yard');
   const v2 = stamped(house(2, true), V2);
   const r = reconcile(v2, s, HOUSE_KNOTS, V1);
-  expect(r.state.unproved).toEqual(['house']);
+  // The current section is marked too: its proof waits for its first entry like every other's (engine plan §3.4).
+  expect(r.state.unproved).toEqual(['house', 'yard']);
   expect(r.reset).toBeNull();
   expect(r.state.section).toBe('yard');
   expect(r.state.room).toBe('yard');
@@ -846,6 +942,21 @@ test('reconcile: a version change marks every other section unproved and keeps t
   expect(r.state.open).toEqual(['hall.to_vault']);
   const admitted = admitSection(v2, frozen({ ...r.state, section: null }), sec('house'));
   expect(admitted.effects[0]).toEqual({ kind: 'reset', section: 'house' });
+});
+
+test('reconcile: a re-versioned save leaves every section unproved', () => {
+  // A save the new world can produce: only `unproved` changes, the current section included.
+  const provable = reconcile(stamped(manor(), V2), at('hall'), MANOR_KNOTS, V1);
+  expect(provable.state.unproved).toEqual(['manor']);
+  expect(provable.reset).toBeNull();
+  expect([provable.state.section, provable.state.room]).toEqual(['manor', 'hall']);
+  // One it cannot (the cellar behind v2's lever door): the load keeps it as saved and searches nothing.
+  const v2 = stamped(manor({ leverCellar: true }), V2);
+  const s = run(manor(), EMPTY_WORLD_STATE, enterAction('manor'), tap('hall.to_cellar'), returned('manor'), tap('cellar.star')).state;
+  const r = reconcile(v2, s, MANOR_KNOTS, V1);
+  expect(r.reset).toBeNull();
+  expect([r.state.section, r.state.room]).toEqual(['manor', 'cellar']);
+  expect(r.state.unproved).toEqual(['manor']);
 });
 
 // ---------------------------------------------------------------------------------------------------------------

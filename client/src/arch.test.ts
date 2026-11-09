@@ -31,6 +31,7 @@ const RULE_IDS = [
   'import-outside-src',
   'pure-world',
   'lazy-ui',
+  'rules-lazy',
   'runner-enter',
 ] as const;
 
@@ -68,6 +69,7 @@ const GROUP: Record<RuleId, Group> = {
   'import-outside-src': 'boundary',
   'pure-world': 'pure',
   'lazy-ui': 'lazy',
+  'rules-lazy': 'lazy',
   'runner-enter': 'runner',
 };
 
@@ -103,6 +105,8 @@ const PURE_WORLD_FILES = [
   'explore/reduce.ts',
   'explore/project.ts',
   'explore/reconcile.ts',
+  'mechanics/rules/core.ts',
+  'mechanics/rules/search.ts',
 ] as const;
 const PURE_WORLD_DEPS = new Set(['story/staging.ts', 'story/catalog.ts', 'story/tags.ts']);
 const PURE_WORLD_GLOBALS = new Set([
@@ -131,6 +135,8 @@ function isPureWorld(file: string): boolean {
   return (
     file.startsWith('world/') ||
     file.startsWith('puzzles/rules/') ||
+    // The mechanics engine (engine plan §3.5): both halves run in the build's proofs as they run in play.
+    file.startsWith('mechanics/') ||
     (PURE_WORLD_FILES as readonly string[]).includes(file) ||
     PURE_WORLD_DEPS.has(file)
   );
@@ -148,6 +154,15 @@ const LAZY_ROOT_FILES = ['app/meta.ts'] as const;
 function lazyDirOf(file: string): string | undefined {
   return LAZY_DIRS.find((dir) => file.startsWith(dir)) ?? LAZY_ROOT_FILES.find((root) => file === root);
 }
+
+/**
+ * The rules half of the mechanics engine (engine plan §3.3, §3.5: the reducer's rules, the successor relation, the
+ * section key, the searches) is explore-ui chunk code. A value reference to it comes only from inside it and from its
+ * listed importers; `import()` counts too, since the budget's engine walk follows dynamic imports and a rules chunk an
+ * engine module imports would be counted in the engine row. `import type` loads nothing and is allowed anywhere.
+ */
+const RULES_DIR = 'mechanics/rules/';
+const RULES_IMPORTERS: readonly string[] = ['explore/controller.ts'];
 
 /** The only caller of `runner.enter` (PZ "Modules": `yields.ts` routes every yield and calls `project` first). */
 const RUNNER_ENTRY_FILE = 'app/yields.ts';
@@ -618,6 +633,10 @@ function checkImport(ctx: Ctx, node: ts.Node): void {
     if (isStatic && lazy !== undefined && !ctx.file.startsWith(lazy)) {
       report(ctx, 'lazy-ui', node);
     }
+    // Any value reference into the rules half, `import()` included, from outside it and its importers.
+    if (target.startsWith(`/src/${RULES_DIR}`) && !ctx.file.startsWith(RULES_DIR) && !RULES_IMPORTERS.includes(ctx.file)) {
+      report(ctx, 'rules-lazy', node);
+    }
   }
   if (spec === 'svelte' || spec.startsWith('svelte/') || /\.svelte(?:\.ts)?$/.test(spec)) {
     report(ctx, 'pure-world', node); // type-only too: the pure layer knows no component or store
@@ -933,6 +952,10 @@ test('arch: lazy ui only by dynamic import', () => {
   // The meta chunks (RULINGS 105): boot imports the controller, the controller its overlays, each by `import()`.
   expect(dynamicLazyTargets('app/boot.ts', SOURCES['app/boot.ts'] ?? '')).toEqual(['app/meta.ts']);
   expect(dynamicLazyTargets('app/meta.ts', SOURCES['app/meta.ts'] ?? '')).toEqual(['ui/meta/index.ts']);
+  // `rules-lazy`'s allow side on the tree: the explore controller, its one importer, loads both rules files.
+  expect(staticTargets('explore/controller.ts', SOURCES['explore/controller.ts'] ?? '')).toEqual(
+    expect.arrayContaining(['mechanics/rules/core.ts', 'mechanics/rules/search.ts']),
+  );
   expect(treeViolations().filter((v) => GROUP[v.rule] === 'lazy')).toEqual([]);
 }, TREE_TIMEOUT_MS);
 
@@ -1724,6 +1747,8 @@ const RED: Record<RuleId, readonly Fixture[]> = {
     ['story/catalog.ts', 'const d = document;'],
     ['explore/reduce.ts', 'const o = { document };'],
     ['world/decode.ts', "import { z } from 'zod';"],
+    // A mechanics file no list names: the directory alone makes it pure.
+    ['mechanics/rules/writer.ts', 'const t = Date.now();'],
   ],
   'lazy-ui': [
     ['app/yields.ts', "import CodeLock from '../puzzles/ui/CodeLock.svelte';"],
@@ -1737,6 +1762,20 @@ const RED: Record<RuleId, readonly Fixture[]> = {
     // The meta controller (a lazy root file) and its overlays (RULINGS 105; LMI cut Q8).
     ['app/game.ts', "import { createMetaController } from './meta.ts';"],
     ['ui/App.svelte', "<script lang=\"ts\">\n  import Wallet from './meta/Wallet.svelte';\n</script>\n<Wallet />"],
+  ],
+  'rules-lazy': [
+    ['story/chapters.ts', "import { MECHANIC_RULES } from '../mechanics/rules/index.ts';"],
+    // The engine's resume path reaching the search.
+    ['explore/reconcile.ts', "import { inSectionReach } from '../mechanics/rules/search.ts';"],
+    // A linear puzzle runs through the kernel's runReduce, never the rules' reduce.
+    ['app/yields.ts', "import { reduce } from '../mechanics/rules/core.ts';"],
+    ['story/resume.ts', "export { admitSection } from '../mechanics/rules/search.ts';"],
+    // An inline `type` keeps the declaration (verbatimModuleSyntax), so the module still loads.
+    ['app/yields.ts', "import { type SearchResult } from '../mechanics/rules/search.ts';"],
+    // A dynamic import from the engine would be counted in the engine row.
+    ['app/yields.ts', "const m = import('../mechanics/rules/core.ts');"],
+    // Only the controller reaches the rules; the components stay presentational.
+    ['ui/explore/ExploreView.svelte', "<script lang=\"ts\">\n  import { actions } from '../../mechanics/rules/core.ts';\n</script>"],
   ],
   'runner-enter': [
     ['app/game.ts', 'runner.enter(k, p);'],
@@ -1835,6 +1874,7 @@ const ALLOW: ReadonlyArray<readonly [RuleId, readonly Fixture[]]> = [
       ['explore/reduce.ts', "import type { View } from '../ui/view.ts';"],
       ['world/decode.ts', 'const o = { document: 1 }; const d = w.docs;'],
       ['explore/reconcile.ts', "import { reduce } from './reduce.ts';\nconst n = s.date + o.random();"],
+      ['mechanics/rules/core.ts', "import { worldIndex } from '../../explore/reduce.ts';"],
     ],
   ],
   [
@@ -1848,6 +1888,17 @@ const ALLOW: ReadonlyArray<readonly [RuleId, readonly Fixture[]]> = [
       ['app/boot.ts', "const m = import('./meta.ts');"],
       ['ui/state.svelte.ts', "import type { MetaView } from '../app/meta.ts';"],
       ['ui/meta/Friends.svelte', '<script lang="ts">\n  import { x } from \'./index.ts\';\n</script>'],
+    ],
+  ],
+  [
+    'rules-lazy',
+    [
+      // The listed importer, and the rules half among itself and with the kernel.
+      ['explore/controller.ts', "import { reduce } from '../mechanics/rules/core.ts';\nimport { admitSection } from '../mechanics/rules/search.ts';"],
+      ['mechanics/rules/search.ts', "import { reduce } from './core.ts';\nimport { worldIndex } from '../../explore/reduce.ts';"],
+      // Erased: a type import, or a type query, loads nothing.
+      ['app/yields.ts', "import type { SearchResult } from '../mechanics/rules/search.ts';"],
+      ['explore/reconcile.ts', "import type { SearchResult } from '../mechanics/rules/search.ts';\ntype D = import('../mechanics/rules/core.ts').Draft;"],
     ],
   ],
   [

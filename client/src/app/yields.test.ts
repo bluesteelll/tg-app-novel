@@ -5,7 +5,7 @@
 import type { Component } from 'svelte';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
-import type { AttemptResponse } from '../api/generated/api.ts';
+import type { AttemptResponse, PuzzleStatus } from '../api/generated/api.ts';
 import type { ApiError, Clock } from '../api/http.ts';
 import type { AudioCommand } from '../audio/manager.ts';
 import { createExploreController } from '../explore/controller.ts';
@@ -13,6 +13,7 @@ import type { ExploreController } from '../explore/controller.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { WorldState } from '../explore/state.ts';
 import type { PuzzleUiProps } from '../puzzles/registry.ts';
+import type { HintPort } from '../puzzles/session.ts';
 import type { VisualCommand } from '../scene/executor.ts';
 import type { StatEvent } from '../stats/reporter.ts';
 import { decodeChapterMeta } from '../story/catalog.ts';
@@ -157,7 +158,16 @@ class FakeClock implements Clock {
 
 type Rig = ReturnType<typeof rig>;
 
-function rig(o: { create?: ExploreChunk['create']; attempts?: Array<Result<AttemptResponse, ApiError>> } = {}) {
+type RigOptions = {
+  create?: ExploreChunk['create'];
+  attempts?: Array<Result<AttemptResponse, ApiError>>;
+  /** `getPuzzle`'s answer; none = a network error. */
+  status?: PuzzleStatus;
+  /** The hint spend; none = no port. */
+  hints?: HintPort;
+};
+
+function rig(o: RigOptions = {}) {
   const clock = new FakeClock();
   const vm = createViewModel({ timers: clock, lang: 'ru' });
   let y: Yields | null = null;
@@ -200,7 +210,7 @@ function rig(o: { create?: ExploreChunk['create']; attempts?: Array<Result<Attem
     screens,
     tg: { haptic: { impact: () => {}, selection: () => {}, notify: (t) => haptics.push(`notify:${t}`) } },
     api: {
-      getPuzzle: async () => ({ ok: false, error: { kind: 'network', detail: 'none' } }),
+      getPuzzle: async () => (o.status === undefined ? { ok: false, error: { kind: 'network', detail: 'none' } } : { ok: true, value: o.status }),
       postAttempt: async () => {
         calls.attempts += 1;
         return answers.shift() ?? { ok: true, value: { correct: false, solved: false } };
@@ -226,6 +236,7 @@ function rig(o: { create?: ExploreChunk['create']; attempts?: Array<Result<Attem
     reporter: { record: (e) => events.push(e) },
     clock,
     chunks,
+    hints: () => o.hints ?? null,
     // A stand-in: the controller reads only the two sizes of its box.
     stageHost: () => ({ clientWidth: 360, clientHeight: 640 }) as unknown as HTMLElement,
     chapter: () => ch,
@@ -317,6 +328,40 @@ test('yields: a run at max attempts ends failed without a session', async () => 
   expect([r.puzzle.frame, r.calls.host, r.calls.attempts]).toEqual([null, 0, 0]);
   expect(r.events.map((e) => (e.kind === 'puzzle_ended' ? e.outcome : e.kind))).toEqual(['failed']);
   expect(r.entered).toEqual([{ knot: 'after', projection: expect.objectContaining({ pz_drawer: 2 }) }]);
+  r.yields.dispose();
+});
+
+test('yields: a linear wrong answer counts in the world', async () => {
+  const r = rig();
+  await r.yields.onYield({ kind: 'puzzle', puzzle: DRAWER, then: AFTER });
+  r.yields.host.ontry();
+  await settle();
+  // The rig's default answer is wrong: the run stays open, and its count is the one a reload's D18 limit reads.
+  expect(r.calls.attempts).toBe(1);
+  expect(r.yields.world().puzzles[DRAWER]).toEqual({ outcome: null, attempts: 1, hintsOpened: 0 });
+  r.yields.dispose();
+});
+
+test('yields: a linear hint use counts in the world', async () => {
+  const used: number[] = [];
+  const port: HintPort = {
+    balance: () => 3,
+    tierCost: () => 1,
+    use: async (_puzzle, tier) => {
+      used.push(tier);
+      return { ok: true, value: { text: 'hint', balance: 2 } };
+    },
+    getMore: () => {},
+  };
+  const r = rig({ status: { puzzleId: 'ch1.drawer', solved: false, hints: [{ tier: 1, unlocked: false, text: null }] }, hints: port });
+  await r.yields.onYield({ kind: 'puzzle', puzzle: DRAWER, then: AFTER });
+  r.yields.host.onhint();
+  await settle();
+  r.yields.host.onusehint(1);
+  await settle();
+  // The spend went through, and the tier counts in the world (pz_drawer_hints projects it).
+  expect(used).toEqual([1]);
+  expect(r.yields.world().puzzles[DRAWER]).toEqual({ outcome: null, attempts: 0, hintsOpened: 1 });
   r.yields.dispose();
 });
 

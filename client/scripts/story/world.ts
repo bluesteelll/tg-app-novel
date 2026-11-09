@@ -4,11 +4,11 @@
 // the per-section soft-lock check; plus the world texts as lines for the locale checks, and the world needles of
 // `paid/leak` and scan-dist (D12). Pure, no node:*: scan-dist.ts imports this module, so it never loads inkjs;
 // compile.ts, emit.ts and graph.ts come in as types only.
-import { searchSection, sectionEntry } from '../../src/explore/reconcile.ts';
 import { RESUME_STATE_CAP, hotspotKey, lockOf } from '../../src/explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../../src/explore/state.ts';
 import type { WorldState } from '../../src/explore/state.ts';
 import { HOTSPOT_SAFE_FRAME } from '../../src/geom/cover.ts';
+import { searchSection, sectionEntry } from '../../src/mechanics/rules/search.ts';
 import { PUZZLE_RULES } from '../../src/puzzles/rules/index.ts';
 import type { AssetCatalog } from '../../src/story/catalog.ts';
 import type { KnotName, PuzzleLocalId, Rect, SectionId, VarName } from '../../src/story/staging.ts';
