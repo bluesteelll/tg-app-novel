@@ -255,8 +255,8 @@ m1) their talk files (§2.6, §5.2); a room in effect adds its props and decor s
 bound (§3.4).
 
 **Room props on a story cut** (rev. 2, W8): `stage()` (`game.ts:647-654`) passes the visual batch through
-`stage-route.ts`' `withRoomProps(batch, propsFor)`: a batch whose `bg` / `scene` names the bg of a room of the current
-section gets `{ kind: 'props', props: propsFor(bg) }` appended, from `Yields.propsFor(bg): readonly PropPlacement[] |
+`stage-route.ts`' `withRoomProps(batch, roomFor)`: a batch whose `bg` / `scene` names the bg of a room of the current
+section gets the list `roomFor(bg)` appended verbatim (GM3b's `props`, then per-player GM6d2's `labels`), from `Yields.roomFor(bg): readonly VisualCommand[] |
 null` (I-11: today's `roomProps`, `yields.ts:158-169`, and after GM3b `visualsOf`). So a cut back to the room inside an
 event shows its drawers, items and decor states as the world has them; `imageIds` then ensures them.
 

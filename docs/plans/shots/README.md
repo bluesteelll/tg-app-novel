@@ -29,7 +29,7 @@ Owner questions (§12): OQ1 and OQ2 answered (Krea 2; an RTX 5080, RULINGS 136, 
 | EN | the engine plan; its line numbers in the body were "as read 2026-11-03" and are now links | [engine plan](../engine/README.md) |
 | PPL | the per-player plan; as EN | [per-player plan](../per-player/README.md) |
 | SH | this plan; `SH<n>` is one of its lanes | this directory |
-| MEASURED / DOCUMENTED / CLAIMED / A / E / verify (and ARITHMETIC) | the label of every figure: measured (a named test), the vendor's own page, a secondary source, arithmetic done here, the architect's estimate, not yet checked; ARITHMETIC (once, in §10) is the engine label, quoted | [labels and owner values](labels-and-owner-values.md) |
+| MEASURED / DOCUMENTED / CLAIMED / A / E / verify (and ARITHMETIC, CLAIM) | the label of every figure: measured (a named test), the vendor's own page, a secondary source, arithmetic done here, the architect's estimate, not yet checked; ARITHMETIC (once, in §10) and CLAIM (in the lines the adoption applied from engine §30 and RULINGS 158) are the engine labels, quoted | [labels and owner values](labels-and-owner-values.md) |
 | Repo facts | `path:line` on the main commit each revision names (`cdca9d4` / `525dd68` / `d31f720`) | the repository at that commit |
 | Web facts | a URL, read 2026-11-03 (by the research report under its source key, or by the architect) | the URL |
 

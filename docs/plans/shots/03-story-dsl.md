@@ -104,6 +104,7 @@ two-way test in `shots.test.ts`.
 | `shot/sprite-in-shot-chapter` | E | (rev. 2, m7) any `show:` / `hide:` in a chapter that names at least one shot with a non-empty cast: a shot chapter has no sprites at all, cast member or not; a legacy chapter (every used shot cast-less) keeps its sprites until it is restaged; lapses with SH12 |
 | `shot/loc-change` | W | a `bg:` cut to another `loc` without `scene:` |
 | `shot/plane-over-hotspot` | W | (rev. 2) a room shot's front plane overlaps a hotspot rect of that room (world data) |
+| `shot/plane-over-label` | E | (reconcile, per-player R-S2) a room shot's plane (back or front) `at` box or a cast member's `body` bounding box meets a bg label's rect of that room, or a front plane's `at` box meets an anchor label's rect (labels: `w.mods.labels`, GM6d2's data) |
 | `shot/implied-placeholder` | W | a used shot has no catalog entry (art pending) |
 | `art/pending` | W (E under `--strict`) | a needed (shot, char, expr) state has no art: the shot's bg is a placeholder |
 | `flow/edge-missing` | E | a playthrough observed a step transition the CFG lacks. Rev. 2 (m5): fail-closed **only for transitions some seeded run observes**; a CFG edge missing on a path no run takes passes. The CFG rules (below) are the primary guard, the 200 runs a check on them |

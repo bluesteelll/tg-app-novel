@@ -63,15 +63,18 @@
 | (rev. 4, m3) `flatten` reached through the kit from SH7 on | − 0.8 | moves to `scene/motion/` |
 | (rev. 5) eviction of `room:*` at any step and by a reservation (W2), the one ordered queue with `near` (m3), face and talk slots (m1) | 0.2 | engine |
 | (rev. 6) the recency re-insert and step 6 (c) (W1, W2), the `next:*` tail class (W1), `withEventRoom` (W2), the warm-decode rule (m2) | 0.1 | engine |
-| (rev. 7) synchronous joins, `registry.state`, the entry tag (W1); the `eventRoom` class and step 6 (d) (W2) | 0.1 | engine |
-| **engine subtotal** | **~6.15** (rev. 7; rev. 6: 6.05; rev. 5: 5.95; rev. 4: 5.75; 6.95 without the lever; 6.35 between SH6 and SH7, before SH7's loop) | engine row 214.5 MEASURED (S4 :170) + EN 1.53 + PPL 3.00 + 6.15 = ~225.2 / 230.0 (rev. 6, m6: EN and PPL re-read; rev. 7: not re-read, a delta round) |
+| (rev. 7) synchronous joins, `registry.state`, the entry tag (W1); the `eventRoom` class and step 6 (d) (W2) | 0.1 | engine. **Reconciled ([engine §30 Shots errata from reconcile](../engine/30-shots-errata.md#30-shots-errata-from-reconcile) item 19):** SH5a's +1.3 ([engine §11.1 The shared ledgers](../engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13)) includes the synchronous joins and `registry.state` that LHJ landed (`preload.ts:163-172`, `registry.ts:523-527`), so up to 0.1 is already in the MEASURED base; engine §11.1 keeps the figure (the safe direction), and SH5a's cut quotes its measured delta against the base |
+| **engine subtotal** | **~6.15** (rev. 7; rev. 6: 6.05; rev. 5: 5.95; rev. 4: 5.75; 6.95 without the lever; 6.35 between SH6 and SH7, before SH7's loop) | engine row 214.5 MEASURED (S4 :170) + EN 1.53 + PPL 3.00 + 6.15 = 226.08 ([engine §11.1 The shared ledgers](../engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13), main `3c62a86`) / 230.0 (rev. 6, m6: EN and PPL re-read; rev. 7: not re-read, a delta round) |
 | `flatten` (rev. 4, from SH7) | 0.8 | `scene/motion/` chunk |
 | animator | 1.5 | `scene/motion/` |
 | warp + drive + hair mesh | 1.5 | `scene/motion/` |
 | ambient | 1.2 | `scene/motion/` |
 | scene-motions | 1.0 | `scene/motion/` |
 | **chunk subtotal** | **~6.0** (rev. 4: + `flatten`) | `scene-motion chunk (br)` <= 8.0 |
+| SH10 `scene` ids | 0.5 | cue-stage chunk |
 | Entry: catalog namespace strings | <= 0.1 | entry |
+
+**Superseded by [engine §11.1 The shared ledgers](../engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13)** ([engine §30 Shots errata from reconcile](../engine/30-shots-errata.md#30-shots-errata-from-reconcile) item 7): every SH lane quotes §11.1's rows at its cut. The table below stays as the record (rev. 7).
 
 **First-line ledger** (rev. 2, W6; KB br; every line E except the base):
 
@@ -102,6 +105,9 @@ window).
 **Entry** (rev. 6, RULINGS 137): 39.4 MEASURED + EN's planned 0.40 (39.80, RULINGS 137) + this design's 0.1 = 39.90 /
 40.0 KB br; LEL (RULINGS 137) is measuring a lever of >= 1.0 KB br out of the entry now, and SH3a's cut quotes the
 row after it merges.
+**Ruled since: RULINGS 158** — L1 is unshelved (RULINGS 142's return condition: 38,988 B + 510 B = 39,498 B, 502 B left against the 500 B line, inside the build's own churn) as lane `l1-entry-summary` (`summaryOf` into `saves/summary.ts`; entry -1.59, first line +0.21, CLAIM at `cdca9d4`); L2 stays shelved. The cut/build crossing rule above stands for every later entry-adding lane, read against the row after L1 merges.
+
+**Superseded by [engine §11.1 The shared ledgers](../engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13)** ([engine §30 Shots errata from reconcile](../engine/30-shots-errata.md#30-shots-errata-from-reconcile) item 7): every SH lane quotes §11.1's rows at its cut. The table below stays as the record (rev. 7).
 
 **All-JS ledger** (rev. 3, m5; the row `all JS (br)` <= 305,000 B, `budget.ts:114`; KB br, E except the base):
 
@@ -116,7 +122,8 @@ row after it merges.
 | **sum** | **298.49 / 305.0** (rev. 7; 6.51 left; rev. 6: 298.39; rev. 5: 297.90) | A (PLAUSIBLE: the explore-ui and cue rows are EN's estimates) |
 
 Not in the sum: EN's new puzzle-type chunks (GM7p, GM7g, GM8a, GM8b; each <= 8 KB by its row). With 6.51 KB left (rev. 7), a few
-of them exceed `all JS`: I-13 makes this ledger shared, and the first EN lane whose estimate crosses 305.0 STOPs.
+of them exceed `all JS`: I-13 makes this ledger shared, superseded by [engine §11.1 The shared ledgers](../engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13) ([engine §30 Shots errata from reconcile](../engine/30-shots-errata.md#30-shots-errata-from-reconcile) item 7); and the first EN lane whose estimate crosses 305.0 STOPs.
+**Ruled: RULINGS 158** — `allJsBr` is re-set once, by GM7p (the `budget.ts` holder before GM7g in the one order), to GM7p's measured HEAD + the remaining planned puzzle-type chunks (GM7g, GM8a, GM8b at 1.6 KB br each, the measured `puzzle-type` chunk) + 5.0 KB br, rounded up to a whole KB; GM7p's cut quotes the arithmetic and the orchestrator confirms it in a RULINGS line at that cut; no other lane raises it (the row bounds no download).
 
 Verify the engine headroom against 230,000 B at SH4's cut.
 

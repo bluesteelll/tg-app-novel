@@ -88,6 +88,8 @@ Rev. 7 (critique r6):
 - W2: the event room is the window's own `eventRoom` class (`StageWindow`), evicted after every other family (step
   6 (d)).
 - Size: lock 14, unchanged; 7 commits; ~52 named tests (7 new); 19 mutations (5 new).
+- **Reconciled ([engine §30 Shots errata from reconcile](../engine/30-shots-errata.md#30-shots-errata-from-reconcile) item 12):** this lane keeps `meta?.stepShown()` after the step's view is set (`game.ts:776` on `cec347c`) and at D11's paywall (`game.ts:982` on `cec347c`), pinned by LFL's `game: a presented step tells the meta port` (`game.test.ts:3218` on `cec347c`), `game: a continue into a pending paid start asks for the meta chunk at its paywall` (`game.test.ts:3237`) and its e2e G2; a lane that edits the entry path keeps both calls.
+- **Reconciled ([engine §30 Shots errata from reconcile](../engine/30-shots-errata.md#30-shots-errata-from-reconcile) item 18, R-S3):** SH1, SH5a, SH5b and SH7, which rework `present()` / `stage()`, keep a story step's visual batch applied (`scene.apply`, the snapshot move) inside the step's intent, the `withRoomProps` cut back included (`game.ts:723`, `:744`, `:789` on `3c62a86`); detector: per-player GM6d1's `game: a tap while a step's batch loads completes it and starts no step` (M-PR3c), which lands after SH7; per-player owns the text and status ([per-player §12.1 R-S3](../per-player/12-interface-requests.md#121-requests-from-this-file-status-after-enginemd-round-9-as-read-2026-11-03-reconcile-revision-1-round-14-as-read-2026-11-09-reconcile-revision-2-enginemds-reconcile-revision-1-as-read-2026-11-09-reconcile-revision-3-enginemds-reconcile-revision-2-as-read-2026-11-09)).
 
 **Lock (14; rev. 6: + `client/src/app/window.test.ts`):**
 - `client/src/app/{game,game.test}.ts` (windows per step; rev. 4: the yields host `apply` hands the room window; rev.
@@ -313,10 +315,10 @@ Rev. 7 (critique r6):
 - M-SH5v (rev. 7, W2): step 6 (b) ignores `eventRoom`, so recency alone ranks the event room's tag (red: `preload: an
   onEnter event keeps its room through eventRoom`).
 
-**Gates:** check, test, build, e2e full. S-D (1c) read at the cut.
+**Gates:** check, test, build, e2e full. S-D (1c) read at the cut. **Reconciled ([engine §30 Shots errata from reconcile](../engine/30-shots-errata.md#30-shots-errata-from-reconcile) item 19):** SH5a's +1.3 ([engine §11.1 The shared ledgers](../engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13)) includes the synchronous joins and `registry.state` that LHJ landed (`preload.ts:163-172`, `registry.ts:523-527`), so up to 0.1 is already in the MEASURED base; the cut quotes its measured delta against the base.
 
 **Order:**
-- After SH4 (`scene/*`) and **GM3b** (I-11: `Yields.propsFor` over `visualsOf`; if GM3b has not merged at SH5a's cut,
+- After SH4 (`scene/*`) and **GM3b** (I-11: `Yields.roomFor` over `visualsOf`; if GM3b has not merged at SH5a's cut,
   STOP: the method is EN's, `yields.ts` is not in this lock).
 - `game.ts`: after SH1, before SH5b.
 - `registry.ts` / `registry.test.ts`, `loader.ts`: SH4 -> SH5a -> SH5b -> SH6 (the `scene/*` chain).
@@ -335,6 +337,8 @@ Rev. 7 (critique r6):
 
 **Goal:** §5.8 "Entry at the half tier" (rev. 3, C1) with rev. 4's order (W1): the entry window admitted beside the
 upgrade, its `need` files as half-tier previews, each sharpened after the visible records.
+- **Reconciled ([engine §30 Shots errata from reconcile](../engine/30-shots-errata.md#30-shots-errata-from-reconcile) item 12):** this lane keeps `meta?.stepShown()` after the step's view is set (`game.ts:776` on `cec347c`) and at D11's paywall (`game.ts:982` on `cec347c`), pinned by LFL's `game: a presented step tells the meta port` (`game.test.ts:3218` on `cec347c`), `game: a continue into a pending paid start asks for the meta chunk at its paywall` (`game.test.ts:3237`) and its e2e G2; a lane that edits the entry path keeps both calls.
+- **Reconciled ([engine §30 Shots errata from reconcile](../engine/30-shots-errata.md#30-shots-errata-from-reconcile) item 18, R-S3):** SH1, SH5a, SH5b and SH7, which rework `present()` / `stage()`, keep a story step's visual batch applied (`scene.apply`, the snapshot move) inside the step's intent, the `withRoomProps` cut back included (`game.ts:723`, `:744`, `:789` on `3c62a86`); detector: per-player GM6d1's `game: a tap while a step's batch loads completes it and starts no step` (M-PR3c), which lands after SH7; per-player owns the text and status ([per-player §12.1 R-S3](../per-player/12-interface-requests.md#121-requests-from-this-file-status-after-enginemd-round-9-as-read-2026-11-03-reconcile-revision-1-round-14-as-read-2026-11-09-reconcile-revision-2-enginemds-reconcile-revision-1-as-read-2026-11-09-reconcile-revision-3-enginemds-reconcile-revision-2-as-read-2026-11-09)).
 
 **Lock (9):**
 - `client/src/app/{game,game.test}.ts` (the entry flag)

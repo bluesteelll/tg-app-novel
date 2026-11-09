@@ -183,6 +183,8 @@ their tests.
 - `docs/STAGING-DSL.md` (§11 `budget/knot-set` row, §14 row)
 - `client/src/scene/{layout,layout.test}.ts` (`charPlacement` `:93-95` goes)
 
+**Reconciled ([engine §30 Shots errata from reconcile](../engine/30-shots-errata.md#30-shots-errata-from-reconcile) item 18, R-S2):** SH12b, the lane after per-player GM6d2 that holds `client/scripts/story/shots/lint.ts`, also adds the E rule `shot/plane-over-label` beside `shot/plane-over-hotspot` ([§3.3 Lints](03-story-dsl.md#33-lints)): a room shot's plane (back or front) `at` box or a cast member's `body` bounding box meets a bg label's rect of that room, or a front plane's `at` box meets an anchor label's rect (labels: `w.mods.labels`, GM6d2's data). `shots/lint.ts` is already in this lock; until the rule lands, GM6d2's cut checks its one label by hand. Per-player owns the text and status ([per-player §12.1 Requests from this file](../per-player/12-interface-requests.md#121-requests-from-this-file-status-after-enginemd-round-9-as-read-2026-11-03-reconcile-revision-1-round-14-as-read-2026-11-09-reconcile-revision-2-enginemds-reconcile-revision-1-as-read-2026-11-09-reconcile-revision-3-enginemds-reconcile-revision-2-as-read-2026-11-09)).
+
 **Red-first:**
 - `shots: shot/sprite-in-shot-chapter is retired` (the code removed);
 - (rev. 3) `dsl-doc: lint table equals lint codes` at 85 rows (the pin `dsl-doc.test.ts:146` moves 86 -> 85 with the

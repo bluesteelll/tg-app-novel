@@ -60,7 +60,7 @@ expression it shows, talk mouths in every expression it speaks in. A small face 
     <= 4 x 3 CSS px per axis (`g0 = 0`, far wall still, S19), so a drawn hotspot is <= 4 x 3 CSS px (5 CSS px
     diagonal) off its static tap box;
   - a story cut back to a room's shot inside an event restores the room's props and decor from world state
-    (`Yields.propsFor`, I-11; rev. 2, W8), so a re-establishing wide shows the room as the world has it.
+    (`Yields.roomFor`, I-11; rev. 2, W8), so a re-establishing wide shows the room as the world has it.
 - **A zoom view is a shot with `frame: room`** (rev. 3, W9). EN §6.3 makes a view "a room with `"view": { "of":
   "study" }`, its own `bg` and hotspots" (engine.md §6.3, as read), so it takes every room rule: plate exactly
   1080 x 2048 (R5), rest framing `cover()` exactly (no overscan, no `focus` offset), the room drive (`A = 4 x 3` CSS px,

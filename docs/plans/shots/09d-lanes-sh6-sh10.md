@@ -87,6 +87,7 @@
   `stats().scene.motion`;
 - talking with `think` and the off-screen speaker;
 - `setCovered('panel')` (CH R12);
+  **Reconciled ([engine §30 Shots errata from reconcile](../engine/30-shots-errata.md#30-shots-errata-from-reconcile) item 5):** SH7 implements GM3p's `YieldsHost.frameShown?(f: ShownFrame | null)` in `yieldsHost` (`game.ts`, in its lock) with one function `panelCover(f)` and one pending timer on GameSession's `clock`: every call first clears the timer; `null` calls `scene.setCovered('panel', false)` at once; a frame arms `setCovered('panel', true)` `FRAME_OPEN_MS` (300, `cues/types.ts`, GM3m) later; `dispose` clears the timer before the yields and the scene go. `present()` no longer sets the panel cover (CH R12's wiring fired at a puzzle yield's step, before the frame's chunks loaded, and never for an explore-mode frame). The timer's row: [§14 Resource lifetime](14-resource-lifetime.md#14-resource-lifetime). SH7's lock is unchanged by this item.
 - R-A9's loop contract;
 - (rev. 4, m3: the designed first-line lever, taken here) the executor reaches `flatten` (SH6) only through the kit:
   `executor.ts` keeps an `import type`, `motion/index.ts` re-exports `../flatten.ts`, so `flatten` (~0.8 KB br E)
@@ -94,13 +95,17 @@
   `flatRefused`, CH D15) and a face change to K7. Round 3's "camera tweens too" is withdrawn: GSAP stays in
   `executor.ts` only (`arch.test.ts:160-165`) and the framing math is needed by `restore`.
 - (The parallax drive moves to SH8 with the depth grid it needs; rev. 2.)
+- **Reconciled ([engine §30 Shots errata from reconcile](../engine/30-shots-errata.md#30-shots-errata-from-reconcile) item 3):** SH7 implements `YieldsHost.sceneCues` in `yieldsHost` (`game.ts`, in its lock) and hands the `subscribe` it receives to the scene role; SH10 subscribes `'scene'` through it. The seam is GM3s's ([engine §8.6 Reduced motion, `deactivated`, e2e determinism](../engine/08c-motion-gate-and-contracts.md#86-reduced-motion-deactivated-e2e-determinism)); SH7 runs after GM3s.
+- **Reconciled ([engine §30 Shots errata from reconcile](../engine/30-shots-errata.md#30-shots-errata-from-reconcile) item 12):** this lane keeps `meta?.stepShown()` after the step's view is set (`game.ts:776` on `cec347c`) and at D11's paywall (`game.ts:982` on `cec347c`), pinned by LFL's `game: a presented step tells the meta port` (`game.test.ts:3218` on `cec347c`), `game: a continue into a pending paid start asks for the meta chunk at its paywall` (`game.test.ts:3237`) and its e2e G2; a lane that edits the entry path keeps both calls.
+- **Reconciled ([engine §30 Shots errata from reconcile](../engine/30-shots-errata.md#30-shots-errata-from-reconcile) item 18, R-S3):** SH1, SH5a, SH5b and SH7, which rework `present()` / `stage()`, keep a story step's visual batch applied (`scene.apply`, the snapshot move) inside the step's intent, the `withRoomProps` cut back included (`game.ts:723`, `:744`, `:789` on `3c62a86`); detector: per-player GM6d1's `game: a tap while a step's batch loads completes it and starts no step` (M-PR3c), which lands after SH7; per-player owns the text and status ([per-player §12.1 R-S3](../per-player/12-interface-requests.md#121-requests-from-this-file-status-after-enginemd-round-9-as-read-2026-11-03-reconcile-revision-1-round-14-as-read-2026-11-09-reconcile-revision-2-enginemds-reconcile-revision-1-as-read-2026-11-09-reconcile-revision-3-enginemds-reconcile-revision-2-as-read-2026-11-09)).
 
-**Lock (12):**
+**Lock (13):**
 - `client/src/scene/motion/{index,animator,animator.test}.ts` (new)
 - `client/src/scene/render-loop.test.ts` (new)
 - `client/src/scene/{render-loop,executor,executor.test,controller,shot-view}.ts`
 - `client/src/app/{game,game.test}.ts`
 - `client/e2e/animation.spec.ts` (new)
+- `client/src/requests.test.ts` (one row: SH7's `import()` of `scene/motion/`, an unlisted start; and its `WAIT_CASES` case if a view waits on it; by launch, never beside: [engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts), the `requests.test.ts` row)
 
 **Commits:**
 1. Animator:
@@ -127,7 +132,9 @@
 5. Game:
    - `game: a line's speaker talks until lineShown`;
    - `game: an instant line talks for its nominal time`;
-   - `game: a puzzle yield covers the stage`;
+   - `game: an opaque frame covers the stage once its entrance ends` (a fake clock: no cover at `{ id }`, covered at +300, uncovered at `null`; red on a cover at the frame write);
+   - `game: a frame cleared inside its entrance never covers` (`{ id }` at 0, `null` at 150: no `setCovered(true)`, 0 pending timers; also A `null` at 100 and B `{ id }` at 150: covered first at 450) with **M-SH7f** (`panelCover`'s clear removed: red, covered at 300 and 1 pending timer);
+   - `game: a disposed session leaves no pending cover` with **M-SH7g** (`dispose` leaves the timer: red, 1 pending timer);
    - `game: reduced motion reaches the scene's mount`.
 6. e2e:
    - `animation: the keeper blinks in the lamp-room shot` (live; waits for `stats().scene.motion === 'ready'`; the eye
@@ -148,7 +155,7 @@
 here), e2e full.
 
 **Order:**
-- After SH6 (`scene/*`, the `scene-lazy` rule) and SH3b (the `scene-motion chunk (br)` row).
+- After SH6, SH3b, GM3s (the `sceneCues` seam), GM3m (`FRAME_OPEN_MS`) and GM3p (the frame edge `frameShown`; merged before SH5a's GM3b in any case).
 - `game.ts`: after SH5b, before GM6c2.
 - GM6d1 after SH7 (R-A9's `addAmbient`) and after SH8.
 
@@ -158,6 +165,8 @@ here), e2e full.
 plateaus from the head mask, head groups), hair-lock meshes, the `anim:` / `fx:` runtime, the parallax drive with its
 values (rev. 2, C2), back and front planes (the `front` layer), props, decor and labels in the anchor's `depth` node
 (m9); rooms and views hold `cover()` while near layers move; (rev. 3, W8) the CG drift as a `'top'` source.
+
+**Reconciled ([engine §30 Shots errata from reconcile](../engine/30-shots-errata.md#30-shots-errata-from-reconcile) item 18, R-S1):** SH8's drive steps a **depth list** held by the executor (one entry per `depth` node with its rect centre: prop anchors, decor anchors) that a later scene lane can add entries to; GM6d1 adds one entry per bg label view (`content > label depth > label node > sprite`, `par(n)` at the label's rect centre) and removes it with the view. Per-player owns the text and status ([per-player §12.1 Requests from this file](../per-player/12-interface-requests.md#121-requests-from-this-file-status-after-enginemd-round-9-as-read-2026-11-03-reconcile-revision-1-round-14-as-read-2026-11-09-reconcile-revision-2-enginemds-reconcile-revision-1-as-read-2026-11-09-reconcile-revision-3-enginemds-reconcile-revision-2-as-read-2026-11-09)).
 
 **Lock (14; rev. 3, m3: + `shot-view.test.ts`, `flatten.test.ts`, which commits 2 and 3 write):**
 - `client/src/scene/motion/{warp,warp.test,hair-mesh,hair-mesh.test}.ts` (new; CH §7's math under `motion/`)
@@ -287,14 +296,16 @@ per-player GM6c4" (engine.md §12, as read): SH9 follows GM6c4, never beside any
   the drive the `depth` node; red if one overwrites the other); mutation **M-SH10a**: the tween targets the `depth`
   node;
 - e2e `shots: opening the drawer moves its prop anchor`.
+- **Reconciled ([engine §30 Shots errata from reconcile](../engine/30-shots-errata.md#30-shots-errata-from-reconcile) item 15):** `prop(AnchorKey)`, `bg` and `closeup` resolve to their anchor's `motion` node, so the tweens there write only `motion` nodes (never `anchor`, the executor's, or `depth`, SH8's); the cut verifies the bg and close-up roots carry the four-node nesting I-9 rev. 2 gives the bg anchor "likewise" (the display tree, [§5.1 Shot view](05a-runtime.md#51-shot-view-sh4-clientsrcsceneshot-viewts-pure), draws it for prop anchors only) and adds it in `executor.ts` (in this lock) if SH4 did not. `world` (the camera node) and `face(CharId)` (the head node) have per-frame writers and no `motion` node: a `world` cue motion is a term of the camera composition (the camera-move term, through the executor's camera state), a `face` cue motion a term of the head's composition or a layer change, never a tween on the node. Red-first: `executor: a world and a face cue motion survive their per-frame writers` (one drawn frame at a motion's midpoint: the composed transform differs from rest) with **M-SH10b** (the motion written as a tween on the node: red, the transform reads rest).
 
-**Gates:** check, test, build (explore-ui row: EN estimates +1.0 KB, `engine.md:445`), e2e full.
+**Gates:** check, test, build (the `scene-motion chunk (br)` row, its scene-motions ~1.0, and the `cue-stage chunk (br)` row, +0.5 CLAIM for every key's and control default's `SceneMotionId` in `cues/stage/motions.ts`, [engine §11.1 The shared ledgers](../engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13)), e2e full.
 
 **Order:**
 - After GM3b, GM3s, GM6a, GM8i (the last `motions.ts` holder, EN [engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts)), SH7 and SH6 (EN [engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts)'s "MA1" =
   SH7).
 - STOP item at the cut: the scene subscribes to `CueBus` as `scene` without a `game.ts` hunk (else `game.ts` joins
   the lock, after GM9r).
+  **Reconciled ([engine §30 Shots errata from reconcile](../engine/30-shots-errata.md#30-shots-errata-from-reconcile) item 3):** SH10 subscribes `'scene'` through the `subscribe` that SH7's `YieldsHost.sceneCues` (in `yieldsHost`, `game.ts`) hands the scene role; the seam is GM3s's ([engine §8.6 Reduced motion, `deactivated`, e2e determinism](../engine/08c-motion-gate-and-contracts.md#86-reduced-motion-deactivated-e2e-determinism)).
 - (rev. 3, W9) Read at the cut: the explore view takes no hotspot tap while a room batch runs (I-6's question back);
   if it does, the `move:*` motion is the dissolve alone (no camera push into `via`), so no drawn hotspot is ever off
   its box under a finger.

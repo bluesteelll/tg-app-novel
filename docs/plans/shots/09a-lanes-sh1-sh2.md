@@ -39,6 +39,8 @@
 - The other new kinds are parsed and routed; `cam` sits in the snapshot. Drawing comes in SH4 / SH6 / SH8.
 - `splitBatch` / `imageIds` / `manifestIndex` / `knotAssets` move out of `game.ts` into `client/src/app/stage-route.ts`,
   so later lanes leave `game.ts`.
+- **Reconciled ([engine §30 Shots errata from reconcile](../engine/30-shots-errata.md#30-shots-errata-from-reconcile) item 12):** this lane keeps `meta?.stepShown()` after the step's view is set (`game.ts:776` on `cec347c`) and at D11's paywall (`game.ts:982` on `cec347c`), pinned by LFL's `game: a presented step tells the meta port` (`game.test.ts:3218` on `cec347c`), `game: a continue into a pending paid start asks for the meta chunk at its paywall` (`game.test.ts:3237`) and its e2e G2; a lane that edits the entry path keeps both calls.
+- **Reconciled ([engine §30 Shots errata from reconcile](../engine/30-shots-errata.md#30-shots-errata-from-reconcile) item 18, R-S3):** SH1, SH5a, SH5b and SH7, which rework `present()` / `stage()`, keep a story step's visual batch applied (`scene.apply`, the snapshot move) inside the step's intent, the `withRoomProps` cut back included (`game.ts:723`, `:744`, `:789` on `3c62a86`); detector: per-player GM6d1's `game: a tap while a step's batch loads completes it and starts no step` (M-PR3c), which lands after SH7; per-player owns the text and status ([per-player §12.1 R-S3](../per-player/12-interface-requests.md#121-requests-from-this-file-status-after-enginemd-round-9-as-read-2026-11-03-reconcile-revision-1-round-14-as-read-2026-11-09-reconcile-revision-2-enginemds-reconcile-revision-1-as-read-2026-11-09-reconcile-revision-3-enginemds-reconcile-revision-2-as-read-2026-11-09)).
 
 **Lock (12):**
 - `client/src/story/{tags,tags.test,staging,dsl-doc.test}.ts`
@@ -109,6 +111,7 @@ visible change: pixel pins green).
 `client/src/story/save-codec.ts:181-187`, `Shape<T>` at `:61`). If it has not, SH1 keeps `cam` out of
 `StagingSnapshot` (the executor's camera state lives beside the snapshot, and a restore opens at rest framing) and the
 orchestrator files the gap; SH1 never edits `save-codec.ts`.
+**Reconciled ([engine §30 Shots errata from reconcile](../engine/30-shots-errata.md#30-shots-errata-from-reconcile) item 1):** GM2a declares `CamTarget` / `CamState` in `staging.ts` and reads `StagingSnapshot.cam?` as an optional key, so SH1 imports the types and writes `cam`: this STOP item is met once GM2a merges; engine +0.03 is GM2a's, not SH1's.
 
 ### 9.2 SH2 `shot-flow` (client, story tool)
 
