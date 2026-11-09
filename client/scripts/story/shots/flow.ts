@@ -5,7 +5,8 @@
 // CFG rules: weave depth for choices and gathers; diverts enter a knot's first step; tunnels add call and every-return
 // edges; conditional and sequence blocks take every arm (and skip them when no arm must run); sticky and fallback
 // choices count; END and DONE end a path; a yield leads to its `then` knot, an explore yield to its section's knots
-// (cross-check only, `explore`). The may-analysis: what may be on stage after each step's batch, a forward union to a
+// (cross-check only, `explore`); an event knot's last step returns to its rooms' windows `r:<room>` and to the event
+// knots co-fired after it, an entering explore yield leads to its section's start room window. The may-analysis: what may be on stage after each step's batch, a forward union to a
 // fixpoint from the seeds (the first knot: the empty stage; a section knot: its rooms). It is the only code of the
 // shot pass that names the legacy kinds `show` / `hide` (rev. 5, W3: SH12a removes them here alone). Pure, no node:*,
 // no inkjs; tags are read only through `parseTags`.
@@ -15,7 +16,7 @@ import { YIELD_KINDS, parseTags, tagKind } from '../../../src/story/tags.ts';
 import type { RoomId, WorldPublicBody } from '../../../src/world/types.ts';
 import { classify } from '../classify.ts';
 import type { Divert, LineClass, RawTag, SourceLine } from '../classify.ts';
-import type { ChapterGraph } from '../graph.ts';
+import type { ChapterGraph, ChapterSections } from '../graph.ts';
 import { shotFinding } from './lint.ts';
 import type { ShotFinding } from './lint.ts';
 import type { EffectiveShot } from './list.ts';
@@ -152,6 +153,7 @@ class Builder {
   readonly #depthAt: Array<number[]>;
   readonly findings: ShotFinding[] = [];
   readonly #reported = new Set<string>();
+  readonly #returns: EventReturns;
   /** Per step: where it is, its own commands and how its walk continues. */
   readonly nodes = new Map<StepKey, { kind: StepFlow['kind']; file: string; line: number; speaker: CharId | null; cont: () => State[] }>();
   /** Per choice, the choices of its set. */
@@ -164,6 +166,7 @@ class Builder {
 
   constructor(input: FlowInput) {
     this.#input = input;
+    this.#returns = eventReturns(input.world, graphSections(input.graph));
     this.#files = input.files.map((name) => ({ name, lines: classify(input.sources.get(name) ?? '') }));
     this.#blocks = this.#files.map(() => new Map());
     this.#owner = this.#files.map(() => new Map());
@@ -609,6 +612,26 @@ class Builder {
       this.seed(key);
       this.#knotEntry(key, k, this.#knots.get(k));
     }
+    const next = this.next.get(from) ?? this.next.set(from, new Set()).get(from);
+    const back = yielding === null ? undefined : this.#returns.get(yielding as KnotName); // a compiled knot name
+    if (back !== undefined) {
+      // An event returns (§3.4, rev. 5 W2): the explore runs the next co-fired event, else shows the room it fired in.
+      for (const r of back.rooms) {
+        next?.add(`r:${r}`);
+      }
+      for (const k of back.cofiredAfter.filter((x) => this.#knots.has(x))) {
+        next?.add(knotKey(k)); // no batch: the next event opens on this one's last image, not on a seed's
+        this.seed(knotKey(k));
+        this.#knotEntry(knotKey(k), k, this.#knots.get(k));
+      }
+      return;
+    }
+    // Entering the section: its start room's window (a resume into another room is that room's entry, D9).
+    const world = this.#input.world;
+    const section = world !== undefined && Object.hasOwn(world.sections, y.cmd.section) ? world.sections[y.cmd.section] : undefined;
+    if (section !== undefined) {
+      next?.add(`r:${section.start}`);
+    }
   }
 
   #knotOfLine(file: string, line: number): string | null {
@@ -863,7 +886,91 @@ export type Lookahead = {
   readonly d3: readonly AssetId[];
   readonly labels: boolean;
 };
-export type LookInput = { readonly flow: ChapterFlow; readonly files: ShotFiles; readonly rooms: RoomFiles };
+export type LookInput = { readonly flow: ChapterFlow; readonly files: ShotFiles; readonly rooms: RoomEvents };
+
+/**
+ * Per room of the chapter's world (§3.4 "At an explore yield", rev. 5 m3, m7): its shot, its pictures beyond the plate,
+ * `near` = its own knots (named by its hotspots, locks, onEnter and leave exits) and `far` = the onEnter knots of the
+ * rooms its exits lead to (their `onEnter` fires on the move), the order a room window fetches their openers in.
+ */
+export type RoomEvents = ReadonlyMap<
+  RoomId,
+  { readonly shot: BgId; readonly room: readonly AssetId[]; readonly near: readonly KnotName[]; readonly far: readonly KnotName[] }
+>;
+/**
+ * Per event knot (§3.4 "An event's return", rev. 5 W2): the rooms it is named in as an event (`ChapterSections.rooms`;
+ * the explore resumes in the room that fired it) and `cofiredAfter`, the knots a list of effects fires after it (the
+ * explore runs the next one instead of showing the room, `reduce.ts` `eventReturned`). A leave knot has no entry.
+ */
+export type EventReturns = ReadonlyMap<KnotName, { readonly rooms: readonly RoomId[]; readonly cofiredAfter: readonly KnotName[] }>;
+
+/** Every list of effects a room fires, as its story knots in order: its onEnter, a hotspot's `then`, a lock's onOpen and onFail. */
+function storyLists(world: WorldPublicBody | undefined): KnotName[][] {
+  const out: KnotName[][] = [];
+  const knots = (effects: ReadonlyArray<{ story: KnotName } | object>): KnotName[] => effects.flatMap((e) => ('story' in e ? [e.story] : []));
+  for (const section of Object.values(world?.sections ?? {})) {
+    for (const room of Object.values(section.rooms)) {
+      out.push(knots(room.onEnter));
+      for (const h of room.hotspots) {
+        if (h.kind !== 'exit') {
+          out.push(knots(h.then));
+        }
+        if (h.kind === 'exit' || h.kind === 'object') {
+          out.push(knots(h.lock?.onOpen ?? []), knots(h.lock?.onFail ?? []));
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/** The returns of the chapter's event knots (see `EventReturns`). */
+export function eventReturns(world: WorldPublicBody | undefined, sections: ChapterSections): EventReturns {
+  const after = new Map<KnotName, Set<KnotName>>();
+  for (const list of storyLists(world)) {
+    list.forEach((k, i) => {
+      const later = after.get(k) ?? after.set(k, new Set()).get(k);
+      for (const x of list.slice(i + 1).filter((y) => y !== k)) {
+        later?.add(x);
+      }
+    });
+  }
+  const out = new Map<KnotName, { rooms: RoomId[]; cofiredAfter: KnotName[] }>();
+  for (const [knot, named] of sections.rooms) {
+    if (named.events.length > 0) {
+      out.set(knot, { rooms: [...named.events].sort(order), cofiredAfter: [...(after.get(knot) ?? [])].sort(order) });
+    }
+  }
+  return out;
+}
+
+/** The rooms of the chapter's world with their knots one action away (see `RoomEvents`); `pictures` per room (usage props). */
+export function roomEvents(world: WorldPublicBody | undefined, sections: ChapterSections, pictures: ReadonlyMap<RoomId, readonly AssetId[]>): RoomEvents {
+  const own = new Map<RoomId, Set<KnotName>>();
+  for (const [knot, named] of sections.rooms) {
+    for (const r of [...named.events, ...named.leaves]) {
+      (own.get(r) ?? own.set(r, new Set()).get(r))?.add(knot);
+    }
+  }
+  const out = new Map<RoomId, { shot: BgId; room: readonly AssetId[]; near: KnotName[]; far: KnotName[] }>();
+  for (const section of Object.values(world?.sections ?? {})) {
+    for (const [key, room] of Object.entries(section.rooms)) {
+      const id = key as RoomId; // a decoded room id
+      const near = own.get(id) ?? new Set<KnotName>();
+      const far = new Set<KnotName>();
+      for (const h of room.hotspots) {
+        const to = h.kind === 'exit' && 'room' in h.to && Object.hasOwn(section.rooms, h.to.room) ? section.rooms[h.to.room] : undefined;
+        for (const e of to?.onEnter ?? []) {
+          if ('story' in e && !near.has(e.story)) {
+            far.add(e.story);
+          }
+        }
+      }
+      out.set(id, { shot: room.bg, room: pictures.get(id) ?? [], near: [...near].sort(order), far: [...far].sort(order) });
+    }
+  }
+  return out;
+}
 
 function asset(id: string): AssetId {
   return id as AssetId; // a shot-file or catalog id built from decoded ids (usage.ts checks every id on decode)
@@ -966,15 +1073,38 @@ export function entryOf(e: Effect, input: Omit<LookInput, 'flow'>): AssetId[][] 
 /** A lookahead edge: the successor and the files the way into it makes visible; `to: null` = the path ends there. */
 type LookEdge = { readonly to: StepKey | null; readonly files: ReadonlySet<AssetId> };
 
+/** A room's files as its window holds them: its shot at rest (talk files when `talk`), its pictures. */
+function roomFiles(r: RoomId, input: Omit<LookInput, 'flow'>, talk: boolean): AssetId[] {
+  const ev = input.rooms.get(r);
+  return ev === undefined ? [] : [...new Set([...shotFiles(ev.shot, EMPTY_EFFECT, input.files, talk), ...ev.room])].sort(order);
+}
+
+/** What a return to room `r` makes visible after a step of effect `e`: nothing when the step surely shows the room. */
+function returnFiles(e: Effect, r: RoomId, input: Omit<LookInput, 'flow'>): AssetId[] {
+  const ev = input.rooms.get(r);
+  const shown = ev !== undefined && e.shots.size === 1 && e.shots.has(ev.shot) && e.room.size === 1 && e.room.has(r) && e.cg.size === 1 && e.cg.has(null);
+  return shown ? [] : roomFiles(r, input, true);
+}
+
 /** Story-step lookahead edges: per step, its successors with the files the way into each makes visible. */
 function lookEdges(input: LookInput): Map<StepKey, LookEdge[]> {
   const own = new Map<StepKey, LookEdge[]>();
   for (const step of input.flow.steps.values()) {
     const out: LookEdge[] = [];
     for (const n of step.next) {
-      const to = input.flow.steps.get(n as StepKey); // a step key: an `r:` window has no step
-      for (const b of to?.batches.filter((x) => x.from.includes(step.key)) ?? []) {
-        out.push({ to: to?.key ?? null, files: new Set(appears(b, input)) });
+      if (n.startsWith('r:')) {
+        // A return to a room ends the step flow: the explore resumes, its window is the room's own.
+        out.push({ to: null, files: new Set(returnFiles(step.effect, n.slice('r:'.length) as RoomId, input)) }); // an `r:<room>` key
+        continue;
+      }
+      const to = input.flow.steps.get(n as StepKey); // not `r:`: a step key
+      if (to === undefined) {
+        continue;
+      }
+      const batches = to.batches.filter((x) => x.from.includes(step.key));
+      // No batch from this step: a co-fired event knot, which opens on this step's last image.
+      for (const b of batches.length > 0 ? batches : [null]) {
+        out.push({ to: to.key, files: new Set(b === null ? [] : appears(b, input)) });
       }
     }
     // A step with no successor ends its paths: kept as an edge so that a choice set's union still sees the end.
@@ -1015,26 +1145,25 @@ export function lookahead(input: LookInput): Map<WindowKey, Lookahead> {
       const nAny = new Set<AssetId>();
       const nD2 = new Set<AssetId>();
       const nD3 = new Set<AssetId>();
-      let nAll: ReadonlySet<AssetId> | null = null;
+      let nAll = null as ReadonlySet<AssetId> | null; // null: every file (no edge seen yet); a cast keeps the loop from narrowing it
       let nDist = Number.POSITIVE_INFINITY;
       for (const e of out) {
-        if (e.to === null) {
-          nAll = none; // a path that ends with no appearance shares none
-          continue;
-        }
+        // An edge to no step (`to: null`: an end, a return to a room) has nothing after its own files.
+        const after = (m: ReadonlyMap<StepKey, ReadonlySet<AssetId>>): ReadonlySet<AssetId> => (e.to === null ? none : (m.get(e.to) ?? none));
         const appeared = e.files.size > 0;
-        for (const a of appeared ? e.files : (any1.get(e.to) ?? none)) {
+        for (const a of appeared ? e.files : after(any1)) {
           nAny.add(a);
         }
-        for (const a of appeared ? (any1.get(e.to) ?? none) : (d2.get(e.to) ?? none)) {
+        for (const a of appeared ? after(any1) : after(d2)) {
           nD2.add(a);
         }
-        for (const a of appeared ? (d2.get(e.to) ?? none) : (d3.get(e.to) ?? none)) {
+        for (const a of appeared ? after(d2) : after(d3)) {
           nD3.add(a);
         }
-        const first = appeared ? e.files : (all1.get(e.to) ?? null);
+        // A path that ends with no appearance shares none; an unnarrowed successor (null) narrows nothing yet.
+        const first = appeared ? e.files : e.to === null ? none : (all1.get(e.to) ?? null);
         nAll = nAll === null ? first : first === null ? nAll : new Set([...nAll].filter((a) => first.has(a)));
-        nDist = Math.min(nDist, appeared ? 1 : 1 + (dist.get(e.to) ?? Number.POSITIVE_INFINITY));
+        nDist = Math.min(nDist, appeared ? 1 : e.to === null ? Number.POSITIVE_INFINITY : 1 + (dist.get(e.to) ?? Number.POSITIVE_INFINITY));
       }
       if (!sameSet(nAny, any1.get(k) ?? null) || !sameSet(nD2, d2.get(k) ?? null) || !sameSet(nD3, d3.get(k) ?? null) || !sameSet(nAll, all1.get(k) ?? null) || nDist !== dist.get(k)) {
         any1.set(k, nAny);
@@ -1067,6 +1196,28 @@ export function lookahead(input: LookInput): Map<WindowKey, Lookahead> {
       d3: [...(d3.get(k) ?? none)].sort(order),
       labels: [...step.effect.room].some((r) => r !== null),
     });
+  }
+  // A room window (§3.4 "At an explore yield"): nothing certain; the openers of its own knots, then of its neighbours'.
+  const opens = (knots: readonly KnotName[]): AssetId[] => [...new Set(knots.flatMap((k) => [...(any1.get(knotKey(k)) ?? none)]))].sort(order);
+  for (const [r, ev] of input.rooms) {
+    const near = opens(ev.near);
+    const far = opens(ev.far).filter((a) => !near.includes(a));
+    out.set(`r:${r}`, { cur: roomFiles(r, input, true), certain: [], certainDist: 0, possible: [...near, ...far], near: near.length, d2: [], d3: [], labels: true });
+  }
+  return out;
+}
+
+/**
+ * The entry alternatives of every window (§3.4, D9): a step's per `entryOf`; a room window's one alternative, its shot
+ * at rest and its pictures (a resume into the explore restores any room of the section).
+ */
+export function entries(input: LookInput): Map<WindowKey, AssetId[][]> {
+  const out = new Map<WindowKey, AssetId[][]>();
+  for (const step of input.flow.steps.values()) {
+    out.set(step.key, entryOf(step.effect, input));
+  }
+  for (const r of input.rooms.keys()) {
+    out.set(`r:${r}`, [roomFiles(r, input, false)]);
   }
   return out;
 }

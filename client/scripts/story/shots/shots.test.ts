@@ -6,17 +6,17 @@ import { expect, test } from 'vitest';
 
 import { assetIndex, decodeAssetCatalog, decodeCast } from '../../../src/story/catalog.ts';
 import type { AssetCatalog, Cast } from '../../../src/story/catalog.ts';
-import type { AssetIndex, BgId, ChapterId, KnotName } from '../../../src/story/staging.ts';
+import type { AssetId, AssetIndex, BgId, ChapterId, KnotName } from '../../../src/story/staging.ts';
 import { decodeWorldSource, toPublic } from '../../../src/world/decode.ts';
-import type { WorldPublicBody } from '../../../src/world/types.ts';
+import type { RoomId, WorldPublicBody } from '../../../src/world/types.ts';
 import { compileChapter } from '../compile.ts';
 import { buildGraph, carriedStage } from '../graph.ts';
 import type { ChapterGraph } from '../graph.ts';
 import { GLOBALS_PATH } from '../lint.ts';
 import { playChapter } from '../playthrough.ts';
 import type { ChapterPlay } from '../playthrough.ts';
-import { buildFlow, crossCheck, entryOf, lookahead } from './flow.ts';
-import type { ChapterFlow, Lookahead, RoomFiles, ShotFiles, StepKey } from './flow.ts';
+import { buildFlow, crossCheck, entries, entryOf, eventReturns, lookahead, roomEvents } from './flow.ts';
+import type { ChapterFlow, Lookahead, RoomEvents, ShotFiles, StepKey } from './flow.ts';
 import { SHOT_LINT_CODES, faceNeeds, lintShots } from './lint.ts';
 import type { Plane, ShotFinding } from './lint.ts';
 import { decodeShotList, effectiveCatalog, effectiveShots, impliedPlaceholders } from './list.ts';
@@ -993,13 +993,16 @@ test('shots: a face, anim or cam target on a legacy chapter fails even with its 
 // ---------------------------------------------------------------------------------------------------------------
 // Commit 6a: the story-step lookahead
 
-type Looked = { flow: ChapterFlow; look: ReadonlyMap<string, Lookahead>; files: ShotFiles; rooms: RoomFiles };
+type Looked = { flow: ChapterFlow; look: ReadonlyMap<string, Lookahead>; files: ShotFiles; rooms: RoomEvents };
 
-/** One fixture chapter's flow and lookahead under a shot list; the talk files are the chapter's own spoken faces. */
-function looked(body: readonly string[], opts: { list?: ShotList; w?: WorldPublicBody; rooms?: RoomFiles } = {}): Looked {
+/**
+ * One fixture chapter's flow and lookahead under a shot list; the talk files are the chapter's own spoken faces, the
+ * room windows the world's rooms with `pictures` (per room id, its pictures beyond the plate).
+ */
+function looked(body: readonly string[], opts: { list?: ShotList; w?: WorldPublicBody; pictures?: ReadonlyMap<string, readonly string[]> } = {}): Looked {
   const list = opts.list ?? CAFE_SHOTS;
   const catalog = effectiveCatalog(COMMITTED.catalog, list);
-  const { flow } = flowOf(body, catalog, opts.w);
+  const { flow, built } = flowOf(body, catalog, opts.w);
   const shots = effectiveShots(catalog, list, opts.w === undefined ? [] : [opts.w]);
   const talk = new Set(
     faceNeeds(flow, shots)
@@ -1007,7 +1010,8 @@ function looked(body: readonly string[], opts: { list?: ShotList; w?: WorldPubli
       .map((n) => `${n.shot}/${n.char}/${n.expr}`),
   );
   const files = { shots, talk };
-  const rooms = opts.rooms ?? new Map();
+  const pictures = new Map([...(opts.pictures ?? [])].map(([r, xs]) => [r as RoomId, xs.map((x) => x as AssetId)])); // fixture ids
+  const rooms = opts.w === undefined ? new Map() : roomEvents(opts.w, sectionsOf(built.graph), pictures);
   return { flow, look: lookahead({ flow, files, rooms }), files, rooms };
 }
 
@@ -1213,4 +1217,189 @@ test("flow: a story step's near covers all its possible files", () => {
     expect(v.near, key).toBe(v.possible.length);
     expect(v.labels, key).toBe(false); // no room in effect
   }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Commit 6b: room windows and event returns
+
+/** The manor rooms' pictures beyond the plate (usage.json `rooms` props). */
+const MANOR_PROPS = new Map([
+  ['study', ['prop/medal_sun']],
+  ['cellar', ['prop/medal_star']],
+]);
+
+/** MANOR with some knots' first line replaced (`<knot>` -> its new opening lines). */
+function manor(opening: Readonly<Record<string, readonly string[]>>, extra: readonly string[] = []): string[] {
+  const out: string[] = [];
+  let knot = '';
+  for (const l of MANOR) {
+    const m = /^=== (\w+) ===$/.exec(l);
+    if (m !== null) {
+      knot = m[1] ?? '';
+      out.push(l, ...(opening[knot] ?? []));
+      continue;
+    }
+    out.push(l);
+  }
+  return [...out, ...extra];
+}
+
+test('flow: a window with a room in effect lists its props and its label bound', () => {
+  const w = manorWorld();
+  const l = looked(manor({ gate_forced: [] }).flatMap((x) => (x === 'Хруст. #id:ch1.gate_forced.f001' ? [x, '# bg: cellar', 'Подвал. #id:ch1.gate_forced.f002'] : [x])), { w, pictures: MANOR_PROPS });
+  // A cut into a room's shot brings the room's props with its plate.
+  expect(lookAt(l, 'ch1.gate_forced.f001')).toMatchObject({ certain: ['bg/cellar', 'prop/medal_star'], certainDist: 1 });
+  expect(lookAt(l, 'ch1.gate_forced.f002')).toMatchObject({ cur: ['bg/cellar', 'prop/medal_star'], labels: true });
+  expect(lookAt(l, 'ch1.cellar_voice.v001')).toMatchObject({ cur: ['bg/cellar', 'prop/medal_star'], labels: true });
+  expect(lookAt(l, 'ch1.out.o001')).toMatchObject({ cur: ['bg/street'], labels: false });
+  expect(lookAt(l, 'r:study')).toMatchObject({ cur: ['bg/study', 'prop/medal_sun'], certain: [], certainDist: 0, d2: [], d3: [], labels: true });
+});
+
+/** The critic's fixture: a start room with three events of distinct close-up openers and a leave knot opening on a scene. */
+function crowdedHall(): { w: WorldPublicBody; body: string[] } {
+  const look = (id: string, n: number, story: string): Json => ({
+    id,
+    kind: 'look',
+    rect: [100 * n, 300, 100, 100],
+    label: TEXT(`ch1.s.l10${n}`),
+    look: TEXT(`ch1.s.k10${n}`),
+    then: [{ story }],
+  });
+  const w = world({
+    hall: room('hall', [
+      look('clock', 1, 'e1'),
+      look('mirror', 2, 'e2'),
+      look('chair', 3, 'e3'),
+      { id: 'to_study', kind: 'exit', rect: [100, 1300, 250, 400], label: TEXT('ch1.s.l104'), to: { room: 'study' }, lock: null, sfx: null },
+      { id: 'door', kind: 'exit', rect: [700, 1300, 250, 400], label: TEXT('ch1.s.l105'), to: { story: 'out' }, lock: null, sfx: null },
+    ]),
+    study: room('study', [{ id: 'to_hall', kind: 'exit', rect: [100, 1300, 250, 400], label: TEXT('ch1.s.l106'), to: { room: 'hall' }, lock: null, sfx: null }]),
+  });
+  const event = (k: string, shot: string, line: string): string[] => [`=== ${k} ===`, `# bg: ${shot}`, line, '# explore: s', '-> DONE'];
+  const body = [
+    '-> arrive',
+    '=== arrive ===',
+    '# scene: hall',
+    'Зал. #id:ch1.arrive.a001',
+    '# explore: s',
+    '-> DONE',
+    ...event('e1', 'cafe_ally_cu', 'ally: Привет. #id:ch1.e1.a001'),
+    ...event('e2', 'cafe_ots', 'Плечо. #id:ch1.e2.a001'),
+    ...event('e3', 'spare_cu', 'Хранитель. #id:ch1.e3.a001'),
+    '=== out ===',
+    '# scene: street_wide',
+    'Улица. #id:ch1.out.o001',
+    '-> END',
+  ];
+  return { w, body };
+}
+
+test('flow: each room of a section has a window of its room and the knots one action away', () => {
+  const { w, body } = crowdedHall();
+  const l = looked(body, { w });
+  expect(l.rooms.get('hall' as RoomId)).toMatchObject({ near: ['e1', 'e2', 'e3', 'out'], far: [] });
+  expect(lookAt(l, 'r:hall')).toEqual({
+    cur: ['bg/hall'],
+    certain: [],
+    certainDist: 0,
+    possible: [
+      'bg/cafe_ally_cu',
+      'bg/cafe_ots',
+      'bg/spare_cu',
+      'bg/street_wide',
+      'sheet/cafe_ally_cu',
+      'sheet/cafe_ots',
+      'sheet/spare_cu',
+      'talk/cafe_ally_cu/ally/neutral',
+    ],
+    near: 8,
+    d2: [],
+    d3: [],
+    labels: true,
+  });
+  // The study names no knot and its exit leads to a room without onEnter: nothing is one action away.
+  expect(lookAt(l, 'r:study')).toMatchObject({ cur: ['bg/study'], possible: [], near: 0, labels: true });
+});
+
+test('flow: an explore yield step enters at any room of its section', () => {
+  const w = manorWorld();
+  const l = looked(MANOR, { w, pictures: MANOR_PROPS });
+  // Entering the section leads to its start room's window; the arrival already shows the hall, so nothing appears.
+  expect(nextOf(l.flow, 'ch1.arrive.a001')).toEqual(['r:hall']);
+  expect(lookAt(l, 'ch1.arrive.a001')).toMatchObject({ certain: [], possible: [] });
+  const all = entries(l);
+  expect([...all].filter(([k]) => k.startsWith('r:')).sort(([a], [b]) => (a < b ? -1 : 1))).toEqual([
+    ['r:cellar', [['bg/cellar', 'prop/medal_star']]],
+    ['r:hall', [['bg/hall']]],
+    ['r:study', [['bg/study', 'prop/medal_sun']]],
+  ]);
+  expect(all.get('ch1.arrive.a001' as StepKey)).toEqual([['bg/hall']]);
+});
+
+test("flow: an event knot's last step lists the return to its room as certain", () => {
+  const w = manorWorld();
+  const l = looked(manor({ gate_forced: ['# bg: cafe_ally_cu'] }), { w, pictures: MANOR_PROPS });
+  expect(nextOf(l.flow, 'ch1.gate_forced.f001')).toEqual(['r:hall']);
+  expect(lookAt(l, 'ch1.gate_forced.f001')).toMatchObject({ certain: ['bg/hall'], certainDist: 1, possible: [] });
+  // An event that never left its room returns to what is on stage: nothing appears.
+  expect(nextOf(l.flow, 'ch1.cellar_voice.v001')).toEqual(['r:cellar']);
+  expect(lookAt(l, 'ch1.cellar_voice.v001')).toMatchObject({ certain: [], possible: [] });
+  // A leave knot leaves the section: no return.
+  expect(nextOf(l.flow, 'ch1.out.o001')).toEqual([]);
+});
+
+test('flow: an event co-fired before another makes the return possible, not certain', () => {
+  const w = manorWorld([{ story: 'gate_forced' }, { story: 'gate_echo' }, { unlock: 'hall.gate' }]);
+  const body = manor({ gate_forced: ['# bg: cafe_ally_cu'] }, ['=== gate_echo ===', '# bg: cafe_ots', 'Эхо. #id:ch1.gate_echo.e001', '# explore: s', '-> DONE']);
+  const l = looked(body, { w, pictures: MANOR_PROPS });
+  const built = chapter(body, CAFE_CATALOG, w);
+  expect([...eventReturns(w, sectionsOf(built.graph))].sort(([a], [b]) => (a < b ? -1 : 1))).toEqual([
+    ['cellar_voice', { rooms: ['cellar'], cofiredAfter: [] }],
+    ['gate_echo', { rooms: ['hall'], cofiredAfter: [] }],
+    ['gate_forced', { rooms: ['hall'], cofiredAfter: ['gate_echo'] }],
+  ]);
+  // The echo runs on the forced gate's last image; the hall shows only when nothing more is co-fired.
+  expect(nextOf(l.flow, 'ch1.gate_forced.f001')).toEqual(['k:gate_echo', 'r:hall']);
+  expect(lookAt(l, 'ch1.gate_forced.f001')).toMatchObject({ certain: [], certainDist: 0, possible: ['bg/cafe_ots', 'bg/hall', 'sheet/cafe_ots'] });
+  expect(lookAt(l, 'ch1.gate_echo.e001')).toMatchObject({ certain: ['bg/hall'], certainDist: 1 });
+});
+
+test('flow: two rooms on one bg keep two windows', () => {
+  const look = (story: string, n: number): Json => ({ id: 'thing', kind: 'look', rect: [100, 300, 100, 100], label: TEXT(`ch1.s.l20${n}`), look: TEXT(`ch1.s.k20${n}`), then: [{ story }] });
+  const exit = (to: string, n: number): Json => ({ id: 'way', kind: 'exit', rect: [100, 1300, 250, 400], label: TEXT(`ch1.s.l21${n}`), to: { room: to }, lock: null, sfx: null });
+  const w = world({ hall: room('hall', [look('e1', 1), exit('wing', 1)]), wing: room('hall', [look('e2', 2), exit('hall', 2)]) });
+  const body = [
+    '-> arrive',
+    '=== arrive ===',
+    '# scene: hall',
+    'Зал. #id:ch1.arrive.a001',
+    '# explore: s',
+    '-> DONE',
+    '=== e1 ===',
+    '# bg: cafe_ally_cu',
+    'Близко. #id:ch1.e1.a001',
+    '# explore: s',
+    '-> DONE',
+    '=== e2 ===',
+    '# bg: cafe_ots',
+    'Плечо. #id:ch1.e2.a001',
+    '# explore: s',
+    '-> DONE',
+  ];
+  const l = looked(body, { w });
+  expect(lookAt(l, 'r:hall')).toMatchObject({ cur: ['bg/hall'], possible: ['bg/cafe_ally_cu', 'sheet/cafe_ally_cu'], near: 2 });
+  expect(lookAt(l, 'r:wing')).toMatchObject({ cur: ['bg/hall'], possible: ['bg/cafe_ots', 'sheet/cafe_ots'], near: 2 });
+});
+
+test("flow: a room window lists its own openers before its neighbours' onEnter openers", () => {
+  // ch1's hall shape: the gate's onFail event and the leave knot are the hall's own; the cellar's onEnter is one exit away.
+  const w = manorWorld();
+  const l = looked(manor({ gate_forced: ['# bg: cafe_ots'], cellar_voice: ['# bg: cafe_ally_cu'] }), { w, pictures: MANOR_PROPS });
+  expect(l.rooms.get('hall' as RoomId)).toMatchObject({ near: ['gate_forced', 'out'], far: ['cellar_voice'] });
+  expect(lookAt(l, 'r:hall')).toMatchObject({
+    possible: ['bg/cafe_ots', 'bg/street', 'sheet/cafe_ots', 'bg/cafe_ally_cu', 'sheet/cafe_ally_cu'],
+    near: 3,
+  });
+  expect(lookAt(l, 'r:cellar')).toMatchObject({ cur: ['bg/cellar', 'prop/medal_star'], possible: ['bg/cafe_ally_cu', 'sheet/cafe_ally_cu'], near: 2 });
+  expect(lookAt(l, 'r:study')).toMatchObject({ possible: [], near: 0 });
 });
