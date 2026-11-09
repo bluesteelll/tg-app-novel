@@ -1135,6 +1135,106 @@ test('arch: entry closure fixtures', () => {
   }
 });
 
+// LFL B1 / T4 (RULINGS 149): boot no longer imports the meta controller's chunk after auth, so its after-auth step hands
+// the gate what Home and a launch need before the chunk: boot's own stats read (Home's card buttons) and the launch's
+// start parameter (an invite imports the chunk at once). Each is one call in `startApp`'s `boot`, and no other test runs
+// `startApp`, so the calls are read from the source.
+
+/** The calls boot's after-auth step makes before Home, as `callShape` prints them. */
+const BOOT_HAND_OVER = ['gate.stats(api.getStats())', 'gate.launched(tg.startParam())'] as const;
+
+/** An identifier, a property access or a call, without layout or comments; any other expression is `<other>`. */
+function callShape(e: ts.Expression): string {
+  if (ts.isIdentifier(e)) {
+    return e.text;
+  }
+  if (ts.isPropertyAccessExpression(e)) {
+    return `${callShape(e.expression)}.${e.name.text}`;
+  }
+  if (ts.isCallExpression(e)) {
+    return `${callShape(e.expression)}(${e.arguments.map(callShape).join(', ')})`;
+  }
+  return '<other>';
+}
+
+/**
+ * What `startApp`'s `boot` does not hand the gate before Home: [] while LFL B1 / T4 hold. Only the arrow's own
+ * statements count, in order, up to its first own `showHome(...)` statement: a call in a nested block or function, in a
+ * comment, or after Home is no hand-over.
+ */
+function handOverGaps(text: string): string[] {
+  const sf = ts.createSourceFile('app/boot.ts', text, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
+  const startApp = sf.statements.find(
+    (s): s is ts.FunctionDeclaration => ts.isFunctionDeclaration(s) && s.name?.text === 'startApp',
+  );
+  const own: readonly ts.Statement[] = startApp?.body?.statements ?? [];
+  const boot = own
+    .filter(ts.isVariableStatement)
+    .flatMap((s) => [...s.declarationList.declarations])
+    .find((d) => ts.isIdentifier(d.name) && d.name.text === 'boot')?.initializer;
+  if (boot === undefined || !(ts.isArrowFunction(boot) || ts.isFunctionExpression(boot)) || !ts.isBlock(boot.body)) {
+    return ['no boot in startApp'];
+  }
+  const steps = boot.body.statements.filter(ts.isExpressionStatement).map((s) => callShape(s.expression));
+  const home = steps.findIndex((s) => s.startsWith('showHome('));
+  if (home < 0) {
+    return ['no showHome in boot'];
+  }
+  const before = steps.slice(0, home);
+  return BOOT_HAND_OVER.filter((call) => !before.includes(call));
+}
+
+test('arch: boot hands the gate its stats read and the launch parameter before Home', () => {
+  // Non-vacuous: boot.ts is scanned, and a source without boot, without Home or without either call is judged red
+  // (the fixtures below).
+  expect(Object.keys(SOURCES)).toContain('app/boot.ts');
+  expect(handOverGaps(SOURCES['app/boot.ts'] ?? '')).toEqual([]);
+});
+
+test('arch: boot hand-over fixtures', () => {
+  type Case = readonly [label: string, source: string, gaps: readonly string[]];
+  /** A startApp whose boot runs `steps`. */
+  const app = (steps: string): string =>
+    `export function startApp(tg) {\n  const gate = createMetaGate({});\n  const boot = async () => {\n${steps}\n  };\n}`;
+  const stats = 'gate.stats(api.getStats())';
+  const launched = 'gate.launched(tg.startParam())';
+  const red: readonly Case[] = [
+    ['R1 no stats read handed', app(`${launched};\nshowHome(d);`), [stats]],
+    ['R2 no start parameter handed', app(`${stats};\nshowHome(d);`), [launched]],
+    ['R3 both after Home', app(`showHome(d);\n${stats};\n${launched};`), [stats, launched]],
+    ['R4 in a comment', app(`// ${stats};\n${launched};\nshowHome(d);`), [stats]],
+    ['R5 in a callback', app(`void read.then(() => ${stats});\n${launched};\nshowHome(d);`), [stats]],
+    ['R6 in a branch', app(`${stats};\nif (first) {\n  ${launched};\n}\nshowHome(d);`), [launched]],
+    ['R7 other arguments', app('gate.stats(api.listSaves());\ngate.launched(null);\nshowHome(d);'), [stats, launched]],
+    ['R8 no Home', app(`${stats};\n${launched};`), ['no showHome in boot']],
+    [
+      'R9 in another function of startApp',
+      `export function startApp(tg) {\n  const refresh = () => {\n${stats};\n${launched};\n  };\n` +
+        '  const boot = async () => {\nshowHome(d);\n  };\n}',
+      [stats, launched],
+    ],
+    ['R10 no boot', 'export function startApp(tg) {}', ['no boot in startApp']],
+  ];
+  for (const [label, source, gaps] of red) {
+    expect(handOverGaps(source), label).toEqual(gaps);
+  }
+  const allow: readonly Case[] = [
+    [
+      'A1 layout and comments',
+      app("gate.stats(\n  api.getStats(), // boot's own read\n);\ngate.launched(/* T4 */ tg.startParam());\nshowHome(d);"),
+      [],
+    ],
+    [
+      'A2 other steps between, either order',
+      app(`${launched};\nconst x = 1;\nreporter.flush();\n${stats};\nshowHome(d);\nvoid engineOf(d);`),
+      [],
+    ],
+  ];
+  for (const [label, source, gaps] of allow) {
+    expect(handOverGaps(source), label).toEqual(gaps);
+  }
+});
+
 test('arch: only yields.ts enters the runner', () => {
   // Non-vacuous: yields.ts is scanned, and its own runner call is found once the file is judged under a name the rule
   // does not exempt. The `runner.enter(` prefix tells that call from the section controller's `c.enter(` in the same
