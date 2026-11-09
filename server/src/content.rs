@@ -20,7 +20,7 @@ use serde::Deserialize;
 use serde::de::{DeserializeOwned, IgnoredAny};
 use serde_json::value::RawValue;
 
-use crate::ids::{ChapterId, ProductId, PuzzleId, StoryId, is_local_id};
+use crate::ids::{ChapterId, ProductId, PuzzleId, PuzzleKey, StoryId, is_local_id};
 use crate::meta::{MetaFile, MetaIndex};
 
 /// The most hint tiers a puzzle has (PUZZLES-PLAN X18); a puzzle may have none (the producer's `HintTiers` is
@@ -170,8 +170,10 @@ pub struct StoryChapter {
 /// A puzzle of the index: what the server checks answers against. No `Debug`: it holds the solution and the hint
 /// texts, which are sold.
 pub struct PuzzleDef {
-    /// `<chapter>.<local>`.
+    /// `<chapter>.<local>`: the id routes and the meta index name the puzzle by.
     pub id: PuzzleId,
+    /// The storage key every row of the puzzle is kept under (per-player §3.8): the id it first shipped under.
+    pub key: PuzzleKey,
     /// The chapter the puzzle is in.
     pub chapter: ChapterId,
     /// The answer's length.
@@ -831,6 +833,7 @@ async fn load_puzzle_file(
             return Err(invalid(path, format!("puzzle {}: {rule}", id.0)));
         }
         puzzles.push(PuzzleDef {
+            key: PuzzleKey(id.0.clone()),
             id,
             chapter: chapter.clone(),
             answer_len: entry.answer_len,

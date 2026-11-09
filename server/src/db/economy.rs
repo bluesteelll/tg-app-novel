@@ -20,12 +20,12 @@ use sqlx::PgConnection;
 use crate::catalog::{GiftRules, HINT_KIND, ResourceKind};
 use crate::db::social::{are_friends_in, lock_pair};
 use crate::db::{Repo, without_nul};
-use crate::ids::{PuzzleId, UserId};
+use crate::ids::{PuzzleKey, UserId};
 
 /// The idempotency-key prefix of a pack credit: `pay:<charge>`.
 const PAY_KEY_PREFIX: &str = "pay:";
 
-/// The idempotency-key prefix of a hint spend: `hint:<user>:<puzzle>:<tier>`.
+/// The idempotency-key prefix of a hint spend: `hint:<user>:<puzzleKey>:<tier>`.
 const HINT_KEY_PREFIX: &str = "hint:";
 
 /// The idempotency-key prefix of a gift's two rows: `gift:<sender>:<requestId>:out` and `…:in`.
@@ -234,8 +234,9 @@ pub(crate) fn pay_key(charge: &str) -> String {
     key
 }
 
-/// The idempotency key of `user`'s spend on `puzzle`'s `tier`: `hint:<user>:<puzzle>:<tier>`.
-fn hint_key(user: UserId, puzzle: &PuzzleId, tier: u8) -> String {
+/// The idempotency key of `user`'s spend on `tier` of the puzzle keyed `puzzle`: `hint:<user>:<puzzleKey>:<tier>`.
+/// Built from the storage key (per-player §3.8), so a renamed puzzle's spend keeps its key.
+fn hint_key(user: UserId, puzzle: &PuzzleKey, tier: u8) -> String {
     let mut key = String::from(HINT_KEY_PREFIX);
     key.push_str(&user.0.to_string());
     key.push(':');
@@ -243,8 +244,9 @@ fn hint_key(user: UserId, puzzle: &PuzzleId, tier: u8) -> String {
     key
 }
 
-/// The ledger `ref` of a hint spend: `<puzzleId>:<tier>`.
-fn spend_ref(puzzle: &PuzzleId, tier: u8) -> String {
+/// The ledger `ref` of a hint spend: `<puzzleKey>:<tier>` (the column comment's `<puzzleId>`: the same text for a
+/// puzzle never renamed).
+fn spend_ref(puzzle: &PuzzleKey, tier: u8) -> String {
     let mut reference = puzzle.0.clone();
     reference.push(':');
     reference.push_str(&tier.to_string());
@@ -369,21 +371,21 @@ impl Repo {
             .collect())
     }
 
-    /// Unlocks `tier` (1 to 3) of `puzzle` for `user` at `now`, paying `cost` units of [`HINT_KIND`] (M21), in one
-    /// READ COMMITTED transaction:
+    /// Unlocks `tier` (1 to 3) of the puzzle keyed `puzzle` for `user` at `now`, paying `cost` units of [`HINT_KIND`]
+    /// (M21), in one READ COMMITTED transaction:
     /// 1. one read: the puzzle not solved, and tier 1 or the tier before unlocked; else `Unavailable`, nothing written
     ///    (a replay after a solve included);
     /// 2. the unlock row, `ON CONFLICT ON CONSTRAINT hint_unlocks_pkey DO NOTHING`: no row back is `AlreadyUnlocked`,
     ///    nothing debited. A concurrent use of the same tier waits on the first one's row here, then finds it: the
     ///    unlock key, not the balance, makes one debit per tier;
-    /// 3. the debit keyed `hint:<user>:<puzzle>:<tier>`: a balance that does not cover it rolls back the unlock row and
-    ///    the ledger row with it (`Insufficient`).
+    /// 3. the debit keyed `hint:<user>:<puzzleKey>:<tier>`: a balance that does not cover it rolls back the unlock row
+    ///    and the ledger row with it (`Insufficient`).
     ///
     /// The unlock row comes before the debit, so no debit exists without its unlock.
     pub async fn spend_hint(
         &self,
         user: UserId,
-        puzzle: &PuzzleId,
+        puzzle: &PuzzleKey,
         tier: u8,
         cost: u32,
         now: i64,

@@ -433,6 +433,24 @@ async fn puzzle_index_loaded() {
     report(&failures);
 }
 
+/// A puzzle never renamed is stored under its own id (per-player §3.8 "The key"): every puzzle of the fixture has
+/// key = id, so every row on main is already keyed correctly.
+#[tokio::test]
+async fn content_puzzle_key_defaults_to_id() {
+    let (st, _db) = common::test_state().await;
+    let got: Vec<(&str, &str)> = st
+        .content
+        .puzzles()
+        .iter()
+        .map(|p| (p.id.0.as_str(), p.key.0.as_str()))
+        .collect();
+    let want = [("ch1.drawer", "ch1.drawer"), ("ch2.cabinet", "ch2.cabinet")];
+    assert!(
+        got == want,
+        "puzzles() as (id, key): expected {want:?}, got {got:?}"
+    );
+}
+
 /// No `stories.json`: the server refuses to start (STORIES-PLAN Y6).
 #[tokio::test]
 async fn startup_fails_without_story_index() {

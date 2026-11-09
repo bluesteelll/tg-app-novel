@@ -16,7 +16,7 @@ use server::AppState;
 use server::clock::FixedClock;
 use server::db::POOL_MAX_CONNECTIONS;
 use server::db::puzzles::AttemptRecord;
-use server::ids::{PuzzleId, UserId};
+use server::ids::{PuzzleKey, UserId};
 use server::puzzles::ATTEMPT_WINDOW_SECS;
 use sqlx::postgres::PgQueryResult;
 use sqlx::{Connection, PgConnection};
@@ -396,8 +396,9 @@ async fn progress_row(
     row
 }
 
-fn pid(id: &str) -> PuzzleId {
-    PuzzleId::parse(id).unwrap()
+/// The storage key of the puzzle `id` names: key = id for a puzzle never renamed (per-player §3.8).
+fn pid(id: &str) -> PuzzleKey {
+    PuzzleKey::parse(id).unwrap()
 }
 
 /// An attempt in the window, answered: not limited, no retry time.

@@ -9,7 +9,7 @@
 
 use crate::db::Repo;
 use crate::db::stats::StatKind;
-use crate::ids::{ChapterId, PuzzleId, StoryId, UserId};
+use crate::ids::{ChapterId, PuzzleId, PuzzleKey, StoryId, UserId};
 
 /// One group of a user's stat rows of one story, as [`Repo::card_stats`] reads them: a kind, a chapter and a subject,
 /// how many rows, and the first one's time. Rows outside the current index are returned too: the caller counts only
@@ -96,14 +96,16 @@ impl Repo {
             .collect()
     }
 
-    /// The facts of `user`'s puzzles among `puzzles`: one read of `puzzle_progress` (a puzzle without a row has no
-    /// fact) with the count of its `hint_unlocks` rows, both on their primary keys.
+    /// The facts of `user`'s puzzles among `puzzles`, each a (route id, storage key) pair: one read of
+    /// `puzzle_progress` by the keys (a puzzle without a row has no fact) with the count of its `hint_unlocks` rows,
+    /// both on their primary keys. Each row is returned under its pair's id (per-player §3.8), so the meta index's
+    /// facts stay keyed by the ids it names.
     pub async fn card_puzzles(
         &self,
         user: UserId,
-        puzzles: &[PuzzleId],
+        puzzles: &[(PuzzleId, PuzzleKey)],
     ) -> Result<Vec<PuzzleRow>, sqlx::Error> {
-        let ids: Vec<&str> = puzzles.iter().map(|p| p.0.as_str()).collect();
+        let keys: Vec<&str> = puzzles.iter().map(|(_, key)| key.0.as_str()).collect();
         let rows: Vec<(String, bool, i64)> = sqlx::query_as(
             "SELECT p.puzzle_id, p.solved_at IS NOT NULL, count(h.tier) FROM puzzle_progress p \
              LEFT JOIN hint_unlocks h ON h.user_id = p.user_id AND h.puzzle_id = p.puzzle_id \
@@ -111,15 +113,20 @@ impl Repo {
              GROUP BY p.puzzle_id, p.solved_at",
         )
         .bind(user.0)
-        .bind(ids)
+        .bind(keys)
         .fetch_all(&self.pool)
         .await?;
+        // A row is selected only by a key of `puzzles`, and the content load keeps keys one-to-one with ids, so every
+        // row finds its pair; one that did not would be skipped, never a panic on the card route.
         Ok(rows
             .into_iter()
-            .map(|(puzzle, solved, hints)| PuzzleRow {
-                puzzle: PuzzleId(puzzle),
-                solved,
-                hints,
+            .filter_map(|(key, solved, hints)| {
+                let (id, _) = puzzles.iter().find(|(_, k)| k.0 == key)?;
+                Some(PuzzleRow {
+                    puzzle: id.clone(),
+                    solved,
+                    hints,
+                })
             })
             .collect())
     }
