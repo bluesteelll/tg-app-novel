@@ -1,5 +1,7 @@
 ## 13. Owner questions (values only, each with a default)
 
+Changed by RULINGS 175 (as of `9b4fd25`; docs lane `docs-errata-11`, group A): **resolved** — the owner adopted every default below ("Все вопросы прими по умолчанию ответы"; [OPEN-QUESTIONS Q58](../../OPEN-QUESTIONS.md) RESOLVED 2026-11-09, main `967a8da`). OQ1-OQ7 are answered with the defaults in the table; no owner question is left in them. GM6c2's cut reads OQ4, GM6c4's OQ1-OQ3 (the `drawer` clue and tier-2 hint rewording is story work inside the lane that marks `drawer` per-player), GM6d2's OQ7; OQ5's compensation step stays unbuilt (T4); OQ6 joins the policy's next version with the lawyer items Q38-Q40.
+
 | # | Question | Default |
 |---|---|---|
 | OQ1 | Which demo puzzles are per-player (O1, the author marks)? | ch1 `drawer` (4 dials, 9,999 values), with its diary clue (`ch1.diary.b002`) reworded so it no longer names a year (a random code cannot be "the year the house was built"), and its tier-2 hint (`ch1.drawer.h002`, "в нём есть год") reworded likewise; ch2 `cabinet` (3 dials) cannot qualify |

@@ -162,6 +162,9 @@ export interface PuzzleTypeLint<P> {
   numbers joined by ", " (`renderHints`), so the sold tier 3 is the hidden throw order and can never restate the drawn
   target. Seeded reds: a diary inside its own drawer; a `sequence` with a clue; a `levers` tier 3 in plain text; a
   `[moves]` marker on a `code` puzzle.
+  **Ruled: RULINGS 180** — `world/clue-declared` and `world/clue-reachable` judge the secret puzzles a lock holds (a
+  linear puzzle has no section entry to search from; its clue is the story's, and a clue in an earlier chapter, ch2
+  `cabinet` -> ch1 `letter`, is GM9p's cross-chapter pass).
 - **Rejected:** per-press feedback for `ritual` (it leaks the answer one press at a time, `length x parts` probes);
   ruling sequence answers public (it would sell hints whose answer ships, I4).
 

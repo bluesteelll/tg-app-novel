@@ -82,6 +82,16 @@
 - **Gates:** check, test, story, build (puzzle-type row unchanged within 0.1 KB). Round 5: the lock stays 16 (the seam
   lives in `world/decode.ts`, `puzzles/session.ts`, `puzzles/rules/index.ts`, all already held; the tests in
   `session.test.ts` and `rules.test.ts`, also held, so no `decode.test.ts` edit).
+- Changed by RULINGS 178 (as of `9b4fd25`; docs lane `docs-errata-11`, group A): merged `8c2fa03`. A design erratum
+  (cut Q6): commit (2)'s decode fixture red is TS2554 ("Expected 1 arguments, but got 2.": `decodeWorldPublic` /
+  `decodeWorldSource` took one parameter on `2815340`), not TS2353, which holds for `createPuzzleSession({ …, types })`;
+  TS2339 `start` is a red inside the commit, its commit-level red TS2305 `puzzleInstance`. The pins as merged
+  (`client/src/arch.test.ts` on `9b4fd25`): the registry pin, `puzzles/registry.ts`'s two `import()` targets, is
+  :966-969 (`:950-953` on GM1c's base `2815340`, the plan's `:929-932` older), `LAZY_COMPONENTS` :929-938 (`:913-922`
+  on `2815340`, the plan's `:892-901` older; §3.5, §8b and GM3's locks cite that older line). `PUZZLE_RULES` is kept as
+  the keyed view of `PUZZLE_TYPES` that the type UIs read (`client/src/puzzles/rules/index.ts:52`; cut Q1); the play
+  halves land in no chunk until a type UI imports one (cut Q2); `puzzles/play/` joins `isPureWorld` (cut Q3). MEASURED
+  rows: §3.5's GM1c row and [§11.1](11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13).
 
 ### GM1d `mech-clues` (new; round 3 adds the answer-length bound)
 - **Goal:** §7.3's lints and the source key `clues`; the demo puzzles declare their clues; round 3 (W3): §7.4's
@@ -100,6 +110,9 @@
   MAX_ANSWER_LEN is refused` (a fixture type posting 17; red: TS2307 `shape.ts` missing, then no finding) and `story:
   the build's answer bound never exceeds the server's MAX_ANSWER_LEN` (seen red on client = 17; a red on "no match"
   means the server constant moved or was renamed, a STOP item); (5) the story commit; `npm run story` 0 errors.
+  **Ruled since: RULINGS 180** — option A: commit (5) gives `clues` to `drawer` and `gate` (the secret puzzles the ch1
+  locks hold), not to `cabinet` (ch2's linear puzzle; no lock holds it, its clue is ch1's `letter`, GM9p's
+  cross-chapter pass); `story/ch2/world.json` leaves the lock (11).
   Round 4 (found while resolving): commit (0), before (1): `lint.ts`'s one hunk widens `Finding.code` to `LintCode |
   MechanicLintCode | PuzzleLintCode` (§3.2), and this lane's codes (`world/clue-declared`, `world/reach-has-clue`,
   `world/clue-reachable`, `world/answer-len`) live in `clues.ts`'s and `shape.ts`'s own `codes` (`shape.ts` registered

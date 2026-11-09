@@ -730,7 +730,7 @@ check (the second table below).
 | `world/hotspot-frame` | E | a rect outside the safe frame `x 80–1000, y 160–1760` |
 | `world/hotspot-small` / `world/hotspot-overlap` | W | a rect under 150×150 source px (44 CSS px at a 0.296 scale, 320×568); overlapping rects |
 | `world/props-per-room` | E | more than 8 props in a room |
-| `world/solution`, `world/solution-initial` | E | `PUZZLE_RULES[type].validateSolution` fails; the solution equals the initial state |
+| `world/solution`, `world/solution-initial` | E | `PUZZLE_RULES[type].validateSolution` fails (as merged, GM1c `8c2fa03`: `PUZZLE_LINTS[type].validateSolution`, the type's build-only lint half in `client/scripts/story/puzzles/{code,order}.ts`, read at `client/scripts/story/world.ts:311`; the play-side `PuzzleTypeData` has none); the solution equals the initial state |
 | `world/order-pieces` | E | an `order` puzzle in a lock whose `pieces` differ from the lock's slot items |
 | `world/hint-count` | E | more than 3 hint tiers; a hint without an `id` |
 | `world/title-long` | E | a puzzle title over 18 graphemes (the invoice title `Подсказка 3: <title>` must fit 32 chars) |
