@@ -17,21 +17,34 @@ done:      M3c (a6365a8), docs-errata-8 (be6c348), LRF (a93fe54), docs (d31f720,
            after docs-errata-10 (main 9b4fd25): docs-errata-10 (5977df5, RULINGS 174), docs 967a8da (every open
            question's default adopted, Q58 resolved, RULINGS 175), GM6s2 (2815340, RULINGS 176; the per-player
            server chain GM6k -> GM6s1 -> GM6s2 is done), GM1c (8c2fa03, RULINGS 178), GM2a (9b4fd25, RULINGS 181)
-in flight: (as of 9b4fd25) GM1d gm1d-mech-clues (RULINGS 179 / 180; base 8c2fa03, launched beside GM2a; lock 11:
-           client/src/world/{types,decode}.ts, decode.test.ts, scripts/story/{lint,world.test,build.test}.ts,
-           scripts/story/mechanics/{clues,index}.ts, scripts/story/puzzles/shape.ts, mechanics/rules/search.ts,
-           story/ch1/world.json), GM3w gm3w-ui-wiring (RULINGS 182; lock 10: app/{game,yields}.ts, game.test.ts,
-           ui/{App.svelte,explore-view.svelte.ts,puzzle-view.svelte.ts}, ui/explore/{ExploreView.svelte,
-           explore.svelte.test.ts}, ui/puzzles/{PuzzleHost.svelte,puzzle-host.svelte.test.ts}), docs-errata-11
-           (RULINGS 182; docs only, in the idle server slot)
-next:      per-player GM6a (after GM2a's field; with GM3w it gates SH1) and GM3m (after GM1c, GM1b) when a client
-           slot frees (RULINGS 182); GM2b after GM1d; SH1 after GM3w and GM6a
+           after docs-errata-11 (main 837b1ed): GM1d (794181b, RULINGS 183), docs-errata-11 (e2d2d13, RULINGS 185),
+           GM3w (508bd36, RULINGS 186), per-player GM6a (23e1d31, RULINGS 188; D5.1 adopted), GM2b (1782d6d,
+           RULINGS 190), GM3m (a3f0678, RULINGS 193), GM3c (837b1ed, RULINGS 196)
+in flight: (as of 837b1ed) GM3s gm3s-mech-cue-stage (RULINGS 194 / 195; base a3f0678, launched beside GM3c; lock
+           18: cues/stage/{index.ts,CueStage.svelte,stage.svelte.test.ts,motions.ts}, cues/root.ts,
+           ui/{state.svelte.ts,App.svelte,explore-view.svelte.ts}, ui/explore/{ExploreView.svelte,
+           explore.svelte.test.ts}, app/{yields,yields.test}.ts, scripts/{budget,budget.test}.ts, arch.test.ts,
+           e2e/mechanics.spec.ts, mechanics/{rules/index.ts,registry.test.ts}), shots SH1 sh1-shot-dsl (RULINGS
+           196; base 837b1ed; lock 12: story/{tags,tags.test,staging,dsl-doc.test}.ts, docs/STAGING-DSL.md,
+           scripts/story/graph.ts, graph-shot.test.ts, app/game.ts, app/stage-route{,.test}.ts,
+           scene/{executor,executor.test}.ts), docs-errata-12 (RULINGS 197; docs only, in the idle server slot)
+next:      the engine-closure lever lane (RULINGS 195 / 196; Ledger 4's headroom 0.873 KB on 837b1ed, under the
+           1.0 KB trigger) in the first client slot after GM3s merges, before GM3 or any later engine-adding lane;
+           GM3 after GM3s and the lever (GM3c and GM3m merged); SH2 after SH1
 carried:   L2, the entry lever (shelved, RULINGS 142 / 158; return line: entry headroom < 0.5 KB br, §15 item 15);
-           the preload-priority lane (RULINGS 152 Q14 (b); scene/{registry,preload}.ts, the scene/* tail)
+           the preload-priority lane (RULINGS 152 Q14 (b); scene/{registry,preload}.ts, the scene/* tail);
+           the lever's candidate P (purchase/flow.ts, ~-1.52 KB br) unless game.ts is free when the lever lane
+           starts (SH1 merged; RULINGS 196)
 stopped:   the character half of design-animation (RULINGS 132), replaced by design-shots (RULINGS 143)
 LFL's nine files: client/src/app/{boot,game,meta,game.test,meta.test}.ts, client/scripts/{budget,budget.test}.ts,
            client/e2e/perf.spec.ts, client/src/arch.test.ts (lfl-first-line/test_r2.md:85-86)
 ```
+
+**Ruled: RULINGS 190, 195, 196** — the `next:` line gains the engine-closure lever lane (Ledger 4's headroom 0.873 KB
+on `837b1ed`, under the 1.0 KB trigger): it runs in the first client slot after GM3s merges, before GM3 or any later
+engine-adding lane; the `carried:` line gains its second candidate, P (`purchase/flow.ts`, ~-1.52 KB br), which joins
+the lever only if `game.ts` is free (SH1 merged) and otherwise stays the next lever
+([§11.1 Ledger 4](11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13)).
 
 Changed by RULINGS 159-173 (as of `9a83251`; docs lane `docs-errata-10`, group B): the block above is the state at
 `9a83251` (SHAs from `git log --first-parent main`). L1, GM6k, GM1a, GM6s1, GM1b and `docs-adopt` moved to `done:`;
@@ -48,6 +61,24 @@ and the `next:` line read "GM1c and GM2a (Beside), after GM6s2 merges: GM1c hold
 app/{game,yields}.test.ts, all in GM6s2's lock (RULINGS 170, 173)". GM1d ran beside GM2a, a pair the order table
 does not list (lock-disjoint, checked at launch: RULINGS 179), and now runs beside GM3w, a pair it lists (GM1d's row:
 Beside GM3m, GM3w). The rows below keep GM6s2, GM1c and GM2a as the predecessors they name; all three have merged.
+
+Changed by RULINGS 183-197 (as of `837b1ed`; docs lane `docs-errata-12`, group B): the block above is the state at
+`837b1ed` (SHAs from `git log --first-parent main`). GM1d, `docs-errata-11`, GM3w, per-player GM6a, GM2b, GM3m and
+GM3c moved to `done:`; the `in flight:` line read "(as of 9b4fd25) GM1d gm1d-mech-clues (RULINGS 179 / 180; base
+8c2fa03, launched beside GM2a; lock 11: client/src/world/{types,decode}.ts, decode.test.ts,
+scripts/story/{lint,world.test,build.test}.ts, scripts/story/mechanics/{clues,index}.ts, scripts/story/puzzles/shape.ts,
+mechanics/rules/search.ts, story/ch1/world.json), GM3w gm3w-ui-wiring (RULINGS 182; lock 10: app/{game,yields}.ts,
+game.test.ts, ui/{App.svelte,explore-view.svelte.ts,puzzle-view.svelte.ts}, ui/explore/{ExploreView.svelte,
+explore.svelte.test.ts}, ui/puzzles/{PuzzleHost.svelte,puzzle-host.svelte.test.ts}), docs-errata-11 (RULINGS 182; docs
+only, in the idle server slot)", the `next:` line read "per-player GM6a (after GM2a's field; with GM3w it gates SH1)
+and GM3m (after GM1c, GM1b) when a client slot frees (RULINGS 182); GM2b after GM1d; SH1 after GM3w and GM6a", and the
+`carried:` line ended at the preload-priority lane. GM3s's lock is the plan's 14 plus four named hunks (RULINGS 194,
+195). GM3s launched beside GM3c, a pair the table lists (GM3s's row: Beside GM3c), and now runs beside SH1, whose row
+keeps only `scene/*` and `game.ts` lanes off its side (GM3s holds neither; an `arch.test.ts` or `budget*.ts` hunk in SH1
+is a STOP, RULINGS 196); SH1 started on `837b1ed` with its predecessors GM2a, GM3w and GM6a merged. The
+engine-closure lever lane is new (RULINGS 195, 196): no row below names it yet; its cut designs it (architect +
+critic, both candidates re-measured) and takes its place in this order. The rows below keep GM1d, GM3w, GM6a, GM2b,
+GM3m and GM3c as the predecessors they name; all six have merged.
 
 **The one order across the three designs (reconcile r1; RULINGS 143, 152, 153; design-shots §9.14 and I-2,
 adopted with one change; it replaces the paragraph "Animation and shot lanes" that earlier sections cite).** The **A(f)** placeholders of rounds 4-14 ("every lane of an adopted animation or shot design
@@ -86,9 +117,9 @@ re-located at each holder's cut.
 | GM4u | GM4 (`yields.ts`), GM3u (`ExploreView.svelte`), GM3b (`story/ch1/world.json`) | - |
 | GM5 | GM4u (`yields.ts`, the explore view files, the e2e), GM3 (`motions.ts`), GM1b (`spike-p2.test.ts`) | - |
 | GM5q (round 4; only if P2-b demands it) | GM5 (`spike-p2.test.ts`, P2-b), GM4 (`mechanics/view.test.ts`), GM3 (`explore.test.ts`), GM1d (`rules/search.ts`); all earlier than GM5 already | - |
-| GM5f | GM5 (index files, `motions.ts`, `spike-p2.test.ts`), GM5q when it runs (`spike-p2.test.ts`, `explore.test.ts`), GM2b (`reconcile.ts`) | GM7r |
+| GM5f | GM5 (index files, `motions.ts`, `spike-p2.test.ts`), GM5q when it runs (`spike-p2.test.ts`, `explore.test.ts`), GM2b (`reconcile.ts`); Changed by RULINGS 190 (as of `837b1ed`; docs lane `docs-errata-12`, group A, fix round 1): GM2b also on `mechanics/core.ts` (GM2b cut Q1), and never beside per-player GM6c1b (`mechanics/core.ts`) | GM7r |
 | GM7r | GM5 (`yields.ts`), GM3p (`puzzle-view.svelte.ts`, `PuzzleHost.svelte`, `puzzle-host.svelte.test.ts`), GM1c (`session.ts`, `registry.ts`); never beside per-player GM6c2 | GM5f |
-| GM7p | GM7r (`registry.ts`), GM1d (`clues.ts`, `shape.ts`), GM1c (`scripts/story/puzzles/index.ts`, round 4), GM4g (`budget.ts`), GM3u (`arch.test.ts`), GM3p (`puzzle-types.svelte.test.ts`); **per-player GM6k** | GM8i |
+| GM7p | GM7r (`registry.ts`), GM1d (`clues.ts`, `shape.ts`), GM3c (`clues.ts`; **Ruled: RULINGS 192**, the `clues.ts` row), GM1c (`scripts/story/puzzles/index.ts`, round 4), GM4g (`budget.ts`), GM3u (`arch.test.ts`), GM3p (`puzzle-types.svelte.test.ts`); **per-player GM6k** | GM8i |
 | GM7g | GM7p (`scripts/story/puzzles/index.ts` and every other shared file), GM7r (`session.test.ts`); **per-player GM6s1** | GM8i |
 | GM8i | GM5f (index files, `motions.ts`), GM4 (`controller.ts`), GM3c (`rules/conditions.ts`); **per-player GM6a** | GM7p, GM7g |
 | GM8h | GM8i, GM7g (`registry.ts`, `session.test.ts`, round 5: `rules/index.ts`), GM7r (`session.ts`, `puzzle-view.svelte.ts`, `PuzzleHost.svelte`, round 5: `reachEdge`, `Open.reach`), GM5 (`ExploreView.svelte`, `explore.svelte.test.ts`, `yields.ts`); never beside per-player GM6c2 / GM6c4 | - |
@@ -150,7 +181,7 @@ the table is the error to fix (the rule of this section's first paragraph).
 | `client/scripts/story/puzzles/index.ts` (round 4, `PUZZLE_LINTS`) | GM1c (new, the `code` / `order` lines) -> GM7p -> GM7g -> GM8a -> GM8b (one line per type). **Ruled: RULINGS 178** — Q7' option B: per-player GM6c1a also holds the file for one hunk (`PuzzleTypeLint.domainFits?(p: P, d: Domain): string \| null` beside the TypeScript `Domain` type it defines), never beside GM7p / GM7g / GM8a / GM8b (whichever holds the file first holds it to its merge) |
 | `client/src/mechanics/contract.ts` (round 4) | GM1b (new) -> GM3m (`MechanicData.controls?`) |
 | `client/scripts/story/lint.ts` (round 4; round 5, per-player R-E23) | **GM1d** (one hunk: `Finding.code`'s union) **-> SH12b** (reconcile r1: the one-line removal of `budget/knot-set`; was: A(`lint.ts`) (rev. 3: MA1b -> MD3) never beside it); no other lane of either design edits it (per-player round 5 dropped GM6c1b's hunk; every module, type and per-player code lives in its own file's `codes`, §3.2) |
-| `client/scripts/story/mechanics/core.ts` (round 4) | GM1b (new) -> GM2b (the four `renamed` codes and lints) -> per-player GM6c1b (lifts `world/renamed-puzzles`, E-P13) |
+| `client/scripts/story/mechanics/core.ts` (round 4) | GM1b (new) -> GM2b (the four `renamed` codes and lints) -> per-player GM6c1b (lifts `world/renamed-puzzles`, E-P13); Changed by RULINGS 190 (as of `837b1ed`; docs lane `docs-errata-12`, group A, fix round 1): **GM5f** holds it after GM2b, one hunk (`world/renamed-target` reads the declared flags for `renamed.flags`, which it refuses until then; GM2b cut Q1), by launch against per-player GM6c1b, never beside it |
 | `client/src/cues/stage/motions.ts` (round 3 m1) | GM3m -> GM3 -> GM5 -> GM5f -> GM8i -> SH10 (reconcile r1: MR1 adds every key's `scene` motion and sets `ScenePending = never`) (control motions come from `UI_MOTIONS` and each `ControlDecl`, so no type or UI lane holds it) |
 | `client/src/cues/stage/motions.test.ts` (reconcile r1, new row) | GM3m (I-7's `FRAME_OPEN_MS` case) -> GM3 -> GM5 -> GM5f -> GM8i -> SH10, with `motions.ts` |
 | `client/src/cues/controls.test.ts` | GM3u -> GM3p |
@@ -162,7 +193,7 @@ the table is the error to fix (the rule of this section's first paragraph).
 | `assets/catalog.json` (round 4; round 5 m2) | GM3b (one prop `drawer_open`) -> GM8d (five placeholder props and the bg `fog_gallery`); reconcile r1: SH9 (loop props, ambient) by launch, never beside either (was: A(`assets/catalog.json`)) |
 | `story/locales/en/ch1.json` (round 5, m2) | GM4u (the demo view's title and labels) -> GM9r (the carried item's texts) -> per-player GM6c4 -> GM6d2 (by launch, never beside), the order of `story/ch1/world.json`'s row; GM1d and GM3b add no ch1 text (`clues` are conditions, a visual state has no text) |
 | `story/locales/en/ch2.json` (round 5, m2) | GM9r only (the required item's `name` / `desc` and the door's label) |
-| `client/scripts/story.ts` (round 5, m6; per-player R-E23) | GM1d only if its cut's verify item (§3.2: a `Finding.code` reader in `story.ts` that needs the wider union) finds one, then GM9p (the cross-chapter pass); per-player GM6c1a, GM6c1b by launch, never beside GM9p (their mutual order is per-player.md's) (this row, not `lint.ts`, now keeps GM9p and GM6c1b apart); reconcile r1: SH2 never beside GM1d, GM2b, GM3c, GM9p, GM6c1a, GM6c1b |
+| `client/scripts/story.ts` (round 5, m6; per-player R-E23) | GM1d only if its cut's verify item (§3.2: a `Finding.code` reader in `story.ts` that needs the wider union) finds one, then GM9p (the cross-chapter pass); per-player GM6c1a, GM6c1b by launch, never beside GM9p (their mutual order is per-player.md's) (this row, not `lint.ts`, now keeps GM9p and GM6c1b apart); reconcile r1: SH2 never beside GM1d, GM2b, GM3c, GM9p, GM6c1a, GM6c1b. Changed by RULINGS 183 (as of `837b1ed`; docs lane `docs-errata-12`, group A): GM1d took no hunk here (its cut's verify item found no `Finding.code` reader that needs the wider union; merged `794181b` without `story.ts`), so the row starts at GM9p |
 | `client/scripts/story/spike-p2.test.ts` (round 5, m6) | GM1b (new) -> GM5 -> GM5q (when it runs) -> GM5f |
 | `client/src/mechanics/rules/search.ts` (round 4) | GM1a -> GM1b -> GM1d -> GM5q (when it runs) |
 | `client/src/explore/reconcile.ts`, `explore.test.ts` (round 3 m1) | GM1a -> GM1b -> GM2a -> GM2b -> GM3 (test) -> GM5q (test, when it runs; round 5 m6) -> GM5f; per-player GM6c1b never beside |
@@ -170,6 +201,7 @@ the table is the error to fix (the rule of this section's first paragraph).
 | `client/scripts/story/world.test.ts` | GM1d -> GM2b -> GM3c (round 6: the walk's tests) -> GM9p; per-player GM6c1b by launch, never beside (round 5, R-E23) |
 | `client/scripts/story/world.ts` (round 6, W1; per-player R-E25) | GM1a -> GM1b -> GM1c -> GM2b -> GM3c (`WorldTextLine`, the walk over `MECHANIC_TEXTS`); no later lane of either design (module texts arrive through `MECHANIC_TEXTS`, per-player's text rules read the walk's lines in `values.ts`) |
 | `client/scripts/story/mechanics/texts.ts` (round 6, new) | GM3c only (the types, `KERNEL_TEXT_ROLES`, `TEXTS_LINT`); later lanes import its types |
+| `client/scripts/story/mechanics/clues.ts` (GM1d, new) | **Ruled: RULINGS 192** — GM1d (new) -> GM3c (commit (2b), `clues` widened to `Cond[]`) -> GM7p, one at a time (the GM7p row names GM1d and, fix round 1, GM3c; GM3c held it between them) |
 | `client/scripts/story/puzzles/shape.ts` | GM1d -> GM7g |
 | `client/src/mechanics/data/index.ts`, `rules/index.ts` | GM1b -> GM3c (data) -> GM3 -> GM3b -> GM4 -> GM5 -> GM5f -> GM8i -> GM9p (data) -> per-player GM6d2 (data) |
 | `client/src/ui/state.svelte.ts` | GM3s (one field and the slot types); per-player GM6c3 by launch |
@@ -177,7 +209,7 @@ the table is the error to fix (the rule of this section's first paragraph).
 | `client/src/i18n/mechanics.ts` (round 4, new) | GM3u (new, with its parity test) -> GM7r (`mech.content_updated`) |
 | `client/scripts/budget.ts`, `budget.test.ts` | reconcile r1: M3c, LEL, LFL (merged) -> {SH3a (the `LIMITS.image` and DIMS Records), GM3s} by launch, never beside -> SH3b (the sheet helper, two budget codes) -> GM4g -> GM7p -> per-player GM6d2 -> SH12b (`knotRows`, by launch, never beside) (was: M3c (merged) -> A(`budget.ts`) (rev. 3: MD1b) / GM3s (by launch, never beside) -> GM4g -> GM7p -> per-player GM6d2 -> the MR2 role (DIMS rows)) |
 | `client/src/world/{types,decode}.ts` | GM1c -> GM1d -> GM2b -> GM3c (composed decoder) -> per-player GM6c1a; after GM3c no module lane edits them |
-| `client/scripts/story/emit.ts` | (reconcile r1: no SH lane holds it, §9.14; "A(`emit.ts`) (rev. 3: MD1a) ->" removed) GM2b (compact, the `renderHints` call site) -> GM3b -> GM4g -> GM4 -> per-player GM6c1a -> GM6c1b -> GM6d2 (round 1 listed GM1d, whose strip lives in `toPublic`, `world/decode.ts:660`, not in `emit.ts`) |
+| `client/scripts/story/emit.ts` | (reconcile r1: no SH lane holds it, §9.14; "A(`emit.ts`) (rev. 3: MD1a) ->" removed) GM2b (compact, the `renderHints` call site) -> GM3b -> GM4g -> GM4 -> per-player GM6c1a -> GM6c1b -> GM6d2 (round 1 listed GM1d, whose strip lives in `toPublic`, `world/decode.ts:660`, not in `emit.ts`). Changed by RULINGS 183 (as of `837b1ed`; docs lane `docs-errata-12`, group A): `toPublic` is `client/src/world/decode.ts:855` on `837b1ed` (`:640` on `9b4fd25`, `:687` on `794181b`); GM1d stripped `clues` there and edited no `emit.ts` line |
 | `client/scripts/story/mechanics/index.ts` | every module lane in the world chain order (one `MECHANIC_LINTS` line each, and from GM3c on one `MECHANIC_TEXTS` line each, `null` for a module without texts, round 6 W1: GM3c `core: null` plus the `TEXTS_LINT` line of `MECHANIC_LINTS`, GM3 `use`, GM3b `visual`, GM4 `view`, GM5 `combine`, GM5f `flags`, GM8i `devices`, GM9p `carry`, per-player GM6d2 `labels`); per-player GM6c1a (R-E16, round 4: one line `VALUES_LINT`, after GM1d, then by launch, never beside a later holder: GM3c, GM3, GM3b, GM4, GM5, GM5f, GM8i, GM9p) -> per-player GM6c1b (round 5, R-E23: one line `KEY_LINT`, a `runsFrom: 'story'` entry, by launch, never beside a module lane) -> per-player GM6d2 |
 | `client/scripts/story/graph.ts` (round 4) | reconcile r1: SH1 -> SH2 (`sections`) -> GM9p (`mustPass`) -> SH12a, never beside (was: A(`graph.ts`) (rev. 3: MD1a) -> GM9p (`mustPass`); rev. 3's MA1b by launch, never beside GM9p) |
 | `client/src/scene/*` | none of this file's lanes (views use today's crossfade); reconcile r1: M3c, LHJ (merged) -> GM2a's field -> per-player GM6a -> SH1 (executor, `executor.test.ts`) -> SH4 -> SH5a -> SH5b -> SH6 -> SH7 -> SH8 -> {per-player GM6d1, SH9, SH10, SH12a, SH12b, the carried preload-priority lane} one at a time by launch (was: M3c (merged) -> GM2a's field -> per-player GM6a -> A(`scene/*`) (rev. 3: MD2 -> MA1a -> MA1b -> MA2) -> {per-player GM6d1, the MR1 -> MR2 roles}) |
@@ -191,7 +223,7 @@ the table is the error to fix (the rule of this section's first paragraph).
 | `client/src/requests.test.ts` (round 13; reconcile r1 adds SH7; reconcile r2, R-E35) | GM3p (new) -> {per-player GM6c2 (E-P23; its `SITE_MEMBERS` row, E-P29), SH7 (its `scene/motion/` `import()` row; GM3p is always merged by then), every later lane that adds a start, a `HOST_WAITS` row or a `SITE_MEMBERS` row} by launch, never beside (§12 head; r1 let two holders with disjoint rows run beside each other, withdrawn) |
 | `client/src/story/staging.ts` (reconcile r1) | GM2a (`PropPlacement.at`, `StagingSnapshot.cam`, I-1) -> SH1 (the `cam` command) -> SH12a |
 | `client/src/story/tags.ts`, `tags.test.ts` (reconcile r1) | SH1 -> SH12a |
-| `client/scripts/story/dsl-doc.test.ts` (reconcile r1) | SH1 -> SH12a -> SH12b (GM1d reads its 86-row pin, edits none) |
+| `client/scripts/story/dsl-doc.test.ts` (reconcile r1) | SH1 -> SH12a -> SH12b (GM1d reads its 86-row pin, edits none). Changed by RULINGS 183 (as of `837b1ed`; docs lane `docs-errata-12`, group A): the file is `client/src/story/dsl-doc.test.ts` (the path the other plan sections cite, §3.2); no file exists under `client/scripts/story/` by that name |
 | `docs/STAGING-DSL.md` (reconcile r1) | SH1 -> SH2 -> SH3b -> SH12a -> SH12b; the docs adoption lane (RULINGS 153) before or after them, never beside |
 | `client/src/story/catalog.ts` (reconcile r1) | no planned holder; it is in the entry closure (`client/src/app/boot.ts:21`), so a lane that adds to it quotes the entry ledger (§11.1; §30 item 9) |
 | `client/src/story/shots.ts` (reconcile r1, new) | SH3a only (SH5a imports `ShotWindow` / `stepWindow`, SH9 `shotImages`) |

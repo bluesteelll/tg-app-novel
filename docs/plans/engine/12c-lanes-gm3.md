@@ -26,6 +26,12 @@
   moved from `world.ts:48`). No `locales.ts`, `story.ts` or `scan-dist.ts` edit: each reads the walk's output as it is
   (`locales.ts:239`, `story.ts:319`, `scan-dist.ts:457`). Beside pairs re-checked in round 7: `cover.ts` is in none of
   GM3m's, GM3w's or GM3s's locks.
+  **Ruled since: RULINGS 192** — Q1 option A: the lock gains `client/scripts/story/mechanics/clues.ts` (14) for commit
+  (2b) `world: a clue is a condition` (`clues` widened to `Cond[]`; "a clue holds" = its whole condition holds in one
+  reached state); Q2: `texts.ts`, `mechanics/index.ts` and `conditions.ts` import nothing from `world.ts`, **not even a
+  type**, where round 7 above says "by type" (a type import reaches `node:crypto` in the app program), and the test
+  `texts: texts.ts value-imports nothing from mechanics/index.ts or world.ts` checks every file of the directory
+  (`client/scripts/story/world.test.ts:1645`).
 - **Commits:** (1) `world: an owned key reaches its module and nothing else` (a fixture module through the registry
   parameter; red: unknown key), `world: an unowned key is still refused` (pin); round 6: `world: a module text decodes
   with the kernel's line-ID rule` (a fixture module text without `id`, through `decodeWorldFile`: `id/missing` at the
@@ -224,6 +230,15 @@
   entry projection is 37.929 / 40.0, 1.571 above the 0.5 KB line ([§11.1](11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13)), so the entry STOPs only by
   Ledger 2's crossing rule, §3.5's STOP rule or the 40.0 LIMIT, and is quoted; the engine row within 0.05 KB stays
   GM3w's own gate, a STOP item unless the tester shows the excess is chunk-hash churn.
+  Changed by RULINGS 186 (as of `837b1ed`; docs lane `docs-errata-12`, group A): as merged (`508bd36`), **6 commits**
+  against the plan's 5: commits (1)-(5) as planned (`e1082cd`, `a58066a`, `632c220`, `bf7f4d4`, `1d43552`) and (6)
+  `25cc64a`, the spec's LBI review M1 carry as its own comment-only commit (cut Q8). Cut D2: `ExploreLayerActions`
+  moved from `yields.ts:120-121` to `client/src/ui/explore-view.svelte.ts:58`, an explicit object type next to
+  `forwardLayer` (`:72`), which `yields.ts` and `game.ts` import by type (a type-only `yields.ts` hunk, 0 bytes). Cut
+  D4: the frame wrapper is `<div class="layer frame-layer" inert={covered}>` (`client/src/ui/App.svelte:95`) with the
+  rule `.frame-layer { pointer-events: none; }` (`:292-294`), the tap rule of §8.3 ("The frame wrapper passes taps").
+  The engine row passed its 0.05 KB gate by the churn escape: +15.8 B on the mean of 4 builds per tree (one build +80)
+  ([§11.1](11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13)).
 
 ### GM3s `mech-cue-stage` (new)
 - **Goal:** §8.1's one stage-level layer and its loading, §8.3's `cueRoot` on the explore root, the outros, today's
@@ -299,6 +314,12 @@
   (`oncue` action), `client/src/app/yields.ts`, `client/src/app/yields.test.ts`, `client/scripts/budget.ts` (family row,
   `cueStageChunkBr`, LAZY_DIRS), `client/scripts/budget.test.ts`, `client/src/arch.test.ts` (`LAZY_COMPONENTS`
   `:892-901` += `CueStage.svelte`; lazy dirs), new `client/e2e/mechanics.spec.ts`.
+  **Ruled since: RULINGS 194, 195** — the lock is 18: it gains core's four cue names (`look`, `locked`, `refused`,
+  `reset`) in `client/src/mechanics/rules/index.ts`, their pin in `client/src/mechanics/registry.test.ts`, the four
+  `module:core:*` rows in `client/src/cues/stage/motions.ts` (GM3m's cut Q1) and the one `VALUE_IMPORTS` line in
+  `client/src/ui/explore/explore.svelte.test.ts` (`ExploreView.svelte`'s value import of `cues/root.ts`); §3.5's
+  transition-runtime rule is applied as P0 first (the entry row's mean of 4 builds), then the directives (entry delta
+  within +0.55 KB br and Ledger 3 within 305.0) or the named fallback at once, without a second stop.
 - **Commits:** (1) `budget: the cue-stage family is measured and refused over its limit` (red: PENDING never turns
   measured; seen failing on a fixture over 6.0); (2) `yields: today's effects reach the cue bus` (red: the bus records
   nothing), `yields: the cue stage loads before a section or a puzzle opens`; round 4: `yields: a move cue plays when

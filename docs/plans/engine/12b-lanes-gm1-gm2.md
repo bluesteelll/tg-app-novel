@@ -110,6 +110,9 @@
   MAX_ANSWER_LEN is refused` (a fixture type posting 17; red: TS2307 `shape.ts` missing, then no finding) and `story:
   the build's answer bound never exceeds the server's MAX_ANSWER_LEN` (seen red on client = 17; a red on "no match"
   means the server constant moved or was renamed, a STOP item); (5) the story commit; `npm run story` 0 errors.
+  Changed by RULINGS 179, 183 (as of `837b1ed`; docs lane `docs-errata-12`, group A): commit (4)'s pin was seen red on
+  the mutation client = **65**, not 17: the server bound is 64 since GM6s1 (`server/src/puzzles/mod.rs:34`), and the
+  build bound stays 16 until GM7g (§7.4; GM1d `910f49e`, mutation M-4c `expected 65 to be less than or equal to 64`).
   **Ruled since: RULINGS 180** — option A: commit (5) gives `clues` to `drawer` and `gate` (the secret puzzles the ch1
   locks hold), not to `cabinet` (ch2's linear puzzle; no lock holds it, its clue is ch1's `letter`, GM9p's
   cross-chapter pass); `story/ch2/world.json` leaves the lock (11).
@@ -164,4 +167,10 @@
   GM6c1b edits when it lifts the refusal); (3) `emit: the public world is compact and keeps its version` (red: newlines in the file);
   (4) `emit: server hints pass through the type's renderHints` (the `emit.ts:428` call site passes the build registry's
   renderer; a fixture type whose renderer upper-cases proves it is called; code / order output byte-identical).
+  Changed by RULINGS 190 (as of `837b1ed`; docs lane `docs-errata-12`, group A, fix round 1): as merged (`1782d6d`),
+  **5 commits** against the plan's 4, 9 files of the lock's 10 (`client/scripts/story/world.ts` untouched, cut D8):
+  (1) `744769c`, (2) `8df3f47`, (3) `3c4b180`, then (4a) `ed6f243` `world: toServer reads puzzle shapes from the types
+  its world was decoded with` (GM1c's carry as its own commit, so its red is its own; cut D7, Q4, the GM3w precedent of
+  RULINGS 186), and (4) `fe0fda6`; then the review and test fix commits (`7f6894c`, `11a003c` the item-merge rule,
+  `f0f6636`, `e2fce6d`, `a07da33`, `0b16f96`, `12c353e`, `cd31c8b`, `636eb5b`) and one trunk sync.
 - **Gates:** check, test, story, build (world rows MEASURED before / after).

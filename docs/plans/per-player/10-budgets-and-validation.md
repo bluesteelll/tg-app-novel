@@ -38,7 +38,7 @@ build measures; reconcile r2).** The other designs' terms (EN, shots) are §11.1
 
 | Lane | engine closure | entry closure | meta controller | explore-ui | Source |
 |---|---|---|---|---|---|
-| GM6a | +0.15 | - | - | - | §9 GM6a Gates |
+| GM6a | +0.15; Changed by RULINGS 188 (as of `837b1ed`; docs lane `docs-errata-12`, group A): **+0.4696** MEASURED at its merge (`23e1d31`, mean of 4 builds per tree, 215,546.2 -> 216,015.8 B: 320 B over the term, 180 B under the term + 0.5 KB STOP line, a PASS), in place of the term ([engine §11.1](../engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13), the `837b1ed` bullet) | - | - | - | §9 GM6a Gates |
 | GM6s2 | - | +0.09 | +0.004 (`META_KINDS`' row, 1 x 4.3 B) | - | §9 GM6s2 Gates |
 | GM6c2 | +1.59 | 0 (the strings ship in `i18n/values.ts`, engine chunk) | - | - | §9 GM6c2 Gates |
 | GM6c3 | +0.58 | - | - | - | §9 GM6c3 Gates |
