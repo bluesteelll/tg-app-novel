@@ -7,7 +7,7 @@
 import type { Endpoints } from '../api/endpoints.ts';
 import type { ProductDto, SaveListResponse, SaveSlot, SaveSummary } from '../api/generated/api.ts';
 import type { ApiError, Clock } from '../api/http.ts';
-import type { AudioCommand, AudioManager } from '../audio/manager.ts';
+import type { AudioManager } from '../audio/manager.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import { t } from '../i18n/index.ts';
 import type { Lang } from '../i18n/index.ts';
@@ -25,7 +25,7 @@ import type { Settings, SettingsStore } from '../settings/store.ts';
 import type { StatsReporter } from '../stats/reporter.ts';
 import { carryInto, carryOut } from '../story/carry.ts';
 import type { ChapterLoader, ChapterLoadError } from '../story/chapters.ts';
-import type { AssetManifest, ChapterCatalog, FetchAsset, InkScalar, LoadedChapter, Result, StoryEntry, StoryId } from '../story/catalog.ts';
+import type { ChapterCatalog, FetchAsset, InkScalar, LoadedChapter, Result, StoryEntry, StoryId } from '../story/catalog.ts';
 import { resume } from '../story/resume.ts';
 import type { ResumeError, ResumeLevel } from '../story/resume.ts';
 import { liveRunners, StoryRunner } from '../story/runner.ts';
@@ -34,14 +34,12 @@ import { BACKLOG_MAX, SAVE_FORMAT, decodeSave, encodeSave } from '../story/save-
 import type { BacklogEntry, SaveBody } from '../story/save-codec.ts';
 import { EMPTY_SNAPSHOT } from '../story/staging.ts';
 import type {
-  AssetId,
   AssetIndex,
   ChapterId,
   KnotName,
   LineId,
   ProductId,
   SpeakerId,
-  StagingCommand,
   StagingSnapshot,
   TagError,
   VarName,
@@ -57,6 +55,7 @@ import type { PuzzleHostCallbacks, PuzzleView } from '../ui/puzzle-view.svelte.t
 import type { Screens, ScreensView } from '../ui/screens.ts';
 import type { ChoiceSet, LineView, PlayMode, ViewModel } from '../ui/state.svelte.ts';
 import { graphemes, GRAPHEMES_PER_SECOND } from '../ui/typewriter.ts';
+import { imageIds, knotAssets, manifestIndex, splitBatch } from './stage-route.ts';
 import { createYields, LAZY_CHUNKS } from './yields.ts';
 import type { LazyChunks, Yields, YieldsHost } from './yields.ts';
 
@@ -282,77 +281,6 @@ const err = <E>(error: E): Result<never, E> => ({ ok: false, error });
 const DONE: Promise<void> = Promise.resolve();
 const NO_AT: SaveBody['at'] = Object.freeze({ lineId: null, knot: null, yield: null });
 const MANUAL_SLOTS: readonly SaveSlot[] = ['auto', 's1', 's2', 's3'];
-const IMAGE_ID = /^(?:bg|cg|char|prop)\//;
-
-/**
- * D14: the AssetIndex `parseTags` checks a loaded chapter's tags against: the keys of its own manifest, never
- * assets/catalog.json (outside src/, and naming paid-only assets). The story gate checked every tag against the catalog.
- */
-export function manifestIndex(m: AssetManifest): AssetIndex {
-  const has = (id: string): boolean => Object.hasOwn(m.assets, id);
-  const chars = new Set(Object.keys(m.assets).flatMap((k) => (k.startsWith('char/') ? [k.split('/')[1] ?? ''] : [])));
-  return {
-    hasBg: (id) => has(`bg/${id}`),
-    hasExpr: (char, expr) => has(`char/${char}/${expr}`),
-    hasChar: (id) => chars.has(id),
-    hasCg: (id) => has(`cg/${id}`),
-    hasTrack: (id) => has(`bgm/${id}`),
-    hasSfx: (id) => has(`sfx/${id}`),
-  };
-}
-
-/** A batch's commands by consumer (F2): the scene's, the audio's; a yield is its step's own, never a command here. */
-export function splitBatch(cmds: readonly StagingCommand[]): { visual: VisualCommand[]; audio: AudioCommand[] } {
-  const visual: VisualCommand[] = [];
-  const audio: AudioCommand[] = [];
-  for (const c of cmds) {
-    switch (c.kind) {
-      case 'bgm':
-      case 'sfx':
-        audio.push(c);
-        break;
-      case 'bg':
-      case 'scene':
-      case 'show':
-      case 'hide':
-      case 'cg':
-      case 'wait':
-        visual.push(c);
-        break;
-      case 'puzzle':
-      case 'explore':
-        break;
-      default: {
-        const _never: never = c;
-        return _never;
-      }
-    }
-  }
-  return { visual, audio };
-}
-
-/** The image asset ids a visual batch shows (STAGING-DSL §8), for `ensure`. */
-export function imageIds(cmds: readonly VisualCommand[]): AssetId[] {
-  // The brands hold: parseTags and the world decoder admit only ids the chapter's manifest lists.
-  const out: AssetId[] = [];
-  for (const c of cmds) {
-    if (c.kind === 'bg' || c.kind === 'scene') {
-      out.push(`bg/${c.bg}` as AssetId);
-    } else if (c.kind === 'show') {
-      out.push(`char/${c.char}/${c.expr}` as AssetId);
-    } else if (c.kind === 'cg' && c.cg !== null) {
-      out.push(`cg/${c.cg}` as AssetId);
-    } else if (c.kind === 'props') {
-      out.push(...c.props.map((p) => `prop/${p.prop}` as AssetId));
-    }
-  }
-  return out;
-}
-
-/** A knot's preload ids by consumer: images for the scene, the rest (bgm, sfx) for the audio. */
-export function knotAssets(ids: readonly AssetId[]): { images: AssetId[]; sounds: AssetId[] } {
-  return { images: ids.filter((id) => IMAGE_ID.test(id)), sounds: ids.filter((id) => !IMAGE_ID.test(id)) };
-}
 
 /** One session's state: everything here dies with the session (exitToStories, a failed start, dispose). */
 type Session = {

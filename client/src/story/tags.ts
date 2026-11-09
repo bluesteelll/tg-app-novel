@@ -3,11 +3,13 @@
 import type {
   AssetIndex,
   BgId,
+  CamTarget,
   CgId,
   CharId,
   ExprId,
   KnotName,
   LineId,
+  Motion,
   ParsedTags,
   PuzzleLocalId,
   SectionId,
@@ -24,7 +26,24 @@ export const YIELD_KINDS = ['puzzle', 'explore'] as const;
 export type YieldKind = (typeof YIELD_KINDS)[number];
 
 /** Every tag kind of STAGING-DSL §6, in table order: `id` is the line ID, the rest are the command kinds. */
-export const TAG_KINDS = ['id', 'bg', 'scene', 'show', 'hide', 'cg', 'bgm', 'sfx', 'wait', ...YIELD_KINDS] as const;
+export const TAG_KINDS = [
+  'id',
+  'bg',
+  'scene',
+  'show',
+  'hide',
+  'cg',
+  'bgm',
+  'sfx',
+  'wait',
+  // The shot kinds (docs/plans/shots §3.1).
+  'face',
+  'cam',
+  'think',
+  'anim',
+  'fx',
+  ...YIELD_KINDS,
+] as const;
 export type TagKind = (typeof TAG_KINDS)[number];
 
 type SameUnion<A, B> = [A] extends [B] ? ([B] extends [A] ? A : never) : never;
@@ -83,7 +102,8 @@ function fail(tag: string, reason: TagError['reason'], detail: string): TagError
 
 /**
  * Splits args into positionals and options and checks their shape: the grammar (§2), the positional count and the
- * option names. On success `positional.length === arity`, which is what makes the tuple casts in `command` exact.
+ * option names. On success `positional.length === arity`, which is what makes the tuple casts in `command` exact; a
+ * kind of arity 0 (`think`) takes no args at all, with or without its colon.
  * `id` takes its one positional verbatim: it is checked against LINE_ID_RE (§4), not against §2's `positional`.
  */
 function readArgs(
@@ -96,7 +116,7 @@ function readArgs(
   const text = (args ?? '').trim();
   const count = `'${kind}' takes ${arity} argument${arity === 1 ? '' : 's'}`;
   if (text === '') {
-    return fail(tag, 'missing-arg', count);
+    return arity === 0 ? { positional: [], options: new Map() } : fail(tag, 'missing-arg', count);
   }
   const positional: string[] = [];
   const pairs: Array<readonly [string, string]> = [];
@@ -147,6 +167,16 @@ function intOption(tag: string, options: Options, name: string, fallback: number
   return value === undefined ? fallback : int(tag, name, value, 0, max);
 }
 
+/** An `ms` with no fixed default: null when omitted, so whoever draws the command applies its own per-case one. */
+function msOrNull(tag: string, options: Options): number | null | TagError {
+  return options.has('ms') ? intOption(tag, options, 'ms', 0, MS_MAX) : null;
+}
+
+/** `value` when it is one of `allowed`, else bad-arg; `label` is how the detail names it. */
+function pick<T extends string>(tag: string, label: string, value: string, allowed: readonly T[]): T | TagError {
+  return allowed.find((a) => a === value) ?? fail(tag, 'bad-arg', `${label} is not one of ${allowed.join(', ')}`);
+}
+
 function choice<T extends string>(
   tag: string,
   options: Options,
@@ -155,15 +185,17 @@ function choice<T extends string>(
   fallback: T,
 ): T | TagError {
   const value = options.get(name);
-  if (value === undefined) {
-    return fallback;
-  }
-  const hit = allowed.find((a) => a === value);
-  return hit ?? fail(tag, 'bad-arg', `${name}=${value} is not one of ${allowed.join(', ')}`);
+  return value === undefined ? fallback : pick(tag, `${name}=${value}`, value, allowed);
 }
 
 function unknownAsset(tag: string, what: string): TagError {
   return fail(tag, 'unknown-asset', `${what} is not in assets/catalog.json`);
+}
+
+/** A character of the catalog, then (when given) one of its expressions; null when both are known. */
+function unknownChar(tag: string, assets: AssetIndex, char: string, expr?: string): TagError | null {
+  if (!assets.hasChar(char)) return unknownAsset(tag, `character '${char}'`);
+  return expr === undefined || assets.hasExpr(char, expr) ? null : unknownAsset(tag, `expression '${expr}' of '${char}'`);
 }
 
 function badName(tag: string, what: string, value: string): TagError {
@@ -203,6 +235,15 @@ function yieldCommand(tag: string, kind: YieldKindTie, rawArgs: string | undefin
 
 const SLOTS: readonly Slot[] = ['left', 'center', 'right'];
 const FADE_CUT = ['fade', 'cut'] as const;
+const CAM_MOVES = ['push', 'pull', 'pan'] as const;
+/** `never` when CAM_MOVES and the `cam` command's moves drift apart, which fails `check` where a move is picked. */
+type CamMove = SameUnion<(typeof CAM_MOVES)[number], Extract<StagingCommand, { kind: 'cam' }>['cam']['kind']>;
+const MOTIONS = ['nod', 'shake', 'lean_in', 'lean_back', 'sigh', 'tremble', 'hop', 'bounce'] as const;
+/** `never` when MOTIONS and Motion drift apart, which fails `check` where a motion is picked. */
+type MotionTie = SameUnion<(typeof MOTIONS)[number], Motion>;
+const FX = ['shake', 'flash'] as const;
+/** `never` when FX and the `fx` command's effects drift apart, which fails `check` where an effect is picked. */
+type FxTie = SameUnion<(typeof FX)[number], Extract<StagingCommand, { kind: 'fx' }>['fx']>;
 
 /**
  * One command tag after its kind is known: arg shape first, then values, then the catalog (§6, §8). Reserved words
@@ -213,7 +254,7 @@ function command(tag: string, kind: CommandKind, rawArgs: string | undefined, as
     case 'bg': {
       const a = readArgs(tag, kind, rawArgs, 1, ['t', 'ms']);
       if ('reason' in a) return a;
-      const t = choice(tag, a.options, 't', ['crossfade', 'fade', 'cut'] as const, 'crossfade');
+      const t = choice(tag, a.options, 't', ['crossfade', 'fade', 'cut'] as const, 'cut');
       if (typeof t === 'object') return t;
       const ms = intOption(tag, a.options, 'ms', 500, MS_MAX);
       if (typeof ms === 'object') return ms;
@@ -239,11 +280,11 @@ function command(tag: string, kind: CommandKind, rawArgs: string | undefined, as
       if (typeof at === 'object' && at !== null) return at;
       const t = choice(tag, a.options, 't', FADE_CUT, 'fade');
       if (typeof t === 'object') return t;
-      const ms = a.options.has('ms') ? intOption(tag, a.options, 'ms', 0, MS_MAX) : null;
+      const ms = msOrNull(tag, a.options);
       if (typeof ms === 'object' && ms !== null) return ms;
       const [char, expr] = a.positional as [string, string];
-      if (!assets.hasChar(char)) return unknownAsset(tag, `character '${char}'`);
-      if (!assets.hasExpr(char, expr)) return unknownAsset(tag, `expression '${expr}' of '${char}'`);
+      const unknown = unknownChar(tag, assets, char, expr);
+      if (unknown !== null) return unknown;
       return { kind: 'command', command: { kind, char: char as CharId, expr: expr as ExprId, at, t, ms } };
     }
     case 'hide': {
@@ -296,6 +337,64 @@ function command(tag: string, kind: CommandKind, rawArgs: string | undefined, as
       if (typeof ms === 'object') return ms;
       return { kind: 'command', command: { kind, ms } };
     }
+    case 'face': {
+      const a = readArgs(tag, kind, rawArgs, 2, ['ms']);
+      if ('reason' in a) return a;
+      const ms = msOrNull(tag, a.options);
+      if (typeof ms === 'object' && ms !== null) return ms;
+      const [char, expr] = a.positional as [string, string];
+      const unknown = unknownChar(tag, assets, char, expr);
+      if (unknown !== null) return unknown;
+      return { kind: 'command', command: { kind, char: char as CharId, expr: expr as ExprId, ms } };
+    }
+    case 'cam': {
+      const a = readArgs(tag, kind, rawArgs, 1, ['to', 'z', 'ms']);
+      if ('reason' in a) return a;
+      const [name] = a.positional as [string];
+      const move: CamMove | TagError = pick(tag, `'${name}'`, name, CAM_MOVES);
+      if (typeof move === 'object') return move;
+      // Each move takes only its own options: a pan has no z, a pull neither a target nor a z.
+      const b = readArgs(tag, kind, rawArgs, 1, move === 'push' ? ['to', 'z', 'ms'] : move === 'pan' ? ['to', 'ms'] : ['ms']);
+      if ('reason' in b) return b;
+      const ms = msOrNull(tag, b.options);
+      if (typeof ms === 'object' && ms !== null) return ms;
+      if (move === 'pull') return { kind: 'command', command: { kind, cam: { kind: move }, ms } };
+      const to = b.options.get('to') ?? (move === 'push' ? 'center' : undefined);
+      if (to === undefined) return fail(tag, 'missing-arg', "'cam: pan' requires to=<char>|left|right (§6)");
+      // Reserved words are valid only for their own move; any other target is a character of the catalog.
+      const reserved = move === 'push' ? to === 'center' : to === 'left' || to === 'right';
+      const unknown = reserved ? null : unknownChar(tag, assets, to);
+      if (unknown !== null) return unknown;
+      // The brands are earned above: a reserved word of the move, or a character the catalog lists.
+      if (move === 'pan') return { kind: 'command', command: { kind, cam: { kind: move, to: to as CharId | 'left' | 'right' }, ms } };
+      const zoom = b.options.get('z');
+      const z = zoom === undefined ? 110 : int(tag, 'z', zoom, 105, 130);
+      if (typeof z === 'object') return z;
+      return { kind: 'command', command: { kind, cam: { kind: move, to: to as CamTarget, z }, ms } };
+    }
+    case 'think': {
+      const a = readArgs(tag, kind, rawArgs, 0, []);
+      return 'reason' in a ? a : { kind: 'command', command: { kind } };
+    }
+    case 'anim': {
+      const a = readArgs(tag, kind, rawArgs, 2, ['ms']);
+      if ('reason' in a) return a;
+      const ms = msOrNull(tag, a.options);
+      if (typeof ms === 'object' && ms !== null) return ms;
+      const [char, name] = a.positional as [string, string];
+      const motion: MotionTie | TagError = pick(tag, `'${name}'`, name, MOTIONS);
+      if (typeof motion === 'object') return motion;
+      return unknownChar(tag, assets, char) ?? { kind: 'command', command: { kind, char: char as CharId, motion, ms } };
+    }
+    case 'fx': {
+      const a = readArgs(tag, kind, rawArgs, 1, ['ms']);
+      if ('reason' in a) return a;
+      const ms = msOrNull(tag, a.options);
+      if (typeof ms === 'object' && ms !== null) return ms;
+      const [name] = a.positional as [string];
+      const fx: FxTie | TagError = pick(tag, `'${name}'`, name, FX);
+      return typeof fx === 'object' ? fx : { kind: 'command', command: { kind, fx, ms } };
+    }
     case 'puzzle':
     case 'explore':
       return yieldCommand(tag, kind, rawArgs);
@@ -336,12 +435,18 @@ function conflictsOneWay(a: StagingCommand, b: StagingCommand): boolean {
       return b.kind === 'scene' || b.kind === 'hide' || b.kind === 'cg';
     case 'show':
       return (b.kind === 'show' && b.char === a.char) || (b.kind === 'hide' && (b.char === 'all' || b.char === a.char));
+    case 'face':
+      return b.kind === 'face' && b.char === a.char;
     case 'cg':
     case 'bgm':
     case 'wait':
+    case 'cam':
+    case 'fx':
       return b.kind === a.kind;
     case 'hide':
     case 'sfx':
+    case 'think':
+    case 'anim':
       return false;
     case 'puzzle':
     case 'explore':

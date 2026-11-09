@@ -31,9 +31,12 @@ export function resumeAll(): void {
   gsap.globalTimeline.resume();
 }
 
-/** The commands the scene executes; audio and yields stay with GameSession (§7 steps 1 and 5). */
+/**
+ * The commands the scene executes; audio, yields and `think` stay with GameSession (§7 steps 1 and 5). `anim` and `fx`
+ * are one-shots nothing draws yet (the shots plan's SH8): reduce and compose pass over them.
+ */
 export type VisualCommand =
-  | Extract<StagingCommand, { kind: 'bg' | 'scene' | 'show' | 'hide' | 'cg' | 'wait' }>
+  | Extract<StagingCommand, { kind: 'bg' | 'scene' | 'show' | 'hide' | 'cg' | 'wait' | 'face' | 'cam' | 'anim' | 'fx' }>
   | PropsCommand;
 export type SceneSnapshot = Omit<StagingSnapshot, 'bgm'>;
 
@@ -154,9 +157,13 @@ function find<K extends VisualCommand['kind']>(
   return cmds.find((c): c is Extract<VisualCommand, { kind: K }> => c.kind === kind);
 }
 
-/** The end state of a batch (§7 order): scene clears, bg replaces (and clears props), hides, shows, cg, props. */
+/**
+ * The end state of a batch (§7 order): scene clears, bg replaces (and clears props), hides, shows, faces, cam, cg,
+ * props. The camera holds until the next cut: a scene or a bg resets it to rest, the absent key (a stage without a
+ * move stays byte-identical in snapshots and saves); then the batch's cam sets it, a pull back to rest.
+ */
 function reduce(s: SceneSnapshot, cmds: readonly VisualCommand[]): SceneSnapshot {
-  let { bg, cg } = s;
+  let { bg, cg, cam } = s;
   let chars = [...s.chars];
   let props = [...s.props];
   const scene = find(cmds, 'scene');
@@ -165,11 +172,13 @@ function reduce(s: SceneSnapshot, cmds: readonly VisualCommand[]): SceneSnapshot
     cg = null;
     chars = [];
     props = [];
+    cam = undefined;
   }
   const bgCmd = find(cmds, 'bg');
   if (bgCmd !== undefined) {
     bg = bgCmd.bg;
     props = [];
+    cam = undefined;
   }
   for (const c of cmds) {
     if (c.kind === 'hide') {
@@ -188,6 +197,17 @@ function reduce(s: SceneSnapshot, cmds: readonly VisualCommand[]): SceneSnapshot
       }
     }
   }
+  // Shots plan §3.1 step 3: a face changes the expression of a character on stage (slot and z-order kept); a face
+  // of a character not on stage changes nothing.
+  for (const c of cmds) {
+    if (c.kind === 'face') {
+      chars = chars.map((x) => (x.char === c.char ? { ...x, expr: c.expr } : x));
+    }
+  }
+  const camCmd = find(cmds, 'cam');
+  if (camCmd !== undefined) {
+    cam = camCmd.cam.kind === 'pull' ? undefined : camCmd.cam;
+  }
   const cgCmd = find(cmds, 'cg');
   if (cgCmd !== undefined) {
     cg = cgCmd.cg;
@@ -197,10 +217,17 @@ function reduce(s: SceneSnapshot, cmds: readonly VisualCommand[]): SceneSnapshot
     const byProp = new Map(propsCmd.props.map((p) => [p.prop, p]));
     props = [...byProp.values()];
   }
-  return { bg, cg, chars, props };
+  return { bg, cg, chars, props, ...(cam && { cam }) };
 }
 
-const copy = (s: SceneSnapshot): SceneSnapshot => ({ bg: s.bg, cg: s.cg, chars: [...s.chars], props: [...s.props] });
+/** A snapshot's own copy; the camera key only when it is set, so a restore and every snapshot keep it as read. */
+const copy = (s: SceneSnapshot): SceneSnapshot => ({
+  bg: s.bg,
+  cg: s.cg,
+  chars: [...s.chars],
+  props: [...s.props],
+  ...(s.cam && { cam: s.cam }),
+});
 
 // ---------------------------------------------------------------------------------------------------------------
 // The executor
@@ -383,10 +410,20 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     adapter.set(v.node.anchor, { x: c.offsetX, y: c.offsetY });
     adapter.set(v.sprite, { w: ROOM_SOURCE.w * c.scale, h: ROOM_SOURCE.h * c.scale });
   };
-  /** A bg or a CG: its anchor on top of the layer, at `alpha`, then the art in its `content`. */
+  /**
+   * A bg or a CG: its anchor on top of the layer, at `alpha`, then the art in its `content`. A sprite that throws takes
+   * its fresh anchor with it, so a failed build leaves no anchor in the layer (the shots plan's SH1 item 2 (b)).
+   */
   const backdrop = (layer: 'bg' | 'cg', h: TextureHandle<T>, alpha: number): BackdropView<T> => {
     const node = adapter.anchor(layer, h.id);
-    const v: BackdropView<T> = { slot: layer, handle: h, node, sprite: adapter.sprite(layer, h, node.content) };
+    let sprite: SpriteRef;
+    try {
+      sprite = adapter.sprite(layer, h, node.content);
+    } catch (e) {
+      adapter.dropGroup(node.anchor);
+      throw e;
+    }
+    const v: BackdropView<T> = { slot: layer, handle: h, node, sprite };
     placeBackdrop(v);
     adapter.set(node.anchor, { alpha });
     return v;
@@ -569,52 +606,71 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         }
       }
       const next: Array<[string, PropAnchor<T>]> = [];
-      for (const [k, ps] of byKey) {
-        const kept = anchors.get(k);
-        const live = ps.filter((p) => can(kept, p));
-        const first = live.find((p) => p.part !== 'patch') ?? live[0];
-        if (first === undefined) {
-          continue;
-        }
-        const a: PropAnchor<T> = kept ?? { node: adapter.anchor('props', k), rect: first.rect, views: [] };
-        let baseLeaves = false;
-        const views: PropView<T>[] = [];
-        for (const v of a.views) {
-          const p = ps.find((x) => x.prop === v.prop);
-          if (p === undefined) {
-            if (v.part === 'base') {
-              baseLeaves = true;
-              adapter.set(v.sprite, { z: 1 });
-            }
-            fade(v.sprite, 1, 0, ms, retire([v], null));
-          } else {
-            v.rect = p.rect;
-            views.push(v);
+      // What this pass makes, for the unmake when a sprite throws (the shots plan's SH1 item 2 (b), RULINGS 198 W2).
+      const made: PropView<T>[] = [];
+      const fresh: AnchorRef[] = [];
+      try {
+        for (const [k, ps] of byKey) {
+          const kept = anchors.get(k);
+          const live = ps.filter((p) => can(kept, p));
+          const first = live.find((p) => p.part !== 'patch') ?? live[0];
+          if (first === undefined) {
+            continue;
           }
-        }
-        for (const p of live) {
-          const h = handleFor(propSlot(p.prop));
-          if (h !== undefined && !views.some((v) => v.prop === p.prop)) {
-            const v: PropView<T> = {
-              slot: propSlot(p.prop),
-              handle: h,
-              sprite: adapter.sprite('props', h, a.node.content),
-              prop: p.prop,
-              part: p.part ?? 'base',
-              rect: p.rect,
-              box: propPlacement(adapter.size(), p.rect),
-            };
-            views.push(v);
-            if (kept !== undefined && (v.part === 'patch' || !baseLeaves)) {
-              fade(v.sprite, 0, 1, ms);
+          const a: PropAnchor<T> = kept ?? { node: adapter.anchor('props', k), rect: first.rect, views: [] };
+          if (kept === undefined) {
+            fresh.push(a.node);
+          }
+          let baseLeaves = false;
+          const views: PropView<T>[] = [];
+          for (const v of a.views) {
+            const p = ps.find((x) => x.prop === v.prop);
+            if (p === undefined) {
+              if (v.part === 'base') {
+                baseLeaves = true;
+                adapter.set(v.sprite, { z: 1 });
+              }
+              fade(v.sprite, 1, 0, ms, retire([v], null));
+            } else {
+              v.rect = p.rect;
+              views.push(v);
             }
           }
+          // A leaving view is retiring now: if a sprite below throws, the anchor must not track it once it is destroyed
+          // (critique r2 W1, RULINGS 200).
+          a.views = [...views];
+          for (const p of live) {
+            const h = handleFor(propSlot(p.prop));
+            if (h !== undefined && !views.some((v) => v.prop === p.prop)) {
+              const v: PropView<T> = {
+                slot: propSlot(p.prop),
+                handle: h,
+                sprite: adapter.sprite('props', h, a.node.content),
+                prop: p.prop,
+                part: p.part ?? 'base',
+                rect: p.rect,
+                box: propPlacement(adapter.size(), p.rect),
+              };
+              views.push(v);
+              made.push(v);
+              if (kept !== undefined && (v.part === 'patch' || !baseLeaves)) {
+                fade(v.sprite, 0, 1, ms);
+              }
+            }
+          }
+          a.views = [...views.filter((v) => v.part === 'base'), ...views.filter((v) => v.part === 'patch')];
+          if (kept === undefined) {
+            fade(a.node.anchor, 0, 1, ms);
+          }
+          next.push([k, a]);
         }
-        a.views = [...views.filter((v) => v.part === 'base'), ...views.filter((v) => v.part === 'patch')];
-        if (kept === undefined) {
-          fade(a.node.anchor, 0, 1, ms);
-        }
-        next.push([k, a]);
+      } catch (e) {
+        // A sprite this pass made that no anchor still in `anchors` tracks is destroyed, then every anchor it made is
+        // dropped; a kept anchor keeps the views assigned to it. The views it retired go at finish().
+        const tracked = new Set([...anchors.values()].flatMap((a) => a.views));
+        made.filter((v) => !tracked.has(v)).forEach(destroyView);
+        fresh.forEach((n) => adapter.dropGroup(n.anchor));
+        throw e;
       }
       anchors.clear();
       for (const [k, a] of next) {
@@ -690,8 +746,11 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         }
       }
       for (const c of target.chars) {
-        const show = b.cmds.find((x) => x.kind === 'show' && x.char === c.char);
-        const ms = (byDefault: number): number => (show?.kind !== 'show' || show.t === 'cut' ? 0 : (show.ms ?? byDefault));
+        // A face is a show without `at` or `t`: the expression crossfade, 200 ms by default.
+        const show = b.cmds.find(
+          (x): x is Extract<VisualCommand, { kind: 'show' | 'face' }> => (x.kind === 'show' || x.kind === 'face') && x.char === c.char,
+        );
+        const ms = (byDefault: number): number => (show === undefined || (show.kind === 'show' && show.t === 'cut') ? 0 : (show.ms ?? byDefault));
         const cv = chars.get(c.char);
         const id = want.get(charSlot(c.char));
         const h = handleFor(charSlot(c.char));

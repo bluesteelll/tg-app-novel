@@ -39,10 +39,10 @@ function reasons(r: ParsedTags): string[] {
 
 test('tags: every form from STAGING-DSL parses', () => {
   const forms: ReadonlyArray<readonly [string, unknown]> = [
-    ['bg: cafe', { kind: 'bg', bg: 'cafe', t: 'crossfade', ms: 500 }],
-    ['bg:cafe', { kind: 'bg', bg: 'cafe', t: 'crossfade', ms: 500 }],
-    ['bg : cafe', { kind: 'bg', bg: 'cafe', t: 'crossfade', ms: 500 }],
-    ['  bg:\tcafe  ', { kind: 'bg', bg: 'cafe', t: 'crossfade', ms: 500 }],
+    ['bg: cafe', { kind: 'bg', bg: 'cafe', t: 'cut', ms: 500 }],
+    ['bg:cafe', { kind: 'bg', bg: 'cafe', t: 'cut', ms: 500 }],
+    ['bg : cafe', { kind: 'bg', bg: 'cafe', t: 'cut', ms: 500 }],
+    ['  bg:\tcafe  ', { kind: 'bg', bg: 'cafe', t: 'cut', ms: 500 }],
     ['bg: room t=fade ms=900', { kind: 'bg', bg: 'room', t: 'fade', ms: 900 }],
     ['bg: street ms=0 t=cut', { kind: 'bg', bg: 'street', t: 'cut', ms: 0 }],
     ['scene: cafe', { kind: 'scene', bg: 'cafe', t: 'fade', ms: 800 }],
@@ -81,8 +81,28 @@ test('tags: every form from STAGING-DSL parses', () => {
   expect(parse('id:ch1.cafe.k3x9', 'sfx: door')).toEqual(line);
 });
 
+test('tags: bg parses with a cut by default', () => {
+  // The shots plan's cut verb (OQ6): a `bg` without `t` replaces the shot at once; `ms` keeps its default.
+  const [c] = parse('bg: cafe').commands;
+  expect(c?.kind === 'bg' ? c.t : c?.kind).toBe('cut');
+  expect(parse('bg: cafe')).toEqual({ lineId: null, commands: [{ kind: 'bg', bg: 'cafe', t: 'cut', ms: 500 }], errors: [] });
+});
+
+test('tags: bg t=crossfade takes its ms', () => {
+  expect(parse('bg: cafe t=crossfade ms=700')).toEqual({
+    lineId: null,
+    commands: [{ kind: 'bg', bg: 'cafe', t: 'crossfade', ms: 700 }],
+    errors: [],
+  });
+  expect(parse('bg: cafe t=crossfade')).toEqual({
+    lineId: null,
+    commands: [{ kind: 'bg', bg: 'cafe', t: 'crossfade', ms: 500 }],
+    errors: [],
+  });
+});
+
 test('tags: unknown kind is an error value', () => {
-  for (const tag of ['fx: boom', 'speaker: ally', 'music: calm', 'wait2: 100', 'bgx', 'idd: ch1.cafe.k3x9']) {
+  for (const tag of ['shot: cafe', 'speaker: ally', 'music: calm', 'wait2: 100', 'bgx', 'idd: ch1.cafe.k3x9']) {
     const r = parse(tag);
     expect(r.errors, tag).toEqual([{ tag, reason: 'unknown-kind', detail: expect.any(String) }]);
     expect(r.commands, tag).toEqual([]);
@@ -566,4 +586,194 @@ test('catalog: lookups ignore inherited properties', () => {
     expect(index.hasSfx(name), name).toBe(false);
   }
   expect(index.hasExpr('ally', 'smile')).toBe(true);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The shot kinds (docs/plans/shots §3.1-3.2, lane SH1).
+
+test('tags: face names a known character and expression', () => {
+  expect(parse('face: ally smile')).toEqual({
+    lineId: null,
+    commands: [{ kind: 'face', char: 'ally', expr: 'smile', ms: null }],
+    errors: [],
+  });
+  expect(parse('face:stranger serious ms=300')).toEqual({
+    lineId: null,
+    commands: [{ kind: 'face', char: 'stranger', expr: 'serious', ms: 300 }],
+    errors: [],
+  });
+  const cases: ReadonlyArray<readonly [string, string]> = [
+    ['face: ally', 'missing-arg'],
+    ['face:', 'missing-arg'],
+    ['face: ally smile at=left', 'bad-arg'],
+    ['face: ally smile t=cut', 'bad-arg'],
+    ['face: ally smile worried', 'bad-arg'],
+    ['face: ally smile ms=10001', 'bad-arg'],
+  ];
+  for (const [tag, reason] of cases) {
+    const r = parse(tag);
+    expect(reasons(r), tag).toEqual([reason]);
+    expect(r.commands, tag).toEqual([]);
+  }
+});
+
+test('tags: face of an unknown expression is unknown-asset', () => {
+  for (const index of [DEMO, assetIndex(committedCatalog())]) {
+    // An expression the character lacks, a character the catalog lacks, a speaker with no sprites, a reserved word.
+    for (const tag of ['face: ally grin', 'face: nobody smile', 'face: voice neutral', 'face: all smile']) {
+      const r = parseTags([tag], index);
+      expect(reasons(r), tag).toEqual(['unknown-asset']);
+      expect(r.commands, tag).toEqual([]);
+    }
+    expect(parseTags(['face: stranger serious'], index).errors).toEqual([]);
+  }
+});
+
+test('tags: cam push takes to and z within 105..130', () => {
+  const forms: ReadonlyArray<readonly [string, unknown]> = [
+    ['cam: push', { kind: 'cam', cam: { kind: 'push', to: 'center', z: 110 }, ms: null }],
+    ['cam: push to=ally z=120 ms=2000', { kind: 'cam', cam: { kind: 'push', to: 'ally', z: 120 }, ms: 2000 }],
+    ['cam:push z=105 to=center', { kind: 'cam', cam: { kind: 'push', to: 'center', z: 105 }, ms: null }],
+    ['cam: push z=130', { kind: 'cam', cam: { kind: 'push', to: 'center', z: 130 }, ms: null }],
+    ['cam: pull', { kind: 'cam', cam: { kind: 'pull' }, ms: null }],
+    ['cam: pull ms=1200', { kind: 'cam', cam: { kind: 'pull' }, ms: 1200 }],
+  ];
+  for (const [tag, command] of forms) {
+    expect(parse(tag), tag).toEqual({ lineId: null, commands: [command], errors: [] });
+  }
+  const cases: ReadonlyArray<readonly [string, string]> = [
+    ['cam: push z=104', 'bad-arg'],
+    ['cam: push z=131', 'bad-arg'],
+    ['cam: push z=1x', 'bad-arg'],
+    ['cam: push t=cut', 'bad-arg'],
+    ['cam: pull z=110', 'bad-arg'],
+    ['cam: pull to=ally', 'bad-arg'],
+    ['cam: zoom', 'bad-arg'],
+    ['cam: push pull', 'bad-arg'],
+    ['cam:', 'missing-arg'],
+    ['cam: push to=nobody', 'unknown-asset'],
+    // A reserved word is valid only for its own move.
+    ['cam: push to=left', 'unknown-asset'],
+  ];
+  for (const [tag, reason] of cases) {
+    const r = parse(tag);
+    expect(reasons(r), tag).toEqual([reason]);
+    expect(r.commands, tag).toEqual([]);
+  }
+});
+
+test('tags: cam pan needs to', () => {
+  expect(reasons(parse('cam: pan'))).toEqual(['missing-arg']);
+  expect(reasons(parse('cam: pan ms=1800'))).toEqual(['missing-arg']);
+  for (const to of ['left', 'right', 'ally']) {
+    expect(parse(`cam: pan to=${to}`), to).toEqual({ lineId: null, commands: [{ kind: 'cam', cam: { kind: 'pan', to }, ms: null }], errors: [] });
+  }
+  expect(parse('cam: pan to=stranger ms=900').commands).toEqual([{ kind: 'cam', cam: { kind: 'pan', to: 'stranger' }, ms: 900 }]);
+  expect(reasons(parse('cam: pan to=ally z=110'))).toEqual(['bad-arg']);
+  expect(reasons(parse('cam: pan to=center'))).toEqual(['unknown-asset']);
+  expect(reasons(parse('cam: pan to=nobody'))).toEqual(['unknown-asset']);
+});
+
+test('tags: think takes no argument', () => {
+  for (const tag of ['think', 'think:', ' think : ']) {
+    expect(parse(tag), JSON.stringify(tag)).toEqual({ lineId: null, commands: [{ kind: 'think' }], errors: [] });
+  }
+  for (const tag of ['think: now', 'think: ms=1', 'think: ally']) {
+    const r = parse(tag);
+    expect(reasons(r), tag).toEqual(['bad-arg']);
+    expect(r.commands, tag).toEqual([]);
+  }
+});
+
+test('tags: anim names a closed motion', () => {
+  for (const motion of ['nod', 'shake', 'lean_in', 'lean_back', 'sigh', 'tremble', 'hop', 'bounce']) {
+    expect(parse(`anim: ally ${motion}`), motion).toEqual({
+      lineId: null,
+      commands: [{ kind: 'anim', char: 'ally', motion, ms: null }],
+      errors: [],
+    });
+  }
+  expect(parse('anim: stranger sigh ms=900').commands).toEqual([{ kind: 'anim', char: 'stranger', motion: 'sigh', ms: 900 }]);
+  const cases: ReadonlyArray<readonly [string, string]> = [
+    ['anim: ally dance', 'bad-arg'],
+    ['anim: ally nod at=left', 'bad-arg'],
+    ['anim: ally nod shake', 'bad-arg'],
+    ['anim: ally', 'missing-arg'],
+    ['anim: nobody nod', 'unknown-asset'],
+    ['anim: voice nod', 'unknown-asset'],
+  ];
+  for (const [tag, reason] of cases) {
+    const r = parse(tag);
+    expect(reasons(r), tag).toEqual([reason]);
+    expect(r.commands, tag).toEqual([]);
+  }
+});
+
+test('tags: fx is shake or flash', () => {
+  expect(parse('fx: shake')).toEqual({ lineId: null, commands: [{ kind: 'fx', fx: 'shake', ms: null }], errors: [] });
+  expect(parse('fx:flash ms=300')).toEqual({ lineId: null, commands: [{ kind: 'fx', fx: 'flash', ms: 300 }], errors: [] });
+  const cases: ReadonlyArray<readonly [string, string]> = [
+    ['fx: boom', 'bad-arg'],
+    ['fx: shake flash', 'bad-arg'],
+    ['fx: shake vol=50', 'bad-arg'],
+    ['fx:', 'missing-arg'],
+    ['fx', 'missing-arg'],
+  ];
+  for (const [tag, reason] of cases) {
+    const r = parse(tag);
+    expect(reasons(r), tag).toEqual([reason]);
+    expect(r.commands, tag).toEqual([]);
+  }
+});
+
+/** The pair conflicts on its second tag (§7); both commands stay in the batch, as for the existing kinds. */
+function expectConflict(first: string, second: string): void {
+  const r = parse(first, second);
+  expect(r.errors, `${first} + ${second}`).toEqual([{ tag: second, reason: 'conflict', detail: expect.any(String) }]);
+  expect(r.commands, `${first} + ${second}`).toHaveLength(2);
+}
+
+test('tags: two faces of one character conflict', () => {
+  expectConflict('face: ally smile', 'face: ally worried');
+  expectConflict('face: ally smile', 'face: ally smile ms=300');
+  // Faces of two characters, a face beside a show of its character, a scene with a face, two anims of one character.
+  const allowed: ReadonlyArray<readonly string[]> = [
+    ['face: ally smile', 'face: stranger serious'],
+    ['show: ally neutral at=left', 'face: ally smile'],
+    ['face: ally smile', 'show: ally neutral'],
+    ['scene: cafe', 'show: ally neutral', 'face: ally worried'],
+    ['anim: ally nod', 'anim: ally sigh', 'face: ally smile'],
+  ];
+  for (const tags of allowed) {
+    expect(parse(...tags).errors, tags.join(' + ')).toEqual([]);
+  }
+});
+
+test('tags: two cam moves conflict', () => {
+  expectConflict('cam: push', 'cam: pull');
+  expectConflict('cam: pan to=left', 'cam: push to=ally z=120');
+  // A camera move beside the cut it follows, a scene, a CG; two thinks.
+  const allowed: ReadonlyArray<readonly string[]> = [
+    ['bg: cafe', 'cam: push'],
+    ['scene: cafe', 'cam: pull'],
+    ['cg: letter', 'cam: pan to=right'],
+    ['think', 'think', 'cam: push'],
+  ];
+  for (const tags of allowed) {
+    expect(parse(...tags).errors, tags.join(' + ')).toEqual([]);
+  }
+});
+
+test('tags: two fx in one batch conflict', () => {
+  expectConflict('fx: shake', 'fx: flash');
+  expectConflict('fx: shake', 'fx: shake ms=300');
+  // An fx beside a sound, a motion, a camera move; two anims of two characters.
+  const allowed: ReadonlyArray<readonly string[]> = [
+    ['fx: shake', 'sfx: door', 'anim: ally tremble'],
+    ['fx: flash', 'cam: push', 'bg: cafe'],
+    ['anim: ally hop', 'anim: stranger bounce', 'fx: flash'],
+  ];
+  for (const tags of allowed) {
+    expect(parse(...tags).errors, tags.join(' + ')).toEqual([]);
+  }
 });
