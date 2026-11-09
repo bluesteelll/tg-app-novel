@@ -972,6 +972,12 @@ test('reconcile: step 0 maps renamed items, docs, rooms, sections and hotspots b
   expect(misfit.dropped).toEqual([]);
 });
 
+test('reconcile: a slot of a lost lock gives its items back to held', () => {
+  const w = stamped(manor(), V2);
+  const r = reconcile(w, at('hall', { used: [it('medal_sun')], slots: { [k('hall.gone')]: [it('medal_sun')] } }), MANOR_KNOTS, V1);
+  expect([r.state.held, r.state.used, r.state.slots, r.dropped]).toEqual([['medal_sun'], [], {}, ['slots:hall.gone']]);
+});
+
 test('reconcile: unprovable state restarts the section', () => {
   const v1 = manor();
   const v2 = stamped(manor({ leverCellar: true }), V2);
