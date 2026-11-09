@@ -8,8 +8,10 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import type { AttemptResponse, PuzzleStatus } from '../api/generated/api.ts';
 import type { ApiError, Clock } from '../api/http.ts';
 import type { AudioCommand } from '../audio/manager.ts';
+import type { CueEvent } from '../cues/types.ts';
 import { createExploreController } from '../explore/controller.ts';
 import type { ExploreController } from '../explore/controller.ts';
+import type { ExploreEffect } from '../explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { WorldState } from '../explore/state.ts';
 import type { PuzzleUiProps } from '../puzzles/registry.ts';
@@ -18,17 +20,18 @@ import type { VisualCommand } from '../scene/executor.ts';
 import type { StatEvent } from '../stats/reporter.ts';
 import { decodeChapterMeta } from '../story/catalog.ts';
 import type { AssetEntry, AssetManifest, LoadedChapter, Result } from '../story/catalog.ts';
-import type { AssetId, ChapterId, KnotName, PuzzleLocalId, SectionId, StagingSnapshot } from '../story/staging.ts';
+import type { AssetId, ChapterId, KnotName, LineId, PuzzleLocalId, SectionId, StagingSnapshot } from '../story/staging.ts';
 import { createExploreView } from '../ui/explore-view.svelte.ts';
 import type { ExploreLayerProps } from '../ui/explore-view.svelte.ts';
 import { createPuzzleView } from '../ui/puzzle-view.svelte.ts';
 import type { PuzzleHostProps } from '../ui/puzzle-view.svelte.ts';
 import { createScreens } from '../ui/screens.ts';
 import { createViewModel } from '../ui/state.svelte.ts';
+import type { CueStageProps } from '../ui/state.svelte.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { HotspotKey, ItemId, WorldPublic } from '../world/types.ts';
-import { TAKE_FADE_MS, createYields } from './yields.ts';
-import type { ExploreChunk, LazyChunks, Yields } from './yields.ts';
+import { TAKE_FADE_MS, coreCue, createYields } from './yields.ts';
+import type { ExploreChunk, LazyChunks, Yields, YieldsHost } from './yields.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
 // Fixtures: a world in the source format (decoded and stamped, as controller.test.ts does) and its chapter
@@ -79,6 +82,54 @@ function manorWorld(): WorldPublic {
   return { ...toPublic(r.value), version: '1111111111111111' };
 }
 
+/**
+ * The cue fixture (engine plan GM3s): the hall holds one hotspot per effect the yields map to a cue (a look, a take with
+ * a prop, a document, a lock, the exits) and an exit out of the section; the cellar's onEnter gives a coin; the
+ * study's runs an event knot.
+ */
+function cueWorld(): WorldPublic {
+  const raw = {
+    format: 1,
+    items: {
+      medal: { name: txt('Медаль'), desc: txt('d'), glyph: 'sun' },
+      key: { name: txt('Ключ'), desc: txt('d'), glyph: 'key' },
+      coin: { name: txt('Монета'), desc: txt('d'), glyph: 'sun' },
+    },
+    docs: { letter: { title: txt('Письмо'), body: [txt('текст')] } },
+    puzzles: { gate: code(null, null) },
+    sections: {
+      manor: {
+        start: 'hall',
+        bgm: null,
+        rooms: {
+          hall: {
+            bg: 'hall',
+            title: txt('Hall'),
+            onEnter: [],
+            hotspots: [
+              exit('to_cellar', 'cellar'),
+              exit('to_study', 'study'),
+              take('medal', 'medal', 'medal'),
+              take('key', 'key', null),
+              { id: 'letter', kind: 'take', rect: RECT, label: txt('letter'), gives: { doc: 'letter' }, prop: null, then: [] },
+              box('box', lockOf(['medal'], 'gate')),
+              look('desk'),
+              { id: 'out', kind: 'exit', rect: RECT, label: txt('out'), to: { story: 'after' }, lock: null, sfx: null },
+            ],
+          },
+          cellar: { bg: 'cellar', title: txt('Cellar'), onEnter: [{ give: 'coin' }], hotspots: [exit('to_hall', 'hall')] },
+          study: { bg: 'study', title: txt('Study'), onEnter: [{ story: 'study_event' }], hotspots: [exit('to_hall', 'hall')] },
+        },
+      },
+    },
+  };
+  const r = decodeWorldSource(raw);
+  if (!r.ok) {
+    throw new Error(`invariant: the cue fixture world decodes: ${JSON.stringify(r.error)}`);
+  }
+  return { ...toPublic(r.value), version: '2222222222222222' };
+}
+
 const VARS = ['g_x', 'pz_drawer', 'pz_drawer_hints', 'pz_gate', 'pz_gate_hints', 'it_medal', 'it_key'];
 
 function image(name: string): AssetEntry {
@@ -86,7 +137,7 @@ function image(name: string): AssetEntry {
   return { kind: 'image', w: 1080, h: 2048, decodedBytes: 8_847_360, avif: ref('avif'), webp: ref('webp') };
 }
 
-function manorChapter(): LoadedChapter {
+function manorChapter(world: WorldPublic = manorWorld()): LoadedChapter {
   const meta = decodeChapterMeta({
     chapterId: 'ch1',
     storyVersion: '0111111111111111',
@@ -99,9 +150,9 @@ function manorChapter(): LoadedChapter {
   if (!meta.ok) {
     throw new Error(`invariant: the fixture meta decodes: ${JSON.stringify(meta.error)}`);
   }
-  const ids = ['bg/hall', 'bg/study', 'prop/medal', 'cg/drawer_close'];
+  const ids = ['bg/hall', 'bg/study', 'bg/cellar', 'prop/medal', 'cg/drawer_close'];
   const assets: AssetManifest = { chapterId: 'ch1' as ChapterId, assets: Object.fromEntries(ids.map((id) => [id, image(id)])) as Record<AssetId, AssetEntry> };
-  return { id: 'ch1' as ChapterId, story: {}, meta: meta.value, assets, en: null, world: manorWorld() };
+  return { id: 'ch1' as ChapterId, story: {}, meta: meta.value, assets, en: null, world };
 }
 
 const MANOR = 'manor' as SectionId;
@@ -116,6 +167,7 @@ const key = (k: string): HotspotKey => k as HotspotKey;
 const LAYER = (() => ({})) as unknown as Component<ExploreLayerProps>;
 const HOST = (() => ({})) as unknown as Component<PuzzleHostProps>;
 const TYPE_UI = (() => ({})) as unknown as Component<PuzzleUiProps>;
+const STAGE = (() => ({})) as unknown as Component<CueStageProps>;
 
 let observers = 0;
 let disconnected = 0;
@@ -165,6 +217,10 @@ type RigOptions = {
   status?: PuzzleStatus;
   /** The hint spend; none = no port. */
   hints?: HintPort;
+  /** The chapter's world; the manor by default. */
+  world?: WorldPublic;
+  /** The explore loader settles only after it. */
+  exploreGate?: Promise<void>;
 };
 
 function rig(o: RigOptions = {}) {
@@ -188,12 +244,18 @@ function rig(o: RigOptions = {}) {
   const haptics: string[] = [];
   const holders = new Map<string, Set<string>>();
   let stage: StagingSnapshot = { bg: null, cg: null, chars: [], bgm: null, props: [] };
-  const calls = { explore: 0, host: 0, ui: 0, attempts: 0 };
+  const calls = { explore: 0, host: 0, ui: 0, attempts: 0, stage: 0 };
+  /** Every cue the session's bus carries, through the scene role's subscription. */
+  const cues: CueEvent[] = [];
+  let sceneCalls = 0;
+  /** The puzzle frame's type UI at each call of the stage loader. */
+  const frameUi: unknown[] = [];
   const answers = [...(o.attempts ?? [])];
-  const ch = manorChapter();
+  const ch = manorChapter(o.world);
   const chunks: LazyChunks = {
     explore: async () => {
       calls.explore += 1;
+      await o.exploreGate;
       return { ok: true, value: { create: o.create ?? createExploreController, layer: LAYER } };
     },
     puzzleHost: async () => {
@@ -204,8 +266,14 @@ function rig(o: RigOptions = {}) {
       calls.ui += 1;
       return { ok: true, value: TYPE_UI };
     },
+    cueStage: async () => {
+      calls.stage += 1;
+      log.push('stage');
+      frameUi.push(puzzle.frame?.ui ?? null);
+      return { ok: true, value: STAGE };
+    },
   };
-  const yields = createYields({
+  const host: YieldsHost = {
     vm,
     screens,
     tg: { haptic: { impact: () => {}, selection: () => {}, notify: (t) => haptics.push(`notify:${t}`) } },
@@ -270,10 +338,33 @@ function rig(o: RigOptions = {}) {
     notice: () => log.push('notice'),
     tap: (fn) => fn(),
     queue: (fn) => fn(),
-  });
+    sceneCues: (subscribe) => {
+      sceneCalls += 1;
+      subscribe('scene', (e) => cues.push(e));
+    },
+  };
+  const yields = createYields(host);
   y = yields;
   const entered: Array<{ knot: string; projection: Readonly<Record<string, unknown>> }> = [];
-  return { yields, vm, screens, explore, puzzle, log, batches, events, haptics, holders, calls, entered, stage: () => stage };
+  return {
+    yields,
+    host,
+    vm,
+    screens,
+    explore,
+    puzzle,
+    log,
+    batches,
+    events,
+    haptics,
+    holders,
+    calls,
+    entered,
+    cues,
+    frameUi,
+    sceneCalls: () => sceneCalls,
+    stage: () => stage,
+  };
 }
 
 /** Lets the promise callbacks queued so far run. */
@@ -513,4 +604,177 @@ test('yields: a controller reset effect shows the area reset toast', async () =>
   expect(resetShown(r)).toBe(true);
   r.yields.dispose();
   expect([observers, disconnected]).toEqual([1, 1]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The cue channel (engine plan §8.1, GM3s): the session's bus, the effects mapped to cues, the stage's slot
+
+/** The world, module and panel cues the bus carried (the waits and moves have their own tests), with their boxes. */
+const worldCues = (r: Rig): Array<Pick<CueEvent, 'cue' | 'box'>> =>
+  r.cues
+    .filter((e) => e.cue.kind === 'fact' || e.cue.kind === 'module' || (e.cue.kind === 'ui-state' && e.cue.name === 'panel-open'))
+    .map((e) => ({ cue: e.cue, box: e.box }));
+
+/** The stage box of a hotspot's button now (the controller's cover-mapped box). */
+const boxOf = (r: Rig, k: string): CueEvent['box'] => r.explore.hotspots.find((h) => h.key === k)?.css ?? null;
+
+const tapCause = (at: string): Record<string, unknown> => ({ verb: 'tap', at, item: null, via: null });
+
+test("yields: today's effects reach the cue bus", async () => {
+  const r = rig({ world: cueWorld() });
+  await inHall(r);
+  const step = async (run: () => void): Promise<Array<Pick<CueEvent, 'cue' | 'box'>>> => {
+    const mark = worldCues(r).length;
+    run();
+    await settle();
+    return worldCues(r).slice(mark);
+  };
+  // A look is core's `look` at its hotspot, on its box.
+  const desk = boxOf(r, 'hall.desk');
+  expect(await step(() => r.yields.layer.ontap(key('hall.desk')))).toEqual([
+    { cue: { kind: 'module', module: 'core', name: 'look', at: 'hall.desk', item: null }, box: desk },
+  ]);
+  // A take: the item is held, by a tap at its hotspot; a document gift likewise.
+  const medal = boxOf(r, 'hall.medal');
+  expect(await step(() => r.yields.layer.ontap(key('hall.medal')))).toEqual([
+    { cue: { kind: 'fact', fact: { kind: 'held', id: 'medal' }, change: 'added', cause: tapCause('hall.medal') }, box: medal },
+  ]);
+  const letter = boxOf(r, 'hall.letter');
+  expect(await step(() => r.yields.layer.ontap(key('hall.letter')))).toEqual([
+    { cue: { kind: 'fact', fact: { kind: 'doc', id: 'letter' }, change: 'added', cause: tapCause('hall.letter') }, box: letter },
+  ]);
+  // A tap on a locked hotspot opens its panel: the panel's own cue, at the write that opens it.
+  expect(await step(() => r.yields.layer.ontap(key('hall.box')))).toEqual([
+    { cue: { kind: 'ui-state', name: 'panel-open', panel: 'lock', item: null }, box: null },
+  ]);
+  // An item that does not fit: core's `refused` at the lock, with the item.
+  const lock = boxOf(r, 'hall.box');
+  r.yields.layer.ontap(key('hall.key'));
+  await settle();
+  expect(await step(() => r.yields.layer.oninsert(key('hall.box'), 'key' as ItemId))).toEqual([
+    { cue: { kind: 'module', module: 'core', name: 'refused', at: 'hall.box', item: 'key' }, box: lock },
+  ]);
+  r.screens.back();
+  // A room whose onEnter runs an event knot: the story fact, by the tap on the exit.
+  const door = boxOf(r, 'hall.to_study');
+  expect(await step(() => r.yields.layer.ontap(key('hall.to_study')))).toEqual([
+    { cue: { kind: 'fact', fact: { kind: 'story', id: 'study_event' }, change: 'added', cause: tapCause('hall.to_study') }, box: door },
+  ]);
+  r.yields.dispose();
+
+  // A section that restarted (admitSection's `reset`, never emitted by reduce): core's `reset`, over the stage.
+  const create: ExploreChunk['create'] = (deps) => {
+    const real = createExploreController(deps);
+    let emit: Parameters<ExploreController['onEffect']>[0] | null = null;
+    return {
+      ...real,
+      enter: (section, state) => {
+        real.enter(section, state);
+        emit?.({ kind: 'reset', section });
+      },
+      onEffect: (fn) => {
+        emit = fn;
+        return real.onEffect(fn);
+      },
+    };
+  };
+  const reset = rig({ create });
+  await inHall(reset);
+  expect(worldCues(reset)).toEqual([{ cue: { kind: 'module', module: 'core', name: 'reset', at: null, item: null }, box: null }]);
+  reset.yields.dispose();
+});
+
+test('yields: the cue stage loads before a section or a puzzle opens', async () => {
+  // A section: the stage's chunk is requested with the explore chunk, before the first room batch.
+  const r = rig();
+  expect(r.vm.cueStage).toBeNull();
+  await inHall(r);
+  expect(r.calls.stage).toBe(1);
+  expect(r.log.indexOf('stage')).toBeLessThan(r.log.findIndex((l) => l.startsWith('apply:')));
+  expect(r.vm.cueStage?.component).toBe(STAGE);
+  r.yields.dispose();
+  // The slot is written when the stage's own chunk settles, not after the explore chunk's: the stage is mounted while
+  // the explore import runs, so the import's hold can show (critique W2).
+  let open = (): void => {};
+  const gated = rig({ exploreGate: new Promise<void>((resolve) => (open = resolve)) });
+  const entering = gated.yields.onYield({ kind: 'explore', section: MANOR });
+  await settle();
+  expect(gated.explore.layer).toBeNull();
+  expect(gated.vm.cueStage?.component).toBe(STAGE);
+  open();
+  await entering;
+  expect(gated.explore.layer).not.toBeNull();
+  gated.yields.dispose();
+  // A puzzle: requested with the host and type chunks, before the frame's type UI is written.
+  const p = rig();
+  await p.yields.onYield({ kind: 'puzzle', puzzle: DRAWER, then: AFTER });
+  expect(p.frameUi).toEqual([null]);
+  expect(p.puzzle.frame?.ui).toBe(TYPE_UI);
+  expect(p.vm.cueStage?.component).toBe(STAGE);
+  p.yields.dispose();
+});
+
+test("yields: the scene role gets the session's cue subscription once", async () => {
+  const r = rig({ world: cueWorld() });
+  // Right after the bus exists: before any step of the session.
+  expect(r.sceneCalls()).toBe(1);
+  await inHall(r);
+  r.yields.layer.ontap(key('hall.medal')); // a take: a cue and a batch
+  await settle();
+  await r.yields.onYield({ kind: 'puzzle', puzzle: DRAWER, then: AFTER });
+  expect(r.sceneCalls()).toBe(1);
+  // The subscription carries the session's cues.
+  expect(worldCues(r).map((e) => e.cue.kind)).toEqual(['fact']);
+  r.yields.dispose();
+});
+
+test('yields: dispose leaves no cue subscriber', async () => {
+  // A late effect: the controller's listener called after the session ended.
+  const listener: { fn: Parameters<ExploreController['onEffect']>[0] | null } = { fn: null };
+  const create: ExploreChunk['create'] = (deps) => {
+    const real = createExploreController(deps);
+    return {
+      ...real,
+      onEffect: (fn) => {
+        listener.fn = fn;
+        return real.onEffect(fn);
+      },
+    };
+  };
+  const r = rig({ create });
+  await inHall(r);
+  const looked: ExploreEffect = { kind: 'look', text: { id: 'ch1.yx.late' as LineId, ru: 'late' } };
+  // Control: while the session lives, such an effect reaches the scene role.
+  const before = r.cues.length;
+  listener.fn?.(looked);
+  expect(r.cues.length).toBe(before + 1);
+  r.yields.dispose();
+  listener.fn?.(looked);
+  expect(r.cues.length).toBe(before + 1);
+});
+
+test('yields: a disposed session clears the cue stage slot', async () => {
+  const r = rig();
+  await inHall(r);
+  const first = r.vm.cueStage;
+  expect(first?.component).toBe(STAGE);
+  // A second session on the same view model writes its own slot.
+  const second = createYields(r.host);
+  await second.onYield({ kind: 'explore', section: MANOR });
+  const own = r.vm.cueStage;
+  expect(own).not.toBeNull();
+  expect(own).not.toBe(first);
+  // The first session's late dispose leaves the second's slot; the second's own dispose clears it.
+  r.yields.dispose();
+  expect(r.vm.cueStage).toBe(own);
+  second.dispose();
+  expect(r.vm.cueStage).toBeNull();
+});
+
+test("yields: a module cue's name is one its rules half declares", () => {
+  // GM3m review M2: a module cue whose name its rules half lacks has no motion row, and the stage would throw in the
+  // bus emit. The yields' one builder takes core's declared names only.
+  expect(coreCue('look', key('hall.desk'), null)).toEqual({ kind: 'module', module: 'core', name: 'look', at: 'hall.desk', item: null });
+  // @ts-expect-error -- `opened` is no cue of core's rules half (a puzzle key): refused by type.
+  expect(coreCue('opened', null, null).name).toBe('opened');
 });
