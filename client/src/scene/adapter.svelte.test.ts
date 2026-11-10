@@ -1,13 +1,14 @@
 // The Pixi stage adapter (controller.ts) under happy-dom, on a bare Container stage (no renderer): an anchor's four
 // Containers nest, its art follows each of them, and a drop destroys them with the art but never the texture
 // (per-player GM6a 4, §6.1). Bounds come from Pixi's own transform math (getBounds), not from the executor's model.
+// The app's Pixi options skip Pixi's environment imports (RULINGS 201 lever X).
 import { Container, Rectangle, Sprite, Texture, TextureSource } from 'pixi.js';
 import { expect, test } from 'vitest';
 
 import type { AnchorKey } from '../mechanics/contract.ts';
 import type { ImageEntry, Result } from '../story/catalog.ts';
 import type { AssetId, PropId, Rect } from '../story/staging.ts';
-import { createLayers, pixiAdapter } from './controller.ts';
+import { appOptions, createLayers, pixiAdapter } from './controller.ts';
 import { createExecutor } from './executor.ts';
 import { propPlacement } from './layout.ts';
 import { createAssetRegistry } from './registry.ts';
@@ -170,4 +171,10 @@ test('scene: dropping an anchor destroys its four nodes and its art, never the t
     adapter.set(node.content, { z: 1 });
   }).not.toThrow();
   stage.destroy({ children: true });
+});
+
+test("scene: the app skips Pixi's environment imports", () => {
+  // Rule pixi-env keeps scene code off the systems the skip drops; a literal here, not SKIP_PIXI_ENV, so turning the
+  // flag off reds this pin (lane X, RULINGS 201).
+  expect(appOptions(document.createElement('div'), 1).skipExtensionImports).toBe(true);
 });

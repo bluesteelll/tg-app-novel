@@ -4,12 +4,13 @@
 // `eventMode = 'none'`, accessibility is off). Rule `pixi-env` (arch.test.ts) keeps scene code off the systems the
 // skip drops, and carries the recipe for importing one back. The budget's engine walk stops at these chunks only
 // while SKIP_PIXI_ENV holds, so with the flag off they are counted again (the fail-safe).
-// Pure, no import: scripts/budget.ts (through scripts/assets/manifest.ts) and the e2e read it in Node.
+// Read by scene/controller.ts (`appOptions`), and in Node by scripts/budget.ts (through scripts/assets/manifest.ts)
+// and the e2e: pure, no import, so pixi.js never loads there.
 // On a Pixi upgrade (8.22.0 now), re-check both srcs against node_modules/pixi.js/lib and the build's manifest: a
 // renamed src stops nothing, so the engine row rises by the chunks again, visibly.
 
 /** Pixi's environment extensions (events, accessibility, DOM pipe, filters) are not imported; see rule pixi-env. */
-export const SKIP_PIXI_ENV: boolean = false;
+export const SKIP_PIXI_ENV: boolean = true;
 /** The manifest `src` of Pixi's environment chunks; the budget walk stops there only while SKIP_PIXI_ENV holds. */
 export const PIXI_ENV_SRCS: readonly string[] = [
   'node_modules/pixi.js/lib/environment-browser/browserAll.mjs',

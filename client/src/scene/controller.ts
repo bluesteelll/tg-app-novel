@@ -14,6 +14,7 @@ import type { Executor, GroupRef, Layer, SceneSnapshot, SpriteRef, StageAdapter,
 import { halfFits, renderResolution, stageBound, tierFor } from './layout.ts';
 import type { PerfClass } from './layout.ts';
 import { createImageLoader, probeAvif } from './loader.ts';
+import { SKIP_PIXI_ENV } from './pixi-env.ts';
 import { ENSURE_HOLDER, createAssetScheduler } from './preload.ts';
 import type { AssetScheduler } from './preload.ts';
 import { createAssetRegistry } from './registry.ts';
@@ -118,8 +119,11 @@ function screenSize(): Size | null {
  * PROTOTYPE-PLAN "Init" [R3 §4.3], plus the accessibility layer off: it would listen for Tab and add DOM nodes. Sized
  * from the host at init and then only by the controller's ResizeObserver, not `resizeTo`: Pixi's ResizePlugin renders
  * on a window resize outside the render loop's gate, which could draw a texture not yet revived (MEMORY-PLAN M2).
+ * Pixi's environment extensions are not imported (`SKIP_PIXI_ENV`, RULINGS 201 lever X): the app uses none of their
+ * systems (events, accessibility, the DOM pipe, filters), so their chunks leave the path to the first line. Rule
+ * `pixi-env` (arch.test.ts) keeps scene code off those systems and every `.init(` here on these options.
  */
-function appOptions(host: HTMLElement, resolution: number): Partial<ApplicationOptions> {
+export function appOptions(host: HTMLElement, resolution: number): Partial<ApplicationOptions> {
   return {
     preference: 'webgl',
     resolution,
@@ -130,6 +134,7 @@ function appOptions(host: HTMLElement, resolution: number): Partial<ApplicationO
     height: host.clientHeight,
     autoStart: false,
     accessibilityOptions: { enabledByDefault: false, activateOnTab: false },
+    skipExtensionImports: SKIP_PIXI_ENV,
   };
 }
 
@@ -289,6 +294,9 @@ export function createSceneController(): SceneController {
     }
   };
   const watch = (canvas: HTMLCanvasElement): void => {
+    // Pixi's EventSystem set this, and it is skipped (SKIP_PIXI_ENV): without it a touch on the bare picture gets the
+    // body's `manipulation` (index.html) and pans or pinch-zooms. Both installs, mount and rebuild, come through here.
+    canvas.style.touchAction = 'none';
     canvas.addEventListener('webglcontextlost', onLost);
     canvas.addEventListener('webglcontextrestored', onRestored);
   };
