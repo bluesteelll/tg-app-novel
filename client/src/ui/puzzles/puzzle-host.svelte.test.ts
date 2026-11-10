@@ -216,6 +216,15 @@ test('puzzle host: status line, attempts and try', async () => {
   expect(names(container.querySelectorAll('button'))).not.toContain(t('en', 'puzzle.hint'));
 });
 
+test('puzzle-host: the status line is a cue target', () => {
+  // Engine plan §8.5 "Cue targets" (`status`): the status line, and only it, carries the marker the frame's
+  // `puzzle:checking` / `wrong` / `offline` / `rate-limited` / `ready` rows land on.
+  const { container } = render(PuzzleHost, hostProps({ frame: frameOf({ line: 'checking', busy: true }) }));
+  const marked = [...container.querySelectorAll('[data-cue-status]')];
+  expect(marked.map((el) => el.getAttribute('role'))).toEqual(['status']);
+  expect(shown(must(marked[0], 'the status line'))).toBe(t('en', 'puzzle.checking'));
+});
+
 const ladderOf = (tiers: readonly HintTierView[], wallet: HintLadderUiView['wallet'], over: Partial<HintLadderUiView> = {}): HintLadderUiView => ({
   tiers,
   wallet,

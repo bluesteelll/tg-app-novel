@@ -138,6 +138,25 @@ test('explore: every control declares its cue', () => {
   expect(findings).toEqual([]);
 });
 
+test('puzzles: every control declares its cue', () => {
+  // GM3p: the same rules over the puzzle families (the frame, the ladder, the type UIs), whose controls the frame root
+  // speaks for. Non-vacuous: exactly the two families' lazy components are scanned, each with at least one control.
+  const files = byName(PUZZLE_SOURCES);
+  const families = ['ui/puzzles/', 'puzzles/ui/'];
+  expect(files.map(([name]) => name)).toEqual(
+    lazyComponents()
+      .filter((f) => families.some((dir) => f.startsWith(dir)))
+      .sort((a, b) => a.localeCompare(b)),
+  );
+  const findings: string[] = [];
+  for (const [name, source] of files) {
+    const s = scan(name, source);
+    expect(s.controls, name).toBeGreaterThan(0);
+    findings.push(...s.declaration, ...s.gesture);
+  }
+  expect(findings).toEqual([]);
+});
+
 test('controls: the gate refuses an undeclared handler, a foreign trigger and an unknown cue', () => {
   const f = (markup: string): readonly string[] => scan('F.svelte', `<script lang="ts">\n  const f = (): void => {};\n</script>\n${markup}`).declaration;
   // Declared: a click control, a pointerdown control with its trigger, a keyed control's index and item; a component

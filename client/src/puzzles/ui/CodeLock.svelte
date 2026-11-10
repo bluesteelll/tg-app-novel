@@ -30,11 +30,25 @@
   <div class="lock">
     {#each dials as dial (dial)}
       <div class="dial">
-        <button type="button" class="step" aria-label={t(lang, 'puzzle.dial_up')} disabled={busy} onclick={() => step(dial, 1)}
+        <button
+          type="button"
+          class="step"
+          data-cue="dial-up"
+          data-cue-index={dial}
+          aria-label={t(lang, 'puzzle.dial_up')}
+          disabled={busy}
+          onclick={() => step(dial, 1)}
           >▲</button
         >
-        <span class="digit">{answer[dial] ?? 0}</span>
-        <button type="button" class="step" aria-label={t(lang, 'puzzle.dial_down')} disabled={busy} onclick={() => step(dial, -1)}
+        <span class="digit" data-cue-part={dial}>{answer[dial] ?? 0}</span>
+        <button
+          type="button"
+          class="step"
+          data-cue="dial-down"
+          data-cue-index={dial}
+          aria-label={t(lang, 'puzzle.dial_down')}
+          disabled={busy}
+          onclick={() => step(dial, -1)}
           >▼</button
         >
       </div>
