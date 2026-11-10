@@ -146,7 +146,6 @@ class OverlayState implements ViewModel {
   settings: Settings = $state.raw(DEFAULT_SETTINGS);
   saves: SavesView = $state.raw(NO_SAVES);
   paywall: PaywallView | null = $state.raw(null);
-  stageTap: boolean = $state.raw(false);
   mode: PlayMode = $state.raw('normal');
   speed: TextSpeed = $state.raw('normal');
   reducedMotion: boolean = $state.raw(false);
@@ -160,6 +159,9 @@ class OverlayState implements ViewModel {
   /** The pending expiry of each transient entry, by key. */
   readonly #expiry = new Map<string, number>();
   #destroyed = false;
+  // Last in the class: the minifier names the private fields in declaration order, so a field added here renames none
+  // of the others (beside `paywall` it renamed ten, each at every use, in the entry closure).
+  stageTap: boolean = $state.raw(false);
 
   constructor(timers: Timers, lang: Lang) {
     this.#timers = timers;
