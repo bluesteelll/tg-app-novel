@@ -14,7 +14,7 @@ import type { ExploreController } from '../explore/controller.ts';
 import type { ExploreEffect } from '../explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { WorldState } from '../explore/state.ts';
-import type { PuzzleUiProps } from '../puzzles/registry.ts';
+import type { ChunkError, PuzzleUiProps } from '../puzzles/registry.ts';
 import type { HintPort } from '../puzzles/session.ts';
 import type { SceneStats } from '../scene/controller.ts';
 import type { VisualCommand } from '../scene/executor.ts';
@@ -25,12 +25,13 @@ import type { AssetId, ChapterId, KnotName, PropId, PuzzleLocalId, SectionId, St
 import { createExploreView } from '../ui/explore-view.svelte.ts';
 import type { ExploreLayerProps } from '../ui/explore-view.svelte.ts';
 import { createPuzzleView } from '../ui/puzzle-view.svelte.ts';
-import type { PuzzleHostProps } from '../ui/puzzle-view.svelte.ts';
+import type { HintLadderUiView, PuzzleFrameView, PuzzleHostProps } from '../ui/puzzle-view.svelte.ts';
 import { createScreens } from '../ui/screens.ts';
 import { createViewModel } from '../ui/state.svelte.ts';
 import type { CueStageProps } from '../ui/state.svelte.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { DocId, HotspotKey, ItemId, WorldPublic } from '../world/types.ts';
+import type { WaitRow } from '../requests.test.ts';
 import { TAKE_FADE_MS, coreCue, createYields, heldBy } from './yields.ts';
 import type { ExploreChunk, LazyChunks, Yields, YieldsHost } from './yields.ts';
 import yieldsSource from './yields.ts?raw';
@@ -87,9 +88,9 @@ function manorWorld(): WorldPublic {
 /**
  * The cue fixture (engine plan GM3s): the hall holds one hotspot per effect the yields map to a cue (a look, a take with
  * a prop, a document, a lock, the exits) and an exit out of the section; the cellar's onEnter gives a coin; the
- * study's runs an event knot.
+ * study's runs an event knot. `extra` adds puzzles that no hotspot opens (a yield opens them).
  */
-function cueWorld(): WorldPublic {
+function cueWorld(extra: Json = {}): WorldPublic {
   const raw = {
     format: 1,
     items: {
@@ -98,7 +99,7 @@ function cueWorld(): WorldPublic {
       coin: { name: txt('Монета'), desc: txt('d'), glyph: 'sun' },
     },
     docs: { letter: { title: txt('Письмо'), body: [txt('текст')] } },
-    puzzles: { gate: code(null, null), drawer: code('drawer_close', 2) },
+    puzzles: { gate: code(null, null), drawer: code('drawer_close', 2), ...extra },
     sections: {
       manor: {
         start: 'hall',
@@ -209,6 +210,25 @@ class FakeClock implements Clock {
   clearTimeout(id: number): void {
     this.#timers.delete(id);
   }
+  /** Runs every timer that falls due within `ms`, in time order (one a callback sets included), then moves the clock. */
+  advance(ms: number): void {
+    const end = this.#now + ms;
+    for (;;) {
+      let next: [number, { at: number; fn: () => void }] | undefined;
+      for (const e of this.#timers) {
+        if (e[1].at <= end && (next === undefined || e[1].at < next[1].at)) {
+          next = e;
+        }
+      }
+      if (next === undefined) {
+        break;
+      }
+      this.#timers.delete(next[0]);
+      this.#now = next[1].at;
+      next[1].fn();
+    }
+    this.#now = end;
+  }
 }
 
 type Rig = ReturnType<typeof rig>;
@@ -226,7 +246,14 @@ type RigOptions = {
   exploreGate?: Promise<void>;
   /** Each batch starts only when the test releases it (`release`): its loads are slow. */
   late?: boolean;
+  /** Every attempt's answer waits for it (an attempt in flight). */
+  attemptGate?: Promise<void>;
+  /** Loaders in place of the counting ones (a deferred or failing chunk). */
+  loaders?: Partial<LazyChunks>;
 };
+
+/** The views as they stood when a cue reached the bus. */
+type ViewsAt = { readonly frame: PuzzleFrameView | null; readonly host: Component<PuzzleHostProps> | null; readonly ladder: HintLadderUiView | null };
 
 /** A scene's counters with every field idle but the two the batch hold reads. */
 function sceneStats(s: { stale: number; reviving: boolean }): SceneStats {
@@ -271,6 +298,8 @@ function rig(o: RigOptions = {}) {
   const calls = { explore: 0, host: 0, ui: 0, attempts: 0, stage: 0 };
   /** Every cue the session's bus carries, through the scene role's subscription. */
   const cues: CueEvent[] = [];
+  /** The puzzle views at each of those cues. */
+  const views: ViewsAt[] = [];
   let sceneCalls = 0;
   /** The puzzle frame's type UI at each call of the stage loader. */
   const frameUi: unknown[] = [];
@@ -300,6 +329,7 @@ function rig(o: RigOptions = {}) {
       frameUi.push(puzzle.frame?.ui ?? null);
       return { ok: true, value: STAGE };
     },
+    ...o.loaders,
   };
   const host: YieldsHost = {
     vm,
@@ -309,6 +339,7 @@ function rig(o: RigOptions = {}) {
       getPuzzle: async () => (o.status === undefined ? { ok: false, error: { kind: 'network', detail: 'none' } } : { ok: true, value: o.status }),
       postAttempt: async () => {
         calls.attempts += 1;
+        await o.attemptGate;
         return answers.shift() ?? { ok: true, value: { correct: false, solved: false, attemptsLeft: null, spent: false } };
       },
     },
@@ -373,7 +404,10 @@ function rig(o: RigOptions = {}) {
     queue: (fn) => fn(),
     sceneCues: (subscribe) => {
       sceneCalls += 1;
-      subscribe('scene', (e) => cues.push(e));
+      subscribe('scene', (e) => {
+        cues.push(e);
+        views.push({ frame: puzzle.frame, host: puzzle.host, ladder: puzzle.ladder });
+      });
     },
   };
   const yields = createYields(host);
@@ -394,6 +428,8 @@ function rig(o: RigOptions = {}) {
     calls,
     entered,
     cues,
+    views,
+    clock,
     frameUi,
     sceneCalls: () => sceneCalls,
     revive,
@@ -829,8 +865,9 @@ test("yields: the scene role gets the session's cue subscription once", async ()
   await settle();
   await r.yields.onYield({ kind: 'puzzle', puzzle: DRAWER, then: AFTER });
   expect(r.sceneCalls()).toBe(1);
-  // The subscription carries the session's cues: the hall's visit, then the take's held and taken.
-  expect(worldCues(r).map((e) => e.cue.kind)).toEqual(['fact', 'fact', 'fact']);
+  // The subscription carries the session's cues: the hall's visit, then the take's held and taken, then the drawer
+  // frame's appearance (GM3p: yields' own `panel-open` at the write that shows it).
+  expect(worldCues(r).map((e) => e.cue.kind)).toEqual(['fact', 'fact', 'fact', 'ui-state']);
   r.yields.dispose();
 });
 
@@ -928,17 +965,6 @@ async function inLateHall(r: Rig): Promise<void> {
   expect(r.explore.layer).not.toBeNull();
 }
 
-test('yields: every batch goes through held', () => {
-  // The one batch site: every `h.apply(` of yields.ts is held's (GM3p's request walk replaces this pin by declaration).
-  const sites = [...yieldsSource.matchAll(/\bh\.apply\(/g)].map((m) => m.index);
-  expect(sites.length).toBe(1);
-  const start = yieldsSource.indexOf('export function heldBy(');
-  const end = yieldsSource.indexOf('\n}\n', start);
-  expect(start).toBeGreaterThan(-1);
-  expect(sites[0]).toBeGreaterThan(start);
-  expect(sites[0]).toBeLessThan(end);
-});
-
 test('yields: a batch that waits on a load emits waiting, then waited', async () => {
   const r = rig({ world: cueWorld(), late: true });
   await inLateHall(r);
@@ -974,15 +1000,18 @@ test('yields: a batch that waits on a load emits waiting, then waited', async ()
   expect(r.cues.at(-1)?.box).toBeNull();
   r.release();
   await settle();
-  expect(keysOf(r, mark)).toEqual(['ui-state:waiting', 'ui-state:waited']);
+  // GM3p: then the frame's own load hold (its write, its chunk write), its appearance and its type UI.
+  expect(keysOf(r, mark)).toEqual(['ui-state:waiting', 'ui-state:waited', 'ui-state:waiting', 'ui-state:waited', 'ui-state:panel-open', 'puzzle:opened']);
   expect(r.puzzle.frame?.mode).toBe('explore');
   mark = r.cues.length;
   r.screens.back();
   await settle();
-  expect(keysOf(r, mark)).toEqual(['ui-state:waiting']);
+  // GM3p: the X8 Back hides the frame (its end cue), then the close-up's hold.
+  expect(keysOf(r, mark)).toEqual(['puzzle:closed', 'ui-state:waiting']);
+  expect(r.cues.at(-1)?.box).toBeNull();
   r.release();
   await settle();
-  expect(keysOf(r, mark)).toEqual(['ui-state:waiting', 'ui-state:waited']);
+  expect(keysOf(r, mark)).toEqual(['puzzle:closed', 'ui-state:waiting', 'ui-state:waited']);
   expect(r.stage().cg).toBeNull();
   r.yields.dispose();
 
@@ -995,11 +1024,12 @@ test('yields: a batch that waits on a load emits waiting, then waited', async ()
   mark = p.cues.length;
   p.yields.host.ontry();
   await settle();
-  expect(keysOf(p, mark)).toEqual(['ui-state:waiting']);
+  // GM3p: the attempt's check and the frame's end cue come first.
+  expect(keysOf(p, mark)).toEqual(['puzzle:checking', 'puzzle:solved', 'ui-state:waiting']);
   expect(p.cues.at(-1)?.box).toBeNull();
   p.release();
   await settle();
-  expect(keysOf(p, mark)).toEqual(['ui-state:waiting', 'ui-state:waited']);
+  expect(keysOf(p, mark)).toEqual(['puzzle:checking', 'puzzle:solved', 'ui-state:waiting', 'ui-state:waited']);
   expect(p.entered.map((e) => e.knot)).toEqual(['after']);
   p.yields.dispose();
 
@@ -1383,15 +1413,629 @@ test('yields: the screens diff emits panel-open and panel-close', async () => {
   expect(await step(() => r.yields.layer.onread('letter' as DocId))).toEqual(['panel-open:document']);
   expect(await step(() => r.yields.layer.onclose())).toEqual(['panel-close:document']);
   expect(await step(() => r.screens.back())).toEqual(['panel-close:inventory']);
-  // An exploration puzzle is no panel (its frame has cues of its own): its open and its X8 Back add none. The hint
-  // ladder over it is one (critique O1: its live target is GM3p's HintLadder marker; until then the stage's fallback).
-  expect(await step(() => r.yields.layer.ontap(key('hall.chest')))).toEqual([]);
+  // An exploration puzzle is no screens-diff panel: its frame's appearance is yields' own `panel-open` (GM3p, from
+  // the write that shows it), and its X8 Back adds none (its leave is its end cue). The hint ladder over it is one (its
+  // live target is HintLadder's marker).
+  expect(await step(() => r.yields.layer.ontap(key('hall.chest')))).toEqual(['panel-open:puzzle']);
   expect(r.puzzle.frame?.mode).toBe('explore');
   expect(await step(() => r.yields.host.onhint())).toEqual(['panel-open:hints']);
   expect(await step(() => r.screens.back())).toEqual(['panel-close:hints']);
   expect(await step(() => r.screens.back())).toEqual([]);
   expect(r.vm.screens.overlays).toEqual([]);
   // Every panel cue is the panel's own: no box (the stage finds the panel by its marker).
-  expect(r.cues.filter(isPanelCue).map((e) => e.box)).toEqual(Array.from({ length: 8 }, () => null));
+  expect(r.cues.filter(isPanelCue).map((e) => e.box)).toEqual(Array.from({ length: 9 }, () => null));
   r.yields.dispose();
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM3p: the puzzle cues (engine plan §8.1 "The frame's flags and its ends", point 11; §8.6 `frameShown`)
+
+const PIECES = 'pieces' as PuzzleLocalId;
+const CABINET = 'cabinet' as PuzzleLocalId;
+/** A linear `order` puzzle over the cue world's three items, `maxAttempts` tries. */
+const orderPuzzle = (maxAttempts: number | null): Json => ({
+  type: 'order',
+  title: txt('order'),
+  prompt: txt('prompt'),
+  closeup: null,
+  params: { pieces: ['medal', 'key', 'coin'] },
+  maxAttempts,
+  giveUp: false,
+  solution: [2, 0, 1],
+  hints: [txt('hint')],
+});
+/** The cue world with an `order` puzzle of three tries and a code puzzle with no close-up that allows Give up. */
+const puzzleWorld = (): WorldPublic => cueWorld({ pieces: orderPuzzle(3), cabinet: { ...code(null, null), giveUp: true } });
+
+const WRONG: Result<AttemptResponse, ApiError> = { ok: true, value: { correct: false, solved: false, attemptsLeft: null, spent: false } };
+const RIGHT: Result<AttemptResponse, ApiError> = { ok: true, value: { correct: true, solved: true, attemptsLeft: null, spent: false } };
+const httpError = (status: number, retryAfter: number | null = null): Result<AttemptResponse, ApiError> => ({
+  ok: false,
+  error: { kind: 'http', status, code: null, body: null, retryAfter },
+});
+
+/** A promise the test settles. */
+function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
+  let resolve: (v: T) => void = () => {};
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+/** The host chunk, deferred until the test lands it. */
+const deferredHost = (): { loader: LazyChunks['puzzleHost']; land: () => void } => {
+  const d = deferred<void>();
+  return {
+    loader: async () => {
+      await d.promise;
+      return { ok: true, value: HOST };
+    },
+    land: () => d.resolve(),
+  };
+};
+
+/** The puzzle keys (and the frame's `ui-state` keys with their panel) the bus carried from `from` on. */
+const frameKeys = (r: Rig, from = 0): string[] =>
+  r.cues
+    .slice(from)
+    .flatMap((e) =>
+      e.cue.kind === 'puzzle'
+        ? [`puzzle:${e.cue.name}${e.cue.index === null ? '' : `@${e.cue.index}`}`]
+        : e.cue.kind === 'ui-state' && e.cue.panel === 'puzzle'
+          ? [`ui-state:${e.cue.name}@puzzle`]
+          : [],
+    );
+/** App's frame layer shows the frame (§8.1 point 8): the host component, or the failed-host block. */
+const shownIn = (v: ViewsAt): boolean => v.frame !== null && (v.host !== null || v.frame.loadFailed);
+
+test('yields: a dial change emits puzzle input with its index', async () => {
+  const r = rig();
+  await r.yields.onYield({ kind: 'puzzle', puzzle: DRAWER, then: AFTER });
+  const mark = r.cues.length;
+  r.yields.host.onchange([0, 1, 0, 0]);
+  r.yields.host.onchange([0, 1, 0, 0]); // the same answer: no change, no cue
+  r.yields.host.onchange([2, 1, 0, 3]);
+  expect(frameKeys(r, mark)).toEqual(['puzzle:input@1', 'puzzle:input@0', 'puzzle:input@3']);
+  expect(r.cues.slice(mark).every((e) => e.cue.kind === 'puzzle' && e.cue.puzzle === DRAWER && e.box === null)).toBe(true);
+  r.yields.dispose();
+});
+
+test('yields: a wrong attempt emits puzzle wrong and a solve emits puzzle solved', async () => {
+  const r = rig({ attempts: [WRONG, RIGHT] });
+  await r.yields.onYield({ kind: 'puzzle', puzzle: DRAWER, then: AFTER });
+  let mark = r.cues.length;
+  r.yields.host.ontry();
+  await settle();
+  expect(frameKeys(r, mark)).toEqual(['puzzle:checking', 'puzzle:wrong']);
+  mark = r.cues.length;
+  r.yields.host.ontry();
+  await settle();
+  // The end cue comes from the drop that ends the frame (`onEnd`), not from `attempted`, which never sees an ending answer.
+  expect(frameKeys(r, mark)).toEqual(['puzzle:checking', 'puzzle:solved']);
+  expect(r.puzzle.frame).toBeNull();
+  r.yields.dispose();
+});
+
+test('yields: a last wrong attempt emits puzzle failed', async () => {
+  const r = rig({ world: puzzleWorld(), attempts: [WRONG, WRONG, WRONG] });
+  await r.yields.onYield({ kind: 'puzzle', puzzle: PIECES, then: AFTER });
+  const id = r.puzzle.frame?.id;
+  const mark = r.cues.length;
+  for (let i = 0; i < 3; i += 1) {
+    r.yields.host.ontry();
+    await settle();
+  }
+  expect(frameKeys(r, mark)).toEqual(['puzzle:checking', 'puzzle:wrong', 'puzzle:checking', 'puzzle:wrong', 'puzzle:checking', 'puzzle:failed']);
+  // Emitted while its frame was still on screen (the stage captures the wrapper inside the emit), then the frame goes.
+  const at = r.cues.findIndex((e) => e.cue.kind === 'puzzle' && e.cue.name === 'failed');
+  const v = r.views[at];
+  expect([v?.frame?.id, v !== undefined && shownIn(v)]).toEqual([id, true]);
+  expect(r.puzzle.frame).toBeNull();
+  r.yields.dispose();
+});
+
+test('yields: a solve emits puzzle solved while its frame is shown', async () => {
+  const r = rig({ world: puzzleWorld(), attempts: [RIGHT] });
+  await r.yields.onYield({ kind: 'puzzle', puzzle: CABINET, then: AFTER });
+  const id = r.puzzle.frame?.id;
+  r.yields.host.ontry();
+  await settle();
+  const solved = r.cues.flatMap((e, i) => (e.cue.kind === 'puzzle' && e.cue.name === 'solved' ? [i] : []));
+  expect(solved).toHaveLength(1);
+  const v = r.views[solved[0] ?? -1];
+  expect([v?.frame?.id, v !== undefined && shownIn(v)]).toEqual([id, true]);
+  expect(r.puzzle.frame).toBeNull();
+  r.yields.dispose();
+});
+
+test('yields: a give-up and an X8 close emit puzzle closed', async () => {
+  // A linear give-up (the session ends `abandoned`; its drop's cue is `closed`).
+  const r = rig({ world: puzzleWorld() });
+  await r.yields.onYield({ kind: 'puzzle', puzzle: CABINET, then: AFTER });
+  let mark = r.cues.length;
+  r.yields.host.ongiveup();
+  await settle();
+  expect(frameKeys(r, mark)).toEqual(['puzzle:closed']);
+  expect(r.puzzle.frame).toBeNull();
+  r.yields.dispose();
+  // An exploration puzzle's X8 Back with nothing in flight: one close, one motion.
+  const x = rig({ world: cueWorld() });
+  await inHall(x);
+  x.yields.layer.ontap(key('hall.chest'));
+  await settle();
+  expect(x.puzzle.frame?.mode).toBe('explore');
+  mark = x.cues.length;
+  x.screens.back();
+  await settle();
+  expect(frameKeys(x, mark)).toEqual(['puzzle:closed']);
+  expect(x.puzzle.frame).toBeNull();
+  x.yields.dispose();
+});
+
+test("yields: every frame's appearance plays one panel-open", async () => {
+  const opens = (r: Rig, from: number): number =>
+    r.cues.slice(from).filter((e) => e.cue.kind === 'ui-state' && e.cue.name === 'panel-open' && e.cue.panel === 'puzzle').length;
+  // A linear frame whose type chunk is still loading (the host already in): it shows at its write, once.
+  const ui = deferred<void>();
+  const r = rig({
+    loaders: {
+      puzzleUi: async () => {
+        await ui.promise;
+        return { ok: true, value: TYPE_UI };
+      },
+    },
+  });
+  r.puzzle.host = HOST;
+  const opening = r.yields.onYield({ kind: 'puzzle', puzzle: DRAWER, then: AFTER });
+  await settle();
+  expect(opens(r, 0)).toBe(1);
+  ui.resolve();
+  await opening;
+  expect(opens(r, 0)).toBe(1);
+  r.yields.dispose();
+  // An exploration frame: one, from the write that shows it (the screens diff does not speak for `puzzle`).
+  const x = rig({ world: cueWorld() });
+  await inHall(x);
+  const mark = x.cues.length;
+  x.yields.layer.ontap(key('hall.chest'));
+  await settle();
+  expect(x.puzzle.frame?.mode).toBe('explore');
+  expect(opens(x, mark)).toBe(1);
+  x.yields.dispose();
+});
+
+test('yields: an X8 Back hides the frame at once and a late correct answer still opens the lock', async () => {
+  const answer = deferred<void>();
+  const r = rig({ world: cueWorld(), attempts: [RIGHT], attemptGate: answer.promise });
+  await inHall(r);
+  r.yields.layer.ontap(key('hall.chest'));
+  await settle();
+  expect([r.puzzle.frame?.mode, r.stage().cg]).toEqual(['explore', 'drawer_close']);
+  r.yields.host.ontry(); // the attempt is in flight
+  await settle();
+  const mark = r.cues.length;
+  r.screens.back();
+  await settle();
+  // At the Back: the frame is gone, it irises out once, and the close-up fades out.
+  expect(r.puzzle.frame).toBeNull();
+  expect(frameKeys(r, mark)).toEqual(['puzzle:closed']);
+  expect(r.stage().cg).toBeNull();
+  const back = r.cues.length;
+  answer.resolve();
+  await settle();
+  // The late answer opens the lock in the room, with no second frame motion.
+  expect(r.yields.world().puzzles[DRAWER]?.outcome).toBe('solved');
+  expect(frameKeys(r, back)).toEqual([]);
+  expect(r.cues.slice(back).filter(isPanelCue)).toEqual([]);
+  r.yields.dispose();
+});
+
+test("yields: a frame's appearance is emitted by the write that shows it", async () => {
+  const host = deferredHost();
+  const r = rig({ world: puzzleWorld(), loaders: { puzzleHost: host.loader } });
+  // The first frame of the page: its write shows nothing (no host), the chunk write shows it.
+  const opening = r.yields.onYield({ kind: 'puzzle', puzzle: CABINET, then: AFTER });
+  await settle();
+  expect(frameKeys(r)).toEqual(['ui-state:waiting@puzzle']);
+  let mark = r.cues.length;
+  host.land();
+  await opening;
+  expect(frameKeys(r, mark)).toEqual(['ui-state:waited@puzzle', 'ui-state:panel-open@puzzle', 'puzzle:opened']);
+  // A second open with the host in: the frame write shows it.
+  r.yields.disposePuzzle();
+  const ui = deferred<void>();
+  r.host.chunks.puzzleUi = async () => {
+    await ui.promise;
+    return { ok: true, value: TYPE_UI };
+  };
+  mark = r.cues.length;
+  const second = r.yields.onYield({ kind: 'puzzle', puzzle: CABINET, then: AFTER });
+  await settle();
+  expect(frameKeys(r, mark)).toEqual(['ui-state:panel-open@puzzle', 'ui-state:waiting@puzzle']);
+  ui.resolve();
+  await second;
+  expect(frameKeys(r, mark)).toEqual(['ui-state:panel-open@puzzle', 'ui-state:waiting@puzzle', 'ui-state:waited@puzzle', 'puzzle:opened']);
+  r.yields.dispose();
+  // A frame that opens waiting (its `busy` set through the store before the chunk lands, as per-player's values wait
+  // does): its appearance breathes at once.
+  const waitHost = deferredHost();
+  const w = rig({ world: puzzleWorld(), loaders: { puzzleHost: waitHost.loader } });
+  const waiting = w.yields.onYield({ kind: 'puzzle', puzzle: CABINET, then: AFTER });
+  await settle();
+  const f = w.puzzle.frame;
+  w.puzzle.frame = f === null ? null : { ...f, busy: true, line: 'checking' };
+  mark = w.cues.length;
+  waitHost.land();
+  await waiting;
+  expect(frameKeys(w, mark)).toEqual(['ui-state:waited@puzzle', 'ui-state:panel-open@puzzle', 'puzzle:checking', 'puzzle:opened']);
+  w.yields.dispose();
+  // A host that fails: the failed-host block shows, then its notice wobbles.
+  const failed = rig({ world: puzzleWorld(), loaders: { puzzleHost: async () => ({ ok: false, error: { kind: 'chunk', detail: 'offline' } }) } });
+  await failed.yields.onYield({ kind: 'puzzle', puzzle: CABINET, then: AFTER });
+  expect(frameKeys(failed)).toEqual(['ui-state:waiting@puzzle', 'ui-state:waited@puzzle', 'ui-state:panel-open@puzzle', 'puzzle:load-failed']);
+  expect([failed.puzzle.host, failed.puzzle.frame?.loadFailed]).toEqual([null, true]);
+  failed.yields.dispose();
+  // Every frame cue of the four opens was emitted with its frame on screen.
+  for (const x of [r, w, failed]) {
+    const unshown = x.cues.flatMap((e, i) => {
+      const v = x.views[i];
+      const frameCue = e.cue.kind === 'puzzle' || (e.cue.kind === 'ui-state' && e.cue.panel === 'puzzle' && e.cue.name === 'panel-open');
+      return frameCue && v !== undefined && !shownIn(v) ? [keyOf(e.cue)] : [];
+    });
+    expect(unshown).toEqual([]);
+  }
+});
+
+test('yields: a frame that never showed plays no cue', async () => {
+  // An X8 Back, a restore and a chapter change, each before the first host chunk lands: only the load hold ends.
+  const drops: ReadonlyArray<readonly [string, (r: Rig) => void]> = [
+    ['an X8 Back', (r) => r.screens.back()],
+    ['a restore', (r) => r.yields.restore(EMPTY_WORLD_STATE, null, null)],
+    ['a chapter change', (r) => r.yields.chapterChanged()],
+  ];
+  for (const [name, drop] of drops) {
+    const host = deferredHost();
+    const r = rig({ world: cueWorld(), loaders: { puzzleHost: host.loader } });
+    await inHall(r);
+    const mark = r.cues.length;
+    r.yields.layer.ontap(key('hall.chest'));
+    await settle();
+    expect(r.puzzle.frame?.mode, name).toBe('explore');
+    drop(r);
+    await settle();
+    host.land();
+    await settle();
+    expect(frameKeys(r, mark), name).toEqual(['ui-state:waiting@puzzle', 'ui-state:waited@puzzle']);
+    // The dropped open's late chunk result writes nothing.
+    expect([r.puzzle.frame, r.puzzle.host], name).toEqual([null, null]);
+    r.yields.dispose();
+  }
+});
+
+test('yields: the host hears every change of the shown frame', async () => {
+  const host = deferredHost();
+  const r = rig({ world: puzzleWorld(), loaders: { puzzleHost: host.loader } });
+  const heard: Array<{ id: number } | null> = [];
+  r.host.frameShown = (f) => heard.push(f === null ? null : { id: f.id });
+  await inHall(r);
+  // Nothing until the frame is on screen.
+  r.yields.layer.ontap(key('hall.chest'));
+  await settle();
+  const first = r.puzzle.frame?.id ?? -1;
+  expect(heard).toEqual([]);
+  host.land();
+  await settle();
+  expect(heard).toEqual([{ id: first }]);
+  // An X8 Back takes it off; a reopen (the host now in) shows the next at its write; a restore takes it off.
+  r.screens.back();
+  await settle();
+  r.yields.layer.ontap(key('hall.chest'));
+  await settle();
+  const second = r.puzzle.frame?.id ?? -1;
+  r.yields.restore(EMPTY_WORLD_STATE, null, null);
+  await settle();
+  await r.yields.onYield({ kind: 'puzzle', puzzle: CABINET, then: AFTER });
+  const third = r.puzzle.frame?.id ?? -1;
+  r.yields.dispose();
+  expect(heard).toEqual([{ id: first }, null, { id: second }, null, { id: third }, null]);
+  // A frame that never appeared reports nothing.
+  const late = deferredHost();
+  const x = rig({ world: cueWorld(), loaders: { puzzleHost: late.loader } });
+  const none: unknown[] = [];
+  x.host.frameShown = (f) => none.push(f);
+  await inHall(x);
+  x.yields.layer.ontap(key('hall.chest'));
+  await settle();
+  x.screens.back();
+  late.land();
+  await settle();
+  x.yields.dispose();
+  expect(none).toEqual([]);
+  // An X8 Back over an attempt in flight: the session ends with the late answer, the frame left at the Back.
+  const answer = deferred<void>();
+  const y = rig({ world: cueWorld(), attempts: [RIGHT], attemptGate: answer.promise });
+  const atBack: Array<{ id: number } | null> = [];
+  y.host.frameShown = (f) => atBack.push(f === null ? null : { id: f.id });
+  await inHall(y);
+  y.yields.layer.ontap(key('hall.chest'));
+  await settle();
+  const shown = y.puzzle.frame?.id ?? -1;
+  y.yields.host.ontry();
+  await settle();
+  y.screens.back();
+  await settle();
+  expect(atBack).toEqual([{ id: shown }, null]);
+  answer.resolve();
+  await settle();
+  y.yields.dispose();
+  expect(atBack).toEqual([{ id: shown }, null]);
+});
+
+test('yields: every attempt starts through post', () => {
+  // The one attempt starter (per-player R-E28): `session.attempt(` occurs once in yields.ts, inside `const post`.
+  const sites = [...yieldsSource.matchAll(/\.session\.attempt\(/g)].map((m) => m.index);
+  expect(sites).toHaveLength(1);
+  const start = yieldsSource.indexOf('  const post = ');
+  const end = yieldsSource.indexOf('\n  };\n', start);
+  expect(start).toBeGreaterThan(-1);
+  expect(sites[0]).toBeGreaterThan(start);
+  expect(sites[0]).toBeLessThan(end);
+});
+
+test('yields: an offline reply and each countdown second emit their cues', async () => {
+  const r = rig({ world: puzzleWorld(), attempts: [{ ok: false, error: { kind: 'network', detail: 'down' } }, httpError(403), httpError(429, 3)] });
+  await r.yields.onYield({ kind: 'puzzle', puzzle: CABINET, then: AFTER });
+  const mark = r.cues.length;
+  r.yields.host.ontry();
+  await settle();
+  r.yields.host.ontry();
+  await settle();
+  expect(frameKeys(r, mark)).toEqual(['puzzle:checking', 'puzzle:offline', 'puzzle:checking', 'puzzle:offline']);
+  const limit = r.cues.length;
+  r.yields.host.ontry();
+  await settle();
+  // One cue per second, its index the seconds left.
+  expect(frameKeys(r, limit)).toEqual(['puzzle:checking', 'puzzle:rate-limited@3']);
+  r.clock.advance(1000);
+  expect(frameKeys(r, limit)).toEqual(['puzzle:checking', 'puzzle:rate-limited@3', 'puzzle:rate-limited@2']);
+  r.clock.advance(1000);
+  expect(frameKeys(r, limit).slice(-1)).toEqual(['puzzle:rate-limited@1']);
+  expect(r.puzzle.frame?.retryAfter).toBe(1);
+  r.yields.dispose();
+});
+
+test('yields: a countdown that ends with nothing to post emits puzzle ready', async () => {
+  const r = rig({ world: puzzleWorld(), attempts: [httpError(429, 3)] });
+  await r.yields.onYield({ kind: 'puzzle', puzzle: CABINET, then: AFTER });
+  r.yields.host.ontry();
+  await settle();
+  const mark = r.cues.length;
+  r.clock.advance(3000);
+  await settle();
+  expect(frameKeys(r, mark)).toEqual(['puzzle:rate-limited@2', 'puzzle:rate-limited@1', 'puzzle:ready']);
+  expect([r.puzzle.frame?.line, r.puzzle.frame?.retryAfter, r.calls.attempts]).toEqual(['idle', null, 1]);
+  r.clock.advance(5000);
+  expect(frameKeys(r, mark)).toHaveLength(3);
+  r.yields.dispose();
+});
+
+test('yields: a check that ends with no outcome returns the frame to idle with puzzle ready', async () => {
+  // `attempt()` refuses an answer of the wrong shape (`invalid`) before any request: an order of one piece of three.
+  const r = rig({ world: puzzleWorld() });
+  await r.yields.onYield({ kind: 'puzzle', puzzle: PIECES, then: AFTER });
+  r.yields.host.onchange([0]);
+  const mark = r.cues.length;
+  r.yields.host.ontry();
+  await settle();
+  expect(frameKeys(r, mark)).toEqual(['puzzle:checking', 'puzzle:ready@3']);
+  expect([r.puzzle.frame?.line, r.puzzle.frame?.busy, r.calls.attempts]).toEqual(['idle', false, 0]);
+  r.yields.dispose();
+});
+
+test('yields: a busy reply leaves the frame to the attempt in flight', async () => {
+  const answer = deferred<void>();
+  const r = rig({ world: puzzleWorld(), attempts: [WRONG], attemptGate: answer.promise });
+  await r.yields.onYield({ kind: 'puzzle', puzzle: CABINET, then: AFTER });
+  r.yields.host.ontry(); // in flight
+  await settle();
+  // The frame shown as idle again (a write this lane does not make), so a second Try reaches the session: `busy`.
+  const f = r.puzzle.frame;
+  r.puzzle.frame = f === null ? null : { ...f, busy: false, line: 'idle' };
+  r.yields.host.ontry();
+  const checking = r.puzzle.frame;
+  const mark = r.cues.length;
+  await settle();
+  expect([r.calls.attempts, r.puzzle.frame === checking, r.puzzle.frame?.busy]).toEqual([1, true, true]);
+  expect(frameKeys(r, mark)).toEqual([]);
+  // The attempt in flight settles it.
+  answer.resolve();
+  await settle();
+  expect([r.puzzle.frame?.line, r.puzzle.frame?.busy]).toEqual(['wrong', false]);
+  r.yields.dispose();
+});
+
+// The class guard of §8.1 point 11: every wait of the views has exactly one hold from the block that starts it to every
+// block that ends it. A hold's edges as the stage keys them: `ui-state:waiting` / `waited` per panel (`room` for a
+// box-less or `via` hold), and the answer in flight, opened by `puzzle:checking` and ended by the same puzzle's next
+// `CHECKING_ENDS` key.
+
+const CHECKING_ENDS_KEYS = ['wrong', 'failed', 'solved', 'offline', 'rate-limited', 'ready', 'renewed', 'reset', 'closed'];
+
+/** The hold edges of `cues`, given the answer holds already open; the panels' open counts after them. */
+function holdEdges(cues: readonly CueEvent[], open: Map<string, number>): string[] {
+  const edges: string[] = [];
+  for (const e of cues) {
+    const c = e.cue;
+    let edge: string | null = null;
+    if (c.kind === 'ui-state' && (c.name === 'waiting' || c.name === 'waited')) {
+      edge = `${c.name === 'waiting' ? '+' : '-'}${c.panel ?? 'room'}`;
+    } else if (c.kind === 'puzzle' && c.name === 'checking') {
+      edge = '+answer';
+    } else if (c.kind === 'puzzle' && CHECKING_ENDS_KEYS.includes(c.name) && (open.get('answer') ?? 0) > 0) {
+      edge = '-answer';
+    }
+    if (edge !== null) {
+      const panel = edge.slice(1);
+      open.set(panel, (open.get(panel) ?? 0) + (edge.startsWith('+') ? 1 : -1));
+      edges.push(edge);
+    }
+  }
+  return edges;
+}
+
+/** One block of a row's script: what it runs, and the hold edges it declares, in order. */
+type Block = readonly [name: string, run: () => unknown, edges: readonly string[]];
+
+/** Runs `blocks` on `r`, checking each block's edges and that no panel ever holds two holds, or a negative one. */
+async function script(row: string, r: Rig, blocks: readonly Block[]): Promise<void> {
+  const open = new Map<string, number>();
+  holdEdges(r.cues, open);
+  for (const [name, run, edges] of blocks) {
+    const mark = r.cues.length;
+    await run();
+    await settle();
+    const seen = holdEdges(r.cues.slice(mark), open);
+    expect(seen, `${row}: ${name}`).toEqual(edges);
+    expect(
+      [...open].filter(([, n]) => n < 0 || n > 1),
+      `${row}: ${name}: one hold per panel`,
+    ).toEqual([]);
+  }
+  expect(
+    [...open].filter(([, n]) => n !== 0),
+    `${row}: every hold ended`,
+  ).toEqual([]);
+}
+
+/** Deferred chunk results, landed one at a time in call order. */
+function chunkQueue<T>(): { loader: () => Promise<T>; land: (v: T) => void; waiting: () => number } {
+  const pending: Array<(v: T) => void> = [];
+  return {
+    loader: () => new Promise<T>((resolve) => pending.push(resolve)),
+    land: (v) => pending.shift()?.(v),
+    waiting: () => pending.length,
+  };
+}
+
+type WaitCase = (row: string) => Promise<void>;
+
+/** One case per `WaitRow` (tsc keeps the table and the rows equal). The ladder row's case lands with `setLadder`. */
+const WAIT_CASES: { readonly [R in Exclude<WaitRow, 'ladder'>]: WaitCase } = {
+  // A visual batch's loads, through `held`: the room, the take and the close-up in and out, each with a late start.
+  batch: async (row) => {
+    const r = rig({ world: cueWorld(), late: true });
+    await inLateHall(r);
+    await script(row, r, [
+      ['an exit', () => r.yields.layer.ontap(key('hall.to_cellar')), ['+room']],
+      ['its start', () => r.release(), ['-room']],
+      ['the way back', () => r.yields.layer.ontap(key('cellar.to_hall')), ['+room']],
+      ['its start', () => r.release(), ['-room']],
+      ['a take', () => r.yields.layer.ontap(key('hall.medal')), ['+room']],
+      ['its start', () => r.release(), ['-room']],
+      ['the close-up in', () => r.yields.layer.ontap(key('hall.chest')), ['+room']],
+      ['its start, the frame write and the chunk write', () => r.release(), ['-room', '+puzzle', '-puzzle']],
+      ['the close-up out at an X8 Back', () => r.screens.back(), ['+room']],
+      ['its start', () => r.release(), ['-room']],
+    ]);
+    r.yields.dispose();
+    // The close-up out at a run's end (`ended`).
+    const p = rig({ late: true, attempts: [RIGHT] });
+    await script(row, p, [
+      ['the close-up in', () => void p.yields.onYield({ kind: 'puzzle', puzzle: DRAWER, then: AFTER }), ['+room']],
+      ['its start, the frame write and the chunk write', () => p.release(), ['-room', '+puzzle', '-puzzle']],
+      ['a solve, then the close-up out', () => p.yields.host.ontry(), ['+answer', '-answer', '+room']],
+      ['its start', () => p.release(), ['-room']],
+    ]);
+    p.yields.dispose();
+  },
+  // A section's first explore-chunk import: it ends when the import settles, ok or failed.
+  'explore-import': async (row) => {
+    const chunks = chunkQueue<Result<ExploreChunk, ChunkError>>();
+    const r = rig({ world: cueWorld(), loaders: { explore: chunks.loader } });
+    await script(row, r, [
+      ['the yield', () => void r.yields.onYield({ kind: 'explore', section: MANOR }), ['+room']],
+      ['the chunk, then the first room batch', () => chunks.land({ ok: true, value: { create: createExploreController, layer: LAYER } }), ['-room', '+room', '-room']],
+    ]);
+    r.yields.dispose();
+    const failing = chunkQueue<Result<ExploreChunk, ChunkError>>();
+    const f = rig({ world: cueWorld(), loaders: { explore: failing.loader } });
+    await script(row, f, [
+      ['the yield', () => void f.yields.onYield({ kind: 'explore', section: MANOR }), ['+room']],
+      ['the chunk failed', () => failing.land({ ok: false, error: { kind: 'chunk', detail: 'offline' } }), ['-room']],
+    ]);
+    expect(f.log.at(-1), `${row}: the D13 notice`).toBe('notice');
+    f.yields.dispose();
+    // The ninth view row (RULINGS 233 Q1): only the cue stage pending; the hold waits for it too.
+    const stage = chunkQueue<Result<Component<CueStageProps>, ChunkError>>();
+    const s = rig({ world: cueWorld(), loaders: { cueStage: stage.loader } });
+    await script(row, s, [
+      ['the yield', () => void s.yields.onYield({ kind: 'explore', section: MANOR }), ['+room']],
+      ['the stage chunk, then the first room batch', () => stage.land({ ok: true, value: STAGE }), ['-room', '+room', '-room']],
+    ]);
+    s.yields.dispose();
+  },
+  // A frame's chunk imports (the host and the type) and a chunk Retry, unshown (no host yet) and shown.
+  'frame-chunks': async (row) => {
+    const host = chunkQueue<Result<Component<PuzzleHostProps>, ChunkError>>();
+    const ui = chunkQueue<Result<Component<PuzzleUiProps>, ChunkError>>();
+    const r = rig({ world: puzzleWorld(), loaders: { puzzleHost: host.loader, puzzleUi: ui.loader } });
+    await script(row, r, [
+      ['the frame write (unshown)', () => void r.yields.onYield({ kind: 'puzzle', puzzle: CABINET, then: AFTER }), ['+puzzle']],
+      ['the host chunk', () => host.land({ ok: true, value: HOST }), []],
+      ['the type chunk failed: the chunk write', () => ui.land({ ok: false, error: { kind: 'chunk', detail: 'offline' } }), ['-puzzle']],
+      ['Retry', () => r.yields.host.onretry(), ['+puzzle']],
+      ['the reload: the chunk write', () => (host.land({ ok: true, value: HOST }), ui.land({ ok: true, value: TYPE_UI })), ['-puzzle']],
+      ['a second open (shown at its write)', () => void r.yields.onYield({ kind: 'puzzle', puzzle: PIECES, then: AFTER }), ['+puzzle']],
+      ['its chunk write', () => (host.land({ ok: true, value: HOST }), ui.land({ ok: true, value: TYPE_UI })), ['-puzzle']],
+    ]);
+    r.yields.dispose();
+    // `endFrame`: an X8 Back before the chunks land ends the hold; their late result writes nothing.
+    const xHost = chunkQueue<Result<Component<PuzzleHostProps>, ChunkError>>();
+    const x = rig({ world: cueWorld(), loaders: { puzzleHost: xHost.loader } });
+    await inHall(x);
+    await script(row, x, [
+      ['a lock tap: the close-up in, the frame write', () => x.yields.layer.ontap(key('hall.chest')), ['+room', '-room', '+puzzle']],
+      ['an X8 Back: endFrame, the close-up out', () => x.screens.back(), ['-puzzle', '+room', '-room']],
+      [
+        'the late chunks',
+        () => {
+          while (xHost.waiting() > 0) {
+            xHost.land({ ok: true, value: HOST });
+          }
+        },
+        [],
+      ],
+    ]);
+    expect([x.puzzle.frame, x.puzzle.host], `${row}: the dropped open writes nothing`).toEqual([null, null]);
+    x.yields.dispose();
+    // The ninth view row (RULINGS 233 Q1): only the cue stage pending (a fresh session has no stage slot yet).
+    const stage = chunkQueue<Result<Component<CueStageProps>, ChunkError>>();
+    const s = rig({ world: puzzleWorld(), loaders: { cueStage: stage.loader } });
+    await script(row, s, [
+      ['the frame write', () => void s.yields.onYield({ kind: 'puzzle', puzzle: CABINET, then: AFTER }), ['+puzzle']],
+      ['the stage chunk: the chunk write', () => stage.land({ ok: true, value: STAGE }), ['-puzzle']],
+    ]);
+    s.yields.dispose();
+  },
+  // An answer in flight: `post`'s `puzzle:checking` to the reply's key, the countdown's first tick or the end cue.
+  answer: async (row) => {
+    const gate = deferred<void>();
+    const r = rig({ world: puzzleWorld(), attempts: [WRONG, httpError(429, 2), RIGHT], attemptGate: gate.promise });
+    await r.yields.onYield({ kind: 'puzzle', puzzle: CABINET, then: AFTER });
+    await script(row, r, [
+      ['Try', () => r.yields.host.ontry(), ['+answer']],
+      ['the wrong reply', () => gate.resolve(), ['-answer']],
+      ['Try', () => r.yields.host.ontry(), ['+answer', '-answer']],
+      ['the countdown', () => r.clock.advance(2000), []],
+      ['Try: solved', () => r.yields.host.ontry(), ['+answer', '-answer']],
+    ]);
+    r.yields.dispose();
+  },
+};
+
+test('yields: every wait of the views holds a motion', async () => {
+  for (const [row, run] of Object.entries(WAIT_CASES)) {
+    await run(row);
+  }
 });

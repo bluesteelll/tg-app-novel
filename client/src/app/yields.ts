@@ -13,7 +13,7 @@ import type { Clock } from '../api/http.ts';
 import type { AudioCommand } from '../audio/manager.ts';
 import { createCueBus } from '../cues/bus.ts';
 import type { CueBus } from '../cues/bus.ts';
-import type { Cue, CueEvent, MoveHow } from '../cues/types.ts';
+import type { Cue, CueEvent, MoveHow, PuzzleCue } from '../cues/types.ts';
 import type { ExploreController, createExploreController } from '../explore/controller.ts';
 import { project } from '../explore/project.ts';
 import { runReduce, worldIndex } from '../explore/reduce.ts';
@@ -37,7 +37,7 @@ import type { RunnerError, StoryRunner } from '../story/runner.ts';
 import type { KnotName, PropPlacement, PuzzleLocalId, SectionId, StagingSnapshot, VarName, YieldCommand } from '../story/staging.ts';
 import type { TelegramClient } from '../telegram/index.ts';
 import type { ExploreLayerActions, ExploreLayerProps, ExploreViewStore } from '../ui/explore-view.svelte.ts';
-import { backScreen } from '../ui/puzzle-view.svelte.ts';
+import { backScreen, coversStage } from '../ui/puzzle-view.svelte.ts';
 import type { PuzzleFrameView, PuzzleHostCallbacks, PuzzleHostProps, PuzzleView } from '../ui/puzzle-view.svelte.ts';
 import type { ScreenKind, Screens, ScreensView } from '../ui/screens.ts';
 import type { CueStageProps, CueStageSlot, ViewModel } from '../ui/state.svelte.ts';
@@ -98,6 +98,9 @@ export const LAZY_CHUNKS: LazyChunks = {
   },
 };
 
+/** A frame on screen in App's frame layer (the opaque frame overlay); `id` is `PuzzleFrameView.id` (engine plan §8.6). */
+export type ShownFrame = { readonly id: number };
+
 /** What GameSession gives its yields: the views, the ports, and its own steps. */
 export type YieldsHost = {
   vm: ViewModel;
@@ -138,6 +141,13 @@ export type YieldsHost = {
   queue(fn: () => Promise<void>): Promise<void>;
   /** The scene role's seam (engine plan §8.6, design-shots I-4): called once, with the session's bus subscription. */
   sceneCues?: (subscribe: CueBus['subscribe']) => void;
+  /**
+   * The frame on screen changed (engine plan §8.6): `f` once the frame has appeared (`appear`, after the write that
+   * shows it), `null` at the step that takes a shown frame off screen (its clear, an X8 Back's `hideFrame`, a drop by
+   * another open, `restore`, a chapter change or `dispose`). Never two equal values in a row; a frame that never
+   * appeared reports nothing; only a frame that covers the stage (`coversStage`) reports. Void: no host wait.
+   */
+  frameShown?: (f: ShownFrame | null) => void;
 };
 
 export interface Yields {
@@ -216,7 +226,16 @@ type Open = {
   then: KnotName | null;
   closeup: boolean;
   id: number;
+  /** `hideFrame` took the frame off screen; the session ends later (an X8 Back over an attempt in flight). */
+  hidden: boolean;
+  /** `appear` has shown the frame: its cues may play (the shown-frame test). */
+  appeared: boolean;
+  /** The frame's load hold is open (`holdLoad`): exactly while `loading(puzzle.frame)` holds. */
+  loading: boolean;
 };
+
+/** The end cue of a dropped frame (`dropPuzzle`): the session's end, `closed` for a no-outcome drop, null at `dispose`. */
+type DropCue = Extract<PuzzleCue, 'solved' | 'failed' | 'closed'> | null;
 
 let frameSeq = 0;
 
@@ -247,7 +266,8 @@ export function heldBy(
   h: Pick<YieldsHost, 'apply' | 'scene'>,
   emit: (e: CueEvent) => void,
 ): (visual: readonly VisualCommand[], audio: readonly AudioCommand[], at: HeldAt | 'no-load') => Promise<void> {
-  return (visual, audio, at) => {
+  // `at` names `HeldAt` on the declaration with a body: the request walk binds the batch site by it.
+  return (visual, audio, at: HeldAt | 'no-load') => {
     const hold: HeldAt | null = at !== 'no-load' ? at : h.scene.stats().stale === 0 && !h.scene.stats().reviving ? null : { box: null };
     if (hold !== null) {
       emit(waitCue('waiting', hold.box));
@@ -758,19 +778,114 @@ export function createYields(h: YieldsHost): Yields {
     }
   };
 
-  /** Closes the frame and its overlays and disposes the session; no outcome (an exit, a chapter change, a load). */
-  const dropPuzzle = (): void => {
-    const o = open;
-    open = null;
-    clearRetry();
-    if (o === null) {
+  /** The frame id `frameShown` last reported; null: none on screen. */
+  let reported: number | null = null;
+  const report = (f: ShownFrame | null): void => {
+    if ((f?.id ?? null) !== reported) {
+      reported = f?.id ?? null;
+      h.frameShown?.(f);
+    }
+  };
+
+  /**
+   * The frame is on screen (engine plan §8.1 point 8): App's frame layer renders the host component, or the failed-host
+   * block; before either, the layer is an empty `div`.
+   */
+  const shownFrame = (): boolean => puzzle.frame !== null && (puzzle.host !== null || puzzle.frame.loadFailed);
+  /** The shown-frame test: a cue of `o`'s frame plays only while it is the open, appeared, unhidden frame on screen. */
+  const showing = (o: Open): boolean => open === o && !o.hidden && o.appeared && puzzle.frame?.id === o.id;
+  /** A frame cue of `o` (no box: the stage finds its target in the frame), dropped while the frame is not shown. */
+  const puzzleCue = (o: Open, name: PuzzleCue, index: number | null = null): void => {
+    if (showing(o)) {
+      bus.emit(cueEvent({ kind: 'puzzle', puzzle: o.local, name, index }, null));
+    }
+  };
+  /** A `ui-state` cue of the frame's panel (no box: the stage finds the frame, its notice, or the centre). */
+  const frameState = (name: 'panel-open' | 'waiting' | 'waited'): CueEvent => cueEvent({ kind: 'ui-state', name, panel: 'puzzle', item: null }, null);
+
+  /**
+   * Called after each write that can show `o`'s frame (the frame write, the chunk write): at the first after which it is
+   * the open, unhidden frame on screen, the frame's one `panel-open`, then `puzzle:checking` when it shows `busy` (a wait
+   * that began before it showed breathes as one that began after), and the host hears it (`frameShown`).
+   */
+  const appear = (o: Open): void => {
+    const f = puzzle.frame;
+    if (o.appeared || open !== o || o.hidden || f === null || f.id !== o.id || !shownFrame()) {
       return;
     }
-    o.session.dispose();
-    puzzle.frame = null;
+    o.appeared = true;
+    bus.emit(frameState('panel-open'));
+    if (f.busy) {
+      puzzleCue(o, 'checking');
+    }
+    if (coversStage(f)) {
+      report({ id: o.id });
+    }
+  };
+
+  /**
+   * The frame's load hold (engine plan §8.1 point 11), one per open: opened at the frame write and a Retry, ended by the
+   * chunk write and `endFrame`, whether or not the frame shows (it plays at the notice, else at the stage centre).
+   */
+  const holdLoad = (o: Open, on: boolean): void => {
+    if (open !== o || o.loading === on) {
+      return;
+    }
+    o.loading = on;
+    bus.emit(frameState(on ? 'waiting' : 'waited'));
+  };
+
+  /** The one end emission of a frame: its load hold ends first, whatever it shows; then, if it is shown, `cue`. */
+  const endFrame = (o: Open, cue: Exclude<DropCue, null>): void => {
+    holdLoad(o, false);
+    puzzleCue(o, cue);
+  };
+
+  /** The close-up fades out and the rooms' neighbours come back, after the batch in flight. */
+  const unshowCloseup = (o: Open): void => {
+    void h.queue(async () => {
+      if (o.closeup) {
+        await held([{ kind: 'cg', cg: null, t: 'fade', ms: CLOSEUP_FADE_MS }], [], { box: null });
+      }
+      controller?.roomShown();
+    });
+  };
+
+  /**
+   * Closes the frame and its overlays and disposes the session, `cue` the frame's end (engine plan §8.1 "Ends"): the end
+   * cue, the ladder and its sheet while the frame is still the open one on screen, then the rest.
+   */
+  const dropPuzzle = (cue: DropCue): void => {
+    const o = open;
+    if (o === null) {
+      clearRetry();
+      return;
+    }
+    if (cue !== null) {
+      endFrame(o, cue);
+    }
     puzzle.ladder = null;
     screens.close('hints');
+    open = null;
+    clearRetry();
+    o.session.dispose();
+    puzzle.frame = null;
+    report(null);
     screens.close('puzzle');
+  };
+
+  /**
+   * An X8 Back hides the frame at once (engine plan §8.1 "Ends"): its end cue, the ladder, the frame, the close-up. The
+   * session stays open until its end, so an attempt in flight still reaches the world when it answers.
+   */
+  const hideFrame = (o: Open): void => {
+    endFrame(o, 'closed');
+    puzzle.ladder = null;
+    screens.close('hints');
+    puzzle.frame = null;
+    report(null);
+    o.hidden = true;
+    unshowCloseup(o);
   };
 
   const loadPuzzleUis = async (o: Open, type: PuzzleFrameView['type']): Promise<void> => {
@@ -782,7 +897,12 @@ export function createYields(h: YieldsHost): Yields {
       puzzle.host = hostUi.value;
     }
     // D13: a chunk error keeps the mode with Retry (linear) or the overlay with Retry (explore); no outcome.
-    setFrame(o, typeUi.ok && hostUi.ok && staged ? { ui: typeUi.value, loadFailed: false } : { ui: null, loadFailed: true });
+    const loaded = typeUi.ok && hostUi.ok && staged;
+    setFrame(o, loaded ? { ui: typeUi.value, loadFailed: false } : { ui: null, loadFailed: true });
+    // The wait's end, the frame's appearance (when this write shows it), then the state it ends in.
+    holdLoad(o, false);
+    appear(o);
+    puzzleCue(o, loaded ? 'opened' : 'load-failed');
   };
 
   /** The end of a run (PZ F6 steps 5-6, F7 step 7): the report, the close-up cleared, the outcome into the world. */
@@ -810,19 +930,17 @@ export function createYields(h: YieldsHost): Yields {
     if (open !== o) {
       return;
     }
-    dropPuzzle();
+    dropPuzzle(e.outcome === 'solved' || e.outcome === 'failed' ? e.outcome : 'closed');
     if (e.outcome === 'closed') {
-      // X8: an exploration close records no outcome; the close-up goes, the rooms' neighbours come back.
-      void h.queue(async () => {
-        if (o.closeup) {
-          await held([{ kind: 'cg', cg: null, t: 'fade', ms: CLOSEUP_FADE_MS }], [], { box: null });
-        }
-        controller?.roomShown();
-      });
+      // X8: an exploration close records no outcome; the close-up goes, the rooms' neighbours come back (a hidden
+      // frame's close-up went at its Back).
+      if (!o.hidden) {
+        unshowCloseup(o);
+      }
       return;
     }
     const outcome = e.outcome;
-    void h.queue(() => ended(o.local, outcome, o.mode, o.then, o.closeup)); // the outcome is on screen
+    void h.queue(() => ended(o.local, outcome, o.mode, o.then, o.closeup && !o.hidden)); // the outcome is on screen
   };
 
   const openPuzzle = async (local: PuzzleLocalId, mode: PuzzleMode, then: KnotName | null): Promise<void> => {
@@ -839,14 +957,14 @@ export function createYields(h: YieldsHost): Yields {
       await ended(local, 'failed', mode, then, false);
       return;
     }
-    dropPuzzle(); // at most one session
+    dropPuzzle('closed'); // at most one session
     const port = h.hints?.() ?? null;
     const made = createPuzzleSession({ api: h.api, hints: port, world: w, chapter: ch.id, puzzle: local, mode, run, lang: () => vm.lang, dispatch: act });
     if (!made.ok) {
       h.storyError({ kind: 'load', message: `puzzle ${made.error.puzzle} has no session` });
       return;
     }
-    const o: Open = { session: made.value, port, local, mode, then, closeup: p.closeup !== null, id: ++frameSeq };
+    const o: Open = { session: made.value, port, local, mode, then, closeup: p.closeup !== null, id: ++frameSeq, hidden: false, appeared: false, loading: false };
     open = o;
     o.session.onEnd((e) => onEnd(o, e));
     if (p.closeup !== null) {
@@ -874,6 +992,8 @@ export function createYields(h: YieldsHost): Yields {
       retrying: false,
     };
     puzzle.frame = frame;
+    appear(o); // shown at its write when the host chunk is in
+    holdLoad(o, true);
     const overlay = backScreen(frame);
     if (overlay !== null) {
       screens.push(overlay);
@@ -881,14 +1001,16 @@ export function createYields(h: YieldsHost): Yields {
     await loadPuzzleUis(o, p.type);
   };
 
-  /** A 429's countdown (GameSession owns it): Try opens again at zero. */
+  /** A 429's countdown (GameSession owns it): one cue per second, its index the seconds left; Try opens again at zero. */
   const countdown = (o: Open, secs: number): void => {
     clearRetry();
     setFrame(o, { line: 'rate-limited', retryAfter: secs, busy: false });
     if (secs <= 0) {
       setFrame(o, { line: 'idle', retryAfter: null });
+      puzzleCue(o, 'ready', puzzle.frame?.attemptsLeft ?? null); // nothing to post: the frame takes input again
       return;
     }
+    puzzleCue(o, 'rate-limited', secs);
     retryTimer = h.clock.setTimeout(() => {
       retryTimer = null;
       countdown(o, secs - 1);
@@ -900,6 +1022,8 @@ export function createYields(h: YieldsHost): Yields {
       return; // the run ended with this answer (solved, failed) or was closed meanwhile
     }
     if (r.ok) {
+      // `correct` and `failed` end the session first (its listeners run inside `attempt`), so `open !== o` above: the end
+      // cues are `dropPuzzle`'s, through `onEnd`.
       switch (r.value.kind) {
         case 'correct':
           setFrame(o, { busy: false, line: 'solved' });
@@ -909,6 +1033,7 @@ export function createYields(h: YieldsHost): Yields {
           return;
         case 'wrong':
           setFrame(o, { busy: false, line: 'wrong', attemptsLeft: r.value.attemptsLeft });
+          puzzleCue(o, 'wrong');
           h.autosave(); // F9: the attempts count survives a reload
           return;
         default: {
@@ -924,17 +1049,36 @@ export function createYields(h: YieldsHost): Yields {
       case 'network':
       case 'not-entitled':
         setFrame(o, { busy: false, line: 'offline' });
+        puzzleCue(o, 'offline');
         return;
       case 'busy':
+        return; // another attempt is in flight: its own reply settles the frame
       case 'closed':
       case 'invalid':
-        setFrame(o, { busy: false });
+        // A check that ends with no outcome: the frame takes input again.
+        setFrame(o, { busy: false, line: 'idle' });
+        puzzleCue(o, 'ready', puzzle.frame?.attemptsLeft ?? null);
         return;
       default: {
         const _never: never = r.error;
         return _never;
       }
     }
+  };
+
+  /**
+   * The one attempt starter (per-player R-E28): refuses while the frame is busy or a countdown runs; else `busy`,
+   * `checking` and `puzzle:checking`, then the attempt, its reply through `attempted`.
+   */
+  const post = (o: Open): boolean => {
+    const f = frameOf();
+    if (open !== o || f === null || f.id !== o.id || f.busy || f.retryAfter !== null) {
+      return false;
+    }
+    setFrame(o, { busy: true, line: 'checking' });
+    puzzleCue(o, 'checking');
+    void o.session.attempt().then((r) => attempted(o, r)); // the session answers with a Result; the frame shows it
+    return true;
   };
 
   const puzzleHost: PuzzleHostCallbacks = {
@@ -946,18 +1090,23 @@ export function createYields(h: YieldsHost): Yields {
     onchange: (a) => {
       const o = open;
       if (o !== null) {
+        const was = o.session.answer();
         o.session.setAnswer(a);
-        setFrame(o, { answer: o.session.answer() });
+        const now = o.session.answer();
+        setFrame(o, { answer: now });
+        // One cue per changed part, in index order.
+        for (let i = 0; i < Math.max(was.length, now.length); i += 1) {
+          if (was[i] !== now[i]) {
+            puzzleCue(o, 'input', i);
+          }
+        }
       }
     },
     ontry: () => {
       const o = open;
-      const f = frameOf();
-      if (o === null || f === null || f.busy || f.retryAfter !== null) {
-        return;
+      if (o !== null) {
+        post(o);
       }
-      setFrame(o, { busy: true, line: 'checking' });
-      void o.session.attempt().then((r) => attempted(o, r)); // the session answers with a Result; the frame shows it
     },
     ongiveup: () => {
       open?.session.giveUp();
@@ -979,6 +1128,7 @@ export function createYields(h: YieldsHost): Yields {
       const o = open;
       const f = frameOf();
       if (o !== null && f !== null && f.loadFailed) {
+        holdLoad(o, true);
         setFrame(o, { loadFailed: false });
         void loadPuzzleUis(o, f.type); // a second import() (D13); the frame shows the outcome
       }
@@ -1087,7 +1237,7 @@ export function createYields(h: YieldsHost): Yields {
     lineShown: prefetch,
     world: () => world,
     restore(next, reset, at) {
-      dropPuzzle();
+      dropPuzzle('closed');
       jobs.length = 0;
       if (at?.kind !== 'explore') {
         disposeController();
@@ -1107,7 +1257,7 @@ export function createYields(h: YieldsHost): Yields {
       }
     },
     chapterChanged() {
-      dropPuzzle();
+      dropPuzzle('closed');
       disposeController();
       jobs.length = 0;
       world = EMPTY_WORLD_STATE;
@@ -1130,7 +1280,11 @@ export function createYields(h: YieldsHost): Yields {
         }
       }
       if (open !== null && open.mode === 'explore' && puzzle.frame?.id === open.id && !kinds.has('puzzle')) {
-        open.session.close(); // X8: Back closes an exploration puzzle with no outcome (deferred while an attempt runs)
+        // X8: Back closes an exploration puzzle with no outcome: the frame goes at once, the session at its end (deferred
+        // while an attempt runs, whose answer still reaches the world).
+        const o = open;
+        hideFrame(o);
+        o.session.close();
       }
       const ladder = puzzle.ladder;
       if (ladder !== null && !kinds.has('hints')) {
@@ -1155,12 +1309,12 @@ export function createYields(h: YieldsHost): Yields {
     relabel() {
       controller?.relabel();
     },
-    disposePuzzle: dropPuzzle,
+    disposePuzzle: () => dropPuzzle('closed'),
     dispose() {
       if (dead) {
         return;
       }
-      dropPuzzle();
+      dropPuzzle(null);
       disposeController();
       dead = true;
       jobs.length = 0;

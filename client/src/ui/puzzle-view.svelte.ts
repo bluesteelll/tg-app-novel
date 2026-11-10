@@ -26,9 +26,10 @@ export type PuzzleFrameView = {
   params: unknown;
   answer: readonly number[];
   /**
-   * The frame waits for an answer that settles it: an attempt in flight (yields' `ontry` sets it; the attempt's reply
-   * clears it, in `attempted`, or in `countdown` for a 429). Try and the type UI's input are off while it holds. Never
-   * the chunk's state: that is `retrying`.
+   * The frame waits for an answer that settles it: an attempt in flight (yields' `post(o)`, the one attempt starter,
+   * sets it; the attempt's reply clears it, in `attempted`, or in `countdown` for a 429; a `busy` reply leaves it to the
+   * attempt in flight). Try and the type UI's input are off while it holds. Never the chunk's state: that is
+   * `retrying`.
    */
   busy: boolean;
   line: PuzzleLine;
