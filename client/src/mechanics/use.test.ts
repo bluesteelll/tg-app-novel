@@ -295,6 +295,11 @@ test('use: a section reset clears what its rules read', () => {
   // the build started from.
   const key = sectionKey(w, start, S);
   expect(reached.map((s) => sectionKey(w, sectionEntry(w, s, S), S)).filter((x) => x !== key)).toEqual([]);
+  // The key reads the same share (use's `reads` compose `useScope`): the use's state differs from the one before it in
+  // the gift and the rule's key, so the search never merges the two.
+  const before = reached.find((s) => s.held.includes(it('pen')) && s.fired.length === 0);
+  const after = reached.find((s) => s.fired.includes('use:hall.desk#0'));
+  expect([before, after].map((s) => (s === undefined ? null : sectionKey(w, s, S)))).toEqual(['hall||hall.pen|||||pen||', 'hall||hall.pen|||use:hall.desk#0||note|pen|']);
   // S's own facts: the kernel's scope plus the rule's gift and key; a world without rules adds nothing (the kernel's
   // scope object itself, so the reset of every world without `uses` is unchanged).
   const own = ownScope(w, S);

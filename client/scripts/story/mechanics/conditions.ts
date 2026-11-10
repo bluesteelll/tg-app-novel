@@ -1,19 +1,22 @@
-// The condition lints of engine plan §4 ("Two scopes", "Limits"): a gating condition reads only its own section, so
-// its atoms are in the section key (`world/cross-section-cond`) and no visual-only atom gates (`world/visual-only-atom`);
+// The condition lints of engine plan §4 ("Two scopes", "Limits"): a gating condition reads only its own section's own
+// facts (`ownScope`: the kernel scope plus each rules module's `scope`), so its atoms are in the section key
+// (`world/cross-section-cond`) and no visual-only atom gates (`world/visual-only-atom`);
 // every condition is bounded (`world/cond-size`). A build pass of the world lint registry (§3.2) over the world's
 // clues; a module lane calls `condFindings` from its own lint file for its own sites (GM3's `uses.when` as gating,
 // GM3b's `is` as visual). Build only and pure, no node:*: world.ts imports the registry and scan-dist.ts imports
 // world.ts. Its imports from index.ts and lint.ts are `import type`; it imports nothing from world.ts, not even a type
 // (index.ts's header).
-import { sectionScope } from '../../../src/explore/reduce.ts';
 import type { SectionScope } from '../../../src/explore/reduce.ts';
+import type { KernelWorld, RulesRegistry } from '../../../src/mechanics/contract.ts';
 import { COND_MAX_ATOMS, COND_MAX_DEPTH, condEntry, condSize } from '../../../src/mechanics/data/conditions.ts';
 import type { Cond } from '../../../src/mechanics/data/conditions.ts';
 import { MECHANIC_DATA } from '../../../src/mechanics/data/index.ts';
 import type { DataRegistry } from '../../../src/mechanics/data/index.ts';
+import { MECHANIC_RULES } from '../../../src/mechanics/rules/index.ts';
+import { ownScope } from '../../../src/mechanics/rules/search.ts';
 import type { SectionId } from '../../../src/story/staging.ts';
 import { toPublic } from '../../../src/world/decode.ts';
-import type { WorldPublicBody, WorldSource } from '../../../src/world/types.ts';
+import type { WorldSource } from '../../../src/world/types.ts';
 import type { Finding, Severity } from '../lint.ts';
 import type { WorldLint, WorldLintInput } from './index.ts';
 
@@ -57,14 +60,15 @@ function atomsOf(c: Cond): Cond[] {
 
 /**
  * The condition findings of `sites` (`data`: the data registry the world was decoded with, whose module atoms say
- * whether they may gate), each at its site's line: `world/cond-size` in every scope; in a gating one,
- * `world/cross-section-cond` per kernel atom naming no id of the section (its rooms, hotspot keys, the items and docs
- * it gives, its lock puzzles: `sectionScope`, the keys `sectionKey` reads) and `world/visual-only-atom` per module atom
- * declared `gating: false`. Another module's gating atom is its own module's to scope (flags' `world/flag-scope`).
+ * whether they may gate; `rules`: the rules registry whose `scope` hooks widen a section's own facts), each at its
+ * site's line: `world/cond-size` in every scope; in a gating one, `world/cross-section-cond` per kernel atom naming no
+ * id of S's own facts (its rooms, hotspot keys, the items and docs it gives, its lock puzzles, and what its modules'
+ * data gives: `ownScope`, the facts the section key reads and the reset clears) and `world/visual-only-atom` per module
+ * atom declared `gating: false`. Another module's gating atom is its own module's to scope (flags' `world/flag-scope`).
  */
-export function condFindings(input: WorldLintInput, sites: readonly CondSite[], data: DataRegistry = MECHANIC_DATA): Finding[] {
+export function condFindings(input: WorldLintInput, sites: readonly CondSite[], data: DataRegistry = MECHANIC_DATA, rules: RulesRegistry = MECHANIC_RULES): Finding[] {
   const out: Finding[] = [];
-  let pub: WorldPublicBody | null = null; // the section index, built at the first gating site
+  let kw: KernelWorld | null = null; // the proof world (the section index and the modules' data), built at the first gating site
   for (const { cond, path, scope } of sites) {
     const report = (code: CondCode, message: string): void => {
       out.push({ code, severity: COND_CODES[code], file: input.file, line: input.line(path), message: `${path}: ${message}` });
@@ -77,8 +81,8 @@ export function condFindings(input: WorldLintInput, sites: readonly CondSite[], 
     if (typeof scope !== 'object') {
       continue;
     }
-    pub ??= toPublic(input.world);
-    const section = sectionScope(pub, scope.gating);
+    kw ??= { ...toPublic(input.world), mods: input.world.mods };
+    const section = ownScope(kw, scope.gating, rules);
     for (const atom of atomsOf(cond)) {
       const [kind, value] = condEntry(atom);
       const scoped = SCOPED[kind];

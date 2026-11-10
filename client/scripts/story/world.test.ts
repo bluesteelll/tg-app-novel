@@ -10,9 +10,10 @@ import { RESUME_STATE_CAP } from '../../src/explore/reduce.ts';
 import type { Step } from '../../src/explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../../src/explore/state.ts';
 import { HOTSPOT_MIN_SOURCE_PX } from '../../src/geom/cover.ts';
-import type { IssueReport, KernelWorld, MechanicData, OwnedAt, OwnedRaw } from '../../src/mechanics/contract.ts';
+import type { IssueReport, KernelWorld, MechanicData, MechanicRules, OwnedAt, OwnedRaw } from '../../src/mechanics/contract.ts';
 import { MECHANIC_DATA } from '../../src/mechanics/data/index.ts';
 import type { DataRegistry } from '../../src/mechanics/data/index.ts';
+import { MECHANIC_RULES } from '../../src/mechanics/rules/index.ts';
 import { searchSection, sectionEntry } from '../../src/mechanics/rules/search.ts';
 import type { SearchOptions } from '../../src/mechanics/rules/search.ts';
 import { PUZZLE_TYPES } from '../../src/puzzles/rules/index.ts';
@@ -22,7 +23,7 @@ import type { AssetCatalog } from '../../src/story/catalog.ts';
 import type { ChapterId, KnotName, PuzzleLocalId, SectionId, VarName } from '../../src/story/staging.ts';
 import { decodeWorldSource, toPublic } from '../../src/world/decode.ts';
 import type { DecodeOptions, WorldIssue } from '../../src/world/decode.ts';
-import type { HotspotKey, WorldSource, WorldText } from '../../src/world/types.ts';
+import type { HotspotKey, ItemId, WorldSource, WorldText } from '../../src/world/types.ts';
 import { compileChapter } from './compile.ts';
 import { buildGraph } from './graph.ts';
 import type { ChapterGraph, GraphFacts, WorldRef } from './graph.ts';
@@ -33,9 +34,9 @@ import { clueFindings } from './mechanics/clues.ts';
 import { CONDITIONS_LINT, condFindings } from './mechanics/conditions.ts';
 import type { CondSite } from './mechanics/conditions.ts';
 import { MECHANIC_LINTS, MECHANIC_TEXTS } from './mechanics/index.ts';
-import { playChapter } from './playthrough.ts';
 import type { MechanicLintCode, WorldLint, WorldLintInput } from './mechanics/index.ts';
 import type { ModuleText, TextRegistry, TextWalker } from './mechanics/texts.ts';
+import { playChapter } from './playthrough.ts';
 import { PUZZLE_LINTS } from './puzzles/index.ts';
 import type { PuzzleLintCode, PuzzleTypeLint } from './puzzles/index.ts';
 import { MAX_ANSWER_LEN, answerLenFindings, answerLenIssues } from './puzzles/shape.ts';
@@ -958,6 +959,9 @@ test('story: module and type lint codes are unique and none is a DSL code', () =
     'world/visual-only-atom E',
     'world/cond-size E',
     'world/text-unwalked E',
+    'world/use-unknown-ref E',
+    'world/use-cross-section E',
+    'world/keep-consumed W',
   ]);
   // The registry restates world.ts's VarLiteral (its types stay out of the app program): one type (tsc).
   type InputVar = WorldLintInput['declared'] extends ReadonlyMap<VarName, infer V> ? V : never;
@@ -1778,4 +1782,102 @@ test("use: a played chapter takes a use edge only with the world's mods", () => 
   const without = play(toPublic(src.value));
   expect(without.play.ended).toBe(0);
   expect([...without.play.visited]).not.toContain('after');
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Module `use`'s texts and lints (scripts/story/mechanics/use.ts)
+
+/** The world as the story gate decodes it from its file. */
+function decodedText(w: Json): { text: string; world: WorldSource } {
+  const text = `${JSON.stringify(w, null, 2)}\n`;
+  const decoded = decodeWorldFile({ file: FILE, text });
+  if (decoded.world === null) {
+    throw new Error(`invariant: the fixture world decodes: ${JSON.stringify(decoded.findings)}`);
+  }
+  return { text, world: decoded.world };
+}
+
+test('use: its say and refuse texts are world lines of role toast', () => {
+  const w = base();
+  const refuse = t('medal_sun', 'Не подходит.');
+  const say = t('manor', 'Медальон звякнул.');
+  obj(obj(w['items'])['medal_sun'])['refuse'] = refuse;
+  spot(w, 'hall', 'inscription')['uses'] = [{ item: 'medal_sun', keep: true, say }];
+  const { text, world } = decodedText(w);
+  const lines = worldLines(world, FILE, text);
+  // The kernel's lines first, unchanged; then use's, in source order, at their source paths and lines.
+  expect(lines.slice(0, -2)).toEqual(worldLines(world, FILE, text, { ...MECHANIC_TEXTS, use: null }));
+  expect(lines.slice(-2)).toEqual([
+    { id: refuse['id'], text: 'Не подходит.', file: FILE, line: jsonLine(w, '"refuse": {'), hint: false, path: 'items.medal_sun.refuse', role: 'toast', reach: [] },
+    { id: say['id'], text: 'Медальон звякнул.', file: FILE, line: jsonLine(w, '"say": {'), hint: false, path: 'sections.manor.rooms.hall.hotspots.2.uses.0.say', role: 'toast', reach: [] },
+  ]);
+  // The texts gate reads them as walked: the world lints clean.
+  expect(lint(w)).toEqual([]);
+});
+
+test('use: lints refuse an unknown ref, a cross-section rule and warn a consumed keep item', () => {
+  // Section s gives the key and the lens; section t gives the relic, and its chest takes the gem.
+  const w = mini({
+    items: ['key', 'relic', 'gem', 'lens'],
+    sections: {
+      s: { start: 'hall', rooms: { hall: [take('key', { item: 'key' }), object('box', null), take('lens', { item: 'lens' }), object('scope', lockOf(['lens'])), object('jar', lockOf(['lens'])), leave('out')] } },
+      t: { start: 'yard', rooms: { yard: [take('relic', { item: 'relic' }), object('chest', lockOf(['gem'])), leave('out')] } },
+    },
+  });
+  // The box's rule 0 uses and reads t's relic; rule 1 gives the gem t's chest takes, unlocks a take, enters no knot.
+  spot(w, 'hall', 'box', 's')['uses'] = [
+    { item: 'relic', when: { held: 'relic' } },
+    { item: 'key', keep: true, do: [{ give: 'gem' }, { unlock: 'hall.key' }, { story: 'nowhere' }] },
+  ];
+  // The scope's slot keeps the lens, which the jar's slot consumes.
+  obj(list(obj(spot(w, 'hall', 'scope', 's')['lock'])['slots'])[0])['keep'] = true;
+  const box = 'sections.s.rooms.hall.hotspots.1.uses';
+  const found = lint(w, { knots: new Set(['k'] as KnotName[]) }); // the fixture's one knot
+  expect(found.map((f) => `${f.code} ${f.severity} ${f.message}`)).toEqual([
+    `world/use-cross-section E rule 0 of hall.box: item 'relic' is no item section s gives: a rule reads only its own section (X15)`,
+    `world/cross-section-cond E ${box}.0.when: {"held":"relic"} names no item of section s: a gating condition reads only its own section (§4)`,
+    `world/use-cross-section E rule 1 of hall.box: item 'gem' is given in section s and required by lock yard.chest of section t (X15)`,
+    `world/use-unknown-ref E rule 1 of hall.box: hotspot 'hall.key' is no lock`,
+    `world/use-unknown-ref E rule 1 of hall.box: knot 'nowhere' of ch1 is not defined`,
+    `world/keep-consumed W slot hall.scope#0 keeps item 'lens' held, but slot hall.jar#0 consumes it: a tool that stays is never used up (§6.1)`,
+  ]);
+  // Each at its source line, in the file's order (the slot's `keep` is the file's last one: the box's rule comes first).
+  const lines = `${JSON.stringify(w, null, 2)}\n`.split('\n');
+  const slotKeep = lines.findLastIndex((l) => l.trimStart().startsWith('"keep": true')) + 1;
+  const at = (start: string): number => jsonLine(w, start);
+  expect(found.map((f) => f.line)).toEqual([at('"item": "relic"'), at('"when": {'), at('"give": "gem"'), at('"unlock": "hall.key"'), at('"story": "nowhere"'), slotKeep]);
+  // The keep check reads the data alone: a world whose `use` data holds no rule still gets it.
+  delete spot(w, 'hall', 'box', 's')['uses'];
+  const ruleless = `${JSON.stringify(w, null, 2)}\n`.split('\n').findIndex((l) => l.trimStart().startsWith('"keep": true')) + 1;
+  expect(of(lint(w, { knots: new Set(['k'] as KnotName[]) }), 'world/keep-consumed').map((f) => f.line)).toEqual([ruleless]);
+});
+
+test("use: a world whose rules give and read their section's own items lints clean", () => {
+  // The positive control (RULINGS 212): the inscription's rule takes the sun medallion and leaves it held (`keep`, so
+  // the gate's slots can still be filled: the section stays leave-safe) and gives the coin, which the drawer's rule
+  // reads in its `when`. The coin is manor's own item through use's scope hook only.
+  const w = base();
+  obj(w['items'])['coin'] = { name: t('coin', 'Монета'), desc: t('coin', 'Старая монета.'), glyph: 'key' };
+  spot(w, 'hall', 'inscription')['uses'] = [{ item: 'medal_sun', keep: true, do: [{ give: 'coin' }] }];
+  spot(w, 'study', 'drawer')['uses'] = [{ item: 'coin', when: { held: 'coin' }, do: [{ story: 'manor_cellar_voice' }] }];
+  expect(lint(w)).toEqual([]);
+});
+
+test("conditions: a module's scope hook widens the gating scope", () => {
+  const input = passInput(base(), PUZZLE_TYPES);
+  const where = 'sections.manor.rooms.hall.hotspots.2.when';
+  const site: CondSite = { cond: { held: 'relic' }, path: where, scope: MANOR };
+  // A fixture rules module whose data gives the relic in manor: no item of the world, nothing else.
+  const relic: MechanicRules<'relic_probe', never, never> = {
+    id: 'relic_probe',
+    actions: () => [],
+    apply: () => undefined,
+    reads: () => [],
+    cues: [],
+    scope: (_w, section) => ({ items: section === 'manor' ? ['relic' as ItemId] : [], fired: [] }), // a fixture item id
+  };
+  expect(condFindings(input, [site], MECHANIC_DATA, [...MECHANIC_RULES, relic])).toEqual([]);
+  expect(condFindings(input, [site]).map((f) => `${f.code} ${f.severity} ${f.message}`)).toEqual([
+    `world/cross-section-cond E ${where}: {"held":"relic"} names no item of section manor: a gating condition reads only its own section (§4)`,
+  ]);
 });
