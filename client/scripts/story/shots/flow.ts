@@ -7,12 +7,12 @@
 // choices count; END and DONE end a path; a yield leads to its `then` knot, an explore yield to its section's knots
 // (cross-check only, `explore`); an event's run returns at its section's explore yield in whichever event knot its
 // diverts and `then=` reached: that step leads to the event's rooms' windows `r:<room>` and, with its yield's batch, to
-// the event knots co-fired after it; an entering explore yield leads to its section's start room window. The
-// may-analysis: what may be on stage after each step's batch, a forward union to a fixpoint from the seeds (the first
-// knot: the empty stage; a section knot: the rooms it opens on, none for an event only ever co-fired after another,
-// which opens on the last image of that one's run). It is the only code of the shot pass that names the legacy kinds
-// `show` / `hide` (rev. 5, W3: SH12a removes them here alone). Pure, no node:*, no inkjs; tags are read only through
-// `parseTags`.
+// each knot a list of effects fires directly after it; an entering explore yield leads to its section's start room
+// window. The may-analysis: what may be on stage after each step's batch, a forward union to a fixpoint from the seeds
+// (the first knot: the empty stage; a section knot: the rooms it opens on, none for an event only ever co-fired after
+// another, which opens on the last image of that one's run). It is the only code of the shot pass that names the
+// legacy kinds `show` / `hide` (rev. 5, W3: SH12a removes them here alone). Pure, no node:*, no inkjs; tags are read
+// only through `parseTags`.
 import type { Cast } from '../../../src/story/catalog.ts';
 import type { AssetId, AssetIndex, BgId, CgId, ChapterId, CharId, ExprId, KnotName, LineId, SectionId, SpeakerId, StagingCommand, YieldCommand } from '../../../src/story/staging.ts';
 import { YIELD_KINDS, parseTags, tagKind } from '../../../src/story/tags.ts';
@@ -920,8 +920,9 @@ export type RoomEvents = ReadonlyMap<
 >;
 /**
  * Per event knot (§3.4 "An event's return", rev. 5 W2): the rooms it is named in as an event (`ChapterSections.rooms`;
- * the explore resumes in the room that fired it) and `cofiredAfter`, the knots a list of effects fires after it (the
- * explore runs the next one instead of showing the room, `reduce.ts` `eventReturned`). A leave knot has no entry.
+ * the explore resumes in the room that fired it) and `cofiredAfter`, each knot a list of effects fires directly after it
+ * (the explore runs that one when this one's run returns, instead of showing the room: `core.ts` `eventReturned` runs
+ * `rest[0]`, so a knot further down the list follows the one before it, never this one). A leave knot has no entry.
  */
 export type EventReturns = ReadonlyMap<KnotName, { readonly rooms: readonly RoomId[]; readonly cofiredAfter: readonly KnotName[] }>;
 
@@ -979,9 +980,9 @@ export function eventReturns(world: WorldPublicBody | undefined, sections: Chapt
   const after = new Map<KnotName, Set<KnotName>>();
   for (const { knots: list } of storyLists(world)) {
     list.forEach((k, i) => {
-      const later = after.get(k) ?? after.set(k, new Set()).get(k);
-      for (const x of list.slice(i + 1).filter((y) => y !== k)) {
-        later?.add(x);
+      const x = list[i + 1];
+      if (x !== undefined) {
+        (after.get(k) ?? after.set(k, new Set()).get(k))?.add(x);
       }
     });
   }

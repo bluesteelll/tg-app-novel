@@ -1471,6 +1471,38 @@ test("flow: an event co-fired after one that returns through another event knot 
   expect(effectAt(flow, 'ch1.gate_echo.e001').shots).toEqual(['cafe_ally_cu']);
 });
 
+test("flow: an event fired third opens on the second's last image, not the first's", () => {
+  const look = (id: string, n: number, then: readonly Json[]): Json => ({ id, kind: 'look', rect: [100, 300, 100, 100], label: TEXT(`ch1.s.l30${n}`), look: TEXT(`ch1.s.k30${n}`), then });
+  // The explore runs the third knot of the list when the second returns (`core.ts` `eventReturned` runs `rest[0]`).
+  const w = world({ hall: room('hall', [look('bang', 1, [{ story: 'gate_a' }, { story: 'gate_b' }, { story: 'gate_c' }]), LEAVE_DOOR]) });
+  const body = [
+    '-> arrive', '=== arrive ===', '# scene: hall', 'Зал. #id:ch1.arrive.a001', '# explore: s', '-> DONE',
+    '=== gate_a ===', 'Хруст. #id:ch1.gate_a.a001', '# explore: s', '-> DONE',
+    '=== gate_b ===', '# bg: cafe_ally_cu', 'ally: Ну? #id:ch1.gate_b.b001', '# explore: s', '-> DONE',
+    '=== gate_c ===', '# face: ally smile', 'ally: Эхо. #id:ch1.gate_c.c001', '# explore: s', '-> DONE',
+    ...LEAVE_OUT,
+  ];
+  expect(graphShown(body, w)).toEqual([]);
+  const { flow, findings } = linted(body, { w });
+  expect(shown(findings, 'shot/char-absent')).toEqual([]);
+  expect(effectAt(flow, 'k:gate_c').shots).toEqual(['cafe_ally_cu']);
+});
+
+test('flow: an event a list fires twice opens the second time on its own last image', () => {
+  const look = (id: string, n: number, then: readonly Json[]): Json => ({ id, kind: 'look', rect: [100, 300, 100, 100], label: TEXT(`ch1.s.l30${n}`), look: TEXT(`ch1.s.k30${n}`), then });
+  // The list queues the knot twice: the second run follows the first's return, so it opens on the first run's cut.
+  const w = world({ hall: room('hall', [look('bang', 1, [{ story: 'gate_a' }, { story: 'gate_a' }]), LEAVE_DOOR]) });
+  const body = [
+    '-> arrive', '=== arrive ===', '# scene: hall', 'Зал. #id:ch1.arrive.a001', '# explore: s', '-> DONE',
+    '=== gate_a ===', 'Хруст. #id:ch1.gate_a.a001', '# bg: cafe_ally_cu', '# explore: s', '-> DONE',
+    ...LEAVE_OUT,
+  ];
+  expect(graphShown(body, w)).toEqual([]);
+  const { flow } = flowOf(body, CAFE_CATALOG, w);
+  expect(nextOf(flow, 'ch1.gate_a.a001')).toEqual(['k:gate_a', 'r:hall']);
+  expect(effectAt(flow, 'k:gate_a').shots).toEqual(['cafe_ally_cu', 'hall']);
+});
+
 test('flow: two rooms on one bg keep two windows', () => {
   const look = (story: string, n: number): Json => ({ id: 'thing', kind: 'look', rect: [100, 300, 100, 100], label: TEXT(`ch1.s.l20${n}`), look: TEXT(`ch1.s.k20${n}`), then: [{ story }] });
   const exit = (to: string, n: number): Json => ({ id: 'way', kind: 'exit', rect: [100, 1300, 250, 400], label: TEXT(`ch1.s.l21${n}`), to: { room: to }, lock: null, sfx: null });
