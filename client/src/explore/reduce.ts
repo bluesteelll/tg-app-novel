@@ -4,6 +4,7 @@
 // successor relation, the section key and the searches are the rules half (mechanics/rules/core.ts and search.ts),
 // which only the explore controller's lazy chunk loads. Pure: the runtime and the story tool call these same
 // functions.
+import type { MoveHow } from '../cues/types.ts';
 import type { KnotName, PuzzleLocalId, SectionId, SfxId } from '../story/staging.ts';
 import type {
   DocId,
@@ -43,19 +44,24 @@ export type ExploreAction =
   | { kind: 'hint-opened'; puzzle: PuzzleLocalId; tier: number }
   | { kind: 'puzzle-ended'; puzzle: PuzzleLocalId; outcome: PuzzleOutcome };
 
+// Each effect names where it acts (engine plan §6.1 "Effects grow"), so a cue built from it needs no second lookup.
 export type ExploreEffect =
-  /** GameSession builds the room batch from it. */
-  | { kind: 'room'; room: RoomId; sfx: SfxId | null }
-  | { kind: 'look'; text: WorldText }
-  | { kind: 'got'; gift: Gift }
+  /** GameSession builds the room batch from it. `from`: the room left (a resume, an event return: the room itself; a
+   *  section's fresh entry: null); `via`: the exit a walk took, else null. */
+  | { kind: 'room'; room: RoomId; sfx: SfxId | null; from: RoomId | null; via: HotspotKey | null; how: Exclude<MoveHow, 'leave'> }
+  /** `at`: the hotspot whose text it is. */
+  | { kind: 'look'; text: WorldText; at: HotspotKey }
+  /** `at`: the take, or the hotspot of the trigger that gave it (null: a room's `onEnter`). */
+  | { kind: 'got'; gift: Gift; at: HotspotKey | null }
   /** Open the lock panel. */
   | { kind: 'lock'; hotspot: HotspotKey }
   | { kind: 'puzzle'; puzzle: PuzzleLocalId; hotspot: HotspotKey }
   /** Run an event knot (ink); the rooms are suspended. */
   | { kind: 'story'; knot: KnotName }
-  /** Leave the section into the story. */
-  | { kind: 'leave'; knot: KnotName }
-  | { kind: 'refused'; reason: 'no-fit' }
+  /** Leave the section into the story: `from` the room left, `via` the exit. */
+  | { kind: 'leave'; knot: KnotName; from: RoomId; via: HotspotKey }
+  /** An item that does not go in at `at`: no slot takes it ('no-fit') or no rule uses it ('no-rule'). */
+  | { kind: 'refused'; at: HotspotKey; item: ItemId; reason: 'no-fit' | 'no-rule' }
   /** admitSection or admitEvent restarted the section (a toast); never emitted by reduce. */
   | { kind: 'reset'; section: SectionId }
   /** The state changed: a debounced autosave. */

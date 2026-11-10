@@ -13,8 +13,11 @@ export function added<T>(list: readonly T[], v: T): readonly T[] {
   return list.includes(v) ? list : [...list, v];
 }
 
-/** Every trigger fires at most once; an empty one is never recorded, so it adds no state. */
-export function fire(d: Draft, firedKey: string, effects: readonly Effect[]): void {
+/**
+ * Every trigger fires at most once; an empty one is never recorded, so it adds no state. `at`: the hotspot the trigger
+ * belongs to (null: a room's `onEnter`), which its gifts name.
+ */
+export function fire(d: Draft, firedKey: string, effects: readonly Effect[], at: HotspotKey | null): void {
   if (effects.length === 0 || d.s.fired.includes(firedKey)) {
     return;
   }
@@ -23,7 +26,7 @@ export function fire(d: Draft, firedKey: string, effects: readonly Effect[]): vo
     if ('give' in e) {
       if (d.ix.items.has(e.give)) {
         set(d, 'held', added(d.s.held, e.give));
-        d.effects.push({ kind: 'got', gift: { item: e.give } });
+        d.effects.push({ kind: 'got', gift: { item: e.give }, at });
       }
     } else if ('unlock' in e) {
       openKey(d, e.unlock);
@@ -41,7 +44,7 @@ export function openKey(d: Draft, key: HotspotKey): void {
     return;
   }
   set(d, 'open', [...d.s.open, key]);
-  fire(d, `open:${key}`, lock.onOpen);
+  fire(d, `open:${key}`, lock.onOpen, key);
 }
 
 /** A module cue as the writer recorded it. */
@@ -157,8 +160,8 @@ class DraftWriter implements KernelWriter {
     setRun(this.draft, puzzle, run);
   }
 
-  fire(trigger: TriggerKey, effects: readonly Effect[], _cause: Cause): void {
-    fire(this.draft, trigger, effects);
+  fire(trigger: TriggerKey, effects: readonly Effect[], cause: Cause): void {
+    fire(this.draft, trigger, effects, cause.at);
   }
 
   effect(e: ExploreEffect): void {

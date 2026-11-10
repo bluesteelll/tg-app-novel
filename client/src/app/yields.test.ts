@@ -780,7 +780,7 @@ test('yields: dispose leaves no cue subscriber', async () => {
   };
   const r = rig({ create });
   await inHall(r);
-  const looked: ExploreEffect = { kind: 'look', text: { id: 'ch1.yx.late' as LineId, ru: 'late' } };
+  const looked: ExploreEffect = { kind: 'look', text: { id: 'ch1.yx.late' as LineId, ru: 'late' }, at: 'study.desk' as HotspotKey };
   // Control: while the session lives, such an effect reaches the scene role.
   const before = r.cues.length;
   listener.fn?.(looked);

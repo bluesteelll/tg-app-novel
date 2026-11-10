@@ -16,7 +16,7 @@
 import { hotspotKey, lockOf, own, runOf, runStep, sectionScope, set, setRun, worldIndex } from '../../explore/reduce.ts';
 import type { Draft, ExploreAction, ExploreEffect, HotspotEntry, WorldIndex } from '../../explore/reduce.ts';
 import type { PuzzleOutcome, WorldState } from '../../explore/state.ts';
-import type { PuzzleLocalId, SectionId, SfxId } from '../../story/staging.ts';
+import type { PuzzleLocalId, SectionId } from '../../story/staging.ts';
 import type { Hotspot, HotspotKey, ItemId, Lock, RoomId, WorldPublicBody } from '../../world/types.ts';
 import type { ArrivalOut, FactAtom, RulesRegistry, SectionAction } from '../contract.ts';
 import { MECHANIC_RULES } from './index.ts';
@@ -39,7 +39,7 @@ function cellsOf(s: WorldState, key: HotspotKey, lock: Lock): Array<ItemId | nul
 function openAt(d: Draft, key: HotspotKey, hotspot: Hotspot): void {
   openKey(d, key);
   if (hotspot.kind === 'object') {
-    fire(d, `then:${key}`, hotspot.then);
+    fire(d, `then:${key}`, hotspot.then, key);
   }
 }
 
@@ -56,7 +56,10 @@ function arrived(out: KernelWriter, room: RoomId): void {
   }
 }
 
-function arrive(out: KernelWriter, room: RoomId, sfx: SfxId | null): void {
+/** How a `room` effect enters its room: the move's sound, the room left, the exit taken, the kind of move. */
+type Move = Omit<Extract<ExploreEffect, { kind: 'room' }>, 'kind' | 'room'>;
+
+function arrive(out: KernelWriter, room: RoomId, move: Move): void {
   const d = out.draft;
   const entry = d.ix.rooms.get(room);
   const section = d.s.section;
@@ -68,8 +71,8 @@ function arrive(out: KernelWriter, room: RoomId, sfx: SfxId | null): void {
     set(d, 'lastRoom', { ...d.s.lastRoom, [section]: room });
   }
   set(d, 'visited', added(d.s.visited, room));
-  d.effects.push({ kind: 'room', room, sfx });
-  fire(d, `enter:${room}`, entry.room.onEnter);
+  d.effects.push({ kind: 'room', room, ...move });
+  fire(d, `enter:${room}`, entry.room.onEnter, null);
   arrived(out, room);
 }
 
@@ -80,7 +83,7 @@ function enterSection(out: KernelWriter, sid: SectionId): void {
     return;
   }
   if (d.s.section === sid && d.s.room !== null) {
-    d.effects.push({ kind: 'room', room: d.s.room, sfx: null }); // a resume
+    d.effects.push({ kind: 'room', room: d.s.room, sfx: null, from: d.s.room, via: null, how: 'resume' });
     arrived(out, d.s.room);
     return;
   }
@@ -90,7 +93,7 @@ function enterSection(out: KernelWriter, sid: SectionId): void {
     return;
   }
   set(d, 'section', sid);
-  arrive(out, room, null);
+  arrive(out, room, { sfx: null, from: null, via: null, how: 'enter' });
 }
 
 function eventReturned(out: KernelWriter, sid: SectionId): void {
@@ -104,7 +107,7 @@ function eventReturned(out: KernelWriter, sid: SectionId): void {
   if (next !== undefined) {
     d.effects.push({ kind: 'story', knot: next });
   } else if (d.s.room !== null) {
-    d.effects.push({ kind: 'room', room: d.s.room, sfx: null });
+    d.effects.push({ kind: 'room', room: d.s.room, sfx: null, from: d.s.room, via: null, how: 'return' });
     arrived(out, d.s.room);
   }
 }
@@ -143,9 +146,9 @@ function tap(out: KernelWriter, key: HotspotKey): void {
   const h = entry.hotspot;
   switch (h.kind) {
     case 'look':
-      d.effects.push({ kind: 'look', text: h.look });
+      d.effects.push({ kind: 'look', text: h.look, at: key });
       set(d, 'examined', added(d.s.examined, key));
-      fire(d, `then:${key}`, h.then);
+      fire(d, `then:${key}`, h.then, key);
       return;
     case 'take': {
       if (d.s.taken.includes(key)) {
@@ -161,19 +164,19 @@ function tap(out: KernelWriter, key: HotspotKey): void {
         set(d, 'docs', added(d.s.docs, g.doc));
       }
       set(d, 'taken', [...d.s.taken, key]);
-      d.effects.push({ kind: 'got', gift: g });
-      fire(d, `then:${key}`, h.then);
+      d.effects.push({ kind: 'got', gift: g, at: key });
+      fire(d, `then:${key}`, h.then, key);
       return;
     }
     case 'exit':
       if (h.lock !== null && !d.s.open.includes(key)) {
         lockTap(d, key, h.lock);
       } else if ('room' in h.to) {
-        arrive(out, h.to.room, h.sfx);
+        arrive(out, h.to.room, { sfx: h.sfx, from: entry.room, via: key, how: 'walk' });
       } else {
         // I-W's re-entry rule: a leave changes only `section` (sectionKey ignores it and lastRoom).
         set(d, 'section', null);
-        d.effects.push({ kind: 'leave', knot: h.to.story });
+        d.effects.push({ kind: 'leave', knot: h.to.story, from: entry.room, via: key });
       }
       return;
     case 'object':
@@ -182,9 +185,9 @@ function tap(out: KernelWriter, key: HotspotKey): void {
         return;
       }
       if (h.look !== null) {
-        d.effects.push({ kind: 'look', text: h.look });
+        d.effects.push({ kind: 'look', text: h.look, at: key });
       }
-      fire(d, `then:${key}`, h.then);
+      fire(d, `then:${key}`, h.then, key);
       return;
     default: {
       const never: never = h;
@@ -217,7 +220,7 @@ function insert(d: Draft, key: HotspotKey, item: ItemId): void {
   }
   const f = fit(d.ix, d.s, key, item);
   if (f === null) {
-    d.effects.push({ kind: 'refused', reason: 'no-fit' });
+    d.effects.push({ kind: 'refused', at: key, item, reason: 'no-fit' });
     return;
   }
   const cells = cellsOf(d.s, key, f.lock).map((c, i) => (i === f.index ? item : c));
@@ -258,7 +261,7 @@ function puzzleEnded(d: Draft, p: PuzzleLocalId, outcome: PuzzleOutcome): void {
   if (outcome === 'solved') {
     openAt(d, entry.key, entry.hotspot);
   } else {
-    fire(d, `fail:${entry.key}`, lock.onFail);
+    fire(d, `fail:${entry.key}`, lock.onFail, entry.key);
   }
 }
 
