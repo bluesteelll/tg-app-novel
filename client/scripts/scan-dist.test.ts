@@ -226,6 +226,18 @@ describe('scan build', () => {
         'const p=()=>l(()=>import(`./flow-e.js`),__vite__mapDeps([0,1,2]));export{p};',
     );
     expect(scanBuild([LINKED, ENTRY, engine, CSS])).toEqual([{ kind: 'preload-deps', file: 'assets/engine-b.js', count: 3 }]);
+    // One file is already a preload list (Vite appends a lazy chunk's CSS after `resolveDependencies`).
+    const one = text(
+      'assets/engine-b.js',
+      `${mapDeps(['assets/flow-e.js'])}const p=()=>l(()=>import(\`./flow-e.js\`),__vite__mapDeps([0]));export{p};`,
+    );
+    expect(scanBuild([LINKED, ENTRY, one, CSS])).toEqual([{ kind: 'preload-deps', file: 'assets/engine-b.js', count: 1 }]);
+    // The helper in a shape the scan cannot read fails closed: a reshaped helper must not read as an empty list.
+    const odd = text(
+      'assets/engine-b.js',
+      'const __vite__mapDeps=(i,m)=>i;const p=()=>l(()=>import(`./flow-e.js`),__vite__mapDeps([0]));export{p};',
+    );
+    expect(scanBuild([LINKED, ENTRY, odd, CSS])).toEqual([{ kind: 'preload-deps', file: 'assets/engine-b.js', count: 0 }]);
     // An entry's static imports preloaded from index.html.
     const preloading = html('<link rel="modulepreload" crossorigin href="/assets/Geometry-c.js"><link rel="stylesheet" crossorigin href="/assets/style-a.css">');
     expect(scanBuild([preloading, ENTRY, ENGINE, CSS])).toEqual([{ kind: 'preload-deps', file: 'index.html', count: 1 }]);
