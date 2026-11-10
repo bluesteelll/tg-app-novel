@@ -3,10 +3,12 @@ import { expect, test } from 'vitest';
 import { RESUME_STATE_CAP } from '../../src/explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../../src/explore/state.ts';
 import type { KernelWorld } from '../../src/mechanics/contract.ts';
-import { inSectionReach, searchSection, sectionEntry } from '../../src/mechanics/rules/search.ts';
+import { reduce } from '../../src/mechanics/rules/core.ts';
+import { admitEvent, admitSection, inSectionReach, ownScope, resetSection, searchSection, sectionEntry, sectionKey, successors } from '../../src/mechanics/rules/search.ts';
 import type { SectionId } from '../../src/story/staging.ts';
 import { decodeWorldSource, toPublic } from '../../src/world/decode.ts';
 import type { RoomId, WorldPublicBody } from '../../src/world/types.ts';
+import type { PlayInput } from './playthrough.ts';
 import { checkSection, checkWorld } from './softlock.ts';
 import type { SectionCheck } from './softlock.ts';
 
@@ -235,3 +237,56 @@ test('softlock: section just under RESUME_STATE_CAP passes', () => {
     `[timing] inSectionReach full enumeration: ${N} states, ${median.toFixed(1)} ms median of 5 after 1 warm-up, heap +${(heap / 2 ** 20).toFixed(1)} MiB`,
   );
 }, 60_000);
+
+test("softlock: a search, reset or proof call without the modules' data fails check", () => {
+  const w: KernelWorld = hub(1, 1, 0);
+  const body: WorldPublicBody = w; // the public body alone, as `toPublic` returns it (a widening, no cast)
+  const s = sectionEntry(w, EMPTY_WORLD_STATE, S);
+  const asInput = (_world: PlayInput['world']): void => undefined;
+  // Type pins, never run (registry.test.ts's form): each call without the modules' data fails check beside its
+  // positive control, so an unused directive is itself a red (TS2578).
+  const pins = (): void => {
+    // @ts-expect-error -- successors needs the kernel world
+    successors(body, s);
+    successors(w, s);
+    // @ts-expect-error -- sectionKey needs the kernel world
+    sectionKey(body, s, S);
+    sectionKey(w, s, S);
+    // @ts-expect-error -- ownScope needs the kernel world
+    ownScope(body, S);
+    ownScope(w, S);
+    // @ts-expect-error -- resetSection needs the kernel world
+    resetSection(body, s, S);
+    resetSection(w, s, S);
+    // @ts-expect-error -- sectionEntry needs the kernel world
+    sectionEntry(body, s, S);
+    sectionEntry(w, s, S);
+    // @ts-expect-error -- searchSection needs the kernel world
+    searchSection(body, s, S, RESUME_STATE_CAP);
+    searchSection(w, s, S, RESUME_STATE_CAP);
+    // @ts-expect-error -- inSectionReach needs the kernel world
+    inSectionReach(body, s, S, RESUME_STATE_CAP);
+    inSectionReach(w, s, S, RESUME_STATE_CAP);
+    // @ts-expect-error -- admitSection needs the kernel world
+    admitSection(body, s, S);
+    admitSection(w, s, S);
+    // @ts-expect-error -- admitEvent needs the kernel world
+    admitEvent(body, s, S);
+    admitEvent(w, s, S);
+    // @ts-expect-error -- reduce needs the kernel world
+    reduce(body, s, { kind: 'enter-section', section: S });
+    reduce(w, s, { kind: 'enter-section', section: S });
+    // @ts-expect-error -- a section's soft-lock proof needs the proof world
+    checkSection(body, S, FILE);
+    checkSection(w, S, FILE);
+    // @ts-expect-error -- a world's soft-lock proof needs the proof world
+    checkWorld(body, FILE);
+    checkWorld(w, FILE);
+    // @ts-expect-error -- a playthrough's world is the proof world
+    asInput(body);
+    asInput(w);
+  };
+  expect(pins).toBeTypeOf('function'); // a type check only: never run
+  // The live control: the kernel world's proof runs, the hub's (1 + 1) x 3^1 states.
+  expect(checkWorld(w, FILE)).toEqual([{ section: 's', states: 6, findings: [] }]);
+});

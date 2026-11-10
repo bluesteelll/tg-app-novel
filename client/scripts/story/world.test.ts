@@ -1799,6 +1799,7 @@ test("use: a played chapter takes a use edge only with the world's mods", () => 
   expect(withMods.play, JSON.stringify(withMods.findings)).toMatchObject({ ended: 5, failed: 0 });
   expect([...withMods.play.visited]).toEqual(['start', 'statue_voice', 'after']);
   // The public body alone has no rules: the door never opens and `after` is never entered.
+  // @ts-expect-error -- the public body alone is no proof world (KernelWorld.mods); kept as the runtime guard
   const without = playStatue(graph, ch.json, toPublic(src));
   expect(without.play.ended).toBe(0);
   expect([...without.play.visited]).not.toContain('after');
