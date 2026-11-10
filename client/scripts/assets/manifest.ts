@@ -1,8 +1,9 @@
 // The asset tool's planner (PROTOTYPE-PLAN "Build outputs", "Asset pipeline"; PUZZLES-PLAN, STORIES-PLAN Y15): tiers,
 // file names, the per-chapter manifests, the Home covers and the paid file fingerprints, as a plan (repo-relative
 // posix path → bytes). Pure: the encoders' results come in, IO stays in assets.ts, sharp is never loaded here.
-// Also the one door through which budget.ts, assets.ts and scan-dist.ts reach the src/ decoders: a main module's
-// relative imports stay under scripts/ (emit.ts, the `--preserve-symlinks-main` CLI tests).
+// Also the one door through which budget.ts, assets.ts and scan-dist.ts reach the src/ decoders and the scene's Pixi
+// environment constants: a main module's relative imports stay under scripts/ (emit.ts, the
+// `--preserve-symlinks-main` CLI tests).
 import { createHash } from 'node:crypto';
 
 import { ASSET_ID_RE, CHAR_HALF_CANVAS_H, TRIMMED_NAMESPACES, decodeAssetManifest } from '../../src/story/catalog.ts';
@@ -34,6 +35,7 @@ export {
 } from '../../src/story/catalog.ts';
 /** The registry's preload cap: the knot-set and room-set rows' limit (MEMORY-PLAN M2). */
 export { STEADY_CAP_BYTES } from '../../src/scene/registry.ts';
+export { PIXI_ENV_SRCS, SKIP_PIXI_ENV } from '../../src/scene/pixi-env.ts';
 
 /** Output locations, repo-relative posix. Paid files never go under `client/` (principle 0). */
 export const ASSET_OUT = {

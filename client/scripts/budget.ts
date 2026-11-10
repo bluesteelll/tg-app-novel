@@ -9,6 +9,8 @@ import { brotliCompressSync, constants } from 'node:zlib';
 import type { AssetCatalog, AssetEntry, AssetManifest, ChapterListEntry, ChapterMeta, CoverManifest, ImageEntry } from '../src/story/catalog.ts';
 import type { AssetId, ChapterId } from '../src/story/staging.ts';
 import {
+  PIXI_ENV_SRCS,
+  SKIP_PIXI_ENV,
   STEADY_CAP_BYTES,
   TRIMMED_NAMESPACES,
   assetUsage,
@@ -62,6 +64,11 @@ export type BudgetInputs = {
   lazySources: ReadonlySet<string>;
   /** Dist paths of the re-export-only JS files: Rolldown's facades, which hold no code of their own (RULINGS 92). */
   facades: ReadonlySet<string>;
+  /**
+   * The scene skips Pixi's environment imports (`SKIP_PIXI_ENV`): no path requests the chunks at `PIXI_ENV_SRCS`, so
+   * the engine walk stops there; false counts them again (the basis note in `engineWalk`).
+   */
+  pixiEnvSkipped: boolean;
 };
 export type Limits = {
   entryJsBr: number;
@@ -247,7 +254,7 @@ function isReexportFacade(js: string): boolean {
 }
 
 type Closure = { keys: Set<string>; missing: string[] };
-/** `imports` load before a chunk runs; `dynamicImports` load when it calls them (Pixi's `init` always does). */
+/** `imports` load before a chunk runs; `dynamicImports` load when it calls them (which ones count: `engineWalk`). */
 type Edges = 'static' | 'static+dynamic';
 type Entry = { ok: true; key: string; chunk: ManifestChunk } | { ok: false; reason: string };
 /** A JS closure's brotli bytes, or why it cannot be measured. */
@@ -408,26 +415,71 @@ function engineClosure(inputs: BudgetInputs): EngineClosure {
     return { ok: false, problem: 'dist/.vite/manifest.json missing' };
   }
   const manifest = inputs.manifest;
+  const walk = engineWalk(manifest, inputs.pixiEnvSkipped);
+  // An engine merged into the entry (or not built) would measure 0 KB here: that is a FAIL, never a PASS.
+  if (walk.roots === 0) {
+    return { ok: false, problem: `no dynamic entry for ${ENGINE_SRC} in the manifest` };
+  }
+  return { ok: true, manifest, keys: walk.keys, missing: walk.missing };
+}
+
+/**
+ * The engine walk from every dynamic entry of the engine: the one walk the engine, first-line, first-load and lazy
+ * rows and `firstLineFiles` read.
+ */
+function engineWalk(
+  manifest: Record<string, ManifestChunk>,
+  pixiEnvSkipped: boolean,
+): { roots: number; keys: Set<string>; missing: string[] } {
   const roots = Object.keys(manifest).filter((key) => {
     const chunk = manifest[key];
     return chunk?.isDynamicEntry === true && chunk.src === ENGINE_SRC;
   });
-  // An engine merged into the entry (or not built) would measure 0 KB here: that is a FAIL, never a PASS.
-  if (roots.length === 0) {
-    return { ok: false, problem: `no dynamic entry for ${ENGINE_SRC} in the manifest` };
-  }
   const keys = new Set<string>();
   const missing: string[] = [];
-  // Application.init() always imports Pixi's environment chunk (browserAll) dynamically, and the 230 KB basis
-  // (P:1739, R4 145.1 K) counts it: the engine row follows dynamic imports too; the entry row stays static (P:1738).
-  // The walk stops at a lazy chunk (yields.ts imports them): they load after the first line (PUZZLES-PLAN X14), so
-  // neither the engine row nor the first-line and first-load rows count them; their own rows do.
+  // The basis note (RULINGS 201's path rule, stated here once). Ledgers 1 / 4 (the first-line and engine rows) count
+  // every JS chunk that some supported WebView requests automatically before its first line on the boot -> chapter
+  // -> first-line path, a capability fallback included (Pixi's three renderer facades: a device requests one by what
+  // it is, not by what the player does); so this walk follows dynamic imports too, while the entry row stays static
+  // (P:1738). A lazy root (its own row, out of Ledgers 1 / 4) is a chunk requested by a player action, by an app event
+  // after the first line, or by a prefetch scheduled after the first line: the walk stops at one (yields.ts imports
+  // them, PUZZLES-PLAN X14), and its own row counts it. The named exceptions, where a lazy root is requested before a
+  // first line, are bounded by their own rows: residual (j) (a room- or puzzle-first resume, a yield-first chapter)
+  // and P's `openPaywall` prefetch if P's cut keeps it. A chunk that no path requests leaves the rows: Pixi's
+  // environment chunks (`PIXI_ENV_SRCS`) while the scene skips them (`SKIP_PIXI_ENV`, rule `pixi-env`); with the
+  // flag off the walk counts them again, which is the fail-safe. The 230 KB basis (P:1739, R4 145.1 K) counted
+  // browserAll; RULINGS 201 keeps the LIMIT.
+  const stop = (key: string): boolean => {
+    const src = manifest[key]?.src;
+    return isLazySrc(src) || (pixiEnvSkipped && src !== undefined && PIXI_ENV_SRCS.includes(src));
+  };
   for (const root of roots) {
-    const c = closure(manifest, root, 'static+dynamic', (key) => isLazySrc(manifest[key]?.src));
+    const c = closure(manifest, root, 'static+dynamic', stop);
     c.keys.forEach((k) => keys.add(k));
     missing.push(...c.missing);
   }
-  return { ok: true, manifest, keys, missing };
+  return { roots: roots.length, keys, missing };
+}
+
+/**
+ * The JS files the first-line rows count, by the rows' own walk: the entry's static closure and the engine walk (the
+ * entry closure alone without an engine dynamic entry). The e2e names the chunks a fresh start must not request
+ * against it (scene-env.spec.ts).
+ */
+export function firstLineFiles(manifest: Record<string, ManifestChunk>, o: { pixiEnvSkipped: boolean }): ReadonlySet<string> {
+  const keys = new Set(engineWalk(manifest, o.pixiEnvSkipped).keys);
+  const entry = findEntry(manifest);
+  if (entry.ok) {
+    closure(manifest, entry.key, 'static').keys.forEach((k) => keys.add(k));
+  }
+  const files = new Set<string>();
+  for (const key of keys) {
+    const file = manifest[key]?.file;
+    if (file !== undefined && JS.test(file)) {
+      files.add(file);
+    }
+  }
+  return files;
 }
 
 /** The engine's download beyond the entry closure; null while the engine source does not exist (PENDING). */
@@ -1152,7 +1204,18 @@ export function readInputs(distDir: string, clientRoot: string): { inputs: Budge
   const metaSourceExists = sourceExists(META_SRC);
   const lazySources = new Set([...LAZY_ROOTS].filter(sourceExists));
   return {
-    inputs: { manifest, manifestStale, indexHtml, files, engineSourceExists, yieldsSourceExists, metaSourceExists, lazySources, facades },
+    inputs: {
+      manifest,
+      manifestStale,
+      indexHtml,
+      files,
+      engineSourceExists,
+      yieldsSourceExists,
+      metaSourceExists,
+      lazySources,
+      facades,
+      pixiEnvSkipped: SKIP_PIXI_ENV,
+    },
     problems,
   };
 }
