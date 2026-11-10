@@ -1425,6 +1425,24 @@ test('flow: an event opens on the room of a list that fires it first, else on th
   expect(effectAt(flow, 'k:bell')).toMatchObject({ shots: ['hall'], room: ['hall'] });
 });
 
+test('flow: a co-fired event lookahead edge carries only its own predecessor yield cut', () => {
+  const look = (id: string, n: number, then: readonly Json[]): Json => ({ id, kind: 'look', rect: [100, 300, 100, 100], label: TEXT(`ch1.s.l30${n}`), look: TEXT(`ch1.s.k30${n}`), then });
+  const exit = (to: string, n: number): Json => ({ id: 'way', kind: 'exit', rect: [100, 1300, 250, 400], label: TEXT(`ch1.s.l31${n}`), to: { room: to }, lock: null, sfx: null });
+  const w = world({
+    hall: room('hall', [look('bell', 1, [{ story: 'bell' }, { story: 'echo' }]), exit('study', 1)]),
+    study: room('study', [look('bust', 2, [{ story: 'alt' }, { story: 'echo' }]), exit('hall', 2)]),
+  });
+  const body = [
+    '-> arrive', '=== arrive ===', '# scene: hall', 'Зал. #id:ch1.arrive.a001', '# explore: s', '-> DONE',
+    '=== bell ===', 'Звон. #id:ch1.bell.b001', '# bg: cafe_ally_cu', '# explore: s', '-> DONE',
+    '=== alt ===', 'Иное. #id:ch1.alt.t001', '# bg: cafe_ots', '# explore: s', '-> DONE',
+    '=== echo ===', 'Эхо. #id:ch1.echo.e001', '# explore: s', '-> DONE',
+  ];
+  const l = looked(body, { w });
+  expect(lookAt(l, 'ch1.bell.b001').possible).toEqual(['bg/cafe_ally_cu', 'sheet/cafe_ally_cu']);
+  expect(lookAt(l, 'ch1.alt.t001').possible).toEqual(['bg/cafe_ots', 'sheet/cafe_ots']);
+});
+
 test('flow: two rooms on one bg keep two windows', () => {
   const look = (story: string, n: number): Json => ({ id: 'thing', kind: 'look', rect: [100, 300, 100, 100], label: TEXT(`ch1.s.l20${n}`), look: TEXT(`ch1.s.k20${n}`), then: [{ story }] });
   const exit = (to: string, n: number): Json => ({ id: 'way', kind: 'exit', rect: [100, 1300, 250, 400], label: TEXT(`ch1.s.l21${n}`), to: { room: to }, lock: null, sfx: null });
