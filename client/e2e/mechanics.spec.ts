@@ -8,11 +8,14 @@ import type { Locator, Page } from '@playwright/test';
 import { t } from '../src/i18n/index.ts';
 import {
   atRest,
+  catalogTitle,
   enterManor,
   expect,
+  grantChapter,
   hotspotLabel,
   itemName,
   launch,
+  plantPending,
   playCh1ToGate,
   reachLine,
   solveOrder,
@@ -196,5 +199,37 @@ test('mechanics: select a medal, tap the gate, its slot fills', async ({ page })
     await expect(slots.nth(i)).not.toHaveClass(/\bfilled\b/);
   }
   await expect(page.locator('.held-item', { hasText: itemName('medal_sun') })).toHaveCount(0);
+  expect([await counter(page, 'data-cue-orphans'), await counter(page, 'data-cue-fallbacks')], 'orphans, fallbacks').toEqual([0, 0]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM3p (engine plan §8.3, §8.5): the puzzle frame is a cue family. Its controls are found by their names (a ghost on
+// the stage layer sits under the layer's `aria-hidden`, so a role locator never matches one).
+
+/** ch2's carried values (memory.spec.ts's): the trust picks of ch1. */
+const CH2_CARRY = { g_gate_forced: false, g_manor_trust: 2, g_manor_promise: true, g_tide_trust_keeper: 0 } as const;
+
+test("mechanics: a linear puzzle's give-up ask and no play their cues", async ({ page, request }) => {
+  test.setTimeout(180_000);
+  // ch2 owned (a simulated payment through the real webhook), then F4's pending start, so Continue opens it.
+  await grantChapter(request, 9706, 'chapter:ch2');
+  await plantPending(request, 9706, 'ch2', CH2_CARRY);
+  await launch(page, 9706);
+  const resume = page.getByRole('button', { name: t('ru', 'tap.continue_story', { story: catalogTitle('manor') }) });
+  await expect(resume).toBeVisible({ timeout: LINE_MS });
+  await resume.tap();
+  // The archive's last line, then the tap that yields `# puzzle: cabinet`: a linear frame with Give up.
+  await reachLine(page, 'ch2.archive_cabinet.c012');
+  await page.locator('.dialogue .tap').tap();
+  const ask = page.getByRole('button', { name: t('ru', 'puzzle.give_up'), exact: true });
+  await expect(ask).toBeVisible({ timeout: LINE_MS });
+  await ask.tap();
+  const no = page.getByRole('button', { name: t('ru', 'saves.no'), exact: true });
+  await expect(no).toBeVisible();
+  await no.tap();
+  await expect(ask, 'No keeps the frame and asks again').toBeVisible();
+  await expect
+    .poll(() => played(page), { timeout: CUE_MS, message: 'the ask and the no played' })
+    .toEqual(expect.arrayContaining(['ui:give-up-ask', 'ui:give-up-no']));
   expect([await counter(page, 'data-cue-orphans'), await counter(page, 'data-cue-fallbacks')], 'orphans, fallbacks').toEqual([0, 0]);
 });
