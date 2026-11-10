@@ -88,6 +88,12 @@ through `oncue` and never through the root listener (W5).
   **M-I5j**: drop the check -> two cues). Gesture steps are emitted by the type UI through `oncue(name, index)`
   (PuzzleUiProps) per accepted or refused step; a refused step also yields `puzzle:blocked`. Listeners are added on
   mount and removed by the action's `destroy`.
+  Changed by RULINGS 201 (as of `461424d`; docs lane `docs-errata-13`, group A): **E1** as merged (GM3s `65e10ad`):
+  no `use:` action; an `$effect` on the bound root (`bind:this`) calls `cueRoot` and returns its `destroy`
+  (`client/src/ui/explore/ExploreView.svelte:33-45`), a second `$effect` passes the emit through `update` (`:46-50`);
+  arch rule `svelte-action` forbids `use:` (entry -219, first line -252 MEASURED). **E2:** `cues/root.ts` keeps its own
+  trigger tuple `ROOT_TRIGGERS`, tied to `CUE_TRIGGERS` by a type equality and a runtime pin (`client/src/cues/root.ts:21`;
+  explore-ui -190, cue-stage -109, one request fewer). GM3p's frame root attaches the same way.
 - **Gesture input (m13, principle 5).** ExploreView's buttons use `touch-action: manipulation`
   (`ExploreView.svelte:110`), which lets the WebView start a pan and fire `pointercancel` mid-stroke on Android and iOS;
   desktop Playwright and jsdom never show it. Every gesture surface therefore carries `style:touch-action="none"`,
@@ -114,6 +120,19 @@ through `oncue` and never through the root listener (W5).
   (`client/src/ui/puzzles/PuzzleHost.svelte:129`) take `pointer-events: auto`. The comment above the rule
   (`App.svelte:290-291`) gives a reason the frame layer's `{#if}` guard rules out today; the rule serves this outro tap
   (GM3w review M1, carried to GM3s, a comment only).
+  Changed by RULINGS 195, 198, 201 (as of `461424d`; docs lane `docs-errata-13`, group A): as merged, **Branch F**
+  (GM3s `65e10ad`; its P0 measured Svelte's transition runtime in the entry at +989 B br, past §3.5's +0.55): no root
+  carries `in:` / `out:` and no Svelte transition directive exists in `client/src` (`cues: no Svelte transition
+  directive in client/src`). The cue stage owns both layer motions (`mountStage`, `client/src/cues/stage/index.ts:214`):
+  a `MutationObserver` sees a family root (`data-cue-root`) arrive and plays `LAYER_MOTIONS.in` on the live root from
+  the birth stamp `cueRoot` writes (`data-cue-born`, `client/src/cues/root.ts:57`), and a tracked root that leaves the
+  document plays `LAYER_MOTIONS.out` (`frameOut` for `data-cue-root="frame"`) on a ghost clone at its last box
+  (`:260-276`); an end motion caught on the leaving wrapper continues on the wrapper's clone inside the root's ghost,
+  padded to the ghost's end (`stage: an end motion continues on the wrapper's clone inside its root's ghost`). The
+  root leaves the document at the flush, so no outroing root takes a tap or holds `inert`, and the room's tap after a
+  puzzle closes has no outro window (M-W1b still guards the wrapper's `pointer-events`). Test `stage: a family root
+  enters and leaves with LAYER_MOTIONS`. The vitest check above was settled at GM3s's cut (happy-dom 21.0.4 implements
+  `Element.animate`).
 - **The catcher (R17):** `<div class="bare" data-cue="bare-art">` is the first child of `.room`, `inset: 0`, under the
   hotspot buttons; it emits `ui:bare-art` with the point and calls `ondeselect`; it dispatches no action. Tests
   `explore: a tap on bare art emits one bare-art cue and no action`, `explore: a tap on a hotspot edge dispatches the
@@ -147,7 +166,14 @@ opens), `dim` (stage darkens and blurs under a panel), `lift` / `settle` (ribbon
 `caption` (room title fades in and out), `roll` (a digit rolls), `breathe` (frame pulses x3), `flourish` (frame burst +
 scale out), `jam` (shake + dim), `unfold` (tier text unfolds); the layer transitions `layer-in` / `layer-out` (the room
 UI or the puzzle frame enters / leaves: fade + scale 0.98 <-> 1) are `LAYER_MOTIONS` in `cues/visible.ts`, played by
-`cues/root.ts`'s Svelte transitions (round 3, m11). Every played-backwards entry below (`tick`, `pulse`, `sweep`
+`cues/root.ts`'s Svelte transitions (round 3, m11; Changed by RULINGS 195 (as of `461424d`; docs lane
+`docs-errata-13`, group A): played by the cue stage on the live root and on its ghost, Branch F, §8.3 "Entrances and
+outros"). **Ruled: RULINGS 203, 204** — the ghost style: a plain ghost (a box- or stage-site drawing, `of` null) carries
+`cue-plain`, which CueStage paints with a soft light (radial white, peak alpha 0.5, CSS only, CLAIM defaults judged at
+Q54's device session), unless the keyframes it plays carry `boxShadow` or `backgroundColor` (`vignette`,
+`vignette-back`, `dim` paint by themselves: `SELF_PAINT`, `client/src/cues/stage/index.ts:30`, `:292-294`); a clone of an
+element that is or lies inside `[data-cue-hit]` carries `cue-hit` (`:155-170`; `client/src/cues/stage/CueStage.svelte:46-57`).
+Every played-backwards entry below (`tick`, `pulse`, `sweep`
 reversed) is the preset with its keyframes in reverse order, so it changes the same visible properties. Scene motions are MR1's: **every cell of the scene column is owed by MR1** (W4; the names are
 indicative, MR1 designs them); there is no "none", no "-" and no exemption list: rooms, scenes and props take the
 maximum (RULINGS 114, 122). The haptic column adds touch feedback **on top of** motion, never instead of it.
@@ -190,7 +216,7 @@ maximum (RULINGS 114, 122). The haptic column adds touch feedback **on top of** 
 | `move:enter` / `move:return` / `move:resume` | `vignette` open | establishing push-in (scale 1.04 -> 1) | - |
 | `move:leave` (W3; a section left for a knot) | `vignette` close + the room layer's `layer-out` | the room pushes out and fades | - |
 | `module:core:look` | `glint` at the box | a glint on the object | - |
-| `module:core:locked` | `shake` at the box | the door rattles | error |
+| `module:core:locked` | `shake` at the box | the door rattles | error. Changed by RULINGS 204 (as of `461424d`; docs lane `docs-errata-13`, group A): declared with its row (GM3s), but **no effect emits it** on `461424d`: its emitter is the first lane that refuses a tap on a closed exit or hotspot (GM3s cut Q4) |
 | `module:core:refused` | `wobble` at the box | the target wobbles, the item bounces back | error (as `yields.ts:311`) |
 | `module:core:reset` | `sweep` reversed (a rewind) + today's toast | every changed anchor rewinds to its section-start state | - |
 | `module:use:refused` (GM3) | `wobble` at the target + `fly` back to the ribbon | as core refused | error |

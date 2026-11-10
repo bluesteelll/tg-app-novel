@@ -40,6 +40,9 @@
   `via` plus the dissolve; the batch keeps `kind: 'bg'`, `t: 'crossfade'`, which from SH6 is the exact dissolve
   between two shots, so no kind rename reaches `yields.ts`; a hotspot tap during this batch completes it, GM3w's pin).
 - **Gates:** check, test, story, build (new room-set rows), e2e full (no new e2e: GM4u owns it).
+- **Carried from SH2 (RULINGS 207):** SH2's critique O3: this lane adds `Room.view`, so it adds a fixture with a real view
+  and runs SH2's mutation M-SH2g (`shot/room-frame` skips views) in its original form, red on `shots: a view whose bg
+  is declared as an insert fails` (SH2 restated it on rooms, having no view to test).
 
 ### GM4u `mech-view-ui` (new)
 - **Goal:** the view bar's leave control (`ui:view-leave`), the demo view, the e2e.

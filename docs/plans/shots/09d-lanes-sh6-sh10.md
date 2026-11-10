@@ -153,6 +153,11 @@
 
 **Gates:** check, test, build (the engine, first-line and scene-motion chunk rows MEASURED: the chunk leaves PENDING
 here), e2e full.
+**Ruled since: RULINGS 201** (the estimate policy, [engine §11.1 The shared ledgers](../engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13)) — this lane's cut books its terms at E x R: its
+engine net (the loop +0.6, `flatten` -0.8) books **0** on the engine until it measures it, and `flatten` is growth on
+`scene-motion` (+0.8 x R); the `scene-motion` chunk at R (6.0 x 2.031 = 12.19) is flagged against its 8.0 LIMIT, so this
+cut quotes it first ([§10 Budgets and validation](10-budgets-and-validation.md#10-budgets-and-validation-summary)); no Pixi filter, Sprite mask or advanced blend mode without lever X's import-back (rule
+`pixi-env`).
 
 **Order:**
 - After SH6, SH3b, GM3s (the `sceneCues` seam), GM3m (`FRAME_OPEN_MS`) and GM3p (the frame edge `frameShown`; merged before SH5a's GM3b in any case).
@@ -299,6 +304,10 @@ per-player GM6c4" (engine.md §12, as read): SH9 follows GM6c4, never beside any
 - **Reconciled ([engine §30 Shots errata from reconcile](../engine/30-shots-errata.md#30-shots-errata-from-reconcile) item 15):** `prop(AnchorKey)`, `bg` and `closeup` resolve to their anchor's `motion` node, so the tweens there write only `motion` nodes (never `anchor`, the executor's, or `depth`, SH8's); the cut verifies the bg and close-up roots carry the four-node nesting I-9 rev. 2 gives the bg anchor "likewise" (the display tree, [§5.1 Shot view](05a-runtime.md#51-shot-view-sh4-clientsrcsceneshot-viewts-pure), draws it for prop anchors only) and adds it in `executor.ts` (in this lock) if SH4 did not. `world` (the camera node) and `face(CharId)` (the head node) have per-frame writers and no `motion` node: a `world` cue motion is a term of the camera composition (the camera-move term, through the executor's camera state), a `face` cue motion a term of the head's composition or a layer change, never a tween on the node. Red-first: `executor: a world and a face cue motion survive their per-frame writers` (one drawn frame at a motion's midpoint: the composed transform differs from rest) with **M-SH10b** (the motion written as a tween on the node: red, the transform reads rest).
 
 **Gates:** check, test, build (the `scene-motion chunk (br)` row, its scene-motions ~1.0, and the `cue-stage chunk (br)` row, +0.5 CLAIM for every key's and control default's `SceneMotionId` in `cues/stage/motions.ts`, [engine §11.1 The shared ledgers](../engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13)), e2e full.
+**Ruled since: RULINGS 201** — its scene-motions ~1.0 and the cue-stage +0.5 are estimates booked at E x R (the
+all-JS R for both rows, 2.030 at `597dded`); the cue-stage row's LIMIT is 8.5 KB with a 7.5 KB review trigger (6,108 B
+MEASURED at GM3s's merge); no Pixi filter, Sprite mask or advanced blend mode without lever X's import-back (rule
+`pixi-env`) ([§10 Budgets and validation](10-budgets-and-validation.md#10-budgets-and-validation-summary)).
 
 **Order:**
 - After GM3b, GM3s, GM6a, GM8i (the last `motions.ts` holder, EN [engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts)), SH7 and SH6 (EN [engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts)'s "MA1" =
