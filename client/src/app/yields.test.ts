@@ -1855,6 +1855,26 @@ test('yields: a busy reply leaves the frame to the attempt in flight', async () 
   r.yields.dispose();
 });
 
+test('yields: the reveal emits its cue', async () => {
+  // No section entered: no controller, so the reveal shows nothing and plays nothing.
+  const none = rig({ world: cueWorld() });
+  const before = none.cues.length;
+  none.yields.layer.onreveal();
+  await settle();
+  expect(none.cues.slice(before).map((e) => keyOf(e.cue))).toEqual([]);
+  none.yields.dispose();
+  // In a room: one `ui-state:reveal`, no box (the stage plays it over the stage).
+  const r = rig({ world: cueWorld() });
+  await inHall(r);
+  const mark = r.cues.length;
+  r.yields.layer.onreveal();
+  await settle();
+  const played = r.cues.slice(mark);
+  expect(played.map((e) => keyOf(e.cue))).toEqual(['ui-state:reveal']);
+  expect(played.map((e) => e.box)).toEqual([null]);
+  r.yields.dispose();
+});
+
 // The class guard of §8.1 point 11: every wait of the views has exactly one hold from the block that starts it to every
 // block that ends it. A hold's edges as the stage keys them: `ui-state:waiting` / `waited` per panel (`room` for a
 // box-less or `via` hold), and the answer in flight, opened by `puzzle:checking` and ended by the same puzzle's next

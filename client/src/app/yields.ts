@@ -1184,7 +1184,11 @@ export function createYields(h: YieldsHost): Yields {
       screens.push({ kind: 'document' });
     },
     onreveal: () => {
-      controller?.reveal();
+      if (controller !== null) {
+        controller.reveal();
+        // The reveal's own cue (§8.1 point 10): no box, the stage plays it over the stage.
+        bus.emit(cueEvent({ kind: 'ui-state', name: 'reveal', panel: null, item: null }, null));
+      }
     },
     onclose: () => {
       screens.back(); // the overlay's own close is a Back press; screensChanged follows it
