@@ -320,6 +320,39 @@ test('use: a soft-lock path names its use step', () => {
   ]);
 });
 
+/** The hall's drawer is a take that also carries a rule: the key, used on it before it is taken, opens the door. */
+function drawerWorld(): WorldSource {
+  return source(
+    rawWorld(
+      {
+        hall: room([
+          take('key', 'key'),
+          { ...take('drawer', 'map'), uses: [{ item: 'key', do: [{ unlock: 'hall.door' }] }] },
+          exit('door', { story: 'after' }, lock([])),
+        ]),
+      },
+      { key: {}, map: {} },
+    ),
+  );
+}
+
+test('use: a taken take is no use target', () => {
+  const w = kernel(drawerWorld());
+  // The positive control: the drawer not yet taken, the search lists the edge and the use runs the rule.
+  const before = at('hall', { held: [it('key')] });
+  expect(useActions(w, before)).toEqual([use('key', 'hall.drawer')]);
+  expect(reduce(w, before, use('key', 'hall.drawer')).state.open).toEqual(['hall.door']);
+  // The drawer taken (a taken take is gone, as core's taps have it): no edge for the search, and the use acts not at
+  // all (the same state object, no effect).
+  const gone: WorldState = { ...before, held: [it('key'), it('map')], taken: [k('hall.drawer')] };
+  expect(useActions(w, gone)).toEqual([]);
+  const r = reduce(w, gone, use('key', 'hall.drawer'));
+  expect(r.state).toBe(gone);
+  expect(r.effects).toEqual([]);
+  // On the proof path: a player who takes the drawer first can never open the door, and the soft-lock proof says so.
+  expect(checkWorld(w, 'story/ch1/world.json').flatMap((c) => c.findings.map((f) => f.code))).toEqual(['world/softlock']);
+});
+
 test('use: a section reset clears what its rules read', () => {
   // The desk's rule gives the note and fires its own key, both outside the kernel's scan of S's triggers.
   const src = source(
