@@ -792,6 +792,13 @@ test('shots: a face of a character absent from the shot fails', () => {
   expect(findings.find((f) => f.code === 'shot/char-absent')?.severity).toBe('E');
 });
 
+test('shots: a face before any bg or scene fails (no shot in effect)', () => {
+  const { findings } = linted(['-> k', '=== k ===', '# face: ally smile', 'Привет. #id:ch1.k.a001', '-> END']);
+  expect(shown(findings, 'shot/char-absent')).toEqual([
+    "shot/char-absent story/ch1/main.ink:4 'face: ally smile': no shot is in effect on any path, so ally is in no cast (§14)",
+  ]);
+});
+
 test("shots: a face in the batch of a cut names the new shot's cast", () => {
   const { findings } = linted([
     '-> k',
