@@ -6,8 +6,8 @@ import { lockOf, runOf, set, setRun } from '../../explore/reduce.ts';
 import type { Draft, ExploreEffect } from '../../explore/reduce.ts';
 import type { PuzzleRun, WorldState } from '../../explore/state.ts';
 import type { PuzzleLocalId } from '../../story/staging.ts';
-import type { Effect, HotspotKey, ItemId, WorldPublicBody } from '../../world/types.ts';
-import type { ArrivalOut, Cause, FactKind, KernelFactKind, ListField, MechanicId, RulesRegistry, TriggerKey, Writer } from '../contract.ts';
+import type { Effect, HotspotKey, ItemId } from '../../world/types.ts';
+import type { ArrivalOut, Cause, FactKind, KernelFactKind, KernelWorld, ListField, MechanicId, RulesRegistry, TriggerKey, Writer } from '../contract.ts';
 
 export function added<T>(list: readonly T[], v: T): readonly T[] {
   return list.includes(v) ? list : [...list, v];
@@ -58,7 +58,7 @@ export type FactChange = { readonly kind: FactKind; readonly id: string; readonl
  */
 export type KernelWriter<Id extends string = string, C extends string = string> = Writer<Id, C> & {
   readonly draft: Draft;
-  readonly world: WorldPublicBody;
+  readonly world: KernelWorld;
   readonly rules: RulesRegistry;
   /** Every fact change a `set` or `run` made, in order. */
   readonly changes: readonly FactChange[];
@@ -91,12 +91,12 @@ function sameRun(a: PuzzleRun, b: PuzzleRun): boolean {
 // A class, so a `reduce` call allocates one object: the search builds a writer per successor.
 class DraftWriter implements KernelWriter {
   readonly draft: Draft;
-  readonly world: WorldPublicBody;
+  readonly world: KernelWorld;
   readonly rules: RulesRegistry;
   #changes: FactChange[] | null = null;
   #cues: ModuleCue[] | null = null;
 
-  constructor(d: Draft, w: WorldPublicBody, rules: RulesRegistry) {
+  constructor(d: Draft, w: KernelWorld, rules: RulesRegistry) {
     this.draft = d;
     this.world = w;
     this.rules = rules;
@@ -178,7 +178,7 @@ class DraftWriter implements KernelWriter {
 }
 
 /** The writer of one `reduce` call over its draft. */
-export function createWriter(d: Draft, w: WorldPublicBody, rules: RulesRegistry): KernelWriter {
+export function createWriter(d: Draft, w: KernelWorld, rules: RulesRegistry): KernelWriter {
   return new DraftWriter(d, w, rules);
 }
 

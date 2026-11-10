@@ -10,14 +10,14 @@ import { RESUME_STATE_CAP } from '../../src/explore/reduce.ts';
 import type { Step } from '../../src/explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../../src/explore/state.ts';
 import { HOTSPOT_MIN_SOURCE_PX } from '../../src/geom/cover.ts';
-import type { IssueReport, MechanicData, OwnedAt, OwnedRaw } from '../../src/mechanics/contract.ts';
+import type { IssueReport, KernelWorld, MechanicData, OwnedAt, OwnedRaw } from '../../src/mechanics/contract.ts';
 import { MECHANIC_DATA } from '../../src/mechanics/data/index.ts';
 import type { DataRegistry } from '../../src/mechanics/data/index.ts';
 import { searchSection, sectionEntry } from '../../src/mechanics/rules/search.ts';
 import type { SearchOptions } from '../../src/mechanics/rules/search.ts';
 import { PUZZLE_TYPES } from '../../src/puzzles/rules/index.ts';
 import type { PuzzleTypeData, PuzzleTypes } from '../../src/puzzles/rules/index.ts';
-import { assetIndex, decodeAssetCatalog } from '../../src/story/catalog.ts';
+import { assetIndex, decodeAssetCatalog, decodeCast } from '../../src/story/catalog.ts';
 import type { AssetCatalog } from '../../src/story/catalog.ts';
 import type { ChapterId, KnotName, PuzzleLocalId, SectionId, VarName } from '../../src/story/staging.ts';
 import { decodeWorldSource, toPublic } from '../../src/world/decode.ts';
@@ -33,6 +33,7 @@ import { clueFindings } from './mechanics/clues.ts';
 import { CONDITIONS_LINT, condFindings } from './mechanics/conditions.ts';
 import type { CondSite } from './mechanics/conditions.ts';
 import { MECHANIC_LINTS, MECHANIC_TEXTS } from './mechanics/index.ts';
+import { playChapter } from './playthrough.ts';
 import type { MechanicLintCode, WorldLint, WorldLintInput } from './mechanics/index.ts';
 import type { ModuleText, TextRegistry, TextWalker } from './mechanics/texts.ts';
 import { PUZZLE_LINTS } from './puzzles/index.ts';
@@ -324,7 +325,7 @@ test('lint: world/schema red on fixture', () => {
   const found = of(lint(w), 'world/schema');
   // Every issue, never the first only.
   expect(found.map((f) => f.message).sort()).toEqual([
-    'sections.manor.rooms.hall.onenter: unknown key (expected bg, title, onEnter, hotspots)',
+    'sections.manor.rooms.hall.onenter: unknown key (expected bg, title, onEnter, hotspots, refuse)',
     'sections.manor.rooms.study.title: missing',
   ]);
   expect(found.every((f) => f.severity === 'E' && f.file === FILE && f.line > 0)).toBe(true);
@@ -1685,4 +1686,96 @@ test('story: the hotspot minimum is one constant', () => {
   }
   const ch1 = lintWorld({ chapter: CH1, file: FILE, text, world: decoded.world, catalog: CATALOG, knots: null, yielded: null, declared: new Map() });
   expect(of(ch1.findings, 'world/hotspot-small')).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Module `use` on the seeded playthroughs (STAGING-DSL §11): the played world is story.ts's, the public body with the
+// decoded `mods` (b1). The fixture helpers restate play.test.ts's; this file's program has the node types the story
+// tool's modules need, which src/mechanics/use.test.ts's has not.
+
+test("use: a played chapter takes a use edge only with the world's mods", () => {
+  const cast = decodeCast(readRepoJson('story/cast.json'), CATALOG);
+  if (!cast.ok) {
+    throw new Error('invariant: the committed cast decodes');
+  }
+  // The hall's door is a zero-slot lock that only the statue's rule unlocks; the rule's story runs and hands back.
+  const label = (owner: string): Json => ({ id: `ch1.${owner}.u${(counter++).toString(36).padStart(3, '0')}`, ru: 'Текст' });
+  const spot = (h: Json, i: number): Json => ({ label: label('s'), rect: [100 + i * 300, 300, 200, 200], ...h });
+  const raw = {
+    format: 1,
+    items: { key: { name: label('key'), desc: label('key'), glyph: 'key' } },
+    docs: {},
+    puzzles: {},
+    sections: {
+      s: {
+        start: 'hall',
+        bgm: null,
+        rooms: {
+          hall: {
+            bg: 'hall',
+            title: label('s'),
+            onEnter: [],
+            hotspots: [
+              { id: 'key', kind: 'take', gives: { item: 'key' }, prop: null, then: [] },
+              { id: 'statue', kind: 'object', lock: null, then: [], look: null, prop: null, uses: [{ item: 'key', do: [{ unlock: 'hall.door' }, { story: 'statue_voice' }] }] },
+              { id: 'door', kind: 'exit', to: { story: 'after' }, lock: { slots: [], puzzle: null, locked: label('s'), onOpen: [], onFail: [] }, sfx: null },
+            ].map(spot),
+          },
+        },
+      },
+    },
+  };
+  const src = decodeWorldSource(raw);
+  if (!src.ok) {
+    throw new Error(`invariant: the fixture world decodes: ${JSON.stringify(src.error)}`);
+  }
+  const files = new Map([
+    [GLOBALS_PATH, 'VAR g_x = 0\n'],
+    [
+      CH1.entry,
+      [
+        'INCLUDE ../common/globals.ink',
+        '-> start',
+        '=== start ===',
+        'Холл. #id:ch1.start.a001',
+        '# explore: s',
+        '-> DONE',
+        '=== statue_voice ===',
+        'Статуя повернулась. #id:ch1.statue_voice.a002',
+        '# explore: s',
+        '-> DONE',
+        '=== after ===',
+        'Дверь открыта. #id:ch1.after.a003',
+        '-> END',
+        '',
+      ].join('\n'),
+    ],
+  ]);
+  const compiled = compileChapter(CH1, (key) => files.get(key) ?? null).compiled;
+  if (compiled === null) {
+    throw new Error('invariant: the fixture compiles');
+  }
+  const graph = buildGraph({ chapter: CH1, files: compiled.files, sources: files, assets: ASSETS }).graph;
+  const play = (world: KernelWorld) =>
+    playChapter({
+      chapter: CH1,
+      json: compiled.json,
+      graph,
+      assets: ASSETS,
+      cast: cast.value,
+      en: new Map(),
+      staticIds: new Set(graph.lines.map((l) => l.id)),
+      allow: new Map(),
+      carry: null,
+      runs: 5,
+      world,
+    });
+  // With the decoded `mods` every run uses the key on the statue, plays its voice and leaves through the door.
+  const withMods = play({ ...toPublic(src.value), mods: src.value.mods });
+  expect(withMods.play, JSON.stringify(withMods.findings)).toMatchObject({ ended: 5, failed: 0 });
+  expect([...withMods.play.visited]).toEqual(['start', 'statue_voice', 'after']);
+  // The public body alone has no rules: the door never opens and `after` is never entered.
+  const without = play(toPublic(src.value));
+  expect(without.play.ended).toBe(0);
+  expect([...without.play.visited]).not.toContain('after');
 });

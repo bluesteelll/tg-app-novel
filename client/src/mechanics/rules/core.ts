@@ -18,8 +18,9 @@ import type { Draft, ExploreAction, ExploreEffect, HotspotEntry, WorldIndex } fr
 import type { PuzzleOutcome, WorldState } from '../../explore/state.ts';
 import type { PuzzleLocalId, SectionId } from '../../story/staging.ts';
 import type { Hotspot, HotspotKey, ItemId, Lock, RoomId, WorldPublicBody } from '../../world/types.ts';
-import type { ArrivalOut, FactAtom, KernelWorld, RulesRegistry, SectionAction } from '../contract.ts';
+import type { ArrivalOut, Cause, FactAtom, KernelWorld, RulesRegistry, SectionAction } from '../contract.ts';
 import { APPLY, MECHANIC_RULES } from './index.ts';
+import { keepsSlot } from './use.ts';
 import { added, arrivalOut, createWriter, fire, openKey } from './writer.ts';
 import type { KernelWriter } from './writer.ts';
 
@@ -220,27 +221,43 @@ function fit(ix: WorldIndex, s: WorldState, key: HotspotKey, item: ItemId): { ho
   return index === -1 ? null : { hotspot: entry.hotspot, lock, index };
 }
 
-function insert(d: Draft, key: HotspotKey, item: ItemId): void {
-  if (d.s.section === null || d.s.room === null || d.s.pendingStory.length > 0) {
-    return;
-  }
+/**
+ * The fit and the writes of an insert, shared with `use`'s lock fallback (engine plan §6.1): the item fills the first
+ * free slot that accepts it (a keeping slot, `keepsSlot`, records it and leaves it held, never used), and the last
+ * filled slot opens the lock or offers its puzzle. False, with nothing written or emitted: no slot takes it.
+ */
+export function insertItem(out: KernelWriter, key: HotspotKey, item: ItemId, cause: Cause): boolean {
+  const d = out.draft;
   const f = fit(d.ix, d.s, key, item);
   if (f === null) {
-    d.effects.push({ kind: 'refused', at: key, item, reason: 'no-fit' });
-    return;
+    return false;
   }
   const cells = cellsOf(d.s, key, f.lock).map((c, i) => (i === f.index ? item : c));
   set(d, 'slots', { ...d.s.slots, [key]: cells });
-  set(d, 'held', removed(d.s.held, item));
-  set(d, 'used', added(d.s.used, item));
+  if (!keepsSlot(out.world, key, f.index)) {
+    out.set('held', removed(d.s.held, item), cause);
+    out.set('used', added(d.s.used, item), cause);
+  }
   if (cells.some((c) => c === null)) {
-    return;
+    return true;
   }
   const p = f.lock.puzzle;
   if (p === null) {
     openAt(d, key, f.hotspot);
   } else if (d.ix.puzzles.has(p) && runOf(d.s, p).outcome === null) {
     d.effects.push({ kind: 'puzzle', puzzle: p, hotspot: key });
+  }
+  return true;
+}
+
+/** An insert from the lock panel: refused (and nothing written) when no slot takes the item. */
+function insert(out: CoreWriter, key: HotspotKey, item: ItemId): void {
+  const d = out.draft;
+  if (d.s.section === null || d.s.room === null || d.s.pendingStory.length > 0) {
+    return;
+  }
+  if (!insertItem(out, key, item, { verb: 'insert', at: key, item, via: null })) {
+    d.effects.push({ kind: 'refused', at: key, item, reason: 'no-fit' });
   }
 }
 
@@ -285,7 +302,7 @@ export function applyCore(_w: WorldPublicBody, a: ExploreAction, out: CoreWriter
     case 'tap':
       return tap(out, a.hotspot);
     case 'insert':
-      return insert(d, a.hotspot, a.item);
+      return insert(out, a.hotspot, a.item);
     case 'attempt-failed':
     case 'hint-opened':
       return runStep(d, a); // the kernel's run rules, shared with runReduce

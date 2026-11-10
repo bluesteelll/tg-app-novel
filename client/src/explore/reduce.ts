@@ -5,6 +5,7 @@
 // which only the explore controller's lazy chunk loads. Pure: the runtime and the story tool call these same
 // functions.
 import type { MoveHow } from '../cues/types.ts';
+import type { SectionAction } from '../mechanics/contract.ts';
 import type { KnotName, PuzzleLocalId, SectionId, SfxId } from '../story/staging.ts';
 import type {
   DocId,
@@ -67,7 +68,8 @@ export type ExploreEffect =
   /** The state changed: a debounced autosave. */
   | { kind: 'dirty' };
 
-export type Step = ExploreAction | { kind: 'closed'; puzzle: PuzzleLocalId };
+/** One edge's step: an action of any registry module (`SectionAction`), or a puzzle closed unsolved. */
+export type Step = SectionAction | { kind: 'closed'; puzzle: PuzzleLocalId };
 /** One edge of the successor relation; `leaves` marks a step whose effects hold a `leave`. */
 export type Successor = { step: Step; state: WorldState; leaves: boolean };
 

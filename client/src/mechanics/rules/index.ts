@@ -11,6 +11,8 @@ import type { ExploreAction } from '../../explore/reduce.ts';
 import type { KernelWorld, MechanicRules, SectionAction } from '../contract.ts';
 import { actions, applyCore, reads } from './core.ts';
 import type { CoreCue } from './core.ts';
+import { applyUse, useActions, useReads, useScope } from './use.ts';
+import type { UseAction, UseCue } from './use.ts';
 import type { KernelWriter } from './writer.ts';
 
 const core = {
@@ -21,7 +23,16 @@ const core = {
   cues: ['look', 'locked', 'refused', 'reset'] as const,
 } satisfies MechanicRules<'core', ExploreAction, CoreCue>;
 
-export const MECHANIC_RULES = [core] as const;
+const use = {
+  id: 'use',
+  actions: useActions,
+  apply: applyUse,
+  reads: useReads,
+  scope: useScope,
+  cues: ['refused', 'said'] as const,
+} satisfies MechanicRules<'use', UseAction, UseCue>;
+
+export const MECHANIC_RULES = [core, use] as const;
 
 /**
  * The dispatch (engine plan §3.2 "Exhaustiveness: dispatch is a typed map over the tuple"): one handler per action kind
@@ -36,4 +47,5 @@ export const APPLY: { readonly [K in SectionAction['kind']]: (w: KernelWorld, a:
   'attempt-failed': applyCore,
   'hint-opened': applyCore,
   'puzzle-ended': applyCore,
+  use: applyUse,
 };

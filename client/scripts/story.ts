@@ -770,7 +770,8 @@ export function main(argv: readonly string[], repoRoot: string): number {
   // 6. Seeded playthroughs of the chapters, in list order.
   const endings = plans === null ? new Map<ChapterId, ReadonlyMap<KnotName, EndingName>>() : endingKnots(plans);
   const sourceWorlds = new Map([...worlds].flatMap(([ch, w]) => (w.kind === 'ok' ? [[ch, w.source] as const] : [])));
-  const publicWorlds = new Map([...sourceWorlds].map(([ch, w]) => [ch, toPublic(w)]));
+  // The played world carries the decoded `mods`, as the explore controller's does: a module's rules read their data there.
+  const publicWorlds = new Map([...sourceWorlds].map(([ch, w]) => [ch, { ...toPublic(w), mods: w.mods }]));
   const played = playStage(
     root,
     {

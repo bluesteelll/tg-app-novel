@@ -59,7 +59,7 @@ export const MECHANIC_LINTS = [CORE_LINT, CLUES_LINT, SHAPE_LINT, CONDITIONS_LIN
  * Each data module's text walker (engine plan §3.2 "Module texts"), exhaustive over MECHANIC_DATA ids (an id without
  * an entry fails `check`); null: the module owns no text, and `world/text-unwalked` refuses one in its data.
  */
-export const MECHANIC_TEXTS: { readonly [M in (typeof MECHANIC_DATA)[number] as M['id']]: TextWalker<DataOf<M>> | null } = { core: null };
+export const MECHANIC_TEXTS: { readonly [M in (typeof MECHANIC_DATA)[number] as M['id']]: TextWalker<DataOf<M>> | null } = { core: null, use: null };
 
 type CodesOf<L> = L extends { readonly codes: infer C } ? keyof C & string : never;
 /** Every code of every MECHANIC_LINTS entry. */

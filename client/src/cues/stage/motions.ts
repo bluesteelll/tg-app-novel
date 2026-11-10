@@ -209,6 +209,10 @@ export const CUE_MOTIONS: { readonly [K in Exclude<CueKey, ControlKey>]: MotionS
   'module:core:locked': row('shake', 360, 'box', { haptic: 'error' }),
   'module:core:refused': row('wobble', 360, 'box', { haptic: 'error' }),
   'module:core:reset': row('sweep-back', 600, 'stage'),
+  // `use`'s (08b): a refused item wobbles at its target and flies back to the ribbon; a rule's run glints (its text, if
+  // any, is the `look` effect's toast).
+  'module:use:refused': row('wobble', 360, 'box', { haptic: 'error', with: [{ preset: 'fly', ms: 480, target: 'ribbon', reduced: 'fade' }] }),
+  'module:use:said': row('glint', 420, 'box'),
 };
 
 /** Control keys: a default per trigger kind and overrides for the core controls; a type or module control takes its

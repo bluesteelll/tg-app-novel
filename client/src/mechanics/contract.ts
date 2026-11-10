@@ -154,6 +154,12 @@ export interface MechanicRules<Id extends string, A extends { readonly kind: str
   apply(w: KernelWorld, a: A, out: KernelWriter<Id, C>): void;
   /** Every fact this module's GATING rules read in `section`: `sectionKey` is built from these. */
   reads(w: KernelWorld, section: SectionId): readonly FactAtom[];
+  /**
+   * What this module's data adds to S's own facts beyond the kernel's `sectionScope` (engine plan §4 "Two scopes"):
+   * the items its rules in S give and the `fired` keys they write. One definition, read through `ownScope`
+   * (rules/search.ts) by the section reset, the section key and the gating lints.
+   */
+  scope?(w: KernelWorld, section: SectionId): ModuleScope;
   /** Module cue names; each `module:<id>:<name>` needs a cue motion. */
   readonly cues: readonly C[];
   /** A tap on a hotspot that carries a key this module owns (`owns.hotspot`): core's `tap` hands it over before its own
@@ -170,6 +176,9 @@ export interface MechanicRules<Id extends string, A extends { readonly kind: str
   holds?(w: KernelWorld, s: WorldState, atom: { readonly kind: string; readonly value: unknown }): boolean;
 }
 
+/** A module's share of S's own facts (`MechanicRules.scope`): items S's module data gives, `fired` keys it writes. */
+export type ModuleScope = { readonly items: readonly ItemId[]; readonly fired: readonly TriggerKey[] };
+
 /** What an arrival may do: open a puzzle (the same states a hotspot's own tap reaches) and play a module cue. */
 export type ArrivalOut<Id extends string = string, C extends string = string> = {
   effect(e: Extract<ExploreEffect, { kind: 'puzzle' }>): void;
@@ -185,7 +194,8 @@ export type SectionAction = ActionOf<(typeof MECHANIC_RULES)[number]>;
 export type ModuleCueKey = {
   [R in (typeof MECHANIC_RULES)[number] as R['id']]: `module:${R['id']}:${R['cues'][number]}`;
 }[(typeof MECHANIC_RULES)[number]['id']];
-export type DataOf<M> = M extends MechanicData<string, infer D, unknown> ? D : never;
+/** A data half's decoded data, read off its `decode` (an entry's `encode` may take it as `unknown`: data/index.ts). */
+export type DataOf<M> = M extends { decode(raw: OwnedRaw, ctx: DecodeCtx): Result<infer D, Issue[]> } ? D : never;
 /** One side table per module, keyed by its id (modules never edit world/types.ts). */
 export type ModsOf<T extends readonly { readonly id: string }[]> = { readonly [M in T[number] as M['id']]: DataOf<M> };
 /** The decoded world: the kernel body plus the modules' side tables. `mods` is optional until the composed decoder

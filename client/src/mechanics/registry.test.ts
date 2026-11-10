@@ -227,18 +227,107 @@ test('mechanics: the rules registry loads from either module first', async () =>
   // and the bundle throw on a `const` read across the cycle before it is initialized; vitest's module runner reads it
   // as undefined, so every member of the entry is compared, not only the functions.
   const w = world({ hall: room([look('statue')]) });
-  const checkGraph = (index: typeof import('./rules/index.ts'), core: typeof import('./rules/core.ts')): void => {
+  const checkGraph = (index: typeof import('./rules/index.ts'), core: typeof import('./rules/core.ts'), use: typeof import('./rules/use.ts')): void => {
     expect(index.MECHANIC_RULES).toStrictEqual([
       { id: 'core', actions: core.actions, apply: core.applyCore, reads: core.reads, cues: ['look', 'locked', 'refused', 'reset'] },
+      { id: 'use', actions: use.useActions, apply: use.applyUse, reads: use.useReads, scope: use.useScope, cues: ['refused', 'said'] },
     ]);
     expect(core.reduce(w, at('hall'), tap('hall.statue')).effects.map((e) => e.kind)).toEqual(['look', 'dirty']);
   };
-  vi.resetModules();
-  const coreFirst = await import('./rules/core.ts');
-  checkGraph(await import('./rules/index.ts'), coreFirst);
-  vi.resetModules();
-  const indexFirst = await import('./rules/index.ts');
-  checkGraph(indexFirst, await import('./rules/core.ts'));
+  // rules/use.ts and rules/conditions.ts sit on the cycle too (use.ts <-> core.ts, conditions.ts -> index.ts).
+  const firsts = [() => import('./rules/core.ts'), () => import('./rules/index.ts'), () => import('./rules/use.ts'), () => import('./rules/conditions.ts')];
+  for (const first of firsts) {
+    vi.resetModules();
+    await first();
+    checkGraph(await import('./rules/index.ts'), await import('./rules/core.ts'), await import('./rules/use.ts'));
+  }
+});
+
+/** The source of a world whose `use` data holds every form: a gated rule, a say, a keeping slot, both refusals. */
+function useSource(): Json {
+  const box = { ...object('box', [], { slots: [{ accepts: 'lens', keep: true }, { accepts: 'key' }], puzzle: null, locked: txt(), onOpen: [], onFail: [] }) };
+  box['uses'] = [
+    { item: 'key', when: { all: [{ held: 'lens' }, { not: { open: 'hall.box' } }] }, do: [{ give: 'lens' }, { story: 'voice' }], say: txt() },
+    { item: 'lens', keep: true },
+  ];
+  return {
+    format: 1,
+    items: { key: { name: txt(), desc: txt(), glyph: 'key', refuse: txt() }, lens: { name: txt(), desc: txt(), glyph: 'key' } },
+    docs: {},
+    puzzles: {},
+    sections: { s: { start: 'hall', bgm: null, rooms: { hall: { ...room([box, exit('out', { story: 'end' })]), refuse: txt() } } } },
+  };
+}
+
+test('mechanics: the data registry loads from any module first', async () => {
+  // data/use.ts imports data/conditions.ts (`decodeCond`), which imports data/index.ts (its default registry), which
+  // holds use's entry: the same cycle as the rules registry's. index.ts builds the entry from use.ts's function
+  // declarations, so each load order leaves the registry whole (every member compared: vitest's runner reads an
+  // uninitialized `const` as undefined), and a decode through the freshly loaded graph reads a `when`.
+  const checkData = (index: typeof import('./data/index.ts'), core: typeof import('./data/core.ts'), use: typeof import('./data/use.ts')): void => {
+    expect(index.MECHANIC_DATA).toStrictEqual([
+      core.core,
+      {
+        id: 'use',
+        rules: 'chunk',
+        owns: { hotspot: ['uses'], slot: ['keep'], item: ['refuse'], room: ['refuse'], trigger: 'use', facts: [] },
+        decode: use.decodeUse,
+        encode: use.encodeUse,
+        normalize: use.normalizeUse,
+      },
+    ]);
+  };
+  const firsts = [() => import('./data/use.ts'), () => import('./data/conditions.ts'), () => import('./data/index.ts'), () => import('./data/core.ts')];
+  for (const first of firsts) {
+    vi.resetModules();
+    await first();
+    checkData(await import('./data/index.ts'), await import('./data/core.ts'), await import('./data/use.ts'));
+    const decoded = (await import('../world/decode.ts')).decodeWorldSource(useSource());
+    expect(decoded.ok ? decoded.value.mods.use.uses[k('hall.box')]?.[0]?.when : decoded.error).toEqual({ all: [{ held: 'lens' }, { not: { open: 'hall.box' } }] });
+  }
+});
+
+/** Where `v` is not plain JSON (a Map, a Set, a class instance, a function, undefined, a non-finite number), by path. */
+function notJson(v: unknown, path: string): string[] {
+  if (v === null || typeof v === 'string' || typeof v === 'boolean') {
+    return [];
+  }
+  if (typeof v === 'number') {
+    return Number.isFinite(v) ? [] : [`${path}: ${String(v)}`];
+  }
+  if (Array.isArray(v)) {
+    return v.flatMap((x, i) => notJson(x, `${path}.${i}`));
+  }
+  if (typeof v === 'object') {
+    const proto: unknown = Object.getPrototypeOf(v);
+    if (proto !== Object.prototype && proto !== null) {
+      return [`${path}: ${Object.prototype.toString.call(v)}`];
+    }
+    return Object.entries(v).flatMap(([key, x]) => notJson(x, `${path}.${key}`));
+  }
+  return [`${path}: ${typeof v}`];
+}
+
+test("mechanics: every module's decoded data is plain JSON", () => {
+  // The text walk (`world/text-unwalked`) and the version hash read a module's `D` as data (data/index.ts's header).
+  const r = decodeWorldSource(useSource());
+  if (!r.ok) {
+    throw new Error(`invariant: the fixture world decodes: ${JSON.stringify(r.error)}`);
+  }
+  const mods: Record<string, unknown> = r.value.mods;
+  for (const m of MECHANIC_DATA) {
+    const d = mods[m.id];
+    expect(d, m.id).toStrictEqual(JSON.parse(JSON.stringify(d)));
+    expect(notJson(d, m.id)).toEqual([]);
+  }
+  // The positive control: the fixture holds every form of `use`'s data.
+  expect([Object.keys(r.value.mods.use.uses), r.value.mods.use.keep, Object.keys(r.value.mods.use.refuse.items), Object.keys(r.value.mods.use.refuse.rooms)]).toEqual([
+    ['hall.box'],
+    ['hall.box#0'],
+    ['key'],
+    ['hall'],
+  ]);
+  expect(notJson(new Map(), 'm')).toEqual(['m: [object Map]']);
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -298,6 +387,7 @@ test('mechanics: every action kind has one handler', () => {
     'attempt-failed': true,
     'hint-opened': true,
     'puzzle-ended': true,
+    use: true,
   } satisfies Record<SectionAction['kind'], true>;
   expect(Object.keys(APPLY).sort()).toEqual(Object.keys(kinds).sort());
   expect(Object.values(APPLY).every((handler) => typeof handler === 'function')).toBe(true);
