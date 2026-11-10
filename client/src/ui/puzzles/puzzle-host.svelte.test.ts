@@ -2,26 +2,41 @@
 // view store's BackButton rule, and the reader rules over the four puzzle components (no literal text, no I/O). Events
 // are built by hand where it matters: a raw tap is pointerdown + click with the DOM not yet updated (a double tap).
 import { cleanup, render } from '@testing-library/svelte';
-import { flushSync } from 'svelte';
+import { flushSync, tick } from 'svelte';
 import ts from 'typescript';
 import { afterEach, expect, test, vi } from 'vitest';
 
-import type { CueEvent } from '../../cues/types.ts';
+import { createCueBus } from '../../cues/bus.ts';
+import type { CueBus } from '../../cues/bus.ts';
+import { CueStage, landing, resolveTarget } from '../../cues/stage/index.ts';
+import { CUE_MOTIONS, CUE_TARGET_ATTRS, cueKey } from '../../cues/stage/motions.ts';
+import type { CueTarget } from '../../cues/stage/motions.ts';
+import type { Resolved } from '../../cues/stage/player.ts';
+import { PRESETS } from '../../cues/stage/presets.ts';
+import type { Cue, CueEvent, PuzzleCue, UiStateCue } from '../../cues/types.ts';
+import { LAYER_MOTIONS } from '../../cues/visible.ts';
+import type { Box } from '../../geom/cover.ts';
 import { t } from '../../i18n/index.ts';
 import type { Lang } from '../../i18n/index.ts';
 import CodeLock from '../../puzzles/ui/CodeLock.svelte';
 import OrderPuzzle from '../../puzzles/ui/OrderPuzzle.svelte';
 import type { HintTierView } from '../../puzzles/session.ts';
+import type { PuzzleLocalId } from '../../story/staging.ts';
 import type { ItemId } from '../../world/types.ts';
 import { backScreen, coversStage, createPuzzleView, forwardHost } from '../puzzle-view.svelte.ts';
 import type { HintLadderUiView, PuzzleFrameView, PuzzleHostCallbacks, PuzzleHostProps } from '../puzzle-view.svelte.ts';
+import type { CueStageProps } from '../state.svelte.ts';
 import appSource from '../App.svelte?raw';
 import HintLadder from './HintLadder.svelte';
 import PuzzleHost from './PuzzleHost.svelte';
 import puzzleHostSource from './PuzzleHost.svelte?raw';
 
-// svelteTesting()'s auto-cleanup does not reach the `dom` project (L14a), so each test unmounts what it rendered here.
-afterEach(() => cleanup());
+// svelteTesting()'s auto-cleanup does not reach the `dom` project (L14a), so each test unmounts what it rendered here;
+// a test that installed the stage rig gets the real clock and DOM methods back after its components are gone.
+afterEach(() => {
+  cleanup();
+  unstage();
+});
 
 const LANGS: readonly Lang[] = ['ru', 'en'];
 
@@ -512,6 +527,291 @@ test('puzzle-host: Retry is disabled only while it reloads', () => {
     expect((getByRole('button', { name: t('en', 'puzzle.retry') }) as HTMLButtonElement).disabled, name).toBe(disabled);
     unmount();
   }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The frame over the real cue stage (engine plan §8.5 "Cue targets", the real-flush rows; GM3p): the rig of
+// cues/stage/stage.svelte.test.ts, copied as GM3u copied it (RULINGS 55): a fake `Animation` on vitest's fake clock, a
+// recording `Element.prototype.animate`, fixture boxes (happy-dom lays nothing out) and the real CueStage on a bus.
+
+/** A fake `Animation` on the fake clock: finishes `ms` after its start; `currentTime` moves its start. */
+class FakeAnimation {
+  onfinish: (() => void) | null = null;
+  playState: 'running' | 'finished' | 'idle' = 'running';
+  readonly timing = { endDelay: 0 };
+  readonly effect = {
+    updateTiming: (t: { endDelay?: number }): void => {
+      this.timing.endDelay = t.endDelay ?? this.timing.endDelay;
+    },
+  };
+  #start = Date.now();
+  #timer: ReturnType<typeof setTimeout> | null = null;
+  readonly #ms: number;
+  constructor(ms: number) {
+    this.#ms = ms;
+    this.#schedule(0);
+  }
+  get currentTime(): number {
+    return Date.now() - this.#start;
+  }
+  set currentTime(t: number) {
+    this.#start = Date.now() - t;
+    this.#schedule(t);
+  }
+  cancel(): void {
+    this.#clear();
+    this.playState = 'idle';
+  }
+  #clear(): void {
+    if (this.#timer !== null) {
+      clearTimeout(this.#timer);
+      this.#timer = null;
+    }
+  }
+  #schedule(t: number): void {
+    this.#clear();
+    this.#timer = setTimeout(() => {
+      this.playState = 'finished';
+      this.onfinish?.();
+    }, this.#ms - t);
+  }
+}
+
+type Rec = { readonly el: Element; readonly kf: Keyframe[]; readonly ms: number; readonly fill: unknown; readonly anim: FakeAnimation };
+
+const STAGE_BOX: Box = { x: 0, y: 0, w: 400, h: 600 };
+/** The frame's root and its wrapper, and the ladder inside it. */
+const ROOT_BOX: Box = { x: 0, y: 0, w: 400, h: 600 };
+const WRAP_BOX: Box = { x: 20, y: 60, w: 360, h: 480 };
+const LADDER_BOX: Box = { x: 40, y: 300, w: 320, h: 200 };
+
+/** Each fixture element's box; a `[data-cue-stage]` layer has the stage's box. */
+const BOXES = new WeakMap<Element, Box>();
+const realAnimate = Element.prototype.animate;
+const realRect = Element.prototype.getBoundingClientRect;
+let records: Rec[] = [];
+let staged = false;
+
+function rectOf(b: Box): DOMRect {
+  // The fields a DOMRect reader takes.
+  return { x: b.x, y: b.y, left: b.x, top: b.y, width: b.w, height: b.h, right: b.x + b.w, bottom: b.y + b.h, toJSON: () => b } as DOMRect;
+}
+
+/** Installs the fake clock, the recording `animate` and the fixture boxes for one test; `unstage` (afterEach) undoes it. */
+function stageRig(): void {
+  staged = true;
+  vi.useFakeTimers();
+  records = [];
+  Element.prototype.animate = function (this: Element, kf, opts) {
+    const o = typeof opts === 'object' ? opts : { duration: opts };
+    const anim = new FakeAnimation(Number(o.duration));
+    // The keyframes the stage and the player pass are arrays.
+    records.push({ el: this, kf: kf as Keyframe[], ms: Number(o.duration), fill: o.fill, anim });
+    // The fake stands for the DOM's Animation: the stage reads `onfinish`, `currentTime`, `effect` and `cancel` only.
+    return anim as unknown as Animation;
+  };
+  Element.prototype.getBoundingClientRect = function (this: Element) {
+    const b = this.matches('[data-cue-stage]') ? STAGE_BOX : BOXES.get(this);
+    return b === undefined ? realRect.call(this) : rectOf(b);
+  };
+}
+
+function unstage(): void {
+  if (!staged) {
+    return;
+  }
+  staged = false;
+  document.body.replaceChildren();
+  Element.prototype.animate = realAnimate;
+  Element.prototype.getBoundingClientRect = realRect;
+  vi.useRealTimers();
+}
+
+/** Lets the emitting block's flush, the stage's `tick` continuation and the observers' microtasks run. */
+async function settleStage(): Promise<void> {
+  await tick();
+  for (let i = 0; i < 8; i += 1) {
+    await Promise.resolve();
+  }
+}
+
+type Mounted = { readonly bus: CueBus; readonly layer: HTMLElement; readonly played: () => string[]; readonly fallbacks: () => number };
+
+/** The real CueStage on a bus, as App mounts it from the session's slot. */
+function mountedStage(): Mounted {
+  const bus = createCueBus();
+  const props: CueStageProps = {
+    subscribe: bus.subscribe,
+    orphans: () => bus.orphans(),
+    dropped: () => {},
+    reduced: false,
+    host: () => null,
+    haptic: { impact: () => {}, selection: () => {}, notify: () => {} },
+  };
+  const { container } = render(CueStage, { props });
+  const layer = must(container.querySelector<HTMLElement>('[data-cue-stage]'), 'the stage layer');
+  return {
+    bus,
+    layer,
+    played: () => (layer.dataset.cuesPlayed ?? '').split(' ').filter((key) => key !== ''),
+    fallbacks: () => Number(layer.dataset.cueFallbacks),
+  };
+}
+
+/** The cue motions recorded (the roots' entrances and exits left out) that played `preset`'s keyframes. */
+const motionsOf = (preset: keyof typeof PRESETS): Rec[] => {
+  const want = JSON.stringify(PRESETS[preset]);
+  return records.filter((r) => !r.el.matches('[data-cue-root]') && !r.el.classList.contains('cue-root-ghost') && JSON.stringify(r.kf) === want);
+};
+/** A ghost's box, from the style the stage placed it with. */
+function boxOfGhost(el: Element): Box {
+  const s = el instanceof HTMLElement ? el.style : null;
+  return { x: parseFloat(s?.left ?? ''), y: parseFloat(s?.top ?? ''), w: parseFloat(s?.width ?? ''), h: parseFloat(s?.height ?? '') };
+}
+const cueEventOf = (cue: Cue): CueEvent => ({ cue, box: null, point: null, diff: [], el: null });
+const P = 'drawer' as PuzzleLocalId;
+const puzzleCue = (name: PuzzleCue, index: number | null = null): Cue => ({ kind: 'puzzle', puzzle: P, name, index });
+const panelCue = (name: UiStateCue, panel: 'puzzle' | 'hints'): Cue => ({ kind: 'ui-state', name, panel, item: null });
+const foundOf = (r: Resolved): Element | Box | null => (r === null ? null : 'el' in r ? r.el : r.box);
+
+test('puzzle-host: every puzzle cue target resolves in the frame', async () => {
+  // §8.5 "Cue targets": each DOM target a `puzzle:*` row names (its first motion and its `with`), and the `ui-state`
+  // rows that resolve by a panel as the frame and the ladder emit them (`box: null`), found by its marker on the element
+  // the frame means: never a family root, never the stage centre's fallback. The rows derive from CUE_MOTIONS, so a
+  // new row's target fails here until the frame marks it. Two frames: a capped code frame with its ladder up and
+  // failed, and a frame whose chunk failed (the notice).
+  stageRig(); // the stage layer's box, and `unstage` clears the body
+  const stage = document.createElement('div');
+  stage.setAttribute('data-cue-stage', '');
+  document.body.append(stage);
+  type State = 'capped' | 'failed';
+  const wallet = { cost: 1, balance: 2 };
+  const states: Record<State, PuzzleHostProps> = {
+    capped: hostProps({ frame: frameOf({ attemptsLeft: 2 }), ladder: ladderOf(TIERS, wallet, { failed: true }) }),
+    failed: hostProps({ frame: frameOf({ ui: null, loadFailed: true }), ladder: ladderOf(TIERS, wallet) }),
+  };
+  /** The element a target means, by the frame's own structure (the marker is what the resolver is checked on). */
+  const MEANT: Readonly<Record<string, (c: HTMLElement) => Element | null>> = {
+    frame: (c) => c.querySelector('.frame > .wrap'),
+    status: (c) => c.querySelector('.status'),
+    attempts: (c) => c.querySelector('.attempts'),
+    part: (c) => c.querySelectorAll('.digit')[1] ?? null,
+    tier: (c) => c.querySelectorAll('.ladder li')[1] ?? null,
+    ladder: (c) => c.querySelector('section.ladder'),
+    alert: (c) => c.querySelector('.ladder .failed'),
+    notice: (c) => c.querySelector('.notice'),
+  };
+  const centre = (): Box => landing(stage, 'centre');
+  type Row = readonly [state: State, cue: Cue, target: CueTarget, want: (c: HTMLElement) => Element | Box | null];
+  const rows: Row[] = [];
+  for (const [key, spec] of Object.entries(CUE_MOTIONS)) {
+    const targets = [spec.target, ...(spec.with ?? []).map((w) => w.target)];
+    if (key.startsWith('puzzle:')) {
+      for (const t of targets.filter((x) => x in CUE_TARGET_ATTRS)) {
+        // A part's and a tier's rows carry their index: dial 1, tier 2.
+        const cue = puzzleCue(key.slice('puzzle:'.length) as PuzzleCue, t === 'part' ? 1 : t === 'tier' ? 2 : null);
+        rows.push([t === 'notice' ? 'failed' : 'capped', cue, t, MEANT[t] ?? (() => null)]);
+      }
+    } else if (key.startsWith('ui-state:') && (spec.target === 'panel' || spec.target === 'box')) {
+      const name = key.slice('ui-state:'.length) as UiStateCue;
+      // A panel row finds the frame's wrapper or the ladder; a box-less hold the notice the panel shows, else the
+      // panel, but a `puzzle` hold with no notice breathes at the centre (round 11), never on the wrapper.
+      rows.push(['capped', panelCue(name, 'hints'), spec.target, MEANT['ladder'] ?? (() => null)]);
+      rows.push(['capped', panelCue(name, 'puzzle'), spec.target, spec.target === 'box' ? centre : (MEANT['frame'] ?? (() => null))]);
+      if (spec.target === 'box') {
+        rows.push(['failed', panelCue(name, 'puzzle'), spec.target, MEANT['notice'] ?? (() => null)]);
+      }
+    }
+  }
+  const got: unknown[] = [];
+  const want: unknown[] = [];
+  for (const state of ['capped', 'failed'] as const) {
+    const { container, unmount } = render(PuzzleHost, states[state]);
+    await tick();
+    for (const [, cue, t, pick] of rows.filter((r) => r[0] === state)) {
+      const found = foundOf(resolveTarget(t, cueEventOf(cue), stage));
+      const meant = pick(container);
+      const label = `${cueKey(cue)}${cue.kind === 'ui-state' ? `@${cue.panel ?? ''}` : ''} ${t} (${state})`;
+      const same = found instanceof Element || meant instanceof Element ? found === meant : JSON.stringify(found) === JSON.stringify(meant);
+      got.push([label, same, found instanceof Element ? found.matches('[data-cue-root]') : null, meant === null]);
+      want.push([label, true, meant instanceof Element ? false : null, false]);
+    }
+    unmount();
+  }
+  expect(got).toEqual(want);
+  // Non-vacuous: the derived rows reach every DOM target a puzzle row names, both panels and the notice.
+  expect(new Set(rows.map((r) => r[2]))).toEqual(new Set(['frame', 'status', 'attempts', 'part', 'tier', 'ladder', 'alert', 'notice', 'panel', 'box']));
+});
+
+test('puzzle-host: a failed purchase wobbles its new alert and Back slides the ladder out on its ghost', async () => {
+  // 08c's first frame row: each block writes the views and emits its cues synchronously, as yields does.
+  stageRig();
+  const s = mountedStage();
+  const wallet = { cost: 1, balance: 2 };
+  const props: PuzzleHostProps = $state(hostProps({ frame: frameOf({ attemptsLeft: 2 }), ladder: ladderOf(TIERS, wallet, { busy: true }) }));
+  const { container } = render(PuzzleHost, props);
+  await settleStage();
+  vi.advanceTimersByTime(LAYER_MOTIONS.in.ms + 100);
+  const ladder = must(container.querySelector('section.ladder'), 'the ladder');
+  BOXES.set(ladder, LADDER_BOX);
+  expect(container.querySelector('[data-cue-alert]')).toBeNull();
+  records = [];
+  // The use answered `failed`: the alert appears in this write's flush, and its wobble lands on it, not on the ladder.
+  props.ladder = ladderOf(TIERS, wallet, { failed: true });
+  s.bus.emit(cueEventOf(panelCue('waited', 'hints')));
+  s.bus.emit(cueEventOf(puzzleCue('hint-failed', 2)));
+  await settleStage();
+  const alert = must(container.querySelector('[data-cue-alert]'), 'the alert');
+  expect(motionsOf('wobble').map((r) => r.el)).toEqual([alert]);
+  vi.advanceTimersByTime(1000);
+  // Back pops the sheet: the ladder leaves in this flush, and its slide-out plays on its ghost at its last box.
+  records = [];
+  props.ladder = null;
+  s.bus.emit(cueEventOf(panelCue('panel-close', 'hints')));
+  await settleStage();
+  expect(ladder.isConnected).toBe(false);
+  const outs = motionsOf('settle');
+  expect(outs.map((r) => [r.el.classList.contains('cue-ghost'), s.layer.contains(r.el), boxOfGhost(r.el)])).toEqual([[true, true, LADDER_BOX]]);
+  expect([s.played().slice(-3), s.fallbacks()]).toEqual([['ui-state:waited@hints', 'puzzle:hint-failed', 'ui-state:panel-close@hints'], 0]);
+  // No ghost outlives its motion.
+  vi.advanceTimersByTime(1000);
+  expect(s.layer.querySelectorAll('.cue-ghost')).toHaveLength(0);
+});
+
+test("puzzle-host: a frame replaced in one block ends on its own wrapper under the root's ghost and the next opens on its own", async () => {
+  // 08c's second frame row (Branch F): A's run fails, B (a new id) replaces it and appears, in one block.
+  stageRig();
+  const s = mountedStage();
+  const props: PuzzleHostProps = $state(hostProps({ frame: frameOf({ id: 1 }) }));
+  const { container } = render(PuzzleHost, props);
+  await settleStage();
+  vi.advanceTimersByTime(LAYER_MOTIONS.in.ms + 100);
+  const rootA = must(container.querySelector('[data-cue-root="frame"]'), "A's root");
+  const wrapA = must(rootA.querySelector('.wrap'), "A's wrapper");
+  BOXES.set(rootA, ROOT_BOX);
+  BOXES.set(wrapA, WRAP_BOX);
+  records = [];
+  s.bus.emit(cueEventOf(puzzleCue('failed')));
+  props.frame = frameOf({ id: 2 });
+  s.bus.emit(cueEventOf(panelCue('panel-open', 'puzzle')));
+  await settleStage();
+  const rootB = must(container.querySelector('[data-cue-root="frame"]'), "B's root");
+  const wrapB = must(rootB.querySelector('.wrap'), "B's wrapper");
+  expect([rootB === rootA, wrapA.isConnected]).toEqual([false, false]);
+  // A's root leaves on its ghost with `frameOut`; `jam` holds its end on A's wrapper's clone inside that ghost.
+  const rootGhost = must(s.layer.querySelector('.cue-root-ghost'), "A's root ghost");
+  const exit = records.find((r) => r.el === rootGhost);
+  expect([exit?.kf, exit?.ms]).toEqual([LAYER_MOTIONS.frameOut.keyframes, LAYER_MOTIONS.frameOut.ms]);
+  const jams = motionsOf('jam');
+  expect(jams.map((r) => [r.el === rootGhost.children[0], r.fill])).toEqual([[true, 'forwards']]);
+  // B appears on its own wrapper; its root enters on itself.
+  expect(motionsOf('lift').map((r) => r.el)).toEqual([wrapB]);
+  expect(records.filter((r) => r.el === rootB).map((r) => r.kf)).toEqual([LAYER_MOTIONS.in.keyframes]);
+  // Nothing animates a connected family root but B's entrance, nothing fell back, and no ghost outlives its motion.
+  expect(records.filter((r) => r.el !== rootB && r.el.isConnected && r.el.matches('[data-cue-root]'))).toEqual([]);
+  expect([s.played().slice(-2), s.fallbacks()]).toEqual([['puzzle:failed', 'ui-state:panel-open@puzzle'], 0]);
+  vi.advanceTimersByTime(1000);
+  expect(s.layer.querySelectorAll('.cue-ghost')).toHaveLength(0);
 });
 
 test('puzzle host: the frame layer takes taps only on the frame and the load notice', () => {

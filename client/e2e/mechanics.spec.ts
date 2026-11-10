@@ -289,3 +289,20 @@ test('mechanics: the first puzzle of a page load holds a motion while its frame 
     .toEqual(order);
   expect([await counter(page, 'data-cue-orphans'), await counter(page, 'data-cue-fallbacks')], 'orphans, fallbacks').toEqual([0, 0]);
 });
+
+test('mechanics: a hint ladder that cannot load plays its failure cue', async ({ page }) => {
+  test.setTimeout(180_000);
+  // The drawer's status request fails at the network: the ladder's first answer is its failure line.
+  await page.route(/\/api\/puzzles\/ch1\.drawer\?/, (route) => route.abort());
+  await launch(page, 9709);
+  await startManor(page);
+  await enterManor(page);
+  await walk(page, 'hall', 'to_study', 'study', 'to_hall');
+  await tapHotspot(page, 'study', 'drawer');
+  const frame = puzzleFrame(page, 'drawer');
+  await expect(frame).toBeVisible({ timeout: LINE_MS });
+  await frame.getByRole('button', { name: t('ru', 'puzzle.hint'), exact: true }).tap();
+  await expect(frame.getByRole('alert'), "the ladder's failure line").toHaveText(t('ru', 'hint.failed'), { timeout: CUE_MS });
+  await expect.poll(() => played(page), { timeout: CUE_MS, message: 'the failure played' }).toContain('puzzle:hint-failed');
+  expect([await counter(page, 'data-cue-orphans'), await counter(page, 'data-cue-fallbacks')], 'orphans, fallbacks').toEqual([0, 0]);
+});

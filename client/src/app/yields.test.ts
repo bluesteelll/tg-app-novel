@@ -2148,6 +2148,420 @@ test("yields: App's host-chunk Retry emits its control cue", async () => {
   typeFailed.yields.dispose();
 });
 
+// ---------------------------------------------------------------------------------------------------------------
+// GM3p: the state gate (engine plan §8.5; 08c "yields: every visible change of the puzzle view plays a cue")
+
+/** The keys that settle a wait: the only ones that cover `busy` turning false or `attemptsLeft` moving (round 8). */
+const SETTLE_KEYS = ['puzzle:wrong', 'puzzle:failed', 'puzzle:solved', 'puzzle:offline', 'puzzle:rate-limited', 'puzzle:ready', 'puzzle:renewed', 'puzzle:reset'];
+/** A field's covering keys, from its new value (`VIEW_FIELD_CUES`), or why it never moves in a frame (`SILENT_VIEW_FIELDS`). */
+type Covering = { readonly keys: (now: unknown) => readonly string[] } | { readonly silent: string };
+const FIXED: Covering = { silent: 'fixed for the frame: its session opened it with this value' };
+const CHUNK_KEYS: Covering = { keys: () => ['puzzle:opened', 'puzzle:load-failed'] };
+const RUNG_KEYS: Covering = { keys: () => ['puzzle:ladder', 'puzzle:hint-shown', 'puzzle:hint-renewing'] };
+
+/** Both tables in one: tsc holds every field of the view to exactly one entry (a new field fails the check). */
+const FRAME_FIELD_CUES: { readonly [K in keyof PuzzleFrameView]-?: Covering } = {
+  id: { silent: 'the frame itself: a new id is a new frame, its panel-open and the old frame end' },
+  mode: FIXED,
+  type: FIXED,
+  title: FIXED,
+  prompt: FIXED,
+  params: FIXED,
+  answer: { keys: () => ['puzzle:input', 'puzzle:reset', 'puzzle:demo'] },
+  busy: { keys: (v) => (v === true ? ['puzzle:checking'] : SETTLE_KEYS) },
+  line: { keys: (v) => (v === 'checking' ? ['puzzle:checking'] : v === 'idle' ? ['puzzle:ready', 'puzzle:renewed'] : [`puzzle:${String(v)}`]) },
+  attemptsLeft: { keys: () => SETTLE_KEYS },
+  retryAfter: { keys: () => ['puzzle:rate-limited', 'puzzle:ready', 'puzzle:checking'] },
+  giveUp: FIXED,
+  hintTiers: FIXED,
+  ui: CHUNK_KEYS,
+  loadFailed: CHUNK_KEYS,
+  retrying: { keys: (v) => [v === true ? 'ui-state:waiting@puzzle' : 'ui-state:waited@puzzle'] },
+};
+const LADDER_FIELD_CUES: { readonly [K in keyof HintLadderUiView]-?: Covering } = {
+  tiers: RUNG_KEYS,
+  wallet: RUNG_KEYS,
+  busy: { keys: (v) => [v === true ? 'ui-state:waiting@hints' : 'ui-state:waited@hints'] },
+  failed: { keys: (v) => [v === true ? 'puzzle:hint-failed' : 'puzzle:ladder'] },
+};
+
+/** By value, as `isDeepStrictEqual` compares (08c): the rebuilt `tiers` / `wallet` count when their content moves; a function (the type UI) by identity. */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) {
+    return true;
+  }
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null || Array.isArray(a) !== Array.isArray(b)) {
+    return false;
+  }
+  const ka = Object.keys(a);
+  return ka.length === Object.keys(b).length && ka.every((k) => Object.hasOwn(b, k) && sameValue(Reflect.get(a, k), Reflect.get(b, k)));
+}
+
+/** A cue's key for the gate: a panel cue with its panel, a puzzle cue without its index. */
+const gateKey = (c: Cue): string => (c.kind === 'ui-state' && c.panel !== null ? `ui-state:${c.name}@${c.panel}` : keyOf(c));
+/** The frame's load hold is owed while its chunks load or a Retry reloads them (round 11), read on the raw frame. */
+const loadingFrame = (f: PuzzleFrameView | null): boolean => f !== null && ((f.ui === null && !f.loadFailed) || f.retrying);
+/** The open holds of `panel`: the `waiting` the bus carried for it minus its `waited`. */
+const holdsOf = (r: Rig, panel: 'puzzle' | 'hints'): number =>
+  r.cues.reduce((n, e) => (e.cue.kind === 'ui-state' && e.cue.panel === panel ? n + (e.cue.name === 'waiting' ? 1 : e.cue.name === 'waited' ? -1 : 0) : n), 0);
+
+type GateStep = readonly [name: string, run: () => unknown];
+/** What the gate saw: its problems, every field that moved, and the fields of the views it met (the non-vacuity). */
+type GateLog = { readonly problems: string[]; readonly moved: Set<string>; readonly fields: Set<string>; steps: number };
+
+/**
+ * The state gate: each step (one host callback, one answered fixture request or chunk, one clock tick, then a microtask
+ * flush) is compared on the shown view before and after it. A moved field needs one of its covering keys in the step;
+ * a silent field may not move; a frame cue may not play while its frame is unshown (the load hold aside); after the
+ * step, the open holds per panel equal the views' waits.
+ */
+async function gate(r: Rig, log: GateLog, steps: readonly GateStep[]): Promise<void> {
+  const shown = (): PuzzleFrameView | null => (shownIn({ frame: r.puzzle.frame, host: r.puzzle.host, ladder: r.puzzle.ladder }) ? r.puzzle.frame : null);
+  const firstOf = new Map<number, PuzzleFrameView>();
+  for (const [name, run] of steps) {
+    const b = shown();
+    const bl = r.puzzle.ladder;
+    const mark = r.cues.length;
+    await run();
+    await settle();
+    log.steps += 1;
+    const a = shown();
+    const al = r.puzzle.ladder;
+    const step = r.cues.slice(mark);
+    const keys = new Set(step.map((e) => gateKey(e.cue)));
+    const need = (what: string, cover: readonly string[]): void => {
+      if (!cover.some((k) => keys.has(k))) {
+        log.problems.push(`${what}: none of ${cover.join(' ')} at ${name}`);
+      }
+    };
+    for (const f of [r.puzzle.frame, al]) {
+      for (const k of Object.keys(f ?? {})) {
+        log.fields.add(`${f === al ? 'ladder' : 'frame'}.${k}`);
+      }
+    }
+    // The frame: its appearance, its end, then each field of the same frame.
+    if (a !== null && (b === null || b.id !== a.id)) {
+      need('frame', ['ui-state:panel-open@puzzle']);
+    }
+    if (b !== null && (a === null || a.id !== b.id)) {
+      need('frame', ['puzzle:closed', 'puzzle:solved', 'puzzle:failed']);
+    }
+    const frameFields = Object.keys(FRAME_FIELD_CUES) as (keyof PuzzleFrameView)[];
+    if (a !== null && b !== null && a.id === b.id) {
+      for (const f of frameFields) {
+        const c = FRAME_FIELD_CUES[f];
+        if ('keys' in c && !sameValue(b[f], a[f])) {
+          log.moved.add(`frame.${f}`);
+          need(`frame ${f}`, c.keys(a[f]));
+        }
+      }
+    }
+    if (a !== null) {
+      const first = firstOf.get(a.id) ?? a;
+      firstOf.set(a.id, first);
+      for (const f of frameFields) {
+        if ('silent' in FRAME_FIELD_CUES[f] && !sameValue(first[f], a[f])) {
+          log.problems.push(`silent field ${f} moved at ${name}`);
+        }
+      }
+    }
+    // The ladder: its sheet's open and close, then each field.
+    if (bl === null && al !== null) {
+      need('ladder', ['ui-state:panel-open@hints']);
+    }
+    if (bl !== null && al === null) {
+      need('ladder', ['ui-state:panel-close@hints']);
+    }
+    if (bl !== null && al !== null) {
+      for (const f of Object.keys(LADDER_FIELD_CUES) as (keyof HintLadderUiView)[]) {
+        const c = LADDER_FIELD_CUES[f];
+        if ('keys' in c && !sameValue(bl[f], al[f])) {
+          log.moved.add(`ladder.${f}`);
+          need(`ladder ${f}`, c.keys(al[f]));
+        }
+      }
+    }
+    // A frame cue plays only on a shown frame (round 10), the load hold's edges aside (round 11).
+    step.forEach((e, i) => {
+      const c = e.cue;
+      const v = r.views[mark + i];
+      const frameCue = c.kind === 'puzzle' || (c.kind === 'ui-state' && (c.panel === 'puzzle' || c.panel === 'hints'));
+      const loadHold = c.kind === 'ui-state' && c.panel === 'puzzle' && (c.name === 'waiting' || c.name === 'waited');
+      if (frameCue && !loadHold && v !== undefined && !shownIn(v)) {
+        log.problems.push(`frame cue while unshown ${gateKey(c)} at ${name}`);
+      }
+    });
+    // The hold balance (round 9, 11): one `puzzle` hold iff the frame loads, one `hints` hold iff the ladder waits.
+    for (const [panel, owed] of [
+      ['puzzle', loadingFrame(r.puzzle.frame)],
+      ['hints', r.puzzle.ladder?.busy === true],
+    ] as const) {
+      const open = holdsOf(r, panel);
+      if (open < Number(owed)) {
+        log.problems.push(`hold ${panel} missing after ${name}`);
+      }
+      if (open > Number(owed)) {
+        log.problems.push(`hold ${panel} open after ${name}`);
+      }
+    }
+  }
+}
+
+/** The fixture's requests held: each step answers the oldest attempt or status. */
+function heldRequests(r: Rig): { attempt: (v: Result<AttemptResponse, ApiError>) => void; status: (v: Result<PuzzleStatus, ApiError>) => void } {
+  const attempts: Array<(v: Result<AttemptResponse, ApiError>) => void> = [];
+  const statuses: Array<(v: Result<PuzzleStatus, ApiError>) => void> = [];
+  r.host.api.postAttempt = () => new Promise((resolve) => attempts.push(resolve));
+  r.host.api.getPuzzle = () => new Promise((resolve) => statuses.push(resolve));
+  return { attempt: (v) => attempts.shift()?.(v), status: (v) => statuses.shift()?.(v) };
+}
+
+/** A hint port whose uses are held: each step answers the oldest. */
+function heldPort(balance: number) {
+  const state = { balance };
+  const uses: Array<(v: Result<{ text: string; balance: number }, HintPortError>) => void> = [];
+  const port: HintPort = {
+    balance: () => state.balance,
+    tierCost: () => 1,
+    use: () => new Promise((resolve) => uses.push(resolve)),
+    getMore: () => {},
+  };
+  return { port, state, use: (v: Result<{ text: string; balance: number }, HintPortError>): void => uses.shift()?.(v) };
+}
+
+/** The cue world with an unlimited three-tier drawer (the hall's chest), a Give-up cabinet and a three-try order. */
+const gateWorld = (): WorldPublic =>
+  cueWorld({
+    drawer: { ...code('drawer_close', null), hints: [txt('a'), txt('b'), txt('c')] },
+    cabinet: { ...code(null, null), giveUp: true },
+    pieces: orderPuzzle(3),
+  });
+const STATUS_OK: Result<PuzzleStatus, ApiError> = { ok: true, value: LADDER_STATUS };
+const NETWORK: Result<never, ApiError> = { ok: false, error: { kind: 'network', detail: 'offline' } };
+const spent = (balance: number): Result<{ text: string; balance: number }, HintPortError> => ({ ok: true, value: { text: 'spent', balance } });
+const usedFailed = (kind: HintPortError['kind']): Result<{ text: string; balance: number }, HintPortError> => ({ ok: false, error: { kind } });
+
+test('yields: every visible change of the puzzle view plays a cue', async () => {
+  const log: GateLog = { problems: [], moved: new Set(), fields: new Set(), steps: 0 };
+  const linear = (r: Rig, puzzle: PuzzleLocalId) => (): void => void r.yields.onYield({ kind: 'puzzle', puzzle, then: AFTER });
+
+  // An exploration frame in a hall where the engine already opened one (the host in), its type chunk pending: the
+  // attempts' every answer, the countdown, the hint ladder's every answer, the wallet, Back over a request, the X8 close.
+  {
+    const ui = chunkQueue<Result<Component<PuzzleUiProps>, ChunkError>>();
+    const w = heldPort(5);
+    const r = rig({ world: gateWorld(), loaders: { puzzleUi: ui.loader }, hints: w.port });
+    const q = heldRequests(r);
+    await inHall(r);
+    r.puzzle.host = HOST;
+    const tier3 = (): void => r.yields.host.onusehint(3);
+    await gate(r, log, [
+      ['open (explore)', () => r.yields.layer.ontap(key('hall.chest'))],
+      ['the type chunk', () => ui.land({ ok: true, value: TYPE_UI })],
+      ['a dial change', () => r.yields.host.onchange([1, 0, 0, 0])],
+      ['Try', () => r.yields.host.ontry()],
+      ['answered wrong', () => q.attempt(WRONG)],
+      ['Try', () => r.yields.host.ontry()],
+      ['answered network', () => q.attempt(NETWORK)],
+      ['Try', () => r.yields.host.ontry()],
+      ['answered not-entitled', () => q.attempt(httpError(403))],
+      ['Try', () => r.yields.host.ontry()],
+      ['answered rate-limited', () => q.attempt(httpError(429, 2))],
+      ['a countdown tick', () => r.clock.advance(1000)],
+      ['the last countdown tick', () => r.clock.advance(1000)],
+      ['Try', () => r.yields.host.ontry()],
+      ['answered closed', () => q.attempt({ ok: false, error: { kind: 'aborted' } })],
+      ['an answer of the wrong shape', () => r.yields.host.onchange([1])],
+      ['Try answered invalid', () => r.yields.host.ontry()],
+      ['the dials again', () => r.yields.host.onchange([1, 0, 0, 0])],
+      ['Hint', () => r.yields.host.onhint()],
+      ['the status answered', () => q.status(STATUS_OK)],
+      ['a re-read of tier 1', () => r.yields.host.onusehint(1)],
+      ['a use of tier 2', () => r.yields.host.onusehint(2)],
+      ['a second use while it runs (busy)', () => r.yields.host.onusehint(2)],
+      ['the use answered', () => w.use(spent(4))],
+      ['a use of tier 3', tier3],
+      ['the use failed', () => w.use(usedFailed('network'))],
+      ['a re-read of an unlocked tier over the failed ladder', () => r.yields.host.onusehint(1)],
+      ['a use of tier 3 again', tier3],
+      ['the use answered insufficient', () => w.use(usedFailed('insufficient'))],
+      ['a use of tier 3 again', tier3],
+      // `unavailable` re-reads the status before it answers: the use's answer, then the status's.
+      [
+        'the use answered unavailable',
+        async () => {
+          w.use(usedFailed('unavailable'));
+          await settle();
+          q.status(STATUS_OK);
+        },
+      ],
+      ['the wallet opens over the ladder', () => r.screens.push({ kind: 'wallet' })],
+      ['the wallet closes with a new balance', () => ((w.state.balance = 9), r.screens.back())],
+      ['a use of tier 3 again', tier3],
+      ['Back with the use in flight', () => r.screens.back()],
+      ['its late answer', () => w.use(spent(8))],
+      ['Hint again', () => r.yields.host.onhint()],
+      ['the status failed', () => q.status(NETWORK)],
+      ['Hint again over the failed ladder', () => r.yields.host.onhint()],
+      ['its status answered', () => q.status(STATUS_OK)],
+      ['Back closes the sheet', () => r.screens.back()],
+      ['an X8 Back closes the explore frame', () => r.screens.back()],
+    ]);
+    r.yields.dispose();
+  }
+
+  // A type chunk failed, Retry failed, Retry loaded; and Back during a Retry.
+  for (const end of ['loaded', 'Back'] as const) {
+    const ui = chunkQueue<Result<Component<PuzzleUiProps>, ChunkError>>();
+    const r = rig({ world: gateWorld(), loaders: { puzzleUi: ui.loader } });
+    await inHall(r);
+    r.puzzle.host = HOST;
+    await gate(r, log, [
+      ['open (explore)', () => r.yields.layer.ontap(key('hall.chest'))],
+      ['the type chunk failed', () => ui.land(CHUNK_OFFLINE)],
+      ['Retry', () => r.yields.host.onretry()],
+      ...(end === 'loaded'
+        ? ([
+            ['Retry failed', () => ui.land(CHUNK_OFFLINE)],
+            ['Retry again', () => r.yields.host.onretry()],
+            ['Retry loaded', () => ui.land({ ok: true, value: TYPE_UI })],
+          ] as const)
+        : ([
+            ['Back during the Retry', () => r.screens.back()],
+            ['the late reload', () => ui.land({ ok: true, value: TYPE_UI })],
+          ] as const)),
+    ]);
+    r.yields.dispose();
+  }
+
+  // Linear frames (the host in): Give up; an order run to its last wrong try; a restore's drop with no outcome; a chunk
+  // result over a frame waiting for a settling answer (per-player's values wait, set through the store).
+  {
+    const ui = chunkQueue<Result<Component<PuzzleUiProps>, ChunkError>>();
+    const r = rig({ world: gateWorld(), loaders: { puzzleUi: ui.loader } });
+    const q = heldRequests(r);
+    r.puzzle.host = HOST;
+    const chunk = (): void => ui.land({ ok: true, value: TYPE_UI });
+    await gate(r, log, [
+      ['a linear frame opened with its type chunk pending', linear(r, CABINET)],
+      ['its chunk', chunk],
+      ['Give up (yes)', () => r.yields.host.ongiveup()],
+      ['an order frame', linear(r, PIECES)],
+      ['its chunk', chunk],
+      ['Try', () => r.yields.host.ontry()],
+      ['answered wrong', () => q.attempt(WRONG)],
+      ['Try', () => r.yields.host.ontry()],
+      ['answered wrong', () => q.attempt(WRONG)],
+      ['Try', () => r.yields.host.ontry()],
+      ['answered with the last try wrong', () => q.attempt(WRONG)],
+      ['a linear frame', linear(r, CABINET)],
+      ['its chunk', chunk],
+      ['a restore drops it with no outcome', () => r.yields.restore(EMPTY_WORLD_STATE, null, null)],
+      ['a linear frame', linear(r, CABINET)],
+    ]);
+    const f = r.puzzle.frame;
+    if (f === null) {
+      throw new Error('expected the open frame');
+    }
+    r.puzzle.frame = { ...f, busy: true, line: 'checking' };
+    await gate(r, log, [['a chunk result over a waiting frame', chunk]]);
+    r.yields.dispose();
+  }
+
+  // A linear frame dropped during a Retry.
+  {
+    const ui = chunkQueue<Result<Component<PuzzleUiProps>, ChunkError>>();
+    const r = rig({ world: gateWorld(), loaders: { puzzleUi: ui.loader } });
+    r.puzzle.host = HOST;
+    await gate(r, log, [
+      ['a linear frame', linear(r, CABINET)],
+      ['its chunk failed', () => ui.land(CHUNK_OFFLINE)],
+      ['Retry', () => r.yields.host.onretry()],
+      ['a restore during the Retry', () => r.yields.restore(EMPTY_WORLD_STATE, null, null)],
+      ['the late reload', () => ui.land({ ok: true, value: TYPE_UI })],
+    ]);
+    r.yields.dispose();
+  }
+
+  // An X8 Back during an attempt in flight, then that attempt answered correct: the frame went with the Back.
+  {
+    const r = rig({ world: gateWorld() });
+    const q = heldRequests(r);
+    await inHall(r);
+    r.puzzle.host = HOST;
+    await gate(r, log, [
+      ['open (explore), its chunks in', () => r.yields.layer.ontap(key('hall.chest'))],
+      ['Try', () => r.yields.host.ontry()],
+      ['an X8 Back during the attempt', () => r.screens.back()],
+      ['the attempt answered correct', () => q.attempt(RIGHT)],
+    ]);
+    r.yields.dispose();
+  }
+
+  // The engine's first open, its host chunk pending (a fresh view): the chunk; an X8 Back, a restore and a chapter
+  // change before it lands.
+  for (const leave of ['the host chunk', 'an X8 Back before the host lands', 'a restore before the host lands', 'a chapter change before the host lands'] as const) {
+    const host = chunkQueue<Result<Component<PuzzleHostProps>, ChunkError>>();
+    const r = rig({ world: gateWorld(), loaders: { puzzleHost: host.loader } });
+    const land = (): void => host.land({ ok: true, value: HOST });
+    const explore = leave === 'an X8 Back before the host lands';
+    if (explore) {
+      await inHall(r);
+    }
+    const steps: GateStep[] = [
+      ['the first open with the host chunk pending', explore ? () => r.yields.layer.ontap(key('hall.chest')) : linear(r, CABINET)],
+    ];
+    if (leave === 'the host chunk') {
+      steps.push([leave, land]);
+    } else {
+      const go = explore ? () => r.screens.back() : leave === 'a restore before the host lands' ? () => r.yields.restore(EMPTY_WORLD_STATE, null, null) : () => r.yields.chapterChanged();
+      steps.push([leave, go], ['the late host chunk', land]);
+    }
+    await gate(r, log, steps);
+    r.yields.dispose();
+  }
+
+  // A Try answered correct while the ladder is open with its status in flight: the end cue, the ladder's waited and the
+  // sheet's close all play on the shown frame, and both holds end.
+  {
+    const r = rig({ world: gateWorld(), hints: heldPort(5).port });
+    const q = heldRequests(r);
+    r.puzzle.host = HOST;
+    await gate(r, log, [
+      ['a linear frame, its chunks in', linear(r, CABINET)],
+      ['Hint', () => r.yields.host.onhint()],
+      ['Try', () => r.yields.host.ontry()],
+      ['the attempt answered correct while the status runs', () => q.attempt(RIGHT)],
+    ]);
+    r.yields.dispose();
+  }
+
+  expect(log.problems).toEqual([]);
+  // Non-vacuous: the views the gate met hold exactly the tables' fields, and every field with covering keys moved.
+  const frameFields = Object.keys(FRAME_FIELD_CUES) as (keyof PuzzleFrameView)[];
+  const ladderFields = Object.keys(LADDER_FIELD_CUES) as (keyof HintLadderUiView)[];
+  const tables = [...frameFields.map((f) => `frame.${f}`), ...ladderFields.map((f) => `ladder.${f}`)].sort();
+  expect([...log.fields].sort()).toEqual(tables);
+  const covered = [
+    ...frameFields.filter((f) => 'keys' in FRAME_FIELD_CUES[f]).map((f) => `frame.${f}`),
+    ...ladderFields.filter((f) => 'keys' in LADDER_FIELD_CUES[f]).map((f) => `ladder.${f}`),
+  ].sort();
+  expect([...log.moved].sort()).toEqual(covered);
+  expect(log.steps).toBe(93);
+});
+
+test('yields: a screens change closes a panel before it opens the next', async () => {
+  // GM3u F1: a view that swaps the inventory for the lock closes the inventory first, then opens the lock.
+  const r = rig({ world: cueWorld() });
+  await inHall(r);
+  const root = r.vm.screens.root;
+  r.yields.screensChanged({ root, overlays: [{ kind: 'inventory' }], backVisible: true });
+  const mark = r.cues.length;
+  r.yields.screensChanged({ root, overlays: [{ kind: 'lock' }], backVisible: true });
+  expect(panelCues(r, mark)).toEqual(['panel-close:inventory', 'panel-open:lock']);
+  r.yields.dispose();
+});
+
 test('yields: the reveal emits its cue', async () => {
   // No section entered: no controller, so the reveal shows nothing and plays nothing.
   const none = rig({ world: cueWorld() });
