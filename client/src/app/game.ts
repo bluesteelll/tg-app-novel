@@ -45,11 +45,11 @@ import type {
   VarName,
 } from '../story/staging.ts';
 import type { Lifecycle, TelegramClient } from '../telegram/index.ts';
-import type { BacklogLine } from '../ui/Backlog.svelte';
+import type { BacklogLine } from '../ui/overlays/Backlog.svelte';
 import { forwardLayer } from '../ui/explore-view.svelte.ts';
 import type { ExploreLayerActions, ExploreViewStore } from '../ui/explore-view.svelte.ts';
 import type { NoticeView } from '../ui/Notice.svelte';
-import type { SlotView } from '../ui/SaveLoad.svelte';
+import type { SlotView } from '../ui/overlays/SaveLoad.svelte';
 import { forwardHost } from '../ui/puzzle-view.svelte.ts';
 import type { PuzzleHostCallbacks, PuzzleView } from '../ui/puzzle-view.svelte.ts';
 import type { Screens, ScreensView } from '../ui/screens.ts';

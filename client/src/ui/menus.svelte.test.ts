@@ -16,18 +16,18 @@ import type { ManualSlot } from '../saves/service.ts';
 import type { Settings } from '../settings/store.ts';
 import type { StoryId } from '../story/catalog.ts';
 import type { ChapterId, LineId, OrderId, ProductId } from '../story/staging.ts';
-import Backlog from './Backlog.svelte';
-import type { BacklogLine } from './Backlog.svelte';
+import Backlog from './overlays/Backlog.svelte';
+import type { BacklogLine } from './overlays/Backlog.svelte';
 import ChapterSelect from './ChapterSelect.svelte';
 import type { ChapterRow } from './ChapterSelect.svelte';
-import Menu from './Menu.svelte';
+import Menu from './overlays/Menu.svelte';
 import Notice from './Notice.svelte';
 import type { NoticeView } from './Notice.svelte';
 import Paywall from './Paywall.svelte';
-import SaveLoad from './SaveLoad.svelte';
-import type { SlotView } from './SaveLoad.svelte';
+import SaveLoad from './overlays/SaveLoad.svelte';
+import type { SlotView } from './overlays/SaveLoad.svelte';
 // Imported under another name: `Settings` is the store's type.
-import SettingsScreen from './Settings.svelte';
+import SettingsScreen from './overlays/Settings.svelte';
 import StoryPicker from './StoryPicker.svelte';
 import type { StoryCardView } from './StoryPicker.svelte';
 import Terms from './Terms.svelte';
@@ -912,20 +912,27 @@ test('menus: paywall shows the purchase states', () => {
 // ---------------------------------------------------------------------------------------------------------------
 // No literal text and no I/O in this lane's components (C3-C8; principle 8, spec 2 and 4)
 
-/** This lane's nine components; L14a's six and App.svelte (L15) are not among them. */
+/**
+ * This lane's nine components; L14a's six and App.svelte (L15) are not among them. The in-play overlays live in
+ * overlays/, their chunk's directory (lever O5).
+ */
 const MENU_COMPONENTS = [
-  'Backlog.svelte',
+  'overlays/Backlog.svelte',
   'ChapterSelect.svelte',
-  'Menu.svelte',
+  'overlays/Menu.svelte',
   'Notice.svelte',
   'Paywall.svelte',
-  'SaveLoad.svelte',
-  'Settings.svelte',
+  'overlays/SaveLoad.svelte',
+  'overlays/Settings.svelte',
   'StoryPicker.svelte',
   'Terms.svelte',
 ] as const;
 
-const COMPONENT_SOURCES = import.meta.glob<string>('./*.svelte', { query: '?raw', import: 'default', eager: true });
+const COMPONENT_SOURCES = import.meta.glob<string>(['./*.svelte', './overlays/*.svelte'], {
+  query: '?raw',
+  import: 'default',
+  eager: true,
+});
 
 /** The markup with every `{…}` (expressions, blocks, tags) blanked; braces nest, as in an inline handler body. */
 function withoutMustaches(text: string): string {
@@ -1040,13 +1047,15 @@ test('menus: components do no I/O', () => {
   for (const name of MENU_COMPONENTS) {
     const source = COMPONENT_SOURCES[`./${name}`] ?? '';
     const refs = moduleRefs(name, source);
+    // The UI tables' specifier from the component's own directory (ui/ or ui/overlays/).
+    const i18n = name.startsWith('overlays/') ? '../../i18n/index.ts' : '../i18n/index.ts';
     // Non-vacuous: every component reads the UI tables through t().
     expect(
       refs.filter((r) => !r.typeOnly).map((r) => r.spec),
       name,
-    ).toContain('../i18n/index.ts');
+    ).toContain(i18n);
     for (const r of refs) {
-      if (r.dynamic || (!r.typeOnly && r.spec !== '../i18n/index.ts')) {
+      if (r.dynamic || (!r.typeOnly && r.spec !== i18n)) {
         offenders.push(`${name}: ${r.dynamic ? 'dynamic' : 'value'} ${r.spec}`);
       }
     }
