@@ -738,7 +738,7 @@ function okWorld(w: Json): WorldRef {
   if (decoded.world === null) {
     throw new Error(`invariant: the fixture world decodes: ${JSON.stringify(decoded.findings)}`);
   }
-  return { kind: 'ok', body: toPublic(decoded.world) };
+  return { kind: 'ok', body: { ...toPublic(decoded.world), mods: decoded.world.mods } };
 }
 
 /** Compiles `main` as ch1 (the fixture must compile cleanly) and builds its graph against `world` (default none). */
@@ -1171,7 +1171,7 @@ test('search: an excluded step is never taken', () => {
   if (!decoded.ok) {
     throw new Error(`invariant: the fixture decodes: ${JSON.stringify(decoded.error)}`);
   }
-  const pub = toPublic(decoded.value);
+  const pub = { ...toPublic(decoded.value), mods: decoded.value.mods };
   const manor = 'manor' as SectionId; // the fixture's section
   const start = sectionEntry(pub, EMPTY_WORLD_STATE, manor);
   const walk = (opts: SearchOptions): { states: number; result: string; steps: Step[] } => {
@@ -1799,6 +1799,7 @@ test("use: a played chapter takes a use edge only with the world's mods", () => 
   expect(withMods.play, JSON.stringify(withMods.findings)).toMatchObject({ ended: 5, failed: 0 });
   expect([...withMods.play.visited]).toEqual(['start', 'statue_voice', 'after']);
   // The public body alone has no rules: the door never opens and `after` is never entered.
+  // @ts-expect-error -- the public body alone is no proof world (KernelWorld.mods); kept as the runtime guard
   const without = playStatue(graph, ch.json, toPublic(src));
   expect(without.play.ended).toBe(0);
   expect([...without.play.visited]).not.toContain('after');
@@ -1855,7 +1856,7 @@ test('playthrough: every step yields at least one cue', () => {
       allow: new Map(),
       carry: null,
       runs: 20,
-      world: toPublic(src.value),
+      world: { ...toPublic(src.value), mods: src.value.mods },
       ...(rules === undefined ? {} : { rules }),
     });
   // Every run taps the desk until it leaves: each tap, the first and every later one, plays a cue.

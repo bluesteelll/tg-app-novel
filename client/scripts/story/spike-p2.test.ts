@@ -162,7 +162,7 @@ function measure(raw: unknown): Measured[] {
   if (!r.ok) {
     throw new Error(`the generated world does not decode: ${JSON.stringify(r.error)}`);
   }
-  const w = toPublic(r.value);
+  const w = { ...toPublic(r.value), mods: r.value.mods };
   return (Object.keys(w.sections) as SectionId[]).map((section) => {
     const t0 = performance.now();
     const found = searchSection(w, sectionEntry(w, EMPTY_WORLD_STATE, section), section, CAP);

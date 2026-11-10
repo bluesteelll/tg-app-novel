@@ -15,6 +15,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync,
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import type { KernelWorld } from '../src/mechanics/contract.ts';
 import { assetIndex, decodeChapterList } from '../src/story/catalog.ts';
 import type { AssetCatalog, Cast, CatalogIssue, ChapterListEntry, EndingName, StoryId } from '../src/story/catalog.ts';
 import type { AssetId, AssetIndex, BgId, ChapterId, KnotName, LineId, PuzzleLocalId } from '../src/story/staging.ts';
@@ -478,8 +479,9 @@ function playStage(
     sourceErrors: ReadonlySet<string>;
     /** Per chapter, its declared story endings (knot → name); empty when the story list did not decode. */
     endings: ReadonlyMap<ChapterId, ReadonlyMap<KnotName, EndingName>>;
-    /** Per chapter whose world decoded, its public world: the runs play through its yields (D14). */
-    worlds: ReadonlyMap<ChapterId, WorldPublicBody>;
+    /** Per chapter whose world decoded, its proof world (the public body and its decoded `mods`): the runs play through
+     *  its yields (D14). */
+    worlds: ReadonlyMap<ChapterId, KernelWorld>;
   },
   out: Finding[],
 ): { lines: string[]; skipped: number; plays: ReadonlyMap<ChapterId, ChapterPlay> } {

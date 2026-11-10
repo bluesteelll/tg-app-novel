@@ -1635,7 +1635,7 @@ function gameWorld(): WorldPublic {
   if (!r.ok) {
     throw new Error(`invariant: the fixture world decodes: ${JSON.stringify(r.error)}`);
   }
-  return { ...toPublic(r.value), version: '1111111111111111' };
+  return { ...toPublic(r.value), mods: r.value.mods, version: '1111111111111111' };
 }
 
 const WORLD_VARS = ['g_x', 'pz_drawer', 'pz_drawer_hints', 'pz_gate', 'pz_gate_hints', 'it_medal'];

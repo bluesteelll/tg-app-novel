@@ -8,11 +8,12 @@ import { fileURLToPath } from 'node:url';
 
 import { expect, test } from 'vitest';
 
+import type { KernelWorld } from '../../../src/mechanics/contract.ts';
 import { assetIndex, decodeAssetCatalog, decodeCast } from '../../../src/story/catalog.ts';
 import type { AssetCatalog, Cast } from '../../../src/story/catalog.ts';
 import type { AssetId, AssetIndex, BgId, ChapterId, KnotName } from '../../../src/story/staging.ts';
 import { decodeWorldSource, toPublic } from '../../../src/world/decode.ts';
-import type { RoomId, WorldPublicBody } from '../../../src/world/types.ts';
+import type { RoomId } from '../../../src/world/types.ts';
 import { compileChapter } from '../compile.ts';
 import { buildGraph, carriedStage } from '../graph.ts';
 import type { ChapterGraph } from '../graph.ts';
@@ -65,13 +66,13 @@ function shotList(raw: Json): ShotList {
 }
 
 /** A one-section world (section `s`, start `start`) of the given rooms, decoded and projected as the story tool does. */
-function world(rooms: Json, start = 'hall', extra: Json = {}): WorldPublicBody {
+function world(rooms: Json, start = 'hall', extra: Json = {}): KernelWorld {
   const raw = { format: 1, items: {}, docs: {}, puzzles: {}, sections: { s: { start, bgm: null, rooms } }, ...extra };
   const r = decodeWorldSource(raw);
   if (!r.ok) {
     throw new Error(`invariant: the fixture world decodes: ${JSON.stringify(r.error)}`);
   }
-  return toPublic(r.value);
+  return { ...toPublic(r.value), mods: r.value.mods };
 }
 
 let titles = 0;
@@ -98,7 +99,7 @@ function sectionsOf(g: ChapterGraph): NonNullable<ChapterGraph['sections']> {
 type Built = { graph: ChapterGraph; files: readonly string[]; sources: ReadonlyMap<string, string>; assets: AssetIndex };
 
 /** A fixture chapter (`id`, one entry file after the globals INCLUDE) graphed against `catalog`, with `w` as its world. */
-function chapter(body: readonly string[], catalog: AssetCatalog = COMMITTED.catalog, w?: WorldPublicBody, id: ChapterId = CH1): Built {
+function chapter(body: readonly string[], catalog: AssetCatalog = COMMITTED.catalog, w?: KernelWorld, id: ChapterId = CH1): Built {
   const entry = `${id}/main.ink`;
   const sources = new Map([
     [entry, ['INCLUDE ../common/globals.ink', ...body, ''].join('\n')],
@@ -112,7 +113,7 @@ function chapter(body: readonly string[], catalog: AssetCatalog = COMMITTED.cata
 
 const TEXT = (id: string): Json => ({ id, ru: 'Текст' });
 /** ch1's manor shape: the hall (gate exit to the leave knot, its lock's onFail an event), the study, the cellar (onEnter event). */
-function manorWorld(onFail: readonly Json[] = [{ story: 'gate_forced' }, { unlock: 'hall.gate' }]): WorldPublicBody {
+function manorWorld(onFail: readonly Json[] = [{ story: 'gate_forced' }, { unlock: 'hall.gate' }]): KernelWorld {
   return world(
     {
       hall: room('hall', [
@@ -328,7 +329,7 @@ test('graph: the chapter graph exposes its section edges, seeds and rooms', () =
 // Commit 2: the step graph of a chapter
 
 /** The step flow of a fixture chapter. */
-function flowOf(body: readonly string[], catalog: AssetCatalog = COMMITTED.catalog, w?: WorldPublicBody, id: ChapterId = CH1): { flow: ChapterFlow; findings: ShotFinding[]; built: Built } {
+function flowOf(body: readonly string[], catalog: AssetCatalog = COMMITTED.catalog, w?: KernelWorld, id: ChapterId = CH1): { flow: ChapterFlow; findings: ShotFinding[]; built: Built } {
   const built = chapter(body, catalog, w, id);
   const r = buildFlow({ chapter: id, files: built.files, sources: built.sources, graph: built.graph, assets: built.assets, cast: COMMITTED.cast, ...(w === undefined ? {} : { world: w }) });
   return { ...r, built };
@@ -515,7 +516,7 @@ test('flow: a conditional block without an else can skip its arms', () => {
 // Commit 3: the playthroughs' step transitions and the cross-check
 
 /** The fixture chapter compiled and played `runs` times (with its world, through its yields). */
-function played(built: Built, runs: number, w?: WorldPublicBody): ChapterPlay {
+function played(built: Built, runs: number, w?: KernelWorld): ChapterPlay {
   const compiled = compileChapter({ id: CH1, paid: false, entry: 'ch1/main.ink' }, (key) => built.sources.get(key) ?? null);
   if (compiled.compiled === null) {
     throw new Error(`invariant: the fixture compiles: ${JSON.stringify(compiled.findings)}`);
@@ -770,7 +771,7 @@ const CAFE_CATALOG = effectiveCatalog(COMMITTED.catalog, CAFE_SHOTS);
 type Linted = { flow: ChapterFlow; findings: ShotFinding[]; shots: ReadonlyMap<BgId, EffectiveShot> };
 
 /** One fixture chapter's flow under a shot list, and the shot lints over it. */
-function linted(body: readonly string[], opts: { list?: ShotList; w?: WorldPublicBody; planes?: ReadonlyMap<BgId, readonly Plane[]> } = {}): Linted {
+function linted(body: readonly string[], opts: { list?: ShotList; w?: KernelWorld; planes?: ReadonlyMap<BgId, readonly Plane[]> } = {}): Linted {
   const list = opts.list ?? CAFE_SHOTS;
   const catalog = effectiveCatalog(COMMITTED.catalog, list);
   const { flow } = flowOf(body, catalog, opts.w);
@@ -1069,7 +1070,7 @@ type Looked = { flow: ChapterFlow; look: ReadonlyMap<string, Lookahead>; files: 
  * One fixture chapter's flow and lookahead under a shot list; the talk files are the chapter's own spoken faces, the
  * room windows the world's rooms with `pictures` (per room id, its pictures beyond the plate).
  */
-function looked(body: readonly string[], opts: { list?: ShotList; w?: WorldPublicBody; pictures?: ReadonlyMap<string, readonly string[]> } = {}): Looked {
+function looked(body: readonly string[], opts: { list?: ShotList; w?: KernelWorld; pictures?: ReadonlyMap<string, readonly string[]> } = {}): Looked {
   const list = opts.list ?? CAFE_SHOTS;
   const catalog = effectiveCatalog(COMMITTED.catalog, list);
   const { flow, built } = flowOf(body, catalog, opts.w);
@@ -1326,7 +1327,7 @@ test('flow: a window with a room in effect lists its props and its label bound',
 });
 
 /** The critic's fixture: a start room with three events of distinct close-up openers and a leave knot opening on a scene. */
-function crowdedHall(): { w: WorldPublicBody; body: string[] } {
+function crowdedHall(): { w: KernelWorld; body: string[] } {
   const look = (id: string, n: number, story: string): Json => ({
     id,
     kind: 'look',
@@ -1503,7 +1504,7 @@ const LEAVE_DOOR: Json = { id: 'door', kind: 'exit', rect: [730, 1300, 250, 400]
 const LEAVE_OUT = ['=== out ===', '# scene: street', 'Улица. #id:ch1.out.o001', '-> END'];
 
 /** A fixture chapter's graph findings on the cafe catalog, as `code message`: a valid story has none. */
-function graphShown(body: readonly string[], w: WorldPublicBody): string[] {
+function graphShown(body: readonly string[], w: KernelWorld): string[] {
   const built = chapter(body, CAFE_CATALOG, w);
   const g = buildGraph({ chapter: { id: CH1, paid: false, entry: 'ch1/main.ink' }, files: built.files, sources: built.sources, assets: built.assets, world: { kind: 'ok', body: w } });
   return g.findings.map((f) => `${f.code} ${f.message}`);
@@ -1632,7 +1633,7 @@ test("flow: a room window lists its own openers before its neighbours' onEnter o
 const CH2: ChapterId = 'ch2' as ChapterId; // the second fixture chapter
 
 /** build/shots.json over fixture chapters (`[id, body, world?]`) under a shot list. */
-function usageOf(chs: ReadonlyArray<readonly [ChapterId, readonly string[], WorldPublicBody?]>, list: ShotList = CAFE_SHOTS): ShotUsage {
+function usageOf(chs: ReadonlyArray<readonly [ChapterId, readonly string[], KernelWorld?]>, list: ShotList = CAFE_SHOTS): ShotUsage {
   const catalog = effectiveCatalog(COMMITTED.catalog, list);
   const worlds = chs.flatMap(([, , w]) => (w === undefined ? [] : [w]));
   const shots = effectiveShots(catalog, list, worlds);

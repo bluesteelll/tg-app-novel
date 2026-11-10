@@ -3,7 +3,8 @@ import { expect, test } from 'vitest';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { WorldState } from '../explore/state.ts';
 import type { PuzzleLocalId } from '../story/staging.ts';
-import type { DocId, HotspotKey, ItemId, RoomId, WorldPublicBody } from '../world/types.ts';
+import { decodeWorldSource, toPublic } from '../world/decode.ts';
+import type { DocId, HotspotKey, ItemId, RoomId } from '../world/types.ts';
 import type { DecodeCtx, Issue, KernelWorld, MechanicData, MechanicRules, RulesRegistry } from './contract.ts';
 import { COND_MAX_ATOMS, COND_MAX_DEPTH, condReads, condSize, decodeCond } from './data/conditions.ts';
 import type { Cond } from './data/conditions.ts';
@@ -134,7 +135,15 @@ test('conditions: reads lists every atom', () => {
   expect(COND_MAX_DEPTH).toBe(4);
 });
 
-const WORLD: KernelWorld = { format: 1, items: {}, docs: {}, puzzles: {}, sections: {} } satisfies WorldPublicBody;
+/** The empty world through the decoder: the body and every module's data, as a decoded world carries them. */
+function emptyWorld(): KernelWorld {
+  const r = decodeWorldSource({ format: 1, items: {}, docs: {}, puzzles: {}, sections: {} });
+  if (!r.ok) {
+    throw new Error(`invariant: the empty world decodes: ${JSON.stringify(r.error)}`);
+  }
+  return { ...toPublic(r.value), mods: r.value.mods };
+}
+const WORLD = emptyWorld();
 
 /** A state holding one fact of every kernel atom kind of KERNEL_ATOMS but `used` (the match is held) and `failed`. */
 function rich(): WorldState {

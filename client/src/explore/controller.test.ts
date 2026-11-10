@@ -111,7 +111,7 @@ function world(spec: WorldSpec, version = V1): WorldPublic {
   if (!r.ok) {
     throw new Error(`invariant: the fixture world decodes: ${JSON.stringify(r.error)}`);
   }
-  return { ...toPublic(r.value), version };
+  return { ...toPublic(r.value), mods: r.value.mods, version };
 }
 
 /** One room with a full-frame look and a 100 px look (the cover.test.ts numbers). */
