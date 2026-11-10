@@ -662,6 +662,11 @@ export function layerOut(node: Element, opts: { reduced: boolean; frame?: boolea
           'fetchAsset'] as const;
         ```
 
+        **Ruled: RULINGS 233** — Point 11 restated: `HOST_WAITS` has **nine** rows, not eight: GM3s's optional
+        `LazyChunks.cueStage?()` loader (`client/src/app/yields.ts:66` on `8d388ba`) postdates the list above (written on
+        `cec347c`), so GM3p's cut adds the row `{ member: 'LazyChunks.cueStage', wait: 'import()' }` (GM3p cut r1 Q1);
+        never an exclusion, and `cueStage` stays optional.
+
         **A request start** is (a) a `PropertyAccessExpression`'s name, a string-keyed `ElementAccessExpression` or a
         value-position `BindingElement` (a destructured member) whose symbol (`checker.getSymbolAtLocation` for the
         first two; round 14, found: for a binding element, its property's symbol,

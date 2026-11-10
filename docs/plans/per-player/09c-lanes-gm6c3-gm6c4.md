@@ -20,6 +20,12 @@
   `choiceSet` / `backlogLines` `:437-455`; `revalue` beside `relabel` `:457-466`; reconcile P4, re-located on main
   `acc4e0d`: `lineView` `:501`, `choiceSet` `:506`, `backlogLines` `:510`, `relabel` `:521-528`; the cut re-locates
   them again on its parent), `client/src/app/game.test.ts`.
+  Changed by RULINGS 234, 236 (as of `0b91acc`; docs lane `docs-errata-15`, group A): lever O5 (`9a0ae2d`) moved the Backlog, so this lock's
+  `client/src/ui/Backlog.svelte` is **`client/src/ui/overlays/Backlog.svelte`** (in the overlays chunk; its `ValueText`
+  import from `ui/overlays/` is an out-of-directory import, which the arch rule `lazy-ui` allows), and
+  `menus.svelte.test.ts`'s component glob reads `['./*.svelte', './overlays/*.svelte']`
+  (`client/src/ui/menus.svelte.test.ts:931`); the Q64 fix (`d820803`) added the stage tap to `DialogueBox.svelte` and
+  `vm.stageTap` to `state.svelte.ts` (the cut re-locates both).
 - **Commits (5):** (1) the motion gate: `value-motion: every value motion changes a visible property for >= 120 ms`
   (through engine.md's `keyframesVisible` and `MIN_VISIBLE_MS`, E-P8; red: module missing; then seen red on the
   mutation "equal keyframes"), `value-motion: reduced motion animates opacity only`; (2) `ValueText`: `value-text: a

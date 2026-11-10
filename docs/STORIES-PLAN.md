@@ -1162,6 +1162,21 @@ while LDB1 ran; LDB1 and LDB2 had merged before the design landed, and the merge
   - to go, of this design's lanes: none. The adopted plans' next lanes: GM3u after GM3 and P; SH3a after SH2 once P
     frees `budget.ts`; the levers O5, then Y, only on the merge-time trigger (RULINGS 201); the rest follow the one
     order above.
+- **As of `0b91acc`** (changed by RULINGS 209-237; docs lane `docs-errata-15`, group A; SHAs from `git log
+  --first-parent main`):
+  - merged since `461424d`: the docs lane `docs-errata-13` as `25c0031` (RULINGS 211), the lever P
+    `lever-p-purchase-lazy` `3d120bc` (RULINGS 213), from the adopted plans GM3 `7082a35` (RULINGS 217) and the
+    type-only GM3k `3131844` (new, RULINGS 210 Q4; RULINGS 223), the recovery lane `lazy-chunk-recovery` `8e099ee`
+    (new, Q60; RULINGS 224), the docs lane `docs-errata-14` as `086d81c` (RULINGS 227), E6 `e6-money-holds` `d5e04ef`
+    (new, the money-path follow-up; RULINGS 228), GM3u `33b4f8d` (RULINGS 230), the Q63 fix `fix-vitest-fs-cache`
+    `340f47c` (RULINGS 232), the lever O5 `lever-o5-overlays` `9a0ae2d` (RULINGS 234) and the Q64 fix
+    `fix-paywall-reopen` `d820803` (RULINGS 236) (PP "Dependency order"); the orchestrator's docs commits (Q54, Q59-Q66)
+    are not lanes;
+  - running: GM3p `gm3p-mech-puzzle-cues` (client, lane A; RULINGS 232-234), beside the docs lane `docs-errata-15` (in
+    the server slot, RULINGS 237);
+  - to go, of this design's lanes: none. The adopted plans' next lanes: GM3b after GM3p, SH3a and per-player GM6t, their
+    entry terms watched against Ledger 2; the lever Y only on the merge-time trigger (shelved, RULINGS 234); the rest
+    follow the one order above.
 
 **Order** (RULINGS 8 rolling, RULINGS 18 three slots; as of `66c92c4`, changed by RULINGS 22, 23: LDB1 and LDB2
 merged, so the server chain starts at L6b): server L6b → LS2 → L6c → L8a → L8b → LS3 → L9; client (two slots)
@@ -1216,6 +1231,12 @@ Changed by RULINGS 198-209 (as of `461424d`; docs lane `docs-errata-13`, group B
 `2db33c3`, GM3s `65e10ad` and shots SH2 `7f45dee` have merged, and the engine-closure lever X `597dded` (the lever lane
 became the program X, then P, RULINGS 201); GM3 and the lever P run (client; RULINGS 209); GM3u follows GM3 and P, SH3a
 follows SH2 once P frees `budget.ts`; the rest follow the one order above.
+Changed by RULINGS 209-237 (as of `0b91acc`; docs lane `docs-errata-15`, group A): from the adopted plans, GM3
+`7082a35`, the type-only GM3k `3131844` (new, RULINGS 210 Q4) and GM3u `33b4f8d` have merged, with the lever P
+`3d120bc`, the recovery lane `8e099ee` (new, Q60), E6 `d5e04ef` (new, the money-path follow-up), the Q63 fix `340f47c`,
+the lever O5 `9a0ae2d` and the Q64 fix `d820803`; GM3p runs (client, lane A; RULINGS 232-234); GM3b follows GM3p,
+SH3a and per-player GM6t follow when a client slot frees; the lever Y stays on the shelf (RULINGS 234); the rest follow
+the one order above.
 
 **Collision locks added** (PP "Collision locks"): `0001` L2 → LDB1 → LS2; `0003` LS3; the serialized server files
 L6b → LS2 → L6c → L8a → L8b → LS3 → L9; `ids.rs` L6b (`StoryId` with `PuzzleId`); `lint.ts` / `dsl-doc.test.ts` /

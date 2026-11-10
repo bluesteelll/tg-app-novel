@@ -20,6 +20,11 @@ Changed by RULINGS 209-225 (as of `52e328e`; docs lane `docs-errata-14`, group B
 (`8e099ee`; new, Q60); the levers O5 and Y are approved designs on the shelf (RULINGS 221, 222, 224); engine GM3u and
 E6 (new, the money-path follow-up) run (RULINGS 225); next, engine GM3p after GM3u, shots SH3a and per-player GM6t;
 the rest is planned, in the one order below.
+Changed by RULINGS 225-237 (as of `0b91acc`; docs lane `docs-errata-15`, group B): built since also engine GM3u
+(`33b4f8d`), E6 (`d5e04ef`), the lever O5 (`9a0ae2d`; run on the trigger fired at E6's merge, RULINGS 228, 230, 234)
+and two fix lanes, Q63 (`340f47c`) and Q64 (`d820803`); the lever Y stays an approved design on the shelf (RULINGS
+234); engine GM3p runs (RULINGS 232-234); next, engine GM3b after GM3p, shots SH3a and per-player GM6t, their entry
+terms watched against Ledger 2; the rest is planned, in the one order below.
 
 - [engine](engine/README.md) — the mechanics engine: module contract, world data, puzzle types, the cue union and bus, lanes GM1a-GM9r.
 - [per-player](per-player/README.md) — per-player codes and labels on the art: the server half, the values store, labels, lanes GM6a-GM6d2.
