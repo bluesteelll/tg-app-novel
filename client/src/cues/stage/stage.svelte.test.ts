@@ -638,6 +638,20 @@ test('stage: a preset that paints by itself plays without the plain light', asyn
   expect(calm).toEqual(Array.from({ length: 5 }, () => [PRESETS.fade, true]));
 });
 
+test('stage: a hold on a plain box plays without the plain light', async () => {
+  // Triage r2 F1: a box-less hold (a room batch with no `via`, a frame's load with no notice) breathes at `centre` on
+  // a plain ghost. `breathe` paints its own ring in its middle frame only, so the light comes off for any played
+  // frame that paints, not only the first one or every one.
+  const s = mounted();
+  s.bus.emit(event(uiState('waiting', null)));
+  s.bus.emit(event(uiState('waiting', 'puzzle')));
+  await settle();
+  vi.advanceTimersByTime(WAIT_DELAY_MS);
+  const holds = cueMotions().filter((r) => r.el.classList.contains('cue-ghost'));
+  expect(holds.map((r) => r.kf)).toEqual([PRESETS.breathe, PRESETS.breathe]);
+  expect(holds.filter((r) => r.el.classList.contains('cue-plain'))).toEqual([]);
+});
+
 test('stage: a wait hold over a panel with a notice plays on the notice', async () => {
   // PuzzleHost's load-failed block inside the frame wrapper (the notice is a descendant of the panel).
   const s = mounted();
