@@ -54,6 +54,13 @@ export default defineConfig(({ mode, command }) => {
       sourcemap: false,
       // dist/.vite/manifest.json is the budget script's chunk graph.
       manifest: true,
+      // Q60 R1: all CSS in one stylesheet, linked from index.html. A lazy root's own stylesheet is awaited before its
+      // import(), and once it failed the helper never asks for it again, so a retry renders unstyled.
+      cssCodeSplit: false,
+      // Q60 R1: no <link rel=modulepreload> for any import(). WebKit keeps a failed preload in its memory cache, and
+      // every later import() of that URL then fails with no request, past a reload too (WebKit bug 270357). The helper
+      // still wraps each import(), so `vite:preloadError` still names every lazy failure (app/boot.ts's recovery).
+      modulePreload: { polyfill: false, resolveDependencies: () => [] },
     },
     test: {
       projects: [

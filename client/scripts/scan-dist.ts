@@ -4,8 +4,9 @@
 // copy, or one inlined as a base64 data: URI); from LW3 the hint IDs and texts of every world, the paid worlds' IDs
 // and texts and the paid en values, all built from the sources (PUZZLES-PLAN X7); from LM1 the meta texts of
 // story/meta.json (META-PLAN "Paid-content protection"); from LFU2 (K7(c)) a text inside a JS string literal, found
-// in its escaped forms (Vite's `JSON.parse("…")` of a JSON module, a requoted literal). Every finding is reported;
-// exit 1 iff there is one or dist is missing.
+// in its escaped forms (Vite's `JSON.parse("…")` of a JSON module, a requoted literal); from Q60 the build's shape (no
+// preload list or modulepreload link, one stylesheet: `scanBuild`). Every finding is reported; exit 1 iff there is one
+// or dist is missing.
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
@@ -60,14 +61,21 @@ export type Finding =
    * (`prefix`) under its asset's file-name shape, full or half, with another hash, an older build's copy; `name` is the
    * paid file's name, except for `prefix`, where it is the asset id.
    */
-  | { kind: 'paid-asset'; file: string; name: string; via: 'name' | 'hash' | 'data-uri' | 'prefix' };
+  | { kind: 'paid-asset'; file: string; name: string; via: 'name' | 'hash' | 'data-uri' | 'prefix' }
+  /**
+   * Q60 R1: a file that makes the page preload: a JS chunk whose `__vite__mapDeps` list holds `count` files (0: a list
+   * the scan cannot read), or index.html with `count` `<link rel=modulepreload>` tags.
+   */
+  | { kind: 'preload-deps'; file: string; count: number }
+  /** Q60 R1: with more than one stylesheet in dist, one index.html does not link (a lazy root's own). */
+  | { kind: 'lazy-stylesheet'; file: string };
 
 /** Sections every build is scanned for, whatever the story holds. */
 export const FIXED_SECTIONS: readonly Section[] = [
   // inkjs/full only: the runtime never contains these (R4 §2.1, measured).
   { name: 'compiler', needles: ['Compilation failed', 'Recursive INCLUDE detected'] },
   // The Telegram dev mock and debug hooks are compiled out of production builds.
-  { name: 'dev-canary', needles: ['__TG_DEV_MOCK__', '__tgMock', '/dev/launch', '__novelDebug'] },
+  { name: 'dev-canary', needles: ['__TG_DEV_MOCK__', '__tgMock', '/dev/launch', '__novelDebug', '__novelChunks'] },
 ];
 
 /** Nested data: URIs (a data-URI stylesheet holding a data-URI image) are decoded this deep. */
@@ -225,6 +233,43 @@ export function scanFiles(files: readonly ScanFile[], sections: readonly Section
           findings.push({ kind: 'fingerprint', file: file.path, section: section.name, needle, via });
         }
       }
+    }
+  }
+  return findings;
+}
+
+/** Vite 8.3.5's preload list in a chunk; the capture is the list's text. */
+const MAP_DEPS = /__vite__mapDeps=\(i,m=__vite__mapDeps,d=\(m\.f\|\|\(m\.f=\[([^\]]*)\]\)\)\)/;
+const MODULEPRELOAD = /<link\b[^>]*\brel=["']?modulepreload\b/gi;
+
+/**
+ * Q60 R1 (vite.config.ts `modulePreload`, `cssCodeSplit`): the build's shape, so a lazy chunk that fails is a failure of
+ * its own module fetch only. No preload list and no modulepreload link: WebKit keeps a failed preload past a reload.
+ * One stylesheet, linked from index.html: no lazy root waits for a stylesheet of its own, or loses one that failed.
+ * Every finding is reported.
+ */
+export function scanBuild(files: readonly ScanFile[]): Finding[] {
+  const findings: Finding[] = [];
+  const index = files.find((f) => f.path === 'index.html');
+  const html = index === undefined ? '' : utf8.decode(index.bytes);
+  const links = html.match(MODULEPRELOAD)?.length ?? 0;
+  if (links > 0) {
+    findings.push({ kind: 'preload-deps', file: 'index.html', count: links });
+  }
+  for (const file of files.filter((f) => f.path.endsWith('.js'))) {
+    const text = utf8.decode(file.bytes);
+    if (text.includes('__vite__mapDeps')) {
+      const list = MAP_DEPS.exec(text)?.[1];
+      const count = list === undefined ? 0 : (list.match(/"[^"]*"/g)?.length ?? 0);
+      if (list === undefined || count > 0) {
+        findings.push({ kind: 'preload-deps', file: file.path, count });
+      }
+    }
+  }
+  const sheets = files.filter((f) => f.path.endsWith('.css'));
+  if (sheets.length > 1) {
+    for (const sheet of sheets.filter((f) => !html.includes(f.path))) {
+      findings.push({ kind: 'lazy-stylesheet', file: sheet.path });
     }
   }
   return findings;
@@ -632,6 +677,10 @@ export function formatFinding(f: Finding): string {
       return `scan: fingerprints ${f.reason} ${f.detail}`;
     case 'paid-asset':
       return `scan: paid-asset ${f.name} in ${f.file} (via ${f.via})`;
+    case 'preload-deps':
+      return `scan: preload-deps ${f.file} (${f.count === 0 ? 'a preload list the scan cannot read' : `${f.count} preloaded`})`;
+    case 'lazy-stylesheet':
+      return `scan: lazy-stylesheet ${f.file} (index.html does not link it)`;
     default: {
       const unreachable: never = f;
       return unreachable;
@@ -680,7 +729,7 @@ export function main(argv: readonly string[], clientRoot: string): number {
   }
   const { sections, findings: vacuity, paidFiles } = loadSections(clientRoot);
   const files = walkFiles(distDir).map((rel): ScanFile => ({ path: rel, bytes: readFileSync(path.join(distDir, rel)) }));
-  const findings = [...vacuity, ...scanFiles(files, sections), ...scanPaidFiles(files, paidFiles)];
+  const findings = [...vacuity, ...scanFiles(files, sections), ...scanPaidFiles(files, paidFiles), ...scanBuild(files)];
   const summary = sections.map((s) => `${s.name}(${s.needles.length})`).join(' ');
   console.log(`scan: ${files.length} files; sections ${summary}`);
   for (const finding of findings) {
