@@ -1569,7 +1569,7 @@ test('game: a Buy on a purchase module that already landed starts the purchase i
   await settle(); // the module lands
   expect(h.purchaseLoads()).toBe(1);
   h.game.buy();
-  expect(h.purchases, 'no await between the tap and the invoice').toEqual(['createInvoice:chapter:ch2']);
+  expect([...h.purchases], 'no await between the tap and the invoice').toEqual(['createInvoice:chapter:ch2']);
   await settle();
   expect(h.purchases).toEqual(['createInvoice:chapter:ch2']);
   expect(h.purchaseLoads(), 'Buy loads nothing more').toBe(1);
