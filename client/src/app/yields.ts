@@ -1081,6 +1081,22 @@ export function createYields(h: YieldsHost): Yields {
     return true;
   };
 
+  /**
+   * A frame root's cue with its point moved from the root's px to the stage host's (D-P: the stage plays in the host's
+   * px; the frame root is full-bleed under the viewport's top inset, so the two differ). A cue with no point, element,
+   * root or host passes as it came.
+   */
+  const inStageHost = (e: CueEvent): CueEvent => {
+    const root = e.el?.closest('[data-cue-root]') ?? null;
+    const host = h.stageHost();
+    if (e.point === null || root === null || host === null) {
+      return e;
+    }
+    const r = root.getBoundingClientRect();
+    const s = host.getBoundingClientRect();
+    return { ...e, point: { x: e.point.x + r.left - s.left, y: e.point.y + r.top - s.top } };
+  };
+
   const puzzleHost: PuzzleHostCallbacks = {
     item: (id) => {
       const w = h.chapter()?.world ?? null;
@@ -1162,6 +1178,9 @@ export function createYields(h: YieldsHost): Yields {
     },
     ongetmore: () => {
       open?.port?.getMore();
+    },
+    oncue: (e) => {
+      bus.emit(inStageHost(e)); // the frame family's controls (engine plan §8.3), on the session's bus
     },
   };
 

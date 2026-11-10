@@ -366,7 +366,13 @@ function rig(o: RigOptions = {}) {
     chunks,
     hints: () => o.hints ?? null,
     // A stand-in: the controller reads only the two sizes of its box.
-    stageHost: () => ({ clientWidth: 360, clientHeight: 640 }) as unknown as HTMLElement,
+    // D-P (GM3p): the frame's points move from the frame root's px to the host's by their rects' offset.
+    stageHost: () =>
+      ({
+        clientWidth: 360,
+        clientHeight: 640,
+        getBoundingClientRect: () => ({ left: 0, top: 0, right: 360, bottom: 640, width: 360, height: 640, x: 0, y: 0 }),
+      }) as unknown as HTMLElement,
     chapter: () => ch,
     runner: () => ({
       enter: (knot, projection) => {
@@ -1872,6 +1878,36 @@ test('yields: the reveal emits its cue', async () => {
   const played = r.cues.slice(mark);
   expect(played.map((e) => keyOf(e.cue))).toEqual(['ui-state:reveal']);
   expect(played.map((e) => e.box)).toEqual([null]);
+  r.yields.dispose();
+});
+
+test("yields: a frame control's point reaches the bus in stage-host px", async () => {
+  // The frame root emits points in its own px (`cues/root.ts`); the stage plays in the stage host's (§8.3, D-P).
+  const r = rig({ world: puzzleWorld() });
+  await r.yields.onYield({ kind: 'puzzle', puzzle: CABINET, then: AFTER });
+  const rect = (left: number, top: number): DOMRect => ({ left, top, right: left + 360, bottom: top + 584, width: 360, height: 584, x: left, y: top }) as DOMRect;
+  const root = { getBoundingClientRect: () => rect(4, 56) };
+  const el = { closest: (sel: string) => (sel === '[data-cue-root]' ? root : null) } as unknown as HTMLElement;
+  const tapAt = (point: { x: number; y: number } | null): CueEvent => ({
+    cue: { kind: 'ui', control: 'puzzle-try', item: null, index: null },
+    box: null,
+    point,
+    diff: [],
+    el,
+  });
+  const mark = r.cues.length;
+  r.yields.host.oncue?.(tapAt({ x: 10, y: 20 }));
+  r.yields.host.oncue?.(tapAt(null));
+  const played = r.cues.slice(mark);
+  expect(played.map((e) => [keyOf(e.cue), e.point])).toEqual([
+    ['ui:puzzle-try', { x: 14, y: 76 }],
+    ['ui:puzzle-try', null],
+  ]);
+  // A host off the page's origin: the offset is the two rects' difference.
+  r.host.stageHost = () => ({ getBoundingClientRect: () => rect(2, 6) }) as unknown as HTMLElement;
+  const moved = r.cues.length;
+  r.yields.host.oncue?.(tapAt({ x: 10, y: 20 }));
+  expect(r.cues.slice(moved).map((e) => e.point)).toEqual([{ x: 12, y: 70 }]);
   r.yields.dispose();
 });
 

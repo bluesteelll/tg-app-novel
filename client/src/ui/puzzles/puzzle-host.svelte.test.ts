@@ -6,9 +6,11 @@ import { flushSync } from 'svelte';
 import ts from 'typescript';
 import { afterEach, expect, test, vi } from 'vitest';
 
+import type { CueEvent } from '../../cues/types.ts';
 import { t } from '../../i18n/index.ts';
 import type { Lang } from '../../i18n/index.ts';
 import CodeLock from '../../puzzles/ui/CodeLock.svelte';
+import OrderPuzzle from '../../puzzles/ui/OrderPuzzle.svelte';
 import type { HintTierView } from '../../puzzles/session.ts';
 import type { ItemId } from '../../world/types.ts';
 import { backScreen, coversStage, createPuzzleView, forwardHost } from '../puzzle-view.svelte.ts';
@@ -319,8 +321,17 @@ function recordingHost(tag: string, calls: unknown[][]): PuzzleHostCallbacks {
     ongetmore: () => {
       calls.push([tag, 'ongetmore']);
     },
+    oncue: (e) => {
+      calls.push([tag, 'oncue', keyOfCue(e)]);
+    },
   };
 }
+
+/** A recorded cue: its kind and control (the forwarders hand the event on unchanged). */
+const keyOfCue = (e: CueEvent): string => (e.cue.kind === 'ui' ? `ui:${e.cue.control}` : e.cue.kind);
+
+/** The cue `callEveryCallback` hands `oncue`. */
+const TRY_CUE: CueEvent = { cue: { kind: 'ui', control: 'puzzle-try', item: null, index: null }, box: null, point: null, diff: [], el: null };
 
 /** Every callback once, in a fixed order, with fixed arguments; answers what `item` named. */
 function callEveryCallback(c: PuzzleHostCallbacks): ReturnType<PuzzleHostCallbacks['item']> {
@@ -332,6 +343,7 @@ function callEveryCallback(c: PuzzleHostCallbacks): ReturnType<PuzzleHostCallbac
   c.onretry();
   c.onusehint(2);
   c.ongetmore();
+  c.oncue?.(TRY_CUE);
   return named;
 }
 
@@ -345,6 +357,7 @@ const everyCallbackOn = (tag: string): unknown[][] => [
   [tag, 'onretry'],
   [tag, 'onusehint', 2],
   [tag, 'ongetmore'],
+  [tag, 'oncue', 'ui:puzzle-try'],
 ];
 
 test("puzzle-view: forwardHost reaches the current session's host and nothing after it ends", () => {
@@ -352,7 +365,7 @@ test("puzzle-view: forwardHost reaches the current session's host and nothing af
   let current: PuzzleHostCallbacks | undefined = recordingHost('a', calls);
   const forward = forwardHost(() => current);
   // One forwarder per callback, no more: a lane adding a callback edits the forwarder and this list.
-  expect(Object.keys(forward).sort()).toEqual(['item', 'onchange', 'ongetmore', 'ongiveup', 'onhint', 'onretry', 'ontry', 'onusehint']);
+  expect(Object.keys(forward).sort()).toEqual(['item', 'onchange', 'oncue', 'ongetmore', 'ongiveup', 'onhint', 'onretry', 'ontry', 'onusehint']);
   expect(callEveryCallback(forward)).toEqual({ name: 'a medal', glyph: 'sun' });
   expect(calls).toEqual(everyCallbackOn('a'));
   // A later session: the same forwarders reach its host only (the getter runs at each call, never at creation).
@@ -383,6 +396,79 @@ test('puzzle-view: coversStage is true for every frame today', () => {
   expect(view.covers).toBe(true);
   view.frame = null;
   expect(view.covers).toBe(false);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM3p: the frame is a cue family (engine plan §8.3): its root emits each declared control's cue
+
+/** A `[data-cue]` control as `name@index` (`@index` only with `data-cue-index`). */
+const controlKey = (el: HTMLElement): string => `${el.dataset.cue ?? ''}${el.dataset.cueIndex === undefined ? '' : `@${el.dataset.cueIndex}`}`;
+
+/**
+ * Renders the host with `props` and taps every enabled control it shows, each once: the first one not yet tapped in
+ * document order (`'first'`) or from the end (`'last'`), re-reading the DOM after each tap (a tap may show new
+ * controls: Give up's question shows No and Yes, and either one hides the other). A disabled control takes no tap, so
+ * it plays nothing; a state where it is enabled taps it. Answers the controls tapped and the `ui` cues played, both as
+ * `ui:name@index`, in tap order.
+ */
+function tapEveryControl(props: PuzzleHostProps, from: 'first' | 'last'): { tapped: string[]; played: string[] } {
+  const played: string[] = [];
+  const oncue = (e: CueEvent): void => {
+    if (e.cue.kind === 'ui') {
+      played.push(`ui:${e.cue.control}${e.cue.index === null ? '' : `@${e.cue.index}`}`);
+    }
+  };
+  const { container, unmount } = render(PuzzleHost, { ...props, oncue });
+  const tapped: string[] = [];
+  for (;;) {
+    const fresh = [...container.querySelectorAll<HTMLElement>('[data-cue]')].filter(
+      (el) => !(el instanceof HTMLButtonElement && el.disabled) && !tapped.includes(`ui:${controlKey(el)}`),
+    );
+    const next = from === 'first' ? fresh[0] : fresh.at(-1);
+    if (next === undefined) {
+      break;
+    }
+    tapped.push(`ui:${controlKey(next)}`);
+    tap(next);
+  }
+  unmount();
+  return { tapped, played };
+}
+
+const ORDER_PIECES = ['medal_sun', 'medal_moon', 'medal_star'];
+
+test('puzzles: every declared control emits its cue', () => {
+  // The frame's states that show every control: a linear code frame with Give up and a ladder that can be used, an
+  // exploration order frame whose ladder cannot be paid (get more), and a frame whose type chunk failed (Retry).
+  const states: Array<[string, PuzzleHostProps]> = [
+    ['code', hostProps({ ladder: ladderOf(TIERS, { cost: 1, balance: 2 }) })],
+    [
+      'order',
+      hostProps({
+        frame: frameOf({ mode: 'explore', type: 'order', params: { pieces: ORDER_PIECES }, answer: [0, 1, 2], ui: OrderPuzzle }),
+        ladder: ladderOf(TIERS, { cost: 3, balance: 0 }),
+        item: (id) => ({ name: id, glyph: 'sun' }),
+      }),
+    ],
+    ['load failed', hostProps({ frame: frameOf({ ui: null, loadFailed: true }) })],
+  ];
+  const names = new Set<string>();
+  for (const [name, props] of states) {
+    for (const from of ['first', 'last'] as const) {
+      const { tapped, played } = tapEveryControl(props, from);
+      // One cue per tap, the tapped control's own, with its index.
+      expect(played, `${name} (${from})`).toEqual(tapped);
+      for (const key of tapped) {
+        names.add(key.replace(/@.*$/, ''));
+      }
+    }
+  }
+  // Every control the frame family declares was shown and tapped (the controls gate holds each name to its type).
+  expect([...names].sort()).toEqual(
+    ['dial-down', 'dial-up', 'give-up-ask', 'give-up-no', 'give-up-yes', 'hint-more', 'hint-use', 'order-slot', 'puzzle-hint', 'puzzle-retry', 'puzzle-try'].map(
+      (n) => `ui:${n}`,
+    ),
+  );
 });
 
 /**
@@ -425,7 +511,7 @@ const COMPONENT_SOURCES = import.meta.glob<string>(['./*.svelte', '../../puzzles
 
 /** Each component and the only modules it may import as values. */
 const VALUE_IMPORTS: Readonly<Record<string, readonly string[]>> = {
-  './PuzzleHost.svelte': ['../../i18n/index.ts', './HintLadder.svelte'],
+  './PuzzleHost.svelte': ['../../cues/root.ts', '../../i18n/index.ts', './HintLadder.svelte'],
   './HintLadder.svelte': ['../../i18n/index.ts'],
   '../../puzzles/ui/CodeLock.svelte': ['../../i18n/index.ts', '../rules/index.ts'],
   '../../puzzles/ui/OrderPuzzle.svelte': ['../../i18n/index.ts', '../../ui/glyphs.ts', '../rules/index.ts'],

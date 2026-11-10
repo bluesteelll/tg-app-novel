@@ -8,13 +8,28 @@
   // block that held Give up and Yes gets a block of its own below it, so a double tap on Give up never gives up; Yes
   // answers once per question. The frame is a cue family (engine plan §8.3, §8.5; GM3p): its root, keyed by the frame's
   // id, carries `data-cue-root="frame"` and holds one child, the wrapper the frame cues land on; every control declares
-  // its cue, and the notice, the status and the attempts lines carry their target markers.
+  // its cue, and the notice, the status and the attempts lines carry their target markers. The root is attached in an
+  // effect, as the explore layer's is (RULINGS 201 E1: no `use:` action): its controls emit to `oncue`, the session's
+  // bus through yields, which moves each point from the root's px to the stage host's.
+  import { cueRoot } from '../../cues/root.ts';
   import { t } from '../../i18n/index.ts';
   import type { PuzzleHostProps } from '../puzzle-view.svelte.ts';
   import HintLadder from './HintLadder.svelte';
 
-  let { lang, frame, ladder, item, onchange, ontry, ongiveup, onhint, onretry, onusehint, ongetmore }: PuzzleHostProps =
-    $props();
+  let {
+    lang,
+    frame,
+    ladder,
+    item,
+    onchange,
+    ontry,
+    ongiveup,
+    onhint,
+    onretry,
+    onusehint,
+    ongetmore,
+    oncue,
+  }: PuzzleHostProps = $props();
 
   const uid = $props.id();
   /** The frame whose Give up is asking; a new frame never inherits the question. */
@@ -63,11 +78,34 @@
     askingFor = null;
     ongiveup();
   }
+
+  /** The frame's root while a frame is shown; a new frame id is a new root (the key block). */
+  let root: HTMLElement | null = $state(null);
+  let cues: ReturnType<typeof cueRoot> | undefined;
+  // Attached once per root element: a new emit must not re-attach it (that would re-stamp the root's birth).
+  $effect(() => {
+    const el = root;
+    if (el === null) {
+      return;
+    }
+    const r = cueRoot(el, undefined);
+    cues = r;
+    return () => {
+      cues = undefined;
+      r.destroy();
+    };
+  });
+  // The emit: the host's `oncue`. Reads the root too, so it runs after a re-attach.
+  $effect(() => {
+    if (root !== null) {
+      cues?.update(oncue);
+    }
+  });
 </script>
 
 {#if frame !== null}
   {#key frame.id}
-    <section class="frame" data-cue-root="frame" aria-labelledby="{uid}-title">
+    <section class="frame" bind:this={root} data-cue-root="frame" aria-labelledby="{uid}-title">
       <div class="wrap" data-cue-frame data-cue-panel="puzzle">
         <h2 id="{uid}-title">{frame.title}</h2>
         <p class="prompt">{frame.prompt}</p>
