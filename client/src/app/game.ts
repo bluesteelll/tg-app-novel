@@ -3,7 +3,8 @@
 // views for the overlay and autosaves for the server (principle 7: the scene only ever sees staging commands), and it
 // owns every per-session resource: the runner, the SaveService and the timers. One intent runs at a time (F2): a tap
 // while a batch is in flight completes the transition, a choice is ignored, a load or an exit waits for it.
-// It lives in the engine chunk; scene/, audio/ and explore/ are reached through their types only (tests pass fakes).
+// It lives in the engine chunk; scene/, audio/ and explore/ are reached through their types only (tests pass fakes);
+// the purchase flow is import()ed at the paywall (lever P).
 import type { Endpoints } from '../api/endpoints.ts';
 import type { ProductDto, SaveListResponse, SaveSlot, SaveSummary } from '../api/generated/api.ts';
 import type { ApiError, Clock } from '../api/http.ts';
@@ -13,7 +14,6 @@ import { t } from '../i18n/index.ts';
 import type { Lang } from '../i18n/index.ts';
 import { createLineText } from '../i18n/lines.ts';
 import type { LineText } from '../i18n/lines.ts';
-import { chapterDelivered, createPurchaseFlow } from '../purchase/flow.ts';
 import type { PurchaseFlow, PurchaseState } from '../purchase/flow.ts';
 import type { HintPort } from '../puzzles/session.ts';
 import type { ManualSlot, SaveError, SaveService, SaveState, SaveWrite } from '../saves/service.ts';
@@ -124,6 +124,9 @@ export function withReloadedFor(href: string, served: string): string {
   return `${base}#${next.join('&')}`;
 }
 
+/** The purchase flow's chunk (lever P): reached by `import()` only, so the engine chunk does not carry it. */
+type PurchaseModule = Pick<typeof import('../purchase/flow.ts'), 'createPurchaseFlow' | 'chapterDelivered'>;
+
 /** The Game's collaborators; the engine wires the real ones (app/engine.ts), the tests fakes. */
 export type GameDeps = {
   vm: ViewModel;
@@ -159,6 +162,8 @@ export type GameDeps = {
   puzzle: PuzzleView;
   /** The lazy families' loaders; the tests pass their own. */
   chunks?: LazyChunks;
+  /** The purchase flow's loader (lever P): the paywall prefetches it, Buy waits for it; the tests pass their own. */
+  loadPurchase?: () => Promise<PurchaseModule>;
 };
 
 /**
@@ -211,7 +216,10 @@ export interface Game {
   onLifecycle(e: Lifecycle): void;
   /** `pagehide`: the autosave as a keepalive PUT. */
   pagehide(): void;
-  /** The paywall's Buy (P2): the purchase flow of the paywall's chapter; the server's reads unlock it, never this. */
+  /**
+   * The paywall's Buy (P2): the purchase flow of the paywall's chapter; the server's reads unlock it, never this. It
+   * waits for the purchase module only when the paywall's prefetch has not landed (lever P).
+   */
   buy(): void;
   /** The paywall's Check again (P7: `delayed`, or a sheet whose close was lost). */
   checkAgain(): void;
@@ -339,8 +347,17 @@ type Session = {
   readonly yields: Yields;
 };
 
-/** The paywall's purchase: its chapter, its flow once Buy ran, and the story a pre-session unlock starts (D17). */
-type Offer = { readonly chapter: ChapterId; readonly product: ProductId | null; readonly start: StoryId | null; flow: PurchaseFlow | null };
+/**
+ * The paywall's purchase: its chapter, its flow once Buy ran, and the story a pre-session unlock starts (D17);
+ * `waiting` while a Buy waits for the purchase module (lever P).
+ */
+type Offer = {
+  readonly chapter: ChapterId;
+  readonly product: ProductId | null;
+  readonly start: StoryId | null;
+  flow: PurchaseFlow | null;
+  waiting: boolean;
+};
 
 /** LBI D5: a recovery waiting for its safe point: the build to reload into, through boot's port. */
 type Recovery = { readonly served: string; readonly page: ReloadPort };
@@ -361,6 +378,7 @@ export function createGame(deps: GameDeps): Game {
   let host: HTMLElement | null = null;
   let hostWaiters: Array<(h: HTMLElement) => void> = [];
   const chunks = deps.chunks ?? LAZY_CHUNKS;
+  const loadPurchase = deps.loadPurchase ?? (() => import('../purchase/flow.ts'));
   let mounted: Promise<Result<void, SceneError>> | null = null;
   let sound: AudioManager | null = null;
   let autoTimer: number | null = null;
@@ -382,6 +400,12 @@ export function createGame(deps: GameDeps): Game {
   let exiting = false;
   let choiceSetId = 0;
   let offer: Offer | null = null;
+  /**
+   * Lever P: the purchase module once it loaded, and its one load, in flight or done, for the page's life (the module
+   * is code, not session state); a failed load is cleared, so the next Buy imports again.
+   */
+  let purchase: PurchaseModule | null = null;
+  let purchaseLoad: Promise<PurchaseModule | null> | null = null;
   let meta: GameMeta | null = null;
   /**
    * An autosave asked for from outside the intent queue that has to wait (`waits`); it is written as soon as it no
@@ -1062,16 +1086,55 @@ export function createGame(deps: GameDeps): Game {
     o?.flow?.dispose();
   };
 
+  /**
+   * Lever P: the purchase module, one load per page (meta.ts's shape). A failure is logged and the load cleared, so
+   * the next call imports again; the player's note is Buy's, never the prefetch's.
+   */
+  const purchaseModule = (): Promise<PurchaseModule | null> => {
+    purchaseLoad ??= loadPurchase().then(
+      (m) => {
+        purchase = m;
+        return m;
+      },
+      (e: unknown) => {
+        console.error('game: the purchase module did not load', e);
+        purchaseLoad = null;
+        return null;
+      },
+    );
+    return purchaseLoad;
+  };
+
   /** The paywall of `id`; an open offer of the same chapter keeps its flow, so a re-open shows its state. */
   const openPaywall = (id: ChapterId, start: StoryId | null): void => {
     let o = offer;
     if (o === null || o.chapter !== id || o.start !== start) {
       closeOffer();
-      o = { chapter: id, product: chapterEntry(id)?.productId ?? null, start, flow: null };
+      o = { chapter: id, product: chapterEntry(id)?.productId ?? null, start, flow: null, waiting: false };
       offer = o;
     }
     vm.paywall = { chapter: titleOf(id), priceStars: priceOf(id), state: o.flow?.state() ?? IDLE };
     screens.push({ kind: 'paywall' });
+    if (o.product !== null) {
+      // Lever P: the module loads while the paywall is read, so Buy waits for it only when this has not landed.
+      void purchaseModule(); // never rejects
+    }
+  };
+
+  /** Buy with the module in: one flow per offer, and a flow made in the background starts paused (lever P D6). */
+  const startPurchase = (o: Offer, p: ProductId, m: PurchaseModule): void => {
+    const made = o.flow === null;
+    o.flow ??= m.createPurchaseFlow({
+      api: deps.api,
+      tg,
+      clock,
+      isDelivered: m.chapterDelivered(deps.api),
+      onState: (st) => purchaseState(o, st),
+    });
+    if (made && paused) {
+      o.flow.onDeactivated(); // its `activated` arms the window and the poll; until then it holds still
+    }
+    o.flow.buy(p);
   };
 
   /** P9 / F4 step 4: the chapter now owned starts from its saved start, with the carry it saved. */
@@ -1669,7 +1732,9 @@ export function createGame(deps: GameDeps): Game {
    * What a reload would cut now, or null at a safe point. A deactivated page waits for `activated`: the player would
    * not see the notice, and the flush may be throttled. The grant of an open invoice is the server's on
    * `successful_payment` either way (principle 2); waiting keeps the flow's poll, and with it the paywall's state, so no
-   * reloaded paywall offers Buy for a payment still being confirmed (`delayed` included, critique W1).
+   * reloaded paywall offers Buy for a payment still being confirmed (`delayed` included, critique W1). A Buy waiting for
+   * the purchase module (lever P) holds like an invoice being created: its flow is made and asks for the invoice as
+   * soon as the module lands, which would open the sheet under the update notice.
    * The wallet's pack flow is waited for only while the player is on it (LRB): an invoice being created or confirmed,
    * the wallet open, or a sheet no Back on the wallet has shown closed. One the player left (`purchaseLeft`) holds
    * nothing: it moves only on the wallet's Check again or `activated`. After that reload the wallet reads the balance
@@ -1689,6 +1754,7 @@ export function createGame(deps: GameDeps): Game {
     }
     const wallet = vm.meta;
     if (
+      offer?.waiting === true ||
       PURCHASE_OPEN.has(offer?.flow?.state().kind ?? 'idle') ||
       (PURCHASE_OPEN.has(wallet?.purchase.kind ?? 'idle') && wallet?.purchaseLeft !== true)
     ) {
@@ -1962,14 +2028,25 @@ export function createGame(deps: GameDeps): Game {
       if (disposed || o === null || o.product === null) {
         return;
       }
-      o.flow ??= createPurchaseFlow({
-        api: deps.api,
-        tg,
-        clock,
-        isDelivered: chapterDelivered(deps.api),
-        onState: (st) => purchaseState(o, st),
+      const p = o.product;
+      if (purchase !== null) {
+        startPurchase(o, p, purchase); // the paywall's prefetch landed: today's synchronous Buy
+        return;
+      }
+      // Lever P: the prefetch failed or has not landed. The paywall stays the flow's (no flow: idle, Buy enabled);
+      // a double tap queues on the one load, and the flow's own guard opens one sheet.
+      o.waiting = true;
+      void purchaseModule().then((m) => {
+        o.waiting = false;
+        if (disposed || offer !== o) {
+          return; // the offer ended while the module loaded: nothing is bought
+        }
+        if (m === null) {
+          vm.showToast({ kind: 'note', key: PURCHASE_TOAST, message: t(vm.lang, 'toast.purchase_failed'), sticky: false });
+          return;
+        }
+        startPurchase(o, p, m);
       });
-      o.flow.buy(o.product);
     },
     checkAgain() {
       offer?.flow?.checkAgain();

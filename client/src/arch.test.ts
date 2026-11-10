@@ -163,9 +163,10 @@ function isPureWorld(file: string): boolean {
 // file under one of these directories is imported statically only from inside the same directory; anywhere else
 // only through `import()` (app/yields.ts and puzzles/registry.ts hold those). The meta overlays (`ui/meta/`) and the
 // meta controller (`app/meta.ts`, a lazy root file: RULINGS 105, LMI cut Q8) are lazy the same way; boot.ts and the
-// controller hold their `import()` calls.
+// controller hold their `import()` calls. So is the purchase flow (`purchase/flow.ts`, lever P): by `import()` only
+// (app/game.ts at the paywall and at Buy, app/meta.ts at a pack Buy), its types anywhere.
 const LAZY_DIRS = ['puzzles/ui/', 'ui/puzzles/', 'ui/explore/', 'ui/meta/', 'cues/stage/'] as const;
-const LAZY_ROOT_FILES = ['app/meta.ts'] as const;
+const LAZY_ROOT_FILES = ['app/meta.ts', 'purchase/flow.ts'] as const;
 
 /** The lazy scope a file is in: its lazy directory, or the lazy root file itself. */
 function lazyDirOf(file: string): string | undefined {
@@ -1165,7 +1166,9 @@ test('arch: lazy ui only by dynamic import', () => {
   ]);
   // The meta chunks (RULINGS 105): boot imports the controller, the controller its overlays, each by `import()`.
   expect(dynamicLazyTargets('app/boot.ts', SOURCES['app/boot.ts'] ?? '')).toEqual(['app/meta.ts']);
-  expect(dynamicLazyTargets('app/meta.ts', SOURCES['app/meta.ts'] ?? '')).toEqual(['ui/meta/index.ts']);
+  // The controller also loads the purchase flow at a pack Buy, and the game at the paywall (lever P).
+  expect(dynamicLazyTargets('app/meta.ts', SOURCES['app/meta.ts'] ?? '')).toEqual(['purchase/flow.ts', 'ui/meta/index.ts']);
+  expect(dynamicLazyTargets('app/game.ts', SOURCES['app/game.ts'] ?? '')).toEqual(['purchase/flow.ts']);
   // `rules-lazy`'s allow side on the tree: the explore controller, its one importer, loads both rules files.
   expect(staticTargets('explore/controller.ts', SOURCES['explore/controller.ts'] ?? '')).toEqual(
     expect.arrayContaining(['mechanics/rules/core.ts', 'mechanics/rules/search.ts']),
@@ -1223,20 +1226,23 @@ function sourceIn(files: Readonly<Record<string, string>>, target: string): stri
 }
 
 /**
- * A breadth-first walk over the static value edges from ENTRY_ROOT: each reached file with the file that first reached
- * it (null for the root), and every relative target that names no source of `files`.
+ * A breadth-first walk over the static value edges from `root` (ENTRY_ROOT unless named): each reached file with the
+ * file that first reached it (null for the root), and every relative target that names no source of `files`.
  */
-function entryClosure(files: Readonly<Record<string, string>>): {
+function entryClosure(
+  files: Readonly<Record<string, string>>,
+  root: string = ENTRY_ROOT,
+): {
   reached: ReadonlyMap<string, string | null>;
   unresolved: readonly string[];
 } {
   const reached = new Map<string, string | null>();
   const unresolved: string[] = [];
-  if (!Object.hasOwn(files, ENTRY_ROOT)) {
-    return { reached, unresolved: [ENTRY_ROOT] };
+  if (!Object.hasOwn(files, root)) {
+    return { reached, unresolved: [root] };
   }
-  reached.set(ENTRY_ROOT, null);
-  const queue = [ENTRY_ROOT];
+  reached.set(root, null);
+  const queue = [root];
   for (let file = queue.shift(); file !== undefined; file = queue.shift()) {
     for (const target of staticTargets(file, files[file] ?? '')) {
       const source = sourceIn(files, target);
@@ -1504,6 +1510,40 @@ test('arch: entry closure save service fixtures', () => {
     expect(walk(files), label).toEqual({ chains, unresolved: [] });
   }
 });
+
+// Lever P (RULINGS 201, 209): the purchase flow loads by `import()` when a paywall opens (app/game.ts) and at a pack Buy
+// (app/meta.ts), so the engine chunk does not carry it. `lazy-ui` reports a static value import of it by its exact path
+// only; this walk from the engine resolves extensionless, `.js` and directory specifiers too, as the bundler does.
+
+/** The engine chunk's root module: boot.ts import()s it. */
+const ENGINE_ROOT = 'app/engine.ts';
+/** The purchase flow's module (lever P), a lazy root file. */
+const PURCHASE_FLOW = 'purchase/flow.ts';
+
+/** The engine's chain to the purchase flow when it holds the flow statically: [] while the lever holds. */
+function purchaseChains(reached: ReadonlyMap<string, string | null>): string[] {
+  return reached.has(PURCHASE_FLOW) ? [pathTo(reached, PURCHASE_FLOW)] : [];
+}
+
+test('arch: the engine closure holds no purchase flow', () => {
+  // Non-vacuous: the walk from the engine reaches the game and its yields, the flow is a scanned source, every module
+  // edge resolves, and the game reaches the flow by `import()`.
+  const { reached, unresolved } = entryClosure(SOURCES, ENGINE_ROOT);
+  expect(reached.has('app/game.ts')).toBe(true);
+  expect(reached.has('app/yields.ts')).toBe(true);
+  expect(Object.keys(SOURCES)).toContain(PURCHASE_FLOW);
+  expect(unresolved.filter((target) => /\.(?:ts|svelte)$/.test(target))).toEqual([]);
+  expect(purchaseChains(reached)).toEqual([]);
+  expect(dynamicLazyTargets('app/game.ts', SOURCES['app/game.ts'] ?? '')).toContain(PURCHASE_FLOW);
+  // Fixtures: a value import (extensionless) and an inline `type` keep the edge; `import type` and `import()` do not.
+  const flow = 'export const createPurchaseFlow = 1;\nexport type PurchaseFlow = number;';
+  const walk = (game: string): string[] =>
+    purchaseChains(entryClosure({ 'app/engine.ts': "import './game.ts';", 'app/game.ts': game, 'purchase/flow.ts': flow }, ENGINE_ROOT).reached);
+  const chain = ['app/engine.ts -> app/game.ts -> purchase/flow.ts'];
+  expect(walk("import { createPurchaseFlow } from '../purchase/flow';"), 'a value import').toEqual(chain);
+  expect(walk("import { type PurchaseFlow } from '../purchase/flow.ts';"), 'an inline type').toEqual(chain);
+  expect(walk("import type { PurchaseFlow } from '../purchase/flow.ts';\nconst m = import('../purchase/flow.ts');"), 'lazy').toEqual([]);
+}, TREE_TIMEOUT_MS);
 
 // LFL B1 / T4 (RULINGS 149): boot no longer imports the meta controller's chunk after auth, so its after-auth step hands
 // the gate what Home and a launch need before the chunk: boot's own stats read (Home's card buttons) and the launch's
@@ -2009,6 +2049,10 @@ const RED: Record<RuleId, readonly Fixture[]> = {
     ['ui/App.svelte', "<script lang=\"ts\">\n  import Wallet from './meta/Wallet.svelte';\n</script>\n<Wallet />"],
     // A bare lazy directory resolves to its index.ts (`src/ui/meta/index.ts` exists), so it loads the overlays eagerly.
     ['app/yields.ts', "import { x } from '../ui/meta';"],
+    // The purchase flow (a lazy root file, lever P): a value import, a re-export and an inline type all load it.
+    ['app/game.ts', "import { createPurchaseFlow } from '../purchase/flow.ts';"],
+    ['app/engine.ts', "export { chapterDelivered } from '../purchase/flow.ts';"],
+    ['app/game.ts', "import { type PurchaseFlow } from '../purchase/flow.ts';"],
   ],
   'rules-lazy': [
     ['story/chapters.ts', "import { MECHANIC_RULES } from '../mechanics/rules/index.ts';"],
@@ -2209,6 +2253,12 @@ const ALLOW: ReadonlyArray<readonly [RuleId, readonly Fixture[]]> = [
       ['ui/meta/Friends.svelte', '<script lang="ts">\n  import { x } from \'./index.ts\';\n</script>'],
       // A sibling whose name only shares a lazy directory's prefix is not in it.
       ['app/yields.ts', "import { x } from '../ui/metadata.ts';"],
+      // The purchase flow by `import()` and its module's type (lever P), its types anywhere.
+      [
+        'app/game.ts',
+        "type M = Pick<typeof import('../purchase/flow.ts'), 'createPurchaseFlow'>;\nconst m = () => import('../purchase/flow.ts');",
+      ],
+      ['ui/state.svelte.ts', "import type { PurchaseState } from '../purchase/flow.ts';"],
     ],
   ],
   [
