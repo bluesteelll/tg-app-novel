@@ -199,7 +199,8 @@ export interface Game {
   start(from: StartFrom): Promise<Result<void, GameError>>;
   /** The Stage element (its `onhost`): the scene mounts into it at the first start. */
   attachStage(host: HTMLElement | null): void;
-  /** A tap on the play surface: completes a transition in flight, else the next step. */
+  /** A tap on the play surface: completes a transition in flight, else the next step (the empty stage's tap opens a
+   * pending paid start's paywall again: D11, Q64). */
   advance(): Promise<void>;
   /** A pick from the shown choice set; ignored while busy. */
   choose(index: number): Promise<void>;
@@ -928,6 +929,7 @@ export function createGame(deps: GameDeps): Game {
     s.step = null;
     s.shown = null;
     s.pending = null;
+    vm.stageTap = false;
     reporter.record({ kind: 'chapter_started', chapterId: ch.id, storyVersion: ch.meta.storyVersion });
     await handle(s, made.value.next());
     return ok(undefined);
@@ -999,6 +1001,7 @@ export function createGame(deps: GameDeps): Game {
     s.step = null;
     s.shown = null;
     s.pending = null;
+    vm.stageTap = false;
     vm.line = null;
     vm.choices = null;
     if (vm.paywall !== null) {
@@ -1228,6 +1231,7 @@ export function createGame(deps: GameDeps): Game {
     }
     if (!loaded.ok) {
       if (loaded.error.kind === 'not-entitled') {
+        vm.stageTap = true; // the pending start waits again; `unlocked` withdrew the tap
         openPaywall(body.chapterId, null); // P9: refunded in between; the server wins
         return;
       }
@@ -1247,6 +1251,7 @@ export function createGame(deps: GameDeps): Game {
     }
     closeOffer();
     vm.paywall = null;
+    vm.stageTap = false; // the purchase landed: no tap reopens the paywall while the chapter loads
     screens.close('paywall');
     if (o.start !== null) {
       await game.start({ kind: 'new', story: o.start, chapter: o.chapter }); // its failures show their notices
@@ -1277,6 +1282,7 @@ export function createGame(deps: GameDeps): Game {
     s.runner?.dispose();
     s.runner = null;
     s.pending = body;
+    vm.stageTap = true;
     s.last = body;
     if (write) {
       autosave(s); // the pending body, through the one guarded write
@@ -1564,6 +1570,7 @@ export function createGame(deps: GameDeps): Game {
     vm.line = null;
     vm.choices = null;
     vm.paywall = null;
+    vm.stageTap = false;
   };
 
   /** A failed start: the session ends, and the notice's Retry starts again from the same point. */

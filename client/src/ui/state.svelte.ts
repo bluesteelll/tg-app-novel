@@ -100,6 +100,9 @@ export interface ViewModel {
   settings: Settings;
   saves: SavesView;
   paywall: PaywallView | null;
+  /** D11 / Q64: the session's pending paid start waits for its purchase, so with no line on screen a tap on the stage
+   * opens its paywall again (the Game writes it beside the pending start; it unlocks nothing). */
+  stageTap: boolean;
   mode: PlayMode;
   speed: TextSpeed;
   reducedMotion: boolean;
@@ -143,6 +146,7 @@ class OverlayState implements ViewModel {
   settings: Settings = $state.raw(DEFAULT_SETTINGS);
   saves: SavesView = $state.raw(NO_SAVES);
   paywall: PaywallView | null = $state.raw(null);
+  stageTap: boolean = $state.raw(false);
   mode: PlayMode = $state.raw('normal');
   speed: TextSpeed = $state.raw('normal');
   reducedMotion: boolean = $state.raw(false);
