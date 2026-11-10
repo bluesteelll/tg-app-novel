@@ -543,6 +543,32 @@
   and for that lane's `client/src/i18n/{ru,en}.ts` (its `mech.use_refused` default, RULINGS 223); RULINGS 225 then
   locked it to the plan's 13 without them (`mech.use_refused` in the new `i18n/mechanics.ts`). Its cut rebuilds the
   explore-ui R sample list (RULINGS 217: 2.319 kept until then; GM3's sample 1.273 joins it).
+- **Ruled since: RULINGS 226** — the lock is **18**, not the plan's 13: cut r1 Q1 added
+  `client/src/explore/controller.ts` (type-only, `ExploreAction` -> `SectionAction`: the one typed path for `use`),
+  `client/src/cues/stage/index.ts` (`itemOf` resolves a slot fact by `cause.item`, GM3's carry) and
+  `client/src/cues/stage/stage.svelte.test.ts` (the forced fixture), Q3 added `client/src/cues/stage/CueStage.svelte`
+  (`aria-hidden` on the stage layer: Q62's fix moved here from GM3p), each by its named hunk, beside the plan's 13 and
+  `mechanics/use.test.ts` (test-only). Q2 renamed the e2e `mechanics: select a medal, tap the gate, its slot fills`
+  (ch1 has no key item). Q6: the draft copy ships (`mech.use_refused`, `mech.ribbon`) and joins Q61's copy pass (owner
+  values; [OPEN-QUESTIONS](../../OPEN-QUESTIONS.md)). Q7: the refusal toast stays on `look`.
+- **Ruled since: RULINGS 230** — merged `33b4f8d` (18 files, the ruled lock exactly; 26 vitest names and 1 e2e, tag
+  GM3u). As merged: the item ribbon `client/src/ui/explore/Ribbon.svelte` (`role="group"` named `mech.ribbon`,
+  `data-cue-ribbon`, one `data-cue="ribbon-item"` slot per held item with `aria-pressed`), mounted in the room while no
+  sheet covers it (`ExploreView.svelte:91`), in the explore-ui chunk; the selection and the use dispatch in yields
+  (`onselect` / `ondeselect` / `onuse`, `client/src/app/yields.ts:1042-1059`: `onuse` deselects, then dispatches the
+  use as a `SectionAction` in one tap block; a hotspot tap with an item selected is a use, `ExploreView.svelte:83`); every
+  explore control declares and emits its cue (the control gate `explore: every control declares its cue` in
+  `client/src/cues/controls.test.ts`); the bare-art catcher (`ExploreView.svelte:68`, `data-cue="bare-art"`,
+  `data-cue-hit`); the screens diff emits `panel-open` / `panel-close` over `PANEL_KINDS` (`yields.ts:230`,
+  `:1145-1152`); the sheet's dim (its backdrop); `client/src/i18n/mechanics.ts` imported by yields, so it ships with
+  the engine, never the entry (an arch pin); the cue stage layer `aria-hidden` (Q62). Recorded: **cut Q4**,
+  `ui-state:tab` and `ui-state:reveal` are in `UI_STATE_CUES` (`client/src/cues/types.ts:102-103`) with no emitter
+  yet (§8.4's rows are the design's, unbuilt); **review Q1**, the catcher's `onbare` deselects only while an item is
+  selected (`ExploreView.svelte:36-39`, `if (view.selected != null)`), a deviation the cut did not declare, with
+  identical behaviour (pinned, seen red as `C4-no-guard`). MEASURED (main `d5e04ef` -> `46ef5bf`): engine +393 B
+  (sample 1.31; engine R **2.3625**, n 12), entry +27, explore-ui 9,368 -> **9,716** (+348), all JS +783; the
+  explore-ui (2.319) and all-JS (2.027) R are kept as upper bounds, since the lists' other members are not in the
+  records ([§11.1](11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13)).
 
 ### GM3p `mech-puzzle-cues`
 - **Goal:** §8.2-§8.3 for `puzzles/ui/**`, `ui/puzzles/**`: `data-cue` on every puzzle control, `use:cueRoot` and the
@@ -742,6 +768,31 @@
   300 ms ghost clone keeps the hotspot buttons and only its root is `inert`, which Playwright does not treat as hidden;
   this lane gives the ghost clone `aria-hidden` as well as `inert`, or scopes the e2e `hotspot()` to the live layer, so
   a strict locator never matches a departing room's buttons.
+- **Ruled since: RULINGS 226, 230** — Q62's fix is GM3u's, not this lane's: GM3u put `aria-hidden="true"` beside
+  `inert` on the cue stage layer itself (`client/src/cues/stage/CueStage.svelte:31`, its cut Q3 (A); pinned by `cues:
+  the stage layer is hidden from the accessibility tree`), which hides every ghost clone from a role locator, and
+  merged `33b4f8d` (Q62 RESOLVED, `223a012`). This lane takes no Q62 item.
+- **Ruled: RULINGS 233** — cut r1 Q2: the puzzle host's `use:cueRoot` makes `client/src/cues/root.ts` (one importer on
+  `8d388ba`, `ExploreView.svelte:15`) a module both lazy families import, so the build splits it into one shared root
+  chunk of the explore-ui and puzzle-host families; accepted (the explore-ui chunk list = main's + that chunk, which
+  holds `root.ts` alone; explore-ui within +0.10 KB churn, RULINGS 234 Q7: (+0.10, +0.15] KB reported as the split's
+  cost, above +0.15 a STOP; any other split a STOP to the orchestrator); a second copy of the capture logic, a
+  `manualChunks` rule and a PuzzleHost without `cueRoot` were rejected.
+- **Ruled: RULINGS 232** — launched in lane A from `8d388ba` (cut and critique at once), its implement stage after O5's
+  merge: its request walk (`requests.test.ts`) reads every file under `client/src`, and O5 added request starts in
+  `game.ts`. Its spec rules: Branch F and the frame root's `point` mapping (GM3s's carries), Retry's `disabled` pins
+  (GM3w), `HintLadder`'s `data-cue-panel="hints"` and the T8 close-before-open pin (GM3u's carries), no Q62 item, the
+  design's Q12 engine target superseded by RULINGS 201's per-lane STOP (engine +1.24 KB = 0.31 x 2.3625 + 0.5,
+  puzzle-host +1.01 KB, entry +0.10 KB), and GM3's `cues/stage/{motions,index}.ts` carry not this lane's (outside its
+  lock of 12).
+- **Ruled: RULINGS 233** — cut r1 Q3: the puzzle-type row's term 0.05 KB x the all-JS R 2.027 = 0.10, a STOP above
+  +0.60 KB (LIMIT 8.0); Q4: the request walk's program time measured at C2 by the developer (3 runs, the machine state
+  quoted) and again by the tester, over 30 s a STOP confirmed on a quiet machine, test timeout 60 s; Q5: M-R9g retired
+  (no subject under Branch F); Q6: the room-tap e2e re-formed with an attempt in flight.
+- **Ruled: RULINGS 234** — critique W1: the re-formed room-tap e2e stays in the drawer's room (a same-room hotspot of
+  the study) while the answer is pending, so the late cue lands on the shown drawer and the test ends on
+  `data-cue-fallbacks` 0 (red on the parent and on M-R9k); the product half, a late world cue in another room, is Q65
+  ([§8.4 Fallback](08b-interactions-mechanism-presenters.md#84-the-presenter-table-every-cue---default-motion)).
 
 ### GM3b `mech-state-visuals`
 - **Goal:** §6.4.

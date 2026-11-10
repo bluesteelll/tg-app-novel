@@ -80,6 +80,7 @@
             reducedMotion={vm.reducedMotion}
             paused={vm.paused}
             lang={vm.lang}
+            stageTap={vm.stageTap}
             onadvance={() => void game?.advance()}
             ondone={() => game?.lineShown()}
           />

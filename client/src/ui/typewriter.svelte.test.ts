@@ -267,3 +267,50 @@ test('typewriter: line text is set as text, never markup', () => {
   expect(root.querySelector('[aria-live="polite"]')?.textContent).toContain(text);
   expect(root.textContent).toContain('<i>Mira</i>');
 });
+
+// Q64: with no line on screen and the game's offer (a pending paid start, D11), the empty stage is a tap that advances.
+
+test('dialogue: with no line, the offered stage tap is a button over the stage that advances', () => {
+  const onadvance = vi.fn();
+  const ondone = vi.fn();
+  const result = render(DialogueBox, {
+    line: null,
+    stageTap: true,
+    speed: 'normal',
+    reducedMotion: false,
+    paused: false,
+    lang: 'en',
+    onadvance,
+    ondone,
+    clock: new FakeFrames(),
+  });
+  const tap = result.getByRole('button', { name: 'Next' });
+  expect(tap.closest('.dialogue'), 'outside the hidden dialogue box').toBeNull();
+  expect(tap.getAttribute('type')).toBe('button');
+  tap.focus();
+  expect(document.activeElement, 'keyboard-focusable').toBe(tap);
+  tap.click();
+  expect([onadvance.mock.calls.length, ondone.mock.calls.length]).toEqual([1, 0]);
+});
+
+test("dialogue: the stage tap shows only with no line and the game's offer", async () => {
+  const result = render(DialogueBox, {
+    line: null,
+    stageTap: false,
+    speed: 'normal',
+    reducedMotion: false,
+    paused: false,
+    lang: 'en',
+    onadvance: vi.fn(),
+    clock: new FakeFrames(),
+  });
+  const count = (): number => result.container.querySelectorAll('button').length;
+  expect(count(), 'no line, no offer').toBe(1);
+  await result.rerender({ stageTap: true });
+  expect(count(), 'no line, the offer').toBe(2);
+  await result.rerender({ line: lineOf('x') });
+  expect(count(), 'a line on screen, the offer kept').toBe(1);
+  expect(result.container.querySelector('button')?.closest('.dialogue'), "the dialogue's own tap").not.toBeNull();
+  await result.rerender({ line: null, stageTap: false });
+  expect(count(), 'the offer withdrawn').toBe(1);
+});

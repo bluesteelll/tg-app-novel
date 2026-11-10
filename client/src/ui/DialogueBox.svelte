@@ -2,6 +2,8 @@
   // The dialogue box (F2 "Tap"): one typewriter per mounted box. A tap during the reveal completes the line and
   // nothing else; any other tap is `onadvance`, which the caller routes to the scene or the story. The line's end
   // reaches `ondone` in a microtask, never inside this component's effects, and never after a newer line or unmount.
+  // With no line and the game's offer (`stageTap`: a pending paid start, D11 / Q64), the empty stage is one more
+  // `onadvance`: a transparent button over the stage, outside the hidden box, under the quick bar and the choices.
   import { untrack } from 'svelte';
 
   import { t, type Lang } from '../i18n/index.ts';
@@ -17,9 +19,10 @@
     onadvance: () => void;
     ondone?: () => void;
     clock?: FrameClock;
+    stageTap?: boolean;
   };
 
-  let { line, speed, reducedMotion, paused, lang, onadvance, ondone, clock }: Props = $props();
+  let { line, speed, reducedMotion, paused, lang, onadvance, ondone, clock, stageTap = false }: Props = $props();
 
   let shownEl: HTMLSpanElement | undefined = $state();
   let restEl: HTMLSpanElement | undefined = $state();
@@ -109,6 +112,9 @@
     {/if}
   </p>
 </div>
+{#if line === null && stageTap}
+  <button type="button" class="stage-tap" aria-label={t(lang, 'quick.advance')} onclick={onadvance}></button>
+{/if}
 
 <style>
   .dialogue {
@@ -149,6 +155,21 @@
 
   .rest {
     visibility: hidden;
+  }
+
+  /* The whole stage inside the safe area, painting nothing. A button's auto size is its content's (HTML button
+     layout), so the box is sized explicitly. */
+  .stage-tap {
+    position: absolute;
+    top: var(--app-inset-top, 0px);
+    left: var(--app-inset-left, 0px);
+    width: calc(100% - var(--app-inset-left, 0px) - var(--app-inset-right, 0px));
+    height: calc(100% - var(--app-inset-top, 0px) - var(--app-inset-bottom, 0px));
+    margin: 0;
+    border: 0;
+    padding: 0;
+    background: transparent;
+    -webkit-tap-highlight-color: transparent;
   }
 
   /* Read by assistive technology only: the full line at once, not every revealed grapheme. */

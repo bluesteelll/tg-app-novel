@@ -30,6 +30,14 @@ the family `:226`) with a **1.75 KB review trigger** (an attribution, not a spli
 first line 234,175, explore-ui 9,366, cue-stage 5,981, all JS 264,905 B against 365,000 (14 files); the per-merge
 figures are §11.1's bullets.
 
+Changed by RULINGS 229, 231, 234, 236 (as of `0b91acc`; docs lane `docs-errata-15`, group A): lever O5 added a lazy row this table does
+not list, **`overlays chunk (br)`**, LIMIT **3.0 KB br** (`overlaysChunkBr` 3,000, `client/scripts/budget.ts:148`; the
+family `:239`: root `src/ui/overlays/index.ts`, importer `app/game.ts`), 2,498 B MEASURED at `9a0ae2d` (RULINGS 234).
+The first-load rows moved with it: ch1 282,707 -> 280,831 B and ch3 264,855 -> 262,979 B at O5's merge, then
+281,110 / 263,258 B at the Q64 fix's merge `d820803` (RULINGS 236). The rows of `0b91acc`'s code (MEASURED at the Q64
+fix's merge): entry 38,309, engine **194,715** (one chunk), first line **233,024**, all JS 266,611 B against 365,000
+(15 files), CSS 3,857; 91 rows PASS; every lazy row, the overlays chunk's included, equal to O5's by module identity.
+
 Changed by RULINGS 171 (as of `9a83251`; docs lane `docs-errata-10`, group A): **spike P2-a, MEASURED** (GM1b
 `03a00bc`, `client/scripts/story/spike-p2.test.ts`, eight seeds, a quiet machine): states per configuration (§7.6) —
 base 406-528, views at 2 per room 1,174-1,456 (the asserted claim holds), flags 896-1,410, kept tools 1,516-1,840,
@@ -159,6 +167,10 @@ ledger ([shots §10 Budgets and validation](../shots/10-budgets-and-validation.m
   37.693 + 0.36 x 3.26 + the recovery lane's booked +0.43 = **39.297**; Ledger 1 **270.544 (FAIL 0.544)**; Ledger 3
   about **341.04**. **The trigger fired**: O5, then Y, before the next engine-adding cut (after O5's ESTIMATED -2.010:
   229.237; after Y's -3.3: 225.937).
+  **Ruled: RULINGS 227** — an erratum to this bullet's Ledger 2: the recovery lane's booking was **0.73** (RULINGS 215:
+  E 0.73, R 1.0), not 0.43, so Ledger 2 on `7082a35` = 38.867 + 0.73 = **39.597** (0.403 left) and Ledger 1 **270.844
+  (FAIL 0.844)**; no decision changes (the trigger fired on Ledger 4 either way, and RULINGS 224 replaced the booking
+  with the measured +0.504).
 - **Main `3131844`, MEASURED** (Changed by RULINGS 219, 223 (as of `52e328e`; docs lane `docs-errata-14`, group A); GM3k's
   merge, type-only): with the build id pinned, all 127 `client/dist` files and all 17 rows byte-identical main ->
   HEAD (RULINGS 219 Q3); the real build's rows differ by the id's churn only: entry 37,715, engine 204,329, first line
@@ -174,6 +186,57 @@ ledger ([shots §10 Budgets and validation](../shots/10-budgets-and-validation.m
   `8e099ee` (ARITHMETIC): Ledger 4 195.956 + 11.40 x 2.3625 = **222.888 / 230.0 (7.112 left)**; Ledger 2 38.219 + 0.36
   x 1.975 = **38.930 / 40.0 (1.070 left, the tightest)**; Ledger 1 **261.818 / 270.0 (8.182 left)**; Ledger 3 about
   **318.86 / 365.0**. The trigger does not hold: O5 and Y stay approved designs on the shelf (the program below).
+- **Main `d5e04ef`, MEASURED** (Changed by RULINGS 228 (as of `0b91acc`; docs lane `docs-errata-15`, group A); E6's merge, the tester's 4
+  builds per tree, byte-identical per tree, main `52e328e` -> `23b8ab0`): entry 38,219 -> **38,240** (+21), engine
+  195,956 -> **196,067** (+111), first line **234,307**, meta controller 5,118 -> 5,153 (limit 6,000), all JS 264,905 ->
+  **265,054**, first load ch1 282,233 / ch3 264,381; 90 rows PASS. **R** (RULINGS 228): the +111 B is deterministic
+  but carries build-id churn; by the policy (one merged delta with a positive net term is one sample) the engine sample
+  0.111 / 0.01 = 11.1 (C3's `p&&a.suspend()`) makes n 11, median **3.025**, the same without the two tiny-term samples
+  (E6's, GM3w's), so no floor rule is added; the entry sample 0.021 / 0.08 = 0.26 makes n 5, median 0.690 -> the
+  **floor 1.0**. Projection (ARITHMETIC): Ledger 4 196.067 + 11.40 x 3.025 = **230.552 (FAIL 0.552)**; Ledger 2 38.240 +
+  0.36 x 1.0 = 38.600; Ledger 1 **269.152** (0.848 left); Ledger 3 about 319. **The trigger held again** (Ledgers 4 and
+  1): O5 launched in lane C (cut and critique at once, its implement stage after GM3u's merge).
+- **Main `33b4f8d`, MEASURED** (Changed by RULINGS 230 (as of `0b91acc`; docs lane `docs-errata-15`, group A); GM3u's merge, the tester's 4
+  builds per tree, main `d5e04ef` -> `46ef5bf`): entry 38,240 -> **38,267** (+27; term 0), engine 196,067 -> **196,460**
+  (+393 against +0.3), first line 234,307 -> 234,727, explore-ui 9,368 -> **9,716** (+348 against +1.2; LIMIT 16,000),
+  cue-stage 5,975 -> 6,000, meta controller 5,155, all JS 265,054 -> **265,837** (+783), first load ch1 282,752 / ch3
+  264,900; 90 rows PASS. **R** (RULINGS 230): the engine sample 0.393 / 0.3 = 1.31 makes n 12 (-0.127, 0.123, 0.527,
+  1.009, 1.31, 1.700 | 3.025, 3.131, 3.546, 4.000, 5.96, 11.1), median **2.3625**, the same without the two tiny-term
+  samples; entry no sample (term 0), 1.0; all JS: the sample 0.783 / 1.5 = 0.52 (and E6's, not drawn at RULINGS 228)
+  lies below 2.027, which is **kept as an upper bound** (the list's other members are not in the records, so the
+  median can only move down); explore-ui: the sample 0.348 / 1.2 = 0.29 joins GM3's 1.273 and GM3s's 2.319 below the
+  kept **2.319** (an upper bound for the same reason). Projection (remaining engine terms 11.40 - 0.3 = 11.10): Ledger 4
+  196.460 + 11.10 x 2.3625 = **222.684 (7.316 left)**; Ledger 2 38.267 + 0.36 x 1.0 = **38.627**; Ledger 1 **261.311**.
+  The trigger does not hold; at the upper middle sample 3.025 Ledger 4 would be 230.038: the engine samples are bimodal
+  (five at or under 1.7, six at or over 3.0, one tiny-term outlier), a 7.35 KB swing on 11.10 KB of terms.
+- **Main `340f47c`** (Changed by RULINGS 232 (as of `0b91acc`; docs lane `docs-errata-15`, group A); the Q63 fix's merge): `client/vite.config.ts`
+  gained `fsModuleCache: false` (a build-id input); the dist is identical after normalising the build id and the hashed
+  names (111 files, 0 differences), so no row moves and no R sample.
+- **Main `9a0ae2d`, MEASURED** (Changed by RULINGS 229, 231, 234 (as of `0b91acc`; docs lane `docs-errata-15`, group A); lever O5's merge, the
+  tester's 4 builds per tree, main `8d388ba` -> `e62fbd1`): entry 38,224 -> **38,296** (+72, mean of 4; STOP +560),
+  engine 196,457 -> **194,518** (**-1,939**; saving floor -1,005), first line 234,681 -> **232,814** (**-1,867**; floor
+  -1,005), the new `overlays chunk (br)` row **2,498 / 3,000**, all JS 265,797 -> **266,440** (+643, 14 -> 15 files; STOP
+  +1,430), CSS 3,808 -> 3,804, first load ch1 282,707 -> 280,831 / ch3 264,855 -> 262,979; every other lazy row equal by
+  module identity (`k/normdiff-o5.mts`: only `index.html`, the engine chunk and `style.css` differ after
+  normalisation, the overlays chunk only in HEAD). The engine chunk references the overlays chunk once, as a dynamic
+  import with an empty preload list; it is in neither `index.html` nor the entry. **The C0 CSS block rule** (RULINGS
+  231): one stylesheet (R1) emits the four moved components' blocks at the overlays chunk's place, so from C0 to the
+  merge `CSS total (br)` was judged, after normalising the four components' `svelte-<hash>` tokens, by (i) every other
+  rule byte-equal in sequence, (ii) each moved block byte-equal, contiguous and in main's internal order, (iii) the four
+  blocks together at the stylesheet's end; any other difference a STOP (no element's matching rules come from two
+  components, so the block order cannot change a computed style). **R** (RULINGS 234): a lever gives no sample (engine
+  2.3625, entry 1.0, all JS 2.027). Projection (remaining engine terms 11.10, entry 0.36): Ledger 4 194.518 + 11.10 x
+  2.3625 = **220.742 (9.258 left)**, 228.096 at the upper middle sample 3.025; Ledger 2 38.296 + 0.36 = **38.656 (1.344
+  left)**; Ledger 1 232.814 + 26.224 + 0.36 = **259.398 (10.602 left)**. The trigger does not hold at either middle
+  sample, so **Y stays on the shelf** (RULINGS 234: it returns when a ledger is within 1.0 KB).
+- **Main `d820803`, MEASURED** (Changed by RULINGS 236 (as of `0b91acc`; docs lane `docs-errata-15`, group A); the Q64 fix's merge, the tester's 4
+  builds per tree, main `b831b05` -> `f7849f3`): entry 38,296 -> **38,309** (+13; STOP +100), engine 194,518 ->
+  **194,715** (+197; STOP +400), first line 232,814 -> **233,024** (+210), all JS 266,440 -> **266,611** (+171; STOP
+  +500), CSS 3,804 -> 3,857, `index.html` 285 -> 301, first load ch1 280,831 -> 281,110 / ch3 262,979 -> 263,258; every
+  lazy row equal by module identity; 91 rows PASS. A fix gives no R sample (RULINGS 201). Projection: Ledger 4 194.715 +
+  11.10 x 2.3625 = **220.939 (9.061 left)**, 228.293 at the upper sample; Ledger 2 38.309 + 0.36 = **38.669 (1.331
+  left)**; Ledger 1 233.024 + 26.224 + 0.36 = **259.608 (10.392 left)**. The trigger does not hold; Y stays on the
+  shelf.
 - **The path rule (RULINGS 201; the union rule, budget round r198 design §3.1).** Ledgers 1 and 4 count every JS chunk
   that some supported WebView requests **automatically before its first line** on the boot -> chapter -> first-line
   path, a capability fallback included (Pixi's three renderer facades: a device requests one by what it is): the
@@ -200,6 +263,15 @@ ledger ([shots §10 Budgets and validation](../shots/10-budgets-and-validation.m
   `ENGINE_STATIC_DEPS_MAX` 0 (`client/scripts/scan-dist.ts:251`) fails the scan when the engine's import waits on
   another JS chunk. The basis note's "Pixi's three renderer facades" (`budget.ts:471`) predates G3; RULINGS 218 Q6
   left `budget*` untouched, so the correction stands here.
+  Changed by RULINGS 229, 234, 236 (as of `0b91acc`; docs lane `docs-errata-15`, group A): lever O5's in-play overlays chunk (`overlays chunk
+  (br)`) is a lazy root: the Game requests it once, after the first line's reveal (`game.lineShown`, after the
+  gameplay chunks' prefetch), and before a first line only by a Menu or Backlog tap during a start or a chapter load, on
+  a paywall-first session's empty stage once Back has closed its paywall, or in a room before any line (the basis
+  note, `client/scripts/budget.ts:479-494`, its O5 clause `:489-492`); no automatic request precedes a first line, and a failed tap before the
+  first line is not followed by the prefetch (RULINGS 229 Q1 (B)). Since the Q64 fix (`d820803`) that empty stage is
+  also a tap that opens the pending chapter's paywall again (D11's re-open; it requests nothing new: the purchase
+  flow's prefetch is `openPaywall`'s, above), and while the overlays chunk fails a Menu or Backlog tap there shows the
+  failure note (`meta.action_failed`).
 - **The estimate policy (RULINGS 201; design §5).** **R per row** = the median of MEASURED / term over the lanes merged
   since the adoption (RULINGS 158) with a positive net term on that row; one merged MEASURED delta is one sample (a
   term deferred to a later lane joins that lane's term: GM3m + GM3s is one sample); a row with fewer than 3 samples uses
@@ -208,6 +280,9 @@ ledger ([shots §10 Budgets and validation](../shots/10-budgets-and-validation.m
   (Changed by RULINGS 213, 217, 224 (as of `52e328e`; docs lane `docs-errata-14`, group A)) unchanged at P's merge; at GM3's
   (RULINGS 217): engine **2.3625** (n 10), all JS **2.027** (n 11), entry 3.26, explore-ui 2.319 (kept); at the recovery
   lane's (RULINGS 224): entry **1.975** (n 4), the rest unchanged;
+  (Changed by RULINGS 228, 230, 234, 236 (as of `0b91acc`; docs lane `docs-errata-15`, group A)) at E6's (RULINGS 228): engine **3.025**
+  (n 11), entry **1.0** (the floor; median 0.690, n 5); at GM3u's (RULINGS 230): engine **2.3625** (n 12), all JS 2.027
+  and explore-ui 2.319 kept as upper bounds; O5 (a lever) and the Q63 and Q64 fixes gave no sample;
   cue-stage and `scene-motion` use the all-JS R. **Stability note:** the engine sample is bimodal (1.009 | 3.025, SH1
   between), so each next sample moves the median toward its own ratio; this is why the trigger is evaluated at every
   merge, and why Ledger 3's one-time LIMIT is set on the upper quartile, not the median. **Booking:** (2a) the unit is
@@ -382,6 +457,18 @@ chunk): on `8e099ee` Ledger 4 is **222.888 / 230.0** and Ledger 1 261.818 / 270.
 and Y are on the shelf** (return condition: the trigger holds at a later merge) and the engine-adding lanes resume.
 **Q59 recedes:** at the upper ratio 3.025 the engine projects 230.441 without levers, and O5 + Y would leave about 4.9
 KB. Ledger 2 (1.070 left) is the tightest: GM6t's and SH3a's entry terms are watched at their cuts.
+
+**Ruled since: RULINGS 228, 230, 234, 236** — E6's merge (`d5e04ef`) moved the engine R to 3.025 and **the trigger
+fired again** (Ledger 4 230.552, Ledger 1 269.152): O5 launched in lane C (RULINGS 228). GM3u's merge (`33b4f8d`) put
+the R back to 2.3625 (n 12, bimodal) and the trigger no longer held (Ledger 4 222.684), but **the trigger gates
+launches only: a lane in flight is not stopped by a later flip, in either direction** (RULINGS 230; GM3u continued when
+it fired), so O5 continued. O5 merged `9a0ae2d` (engine **-1,939** B br MEASURED, first line -1,867, the new overlays
+row 2,498 / 3,000; RULINGS 234), and the Q64 fix (`d820803`) added engine +197 B, entry +13 (RULINGS 236); a lever
+or a fix gives no R sample, so the engine R stays **2.3625** (n 12). The projection after the Q64 fix (ARITHMETIC):
+**Ledger 4 220.939 / 230.0** (9.061 left; 228.293 at the upper middle sample 3.025), **Ledger 2 38.669 / 40.0** (1.331
+left, the tightest), **Ledger 1 259.608 / 270.0** (10.392 left). **Y stays on the shelf** until a ledger is within
+1.0 KB at a merge (RULINGS 234); the engine-adding lanes (GM3p running, then GM3b, SH3a, GM6t, SH5a) take the trigger
+check at their launch. Per-merge rows: the bullets above.
 
 **One owner per figure (reconcile r2, RC-W1).** This section owns the sums, headrooms and verdicts of the three
 designs; each design owns its own lane terms (EN §3.5, per-player §10 "Ledgers", the shots §9 / §10 with this
