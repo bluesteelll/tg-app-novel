@@ -5565,3 +5565,164 @@ test('game: a disposed game drops a waiting overlay open', async () => {
   await settle();
   expect([h.vm.screens.overlays, overlaysNoted(h)]).toEqual([[], false]);
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// Q64: the stage's tap over a pending paid start (D11: with no line on screen and the paywall closed, a tap on the
+// stage opens it again)
+
+/** Holds the loader's answer for chapter `id` until the returned release runs (a start's or startPending's load). */
+function holdLoad(h: Harness, id: string): () => void {
+  const load = h.loader.load;
+  let go = (): void => {};
+  const gate = new Promise<void>((resolve) => {
+    go = resolve;
+  });
+  h.loader.load = async (ch, o) => {
+    if (ch.id === id) {
+      await gate;
+    }
+    return load(ch, o);
+  };
+  return go;
+}
+
+test("game: Back from a pending paid start's paywall leaves the stage's tap, which reopens the same offer once", async () => {
+  const h = harness({ chapters: [manorCh1(), manorCh2()], slots: new Map([['auto', pendingCh2()]]), invoice: ['failed'] });
+  expect((await h.game.start({ kind: 'slot', story: MANOR, slot: 'auto' })).ok).toBe(true);
+  // D11: the paywall over an empty stage, and the stage's tap offered under it.
+  expect([h.vm.screens.root.kind, overlayKinds(h), lineOf(h.vm), h.vm.stageTap]).toEqual(['game', ['paywall'], null, true]);
+  h.game.buy();
+  await settle();
+  const failed = { kind: 'failed', reason: 'failed' };
+  expect(h.vm.paywall?.state).toEqual(failed);
+  const bought = [...h.purchases];
+  h.screens.back();
+  expect([overlayKinds(h), lineOf(h.vm), h.vm.stageTap], 'Back: the empty stage keeps its tap').toEqual([[], null, true]);
+  await Promise.all([h.game.advance(), h.game.advance()]); // a double tap is one intent
+  expect(overlayKinds(h), 'the tap opens the paywall once').toEqual(['paywall']);
+  expect(h.vm.paywall?.state, 'the same offer: a new one would be idle').toEqual(failed);
+  expect([h.purchaseLoads(), h.purchases], 'nothing loaded or asked again').toEqual([1, bought]);
+  expect(h.vm.stageTap, 'still offered under the paywall').toBe(true);
+  h.game.dispose();
+});
+
+test("game: a chapter end reached from a choice set with no line on screen offers the stage's tap at its pending start", async () => {
+  const first = harness({ chapters: [branchCh1(), manorCh2()] });
+  await startManor(first);
+  await first.game.advance(); // the choice set: an autosave point
+  expect(first.vm.choices).not.toBeNull();
+  const auto = first.save().slots.get('auto');
+  first.game.dispose();
+  expect(auto).toBeDefined();
+  if (auto === undefined) {
+    return;
+  }
+  // A later session resumes at the choice set: no line on screen above it.
+  const h = harness({ chapters: [branchCh1(), manorCh2()], slots: new Map([['auto', auto]]) });
+  expect((await h.game.start({ kind: 'slot', story: MANOR, slot: 'auto' })).ok).toBe(true);
+  expect([lineOf(h.vm), h.vm.choices !== null, h.vm.stageTap], 'resumed at the choice set').toEqual([null, true, false]);
+  await h.game.choose(1); // End.: the chapter's END, and ch2 is not owned
+  await settle();
+  expect([overlayKinds(h), lineOf(h.vm), h.vm.stageTap], 'the paywall over the empty stage').toEqual([['paywall'], null, true]);
+  h.screens.back();
+  expect(h.vm.stageTap, 'Back keeps the tap').toBe(true);
+  await h.game.advance();
+  expect(overlayKinds(h), 'the tap opens the paywall').toEqual(['paywall']);
+  h.game.dispose();
+});
+
+test('game: the stage offers no tap on Home, while a chapter loads, at a choice set or at the end screens', async () => {
+  const h = harness({ chapters: [tideCh3()] });
+  expect(h.vm.stageTap, 'Home').toBe(false);
+  const go = holdLoad(h, 'ch3');
+  const starting = h.game.start({ kind: 'new', story: TIDE, chapter: CH3 });
+  await settle();
+  expect([h.vm.screens.root.kind, lineOf(h.vm), h.vm.stageTap], 'a chapter loads').toEqual(['game', null, false]);
+  go();
+  expect((await starting).ok).toBe(true);
+  expect(lineOf(h.vm)).toBe('ch3.shore.l001');
+  await h.game.advance(); // the choice set
+  expect([h.vm.choices !== null, h.vm.stageTap], 'a choice set').toEqual([true, false]);
+  await h.game.choose(0); // dawn
+  await h.game.advance(); // END, and ch3 has no next chapter
+  expect([h.vm.notice?.kind, h.vm.stageTap], 'to be continued').toEqual(['to_be_continued', false]);
+  h.game.dispose();
+  const end = harness({ chapters: [tideCh3()] });
+  await drowned(end); // the declared ending
+  expect(end.vm.stageTap, 'the end').toBe(false);
+  end.game.dispose();
+});
+
+test('game: the stage offers no tap at an exploration section', async () => {
+  stubObserver();
+  try {
+    const h = harness({ chapters: [yieldCh1()], chunks: worldChunks().chunks });
+    await startManor(h);
+    await h.game.advance(); // l002
+    await h.game.advance(); // the explore yield
+    await settle();
+    expect([h.explore.layer !== null, h.vm.stageTap]).toEqual([true, false]);
+    h.game.dispose();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+test("game: the stage's tap is withdrawn when the purchase lands, before the pending chapter loads", async () => {
+  const h = harness({ chapters: [manorCh1(), manorCh2()], slots: new Map([['auto', pendingCh2()]]), invoice: ['paid'] });
+  expect((await h.game.start({ kind: 'slot', story: MANOR, slot: 'auto' })).ok).toBe(true);
+  expect(h.vm.stageTap, 'D11: offered under the paywall').toBe(true);
+  const go = holdLoad(h, 'ch2'); // startPending's load
+  h.game.buy();
+  await settle();
+  await settle();
+  expect([h.vm.paywall, overlayKinds(h), lineOf(h.vm), h.vm.stageTap], 'paid: the chapter loads').toEqual([null, [], null, false]);
+  go();
+  await settle();
+  expect([lineOf(h.vm), h.vm.stageTap]).toEqual(['ch2.study.l001', false]);
+  h.game.dispose();
+});
+
+test("game: a pending start refunded before its chapter loads offers the stage's tap again", async () => {
+  const h = harness({ chapters: [manorCh1(), manorCh2()], slots: new Map([['auto', pendingCh2()]]), invoice: ['paid'] });
+  expect((await h.game.start({ kind: 'slot', story: MANOR, slot: 'auto' })).ok).toBe(true);
+  expect(h.vm.stageTap, 'D11: offered under the paywall').toBe(true);
+  const go = holdLoad(h, 'ch2'); // startPending's load
+  h.game.buy();
+  await settle();
+  await settle();
+  expect([overlayKinds(h), h.vm.stageTap], 'paid: the chapter loads').toEqual([[], false]);
+  h.owned.delete('ch2'); // refunded in between: the server wins (P9)
+  go();
+  await settle();
+  expect([overlayKinds(h), lineOf(h.vm), h.vm.stageTap], 'the paywall again').toEqual([['paywall'], null, true]);
+  h.screens.back();
+  expect(h.vm.stageTap, 'Back keeps the tap').toBe(true);
+  await h.game.advance();
+  expect(overlayKinds(h), 'the tap opens the paywall').toEqual(['paywall']);
+  h.game.dispose();
+});
+
+test("game: a resume of another save or an exit to the stories withdraws the stage's tap", async () => {
+  const h = harness({ chapters: [manorCh1(), manorCh2()] });
+  await startManor(h); // l001: the start knot's entry autosave
+  const sv = h.save();
+  const auto = sv.slots.get('auto');
+  const decoded = auto === undefined ? null : decodeSave(auto.body);
+  expect(decoded?.ok).toBe(true);
+  if (auto === undefined || decoded === null || !decoded.ok) {
+    return;
+  }
+  const pending = { ...decoded.value, chapterId: CH2, ink: null, at: { lineId: null, knot: null, yield: null }, staging: EMPTY_SNAPSHOT };
+  sv.slots.set('s2', { summary: { ...auto.summary, slot: 's2', chapterId: CH2 }, body: encodeSave({ ...pending, checkpoint: null, backlog: [] }) });
+  await h.game.load('s2'); // D11: ch2 is not owned, so its saved start waits under the paywall
+  expect([overlayKinds(h), lineOf(h.vm), h.vm.stageTap], 'a pending start by a load').toEqual([['paywall'], null, true]);
+  h.screens.back();
+  await h.game.load('auto');
+  expect([lineOf(h.vm), h.vm.stageTap], 'a resume of another save').toEqual(['ch1.arrival.l001', false]);
+  await h.game.load('s2');
+  expect(h.vm.stageTap, 'pending again').toBe(true);
+  await h.game.exitToStories();
+  expect([h.exits(), h.vm.stageTap], 'an exit to the stories').toEqual([1, false]);
+  h.game.dispose();
+});

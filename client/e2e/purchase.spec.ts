@@ -215,3 +215,38 @@ test('a purchase chunk that fails to load keeps the paywall and probes the build
   await expect(page.locator('[data-tg-mock-sheet]'), 'the invoice sheet').toBeVisible({ timeout: 10_000 });
   expect(chunkLoads(), 'the retry requested the chunk again').toBeGreaterThan(failed);
 });
+
+// Q64: D11's "a tap on the empty stage opens the paywall again", the money path from a Back to the chapter.
+
+test('the empty stage reopens the paywall after Back, and the purchase starts the chapter', async ({ page, request }) => {
+  test.setTimeout(120_000);
+  const back = (): Promise<void> => page.evaluate(() => (window as unknown as E2eWindow).__tgMock.pressBack());
+  await plantPending(request, 3009, 'ch2', CARRY);
+  const token = await devToken(request, 3009);
+  const price = (await ch2(request, token)).priceStars;
+  await continueToPaywall(page, 3009);
+  await back();
+  await expect(paywall(page), 'the empty stage').toBeHidden();
+  await expect(page.locator('.dialogue[data-line-id]'), 'no line on the stage').toHaveCount(0);
+  // The player's tap, at the stage's centre.
+  const size = page.viewportSize();
+  if (size === null) {
+    throw new Error('the project sets a viewport');
+  }
+  await page.touchscreen.tap(size.width / 2, size.height / 2);
+  await expect(paywall(page), 'the stage tap reopens the paywall').toBeVisible({ timeout: 10_000 });
+  const tap = page.locator('.stage-tap');
+  expect(await tap.evaluate((el) => el.closest('[inert]') !== null), 'inert under the paywall').toBe(true);
+  // The keyboard reaches the same tap.
+  await back();
+  await expect(paywall(page)).toBeHidden();
+  await page.getByRole('button', { name: ru('quick.advance'), exact: true }).press('Enter');
+  await expect(paywall(page), 'Enter on the stage tap reopens the paywall').toBeVisible({ timeout: 10_000 });
+  await buy(page, price);
+  const sheet = page.locator('[data-tg-mock-sheet]');
+  await expect(sheet, "the sheet's amount is the server's price").toContainText(`${price} XTR`);
+  await sheet.locator('[data-sheet-button="pay"]').tap();
+  await expect(firstLine(page)).toBeVisible({ timeout: LINE_MS });
+  await expect(tap, 'the purchase withdrew the stage tap').toHaveCount(0);
+  expect((await ch2(request, token)).owned, 'ch2 on the server').toBe(true);
+});

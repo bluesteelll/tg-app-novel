@@ -100,6 +100,9 @@ export interface ViewModel {
   settings: Settings;
   saves: SavesView;
   paywall: PaywallView | null;
+  /** D11 / Q64: the session's pending paid start waits for its purchase, so with no line on screen a tap on the stage
+   * opens its paywall again (the Game writes it beside the pending start; it unlocks nothing). */
+  stageTap: boolean;
   mode: PlayMode;
   speed: TextSpeed;
   reducedMotion: boolean;
@@ -156,6 +159,9 @@ class OverlayState implements ViewModel {
   /** The pending expiry of each transient entry, by key. */
   readonly #expiry = new Map<string, number>();
   #destroyed = false;
+  // Last in the class: the minifier names the private fields in declaration order, so a field added here renames none
+  // of the others (beside `paywall` it renamed ten, each at every use, in the entry closure).
+  stageTap: boolean = $state.raw(false);
 
   constructor(timers: Timers, lang: Lang) {
     this.#timers = timers;
