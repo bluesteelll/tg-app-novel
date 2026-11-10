@@ -986,10 +986,18 @@ export function startApp(tg: TelegramClient): AppHandle {
   const onPreloadError = (e: VitePreloadErrorEvent): void => recovery.failed(e.payload);
   window.addEventListener('vite:preloadError', onPreloadError);
   subscriptions.push(() => window.removeEventListener('vite:preloadError', onPreloadError));
-  // Q60 D6: the one stylesheet has no in-page retry. A pending stylesheet delays `load`, so a link whose sheet is null
-  // once the document loaded failed; its first answered evidence restarts the page.
+  // Q60 D6: the one stylesheet has no in-page retry. A pending stylesheet delays `load`, so a link with no readable rules
+  // once the document loaded failed: no sheet, or (Chromium 156 after a network failure) a sheet whose `cssRules`
+  // throws SecurityError. Ours is same-origin and never empty. Its first answered evidence restarts the page.
+  const unapplied = (link: HTMLLinkElement): boolean => {
+    try {
+      return (link.sheet?.cssRules.length ?? 0) === 0;
+    } catch {
+      return true;
+    }
+  };
   const checkStylesheet = (): void => {
-    const failed = [...document.querySelectorAll<HTMLLinkElement>('link[rel=stylesheet]')].find((l) => l.sheet === null);
+    const failed = [...document.querySelectorAll<HTMLLinkElement>('link[rel=stylesheet]')].find(unapplied);
     if (__TG_MOCK__) {
       console.info(`recovery: stylesheet check at ${Math.round(performance.now())} ms: ${failed?.href ?? 'applied'}`);
     }
