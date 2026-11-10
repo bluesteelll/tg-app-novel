@@ -115,6 +115,10 @@ export default defineConfig(({ mode, command }) => {
       modulePreload: { polyfill: false, resolveDependencies: () => [] },
     },
     test: {
+      // Q63: the on-disk transform cache keys a module by its own text, so a test's import.meta.glob list goes stale
+      // when a file is added (Vitest skips it only for the literal `import.meta.glob(`, not the generic form). Both
+      // projects inherit this through `extends: true`; pinned by scripts/test-config.test.ts.
+      fsModuleCache: false,
       projects: [
         {
           extends: true,
