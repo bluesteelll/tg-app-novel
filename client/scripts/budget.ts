@@ -101,6 +101,12 @@ export type Limits = {
    * purchase/flow.ts's closure.
    */
   purchaseFlowChunkBr: number;
+  /**
+   * Lever O5: JS + CSS of the in-play overlays' chunk, which app/game.ts import()s after the first line's reveal and at
+   * a Menu or Backlog tap: the measured row plus the 0.5 KB per-lane tolerance; past LIMIT - 0.25 KB the row is a review
+   * trigger, not a split.
+   */
+  overlaysChunkBr: number;
   /** Ledger 3: every JS file of dist, set once on the all-JS Q3 (RULINGS 201 QS3). */
   allJsBr: number;
   cssBr: number;
@@ -139,6 +145,7 @@ export const LIMITS: Limits = {
   metaControllerChunkBr: 6_000,
   cueStageChunkBr: 8_500,
   purchaseFlowChunkBr: 2_000,
+  overlaysChunkBr: 3_000,
   allJsBr: 365_000,
   cssBr: 12_000,
   htmlBr: 2_000,
@@ -183,7 +190,8 @@ export type LazyFamily = {
     | 'cueStageChunkBr'
     | 'metaUiChunkBr'
     | 'metaControllerChunkBr'
-    | 'purchaseFlowChunkBr';
+    | 'purchaseFlowChunkBr'
+    | 'overlaysChunkBr';
   measure: 'largest' | 'union';
   importer: typeof YIELDS_SRC | typeof META_SRC | typeof GAME_SRC;
 };
@@ -227,6 +235,8 @@ export const LAZY_FAMILIES: readonly LazyFamily[] = [
     measure: 'largest',
     importer: GAME_SRC,
   },
+  // Lever O5: game.ts import()s it after the first line's reveal and at a Menu or Backlog tap; PENDING keyed on game.ts.
+  { name: 'overlays chunk (br)', roots: ['src/ui/overlays/index.ts'], limit: 'overlaysChunkBr', measure: 'largest', importer: GAME_SRC },
 ];
 const LAZY_ROOTS: ReadonlySet<string> = new Set(LAZY_FAMILIES.flatMap((f) => f.roots));
 /** The arch rule's lazy directories: a chunk from one of them loads after the first line, listed root or not. */
@@ -473,13 +483,15 @@ function engineWalk(
   // (P:1738). A lazy root (its own row, out of Ledgers 1 / 4) is a chunk requested by a player action, by an app event
   // after the first line, or by a prefetch scheduled after the first line: the walk stops at one (yields.ts imports
   // them, PUZZLES-PLAN X14), and its own row counts it. The named exceptions, where a lazy root is requested before a
-  // first line, are bounded by their own rows: residual (j) (a room- or puzzle-first resume, a yield-first chapter)
-  // and the purchase flow (lever P: game.ts's `openPaywall` prefetch, meta.ts's pack Buy), requested before any first
+  // first line, are bounded by their own rows: residual (j) (a room- or puzzle-first resume, a yield-first chapter),
+  // the purchase flow (lever P: game.ts's `openPaywall` prefetch, meta.ts's pack Buy), requested before any first
   // line by a Continue into a saved start of an unowned paid chapter (its paywall is the session's first screen, D11),
-  // by a locked chapter row on Home (D17) and by a pack Buy on Home; a plain start never requests it. A chunk that no
-  // path requests leaves the rows: Pixi's environment chunks (`PIXI_ENV_SRCS`) while the scene skips them
-  // (`SKIP_PIXI_ENV`, rule `pixi-env`); with the flag off the walk counts them again, which is the fail-safe. The 230 KB
-  // basis (P:1739, R4 145.1 K) counted browserAll; RULINGS 201 keeps the LIMIT.
+  // by a locked chapter row on Home (D17) and by a pack Buy on Home; a plain start never requests it; and the in-play
+  // overlays (lever O5), which load at the first line's reveal (`game.lineShown`), and before a first line only by a
+  // Menu or Backlog tap: during a start or a chapter load, on a paywall-first session's stage, in a room before any
+  // line. A chunk that no path requests leaves the rows: Pixi's environment chunks (`PIXI_ENV_SRCS`) while the scene
+  // skips them (`SKIP_PIXI_ENV`, rule `pixi-env`); with the flag off the walk counts them again, which is the
+  // fail-safe. The 230 KB basis (P:1739, R4 145.1 K) counted browserAll; RULINGS 201 keeps the LIMIT.
   const stop = (key: string): boolean => {
     const src = manifest[key]?.src;
     return isLazySrc(src) || (pixiEnvSkipped && src !== undefined && PIXI_ENV_SRCS.includes(src));
