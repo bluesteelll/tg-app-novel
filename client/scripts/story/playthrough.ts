@@ -13,9 +13,10 @@ import type { Story as InkStory } from 'inkjs/engine/Story';
 import type { AbstractValue } from 'inkjs/engine/Value';
 
 import { project } from '../../src/explore/project.ts';
-import type { ExploreAction } from '../../src/explore/reduce.ts';
+import type { ExploreAction, ExploreEffect } from '../../src/explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../../src/explore/state.ts';
 import type { PuzzleOutcome, WorldState } from '../../src/explore/state.ts';
+import type { RulesRegistry, SectionAction } from '../../src/mechanics/contract.ts';
 import { reduce } from '../../src/mechanics/rules/core.ts';
 import { successors } from '../../src/mechanics/rules/search.ts';
 import { CHAPTER_ID_RE, KNOT_NAME_RE } from '../../src/story/catalog.ts';
@@ -110,7 +111,18 @@ export type PlayInput = {
   runs?: number;
   /** The chapter's public world (default none: a yield ends the run as `yielded`). */
   world?: WorldPublicBody;
+  /** Tests only: the rules registry the walk runs (default MECHANIC_RULES, through `successors` and `reduce`). */
+  rules?: RulesRegistry;
 };
+
+/** The effects a player sees a step by (plan (4)): a cue, a move, a leave, the lock panel or a puzzle's frame. */
+const SEEN = new Set<ExploreEffect['kind']>(['cue', 'room', 'leave', 'lock', 'puzzle']);
+
+/** A step's kind and what it acts on, for a finding. */
+function stepName(step: SectionAction): string {
+  const target = 'hotspot' in step ? step.hotspot : 'target' in step ? step.target : 'puzzle' in step ? step.puzzle : step.section;
+  return `${step.kind} ${target}`;
+}
 
 export const ALLOW_FILE = 'lint-allow.json';
 const ALLOW_SECTION = 'play/knot-not-visited';
@@ -467,7 +479,7 @@ function playRun(ctx: Context, seed: number, snapshot: CarrySnapshot | null): Ru
   const hinted = (world: WorldPublicBody, puzzle: PuzzleLocalId): void => {
     const tier = tierOf(world, puzzle);
     if (tier > 0) {
-      ws = reduce(world, ws, { kind: 'hint-opened', puzzle, tier }).state;
+      ws = reduce(world, ws, { kind: 'hint-opened', puzzle, tier }, input.rules).state;
     }
   };
   /** A random walk over the section's successors until an event knot or a leave knot runs; that knot, or a failed Run. */
@@ -477,7 +489,7 @@ function playRun(ctx: Context, seed: number, snapshot: CarrySnapshot | null): Ru
       if (head !== undefined) {
         return { knot: head, event: true };
       }
-      const next = successors(world, ws);
+      const next = successors(world, ws, input.rules);
       if (next.length === 0) {
         return failed('play/runtime-error', here(), `explore walk stuck in ${ws.room ?? 'no room'}`);
       }
@@ -496,9 +508,14 @@ function playRun(ctx: Context, seed: number, snapshot: CarrySnapshot | null): Ru
         hinted(world, step.puzzle); // hints and the outcome touch different fields of the run, so the order is free
         puzzles.push({ puzzle: step.puzzle, outcome: step.outcome });
       }
+      // successors keeps the state, not the effects: the step again (pure, no draw of the rng), for what the player sees
+      // of it and the knot it leaves into. A `closed` step is its opening action's, which opened the puzzle's frame.
+      const effects = step.kind === 'closed' ? [] : reduce(world, before, step, input.rules).effects;
+      if (step.kind !== 'closed' && !effects.some((e) => SEEN.has(e.kind))) {
+        return failed('play/runtime-error', here(), `step ${stepName(step)} yields no cue`);
+      }
       if (pick.leaves) {
-        // successors keeps the state, not the effects: the step again, for the knot it leaves into.
-        const leave = step.kind === 'closed' ? undefined : reduce(world, before, step).effects.find((e) => e.kind === 'leave');
+        const leave = effects.find((e) => e.kind === 'leave');
         if (leave?.kind !== 'leave') {
           throw new Error('invariant: a leaving successor re-reduces to a leave effect');
         }
@@ -539,7 +556,7 @@ function playRun(ctx: Context, seed: number, snapshot: CarrySnapshot | null): Ru
       const open: PuzzleOutcome[] = ['solved', ...(pz.maxAttempts === null ? [] : ['failed' as const]), ...(pz.giveUp ? ['abandoned' as const] : [])];
       const outcome = open[Math.floor(rng() * open.length)] ?? 'solved';
       hinted(world, y.puzzle);
-      ws = reduce(world, ws, { kind: 'puzzle-ended', puzzle: y.puzzle, outcome }).state;
+      ws = reduce(world, ws, { kind: 'puzzle-ended', puzzle: y.puzzle, outcome }, input.rules).state;
       puzzles.push({ puzzle: y.puzzle, outcome });
       const entered = enter(world, y.then);
       if (entered !== null) {
@@ -549,7 +566,7 @@ function playRun(ctx: Context, seed: number, snapshot: CarrySnapshot | null): Ru
     }
     const pendingStory = ws.pendingStory.length > 0;
     const action: ExploreAction = pendingStory ? { kind: 'event-returned', section: y.section } : { kind: 'enter-section', section: y.section };
-    ws = reduce(world, ws, action).state;
+    ws = reduce(world, ws, action, input.rules).state;
     event = null;
     const next = walk(world);
     if ('outcome' in next) {

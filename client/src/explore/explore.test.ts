@@ -1,6 +1,8 @@
 import { expect, test } from 'vitest';
 
-import type { FactAtom, FactKind, FlagId, MechanicRules } from '../mechanics/contract.ts';
+import { motionOf } from '../cues/stage/motions.ts';
+import { SILENT_FIELDS } from '../mechanics/contract.ts';
+import type { FactAtom, FactKind, FlagId, MechanicRules, SectionAction } from '../mechanics/contract.ts';
 import { actions, reduce } from '../mechanics/rules/core.ts';
 import { MECHANIC_RULES } from '../mechanics/rules/index.ts';
 import { admitSection, inSectionReach, searchSection, sectionEntry, sectionKey, successors } from '../mechanics/rules/search.ts';
@@ -202,6 +204,8 @@ const tap = (hotspot: string): ExploreAction => ({ kind: 'tap', hotspot: k(hotsp
 const insert = (hotspot: string, item: string): ExploreAction => ({ kind: 'insert', hotspot: k(hotspot), item: it(item) });
 const ended = (puzzle: string, outcome: 'solved' | 'failed' | 'abandoned'): ExploreAction => ({ kind: 'puzzle-ended', puzzle: pz(puzzle), outcome });
 const DIRTY: ExploreEffect = { kind: 'dirty' };
+/** The kernel's effects of a list, in order: every effect but the writer's `cue` effects. */
+const kernelEffects = <E extends { readonly kind: string }>(effects: readonly E[]): E[] => effects.filter((e) => e.kind !== 'cue');
 
 /** Runs actions in order and returns the last result. */
 function run(w: WorldPublicBody, s: WorldState, ...steps: ExploreAction[]): { state: WorldState; effects: ExploreEffect[] } {
@@ -221,10 +225,10 @@ test('reduce: take moves item to held once', () => {
   const r = reduce(w, s, tap('study.medal'));
   expect(r.state.held).toEqual(['medal_sun']);
   expect(r.state.taken).toEqual(['study.medal']);
-  expect(r.effects).toEqual([{ kind: 'got', gift: { item: 'medal_sun' } }, DIRTY]);
+  expect(kernelEffects(r.effects)).toEqual([{ kind: 'got', gift: { item: 'medal_sun' }, at: 'study.medal' }, DIRTY]);
   const again = reduce(w, frozen(r.state), tap('study.medal'));
   expect(again.state).toBe(r.state);
-  expect(again.effects).toEqual([]);
+  expect(kernelEffects(again.effects)).toEqual([]);
   const doc = reduce(w, frozen(r.state), tap('study.letter'));
   expect(doc.state.docs).toEqual(['letter']);
   expect(doc.state.held).toEqual(['medal_sun']);
@@ -233,10 +237,11 @@ test('reduce: take moves item to held once', () => {
 test('reduce: wrong item refused, state unchanged', () => {
   const w = manor();
   const s = at('hall', { held: [it('medal_sun'), it('medal_moon')] });
-  const refused: ExploreEffect[] = [{ kind: 'refused', reason: 'no-fit' }];
-  for (const a of [insert('hall.gate', 'medal_star'), insert('hall.to_study', 'medal_sun'), insert('study.drawer', 'medal_sun')]) {
+  const refused = (hotspot: string, item: string): ExploreEffect[] => [{ kind: 'refused', at: k(hotspot), item: it(item), reason: 'no-fit' }];
+  for (const [hotspot, item] of [['hall.gate', 'medal_star'], ['hall.to_study', 'medal_sun'], ['study.drawer', 'medal_sun']] as const) {
+    const a = insert(hotspot, item);
     const r = reduce(w, s, a);
-    expect(r.effects, JSON.stringify(a)).toEqual(refused);
+    expect(kernelEffects(r.effects), JSON.stringify(a)).toEqual(refused(hotspot, item));
     expect(r.state).toBe(s);
   }
   // The positive control: the right held item fills its slot.
@@ -244,25 +249,25 @@ test('reduce: wrong item refused, state unchanged', () => {
   expect(right.state.slots).toEqual({ 'hall.gate': ['medal_sun', null, null] });
   expect(right.state.held).toEqual(['medal_moon']);
   expect(right.state.used).toEqual(['medal_sun']);
-  expect(right.effects).toEqual([DIRTY]);
+  expect(kernelEffects(right.effects)).toEqual([DIRTY]);
   // A slot takes one item: the same item again does not fit.
   const twice = reduce(w, frozen({ ...right.state, held: [it('medal_sun')] }), insert('hall.gate', 'medal_sun'));
-  expect(twice.effects).toEqual(refused);
+  expect(kernelEffects(twice.effects)).toEqual(refused('hall.gate', 'medal_sun'));
 });
 
 test('reduce: lock opens after last slot then puzzle', () => {
   const w = manor();
   const s = at('hall', { held: MEDALS.map(it) });
   const two = run(w, s, insert('hall.gate', 'medal_sun'), insert('hall.gate', 'medal_moon'));
-  expect(two.effects).toEqual([DIRTY]);
+  expect(kernelEffects(two.effects)).toEqual([DIRTY]);
   const last = reduce(w, frozen(two.state), insert('hall.gate', 'medal_star'));
-  expect(last.effects).toEqual([{ kind: 'puzzle', puzzle: 'gate', hotspot: 'hall.gate' }, DIRTY]);
+  expect(kernelEffects(last.effects)).toEqual([{ kind: 'puzzle', puzzle: 'gate', hotspot: 'hall.gate' }, DIRTY]);
   expect(last.state.open).toEqual([]);
   const solved = reduce(w, frozen(last.state), ended('gate', 'solved'));
   expect(solved.state.open).toEqual(['hall.gate']);
   expect(solved.state.puzzles).toEqual({ gate: { outcome: 'solved', attempts: 0, hintsOpened: 0 } });
   const out = reduce(w, frozen(solved.state), tap('hall.gate'));
-  expect(out.effects).toEqual([{ kind: 'leave', knot: 'manor_out' }, DIRTY]);
+  expect(kernelEffects(out.effects)).toEqual([{ kind: 'leave', knot: 'manor_out', from: 'hall', via: 'hall.gate' }, DIRTY]);
   // A lock without a puzzle opens at its last insert.
   const plain = world({
     items: ['key'],
@@ -270,7 +275,7 @@ test('reduce: lock opens after last slot then puzzle', () => {
   });
   const opened = reduce(plain, at('a', { held: [it('key')] }, 's'), insert('a.door', 'key'));
   expect(opened.state.open).toEqual(['a.door']);
-  expect(opened.effects).toEqual([DIRTY]);
+  expect(kernelEffects(opened.effects)).toEqual([DIRTY]);
 });
 
 test('reduce: slots persist in any order', () => {
@@ -283,23 +288,23 @@ test('reduce: slots persist in any order', () => {
   expect(walked.state.slots).toEqual(reversed.state.slots);
   const last = reduce(w, frozen(walked.state), insert('hall.gate', 'medal_moon'));
   expect(last.state.slots).toEqual({ 'hall.gate': ['medal_sun', 'medal_moon', 'medal_star'] });
-  expect(last.effects).toEqual([{ kind: 'puzzle', puzzle: 'gate', hotspot: 'hall.gate' }, DIRTY]);
+  expect(kernelEffects(last.effects)).toEqual([{ kind: 'puzzle', puzzle: 'gate', hotspot: 'hall.gate' }, DIRTY]);
 });
 
 test('reduce: tap on a filled unsolved lock reopens its puzzle', () => {
   const w = manor();
   const filled = at('hall', { slots: { [k('hall.gate')]: MEDALS.map(it) }, used: MEDALS.map(it) });
   const r = reduce(w, filled, tap('hall.gate'));
-  expect(r.effects).toEqual([{ kind: 'puzzle', puzzle: 'gate', hotspot: 'hall.gate' }]);
+  expect(kernelEffects(r.effects)).toEqual([{ kind: 'puzzle', puzzle: 'gate', hotspot: 'hall.gate' }]);
   expect(r.state).toBe(filled);
   // Attempts are kept: the run exists but has no outcome.
   const tried = at('hall', { slots: filled.slots, used: filled.used, puzzles: { [pz('gate')]: { outcome: null, attempts: 2, hintsOpened: 1 } } });
-  expect(reduce(w, tried, tap('hall.gate')).effects).toEqual([{ kind: 'puzzle', puzzle: 'gate', hotspot: 'hall.gate' }]);
+  expect(kernelEffects(reduce(w, tried, tap('hall.gate')).effects)).toEqual([{ kind: 'puzzle', puzzle: 'gate', hotspot: 'hall.gate' }]);
   // A zero-slot lock counts as filled.
-  expect(reduce(w, at('study'), tap('study.drawer')).effects).toEqual([{ kind: 'puzzle', puzzle: 'drawer', hotspot: 'study.drawer' }]);
+  expect(kernelEffects(reduce(w, at('study'), tap('study.drawer')).effects)).toEqual([{ kind: 'puzzle', puzzle: 'drawer', hotspot: 'study.drawer' }]);
   // A failed puzzle whose onFail did not unlock shows the panel.
   const failed = at('hall', { slots: filled.slots, used: filled.used, puzzles: { [pz('gate')]: { outcome: 'failed', attempts: 3, hintsOpened: 0 } } });
-  expect(reduce(w, failed, tap('hall.gate')).effects).toEqual([{ kind: 'lock', hotspot: 'hall.gate' }]);
+  expect(kernelEffects(reduce(w, failed, tap('hall.gate')).effects)).toEqual([{ kind: 'lock', hotspot: 'hall.gate' }]);
 });
 
 test('reduce: take runs its then once', () => {
@@ -308,9 +313,9 @@ test('reduce: take runs its then once', () => {
     sections: { s: { start: 'a', rooms: { a: room([take('key', { item: 'key' }, [{ give: 'map' }, { story: 'found_key' }]), exit('out', { story: 'end' })]) } } },
   });
   const r = reduce(w, at('a', {}, 's'), tap('a.key'));
-  expect(r.effects).toEqual([
-    { kind: 'got', gift: { item: 'key' } },
-    { kind: 'got', gift: { item: 'map' } },
+  expect(kernelEffects(r.effects)).toEqual([
+    { kind: 'got', gift: { item: 'key' }, at: 'a.key' },
+    { kind: 'got', gift: { item: 'map' }, at: 'a.key' },
     { kind: 'story', knot: 'found_key' },
     DIRTY,
   ]);
@@ -318,7 +323,7 @@ test('reduce: take runs its then once', () => {
   expect(r.state.fired).toEqual(['then:a.key']);
   expect(r.state.pendingStory).toEqual(['found_key']);
   const back = run(w, r.state, { kind: 'event-returned', section: sec('s') }, tap('a.key'));
-  expect(back.effects).toEqual([]);
+  expect(kernelEffects(back.effects)).toEqual([]);
   expect(back.state.pendingStory).toEqual([]);
   expect(back.state.held).toEqual(['key', 'map']);
 });
@@ -352,7 +357,7 @@ test('reduce: lock opening runs onOpen once', () => {
   // The last insert opens the chest: onOpen first, then the object's own `then`.
   const chest = reduce(w, at('a', { held: [it('key')] }, 's'), insert('a.chest', 'key'));
   expect(chest.state.pendingStory).toEqual(['chest_opens', 'chest_then']);
-  expect(chest.effects).toEqual([{ kind: 'story', knot: 'chest_opens' }, DIRTY]);
+  expect(kernelEffects(chest.effects)).toEqual([{ kind: 'story', knot: 'chest_opens' }, DIRTY]);
 });
 
 test('reduce: tap while an event is pending is refused', () => {
@@ -361,12 +366,12 @@ test('reduce: tap while an event is pending is refused', () => {
   for (const a of [tap('hall.to_study'), tap('hall.inscription'), insert('hall.gate', 'medal_sun')]) {
     const r = reduce(w, busy, a);
     expect(r.state, JSON.stringify(a)).toBe(busy);
-    expect(r.effects, JSON.stringify(a)).toEqual([]);
+    expect(kernelEffects(r.effects), JSON.stringify(a)).toEqual([]);
   }
   // The positive control: the same tap with no event running moves.
   const idle = reduce(w, at('hall', { held: [it('medal_sun')] }), tap('hall.to_study'));
   expect(idle.state.room).toBe('study');
-  expect(idle.effects).toEqual([{ kind: 'room', room: 'study', sfx: 'door' }, DIRTY]);
+  expect(kernelEffects(idle.effects)).toEqual([{ kind: 'room', room: 'study', sfx: 'door', from: 'hall', via: 'hall.to_study', how: 'walk' }, DIRTY]);
 });
 
 test('reduce: failed runs onFail once', () => {
@@ -377,11 +382,11 @@ test('reduce: failed runs onFail once', () => {
   expect(failed.state.fired).toEqual(['fail:hall.gate']);
   expect(failed.state.pendingStory).toEqual(['manor_gate_forced']);
   expect(failed.state.open).toEqual(['hall.gate']);
-  expect(failed.effects).toEqual([{ kind: 'story', knot: 'manor_gate_forced' }, DIRTY]);
+  expect(kernelEffects(failed.effects)).toEqual([{ kind: 'story', knot: 'manor_gate_forced' }, DIRTY]);
   // The outcome is final: a second end changes nothing.
   const again = reduce(w, frozen(failed.state), ended('gate', 'failed'));
   expect(again.state).toBe(failed.state);
-  expect(again.effects).toEqual([]);
+  expect(kernelEffects(again.effects)).toEqual([]);
   // Attempts count while the run is open.
   const tried = run(w, filled, { kind: 'attempt-failed', puzzle: pz('gate') }, { kind: 'attempt-failed', puzzle: pz('gate') });
   expect(tried.state.puzzles).toEqual({ gate: { outcome: null, attempts: 2, hintsOpened: 0 } });
@@ -390,16 +395,17 @@ test('reduce: failed runs onFail once', () => {
 test('reduce: onEnter fires once', () => {
   const w = manor();
   const r = reduce(w, at('hall'), tap('hall.to_cellar'));
-  expect(r.effects).toEqual([{ kind: 'room', room: 'cellar', sfx: null }, { kind: 'story', knot: 'manor_cellar_voice' }, DIRTY]);
+  const cellar: ExploreEffect = { kind: 'room', room: rm('cellar'), sfx: null, from: rm('hall'), via: k('hall.to_cellar'), how: 'walk' };
+  expect(kernelEffects(r.effects)).toEqual([cellar, { kind: 'story', knot: 'manor_cellar_voice' }, DIRTY]);
   expect(r.state.fired).toEqual(['enter:cellar']);
   const again = run(w, r.state, { kind: 'event-returned', section: sec('manor') }, tap('cellar.to_hall'), tap('hall.to_cellar'));
-  expect(again.effects).toEqual([{ kind: 'room', room: 'cellar', sfx: null }, DIRTY]);
+  expect(kernelEffects(again.effects)).toEqual([cellar, DIRTY]);
   expect(again.state.pendingStory).toEqual([]);
   // A section entry fires its room's onEnter too.
   const entered = reduce(w, frozen(structuredClone(EMPTY_WORLD_STATE)), { kind: 'enter-section', section: sec('manor') });
   expect(entered.state.section).toBe('manor');
   expect(entered.state.room).toBe('hall');
-  expect(entered.effects).toEqual([{ kind: 'room', room: 'hall', sfx: null }, DIRTY]);
+  expect(kernelEffects(entered.effects)).toEqual([{ kind: 'room', room: 'hall', sfx: null, from: null, via: null, how: 'enter' }, DIRTY]);
 });
 
 test('reduce: story effects queue and pop on return', () => {
@@ -411,17 +417,17 @@ test('reduce: story effects queue and pop on return', () => {
   expect(r.effects.filter((e) => e.kind === 'story')).toEqual([{ kind: 'story', knot: 'first' }]);
   const one = reduce(w, frozen(r.state), { kind: 'event-returned', section: sec('s') });
   expect(one.state.pendingStory).toEqual(['second']);
-  expect(one.effects).toEqual([{ kind: 'story', knot: 'second' }, DIRTY]);
+  expect(kernelEffects(one.effects)).toEqual([{ kind: 'story', knot: 'second' }, DIRTY]);
   const two = reduce(w, frozen(one.state), { kind: 'event-returned', section: sec('s') });
   expect(two.state.pendingStory).toEqual([]);
-  expect(two.effects).toEqual([{ kind: 'room', room: 'a', sfx: null }, DIRTY]);
+  expect(kernelEffects(two.effects)).toEqual([{ kind: 'room', room: 'a', sfx: null, from: 'a', via: null, how: 'return' }, DIRTY]);
 });
 
 test('reduce: leave clears the section', () => {
   const w = manor();
   const s = at('hall', { open: [k('hall.gate')], fired: ['fail:hall.gate'] });
   const r = reduce(w, s, tap('hall.gate'));
-  expect(r.effects).toEqual([{ kind: 'leave', knot: 'manor_out' }, DIRTY]);
+  expect(kernelEffects(r.effects)).toEqual([{ kind: 'leave', knot: 'manor_out', from: 'hall', via: 'hall.gate' }, DIRTY]);
   expect(r.state.section).toBeNull();
   // Only `section` changes (I-W's re-entry rule), so the section key is the one that left.
   expect({ ...r.state, section: s.section }).toEqual(s);
@@ -433,28 +439,53 @@ test('reduce: leave clears the section', () => {
   expect(back.state.section).toBe('manor');
 });
 
+test('reduce: a kernel effect names where it acts', () => {
+  const w = manor();
+  const first = (r: { effects: ExploreEffect[] }): ExploreEffect | undefined => kernelEffects(r.effects)[0];
+  // A walk: the room left and the exit taken; a section's fresh entry: neither.
+  expect(first(reduce(w, at('hall'), tap('hall.to_study')))).toEqual({ kind: 'room', room: 'study', sfx: 'door', from: 'hall', via: 'hall.to_study', how: 'walk' });
+  const fresh = reduce(w, frozen(structuredClone(EMPTY_WORLD_STATE)), { kind: 'enter-section', section: sec('manor') });
+  expect(first(fresh)).toEqual({ kind: 'room', room: 'hall', sfx: null, from: null, via: null, how: 'enter' });
+  // A resume of the current section and an event knot's return re-show the room they are in.
+  expect(first(reduce(w, at('study'), { kind: 'enter-section', section: sec('manor') }))).toEqual({ kind: 'room', room: 'study', sfx: null, from: 'study', via: null, how: 'resume' });
+  const voice = at('cellar', { pendingStory: [kn('manor_cellar_voice')], fired: ['enter:cellar'] });
+  expect(first(reduce(w, voice, { kind: 'event-returned', section: sec('manor') }))).toEqual({ kind: 'room', room: 'cellar', sfx: null, from: 'cellar', via: null, how: 'return' });
+  // A leave: the room left and the exit.
+  expect(first(reduce(w, at('hall', { open: [k('hall.gate')] }), tap('hall.gate')))).toEqual({ kind: 'leave', knot: 'manor_out', from: 'hall', via: 'hall.gate' });
+  // A take names itself; a `then` gift names the hotspot whose trigger gave it (the solved drawer's).
+  expect(first(reduce(w, at('study'), tap('study.medal')))).toEqual({ kind: 'got', gift: { item: 'medal_sun' }, at: 'study.medal' });
+  expect(first(reduce(w, at('study'), ended('drawer', 'solved')))).toEqual({ kind: 'got', gift: { item: 'medal_moon' }, at: 'study.drawer' });
+  // A room's onEnter gift has no hotspot.
+  const porch = world({ items: ['coin'], sections: { s: { start: 'a', rooms: { a: room([exit('out', { story: 'end' })], [{ give: 'coin' }]) } } } });
+  const entered = reduce(porch, frozen(structuredClone(EMPTY_WORLD_STATE)), { kind: 'enter-section', section: sec('s') });
+  expect(kernelEffects(entered.effects)[1]).toEqual({ kind: 'got', gift: { item: 'coin' }, at: null });
+  // A look names the hotspot read; a refused insert names the lock and the item.
+  expect(first(reduce(w, at('hall'), tap('hall.inscription')))).toEqual({ kind: 'look', text: { id: expect.any(String), ru: 'inscription' }, at: 'hall.inscription' });
+  expect(first(reduce(w, at('hall', { held: [it('medal_sun')] }), insert('hall.gate', 'medal_star')))).toEqual({ kind: 'refused', at: 'hall.gate', item: 'medal_star', reason: 'no-fit' });
+});
+
 test('reduce: an action that changes no state keeps its effects', () => {
   const w = manor();
   // A lock with a free slot: the panel opens (the only UI that sends `insert`).
   const hall = at('hall', { held: [it('medal_sun')] });
   const panel = reduce(w, hall, tap('hall.gate'));
-  expect(panel.effects).toEqual([{ kind: 'lock', hotspot: 'hall.gate' }]);
+  expect(kernelEffects(panel.effects)).toEqual([{ kind: 'lock', hotspot: 'hall.gate' }]);
   expect(panel.state).toBe(hall);
   // A re-read shows the text again.
   const read = at('hall', { examined: [k('hall.inscription')] });
   const reread = reduce(w, read, tap('hall.inscription'));
-  expect(reread.effects).toHaveLength(1);
-  expect(reread.effects[0]?.kind).toBe('look');
+  expect(kernelEffects(reread.effects)).toHaveLength(1);
+  expect(kernelEffects(reread.effects)[0]?.kind).toBe('look');
   expect(reread.state).toBe(read);
   // A resume of the current section re-shows its room.
   const resumed = reduce(w, hall, { kind: 'enter-section', section: sec('manor') });
-  expect(resumed.effects).toEqual([{ kind: 'room', room: 'hall', sfx: null }]);
+  expect(kernelEffects(resumed.effects)).toEqual([{ kind: 'room', room: 'hall', sfx: null, from: 'hall', via: null, how: 'resume' }]);
   expect(resumed.state).toBe(hall);
   // A re-read hint tier counts nothing.
   const hinted = at('study', { puzzles: { [pz('drawer')]: { outcome: null, attempts: 0, hintsOpened: 2 } } });
   const reHint = reduce(w, hinted, { kind: 'hint-opened', puzzle: pz('drawer'), tier: 1 });
   expect(reHint.state).toBe(hinted);
-  expect(reHint.effects).toEqual([]);
+  expect(kernelEffects(reHint.effects)).toEqual([]);
 });
 
 test("explore: runReduce leaves a lock puzzle's outcome alone", () => {
@@ -504,7 +535,8 @@ test("explore: runReduce leaves a lock puzzle's outcome alone", () => {
   let state = frozen(structuredClone(EMPTY_WORLD_STATE));
   for (const a of steps) {
     const ran = runReduce(linear, state, a);
-    expect(ran, JSON.stringify(a)).toEqual(reduce(linear, state, a));
+    const reduced = reduce(linear, state, a);
+    expect({ state: ran.state, effects: ran.effects }, JSON.stringify(a)).toEqual({ state: reduced.state, effects: kernelEffects(reduced.effects) });
     state = frozen(ran.state);
   }
   expect(state.puzzles).toEqual({ lin: { outcome: 'solved', attempts: 2, hintsOpened: 2 } });
@@ -526,7 +558,7 @@ test('explore: a repeated outcome and an abandoned lock puzzle change nothing', 
   for (const step of [runReduce, reduce]) {
     const again = step(linear, ended1, failed);
     expect(again.state, step.name).toBe(ended1);
-    expect(again.effects, step.name).toEqual([]);
+    expect(kernelEffects(again.effects), step.name).toEqual([]);
   }
   const hint = { kind: 'hint-opened', puzzle: pz('lin'), tier: 1 } as const;
   const hinted = runReduce(linear, frozen(structuredClone(EMPTY_WORLD_STATE)), hint);
@@ -535,12 +567,12 @@ test('explore: a repeated outcome and an abandoned lock puzzle change nothing', 
   for (const step of [runReduce, reduce]) {
     const again = step(linear, opened, hint);
     expect(again.state, step.name).toBe(opened);
-    expect(again.effects, step.name).toEqual([]);
+    expect(kernelEffects(again.effects), step.name).toEqual([]);
   }
   const s = at('hall');
   const abandoned = reduce(manor(), s, ended('gate', 'abandoned'));
   expect(abandoned.state).toBe(s);
-  expect(abandoned.effects).toEqual([]);
+  expect(kernelEffects(abandoned.effects)).toEqual([]);
 });
 
 test('explore: a fractional hint tier changes nothing', () => {
@@ -559,7 +591,7 @@ test('explore: a fractional hint tier changes nothing', () => {
   const inSection = at('r', { puzzles: { [lin]: { outcome: null, attempts: 0, hintsOpened: 1 } } }, 's');
   const reduced = reduce(linear, inSection, fractional);
   expect(reduced.state).toBe(inSection);
-  expect(reduced.effects).toEqual([]);
+  expect(kernelEffects(reduced.effects)).toEqual([]);
 });
 
 test('actions: enumerates enabled taps and inserts', () => {
@@ -581,7 +613,7 @@ test('actions: enumerates enabled taps and inserts', () => {
   expect(actions(w, at('hall', { section: null }))).toEqual([]);
   // Every listed action is one reduce accepts: no refused insert.
   for (const a of actions(w, hall)) {
-    expect(reduce(w, hall, a).effects, JSON.stringify(a)).not.toContainEqual({ kind: 'refused', reason: 'no-fit' });
+    expect(kernelEffects(reduce(w, hall, a).effects).some((e) => e.kind === 'refused'), JSON.stringify(a)).toBe(false);
   }
 });
 
@@ -1032,7 +1064,7 @@ test('reconcile: unprovable state restarts the section', () => {
   expect(r.reset).toBeNull();
   expect(r.state.unproved).toEqual(['manor']);
   const a = admitSection(v2, frozen(r.state), MANOR);
-  expect(a.effects[0]).toEqual({ kind: 'reset', section: 'manor' });
+  expect(kernelEffects(a.effects)[0]).toEqual({ kind: 'reset', section: 'manor' });
   expect(a.state.held).toEqual([]);
   expect(a.state.taken).toEqual([]);
   expect(a.state.fired).toEqual([]);
@@ -1074,7 +1106,7 @@ test('reconcile: a dead end reachable from the reconciled state restarts the sec
   expect(r.state.open).toEqual(['hall.to_vault']);
   expect(r.state.unproved).toEqual(['temple']);
   const a = admitSection(v2, frozen(r.state), TEMPLE);
-  expect(a.effects[0]).toEqual({ kind: 'reset', section: 'temple' });
+  expect(kernelEffects(a.effects)[0]).toEqual({ kind: 'reset', section: 'temple' });
   expect(a.state.open).toEqual([]);
   // The restart is the state the build proved.
   expect(a.state).toEqual(sectionEntry(v2, EMPTY_WORLD_STATE, TEMPLE));
@@ -1101,10 +1133,10 @@ test("reconcile: reset section fires the start room's onEnter on resume", () => 
   const r = reconcile(v2, s, new Set([kn('crypt_out')]), V1);
   expect(r.reset).toBeNull();
   const resumed = admitSection(v2, frozen(r.state), sec('crypt'));
-  expect(resumed.effects).toContainEqual({ kind: 'got', gift: { item: 'torch' } });
+  expect(kernelEffects(resumed.effects)).toContainEqual({ kind: 'got', gift: { item: 'torch' }, at: null });
   expect(resumed.state.held).toEqual(['torch']);
-  expect(resumed.effects[0]).toEqual({ kind: 'reset', section: 'crypt' });
-  expect(resumed.effects[1]).toEqual({ kind: 'room', room: 'tomb', sfx: null });
+  expect(kernelEffects(resumed.effects)[0]).toEqual({ kind: 'reset', section: 'crypt' });
+  expect(kernelEffects(resumed.effects)[1]).toEqual({ kind: 'room', room: 'tomb', sfx: null, from: null, via: null, how: 'enter' });
   expect(exitable(v2, resumed.state, sec('crypt'))).toBe(true);
 });
 
@@ -1140,14 +1172,14 @@ test('reconcile: a section left through a leave restarts on re-entry after a ver
   const r = reconcile(v2, s, HOUSE_KNOTS, V1);
   expect(r.reset).toBeNull();
   const admitted = admitSection(v2, frozen(r.state), HOUSE);
-  expect(admitted.effects[0]).toEqual({ kind: 'reset', section: 'house' });
+  expect(kernelEffects(admitted.effects)[0]).toEqual({ kind: 'reset', section: 'house' });
   expect(admitted.state.open).not.toContain('hall.to_vault');
   expect(admitted.state).toEqual(sectionEntry(v2, EMPTY_WORLD_STATE, HOUSE));
   expect(admitted.state.unproved).toEqual([]);
   expect(r.state.unproved).toEqual(['house']);
   // Once proved, the section is entered by reduce alone.
   const again = admitSection(v2, frozen({ ...admitted.state, section: null }), HOUSE);
-  expect(again.effects).not.toContainEqual({ kind: 'reset', section: 'house' });
+  expect(kernelEffects(again.effects)).not.toContainEqual({ kind: 'reset', section: 'house' });
 });
 
 test('reconcile: a version change marks every other section unproved and keeps the current section and room', () => {
@@ -1163,7 +1195,7 @@ test('reconcile: a version change marks every other section unproved and keeps t
   // The house progress waits for its proof at the next entry.
   expect(r.state.open).toEqual(['hall.to_vault']);
   const admitted = admitSection(v2, frozen({ ...r.state, section: null }), sec('house'));
-  expect(admitted.effects[0]).toEqual({ kind: 'reset', section: 'house' });
+  expect(kernelEffects(admitted.effects)[0]).toEqual({ kind: 'reset', section: 'house' });
 });
 
 test('reconcile: a re-versioned save leaves every section unproved', () => {
@@ -1246,6 +1278,165 @@ test('reduce: rules golden pinned to RULES_VERSION', () => {
   // X9's start premise: re-entering S from any state play reaches gives the state the build started from.
   const off = reached.filter((s) => sectionKey(w, sectionEntry(w, s, MANOR), MANOR) !== keys[0]);
   expect(off.length, `the first: ${off.slice(0, 2).map((s) => sectionKey(w, s, MANOR)).join(' / ')}`).toBe(0);
+});
+
+/** Each list field with its members' fact kind (the writer's `FACT_OF`, restated as the oracle's). */
+const LIST_FACTS = [
+  ['visited', 'visited'],
+  ['held', 'held'],
+  ['used', 'used'],
+  ['docs', 'doc'],
+  ['taken', 'taken'],
+  ['examined', 'examined'],
+  ['open', 'open'],
+  ['fired', 'fired'],
+  ['pendingStory', 'story'],
+] as const;
+
+/** The fact changes from `a` to `b` as `kind:id:change`, sorted: every non-silent field's diff. */
+function factDiff(a: WorldState, b: WorldState): string[] {
+  const out: string[] = [];
+  for (const [field, kind] of LIST_FACTS) {
+    const before: readonly string[] = a[field];
+    const after: readonly string[] = b[field];
+    out.push(...before.filter((x) => !after.includes(x)).map((x) => `${kind}:${x}:removed`));
+    out.push(...after.filter((x) => !before.includes(x)).map((x) => `${kind}:${x}:added`));
+  }
+  const filled = (c: ReadonlyArray<ItemId | null>): number => c.filter((x) => x !== null).length;
+  for (const key of new Set([...Object.keys(a.slots), ...Object.keys(b.slots)]) as Set<HotspotKey>) {
+    const before = own(a.slots, key) ?? [];
+    const after = own(b.slots, key) ?? [];
+    if (JSON.stringify(before) !== JSON.stringify(after)) {
+      out.push(`slot:${key}:${filled(after) >= filled(before) ? 'added' : 'removed'}`);
+    }
+  }
+  for (const p of new Set([...Object.keys(a.puzzles), ...Object.keys(b.puzzles)]) as Set<PuzzleLocalId>) {
+    const [x, y] = [runOf(a, p), runOf(b, p)];
+    if (x.outcome !== y.outcome) {
+      out.push(...(x.outcome === null ? [] : [`${x.outcome}:${p}:removed`]), ...(y.outcome === null ? [] : [`${y.outcome}:${p}:added`]));
+    }
+    if (x.attempts !== y.attempts) {
+      out.push(`attempt:${p}:${y.attempts > x.attempts ? 'added' : 'removed'}`);
+    }
+    if (x.hintsOpened !== y.hintsOpened) {
+      out.push(`hint:${p}:${y.hintsOpened > x.hintsOpened ? 'added' : 'removed'}`);
+    }
+  }
+  // Any other field that changed has no fact kind: the oracle names it, so a new field cannot pass unseen.
+  const known = new Set<string>([...LIST_FACTS.map(([f]) => f), 'slots', 'puzzles', ...Object.keys(SILENT_FIELDS)]);
+  for (const field of Object.keys(b) as Array<keyof WorldState>) {
+    if (!known.has(field) && JSON.stringify(a[field]) !== JSON.stringify(b[field])) {
+      out.push(`${field}:?:unrecorded`);
+    }
+  }
+  return out.sort();
+}
+
+test('writer: a fact cue with no hotspot needs no box', () => {
+  // Every cue effect with no hotspot (a section's entry, an onEnter, an event's return) plays where no box is needed.
+  const boxed = new Set(['box', 'point']);
+  const lost = new Set<string>();
+  let homeless = 0;
+  const walk = (w: WorldPublicBody, section: SectionId): void => {
+    const start = sectionEntry(w, EMPTY_WORLD_STATE, section);
+    const reached: WorldState[] = [start];
+    searchSection(w, start, section, RESUME_STATE_CAP, {
+      onEdge: (_from, succ, to, isNew) => {
+        if (isNew && to !== null) {
+          reached.push(succ.state);
+        }
+      },
+    });
+    const steps: Array<readonly [WorldState, SectionAction]> = [[{ ...EMPTY_WORLD_STATE, unproved: [] }, { kind: 'enter-section', section }]];
+    for (const s of reached) {
+      steps.push(...MECHANIC_RULES.flatMap((m): readonly SectionAction[] => m.actions(w, s)).map((a) => [s, a] as const));
+    }
+    for (const [s, a] of steps) {
+      for (const e of reduce(w, s, a).effects) {
+        const c = e.kind === 'cue' ? e.cue : null;
+        if (c !== null && (c.kind === 'fact' ? c.cause.at : c.at) === null) {
+          homeless += 1;
+          const m = motionOf(c);
+          if (boxed.has(m.target)) {
+            lost.add(c.kind === 'fact' ? `fact:${c.fact.kind}:${c.change}~${c.cause.verb}` : `module:${c.module}:${c.name}`);
+          }
+        }
+      }
+    }
+  };
+  walk(manor({ golden: true }), MANOR);
+  // A start room whose onEnter gives an item and runs an event knot.
+  walk(world({ items: ['coin'], sections: { s: { start: 'hall', rooms: { hall: room([exit('out', { story: 'end' })], [{ give: 'coin' }, { story: 'voice' }]) } } } }), sec('s'));
+  expect([...lost]).toEqual([]);
+  // The positive control: the walks met cues with no hotspot.
+  expect(homeless).toBeGreaterThan(0);
+});
+
+test('writer: every fact write emits a fact cue with its cause', () => {
+  const w = manor({ golden: true });
+  const ix = worldIndex(w);
+  const start = sectionEntry(w, EMPTY_WORLD_STATE, MANOR);
+  const reached: WorldState[] = [start];
+  searchSection(w, start, MANOR, RESUME_STATE_CAP, {
+    onEdge: (_from, succ, to, isNew) => {
+      if (isNew && to !== null) {
+        reached.push(succ.state);
+      }
+    },
+  });
+  // The cause each step's fact cues carry: the action's verb and hotspot (a puzzle's run: its lock).
+  const lockOfRun = (p: PuzzleLocalId): HotspotKey | null => ix.puzzleLock.get(p) ?? null;
+  const causeOf = (a: SectionAction): string => {
+    switch (a.kind) {
+      case 'tap':
+        return `tap@${a.hotspot}`;
+      case 'insert':
+        return `insert@${a.hotspot}`;
+      case 'use':
+        return `use@${a.target}`;
+      case 'enter-section':
+        return 'enter@null';
+      case 'event-returned':
+        return 'return@null';
+      case 'puzzle-ended':
+        return `${a.outcome === 'solved' ? 'solve' : 'fail'}@${String(lockOfRun(a.puzzle))}`;
+      default:
+        return `fail@${String('puzzle' in a ? lockOfRun(a.puzzle) : null)}`;
+    }
+  };
+  const problems: string[] = [];
+  let cues = 0;
+  const check = (s: WorldState, a: SectionAction): ReturnType<typeof reduce> => {
+    const r = reduce(w, s, a);
+    const facts = r.effects.flatMap((e) => (e.kind === 'cue' && e.cue.kind === 'fact' ? [e.cue] : []));
+    cues += facts.length;
+    const got = facts.map((c) => `${c.fact.kind}:${c.fact.id}:${c.change}`).sort();
+    const want = factDiff(s, r.state);
+    const label = `${a.kind} ${'hotspot' in a ? a.hotspot : 'target' in a ? a.target : 'puzzle' in a ? a.puzzle : 'section' in a ? a.section : ''}`;
+    problems.push(...want.filter((x) => !got.includes(x)).map((x) => `${label}: fact:${x} missing`));
+    problems.push(...got.filter((x) => !want.includes(x)).map((x) => `${label}: fact:${x} extra`));
+    problems.push(...facts.filter((c) => `${c.cause.verb}@${String(c.cause.at)}` !== causeOf(a)).map((c) => `${label}: cause ${c.cause.verb}@${String(c.cause.at)}`));
+    return r;
+  };
+  check({ ...EMPTY_WORLD_STATE, unproved: [] }, { kind: 'enter-section', section: MANOR });
+  for (const s of reached) {
+    for (const a of MECHANIC_RULES.flatMap((m): readonly SectionAction[] => m.actions(w, s))) {
+      const r = check(s, a);
+      const opened = r.effects.find((e) => e.kind === 'puzzle');
+      if (opened !== undefined) {
+        check(r.state, ended(opened.puzzle, 'solved'));
+        check(r.state, ended(opened.puzzle, 'failed'));
+      }
+    }
+    // A run's attempt and hint (O1: no search edge takes them).
+    for (const p of ['drawer', 'gate'].map(pz)) {
+      check(s, { kind: 'attempt-failed', puzzle: p });
+      check(s, { kind: 'hint-opened', puzzle: p, tier: runOf(s, p).hintsOpened + 1 });
+    }
+  }
+  expect(problems.slice(0, 5)).toEqual([]);
+  // The positive control: the walk saw every state and many fact cues.
+  expect([reached.length, cues > reached.length]).toEqual([GOLDEN[RULES_VERSION]?.states, true]);
 });
 
 // ---------------------------------------------------------------------------------------------------------------

@@ -25,8 +25,8 @@ import type { CompiledChapter } from './story/compile.ts';
 import { OUT, chapterPaths, decodeLineFingerprints, decodeStoryUsage, hintIdsOf, paidLeak, planEmit, storyVersion } from './story/emit.ts';
 import type { StoryNames, WorldNeedles } from './story/emit.ts';
 import { ID_SHAPED_RE, fixIds, fixWorldIds, syncLocales } from './story/fix.ts';
-import { buildGraph, writeOnly } from './story/graph.ts';
-import type { ChapterGraph, GraphFacts, WorldRef } from './story/graph.ts';
+import { buildGraph, worldRef, writeOnly } from './story/graph.ts';
+import type { ChapterGraph, GraphFacts } from './story/graph.ts';
 import { LINT_CODES, lintCatalog, lintSources } from './story/lint.ts';
 import type { Finding, LintCode, Severity, SourceChapter, SourceLintInput } from './story/lint.ts';
 import { RETIRED_FILE, checkLocales, decodeEnTable, decodeNameTable, decodeRetired } from './story/locales.ts';
@@ -339,14 +339,6 @@ function readWorlds(root: string, chapters: readonly ChapterListEntry[], out: Fi
     worlds.set(ch.id, d.world === null ? { kind: 'invalid' } : { kind: 'ok', source: d.world, text, lines: worldLines(d.world, key, text) });
   }
   return worlds;
-}
-
-/** The graph's world input (D6): a world that did not decode skips the world-dependent graph codes. */
-function worldRef(w: ChapterWorld | undefined): WorldRef {
-  if (w === undefined || w.kind === 'none') {
-    return { kind: 'none' };
-  }
-  return w.kind === 'invalid' ? { kind: 'invalid' } : { kind: 'ok', body: toPublic(w.source) };
 }
 
 /**
@@ -770,7 +762,8 @@ export function main(argv: readonly string[], repoRoot: string): number {
   // 6. Seeded playthroughs of the chapters, in list order.
   const endings = plans === null ? new Map<ChapterId, ReadonlyMap<KnotName, EndingName>>() : endingKnots(plans);
   const sourceWorlds = new Map([...worlds].flatMap(([ch, w]) => (w.kind === 'ok' ? [[ch, w.source] as const] : [])));
-  const publicWorlds = new Map([...sourceWorlds].map(([ch, w]) => [ch, toPublic(w)]));
+  // The played world carries the decoded `mods`, as the explore controller's does: a module's rules read their data there.
+  const publicWorlds = new Map([...sourceWorlds].map(([ch, w]) => [ch, { ...toPublic(w), mods: w.mods }]));
   const played = playStage(
     root,
     {

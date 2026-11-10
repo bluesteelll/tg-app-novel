@@ -7,21 +7,29 @@
 // rules the player runs.
 //
 // Module `core` of the rules registry: rules/index.ts builds its entry from `actions`, `applyCore` and `reads`, and
-// `reduce` hands every action a writer over the registry (rules/writer.ts), the other modules' write path.
+// `reduce` hands every action a writer over the registry (rules/writer.ts), every rule's write path, core's too: each
+// fact write carries the action's cause, and `reduce` appends the writer's record as `cue` effects (plan (2)).
 //
 // An action that changes no state returns the same state object and no `dirty`, but keeps the effects its rule emits
 // (a lock panel, a reopened puzzle, a re-read text, a resume `room`, `refused`). A change ends with exactly one
 // `dirty`. A reference the story gate would reject (a missing room, item or hotspot) makes the action a no-op, never
 // a throw.
-import { hotspotKey, lockOf, own, runOf, runStep, sectionScope, set, setRun, worldIndex } from '../../explore/reduce.ts';
-import type { Draft, ExploreAction, ExploreEffect, HotspotEntry, WorldIndex } from '../../explore/reduce.ts';
+import { hotspotKey, lockOf, own, runOf, runStep, sectionScope, set, worldIndex } from '../../explore/reduce.ts';
+import type { Draft, ExploreAction, ExploreEffect, HotspotEntry, RunAction, WorldIndex } from '../../explore/reduce.ts';
 import type { PuzzleOutcome, WorldState } from '../../explore/state.ts';
-import type { PuzzleLocalId, SectionId, SfxId } from '../../story/staging.ts';
+import type { PuzzleLocalId, SectionId } from '../../story/staging.ts';
 import type { Hotspot, HotspotKey, ItemId, Lock, RoomId, WorldPublicBody } from '../../world/types.ts';
-import type { ArrivalOut, FactAtom, RulesRegistry, SectionAction } from '../contract.ts';
-import { MECHANIC_RULES } from './index.ts';
+import type { ArrivalOut, Cause, CauseVerb, FactAtom, KernelWorld, RulesRegistry, SectionAction } from '../contract.ts';
+import { APPLY, MECHANIC_RULES } from './index.ts';
+import { keepsSlot } from './use.ts';
 import { added, arrivalOut, createWriter, fire, openKey } from './writer.ts';
 import type { KernelWriter } from './writer.ts';
+
+/** Core's module cue names (its rules entry's `cues`), declared here: derived from the entry, the type would circle
+ *  back through `applyCore`'s own signature. */
+export type CoreCue = 'look' | 'locked' | 'refused' | 'reset';
+/** The writer core's rules write through: a cue it emits is one of its own names. */
+type CoreWriter = KernelWriter<'core', CoreCue>;
 
 function removed<T>(list: readonly T[], v: T): readonly T[] {
   return list.includes(v) ? list.filter((x) => x !== v) : list;
@@ -36,15 +44,15 @@ function cellsOf(s: WorldState, key: HotspotKey, lock: Lock): Array<ItemId | nul
  * The opening action happened at this hotspot (its last insert, its puzzle solved): `onOpen`, then an object's
  * `then` at once. After a remote `unlock` an object's `then` waits for the next tap instead.
  */
-function openAt(d: Draft, key: HotspotKey, hotspot: Hotspot): void {
-  openKey(d, key);
+function openAt(out: CoreWriter, key: HotspotKey, hotspot: Hotspot, cause: Cause): void {
+  openKey(out, key, cause);
   if (hotspot.kind === 'object') {
-    fire(d, `then:${key}`, hotspot.then);
+    fire(out, `then:${key}`, hotspot.then, key, cause);
   }
 }
 
 /** The arrival hook of every module, once per `room` effect: after the room's onEnter, never while a knot is pending. */
-function arrived(out: KernelWriter, room: RoomId): void {
+function arrived(out: CoreWriter, room: RoomId): void {
   if (out.draft.s.pendingStory.length > 0) {
     return;
   }
@@ -56,7 +64,10 @@ function arrived(out: KernelWriter, room: RoomId): void {
   }
 }
 
-function arrive(out: KernelWriter, room: RoomId, sfx: SfxId | null): void {
+/** How a `room` effect enters its room: the move's sound, the room left, the exit taken, the kind of move. */
+type Move = Omit<Extract<ExploreEffect, { kind: 'room' }>, 'kind' | 'room'>;
+
+function arrive(out: CoreWriter, room: RoomId, move: Move, cause: Cause): void {
   const d = out.draft;
   const entry = d.ix.rooms.get(room);
   const section = d.s.section;
@@ -67,20 +78,20 @@ function arrive(out: KernelWriter, room: RoomId, sfx: SfxId | null): void {
   if (own(d.s.lastRoom, section) !== room) {
     set(d, 'lastRoom', { ...d.s.lastRoom, [section]: room });
   }
-  set(d, 'visited', added(d.s.visited, room));
-  d.effects.push({ kind: 'room', room, sfx });
-  fire(d, `enter:${room}`, entry.room.onEnter);
+  out.set('visited', added(d.s.visited, room), cause);
+  d.effects.push({ kind: 'room', room, ...move });
+  fire(out, `enter:${room}`, entry.room.onEnter, null, cause);
   arrived(out, room);
 }
 
-function enterSection(out: KernelWriter, sid: SectionId): void {
+function enterSection(out: CoreWriter, sid: SectionId, cause: Cause): void {
   const d = out.draft;
   const section = d.ix.sections.get(sid);
   if (section === undefined) {
     return;
   }
   if (d.s.section === sid && d.s.room !== null) {
-    d.effects.push({ kind: 'room', room: d.s.room, sfx: null }); // a resume
+    d.effects.push({ kind: 'room', room: d.s.room, sfx: null, from: d.s.room, via: null, how: 'resume' });
     arrived(out, d.s.room);
     return;
   }
@@ -90,21 +101,21 @@ function enterSection(out: KernelWriter, sid: SectionId): void {
     return;
   }
   set(d, 'section', sid);
-  arrive(out, room, null);
+  arrive(out, room, { sfx: null, from: null, via: null, how: 'enter' }, cause);
 }
 
-function eventReturned(out: KernelWriter, sid: SectionId): void {
+function eventReturned(out: CoreWriter, sid: SectionId, cause: Cause): void {
   const d = out.draft;
   if (d.s.pendingStory.length === 0 || d.s.section !== sid) {
     return;
   }
   const rest = d.s.pendingStory.slice(1);
-  set(d, 'pendingStory', rest);
+  out.set('pendingStory', rest, cause);
   const next = rest[0];
   if (next !== undefined) {
     d.effects.push({ kind: 'story', knot: next });
   } else if (d.s.room !== null) {
-    d.effects.push({ kind: 'room', room: d.s.room, sfx: null });
+    d.effects.push({ kind: 'room', room: d.s.room, sfx: null, from: d.s.room, via: null, how: 'return' });
     arrived(out, d.s.room);
   }
 }
@@ -128,7 +139,7 @@ function lockTap(d: Draft, key: HotspotKey, lock: Lock): void {
   }
 }
 
-function tap(out: KernelWriter, key: HotspotKey): void {
+function tap(out: CoreWriter, key: HotspotKey, cause: Cause): void {
   const d = out.draft;
   const entry = here(d, key);
   if (entry === undefined) {
@@ -143,9 +154,10 @@ function tap(out: KernelWriter, key: HotspotKey): void {
   const h = entry.hotspot;
   switch (h.kind) {
     case 'look':
-      d.effects.push({ kind: 'look', text: h.look });
-      set(d, 'examined', added(d.s.examined, key));
-      fire(d, `then:${key}`, h.then);
+      d.effects.push({ kind: 'look', text: h.look, at: key });
+      out.cue('core', 'look', key, null);
+      out.set('examined', added(d.s.examined, key), cause);
+      fire(out, `then:${key}`, h.then, key, cause);
       return;
     case 'take': {
       if (d.s.taken.includes(key)) {
@@ -156,24 +168,24 @@ function tap(out: KernelWriter, key: HotspotKey): void {
         return;
       }
       if ('item' in g) {
-        set(d, 'held', added(d.s.held, g.item));
+        out.set('held', added(d.s.held, g.item), cause);
       } else {
-        set(d, 'docs', added(d.s.docs, g.doc));
+        out.set('docs', added(d.s.docs, g.doc), cause);
       }
-      set(d, 'taken', [...d.s.taken, key]);
-      d.effects.push({ kind: 'got', gift: g });
-      fire(d, `then:${key}`, h.then);
+      out.set('taken', [...d.s.taken, key], cause);
+      d.effects.push({ kind: 'got', gift: g, at: key });
+      fire(out, `then:${key}`, h.then, key, cause);
       return;
     }
     case 'exit':
       if (h.lock !== null && !d.s.open.includes(key)) {
         lockTap(d, key, h.lock);
       } else if ('room' in h.to) {
-        arrive(out, h.to.room, h.sfx);
+        arrive(out, h.to.room, { sfx: h.sfx, from: entry.room, via: key, how: 'walk' }, cause);
       } else {
         // I-W's re-entry rule: a leave changes only `section` (sectionKey ignores it and lastRoom).
         set(d, 'section', null);
-        d.effects.push({ kind: 'leave', knot: h.to.story });
+        d.effects.push({ kind: 'leave', knot: h.to.story, from: entry.room, via: key });
       }
       return;
     case 'object':
@@ -182,9 +194,12 @@ function tap(out: KernelWriter, key: HotspotKey): void {
         return;
       }
       if (h.look !== null) {
-        d.effects.push({ kind: 'look', text: h.look });
+        d.effects.push({ kind: 'look', text: h.look, at: key });
       }
-      fire(d, `then:${key}`, h.then);
+      // Every tap of an open or lockless object plays its look, with or without a text (an opened drawer whose `then`
+      // has fired still answers the tap: plan (4), every step yields a cue).
+      out.cue('core', 'look', key, null);
+      fire(out, `then:${key}`, h.then, key, cause);
       return;
     default: {
       const never: never = h;
@@ -211,37 +226,66 @@ function fit(ix: WorldIndex, s: WorldState, key: HotspotKey, item: ItemId): { ho
   return index === -1 ? null : { hotspot: entry.hotspot, lock, index };
 }
 
-function insert(d: Draft, key: HotspotKey, item: ItemId): void {
-  if (d.s.section === null || d.s.room === null || d.s.pendingStory.length > 0) {
-    return;
-  }
+/**
+ * The fit and the writes of an insert, shared with `use`'s lock fallback (engine plan §6.1): the item fills the first
+ * free slot that accepts it (a keeping slot, `keepsSlot`, records it and leaves it held, never used), and the last
+ * filled slot opens the lock or offers its puzzle. False, with nothing written or emitted: no slot takes it.
+ */
+export function insertItem(out: KernelWriter, key: HotspotKey, item: ItemId, cause: Cause): boolean {
+  const d = out.draft;
   const f = fit(d.ix, d.s, key, item);
   if (f === null) {
-    d.effects.push({ kind: 'refused', reason: 'no-fit' });
-    return;
+    return false;
   }
   const cells = cellsOf(d.s, key, f.lock).map((c, i) => (i === f.index ? item : c));
-  set(d, 'slots', { ...d.s.slots, [key]: cells });
-  set(d, 'held', removed(d.s.held, item));
-  set(d, 'used', added(d.s.used, item));
+  out.slots(key, cells, cause);
+  if (!keepsSlot(out.world, key, f.index)) {
+    out.set('held', removed(d.s.held, item), cause);
+    out.set('used', added(d.s.used, item), cause);
+  }
   if (cells.some((c) => c === null)) {
-    return;
+    return true;
   }
   const p = f.lock.puzzle;
   if (p === null) {
-    openAt(d, key, f.hotspot);
+    openAt(out, key, f.hotspot, cause);
   } else if (d.ix.puzzles.has(p) && runOf(d.s, p).outcome === null) {
     d.effects.push({ kind: 'puzzle', puzzle: p, hotspot: key });
   }
+  return true;
 }
 
-function puzzleEnded(d: Draft, p: PuzzleLocalId, outcome: PuzzleOutcome): void {
+/** An insert from the lock panel: refused (and nothing written) when no slot takes the item. */
+function insert(out: CoreWriter, key: HotspotKey, item: ItemId): void {
+  const d = out.draft;
+  if (d.s.section === null || d.s.room === null || d.s.pendingStory.length > 0) {
+    return;
+  }
+  if (!insertItem(out, key, item, { verb: 'insert', at: key, item, via: null })) {
+    d.effects.push({ kind: 'refused', at: key, item, reason: 'no-fit' });
+    out.cue('core', 'refused', key, item);
+  }
+}
+
+/**
+ * The kernel's run rules (`runStep`, shared with `runReduce`) over a scratch draft of the same state, the run they write
+ * then recorded through the writer: one run definition, and the change still a fact cue.
+ */
+function runIn(out: CoreWriter, a: RunAction, cause: Cause): void {
+  const d = out.draft;
+  const scratch: Draft = { s: d.s, effects: d.effects, ix: d.ix };
+  runStep(scratch, a);
+  out.run(a.puzzle, runOf(scratch.s, a.puzzle), cause);
+}
+
+function puzzleEnded(out: CoreWriter, p: PuzzleLocalId, outcome: PuzzleOutcome, cause: Cause): void {
+  const d = out.draft;
   if (!d.ix.puzzles.has(p)) {
     return;
   }
   const key = d.ix.puzzleLock.get(p);
   if (key === undefined) {
-    runStep(d, { kind: 'puzzle-ended', puzzle: p, outcome }); // a linear puzzle: the kernel's run rule
+    runIn(out, { kind: 'puzzle-ended', puzzle: p, outcome }, cause); // a linear puzzle: the kernel's run rule
     return;
   }
   const run = runOf(d.s, p);
@@ -249,36 +293,41 @@ function puzzleEnded(d: Draft, p: PuzzleLocalId, outcome: PuzzleOutcome): void {
   if (run.outcome !== null || outcome === 'abandoned') {
     return;
   }
-  setRun(d, p, { ...run, outcome });
+  out.run(p, { ...run, outcome }, cause);
   const entry = d.ix.hotspots.get(key);
   const lock = entry === undefined ? null : lockOf(entry.hotspot);
   if (entry === undefined || lock === null) {
     return;
   }
   if (outcome === 'solved') {
-    openAt(d, entry.key, entry.hotspot);
+    openAt(out, entry.key, entry.hotspot, cause);
   } else {
-    fire(d, `fail:${entry.key}`, lock.onFail);
+    fire(out, `fail:${entry.key}`, lock.onFail, entry.key, cause);
   }
 }
 
-/** Core's `apply`: its rules write the draft directly (the writer is the write path of the other modules). */
-export function applyCore(_w: WorldPublicBody, a: ExploreAction, out: KernelWriter): void {
+/**
+ * Core's `apply`, the handler of every kernel action kind (`APPLY`, rules/index.ts): every fact write goes through the
+ * writer with the action's cause (a puzzle's run acts at its lock, null for a linear one). The dispatch never hands it
+ * another module's action.
+ */
+export function applyCore(_w: WorldPublicBody, a: ExploreAction, out: CoreWriter): void {
   const d = out.draft;
+  const cause = (verb: CauseVerb, at: HotspotKey | null): Cause => ({ verb, at, item: null, via: null });
   switch (a.kind) {
     case 'enter-section':
-      return enterSection(out, a.section);
+      return enterSection(out, a.section, cause('enter', null));
     case 'event-returned':
-      return eventReturned(out, a.section);
+      return eventReturned(out, a.section, cause('return', null));
     case 'tap':
-      return tap(out, a.hotspot);
+      return tap(out, a.hotspot, cause('tap', a.hotspot));
     case 'insert':
-      return insert(d, a.hotspot, a.item);
+      return insert(out, a.hotspot, a.item);
     case 'attempt-failed':
     case 'hint-opened':
-      return runStep(d, a); // the kernel's run rules, shared with runReduce
+      return runIn(out, a, cause('fail', d.ix.puzzleLock.get(a.puzzle) ?? null));
     case 'puzzle-ended':
-      return puzzleEnded(d, a.puzzle, a.outcome);
+      return puzzleEnded(out, a.puzzle, a.outcome, cause(a.outcome === 'solved' ? 'solve' : 'fail', d.ix.puzzleLock.get(a.puzzle) ?? null));
     default: {
       const never: never = a;
       return never;
@@ -288,7 +337,7 @@ export function applyCore(_w: WorldPublicBody, a: ExploreAction, out: KernelWrit
 
 /**
  * The one writer of WorldState while a section is current (a linear puzzle's run: the kernel's `runReduce`). `rules`
- * is the registry whose hooks run (a fixture registry in tests).
+ * is the registry whose hooks run (a fixture registry in tests); the action goes to its kind's handler (`APPLY`).
  */
 export function reduce(
   w: WorldPublicBody,
@@ -298,7 +347,13 @@ export function reduce(
 ): { state: WorldState; effects: ExploreEffect[] } {
   const d: Draft = { s, effects: [], ix: worldIndex(w) };
   const idle = s.pendingStory.length === 0;
-  applyCore(w, a, createWriter(d, w, rules));
+  // Read here, never at load (the core.ts <-> index.ts cycle); TS cannot correlate `APPLY[a.kind]` with `a`.
+  const apply = APPLY[a.kind] as (w: KernelWorld, a: SectionAction, out: KernelWriter) => void;
+  const out = createWriter(d, w, rules);
+  apply(w, a, out);
+  for (const cue of out.record) {
+    d.effects.push({ kind: 'cue', cue });
+  }
   const head = d.s.pendingStory[0];
   if (idle && head !== undefined) {
     d.effects.push({ kind: 'story', knot: head });

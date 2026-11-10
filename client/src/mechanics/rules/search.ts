@@ -4,7 +4,7 @@
 // only the explore controller imports (the `rules-lazy` arch rule); the story tool runs the same functions. Never
 // throws on save data. Pure.
 import { RESUME_STATE_CAP, lockOf, own, runOf, sectionScope, worldIndex } from '../../explore/reduce.ts';
-import type { ExploreAction, ExploreEffect, Step, Successor } from '../../explore/reduce.ts';
+import type { ExploreAction, ExploreEffect, SectionScope, Step, Successor } from '../../explore/reduce.ts';
 import type { PuzzleOutcome, PuzzleRun, WorldState } from '../../explore/state.ts';
 import type { PuzzleLocalId, SectionId } from '../../story/staging.ts';
 import type { HotspotKey, ItemId, Lock, RoomId, WorldPublicBody } from '../../world/types.ts';
@@ -249,13 +249,38 @@ function outside<T extends string>(list: readonly T[], keys: ReadonlySet<T>): T[
 }
 
 /**
+ * S's own facts (engine plan §4 "Two scopes"): the kernel's `sectionScope` plus, from each module of `rules`, its
+ * `scope` hook's items and `fired` keys (the items its data gives in S, the keys its triggers there write). The
+ * `sectionScope` object itself when no module adds one; not cached (a hook scans its module's data in S). The reset
+ * and the gating lints read it; a module's `reads` compose the same hook, so the section key and the reset agree.
+ */
+export function ownScope(w: WorldPublicBody, section: SectionId, rules: RulesRegistry = MECHANIC_RULES): SectionScope {
+  const scope = sectionScope(w, section);
+  const items: ItemId[] = [];
+  const fired: string[] = [];
+  for (const m of rules) {
+    const extra = m.scope?.(w, section);
+    if (extra !== undefined) {
+      items.push(...extra.items.filter((x) => !scope.items.has(x)));
+      fired.push(...extra.fired.filter((x) => !scope.fired.has(x)));
+    }
+  }
+  if (items.length === 0 && fired.length === 0) {
+    return scope;
+  }
+  return { ...scope, items: new Set([...scope.items, ...items]), fired: new Set([...scope.fired, ...fired]) };
+}
+
+/**
  * Restarts section S: every key of S's rooms and hotspots leaves taken / examined / open / slots / fired / visited,
  * the runs of S's lock puzzles and the items and docs S gives are removed, `section` and `room` become null,
- * `lastRoom[S]` and `pendingStory` are cleared, and S leaves `unproved`. Callers pass a state whose section is S or
- * null, so the cleared `section` / `room` / `pendingStory` are never another section's.
+ * `lastRoom[S]` and `pendingStory` are cleared, and S leaves `unproved`. "S gives" and S's `fired` keys are S's own
+ * facts (`ownScope`): a module rule's gift and key go too, so a restart reaches the state the build started from (X9).
+ * Callers pass a state whose section is S or null, so the cleared `section` / `room` / `pendingStory` are never
+ * another section's.
  */
-export function resetSection(w: WorldPublicBody, s: WorldState, section: SectionId): WorldState {
-  const scope = sectionScope(w, section);
+export function resetSection(w: WorldPublicBody, s: WorldState, section: SectionId, rules: RulesRegistry = MECHANIC_RULES): WorldState {
+  const scope = ownScope(w, section, rules);
   const slots: Record<HotspotKey, ReadonlyArray<ItemId | null>> = {};
   for (const [key, cells] of entriesOf(s.slots)) {
     if (!scope.hotspots.has(key)) {
@@ -304,7 +329,7 @@ function enter(section: SectionId): ExploreAction {
  * the registry whose hooks the entry runs (a fixture registry in tests; `searchSection` takes it in its options).
  */
 export function sectionEntry(w: WorldPublicBody, s: WorldState, section: SectionId, rules: RulesRegistry = MECHANIC_RULES): WorldState {
-  return reduce(w, resetSection(w, s, section), enter(section), rules).state;
+  return reduce(w, resetSection(w, s, section, rules), enter(section), rules).state;
 }
 
 export type SearchOptions = {

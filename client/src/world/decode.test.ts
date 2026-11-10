@@ -330,7 +330,7 @@ test('toPublic: strips solution and hints, keeps tier count', () => {
   expect(text).not.toContain('"hints"');
   expect(text).not.toContain('ch1.drawer.h1aa');
   const back = decodeWorldPublic({ ...structuredClone(pub), version: '0123456789abcdef' });
-  expect(back).toEqual({ ok: true, value: { ...pub, version: '0123456789abcdef', mods: { core: null } } });
+  expect(back).toEqual({ ok: true, value: { ...pub, version: '0123456789abcdef', mods: decoded(raw).mods } });
 });
 
 test('toServer: answer shape from the type rules', () => {
@@ -465,7 +465,7 @@ test('world: an owned key reaches its module and nothing else', () => {
   ];
   expect(mods['probe']).toEqual(owned);
   expect(mods['core']).toBeNull();
-  expect(Object.keys(mods)).toEqual(['core', 'probe']);
+  expect(Object.keys(mods)).toEqual([...MECHANIC_DATA.map((m) => m.id), 'probe']);
   // The kernel value is the plain manor's: no place keeps an owned key, the gate's onFail keeps its two kernel effects.
   expect(w).toEqual({ ...decoded(), mods: w.mods });
   // Emission puts every key back where it was written, after the kernel's keys, and the effect at its source index.
@@ -522,7 +522,7 @@ test('world: two key-owning modules each get only their own keys at their own pl
     { place: 'effect', id: 'fail:hall.gate#2', path: `${GATE}.lock.onFail.2`, raw: { probe_e: 6 } },
     { place: 'hotspot', id: 'hall.inscription', path: `${HALL}.hotspots.3`, raw: { say: SAY } },
   ]);
-  expect(Object.keys(mods)).toEqual(['core', 'probe', 'echo']);
+  expect(Object.keys(mods)).toEqual([...MECHANIC_DATA.map((m) => m.id), 'probe', 'echo']);
   expect(r.value).toEqual({ ...decoded(), mods: r.value.mods });
   // Both modules' room keys follow the kernel's in registry order; both effects land at their source indices.
   const body = toPublic(r.value, ECHOED);
