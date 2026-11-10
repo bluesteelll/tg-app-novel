@@ -33,6 +33,8 @@ function describe(w: WorldPublicBody, from: WorldState, step: Step): string {
       return `insert ${step.hotspot} ${step.item}`;
     case 'event-returned':
       return `return from ${from.pendingStory[0] ?? '?'}`;
+    case 'use':
+      return `use ${step.item} on ${step.target}`;
     case 'closed':
     case 'puzzle-ended': {
       const opened = opener(w, from, step.puzzle);

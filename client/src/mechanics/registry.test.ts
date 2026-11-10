@@ -8,10 +8,10 @@ import type { KnotName, PuzzleLocalId, SectionId } from '../story/staging.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { DocId, HotspotKey, ItemId, RoomId, WorldPublicBody } from '../world/types.ts';
 import { KERNEL_FACT_KINDS } from './contract.ts';
-import type { Cause, MechanicData, MechanicId, MechanicRules, RulesRegistry, Writer } from './contract.ts';
+import type { Cause, MechanicData, MechanicId, MechanicRules, RulesRegistry, SectionAction, Writer } from './contract.ts';
 import { MECHANIC_DATA } from './data/index.ts';
 import { reduce } from './rules/core.ts';
-import { MECHANIC_RULES } from './rules/index.ts';
+import { APPLY, MECHANIC_RULES } from './rules/index.ts';
 import { searchSection, sectionEntry, successors } from './rules/search.ts';
 import { createWriter } from './rules/writer.ts';
 
@@ -227,18 +227,107 @@ test('mechanics: the rules registry loads from either module first', async () =>
   // and the bundle throw on a `const` read across the cycle before it is initialized; vitest's module runner reads it
   // as undefined, so every member of the entry is compared, not only the functions.
   const w = world({ hall: room([look('statue')]) });
-  const checkGraph = (index: typeof import('./rules/index.ts'), core: typeof import('./rules/core.ts')): void => {
+  const checkGraph = (index: typeof import('./rules/index.ts'), core: typeof import('./rules/core.ts'), use: typeof import('./rules/use.ts')): void => {
     expect(index.MECHANIC_RULES).toStrictEqual([
       { id: 'core', actions: core.actions, apply: core.applyCore, reads: core.reads, cues: ['look', 'locked', 'refused', 'reset'] },
+      { id: 'use', actions: use.useActions, apply: use.applyUse, reads: use.useReads, scope: use.useScope, cues: ['refused', 'said'] },
     ]);
-    expect(core.reduce(w, at('hall'), tap('hall.statue')).effects.map((e) => e.kind)).toEqual(['look', 'dirty']);
+    expect(core.reduce(w, at('hall'), tap('hall.statue')).effects.map((e) => e.kind)).toEqual(['look', 'cue', 'cue', 'dirty']);
   };
-  vi.resetModules();
-  const coreFirst = await import('./rules/core.ts');
-  checkGraph(await import('./rules/index.ts'), coreFirst);
-  vi.resetModules();
-  const indexFirst = await import('./rules/index.ts');
-  checkGraph(indexFirst, await import('./rules/core.ts'));
+  // rules/use.ts and rules/conditions.ts sit on the cycle too (use.ts <-> core.ts, conditions.ts -> index.ts).
+  const firsts = [() => import('./rules/core.ts'), () => import('./rules/index.ts'), () => import('./rules/use.ts'), () => import('./rules/conditions.ts')];
+  for (const first of firsts) {
+    vi.resetModules();
+    await first();
+    checkGraph(await import('./rules/index.ts'), await import('./rules/core.ts'), await import('./rules/use.ts'));
+  }
+});
+
+/** The source of a world whose `use` data holds every form: a gated rule, a say, a keeping slot, both refusals. */
+function useSource(): Json {
+  const box = { ...object('box', [], { slots: [{ accepts: 'lens', keep: true }, { accepts: 'key' }], puzzle: null, locked: txt(), onOpen: [], onFail: [] }) };
+  box['uses'] = [
+    { item: 'key', when: { all: [{ held: 'lens' }, { not: { open: 'hall.box' } }] }, do: [{ give: 'lens' }, { story: 'voice' }], say: txt() },
+    { item: 'lens', keep: true },
+  ];
+  return {
+    format: 1,
+    items: { key: { name: txt(), desc: txt(), glyph: 'key', refuse: txt() }, lens: { name: txt(), desc: txt(), glyph: 'key' } },
+    docs: {},
+    puzzles: {},
+    sections: { s: { start: 'hall', bgm: null, rooms: { hall: { ...room([box, exit('out', { story: 'end' })]), refuse: txt() } } } },
+  };
+}
+
+test('mechanics: the data registry loads from any module first', async () => {
+  // data/use.ts imports data/conditions.ts (`decodeCond`), which imports data/index.ts (its default registry), which
+  // holds use's entry: the same cycle as the rules registry's. index.ts builds the entry from use.ts's function
+  // declarations, so each load order leaves the registry whole (every member compared: vitest's runner reads an
+  // uninitialized `const` as undefined), and a decode through the freshly loaded graph reads a `when`.
+  const checkData = (index: typeof import('./data/index.ts'), core: typeof import('./data/core.ts'), use: typeof import('./data/use.ts')): void => {
+    expect(index.MECHANIC_DATA).toStrictEqual([
+      core.core,
+      {
+        id: 'use',
+        rules: 'chunk',
+        owns: { hotspot: ['uses'], slot: ['keep'], item: ['refuse'], room: ['refuse'], trigger: 'use', facts: [] },
+        decode: use.decodeUse,
+        encode: use.encodeUse,
+        normalize: use.normalizeUse,
+      },
+    ]);
+  };
+  const firsts = [() => import('./data/use.ts'), () => import('./data/conditions.ts'), () => import('./data/index.ts'), () => import('./data/core.ts')];
+  for (const first of firsts) {
+    vi.resetModules();
+    await first();
+    checkData(await import('./data/index.ts'), await import('./data/core.ts'), await import('./data/use.ts'));
+    const decoded = (await import('../world/decode.ts')).decodeWorldSource(useSource());
+    expect(decoded.ok ? decoded.value.mods.use.uses[k('hall.box')]?.[0]?.when : decoded.error).toEqual({ all: [{ held: 'lens' }, { not: { open: 'hall.box' } }] });
+  }
+});
+
+/** Where `v` is not plain JSON (a Map, a Set, a class instance, a function, undefined, a non-finite number), by path. */
+function notJson(v: unknown, path: string): string[] {
+  if (v === null || typeof v === 'string' || typeof v === 'boolean') {
+    return [];
+  }
+  if (typeof v === 'number') {
+    return Number.isFinite(v) ? [] : [`${path}: ${String(v)}`];
+  }
+  if (Array.isArray(v)) {
+    return v.flatMap((x, i) => notJson(x, `${path}.${i}`));
+  }
+  if (typeof v === 'object') {
+    const proto: unknown = Object.getPrototypeOf(v);
+    if (proto !== Object.prototype && proto !== null) {
+      return [`${path}: ${Object.prototype.toString.call(v)}`];
+    }
+    return Object.entries(v).flatMap(([key, x]) => notJson(x, `${path}.${key}`));
+  }
+  return [`${path}: ${typeof v}`];
+}
+
+test("mechanics: every module's decoded data is plain JSON", () => {
+  // The text walk (`world/text-unwalked`) and the version hash read a module's `D` as data (data/index.ts's header).
+  const r = decodeWorldSource(useSource());
+  if (!r.ok) {
+    throw new Error(`invariant: the fixture world decodes: ${JSON.stringify(r.error)}`);
+  }
+  const mods: Record<string, unknown> = r.value.mods;
+  for (const m of MECHANIC_DATA) {
+    const d = mods[m.id];
+    expect(d, m.id).toStrictEqual(JSON.parse(JSON.stringify(d)));
+    expect(notJson(d, m.id)).toEqual([]);
+  }
+  // The positive control: the fixture holds every form of `use`'s data.
+  expect([Object.keys(r.value.mods.use.uses), r.value.mods.use.keep, Object.keys(r.value.mods.use.refuse.items), Object.keys(r.value.mods.use.refuse.rooms)]).toEqual([
+    ['hall.box'],
+    ['hall.box#0'],
+    ['key'],
+    ['hall'],
+  ]);
+  expect(notJson(new Map(), 'm')).toEqual(['m: [object Map]']);
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -246,6 +335,68 @@ test('mechanics: the rules registry loads from either module first', async () =>
 
 const [CORE] = MECHANIC_RULES;
 const DIRTY = { kind: 'dirty' } as const;
+
+test("mechanics: a dispatch over the registry needs the kernel's writer", () => {
+  const w = world({ hall: room([look('statue')]) });
+  const s = at('hall');
+  // The registry's own `apply` type, the one the dispatch and `out.rules` walk: the kernel's writer drives core's rules.
+  const apply: RulesRegistry[number]['apply'] = CORE.apply;
+  const d: Draft = { s, effects: [], ix: worldIndex(w) };
+  apply(w, tap('hall.statue'), createWriter(d, w, MECHANIC_RULES));
+  expect(d.s.examined).toEqual(['hall.statue']);
+  // A module's plain `Writer` lacks the draft, world and registry core's rules write through: the dispatch refuses it.
+  const plain: Writer = { state: s, set: () => undefined, run: () => undefined, fire: () => undefined, effect: () => undefined, cue: () => undefined };
+  const refused = (): void => {
+    // @ts-expect-error -- a plain Writer is not the kernel's writer
+    apply(w, tap('hall.statue'), plain);
+  };
+  expect(refused).toBeTypeOf('function'); // a type check only: never run
+});
+
+test('mechanics: a module emits only the cue names its rules half declares', () => {
+  const fx = {
+    id: 'fx',
+    actions: () => [],
+    apply: (_w, _a, out) => {
+      out.cue('fx', 'ok', null, null);
+      // Type checks only, never run: a name the module does not declare, and another module's id.
+      const refused = (): void => {
+        // @ts-expect-error -- 'other' is no cue name of module fx
+        out.cue('fx', 'other', null, null);
+        // @ts-expect-error -- module fx emits under its own id only
+        out.cue('core', 'ok', null, null);
+      };
+      void refused;
+    },
+    reads: () => [],
+    cues: ['ok'] as const,
+  } satisfies MechanicRules<'fx', { kind: 'fx' }, 'ok'>;
+  const w = world({ hall: room([look('statue')]) });
+  const out = createWriter({ s: at('hall'), effects: [], ix: worldIndex(w) }, w, [CORE, fx]);
+  fx.apply(w, { kind: 'fx' }, out);
+  expect(out.cues).toEqual([{ module: 'fx', name: 'ok', at: null, item: null }]);
+});
+
+test('mechanics: every action kind has one handler', () => {
+  // The registry's action kinds: a record check holds to the derived union, so a kind missing or extra fails check.
+  const kinds = {
+    'enter-section': true,
+    'event-returned': true,
+    tap: true,
+    insert: true,
+    'attempt-failed': true,
+    'hint-opened': true,
+    'puzzle-ended': true,
+    use: true,
+  } satisfies Record<SectionAction['kind'], true>;
+  expect(Object.keys(APPLY).sort()).toEqual(Object.keys(kinds).sort());
+  expect(Object.values(APPLY).every((handler) => typeof handler === 'function')).toBe(true);
+  // A dispatch map without a handler for `tap` fails check.
+  const { tap: _tap, ...rest } = APPLY;
+  // @ts-expect-error -- the map lacks the kind `tap`
+  const partial: typeof APPLY = rest;
+  expect(Object.keys(partial)).not.toContain('tap');
+});
 
 test('mechanics: a hotspot a module claims routes its tap to the module', () => {
   // The statue is an object whose `then` gives a coin with a look text: core's tap would show the text and give it.
@@ -270,7 +421,7 @@ test('mechanics: a hotspot a module claims routes its tap to the module', () => 
   const registry = [CORE, probe];
   const s = at('hall');
   const r = reduce(w, s, tap('hall.statue'), registry);
-  expect(r.effects).toEqual([DIRTY]);
+  expect(r.effects).toEqual([{ kind: 'cue', cue: { kind: 'fact', fact: { kind: 'examined', id: 'hall.statue' }, change: 'added', cause } }, DIRTY]);
   expect(r.state.examined).toEqual(['hall.statue']);
   expect(r.state.held).toEqual([]);
   const [out] = writers;

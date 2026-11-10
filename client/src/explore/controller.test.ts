@@ -257,6 +257,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/** The kernel's effects of a list, in order: every effect but the writer's `cue` effects. */
+const kernelEffects = <E extends { readonly kind: string }>(effects: readonly E[]): E[] => effects.filter((e) => e.kind !== 'cue');
+
 function emptyView(): ExploreViewStore {
   return { layer: null, panel: null, hotspots: [], reveal: false, items: [], docs: [], lock: null };
 }
@@ -265,8 +268,9 @@ type Harness = {
   c: ExploreController;
   host: { clientWidth: number; clientHeight: number };
   view: ExploreViewStore;
-  /** Scene calls and effects, in the order they happened. */
+  /** Scene calls and the kernel's effects, in the order they happened. */
   log: string[];
+  /** The kernel's effects (`kernelEffects`): the writer's cue effects are the yields' to play. */
   effects: ExploreEffect[];
   froms: Array<AssetManifest | undefined>;
   ro: FakeRO;
@@ -300,8 +304,10 @@ function harness(w: WorldPublic, o: { scene?: ExploreControllerDeps['scene']; ma
     stageHost: host as unknown as HTMLElement, // the controller reads only the two sizes and observes the element
   });
   c.onEffect((e) => {
-    effects.push(e);
-    log.push(`effect ${e.kind}`);
+    for (const x of kernelEffects([e])) {
+      effects.push(x);
+      log.push(`effect ${x.kind}`);
+    }
   });
   const ro = FakeRO.last;
   if (ro === null) {
@@ -364,7 +370,7 @@ test('controller: enter admits an unproved section', () => {
   const h = harness(house(2));
   h.c.enter(sec('house'), { ...s, unproved: [sec('house')] });
   expect(h.effects[0]).toEqual({ kind: 'reset', section: 'house' });
-  expect(h.effects[1]).toEqual({ kind: 'room', room: 'hall', sfx: null });
+  expect(h.effects[1]).toEqual({ kind: 'room', room: 'hall', sfx: null, from: null, via: null, how: 'enter' });
   expect(h.c.state().open).not.toContain('hall.to_vault');
   expect(h.c.state().unproved).toEqual([]);
   // The same yield arriving as an action takes the same route: the controller never reduces `enter-section` itself.
@@ -376,7 +382,7 @@ test('controller: enter admits an unproved section', () => {
   y.c.dispatch(enterAction('house'));
   expect(y.effects.slice(before, before + 2)).toEqual([
     { kind: 'reset', section: 'house' },
-    { kind: 'room', room: 'hall', sfx: null },
+    { kind: 'room', room: 'hall', sfx: null, from: null, via: null, how: 'enter' },
   ]);
   expect(y.c.state().open).not.toContain('hall.to_vault');
   expect(y.c.state().unproved).toEqual([]);
@@ -394,7 +400,7 @@ test('controller: a save the new world cannot produce resets at its first entry'
   const h = harness(house(2));
   h.c.enter(sec('house'), r.state);
   expect(h.effects[0]).toEqual({ kind: 'reset', section: 'house' });
-  expect(h.effects[1]).toEqual({ kind: 'room', room: 'hall', sfx: null });
+  expect(h.effects[1]).toEqual({ kind: 'room', room: 'hall', sfx: null, from: null, via: null, how: 'enter' });
   expect(h.c.state().open).not.toContain('hall.to_vault');
   expect(h.c.state().unproved).toEqual([]);
 });
@@ -443,7 +449,7 @@ test('controller: inside an event knot the return proves the section', () => {
   const before = h.effects.length;
   h.c.enter(CRYPT, saved);
   expect(h.effects[before]).toEqual({ kind: 'reset', section: 'crypt' });
-  expect(h.effects.slice(before + 1)).toEqual([{ kind: 'room', room: 'hall', sfx: null }, { kind: 'dirty' }]);
+  expect(h.effects.slice(before + 1)).toEqual([{ kind: 'room', room: 'hall', sfx: null, from: null, via: null, how: 'enter' }, { kind: 'dirty' }]);
   expect(h.c.state()).toEqual(sectionEntry(v2, EMPTY_WORLD_STATE, CRYPT));
   expect(h.c.state().pendingStory).toEqual([]);
   expect(calls).toEqual([false, true, false]);
@@ -455,7 +461,7 @@ test('controller: inside an event knot the return proves the section', () => {
   y.c.dispatch(tap('hall.to_side'));
   const from = y.effects.length;
   y.c.enter(CRYPT, saved);
-  expect(y.effects.slice(from)).toEqual([{ kind: 'room', room: 'cellar', sfx: null }, { kind: 'dirty' }]);
+  expect(y.effects.slice(from)).toEqual([{ kind: 'room', room: 'cellar', sfx: null, from: 'cellar', via: null, how: 'return' }, { kind: 'dirty' }]);
   expect(y.c.state().pendingStory).toEqual([]);
   expect(y.c.state().unproved).toEqual([]);
   expect(kept).toEqual([false, true]);
@@ -883,7 +889,7 @@ test('controller: inventory and lock views follow the state', () => {
   expect(h.view.lock).toEqual({ key: 'hall.gate', title: 'exit gate', locked: 'locked', slots: [null, null, null], refused: false });
   // An insert no slot takes (the moon medal is not held): "doesn't fit", the slots unchanged.
   h.c.dispatch({ kind: 'insert', hotspot: k('hall.gate'), item: 'medal_moon' as ItemId });
-  expect(h.effects.at(-1)).toEqual({ kind: 'refused', reason: 'no-fit' });
+  expect(h.effects.at(-1)).toEqual({ kind: 'refused', at: 'hall.gate', item: 'medal_moon', reason: 'no-fit' });
   expect(h.view.lock?.refused).toBe(true);
   expect(h.view.lock?.slots).toEqual([null, null, null]);
   // The sun medal fills its slot and leaves the inventory; the refusal is over.

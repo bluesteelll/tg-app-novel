@@ -144,7 +144,8 @@ export const CUE_MOTIONS: { readonly [K in Exclude<CueKey, ControlKey>]: MotionS
   'fact:open:removed': row('iris-back', 360, 'box'),
   'fact:slot:added': row('drop', 420, 'ribbon', { resolveAt: 'emit', haptic: 'light' }),
   'fact:slot:removed': row('fly', 480, 'ribbon', { with: [SLOT_PULSE] }),
-  'fact:fired:added': row('pulse', 420, 'box'),
+  // A room's `onEnter` (a section entry, a walk) fires with no hotspot: its trigger sweeps the stage (08b).
+  'fact:fired:added': row('pulse', 420, 'box', { byCause: { enter: row('sweep', 600, 'stage') } }),
   'fact:fired:removed': row('pulse-back', 420, 'box'),
   'fact:visited:added': row('vignette', 600, 'stage', {
     with: [{ preset: 'caption', ms: 1200, target: 'stage', reduced: 'fade' }],
@@ -209,6 +210,10 @@ export const CUE_MOTIONS: { readonly [K in Exclude<CueKey, ControlKey>]: MotionS
   'module:core:locked': row('shake', 360, 'box', { haptic: 'error' }),
   'module:core:refused': row('wobble', 360, 'box', { haptic: 'error' }),
   'module:core:reset': row('sweep-back', 600, 'stage'),
+  // `use`'s (08b): a refused item wobbles at its target and flies back to the ribbon; a rule's run glints (its text, if
+  // any, is the `look` effect's toast).
+  'module:use:refused': row('wobble', 360, 'box', { haptic: 'error', with: [{ preset: 'fly', ms: 480, target: 'ribbon', reduced: 'fade' }] }),
+  'module:use:said': row('glint', 420, 'box'),
 };
 
 /** Control keys: a default per trigger kind and overrides for the core controls; a type or module control takes its

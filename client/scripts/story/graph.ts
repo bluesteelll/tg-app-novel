@@ -4,14 +4,18 @@
 // input) and the chapter's ID'd lines. From LW3 the yield edges (STAGING-DSL §8 "Yield edges"; PUZZLES-PLAN §8 knot
 // index) and the yield codes against the chapter's world (`puzzle/*`, `explore/*`), and the VARs each chapter assigns
 // and reads (`vars/write-only` across the chapters). Pure: no node:*, no inkjs; tags are read only through `parseTags`.
-import { lockOf, worldIndex } from '../../src/explore/reduce.ts';
+import { lockOf, own, worldIndex } from '../../src/explore/reduce.ts';
+import type { KernelWorld } from '../../src/mechanics/contract.ts';
 import type { AssetId, AssetIndex, ChapterId, CharId, KnotName, LineId, SectionId, StagingCommand, VarName, YieldCommand } from '../../src/story/staging.ts';
 import { parseTags, tagKind } from '../../src/story/tags.ts';
-import type { Room, RoomId, WorldPublicBody } from '../../src/world/types.ts';
+import { toPublic } from '../../src/world/decode.ts';
+import type { Room, RoomId, WorldPublicBody, WorldSource } from '../../src/world/types.ts';
 import { classify, openingTagLines, unescapeInk } from './classify.ts';
 import type { Divert, LineClass, RawTag, SourceLine } from './classify.ts';
 import { GLOBALS_PATH, LINT_CODES, tagsOf } from './lint.ts';
 import type { Finding, LintCode, SourceChapter } from './lint.ts';
+import { MECHANIC_STORIES } from './mechanics/index.ts';
+import type { StoryList } from './mechanics/index.ts';
 import type { VarLiteral } from './world.ts';
 
 /** A player-facing line with its ID: `text` is as displayed (speaker prefix stripped, ink escapes resolved). */
@@ -54,9 +58,12 @@ export type ChapterGraph = {
 };
 /**
  * The chapter's world as the graph sees it: none (no world.json), invalid (it failed `world/schema`: the
- * world-dependent codes are skipped, so one broken file is not also one finding per tag), or its public body.
+ * world-dependent codes are skipped, so one broken file is not also one finding per tag), or its public body with the
+ * decoded `mods` (a section's module data names knots too: `sectionKnots`).
  */
-export type WorldRef = { kind: 'none' } | { kind: 'invalid' } | { kind: 'ok'; body: WorldPublicBody };
+export type WorldRef = { kind: 'none' } | { kind: 'invalid' } | { kind: 'ok'; body: KernelWorld };
+/** A chapter's world as the story gate decoded it: none (no world.json), a file that did not decode, or its source. */
+export type WorldInput = { kind: 'none' } | { kind: 'invalid' } | { kind: 'ok'; source: WorldSource };
 /** A VAR's first assignment site in a chapter (story-relative); `global` marks a g_ VAR of common/globals.ink. */
 export type VarAssignment = { file: string; line: number; global: boolean };
 /** What the world lint and `vars/write-only` need of a compiled chapter beyond its graph. */
@@ -432,7 +439,21 @@ export function writeOnly(chapters: readonly GraphFacts[]): Finding[] {
 /** A section's knots: its event knots (named by a `story` effect of its rooms) and its leave knots, each with its rooms. */
 type SectionKnots = { events: Map<KnotName, Room[]>; leaves: Map<KnotName, Room[]> };
 
-function sectionKnots(body: WorldPublicBody, section: SectionId): SectionKnots {
+/** Each module's story lists in S (MECHANIC_STORIES): the knots its data's effects enter, with their rooms. */
+function moduleStories(body: KernelWorld, section: SectionId): StoryList[] {
+  const mods: Readonly<Record<string, unknown>> = body.mods ?? {};
+  const out: StoryList[] = [];
+  for (const [id, walker] of Object.entries(MECHANIC_STORIES)) {
+    if (walker !== null && Object.hasOwn(mods, id)) {
+      // Module `id`'s walker reads `mods[id]`, its own decode's result (MECHANIC_STORIES types each walker by it).
+      out.push(...walker(body, mods[id] as never, section));
+    }
+  }
+  return out;
+}
+
+/** A section's knots: the kernel's (its rooms' and hotspots' effects, its leaves), then those its module data enters. */
+function sectionKnots(body: KernelWorld, section: SectionId): SectionKnots {
   const out: SectionKnots = { events: new Map(), leaves: new Map() };
   const name = (into: Map<KnotName, Room[]>, knot: KnotName, room: Room): void => {
     const rooms = into.get(knot) ?? [];
@@ -456,6 +477,14 @@ function sectionKnots(body: WorldPublicBody, section: SectionId): SectionKnots {
       }
     }
   }
+  for (const list of moduleStories(body, section)) {
+    const room = s === undefined ? undefined : own(s.rooms, list.room);
+    if (room !== undefined) {
+      for (const knot of list.knots) {
+        name(out.events, knot, room);
+      }
+    }
+  }
   return out;
 }
 
@@ -463,6 +492,18 @@ function sectionKnots(body: WorldPublicBody, section: SectionId): SectionKnots {
 function roomStage(room: Room): AssetId[] {
   const props = room.hotspots.flatMap((h) => ((h.kind === 'take' || h.kind === 'object') && h.prop !== null ? [`prop/${h.prop}` as AssetId] : []));
   return [`bg/${room.bg}` as AssetId, ...props]; // ids the world decoder checked; the catalog is world/unknown-asset's
+}
+
+/**
+ * The graph's world input (D6) from the decoded world, the one construction the story gate and its tests share: a world
+ * that did not decode skips the world-dependent graph codes. The body carries the decoded `mods`: a section's module
+ * data names knots the graph must see (RULINGS 212 Q3).
+ */
+export function worldRef(w: WorldInput | undefined): WorldRef {
+  if (w === undefined || w.kind === 'none') {
+    return { kind: 'none' };
+  }
+  return w.kind === 'invalid' ? { kind: 'invalid' } : { kind: 'ok', body: { ...toPublic(w.source), mods: w.source.mods } };
 }
 
 /**

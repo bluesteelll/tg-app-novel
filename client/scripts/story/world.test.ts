@@ -10,21 +10,22 @@ import { RESUME_STATE_CAP } from '../../src/explore/reduce.ts';
 import type { Step } from '../../src/explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../../src/explore/state.ts';
 import { HOTSPOT_MIN_SOURCE_PX } from '../../src/geom/cover.ts';
-import type { IssueReport, MechanicData, OwnedAt, OwnedRaw } from '../../src/mechanics/contract.ts';
+import type { IssueReport, KernelWorld, MechanicData, MechanicRules, OwnedAt, OwnedRaw, RulesRegistry } from '../../src/mechanics/contract.ts';
 import { MECHANIC_DATA } from '../../src/mechanics/data/index.ts';
 import type { DataRegistry } from '../../src/mechanics/data/index.ts';
+import { MECHANIC_RULES } from '../../src/mechanics/rules/index.ts';
 import { searchSection, sectionEntry } from '../../src/mechanics/rules/search.ts';
 import type { SearchOptions } from '../../src/mechanics/rules/search.ts';
 import { PUZZLE_TYPES } from '../../src/puzzles/rules/index.ts';
 import type { PuzzleTypeData, PuzzleTypes } from '../../src/puzzles/rules/index.ts';
-import { assetIndex, decodeAssetCatalog } from '../../src/story/catalog.ts';
-import type { AssetCatalog } from '../../src/story/catalog.ts';
+import { assetIndex, decodeAssetCatalog, decodeCast } from '../../src/story/catalog.ts';
+import type { AssetCatalog, Cast } from '../../src/story/catalog.ts';
 import type { ChapterId, KnotName, PuzzleLocalId, SectionId, VarName } from '../../src/story/staging.ts';
 import { decodeWorldSource, toPublic } from '../../src/world/decode.ts';
 import type { DecodeOptions, WorldIssue } from '../../src/world/decode.ts';
-import type { HotspotKey, WorldSource, WorldText } from '../../src/world/types.ts';
+import type { HotspotKey, ItemId, WorldSource, WorldText } from '../../src/world/types.ts';
 import { compileChapter } from './compile.ts';
-import { buildGraph } from './graph.ts';
+import { buildGraph, worldRef } from './graph.ts';
 import type { ChapterGraph, GraphFacts, WorldRef } from './graph.ts';
 import { GLOBALS_PATH, LINT_CODES } from './lint.ts';
 import { checkLocales, decodeEnTable, decodeNameTable } from './locales.ts';
@@ -35,9 +36,11 @@ import type { CondSite } from './mechanics/conditions.ts';
 import { MECHANIC_LINTS, MECHANIC_TEXTS } from './mechanics/index.ts';
 import type { MechanicLintCode, WorldLint, WorldLintInput } from './mechanics/index.ts';
 import type { ModuleText, TextRegistry, TextWalker } from './mechanics/texts.ts';
+import { playChapter } from './playthrough.ts';
 import { PUZZLE_LINTS } from './puzzles/index.ts';
 import type { PuzzleLintCode, PuzzleTypeLint } from './puzzles/index.ts';
 import { MAX_ANSWER_LEN, answerLenFindings, answerLenIssues } from './puzzles/shape.ts';
+import { buildFlow, crossCheck } from './shots/flow.ts';
 import { decodeWorldFile, lintWorld, worldLines } from './world.ts';
 import type { SectionReport, VarLiteral } from './world.ts';
 
@@ -324,7 +327,7 @@ test('lint: world/schema red on fixture', () => {
   const found = of(lint(w), 'world/schema');
   // Every issue, never the first only.
   expect(found.map((f) => f.message).sort()).toEqual([
-    'sections.manor.rooms.hall.onenter: unknown key (expected bg, title, onEnter, hotspots)',
+    'sections.manor.rooms.hall.onenter: unknown key (expected bg, title, onEnter, hotspots, refuse)',
     'sections.manor.rooms.study.title: missing',
   ]);
   expect(found.every((f) => f.severity === 'E' && f.file === FILE && f.line > 0)).toBe(true);
@@ -957,6 +960,9 @@ test('story: module and type lint codes are unique and none is a DSL code', () =
     'world/visual-only-atom E',
     'world/cond-size E',
     'world/text-unwalked E',
+    'world/use-unknown-ref E',
+    'world/use-cross-section E',
+    'world/keep-consumed W',
   ]);
   // The registry restates world.ts's VarLiteral (its types stay out of the app program): one type (tsc).
   type InputVar = WorldLintInput['declared'] extends ReadonlyMap<VarName, infer V> ? V : never;
@@ -1253,13 +1259,13 @@ test("story: the build's answer bound never exceeds the server's MAX_ANSWER_LEN"
 // GM3c: the composed decoder's module texts (engine plan §3.2 "Module texts")
 
 /**
- * A fixture module owning hotspot `say` (a text) and `uses` (a list of `{ say }`): its data is the `OwnedAt`s it got,
+ * A fixture module owning hotspot `say` (a text) and `notes` (a list of `{ say }`): its data is the `OwnedAt`s it got,
  * every text decoded through the kernel's line-ID text decoder (`DecodeCtx.text`).
  */
 const PROBE: MechanicData<'probe', OwnedRaw> = {
   id: 'probe',
   rules: 'none',
-  owns: { hotspot: ['say', 'uses'] },
+  owns: { hotspot: ['say', 'notes'] },
   decode: (raw, ctx) => {
     const error: WorldIssue[] = [];
     const report: IssueReport = (path, reason, detail) => {
@@ -1270,8 +1276,8 @@ const PROBE: MechanicData<'probe', OwnedRaw> = {
       if (Object.hasOwn(a.raw, 'say')) {
         out['say'] = ctx.text(a.raw['say'], `${a.path}.say`, report);
       }
-      if (Object.hasOwn(a.raw, 'uses')) {
-        out['uses'] = list(a.raw['uses']).map((u, i) => ({ say: ctx.text(u['say'], `${a.path}.uses.${i}.say`, report) }));
+      if (Object.hasOwn(a.raw, 'notes')) {
+        out['notes'] = list(a.raw['notes']).map((u, i) => ({ say: ctx.text(u['say'], `${a.path}.notes.${i}.say`, report) }));
       }
       return { ...a, raw: out };
     });
@@ -1439,15 +1445,15 @@ test('story: a condition deeper than 4 or with more than 16 atoms is refused', (
 // ---------------------------------------------------------------------------------------------------------------
 // GM3c: the one walk of world texts (engine plan §3.2 "Module texts"), its gate, and the hotspot minimum's home
 
-/** The probe's texts at their source paths: its hotspot `say` and every `uses` entry's `say`, all toasts. */
+/** The probe's texts at their source paths: its hotspot `say` and every `notes` entry's `say`, all toasts. */
 const PROBE_WALKER: TextWalker<OwnedRaw> = (_w, d, places) =>
   d.flatMap((a): ModuleText[] => {
     const path = places.hotspot(a.id as HotspotKey); // the probe owns hotspot keys only: its id is a HotspotKey
     const say = a.raw['say'] as WorldText | undefined; // the probe's decode made every say a text
-    const uses = (a.raw['uses'] ?? []) as ReadonlyArray<{ readonly say: WorldText }>; // likewise, inside its list
+    const notes = (a.raw['notes'] ?? []) as ReadonlyArray<{ readonly say: WorldText }>; // likewise, inside its list
     return [
       ...(say === undefined ? [] : [{ text: say, path: `${path}.say`, role: 'toast' as const, reach: [] }]),
-      ...uses.map((u, i) => ({ text: u.say, path: `${path}.uses.${i}.say`, role: 'toast' as const, reach: [] })),
+      ...notes.map((u, i) => ({ text: u.say, path: `${path}.notes.${i}.say`, role: 'toast' as const, reach: [] })),
     ];
   });
 
@@ -1602,7 +1608,7 @@ test('mechanics: every module declares its texts', () => {
 test('story: an undeclared module text is refused', () => {
   const w = base();
   const say = t('manor', 'Тихо.');
-  spot(w, 'hall', 'inscription')['uses'] = [{ say }];
+  spot(w, 'hall', 'inscription')['notes'] = [{ say }];
   // The probe's entry is null, and its data holds a text inside a list.
   expect(of(lintProbe(w, MECHANIC_LINTS, { ...MECHANIC_TEXTS, probe: null }), 'world/text-unwalked')).toEqual([
     {
@@ -1631,7 +1637,7 @@ test("story: the texts gate reads each module's walked lines", () => {
   const walked = lintProbe(w, [...MECHANIC_LINTS, capture], { ...MECHANIC_TEXTS, probe: PROBE_WALKER });
   expect(seen).toHaveLength(1);
   const moduleLines: ReadonlyMap<string, ReadonlySet<string>> | undefined = seen[0]?.moduleLines;
-  expect([...(moduleLines?.keys() ?? [])]).toEqual(['core', 'probe']);
+  expect([...(moduleLines?.keys() ?? [])]).toEqual([...Object.keys(MECHANIC_TEXTS), 'probe']);
   expect(moduleLines?.get('probe')).toEqual(new Set([say['id']]));
   expect(moduleLines?.get('core')).toEqual(new Set());
   expect(of(walked, 'world/text-unwalked')).toEqual([]);
@@ -1685,4 +1691,313 @@ test('story: the hotspot minimum is one constant', () => {
   }
   const ch1 = lintWorld({ chapter: CH1, file: FILE, text, world: decoded.world, catalog: CATALOG, knots: null, yielded: null, declared: new Map() });
   expect(of(ch1.findings, 'world/hotspot-small')).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Module `use` on the seeded playthroughs (STAGING-DSL §11): the played world is story.ts's, the public body with the
+// decoded `mods` (b1). The fixture helpers restate play.test.ts's; this file's program has the node types the story
+// tool's modules need, which src/mechanics/use.test.ts's has not.
+
+/** The committed cast, decoded against the committed catalog. */
+function committedCast(): Cast {
+  const cast = decodeCast(readRepoJson('story/cast.json'), CATALOG);
+  if (!cast.ok) {
+    throw new Error('invariant: the committed cast decodes');
+  }
+  return cast.value;
+}
+
+/** The hall's door is a zero-slot lock that only the statue's rule unlocks; the rule's story runs and hands back. */
+function statueWorld(): WorldSource {
+  const label = (owner: string): Json => ({ id: `ch1.${owner}.u${(counter++).toString(36).padStart(3, '0')}`, ru: 'Текст' });
+  const laid = (h: Json, i: number): Json => ({ label: label('s'), rect: [100 + i * 300, 300, 200, 200], ...h });
+  const raw = {
+    format: 1,
+    items: { key: { name: label('key'), desc: label('key'), glyph: 'key' } },
+    docs: {},
+    puzzles: {},
+    sections: {
+      s: {
+        start: 'hall',
+        bgm: null,
+        rooms: {
+          hall: {
+            bg: 'hall',
+            title: label('s'),
+            onEnter: [],
+            hotspots: [
+              { id: 'key', kind: 'take', gives: { item: 'key' }, prop: null, then: [] },
+              { id: 'statue', kind: 'object', lock: null, then: [], look: null, prop: null, uses: [{ item: 'key', do: [{ unlock: 'hall.door' }, { story: 'statue_voice' }] }] },
+              { id: 'door', kind: 'exit', to: { story: 'after' }, lock: { slots: [], puzzle: null, locked: label('s'), onOpen: [], onFail: [] }, sfx: null },
+            ].map(laid),
+          },
+        },
+      },
+    },
+  };
+  const src = decodeWorldSource(raw);
+  if (!src.ok) {
+    throw new Error(`invariant: the fixture world decodes: ${JSON.stringify(src.error)}`);
+  }
+  return src.value;
+}
+
+/** The chapter that explores the statue world: `statue_voice` is entered only by the rule's `story`. */
+function statueChapter(): { sources: ReadonlyMap<string, string>; files: readonly string[]; json: string } {
+  const sources = new Map([
+    [GLOBALS_PATH, 'VAR g_x = 0\n'],
+    [
+      CH1.entry,
+      [
+        'INCLUDE ../common/globals.ink',
+        '-> start',
+        '=== start ===',
+        'Холл. #id:ch1.start.a001',
+        '# explore: s',
+        '-> DONE',
+        '=== statue_voice ===',
+        'Статуя повернулась. #id:ch1.statue_voice.a002',
+        '# explore: s',
+        '-> DONE',
+        '=== after ===',
+        'Дверь открыта. #id:ch1.after.a003',
+        '-> END',
+        '',
+      ].join('\n'),
+    ],
+  ]);
+  const compiled = compileChapter(CH1, (key) => sources.get(key) ?? null).compiled;
+  if (compiled === null) {
+    throw new Error('invariant: the fixture compiles');
+  }
+  return { sources, files: compiled.files, json: compiled.json };
+}
+
+/** Five seeded runs of the statue chapter over `world`. */
+function playStatue(graph: ChapterGraph, json: string, world: KernelWorld): ReturnType<typeof playChapter> {
+  return playChapter({
+    chapter: CH1,
+    json,
+    graph,
+    assets: ASSETS,
+    cast: committedCast(),
+    en: new Map(),
+    staticIds: new Set(graph.lines.map((l) => l.id)),
+    allow: new Map(),
+    carry: null,
+    runs: 5,
+    world,
+  });
+}
+
+test("use: a played chapter takes a use edge only with the world's mods", () => {
+  const src = statueWorld();
+  const ch = statueChapter();
+  const graph = buildGraph({ chapter: CH1, files: ch.files, sources: ch.sources, assets: ASSETS }).graph;
+  // With the decoded `mods` every run uses the key on the statue, plays its voice and leaves through the door.
+  const withMods = playStatue(graph, ch.json, { ...toPublic(src), mods: src.mods });
+  expect(withMods.play, JSON.stringify(withMods.findings)).toMatchObject({ ended: 5, failed: 0 });
+  expect([...withMods.play.visited]).toEqual(['start', 'statue_voice', 'after']);
+  // The public body alone has no rules: the door never opens and `after` is never entered.
+  const without = playStatue(graph, ch.json, toPublic(src));
+  expect(without.play.ended).toBe(0);
+  expect([...without.play.visited]).not.toContain('after');
+});
+
+test('playthrough: every step yields at least one cue', () => {
+  // The hall: a look hotspot (tapped again and again) and the exit out of the section.
+  const label = (): Json => ({ id: `ch1.s.p${(counter++).toString(36).padStart(3, '0')}`, ru: 'Текст' });
+  const raw = {
+    format: 1,
+    items: {},
+    docs: {},
+    puzzles: {},
+    sections: {
+      s: {
+        start: 'hall',
+        bgm: null,
+        rooms: {
+          hall: {
+            bg: 'hall',
+            title: label(),
+            onEnter: [],
+            hotspots: [
+              { id: 'desk', kind: 'look', rect: [100, 300, 200, 200], label: label(), look: label(), then: [] },
+              { id: 'out', kind: 'exit', rect: [400, 300, 200, 200], label: label(), to: { story: 'after' }, lock: null, sfx: null },
+            ],
+          },
+        },
+      },
+    },
+  };
+  const src = decodeWorldSource(raw);
+  if (!src.ok) {
+    throw new Error(`invariant: the fixture world decodes: ${JSON.stringify(src.error)}`);
+  }
+  const sources = new Map([
+    [GLOBALS_PATH, 'VAR g_x = 0\n'],
+    [CH1.entry, ['INCLUDE ../common/globals.ink', '-> start', '=== start ===', 'Холл. #id:ch1.start.a001', '# explore: s', '-> DONE', '=== after ===', 'Вышли. #id:ch1.after.a002', '-> END', ''].join('\n')],
+  ]);
+  const compiled = compileChapter(CH1, (key) => sources.get(key) ?? null).compiled;
+  if (compiled === null) {
+    throw new Error('invariant: the fixture compiles');
+  }
+  const graph = buildGraph({ chapter: CH1, files: compiled.files, sources, assets: ASSETS }).graph;
+  const play = (rules?: RulesRegistry): ReturnType<typeof playChapter> =>
+    playChapter({
+      chapter: CH1,
+      json: compiled.json,
+      graph,
+      assets: ASSETS,
+      cast: committedCast(),
+      en: new Map(),
+      staticIds: new Set(graph.lines.map((l) => l.id)),
+      allow: new Map(),
+      carry: null,
+      runs: 20,
+      world: toPublic(src.value),
+      ...(rules === undefined ? {} : { rules }),
+    });
+  // Every run taps the desk until it leaves: each tap, the first and every later one, plays a cue.
+  const clean = play();
+  expect(clean.play, JSON.stringify(clean.findings)).toMatchObject({ ended: 20, failed: 0 });
+  expect(clean.findings).toEqual([]);
+  // The positive control: a module that claims the desk's tap and writes nothing fails the run at that step.
+  const mute: MechanicRules<'mute', never, never> = {
+    id: 'mute',
+    actions: () => [],
+    apply: () => undefined,
+    reads: () => [],
+    cues: [],
+    tap: (_w, _s, at) => at === ('hall.desk' as HotspotKey), // the fixture's hotspot
+  };
+  const muted = play([...MECHANIC_RULES, mute]);
+  expect(muted.findings.map((f) => f.code)).toEqual(['play/runtime-error']);
+  expect(muted.findings[0]?.message).toContain('step tap hall.desk yields no cue');
+});
+
+test('use: a knot a rule enters is in the graph, its seeds and the shot flow', () => {
+  const src = statueWorld();
+  const world: KernelWorld = { ...toPublic(src), mods: src.mods };
+  const ch = statueChapter();
+  // The graph's world is the story gate's own construction (`worldRef`, what story.ts passes to `buildGraph`).
+  const g = buildGraph({ chapter: CH1, files: ch.files, sources: ch.sources, assets: ASSETS, world: worldRef({ kind: 'ok', source: src }) });
+  // The rule's knot is an event of the hall (RULINGS 212 Q3): reachable from the yield, seeded with the hall's stage.
+  expect(g.findings.filter((f) => f.code === 'graph/unreachable-knot' || f.code.startsWith('explore/'))).toEqual([]);
+  const knot = 'statue_voice' as KnotName; // the fixture's knot
+  expect([g.graph.sections?.seeds.get(knot), g.graph.sections?.rooms.get(knot)]).toEqual([['bg/hall'], { events: ['hall'], leaves: [] }]);
+  // The seeded runs enter it, and the shot flow has every transition they took.
+  const r = playStatue(g.graph, ch.json, world);
+  expect([...r.play.visited]).toContain('statue_voice');
+  const flow = buildFlow({ chapter: CH1.id, files: ch.files, sources: ch.sources, graph: g.graph, assets: ASSETS, cast: committedCast(), world });
+  expect(crossCheck(flow.flow, r.play.transitions, CH1.entry)).toEqual([]);
+});
+
+test('use: the graph world input maps none, invalid and ok', () => {
+  const src = statueWorld();
+  // No world file and a world that did not decode stay apart: only `none` gives each yield a "has no world" finding.
+  expect(worldRef(undefined)).toEqual({ kind: 'none' });
+  expect(worldRef({ kind: 'none' })).toEqual({ kind: 'none' });
+  expect(worldRef({ kind: 'invalid' })).toEqual({ kind: 'invalid' });
+  const ok = worldRef({ kind: 'ok', source: src });
+  expect(ok.kind).toBe('ok');
+  expect(ok.kind === 'ok' ? ok.body.mods : null).toBe(src.mods);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Module `use`'s texts and lints (scripts/story/mechanics/use.ts)
+
+/** The world as the story gate decodes it from its file. */
+function decodedText(w: Json): { text: string; world: WorldSource } {
+  const text = `${JSON.stringify(w, null, 2)}\n`;
+  const decoded = decodeWorldFile({ file: FILE, text });
+  if (decoded.world === null) {
+    throw new Error(`invariant: the fixture world decodes: ${JSON.stringify(decoded.findings)}`);
+  }
+  return { text, world: decoded.world };
+}
+
+test('use: its say and refuse texts are world lines of role toast', () => {
+  const w = base();
+  const refuse = t('medal_sun', 'Не подходит.');
+  const say = t('manor', 'Медальон звякнул.');
+  obj(obj(w['items'])['medal_sun'])['refuse'] = refuse;
+  spot(w, 'hall', 'inscription')['uses'] = [{ item: 'medal_sun', keep: true, say }];
+  const { text, world } = decodedText(w);
+  const lines = worldLines(world, FILE, text);
+  // The kernel's lines first, unchanged; then use's, in source order, at their source paths and lines.
+  expect(lines.slice(0, -2)).toEqual(worldLines(world, FILE, text, { ...MECHANIC_TEXTS, use: null }));
+  expect(lines.slice(-2)).toEqual([
+    { id: refuse['id'], text: 'Не подходит.', file: FILE, line: jsonLine(w, '"refuse": {'), hint: false, path: 'items.medal_sun.refuse', role: 'toast', reach: [] },
+    { id: say['id'], text: 'Медальон звякнул.', file: FILE, line: jsonLine(w, '"say": {'), hint: false, path: 'sections.manor.rooms.hall.hotspots.2.uses.0.say', role: 'toast', reach: [] },
+  ]);
+  // The texts gate reads them as walked: the world lints clean.
+  expect(lint(w)).toEqual([]);
+});
+
+test('use: lints refuse an unknown ref, a cross-section rule and warn a consumed keep item', () => {
+  // Section s gives the key and the lens; section t gives the relic, and its chest takes the gem.
+  const w = mini({
+    items: ['key', 'relic', 'gem', 'lens'],
+    sections: {
+      s: { start: 'hall', rooms: { hall: [take('key', { item: 'key' }), object('box', null), take('lens', { item: 'lens' }), object('scope', lockOf(['lens'])), object('jar', lockOf(['lens'])), leave('out')] } },
+      t: { start: 'yard', rooms: { yard: [take('relic', { item: 'relic' }), object('chest', lockOf(['gem'])), leave('out')] } },
+    },
+  });
+  // The box's rule 0 uses and reads t's relic; rule 1 gives the gem t's chest takes, unlocks a take, enters no knot.
+  spot(w, 'hall', 'box', 's')['uses'] = [
+    { item: 'relic', when: { held: 'relic' } },
+    { item: 'key', keep: true, do: [{ give: 'gem' }, { unlock: 'hall.key' }, { story: 'nowhere' }] },
+  ];
+  // The scope's slot keeps the lens, which the jar's slot consumes.
+  obj(list(obj(spot(w, 'hall', 'scope', 's')['lock'])['slots'])[0])['keep'] = true;
+  const box = 'sections.s.rooms.hall.hotspots.1.uses';
+  const found = lint(w, { knots: new Set(['k'] as KnotName[]) }); // the fixture's one knot
+  expect(found.map((f) => `${f.code} ${f.severity} ${f.message}`)).toEqual([
+    `world/use-cross-section E rule 0 of hall.box: item 'relic' is no item section s gives: a rule reads only its own section (X15)`,
+    `world/cross-section-cond E ${box}.0.when: {"held":"relic"} names no item of section s: a gating condition reads only its own section (§4)`,
+    `world/use-cross-section E rule 1 of hall.box: item 'gem' is given in section s and required by lock yard.chest of section t (X15)`,
+    `world/use-unknown-ref E rule 1 of hall.box: hotspot 'hall.key' is no lock`,
+    `world/use-unknown-ref E rule 1 of hall.box: knot 'nowhere' of ch1 is not defined`,
+    `world/keep-consumed W slot hall.scope#0 keeps item 'lens' held, but slot hall.jar#0 consumes it: a tool that stays is never used up (§6.1)`,
+  ]);
+  // Each at its source line, in the file's order (the slot's `keep` is the file's last one: the box's rule comes first).
+  const lines = `${JSON.stringify(w, null, 2)}\n`.split('\n');
+  const slotKeep = lines.findLastIndex((l) => l.trimStart().startsWith('"keep": true')) + 1;
+  const at = (start: string): number => jsonLine(w, start);
+  expect(found.map((f) => f.line)).toEqual([at('"item": "relic"'), at('"when": {'), at('"give": "gem"'), at('"unlock": "hall.key"'), at('"story": "nowhere"'), slotKeep]);
+  // The keep check reads the data alone: a world whose `use` data holds no rule still gets it.
+  delete spot(w, 'hall', 'box', 's')['uses'];
+  const ruleless = `${JSON.stringify(w, null, 2)}\n`.split('\n').findIndex((l) => l.trimStart().startsWith('"keep": true')) + 1;
+  expect(of(lint(w, { knots: new Set(['k'] as KnotName[]) }), 'world/keep-consumed').map((f) => f.line)).toEqual([ruleless]);
+});
+
+test("use: a world whose rules give and read their section's own items lints clean", () => {
+  // The positive control (RULINGS 212): the inscription's rule takes the sun medallion and leaves it held (`keep`, so
+  // the gate's slots can still be filled: the section stays leave-safe) and gives the coin, which the drawer's rule
+  // reads in its `when`. The coin is manor's own item through use's scope hook only.
+  const w = base();
+  obj(w['items'])['coin'] = { name: t('coin', 'Монета'), desc: t('coin', 'Старая монета.'), glyph: 'key' };
+  spot(w, 'hall', 'inscription')['uses'] = [{ item: 'medal_sun', keep: true, do: [{ give: 'coin' }] }];
+  spot(w, 'study', 'drawer')['uses'] = [{ item: 'coin', when: { held: 'coin' }, do: [{ story: 'manor_cellar_voice' }] }];
+  expect(lint(w)).toEqual([]);
+});
+
+test("conditions: a module's scope hook widens the gating scope", () => {
+  const input = passInput(base(), PUZZLE_TYPES);
+  const where = 'sections.manor.rooms.hall.hotspots.2.when';
+  const site: CondSite = { cond: { held: 'relic' }, path: where, scope: MANOR };
+  // A fixture rules module whose data gives the relic in manor: no item of the world, nothing else.
+  const relic: MechanicRules<'relic_probe', never, never> = {
+    id: 'relic_probe',
+    actions: () => [],
+    apply: () => undefined,
+    reads: () => [],
+    cues: [],
+    scope: (_w, section) => ({ items: section === 'manor' ? ['relic' as ItemId] : [], fired: [] }), // a fixture item id
+  };
+  expect(condFindings(input, [site], MECHANIC_DATA, [...MECHANIC_RULES, relic])).toEqual([]);
+  expect(condFindings(input, [site]).map((f) => `${f.code} ${f.severity} ${f.message}`)).toEqual([
+    `world/cross-section-cond E ${where}: {"held":"relic"} names no item of section manor: a gating condition reads only its own section (§4)`,
+  ]);
 });

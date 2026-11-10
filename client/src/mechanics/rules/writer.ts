@@ -1,62 +1,81 @@
-// The writer (engine plan §3.1 `Writer`): the write path of a mechanic module's rules over the reducer's draft, and the
-// kernel trigger runner every rule fires through. `reduce` (core.ts) builds one per action and hands it to the modules'
-// hooks; core's own rules write the draft directly. Rules half: explore-ui chunk code (the `rules-lazy` arch rule).
-// Pure.
-import { lockOf, runOf, set, setRun } from '../../explore/reduce.ts';
+// The writer (engine plan §3.1 `Writer`): the one write path of every rule over the reducer's draft, core's included,
+// and the kernel trigger runner every rule fires through. `reduce` (core.ts) builds one per action, hands it to core and
+// to the modules' hooks, and appends its record, every fact change with its cause and every module cue in write order,
+// as `cue` effects (plan (2)). Silent fields (`SILENT_FIELDS`: section, room, lastRoom) are written to the draft
+// directly. Rules half: explore-ui chunk code (the `rules-lazy` arch rule). Pure.
+import { lockOf, own, runOf, set, setRun } from '../../explore/reduce.ts';
 import type { Draft, ExploreEffect } from '../../explore/reduce.ts';
+import type { Cue } from '../../cues/types.ts';
 import type { PuzzleRun, WorldState } from '../../explore/state.ts';
 import type { PuzzleLocalId } from '../../story/staging.ts';
-import type { Effect, HotspotKey, ItemId, WorldPublicBody } from '../../world/types.ts';
-import type { ArrivalOut, Cause, FactKind, KernelFactKind, ListField, MechanicId, RulesRegistry, TriggerKey, Writer } from '../contract.ts';
+import type { Effect, HotspotKey, ItemId } from '../../world/types.ts';
+import type { ArrivalOut, Cause, FactKind, KernelFactKind, KernelWorld, ListField, MechanicId, RulesRegistry, TriggerKey, Writer } from '../contract.ts';
 
 export function added<T>(list: readonly T[], v: T): readonly T[] {
   return list.includes(v) ? list : [...list, v];
 }
 
-/** Every trigger fires at most once; an empty one is never recorded, so it adds no state. */
-export function fire(d: Draft, firedKey: string, effects: readonly Effect[]): void {
+/**
+ * Every trigger fires at most once; an empty one is never recorded, so it adds no state. `at`: the hotspot the trigger
+ * belongs to (null: a room's `onEnter`), which its gifts name. Its `fired` entry and every write of its effects carry
+ * the action's `cause` with `via` = this trigger (a fact's `via` is the trigger running when it was written).
+ */
+export function fire(out: KernelWriter, firedKey: string, effects: readonly Effect[], at: HotspotKey | null, cause: Cause): void {
+  const d = out.draft;
   if (effects.length === 0 || d.s.fired.includes(firedKey)) {
     return;
   }
-  set(d, 'fired', [...d.s.fired, firedKey]);
+  const via: Cause = { ...cause, via: firedKey as TriggerKey }; // every fired key is a trigger key
+  out.set('fired', [...d.s.fired, firedKey], via);
   for (const e of effects) {
     if ('give' in e) {
       if (d.ix.items.has(e.give)) {
-        set(d, 'held', added(d.s.held, e.give));
-        d.effects.push({ kind: 'got', gift: { item: e.give } });
+        out.set('held', added(d.s.held, e.give), via);
+        d.effects.push({ kind: 'got', gift: { item: e.give }, at });
       }
     } else if ('unlock' in e) {
-      openKey(d, e.unlock);
+      openKey(out, e.unlock, via);
     } else {
-      set(d, 'pendingStory', [...d.s.pendingStory, e.story]);
+      out.set('pendingStory', [...d.s.pendingStory, e.story], via);
     }
   }
 }
 
 /** A key entering `open` runs its lock's `onOpen` once, whatever the cause. */
-export function openKey(d: Draft, key: HotspotKey): void {
+export function openKey(out: KernelWriter, key: HotspotKey, cause: Cause): void {
+  const d = out.draft;
   const entry = d.ix.hotspots.get(key);
   const lock = entry === undefined ? null : lockOf(entry.hotspot);
   if (lock === null || d.s.open.includes(key)) {
     return;
   }
-  set(d, 'open', [...d.s.open, key]);
-  fire(d, `open:${key}`, lock.onOpen);
+  out.set('open', [...d.s.open, key], cause);
+  fire(out, `open:${key}`, lock.onOpen, key, cause);
 }
 
 /** A module cue as the writer recorded it. */
 export type ModuleCue = { readonly module: MechanicId; readonly name: string; readonly at: HotspotKey | null; readonly item: ItemId | null };
 /** One fact entering or leaving the state through the writer, with the cause the rule gave. */
 export type FactChange = { readonly kind: FactKind; readonly id: string; readonly change: 'added' | 'removed'; readonly cause: Cause };
+/** One entry of the writer's record: a fact cue or a module cue, as the cue bus takes it. */
+export type RecordedCue = Extract<Cue, { kind: 'fact' | 'module' }>;
 
-/** The kernel's writer: the module-facing `Writer` plus what core's rules and hooks reach through it. */
-export type KernelWriter = Writer & {
+/**
+ * The kernel's writer: the module-facing `Writer` plus what core's rules and hooks reach through it. The registry's
+ * dispatch hands it to every module's `apply` and `tap` (`Id` / `C`: that module's id and cue names).
+ */
+export type KernelWriter<Id extends string = string, C extends string = string> = Writer<Id, C> & {
   readonly draft: Draft;
-  readonly world: WorldPublicBody;
+  readonly world: KernelWorld;
   readonly rules: RulesRegistry;
-  /** Every fact change a `set` or `run` made, in order. */
+  /** Every fact change and module cue, in write order: `reduce` appends them as `cue` effects. */
+  readonly record: readonly RecordedCue[];
+  /** The record's fact changes (a `set`, `run` or `slots`), in order. */
   readonly changes: readonly FactChange[];
+  /** The record's module cues, in order. */
   readonly cues: readonly ModuleCue[];
+  /** Kernel only: lock `key`'s cells, a `slot` fact (id: the lock key) added as a cell fills, removed as one empties. */
+  slots(key: HotspotKey, cells: ReadonlyArray<ItemId | null>, cause: Cause): void;
 };
 
 /** The fact kind of each list field's members. */
@@ -85,12 +104,11 @@ function sameRun(a: PuzzleRun, b: PuzzleRun): boolean {
 // A class, so a `reduce` call allocates one object: the search builds a writer per successor.
 class DraftWriter implements KernelWriter {
   readonly draft: Draft;
-  readonly world: WorldPublicBody;
+  readonly world: KernelWorld;
   readonly rules: RulesRegistry;
-  #changes: FactChange[] | null = null;
-  #cues: ModuleCue[] | null = null;
+  #record: RecordedCue[] | null = null;
 
-  constructor(d: Draft, w: WorldPublicBody, rules: RulesRegistry) {
+  constructor(d: Draft, w: KernelWorld, rules: RulesRegistry) {
     this.draft = d;
     this.world = w;
     this.rules = rules;
@@ -100,16 +118,20 @@ class DraftWriter implements KernelWriter {
     return this.draft.s;
   }
 
+  get record(): readonly RecordedCue[] {
+    return this.#record ?? NONE;
+  }
+
   get changes(): readonly FactChange[] {
-    return this.#changes ?? NONE;
+    return this.record.flatMap((c) => (c.kind === 'fact' ? [{ kind: c.fact.kind, id: c.fact.id, change: c.change, cause: c.cause }] : []));
   }
 
   get cues(): readonly ModuleCue[] {
-    return this.#cues ?? NONE;
+    return this.record.flatMap((c) => (c.kind === 'module' ? [{ module: c.module, name: c.name, at: c.at, item: c.item }] : []));
   }
 
-  #record(kind: FactKind, id: string, change: FactChange['change'], cause: Cause): void {
-    (this.#changes ??= []).push({ kind, id, change, cause });
+  #fact(kind: FactKind, id: string, change: FactChange['change'], cause: Cause): void {
+    (this.#record ??= []).push({ kind: 'fact', fact: { kind, id }, change, cause });
   }
 
   /** Records the removed members in their old order, then the added members in their new order. */
@@ -123,15 +145,25 @@ class DraftWriter implements KernelWriter {
     const was = new Set<string>(before);
     for (const x of before) {
       if (!now.has(x)) {
-        this.#record(kind, x, 'removed', cause);
+        this.#fact(kind, x, 'removed', cause);
       }
     }
     for (const x of value) {
       if (!was.has(x)) {
-        this.#record(kind, x, 'added', cause);
+        this.#fact(kind, x, 'added', cause);
       }
     }
     set(this.draft, field, value);
+  }
+
+  slots(key: HotspotKey, cells: ReadonlyArray<ItemId | null>, cause: Cause): void {
+    const before = own(this.draft.s.slots, key) ?? NONE;
+    if (sameList(before, cells)) {
+      return;
+    }
+    const filled = (c: ReadonlyArray<ItemId | null>): number => c.filter((x) => x !== null).length;
+    this.#fact('slot', key, filled(cells) >= filled(before) ? 'added' : 'removed', cause);
+    set(this.draft, 'slots', { ...this.draft.s.slots, [key]: cells });
   }
 
   /** Records the outcome that left and the one that came, then a changed attempt or hint count. */
@@ -142,36 +174,37 @@ class DraftWriter implements KernelWriter {
     }
     if (before.outcome !== run.outcome) {
       if (before.outcome !== null) {
-        this.#record(before.outcome, puzzle, 'removed', cause);
+        this.#fact(before.outcome, puzzle, 'removed', cause);
       }
       if (run.outcome !== null) {
-        this.#record(run.outcome, puzzle, 'added', cause);
+        this.#fact(run.outcome, puzzle, 'added', cause);
       }
     }
     if (before.attempts !== run.attempts) {
-      this.#record('attempt', puzzle, run.attempts > before.attempts ? 'added' : 'removed', cause);
+      this.#fact('attempt', puzzle, run.attempts > before.attempts ? 'added' : 'removed', cause);
     }
     if (before.hintsOpened !== run.hintsOpened) {
-      this.#record('hint', puzzle, run.hintsOpened > before.hintsOpened ? 'added' : 'removed', cause);
+      this.#fact('hint', puzzle, run.hintsOpened > before.hintsOpened ? 'added' : 'removed', cause);
     }
     setRun(this.draft, puzzle, run);
   }
 
-  fire(trigger: TriggerKey, effects: readonly Effect[], _cause: Cause): void {
-    fire(this.draft, trigger, effects);
+  fire(trigger: TriggerKey, effects: readonly Effect[], cause: Cause): void {
+    fire(this, trigger, effects, cause.at, cause);
   }
 
   effect(e: ExploreEffect): void {
     this.draft.effects.push(e);
   }
 
-  cue(module: MechanicId, name: string, at: HotspotKey | null, item: ItemId | null): void {
-    (this.#cues ??= []).push({ module, name, at, item });
+  // The widest signature, so this one writer is every module's: each module's rules see only their own names.
+  cue(module: string, name: string, at: HotspotKey | null, item: ItemId | null): void {
+    (this.#record ??= []).push({ kind: 'module', module: module as MechanicId, name, at, item }); // a module's own id, typed by its rules half
   }
 }
 
 /** The writer of one `reduce` call over its draft. */
-export function createWriter(d: Draft, w: WorldPublicBody, rules: RulesRegistry): KernelWriter {
+export function createWriter(d: Draft, w: KernelWorld, rules: RulesRegistry): KernelWriter {
   return new DraftWriter(d, w, rules);
 }
 

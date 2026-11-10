@@ -21,7 +21,7 @@ import type { VisualCommand } from '../scene/executor.ts';
 import type { StatEvent } from '../stats/reporter.ts';
 import { decodeChapterMeta } from '../story/catalog.ts';
 import type { AssetEntry, AssetManifest, LoadedChapter, Result } from '../story/catalog.ts';
-import type { AssetId, ChapterId, KnotName, LineId, PuzzleLocalId, SectionId, StagingSnapshot } from '../story/staging.ts';
+import type { AssetId, ChapterId, KnotName, PropId, PuzzleLocalId, SectionId, StagingSnapshot } from '../story/staging.ts';
 import { createExploreView } from '../ui/explore-view.svelte.ts';
 import type { ExploreLayerProps } from '../ui/explore-view.svelte.ts';
 import { createPuzzleView } from '../ui/puzzle-view.svelte.ts';
@@ -556,6 +556,59 @@ test("yields: a room batch's props carry their anchor key", async () => {
   r.yields.dispose();
 });
 
+/** hall and den over one background, each with the medal's prop at the same rect on its own hotspot. */
+function twinWorld(): WorldPublic {
+  const raw = {
+    format: 1,
+    items: { medal: { name: txt('Медаль'), desc: txt('d'), glyph: 'sun' }, coin: { name: txt('Монета'), desc: txt('d'), glyph: 'sun' } },
+    docs: {},
+    puzzles: {},
+    sections: {
+      manor: {
+        start: 'hall',
+        bgm: null,
+        rooms: {
+          hall: { bg: 'hall', title: txt('Hall'), onEnter: [], hotspots: [exit('to_den', 'den'), take('medal', 'medal', 'medal')] },
+          den: { bg: 'hall', title: txt('Den'), onEnter: [], hotspots: [exit('to_hall', 'hall'), take('twin', 'coin', 'medal')] },
+        },
+      },
+    },
+  };
+  const r = decodeWorldSource(raw);
+  if (!r.ok) {
+    throw new Error(`invariant: the fixture world decodes: ${JSON.stringify(r.error)}`);
+  }
+  return { ...toPublic(r.value), version: '3333333333333333' };
+}
+
+test('yields: a room batch redraws props whose anchor changed', async () => {
+  const r = rig({ world: twinWorld() });
+  await inHall(r);
+  expect(r.stage().props).toEqual([{ prop: 'medal', rect: RECT, at: 'hall.medal' }]);
+  const mark = r.batches.length;
+  r.yields.layer.ontap(key('hall.to_den'));
+  await settle();
+  // The same prop at the same rect over the same background, on another hotspot: the batch redraws it there.
+  const den = [{ prop: 'medal', rect: RECT, at: 'den.twin' }];
+  expect([roomOf(r), r.stage().props]).toEqual(['den', den]);
+  expect(r.batches.slice(mark).flat().filter((c) => c.kind === 'props')).toEqual([{ kind: 'props', props: den }]);
+  r.yields.dispose();
+});
+
+test('yields: an at-less stage prop equals its anchored placement', async () => {
+  const r = rig({ world: twinWorld() });
+  await inHall(r);
+  // A format-1 save's stage: the same prop and rect with no anchor (`PropPlacementV1`).
+  await r.host.apply([{ kind: 'props', props: [{ prop: 'medal' as PropId, rect: [100, 200, 200, 200] as const }] }], []); // RECT, at no anchor
+  const mark = r.batches.length;
+  r.yields.layer.ontap(key('hall.to_den'));
+  await settle();
+  // The den's anchored placement is that picture: the room batch draws no props.
+  expect(roomOf(r)).toBe('den');
+  expect(r.batches.slice(mark).flat().filter((c) => c.kind === 'props')).toEqual([]);
+  r.yields.dispose();
+});
+
 test('yields: back during an event knot does not move rooms', async () => {
   const r = rig();
   await inHall(r);
@@ -666,19 +719,28 @@ test("yields: today's effects reach the cue bus", async () => {
     await settle();
     return worldCues(r).slice(mark);
   };
-  // A look is core's `look` at its hotspot, on its box.
+  const fact = (kind: string, id: string, at: string, via: string | null = null): Record<string, unknown> => ({
+    kind: 'fact',
+    fact: { kind, id },
+    change: 'added',
+    cause: { ...tapCause(at), via },
+  });
+  // A look is core's `look` at its hotspot, then the writer's `examined`, on its box.
   const desk = boxOf(r, 'hall.desk');
   expect(await step(() => r.yields.layer.ontap(key('hall.desk')))).toEqual([
     { cue: { kind: 'module', module: 'core', name: 'look', at: 'hall.desk', item: null }, box: desk },
+    { cue: fact('examined', 'hall.desk', 'hall.desk'), box: desk },
   ]);
-  // A take: the item is held, by a tap at its hotspot; a document gift likewise.
+  // A take: the item is held and the hotspot taken, by a tap at its hotspot; a document gift likewise.
   const medal = boxOf(r, 'hall.medal');
   expect(await step(() => r.yields.layer.ontap(key('hall.medal')))).toEqual([
-    { cue: { kind: 'fact', fact: { kind: 'held', id: 'medal' }, change: 'added', cause: tapCause('hall.medal') }, box: medal },
+    { cue: fact('held', 'medal', 'hall.medal'), box: medal },
+    { cue: fact('taken', 'hall.medal', 'hall.medal'), box: medal },
   ]);
   const letter = boxOf(r, 'hall.letter');
   expect(await step(() => r.yields.layer.ontap(key('hall.letter')))).toEqual([
-    { cue: { kind: 'fact', fact: { kind: 'doc', id: 'letter' }, change: 'added', cause: tapCause('hall.letter') }, box: letter },
+    { cue: fact('doc', 'letter', 'hall.letter'), box: letter },
+    { cue: fact('taken', 'hall.letter', 'hall.letter'), box: letter },
   ]);
   // A tap on a locked hotspot opens its panel: the panel's own cue, at the write that opens it.
   expect(await step(() => r.yields.layer.ontap(key('hall.box')))).toEqual([
@@ -692,10 +754,13 @@ test("yields: today's effects reach the cue bus", async () => {
     { cue: { kind: 'module', module: 'core', name: 'refused', at: 'hall.box', item: 'key' }, box: lock },
   ]);
   r.screens.back();
-  // A room whose onEnter runs an event knot: the story fact, by the tap on the exit.
+  // A room whose onEnter runs an event knot: the visit, then its trigger and the story fact (`via` the trigger), by the
+  // tap on the exit.
   const door = boxOf(r, 'hall.to_study');
   expect(await step(() => r.yields.layer.ontap(key('hall.to_study')))).toEqual([
-    { cue: { kind: 'fact', fact: { kind: 'story', id: 'study_event' }, change: 'added', cause: tapCause('hall.to_study') }, box: door },
+    { cue: fact('visited', 'study', 'hall.to_study'), box: door },
+    { cue: fact('fired', 'enter:study', 'hall.to_study', 'enter:study'), box: door },
+    { cue: fact('story', 'study_event', 'hall.to_study', 'enter:study'), box: door },
   ]);
   r.yields.dispose();
 
@@ -717,7 +782,11 @@ test("yields: today's effects reach the cue bus", async () => {
   };
   const reset = rig({ create });
   await inHall(reset);
-  expect(worldCues(reset)).toEqual([{ cue: { kind: 'module', module: 'core', name: 'reset', at: null, item: null }, box: null }]);
+  // The section's entry first: its visit, caused by the entry (no hotspot, no box).
+  expect(worldCues(reset)).toEqual([
+    { cue: { kind: 'fact', fact: { kind: 'visited', id: 'hall' }, change: 'added', cause: { verb: 'enter', at: null, item: null, via: null } }, box: null },
+    { cue: { kind: 'module', module: 'core', name: 'reset', at: null, item: null }, box: null },
+  ]);
   reset.yields.dispose();
 });
 
@@ -760,8 +829,8 @@ test("yields: the scene role gets the session's cue subscription once", async ()
   await settle();
   await r.yields.onYield({ kind: 'puzzle', puzzle: DRAWER, then: AFTER });
   expect(r.sceneCalls()).toBe(1);
-  // The subscription carries the session's cues.
-  expect(worldCues(r).map((e) => e.cue.kind)).toEqual(['fact']);
+  // The subscription carries the session's cues: the hall's visit, then the take's held and taken.
+  expect(worldCues(r).map((e) => e.cue.kind)).toEqual(['fact', 'fact', 'fact']);
   r.yields.dispose();
 });
 
@@ -780,7 +849,8 @@ test('yields: dispose leaves no cue subscriber', async () => {
   };
   const r = rig({ create });
   await inHall(r);
-  const looked: ExploreEffect = { kind: 'look', text: { id: 'ch1.yx.late' as LineId, ru: 'late' } };
+  // A late look cue (the writer's record; a `look` effect itself plays no cue).
+  const looked: ExploreEffect = { kind: 'cue', cue: coreCue('look', 'study.desk' as HotspotKey, null) };
   // Control: while the session lives, such an effect reaches the scene role.
   const before = r.cues.length;
   listener.fn?.(looked);
@@ -877,11 +947,11 @@ test('yields: a batch that waits on a load emits waiting, then waited', async ()
   let mark = r.cues.length;
   r.yields.layer.ontap(key('hall.medal'));
   await settle();
-  expect(keysOf(r, mark)).toEqual(['fact:held:added', 'ui-state:waiting']);
+  expect(keysOf(r, mark)).toEqual(['fact:held:added', 'fact:taken:added', 'ui-state:waiting']);
   expect(r.cues.at(-1)?.box).toEqual(medal);
   r.release();
   await settle();
-  expect(keysOf(r, mark)).toEqual(['fact:held:added', 'ui-state:waiting', 'ui-state:waited']);
+  expect(keysOf(r, mark)).toEqual(['fact:held:added', 'fact:taken:added', 'ui-state:waiting', 'ui-state:waited']);
   // The room batch: at the exit's box (the move cues have their own tests).
   const door = boxOf(r, 'hall.to_cellar');
   mark = r.cues.length;
@@ -991,6 +1061,39 @@ test('yields: a move cue plays when its batch starts', async () => {
   r.yields.dispose();
 });
 
+test('yields: a take emits exactly one held cue', async () => {
+  // The writer's `held` alone: the `got` effect keeps its toast and batch, and no cue of its own.
+  const r = rig({ world: cueWorld() });
+  await inHall(r);
+  const mark = r.cues.length;
+  r.yields.layer.ontap(key('hall.medal'));
+  await settle();
+  expect(keysOf(r, mark).filter((k) => k.startsWith('fact:'))).toEqual(['fact:held:added', 'fact:taken:added']);
+  r.yields.dispose();
+});
+
+test("yields: a lock puzzle's end plays its fact cues at the lock", async () => {
+  const r = rig({ world: cueWorld(), attempts: [{ ok: true, value: { correct: true, solved: true, attemptsLeft: null, spent: false } }] });
+  await inHall(r);
+  const lock = boxOf(r, 'hall.box');
+  r.yields.layer.ontap(key('hall.medal'));
+  await settle();
+  // The medal fills the box's one slot: its puzzle opens; solved, the lock opens.
+  r.yields.layer.oninsert(key('hall.box'), 'medal' as ItemId);
+  await settle();
+  expect(r.puzzle.frame?.mode).toBe('explore');
+  const mark = r.cues.length;
+  r.yields.host.ontry();
+  await settle();
+  const facts = r.cues.slice(mark).filter((e) => e.cue.kind === 'fact');
+  expect(lock).not.toBeNull();
+  expect(facts.map((e) => [keyOf(e.cue), e.box])).toEqual([
+    ['fact:solved:added', lock],
+    ['fact:open:added', lock],
+  ]);
+  r.yields.dispose();
+});
+
 test("yields: a moving dispatch's cues play after its move cue", async () => {
   // The cellar's onEnter gives a coin: the gift's cue rides the move's batch and plays after its move cue.
   const r = rig({ world: cueWorld(), late: true });
@@ -1001,8 +1104,50 @@ test("yields: a moving dispatch's cues play after its move cue", async () => {
   expect(keysOf(r, mark)).toEqual(['ui-state:waiting']);
   r.release();
   await settle();
-  expect(keysOf(r, mark)).toEqual(['ui-state:waiting', 'ui-state:waited', 'move:walk', 'fact:held:added']);
+  expect(keysOf(r, mark)).toEqual(['ui-state:waiting', 'ui-state:waited', 'move:walk', 'fact:visited:added', 'fact:fired:added', 'fact:held:added']);
   r.yields.dispose();
+});
+
+test("yields: an arrival's fact cues play with its move at the batch start", async () => {
+  // The cellar walk, its batch late: nothing but the hold before it starts; then the move, and the arrival's facts
+  // (the visit, the cellar's onEnter trigger and its gift) with it.
+  const r = rig({ world: cueWorld(), late: true });
+  await inLateHall(r);
+  let mark = r.cues.length;
+  r.yields.layer.ontap(key('hall.to_cellar'));
+  await settle();
+  expect(keysOf(r, mark)).toEqual(['ui-state:waiting']);
+  r.release();
+  await settle();
+  expect(keysOf(r, mark)).toEqual(['ui-state:waiting', 'ui-state:waited', 'move:walk', 'fact:visited:added', 'fact:fired:added', 'fact:held:added']);
+  const fired = r.cues.slice(mark).find((e) => keyOf(e.cue) === 'fact:fired:added')?.cue;
+  expect(fired?.kind === 'fact' ? [fired.fact.id, fired.cause.verb, fired.cause.at, fired.cause.via] : null).toEqual(['enter:cellar', 'tap', 'hall.to_cellar', 'enter:cellar']);
+  r.yields.dispose();
+
+  // A controller that delivers a cue effect before the room effect of the same dispatch: it still plays after the move.
+  const create: ExploreChunk['create'] = (deps) => {
+    const real = createExploreController(deps);
+    return {
+      ...real,
+      onEffect: (fn) =>
+        real.onEffect((e) => {
+          if (e.kind === 'room' && e.how === 'walk') {
+            fn({ kind: 'cue', cue: coreCue('look', 'hall.to_cellar' as HotspotKey, null) });
+          }
+          fn(e);
+        }),
+    };
+  };
+  const early = rig({ world: cueWorld(), late: true, create });
+  await inLateHall(early);
+  mark = early.cues.length;
+  early.yields.layer.ontap(key('hall.to_cellar'));
+  await settle();
+  expect(keysOf(early, mark)).toEqual(['ui-state:waiting']);
+  early.release();
+  await settle();
+  expect(keysOf(early, mark)).toEqual(['ui-state:waiting', 'ui-state:waited', 'move:walk', 'module:core:look', 'fact:visited:added', 'fact:fired:added', 'fact:held:added']);
+  early.yields.dispose();
 });
 
 test("yields: a section's first entry holds a motion while its chunk loads", async () => {
