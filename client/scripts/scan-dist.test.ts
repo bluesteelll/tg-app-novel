@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
-import { ENGINE_STATIC_DEPS_MAX, FIXED_SECTIONS, scanBuild, scanFiles } from './scan-dist.ts';
+import { FIXED_SECTIONS, scanBuild, scanFiles } from './scan-dist.ts';
 import type { ScanFile, Section } from './scan-dist.ts';
 import { loadSections, main } from './scan-dist.ts';
 import type { Finding } from './scan-dist.ts';
@@ -255,12 +255,12 @@ describe('scan build', () => {
           ...Object.fromEntries(deps.map((d) => [d, { file: `assets/${d.slice(1)}` }])),
         }),
       );
-    const over = Array.from({ length: ENGINE_STATIC_DEPS_MAX + 1 }, (_, i) => `_Geometry${i}-c.js`);
-    expect(scanBuild([LINKED, ENTRY, ENGINE, CSS, manifest(over)])).toEqual([
-      { kind: 'engine-static-deps', count: over.length, limit: ENGINE_STATIC_DEPS_MAX, deps: over },
+    // C0 recorded fork F2: the engine imports no chunk besides the entry. Literal values, so a raised limit fails here.
+    expect(scanBuild([LINKED, ENTRY, ENGINE, CSS, manifest(['_Geometry-c.js'])])).toEqual([
+      { kind: 'engine-static-deps', count: 1, limit: 0, deps: ['_Geometry-c.js'] },
     ]);
-    // Control: the recorded count passes.
-    expect(scanBuild([LINKED, ENTRY, ENGINE, CSS, manifest(over.slice(1))])).toEqual([]);
+    // Control: the recorded count, none, passes.
+    expect(scanBuild([LINKED, ENTRY, ENGINE, CSS, manifest([])])).toEqual([]);
   });
 });
 
