@@ -4216,6 +4216,28 @@ test('boot: a game made in the background starts paused and resumes at activated
   fresh.game.dispose();
 });
 
+test('game: a session started while the game is paused starts its audio suspended, and activated resumes it', async () => {
+  // E6 (b), critique W1: a Start tapped before the engine landed, then the app minimized; the Game made then is paused
+  // (boot's join, above), and so is one that saw `deactivated` during the Start's chapter load. Its session makes the
+  // audio manager in the background: suspended from the start, as one that existed at the event, so nothing sounds.
+  const h = harness();
+  h.game.onLifecycle('deactivated');
+  const before: string[][] = [];
+  const apply = h.audio.apply;
+  h.audio.apply = (cmds, o) => {
+    before.push([...h.audio.calls]);
+    apply(cmds, o);
+  };
+  await startManor(h);
+  const sound = (calls: readonly string[] | undefined): string[] => (calls ?? []).filter((c) => c === 'suspend' || c === 'resume');
+  expect(before.length, 'the first line applied its batch').toBeGreaterThan(0);
+  expect(sound(before[0]), 'suspended before its first batch').toEqual(['suspend']);
+  h.game.onLifecycle('activated');
+  await settle();
+  expect(sound(h.audio.calls), 'activated resumes it').toEqual(['suspend', 'resume']);
+  h.game.dispose();
+});
+
 test("game: skew waits for the wallet's purchase", async () => {
   const h = harness(); // Home: no session to autosave
   const page = fakePage();

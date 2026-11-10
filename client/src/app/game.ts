@@ -526,6 +526,11 @@ export function createGame(deps: GameDeps): Game {
           vm.dismissToast(SOUND_CHIP);
         }
       });
+      if (paused) {
+        // E6 (critique W1): made in the background (the Start's tap unlocked the context), it starts as a manager
+        // that existed at `deactivated`: suspended until `activated` resumes it.
+        a.suspend();
+      }
     }
     return sound;
   };
