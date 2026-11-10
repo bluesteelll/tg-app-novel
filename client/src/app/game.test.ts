@@ -44,12 +44,12 @@ import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { HotspotKey, ItemId, WorldPublic } from '../world/types.ts';
 import { createViewModel } from '../ui/state.svelte.ts';
 import type { ViewModel } from '../ui/state.svelte.ts';
-import { createMetaGate, HOME_IDLE_MS, newestAuto } from './boot.ts';
-import type { MetaGate } from './boot.ts';
+import { createMetaGate, createPageRecovery, HOME_IDLE_MS, newestAuto } from './boot.ts';
+import type { MetaGate, PageRecovery } from './boot.ts';
 import { CONFLICT_HOLD_MS, createGame, reloadedFor, withReloadedFor } from './game.ts';
 import type { Entitlements, Game, GameDeps, ReloadPort } from './game.ts';
 import type { MetaController, MetaDeps, MetaUi, MetaView } from './meta.ts';
-import { chunkLatch, latched, metaHold, withLatch } from './reload.ts';
+import { chunkLatch, latched, metaHold, RELOAD_POLL_MS, withLatch } from './reload.ts';
 import type { ExploreChunk, LazyChunks, Yields, YieldsHost } from './yields.ts';
 
 // GM3w: each session's YieldsHost and Yields, as createYields received and made them; every other export of yields.ts
@@ -4371,4 +4371,640 @@ test('reload: metaHold names a wallet purchase on screen before a gift, and noth
   expect(metaHold(metaView({ gift: giftView(false) }))).toBeNull();
   expect(metaHold(metaView({ purchase: { kind: 'unlocked', product: 'pack:hints' as ProductId } }))).toBeNull();
   expect(metaHold(null)).toBeNull();
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Q60 B' (D2-D4, D6): boot's page recovery over fakes of the evidence fetches, the skew, the Game, the page port, the
+// view and the clock. Engine imports are promises the test settles; the holds change through `view` and `lifecycle`.
+
+/** The page's build in these tests; its chunk latch is OWN_LATCH. */
+const OWN = 'own';
+/** A lazy chunk's URL, as Chromium names it in a failed import's message. */
+const FLOW = 'https://app.example/assets/flow-AbC123.js';
+const OTHER = 'https://app.example/assets/explore-ui-Def456.js';
+/** The one stylesheet (D6). */
+const CSS = 'https://app.example/assets/index-Gh789.css';
+const HEALTH = '/api/health';
+/** A wallet pack's invoice sheet on screen (LRB). */
+const SHEET: PurchaseState = { kind: 'sheet', orderId: 'o1' as OrderId };
+
+/** A failed dynamic import as `vite:preloadError` carries it. */
+const failure = (url: string): Error => new TypeError(`Failed to fetch dynamically imported module: ${url}`);
+
+type Answer = 'ok' | 'gone' | 'offline';
+
+type RecoveryRig = {
+  readonly recovery: PageRecovery;
+  readonly debug: NonNullable<PageRecovery['debug']>;
+  readonly page: ReturnType<typeof fakePage>;
+  readonly clock: FakeClock;
+  readonly view: { meta: MetaView | null };
+  /** The factory's own notices: a reload without a Game. */
+  readonly notices: string[];
+  /** Every URL the evidence fetched, in order. */
+  readonly fetched: string[];
+  /** How the server answers the evidence from now on (`gone`: a 404). */
+  serve(answer: (url: string) => Answer): void;
+  /** The build the server names from now on (`http.skew()`). */
+  skew(served: string | null): void;
+};
+
+function recoveryRig(
+  o: { own?: string | null; href?: string; game?: () => Game | null; clock?: FakeClock; view?: { meta: MetaView | null } } = {},
+): RecoveryRig {
+  const clock = o.clock ?? new FakeClock();
+  const page = fakePage(o.href);
+  const view = o.view ?? { meta: null };
+  const notices: string[] = [];
+  const fetched: string[] = [];
+  let answer: (url: string) => Answer = () => 'ok';
+  let served: string | null = null;
+  const recovery = createPageRecovery({
+    own: o.own === undefined ? OWN : o.own,
+    http: {
+      fetchAsset: async (url) => {
+        fetched.push(url);
+        const a = answer(url);
+        if (a === 'ok') {
+          return { ok: true, value: new Blob() };
+        }
+        return { ok: false, error: a === 'gone' ? { kind: 'http', status: 404 } : { kind: 'network', detail: 'offline in the unit test' } };
+      },
+      skew: () => served,
+    },
+    game: o.game ?? (() => null),
+    view,
+    page,
+    notice: (kind) => notices.push(kind),
+    clock,
+  });
+  const debug = recovery.debug;
+  if (debug === undefined) {
+    throw new Error('invariant: a __TG_MOCK__ build carries the recovery debug hook');
+  }
+  return {
+    recovery,
+    debug,
+    page,
+    clock,
+    view,
+    notices,
+    fetched,
+    serve: (fn) => {
+      answer = fn;
+    },
+    skew: (s) => {
+      served = s;
+    },
+  };
+}
+
+/** A Game stand-in that records the factory's hand-overs; the factory calls nothing else on a Game. */
+function handOver(): { game: Game; restarts: string[] } {
+  const restarts: string[] = [];
+  // One member of Game is reached; any other access fails the test (undefined is not a function).
+  const game = {
+    restart: (latch: string) => {
+      restarts.push(latch);
+    },
+  } as unknown as Game;
+  return { game, restarts };
+}
+
+/** An engine import the test settles by hand. */
+function engineLoad(): { promise: Promise<'engine'>; land(): void; fail(): void } {
+  let land = (): void => {};
+  let fail = (): void => {};
+  const promise = new Promise<'engine'>((resolve, reject) => {
+    land = () => resolve('engine');
+    fail = () => reject(new Error('the engine chunk did not load'));
+  });
+  return { promise, land, fail };
+}
+
+/** An engine import that failed: no Game can be made until the next one starts. */
+async function engineFailed(r: RecoveryRig): Promise<void> {
+  const load = engineLoad();
+  void r.recovery.engine(load.promise);
+  load.fail();
+  await settle();
+}
+
+/** A failure, and its evidence round to its end. */
+async function failNow(r: RecoveryRig, payload: unknown, now?: boolean): Promise<void> {
+  r.recovery.failed(payload, now);
+  await settle();
+}
+
+/** `ms` of the rig's clock in 100 ms steps, the fakes' answers settling between them. */
+async function tick(r: RecoveryRig, ms: number): Promise<void> {
+  for (let left = ms; left > 0; left -= 100) {
+    r.clock.advance(Math.min(100, left));
+    await settle();
+  }
+}
+
+/** HREF with this build's chunk latch appended: the reload URL of a chunk restart. */
+const RESTARTED = `${HREF}&novelReloadedFor=chunk%3Aown`;
+
+test('recovery: a failure before any answered probe restarts nothing', async () => {
+  const g = handOver();
+  const r = recoveryRig({ game: () => g.game });
+  await failNow(r, failure(FLOW));
+  // Its own evidence answers: the URL is armed, and that is all a first failure does.
+  expect([r.fetched, r.debug.armed(), r.debug.checked()]).toEqual([[HEALTH, FLOW], [FLOW], 1]);
+  await tick(r, 2000);
+  expect([g.restarts, r.page.reloads, r.debug.wanted()]).toEqual([[], [], null]);
+});
+
+test('recovery: a second failure of an armed URL restarts through the game', async () => {
+  const h = harness();
+  await startManor(h);
+  const r = recoveryRig({ clock: h.clock, game: () => h.game, view: h.vm });
+  await failNow(r, failure(FLOW));
+  expect([r.debug.armed(), r.page.reloads]).toEqual([[FLOW], []]);
+  await failNow(r, failure(FLOW));
+  expect(r.debug.wanted(), 'handed to the game').toBeNull();
+  await pass(h, 100);
+  // The Game's reload rules: the autosave, its restart notice, the flush, the reload with the chunk latch.
+  expect([r.page.reloads, h.vm.notice?.kind, r.notices]).toEqual([[RESTARTED], 'restart', []]);
+  expect(h.save().autosaves.at(-1)?.lineId).toBe('ch1.arrival.l001');
+  h.game.dispose();
+});
+
+test('recovery: a failure of another URL arms it and restarts nothing', async () => {
+  const g = handOver();
+  const r = recoveryRig({ game: () => g.game });
+  await failNow(r, failure(FLOW));
+  await failNow(r, failure(OTHER));
+  expect([r.debug.armed(), r.debug.checked(), g.restarts]).toEqual([[FLOW, OTHER], 2, []]);
+  // Each key restarts at its own second failure.
+  await failNow(r, failure(OTHER));
+  expect(g.restarts).toEqual([OWN_LATCH]);
+});
+
+test('recovery: a chunk the server does not serve arms nothing', async () => {
+  const g = handOver();
+  const r = recoveryRig({ game: () => g.game });
+  r.serve((url) => (url === FLOW ? 'gone' : 'ok')); // a deploy removed it: the 404 of P's test
+  for (let i = 0; i < 3; i += 1) {
+    await failNow(r, failure(FLOW));
+  }
+  expect([r.debug.armed(), r.debug.checked(), g.restarts]).toEqual([[], 3, []]);
+  expect(r.fetched).toEqual([HEALTH, FLOW, HEALTH, FLOW, HEALTH, FLOW]);
+});
+
+test('recovery: failures in one burst count once', async () => {
+  const g = handOver();
+  const r = recoveryRig({ game: () => g.game });
+  // Two failures of one URL before any evidence answered (a retry inside one tap): neither was armed at its event.
+  r.recovery.failed(failure(FLOW));
+  r.recovery.failed(failure(FLOW));
+  await settle();
+  expect([r.debug.armed(), r.debug.checked(), g.restarts]).toEqual([[FLOW], 2, []]);
+  await failNow(r, failure(FLOW));
+  expect(g.restarts).toEqual([OWN_LATCH]);
+});
+
+test('recovery: an unanswered probe arms nothing', async () => {
+  const g = handOver();
+  const r = recoveryRig({ game: () => g.game });
+  r.serve(() => 'offline');
+  await failNow(r, failure(FLOW));
+  await failNow(r, failure(FLOW));
+  // No servability fetch once the probe went unanswered.
+  expect([r.fetched, r.debug.armed(), r.debug.checked(), g.restarts]).toEqual([[HEALTH, HEALTH], [], 2, []]);
+  r.serve(() => 'ok');
+  await failNow(r, failure(FLOW));
+  expect([r.debug.armed(), g.restarts], 'the first answered failure only arms').toEqual([[FLOW], []]);
+});
+
+test('recovery: a skew answer arms nothing and leaves the reload to the skew path', async () => {
+  const g = handOver();
+  const r = recoveryRig({ game: () => g.game });
+  r.serve((url) => {
+    if (url === HEALTH) {
+      r.skew(SKEW); // the probe's answer names another build (http.ts reads its header)
+    }
+    return 'ok';
+  });
+  await failNow(r, failure(FLOW));
+  await failNow(r, failure(FLOW));
+  expect([r.fetched, r.debug.armed(), r.debug.checked()]).toEqual([[HEALTH, HEALTH], [], 2]);
+  await tick(r, 2000);
+  expect([g.restarts, r.page.reloads, r.notices]).toEqual([[], [], []]);
+});
+
+test('recovery: a failure that names no URL arms the page-wide key', async () => {
+  const g = handOver();
+  const r = recoveryRig({ game: () => g.game });
+  await failNow(r, new TypeError('Importing a module script failed.')); // WebKit names no module
+  expect([r.fetched, r.debug.armed(), g.restarts]).toEqual([[HEALTH], [''], []]);
+  // Any later failure with no URL is the same key: a payload that is no error at all included.
+  await failNow(r, { reason: 'not an error' });
+  expect(g.restarts).toEqual([OWN_LATCH]);
+});
+
+test('recovery: a stylesheet failure restarts at its first answered evidence', async () => {
+  const g = handOver();
+  const r = recoveryRig({ game: () => g.game });
+  r.serve(() => 'offline');
+  await failNow(r, CSS, true);
+  expect([r.debug.armed(), g.restarts], 'an unanswered probe').toEqual([[], []]);
+  r.serve(() => 'ok');
+  await failNow(r, CSS, true);
+  expect([r.fetched, r.debug.checked(), g.restarts]).toEqual([[HEALTH, HEALTH, CSS], 2, [OWN_LATCH]]);
+});
+
+test('recovery: a page without a build id never restarts', async () => {
+  const g = handOver();
+  let game: Game | null = g.game;
+  const r = recoveryRig({ own: null, game: () => game });
+  await failNow(r, failure(FLOW));
+  await failNow(r, failure(FLOW));
+  await failNow(r, CSS, true);
+  // It arms and counts its rounds (D2 step 4); only the act reads the build id.
+  expect([r.debug.armed(), r.debug.checked(), g.restarts]).toEqual([[FLOW], 3, []]);
+  game = null;
+  await engineFailed(r);
+  r.recovery.settle();
+  await tick(r, 2000);
+  expect([r.page.reloads, r.notices]).toEqual([[], []]);
+});
+
+test("recovery: the chunk latch for this build keeps today's error states", async () => {
+  const r = recoveryRig({ href: withLatch(HREF, OWN_LATCH) });
+  await engineFailed(r);
+  await failNow(r, failure(FLOW));
+  await failNow(r, failure(FLOW));
+  await failNow(r, CSS, true);
+  await tick(r, 2000);
+  expect([r.page.reloads, r.notices, r.debug.wanted()]).toEqual([[], [], null]);
+  expect([r.debug.armed(), r.debug.checked()], 'the latch is read by the act alone').toEqual([[FLOW], 3]);
+  // The control: the same failures on a page without the latch restart it.
+  const control = recoveryRig();
+  await engineFailed(control);
+  await failNow(control, failure(FLOW));
+  await failNow(control, failure(FLOW));
+  expect([control.page.reloads, control.notices]).toEqual([[RESTARTED], ['restart']]);
+});
+
+test('recovery: a restart wanted while the engine import is in flight goes to the game once it is made', async () => {
+  const g = handOver();
+  let game: Game | null = null;
+  const r = recoveryRig({ game: () => game });
+  const load = engineLoad();
+  void r.recovery.engine(load.promise);
+  await failNow(r, failure(FLOW));
+  await failNow(r, failure(FLOW));
+  expect(r.debug.wanted()).toBe('chunk');
+  await tick(r, 2000);
+  expect([r.page.reloads, r.notices, g.restarts], 'the engine is still loading').toEqual([[], [], []]);
+  load.land();
+  await settle();
+  game = g.game; // engineOf made the Game, then settles the recovery
+  r.recovery.settle();
+  expect([g.restarts, r.debug.wanted(), r.page.reloads]).toEqual([[OWN_LATCH], null, []]);
+});
+
+test('recovery: a restart wanted while the engine import is in flight reloads without a game once that import fails', async () => {
+  const r = recoveryRig();
+  const load = engineLoad();
+  void r.recovery.engine(load.promise);
+  await failNow(r, failure(FLOW));
+  await failNow(r, failure(FLOW));
+  await tick(r, 2000);
+  expect([r.page.reloads, r.notices]).toEqual([[], []]);
+  load.fail();
+  await settle();
+  expect([r.page.reloads, r.notices]).toEqual([[RESTARTED], ['restart']]);
+  await tick(r, 2000);
+  expect(r.page.reloads, 'one reload').toHaveLength(1);
+});
+
+test('recovery: without a game the restart waits for a wallet pack purchase on screen', async () => {
+  const r = recoveryRig();
+  r.view.meta = metaView({ purchase: SHEET });
+  await engineFailed(r);
+  await failNow(r, failure(FLOW));
+  await failNow(r, failure(FLOW));
+  expect(r.debug.wanted()).toBe('chunk');
+  await tick(r, 2000);
+  expect([r.page.reloads, r.notices], 'the sheet is on screen').toEqual([[], []]);
+  r.view.meta = metaView({ purchase: SHEET, purchaseLeft: true }); // the player left the sheet (LRB): no hold
+  await tick(r, RELOAD_POLL_MS);
+  expect([r.page.reloads, r.notices]).toEqual([[RESTARTED], ['restart']]);
+});
+
+test('recovery: without a game the restart waits for a gift being sent', async () => {
+  const r = recoveryRig();
+  r.view.meta = metaView({ gift: giftView(true) });
+  await engineFailed(r);
+  await failNow(r, failure(FLOW));
+  await failNow(r, failure(FLOW));
+  await tick(r, 2000);
+  expect([r.page.reloads, r.notices], 'the gift is being sent').toEqual([[], []]);
+  r.view.meta = metaView({ gift: giftView(false) });
+  await tick(r, RELOAD_POLL_MS);
+  expect([r.page.reloads, r.notices]).toEqual([[RESTARTED], ['restart']]);
+});
+
+test('recovery: without a game the restart waits for activated', async () => {
+  const r = recoveryRig();
+  r.recovery.lifecycle('deactivated');
+  await engineFailed(r);
+  await failNow(r, failure(FLOW));
+  await failNow(r, failure(FLOW));
+  await tick(r, 2000);
+  expect([r.page.reloads, r.notices, r.debug.wanted()], 'in the background').toEqual([[], [], 'chunk']);
+  r.recovery.lifecycle('activated');
+  expect([r.page.reloads, r.notices]).toEqual([[RESTARTED], ['restart']]);
+});
+
+test('recovery: a skew while the engine import is in flight reloads nothing', async () => {
+  const r = recoveryRig();
+  const load = engineLoad();
+  void r.recovery.engine(load.promise);
+  r.skew(SKEW);
+  r.recovery.settle(); // onSkew
+  await tick(r, 2000);
+  expect([r.page.reloads, r.notices], 'the Game, once made, takes the skew').toEqual([[], []]);
+  // The control: once that import failed, no Game can be made, so the page reloads for the skew itself.
+  load.fail();
+  await settle();
+  expect([r.page.reloads, r.notices]).toEqual([[`${HREF}&novelReloadedFor=${SKEW}`], ['update']]);
+});
+
+test('recovery: a skew after the engine import failed waits for a wallet pack purchase on screen and for activated, then reloads with the update notice', async () => {
+  const r = recoveryRig();
+  await engineFailed(r);
+  r.view.meta = metaView({ purchase: SHEET });
+  r.recovery.lifecycle('deactivated');
+  r.skew(SKEW);
+  r.recovery.settle();
+  expect(r.debug.wanted()).toBe('skew');
+  await tick(r, 2000);
+  expect([r.page.reloads, r.notices], 'the sheet, in the background').toEqual([[], []]);
+  r.view.meta = metaView();
+  await tick(r, 2000);
+  expect([r.page.reloads, r.notices], 'in the background').toEqual([[], []]);
+  r.recovery.lifecycle('activated');
+  expect([r.page.reloads, r.notices]).toEqual([[`${HREF}&novelReloadedFor=${SKEW}`], ['update']]);
+  expect(reloadedFor(r.page.reloads[0] ?? '')).toBe(SKEW);
+});
+
+test('recovery: a restart for a game waits for activated', async () => {
+  const g = handOver();
+  const r = recoveryRig({ game: () => g.game });
+  r.recovery.lifecycle('deactivated');
+  await failNow(r, failure(FLOW));
+  await failNow(r, failure(FLOW));
+  await tick(r, 2000);
+  expect([g.restarts, r.debug.wanted()], 'in the background').toEqual([[], 'chunk']);
+  r.recovery.lifecycle('activated');
+  expect([g.restarts, r.debug.wanted()]).toEqual([[OWN_LATCH], null]);
+});
+
+test("recovery: a page with this build's chunk latch still arms, and its second failure restarts nothing", async () => {
+  const h = harness();
+  await startManor(h);
+  const r = recoveryRig({ href: withLatch(HREF, OWN_LATCH), clock: h.clock, game: () => h.game, view: h.vm });
+  await failNow(r, failure(FLOW));
+  expect([r.debug.armed(), r.debug.checked()], 'a latched page arms like any page').toEqual([[FLOW], 1]);
+  await failNow(r, failure(FLOW));
+  expect(r.debug.checked()).toBe(2);
+  await pass(h, 2000);
+  // The Game's restart is a no-op on a latched page: today's error states, no restart notice.
+  expect([r.page.reloads, h.vm.notice, r.notices]).toEqual([[], null, []]);
+  h.game.dispose();
+});
+
+test('recovery: without a game a skew and a chunk restart both wanted reload once, for the skew', async () => {
+  const r = recoveryRig();
+  r.view.meta = metaView({ purchase: SHEET });
+  await engineFailed(r);
+  await failNow(r, failure(FLOW));
+  await failNow(r, failure(FLOW));
+  r.skew(SKEW);
+  r.recovery.settle();
+  expect(r.debug.wanted()).toBe('skew');
+  r.view.meta = metaView();
+  await tick(r, 2000);
+  // The served build's chunk URLs differ: its latch is the only one, so LBI's reader finds it.
+  expect([r.page.reloads, r.notices]).toEqual([[`${HREF}&novelReloadedFor=${SKEW}`], ['update']]);
+  // A page that already reloaded for the served build: the chunk restart acts, its latch appended.
+  const skewed = recoveryRig({ href: withReloadedFor(HREF, SKEW) });
+  await engineFailed(skewed);
+  await failNow(skewed, failure(FLOW));
+  await failNow(skewed, failure(FLOW));
+  skewed.skew(SKEW);
+  skewed.recovery.settle();
+  expect([skewed.page.reloads, skewed.notices]).toEqual([[`${HREF}&novelReloadedFor=${SKEW}&novelReloadedFor=chunk%3Aown`], ['restart']]);
+  // Both latches present: nothing reloads.
+  const both = recoveryRig({ href: withLatch(withReloadedFor(HREF, SKEW), OWN_LATCH) });
+  await engineFailed(both);
+  await failNow(both, failure(FLOW));
+  await failNow(both, failure(FLOW));
+  both.skew(SKEW);
+  both.recovery.settle();
+  await tick(both, 2000);
+  expect([both.page.reloads, both.notices, both.debug.wanted()]).toEqual([[], [], null]);
+});
+
+test('recovery: a re-import of the engine stops the no-game poll, and its failure resumes it', async () => {
+  const r = recoveryRig();
+  r.view.meta = metaView({ purchase: SHEET });
+  await engineFailed(r);
+  await failNow(r, failure(FLOW));
+  await failNow(r, failure(FLOW));
+  expect(r.clock.pending, 'polling for the sheet').toBe(1);
+  const again = engineLoad(); // Start imports the engine again
+  void r.recovery.engine(again.promise);
+  expect(r.clock.pending, 'the import is in flight').toBe(0);
+  await tick(r, 2000);
+  expect([r.page.reloads, r.notices]).toEqual([[], []]);
+  again.fail();
+  await settle();
+  expect([r.clock.pending, r.page.reloads], 'polling again for the sheet').toEqual([1, []]);
+  r.view.meta = metaView();
+  await tick(r, RELOAD_POLL_MS);
+  expect([r.page.reloads, r.notices]).toEqual([[RESTARTED], ['restart']]);
+});
+
+// The Game's side of the restart (Q60 D3): LBI's reload rules with the chunk latch and the restart notice.
+
+test('game: a chunk restart waits for the safe point and shows the restart notice', async () => {
+  const h = harness();
+  await startManor(h);
+  await h.game.advance(); // l002
+  let flushed: (v: 'saved' | 'pending') => void = () => {};
+  h.save().flush = () =>
+    new Promise((resolve) => {
+      flushed = resolve;
+    });
+  const page = fakePage(withReloadedFor(HREF, SKEW)); // this tab reloaded for a deploy before
+  const before = h.save().autosaves.length;
+  h.game.restart(OWN_LATCH, page);
+  expect([h.save().autosaves.length, h.vm.notice, page.reloads]).toEqual([before, null, []]);
+  h.clock.advance(0);
+  await settle();
+  expect(h.save().autosaves.slice(before).map((w) => w.lineId)).toEqual(['ch1.arrival.l002']);
+  expect([h.vm.notice?.kind, h.vm.screens.root.kind, h.vm.screens.overlays]).toEqual(['restart', 'notice', []]);
+  expect(page.reloads, 'no reload before the flush settles').toEqual([]);
+  flushed('saved');
+  await settle();
+  // The skew latch kept byte for byte, the chunk latch appended: each reader finds its own.
+  expect(page.reloads).toEqual([`${HREF}&novelReloadedFor=${SKEW}&novelReloadedFor=chunk%3Aown`]);
+  expect(reloadedFor(page.reloads[0] ?? '')).toBe(SKEW);
+  // One recovery per page.
+  h.game.restart(OWN_LATCH, page);
+  h.game.skewed('eeeeeeeeeeeeeeee', page);
+  await pass(h, 2000);
+  expect(page.reloads).toHaveLength(1);
+  h.game.dispose();
+  // The restarted page's Game: a restart for this build is a no-op there (F4).
+  const again = harness();
+  await startManor(again);
+  again.game.restart(OWN_LATCH, page);
+  await pass(again, 2000);
+  expect([page.reloads.length, again.vm.notice]).toEqual([1, null]);
+  again.game.dispose();
+});
+
+test('game: a waiting Buy holds a chunk restart', async () => {
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const held = heldPurchase();
+    const h = harness({ chapters: [manorCh1(), manorCh2()], loadPurchase: held.load });
+    await playManorCh1(h);
+    await h.game.advance(); // END: ch2's pending start and the paywall, whose prefetch is held
+    h.game.buy(); // waits for the module
+    await settle();
+    const page = fakePage();
+    h.game.restart(OWN_LATCH, page);
+    await pass(h, 3000);
+    expect([page.reloads, h.vm.notice], 'a Buy waits for the module').toEqual([[], null]);
+    held.fail(); // the flow chunk failed again
+    await settle();
+    expect(purchaseNoted(h)).toBe(true);
+    await pass(h, 1000);
+    expect([page.reloads, h.vm.notice?.kind]).toEqual([[RESTARTED], 'restart']);
+    h.game.dispose();
+  } finally {
+    errors.mockRestore();
+  }
+});
+
+test('game: a pending skew recovery absorbs a chunk restart, and a chunk restart absorbs a skew', async () => {
+  const first = harness();
+  await startManor(first);
+  const page = fakePage();
+  first.game.skewed(SKEW, page);
+  first.game.restart(OWN_LATCH, page);
+  await pass(first, 1000);
+  expect([page.reloads, first.vm.notice?.kind]).toEqual([[`${HREF}&novelReloadedFor=${SKEW}`], 'update']);
+  first.game.dispose();
+  const second = harness();
+  await startManor(second);
+  const other = fakePage();
+  second.game.restart(OWN_LATCH, other);
+  second.game.skewed(SKEW, other);
+  await pass(second, 1000);
+  expect([other.reloads, second.vm.notice?.kind]).toEqual([[RESTARTED], 'restart']);
+  second.game.dispose();
+});
+
+/** W3: ch1 whose explore yield comes two lines after the first, so the steps between prefetch and yield are seen. */
+function yieldCh1(): LoadedChapter {
+  return chapter(
+    'ch1',
+    [
+      ...WORLD_INK_VARS,
+      '-> start',
+      '=== start ===',
+      '# scene: hall',
+      'Start. #id:ch1.start.l001',
+      'Then. #id:ch1.start.l002',
+      '# explore: manor',
+      '-> DONE',
+      '=== study_event ===',
+      'Event. #id:ch1.study_event.l004',
+      '# explore: manor',
+      '-> DONE',
+    ],
+    { start: { assets: ['bg/hall'], next: [] }, study_event: {} },
+    { assets: ['bg/study', 'prop/medal', 'cg/drawer_close'], vars: WORLD_VARS, world: gameWorld() },
+  );
+}
+
+/** The yield an autosave stopped at. */
+const yieldOf = (w: SaveWrite | undefined): unknown => (w === undefined ? undefined : (JSON.parse(w.body) as { at: { yield: unknown } }).at.yield);
+
+test('game: a failed yield prefetch is not imported again before its section opens', async () => {
+  stubObserver();
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const w = worldChunks();
+    let imports = 0;
+    const chunks: LazyChunks = {
+      ...w.chunks,
+      explore: async () => {
+        imports += 1;
+        if (imports === 1) {
+          return { ok: false, error: { kind: 'chunk', detail: 'the explore chunk failed once' } };
+        }
+        return w.chunks.explore();
+      },
+    };
+    const h = harness({ chapters: [yieldCh1()], chunks });
+    await startManor(h);
+    h.game.lineShown(); // the dialogue box revealed the first line: the chapter's prefetch
+    await settle();
+    expect([lineOf(h.vm), imports], 'the first line prefetches').toEqual(['ch1.start.l001', 1]);
+    await h.game.advance(); // l002
+    h.game.lineShown();
+    await settle();
+    expect([lineOf(h.vm), imports], 'nothing imports again before the yield').toEqual(['ch1.start.l002', 1]);
+    await h.game.advance(); // the explore yield
+    await settle();
+    expect([imports, h.explore.layer !== null]).toEqual([2, true]);
+    h.game.dispose();
+  } finally {
+    errors.mockRestore();
+    vi.unstubAllGlobals();
+  }
+});
+
+test("game: a chunk restart at a yield's error notice autosaves the yield, and the resumed yield opens its section", async () => {
+  stubObserver();
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const h = harness({ chapters: [yieldCh1()] }); // every explore import fails: a sticky engine
+    await startManor(h);
+    await h.game.advance(); // l002
+    await h.game.advance(); // the explore yield
+    await settle();
+    expect([h.vm.notice?.kind, h.explore.layer]).toEqual(['error', null]);
+    const page = fakePage();
+    h.game.restart(OWN_LATCH, page);
+    h.clock.advance(0);
+    await settle();
+    expect(yieldOf(h.save().autosaves.at(-1))).toEqual({ kind: 'explore', section: 'manor' });
+    expect([h.vm.notice?.kind, page.reloads]).toEqual(['restart', [RESTARTED]]);
+    const auto = h.save().slots.get('auto');
+    h.game.dispose();
+    expect(auto).toBeDefined();
+    if (auto === undefined) {
+      return;
+    }
+    // The restarted page: Home -> Continue resumes onto the yield, and its section opens.
+    const again = harness({ chapters: [yieldCh1()], chunks: worldChunks().chunks, slots: new Map([['auto', auto]]) });
+    expect((await again.game.start({ kind: 'slot', story: MANOR, slot: 'auto' })).ok).toBe(true);
+    await settle();
+    expect([again.vm.notice, again.explore.layer !== null]).toEqual([null, true]);
+    again.game.dispose();
+  } finally {
+    errors.mockRestore();
+    vi.unstubAllGlobals();
+  }
 });

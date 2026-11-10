@@ -38,6 +38,9 @@ export const en: Record<UiKey, string> = {
   'notice.the_end_card': 'Playthrough',
   // LBI D5: a deploy under the open app; the page reloads at a safe point (a draft).
   'notice.update_title': 'An update is out. Restarting…',
+  // Q60: a part of the game failed to load again after the server answered; the page restarts at a safe point
+  // (placeholder until Q61).
+  'notice.restart_title': 'Loading the rest of the game. Restarting…',
   // The in-play menu.
   'menu.title': 'Menu',
   'menu.saves': 'Saves',

@@ -4,11 +4,13 @@
    * toast's `run` does; each new object is a new presentation. `reopen`'s one action is Close (`onclose`, the facade's
    * `close()`: the ended session is reopened from Telegram, K33); `open_in_telegram` has none (the page is outside
    * Telegram, and its body says what to do). `the_end` shows the card action iff `oncard` is given (META M9).
-   * `update` has none either: the page reloads under it into the new build (LBI D5), so nothing may be tapped.
+   * `update` has none either: the page reloads under it into the new build (LBI D5), so nothing may be tapped; nor has
+   * `restart`: the page reloads under it once a part of the game failed to load again (Q60).
    */
   export type NoticeView =
     | { kind: 'open_in_telegram' }
     | { kind: 'update' }
+    | { kind: 'restart' }
     | { kind: 'reopen'; onclose: () => void }
     | { kind: 'error' | 'story_error' | 'to_be_continued'; onaction: () => void }
     | { kind: 'the_end'; onaction: () => void; oncard?: () => void };
@@ -53,6 +55,8 @@
         return { title: 'notice.the_end_title', body: null, action: 'notice.the_end_action' };
       case 'update':
         return { title: 'notice.update_title', body: null, action: null };
+      case 'restart':
+        return { title: 'notice.restart_title', body: null, action: null };
       default: {
         const unhandled: never = kind;
         throw new Error(`invariant: unhandled notice ${String(unhandled)}`);
