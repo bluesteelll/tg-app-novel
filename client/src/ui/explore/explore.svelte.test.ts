@@ -1,11 +1,17 @@
 // LX in happy-dom: the explore layer (PUZZLES-PLAN X10, X16; the LX cut D14): hotspot buttons placed by the
 // controller's boxes, the reveal outline, the bar, and the reader rules over the explore components (copies of
-// L14b's readers as ui/puzzles/puzzle-host.svelte.test.ts holds them; RULINGS 55 accepts copies).
+// L14b's readers as ui/puzzles/puzzle-host.svelte.test.ts holds them; RULINGS 55 accepts copies). GM3u (engine plan
+// §6.1 UI, §8.3, §8.5): the controls' cues, the hit areas, and the layer over the real cue stage on a real flush.
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
-import { flushSync } from 'svelte';
+import { flushSync, tick } from 'svelte';
 import ts from 'typescript';
 import { afterEach, expect, test, vi } from 'vitest';
 
+import { createCueBus } from '../../cues/bus.ts';
+import type { CueBus } from '../../cues/bus.ts';
+import { CueStage } from '../../cues/stage/index.ts';
+import { PRESETS } from '../../cues/stage/presets.ts';
+import type { Box } from '../../geom/cover.ts';
 import { t } from '../../i18n/index.ts';
 import type { Lang } from '../../i18n/index.ts';
 import type { DocId, HotspotKey, ItemId } from '../../world/types.ts';
@@ -22,11 +28,16 @@ import type {
 import { GLYPH_PATHS } from '../glyphs.ts';
 import { createPuzzleView } from '../puzzle-view.svelte.ts';
 import type { PuzzleHostCallbacks } from '../puzzle-view.svelte.ts';
+import type { CueStageProps } from '../state.svelte.ts';
 import ExploreView from './ExploreView.svelte';
 import exploreViewSource from './ExploreView.svelte?raw';
 
-// svelteTesting()'s auto-cleanup does not reach the `dom` project (L14a), so each test unmounts what it rendered here.
-afterEach(() => cleanup());
+// svelteTesting()'s auto-cleanup does not reach the `dom` project (L14a), so each test unmounts what it rendered here;
+// a test that installed the stage rig gets the real clock and DOM methods back after its components are gone.
+afterEach(() => {
+  cleanup();
+  unstage();
+});
 
 const LANGS: readonly Lang[] = ['ru', 'en'];
 const k = (s: string) => s as HotspotKey;
@@ -483,4 +494,180 @@ test('explore ui: components do no I/O', () => {
     ['../../telegram/index.ts', false],
     ['../../i18n/index.ts', true],
   ]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The layer over the real cue stage (engine plan §8.5 "Cue targets", "Hit areas", the real-flush rows; GM3u): the rig of
+// cues/stage/stage.svelte.test.ts, copied (RULINGS 55): a fake `Animation` on vitest's fake clock, a recording
+// `Element.prototype.animate`, fixture boxes (happy-dom lays nothing out) and the real CueStage on a bus.
+
+/** A fake `Animation` on the fake clock: finishes `ms` after its start; `currentTime` moves its start. */
+class FakeAnimation {
+  onfinish: (() => void) | null = null;
+  playState: 'running' | 'finished' | 'idle' = 'running';
+  readonly timing = { endDelay: 0 };
+  readonly effect = {
+    updateTiming: (t: { endDelay?: number }): void => {
+      this.timing.endDelay = t.endDelay ?? this.timing.endDelay;
+    },
+  };
+  #start = Date.now();
+  #timer: ReturnType<typeof setTimeout> | null = null;
+  readonly #ms: number;
+  constructor(ms: number) {
+    this.#ms = ms;
+    this.#schedule(0);
+  }
+  get currentTime(): number {
+    return Date.now() - this.#start;
+  }
+  set currentTime(t: number) {
+    this.#start = Date.now() - t;
+    this.#schedule(t);
+  }
+  cancel(): void {
+    this.#clear();
+    this.playState = 'idle';
+  }
+  #clear(): void {
+    if (this.#timer !== null) {
+      clearTimeout(this.#timer);
+      this.#timer = null;
+    }
+  }
+  #schedule(t: number): void {
+    this.#clear();
+    this.#timer = setTimeout(() => {
+      this.playState = 'finished';
+      this.onfinish?.();
+    }, this.#ms - t);
+  }
+}
+
+type Rec = { readonly el: Element; readonly kf: Keyframe[]; readonly ms: number; readonly fill: unknown; readonly anim: FakeAnimation };
+
+const STAGE: Box = { x: 0, y: 0, w: 400, h: 600 };
+const HOTSPOT: Box = { x: 40, y: 80, w: 60, h: 40 };
+
+/** Each fixture element's box; a `[data-cue-stage]` layer has the stage's box. */
+const BOXES = new WeakMap<Element, Box>();
+const realAnimate = Element.prototype.animate;
+const realRect = Element.prototype.getBoundingClientRect;
+let records: Rec[] = [];
+let staged = false;
+
+function rectOf(b: Box): DOMRect {
+  // The fields a DOMRect reader takes.
+  return { x: b.x, y: b.y, left: b.x, top: b.y, width: b.w, height: b.h, right: b.x + b.w, bottom: b.y + b.h, toJSON: () => b } as DOMRect;
+}
+
+/** Installs the fake clock, the recording `animate` and the fixture boxes for one test; `unstage` (afterEach) undoes it. */
+function stageRig(): void {
+  staged = true;
+  vi.useFakeTimers();
+  records = [];
+  Element.prototype.animate = function (this: Element, kf, opts) {
+    const o = typeof opts === 'object' ? opts : { duration: opts };
+    const anim = new FakeAnimation(Number(o.duration));
+    // The keyframes the stage and the player pass are arrays.
+    records.push({ el: this, kf: kf as Keyframe[], ms: Number(o.duration), fill: o.fill, anim });
+    // The fake stands for the DOM's Animation: the stage reads `onfinish`, `currentTime`, `effect` and `cancel` only.
+    return anim as unknown as Animation;
+  };
+  Element.prototype.getBoundingClientRect = function (this: Element) {
+    const b = this.matches('[data-cue-stage]') ? STAGE : BOXES.get(this);
+    return b === undefined ? realRect.call(this) : rectOf(b);
+  };
+}
+
+function unstage(): void {
+  if (!staged) {
+    return;
+  }
+  staged = false;
+  document.body.replaceChildren();
+  Element.prototype.animate = realAnimate;
+  Element.prototype.getBoundingClientRect = realRect;
+  vi.useRealTimers();
+}
+
+/** Lets the emitting block's flush, the stage's `tick` continuation and the observers' microtasks run. */
+async function settle(): Promise<void> {
+  await tick();
+  for (let i = 0; i < 8; i += 1) {
+    await Promise.resolve();
+  }
+}
+
+type Mounted = { readonly bus: CueBus; readonly layer: HTMLElement; readonly played: () => string[]; readonly fallbacks: () => number };
+
+/** The real CueStage on a bus, as App mounts it from the session's slot. */
+function mounted(): Mounted {
+  const bus = createCueBus();
+  const props: CueStageProps = {
+    subscribe: bus.subscribe,
+    orphans: () => bus.orphans(),
+    dropped: () => {},
+    reduced: false,
+    host: () => null,
+    haptic: { impact: () => {}, selection: () => {}, notify: () => {} },
+  };
+  const { container } = render(CueStage, { props });
+  const layer = container.querySelector<HTMLElement>('[data-cue-stage]');
+  if (layer === null) {
+    throw new Error('no stage layer');
+  }
+  return {
+    bus,
+    layer,
+    played: () => (layer.dataset.cuesPlayed ?? '').split(' ').filter((key) => key !== ''),
+    fallbacks: () => Number(layer.dataset.cueFallbacks),
+  };
+}
+
+/** The cue motions recorded (the roots' entrances and exits left out). */
+const cueMotions = (): Rec[] => records.filter((r) => !r.el.matches('[data-cue-root]') && !r.el.classList.contains('cue-root-ghost'));
+/** A frame without the travel the player prepends to a two-endpoint preset's transform. */
+const untravelled = (f: Keyframe): Keyframe => (typeof f.transform === 'string' ? { ...f, transform: f.transform.replace(/^translate\([^)]*\)\s?/, '') } : f);
+/** The cue motions that played `preset`'s keyframes (a travel's compared without its translate). */
+const motionsOf = (preset: keyof typeof PRESETS): Rec[] => {
+  const want = JSON.stringify(PRESETS[preset].map(untravelled));
+  return cueMotions().filter((r) => JSON.stringify(r.kf.map(untravelled)) === want);
+};
+
+/** A hotspot as the controller writes it, at `css`. */
+const spot = (key: string, kind: HotspotView['kind'], label: string, css: Box = HOTSPOT): HotspotView => ({ key: k(key), kind, label, css, done: false, locked: false });
+
+test('explore: a hotspot is a hit area exactly while it paints nothing', () => {
+  // §8.5 "Hit areas" (round 11): a hotspot that paints nothing carries `data-cue-hit`, so its element-site motion plays
+  // on a painted ghost; an exit draws its glyph and a revealed hotspot its outline, so neither does.
+  const props = layerProps({ hotspots: [spot('hall.to_study', 'exit', 'study door'), spot('hall.medal', 'take', 'medal')] });
+  const { getByRole } = render(ExploreView, props);
+  const hits = (): boolean[] => ['study door', 'medal'].map((name) => getByRole('button', { name }).hasAttribute('data-cue-hit'));
+  expect(hits()).toEqual([false, true]);
+  props.view.reveal = true;
+  flushSync();
+  expect(hits()).toEqual([false, false]);
+  props.view.reveal = false;
+  flushSync();
+  expect(hits()).toEqual([false, true]);
+});
+
+test('explore: an exit tap presses its glyph', async () => {
+  // The exit paints its glyph, so its `press` scales the button with what it paints: on the button, no ghost.
+  stageRig();
+  const s = mounted();
+  const props = layerProps({ hotspots: [spot('hall.to_study', 'exit', 'study door')] });
+  props.view.oncue = s.bus.emit;
+  const { getByRole } = render(ExploreView, props);
+  await settle();
+  const exit = getByRole('button', { name: 'study door' });
+  BOXES.set(exit, HOTSPOT);
+  records = [];
+  await fireEvent.click(exit);
+  await settle();
+  expect(s.played()).toEqual(['ui:hotspot']);
+  expect(motionsOf('press').map((r) => r.el)).toEqual([exit]);
+  expect(s.layer.querySelectorAll('.cue-ghost')).toHaveLength(0);
+  expect(s.fallbacks()).toBe(0);
 });

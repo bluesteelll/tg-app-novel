@@ -2,7 +2,7 @@
 // ghosts, the real CueStage on a real Svelte flush, and the family roots' entrance and exit (RULINGS 195's fallback: no
 // Svelte transition directive; the roots enter and leave as cue-stage motions). A fixture DOM in happy-dom, a recording
 // `Element.prototype.animate` that returns a fake `Animation` on vitest's fake clock.
-import { cleanup, render } from '@testing-library/svelte';
+import { cleanup, render, screen } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { parse } from 'svelte/compiler';
 import type { AST } from 'svelte/compiler';
@@ -516,6 +516,20 @@ test("stage: no target resolves inside a root's ghost", async () => {
   // ghostOf strips a plain clone the same way.
   const g = ghostOf(HOTSPOT, element('button', { 'data-cue': 'hotspot', 'data-cue-hit': '', id: 'h' }), s.layer);
   expect([g.id, g.getAttribute('data-cue'), g.hasAttribute('data-cue-hit'), g.hasAttribute('inert'), g.style.pointerEvents]).toEqual(['', null, false, true, 'none']);
+});
+
+test('cues: the stage layer is hidden from the accessibility tree', () => {
+  // RULINGS 226 Q3 (08b §8.3's `aria-hidden` layer): a ghost keeps its original's tag, role and label, and `inert` hides
+  // nothing from a role query, so without the layer's `aria-hidden` a hotspot's press ghost answers its label beside the
+  // live button (Q62's "resolved to 2 elements").
+  const s = mounted();
+  const room = element('div', { 'data-cue-root': '' }, ROOT);
+  const button = element('button', { 'aria-label': 'X', 'data-cue': 'hotspot', 'data-cue-hit': '' }, HOTSPOT, room);
+  const clone = ghostOf(HOTSPOT, button, s.layer);
+  // Non-vacuous: the clone a played press makes is a labelled button on the layer.
+  expect([clone.tagName, clone.getAttribute('aria-label'), clone.parentElement]).toEqual(['BUTTON', 'X', s.layer]);
+  expect(screen.getAllByRole('button', { name: 'X' })).toEqual([button]);
+  expect(s.layer.getAttribute('aria-hidden')).toBe('true');
 });
 
 // ---------------------------------------------------------------------------------------------------------------

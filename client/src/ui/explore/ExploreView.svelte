@@ -60,6 +60,8 @@
         class:done={h.done}
         class:locked={h.locked}
         aria-label={h.label}
+        data-cue="hotspot"
+        data-cue-hit={h.kind !== 'exit' && !view.reveal ? '' : undefined}
         style:left="{h.css.x}px"
         style:top="{h.css.y}px"
         style:width="{h.css.w}px"
@@ -72,8 +74,8 @@
       </button>
     {/each}
     <div class="bar">
-      <button type="button" class="bar-button" onclick={actions.oninventory}>{t(lang, 'explore.bar_inventory')}</button>
-      <button type="button" class="bar-button" onclick={actions.onreveal}>{t(lang, 'explore.bar_reveal')}</button>
+      <button type="button" class="bar-button" data-cue="bar-inventory" onclick={actions.oninventory}>{t(lang, 'explore.bar_inventory')}</button>
+      <button type="button" class="bar-button" data-cue="bar-reveal" onclick={actions.onreveal}>{t(lang, 'explore.bar_reveal')}</button>
     </div>
   </div>
   {#if inventoryOpen}
