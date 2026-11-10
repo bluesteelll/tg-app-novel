@@ -19,9 +19,11 @@ const CLIENT_DIR = path.resolve(E2E_DIR, '..');
 const LINE_MS = 30_000;
 /** scene/controller.ts CONTEXT_GRACE_MS (2000; not imported: the module loads pixi.js) plus the rebuild's own time. */
 const REBUILD_MS = 2_000 + 3_000;
-/** The positive controls: the engine's chunk and the WebGL renderer's facade, which every fresh start requests. */
+/**
+ * The positive control: the engine's chunk, which every fresh start requests. Since Q60 G3 the renderers are in it
+ * (vite.config.ts `pixiChunking`), so the WebGL renderer has no chunk of its own to request.
+ */
 const ENGINE_KEY = 'src/app/engine.ts';
-const WEBGL_KEY = 'node_modules/pixi.js/lib/rendering/renderers/gl/WebGLRenderer.mjs';
 
 /**
  * The debug hook's fields this spec reads. helpers.ts (frozen in this lane) names neither `rebuilds` nor the loss
@@ -108,7 +110,6 @@ test('scene: a fresh start requests no Pixi environment chunk', async ({ page })
   expect(forbidden, 'the forbidden list').toContain(chunkFile(browserAll));
   // The recorder sees the scene's own requests before the first line.
   expect(requested, 'the engine chunk is requested').toContain(`/${chunkFile(ENGINE_KEY)}`);
-  expect(requested, "the WebGL renderer's chunk is requested").toContain(`/${chunkFile(WEBGL_KEY)}`);
   expect(requested.filter((p) => forbidden.includes(p.slice(1))), 'Pixi environment chunks requested').toEqual([]);
 });
 

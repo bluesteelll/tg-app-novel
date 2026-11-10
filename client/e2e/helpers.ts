@@ -13,7 +13,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { test as base, expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
+import { test as base, expect, type APIRequestContext, type Locator, type Page, type Route } from '@playwright/test';
 import type { FullResult, Reporter, TestCase, TestResult } from '@playwright/test/reporter';
 import sharp from 'sharp';
 
@@ -48,8 +48,24 @@ export type NovelDebug = {
   propRects(): ReadonlyArray<{ prop: string; x: number; y: number; w: number; h: number }>;
 };
 
+/**
+ * `__novelChunks`, Q60's recovery as boot made it (app/boot.ts `createPageRecovery`), in `__TG_MOCK__` builds only: the
+ * armed keys (a failed chunk's URL, or '' for a failure that names none), the failure events whose evidence round has
+ * ended, and the recovery the page holds itself (null once handed to the Game).
+ */
+export type ChunksHook = {
+  armed(): readonly string[];
+  checked(): number;
+  wanted(): 'chunk' | 'skew' | null;
+};
+
 /** The page's globals the specs read. */
-export type E2eWindow = Window & { __tgMock: MockControls; __e2eForbidden: ForbiddenCall[]; __novelDebug?: NovelDebug };
+export type E2eWindow = Window & {
+  __tgMock: MockControls;
+  __e2eForbidden: ForbiddenCall[];
+  __novelDebug?: NovelDebug;
+  __novelChunks?: ChunksHook;
+};
 
 const E2E_DIR = path.dirname(fileURLToPath(import.meta.url));
 const TWA_FIXTURE = path.join(E2E_DIR, 'fixtures', 'telegram-web-app.js');
@@ -663,6 +679,62 @@ export function chunkFile(key: string): string {
     throw new Error(`dist-e2e/.vite/manifest.json has no chunk for ${key}`);
   }
   return file;
+}
+
+/** The e2e build's own id (LBI D1: `dist-e2e/build-id.txt`, the `__BUILD_ID__` compiled into the bundle). */
+export function ownBuild(): string {
+  return readFileSync(path.join(CLIENT_DIR, 'dist-e2e', 'build-id.txt'), 'utf8').trim();
+}
+
+/** A resource type the blocks and counters below tell apart: a module's fetch is a `script`, a `<link>` a `stylesheet`. */
+export type LoadType = 'script' | 'stylesheet';
+
+/**
+ * The requests of `page` for `pathname` of resource type `type`, from now on. Q60: the recovery's servability check
+ * fetches the same URL as a `fetch`, which this leaves out (a URL-only count would see it as a load).
+ */
+export function scriptRequests(page: Page, pathname: string, type: LoadType = 'script'): () => number {
+  let n = 0;
+  page.on('request', (r) => {
+    if (r.resourceType() === type && new URL(r.url()).pathname === pathname) {
+      n += 1;
+    }
+  });
+  return () => n;
+}
+
+/**
+ * Fails `pathname`'s requests of resource type `type` with a network error (`route.abort('failed')`): the first only
+ * (`once`), else every one until `unroute()`. Every other request falls back to the guard, the same URL's `fetch`
+ * among them, so Q60's servability check can pass while the module fetch fails.
+ */
+export async function blockScript(
+  page: Page,
+  pathname: string,
+  o: { once: boolean; type?: LoadType },
+): Promise<{ blocked(): number; unroute(): Promise<void> }> {
+  const type = o.type ?? 'script';
+  let blocked = 0;
+  const match = (url: URL): boolean => url.pathname === pathname;
+  const handler = async (route: Route): Promise<void> => {
+    if (route.request().resourceType() === type && (!o.once || blocked === 0)) {
+      blocked += 1;
+      await route.abort('failed');
+    } else {
+      await route.fallback();
+    }
+  };
+  await page.route(match, handler);
+  return { blocked: () => blocked, unroute: () => page.unroute(match, handler) };
+}
+
+/** Counts the page's `load` events from now on: a reload is one. */
+export function loads(page: Page): { readonly count: () => number } {
+  let n = 0;
+  page.on('load', () => {
+    n += 1;
+  });
+  return { count: () => n };
 }
 
 /** Fails a run in which any test ended skipped, with one line naming them. */

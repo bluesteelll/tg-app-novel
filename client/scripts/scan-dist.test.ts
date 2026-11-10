@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
-import { FIXED_SECTIONS, scanFiles } from './scan-dist.ts';
+import { FIXED_SECTIONS, scanBuild, scanFiles } from './scan-dist.ts';
 import type { ScanFile, Section } from './scan-dist.ts';
 import { loadSections, main } from './scan-dist.ts';
 import type { Finding } from './scan-dist.ts';
@@ -110,7 +110,7 @@ describe('scan files', () => {
     });
   }
 
-  for (const needle of ['__TG_DEV_MOCK__', '__tgMock', '/dev/launch', '__novelDebug']) {
+  for (const needle of ['__TG_DEV_MOCK__', '__tgMock', '/dev/launch', '__novelDebug', '__novelChunks']) {
     test(`scan: dev canary ${needle} fails`, () => {
       const js = text('assets/index-a.js', `console.info(${JSON.stringify(needle)});`);
       expect(scanFiles([INDEX, js], SECTIONS)).toContainEqual({
@@ -198,6 +198,81 @@ describe('scan files', () => {
     expect(scanFiles([INDEX, c], [{ name: 'paid-texts', needles: [q] }])).toEqual([
       { kind: 'fingerprint', file: 'assets/c.js', section: 'paid-texts', needle: q, via: 'js-string' },
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Q60 R1: no preload list and one stylesheet, so a lazy chunk that fails is a failure of its own module fetch only.
+
+describe('scan build', () => {
+  /** Vite 8.3.5's preload list in a chunk, as main's build wrote it into the entry and the engine before R1. */
+  const mapDeps = (deps: readonly string[]): string =>
+    `const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=[${deps.map((d) => JSON.stringify(d)).join(',')}])))=>i.map(i=>d[i]);`;
+  const html = (head: string): ScanFile =>
+    text(
+      'index.html',
+      `<!doctype html><html><head><script type="module" crossorigin src="/assets/index-a.js"></script>${head}</head>` +
+        '<body><div id="app"></div></body></html>',
+    );
+  const LINKED = html('<link rel="stylesheet" crossorigin href="/assets/style-a.css">');
+  const CSS = text('assets/style-a.css', 'body{margin:0}');
+  const ENTRY = text('assets/index-a.js', 'const e=()=>l(()=>import(`./engine-b.js`),[]);export{e};');
+  const ENGINE = text('assets/engine-b.js', 'const p=()=>l(()=>import(`./flow-e.js`),[]);export{p};');
+
+  test('scan-dist: a dynamic import that preloads files fails the scan', () => {
+    const engine = text(
+      'assets/engine-b.js',
+      `${mapDeps(['assets/flow-e.js', 'assets/Geometry-c.js', 'assets/flow-d.css'])}` +
+        'const p=()=>l(()=>import(`./flow-e.js`),__vite__mapDeps([0,1,2]));export{p};',
+    );
+    expect(scanBuild([LINKED, ENTRY, engine, CSS])).toEqual([{ kind: 'preload-deps', file: 'assets/engine-b.js', count: 3 }]);
+    // One file is already a preload list (Vite appends a lazy chunk's CSS after `resolveDependencies`).
+    const one = text(
+      'assets/engine-b.js',
+      `${mapDeps(['assets/flow-e.js'])}const p=()=>l(()=>import(\`./flow-e.js\`),__vite__mapDeps([0]));export{p};`,
+    );
+    expect(scanBuild([LINKED, ENTRY, one, CSS])).toEqual([{ kind: 'preload-deps', file: 'assets/engine-b.js', count: 1 }]);
+    // The helper in a shape the scan cannot read fails closed: a reshaped helper must not read as an empty list.
+    const odd = text(
+      'assets/engine-b.js',
+      'const __vite__mapDeps=(i,m)=>i;const p=()=>l(()=>import(`./flow-e.js`),__vite__mapDeps([0]));export{p};',
+    );
+    expect(scanBuild([LINKED, ENTRY, odd, CSS])).toEqual([{ kind: 'preload-deps', file: 'assets/engine-b.js', count: 0 }]);
+    // An entry's static imports preloaded from index.html.
+    const preloading = html('<link rel="modulepreload" crossorigin href="/assets/Geometry-c.js"><link rel="stylesheet" crossorigin href="/assets/style-a.css">');
+    expect(scanBuild([preloading, ENTRY, ENGINE, CSS])).toEqual([{ kind: 'preload-deps', file: 'index.html', count: 1 }]);
+  });
+
+  test('scan-dist: a lazy stylesheet fails the scan', () => {
+    const lazy = text('assets/engine-d.css', '.stage{inset:0}');
+    expect(scanBuild([LINKED, ENTRY, ENGINE, CSS, lazy])).toEqual([{ kind: 'lazy-stylesheet', file: 'assets/engine-d.css' }]);
+  });
+
+  test('scan-dist: one stylesheet and empty preload lists pass', () => {
+    const files = [LINKED, ENTRY, ENGINE, CSS];
+    expect(scanBuild(files)).toEqual([]);
+    // Control: the same build with one lazy stylesheet more gives exactly one finding, so the empty list is the scan's.
+    const lazy = text('assets/meta-f.css', '.wallet{color:red}');
+    expect(scanBuild([...files, lazy])).toEqual([{ kind: 'lazy-stylesheet', file: 'assets/meta-f.css' }]);
+  });
+
+  test('scan-dist: an engine chunk with more static JS dependencies than recorded fails the scan', () => {
+    /** The build's manifest with the engine chunk statically importing the entry and `deps`. */
+    const manifest = (deps: readonly string[]): ScanFile =>
+      text(
+        '.vite/manifest.json',
+        JSON.stringify({
+          'index.html': { file: 'assets/index-a.js', src: 'index.html', isEntry: true, dynamicImports: ['src/app/engine.ts'] },
+          'src/app/engine.ts': { file: 'assets/engine-b.js', src: 'src/app/engine.ts', isDynamicEntry: true, imports: ['index.html', ...deps] },
+          ...Object.fromEntries(deps.map((d) => [d, { file: `assets/${d.slice(1)}` }])),
+        }),
+      );
+    // C0 recorded fork F2: the engine imports no chunk besides the entry. Literal values, so a raised limit fails here.
+    expect(scanBuild([LINKED, ENTRY, ENGINE, CSS, manifest(['_Geometry-c.js'])])).toEqual([
+      { kind: 'engine-static-deps', count: 1, limit: 0, deps: ['_Geometry-c.js'] },
+    ]);
+    // Control: the recorded count, none, passes.
+    expect(scanBuild([LINKED, ENTRY, ENGINE, CSS, manifest([])])).toEqual([]);
   });
 });
 
@@ -369,7 +444,7 @@ describe('scan fingerprints', () => {
   test('scan: paid line fingerprints are scanned in dist', () => {
     expect(setup()).toEqual([]);
     const { sections } = loadSections(join(repo, 'client'));
-    expect(sections.map((s) => `${s.name}(${s.needles.length})`)).toEqual(['compiler(2)', 'dev-canary(4)', 'paid-lines(2)', 'paid-texts(1)']);
+    expect(sections.map((s) => `${s.name}(${s.needles.length})`)).toEqual(['compiler(2)', 'dev-canary(5)', 'paid-lines(2)', 'paid-texts(1)']);
     const js = text('assets/index-a.js', `const a=${JSON.stringify(`ch2.archive.v5c1 ${TEXT}`)};export{a};`);
     const findings = scanFiles([INDEX, js], sections);
     expect(findings).toContainEqual({ kind: 'fingerprint', file: 'assets/index-a.js', section: 'paid-lines', needle: 'ch2.archive.v5c1', via: 'plain' });
@@ -483,7 +558,7 @@ describe('scan assets', () => {
     // Control: a dist with public art only passes, and every section is counted.
     const clean = scanDist('dist-e', { 'assets/bg-cafe-0a1b2c3d.avif': Uint8Array.from([1, 2, 3]) });
     expect(clean.code, clean.lines.join('\n')).toBe(0);
-    expect(clean.lines).toContainEqual(expect.stringMatching(/ sections compiler\(2\) dev-canary\(4\) paid-lines\(1\) paid-texts\(1\) paid-asset-files\(3\)$/));
+    expect(clean.lines).toContainEqual(expect.stringMatching(/ sections compiler\(2\) dev-canary\(5\) paid-lines\(1\) paid-texts\(1\) paid-asset-files\(3\)$/));
   });
 
   test('scan: an old-hash copy of a paid-only asset fails', () => {
@@ -846,7 +921,7 @@ describe('scan meta', () => {
     expect(dirty.lines).toContainEqual(`scan: fingerprint meta-texts ${JSON.stringify(TITLE.ru)} in assets/index-a.js (via plain)`);
     const clean = scanDist('dist-clean', { 'assets/index-a.js': `const s=${JSON.stringify(SHORT.ru)};export{s};` });
     expect(clean.code, clean.lines.join('\n')).toBe(0);
-    expect(clean.lines).toContainEqual(expect.stringMatching(/ sections compiler\(2\) dev-canary\(4\) meta-texts\(4\)$/));
+    expect(clean.lines).toContainEqual(expect.stringMatching(/ sections compiler\(2\) dev-canary\(5\) meta-texts\(4\)$/));
   });
 
   test('scan: a meta text inside JSON.parse fails the scan', () => {
@@ -870,7 +945,7 @@ describe('scan meta', () => {
     expect(dist.lines).toContainEqual(`scan: fingerprint meta-texts ${JSON.stringify(quoted.en)} in assets/index-a.js (via js-string)`);
     // One finding per text: the escapes the section holds as needles add none.
     expect(dist.lines).toContainEqual('scan: 2 findings');
-    expect(dist.lines).toContainEqual(expect.stringMatching(/ sections compiler\(2\) dev-canary\(4\) meta-texts\(6\)$/));
+    expect(dist.lines).toContainEqual(expect.stringMatching(/ sections compiler\(2\) dev-canary\(5\) meta-texts\(6\)$/));
   });
 
   test('scan: empty meta fingerprint set fails', () => {

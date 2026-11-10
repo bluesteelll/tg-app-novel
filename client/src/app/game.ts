@@ -55,6 +55,7 @@ import type { PuzzleHostCallbacks, PuzzleView } from '../ui/puzzle-view.svelte.t
 import type { Screens, ScreensView } from '../ui/screens.ts';
 import type { ChoiceSet, LineView, PlayMode, ViewModel } from '../ui/state.svelte.ts';
 import { graphemes, GRAPHEMES_PER_SECOND } from '../ui/typewriter.ts';
+import { latched, metaHold, PURCHASE_OPEN, RELOAD_POLL_MS, RELOADED_FOR, withLatch } from './reload.ts';
 import { imageIds, knotAssets, manifestIndex, splitBatch } from './stage-route.ts';
 import { createYields, LAZY_CHUNKS } from './yields.ts';
 import type { LazyChunks, Yields, YieldsHost } from './yields.ts';
@@ -241,6 +242,13 @@ export interface Game {
    * once the autosave is flushed. One recovery per page; none for a build this tab already reloaded for (D6).
    */
   skewed(served: string, page: ReloadPort): void;
+  /**
+   * Q60: a lazy load failed again after the evidence that the network and the server deliver it (boot's recovery). At
+   * the next safe point, as `skewed`: the autosave, the restart notice, the flush, then `page` reloads with `latch`
+   * appended (`withLatch`). A no-op when `page` already carries `latch`, when any recovery is pending (one per page), or
+   * after dispose.
+   */
+  restart(latch: string, page: ReloadPort): void;
   /** The explore layer's callbacks, for the current session's yields. */
   readonly exploreActions: ExploreLayerActions;
   /** The puzzle host's callbacks, for the current session's yields. */
@@ -268,14 +276,10 @@ export const EXIT_FLUSH_MS = 2000;
  * (300 ms, from the first tap's up to the second's down) plus the second press's down to click.
  */
 export const CONFLICT_HOLD_MS = 500;
-/** LBI D5: how often a recovery that waits for its safe point looks again. */
-export const RELOAD_POLL_MS = 500;
-/** LBI D6: the fragment parameter recording the build id this tab reloaded for (outside Telegram's `tgWebApp*`). */
-export const RELOADED_FOR = 'novelReloadedFor';
+/** LBI D6: the fragment parameter recording the build id this tab reloaded for (Q60: one definition, app/reload.ts). */
+export { RELOADED_FOR } from './reload.ts';
 /** LBI D4: the server's answer to this names the build it serves; the probe after a chapter file failed to load. */
 const BUILD_PROBE_URL = '/api/health';
-/** LBI D5: the purchase states of an invoice being created, open or confirmed; a reload would cut the hand-off. */
-const PURCHASE_OPEN: ReadonlySet<PurchaseState['kind']> = new Set(['requesting', 'sheet', 'confirming', 'delayed']);
 /** Every holder family the session requests besides the stage: knot preloads, F5, the explore rooms. */
 const EXIT_RELEASES: readonly string[] = ['preload:', 'next:', 'room:'];
 const IDLE: PurchaseState = Object.freeze({ kind: 'idle' });
@@ -359,8 +363,11 @@ type Offer = {
   waiting: boolean;
 };
 
-/** LBI D5: a recovery waiting for its safe point: the build to reload into, through boot's port. */
-type Recovery = { readonly served: string; readonly page: ReloadPort };
+/**
+ * LBI D5: a recovery waiting for its safe point, reloading through boot's port: a skew's latch is the build to reload
+ * into, a chunk restart's (Q60) the page's own build marked `chunk:`.
+ */
+type Recovery = { readonly kind: 'skew' | 'chunk'; readonly latch: string; readonly page: ReloadPort };
 
 type DebugHook = {
   stats(): unknown;
@@ -412,7 +419,7 @@ export function createGame(deps: GameDeps): Game {
    * longer has to, at the latest when the intent ends.
    */
   let deferred: { s: Session; keepalive: boolean } | null = null;
-  /** LBI D5: the build a recovery waits to reload into (one per page), and its poll timer. */
+  /** LBI D5 (Q60: or a chunk restart): the recovery waiting for its safe point (one per page), and its poll timer. */
   let recovery: Recovery | null = null;
   let reloadTimer: number | null = null;
   /** LBI D5 'attempt': the puzzle attempts sent through the yields and not yet answered. */
@@ -1752,12 +1759,9 @@ export function createGame(deps: GameDeps): Game {
     if (paused) {
       return 'background';
     }
-    const wallet = vm.meta;
-    if (
-      offer?.waiting === true ||
-      PURCHASE_OPEN.has(offer?.flow?.state().kind ?? 'idle') ||
-      (PURCHASE_OPEN.has(wallet?.purchase.kind ?? 'idle') && wallet?.purchaseLeft !== true)
-    ) {
+    // LRB's wallet and gift clauses, in app/reload.ts since Q60: boot's recovery reads them when no Game exists.
+    const m = metaHold(vm.meta);
+    if (offer?.waiting === true || PURCHASE_OPEN.has(offer?.flow?.state().kind ?? 'idle') || m === 'purchase') {
       return 'purchase';
     }
     if (attemptsInFlight > 0) {
@@ -1766,7 +1770,7 @@ export function createGame(deps: GameDeps): Game {
     if (vm.saves.saving !== null) {
       return 'save';
     }
-    if (vm.meta?.gift?.busy === true) {
+    if (m === 'gift') {
       return 'gift';
     }
     return null;
@@ -1774,8 +1778,9 @@ export function createGame(deps: GameDeps): Game {
 
   /**
    * D5 step 3, in this one timer task once nothing blocks: the autosave of this exact point (by its own rules: an
-   * adopting or mixed session writes nothing, a pending paid start writes its body), then the update notice as the
-   * root, which covers every control so no Buy or attempt can start; then the flush and the reload.
+   * adopting or mixed session writes nothing, a pending paid start writes its body), then the update notice (Q60: the
+   * restart notice for a chunk restart) as the root, which covers every control so no Buy or attempt can start; then
+   * the flush and the reload.
    */
   const reloadTick = (): void => {
     reloadTimer = null;
@@ -1793,17 +1798,21 @@ export function createGame(deps: GameDeps): Game {
     if (s !== null) {
       autosave(s);
     }
-    showNotice({ kind: 'update' });
+    showNotice({ kind: r.kind === 'skew' ? 'update' : 'restart' });
     void reloadAfterFlush(r, s); // its end is the reload; nothing awaits it
   };
 
-  /** The exit's rule (EXIT_FLUSH_MS, else the pending cache keeps the autosave), then the reload with the latch set. */
+  /**
+   * The exit's rule (EXIT_FLUSH_MS, else the pending cache keeps the autosave), then the reload with the latch set: a
+   * skew's replaces any latch (LBI D6), a chunk restart's is appended (Q60 D4).
+   */
   const reloadAfterFlush = async (r: Recovery, s: Session | null): Promise<void> => {
     if (s !== null) {
       await s.saves.flush({ timeoutMs: EXIT_FLUSH_MS });
     }
     if (!disposed) {
-      r.page.reload(withReloadedFor(r.page.href(), r.served));
+      const href = r.page.href();
+      r.page.reload(r.kind === 'skew' ? withReloadedFor(href, r.latch) : withLatch(href, r.latch));
     }
   };
 
@@ -2083,8 +2092,15 @@ export function createGame(deps: GameDeps): Game {
       if (disposed || recovery !== null || reloadedFor(page.href()) === served) {
         return; // the latch: this tab already reloaded for `served`, so today's error states stay (D6)
       }
-      recovery = { served, page };
+      recovery = { kind: 'skew', latch: served, page };
       reloadTimer = clock.setTimeout(reloadTick, 0); // checked in a task of its own, never inside the response path
+    },
+    restart(latch, page) {
+      if (disposed || recovery !== null || latched(page.href(), latch)) {
+        return; // one recovery per page; a page that restarted for this build keeps today's error states (Q60 F4)
+      }
+      recovery = { kind: 'chunk', latch, page };
+      reloadTimer = clock.setTimeout(reloadTick, 0);
     },
     exploreActions: forwardLayer(() => session?.yields.layer),
     puzzleActions: forwardHost(() => session?.yields.host),

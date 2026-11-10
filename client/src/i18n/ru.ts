@@ -38,6 +38,9 @@ export const ru = {
   'notice.the_end_card': 'Прохождение',
   // LBI D5: a deploy under the open app; the page reloads at a safe point (a draft).
   'notice.update_title': 'Вышло обновление. Перезапускаем…',
+  // Q60: a part of the game failed to load again after the server answered; the page restarts at a safe point
+  // (placeholder until Q61).
+  'notice.restart_title': 'Догружаем игру. Перезапускаем…',
   // The in-play menu.
   'menu.title': 'Меню',
   'menu.saves': 'Сохранения',

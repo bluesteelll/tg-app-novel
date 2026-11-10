@@ -147,6 +147,7 @@ const NOTICE_COPY: ReadonlyArray<readonly [NoticeView['kind'], UiKey, UiKey | nu
   ['to_be_continued', 'notice.to_be_continued_title', null, ['notice.to_be_continued_action']],
   ['the_end', 'notice.the_end_title', null, ['notice.the_end_action']],
   ['update', 'notice.update_title', null, []],
+  ['restart', 'notice.restart_title', null, []],
 ];
 
 /** A new notice object of `kind`: each one is a presentation of its own. */
@@ -154,6 +155,7 @@ function noticeOf(kind: NoticeView['kind'], onaction: () => void): NoticeView {
   switch (kind) {
     case 'open_in_telegram':
     case 'update':
+    case 'restart':
       return { kind };
     case 'reopen':
       return { kind, onclose: onaction };

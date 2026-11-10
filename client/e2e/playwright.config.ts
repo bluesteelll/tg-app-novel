@@ -25,6 +25,35 @@ const CLIENT_DIR = path.resolve(E2E_DIR, '..');
 const REPO_DIR = path.resolve(CLIENT_DIR, '..');
 const API_PORT = envPort('DEV_API_PORT', 8787);
 const WEB_PORT = envPort('DEV_WEB_PORT', 4173);
+/** Q60: the specs of the sticky project, and only those (projects map by file). */
+const STICKY_SPEC = 'lazy-recovery-sticky.spec.ts';
+/**
+ * Q60: Chromium 156 fetches a failed module again at the next import(); with this feature off it keeps the failure in
+ * the module map until a new document, as older engines do. Chromium reads only the last `--disable-features`, and
+ * Playwright passes its own first, so the sticky project repeats Playwright 1.64.1's list (chromiumSwitches.ts) with
+ * the feature added: a Playwright upgrade re-checks it.
+ */
+const STICKY_DISABLED_FEATURES: readonly string[] = [
+  'AvoidUnnecessaryBeforeUnloadCheckSync',
+  'DestroyProfileOnBrowserClose',
+  'DialMediaRouteProvider',
+  'GlobalMediaControls',
+  'HttpsUpgrades',
+  'LensOverlay',
+  'MediaRouter',
+  'PaintHolding',
+  'ThirdPartyStoragePartitioning',
+  'BlockOriginHeaderModificationOnRedirect',
+  'AvoidCorsURLLoaderRestartOnRedirect',
+  'Translate',
+  'AutoDeElevate',
+  'OptimizationHints',
+  'NetworkTimeServiceQuerying',
+  'AimEnabled',
+  'msForceBrowserSignIn',
+  'msEdgeUpdateLaunchServicesPreferredVersion',
+  'ModuleMapDoNotCacheFailedFetch',
+];
 
 export default defineConfig({
   testDir: '.',
@@ -41,7 +70,14 @@ export default defineConfig({
     viewport: { width: 375, height: 812 },
     hasTouch: true,
   },
-  projects: [{ name: 'chromium', use: { browserName: 'chromium' } }],
+  projects: [
+    { name: 'chromium', testIgnore: STICKY_SPEC, use: { browserName: 'chromium' } },
+    {
+      name: 'chromium-sticky',
+      testMatch: STICKY_SPEC,
+      use: { browserName: 'chromium', launchOptions: { args: [`--disable-features=${STICKY_DISABLED_FEATURES.join(',')}`] } },
+    },
+  ],
   webServer: [
     {
       // SERVER_DEV_CMD names a prebuilt binary where a lane may not run cargo (RULINGS 36); a full command line.

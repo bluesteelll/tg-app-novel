@@ -30,8 +30,9 @@ import { createScreens } from '../ui/screens.ts';
 import type { Screens } from '../ui/screens.ts';
 import { createViewModel } from '../ui/state.svelte.ts';
 import type { ViewModel } from '../ui/state.svelte.ts';
-import type { Entitlements, Game, GameMeta, StartFrom } from './game.ts';
-import type { MetaController } from './meta.ts';
+import type { Entitlements, Game, GameMeta, ReloadPort, StartFrom } from './game.ts';
+import type { MetaController, MetaView } from './meta.ts';
+import { chunkLatch, latched, metaHold, RELOAD_POLL_MS, withLatch } from './reload.ts';
 
 /** Home's buttons; each one unlocks audio inside its tap and is single-shot until Home is shown again (F1 step 5). */
 export type HomeActions = {
@@ -401,6 +402,196 @@ export function createMetaGate(d: {
   };
 }
 
+/** Q60: the page's recovery from a lazy load that keeps failing (`createPageRecovery`). */
+export type PageRecovery = {
+  /** A lazy load failed: `vite:preloadError`'s payload, or a stylesheet's href; `now`: no in-page retry exists. */
+  failed(payload: unknown, now?: boolean): void;
+  /**
+   * Every engine import goes through this, and it returns `load` itself. The import is in flight until it settles; a
+   * rejection means no Game can be made until the next import starts.
+   */
+  engine<T>(load: Promise<T>): Promise<T>;
+  /** Boot's lifecycle events: `deactivated` sets the background bit, `activated` clears it; then looks again. */
+  lifecycle(e: Lifecycle): void;
+  /** Looks again: a skew was named, a Game was made. */
+  settle(): void;
+  /** `__TG_MOCK__` builds only (vitest, the e2e's `__novelChunks`); compiled out of production. */
+  readonly debug?: {
+    /** The armed keys: a failed chunk's URL, or '' for a failure that names none. */
+    armed(): readonly string[];
+    /** Failure events whose evidence round has ended, answered or not. */
+    checked(): number;
+    /** The recovery the factory holds itself; null once handed to a Game. */
+    wanted(): 'chunk' | 'skew' | null;
+  };
+};
+
+/** LBI D4: the probe whose answer names the build the server serves. */
+const HEALTH_URL = '/api/health';
+/** The first absolute URL in a load error's text: Chromium and Firefox name the module; Safari names none. */
+const FAILED_URL = /https?:\/\/[^\s"'<>]+/;
+
+/**
+ * Q60 B' (D2-D4, D6): one latched restart of the page at a safe point, once a lazy load fails again after the evidence
+ * that the network and the server deliver it. Per failure: its key (the failed URL, else one page-wide key), whether
+ * that key was armed before it (a burst counts once), then the evidence: `GET /api/health` answers with no skew and,
+ * for a URL key, a plain fetch of that URL answers 2xx (a 404 or a lossy link arms nothing). Answered: an armed key (or
+ * a failure with no in-page retry) wants the restart, any other is armed. Arming never reads the latch; the act does.
+ * The restart goes to the Game when one exists (its reload rules, `Game.restart`), after the background. Without a
+ * Game it waits while the engine import is in flight or landed (the Game will be made and take it); once that import
+ * failed, no Game can be made, so the page reloads itself after the holds that exist without one (the background, a
+ * wallet pack purchase on screen, a gift being sent), and so does a skew then (LBI's F-5), which wins over a chunk
+ * restart. `own` null (the dev server, vitest): nothing ever reloads.
+ */
+export function createPageRecovery(d: {
+  own: string | null;
+  http: Pick<Http, 'fetchAsset' | 'skew'>;
+  game: () => Game | null;
+  /** Boot's view model, read at every look as `metaHold(view.meta)`. */
+  view: { readonly meta: MetaView | null };
+  page: ReloadPort;
+  notice: (kind: 'update' | 'restart') => void;
+  clock: Pick<Clock, 'setTimeout' | 'clearTimeout'>;
+}): PageRecovery {
+  const armed = new Set<string>();
+  let checked = 0;
+  /** The last engine import's state, by generation: a later import replaces an earlier one's outcome. */
+  let engine: 'never' | 'flight' | 'landed' | 'failed' = 'never';
+  let imports = 0;
+  let background = false;
+  /** A chunk restart is wanted and not yet handed to a Game. */
+  let chunk = false;
+  /** The page reloads: nothing more is done. */
+  let reloading = false;
+  let poll: number | null = null;
+
+  const stopPoll = (): void => {
+    if (poll !== null) {
+      d.clock.clearTimeout(poll);
+      poll = null;
+    }
+  };
+
+  /** What a reload without a Game would be for now: a skew wins (its build's chunk URLs differ); null for nothing. */
+  const noGameKind = (own: string): 'skew' | 'chunk' | null => {
+    const href = d.page.href();
+    const served = d.http.skew();
+    if (served !== null && !latched(href, served)) {
+      return 'skew';
+    }
+    return chunk && !latched(href, chunkLatch(own)) ? 'chunk' : null;
+  };
+
+  const look = (): void => {
+    const own = d.own;
+    if (own === null || reloading) {
+      return;
+    }
+    const game = d.game();
+    if (game !== null) {
+      stopPoll();
+      if (chunk && !background) {
+        chunk = false;
+        game.restart(chunkLatch(own), d.page); // its reload rules; a no-op on a latched page or a pending recovery
+      }
+      return;
+    }
+    const kind = engine === 'failed' ? noGameKind(own) : null;
+    if (kind === null) {
+      stopPoll(); // in flight or landed: the Game takes it once made (engineOf's settle)
+      return;
+    }
+    if (background || metaHold(d.view.meta) !== null) {
+      poll ??= d.clock.setTimeout(() => {
+        poll = null;
+        look();
+      }, RELOAD_POLL_MS);
+      return;
+    }
+    stopPoll();
+    reloading = true;
+    const href = d.page.href();
+    const served = d.http.skew();
+    if (kind === 'skew' && served !== null) {
+      d.notice('update');
+      d.page.reload(withLatch(href, served, true)); // the only latch: LBI's reader finds it in the next document
+    } else {
+      d.notice('restart');
+      d.page.reload(withLatch(href, chunkLatch(own)));
+    }
+  };
+
+  /** The evidence that the network and the server deliver `key` now; false when anything says otherwise. */
+  const evidence = async (key: string): Promise<boolean> => {
+    const signal = new AbortController().signal; // ends with its answer; nothing cancels it
+    const probe = await d.http.fetchAsset(HEALTH_URL, signal);
+    if (!probe.ok || d.http.skew() !== null) {
+      return false; // offline, a server fault, or a skew: LBI's path (onSkew) owns that one
+    }
+    return key === '' || (await d.http.fetchAsset(key, signal)).ok;
+  };
+
+  const recovery: PageRecovery = {
+    failed(payload, now = false) {
+      const text = payload instanceof Error ? payload.message : typeof payload === 'string' ? payload : '';
+      const key = FAILED_URL.exec(text)?.[0] ?? '';
+      const known = armed.has(key); // at the event: a burst of failures before any answer counts once
+      void evidence(key).then((answered) => {
+        if (answered) {
+          if (known || now) {
+            chunk = true;
+            look();
+          } else {
+            armed.add(key);
+          }
+        }
+        if (__TG_MOCK__) {
+          checked += 1;
+        }
+      });
+    },
+    engine(load) {
+      imports += 1;
+      const at = imports;
+      engine = 'flight';
+      look(); // a no-Game poll stops while the import runs
+      load.then(
+        () => {
+          if (at === imports) {
+            engine = 'landed';
+          }
+        },
+        () => {
+          if (at === imports) {
+            engine = 'failed';
+            look();
+          }
+        },
+      );
+      return load;
+    },
+    lifecycle(e) {
+      background = e === 'deactivated';
+      look();
+    },
+    settle: look,
+    debug: __TG_MOCK__
+      ? {
+          armed: () => [...armed],
+          checked: () => checked,
+          wanted: () => {
+            const own = d.own ?? '';
+            if (d.game() !== null) {
+              return chunk ? 'chunk' : null;
+            }
+            return noGameKind(own);
+          },
+        }
+      : undefined,
+  };
+  return recovery;
+}
+
 export function startApp(tg: TelegramClient): AppHandle {
   const vm = createViewModel({ timers: systemClock, lang: 'ru' });
   // K12: a stack made with another root would not seed the view itself.
@@ -550,10 +741,13 @@ export function startApp(tg: TelegramClient): AppHandle {
     return r;
   };
 
-  /** F1 step 3: the engine chunk, imported beside the boot reads; a failed import is tried again at the next tap. */
+  /**
+   * F1 step 3: the engine chunk, imported beside the boot reads; a failed import is tried again at the next tap. Each
+   * import goes through the recovery (Q60), which then knows whether a Game can still be made.
+   */
   let engineModule: Promise<EngineModule | null> | null = null;
   const importEngine = (): Promise<EngineModule | null> => {
-    engineModule ??= import('./engine.ts').catch((e: unknown) => {
+    engineModule ??= recovery.engine(import('./engine.ts')).catch((e: unknown) => {
       console.error('boot: the engine chunk did not load', e);
       engineModule = null;
       return null;
@@ -593,6 +787,7 @@ export function startApp(tg: TelegramClient): AppHandle {
       if (served !== null) {
         made.game.skewed(served, page);
       }
+      recovery.settle(); // Q60: a restart wanted while the engine loaded goes to the Game now
       vm.ui = made.ui;
       return made.game;
     });
@@ -744,6 +939,7 @@ export function startApp(tg: TelegramClient): AppHandle {
   const onLifecycle = (e: Lifecycle): void => {
     game?.onLifecycle(e);
     gate.current()?.onLifecycle(e);
+    recovery.lifecycle(e); // Q60: no restart in the background, with or without a Game
     if (e === 'deactivated') {
       reporter?.flush({ keepalive: true });
     }
@@ -753,25 +949,68 @@ export function startApp(tg: TelegramClient): AppHandle {
     reporter?.flush({ keepalive: true });
   };
 
-  subscriptions.push(tg.onLifecycle(onLifecycle));
-  subscriptions.push(http.onSessionExpired(() => showNotice({ kind: 'reopen', onclose: () => tg.close() })));
-  window.addEventListener('pagehide', onPageHide);
-  subscriptions.push(() => window.removeEventListener('pagehide', onPageHide));
-  // LBI D5/D6: the Game's reload port. A hash-only `replace` navigates within the document; the reload then loads the
-  // new build with the latch in the fragment. Read by `engineOf`'s closure, which runs after this block.
-  const page = {
+  // LBI D5/D6: the reload port of the Game and of the recovery. A hash-only `replace` navigates within the document;
+  // the reload then loads the page again with the latch in the fragment.
+  const page: ReloadPort = {
     href: (): string => location.href,
     reload: (url: string): void => {
       location.replace(url);
       location.reload();
     },
   };
-  subscriptions.push(http.onSkew((served) => game?.skewed(served, page)));
-  // LBI D4: a lazy chunk a deploy removed carries no build header; the probe's answer does. Never `preventDefault`:
-  // the failed import keeps today's error state until the recovery replaces the screen.
-  const probe = (): void => void http.fetchAsset('/api/health', new AbortController().signal);
-  window.addEventListener('vite:preloadError', probe);
-  subscriptions.push(() => window.removeEventListener('vite:preloadError', probe));
+  // Q60: declared before anything that can call it (the lifecycle below, the engine import, `engineOf`).
+  const recovery = createPageRecovery({
+    own: __BUILD_ID__,
+    http,
+    game: () => game,
+    view: vm,
+    page,
+    notice: (kind) => showNotice({ kind }),
+    clock: systemClock,
+  });
+  if (__TG_MOCK__) {
+    (globalThis as typeof globalThis & { __novelChunks?: PageRecovery['debug'] }).__novelChunks = recovery.debug;
+  }
+  subscriptions.push(tg.onLifecycle(onLifecycle));
+  subscriptions.push(http.onSessionExpired(() => showNotice({ kind: 'reopen', onclose: () => tg.close() })));
+  window.addEventListener('pagehide', onPageHide);
+  subscriptions.push(() => window.removeEventListener('pagehide', onPageHide));
+  subscriptions.push(
+    http.onSkew((served) => {
+      game?.skewed(served, page);
+      recovery.settle(); // Q60 (F-5): without a Game, once the engine import failed, the page reloads for the skew
+    }),
+  );
+  // LBI D4 and Q60 D2: every lazy failure feeds the recovery, whose probe also names a deploy's build. Never
+  // `preventDefault`: the failed import keeps today's error state until a restart replaces the screen.
+  const onPreloadError = (e: VitePreloadErrorEvent): void => recovery.failed(e.payload);
+  window.addEventListener('vite:preloadError', onPreloadError);
+  subscriptions.push(() => window.removeEventListener('vite:preloadError', onPreloadError));
+  // Q60 D6: the one stylesheet has no in-page retry. A pending stylesheet delays `load`, so a link with no readable rules
+  // once the document loaded failed: no sheet, or (Chromium 156 after a network failure) a sheet whose `cssRules`
+  // throws SecurityError. Ours is same-origin and never empty. Its first answered evidence restarts the page.
+  const unapplied = (link: HTMLLinkElement): boolean => {
+    try {
+      return (link.sheet?.cssRules.length ?? 0) === 0;
+    } catch {
+      return true;
+    }
+  };
+  const checkStylesheet = (): void => {
+    const failed = [...document.querySelectorAll<HTMLLinkElement>('link[rel=stylesheet]')].find(unapplied);
+    if (__TG_MOCK__) {
+      console.info(`recovery: stylesheet check at ${Math.round(performance.now())} ms: ${failed?.href ?? 'applied'}`);
+    }
+    if (failed !== undefined) {
+      recovery.failed(failed.href, true);
+    }
+  };
+  if (document.readyState === 'complete') {
+    checkStylesheet();
+  } else {
+    window.addEventListener('load', checkStylesheet, { once: true });
+    subscriptions.push(() => window.removeEventListener('load', checkStylesheet));
+  }
 
   if (!tg.inTelegram) {
     // F1 step 1: opened outside Telegram (or by a reply-keyboard button): nothing to sign in with.
