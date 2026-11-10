@@ -19,6 +19,8 @@ import { decodeChapterList, decodeStoryUsage } from './story/emit.ts';
 const LAZY_ROWS = ['puzzle-type chunk (br)', 'puzzle-host chunk (br)', 'explore-ui chunk (br)', 'cue-stage chunk (br)'];
 /** The meta families' rows (META-PLAN M27, "Budgets"; RULINGS 105): app/meta.ts is their importer. */
 const META_ROWS = ['meta-ui chunk (br)', 'meta controller chunk (br)'];
+/** The purchase flow's row (lever P): app/game.ts is its importer. */
+const PURCHASE_ROW = 'purchase-flow chunk (br)';
 
 const ROW_NAMES = [
   'manifest',
@@ -27,6 +29,7 @@ const ROW_NAMES = [
   'JS before the first line (br)',
   ...LAZY_ROWS,
   ...META_ROWS,
+  PURCHASE_ROW,
   'all JS (br)',
   'CSS total (br)',
   'index.html (br)',
@@ -62,6 +65,7 @@ function inputs(over: Partial<BudgetInputs> = {}): BudgetInputs {
     engineSourceExists: false,
     yieldsSourceExists: false,
     metaSourceExists: false,
+    gameSourceExists: false,
     lazySources: new Set(),
     facades: new Set(),
     pixiEnvSkipped: false,
@@ -632,6 +636,96 @@ describe('budget evaluate', () => {
     });
   });
 
+  /**
+   * Lever P's built topology: the engine import()s the purchase flow, a dynamic entry of its own (JS, and CSS if
+   * given); app/game.ts and the flow's source exist.
+   */
+  function withPurchase(jsBr: number, cssBr?: number): BudgetInputs {
+    const base = withEngine(inputs(), 50_000, 179_000);
+    const manifest = { ...base.manifest };
+    const engine = manifest[ENGINE_SRC];
+    if (engine === undefined) {
+      throw new Error('invariant: withEngine adds the engine chunk');
+    }
+    manifest[ENGINE_SRC] = { ...engine, dynamicImports: ['src/purchase/flow.ts'] };
+    const css = cssBr === undefined ? [] : ['assets/flow-p.css'];
+    manifest['src/purchase/flow.ts'] = { file: 'assets/flow-p.js', src: 'src/purchase/flow.ts', isDynamicEntry: true, css };
+    const files = [...base.files, file('assets/flow-p.js', jsBr), ...css.map((c) => file(c, cssBr ?? 0))];
+    return { ...base, manifest, files, gameSourceExists: true, lazySources: new Set(['src/purchase/flow.ts']) };
+  }
+
+  test('budget: the purchase-flow family is measured and refused over its limit', () => {
+    // Lever P: game.ts import()s the flow at the paywall, so the engine walk stops at it and its own row counts it,
+    // against 2.0 KB (the measured 1,468 B plus the per-lane tolerance).
+    expect(LIMITS.purchaseFlowChunkBr).toBe(2_000);
+    const row = (b: BudgetInputs): Row => rowOf(evaluate(b, LIMITS), PURCHASE_ROW);
+    const rows = evaluate(withPurchase(1_468), LIMITS);
+    expect(rowOf(rows, 'engine closure JS (br)')).toMatchObject({ status: 'PASS', valueBytes: 229_000 });
+    expect(rowOf(rows, 'JS before the first line (br)')).toMatchObject({ status: 'PASS', valueBytes: 12_000 + 229_000 });
+    expect(rowOf(rows, PURCHASE_ROW)).toMatchObject({
+      status: 'PASS',
+      valueBytes: 1_468,
+      limitBytes: 2_000,
+      note: 'largest: src/purchase/flow.ts, 1 chunks',
+    });
+    expect(row(withPurchase(2_000))).toMatchObject({ status: 'PASS', valueBytes: 2_000 });
+    expect(row(withPurchase(2_001))).toMatchObject({ status: 'FAIL', valueBytes: 2_001 });
+    // JS and CSS both count.
+    expect(row(withPurchase(1_500, 300))).toMatchObject({ status: 'PASS', valueBytes: 1_800 });
+    // First-load to the first line does not count it.
+    const plain = assetRows(assetInputs(), withEngine(inputs(), 50_000, 179_000));
+    const lazy = assetRows(assetInputs(), withPurchase(1_468));
+    expect(rowOf(lazy, 'first-load ch1').valueBytes).toBe(rowOf(plain, 'first-load ch1').valueBytes);
+  });
+
+  test('budget: the purchase-flow row is pending until app/game.ts exists', () => {
+    const row = (b: BudgetInputs): Row => rowOf(evaluate(b, LIMITS), PURCHASE_ROW);
+    // The other importers exist and the game does not: PENDING, keyed on the game alone.
+    expect(row({ ...withPurchase(1_468), gameSourceExists: false, yieldsSourceExists: true, metaSourceExists: true })).toMatchObject({
+      status: 'PENDING',
+      valueBytes: null,
+      note: 'src/app/game.ts absent',
+    });
+    // The game exists and the other importers do not: measured.
+    expect(row({ ...withPurchase(1_468), yieldsSourceExists: false, metaSourceExists: false })).toMatchObject({ status: 'PASS', valueBytes: 1_468 });
+    // The game exists and the flow's source does not: PENDING, never a 0 KB PASS.
+    expect(row({ ...withPurchase(1_468), lazySources: new Set() })).toMatchObject({
+      status: 'PENDING',
+      valueBytes: null,
+      note: 'no source of src/purchase/flow.ts',
+    });
+    // Both exist and nothing makes the flow a dynamic entry: FAIL.
+    expect(row(inputs({ gameSourceExists: true, lazySources: new Set(['src/purchase/flow.ts']) }))).toMatchObject({
+      status: 'FAIL',
+      note: 'no dynamic entry for src/purchase/flow.ts',
+    });
+  });
+
+  test('budget: a purchase flow imported statically fails', () => {
+    const base = withPurchase(1_468);
+    const row = (b: BudgetInputs): Row => rowOf(evaluate(b, LIMITS), PURCHASE_ROW);
+    // Control: its own dynamic chunk.
+    expect(row(base)).toMatchObject({ status: 'PASS', valueBytes: 1_468 });
+    // Merged into the engine (a static import, as before lever P): no chunk of its own, so a FAIL, never a 0 KB PASS.
+    const { ['src/purchase/flow.ts']: _merged, ...rest } = base.manifest ?? {};
+    const engine = rest[ENGINE_SRC];
+    if (engine === undefined) {
+      throw new Error('invariant: withEngine adds the engine chunk');
+    }
+    const merged = { ...rest, [ENGINE_SRC]: { ...engine, dynamicImports: [] } };
+    expect(row({ ...base, manifest: merged })).toMatchObject({ status: 'FAIL', note: 'no dynamic entry for src/purchase/flow.ts' });
+    // Imported as a value too: the dynamic entry is a facade over the engine chunk that holds the code.
+    const facade = 'assets/flow-p.js';
+    const overEngine = {
+      ...base.manifest,
+      'src/purchase/flow.ts': { file: facade, src: 'src/purchase/flow.ts', isDynamicEntry: true, imports: [ENGINE_SRC] },
+    };
+    expect(row({ ...base, manifest: overEngine, facades: new Set([facade]) })).toMatchObject({
+      status: 'FAIL',
+      note: `src/purchase/flow.ts: its dynamic entry ${facade} only re-exports assets/engine-d.js, which the engine closure loads before the first line (a static import of the root?)`,
+    });
+  });
+
   test('budget: all js limit is 365 KB', () => {
     // RULINGS 201 QS3: Ledger 3 re-set once, to 365 KB br (the measured base, the queued levers and the remaining nets).
     const base = inputs(); // 12 000 B of JS
@@ -643,11 +737,11 @@ describe('budget evaluate', () => {
 
   test('budget: every row is printed', () => {
     // A failing manifest does not stop later rows (no bail). PENDING: the engine row, the first-line row while the
-    // engine is absent, the four lazy rows while app/yields.ts is, and the two meta rows while app/meta.ts is; with no
-    // manifest the first-line row FAILs.
+    // engine is absent, the four lazy rows while app/yields.ts is, the two meta rows while app/meta.ts is, and the
+    // purchase-flow row while app/game.ts is; with no manifest the first-line row FAILs.
     const cases: ReadonlyArray<readonly [BudgetInputs, number]> = [
-      [inputs(), 8],
-      [inputs({ manifest: null }), 7],
+      [inputs(), 9],
+      [inputs({ manifest: null }), 8],
     ];
     for (const [input, pendingRows] of cases) {
       const rows = evaluate(input, LIMITS);
@@ -764,6 +858,7 @@ describe('budget cli', () => {
     expect(r.stdout).toContain('cue-stage chunk (br) | — | 8.5 KB | PENDING | src/app/yields.ts absent');
     expect(r.stdout).toContain('meta-ui chunk (br) | — | 14.0 KB | PENDING | src/app/meta.ts absent');
     expect(r.stdout).toContain('meta controller chunk (br) | — | 6.0 KB | PENDING | src/app/meta.ts absent');
+    expect(r.stdout).toContain('purchase-flow chunk (br) | — | 2.0 KB | PENDING | src/app/game.ts absent');
     expect(r.stdout).toMatch(/^budget: \d+ rows, \d+ PASS, 0 FAIL, \d+ PENDING$/m);
   }, CLI_TIMEOUT_MS);
 
@@ -1464,7 +1559,9 @@ describe('budget assets', () => {
       ]) {
         expect(r.stdout).toMatch(row);
       }
-      expect(r.stdout).toMatch(/^budget: \d+ rows, \d+ PASS, 0 FAIL, 11 PENDING$/m);
+      // No client/src/app/*.ts under --root: the engine, first-line, four yields, two meta and purchase-flow rows, and
+      // world json, room-set and first-load ch1 (lever P added the purchase-flow row).
+      expect(r.stdout).toMatch(/^budget: \d+ rows, \d+ PASS, 0 FAIL, 12 PENDING$/m);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

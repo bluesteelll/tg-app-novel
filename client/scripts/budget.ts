@@ -60,6 +60,8 @@ export type BudgetInputs = {
   yieldsSourceExists: boolean;
   /** `src/app/meta.ts` exists: the importer of the meta families (META-PLAN M27; RULINGS 105). */
   metaSourceExists: boolean;
+  /** `src/app/game.ts` exists: the importer whose `import()` makes the purchase flow a dynamic entry (lever P). */
+  gameSourceExists: boolean;
   /** The LAZY_FAMILIES roots that exist under client/, by their manifest `src`. */
   lazySources: ReadonlySet<string>;
   /** Dist paths of the re-export-only JS files: Rolldown's facades, which hold no code of their own (RULINGS 92). */
@@ -92,6 +94,13 @@ export type Limits = {
    * the row by module in its report, and a split is proposed only if it removes a request or bytes from a load path.
    */
   cueStageChunkBr: number;
+  /**
+   * Lever P: JS + CSS of the purchase flow's chunk, which app/game.ts import()s at the paywall and at Buy and
+   * app/meta.ts at a pack Buy: the measured 1,468 B plus the 0.5 KB per-lane tolerance. Past 1.75 KB the row is a review
+   * trigger, not a split: the lane that crosses it attributes the row by module and names any value import that entered
+   * purchase/flow.ts's closure.
+   */
+  purchaseFlowChunkBr: number;
   /** Ledger 3: every JS file of dist, set once on the all-JS Q3 (RULINGS 201 QS3). */
   allJsBr: number;
   cssBr: number;
@@ -129,6 +138,7 @@ export const LIMITS: Limits = {
   metaUiChunkBr: 14_000,
   metaControllerChunkBr: 6_000,
   cueStageChunkBr: 8_500,
+  purchaseFlowChunkBr: 2_000,
   allJsBr: 365_000,
   cssBr: 12_000,
   htmlBr: 2_000,
@@ -156,6 +166,8 @@ export const ENGINE_SRC = 'src/app/engine.ts';
 export const YIELDS_SRC = 'src/app/yields.ts';
 /** The meta controller (META-PLAN M27; RULINGS 105, 149): boot's gate import()s it, and it import()s the overlays. */
 export const META_SRC = 'src/app/meta.ts';
+/** The game session (lever P): it import()s the purchase flow at the paywall and at Buy. */
+export const GAME_SRC = 'src/app/game.ts';
 
 /**
  * One lazy chunk family: its roots (manifest `src`), its limit, whether the largest root or their union counts, and the
@@ -164,9 +176,16 @@ export const META_SRC = 'src/app/meta.ts';
 export type LazyFamily = {
   name: string;
   roots: readonly string[];
-  limit: 'puzzleTypeChunkBr' | 'puzzleHostChunkBr' | 'exploreUiChunkBr' | 'cueStageChunkBr' | 'metaUiChunkBr' | 'metaControllerChunkBr';
+  limit:
+    | 'puzzleTypeChunkBr'
+    | 'puzzleHostChunkBr'
+    | 'exploreUiChunkBr'
+    | 'cueStageChunkBr'
+    | 'metaUiChunkBr'
+    | 'metaControllerChunkBr'
+    | 'purchaseFlowChunkBr';
   measure: 'largest' | 'union';
-  importer: typeof YIELDS_SRC | typeof META_SRC;
+  importer: typeof YIELDS_SRC | typeof META_SRC | typeof GAME_SRC;
 };
 /**
  * PUZZLES-PLAN X14, META-PLAN M27: every family is a dynamic chunk, never in the entry or the engine closure, and none
@@ -199,6 +218,15 @@ export const LAZY_FAMILIES: readonly LazyFamily[] = [
   { name: 'meta-ui chunk (br)', roots: ['src/ui/meta/index.ts'], limit: 'metaUiChunkBr', measure: 'largest', importer: META_SRC },
   // Its own root is its importer: boot.ts always exists, so the row is PENDING exactly while the controller is absent.
   { name: 'meta controller chunk (br)', roots: [META_SRC], limit: 'metaControllerChunkBr', measure: 'largest', importer: META_SRC },
+  // Lever P: game.ts import()s it at the paywall and at Buy, meta.ts at a pack Buy. PENDING keyed on game.ts, whose
+  // `import()` makes it a dynamic entry (meta's alone did not on main: the engine imported it statically).
+  {
+    name: 'purchase-flow chunk (br)',
+    roots: ['src/purchase/flow.ts'],
+    limit: 'purchaseFlowChunkBr',
+    measure: 'largest',
+    importer: GAME_SRC,
+  },
 ];
 const LAZY_ROOTS: ReadonlySet<string> = new Set(LAZY_FAMILIES.flatMap((f) => f.roots));
 /** The arch rule's lazy directories: a chunk from one of them loads after the first line, listed root or not. */
@@ -446,10 +474,12 @@ function engineWalk(
   // after the first line, or by a prefetch scheduled after the first line: the walk stops at one (yields.ts imports
   // them, PUZZLES-PLAN X14), and its own row counts it. The named exceptions, where a lazy root is requested before a
   // first line, are bounded by their own rows: residual (j) (a room- or puzzle-first resume, a yield-first chapter)
-  // and P's `openPaywall` prefetch if P's cut keeps it. A chunk that no path requests leaves the rows: Pixi's
-  // environment chunks (`PIXI_ENV_SRCS`) while the scene skips them (`SKIP_PIXI_ENV`, rule `pixi-env`); with the
-  // flag off the walk counts them again, which is the fail-safe. The 230 KB basis (P:1739, R4 145.1 K) counted
-  // browserAll; RULINGS 201 keeps the LIMIT.
+  // and the purchase flow (lever P: game.ts's `openPaywall` prefetch, meta.ts's pack Buy), requested before any first
+  // line by a Continue into a saved start of an unowned paid chapter (its paywall is the session's first screen, D11),
+  // by a locked chapter row on Home (D17) and by a pack Buy on Home; a plain start never requests it. A chunk that no
+  // path requests leaves the rows: Pixi's environment chunks (`PIXI_ENV_SRCS`) while the scene skips them
+  // (`SKIP_PIXI_ENV`, rule `pixi-env`); with the flag off the walk counts them again, which is the fail-safe. The 230 KB
+  // basis (P:1739, R4 145.1 K) counted browserAll; RULINGS 201 keeps the LIMIT.
   const stop = (key: string): boolean => {
     const src = manifest[key]?.src;
     return isLazySrc(src) || (pixiEnvSkipped && src !== undefined && PIXI_ENV_SRCS.includes(src));
@@ -584,8 +614,13 @@ type LazyMeasure = { kind: 'pending'; note: string } | { kind: 'failed'; problem
  * beyond the entry and engine closures (downloaded once): the largest root's, or the union of the roots'.
  */
 function lazyMeasure(inputs: BudgetInputs, family: LazyFamily, entryClosure: Closure | null, sizes: ReadonlyMap<string, number>): LazyMeasure {
-  const importerExists = family.importer === META_SRC ? inputs.metaSourceExists : inputs.yieldsSourceExists;
-  if (!importerExists) {
+  // Every importer by name: a new one without its flag fails `check` instead of reading another importer's.
+  const importers: Readonly<Record<LazyFamily['importer'], boolean>> = {
+    [YIELDS_SRC]: inputs.yieldsSourceExists,
+    [META_SRC]: inputs.metaSourceExists,
+    [GAME_SRC]: inputs.gameSourceExists,
+  };
+  if (!importers[family.importer]) {
     return { kind: 'pending', note: `${family.importer} absent` };
   }
   const present = family.roots.filter((root) => inputs.lazySources.has(root));
@@ -1203,6 +1238,7 @@ export function readInputs(distDir: string, clientRoot: string): { inputs: Budge
   const engineSourceExists = sourceExists(ENGINE_SRC);
   const yieldsSourceExists = sourceExists(YIELDS_SRC);
   const metaSourceExists = sourceExists(META_SRC);
+  const gameSourceExists = sourceExists(GAME_SRC);
   const lazySources = new Set([...LAZY_ROOTS].filter(sourceExists));
   return {
     inputs: {
@@ -1213,6 +1249,7 @@ export function readInputs(distDir: string, clientRoot: string): { inputs: Budge
       engineSourceExists,
       yieldsSourceExists,
       metaSourceExists,
+      gameSourceExists,
       lazySources,
       facades,
       pixiEnvSkipped: SKIP_PIXI_ENV,

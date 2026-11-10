@@ -163,9 +163,10 @@ function isPureWorld(file: string): boolean {
 // file under one of these directories is imported statically only from inside the same directory; anywhere else
 // only through `import()` (app/yields.ts and puzzles/registry.ts hold those). The meta overlays (`ui/meta/`) and the
 // meta controller (`app/meta.ts`, a lazy root file: RULINGS 105, LMI cut Q8) are lazy the same way; boot.ts and the
-// controller hold their `import()` calls.
+// controller hold their `import()` calls. So is the purchase flow (`purchase/flow.ts`, lever P): by `import()` only
+// (app/game.ts at the paywall and at Buy, app/meta.ts at a pack Buy), its types anywhere.
 const LAZY_DIRS = ['puzzles/ui/', 'ui/puzzles/', 'ui/explore/', 'ui/meta/', 'cues/stage/'] as const;
-const LAZY_ROOT_FILES = ['app/meta.ts'] as const;
+const LAZY_ROOT_FILES = ['app/meta.ts', 'purchase/flow.ts'] as const;
 
 /** The lazy scope a file is in: its lazy directory, or the lazy root file itself. */
 function lazyDirOf(file: string): string | undefined {
@@ -222,6 +223,8 @@ const WAAPI_FILES: readonly string[] = ['cues/stage/player.ts', 'ui/value-motion
 // statically, so the engine walk counts it; its bytes are booked in the importing lane's engine term (filters 4,291 B;
 // events ~6,719; accessibility ~2,348; dom ~738); and this rule's allow list is widened for it, with the reason.
 // GSAP's PixiPlugin turns `pixi: { blur, ... }` tween vars into filters inside GSAP, so importing it counts as a filter.
+// Pixi's environment entry points (`pixi.js/browser`, `pixi.js/webworker`) and its loaders of them
+// (`loadEnvironmentExtensions`, `autoDetectEnvironment`, by any name or member) register every skipped system at once.
 /** The one file that builds and initialises the Application, always with `appOptions(` (scene/controller.ts). */
 const PIXI_APP_FILE = 'scene/controller.ts';
 /** Pixi's federated pointer events (events/FederatedEventMap): an `on<event>` property or an `.on(` name. */
@@ -229,9 +232,23 @@ const FEDERATED_EVENT = /^(?:pointer|mouse|touch|global)[a-z]*$|^(?:click|tap|wh
 /** Members that need a skipped system: masks, filters and the pointer API (events). `eventMode` is judged by value. */
 const PIXI_ENV_PROPS = new Set(['mask', 'filters', 'hitArea', 'cursor', 'interactive', 'interactiveChildren']);
 const PIXI_LISTEN_METHODS = new Set(['on', 'once', 'addListener']);
-const PIXI_ENV_IMPORTS = new Set(['pixi.js/events', 'pixi.js/accessibility', 'pixi.js/dom', 'pixi.js/filters', 'pixi.js/advanced-blend-modes']);
+const PIXI_ENV_IMPORTS = new Set([
+  'pixi.js/events',
+  'pixi.js/accessibility',
+  'pixi.js/dom',
+  'pixi.js/filters',
+  'pixi.js/advanced-blend-modes',
+  // The environment entry points themselves (`exports['./browser' | './webworker']` = PIXI_ENV_SRCS): X review M1.
+  'pixi.js/browser',
+  'pixi.js/webworker',
+]);
 const GSAP_PIXI_PLUGIN = /^gsap\/(?:dist\/)?(?:PixiPlugin|all)(?:\.js)?$/;
 const PIXI_RENDERERS = new Set(['WebGLRenderer', 'WebGPURenderer', 'CanvasRenderer']);
+/**
+ * Pixi's loaders of the environment entry points. Matched as identifiers, not calls: an aliased import names the loader
+ * in its specifier's `propertyName`, and a member call (`pixi.loadEnvironmentExtensions(`) in its name.
+ */
+const PIXI_ENV_LOADERS = new Set(['loadEnvironmentExtensions', 'autoDetectEnvironment']);
 
 function isPixiEnvMember(name: string): boolean {
   return PIXI_ENV_PROPS.has(name) || name.startsWith('accessible') || (name.startsWith('on') && FEDERATED_EVENT.test(name.slice(2)));
@@ -250,6 +267,9 @@ function checkPixiEnv(ctx: Ctx, node: ts.Node): void {
       report(ctx, 'pixi-env', node, inScene);
     }
     if (name === 'eventMode' && ts.isShorthandPropertyAssignment(node.parent)) {
+      report(ctx, 'pixi-env', node, inScene);
+    }
+    if (PIXI_ENV_LOADERS.has(name)) {
       report(ctx, 'pixi-env', node, inScene);
     }
   }
@@ -1146,7 +1166,9 @@ test('arch: lazy ui only by dynamic import', () => {
   ]);
   // The meta chunks (RULINGS 105): boot imports the controller, the controller its overlays, each by `import()`.
   expect(dynamicLazyTargets('app/boot.ts', SOURCES['app/boot.ts'] ?? '')).toEqual(['app/meta.ts']);
-  expect(dynamicLazyTargets('app/meta.ts', SOURCES['app/meta.ts'] ?? '')).toEqual(['ui/meta/index.ts']);
+  // The controller also loads the purchase flow at a pack Buy, and the game at the paywall (lever P).
+  expect(dynamicLazyTargets('app/meta.ts', SOURCES['app/meta.ts'] ?? '')).toEqual(['purchase/flow.ts', 'ui/meta/index.ts']);
+  expect(dynamicLazyTargets('app/game.ts', SOURCES['app/game.ts'] ?? '')).toEqual(['purchase/flow.ts']);
   // `rules-lazy`'s allow side on the tree: the explore controller, its one importer, loads both rules files.
   expect(staticTargets('explore/controller.ts', SOURCES['explore/controller.ts'] ?? '')).toEqual(
     expect.arrayContaining(['mechanics/rules/core.ts', 'mechanics/rules/search.ts']),
@@ -1204,20 +1226,23 @@ function sourceIn(files: Readonly<Record<string, string>>, target: string): stri
 }
 
 /**
- * A breadth-first walk over the static value edges from ENTRY_ROOT: each reached file with the file that first reached
- * it (null for the root), and every relative target that names no source of `files`.
+ * A breadth-first walk over the static value edges from `root` (ENTRY_ROOT unless named): each reached file with the
+ * file that first reached it (null for the root), and every relative target that names no source of `files`.
  */
-function entryClosure(files: Readonly<Record<string, string>>): {
+function entryClosure(
+  files: Readonly<Record<string, string>>,
+  root: string = ENTRY_ROOT,
+): {
   reached: ReadonlyMap<string, string | null>;
   unresolved: readonly string[];
 } {
   const reached = new Map<string, string | null>();
   const unresolved: string[] = [];
-  if (!Object.hasOwn(files, ENTRY_ROOT)) {
-    return { reached, unresolved: [ENTRY_ROOT] };
+  if (!Object.hasOwn(files, root)) {
+    return { reached, unresolved: [root] };
   }
-  reached.set(ENTRY_ROOT, null);
-  const queue = [ENTRY_ROOT];
+  reached.set(root, null);
+  const queue = [root];
   for (let file = queue.shift(); file !== undefined; file = queue.shift()) {
     for (const target of staticTargets(file, files[file] ?? '')) {
       const source = sourceIn(files, target);
@@ -1485,6 +1510,40 @@ test('arch: entry closure save service fixtures', () => {
     expect(walk(files), label).toEqual({ chains, unresolved: [] });
   }
 });
+
+// Lever P (RULINGS 201, 209): the purchase flow loads by `import()` when a paywall opens (app/game.ts) and at a pack Buy
+// (app/meta.ts), so the engine chunk does not carry it. `lazy-ui` reports a static value import of it by its exact path
+// only; this walk from the engine resolves extensionless, `.js` and directory specifiers too, as the bundler does.
+
+/** The engine chunk's root module: boot.ts import()s it. */
+const ENGINE_ROOT = 'app/engine.ts';
+/** The purchase flow's module (lever P), a lazy root file. */
+const PURCHASE_FLOW = 'purchase/flow.ts';
+
+/** The engine's chain to the purchase flow when it holds the flow statically: [] while the lever holds. */
+function purchaseChains(reached: ReadonlyMap<string, string | null>): string[] {
+  return reached.has(PURCHASE_FLOW) ? [pathTo(reached, PURCHASE_FLOW)] : [];
+}
+
+test('arch: the engine closure holds no purchase flow', () => {
+  // Non-vacuous: the walk from the engine reaches the game and its yields, the flow is a scanned source, every module
+  // edge resolves, and the game reaches the flow by `import()`.
+  const { reached, unresolved } = entryClosure(SOURCES, ENGINE_ROOT);
+  expect(reached.has('app/game.ts')).toBe(true);
+  expect(reached.has('app/yields.ts')).toBe(true);
+  expect(Object.keys(SOURCES)).toContain(PURCHASE_FLOW);
+  expect(unresolved.filter((target) => /\.(?:ts|svelte)$/.test(target))).toEqual([]);
+  expect(purchaseChains(reached)).toEqual([]);
+  expect(dynamicLazyTargets('app/game.ts', SOURCES['app/game.ts'] ?? '')).toContain(PURCHASE_FLOW);
+  // Fixtures: a value import (extensionless) and an inline `type` keep the edge; `import type` and `import()` do not.
+  const flow = 'export const createPurchaseFlow = 1;\nexport type PurchaseFlow = number;';
+  const walk = (game: string): string[] =>
+    purchaseChains(entryClosure({ 'app/engine.ts': "import './game.ts';", 'app/game.ts': game, 'purchase/flow.ts': flow }, ENGINE_ROOT).reached);
+  const chain = ['app/engine.ts -> app/game.ts -> purchase/flow.ts'];
+  expect(walk("import { createPurchaseFlow } from '../purchase/flow';"), 'a value import').toEqual(chain);
+  expect(walk("import { type PurchaseFlow } from '../purchase/flow.ts';"), 'an inline type').toEqual(chain);
+  expect(walk("import type { PurchaseFlow } from '../purchase/flow.ts';\nconst m = import('../purchase/flow.ts');"), 'lazy').toEqual([]);
+}, TREE_TIMEOUT_MS);
 
 // LFL B1 / T4 (RULINGS 149): boot no longer imports the meta controller's chunk after auth, so its after-auth step hands
 // the gate what Home and a launch need before the chunk: boot's own stats read (Home's card buttons) and the launch's
@@ -1990,6 +2049,10 @@ const RED: Record<RuleId, readonly Fixture[]> = {
     ['ui/App.svelte', "<script lang=\"ts\">\n  import Wallet from './meta/Wallet.svelte';\n</script>\n<Wallet />"],
     // A bare lazy directory resolves to its index.ts (`src/ui/meta/index.ts` exists), so it loads the overlays eagerly.
     ['app/yields.ts', "import { x } from '../ui/meta';"],
+    // The purchase flow (a lazy root file, lever P): a value import, a re-export and an inline type all load it.
+    ['app/game.ts', "import { createPurchaseFlow } from '../purchase/flow.ts';"],
+    ['app/engine.ts', "export { chapterDelivered } from '../purchase/flow.ts';"],
+    ['app/game.ts', "import { type PurchaseFlow } from '../purchase/flow.ts';"],
   ],
   'rules-lazy': [
     ['story/chapters.ts', "import { MECHANIC_RULES } from '../mechanics/rules/index.ts';"],
@@ -2074,6 +2137,11 @@ const RED: Record<RuleId, readonly Fixture[]> = {
     // GSAP's PixiPlugin makes filters inside GSAP (critique O4).
     ['scene/motion/tween.ts', "import { PixiPlugin } from 'gsap/PixiPlugin';"],
     ['scene/executor.ts', "import { gsap, PixiPlugin } from 'gsap/all';"],
+    // Pixi's environment entry points and its loaders of them (X review M1): each would bring the skipped systems back.
+    ['scene/x.ts', "void import('pixi.js/browser');"],
+    ['scene/controller.ts', "import 'pixi.js/webworker';"],
+    ['scene/controller.ts', 'await loadEnvironmentExtensions(false);'],
+    ['scene/executor.ts', "import { autoDetectEnvironment as env } from 'pixi.js';\nawait env(true);"],
   ],
 };
 
@@ -2185,6 +2253,12 @@ const ALLOW: ReadonlyArray<readonly [RuleId, readonly Fixture[]]> = [
       ['ui/meta/Friends.svelte', '<script lang="ts">\n  import { x } from \'./index.ts\';\n</script>'],
       // A sibling whose name only shares a lazy directory's prefix is not in it.
       ['app/yields.ts', "import { x } from '../ui/metadata.ts';"],
+      // The purchase flow by `import()` and its module's type (lever P), its types anywhere.
+      [
+        'app/game.ts',
+        "type M = Pick<typeof import('../purchase/flow.ts'), 'createPurchaseFlow'>;\nconst m = () => import('../purchase/flow.ts');",
+      ],
+      ['ui/state.svelte.ts', "import type { PurchaseState } from '../purchase/flow.ts';"],
     ],
   ],
   [
@@ -2255,6 +2329,8 @@ const ALLOW: ReadonlyArray<readonly [RuleId, readonly Fixture[]]> = [
       // A DOM listener for the GPU context, and Pixi's texture upload, are no pointer API and no `.init(`.
       ['scene/controller.ts', "canvas.addEventListener('webglcontextlost', onLost);\ncanvas.style.touchAction = 'none';"],
       ['scene/controller.ts', 'app.renderer.texture.initSource(source);'],
+      // A comment and a string name the environment loader and entry point without importing or calling either.
+      ['scene/controller.ts', "// never loadEnvironmentExtensions(\nconst src = 'pixi.js/browser';"],
     ],
   ],
 ];
