@@ -6,11 +6,12 @@ import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
+import { PIXI_ENV_SRCS, SKIP_PIXI_ENV } from '../src/scene/pixi-env.ts';
 import { STEADY_CAP_BYTES } from '../src/scene/registry.ts';
 import type { AssetCatalog, AssetEntry, HalfFile, ImageEntry } from '../src/story/catalog.ts';
 import type { AssetId, ChapterId, TrackId } from '../src/story/staging.ts';
 import { decodeAssetCatalog, decodeAssetManifest, decodeChapterMeta, decodeCoverManifest, urlPath } from './assets/manifest.ts';
-import { ENGINE_SRC, LIMITS, evaluate, evaluateAssets, formatRows, readAssetInputs, readInputs } from './budget.ts';
+import { ENGINE_SRC, LIMITS, evaluate, evaluateAssets, firstLineFiles, formatRows, readAssetInputs, readInputs } from './budget.ts';
 import type { AssetInputs, BudgetInputs, ChapterInputs, DistFile, ManifestChunk, Row } from './budget.ts';
 import { decodeChapterList, decodeStoryUsage } from './story/emit.ts';
 
@@ -63,6 +64,7 @@ function inputs(over: Partial<BudgetInputs> = {}): BudgetInputs {
     metaSourceExists: false,
     lazySources: new Set(),
     facades: new Set(),
+    pixiEnvSkipped: false,
     ...over,
   };
 }
@@ -97,6 +99,29 @@ function withEngine(base: BudgetInputs, engineBr: number, pixiBr: number): Budge
     engineSourceExists: true,
     files: [...base.files, file('assets/engine-d.js', engineBr), file('assets/pixi-e.js', pixiBr)],
   };
+}
+
+/** Pixi's environment srcs as the manifest names them (pixi.js 8.22.0), spelled out: PIXI_ENV_SRCS is pinned on them. */
+const BROWSER_ALL = 'node_modules/pixi.js/lib/environment-browser/browserAll.mjs';
+const WEBWORKER_ALL = 'node_modules/pixi.js/lib/environment-webworker/webworkerAll.mjs';
+
+/**
+ * An engine of 200 000 B whose dynamic imports are Pixi's two environment chunks (dynamic entries, as Vite emits
+ * them: browserAll 9 851, webworkerAll 120), both statically importing one `init` chunk (4 291) nothing else imports.
+ */
+function withPixiEnv(pixiEnvSkipped: boolean): BudgetInputs {
+  const base = withEngine(inputs({ pixiEnvSkipped }), 20_000, 180_000);
+  const manifest = { ...base.manifest };
+  const engine = manifest[ENGINE_SRC];
+  if (engine === undefined) {
+    throw new Error('invariant: withEngine adds the engine chunk');
+  }
+  manifest[ENGINE_SRC] = { ...engine, dynamicImports: [BROWSER_ALL, WEBWORKER_ALL] };
+  manifest[BROWSER_ALL] = { file: 'assets/browserAll-f.js', src: BROWSER_ALL, isDynamicEntry: true, imports: ['_init-g.js'] };
+  manifest[WEBWORKER_ALL] = { file: 'assets/webworkerAll-h.js', src: WEBWORKER_ALL, isDynamicEntry: true, imports: ['_init-g.js'] };
+  manifest['_init-g.js'] = { file: 'assets/init-g.js' };
+  const env = [file('assets/browserAll-f.js', 9_851), file('assets/webworkerAll-h.js', 120), file('assets/init-g.js', 4_291)];
+  return { ...base, manifest, files: [...base.files, ...env] };
 }
 
 const CODE_LOCK = 'src/puzzles/ui/CodeLock.svelte';
@@ -137,12 +162,12 @@ function withLazy(base: BudgetInputs, chunks: Readonly<Record<string, LazyChunk>
 describe('budget evaluate', () => {
   test('budget: entry over limit fails', () => {
     const big = inputs();
-    // 310 000 + 2 000 shared: over the entry's 40 KB and the 305 KB of all JS.
-    big.files = big.files.map((f) => (f.path === 'assets/index-a.js' ? file(f.path, 310_000) : f));
+    // 370 000 + 2 000 shared: over the entry's 40 KB and the 365 KB of all JS.
+    big.files = big.files.map((f) => (f.path === 'assets/index-a.js' ? file(f.path, 370_000) : f));
     const rows = evaluate(big, LIMITS);
     const entry = rowOf(rows, 'entry closure JS (br)');
     expect(entry.status).toBe('FAIL');
-    expect(entry.valueBytes).toBe(312_000);
+    expect(entry.valueBytes).toBe(372_000);
     expect(rowOf(rows, 'all JS (br)').status).toBe('FAIL');
   });
 
@@ -177,8 +202,9 @@ describe('budget evaluate', () => {
   });
 
   test("budget: engine row counts the engine's dynamic imports", () => {
-    // Pixi's default Application.init() downloads its environment chunk through a dynamic import (browserAll,
-    // which pulls more): the engine's real boot download, and the 230 KB basis, include it.
+    // A chunk the engine imports dynamically on the way to the first line is part of its boot download (budget.ts's
+    // basis note): Pixi's default Application.init() imports its environment chunk that way. These keys carry no src,
+    // so no stop applies.
     const base = withEngine(inputs(), 20_000, 180_000);
     const manifest = { ...base.manifest };
     const engine = manifest[ENGINE_SRC];
@@ -201,6 +227,38 @@ describe('budget evaluate', () => {
     expect(row.note).toContain('4 chunks');
     // The entry row stays static: the entry's dynamic import of the engine is not part of its first download.
     expect(rowOf(rows, 'entry closure JS (br)').valueBytes).toBe(12_000);
+  });
+
+  test("budget: the engine row stops at Pixi's environment chunks the scene skips", () => {
+    // Under the skip no path requests them (the basis note): the engine's own 200 000 B, without 9 851 + 120 + 4 291.
+    expect(rowOf(evaluate(withPixiEnv(true), LIMITS), 'engine closure JS (br)').valueBytes).toBe(200_000);
+    expect(PIXI_ENV_SRCS).toEqual([BROWSER_ALL, WEBWORKER_ALL]);
+  });
+
+  test("budget: the engine row counts Pixi's environment chunks the scene imports", () => {
+    // The fail-safe: with the flag off the walk follows the dynamic edges as before, 200 000 + 9 851 + 120 + 4 291.
+    expect(rowOf(evaluate(withPixiEnv(false), LIMITS), 'engine closure JS (br)').valueBytes).toBe(214_262);
+  });
+
+  test("budget: the first-line files are the rows' own walk", () => {
+    // The e2e's list of chunks a fresh start may request: entry 12 000 + engine, under the skip and without it.
+    const cases: ReadonlyArray<readonly [boolean, number]> = [
+      [true, 212_000],
+      [false, 226_262],
+    ];
+    for (const [skipped, bytes] of cases) {
+      const input = withPixiEnv(skipped);
+      if (input.manifest === null) {
+        throw new Error('invariant: withPixiEnv builds a manifest');
+      }
+      const sizes = new Map(input.files.map((f) => [f.path, f.brBytes]));
+      const files = [...firstLineFiles(input.manifest, { pixiEnvSkipped: skipped })];
+      expect(files.filter((f) => !sizes.has(f)), `skipped ${skipped}`).toEqual([]);
+      const sum = files.reduce((s, f) => s + (sizes.get(f) ?? 0), 0);
+      expect(sum, `skipped ${skipped}`).toBe(bytes);
+      expect(rowOf(evaluate(input, LIMITS), 'JS before the first line (br)').valueBytes, `skipped ${skipped}`).toBe(sum);
+      expect(files.includes('assets/browserAll-f.js'), `skipped ${skipped}`).toBe(!skipped);
+    }
   });
 
   // The CLI reads whatever dist/ is on disk (hand-edited, interrupted, partly deleted): an edge or a file the engine
@@ -229,13 +287,13 @@ describe('budget evaluate', () => {
   });
 
   test('budget: all js over limit fails', () => {
-    // META-PLAN raised the limit to 305 KB br: 12 000 + 11 × 27 000 = 309 000 is over it.
+    // RULINGS 201 QS3 re-set the limit to 365 KB br: 12 000 + 11 × 33 000 = 375 000 is over it.
     const base = inputs();
-    const lazy = Array.from({ length: 11 }, (_, i) => file(`assets/lazy-${i}.js`, 27_000));
+    const lazy = Array.from({ length: 11 }, (_, i) => file(`assets/lazy-${i}.js`, 33_000));
     const rows = evaluate({ ...base, files: [...base.files, ...lazy] }, LIMITS);
     expect(rowOf(rows, 'entry closure JS (br)').status).toBe('PASS');
     const all = rowOf(rows, 'all JS (br)');
-    expect(all.valueBytes).toBe(309_000);
+    expect(all.valueBytes).toBe(375_000);
     expect(all.status).toBe('FAIL');
   });
 
@@ -574,13 +632,13 @@ describe('budget evaluate', () => {
     });
   });
 
-  test('budget: all js limit is 305 KB', () => {
-    // META-PLAN "Budgets": 290 KB br plus the meta chunks.
+  test('budget: all js limit is 365 KB', () => {
+    // RULINGS 201 QS3: Ledger 3 re-set once, to 365 KB br (the measured base, the queued levers and the remaining nets).
     const base = inputs(); // 12 000 B of JS
     const all = (bytes: number): Row => rowOf(evaluate({ ...base, files: [...base.files, file('assets/lazy-0.js', bytes - 12_000)] }, LIMITS), 'all JS (br)');
     expect(all(300_000).status).toBe('PASS');
-    expect(all(305_000)).toMatchObject({ status: 'PASS', valueBytes: 305_000 });
-    expect(all(305_001).status).toBe('FAIL');
+    expect(all(365_000)).toMatchObject({ status: 'PASS', valueBytes: 365_000 });
+    expect(all(365_001).status).toBe('FAIL');
   });
 
   test('budget: every row is printed', () => {
@@ -679,11 +737,11 @@ describe('budget cli', () => {
 
   test('budget: cli exits 1 on oversize dist', () => {
     const dist = join(tmp, 'dist');
-    writeDist(dist, noise(310_000, 42)); // over the 305 KB of all JS too
+    writeDist(dist, noise(370_000, 42)); // over the 365 KB of all JS too
     writeRepo(join(tmp, 'repo'), { bgWidth: 4096 });
     const r = runCli(dist, SCRIPT, [], ['--root', join(tmp, 'repo')]);
     expect(r.status, r.stdout + r.stderr).toBe(1);
-    expect(r.stdout).toMatch(/^entry closure JS \(br\) \| 310\.\d KB \| 40\.0 KB \| FAIL/m);
+    expect(r.stdout).toMatch(/^entry closure JS \(br\) \| 370\.\d KB \| 40\.0 KB \| FAIL/m);
     expect(r.stdout).toMatch(/^all JS \(br\) \| .* \| FAIL/m);
     expect(r.stdout).toMatch(/^image bg\/cafe \| .* \| FAIL \| 4096×2048 over 2048 px/m);
     for (const name of ROW_NAMES) {
@@ -722,6 +780,13 @@ describe('budget cli', () => {
     put('empty-e.js', '');
     const { inputs: read } = readInputs(dist, tmp);
     expect(read.facades).toEqual(new Set(['assets/facade-c.js', 'assets/facade-f.js', 'assets/facade-i.js']));
+  });
+
+  test("budget: the cli reads the scene's Pixi environment flag", () => {
+    // The rows stop at Pixi's environment chunks only while the scene itself skips them: the CLI reads its flag.
+    const dist = join(tmp, 'dist');
+    writeDist(dist, 'export const main = 1;\n');
+    expect(readInputs(dist, tmp).inputs.pixiEnvSkipped).toBe(SKIP_PIXI_ENV);
   });
 
   test('budget: cli runs through a linked path', () => {
