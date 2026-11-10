@@ -232,6 +232,11 @@ type Open = {
   appeared: boolean;
   /** The frame's load hold is open (`holdLoad`): exactly while `loading(puzzle.frame)` holds. */
   loading: boolean;
+  /**
+   * The status request the frame's Hint last read (`hints()` is single-flight): a tap that shares it adds no second
+   * reader, so its one answer writes the ladder and plays its cue once.
+   */
+  asked: ReturnType<PuzzleSession['hints']> | null;
 };
 
 /** The end cue of a dropped frame (`dropPuzzle`): the session's end, `closed` for a no-outcome drop, null at `dispose`. */
@@ -990,7 +995,7 @@ export function createYields(h: YieldsHost): Yields {
       h.storyError({ kind: 'load', message: `puzzle ${made.error.puzzle} has no session` });
       return;
     }
-    const o: Open = { session: made.value, port, local, mode, then, closeup: p.closeup !== null, id: ++frameSeq, hidden: false, appeared: false, loading: false };
+    const o: Open = { session: made.value, port, local, mode, then, closeup: p.closeup !== null, id: ++frameSeq, hidden: false, appeared: false, loading: false, asked: null };
     open = o;
     o.session.onEnd((e) => onEnd(o, e));
     if (p.closeup !== null) {
@@ -1160,7 +1165,12 @@ export function createYields(h: YieldsHost): Yields {
       }
       screens.push({ kind: 'hints' });
       setLadder(o, { ...o.session.ladder(), busy: true, failed: ladderFailed() }); // a repeat tap keeps the alert up
-      void o.session.hints().then((r) => {
+      const asked = o.session.hints();
+      if (asked === o.asked) {
+        return; // a tap while the status runs shares it: its reader below answers every tap once
+      }
+      o.asked = asked;
+      void asked.then((r) => {
         if (open !== o || puzzle.ladder === null) {
           return; // the puzzle or its ladder was left meanwhile
         }

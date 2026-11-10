@@ -297,7 +297,7 @@ function rig(o: RigOptions = {}) {
   const haptics: string[] = [];
   const holders = new Map<string, Set<string>>();
   let stage: StagingSnapshot = { bg: null, cg: null, chars: [], bgm: null, props: [] };
-  const calls = { explore: 0, host: 0, ui: 0, attempts: 0, stage: 0 };
+  const calls = { explore: 0, host: 0, ui: 0, attempts: 0, stage: 0, status: 0 };
   /** Every cue the session's bus carries, through the scene role's subscription. */
   const cues: CueEvent[] = [];
   /** The puzzle views at each of those cues. */
@@ -339,6 +339,7 @@ function rig(o: RigOptions = {}) {
     tg: { haptic: { impact: () => {}, selection: () => {}, notify: (t) => haptics.push(`notify:${t}`) } },
     api: {
       getPuzzle: async () => {
+        calls.status += 1;
         await o.statusGate;
         return o.status === undefined ? { ok: false, error: { kind: 'network', detail: 'none' } } : { ok: true, value: o.status };
       },
@@ -2010,6 +2011,51 @@ test('yields: a status that answers after Back leaves the ladder closed', async 
   expect(r.puzzle.ladder).toBeNull();
   expect(ladderKeys(r, mark)).toEqual([]);
   r.yields.dispose();
+});
+
+test('yields: two Hint taps that share one status play its answer once', async () => {
+  // The session's status is single-flight, and the Hint button stays enabled while it runs: a repeat tap shares the
+  // request, takes only its hold's edge, and the one answer writes the ladder and plays its cue once (08a's table).
+  const status = deferred<void>();
+  const r = rig({ status: LADDER_STATUS, statusGate: status.promise, hints: ladderPort(5).port });
+  await r.yields.onYield({ kind: 'puzzle', puzzle: DRAWER, then: AFTER });
+  await ladderSteps(r, [
+    ['Hint', () => r.yields.host.onhint(), { busy: true, failed: false }, ['ui-state:waiting@hints']],
+    ['Hint again while the status runs', () => r.yields.host.onhint(), { busy: true, failed: false }, []],
+    ['the status answered', () => (status.resolve(), settle()), { busy: false, failed: false }, ['ui-state:waited@hints', 'puzzle:ladder']],
+  ]);
+  expect(r.calls.status, 'one status request').toBe(1);
+  r.yields.dispose();
+  // Back, then Hint again while the same status still runs: its answer still plays once.
+  const late = deferred<void>();
+  const b = rig({ status: LADDER_STATUS, statusGate: late.promise, hints: ladderPort(5).port });
+  await b.yields.onYield({ kind: 'puzzle', puzzle: DRAWER, then: AFTER });
+  await ladderSteps(b, [
+    ['Hint', () => b.yields.host.onhint(), { busy: true, failed: false }, ['ui-state:waiting@hints']],
+    ['the sheet closes while the status runs', () => b.screens.back(), null, ['ui-state:waited@hints']],
+    ['Hint again while it still runs', () => b.yields.host.onhint(), { busy: true, failed: false }, ['ui-state:waiting@hints']],
+    ['the status answered', () => (late.resolve(), settle()), { busy: false, failed: false }, ['ui-state:waited@hints', 'puzzle:ladder']],
+  ]);
+  expect(b.calls.status, 'one status request').toBe(1);
+  b.yields.dispose();
+});
+
+test('yields: two Hint taps that share one failed status play its failure once', async () => {
+  // The failed answer likewise; a tap after it starts a new request with its own answer, and a repeat tap during
+  // that one keeps the alert up (08a: a repeat Hint keeps `failed`).
+  const again = deferred<void>();
+  const f = rig({ statusGate: again.promise, hints: ladderPort(5).port });
+  await f.yields.onYield({ kind: 'puzzle', puzzle: DRAWER, then: AFTER });
+  await ladderSteps(f, [
+    ['Hint', () => f.yields.host.onhint(), { busy: true, failed: false }, ['ui-state:waiting@hints']],
+    ['Hint again while the status runs', () => f.yields.host.onhint(), { busy: true, failed: false }, []],
+    ['the status failed', () => (again.resolve(), settle()), { busy: false, failed: true }, ['ui-state:waited@hints', 'puzzle:hint-failed']],
+    ['Hint again over the failed ladder', () => f.yields.host.onhint(), { busy: true, failed: true }, ['ui-state:waiting@hints']],
+    ['and once more while its status runs', () => f.yields.host.onhint(), { busy: true, failed: true }, []],
+    ['its status failed again', () => settle(), { busy: false, failed: true }, ['ui-state:waited@hints', 'puzzle:hint-failed']],
+  ]);
+  expect(f.calls.status, 'one status request per answer').toBe(2);
+  f.yields.dispose();
 });
 
 test('yields: the ladder has one writer', () => {
