@@ -25,6 +25,9 @@ const EDGE_PX = 56;
 const CENTRE_PX = 72;
 /** Keys `data-cues-played` keeps (§8.6). */
 const PLAYED_MAX = 32;
+/** The keyframe properties that paint a ghost by themselves (the presets' shade, colour and glow): a plain ghost
+ *  playing one shows that paint alone (triage r1 I1). */
+const SELF_PAINT = ['boxShadow', 'backgroundColor'] as const;
 
 /** `el`'s box in the stage layer's px. */
 export function boxIn(el: Element, layer: Element): Box {
@@ -147,7 +150,8 @@ export function resolveTarget(t: CueTarget, e: CueEvent, layer: Element): Resolv
 /** A ghost on the stage layer at `box`: a clone of `of` (ids and `data-cue*` stripped over its subtree, so no resolver
  *  and no root scan ever finds one), or a plain box; inert and passing taps either way. A plain box (`cue-plain`) and a
  *  hit area's clone (`cue-hit`) paint nothing of their own while a preset moves only transform and opacity, so each
- *  carries the class CueStage paints (RULINGS 203). */
+ *  carries the class CueStage paints (RULINGS 203); the stage's `animate` takes the plain light off again for keyframes
+ *  that paint by themselves. */
 export function ghostOf(box: Box, of: Element | null, layer: Element): HTMLElement {
   // A clone of an element is an element; an SVG one has the same `style` and attributes.
   const g = (of?.cloneNode(true) ?? document.createElement('div')) as HTMLElement;
@@ -282,6 +286,12 @@ export function mountStage(layer: HTMLElement, p: CueStageProps): () => void {
   const player = createCuePlayer({
     animate(el, kf, ms, fill) {
       moved = true;
+      // The light would lie over `vignette`'s inset shade and over `dim`'s colour, so a darkening would brighten the
+      // stage (triage r1 I1). These are the keyframes actually played: reduced motion's `fade` paints nothing, so its
+      // plain ghost keeps the light (RULINGS 203).
+      if (kf.some((f) => SELF_PAINT.some((prop) => f[prop] !== undefined))) {
+        el.classList.remove('cue-plain');
+      }
       const anim = waapiAnimate(el, kf, ms, fill);
       // A hold's fallback is counted in its timer, after the run that started it.
       debug();

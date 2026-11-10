@@ -147,8 +147,9 @@ async function settle(): Promise<void> {
 const event = (cue: Cue, box: Box | null = null, el: Element | null = null): CueEvent => ({ cue, box, point: null, diff: [], el });
 type StateName = 'waiting' | 'waited' | 'panel-open' | 'panel-close' | 'select';
 const uiState = (name: StateName, panel: ScreenKind | null): Cue => ({ kind: 'ui-state', name, panel, item: null });
-/** A fact a tap adds (a take: `fact:held:added`; a document: `fact:doc:added`). */
-const added = (kind: 'held' | 'doc', id: string): Cue => ({
+/** A fact a tap adds (a take: `fact:held:added`; a document: `fact:doc:added`; a story note: `fact:story:added`; a
+ *  device fired: `fact:fired:added`). */
+const added = (kind: 'held' | 'doc' | 'story' | 'fired', id: string): Cue => ({
   kind: 'fact',
   fact: { kind, id },
   change: 'added',
@@ -599,6 +600,42 @@ test('stage: a plain ghost paints', async () => {
   expect(s.played()).toEqual(['module:core:look', 'module:core:refused', 'module:core:reset', 'move:walk', 'fact:held:added', 'fact:doc:added']);
   expect(cueMotions().length).toBeGreaterThanOrEqual(cues.length);
   expect(cueMotions().filter((r) => !r.el.classList.contains('cue-plain'))).toEqual([]);
+});
+
+test('stage: a preset that paints by itself plays without the plain light', async () => {
+  // Triage r1 I1: the light would lie over `vignette`'s inset shade and over `dim`'s colour, so a darkening brightened
+  // the stage. A plain ghost whose keyframes paint it (a shade, a colour, a glow) shows that paint alone; reduced
+  // motion's `fade` paints nothing, so the same ghost keeps the light there (RULINGS 203).
+  const run = async (reduced: boolean): Promise<[Keyframe[], boolean][]> => {
+    records = [];
+    const s = mounted({ reduced });
+    element('div', { 'data-cue-panel': 'lock' });
+    const move = (how: 'enter' | 'leave'): Cue => ({ kind: 'move', from: null, to: null, via: null, how });
+    const cues: [Cue, Box | null][] = [
+      [move('enter'), null],
+      [move('leave'), null],
+      [added('story', 'note'), null],
+      [uiState('panel-open', 'lock'), null],
+      [added('fired', 'lamp'), HOTSPOT],
+    ];
+    for (const [cue, box] of cues) {
+      s.bus.emit(event(cue, box));
+      await settle();
+    }
+    expect(s.played()).toEqual(['move:enter', 'move:leave', 'fact:story:added', 'ui-state:panel-open@lock', 'fact:fired:added']);
+    const ghosts = cueMotions().filter((r) => r.el.classList.contains('cue-ghost'));
+    const out = ghosts.map((r): [Keyframe[], boolean] => [r.kf, r.el.classList.contains('cue-plain')]);
+    s.unmount();
+    document.body.replaceChildren();
+    return out;
+  };
+  const full = await run(false);
+  // The stage's shade and colour, the panel's dim and a box's glow: each on an unlit ghost (the panel's own `lift`
+  // plays on the live sheet).
+  expect(full.filter(([, lit]) => lit)).toEqual([]);
+  expect(full.map(([kf]) => kf)).toEqual([PRESETS.vignette, PRESETS['vignette-back'], PRESETS.dim, PRESETS.dim, PRESETS.pulse]);
+  const calm = await run(true);
+  expect(calm).toEqual(Array.from({ length: 5 }, () => [PRESETS.fade, true]));
 });
 
 test('stage: a wait hold over a panel with a notice plays on the notice', async () => {
