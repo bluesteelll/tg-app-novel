@@ -8,7 +8,8 @@ import { lockOf, own, worldIndex } from '../../src/explore/reduce.ts';
 import type { KernelWorld } from '../../src/mechanics/contract.ts';
 import type { AssetId, AssetIndex, ChapterId, CharId, KnotName, LineId, SectionId, StagingCommand, VarName, YieldCommand } from '../../src/story/staging.ts';
 import { parseTags, tagKind } from '../../src/story/tags.ts';
-import type { Room, RoomId, WorldPublicBody } from '../../src/world/types.ts';
+import { toPublic } from '../../src/world/decode.ts';
+import type { Room, RoomId, WorldPublicBody, WorldSource } from '../../src/world/types.ts';
 import { classify, openingTagLines, unescapeInk } from './classify.ts';
 import type { Divert, LineClass, RawTag, SourceLine } from './classify.ts';
 import { GLOBALS_PATH, LINT_CODES, tagsOf } from './lint.ts';
@@ -61,6 +62,8 @@ export type ChapterGraph = {
  * decoded `mods` (a section's module data names knots too: `sectionKnots`).
  */
 export type WorldRef = { kind: 'none' } | { kind: 'invalid' } | { kind: 'ok'; body: KernelWorld };
+/** A chapter's world as the story gate decoded it: none (no world.json), a file that did not decode, or its source. */
+export type WorldInput = { kind: 'none' } | { kind: 'invalid' } | { kind: 'ok'; source: WorldSource };
 /** A VAR's first assignment site in a chapter (story-relative); `global` marks a g_ VAR of common/globals.ink. */
 export type VarAssignment = { file: string; line: number; global: boolean };
 /** What the world lint and `vars/write-only` need of a compiled chapter beyond its graph. */
@@ -489,6 +492,18 @@ function sectionKnots(body: KernelWorld, section: SectionId): SectionKnots {
 function roomStage(room: Room): AssetId[] {
   const props = room.hotspots.flatMap((h) => ((h.kind === 'take' || h.kind === 'object') && h.prop !== null ? [`prop/${h.prop}` as AssetId] : []));
   return [`bg/${room.bg}` as AssetId, ...props]; // ids the world decoder checked; the catalog is world/unknown-asset's
+}
+
+/**
+ * The graph's world input (D6) from the decoded world, the one construction the story gate and its tests share: a world
+ * that did not decode skips the world-dependent graph codes. The body carries the decoded `mods`: a section's module
+ * data names knots the graph must see (RULINGS 212 Q3).
+ */
+export function worldRef(w: WorldInput | undefined): WorldRef {
+  if (w === undefined || w.kind === 'none') {
+    return { kind: 'none' };
+  }
+  return w.kind === 'invalid' ? { kind: 'invalid' } : { kind: 'ok', body: { ...toPublic(w.source), mods: w.source.mods } };
 }
 
 /**

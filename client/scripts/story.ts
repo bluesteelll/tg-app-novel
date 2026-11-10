@@ -25,8 +25,8 @@ import type { CompiledChapter } from './story/compile.ts';
 import { OUT, chapterPaths, decodeLineFingerprints, decodeStoryUsage, hintIdsOf, paidLeak, planEmit, storyVersion } from './story/emit.ts';
 import type { StoryNames, WorldNeedles } from './story/emit.ts';
 import { ID_SHAPED_RE, fixIds, fixWorldIds, syncLocales } from './story/fix.ts';
-import { buildGraph, writeOnly } from './story/graph.ts';
-import type { ChapterGraph, GraphFacts, WorldRef } from './story/graph.ts';
+import { buildGraph, worldRef, writeOnly } from './story/graph.ts';
+import type { ChapterGraph, GraphFacts } from './story/graph.ts';
 import { LINT_CODES, lintCatalog, lintSources } from './story/lint.ts';
 import type { Finding, LintCode, Severity, SourceChapter, SourceLintInput } from './story/lint.ts';
 import { RETIRED_FILE, checkLocales, decodeEnTable, decodeNameTable, decodeRetired } from './story/locales.ts';
@@ -339,15 +339,6 @@ function readWorlds(root: string, chapters: readonly ChapterListEntry[], out: Fi
     worlds.set(ch.id, d.world === null ? { kind: 'invalid' } : { kind: 'ok', source: d.world, text, lines: worldLines(d.world, key, text) });
   }
   return worlds;
-}
-
-/** The graph's world input (D6): a world that did not decode skips the world-dependent graph codes. */
-function worldRef(w: ChapterWorld | undefined): WorldRef {
-  if (w === undefined || w.kind === 'none') {
-    return { kind: 'none' };
-  }
-  // The body carries the decoded `mods`: a section's module data names knots the graph must see (RULINGS 212 Q3).
-  return w.kind === 'invalid' ? { kind: 'invalid' } : { kind: 'ok', body: { ...toPublic(w.source), mods: w.source.mods } };
 }
 
 /**

@@ -25,7 +25,7 @@ import { decodeWorldSource, toPublic } from '../../src/world/decode.ts';
 import type { DecodeOptions, WorldIssue } from '../../src/world/decode.ts';
 import type { HotspotKey, ItemId, WorldSource, WorldText } from '../../src/world/types.ts';
 import { compileChapter } from './compile.ts';
-import { buildGraph } from './graph.ts';
+import { buildGraph, worldRef } from './graph.ts';
 import type { ChapterGraph, GraphFacts, WorldRef } from './graph.ts';
 import { GLOBALS_PATH, LINT_CODES } from './lint.ts';
 import { checkLocales, decodeEnTable, decodeNameTable } from './locales.ts';
@@ -1880,7 +1880,8 @@ test('use: a knot a rule enters is in the graph, its seeds and the shot flow', (
   const src = statueWorld();
   const world: KernelWorld = { ...toPublic(src), mods: src.mods };
   const ch = statueChapter();
-  const g = buildGraph({ chapter: CH1, files: ch.files, sources: ch.sources, assets: ASSETS, world: { kind: 'ok', body: world } });
+  // The graph's world is the story gate's own construction (`worldRef`, what story.ts passes to `buildGraph`).
+  const g = buildGraph({ chapter: CH1, files: ch.files, sources: ch.sources, assets: ASSETS, world: worldRef({ kind: 'ok', source: src }) });
   // The rule's knot is an event of the hall (RULINGS 212 Q3): reachable from the yield, seeded with the hall's stage.
   expect(g.findings.filter((f) => f.code === 'graph/unreachable-knot' || f.code.startsWith('explore/'))).toEqual([]);
   const knot = 'statue_voice' as KnotName; // the fixture's knot
