@@ -1,7 +1,9 @@
 // The engine chunk's composition root (PROTOTYPE-PLAN "app/engine.ts", the two-stage boot; L15 D1): the only path to
 // Pixi, inkjs and GSAP, imported dynamically by boot.ts while Home is shown. It builds the scene controller, one
-// chapter loader per role, the SaveService factory and the Game, and hands the overlay the in-play components, which
-// never render before the engine and so ship in its closure rather than the entry's.
+// chapter loader per role, the SaveService factory and the Game, and hands the overlay the components its first line
+// needs, plus the Paywall and its Terms, which never render before the engine and so ship in its closure rather than
+// the entry's. The in-play overlays (Menu, Backlog, Settings, Saves) are their own chunk, which the Game loads after
+// the first line (lever O5, RULINGS 201).
 import type { Endpoints } from '../api/endpoints.ts';
 import { systemClock } from '../api/http.ts';
 import type { Http } from '../api/http.ts';
@@ -15,35 +17,27 @@ import type { StatsReporter } from '../stats/reporter.ts';
 import type { ChapterCatalog } from '../story/catalog.ts';
 import { createChapterLoader } from '../story/chapters.ts';
 import type { TelegramClient } from '../telegram/index.ts';
-import Backlog from '../ui/Backlog.svelte';
 import Choices from '../ui/Choices.svelte';
 import DialogueBox from '../ui/DialogueBox.svelte';
 import { createExploreView } from '../ui/explore-view.svelte.ts';
 import type { ExploreViewStore } from '../ui/explore-view.svelte.ts';
-import Menu from '../ui/Menu.svelte';
 import Paywall from '../ui/Paywall.svelte';
 import { createPuzzleView } from '../ui/puzzle-view.svelte.ts';
 import type { PuzzleView } from '../ui/puzzle-view.svelte.ts';
 import QuickBar from '../ui/QuickBar.svelte';
-import SaveLoad from '../ui/SaveLoad.svelte';
 import type { Screens } from '../ui/screens.ts';
-import Settings from '../ui/Settings.svelte';
 import Stage from '../ui/Stage.svelte';
 import type { ViewModel } from '../ui/state.svelte.ts';
 import Terms from '../ui/Terms.svelte';
 import { createGame } from './game.ts';
 import type { Entitlements, Game, GameDeps } from './game.ts';
 
-/** The in-play components and the two lazy views' stores, for App.svelte once the engine is in. */
+/** The first line's components, the Paywall, its Terms and the two lazy views' stores, for App.svelte (lever O5). */
 export type EngineUi = {
   readonly Stage: typeof Stage;
   readonly DialogueBox: typeof DialogueBox;
   readonly Choices: typeof Choices;
   readonly QuickBar: typeof QuickBar;
-  readonly Menu: typeof Menu;
-  readonly Backlog: typeof Backlog;
-  readonly Settings: typeof Settings;
-  readonly SaveLoad: typeof SaveLoad;
   readonly Paywall: typeof Paywall;
   readonly Terms: typeof Terms;
   /** Written by app/yields.ts and the explore controller; App renders its loaded layer. */
@@ -105,6 +99,6 @@ export function createEngine(d: EngineDeps): { game: Game; ui: EngineUi } {
   });
   return {
     game,
-    ui: { Stage, DialogueBox, Choices, QuickBar, Menu, Backlog, Settings, SaveLoad, Paywall, Terms, explore, puzzle },
+    ui: { Stage, DialogueBox, Choices, QuickBar, Paywall, Terms, explore, puzzle },
   };
 }

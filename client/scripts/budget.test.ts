@@ -21,6 +21,8 @@ const LAZY_ROWS = ['puzzle-type chunk (br)', 'puzzle-host chunk (br)', 'explore-
 const META_ROWS = ['meta-ui chunk (br)', 'meta controller chunk (br)'];
 /** The purchase flow's row (lever P): app/game.ts is its importer. */
 const PURCHASE_ROW = 'purchase-flow chunk (br)';
+/** The in-play overlays' row (lever O5): app/game.ts is its importer. */
+const OVERLAYS_ROW = 'overlays chunk (br)';
 
 const ROW_NAMES = [
   'manifest',
@@ -30,6 +32,7 @@ const ROW_NAMES = [
   ...LAZY_ROWS,
   ...META_ROWS,
   PURCHASE_ROW,
+  OVERLAYS_ROW,
   'all JS (br)',
   'CSS total (br)',
   'index.html (br)',
@@ -726,6 +729,75 @@ describe('budget evaluate', () => {
     });
   });
 
+  /**
+   * Lever O5's built topology: the engine import()s the overlays' barrel, a dynamic entry of its own (JS, and CSS if
+   * given); app/game.ts and the barrel's source exist.
+   */
+  function withOverlays(jsBr: number, cssBr?: number): BudgetInputs {
+    const base = withEngine(inputs(), 50_000, 179_000);
+    const manifest = { ...base.manifest };
+    const engine = manifest[ENGINE_SRC];
+    if (engine === undefined) {
+      throw new Error('invariant: withEngine adds the engine chunk');
+    }
+    manifest[ENGINE_SRC] = { ...engine, dynamicImports: ['src/ui/overlays/index.ts'] };
+    const css = cssBr === undefined ? [] : ['assets/overlays-o.css'];
+    manifest['src/ui/overlays/index.ts'] = { file: 'assets/overlays-o.js', src: 'src/ui/overlays/index.ts', isDynamicEntry: true, css };
+    const files = [...base.files, file('assets/overlays-o.js', jsBr), ...css.map((c) => file(c, cssBr ?? 0))];
+    return { ...base, manifest, files, gameSourceExists: true, lazySources: new Set(['src/ui/overlays/index.ts']) };
+  }
+
+  test('budget: the overlays family is measured and refused over its limit', () => {
+    // Lever O5: game.ts import()s the overlays after the first line's reveal and at a Menu or Backlog tap, so their own
+    // row counts them, against 3.0 KB (C0's measured 2,496 B plus the per-lane tolerance, rounded up to 0.5 KB).
+    expect(LIMITS.overlaysChunkBr).toBe(3_000);
+    const row = (b: BudgetInputs): Row => rowOf(evaluate(b, LIMITS), OVERLAYS_ROW);
+    expect(row(withOverlays(2_496))).toMatchObject({
+      status: 'PASS',
+      valueBytes: 2_496,
+      limitBytes: 3_000,
+      note: 'largest: src/ui/overlays/index.ts, 1 chunks',
+    });
+    expect(row(withOverlays(3_000))).toMatchObject({ status: 'PASS', valueBytes: 3_000 });
+    expect(row(withOverlays(3_001))).toMatchObject({ status: 'FAIL', valueBytes: 3_001 });
+    // JS and CSS both count.
+    expect(row(withOverlays(2_500, 300))).toMatchObject({ status: 'PASS', valueBytes: 2_800 });
+    // First-load to the first line does not count it.
+    const plain = assetRows(assetInputs(), withEngine(inputs(), 50_000, 179_000));
+    const lazy = assetRows(assetInputs(), withOverlays(2_496));
+    expect(rowOf(lazy, 'first-load ch1').valueBytes).toBe(rowOf(plain, 'first-load ch1').valueBytes);
+  });
+
+  test('budget: the overlays family is PENDING until its source exists', () => {
+    const row = (b: BudgetInputs): Row => rowOf(evaluate(b, LIMITS), OVERLAYS_ROW);
+    // The game, its importer, is absent: PENDING, keyed on the game alone.
+    expect(row({ ...withOverlays(2_496), gameSourceExists: false, yieldsSourceExists: true, metaSourceExists: true })).toMatchObject({
+      status: 'PENDING',
+      valueBytes: null,
+      note: 'src/app/game.ts absent',
+    });
+    // The game exists and the barrel's source does not: PENDING, never a 0 KB PASS.
+    expect(row({ ...withOverlays(2_496), lazySources: new Set() })).toMatchObject({
+      status: 'PENDING',
+      valueBytes: null,
+      note: 'no source of src/ui/overlays/index.ts',
+    });
+    // Both exist and nothing makes the barrel a dynamic entry: FAIL.
+    expect(row(inputs({ gameSourceExists: true, lazySources: new Set(['src/ui/overlays/index.ts']) }))).toMatchObject({
+      status: 'FAIL',
+      note: 'no dynamic entry for src/ui/overlays/index.ts',
+    });
+  });
+
+  test('budget: the engine walk stops at the overlays chunk', () => {
+    // The engine (50,000) and Pixi (179,000) fill 229,000 of 230,000: the overlays chunk the engine import()s (2,500)
+    // would break the engine and first-line rows if the walk counted it; its own row counts it instead.
+    const rows = evaluate(withOverlays(2_500), LIMITS);
+    expect(rowOf(rows, 'engine closure JS (br)')).toMatchObject({ status: 'PASS', valueBytes: 229_000 });
+    expect(rowOf(rows, 'JS before the first line (br)')).toMatchObject({ status: 'PASS', valueBytes: 12_000 + 229_000 });
+    expect(rowOf(rows, OVERLAYS_ROW)).toMatchObject({ status: 'PASS', valueBytes: 2_500 });
+  });
+
   test('budget: all js limit is 365 KB', () => {
     // RULINGS 201 QS3: Ledger 3 re-set once, to 365 KB br (the measured base, the queued levers and the remaining nets).
     const base = inputs(); // 12 000 B of JS
@@ -738,10 +810,10 @@ describe('budget evaluate', () => {
   test('budget: every row is printed', () => {
     // A failing manifest does not stop later rows (no bail). PENDING: the engine row, the first-line row while the
     // engine is absent, the four lazy rows while app/yields.ts is, the two meta rows while app/meta.ts is, and the
-    // purchase-flow row while app/game.ts is; with no manifest the first-line row FAILs.
+    // purchase-flow and overlays rows while app/game.ts is; with no manifest the first-line row FAILs.
     const cases: ReadonlyArray<readonly [BudgetInputs, number]> = [
-      [inputs(), 9],
-      [inputs({ manifest: null }), 8],
+      [inputs(), 10],
+      [inputs({ manifest: null }), 9],
     ];
     for (const [input, pendingRows] of cases) {
       const rows = evaluate(input, LIMITS);
@@ -859,6 +931,7 @@ describe('budget cli', () => {
     expect(r.stdout).toContain('meta-ui chunk (br) | — | 14.0 KB | PENDING | src/app/meta.ts absent');
     expect(r.stdout).toContain('meta controller chunk (br) | — | 6.0 KB | PENDING | src/app/meta.ts absent');
     expect(r.stdout).toContain('purchase-flow chunk (br) | — | 2.0 KB | PENDING | src/app/game.ts absent');
+    expect(r.stdout).toContain('overlays chunk (br) | — | 3.0 KB | PENDING | src/app/game.ts absent');
     expect(r.stdout).toMatch(/^budget: \d+ rows, \d+ PASS, 0 FAIL, \d+ PENDING$/m);
   }, CLI_TIMEOUT_MS);
 
@@ -1559,9 +1632,9 @@ describe('budget assets', () => {
       ]) {
         expect(r.stdout).toMatch(row);
       }
-      // No client/src/app/*.ts under --root: the engine, first-line, four yields, two meta and purchase-flow rows, and
-      // world json, room-set and first-load ch1 (lever P added the purchase-flow row).
-      expect(r.stdout).toMatch(/^budget: \d+ rows, \d+ PASS, 0 FAIL, 12 PENDING$/m);
+      // No client/src/app/*.ts under --root: the engine, first-line, four yields, two meta, purchase-flow and overlays
+      // rows, and world json, room-set and first-load ch1 (lever P added the purchase-flow row, lever O5 the overlays').
+      expect(r.stdout).toMatch(/^budget: \d+ rows, \d+ PASS, 0 FAIL, 13 PENDING$/m);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

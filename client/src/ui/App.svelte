@@ -2,7 +2,8 @@
   // The overlay's root (PROTOTYPE-PLAN "Screen map"; L15 D5, D6, D12, D26): it routes the view model to the
   // components and their callbacks to Home's actions, the Game and the meta controller, and decides nothing itself.
   // Home, the notices, the chapter list and the toasts ship in the entry; the meta overlays are the meta chunk's
-  // (`vm.meta.ui`, META M27); every other component is the engine's (`vm.ui`); each renders once its chunk is in.
+  // (`vm.meta.ui`, META M27); the in-play overlays are the overlays chunk's (`vm.overlayUi`, lever O5); every other
+  // component is the engine's (`vm.ui`); each renders once its chunk is in.
   // Home's, the Menu's and the Terms' meta taps go through boot's gate (`app.metaTaps`), so they are always given.
   // The Stage mounts with the engine and stays for the page's life (one Pixi Application; the scene itself mounts at
   // the first start), under the opaque Home and notice layers. The cue layer (engine plan §8.1) sits above the frame
@@ -165,32 +166,8 @@
             />
           {/if}
         {:else if ui !== null && game !== null}
-          {#if o.kind === 'menu'}
-            <ui.Menu
-              lang={vm.lang}
-              onsaves={() => void game?.openSaves()}
-              onsettings={() => game?.openSettings()}
-              onstories={() => void game?.exitToStories()}
-              onfriends={() => app.metaTaps.friends()}
-              onwallet={() => app.metaTaps.wallet()}
-            />
-          {:else if o.kind === 'backlog'}
-            <ui.Backlog lines={vm.backlog} lang={vm.lang} />
-          {:else if o.kind === 'settings'}
-            <ui.Settings settings={vm.settings} lang={vm.lang} onchange={(next) => game?.setSettings(next)} />
-          {:else if o.kind === 'saves'}
-            <ui.SaveLoad
-              slots={vm.saves.slots}
-              lang={vm.lang}
-              saving={vm.saves.saving}
-              conflict={vm.saves.conflict}
-              failed={vm.saves.failed}
-              onsave={(slot) => void game?.save(slot)}
-              onoverwrite={(slot) => void game?.overwrite(slot)}
-              oncancel={() => game?.cancelOverwrite()}
-              onload={(slot) => void game?.load(slot)}
-            />
-          {:else if o.kind === 'paywall'}
+          {@const k = vm.overlayUi}
+          {#if o.kind === 'paywall'}
             {#if vm.paywall !== null}
               <ui.Paywall
                 chapter={vm.paywall.chapter}
@@ -205,6 +182,33 @@
             {/if}
           {:else if o.kind === 'terms'}
             <ui.Terms lang={vm.lang} onpolicy={() => app.metaTaps.policy()} />
+          {:else if k !== null}
+            {#if o.kind === 'menu'}
+              <k.Menu
+                lang={vm.lang}
+                onsaves={() => void game?.openSaves()}
+                onsettings={() => game?.openSettings()}
+                onstories={() => void game?.exitToStories()}
+                onfriends={() => app.metaTaps.friends()}
+                onwallet={() => app.metaTaps.wallet()}
+              />
+            {:else if o.kind === 'backlog'}
+              <k.Backlog lines={vm.backlog} lang={vm.lang} />
+            {:else if o.kind === 'settings'}
+              <k.Settings settings={vm.settings} lang={vm.lang} onchange={(next) => game?.setSettings(next)} />
+            {:else if o.kind === 'saves'}
+              <k.SaveLoad
+                slots={vm.saves.slots}
+                lang={vm.lang}
+                saving={vm.saves.saving}
+                conflict={vm.saves.conflict}
+                failed={vm.saves.failed}
+                onsave={(slot) => void game?.save(slot)}
+                onoverwrite={(slot) => void game?.overwrite(slot)}
+                oncancel={() => game?.cancelOverwrite()}
+                onload={(slot) => void game?.load(slot)}
+              />
+            {/if}
           {/if}
         {/if}
       </div>

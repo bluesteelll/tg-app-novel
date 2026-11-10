@@ -1,5 +1,5 @@
 <script module lang="ts">
-  import type { SaveSlot } from '../api/generated/api.ts';
+  import type { SaveSlot } from '../../api/generated/api.ts';
 
   /** One occupied slot as the save screen shows it: `savedAt` in unix seconds, `chapter` its title in the UI language. */
   export type SlotView = { slot: SaveSlot; savedAt: number; chapter: string };
@@ -16,8 +16,8 @@
   // The upper block holds a button and no button label wraps, so it is at least as tall as the actions row was, and
   // Yes starts below Save's former rectangle: the second tap of a double tap on an occupied row's Save meets the
   // question or No, never Yes. Loading once per tap is the caller's, as Start is.
-  import { t, type Lang } from '../i18n/index.ts';
-  import type { ManualSlot } from '../saves/service.ts';
+  import { t, type Lang } from '../../i18n/index.ts';
+  import type { ManualSlot } from '../../saves/service.ts';
 
   type Props = {
     slots: readonly SlotView[];
