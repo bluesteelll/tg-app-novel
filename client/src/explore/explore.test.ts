@@ -1,5 +1,6 @@
 import { expect, test } from 'vitest';
 
+import { motionOf } from '../cues/stage/motions.ts';
 import { SILENT_FIELDS } from '../mechanics/contract.ts';
 import type { FactAtom, FactKind, FlagId, MechanicRules, SectionAction } from '../mechanics/contract.ts';
 import { actions, reduce } from '../mechanics/rules/core.ts';
@@ -1330,6 +1331,46 @@ function factDiff(a: WorldState, b: WorldState): string[] {
   }
   return out.sort();
 }
+
+test('writer: a fact cue with no hotspot needs no box', () => {
+  // Every cue effect with no hotspot (a section's entry, an onEnter, an event's return) plays where no box is needed.
+  const boxed = new Set(['box', 'point']);
+  const lost = new Set<string>();
+  let homeless = 0;
+  const walk = (w: WorldPublicBody, section: SectionId): void => {
+    const start = sectionEntry(w, EMPTY_WORLD_STATE, section);
+    const reached: WorldState[] = [start];
+    searchSection(w, start, section, RESUME_STATE_CAP, {
+      onEdge: (_from, succ, to, isNew) => {
+        if (isNew && to !== null) {
+          reached.push(succ.state);
+        }
+      },
+    });
+    const steps: Array<readonly [WorldState, SectionAction]> = [[{ ...EMPTY_WORLD_STATE, unproved: [] }, { kind: 'enter-section', section }]];
+    for (const s of reached) {
+      steps.push(...MECHANIC_RULES.flatMap((m): readonly SectionAction[] => m.actions(w, s)).map((a) => [s, a] as const));
+    }
+    for (const [s, a] of steps) {
+      for (const e of reduce(w, s, a).effects) {
+        const c = e.kind === 'cue' ? e.cue : null;
+        if (c !== null && (c.kind === 'fact' ? c.cause.at : c.at) === null) {
+          homeless += 1;
+          const m = motionOf(c);
+          if (boxed.has(m.target)) {
+            lost.add(c.kind === 'fact' ? `fact:${c.fact.kind}:${c.change}~${c.cause.verb}` : `module:${c.module}:${c.name}`);
+          }
+        }
+      }
+    }
+  };
+  walk(manor({ golden: true }), MANOR);
+  // A start room whose onEnter gives an item and runs an event knot.
+  walk(world({ items: ['coin'], sections: { s: { start: 'hall', rooms: { hall: room([exit('out', { story: 'end' })], [{ give: 'coin' }, { story: 'voice' }]) } } } }), sec('s'));
+  expect([...lost]).toEqual([]);
+  // The positive control: the walks met cues with no hotspot.
+  expect(homeless).toBeGreaterThan(0);
+});
 
 test('writer: every fact write emits a fact cue with its cause', () => {
   const w = manor({ golden: true });

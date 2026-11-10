@@ -259,6 +259,7 @@ function insert(out: CoreWriter, key: HotspotKey, item: ItemId): void {
   }
   if (!insertItem(out, key, item, { verb: 'insert', at: key, item, via: null })) {
     d.effects.push({ kind: 'refused', at: key, item, reason: 'no-fit' });
+    out.cue('core', 'refused', key, item);
   }
 }
 

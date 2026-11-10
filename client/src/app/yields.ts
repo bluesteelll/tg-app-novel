@@ -258,13 +258,16 @@ export const coreCue = (name: CoreCueName, at: HotspotKey | null, item: ItemId |
 
 const cause = (verb: CauseVerb, at: HotspotKey | null = null, item: ItemId | null = null): Cause => ({ verb, at, item, via: null });
 
-/** The cause of a dispatched action's cues. */
-const causeOf = (a: ExploreAction): Cause =>
+/** The cause of a dispatched action's cues; a lock puzzle's run acts at its lock, so its cues land on the lock's box. */
+const causeOf = (a: ExploreAction, w: WorldPublic | null): Cause =>
   a.kind === 'tap'
     ? cause('tap', a.hotspot)
     : a.kind === 'insert'
       ? cause('insert', a.hotspot, a.item)
-      : cause(a.kind === 'puzzle-ended' && a.outcome === 'solved' ? 'solve' : 'fail');
+      : cause(
+          a.kind === 'puzzle-ended' && a.outcome === 'solved' ? 'solve' : 'fail',
+          'puzzle' in a && w !== null ? (worldIndex(w).puzzleLock.get(a.puzzle) ?? null) : null,
+        );
 
 export function createYields(h: YieldsHost): Yields {
   const { vm, screens, explore, puzzle } = h;
@@ -472,9 +475,8 @@ export function createYields(h: YieldsHost): Yields {
         send(coreCue('look', scope.cause.at, null));
         return;
       case 'got': {
-        // K51's success haptic is the cue's (its row's haptic, played by the cue stage on top of its motion: D6).
+        // Its fact cue is the writer's (a `cue` effect), which carries K51's success haptic in its row (D6).
         const g = e.gift;
-        send({ kind: 'fact', fact: 'item' in g ? { kind: 'held', id: g.item } : { kind: 'doc', id: g.doc }, change: 'added', cause: scope.cause });
         const name = w === null ? null : giftName(g, w);
         if (name !== null) {
           vm.showToast({ kind: 'note', key: 'got', message: name, sticky: false });
@@ -493,23 +495,22 @@ export function createYields(h: YieldsHost): Yields {
         jobs.push(() => openPuzzle(e.puzzle, 'explore', null));
         return;
       case 'story':
-        send({ kind: 'fact', fact: { kind: 'story', id: e.knot }, change: 'added', cause: scope.cause });
-        toStory(e.knot);
+        toStory(e.knot); // its fact cue is the writer's
         return;
       case 'leave':
         send({ kind: 'move', from: shown, to: null, via: scope.cause.at, how: 'leave' });
         toStory(e.knot);
         return;
       case 'refused':
-        // K51's error haptic is the cue's, as the take's (D6).
-        send(coreCue('refused', scope.cause.at, scope.cause.item));
+        // Its cue is the writer's: core's `refused` at an insert, `use`'s at a use (K51's error haptic, D6).
         return;
       case 'reset':
         vm.showToast({ kind: 'note', key: 'area_reset', message: t(vm.lang, 'explore.area_reset'), sticky: false });
         send(coreCue('reset', null, null));
         return;
       case 'cue':
-        // The writer's record (engine plan §8.1 plan (2)): not yet on the bus (lane GM3 C7 forwards it).
+        // The writer's record (engine plan §8.1 plan (2)): each fact and module cue of the entry, on its box.
+        send(e.cue);
         return;
       case 'dirty':
         dirty();
@@ -527,7 +528,7 @@ export function createYields(h: YieldsHost): Yields {
    * and inserts come only from the explore layer, which exists only with a controller, so nothing else is written here.
    */
   const act = (a: ExploreAction): void => {
-    scoped(causeOf(a), () => {
+    scoped(causeOf(a, h.chapter()?.world ?? null), () => {
       const c = controller;
       if (c !== null && world.section !== null) {
         c.dispatch(a);

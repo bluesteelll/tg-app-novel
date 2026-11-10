@@ -144,7 +144,8 @@ export const CUE_MOTIONS: { readonly [K in Exclude<CueKey, ControlKey>]: MotionS
   'fact:open:removed': row('iris-back', 360, 'box'),
   'fact:slot:added': row('drop', 420, 'ribbon', { resolveAt: 'emit', haptic: 'light' }),
   'fact:slot:removed': row('fly', 480, 'ribbon', { with: [SLOT_PULSE] }),
-  'fact:fired:added': row('pulse', 420, 'box'),
+  // A room's `onEnter` (a section entry, a walk) fires with no hotspot: its trigger sweeps the stage (08b).
+  'fact:fired:added': row('pulse', 420, 'box', { byCause: { enter: row('sweep', 600, 'stage') } }),
   'fact:fired:removed': row('pulse-back', 420, 'box'),
   'fact:visited:added': row('vignette', 600, 'stage', {
     with: [{ preset: 'caption', ms: 1200, target: 'stage', reduced: 'fade' }],
