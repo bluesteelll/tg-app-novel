@@ -24,7 +24,7 @@ import { createSettingsStore } from '../settings/store.ts';
 import type { CloudPort, SettingsStore } from '../settings/store.ts';
 import type { StatEvent } from '../stats/reporter.ts';
 import type { PuzzleUiProps } from '../puzzles/registry.ts';
-import { PAID_WINDOW_MS, PENDING_WINDOW_MS } from '../purchase/flow.ts';
+import { PAID_WINDOW_MS, PENDING_WINDOW_MS, chapterDelivered, createPurchaseFlow } from '../purchase/flow.ts';
 import type { PurchaseState } from '../purchase/flow.ts';
 import type { ChapterLoader } from '../story/chapters.ts';
 import { decodeChapterMeta } from '../story/catalog.ts';
@@ -523,6 +523,27 @@ const NO_CHUNKS: LazyChunks = {
   puzzleUi: async () => ({ ok: false, error: { kind: 'chunk', detail: 'no chunks in this test' } }),
 };
 
+/** Lever P: the game's loader of the purchase flow's chunk, and what it loads. */
+type LoadPurchase = NonNullable<GameDeps['loadPurchase']>;
+const PURCHASE_MODULE: Awaited<ReturnType<LoadPurchase>> = { createPurchaseFlow, chapterDelivered };
+
+/** A purchase module loader whose loads wait for the test: each `release` or `fail` answers the oldest open one. */
+function heldPurchase(): { load: LoadPurchase; release(): void; fail(): void } {
+  const open: Array<{ resolve: (m: typeof PURCHASE_MODULE) => void; reject: (e: unknown) => void }> = [];
+  const next = (): { resolve: (m: typeof PURCHASE_MODULE) => void; reject: (e: unknown) => void } => {
+    const load = open.shift();
+    if (load === undefined) {
+      throw new Error('invariant: a purchase module load is open');
+    }
+    return load;
+  };
+  return {
+    load: () => new Promise((resolve, reject) => open.push({ resolve, reject })),
+    release: () => next().resolve(PURCHASE_MODULE),
+    fail: () => next().reject(new Error('the purchase chunk is gone')),
+  };
+}
+
 type Harness = {
   game: Game;
   vm: ViewModel;
@@ -543,6 +564,8 @@ type Harness = {
   readonly purchases: string[];
   /** Every URL the game asked `fetchAsset` for, in order (LBI: the build-id probe). */
   readonly assetUrls: string[];
+  /** How many times the game asked for the purchase module (lever P). */
+  purchaseLoads(): number;
   /** How many times the game handed Home back (onExit). */
   exits(): number;
   /** How many times the game closed the Mini App (the facade's `close`). */
@@ -569,6 +592,8 @@ type HarnessOptions = {
   status?: () => Promise<Result<PuzzleStatus, ApiError>>;
   /** Also told every screens view, after the game (boot's `onView` tells the meta controller too). */
   onView?: (v: ScreensView) => void;
+  /** The purchase module's loader (lever P); the default answers the real module at once. */
+  loadPurchase?: LoadPurchase;
 };
 
 function harness(o: HarnessOptions = {}): Harness {
@@ -613,6 +638,8 @@ function harness(o: HarnessOptions = {}): Harness {
   let product: string | null = null;
   let exits = 0;
   let closes = 0;
+  let purchaseLoads = 0;
+  const loadPurchase = o.loadPurchase ?? (() => Promise.resolve(PURCHASE_MODULE));
   const chapterOf = (p: string | null): string | null => catalog().chapters.find((c) => c.productId === p)?.id ?? null;
   const deps: GameDeps = {
     vm,
@@ -690,6 +717,11 @@ function harness(o: HarnessOptions = {}): Harness {
     explore,
     puzzle,
     chunks: o.chunks ?? NO_CHUNKS,
+    // Counted and handed on in the same call, so the load starts when the game asks (no added microtask).
+    loadPurchase: () => {
+      purchaseLoads += 1;
+      return loadPurchase();
+    },
   };
   const game = createGame(deps);
   gameRef = game;
@@ -713,6 +745,7 @@ function harness(o: HarnessOptions = {}): Harness {
     owned,
     purchases,
     assetUrls,
+    purchaseLoads: () => purchaseLoads,
     exits: () => exits,
     closes: () => closes,
     save: () => {
@@ -1393,6 +1426,152 @@ test('game: a locked chapter row opens the paywall and the unlock starts it', as
   expect(h.vm.screens.root.kind).toBe('game');
   expect(lineOf(h.vm)).toBe('ch2.study.l001');
   expect(reports(h)).toEqual([{ kind: 'chapter_started', chapterId: CH2, storyVersion: V_CH2 }]);
+  h.game.dispose();
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Lever P: the purchase flow's chunk loads by import(), prefetched when a paywall opens
+
+/** P7's failed-payment note is on screen. */
+const purchaseNoted = (h: Harness): boolean => h.vm.toasts.some((e) => e.kind === 'note' && e.message === 'Оплата не прошла');
+
+test('game: the paywall prefetches the purchase module once, never before a first line', async () => {
+  const h = harness({ chapters: [manorCh1(), manorCh2()] });
+  await startManor(h);
+  expect(lineOf(h.vm)).toBe('ch1.arrival.l001');
+  expect(h.purchaseLoads(), 'at the first line').toBe(0);
+  await h.game.advance(); // l002
+  await h.game.advance(); // the choice set
+  await h.game.choose(0); // l003
+  await h.game.advance(); // l005, entering garden
+  await settle(); // F5's load of the next chapter
+  expect(h.purchaseLoads(), 'through the free chapter').toBe(0);
+  await h.game.advance(); // END: ch2's pending start and the paywall
+  expect(h.vm.screens.overlays.map((o) => o.kind)).toEqual(['paywall']);
+  expect(h.purchaseLoads(), 'the paywall prefetches').toBe(1);
+  // Back closes it and the next tap opens it again (D11); Buy runs on the module already in.
+  h.screens.back();
+  await h.game.advance();
+  expect(h.vm.screens.overlays.map((o) => o.kind)).toEqual(['paywall']);
+  h.game.buy();
+  await settle();
+  expect(h.purchaseLoads(), 'one load for the page').toBe(1);
+  expect(h.purchases).toEqual(['createInvoice:chapter:ch2']);
+  h.game.dispose();
+});
+
+test('game: a double tap on Buy while the purchase module loads starts one purchase', async () => {
+  const held = heldPurchase();
+  const h = harness({ chapters: [manorCh1(), manorCh2()], loadPurchase: held.load });
+  h.game.offerChapter(MANOR, CH2); // D17: the paywall's prefetch is held
+  h.game.buy();
+  h.game.buy();
+  await settle();
+  expect(h.purchases, 'nothing before the module').toEqual([]);
+  expect(h.purchaseLoads()).toBe(1);
+  held.release();
+  await settle();
+  // Both taps waited on the one load; one flow, whose guard drops the second buy while `requesting`.
+  expect(h.purchases).toEqual(['createInvoice:chapter:ch2']);
+  expect(h.purchaseLoads()).toBe(1);
+  h.game.dispose();
+});
+
+test('game: a purchase module that fails to load is noted at Buy, keeps the paywall idle and loads again on the next Buy', async () => {
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    let calls = 0;
+    // Each rejection is made at its call, so none is left unhandled between the calls.
+    const load: LoadPurchase = () => {
+      calls += 1;
+      return calls <= 2 ? Promise.reject(new Error('the purchase chunk is gone')) : Promise.resolve(PURCHASE_MODULE);
+    };
+    const h = harness({ chapters: [manorCh1(), manorCh2()], loadPurchase: load });
+    const owned = [...h.owned];
+    h.game.offerChapter(MANOR, CH2);
+    await settle();
+    // The prefetch failed: logged, and nothing on screen.
+    expect(h.purchaseLoads()).toBe(1);
+    expect(purchaseNoted(h), 'no note for a prefetch').toBe(false);
+    expect(h.vm.paywall?.state).toEqual({ kind: 'idle' });
+    h.game.buy();
+    await settle();
+    // Buy loads again and fails: the note, the paywall idle and on top, nothing asked or unlocked.
+    expect(h.purchaseLoads()).toBe(2);
+    expect(purchaseNoted(h)).toBe(true);
+    expect(h.vm.paywall?.state).toEqual({ kind: 'idle' });
+    expect(h.vm.screens.overlays.map((o) => o.kind)).toEqual(['paywall']);
+    expect(h.purchases).toEqual([]);
+    expect([...h.owned]).toEqual(owned);
+    expect(reports(h)).toEqual([]);
+    h.game.buy();
+    await settle();
+    expect(h.purchaseLoads(), 'the next Buy loads again').toBe(3);
+    expect(h.purchases).toEqual(['createInvoice:chapter:ch2']);
+    expect(errors.mock.calls.filter((c) => c[0] === 'game: the purchase module did not load')).toHaveLength(2);
+    h.game.dispose();
+  } finally {
+    errors.mockRestore();
+  }
+});
+
+test('game: a purchase module that arrives after its offer ended buys nothing', async () => {
+  // A new start closes the offer (`begin`) while its Buy waits for the module.
+  const started = heldPurchase();
+  const h = harness({ chapters: [manorCh1(), manorCh2()], loadPurchase: started.load });
+  h.game.offerChapter(MANOR, CH2);
+  h.game.buy();
+  await settle();
+  expect(h.purchases, 'nothing before the module').toEqual([]);
+  await startManor(h);
+  started.release();
+  await settle();
+  expect(h.purchases, 'after a new start').toEqual([]);
+  h.game.dispose();
+  // The game is disposed while its Buy waits.
+  const disposed = heldPurchase();
+  const d = harness({ chapters: [manorCh1(), manorCh2()], loadPurchase: disposed.load });
+  d.game.offerChapter(MANOR, CH2);
+  d.game.buy();
+  d.game.dispose();
+  disposed.release();
+  await settle();
+  expect(d.purchases, 'after dispose').toEqual([]);
+});
+
+test('game: a purchase module that arrives in the background starts its flow paused', async () => {
+  const held = heldPurchase();
+  const h = harness({ chapters: [manorCh1(), manorCh2()], invoice: ['paid'], loadPurchase: held.load });
+  h.game.offerChapter(MANOR, CH2);
+  h.game.buy();
+  h.game.onLifecycle('deactivated');
+  await settle();
+  expect(h.purchases, 'nothing before the module').toEqual([]);
+  held.release();
+  await settle();
+  // The flow made after `deactivated` asks for the invoice and opens it, then holds still: no poll, no window.
+  expect(h.purchases).toEqual(['createInvoice:chapter:ch2', 'openInvoice']);
+  h.clock.advance(5000);
+  await settle();
+  expect(h.purchases, 'no poll in the background').toEqual(['createInvoice:chapter:ch2', 'openInvoice']);
+  h.game.onLifecycle('activated');
+  await settle();
+  expect(h.purchases.slice(0, 3)).toEqual(['createInvoice:chapter:ch2', 'openInvoice', 'getOrder:o1']);
+  h.game.dispose();
+});
+
+test('game: a Buy on a purchase module that already landed starts the purchase in the same tick', async () => {
+  // D2: once the paywall's prefetch is in, Buy runs the flow synchronously, as before lever P; the other Buy tests
+  // await between the tap and their assertions, so they hold on the waiting path too.
+  const h = harness({ chapters: [manorCh1(), manorCh2()] });
+  h.game.offerChapter(MANOR, CH2); // the paywall prefetches
+  await settle(); // the module lands
+  expect(h.purchaseLoads()).toBe(1);
+  h.game.buy();
+  expect(h.purchases, 'no await between the tap and the invoice').toEqual(['createInvoice:chapter:ch2']);
+  await settle();
+  expect(h.purchases).toEqual(['createInvoice:chapter:ch2']);
+  expect(h.purchaseLoads(), 'Buy loads nothing more').toBe(1);
   h.game.dispose();
 });
 
@@ -3885,6 +4064,30 @@ test('game: skew waits for an open invoice', async () => {
   expect(page.reloads).toHaveLength(1);
   expect(h.save().autosaves.at(-1)?.lineId).toBe('ch2.study.l001');
   h.game.dispose();
+});
+
+test('game: a Buy waiting for the purchase module holds a skew recovery until the module settles', async () => {
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const held = heldPurchase();
+    const h = harness({ chapters: [manorCh1(), manorCh2()], loadPurchase: held.load });
+    await playManorCh1(h);
+    await h.game.advance(); // END: ch2's pending start and the paywall, whose prefetch is held
+    h.game.buy(); // waits for the module: its flow would ask for the invoice the moment it lands
+    await settle();
+    const page = fakePage();
+    h.game.skewed(SKEW, page);
+    await pass(h, 3000);
+    expect([page.reloads, h.vm.notice], 'a Buy waits for the module').toEqual([[], null]);
+    held.fail(); // the deploy removed the chunk
+    await settle();
+    expect(purchaseNoted(h)).toBe(true);
+    await pass(h, 1000);
+    expect(page.reloads.map((url) => reloadedFor(url)), 'one reload, with the latch').toEqual([SKEW]);
+    h.game.dispose();
+  } finally {
+    errors.mockRestore();
+  }
 });
 
 test("game: skew waits for a puzzle attempt's answer", async () => {

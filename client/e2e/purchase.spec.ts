@@ -5,7 +5,7 @@
 import type { APIRequestContext, Page } from '@playwright/test';
 
 import { t, type UiKey } from '../src/i18n/index.ts';
-import { catalogTitle, devToken, expect, launch, plantPending, playCh1ToEnd, reachLine, requests, test, type E2eWindow } from './helpers.ts';
+import { catalogTitle, chunkFile, devToken, expect, guard, launch, plantPending, playCh1ToEnd, reachLine, requests, test, type E2eWindow } from './helpers.ts';
 
 const ru = (key: UiKey, params?: Readonly<Record<string, string | number>>): string => t('ru', key, params);
 
@@ -146,4 +146,73 @@ test('paid twice grants once', async ({ page, request }) => {
   expect((await ch2(request, token)).owned).toBe(true);
   const again = await request.post('/api/invoices', { headers: { Authorization: `Bearer ${token}` }, data: { productId: 'chapter:ch2' } });
   expect(again.status(), 'a second invoice for an owned chapter').toBe(409);
+});
+
+// Lever P (RULINGS 201, 209): the purchase flow is its own chunk, which app/game.ts import()s when a paywall opens.
+
+test('the purchase chunk loads when the paywall opens, once, and never before a first line', async ({ page, request, browser, baseURL, viewport, hasTouch }) => {
+  test.setTimeout(120_000);
+  const chunk = `/${chunkFile('src/purchase/flow.ts')}`;
+  /** The purchase chunk's requests from a page, from now on. */
+  const chunkLoads = (p: Page): (() => number) => {
+    const scripts = requests(p, /\.js(?:\?|$)/);
+    return () => scripts.urls.filter((u) => new URL(u).pathname === chunk).length;
+  };
+  // A plain start: the first line shows, and the purchase chunk was never requested.
+  const plain = chunkLoads(page);
+  await launch(page, 3006);
+  await page.locator('[data-story="manor"]').getByRole('button', { name: ru('stories.start') }).tap();
+  await expect(page.locator('.dialogue[data-line-id]')).toBeVisible({ timeout: LINE_MS });
+  expect(plain(), 'up to the first line').toBe(0);
+  // A paywall-first session (D11), another user's in a context of its own (the first user's device caches stay
+  // behind): the paywall requests the chunk before any tap on Buy, and two Buys request nothing more.
+  const context = await browser.newContext({ baseURL, viewport, hasTouch, reducedMotion: 'reduce' });
+  try {
+    const second = await context.newPage();
+    const check = await guard(second);
+    const paywallFirst = chunkLoads(second);
+    await plantPending(request, 3007, 'ch2', CARRY);
+    const price = (await ch2(request, await devToken(request, 3007))).priceStars;
+    await continueToPaywall(second, 3007);
+    await expect.poll(paywallFirst, { timeout: LINE_MS, message: 'the paywall prefetches the chunk' }).toBe(1);
+    await setOutcome(second, 'cancelled');
+    for (const tap of ['first', 'second']) {
+      await buy(second, price);
+      await expect(buyButton(second, price), `the form is back after the ${tap} Buy`).toBeEnabled({ timeout: 10_000 });
+    }
+    expect(paywallFirst(), 'one request for the page').toBe(1);
+    check();
+  } finally {
+    await context.close();
+  }
+});
+
+test('a purchase chunk that fails to load keeps the paywall and probes the build', async ({ page, request }) => {
+  test.setTimeout(120_000);
+  const chunk = `/${chunkFile('src/purchase/flow.ts')}`;
+  const gone = (url: URL): boolean => url.pathname === chunk;
+  // A deploy removed the chunk: the paywall's prefetch and the Buy both meet a 404.
+  await page.route(gone, (route) => route.fulfill({ status: 404, body: '' }));
+  const scripts = requests(page, /\.js(?:\?|$)/);
+  const chunkLoads = (): number => scripts.urls.filter((u) => new URL(u).pathname === chunk).length;
+  const probes = requests(page, /\/api\/health(?:\?|$)/);
+  await plantPending(request, 3008, 'ch2', CARRY);
+  const token = await devToken(request, 3008);
+  const price = (await ch2(request, token)).priceStars;
+  await continueToPaywall(page, 3008);
+  await buy(page, price);
+  const note = page.locator('[data-variant="note"]', { hasText: ru('toast.purchase_failed') });
+  await expect(note, 'the failed-payment note').toBeVisible({ timeout: 10_000 });
+  await expect(buyButton(page, price), 'the form stays').toBeEnabled();
+  await expect(page.locator('[data-tg-mock-sheet]'), 'no invoice sheet').toHaveCount(0);
+  // The failed import went through Vite's preload helper: its `vite:preloadError` sent boot's build probe.
+  await expect.poll(() => probes.urls.length, { timeout: LINE_MS, message: 'a GET /api/health followed' }).toBeGreaterThan(0);
+  expect((await ch2(request, token)).owned, 'ch2 on the server').toBe(false);
+  // Critique W2 (a): with the chunk served again, the next Buy imports it again (a browser that keeps a failed module
+  // fetch in its module map, Chromium before 155, fails here) and the invoice sheet opens.
+  const failed = chunkLoads();
+  await page.unroute(gone);
+  await buyButton(page, price).tap();
+  await expect(page.locator('[data-tg-mock-sheet]'), 'the invoice sheet').toBeVisible({ timeout: 10_000 });
+  expect(chunkLoads(), 'the retry requested the chunk again').toBeGreaterThan(failed);
 });
