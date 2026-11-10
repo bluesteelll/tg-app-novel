@@ -55,7 +55,7 @@
 | loop (rev. 3: + layered cover, second clock 0.1) | 0.6 | engine (`render-loop.ts`) |
 | (rev. 3, C1) entry preview + in-place upgrade (registry, loader, controller order) | 0.4 | engine |
 | (rev. 4, m3) `story/shots.ts` decoders (rigs, look, loops, face index), needed before the first `apply` | 1.0 | engine |
-| (rev. 4, m3) SH1's tags / staging / stage-route growth (its own estimate, §9.1 Gates) | 0.3 | engine |
+| (rev. 4, m3) SH1's tags / staging / stage-route growth (its own estimate, §9.1 Gates) | 0.3 | engine. Changed by RULINGS 201 (as of `461424d`; docs lane `docs-errata-13`, group A): **MEASURED** at SH1's merge (`2db33c3`, mean of 4 builds per tree, main -> HEAD): engine **+510 B** against the 0.3 (R 1.70), entry +42 (churn), first line +552, all JS +549 ([engine §11.1 The shared ledgers](../engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13)) |
 | (rev. 4, C1) the warm form (registry, loader, scheduler classes) | 0.3 | engine |
 | (rev. 4, W2) room windows (`roomWindowKey`, the host `apply` hunk) | 0.1 | engine |
 | (rev. 4, W1) the entry window beside the upgrade | 0.05 | engine |
@@ -70,7 +70,7 @@
 | warp + drive + hair mesh | 1.5 | `scene/motion/` |
 | ambient | 1.2 | `scene/motion/` |
 | scene-motions | 1.0 | `scene/motion/` |
-| **chunk subtotal** | **~6.0** (rev. 4: + `flatten`) | `scene-motion chunk (br)` <= 8.0 |
+| **chunk subtotal** | **~6.0** (rev. 4: + `flatten`) | `scene-motion chunk (br)` <= 8.0. Changed by RULINGS 201 (as of `461424d`; docs lane `docs-errata-13`, group A): at the estimate policy's R (the all-JS R, 2.031 at SH1's merge; `scene-motion` has no MEASURED sample) the chunk reads 6.0 x 2.031 = **12.19 / 8.0** (ARITHMETIC): **flagged**, the first `scene/motion/` lane (SH7) quotes it at its cut |
 | SH10 `scene` ids | 0.5 | cue-stage chunk |
 | Entry: catalog namespace strings | <= 0.1 | entry |
 
@@ -126,6 +126,19 @@ of them exceed `all JS`: I-13 makes this ledger shared, superseded by [engine §
 **Ruled: RULINGS 158** — `allJsBr` is re-set once, by GM7p (the `budget.ts` holder before GM7g in the one order), to GM7p's measured HEAD + the remaining planned puzzle-type chunks (GM7g, GM8a, GM8b at 1.6 KB br each, the measured `puzzle-type` chunk) + 5.0 KB br, rounded up to a whole KB; GM7p's cut quotes the arithmetic and the orchestrator confirms it in a RULINGS line at that cut; no other lane raises it (the row bounds no download).
 
 Verify the engine headroom against 230,000 B at SH4's cut.
+
+**Ruled since: RULINGS 201** — Ledger 3 (all JS) is re-set now, once, to **365.0 KB br** (lane X wrote `allJsBr`
+365,000, `597dded`): RULINGS 158's re-set at GM7p above is **withdrawn**
+([engine §11.1 The shared ledgers](../engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13)).
+**Ruled since: RULINGS 201** (the estimate policy, budget round r198 design §5) — every SH term above is an estimate E
+that a cut books at **E x R** (R per row: the median MEASURED / term since the adoption, n >= 3 else the all-JS R,
+floor 1.0; printed at each merge; engine 1.700 and all JS 2.030 at `597dded`, RULINGS 208), the lane's **net** per row
+(a net <= 0 books 0 until that lane measures it, so SH7's net on the engine, `flatten` -0.8 against its loop's growth,
+books **0**; a moved module is growth on the row it enters: `flatten` is +0.8 x R on `scene-motion`); the per-lane
+build STOP is E x R + 0.5 KB, with an attribution tripwire (no STOP) at E + 0.5. The rows count §11.1's union rule
+(every chunk any device can request before its first line). No shots lane adds a Pixi filter, a Sprite mask or an
+advanced blend mode without lever X's import-back (rule `pixi-env`, `client/src/arch.test.ts:217`; RULINGS 201 lever X,
+design §2.4 D4): the scene skips Pixi's environment extensions, so those systems are not registered.
 
 ### 10.1 Fixture ledger (rev. 6, RULINGS 138 (c); the invariant S34)
 

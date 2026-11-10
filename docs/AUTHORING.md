@@ -132,7 +132,7 @@ At a chapter's end the runtime carries every `g_` value into the next chapter of
 
 Every text line and every choice with text carries exactly one line ID: `#id:<chapter>.<knot>.<suffix>`, for example
 `#id:ch2.archive.p4pr` ([STAGING-DSL §4](STAGING-DSL.md#4-line-ids-localization-and-position--principle-8), regex
-[tags.ts:40](../client/src/story/tags.ts#L40)). The ID is the line's identity for translation, saves and
+[tags.ts:59](../client/src/story/tags.ts#L59)). The ID is the line's identity for translation, saves and
 statistics:
 - the chapter part is the chapter whose files hold the line (`id/chapter-prefix`);
 - the knot part is only a hint, assigned once: moving the line to another knot keeps its ID;
@@ -215,8 +215,10 @@ catalog (`catalog/assets`).
 
 ### Staging tags
 
-Tags stage the scene: `scene`, `bg`, `show`, `hide`, `cg`, `bgm`, `sfx`, `wait`, plus the two yield tags `puzzle`
-and `explore`. The parser's list is `TAG_KINDS` ([tags.ts:27](../client/src/story/tags.ts#L27)); the syntax, options,
+Tags stage the scene: `scene`, `bg`, `show`, `hide`, `cg`, `bgm`, `sfx`, `wait`, the shot kinds `face`, `cam`,
+`think`, `anim`, `fx` (DSL v3: a face change, a camera framing, a thought line, a character's one-shot motion, a
+screen effect; parsed and checked today, drawn by later shots lanes), plus the two yield tags `puzzle` and `explore`.
+The parser's list is `TAG_KINDS` ([tags.ts:28](../client/src/story/tags.ts#L28)); the syntax, options,
 defaults and conflicts of each are in [STAGING-DSL §6](STAGING-DSL.md#6-tags) and
 [§7](STAGING-DSL.md#7-batches-and-execution-order). The habits that keep a chapter green and cheap:
 - put scene-setting tags on their own lines at the top of a knot, as `archive` does above

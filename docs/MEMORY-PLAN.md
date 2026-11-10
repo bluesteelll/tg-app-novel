@@ -1232,6 +1232,12 @@ Ownership rules for every lane below (critique W3):
     re-exports it from `scene/registry.ts`; so `assets.ts` and `scan-dist.ts`, which import `manifest.ts`, load
     `scene/registry.ts` -> `scene/layout.ts` -> `geom/cover.ts` at startup (and `story/catalog.ts` since M3c,
     `layout.ts:6`). The CLI tests through a linked path are the cover (`budget.test.ts:700`).
+    Changed by RULINGS 206 (as of `461424d`; docs lane `docs-errata-13`, group A): the door's second use: lever X
+    (`597dded`) re-exports `PIXI_ENV_SRCS` and `SKIP_PIXI_ENV` from `scene/pixi-env.ts` through it
+    (`client/scripts/assets/manifest.ts:38`; its header names "the scene's Pixi environment constants", `:4-6`), and
+    `budget.ts` imports both from `./assets/manifest.ts`; a value import of `src/` from a main module is refused under
+    `--preserve-symlinks-main` (`ERR_MODULE_NOT_FOUND`), so `createRequire` or a top-level `import()` was rejected as a
+    second way in.
   - Pixi's GC flag (section 2): the loader assigns `autoGarbageCollect = false` after construction.
   - The map rows for M2 were D2's (`b766a16`, FEATURE_MAP and ARCHITECTURE as merged at `385d52f`).
 

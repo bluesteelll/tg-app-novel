@@ -420,6 +420,11 @@ export function layerOut(node: Element, opts: { reduced: boolean; frame?: boolea
      element: ExploreView's `inert` sits on `.room` and `.sheet`, `ExploreView.svelte:42`, `:68`, App's on its
      `.layer` divs, `App.svelte:65`, `:104`). So a frame replaced in one block (the old root outroing, the new one
      entering, both keyed by `frame.id`) gives the new frame's targets to the new frame only.
+     Changed by RULINGS 195, 198 (as of `461424d`; docs lane `docs-errata-13`, group A): as merged, Branch F (GM3s
+     `65e10ad`, F8): no root outros and nothing sets `inert` on a `[data-cue-root]`, so the resolver has no `inert` skip:
+     a leaving root is out of the document at the flush, and its exit plays on a ghost clone on the stage layer, whose
+     `id` and `data-cue*` attributes are stripped; the resolver takes the first match outside the stage layer
+     (`live`, `client/src/cues/stage/index.ts:47`), so a ghost is never a live target (§8.3 "Entrances and outros").
   5. **Leaving.** An `'emit'` motion plays on its captured element while that element is in the document; the moment
      it leaves (at run, or later: a hotspot button the tap's own dispatch removes leaves after the press started),
      the motion continues on a **ghost clone** of the element (`cloneNode(true)`, `id` attributes stripped,
@@ -436,6 +441,12 @@ export function layerOut(node: Element, opts: { reduced: boolean; frame?: boolea
      motion is `holdEnd` (§8.5): it fills `forwards`, so the wrapper keeps its end pose (scaled out, dimmed) until the
      root's outro removes it, never snapping back to rest inside a frame that is still fading, and the leave watch
      never moves it to a ghost (its target was meant to leave with the root).
+     Changed by RULINGS 195, 198 (as of `461424d`; docs lane `docs-errata-13`, group A): as merged, Branch F (GM3s
+     `65e10ad`, F5-F7): the family root carries `data-cue-root` (the frame's `data-cue-root="frame"`), not `in:` / `out:`;
+     the root leaves the document at the flush and its `frameOut` plays on the root's ghost at its last box; an end
+     motion caught on the leaving wrapper continues on the wrapper's clone inside that ghost (RULINGS 135 (b) restated),
+     padded to the ghost's end, so the clone is never removed inside a frame still fading
+     (`stage: an end motion continues on the wrapper's clone inside its root's ghost`).
   7. **Holds.** A `waited` settles the element its own `waiting` hold played on (captured with its box at the
      `waited` emit, so a notice that the reload removes settles on its ghost). Round 11: a hold that played at a box
      landing (`centre`, a `via` box) settles at that box.

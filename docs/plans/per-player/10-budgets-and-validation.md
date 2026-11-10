@@ -96,6 +96,10 @@ entry / +12.75 all JS; reconcile r4's readings on the rounding intervals stay in
   chunk) = **305.094**, 0.094 over the LIMIT; + GM8a = 306.719 (FAIL without the re-set; [engine §15 Questions for the orchestrator](../engine/15-orchestrator-questions.md#15-questions-for-the-orchestrator-engineering-each-with-a-recommendation) item 16's
   ruling, RULINGS 158: GM7p re-sets `allJsBr` once). Reconcile r4 read 272.05-272.15 + 29.714 = 301.76-301.86 (3.14-3.24
   left), 304.96-305.06 after GM7p and GM7g, 306.56-306.66 after GM8a.
+  **Ruled since: RULINGS 201** — `allJsBr` is re-set now, once, to **365.0 KB br** (written by lever X, `597dded`); the
+  GM7p re-set above is withdrawn. This file's term table is unchanged; each GM6 cut books its terms at **E x R** (R per
+  row, the booking rule for nets, the path rule, the per-lane STOP at E x R + 0.5 KB) as
+  [engine §11.1 The shared ledgers](../engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13) states them.
 - **Without LFL** (history; LFL is main since `cec347c`): 270.327 first line (FAIL) and 39.197 entry, unchanged.
 
 No GM6 verdict flips. What a crossing does to a GM6 lane is "Per-lane quote" below (reconcile r4 clarifies its all-JS

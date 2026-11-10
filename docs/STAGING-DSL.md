@@ -743,7 +743,7 @@ meta.
 
 ## 10. The ink subset
 
-| Construct | DSL v2 |
+| Construct | DSL v3 (unchanged since v2) |
 |---|---|
 | Knots, stitches, labelled gathers; diverts to a knot, and to a stitch or labelled gather of the same knot | allowed |
 | A divert from one knot to a stitch or labelled gather of another (`-> k.s`, `-> k.g`, `-> k.s.g`) | forbidden (`graph/entry-below-top`) — every knot is entered at its top, so its opening tag lines run on every entry (the carried-stage budget, §8), and a resume after a story update restarts the saved knot at its top, where the player entered it. Split a scene that must be entered in the middle into its own knot |
@@ -1046,3 +1046,11 @@ be in effect after its batch's cut.
   shots in order of first use. Per shot: its cast and masks, the face states to draw (an expression's derived states
   only where it changes that box), camera targets, motions and an hours estimate. Then "to draw" (no catalog art),
   "to stage" (not in `story/shots.json`) and the chapter totals.
+- **Known limits** (SH2, RULINGS 207; no committed chapter reaches the first two). (1) A yield step shared by two event
+  runs carries the images of both runs into a knot that a list fires directly after only one of them, so
+  `shot/char-absent` can report an error on a valid story; the workaround is a cut (`scene:` or `bg:`) inside the
+  follower knot, before its first `face:`, `anim:` or `cam: … to=<char>`. (2) For a run that ends in another
+  event knot, the `r:<room>` windows are that knot's rooms as well as the yielding knot's (the runtime shows the room
+  the action happened in). (3) `npm --prefix client run story -- --strict` is red on the demo by design:
+  `--strict` turns the eight `shot/undeclared` warnings into errors until `story/shots.json` declares those shots
+  (no gate runs `--strict`).

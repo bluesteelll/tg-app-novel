@@ -85,6 +85,7 @@ engineering; none narrows motion.
 14. **All JS:** the third of EN's new puzzle-type chunks crosses 305.0 on §11.1's projection; engine §15 item 16 asks
     the orchestrator for the ruling; SH lanes quote the row.
     **Ruled: RULINGS 158** — `allJsBr` is re-set once, by GM7p (the `budget.ts` holder before GM7g in the one order), to GM7p's measured HEAD + the remaining planned puzzle-type chunks (GM7g, GM8a, GM8b at 1.6 KB br each, the measured `puzzle-type` chunk) + 5.0 KB br, rounded up to a whole KB; GM7p's cut quotes the arithmetic and the orchestrator confirms it in a RULINGS line at that cut; no other lane raises it (the row bounds no download).
+    **Ruled since: RULINGS 201** — RULINGS 158's GM7p re-set is withdrawn: Ledger 3 (`allJsBr`) is re-set now, once, to **365.0 KB br** on the all-JS upper quartile at that ruling (lever X wrote it, `597dded`) [§11.1 Ledger 3](11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13).
 15. **I-4 / I-9, targets:** ~~`SceneTargets` members resolve to their anchor's `motion` node, so SH10's tweens write
     only `motion` nodes (never `anchor`, the executor's, or `depth`, SH8's).~~ (reconcile r2, RC-m2) `prop(AnchorKey)`,
     `bg` and `closeup` resolve to their anchor's `motion` node, so SH10's tweens there write only `motion` nodes (never
