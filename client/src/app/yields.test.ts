@@ -1285,6 +1285,16 @@ test('yields: a ribbon selection writes the view and plays select and deselect',
   mark = r.cues.length;
   r.yields.restore(r.yields.world(), null, null);
   expect([r.explore.selected, selections(r, mark)]).toEqual([null, []]);
+  // A resume into the rooms keeps the controller (no dispose), so the resume's own clear is the one that takes it.
+  r.yields.layer.onselect(held);
+  mark = r.cues.length;
+  r.yields.restore(r.yields.world(), null, { kind: 'explore', section: MANOR });
+  expect([r.explore.selected, selections(r, mark)]).toEqual([null, []]);
+  // A chapter change disposes the controller, whose clear takes it (no resume follows to clear it).
+  r.yields.layer.onselect(held);
+  mark = r.cues.length;
+  r.yields.chapterChanged();
+  expect([r.explore.selected, selections(r, mark)]).toEqual([null, []]);
   r.yields.dispose();
   // The rooms left for a knot: the selection goes with them, silently.
   const out = rig({ world: cueWorld() });
