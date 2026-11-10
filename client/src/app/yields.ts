@@ -194,8 +194,16 @@ function roomProps(room: RoomId, r: Room, s: WorldState): PropPlacement[] {
   return out;
 }
 
+/**
+ * The stage already shows these placements: the same prop at the same rect on the same anchor, in order. An absent
+ * anchor (a format-1 save's placement, `PropPlacementV1`) is the same prop and rect at any anchor (carry (c)).
+ */
 const sameProps = (a: readonly PropPlacement[], b: readonly PropPlacement[]): boolean =>
-  a.length === b.length && a.every((p, i) => p.prop === b[i]?.prop && p.rect.every((v, j) => v === b[i]?.rect[j]));
+  a.length === b.length &&
+  a.every((p, i) => {
+    const q = b[i];
+    return q !== undefined && p.prop === q.prop && p.rect.every((v, j) => v === q.rect[j]) && (p.at === undefined || q.at === undefined || p.at === q.at);
+  });
 
 /** An open puzzle: its session, how it ends, and the frame the overlay shows. */
 type Open = {

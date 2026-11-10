@@ -21,7 +21,7 @@ import type { VisualCommand } from '../scene/executor.ts';
 import type { StatEvent } from '../stats/reporter.ts';
 import { decodeChapterMeta } from '../story/catalog.ts';
 import type { AssetEntry, AssetManifest, LoadedChapter, Result } from '../story/catalog.ts';
-import type { AssetId, ChapterId, KnotName, PuzzleLocalId, SectionId, StagingSnapshot } from '../story/staging.ts';
+import type { AssetId, ChapterId, KnotName, PropId, PuzzleLocalId, SectionId, StagingSnapshot } from '../story/staging.ts';
 import { createExploreView } from '../ui/explore-view.svelte.ts';
 import type { ExploreLayerProps } from '../ui/explore-view.svelte.ts';
 import { createPuzzleView } from '../ui/puzzle-view.svelte.ts';
@@ -553,6 +553,59 @@ test("yields: a room batch's props carry their anchor key", async () => {
   const medal = [{ prop: 'medal', rect: [100, 200, 200, 200], at: 'hall.medal' }];
   expect(r.stage().props).toEqual(medal);
   expect(r.batches.flat().filter((c) => c.kind === 'props')).toEqual([{ kind: 'props', props: medal }]);
+  r.yields.dispose();
+});
+
+/** hall and den over one background, each with the medal's prop at the same rect on its own hotspot. */
+function twinWorld(): WorldPublic {
+  const raw = {
+    format: 1,
+    items: { medal: { name: txt('Медаль'), desc: txt('d'), glyph: 'sun' }, coin: { name: txt('Монета'), desc: txt('d'), glyph: 'sun' } },
+    docs: {},
+    puzzles: {},
+    sections: {
+      manor: {
+        start: 'hall',
+        bgm: null,
+        rooms: {
+          hall: { bg: 'hall', title: txt('Hall'), onEnter: [], hotspots: [exit('to_den', 'den'), take('medal', 'medal', 'medal')] },
+          den: { bg: 'hall', title: txt('Den'), onEnter: [], hotspots: [exit('to_hall', 'hall'), take('twin', 'coin', 'medal')] },
+        },
+      },
+    },
+  };
+  const r = decodeWorldSource(raw);
+  if (!r.ok) {
+    throw new Error(`invariant: the fixture world decodes: ${JSON.stringify(r.error)}`);
+  }
+  return { ...toPublic(r.value), version: '3333333333333333' };
+}
+
+test('yields: a room batch redraws props whose anchor changed', async () => {
+  const r = rig({ world: twinWorld() });
+  await inHall(r);
+  expect(r.stage().props).toEqual([{ prop: 'medal', rect: RECT, at: 'hall.medal' }]);
+  const mark = r.batches.length;
+  r.yields.layer.ontap(key('hall.to_den'));
+  await settle();
+  // The same prop at the same rect over the same background, on another hotspot: the batch redraws it there.
+  const den = [{ prop: 'medal', rect: RECT, at: 'den.twin' }];
+  expect([roomOf(r), r.stage().props]).toEqual(['den', den]);
+  expect(r.batches.slice(mark).flat().filter((c) => c.kind === 'props')).toEqual([{ kind: 'props', props: den }]);
+  r.yields.dispose();
+});
+
+test('yields: an at-less stage prop equals its anchored placement', async () => {
+  const r = rig({ world: twinWorld() });
+  await inHall(r);
+  // A format-1 save's stage: the same prop and rect with no anchor (`PropPlacementV1`).
+  await r.host.apply([{ kind: 'props', props: [{ prop: 'medal' as PropId, rect: [100, 200, 200, 200] as const }] }], []); // RECT, at no anchor
+  const mark = r.batches.length;
+  r.yields.layer.ontap(key('hall.to_den'));
+  await settle();
+  // The den's anchored placement is that picture: the room batch draws no props.
+  expect(roomOf(r)).toBe('den');
+  expect(r.batches.slice(mark).flat().filter((c) => c.kind === 'props')).toEqual([]);
   r.yields.dispose();
 });
 
