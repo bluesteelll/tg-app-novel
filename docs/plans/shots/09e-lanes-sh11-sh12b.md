@@ -104,6 +104,12 @@ variants fails `check` in every switch over the kinds at once, `game.test.ts`'s 
 `case 'show'`, `client/src/app/game.test.ts:213-248`: TS2678), and every `# show:` fixture becomes
 `tag/unknown-kind` (critique r3 W6, grep at this round).
 
+**Carried from SH2 (RULINGS 207):** this lane is the next holder of `client/scripts/story/shots/flow.ts`: SH2 triage r3
+M1, a yield step shared by two event runs carries both images into a knot co-fired after only one of them, so
+`shot/char-absent` can be a false E on a valid story (the fix: a per-run context in the flow), and SH2 fix r2's limit 2
+(the `r:<room>` windows of a run that ends in another event knot are that knot's rooms too); neither is reached by a
+committed chapter. SH2's cut Q4 (`assetOf(face)` on a shot chapter) is this lane's if it runs before SH4.
+
 **Lock (15; rev. 4, W6: + the four test files, − `lint.ts`, `shots/lint.ts`, `layout.ts`, `layout.test.ts` to SH12b;
 rev. 5, W3: + `shots/shots.test.ts`, − `play.test.ts`):**
 - `client/src/story/{tags,tags.test,staging,dsl-doc.test}.ts`
@@ -169,6 +175,9 @@ data path SH12a left in place, so the code and the rows of `knot-set` go togethe
 `ShotUsage.sprites` and the entry's legacy sprite alternatives (`usage.ts`), `knotRows` and `carriedBound`
 (`client/scripts/budget.ts:827-867`, `carriedBound`'s only caller is `knotRows`, `:856`; the call at `:1020`) with
 their tests.
+
+**Carried from SH2 (RULINGS 207):** SH2's cut Q6: the reader of a shot's plane `at` boxes, which this lane needs for
+`shot/plane-over-label` (it holds `shots/lint.ts`; no reader exists before shot sources).
 
 **Lock (11; rev. 5, W3: + `shots/flow.ts`, `shots/usage.ts`, `budget.ts`, `budget.test.ts`):**
 - `client/scripts/story/lint.ts` (one line: `'budget/knot-set'` at `:66` goes; EN §12's row allows an A(`lint.ts`)

@@ -1151,6 +1151,17 @@ while LDB1 ran; LDB1 and LDB2 had merged before the design landed, and the merge
     196), beside the docs lane `docs-errata-12` (in the idle server slot, RULINGS 197);
   - to go, of this design's lanes: none. The adopted plans' next lanes: the engine-closure lever lane (new, RULINGS
     195, 196) after GM3s, then GM3; SH2 after SH1; the rest follow the one order above.
+- **As of `461424d`** (changed by RULINGS 198-209; docs lane `docs-errata-13`, group B; SHAs from `git log --first-parent
+  main`):
+  - merged since `837b1ed`: the docs lane `docs-errata-12` as `0fb7018` (RULINGS 199), and from the adopted plans
+    shots SH1 `2db33c3` (RULINGS 201), GM3s `65e10ad` (RULINGS 204) and shots SH2 `7f45dee` (RULINGS 207), and the
+    engine-closure lever X `lever-x-pixi-env` `597dded` (RULINGS 208) (PP "Dependency order"); the docs commits
+    `7b9dc6f` and `461424d` (Q54, Q59) are not lanes;
+  - running: GM3 `gm3-mech-use` and the lever P `lever-p-purchase-lazy` (client; RULINGS 209), beside the docs lane
+    `docs-errata-13` (in the idle server slot, RULINGS 209);
+  - to go, of this design's lanes: none. The adopted plans' next lanes: GM3u after GM3 and P; SH3a after SH2 once P
+    frees `budget.ts`; the levers O5, then Y, only on the merge-time trigger (RULINGS 201); the rest follow the one
+    order above.
 
 **Order** (RULINGS 8 rolling, RULINGS 18 three slots; as of `66c92c4`, changed by RULINGS 22, 23: LDB1 and LDB2
 merged, so the server chain starts at L6b): server L6b → LS2 → L6c → L8a → L8b → LS3 → L9; client (two slots)
@@ -1201,6 +1212,10 @@ Changed by RULINGS 183-197 (as of `837b1ed`; docs lane `docs-errata-12`, group B
 `794181b`, GM3w `508bd36`, per-player GM6a `23e1d31`, GM2b `1782d6d`, GM3m `a3f0678` and GM3c `837b1ed` have merged;
 GM3s and shots SH1 run (client; RULINGS 194-196); the engine-closure lever lane (new, RULINGS 195, 196) follows GM3s,
 then GM3; SH2 follows SH1; the rest follow the one order above.
+Changed by RULINGS 198-209 (as of `461424d`; docs lane `docs-errata-13`, group B): from the adopted plans, shots SH1
+`2db33c3`, GM3s `65e10ad` and shots SH2 `7f45dee` have merged, and the engine-closure lever X `597dded` (the lever lane
+became the program X, then P, RULINGS 201); GM3 and the lever P run (client; RULINGS 209); GM3u follows GM3 and P, SH3a
+follows SH2 once P frees `budget.ts`; the rest follow the one order above.
 
 **Collision locks added** (PP "Collision locks"): `0001` L2 → LDB1 → LS2; `0003` LS3; the serialized server files
 L6b → LS2 → L6c → L8a → L8b → LS3 → L9; `ids.rs` L6b (`StoryId` with `PuzzleId`); `lint.ts` / `dsl-doc.test.ts` /

@@ -23,6 +23,9 @@ exhaustive `CANONICAL_SIZE` (`placeholder.ts:13-19`), `shapes` (`:37-82`), `LIMI
 then adds the rows. A separate predicate for derived kinds (critique option 2) would leave `budget.ts:701-706` and
 `:814` reading a sheet as not-an-image (the audio path) between SH3a and SH3b, so it is rejected.
 
+**Carried from SH2 (RULINGS 207):** SH2's cut Q7: a declared catalog-less shot passes `story` and fails `npm run
+assets` until this lane's effective catalog (SH2 merged `7f45dee`; `D:/tmp/novel-orch/carry.md` "SH2 carries").
+
 **Lock (12; rev. 4: − `encode.ts`, − the `src` fixture (both SH3c), + `placeholder.ts`, + `budget.ts`):**
 - `client/src/story/catalog.ts` (namespaces `sheet` / `face` / `talk` in the id lists `:78`, `ASSET_ID_RE` `:390`,
   `:767-769`; bg `src` form decoded; `decodeAssetManifest` optional `shots` / `look` / `loops`)
@@ -139,6 +142,10 @@ with copies of reused rest states, R1-R4, R6-R8, masked layers and joint states 
 fixture (S-A's shot once it exists). Split out of SH3a so each lane stays one subsystem (round 3's SH3a: 10 commits,
 ~40 tests, 15 mutations, critique r3 W5).
 
+**Carried from SH2 (RULINGS 207):** SH2's cut Q6: the reader of a shot's plane `at` boxes is SH12b's (it holds
+`shots/lint.ts` and needs it for `shot/plane-over-label`); this lane's cut notes that the story tool must be able to
+read a shot's plane `at` boxes, since the story tool runs before the asset tool.
+
 **Lock (7):**
 - `client/scripts/assets/{extract,extract.test}.ts` (new: pure diffs and checks over synthetic buffers)
 - `client/scripts/assets/shots.ts` (wires `src` shots into packing)
@@ -181,6 +188,14 @@ with its printed derivation (W5); the lazy family `scene-motion chunk (br)` (W6)
 the chapter files, limit 279,000 B (C1, W1); codes in `SHOT_LINT_CODES`, not `LINT_CODES` (§3.3). Rev. 4: the
 `step-window` formula of §3.4 (the certain term due one step ahead, possible openers at kept bytes, one row per `r:`
 room window), the face and talk file guards, the levers note of §5.9.
+
+**Carried from SH2 (RULINGS 207):** SH2's cut Q3: this lane's two budget codes join `SHOT_LINT_CODES` and STAGING-DSL
+§14, typed `ShotFinding` (SH2's finding type beside `Finding`); SH2 fix r1's limits: cross-list co-firing (an `unlock` /
+`openAt` inserting another list's knots into the queue), the yield batch on a plain `r:` return, and `graph.ts`'s
+`carriedStage` seeding a co-fired-only event.
+
+**Ruled since: RULINGS 201** — the `scene-motion chunk (br)` row this lane adds reads 6.0 x 2.031 =
+12.19 / 8.0 at the estimate policy's R (ARITHMETIC, flagged): this lane's cut quotes it (budget design §2.1; shots §10).
 
 **Lock (4; rev. 3: `lint.ts` out, `shots/lint.ts` in):** `client/scripts/{budget,budget.test}.ts`,
 `client/scripts/story/shots/lint.ts` (two codes, `budget/step-window` and `budget/entry-step`), `docs/STAGING-DSL.md`

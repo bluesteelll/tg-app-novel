@@ -173,6 +173,8 @@
     lanes, not this file's. (c) The entry base is CLAIM since LRB (rounded 39.0, no byte table): GM6s2's and GM6t's
     cuts read the exact entry bytes on their parent before quoting the 38 B margin.
     **Ruled: RULINGS 158** — (b) `allJsBr` is re-set once, by GM7p ([engine §15 Questions for the orchestrator](../engine/15-orchestrator-questions.md#15-questions-for-the-orchestrator-engineering-each-with-a-recommendation) item 16); (c) the entry base is MEASURED at `3c62a86`: 38,988 B ([§10 Ledgers](10-budgets-and-validation.md#ledgers-reconcile-p4-rulings-143-qo10-145-149-152-shots-i-13-reconcile-r2-one-ledger-enginemd-111)).
+    **Ruled since: RULINGS 201** — (b) withdrawn: Ledger 3 (`allJsBr`) is re-set now, once, to 365.0 KB br, on the
+    all-JS upper quartile at that ruling (lever X wrote it, `597dded`); GM7p re-sets nothing [engine §11.1 The shared ledgers](../engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13).
 18. **R-S1 to the shots design (reconcile P2).** SH8's drive steps a depth list a later scene lane can enter (the bg
     labels' depth nodes, GM6d1). Recommendation: forward it with I-9's answer before SH8's cut; it adds no lane and
     ~2 lines to SH8 (the list's add / remove), or GM6d1 STOPs at its cut.
