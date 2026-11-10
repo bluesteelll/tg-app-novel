@@ -188,7 +188,7 @@ maximum (RULINGS 114, 122). The haptic column adds touch feedback **on top of** 
 | `fact:examined:added` | `tick` at the box | a done glint on the object | - |
 | `fact:open:added` | `burst` at the box | part tween (a drawer slides) + patch crossfade | success |
 | `fact:slot:added` (round 9: `resolveAt: 'emit'`, as `used:added`) | `drop` into the box | the item seats in the slot | light |
-| `fact:fired:added` | `pulse` at the trigger's box; room triggers: `sweep` | a pulse on each target anchor | - |
+| `fact:fired:added` | `pulse` at the trigger's box; room triggers: `sweep`. Changed by RULINGS 212, 217 (as of `52e328e`; docs lane `docs-errata-14`, group A): as merged (GM3 `7082a35`), the `enter` cause (a room's `onEnter`, no hotspot) plays `sweep` on the stage (`byCause.enter`, `client/src/cues/stage/motions.ts:148`); every other cause pulses at the box; the walk case is GM3p's carry | a pulse on each target anchor | - |
 | `fact:visited:added` | `vignette` + `caption` (the room title) | establishing pan | - |
 | `fact:solved:added` | `flourish` at the lock box | the lock opens (tween) | success |
 | `fact:failed:added` | `jam` at the lock box | the lock shudders and dims | error |
@@ -219,8 +219,8 @@ maximum (RULINGS 114, 122). The haptic column adds touch feedback **on top of** 
 | `module:core:locked` | `shake` at the box | the door rattles | error. Changed by RULINGS 204 (as of `461424d`; docs lane `docs-errata-13`, group A): declared with its row (GM3s), but **no effect emits it** on `461424d`: its emitter is the first lane that refuses a tap on a closed exit or hotspot (GM3s cut Q4) |
 | `module:core:refused` | `wobble` at the box | the target wobbles, the item bounces back | error (as `yields.ts:311`) |
 | `module:core:reset` | `sweep` reversed (a rewind) + today's toast | every changed anchor rewinds to its section-start state | - |
-| `module:use:refused` (GM3) | `wobble` at the target + `fly` back to the ribbon | as core refused | error |
-| `module:use:said` (GM3) | `glint` at the target + the toast | a glint on the target | - |
+| `module:use:refused` (GM3; Changed by RULINGS 212, 217 (as of `52e328e`; docs lane `docs-errata-14`, group A): as merged, `motions.ts:215`, also on a failed fit, `refused { reason: 'no-fit' }`) | `wobble` at the target + `fly` back to the ribbon | as core refused | error |
+| `module:use:said` (GM3; Changed by RULINGS 212, 217 (as of `52e328e`; docs lane `docs-errata-14`, group A): as merged, `motions.ts:216`; the toast is the rule's `look` effect, not the cue's) | `glint` at the target + the toast | a glint on the target | - |
 | `module:combine:refused` (GM5) | both ribbon items `shake` | the room's light dips once | error |
 | `module:devices:done` (GM8i, round 3 m10; arrival at a solved device) | `glint` at the device box | the device's light settles | - |
 | `module:devices:jammed` (GM8i, round 3 m10; arrival at a failed device) | `jam` at the device box | the parts shudder and settle in their jammed state | error |
