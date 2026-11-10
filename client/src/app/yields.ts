@@ -38,7 +38,7 @@ import type { KnotName, PropPlacement, PuzzleLocalId, SectionId, StagingSnapshot
 import type { TelegramClient } from '../telegram/index.ts';
 import type { ExploreLayerActions, ExploreLayerProps, ExploreViewStore } from '../ui/explore-view.svelte.ts';
 import { backScreen, coversStage } from '../ui/puzzle-view.svelte.ts';
-import type { PuzzleFrameView, PuzzleHostCallbacks, PuzzleHostProps, PuzzleView } from '../ui/puzzle-view.svelte.ts';
+import type { HintLadderUiView, PuzzleFrameView, PuzzleHostCallbacks, PuzzleHostProps, PuzzleView } from '../ui/puzzle-view.svelte.ts';
 import type { ScreenKind, Screens, ScreensView } from '../ui/screens.ts';
 import type { CueStageProps, CueStageSlot, ViewModel } from '../ui/state.svelte.ts';
 import type { Gift, HotspotKey, ItemId, Room, RoomId, WorldPublic, WorldText } from '../world/types.ts';
@@ -236,6 +236,9 @@ type Open = {
 
 /** The end cue of a dropped frame (`dropPuzzle`): the session's end, `closed` for a no-outcome drop, null at `dispose`. */
 type DropCue = Extract<PuzzleCue, 'solved' | 'failed' | 'closed'> | null;
+
+/** The hint ladder's own cues (engine plan §8.1 "The hint ladder"). */
+type LadderCue = Extract<PuzzleCue, 'ladder' | 'hint-shown' | 'hint-failed' | 'hint-renewing'>;
 
 let frameSeq = 0;
 
@@ -800,6 +803,28 @@ export function createYields(h: YieldsHost): Yields {
       bus.emit(cueEvent({ kind: 'puzzle', puzzle: o.local, name, index }, null));
     }
   };
+  /**
+   * The one writer of `puzzle.ladder` (engine plan §8.1 "The hint ladder"; pinned by `yields: the ladder has one
+   * writer`): writes `next`, emits its hold's edge when `busy` turns (`ui-state:waiting` / `waited`, `panel: 'hints'`; a
+   * null `next` over a busy ladder is a `waited`, so Back during a request ends the hold), then each `[name, index]` of
+   * `cues` as a frame cue of `o` (dropped while the frame is not shown).
+   */
+  const setLadder = (o: Open | null, next: HintLadderUiView | null, cues: readonly (readonly [LadderCue, number | null])[] = []): void => {
+    const was = puzzle.ladder?.busy ?? false;
+    puzzle.ladder = next;
+    const now = next?.busy ?? false;
+    if (now !== was) {
+      bus.emit(cueEvent({ kind: 'ui-state', name: now ? 'waiting' : 'waited', panel: 'hints', item: null }, null));
+    }
+    if (o !== null) {
+      for (const [name, index] of cues) {
+        puzzleCue(o, name, index);
+      }
+    }
+  };
+  /** The shown ladder's alert, kept by a new request until it answers (a repeat Hint, a use's start). */
+  const ladderFailed = (): boolean => puzzle.ladder?.failed ?? false;
+
   /** A `ui-state` cue of the frame's panel (no box: the stage finds the frame, its notice, or the centre). */
   const frameState = (name: 'panel-open' | 'waiting' | 'waited'): CueEvent => cueEvent({ kind: 'ui-state', name, panel: 'puzzle', item: null }, null);
 
@@ -864,7 +889,7 @@ export function createYields(h: YieldsHost): Yields {
     if (cue !== null) {
       endFrame(o, cue);
     }
-    puzzle.ladder = null;
+    setLadder(o, null);
     screens.close('hints');
     open = null;
     clearRetry();
@@ -880,7 +905,7 @@ export function createYields(h: YieldsHost): Yields {
    */
   const hideFrame = (o: Open): void => {
     endFrame(o, 'closed');
-    puzzle.ladder = null;
+    setLadder(o, null);
     screens.close('hints');
     puzzle.frame = null;
     report(null);
@@ -1133,10 +1158,15 @@ export function createYields(h: YieldsHost): Yields {
         return;
       }
       screens.push({ kind: 'hints' });
-      puzzle.ladder = { ...o.session.ladder(), busy: true, failed: false };
+      setLadder(o, { ...o.session.ladder(), busy: true, failed: ladderFailed() }); // a repeat tap keeps the alert up
       void o.session.hints().then((r) => {
-        if (open === o) {
-          puzzle.ladder = r.ok ? { ...r.value, busy: false, failed: false } : { ...o.session.ladder(), busy: false, failed: true };
+        if (open !== o || puzzle.ladder === null) {
+          return; // the puzzle or its ladder was left meanwhile
+        }
+        if (r.ok) {
+          setLadder(o, { ...r.value, busy: false, failed: false }, [['ladder', null]]);
+        } else {
+          setLadder(o, { ...o.session.ladder(), busy: false, failed: true }, [['hint-failed', null]]);
         }
       }); // the ladder shows the answer
     },
@@ -1157,22 +1187,30 @@ export function createYields(h: YieldsHost): Yields {
       }
       if (state === 'unlocked') {
         o.session.openHint(tier); // a re-read: the text is in memory, nothing is spent
-        puzzle.ladder = { ...o.session.ladder(), busy: false, failed: false };
+        // The tier's text is the answer: the alert clears, with the ladder's glint when it was up.
+        const cleared: readonly (readonly [LadderCue, number | null])[] = ladderFailed() ? [['ladder', null]] : [];
+        setLadder(o, { ...o.session.ladder(), busy: puzzle.ladder?.busy ?? false, failed: false }, [['hint-shown', tier], ...cleared]);
         return;
       }
       if (state !== 'usable' || o.port === null) {
         return;
       }
-      puzzle.ladder = { ...o.session.ladder(), busy: true, failed: false };
+      setLadder(o, { ...o.session.ladder(), busy: true, failed: ladderFailed() }); // the alert stays until the answer
       void o.session.useHint(tier).then((r) => {
         if (open !== o || puzzle.ladder === null) {
           return; // the puzzle or its ladder was left meanwhile
         }
         if (r.ok) {
-          puzzle.ladder = { ...r.value, busy: false, failed: false };
+          setLadder(o, { ...r.value, busy: false, failed: false }, [
+            ['hint-shown', tier],
+            ['ladder', null],
+          ]);
+        } else if (r.error.kind === 'failed') {
+          setLadder(o, { ...o.session.ladder(), busy: false, failed: true }, [['hint-failed', tier]]);
         } else if (r.error.kind !== 'busy') {
-          // `busy`: another use is in flight, and its answer is the ladder.
-          puzzle.ladder = { ...o.session.ladder(), busy: false, failed: r.error.kind === 'failed' };
+          // `busy`: another use is in flight, and its answer is the ladder. The rest re-read it (`insufficient` also
+          // opens the wallet, whose motion is the meta overlay's).
+          setLadder(o, { ...o.session.ladder(), busy: false, failed: false }, [['ladder', null]]);
         }
       }); // the ladder shows the answer
     },
@@ -1311,10 +1349,12 @@ export function createYields(h: YieldsHost): Yields {
       }
       const ladder = puzzle.ladder;
       if (ladder !== null && !kinds.has('hints')) {
-        puzzle.ladder = null;
+        setLadder(open, null);
       } else if (ladder !== null && open !== null) {
-        // The wallet's balance, as of now: a pack bought over the ladder shows once the wallet closes.
-        puzzle.ladder = { ...open.session.ladder(), busy: ladder.busy, failed: ladder.failed };
+        // The wallet's balance, as of now: a pack bought over the ladder shows once the wallet closes, with its glint.
+        const next = { ...open.session.ladder(), busy: ladder.busy, failed: ladder.failed };
+        const moved = next.wallet?.cost !== ladder.wallet?.cost || next.wallet?.balance !== ladder.wallet?.balance;
+        setLadder(open, next, moved ? [['ladder', null]] : []);
       }
       // The panels' own cues (§8.1 point 10), from the stack whoever pushed or popped it: the ones that left close first,
       // then the ones that arrived open, each with no box (the stage finds the panel by its marker). A disposed bus

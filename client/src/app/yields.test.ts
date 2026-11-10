@@ -15,7 +15,7 @@ import type { ExploreEffect } from '../explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { WorldState } from '../explore/state.ts';
 import type { ChunkError, PuzzleUiProps } from '../puzzles/registry.ts';
-import type { HintPort } from '../puzzles/session.ts';
+import type { HintPort, HintPortError } from '../puzzles/session.ts';
 import type { SceneStats } from '../scene/controller.ts';
 import type { VisualCommand } from '../scene/executor.ts';
 import type { StatEvent } from '../stats/reporter.ts';
@@ -238,6 +238,8 @@ type RigOptions = {
   attempts?: Array<Result<AttemptResponse, ApiError>>;
   /** `getPuzzle`'s answer; none = a network error. */
   status?: PuzzleStatus;
+  /** `getPuzzle` answers only after it (a status request in flight). */
+  statusGate?: Promise<void>;
   /** The hint spend; none = no port. */
   hints?: HintPort;
   /** The chapter's world; the manor by default. */
@@ -336,7 +338,10 @@ function rig(o: RigOptions = {}) {
     screens,
     tg: { haptic: { impact: () => {}, selection: () => {}, notify: (t) => haptics.push(`notify:${t}`) } },
     api: {
-      getPuzzle: async () => (o.status === undefined ? { ok: false, error: { kind: 'network', detail: 'none' } } : { ok: true, value: o.status }),
+      getPuzzle: async () => {
+        await o.statusGate;
+        return o.status === undefined ? { ok: false, error: { kind: 'network', detail: 'none' } } : { ok: true, value: o.status };
+      },
       postAttempt: async () => {
         calls.attempts += 1;
         await o.attemptGate;
@@ -1861,6 +1866,161 @@ test('yields: a busy reply leaves the frame to the attempt in flight', async () 
   r.yields.dispose();
 });
 
+// ---------------------------------------------------------------------------------------------------------------
+// GM3p: the hint ladder has one writer, and every answer plays its cue (engine plan §8.1 "The hint ladder")
+
+/** The drawer's status: tier 1 unlocked, tiers 2 and 3 to spend on. */
+const LADDER_STATUS: PuzzleStatus = {
+  puzzleId: 'ch1.drawer',
+  solved: false,
+  hints: [
+    { tier: 1, unlocked: true, text: 'one' },
+    { tier: 2, unlocked: false, text: null },
+    { tier: 3, unlocked: false, text: null },
+  ],
+  valueRun: null,
+};
+
+/** A hint port whose `use` answers with the next queued result (a spend by default), after its gate. */
+function ladderPort(balance: number) {
+  const state = { balance, gate: Promise.resolve() as Promise<void> };
+  const results: Array<Result<{ text: string; balance: number }, HintPortError>> = [];
+  const port: HintPort = {
+    balance: () => state.balance,
+    tierCost: () => 1,
+    use: async () => {
+      await state.gate;
+      return results.shift() ?? { ok: true, value: { text: 'spent', balance: state.balance } };
+    },
+    getMore: () => {},
+  };
+  return { port, results, state };
+}
+
+/** The ladder's own cues after `from`: its hold's edges (`panel: 'hints'`) and its puzzle cues, with their index. */
+const ladderKeys = (r: Rig, from: number): string[] =>
+  r.cues.slice(from).flatMap((e) =>
+    e.cue.kind === 'ui-state' && e.cue.panel === 'hints' && (e.cue.name === 'waiting' || e.cue.name === 'waited')
+      ? [`ui-state:${e.cue.name}@hints`]
+      : e.cue.kind === 'puzzle' && ['ladder', 'hint-shown', 'hint-failed', 'hint-renewing'].includes(e.cue.name)
+        ? [`puzzle:${e.cue.name}${e.cue.index === null ? '' : `@${e.cue.index}`}`]
+        : [],
+  );
+
+/** One step: what it runs (synchronously, or awaited when it answers a promise), the ladder after it, its cues. */
+type LadderStep = readonly [name: string, run: () => unknown, ladder: { busy: boolean; failed: boolean } | null, cues: readonly string[]];
+
+async function ladderSteps(r: Rig, steps: readonly LadderStep[]): Promise<void> {
+  for (const [name, run, ladder, cues] of steps) {
+    const mark = r.cues.length;
+    const p = run();
+    if (p instanceof Promise) {
+      await p;
+    }
+    const l = r.puzzle.ladder;
+    expect(l === null ? null : { busy: l.busy, failed: l.failed }, `${name}: the ladder`).toEqual(ladder);
+    expect(ladderKeys(r, mark), `${name}: its cues`).toEqual(cues);
+  }
+}
+
+test('yields: every hint-ladder answer plays its cue', async () => {
+  // A ladder with a port: the status, a re-read, the uses and their answers, a wallet re-read, the sheet's close.
+  const status = deferred<void>();
+  const w = ladderPort(5);
+  const r = rig({ status: LADDER_STATUS, statusGate: status.promise, hints: w.port });
+  await r.yields.onYield({ kind: 'puzzle', puzzle: DRAWER, then: AFTER });
+  const use = deferred<void>();
+  const failedUse: Result<{ text: string; balance: number }, HintPortError> = { ok: false, error: { kind: 'network' } };
+  await ladderSteps(r, [
+    ['Hint', () => r.yields.host.onhint(), { busy: true, failed: false }, ['ui-state:waiting@hints']],
+    ['the status answered', () => (status.resolve(), settle()), { busy: false, failed: false }, ['ui-state:waited@hints', 'puzzle:ladder']],
+    ['a re-read of tier 1', () => r.yields.host.onusehint(1), { busy: false, failed: false }, ['puzzle:hint-shown@1']],
+    ['a use of tier 2 starts', () => ((w.state.gate = use.promise), r.yields.host.onusehint(2)), { busy: true, failed: false }, ['ui-state:waiting@hints']],
+    ['a second use while it runs (busy)', () => (r.yields.host.onusehint(2), settle()), { busy: true, failed: false }, []],
+    ['the use answered', () => (use.resolve(), settle()), { busy: false, failed: false }, ['ui-state:waited@hints', 'puzzle:hint-shown@2', 'puzzle:ladder']],
+    ['a use of tier 3 failed', () => (w.results.push(failedUse), r.yields.host.onusehint(3), settle()), { busy: false, failed: true }, ['ui-state:waiting@hints', 'ui-state:waited@hints', 'puzzle:hint-failed@3']],
+    ['a re-read over the failed ladder', () => r.yields.host.onusehint(1), { busy: false, failed: false }, ['puzzle:hint-shown@1', 'puzzle:ladder']],
+    ['tier 3 failed again', () => (w.results.push(failedUse), r.yields.host.onusehint(3), settle()), { busy: false, failed: true }, ['ui-state:waiting@hints', 'ui-state:waited@hints', 'puzzle:hint-failed@3']],
+    ['a use starts over the failed ladder', () => ((w.state.gate = new Promise<void>(() => undefined)), r.yields.host.onusehint(3)), { busy: true, failed: true }, ['ui-state:waiting@hints']],
+  ]);
+  r.yields.dispose();
+  // The no-text answers: each a waited and the ladder re-read, the alert cleared.
+  for (const kind of ['insufficient', 'unavailable'] as const) {
+    const n = ladderPort(5);
+    const x = rig({ status: LADDER_STATUS, hints: n.port });
+    await x.yields.onYield({ kind: 'puzzle', puzzle: DRAWER, then: AFTER });
+    x.yields.host.onhint();
+    await settle();
+    n.results.push({ ok: false, error: { kind } });
+    await ladderSteps(x, [
+      [`a use answered ${kind}`, () => (x.yields.host.onusehint(2), settle()), { busy: false, failed: false }, ['ui-state:waiting@hints', 'ui-state:waited@hints', 'puzzle:ladder']],
+    ]);
+    x.yields.dispose();
+  }
+  // The wallet re-read on a screens change: the balance moved (a pack bought over the ladder), then it did not.
+  const m = ladderPort(5);
+  const y = rig({ status: LADDER_STATUS, hints: m.port });
+  await y.yields.onYield({ kind: 'puzzle', puzzle: DRAWER, then: AFTER });
+  y.yields.host.onhint();
+  await settle();
+  await ladderSteps(y, [
+    ['the wallet opens over the ladder', () => y.screens.push({ kind: 'wallet' }), { busy: false, failed: false }, []],
+    ['the wallet closes with a new balance', () => ((m.state.balance = 9), y.screens.back()), { busy: false, failed: false }, ['puzzle:ladder']],
+    ['the sheet closes, idle', () => y.screens.back(), null, []],
+  ]);
+  y.yields.dispose();
+  // A status that fails, a Hint again over the failed ladder (the alert kept), and the sheet closed while it is busy.
+  const again = deferred<void>();
+  const f = rig({ statusGate: again.promise, hints: ladderPort(5).port });
+  await f.yields.onYield({ kind: 'puzzle', puzzle: DRAWER, then: AFTER });
+  await ladderSteps(f, [
+    ['Hint', () => f.yields.host.onhint(), { busy: true, failed: false }, ['ui-state:waiting@hints']],
+    ['the status failed', () => (again.resolve(), settle()), { busy: false, failed: true }, ['ui-state:waited@hints', 'puzzle:hint-failed']],
+    ['Hint again over the failed ladder', () => f.yields.host.onhint(), { busy: true, failed: true }, ['ui-state:waiting@hints']],
+    ['its status failed again', () => settle(), { busy: false, failed: true }, ['ui-state:waited@hints', 'puzzle:hint-failed']],
+  ]);
+  f.yields.dispose();
+  const busyClose = rig({ statusGate: new Promise<void>(() => undefined), hints: ladderPort(5).port });
+  await busyClose.yields.onYield({ kind: 'puzzle', puzzle: DRAWER, then: AFTER });
+  await ladderSteps(busyClose, [
+    ['Hint', () => busyClose.yields.host.onhint(), { busy: true, failed: false }, ['ui-state:waiting@hints']],
+    ['the sheet closes while the status runs', () => busyClose.screens.back(), null, ['ui-state:waited@hints']],
+  ]);
+  busyClose.yields.dispose();
+  // A drop of the frame over a busy ladder ends its hold.
+  const dropped = rig({ statusGate: new Promise<void>(() => undefined), hints: ladderPort(5).port });
+  await dropped.yields.onYield({ kind: 'puzzle', puzzle: DRAWER, then: AFTER });
+  await ladderSteps(dropped, [
+    ['Hint', () => dropped.yields.host.onhint(), { busy: true, failed: false }, ['ui-state:waiting@hints']],
+    ['the frame dropped', () => dropped.yields.disposePuzzle(), null, ['ui-state:waited@hints']],
+  ]);
+  dropped.yields.dispose();
+});
+
+test('yields: a status that answers after Back leaves the ladder closed', async () => {
+  const status = deferred<void>();
+  const r = rig({ status: LADDER_STATUS, statusGate: status.promise, hints: ladderPort(5).port });
+  await r.yields.onYield({ kind: 'puzzle', puzzle: DRAWER, then: AFTER });
+  r.yields.host.onhint();
+  r.screens.back(); // the sheet closes before the status answers
+  expect(r.puzzle.ladder).toBeNull();
+  const mark = r.cues.length;
+  status.resolve();
+  await settle();
+  expect(r.puzzle.ladder).toBeNull();
+  expect(ladderKeys(r, mark)).toEqual([]);
+  r.yields.dispose();
+});
+
+test('yields: the ladder has one writer', () => {
+  // Engine plan §8.1: every write of `puzzle.ladder` goes through `setLadder`, which emits its hold's edges.
+  const writes = [...yieldsSource.matchAll(/\bpuzzle\.ladder = /g)].map((m) => m.index);
+  expect(writes).toHaveLength(1);
+  const start = yieldsSource.indexOf('  const setLadder = ');
+  const end = yieldsSource.indexOf('\n  };\n', start);
+  expect([start > -1, writes.every((i) => i > start && i < end)]).toEqual([true, true]);
+});
+
 test('yields: the reveal emits its cue', async () => {
   // No section entered: no controller, so the reveal shows nothing and plays nothing.
   const none = rig({ world: cueWorld() });
@@ -1976,8 +2136,8 @@ function chunkQueue<T>(): { loader: () => Promise<T>; land: (v: T) => void; wait
 
 type WaitCase = (row: string) => Promise<void>;
 
-/** One case per `WaitRow` (tsc keeps the table and the rows equal). The ladder row's case lands with `setLadder`. */
-const WAIT_CASES: { readonly [R in Exclude<WaitRow, 'ladder'>]: WaitCase } = {
+/** One case per `WaitRow` (tsc keeps the table and the rows equal). */
+const WAIT_CASES: { readonly [R in WaitRow]: WaitCase } = {
   // A visual batch's loads, through `held`: the room, the take and the close-up in and out, each with a late start.
   batch: async (row) => {
     const r = rig({ world: cueWorld(), late: true });
@@ -2087,6 +2247,28 @@ const WAIT_CASES: { readonly [R in Exclude<WaitRow, 'ladder'>]: WaitCase } = {
       ['Try: solved', () => r.yields.host.ontry(), ['+answer', '-answer']],
     ]);
     r.yields.dispose();
+  },
+  // A ladder request (the status, a use): `setLadder`'s busy edges, and Back over a request in flight.
+  ladder: async (row) => {
+    const status = deferred<void>();
+    const use = deferred<void>();
+    const w = ladderPort(5);
+    const r = rig({ status: LADDER_STATUS, statusGate: status.promise, hints: w.port });
+    await r.yields.onYield({ kind: 'puzzle', puzzle: DRAWER, then: AFTER });
+    await script(row, r, [
+      ['Hint', () => r.yields.host.onhint(), ['+hints']],
+      ['the status', () => status.resolve(), ['-hints']],
+      ['a use', () => ((w.state.gate = use.promise), r.yields.host.onusehint(2)), ['+hints']],
+      ['its answer', () => use.resolve(), ['-hints']],
+    ]);
+    r.yields.dispose();
+    const b = rig({ statusGate: new Promise<void>(() => undefined), hints: ladderPort(5).port });
+    await b.yields.onYield({ kind: 'puzzle', puzzle: DRAWER, then: AFTER });
+    await script(row, b, [
+      ['Hint', () => b.yields.host.onhint(), ['+hints']],
+      ['Back over the request', () => b.screens.back(), ['-hints']],
+    ]);
+    b.yields.dispose();
   },
 };
 
