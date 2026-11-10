@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
-import { FIXED_SECTIONS, scanBuild, scanFiles } from './scan-dist.ts';
+import { ENGINE_STATIC_DEPS_MAX, FIXED_SECTIONS, scanBuild, scanFiles } from './scan-dist.ts';
 import type { ScanFile, Section } from './scan-dist.ts';
 import { loadSections, main } from './scan-dist.ts';
 import type { Finding } from './scan-dist.ts';
@@ -242,6 +242,25 @@ describe('scan build', () => {
     // Control: the same build with one lazy stylesheet more gives exactly one finding, so the empty list is the scan's.
     const lazy = text('assets/meta-f.css', '.wallet{color:red}');
     expect(scanBuild([...files, lazy])).toEqual([{ kind: 'lazy-stylesheet', file: 'assets/meta-f.css' }]);
+  });
+
+  test('scan-dist: an engine chunk with more static JS dependencies than recorded fails the scan', () => {
+    /** The build's manifest with the engine chunk statically importing the entry and `deps`. */
+    const manifest = (deps: readonly string[]): ScanFile =>
+      text(
+        '.vite/manifest.json',
+        JSON.stringify({
+          'index.html': { file: 'assets/index-a.js', src: 'index.html', isEntry: true, dynamicImports: ['src/app/engine.ts'] },
+          'src/app/engine.ts': { file: 'assets/engine-b.js', src: 'src/app/engine.ts', isDynamicEntry: true, imports: ['index.html', ...deps] },
+          ...Object.fromEntries(deps.map((d) => [d, { file: `assets/${d.slice(1)}` }])),
+        }),
+      );
+    const over = Array.from({ length: ENGINE_STATIC_DEPS_MAX + 1 }, (_, i) => `_Geometry${i}-c.js`);
+    expect(scanBuild([LINKED, ENTRY, ENGINE, CSS, manifest(over)])).toEqual([
+      { kind: 'engine-static-deps', count: over.length, limit: ENGINE_STATIC_DEPS_MAX, deps: over },
+    ]);
+    // Control: the recorded count passes.
+    expect(scanBuild([LINKED, ENTRY, ENGINE, CSS, manifest(over.slice(1))])).toEqual([]);
   });
 });
 

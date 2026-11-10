@@ -68,7 +68,9 @@ export type Finding =
    */
   | { kind: 'preload-deps'; file: string; count: number }
   /** Q60 R1: with more than one stylesheet in dist, one index.html does not link (a lazy root's own). */
-  | { kind: 'lazy-stylesheet'; file: string };
+  | { kind: 'lazy-stylesheet'; file: string }
+  /** Q60 G2 + G3: the engine chunk statically imports `count` JS chunks besides the entry, more than `limit`. */
+  | { kind: 'engine-static-deps'; count: number; limit: number; deps: readonly string[] };
 
 /** Sections every build is scanned for, whatever the story holds. */
 export const FIXED_SECTIONS: readonly Section[] = [
@@ -241,12 +243,44 @@ export function scanFiles(files: readonly ScanFile[], sections: readonly Section
 /** Vite 8.3.5's preload list in a chunk; the capture is the list's text. */
 const MAP_DEPS = /__vite__mapDeps=\(i,m=__vite__mapDeps,d=\(m\.f\|\|\(m\.f=\[([^\]]*)\]\)\)\)/;
 const MODULEPRELOAD = /<link\b[^>]*\brel=["']?modulepreload\b/gi;
+/**
+ * Q60 G2 + G3 (vite.config.ts `pixiChunking`, fork F2 of the recovery lane's C0): the JS chunks the engine chunk may
+ * import statically besides the entry. Each one is a request the engine's import waits for after the engine itself,
+ * a step of the boot's waterfall; a later change that splits the engine again fails the scan.
+ */
+export const ENGINE_STATIC_DEPS_MAX = 0;
+/** The engine chunk's manifest key (app/boot.ts imports it). */
+const ENGINE_KEY = 'src/app/engine.ts';
+
+/**
+ * The engine chunk's static imports besides the entry, from dist/.vite/manifest.json; null without a readable manifest
+ * or engine key (the budget's manifest and engine rows fail the build then).
+ */
+function engineStaticDeps(files: readonly ScanFile[]): string[] | null {
+  const file = files.find((f) => f.path === '.vite/manifest.json');
+  if (file === undefined) {
+    return null;
+  }
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(utf8.decode(file.bytes));
+  } catch {
+    return null;
+  }
+  const engine: unknown = typeof manifest === 'object' && manifest !== null ? Reflect.get(manifest, ENGINE_KEY) : undefined;
+  if (typeof engine !== 'object' || engine === null) {
+    return null;
+  }
+  const imports: unknown = Reflect.get(engine, 'imports');
+  return Array.isArray(imports) ? imports.filter((k): k is string => typeof k === 'string' && k !== 'index.html') : [];
+}
 
 /**
  * Q60 R1 (vite.config.ts `modulePreload`, `cssCodeSplit`): the build's shape, so a lazy chunk that fails is a failure of
  * its own module fetch only. No preload list and no modulepreload link: WebKit keeps a failed preload past a reload.
  * One stylesheet, linked from index.html: no lazy root waits for a stylesheet of its own, or loses one that failed.
- * Every finding is reported.
+ * And (G2 + G3) the engine's import is one request: at most ENGINE_STATIC_DEPS_MAX static JS chunks behind it. Every
+ * finding is reported.
  */
 export function scanBuild(files: readonly ScanFile[]): Finding[] {
   const findings: Finding[] = [];
@@ -271,6 +305,10 @@ export function scanBuild(files: readonly ScanFile[]): Finding[] {
     for (const sheet of sheets.filter((f) => !html.includes(f.path))) {
       findings.push({ kind: 'lazy-stylesheet', file: sheet.path });
     }
+  }
+  const deps = engineStaticDeps(files);
+  if (deps !== null && deps.length > ENGINE_STATIC_DEPS_MAX) {
+    findings.push({ kind: 'engine-static-deps', count: deps.length, limit: ENGINE_STATIC_DEPS_MAX, deps });
   }
   return findings;
 }
@@ -681,6 +719,8 @@ export function formatFinding(f: Finding): string {
       return `scan: preload-deps ${f.file} (${f.count === 0 ? 'a preload list the scan cannot read' : `${f.count} preloaded`})`;
     case 'lazy-stylesheet':
       return `scan: lazy-stylesheet ${f.file} (index.html does not link it)`;
+    case 'engine-static-deps':
+      return `scan: engine-static-deps ${f.count} > ${f.limit} (${f.deps.join(', ')})`;
     default: {
       const unreachable: never = f;
       return unreachable;

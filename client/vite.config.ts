@@ -3,9 +3,11 @@ import { fileURLToPath } from 'node:url';
 
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { svelteTesting } from '@testing-library/svelte/vite';
+import type { Plugin } from 'vite';
 import { defineConfig } from 'vitest/config';
 
 import { buildIdFile, buildIdOf } from './scripts/build-id.ts';
+import { PIXI_ENV_SRCS, SKIP_PIXI_ENV } from './src/scene/pixi-env.ts';
 import { tgDevMock } from './vite-plugins/tg-dev-mock.ts';
 
 const CLIENT_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -26,6 +28,55 @@ function envPort(name: string, fallback: number): number {
   return port;
 }
 
+/** A module id with '/' separators, as `path.resolve` gives it on Windows. */
+const slashes = (id: string): string => id.replaceAll('\\', '/');
+
+/** Pixi's renderer chooser (8.22.0) and the three renderers it imports dynamically, each once (Q60 G3). */
+const AUTO_DETECT = '/node_modules/pixi.js/lib/rendering/renderers/autoDetectRenderer.mjs';
+const RENDERERS: readonly string[] = [
+  './gpu/WebGPURenderer.mjs',
+  './gl/WebGLRenderer.mjs',
+  './canvas/CanvasRenderer.mjs',
+];
+
+/**
+ * Q60 G2 + G3 (build only): the engine's chunk waits on no Pixi chunk of its own. Rolldown gives a module that several
+ * entries reach a common chunk of its own; Pixi's environment modules and its three renderers are such entries.
+ * - G2: no path requests the environment modules while SKIP_PIXI_ENV holds (rule pixi-env), so they load empty then;
+ *   their ids, and so their manifest keys, stay (the budget's engine walk and scene-env.spec.ts read them). With the
+ *   flag off they load as they are.
+ * - G3: autoDetectRenderer's three renderer import()s become static imports. The renderers' code is in the engine chunk
+ *   already, and the chooser still picks the same one. Anything but exactly three replaced fails the build, so a Pixi
+ *   upgrade cannot undo it silently.
+ */
+function pixiChunking(): Plugin {
+  const envIds = new Set(PIXI_ENV_SRCS.map((src) => slashes(path.resolve(CLIENT_DIR, src))));
+  return {
+    name: 'novel:pixi-chunking',
+    apply: 'build',
+    enforce: 'pre',
+    load(id) {
+      return SKIP_PIXI_ENV && envIds.has(slashes(id)) ? 'export {};' : null;
+    },
+    transform(code, id) {
+      if (!slashes(id).endsWith(AUTO_DETECT)) {
+        return null;
+      }
+      const statics: string[] = [];
+      let out = code;
+      for (const [i, spec] of RENDERERS.entries()) {
+        const dynamic = `import('${spec}')`;
+        if (out.split(dynamic).length !== 2) {
+          throw new Error(`novel:pixi-chunking: ${AUTO_DETECT} has not exactly one ${dynamic} (Q60 G3, this Pixi)`);
+        }
+        statics.push(`import * as novelRenderer${i} from '${spec}';`);
+        out = out.replace(dynamic, `Promise.resolve(novelRenderer${i})`);
+      }
+      return { code: `${statics.join('\n')}\n${out}`, map: null };
+    },
+  };
+}
+
 export default defineConfig(({ mode, command }) => {
   // K25: the dev mock exists in every mode but production (the dev server, vitest, `--mode e2e`).
   const mock = mode !== 'production';
@@ -42,6 +93,7 @@ export default defineConfig(({ mode, command }) => {
       svelteTesting(),
       ...(mock ? [tgDevMock()] : []),
       ...(buildId === null ? [] : [buildIdFile(buildId)]),
+      pixiChunking(),
     ],
     // Production compiles `if (__TG_MOCK__)` and the mock chunk it imports out of the bundle.
     define: { __TG_MOCK__: JSON.stringify(mock), __BUILD_ID__: JSON.stringify(buildId) },
