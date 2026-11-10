@@ -1471,6 +1471,34 @@ test("flow: an event co-fired after one that returns through another event knot 
   expect(effectAt(flow, 'ch1.gate_echo.e001').shots).toEqual(['cafe_ally_cu']);
 });
 
+test('flow: an event whose run branches to two event knots opens the next event on the last image of each', () => {
+  const look = (id: string, n: number, then: readonly Json[]): Json => ({ id, kind: 'look', rect: [100, 300, 100, 100], label: TEXT(`ch1.s.l30${n}`), look: TEXT(`ch1.s.k30${n}`), then });
+  // The bang fires the forced gate and then the echo; the forced gate's choice runs on to the left or the right gate,
+  // and either one's yield returns the run (`core.ts` `eventReturned` keys on the section, not the knot).
+  const w = world({
+    hall: room('hall', [look('bang', 1, [{ story: 'gate_forced' }, { story: 'gate_echo' }]), look('left', 2, [{ story: 'gate_x' }]), look('right', 3, [{ story: 'gate_y' }]), LEAVE_DOOR]),
+  });
+  const body = (x: string, y: string, echo: readonly string[]): string[] => [
+    '-> arrive', '=== arrive ===', '# scene: hall', 'Зал. #id:ch1.arrive.a001', '# explore: s', '-> DONE',
+    '=== gate_forced ===', 'Хруст. #id:ch1.gate_forced.f001', '* [Налево #id:ch1.gate_forced.f002]', '  -> gate_x', '* [Направо #id:ch1.gate_forced.f003]', '  -> gate_y',
+    '=== gate_x ===', `# bg: ${x}`, 'Икс. #id:ch1.gate_x.x001', '# explore: s', '-> DONE',
+    '=== gate_y ===', `# bg: ${y}`, 'Игрек. #id:ch1.gate_y.y001', '# explore: s', '-> DONE',
+    '=== gate_echo ===', ...echo, 'Эхо. #id:ch1.gate_echo.e001', '# explore: s', '-> DONE',
+    ...LEAVE_OUT,
+  ];
+  const plain = body('cafe_ally_cu', 'cafe_ots', []);
+  expect(graphShown(plain, w)).toEqual([]);
+  // Each branch's last image is a possible opening of the echo: a closure that kept one successor would lose the other.
+  expect(effectAt(linted(plain, { w }).flow, 'k:gate_echo').shots).toEqual(['cafe_ally_cu', 'cafe_ots']);
+  // So a face the right gate's image does not cast fails, though the left gate's image casts it.
+  const faced = body('cafe_wide', 'cafe_ally_cu', ['# face: stranger smile']);
+  expect(graphShown(faced, w)).toEqual([]);
+  const errors = linted(faced, { w }).findings.filter((f) => f.severity === 'E');
+  expect(errors.map((f) => `${f.code} ${f.file}:${f.line} ${f.message}`)).toEqual([
+    "shot/char-absent story/ch1/main.ink:25 'face: stranger smile': stranger is not in the cast of shot 'cafe_ally_cu' (on some path) (§14)",
+  ]);
+});
+
 test("flow: an event fired third opens on the second's last image, not the first's", () => {
   const look = (id: string, n: number, then: readonly Json[]): Json => ({ id, kind: 'look', rect: [100, 300, 100, 100], label: TEXT(`ch1.s.l30${n}`), look: TEXT(`ch1.s.k30${n}`), then });
   // The explore runs the third knot of the list when the second returns (`core.ts` `eventReturned` runs `rest[0]`).
