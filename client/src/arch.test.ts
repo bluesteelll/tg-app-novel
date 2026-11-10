@@ -222,6 +222,8 @@ const WAAPI_FILES: readonly string[] = ['cues/stage/player.ts', 'ui/value-motion
 // statically, so the engine walk counts it; its bytes are booked in the importing lane's engine term (filters 4,291 B;
 // events ~6,719; accessibility ~2,348; dom ~738); and this rule's allow list is widened for it, with the reason.
 // GSAP's PixiPlugin turns `pixi: { blur, ... }` tween vars into filters inside GSAP, so importing it counts as a filter.
+// Pixi's environment entry points (`pixi.js/browser`, `pixi.js/webworker`) and its loaders of them
+// (`loadEnvironmentExtensions`, `autoDetectEnvironment`, by any name or member) register every skipped system at once.
 /** The one file that builds and initialises the Application, always with `appOptions(` (scene/controller.ts). */
 const PIXI_APP_FILE = 'scene/controller.ts';
 /** Pixi's federated pointer events (events/FederatedEventMap): an `on<event>` property or an `.on(` name. */
@@ -229,9 +231,23 @@ const FEDERATED_EVENT = /^(?:pointer|mouse|touch|global)[a-z]*$|^(?:click|tap|wh
 /** Members that need a skipped system: masks, filters and the pointer API (events). `eventMode` is judged by value. */
 const PIXI_ENV_PROPS = new Set(['mask', 'filters', 'hitArea', 'cursor', 'interactive', 'interactiveChildren']);
 const PIXI_LISTEN_METHODS = new Set(['on', 'once', 'addListener']);
-const PIXI_ENV_IMPORTS = new Set(['pixi.js/events', 'pixi.js/accessibility', 'pixi.js/dom', 'pixi.js/filters', 'pixi.js/advanced-blend-modes']);
+const PIXI_ENV_IMPORTS = new Set([
+  'pixi.js/events',
+  'pixi.js/accessibility',
+  'pixi.js/dom',
+  'pixi.js/filters',
+  'pixi.js/advanced-blend-modes',
+  // The environment entry points themselves (`exports['./browser' | './webworker']` = PIXI_ENV_SRCS): X review M1.
+  'pixi.js/browser',
+  'pixi.js/webworker',
+]);
 const GSAP_PIXI_PLUGIN = /^gsap\/(?:dist\/)?(?:PixiPlugin|all)(?:\.js)?$/;
 const PIXI_RENDERERS = new Set(['WebGLRenderer', 'WebGPURenderer', 'CanvasRenderer']);
+/**
+ * Pixi's loaders of the environment entry points. Matched as identifiers, not calls: an aliased import names the loader
+ * in its specifier's `propertyName`, and a member call (`pixi.loadEnvironmentExtensions(`) in its name.
+ */
+const PIXI_ENV_LOADERS = new Set(['loadEnvironmentExtensions', 'autoDetectEnvironment']);
 
 function isPixiEnvMember(name: string): boolean {
   return PIXI_ENV_PROPS.has(name) || name.startsWith('accessible') || (name.startsWith('on') && FEDERATED_EVENT.test(name.slice(2)));
@@ -250,6 +266,9 @@ function checkPixiEnv(ctx: Ctx, node: ts.Node): void {
       report(ctx, 'pixi-env', node, inScene);
     }
     if (name === 'eventMode' && ts.isShorthandPropertyAssignment(node.parent)) {
+      report(ctx, 'pixi-env', node, inScene);
+    }
+    if (PIXI_ENV_LOADERS.has(name)) {
       report(ctx, 'pixi-env', node, inScene);
     }
   }
@@ -2074,6 +2093,11 @@ const RED: Record<RuleId, readonly Fixture[]> = {
     // GSAP's PixiPlugin makes filters inside GSAP (critique O4).
     ['scene/motion/tween.ts', "import { PixiPlugin } from 'gsap/PixiPlugin';"],
     ['scene/executor.ts', "import { gsap, PixiPlugin } from 'gsap/all';"],
+    // Pixi's environment entry points and its loaders of them (X review M1): each would bring the skipped systems back.
+    ['scene/x.ts', "void import('pixi.js/browser');"],
+    ['scene/controller.ts', "import 'pixi.js/webworker';"],
+    ['scene/controller.ts', 'await loadEnvironmentExtensions(false);'],
+    ['scene/executor.ts', "import { autoDetectEnvironment as env } from 'pixi.js';\nawait env(true);"],
   ],
 };
 
@@ -2255,6 +2279,8 @@ const ALLOW: ReadonlyArray<readonly [RuleId, readonly Fixture[]]> = [
       // A DOM listener for the GPU context, and Pixi's texture upload, are no pointer API and no `.init(`.
       ['scene/controller.ts', "canvas.addEventListener('webglcontextlost', onLost);\ncanvas.style.touchAction = 'none';"],
       ['scene/controller.ts', 'app.renderer.texture.initSource(source);'],
+      // A comment and a string name the environment loader and entry point without importing or calling either.
+      ['scene/controller.ts', "// never loadEnvironmentExtensions(\nconst src = 'pixi.js/browser';"],
     ],
   ],
 ];
