@@ -3170,6 +3170,23 @@ and P; SH3a after SH2 once P frees `client/scripts/budget.ts` / `budget.test.ts`
 Ledger 1 leaves < 1.0 KB at a merge (none does on `597dded`, RULINGS 208). L2 stays shelved and the
 preload-priority lane carried.
 
+Changed by RULINGS 209-225 (as of `52e328e`; docs lane `docs-errata-14`, group B): the State column is the state as
+of `52e328e`, with each SHA from `git log --first-parent main`. Since `461424d` these merged: the docs lane
+`docs-errata-13` as `25c0031` (RULINGS 211); the lever P `lever-p-purchase-lazy` `3d120bc` (RULINGS 213); from the
+planned block, GM3 mech-use `7082a35` (RULINGS 217); the type-only lane GM3k `gm3k-mech-kernel-world` `3131844` (new,
+RULINGS 210 Q4; merged RULINGS 223); and the recovery lane `lazy-chunk-recovery` `8e099ee` (new, Q60, RULINGS 213-215;
+merged RULINGS 224). The docs commits `0bd20da`, `2b68954` (Q60, Q61), `f7a2bc6`, `651cfbf` (Q59) and `52e328e` (Q59,
+Q60, Q62) are not lanes. GM3's merge fired the lever trigger (RULINGS 217); the levers O5 and Y were designed and
+approved (RULINGS 221, 222); the recovery lane re-based the engine, so the trigger no longer holds and both are approved
+designs on the shelf (RULINGS 224). Running, all from `52e328e` (RULINGS 225): E6 `e6-money-holds` (client, lane C;
+new, the money-path follow-up of RULINGS 215, 221), GM3u mech-ribbon (client, lane A) and the docs lane
+`docs-errata-14` (in the server slot). "To go": no lane of this table; the rest of the planned block, in the one order
+of [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts): GM3p after GM3u;
+SH3a (P has merged, so `client/scripts/budget.ts` / `budget.test.ts` are free) and per-player GM6t when a client slot
+frees, their entry terms watched against Ledger 2's 1.070 KB (RULINGS 224); O5, then Y, only when Ledger 4 or Ledger 1
+leaves < 1.0 KB at a merge (none does on `8e099ee`, RULINGS 224). L2 stays shelved and the preload-priority lane
+carried.
+
 | Lane | Slot | State | Gate to start (merged) | Re-cut |
 |---|---|---|---|---|
 | L1 client-shell | client | merged `ea8a6a2` (`f6e2624` before the rewrite) | — | — |
@@ -3234,7 +3251,7 @@ preload-priority lane carried.
 | **LFL first-line** | client | merged `cec347c` (new, RULINGS 146; its cut ruled in RULINGS 149; merged RULINGS 155) | LBI (both hold `client/src/app/{boot,game}.ts`: RULINGS 142) | new (RULINGS 142, 146) |
 | **LRB reload-bounds** | client | merged `3c62a86` (new, RULINGS 156; merged RULINGS 157) | LFL (LBI's carry for the next `game.ts` + `meta.ts` holder: RULINGS 149 Q9, 156) | new (RULINGS 156) |
 | **L1 entry-summary** (`l1-entry-summary`: the entry lever L1, not L1 client-shell) | client | merged `eec24fe` (new, RULINGS 158: unshelved by RULINGS 142's return condition; merged RULINGS 159) | LRB (`client/src/app/{boot,game}.ts`, `client/src/arch.test.ts`: [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts)) | new (RULINGS 158) |
-| **The three plans' lanes** (engine GM1a-GM9r: 29 + GM5q if P2-b demands it; per-player GM6a-GM6d2: 12; shots SH1-SH12b: 16) | client / server | planned (adopted 2026-11-09, RULINGS 158). Changed by RULINGS 159-173 (as of `9a83251`; docs lane `docs-errata-10`, group B): GM6k merged `fd62933`, GM1a `ef8b4dc`, GM6s1 `81a15b0`, GM1b `03a00bc`; GM6s2 running (lock 22, RULINGS 170); the rest planned. Changed by RULINGS 174-182 (as of `9b4fd25`; docs lane `docs-errata-11`, group B): also merged GM6s2 `2815340`, GM1c `8c2fa03`, GM2a `9b4fd25`; GM1d (lock 11, RULINGS 180) and GM3w (lock 10, RULINGS 182) running; the rest planned. Changed by RULINGS 183-197 (as of `837b1ed`; docs lane `docs-errata-12`, group B): also merged GM1d `794181b`, GM3w `508bd36`, GM6a `23e1d31`, GM2b `1782d6d`, GM3m `a3f0678`, GM3c `837b1ed`; GM3s (lock 18, RULINGS 194, 195) and SH1 (lock 12, RULINGS 196) running; the engine-closure lever lane (new, RULINGS 195, 196) next after GM3s; the rest planned. Changed by RULINGS 198-209 (as of `461424d`; docs lane `docs-errata-13`, group B): also merged SH1 `2db33c3`, GM3s `65e10ad`, SH2 `7f45dee`; GM3 (the plan's lock 16 plus at most four carry files, RULINGS 209) running; the lever lane became the program X, then P (RULINGS 201): X merged `597dded`, P running (RULINGS 209); the rest planned | the one order: [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts) (GM1a and GM6k launched first, from the frozen designs, before this adoption merged: RULINGS 160) | new |
+| **The three plans' lanes** (engine GM1a-GM9r: 29 + GM5q if P2-b demands it; per-player GM6a-GM6d2: 12; shots SH1-SH12b: 16) | client / server | planned (adopted 2026-11-09, RULINGS 158). Changed by RULINGS 159-173 (as of `9a83251`; docs lane `docs-errata-10`, group B): GM6k merged `fd62933`, GM1a `ef8b4dc`, GM6s1 `81a15b0`, GM1b `03a00bc`; GM6s2 running (lock 22, RULINGS 170); the rest planned. Changed by RULINGS 174-182 (as of `9b4fd25`; docs lane `docs-errata-11`, group B): also merged GM6s2 `2815340`, GM1c `8c2fa03`, GM2a `9b4fd25`; GM1d (lock 11, RULINGS 180) and GM3w (lock 10, RULINGS 182) running; the rest planned. Changed by RULINGS 183-197 (as of `837b1ed`; docs lane `docs-errata-12`, group B): also merged GM1d `794181b`, GM3w `508bd36`, GM6a `23e1d31`, GM2b `1782d6d`, GM3m `a3f0678`, GM3c `837b1ed`; GM3s (lock 18, RULINGS 194, 195) and SH1 (lock 12, RULINGS 196) running; the engine-closure lever lane (new, RULINGS 195, 196) next after GM3s; the rest planned. Changed by RULINGS 198-209 (as of `461424d`; docs lane `docs-errata-13`, group B): also merged SH1 `2db33c3`, GM3s `65e10ad`, SH2 `7f45dee`; GM3 (the plan's lock 16 plus at most four carry files, RULINGS 209) running; the lever lane became the program X, then P (RULINGS 201): X merged `597dded`, P running (RULINGS 209); the rest planned. Changed by RULINGS 209-225 (as of `52e328e`; docs lane `docs-errata-14`, group B): also merged GM3 `7082a35`; outside the 57, the lever P `3d120bc`, GM3k (new, type-only, RULINGS 210 Q4) `3131844` and the recovery lane (new, Q60) `8e099ee`; the levers O5 and Y approved designs on the shelf (RULINGS 221, 222, 224); GM3u (lane A) and E6 (new, lane C; outside the 57) running (RULINGS 225); the rest planned | the one order: [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts) (GM1a and GM6k launched first, from the frozen designs, before this adoption merged: RULINGS 160) | new |
 
 There are 38 lanes: 12 merged, 2 running, 24 to go (changed by RULINGS 22, 23; it read "10 merged, 1 running, 1
 paused, 26 to go"); 6 are new from PUZZLES-PLAN, 3 (LDB0, LDB1, LDB2) from RULINGS 14/17 and 5 (LS1–LS4, N2) from
@@ -3282,6 +3299,12 @@ Changed by RULINGS 198-209 (as of `461424d`; docs lane `docs-errata-13`, group B
 `65e10ad` and SH2 `7f45dee` since `837b1ed`), 1 running (GM3), 40 to go, and GM5q only if P2-b demands it; plus the
 engine-closure lever program (RULINGS 201; not one of the 57): X merged (`597dded`), P running, O5 and Y only on the
 trigger.
+Changed by RULINGS 209-225 (as of `52e328e`; docs lane `docs-errata-14`, group B): 64 lanes in the table — 64 merged,
+0 running, 0 to go; plus the planned block of the three plans (57 lanes + GM5q) — 17 merged (GM3 `7082a35` since
+`461424d`), 1 running (GM3u), 39 to go, and GM5q only if P2-b demands it; plus, outside the 57, the engine-closure
+lever program (RULINGS 201): X and P merged (`597dded`, `3d120bc`), O5 and Y approved designs on the shelf, run only
+on the trigger (RULINGS 221, 222, 224); and three new lanes: GM3k (RULINGS 210 Q4; merged `3131844`), the recovery
+lane (Q60; merged `8e099ee`) and E6 (RULINGS 215, 221; running).
 
 **Launch preference** when several lanes are ready (critical path first; changed by STORIES-PLAN):
 - client (two slots): L3c (running), L5, L11, LS1, L7, L12, LW3, L14a, L10, L13, L14b, LP2 ∥ LX, LS4, D1, N1, N2, L15,
@@ -3363,6 +3386,15 @@ trigger.
   and P (`arch.test.ts`), SH3a after SH2 once P frees `client/scripts/budget.ts` / `budget.test.ts`; O5, then Y,
   before the next engine-adding cut only when Ledger 4 or Ledger 1 leaves < 1.0 KB at a merge (RULINGS 201, 208). The
   rest by the one order:
+  [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts).
+- Changed by RULINGS 209-225 (as of `52e328e`; docs lane `docs-errata-14`, group B), merged lanes dropped: no lane of
+  this table is left. From the planned block: server none (the server slot runs the docs lane `docs-errata-14`,
+  RULINGS 225). Client: GM3u (running, lane A) and E6 (running, lane C; a new lane, not of the block), both from
+  `52e328e` (RULINGS 225), since P, GM3, GM3k and the recovery lane merged; when a client slot frees, GM3p after GM3u
+  (`yields.ts`, `controls.test.ts`, the e2e; it also takes Q62's fix, RULINGS 224), SH3a (its `budget*` predecessors
+  merged) and per-player GM6t (after GM3s on `App.svelte`), the entry terms of SH3a and GM6t watched against Ledger 2
+  (RULINGS 224); O5, then Y, before the next engine-adding cut only when Ledger 4 or Ledger 1 leaves < 1.0 KB at a
+  merge (neither does on `8e099ee`, RULINGS 224). The rest by the one order:
   [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts).
 
 After L9 the server slot takes doc / narrative / client lanes with disjoint locks.
@@ -3513,6 +3545,20 @@ beside them.
   after SH3b on `budget.ts`, after SH3a → SH3c on `scripts/assets/manifest.ts`).
 - SH1, GM3s, SH2 and the lever X have merged (`2db33c3`, `65e10ad`, `7f45dee`, `597dded`), and the docs lane
   `docs-errata-12` (`0fb7018`).
+
+**Changed by RULINGS 209-225 — the critical path as of `52e328e`** (docs lane `docs-errata-14`, group B).
+- No lane of this table is left.
+- The whole plan's path is the planned block in its one order:
+  [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts).
+  No server lane is on it. GM3 has merged (`7082a35`, RULINGS 217), and so has GM3k (`3131844`, RULINGS 223), which
+  GM3b needs (`KernelWorld.mods` required), so the path starts at GM3u, which runs (RULINGS 225): GM3u → GM3p → GM3b →
+  GM4g → … (the rows of the one order). P has merged (`3d120bc`), so no lever stands before SH3a on `budget.ts`; O5 and
+  Y join the path only while the merge-time trigger holds (it does not on `8e099ee`: approved designs on the shelf,
+  RULINGS 221, 222, 224). E6 (running) is off the path: on the `game.ts` row it precedes O5 and SH5a. The shot chain
+  continues SH3a → SH3b (with SH3c after SH3a) beside it and joins at GM4g (GM4g's row: after SH3b on `budget.ts`,
+  after SH3a → SH3c on `scripts/assets/manifest.ts`).
+- The lever P, GM3, GM3k and the recovery lane have merged (`3d120bc`, `7082a35`, `3131844`, `8e099ee`), and the docs
+  lane `docs-errata-13` (`25c0031`).
 
 ### Lanes
 

@@ -23,23 +23,29 @@ done:      M3c (a6365a8), docs-errata-8 (be6c348), LRF (a93fe54), docs (d31f720,
            after docs-errata-12 (main 461424d): docs-errata-12 (0fb7018, RULINGS 199), shots SH1 (2db33c3, RULINGS
            201), docs 7b9dc6f (Q59 recorded, Q54's X checklist), GM3s (65e10ad, RULINGS 204), shots SH2 (7f45dee,
            RULINGS 207), lever X lever-x-pixi-env (597dded, RULINGS 208), docs 461424d (Q54, Q59)
-in flight: (as of 461424d; all three launched from 461424d, RULINGS 209) GM3 gm3-mech-use (lane A; the plan's lock 16:
-           mechanics/{data,rules}/use.ts, mechanics/use.test.ts, scripts/story/mechanics/use.ts,
-           mechanics/{data,rules}/index.ts, scripts/story/mechanics/index.ts, mechanics/rules/{core,writer}.ts,
-           explore/reduce.ts, cues/stage/motions.ts, scripts/story/playthrough.ts, explore/{explore,controller}.test.ts,
-           app/{yields,yields.test}.ts; plus at most four files pre-ruled for its carries only: scripts/story.ts,
-           mechanics/contract.ts, mechanics/rules/search.ts, mechanics/registry.test.ts), lever P
-           lever-p-purchase-lazy (lane C; lock app/{game,game.test}.ts, scripts/{budget,budget.test}.ts,
-           arch.test.ts, and with a named hunk only purchase/flow.ts, e2e/purchase.spec.ts), docs-errata-13 (docs
-           only, in the idle server slot)
-next:      GM3u after GM3 (yields.ts) and P (arch.test.ts); SH3a after SH2 (merged) once P frees budget.ts /
-           budget.test.ts; O5, then Y, only on the merge-time trigger (carried below)
+           after docs-errata-13 (main 52e328e): docs-errata-13 (25c0031, RULINGS 211), lever P lever-p-purchase-lazy
+           (3d120bc, RULINGS 213), docs 0bd20da / 2b68954 (Q60, Q61), GM3 gm3-mech-use (7082a35, RULINGS 217; the
+           trigger fired), docs f7a2bc6 / 651cfbf (Q59), GM3k gm3k-mech-kernel-world (3131844, RULINGS 223), the
+           recovery lane lazy-chunk-recovery (8e099ee, RULINGS 224; the trigger no longer holds), docs 52e328e (Q59,
+           Q60, Q62)
+in flight: (as of 52e328e; all three launched from 52e328e, RULINGS 225) E6 e6-money-holds (lane C; lock
+           app/{meta,meta.test,reload,game,game.test,boot}.ts, and with a named hunk only
+           e2e/{lazy-recovery,meta}.spec.ts, e2e/helpers.ts), GM3u gm3u-mech-ribbon (lane A; the plan's lock 13:
+           new ui/explore/Ribbon.svelte, new cues/controls.test.ts, new i18n/mechanics.ts,
+           ui/explore/{ExploreView,Inventory,LockPanel,DocumentReader}.svelte, ui/explore-view.svelte.ts,
+           app/{yields,yields.test}.ts, ui/explore/explore.svelte.test.ts, e2e/mechanics.spec.ts, arch.test.ts; plus
+           mechanics/use.test.ts, test-only, and named hunks its cut names), docs-errata-14 (docs only, in the server
+           slot)
+next:      GM3p after GM3u (yields.ts, controls.test.ts, the e2e; with Q62's fix, RULINGS 224); SH3a (P merged:
+           budget.ts / budget.test.ts free) and per-player GM6t (App.svelte, after GM3s) when a client slot frees,
+           their entry terms watched against Ledger 2 (1.070 KB left, RULINGS 224); O5, then Y, only on the
+           merge-time trigger (carried below)
 carried:   L2, the entry lever (shelved, RULINGS 142 / 158; return line: entry headroom < 0.5 KB br, §15 item 15);
            the preload-priority lane (RULINGS 152 Q14 (b); scene/{registry,preload}.ts, the scene/* tail);
-           the levers O5 and Y (Y with S folded in; RULINGS 201): each runs before the next engine-adding cut once
-           Ledger 4 or Ledger 1 leaves < 1.0 KB (none does on 597dded, RULINGS 208), and O5's read-only cut design
-           starts when GM3 reports an engine delta >= 0.505 KB (0.557 after P); probe G withdrawn by the path rule
-           (RULINGS 201; its return is a ruling at the queue's end)
+           the levers O5 and Y (Y with S folded in; RULINGS 201): approved designs on the shelf (O5 r2, RULINGS 221;
+           Y r2, RULINGS 222); each runs before the next engine-adding cut once Ledger 4 or Ledger 1 leaves < 1.0 KB
+           at a merge (none does on 8e099ee: 7.112 and 8.182 KB left, RULINGS 224); probe G withdrawn by the path
+           rule (RULINGS 201; its return is a ruling at the queue's end)
 stopped:   the character half of design-animation (RULINGS 132), replaced by design-shots (RULINGS 143)
 LFL's nine files: client/src/app/{boot,game,meta,game.test,meta.test}.ts, client/scripts/{budget,budget.test}.ts,
            client/e2e/perf.spec.ts, client/src/arch.test.ts (lfl-first-line/test_r2.md:85-86)
@@ -126,6 +132,29 @@ never both; locks checked disjoint at launch, RULINGS 209). GM3 started with eve
 GM3s, GM3m, GM1b) and after SH2, its never-beside on `playthrough.ts` (RULINGS 202). SH1 and SH2 hold no file now; SH3a,
 the next shot lane, waits for P on the `budget.ts` row. The rows below keep SH1, GM3s, SH2 and X as the predecessors
 they name; all four have merged.
+
+Changed by RULINGS 209-225 (as of `52e328e`; docs lane `docs-errata-14`, group B): the block above is the state at
+`52e328e` (SHAs from `git log --first-parent main`). `docs-errata-13`, lever P, GM3, GM3k and the recovery lane moved
+to `done:`, with the orchestrator's docs commits `0bd20da`, `2b68954`, `f7a2bc6`, `651cfbf` and `52e328e` (not lanes);
+the `in flight:` line read "(as of 461424d; all three launched from 461424d, RULINGS 209) GM3 gm3-mech-use (lane A; the
+plan's lock 16: mechanics/{data,rules}/use.ts, mechanics/use.test.ts, scripts/story/mechanics/use.ts,
+mechanics/{data,rules}/index.ts, scripts/story/mechanics/index.ts, mechanics/rules/{core,writer}.ts, explore/reduce.ts,
+cues/stage/motions.ts, scripts/story/playthrough.ts, explore/{explore,controller}.test.ts, app/{yields,yields.test}.ts;
+plus at most four files pre-ruled for its carries only: scripts/story.ts, mechanics/contract.ts,
+mechanics/rules/search.ts, mechanics/registry.test.ts), lever P lever-p-purchase-lazy (lane C; lock
+app/{game,game.test}.ts, scripts/{budget,budget.test}.ts, arch.test.ts, and with a named hunk only purchase/flow.ts,
+e2e/purchase.spec.ts), docs-errata-13 (docs only, in the idle server slot)", the `next:` line read "GM3u after GM3
+(yields.ts) and P (arch.test.ts); SH3a after SH2 (merged) once P frees budget.ts / budget.test.ts; O5, then Y, only on
+the merge-time trigger (carried below)", and the `carried:` line's lever item read "the levers O5 and Y (Y with S
+folded in; RULINGS 201): each runs before the next engine-adding cut once Ledger 4 or Ledger 1 leaves < 1.0 KB (none
+does on 597dded, RULINGS 208), and O5's read-only cut design starts when GM3 reports an engine delta >= 0.505 KB (0.557
+after P)". GM3 ran in lane A beside P (P's row: Beside GM3 or SH2), then beside the recovery lane in lane C (launched
+with GM3's files frozen, RULINGS 215), a pair the table does not list; GM3k followed GM3 in lane A beside the recovery
+lane, a pair its row lists (disjoint but for one line of `game.test.ts`, RULINGS 219 Q1). E6 and GM3u run beside each
+other, a pair the table does not list (locks checked disjoint at launch, RULINGS 225). GM3u started with every
+predecessor of its row merged (GM3, GM3s, the recovery lane on `i18n/{ru,en}.ts`); lever Y did not run before it, since
+the trigger does not hold (RULINGS 224). E6 follows the recovery lane on its files (E6's row). The rows below keep P,
+GM3, GM3k and the recovery lane as the predecessors they name; all four have merged.
 
 **The one order across the three designs (reconcile r1; RULINGS 143, 152, 153; design-shots §9.14 and I-2,
 adopted with one change; it replaces the paragraph "Animation and shot lanes" that earlier sections cite).** The **A(f)** placeholders of rounds 4-14 ("every lane of an adopted animation or shot design
