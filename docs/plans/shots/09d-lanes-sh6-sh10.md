@@ -156,8 +156,10 @@ here), e2e full.
 **Ruled since: RULINGS 201** (the estimate policy, [engine §11.1 The shared ledgers](../engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13)) — this lane's cut books its terms at E x R: its
 engine net (the loop +0.6, `flatten` -0.8) books **0** on the engine until it measures it, and `flatten` is growth on
 `scene-motion` (+0.8 x R); the `scene-motion` chunk at R (6.0 x 2.031 = 12.19) is flagged against its 8.0 LIMIT, so this
-cut quotes it first ([§10 Budgets and validation](10-budgets-and-validation.md#10-budgets-and-validation-summary)); no Pixi filter, Sprite mask or advanced blend mode without lever X's import-back (rule
-`pixi-env`).
+cut quotes it at its cut, after SH3b's, which quotes it first when it adds the row ([§9.4 SH3b](09b-lanes-sh3a-sh3b.md#94-sh3b-shot-budget-client-budget);
+[§10 Budgets and validation](10-budgets-and-validation.md#10-budgets-and-validation-summary); Changed by RULINGS 211 (as of `52e328e`; docs lane
+`docs-errata-14`, group A): it read "so this cut quotes it first"); no Pixi filter, Sprite mask or advanced blend mode
+without lever X's import-back (rule `pixi-env`).
 
 **Order:**
 - After SH6, SH3b, GM3s (the `sceneCues` seam), GM3m (`FRAME_OPEN_MS`) and GM3p (the frame edge `frameShown`; merged before SH5a's GM3b in any case).

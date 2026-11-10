@@ -15,6 +15,11 @@ Changed by RULINGS 198-209 (as of `461424d`; docs lane `docs-errata-13`, group B
 (`65e10ad`) and shots SH1 (`2db33c3`) and SH2 (`7f45dee`), and the engine-closure lever X (`597dded`; the lever lane
 became the program X, then P, RULINGS 201); engine GM3 and lever P run (RULINGS 209); next, engine GM3u after GM3 and
 shots SH3a after SH2, both after P on a shared file; the rest is planned, in the one order below.
+Changed by RULINGS 209-225 (as of `52e328e`; docs lane `docs-errata-14`, group B): built since also engine GM3
+(`7082a35`) and GM3k (`3131844`; new, type-only, RULINGS 210 Q4), the lever P (`3d120bc`) and the recovery lane
+(`8e099ee`; new, Q60); the levers O5 and Y are approved designs on the shelf (RULINGS 221, 222, 224); engine GM3u and
+E6 (new, the money-path follow-up) run (RULINGS 225); next, engine GM3p after GM3u, shots SH3a and per-player GM6t;
+the rest is planned, in the one order below.
 
 - [engine](engine/README.md) — the mechanics engine: module contract, world data, puzzle types, the cue union and bus, lanes GM1a-GM9r.
 - [per-player](per-player/README.md) — per-player codes and labels on the art: the server half, the values store, labels, lanes GM6a-GM6d2.

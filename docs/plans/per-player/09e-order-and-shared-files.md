@@ -26,6 +26,9 @@ as of 837b1ed: GM6a merged 23e1d31 (RULINGS 188; D5.1 adopted); engine GM1d 7941
               GM3m a3f0678 and GM3c 837b1ed merged; engine GM3s and shots SH1 running; no lane of this plan runs
 as of 461424d: no lane of this plan runs; engine GM3s 65e10ad, shots SH1 2db33c3 and SH2 7f45dee, lever X 597dded
               merged; engine GM3 and lever P running (RULINGS 209); GM6t's App.svelte edge (GM3s) is met
+as of 52e328e: no lane of this plan runs; engine lever P 3d120bc, GM3 7082a35, GM3k 3131844 and the recovery lane
+              8e099ee merged; engine GM3u and E6 running (RULINGS 225); lever O5 on the shelf (RULINGS 224), so
+              GM6t's App.svelte edge stays met
 reconcile r2: (E-P26, engine.md §12 "Order and conflicts" engine §12 Order and conflicts owns every row below; mirrored)
 reconcile:    scene/*: M3c, LHJ (merged) -> GM2a's field -> GM6a -> SH1 -> SH4 -> SH5a -> SH5b -> SH6 -> SH7 -> SH8 ->
               {GM6d1, SH9, SH10, SH12a, SH12b, the carried preload-priority lane} one at a time by launch (GM6a before
@@ -94,6 +97,16 @@ RULINGS 208) and P on that file (engine §12's `budget.ts` row). Shots SH2 merge
 `story.ts` row's never-beside with GM6c1a / GM6c1b no longer holds anything back. No lane of this plan runs: GM6t's `App.svelte`
 predecessor has merged, but no ruling places it yet and both client slots run engine GM3 and lever P (RULINGS 209);
 GM6c1a still waits for GM4 on the world chain. The server slot runs the docs lane `docs-errata-13` (RULINGS 209).
+
+Changed by RULINGS 209-225 (as of `52e328e`; docs lane `docs-errata-14`, group B): the block's `as of 52e328e:` row is
+new (SHAs from `git log --first-parent main`). Engine's lever P merged as `3d120bc` (RULINGS 213) and the recovery lane
+as `8e099ee` (RULINGS 224), so on engine §12's `game.ts` row the holders after SH1 are E6 (running, lane C, RULINGS
+225), then O5 only while the trigger holds, then SH5a. On the `budget.ts` row SH3a now follows P directly: the recovery
+lane took no `budget*` hunk (RULINGS 218 Q6), and O5 and Y are approved designs on the shelf (RULINGS 221, 222, 224).
+The `App.svelte` row's GM6t keeps its GM3s edge met; O5 comes before it only if the trigger holds again at a merge
+(engine §12's `App.svelte` row). No lane of this plan runs: GM6t has no ruled slot yet (engine GM3u and E6 hold both
+client slots, RULINGS 225), and its entry term is watched against Ledger 2's 1.070 KB at its cut (RULINGS 224); GM6c1a
+still waits for GM4 on the world chain. The server slot runs the docs lane `docs-errata-14` (RULINGS 225).
 
 Until GM6d2, per-player codes show in documents, item descriptions, ink lines, choices and the tier-3 hint (synthesis
 §6.4 item 4), which needs no label on the art.

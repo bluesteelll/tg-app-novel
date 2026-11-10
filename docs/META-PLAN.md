@@ -899,7 +899,11 @@ deletion on request). Not stored, ever: `last_name`, `username`, `photo_url`, `i
     the first line (`client/src/app/boot.ts:576`). The three services ride in its chunk (only `app/meta.ts` imports
     them); the decoders and `createMetaEndpoints` stay in the entry (`boot.ts:7`, `:279`).
   - The meta gate (`createMetaGate`, `boot.ts:169-253`) keeps one import in flight; a failed import is re-imported by
-    the next tap that needs the controller, never on a timer (`ready` :180-198, `tap` :203-222). An ending awaits the
+    the next tap that needs the controller, never on a timer (`ready` :180-198, `tap` :203-222). Changed by RULINGS 213, 214, 224 (as of `52e328e`; docs lane `docs-errata-14`, group A): that
+    re-import happens only where the engine's module map lets it (Chromium-based WebViews before 156 keep a failed
+    `import()`); every lazy failure feeds boot's recovery (`vite:preloadError`), and a load that fails again after the
+    evidence (`/api/health` answers, the chunk's URL fetches 2xx) restarts the page once per build at a safe point
+    (Q60, merged `8e099ee`; `createPageRecovery`, `client/src/app/boot.ts:446`). An ending awaits the
     import in flight (`port.onEnding` :224-239); `hintPort()` is null until the chunk lands (:240).
   - The chunk has its own row, `meta controller chunk (br)` ≤ 5.0 KB br (cut Q3; `client/scripts/budget.ts:112`,
     `:184`), and "JS before the first line" counts it (`budget.ts:503`): 84 rows. Measured at the merge
