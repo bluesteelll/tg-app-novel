@@ -19,7 +19,7 @@ import type { SearchOptions } from '../../src/mechanics/rules/search.ts';
 import { PUZZLE_TYPES } from '../../src/puzzles/rules/index.ts';
 import type { PuzzleTypeData, PuzzleTypes } from '../../src/puzzles/rules/index.ts';
 import { assetIndex, decodeAssetCatalog, decodeCast } from '../../src/story/catalog.ts';
-import type { AssetCatalog } from '../../src/story/catalog.ts';
+import type { AssetCatalog, Cast } from '../../src/story/catalog.ts';
 import type { ChapterId, KnotName, PuzzleLocalId, SectionId, VarName } from '../../src/story/staging.ts';
 import { decodeWorldSource, toPublic } from '../../src/world/decode.ts';
 import type { DecodeOptions, WorldIssue } from '../../src/world/decode.ts';
@@ -40,6 +40,7 @@ import { playChapter } from './playthrough.ts';
 import { PUZZLE_LINTS } from './puzzles/index.ts';
 import type { PuzzleLintCode, PuzzleTypeLint } from './puzzles/index.ts';
 import { MAX_ANSWER_LEN, answerLenFindings, answerLenIssues } from './puzzles/shape.ts';
+import { buildFlow, crossCheck } from './shots/flow.ts';
 import { decodeWorldFile, lintWorld, worldLines } from './world.ts';
 import type { SectionReport, VarLiteral } from './world.ts';
 
@@ -1697,14 +1698,19 @@ test('story: the hotspot minimum is one constant', () => {
 // decoded `mods` (b1). The fixture helpers restate play.test.ts's; this file's program has the node types the story
 // tool's modules need, which src/mechanics/use.test.ts's has not.
 
-test("use: a played chapter takes a use edge only with the world's mods", () => {
+/** The committed cast, decoded against the committed catalog. */
+function committedCast(): Cast {
   const cast = decodeCast(readRepoJson('story/cast.json'), CATALOG);
   if (!cast.ok) {
     throw new Error('invariant: the committed cast decodes');
   }
-  // The hall's door is a zero-slot lock that only the statue's rule unlocks; the rule's story runs and hands back.
+  return cast.value;
+}
+
+/** The hall's door is a zero-slot lock that only the statue's rule unlocks; the rule's story runs and hands back. */
+function statueWorld(): WorldSource {
   const label = (owner: string): Json => ({ id: `ch1.${owner}.u${(counter++).toString(36).padStart(3, '0')}`, ru: 'Текст' });
-  const spot = (h: Json, i: number): Json => ({ label: label('s'), rect: [100 + i * 300, 300, 200, 200], ...h });
+  const laid = (h: Json, i: number): Json => ({ label: label('s'), rect: [100 + i * 300, 300, 200, 200], ...h });
   const raw = {
     format: 1,
     items: { key: { name: label('key'), desc: label('key'), glyph: 'key' } },
@@ -1723,7 +1729,7 @@ test("use: a played chapter takes a use edge only with the world's mods", () => 
               { id: 'key', kind: 'take', gives: { item: 'key' }, prop: null, then: [] },
               { id: 'statue', kind: 'object', lock: null, then: [], look: null, prop: null, uses: [{ item: 'key', do: [{ unlock: 'hall.door' }, { story: 'statue_voice' }] }] },
               { id: 'door', kind: 'exit', to: { story: 'after' }, lock: { slots: [], puzzle: null, locked: label('s'), onOpen: [], onFail: [] }, sfx: null },
-            ].map(spot),
+            ].map(laid),
           },
         },
       },
@@ -1733,7 +1739,12 @@ test("use: a played chapter takes a use edge only with the world's mods", () => 
   if (!src.ok) {
     throw new Error(`invariant: the fixture world decodes: ${JSON.stringify(src.error)}`);
   }
-  const files = new Map([
+  return src.value;
+}
+
+/** The chapter that explores the statue world: `statue_voice` is entered only by the rule's `story`. */
+function statueChapter(): { sources: ReadonlyMap<string, string>; files: readonly string[]; json: string } {
+  const sources = new Map([
     [GLOBALS_PATH, 'VAR g_x = 0\n'],
     [
       CH1.entry,
@@ -1755,33 +1766,58 @@ test("use: a played chapter takes a use edge only with the world's mods", () => 
       ].join('\n'),
     ],
   ]);
-  const compiled = compileChapter(CH1, (key) => files.get(key) ?? null).compiled;
+  const compiled = compileChapter(CH1, (key) => sources.get(key) ?? null).compiled;
   if (compiled === null) {
     throw new Error('invariant: the fixture compiles');
   }
-  const graph = buildGraph({ chapter: CH1, files: compiled.files, sources: files, assets: ASSETS }).graph;
-  const play = (world: KernelWorld) =>
-    playChapter({
-      chapter: CH1,
-      json: compiled.json,
-      graph,
-      assets: ASSETS,
-      cast: cast.value,
-      en: new Map(),
-      staticIds: new Set(graph.lines.map((l) => l.id)),
-      allow: new Map(),
-      carry: null,
-      runs: 5,
-      world,
-    });
+  return { sources, files: compiled.files, json: compiled.json };
+}
+
+/** Five seeded runs of the statue chapter over `world`. */
+function playStatue(graph: ChapterGraph, json: string, world: KernelWorld): ReturnType<typeof playChapter> {
+  return playChapter({
+    chapter: CH1,
+    json,
+    graph,
+    assets: ASSETS,
+    cast: committedCast(),
+    en: new Map(),
+    staticIds: new Set(graph.lines.map((l) => l.id)),
+    allow: new Map(),
+    carry: null,
+    runs: 5,
+    world,
+  });
+}
+
+test("use: a played chapter takes a use edge only with the world's mods", () => {
+  const src = statueWorld();
+  const ch = statueChapter();
+  const graph = buildGraph({ chapter: CH1, files: ch.files, sources: ch.sources, assets: ASSETS }).graph;
   // With the decoded `mods` every run uses the key on the statue, plays its voice and leaves through the door.
-  const withMods = play({ ...toPublic(src.value), mods: src.value.mods });
+  const withMods = playStatue(graph, ch.json, { ...toPublic(src), mods: src.mods });
   expect(withMods.play, JSON.stringify(withMods.findings)).toMatchObject({ ended: 5, failed: 0 });
   expect([...withMods.play.visited]).toEqual(['start', 'statue_voice', 'after']);
   // The public body alone has no rules: the door never opens and `after` is never entered.
-  const without = play(toPublic(src.value));
+  const without = playStatue(graph, ch.json, toPublic(src));
   expect(without.play.ended).toBe(0);
   expect([...without.play.visited]).not.toContain('after');
+});
+
+test('use: a knot a rule enters is in the graph, its seeds and the shot flow', () => {
+  const src = statueWorld();
+  const world: KernelWorld = { ...toPublic(src), mods: src.mods };
+  const ch = statueChapter();
+  const g = buildGraph({ chapter: CH1, files: ch.files, sources: ch.sources, assets: ASSETS, world: { kind: 'ok', body: world } });
+  // The rule's knot is an event of the hall (RULINGS 212 Q3): reachable from the yield, seeded with the hall's stage.
+  expect(g.findings.filter((f) => f.code === 'graph/unreachable-knot' || f.code.startsWith('explore/'))).toEqual([]);
+  const knot = 'statue_voice' as KnotName; // the fixture's knot
+  expect([g.graph.sections?.seeds.get(knot), g.graph.sections?.rooms.get(knot)]).toEqual([['bg/hall'], { events: ['hall'], leaves: [] }]);
+  // The seeded runs enter it, and the shot flow has every transition they took.
+  const r = playStatue(g.graph, ch.json, world);
+  expect([...r.play.visited]).toContain('statue_voice');
+  const flow = buildFlow({ chapter: CH1.id, files: ch.files, sources: ch.sources, graph: g.graph, assets: ASSETS, cast: committedCast(), world });
+  expect(crossCheck(flow.flow, r.play.transitions, CH1.entry)).toEqual([]);
 });
 
 // ---------------------------------------------------------------------------------------------------------------

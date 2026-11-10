@@ -346,7 +346,8 @@ function worldRef(w: ChapterWorld | undefined): WorldRef {
   if (w === undefined || w.kind === 'none') {
     return { kind: 'none' };
   }
-  return w.kind === 'invalid' ? { kind: 'invalid' } : { kind: 'ok', body: toPublic(w.source) };
+  // The body carries the decoded `mods`: a section's module data names knots the graph must see (RULINGS 212 Q3).
+  return w.kind === 'invalid' ? { kind: 'invalid' } : { kind: 'ok', body: { ...toPublic(w.source), mods: w.source.mods } };
 }
 
 /**

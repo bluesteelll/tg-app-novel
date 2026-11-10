@@ -14,7 +14,7 @@ import type { HotspotKey, ItemId, RoomId } from '../../../src/world/types.ts';
 import type { Finding, Severity } from '../lint.ts';
 import { condFindings } from './conditions.ts';
 import type { CondSite } from './conditions.ts';
-import type { WorldLint, WorldLintInput } from './index.ts';
+import type { StoryList, StoryWalker, WorldLint, WorldLintInput } from './index.ts';
 import type { ModuleText, TextWalker } from './texts.ts';
 
 /**
@@ -40,6 +40,25 @@ export const USE_TEXTS: TextWalker<UseData> = (w, d, at) => {
       const refuse = own(d.refuse.rooms, rid);
       if (refuse !== undefined) {
         out.push({ text: refuse, path: `${at.room(rid)}.refuse`, role: 'toast', reach: [] });
+      }
+    }
+  }
+  return out;
+};
+
+/** The knots each rule of a target in S enters (the `story` effects of its `do`), with the target's room. */
+export const USE_STORIES: StoryWalker<UseData> = (w, d, section) => {
+  const ix = worldIndex(w);
+  const out: StoryList[] = [];
+  for (const t of targetsOf(d)) {
+    const entry = ix.hotspots.get(t.key);
+    if (entry?.section !== section) {
+      continue;
+    }
+    for (const r of t.rules) {
+      const knots = r.do.flatMap((e) => ('story' in e ? [e.story] : []));
+      if (knots.length > 0) {
+        out.push({ room: entry.room, knots });
       }
     }
   }

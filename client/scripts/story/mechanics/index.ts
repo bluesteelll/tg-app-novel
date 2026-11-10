@@ -1,16 +1,16 @@
 // The world lint registry (engine plan §3.2 "Lint codes"; build only): every mechanic's lint pass the story gate runs
 // over a chapter world, each with its own codes, so no lane adds to LINT_CODES (lint.ts) or the DSL's code table; and
-// beside it the module text walkers (§3.2 "Module texts"). Pure, no node:*: world.ts imports it and scan-dist.ts imports
-// world.ts. Its imports from lint.ts are `import type`, erased at run time, so the value graph is world.ts -> index.ts
-// -> the lint files with no edge back. Neither it nor any file in this directory (the lint files, texts.ts) imports
+// beside it the module text walkers (§3.2 "Module texts") and story walkers (graph.ts reads those). Pure, no node:*:
+// world.ts and graph.ts import it and scan-dist.ts imports world.ts. Its imports from lint.ts are `import type`, erased
+// at run time, so the value graph is world.ts (or graph.ts) -> index.ts -> the lint files with no edge back. Neither it nor any file in this directory (the lint files, texts.ts) imports
 // anything from world.ts, not even a type: lint.ts's `Finding` takes this module's codes, so the app program
 // (src/story/dsl-doc.test.ts -> lint.ts) compiles every file this one reaches, and world.ts type-imports emit.ts, which
 // imports node:crypto. Each module lane appends its entries.
 import type { DataOf, MechanicId } from '../../../src/mechanics/contract.ts';
 import type { MECHANIC_DATA } from '../../../src/mechanics/data/index.ts';
 import type { AssetCatalog } from '../../../src/story/catalog.ts';
-import type { KnotName, LineId, PuzzleLocalId, VarName } from '../../../src/story/staging.ts';
-import type { WorldSource } from '../../../src/world/types.ts';
+import type { KnotName, LineId, PuzzleLocalId, SectionId, VarName } from '../../../src/story/staging.ts';
+import type { RoomId, WorldPublicBody, WorldSource } from '../../../src/world/types.ts';
 import type { Finding, Severity, SourceChapter } from '../lint.ts';
 import { SHAPE_LINT } from '../puzzles/shape.ts';
 import { CLUES_LINT } from './clues.ts';
@@ -18,7 +18,7 @@ import { CONDITIONS_LINT } from './conditions.ts';
 import { CORE_LINT } from './core.ts';
 import { TEXTS_LINT } from './texts.ts';
 import type { TextWalker } from './texts.ts';
-import { USE_LINT, USE_TEXTS } from './use.ts';
+import { USE_LINT, USE_STORIES, USE_TEXTS } from './use.ts';
 
 /** world.ts's `VarLiteral`, restated (see the header); world.test.ts pins the two to one type. */
 type VarLiteral = 'int' | 'float' | 'bool' | 'string' | 'other';
@@ -61,6 +61,19 @@ export const MECHANIC_LINTS = [CORE_LINT, CLUES_LINT, SHAPE_LINT, CONDITIONS_LIN
  * an entry fails `check`); null: the module owns no text, and `world/text-unwalked` refuses one in its data.
  */
 export const MECHANIC_TEXTS: { readonly [M in (typeof MECHANIC_DATA)[number] as M['id']]: TextWalker<DataOf<M>> | null } = { core: null, use: USE_TEXTS };
+
+/** One list of effects a module's data fires in a section, with its room: the story knots it enters, in fire order. */
+export type StoryList = { readonly room: RoomId; readonly knots: readonly KnotName[] };
+
+/** A module's story walker: every list of effects its own decoded data `d` (= `w.mods[id]`) fires in section S. */
+export type StoryWalker<D> = (w: WorldPublicBody, d: D, section: SectionId) => readonly StoryList[];
+
+/**
+ * Each data module's story walker (RULINGS 212 Q3), exhaustive over MECHANIC_DATA ids (an id without an entry fails
+ * `check`); null: its data enters no knot. graph.ts names each knot an event of its room, so the knot graph, the stage
+ * seeds and the shot flow see the knots a section's module data enters, as they see the kernel's `story` effects.
+ */
+export const MECHANIC_STORIES: { readonly [M in (typeof MECHANIC_DATA)[number] as M['id']]: StoryWalker<DataOf<M>> | null } = { core: null, use: USE_STORIES };
 
 type CodesOf<L> = L extends { readonly codes: infer C } ? keyof C & string : never;
 /** Every code of every MECHANIC_LINTS entry. */
