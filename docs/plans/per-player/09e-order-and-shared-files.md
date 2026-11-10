@@ -24,6 +24,8 @@ as of 9b4fd25: GM6s2 merged 2815340 (RULINGS 176): the server chain GM6k -> GM6s
               8c2fa03 and GM2a 9b4fd25 merged, GM1d and GM3w running; GM6a next when a client slot frees (RULINGS 182)
 as of 837b1ed: GM6a merged 23e1d31 (RULINGS 188; D5.1 adopted); engine GM1d 794181b, GM3w 508bd36, GM2b 1782d6d,
               GM3m a3f0678 and GM3c 837b1ed merged; engine GM3s and shots SH1 running; no lane of this plan runs
+as of 461424d: no lane of this plan runs; engine GM3s 65e10ad, shots SH1 2db33c3 and SH2 7f45dee, lever X 597dded
+              merged; engine GM3 and lever P running (RULINGS 209); GM6t's App.svelte edge (GM3s) is met
 reconcile r2: (E-P26, engine.md §12 "Order and conflicts" engine §12 Order and conflicts owns every row below; mirrored)
 reconcile:    scene/*: M3c, LHJ (merged) -> GM2a's field -> GM6a -> SH1 -> SH4 -> SH5a -> SH5b -> SH6 -> SH7 -> SH8 ->
               {GM6d1, SH9, SH10, SH12a, SH12b, the carried preload-priority lane} one at a time by launch (GM6a before
@@ -82,6 +84,16 @@ lane of this plan; it runs the docs lane `docs-errata-12` (RULINGS 197). GM3c me
 texts:` row's "GM6c1a after GM3c" is met; GM6c1a still waits for GM4 on the world chain. The `App.svelte` row's GM6t
 follows GM3s, which runs (RULINGS 194, 195). The status block of the one order is
 [engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts).
+
+Changed by RULINGS 198-209 (as of `461424d`; docs lane `docs-errata-13`, group B): the block's `as of 461424d:` row is
+new (SHAs from `git log --first-parent main`). Shots SH1 merged as `2db33c3` (RULINGS 201), so the `scene/*` row's next
+holder is SH4, and the `game.ts` row's next holder after SH1 is engine's lever P (running, RULINGS 209; engine §12's
+`game.ts` row: P after SH1, before SH5a). Engine GM3s merged as `65e10ad` (RULINGS 204), so the `App.svelte` row's GM6t
+edge is met and the `budget.ts` row's `{SH3a, GM3s}` pair is down to SH3a, which follows the levers X (merged `597dded`,
+RULINGS 208) and P on that file (engine §12's `budget.ts` row). Shots SH2 merged as `7f45dee` (RULINGS 207), so the
+`story.ts` row's never-beside with GM6c1a / GM6c1b no longer holds anything back. No lane of this plan runs: GM6t's `App.svelte`
+predecessor has merged, but no ruling places it yet and both client slots run engine GM3 and lever P (RULINGS 209);
+GM6c1a still waits for GM4 on the world chain. The server slot runs the docs lane `docs-errata-13` (RULINGS 209).
 
 Until GM6d2, per-player codes show in documents, item descriptions, ink lines, choices and the tier-3 hint (synthesis
 §6.4 item 4), which needs no label on the art.
