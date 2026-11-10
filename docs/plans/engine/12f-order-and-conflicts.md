@@ -28,24 +28,28 @@ done:      M3c (a6365a8), docs-errata-8 (be6c348), LRF (a93fe54), docs (d31f720,
            trigger fired), docs f7a2bc6 / 651cfbf (Q59), GM3k gm3k-mech-kernel-world (3131844, RULINGS 223), the
            recovery lane lazy-chunk-recovery (8e099ee, RULINGS 224; the trigger no longer holds), docs 52e328e (Q59,
            Q60, Q62)
-in flight: (as of 52e328e; all three launched from 52e328e, RULINGS 225) E6 e6-money-holds (lane C; lock
-           app/{meta,meta.test,reload,game,game.test,boot}.ts, and with a named hunk only
-           e2e/{lazy-recovery,meta}.spec.ts, e2e/helpers.ts), GM3u gm3u-mech-ribbon (lane A; the plan's lock 13:
-           new ui/explore/Ribbon.svelte, new cues/controls.test.ts, new i18n/mechanics.ts,
-           ui/explore/{ExploreView,Inventory,LockPanel,DocumentReader}.svelte, ui/explore-view.svelte.ts,
-           app/{yields,yields.test}.ts, ui/explore/explore.svelte.test.ts, e2e/mechanics.spec.ts, arch.test.ts; plus
-           mechanics/use.test.ts, test-only, and named hunks its cut names), docs-errata-14 (docs only, in the server
-           slot)
-next:      GM3p after GM3u (yields.ts, controls.test.ts, the e2e; with Q62's fix, RULINGS 224); SH3a (P merged:
-           budget.ts / budget.test.ts free) and per-player GM6t (App.svelte, after GM3s) when a client slot frees,
-           their entry terms watched against Ledger 2 (1.070 KB left, RULINGS 224); O5, then Y, only on the
-           merge-time trigger (carried below)
+           after docs-errata-14 (main 0b91acc): docs-errata-14 (086d81c, RULINGS 227), E6 e6-money-holds (d5e04ef,
+           RULINGS 228; the trigger fired again), docs 36dd14a (Q63), GM3u gm3u-mech-ribbon (33b4f8d, RULINGS 230;
+           Q62 fixed; the trigger no longer holds), docs 223a012 (Q62), the Q63 fix fix-vitest-fs-cache (340f47c,
+           RULINGS 232), docs 8d388ba (Q63), lever O5 lever-o5-overlays (9a0ae2d, RULINGS 234; a lane in flight,
+           RULINGS 230), docs b831b05 (Q64, Q65) / 262d144 (Q54, Q61), the Q64 fix fix-paywall-reopen (d820803,
+           RULINGS 236), docs 0b91acc (Q64, Q66, Q54)
+in flight: (as of 0b91acc) GM3p gm3p-mech-puzzle-cues (lane A; launched from 8d388ba, RULINGS 232, its implement
+           stage after O5's merge, RULINGS 234; lock 12: puzzles/ui/{CodeLock,OrderPuzzle}.svelte,
+           ui/puzzles/{PuzzleHost,HintLadder}.svelte, ui/puzzle-view.svelte.ts, app/{yields,yields.test}.ts,
+           ui/puzzles/puzzle-host.svelte.test.ts, puzzles/ui/puzzle-types.svelte.test.ts, cues/controls.test.ts,
+           e2e/mechanics.spec.ts, new requests.test.ts), docs-errata-15 (launched from 0b91acc, RULINGS 237; docs
+           only, in the server slot); lane C free
+next:      GM3b after GM3p (yields.ts, the e2e), in lane C with the trigger checked at its launch (RULINGS 237); SH3a
+           (O5 merged: budget.ts / budget.test.ts free) and per-player GM6t (App.svelte, O5 merged) when a client
+           slot frees, their entry terms watched against Ledger 2 (1.331 KB left on d820803, RULINGS 236); Y only on
+           the merge-time trigger (carried below)
 carried:   L2, the entry lever (shelved, RULINGS 142 / 158; return line: entry headroom < 0.5 KB br, §15 item 15);
            the preload-priority lane (RULINGS 152 Q14 (b); scene/{registry,preload}.ts, the scene/* tail);
-           the levers O5 and Y (Y with S folded in; RULINGS 201): approved designs on the shelf (O5 r2, RULINGS 221;
-           Y r2, RULINGS 222); each runs before the next engine-adding cut once Ledger 4 or Ledger 1 leaves < 1.0 KB
-           at a merge (none does on 8e099ee: 7.112 and 8.182 KB left, RULINGS 224); probe G withdrawn by the path
-           rule (RULINGS 201; its return is a ruling at the queue's end)
+           the lever Y (with S folded in; RULINGS 201): an approved design on the shelf (Y r2, RULINGS 222); it runs
+           before the next engine-adding cut once Ledger 4 or Ledger 1 leaves < 1.0 KB at a merge (none does on
+           d820803: 9.061 and 10.392 KB left, RULINGS 234, 236); the trigger gates launches only (RULINGS 230);
+           probe G withdrawn by the path rule (RULINGS 201; its return is a ruling at the queue's end)
 stopped:   the character half of design-animation (RULINGS 132), replaced by design-shots (RULINGS 143)
 LFL's nine files: client/src/app/{boot,game,meta,game.test,meta.test}.ts, client/scripts/{budget,budget.test}.ts,
            client/e2e/perf.spec.ts, client/src/arch.test.ts (lfl-first-line/test_r2.md:85-86)
@@ -166,6 +170,36 @@ other, a pair the table does not list (locks checked disjoint at launch, RULINGS
 predecessor of its row merged (GM3, GM3s; its lock holds no `i18n/{ru,en}.ts`, RULINGS 225); lever Y did not run before it, since
 the trigger does not hold (RULINGS 224). E6 follows the recovery lane on its files (E6's row). The rows below keep P,
 GM3, GM3k and the recovery lane as the predecessors they name; all four have merged.
+
+Changed by RULINGS 225-237 (as of `0b91acc`; docs lane `docs-errata-15`, group B): the block above is the state at
+`0b91acc` (SHAs from `git log --first-parent main`). `docs-errata-14`, E6, GM3u, the Q63 fix, lever O5 and the Q64 fix
+moved to `done:`, with the orchestrator's docs commits `36dd14a`, `223a012`, `8d388ba`, `b831b05`, `262d144` and
+`0b91acc` (not lanes); the `in flight:` line read "(as of 52e328e; all three launched from 52e328e, RULINGS 225) E6
+e6-money-holds (lane C; lock app/{meta,meta.test,reload,game,game.test,boot}.ts, and with a named hunk only
+e2e/{lazy-recovery,meta}.spec.ts, e2e/helpers.ts), GM3u gm3u-mech-ribbon (lane A; the plan's lock 13: new
+ui/explore/Ribbon.svelte, new cues/controls.test.ts, new i18n/mechanics.ts,
+ui/explore/{ExploreView,Inventory,LockPanel,DocumentReader}.svelte, ui/explore-view.svelte.ts,
+app/{yields,yields.test}.ts, ui/explore/explore.svelte.test.ts, e2e/mechanics.spec.ts, arch.test.ts; plus
+mechanics/use.test.ts, test-only, and named hunks its cut names), docs-errata-14 (docs only, in the server slot)", the
+`next:` line read "GM3p after GM3u (yields.ts, controls.test.ts, the e2e; with Q62's fix, RULINGS 224); SH3a (P merged:
+budget.ts / budget.test.ts free) and per-player GM6t (App.svelte, after GM3s) when a client slot frees, their entry
+terms watched against Ledger 2 (1.070 KB left, RULINGS 224); O5, then Y, only on the merge-time trigger (carried
+below)", and the `carried:` line's lever item read "the levers O5 and Y (Y with S folded in; RULINGS 201): approved
+designs on the shelf (O5 r2, RULINGS 221; Y r2, RULINGS 222); each runs before the next engine-adding cut once Ledger 4
+or Ledger 1 leaves < 1.0 KB at a merge (none does on 8e099ee: 7.112 and 8.182 KB left, RULINGS 224)". GM3u's lock was
+18, not the plan's 13 (RULINGS 226), and it took Q62's fix, so GM3p takes none (RULINGS 226, 230). E6's merge fired the
+trigger (RULINGS 228), so O5 left the shelf and ran in lane C; GM3u's merge ended the trigger, and O5 continued as a
+lane in flight (RULINGS 230) and merged. The Q63 fix (new, Q63; 2 files: `vite.config.ts`, new
+`scripts/test-config.test.ts`; RULINGS 232) and the Q64 fix (new, Q64; 8 files: `app/{game,game.test}.ts`,
+`ui/{App,DialogueBox}.svelte`, `ui/state.svelte.ts`, `ui/typewriter.svelte.test.ts`, `e2e/{purchase,overlays}.spec.ts`
+by hunk; RULINGS 234-236) are fix lanes no row below names; the Q64 fix followed O5 on `game.ts`, `App.svelte` and
+`ui/state.svelte.ts` (those rows). Beside pairs as they ran, none
+listed by the table (locks checked disjoint at each launch): E6 and GM3u (RULINGS 225); GM3u and the Q63 fix lane, with
+O5's read-only cut and critique (RULINGS 228, 229); O5's implement stage and the Q63 fix lane (RULINGS 230); O5 and
+GM3p's read-only cut and critique (RULINGS 232, 233); GM3p's implement stage and the Q64 fix lane (RULINGS 234-236);
+GM3p and `docs-errata-15` (RULINGS 237). GM3p started its implement stage with every predecessor of its row merged
+(GM3u, GM3w, GM3s) and after O5 (its request walk reads `game.ts`'s request starts, RULINGS 232). The rows below keep E6,
+GM3u and O5 as the predecessors they name; all three have merged.
 
 **The one order across the three designs (reconcile r1; RULINGS 143, 152, 153; design-shots §9.14 and I-2,
 adopted with one change; it replaces the paragraph "Animation and shot lanes" that earlier sections cite).** The **A(f)** placeholders of rounds 4-14 ("every lane of an adopted animation or shot design
