@@ -685,17 +685,21 @@ const spot = (key: string, kind: HotspotView['kind'], label: string, css: Box = 
 
 test('explore: a hotspot is a hit area exactly while it paints nothing', () => {
   // §8.5 "Hit areas" (round 11): a hotspot that paints nothing carries `data-cue-hit`, so its element-site motion plays
-  // on a painted ghost; an exit draws its glyph and a revealed hotspot its outline, so neither does.
+  // on a painted ghost; an exit draws its glyph and a revealed hotspot its outline, so neither does. The bare-art
+  // catcher paints nothing, revealed or not.
   const props = layerProps({ hotspots: [spot('hall.to_study', 'exit', 'study door'), spot('hall.medal', 'take', 'medal')] });
-  const { getByRole } = render(ExploreView, props);
-  const hits = (): boolean[] => ['study door', 'medal'].map((name) => getByRole('button', { name }).hasAttribute('data-cue-hit'));
-  expect(hits()).toEqual([false, true]);
+  const { container, getByRole } = render(ExploreView, props);
+  const hits = (): boolean[] => [
+    container.querySelector('.room > .bare')?.hasAttribute('data-cue-hit') ?? false,
+    ...['study door', 'medal'].map((name) => getByRole('button', { name }).hasAttribute('data-cue-hit')),
+  ];
+  expect(hits()).toEqual([true, false, true]);
   props.view.reveal = true;
   flushSync();
-  expect(hits()).toEqual([false, false]);
+  expect(hits()).toEqual([true, false, false]);
   props.view.reveal = false;
   flushSync();
-  expect(hits()).toEqual([false, true]);
+  expect(hits()).toEqual([true, false, true]);
 });
 
 test('explore: an exit tap presses its glyph', async () => {
@@ -742,6 +746,7 @@ const CONTROL_STATES: readonly ControlState[] = [
 /** Every control a state shows a player, in document order: W1's non-vacuity, so a state that fails to render or a
  *  control that loses its marker is a missing row, never a skipped one. */
 const EXPECTED_CONTROLS: readonly Fired[] = [
+  ['rooms', 'bare-art', null, null],
   ['rooms', 'hotspot', null, null],
   ['rooms', 'hotspot', null, null],
   ['rooms', 'hotspot', null, null],
@@ -1054,6 +1059,83 @@ test("explore: a use that fills a lock slot drops from the item's ribbon slot", 
     [true, SUN.name, slotBox(SUN.id)],
   ]);
   expect([s.played(), s.fallbacks()]).toEqual([['ui:hotspot', 'fact:slot:added'], 0]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The catcher (engine plan §8.3 "The catcher", R17; GM3u): a tap on the art outside every hotspot answers with a ripple
+// at the finger, and drops the ribbon's selection
+
+/** The rooms' bare-art catcher, or null. */
+const catcherIn = (c: Element): HTMLElement | null => c.querySelector<HTMLElement>('.room > .bare');
+
+test('explore: a tap on bare art emits one bare-art cue and no action', async () => {
+  stageRig();
+  const s = mounted();
+  const calls: unknown[][] = [];
+  const props = layerProps({ hotspots: [spot('study.medal', 'take', 'medal on the shelf')], items: [SUN], ...recordingLayer('layer', calls) });
+  const cues: CueEvent[] = [];
+  props.view.oncue = (e) => {
+    cues.push(e);
+    s.bus.emit(e);
+  };
+  const { container } = render(ExploreView, props);
+  await settle();
+  const bare = catcherIn(container);
+  // A presentational surface under the whole room: no role, no name, painting nothing.
+  expect([bare?.getAttribute('role'), bare?.hasAttribute('data-cue-hit'), bare?.textContent]).toEqual(['presentation', true, '']);
+  records = [];
+  await fireEvent.click(bare ?? container, { clientX: 150, clientY: 210 });
+  await settle();
+  // One cue from the catcher itself, at the finger; nothing selected, so no action.
+  expect(cues.map((e) => [e.cue, e.el, e.point])).toEqual([[{ kind: 'ui', control: 'bare-art', item: null, index: null }, bare, { x: 150, y: 210 }]]);
+  expect(calls).toEqual([]);
+  // The ripple plays at the point (a box ghost centred there), never a fallback.
+  const ripples = motionsOf('ripple').map((r) => boxOfGhost(r.el));
+  expect(ripples.map((b) => [b.x + b.w / 2, b.y + b.h / 2])).toEqual([[150, 210]]);
+  expect([s.played(), s.fallbacks()]).toEqual([['ui:bare-art'], 0]);
+});
+
+test('explore: a tap on a hotspot edge dispatches the tap and no bare-art cue', async () => {
+  // The catcher fills the room under the hotspots: it is the room's first child and neither it nor a hotspot sets a
+  // z-index, so every hotspot paints (and takes taps) above it, to its very edge (the e2e taps it in a real browser).
+  const calls: unknown[][] = [];
+  const props = layerProps({ ...recordingLayer('layer', calls) });
+  const cues: CueEvent[] = [];
+  props.view.oncue = (e) => cues.push(e);
+  const { container, getByRole } = render(ExploreView, props);
+  await tick();
+  const room = container.querySelector('.room');
+  const bare = catcherIn(container);
+  expect([bare === null, room?.firstElementChild === bare]).toEqual([false, true]);
+  expect([...(room?.querySelectorAll('.hotspot') ?? [])].map((h) => (bare?.compareDocumentPosition(h) ?? 0) & Node.DOCUMENT_POSITION_FOLLOWING)).toEqual([
+    Node.DOCUMENT_POSITION_FOLLOWING,
+    Node.DOCUMENT_POSITION_FOLLOWING,
+    Node.DOCUMENT_POSITION_FOLLOWING,
+  ]);
+  expect(['bare', 'hotspot'].map((cls) => declarationsFor(exploreViewSource, cls).get('z-index') ?? null)).toEqual([null, null]);
+  expect(declarationsFor(exploreViewSource, 'bare').get('inset')).toBe('0');
+  const gate = getByRole('button', { name: 'en gate' });
+  await fireEvent.click(gate);
+  expect(cues.map((e) => [e.cue.kind === 'ui' ? e.cue.control : e.cue.kind, e.el])).toEqual([['hotspot', gate]]);
+  expect(calls).toEqual([['layer', 'ontap', 'hall.gate']]);
+});
+
+test('explore: a bare tap deselects', async () => {
+  // §6.1 UI: with an item selected, a tap on the art outside every hotspot puts it back (the ribbon's deselect).
+  const calls: unknown[][] = [];
+  const props = layerProps({ items: [COIN, SUN], selected: SUN.id, ...recordingLayer('layer', calls) });
+  const cues: CueEvent[] = [];
+  props.view.oncue = (e) => cues.push(e);
+  const { container } = render(ExploreView, props);
+  await tick();
+  await fireEvent.click(catcherIn(container) ?? container);
+  expect(calls).toEqual([['layer', 'ondeselect']]);
+  expect(cues.map((e) => (e.cue.kind === 'ui' ? e.cue.control : e.cue.kind))).toEqual(['bare-art']);
+  // GameSession clears the selection; the next bare tap acts on nothing.
+  props.view.selected = null;
+  flushSync();
+  await fireEvent.click(catcherIn(container) ?? container);
+  expect(calls).toEqual([['layer', 'ondeselect']]);
 });
 
 /**

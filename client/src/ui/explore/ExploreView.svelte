@@ -10,6 +10,8 @@
   // entrance and exit; the sheets carry their panel markers (§8.5 "Cue targets"). GM3u (§6.1 UI, §8.3): every control
   // declares the cue it emits (`cues/controls.test.ts`), a hotspot that paints nothing is a hit area, and the item
   // ribbon sits over the rooms while no panel covers them; a hotspot tapped while an item is selected uses that item.
+  // Under the hotspots, the bare-art catcher (§8.3 "The catcher") answers a tap on the art itself: its cue ripples at the
+  // finger, and it puts a selected item back.
   import { cueRoot, SHEET_PANELS } from '../../cues/root.ts';
   import { t } from '../../i18n/index.ts';
   import type { ExploreLayerProps } from '../explore-view.svelte.ts';
@@ -29,6 +31,13 @@
   const inventoryOpen = $derived(view.panel?.kind === 'inventory' || view.panel?.kind === 'doc');
   /** A panel covers the rooms: their buttons leave the tab order and the accessibility tree. */
   const covered = $derived(inventoryOpen || (view.panel?.kind === 'lock' && view.lock !== null));
+
+  /** A tap on the bare art puts a selected item back (§6.1 UI); with none selected it is only its cue. */
+  const onbare = (): void => {
+    if (view.selected != null) {
+      actions.ondeselect();
+    }
+  };
 
   let root: HTMLDivElement | undefined = $state();
   let cues: ReturnType<typeof cueRoot> | undefined;
@@ -55,6 +64,8 @@
 
 <div class="layer" bind:this={root} data-cue-root>
   <div class="room" inert={covered}>
+    <!-- First in the room and with no z-index, so every hotspot paints and takes taps above it, to its edge. -->
+    <div class="bare" role="presentation" data-cue="bare-art" data-cue-hit onclick={onbare}></div>
     {#each view.hotspots as h (h.key)}
       <button
         type="button"
@@ -109,6 +120,12 @@
 
   /* A panel covers the rooms; the panels pad themselves past the safe area. */
   .sheet {
+    position: absolute;
+    inset: 0;
+  }
+
+  /* The bare-art catcher: the whole room, painting nothing; the hotspots and the ribbon lie above it. */
+  .bare {
     position: absolute;
     inset: 0;
   }
