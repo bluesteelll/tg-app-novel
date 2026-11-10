@@ -217,8 +217,9 @@ catalog (`catalog/assets`).
 
 Tags stage the scene: `scene`, `bg`, `show`, `hide`, `cg`, `bgm`, `sfx`, `wait`, the shot kinds `face`, `cam`,
 `think`, `anim`, `fx` (DSL v3: a face change, a camera framing, a thought line, a character's one-shot motion, a
-screen effect; parsed and checked today, drawn by later shots lanes), plus the two yield tags `puzzle` and `explore`.
-The parser's list is `TAG_KINDS` ([tags.ts:28](../client/src/story/tags.ts#L28)); the syntax, options,
+screen effect; all five parsed and checked today; on today's sprite stage a `face` crossfades the character's
+expression, and the other four are drawn by later shots lanes), plus the two yield tags `puzzle` and `explore`.
+The parser's list is `TAG_KINDS` ([tags.ts:29](../client/src/story/tags.ts#L29)); the syntax, options,
 defaults and conflicts of each are in [STAGING-DSL §6](STAGING-DSL.md#6-tags) and
 [§7](STAGING-DSL.md#7-batches-and-execution-order). The habits that keep a chapter green and cheap:
 - put scene-setting tags on their own lines at the top of a knot, as `archive` does above

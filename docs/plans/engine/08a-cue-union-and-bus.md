@@ -442,7 +442,8 @@ export function layerOut(node: Element, opts: { reduced: boolean; frame?: boolea
      root's outro removes it, never snapping back to rest inside a frame that is still fading, and the leave watch
      never moves it to a ghost (its target was meant to leave with the root).
      Changed by RULINGS 195, 198 (as of `461424d`; docs lane `docs-errata-13`, group A): as merged, Branch F (GM3s
-     `65e10ad`, F5-F7): the family root carries `data-cue-root` (the frame's `data-cue-root="frame"`), not `in:` / `out:`;
+     `65e10ad`, F5-F7): the family root carries `data-cue-root` (the frame's `data-cue-root="frame"` is GM3p's PuzzleHost
+     root, a carry; today only the explore layer is a cue root), not `in:` / `out:`;
      the root leaves the document at the flush and its `frameOut` plays on the root's ghost at its last box; an end
      motion caught on the leaving wrapper continues on the wrapper's clone inside that ghost (RULINGS 135 (b) restated),
      padded to the ghost's end, so the clone is never removed inside a frame still fading

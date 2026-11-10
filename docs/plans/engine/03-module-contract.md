@@ -363,10 +363,10 @@ export const HOTSPOT_MIN_SOURCE_PX = 150;
   the rule (R-E17: a later tightening keeps them allowed). Red fixture: `['ui/explore/Ribbon.svelte', "el.animate([{opacity:
   0}, {opacity: 1}], 200);"]`; allow fixtures: one per allowed file, `ui/toast-motion.ts` included.
 - Changed by RULINGS 201, 206, 208 (as of `461424d`; docs lane `docs-errata-13`, group A): two rules joined as merged.
-  **Rule `svelte-action`** (group `pattern`, GM3s's E1; `client/src/arch.test.ts:398-424`): no `use:` directive in any
+  **Rule `svelte-action`** (group `pattern`, GM3s's E1; `client/src/arch.test.ts:398-429`): no `use:` directive in any
   component, judged on the Svelte compiler's tree (the first `use:` brings Svelte's action runtime into the entry,
   ~0.22 KB br MEASURED), so a family root attaches `cueRoot` in an `$effect` on its bound element. **Rule `pixi-env`**
-  (group `scene`, lever X; `:217-300`): Pixi's environment extensions are not imported (`SKIP_PIXI_ENV` and
+  (group `scene`, lever X; `:217-306`): Pixi's environment extensions are not imported (`SKIP_PIXI_ENV` and
   `PIXI_ENV_SRCS` in `client/src/scene/pixi-env.ts`, read by `scene/controller.ts`'s `appOptions` and, through the
   `scripts/assets/manifest.ts` door, by `budget.ts`), so scene code may not use what the skip drops: a mask, filters,
   the pointer API, `accessible*`, `eventMode` other than `'none'`, the subpath imports of those systems, GSAP's

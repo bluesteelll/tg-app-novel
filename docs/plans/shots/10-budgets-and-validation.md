@@ -70,7 +70,7 @@
 | warp + drive + hair mesh | 1.5 | `scene/motion/` |
 | ambient | 1.2 | `scene/motion/` |
 | scene-motions | 1.0 | `scene/motion/` |
-| **chunk subtotal** | **~6.0** (rev. 4: + `flatten`) | `scene-motion chunk (br)` <= 8.0. Changed by RULINGS 201 (as of `461424d`; docs lane `docs-errata-13`, group A): at the estimate policy's R (the all-JS R, 2.031 at SH1's merge; `scene-motion` has no MEASURED sample) the chunk reads 6.0 x 2.031 = **12.19 / 8.0** (ARITHMETIC): **flagged**, the first `scene/motion/` lane (SH7) quotes it at its cut |
+| **chunk subtotal** | **~6.0** (rev. 4: + `flatten`) | `scene-motion chunk (br)` <= 8.0. Changed by RULINGS 201 (as of `461424d`; docs lane `docs-errata-13`, group A): at the estimate policy's R (the all-JS R, 2.031 at SH1's merge; `scene-motion` has no MEASURED sample) the chunk reads 6.0 x 2.031 = **12.19 / 8.0** (ARITHMETIC): **flagged**: SH3b, which adds the row, and the first `scene/motion/` lane (SH7) quote it at their cuts (budget design §2.1) |
 | SH10 `scene` ids | 0.5 | cue-stage chunk |
 | Entry: catalog namespace strings | <= 0.1 | entry |
 

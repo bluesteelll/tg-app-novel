@@ -194,6 +194,9 @@ room window), the face and talk file guards, the levers note of §5.9.
 `openAt` inserting another list's knots into the queue), the yield batch on a plain `r:` return, and `graph.ts`'s
 `carriedStage` seeding a co-fired-only event.
 
+**Ruled since: RULINGS 201** — the `scene-motion chunk (br)` row this lane adds reads 6.0 x 2.031 =
+12.19 / 8.0 at the estimate policy's R (ARITHMETIC, flagged): this lane's cut quotes it (budget design §2.1; shots §10).
+
 **Lock (4; rev. 3: `lint.ts` out, `shots/lint.ts` in):** `client/scripts/{budget,budget.test}.ts`,
 `client/scripts/story/shots/lint.ts` (two codes, `budget/step-window` and `budget/entry-step`), `docs/STAGING-DSL.md`
 (§8, §14 rows).
