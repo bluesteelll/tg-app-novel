@@ -7,8 +7,8 @@ import { RESUME_STATE_CAP, lockOf, own, runOf, sectionScope, worldIndex } from '
 import type { ExploreAction, ExploreEffect, SectionScope, Step, Successor } from '../../explore/reduce.ts';
 import type { PuzzleOutcome, PuzzleRun, WorldState } from '../../explore/state.ts';
 import type { PuzzleLocalId, SectionId } from '../../story/staging.ts';
-import type { HotspotKey, ItemId, Lock, RoomId, WorldPublicBody } from '../../world/types.ts';
-import type { RulesRegistry, SectionAction } from '../contract.ts';
+import type { HotspotKey, ItemId, Lock, RoomId } from '../../world/types.ts';
+import type { KernelWorld, RulesRegistry, SectionAction } from '../contract.ts';
 import { reduce } from './core.ts';
 import { MECHANIC_RULES } from './index.ts';
 
@@ -28,7 +28,7 @@ const hasLeave = (effects: readonly ExploreEffect[]): boolean => effects.some((e
  * or a reload, since the puzzle is an overlay) and one successor per outcome (`solved`; `failed` when p has
  * `maxAttempts`).
  */
-export function successors(w: WorldPublicBody, s: WorldState, rules: RulesRegistry = MECHANIC_RULES): Successor[] {
+export function successors(w: KernelWorld, s: WorldState, rules: RulesRegistry = MECHANIC_RULES): Successor[] {
   const out: Successor[] = [];
   for (const m of rules) {
     for (const action of m.actions(w, s)) {
@@ -86,11 +86,11 @@ type KeyPlan = {
 };
 
 // Built once per (registry, world, section): the searches call `sectionKey` once per successor.
-const PLANS = new WeakMap<RulesRegistry, WeakMap<WorldPublicBody, Map<SectionId, KeyPlan>>>();
+const PLANS = new WeakMap<RulesRegistry, WeakMap<KernelWorld, Map<SectionId, KeyPlan>>>();
 
 const sortedIds = <T extends string>(ids: ReadonlySet<T>): T[] => [...ids].sort();
 
-function keyPlan(w: WorldPublicBody, section: SectionId, rules: RulesRegistry): KeyPlan {
+function keyPlan(w: KernelWorld, section: SectionId, rules: RulesRegistry): KeyPlan {
   let perRegistry = PLANS.get(rules);
   if (perRegistry === undefined) {
     perRegistry = new WeakMap();
@@ -205,7 +205,7 @@ function keyPlan(w: WorldPublicBody, section: SectionId, rules: RulesRegistry): 
  * (X15). The set-valued fields are sorted, so the order play added them in never splits one state into two. Ids
  * never hold `|`, `;`, `=` or `,`, so the joins are unambiguous.
  */
-export function sectionKey(w: WorldPublicBody, s: WorldState, section: SectionId, rules: RulesRegistry = MECHANIC_RULES): string {
+export function sectionKey(w: KernelWorld, s: WorldState, section: SectionId, rules: RulesRegistry = MECHANIC_RULES): string {
   const plan = keyPlan(w, section, rules);
   const slots: string[] = [];
   for (const { key, lock } of plan.slots) {
@@ -254,7 +254,7 @@ function outside<T extends string>(list: readonly T[], keys: ReadonlySet<T>): T[
  * `sectionScope` object itself when no module adds one; not cached (a hook scans its module's data in S). The reset
  * and the gating lints read it; a module's `reads` compose the same hook, so the section key and the reset agree.
  */
-export function ownScope(w: WorldPublicBody, section: SectionId, rules: RulesRegistry = MECHANIC_RULES): SectionScope {
+export function ownScope(w: KernelWorld, section: SectionId, rules: RulesRegistry = MECHANIC_RULES): SectionScope {
   const scope = sectionScope(w, section);
   const items: ItemId[] = [];
   const fired: string[] = [];
@@ -279,7 +279,7 @@ export function ownScope(w: WorldPublicBody, section: SectionId, rules: RulesReg
  * Callers pass a state whose section is S or null, so the cleared `section` / `room` / `pendingStory` are never
  * another section's.
  */
-export function resetSection(w: WorldPublicBody, s: WorldState, section: SectionId, rules: RulesRegistry = MECHANIC_RULES): WorldState {
+export function resetSection(w: KernelWorld, s: WorldState, section: SectionId, rules: RulesRegistry = MECHANIC_RULES): WorldState {
   const scope = ownScope(w, section, rules);
   const slots: Record<HotspotKey, ReadonlyArray<ItemId | null>> = {};
   for (const [key, cells] of entriesOf(s.slots)) {
@@ -328,7 +328,7 @@ function enter(section: SectionId): ExploreAction {
  * `reduce(w, resetSection(w, s, S), enter-section S).state`: the start of both searches (build: s = empty). `rules` is
  * the registry whose hooks the entry runs (a fixture registry in tests; `searchSection` takes it in its options).
  */
-export function sectionEntry(w: WorldPublicBody, s: WorldState, section: SectionId, rules: RulesRegistry = MECHANIC_RULES): WorldState {
+export function sectionEntry(w: KernelWorld, s: WorldState, section: SectionId, rules: RulesRegistry = MECHANIC_RULES): WorldState {
   return reduce(w, resetSection(w, s, section, rules), enter(section), rules).state;
 }
 
@@ -355,7 +355,7 @@ export type SearchResult = { readonly result: 'found' | 'exhausted' | 'cap'; rea
  * (but the steps `opts.exclude` accepts), deduplicated by `sectionKey(S)`. Discovering a (cap+1)-th distinct state
  * stops with 'cap', so the runtime never searches past a count the build accepted.
  */
-export function searchSection(w: WorldPublicBody, start: WorldState, section: SectionId, cap: number, opts: SearchOptions = {}): SearchResult {
+export function searchSection(w: KernelWorld, start: WorldState, section: SectionId, cap: number, opts: SearchOptions = {}): SearchResult {
   const seen = new Map<string, number>();
   const queue: WorldState[] = [start];
   const startKey = sectionKey(w, start, section, opts.rules);
@@ -398,7 +398,7 @@ export function searchSection(w: WorldPublicBody, start: WorldState, section: Se
 }
 
 /** Whether the current world can produce `s` from S's entry: 'yes' when the search meets `sectionKey(s)`. */
-export function inSectionReach(w: WorldPublicBody, s: WorldState, section: SectionId, cap: number): 'yes' | 'no' | 'cap' {
+export function inSectionReach(w: KernelWorld, s: WorldState, section: SectionId, cap: number): 'yes' | 'no' | 'cap' {
   const r = searchSection(w, sectionEntry(w, s, section), section, cap, { target: sectionKey(w, s, section) });
   return r.result === 'found' ? 'yes' : r.result === 'cap' ? 'cap' : 'no';
 }
@@ -413,7 +413,7 @@ function proved(out: Admitted, section: SectionId): Admitted {
 }
 
 /** The search said 'no' or 'cap': S restarts (a `reset` effect, then `sectionEntry` and its entry effects). */
-function restart(w: WorldPublicBody, s: WorldState, section: SectionId): Admitted {
+function restart(w: KernelWorld, s: WorldState, section: SectionId): Admitted {
   const restarted = reduce(w, resetSection(w, s, section), enter(section));
   return { state: restarted.state, effects: [{ kind: 'reset', section }, ...restarted.effects] };
 }
@@ -423,7 +423,7 @@ function restart(w: WorldPublicBody, s: WorldState, section: SectionId): Admitte
  * `reduce`. Otherwise enter with `reduce` and search the entered state: 'yes' keeps it, 'no' / 'cap' restarts S. S
  * leaves `unproved` either way.
  */
-export function admitSection(w: WorldPublicBody, s: WorldState, section: SectionId): Admitted {
+export function admitSection(w: KernelWorld, s: WorldState, section: SectionId): Admitted {
   const entered = reduce(w, s, enter(section));
   if (!s.unproved.includes(section)) {
     return entered;
@@ -438,7 +438,7 @@ export function admitSection(w: WorldPublicBody, s: WorldState, section: Section
  * 'no' / 'cap' restarts S (`resetSection` drops the knot, so it never resumes on a reset state). S leaves `unproved`
  * either way.
  */
-export function admitEvent(w: WorldPublicBody, s: WorldState, section: SectionId): Admitted {
+export function admitEvent(w: KernelWorld, s: WorldState, section: SectionId): Admitted {
   const returned = reduce(w, s, { kind: 'event-returned', section });
   if (!s.unproved.includes(section) || s.pendingStory.length === 0 || s.section !== section) {
     return returned;

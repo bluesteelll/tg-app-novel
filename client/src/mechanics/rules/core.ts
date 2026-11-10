@@ -338,9 +338,10 @@ export function applyCore(_w: WorldPublicBody, a: ExploreAction, out: CoreWriter
 /**
  * The one writer of WorldState while a section is current (a linear puzzle's run: the kernel's `runReduce`). `rules`
  * is the registry whose hooks run (a fixture registry in tests); the action goes to its kind's handler (`APPLY`).
+ * `w` is the kernel world, whose `mods` the modules' rules read.
  */
 export function reduce(
-  w: WorldPublicBody,
+  w: KernelWorld,
   s: WorldState,
   a: SectionAction,
   rules: RulesRegistry = MECHANIC_RULES,

@@ -2,7 +2,7 @@ import { expect, test } from 'vitest';
 
 import { motionOf } from '../cues/stage/motions.ts';
 import { SILENT_FIELDS } from '../mechanics/contract.ts';
-import type { FactAtom, FactKind, FlagId, MechanicRules, SectionAction } from '../mechanics/contract.ts';
+import type { FactAtom, FactKind, FlagId, KernelWorld, MechanicRules, SectionAction } from '../mechanics/contract.ts';
 import { actions, reduce } from '../mechanics/rules/core.ts';
 import { MECHANIC_RULES } from '../mechanics/rules/index.ts';
 import { admitSection, inSectionReach, searchSection, sectionEntry, sectionKey, successors } from '../mechanics/rules/search.ts';
@@ -90,7 +90,7 @@ type WorldSpec = {
   sections: Record<string, { start: string; rooms: Record<string, Json> }>;
 };
 
-function world(spec: WorldSpec): WorldPublicBody {
+function world(spec: WorldSpec): KernelWorld {
   const named = (ids: string[], body: () => Json) => Object.fromEntries(ids.map((id) => [id, body()]));
   const raw = {
     format: 1,
@@ -103,7 +103,7 @@ function world(spec: WorldSpec): WorldPublicBody {
   if (!r.ok) {
     throw new Error(`invariant: the fixture world decodes: ${JSON.stringify(r.error)}`);
   }
-  return toPublic(r.value);
+  return { ...toPublic(r.value), mods: r.value.mods };
 }
 
 // Fixture ids, typed as the brands the decoder gives them.
@@ -131,7 +131,7 @@ type ManorVariant = {
 };
 
 /** The demo section of PUZZLES-PLAN "Demo content outline" (ch1 `manor`), and its v2 edits. */
-function manor(v: ManorVariant = {}): WorldPublicBody {
+function manor(v: ManorVariant = {}): KernelWorld {
   const star = v.star ?? 'medal_star';
   const medals = ['medal_sun', 'medal_moon', star];
   const golden = v.golden === true;
@@ -208,7 +208,7 @@ const DIRTY: ExploreEffect = { kind: 'dirty' };
 const kernelEffects = <E extends { readonly kind: string }>(effects: readonly E[]): E[] => effects.filter((e) => e.kind !== 'cue');
 
 /** Runs actions in order and returns the last result. */
-function run(w: WorldPublicBody, s: WorldState, ...steps: ExploreAction[]): { state: WorldState; effects: ExploreEffect[] } {
+function run(w: KernelWorld, s: WorldState, ...steps: ExploreAction[]): { state: WorldState; effects: ExploreEffect[] } {
   let r = { state: s, effects: [] as ExploreEffect[] };
   for (const a of steps) {
     r = reduce(w, frozen(r.state), a);
@@ -726,7 +726,7 @@ test('project: puzzle outcome codes', () => {
 // ---------------------------------------------------------------------------------------------------------------
 // Reconcile (X9)
 
-const stamped = (w: WorldPublicBody, version: string): WorldPublic => ({ ...w, version });
+const stamped = (w: KernelWorld, version: string): WorldPublic => ({ ...w, version });
 const V1 = '1111111111111111';
 const V2 = '2222222222222222';
 const MANOR = sec('manor');
@@ -735,7 +735,7 @@ const enterAction = (section: string): ExploreAction => ({ kind: 'enter-section'
 const returned = (section: string): ExploreAction => ({ kind: 'event-returned', section: sec(section) });
 
 /** Whether some path from `s` leaves section S (the search kernel's goal edges). */
-function exitable(w: WorldPublicBody, s: WorldState, section: SectionId): boolean {
+function exitable(w: KernelWorld, s: WorldState, section: SectionId): boolean {
   let leaves = 0;
   searchSection(w, s, section, RESUME_STATE_CAP, {
     onEdge: (_from, _succ, to) => {
@@ -1072,7 +1072,7 @@ test('reconcile: unprovable state restarts the section', () => {
 });
 
 /** The round-2 triage world: a lever opens the vault in v1; in v2 the altar does, and the vault has a shrine. */
-function temple(version: 1 | 2): WorldPublicBody {
+function temple(version: 1 | 2): KernelWorld {
   return world({
     items: ['k', 'g'],
     sections: {
@@ -1113,7 +1113,7 @@ test('reconcile: a dead end reachable from the reconciled state restarts the sec
 });
 
 test("reconcile: reset section fires the start room's onEnter on resume", () => {
-  const crypt = (version: 1 | 2): WorldPublicBody =>
+  const crypt = (version: 1 | 2): KernelWorld =>
     world({
       items: ['torch'],
       sections: {
@@ -1141,7 +1141,7 @@ test("reconcile: reset section fires the start room's onEnter on resume", () => 
 });
 
 /** The round-3 triage world: a lever (v1) or the key's own `then` (v2) opens the vault; v2 locks the way back. */
-function house(version: 1 | 2, withYard = false): WorldPublicBody {
+function house(version: 1 | 2, withYard = false): KernelWorld {
   return world({
     items: ['k'],
     sections: {
@@ -1337,7 +1337,7 @@ test('writer: a fact cue with no hotspot needs no box', () => {
   const boxed = new Set(['box', 'point']);
   const lost = new Set<string>();
   let homeless = 0;
-  const walk = (w: WorldPublicBody, section: SectionId): void => {
+  const walk = (w: KernelWorld, section: SectionId): void => {
     const start = sectionEntry(w, EMPTY_WORLD_STATE, section);
     const reached: WorldState[] = [start];
     searchSection(w, start, section, RESUME_STATE_CAP, {
@@ -1485,12 +1485,12 @@ const reader = (...atoms: FactAtom[]): MechanicRules<'reader', never, never> => 
 });
 
 test('search: derived sectionKey equals the hand key on ch1 and ch2', () => {
-  const chapters = Object.entries(STORY_WORLDS).map(([path, text]): [string, WorldPublicBody] => {
+  const chapters = Object.entries(STORY_WORLDS).map(([path, text]): [string, KernelWorld] => {
     const r = decodeWorldSource(JSON.parse(text));
     if (!r.ok) {
       throw new Error(`invariant: ${path} decodes: ${JSON.stringify(r.error)}`);
     }
-    return [path.replace('../../../', ''), toPublic(r.value)];
+    return [path.replace('../../../', ''), { ...toPublic(r.value), mods: r.value.mods }];
   });
   expect(chapters.map(([path]) => path)).toEqual(expect.arrayContaining(['story/ch1/world.json', 'story/ch2/world.json']));
   // Every state each section's search discovers, in every chapter and in the golden fixture. No count of story content

@@ -6,10 +6,10 @@ import { RESUME_STATE_CAP } from '../../src/explore/reduce.ts';
 import type { ExploreAction, Step } from '../../src/explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../../src/explore/state.ts';
 import type { WorldState } from '../../src/explore/state.ts';
+import type { KernelWorld } from '../../src/mechanics/contract.ts';
 import { actions, reduce } from '../../src/mechanics/rules/core.ts';
 import { searchSection, sectionEntry } from '../../src/mechanics/rules/search.ts';
 import type { PuzzleLocalId, SectionId } from '../../src/story/staging.ts';
-import type { WorldPublicBody } from '../../src/world/types.ts';
 import { LINT_CODES } from './lint.ts';
 import type { Finding, LintCode } from './lint.ts';
 
@@ -21,11 +21,11 @@ function finding(code: LintCode, file: string, message: string): Finding {
 }
 
 /** The action of `from` that opened `puzzle` (a `closed` or `puzzle-ended` step stands for it). */
-function opener(w: WorldPublicBody, from: WorldState, puzzle: PuzzleLocalId): ExploreAction | undefined {
+function opener(w: KernelWorld, from: WorldState, puzzle: PuzzleLocalId): ExploreAction | undefined {
   return actions(w, from).find((a) => reduce(w, from, a).effects.some((e) => e.kind === 'puzzle' && e.puzzle === puzzle));
 }
 
-function describe(w: WorldPublicBody, from: WorldState, step: Step): string {
+function describe(w: KernelWorld, from: WorldState, step: Step): string {
   switch (step.kind) {
     case 'tap':
       return `tap ${step.hotspot}`;
@@ -54,11 +54,11 @@ function describe(w: WorldPublicBody, from: WorldState, step: Step): string {
 }
 
 /**
- * Proves section S of a public world body (the build has no `version`; LW3 stamps it on emit). `file` is the
- * finding's file (`story/<ch>/world.json`). The `world/softlock` message carries the shortest action path from the
- * entry to the first stuck state in BFS order.
+ * Proves section S of the proof world: the public body and its decoded `mods` (the build has no `version`; LW3 stamps
+ * it on emit). `file` is the finding's file (`story/<ch>/world.json`). The `world/softlock` message carries the
+ * shortest action path from the entry to the first stuck state in BFS order.
  */
-export function checkSection(w: WorldPublicBody, section: SectionId, file: string): SectionCheck {
+export function checkSection(w: KernelWorld, section: SectionId, file: string): SectionCheck {
   const start = sectionEntry(w, EMPTY_WORLD_STATE, section);
   const states: WorldState[] = [start];
   const parent: Array<{ from: number; step: Step } | undefined> = [undefined];
@@ -113,6 +113,6 @@ export function checkSection(w: WorldPublicBody, section: SectionId, file: strin
 }
 
 /** Every section of the world, in key order. */
-export function checkWorld(w: WorldPublicBody, file: string): SectionCheck[] {
+export function checkWorld(w: KernelWorld, file: string): SectionCheck[] {
   return (Object.keys(w.sections) as SectionId[]).sort().map((s) => checkSection(w, s, file)); // the keys are ids
 }
