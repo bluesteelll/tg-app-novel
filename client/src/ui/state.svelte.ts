@@ -1,14 +1,18 @@
 // The overlay's view model (PROTOTYPE-PLAN "client/src"): what the components render, written by the boot and the
 // game session. It holds views only, never a Story, a runner or a Pixi object (principle 7). Every field is
 // `$state.raw` and is replaced, never mutated, so a component re-renders on assignment and nothing deep is proxied.
+import type { Component } from 'svelte';
+
 import type { EngineUi } from '../app/engine.ts';
 import type { MetaView } from '../app/meta.ts';
+import type { CueBus } from '../cues/bus.ts';
 import type { Lang } from '../i18n/index.ts';
 import type { PurchaseState } from '../purchase/flow.ts';
 import type { ManualSlot } from '../saves/service.ts';
 import { DEFAULT_SETTINGS } from '../settings/store.ts';
 import type { Settings } from '../settings/store.ts';
 import type { LineId } from '../story/staging.ts';
+import type { TelegramClient } from '../telegram/index.ts';
 import type { BacklogLine } from './Backlog.svelte';
 import type { ChapterRow } from './ChapterSelect.svelte';
 import type { NoticeView } from './Notice.svelte';
@@ -52,6 +56,21 @@ export type SavesView = {
 };
 /** One chapter's paywall: its title, the server's price (null: the price read failed) and the purchase state. */
 export type PaywallView = { chapter: string; priceStars: number | null; state: PurchaseState };
+/**
+ * The cue stage's props (engine plan §8.1, GM3s): the session's bus subscription, its orphan count (the bus's, plus the
+ * plans the stage dropped at its unmount, counted through `dropped`), reduced motion, the stage host whose px the cue
+ * boxes are in, and the touch feedback a motion plays on top of.
+ */
+export type CueStageProps = {
+  subscribe: CueBus['subscribe'];
+  orphans: () => number;
+  dropped: () => void;
+  reduced: boolean;
+  host: () => HTMLElement | null;
+  haptic: TelegramClient['haptic'];
+};
+/** What yields writes once the cue stage's chunk is in: the component and the session's side of its props. */
+export type CueStageSlot = { component: Component<CueStageProps> } & Omit<CueStageProps, 'reduced'>;
 /** The view model's clock: the page's timers, or a test's. */
 export type Timers = { setTimeout(fn: () => void, ms: number): number; clearTimeout(id: number): void };
 
@@ -87,6 +106,8 @@ export interface ViewModel {
   ui: EngineUi | null;
   /** What the meta overlays render (app/meta.ts writes it); null until the meta controller exists, after auth. */
   meta: MetaView | null;
+  /** The session's cue stage (app/yields.ts writes it when its chunk is in, and clears its own at dispose). */
+  cueStage: CueStageSlot | null;
   readonly toasts: readonly ToastEntry[];
   /** Adds `e`; an entry with the same key is replaced in place (its timer restarted). Above TOAST_MAX the oldest
    * transient is dropped; a sticky entry never is. */
@@ -123,6 +144,7 @@ class OverlayState implements ViewModel {
   paused: boolean = $state.raw(false);
   ui: EngineUi | null = $state.raw(null);
   meta: MetaView | null = $state.raw(null);
+  cueStage: CueStageSlot | null = $state.raw(null);
   #toasts: readonly ToastEntry[] = $state.raw([]);
   readonly #timers: Timers;
   /** The pending expiry of each transient entry, by key. */
