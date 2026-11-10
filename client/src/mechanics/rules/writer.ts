@@ -52,8 +52,11 @@ export type ModuleCue = { readonly module: MechanicId; readonly name: string; re
 /** One fact entering or leaving the state through the writer, with the cause the rule gave. */
 export type FactChange = { readonly kind: FactKind; readonly id: string; readonly change: 'added' | 'removed'; readonly cause: Cause };
 
-/** The kernel's writer: the module-facing `Writer` plus what core's rules and hooks reach through it. */
-export type KernelWriter = Writer & {
+/**
+ * The kernel's writer: the module-facing `Writer` plus what core's rules and hooks reach through it. The registry's
+ * dispatch hands it to every module's `apply` and `tap` (`Id` / `C`: that module's id and cue names).
+ */
+export type KernelWriter<Id extends string = string, C extends string = string> = Writer<Id, C> & {
   readonly draft: Draft;
   readonly world: WorldPublicBody;
   readonly rules: RulesRegistry;
@@ -168,8 +171,9 @@ class DraftWriter implements KernelWriter {
     this.draft.effects.push(e);
   }
 
-  cue(module: MechanicId, name: string, at: HotspotKey | null, item: ItemId | null): void {
-    (this.#cues ??= []).push({ module, name, at, item });
+  // The widest signature, so this one writer is every module's: each module's rules see only their own names.
+  cue(module: string, name: string, at: HotspotKey | null, item: ItemId | null): void {
+    (this.#cues ??= []).push({ module: module as MechanicId, name, at, item }); // a module's own id, typed by its rules half
   }
 }
 

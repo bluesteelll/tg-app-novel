@@ -18,10 +18,16 @@ import type { Draft, ExploreAction, ExploreEffect, HotspotEntry, WorldIndex } fr
 import type { PuzzleOutcome, WorldState } from '../../explore/state.ts';
 import type { PuzzleLocalId, SectionId } from '../../story/staging.ts';
 import type { Hotspot, HotspotKey, ItemId, Lock, RoomId, WorldPublicBody } from '../../world/types.ts';
-import type { ArrivalOut, FactAtom, RulesRegistry, SectionAction } from '../contract.ts';
-import { MECHANIC_RULES } from './index.ts';
+import type { ArrivalOut, FactAtom, KernelWorld, RulesRegistry, SectionAction } from '../contract.ts';
+import { APPLY, MECHANIC_RULES } from './index.ts';
 import { added, arrivalOut, createWriter, fire, openKey } from './writer.ts';
 import type { KernelWriter } from './writer.ts';
+
+/** Core's module cue names (its rules entry's `cues`), declared here: derived from the entry, the type would circle
+ *  back through `applyCore`'s own signature. */
+export type CoreCue = 'look' | 'locked' | 'refused' | 'reset';
+/** The writer core's rules write through: a cue it emits is one of its own names. */
+type CoreWriter = KernelWriter<'core', CoreCue>;
 
 function removed<T>(list: readonly T[], v: T): readonly T[] {
   return list.includes(v) ? list.filter((x) => x !== v) : list;
@@ -44,7 +50,7 @@ function openAt(d: Draft, key: HotspotKey, hotspot: Hotspot): void {
 }
 
 /** The arrival hook of every module, once per `room` effect: after the room's onEnter, never while a knot is pending. */
-function arrived(out: KernelWriter, room: RoomId): void {
+function arrived(out: CoreWriter, room: RoomId): void {
   if (out.draft.s.pendingStory.length > 0) {
     return;
   }
@@ -59,7 +65,7 @@ function arrived(out: KernelWriter, room: RoomId): void {
 /** How a `room` effect enters its room: the move's sound, the room left, the exit taken, the kind of move. */
 type Move = Omit<Extract<ExploreEffect, { kind: 'room' }>, 'kind' | 'room'>;
 
-function arrive(out: KernelWriter, room: RoomId, move: Move): void {
+function arrive(out: CoreWriter, room: RoomId, move: Move): void {
   const d = out.draft;
   const entry = d.ix.rooms.get(room);
   const section = d.s.section;
@@ -76,7 +82,7 @@ function arrive(out: KernelWriter, room: RoomId, move: Move): void {
   arrived(out, room);
 }
 
-function enterSection(out: KernelWriter, sid: SectionId): void {
+function enterSection(out: CoreWriter, sid: SectionId): void {
   const d = out.draft;
   const section = d.ix.sections.get(sid);
   if (section === undefined) {
@@ -96,7 +102,7 @@ function enterSection(out: KernelWriter, sid: SectionId): void {
   arrive(out, room, { sfx: null, from: null, via: null, how: 'enter' });
 }
 
-function eventReturned(out: KernelWriter, sid: SectionId): void {
+function eventReturned(out: CoreWriter, sid: SectionId): void {
   const d = out.draft;
   if (d.s.pendingStory.length === 0 || d.s.section !== sid) {
     return;
@@ -131,7 +137,7 @@ function lockTap(d: Draft, key: HotspotKey, lock: Lock): void {
   }
 }
 
-function tap(out: KernelWriter, key: HotspotKey): void {
+function tap(out: CoreWriter, key: HotspotKey): void {
   const d = out.draft;
   const entry = here(d, key);
   if (entry === undefined) {
@@ -265,8 +271,11 @@ function puzzleEnded(d: Draft, p: PuzzleLocalId, outcome: PuzzleOutcome): void {
   }
 }
 
-/** Core's `apply`: its rules write the draft directly (the writer is the write path of the other modules). */
-export function applyCore(_w: WorldPublicBody, a: ExploreAction, out: KernelWriter): void {
+/**
+ * Core's `apply`, the handler of every kernel action kind (`APPLY`, rules/index.ts): its rules write the draft directly
+ * (the writer is the write path of the other modules). The dispatch never hands it another module's action.
+ */
+export function applyCore(_w: WorldPublicBody, a: ExploreAction, out: CoreWriter): void {
   const d = out.draft;
   switch (a.kind) {
     case 'enter-section':
@@ -291,7 +300,7 @@ export function applyCore(_w: WorldPublicBody, a: ExploreAction, out: KernelWrit
 
 /**
  * The one writer of WorldState while a section is current (a linear puzzle's run: the kernel's `runReduce`). `rules`
- * is the registry whose hooks run (a fixture registry in tests).
+ * is the registry whose hooks run (a fixture registry in tests); the action goes to its kind's handler (`APPLY`).
  */
 export function reduce(
   w: WorldPublicBody,
@@ -301,7 +310,9 @@ export function reduce(
 ): { state: WorldState; effects: ExploreEffect[] } {
   const d: Draft = { s, effects: [], ix: worldIndex(w) };
   const idle = s.pendingStory.length === 0;
-  applyCore(w, a, createWriter(d, w, rules));
+  // Read here, never at load (the core.ts <-> index.ts cycle); TS cannot correlate `APPLY[a.kind]` with `a`.
+  const apply = APPLY[a.kind] as (w: KernelWorld, a: SectionAction, out: KernelWriter) => void;
+  apply(w, a, createWriter(d, w, rules));
   const head = d.s.pendingStory[0];
   if (idle && head !== undefined) {
     d.effects.push({ kind: 'story', knot: head });

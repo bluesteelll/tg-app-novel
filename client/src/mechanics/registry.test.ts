@@ -8,10 +8,10 @@ import type { KnotName, PuzzleLocalId, SectionId } from '../story/staging.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { DocId, HotspotKey, ItemId, RoomId, WorldPublicBody } from '../world/types.ts';
 import { KERNEL_FACT_KINDS } from './contract.ts';
-import type { Cause, MechanicData, MechanicId, MechanicRules, RulesRegistry, Writer } from './contract.ts';
+import type { Cause, MechanicData, MechanicId, MechanicRules, RulesRegistry, SectionAction, Writer } from './contract.ts';
 import { MECHANIC_DATA } from './data/index.ts';
 import { reduce } from './rules/core.ts';
-import { MECHANIC_RULES } from './rules/index.ts';
+import { APPLY, MECHANIC_RULES } from './rules/index.ts';
 import { searchSection, sectionEntry, successors } from './rules/search.ts';
 import { createWriter } from './rules/writer.ts';
 
@@ -246,6 +246,67 @@ test('mechanics: the rules registry loads from either module first', async () =>
 
 const [CORE] = MECHANIC_RULES;
 const DIRTY = { kind: 'dirty' } as const;
+
+test("mechanics: a dispatch over the registry needs the kernel's writer", () => {
+  const w = world({ hall: room([look('statue')]) });
+  const s = at('hall');
+  // The registry's own `apply` type, the one the dispatch and `out.rules` walk: the kernel's writer drives core's rules.
+  const apply: RulesRegistry[number]['apply'] = CORE.apply;
+  const d: Draft = { s, effects: [], ix: worldIndex(w) };
+  apply(w, tap('hall.statue'), createWriter(d, w, MECHANIC_RULES));
+  expect(d.s.examined).toEqual(['hall.statue']);
+  // A module's plain `Writer` lacks the draft, world and registry core's rules write through: the dispatch refuses it.
+  const plain: Writer = { state: s, set: () => undefined, run: () => undefined, fire: () => undefined, effect: () => undefined, cue: () => undefined };
+  const refused = (): void => {
+    // @ts-expect-error -- a plain Writer is not the kernel's writer
+    apply(w, tap('hall.statue'), plain);
+  };
+  expect(refused).toBeTypeOf('function'); // a type check only: never run
+});
+
+test('mechanics: a module emits only the cue names its rules half declares', () => {
+  const fx = {
+    id: 'fx',
+    actions: () => [],
+    apply: (_w, _a, out) => {
+      out.cue('fx', 'ok', null, null);
+      // Type checks only, never run: a name the module does not declare, and another module's id.
+      const refused = (): void => {
+        // @ts-expect-error -- 'other' is no cue name of module fx
+        out.cue('fx', 'other', null, null);
+        // @ts-expect-error -- module fx emits under its own id only
+        out.cue('core', 'ok', null, null);
+      };
+      void refused;
+    },
+    reads: () => [],
+    cues: ['ok'] as const,
+  } satisfies MechanicRules<'fx', { kind: 'fx' }, 'ok'>;
+  const w = world({ hall: room([look('statue')]) });
+  const out = createWriter({ s: at('hall'), effects: [], ix: worldIndex(w) }, w, [CORE, fx]);
+  fx.apply(w, { kind: 'fx' }, out);
+  expect(out.cues).toEqual([{ module: 'fx', name: 'ok', at: null, item: null }]);
+});
+
+test('mechanics: every action kind has one handler', () => {
+  // The registry's action kinds: a record check holds to the derived union, so a kind missing or extra fails check.
+  const kinds = {
+    'enter-section': true,
+    'event-returned': true,
+    tap: true,
+    insert: true,
+    'attempt-failed': true,
+    'hint-opened': true,
+    'puzzle-ended': true,
+  } satisfies Record<SectionAction['kind'], true>;
+  expect(Object.keys(APPLY).sort()).toEqual(Object.keys(kinds).sort());
+  expect(Object.values(APPLY).every((handler) => typeof handler === 'function')).toBe(true);
+  // A dispatch map without a handler for `tap` fails check.
+  const { tap: _tap, ...rest } = APPLY;
+  // @ts-expect-error -- the map lacks the kind `tap`
+  const partial: typeof APPLY = rest;
+  expect(Object.keys(partial)).not.toContain('tap');
+});
 
 test('mechanics: a hotspot a module claims routes its tap to the module', () => {
   // The statue is an object whose `then` gives a coin with a look text: core's tap would show the text and give it.
