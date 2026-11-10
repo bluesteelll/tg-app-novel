@@ -5,7 +5,7 @@
 // or on an error or a step cap (failed). With the chapter's world (LW3, PUZZLES-PLAN "Seeded playthroughs") a run
 // plays through its yields instead: a random puzzle outcome, or a random walk over the section's `successors`, then
 // `project` and the next knot, on one WorldState per run. Per chapter: the knots no run entered, the endings no run
-// reached, and the puzzle outcomes the runs saw. Pure, no node:*: the story tool's only importer of the inkjs
+// reached, the puzzle outcomes the runs saw, and the step transitions they made (the shot flow's cross-check). Pure, no node:*: the story tool's only importer of the inkjs
 // RUNTIME ('inkjs').
 import { Story as UntypedStory } from 'inkjs';
 import type { InkObject } from 'inkjs/engine/Object';
@@ -86,6 +86,12 @@ export type ChapterPlay = {
   carrySnapshots: number;
   /** Per puzzle some run ended (a yield or a lock in a walk), the `pz_<puzzle>` codes seen: 1 solved, 2 failed, 3 abandoned. */
   outcomes: ReadonlyMap<PuzzleLocalId, ReadonlySet<number>>;
+  /**
+   * Every presented-step transition some run made, `"<from>→<to>"` (docs/plans/shots §3.4 cross-check): a run starts at
+   * `k:<first knot>`; a line by its ID; a choice set as one transition into each offered choice, then on from the
+   * picked one; a knot the world enters (a puzzle's then, an explore knot) as `k:<knot>`.
+   */
+  transitions: ReadonlySet<string>;
 };
 export type PlayInput = {
   chapter: SourceChapter;
@@ -203,6 +209,7 @@ type Run = {
   choices: readonly number[];
   /** The puzzle outcomes this run saw, in order. */
   puzzles: ReadonlyArray<{ puzzle: PuzzleLocalId; outcome: PuzzleOutcome }>;
+  transitions: ReadonlySet<string>;
 };
 /** `pz_<puzzle>`'s value per outcome (project.ts, PUZZLES-PLAN X2). */
 const OUTCOME_CODE: Readonly<Record<PuzzleOutcome, number>> = { solved: 1, failed: 2, abandoned: 3 };
@@ -319,11 +326,20 @@ function playRun(ctx: Context, seed: number, snapshot: CarrySnapshot | null): Ru
   const findings: RunFinding[] = [];
   const choices: number[] = [];
   const puzzles: Array<{ puzzle: PuzzleLocalId; outcome: PuzzleOutcome }> = [];
+  // The step transitions read only the shown IDs and the entered knots, never rng() or the story's state, so the
+  // recording cannot change a run.
+  const transitions = new Set<string>();
+  let prev: string | null = input.graph.firstKnot === null ? null : `k:${input.graph.firstKnot}`;
+  const saw = (to: string): void => {
+    if (prev !== null) {
+      transitions.add(`${prev}→${to}`);
+    }
+  };
   let lastLine: StoryLine | null = null;
   const here = (): { file: string; line: number } => (lastLine === null ? entry : { file: lastLine.file, line: lastLine.line });
   const failed = (code: LintCode, at: { file: string; line: number }, detail: string): Run => {
     findings.push({ code, ...at, detail });
-    return { outcome: 'failed', visited: trail.visited, carry: null, findings, choices, puzzles };
+    return { outcome: 'failed', visited: trail.visited, carry: null, findings, choices, puzzles, transitions };
   };
   const capped = (detail: string): Run => {
     const knot = trail.last === null ? undefined : input.graph.knots.get(trail.last);
@@ -377,8 +393,12 @@ function playRun(ctx: Context, seed: number, snapshot: CarrySnapshot | null): Ru
         batchErrors(parsed, here(), findings);
         if (parsed.lineId === null) {
           findings.push({ code: 'play/line-without-id', ...entry, detail: `a line shown without an id: ${excerpt(text)}` });
-        } else if (!input.staticIds.has(parsed.lineId)) {
-          runtimeIdChecks(ctx, parsed.lineId, text, here(), findings);
+        } else {
+          saw(parsed.lineId);
+          prev = parsed.lineId;
+          if (!input.staticIds.has(parsed.lineId)) {
+            runtimeIdChecks(ctx, parsed.lineId, text, here(), findings);
+          }
         }
       }
       const offered = story.currentChoices;
@@ -389,16 +409,25 @@ function playRun(ctx: Context, seed: number, snapshot: CarrySnapshot | null): Ru
       // its own (§3.4, §4), and it is consumed here, never merged into the first line after the choice.
       batchErrors(parseTags(pending, input.assets), here(), findings);
       pending = [];
+      const ids: Array<string | null> = [];
       for (const c of offered) {
         const parsed = parseTags(c.tags ?? [], input.assets);
+        ids.push(parsed.lineId);
         if (parsed.lineId === null) {
           findings.push({ code: 'play/line-without-id', ...entry, detail: `a choice shown without an id: ${excerpt(c.text)}` });
-        } else if (!input.staticIds.has(parsed.lineId)) {
-          runtimeIdChecks(ctx, parsed.lineId, null, here(), findings);
+        } else {
+          saw(parsed.lineId); // the set is one step: a transition into each offered choice
+          if (!input.staticIds.has(parsed.lineId)) {
+            runtimeIdChecks(ctx, parsed.lineId, null, here(), findings);
+          }
         }
       }
       const pick = Math.floor(rng() * offered.length);
       choices.push(pick);
+      const picked = ids[pick];
+      if (picked !== undefined && picked !== null) {
+        prev = picked;
+      }
       story.ChooseChoiceIndex(pick);
     }
     return null;
@@ -425,6 +454,8 @@ function playRun(ctx: Context, seed: number, snapshot: CarrySnapshot | null): Ru
     } catch (e) {
       return failed('play/runtime-error', here(), `entering '${knot}': ${e instanceof Error ? e.message : String(e)}`);
     }
+    saw(`k:${knot}`);
+    prev = `k:${knot}`;
     // No count here: ChoosePathString diverts through VisitChangedContainersDueToDivert, so the VisitContainer
     // wrapper above credits `knot` (the walk test's visited list pins it).
     return null;
@@ -489,7 +520,7 @@ function playRun(ctx: Context, seed: number, snapshot: CarrySnapshot | null): Ru
     const world = input.world;
     if (world === undefined) {
       if (y !== undefined) {
-        return { outcome: 'yielded', visited: trail.visited, carry: null, findings, choices, puzzles };
+        return { outcome: 'yielded', visited: trail.visited, carry: null, findings, choices, puzzles, transitions };
       }
       break;
     }
@@ -537,7 +568,7 @@ function playRun(ctx: Context, seed: number, snapshot: CarrySnapshot | null): Ru
   if (knot === null) {
     throw new Error('invariant: an ended run entered a knot');
   }
-  return { outcome: 'ended', visited: trail.visited, carry: { knot, vars: carryOf(story, input.graph.globals) }, findings, choices, puzzles };
+  return { outcome: 'ended', visited: trail.visited, carry: { knot, vars: carryOf(story, input.graph.globals) }, findings, choices, puzzles, transitions };
 }
 
 /**
@@ -557,6 +588,7 @@ export function playChapter(input: PlayInput): { play: ChapterPlay; findings: Fi
   const endings = new Set<KnotName>();
   const carries: Carry[] = [];
   const outcomes = new Map<PuzzleLocalId, Set<number>>();
+  const transitions = new Set<string>();
   const counts = { ended: 0, yielded: 0, failed: 0 };
   for (let seed = 1; seed <= runs; seed += 1) {
     const snapshot = snapshots.length === 0 ? null : (snapshots[(seed - 1) % snapshots.length] ?? null);
@@ -567,6 +599,9 @@ export function playChapter(input: PlayInput): { play: ChapterPlay; findings: Fi
     }
     for (const { puzzle, outcome } of run.puzzles) {
       outcomes.set(puzzle, (outcomes.get(puzzle) ?? new Set()).add(OUTCOME_CODE[outcome]));
+    }
+    for (const t of run.transitions) {
+      transitions.add(t);
     }
     if (run.carry !== null) {
       carries.push(run.carry);
@@ -612,6 +647,7 @@ export function playChapter(input: PlayInput): { play: ChapterPlay; findings: Fi
     carriedFrom: input.carry?.from ?? null,
     carrySnapshots: snapshots.length,
     outcomes,
+    transitions,
   };
   return { play, findings };
 }

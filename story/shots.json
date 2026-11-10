@@ -1,0 +1,45 @@
+{
+  "locs": [
+    {
+      "id": "room",
+      "light": null
+    },
+    {
+      "id": "street",
+      "light": null
+    },
+    {
+      "id": "cafe",
+      "light": null
+    },
+    {
+      "id": "archive",
+      "light": null
+    },
+    {
+      "id": "hall",
+      "light": null
+    },
+    {
+      "id": "study",
+      "light": null
+    },
+    {
+      "id": "cellar",
+      "light": null
+    },
+    {
+      "id": "shore",
+      "light": null
+    },
+    {
+      "id": "lighthouse",
+      "light": null
+    },
+    {
+      "id": "lamp_room",
+      "light": null
+    }
+  ],
+  "shots": []
+}
