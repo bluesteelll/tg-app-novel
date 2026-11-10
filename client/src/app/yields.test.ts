@@ -1832,6 +1832,22 @@ test('yields: a countdown that ends with nothing to post emits puzzle ready', as
   r.yields.dispose();
 });
 
+test('yields: a countdown that ends on a frame showing its attempts plays ready with them', async () => {
+  // 08a: `index` = the attempts left when the frame shows them (`frame.attemptsLeft`); a 429 keeps them.
+  const r = rig({ world: puzzleWorld(), attempts: [httpError(429, 1)] });
+  await r.yields.onYield({ kind: 'puzzle', puzzle: PIECES, then: AFTER });
+  expect(r.puzzle.frame?.attemptsLeft, 'the frame shows its attempts').toBe(3);
+  r.yields.host.ontry();
+  await settle();
+  expect([r.calls.attempts, r.puzzle.frame?.line, r.puzzle.frame?.attemptsLeft]).toEqual([1, 'rate-limited', 3]);
+  const mark = r.cues.length;
+  r.clock.advance(1000);
+  await settle();
+  expect(frameKeys(r, mark)).toEqual(['puzzle:ready@3']);
+  expect([r.puzzle.frame?.line, r.puzzle.frame?.attemptsLeft]).toEqual(['idle', 3]);
+  r.yields.dispose();
+});
+
 test('yields: a check that ends with no outcome returns the frame to idle with puzzle ready', async () => {
   // `attempt()` refuses an answer of the wrong shape (`invalid`) before any request: an order of one piece of three.
   const r = rig({ world: puzzleWorld() });
