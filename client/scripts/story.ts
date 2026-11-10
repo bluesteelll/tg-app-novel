@@ -1,12 +1,14 @@
 // The story tool (STAGING-DSL §11): catalog checks (chapters, assets, cast, the story list) → the worlds decoded →
 // source lint → compile → knot graph (given the world) and story endings → the world lint and the soft-lock check →
 // the story meta against the choice points and the worlds' puzzles → localization and invoice titles → seeded
-// playthroughs (through the worlds' yields) → emit. Every finding is
+// playthroughs (through the worlds' yields) → the shot pass (§14: only when story/shots.json exists; its implied
+// placeholders join the catalog from stage 2 on) → emit (with build/shots.json; `--art-list` also writes
+// target/art-list/<story>.{md,json}). Every finding is
 // printed, never only the first; outputs are written (and stale ones deleted)
 // only when no error remains, then story-gen is read back for paid leaks. Exit 1 iff an error remains. The story
 // sources are rewritten only on request (STAGING-DSL §4): `--fix-ids` writes the missing line IDs into the ink files
 // before the lint, `--sync-locales` appends the new IDs to the en tables before the localization checks.
-// Usage: node scripts/story.ts [--strict] [--fix-ids] [--sync-locales] [--root <repo>]   (`--strict`: every warning is
+// Usage: node scripts/story.ts [--strict] [--fix-ids] [--sync-locales] [--art-list] [--root <repo>]   (`--strict`: every warning is
 // an error; the repo root defaults to two levels above this script, never the cwd)
 import { randomInt } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -15,30 +17,38 @@ import { fileURLToPath } from 'node:url';
 
 import { assetIndex, decodeChapterList } from '../src/story/catalog.ts';
 import type { AssetCatalog, Cast, CatalogIssue, ChapterListEntry, EndingName, StoryId } from '../src/story/catalog.ts';
-import type { AssetIndex, ChapterId, KnotName, LineId, PuzzleLocalId } from '../src/story/staging.ts';
+import type { AssetId, AssetIndex, BgId, ChapterId, KnotName, LineId, PuzzleLocalId } from '../src/story/staging.ts';
 import { toPublic } from '../src/world/decode.ts';
-import type { WorldPublicBody, WorldSource } from '../src/world/types.ts';
+import type { RoomId, WorldPublicBody, WorldSource } from '../src/world/types.ts';
 import { compileChapter } from './story/compile.ts';
 import type { CompiledChapter } from './story/compile.ts';
-import { OUT, chapterPaths, decodeLineFingerprints, hintIdsOf, paidLeak, planEmit, storyVersion } from './story/emit.ts';
+import { OUT, chapterPaths, decodeLineFingerprints, decodeStoryUsage, hintIdsOf, paidLeak, planEmit, storyVersion } from './story/emit.ts';
 import type { StoryNames, WorldNeedles } from './story/emit.ts';
 import { ID_SHAPED_RE, fixIds, fixWorldIds, syncLocales } from './story/fix.ts';
 import { buildGraph, writeOnly } from './story/graph.ts';
 import type { ChapterGraph, GraphFacts, WorldRef } from './story/graph.ts';
 import { LINT_CODES, lintCatalog, lintSources } from './story/lint.ts';
-import type { Finding, LintCode, SourceChapter, SourceLintInput } from './story/lint.ts';
+import type { Finding, LintCode, Severity, SourceChapter, SourceLintInput } from './story/lint.ts';
 import { RETIRED_FILE, checkLocales, decodeEnTable, decodeNameTable, decodeRetired } from './story/locales.ts';
 import type { EnTable } from './story/locales.ts';
 import { META_FILE, choicePoints, lintMeta } from './story/meta.ts';
 import type { ChoiceMap, MetaSource, StoryMeta } from './story/meta.ts';
 import { ALLOW_FILE, coverageLine, decodeAllow, playChapter } from './story/playthrough.ts';
 import type { CarrySnapshot, ChapterPlay } from './story/playthrough.ts';
+import { ART_LIST_DIR, artList, artListMarkdown, encodeArtList } from './story/shots/art-list.ts';
+import { buildFlow, crossCheck, graphSections, roomEvents } from './story/shots/flow.ts';
+import type { ChapterFlow } from './story/shots/flow.ts';
+import { lintShots, shotFinding, usedShots } from './story/shots/lint.ts';
+import type { ShotFinding } from './story/shots/lint.ts';
+import { SHOTS_FILE, decodeShotList, effectiveCatalog, effectiveShots } from './story/shots/list.ts';
+import type { EffectiveShot, ShotList } from './story/shots/list.ts';
+import { SHOT_USAGE_FILE, encodeShotUsage, shotUsage } from './story/shots/usage.ts';
 import { STORIES_FILE, checkEndings, checkInvoiceTitles, decodeStories, endingKnots } from './story/stories.ts';
 import type { StoryPlan } from './story/stories.ts';
 import { WORLD_FILE, decodeWorldFile, lintWorld, worldFingerprints, worldLines } from './story/world.ts';
 import type { SectionReport, WorldLine } from './story/world.ts';
 
-const USAGE = 'usage: node scripts/story.ts [--strict] [--fix-ids] [--sync-locales] [--root <repo>]';
+const USAGE = 'usage: node scripts/story.ts [--strict] [--fix-ids] [--sync-locales] [--art-list] [--root <repo>]';
 /** The en tables (STAGING-DSL §4): `<ch>.json` per chapter, beside the names and titles of `story.json`. */
 const EN_DIR = 'story/locales/en';
 const NAME_TABLE = 'story.json';
@@ -52,6 +62,16 @@ function finding(code: LintCode, file: string, message: string): Finding {
 /** Findings of the source lint, the compiler and the graph name story-relative files; printed repo-relative. */
 function inStory(findings: readonly Finding[]): Finding[] {
   return findings.map((f) => ({ ...f, file: `story/${f.file}` }));
+}
+
+/** The step flow's findings name story-relative files, as the compiler's do. */
+function shotsInStory(findings: readonly ShotFinding[]): ShotFinding[] {
+  return findings.map((f) => ({ ...f, file: `story/${f.file}` }));
+}
+
+/** `--strict`: a warning is an error (a lint finding or a shot finding alike). */
+function strictly<T extends { readonly severity: Severity }>(f: T): T {
+  return f.severity === 'W' ? { ...f, severity: 'E' } : f;
 }
 
 function stripBom(text: string): string {
@@ -470,7 +490,7 @@ function playStage(
     worlds: ReadonlyMap<ChapterId, WorldPublicBody>;
   },
   out: Finding[],
-): { lines: string[]; skipped: number } {
+): { lines: string[]; skipped: number; plays: ReadonlyMap<ChapterId, ChapterPlay> } {
   const allow = decodeAllow(readRaw(root, `story/${ALLOW_FILE}`), input.list, input.graphs);
   out.push(...inStory(allow.findings));
   const plays = new Map<ChapterId, ChapterPlay>();
@@ -514,12 +534,34 @@ function playStage(
     plays.set(ch.id, r.play);
     lines.push(coverageLine(r.play, g));
   }
-  return { lines, skipped };
+  return { lines, skipped, plays };
 }
 
 /** The snapshots a played chapter hands its successor: every ended run's, except a run that ended the story. */
 function carriesOn(play: ChapterPlay, endings: ReadonlyMap<KnotName, EndingName> | undefined): CarrySnapshot[] {
   return play.carries.filter((c) => endings?.has(c.knot) !== true).map((c) => c.vars);
+}
+
+/**
+ * The `shots:` report line (§14, D1): not checked without story/shots.json or when it (or the catalog) did not decode;
+ * else the flow nodes over the listed chapters, the shots some listed chapter shows and the shot pass's errors.
+ */
+function shotReport(
+  present: boolean,
+  decoded: boolean,
+  flows: ReadonlyMap<ChapterId, ChapterFlow>,
+  worlds: ReadonlyMap<ChapterId, WorldPublicBody>,
+  errors: number,
+): string {
+  if (!present) {
+    return `shots: not checked (no ${SHOTS_FILE})`;
+  }
+  if (!decoded) {
+    return `shots: not checked (${SHOTS_FILE} or the catalog has errors)`;
+  }
+  const shown = new Set([...flows].flatMap(([ch, flow]) => [...usedShots(flow, worlds.get(ch) ?? null)]));
+  const steps = [...flows.values()].reduce((n, f) => n + f.steps.size, 0);
+  return `shots: ${steps} steps, ${shown.size} shots, ${errors} E`;
 }
 
 function issueFindings(code: LintCode, issues: readonly CatalogIssue[]): Finding[] {
@@ -531,6 +573,7 @@ export function main(argv: readonly string[], repoRoot: string): number {
   let strict = false;
   let fix = false;
   let sync = false;
+  let arts = false;
   let root = repoRoot;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -541,6 +584,8 @@ export function main(argv: readonly string[], repoRoot: string): number {
       fix = true;
     } else if (arg === '--sync-locales') {
       sync = true;
+    } else if (arg === '--art-list') {
+      arts = true;
     } else if (arg === '--root' && value !== undefined) {
       root = path.resolve(value);
       i++;
@@ -584,6 +629,28 @@ export function main(argv: readonly string[], repoRoot: string): number {
     catalog = linted.catalog;
     assets = catalog === null ? null : assetIndex(catalog);
     cast = linted.cast;
+  }
+  // The shot list (§14, D1): opt-in on story/shots.json, decoded against the catalog. A declared shot without a
+  // catalog bg gets its implied placeholder in the catalog every later stage reads, so its `bg:` / `scene:` parse.
+  const shotFound: ShotFinding[] = [];
+  const baseCatalog = catalog;
+  const shotText = readRaw(root, SHOTS_FILE);
+  let shotList: ShotList | null = null;
+  if (shotText !== null && catalog !== null) {
+    let raw: unknown = null;
+    try {
+      raw = JSON.parse(stripBom(shotText));
+    } catch (e) {
+      shotFound.push(shotFinding('shot/list', SHOTS_FILE, 0, `not JSON: ${e instanceof Error ? e.message : String(e)}`));
+    }
+    const r = shotFound.length === 0 ? decodeShotList(raw, catalog) : null;
+    if (r?.ok === true) {
+      shotList = r.value;
+      catalog = effectiveCatalog(catalog, r.value);
+      assets = assetIndex(catalog);
+    } else if (r !== null) {
+      shotFound.push(...r.error.map((issue) => shotFinding('shot/list', SHOTS_FILE, 0, issue)));
+    }
   }
 
   // The story list (§9): judged only on a list that decoded in play order, so every chain is defined and a list error
@@ -703,6 +770,7 @@ export function main(argv: readonly string[], repoRoot: string): number {
   // 6. Seeded playthroughs of the chapters, in list order.
   const endings = plans === null ? new Map<ChapterId, ReadonlyMap<KnotName, EndingName>>() : endingKnots(plans);
   const sourceWorlds = new Map([...worlds].flatMap(([ch, w]) => (w.kind === 'ok' ? [[ch, w.source] as const] : [])));
+  const publicWorlds = new Map([...sourceWorlds].map(([ch, w]) => [ch, toPublic(w)]));
   const played = playStage(
     root,
     {
@@ -715,7 +783,7 @@ export function main(argv: readonly string[], repoRoot: string): number {
       en: localized?.en ?? new Map(),
       sourceErrors,
       endings,
-      worlds: new Map([...sourceWorlds].map(([ch, w]) => [ch, toPublic(w)])),
+      worlds: publicWorlds,
     },
     found,
   );
@@ -724,7 +792,36 @@ export function main(argv: readonly string[], repoRoot: string): number {
     throw new Error('invariant: a listed chapter not played implies an error');
   }
 
-  const findings = strict ? found.map((f): Finding => (f.severity === 'W' ? { ...f, severity: 'E' } : f)) : found;
+  // The shot pass (§14, D1): each compiled chapter's step flow, the cross-check against its seeded runs (played
+  // chapters only), then the shot lints over every listed chapter, with every world (a room's shot is a room shot).
+  const flows = new Map<ChapterId, ChapterFlow>();
+  let effective: ReadonlyMap<BgId, EffectiveShot> | null = null;
+  if (shotList !== null && catalog !== null && baseCatalog !== null && assets !== null && cast !== null) {
+    effective = effectiveShots(catalog, shotList, [...publicWorlds.values()]);
+    for (const ch of chapters) {
+      const c = compiled.get(ch.id);
+      const g = graphs.get(ch.id);
+      if (c === undefined || g === undefined) {
+        continue;
+      }
+      const w = publicWorlds.get(ch.id);
+      const r = buildFlow({ chapter: ch.id, files: c.files, sources: files, graph: g, assets, cast, ...(w === undefined ? {} : { world: w }) });
+      shotFound.push(...shotsInStory(r.findings));
+      const play = played.plays.get(ch.id);
+      if (play !== undefined) {
+        shotFound.push(...shotsInStory(crossCheck(r.flow, play.transitions, ch.entry)));
+      }
+      flows.set(ch.id, r.flow);
+    }
+    const shotChapters = chapters.flatMap((ch) => {
+      const flow = flows.get(ch.id);
+      return flow === undefined ? [] : [{ id: ch.id, flow, world: publicWorlds.get(ch.id) ?? null }];
+    });
+    shotFound.push(...lintShots({ chapters: shotChapters, shots: effective, catalog: baseCatalog, planes: new Map() }));
+  }
+
+  const reported: Array<Finding | ShotFinding> = [...found, ...shotFound];
+  const findings = strict ? reported.map(strictly) : reported;
   // 7. Emit only from a clean run: a failed run writes and deletes nothing.
   if (!findings.some((f) => f.severity === 'E')) {
     if (cast === null) {
@@ -747,9 +844,50 @@ export function main(argv: readonly string[], repoRoot: string): number {
     if (meta === null) {
       throw new Error('invariant: a run with no error decoded the story meta');
     }
-    const plan = planEmit({ chapters, compiled, graphs, cast, names, en, stories: plans, worlds: sourceWorlds, meta: { source: meta, choices } });
+    const plan = new Map(planEmit({ chapters, compiled, graphs, cast, names, en, stories: plans, worlds: sourceWorlds, meta: { source: meta, choices } }));
+    const artFiles = new Map<string, string>();
+    if (shotList !== null && effective !== null && baseCatalog !== null) {
+      // The rooms' pictures come from the planned usage.json (one derivation of a room's images).
+      const usage = decodeStoryUsage(JSON.parse(plan.get(`${OUT.build}/usage.json`) ?? 'null'));
+      if (!usage.ok) {
+        throw new Error(`invariant: the planned usage.json decodes: ${usage.error.join('; ')}`);
+      }
+      const usageChapters = chapters.flatMap((ch) => {
+        const flow = flows.get(ch.id);
+        const g = graphs.get(ch.id);
+        if (flow === undefined || g === undefined) {
+          return [];
+        }
+        const world = publicWorlds.get(ch.id) ?? null;
+        const pictures = new Map<RoomId, readonly AssetId[]>(
+          Object.entries(usage.value.rooms ?? {}).flatMap(([key, room]) => (key.startsWith(`${ch.id}/`) ? [[key.slice(key.lastIndexOf('/') + 1) as RoomId, room.props] as const] : [])), // `<ch>/<section>/<room>`
+        );
+        return [{ id: ch.id, paid: ch.paid, flow, world, rooms: world === null ? new Map() : roomEvents(world, graphSections(g), pictures) }];
+      });
+      const shotsUsage = shotUsage(usageChapters, effective);
+      plan.set(SHOT_USAGE_FILE, encodeShotUsage(shotsUsage));
+      for (const p of arts ? plans : []) {
+        const art = artList({
+          story: p.id,
+          chapters: p.chapters.flatMap((id) => {
+            const ch = usageChapters.find((c) => c.id === id);
+            const entry = shotsUsage.chapters[id];
+            return ch === undefined || entry === undefined ? [] : [{ id, paid: ch.paid, flow: ch.flow, usage: entry }];
+          }),
+          list: shotList,
+          shots: effective,
+          catalog: baseCatalog,
+        });
+        artFiles.set(`${ART_LIST_DIR}/${p.id}.md`, artListMarkdown(art));
+        artFiles.set(`${ART_LIST_DIR}/${p.id}.json`, encodeArtList(art));
+      }
+    } else {
+      // No shot list: no build/shots.json, a stale one included (D1).
+      rmSync(path.join(root, ...SHOT_USAGE_FILE.split('/')), { force: true });
+    }
     deleteStale(root, chapters, new Set(sourceWorlds.keys()));
     write(root, plan);
+    write(root, artFiles);
     const fp = decodeLineFingerprints(JSON.parse(plan.get(`${OUT.build}/fingerprints.lines.json`) ?? 'null'));
     if (!fp.ok) {
       throw new Error(`invariant: the planned fingerprints decode: ${fp.error.join('; ')}`);
@@ -792,6 +930,8 @@ export function main(argv: readonly string[], repoRoot: string): number {
   for (const line of played.lines) {
     console.log(line);
   }
+  const shotErrors = (strict ? shotFound.map(strictly) : shotFound).filter((f) => f.severity === 'E').length;
+  console.log(shotReport(shotText !== null, shotList !== null, flows, publicWorlds, shotErrors));
   for (const f of findings) {
     console.log(`${f.severity} ${f.file}:${f.line} ${f.code} ${f.message}`);
   }
