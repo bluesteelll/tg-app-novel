@@ -1560,6 +1560,21 @@ test('game: a purchase module that arrives in the background starts its flow pau
   h.game.dispose();
 });
 
+test('game: a Buy on a purchase module that already landed starts the purchase in the same tick', async () => {
+  // D2: once the paywall's prefetch is in, Buy runs the flow synchronously, as before lever P; the other Buy tests
+  // await between the tap and their assertions, so they hold on the waiting path too.
+  const h = harness({ chapters: [manorCh1(), manorCh2()] });
+  h.game.offerChapter(MANOR, CH2); // the paywall prefetches
+  await settle(); // the module lands
+  expect(h.purchaseLoads()).toBe(1);
+  h.game.buy();
+  expect(h.purchases, 'no await between the tap and the invoice').toEqual(['createInvoice:chapter:ch2']);
+  await settle();
+  expect(h.purchases).toEqual(['createInvoice:chapter:ch2']);
+  expect(h.purchaseLoads(), 'Buy loads nothing more').toBe(1);
+  h.game.dispose();
+});
+
 // ---------------------------------------------------------------------------------------------------------------
 // C6: the yields in the session (PZ "Resource lifetime", F9, F10; SP "Module API")
 
