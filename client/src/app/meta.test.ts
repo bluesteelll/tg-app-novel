@@ -2,7 +2,7 @@
 // real endpoints and decoders, the real view model, screens stack and purchase flow: only the http layer, the facade,
 // the reporter's settle and the lazy chunk are fakes. The http fake answers each route with its dto sample unless a
 // test parks or replaces the answer, so every answer goes through its decoder as at the real edge.
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 
 import { decodeStatsResponse } from '../api/decode.ts';
 import type { Decoder } from '../api/decode.ts';
@@ -26,6 +26,7 @@ import { createViewModel } from '../ui/state.svelte.ts';
 import type { ViewModel } from '../ui/state.svelte.ts';
 import { createMetaController, policyUrl } from './meta.ts';
 import type { MetaController, MetaUi } from './meta.ts';
+import { metaHold } from './reload.ts';
 
 const SAMPLES: unknown = JSON.parse(samplesText);
 
@@ -643,6 +644,37 @@ test('meta: one pack flow per wallet surface', async () => {
   r.ctl.onLifecycle('activated');
   r.ctl.dispose();
   expect(flows.calls).toEqual(['deactivated', 'activated', 'dispose']);
+});
+
+test('meta: a pack Buy waiting for the purchase module is named in the view until its flow starts or its load fails', async () => {
+  // E6 (a): the page's reload holds read the view (`metaHold`), and the flow writes nothing before its module lands.
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const flows = spiedFlows();
+    const loads: Array<{ resolve: (m: FlowModule) => void; reject: (e: unknown) => void }> = [];
+    const r = await booted({ loadPurchase: () => new Promise((resolve, reject) => loads.push({ resolve, reject })) });
+    r.ctl.buyPack(PACK);
+    r.ctl.buyPack(PACK); // a double tap: both wait on the one load
+    expect(r.vm.meta?.purchaseWaiting, 'a Buy waits for the module').toBe(true);
+    expect([metaHold(r.vm.meta), loads.length]).toEqual(['purchase', 1]);
+    loads[0]?.reject(new Error('the purchase chunk is gone'));
+    await flush();
+    expect([r.vm.meta?.purchaseWaiting, metaHold(r.vm.meta), r.vm.meta?.purchase.kind], 'the load failed').toEqual([false, null, 'idle']);
+    expect([toasts(r), r.server.count(INVOICE_LABEL)]).toEqual([[{ key: 'toast.purchase_failed', message: t('ru', 'toast.purchase_failed') }], 0]);
+    // The next Buy loads again; its invoice is parked, so the flow it starts stays `requesting`.
+    const invoice = r.server.park(INVOICE_LABEL);
+    r.ctl.buyPack(PACK);
+    expect([r.vm.meta?.purchaseWaiting, loads.length]).toEqual([true, 2]);
+    loads[1]?.resolve(await flows.load());
+    await flush();
+    expect([r.vm.meta?.purchaseWaiting, r.vm.meta?.purchase.kind, metaHold(r.vm.meta)], 'the hand-off').toEqual([false, 'requesting', 'purchase']);
+    expect([flows.made(), r.server.count(INVOICE_LABEL)]).toEqual([1, 1]);
+    invoice.release();
+    await flush();
+    r.ctl.dispose();
+  } finally {
+    errors.mockRestore();
+  }
 });
 
 test("meta: a pack's 429 shows the wait and holds Buy", async () => {
