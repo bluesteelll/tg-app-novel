@@ -6,6 +6,7 @@
 // rule).
 import type { Component } from 'svelte';
 
+import type { CueEvent } from '../cues/types.ts';
 import type { Lang } from '../i18n/index.ts';
 import type { PuzzleUiProps } from '../puzzles/registry.ts';
 import type { PuzzleType } from '../puzzles/rules/index.ts';
@@ -26,9 +27,10 @@ export type PuzzleFrameView = {
   params: unknown;
   answer: readonly number[];
   /**
-   * The frame waits for an answer that settles it: an attempt in flight (yields' `ontry` sets it; the attempt's reply
-   * clears it, in `attempted`, or in `countdown` for a 429). Try and the type UI's input are off while it holds. Never
-   * the chunk's state: that is `retrying`.
+   * The frame waits for an answer that settles it: an attempt in flight (yields' `post(o)`, the one attempt starter,
+   * sets it; the attempt's reply clears it, in `attempted`, or in `countdown` for a 429; a `busy` reply leaves it to the
+   * attempt in flight). Try and the type UI's input are off while it holds. Never the chunk's state: that is
+   * `retrying`.
    */
   busy: boolean;
   line: PuzzleLine;
@@ -43,8 +45,8 @@ export type PuzzleFrameView = {
   loadFailed: boolean;
   /**
    * A Retry's import of the host and type chunks is in flight: the notice stays, with Retry disabled. Never `busy`.
-   * Starts false (`openPuzzle`); nothing sets it yet, so both Retry buttons stay enabled (engine plan GM3w): yields'
-   * `onretry` and `loadPuzzleUis` become its writers in GM3p.
+   * Starts false (`openPuzzle`); yields' `onretry` sets it and the chunk write (`loadPuzzleUis`) clears it with its
+   * result, so both Retry buttons (PuzzleHost's and App's failed-host block) are disabled only while a reload runs.
    */
   retrying: boolean;
 };
@@ -63,6 +65,12 @@ export type PuzzleHostCallbacks = {
   onretry: () => void;
   onusehint: (tier: number) => void;
   ongetmore: () => void;
+  /**
+   * The frame family's cues (engine plan §8.3; GM3p): its root emits each declared control's `ui` cue here, with its
+   * point in the frame root's px; yields moves it to the stage host's and puts it on the session's bus. Optional: a
+   * host without a bus (a test's) plays none.
+   */
+  oncue?: (e: CueEvent) => void;
 };
 
 /**
@@ -80,6 +88,7 @@ export function forwardHost(get: () => PuzzleHostCallbacks | undefined): PuzzleH
     onretry: () => get()?.onretry(),
     onusehint: (tier) => get()?.onusehint(tier),
     ongetmore: () => get()?.ongetmore(),
+    oncue: (e) => get()?.oncue?.(e),
   };
 }
 
