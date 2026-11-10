@@ -15,7 +15,7 @@
   {#each doc.body as paragraph, i (i)}
     <p>{paragraph}</p>
   {/each}
-  <button type="button" class="close" onclick={onclose}>{t(lang, 'doc.close')}</button>
+  <button type="button" class="close" data-cue="doc-close" onclick={onclose}>{t(lang, 'doc.close')}</button>
 </article>
 
 <style>

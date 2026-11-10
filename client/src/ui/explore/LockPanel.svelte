@@ -39,7 +39,7 @@
   <ul class="held">
     {#each items as item (item.id)}
       <li>
-        <button type="button" class="held-item" onclick={() => oninsert(lock.key, item.id)}>
+        <button type="button" class="held-item" data-cue="lock-item" data-cue-item={item.id} onclick={() => oninsert(lock.key, item.id)}>
           <svg class="glyph" viewBox={GLYPH_VIEWBOX} aria-hidden="true"><path d={GLYPH_PATHS[item.glyph]} /></svg>
           <span class="name">{item.name}</span>
         </button>
