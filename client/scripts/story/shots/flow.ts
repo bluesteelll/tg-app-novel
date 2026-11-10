@@ -5,9 +5,11 @@
 // CFG rules: weave depth for choices and gathers; diverts enter a knot's first step; tunnels add call and every-return
 // edges; conditional and sequence blocks take every arm (and skip them when no arm must run); sticky and fallback
 // choices count; END and DONE end a path; a yield leads to its `then` knot, an explore yield to its section's knots
-// (cross-check only, `explore`); an event knot's last step returns to its rooms' windows `r:<room>` and to the event
-// knots co-fired after it, an entering explore yield leads to its section's start room window. The may-analysis: what may be on stage after each step's batch, a forward union to a
-// fixpoint from the seeds (the first knot: the empty stage; a section knot: its rooms). It is the only code of the
+// (cross-check only, `explore`); an event knot's last step returns to its rooms' windows `r:<room>` and leads, with its
+// yield's batch, to the event knots co-fired after it, an entering explore yield leads to its section's start room
+// window. The may-analysis: what may be on stage after each step's batch, a forward union to a fixpoint from the seeds
+// (the first knot: the empty stage; a section knot: the rooms it opens on, none for an event only ever co-fired after
+// another, which opens on that one's last image). It is the only code of the
 // shot pass that names the legacy kinds `show` / `hide` (rev. 5, W3: SH12a removes them here alone). Pure, no node:*,
 // no inkjs; tags are read only through `parseTags`.
 import type { Cast } from '../../../src/story/catalog.ts';
@@ -159,6 +161,8 @@ class Builder {
   readonly findings: ShotFinding[] = [];
   readonly #reported = new Set<string>();
   readonly #returns: EventReturns;
+  /** Per section knot, the rooms it opens on (`openingRooms`): a knot with none is never seeded. */
+  readonly opens: OpeningRooms;
   /** Per step: where it is, its own commands and how its walk continues. */
   readonly nodes = new Map<StepKey, { kind: StepFlow['kind']; file: string; line: number; speaker: CharId | null; cont: () => State[] }>();
   /** Per choice, the choices of its set. */
@@ -172,6 +176,7 @@ class Builder {
   constructor(input: FlowInput) {
     this.#input = input;
     this.#returns = eventReturns(input.world, graphSections(input.graph));
+    this.opens = openingRooms(input.world, graphSections(input.graph));
     this.#files = input.files.map((name) => ({ name, lines: classify(input.sources.get(name) ?? '') }));
     this.#blocks = this.#files.map(() => new Map());
     this.#owner = this.#files.map(() => new Map());
@@ -614,7 +619,9 @@ class Builder {
     for (const k of knots) {
       const key = knotKey(k);
       (this.explore.get(from) ?? this.explore.set(from, new Set()).get(from))?.add(key);
-      this.seed(key);
+      if ((this.opens.get(k)?.length ?? 0) > 0) {
+        this.seed(key); // an event only ever co-fired after another opens on no room: its co-fired edges carry its stage
+      }
       this.#knotEntry(key, k, this.#knots.get(k));
     }
     const next = this.next.get(from) ?? this.next.set(from, new Set()).get(from);
@@ -625,8 +632,9 @@ class Builder {
         next?.add(`r:${r}`);
       }
       for (const k of back.cofiredAfter.filter((x) => this.#knots.has(x))) {
-        next?.add(knotKey(k)); // no batch: the next event opens on this one's last image, not on a seed's
-        this.seed(knotKey(k));
+        // The next event opens on this one's last image after the yield's batch (`core.ts` `eventReturned` stages no
+        // room in between); the yield in the batch keeps it apart from a seed's empty one.
+        this.#edge(from, knotKey(k), s.pending);
         this.#knotEntry(knotKey(k), k, this.#knots.get(k));
       }
       return;
@@ -761,11 +769,11 @@ function roomIndex(world: WorldPublicBody | undefined): (bg: BgId) => ReadonlySe
 
 /**
  * The seeds (§3.4 "May-analysis"): the first knot's entry starts on the empty stage (§2.2); a section knot's entry on
- * the shot and room of each room that names it, as `carriedStage` seeds it (`graph.ts`), so the stage of the step
- * before the yield never flows into it.
+ * the shot and room of each room it opens on (`openingRooms`), so the stage of the step before the yield never flows
+ * into it. `carriedStage` (`graph.ts`) seeds a section knot with every room that names it; an event only ever co-fired
+ * after another has no seed here: its co-fired edges bring that event's last image.
  */
-function seedEffects(input: FlowInput, raw: ReadonlyMap<StepKey, ReadonlyArray<{ from: readonly StepKey[] }>>): Map<StepKey, Effect> {
-  const sections = graphSections(input.graph);
+function seedEffects(input: FlowInput, raw: ReadonlyMap<StepKey, ReadonlyArray<{ from: readonly StepKey[] }>>, opens: OpeningRooms): Map<StepKey, Effect> {
   const bgOf = new Map<string, BgId>();
   for (const s of Object.values(input.world?.sections ?? {})) {
     for (const [id, r] of Object.entries(s.rooms)) {
@@ -779,8 +787,8 @@ function seedEffects(input: FlowInput, raw: ReadonlyMap<StepKey, ReadonlyArray<{
     }
     const knot = key.slice('k:'.length);
     const parts: Effect[] = knot === input.graph.firstKnot ? [EMPTY_EFFECT] : [];
-    const named = sections.rooms.get(knot as KnotName); // a lookup key
-    for (const room of [...(named?.events ?? []), ...(named?.leaves ?? [])]) {
+    const rooms = opens.get(knot as KnotName) ?? []; // a lookup key
+    for (const room of rooms) {
       const bg = bgOf.get(room);
       if (bg !== undefined) {
         parts.push({ ...EMPTY_EFFECT, shots: new Set([bg]), room: new Set([room]) });
@@ -806,7 +814,7 @@ export function buildFlow(input: FlowInput): { flow: ChapterFlow; findings: Shot
   const keys = [...b.nodes.keys()].sort(order);
   const raw = new Map(keys.map((k) => [k, [...(b.into.get(k)?.values() ?? [])].map((x) => ({ from: [...x.from].sort(order), commands: x.commands }))]));
   const roomsOf = roomIndex(input.world);
-  const seeds = seedEffects(input, raw);
+  const seeds = seedEffects(input, raw, b.opens);
   // The forward may-analysis: a union to a fixpoint (every transfer is monotone, every set finite).
   const effects = new Map<StepKey, Effect>();
   const batchOut = (key: StepKey, x: { from: readonly StepKey[]; commands: readonly Placed[] }): Effect | undefined => {
@@ -909,19 +917,23 @@ export type RoomEvents = ReadonlyMap<
  */
 export type EventReturns = ReadonlyMap<KnotName, { readonly rooms: readonly RoomId[]; readonly cofiredAfter: readonly KnotName[] }>;
 
-/** Every list of effects a room fires, as its story knots in order: its onEnter, a hotspot's `then`, a lock's onOpen and onFail. */
-function storyLists(world: WorldPublicBody | undefined): KnotName[][] {
-  const out: KnotName[][] = [];
+/**
+ * Every list of effects a room fires, with the room, as its story knots in order: its onEnter, a hotspot's `then`, a
+ * lock's onOpen and onFail.
+ */
+function storyLists(world: WorldPublicBody | undefined): Array<{ readonly room: RoomId; readonly knots: readonly KnotName[] }> {
+  const out: Array<{ room: RoomId; knots: KnotName[] }> = [];
   const knots = (effects: ReadonlyArray<{ story: KnotName } | object>): KnotName[] => effects.flatMap((e) => ('story' in e ? [e.story] : []));
   for (const section of Object.values(world?.sections ?? {})) {
-    for (const room of Object.values(section.rooms)) {
-      out.push(knots(room.onEnter));
+    for (const [key, room] of Object.entries(section.rooms)) {
+      const id = key as RoomId; // a decoded room id
+      out.push({ room: id, knots: knots(room.onEnter) });
       for (const h of room.hotspots) {
         if (h.kind !== 'exit') {
-          out.push(knots(h.then));
+          out.push({ room: id, knots: knots(h.then) });
         }
         if (h.kind === 'exit' || h.kind === 'object') {
-          out.push(knots(h.lock?.onOpen ?? []), knots(h.lock?.onFail ?? []));
+          out.push({ room: id, knots: knots(h.lock?.onOpen ?? []) }, { room: id, knots: knots(h.lock?.onFail ?? []) });
         }
       }
     }
@@ -929,10 +941,35 @@ function storyLists(world: WorldPublicBody | undefined): KnotName[][] {
   return out;
 }
 
+/**
+ * Per section knot (`ChapterSections.rooms`), the rooms whose stage it may open on, sorted: each room it is a leave
+ * knot of, and each room it is named in as an event where a list of effects fires it first. The explore runs a knot a
+ * list fires after another only when that one returns, with no room batch in between (`core.ts` `eventReturned`), so
+ * an event only ever co-fired opens on no room (none listed): it opens on the previous event's last image.
+ */
+type OpeningRooms = ReadonlyMap<KnotName, readonly RoomId[]>;
+
+/** The rooms the chapter's section knots open on (see `OpeningRooms`). */
+function openingRooms(world: WorldPublicBody | undefined, sections: ChapterSections): OpeningRooms {
+  const first = new Map<KnotName, Set<RoomId>>();
+  for (const { room, knots } of storyLists(world)) {
+    const k = knots[0];
+    if (k !== undefined) {
+      (first.get(k) ?? first.set(k, new Set()).get(k))?.add(room);
+    }
+  }
+  const out = new Map<KnotName, RoomId[]>();
+  for (const [knot, named] of sections.rooms) {
+    const opened = named.events.filter((r) => first.get(knot)?.has(r) === true);
+    out.set(knot, [...new Set([...opened, ...named.leaves])].sort(order));
+  }
+  return out;
+}
+
 /** The returns of the chapter's event knots (see `EventReturns`). */
 export function eventReturns(world: WorldPublicBody | undefined, sections: ChapterSections): EventReturns {
   const after = new Map<KnotName, Set<KnotName>>();
-  for (const list of storyLists(world)) {
+  for (const { knots: list } of storyLists(world)) {
     list.forEach((k, i) => {
       const later = after.get(k) ?? after.set(k, new Set()).get(k);
       for (const x of list.slice(i + 1).filter((y) => y !== k)) {
@@ -1106,10 +1143,9 @@ function lookEdges(input: LookInput): Map<StepKey, LookEdge[]> {
       if (to === undefined) {
         continue;
       }
-      const batches = to.batches.filter((x) => x.from.includes(step.key));
-      // No batch from this step: a co-fired event knot, which opens on this step's last image.
-      for (const b of batches.length > 0 ? batches : [null]) {
-        out.push({ to: to.key, files: new Set(b === null ? [] : appears(b, input)) });
+      // Every way into a step from this one is a batch (a co-fired event knot's carries the yield's batch).
+      for (const b of to.batches.filter((x) => x.from.includes(step.key))) {
+        out.push({ to: to.key, files: new Set(appears(b, input)) });
       }
     }
     // A step with no successor ends its paths: kept as an edge so that a choice set's union still sees the end.

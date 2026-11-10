@@ -993,7 +993,8 @@ or its section's knots. Every step transition a seeded playthrough makes must be
 (`flow/edge-missing`). Over the flow, what may be on stage at each step (the shot, the faces, the CG, the room, the
 legacy sprites) is a union over every path: `scene:` resets the faces to each member's rest, `bg:` cuts inside the
 scene and keeps them, `face:` sets one character's expression; a chapter starts on the empty stage, a section's knot
-on its room. So a `face:`, an `anim:` or a `cam:` with a character target must name a member of every shot that may
+on the room it is fired from, and an event that a list of effects fires after another on that event's last image (the
+explore runs it when that one returns, without showing the room). So a `face:`, an `anim:` or a `cam:` with a character target must name a member of every shot that may
 be in effect after its batch's cut.
 
 ### 14.3 Shot lint codes

@@ -1379,6 +1379,52 @@ test('flow: an event co-fired before another makes the return possible, not cert
   expect(lookAt(l, 'ch1.gate_echo.e001')).toMatchObject({ certain: ['bg/hall'], certainDist: 1 });
 });
 
+test('flow: an event co-fired after another opens on its last image', () => {
+  const w = manorWorld([{ story: 'gate_forced' }, { story: 'gate_echo' }, { unlock: 'hall.gate' }]);
+  const echo = (opening: readonly string[]): string[] => manor({ gate_forced: ['# bg: cafe_ally_cu'] }, ['=== gate_echo ===', ...opening, '# explore: s', '-> DONE']);
+  const l = looked(echo(['Эхо. #id:ch1.gate_echo.e001']), { w, pictures: MANOR_PROPS });
+  // The explore runs the echo when the forced gate returns, with no room batch between them (`core.ts` `eventReturned`),
+  // and no list fires the echo first: it opens on the forced gate's close-up, never on the hall.
+  expect(effectAt(l.flow, 'ch1.gate_echo.e001')).toMatchObject({ shots: ['cafe_ally_cu'], room: ['-'] });
+  expect(entryAt(l, 'ch1.gate_echo.e001')).toEqual([['bg/cafe_ally_cu', 'sheet/cafe_ally_cu']]);
+  // The hall is not on stage there: the return after the echo brings it, certain at distance 1.
+  expect(lookAt(l, 'ch1.gate_echo.e001')).toMatchObject({ certain: ['bg/hall'], certainDist: 1 });
+  // A face change without a cut there names the close-up's cast.
+  const { findings } = linted(echo(['# face: ally smile', 'ally: Эхо. #id:ch1.gate_echo.e001']), { w });
+  expect(shown(findings, 'shot/char-absent')).toEqual([]);
+});
+
+test('flow: an event opens on the room of a list that fires it first, else on the event before it', () => {
+  const look = (id: string, n: number, then: readonly Json[]): Json => ({ id, kind: 'look', rect: [100, 300, 100, 100], label: TEXT(`ch1.s.l30${n}`), look: TEXT(`ch1.s.k30${n}`), then });
+  const exit = (to: string, n: number): Json => ({ id: 'way', kind: 'exit', rect: [100, 1300, 250, 400], label: TEXT(`ch1.s.l31${n}`), to: { room: to }, lock: null, sfx: null });
+  // The hall's bell fires the bell and then the echo; the study's bust fires the echo alone.
+  const w = world({
+    hall: room('hall', [look('bell', 1, [{ story: 'bell' }, { story: 'echo' }]), exit('study', 1)]),
+    study: room('study', [look('bust', 2, [{ story: 'echo' }]), exit('hall', 2)]),
+  });
+  const body = [
+    '-> arrive',
+    '=== arrive ===',
+    '# scene: hall',
+    'Зал. #id:ch1.arrive.a001',
+    '# explore: s',
+    '-> DONE',
+    '=== bell ===',
+    '# bg: cafe_ally_cu',
+    'Звон. #id:ch1.bell.b001',
+    '# explore: s',
+    '-> DONE',
+    '=== echo ===',
+    'Эхо. #id:ch1.echo.e001',
+    '# explore: s',
+    '-> DONE',
+  ];
+  const { flow } = flowOf(body, CAFE_CATALOG, w);
+  // In the study the echo opens on the study; in the hall only after the bell, on its close-up; never on the hall.
+  expect(effectAt(flow, 'ch1.echo.e001')).toMatchObject({ shots: ['cafe_ally_cu', 'study'], room: ['-', 'study'] });
+  expect(effectAt(flow, 'k:bell')).toMatchObject({ shots: ['hall'], room: ['hall'] });
+});
+
 test('flow: two rooms on one bg keep two windows', () => {
   const look = (story: string, n: number): Json => ({ id: 'thing', kind: 'look', rect: [100, 300, 100, 100], label: TEXT(`ch1.s.l20${n}`), look: TEXT(`ch1.s.k20${n}`), then: [{ story }] });
   const exit = (to: string, n: number): Json => ({ id: 'way', kind: 'exit', rect: [100, 1300, 250, 400], label: TEXT(`ch1.s.l21${n}`), to: { room: to }, lock: null, sfx: null });
