@@ -1055,6 +1055,48 @@ test("yields: a moving dispatch's cues play after its move cue", async () => {
   r.yields.dispose();
 });
 
+test("yields: an arrival's fact cues play with its move at the batch start", async () => {
+  // The cellar walk, its batch late: nothing but the hold before it starts; then the move, and the arrival's facts
+  // (the visit, the cellar's onEnter trigger and its gift) with it.
+  const r = rig({ world: cueWorld(), late: true });
+  await inLateHall(r);
+  let mark = r.cues.length;
+  r.yields.layer.ontap(key('hall.to_cellar'));
+  await settle();
+  expect(keysOf(r, mark)).toEqual(['ui-state:waiting']);
+  r.release();
+  await settle();
+  expect(keysOf(r, mark)).toEqual(['ui-state:waiting', 'ui-state:waited', 'move:walk', 'fact:visited:added', 'fact:fired:added', 'fact:held:added']);
+  const fired = r.cues.slice(mark).find((e) => keyOf(e.cue) === 'fact:fired:added')?.cue;
+  expect(fired?.kind === 'fact' ? [fired.fact.id, fired.cause.verb, fired.cause.at, fired.cause.via] : null).toEqual(['enter:cellar', 'tap', 'hall.to_cellar', 'enter:cellar']);
+  r.yields.dispose();
+
+  // A controller that delivers a cue effect before the room effect of the same dispatch: it still plays after the move.
+  const create: ExploreChunk['create'] = (deps) => {
+    const real = createExploreController(deps);
+    return {
+      ...real,
+      onEffect: (fn) =>
+        real.onEffect((e) => {
+          if (e.kind === 'room' && e.how === 'walk') {
+            fn({ kind: 'cue', cue: coreCue('look', 'hall.to_cellar' as HotspotKey, null) });
+          }
+          fn(e);
+        }),
+    };
+  };
+  const early = rig({ world: cueWorld(), late: true, create });
+  await inLateHall(early);
+  mark = early.cues.length;
+  early.yields.layer.ontap(key('hall.to_cellar'));
+  await settle();
+  expect(keysOf(early, mark)).toEqual(['ui-state:waiting']);
+  early.release();
+  await settle();
+  expect(keysOf(early, mark)).toEqual(['ui-state:waiting', 'ui-state:waited', 'move:walk', 'module:core:look', 'fact:visited:added', 'fact:fired:added', 'fact:held:added']);
+  early.yields.dispose();
+});
+
 test("yields: a section's first entry holds a motion while its chunk loads", async () => {
   let open = (): void => {};
   const r = rig({ exploreGate: new Promise<void>((resolve) => (open = resolve)) });
