@@ -5,6 +5,7 @@
 // components (X14), the one importer of the rules half (mechanics/rules/, the `rules-lazy` arch rule).
 import { ROOM_SOURCE, cover, minTarget, toStage } from '../geom/cover.ts';
 import type { Size } from '../geom/cover.ts';
+import type { SectionAction } from '../mechanics/contract.ts';
 import { reduce } from '../mechanics/rules/core.ts';
 import { admitEvent, admitSection } from '../mechanics/rules/search.ts';
 import type { SceneController } from '../scene/controller.ts';
@@ -14,7 +15,7 @@ import type { Unsubscribe } from '../telegram/index.ts';
 import type { DocView, ExploreViewStore, HotspotView, ItemView, LockView } from '../ui/explore-view.svelte.ts';
 import type { DocId, HotspotKey, ItemId, Lock, RoomId, WorldPublic, WorldText } from '../world/types.ts';
 import { hotspotKey, lockOf, worldIndex } from './reduce.ts';
-import type { ExploreAction, ExploreEffect } from './reduce.ts';
+import type { ExploreEffect } from './reduce.ts';
 import { EMPTY_WORLD_STATE } from './state.ts';
 import type { WorldState } from './state.ts';
 
@@ -31,7 +32,7 @@ export interface ExploreController {
    */
   enter(section: SectionId, state: WorldState): void;
   /** Taps, inserts and puzzle results; `enter-section` / `event-returned` take `enter`'s route, never `reduce` directly. */
-  dispatch(a: ExploreAction): void;
+  dispatch(a: SectionAction): void;
   /**
    * BackButton at the root (X12): a `tap` on the current room's open exit to the previous room of the path; false
    * when the path is empty or the controller is disposed. During an event knot the reducer refuses the tap.
@@ -79,7 +80,7 @@ const bgAsset = (bg: BgId): AssetId => `bg/${bg}` as AssetId; // STAGING-DSL §8
  * How an outcome came: through a section's entry (the path restarts), an event's return (the path is kept), or a
  * player action from `room` (a `room` effect to another room is a move).
  */
-type Route = { kind: 'admit' } | { kind: 'event' } | { kind: 'action'; action: ExploreAction; room: RoomId | null };
+type Route = { kind: 'admit' } | { kind: 'event' } | { kind: 'action'; action: SectionAction; room: RoomId | null };
 
 /** The renderer reads the same two numbers (`scene/controller.ts:180`); `.host` has no padding, so this is its content box. */
 const sizeOf = (host: HTMLElement): Size => ({ w: host.clientWidth, h: host.clientHeight });
@@ -327,7 +328,7 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
     }
   };
 
-  const dispatch = (a: ExploreAction): void => {
+  const dispatch = (a: SectionAction): void => {
     if (dead) {
       return;
     }

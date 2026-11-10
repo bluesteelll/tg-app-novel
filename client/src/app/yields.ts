@@ -17,12 +17,13 @@ import type { Cue, CueEvent, MoveHow } from '../cues/types.ts';
 import type { ExploreController, createExploreController } from '../explore/controller.ts';
 import { project } from '../explore/project.ts';
 import { runReduce, worldIndex } from '../explore/reduce.ts';
-import type { ExploreAction, ExploreEffect } from '../explore/reduce.ts';
+import type { ExploreEffect } from '../explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { PuzzleOutcome, PuzzleRun, WorldState } from '../explore/state.ts';
 import type { Box } from '../geom/cover.ts';
 import { t } from '../i18n/index.ts';
-import type { AnchorKey, Cause, CauseVerb, MechanicId } from '../mechanics/contract.ts';
+import { mechT } from '../i18n/mechanics.ts';
+import type { AnchorKey, Cause, CauseVerb, MechanicId, SectionAction } from '../mechanics/contract.ts';
 import type { MECHANIC_RULES } from '../mechanics/rules/index.ts';
 import { loadPuzzleUi } from '../puzzles/registry.ts';
 import type { ChunkError } from '../puzzles/registry.ts';
@@ -266,16 +267,21 @@ export const coreCue = (name: CoreCueName, at: HotspotKey | null, item: ItemId |
 
 const cause = (verb: CauseVerb, at: HotspotKey | null = null, item: ItemId | null = null): Cause => ({ verb, at, item, via: null });
 
-/** The cause of a dispatched action's cues; a lock puzzle's run acts at its lock, so its cues land on the lock's box. */
-const causeOf = (a: ExploreAction, w: WorldPublic | null): Cause =>
+/**
+ * The cause of a dispatched action's cues; a use acts at its target with its item (§6.1); a lock puzzle's run acts at its
+ * lock, so its cues land on the lock's box.
+ */
+const causeOf = (a: SectionAction, w: WorldPublic | null): Cause =>
   a.kind === 'tap'
     ? cause('tap', a.hotspot)
     : a.kind === 'insert'
       ? cause('insert', a.hotspot, a.item)
-      : cause(
-          a.kind === 'puzzle-ended' && a.outcome === 'solved' ? 'solve' : 'fail',
-          'puzzle' in a && w !== null ? (worldIndex(w).puzzleLock.get(a.puzzle) ?? null) : null,
-        );
+      : a.kind === 'use'
+        ? cause('use', a.target, a.item)
+        : cause(
+            a.kind === 'puzzle-ended' && a.outcome === 'solved' ? 'solve' : 'fail',
+            'puzzle' in a && w !== null ? (worldIndex(w).puzzleLock.get(a.puzzle) ?? null) : null,
+          );
 
 export function createYields(h: YieldsHost): Yields {
   const { vm, screens, explore, puzzle } = h;
@@ -444,9 +450,11 @@ export function createYields(h: YieldsHost): Yields {
     screens.close('lock');
   };
 
-  /** Leaves the rooms for the story: the layer hides, the root-back clears (X12), the knot runs after the drain. */
+  /** Leaves the rooms for the story: the layer hides with the ribbon's selection, the root-back clears (X12), the knot
+   *  runs after the drain. */
   const toStory = (knot: KnotName): void => {
     closePanel();
+    explore.selected = null;
     explore.layer = null;
     screens.setRootBack(null);
     jobs.push(() => enterKnot(knot));
@@ -509,7 +517,12 @@ export function createYields(h: YieldsHost): Yields {
         toStory(e.knot);
         return;
       case 'refused':
-        // Its cue is the writer's: core's `refused` at an insert, `use`'s at a use (K51's error haptic, D6).
+        // Its cue is the writer's: core's `refused` at an insert, `use`'s at a use (K51's error haptic, D6). A refused use
+        // says so in the UI's default words (§6.1, GM3u); a `look` of the same block (the item's or the room's text, which
+        // `use` emits after this effect) replaces it, by the toast's key. A refused insert says it in the lock panel.
+        if (scope.cause.verb === 'use') {
+          vm.showToast({ kind: 'note', key: 'look', message: mechT(vm.lang, 'mech.use_refused'), sticky: false });
+        }
         return;
       case 'reset':
         vm.showToast({ kind: 'note', key: 'area_reset', message: t(vm.lang, 'explore.area_reset'), sticky: false });
@@ -529,12 +542,28 @@ export function createYields(h: YieldsHost): Yields {
     }
   };
 
+  // -------------------------------------------------------------------------------------------------------------
+  // The ribbon's selection (engine plan §6.1 UI, §8.1 point 9; GM3u): written here only
+
+  /** The ribbon's cue for `item`: no panel and no box (the stage finds the slot by its item). */
+  const selection = (name: 'select' | 'deselect', item: ItemId): CueEvent => cueEvent({ kind: 'ui-state', name, panel: null, item }, null);
+  /** Clears the selection with its `deselect` (the slot settles back); none selected, nothing. */
+  const deselect = (): void => {
+    const was = explore.selected ?? null;
+    if (was !== null) {
+      explore.selected = null;
+      bus.emit(selection('deselect', was));
+    }
+  };
+
   /**
    * One action through the one writer: the controller while a section is current (K53, so an exploration puzzle's
-   * results reach the lock), else the kernel's `runReduce` here (a linear puzzle's run, which no section holds). Taps
-   * and inserts come only from the explore layer, which exists only with a controller, so nothing else is written here.
+   * results reach the lock), else the kernel's `runReduce` here (a linear puzzle's run, which no section holds). Taps,
+   * inserts and uses come only from the explore layer, which exists only with a controller, so nothing else is written
+   * here. A selected item the action took out of the hands leaves the selection, with no cue of its own: the action's
+   * cues show where it went.
    */
-  const act = (a: ExploreAction): void => {
+  const act = (a: SectionAction): void => {
     scoped(causeOf(a, h.chapter()?.world ?? null), () => {
       const c = controller;
       if (c !== null && world.section !== null) {
@@ -553,6 +582,9 @@ export function createYields(h: YieldsHost): Yields {
         effect(e);
       }
     });
+    if (explore.selected != null && !world.held.includes(explore.selected)) {
+      explore.selected = null;
+    }
   };
 
   /** K48: the lock panel closes when the controller's lock view turns null (opened, or another room). */
@@ -563,7 +595,7 @@ export function createYields(h: YieldsHost): Yields {
     }
   };
 
-  const dispatchNow = async (a: ExploreAction): Promise<void> => {
+  const dispatchNow = async (a: SectionAction): Promise<void> => {
     act(a);
     await drain();
   };
@@ -1000,6 +1032,23 @@ export function createYields(h: YieldsHost): Yields {
     onclose: () => {
       screens.back(); // the overlay's own close is a Back press; screensChanged follows it
     },
+    onselect: (item) => {
+      // Another item: the old one settles back first; the selected one again: off.
+      const again = explore.selected === item;
+      deselect();
+      if (!again) {
+        explore.selected = item;
+        bus.emit(selection('select', item));
+      }
+    },
+    ondeselect: deselect,
+    onuse: (item, target) => {
+      // One block: the selection settles back, then the use's writes and cues (§6.1 "Action").
+      void h.tap(async () => {
+        deselect();
+        await dispatchNow({ kind: 'use', item, target });
+      }); // the outcome is on screen
+    },
   };
 
   const disposeController = (): void => {
@@ -1012,6 +1061,7 @@ export function createYields(h: YieldsHost): Yields {
     walkable = false;
     explore.layer = null;
     explore.panel = null;
+    explore.selected = null;
   };
 
   return {
@@ -1037,6 +1087,7 @@ export function createYields(h: YieldsHost): Yields {
       }
       closePanel();
       explore.layer = null;
+      explore.selected = null;
       screens.setRootBack(null);
       world = next;
       shown = null;

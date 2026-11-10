@@ -1195,3 +1195,153 @@ test('yields: a yield step prefetches its chunks ahead of its transition', async
   expect([r.calls.explore, r.calls.host, r.calls.stage]).toEqual([2, 2, 1]);
   r.yields.dispose();
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// The ribbon (engine plan §6.1 UI, §8.1 point 9; GM3u): the selection, the use from the ribbon, a refusal's default text
+
+/**
+ * The use fixture: the hall's desk runs a rule for the key (it gives a coin and keeps nothing), its shelf has no rule
+ * and no lock, its chest is a lock for the map; neither the key nor the hall has a refusal text, the den has one.
+ */
+function useWorld(): WorldPublic {
+  const raw = {
+    format: 1,
+    items: {
+      key: { name: txt('Ключ'), desc: txt('d'), glyph: 'key' },
+      map: { name: txt('Карта'), desc: txt('d'), glyph: 'letter' },
+      coin: { name: txt('Монета'), desc: txt('d'), glyph: 'coin' },
+    },
+    docs: {},
+    puzzles: {},
+    sections: {
+      manor: {
+        start: 'hall',
+        bgm: null,
+        rooms: {
+          hall: {
+            bg: 'hall',
+            title: txt('Hall'),
+            onEnter: [],
+            hotspots: [
+              take('key', 'key', null),
+              take('map', 'map', null),
+              { ...look('desk'), uses: [{ item: 'key', do: [{ give: 'coin' }] }] },
+              look('shelf'),
+              { id: 'chest', kind: 'object', rect: RECT, label: txt('chest'), lock: { slots: [{ accepts: 'map' }], puzzle: null, locked: txt('locked'), onOpen: [], onFail: [] }, then: [], look: null, prop: null },
+              exit('to_den', 'den'),
+            ],
+          },
+          den: { bg: 'study', title: txt('Den'), onEnter: [], refuse: txt('den refuse'), hotspots: [exit('to_hall', 'hall'), look('crate')] },
+        },
+      },
+    },
+  };
+  const r = decodeWorldSource(raw);
+  if (!r.ok) {
+    throw new Error(`invariant: the use fixture world decodes: ${JSON.stringify(r.error)}`);
+  }
+  return { ...toPublic(r.value), mods: r.value.mods, version: '3333333333333333' };
+}
+
+/** The ribbon's selection cues the bus carried from the `from`-th cue on: [name, item]. */
+const selections = (r: Rig, from: number): Array<[string, string | null]> =>
+  r.cues.slice(from).flatMap((e): Array<[string, string | null]> => (e.cue.kind === 'ui-state' && (e.cue.name === 'select' || e.cue.name === 'deselect') ? [[e.cue.name, e.cue.item]] : []));
+
+test('yields: a ribbon selection writes the view and plays select and deselect', async () => {
+  const r = rig({ world: cueWorld() });
+  await inHall(r);
+  r.yields.layer.ontap(key('hall.medal'));
+  await settle();
+  r.yields.layer.ontap(key('hall.key'));
+  await settle();
+  const medal = 'medal' as ItemId;
+  const held = 'key' as ItemId;
+  let mark = r.cues.length;
+  r.yields.layer.onselect(medal);
+  expect([r.explore.selected, selections(r, mark)]).toEqual([medal, [['select', 'medal']]]);
+  // The ribbon's cue: no panel, no box (the stage finds the slot by its item).
+  expect(r.cues.at(-1)).toEqual({ cue: { kind: 'ui-state', name: 'select', panel: null, item: 'medal' }, box: null, point: null, diff: [], el: null });
+  // Another item: the old one settles back, then the new one lifts.
+  mark = r.cues.length;
+  r.yields.layer.onselect(held);
+  expect([r.explore.selected, selections(r, mark)]).toEqual([held, [['deselect', 'medal'], ['select', 'key']]]);
+  // The selected item again toggles it off; a deselect with nothing selected plays nothing.
+  mark = r.cues.length;
+  r.yields.layer.onselect(held);
+  r.yields.layer.ondeselect();
+  expect([r.explore.selected, selections(r, mark)]).toEqual([null, [['deselect', 'key']]]);
+  r.yields.layer.onselect(medal);
+  mark = r.cues.length;
+  r.yields.layer.ondeselect();
+  expect([r.explore.selected, selections(r, mark)]).toEqual([null, [['deselect', 'medal']]]);
+  // An item that leaves the hands another way (the lock panel's insert) takes the selection with it, silently.
+  r.yields.layer.onselect(medal);
+  mark = r.cues.length;
+  r.yields.layer.oninsert(key('hall.box'), medal);
+  await settle();
+  expect([r.yields.world().used, r.explore.selected, selections(r, mark)]).toEqual([['medal'], null, []]);
+  // A resume drops the rooms and the selection with them, silently.
+  r.yields.layer.onselect(held);
+  mark = r.cues.length;
+  r.yields.restore(r.yields.world(), null, null);
+  expect([r.explore.selected, selections(r, mark)]).toEqual([null, []]);
+  r.yields.dispose();
+  // The rooms left for a knot: the selection goes with them, silently.
+  const out = rig({ world: cueWorld() });
+  await inHall(out);
+  out.yields.layer.ontap(key('hall.key'));
+  await settle();
+  out.yields.layer.onselect(held);
+  mark = out.cues.length;
+  out.yields.layer.ontap(key('hall.out'));
+  await settle();
+  expect([out.explore.layer, out.explore.selected, selections(out, mark)]).toEqual([null, null, []]);
+  out.yields.dispose();
+});
+
+test('yields: a use from the ribbon deselects and runs the rule', async () => {
+  const r = rig({ world: useWorld() });
+  await inHall(r);
+  r.yields.layer.ontap(key('hall.key'));
+  await settle();
+  const held = 'key' as ItemId;
+  r.yields.layer.onselect(held);
+  const mark = r.cues.length;
+  r.yields.layer.onuse(held, key('hall.desk'));
+  await settle();
+  // One block: the selection settles, then the rule's writes and its `said`, each on the desk's box.
+  expect(r.explore.selected).toBeNull();
+  expect(keysOf(r, mark)).toEqual(['ui-state:deselect', 'fact:held:removed', 'fact:used:added', 'fact:fired:added', 'fact:held:added', 'module:use:said']);
+  expect(r.cues.slice(mark + 1).map((e) => e.box)).toEqual(Array.from({ length: 5 }, () => boxOf(r, 'hall.desk')));
+  expect([r.yields.world().held, r.yields.world().used]).toEqual([['coin'], ['key']]);
+  r.yields.dispose();
+});
+
+test('yields: a refused use with no text shows the mechanics default', async () => {
+  const r = rig({ world: useWorld() });
+  await inHall(r);
+  r.yields.layer.ontap(key('hall.key'));
+  await settle();
+  const held = 'key' as ItemId;
+  /** The texts of the toast a look shows (`key: 'look'`, one at a time). */
+  const looks = (): string[] => r.vm.toasts.flatMap((e) => (e.key === 'look' && e.kind === 'note' ? [e.message] : []));
+  // The shelf: no rule for the key and no lock; neither the key nor the hall says why: the UI's default.
+  r.yields.layer.onselect(held);
+  r.yields.layer.onuse(held, key('hall.shelf'));
+  await settle();
+  const { mechT } = await import('../i18n/mechanics.ts');
+  expect(looks()).toEqual([mechT('ru', 'mech.use_refused')]);
+  expect(r.yields.world().held).toEqual(['key']);
+  // Core's refusal (an insert that does not fit) shows no default: the lock panel says it there.
+  r.vm.dismissToast('look');
+  r.yields.layer.oninsert(key('hall.chest'), held);
+  await settle();
+  expect(looks()).toEqual([]);
+  // A refusal with a text of its own: the den's replaces the default (its `look` follows `refused` in the same block).
+  r.yields.layer.ontap(key('hall.to_den'));
+  await settle();
+  r.yields.layer.onuse(held, key('den.crate'));
+  await settle();
+  expect(looks()).toEqual(['den refuse']);
+  r.yields.dispose();
+});

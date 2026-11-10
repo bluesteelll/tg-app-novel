@@ -1,6 +1,6 @@
 // The exploration overlay's view store (docs/PUZZLES-PLAN.md X10, X14, X16; LX cut D1): what the explore-ui chunk's
 // layer renders. One writer per field: GameSession (app/yields.ts, L15) writes `layer` and `panel`, in step with the
-// screens stack; the explore controller writes every other field. It holds views and the loaded layer component,
+// screens stack, and the ribbon's `selected` (engine plan §6.1 UI, GM3u); the explore controller writes every other field. It holds views and the loaded layer component,
 // never a controller, a world or a Pixi object (principle 7). Every field is `$state.raw` and is replaced, never
 // mutated. Statically importable: the lazy component appears here as a type only (the `lazy-ui` arch rule).
 import type { Component } from 'svelte';
@@ -63,6 +63,12 @@ export type ExploreLayerActions = {
   onread: (doc: DocId) => void;
   oninsert: (key: HotspotKey, item: ItemId) => void;
   onclose: () => void;
+  /** A ribbon slot tapped (engine plan §6.1 UI): selects its item; the selected one again deselects it. */
+  onselect: (item: ItemId) => void;
+  /** The selected slot tapped again, or bare art (§8.3 "The catcher"): the selection clears. */
+  ondeselect: () => void;
+  /** A hotspot tapped while an item is selected: `use {item, target}` (§6.1 "Action"), instead of a tap. */
+  onuse: (item: ItemId, target: HotspotKey) => void;
 };
 
 /**
@@ -78,6 +84,9 @@ export function forwardLayer(get: () => ExploreLayerActions | undefined): Explor
     onread: (doc) => get()?.onread(doc),
     onreveal: () => get()?.onreveal(),
     onclose: () => get()?.onclose(),
+    onselect: (item) => get()?.onselect(item),
+    ondeselect: () => get()?.ondeselect(),
+    onuse: (item, target) => get()?.onuse(item, target),
   };
 }
 
@@ -92,6 +101,8 @@ export interface ExploreViewStore {
   items: readonly ItemView[];
   docs: readonly DocView[];
   lock: LockView | null;
+  /** The ribbon's selected item, written by `app/yields.ts`; optional: a store built as a literal (a test's) has none. */
+  selected?: ItemId | null;
   /**
    * The layer root's cue emit (engine plan §8.3): the session's bus, written by `app/yields.ts`, which clears its own at
    * dispose; absent, the root emits nothing. Optional: a store built as a literal (a test's) has no cue root.
@@ -107,6 +118,7 @@ class ExploreViewState implements ExploreViewStore {
   items: readonly ItemView[] = $state.raw([]);
   docs: readonly DocView[] = $state.raw([]);
   lock: LockView | null = $state.raw(null);
+  selected: ItemId | null = $state.raw(null);
   oncue: ((e: CueEvent) => void) | undefined = $state.raw(undefined);
 }
 

@@ -7,7 +7,9 @@
   // callbacks. GameSession (L15) mounts it as a child of the Stage host, which is its containing block. Its root is the
   // explore family's cue root (engine plan §8.3), attached in an effect (RULINGS 201 E1: a `use:` action would bring
   // Svelte's action runtime into the entry): its controls emit to the session's bus, and the cue stage plays its
-  // entrance and exit; the sheets carry their panel markers (§8.5 "Cue targets").
+  // entrance and exit; the sheets carry their panel markers (§8.5 "Cue targets"). GM3u (§6.1 UI, §8.3): every control
+  // declares the cue it emits (`cues/controls.test.ts`), a hotspot that paints nothing is a hit area, and the item
+  // ribbon sits over the rooms while no panel covers them; a hotspot tapped while an item is selected uses that item.
   import { cueRoot, SHEET_PANELS } from '../../cues/root.ts';
   import { t } from '../../i18n/index.ts';
   import type { ExploreLayerProps } from '../explore-view.svelte.ts';
@@ -15,6 +17,7 @@
   import DocumentReader from './DocumentReader.svelte';
   import Inventory from './Inventory.svelte';
   import LockPanel from './LockPanel.svelte';
+  import Ribbon from './Ribbon.svelte';
 
   let { lang, view, actions }: ExploreLayerProps = $props();
 
@@ -66,13 +69,16 @@
         style:top="{h.css.y}px"
         style:width="{h.css.w}px"
         style:height="{h.css.h}px"
-        onclick={() => actions.ontap(h.key)}
+        onclick={() => (view.selected != null ? actions.onuse(view.selected, h.key) : actions.ontap(h.key))}
       >
         {#if h.kind === 'exit'}
           <svg class="exit-glyph" viewBox={GLYPH_VIEWBOX} aria-hidden="true"><path d={EXIT_PATH} /></svg>
         {/if}
       </button>
     {/each}
+    {#if !covered}
+      <Ribbon {lang} items={view.items} selected={view.selected ?? null} onselect={actions.onselect} ondeselect={actions.ondeselect} />
+    {/if}
     <div class="bar">
       <button type="button" class="bar-button" data-cue="bar-inventory" onclick={actions.oninventory}>{t(lang, 'explore.bar_inventory')}</button>
       <button type="button" class="bar-button" data-cue="bar-reveal" onclick={actions.onreveal}>{t(lang, 'explore.bar_reveal')}</button>

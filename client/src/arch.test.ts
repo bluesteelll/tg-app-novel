@@ -1131,6 +1131,7 @@ const LAZY_COMPONENTS = [
   'ui/explore/Inventory.svelte',
   'ui/explore/DocumentReader.svelte',
   'ui/explore/LockPanel.svelte',
+  'ui/explore/Ribbon.svelte',
   'cues/stage/CueStage.svelte',
 ] as const;
 
@@ -1543,6 +1544,33 @@ test('arch: the engine closure holds no purchase flow', () => {
   expect(walk("import { createPurchaseFlow } from '../purchase/flow';"), 'a value import').toEqual(chain);
   expect(walk("import { type PurchaseFlow } from '../purchase/flow.ts';"), 'an inline type').toEqual(chain);
   expect(walk("import type { PurchaseFlow } from '../purchase/flow.ts';\nconst m = import('../purchase/flow.ts');"), 'lazy').toEqual([]);
+}, TREE_TIMEOUT_MS);
+
+// GM3u (engine plan 12c GM3u Lock): the mechanics' string table ships with the engine (yields' default text of a
+// refused use) and the explore UI (the ribbon's label), never with the entry.
+
+/** The mechanics' string table. */
+const MECHANICS_TABLE = 'i18n/mechanics.ts';
+
+/** The chain a walk reaches the mechanics table by: [] while it stays out of that walk. */
+function tableChains(reached: ReadonlyMap<string, string | null>): string[] {
+  return reached.has(MECHANICS_TABLE) ? [pathTo(reached, MECHANICS_TABLE)] : [];
+}
+
+test('arch: the mechanics string table loads with the engine, never with the entry', () => {
+  // Non-vacuous: the table is a scanned source, the engine's walk reaches it through yields, and every module edge of
+  // the entry's walk resolves.
+  expect(Object.keys(SOURCES)).toContain(MECHANICS_TABLE);
+  expect(entryClosure(SOURCES, ENGINE_ROOT).reached.get(MECHANICS_TABLE)).toBe('app/yields.ts');
+  const entry = entryClosure(SOURCES);
+  expect(entry.unresolved.filter((target) => /\.(?:ts|svelte)$/.test(target))).toEqual([]);
+  expect(tableChains(entry.reached)).toEqual([]);
+  // Fixtures: a boot module's value import puts the table in the entry, and its chain is reported; a type import does not.
+  const table = "import type { Lang } from './index.ts';\nexport const mechT = (lang: Lang): string => lang;";
+  const walk = (boot: string): string[] =>
+    tableChains(entryClosure({ 'main.ts': "import './app/boot.ts';", 'app/boot.ts': boot, 'i18n/index.ts': 'export type Lang = string;', 'i18n/mechanics.ts': table }).reached);
+  expect(walk("import { mechT } from '../i18n/mechanics.ts';"), 'a value import').toEqual(['main.ts -> app/boot.ts -> i18n/mechanics.ts']);
+  expect(walk("import type { MechanicsKey } from '../i18n/mechanics.ts';"), 'a type import').toEqual([]);
 }, TREE_TIMEOUT_MS);
 
 // LFL B1 / T4 (RULINGS 149): boot no longer imports the meta controller's chunk after auth, so its after-auth step hands
