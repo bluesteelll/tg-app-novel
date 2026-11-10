@@ -1893,6 +1893,17 @@ test('use: a knot a rule enters is in the graph, its seeds and the shot flow', (
   expect(crossCheck(flow.flow, r.play.transitions, CH1.entry)).toEqual([]);
 });
 
+test('use: the graph world input maps none, invalid and ok', () => {
+  const src = statueWorld();
+  // No world file and a world that did not decode stay apart: only `none` gives each yield a "has no world" finding.
+  expect(worldRef(undefined)).toEqual({ kind: 'none' });
+  expect(worldRef({ kind: 'none' })).toEqual({ kind: 'none' });
+  expect(worldRef({ kind: 'invalid' })).toEqual({ kind: 'invalid' });
+  const ok = worldRef({ kind: 'ok', source: src });
+  expect(ok.kind).toBe('ok');
+  expect(ok.kind === 'ok' ? ok.body.mods : null).toBe(src.mods);
+});
+
 // ---------------------------------------------------------------------------------------------------------------
 // Module `use`'s texts and lints (scripts/story/mechanics/use.ts)
 
