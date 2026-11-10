@@ -846,6 +846,34 @@ test('shots: a face cast in one possible shot and absent from a later-sorted one
   ]);
 });
 
+test('shots: a face absent from one possible shot and a back view in another reports both', () => {
+  const { flow, findings } = linted([
+    '-> k',
+    '=== k ===',
+    '# scene: cafe_ally_cu',
+    'Кафе. #id:ch1.k.a001',
+    '* [Остаться #id:ch1.k.c001]',
+    '  -> m',
+    '* [Выйти #id:ch1.k.c002]',
+    '  -> s',
+    '=== s ===',
+    '# bg: cafe_ots',
+    'Спина. #id:ch1.s.a001',
+    '-> m',
+    '=== m ===',
+    '# face: stranger smile',
+    'Тишина. #id:ch1.m.a001',
+    '-> END',
+  ]);
+  // Both shots fail the face, each by its own rule: stranger is absent from cafe_ally_cu (first in sort order) and a
+  // back view in cafe_ots. A finding on one shot never ends the judging of the next (D4), so both are reported.
+  expect(effectAt(flow, 'ch1.m.a001').shots).toEqual(['cafe_ally_cu', 'cafe_ots']);
+  expect(findings.filter((f) => f.severity === 'E').map((f) => `${f.code} ${f.file}:${f.line} ${f.message}`)).toEqual([
+    "shot/back-view story/ch1/main.ink:15 'face: stranger smile': stranger is a back view in shot 'cafe_ots' (§14)",
+    "shot/char-absent story/ch1/main.ink:15 'face: stranger smile': stranger is not in the cast of shot 'cafe_ally_cu' (on some path) (§14)",
+  ]);
+});
+
 test('shots: an off-screen speaker passes', () => {
   const { findings } = linted(['-> k', '=== k ===', '# scene: cafe_ally_cu', 'voice: Кто там? #id:ch1.k.a001', 'radio: Приём. #id:ch1.k.a002', 'stranger: Я здесь. #id:ch1.k.a003', '-> END']);
   expect(shown(findings, 'shot/char-absent', 'shot/back-view')).toEqual([]);
