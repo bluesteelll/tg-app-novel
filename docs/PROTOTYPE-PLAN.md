@@ -211,7 +211,8 @@ research is newer and verified (brief), so it wins, and the deviation is recorde
   and "`hintPort()` null until the chunk" are superseded (RULINGS 149).
 - **Changed by RULINGS 201, 221, 228-231, 234, 236 (as of `0b91acc`; docs lane `docs-errata-15`, group A); an erratum to the L15 cut's
   D1).** D1's "the in-play components ship in the engine closure" no longer holds: since lever O5 (`9a0ae2d`) the
-  Menu, the Backlog, the Settings and the Saves screen are a sixth lazy family, one chunk behind the barrel
+  Menu, the Backlog, the Settings and the Saves screen are a lazy family of their own (the eighth `LAZY_FAMILIES` row,
+  `client/scripts/budget.ts:239`), one chunk behind the barrel
   `client/src/ui/overlays/index.ts` (row `overlays chunk (br)` ≤ 3.0 KB br, 2,498 B at the merge), which the Game
   imports once after the first line's reveal and at a Menu or Backlog tap before it; App renders them from
   `vm.overlayUi`. The engine keeps the first line's components, the Paywall and its Terms (`EngineUi`,

@@ -267,7 +267,7 @@ ledger ([shots §10 Budgets and validation](../shots/10-budgets-and-validation.m
   (br)`) is a lazy root: the Game requests it once, after the first line's reveal (`game.lineShown`, after the
   gameplay chunks' prefetch), and before a first line only by a Menu or Backlog tap during a start or a chapter load, on
   a paywall-first session's empty stage once Back has closed its paywall, or in a room before any line (the basis
-  note, `client/scripts/budget.ts:479-494`, its O5 clause `:490-492`); no automatic request precedes a first line, and a failed tap before the
+  note, `client/scripts/budget.ts:479-494`, its O5 clause `:489-492`); no automatic request precedes a first line, and a failed tap before the
   first line is not followed by the prefetch (RULINGS 229 Q1 (B)). Since the Q64 fix (`d820803`) that empty stage is
   also a tap that opens the pending chapter's paywall again (D11's re-open; it requests nothing new: the purchase
   flow's prefetch is `openPaywall`'s, above), and while the overlays chunk fails a Menu or Backlog tap there shows the

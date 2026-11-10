@@ -117,10 +117,12 @@ new (SHAs from `git log --first-parent main`). On engine §12's `game.ts` row E6
 after SH1 is SH5a, and GM6c2's place on that row is unchanged. On the `budget.ts` row SH3a now follows O5 (Y is on the
 shelf, RULINGS 234). The `App.svelte` row's GM6t follows O5 (merged; the trigger fired at E6's merge, RULINGS 228) and
 the Q64 fix's one prop after it, so GM6t is free on that file. The `requests.test.ts` row's first holder, engine GM3p,
-runs (lane A; its lock creates the file, RULINGS 232-234), so GM6c2 follows it there. O5 moved `Backlog.svelte` to
-`ui/overlays/` and held `ui/state.svelte.ts`, and the Q64 fix held `ui/state.svelte.ts` and `ui/DialogueBox.svelte`,
-all three files of GM6c3's lock (the note under its lock,
-[GM6c3 `values-ink-text`](09c-lanes-gm6c3-gm6c4.md#gm6c3-values-ink-text-client-overlay)). No lane of this plan runs:
+runs (lane A; its lock creates the file, RULINGS 232-234), so GM6c2 follows it there. O5 and the Q64 fix together held
+seven of GM6c3's 14 lock files: O5 moved `Backlog.svelte` to `ui/overlays/` and held `ui/state.svelte.ts`,
+`ui/menus.svelte.test.ts`, `app/game.ts` and `app/game.test.ts`; the Q64 fix held `ui/state.svelte.ts`,
+`ui/DialogueBox.svelte`, `ui/typewriter.svelte.test.ts` (appended after `:269`; `lineOf` `:51` unchanged),
+`app/game.ts` and `app/game.test.ts` (the moved path, the glob and the stage tap: the note under its lock,
+[GM6c3 `values-ink-text`](09c-lanes-gm6c3-gm6c4.md#gm6c3-values-ink-text-client-overlay); `game.ts` and `game.test.ts`: the `game.ts` row sentence above). No lane of this plan runs:
 GM6t has no ruled slot yet (lane C is kept for engine GM3b, RULINGS 237), and its entry term is watched against Ledger
 2's 1.331 KB at its cut (RULINGS 236); GM6c1a still waits for GM4 on the world chain. The server slot runs the docs
 lane `docs-errata-15` (RULINGS 237).
