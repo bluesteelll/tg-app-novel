@@ -19,6 +19,7 @@ import type { KernelWorld, SectionAction } from './contract.ts';
 import { MECHANIC_DATA } from './data/index.ts';
 import { reduce } from './rules/core.ts';
 import { ownScope, searchSection, sectionEntry, sectionKey, successors } from './rules/search.ts';
+import { useActions } from './rules/use.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
 // Fixture worlds (one section `s`), in the source format
@@ -203,6 +204,22 @@ test('use: the fallback chain ends at the room default', () => {
   // A room without a text: the refusal alone (the UI's default text is GM3u's).
   const den = { ...at('den', { held: [it('pin')] }) };
   expect(kernelEffects(reduce(w, den, use('pin', 'den.crate')).effects)).toEqual([{ kind: 'refused', at: 'den.crate', item: 'pin', reason: 'no-rule' }]);
+});
+
+test('use: a use while an event knot is pending changes nothing', () => {
+  const { w } = boxWorld();
+  // The positive control: idle in the hall, the key's second rule holds on the box, so the search lists the edge and
+  // the use runs it.
+  const idle = at('hall', { held: [it('key')] });
+  expect(useActions(w, idle)).toEqual([use('key', 'hall.box')]);
+  expect(reduce(w, idle, use('key', 'hall.box')).state.fired).toEqual(['use:hall.box#1']);
+  // The same state while an event knot pends (core's `here` guard): no edge for the search, and the use acts not at all
+  // (the same state object, no effect: no refusal, no cue, no story replayed).
+  const pending: WorldState = { ...idle, pendingStory: ['hall_voice' as KnotName] }; // a fixture knot name
+  expect(useActions(w, pending)).toEqual([]);
+  const r = reduce(w, pending, use('key', 'hall.box'));
+  expect(r.state).toBe(pending);
+  expect(r.effects).toEqual([]);
 });
 
 // ---------------------------------------------------------------------------------------------------------------
