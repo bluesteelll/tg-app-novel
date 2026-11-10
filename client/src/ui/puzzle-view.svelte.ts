@@ -45,8 +45,8 @@ export type PuzzleFrameView = {
   loadFailed: boolean;
   /**
    * A Retry's import of the host and type chunks is in flight: the notice stays, with Retry disabled. Never `busy`.
-   * Starts false (`openPuzzle`); nothing sets it yet, so both Retry buttons stay enabled (engine plan GM3w): yields'
-   * `onretry` and `loadPuzzleUis` become its writers in GM3p.
+   * Starts false (`openPuzzle`); yields' `onretry` sets it and the chunk write (`loadPuzzleUis`) clears it with its
+   * result, so both Retry buttons (PuzzleHost's and App's failed-host block) are disabled only while a reload runs.
    */
   retrying: boolean;
 };

@@ -492,6 +492,28 @@ function declarationsOf(source: string, selector: string): Map<string, string> {
   return out;
 }
 
+test('puzzle-host: Retry is disabled only while it reloads', () => {
+  // GM3w's two bindings, PuzzleHost's notice and App's failed-host block: `retrying`, never `busy` (00-decision-table W1).
+  for (const [name, source] of [
+    ['PuzzleHost', puzzleHostSource],
+    ['App', appSource],
+  ] as const) {
+    const bindings = [...source.matchAll(/data-cue="puzzle-retry"[^\n]*/g)].map((m) => /\bdisabled=\{([^}]*)\}/.exec(m[0])?.[1] ?? null);
+    expect(bindings, name).toEqual(['frame.retrying']);
+  }
+  // The frame's Retry: enabled over a failed load, during a values wait too (neither wait wins); disabled while it reloads.
+  const cases: ReadonlyArray<readonly [string, Partial<PuzzleFrameView>, boolean]> = [
+    ['a failed load', {}, false],
+    ['a failed load during a values wait', { busy: true, line: 'checking' }, false],
+    ['a reload', { retrying: true }, true],
+  ];
+  for (const [name, over, disabled] of cases) {
+    const { getByRole, unmount } = render(PuzzleHost, hostProps({ frame: frameOf({ ui: null, loadFailed: true, ...over }) }));
+    expect((getByRole('button', { name: t('en', 'puzzle.retry') }) as HTMLButtonElement).disabled, name).toBe(disabled);
+    unmount();
+  }
+});
+
 test('puzzle host: the frame layer takes taps only on the frame and the load notice', () => {
   // happy-dom computes no cascade: the rules are read from the sources. App's frame layer passes every tap through and
   // the two blocks it can hold take them back; both are full-bleed, so every tap they took they still take.

@@ -921,9 +921,10 @@ export function createYields(h: YieldsHost): Yields {
     if (hostUi.ok) {
       puzzle.host = hostUi.value;
     }
-    // D13: a chunk error keeps the mode with Retry (linear) or the overlay with Retry (explore); no outcome.
+    // D13: a chunk error keeps the mode with Retry (linear) or the overlay with Retry (explore); no outcome. The chunk
+    // fields only (00-decision-table W1): `busy` and the line are a settling answer's, never a chunk's.
     const loaded = typeUi.ok && hostUi.ok && staged;
-    setFrame(o, loaded ? { ui: typeUi.value, loadFailed: false } : { ui: null, loadFailed: true });
+    setFrame(o, loaded ? { ui: typeUi.value, loadFailed: false, retrying: false } : { ui: null, loadFailed: true, retrying: false });
     // The wait's end, the frame's appearance (when this write shows it), then the state it ends in.
     holdLoad(o, false);
     appear(o);
@@ -1173,9 +1174,14 @@ export function createYields(h: YieldsHost): Yields {
     onretry: () => {
       const o = open;
       const f = frameOf();
-      if (o !== null && f !== null && f.loadFailed) {
+      if (o !== null && f !== null && f.loadFailed && !f.retrying) {
+        if (puzzle.host === null) {
+          // App's failed-host Retry lies outside every cue root, so its control cue is emitted here (found by its name).
+          bus.emit(cueEvent({ kind: 'ui', control: 'puzzle-retry', item: null, index: null }, null));
+        }
+        // The notice stays, its Retry disabled, until the reload answers (engine plan §8.1 "The frame's flags").
         holdLoad(o, true);
-        setFrame(o, { loadFailed: false });
+        setFrame(o, { retrying: true });
         void loadPuzzleUis(o, f.type); // a second import() (D13); the frame shows the outcome
       }
     },

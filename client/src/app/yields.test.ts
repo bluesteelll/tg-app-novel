@@ -2021,6 +2021,133 @@ test('yields: the ladder has one writer', () => {
   expect([start > -1, writes.every((i) => i > start && i < end)]).toEqual([true, true]);
 });
 
+// ---------------------------------------------------------------------------------------------------------------
+// GM3p: a chunk Retry keeps its notice (engine plan §8.1 "The frame's flags and its ends"; 00-decision-table W1)
+
+/** The frame's chunk fields: the only ones a chunk's result writes. */
+const chunkFlags = (r: Rig): { loadFailed: boolean; retrying: boolean; ui: unknown } | null => {
+  const f = r.puzzle.frame;
+  return f === null ? null : { loadFailed: f.loadFailed, retrying: f.retrying, ui: f.ui };
+};
+const CHUNK_OFFLINE = { ok: false, error: { kind: 'chunk', detail: 'offline' } } as const;
+
+test('yields: a failed type chunk plays load-failed and a retry keeps the notice until it answers', async () => {
+  const host = chunkQueue<Result<Component<PuzzleHostProps>, ChunkError>>();
+  const ui = chunkQueue<Result<Component<PuzzleUiProps>, ChunkError>>();
+  const r = rig({ world: puzzleWorld(), loaders: { puzzleHost: host.loader, puzzleUi: ui.loader } });
+  const opening = r.yields.onYield({ kind: 'puzzle', puzzle: CABINET, then: AFTER });
+  await settle();
+  host.land({ ok: true, value: HOST });
+  ui.land(CHUNK_OFFLINE);
+  await opening;
+  expect(chunkFlags(r), 'the type chunk failed').toEqual({ loadFailed: true, retrying: false, ui: null });
+  expect(frameKeys(r)).toEqual(['ui-state:waiting@puzzle', 'ui-state:waited@puzzle', 'ui-state:panel-open@puzzle', 'puzzle:load-failed']);
+  // Retry: the notice stays, its Retry disabled, and the load hold opens again; a second tap meanwhile does nothing.
+  let mark = r.cues.length;
+  r.yields.host.onretry();
+  expect(chunkFlags(r), 'Retry').toEqual({ loadFailed: true, retrying: true, ui: null });
+  r.yields.host.onretry();
+  await settle();
+  expect([host.waiting(), ui.waiting()], 'one reload').toEqual([1, 1]);
+  expect(frameKeys(r, mark), 'Retry').toEqual(['ui-state:waiting@puzzle']);
+  // The reload fails: the notice again, Retry enabled, its wobble.
+  mark = r.cues.length;
+  host.land({ ok: true, value: HOST });
+  ui.land(CHUNK_OFFLINE);
+  await settle();
+  expect(chunkFlags(r), 'the reload failed').toEqual({ loadFailed: true, retrying: false, ui: null });
+  expect(frameKeys(r, mark), 'the reload failed').toEqual(['ui-state:waited@puzzle', 'puzzle:load-failed']);
+  // Retry again, and the reload loads: the type UI opens.
+  mark = r.cues.length;
+  r.yields.host.onretry();
+  expect(chunkFlags(r), 'Retry again').toEqual({ loadFailed: true, retrying: true, ui: null });
+  await settle();
+  host.land({ ok: true, value: HOST });
+  ui.land({ ok: true, value: TYPE_UI });
+  await settle();
+  expect(chunkFlags(r), 'the reload loaded').toEqual({ loadFailed: false, retrying: false, ui: TYPE_UI });
+  expect(frameKeys(r, mark), 'the reload loaded').toEqual(['ui-state:waiting@puzzle', 'ui-state:waited@puzzle', 'puzzle:opened']);
+  // Retry over a loaded frame does nothing.
+  mark = r.cues.length;
+  r.yields.host.onretry();
+  await settle();
+  expect([chunkFlags(r)?.retrying, frameKeys(r, mark), host.waiting(), ui.waiting()]).toEqual([false, [], 0, 0]);
+  r.yields.dispose();
+});
+
+test('yields: a chunk result writes only the chunk fields', async () => {
+  // A frame waiting for a settling answer (per-player's values wait, set through the store) when its chunks land: the
+  // result moves `ui`, `loadFailed` and `retrying` only, whether it loads or fails (W1: round 7's `busy: false`).
+  for (const result of [{ ok: true, value: TYPE_UI }, CHUNK_OFFLINE] as const) {
+    const ui = chunkQueue<Result<Component<PuzzleUiProps>, ChunkError>>();
+    const r = rig({ world: puzzleWorld(), loaders: { puzzleUi: ui.loader } });
+    const opening = r.yields.onYield({ kind: 'puzzle', puzzle: CABINET, then: AFTER });
+    await settle();
+    const f = r.puzzle.frame;
+    if (f === null) {
+      throw new Error('expected the open frame');
+    }
+    const before: PuzzleFrameView = { ...f, busy: true, line: 'checking' };
+    r.puzzle.frame = before;
+    ui.land(result);
+    await opening;
+    const after = r.puzzle.frame;
+    if (after === null) {
+      throw new Error('expected the frame after its chunk');
+    }
+    const moved = (Object.keys(after) as (keyof PuzzleFrameView)[]).filter((k) => !Object.is(after[k], before[k]));
+    expect(moved.filter((k) => k !== 'ui' && k !== 'loadFailed' && k !== 'retrying'), `${result.ok}: moved`).toEqual([]);
+    r.yields.dispose();
+  }
+  // A failed chunk, Retry, and the reload's result: `retrying` ends with it, loaded or failed.
+  for (const reload of [{ ok: true, value: TYPE_UI }, CHUNK_OFFLINE] as const) {
+    const ui = chunkQueue<Result<Component<PuzzleUiProps>, ChunkError>>();
+    const r = rig({ world: puzzleWorld(), loaders: { puzzleUi: ui.loader } });
+    const opening = r.yields.onYield({ kind: 'puzzle', puzzle: CABINET, then: AFTER });
+    await settle();
+    ui.land(CHUNK_OFFLINE);
+    await opening;
+    r.yields.host.onretry();
+    await settle();
+    ui.land(reload);
+    await settle();
+    expect([r.puzzle.frame?.retrying, r.puzzle.frame?.busy], `${reload.ok}: after the reload`).toEqual([false, false]);
+    r.yields.dispose();
+  }
+});
+
+test("yields: App's host-chunk Retry emits its control cue", async () => {
+  /** The `ui:puzzle-retry` cues from `from` on, with their element, point and box. */
+  const retries = (r: Rig, from: number): unknown[] =>
+    r.cues.slice(from).flatMap((e) => (e.cue.kind === 'ui' && e.cue.control === 'puzzle-retry' ? [[keyOf(e.cue), e.el, e.point, e.box]] : []));
+  // The host chunk failed: App's failed-host block shows outside every cue root, so yields emits its Retry's cue (the
+  // stage finds the control by its name); the block stays while the reload runs.
+  const host = chunkQueue<Result<Component<PuzzleHostProps>, ChunkError>>();
+  const r = rig({ world: puzzleWorld(), loaders: { puzzleHost: host.loader } });
+  const opening = r.yields.onYield({ kind: 'puzzle', puzzle: CABINET, then: AFTER });
+  await settle();
+  host.land(CHUNK_OFFLINE);
+  await opening;
+  expect([r.puzzle.host, r.puzzle.frame?.loadFailed]).toEqual([null, true]);
+  let mark = r.cues.length;
+  r.yields.host.onretry();
+  r.yields.host.onretry(); // a second tap while it reloads (its button disabled): nothing
+  expect(retries(r, mark), 'the failed-host Retry').toEqual([['ui:puzzle-retry', null, null, null]]);
+  expect([r.puzzle.host, r.puzzle.frame?.loadFailed, r.puzzle.frame?.retrying], 'the block stays').toEqual([null, true, true]);
+  host.land({ ok: true, value: HOST });
+  await settle();
+  expect([r.puzzle.host, chunkFlags(r)], 'the reload loaded').toEqual([HOST, { loadFailed: false, retrying: false, ui: TYPE_UI }]);
+  r.yields.dispose();
+  // The host loaded and the type chunk failed: PuzzleHost's own Retry emits through its frame root, so yields does not.
+  const typeFailed = rig({ world: puzzleWorld(), loaders: { puzzleUi: async () => CHUNK_OFFLINE } });
+  await typeFailed.yields.onYield({ kind: 'puzzle', puzzle: CABINET, then: AFTER });
+  expect([typeFailed.puzzle.host, typeFailed.puzzle.frame?.loadFailed]).toEqual([HOST, true]);
+  mark = typeFailed.cues.length;
+  typeFailed.yields.host.onretry();
+  expect(retries(typeFailed, mark), "the frame's Retry").toEqual([]);
+  typeFailed.yields.dispose();
+});
+
 test('yields: the reveal emits its cue', async () => {
   // No section entered: no controller, so the reveal shows nothing and plays nothing.
   const none = rig({ world: cueWorld() });
