@@ -36,6 +36,7 @@ const RULE_IDS = [
   'runner-enter',
   'waapi',
   'svelte-action',
+  'pixi-env',
 ] as const;
 
 type RuleId = (typeof RULE_IDS)[number];
@@ -45,8 +46,9 @@ type Fixture = readonly [file: string, source: string];
 
 /**
  * "Forbidden anywhere in src/", "import boundaries" of the plan's module map, the pure world layer (X4), the lazy
- * chunk families (X14), the one caller of `runner.enter` (PZ "Modules") and the owners of DOM motion (engine plan
- * §3.5 `waapi`), each judged by its own tree test.
+ * chunk families (X14), the one caller of `runner.enter` (PZ "Modules"), the owners of DOM motion (engine plan
+ * §3.5 `waapi`) and the scene's Pixi systems under the skipped environment imports (`pixi-env`, RULINGS 201 lever X),
+ * each judged by its own tree test.
  */
 const GROUP: Record<RuleId, Group> = {
   'vh-unit': 'pattern',
@@ -77,6 +79,7 @@ const GROUP: Record<RuleId, Group> = {
   'runner-enter': 'runner',
   waapi: 'scene',
   'svelte-action': 'pattern',
+  'pixi-env': 'scene',
 };
 
 /** Paths are relative to src/; index.html sits one level up. */
@@ -211,6 +214,97 @@ const RUNNER_ENTRY_FILE = 'app/yields.ts';
  *  value and toast motions, so every `.animate(` has one owner. Svelte's `animate:` / `in:` / `out:` are directives. */
 const WAAPI_FILES: readonly string[] = ['cues/stage/player.ts', 'ui/value-motion.ts', 'ui/toast-motion.ts'];
 
+// Rule `pixi-env` (RULINGS 201 lever X; budget-r198 design §2.4 D4). The scene skips Pixi's environment imports
+// (scene/pixi-env.ts), so Pixi's events, accessibility, DOM pipe and filters are never registered: a mask or a filter
+// throws in render(), and DOMContainer, the pointer API and `accessible*` silently do nothing. A second renderer, or an
+// `.init(` without `appOptions(`, would request the skipped chunks while the budget's engine walk stops counting them.
+// To import a system back: its side-effect import (`import 'pixi.js/filters';`) goes in scene/controller.ts,
+// statically, so the engine walk counts it; its bytes are booked in the importing lane's engine term (filters 4,291 B;
+// events ~6,719; accessibility ~2,348; dom ~738); and this rule's allow list is widened for it, with the reason.
+// GSAP's PixiPlugin turns `pixi: { blur, ... }` tween vars into filters inside GSAP, so importing it counts as a filter.
+/** The one file that builds and initialises the Application, always with `appOptions(` (scene/controller.ts). */
+const PIXI_APP_FILE = 'scene/controller.ts';
+/** Pixi's federated pointer events (events/FederatedEventMap): an `on<event>` property or an `.on(` name. */
+const FEDERATED_EVENT = /^(?:pointer|mouse|touch|global)[a-z]*$|^(?:click|tap|wheel|right(?:click|tap|down|up|upoutside))$/;
+/** Members that need a skipped system: masks, filters and the pointer API (events). `eventMode` is judged by value. */
+const PIXI_ENV_PROPS = new Set(['mask', 'filters', 'hitArea', 'cursor', 'interactive', 'interactiveChildren']);
+const PIXI_LISTEN_METHODS = new Set(['on', 'once', 'addListener']);
+const PIXI_ENV_IMPORTS = new Set(['pixi.js/events', 'pixi.js/accessibility', 'pixi.js/dom', 'pixi.js/filters', 'pixi.js/advanced-blend-modes']);
+const GSAP_PIXI_PLUGIN = /^gsap\/(?:dist\/)?(?:PixiPlugin|all)(?:\.js)?$/;
+const PIXI_RENDERERS = new Set(['WebGLRenderer', 'WebGPURenderer', 'CanvasRenderer']);
+
+function isPixiEnvMember(name: string): boolean {
+  return PIXI_ENV_PROPS.has(name) || name.startsWith('accessible') || (name.startsWith('on') && FEDERATED_EVENT.test(name.slice(2)));
+}
+
+/** A value other than the literal `'none'` (an expression, a variable, a shorthand). */
+function isNotNone(e: ts.Expression | undefined): boolean {
+  return e === undefined || !ts.isStringLiteralLike(e) || e.text !== 'none';
+}
+
+function checkPixiEnv(ctx: Ctx, node: ts.Node): void {
+  const inScene = applies('pixi-env', ctx.file);
+  if (ts.isIdentifier(node)) {
+    const name = node.text;
+    if (name === 'DOMContainer' || name.startsWith('accessible') || (isPropertyName(node) && isPixiEnvMember(name))) {
+      report(ctx, 'pixi-env', node, inScene);
+    }
+    if (name === 'eventMode' && ts.isShorthandPropertyAssignment(node.parent)) {
+      report(ctx, 'pixi-env', node, inScene);
+    }
+  }
+  if (ts.isElementAccessExpression(node)) {
+    // Property-access forms are caught as identifiers; element access hides the name in a string.
+    const m = member(node);
+    if (m !== undefined && isPixiEnvMember(m.name)) {
+      report(ctx, 'pixi-env', node, inScene);
+    }
+  }
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+    if (member(node.left)?.name === 'eventMode' && isNotNone(node.right)) {
+      report(ctx, 'pixi-env', node, inScene);
+    }
+  }
+  if (ts.isPropertyAssignment(node) && (ts.isIdentifier(node.name) || ts.isStringLiteral(node.name)) && node.name.text === 'eventMode') {
+    if (isNotNone(node.initializer)) {
+      report(ctx, 'pixi-env', node, inScene);
+    }
+  }
+  if (ts.isCallExpression(node)) {
+    const m = member(node.expression);
+    const arg = node.arguments[0];
+    if (rightName(ctx, node.expression) === 'autoDetectRenderer') {
+      report(ctx, 'pixi-env', node, true); // anywhere in src/
+    }
+    if (m?.name === 'setMask') {
+      report(ctx, 'pixi-env', node, inScene);
+    }
+    if (m !== undefined && PIXI_LISTEN_METHODS.has(m.name) && arg !== undefined && ts.isStringLiteralLike(arg) && FEDERATED_EVENT.test(arg.text)) {
+      report(ctx, 'pixi-env', node, inScene);
+    }
+    const withOptions = arg !== undefined && ts.isCallExpression(arg) && ts.isIdentifier(arg.expression) && arg.expression.text === 'appOptions';
+    if (m?.name === 'init' && !withOptions) {
+      report(ctx, 'pixi-env', node, ctx.file === PIXI_APP_FILE);
+    }
+  }
+  if (ts.isNewExpression(node)) {
+    const name = rightName(ctx, node.expression);
+    if (name !== undefined && PIXI_RENDERERS.has(name)) {
+      report(ctx, 'pixi-env', node, true); // anywhere in src/
+    }
+    if (name === 'Application') {
+      report(ctx, 'pixi-env', node, ctx.file !== PIXI_APP_FILE);
+    }
+    if (name?.endsWith('Filter') === true) {
+      report(ctx, 'pixi-env', node, inScene);
+    }
+  }
+  const ref = moduleReference(node);
+  if (ref !== undefined && !ref.typeOnly && (PIXI_ENV_IMPORTS.has(ref.spec) || GSAP_PIXI_PLUGIN.test(ref.spec))) {
+    report(ctx, 'pixi-env', node, inScene);
+  }
+}
+
 /** Where a rule applies; everything outside is the rule's exemption. */
 function applies(rule: RuleId, file: string): boolean {
   switch (rule) {
@@ -240,6 +334,9 @@ function applies(rule: RuleId, file: string): boolean {
       return file !== RUNNER_ENTRY_FILE;
     case 'waapi':
       return !WAAPI_FILES.includes(file);
+    case 'pixi-env':
+      // The scene's systems; the renderer and Application branches pass their own scope (all of src/).
+      return file.startsWith('scene/');
     default:
       return true;
   }
@@ -512,6 +609,7 @@ function checkNode(ctx: Ctx, node: ts.Node): void {
     }
   }
   checkImport(ctx, node);
+  checkPixiEnv(ctx, node);
   if (importOrigins(node).some((o) => reachesOutsideSrc(ctx.file, o))) {
     report(ctx, 'import-outside-src', node);
   }
@@ -1650,6 +1748,17 @@ test('arch: only the motion owners call animate', () => {
   expect(treeViolations().filter((v) => GROUP[v.rule] === 'scene')).toEqual([]);
 }, TREE_TIMEOUT_MS);
 
+test('arch: no scene code needs a Pixi extension the app skips', () => {
+  // Non-vacuous: the controller is scanned, and its two live `.init(` calls are found once they no longer pass
+  // `appOptions(` (the mount and the rebuild).
+  expect(Object.keys(SOURCES)).toContain(PIXI_APP_FILE);
+  const renamed = (SOURCES[PIXI_APP_FILE] ?? '').split('appOptions(').join('otherOptions(');
+  const probe = violations({ [PIXI_APP_FILE]: renamed }).filter((v) => v.rule === 'pixi-env');
+  expect(probe).not.toEqual([]);
+  expect(probe).toHaveLength(2);
+  expect(treeViolations().filter((v) => v.rule === 'pixi-env')).toEqual([]);
+}, TREE_TIMEOUT_MS);
+
 test('arch: only yields.ts enters the runner', () => {
   // Non-vacuous: yields.ts is scanned, and its own runner call is found once the file is judged under a name the rule
   // does not exempt. The `runner.enter(` prefix tells that call from the section controller's `c.enter(` in the same
@@ -1929,6 +2038,43 @@ const RED: Record<RuleId, readonly Fixture[]> = {
     ['ui/x.ts', "el['animate'](kf, 200);"],
     ['ui/A.svelte', '<script lang="ts">\n  el.animate(kf, 200);\n</script>'],
   ],
+  'pixi-env': [
+    // The design's six (budget-r198 §2.4 C3).
+    ['scene/executor.ts', 'sprite.mask = cover;'],
+    ['scene/executor.ts', 'node.filters = [blur];'],
+    ['scene/motion/glow.ts', "import 'pixi.js/filters';"],
+    ['scene/controller.ts', "app.stage.eventMode = 'static';"],
+    ['scene/executor.ts', "const r = await autoDetectRenderer({ preference: 'webgl' });"],
+    ['scene/controller.ts', "await app.init({ preference: 'webgl' });"],
+    // One per remaining branch: a filter, a mask in options, by element access or by setMask, the DOM pipe.
+    ['scene/executor.ts', 'const f = new BlurFilter({ strength: 4 });'],
+    ['scene/executor.ts', 'const s = new Sprite({ texture: t, mask: m });'],
+    ['scene/executor.ts', "s['mask'] = m;"],
+    ['scene/executor.ts', 'c.setMask(options);'],
+    ['scene/executor.ts', 'const d = new DOMContainer({ element });'],
+    // The pointer API (events): eventMode by value, listeners, handler properties, hit testing.
+    ['scene/executor.ts', "const c = new Container({ eventMode: 'static' });"],
+    ['scene/executor.ts', 'const c = new Container({ eventMode });'],
+    ['scene/executor.ts', "c.on('pointerdown', f);"],
+    ['scene/executor.ts', "c.once('globalpointermove', f);"],
+    ['scene/executor.ts', "c.addListener('tap', f);"],
+    ['scene/executor.ts', 'c.onpointertap = f;'],
+    ['scene/executor.ts', 'c.hitArea = r;'],
+    ['scene/executor.ts', "c.cursor = 'pointer';"],
+    ['scene/executor.ts', 'c.interactive = true;'],
+    ['scene/executor.ts', 'c.interactiveChildren = false;'],
+    // Accessibility, and the systems' side-effect imports.
+    ['scene/executor.ts', "c.accessible = true;\nc.accessibleTitle = 'x';"],
+    ['scene/controller.ts', "import 'pixi.js/events';"],
+    ['scene/controller.ts', "import 'pixi.js/accessibility';"],
+    // A second renderer or Application anywhere in src/.
+    ['scene/executor.ts', 'const r = new WebGLRenderer();'],
+    ['app/game.ts', 'const r = new WebGPURenderer();'],
+    ['scene/executor.ts', 'const app = new Application();'],
+    // GSAP's PixiPlugin makes filters inside GSAP (critique O4).
+    ['scene/motion/tween.ts', "import { PixiPlugin } from 'gsap/PixiPlugin';"],
+    ['scene/executor.ts', "import { gsap, PixiPlugin } from 'gsap/all';"],
+  ],
 };
 
 for (const rule of RULE_IDS) {
@@ -2095,6 +2241,20 @@ const ALLOW: ReadonlyArray<readonly [RuleId, readonly Fixture[]]> = [
       ['ui/App.svelte', '<div class="app" bind:this={rootEl}></div>'],
       ['ui/explore/ExploreView.svelte', '<!-- use:cueRoot -->\n<p title="module:use:said">use:said</p>'],
       ['ui/A.svelte', "<script lang=\"ts\">\n  const key = 'module:use:said';\n</script>\n<p>{key}</p>"],
+    ],
+  ],
+  [
+    'pixi-env',
+    [
+      // Input stays off the stage; an array filter is no Pixi filter; the controller's own Application and init.
+      ['scene/controller.ts', "app.stage.eventMode = 'none';"],
+      ['scene/executor.ts', 'const ok = list.filter((x) => x.ok);'],
+      ['scene/controller.ts', 'const app = new Application();\nawait app.init(appOptions(host, resolution));'],
+      // The accessibility layer's own options (D6), not an `accessible*` member.
+      ['scene/controller.ts', 'const o = { accessibilityOptions: { enabledByDefault: false, activateOnTab: false } };'],
+      // A DOM listener for the GPU context, and Pixi's texture upload, are no pointer API and no `.init(`.
+      ['scene/controller.ts', "canvas.addEventListener('webglcontextlost', onLost);\ncanvas.style.touchAction = 'none';"],
+      ['scene/controller.ts', 'app.renderer.texture.initSource(source);'],
     ],
   ],
 ];
