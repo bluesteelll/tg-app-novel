@@ -819,6 +819,33 @@ test("shots: a face in the batch of a cut names the new shot's cast", () => {
   ]);
 });
 
+test('shots: a face cast in one possible shot and absent from a later-sorted one fails', () => {
+  const { flow, findings } = linted([
+    '-> k',
+    '=== k ===',
+    '# scene: cafe_wide',
+    'Кафе. #id:ch1.k.a001',
+    '* [Остаться #id:ch1.k.c001]',
+    '  -> m',
+    '* [Выйти #id:ch1.k.c002]',
+    '  -> s',
+    '=== s ===',
+    '# bg: street_wide',
+    'Улица. #id:ch1.s.a001',
+    '-> m',
+    '=== m ===',
+    '# face: stranger smile',
+    'Тишина. #id:ch1.m.a001',
+    '-> END',
+  ]);
+  // Both paths join at m, so both shots are possible there; the first in sort order casts stranger, the later does not.
+  // Every possible shot is judged (D4), so the later one alone still fails the face.
+  expect(effectAt(flow, 'ch1.m.a001').shots).toEqual(['cafe_wide', 'street_wide']);
+  expect(findings.filter((f) => f.severity === 'E').map((f) => `${f.code} ${f.file}:${f.line} ${f.message}`)).toEqual([
+    "shot/char-absent story/ch1/main.ink:15 'face: stranger smile': stranger is not in the cast of shot 'street_wide' (on some path) (§14)",
+  ]);
+});
+
 test('shots: an off-screen speaker passes', () => {
   const { findings } = linted(['-> k', '=== k ===', '# scene: cafe_ally_cu', 'voice: Кто там? #id:ch1.k.a001', 'radio: Приём. #id:ch1.k.a002', 'stranger: Я здесь. #id:ch1.k.a003', '-> END']);
   expect(shown(findings, 'shot/char-absent', 'shot/back-view')).toEqual([]);
