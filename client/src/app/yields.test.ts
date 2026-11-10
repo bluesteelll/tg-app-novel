@@ -21,7 +21,7 @@ import type { VisualCommand } from '../scene/executor.ts';
 import type { StatEvent } from '../stats/reporter.ts';
 import { decodeChapterMeta } from '../story/catalog.ts';
 import type { AssetEntry, AssetManifest, LoadedChapter, Result } from '../story/catalog.ts';
-import type { AssetId, ChapterId, KnotName, LineId, PuzzleLocalId, SectionId, StagingSnapshot } from '../story/staging.ts';
+import type { AssetId, ChapterId, KnotName, PuzzleLocalId, SectionId, StagingSnapshot } from '../story/staging.ts';
 import { createExploreView } from '../ui/explore-view.svelte.ts';
 import type { ExploreLayerProps } from '../ui/explore-view.svelte.ts';
 import { createPuzzleView } from '../ui/puzzle-view.svelte.ts';
@@ -796,7 +796,8 @@ test('yields: dispose leaves no cue subscriber', async () => {
   };
   const r = rig({ create });
   await inHall(r);
-  const looked: ExploreEffect = { kind: 'look', text: { id: 'ch1.yx.late' as LineId, ru: 'late' }, at: 'study.desk' as HotspotKey };
+  // A late look cue (the writer's record; a `look` effect itself plays no cue).
+  const looked: ExploreEffect = { kind: 'cue', cue: coreCue('look', 'study.desk' as HotspotKey, null) };
   // Control: while the session lives, such an effect reaches the scene role.
   const before = r.cues.length;
   listener.fn?.(looked);

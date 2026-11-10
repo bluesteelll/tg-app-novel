@@ -10,7 +10,7 @@ import { RESUME_STATE_CAP } from '../../src/explore/reduce.ts';
 import type { Step } from '../../src/explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../../src/explore/state.ts';
 import { HOTSPOT_MIN_SOURCE_PX } from '../../src/geom/cover.ts';
-import type { IssueReport, KernelWorld, MechanicData, MechanicRules, OwnedAt, OwnedRaw } from '../../src/mechanics/contract.ts';
+import type { IssueReport, KernelWorld, MechanicData, MechanicRules, OwnedAt, OwnedRaw, RulesRegistry } from '../../src/mechanics/contract.ts';
 import { MECHANIC_DATA } from '../../src/mechanics/data/index.ts';
 import type { DataRegistry } from '../../src/mechanics/data/index.ts';
 import { MECHANIC_RULES } from '../../src/mechanics/rules/index.ts';
@@ -1802,6 +1802,78 @@ test("use: a played chapter takes a use edge only with the world's mods", () => 
   const without = playStatue(graph, ch.json, toPublic(src));
   expect(without.play.ended).toBe(0);
   expect([...without.play.visited]).not.toContain('after');
+});
+
+test('playthrough: every step yields at least one cue', () => {
+  // The hall: a look hotspot (tapped again and again) and the exit out of the section.
+  const label = (): Json => ({ id: `ch1.s.p${(counter++).toString(36).padStart(3, '0')}`, ru: 'Текст' });
+  const raw = {
+    format: 1,
+    items: {},
+    docs: {},
+    puzzles: {},
+    sections: {
+      s: {
+        start: 'hall',
+        bgm: null,
+        rooms: {
+          hall: {
+            bg: 'hall',
+            title: label(),
+            onEnter: [],
+            hotspots: [
+              { id: 'desk', kind: 'look', rect: [100, 300, 200, 200], label: label(), look: label(), then: [] },
+              { id: 'out', kind: 'exit', rect: [400, 300, 200, 200], label: label(), to: { story: 'after' }, lock: null, sfx: null },
+            ],
+          },
+        },
+      },
+    },
+  };
+  const src = decodeWorldSource(raw);
+  if (!src.ok) {
+    throw new Error(`invariant: the fixture world decodes: ${JSON.stringify(src.error)}`);
+  }
+  const sources = new Map([
+    [GLOBALS_PATH, 'VAR g_x = 0\n'],
+    [CH1.entry, ['INCLUDE ../common/globals.ink', '-> start', '=== start ===', 'Холл. #id:ch1.start.a001', '# explore: s', '-> DONE', '=== after ===', 'Вышли. #id:ch1.after.a002', '-> END', ''].join('\n')],
+  ]);
+  const compiled = compileChapter(CH1, (key) => sources.get(key) ?? null).compiled;
+  if (compiled === null) {
+    throw new Error('invariant: the fixture compiles');
+  }
+  const graph = buildGraph({ chapter: CH1, files: compiled.files, sources, assets: ASSETS }).graph;
+  const play = (rules?: RulesRegistry): ReturnType<typeof playChapter> =>
+    playChapter({
+      chapter: CH1,
+      json: compiled.json,
+      graph,
+      assets: ASSETS,
+      cast: committedCast(),
+      en: new Map(),
+      staticIds: new Set(graph.lines.map((l) => l.id)),
+      allow: new Map(),
+      carry: null,
+      runs: 20,
+      world: toPublic(src.value),
+      ...(rules === undefined ? {} : { rules }),
+    });
+  // Every run taps the desk until it leaves: each tap, the first and every later one, plays a cue.
+  const clean = play();
+  expect(clean.play, JSON.stringify(clean.findings)).toMatchObject({ ended: 20, failed: 0 });
+  expect(clean.findings).toEqual([]);
+  // The positive control: a module that claims the desk's tap and writes nothing fails the run at that step.
+  const mute: MechanicRules<'mute', never, never> = {
+    id: 'mute',
+    actions: () => [],
+    apply: () => undefined,
+    reads: () => [],
+    cues: [],
+    tap: (_w, _s, at) => at === ('hall.desk' as HotspotKey), // the fixture's hotspot
+  };
+  const muted = play([...MECHANIC_RULES, mute]);
+  expect(muted.findings.map((f) => f.code)).toEqual(['play/runtime-error']);
+  expect(muted.findings[0]?.message).toContain('step tap hall.desk yields no cue');
 });
 
 test('use: a knot a rule enters is in the graph, its seeds and the shot flow', () => {

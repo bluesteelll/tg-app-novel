@@ -155,6 +155,7 @@ function tap(out: CoreWriter, key: HotspotKey, cause: Cause): void {
   switch (h.kind) {
     case 'look':
       d.effects.push({ kind: 'look', text: h.look, at: key });
+      out.cue('core', 'look', key, null);
       out.set('examined', added(d.s.examined, key), cause);
       fire(out, `then:${key}`, h.then, key, cause);
       return;
@@ -195,6 +196,9 @@ function tap(out: CoreWriter, key: HotspotKey, cause: Cause): void {
       if (h.look !== null) {
         d.effects.push({ kind: 'look', text: h.look, at: key });
       }
+      // Every tap of an open or lockless object plays its look, with or without a text (an opened drawer whose `then`
+      // has fired still answers the tap: plan (4), every step yields a cue).
+      out.cue('core', 'look', key, null);
       fire(out, `then:${key}`, h.then, key, cause);
       return;
     default: {

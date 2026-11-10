@@ -471,8 +471,7 @@ export function createYields(h: YieldsHost): Yields {
         return;
       }
       case 'look':
-        vm.showToast({ kind: 'note', key: 'look', message: h.text(e.text), sticky: false });
-        send(coreCue('look', scope.cause.at, null));
+        vm.showToast({ kind: 'note', key: 'look', message: h.text(e.text), sticky: false }); // its cue is the writer's
         return;
       case 'got': {
         // Its fact cue is the writer's (a `cue` effect), which carries K51's success haptic in its row (D6).
