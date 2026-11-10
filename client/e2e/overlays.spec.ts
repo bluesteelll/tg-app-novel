@@ -242,6 +242,15 @@ test.describe(() => {
     await quick(page, 'quick.menu').tap();
     await expect(overlaysNote(page)).toBeVisible({ timeout: 10_000 });
     await expect(heading(page, 'menu.title')).toHaveCount(0);
+    // A tap on the stage (its centre: the note sits at the top) opens the paywall again (D11), and its Terms again.
+    const size = page.viewportSize();
+    if (size === null) {
+      throw new Error('the project sets a viewport');
+    }
+    await page.touchscreen.tap(size.width / 2, size.height / 2);
+    await expect(paywall(page), 'the stage tap: the paywall (D11)').toBeVisible({ timeout: 10_000 });
+    await page.getByRole('button', { name: ru('paywall.terms_link'), exact: true }).tap();
+    await expect(heading(page, 'terms.title'), 'Terms again').toBeVisible();
   });
 
   test('overlays: a chunk that keeps failing while the server serves it restarts the page once, and the menu opens after', async ({ page }) => {
