@@ -9,7 +9,9 @@ import { afterEach, expect, test, vi } from 'vitest';
 
 import { createCueBus } from '../../cues/bus.ts';
 import type { CueBus } from '../../cues/bus.ts';
-import { CueStage } from '../../cues/stage/index.ts';
+import { CueStage, landing, resolveTarget } from '../../cues/stage/index.ts';
+import { CUE_TARGET_ATTRS, cueKey, motionOf } from '../../cues/stage/motions.ts';
+import type { Resolved } from '../../cues/stage/player.ts';
 import { PRESETS } from '../../cues/stage/presets.ts';
 import type { CueEvent } from '../../cues/types.ts';
 import { LAYER_MOTIONS } from '../../cues/visible.ts';
@@ -1136,6 +1138,74 @@ test('explore: a bare tap deselects', async () => {
   flushSync();
   await fireEvent.click(catcherIn(container) ?? container);
   expect(calls).toEqual([['layer', 'ondeselect']]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The panels and the targets (engine plan §8.5 "Cue targets"; GM3u): what a cue of the rooms plays on
+
+test("explore: an open panel's sheet holds the dim after its cue ends", async () => {
+  // The panel-open cue's `dim` is a stage motion that ends with the cue; the sheet's own backdrop keeps the rooms dimmed
+  // under every open panel for as long as it stays open: a translucent black, never transparent and never opaque.
+  const bg = declarationsFor(exploreViewSource, 'sheet').get('background') ?? '';
+  const alpha = Number(/^rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*([0-9.]+)\s*\)$/.exec(bg)?.[1] ?? Number.NaN);
+  expect([bg, alpha > 0 && alpha < 1]).toEqual([bg, true]);
+  // Every panel the layer opens is such a sheet.
+  const opened: string[] = [];
+  for (const over of [
+    { items: [SUN], panel: { kind: 'inventory' } },
+    { docs: [LETTER], panel: { kind: 'doc', doc: LETTER.id } },
+    { items: [SUN], lock: GATE, panel: { kind: 'lock' } },
+  ] satisfies LayerOver[]) {
+    const { container, unmount } = render(ExploreView, layerProps(over));
+    await tick();
+    for (const p of container.querySelectorAll('[data-cue-panel]')) {
+      opened.push(`${p.getAttribute('data-cue-panel')}:${p.classList.contains('sheet')}`);
+    }
+    unmount();
+  }
+  expect(opened).toEqual(['inventory:true', 'inventory:true', 'document:true', 'lock:true']);
+});
+
+/** What a resolved target is: its element, a designed landing's box, or nothing. */
+const foundOf = (r: Resolved): Element | Box | null => (r === null ? null : 'el' in r ? r.el : r.box);
+
+test('explore: every explore cue target resolves', async () => {
+  // Each cue the rooms' writes emit plays where §8.5 says: its first motion's target, found by that target's marker
+  // (`CUE_TARGET_ATTRS`) in the live layer, never the layer's root, and never the stage centre's fallback.
+  stageRig(); // the stage layer's box, and `unstage` clears the body
+  const stage = document.createElement('div');
+  stage.setAttribute('data-cue-stage', '');
+  document.body.append(stage);
+  const at: Cause = { verb: 'tap', at: k('hall.gate'), item: null, via: null };
+  type Row = readonly [state: LayerOver, cue: CueEvent['cue'], target: string, want: (c: HTMLElement) => Element | Box | null];
+  const panel = (name: string) => (c: HTMLElement) => c.querySelector(`[data-cue-panel="${name}"]`);
+  const rows: readonly Row[] = [
+    [{ items: [COIN, SUN] }, { kind: 'fact', fact: { kind: 'held', id: SUN.id }, change: 'added', cause: at }, 'ribbon', () => slotOf(SUN)],
+    [{ items: [COIN, SUN] }, { kind: 'ui-state', name: 'select', panel: null, item: SUN.id }, 'ribbon', () => slotOf(SUN)],
+    [{ items: [COIN, SUN] }, { kind: 'fact', fact: { kind: 'doc', id: LETTER.id }, change: 'added', cause: at }, 'inventory', (c) => c.querySelector('[data-cue="bar-inventory"]')],
+    [{ items: [SUN], panel: { kind: 'inventory' } }, { kind: 'ui-state', name: 'panel-open', panel: 'inventory', item: null }, 'panel', panel('inventory')],
+    [{ docs: [LETTER], panel: { kind: 'doc', doc: LETTER.id } }, { kind: 'ui-state', name: 'panel-open', panel: 'document', item: null }, 'panel', panel('document')],
+    [{ items: [SUN], lock: GATE, panel: { kind: 'lock' } }, { kind: 'ui-state', name: 'panel-open', panel: 'lock', item: null }, 'panel', panel('lock')],
+    // Under a panel the ribbon is gone: a slot's cue lands at the designed `edge`, which counts nothing.
+    [{ items: [SUN], panel: { kind: 'inventory' } }, { kind: 'ui-state', name: 'select', panel: null, item: SUN.id }, 'ribbon', () => landing(stage, 'edge')],
+  ];
+  const got: unknown[] = [];
+  const want: unknown[] = [];
+  for (const [over, cue, target, pick] of rows) {
+    const { container, unmount } = render(ExploreView, layerProps(over));
+    await tick();
+    const t = motionOf(cue).target;
+    const r = foundOf(resolveTarget(t, { cue, box: null, point: null, diff: [], el: null }, stage));
+    const expected = pick(container);
+    // The marker the target is found by, on the element found.
+    const marked = r instanceof Element && t in CUE_TARGET_ATTRS ? r.hasAttribute(CUE_TARGET_ATTRS[t as keyof typeof CUE_TARGET_ATTRS]) : null;
+    got.push([cueKey(cue), t, r, r instanceof Element ? [marked, r.matches('[data-cue-root]'), container.contains(r)] : null]);
+    want.push([cueKey(cue), target, expected, expected instanceof Element ? [true, false, true] : null]);
+    unmount();
+  }
+  expect(got).toEqual(want);
+  // Non-vacuous: every row names a target that exists (a marker lost on both sides would otherwise compare equal).
+  expect(want.filter((w) => Array.isArray(w) && w[2] === null)).toEqual([]);
 });
 
 /**

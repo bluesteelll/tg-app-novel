@@ -118,10 +118,12 @@
     inset: 0;
   }
 
-  /* A panel covers the rooms; the panels pad themselves past the safe area. */
+  /* A panel covers the rooms; the panels pad themselves past the safe area. Its backdrop holds the rooms dimmed while it
+     stays open: the panel-open cue's stage dim ends with the cue (§8.5). */
   .sheet {
     position: absolute;
     inset: 0;
+    background: rgba(0, 0, 0, 0.5);
   }
 
   /* The bare-art catcher: the whole room, painting nothing; the hotspots and the ribbon lie above it. */
