@@ -1253,13 +1253,13 @@ test("story: the build's answer bound never exceeds the server's MAX_ANSWER_LEN"
 // GM3c: the composed decoder's module texts (engine plan §3.2 "Module texts")
 
 /**
- * A fixture module owning hotspot `say` (a text) and `uses` (a list of `{ say }`): its data is the `OwnedAt`s it got,
+ * A fixture module owning hotspot `say` (a text) and `notes` (a list of `{ say }`): its data is the `OwnedAt`s it got,
  * every text decoded through the kernel's line-ID text decoder (`DecodeCtx.text`).
  */
 const PROBE: MechanicData<'probe', OwnedRaw> = {
   id: 'probe',
   rules: 'none',
-  owns: { hotspot: ['say', 'uses'] },
+  owns: { hotspot: ['say', 'notes'] },
   decode: (raw, ctx) => {
     const error: WorldIssue[] = [];
     const report: IssueReport = (path, reason, detail) => {
@@ -1270,8 +1270,8 @@ const PROBE: MechanicData<'probe', OwnedRaw> = {
       if (Object.hasOwn(a.raw, 'say')) {
         out['say'] = ctx.text(a.raw['say'], `${a.path}.say`, report);
       }
-      if (Object.hasOwn(a.raw, 'uses')) {
-        out['uses'] = list(a.raw['uses']).map((u, i) => ({ say: ctx.text(u['say'], `${a.path}.uses.${i}.say`, report) }));
+      if (Object.hasOwn(a.raw, 'notes')) {
+        out['notes'] = list(a.raw['notes']).map((u, i) => ({ say: ctx.text(u['say'], `${a.path}.notes.${i}.say`, report) }));
       }
       return { ...a, raw: out };
     });
@@ -1439,15 +1439,15 @@ test('story: a condition deeper than 4 or with more than 16 atoms is refused', (
 // ---------------------------------------------------------------------------------------------------------------
 // GM3c: the one walk of world texts (engine plan §3.2 "Module texts"), its gate, and the hotspot minimum's home
 
-/** The probe's texts at their source paths: its hotspot `say` and every `uses` entry's `say`, all toasts. */
+/** The probe's texts at their source paths: its hotspot `say` and every `notes` entry's `say`, all toasts. */
 const PROBE_WALKER: TextWalker<OwnedRaw> = (_w, d, places) =>
   d.flatMap((a): ModuleText[] => {
     const path = places.hotspot(a.id as HotspotKey); // the probe owns hotspot keys only: its id is a HotspotKey
     const say = a.raw['say'] as WorldText | undefined; // the probe's decode made every say a text
-    const uses = (a.raw['uses'] ?? []) as ReadonlyArray<{ readonly say: WorldText }>; // likewise, inside its list
+    const notes = (a.raw['notes'] ?? []) as ReadonlyArray<{ readonly say: WorldText }>; // likewise, inside its list
     return [
       ...(say === undefined ? [] : [{ text: say, path: `${path}.say`, role: 'toast' as const, reach: [] }]),
-      ...uses.map((u, i) => ({ text: u.say, path: `${path}.uses.${i}.say`, role: 'toast' as const, reach: [] })),
+      ...notes.map((u, i) => ({ text: u.say, path: `${path}.notes.${i}.say`, role: 'toast' as const, reach: [] })),
     ];
   });
 
@@ -1602,7 +1602,7 @@ test('mechanics: every module declares its texts', () => {
 test('story: an undeclared module text is refused', () => {
   const w = base();
   const say = t('manor', 'Тихо.');
-  spot(w, 'hall', 'inscription')['uses'] = [{ say }];
+  spot(w, 'hall', 'inscription')['notes'] = [{ say }];
   // The probe's entry is null, and its data holds a text inside a list.
   expect(of(lintProbe(w, MECHANIC_LINTS, { ...MECHANIC_TEXTS, probe: null }), 'world/text-unwalked')).toEqual([
     {
@@ -1631,7 +1631,7 @@ test("story: the texts gate reads each module's walked lines", () => {
   const walked = lintProbe(w, [...MECHANIC_LINTS, capture], { ...MECHANIC_TEXTS, probe: PROBE_WALKER });
   expect(seen).toHaveLength(1);
   const moduleLines: ReadonlyMap<string, ReadonlySet<string>> | undefined = seen[0]?.moduleLines;
-  expect([...(moduleLines?.keys() ?? [])]).toEqual(['core', 'probe']);
+  expect([...(moduleLines?.keys() ?? [])]).toEqual([...Object.keys(MECHANIC_TEXTS), 'probe']);
   expect(moduleLines?.get('probe')).toEqual(new Set([say['id']]));
   expect(moduleLines?.get('core')).toEqual(new Set());
   expect(of(walked, 'world/text-unwalked')).toEqual([]);
