@@ -232,7 +232,7 @@ test('mechanics: the rules registry loads from either module first', async () =>
       { id: 'core', actions: core.actions, apply: core.applyCore, reads: core.reads, cues: ['look', 'locked', 'refused', 'reset'] },
       { id: 'use', actions: use.useActions, apply: use.applyUse, reads: use.useReads, scope: use.useScope, cues: ['refused', 'said'] },
     ]);
-    expect(core.reduce(w, at('hall'), tap('hall.statue')).effects.map((e) => e.kind)).toEqual(['look', 'dirty']);
+    expect(core.reduce(w, at('hall'), tap('hall.statue')).effects.map((e) => e.kind)).toEqual(['look', 'cue', 'dirty']);
   };
   // rules/use.ts and rules/conditions.ts sit on the cycle too (use.ts <-> core.ts, conditions.ts -> index.ts).
   const firsts = [() => import('./rules/core.ts'), () => import('./rules/index.ts'), () => import('./rules/use.ts'), () => import('./rules/conditions.ts')];
@@ -421,7 +421,7 @@ test('mechanics: a hotspot a module claims routes its tap to the module', () => 
   const registry = [CORE, probe];
   const s = at('hall');
   const r = reduce(w, s, tap('hall.statue'), registry);
-  expect(r.effects).toEqual([DIRTY]);
+  expect(r.effects).toEqual([{ kind: 'cue', cue: { kind: 'fact', fact: { kind: 'examined', id: 'hall.statue' }, change: 'added', cause } }, DIRTY]);
   expect(r.state.examined).toEqual(['hall.statue']);
   expect(r.state.held).toEqual([]);
   const [out] = writers;

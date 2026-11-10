@@ -508,6 +508,9 @@ export function createYields(h: YieldsHost): Yields {
         vm.showToast({ kind: 'note', key: 'area_reset', message: t(vm.lang, 'explore.area_reset'), sticky: false });
         send(coreCue('reset', null, null));
         return;
+      case 'cue':
+        // The writer's record (engine plan §8.1 plan (2)): not yet on the bus (lane GM3 C7 forwards it).
+        return;
       case 'dirty':
         dirty();
         return;

@@ -1,6 +1,7 @@
 import { expect, test } from 'vitest';
 
-import type { FactAtom, FactKind, FlagId, MechanicRules } from '../mechanics/contract.ts';
+import { SILENT_FIELDS } from '../mechanics/contract.ts';
+import type { FactAtom, FactKind, FlagId, MechanicRules, SectionAction } from '../mechanics/contract.ts';
 import { actions, reduce } from '../mechanics/rules/core.ts';
 import { MECHANIC_RULES } from '../mechanics/rules/index.ts';
 import { admitSection, inSectionReach, searchSection, sectionEntry, sectionKey, successors } from '../mechanics/rules/search.ts';
@@ -1276,6 +1277,125 @@ test('reduce: rules golden pinned to RULES_VERSION', () => {
   // X9's start premise: re-entering S from any state play reaches gives the state the build started from.
   const off = reached.filter((s) => sectionKey(w, sectionEntry(w, s, MANOR), MANOR) !== keys[0]);
   expect(off.length, `the first: ${off.slice(0, 2).map((s) => sectionKey(w, s, MANOR)).join(' / ')}`).toBe(0);
+});
+
+/** Each list field with its members' fact kind (the writer's `FACT_OF`, restated as the oracle's). */
+const LIST_FACTS = [
+  ['visited', 'visited'],
+  ['held', 'held'],
+  ['used', 'used'],
+  ['docs', 'doc'],
+  ['taken', 'taken'],
+  ['examined', 'examined'],
+  ['open', 'open'],
+  ['fired', 'fired'],
+  ['pendingStory', 'story'],
+] as const;
+
+/** The fact changes from `a` to `b` as `kind:id:change`, sorted: every non-silent field's diff. */
+function factDiff(a: WorldState, b: WorldState): string[] {
+  const out: string[] = [];
+  for (const [field, kind] of LIST_FACTS) {
+    const before: readonly string[] = a[field];
+    const after: readonly string[] = b[field];
+    out.push(...before.filter((x) => !after.includes(x)).map((x) => `${kind}:${x}:removed`));
+    out.push(...after.filter((x) => !before.includes(x)).map((x) => `${kind}:${x}:added`));
+  }
+  const filled = (c: ReadonlyArray<ItemId | null>): number => c.filter((x) => x !== null).length;
+  for (const key of new Set([...Object.keys(a.slots), ...Object.keys(b.slots)]) as Set<HotspotKey>) {
+    const before = own(a.slots, key) ?? [];
+    const after = own(b.slots, key) ?? [];
+    if (JSON.stringify(before) !== JSON.stringify(after)) {
+      out.push(`slot:${key}:${filled(after) >= filled(before) ? 'added' : 'removed'}`);
+    }
+  }
+  for (const p of new Set([...Object.keys(a.puzzles), ...Object.keys(b.puzzles)]) as Set<PuzzleLocalId>) {
+    const [x, y] = [runOf(a, p), runOf(b, p)];
+    if (x.outcome !== y.outcome) {
+      out.push(...(x.outcome === null ? [] : [`${x.outcome}:${p}:removed`]), ...(y.outcome === null ? [] : [`${y.outcome}:${p}:added`]));
+    }
+    if (x.attempts !== y.attempts) {
+      out.push(`attempt:${p}:${y.attempts > x.attempts ? 'added' : 'removed'}`);
+    }
+    if (x.hintsOpened !== y.hintsOpened) {
+      out.push(`hint:${p}:${y.hintsOpened > x.hintsOpened ? 'added' : 'removed'}`);
+    }
+  }
+  // Any other field that changed has no fact kind: the oracle names it, so a new field cannot pass unseen.
+  const known = new Set<string>([...LIST_FACTS.map(([f]) => f), 'slots', 'puzzles', ...Object.keys(SILENT_FIELDS)]);
+  for (const field of Object.keys(b) as Array<keyof WorldState>) {
+    if (!known.has(field) && JSON.stringify(a[field]) !== JSON.stringify(b[field])) {
+      out.push(`${field}:?:unrecorded`);
+    }
+  }
+  return out.sort();
+}
+
+test('writer: every fact write emits a fact cue with its cause', () => {
+  const w = manor({ golden: true });
+  const ix = worldIndex(w);
+  const start = sectionEntry(w, EMPTY_WORLD_STATE, MANOR);
+  const reached: WorldState[] = [start];
+  searchSection(w, start, MANOR, RESUME_STATE_CAP, {
+    onEdge: (_from, succ, to, isNew) => {
+      if (isNew && to !== null) {
+        reached.push(succ.state);
+      }
+    },
+  });
+  // The cause each step's fact cues carry: the action's verb and hotspot (a puzzle's run: its lock).
+  const lockOfRun = (p: PuzzleLocalId): HotspotKey | null => ix.puzzleLock.get(p) ?? null;
+  const causeOf = (a: SectionAction): string => {
+    switch (a.kind) {
+      case 'tap':
+        return `tap@${a.hotspot}`;
+      case 'insert':
+        return `insert@${a.hotspot}`;
+      case 'use':
+        return `use@${a.target}`;
+      case 'enter-section':
+        return 'enter@null';
+      case 'event-returned':
+        return 'return@null';
+      case 'puzzle-ended':
+        return `${a.outcome === 'solved' ? 'solve' : 'fail'}@${String(lockOfRun(a.puzzle))}`;
+      default:
+        return `fail@${String('puzzle' in a ? lockOfRun(a.puzzle) : null)}`;
+    }
+  };
+  const problems: string[] = [];
+  let cues = 0;
+  const check = (s: WorldState, a: SectionAction): ReturnType<typeof reduce> => {
+    const r = reduce(w, s, a);
+    const facts = r.effects.flatMap((e) => (e.kind === 'cue' && e.cue.kind === 'fact' ? [e.cue] : []));
+    cues += facts.length;
+    const got = facts.map((c) => `${c.fact.kind}:${c.fact.id}:${c.change}`).sort();
+    const want = factDiff(s, r.state);
+    const label = `${a.kind} ${'hotspot' in a ? a.hotspot : 'target' in a ? a.target : 'puzzle' in a ? a.puzzle : 'section' in a ? a.section : ''}`;
+    problems.push(...want.filter((x) => !got.includes(x)).map((x) => `${label}: fact:${x} missing`));
+    problems.push(...got.filter((x) => !want.includes(x)).map((x) => `${label}: fact:${x} extra`));
+    problems.push(...facts.filter((c) => `${c.cause.verb}@${String(c.cause.at)}` !== causeOf(a)).map((c) => `${label}: cause ${c.cause.verb}@${String(c.cause.at)}`));
+    return r;
+  };
+  check({ ...EMPTY_WORLD_STATE, unproved: [] }, { kind: 'enter-section', section: MANOR });
+  for (const s of reached) {
+    for (const a of MECHANIC_RULES.flatMap((m): readonly SectionAction[] => m.actions(w, s))) {
+      const r = check(s, a);
+      const opened = r.effects.find((e) => e.kind === 'puzzle');
+      if (opened !== undefined) {
+        check(r.state, ended(opened.puzzle, 'solved'));
+        check(r.state, ended(opened.puzzle, 'failed'));
+      }
+    }
+    // A run's attempt and hint (O1: no search edge takes them).
+    for (const p of ['drawer', 'gate'].map(pz)) {
+      check(s, { kind: 'attempt-failed', puzzle: p });
+      check(s, { kind: 'hint-opened', puzzle: p, tier: runOf(s, p).hintsOpened + 1 });
+    }
+  }
+  expect(problems.slice(0, 5)).toEqual([]);
+  // The positive control: the walk saw every state and many fact cues.
+  expect([reached.length, cues > reached.length]).toEqual([GOLDEN[RULES_VERSION]?.states, true]);
 });
 
 // ---------------------------------------------------------------------------------------------------------------

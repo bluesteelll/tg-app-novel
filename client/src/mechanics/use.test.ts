@@ -160,6 +160,32 @@ test('use: a keep slot leaves the item held', () => {
   expect([jar.state.held, jar.state.used, jar.state.open]).toEqual([[], ['lens'], ['hall.jar']]);
 });
 
+test('use: a run plays said, a refusal plays refused', () => {
+  const { w } = boxWorld();
+  const cues = (effects: readonly ExploreEffect[]): string[] =>
+    effects.flatMap((e) => {
+      if (e.kind !== 'cue') {
+        return [];
+      }
+      const c = e.cue;
+      return [c.kind === 'module' ? `module:${c.module}:${c.name} ${String(c.at)} ${String(c.item)}` : `fact:${c.fact.kind}:${c.fact.id}:${c.change} ${c.cause.verb}@${String(c.cause.at)} via ${String(c.cause.via)}`];
+    });
+  // A rule's run: its writes as fact cues with the use's cause (`via` its key for what its `do` wrote), then `said`.
+  const run = reduce(w, at('hall', { held: [it('key')] }), use('key', 'hall.box'));
+  expect(cues(run.effects)).toEqual([
+    'fact:held:key:removed use@hall.box via null',
+    'fact:used:key:added use@hall.box via null',
+    'fact:fired:use:hall.box#1:added use@hall.box via use:hall.box#1',
+    'fact:held:gem:added use@hall.box via use:hall.box#1',
+    'module:use:said hall.box key',
+  ]);
+  // A refusal: the same state object, the kernel's effects, then `refused` alone.
+  const s = at('hall', { held: [it('map')] });
+  const refused = reduce(w, s, use('map', 'hall.box'));
+  expect(refused.state).toBe(s);
+  expect([refused.effects.map((e) => e.kind), cues(refused.effects)]).toEqual([['refused', 'look', 'cue'], ['module:use:refused hall.box map']]);
+});
+
 test('use: the fallback chain ends at the room default', () => {
   const src = source(
     rawWorld(
