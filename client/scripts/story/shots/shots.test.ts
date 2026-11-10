@@ -1443,6 +1443,34 @@ test('flow: a co-fired event lookahead edge carries only its own predecessor yie
   expect(lookAt(l, 'ch1.alt.t001').possible).toEqual(['bg/cafe_ots', 'sheet/cafe_ots']);
 });
 
+/** A leave door of the hall to `out` and its knot: a fixture world with one ends its chapter (no `graph/no-end`). */
+const LEAVE_DOOR: Json = { id: 'door', kind: 'exit', rect: [730, 1300, 250, 400], label: TEXT('ch1.s.l399'), to: { story: 'out' }, lock: null, sfx: null };
+const LEAVE_OUT = ['=== out ===', '# scene: street', 'Улица. #id:ch1.out.o001', '-> END'];
+
+/** A fixture chapter's graph findings on the cafe catalog, as `code message`: a valid story has none. */
+function graphShown(body: readonly string[], w: WorldPublicBody): string[] {
+  const built = chapter(body, CAFE_CATALOG, w);
+  const g = buildGraph({ chapter: { id: CH1, paid: false, entry: 'ch1/main.ink' }, files: built.files, sources: built.sources, assets: built.assets, world: { kind: 'ok', body: w } });
+  return g.findings.map((f) => `${f.code} ${f.message}`);
+}
+
+test("flow: an event co-fired after one that returns through another event knot opens on that knot's last image", () => {
+  const look = (id: string, n: number, then: readonly Json[]): Json => ({ id, kind: 'look', rect: [100, 300, 100, 100], label: TEXT(`ch1.s.l30${n}`), look: TEXT(`ch1.s.k30${n}`), then });
+  // The bang fires the forced gate and then the echo; the forced gate's run returns at the common gate's yield.
+  const w = world({ hall: room('hall', [look('bang', 1, [{ story: 'gate_forced' }, { story: 'gate_echo' }]), look('bell', 2, [{ story: 'gate_common' }]), LEAVE_DOOR]) });
+  const body = [
+    '-> arrive', '=== arrive ===', '# scene: hall', 'Зал. #id:ch1.arrive.a001', '# explore: s', '-> DONE',
+    '=== gate_forced ===', 'Хруст. #id:ch1.gate_forced.f001', '-> gate_common',
+    '=== gate_common ===', 'Звон. #id:ch1.gate_common.c001', '# explore: s', '-> DONE',
+    '=== gate_echo ===', '# bg: cafe_ally_cu', '# face: ally smile', 'ally: Эхо. #id:ch1.gate_echo.e001', '# explore: s', '-> DONE',
+    ...LEAVE_OUT,
+  ];
+  expect(graphShown(body, w)).toEqual([]);
+  const { flow, findings } = linted(body, { w });
+  expect(shown(findings, 'shot/char-absent')).toEqual([]);
+  expect(effectAt(flow, 'ch1.gate_echo.e001').shots).toEqual(['cafe_ally_cu']);
+});
+
 test('flow: two rooms on one bg keep two windows', () => {
   const look = (story: string, n: number): Json => ({ id: 'thing', kind: 'look', rect: [100, 300, 100, 100], label: TEXT(`ch1.s.l20${n}`), look: TEXT(`ch1.s.k20${n}`), then: [{ story }] });
   const exit = (to: string, n: number): Json => ({ id: 'way', kind: 'exit', rect: [100, 1300, 250, 400], label: TEXT(`ch1.s.l21${n}`), to: { room: to }, lock: null, sfx: null });

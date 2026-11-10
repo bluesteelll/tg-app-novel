@@ -993,8 +993,9 @@ or its section's knots. Every step transition a seeded playthrough makes must be
 (`flow/edge-missing`). Over the flow, what may be on stage at each step (the shot, the faces, the CG, the room, the
 legacy sprites) is a union over every path: `scene:` resets the faces to each member's rest, `bg:` cuts inside the
 scene and keeps them, `face:` sets one character's expression; a chapter starts on the empty stage, a section's knot
-on the room it is fired from, and an event that a list of effects fires after another on that event's last image (the
-explore runs it when that one returns, without showing the room). So a `face:`, an `anim:` or a `cam:` with a character target must name a member of every shot that may
+on the room it is fired from, and an event that a list of effects fires after another on the last image of that
+one's run (the explore runs it when that run returns, at its section's `# explore:` in whichever event knot its
+diverts and `then=` reached, without showing the room). So a `face:`, an `anim:` or a `cam:` with a character target must name a member of every shot that may
 be in effect after its batch's cut.
 
 ### 14.3 Shot lint codes
@@ -1032,8 +1033,9 @@ be in effect after its batch's cut.
   - `look`: each window's lookahead (a step, or a room `r:<room>` of an explore section): `cur` (the files on stage),
     `certain` (the next appearance on every path) at `certainDist` steps, `possible` (the other next-appearance
     files; a room window lists its own knots' openers first, `near` of them, then the `onEnter` openers of the rooms
-    its exits lead to), `d2` / `d3` (the two appearances after) and `labels` (a room is in effect). An event knot's
-    last step returns to its room's window, or runs the event co-fired after it;
+    its exits lead to), `d2` / `d3` (the two appearances after) and `labels` (a room is in effect). An event's last
+    step (in any event knot its diverts and `then=` reach) returns to its room's window, or runs the event co-fired
+    after it;
   - `entry`: per window, one alternative per possible top image (a room window: its room);
   - `sprites`: the chapter still names `show:` / `hide:`.
 

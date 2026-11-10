@@ -5,20 +5,21 @@
 // CFG rules: weave depth for choices and gathers; diverts enter a knot's first step; tunnels add call and every-return
 // edges; conditional and sequence blocks take every arm (and skip them when no arm must run); sticky and fallback
 // choices count; END and DONE end a path; a yield leads to its `then` knot, an explore yield to its section's knots
-// (cross-check only, `explore`); an event knot's last step returns to its rooms' windows `r:<room>` and leads, with its
-// yield's batch, to the event knots co-fired after it, an entering explore yield leads to its section's start room
-// window. The may-analysis: what may be on stage after each step's batch, a forward union to a fixpoint from the seeds
-// (the first knot: the empty stage; a section knot: the rooms it opens on, none for an event only ever co-fired after
-// another, which opens on that one's last image). It is the only code of the
-// shot pass that names the legacy kinds `show` / `hide` (rev. 5, W3: SH12a removes them here alone). Pure, no node:*,
-// no inkjs; tags are read only through `parseTags`.
+// (cross-check only, `explore`); an event's run returns at its section's explore yield in whichever event knot its
+// diverts and `then=` reached: that step leads to the event's rooms' windows `r:<room>` and, with its yield's batch, to
+// the event knots co-fired after it; an entering explore yield leads to its section's start room window. The
+// may-analysis: what may be on stage after each step's batch, a forward union to a fixpoint from the seeds (the first
+// knot: the empty stage; a section knot: the rooms it opens on, none for an event only ever co-fired after another,
+// which opens on the last image of that one's run). It is the only code of the shot pass that names the legacy kinds
+// `show` / `hide` (rev. 5, W3: SH12a removes them here alone). Pure, no node:*, no inkjs; tags are read only through
+// `parseTags`.
 import type { Cast } from '../../../src/story/catalog.ts';
-import type { AssetId, AssetIndex, BgId, CgId, ChapterId, CharId, ExprId, KnotName, LineId, SpeakerId, StagingCommand, YieldCommand } from '../../../src/story/staging.ts';
+import type { AssetId, AssetIndex, BgId, CgId, ChapterId, CharId, ExprId, KnotName, LineId, SectionId, SpeakerId, StagingCommand, YieldCommand } from '../../../src/story/staging.ts';
 import { YIELD_KINDS, parseTags, tagKind } from '../../../src/story/tags.ts';
 import type { RoomId, WorldPublicBody } from '../../../src/world/types.ts';
 import { classify } from '../classify.ts';
 import type { Divert, LineClass, RawTag, SourceLine } from '../classify.ts';
-import type { ChapterGraph, ChapterSections } from '../graph.ts';
+import type { ChapterGraph, ChapterSections, KnotNode } from '../graph.ts';
 import { shotFinding } from './lint.ts';
 import type { ShotFinding } from './lint.ts';
 import type { EffectiveShot } from './list.ts';
@@ -161,6 +162,8 @@ class Builder {
   readonly findings: ShotFinding[] = [];
   readonly #reported = new Set<string>();
   readonly #returns: EventReturns;
+  /** Per section and knot, the event runs an explore yield written in that knot may end (`runEnds`). */
+  readonly #ends: RunEnds;
   /** Per section knot, the rooms it opens on (`openingRooms`): a knot with none is never seeded. */
   readonly opens: OpeningRooms;
   /** Per step: where it is, its own commands and how its walk continues. */
@@ -176,6 +179,7 @@ class Builder {
   constructor(input: FlowInput) {
     this.#input = input;
     this.#returns = eventReturns(input.world, graphSections(input.graph));
+    this.#ends = runEnds(input.world, graphSections(input.graph), input.graph.knots);
     this.opens = openingRooms(input.world, graphSections(input.graph));
     this.#files = input.files.map((name) => ({ name, lines: classify(input.sources.get(name) ?? '') }));
     this.#blocks = this.#files.map(() => new Map());
@@ -625,17 +629,21 @@ class Builder {
       this.#knotEntry(key, k, this.#knots.get(k));
     }
     const next = this.next.get(from) ?? this.next.set(from, new Set()).get(from);
-    const back = yielding === null ? undefined : this.#returns.get(yielding as KnotName); // a compiled knot name
-    if (back !== undefined) {
-      // An event returns (§3.4, rev. 5 W2): the explore runs the next co-fired event, else shows the room it fired in.
-      for (const r of back.rooms) {
-        next?.add(`r:${r}`);
-      }
-      for (const k of back.cofiredAfter.filter((x) => this.#knots.has(x))) {
-        // The next event opens on this one's last image after the yield's batch (`core.ts` `eventReturned` stages no
-        // room in between); the yield in the batch keeps it apart from a seed's empty one.
-        this.#edge(from, knotKey(k), s.pending);
-        this.#knotEntry(knotKey(k), k, this.#knots.get(k));
+    const ending = yielding === null ? [] : (this.#ends.get(y.cmd.section)?.get(yielding as KnotName) ?? []); // a compiled knot name
+    if (ending.length > 0) {
+      // An event returns (§3.4, rev. 5 W2) at its section's yield, in whichever event knot its run reached it (`core.ts`
+      // `eventReturned` keys on the section): the explore runs the next co-fired event, else shows the room it fired in.
+      for (const e of ending) {
+        const back = this.#returns.get(e);
+        for (const r of back?.rooms ?? []) {
+          next?.add(`r:${r}`);
+        }
+        for (const k of (back?.cofiredAfter ?? []).filter((x) => this.#knots.has(x))) {
+          // The next event opens on the run's last image after the yield's batch (`core.ts` `eventReturned` stages no
+          // room in between); the yield in the batch keeps it apart from a seed's empty one.
+          this.#edge(from, knotKey(k), s.pending);
+          this.#knotEntry(knotKey(k), k, this.#knots.get(k));
+        }
       }
       return;
     }
@@ -982,6 +990,48 @@ export function eventReturns(world: WorldPublicBody | undefined, sections: Chapt
     if (named.events.length > 0) {
       out.set(knot, { rooms: [...named.events].sort(order), cofiredAfter: [...(after.get(knot) ?? [])].sort(order) });
     }
+  }
+  return out;
+}
+
+/**
+ * Per section, per knot: the section's event knots (sorted) whose run may end at an explore yield of the section
+ * written in that knot. A run returns at the first such yield it reaches, through diverts and `then=` knots among the
+ * section's event knots (the closure `graph.ts` checks `explore/event-return` on), whichever knot holds it: the
+ * runtime keys the return on the section (`core.ts` `eventReturned`). An event knot ends its own run.
+ */
+type RunEnds = ReadonlyMap<SectionId, ReadonlyMap<KnotName, readonly KnotName[]>>;
+
+/** The event runs each knot's explore yields may end (see `RunEnds`). */
+function runEnds(world: WorldPublicBody | undefined, sections: ChapterSections, knots: ReadonlyMap<KnotName, KnotNode>): RunEnds {
+  const sectionOf = new Map<string, SectionId>();
+  for (const [sid, section] of Object.entries(world?.sections ?? {})) {
+    for (const room of Object.keys(section.rooms)) {
+      sectionOf.set(room, sid as SectionId); // a decoded section id
+    }
+  }
+  const events = new Map<SectionId, Set<KnotName>>();
+  for (const [knot, named] of sections.rooms) {
+    for (const sid of named.events.flatMap((r) => sectionOf.get(r) ?? [])) {
+      (events.get(sid) ?? events.set(sid, new Set()).get(sid))?.add(knot);
+    }
+  }
+  const out = new Map<SectionId, Map<KnotName, KnotName[]>>();
+  for (const [sid, own] of events) {
+    const ends = new Map<KnotName, KnotName[]>();
+    for (const e of [...own].sort(order)) {
+      const seen = new Set<KnotName>();
+      const queue: KnotName[] = [e];
+      for (let k = queue.shift(); k !== undefined; k = queue.shift()) {
+        if (seen.has(k)) {
+          continue;
+        }
+        seen.add(k);
+        (ends.get(k) ?? ends.set(k, []).get(k))?.push(e);
+        queue.push(...(knots.get(k)?.next ?? []).filter((n) => own.has(n) && !seen.has(n)));
+      }
+    }
+    out.set(sid, ends);
   }
   return out;
 }
