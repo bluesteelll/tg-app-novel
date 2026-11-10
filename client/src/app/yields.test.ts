@@ -30,7 +30,7 @@ import { createScreens } from '../ui/screens.ts';
 import { createViewModel } from '../ui/state.svelte.ts';
 import type { CueStageProps } from '../ui/state.svelte.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
-import type { HotspotKey, ItemId, WorldPublic } from '../world/types.ts';
+import type { DocId, HotspotKey, ItemId, WorldPublic } from '../world/types.ts';
 import { TAKE_FADE_MS, coreCue, createYields, heldBy } from './yields.ts';
 import type { ExploreChunk, LazyChunks, Yields, YieldsHost } from './yields.ts';
 import yieldsSource from './yields.ts?raw';
@@ -1353,5 +1353,45 @@ test('yields: a refused use with no text shows the mechanics default', async () 
   r.yields.layer.onuse(held, key('den.crate'));
   await settle();
   expect(looks()).toEqual(['den refuse']);
+  r.yields.dispose();
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The screens diff (engine plan §8.1 point 10; GM3u): a panel's cues follow the screens stack, whoever pushed it
+
+/** A panel cue of the screens diff. */
+const isPanelCue = (e: CueEvent): boolean => e.cue.kind === 'ui-state' && (e.cue.name === 'panel-open' || e.cue.name === 'panel-close');
+/** The panel cues the bus carried from the `from`-th cue on, as `name:panel`. */
+const panelCues = (r: Rig, from: number): string[] =>
+  r.cues.slice(from).flatMap((e) => (e.cue.kind === 'ui-state' && isPanelCue(e) ? [`${e.cue.name}:${e.cue.panel}`] : []));
+
+test('yields: the screens diff emits panel-open and panel-close', async () => {
+  const r = rig({ world: cueWorld() });
+  await inHall(r);
+  const step = async (run: () => void): Promise<string[]> => {
+    const mark = r.cues.length;
+    run();
+    await settle();
+    return panelCues(r, mark);
+  };
+  // The lock: one open at the tap that pushes its panel (the opener adds none of its own), one close at Back.
+  expect(await step(() => r.yields.layer.ontap(key('hall.box')))).toEqual(['panel-open:lock']);
+  expect(await step(() => r.screens.back())).toEqual(['panel-close:lock']);
+  // The inventory and the reader over it: each its own; the reader's close leaves the inventory open.
+  expect(await step(() => r.yields.layer.ontap(key('hall.letter')))).toEqual([]);
+  expect(await step(() => r.yields.layer.oninventory())).toEqual(['panel-open:inventory']);
+  expect(await step(() => r.yields.layer.onread('letter' as DocId))).toEqual(['panel-open:document']);
+  expect(await step(() => r.yields.layer.onclose())).toEqual(['panel-close:document']);
+  expect(await step(() => r.screens.back())).toEqual(['panel-close:inventory']);
+  // An exploration puzzle is no panel (its frame has cues of its own): its open and its X8 Back add none. The hint
+  // ladder over it is one (critique O1: its live target is GM3p's HintLadder marker; until then the stage's fallback).
+  expect(await step(() => r.yields.layer.ontap(key('hall.chest')))).toEqual([]);
+  expect(r.puzzle.frame?.mode).toBe('explore');
+  expect(await step(() => r.yields.host.onhint())).toEqual(['panel-open:hints']);
+  expect(await step(() => r.screens.back())).toEqual(['panel-close:hints']);
+  expect(await step(() => r.screens.back())).toEqual([]);
+  expect(r.vm.screens.overlays).toEqual([]);
+  // Every panel cue is the panel's own: no box (the stage finds the panel by its marker).
+  expect(r.cues.filter(isPanelCue).map((e) => e.box)).toEqual(Array.from({ length: 8 }, () => null));
   r.yields.dispose();
 });

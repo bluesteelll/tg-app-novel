@@ -39,7 +39,7 @@ import type { TelegramClient } from '../telegram/index.ts';
 import type { ExploreLayerActions, ExploreLayerProps, ExploreViewStore } from '../ui/explore-view.svelte.ts';
 import { backScreen } from '../ui/puzzle-view.svelte.ts';
 import type { PuzzleFrameView, PuzzleHostCallbacks, PuzzleHostProps, PuzzleView } from '../ui/puzzle-view.svelte.ts';
-import type { Screens, ScreensView } from '../ui/screens.ts';
+import type { ScreenKind, Screens, ScreensView } from '../ui/screens.ts';
 import type { CueStageProps, CueStageSlot, ViewModel } from '../ui/state.svelte.ts';
 import type { Gift, HotspotKey, ItemId, Room, RoomId, WorldPublic, WorldText } from '../world/types.ts';
 
@@ -223,6 +223,13 @@ let frameSeq = 0;
 /** A cue as the yields emit it: no pointer, no visual diff, no element (no control cue is theirs). */
 const cueEvent = (cue: Cue, box: Box | null): CueEvent => ({ cue, box, point: null, diff: [], el: null });
 
+/**
+ * The overlays whose cues the screens diff speaks (engine plan §8.1 point 10): a sheet of the rooms or the hint ladder.
+ * An exploration puzzle is none: its frame's own `opened` and `closed` cues show it.
+ */
+const PANEL_KINDS = ['inventory', 'document', 'lock', 'hints'] as const satisfies readonly ScreenKind[];
+type PanelKind = (typeof PANEL_KINDS)[number];
+
 /** A wait of the views (engine plan §8.1 point 11): the room batch's hold, `panel: null`. */
 const waitCue = (name: 'waiting' | 'waited', box: Box | null): CueEvent => cueEvent({ kind: 'ui-state', name, panel: null, item: null }, box);
 
@@ -296,6 +303,8 @@ export function createYields(h: YieldsHost): Yields {
   let dirtyTimer: number | null = null;
   let retryTimer: number | null = null;
   let dead = false;
+  /** The panels the screens stack showed at its last change, so the next change says which left and which arrived. */
+  let panels: readonly PanelKind[] = [];
   /** The async steps the effects of one dispatch asked for, run in order by the intent that dispatched. */
   const jobs: Array<() => Promise<void>> = [];
 
@@ -502,9 +511,7 @@ export function createYields(h: YieldsHost): Yields {
       }
       case 'lock':
         explore.panel = { kind: 'lock' };
-        screens.push({ kind: 'lock' });
-        // The panel's own cue, at the write that opens it (never held with a move: §8.1 round 9).
-        bus.emit(cueEvent({ kind: 'ui-state', name: 'panel-open', panel: 'lock', item: null }, null));
+        screens.push({ kind: 'lock' }); // its `panel-open` is the screens diff's, here in this push (never held with a move)
         return;
       case 'puzzle':
         jobs.push(() => openPuzzle(e.puzzle, 'explore', null));
@@ -1131,6 +1138,18 @@ export function createYields(h: YieldsHost): Yields {
       } else if (ladder !== null && open !== null) {
         // The wallet's balance, as of now: a pack bought over the ladder shows once the wallet closes.
         puzzle.ladder = { ...open.session.ladder(), busy: ladder.busy, failed: ladder.failed };
+      }
+      // The panels' own cues (§8.1 point 10), from the stack whoever pushed or popped it: the ones that left close first,
+      // then the ones that arrived open, each with no box (the stage finds the panel by its marker). A disposed bus
+      // drops them.
+      const now = PANEL_KINDS.filter((k) => kinds.has(k));
+      const was = panels;
+      panels = now;
+      for (const k of was.filter((k) => !now.includes(k))) {
+        bus.emit(cueEvent({ kind: 'ui-state', name: 'panel-close', panel: k, item: null }, null));
+      }
+      for (const k of now.filter((k) => !was.includes(k))) {
+        bus.emit(cueEvent({ kind: 'ui-state', name: 'panel-open', panel: k, item: null }, null));
       }
     },
     relabel() {
