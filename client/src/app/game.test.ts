@@ -49,6 +49,7 @@ import type { MetaGate } from './boot.ts';
 import { CONFLICT_HOLD_MS, createGame, reloadedFor, withReloadedFor } from './game.ts';
 import type { Entitlements, Game, GameDeps, ReloadPort } from './game.ts';
 import type { MetaController, MetaDeps, MetaUi, MetaView } from './meta.ts';
+import { chunkLatch, latched, metaHold, withLatch } from './reload.ts';
 import type { ExploreChunk, LazyChunks, Yields, YieldsHost } from './yields.ts';
 
 // GM3w: each session's YieldsHost and Yields, as createYields received and made them; every other export of yields.ts
@@ -4302,4 +4303,72 @@ test('game: a chapter that fails to load probes the build id', async () => {
   expect(h.vm.notice?.kind).toBe('error');
   expect(h.assetUrls).toEqual(['/api/health']);
   h.game.dispose();
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Q60 D3-D4 (app/reload.ts): the chunk latch beside LBI's skew latch, and the meta holds both reload paths read
+
+/** The chunk latch for build `own` in these tests. */
+const OWN_LATCH = 'chunk:own';
+
+test('reload: a chunk latch is appended and keeps every other param byte for byte', () => {
+  const once = withLatch(HREF, chunkLatch('own'));
+  expect(latched(once, OWN_LATCH)).toBe(true);
+  expect(once).toBe(`${HREF}&novelReloadedFor=chunk%3Aown`);
+  expect(latched(HREF, OWN_LATCH)).toBe(false);
+  // No fragment, or an empty one.
+  expect(withLatch('https://a/', OWN_LATCH)).toBe('https://a/#novelReloadedFor=chunk%3Aown');
+  expect(withLatch('https://a/#', OWN_LATCH)).toBe('https://a/#novelReloadedFor=chunk%3Aown');
+  // Only the parameter itself, never one that merely starts with its name.
+  expect(latched('https://a/#novelReloadedForX=chunk%3Aown&x=1', OWN_LATCH)).toBe(false);
+});
+
+test('reload: a chunk latch after a skew latch leaves both readable', () => {
+  const both = withLatch(withReloadedFor(HREF, SKEW), OWN_LATCH);
+  expect(latched(both, OWN_LATCH)).toBe(true);
+  expect(both).toBe(`${HREF}&novelReloadedFor=${SKEW}&novelReloadedFor=chunk%3Aown`);
+  // LBI's reader finds the skew's latch; the chunk latch's reader finds its own.
+  expect(reloadedFor(both)).toBe(SKEW);
+  expect(latched(both, SKEW)).toBe(true);
+});
+
+test('reload: a skew reload over a chunk latch replaces it', () => {
+  const chunked = withLatch(HREF, OWN_LATCH);
+  expect(latched(chunked, OWN_LATCH)).toBe(true);
+  // With a Game, LBI's writer: the page moves to a new build, where the old chunk latch means nothing.
+  const next = withReloadedFor(chunked, SKEW);
+  expect(next).toBe(`${HREF}&novelReloadedFor=${SKEW}`);
+  expect([latched(next, OWN_LATCH), reloadedFor(next)]).toEqual([false, SKEW]);
+});
+
+test('reload: a skew latch written as the only latch replaces a chunk latch, and reloadedFor reads it', () => {
+  const chunked = withLatch(HREF, OWN_LATCH);
+  expect(latched(chunked, OWN_LATCH)).toBe(true);
+  // Appended, LBI's reader would find the chunk latch first and the next document's Game would reload once more.
+  expect(reloadedFor(withLatch(chunked, SKEW))).toBe(OWN_LATCH);
+  const only = withLatch(chunked, SKEW, true);
+  expect(only).toBe(`${HREF}&novelReloadedFor=${SKEW}`);
+  expect([reloadedFor(only), latched(only, OWN_LATCH)]).toEqual([SKEW, false]);
+  // Every latch param goes, wherever it sits; every other param stays, in order.
+  expect(withLatch('https://a/#x=1&novelReloadedFor=aaaa&y=2&novelReloadedFor=chunk%3Abbbb', SKEW, true)).toBe(
+    `https://a/#x=1&y=2&novelReloadedFor=${SKEW}`,
+  );
+});
+
+test('reload: metaHold names a wallet purchase on screen before a gift, and nothing for a purchase the player left', () => {
+  const sheet: PurchaseState = { kind: 'sheet', orderId: 'o1' as OrderId };
+  expect(metaHold(metaView({ purchase: sheet, gift: giftView(true) }))).toBe('purchase');
+  const open: PurchaseState[] = [
+    { kind: 'requesting' },
+    sheet,
+    { kind: 'confirming', orderId: 'o1' as OrderId, since: 0 },
+    { kind: 'delayed', orderId: 'o1' as OrderId },
+  ];
+  expect(open.map((purchase) => metaHold(metaView({ purchase })))).toEqual(['purchase', 'purchase', 'purchase', 'purchase']);
+  // The player left the flow (LRB): the purchase holds nothing, a gift being sent still does.
+  expect(metaHold(metaView({ purchase: sheet, purchaseLeft: true }))).toBeNull();
+  expect(metaHold(metaView({ purchase: sheet, purchaseLeft: true, gift: giftView(true) }))).toBe('gift');
+  expect(metaHold(metaView({ gift: giftView(false) }))).toBeNull();
+  expect(metaHold(metaView({ purchase: { kind: 'unlocked', product: 'pack:hints' as ProductId } }))).toBeNull();
+  expect(metaHold(null)).toBeNull();
 });

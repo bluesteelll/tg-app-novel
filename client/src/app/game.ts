@@ -55,6 +55,7 @@ import type { PuzzleHostCallbacks, PuzzleView } from '../ui/puzzle-view.svelte.t
 import type { Screens, ScreensView } from '../ui/screens.ts';
 import type { ChoiceSet, LineView, PlayMode, ViewModel } from '../ui/state.svelte.ts';
 import { graphemes, GRAPHEMES_PER_SECOND } from '../ui/typewriter.ts';
+import { metaHold, PURCHASE_OPEN, RELOAD_POLL_MS, RELOADED_FOR } from './reload.ts';
 import { imageIds, knotAssets, manifestIndex, splitBatch } from './stage-route.ts';
 import { createYields, LAZY_CHUNKS } from './yields.ts';
 import type { LazyChunks, Yields, YieldsHost } from './yields.ts';
@@ -268,14 +269,10 @@ export const EXIT_FLUSH_MS = 2000;
  * (300 ms, from the first tap's up to the second's down) plus the second press's down to click.
  */
 export const CONFLICT_HOLD_MS = 500;
-/** LBI D5: how often a recovery that waits for its safe point looks again. */
-export const RELOAD_POLL_MS = 500;
-/** LBI D6: the fragment parameter recording the build id this tab reloaded for (outside Telegram's `tgWebApp*`). */
-export const RELOADED_FOR = 'novelReloadedFor';
+/** LBI D6: the fragment parameter recording the build id this tab reloaded for (Q60: one definition, app/reload.ts). */
+export { RELOADED_FOR } from './reload.ts';
 /** LBI D4: the server's answer to this names the build it serves; the probe after a chapter file failed to load. */
 const BUILD_PROBE_URL = '/api/health';
-/** LBI D5: the purchase states of an invoice being created, open or confirmed; a reload would cut the hand-off. */
-const PURCHASE_OPEN: ReadonlySet<PurchaseState['kind']> = new Set(['requesting', 'sheet', 'confirming', 'delayed']);
 /** Every holder family the session requests besides the stage: knot preloads, F5, the explore rooms. */
 const EXIT_RELEASES: readonly string[] = ['preload:', 'next:', 'room:'];
 const IDLE: PurchaseState = Object.freeze({ kind: 'idle' });
@@ -1752,12 +1749,9 @@ export function createGame(deps: GameDeps): Game {
     if (paused) {
       return 'background';
     }
-    const wallet = vm.meta;
-    if (
-      offer?.waiting === true ||
-      PURCHASE_OPEN.has(offer?.flow?.state().kind ?? 'idle') ||
-      (PURCHASE_OPEN.has(wallet?.purchase.kind ?? 'idle') && wallet?.purchaseLeft !== true)
-    ) {
+    // LRB's wallet and gift clauses, in app/reload.ts since Q60: boot's recovery reads them when no Game exists.
+    const m = metaHold(vm.meta);
+    if (offer?.waiting === true || PURCHASE_OPEN.has(offer?.flow?.state().kind ?? 'idle') || m === 'purchase') {
       return 'purchase';
     }
     if (attemptsInFlight > 0) {
@@ -1766,7 +1760,7 @@ export function createGame(deps: GameDeps): Game {
     if (vm.saves.saving !== null) {
       return 'save';
     }
-    if (vm.meta?.gift?.busy === true) {
+    if (m === 'gift') {
       return 'gift';
     }
     return null;
