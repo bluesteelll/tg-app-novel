@@ -195,7 +195,8 @@ ledger ([shots §10 Budgets and validation](../shots/10-budgets-and-validation.m
   `client/scripts/budget.ts:469-482`, the P paths `:475-479`). Since the recovery lane (`8e099ee`, fork F2): Pixi's
   environment modules load empty while `SKIP_PIXI_ENV` holds (G2; their manifest keys stay, so the walk and
   `scene-env.spec.ts` still read them), and `autoDetectRenderer`'s three renderer `import()`s are static imports (G3,
-  `client/vite.config.ts:33-52`): no renderer facade is requested and the engine closure is **one chunk**.
+  `client/vite.config.ts:34-52`, the transform `:61-76`): no renderer facade is requested and the engine closure is
+  **one chunk**.
   `ENGINE_STATIC_DEPS_MAX` 0 (`client/scripts/scan-dist.ts:251`) fails the scan when the engine's import waits on
   another JS chunk. The basis note's "Pixi's three renderer facades" (`budget.ts:471`) predates G3; RULINGS 218 Q6
   left `budget*` untouched, so the correction stands here.

@@ -538,9 +538,10 @@
   `Ribbon.svelte`, `yields.ts`, `yields.test.ts` and `explore.svelte.test.ts`; the sheet markers left this lane for
   GM3s, which already holds `ExploreView.svelte`, and `ExploreView.svelte` stays in this lock for the ribbon mount and
   the `data-cue` controls.
-- **Ruled since: RULINGS 217, 221, 223, 224** — engine-adding: it waited for the lever trigger's re-evaluation at the
-  recovery lane's merge (the trigger does not hold on `8e099ee`, so it runs while O5 and Y stay on the shelf),
-  and for that lane's `client/src/i18n/{ru,en}.ts` (its `mech.use_refused` default, RULINGS 223). Its cut rebuilds the
+- **Ruled since: RULINGS 217, 221, 223, 224, 225** — engine-adding: it waited for the lever trigger's re-evaluation at
+  the recovery lane's merge (the trigger does not hold on `8e099ee`, so it runs while O5 and Y stay on the shelf),
+  and for that lane's `client/src/i18n/{ru,en}.ts` (its `mech.use_refused` default, RULINGS 223); RULINGS 225 then
+  locked it to the plan's 13 without them (`mech.use_refused` in the new `i18n/mechanics.ts`). Its cut rebuilds the
   explore-ui R sample list (RULINGS 217: 2.319 kept until then; GM3's sample 1.273 joins it).
 
 ### GM3p `mech-puzzle-cues`
