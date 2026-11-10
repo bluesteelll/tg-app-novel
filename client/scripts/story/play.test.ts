@@ -5,11 +5,11 @@ import { readFileSync } from 'node:fs';
 
 import { expect, test } from 'vitest';
 
+import type { KernelWorld } from '../../src/mechanics/contract.ts';
 import { assetIndex, decodeAssetCatalog, decodeCast } from '../../src/story/catalog.ts';
 import type { Cast, ChapterListEntry } from '../../src/story/catalog.ts';
 import type { AssetIndex, ChapterId, VarName } from '../../src/story/staging.ts';
 import { decodeWorldSource, toPublic } from '../../src/world/decode.ts';
-import type { WorldPublicBody } from '../../src/world/types.ts';
 import { compileChapter } from './compile.ts';
 import { buildGraph } from './graph.ts';
 import type { ChapterGraph } from './graph.ts';
@@ -378,7 +378,7 @@ function text(owner: string): Json {
 }
 
 /** A source world with one section `s` and its one room `hall`, decoded and made public as the story gate does. */
-function world(spec: { hotspots: readonly Json[]; onEnter?: readonly Json[]; items?: readonly string[]; puzzles?: Json; sections?: boolean }): WorldPublicBody {
+function world(spec: { hotspots: readonly Json[]; onEnter?: readonly Json[]; items?: readonly string[]; puzzles?: Json; sections?: boolean }): KernelWorld {
   const hotspots = spec.hotspots.map((h, i) => ({ label: text('s'), ...h, rect: [100 + i * 300, 300, 200, 200] }));
   const room = { bg: 'hall', title: text('s'), onEnter: spec.onEnter ?? [], hotspots };
   const raw = {
@@ -392,7 +392,7 @@ function world(spec: { hotspots: readonly Json[]; onEnter?: readonly Json[]; ite
   if (!r.ok) {
     throw new Error(`invariant: the fixture world decodes: ${JSON.stringify(r.error)}`);
   }
-  return toPublic(r.value);
+  return { ...toPublic(r.value), mods: r.value.mods };
 }
 
 const LEAVE_OUT: Json = { id: 'out', kind: 'exit', to: { story: 'out' }, lock: null, sfx: null };

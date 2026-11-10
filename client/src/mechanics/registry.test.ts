@@ -6,9 +6,9 @@ import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { WorldState } from '../explore/state.ts';
 import type { KnotName, PuzzleLocalId, SectionId } from '../story/staging.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
-import type { DocId, HotspotKey, ItemId, RoomId, WorldPublicBody } from '../world/types.ts';
+import type { DocId, HotspotKey, ItemId, RoomId } from '../world/types.ts';
 import { KERNEL_FACT_KINDS } from './contract.ts';
-import type { Cause, MechanicData, MechanicId, MechanicRules, RulesRegistry, SectionAction, Writer } from './contract.ts';
+import type { Cause, KernelWorld, MechanicData, MechanicId, MechanicRules, RulesRegistry, SectionAction, Writer } from './contract.ts';
 import { MECHANIC_DATA } from './data/index.ts';
 import { reduce } from './rules/core.ts';
 import { APPLY, MECHANIC_RULES } from './rules/index.ts';
@@ -49,7 +49,7 @@ const code = (dials: number, maxAttempts: number | null = null): Json => ({
 });
 
 /** A one-section world (`s`, starting in `hall`) over the given rooms. */
-function world(rooms: Record<string, Json>, spec: { items?: string[]; puzzles?: Record<string, Json> } = {}): WorldPublicBody {
+function world(rooms: Record<string, Json>, spec: { items?: string[]; puzzles?: Record<string, Json> } = {}): KernelWorld {
   const raw = {
     format: 1,
     items: Object.fromEntries((spec.items ?? []).map((id) => [id, { name: txt(), desc: txt(), glyph: 'key' }])),
@@ -61,7 +61,7 @@ function world(rooms: Record<string, Json>, spec: { items?: string[]; puzzles?: 
   if (!r.ok) {
     throw new Error(`invariant: the fixture world decodes: ${JSON.stringify(r.error)}`);
   }
-  return toPublic(r.value);
+  return { ...toPublic(r.value), mods: r.value.mods };
 }
 
 const S = 's' as SectionId;

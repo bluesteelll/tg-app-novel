@@ -437,8 +437,9 @@ export function planEmit(input: EmitInput): ReadonlyMap<string, string> {
     put(paths.meta, pretty(meta(b, endings.get(b.ch.id))));
     put(paths.en, pretty(Object.fromEntries(Object.entries(en).filter(([id]) => !hints.has(id as LineId))))); // keys of the en table
     if (b.world !== null) {
-      const world: WorldPublic = { ...b.world, version: worldVersion(b.world) };
-      // Compact (engine plan §5.4): the world ships as emitted; its version hashes the value, never this text.
+      const world: Omit<WorldPublic, 'mods'> = { ...b.world, version: worldVersion(b.world) };
+      // Compact (engine plan §5.4): the world ships as emitted, no `mods` (the decoder derives them from the module
+      // keys in their places); its version hashes the value, never this text.
       put(paths.world, JSON.stringify(world));
     }
     const server: ServerPuzzleContent = source === undefined ? { format: 1, chapterId: b.ch.id, puzzles: {} } : toServer(source, en, b.ch.id, renderHints, { types });

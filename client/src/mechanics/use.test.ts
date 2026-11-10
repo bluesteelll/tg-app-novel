@@ -307,6 +307,7 @@ test('use: the soft-lock proof takes a use edge', () => {
   // With the decoded `mods` the proof takes the use, so every state reaches the door.
   expect(checkWorld(kernel(src), file).flatMap((c) => c.findings)).toEqual([]);
   // Without them nothing opens the door: the guard on the proof path (GM3c W1).
+  // @ts-expect-error -- the public body alone is no proof world (KernelWorld.mods); kept as the runtime guard
   expect(checkWorld(toPublic(src), file).flatMap((c) => c.findings.map((f) => f.code))).toEqual(['world/softlock']);
 });
 

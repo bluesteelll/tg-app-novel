@@ -198,9 +198,10 @@ export type ModuleCueKey = {
 export type DataOf<M> = M extends { decode(raw: OwnedRaw, ctx: DecodeCtx): Result<infer D, Issue[]> } ? D : never;
 /** One side table per module, keyed by its id (modules never edit world/types.ts). */
 export type ModsOf<T extends readonly { readonly id: string }[]> = { readonly [M in T[number] as M['id']]: DataOf<M> };
-/** The decoded world: the kernel body plus the modules' side tables. `mods` is optional until the composed decoder
- *  builds it on every decoded world; the explore controller and the story tool pass worlds without it today. */
-export type KernelWorld = WorldPublicBody & { readonly mods?: ModsOf<typeof MECHANIC_DATA> };
+/** The decoded world: the kernel body plus the modules' side tables, on every world a rule, a search or a reset reads:
+ *  the decoder builds them (`decodeWorldPublic`); the story tool and tests convert at the boundary
+ *  (`{ ...toPublic(src), mods: src.mods }`). A module's data is never silently absent (GM3k). */
+export type KernelWorld = WorldPublicBody & { readonly mods: ModsOf<typeof MECHANIC_DATA> };
 
 /** One anchor's picture in a room (§6.4): `at` is stable across states, so motions and labels target it. */
 export type PropView = {

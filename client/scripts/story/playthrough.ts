@@ -16,14 +16,13 @@ import { project } from '../../src/explore/project.ts';
 import type { ExploreAction, ExploreEffect } from '../../src/explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../../src/explore/state.ts';
 import type { PuzzleOutcome, WorldState } from '../../src/explore/state.ts';
-import type { RulesRegistry, SectionAction } from '../../src/mechanics/contract.ts';
+import type { KernelWorld, RulesRegistry, SectionAction } from '../../src/mechanics/contract.ts';
 import { reduce } from '../../src/mechanics/rules/core.ts';
 import { successors } from '../../src/mechanics/rules/search.ts';
 import { CHAPTER_ID_RE, KNOT_NAME_RE } from '../../src/story/catalog.ts';
 import type { Cast, ChapterListEntry, InkScalar } from '../../src/story/catalog.ts';
 import type { AssetIndex, ChapterId, KnotName, ParsedTags, PuzzleLocalId, SectionId, StagingCommand, VarName, YieldCommand } from '../../src/story/staging.ts';
 import { YIELD_KINDS, parseTags, splitSpeaker } from '../../src/story/tags.ts';
-import type { WorldPublicBody } from '../../src/world/types.ts';
 import type { ChapterGraph, StoryLine } from './graph.ts';
 import { LINT_CODES } from './lint.ts';
 import type { Finding, LintCode, SourceChapter } from './lint.ts';
@@ -109,8 +108,9 @@ export type PlayInput = {
   carry: { from: ChapterId; snapshots: readonly CarrySnapshot[] } | null;
   /** Tests only; the CLI plays PLAY_RUNS. */
   runs?: number;
-  /** The chapter's public world (default none: a yield ends the run as `yielded`). */
-  world?: WorldPublicBody;
+  /** The chapter's proof world: its public body and decoded `mods`, as story.ts builds it (default none: a yield ends
+   *  the run as `yielded`). */
+  world?: KernelWorld;
   /** Tests only: the rules registry the walk runs (default MECHANIC_RULES, through `successors` and `reduce`). */
   rules?: RulesRegistry;
 };
@@ -454,7 +454,7 @@ function playRun(ctx: Context, seed: number, snapshot: CarrySnapshot | null): Ru
     return node === undefined ? entry : { file: node.file, line: node.line };
   };
   /** Writes the projection (only the chapter's declared VARs) and enters `knot` at its top. */
-  const enter = (world: WorldPublicBody, knot: KnotName): Run | null => {
+  const enter = (world: KernelWorld, knot: KnotName): Run | null => {
     if (!ctx.knots.has(knot)) {
       return failed('play/runtime-error', here(), `knot '${knot}' that the world enters is not in ${input.chapter.id}`);
     }
@@ -472,18 +472,18 @@ function playRun(ctx: Context, seed: number, snapshot: CarrySnapshot | null): Ru
     // wrapper above credits `knot` (the walk test's visited list pins it).
     return null;
   };
-  const tierOf = (world: WorldPublicBody, puzzle: PuzzleLocalId): number => {
+  const tierOf = (world: KernelWorld, puzzle: PuzzleLocalId): number => {
     const tiers = Object.hasOwn(world.puzzles, puzzle) ? (world.puzzles[puzzle]?.hintTiers ?? 0) : 0;
     return Math.floor(rng() * (tiers + 1)); // 0..tiers, uniform
   };
-  const hinted = (world: WorldPublicBody, puzzle: PuzzleLocalId): void => {
+  const hinted = (world: KernelWorld, puzzle: PuzzleLocalId): void => {
     const tier = tierOf(world, puzzle);
     if (tier > 0) {
       ws = reduce(world, ws, { kind: 'hint-opened', puzzle, tier }, input.rules).state;
     }
   };
   /** A random walk over the section's successors until an event knot or a leave knot runs; that knot, or a failed Run. */
-  const walk = (world: WorldPublicBody): { knot: KnotName; event: boolean } | Run => {
+  const walk = (world: KernelWorld): { knot: KnotName; event: boolean } | Run => {
     for (;;) {
       const head = ws.pendingStory[0];
       if (head !== undefined) {

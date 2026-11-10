@@ -1,7 +1,7 @@
 // The world shapes of docs/PUZZLES-PLAN.md "World data": the source `story/<ch>/world.json` the narrative-designer
 // writes, and the public world the client loads. Types plus the one glyph list; world/decode.ts is the only decoder.
 // Pure (X4, `arch: pure world modules`): the runtime and the story tool import it alike.
-import type { FlagId, ModsOf } from '../mechanics/contract.ts';
+import type { FlagId, KernelWorld, ModsOf } from '../mechanics/contract.ts';
 import type { Cond } from '../mechanics/data/conditions.ts';
 import type { MECHANIC_DATA } from '../mechanics/data/index.ts';
 import type { ParamsOf, PuzzleType } from '../puzzles/rules/index.ts';
@@ -154,10 +154,11 @@ export type WorldSource = World<SourcePuzzle> & { readonly mods: WorldMods };
  *  story tool (LW3) stamps `version` on emit. */
 export type WorldPublicBody = World<PublicPuzzle>;
 /**
- * `version` = `worldVersion(body)` (X9 "World version"); a save records the version it was written against. `mods` is on
- * every decoded public world; a world built from `toPublic` (a test's) has none.
+ * `version` = `worldVersion(body)` (X9 "World version"); a save records the version it was written against. `mods`:
+ * the modules' side tables the decoder builds on every public world (never emitted: the body carries the module keys
+ * in their places).
  */
-export type WorldPublic = WorldPublicBody & { readonly version: string; readonly mods?: WorldMods };
+export type WorldPublic = KernelWorld & { readonly version: string };
 
 /** `server/content/puzzles/<ch>.json` (PUZZLES-PLAN "Server formats"): what the server checks answers against. */
 export type ServerPuzzle = {

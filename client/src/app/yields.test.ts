@@ -81,7 +81,7 @@ function manorWorld(): WorldPublic {
   if (!r.ok) {
     throw new Error(`invariant: the fixture world decodes: ${JSON.stringify(r.error)}`);
   }
-  return { ...toPublic(r.value), version: '1111111111111111' };
+  return { ...toPublic(r.value), mods: r.value.mods, version: '1111111111111111' };
 }
 
 /**
@@ -130,7 +130,7 @@ function cueWorld(): WorldPublic {
   if (!r.ok) {
     throw new Error(`invariant: the cue fixture world decodes: ${JSON.stringify(r.error)}`);
   }
-  return { ...toPublic(r.value), version: '2222222222222222' };
+  return { ...toPublic(r.value), mods: r.value.mods, version: '2222222222222222' };
 }
 
 const VARS = ['g_x', 'pz_drawer', 'pz_drawer_hints', 'pz_gate', 'pz_gate_hints', 'it_medal', 'it_key'];
@@ -578,7 +578,7 @@ function twinWorld(): WorldPublic {
   if (!r.ok) {
     throw new Error(`invariant: the fixture world decodes: ${JSON.stringify(r.error)}`);
   }
-  return { ...toPublic(r.value), version: '3333333333333333' };
+  return { ...toPublic(r.value), mods: r.value.mods, version: '3333333333333333' };
 }
 
 test('yields: a room batch redraws props whose anchor changed', async () => {
