@@ -2,7 +2,7 @@
   // The in-play menu (K26): saves, settings and back to stories; the meta entries Friends and Wallet render iff the
   // caller gives them (META M27: LMI passes them, L15 none). Every tap calls back at once, inside the click. There is
   // no close button: the BackButton closes every overlay. The panel fills its layer, so no tap reaches the dialogue.
-  import { t, type Lang } from '../i18n/index.ts';
+  import { t, type Lang } from '../../i18n/index.ts';
 
   type Props = {
     lang: Lang;

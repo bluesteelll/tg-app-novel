@@ -4,9 +4,9 @@
   // (props are never written). A volume emits on `input`, since the AudioManager ramps each change and the store
   // coalesces the writes. Each language is labelled in itself (its `settings.lang_self` in its own table) in any UI
   // language; with `settings.lang` null (the account's language) the UI language is the one checked.
-  import { t, type Lang, type UiKey } from '../i18n/index.ts';
-  import type { Settings } from '../settings/store.ts';
-  import type { TextSpeed } from './typewriter.ts';
+  import { t, type Lang, type UiKey } from '../../i18n/index.ts';
+  import type { Settings } from '../../settings/store.ts';
+  import type { TextSpeed } from '../typewriter.ts';
 
   type Props = { settings: Settings; lang: Lang; onchange: (next: Settings) => void };
 

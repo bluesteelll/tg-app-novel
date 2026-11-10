@@ -43,7 +43,7 @@ import type { Screens, ScreensView } from '../ui/screens.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { HotspotKey, ItemId, WorldPublic } from '../world/types.ts';
 import { createViewModel } from '../ui/state.svelte.ts';
-import type { ViewModel } from '../ui/state.svelte.ts';
+import type { OverlayUi, ViewModel } from '../ui/state.svelte.ts';
 import { createBackgroundBit, createMetaGate, createPageRecovery, HOME_IDLE_MS, newestAuto } from './boot.ts';
 import type { MetaGate, PageRecovery } from './boot.ts';
 import { CONFLICT_HOLD_MS, createGame, reloadedFor, withReloadedFor } from './game.ts';
@@ -566,6 +566,27 @@ function heldPack(): { load: LoadPack; release(): void; fail(): void } {
   };
 }
 
+/** Lever O5: the game's loader of the in-play overlays' chunk, and what it loads (the Game only hands it to the view). */
+type LoadOverlayUi = NonNullable<GameDeps['loadOverlayUi']>;
+const OVERLAY_MODULE = {} as OverlayUi;
+
+/** An overlays module loader whose loads wait for the test: each `release` or `fail` answers the oldest open one. */
+function heldOverlays(): { load: LoadOverlayUi; release(): void; fail(): void } {
+  const open: Array<{ resolve: (m: OverlayUi) => void; reject: (e: unknown) => void }> = [];
+  const next = (): { resolve: (m: OverlayUi) => void; reject: (e: unknown) => void } => {
+    const load = open.shift();
+    if (load === undefined) {
+      throw new Error('invariant: an overlays module load is open');
+    }
+    return load;
+  };
+  return {
+    load: () => new Promise((resolve, reject) => open.push({ resolve, reject })),
+    release: () => next().resolve(OVERLAY_MODULE),
+    fail: () => next().reject(new Error('the overlays chunk is gone')),
+  };
+}
+
 type Harness = {
   game: Game;
   vm: ViewModel;
@@ -588,6 +609,8 @@ type Harness = {
   readonly assetUrls: string[];
   /** How many times the game asked for the purchase module (lever P). */
   purchaseLoads(): number;
+  /** How many times the game asked for the in-play overlays' module (lever O5). */
+  overlayLoads(): number;
   /** How many times the game handed Home back (onExit). */
   exits(): number;
   /** How many times the game closed the Mini App (the facade's `close`). */
@@ -616,6 +639,8 @@ type HarnessOptions = {
   onView?: (v: ScreensView) => void;
   /** The purchase module's loader (lever P); the default answers the real module at once. */
   loadPurchase?: LoadPurchase;
+  /** The in-play overlays' loader (lever O5); the default answers a stand-in module at once. */
+  loadOverlayUi?: LoadOverlayUi;
 };
 
 function harness(o: HarnessOptions = {}): Harness {
@@ -662,6 +687,8 @@ function harness(o: HarnessOptions = {}): Harness {
   let closes = 0;
   let purchaseLoads = 0;
   const loadPurchase = o.loadPurchase ?? (() => Promise.resolve(PURCHASE_MODULE));
+  let overlayLoads = 0;
+  const loadOverlayUi = o.loadOverlayUi ?? (() => Promise.resolve(OVERLAY_MODULE));
   const chapterOf = (p: string | null): string | null => catalog().chapters.find((c) => c.productId === p)?.id ?? null;
   const deps: GameDeps = {
     vm,
@@ -744,6 +771,11 @@ function harness(o: HarnessOptions = {}): Harness {
       purchaseLoads += 1;
       return loadPurchase();
     },
+    // The same: counted and handed on in the call.
+    loadOverlayUi: () => {
+      overlayLoads += 1;
+      return loadOverlayUi();
+    },
   };
   const game = createGame(deps);
   gameRef = game;
@@ -768,6 +800,7 @@ function harness(o: HarnessOptions = {}): Harness {
     purchases,
     assetUrls,
     purchaseLoads: () => purchaseLoads,
+    overlayLoads: () => overlayLoads,
     exits: () => exits,
     closes: () => closes,
     save: () => {
@@ -5243,4 +5276,292 @@ test("game: a chunk restart at a yield's error notice autosaves the yield, and t
     errors.mockRestore();
     vi.unstubAllGlobals();
   }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Lever O5: the in-play overlays' chunk loads by import() after the first revealed line, and an open waits for it
+
+/** The overlays' failure note (boot's meta-gate note and key, `meta.action_failed`) is on screen. */
+const overlaysNoted = (h: Harness): boolean => note(h.vm, 'Не получилось. Попробуйте ещё раз');
+
+/** The overlays' failures the game logged, of the calls a console.error spy saw. */
+const overlayErrors = (errors: { mock: { calls: unknown[][] } }): number =>
+  errors.mock.calls.filter((c) => c[0] === 'game: the overlays module did not load').length;
+
+test('game: the overlays module is requested once, after the first revealed line', async () => {
+  const h = harness();
+  await startManor(h);
+  expect(lineOf(h.vm)).toBe('ch1.arrival.l001');
+  expect(h.overlayLoads(), 'the first line, before its reveal ends').toBe(0);
+  h.game.lineShown(); // the dialogue box revealed the first line
+  expect(h.overlayLoads(), 'the reveal prefetches').toBe(1);
+  await settle();
+  expect(h.vm.overlayUi).toBe(OVERLAY_MODULE);
+  await h.game.advance(); // l002
+  h.game.lineShown();
+  await settle();
+  expect(h.overlayLoads(), 'one load for the page').toBe(1);
+  h.game.dispose();
+});
+
+test('game: no overlays module is requested before the first line', async () => {
+  // A start presents its first line; the request waits for the line's reveal (lineShown), not for `present`.
+  const h = harness();
+  await startManor(h);
+  await settle();
+  expect([lineOf(h.vm), h.overlayLoads()]).toEqual(['ch1.arrival.l001', 0]);
+  h.game.dispose();
+  // D11: a Continue into the saved start of an unowned paid chapter shows its paywall as the session's first screen,
+  // and a tap on the empty stage opens it again; no line is revealed, so nothing is requested.
+  const d = harness({ chapters: [manorCh1(), manorCh2()], slots: new Map([['auto', pendingCh2()]]) });
+  expect((await d.game.start({ kind: 'slot', story: MANOR, slot: 'auto' })).ok).toBe(true);
+  await settle();
+  expect([overlayKinds(d), d.overlayLoads()]).toEqual([['paywall'], 0]);
+  d.screens.back();
+  await d.game.advance();
+  await settle();
+  expect([overlayKinds(d), d.overlayLoads()]).toEqual([['paywall'], 0]);
+  d.game.dispose();
+});
+
+test('game: a failed overlays prefetch is not requested again until a tap', async () => {
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const held = heldOverlays();
+    const h = harness({ loadOverlayUi: held.load });
+    await startManor(h);
+    h.game.lineShown();
+    expect(h.overlayLoads()).toBe(1);
+    held.fail();
+    await settle();
+    // The prefetch's failure is logged, never noted: the player asked for nothing (critique O1).
+    expect([h.vm.overlayUi, overlaysNoted(h)], 'a silent prefetch').toEqual([null, false]);
+    await h.game.advance(); // l002
+    h.game.lineShown();
+    await settle();
+    expect(h.overlayLoads(), 'no second prefetch').toBe(1);
+    expect(overlaysNoted(h), 'still silent').toBe(false);
+    h.game.openMenu();
+    expect(h.overlayLoads(), 'the tap loads again').toBe(2);
+    held.release();
+    await settle();
+    expect(h.vm.screens.overlays).toEqual([{ kind: 'menu' }]);
+    expect(overlayErrors(errors)).toBe(1);
+    h.game.dispose();
+  } finally {
+    errors.mockRestore();
+  }
+});
+
+test("game: a tap's failed overlays load before the first line is not followed by a prefetch, and the next tap loads again", async () => {
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const held = heldOverlays();
+    const h = harness({ loadOverlayUi: held.load });
+    await startManor(h); // the first line is presented; its reveal has not ended
+    h.game.openMenu();
+    expect(h.overlayLoads()).toBe(1);
+    held.fail();
+    await settle();
+    expect([h.vm.screens.overlays, overlaysNoted(h)], 'the tap is noted').toEqual([[], true]);
+    // The tap's load used up the automatic one: no import that no tap asked for (on a sticky engine its second
+    // failure would restart the page with no tap, right after the first line).
+    h.game.lineShown();
+    await settle();
+    expect(h.overlayLoads(), 'no prefetch after a failed tap').toBe(1);
+    h.game.openMenu();
+    expect(h.overlayLoads(), 'the next tap loads again').toBe(2);
+    held.release();
+    await settle();
+    expect(h.vm.screens.overlays).toEqual([{ kind: 'menu' }]);
+    expect(overlayErrors(errors)).toBe(1);
+    h.game.dispose();
+  } finally {
+    errors.mockRestore();
+  }
+});
+
+test('game: a Menu tap with the overlays module in opens the menu in the same tick', async () => {
+  const h = harness();
+  await startManor(h);
+  h.game.lineShown();
+  await settle();
+  expect(h.overlayLoads()).toBe(1);
+  expect(h.vm.overlayUi).toBe(OVERLAY_MODULE);
+  h.game.openMenu();
+  expect(h.vm.screens.overlays, 'no await between the tap and the push').toEqual([{ kind: 'menu' }]);
+  expect(h.overlayLoads(), 'the tap loads nothing more').toBe(1);
+  h.game.dispose();
+});
+
+test('game: a Menu tap before the overlays module lands opens the menu once it lands, with the module in at the push', async () => {
+  const held = heldOverlays();
+  // Whether the module was in the view model at each push of the menu (App renders `vm.overlayUi`'s Menu).
+  const atPush: boolean[] = [];
+  let ref: Harness | null = null;
+  const h = harness({
+    loadOverlayUi: held.load,
+    onView: (v) => {
+      if (ref !== null && v.overlays.some((o) => o.kind === 'menu')) {
+        atPush.push(ref.vm.overlayUi !== null);
+      }
+    },
+  });
+  ref = h;
+  await startManor(h);
+  h.game.openMenu();
+  await settle();
+  expect(h.vm.screens.overlays, 'nothing before the module').toEqual([]);
+  held.release();
+  await settle();
+  expect(h.vm.screens.overlays).toEqual([{ kind: 'menu' }]);
+  expect(atPush, 'the module was in at the push').toEqual([true]);
+  expect(h.overlayLoads()).toBe(1);
+  h.game.dispose();
+});
+
+test('game: a Menu tap then a Backlog tap before the overlays module lands open the menu only, from one load', async () => {
+  const held = heldOverlays();
+  const h = harness({ loadOverlayUi: held.load });
+  await startManor(h);
+  h.game.lineShown(); // the prefetch, held
+  const before = h.vm.backlog;
+  h.game.openMenu();
+  h.game.openBacklog();
+  await settle();
+  expect(h.vm.screens.overlays, 'nothing before the module').toEqual([]);
+  expect(h.overlayLoads(), 'both taps wait on the prefetch').toBe(1);
+  held.release();
+  await settle();
+  // The menu's push moved the stack the Backlog tap saw, so the later open drops and writes nothing.
+  expect(h.vm.screens.overlays).toEqual([{ kind: 'menu' }]);
+  expect(h.vm.backlog, 'the dropped open wrote nothing').toBe(before);
+  expect(h.overlayLoads()).toBe(1);
+  h.game.dispose();
+});
+
+test('game: a waiting overlay open is dropped when the stack changed meanwhile', async () => {
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    // The module lands after the stack moved: no menu over the screen the player went to.
+    const landed = heldOverlays();
+    const h = harness({ loadOverlayUi: landed.load });
+    await startManor(h);
+    h.game.openMenu();
+    await settle();
+    expect(h.vm.screens.overlays, 'nothing before the module').toEqual([]);
+    h.game.openTerms(); // the stack moves
+    landed.release();
+    await settle();
+    expect([overlayKinds(h), overlaysNoted(h)], 'landed').toEqual([['terms'], false]);
+    h.game.dispose();
+    // The load fails after the stack moved: no note for a Menu the player no longer sees (critique W1).
+    const failed = heldOverlays();
+    const f = harness({ loadOverlayUi: failed.load });
+    await startManor(f);
+    f.game.openMenu();
+    await settle();
+    f.game.openTerms(); // the stack moves
+    failed.fail();
+    await settle();
+    expect([overlayKinds(f), overlaysNoted(f)], 'failed').toEqual([['terms'], false]);
+    expect(overlayErrors(errors)).toBe(1);
+    f.game.dispose();
+  } finally {
+    errors.mockRestore();
+  }
+});
+
+test('game: an overlays module that fails to load is noted at the tap, opens nothing, and the next tap loads again', async () => {
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const held = heldOverlays();
+    const h = harness({ loadOverlayUi: held.load });
+    await startManor(h);
+    h.game.openMenu();
+    expect(h.overlayLoads()).toBe(1);
+    held.fail();
+    await settle();
+    expect(note(h.vm, 'Не получилось. Попробуйте ещё раз')).toBe(true);
+    expect([h.vm.screens.overlays, h.vm.overlayUi]).toEqual([[], null]);
+    h.game.openMenu();
+    expect(h.overlayLoads(), 'the next tap loads again').toBe(2);
+    held.release();
+    await settle();
+    expect(h.vm.screens.overlays).toEqual([{ kind: 'menu' }]);
+    expect(overlayErrors(errors)).toBe(1);
+    h.game.dispose();
+  } finally {
+    errors.mockRestore();
+  }
+});
+
+test('game: the backlog shows the lines of the moment it opens', async () => {
+  const held = heldOverlays();
+  const h = harness({ loadOverlayUi: held.load });
+  await startManor(h);
+  h.game.openBacklog();
+  await settle();
+  expect(h.vm.screens.overlays, 'nothing before the module').toEqual([]);
+  await h.game.advance(); // l002, read while the tap waits
+  held.release();
+  await settle();
+  expect(h.vm.screens.overlays).toEqual([{ kind: 'backlog' }]);
+  expect(h.vm.backlog.at(-1)?.lineId).toBe('ch1.arrival.l002');
+  h.game.dispose();
+});
+
+test('game: terms open from the paywall while the overlays module fails to load', async () => {
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    // Each rejection is made at its call, so none is left unhandled between the calls.
+    const load: LoadOverlayUi = () => Promise.reject(new Error('the overlays chunk is gone'));
+    const h = harness({ chapters: [manorCh1(), manorCh2()], loadOverlayUi: load });
+    await startManor(h);
+    h.game.lineShown(); // the prefetch fails
+    await settle();
+    expect(h.overlayLoads()).toBe(1);
+    expect(h.vm.overlayUi).toBeNull();
+    await h.game.advance(); // l002
+    await h.game.advance(); // the choice set
+    await h.game.choose(0); // l003
+    await h.game.advance(); // l005, entering garden
+    await settle(); // F5's load of the next chapter
+    await h.game.advance(); // END: ch2's pending start and the paywall
+    expect(overlayKinds(h)).toEqual(['paywall']);
+    // The paywall's Terms are the engine's (principle 2: /terms stays reachable when the overlays chunk is gone).
+    h.game.openTerms();
+    expect(overlayKinds(h), 'in the same tick').toEqual(['paywall', 'terms']);
+    expect(h.overlayLoads(), 'Terms load nothing').toBe(1);
+    h.game.dispose();
+  } finally {
+    errors.mockRestore();
+  }
+});
+
+test('game: a chunk restart is not held by an overlay open waiting for its module', async () => {
+  const held = heldOverlays();
+  const h = harness({ loadOverlayUi: held.load });
+  await startManor(h);
+  h.game.openMenu(); // waits for a module that does not land
+  await settle();
+  expect(h.vm.screens.overlays, 'nothing before the module').toEqual([]);
+  const page = fakePage();
+  h.game.restart(OWN_LATCH, page);
+  await pass(h, 1000);
+  expect([page.reloads, h.vm.notice?.kind]).toEqual([[RESTARTED], 'restart']);
+  h.game.dispose();
+});
+
+test('game: a disposed game drops a waiting overlay open', async () => {
+  const held = heldOverlays();
+  const h = harness({ loadOverlayUi: held.load });
+  await startManor(h);
+  h.game.openMenu();
+  await settle();
+  expect(h.vm.screens.overlays, 'nothing before the module').toEqual([]);
+  h.game.dispose();
+  held.release();
+  await settle();
+  expect([h.vm.screens.overlays, overlaysNoted(h)]).toEqual([[], false]);
 });

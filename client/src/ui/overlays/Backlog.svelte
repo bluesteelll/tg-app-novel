@@ -1,5 +1,5 @@
 <script module lang="ts">
-  import type { LineId } from '../story/staging.ts';
+  import type { LineId } from '../../story/staging.ts';
 
   /**
    * One backlog line, oldest first. The speaker, the text and the chosen option are already in the UI language (the
@@ -12,7 +12,7 @@
   // The backlog overlay: the lines read so far, as plain text (story text is never markup). Rows are keyed by
   // position, since a loop shows the same line ID again. It opens at the newest line: the panel scrolls to its end
   // when it mounts, synchronously in the effect (no frame callback that could outlive it).
-  import { t, type Lang } from '../i18n/index.ts';
+  import { t, type Lang } from '../../i18n/index.ts';
 
   type Props = { lines: readonly BacklogLine[]; lang: Lang };
 
