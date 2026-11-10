@@ -11,6 +11,7 @@ import { createCueBus } from '../../cues/bus.ts';
 import type { CueBus } from '../../cues/bus.ts';
 import { CueStage } from '../../cues/stage/index.ts';
 import { PRESETS } from '../../cues/stage/presets.ts';
+import type { CueEvent } from '../../cues/types.ts';
 import type { Box } from '../../geom/cover.ts';
 import { t } from '../../i18n/index.ts';
 import type { Lang } from '../../i18n/index.ts';
@@ -670,4 +671,106 @@ test('explore: an exit tap presses its glyph', async () => {
   expect(motionsOf('press').map((r) => r.el)).toEqual([exit]);
   expect(s.layer.querySelectorAll('.cue-ghost')).toHaveLength(0);
   expect(s.fallbacks()).toBe(0);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// §8.3 "Component test": every declared control emits its cue, on its own trigger
+
+/** One control cue the layer emitted: the state it was fired in, its control, its index and its item. */
+type Fired = readonly [state: string, control: string, index: number | null, item: string | null];
+
+/** A layer state the controls are fired in: the views GameSession writes, then a tap that brings it about (a tab). */
+type ControlState = { readonly name: string; readonly over: LayerOver; readonly prep?: (c: HTMLElement) => Promise<unknown> };
+
+const GATE: LockView = { key: k('hall.gate'), title: 'The gate', locked: 'Three hollows in the iron', slots: [null, null, null], refused: false };
+const CONTROL_STATES: readonly ControlState[] = [
+  { name: 'rooms', over: {} },
+  { name: 'inventory items', over: { items: [SUN], docs: [LETTER, DIARY], panel: { kind: 'inventory' } } },
+  {
+    name: 'inventory files',
+    over: { items: [SUN], docs: [LETTER, DIARY], panel: { kind: 'inventory' } },
+    prep: (c) => fireEvent.click(c.querySelector('[data-cue="inventory-tab"][data-cue-index="1"]') ?? c),
+  },
+  { name: 'reader', over: { docs: [LETTER], panel: { kind: 'doc', doc: LETTER.id } } },
+  { name: 'lock', over: { items: [COIN, SUN], lock: GATE, panel: { kind: 'lock' } } },
+];
+
+/** Every control a state shows a player, in document order: W1's non-vacuity, so a state that fails to render or a
+ *  control that loses its marker is a missing row, never a skipped one. */
+const EXPECTED_CONTROLS: readonly Fired[] = [
+  ['rooms', 'hotspot', null, null],
+  ['rooms', 'hotspot', null, null],
+  ['rooms', 'hotspot', null, null],
+  ['rooms', 'bar-inventory', null, null],
+  ['rooms', 'bar-reveal', null, null],
+  ['inventory items', 'inventory-tab', 0, null],
+  ['inventory items', 'inventory-tab', 1, null],
+  ['inventory files', 'inventory-tab', 0, null],
+  ['inventory files', 'inventory-tab', 1, null],
+  ['inventory files', 'inventory-doc', null, null],
+  ['inventory files', 'inventory-doc', null, null],
+  ['reader', 'doc-close', null, null],
+  ['lock', 'lock-item', null, 'coin'],
+  ['lock', 'lock-item', null, 'medal_sun'],
+];
+
+/** The controls a player can tap now: every `[data-cue]` element outside an inert subtree, in document order. */
+const liveControls = (c: Element): HTMLElement[] => [...c.querySelectorAll<HTMLElement>('[data-cue]')].filter((el) => el.closest('[inert]') === null);
+
+/** Fires a control's declared trigger: a click, else a bare event of its type (the root reads only the event's type). */
+async function fire(el: HTMLElement): Promise<void> {
+  const on = el.dataset.cueOn ?? 'click';
+  await (on === 'click' ? fireEvent.click(el) : fireEvent(el, new Event(on, { bubbles: true })));
+}
+
+/** The layer in `state`, its root emitting into `cues` (cleared after the state's own taps). */
+async function openState(state: ControlState): Promise<{ container: HTMLElement; cues: CueEvent[]; unmount: () => void }> {
+  const cues: CueEvent[] = [];
+  const props = layerProps(state.over);
+  props.view.oncue = (e) => cues.push(e);
+  const { container, unmount } = render(ExploreView, props);
+  await tick();
+  await state.prep?.(container);
+  cues.length = 0;
+  return { container, cues, unmount };
+}
+
+test('explore: every declared control emits its cue', async () => {
+  const fired: Fired[] = [];
+  for (const state of CONTROL_STATES) {
+    const first = await openState(state);
+    const count = liveControls(first.container).length;
+    first.unmount();
+    // A fresh layer per control: a fired control may change the state (a tab), never what the next one is fired in.
+    for (let i = 0; i < count; i += 1) {
+      const { container, cues, unmount } = await openState(state);
+      const el = liveControls(container)[i];
+      if (el === undefined) {
+        throw new Error(`invariant: ${state.name} shows ${count} controls`);
+      }
+      await fire(el);
+      // Exactly one cue per control, from the control itself.
+      expect(cues.map((e) => [e.cue.kind, e.el]), `${state.name} #${i}`).toEqual([['ui', el]]);
+      for (const { cue } of cues) {
+        if (cue.kind === 'ui') {
+          fired.push([state.name, cue.control, cue.index, cue.item]);
+        }
+      }
+      unmount();
+    }
+  }
+  expect(fired).toEqual(EXPECTED_CONTROLS);
+  // A `pointerdown` control (GM8b's `push`; none in the explore UI yet, so a fixture inside the root, M-I5g): it emits on
+  // its declared trigger, with its index, and a click on it emits nothing.
+  const cues: CueEvent[] = [];
+  const props = layerProps();
+  props.view.oncue = (e) => cues.push(e);
+  const { container } = render(ExploreView, props);
+  await tick();
+  const push = document.createElement('button');
+  Object.assign(push.dataset, { cue: 'dial-up', cueOn: 'pointerdown', cueIndex: '3' });
+  container.querySelector('[data-cue-root]')?.append(push);
+  await fire(push);
+  await fireEvent.click(push);
+  expect(cues.map((e) => [e.cue, e.el])).toEqual([[{ kind: 'ui', control: 'dial-up', item: null, index: 3 }, push]]);
 });
