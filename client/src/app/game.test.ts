@@ -44,7 +44,7 @@ import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { HotspotKey, ItemId, WorldPublic } from '../world/types.ts';
 import { createViewModel } from '../ui/state.svelte.ts';
 import type { ViewModel } from '../ui/state.svelte.ts';
-import { createMetaGate, createPageRecovery, HOME_IDLE_MS, newestAuto } from './boot.ts';
+import { createBackgroundBit, createMetaGate, createPageRecovery, HOME_IDLE_MS, newestAuto } from './boot.ts';
 import type { MetaGate, PageRecovery } from './boot.ts';
 import { CONFLICT_HOLD_MS, createGame, reloadedFor, withReloadedFor } from './game.ts';
 import type { Entitlements, Game, GameDeps, ReloadPort } from './game.ts';
@@ -4184,6 +4184,36 @@ test('game: skew waits while the app is in the background', async () => {
   expect(page.reloads).toHaveLength(1);
   expect(h.vm.notice?.kind).toBe('update');
   h.game.dispose();
+});
+
+test('boot: a game made in the background starts paused and resumes at activated as one that saw the event', async () => {
+  // E6 (b): boot forwards the lifecycle only to a Game that exists; its bit tells the Game it makes the event it missed.
+  const seen = harness();
+  seen.game.onLifecycle('deactivated');
+  const bit = createBackgroundBit();
+  bit.lifecycle('deactivated');
+  const made = harness();
+  bit.join(made.game);
+  const state = (h: Harness): unknown[] => [h.vm.paused, [...h.scene.calls], [...h.audio.calls]];
+  expect(state(made), 'as the Game that saw the event').toEqual(state(seen));
+  expect(state(made)).toEqual([true, ['pause'], []]); // no audio manager before a session
+  const page = fakePage();
+  made.game.skewed(SKEW, page);
+  await pass(made, 3000);
+  expect([page.reloads, made.vm.notice], 'no reload in the background').toEqual([[], null]);
+  bit.lifecycle('activated');
+  made.game.onLifecycle('activated'); // boot forwards it to the Game that exists now
+  seen.game.onLifecycle('activated');
+  await pass(made, 1000);
+  expect([page.reloads.map((url) => reloadedFor(url)), made.vm.notice?.kind, made.vm.paused]).toEqual([[SKEW], 'update', false]);
+  expect(made.scene.calls).toEqual(seen.scene.calls);
+  // Control: a bit that saw `activated` after `deactivated` tells a new Game nothing.
+  const fresh = harness();
+  bit.join(fresh.game);
+  expect([fresh.vm.paused, fresh.scene.calls]).toEqual([false, []]);
+  seen.game.dispose();
+  made.game.dispose();
+  fresh.game.dispose();
 });
 
 test("game: skew waits for the wallet's purchase", async () => {

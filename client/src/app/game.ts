@@ -399,6 +399,7 @@ export function createGame(deps: GameDeps): Game {
   let askSeq = 0;
   /** The shown line is fully revealed (its `ondone` came). */
   let revealed = false;
+  /** Between `deactivated` and `activated`; a Game made in the background is told `deactivated` by boot (E6). */
   let paused = false;
   /** An auto advance was pending at `deactivated`: it is scheduled again at `activated`. */
   let autoHeld = false;

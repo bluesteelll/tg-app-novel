@@ -442,3 +442,38 @@ test('no game: a restart waits while a wallet pack Buy waits for its module, the
   await page.waitForTimeout(QUIET_MS);
   expect(r.navs.count(), 'one restart').toBe(1);
 });
+
+/** server-dev's deploy simulation (as `build-skew.spec.ts`): from now on every /api answer names build `id` (none for null). */
+async function claim(request: APIRequestContext, id: string | null): Promise<void> {
+  const res = await request.post('/dev/build-id', { data: { id } });
+  expect(res.status(), `POST /dev/build-id ${String(id)}`).toBe(204);
+}
+
+test.describe(() => {
+  // The simulation is server-dev state for the whole run: cleared after the test, a timed-out one included.
+  test.afterEach(async ({ request }) => {
+    await claim(request, null);
+  });
+
+  test('a game made in the background holds a deploy\'s reload until activated, then reloads once', async ({ page, request }) => {
+    test.setTimeout(150_000);
+    const deploy = 'ffffffffffffffff'; // never an id this tree builds to
+    await claim(request, deploy);
+    const engine = await holdRequests(page, '**' + chunkPath('src/app/engine.ts'));
+    await launch(page, 9916);
+    const navs = await navigations(page);
+    await expect(startButton(page), 'Home').toBeVisible({ timeout: LINE_MS });
+    await mock(page, 'minimize'); // no Game yet: boot alone sees `deactivated` (E6 b)
+    await engine.release();
+    await page.waitForFunction(() => '__novelDebug' in window, undefined, { timeout: LINE_MS }); // the Game is made
+    await page.waitForTimeout(QUIET_MS);
+    expect(navs.count(), 'no reload in the background').toBe(0);
+    await expect(page.getByRole('heading', { name: ru('notice.update_title') })).toHaveCount(0);
+    await mock(page, 'restore');
+    await expect.poll(navs.count, { timeout: LINE_MS, message: 'the reload at activated' }).toBe(1);
+    expect(page.url(), 'the deploy latch in the fragment').toContain(`novelReloadedFor=${deploy}`);
+    await page.waitForFunction(() => '__tgMock' in window);
+    await page.waitForTimeout(QUIET_MS);
+    expect(navs.count(), 'one reload').toBe(1);
+  });
+});

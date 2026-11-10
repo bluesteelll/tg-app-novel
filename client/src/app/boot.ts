@@ -592,6 +592,34 @@ export function createPageRecovery(d: {
   return recovery;
 }
 
+/** E6 (b): boot's background bit for the Game it makes. */
+export type BackgroundBit = {
+  /** Boot's lifecycle events: `deactivated` sets the bit, `activated` clears it. */
+  lifecycle(e: Lifecycle): void;
+  /** A Game just made, before boot publishes it: told `deactivated` while the bit is set (the event it missed). */
+  join(game: Pick<Game, 'onLifecycle'>): void;
+};
+
+/**
+ * E6 (b): boot forwards the lifecycle only to a Game that exists, so one made while the app is in the background would
+ * start as active (a deploy's reload, the auto advance). The Game made then is told the event it missed, so it is a
+ * Game that saw it, and `activated` resumes it through the same code. Clear at first, as the recovery's own bit: a
+ * page loaded already hidden counts as active until its first event.
+ */
+export function createBackgroundBit(): BackgroundBit {
+  let away = false;
+  return {
+    lifecycle(e) {
+      away = e === 'deactivated';
+    },
+    join(game) {
+      if (away) {
+        game.onLifecycle('deactivated');
+      }
+    },
+  };
+}
+
 export function startApp(tg: TelegramClient): AppHandle {
   const vm = createViewModel({ timers: systemClock, lang: 'ru' });
   // K12: a stack made with another root would not seed the view itself.
@@ -644,6 +672,8 @@ export function startApp(tg: TelegramClient): AppHandle {
     clock: systemClock,
   });
   let engine: Promise<Game | null> | null = null;
+  /** E6 (b): written by every lifecycle event, read once by the Game `engineOf` makes. */
+  const bit = createBackgroundBit();
   /** The boot list, handed to the first session that asks; later sessions list again. */
   let freshList: SaveListResponse | null = null;
   /** F1 step 5: a Home button runs once until Home is shown again. */
@@ -781,6 +811,7 @@ export function startApp(tg: TelegramClient): AppHandle {
         unlock: unlockAudio,
         onExit: () => void refreshHome(),
       });
+      bit.join(made.game); // E6 (b): made in the background, it is paused before anything reads it
       made.game.attachMeta(gate.port); // before the game is published, so every session runs attached
       game = made.game;
       const served = http.skew(); // LBI D5: a skew the boot reads saw before the Game existed
@@ -937,6 +968,7 @@ export function startApp(tg: TelegramClient): AppHandle {
   };
 
   const onLifecycle = (e: Lifecycle): void => {
+    bit.lifecycle(e); // E6 (b): first, for a Game made after this event
     game?.onLifecycle(e);
     gate.current()?.onLifecycle(e);
     recovery.lifecycle(e); // Q60: no restart in the background, with or without a Game
