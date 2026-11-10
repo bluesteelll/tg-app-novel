@@ -1,13 +1,24 @@
 // LX in happy-dom: the explore layer (PUZZLES-PLAN X10, X16; the LX cut D14): hotspot buttons placed by the
 // controller's boxes, the reveal outline, the bar, and the reader rules over the explore components (copies of
-// L14b's readers as ui/puzzles/puzzle-host.svelte.test.ts holds them; RULINGS 55 accepts copies).
+// L14b's readers as ui/puzzles/puzzle-host.svelte.test.ts holds them; RULINGS 55 accepts copies). GM3u (engine plan
+// §6.1 UI, §8.3, §8.5): the controls' cues, the hit areas, and the layer over the real cue stage on a real flush.
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
-import { flushSync } from 'svelte';
+import { flushSync, mount, tick, unmount } from 'svelte';
 import ts from 'typescript';
 import { afterEach, expect, test, vi } from 'vitest';
 
+import { createCueBus } from '../../cues/bus.ts';
+import type { CueBus } from '../../cues/bus.ts';
+import { CueStage, landing, resolveTarget } from '../../cues/stage/index.ts';
+import { CUE_TARGET_ATTRS, cueKey, motionOf } from '../../cues/stage/motions.ts';
+import type { Resolved } from '../../cues/stage/player.ts';
+import { PRESETS } from '../../cues/stage/presets.ts';
+import type { CueEvent } from '../../cues/types.ts';
+import { LAYER_MOTIONS } from '../../cues/visible.ts';
+import type { Box } from '../../geom/cover.ts';
 import { t } from '../../i18n/index.ts';
 import type { Lang } from '../../i18n/index.ts';
+import type { Cause, FactKind } from '../../mechanics/contract.ts';
 import type { DocId, HotspotKey, ItemId } from '../../world/types.ts';
 import { createExploreView, forwardLayer } from '../explore-view.svelte.ts';
 import type {
@@ -22,11 +33,16 @@ import type {
 import { GLYPH_PATHS } from '../glyphs.ts';
 import { createPuzzleView } from '../puzzle-view.svelte.ts';
 import type { PuzzleHostCallbacks } from '../puzzle-view.svelte.ts';
+import type { CueStageProps } from '../state.svelte.ts';
 import ExploreView from './ExploreView.svelte';
 import exploreViewSource from './ExploreView.svelte?raw';
 
-// svelteTesting()'s auto-cleanup does not reach the `dom` project (L14a), so each test unmounts what it rendered here.
-afterEach(() => cleanup());
+// svelteTesting()'s auto-cleanup does not reach the `dom` project (L14a), so each test unmounts what it rendered here;
+// a test that installed the stage rig gets the real clock and DOM methods back after its components are gone.
+afterEach(() => {
+  cleanup();
+  unstage();
+});
 
 const LANGS: readonly Lang[] = ['ru', 'en'];
 const k = (s: string) => s as HotspotKey;
@@ -41,7 +57,7 @@ function spots(lang: Lang): HotspotView[] {
 }
 
 /** What a test sets: the language, the view store's fields and the layer's callbacks, each by name. */
-type LayerOver = { lang?: Lang } & Partial<Pick<ExploreViewStore, 'hotspots' | 'reveal' | 'items' | 'docs' | 'lock' | 'panel'>> &
+type LayerOver = { lang?: Lang } & Partial<Pick<ExploreViewStore, 'hotspots' | 'reveal' | 'items' | 'docs' | 'lock' | 'panel' | 'selected'>> &
   Partial<ExploreLayerActions>;
 
 /** The layer's props over a new view store with `over` written into it; a test writes the store as GameSession does. */
@@ -54,6 +70,7 @@ function layerProps(over: LayerOver = {}): ExploreLayerProps {
   view.docs = over.docs ?? [];
   view.lock = over.lock ?? null;
   view.panel = over.panel ?? null;
+  view.selected = over.selected ?? null;
   const puzzleActions: PuzzleHostCallbacks = {
     item: () => null,
     onchange: () => {},
@@ -74,6 +91,9 @@ function layerProps(over: LayerOver = {}): ExploreLayerProps {
       onread: over.onread ?? (() => {}),
       oninsert: over.oninsert ?? (() => {}),
       onclose: over.onclose ?? (() => {}),
+      onselect: over.onselect ?? (() => {}),
+      ondeselect: over.ondeselect ?? (() => {}),
+      onuse: over.onuse ?? (() => {}),
     },
     puzzle: createPuzzleView(),
     puzzleActions,
@@ -277,6 +297,15 @@ function recordingLayer(tag: string, calls: unknown[][]): ExploreLayerActions {
     onclose: () => {
       calls.push([tag, 'onclose']);
     },
+    onselect: (item) => {
+      calls.push([tag, 'onselect', item]);
+    },
+    ondeselect: () => {
+      calls.push([tag, 'ondeselect']);
+    },
+    onuse: (item, target) => {
+      calls.push([tag, 'onuse', item, target]);
+    },
   };
 }
 
@@ -288,6 +317,9 @@ function callEveryAction(a: ExploreLayerActions): void {
   a.onread('letter' as DocId);
   a.onreveal();
   a.onclose();
+  a.onselect('coin' as ItemId);
+  a.ondeselect();
+  a.onuse('coin' as ItemId, k('hall.gate'));
 }
 
 /** What `callEveryAction` records on a layer tagged `tag`. */
@@ -298,6 +330,9 @@ const everyActionOn = (tag: string): unknown[][] => [
   [tag, 'onread', 'letter'],
   [tag, 'onreveal'],
   [tag, 'onclose'],
+  [tag, 'onselect', 'coin'],
+  [tag, 'ondeselect'],
+  [tag, 'onuse', 'coin', 'hall.gate'],
 ];
 
 test("explore-view: forwardLayer reaches the current session's layer and nothing after it ends", () => {
@@ -305,7 +340,7 @@ test("explore-view: forwardLayer reaches the current session's layer and nothing
   let current: ExploreLayerActions | undefined = recordingLayer('a', calls);
   const forward = forwardLayer(() => current);
   // One forwarder per action, no more: a lane adding an action edits the forwarder and this list.
-  expect(Object.keys(forward).sort()).toEqual(['onclose', 'oninsert', 'oninventory', 'onread', 'onreveal', 'ontap']);
+  expect(Object.keys(forward).sort()).toEqual(['onclose', 'ondeselect', 'oninsert', 'oninventory', 'onread', 'onreveal', 'onselect', 'ontap', 'onuse']);
   callEveryAction(forward);
   expect(calls).toEqual(everyActionOn('a'));
   // A later session: the same forwarders reach its layer only (the getter runs at each call, never at creation).
@@ -328,10 +363,19 @@ const COMPONENT_SOURCES = import.meta.glob<string>('./*.svelte', { query: '?raw'
 
 /** Each component and the only modules it may import as values. */
 const VALUE_IMPORTS: Readonly<Record<string, readonly string[]>> = {
-  './ExploreView.svelte': ['../../cues/root.ts', '../../i18n/index.ts', '../glyphs.ts', './DocumentReader.svelte', './Inventory.svelte', './LockPanel.svelte'],
+  './ExploreView.svelte': [
+    '../../cues/root.ts',
+    '../../i18n/index.ts',
+    '../glyphs.ts',
+    './DocumentReader.svelte',
+    './Inventory.svelte',
+    './LockPanel.svelte',
+    './Ribbon.svelte',
+  ],
   './Inventory.svelte': ['../../i18n/index.ts', '../glyphs.ts'],
   './LockPanel.svelte': ['../../i18n/index.ts', '../glyphs.ts'],
   './DocumentReader.svelte': ['../../i18n/index.ts'],
+  './Ribbon.svelte': ['../../i18n/mechanics.ts', '../glyphs.ts'],
 };
 const COMPONENTS = Object.keys(VALUE_IMPORTS);
 
@@ -483,4 +527,709 @@ test('explore ui: components do no I/O', () => {
     ['../../telegram/index.ts', false],
     ['../../i18n/index.ts', true],
   ]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The layer over the real cue stage (engine plan §8.5 "Cue targets", "Hit areas", the real-flush rows; GM3u): the rig of
+// cues/stage/stage.svelte.test.ts, copied (RULINGS 55): a fake `Animation` on vitest's fake clock, a recording
+// `Element.prototype.animate`, fixture boxes (happy-dom lays nothing out) and the real CueStage on a bus.
+
+/** A fake `Animation` on the fake clock: finishes `ms` after its start; `currentTime` moves its start. */
+class FakeAnimation {
+  onfinish: (() => void) | null = null;
+  playState: 'running' | 'finished' | 'idle' = 'running';
+  readonly timing = { endDelay: 0 };
+  readonly effect = {
+    updateTiming: (t: { endDelay?: number }): void => {
+      this.timing.endDelay = t.endDelay ?? this.timing.endDelay;
+    },
+  };
+  #start = Date.now();
+  #timer: ReturnType<typeof setTimeout> | null = null;
+  readonly #ms: number;
+  constructor(ms: number) {
+    this.#ms = ms;
+    this.#schedule(0);
+  }
+  get currentTime(): number {
+    return Date.now() - this.#start;
+  }
+  set currentTime(t: number) {
+    this.#start = Date.now() - t;
+    this.#schedule(t);
+  }
+  cancel(): void {
+    this.#clear();
+    this.playState = 'idle';
+  }
+  #clear(): void {
+    if (this.#timer !== null) {
+      clearTimeout(this.#timer);
+      this.#timer = null;
+    }
+  }
+  #schedule(t: number): void {
+    this.#clear();
+    this.#timer = setTimeout(() => {
+      this.playState = 'finished';
+      this.onfinish?.();
+    }, this.#ms - t);
+  }
+}
+
+type Rec = { readonly el: Element; readonly kf: Keyframe[]; readonly ms: number; readonly fill: unknown; readonly anim: FakeAnimation };
+
+const STAGE: Box = { x: 0, y: 0, w: 400, h: 600 };
+const EDGE: Box = { x: 172, y: 572, w: 56, h: 56 };
+const HOTSPOT: Box = { x: 40, y: 80, w: 60, h: 40 };
+/** A use's target, away from the ribbon. */
+const TARGET: Box = { x: 220, y: 120, w: 80, h: 60 };
+const ROOT: Box = { x: 0, y: 0, w: 400, h: 600 };
+/** The ribbon's slots in their order on screen: each 56 px slot's box follows from its item. */
+const SLOT_ORDER = ['coin', 'medal_sun', 'key', 'gem'];
+const slotBox = (item: string): Box => ({ x: 60 + 64 * SLOT_ORDER.indexOf(item), y: 480, w: 56, h: 56 });
+
+/** Each fixture element's box; a `[data-cue-stage]` layer has the stage's box, a ribbon slot its item's. */
+const BOXES = new WeakMap<Element, Box>();
+const realAnimate = Element.prototype.animate;
+const realRect = Element.prototype.getBoundingClientRect;
+let records: Rec[] = [];
+let staged = false;
+
+function rectOf(b: Box): DOMRect {
+  // The fields a DOMRect reader takes.
+  return { x: b.x, y: b.y, left: b.x, top: b.y, width: b.w, height: b.h, right: b.x + b.w, bottom: b.y + b.h, toJSON: () => b } as DOMRect;
+}
+
+/** Installs the fake clock, the recording `animate` and the fixture boxes for one test; `unstage` (afterEach) undoes it. */
+function stageRig(): void {
+  staged = true;
+  vi.useFakeTimers();
+  records = [];
+  Element.prototype.animate = function (this: Element, kf, opts) {
+    const o = typeof opts === 'object' ? opts : { duration: opts };
+    const anim = new FakeAnimation(Number(o.duration));
+    // The keyframes the stage and the player pass are arrays.
+    records.push({ el: this, kf: kf as Keyframe[], ms: Number(o.duration), fill: o.fill, anim });
+    // The fake stands for the DOM's Animation: the stage reads `onfinish`, `currentTime`, `effect` and `cancel` only.
+    return anim as unknown as Animation;
+  };
+  Element.prototype.getBoundingClientRect = function (this: Element) {
+    const item = this.getAttribute('data-cue-item');
+    const b = this.matches('[data-cue-stage]') ? STAGE : (BOXES.get(this) ?? (item === null ? undefined : slotBox(item)));
+    return b === undefined ? realRect.call(this) : rectOf(b);
+  };
+}
+
+function unstage(): void {
+  if (!staged) {
+    return;
+  }
+  staged = false;
+  document.body.replaceChildren();
+  Element.prototype.animate = realAnimate;
+  Element.prototype.getBoundingClientRect = realRect;
+  vi.useRealTimers();
+}
+
+/** Lets the emitting block's flush, the stage's `tick` continuation and the observers' microtasks run. */
+async function settle(): Promise<void> {
+  await tick();
+  for (let i = 0; i < 8; i += 1) {
+    await Promise.resolve();
+  }
+}
+
+type Mounted = { readonly bus: CueBus; readonly layer: HTMLElement; readonly played: () => string[]; readonly fallbacks: () => number };
+
+/** The real CueStage on a bus, as App mounts it from the session's slot. */
+function mounted(): Mounted {
+  const bus = createCueBus();
+  const props: CueStageProps = {
+    subscribe: bus.subscribe,
+    orphans: () => bus.orphans(),
+    dropped: () => {},
+    reduced: false,
+    host: () => null,
+    haptic: { impact: () => {}, selection: () => {}, notify: () => {} },
+  };
+  const { container } = render(CueStage, { props });
+  const layer = container.querySelector<HTMLElement>('[data-cue-stage]');
+  if (layer === null) {
+    throw new Error('no stage layer');
+  }
+  return {
+    bus,
+    layer,
+    played: () => (layer.dataset.cuesPlayed ?? '').split(' ').filter((key) => key !== ''),
+    fallbacks: () => Number(layer.dataset.cueFallbacks),
+  };
+}
+
+/** The cue motions recorded (the roots' entrances and exits left out). */
+const cueMotions = (): Rec[] => records.filter((r) => !r.el.matches('[data-cue-root]') && !r.el.classList.contains('cue-root-ghost'));
+/** A frame without the travel the player prepends to a two-endpoint preset's transform. */
+const untravelled = (f: Keyframe): Keyframe => (typeof f.transform === 'string' ? { ...f, transform: f.transform.replace(/^translate\([^)]*\)\s?/, '') } : f);
+/** The cue motions that played `preset`'s keyframes (a travel's compared without its translate). */
+const motionsOf = (preset: keyof typeof PRESETS): Rec[] => {
+  const want = JSON.stringify(PRESETS[preset].map(untravelled));
+  return cueMotions().filter((r) => JSON.stringify(r.kf.map(untravelled)) === want);
+};
+
+/** A ghost's box, from the style the stage placed it with. */
+function boxOfGhost(el: Element): Box {
+  const s = el instanceof HTMLElement ? el.style : null;
+  return { x: parseFloat(s?.left ?? ''), y: parseFloat(s?.top ?? ''), w: parseFloat(s?.width ?? ''), h: parseFloat(s?.height ?? '') };
+}
+
+/** A hotspot as the controller writes it, at `css`. */
+const spot = (key: string, kind: HotspotView['kind'], label: string, css: Box = HOTSPOT): HotspotView => ({ key: k(key), kind, label, css, done: false, locked: false });
+
+test('explore: a hotspot is a hit area exactly while it paints nothing', () => {
+  // §8.5 "Hit areas" (round 11): a hotspot that paints nothing carries `data-cue-hit`, so its element-site motion plays
+  // on a painted ghost; an exit draws its glyph and a revealed hotspot its outline, so neither does. The bare-art
+  // catcher paints nothing, revealed or not.
+  const props = layerProps({ hotspots: [spot('hall.to_study', 'exit', 'study door'), spot('hall.medal', 'take', 'medal')] });
+  const { container, getByRole } = render(ExploreView, props);
+  const hits = (): boolean[] => [
+    container.querySelector('.room > .bare')?.hasAttribute('data-cue-hit') ?? false,
+    ...['study door', 'medal'].map((name) => getByRole('button', { name }).hasAttribute('data-cue-hit')),
+  ];
+  expect(hits()).toEqual([true, false, true]);
+  props.view.reveal = true;
+  flushSync();
+  expect(hits()).toEqual([true, false, false]);
+  props.view.reveal = false;
+  flushSync();
+  expect(hits()).toEqual([true, false, true]);
+});
+
+test('explore: an exit tap presses its glyph', async () => {
+  // The exit paints its glyph, so its `press` scales the button with what it paints: on the button, no ghost.
+  stageRig();
+  const s = mounted();
+  const props = layerProps({ hotspots: [spot('hall.to_study', 'exit', 'study door')] });
+  props.view.oncue = s.bus.emit;
+  const { getByRole } = render(ExploreView, props);
+  await settle();
+  const exit = getByRole('button', { name: 'study door' });
+  BOXES.set(exit, HOTSPOT);
+  records = [];
+  await fireEvent.click(exit);
+  await settle();
+  expect(s.played()).toEqual(['ui:hotspot']);
+  expect(motionsOf('press').map((r) => r.el)).toEqual([exit]);
+  expect(s.layer.querySelectorAll('.cue-ghost')).toHaveLength(0);
+  expect(s.fallbacks()).toBe(0);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// §8.3 "Component test": every declared control emits its cue, on its own trigger
+
+/** One control cue the layer emitted: the state it was fired in, its control, its index and its item. */
+type Fired = readonly [state: string, control: string, index: number | null, item: string | null];
+
+/** A layer state the controls are fired in: the views GameSession writes, then a tap that brings it about (a tab). */
+type ControlState = { readonly name: string; readonly over: LayerOver; readonly prep?: (c: HTMLElement) => Promise<unknown> };
+
+const GATE: LockView = { key: k('hall.gate'), title: 'The gate', locked: 'Three hollows in the iron', slots: [null, null, null], refused: false };
+const CONTROL_STATES: readonly ControlState[] = [
+  { name: 'rooms', over: { items: [SUN] } },
+  { name: 'inventory items', over: { items: [SUN], docs: [LETTER, DIARY], panel: { kind: 'inventory' } } },
+  {
+    name: 'inventory files',
+    over: { items: [SUN], docs: [LETTER, DIARY], panel: { kind: 'inventory' } },
+    prep: (c) => fireEvent.click(c.querySelector('[data-cue="inventory-tab"][data-cue-index="1"]') ?? c),
+  },
+  { name: 'reader', over: { docs: [LETTER], panel: { kind: 'doc', doc: LETTER.id } } },
+  { name: 'lock', over: { items: [COIN, SUN], lock: GATE, panel: { kind: 'lock' } } },
+];
+
+/** Every control a state shows a player, in document order: W1's non-vacuity, so a state that fails to render or a
+ *  control that loses its marker is a missing row, never a skipped one. */
+const EXPECTED_CONTROLS: readonly Fired[] = [
+  ['rooms', 'bare-art', null, null],
+  ['rooms', 'hotspot', null, null],
+  ['rooms', 'hotspot', null, null],
+  ['rooms', 'hotspot', null, null],
+  ['rooms', 'ribbon-item', null, 'medal_sun'],
+  ['rooms', 'bar-inventory', null, null],
+  ['rooms', 'bar-reveal', null, null],
+  ['inventory items', 'inventory-tab', 0, null],
+  ['inventory items', 'inventory-tab', 1, null],
+  ['inventory files', 'inventory-tab', 0, null],
+  ['inventory files', 'inventory-tab', 1, null],
+  ['inventory files', 'inventory-doc', null, null],
+  ['inventory files', 'inventory-doc', null, null],
+  ['reader', 'doc-close', null, null],
+  ['lock', 'lock-item', null, 'coin'],
+  ['lock', 'lock-item', null, 'medal_sun'],
+];
+
+/** The controls a player can tap now: every `[data-cue]` element outside an inert subtree, in document order. */
+const liveControls = (c: Element): HTMLElement[] => [...c.querySelectorAll<HTMLElement>('[data-cue]')].filter((el) => el.closest('[inert]') === null);
+
+/** Fires a control's declared trigger: a click, else a bare event of its type (the root reads only the event's type). */
+async function fire(el: HTMLElement): Promise<void> {
+  const on = el.dataset.cueOn ?? 'click';
+  await (on === 'click' ? fireEvent.click(el) : fireEvent(el, new Event(on, { bubbles: true })));
+}
+
+/** The layer in `state`, its root emitting into `cues` (cleared after the state's own taps). */
+async function openState(state: ControlState): Promise<{ container: HTMLElement; cues: CueEvent[]; unmount: () => void }> {
+  const cues: CueEvent[] = [];
+  const props = layerProps(state.over);
+  props.view.oncue = (e) => cues.push(e);
+  const { container, unmount } = render(ExploreView, props);
+  await tick();
+  await state.prep?.(container);
+  cues.length = 0;
+  return { container, cues, unmount };
+}
+
+test('explore: every declared control emits its cue', async () => {
+  const fired: Fired[] = [];
+  for (const state of CONTROL_STATES) {
+    const first = await openState(state);
+    const count = liveControls(first.container).length;
+    first.unmount();
+    // A fresh layer per control: a fired control may change the state (a tab), never what the next one is fired in.
+    for (let i = 0; i < count; i += 1) {
+      const { container, cues, unmount } = await openState(state);
+      const el = liveControls(container)[i];
+      if (el === undefined) {
+        throw new Error(`invariant: ${state.name} shows ${count} controls`);
+      }
+      await fire(el);
+      // Exactly one cue per control, from the control itself.
+      expect(cues.map((e) => [e.cue.kind, e.el]), `${state.name} #${i}`).toEqual([['ui', el]]);
+      for (const { cue } of cues) {
+        if (cue.kind === 'ui') {
+          fired.push([state.name, cue.control, cue.index, cue.item]);
+        }
+      }
+      unmount();
+    }
+  }
+  expect(fired).toEqual(EXPECTED_CONTROLS);
+  // A `pointerdown` control (GM8b's `push`; none in the explore UI yet, so a fixture inside the root, M-I5g): it emits on
+  // its declared trigger, with its index, and a click on it emits nothing.
+  const cues: CueEvent[] = [];
+  const props = layerProps();
+  props.view.oncue = (e) => cues.push(e);
+  const { container } = render(ExploreView, props);
+  await tick();
+  const push = document.createElement('button');
+  Object.assign(push.dataset, { cue: 'dial-up', cueOn: 'pointerdown', cueIndex: '3' });
+  container.querySelector('[data-cue-root]')?.append(push);
+  await fire(push);
+  await fireEvent.click(push);
+  expect(cues.map((e) => [e.cue, e.el])).toEqual([[{ kind: 'ui', control: 'dial-up', item: null, index: 3 }, push]]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The ribbon (engine plan §6.1 UI, §8.1 point 9; GM3u): the held items, the selection, the use dispatch, and the
+// real-flush rows of §8.5 "Cue targets" (08c) for a take and a use
+
+const KEY: ItemView = { id: 'key' as ItemId, name: 'Iron key', desc: 'Heavy', glyph: 'key' };
+const GEM: ItemView = { id: 'gem' as ItemId, name: 'Star gem', desc: 'Cold', glyph: 'star' };
+
+/** The live ribbon's slot of `item`, or null. */
+const slotOf = (item: ItemView): HTMLElement | null => document.querySelector(`[data-cue-ribbon] [data-cue-item="${item.id}"]`);
+
+/** A fact cue as yields emits it, on `box`. */
+function factEvent(kind: FactKind, id: string, change: 'added' | 'removed', cause: Cause, box: Box | null): CueEvent {
+  return { cue: { kind: 'fact', fact: { kind, id }, change, cause }, box, point: null, diff: [], el: null };
+}
+
+test('explore: selecting an item then tapping a target dispatches use', async () => {
+  // §6.1 UI: a ribbon slot selects its item; a hotspot tapped while an item is selected uses it there instead of a tap.
+  const ontap = vi.fn<(key: HotspotKey) => void>();
+  const onuse = vi.fn<(item: ItemId, target: HotspotKey) => void>();
+  const onselect = vi.fn<(item: ItemId) => void>();
+  const ondeselect = vi.fn();
+  const props = layerProps({ items: [COIN, SUN], ontap, onuse, onselect, ondeselect });
+  const { container, getByRole } = render(ExploreView, props);
+  // Each held item is a labelled slot showing its glyph, none pressed.
+  expect([slotOf(COIN), slotOf(SUN)].map((el) => [el?.getAttribute('aria-label'), el?.getAttribute('aria-pressed'), el === null ? [] : glyphsIn(el)])).toEqual([
+    [COIN.name, 'false', [GLYPH_PATHS.coin]],
+    [SUN.name, 'false', [GLYPH_PATHS.sun]],
+  ]);
+  await fireEvent.click(slotOf(SUN) ?? container);
+  expect(onselect.mock.calls).toEqual([['medal_sun']]);
+  // GameSession writes the selection: the slot is pressed, and a tap on a hotspot uses the item there.
+  props.view.selected = SUN.id;
+  flushSync();
+  expect([slotOf(COIN), slotOf(SUN)].map((el) => el?.getAttribute('aria-pressed'))).toEqual(['false', 'true']);
+  await fireEvent.click(getByRole('button', { name: 'en gate' }));
+  expect(onuse.mock.calls).toEqual([['medal_sun', 'hall.gate']]);
+  expect(ontap).not.toHaveBeenCalled();
+  // The pressed slot again deselects; with no selection a hotspot taps again.
+  await fireEvent.click(slotOf(SUN) ?? container);
+  expect([onselect.mock.calls.length, ondeselect.mock.calls.length]).toEqual([1, 1]);
+  props.view.selected = null;
+  flushSync();
+  await fireEvent.click(getByRole('button', { name: 'en gate' }));
+  expect(ontap.mock.calls).toEqual([['hall.gate']]);
+  expect(onuse).toHaveBeenCalledTimes(1);
+  // A panel covers the rooms: no ribbon under it.
+  props.view.panel = { kind: 'inventory' };
+  flushSync();
+  expect(container.querySelector('[data-cue-ribbon]')).toBeNull();
+});
+
+test('explore: a take pulses the slot it creates and presses the hotspot it removes on its ghost', async () => {
+  // 08c's take row: a real click on a take hotspot (the root emits `ui:hotspot`), then the take's writes (the item into
+  // the ribbon, the hotspot out of the room) and its `fact:held:added`, (i) in the click's own block and (ii) in the
+  // intent's microtask, as Game runs a tap.
+  for (const when of ['click', 'microtask'] as const) {
+    stageRig();
+    const s = mounted();
+    const medal = spot('study.medal', 'take', 'medal on the shelf');
+    const cause = { verb: 'tap', at: medal.key, item: null, via: null } as const;
+    const props: ExploreLayerProps = layerProps({
+      hotspots: [medal],
+      ontap: () => {
+        const take = (): void => {
+          props.view.items = [SUN];
+          props.view.hotspots = [];
+          s.bus.emit(factEvent('held', SUN.id, 'added', cause, HOTSPOT));
+        };
+        if (when === 'click') {
+          take();
+        } else {
+          queueMicrotask(take);
+        }
+      },
+    });
+    props.view.oncue = s.bus.emit;
+    const { getByRole } = render(ExploreView, props);
+    await settle();
+    const button = getByRole('button', { name: 'medal on the shelf' });
+    BOXES.set(button, HOTSPOT);
+    records = [];
+    await fireEvent.click(button);
+    await settle();
+    const slot = slotOf(SUN);
+    expect([slot === null, button.isConnected], when).toEqual([false, false]);
+    // The press: on the hotspot's painted ghost from the tap (a hit area paints nothing), at the button's box.
+    const presses = motionsOf('press');
+    expect(presses.map((r) => [r.el.classList.contains('cue-ghost'), r.el.classList.contains('cue-hit'), r.el.getAttribute('aria-label')]), when).toEqual([
+      [true, true, 'medal on the shelf'],
+    ]);
+    expect(presses.map((r) => boxOfGhost(r.el)), when).toEqual([HOTSPOT]);
+    // The fly ends on the new slot (a travelling clone of it at its box); the slot's pulse plays on the slot itself.
+    const flies = motionsOf('fly');
+    expect(flies.map((r) => [r.el.classList.contains('cue-ghost'), r.el.getAttribute('aria-label'), boxOfGhost(r.el)]), when).toEqual([[true, SUN.name, slotBox(SUN.id)]]);
+    expect(motionsOf('pulse').map((r) => r.el), when).toEqual([slot]);
+    expect([s.played(), s.fallbacks()], when).toEqual([['ui:hotspot', 'fact:held:added'], 0]);
+    // No ghost outlives its motion.
+    vi.advanceTimersByTime(480);
+    expect(s.layer.querySelectorAll('.cue-ghost'), when).toHaveLength(0);
+    cleanup();
+    unstage();
+  }
+});
+
+test('explore: a take whose then starts a knot flies its glyph to the edge as the rooms leave', async () => {
+  // 08c's sixth row: the take's writes and cues, then the knot hides the rooms in the same block (App's explore `{#if}`
+  // turns false; Svelte's `unmount` stands for it). The ribbon is live at the emit and gone at the flush: the glyph
+  // flies to the designed `edge` landing, which counts nothing.
+  stageRig();
+  const s = mounted();
+  const medal = spot('study.medal', 'take', 'medal on the shelf');
+  const cause = { verb: 'tap', at: medal.key, item: null, via: null } as const;
+  let view: ReturnType<typeof mount> | null = null;
+  const props: ExploreLayerProps = layerProps({
+    hotspots: [medal],
+    ontap: () => {
+      props.view.items = [SUN];
+      props.view.hotspots = [];
+      s.bus.emit(factEvent('taken', medal.key, 'added', cause, HOTSPOT));
+      s.bus.emit(factEvent('held', SUN.id, 'added', cause, HOTSPOT));
+      s.bus.emit(factEvent('story', 'study_voice', 'added', cause, HOTSPOT));
+      if (view !== null) {
+        void unmount(view);
+      }
+    },
+  });
+  props.view.oncue = s.bus.emit;
+  view = mount(ExploreView, { target: document.body, props });
+  await settle();
+  const root = document.querySelector('[data-cue-root]');
+  const button = document.querySelector<HTMLElement>('.hotspot');
+  if (root === null || button === null) {
+    throw new Error('invariant: the layer is mounted');
+  }
+  BOXES.set(root, ROOT);
+  BOXES.set(button, HOTSPOT);
+  // The ribbon is live before the take.
+  expect(document.querySelector('[data-cue-ribbon]')).not.toBeNull();
+  vi.advanceTimersByTime(LAYER_MOTIONS.in.ms);
+  records = [];
+  await fireEvent.click(button);
+  await settle();
+  // The rooms left at the flush: their ghost is inert and plays `layer-out`.
+  expect(document.querySelector('[data-cue-root]')).toBeNull();
+  const rootGhost = s.layer.querySelector('.cue-root-ghost');
+  expect(rootGhost?.hasAttribute('inert')).toBe(true);
+  expect(records.filter((r) => r.el === rootGhost).map((r) => r.kf)).toEqual([LAYER_MOTIONS.out.keyframes]);
+  // The fly ends on the edge on a plain ghost; the slot's pulse has no slot and is skipped.
+  expect(motionsOf('fly').map((r) => [r.el.classList.contains('cue-plain'), boxOfGhost(r.el)])).toEqual([[true, EDGE]]);
+  expect(motionsOf('pulse')).toEqual([]);
+  // The glint at the emptied box; the press on the hotspot's own painted ghost, outside the rooms' ghost.
+  expect(motionsOf('glint').map((r) => boxOfGhost(r.el))).toEqual([HOTSPOT]);
+  expect(motionsOf('press').map((r) => [r.el.classList.contains('cue-hit'), r.el.closest('.cue-root-ghost')])).toEqual([[true, null]]);
+  expect([s.played(), s.fallbacks()]).toEqual([['ui:hotspot', 'fact:taken:added', 'fact:held:added', 'fact:story:added'], 0]);
+  vi.advanceTimersByTime(600);
+  expect(s.layer.querySelectorAll('.cue-ghost')).toHaveLength(0);
+});
+
+test('explore: a use settles its leaving slot on its ghost and pulses the slot its rule gives', async () => {
+  // 08c's use row: three items held, the middle one selected; a tap on a target uses it (`onuse`), and the block is what
+  // yields writes and emits for a use with `keep: false` and `do: [{ give }]`, in its order: the deselect, then the
+  // rule's writes with their cues.
+  stageRig();
+  const s = mounted();
+  const desk = spot('study.desk', 'object', 'the desk', TARGET);
+  const props: ExploreLayerProps = layerProps({
+    hotspots: [desk],
+    items: [COIN, SUN, KEY],
+    selected: SUN.id,
+    onuse: (item, target) => {
+      const cause = { verb: 'use', at: target, item, via: null } as const;
+      props.view.selected = null;
+      s.bus.emit({ cue: { kind: 'ui-state', name: 'deselect', panel: null, item }, box: null, point: null, diff: [], el: null });
+      props.view.items = [COIN, KEY, GEM];
+      s.bus.emit(factEvent('held', item, 'removed', cause, TARGET));
+      s.bus.emit(factEvent('used', item, 'added', cause, TARGET));
+      s.bus.emit(factEvent('held', GEM.id, 'added', cause, TARGET));
+    },
+  });
+  props.view.oncue = s.bus.emit;
+  const { getByRole } = render(ExploreView, props);
+  await settle();
+  BOXES.set(getByRole('button', { name: 'the desk' }), TARGET);
+  records = [];
+  await fireEvent.click(getByRole('button', { name: 'the desk' }));
+  await settle();
+  expect([slotOf(SUN), slotOf(GEM) === null]).toEqual([null, false]);
+  /** What a ghost shows: its label and its glyph, at its box. */
+  const shown = (r: Rec): unknown[] => [r.el.classList.contains('cue-ghost'), r.el.getAttribute('aria-label'), glyphsIn(r.el), boxOfGhost(r.el)];
+  const sun = [true, SUN.name, [GLYPH_PATHS.sun], slotBox(SUN.id)];
+  // The deselect's and the leaving item's `settle` on clones of the middle slot at its captured box.
+  expect(motionsOf('settle').map(shown)).toEqual([sun, sun]);
+  // The slot flies back to the target and drops there: both from the middle slot's box toward the target's.
+  const toward = (r: Rec | undefined): string => String(r?.kf.at(-1)?.transform ?? '');
+  const [back] = motionsOf('fly-back');
+  const [drop] = motionsOf('drop');
+  const d = { x: TARGET.x + TARGET.w / 2 - (slotBox(SUN.id).x + 28), y: TARGET.y + TARGET.h / 2 - (slotBox(SUN.id).y + 28) };
+  expect([back, drop].map((r) => (r === undefined ? null : shown(r)))).toEqual([sun, sun]);
+  expect([toward(back), toward(drop)].map((t) => t.startsWith(`translate(${d.x}px, ${d.y}px)`))).toEqual([true, true]);
+  // The given item flies to its new slot and pulses there.
+  expect(motionsOf('fly').map(shown)).toEqual([[true, GEM.name, [GLYPH_PATHS.star], slotBox(GEM.id)]]);
+  expect(motionsOf('pulse').map((r) => r.el)).toEqual([slotOf(GEM)]);
+  expect([s.played(), s.fallbacks()]).toEqual([['ui:hotspot', 'ui-state:deselect', 'fact:held:removed', 'fact:used:added', 'fact:held:added'], 0]);
+  vi.advanceTimersByTime(480);
+  expect(s.layer.querySelectorAll('.cue-ghost')).toHaveLength(0);
+});
+
+test("explore: a use that fills a lock slot drops from the item's ribbon slot", async () => {
+  // GM3's carry (its cut Q8 O5): `fact:slot:added` names the lock, so the stage finds the item's slot by the cue's
+  // cause; the item leaves the ribbon in the same block, so the drop plays on its slot's clone at the captured box.
+  stageRig();
+  const s = mounted();
+  const gate = spot('hall.gate', 'exit', 'the gate', TARGET);
+  const props: ExploreLayerProps = layerProps({
+    hotspots: [gate],
+    items: [COIN, SUN],
+    selected: SUN.id,
+    onuse: (item, target) => {
+      props.view.selected = null;
+      props.view.items = [COIN];
+      s.bus.emit(factEvent('slot', target, 'added', { verb: 'use', at: target, item, via: null }, TARGET));
+    },
+  });
+  props.view.oncue = s.bus.emit;
+  const { getByRole } = render(ExploreView, props);
+  await settle();
+  BOXES.set(getByRole('button', { name: 'the gate' }), TARGET);
+  records = [];
+  await fireEvent.click(getByRole('button', { name: 'the gate' }));
+  await settle();
+  expect(motionsOf('drop').map((r) => [r.el.classList.contains('cue-ghost'), r.el.getAttribute('aria-label'), boxOfGhost(r.el)])).toEqual([
+    [true, SUN.name, slotBox(SUN.id)],
+  ]);
+  expect([s.played(), s.fallbacks()]).toEqual([['ui:hotspot', 'fact:slot:added'], 0]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The catcher (engine plan §8.3 "The catcher", R17; GM3u): a tap on the art outside every hotspot answers with a ripple
+// at the finger, and drops the ribbon's selection
+
+/** The rooms' bare-art catcher, or null. */
+const catcherIn = (c: Element): HTMLElement | null => c.querySelector<HTMLElement>('.room > .bare');
+
+test('explore: a tap on bare art emits one bare-art cue and no action', async () => {
+  stageRig();
+  const s = mounted();
+  const calls: unknown[][] = [];
+  const props = layerProps({ hotspots: [spot('study.medal', 'take', 'medal on the shelf')], items: [SUN], ...recordingLayer('layer', calls) });
+  const cues: CueEvent[] = [];
+  props.view.oncue = (e) => {
+    cues.push(e);
+    s.bus.emit(e);
+  };
+  const { container } = render(ExploreView, props);
+  await settle();
+  const bare = catcherIn(container);
+  // A presentational surface under the whole room: no role, no name, painting nothing.
+  expect([bare?.getAttribute('role'), bare?.hasAttribute('data-cue-hit'), bare?.textContent]).toEqual(['presentation', true, '']);
+  records = [];
+  await fireEvent.click(bare ?? container, { clientX: 150, clientY: 210 });
+  await settle();
+  // One cue from the catcher itself, at the finger; nothing selected, so no action.
+  expect(cues.map((e) => [e.cue, e.el, e.point])).toEqual([[{ kind: 'ui', control: 'bare-art', item: null, index: null }, bare, { x: 150, y: 210 }]]);
+  expect(calls).toEqual([]);
+  // The ripple plays at the point (a box ghost centred there), never a fallback.
+  const ripples = motionsOf('ripple').map((r) => boxOfGhost(r.el));
+  expect(ripples.map((b) => [b.x + b.w / 2, b.y + b.h / 2])).toEqual([[150, 210]]);
+  expect([s.played(), s.fallbacks()]).toEqual([['ui:bare-art'], 0]);
+});
+
+test('explore: a tap on a hotspot edge dispatches the tap and no bare-art cue', async () => {
+  // The catcher fills the room under the hotspots: it is the room's first child and neither it nor a hotspot sets a
+  // z-index, so every hotspot paints (and takes taps) above it, to its very edge (the e2e taps it in a real browser).
+  const calls: unknown[][] = [];
+  const props = layerProps({ ...recordingLayer('layer', calls) });
+  const cues: CueEvent[] = [];
+  props.view.oncue = (e) => cues.push(e);
+  const { container, getByRole } = render(ExploreView, props);
+  await tick();
+  const room = container.querySelector('.room');
+  const bare = catcherIn(container);
+  expect([bare === null, room?.firstElementChild === bare]).toEqual([false, true]);
+  expect([...(room?.querySelectorAll('.hotspot') ?? [])].map((h) => (bare?.compareDocumentPosition(h) ?? 0) & Node.DOCUMENT_POSITION_FOLLOWING)).toEqual([
+    Node.DOCUMENT_POSITION_FOLLOWING,
+    Node.DOCUMENT_POSITION_FOLLOWING,
+    Node.DOCUMENT_POSITION_FOLLOWING,
+  ]);
+  expect(['bare', 'hotspot'].map((cls) => declarationsFor(exploreViewSource, cls).get('z-index') ?? null)).toEqual([null, null]);
+  expect(declarationsFor(exploreViewSource, 'bare').get('inset')).toBe('0');
+  const gate = getByRole('button', { name: 'en gate' });
+  await fireEvent.click(gate);
+  expect(cues.map((e) => [e.cue.kind === 'ui' ? e.cue.control : e.cue.kind, e.el])).toEqual([['hotspot', gate]]);
+  expect(calls).toEqual([['layer', 'ontap', 'hall.gate']]);
+});
+
+test('explore: a bare tap deselects', async () => {
+  // §6.1 UI: with an item selected, a tap on the art outside every hotspot puts it back (the ribbon's deselect).
+  const calls: unknown[][] = [];
+  const props = layerProps({ items: [COIN, SUN], selected: SUN.id, ...recordingLayer('layer', calls) });
+  const cues: CueEvent[] = [];
+  props.view.oncue = (e) => cues.push(e);
+  const { container } = render(ExploreView, props);
+  await tick();
+  await fireEvent.click(catcherIn(container) ?? container);
+  expect(calls).toEqual([['layer', 'ondeselect']]);
+  expect(cues.map((e) => (e.cue.kind === 'ui' ? e.cue.control : e.cue.kind))).toEqual(['bare-art']);
+  // GameSession clears the selection; the next bare tap acts on nothing.
+  props.view.selected = null;
+  flushSync();
+  await fireEvent.click(catcherIn(container) ?? container);
+  expect(calls).toEqual([['layer', 'ondeselect']]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The panels and the targets (engine plan §8.5 "Cue targets"; GM3u): what a cue of the rooms plays on
+
+test("explore: an open panel's sheet holds the dim after its cue ends", async () => {
+  // The panel-open cue's `dim` is a stage motion that ends with the cue; the sheet's own backdrop keeps the rooms dimmed
+  // under every open panel for as long as it stays open: a translucent black, never transparent and never opaque.
+  const bg = declarationsFor(exploreViewSource, 'sheet').get('background') ?? '';
+  const alpha = Number(/^rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*([0-9.]+)\s*\)$/.exec(bg)?.[1] ?? Number.NaN);
+  expect([bg, alpha > 0 && alpha < 1]).toEqual([bg, true]);
+  // Every panel the layer opens is such a sheet.
+  const opened: string[] = [];
+  for (const over of [
+    { items: [SUN], panel: { kind: 'inventory' } },
+    { docs: [LETTER], panel: { kind: 'doc', doc: LETTER.id } },
+    { items: [SUN], lock: GATE, panel: { kind: 'lock' } },
+  ] satisfies LayerOver[]) {
+    const { container, unmount } = render(ExploreView, layerProps(over));
+    await tick();
+    for (const p of container.querySelectorAll('[data-cue-panel]')) {
+      opened.push(`${p.getAttribute('data-cue-panel')}:${p.classList.contains('sheet')}`);
+    }
+    unmount();
+  }
+  expect(opened).toEqual(['inventory:true', 'inventory:true', 'document:true', 'lock:true']);
+});
+
+/** What a resolved target is: its element, a designed landing's box, or nothing. */
+const foundOf = (r: Resolved): Element | Box | null => (r === null ? null : 'el' in r ? r.el : r.box);
+
+test('explore: every explore cue target resolves', async () => {
+  // Each cue the rooms' writes emit plays where §8.5 says: its first motion's target, found by that target's marker
+  // (`CUE_TARGET_ATTRS`) in the live layer, never the layer's root, and never the stage centre's fallback.
+  stageRig(); // the stage layer's box, and `unstage` clears the body
+  const stage = document.createElement('div');
+  stage.setAttribute('data-cue-stage', '');
+  document.body.append(stage);
+  const at: Cause = { verb: 'tap', at: k('hall.gate'), item: null, via: null };
+  type Row = readonly [state: LayerOver, cue: CueEvent['cue'], target: string, want: (c: HTMLElement) => Element | Box | null];
+  const panel = (name: string) => (c: HTMLElement) => c.querySelector(`[data-cue-panel="${name}"]`);
+  const rows: readonly Row[] = [
+    [{ items: [COIN, SUN] }, { kind: 'fact', fact: { kind: 'held', id: SUN.id }, change: 'added', cause: at }, 'ribbon', () => slotOf(SUN)],
+    [{ items: [COIN, SUN] }, { kind: 'ui-state', name: 'select', panel: null, item: SUN.id }, 'ribbon', () => slotOf(SUN)],
+    [{ items: [COIN, SUN] }, { kind: 'fact', fact: { kind: 'doc', id: LETTER.id }, change: 'added', cause: at }, 'inventory', (c) => c.querySelector('[data-cue="bar-inventory"]')],
+    [{ items: [SUN], panel: { kind: 'inventory' } }, { kind: 'ui-state', name: 'panel-open', panel: 'inventory', item: null }, 'panel', panel('inventory')],
+    [{ docs: [LETTER], panel: { kind: 'doc', doc: LETTER.id } }, { kind: 'ui-state', name: 'panel-open', panel: 'document', item: null }, 'panel', panel('document')],
+    [{ items: [SUN], lock: GATE, panel: { kind: 'lock' } }, { kind: 'ui-state', name: 'panel-open', panel: 'lock', item: null }, 'panel', panel('lock')],
+    // Under a panel the ribbon is gone: a slot's cue lands at the designed `edge`, which counts nothing.
+    [{ items: [SUN], panel: { kind: 'inventory' } }, { kind: 'ui-state', name: 'select', panel: null, item: SUN.id }, 'ribbon', () => landing(stage, 'edge')],
+  ];
+  const got: unknown[] = [];
+  const want: unknown[] = [];
+  for (const [over, cue, target, pick] of rows) {
+    const { container, unmount } = render(ExploreView, layerProps(over));
+    await tick();
+    const t = motionOf(cue).target;
+    const r = foundOf(resolveTarget(t, { cue, box: null, point: null, diff: [], el: null }, stage));
+    const expected = pick(container);
+    // The marker the target is found by, on the element found.
+    const marked = r instanceof Element && t in CUE_TARGET_ATTRS ? r.hasAttribute(CUE_TARGET_ATTRS[t as keyof typeof CUE_TARGET_ATTRS]) : null;
+    got.push([cueKey(cue), t, r, r instanceof Element ? [marked, r.matches('[data-cue-root]'), container.contains(r)] : null]);
+    want.push([cueKey(cue), target, expected, expected instanceof Element ? [true, false, true] : null]);
+    unmount();
+  }
+  expect(got).toEqual(want);
+  // Non-vacuous: every row names a target that exists (a marker lost on both sides would otherwise compare equal).
+  expect(want.filter((w) => Array.isArray(w) && w[2] === null)).toEqual([]);
+});
+
+/**
+ * The mechanics' string table, read through a glob rather than an import (critique W2): where the table is absent the
+ * glob is empty, so only the parity test is red and the file's other tests keep their own reds (Vite's import analysis
+ * refuses an unresolvable `import()` literal for the whole file).
+ */
+const MECHANICS_TABLES = import.meta.glob<typeof import('../../i18n/mechanics.ts')>('../../i18n/mechanics.ts', { eager: true });
+
+test('mechanics: both string tables hold the same keys and placeholders', () => {
+  const table = MECHANICS_TABLES['../../i18n/mechanics.ts'];
+  if (table === undefined) {
+    throw new Error('no mechanics string table at ../../i18n/mechanics.ts');
+  }
+  const { mechanicsEn, mechanicsRu, mechT } = table;
+  const keys = Object.keys(mechanicsRu) as Array<keyof typeof mechanicsRu>;
+  expect([...keys].sort()).toEqual(['mech.ribbon', 'mech.use_refused']);
+  expect(Object.keys(mechanicsEn).sort()).toEqual([...keys].sort());
+  const placeholders = (text: string): string[] => [...text.matchAll(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map((m) => m[1] ?? '').sort();
+  for (const key of keys) {
+    expect([mechanicsRu[key].trim(), mechanicsEn[key].trim()].map((x) => x !== ''), key).toEqual([true, true]);
+    expect(placeholders(mechanicsEn[key]), key).toEqual(placeholders(mechanicsRu[key]));
+    expect([mechT('ru', key), mechT('en', key)], key).toEqual([mechanicsRu[key], mechanicsEn[key]]);
+  }
+  // Russian belongs in the Russian table: the English one holds none.
+  expect(Object.values(mechanicsEn).filter((v) => /\p{Script=Cyrillic}/u.test(v))).toEqual([]);
 });

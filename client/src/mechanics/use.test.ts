@@ -223,6 +223,44 @@ test('use: a use while an event knot is pending changes nothing', () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------
+// `visible()`'s clauses (GM3's carry: test r3 F1 / V1, r4 N5): the explore UI dispatches `use` from GM3u on, so a
+// hand-built action reaches each clause; each pin holds here and is seen red on its own mutation of `rules/use.ts`
+
+test('use: a use on a target of another room changes nothing', () => {
+  const w = kernel(
+    source(rawWorld({ hall: room([object('box', { uses: [{ item: 'key', do: [{ give: 'coin' }] }] }), exit('to_den', 'den')]), den: room([exit('to_hall', 'hall')]) }, { key: {}, coin: {} })),
+  );
+  // The positive control: in the hall the box's rule runs.
+  expect(reduce(w, at('hall', { held: [it('key')] }), use('key', 'hall.box')).state.fired).toEqual(['use:hall.box#0']);
+  // From the den the hall's box is not on screen: the same state object, no effect.
+  const den = at('den', { held: [it('key')] });
+  const r = reduce(w, den, use('key', 'hall.box'));
+  expect(r.state).toBe(den);
+  expect(r.effects).toEqual([]);
+});
+
+test('use: a use outside a section changes nothing', () => {
+  const { w } = boxWorld();
+  // The positive control: in the section the gem fits the chest's slot through the use's lock fit.
+  const inside = at('hall', { held: [it('gem')] });
+  expect(reduce(w, inside, use('gem', 'hall.chest')).state.slots).toEqual({ 'hall.chest': ['gem'] });
+  // The same room and hand with no current section (a hand-built state: the kernel never leaves one so): nothing.
+  const outside: WorldState = { ...inside, section: null };
+  const r = reduce(w, outside, use('gem', 'hall.chest'));
+  expect(r.state).toBe(outside);
+  expect(r.effects).toEqual([]);
+});
+
+test('use: a use on an unknown target changes nothing', () => {
+  const { w } = boxWorld();
+  // No hotspot has the key: no rule, no lock, no refusal.
+  const s = at('hall', { held: [it('key')] });
+  const r = reduce(w, s, use('key', 'hall.nowhere'));
+  expect(r.state).toBe(s);
+  expect(r.effects).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
 // The data half
 
 test('use: decode and encode round-trip', () => {

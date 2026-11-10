@@ -28,7 +28,7 @@
   );
 </script>
 
-<div class="cue-stage" data-cue-stage inert bind:this={layer}></div>
+<div class="cue-stage" data-cue-stage inert aria-hidden="true" bind:this={layer}></div>
 
 <style>
   .cue-stage {
