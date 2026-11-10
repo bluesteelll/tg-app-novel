@@ -4,15 +4,32 @@
   // failure with Retry, and the hint ladder while `ladder` is set. Presentational: GameSession writes the frame and
   // answers every callback; no timer lives here (the 429 countdown is GameSession's). There is no close button: an
   // exploration puzzle closes with BackButton, a linear one has none (`backScreen`). A new `frame.id` re-mounts the
-  // type UI. Give up asks in place and keeps Yes out of Give up's place (RULINGS 60, I1): the question and No fill the
+  // frame with its type UI. Give up asks in place and keeps Yes out of Give up's place (RULINGS 60, I1): the question and No fill the
   // block that held Give up and Yes gets a block of its own below it, so a double tap on Give up never gives up; Yes
-  // answers once per question.
+  // answers once per question. The frame is a cue family (engine plan §8.3, §8.5; GM3p): its root, keyed by the frame's
+  // id, carries `data-cue-root="frame"` and holds one child, the wrapper the frame cues land on; every control declares
+  // its cue, and the notice, the status and the attempts lines carry their target markers. The root is attached in an
+  // effect, as the explore layer's is (RULINGS 201 E1: no `use:` action): its controls emit to `oncue`, the session's
+  // bus through yields, which moves each point from the root's px to the stage host's.
+  import { cueRoot } from '../../cues/root.ts';
   import { t } from '../../i18n/index.ts';
   import type { PuzzleHostProps } from '../puzzle-view.svelte.ts';
   import HintLadder from './HintLadder.svelte';
 
-  let { lang, frame, ladder, item, onchange, ontry, ongiveup, onhint, onretry, onusehint, ongetmore }: PuzzleHostProps =
-    $props();
+  let {
+    lang,
+    frame,
+    ladder,
+    item,
+    onchange,
+    ontry,
+    ongiveup,
+    onhint,
+    onretry,
+    onusehint,
+    ongetmore,
+    oncue,
+  }: PuzzleHostProps = $props();
 
   const uid = $props.id();
   /** The frame whose Give up is asking; a new frame never inherits the question. */
@@ -61,62 +78,100 @@
     askingFor = null;
     ongiveup();
   }
+
+  /** The frame's root while a frame is shown; a new frame id is a new root (the key block). */
+  let root: HTMLElement | null = $state(null);
+  let cues: ReturnType<typeof cueRoot> | undefined;
+  // Attached once per root element: a new emit must not re-attach it (that would re-stamp the root's birth).
+  $effect(() => {
+    const el = root;
+    if (el === null) {
+      return;
+    }
+    const r = cueRoot(el, undefined);
+    cues = r;
+    return () => {
+      cues = undefined;
+      r.destroy();
+    };
+  });
+  // The emit: the host's `oncue`. Reads the root too, so it runs after a re-attach.
+  $effect(() => {
+    if (root !== null) {
+      cues?.update(oncue);
+    }
+  });
 </script>
 
 {#if frame !== null}
-  <section class="frame" aria-labelledby="{uid}-title">
-    <h2 id="{uid}-title">{frame.title}</h2>
-    <p class="prompt">{frame.prompt}</p>
-    <div class="body">
-      {#if frame.loadFailed}
-        <p class="failed" role="alert">{t(lang, 'puzzle.load_failed')}</p>
-        <button type="button" disabled={frame.retrying} onclick={() => onretry()}>{t(lang, 'puzzle.retry')}</button>
-      {:else if frame.ui !== null}
-        {@const Ui = frame.ui}
-        {#key frame.id}
-          <Ui params={frame.params} answer={frame.answer} busy={frame.busy || ended} {lang} {onchange} {item} />
-        {/key}
-      {/if}
-    </div>
-    <p class="status" role="status">{status}</p>
-    {#if frame.attemptsLeft !== null}
-      <p class="attempts">{t(lang, 'puzzle.attempts_left', { n: frame.attemptsLeft })}</p>
-    {/if}
-    <div class="actions">
-      <button type="button" class="primary" disabled={!canTry} onclick={() => ontry()}>{t(lang, 'puzzle.try')}</button>
-      {#if frame.hintTiers > 0}
-        <button type="button" onclick={() => onhint()}>{t(lang, 'puzzle.hint')}</button>
-      {/if}
-    </div>
-    {#if canGiveUp}
-      <div class="give-up">
-        {#if asking}
-          <div class="actions">
-            <p class="ask">{t(lang, 'puzzle.give_up_confirm')}</p>
-            <button type="button" onclick={() => (askingFor = null)}>{t(lang, 'saves.no')}</button>
-          </div>
-          <div class="actions">
-            <button type="button" class="danger" onclick={giveUp}>{t(lang, 'puzzle.give_up_yes')}</button>
-          </div>
-        {:else}
-          <div class="actions">
-            <button type="button" onclick={ask}>{t(lang, 'puzzle.give_up')}</button>
+  {#key frame.id}
+    <section class="frame" bind:this={root} data-cue-root="frame" aria-labelledby="{uid}-title">
+      <div class="wrap" data-cue-frame data-cue-panel="puzzle">
+        <h2 id="{uid}-title">{frame.title}</h2>
+        <p class="prompt">{frame.prompt}</p>
+        <div class="body">
+          {#if frame.loadFailed}
+            <div class="notice" data-cue-notice>
+              <p class="failed" role="alert">{t(lang, 'puzzle.load_failed')}</p>
+              <button type="button" data-cue="puzzle-retry" disabled={frame.retrying} onclick={() => onretry()}
+                >{t(lang, 'puzzle.retry')}</button
+              >
+            </div>
+          {:else if frame.ui !== null}
+            {@const Ui = frame.ui}
+            <Ui params={frame.params} answer={frame.answer} busy={frame.busy || ended} {lang} {onchange} {item} />
+          {/if}
+        </div>
+        <p class="status" role="status" data-cue-status>{status}</p>
+        {#if frame.attemptsLeft !== null}
+          <p class="attempts" data-cue-attempts>{t(lang, 'puzzle.attempts_left', { n: frame.attemptsLeft })}</p>
+        {/if}
+        <div class="actions">
+          <button type="button" class="primary" data-cue="puzzle-try" disabled={!canTry} onclick={() => ontry()}
+            >{t(lang, 'puzzle.try')}</button
+          >
+          {#if frame.hintTiers > 0}
+            <button type="button" data-cue="puzzle-hint" onclick={() => onhint()}>{t(lang, 'puzzle.hint')}</button>
+          {/if}
+        </div>
+        {#if canGiveUp}
+          <div class="give-up">
+            {#if asking}
+              <div class="actions">
+                <p class="ask">{t(lang, 'puzzle.give_up_confirm')}</p>
+                <button type="button" data-cue="give-up-no" onclick={() => (askingFor = null)}>{t(lang, 'saves.no')}</button>
+              </div>
+              <div class="actions">
+                <button type="button" class="danger" data-cue="give-up-yes" onclick={giveUp}>{t(lang, 'puzzle.give_up_yes')}</button>
+              </div>
+            {:else}
+              <div class="actions">
+                <button type="button" data-cue="give-up-ask" onclick={ask}>{t(lang, 'puzzle.give_up')}</button>
+              </div>
+            {/if}
           </div>
         {/if}
+        {#if ladder !== null}
+          <HintLadder {lang} {ladder} onuse={(tier) => onusehint(tier)} ongetmore={() => ongetmore()} />
+        {/if}
       </div>
-    {/if}
-    {#if ladder !== null}
-      <HintLadder {lang} {ladder} onuse={(tier) => onusehint(tier)} ongetmore={() => ongetmore()} />
-    {/if}
-  </section>
+    </section>
+  {/key}
 {/if}
 
 <style>
+  /* The family root: full-bleed, and it holds only the wrapper (no cue target is a root, engine plan §8.1). */
   .frame {
+    width: 100%;
+    height: 100%;
+    /* App's frame layer passes taps through; the frame takes them back. */
+    pointer-events: auto;
+  }
+
+  .wrap {
     display: flex;
     flex-direction: column;
     gap: 12px;
-    width: 100%;
     height: 100%;
     box-sizing: border-box;
     overflow-y: auto;
@@ -125,8 +180,6 @@
       calc(var(--app-inset-bottom, 0px) + 16px) calc(var(--app-inset-left, 0px) + 20px);
     background: var(--tg-theme-bg-color, #17171c);
     color: var(--tg-theme-text-color, #fff);
-    /* App's frame layer passes taps through; the frame takes them back. */
-    pointer-events: auto;
   }
 
   h2,
@@ -163,6 +216,14 @@
 
   .failed {
     color: var(--tg-theme-destructive-text-color, #ff6b6b);
+  }
+
+  /* The load notice keeps the body's column: its text over Retry, centred. */
+  .notice {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
   }
 
   .actions {

@@ -4,7 +4,8 @@
   // with its cost, the balance, and "get more" while the balance is below the cost. Locked tiers are not shown: the
   // ladder offers only the next usable tier. Without a port (L15) no use button, balance or get more renders; with a
   // cost or balance still unknown (the wallet has not answered) neither the button nor get more does. The texts are
-  // the server's, rendered as text. Presentational: every tap calls back at once.
+  // the server's, rendered as text. Presentational: every tap calls back at once. Its root, rows and failure line are the
+  // cue targets `ladder`, `tier` and `alert` (engine plan §8.5), and each button declares its cue (§8.3).
   import { t, type Lang } from '../../i18n/index.ts';
   import type { HintLadderUiView } from '../puzzle-view.svelte.ts';
 
@@ -29,14 +30,14 @@
   const getMore = $derived(wallet !== null && !affordable && ladder.tiers.some((tier) => tier.state === 'usable'));
 </script>
 
-<section class="ladder" aria-labelledby="{uid}-title">
+<section class="ladder" data-cue-panel="hints" aria-labelledby="{uid}-title">
   <h3 id="{uid}-title">{t(lang, 'hint.title')}</h3>
   {#if ladder.wallet !== null && ladder.wallet.balance !== null}
     <p class="balance">{t(lang, 'hint.balance', { n: ladder.wallet.balance })}</p>
   {/if}
   <ol>
     {#each shownTiers as tier (tier.tier)}
-      <li data-state={tier.state}>
+      <li data-state={tier.state} data-cue-tier={tier.tier}>
         <span class="name">{t(lang, 'hint.tier', { n: tier.tier })}</span>
         {#if tier.state === 'unlocked'}
           <span class="note">{t(lang, 'hint.unlocked')}</span>
@@ -46,7 +47,13 @@
         {:else if tier.state === 'unavailable'}
           <span class="note">{t(lang, 'hint.unavailable')}</span>
         {:else if wallet !== null && affordable}
-          <button type="button" class="use" disabled={ladder.busy} onclick={() => onuse(tier.tier)}
+          <button
+            type="button"
+            class="use"
+            data-cue="hint-use"
+            data-cue-index={tier.tier}
+            disabled={ladder.busy}
+            onclick={() => onuse(tier.tier)}
             >{t(lang, 'hint.use', { n: wallet.cost })}</button
           >
         {/if}
@@ -54,10 +61,10 @@
     {/each}
   </ol>
   {#if getMore}
-    <button type="button" class="more" onclick={() => ongetmore()}>{t(lang, 'hint.get_more')}</button>
+    <button type="button" class="more" data-cue="hint-more" onclick={() => ongetmore()}>{t(lang, 'hint.get_more')}</button>
   {/if}
   {#if ladder.failed}
-    <p class="failed" role="alert">{t(lang, 'hint.failed')}</p>
+    <p class="failed" role="alert" data-cue-alert>{t(lang, 'hint.failed')}</p>
   {/if}
 </section>
 

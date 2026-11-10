@@ -63,6 +63,9 @@
         <button
           type="button"
           class="slot"
+          data-cue="order-slot"
+          data-cue-index={slot}
+          data-cue-part={slot}
           class:selected={selected === slot}
           aria-pressed={selected === slot}
           disabled={busy}

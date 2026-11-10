@@ -8,12 +8,18 @@ import type { Locator, Page } from '@playwright/test';
 import { t } from '../src/i18n/index.ts';
 import {
   atRest,
+  catalogTitle,
+  chunkFile,
   enterManor,
   expect,
+  grantChapter,
+  holdRequests,
   hotspotLabel,
   itemName,
   launch,
+  plantPending,
   playCh1ToGate,
+  puzzleFrame,
   reachLine,
   solveOrder,
   take,
@@ -22,6 +28,7 @@ import {
   walk,
   worldSolutions,
 } from './helpers.ts';
+import type { E2eWindow } from './helpers.ts';
 
 const LINE_MS = 30_000;
 /** A cue plays one flush after its emit; its motion lasts at most a second (§8.4). */
@@ -196,5 +203,106 @@ test('mechanics: select a medal, tap the gate, its slot fills', async ({ page })
     await expect(slots.nth(i)).not.toHaveClass(/\bfilled\b/);
   }
   await expect(page.locator('.held-item', { hasText: itemName('medal_sun') })).toHaveCount(0);
+  expect([await counter(page, 'data-cue-orphans'), await counter(page, 'data-cue-fallbacks')], 'orphans, fallbacks').toEqual([0, 0]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM3p (engine plan §8.3, §8.5): the puzzle frame is a cue family. Its controls are found by their names (a ghost on
+// the stage layer sits under the layer's `aria-hidden`, so a role locator never matches one).
+
+/** ch2's carried values (memory.spec.ts's): the trust picks of ch1. */
+const CH2_CARRY = { g_gate_forced: false, g_manor_trust: 2, g_manor_promise: true, g_tide_trust_keeper: 0 } as const;
+
+test("mechanics: a linear puzzle's give-up ask and no play their cues", async ({ page, request }) => {
+  test.setTimeout(180_000);
+  // ch2 owned (a simulated payment through the real webhook), then F4's pending start, so Continue opens it.
+  await grantChapter(request, 9706, 'chapter:ch2');
+  await plantPending(request, 9706, 'ch2', CH2_CARRY);
+  await launch(page, 9706);
+  const resume = page.getByRole('button', { name: t('ru', 'tap.continue_story', { story: catalogTitle('manor') }) });
+  await expect(resume).toBeVisible({ timeout: LINE_MS });
+  await resume.tap();
+  // The archive's last line, then the tap that yields `# puzzle: cabinet`: a linear frame with Give up.
+  await reachLine(page, 'ch2.archive_cabinet.c012');
+  await page.locator('.dialogue .tap').tap();
+  const ask = page.getByRole('button', { name: t('ru', 'puzzle.give_up'), exact: true });
+  await expect(ask).toBeVisible({ timeout: LINE_MS });
+  await ask.tap();
+  const no = page.getByRole('button', { name: t('ru', 'saves.no'), exact: true });
+  await expect(no).toBeVisible();
+  await no.tap();
+  await expect(ask, 'No keeps the frame and asks again').toBeVisible();
+  await expect
+    .poll(() => played(page), { timeout: CUE_MS, message: 'the ask and the no played' })
+    .toEqual(expect.arrayContaining(['ui:give-up-ask', 'ui:give-up-no']));
+  expect([await counter(page, 'data-cue-orphans'), await counter(page, 'data-cue-fallbacks')], 'orphans, fallbacks').toEqual([0, 0]);
+});
+
+/** The Telegram BackButton, pressed (the mock's native side). */
+function pressBack(page: Page): Promise<void> {
+  return page.evaluate(() => (window as unknown as E2eWindow).__tgMock.pressBack());
+}
+
+test('mechanics: a tap on the room right after a puzzle closes reaches the room', async ({ page }) => {
+  test.setTimeout(180_000);
+  await launch(page, 9707);
+  await startManor(page);
+  await enterManor(page);
+  await walk(page, 'hall', 'to_study', 'study', 'to_hall');
+  // The drawer's code lock, its attempt held at the network: Try with the dials at 0-0-0-0 (a wrong answer, later).
+  const attempt = await holdRequests(page, '**/api/puzzles/*/attempts');
+  await tapHotspot(page, 'study', 'drawer');
+  const frame = puzzleFrame(page, 'drawer');
+  await expect(frame).toBeVisible({ timeout: LINE_MS });
+  await frame.getByRole('button', { name: t('ru', 'puzzle.try') }).tap();
+  await attempt.requested;
+  // X8: Back closes the exploration puzzle with the answer in flight; the frame goes at once, the room takes taps.
+  await pressBack(page);
+  await expect(frame).toBeHidden({ timeout: CUE_MS });
+  // A tap on the study (W1: the drawer's own room, so the late answer's cue lands on the shown drawer): the medal is
+  // taken while the attempt is still held.
+  await take(page, 'study', 'medal');
+  await expect.poll(() => played(page), { timeout: CUE_MS, message: 'the take played' }).toContain('fact:held:added');
+  // The answer arrives: a wrong attempt, its world cue on the drawer's hotspot.
+  await attempt.release();
+  await expect.poll(() => played(page), { timeout: CUE_MS, message: 'the late attempt played' }).toContain('fact:attempt:added');
+  await expect(frame, 'no second frame').toBeHidden();
+  expect([await counter(page, 'data-cue-orphans'), await counter(page, 'data-cue-fallbacks')], 'orphans, fallbacks').toEqual([0, 0]);
+});
+
+test('mechanics: the first puzzle of a page load holds a motion while its frame loads and slides in on its frame', async ({ page }) => {
+  test.setTimeout(180_000);
+  // The puzzle host's chunk held from the page's load (the yields prefetch it) until 1.5 s after the drawer's tap.
+  const host = await holdRequests(page, `**/${chunkFile('src/ui/puzzles/PuzzleHost.svelte')}`);
+  await launch(page, 9708);
+  await startManor(page);
+  await enterManor(page);
+  await walk(page, 'hall', 'to_study', 'study', 'to_hall');
+  await tapHotspot(page, 'study', 'drawer');
+  await page.waitForTimeout(1500);
+  await host.release();
+  await expect(puzzleFrame(page, 'drawer')).toBeVisible({ timeout: LINE_MS });
+  // The frame's load hold, its appearance on its own frame, then its type UI: in that order.
+  const order = ['ui-state:waiting@puzzle', 'ui-state:waited@puzzle', 'ui-state:panel-open@puzzle', 'puzzle:opened'];
+  await expect
+    .poll(async () => (await played(page)).filter((k) => order.includes(k)), { timeout: CUE_MS, message: "the frame's hold, appearance and opening" })
+    .toEqual(order);
+  expect([await counter(page, 'data-cue-orphans'), await counter(page, 'data-cue-fallbacks')], 'orphans, fallbacks').toEqual([0, 0]);
+});
+
+test('mechanics: a hint ladder that cannot load plays its failure cue', async ({ page }) => {
+  test.setTimeout(180_000);
+  // The drawer's status request fails at the network: the ladder's first answer is its failure line.
+  await page.route(/\/api\/puzzles\/ch1\.drawer\?/, (route) => route.abort());
+  await launch(page, 9709);
+  await startManor(page);
+  await enterManor(page);
+  await walk(page, 'hall', 'to_study', 'study', 'to_hall');
+  await tapHotspot(page, 'study', 'drawer');
+  const frame = puzzleFrame(page, 'drawer');
+  await expect(frame).toBeVisible({ timeout: LINE_MS });
+  await frame.getByRole('button', { name: t('ru', 'puzzle.hint'), exact: true }).tap();
+  await expect(frame.getByRole('alert'), "the ladder's failure line").toHaveText(t('ru', 'hint.failed'), { timeout: CUE_MS });
+  await expect.poll(() => played(page), { timeout: CUE_MS, message: 'the failure played' }).toContain('puzzle:hint-failed');
   expect([await counter(page, 'data-cue-orphans'), await counter(page, 'data-cue-fallbacks')], 'orphans, fallbacks').toEqual([0, 0]);
 });

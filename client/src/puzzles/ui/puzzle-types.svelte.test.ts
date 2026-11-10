@@ -7,8 +7,9 @@ import { t } from '../../i18n/index.ts';
 import type { Lang } from '../../i18n/index.ts';
 import { GLYPH_PATHS } from '../../ui/glyphs.ts';
 import type { Glyph, ItemId } from '../../world/types.ts';
-import { loadPuzzleUi } from '../registry.ts';
+import { loadPuzzleUi, PUZZLE_UI } from '../registry.ts';
 import type { PuzzleUiProps } from '../registry.ts';
+import type { PuzzleType } from '../rules/index.ts';
 import CodeLock from './CodeLock.svelte';
 import codeLockSource from './CodeLock.svelte?raw';
 import OrderPuzzle from './OrderPuzzle.svelte';
@@ -166,6 +167,30 @@ test('order: each slot shows its piece glyph beside the name', async () => {
     ['Sun', true],
     ['stray', false],
   ]);
+});
+
+/** Per type: params and an answer that render its parts, and how many parts they render (a type without one is a tsc
+ *  error, so a new type UI is held to the marker rule from its first commit). */
+const PART_FIXTURES: { readonly [T in PuzzleType]: { readonly params: unknown; readonly answer: readonly number[]; readonly parts: number } } = {
+  code: { params: { dials: 4 }, answer: [0, 0, 0, 0], parts: 4 },
+  order: { params: { pieces: PIECES }, answer: [0, 1, 2], parts: 3 },
+};
+
+test('puzzles: every type UI marks its parts', async () => {
+  // Engine plan §8.5 "Cue targets" (`part`): `puzzle:input` with index i lands on `[data-cue-part="i"]`, one per part.
+  const types = Object.keys(PUZZLE_UI) as PuzzleType[];
+  expect(types.sort()).toEqual(Object.keys(PART_FIXTURES).sort());
+  for (const type of types) {
+    const ui = await PUZZLE_UI[type]();
+    if (!ui.ok) {
+      throw new Error(`expected the ${type} chunk to load: ${ui.error.detail}`);
+    }
+    const f = PART_FIXTURES[type];
+    const { container, unmount } = render(ui.value, props({ params: f.params, answer: f.answer, item }));
+    const marks = [...container.querySelectorAll('[data-cue-part]')].map((el) => el.getAttribute('data-cue-part'));
+    expect(marks, type).toEqual(Array.from({ length: f.parts }, (_, i) => String(i)));
+    unmount();
+  }
 });
 
 test('registry: each type loads its own component', async () => {
