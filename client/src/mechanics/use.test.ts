@@ -237,6 +237,10 @@ test('use: decode and encode round-trip', () => {
   const back = decodeWorldPublic({ ...pub, version: '0123456789abcdef' });
   expect(back.ok ? back.value.mods?.use : back.error).toEqual(d);
   expect(JSON.stringify(pub.sections[S]?.rooms[rm('hall')]?.hotspots[0])).toContain('"uses":[{"item":"key","keep":true');
+  // The emitted rules, as the public JSON carries them: a rule of defaults only is its item alone (no `keep`, `when`,
+  // `do` or `say` bytes on every chapter load).
+  const emitted = JSON.parse(JSON.stringify(pub.sections[S]?.rooms[rm('hall')]?.hotspots[0])) as { uses?: unknown[] }; // the body's JSON, `uses` untyped there
+  expect(emitted.uses?.[1]).toEqual({ item: 'map' });
   // A world without `use` keys encodes nothing, so its emitted body is the kernel's.
   const plain = source(rawWorld({ hall: room([exit('out', { story: 'end' })]) }, {}));
   expect(MECHANIC_DATA[1].encode(plain.mods.use)).toEqual([]);
