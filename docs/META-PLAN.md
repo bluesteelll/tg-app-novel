@@ -985,6 +985,15 @@ unchanged.**
     (`65e10ad`) and shots SH2 (`7f45dee`) have merged, and the engine-closure lever X (`597dded`; the lever lane became
     the program X, then P, RULINGS 201); GM3 and the lever P run (client, RULINGS 209); GM3u follows GM3 and P, SH3a
     follows SH2 once P frees `budget.ts`; the rest follow the one order above.
+  - Changed by RULINGS 209-237 (as of `0b91acc`; docs lane `docs-errata-15`, group A; SHAs from `git log --first-parent
+    main`): the docs lane `docs-errata-13` (`25c0031`), the lever P (`3d120bc`), GM3 (`7082a35`), GM3k (`3131844`; new,
+    type-only, RULINGS 210 Q4), the recovery lane (`8e099ee`; new, Q60), the docs lane `docs-errata-14` (`086d81c`), E6
+    (`d5e04ef`; new, the money-path follow-up: a wallet pack Buy waiting for the purchase module holds every page
+    restart, this plan's wallet), GM3u (`33b4f8d`), the Q63 fix (`340f47c`; the test gate's module cache off), the
+    lever O5 (`9a0ae2d`) and the Q64 fix (`d820803`) have merged; GM3p runs (client, lane A; RULINGS 232-234) beside the
+    docs lane `docs-errata-15` (RULINGS 237); next GM3b, SH3a and per-player GM6t, their entry terms watched against
+    Ledger 2; the lever Y stays on the shelf until a ledger is within 1.0 KB (RULINGS 234); the rest follow the one
+    order above.
   - Why LPO is a lane of its own (revision 1, W4): the operator facts need a `Config` variable, which means editing
     the three `Config` constructors (`config.rs`, `server/dev/src/lib.rs`, `server/tests/it/common.rs`) plus
     `lib.rs` and `.env.example`; in LF1 that is 15 + 4 = 19 files, over the cap. LPO holds them with `api/legal.rs` and
@@ -2092,6 +2101,14 @@ shots SH1 `2db33c3`, GM3s `65e10ad` and shots SH2 `7f45dee` (client), and the en
 running GM3 and the lever P (client; RULINGS 209) beside the docs lane `docs-errata-13` (in the idle server slot,
 RULINGS 209); to go of this design's lanes: none. Next, GM3u after GM3 and P, SH3a after SH2 once P frees
 `budget.ts`; the levers O5, then Y, only on the merge-time trigger; the rest follow the one order above.
+Changed by RULINGS 209-237 (as of `0b91acc`; docs lane `docs-errata-15`, group A): merged also, the docs lane
+`docs-errata-13` `25c0031`, the lever P `3d120bc`, from the adopted plans GM3 `7082a35` and the type-only GM3k
+`3131844` (new, RULINGS 210 Q4), the recovery lane `8e099ee` (new, Q60), the docs lane `docs-errata-14` `086d81c`, E6
+`d5e04ef` (new, the money-path follow-up; it holds every page restart while a wallet pack Buy waits for the purchase
+module), GM3u `33b4f8d`, the Q63 fix `340f47c`, the lever O5 `9a0ae2d` and the Q64 fix `d820803` (client); running
+GM3p (client, lane A; RULINGS 232-234) beside the docs lane `docs-errata-15` (in the server slot, RULINGS 237); to go
+of this design's lanes: none. Next, GM3b, SH3a and per-player GM6t (Ledger 2 watched at their cuts); the lever Y on
+the merge-time trigger (shelved: no ledger within 1.0 KB, RULINGS 234); the rest follow the one order above.
 
 ---
 

@@ -209,6 +209,16 @@ research is newer and verified (brief), so it wins, and the deviation is recorde
   `HOME_IDLE_MS` = 2000, `:153`); boot reads the stats itself (B1, `:736`), the hint port forwards before the chunk
   lands (HP, `:304-325`), and JS before the first line no longer counts the chunk. RULINGS 105's "right after auth"
   and "`hintPort()` null until the chunk" are superseded (RULINGS 149).
+- **Changed by RULINGS 201, 221, 228-231, 234, 236 (as of `0b91acc`; docs lane `docs-errata-15`, group A); an erratum to the L15 cut's
+  D1).** D1's "the in-play components ship in the engine closure" no longer holds: since lever O5 (`9a0ae2d`) the
+  Menu, the Backlog, the Settings and the Saves screen are a sixth lazy family, one chunk behind the barrel
+  `client/src/ui/overlays/index.ts` (row `overlays chunk (br)` ≤ 3.0 KB br, 2,498 B at the merge), which the Game
+  imports once after the first line's reveal and at a Menu or Backlog tap before it; App renders them from
+  `vm.overlayUi`. The engine keeps the first line's components, the Paywall and its Terms (`EngineUi`,
+  `client/src/app/engine.ts:35-47`), so `/terms` never waits on the new chunk (principle 2). RULINGS 105's "a failed
+  import is retried by the next tap" applies to this root as to the meta chunk: the next Menu or Backlog tap imports
+  again where the module map lets it, and a load that fails again after the evidence restarts the page once per build
+  (Q60, above).
 
 **K4. Own image loader, not Pixi `Assets`.**
 - **What.** `scene/loader.ts`: the injected `FetchAsset` (implemented by `api/http.ts`: bearer and the single-flight
@@ -2224,7 +2234,9 @@ goes to the Game (`Game.restart`, its reload rules and holds) and is latched per
 `chunk:<build>`, `client/src/app/reload.ts`); without a Game it waits for the engine import, and only once that import
 failed does the page reload itself, after the wallet pack purchase, gift and background holds. A stylesheet with no
 readable rules after `load` takes the same restart. Not covered (carried, E3): an `import()` that never settles and
-an offline reload. Chunk-failure telemetry is a release prerequisite (E2). **Rejected and frozen: C, a cache-busting
+an offline reload. Changed by RULINGS 228 (as of `0b91acc`; docs lane `docs-errata-15`, group A): a purchase-flow `import()` that
+never settles also holds every restart, with or without a Game, while a Buy waits on it (lever P's chapter Buy and,
+since E6 `d5e04ef`, a wallet pack Buy: E6 cut O4), beside E3's hung `import()`. Chunk-failure telemetry is a release prerequisite (E2). **Rejected and frozen: C, a cache-busting
 re-import** (Safari's error names no URL, a failed static dependency stays failed, a second module instance, Cloudflare
 keys by query, no Rolldown `renderDynamicImport`; RULINGS 214). Return condition: the device pass shows a shipping
 WebKit that keeps a failed plain `import()` across a reload, or telemetry shows restarts frequent enough to matter.
@@ -2772,7 +2784,7 @@ set on the `[workspace.dependencies]` entries [R4 §6.1]:
 |---|---|---|
 | `npm --prefix client ci` | `npm ci` | install from the lockfile (plus, once per machine: `npx playwright install chromium` — open question E3) |
 | `npm --prefix client run check` | `svelte-check --tsconfig ./tsconfig.json --fail-on-warnings && tsc -p tsconfig.node.json --noEmit` | the app (`src/`) and scripts/configs/e2e (`erasableSyntaxOnly`, `types: ["node"]`) |
-| `npm --prefix client run test` | `vitest run` (never `--bail`, never `passWithNoTests`) | projects `unit` + `dom` |
+| `npm --prefix client run test` | `vitest run` (never `--bail`, never `passWithNoTests`) | projects `unit` + `dom`; Changed by RULINGS 229, 232 (as of `0b91acc`; docs lane `docs-errata-15`, group A): both inherit `fsModuleCache: false` from the root `test` block of `client/vite.config.ts` (`extends: true`), pinned by `test gate: no project reuses a cached module transform` (`client/scripts/test-config.test.ts`) |
 | `npm --prefix client run story` | `node scripts/story.ts` (Node 24 type stripping [R4]); flags `--fix-ids`, `--sync-locales`, `--strict` | the story gate |
 | `npm --prefix client run build` | `npm run story && npm run assets && vite build && node scripts/budget.ts && node scripts/scan-dist.ts` (`assets` = `node scripts/assets.ts`) | production build + budgets + leak scan |
 | `cargo fmt --all --check` | as is | |
@@ -2782,6 +2794,11 @@ set on the `[workspace.dependencies]` entries [R4 §6.1]:
 
 **Vacuous-green guards:**
 - vitest exits 1 on no files [R4 §5.1];
+- (Changed by RULINGS 229, 232 (as of `0b91acc`; docs lane `docs-errata-15`, group A)) vitest never reuses a cached module transform
+  (`fsModuleCache: false`, Q63, the fix `340f47c`): a cached transform of a test file that uses `import.meta.glob<T>(`
+  (Vitest exempts only the literal `import.meta.glob(` text) kept the glob's old file list, so a glob-driven gate could
+  pass without seeing a newly added file; pinned by `test gate: no project reuses a cached module transform`, which reads the real `test`
+  script and Vitest's own resolved config per project;
 - `story` errors on zero chapters and prints the chapter list by name;
 - `budget.ts` fails if `dist/.vite/manifest.json` is missing or older than `dist/index.html`;
 - the engine row is PENDING (never PASS) while `src/app/engine.ts` does not exist, and FAILs if the file exists but
@@ -3391,7 +3408,9 @@ lane (Q60; merged `8e099ee`) and E6 (RULINGS 215, 221; running).
   this table is left. From the planned block: server none (the server slot runs the docs lane `docs-errata-14`,
   RULINGS 225). Client: GM3u (running, lane A) and E6 (running, lane C; a new lane, not of the block), both from
   `52e328e` (RULINGS 225), since P, GM3, GM3k and the recovery lane merged; when a client slot frees, GM3p after GM3u
-  (`yields.ts`, `controls.test.ts`, the e2e; it also takes Q62's fix, RULINGS 224), SH3a (its `budget*` predecessors
+  (`yields.ts`, `controls.test.ts`, the e2e; it also takes Q62's fix, RULINGS 224 (Changed by RULINGS 226, 230 (as of
+  `0b91acc`; docs lane `docs-errata-15`, group A): Q62's fix is GM3u's, the `aria-hidden` cue stage layer merged in
+  `33b4f8d`; GM3p takes none)), SH3a (its `budget*` predecessors
   merged) and per-player GM6t (after GM3s on `App.svelte`), the entry terms of SH3a and GM6t watched against Ledger 2
   (RULINGS 224); O5, then Y, before the next engine-adding cut only when Ledger 4 or Ledger 1 leaves < 1.0 KB at a
   merge (neither does on `8e099ee`, RULINGS 224). The rest by the one order:
