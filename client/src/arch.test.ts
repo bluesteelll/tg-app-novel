@@ -164,8 +164,9 @@ function isPureWorld(file: string): boolean {
 // only through `import()` (app/yields.ts and puzzles/registry.ts hold those). The meta overlays (`ui/meta/`) and the
 // meta controller (`app/meta.ts`, a lazy root file: RULINGS 105, LMI cut Q8) are lazy the same way; boot.ts and the
 // controller hold their `import()` calls. So is the purchase flow (`purchase/flow.ts`, lever P): by `import()` only
-// (app/game.ts at the paywall and at Buy, app/meta.ts at a pack Buy), its types anywhere.
-const LAZY_DIRS = ['puzzles/ui/', 'ui/puzzles/', 'ui/explore/', 'ui/meta/', 'cues/stage/'] as const;
+// (app/game.ts at the paywall and at Buy, app/meta.ts at a pack Buy), its types anywhere. So are the in-play overlays
+// (`ui/overlays/`, lever O5): app/game.ts import()s their barrel after the first line and at a Menu or Backlog tap.
+const LAZY_DIRS = ['puzzles/ui/', 'ui/puzzles/', 'ui/explore/', 'ui/meta/', 'cues/stage/', 'ui/overlays/'] as const;
 const LAZY_ROOT_FILES = ['app/meta.ts', 'purchase/flow.ts'] as const;
 
 /** The lazy scope a file is in: its lazy directory, or the lazy root file itself. */
@@ -1121,7 +1122,10 @@ test('arch: pure world modules', () => {
   expect(treeViolations().filter((v) => GROUP[v.rule] === 'pure')).toEqual([]);
 }, TREE_TIMEOUT_MS);
 
-/** The lazy components on the tree: the puzzle families, the puzzle host, and LX's explore UI (LX Q5). */
+/**
+ * The lazy components on the tree: the puzzle families, the puzzle host, LX's explore UI (LX Q5) and the in-play
+ * overlays (lever O5).
+ */
 const LAZY_COMPONENTS = [
   'puzzles/ui/CodeLock.svelte',
   'puzzles/ui/OrderPuzzle.svelte',
@@ -1133,6 +1137,10 @@ const LAZY_COMPONENTS = [
   'ui/explore/LockPanel.svelte',
   'ui/explore/Ribbon.svelte',
   'cues/stage/CueStage.svelte',
+  'ui/overlays/Backlog.svelte',
+  'ui/overlays/Menu.svelte',
+  'ui/overlays/SaveLoad.svelte',
+  'ui/overlays/Settings.svelte',
 ] as const;
 
 /** The files under a lazy directory that a source's literal `import()` calls load. */
@@ -1167,9 +1175,10 @@ test('arch: lazy ui only by dynamic import', () => {
   ]);
   // The meta chunks (RULINGS 105): boot imports the controller, the controller its overlays, each by `import()`.
   expect(dynamicLazyTargets('app/boot.ts', SOURCES['app/boot.ts'] ?? '')).toEqual(['app/meta.ts']);
-  // The controller also loads the purchase flow at a pack Buy, and the game at the paywall (lever P).
+  // The controller also loads the purchase flow at a pack Buy, and the game at the paywall (lever P); the game loads
+  // the in-play overlays' barrel after the first line and at a Menu or Backlog tap (lever O5).
   expect(dynamicLazyTargets('app/meta.ts', SOURCES['app/meta.ts'] ?? '')).toEqual(['purchase/flow.ts', 'ui/meta/index.ts']);
-  expect(dynamicLazyTargets('app/game.ts', SOURCES['app/game.ts'] ?? '')).toEqual(['purchase/flow.ts']);
+  expect(dynamicLazyTargets('app/game.ts', SOURCES['app/game.ts'] ?? '')).toEqual(['purchase/flow.ts', 'ui/overlays/index.ts']);
   // `rules-lazy`'s allow side on the tree: the explore controller, its one importer, loads both rules files.
   expect(staticTargets('explore/controller.ts', SOURCES['explore/controller.ts'] ?? '')).toEqual(
     expect.arrayContaining(['mechanics/rules/core.ts', 'mechanics/rules/search.ts']),
@@ -1544,6 +1553,57 @@ test('arch: the engine closure holds no purchase flow', () => {
   expect(walk("import { createPurchaseFlow } from '../purchase/flow';"), 'a value import').toEqual(chain);
   expect(walk("import { type PurchaseFlow } from '../purchase/flow.ts';"), 'an inline type').toEqual(chain);
   expect(walk("import type { PurchaseFlow } from '../purchase/flow.ts';\nconst m = import('../purchase/flow.ts');"), 'lazy').toEqual([]);
+}, TREE_TIMEOUT_MS);
+
+// Lever O5 (RULINGS 201, 221): the in-play overlays (Menu, Backlog, Settings, Saves) load by `import()` of their barrel
+// after the first line's reveal and at a Menu or Backlog tap (app/game.ts), so the engine chunk does not carry them.
+// The Paywall and its Terms stay in the engine: when the overlays chunk fails, /terms stays reachable (principle 2).
+
+/** The in-play overlays' directory (lever O5), a lazy directory whose barrel is its chunk's root. */
+const OVERLAYS_DIR = 'ui/overlays/';
+/** The overlays' barrel: app/game.ts import()s it. */
+const OVERLAYS_ROOT = 'ui/overlays/index.ts';
+/** The four overlays the barrel re-exports. */
+const OVERLAY_COMPONENTS = ['Backlog', 'Menu', 'SaveLoad', 'Settings'].map((name) => `${OVERLAYS_DIR}${name}.svelte`);
+
+/** The engine's chain to each overlays module it holds statically: [] while the lever holds. */
+function overlayChains(reached: ReadonlyMap<string, string | null>): string[] {
+  return [...reached.keys()].filter((file) => file.startsWith(OVERLAYS_DIR)).map((file) => pathTo(reached, file));
+}
+
+test('arch: the engine closure holds no in-play overlays', () => {
+  // Non-vacuous: the walk from the engine reaches the game and its yields, the four overlays are scanned sources, every
+  // module edge resolves, and the game reaches the barrel by `import()`.
+  const { reached, unresolved } = entryClosure(SOURCES, ENGINE_ROOT);
+  expect(reached.has('app/game.ts')).toBe(true);
+  expect(reached.has('app/yields.ts')).toBe(true);
+  for (const file of OVERLAY_COMPONENTS) {
+    expect(Object.keys(SOURCES), file).toContain(file);
+  }
+  expect(unresolved.filter((target) => /\.(?:ts|svelte)$/.test(target))).toEqual([]);
+  expect(overlayChains(reached)).toEqual([]);
+  expect(dynamicLazyTargets('app/game.ts', SOURCES['app/game.ts'] ?? '')).toContain(OVERLAYS_ROOT);
+  // Fixtures: a component's value import and the barrel by its directory keep the edges; `import type` and `import()`
+  // do not.
+  const menu = '<script lang="ts">\n  const title = 1;\n</script>\n<p>{title}</p>';
+  const barrel = "export { default as Menu } from './Menu.svelte';";
+  const walk = (engine: string): string[] =>
+    overlayChains(entryClosure({ 'app/engine.ts': engine, 'ui/overlays/index.ts': barrel, 'ui/overlays/Menu.svelte': menu }, ENGINE_ROOT).reached);
+  expect(walk("import Menu from '../ui/overlays/Menu.svelte';"), 'a component').toEqual(['app/engine.ts -> ui/overlays/Menu.svelte']);
+  expect(walk("import { Menu } from '../ui/overlays';"), 'the barrel').toEqual([
+    'app/engine.ts -> ui/overlays/index.ts',
+    'app/engine.ts -> ui/overlays/index.ts -> ui/overlays/Menu.svelte',
+  ]);
+  expect(walk("import type { Menu } from '../ui/overlays/index.ts';\nconst m = import('../ui/overlays/index.ts');"), 'lazy').toEqual([]);
+}, TREE_TIMEOUT_MS);
+
+test('arch: the paywall and its terms stay in the engine closure', () => {
+  // The engine imports both itself, outside every lazy scope, so a failed overlays chunk leaves the paywall's Terms.
+  const { reached } = entryClosure(SOURCES, ENGINE_ROOT);
+  for (const file of ['ui/Paywall.svelte', 'ui/Terms.svelte']) {
+    expect(reached.get(file), file).toBe(ENGINE_ROOT);
+    expect(lazyDirOf(file), file).toBeUndefined();
+  }
 }, TREE_TIMEOUT_MS);
 
 // GM3u (engine plan 12c GM3u Lock): the mechanics' string table ships with the engine (yields' default text of a
@@ -2081,6 +2141,8 @@ const RED: Record<RuleId, readonly Fixture[]> = {
     ['app/game.ts', "import { createPurchaseFlow } from '../purchase/flow.ts';"],
     ['app/engine.ts', "export { chapterDelivered } from '../purchase/flow.ts';"],
     ['app/game.ts', "import { type PurchaseFlow } from '../purchase/flow.ts';"],
+    // The in-play overlays (a lazy directory, lever O5): the engine imports none of them statically.
+    ['app/engine.ts', "import Menu from '../ui/overlays/Menu.svelte';"],
   ],
   'rules-lazy': [
     ['story/chapters.ts', "import { MECHANIC_RULES } from '../mechanics/rules/index.ts';"],

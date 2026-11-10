@@ -21,6 +21,9 @@ import type { ScreensView } from './screens.ts';
 import type { StoryCardView } from './StoryPicker.svelte';
 import type { TextSpeed } from './typewriter.ts';
 
+/** The in-play overlays' chunk (lever O5): imported only by app/game.ts, and only dynamically. */
+export type OverlayUi = typeof import('./overlays/index.ts');
+
 /** The current line: the speaker's name and the text, both already in the UI language. */
 export type LineView = { lineId: LineId; speaker: string | null; text: string };
 /** One option; `index` is the runner's choice index. */
@@ -108,6 +111,8 @@ export interface ViewModel {
   meta: MetaView | null;
   /** The session's cue stage (app/yields.ts writes it when its chunk is in, and clears its own at dispose). */
   cueStage: CueStageSlot | null;
+  /** The in-play overlays' module once its chunk is in (the Game writes it, lever O5); null before. */
+  overlayUi: OverlayUi | null;
   readonly toasts: readonly ToastEntry[];
   /** Adds `e`; an entry with the same key is replaced in place (its timer restarted). Above TOAST_MAX the oldest
    * transient is dropped; a sticky entry never is. */
@@ -145,6 +150,7 @@ class OverlayState implements ViewModel {
   ui: EngineUi | null = $state.raw(null);
   meta: MetaView | null = $state.raw(null);
   cueStage: CueStageSlot | null = $state.raw(null);
+  overlayUi: OverlayUi | null = $state.raw(null);
   #toasts: readonly ToastEntry[] = $state.raw([]);
   readonly #timers: Timers;
   /** The pending expiry of each transient entry, by key. */

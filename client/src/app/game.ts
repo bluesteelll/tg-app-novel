@@ -4,7 +4,8 @@
 // owns every per-session resource: the runner, the SaveService and the timers. One intent runs at a time (F2): a tap
 // while a batch is in flight completes the transition, a choice is ignored, a load or an exit waits for it.
 // It lives in the engine chunk; scene/, audio/ and explore/ are reached through their types only (tests pass fakes);
-// the purchase flow is import()ed at the paywall (lever P).
+// the purchase flow is import()ed at the paywall (lever P), the in-play overlays after the first line's reveal and at a
+// Menu or Backlog tap before it (lever O5).
 import type { Endpoints } from '../api/endpoints.ts';
 import type { ProductDto, SaveListResponse, SaveSlot, SaveSummary } from '../api/generated/api.ts';
 import type { ApiError, Clock } from '../api/http.ts';
@@ -53,7 +54,7 @@ import type { SlotView } from '../ui/overlays/SaveLoad.svelte';
 import { forwardHost } from '../ui/puzzle-view.svelte.ts';
 import type { PuzzleHostCallbacks, PuzzleView } from '../ui/puzzle-view.svelte.ts';
 import type { Screens, ScreensView } from '../ui/screens.ts';
-import type { ChoiceSet, LineView, PlayMode, ViewModel } from '../ui/state.svelte.ts';
+import type { ChoiceSet, LineView, OverlayUi, PlayMode, ViewModel } from '../ui/state.svelte.ts';
 import { graphemes, GRAPHEMES_PER_SECOND } from '../ui/typewriter.ts';
 import { latched, metaHold, PURCHASE_OPEN, RELOAD_POLL_MS, RELOADED_FOR, withLatch } from './reload.ts';
 import { imageIds, knotAssets, manifestIndex, splitBatch } from './stage-route.ts';
@@ -165,6 +166,11 @@ export type GameDeps = {
   chunks?: LazyChunks;
   /** The purchase flow's loader (lever P): the paywall prefetches it, Buy waits for it; the tests pass their own. */
   loadPurchase?: () => Promise<PurchaseModule>;
+  /**
+   * Lever O5: the in-play overlays' module: the first revealed line prefetches it, a Menu or Backlog tap waits for it;
+   * the tests pass their own.
+   */
+  loadOverlayUi?: () => Promise<OverlayUi>;
 };
 
 /**
@@ -202,9 +208,17 @@ export interface Game {
   lineShown(): void;
   /** Any tap on the game root, in the capture phase (D12): resumes sound that needs a gesture. */
   gesture(): void;
+  /**
+   * Lever O5: with the overlays module in, at once; before it lands, once it lands if the screens stack did not change
+   * since the call (so the first of several waiting opens wins); a failed load opens nothing, with a note if the stack
+   * did not change.
+   */
   openMenu(): void;
+  /** As openMenu; the backlog's lines are those of the moment it opens. */
   openBacklog(): void;
+  /** As openMenu. */
   openSettings(): void;
+  /** As openMenu; resolves after its open and slot refresh, or after the drop or the note. */
   openSaves(): Promise<void>;
   openTerms(): void;
   save(slot: ManualSlot): Promise<void>;
@@ -386,6 +400,7 @@ export function createGame(deps: GameDeps): Game {
   let hostWaiters: Array<(h: HTMLElement) => void> = [];
   const chunks = deps.chunks ?? LAZY_CHUNKS;
   const loadPurchase = deps.loadPurchase ?? (() => import('../purchase/flow.ts'));
+  const loadOverlayUi = deps.loadOverlayUi ?? (() => import('../ui/overlays/index.ts'));
   let mounted: Promise<Result<void, SceneError>> | null = null;
   let sound: AudioManager | null = null;
   let autoTimer: number | null = null;
@@ -414,6 +429,13 @@ export function createGame(deps: GameDeps): Game {
    */
   let purchase: PurchaseModule | null = null;
   let purchaseLoad: Promise<PurchaseModule | null> | null = null;
+  /**
+   * Lever O5: any overlays load was attempted, the prefetch's or a tap's, so the first line's prefetch runs at most
+   * once and never after a tap's load (a failed load is retried only by a tap: no automatic second import of the URL).
+   */
+  let overlaysAsked = false;
+  /** Lever O5: the overlays module's one load, in flight or done; a failed load is cleared. */
+  let overlayLoad: Promise<OverlayUi | null> | null = null;
   let meta: GameMeta | null = null;
   /**
    * An autosave asked for from outside the intent queue that has to wait (`waits`); it is written as soon as it no
@@ -1116,6 +1138,50 @@ export function createGame(deps: GameDeps): Game {
       },
     );
     return purchaseLoad;
+  };
+
+  /**
+   * Lever O5: the overlays module, one load per page (purchaseModule's shape). It is in `vm.overlayUi` before any
+   * caller's reaction runs. A failure is logged and the load cleared, so the next tap imports again; the player's note
+   * is the tap's, never the prefetch's.
+   */
+  const overlayUiModule = (): Promise<OverlayUi | null> => {
+    overlaysAsked = true;
+    overlayLoad ??= loadOverlayUi().then(
+      (m) => {
+        vm.overlayUi = m;
+        return m;
+      },
+      (e: unknown) => {
+        console.error('game: the overlays module did not load', e);
+        overlayLoad = null;
+        return null;
+      },
+    );
+    return overlayLoad;
+  };
+
+  /**
+   * Lever O5: `open` with the overlays module in, in the same tick; else once it lands, unless the Game is gone or the
+   * screens stack changed since the call (any push, close or root freezes a new view: the earliest current tap wins,
+   * and no overlay lands over a stack the player has left), with a note if the load failed.
+   */
+  const withOverlays = (open: () => void | Promise<void>): Promise<void> => {
+    if (vm.overlayUi !== null) {
+      return Promise.resolve(open());
+    }
+    const at = screens.view();
+    return overlayUiModule().then((m) => {
+      if (disposed || screens.view() !== at) {
+        return;
+      }
+      if (m === null) {
+        // boot's meta-gate note (its key too): a failed meta tap and a failed overlay tap show one note
+        vm.showToast({ kind: 'note', key: 'meta.action_failed', message: t(vm.lang, 'meta.action_failed'), sticky: false });
+        return;
+      }
+      return open();
+    });
   };
 
   /** The paywall of `id`; an open offer of the same chapter keeps its flow, so a re-open shows its state. */
@@ -1913,6 +1979,9 @@ export function createGame(deps: GameDeps): Game {
       scheduleAuto();
       session?.yields.lineShown();
       meta?.lineShown();
+      if (!overlaysAsked) {
+        void overlayUiModule(); // lever O5: once per page, after the gameplay chunks; it never rejects
+      }
     },
     gesture() {
       const a = sound;
@@ -1925,29 +1994,37 @@ export function createGame(deps: GameDeps): Game {
       }
     },
     openMenu() {
-      screens.push({ kind: 'menu' });
+      void withOverlays(() => {
+        screens.push({ kind: 'menu' });
+      });
     },
     openBacklog() {
-      const s = session;
-      if (s !== null) {
-        vm.backlog = backlogLines(s);
-        screens.push({ kind: 'backlog' });
-      }
+      void withOverlays(() => {
+        const s = session;
+        if (s !== null) {
+          vm.backlog = backlogLines(s);
+          screens.push({ kind: 'backlog' });
+        }
+      });
     },
     openSettings() {
-      vm.settings = settings.current();
-      screens.push({ kind: 'settings' });
+      void withOverlays(() => {
+        vm.settings = settings.current();
+        screens.push({ kind: 'settings' });
+      });
     },
-    async openSaves() {
-      const s = session;
-      if (s === null) {
-        return;
-      }
-      clearHold(); // a held ask would show over the fresh screen, whose Yes then finds no conflict
-      s.conflicts.clear(); // the fresh screen's slot list is the server's state (LFU1)
-      vm.saves = { ...vm.saves, saving: null, conflict: null, failed: null };
-      screens.push({ kind: 'saves' });
-      await refreshSlots(s);
+    openSaves() {
+      return withOverlays(async () => {
+        const s = session;
+        if (s === null) {
+          return;
+        }
+        clearHold(); // a held ask would show over the fresh screen, whose Yes then finds no conflict
+        s.conflicts.clear(); // the fresh screen's slot list is the server's state (LFU1)
+        vm.saves = { ...vm.saves, saving: null, conflict: null, failed: null };
+        screens.push({ kind: 'saves' });
+        await refreshSlots(s);
+      });
     },
     openTerms() {
       screens.push({ kind: 'terms' });
