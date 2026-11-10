@@ -228,7 +228,9 @@ test('mechanics: the rules registry loads from either module first', async () =>
   // as undefined, so every member of the entry is compared, not only the functions.
   const w = world({ hall: room([look('statue')]) });
   const checkGraph = (index: typeof import('./rules/index.ts'), core: typeof import('./rules/core.ts')): void => {
-    expect(index.MECHANIC_RULES).toStrictEqual([{ id: 'core', actions: core.actions, apply: core.applyCore, reads: core.reads, cues: [] }]);
+    expect(index.MECHANIC_RULES).toStrictEqual([
+      { id: 'core', actions: core.actions, apply: core.applyCore, reads: core.reads, cues: ['look', 'locked', 'refused', 'reset'] },
+    ]);
     expect(core.reduce(w, at('hall'), tap('hall.statue')).effects.map((e) => e.kind)).toEqual(['look', 'dirty']);
   };
   vi.resetModules();

@@ -5,6 +5,7 @@
 // mutated. Statically importable: the lazy component appears here as a type only (the `lazy-ui` arch rule).
 import type { Component } from 'svelte';
 
+import type { CueEvent } from '../cues/types.ts';
 import type { Box } from '../geom/cover.ts';
 import type { Lang } from '../i18n/index.ts';
 import type { DocId, Glyph, Hotspot, HotspotKey, ItemId } from '../world/types.ts';
@@ -91,6 +92,11 @@ export interface ExploreViewStore {
   items: readonly ItemView[];
   docs: readonly DocView[];
   lock: LockView | null;
+  /**
+   * The layer root's cue emit (engine plan §8.3): the session's bus, written by `app/yields.ts`, which clears its own at
+   * dispose; absent, the root emits nothing. Optional: a store built as a literal (a test's) has no cue root.
+   */
+  oncue?: (e: CueEvent) => void;
 }
 
 class ExploreViewState implements ExploreViewStore {
@@ -101,6 +107,7 @@ class ExploreViewState implements ExploreViewStore {
   items: readonly ItemView[] = $state.raw([]);
   docs: readonly DocView[] = $state.raw([]);
   lock: LockView | null = $state.raw(null);
+  oncue: ((e: CueEvent) => void) | undefined = $state.raw(undefined);
 }
 
 /** An empty store: no layer loaded, no panel, no views. */

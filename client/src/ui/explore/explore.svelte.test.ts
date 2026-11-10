@@ -328,7 +328,7 @@ const COMPONENT_SOURCES = import.meta.glob<string>('./*.svelte', { query: '?raw'
 
 /** Each component and the only modules it may import as values. */
 const VALUE_IMPORTS: Readonly<Record<string, readonly string[]>> = {
-  './ExploreView.svelte': ['../../i18n/index.ts', '../glyphs.ts', './DocumentReader.svelte', './Inventory.svelte', './LockPanel.svelte'],
+  './ExploreView.svelte': ['../../cues/root.ts', '../../i18n/index.ts', '../glyphs.ts', './DocumentReader.svelte', './Inventory.svelte', './LockPanel.svelte'],
   './Inventory.svelte': ['../../i18n/index.ts', '../glyphs.ts'],
   './LockPanel.svelte': ['../../i18n/index.ts', '../glyphs.ts'],
   './DocumentReader.svelte': ['../../i18n/index.ts'],

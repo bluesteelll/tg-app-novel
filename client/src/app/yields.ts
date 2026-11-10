@@ -3,21 +3,27 @@
 // exploration section are host-owned: the world state lives here (and in the explore controller while a section is
 // current), room batches are built here from world data, and the story is re-entered only here, through `project` +
 // `runner.enter` (the `runner-enter` arch rule), so ink never reads the rooms and the rooms never read ink
-// (principle 7). Every `import()` of the four lazy families is here too (X14): the explore controller with its layer,
-// the puzzle host, and the puzzle types through `loadPuzzleUi`.
+// (principle 7). Every `import()` of the lazy families is here too (X14): the explore controller with its layer,
+// the puzzle host, the puzzle types through `loadPuzzleUi`, and the cue stage (engine plan §8.1). The session's cue bus
+// lives here: today's effects reach it as cues (GM3s), and the stage subscribes once its chunk is in.
 import type { Component } from 'svelte';
 
 import type { Endpoints } from '../api/endpoints.ts';
 import type { Clock } from '../api/http.ts';
 import type { AudioCommand } from '../audio/manager.ts';
+import { createCueBus } from '../cues/bus.ts';
+import type { CueBus } from '../cues/bus.ts';
+import type { Cue, CueEvent, MoveHow } from '../cues/types.ts';
 import type { ExploreController, createExploreController } from '../explore/controller.ts';
 import { project } from '../explore/project.ts';
 import { runReduce, worldIndex } from '../explore/reduce.ts';
 import type { ExploreAction, ExploreEffect } from '../explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { PuzzleOutcome, PuzzleRun, WorldState } from '../explore/state.ts';
+import type { Box } from '../geom/cover.ts';
 import { t } from '../i18n/index.ts';
-import type { AnchorKey } from '../mechanics/contract.ts';
+import type { AnchorKey, Cause, CauseVerb, MechanicId } from '../mechanics/contract.ts';
+import type { MECHANIC_RULES } from '../mechanics/rules/index.ts';
 import { loadPuzzleUi } from '../puzzles/registry.ts';
 import type { ChunkError } from '../puzzles/registry.ts';
 import { createPuzzleSession } from '../puzzles/session.ts';
@@ -33,8 +39,8 @@ import type { ExploreLayerActions, ExploreLayerProps, ExploreViewStore } from '.
 import { backScreen } from '../ui/puzzle-view.svelte.ts';
 import type { PuzzleFrameView, PuzzleHostCallbacks, PuzzleHostProps, PuzzleView } from '../ui/puzzle-view.svelte.ts';
 import type { Screens, ScreensView } from '../ui/screens.ts';
-import type { ViewModel } from '../ui/state.svelte.ts';
-import type { Gift, HotspotKey, Room, RoomId, WorldPublic, WorldText } from '../world/types.ts';
+import type { CueStageProps, CueStageSlot, ViewModel } from '../ui/state.svelte.ts';
+import type { Gift, HotspotKey, ItemId, Room, RoomId, WorldPublic, WorldText } from '../world/types.ts';
 
 /** X12: the door fade of a room batch. */
 export const ROOM_FADE_MS = 400;
@@ -55,6 +61,8 @@ export type LazyChunks = {
   explore(): Promise<Result<ExploreChunk, ChunkError>>;
   puzzleHost(): Promise<Result<Component<PuzzleHostProps>, ChunkError>>;
   puzzleUi: typeof loadPuzzleUi;
+  /** The cue stage (engine plan §8.1): optional, so a host without it loads none and gets no slot. */
+  cueStage?(): Promise<Result<Component<CueStageProps>, ChunkError>>;
 };
 
 const chunkError = (e: unknown): { ok: false; error: ChunkError } => ({
@@ -80,6 +88,13 @@ export const LAZY_CHUNKS: LazyChunks = {
     }
   },
   puzzleUi: loadPuzzleUi,
+  cueStage: async () => {
+    try {
+      return { ok: true, value: (await import('../cues/stage/index.ts')).CueStage };
+    } catch (e) {
+      return chunkError(e);
+    }
+  },
 };
 
 /** What GameSession gives its yields: the views, the ports, and its own steps. */
@@ -88,7 +103,7 @@ export type YieldsHost = {
   screens: Screens;
   tg: Pick<TelegramClient, 'haptic'>;
   api: Pick<Endpoints, 'getPuzzle' | 'postAttempt'>;
-  scene: Pick<SceneController, 'preload' | 'releasePreload' | 'snapshot'>;
+  scene: Pick<SceneController, 'preload' | 'releasePreload' | 'snapshot' | 'stats'>;
   explore: ExploreViewStore;
   puzzle: PuzzleView;
   reporter: Pick<StatsReporter, 'record'>;
@@ -120,6 +135,8 @@ export type YieldsHost = {
   tap(fn: () => Promise<void>): Promise<void>;
   /** An intent that must run: after the batch in flight. */
   queue(fn: () => Promise<void>): Promise<void>;
+  /** The scene role's seam (engine plan §8.6, design-shots I-4): called once, with the session's bus subscription. */
+  sceneCues?: (subscribe: CueBus['subscribe']) => void;
 };
 
 export interface Yields {
@@ -194,6 +211,61 @@ type Open = {
 
 let frameSeq = 0;
 
+/** A cue as the yields emit it: no pointer, no visual diff, no element (no control cue is theirs). */
+const cueEvent = (cue: Cue, box: Box | null): CueEvent => ({ cue, box, point: null, diff: [], el: null });
+
+/** A wait of the views (engine plan §8.1 point 11): the room batch's hold, `panel: null`. */
+const waitCue = (name: 'waiting' | 'waited', box: Box | null): CueEvent => cueEvent({ kind: 'ui-state', name, panel: null, item: null }, box);
+
+/** Where a batch's load hold plays (its `via` box; null: the stage centre) and what plays when the batch starts. */
+export type HeldAt = { readonly box: Box | null; readonly atStart?: () => void };
+
+/**
+ * The one site that applies a visual batch for the views (engine plan §8.1 "The frame's flags and its ends"):
+ * `ui-state:waiting` before `h.apply`, and from that apply's `started` (called once per apply, an empty batch included)
+ * `waited`, then `at.atStart` (a room batch's move cue and its entry's cues). `'no-load'` (a batch that adds no image)
+ * holds nothing while no texture is stale and no revive runs; otherwise `ensure` may wait, so it holds at the centre.
+ * A batch whose session ended never starts: the bus is gone with it.
+ */
+export function heldBy(
+  h: Pick<YieldsHost, 'apply' | 'scene'>,
+  emit: (e: CueEvent) => void,
+): (visual: readonly VisualCommand[], audio: readonly AudioCommand[], at: HeldAt | 'no-load') => Promise<void> {
+  return (visual, audio, at) => {
+    const hold: HeldAt | null = at !== 'no-load' ? at : h.scene.stats().stale === 0 && !h.scene.stats().reviving ? null : { box: null };
+    if (hold !== null) {
+      emit(waitCue('waiting', hold.box));
+    }
+    return h.apply(visual, audio, () => {
+      if (hold !== null) {
+        emit(waitCue('waited', hold.box));
+        hold.atStart?.();
+      }
+    });
+  };
+}
+
+/** Core's cue names: its rules half's `cues` (a type read: the rules stay in the explore-ui chunk). */
+type CoreCueName = (typeof MECHANIC_RULES)[0]['cues'][number];
+/** The one builder of the yields' module cues: only a name core declares, so its motion row exists (GM3m review M2). */
+export const coreCue = (name: CoreCueName, at: HotspotKey | null, item: ItemId | null): Extract<Cue, { kind: 'module' }> => ({
+  kind: 'module',
+  module: 'core' as MechanicId,
+  name,
+  at,
+  item,
+});
+
+const cause = (verb: CauseVerb, at: HotspotKey | null = null, item: ItemId | null = null): Cause => ({ verb, at, item, via: null });
+
+/** The cause of a dispatched action's cues. */
+const causeOf = (a: ExploreAction): Cause =>
+  a.kind === 'tap'
+    ? cause('tap', a.hotspot)
+    : a.kind === 'insert'
+      ? cause('insert', a.hotspot, a.item)
+      : cause(a.kind === 'puzzle-ended' && a.outcome === 'solved' ? 'solve' : 'fail');
+
 export function createYields(h: YieldsHost): Yields {
   const { vm, screens, explore, puzzle } = h;
   let world: WorldState = EMPTY_WORLD_STATE;
@@ -209,6 +281,101 @@ export function createYields(h: YieldsHost): Yields {
   let dead = false;
   /** The async steps the effects of one dispatch asked for, run in order by the intent that dispatched. */
   const jobs: Array<() => Promise<void>> = [];
+
+  // -------------------------------------------------------------------------------------------------------------
+  // The cue channel (engine plan §8.1): one bus per session; the stage's slot once its chunk is in
+
+  const bus = createCueBus();
+  h.sceneCues?.(bus.subscribe);
+  explore.oncue = bus.emit; // D1: the explore root's controls emit to this session's bus
+  /** Plans the stage dropped at its unmount: orphans the bus cannot see. */
+  let dropped = 0;
+  let slot: CueStageSlot | null = null;
+  /** The stage's chunk; the slot is written when that chunk settles, never after a sibling's (critique W2). */
+  const loadStage = async (): Promise<boolean> => {
+    if (h.chunks.cueStage === undefined || slot !== null) {
+      return true;
+    }
+    const r = await h.chunks.cueStage();
+    if (r.ok && slot === null && !dead) {
+      slot = {
+        component: r.value,
+        subscribe: bus.subscribe,
+        orphans: () => bus.orphans() + dropped,
+        dropped: () => {
+          dropped += 1;
+        },
+        host: () => h.stageHost(),
+        haptic: h.tg.haptic,
+      };
+      vm.cueStage = slot;
+    }
+    return r.ok;
+  };
+
+  /**
+   * D13 and §8.1 "Loading": the lazy chunks the chapter's world needs and the stage, once per chapter, ahead of the
+   * first wait they cover; after the first line (so these bytes never compete with the first knot's images), at a
+   * resume onto a yield, ahead of a yield step's transition, and after a section's first room. Not awaited: a failure
+   * surfaces at the yield, which imports again.
+   */
+  const prefetch = (): void => {
+    const w = prefetched ? null : (h.chapter()?.world ?? null);
+    if (w === null) {
+      return;
+    }
+    prefetched = true;
+    const sections = Object.keys(w.sections).length > 0;
+    const puzzles = Object.keys(w.puzzles).length > 0;
+    if (sections) {
+      void h.chunks.explore();
+    }
+    if (puzzles) {
+      void h.chunks.puzzleHost();
+    }
+    if (sections || puzzles) {
+      void loadStage();
+    }
+  };
+
+  /** A room batch to run (D9): its move cue, built at the effect, and the cues of the entry that pushed it (D8). */
+  type RoomJob = { readonly room: RoomId; readonly sfx: Extract<ExploreEffect, { kind: 'room' }>['sfx']; readonly move: CueEvent; cues: readonly CueEvent[] };
+  /**
+   * One controller entry (D8): its cause, the box of the hotspot it acts on, how a move it makes enters its room, the
+   * cues it maps, and the first room job it pushes, which carries them to its batch's start (§8.1 round 5).
+   */
+  type Scope = { readonly cause: Cause; readonly box: Box | null; readonly how: MoveHow; readonly cues: CueEvent[] | null; job: RoomJob | null };
+  const AT_ONCE: Scope = { cause: cause('trigger'), box: null, how: 'walk', cues: null, job: null };
+  let scope = AT_ONCE;
+  /** The room the last batch showed: a move's `from`. */
+  let shown: RoomId | null = null;
+  /** The next section entry is the resume onto its yield. */
+  let resumed = false;
+  /** A world cue of the entry in scope, on its hotspot's box. */
+  const send = (cue: Cue): void => {
+    const e = cueEvent(cue, scope.box);
+    if (scope.cues === null) {
+      bus.emit(e);
+    } else {
+      scope.cues.push(e);
+    }
+  };
+  /** Runs one controller entry; the box is read before it, while the hotspot it acts on is still shown. */
+  const scoped = <T>(cause: Cause, run: () => T, how: MoveHow = 'walk'): T => {
+    const s: Scope = { cause, box: explore.hotspots.find((v) => v.key === cause.at)?.css ?? null, how, cues: [], job: null };
+    scope = s;
+    const out = run();
+    scope = AT_ONCE;
+    if (s.job !== null) {
+      s.job.cues = s.cues ?? [];
+    } else {
+      for (const e of s.cues ?? []) {
+        bus.emit(e);
+      }
+    }
+    return out;
+  };
+  const held = heldBy(h, bus.emit);
 
   const drain = async (): Promise<void> => {
     for (let job = jobs.shift(); job !== undefined; job = jobs.shift()) {
@@ -235,7 +402,7 @@ export function createYields(h: YieldsHost): Yields {
   const back = (): void => {
     void h.tap(async () => {
       const c = controller;
-      if (c === null || !c.back()) {
+      if (c === null || !scoped(cause('tap'), () => c.back())) {
         return;
       }
       world = c.state();
@@ -290,37 +457,56 @@ export function createYields(h: YieldsHost): Yields {
     }
     const w = h.chapter()?.world ?? null;
     switch (e.kind) {
-      case 'room':
-        jobs.push(() => roomBatch(e.room, e.sfx));
+      case 'room': {
+        // D9: from the room the last batch showed, by the entry's hotspot (an exit) or by its kind (Back: none).
+        const move = cueEvent({ kind: 'move', from: shown, to: e.room, via: scope.cause.at, how: scope.how }, scope.box);
+        const job: RoomJob = { room: e.room, sfx: e.sfx, move, cues: [] };
+        if (scope.cues !== null) {
+          scope.job ??= job;
+        }
+        jobs.push(() => roomBatch(job));
         return;
+      }
       case 'look':
         vm.showToast({ kind: 'note', key: 'look', message: h.text(e.text), sticky: false });
+        send(coreCue('look', scope.cause.at, null));
         return;
       case 'got': {
-        h.tg.haptic.notify('success'); // K51
-        const name = w === null ? null : giftName(e.gift, w);
+        // K51's success haptic is the cue's (its row's haptic, played by the cue stage on top of its motion: D6).
+        const g = e.gift;
+        send({ kind: 'fact', fact: 'item' in g ? { kind: 'held', id: g.item } : { kind: 'doc', id: g.doc }, change: 'added', cause: scope.cause });
+        const name = w === null ? null : giftName(g, w);
         if (name !== null) {
           vm.showToast({ kind: 'note', key: 'got', message: name, sticky: false });
         }
-        jobs.push(takeBatch); // B-001: before a `then`'s room or knot job, so the prop goes first
+        const box = scope.box;
+        jobs.push(() => takeBatch(box)); // B-001: before a `then`'s room or knot job, so the prop goes first
         return;
       }
       case 'lock':
         explore.panel = { kind: 'lock' };
         screens.push({ kind: 'lock' });
+        // The panel's own cue, at the write that opens it (never held with a move: §8.1 round 9).
+        bus.emit(cueEvent({ kind: 'ui-state', name: 'panel-open', panel: 'lock', item: null }, null));
         return;
       case 'puzzle':
         jobs.push(() => openPuzzle(e.puzzle, 'explore', null));
         return;
       case 'story':
+        send({ kind: 'fact', fact: { kind: 'story', id: e.knot }, change: 'added', cause: scope.cause });
+        toStory(e.knot);
+        return;
       case 'leave':
+        send({ kind: 'move', from: shown, to: null, via: scope.cause.at, how: 'leave' });
         toStory(e.knot);
         return;
       case 'refused':
-        h.tg.haptic.notify('error'); // K51
+        // K51's error haptic is the cue's, as the take's (D6).
+        send(coreCue('refused', scope.cause.at, scope.cause.item));
         return;
       case 'reset':
         vm.showToast({ kind: 'note', key: 'area_reset', message: t(vm.lang, 'explore.area_reset'), sticky: false });
+        send(coreCue('reset', null, null));
         return;
       case 'dirty':
         dirty();
@@ -338,22 +524,24 @@ export function createYields(h: YieldsHost): Yields {
    * and inserts come only from the explore layer, which exists only with a controller, so nothing else is written here.
    */
   const act = (a: ExploreAction): void => {
-    const c = controller;
-    if (c !== null && world.section !== null) {
-      c.dispatch(a);
-      world = c.state();
-      followLock();
-      return;
-    }
-    const w = h.chapter()?.world ?? null;
-    if (w === null || (a.kind !== 'attempt-failed' && a.kind !== 'hint-opened' && a.kind !== 'puzzle-ended')) {
-      return;
-    }
-    const out = runReduce(w, world, a);
-    world = out.state;
-    for (const e of out.effects) {
-      effect(e);
-    }
+    scoped(causeOf(a), () => {
+      const c = controller;
+      if (c !== null && world.section !== null) {
+        c.dispatch(a);
+        world = c.state();
+        followLock();
+        return;
+      }
+      const w = h.chapter()?.world ?? null;
+      if (w === null || (a.kind !== 'attempt-failed' && a.kind !== 'hint-opened' && a.kind !== 'puzzle-ended')) {
+        return;
+      }
+      const out = runReduce(w, world, a);
+      world = out.state;
+      for (const e of out.effects) {
+        effect(e);
+      }
+    });
   };
 
   /** K48: the lock panel closes when the controller's lock view turns null (opened, or another room). */
@@ -372,11 +560,19 @@ export function createYields(h: YieldsHost): Yields {
   // -------------------------------------------------------------------------------------------------------------
   // Room batches (F7 step 1, X11, X12, D20)
 
-  const roomBatch = async (room: RoomId, sfx: Extract<ExploreEffect, { kind: 'room' }>['sfx']): Promise<void> => {
+  const roomBatch = async (j: RoomJob): Promise<void> => {
+    const { room, sfx } = j;
+    // §8.1 round 5: the move cue, then the cues of the entry that moved, when the batch starts.
+    const atStart = (): void => {
+      for (const e of [j.move, ...j.cues]) {
+        bus.emit(e);
+      }
+    };
     const ch = h.chapter();
     const w = ch?.world ?? null;
     const entry = w === null ? undefined : indexOf(w).rooms.get(room);
     if (w === null || entry === undefined) {
+      atStart(); // no batch: nothing holds them back
       return;
     }
     const props = roomProps(room, entry.room, world);
@@ -393,13 +589,15 @@ export function createYields(h: YieldsHost): Yields {
     if (sfx !== null) {
       audio.push({ kind: 'sfx', sfx, vol: 1 });
     }
+    shown = room;
     explore.layer = inEvent() ? null : layerComponent; // an onEnter event hides the rooms it moved into
-    await h.apply(visual, audio);
+    await held(visual, audio, { box: j.move.box, atStart });
     if (dead) {
       return;
     }
     rootShown(); // the rooms are back: the root-back returns from the path state (X12)
     controller?.roomShown(); // K47 / D20: after the batch, so the registry counts the room before its neighbours
+    prefetch(); // a session resumed into a room has the host before its first lock tap
   };
 
   /**
@@ -408,7 +606,7 @@ export function createYields(h: YieldsHost): Yields {
    * only the props that changed. A `got` that changes no prop (a take without one, an effect's `give`, a room the stage
    * does not show) applies nothing.
    */
-  const takeBatch = async (): Promise<void> => {
+  const takeBatch = async (box: Box | null): Promise<void> => {
     const room = world.section !== null ? world.room : null;
     const w = h.chapter()?.world ?? null;
     const entry = w === null || room === null ? undefined : indexOf(w).rooms.get(room);
@@ -423,7 +621,7 @@ export function createYields(h: YieldsHost): Yields {
     if (sameProps(stage.props, props)) {
       return;
     }
-    await h.apply([{ kind: 'bg', bg: entry.room.bg, t: 'crossfade', ms: TAKE_FADE_MS }, { kind: 'props', props }], []);
+    await held([{ kind: 'bg', bg: entry.room.bg, t: 'crossfade', ms: TAKE_FADE_MS }, { kind: 'props', props }], [], { box });
   };
 
   // -------------------------------------------------------------------------------------------------------------
@@ -457,13 +655,16 @@ export function createYields(h: YieldsHost): Yields {
     }
     let c = controller;
     if (c === null) {
-      const chunk = await h.chunks.explore();
+      // §8.1 point 11: the section's first chunk import is a wait of the views; it ends when the import settles.
+      bus.emit(waitCue('waiting', null));
+      const [chunk, staged] = await Promise.all([h.chunks.explore(), loadStage()]);
+      bus.emit(waitCue('waited', null));
       if (dead || h.chapter() !== ch) {
         return;
       }
       const stageHost = h.stageHost();
-      if (!chunk.ok || stageHost === null) {
-        console.error('yields: the explore-ui chunk did not load', chunk.ok ? 'no stage host' : chunk.error.detail);
+      if (!chunk.ok || !staged || stageHost === null) {
+        console.error('yields: the explore-ui chunk did not load', chunk.ok ? (staged ? 'no stage host' : 'no cue stage') : chunk.error.detail);
         h.notice(() => openSection(section)); // D13: Retry imports again; the yield stays where it is
         return;
       }
@@ -480,7 +681,11 @@ export function createYields(h: YieldsHost): Yields {
         }),
       );
     }
-    c.enter(section, world); // admitSection, or admitEvent while an event knot is pending
+    const entering = c;
+    const how = inEvent() ? 'return' : resumed ? 'resume' : 'enter';
+    resumed = false;
+    // admitSection, or admitEvent while an event knot is pending
+    scoped(cause(how === 'return' ? 'return' : 'enter'), () => entering.enter(section, world), how);
     world = c.state();
     await drain();
   };
@@ -519,7 +724,7 @@ export function createYields(h: YieldsHost): Yields {
   };
 
   const loadPuzzleUis = async (o: Open, type: PuzzleFrameView['type']): Promise<void> => {
-    const [hostUi, typeUi] = await Promise.all([h.chunks.puzzleHost(), h.chunks.puzzleUi(type)]);
+    const [hostUi, typeUi, staged] = await Promise.all([h.chunks.puzzleHost(), h.chunks.puzzleUi(type), loadStage()]);
     if (open !== o) {
       return;
     }
@@ -527,7 +732,7 @@ export function createYields(h: YieldsHost): Yields {
       puzzle.host = hostUi.value;
     }
     // D13: a chunk error keeps the mode with Retry (linear) or the overlay with Retry (explore); no outcome.
-    setFrame(o, typeUi.ok && hostUi.ok ? { ui: typeUi.value, loadFailed: false } : { ui: null, loadFailed: true });
+    setFrame(o, typeUi.ok && hostUi.ok && staged ? { ui: typeUi.value, loadFailed: false } : { ui: null, loadFailed: true });
   };
 
   /** The end of a run (PZ F6 steps 5-6, F7 step 7): the report, the close-up cleared, the outcome into the world. */
@@ -537,7 +742,7 @@ export function createYields(h: YieldsHost): Yields {
       h.reporter.record({ kind: 'puzzle_ended', chapterId: ch.id, storyVersion: ch.meta.storyVersion, puzzle: local, outcome });
     }
     if (closeup) {
-      await h.apply([{ kind: 'cg', cg: null, t: 'fade', ms: CLOSEUP_FADE_MS }], []);
+      await held([{ kind: 'cg', cg: null, t: 'fade', ms: CLOSEUP_FADE_MS }], [], { box: null });
       if (dead) {
         return;
       }
@@ -560,7 +765,7 @@ export function createYields(h: YieldsHost): Yields {
       // X8: an exploration close records no outcome; the close-up goes, the rooms' neighbours come back.
       void h.queue(async () => {
         if (o.closeup) {
-          await h.apply([{ kind: 'cg', cg: null, t: 'fade', ms: CLOSEUP_FADE_MS }], []);
+          await held([{ kind: 'cg', cg: null, t: 'fade', ms: CLOSEUP_FADE_MS }], [], { box: null });
         }
         controller?.roomShown();
       });
@@ -595,7 +800,7 @@ export function createYields(h: YieldsHost): Yields {
     open = o;
     o.session.onEnd((e) => onEnd(o, e));
     if (p.closeup !== null) {
-      await h.apply([{ kind: 'cg', cg: p.closeup, t: 'fade', ms: CLOSEUP_FADE_MS }], []);
+      await held([{ kind: 'cg', cg: p.closeup, t: 'fade', ms: CLOSEUP_FADE_MS }], [], { box: null });
       if (open !== o) {
         return;
       }
@@ -799,10 +1004,8 @@ export function createYields(h: YieldsHost): Yields {
   };
 
   return {
-    ahead() {
-      // Nothing to get ready yet: GameSession calls it so GM3s can load the yield's chunks during the transition
-      // without another edit of game.ts (engine plan GM3w).
-    },
+    // The step's pictures are loaded: the yield's chunks download while its transition runs (§8.1 "Loading").
+    ahead: prefetch,
     async onYield(y) {
       if (dead) {
         return;
@@ -813,21 +1016,7 @@ export function createYields(h: YieldsHost): Yields {
         await openSection(y.section);
       }
     },
-    lineShown() {
-      const w = prefetched ? null : (h.chapter()?.world ?? null);
-      if (w === null) {
-        return;
-      }
-      prefetched = true;
-      // D13: after the first line, so these bytes never compete with the first knot's images; the module cache keeps
-      // them for the yield. Not awaited: a failure surfaces at the yield, which imports again.
-      if (Object.keys(w.sections).length > 0) {
-        void h.chunks.explore();
-      }
-      if (Object.keys(w.puzzles).length > 0) {
-        void h.chunks.puzzleHost();
-      }
-    },
+    lineShown: prefetch,
     world: () => world,
     restore(next, reset, at) {
       dropPuzzle();
@@ -839,8 +1028,13 @@ export function createYields(h: YieldsHost): Yields {
       explore.layer = null;
       screens.setRootBack(null);
       world = next;
+      shown = null;
+      resumed = at?.kind === 'explore';
       if (reset !== null) {
         vm.showToast({ kind: 'note', key: 'area_reset', message: t(vm.lang, 'explore.area_reset'), sticky: false });
+      }
+      if (at !== null) {
+        prefetch(); // no line shows before the resumed yield
       }
     },
     chapterChanged() {
@@ -848,6 +1042,8 @@ export function createYields(h: YieldsHost): Yields {
       disposeController();
       jobs.length = 0;
       world = EMPTY_WORLD_STATE;
+      shown = null;
+      resumed = false;
       prefetched = false;
       if (dirtyTimer !== null) {
         h.clock.clearTimeout(dirtyTimer);
@@ -887,6 +1083,13 @@ export function createYields(h: YieldsHost): Yields {
       disposeController();
       dead = true;
       jobs.length = 0;
+      bus.dispose();
+      if (slot !== null && vm.cueStage === slot) {
+        vm.cueStage = null;
+      }
+      if (explore.oncue === bus.emit) {
+        explore.oncue = undefined;
+      }
       if (dirtyTimer !== null) {
         h.clock.clearTimeout(dirtyTimer);
         dirtyTimer = null;
