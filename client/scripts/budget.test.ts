@@ -162,12 +162,12 @@ function withLazy(base: BudgetInputs, chunks: Readonly<Record<string, LazyChunk>
 describe('budget evaluate', () => {
   test('budget: entry over limit fails', () => {
     const big = inputs();
-    // 310 000 + 2 000 shared: over the entry's 40 KB and the 305 KB of all JS.
-    big.files = big.files.map((f) => (f.path === 'assets/index-a.js' ? file(f.path, 310_000) : f));
+    // 370 000 + 2 000 shared: over the entry's 40 KB and the 365 KB of all JS.
+    big.files = big.files.map((f) => (f.path === 'assets/index-a.js' ? file(f.path, 370_000) : f));
     const rows = evaluate(big, LIMITS);
     const entry = rowOf(rows, 'entry closure JS (br)');
     expect(entry.status).toBe('FAIL');
-    expect(entry.valueBytes).toBe(312_000);
+    expect(entry.valueBytes).toBe(372_000);
     expect(rowOf(rows, 'all JS (br)').status).toBe('FAIL');
   });
 
@@ -287,13 +287,13 @@ describe('budget evaluate', () => {
   });
 
   test('budget: all js over limit fails', () => {
-    // META-PLAN raised the limit to 305 KB br: 12 000 + 11 × 27 000 = 309 000 is over it.
+    // RULINGS 201 QS3 re-set the limit to 365 KB br: 12 000 + 11 × 33 000 = 375 000 is over it.
     const base = inputs();
-    const lazy = Array.from({ length: 11 }, (_, i) => file(`assets/lazy-${i}.js`, 27_000));
+    const lazy = Array.from({ length: 11 }, (_, i) => file(`assets/lazy-${i}.js`, 33_000));
     const rows = evaluate({ ...base, files: [...base.files, ...lazy] }, LIMITS);
     expect(rowOf(rows, 'entry closure JS (br)').status).toBe('PASS');
     const all = rowOf(rows, 'all JS (br)');
-    expect(all.valueBytes).toBe(309_000);
+    expect(all.valueBytes).toBe(375_000);
     expect(all.status).toBe('FAIL');
   });
 
@@ -632,13 +632,13 @@ describe('budget evaluate', () => {
     });
   });
 
-  test('budget: all js limit is 305 KB', () => {
-    // META-PLAN "Budgets": 290 KB br plus the meta chunks.
+  test('budget: all js limit is 365 KB', () => {
+    // RULINGS 201 QS3: Ledger 3 re-set once, to 365 KB br (the measured base, the queued levers and the remaining nets).
     const base = inputs(); // 12 000 B of JS
     const all = (bytes: number): Row => rowOf(evaluate({ ...base, files: [...base.files, file('assets/lazy-0.js', bytes - 12_000)] }, LIMITS), 'all JS (br)');
     expect(all(300_000).status).toBe('PASS');
-    expect(all(305_000)).toMatchObject({ status: 'PASS', valueBytes: 305_000 });
-    expect(all(305_001).status).toBe('FAIL');
+    expect(all(365_000)).toMatchObject({ status: 'PASS', valueBytes: 365_000 });
+    expect(all(365_001).status).toBe('FAIL');
   });
 
   test('budget: every row is printed', () => {
@@ -737,11 +737,11 @@ describe('budget cli', () => {
 
   test('budget: cli exits 1 on oversize dist', () => {
     const dist = join(tmp, 'dist');
-    writeDist(dist, noise(310_000, 42)); // over the 305 KB of all JS too
+    writeDist(dist, noise(370_000, 42)); // over the 365 KB of all JS too
     writeRepo(join(tmp, 'repo'), { bgWidth: 4096 });
     const r = runCli(dist, SCRIPT, [], ['--root', join(tmp, 'repo')]);
     expect(r.status, r.stdout + r.stderr).toBe(1);
-    expect(r.stdout).toMatch(/^entry closure JS \(br\) \| 310\.\d KB \| 40\.0 KB \| FAIL/m);
+    expect(r.stdout).toMatch(/^entry closure JS \(br\) \| 370\.\d KB \| 40\.0 KB \| FAIL/m);
     expect(r.stdout).toMatch(/^all JS \(br\) \| .* \| FAIL/m);
     expect(r.stdout).toMatch(/^image bg\/cafe \| .* \| FAIL \| 4096×2048 over 2048 px/m);
     for (const name of ROW_NAMES) {

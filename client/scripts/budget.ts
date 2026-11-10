@@ -92,6 +92,7 @@ export type Limits = {
    * the row by module in its report, and a split is proposed only if it removes a request or bytes from a load path.
    */
   cueStageChunkBr: number;
+  /** Ledger 3: every JS file of dist, set once on the all-JS Q3 (RULINGS 201 QS3). */
   allJsBr: number;
   cssBr: number;
   htmlBr: number;
@@ -128,7 +129,7 @@ export const LIMITS: Limits = {
   metaUiChunkBr: 14_000,
   metaControllerChunkBr: 6_000,
   cueStageChunkBr: 8_500,
-  allJsBr: 305_000,
+  allJsBr: 365_000,
   cssBr: 12_000,
   htmlBr: 2_000,
   storyRaw: 160_000,
