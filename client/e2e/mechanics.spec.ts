@@ -7,8 +7,11 @@ import type { Locator, Page } from '@playwright/test';
 
 import { t } from '../src/i18n/index.ts';
 import {
+  atRest,
   enterManor,
   expect,
+  hotspotLabel,
+  itemName,
   launch,
   playCh1ToGate,
   reachLine,
@@ -134,4 +137,64 @@ test('mechanics: no cue is orphaned across the demo walk', async ({ page }) => {
   await reachLine(page, 'ch1.street.s018');
   expect([await counter(page, 'data-cue-orphans'), await counter(page, 'data-cue-fallbacks')], 'orphans, fallbacks').toEqual([0, 0]);
   await page.locator('.dialogue .tap').tap(); // END
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM3u (engine plan §6.1 UI; RULINGS 226 Q2): the item ribbon's selection and a use, in the real client. Every locator
+// of this test's own taps is scoped to the live explore root: a ghost on the stage layer carries no `data-cue*` and lives
+// under `[data-cue-stage]`, so it never matches (Q62; the stage layer's `aria-hidden` is the other guard).
+
+/** The live explore layer. */
+const rooms = (page: Page): Locator => page.locator('.layer[data-cue-root]');
+/** A held item's slot in the live ribbon. */
+const ribbonSlot = (page: Page, item: string): Locator =>
+  rooms(page).locator('[data-cue-ribbon]').getByRole('button', { name: itemName(item), exact: true });
+/** A hotspot of the current room, in the live layer. */
+const liveHotspot = (page: Page, room: string, id: string): Locator =>
+  rooms(page).getByRole('button', { name: hotspotLabel(room, id), exact: true });
+
+test('mechanics: select a medal, tap the gate, its slot fills', async ({ page }) => {
+  test.setTimeout(180_000);
+  await launch(page, 9705);
+  await startManor(page);
+  await enterManor(page);
+  await walk(page, 'hall', 'to_study', 'study', 'to_hall');
+  await take(page, 'study', 'medal');
+  await walk(page, 'study', 'to_hall', 'hall', 'gate');
+  // The medal's slot selects it.
+  const medal = ribbonSlot(page, 'medal_sun');
+  await expect(medal).toBeVisible({ timeout: CUE_MS });
+  await atRest(page);
+  await medal.tap();
+  await expect(medal).toHaveAttribute('aria-pressed', 'true');
+  // A use the hall refuses (the inscription is a look with no rule for the medal, and ch1 writes no refusal text): the
+  // UI's default words, and the selection put back. (Critique W2: the mechanics table is read here, inside the test, so
+  // where it is absent this file still loads and only this test is red.)
+  const { mechT } = await import('../src/i18n/mechanics.ts');
+  await atRest(page);
+  await liveHotspot(page, 'hall', 'inscription').tap();
+  await expect(page.locator('.toast', { hasText: mechT('ru', 'mech.use_refused') })).toBeVisible({ timeout: CUE_MS });
+  await expect(medal).toHaveAttribute('aria-pressed', 'false');
+  // Selected again, the gate takes it into its first slot (the lock fit): the medal leaves the hands.
+  await atRest(page);
+  await medal.tap();
+  await expect(medal).toHaveAttribute('aria-pressed', 'true');
+  await atRest(page);
+  await liveHotspot(page, 'hall', 'gate').tap();
+  await expect(medal).toBeHidden({ timeout: CUE_MS });
+  await expect
+    .poll(() => played(page), { timeout: CUE_MS, message: 'the selection and the fill played' })
+    .toEqual(expect.arrayContaining(['ui-state:select', 'ui-state:deselect', 'fact:slot:added']));
+  // The gate again, nothing selected: its lock panel shows the medal in the first of its three slots.
+  await atRest(page);
+  await liveHotspot(page, 'hall', 'gate').tap();
+  const slots = page.locator('.lock .slot');
+  await expect(slots).toHaveCount(3, { timeout: CUE_MS });
+  await expect(slots.nth(0)).toHaveClass(/\bfilled\b/);
+  await expect(slots.nth(0).locator('.name')).toHaveText(itemName('medal_sun'));
+  for (const i of [1, 2]) {
+    await expect(slots.nth(i)).not.toHaveClass(/\bfilled\b/);
+  }
+  await expect(page.locator('.held-item', { hasText: itemName('medal_sun') })).toHaveCount(0);
+  expect([await counter(page, 'data-cue-orphans'), await counter(page, 'data-cue-fallbacks')], 'orphans, fallbacks').toEqual([0, 0]);
 });

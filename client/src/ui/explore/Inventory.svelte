@@ -16,10 +16,26 @@
 
 <section class="inventory">
   <div class="tabs" role="tablist">
-    <button type="button" role="tab" class="tab" aria-selected={tab === 'items'} onclick={() => (tab = 'items')}>
+    <button
+      type="button"
+      role="tab"
+      class="tab"
+      aria-selected={tab === 'items'}
+      data-cue="inventory-tab"
+      data-cue-index="0"
+      onclick={() => (tab = 'items')}
+    >
       {t(lang, 'inv.items')}
     </button>
-    <button type="button" role="tab" class="tab" aria-selected={tab === 'files'} onclick={() => (tab = 'files')}>
+    <button
+      type="button"
+      role="tab"
+      class="tab"
+      aria-selected={tab === 'files'}
+      data-cue="inventory-tab"
+      data-cue-index="1"
+      onclick={() => (tab = 'files')}
+    >
       {t(lang, 'inv.files')}
     </button>
   </div>
@@ -45,7 +61,7 @@
     {:else}
       <ul class="rows">
         {#each docs as doc (doc.id)}
-          <li><button type="button" class="doc" onclick={() => onread(doc.id)}>{doc.title}</button></li>
+          <li><button type="button" class="doc" data-cue="inventory-doc" onclick={() => onread(doc.id)}>{doc.title}</button></li>
         {/each}
       </ul>
     {/if}

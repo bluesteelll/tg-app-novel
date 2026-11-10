@@ -58,9 +58,13 @@ function sel(t: keyof typeof CUE_TARGET_ATTRS, value?: string | number): string 
   return `[${CUE_TARGET_ATTRS[t]}${value === undefined ? '' : `="${value}"`}]`;
 }
 
-/** The item a cue names: a fact's id, or the item a module, control or panel cue carries. */
+/** The item a cue names: a fact's id (a `slot` fact's id is its lock, so its cause's item: GM3's O5), or the item a
+ *  module, control or panel cue carries. */
 function itemOf(c: Cue): string | null {
-  return c.kind === 'fact' ? c.fact.id : 'item' in c ? c.item : null;
+  if (c.kind === 'fact') {
+    return c.fact.kind === 'slot' ? c.cause.item : c.fact.id;
+  }
+  return 'item' in c ? c.item : null;
 }
 
 const elOf = (el: Element | null): Resolved => (el === null ? null : { el });

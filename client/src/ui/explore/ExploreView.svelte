@@ -7,7 +7,11 @@
   // callbacks. GameSession (L15) mounts it as a child of the Stage host, which is its containing block. Its root is the
   // explore family's cue root (engine plan §8.3), attached in an effect (RULINGS 201 E1: a `use:` action would bring
   // Svelte's action runtime into the entry): its controls emit to the session's bus, and the cue stage plays its
-  // entrance and exit; the sheets carry their panel markers (§8.5 "Cue targets").
+  // entrance and exit; the sheets carry their panel markers (§8.5 "Cue targets"). GM3u (§6.1 UI, §8.3): every control
+  // declares the cue it emits (`cues/controls.test.ts`), a hotspot that paints nothing is a hit area, and the item
+  // ribbon sits over the rooms while no panel covers them; a hotspot tapped while an item is selected uses that item.
+  // Under the hotspots, the bare-art catcher (§8.3 "The catcher") answers a tap on the art itself: its cue ripples at the
+  // finger, and it puts a selected item back.
   import { cueRoot, SHEET_PANELS } from '../../cues/root.ts';
   import { t } from '../../i18n/index.ts';
   import type { ExploreLayerProps } from '../explore-view.svelte.ts';
@@ -15,6 +19,7 @@
   import DocumentReader from './DocumentReader.svelte';
   import Inventory from './Inventory.svelte';
   import LockPanel from './LockPanel.svelte';
+  import Ribbon from './Ribbon.svelte';
 
   let { lang, view, actions }: ExploreLayerProps = $props();
 
@@ -26,6 +31,13 @@
   const inventoryOpen = $derived(view.panel?.kind === 'inventory' || view.panel?.kind === 'doc');
   /** A panel covers the rooms: their buttons leave the tab order and the accessibility tree. */
   const covered = $derived(inventoryOpen || (view.panel?.kind === 'lock' && view.lock !== null));
+
+  /** A tap on the bare art puts a selected item back (§6.1 UI); with none selected it is only its cue. */
+  const onbare = (): void => {
+    if (view.selected != null) {
+      actions.ondeselect();
+    }
+  };
 
   let root: HTMLDivElement | undefined = $state();
   let cues: ReturnType<typeof cueRoot> | undefined;
@@ -52,6 +64,8 @@
 
 <div class="layer" bind:this={root} data-cue-root>
   <div class="room" inert={covered}>
+    <!-- First in the room and with no z-index, so every hotspot paints and takes taps above it, to its edge. -->
+    <div class="bare" role="presentation" data-cue="bare-art" data-cue-hit onclick={onbare}></div>
     {#each view.hotspots as h (h.key)}
       <button
         type="button"
@@ -60,20 +74,25 @@
         class:done={h.done}
         class:locked={h.locked}
         aria-label={h.label}
+        data-cue="hotspot"
+        data-cue-hit={h.kind !== 'exit' && !view.reveal ? '' : undefined}
         style:left="{h.css.x}px"
         style:top="{h.css.y}px"
         style:width="{h.css.w}px"
         style:height="{h.css.h}px"
-        onclick={() => actions.ontap(h.key)}
+        onclick={() => (view.selected != null ? actions.onuse(view.selected, h.key) : actions.ontap(h.key))}
       >
         {#if h.kind === 'exit'}
           <svg class="exit-glyph" viewBox={GLYPH_VIEWBOX} aria-hidden="true"><path d={EXIT_PATH} /></svg>
         {/if}
       </button>
     {/each}
+    {#if !covered}
+      <Ribbon {lang} items={view.items} selected={view.selected ?? null} onselect={actions.onselect} ondeselect={actions.ondeselect} />
+    {/if}
     <div class="bar">
-      <button type="button" class="bar-button" onclick={actions.oninventory}>{t(lang, 'explore.bar_inventory')}</button>
-      <button type="button" class="bar-button" onclick={actions.onreveal}>{t(lang, 'explore.bar_reveal')}</button>
+      <button type="button" class="bar-button" data-cue="bar-inventory" onclick={actions.oninventory}>{t(lang, 'explore.bar_inventory')}</button>
+      <button type="button" class="bar-button" data-cue="bar-reveal" onclick={actions.onreveal}>{t(lang, 'explore.bar_reveal')}</button>
     </div>
   </div>
   {#if inventoryOpen}
@@ -99,8 +118,16 @@
     inset: 0;
   }
 
-  /* A panel covers the rooms; the panels pad themselves past the safe area. */
+  /* A panel covers the rooms; the panels pad themselves past the safe area. Its backdrop holds the rooms dimmed while it
+     stays open: the panel-open cue's stage dim ends with the cue (§8.5). */
   .sheet {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+  }
+
+  /* The bare-art catcher: the whole room, painting nothing; the hotspots and the ribbon lie above it. */
+  .bare {
     position: absolute;
     inset: 0;
   }
