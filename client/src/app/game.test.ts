@@ -24,7 +24,7 @@ import { createSettingsStore } from '../settings/store.ts';
 import type { CloudPort, SettingsStore } from '../settings/store.ts';
 import type { StatEvent } from '../stats/reporter.ts';
 import type { PuzzleUiProps } from '../puzzles/registry.ts';
-import { PAID_WINDOW_MS, PENDING_WINDOW_MS, chapterDelivered, createPurchaseFlow } from '../purchase/flow.ts';
+import { PAID_WINDOW_MS, PENDING_WINDOW_MS, chapterDelivered, createPurchaseFlow, packDelivered } from '../purchase/flow.ts';
 import type { PurchaseState } from '../purchase/flow.ts';
 import type { ChapterLoader } from '../story/chapters.ts';
 import { decodeChapterMeta } from '../story/catalog.ts';
@@ -541,6 +541,27 @@ function heldPurchase(): { load: LoadPurchase; release(): void; fail(): void } {
   return {
     load: () => new Promise((resolve, reject) => open.push({ resolve, reject })),
     release: () => next().resolve(PURCHASE_MODULE),
+    fail: () => next().reject(new Error('the purchase chunk is gone')),
+  };
+}
+
+/** E6 (a): the meta controller's loader of the same chunk, and what it loads there. */
+type LoadPack = NonNullable<MetaDeps['loadPurchase']>;
+const PACK_MODULE: Awaited<ReturnType<LoadPack>> = { createPurchaseFlow, packDelivered };
+
+/** A pack module loader whose loads wait for the test: each `release` or `fail` answers the oldest open one. */
+function heldPack(): { load: LoadPack; release(): void; fail(): void } {
+  const open: Array<{ resolve: (m: typeof PACK_MODULE) => void; reject: (e: unknown) => void }> = [];
+  const next = (): { resolve: (m: typeof PACK_MODULE) => void; reject: (e: unknown) => void } => {
+    const load = open.shift();
+    if (load === undefined) {
+      throw new Error('invariant: a pack module load is open');
+    }
+    return load;
+  };
+  return {
+    load: () => new Promise((resolve, reject) => open.push({ resolve, reject })),
+    release: () => next().resolve(PACK_MODULE),
     fail: () => next().reject(new Error('the purchase chunk is gone')),
   };
 }
@@ -3280,12 +3301,14 @@ type MetaRig = {
 
 /**
  * Boot's gate over the harness's view model and stack, wired as boot.ts wires it (its `make` and `note`); Telegram's
- * invoice sheet closes as `openInvoice` says ('cancelled' by default).
+ * invoice sheet closes as `openInvoice` says ('cancelled' by default); the controller's pack module comes from
+ * `loadPurchase` (the real import by default).
  */
 function metaRig(
   h: Harness,
   bind: (gate: MetaGate) => void = () => {},
   openInvoice: MetaDeps['tg']['openInvoice'] = META_TG.openInvoice,
+  loadPurchase?: LoadPack,
 ): MetaRig {
   const sent: string[] = [];
   const own: Array<readonly [RegExp, () => MetaWire | Promise<MetaWire>]> = [];
@@ -3354,6 +3377,7 @@ function metaRig(
           uiLoads += 1;
           return Promise.resolve({} as MetaUi);
         },
+        loadPurchase,
       });
       c.boot();
       return c;
@@ -3393,7 +3417,11 @@ function metaRig(
 }
 
 /** A tide harness whose screens reach the gate's controller, as boot's `onView` does, with the gate attached. */
-function metaHarness(o: HarnessOptions = {}, openInvoice?: MetaDeps['tg']['openInvoice']): { h: Harness; m: MetaRig } {
+function metaHarness(
+  o: HarnessOptions = {},
+  openInvoice?: MetaDeps['tg']['openInvoice'],
+  loadPurchase?: LoadPack,
+): { h: Harness; m: MetaRig } {
   let gate: MetaGate | null = null;
   const h = harness({ chapters: [tideCh3()], ...o, onView: (v) => gate?.current()?.screensChanged(v) });
   const m = metaRig(
@@ -3402,6 +3430,7 @@ function metaHarness(o: HarnessOptions = {}, openInvoice?: MetaDeps['tg']['openI
       gate = g;
     },
     openInvoice,
+    loadPurchase,
   );
   h.game.attachMeta(m.gate.port);
   return { h, m };
@@ -3973,7 +4002,10 @@ async function pass(h: Harness, ms: number): Promise<void> {
   }
 }
 
-/** The meta overlays' view as the controller writes it; the recovery reads only `purchase`, `purchaseLeft` and `gift.busy`. */
+/**
+ * The meta overlays' view as the controller writes it; the recovery reads only `purchaseWaiting`, `purchase`,
+ * `purchaseLeft` and `gift.busy`.
+ */
 function metaView(o: Partial<MetaView> = {}): MetaView {
   return {
     ui: null,
@@ -3982,6 +4014,7 @@ function metaView(o: Partial<MetaView> = {}): MetaView {
     profile: null,
     wallet: null,
     purchase: { kind: 'idle' },
+    purchaseWaiting: false,
     purchaseLeft: false,
     invite: null,
     gift: null,
@@ -4206,6 +4239,59 @@ async function packBought(
   return { h, m };
 }
 
+/** E6 (a): Telegram's pack sheet, open until the test closes it; `opened` counts the sheets. */
+function packSheet(): { openInvoice: MetaDeps['tg']['openInvoice']; opened(): number; close(s: InvoiceStatus): void } {
+  const open: Array<(s: InvoiceStatus) => void> = [];
+  let opened = 0;
+  return {
+    openInvoice: () => {
+      opened += 1;
+      return new Promise((resolve) => open.push((s) => resolve({ ok: true, value: s })));
+    },
+    opened: () => opened,
+    close: (s) => {
+      const close = open.shift();
+      if (close === undefined) {
+        throw new Error('invariant: a pack sheet is open');
+      }
+      close(s);
+    },
+  };
+}
+
+type PackWaiting = { h: Harness; m: MetaRig; ctl: MetaController; held: ReturnType<typeof heldPack>; sheet: ReturnType<typeof packSheet> };
+
+/**
+ * E6 (a): Home with the real meta controller, its pack module held by the test and Telegram's sheet the test's, the
+ * invoice answered; the wallet open, no Buy yet.
+ */
+async function packWaiting(): Promise<PackWaiting> {
+  const held = heldPack();
+  const sheet = packSheet();
+  const { h, m } = metaHarness({}, sheet.openInvoice, held.load);
+  m.on(/^POST \/api\/invoices$/, () => ({ ok: true, body: metaSample('CreateInvoiceResponse') }));
+  void m.gate.ready();
+  await m.land();
+  const ctl = m.gate.current();
+  if (ctl === null) {
+    throw new Error('invariant: the meta chunk landed');
+  }
+  ctl.openWallet();
+  await settle();
+  expect(overlayKinds(h)).toEqual(['wallet']);
+  return { h, m, ctl, held, sheet };
+}
+
+/** The released module's flow up to Telegram's sheet: its first states settle in the fakes' microtasks. */
+async function packSheetOpen(p: PackWaiting): Promise<void> {
+  for (let i = 0; i < 10 && p.sheet.opened() === 0; i += 1) {
+    await settle();
+  }
+  expect([p.sheet.opened(), p.h.vm.meta?.purchase.kind]).toEqual([1, 'sheet']);
+}
+
+const invoicePosts = (m: MetaRig): string[] => m.sent.filter((x) => x === 'POST /api/invoices');
+
 test('game: skew does not wait for a pack purchase delayed after the wallet closed', async () => {
   const { h, m } = await packBought(() => Promise.resolve({ ok: true, value: 'paid' }), 'confirming');
   const page = fakePage();
@@ -4371,6 +4457,14 @@ test('reload: metaHold names a wallet purchase on screen before a gift, and noth
   expect(metaHold(metaView({ gift: giftView(false) }))).toBeNull();
   expect(metaHold(metaView({ purchase: { kind: 'unlocked', product: 'pack:hints' as ProductId } }))).toBeNull();
   expect(metaHold(null)).toBeNull();
+});
+
+test('reload: metaHold names a pack Buy waiting for the purchase module before a gift', () => {
+  // E6 (a): the Buy's flow asks for the invoice as soon as the module lands, whatever the wallet shows by then.
+  expect(metaHold(metaView({ purchaseWaiting: true }))).toBe('purchase');
+  expect(metaHold(metaView({ purchaseWaiting: true, gift: giftView(true) }))).toBe('purchase');
+  expect(metaHold(metaView({ purchaseWaiting: true, purchaseLeft: true }))).toBe('purchase');
+  expect(metaHold(metaView({ purchaseWaiting: false }))).toBeNull();
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -4696,6 +4790,53 @@ test('recovery: without a game the restart waits for a wallet pack purchase on s
   expect([r.page.reloads, r.notices]).toEqual([[RESTARTED], ['restart']]);
 });
 
+test("recovery: without a game the restart waits for a pack Buy waiting for the purchase module, through its flow's start", async () => {
+  const p = await packWaiting();
+  const { h, m, ctl } = p;
+  const r = recoveryRig({ view: h.vm, clock: h.clock }); // no Game: the controller's view is boot's
+  await engineFailed(r);
+  await failNow(r, failure(FLOW)); // armed
+  ctl.buyPack(PACK_ID); // waits for the module
+  await failNow(r, failure(FLOW)); // the restart is wanted now
+  await tick(r, 2000);
+  expect([r.page.reloads, r.notices, r.debug.wanted()], 'a pack Buy waits for the module').toEqual([[], [], 'chunk']);
+  p.held.release();
+  await packSheetOpen(p);
+  expect([r.page.reloads, r.notices, h.vm.meta?.purchaseWaiting], 'the sheet opens before any restart').toEqual([[], [], false]);
+  await tick(r, 2000);
+  expect([r.page.reloads, r.notices], "the flow's own state holds").toEqual([[], []]);
+  p.sheet.close('cancelled');
+  await settle();
+  await tick(r, RELOAD_POLL_MS);
+  expect([r.page.reloads, r.notices]).toEqual([[RESTARTED], ['restart']]);
+  h.game.dispose();
+  m.gate.dispose();
+});
+
+test('recovery: without a game the restart waits for a pack Buy waiting for the purchase module until the load fails', async () => {
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const p = await packWaiting();
+    const { h, m, ctl } = p;
+    const r = recoveryRig({ view: h.vm, clock: h.clock });
+    ctl.buyPack(PACK_ID); // waits for the module
+    await engineFailed(r);
+    await failNow(r, failure(FLOW));
+    await failNow(r, failure(FLOW));
+    await tick(r, 2000);
+    expect([r.page.reloads, r.notices, r.debug.wanted()], 'a pack Buy waits for the module').toEqual([[], [], 'chunk']);
+    p.held.fail(); // the flow chunk failed again
+    await settle();
+    expect([purchaseNoted(h), h.vm.meta?.purchaseWaiting, invoicePosts(m)], 'the failure toast, no flow').toEqual([true, false, []]);
+    await tick(r, RELOAD_POLL_MS);
+    expect([r.page.reloads, r.notices]).toEqual([[RESTARTED], ['restart']]);
+    h.game.dispose();
+    m.gate.dispose();
+  } finally {
+    errors.mockRestore();
+  }
+});
+
 test('recovery: without a game the restart waits for a gift being sent', async () => {
   const r = recoveryRig();
   r.view.meta = metaView({ gift: giftView(true) });
@@ -4890,6 +5031,49 @@ test('game: a waiting Buy holds a chunk restart', async () => {
     await pass(h, 1000);
     expect([page.reloads, h.vm.notice?.kind]).toEqual([[RESTARTED], 'restart']);
     h.game.dispose();
+  } finally {
+    errors.mockRestore();
+  }
+});
+
+test("game: a pack Buy waiting for the purchase module holds a chunk restart through its flow's start", async () => {
+  const p = await packWaiting();
+  const { h, m, ctl } = p;
+  const page = fakePage();
+  h.game.restart(OWN_LATCH, page); // armed: its first look is a 0 ms timer task
+  ctl.buyPack(PACK_ID); // before that look (the armed rule), with the flow's module still loading
+  await pass(h, 3000);
+  expect([page.reloads, h.vm.notice], 'a pack Buy waits for the module').toEqual([[], null]);
+  p.held.release();
+  await packSheetOpen(p);
+  expect([page.reloads, h.vm.notice, h.vm.meta?.purchaseWaiting], 'the sheet opens with no notice under it').toEqual([[], null, false]);
+  await pass(h, 2000);
+  expect([page.reloads, h.vm.notice], "the flow's own state holds").toEqual([[], null]);
+  p.sheet.close('cancelled');
+  await settle();
+  await pass(h, 1000);
+  expect([page.reloads, h.vm.notice?.kind]).toEqual([[RESTARTED], 'restart']);
+  h.game.dispose();
+  m.gate.dispose();
+});
+
+test('game: a pack Buy waiting for the purchase module holds a chunk restart until the load fails', async () => {
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const p = await packWaiting();
+    const { h, m, ctl } = p;
+    ctl.buyPack(PACK_ID); // waits for the module
+    const page = fakePage();
+    h.game.restart(OWN_LATCH, page);
+    await pass(h, 3000);
+    expect([page.reloads, h.vm.notice], 'a pack Buy waits for the module').toEqual([[], null]);
+    p.held.fail(); // the flow chunk failed again
+    await settle();
+    expect([purchaseNoted(h), h.vm.meta?.purchase.kind, invoicePosts(m)], 'the failure toast, no flow').toEqual([true, 'idle', []]);
+    await pass(h, 1000);
+    expect([page.reloads, h.vm.notice?.kind]).toEqual([[RESTARTED], 'restart']);
+    h.game.dispose();
+    m.gate.dispose();
   } finally {
     errors.mockRestore();
   }

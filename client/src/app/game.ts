@@ -1742,8 +1742,9 @@ export function createGame(deps: GameDeps): Game {
    * reloaded paywall offers Buy for a payment still being confirmed (`delayed` included, critique W1). A Buy waiting for
    * the purchase module (lever P) holds like an invoice being created: its flow is made and asks for the invoice as
    * soon as the module lands, which would open the sheet under the update notice.
-   * The wallet's pack flow is waited for only while the player is on it (LRB): an invoice being created or confirmed,
-   * the wallet open, or a sheet no Back on the wallet has shown closed. One the player left (`purchaseLeft`) holds
+   * The wallet's pack flow is waited for only while the player is on it (LRB): a pack Buy waiting for the module (E6,
+   * `purchaseWaiting`: the same reason as the paywall's), an invoice being created or confirmed, the wallet open, or a
+   * sheet no Back on the wallet has shown closed. One the player left (`purchaseLeft`) holds
    * nothing: it moves only on the wallet's Check again or `activated`. After that reload the wallet reads the balance
    * again and the credit shows once the webhook lands, but its Buy is a new purchase, not Check again: the server
    * refuses a second pre-checkout of the pack for up to CHECKOUT_LOCK_SECS (120 s), and a later one charges and credits a

@@ -408,3 +408,37 @@ test('no game: a restart waits in the background, then reloads once at activated
   await expect.poll(r.navs.count, { timeout: LINE_MS, message: 'the restart at activated' }).toBe(1);
   expect(page.url(), 'the chunk latch in the fragment').toContain(chunkLatch());
 });
+
+test('no game: a restart waits while a wallet pack Buy waits for its module, then for its sheet, and reloads once after', async ({ page }) => {
+  test.setTimeout(150_000);
+  const r = await noGameWithHeldProbe(page, 9915);
+  const flow = await holdRequests(page, '**' + chunkPath('src/purchase/flow.ts'));
+  await page.evaluate(() => (window as unknown as E2eWindow).__tgMock.setInvoiceOutcome(null)); // the sheet shows
+  await page.getByRole('button', { name: ru('stories.wallet'), exact: true }).tap();
+  const w = page.getByRole('region', { name: meta('meta.wallet_title') });
+  await expect(w).toBeVisible({ timeout: LINE_MS });
+  await w.getByRole('checkbox', { name: meta('meta.wallet_terms_agree') }).check();
+  await w.getByRole('listitem').filter({ hasText: PACK_TITLE }).getByRole('button', { name: meta('meta.wallet_buy', { stars: 1 }) }).tap();
+  await flow.requested; // the Buy waits for the purchase module (E6 a)
+  await r.probe.release(); // import #2's evidence answers: the restart is wanted
+  // Either outcome ends the wait, so a page that restarts here fails on the count below, not on a timeout.
+  const wantedOrGone = async (): Promise<boolean> =>
+    r.navs.count() > 0 ||
+    (await page.evaluate(() => (window as unknown as E2eWindow).__novelChunks?.wanted() === 'chunk').catch(() => false));
+  await expect.poll(wantedOrGone, { timeout: LINE_MS, message: 'the restart wanted, or a reload' }).toBe(true);
+  await page.waitForTimeout(QUIET_MS);
+  expect(r.navs.count(), 'no restart while the pack Buy waits for its module').toBe(0);
+  await expect(restartNotice(page)).toHaveCount(0);
+  await expect(sheet(page)).toHaveCount(0);
+  await r.unblock();
+  await flow.release();
+  await expect(sheet(page), "the pack's invoice sheet").toBeVisible({ timeout: LINE_MS });
+  await expect(restartNotice(page), 'the sheet opens, never under the notice').toHaveCount(0);
+  expect(r.navs.count(), 'the sheet opens, never under the notice').toBe(0);
+  await sheet(page).locator('[data-sheet-button="cancel"]').tap();
+  await expect.poll(r.navs.count, { timeout: LINE_MS, message: 'the restart once the sheet closed' }).toBe(1);
+  expect(page.url(), 'the chunk latch in the fragment').toContain(chunkLatch());
+  await page.waitForFunction(() => '__tgMock' in window);
+  await page.waitForTimeout(QUIET_MS);
+  expect(r.navs.count(), 'one restart').toBe(1);
+});
