@@ -5,7 +5,7 @@
 import type { APIRequestContext, Page } from '@playwright/test';
 
 import { t, type UiKey } from '../src/i18n/index.ts';
-import { catalogTitle, chunkFile, devToken, expect, guard, launch, plantPending, playCh1ToEnd, reachLine, requests, test, type E2eWindow } from './helpers.ts';
+import { catalogTitle, chunkFile, devToken, expect, guard, launch, plantPending, playCh1ToEnd, reachLine, requests, scriptRequests, test, type E2eWindow } from './helpers.ts';
 
 const ru = (key: UiKey, params?: Readonly<Record<string, string | number>>): string => t('ru', key, params);
 
@@ -193,8 +193,7 @@ test('a purchase chunk that fails to load keeps the paywall and probes the build
   const gone = (url: URL): boolean => url.pathname === chunk;
   // A deploy removed the chunk: the paywall's prefetch and the Buy both meet a 404.
   await page.route(gone, (route) => route.fulfill({ status: 404, body: '' }));
-  const scripts = requests(page, /\.js(?:\?|$)/);
-  const chunkLoads = (): number => scripts.urls.filter((u) => new URL(u).pathname === chunk).length;
+  const chunkLoads = scriptRequests(page, chunk);
   const probes = requests(page, /\/api\/health(?:\?|$)/);
   await plantPending(request, 3008, 'ch2', CARRY);
   const token = await devToken(request, 3008);
@@ -209,7 +208,7 @@ test('a purchase chunk that fails to load keeps the paywall and probes the build
   await expect.poll(() => probes.urls.length, { timeout: LINE_MS, message: 'a GET /api/health followed' }).toBeGreaterThan(0);
   expect((await ch2(request, token)).owned, 'ch2 on the server').toBe(false);
   // Critique W2 (a): with the chunk served again, the next Buy imports it again (a browser that keeps a failed module
-  // fetch in its module map, Chromium before 155, fails here) and the invoice sheet opens.
+  // fetch in its module map, Chromium before 156, fails here) and the invoice sheet opens.
   const failed = chunkLoads();
   await page.unroute(gone);
   await buyButton(page, price).tap();
