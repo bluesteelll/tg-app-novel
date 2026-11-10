@@ -3,11 +3,11 @@
 | Row | Today (MEASURED, `final-build.log`) | After the programme (ARITHMETIC) | Enforced by |
 |---|---|---|---|
 | entry (br) | 39.4 / 40.0 KB (RULINGS 127); round 11: **38.4** / 40.0 after LEL's merge (RULINGS 141, 38,370 B); reconcile r1: **38,687 B** on `df0e12c` (= `acc4e0d`'s code) and **38,952 B** with LFL (`lfl-first-line/test_r2.md:65`; merged `cec347c`), the three designs' rows in §11.1: **39.45** / 40.0, 0.548 left, 0.048 above L1 / L2's return line (§15 item 15); reconcile r2 (RC-m6): **39.46** / 40.0, 0.538 left, 0.038 above the line, GM3w's App expressions booked +0.01; **main `3c62a86`: 38,988 B** MEASURED (`budget.ts`'s evaluate, docs-adopt) | adoption (main `3c62a86`; supersedes the rounds below; §11.1): **39.50** / 40.0; +0.05 (GM3s slot + mount) -> ~39.45; with per-player's round-4 +0.35 -> **39.80** (round 4; round 11: on 38.4, ~**38.80**, 1.2 KB left, RULINGS 142); Svelte's transition runtime measured at GM3s (§3.5) | row; the carried entry lever first in a lane that would cross; GM3s's STOP item if its delta passes +0.55 |
-| engine closure JS (br) | 214.2 / 230.0 KB (`:93`); round 10: **214.5** after M3c (design-shots' M-build, `design/shots/research_S4-engine-fit.md:170`); **main `3c62a86`: 215,087 B** MEASURED (`budget.ts`'s evaluate, docs-adopt) | adoption (main `3c62a86`; supersedes the rounds below; §11.1): **226.08** / 230.0; reconcile r2: +1.71 on LFL's 215,052 B -> ~216.76; the three designs together (+1.71 + 3.11 + 6.15) -> **226.02** / 230.0 (§11.1); reconcile r1: +1.69 on 215,015 B (`test_r2.md:66`, `df0e12c`) -> ~**216.71**, on LFL's 215,052 B -> ~216.74; the three designs together (+1.69 + 3.00 + 6.15) -> **225.89** / 230.0 (§11.1); was +1.62 -> ~**216.12** (round 14: unchanged at two decimals, m3's revive clause in `held` ~1 line, 4.3 B, 1.62 + 0.004 = 1.624, ARITHMETIC; round 12: `held`, `ahead`, the anchor box, +0.01; ~216.02 on LEL's 214.4; round 11: +1.61 -> 216.11; LEL's merge reads the base 214.4, `lel-entry-lever/test_r1.md:48`, so ~216.01 on today's main; round 10: +1.56 -> 216.06, re-based; round 9: +1.53 on 214.2 -> 215.73) | `budget.ts` row; `rules-lazy`; STOP rule |
+| engine closure JS (br) | 214.2 / 230.0 KB (`:93`); round 10: **214.5** after M3c (design-shots' M-build, `design/shots/research_S4-engine-fit.md:170`); **main `3c62a86`: 215,087 B** MEASURED (`budget.ts`'s evaluate, docs-adopt) | adoption (main `3c62a86`; supersedes the rounds below; §11.1): **226.08** / 230.0; reconcile r2: +1.71 on LFL's 215,052 B -> ~216.76; the three designs together (+1.71 + 3.11 + 6.15) -> **226.02** / 230.0 (§11.1); reconcile r1: +1.69 on 215,015 B (`test_r2.md:66`, `df0e12c`) -> ~**216.71**, on LFL's 215,052 B -> ~216.74; the three designs together (+1.69 + 3.00 + 6.15) -> **225.89** / 230.0 (§11.1); was +1.62 -> ~**216.12** (round 14: unchanged at two decimals, m3's revive clause in `held` ~1 line, 4.3 B, 1.62 + 0.004 = 1.624, ARITHMETIC; round 12: `held`, `ahead`, the anchor box, +0.01; ~216.02 on LEL's 214.4; round 11: +1.61 -> 216.11; LEL's merge reads the base 214.4, `lel-entry-lever/test_r1.md:48`, so ~216.01 on today's main; round 10: +1.56 -> 216.06, re-based; round 9: +1.53 on 214.2 -> 215.73) | `budget.ts` row; `rules-lazy`; STOP rule. Changed by RULINGS 201, 208 (as of `461424d`; docs lane `docs-errata-13`, group A): the row counts the union of the chunks any supported WebView requests before its first line (the path rule, §11.1); lever X's walk stop (`engineWalk` stops at `PIXI_ENV_SRCS` while `SKIP_PIXI_ENV` holds, `client/scripts/budget.ts:453-456`, and counts them again otherwise: the fail-safe); rule `pixi-env` (`client/src/arch.test.ts:217`) keeps scene code off the skipped systems; **204,596 B** MEASURED at X's merge (`597dded`) |
 | JS before the first line (br) | 257.2 / 270.0 KB (`:94`); round 10: **257.9** after M3c (`research_S4-engine-fit.md:171`); reconcile r1: **258,823 B** on `df0e12c` (entry + engine + the meta controller chunk), **254,004 B** with LFL (entry + engine closures; `test_r2.md:67`; merged `cec347c`, RULINGS 155); **main `3c62a86`: 254,075 B** MEASURED (`budget.ts`'s evaluate, docs-adopt) | adoption (main `3c62a86`; supersedes the rounds below; §11.1): **265.58** / 270.0; reconcile r2 (supersedes the rounds below; §11.1): the three designs add 11.48 -> **265.48** / 270.0 with LFL (4.52 left; peak 265.68 before SH7's -0.2), 270.31 (FAIL) on the pre-LFL row; reconcile r1: the three designs add 11.34 -> **265.34** / 270.0 with LFL (4.66 left; peak 265.54 before SH7's -0.2), 270.16 (FAIL) on the pre-LFL row; round 12: + 1.62 (engine) + 0.05 + 3.00 + 0.35 -> ~**262.92**, **7.08 KB left** before the shot design; with design-shots' rev. 7, +6.15 + 0.1, **269.17** / 270.0, 0.83 left, peak 269.37 (0.63 left); round 11: + 1.61 (engine) + 0.05 (entry, GM3s) + 3.00 (per-player engine, its round-10 figure as read, [per-player §12.1 Requests from this file](../per-player/12-interface-requests.md#121-requests-from-this-file-status-after-enginemd-round-9-as-read-2026-11-03-reconcile-revision-1-round-14-as-read-2026-11-09-reconcile-revision-2-enginemds-reconcile-revision-1-as-read-2026-11-09-reconcile-revision-3-enginemds-reconcile-revision-2-as-read-2026-11-09)) + 0.35 (per-player entry) -> ~**262.91**, **7.09 KB left** before the shot design; with design-shots' approved rev. 7, +6.15 + 0.1 ([shots §10 Budgets and validation](../shots/10-budgets-and-validation.md#10-budgets-and-validation-summary), RULINGS 143), **269.16** / 270.0, 0.84 left, peak 269.36 (round 10: 262.86, 7.14, 269.01 with rev. 6's +6.15 in all; LEL's merge leaves the base at 257.9, -15 B, RULINGS 141) (round 9 summed 257.2 + 1.53 + 3.00 = 261.73 without the entry terms; found while resolving) | row |
 | explore-ui chunk (br) | 4.9 / 16.0 KB (`:97`) | ~12.51 before MR1 (includes `cues/root.ts` ~0.2; round 9: `frameOut` +0.01; round 12: GM3b's `roomImages`, the `state:` holder and its release branches, `anchorBox`, ~8 lines, +0.03; round 13: the keep-set release and the close-up's two branches, `stateHold`, ~5 lines, +0.02); Changed by RULINGS 171 (as of `9a83251`; docs lane `docs-errata-10`, group A): **8,395 B** MEASURED after GM1a and GM1b, projected **~13.45** / 16.0 (§11.1) | row; split trigger at 14.0 MEASURED |
 | request walk (round 13) | - | test-only (`client/src/requests.test.ts`), 0 bundle bytes; its program's wall time MEASURED at GM3p's cut, 60 s test timeout, > 30 s a STOP item; round 14: the batch member, the transport's type, the re-type check over every value flow and the component names add checker work, not bytes (the same program; the time measured with them) | `test` |
-| **cue-stage chunk (br), new family** | - (PENDING until GM3s) | ~3.28 (reconcile r2, RC-m5: ~3.78 once SH10 gives every key and control default its `scene` id in `cues/stage/motions.ts`, +0.5 CLAIM, §11.1; round 11: the `checking` loop, `centre`, the `inventory` landing, the edge skip and its count, the DOM-branch count and the played-key panel suffix, +0.06; round 10: the fallback counter, the hit-area ghost and its outline, `holdEnd`, `Resolved` and the `ribbon` landing, +0.07; round 4: the wait hold and four keys; round 5: `offline`, `rate-limited`; round 6: `ready` and the key lines' rounding; round 7: three keys, `with`, the per-panel holds, `CUE_TARGET_ATTRS` and the resolver rules, +0.08; round 9: the two-phase player, `resolveAt`, `PRESET_SITE`, the leave watch, the outroing-root skip, the hold's notice step and the ghost clone, +0.08) | new `LAZY_FAMILIES` row (`budget.ts:159-187`), LIMIT `cueStageChunkBr` 6.0 KB (new), seen red on a fixture over the limit (GM3s); split trigger at 5.0 |
+| **cue-stage chunk (br), new family** | - (PENDING until GM3s) | ~3.28 (reconcile r2, RC-m5: ~3.78 once SH10 gives every key and control default its `scene` id in `cues/stage/motions.ts`, +0.5 CLAIM, §11.1; round 11: the `checking` loop, `centre`, the `inventory` landing, the edge skip and its count, the DOM-branch count and the played-key panel suffix, +0.06; round 10: the fallback counter, the hit-area ghost and its outline, `holdEnd`, `Resolved` and the `ribbon` landing, +0.07; round 4: the wait hold and four keys; round 5: `offline`, `rate-limited`; round 6: `ready` and the key lines' rounding; round 7: three keys, `with`, the per-panel holds, `CUE_TARGET_ATTRS` and the resolver rules, +0.08; round 9: the two-phase player, `resolveAt`, `PRESET_SITE`, the leave watch, the outroing-root skip, the hold's notice step and the ghost clone, +0.08) | new `LAZY_FAMILIES` row (`budget.ts:159-187`), LIMIT `cueStageChunkBr` 6.0 KB (new), seen red on a fixture over the limit (GM3s); split trigger at 5.0. Changed by RULINGS 201, 204 (as of `461424d`; docs lane `docs-errata-13`, group A): LIMIT **8.5 KB** (`cueStageChunkBr` 8,500, `client/scripts/budget.ts:131`; QS1) and a **7.5 KB review trigger** in place of the 5.0 split trigger (attribute by module; split only to remove a measured download: both halves load together); **6,108 B** MEASURED at GM3s's merge (`65e10ad`) |
 | puzzle-type chunk (br, largest) | 1.6 / 8.0 KB (`:95`) | each new type <= 8.0 | row; GM7p derives roots by glob |
 | puzzle-host chunk (br) | 2.5 / 10.0 KB (`:96`) | + `cues/root.ts` ~0.2 and (round 7) the cue-target markers, the load-failed wrapper and Retry's `disabled` ~0.03 (GM3p; round 8: the `disabled={frame.retrying}` attribute lands in GM3w, the same bytes) + the reach `canTry` ~0.01 (GM7r, round 5) + the `room` / `ladder` places with the top bar, its Retry, (round 5) its Try, (round 6) its three-row CSS and (round 7) its 44 px / 18 px rules and markers ~0.52 (GM8h) -> ~3.26; round 9: the frame wrapper, the keyed root and the moved frame styles ~0.01 plus `cues/root.ts`'s `frameOut` ~0.01 (GM3p, GM3s) -> ~3.28 | row |
 | world json (per chapter) | ch1 1.7 KB br, 10.8 KB raw (`:120`); Changed by RULINGS 190 (as of `837b1ed`; docs lane `docs-errata-12`, group A, fix round 1): **MEASURED** at GM2b's merge (`1782d6d`, 4 builds per tree, identical): ch1 br 1,719 -> **1,506** B, raw 10,779 -> **5,253** B; ch2 br 286 -> 255 B, raw 569 -> 394 B | compact emission (merged, GM2b); indentation 51.3 % of raw (CLAIM 25-30 %), so the **br row binds first**: ~58 hotspots per chapter at 8 KB br against ~67 at 32 KB raw (ARITHMETIC on ch1's 11 hotspots, [§5.4](05-world-data-and-save-format.md#54-world-json-bytes-r6)); capacity with views and states MEASURED in GM4 | rows (8 KB br, 32 KB raw) |
@@ -17,6 +17,11 @@
 | story checks | - | new lints each seen red on a seeded world; line IDs for every new `WorldText`; scan-dist unchanged (no answer of a `secret` puzzle in `dist/`: `ritual` / `setting` solutions only in server content, proven by the emit tests, m3); round 3: `world/answer-len` with its server pin, `world/device-failed-state`, `world/attempts-without-wrong`; round 4: `world/view-type-site`, `world/device-type`, `world/device-parts-frame`; round 5: `world/device-closeup` (W2), `world/device-parts-frame` with the safe frame and the derived band (m5), `world/reach-solution`'s "not reached at `initial`" clause (W3); round 6: every module text a line of the walk (en checks, shipped en, `id/chapter-prefix`, needles) and `world/text-unwalked` (W1), the band 496 (m1), ch3's join at a knot top with no `graph/entry-below-top` (W2); every new code in a registered lint file's `codes`, unique across registries (GM1d's test), and `dsl-doc: lint table equals lint codes` pinned at 86 rows in every lane; round 7: `world/text-unwalked` fed by the walk's own per-module IDs (`WorldLintInput.moduleLines`), `texts.ts` value-importing nothing (a source test), `--fix-ids`' world-place skip pinned (GM5) | `story` gate; `test` |
 | world json (ch3, new, round 4) | - (no world) | GM8d's demo section, MEASURED in its build log against the same rows; round 5: one more placeholder bg (`fog_gallery`, m8) in the ch3 transfer and room-set rows | rows (8 KB br, 32 KB raw); room-set for its rooms and device views |
 | answer length (round 3, W3) | server 16 (`puzzles/mod.rs:21`); Changed by RULINGS 164, 168 (as of `9b4fd25`; docs lane `docs-errata-11`, group A): the server bound is **64** since GM6s1 (`81a15b0`; `server/src/puzzles/mod.rs:34` `MAX_ANSWER_LEN` on `9b4fd25`, and from GM6s2 the content load refuses an `answerLen` above it, `server/src/content.rs:1041-1042`) | build bound 16, 64 from GM7g; every posted length <= the bound | `world/answer-len` + the `<=` pin, each seen red |
+
+Changed by RULINGS 201, 208 (as of `461424d`; docs lane `docs-errata-13`, group A): two rows this table does not list:
+**all JS** has LIMIT **365.0 KB br** (`allJsBr` 365,000, `client/scripts/budget.ts:132`; RULINGS 201 QS3, written by
+lane X; §11.1 Ledger 3), 284,488 B MEASURED at `597dded`; lever X moved the **first-load** rows ch1 306,278 -> 292,076 B
+and ch3 288,426 -> 274,224 B (-14,202 each, MEASURED at `597dded`), with the first line 256,519 -> 242,304 B (-14,215).
 
 Changed by RULINGS 171 (as of `9a83251`; docs lane `docs-errata-10`, group A): **spike P2-a, MEASURED** (GM1b
 `03a00bc`, `client/scripts/story/spike-p2.test.ts`, eight seeds, a quiet machine): states per configuration (§7.6) —
@@ -94,6 +99,73 @@ ledger ([shots §10 Budgets and validation](../shots/10-budgets-and-validation.m
   `23e1d31`; 190: 228.742 at `1782d6d`).
   **Ruled: RULINGS 186** — a row judged against a bound tighter than the chunk-hash churn (tens of bytes) is judged on
   the mean of at least 4 builds per tree, never on one build.
+- **Main `65e10ad`, MEASURED** (Changed by RULINGS 201, 204 (as of `461424d`; docs lane `docs-errata-13`, group A);
+  `65e10ad` is GM3s's merge): entry 37,691, engine 218,828, first line 256,519, explore-ui 8,917, cue-stage 6,108 (a
+  new row), puzzle-host 2,527, all JS 284,494 B (exact bytes, the orchestrator's merge check, RULINGS 204). Per lane,
+  main -> merge: **SH1** `2db33c3` (main `0fb7018`, code `837b1ed`) engine **+510** against its +0.3 term (mean of 4
+  builds per tree), entry +42 (churn), first line +552, all JS +549 (RULINGS 201); **GM3s** `65e10ad` (main `7b9dc6f`)
+  entry 37,528 -> 37,691 (**+163** against +0.05; its STOP line +550), engine 217,587 -> 218,828 (**+1,241** against
+  GM3m's +0.16 and GM3s's +0.19, one sample over the combined 0.35; QS2's STOP line +1,580), first line +1,404,
+  explore-ui 8,430 -> 8,917 (+487 against +0.21), cue-stage **6,108 / 8,500** (review trigger 7,500), puzzle-host 2,530
+  -> 2,527, all JS 276,656 -> 284,494 (+7,838; 24 files) (RULINGS 204). GM3s took Branch F: its P0 measured Svelte's
+  transition runtime in the **entry at +989 B br** (past 550), so the layer's entrance and exit are cue-stage motions
+  (§3.5, RULINGS 195, 198); E1 (the explore root attaches through `bind:this` + `$effect`, rule `svelte-action`)
+  MEASURED entry -219 and first line -252, E2 (`cues/root.ts` keeps its own trigger tuple) explore-ui -190 and
+  cue-stage -109, with one request fewer (RULINGS 201). **R** (the estimate policy below) at GM3s's merge: engine
+  **1.700** (n 9), all JS **2.030** (n 10), entry **3.26** (n 3), explore-ui **2.319** (n 3). Projection on `65e10ad`
+  (ARITHMETIC, RULINGS 204): Ledger 4 218.828 + 11.60 x 1.700 = 238.548 with no lever, **224.283** after X; Ledger 2
+  37.691 + 0.36 x 3.26 = **38.865**; Ledger 1 277.413 with no lever, **263.148** after X; Ledger 3 **341.072** / 365.0.
+- **Main `597dded`, MEASURED** (Changed by RULINGS 207, 208 (as of `461424d`; docs lane `docs-errata-13`, group A);
+  `597dded` is lever X's merge): entry 37,708, engine **204,596**, first line **242,304**, first-load ch1 292,076 and
+  ch3 274,224, all JS 284,488 B against 365,000 (exact bytes, the orchestrator's merge check after the trunk sync,
+  RULINGS 208). Per lane: **SH2** `7f45dee` every row byte-identical to main `65e10ad` (a story-tool lane: no engine
+  term, no R sample; RULINGS 207); **lever X** `597dded` (main `65e10ad`) engine **-14,232**, first line **-14,215**,
+  first-load ch1 / ch3 **-14,202** each, entry +17 (churn; mean of 4 per tree), all JS **-6**, explore-ui +3,
+  cue-stage +5, puzzle-type -14, puzzle-host +1, meta-ui +5 (hash churn; module identity held, RULINGS 206 Q1); one
+  serial request fewer at mount; the throttled time to first line (information only, RULINGS 206 Q3) main 4110 / 3880 /
+  4015 ms, HEAD 3460 / 3392 / 3425 ms (limit 6000). **R unchanged** (a lever and a no-term lane add no sample): engine
+  1.700, all JS 2.030, entry 3.26, explore-ui 2.319. Projection on `597dded` (ARITHMETIC, RULINGS 208): Ledger 4
+  204.596 + 11.60 x 1.700 = **224.316** / 230.0 (5.684 left; 222.802 after P); Ledger 2 37.708 + 0.36 x 3.26 =
+  **38.882** / 40.0 (1.118 left); Ledger 1 = Ledger 2 + Ledger 4 = **263.198** / 270.0 (6.802 left); Ledger 3 284.488 +
+  6.464 + 1.600 + 23.94 x 2.030 = **341.150** / 365.0 (23.85 left). No ledger is under the 1.0 KB trigger, so O5 and Y
+  wait; engine-adding cuts may start again (QS2's condition met), each quoting E, R and E x R.
+  **Ruled: RULINGS 206** — a lever's lazy family rows (and the entry, beside its mean of 4 builds) are judged by
+  **module identity**: the chunk list and count equal main -> HEAD, and each chunk file's raw text byte-equal after
+  normalising hashed names (`-<8 chars>.js|css` -> `-H.js|css`) and the 16-hex build id; a difference after
+  normalisation is a STOP, and the br delta is quoted as churn (above 0.5 KB a STOP anyway). The throttled time to first
+  line is information only, never a gate.
+- **The path rule (RULINGS 201; the union rule, budget round r198 design §3.1).** Ledgers 1 and 4 count every JS chunk
+  that some supported WebView requests **automatically before its first line** on the boot -> chapter -> first-line
+  path, a capability fallback included (Pixi's three renderer facades: a device requests one by what it is): the
+  entry's static closure, the engine's static closure and every dynamic import the engine walk reaches that is not a
+  lazy root. A chunk is a **lazy root** (its own row, out of Ledgers 1 / 4) when a player action (a tap, Buy, a menu),
+  an app event after the first line (a yield, a puzzle, a paywall) or a prefetch scheduled after the first line
+  requests it. The named paths where a lazy root is requested before a first line are bounded by their own rows:
+  residual (j) (a room- or puzzle-first resume, a yield-first chapter) and the paywall-first session if P's cut keeps a
+  prefetch at `openPaywall`; a new such path is named in its lane's cut. **A chunk leaves the rows only when no path
+  requests it** (lever X's environment chunks while `SKIP_PIXI_ENV` holds). Moving code between the static engine
+  chunk and a renderer-fallback chunk saves 0 on the rows, so probe **G** (Pixi's WebGPU / Canvas modules) is
+  **withdrawn**; its return is an engineering ruling at the queue's end, before Q59 is asked. The rule is written once,
+  in `engineWalk`'s basis note (`client/scripts/budget.ts:441-452`); `firstLineFiles` (`:470`) gives the e2e the same
+  set.
+- **The estimate policy (RULINGS 201; design §5).** **R per row** = the median of MEASURED / term over the lanes merged
+  since the adoption (RULINGS 158) with a positive net term on that row; one merged MEASURED delta is one sample (a
+  term deferred to a later lane joins that lane's term: GM3m + GM3s is one sample); a row with fewer than 3 samples uses
+  the all-JS R; floor 1.0; recomputed and printed in each merge's RULINGS line. At SH1's merge: engine 1.700 (n 9), all
+  JS 2.031 (n 10), entry 3.52 (n 3), explore-ui 2.83 (n 3); at GM3s's merge (RULINGS 204): 1.700, 2.030, 3.26, 2.319;
+  cue-stage and `scene-motion` use the all-JS R. **Stability note:** the engine sample is bimodal (1.009 | 3.025, SH1
+  between), so each next sample moves the median toward its own ratio; this is why the trigger is evaluated at every
+  merge, and why Ledger 3's one-time LIMIT is set on the upper quartile, not the median. **Booking:** (2a) the unit is
+  a lane's **net** term per row (planned module moves included at the same R); a net > 0 books net x R_row; a net <= 0
+  books **0** until that lane measures it (so the projection bounds every point of the remaining order); a moved module
+  is growth on the row it enters (SH7's `flatten` +0.8 x R on `scene-motion`); a cut's own lines that move an already
+  MEASURED module book its MEASURED bytes (R 1.0); (2b) Ledger 1 = Ledger 2 + Ledger 4 (`budget.ts` sums the two
+  walks), each term at its own row's R, and Ledger 3 is its own row with its own R; (2c) what a row counts is the path
+  rule above, and a lever's saving is measured under it. Every cut states per row E (with its method), R and E x R (an
+  estimate made from built bytes takes R 1.0); a ledger STOP is judged on the projection at E x R; the per-lane build
+  STOP is a MEASURED delta more than 0.5 KB over **E x R**; an attribution tripwire (no STOP) at E + 0.5 attributes the
+  delta by module (deltas within churn judged on the mean of >= 4 builds, RULINGS 186). This section owns R, the
+  booking rule, the path rule and the realistic sums; the term tables stay with their owners.
 - **Main, MEASURED:** exact bytes on `df0e12c` (code identical to `acc4e0d` and `a5f887b`: the two later commits are
   docs) from `lfl-first-line/test_r2.md:65-69` (budget.ts's own evaluate): entry 38,687, engine 215,015, first line
   258,823 (entry + engine + meta controller chunk, the pre-LFL row, `m3s-memory-half-paid/merge/build.log:94`), all
@@ -203,6 +275,12 @@ pass 40.0 is that lane's own STOP. `entryJsBr` is never raised.
 
 §15 item 16 carries the ruling the third type chunk needs; no lane raises the LIMIT.
 
+**Ruled since: RULINGS 201** (QS3) — Ledger 3 is re-set now, once, to **365.0 KB br** = ceil(292.243 + 23.94 x 2.988 +
+1.0): the MEASURED base through SH1 with the four type chunks and the queued levers' all-JS costs (292.243), plus the
+remaining all-JS nets (23.94) at the upper quartile (2.988) of the 10 MEASURED all-JS ratios, + 1.0 (ARITHMETIC). It is
+crossed only if the median passes 3.04. **RULINGS 158's re-set at GM7p is withdrawn**; lane X wrote `allJsBr` 365,000
+(`client/scripts/budget.ts:132`, `597dded`). On `597dded`: 341.150 / 365.0 (the `597dded` bullet above).
+
 **Ledger 4: engine closure JS (br)**, LIMIT 230.0 (`engineJsBr`): main `3c62a86` 215.087 (MEASURED) + 1.71 + 3.13 + 6.15 = **226.077** / 230.0, 3.923 left; the peak before SH7's -0.2 is 226.277 (3.723 left) (ARITHMETIC; the adoption, R-E36 taken; reconcile r2 read 226.02 on LFL's 215.052 and PPL +3.11). (Reconcile r1
 read 225.89 on EN +1.69 and PPL +3.00.) The shots' own figure, ~225.2
 ([shots §10 Budgets and validation](../shots/10-budgets-and-validation.md#10-budgets-and-validation-summary)), used EN's +1.53 and the 214.5 base; superseded here.
@@ -216,6 +294,26 @@ candidates are LFL's Q6 S (`puzzles/session.ts` imported by `yields.ts`, ~-1.19 
 imported by `game.ts` on a paywall, ~-1.52 KB br; it joins only if `game.ts` is free, SH1 merged, else it stays the
 next lever). Every cut quotes Ledger 4 with its own line-by-line engine estimate; a cut whose projection crosses
 230.0 STOPs.
+
+**Ruled since: RULINGS 201, 204, 208** — the lever program replaces the two candidates above: lane **X**
+`lever-x-pixi-env` (Pixi `skipExtensionImports` from `client/src/scene/pixi-env.ts`, the fail-safe walk stop, rule
+`pixi-env`, `touch-action: none` kept, e2e `scene-env.spec.ts`, the Ledger 3 re-set) merged `597dded` (engine -14,232
+MEASURED); **P** (`purchase/flow.ts` lazy at Buy, MEASURED -1.514 engine on an applied build) pre-emptively in the
+first client slot after X, beside GM3; then, evaluated at every merge, while Ledger 4 or 1 leaves < 1.0 KB, **O5 then
+Y** (S folded into Y) run before the next engine-adding cut, each only on (a) its saving MEASURED on an applied build
+under the path rule and (b) a full e2e equal to main's; O5's cut is designed (read-only) once the next positive-term
+engine lane (GM3) measures an engine delta >= 0.505 KB (0.557 after P). R and W rejected; G withdrawn (the path rule).
+**Basis kept:** `engineJsBr` 230.0 and `firstLineJsBr` 270.0 (the accepted time-to-first-line envelope; X's freed bytes
+are planned growth); X rewrote the basis note. When the queue is exhausted (forecast at the second upper-cluster engine
+sample after SH1: every lever leaves Ledger 4 at 232.668 and Ledger 1 at 271.597 at R 3.025), each engine-adding cut
+first places its own new code behind an existing lazy root; then the owner's **Q59**
+([OPEN-QUESTIONS](../../OPEN-QUESTIONS.md)): raise the two LIMITs on the measured throttled time to first line, or
+defer named planned engine features; until answered, no engine-adding cut starts past a projected crossing. **Reach**
+(design §2.2, ARITHMETIC on the base after SH1, 204.402 after X): the single R up to which a lever set keeps >= 1.0 KB
+on Ledger 4 / Ledger 1 is X 2.12 / 2.21, X + P 2.25 / 2.34, X + P + O5 2.42 / 2.52, X + P + O5 + Y 2.71 / 2.80. A 10th
+engine sample at GM3's ratio r gives R = (1.700 + clamp(r, 1.009, 3.025)) / 2 (n 10), so the trigger fires at GM3
+above 2.53x (2.78x with P merged); at n 11 with both upper samples at 3.025 the queue is exhausted (design §2.2's n 10
+/ n 11 tables).
 
 **One owner per figure (reconcile r2, RC-W1).** This section owns the sums, headrooms and verdicts of the three
 designs; each design owns its own lane terms (EN §3.5, per-player §10 "Ledgers", the shots §9 / §10 with this

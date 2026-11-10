@@ -9,6 +9,11 @@
   engine.md §12, as read) and moves `t008`-`t011` of the lighthouse into a new knot `lighthouse_radio` that opens with a
   `show:`; SH11 restages ch3 after GM8d.
 
+**Carried from SH2 (RULINGS 207):** SH2's cut Q4 (SH1's carry (a), carried further): `assetOf(face)` on a shot chapter
+names the face file or nothing (today `char/<c>/<x>` on a sprite stage), with this lane's runtime `imageIds`; SH2
+supplies the facts (`build/shots.json` `sprites`, `shots.<s>.cast`). It goes to SH12a's cut instead if SH12a runs first.
+This lane then joins `graph.ts`'s order (SH2 -> GM9p -> SH12a).
+
 **Lock (12; rev. 3: `story/ch3/main.ink` out):**
 - `client/src/scene/{shot-view,shot-view.test}.ts` (new)
 - `client/src/scene/{executor,executor.test,registry,registry.test,controller}.ts`

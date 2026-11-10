@@ -20,21 +20,26 @@ done:      M3c (a6365a8), docs-errata-8 (be6c348), LRF (a93fe54), docs (d31f720,
            after docs-errata-11 (main 837b1ed): GM1d (794181b, RULINGS 183), docs-errata-11 (e2d2d13, RULINGS 185),
            GM3w (508bd36, RULINGS 186), per-player GM6a (23e1d31, RULINGS 188; D5.1 adopted), GM2b (1782d6d,
            RULINGS 190), GM3m (a3f0678, RULINGS 193), GM3c (837b1ed, RULINGS 196)
-in flight: (as of 837b1ed) GM3s gm3s-mech-cue-stage (RULINGS 194 / 195; base a3f0678, launched beside GM3c; lock
-           18: cues/stage/{index.ts,CueStage.svelte,stage.svelte.test.ts,motions.ts}, cues/root.ts,
-           ui/{state.svelte.ts,App.svelte,explore-view.svelte.ts}, ui/explore/{ExploreView.svelte,
-           explore.svelte.test.ts}, app/{yields,yields.test}.ts, scripts/{budget,budget.test}.ts, arch.test.ts,
-           e2e/mechanics.spec.ts, mechanics/{rules/index.ts,registry.test.ts}), shots SH1 sh1-shot-dsl (RULINGS
-           196; base 837b1ed; lock 12: story/{tags,tags.test,staging,dsl-doc.test}.ts, docs/STAGING-DSL.md,
-           scripts/story/graph.ts, graph-shot.test.ts, app/game.ts, app/stage-route{,.test}.ts,
-           scene/{executor,executor.test}.ts), docs-errata-12 (RULINGS 197; docs only, in the idle server slot)
-next:      the engine-closure lever lane (RULINGS 195 / 196; Ledger 4's headroom 0.873 KB on 837b1ed, under the
-           1.0 KB trigger) in the first client slot after GM3s merges, before GM3 or any later engine-adding lane;
-           GM3 after GM3s and the lever (GM3c and GM3m merged); SH2 after SH1
+           after docs-errata-12 (main 461424d): docs-errata-12 (0fb7018, RULINGS 199), shots SH1 (2db33c3, RULINGS
+           201), docs 7b9dc6f (Q59 recorded, Q54's X checklist), GM3s (65e10ad, RULINGS 204), shots SH2 (7f45dee,
+           RULINGS 207), lever X lever-x-pixi-env (597dded, RULINGS 208), docs 461424d (Q54, Q59)
+in flight: (as of 461424d; all three launched from 461424d, RULINGS 209) GM3 gm3-mech-use (lane A; the plan's lock 16:
+           mechanics/{data,rules}/use.ts, mechanics/use.test.ts, scripts/story/mechanics/use.ts,
+           mechanics/{data,rules}/index.ts, scripts/story/mechanics/index.ts, mechanics/rules/{core,writer}.ts,
+           explore/reduce.ts, cues/stage/motions.ts, scripts/story/playthrough.ts, explore/{explore,controller}.test.ts,
+           app/{yields,yields.test}.ts; plus at most four files pre-ruled for its carries only: scripts/story.ts,
+           mechanics/contract.ts, mechanics/rules/search.ts, mechanics/registry.test.ts), lever P
+           lever-p-purchase-lazy (lane C; lock app/{game,game.test}.ts, scripts/{budget,budget.test}.ts,
+           arch.test.ts, and with a named hunk only purchase/flow.ts, e2e/purchase.spec.ts), docs-errata-13 (docs
+           only, in the idle server slot)
+next:      GM3u after GM3 (yields.ts) and P (arch.test.ts); SH3a after SH2 (merged) once P frees budget.ts /
+           budget.test.ts; O5, then Y, only on the merge-time trigger (carried below)
 carried:   L2, the entry lever (shelved, RULINGS 142 / 158; return line: entry headroom < 0.5 KB br, §15 item 15);
            the preload-priority lane (RULINGS 152 Q14 (b); scene/{registry,preload}.ts, the scene/* tail);
-           the lever's candidate P (purchase/flow.ts, ~-1.52 KB br) unless game.ts is free when the lever lane
-           starts (SH1 merged; RULINGS 196)
+           the levers O5 and Y (Y with S folded in; RULINGS 201): each runs before the next engine-adding cut once
+           Ledger 4 or Ledger 1 leaves < 1.0 KB (none does on 597dded, RULINGS 208), and O5's read-only cut design
+           starts when GM3 reports an engine delta >= 0.505 KB (0.557 after P); probe G withdrawn by the path rule
+           (RULINGS 201; its return is a ruling at the queue's end)
 stopped:   the character half of design-animation (RULINGS 132), replaced by design-shots (RULINGS 143)
 LFL's nine files: client/src/app/{boot,game,meta,game.test,meta.test}.ts, client/scripts/{budget,budget.test}.ts,
            client/e2e/perf.spec.ts, client/src/arch.test.ts (lfl-first-line/test_r2.md:85-86)
@@ -45,6 +50,14 @@ on `837b1ed`, under the 1.0 KB trigger): it runs in the first client slot after 
 engine-adding lane; the `carried:` line gains its second candidate, P (`purchase/flow.ts`, ~-1.52 KB br), which joins
 the lever only if `game.ts` is free (SH1 merged) and otherwise stays the next lever
 ([§11.1 Ledger 4](11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13)).
+
+**Ruled since: RULINGS 201, 208** — the lever lane is the program X, then P (budget round r198 design §2.3): `next:`
+reads lane **X** `lever-x-pixi-env` after GM3s and SH1, then **P** `lever-p-purchase-lazy` beside GM3 or SH2 (never
+both); `carried:` reads **O5 and Y** on the merge-time trigger (Ledger 4 or 1 under 1.0 KB; Y with S folded in) in
+place of "S / P"; probe **G** is frozen (the path rule saves it 0; its return is a ruling at the queue's end). X merged
+`597dded` (RULINGS 208), so GM3 and P may start; the block's state lines at `461424d` are group B's. The lever rows: X
+and P in the GM table below, and X and P in the `game.ts`, `budget.ts`, `arch.test.ts`, `scene/controller.ts` and
+`scripts/assets/manifest.ts` rows.
 
 Changed by RULINGS 159-173 (as of `9a83251`; docs lane `docs-errata-10`, group B): the block above is the state at
 `9a83251` (SHAs from `git log --first-parent main`). L1, GM6k, GM1a, GM6s1, GM1b and `docs-adopt` moved to `done:`;
@@ -80,6 +93,28 @@ engine-closure lever lane is new (RULINGS 195, 196): no row below names it yet; 
 critic, both candidates re-measured) and takes its place in this order. The rows below keep GM1d, GM3w, GM6a, GM2b,
 GM3m and GM3c as the predecessors they name; all six have merged.
 
+Changed by RULINGS 198-209 (as of `461424d`; docs lane `docs-errata-13`, group B): the block above is the state at
+`461424d` (SHAs from `git log --first-parent main`). `docs-errata-12`, SH1, GM3s, SH2 and lever X moved to `done:`, with
+the orchestrator's docs commits `7b9dc6f` and `461424d` (not lanes); the `in flight:` line read "(as of 837b1ed) GM3s
+gm3s-mech-cue-stage (RULINGS 194 / 195; base a3f0678, launched beside GM3c; lock 18:
+cues/stage/{index.ts,CueStage.svelte,stage.svelte.test.ts,motions.ts}, cues/root.ts,
+ui/{state.svelte.ts,App.svelte,explore-view.svelte.ts}, ui/explore/{ExploreView.svelte, explore.svelte.test.ts},
+app/{yields,yields.test}.ts, scripts/{budget,budget.test}.ts, arch.test.ts, e2e/mechanics.spec.ts,
+mechanics/{rules/index.ts,registry.test.ts}), shots SH1 sh1-shot-dsl (RULINGS 196; base 837b1ed; lock 12:
+story/{tags,tags.test,staging,dsl-doc.test}.ts, docs/STAGING-DSL.md, scripts/story/graph.ts, graph-shot.test.ts,
+app/game.ts, app/stage-route{,.test}.ts, scene/{executor,executor.test}.ts), docs-errata-12 (RULINGS 197; docs only,
+in the idle server slot)", the `next:`
+line read "the engine-closure lever lane (RULINGS 195 / 196; Ledger 4's headroom 0.873 KB on 837b1ed, under the 1.0 KB
+trigger) in the first client slot after GM3s merges, before GM3 or any later engine-adding lane; GM3 after GM3s and the
+lever (GM3c and GM3m merged); SH2 after SH1", and the `carried:` line ended "the lever's candidate P
+(purchase/flow.ts, ~-1.52 KB br) unless game.ts is free when the lever lane starts (SH1 merged; RULINGS 196)". The
+lever lane became the program X, then P (RULINGS 201; rows lever X and lever P below): X ran in lane A after GM3s,
+beside SH2 (X's row: Beside SH2), and merged; P runs in lane C beside GM3, a pair P's row lists (Beside: GM3 or SH2,
+never both; locks checked disjoint at launch, RULINGS 209). GM3 started with every predecessor of its row merged (GM3c,
+GM3s, GM3m, GM1b) and after SH2, its never-beside on `playthrough.ts` (RULINGS 202). SH1 and SH2 hold no file now; SH3a,
+the next shot lane, waits for P on the `budget.ts` row. The rows below keep SH1, GM3s, SH2 and X as the predecessors
+they name; all four have merged.
+
 **The one order across the three designs (reconcile r1; RULINGS 143, 152, 153; design-shots §9.14 and I-2,
 adopted with one change; it replaces the paragraph "Animation and shot lanes" that earlier sections cite).** The **A(f)** placeholders of rounds 4-14 ("every lane of an adopted animation or shot design
 that holds file f") are retired: `design-shots` is the adopted design (RULINGS 143) and its §9.14 names its lanes, so
@@ -108,7 +143,9 @@ re-located at each holder's cut.
 | GM2b | GM1d (`world/*`, `build.test.ts`, `world.test.ts`), GM2a (`reconcile.ts`, `explore.test.ts`); GM1b (`mechanics/core.ts`, round 4: replaces `lint.ts`) | GM3m, GM3w |
 | GM3c | GM2b (`world/*`, `decode.test.ts`; round 6: `scripts/story/world.ts`, `world.test.ts`), GM1d (`scripts/story/mechanics/index.ts`) (round 4: no `lint.ts`); before GM3 (the first module with texts) and per-player GM6c1a (R-E25) | GM3m, GM3w, GM3s |
 | GM3s | GM3m (`cues/**`, `arch.test.ts`), GM3w (`App.svelte`, the explore view files, `yields.ts`); reconcile r1: LFL (merged) on `budget.ts`, `budget.test.ts`, then SH3a by launch, never beside; SH6 never beside (`arch.test.ts`) | GM3c |
-| GM3 | GM3c (index files), GM3s (`yields.ts`), GM3m (`motions.ts`), GM1b (`rules/{core,writer}.ts`) | - |
+| lever X (Changed by RULINGS 201, 205, 206 (as of `461424d`; docs lane `docs-errata-13`, group A); merged `597dded`) | GM3s (`budget.ts`, `budget.test.ts`, `arch.test.ts`), SH1 (the `scene/*` row's side); before GM3, SH3a (`budget*` by launch), GM3u (`arch.test.ts`), SH5a (`scene/controller.ts`); lock 8: new `scene/pixi-env.ts`, `scene/controller.ts`, `scene/adapter.svelte.test.ts`, `scripts/{budget,budget.test}.ts`, `arch.test.ts`, new `e2e/scene-env.spec.ts`, `scripts/assets/manifest.ts` (one re-export, RULINGS 206) | SH2 |
+| lever P (Changed by RULINGS 201, 209 (as of `461424d`; docs lane `docs-errata-13`, group A); running) | X (`budget.ts`, `budget.test.ts`, `arch.test.ts`), SH1 (`game.ts`, `game.test.ts`); before SH5a (`game.ts`), SH3a (`budget*`), GM3u (`arch.test.ts`); lock: `app/{game,game.test}.ts`, `scripts/{budget,budget.test}.ts`, `arch.test.ts`, and with a named hunk only `purchase/flow.ts`, `e2e/purchase.spec.ts` | GM3 or SH2 (never both) |
+| GM3 | GM3c (index files), GM3s (`yields.ts`), GM3m (`motions.ts`), GM1b (`rules/{core,writer}.ts`) | lever P (Changed by RULINGS 201, 209 (as of `461424d`; docs lane `docs-errata-13`, group A)) |
 | GM3u | GM3 (`yields.ts`), GM3s (`ExploreView.svelte`, `arch.test.ts`, the e2e) | - |
 | GM3p | GM3u (`yields.ts`, `controls.test.ts`, the e2e), GM3w (`PuzzleHost.svelte`, `puzzle-view.svelte.ts`, round 9: `puzzle-host.svelte.test.ts`), GM3s (round 9: the `CueStage.svelte` its real-flush tests render) | - |
 | GM3b | GM3p (`yields.ts`, the e2e), GM2b (`emit.ts`), GM1d (`story/ch1/world.json`, `build.test.ts`); **per-player GM6a** | - |
@@ -166,10 +203,10 @@ the table is the error to fix (the rule of this section's first paragraph).
 |---|---|
 | `client/src/explore/controller.ts`, `controller.test.ts` | GM1a -> GM3 (test only) -> GM3b -> GM4 -> GM8i -> per-player GM6c4 -> SH9 (reconcile r1, design-shots I-16: `shotImages` in the neighbour preload, one hunk; never beside) |
 | `client/src/app/yields.ts`, `yields.test.ts` | GM1a -> GM2a -> GM3w (`yields.ts` only: the `apply` dep's type, round 4, and `retrying: false` in `openPuzzle`'s frame literal, round 8; named in round 9, critique_engine_r8 drift) -> GM3s -> GM3 -> GM3u -> GM3p -> GM3b -> GM4 -> GM4u -> GM5 -> GM7r -> GM8h -> GM9r; per-player GM6c2, GM6c4, GM6d2 by launch, never beside one of these |
-| `client/src/app/game.ts` | reconcile r1: LBI, LFL (merged) -> LRB (merged `3c62a86`, RULINGS 157) -> L1 (`l1-entry-summary`, RULINGS 158; merged `eec24fe`, RULINGS 159) -> GM2a -> GM3w (two hunks, round 4) -> SH1 -> SH5a -> SH5b -> SH7 -> per-player GM6c2 -> GM6c3 -> GM6d1 -> GM9r, one at a time (was: GM2a -> GM3w -> A(`game.ts`) (rev. 3: MD2 -> MA1a -> MA1b) -> per-player GM6c2 -> GM6c3 -> GM6d1 -> GM9r) |
-| `client/src/app/game.test.ts` (reconcile r1, new row) | LEL, LBI, LFL (merged) -> LRB (merged `3c62a86`) -> the `game.ts` row's holders that test it, in that row's order -> SH12a (`reduceStage`, the `# show:` fixture) |
-| `client/src/app/boot.ts`, `client/src/app/meta.ts`, `meta.test.ts` (reconcile r1, new row) | LEL, LBI, LFL (merged) -> LRB (merged `3c62a86`) -> L1 (`l1-entry-summary`, RULINGS 158; merged `eec24fe`, RULINGS 159; `boot.ts`); no GM, GM6 or SH lane holds them |
-| `client/src/ui/App.svelte` | GM3w (round 8: also the `.host-failed` Retry's `disabled={frame.retrying}`) -> GM3s (round 7: the `.host-failed` block's cue markers) -> per-player GM6t (one prop, per-player round 4); nothing later of this design (round 3 W1: `coversStage` from GM3w on is the only seam; GM8h narrows it in `puzzle-view.svelte.ts`) |
+| `client/src/app/game.ts` | reconcile r1: LBI, LFL (merged) -> LRB (merged `3c62a86`, RULINGS 157) -> L1 (`l1-entry-summary`, RULINGS 158; merged `eec24fe`, RULINGS 159) -> GM2a -> GM3w (two hunks, round 4) -> SH1 -> SH5a -> SH5b -> SH7 -> per-player GM6c2 -> GM6c3 -> GM6d1 -> GM9r, one at a time (was: GM2a -> GM3w -> A(`game.ts`) (rev. 3: MD2 -> MA1a -> MA1b) -> per-player GM6c2 -> GM6c3 -> GM6d1 -> GM9r). Changed by RULINGS 201 (as of `461424d`; docs lane `docs-errata-13`, group A): lever **P** after SH1, before SH5a (and **O5** after P if its cut needs `game.ts`) |
+| `client/src/app/game.test.ts` (reconcile r1, new row) | LEL, LBI, LFL (merged) -> LRB (merged `3c62a86`) -> the `game.ts` row's holders that test it, in that row's order -> SH12a (`reduceStage`, the `# show:` fixture). Changed by RULINGS 201 (as of `461424d`; docs lane `docs-errata-13`, group A): lever P among them (after SH1) |
+| `client/src/app/boot.ts`, `client/src/app/meta.ts`, `meta.test.ts` (reconcile r1, new row) | LEL, LBI, LFL (merged) -> LRB (merged `3c62a86`) -> L1 (`l1-entry-summary`, RULINGS 158; merged `eec24fe`, RULINGS 159; `boot.ts`); no GM, GM6 or SH lane holds them. Changed by RULINGS 201 (as of `461424d`; docs lane `docs-errata-13`, group A): lever **O5** holds `boot.ts` (with `app/engine.ts`) when the trigger requires it, after P (budget design §2.3) |
+| `client/src/ui/App.svelte` | GM3w (round 8: also the `.host-failed` Retry's `disabled={frame.retrying}`) -> GM3s (round 7: the `.host-failed` block's cue markers) -> per-player GM6t (one prop, per-player round 4); nothing later of this design (round 3 W1: `coversStage` from GM3w on is the only seam; GM8h narrows it in `puzzle-view.svelte.ts`). Changed by RULINGS 201 (as of `461424d`; docs lane `docs-errata-13`, group A): lever **O5**, when the trigger requires it, after P and before per-player GM6t (budget design §2.3) |
 | `client/src/geom/cover.ts` (round 7, m1) | GM3c only (`HOTSPOT_MIN_SOURCE_PX` moved in); later lanes import it; no per-player lane holds it (verify at GM3c's cut against the shot design's locks, which read it) |
 | `client/src/ui/explore/ExploreView.svelte`, `explore.svelte.test.ts` | GM3w -> GM3s -> GM3u -> GM4u -> GM5 -> GM8h (round 3 W1) -> per-player GM6c4 |
 | `client/src/ui/explore-view.svelte.ts` | GM3w -> GM3s -> GM3u -> GM4u -> GM5 -> per-player GM6c4 |
@@ -207,18 +244,18 @@ the table is the error to fix (the rule of this section's first paragraph).
 | `client/src/ui/state.svelte.ts` | GM3s (one field and the slot types); per-player GM6c3 by launch |
 | `client/src/i18n/{ru,en}.ts` | none (round 4: this design's strings live in `i18n/mechanics.ts`; per-player's GM6c2 strings in `i18n/values.ts`, R-E19) |
 | `client/src/i18n/mechanics.ts` (round 4, new) | GM3u (new, with its parity test) -> GM7r (`mech.content_updated`) |
-| `client/scripts/budget.ts`, `budget.test.ts` | reconcile r1: M3c, LEL, LFL (merged) -> {SH3a (the `LIMITS.image` and DIMS Records), GM3s} by launch, never beside -> SH3b (the sheet helper, two budget codes) -> GM4g -> GM7p -> per-player GM6d2 -> SH12b (`knotRows`, by launch, never beside) (was: M3c (merged) -> A(`budget.ts`) (rev. 3: MD1b) / GM3s (by launch, never beside) -> GM4g -> GM7p -> per-player GM6d2 -> the MR2 role (DIMS rows)) |
+| `client/scripts/budget.ts`, `budget.test.ts` | reconcile r1: M3c, LEL, LFL (merged) -> {SH3a (the `LIMITS.image` and DIMS Records), GM3s} by launch, never beside -> SH3b (the sheet helper, two budget codes) -> GM4g -> GM7p -> per-player GM6d2 -> SH12b (`knotRows`, by launch, never beside) (was: M3c (merged) -> A(`budget.ts`) (rev. 3: MD1b) / GM3s (by launch, never beside) -> GM4g -> GM7p -> per-player GM6d2 -> the MR2 role (DIMS rows)). Changed by RULINGS 201 (as of `461424d`; docs lane `docs-errata-13`, group A): GM3s (merged `65e10ad`) -> lever **X** (merged `597dded`) -> lever **P** -> O5 and Y when the trigger requires them, one at a time, each inserted before the next holder (SH3a, by launch) |
 | `client/src/world/{types,decode}.ts` | GM1c -> GM1d -> GM2b -> GM3c (composed decoder) -> per-player GM6c1a; after GM3c no module lane edits them |
 | `client/scripts/story/emit.ts` | (reconcile r1: no SH lane holds it, §9.14; "A(`emit.ts`) (rev. 3: MD1a) ->" removed) GM2b (compact, the `renderHints` call site) -> GM3b -> GM4g -> GM4 -> per-player GM6c1a -> GM6c1b -> GM6d2 (round 1 listed GM1d, whose strip lives in `toPublic`, `world/decode.ts:660`, not in `emit.ts`). Changed by RULINGS 183 (as of `837b1ed`; docs lane `docs-errata-12`, group A): `toPublic` is `client/src/world/decode.ts:855` on `837b1ed` (`:640` on `9b4fd25`, `:687` on `794181b`); GM1d stripped `clues` there and edited no `emit.ts` line |
 | `client/scripts/story/mechanics/index.ts` | every module lane in the world chain order (one `MECHANIC_LINTS` line each, and from GM3c on one `MECHANIC_TEXTS` line each, `null` for a module without texts, round 6 W1: GM3c `core: null` plus the `TEXTS_LINT` line of `MECHANIC_LINTS`, GM3 `use`, GM3b `visual`, GM4 `view`, GM5 `combine`, GM5f `flags`, GM8i `devices`, GM9p `carry`, per-player GM6d2 `labels`); per-player GM6c1a (R-E16, round 4: one line `VALUES_LINT`, after GM1d, then by launch, never beside a later holder: GM3c, GM3, GM3b, GM4, GM5, GM5f, GM8i, GM9p) -> per-player GM6c1b (round 5, R-E23: one line `KEY_LINT`, a `runsFrom: 'story'` entry, by launch, never beside a module lane) -> per-player GM6d2 |
 | `client/scripts/story/graph.ts` (round 4) | reconcile r1: SH1 -> SH2 (`sections`) -> GM9p (`mustPass`) -> SH12a, never beside (was: A(`graph.ts`) (rev. 3: MD1a) -> GM9p (`mustPass`); rev. 3's MA1b by launch, never beside GM9p) |
 | `client/src/scene/*` | none of this file's lanes (views use today's crossfade); reconcile r1: M3c, LHJ (merged) -> GM2a's field -> per-player GM6a -> SH1 (executor, `executor.test.ts`) -> SH4 -> SH5a -> SH5b -> SH6 -> SH7 -> SH8 -> {per-player GM6d1, SH9, SH10, SH12a, SH12b, the carried preload-priority lane} one at a time by launch (was: M3c (merged) -> GM2a's field -> per-player GM6a -> A(`scene/*`) (rev. 3: MD2 -> MA1a -> MA1b -> MA2) -> {per-player GM6d1, the MR1 -> MR2 roles}) |
 | `client/src/scene/registry.ts`, `registry.test.ts` (reconcile r1, inside the `scene/*` row) | LHJ (merged) -> SH4 -> SH5a (the warm form) -> SH5b (preview, upgrade) -> SH6 -> the preload-priority lane if it launches |
-| `client/src/scene/preload.ts`, `preload.test.ts`, `scene/controller.ts` (reconcile r1, inside the `scene/*` row) | LHJ (merged; `preload.ts`) -> SH5a -> SH5b -> the later `scene/*` holders whose locks name them, in the `scene/*` row's order (the preload-priority lane among them) |
+| `client/src/scene/preload.ts`, `preload.test.ts`, `scene/controller.ts` (reconcile r1, inside the `scene/*` row) | LHJ (merged; `preload.ts`) -> SH5a -> SH5b -> the later `scene/*` holders whose locks name them, in the `scene/*` row's order (the preload-priority lane among them). Changed by RULINGS 201 (as of `461424d`; docs lane `docs-errata-13`, group A): lever **X** held `scene/controller.ts` (with `scene/adapter.svelte.test.ts` and the new `scene/pixi-env.ts`) before SH5a, merged `597dded` |
 | `client/src/scene/loader.ts` (reconcile r1) | SH5a -> SH5b |
 | `client/src/scene/layout.ts`, `layout.test.ts` (reconcile r1) | SH12b (in the `scene/*` tail) |
 | `client/src/scene/motion/*` (reconcile r1, new directory) | SH7 (creates it) -> SH8 -> SH9 -> SH10 (`index.ts` in each), strict, inside the `scene/*` row |
-| `client/src/arch.test.ts` | GM1a -> GM1c -> GM3m -> GM3s -> GM3u -> GM7p -> GM7g -> GM8a -> GM8b; reconcile r1: LEL, LFL (merged) -> LRB (merged `3c62a86`; its cut took it: `metaStatsGaps`) -> L1 (`l1-entry-summary`, RULINGS 158; merged `eec24fe`, RULINGS 159) before GM1a; SH6 by launch, never beside any of them (was: A(`arch.test.ts`) (rev. 3: MD2 after GM1a) never beside any of them) |
+| `client/src/arch.test.ts` | GM1a -> GM1c -> GM3m -> GM3s -> GM3u -> GM7p -> GM7g -> GM8a -> GM8b; reconcile r1: LEL, LFL (merged) -> LRB (merged `3c62a86`; its cut took it: `metaStatsGaps`) -> L1 (`l1-entry-summary`, RULINGS 158; merged `eec24fe`, RULINGS 159) before GM1a; SH6 by launch, never beside any of them (was: A(`arch.test.ts`) (rev. 3: MD2 after GM1a) never beside any of them). Changed by RULINGS 201 (as of `461424d`; docs lane `docs-errata-13`, group A): GM3s (merged) -> lever **X** (merged `597dded`, rule `pixi-env`) -> lever **P** -> O5 and Y when the trigger requires them -> GM3u |
 | `story/ch1/world.json` | GM1d -> GM3b -> GM4u -> GM9r (with `story/ch2/world.json`, `story/items.json`) -> per-player GM6c4 -> GM6d2, one at a time; reconcile r1 (design-shots I-18): every holder's cut checks that `gate`'s `"closeup": null` (`story/ch1/world.json:43`) and its `onFail` `manor_gate_forced` (`:89`) still stand, or names the replacement room event; SH11 reads it, no SH lane edits it |
 | `client/src/requests.test.ts` (round 13; reconcile r1 adds SH7; reconcile r2, R-E35) | GM3p (new) -> {per-player GM6c2 (E-P23; its `SITE_MEMBERS` row, E-P29), SH7 (its `scene/motion/` `import()` row; GM3p is always merged by then), every later lane that adds a start, a `HOST_WAITS` row or a `SITE_MEMBERS` row} by launch, never beside (§12 head; r1 let two holders with disjoint rows run beside each other, withdrawn) |
 | `client/src/story/staging.ts` (reconcile r1) | GM2a (`PropPlacement.at`, `StagingSnapshot.cam`, I-1) -> SH1 (the `cam` command) -> SH12a |
@@ -232,7 +269,7 @@ the table is the error to fix (the rule of this section's first paragraph).
 | `client/scripts/story/shots/lint.ts` (reconcile r1, new) | SH2 -> SH3b -> SH12b |
 | `client/scripts/story/lint.test.ts` (reconcile r1) | SH12a only |
 | `client/scripts/story/playthrough.ts` (reconcile r1) | GM1a -> GM3 if its cut takes it (§9.14); SH2 never beside either |
-| `client/scripts/assets/manifest.ts` (reconcile r1) | M3s (merged) -> SH3a -> GM4g |
+| `client/scripts/assets/manifest.ts` (reconcile r1) | M3s (merged) -> SH3a -> GM4g. Changed by RULINGS 206 (as of `461424d`; docs lane `docs-errata-13`, group A): lever X (one re-export line, merged `597dded`) before SH3a |
 | `client/scripts/assets/{assets,shots}.ts`, `assets.test.ts` (reconcile r1) | M3s (merged) -> SH3a -> SH3c -> GM4g |
 | `client/scripts/assets/placeholder.ts` / `encode.ts` (reconcile r1) | SH3a only / SH3c only |
 | `client/e2e/shots.spec.ts` (reconcile r1, new) | SH4 -> SH5a -> SH5b -> SH6 -> SH10 -> SH11, strict |

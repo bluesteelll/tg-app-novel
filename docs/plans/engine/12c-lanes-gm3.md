@@ -370,6 +370,27 @@
   cue-stage row is checked against 3.22 (round 9's 3.15 + 0.07, GM3m's and this lane's round-10 lines together).
   Round 11: against 3.28 (+0.06), and the engine against GM3m's +0.16 plus this lane's +0.17 (0.33). Round 12: the
   engine against GM3m's +0.16 plus this lane's +0.18 (0.34); the cue-stage row unchanged (3.28).
+- **Ruled since: RULINGS 198** — GM3s stopped at C7 on budgets (cue-stage 6,251 B br over the 6,000 LIMIT, engine +1,066
+  over its 0.35 term); P0 had chosen **Branch F** (Svelte's transition runtime +989 B br in the entry, past +0.55); a
+  measurement and lever design ran before the ruling.
+- **Ruled since: RULINGS 201** — QS1: `cueStageChunkBr` 8,500 B with a 7.5 KB review trigger (commit C7a moves C1's
+  pins); **E1**: the explore root attaches through `bind:this` + an `$effect` that calls `cueRoot` and returns its
+  `destroy`, no `use:` action, arch rule `svelte-action` (commit C7b; the lock line's "`use:cueRoot`, `in:` / `out:`"
+  reads so under Branch F, with no directive); **E2**: `cues/root.ts` keeps its own trigger tuple (`ROOT_TRIGGERS`)
+  tied to `CUE_TRIGGERS` by a type equality and a pin (in C7); QS2: the engine overrun is GM3s's MEASURED term, on
+  condition lane X takes the slot GM3s frees (met: X merged `597dded`, RULINGS 208); all inside the 18 files.
+- **Ruled since: RULINGS 203, 204** — review M1: every ghost a cue row reaches paints something its preset's keyframes
+  make visible: a plain ghost carries `cue-plain` (a soft light, CLAIM defaults judged at Q54's device session) and a
+  clone of a `[data-cue-hit]` element carries `cue-hit` (C10, `stage: a plain ghost paints`, M-G1..M-G3); the light is
+  withheld for keyframes that carry `boxShadow` or `backgroundColor` (fix r1, `SELF_PAINT`; fix r2's pin `stage: a hold
+  on a plain box plays without the plain light`); C11: no ordering reaches a removed root before its observer runs
+  (the pre-run `sweep()` stays, no test). GM3s merged `65e10ad` (MEASURED rows: §3.5's GM3s row,
+  [§11.1](11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13)).
+  Lane-own names beyond the plan's list (its cut Q5, accepted; Branch F's form): `yields: dispose leaves no cue
+  subscriber`, `yields: a disposed session clears the cue stage slot`, `yields: a module cue's name is one its rules half
+  declares`, `stage: a family root enters and leaves with LAYER_MOTIONS` (in place of `cues: the layer transitions play
+  LAYER_MOTIONS`), `stage: a haptic plays only on top of a motion`, `cues: no Svelte transition directive in
+  client/src`, `stage: an end motion continues on the wrapper's clone inside its root's ghost`.
 
 ### GM3 `mech-use`
 - **Goal:** §6.1 rules; writer fact cues and module cues as `cue` effects; kernel effect fields (`from`, `via`, `how`,
@@ -650,6 +671,15 @@
   `boot.ts` / `app/meta.ts` lines and functions; reconcile r1: LFL merged as `cec347c`, and LRB (RULINGS 156) held
   the same files, merged as `3c62a86` (RULINGS 157): the rows follow the walk's red-first output, the design's list is §1's);
   round 14: 62 rows (the 11 transport rows of §1), the program time measured with the re-type check in it.
+- **Ruled since: RULINGS 195, 201, 204** (GM3s merged `65e10ad` with Branch F, E1 and E2; carried to this lane by
+  `D:/tmp/novel-orch/carry.md` "GM3s carries") — PuzzleHost's frame root attaches `cueRoot` in an `$effect` on its
+  bound root (rule `svelte-action` forbids `use:`) and carries `data-cue-root="frame"` (the stage's `frameOut`
+  selector) in place of `in:layerIn|global` / `out:layerOut|global={{ reduced, frame: true }}` (no `layerIn` /
+  `layerOut` exist; the cue stage plays `LAYER_MOTIONS` on the root and its ghost); `cues: a frame's end motion ends
+  before its frame leaves` keeps its meaning (the stage pads a shorter end motion to the root ghost's end);
+  `puzzle-host: a frame replaced in one block ...` reads "under the root's ghost"; the e2e `mechanics: a tap on the room
+  right after a puzzle closes reaches the room` has no outro window to guard (M-W1b still guards the wrapper's
+  `pointer-events`); the frame root's `point` mapping (GM3s cut D5) is this lane's.
 
 ### GM3b `mech-state-visuals`
 - **Goal:** §6.4.

@@ -52,6 +52,10 @@
 - `client/src/app/stage-route.test.ts` (new)
 - `client/src/scene/{executor,executor.test}.ts` (`VisualCommand` and `reduce`, `:35-37`, `:144-187`)
 
+Changed by RULINGS 198 (as of `461424d`; docs lane `docs-errata-13`, group A): the lock is **13**: it gains
+`client/scripts/story/lint.test.ts` for one fixture line (`lint: tag/unknown-kind red on fixture` moves from `fx: boom`,
+which commit 5 makes a known kind, to an unknown kind no plan declares, `shot`); nothing else in that file changes.
+
 **Commits:**
 1. Move the four functions to `stage-route.ts`. Pins `stage-route: splitBatch routes every command kind`,
    `stage-route: imageIds lists a batch's images` (a pure move: no red-first; pinned green on the parent behaviour).
@@ -67,7 +71,10 @@
    - `tags: face names a known character and expression`;
    - `tags: face of an unknown expression is unknown-asset`;
    - `executor: a face changes the expression of a character on stage and nothing else`;
-   - `graph: a face names no asset`.
+   - `graph: a face names no asset`. Changed by RULINGS 198 (as of `461424d`; docs lane `docs-errata-13`, group A):
+     renamed `graph: a face names its expression and keeps its character` (W1 option (a): `assetOf(face)` names
+     `char/<c>/<x>` on a sprite stage, `clearsOf` clears nothing for it, `imageIds` lists it; a gate-accepted `face:`
+     is never dropped at runtime).
 4. `cam`. Tests:
    - `tags: cam push takes to and z within 105..130`;
    - `tags: cam pan needs to`;
@@ -112,6 +119,22 @@ visible change: pixel pins green).
 `StagingSnapshot` (the executor's camera state lives beside the snapshot, and a restore opens at rest framing) and the
 orchestrator files the gap; SH1 never edits `save-codec.ts`.
 **Reconciled ([engine §30 Shots errata from reconcile](../engine/30-shots-errata.md#30-shots-errata-from-reconcile) item 1):** GM2a declares `CamTarget` / `CamState` in `staging.ts` and reads `StagingSnapshot.cam?` as an optional key, so SH1 imports the types and writes `cam`: this STOP item is met once GM2a merges; engine +0.03 is GM2a's, not SH1's.
+
+**Ruled since: RULINGS 198** — critique C1: lock 13 (`lint.test.ts`'s one line, above); W1 option (a) (the renamed
+graph test, commit 3); W2 option (a) with leg (c) and M-SH1f: a throwing build leaves no anchor or sprite it made, as
+its own red-first commit inside `executor.ts` / `executor.test.ts` (GM6a's cut Q6, RULINGS 196); `newChar`'s
+group-then-sprite and rebind's props loop carry to SH4 (cut Q5).
+**Ruled since: RULINGS 200** — SH1 stopped at its own C5 Ledger 4 checkpoint (engine +594 B, Ledger 4 230.137 / 230.0
+with GM3s's unmerged +1.066) and continued to its verdict: its only engine STOP is its +0.8 KB line (mean of >= 4
+builds); the crossing is answered by the engine lever program, not by SH1; critique r2 W1 option (a) inside
+`executor.ts` (`a.views = [...views]` before the creation loop; leg (d), M-SH1g).
+**Ruled since: RULINGS 201** — SH1 merged `2db33c3` (8 commits: the plan's 1-7 and item 2 (b); 23 new test names, the
+cut's `graph: a cam names no asset` among them). MEASURED rows (mean of 4 builds per tree, main -> HEAD): engine **+510
+B** against its +0.3 term (R 1.70), entry +42 (churn), first line +552, all JS +549
+([§10 Budgets and validation](10-budgets-and-validation.md#10-budgets-and-validation-summary)). Carried: SH2 (`assetOf(face)`
+on shot chapters, `shot/char-absent` on legacy chapters), SH4 (cut Q5's two error-path sites, the face vocabulary on
+shot chapters, review M2's face / show order), SH6 (a same-shot take and a held camera move), the next
+`scene/controller.ts` holder (L11 review M2, M2 review r1 M1).
 
 ### 9.2 SH2 `shot-flow` (client, story tool)
 
@@ -290,3 +313,13 @@ engine lane that turns `lighthouse` or `lamp_room` into a room (GM8d) cannot hit
 - `playthrough.ts`: never beside GM3.
 - `STAGING-DSL.md`: after SH1, before SH3b.
 - Beside M3s (server slot; disjoint).
+
+**Ruled since: RULINGS 202, 207** — SH2 ran in lane C beside GM3s (no engine term; lock 11, disjoint from GM3s's and
+X's; GM3 could not start while SH2 was open) and merged `7f45dee`: lock 11 exactly (no `.gitignore` line needed); 76
+new test names; `npm run story` prints `shots: 192 steps, 8 shots, 0 E` and `story: 0 errors, 8 warnings` (the eight
+`shot/undeclared` warnings of the demo's declared-locations-only `story/shots.json`); every build row byte-identical to
+main `65e10ad`; the generated files identical plus `server/content/build/shots.json` (build-only, no route serves
+`build/`). Carried (RULINGS 207, each named where its lane states its inputs): SH3a (cut Q7), SH3b (cut Q3, fix r1's
+limits), SH4 or SH12a (cut Q4, `assetOf(face)` on a shot chapter), SH12a (triage r3 M1, fix r2's limit 2: the next
+`shots/flow.ts` holder), SH12b and SH3c (cut Q6, the plane `at` boxes), GM4 (critique O3, M-SH2g on a real view); the
+authors' known limits are [STAGING-DSL §14.4](../../STAGING-DSL.md#144-what-the-shot-pass-writes-and-reports).

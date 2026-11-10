@@ -977,6 +977,10 @@ unchanged.**
     (`508bd36`), per-player GM6a (`23e1d31`), GM2b (`1782d6d`), GM3m (`a3f0678`) and GM3c (`837b1ed`) have merged; GM3s
     and shots SH1 run (client, RULINGS 194-196); the engine-closure lever lane (new, RULINGS 195, 196) follows GM3s,
     before GM3; the rest follow the one order above.
+  - Changed by RULINGS 198-209 (as of `461424d`; docs lane `docs-errata-13`, group B): shots SH1 (`2db33c3`), GM3s
+    (`65e10ad`) and shots SH2 (`7f45dee`) have merged, and the engine-closure lever X (`597dded`; the lever lane became
+    the program X, then P, RULINGS 201); GM3 and the lever P run (client, RULINGS 209); GM3u follows GM3 and P, SH3a
+    follows SH2 once P frees `budget.ts`; the rest follow the one order above.
   - Why LPO is a lane of its own (revision 1, W4): the operator facts need a `Config` variable, which means editing
     the three `Config` constructors (`config.rs`, `server/dev/src/lib.rs`, `server/tests/it/common.rs`) plus
     `lib.rs` and `.env.example`; in LF1 that is 15 + 4 = 19 files, over the cap. LPO holds them with `api/legal.rs` and
@@ -2078,6 +2082,12 @@ GM1d `794181b`, GM3w `508bd36`, per-player GM6a `23e1d31`, GM2b `1782d6d`, GM3m 
 the docs lane `docs-errata-12` (in the idle server slot, RULINGS 197); to go of this design's lanes: none. Next, the
 engine-closure lever lane (new, RULINGS 195, 196) after GM3s, then GM3; SH2 after SH1; the rest follow the one order
 above.
+Changed by RULINGS 198-209 (as of `461424d`; docs lane `docs-errata-13`, group B): merged also, from the adopted plans,
+shots SH1 `2db33c3`, GM3s `65e10ad` and shots SH2 `7f45dee` (client), and the engine-closure lever X `597dded`
+(client; the lever lane became the program X, then P, RULINGS 201), with the docs lane `docs-errata-12` `0fb7018`;
+running GM3 and the lever P (client; RULINGS 209) beside the docs lane `docs-errata-13` (in the idle server slot,
+RULINGS 209); to go of this design's lanes: none. Next, GM3u after GM3 and P, SH3a after SH2 once P frees
+`budget.ts`; the levers O5, then Y, only on the merge-time trigger; the rest follow the one order above.
 
 ---
 
