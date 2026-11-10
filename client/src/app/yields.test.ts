@@ -2074,6 +2074,26 @@ test('yields: two Hint taps that share one failed status play its failure once',
   f.yields.dispose();
 });
 
+test('yields: a Hint tap while the ladder is busy only shows the ladder', async () => {
+  // Q68: a Hint tap while a hint use is in flight starts no status request: the use's answer is the ladder's, with its
+  // one cue (GM3p's I1 rule), and the tap only shows the sheet.
+  const w = ladderPort(5);
+  const r = rig({ status: LADDER_STATUS, hints: w.port });
+  await r.yields.onYield({ kind: 'puzzle', puzzle: DRAWER, then: AFTER });
+  r.yields.host.onhint();
+  await settle();
+  const asked = r.calls.status;
+  const use = deferred<void>();
+  await ladderSteps(r, [
+    ['a use of tier 2 starts', () => ((w.state.gate = use.promise), r.yields.host.onusehint(2)), { busy: true, failed: false }, ['ui-state:waiting@hints']],
+    ['Hint while the use runs', () => (r.yields.host.onhint(), settle()), { busy: true, failed: false }, []],
+    ['the use answered', () => (use.resolve(), settle()), { busy: false, failed: false }, ['ui-state:waited@hints', 'puzzle:hint-shown@2', 'puzzle:ladder']],
+  ]);
+  expect(r.calls.status, 'no status request while the use runs').toBe(asked);
+  expect(r.vm.screens.overlays.filter((s) => s.kind === 'hints'), 'the sheet shows once').toHaveLength(1);
+  r.yields.dispose();
+});
+
 test('yields: the ladder has one writer', () => {
   // Engine plan §8.1: every write of `puzzle.ladder` goes through `setLadder`, which emits its hold's edges.
   const writes = [...yieldsSource.matchAll(/\bpuzzle\.ladder = /g)].map((m) => m.index);

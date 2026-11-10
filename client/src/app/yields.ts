@@ -1164,6 +1164,9 @@ export function createYields(h: YieldsHost): Yields {
         return;
       }
       screens.push({ kind: 'hints' });
+      if (puzzle.ladder?.busy === true) {
+        return; // Q68: a status or a hint use in flight: its answer is the ladder's, so the tap only shows the sheet
+      }
       setLadder(o, { ...o.session.ladder(), busy: true, failed: ladderFailed() }); // a repeat tap keeps the alert up
       const asked = o.session.hints();
       if (asked === o.asked) {
