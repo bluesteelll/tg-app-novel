@@ -14,12 +14,13 @@ export const RELOAD_POLL_MS = 500;
 export const PURCHASE_OPEN: ReadonlySet<PurchaseState['kind']> = new Set(['requesting', 'sheet', 'confirming', 'delayed']);
 
 /**
- * LRB: the reload holds that the meta overlays own, in the Game's order: a wallet pack purchase the player is on (an
- * open invoice state, unless the player left the flow), then a gift being sent. Read by the Game's reload blocker and
- * by boot's recovery when no Game exists; every other hold is the engine's.
+ * LRB: the reload holds that the meta overlays own, in the Game's order: a wallet pack purchase the player is on (a
+ * Buy waiting for the purchase module (E6), or an open invoice state unless the player left the flow), then a gift
+ * being sent. Read by the Game's reload blocker and by boot's recovery when no Game exists; every other hold is the
+ * engine's.
  */
 export function metaHold(view: MetaView | null): 'purchase' | 'gift' | null {
-  if (PURCHASE_OPEN.has(view?.purchase.kind ?? 'idle') && view?.purchaseLeft !== true) {
+  if (view?.purchaseWaiting === true || (PURCHASE_OPEN.has(view?.purchase.kind ?? 'idle') && view?.purchaseLeft !== true)) {
     return 'purchase';
   }
   if (view?.gift?.busy === true) {

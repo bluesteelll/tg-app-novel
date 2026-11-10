@@ -43,6 +43,12 @@ export type MetaView = {
   wallet: WalletData | null;
   purchase: PurchaseState;
   /**
+   * A pack Buy waits for the purchase module (E6): its flow asks for the invoice as soon as the module lands, and
+   * `purchase` shows nothing of it until then. Set by the tap, cleared once the flow has started or the load failed.
+   * Read by the page's reload holds (`metaHold`), never rendered.
+   */
+  purchaseWaiting: boolean;
+  /**
    * The player left the pack flow (LRB D1-D3): the wallet is closed and the flow is `delayed`, or `sheet` after the
    * player's Back on the wallet in that state. Read by the Game's build-skew reload rule, never rendered.
    */
@@ -185,6 +191,7 @@ export function createMetaController(d: MetaDeps): MetaController {
     profile: null,
     wallet: null,
     purchase: { kind: 'idle' },
+    purchaseWaiting: false,
     purchaseLeft: false,
     invite: null,
     gift: null,
@@ -750,14 +757,26 @@ export function createMetaController(d: MetaDeps): MetaController {
       }
     },
     buyPack(p) {
+      // E6: a Buy before the module is in holds every page reload until its flow has started (whose own state then
+      // holds) or its load failed (the toast); taps during one load share it and each clears after its own start.
+      const wait = flow === null;
+      if (wait) {
+        set({ purchaseWaiting: true });
+      }
       void purchaseFlow().then((f) => {
-        if (f === null || !alive) {
-          return;
-        }
-        if (stuck(f)) {
-          f.checkAgain(); // the tap reached the page, so no sheet is open: the poll frees the flow for the next Buy
-        } else {
-          f.buy(p); // ignored while an invoice is created, open or confirmed
+        try {
+          if (f === null || !alive) {
+            return;
+          }
+          if (stuck(f)) {
+            f.checkAgain(); // the tap reached the page, so no sheet is open: the poll frees the flow for the next Buy
+          } else {
+            f.buy(p); // ignored while an invoice is created, open or confirmed
+          }
+        } finally {
+          if (wait) {
+            set({ purchaseWaiting: false }); // after the flow's first state is in the view, so no view shows neither
+          }
         }
       });
     },
