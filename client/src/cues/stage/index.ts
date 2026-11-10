@@ -29,16 +29,29 @@ const PLAYED_MAX = 32;
  *  playing one shows that paint alone (triage r1 I1). */
 const SELF_PAINT = ['boxShadow', 'backgroundColor'] as const;
 
+/** Q67: client px per layer px: App's column draws its layers scaled, so a client-px measure becomes layer px by
+ *  dividing by this; 1 unscaled, and for a layer not laid out (a ratio that is not positive and finite). */
+function clientPerLayerPx(layer: Element, l: DOMRect): number {
+  // Measured, never read from App's variable, so it holds for any ancestor transform; the computed width is the
+  // fractional layout width, so an unscaled layer gives exactly 1.
+  const k = l.width / parseFloat(getComputedStyle(layer).width);
+  return k > 0 && Number.isFinite(k) ? k : 1;
+}
+
 /** `el`'s box in the stage layer's px. */
 export function boxIn(el: Element, layer: Element): Box {
   const r = el.getBoundingClientRect();
   const l = layer.getBoundingClientRect();
-  return { x: r.left - l.left, y: r.top - l.top, w: r.width, h: r.height };
+  const k = clientPerLayerPx(layer, l);
+  return { x: (r.left - l.left) / k, y: (r.top - l.top) / k, w: r.width / k, h: r.height / k };
 }
 
 /** A designed landing on the stage layer: `edge` centred on its bottom edge, `centre` on its middle. */
 export function landing(layer: Element, at: 'edge' | 'centre'): Box {
-  const { width: w, height: h } = layer.getBoundingClientRect();
+  const l = layer.getBoundingClientRect();
+  const k = clientPerLayerPx(layer, l);
+  const w = l.width / k;
+  const h = l.height / k;
   const s = at === 'edge' ? EDGE_PX : CENTRE_PX;
   return { x: (w - s) / 2, y: at === 'edge' ? h - s / 2 : (h - s) / 2, w: s, h: s };
 }
@@ -110,7 +123,8 @@ export function resolveTarget(t: CueTarget, e: CueEvent, layer: Element): Resolv
         : { box: { x: e.point.x - CENTRE_PX / 2, y: e.point.y - CENTRE_PX / 2, w: CENTRE_PX, h: CENTRE_PX } };
     case 'stage': {
       const r = layer.getBoundingClientRect();
-      return { box: { x: 0, y: 0, w: r.width, h: r.height } };
+      const k = clientPerLayerPx(layer, r);
+      return { box: { x: 0, y: 0, w: r.width / k, h: r.height / k } };
     }
     case 'edge':
       return { box: landing(layer, 'edge') };
@@ -338,18 +352,21 @@ export function mountStage(layer: HTMLElement, p: CueStageProps): () => void {
   debug();
 
   const unsubscribe = p.subscribe('overlay', (raw) => {
-    // D5: the bus carries stage-host px; the layer may sit offset from the host (a pillar-boxed stage).
+    // D5: the bus carries stage-host px; the layer may sit offset from the host (a pillar-boxed stage). A box is the
+    // host's layout px, which are the layer's (one design box, Q67); a point and the offset are client px, so under
+    // a scaled column each becomes layer px by its own division.
     const host = p.host();
     let e = raw;
     if (host !== null && (raw.box !== null || raw.point !== null)) {
       const h = host.getBoundingClientRect();
       const l = layer.getBoundingClientRect();
-      const dx = h.left - l.left;
-      const dy = h.top - l.top;
+      const k = clientPerLayerPx(layer, l);
+      const dx = (h.left - l.left) / k;
+      const dy = (h.top - l.top) / k;
       e = {
         ...raw,
         box: raw.box && { ...raw.box, x: raw.box.x + dx, y: raw.box.y + dy },
-        point: raw.point && { x: raw.point.x + dx, y: raw.point.y + dy },
+        point: raw.point && { x: raw.point.x / k + dx, y: raw.point.y / k + dy },
       };
     }
     measure();
