@@ -198,6 +198,8 @@ research is newer and verified (brief), so it wins, and the deviation is recorde
   (with its services) as a lazy chunk once the boot reads are in (auth among them; RULINGS 113), never awaited before
   the first line; the next tap that needs
   it re-imports it after a failure, and an ending awaits it (`createMetaGate`, `client/src/app/boot.ts:169-253`).
+  Changed by RULINGS 213, 214, 224 (as of `52e328e`; docs lane `docs-errata-14`, group A): every lazy load failure feeds boot's
+  recovery (`vite:preloadError`), and a load that fails again after the evidence that the network and the server deliver it (`GET /api/health` answers with no skew and, for a named URL, a plain fetch of it answers 2xx) restarts the page once per build at a safe point (Q60's B', `createPageRecovery`, `client/src/app/boot.ts:446`): on Chromium-based WebViews before 156 and on every engine that keeps a failed module fetch, the next tap's `import()` fails again without a request, so RULINGS 105's "a failed import is retried by the next tap" holds only where the module map lets it.
   Its row `meta controller chunk (br)` ≤ 5.0 KB br is counted in JS before the first line (META-PLAN M27).
   As merged (LEL `7b37278`; RULINGS 137, 141): the meta decoders and `createMetaEndpoints` moved from the entry to
   `client/src/api/meta.ts`, which only the controller chunk imports (`client/src/app/meta.ts:9`, `:31`); the row's
@@ -1901,7 +1903,7 @@ next-chapter preload`.
 | # | Actor | Step | Failure model |
 |---|---|---|---|
 | P1 | client | paywall shows the product from `GET /api/entitlements` (price from the server, never the client); a **terms checkbox** must be ticked (payments-stars: users "must confirm that they have read and agree to your terms" [R2 §1.5]); a Terms link opens the in-app terms overlay | entitlement fetch fails → "Retry"; `owned: true` → skip to P9 |
-| P2 | client | Buy → state `requesting` (button disabled) → `POST /api/invoices { productId }` | double tap: button disabled (as merged, LPH `d423cb3`, RULINGS 97 Q2: the planned "+ server order reuse" is removed; a second POST is a second order, and K18 refuses paying both); network error → state `failed: network`, retry allowed |
+| P2 | client | Buy → state `requesting` (button disabled) → `POST /api/invoices { productId }`. Changed by RULINGS 213 (as of `52e328e`; docs lane `docs-errata-14`, group A): the purchase flow is a lazy chunk (lever P, merged `3d120bc`): the Game prefetches it when the paywall opens (`openPaywall`, `client/src/app/game.ts:1116`), so Buy waits for the module only when the prefetch has not landed; a Buy that waits leaves the paywall idle and holds a skew reload (`Offer.waiting`), and a flow made in the background starts paused | double tap: button disabled (as merged, LPH `d423cb3`, RULINGS 97 Q2: the planned "+ server order reuse" is removed; a second POST is a second order, and K18 refuses paying both); network error → state `failed: network`, retry allowed; Changed by RULINGS 213, 224 (as of `52e328e`; docs lane `docs-errata-14`, group A): a double tap while the module loads queues on the one load and the flow's own guard opens one sheet; a module that fails to load shows `toast.purchase_failed`, keeps the paywall idle and loads again at the next Buy (`client/src/app/game.ts:2035-2058`), and a load that fails again after the evidence restarts the page (Q60, "Concurrency and failure model") |
 | P3 | server | catalog lookup (404) → entitled? (409 `already_owned`) → reuse this user's `created` order < 1 h with a link, else insert order (`amount`, `XTR` from the catalog) (as merged, LPH `d423cb3`, RULINGS 97 Q2: no reuse; every POST inserts a new order, at most 10 unpaid (`created` or `checkout`) per user in a rolling hour, then 429 `rate_limited` + `Retry-After`) → **commit** → `create_invoice_link` (title/description in the user's language; one `LabeledPrice`; payload = order id; empty provider token) outside any transaction → `UPDATE orders SET invoice_url` | gateway error/timeout → 502 `telegram_unavailable`, order stays `created` without a link; client shows an error, retry creates or reuses (as merged, LPH `d423cb3`: a retry creates a new order; the order without a link still counts toward the bound) |
 | P4 | client | `tg.openInvoice(url)` → state `sheet` | TWA throws (unsupported, second open of the same slug) → `failed: telegram` |
 | P5 | Telegram → server | `pre_checkout_query` → webhook: secret check → decode → `on_pre_checkout` (below) → `answer_pre_checkout` → 200 | see the pre-checkout table |
@@ -2212,6 +2214,20 @@ As merged (LPH `d423cb3`, RULINGS 97, 106; LPH critique O2, O3, O6, review M2, M
 
 Changed by RULINGS 14 (decision section 6, §4.7; as merged, LDB1 `fee9da7`, LDB2 `a7e4a04`): the rows from "DB
 unreachable at startup" down are the PostgreSQL failure model; the test names are the merged ones.
+
+Changed by RULINGS 213-215, 218, 220, 224 (as of `52e328e`; docs lane `docs-errata-14`, group A): **a lazy chunk that fails to
+load** (the engine, the meta controller, the purchase flow, the explore UI, the cue stage, a puzzle chunk, the one
+stylesheet; Q60, merged `8e099ee`). R1: the build has no `modulepreload` links and one stylesheet, so a failed chunk is
+a failure of its own module fetch only (WebKit keeps a failed preload across a reload). Every lazy failure feeds
+boot's recovery through `vite:preloadError` (`client/src/app/boot.ts:984-988`); a load that fails again after the evidence that the network and the server deliver it (`GET /api/health` answers with no skew and, for a named URL, a plain fetch of it answers 2xx) restarts the page once per build at a safe point (Q60's B', `createPageRecovery`, `client/src/app/boot.ts:446`): on Chromium-based WebViews before 156 and on every engine that keeps a failed module fetch, the next tap's `import()` fails again without a request, so RULINGS 105's "a failed import is retried by the next tap" holds only where the module map lets it. The restart
+goes to the Game (`Game.restart`, its reload rules and holds) and is latched per build (`novelReloadedFor` =
+`chunk:<build>`, `client/src/app/reload.ts`); without a Game it waits for the engine import, and only once that import
+failed does the page reload itself, after the wallet pack purchase, gift and background holds. A stylesheet with no
+readable rules after `load` takes the same restart. Not covered (carried, E3): an `import()` that never settles and
+an offline reload. Chunk-failure telemetry is a release prerequisite (E2). **Rejected and frozen: C, a cache-busting
+re-import** (Safari's error names no URL, a failed static dependency stays failed, a second module instance, Cloudflare
+keys by query, no Rolldown `renderDynamicImport`; RULINGS 214). Return condition: the device pass shows a shipping
+WebKit that keeps a failed plain `import()` across a reload, or telemetry shows restarts frequent enough to matter.
 
 ---
 

@@ -4,6 +4,13 @@ All lanes: client slot; red-first per commit; the CLAUDE.md gates `npm --prefix 
 build` (+ `e2e` through the kit when UI or flow changes); count tests by name; each new gate seen failing on its named
 mutation. Locks are the expected touch set on main; each cut re-locates it.
 
+**Ruled: RULINGS 219** — a type-only (behaviour-identical) lane proves its identity on **pinned-id builds**:
+`client/scripts/build-id.ts` hashes every non-test `src/` file into `__BUILD_ID__` and `dist/build-id.txt`, so any `src`
+edit moves the id and every chunk that holds or names it. The proof is two scratch builds, main and HEAD, with the id
+pinned: every `client/dist` sha256 equal (one differing byte a STOP) and the rows equal in exact bytes, plus the real
+build as the gate verdict (its rows quoted with their churn). GM3k (`3131844`, 12c) is the first such lane: RULINGS 210
+Q4 added it to the lane map after GM3, before GM3b.
+
 **Lane map (renames, merges, splits with reasons).** GM1a, GM1b, GM1c as synthesis. **GM1d** new (I4's lints need a
 home before any reach type). **GM2 -> GM2a + GM2b** (save shape vs world renames: two subsystems, > 15 files together).
 **GM3 -> GM3c + GM3m + GM3w + GM3s + GM3 + GM3u + GM3p** (O1; the motion gate must land before the first new cue;

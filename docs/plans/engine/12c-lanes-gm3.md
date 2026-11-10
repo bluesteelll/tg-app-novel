@@ -415,6 +415,59 @@
   writer's `fact:visited:added`, written before the `room` push at `reduce.ts:321-322`, and the `enter:<room>` cues
   reach the bus after `started`; red if the writer's `cue` effects bypass GM3s's hold, **M-R5c**).
 - **Gates:** check, test, story (ch1 / ch2 states unchanged), build.
+- **Ruled since: RULINGS 210** — **lock 22**: the plan's 16, the four files pre-ruled for the carries only
+  (`client/scripts/story.ts`, `client/src/mechanics/contract.ts`, `client/src/mechanics/rules/search.ts`,
+  `client/src/mechanics/registry.test.ts`), and two forced test files: `client/src/world/decode.test.ts` (it pinned the
+  registry as `core` only) and `client/scripts/story/world.test.ts` (GM3c's probe owned hotspot key `uses`; the module
+  code list), both red the moment `use` registers. Commit C0 makes them registry-agnostic first (green on main, 0 names
+  changed). `resetSection` clears the facts the registry's rules read in the section (carry (b2), C4). GM3c's W1(3)
+  (`KernelWorld.mods` required, the search API typed on `KernelWorld`) leaves this lane for the new type-only lane GM3k
+  (below).
+- **Ruled since: RULINGS 212** — **lock 25**: + `client/scripts/story/softlock.ts` (`Step` widened by a type import,
+  `describe` gains `case 'use'`), + `client/scripts/story/mechanics/conditions.ts`, + `client/scripts/story/graph.ts`.
+  Two module-agnostic hooks, no `use` code in the kernel or the build halves: S's own facts are **`ownScope(w, S,
+  rules)`** ([search.ts:257](../../../client/src/mechanics/rules/search.ts#L257)), the kernel `sectionScope` plus each
+  rules module's optional `scope` member ([contract.ts:162](../../../client/src/mechanics/contract.ts#L162); for `use`:
+  the items S's rules give and their `use:<key>#<i>` fired keys), read by `use.reads`, the section key, the reset,
+  `world/use-cross-section` and `condFindings`; the knots a module's data enters are **`MECHANIC_STORIES`**
+  ([mechanics/index.ts:76](../../../client/scripts/story/mechanics/index.ts#L76)), appended by `sectionKnots`
+  ([graph.ts:442-456](../../../client/scripts/story/graph.ts#L442)), so a rule's `story` effect stays allowed. A use
+  whose fit fails falls through §6.1's text chain with `refused { reason: 'no-fit' }` and `module:use:refused`.
+- **Ruled since: RULINGS 216, 217** — merged `7082a35`, 12 commits C0-C10 + C5g: C0 `test: decode and world fixtures
+  follow the module registry`, C1 `explore: kernel effects name where they act`, C2 `mechanics: the registry dispatch
+  takes the kernel's writer; module cue names typed`, C3 `use: item-first use and tools that stay`, C4 `use: a section
+  reset clears S's own facts`, C5 `use: say and refuse texts are world lines; the module's lints`, C5g `graph: a
+  section's knots include those its module data enters`, C6-C9 the plan's (2)-(5), C10 `yields: a room batch compares
+  props with their anchors` (a carry); then three fix rounds. The fact cues as merged: the writer records each fact
+  write with its cause ([writer.ts:134](../../../client/src/mechanics/rules/writer.ts#L134)) and yields forwards the
+  `cue` effects (§8.4's `fact:fired:added` and `module:use:*` rows). Engine **+1,192 B br** against the +0.2 term,
+  accepted as GM3's measured delta (RULINGS 216): `data/use.ts` value-imports `decodeCond`, so GM3c's condition
+  decoder enters the engine as the condition language's first runtime use, a structural cost. The rows: §3.5's GM3 row
+  and [§11.1](11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13);
+  the lever trigger fired at this merge (RULINGS 217) and stopped holding at the recovery lane's (RULINGS 224).
+
+### GM3k `mech-kernel-world` (new, type-only; RULINGS 210 Q4)
+- **Goal:** GM3c's carry W1(3): `KernelWorld.mods` **required** and the search API (`successors`, `searchSection`,
+  `sectionEntry`, `resetSection`, `restart` and their helpers) typed on `KernelWorld`, so every caller that searches or
+  resets a section hands over the modules' data. Behaviour-identical, 0 runtime bytes.
+- **After:** GM3 (`mechanics/contract.ts`, `rules/search.ts`, `softlock.ts`, `world.test.ts`); **before GM3b**, whose
+  `visuals` hook reads `w.mods`.
+- **Lock (RULINGS 210 Q4; 10 + pre-ruled type-only hunks):** `client/src/mechanics/{contract.ts,rules/search.ts}`,
+  `client/src/explore/controller.ts`, `client/scripts/story/{softlock,world}.ts` and the callers' tests
+  (`softlock.test.ts`, `spike-p2.test.ts`, `world.test.ts`, `story/resume.test.ts`, `mechanics/conditions.test.ts`);
+  any other file whose only change is a world type, a boundary conversion or a directive, named in the cut.
+- **Gates:** check, test, story (identical), build (rows unchanged); no e2e, no cargo.
+- **Ruled since: RULINGS 219, 223** — merged `3131844`, 20 files in 2 commits (C1 `world: the search API, the proof
+  and every caller take the kernel world`, C2 `mechanics: KernelWorld.mods and WorldPublic.mods required; type pins
+  (GM3k)`); `controller.ts`, `scripts/story/world.ts` and `resume.test.ts` untouched. The relation as merged:
+  `KernelWorld = WorldPublicBody & { mods }` ([contract.ts:204](../../../client/src/mechanics/contract.ts#L204)),
+  `WorldPublic = KernelWorld & { version }` ([world/types.ts:161](../../../client/src/world/types.ts#L161)); callers
+  convert at the boundary (`{ ...toPublic(src), mods: src.mods }`), with no cast. Q1: one boundary line in lane C's
+  `client/src/app/game.test.ts` (`:1637` then); Q2: one `@ts-expect-error` in `client/src/mechanics/use.test.ts`. New
+  name: `softlock: a search, reset or proof call without the modules' data fails check`. **The identity proof of a
+  type-only lane (Q3)** is two scratch builds, main and HEAD, with the build id pinned (`client/scripts/build-id.ts`
+  hashes every non-test `src/` file into `__BUILD_ID__`, so any `src` edit moves the id and the chunks that hold it):
+  every `client/dist` sha256 equal, one differing byte a STOP; GM3k: 127 files and 17 rows byte-identical.
 
 ### GM3u `mech-ribbon`
 - **Goal:** §6.1 UI, §8.3 for `ui/explore/**`: ribbon, selection, use dispatch, bare-art catcher, `data-cue` on
@@ -485,6 +538,10 @@
   `Ribbon.svelte`, `yields.ts`, `yields.test.ts` and `explore.svelte.test.ts`; the sheet markers left this lane for
   GM3s, which already holds `ExploreView.svelte`, and `ExploreView.svelte` stays in this lock for the ribbon mount and
   the `data-cue` controls.
+- **Ruled since: RULINGS 217, 221, 223, 224** — engine-adding: it waited for the lever trigger's re-evaluation at the
+  recovery lane's merge (the trigger does not hold on `8e099ee`, so it runs while O5 and Y stay on the shelf),
+  and for that lane's `client/src/i18n/{ru,en}.ts` (its `mech.use_refused` default, RULINGS 223). Its cut rebuilds the
+  explore-ui R sample list (RULINGS 217: 2.319 kept until then; GM3's sample 1.273 joins it).
 
 ### GM3p `mech-puzzle-cues`
 - **Goal:** §8.2-§8.3 for `puzzles/ui/**`, `ui/puzzles/**`: `data-cue` on every puzzle control, `use:cueRoot` and the
@@ -680,6 +737,10 @@
   `puzzle-host: a frame replaced in one block ...` reads "under the root's ghost"; the e2e `mechanics: a tap on the room
   right after a puzzle closes reaches the room` has no outro window to guard (M-W1b still guards the wrapper's
   `pointer-events`); the frame root's `point` mapping (GM3s cut D5) is this lane's.
+- **Ruled: RULINGS 224** — Q62 (a rare e2e flake, `puzzles.spec.ts:109` "resolved to 2 elements"): the cue stage's
+  300 ms ghost clone keeps the hotspot buttons and only its root is `inert`, which Playwright does not treat as hidden;
+  this lane gives the ghost clone `aria-hidden` as well as `inert`, or scopes the e2e `hotspot()` to the live layer, so
+  a strict locator never matches a departing room's buttons.
 
 ### GM3b `mech-state-visuals`
 - **Goal:** §6.4.
