@@ -7,6 +7,7 @@ import { expect, test } from 'vitest';
 
 import { checkWorld } from '../../scripts/story/softlock.ts';
 import { reconcile } from '../explore/reconcile.ts';
+import { RESUME_STATE_CAP, sectionScope } from '../explore/reduce.ts';
 import type { ExploreAction, ExploreEffect } from '../explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { WorldState } from '../explore/state.ts';
@@ -17,7 +18,7 @@ import type { HotspotKey, ItemId, RoomId, WorldSource } from '../world/types.ts'
 import type { KernelWorld, SectionAction } from './contract.ts';
 import { MECHANIC_DATA } from './data/index.ts';
 import { reduce } from './rules/core.ts';
-import { successors } from './rules/search.ts';
+import { ownScope, searchSection, sectionEntry, sectionKey, successors } from './rules/search.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
 // Fixture worlds (one section `s`), in the source format
@@ -270,6 +271,36 @@ test('use: a soft-lock path names its use step', () => {
   expect(checkWorld(kernel(src), 'story/ch1/world.json').flatMap((c) => c.findings.map((f) => f.message))).toEqual([
     'section s: a reachable state cannot reach a leave (stuck in hall): tap hall.key → use key on hall.well',
   ]);
+});
+
+test('use: a section reset clears what its rules read', () => {
+  // The desk's rule gives the note and fires its own key, both outside the kernel's scan of S's triggers.
+  const src = source(
+    rawWorld({ hall: room([take('pen', 'pen'), object('desk', { uses: [{ item: 'pen', do: [{ give: 'note' }] }] }), exit('out', { story: 'end' })]) }, { pen: {}, note: {} }),
+  );
+  const w = kernel(src);
+  const start = sectionEntry(w, EMPTY_WORLD_STATE, S);
+  const reached = [start];
+  const r = searchSection(w, start, S, RESUME_STATE_CAP, {
+    onEdge: (_from, succ, to, isNew) => {
+      if (isNew && to !== null) {
+        reached.push(succ.state);
+      }
+    },
+  });
+  expect(r.result).toBe('exhausted');
+  // The positive control: the search reaches the rule's run.
+  expect(reached.some((s) => s.fired.includes('use:hall.desk#0') && s.held.includes(it('note')))).toBe(true);
+  // X9's start premise (the rules golden's, explore.test.ts): re-entering S from any state play reaches gives the state
+  // the build started from.
+  const key = sectionKey(w, start, S);
+  expect(reached.map((s) => sectionKey(w, sectionEntry(w, s, S), S)).filter((x) => x !== key)).toEqual([]);
+  // S's own facts: the kernel's scope plus the rule's gift and key; a world without rules adds nothing (the kernel's
+  // scope object itself, so the reset of every world without `uses` is unchanged).
+  const own = ownScope(w, S);
+  expect([own.items.has(it('note')), own.fired.has('use:hall.desk#0'), sectionScope(w, S).items.has(it('note'))]).toEqual([true, true, false]);
+  const plain = kernel(source(rawWorld({ hall: room([take('pen', 'pen'), exit('out', { story: 'end' })]) }, { pen: {} })));
+  expect(ownScope(plain, S)).toBe(sectionScope(plain, S));
 });
 
 test('use: a keep slot and its held item survive reconcile', () => {
