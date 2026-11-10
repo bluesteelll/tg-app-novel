@@ -23,7 +23,9 @@ it lives in `D:/tmp/novel-orch/RESUME.md`.
 - **Vacuous greens for this stack**: vitest "No test files found" (exit code depends on `passWithNoTests` — never
   set it); a vitest `include` glob that matches nothing in a renamed directory; cargo `running 0 tests` for a target
   that should have tests; `npm run story` compiling zero chapters; a bundle budget that measured a stale or empty
-  `dist/`; Playwright with every test skipped because no dev server answered. Count tests **by name** against the expected set; a gate script is trusted only after it was seen
+  `dist/`; Playwright with every test skipped because no dev server answered; a glob-driven test (`import.meta.glob`)
+  whose transform Vitest cached before a source file was added, so its list misses the new file (Q63: the gate runs
+  with `fsModuleCache: false`, pinned by `test gate: no project reuses a cached module transform`). Count tests **by name** against the expected set; a gate script is trusted only after it was seen
   exiting non-zero on a failing input.
 - **Per-worktree dependencies**: `npm ci` inside the worktree's `client/` (never a `node_modules` shared through a
   junction — every lane would test whichever tree installed last); cargo builds into the worktree's own `target/`
