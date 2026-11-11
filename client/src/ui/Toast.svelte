@@ -9,15 +9,116 @@
 
 <script lang="ts">
   // The toast stack. Every handler is synchronous and stops the click, so a toast tap never reaches the dialogue
-  // under it, and the sound chip's tap is the gesture that resumes audio.
+  // under it, and the sound chip's tap is the gesture that resumes audio. A leaving toast is an inert, aria-hidden
+  // ghost until its `out` ends, so a tap there reaches the layer below, as on the empty place it leaves.
   import { t, type Lang } from '../i18n/index.ts';
+  import { playToast, stackOf, type ToastMotion, type ToastSlot } from './toast-motion.ts';
 
-  type Props = { toasts: readonly ToastEntry[]; lang: Lang; ondismiss: (key: string) => void };
+  // `reduced` is the view model's `reducedMotion` (required, so App cannot drop the one source silently).
+  type Props = { toasts: readonly ToastEntry[]; lang: Lang; reduced: boolean; ondismiss: (key: string) => void };
 
-  let { toasts, lang, ondismiss }: Props = $props();
+  let { toasts, lang, reduced, ondismiss }: Props = $props();
 
   // The one dev gate: false in production, where a tag error is dropped and logged instead (F2).
   const shown = $derived(visibleToasts(toasts, __TG_MOCK__));
+
+  // Motion (per-player GM6t). No effect reads what it writes: the recompute reads `shown` and `endedTick` and writes
+  // `slots`; the walk reads `root`, `slots` and `reduced` and bumps `endedTick` from a plain counter.
+  let root: HTMLElement | undefined = $state();
+  let slots: readonly ToastSlot[] = $state.raw([]);
+  let endedTick = $state(0);
+  let prev: readonly ToastSlot[] = [];
+  let token = 0;
+  let bumps = 0;
+  // Leave tokens whose `out` ended, and those whose `out` started; both keep only the tokens still on the stack.
+  const ended = new Set<number>();
+  const played = new Set<number>();
+  // One motion per target (a toast element, its text span). An entry leaves when its target leaves the stack, never
+  // at its finish: a key back while its ghost is still here must cancel the ghost's finished `out`, whose held last
+  // frame would hide the toast again once the `in` ends.
+  const running = new Map<Element, Animation>();
+  // The last walk's live toasts by key.
+  let live = new Map<string, { el: Element; message: string }>();
+
+  function play(target: Element | null, kind: ToastMotion): Animation | null {
+    if (!target) {
+      return null;
+    }
+    running.get(target)?.cancel();
+    const anim = playToast(target, kind, reduced);
+    if (anim) {
+      running.set(target, anim);
+    }
+    return anim;
+  }
+
+  function end(leave: number): void {
+    ended.add(leave);
+    endedTick = ++bumps;
+  }
+
+  // A pre effect runs before the DOM update (Svelte's documented order), so the template applies this `slots` before
+  // the walk below runs, and the walk always zips the DOM built from it. A plain effect also gets there in Svelte
+  // 5.57, but only through an undocumented step (a block reading a signal an effect writes runs right after it).
+  $effect.pre(() => {
+    void endedTick;
+    ({ slots: prev, token } = stackOf(prev, shown, ended, token));
+    const held = new Set(prev.map((s) => s.leave));
+    for (const tokens of [ended, played]) {
+      for (const n of tokens) {
+        if (!held.has(n)) {
+          tokens.delete(n);
+        }
+      }
+    }
+    slots = prev;
+  });
+
+  // The walk: `root.children[i]` is `slots[i]`'s element (one root element per slot). Idempotent: a run with nothing
+  // new plays nothing.
+  $effect(() => {
+    const host = root;
+    if (!host) {
+      return;
+    }
+    const now = new Map<string, { el: Element; message: string }>();
+    slots.forEach(({ entry, leave }, i) => {
+      const el = host.children[i];
+      if (!el) {
+        return;
+      }
+      if (leave === null) {
+        const was = live.get(entry.key);
+        if (was?.el !== el) {
+          play(el, 'in');
+        } else if (was.message !== entry.message) {
+          play(el.querySelector('[data-toast-text]'), 'swap');
+        }
+        now.set(entry.key, { el, message: entry.message });
+      } else if (!played.has(leave)) {
+        played.add(leave);
+        const anim = play(el, 'out');
+        if (anim) {
+          anim.onfinish = () => end(leave);
+        } else {
+          end(leave);
+        }
+      }
+    });
+    live = now;
+    for (const target of running.keys()) {
+      if (!host.contains(target)) {
+        running.delete(target);
+      }
+    }
+  });
+
+  // The unmount cancels every motion still held (a cancelled animation fires no `onfinish`).
+  $effect(() => () => {
+    for (const anim of running.values()) {
+      anim.cancel();
+    }
+  });
 
   function dismiss(e: MouseEvent, key: string): void {
     e.stopPropagation();
@@ -25,11 +126,19 @@
   }
 </script>
 
-<div class="toasts" aria-live="polite">
-  {#each shown as entry (entry.key)}
+<div class="toasts" aria-live="polite" bind:this={root}>
+  <!-- One root element per slot: the walk zips root.children with slots (test 'toast: every slot renders exactly one
+       root element'). -->
+  {#each slots as slot (slot.entry.key)}
+    {@const entry = slot.entry}
     {#if entry.kind === 'prompt'}
-      <div class="toast" data-variant="prompt">
-        <span>{entry.message}</span>
+      <div
+        class="toast"
+        data-variant="prompt"
+        inert={slot.leave !== null}
+        aria-hidden={slot.leave === null ? undefined : 'true'}
+      >
+        <span data-toast-text>{entry.message}</span>
         <span class="actions">
           {#each entry.actions as action, i (i)}
             <button
@@ -48,21 +157,33 @@
         type="button"
         class="toast"
         data-variant="chip"
+        inert={slot.leave !== null}
+        aria-hidden={slot.leave === null ? undefined : 'true'}
         onclick={(e) => {
           e.stopPropagation();
           entry.tap();
-        }}>{entry.message}</button
+        }}><span data-toast-text>{entry.message}</span></button
       >
     {:else if entry.kind === 'note' && entry.sticky}
-      <div class="toast" data-variant="note">
-        <span>{entry.message}</span>
+      <div
+        class="toast"
+        data-variant="note"
+        inert={slot.leave !== null}
+        aria-hidden={slot.leave === null ? undefined : 'true'}
+      >
+        <span data-toast-text>{entry.message}</span>
         <button type="button" class="close" aria-label={t(lang, 'toast.close')} onclick={(e) => dismiss(e, entry.key)}>
           <span aria-hidden="true">×</span>
         </button>
       </div>
     {:else}
-      <button type="button" class="toast" data-variant={entry.kind} onclick={(e) => dismiss(e, entry.key)}
-        >{entry.message}</button
+      <button
+        type="button"
+        class="toast"
+        data-variant={entry.kind}
+        inert={slot.leave !== null}
+        aria-hidden={slot.leave === null ? undefined : 'true'}
+        onclick={(e) => dismiss(e, entry.key)}><span data-toast-text>{entry.message}</span></button
       >
     {/if}
   {/each}

@@ -1,7 +1,9 @@
 // L14a in happy-dom: the UI string tables and t(), the screen stack that owns the BackButton, the view model's
 // toasts, the tap screen and the stage host. Components render through @testing-library/svelte.
 import { cleanup, render } from '@testing-library/svelte';
-import { createRawSnippet } from 'svelte';
+import { createRawSnippet, flushSync, tick } from 'svelte';
+import { parse } from 'svelte/compiler';
+import type { AST } from 'svelte/compiler';
 import { afterEach, expect, onTestFinished, test, vi } from 'vitest';
 
 import { en } from '../i18n/en.ts';
@@ -9,12 +11,14 @@ import { t, type UiKey } from '../i18n/index.ts';
 import { ru } from '../i18n/ru.ts';
 import type { StoryId } from '../story/catalog.ts';
 import type { Unsubscribe } from '../telegram/index.ts';
+import appSource from './App.svelte?raw';
 import { createScreens, type BackButtonPort, type RootView, type Screen, type ScreensView } from './screens.ts';
 import Stage from './Stage.svelte';
 import { createViewModel, TOAST_MAX, TOAST_MS, type Timers, type ToastEntry } from './state.svelte.ts';
 import TapToStart from './TapToStart.svelte';
 import Toast, { visibleToasts } from './Toast.svelte';
 import toastSource from './Toast.svelte?raw';
+import { TOAST_MOTIONS, type ToastMotion } from './toast-motion.ts';
 
 // svelteTesting()'s auto-cleanup does not reach the `dom` project (a component of one test stayed mounted into the
 // next), so each test unmounts what it rendered here.
@@ -364,6 +368,9 @@ test('toast: same key replaces in place', () => {
 });
 
 test('toast: actions and the chip run inside the click', () => {
+  // Every Toast render records its motions (recordAnimate, below): happy-dom leaves a cancelled animation's
+  // `finished` rejection unhandled, which browsers mark handled.
+  recordAnimate();
   const { target, escaped } = outerTarget();
   const log: string[] = [];
   const entries: ToastEntry[] = [
@@ -382,7 +389,7 @@ test('toast: actions and the chip run inside the click', () => {
   ];
   const { getByRole, getByText } = render(Toast, {
     target,
-    props: { toasts: entries, lang: 'ru', ondismiss: (key: string) => log.push(`dismiss:${key}`) },
+    props: { toasts: entries, lang: 'ru', reduced: false, ondismiss: (key: string) => log.push(`dismiss:${key}`) },
   });
 
   // Each spy is read right after click(), with no await between: the handler ran inside the gesture.
@@ -401,13 +408,14 @@ test('toast: actions and the chip run inside the click', () => {
 });
 
 test('toast: dev variant renders only with the mock', () => {
+  recordAnimate();
   const dev: ToastEntry = { kind: 'dev', key: 'dev', message: 'tag error: bg unknown' };
   const plain = note('resume');
   expect(visibleToasts([dev, plain], false)).toEqual([plain]);
   expect(visibleToasts([dev, plain], true)).toEqual([dev, plain]);
 
   // Under vitest the mode is not production, so __TG_MOCK__ is true and the banner renders.
-  const { container } = render(Toast, { toasts: [dev, plain], lang: 'en', ondismiss: () => {} });
+  const { container } = render(Toast, { toasts: [dev, plain], lang: 'en', reduced: false, ondismiss: () => {} });
   expect([...container.querySelectorAll('[data-variant]')].map((el) => el.getAttribute('data-variant'))).toEqual([
     'dev',
     'note',
@@ -415,6 +423,363 @@ test('toast: dev variant renders only with the mock', () => {
   // The one call site passes the build's flag, so a production build (__TG_MOCK__ false) drops the banner.
   const calls = [...toastSource.matchAll(/(?<!function\s+)\bvisibleToasts\s*\(([^)]*)\)/g)].map((m) => m[1]);
   expect(calls).toEqual(['toasts, __TG_MOCK__']);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Toast motion (per-player GM6t): every toast enters, leaves as an inert ghost and swaps its text through
+// `Element.animate`, recorded here.
+
+/** A recorded `Animation`: `finish()` ends it as a browser does (the state, then `onfinish`); `cancel()` is counted. */
+class RecordedAnimation {
+  onfinish: (() => void) | null = null;
+  playState: 'running' | 'finished' | 'idle' = 'running';
+  cancels = 0;
+  readonly id: number;
+  readonly #log: string[];
+  constructor(id: number, log: string[]) {
+    this.id = id;
+    this.#log = log;
+  }
+  cancel(): void {
+    this.cancels++;
+    this.playState = 'idle';
+    this.#log.push(`cancel ${this.id}`);
+  }
+  finish(): void {
+    this.playState = 'finished';
+    this.onfinish?.();
+  }
+}
+
+type Played = {
+  readonly el: Element;
+  readonly keyframes: unknown;
+  readonly options: KeyframeAnimationOptions;
+  readonly anim: RecordedAnimation;
+};
+
+/** `Element.prototype.animate` as `value` for this test (happy-dom has a real one), restored after it. */
+function stubAnimate(value: unknown): void {
+  const own = Object.getOwnPropertyDescriptor(Element.prototype, 'animate');
+  Object.defineProperty(Element.prototype, 'animate', { value, configurable: true, writable: true });
+  onTestFinished(() => {
+    if (own === undefined) {
+      Reflect.deleteProperty(Element.prototype, 'animate');
+    } else {
+      Object.defineProperty(Element.prototype, 'animate', own);
+    }
+  });
+}
+
+/** Every `animate` call of this test in order, and a log of each play (`play <id>`) and cancel (`cancel <id>`). */
+function recordAnimate(): { played: Played[]; log: string[] } {
+  const played: Played[] = [];
+  const log: string[] = [];
+  stubAnimate(function (this: Element, keyframes: unknown, options: KeyframeAnimationOptions): RecordedAnimation {
+    const anim = new RecordedAnimation(played.length, log);
+    played.push({ el: this, keyframes, options, anim });
+    log.push(`play ${anim.id}`);
+    return anim;
+  });
+  return { played, log };
+}
+
+const MOTION_KINDS: readonly ToastMotion[] = ['in', 'out', 'swap'];
+
+/** The motion a call played, read from its keyframes against the full table. */
+function kindOf(p: Played): ToastMotion | undefined {
+  const kf = JSON.stringify(p.keyframes);
+  return MOTION_KINDS.find((k) => JSON.stringify(TOAST_MOTIONS[k].full.keyframes) === kf);
+}
+
+/** The stack's root element. */
+function stackRoot(container: HTMLElement): Element {
+  const root = container.querySelector('.toasts');
+  if (root === null) {
+    throw new Error('no toast stack');
+  }
+  return root;
+}
+
+/** The toast element (a child of the stack) whose text holds `text`. */
+function toastEl(container: HTMLElement, text: string): Element {
+  const el = [...stackRoot(container).children].find((c) => c.textContent?.includes(text));
+  if (el === undefined) {
+    throw new Error(`no toast reads "${text}"`);
+  }
+  return el;
+}
+
+const noDismiss = (): void => {};
+
+/** Toast's props for a motion test: English, full motion, no dismiss handler. */
+const motionProps = (
+  toasts: readonly ToastEntry[],
+): { toasts: readonly ToastEntry[]; lang: 'en'; reduced: boolean; ondismiss: () => void } => ({
+  toasts,
+  lang: 'en',
+  reduced: false,
+  ondismiss: noDismiss,
+});
+
+test('toast: a new toast animates in, a dismissed one out', async () => {
+  const { played, log } = recordAnimate();
+  const [a, b] = [note('a'), note('b')];
+  const { container, rerender } = render(Toast, motionProps([a]));
+  expect(played.map(kindOf)).toEqual(['in']);
+  const elA = toastEl(container, 'note a');
+  expect(played[0]?.el).toBe(elA);
+  expect(elA.isConnected).toBe(true);
+
+  await rerender({ toasts: [a, b] });
+  expect(played.map(kindOf)).toEqual(['in', 'in']);
+  expect(played[1]?.el).toBe(toastEl(container, 'note b'));
+  // Another toast arriving cancels nothing: A's entrance runs on.
+  expect(played[0]?.anim.playState).toBe('running');
+
+  await rerender({ toasts: [b] });
+  expect(played.map(kindOf)).toEqual(['in', 'in', 'out']);
+  // One Animation per element: A's running entrance is cancelled before its leave plays, from rest.
+  expect(log).toEqual(['play 0', 'play 1', 'cancel 0', 'play 2']);
+  expect(played[2]?.el).toBe(elA);
+  expect(played[2]?.options.fill).toBe('both');
+});
+
+test('toast: a dismissed toast stays as a leaving ghost until its out motion finishes', async () => {
+  const { played } = recordAnimate();
+  const prompt: ToastEntry = {
+    kind: 'prompt',
+    key: 'p',
+    message: 'prompt p',
+    actions: [{ label: 'act', run: () => {} }],
+  };
+  const stay = note('stay', true);
+  const { container, rerender } = render(Toast, motionProps([prompt, stay]));
+
+  await rerender({ toasts: [stay] });
+  const ghost = container.querySelector('[data-variant="prompt"]');
+  expect(ghost).not.toBeNull();
+  expect([ghost?.hasAttribute('inert'), ghost?.getAttribute('aria-hidden')]).toEqual([true, 'true']);
+  // Its action is inside the inert element: no tap reaches a leaving prompt's buttons.
+  expect(ghost?.querySelector('button')?.closest('[inert]')).toBe(ghost);
+  // A live toast is neither inert nor hidden.
+  const live = toastEl(container, 'note stay');
+  expect([live.hasAttribute('inert'), live.hasAttribute('aria-hidden')]).toEqual([false, false]);
+
+  const out = played.find((p) => p.el === ghost && kindOf(p) === 'out');
+  expect(out).toBeDefined();
+  await tick();
+  expect(ghost?.isConnected).toBe(true);
+  out?.anim.finish();
+  await tick();
+  expect(ghost?.isConnected).toBe(false);
+  expect(container.querySelector('[data-variant="prompt"]')).toBeNull();
+});
+
+test('toast: a same-key replace swaps its text with motion', async () => {
+  const { played, log } = recordAnimate();
+  const say = (message: string): ToastEntry => ({ kind: 'note', key: 'a', message, sticky: false });
+  const { container, rerender } = render(Toast, motionProps([say('one')]));
+  const el = toastEl(container, 'one');
+
+  await rerender({ toasts: [say('two')] });
+  // The same element stays: no new entrance, its text swaps.
+  expect(played.map(kindOf)).toEqual(['in', 'swap']);
+  const text = el.querySelector('[data-toast-text]');
+  expect(text?.textContent).toBe('two');
+  expect(played[1]?.el).toBe(text);
+
+  // A second replace cancels the first swap on the same span.
+  await rerender({ toasts: [say('three')] });
+  expect(played.map(kindOf)).toEqual(['in', 'swap', 'swap']);
+  expect(log.slice(-2)).toEqual(['cancel 1', 'play 2']);
+  expect(played[2]?.el).toBe(text);
+  // The same message again is no motion (the view model restarts the timer only).
+  await rerender({ toasts: [say('three')] });
+  expect(played.length).toBe(3);
+});
+
+test('toast: a key that left, returned and leaves again plays out again', () => {
+  const { played } = recordAnimate();
+  const look = note('look');
+  let list: readonly ToastEntry[] = $state.raw([look]);
+  const { container } = render(Toast, {
+    get toasts() {
+      return list;
+    },
+    lang: 'en',
+    reduced: false,
+    ondismiss: noDismiss,
+  });
+  const el = toastEl(container, 'note look');
+  const set = (next: readonly ToastEntry[]): void => {
+    list = next;
+    flushSync();
+  };
+
+  // Shown again while its out runs: that out is cancelled and the same element enters again.
+  set([]);
+  set([look]);
+  expect(played.map(kindOf)).toEqual(['in', 'out', 'in']);
+  expect(played[1]?.anim.playState).toBe('idle');
+  expect(played[2]?.el).toBe(el);
+  expect([el.isConnected, el.hasAttribute('inert')]).toEqual([true, false]);
+
+  // Shown again in the flush its finished out ends in: the end of that leave must not end the next one.
+  set([]);
+  flushSync(() => {
+    played[3]?.anim.finish();
+    list = [look];
+  });
+  set([]);
+  expect(played.map(kindOf)).toEqual(['in', 'out', 'in', 'out', 'in', 'out']);
+  expect(played[5]?.el).toBe(el);
+  // The element stays a ghost until its own out ends.
+  expect([el.isConnected, el.hasAttribute('inert')]).toEqual([true, true]);
+  played[5]?.anim.finish();
+  flushSync();
+  expect(el.isConnected).toBe(false);
+});
+
+test('toast: a toast without animate leaves at once', async () => {
+  stubAnimate(undefined);
+  const { container, rerender } = render(Toast, motionProps([note('a')]));
+  const el = toastEl(container, 'note a');
+  await rerender({ toasts: [] });
+  expect(el.isConnected).toBe(false);
+  expect(stackRoot(container).children.length).toBe(0);
+});
+
+test('toast: an unmounted stack leaves no running animation', async () => {
+  const { played } = recordAnimate();
+  const { rerender, unmount } = render(Toast, motionProps([note('a'), note('b')]));
+  // A's out and B's in are running.
+  await rerender({ toasts: [note('b')] });
+  expect(played.length).toBeGreaterThanOrEqual(2);
+  unmount();
+  // None of them finished, so every one is cancelled.
+  expect(played.map((p) => p.anim.playState)).toEqual(played.map(() => 'idle'));
+});
+
+test('toast: the stack is built from the dev-filtered entries', () => {
+  // `shown` is `visibleToasts(toasts, __TG_MOCK__)` (pinned above), so a ghost is never a dev entry in production.
+  const args = [...toastSource.matchAll(/\bstackOf\s*\(([^)]*)\)/g)].map((m) => (m[1] ?? '').split(',')[1]?.trim());
+  expect(args).toEqual(['shown']);
+});
+
+test("toast: a dropped ghost's finished out is released, not cancelled at unmount", async () => {
+  const { played } = recordAnimate();
+  const [a, b] = [note('a'), note('b')];
+  const { container, rerender, unmount } = render(Toast, motionProps([a, b]));
+  const [elA, elB] = [toastEl(container, 'note a'), toastEl(container, 'note b')];
+  await rerender({ toasts: [b] });
+  const out = played.find((p) => p.el === elA && kindOf(p) === 'out');
+  const enter = played.find((p) => p.el === elB && kindOf(p) === 'in');
+  expect([out?.anim.playState, enter?.anim.playState]).toEqual(['running', 'running']);
+
+  out?.anim.finish();
+  await tick();
+  expect(elA.isConnected).toBe(false);
+  unmount();
+  // The teardown ran (B's entrance is cancelled) and left the released out alone.
+  expect([enter?.anim.playState, out?.anim.playState, out?.anim.cancels]).toEqual(['idle', 'finished', 0]);
+});
+
+test('toast: a key returning after its out finished cancels that out before its in', () => {
+  const { played, log } = recordAnimate();
+  const a = note('a');
+  let list: readonly ToastEntry[] = $state.raw([a]);
+  const { container } = render(Toast, {
+    get toasts() {
+      return list;
+    },
+    lang: 'en',
+    reduced: false,
+    ondismiss: noDismiss,
+  });
+  const el = toastEl(container, 'note a');
+  list = [];
+  flushSync();
+  expect(played.map(kindOf)).toEqual(['in', 'out']);
+  expect(played[1]?.el).toBe(el);
+
+  // The out ends and the key returns in one flush: the ghost is still on the stack, live again on its element.
+  flushSync(() => {
+    played[1]?.anim.finish();
+    list = [a];
+  });
+  expect(played.map(kindOf)).toEqual(['in', 'out', 'in']);
+  expect(played[2]?.el).toBe(el);
+  expect([el.isConnected, el.hasAttribute('inert'), el.hasAttribute('aria-hidden')]).toEqual([true, false, false]);
+  // The finished out holds opacity 0 (`fill: 'both'`): it is cancelled right before the in.
+  expect(log.slice(-2)).toEqual(['cancel 1', 'play 2']);
+  played[2]?.anim.finish();
+  // The toast ends visible: nothing recorded on it still holds a last frame.
+  const held = played.filter((p) => p.el === el && p.options.fill === 'both' && p.anim.playState !== 'idle');
+  expect(held.map((p) => p.anim.id)).toEqual([]);
+});
+
+test('toast: every slot renders exactly one root element', async () => {
+  recordAnimate();
+  const entries: ToastEntry[] = [
+    { kind: 'prompt', key: 'p', message: 'prompt p', actions: [{ label: 'act', run: () => {} }] },
+    { kind: 'chip', key: 'sound', message: 'chip', tap: () => {} },
+    note('sticky', true),
+    note('transient'),
+    { kind: 'dev', key: 'dev', message: 'dev banner' },
+  ];
+  const { container, rerender } = render(Toast, motionProps(entries));
+  const root = stackRoot(container);
+  const variants = (): (string | null)[] => [...root.children].map((c) => c.getAttribute('data-variant'));
+  expect(variants()).toEqual(['prompt', 'chip', 'note', 'note', 'dev']);
+
+  // The transient note leaves: its ghost keeps its index, so the walk's zip of the children with the stack holds.
+  await rerender({ toasts: entries.filter((e) => e.key !== 'transient') });
+  expect(root.children.length).toBe(5);
+  expect(variants()).toEqual(['prompt', 'chip', 'note', 'note', 'dev']);
+  expect([...root.children].map((c) => c.hasAttribute('inert'))).toEqual([false, false, false, true, false]);
+});
+
+test('toast: reduced motion plays the opacity-only motions', async () => {
+  const { played } = recordAnimate();
+  const say = (message: string): ToastEntry => ({ kind: 'note', key: 'a', message, sticky: false });
+  const { rerender } = render(Toast, { ...motionProps([say('one')]), reduced: true });
+  await rerender({ toasts: [say('two')] });
+  await rerender({ toasts: [] });
+  expect(played.map((p) => p.keyframes)).toEqual([
+    TOAST_MOTIONS.in.reduced.keyframes,
+    TOAST_MOTIONS.swap.reduced.keyframes,
+    TOAST_MOTIONS.out.reduced.keyframes,
+  ]);
+
+  // One flush that changes the setting and adds a toast: the toast enters, with the new setting.
+  const other = render(Toast, { ...motionProps([]), reduced: true });
+  await other.rerender({ toasts: [note('b')], reduced: false });
+  const enter = played[3];
+  expect(played.length).toBe(4);
+  expect(enter?.keyframes).toEqual(TOAST_MOTIONS.in.full.keyframes);
+  expect(enter?.el).toBe(toastEl(other.container, 'note b'));
+  expect(enter?.el.isConnected).toBe(true);
+});
+
+test("toast: App passes the view model's reduced motion to the stack", () => {
+  const ast = parse(appSource, { modern: true });
+  const toasts: AST.Component[] = [];
+  const walk = (n: unknown): void => {
+    if (typeof n !== 'object' || n === null) {
+      return;
+    }
+    if ((n as { type?: unknown }).type === 'Component' && (n as AST.Component).name === 'Toast') {
+      toasts.push(n as AST.Component);
+    }
+    for (const v of Object.values(n)) {
+      walk(v);
+    }
+  };
+  walk(ast.fragment);
+  expect(toasts).toHaveLength(1);
+  const attrs = (toasts[0]?.attributes ?? []).map((a) => appSource.slice(a.start, a.end));
+  expect(attrs).toEqual(expect.arrayContaining(['toasts={vm.toasts}', 'reduced={vm.reducedMotion}']));
 });
 
 // ---------------------------------------------------------------------------------------------------------------

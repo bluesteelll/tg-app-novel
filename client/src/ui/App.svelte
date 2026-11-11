@@ -299,7 +299,7 @@
       {/if}
     {/each}
 
-    <Toast toasts={vm.toasts} lang={vm.lang} ondismiss={(key) => vm.dismissToast(key)} />
+    <Toast toasts={vm.toasts} lang={vm.lang} reduced={vm.reducedMotion} ondismiss={(key) => vm.dismissToast(key)} />
   </div>
 </div>
 
@@ -338,11 +338,13 @@
   }
 
   /* Q67 (W1): wider than a phone, by the window's width only, so Telegram's height changes never toggle it (`480.02px`:
-     a fractional width falls in exactly one branch; classic syntax, which every WebView parses). index.html's `#app`
-     side padding uses the same line: a media query cannot read a custom property. The column is min(width,
-     height x 9/16), centred inside the window's horizontal safe area by that padding, so nothing in it is
-     horizontally unsafe: the side insets are `initial` inside it, and every reader's `, 0px` fallback applies. After
-     `.design`, so its `initial` wins by order. */
+     a fractional width falls in exactly one branch). The build ships the line as range syntax (`width>=480.02px`):
+     Vite 8.3.5's default CSS target (chrome111, edge111, firefox114, safari16.4, ios16.4) is the project's floor, and
+     a WebView below it drops the query, so every window takes the phone branch (the whole window, the layout before
+     Q67). index.html's `#app` side padding uses the same line, minified the same way: a media query cannot read a
+     custom property. The column is min(width, height x 9/16), centred inside the window's horizontal safe area by
+     that padding, so nothing in it is horizontally unsafe: the side insets are `initial` inside it, and every
+     reader's `, 0px` fallback applies. After `.design`, so its `initial` wins by order. */
   @media (min-width: 480.02px) {
     .app {
       width: auto;
