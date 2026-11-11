@@ -198,6 +198,41 @@ describe('extract', () => {
     ]);
   });
 
+  test('assets: an expression that changes the eyes needs its own blink', async () => {
+    // R4 with the reuse rule (§4.2 step 3, W4 b): surprised widens the eyes, so its diff meets the rest blink box E and
+    // the rest blink no longer composites to surprised: its own blink pair is needed, named with ch2's lines; supplied,
+    // it is cut against ally.surprised.png.
+    const needs = [needOf('ch2', [['surprised', false]])];
+    const without = await extract(syntheticShot({ missing: ['ally.surprised.half.png', 'ally.surprised.closed.png'] }), needs);
+    expect(without.ok ? [] : without.error).toEqual([
+      'cafe: ally.surprised.half.png missing (R4: a needed state; lines ch2.cafe.a000)',
+      'cafe: ally.surprised.closed.png missing (R4: a needed state; lines ch2.cafe.a000)',
+    ]);
+    const fx = syntheticShot();
+    const layers = layersOf(await extract(fx, needs));
+    const [rest, surprised] = [exprOf(layers, 'neutral'), exprOf(layers, 'surprised')];
+    expect(surprised.blink.half).not.toBe(rest.blink.half);
+    // Its lids against its own wide eyes (2 units taller each side): the wide eyes' bbox, dilated 4.
+    const g = geometry(160, 320, 1);
+    const [l, r] = [g.wide[0] ?? [0, 0, 0, 0], g.wide[1] ?? [0, 0, 0, 0]];
+    const box: Box = [l[0] - 4, l[1] - 4, r[0] + r[2] + 4 - (l[0] - 4), l[3] + 8];
+    expect(box).toEqual([46, 70, 68, 20]);
+    expect([surprised.blink.half.box, surprised.blink.closed.box]).toEqual([box, box]);
+    expect([...surprised.blink.closed.fill.data]).toEqual(pxIn(fx.files.get('ally.surprised.closed.png'), box));
+    // The brows are untouched: the rest accent is reused.
+    expect(surprised.accent).toBe(rest.accent);
+  });
+
+  test('assets: a needed state missing from the source fails with its line IDs', async () => {
+    // R4: every needed state exists as a file; the message names the file and every line that shows the character in
+    // that expression (both chapters'), or, for a rest state no line shows, the chapters that show the shot.
+    const needs = [needOf('ch1', [['neutral', false], ['smile', false]]), needOf('ch2', [['smile', true]])];
+    const r = await extract(syntheticShot({ missing: ['ally.smile.png'] }), needs);
+    expect(r.ok ? [] : r.error).toEqual(['cafe: ally.smile.png missing (R4: a needed state; lines ch1.cafe.a001, ch2.cafe.a000)']);
+    const rest = await extract(syntheticShot({ missing: ['ally.half.png'] }), [needOf('ch2', [['surprised', false]])]);
+    expect(rest.ok ? [] : rest.error).toEqual(['cafe: ally.half.png missing (R4: a needed state; chapters ch2)']);
+  });
+
   test('assets: a depth map is sampled onto the grid through the crop, white near', () => {
     // §4.2 step 6 (cut D12, critique W4): a vertical ramp depth.png of 64 × 128 (white = near at the bottom) under the
     // crop [40, 96, 160, 320] of a 240 × 480 original. Vertex row j sits at plate y = j / 23 × 320, original y + 96, depth

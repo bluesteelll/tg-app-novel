@@ -494,11 +494,11 @@ export async function extractShot(input: ExtractInput): Promise<Result<Extracted
     }
     return r;
   };
-  /** A file the shot needs; its absence is reported. */
-  const need = async (file: string): Promise<Raster | null> => {
+  /** A file the shot needs; its absence is reported, as R4 with who needs it for a face state (`who`). */
+  const need = async (file: string, who: string | null = null): Promise<Raster | null> => {
     const r = await input.load(file);
     if (r === null) {
-      problems.push(`${s}: ${file} missing`);
+      problems.push(`${s}: ${file} missing${who === null ? '' : ` (R4: a needed state; ${who})`}`);
     }
     return sized(file, r);
   };
@@ -553,10 +553,13 @@ export async function extractShot(input: ExtractInput): Promise<Result<Extracted
     return layer;
   };
 
-  /** The line IDs that show `c` in `x` (sorted, once each), which R2's and R4's messages name. */
-  const linesOf = (c: CharId, x: ExprId): string => {
-    const lines = input.needs.flatMap(({ need }) => (need.faces[c] ?? []).filter((f) => f.expr === x).flatMap((f) => f.lines));
-    return [...new Set(lines)].sort().join(', ');
+  /**
+   * Who needs `c` in `x` (R2's and R4's messages): the line IDs that show it (with `talk`, of the chapters where `c`
+   * speaks in it), sorted, once each; for a rest state no line shows, the chapters that show the shot.
+   */
+  const whoNeeds = (c: CharId, x: ExprId, talk = false): string => {
+    const lines = input.needs.flatMap(({ need }) => (need.faces[c] ?? []).filter((f) => f.expr === x && (!talk || f.talk)).flatMap((f) => f.lines));
+    return lines.length > 0 ? `lines ${[...new Set(lines)].sort().join(', ')}` : `chapters ${[...new Set(input.needs.map((n) => n.ch))].sort().join(', ')}`;
   };
 
   /**
@@ -608,14 +611,14 @@ export async function extractShot(input: ExtractInput): Promise<Result<Extracted
   ): Promise<Map<ExprId, ExprLayers<Raster>>> => {
     const box = (b: Bounds | null): Box => onPlate(b === null ? null : meet(dilate(b, 4), head.clip), crop);
     type Cut = { readonly file: string; readonly v: Raster; readonly d: Px };
-    const variant = async (file: string, base: Raster): Promise<Cut | null> => {
-      const v = await need(file);
+    const variant = async (file: string, base: Raster, who: string): Promise<Cut | null> => {
+      const v = await need(file, who);
       return v === null ? null : { file, v, d: changed(v, base) };
     };
     const settle = (cut: Cut, at: Box): State | null => (registers(cut.file, c, cut.d, head.near, at) ? stateOf(cut.file, cut.v, cut.d, at, crop) : null);
     /** A pair of states (blink, talk) against `base`, in one box: the bbox of both diffs, dilated 4. */
-    const pair = async (files: readonly [string, string], base: Raster): Promise<readonly [State, State] | null> => {
-      const [a, b] = [await variant(files[0], base), await variant(files[1], base)];
+    const pair = async (files: readonly [string, string], base: Raster, who: string): Promise<readonly [State, State] | null> => {
+      const [a, b] = [await variant(files[0], base, who), await variant(files[1], base, who)];
       if (a === null || b === null) {
         return null;
       }
@@ -623,8 +626,8 @@ export async function extractShot(input: ExtractInput): Promise<Result<Extracted
       const [sa, sb] = [settle(a, at), settle(b, at)];
       return sa === null || sb === null ? null : [sa, sb];
     };
-    const single = async (file: string, base: Raster): Promise<State | null> => {
-      const a = await variant(file, base);
+    const single = async (file: string, base: Raster, who: string): Promise<State | null> => {
+      const a = await variant(file, base, who);
       return a === null ? null : settle(a, box(a.d.bounds));
     };
     type Plan = {
@@ -636,16 +639,21 @@ export async function extractShot(input: ExtractInput): Promise<Result<Extracted
     };
     const plans = new Map<ExprId, Plan>();
     const restSpeaks = needed.get(rest) ?? false;
-    const blink = await pair([`${c}.half.png`, `${c}.closed.png`], plate);
-    const accent = await single(`${c}.accent.png`, plate);
-    const mouths = restSpeaks ? await pair([`${c}.talk1.png`, `${c}.talk2.png`], plate) : null;
-    if (blink === null || accent === null || (restSpeaks && mouths === null)) {
-      return new Map();
+    // R4 (a), (d): the rest blink pair and accent of every face member, the rest mouths where the rest is spoken.
+    const blink = await pair([`${c}.half.png`, `${c}.closed.png`], plate, whoNeeds(c, rest));
+    const accent = await single(`${c}.accent.png`, plate, whoNeeds(c, rest));
+    const mouths = restSpeaks ? await pair([`${c}.talk1.png`, `${c}.talk2.png`], plate, whoNeeds(c, rest, true)) : null;
+    const restDone = blink !== null && accent !== null && (!restSpeaks || mouths !== null);
+    if (restDone) {
+      plans.set(rest, { layer: null, blink, accent, mouths, speaks: restSpeaks });
     }
-    plans.set(rest, { layer: null, blink, accent, mouths, speaks: restSpeaks });
     for (const x of [...needed.keys()].filter((e) => e !== rest).sort()) {
-      const cut = await variant(`${c}.${x}.png`, plate);
-      if (cut === null) {
+      // R4 (b): the expression itself; without the rest's boxes only its presence can be told.
+      const cut = restDone ? await variant(`${c}.${x}.png`, plate, whoNeeds(c, x)) : null;
+      if (!restDone && (await input.load(`${c}.${x}.png`)) === null) {
+        problems.push(`${s}: ${c}.${x}.png missing (R4: a needed state; ${whoNeeds(c, x)})`);
+      }
+      if (cut === null || blink === null || accent === null) {
         continue;
       }
       if (cut.d.count === 0) {
@@ -657,10 +665,15 @@ export async function extractShot(input: ExtractInput): Promise<Result<Extracted
         continue;
       }
       const speaks = needed.get(x) ?? false;
+      // R4 (c), the reuse rule (§4.2 step 3): its own state where its diff meets that rest box (talk: or no rest M).
       const own = (rb: Box): boolean => hits(cut.d, rb, crop);
-      const xBlink = own(blink[0].box) ? await pair([`${c}.${x}.half.png`, `${c}.${x}.closed.png`], cut.v) : blink;
-      const xAccent = own(accent.box) ? await single(`${c}.${x}.accent.png`, cut.v) : accent;
-      const xMouths = !speaks ? null : mouths === null || own(mouths[0].box) ? await pair([`${c}.${x}.talk1.png`, `${c}.${x}.talk2.png`], cut.v) : mouths;
+      const xBlink = own(blink[0].box) ? await pair([`${c}.${x}.half.png`, `${c}.${x}.closed.png`], cut.v, whoNeeds(c, x)) : blink;
+      const xAccent = own(accent.box) ? await single(`${c}.${x}.accent.png`, cut.v, whoNeeds(c, x)) : accent;
+      const xMouths = !speaks
+        ? null
+        : mouths === null || own(mouths[0].box)
+          ? await pair([`${c}.${x}.talk1.png`, `${c}.${x}.talk2.png`], cut.v, whoNeeds(c, x, true))
+          : mouths;
       if (xBlink !== null && xAccent !== null && (!speaks || xMouths !== null)) {
         plans.set(x, { layer, blink: xBlink, accent: xAccent, mouths: xMouths, speaks });
       }
@@ -679,7 +692,7 @@ export async function extractShot(input: ExtractInput): Promise<Result<Extracted
       ];
       for (const [an, a, bn, b] of pairs) {
         if (overlap(a[0]?.box ?? [0, 0, 0, 0], b[0]?.box ?? [0, 0, 0, 0]) && touch(a, b)) {
-          problems.push(`${s}: ${c} in ${x}: the ${an} and ${bn} diffs are within 4 px (R2: motion layers used together never touch; lines ${linesOf(c, x)})`);
+          problems.push(`${s}: ${c} in ${x}: the ${an} and ${bn} diffs are within 4 px (R2: motion layers used together never touch; ${whoNeeds(c, x)})`);
         }
       }
     }
