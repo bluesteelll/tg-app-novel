@@ -1518,11 +1518,11 @@ describe('budget assets', () => {
       ['world json br', world({ rawBytes: 2_000, brBytes: 8_001 }), 'world json ch1'],
       ['world source without its public output', world(null), 'world json ch1', 'public world output missing'],
       [
-        'transfer over 6 MB',
+        'transfer over 12 MB',
         () =>
           assetInputs(
             specsWith('ch1', (s) => {
-              for (const n of ['a', 'b', 'c']) {
+              for (const n of ['a', 'b', 'c', 'd', 'e']) {
                 s.assets[`bgm/${n}`] = clip('bgm', `bgm-${n}-2a2a2a2a`, 2_500_000, 60_000, 'm4a');
               }
             }),
@@ -1666,13 +1666,34 @@ describe('budget assets', () => {
     const half = rowOf(rows, 'transfer ch1 (half)');
     // bg/cafe's half AVIF replaces its full one; every other entry counts its full file.
     expect(half.valueBytes).toBe((full.valueBytes ?? 0) - 100_000 + 30_000);
-    expect(half).toMatchObject({ limitBytes: 6_000_000, status: 'PASS' });
+    expect(half).toMatchObject({ limitBytes: 12_000_000, status: 'PASS' });
     // A chapter with no half counts what its full row counts.
     expect(rowOf(rows, 'transfer ch2 (half)').valueBytes).toBe(rowOf(rows, 'transfer ch2').valueBytes);
     // A chapter without a manifest cannot be summed.
     const a = assetInputs();
     const noManifest = assetRows({ ...a, chapters: a.chapters.map((c) => (c.id === 'ch2' ? { ...c, manifest: null } : c)) });
     expect(rowOf(noManifest, 'transfer ch2 (half)')).toMatchObject({ status: 'FAIL', note: 'manifest missing' });
+  });
+
+  test('budget: transfer limit is 12 MB', () => {
+    // OQ5 (RULINGS 154): the owner's default, 12 MB per chapter (shots §5.11: a shot chapter's images and audio ~9.2 to
+    // ~10.6 MB), on the full and the half transfer rows alike.
+    expect(LIMITS.transfer).toBe(12_000_000);
+    // ch1's base assets are 652,844 B; four 2,836,789 B clips bring it to exactly 12,000,000.
+    const at = (extra: number): Row[] =>
+      assetRows(
+        assetInputs(
+          specsWith('ch1', (s) => {
+            for (const [i, n] of ['a', 'b', 'c', 'd'].entries()) {
+              s.assets[`bgm/${n}`] = clip('bgm', `bgm-${n}-2a2a2a2a`, 2_836_789 + (i === 0 ? extra : 0), 60_000, 'm4a');
+            }
+          }),
+        ),
+      );
+    for (const name of ['transfer ch1', 'transfer ch1 (half)']) {
+      expect(rowOf(at(0), name), name).toMatchObject({ status: 'PASS', valueBytes: 12_000_000, limitBytes: 12_000_000 });
+      expect(rowOf(at(1), name), name).toMatchObject({ status: 'FAIL', valueBytes: 12_000_001 });
+    }
   });
 
   test('budget: a room plate that is not 1080 x 2048 fails', () => {
@@ -1849,7 +1870,7 @@ describe('budget assets', () => {
       const r = runCli(dist, SCRIPT, [], ['--root', repo]);
       expect(r.status, r.stdout + r.stderr).toBe(1);
       expect(r.stdout).toMatch(/^asset inputs \| — \| — \| FAIL \| client\/src\/story-gen\/free\/ch1\.assets\.json: missing/m);
-      expect(r.stdout).toMatch(/^transfer ch1 \| — \| 6000\.0 KB \| FAIL \| manifest missing$/m);
+      expect(r.stdout).toMatch(/^transfer ch1 \| — \| 12000\.0 KB \| FAIL \| manifest missing$/m);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -1867,7 +1888,7 @@ describe('budget assets', () => {
         /^asset inputs \| — \| — \| PASS \| 1 chapters$/m,
         /^story json ch1 \| .* \| 35\.0 KB \| PASS/m,
         /^en table ch1 \| .* \| 48\.0 KB \| PASS/m,
-        /^transfer ch1 \| .* \| 6000\.0 KB \| PASS/m,
+        /^transfer ch1 \| .* \| 12000\.0 KB \| PASS/m,
         /^first knot images ch1 \| .* \| 450\.0 KB \| PASS/m,
         /^world json \| — \| 8\.0 KB \| PENDING/m,
         /^image bg\/cafe \| .* \| 300\.0 KB \| PASS \| 1080×2048/m,

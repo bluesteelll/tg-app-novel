@@ -174,7 +174,8 @@ export const LIMITS: Limits = {
   enRaw: 48_000,
   worldRaw: 32_000,
   worldBr: 8_000,
-  transfer: 6_000_000,
+  // OQ5 (RULINGS 154): the owner's default per chapter, full and half rows alike (shots §5.11: a shot chapter ~9.2-10.6 MB).
+  transfer: 12_000_000,
   firstKnotImages: 450_000,
   // What the registry admits as preloads: decoded bytes and the kept file of every live record (MEMORY-PLAN M2).
   knotSet: STEADY_CAP_BYTES,
