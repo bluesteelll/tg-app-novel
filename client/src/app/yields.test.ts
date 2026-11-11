@@ -33,7 +33,7 @@ import type { CueStageProps } from '../ui/state.svelte.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { DocId, HotspotKey, ItemId, WorldPublic } from '../world/types.ts';
 import type { WaitRow } from '../requests.test.ts';
-import { TAKE_FADE_MS, coreCue, createYields, heldBy } from './yields.ts';
+import { ROOM_FADE_MS, TAKE_FADE_MS, coreCue, createYields, heldBy } from './yields.ts';
 import type { ExploreChunk, LazyChunks, Yields, YieldsHost } from './yields.ts';
 import yieldsSource from './yields.ts?raw';
 
@@ -1424,6 +1424,27 @@ test('yields: a state change under a close-up applies no batch', async () => {
   await settle();
   expect(r.yields.world().examined).toContain('hall.switch');
   expect(r.batches.slice(mark)).toEqual([]);
+  r.yields.dispose();
+});
+
+test("yields: a move that changes the left room's picture stays a room fade", async () => {
+  const r = rig({ world: edgeWorld() });
+  await inHall(r);
+  const mark = r.cues.length;
+  const at = r.batches.length;
+  r.yields.layer.ontap(key('hall.to_den'));
+  await settle();
+  // The arrival marks the den visited, which sets the hall's door ajar: a change to the room left, not to the one on
+  // screen. No cue of the move carries it, and no state batch runs ahead of the move: the den fades in on the same bg.
+  expect(roomOf(r)).toBe('den');
+  const moved = r.cues.slice(mark);
+  expect(moved.map((e) => keyOf(e.cue))).toContain('move:walk');
+  expect(moved.filter((e) => e.diff.length > 0)).toEqual([]);
+  expect(r.batches.slice(at)).toEqual([[{ kind: 'bg', bg: 'hall', t: 'fade', ms: ROOM_FADE_MS }, { kind: 'props', props: [placed('mirror', MIRROR, 'den.mirror')] }]]);
+  // Back in the hall, the door stands ajar: the move did change the picture of the room it left.
+  r.yields.layer.ontap(key('den.to_hall'));
+  await settle();
+  expect(r.stage().props).toContainEqual(placed('door_ajar', VASE, 'hall.door'));
   r.yields.dispose();
 });
 
