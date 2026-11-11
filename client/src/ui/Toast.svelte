@@ -23,7 +23,7 @@
   const shown = $derived(visibleToasts(toasts, __TG_MOCK__));
 
   // Motion (per-player GM6t). No effect reads what it writes: the recompute reads `shown` and `endedTick` and writes
-  // `slots`; the walk reads `root` and `slots` and bumps `endedTick` from a plain counter.
+  // `slots`; the walk reads `root`, `slots` and `reduced` and bumps `endedTick` from a plain counter.
   let root: HTMLElement | undefined = $state();
   let slots: readonly ToastSlot[] = $state.raw([]);
   let endedTick = $state(0);
@@ -57,8 +57,9 @@
     endedTick = ++bumps;
   }
 
-  // A pre effect: a plain one would be dirtied by this write in the same flush as the walk below and run it before
-  // the template applies `slots`, against the old DOM, so no new toast would ever enter.
+  // A pre effect runs before the DOM update (Svelte's documented order), so the template applies this `slots` before
+  // the walk below runs, and the walk always zips the DOM built from it. A plain effect also gets there in Svelte
+  // 5.57, but only through an undocumented step (a block reading a signal an effect writes runs right after it).
   $effect.pre(() => {
     void endedTick;
     ({ slots: prev, token } = stackOf(prev, shown, ended, token));
