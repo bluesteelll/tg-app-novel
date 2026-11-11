@@ -336,6 +336,12 @@ function rectLayer(st: State): Layer<Raster> {
   return { box: st.box, fill: st.px };
 }
 
+/**
+ * The face state names of the source files (§4.1: `<c>.half.png`, `<c>.<x>.talk1.png`, ...). An expression of one of
+ * these ids would read a rest state's file as itself (`<c>.closed.png`), so it is an input problem (cut D7).
+ */
+const STATE_NAMES: ReadonlySet<string> = new Set(['half', 'closed', 'accent', 'talk1', 'talk2']);
+
 /** A masked layer's alpha by Chebyshev distance to its own diff (§4.2 step 7b, cut D7): dilated 2 px, feathered 2 px. */
 const MASKED_ALPHA: readonly number[] = [255, 255, 255, 170, 85, 0];
 
@@ -841,6 +847,10 @@ export async function extractShot(input: ExtractInput): Promise<Result<Extracted
       plans.set(rest, restPlan);
     }
     for (const x of [...needed.keys()].filter((e) => e !== rest).sort()) {
+      if (STATE_NAMES.has(x)) {
+        problems.push(`${s}: ${c} in ${x}: ${c}.${x}.png is a face state's file, not an expression's (D7: an expression id is never half, closed, accent, talk1 or talk2; ${whoNeeds(c, x)})`);
+        continue;
+      }
       // R4 (b): the expression itself; without the rest's boxes only its presence can be told.
       const cut = restDone ? await variant(`${c}.${x}.png`, plate, whoNeeds(c, x)) : null;
       if (!restDone && (await input.load(`${c}.${x}.png`)) === null) {

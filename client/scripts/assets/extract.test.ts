@@ -354,6 +354,22 @@ describe('extract', () => {
     expect((pack.files.get('sheet/cafe' as AssetId)?.items ?? []).map((i) => i.key).filter((k) => k.includes('joint'))).toEqual(['ally/neutral/joint.half', 'ally/neutral/joint.closed']);
   });
 
+  test('assets: an expression named like a face state is refused by name', async () => {
+    // Cut D7 (triage r1 I2): half, closed, accent, talk1 and talk2 name a face's state files (ally.closed.png is the rest
+    // blink's closed lids), so an expression of that id would read a rest state as itself. Each is one input problem by
+    // name with its lines, and none of its files is read: the loads are the rest's alone.
+    const restOnly: string[] = [];
+    expect(await extract(syntheticShot(), [needOf('ch1', [['neutral', false]])], restOnly)).toMatchObject({ ok: true });
+    for (const x of ['half', 'closed', 'accent', 'talk1', 'talk2']) {
+      const loaded: string[] = [];
+      const r = await extract(syntheticShot(), [needOf('ch1', [['neutral', false], [x, true]])], loaded);
+      expect(r.ok ? [] : r.error, x).toEqual([
+        `cafe: ally in ${x}: ally.${x}.png is a face state's file, not an expression's (D7: an expression id is never half, closed, accent, talk1 or talk2; lines ch1.cafe.a001)`,
+      ]);
+      expect(loaded, x).toEqual(restOnly);
+    }
+  });
+
   test('assets: a depth map is sampled onto the grid through the crop, white near', () => {
     // §4.2 step 6 (cut D12, critique W4): a vertical ramp depth.png of 64 × 128 (white = near at the bottom) under the
     // crop [40, 96, 160, 320] of a 240 × 480 original. Vertex row j sits at plate y = j / 23 × 320, original y + 96, depth
