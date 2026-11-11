@@ -454,6 +454,27 @@ test('layout: phone windows keep every screen\'s control boxes', async ({ page, 
   await walkScreens(page, request, { uids: [9303, 9304], wins, design: false }, failures, capture);
   writeFileSync(testInfo.outputPath('layout-phone.json'), JSON.stringify(capture, null, 2));
 
+  // Q67 carry M14: at 390 x 844 (scale 1, so no `--col-scale`) the inset model holds on its own, with or without a
+  // parent capture: the quick bar clears the notch and Telegram's header, every advance tap the home bar. Each name
+  // must be found, so a renamed control cannot pass vacuously.
+  const phone = capture['first-line']?.['390x844']?.controls ?? [];
+  const named = (key: UiKey): Array<{ key: string; rect: Rect }> => phone.filter((c) => c.key.split('|')[1] === ru(key));
+  const top = NOTCH.top + HEADER.top;
+  const bottom = 844 - NOTCH.bottom;
+  const quick = (['quick.auto', 'quick.skip', 'quick.backlog', 'quick.menu'] as const).map(named);
+  const advance = named('quick.advance');
+  if (quick.some((g) => g.length === 0) || advance.length === 0) {
+    failures.push(`first-line at 390x844: guard: quick.* found ${quick.map((g) => g.length).join(', ')}, quick.advance ${advance.length}; want each >= 1`);
+  }
+  const tops = quick.flat().map((c) => c.rect.y);
+  if (tops.some((y) => y < top - 0.5)) {
+    failures.push(`first-line at 390x844: quick.* top: got ${tops.map(r2).join(', ')}; want >= ${top}`);
+  }
+  const bottoms = advance.map((c) => c.rect.y + c.rect.h);
+  if (bottoms.some((y) => y > bottom + 0.5)) {
+    failures.push(`first-line at 390x844: quick.advance bottom: got ${bottoms.map(r2).join(', ')}; want <= ${bottom}`);
+  }
+
   // RULINGS 242 Q5: with the parent's capture (the same test run on the parent tree), every box equals it.
   const parentPath = process.env['LAYOUT_PARENT'];
   if (parentPath !== undefined && parentPath !== '') {
