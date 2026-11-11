@@ -586,13 +586,23 @@ fixed:
 ## 8. Assets and preloading
 
 - **Asset IDs** (`assets/catalog.json`, one namespace per kind):
-  - `bg/<bg>`
+  - `bg/<bg>` — its catalog entry is a placeholder, or (SH3a) `"src": "shot/<bg>"`: its own shot's source directory
+    `assets/src/shot/<bg>/`, from which the plate and the shot's files are extracted (`CatalogBg`,
+    `client/src/story/catalog.ts:51`; a `src` beside a placeholder, or any other directory, is a catalog error). The
+    extraction is Planned (SH3c): until it merges, the asset tool refuses a `src` entry ("waits for extraction").
   - `char/<char>/<expr>`
   - `cg/<cg>`
   - `bgm/<track>`
   - `sfx/<sfx>`
   - `prop/<prop>` — named only by world data, never by a tag. The scene receives a room's props in a `props`
     command built by GameSession, and a `bg` or `scene` clears them (PUZZLES-PLAN X11; a catalog namespace from L5).
+    Its catalog entry is an image's placeholder, or (SH3a) a loop whose frames one atlas `prop/<prop>` holds:
+    `"loop": { "placeholder": { "hue": <0-359>, "frames": <1-12> }, "fps": <n> }` or
+    `"loop": { "src": "loop/<prop>", "fps": <n> }` (its frames' source directory, extracted by SH3c, Planned, as
+    for a bg), `fps` a positive integer (`CatalogLoop`, `catalog.ts:53-60`).
+  - (SH3a) A shot's files: `sheet/<shot>`, `face/<shot>/<char>/<expr>` and `talk/<shot>/<char>/<expr>` (shots §2.4).
+    The story tool names them from `story/shots.json` (§14) and the chapter manifest lists them; no tag and no catalog
+    entry names them (`ASSET_ID_RE`, `catalog.ts:488-493`).
 
   Each name is `[a-z][a-z0-9_]*`. A tag can only name an asset the catalog lists (`tag/unknown-asset`). Writers do
   not edit the catalog; a missing asset is an asset request in the narrative report.

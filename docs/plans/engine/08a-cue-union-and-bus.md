@@ -666,6 +666,9 @@ export function layerOut(node: Element, opts: { reduced: boolean; frame?: boolea
         `LazyChunks.cueStage?()` loader (`client/src/app/yields.ts:66` on `8d388ba`) postdates the list above (written on
         `cec347c`), so GM3p's cut adds the row `{ member: 'LazyChunks.cueStage', wait: 'import()' }` (GM3p cut r1 Q1);
         never an exclusion, and `cueStage` stays optional.
+        **Ruled: RULINGS 243** — as merged (GM3p `d478384`): the nine rows are `client/src/requests.test.ts:64-74`
+        on `a064399`, the ninth `LazyChunks.cueStage`; the walk's reach test `requests: the host-wait walk's reach on
+        the tree is the HOST_WAITS rows` (`:1273`) pins the count.
 
         **A request start** is (a) a `PropertyAccessExpression`'s name, a string-keyed `ElementAccessExpression` or a
         value-position `BindingElement` (a destructured member) whose symbol (`checker.getSymbolAtLocation` for the

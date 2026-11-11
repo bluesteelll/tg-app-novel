@@ -3,7 +3,9 @@
 **Round 3 (m1): one order, written once.** Each lane's `After` names every predecessor on every shared file of its
 lock plus its semantic dependencies; `Beside` names the lanes it may run with (locks checked disjoint). The lane
 sections above carry the same fields; where a section and this table ever disagree, the table is the error to fix.
-Lane cap 3 (1 server + 2 client) still holds: at most one `Beside` pair runs at a time.
+Lane cap 3 (1 server + 2 client) still holds: at most one `Beside` pair runs at a time. Changed by RULINGS 255 (as of
+`a064399`; docs lane `docs-errata-16`, group A): **two lanes at most** while the machine's resets recur (a docs lane
+takes a client slot; the server slot is not a third lane, RULINGS 270).
 
 ```
 done:      M3c (a6365a8), docs-errata-8 (be6c348), LRF (a93fe54), docs (d31f720, Q56), docs-errata-9 (525dd68);
@@ -90,6 +92,22 @@ sample. On `d820803`: Ledger 4 **220.939 / 230.0**, Ledger 2 **38.669 / 40.0**, 
 (RULINGS 236); **Y stays on the shelf** until a ledger is within 1.0 KB at a merge (RULINGS 234). The rows: E6, O5, Y,
 GM3u and GM3p in the GM table below, and the `game.ts`, `boot.ts` / `meta.ts`, `App.svelte`, `state.svelte.ts`,
 `budget.ts` and `arch.test.ts` rows. The block's state lines at `0b91acc` are group B's
+([§11.1](11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13)).
+
+**Ruled: RULINGS 241** — the owner keeps the order (2026-11-10): the mechanics chain is on the critical path, and the
+shot chain runs beside it as this order places it; the demo keeps its sprites until SH11 / SH12a / SH12b. Not asked
+again unless the order itself changes.
+
+**Ruled since: RULINGS 243, 251, 253, 255, 256, 258, 259, 262, 265, 269** — merged since `0b91acc`: GM3p (`d478384`),
+Q67's fix (`4f26e8e`), SH3a (`efd3811`), GM3b (`ac9cab1`), SH3b (`e1e7637`), Q69's fix (`99be5c1`) and per-player GM6t
+(`a064399`). GM4g, the next mechanics lane, waits for SH3b and SH3c (its row), so SH3c carries the critical path now
+(RULINGS 259). The engine R is **2.666** (n 14, bimodal; a lever or a fix gives no sample; RULINGS 258). On `a064399`
+(RULINGS 269): Ledger 4 **224.427 / 230.0**, Ledger 2 **39.179 / 40.0** (GM6t was its last planned entry term),
+Ledger 1 **263.606 / 270.0**. The trigger does not hold: Y stays on the shelf until a ledger is within 1.0 KB; GM3b's
+engine-lever candidate is measured once Ledger 4 or Ledger 1 is within 2.0 KB (RULINGS 253). L2's return line does not
+hold (0.821 KB left). RULINGS 206's +-15 B engine noise applies within one build id; across a build-id change the
+engine row is judged by module identity (RULINGS 269). Two lanes at most while the resets recur (RULINGS 255). The
+rows: GM3p, GM3b, SH3a and SH3b below. The block's state lines at `a064399` are group B's
 ([§11.1](11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13)).
 
 Changed by RULINGS 159-173 (as of `9a83251`; docs lane `docs-errata-10`, group B): the block above is the state at
@@ -238,8 +256,8 @@ re-located at each holder's cut.
 | GM3 | GM3c (index files), GM3s (`yields.ts`), GM3m (`motions.ts`), GM1b (`rules/{core,writer}.ts`). Changed by RULINGS 210, 212, 217 (as of `52e328e`; docs lane `docs-errata-14`, group A): lock 25 (12c GM3: the plan's 16, four pre-ruled carry files, `world/decode.test.ts`, `scripts/story/world.test.ts`, `softlock.ts`, `scripts/story/mechanics/conditions.ts`, `graph.ts`); merged `7082a35` | lever P (Changed by RULINGS 201, 209 (as of `461424d`; docs lane `docs-errata-13`, group A)) |
 | GM3k (new, RULINGS 210 Q4; Changed by RULINGS 219, 223 (as of `52e328e`; docs lane `docs-errata-14`, group A); merged `3131844`) | GM3 (`mechanics/contract.ts`, `rules/search.ts`, `softlock.ts`, `world.test.ts`, `story.ts`, `playthrough.ts`); before GM3b (its `visuals` hook reads `w.mods`); one boundary line of `app/game.test.ts` beside the recovery lane (RULINGS 219 Q1) | the recovery lane (disjoint but for that line) |
 | GM3u | GM3 (`yields.ts`), GM3s (`ExploreView.svelte`, `arch.test.ts`, the e2e). Changed by RULINGS 217, 221, 223, 224, 225 (as of `52e328e`; docs lane `docs-errata-14`, group A): RULINGS 223 put it after the recovery lane on `i18n/{ru,en}.ts` (`mech.use_refused`); its lock holds neither file (RULINGS 225: `mech.use_refused` in `i18n/mechanics.ts`), so no `i18n/{ru,en}.ts` edge remains; lever Y before it on `yields.ts` and `arch.test.ts` only while the trigger holds (it does not on `8e099ee`, RULINGS 224); its cut rebuilds the explore-ui R sample list (RULINGS 217). Changed by RULINGS 226, 230 (as of `0b91acc`; docs lane `docs-errata-15`, group A): lock **18**, not the plan's 13 (RULINGS 226: + `explore/controller.ts`, `cues/stage/{index.ts,CueStage.svelte,stage.svelte.test.ts}` by named hunk, + `mechanics/use.test.ts`, test-only; [12c GM3u](12c-lanes-gm3.md#gm3u-mech-ribbon)); it ran beside E6 and then the Q63 fix lane, and merged `33b4f8d` (RULINGS 230) before O5's implement stage (O5 took `arch.test.ts` after it) | - |
-| GM3p | GM3u (`yields.ts`, `controls.test.ts`, the e2e), GM3w (`PuzzleHost.svelte`, `puzzle-view.svelte.ts`, round 9: `puzzle-host.svelte.test.ts`), GM3s (round 9: the `CueStage.svelte` its real-flush tests render). Changed by RULINGS 226, 230, 232, 234 (as of `0b91acc`; docs lane `docs-errata-15`, group A): GM3u merged `33b4f8d` with Q62's fix (the `aria-hidden` stage layer), so this lane takes no Q62 item; after O5 (merged `9a0ae2d`: its request walk reads `game.ts`'s new request starts, RULINGS 232); lock 12 (12c), launched from `8d388ba` | - |
-| GM3b | GM3p (`yields.ts`, the e2e), GM2b (`emit.ts`), GM1d (`story/ch1/world.json`, `build.test.ts`); **per-player GM6a**. Changed by RULINGS 210, 223 (as of `52e328e`; docs lane `docs-errata-14`, group A): GM3k (merged `3131844`: `KernelWorld.mods` required) | - |
+| GM3p | GM3u (`yields.ts`, `controls.test.ts`, the e2e), GM3w (`PuzzleHost.svelte`, `puzzle-view.svelte.ts`, round 9: `puzzle-host.svelte.test.ts`), GM3s (round 9: the `CueStage.svelte` its real-flush tests render). Changed by RULINGS 226, 230, 232, 234 (as of `0b91acc`; docs lane `docs-errata-15`, group A): GM3u merged `33b4f8d` with Q62's fix (the `aria-hidden` stage layer), so this lane takes no Q62 item; after O5 (merged `9a0ae2d`: its request walk reads `game.ts`'s new request starts, RULINGS 232); lock 12 (12c), launched from `8d388ba`. Changed by RULINGS 243 (as of `a064399`; docs lane `docs-errata-16`, group A): merged `d478384`, the lock of 12 exactly ([12c GM3p](12c-lanes-gm3.md#gm3p-mech-puzzle-cues)) | - |
+| GM3b | GM3p (`yields.ts`, the e2e), GM2b (`emit.ts`), GM1d (`story/ch1/world.json`, `build.test.ts`); **per-player GM6a**. Changed by RULINGS 210, 223 (as of `52e328e`; docs lane `docs-errata-14`, group A): GM3k (merged `3131844`: `KernelWorld.mods` required). Changed by RULINGS 245, 250, 258 (as of `a064399`; docs lane `docs-errata-16`, group A): lock **18** (12c's 16, + `mechanics/registry.test.ts` and `scripts/story/world.test.ts`, test-only, RULINGS 245 Q1, 250 Q9); after GM3p (merged `d478384`), beside Q67's fix, SH3a and Q69's fix (locks disjoint at each launch); merged `ac9cab1` ([12c GM3b](12c-lanes-gm3.md#gm3b-mech-state-visuals)) | - |
 | GM4g | GM3b (`emit.ts`, `build.test.ts`), GM3s (`budget.ts`); reconcile r1: SH3b (`budget.ts`, `budget.test.ts`, the sheet helper, I-3), SH3a -> SH3c (`scripts/assets/manifest.ts`, `assets.test.ts`) | - |
 | GM4 | GM4g (`emit.ts`), GM3b (`controller.ts`, `yields.ts`, index files); P2-a read | - |
 | GM4u | GM4 (`yields.ts`), GM3u (`ExploreView.svelte`), GM3b (`story/ch1/world.json`) | - |
@@ -268,8 +286,8 @@ the table is the error to fix (the rule of this section's first paragraph).
 |---|---|---|
 | SH1 | GM2a (`staging.ts`, `game.ts`, the `scene/*` field), GM3w (`game.ts`), per-player GM6a (`scene/*`); LFL, LRB (merged) on `game.ts`, `game.test.ts`; L1 (RULINGS 158; merged `eec24fe`, RULINGS 159) on `game.ts`; first holder of `graph.ts`, `tags.ts`, `dsl-doc.test.ts`, `STAGING-DSL.md` | none on `scene/*` or `game.ts` |
 | SH2 | SH1 (`graph.ts`, `STAGING-DSL.md`); never beside GM1d, GM2b, GM3c, GM9p, per-player GM6c1a, GM6c1b (`client/scripts/story.ts`), never beside GM1a or GM3 (`playthrough.ts`) | M3s (merged: moot) |
-| SH3a | M3s (merged; `scripts/assets/manifest.ts`, `assets.test.ts`); LEL, LFL (merged) on `budget.ts`, `budget.test.ts`; GM3s by launch, never beside (I-2, the change above); reconcile r2 (RC-W3): **SH2** (its tiers read `build/shots.json`'s `assets`, which SH2's `shots/usage.ts` creates, [shots §9.3 SH3a `shot-assets`](../shots/09b-lanes-sh3a-sh3b.md#93-sh3a-shot-assets-client-asset-tool-the-contract-placeholders-tiers-scan-dist), [shots §9.3 SH3a `shot-assets`](../shots/09b-lanes-sh3a-sh3b.md#93-sh3a-shot-assets-client-asset-tool-the-contract-placeholders-tiers-scan-dist); its Order, [shots §9.3 SH3a `shot-assets`](../shots/09b-lanes-sh3a-sh3b.md#93-sh3a-shot-assets-client-asset-tool-the-contract-placeholders-tiers-scan-dist)) | - |
-| SH3b | SH3a and GM3s (`budget.ts`, `budget.test.ts`), SH2 (`shots/lint.ts`, `STAGING-DSL.md`) | SH3c; SH4 if SH4 waits only for SH3a |
+| SH3a | M3s (merged; `scripts/assets/manifest.ts`, `assets.test.ts`); LEL, LFL (merged) on `budget.ts`, `budget.test.ts`; GM3s by launch, never beside (I-2, the change above); reconcile r2 (RC-W3): **SH2** (its tiers read `build/shots.json`'s `assets`, which SH2's `shots/usage.ts` creates, [shots §9.3 SH3a `shot-assets`](../shots/09b-lanes-sh3a-sh3b.md#93-sh3a-shot-assets-client-asset-tool-the-contract-placeholders-tiers-scan-dist), [shots §9.3 SH3a `shot-assets`](../shots/09b-lanes-sh3a-sh3b.md#93-sh3a-shot-assets-client-asset-tool-the-contract-placeholders-tiers-scan-dist); its Order, [shots §9.3 SH3a `shot-assets`](../shots/09b-lanes-sh3a-sh3b.md#93-sh3a-shot-assets-client-asset-tool-the-contract-placeholders-tiers-scan-dist)). Changed by RULINGS 252, 256 (as of `a064399`; docs lane `docs-errata-16`, group A): merged `efd3811` (lane C, its 12 lock files; [shots §9.3](../shots/09b-lanes-sh3a-sh3b.md#93-sh3a-shot-assets-client-asset-tool-the-contract-placeholders-tiers-scan-dist)) | - |
+| SH3b | SH3a and GM3s (`budget.ts`, `budget.test.ts`), SH2 (`shots/lint.ts`, `STAGING-DSL.md`). Changed by RULINGS 259, 262 (as of `a064399`; docs lane `docs-errata-16`, group A): merged `e1e7637` (lane A, its 4 lock files) | SH3c; SH4 if SH4 waits only for SH3a |
 | SH3c | SH3a (`scripts/assets/**`, `assets.test.ts`) | SH3b, SH4 |
 | SH4 | SH1 (`scene/*`), SH3a (`story/shots.ts`'s decoders); first holder of `story/ch4/main.ink`, `client/e2e/shots.spec.ts` | SH3b, SH3c |
 | SH5a | SH4 (`scene/*`, `registry.ts`), SH1 (`game.ts`, `game.test.ts`), GM3b (I-11's `Yields.roomFor`) | - |
@@ -288,7 +306,7 @@ the table is the error to fix (the rule of this section's first paragraph).
 | per-player GM6c4 | GM8i (`explore/controller.ts`); before SH9 (I-16); its `story/ch1/world.json` cut checks I-18 | (per-player.md) |
 | per-player GM6d2 | GM7p (`budget.ts`), GM6c4 (`story/ch1/world.json`, I-18 check); before SH12b (`budget.ts`) | (per-player.md) |
 | per-player GM6c1a, GM6c1b | GM4g / GM8b's `build.test.ts` order by launch; before SH12a (`build.test.ts`); never beside SH2 (`story.ts`) | (per-player.md) |
-| per-player GM6s2, GM6t | the entry ledger (§11.1): each quotes the entry row at its cut and STOPs past L1 / L2's line (§15 item 15); GM6t after GM3s on `App.svelte` | (per-player.md) |
+| per-player GM6s2, GM6t | the entry ledger (§11.1): each quotes the entry row at its cut and STOPs past L1 / L2's line (§15 item 15); GM6t after GM3s on `App.svelte`. Changed by RULINGS 266, 269 (as of `a064399`; docs lane `docs-errata-16`, group A): GM6t ran in lane C beside SH3c (no shared file) and merged `a064399` (entry 39,179 B br; Ledger 2 0.821 KB left, its last planned entry term) | (per-player.md) |
 
 | Shared file | Holders in order |
 |---|---|
@@ -380,7 +398,8 @@ the table is the error to fix (the rule of this section's first paragraph).
   touches no world schema. **Reconcile r1 (design-shots I-2, I-4):** MR1 is **SH10**; it starts after GM3b, GM3s,
   GM3m, per-player GM6a, GM8i (`motions.ts`), SH6, SH7 (the loop, the `sceneCues` seam it subscribes through) and SH8
   (the last strict `scene/*` holder before the tail); MR2 is **SH8 + SH9**.
-- **Lane cap 3** (1 server + 2 client, disjoint locks) holds: every `Beside` pair in the order table is lock-disjoint
+- **Lane cap 3** (1 server + 2 client, disjoint locks; Changed by RULINGS 255 (as of `a064399`; docs lane
+  `docs-errata-16`, group A): two lanes at most while the machine's resets recur) holds: every `Beside` pair in the order table is lock-disjoint
   (checked path by path in round 3: GM2a ∥ GM1c, GM3m ∥ GM1d / GM2b / GM3c / GM3w, GM3w ∥ GM1d / GM2b / GM3c, GM3c ∥
   GM3s, GM5f ∥ GM7r, GM8i ∥ GM7p / GM7g, GM9p ∥ GM8a / GM8b; round 4 re-checked against the new locks: GM3m's
   `mechanics/contract.ts` and `puzzles/rules/index.ts` are in none of GM1d / GM2b / GM3c / GM3w; GM3w's `yields.ts` is in

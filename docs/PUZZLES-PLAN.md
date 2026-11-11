@@ -605,6 +605,9 @@ the explore-ui chunk. The marks below flag each sentence that places step 4 at t
     - A layer in the padded box would sit off by the inset or the pillar-box margin. The e2e
       `explore: hotspot buttons align with props under safe area and landscape` fails on that.
   - Targets smaller than 44×44 CSS px are expanded around their centre.
+    Changed by RULINGS 242, 244 (as of `a064399`; docs lane `docs-errata-16`, group A): since Q67's fix (`4f26e8e`)
+    the 44 px are design px (`MIN_TARGET_PX`, `client/src/explore/controller.ts:25`, in layout px). In a window that scales the column (narrower than the 360 px design width), a hotspot's
+    minimum is 44 x k on screen, k = `--col-scale` ([PROTOTYPE-PLAN "Portrait-first"](PROTOTYPE-PLAN.md)).
   - Rects must lie inside the safe frame `x 80–1000, y 160–1760` (lint `world/hotspot-frame`). That frame is visible
     from 9:19.5 (sides cropped to about 945 px) to 9:16 (top and bottom cropped to about 1,920 px), above the
     inventory bar and below the top bar.

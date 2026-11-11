@@ -1649,6 +1649,24 @@ pub async fn launch_database(cluster: &DevCluster, name: &DbName) -> Result<Stri
 **Portrait-first:**
 - The stage is a column with `aspect-ratio: 9 / 16` max, centered.
 - In landscape it is pillar-boxed (black). `lockOrientation` cannot force portrait [R1 §2], so CSS only.
+- Changed by RULINGS 240, 242, 244, 247, 251 (as of `a064399`; docs lane `docs-errata-16`, group A): Q67's fix
+  (`fix-phone-column`, merged `4f26e8e`) puts every layer in one column, not only the stage.
+  - **Ruled: RULINGS 244** — the 480 CSS px phone line, by width only: a window at most 480 px wide is a phone, and
+    its column is the whole window (the layout before Q67). Above the line the column is min(width, height x 9/16),
+    centred (`client/index.html:17-30`, `client/src/ui/App.svelte:348-359`). Telegram's height changes never toggle it.
+  - The design width is 360 px (`DESIGN_WIDTH`, `client/src/telegram/viewport.ts:35`). A column narrower than that
+    lays its one `.design` box out at 360 px and draws it scaled by `--col-scale` = width / 360, which `fitColumn`
+    keeps on the column (`viewport.ts:45`; `App.svelte:327-338`).
+  - The safe-area insets are client px, so inside the scaled box each is divided by the scale (`App.svelte:334-337`).
+    Above the phone line the side insets sit on `#app` as padding, so the column lies inside the horizontal safe area
+    and its own side insets are `initial`.
+  - The cue stage measures in client px and divides by the measured ratio to get layer px (`clientPerLayerPx`,
+    `client/src/cues/stage/index.ts:34-39`).
+  - The build ships the query as range syntax (`width>=480.02px`) under Vite's default CSS target, whose floor
+    (`safari16.4`) is the project's; below it the query drops and every window takes the phone branch (RULINGS 251).
+  - **Ruled: RULINGS 247** — the O3 residual: a window at most 480 CSS px wide and shorter than about 430 px keeps the
+    old defect (a narrow picture strip, the quick bar at the window's edge). Only a small desktop window reaches it;
+    the width-only rule stands.
 
 **Theme:**
 - Menus, settings, saves, paywall and terms use `var(--tg-theme-bg-color | text-color | hint-color | button-color |
@@ -2593,7 +2611,7 @@ All budgets are enforced by `client/scripts/budget.ts` inside `npm run build` un
 | Image file | AVIF ≤ 300 KB, WebP ≤ 450 KB | | `budget.ts` |
 | Image formats | every image has both AVIF and WebP | [O] | `budget.ts` |
 | Knot working set | for every K: bound(`carried(K)`) + decoded `assets(K) ∪ assets(next(K))` ≤ 32 MiB. `carried(K)` (story tool, `usage.json`) = image assets a predecessor may leave on stage that K's opening tag lines do not clear and that K and next(K) do not name; propagated over the knot graph from an empty stage at the chapter's first knot. Only K's opening tag lines clear: the tag-only lines before K's first other line, as `classify.ts` classifies them (STAGING-DSL §3.3). They run in K's first batch on every entry, because `graph/entry-below-top` makes every entry a knot top. There `scene` clears all, and `bg` / `cg` / `cg: off` / `show` / `hide` replace or clear their slot; every other tag in a knot only adds. bound() = the largest bg + the largest CG + per character its largest expression, since the stage holds one of each. Changed by MEMORY-PLAN (M2): + the kept file bytes, `decodedBytes + max(avif.bytes, webp.bytes)` per image, for the knot-set and room-set rows, with `LIMITS.knotSet = LIMITS.roomSet = STEADY_CAP_BYTES` | K5, K9 | `budget.ts` (`budget/knot-set`) — `budget: knot-set counts carried stage`; changed by MEMORY-PLAN: `budget: knot-set counts kept encoded bytes`, `budget: room-set counts kept encoded bytes`, the guard `budget: knot-set and room-set limits are the registry steady cap` (M2) |
-| Per-chapter transfer (images AVIF + audio) | ≤ 6 MB. Changed by MEMORY-PLAN (M3c, M3s): + the `transfer <ch> (half)` rows (6 MB), a measurement of what a half-tier session downloads per chapter (the half file where an entry has one, else the full; gated halves from M3s), not counted as a guard | [O]: 10–15 MB practical ceiling for the whole app | `budget.ts` |
+| Per-chapter transfer (images AVIF + audio) | ≤ 6 MB. Changed by MEMORY-PLAN (M3c, M3s): + the `transfer <ch> (half)` rows (6 MB), a measurement of what a half-tier session downloads per chapter (the half file where an entry has one, else the full; gated halves from M3s), not counted as a guard. Changed by RULINGS 154, 262 (as of `a064399`; docs lane `docs-errata-16`, group A): both rows are ≤ **12 MB** since SH3b (`e1e7637`; `transfer: 12_000_000`, `client/scripts/budget.ts:178`; owner question OQ5) | [O]: 10–15 MB practical ceiling for the whole app | `budget.ts` |
 | BGM file | m4a ≤ 3 MB and ≤ 240 s; WAV only if `placeholder`, ≤ 400 KB | K23 | `budget.ts` |
 | SFX | ≤ 100 KB and ≤ 3 s | decoded ≤ 1.06 MiB each | `budget.ts` |
 | Live texture bytes | steady ≤ 32 MiB; hard cap 48 MiB; a visible load over the hard cap after eviction is refused. Changed by MEMORY-PLAN (M2): the caps count the kept Blob bytes too (`registry_caps_count_kept_bytes`, `registry: a kept blob is counted at its real size`); the basis becomes the steady total of 106.6 MiB; the caps are unchanged until M2's device measurement | steady total above (135.5 MiB at the gated limits) | registry code + `registry_caps`, `registry: visible load over hard cap after eviction is refused` unit + e2e `textures released on chapter change` |
@@ -2864,7 +2882,8 @@ are in [STORIES-PLAN.md](STORIES-PLAN.md), section "Integration".
 - Each lane is ≤ ~10 commits and ≤ ~15 files, one subsystem.
 - **At most 2 lanes in parallel**, always one client lane ∥ one server lane, or two client lanes with disjoint lock
   sets. Changed by RULINGS 18 (recorded by STORIES-PLAN, SQ8): at most **3** lanes — one server lane and two client
-  / doc / narrative lanes whose locks are disjoint.
+  / doc / narrative lanes whose locks are disjoint. Changed by RULINGS 255 (as of `a064399`; docs lane
+  `docs-errata-16`, group A): **two lanes at most** while the machine's resets recur.
 - Lock sets are paths. A file outside a lane's set is a STOP (lane.js).
 - **Parent files.** Every lane's lock holds the parent module file (`mod.rs` / `lib.rs`) of each `.rs` file it
   creates. Shared files no later lane needs to touch are pre-declared by L2 in full: `server/src/config.rs` and
@@ -6949,7 +6968,7 @@ Notation:
     the entry, and that chapter's knot-set rows are absent (M3c; critique_r2 W5);
   - a half whose LOW count exceeds its full count -> the `image <id>` row FAILs with the I2 note (M3c).
 - **Tester mutations:** MEMORY-PLAN names none for M3c; the quality check under "Seen working" is the tester's.
-- **Budgets** (section 12, section 7): the `transfer <ch> (half)` rows (6 MB) are added as a measurement, and the
+- **Budgets** (section 12, section 7): the `transfer <ch> (half)` rows (6 MB; Changed by RULINGS 154, 262 (as of `a064399`; docs lane `docs-errata-16`, group A): 12 MB since SH3b, `client/scripts/budget.ts:178`) are added as a measurement, and the
   first-load row stays on the full tier (worst case); per entry `half.decodedBytes + max(half avif, half webp) <=
   decodedBytes + max(avif, webp)`; half files within their kind's file limits.
 

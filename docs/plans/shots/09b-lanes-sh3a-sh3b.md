@@ -133,7 +133,24 @@ change).
 - After SH2 and **M3s** (`manifest.ts`, `assets.test.ts`; MEMORY-PLAN `:1315-1349`).
 - Before SH3c, SH3b and GM4g (`manifest.ts`, `assets.test.ts`, EN [engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts)).
 - `budget.ts` (rev. 4): {SH3a, GM3s} by launch, never beside, then SH3b; **never beside GM3s**.
-- `catalog.ts`: no other holder.
+- `catalog.ts`: no other holder. Changed by RULINGS 254, 256 (as of `a064399`; docs lane `docs-errata-16`, group A):
+  SH3a (merged `efd3811`) did not build the placeholder ambient `bg.<id>.placeholder.ambient` (§4.2 step 8; its
+  critique Q3). An ambient-only shot's sheet needs SH2's sheet-existence rule widened
+  (`client/scripts/story/shots/usage.ts:90-92` lists a sheet only for a shot with a cast) or a "sheet tier = plate
+  tier" rule in both the asset tool and scan-dist. So SH9, or a small shot-assets lane before it, holds
+  `client/src/story/catalog.ts` next, with `client/scripts/assets/shots.ts`, `client/scripts/assets/assets.test.ts` and
+  `client/scripts/story/shots/usage.ts` ([§9.10 SH9](09d-lanes-sh6-sh10.md#910-sh9-shot-ambient-client-runtime-the-mr2-ambient-role)).
+
+**Ruled since: RULINGS 252, 254, 256** — launched from `763535d` in lane C with STOP lines on R 2.306 (engine +2.81
+KB, entry +0.15, all JS +2.73). The four STOP items above PASS at the cut: the server's `AssetsProbe` has no
+`deny_unknown_fields` (`server/src/content.rs:396-410` on `763535d`), the fixture pin compares per-entry shapes,
+`budget.test.ts` pins no Record key set, and `story/shots.ts` stays out of the entry closure. The critique: four
+`dev-canary(5)` pins (W1); M-SH3y counts only shot-family ids free (W2 (b)); `assetUsage(u)` deep-equals today's (W3);
+the placeholder ambient (Q3) goes to SH9's cut ("Order" above); depth-grid sampling at the vertices,
+`y = i/(rows-1)·h` (§4.2). Merged `efd3811`: 12 commits (riders R1, Q9's comment stripping, and R2, the dev-canary
+needles), the 12 lock files, 46 vitest names (tag SH3A). Rows: entry 38,416 -> 38,548 B br (+132, under the +150 STOP);
+engine +161 (hashed names only: the decoders do not bundle, so no R sample, and their 1.0 KB term moves to the first
+importer, SH4 / SH5a); first load ch1 +881, ch3 +677.
 
 ### 9.3c SH3c `shot-extract` (client, asset tool: real art from `src`; rev. 4, W5)
 
@@ -264,3 +281,14 @@ and all-JS rows quoted base -> HEAD).
   (engine.md §12, the `budget.ts` row, as read).
 - `shots/lint.ts`: SH2 -> SH3b -> SH12b.
 - `STAGING-DSL.md` after SH2.
+
+**Ruled since: RULINGS 259, 261, 262** — launched from `a54162e` in lane A, with OQ5's 12 MB transfer limit in
+(RULINGS 154) and terms 0 (every existing row byte-equal). The cut's D1-D11 were accepted with critique W1
+(P-sheet-dims pins the kind's own DIMS message) and O1-O6; Q6's flow limits are carried to SH12a / SH12b. Merged
+`e1e7637`: C1-C7 in the 4 lock files, 28 vitest names (tag SH3B); every existing row byte-equal; `budget: 104 rows, 103
+PASS, 0 FAIL, 1 PENDING` (the scene-motion chunk). MEASURED on committed content: step-window ch1 23.4 MiB
+(`ch1.street.s005`), its room windows 10.5-13.3, ch2 16.9, ch3 16.9, ch4 11.7 (limit 32.0); entry step images ch1 22.8
+KB, ch2 11.0, ch3 11.2, ch4 10.1 (limit 279.0 KB). Every committed chapter is legacy (`sprites: true`), so the
+shot-chapter branches of knot-set and first-load are fixture-covered until SH4 / SH5a restage a chapter. The
+scene-motion row's forecast, 6.0 x 2.027 = 12.16 KB against its 8.0 KB LIMIT (first projected FAIL at SH9), is
+carried to SH7's and SH8's cuts.
