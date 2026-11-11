@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { AssetCatalog, ChapterListEntry } from '../src/story/catalog.ts';
-import type { AssetId, BgId } from '../src/story/staging.ts';
+import type { AssetId, BgId, ChapterId } from '../src/story/staging.ts';
 import { encodeImage } from './assets/encode.ts';
 import type { EncodedImage, HalfAsk } from './assets/encode.ts';
 import {
@@ -30,6 +30,7 @@ import type { ChapterShotKeys, Encoded } from './assets/manifest.ts';
 import { CANONICAL_SIZE, renderPlaceholder } from './assets/placeholder.ts';
 import {
   castProblems,
+  faceNeedProblems,
   facesOf,
   loopAtlas,
   loopRig,
@@ -41,7 +42,7 @@ import {
   shotFileSvg,
   shotRig,
 } from './assets/shots.ts';
-import type { PackedFile, ShotLayers, ShotPack } from './assets/shots.ts';
+import type { ChapterNeed, PackedFile, ShotLayers, ShotPack } from './assets/shots.ts';
 import { synthWav } from './assets/synth.ts';
 import { decodeChapterList, decodeStoryUsage } from './story/emit.ts';
 import { SHOTS_FILE, decodeShotList, effectiveCatalog } from './story/shots/list.ts';
@@ -87,27 +88,37 @@ function issueText(e: unknown): string {
 /** One shot of build/shots.json as the tool encodes it: its declared (or implied) shot, its layers, its packing. */
 type PackedShot = { readonly shot: Shot; readonly layers: ShotLayers; readonly pack: ShotPack };
 
+/** The packed shots, the input problems that kept a shot from being packed, and those shots (critique O2). */
+type ShotPacking = { readonly shots: Map<BgId, PackedShot>; readonly problems: string[]; readonly refused: ReadonlySet<BgId> };
+
 /**
  * Every shot of build/shots.json, packed (shots §4.2 steps 7-8): its layer set synthesized from the union of its
  * chapters' face needs, its cast in the shot list's draw order (an implied shot has none), on the placeholder plate.
+ * A need the catalog cannot satisfy (a stale build/shots.json) is reported, and its shot is not packed.
  */
-function packShots(usage: ShotUsage, list: ShotList, catalog: AssetCatalog): Map<BgId, PackedShot> {
-  const needs = new Map<BgId, ShotNeed[]>();
-  for (const c of Object.values(usage.chapters)) {
-    for (const [s, n] of Object.entries(c.shots) as [BgId, ShotNeed][]) {
-      needs.set(s, [...(needs.get(s) ?? []), n]);
+function packShots(usage: ShotUsage, list: ShotList, catalog: AssetCatalog): ShotPacking {
+  const needs = new Map<BgId, ChapterNeed[]>();
+  for (const [ch, c] of Object.entries(usage.chapters) as [ChapterId, ShotUsage['chapters'][ChapterId]][]) {
+    for (const [s, need] of Object.entries(c.shots) as [BgId, ShotNeed][]) {
+      needs.set(s, [...(needs.get(s) ?? []), { ch, need }]);
     }
   }
-  const out = new Map<BgId, PackedShot>();
+  const shots = new Map<BgId, PackedShot>();
+  const problems: string[] = [];
+  const refused = new Set<BgId>();
   for (const [s, ns] of [...needs].sort(([a], [b]) => (a < b ? -1 : 1))) {
-    const first = ns[0];
+    const first = ns[0]?.need;
     const shot = list.shots.find((x) => x.id === s) ?? (first === undefined ? undefined : { id: s, loc: first.loc, frame: first.frame, cast: [] });
-    if (shot !== undefined) {
-      const layers = placeholderLayers(shot, facesOf(ns), catalog, CANONICAL_SIZE.bg);
-      out.set(s, { shot, layers, pack: packShot(layers) });
+    const stale = faceNeedProblems(s, ns, catalog);
+    if (stale.length > 0) {
+      problems.push(...stale);
+      refused.add(s);
+    } else if (shot !== undefined) {
+      const layers = placeholderLayers(shot, facesOf(ns.map((n) => n.need)), catalog, CANONICAL_SIZE.bg);
+      shots.set(s, { shot, layers, pack: packShot(layers) });
     }
   }
-  return out;
+  return { shots, problems, refused };
 }
 
 /**
@@ -134,9 +145,15 @@ function chapterShotKeys(usage: ShotUsage, shots: ReadonlyMap<BgId, PackedShot>)
 
 /**
  * build/shots.json against the chapter list and the packer: it holds exactly the listed chapters (else the story
- * tool's output is stale), and every shot file a chapter lists is one its shot's needs make.
+ * tool's output is stale), and every shot file a chapter lists is one its shot's needs make. A refused shot's files are
+ * skipped: its own problem is the one message (critique O2).
  */
-function shotUsageProblems(usage: ShotUsage, chapters: readonly ChapterListEntry[], shots: ReadonlyMap<BgId, PackedShot>): string[] {
+function shotUsageProblems(
+  usage: ShotUsage,
+  chapters: readonly ChapterListEntry[],
+  shots: ReadonlyMap<BgId, PackedShot>,
+  refused: ReadonlySet<BgId>,
+): string[] {
   const listed = new Set<string>(chapters.map((c) => c.id));
   const problems = [
     ...chapters.filter((c) => !Object.hasOwn(usage.chapters, c.id)).map((c) => `${SHOT_USAGE_FILE} has no chapter ${c.id} (run the story tool)`),
@@ -147,7 +164,7 @@ function shotUsageProblems(usage: ShotUsage, chapters: readonly ChapterListEntry
   for (const [ch, c] of Object.entries(usage.chapters)) {
     for (const id of c.assets.filter(isShotFile)) {
       const shot = id.split('/')[1] as BgId; // a shot file id's second segment is its shot (ASSET_ID_RE)
-      if (shots.get(shot)?.pack.files.has(id) !== true) {
+      if (!refused.has(shot) && shots.get(shot)?.pack.files.has(id) !== true) {
         problems.push(`${SHOT_USAGE_FILE}: ${ch} lists ${id}, which its shot's needs do not make (run the story tool)`);
       }
     }
@@ -230,9 +247,12 @@ export async function main(argv: readonly string[], root: string, encoders: Enco
     }
   }
   const catalog = source !== null && shotList !== null ? effectiveCatalog(source, shotList) : source;
-  const shots = shotList !== null && shotUsage !== null && catalog !== null ? packShots(shotUsage, shotList, catalog) : new Map<BgId, PackedShot>();
+  const packing: ShotPacking =
+    shotList !== null && shotUsage !== null && catalog !== null ? packShots(shotUsage, shotList, catalog) : { shots: new Map(), problems: [], refused: new Set() };
+  const { shots } = packing;
+  problems.push(...packing.problems);
   if (chapters !== null && shotUsage !== null) {
-    problems.push(...shotUsageProblems(shotUsage, chapters, shots));
+    problems.push(...shotUsageProblems(shotUsage, chapters, shots, packing.refused));
   }
   if (chapters === null || catalog === null || storyUsage === null || problems.length > 0) {
     for (const p of problems) {

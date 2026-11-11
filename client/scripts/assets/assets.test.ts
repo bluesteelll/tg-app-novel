@@ -1466,6 +1466,23 @@ describe('assets', () => {
     expect(existsSync(join(repo, 'client', 'src', 'story-gen'))).toBe(false);
   });
 
+  test('assets: an expression the catalog dropped is reported, not thrown', async () => {
+    // SH3a review M1: a stale build/shots.json (free ch1 shows ally in frown, which the catalog no longer defines) is an
+    // input problem by name, reported before any layer is built. The shot is not packed, and no "(run the story tool)"
+    // line follows for the files its chapters list: one cause, one message (critique O2).
+    const frowning = { shots: { cafe: cafeNeed([['frown', false]], 'ch1') }, assets: ['bg/cafe', 'face/cafe/ally/frown', 'sheet/cafe'] };
+    writeRepo(repo, { ...SHOT_FILES, 'server/content/build/shots.json': shotsUsage({ ...SHOT_CHAPTERS, ch1: frowning }) });
+    const r = await runTool(repo, HALVING_FAKES);
+    expect(r.code).toBe(1);
+    expect(r.err).toEqual([
+      'assets: server/content/build/shots.json: ch1 shows ally in frown in cafe, which assets/catalog.json does not define (run the story tool)',
+    ]);
+    expect(r.err.filter((l) => l.includes('invariant'))).toEqual([]);
+    expect(existsSync(join(repo, 'client', 'src', 'story-gen'))).toBe(false);
+    expect(listDir(repo, 'client/public/assets')).toEqual([]);
+    expect(listDir(repo, 'server/content/assets')).toEqual([]);
+  });
+
   test('assets: a src shot before extraction is refused by name', async () => {
     // The catalog admits a bg's `src: "shot/<id>"` (shots §4.1); its extraction is SH3c's, so until then the tool names
     // it and writes nothing rather than encoding something else in its place.
@@ -1637,7 +1654,8 @@ describe('assets', () => {
   test('assets: a look image its chapter does not list is refused', async () => {
     // Shots §4.5 (CH D5): build/shots.json's decoder checks a window's non-shot image by the id grammar alone, never
     // against its chapter's usage, so the planner's own-entries invariant is what keeps a look image out of a manifest
-    // without its entry: free ch1's window hopes for cg/letter, which paid ch2 alone lists, so the image is gated.
+    // without its entry: free ch1's window may warm cg/letter (a `possible` id), which paid ch2 alone lists, so the
+    // image is gated.
     const step = { cur: [], certain: [], certainDist: 0, possible: ['cg/letter'], near: 1, d2: [], d3: [], labels: false };
     const usage = { chapters: { ...REPO_USAGE.chapters, ch2: { ...REPO_USAGE.chapters.ch2, assets: [...REPO_USAGE.chapters.ch2.assets, 'cg/letter'] } } };
     writeRepo(repo, {

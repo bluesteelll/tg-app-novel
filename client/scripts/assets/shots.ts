@@ -4,8 +4,9 @@
 // manifest carries of them (its rigs and its look). No node:*, no sharp: the encoders and IO stay in assets.ts.
 import type { AssetCatalog } from '../../src/story/catalog.ts';
 import type { Box, CastRig, FaceRig, Frame, LookIndex, LoopRig, Member, MotionSet, ShotRig, ShotWindow } from '../../src/story/shots.ts';
-import type { AssetId, BgId, CharId, ExprId } from '../../src/story/staging.ts';
+import type { AssetId, BgId, ChapterId, CharId, ExprId } from '../../src/story/staging.ts';
 import type { Shot } from '../story/shots/list.ts';
+import { SHOT_USAGE_FILE } from '../story/shots/usage.ts';
 import type { ShotNeed, WindowRefs } from '../story/shots/usage.ts';
 import { packedLabelWidth, renderPacked } from './placeholder.ts';
 
@@ -114,6 +115,26 @@ function memberGeometry(i: number, n: number, s: number, pw: number, ph: number)
   const rx = even(0.4 * xw);
   const fig: Ellipse = { cx: xc, cy: (yc + ph) / 2, rx, ry: (ph - yc) / 2, rot: 0 };
   return { expr: [x0, y0, xw, xh] as Box, blink, accent, mouth, head, hair, fig, figBox: onPlate(even(xc - rx), yc, 2 * rx, ph - yc, pw, ph) };
+}
+
+/** One chapter's need of a shot, with the chapter that has it (build/shots.json). */
+export type ChapterNeed = { readonly ch: ChapterId; readonly need: ShotNeed };
+
+/**
+ * SH3a review M1: every expression a chapter's need shows a character in is one the catalog defines; else the story
+ * tool's build/shots.json is stale. Reported by name before any layer is built, so `exprHue`'s throw stays an invariant.
+ */
+export function faceNeedProblems(shot: BgId, needs: readonly ChapterNeed[], catalog: AssetCatalog): string[] {
+  const out: string[] = [];
+  for (const { ch, need } of needs) {
+    for (const [c, list] of Object.entries(need.faces) as [CharId, ShotNeed['faces'][CharId]][]) {
+      const entry = Object.hasOwn(catalog.chars, c) ? catalog.chars[c] : undefined;
+      for (const f of (list ?? []).filter((x) => entry === undefined || !Object.hasOwn(entry.exprs, x.expr))) {
+        out.push(`${SHOT_USAGE_FILE}: ${ch} shows ${c} in ${f.expr} in ${shot}, which assets/catalog.json does not define (run the story tool)`);
+      }
+    }
+  }
+  return out;
 }
 
 /** The vocabulary hue of `char`'s expression `expr` (catalog.json `chars.<c>.exprs.<x>.placeholder.hue`). */
