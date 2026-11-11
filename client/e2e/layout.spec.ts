@@ -514,7 +514,10 @@ type Ghost = { seq: number; tag: string; classes: string[]; children: number; la
  * bare art, and how many animations its cue root ran at that moment (the root's entrance moves the point it emits).
  */
 type Tap = { seq: number; x: number; y: number; bare: boolean; moving: number };
-type GhostWindow = Window & { __layoutGhosts?: Ghost[]; __layoutTaps?: Tap[] };
+type GhostWindow = Window & { __layoutGhosts?: Ghost[]; __layoutTaps?: Tap[]; __layoutHeld?: Animation };
+
+/** Where (a0) holds the explore root's 300 ms entrance: Q69's recorded failure C (`centre got 70.98,94.68`). */
+const ENTRANCE_HELD_MS = 235.1;
 
 /** A plain ghost: a childless `div` with no class but the stage's own (cues/stage/index.ts `ghostOf`). */
 const plain = (g: Ghost): boolean => g.tag === 'div' && g.children === 0 && g.classes.every((c) => c === 'cue-ghost' || c === 'cue-plain');
@@ -647,9 +650,25 @@ test('layout: cue ghosts land on their targets in a scaled column', async ({ pag
   await reachLine(page, 'ch1.arrival.a001');
   await expect(page.locator('[data-cue-stage]'), 'the cue stage').toBeAttached({ timeout: LINE_MS });
   // The recorder: every ghost the stage adds to its layer, read in the observer's callback; every click as it arrives.
-  await page.evaluate(() => {
+  // For (a0), the explore root's entrance (the first animation on a root that holds the bare art) is held: paused at
+  // `held` ms in a microtask, after the stage's own `currentTime = age` (cues/stage/index.ts `see`); the wrapper then
+  // steps aside.
+  await page.evaluate((held) => {
     const layer = document.querySelector('[data-cue-stage]');
     const w = window as GhostWindow;
+    const animate = Element.prototype.animate;
+    Element.prototype.animate = function (this: Element, ...args: Parameters<Element['animate']>): Animation {
+      const a = animate.apply(this, args);
+      if (this.matches('[data-cue-root]') && this.querySelector('[data-cue="bare-art"]') !== null) {
+        Element.prototype.animate = animate;
+        queueMicrotask(() => {
+          a.pause();
+          a.currentTime = held;
+          w.__layoutHeld = a;
+        });
+      }
+      return a;
+    };
     const out: Ghost[] = [];
     w.__layoutGhosts = out;
     const taps: Tap[] = [];
@@ -690,7 +709,7 @@ test('layout: cue ghosts land on their targets in a scaled column', async ({ pag
         }
       }
     }).observe(layer, { childList: true });
-  });
+  }, ENTRANCE_HELD_MS);
   await enterManor(page);
   await atRest(page);
 
@@ -698,6 +717,20 @@ test('layout: cue ghosts land on their targets in a scaled column', async ({ pag
   const k = (await rectsOf(page, '.app')).k;
   if (!(Math.abs(k - 0.7390625) <= 0.002)) {
     failures.push(`k at 1000x473: got ${k}; want 0.7390625 (the column scaled)`);
+  }
+
+  // (a0) A tap during the explore root's entrance ripples at the finger (Q69): the root, held scaled about its centre,
+  // emits the point in its own box, and the yields move it to the stage host's px as they do a frame root's.
+  {
+    const tap = await bareArtRipple(page, '(a0)', k, failures);
+    const held = await page.evaluate(() => {
+      const a = (window as GhostWindow).__layoutHeld;
+      return a === undefined ? null : { state: a.playState, at: Number(a.currentTime) };
+    });
+    if (held === null || held.state !== 'paused' || Math.abs(held.at - ENTRANCE_HELD_MS) > 0.5 || tap === null || tap.moving === 0) {
+      failures.push(`(a0) guard: the explore root's entrance was not held at the tap: ${JSON.stringify(held)}, ${tap?.moving ?? 'no'} animations`);
+    }
+    await page.evaluate(() => (window as GhostWindow).__layoutHeld?.play());
   }
 
   // (a) The hall at rest: a tap on the bare art plays the ripple at its point (D5's point division). Q69: the explore
