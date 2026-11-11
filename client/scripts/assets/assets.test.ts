@@ -13,6 +13,7 @@ import type { AssetId } from '../../src/story/staging.ts';
 import { main } from '../assets.ts';
 import type { Encoders } from '../assets.ts';
 import { decodeChapterList, decodeStoryUsage } from '../story/emit.ts';
+import { placeholderHue } from '../story/shots/list.ts';
 import { encodeImage, halfRgba } from './encode.ts';
 import { ASSET_FILE_RE, assetFileName, assetUsage, catalogImage, decodeAssetFingerprints, halfAsk, sha256Hex, tierOf } from './manifest.ts';
 import type { AssetUsage } from './manifest.ts';
@@ -832,6 +833,50 @@ const REPO_USAGE = {
   },
 };
 
+/**
+ * The shot pipeline's fixture (shots §2.5-2.6): `cafe` is a declared close-up of ally (rest neutral) that free ch1
+ * shows with ally speaking at rest and paid ch2 with ally smiling and speaking; `archive` an implied cast-less shot of
+ * ch2 alone. So `bg/cafe`, `sheet/cafe` and `talk/cafe/ally/neutral` are public, `face/cafe/ally/smile`,
+ * `talk/cafe/ally/smile` and `bg/archive` paid-only.
+ */
+const SHOT_CATALOG = { ...REPO_CATALOG, chars: { ally: { exprs: { neutral: { placeholder: { hue: 200 } }, smile: { placeholder: { hue: 160 } } } } } };
+const SHOT_LIST = { locs: [{ id: 'cafe', light: null }], shots: [{ id: 'cafe', loc: 'cafe', frame: 'close', cast: [{ char: 'ally', view: 'face', rest: 'neutral' }] }] };
+
+/** build/shots.json's need of `cafe` with ally in `faces` (`[expr, talk]`), and of an implied cast-less shot. */
+function cafeNeed(faces: ReadonlyArray<readonly [string, boolean]>, ch: string): Record<string, unknown> {
+  const lines = (i: number): string[] => [`${ch}.cafe.a00${i}`];
+  return {
+    cast: { ally: { view: 'face', rest: 'neutral', figure: false } },
+    faces: { ally: faces.map(([expr, talk], i) => ({ expr, talk, lines: lines(i) })) },
+    frame: 'close',
+    loc: 'cafe',
+    camTargets: [],
+    motions: [],
+    room: null,
+  };
+}
+function impliedNeed(shot: string): Record<string, unknown> {
+  return { cast: {}, faces: {}, frame: 'wide', loc: shot, camTargets: [], motions: [], room: null };
+}
+
+type ShotChapter = { shots: Record<string, unknown>; assets: string[]; look?: Record<string, unknown> };
+const SHOT_CHAPTERS: Readonly<Record<'ch1' | 'ch2', ShotChapter>> = {
+  ch1: { shots: { cafe: cafeNeed([['neutral', true]], 'ch1') }, assets: ['bg/cafe', 'sheet/cafe', 'talk/cafe/ally/neutral'] },
+  ch2: {
+    shots: { archive: impliedNeed('archive'), cafe: cafeNeed([['smile', true]], 'ch2') },
+    assets: ['bg/archive', 'bg/cafe', 'face/cafe/ally/smile', 'sheet/cafe', 'talk/cafe/ally/smile'],
+  },
+};
+
+/** A build/shots.json of these chapters (no entry alternatives, no legacy sprites). */
+function shotsUsage(chapters: Readonly<Record<string, ShotChapter>>): unknown {
+  return { chapters: Object.fromEntries(Object.entries(chapters).map(([id, c]) => [id, { shots: c.shots, assets: c.assets, look: c.look ?? {}, entry: {}, sprites: false }])) };
+}
+
+/** The inputs a shot repository adds: the catalog with ally's smile and the shot list; then its build/shots.json. */
+const SHOT_FILES: Readonly<Record<string, unknown>> = { 'assets/catalog.json': SHOT_CATALOG, 'story/shots.json': SHOT_LIST };
+const SHOT_REPO: Readonly<Record<string, unknown>> = { ...SHOT_FILES, 'server/content/build/shots.json': shotsUsage(SHOT_CHAPTERS) };
+
 function writeRepo(root: string, files: Readonly<Record<string, unknown>> = {}): void {
   const all: Record<string, unknown> = {
     'story/chapters.json': [CH1, CH2],
@@ -1249,6 +1294,106 @@ describe('assets', () => {
       const size = rest.length === 0 ? 'full' : rest.join('-') === 'half' ? 'half' : `unparsed ${rest.join('-')}`;
       expect(`${segments.slice(0, parts).join('/')} ${size}`, name).toBe(made);
     }
+  });
+
+  test('assets: a face file only a paid chapter needs is gated', async () => {
+    // Shots §2.5 (rev. 4, W3): every shot file is one asset tiered by `tierOf` over build/shots.json's per-chapter
+    // `assets`: ally's smile in `cafe` is needed by paid ch2 only, so its face file is gated, full and half.
+    writeRepo(repo, SHOT_REPO);
+    const r = await runTool(repo, HALVING_FAKES);
+    expect(r.code, r.err.join('\n')).toBe(0);
+    const face = (dir: string): string[] => listDir(repo, dir).filter((n) => n.startsWith('face-cafe-ally-smile-'));
+    expect(face('server/content/assets').filter((n) => !n.includes('-half-'))).toHaveLength(2);
+    expect(face('server/content/assets').map((n) => n.replace(/-[0-9a-f]{8}\./, '-<hash8>.')).sort()).toEqual([
+      'face-cafe-ally-smile-<hash8>.avif',
+      'face-cafe-ally-smile-<hash8>.webp',
+      'face-cafe-ally-smile-half-<hash8>.avif',
+      'face-cafe-ally-smile-half-<hash8>.webp',
+    ]);
+    expect(face('client/public/assets'), 'no face/cafe/ally/smile file is public').toEqual([]);
+    const fp = decodeAssetFingerprints(JSON.parse(readRel(repo, 'server/content/build/fingerprints.assets.json')));
+    expect((fp.ok ? fp.value.files : []).filter((f) => f.asset === 'face/cafe/ally/smile').map((f) => f.name).sort()).toEqual(face('server/content/assets'));
+    const ch2 = JSON.parse(readRel(repo, 'server/content/chapters/ch2/assets.json')) as { assets: Record<string, RawEntry> };
+    expect(ch2.assets['face/cafe/ally/smile']?.['avif']).toEqual({ url: expect.stringMatching(/^\/api\/assets\/face-cafe-ally-smile-[0-9a-f]{8}\.avif$/) as string, bytes: expect.any(Number) as number });
+    // The free chapter's manifest names no file of it.
+    expect(readRel(repo, 'client/src/story-gen/free/ch1.assets.json')).not.toContain('face/cafe/ally/smile');
+  });
+
+  test('assets: a shot shown by a free chapter has a public plate and sheet', async () => {
+    writeRepo(repo, SHOT_REPO);
+    const r = await runTool(repo, HALVING_FAKES);
+    expect(r.code, r.err.join('\n')).toBe(0);
+    const pub = (prefix: string): string[] => listDir(repo, 'client/public/assets').filter((n) => n.startsWith(prefix));
+    expect(pub('sheet-cafe-').filter((n) => !n.includes('-half-'))).toHaveLength(2);
+    expect(pub('sheet-cafe-half-')).toHaveLength(2);
+    expect(pub('bg-cafe-')).toHaveLength(4);
+    expect(pub('talk-cafe-ally-neutral-')).toHaveLength(4); // ch1 speaks at rest
+    // One public entry, the same in the free and the paid manifest.
+    const ch1 = JSON.parse(readRel(repo, 'client/src/story-gen/free/ch1.assets.json')) as { assets: Record<string, RawEntry> };
+    const ch2 = JSON.parse(readRel(repo, 'server/content/chapters/ch2/assets.json')) as { assets: Record<string, RawEntry> };
+    expect(ch1.assets['sheet/cafe']?.['avif']).toEqual({ url: expect.stringMatching(/^\/assets\/sheet-cafe-[0-9a-f]{8}\.avif$/) as string, bytes: expect.any(Number) as number });
+    expect(ch2.assets['sheet/cafe']).toEqual(ch1.assets['sheet/cafe']);
+    expect(listDir(repo, 'server/content/assets').filter((n) => n.startsWith('sheet-'))).toEqual([]);
+    // The tool's shot files go to the encoder untrimmed with a half asked for, public or gated.
+    const asked: Record<string, unknown> = {};
+    const recording: Encoders = {
+      ...HALVING_FAKES,
+      encodeImage: (svg, o) => {
+        const id = /<text\b[^>]*>([^<]+)<\/text>/.exec(new TextDecoder().decode(svg))?.[1] ?? '(no label)';
+        asked[id] = o;
+        return HALVING_FAKES.encodeImage(svg, o);
+      },
+    };
+    expect((await runTool(repo, recording)).code).toBe(0);
+    for (const id of ['sheet/cafe', 'face/cafe/ally/smile', 'talk/cafe/ally/neutral', 'talk/cafe/ally/smile']) {
+      expect(asked[id], id).toEqual({ trim: false, half: 'any' });
+    }
+  });
+
+  test('assets: a declared shot without a catalog bg is encoded as its implied placeholder', async () => {
+    // SH2's cut Q7: `story` admits a declared shot the catalog lacks (an implied placeholder, hue = FNV-1a of its id mod
+    // 360, list.ts `effectiveCatalog`); the asset tool now encodes it the same way instead of refusing it.
+    const list = { locs: [{ id: 'attic', light: null }], shots: [{ id: 'attic', loc: 'attic', frame: 'wide', cast: [] }] };
+    const attic = { cast: {}, faces: {}, frame: 'wide', loc: 'attic', camTargets: [], motions: [], room: null };
+    const usage = { chapters: { ...REPO_USAGE.chapters, ch1: { assets: [...REPO_USAGE.chapters.ch1.assets, 'bg/attic'], knots: {} } } };
+    writeRepo(repo, {
+      'story/shots.json': list,
+      'server/content/build/usage.json': usage,
+      'server/content/build/shots.json': shotsUsage({ ch1: { shots: { attic }, assets: ['bg/attic'] }, ch2: { shots: {}, assets: [] } }),
+    });
+    const svgs: Record<string, string> = {};
+    const recording: Encoders = {
+      ...FAKE_ENCODERS,
+      encodeImage: (svg, o) => {
+        const text = new TextDecoder().decode(svg);
+        svgs[/<text\b[^>]*>([^<]+)<\/text>/.exec(text)?.[1] ?? '(no label)'] = text;
+        return FAKE_ENCODERS.encodeImage(svg, o);
+      },
+    };
+    const r = await runTool(repo, recording);
+    expect(r.code, r.err.join('\n')).toBe(0);
+    expect(svgs['bg/attic']).toContain(`hsl(${placeholderHue('attic')} `);
+    expect(listDir(repo, 'client/public/assets').filter((n) => n.startsWith('bg-attic-'))).toHaveLength(2);
+  });
+
+  test('assets: a shot list without its build/shots.json is refused', async () => {
+    // story/shots.json switches the tool to the shot pipeline; its build/shots.json is then required and must hold
+    // exactly the listed chapters. Every problem is reported; nothing is written.
+    writeRepo(repo, SHOT_FILES);
+    const missing = await runTool(repo);
+    expect(missing.code).toBe(1);
+    expect(missing.err).toEqual(['assets: server/content/build/shots.json: missing (story/shots.json exists: run the story tool)']);
+    expect(existsSync(join(repo, 'client', 'src', 'story-gen'))).toBe(false);
+    const stale = shotsUsage({ ch1: SHOT_CHAPTERS.ch1, ch3: SHOT_CHAPTERS.ch2 });
+    writeRepo(repo, { ...SHOT_REPO, 'server/content/build/shots.json': stale });
+    const wrong = await runTool(repo);
+    expect(wrong.code).toBe(1);
+    expect(wrong.err).toEqual([
+      'assets: server/content/build/shots.json has no chapter ch2 (run the story tool)',
+      'assets: server/content/build/shots.json names ch3, which story/chapters.json does not list (run the story tool)',
+    ]);
+    expect(listDir(repo, 'client/public/assets')).toEqual([]);
+    expect(existsSync(join(repo, 'client', 'src', 'story-gen'))).toBe(false);
   });
 
   test('assets: cli runs through a linked path under preserve-symlinks-main', async () => {

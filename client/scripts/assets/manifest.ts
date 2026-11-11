@@ -23,6 +23,7 @@ import type {
 import type { AssetId, ChapterId } from '../../src/story/staging.ts';
 import { decodeWorldSource } from '../../src/world/decode.ts';
 import type { StoryUsage } from '../story/emit.ts';
+import type { ShotUsage } from '../story/shots/usage.ts';
 import type { EncodedHalf, HalfAsk } from './encode.ts';
 import { imageKind } from './placeholder.ts';
 
@@ -69,19 +70,24 @@ export type RoomUsage = {
   closeups: readonly AssetId[];
   neighbours: readonly AssetId[];
 };
+/** What one chapter names: ink tags, its world, and (with a shot list) every shot file it needs (shots §2.6). */
+export type ChapterUsage = { ink: readonly AssetId[]; world: readonly AssetId[]; shots?: readonly AssetId[] };
 export type AssetUsage = {
-  chapters: Readonly<Record<ChapterId, { ink: readonly AssetId[]; world: readonly AssetId[] }>>;
+  chapters: Readonly<Record<ChapterId, ChapterUsage>>;
   rooms: Readonly<Record<RoomKey, RoomUsage>>;
 };
 
 /**
  * The asset usage of a decoded usage.json: a chapter's `worldAssets` and the top-level `rooms`, which the story tool
- * writes only for a chapter with a world (LW3, D4). A pre-LW3 usage.json has neither: no world art, no rooms.
+ * writes only for a chapter with a world (LW3, D4). A pre-LW3 usage.json has neither: no world art, no rooms. With a
+ * decoded build/shots.json (shots §2.5), each chapter also lists its shot files (`shots`); without one the value has
+ * no such field, so the one-argument view is the one it always was.
  */
-export function assetUsage(u: StoryUsage): AssetUsage {
-  const chapters: Record<string, { ink: readonly AssetId[]; world: readonly AssetId[] }> = {};
+export function assetUsage(u: StoryUsage, shots: ShotUsage | null = null): AssetUsage {
+  const chapters: Record<string, ChapterUsage> = {};
   for (const [ch, c] of Object.entries(u.chapters)) {
-    chapters[ch] = { ink: c.assets, world: c.worldAssets ?? [] };
+    const files = shots === null ? undefined : (Object.hasOwn(shots.chapters, ch) ? shots.chapters[ch as ChapterId]?.assets : undefined) ?? [];
+    chapters[ch] = { ink: c.assets, world: c.worldAssets ?? [], ...(files === undefined ? {} : { shots: files }) };
   }
   return { chapters: chapters as AssetUsage['chapters'], rooms: u.rooms ?? {} }; // keys are usage.json's chapter ids
 }
@@ -98,10 +104,15 @@ export function worldHasSections(raw: unknown): Result<boolean, string[]> {
   return { ok: true, value: Object.keys(world.value.sections).length > 0 };
 }
 
-/** Every asset a chapter names (ink ∪ world), sorted, once each. */
+/** Every asset a chapter names (ink ∪ world ∪ its shot files), sorted, once each. */
 export function chapterAssets(usage: AssetUsage, ch: ChapterId): AssetId[] {
   const c = usage.chapters[ch];
-  return c === undefined ? [] : [...new Set([...c.ink, ...c.world])].sort();
+  return c === undefined ? [] : [...new Set([...c.ink, ...c.world, ...(c.shots ?? [])])].sort();
+}
+
+/** A shot's packed file (`sheet/`, `face/`, `talk/`): made by this tool from build/shots.json, never a catalog entry. */
+export function isShotFile(id: AssetId): boolean {
+  return id.startsWith('sheet/') || id.startsWith('face/') || id.startsWith('talk/');
 }
 
 export type Tier = 'public' | 'paid' | 'unused';
@@ -208,8 +219,9 @@ export function catalogAudio(c: AssetCatalog, id: AssetId): CatalogAudio | undef
 }
 
 /**
- * Every catalog id's tier. Errors: a listed chapter usage.json lacks (or the reverse: the story tool's output is stale)
- * and a used id the catalog does not define.
+ * Every catalog id's tier, and every shot file's a chapter lists (shots §2.5: each one asset, tiered by `tierOf`).
+ * Errors: a listed chapter usage.json lacks (or the reverse: the story tool's output is stale) and a used id the catalog
+ * does not define (a shot file aside).
  */
 export function tierAll(
   catalog: AssetCatalog,
@@ -224,7 +236,9 @@ export function tierAll(
   for (const ch of Object.keys(usage.chapters).filter((id) => !listed.has(id))) {
     issues.push(`server/content/build/usage.json names ${ch}, which story/chapters.json does not list (run the story tool)`);
   }
-  const known = new Set<string>(catalogIds(catalog));
+  const shotFiles = Object.values(usage.chapters).flatMap((c) => (c.shots ?? []).filter(isShotFile));
+  const ids = [...new Set([...catalogIds(catalog), ...shotFiles])].sort();
+  const known = new Set<string>(ids);
   for (const c of chapters) {
     for (const id of chapterAssets(usage, c.id).filter((a) => !known.has(a))) {
       issues.push(`${c.id} uses ${id}, which assets/catalog.json does not define`);
@@ -233,7 +247,7 @@ export function tierAll(
   if (issues.length > 0) {
     return { ok: false, error: issues };
   }
-  return { ok: true, value: new Map(catalogIds(catalog).map((id) => [id, tierOf(id, usage, chapters)])) };
+  return { ok: true, value: new Map(ids.map((id) => [id, tierOf(id, usage, chapters)])) };
 }
 
 // ---------------------------------------------------------------------------------------------------------------

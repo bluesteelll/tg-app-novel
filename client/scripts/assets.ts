@@ -1,13 +1,16 @@
 // The asset tool (PROTOTYPE-PLAN "Asset pipeline", K23): reads the chapter list, the catalog and the story tool's
 // usage.json; renders every used placeholder and every cover, encodes them (sharp AVIF + WebP, synthesized WAV);
 // plans the files, the per-chapter manifests, covers.json and the paid file fingerprints; then sweeps its two asset
-// directories of everything not planned and writes. A failed run writes and deletes nothing.
+// directories of everything not planned and writes. A failed run writes and deletes nothing. With a shot list
+// (story/shots.json, shots §2.4-2.6) it reads build/shots.json too, tiers every shot file it lists per file, and
+// synthesizes, packs and encodes those files (placeholders until SH3c).
 // CLI: node scripts/assets.ts [--root <repo>]   (exit 1 on any input error)
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import type { AssetId } from '../src/story/staging.ts';
+import type { AssetCatalog, ChapterListEntry } from '../src/story/catalog.ts';
+import type { AssetId, BgId } from '../src/story/staging.ts';
 import { encodeImage } from './assets/encode.ts';
 import type { EncodedImage, HalfAsk } from './assets/encode.ts';
 import {
@@ -19,13 +22,20 @@ import {
   catalogImage,
   decodeAssetCatalog,
   halfAsk,
+  isShotFile,
   planAssets,
   tierAll,
 } from './assets/manifest.ts';
 import type { Encoded } from './assets/manifest.ts';
-import { renderPlaceholder } from './assets/placeholder.ts';
+import { CANONICAL_SIZE, renderPlaceholder } from './assets/placeholder.ts';
+import { castProblems, facesOf, packShot, placeholderLayers, plateProblems, shotFileSvg } from './assets/shots.ts';
+import type { ShotLayers, ShotPack } from './assets/shots.ts';
 import { synthWav } from './assets/synth.ts';
 import { decodeChapterList, decodeStoryUsage } from './story/emit.ts';
+import { SHOTS_FILE, decodeShotList, effectiveCatalog } from './story/shots/list.ts';
+import type { Shot, ShotList } from './story/shots/list.ts';
+import { SHOT_USAGE_FILE, decodeShotUsage } from './story/shots/usage.ts';
+import type { ShotNeed, ShotUsage } from './story/shots/usage.ts';
 
 /**
  * The encoders, injectable so planner and CLI tests stay fast (the real ones are the default). `trim`: cut the image
@@ -60,6 +70,55 @@ function issueText(e: unknown): string {
   }
   const i = e as { path?: unknown; detail?: unknown }; // a CatalogIssue from the src/ decoders
   return `${String(i.path)}: ${String(i.detail)}`;
+}
+
+/** One shot of build/shots.json as the tool encodes it: its declared (or implied) shot, its layers, its packing. */
+type PackedShot = { readonly shot: Shot; readonly layers: ShotLayers; readonly pack: ShotPack };
+
+/**
+ * Every shot of build/shots.json, packed (shots §4.2 steps 7-8): its layer set synthesized from the union of its
+ * chapters' face needs, its cast in the shot list's draw order (an implied shot has none), on the placeholder plate.
+ */
+function packShots(usage: ShotUsage, list: ShotList, catalog: AssetCatalog): Map<BgId, PackedShot> {
+  const needs = new Map<BgId, ShotNeed[]>();
+  for (const c of Object.values(usage.chapters)) {
+    for (const [s, n] of Object.entries(c.shots) as [BgId, ShotNeed][]) {
+      needs.set(s, [...(needs.get(s) ?? []), n]);
+    }
+  }
+  const out = new Map<BgId, PackedShot>();
+  for (const [s, ns] of [...needs].sort(([a], [b]) => (a < b ? -1 : 1))) {
+    const first = ns[0];
+    const shot = list.shots.find((x) => x.id === s) ?? (first === undefined ? undefined : { id: s, loc: first.loc, frame: first.frame, cast: [] });
+    if (shot !== undefined) {
+      const layers = placeholderLayers(shot, facesOf(ns), catalog, CANONICAL_SIZE.bg);
+      out.set(s, { shot, layers, pack: packShot(layers) });
+    }
+  }
+  return out;
+}
+
+/**
+ * build/shots.json against the chapter list and the packer: it holds exactly the listed chapters (else the story
+ * tool's output is stale), and every shot file a chapter lists is one its shot's needs make.
+ */
+function shotUsageProblems(usage: ShotUsage, chapters: readonly ChapterListEntry[], shots: ReadonlyMap<BgId, PackedShot>): string[] {
+  const listed = new Set<string>(chapters.map((c) => c.id));
+  const problems = [
+    ...chapters.filter((c) => !Object.hasOwn(usage.chapters, c.id)).map((c) => `${SHOT_USAGE_FILE} has no chapter ${c.id} (run the story tool)`),
+    ...Object.keys(usage.chapters)
+      .filter((ch) => !listed.has(ch))
+      .map((ch) => `${SHOT_USAGE_FILE} names ${ch}, which story/chapters.json does not list (run the story tool)`),
+  ];
+  for (const [ch, c] of Object.entries(usage.chapters)) {
+    for (const id of c.assets.filter(isShotFile)) {
+      const shot = id.split('/')[1] as BgId; // a shot file id's second segment is its shot (ASSET_ID_RE)
+      if (shots.get(shot)?.pack.files.has(id) !== true) {
+        problems.push(`${SHOT_USAGE_FILE}: ${ch} lists ${id}, which its shot's needs do not make (run the story tool)`);
+      }
+    }
+  }
+  return problems;
 }
 
 /** Every file under the tool's own directory that the plan does not hold (repo-relative posix paths). */
@@ -102,15 +161,32 @@ export async function main(argv: readonly string[], root: string, encoders: Enco
     return decoded.value;
   };
   const chapters = read('story/chapters.json', decodeChapterList);
-  const catalog = read('assets/catalog.json', decodeAssetCatalog);
+  const source = read('assets/catalog.json', decodeAssetCatalog);
   const storyUsage = read(USAGE_FILE, decodeStoryUsage);
-  if (chapters === null || catalog === null || storyUsage === null) {
+  // Shots §2.4: with a shot list, the effective catalog (an implied placeholder bg per declared shot it lacks, SH2's
+  // cut Q7) and build/shots.json, which the story tool writes beside usage.json; without one, today's path exactly.
+  const hasShotList = existsSync(path.join(root, ...SHOTS_FILE.split('/')));
+  const shotList = source !== null && hasShotList ? read(SHOTS_FILE, (raw) => decodeShotList(raw, source)) : null;
+  let shotUsage: ShotUsage | null = null;
+  if (shotList !== null) {
+    if (existsSync(path.join(root, ...SHOT_USAGE_FILE.split('/')))) {
+      shotUsage = read(SHOT_USAGE_FILE, decodeShotUsage);
+    } else {
+      problems.push(`${SHOT_USAGE_FILE}: missing (${SHOTS_FILE} exists: run the story tool)`);
+    }
+  }
+  const catalog = source !== null && shotList !== null ? effectiveCatalog(source, shotList) : source;
+  const shots = shotList !== null && shotUsage !== null && catalog !== null ? packShots(shotUsage, shotList, catalog) : new Map<BgId, PackedShot>();
+  if (chapters !== null && shotUsage !== null) {
+    problems.push(...shotUsageProblems(shotUsage, chapters, shots));
+  }
+  if (chapters === null || catalog === null || storyUsage === null || problems.length > 0) {
     for (const p of problems) {
       console.error(`assets: ${p}`);
     }
     return 1;
   }
-  const usage = assetUsage(storyUsage);
+  const usage = assetUsage(storyUsage, shotUsage);
   const tiers = tierAll(catalog, usage, chapters);
   if (!tiers.ok) {
     for (const p of tiers.error) {
@@ -118,6 +194,7 @@ export async function main(argv: readonly string[], root: string, encoders: Enco
     }
     return 1;
   }
+  const packedFiles = new Map([...shots.values()].flatMap((v) => [...v.pack.files]));
   // 2. Encode every shipped asset, one at a time: the peak is one decoded canvas.
   const encoded = new Map<AssetId, Encoded>();
   for (const [id, tier] of tiers.value) {
@@ -127,7 +204,12 @@ export async function main(argv: readonly string[], root: string, encoders: Enco
     }
     const image = catalogImage(catalog, id);
     const audio = catalogAudio(catalog, id);
-    if (image !== undefined) {
+    const packed = packedFiles.get(id);
+    if (packed !== undefined) {
+      // A shot file: never trimmed (its frames are its rig's), with its half pair like any bg (shots §4.2 step 7).
+      const svg = new TextEncoder().encode(shotFileSvg(packed));
+      encoded.set(id, { kind: 'image', ...(await encoders.encodeImage(svg, { trim: false, half: halfAsk(id, tier) })) });
+    } else if (image !== undefined) {
       const svg = renderPlaceholder(id, image).svg;
       const trim = TRIMMED_NAMESPACES.includes(id.slice(0, id.indexOf('/')));
       const half = halfAsk(id, tier);
@@ -140,8 +222,13 @@ export async function main(argv: readonly string[], root: string, encoders: Enco
       throw new Error(`invariant: ${id} is a catalog placeholder before it is encoded`);
     }
   }
-  // 3. The canvases are input errors, reported before planning (the planner's own decode would throw on an odd file).
-  const canvases = canvasProblems(encoded);
+  // 3. The canvases are input errors, reported before planning (the planner's own decode would throw on an odd file);
+  // so are a shot's plate (R5) and its cast's masks (R9), shots §4.3.
+  const shotChecks = [...shots].flatMap(([s, { shot, layers }]) => {
+    const plate = encoded.get(`bg/${s}` as AssetId); // the shot's plate is its bg, encoded above when a chapter uses it
+    return [...(plate?.kind === 'image' ? plateProblems(s, shot.frame, plate.w, plate.h) : []), ...castProblems(layers)];
+  });
+  const canvases = [...canvasProblems(encoded), ...shotChecks];
   if (canvases.length > 0) {
     for (const p of canvases) {
       console.error(`assets: ${p}`);
