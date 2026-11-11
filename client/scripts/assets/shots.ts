@@ -252,3 +252,143 @@ export function shotFiles(layers: ShotLayers): ReadonlyMap<AssetId, PackedFile> 
 export function shotFileSvg(file: PackedFile): string {
   return renderPacked(file.id, file.w, file.h, file.items);
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Checks (§4.3 R5, R9) and the rig's fields from masks (§4.2 steps 5-6)
+
+/** R5: a plate is 2048 high with an even width in [1080, 1440]; a `room` plate exactly 1080 × 2048. */
+export function plateProblems(shot: BgId, frame: Frame, w: number, h: number): string[] {
+  if (frame === 'room') {
+    return w === 1080 && h === 2048 ? [] : [`${shot}: a room plate is ${w} × ${h} (R5: exactly 1080 × 2048)`];
+  }
+  return h === 2048 && w % 2 === 0 && w >= 1080 && w <= 1440 ? [] : [`${shot}: plate ${w} × ${h} (R5: 2048 high, an even width in 1080..1440)`];
+}
+
+/** R9: every cast member has a figure mask and a hair lock; every face member a head mask. Messages name the member. */
+export function castProblems(layers: ShotLayers): string[] {
+  return layers.cast.flatMap((m) => [
+    ...(m.masks.fig === null ? [`${layers.shot}: ${m.char} has no figure mask (R9: every cast member has one)`] : []),
+    ...(m.hair.length === 0 ? [`${layers.shot}: ${m.char} has no hair lock (R9: every cast member has one)`] : []),
+    ...(m.view === 'face' && m.masks.head === null ? [`${layers.shot}: ${m.char} has no head mask (R9: every face member has one)`] : []),
+  ]);
+}
+
+/** A vertex lattice over the plate: vertex (i, j) at (i × w / (cols − 1), j × h / (rows − 1)), index j × cols + i. */
+export type Lattice = { readonly cols: number; readonly rows: number };
+/** §4.2 step 5: the plateau's lattice (a cell 45 × 44.5 px on 1080 × 2048, scaled with the plate). */
+export const FINE: Lattice = { cols: 25, rows: 47 };
+/** The S-D fallback lattice, and the depth grid's (§4.2 step 6). */
+export const COARSE: Lattice = { cols: 13, rows: 24 };
+
+/** The regions a head plateau covers: the head mask (hair included), every face layer box, every hair-lock root. */
+function headRegions(m: CastLayers): Box[] {
+  const states = [...m.exprs.values()].flatMap((x) => [x.layer, x.blink.half, x.blink.closed, x.accent, ...(x.mouths ?? [])]);
+  return [
+    ...(m.masks.head === null ? [] : [m.masks.head]),
+    ...states.flatMap((l) => (l === null ? [] : [l.box])),
+    ...m.hair.map((h): Box => [h.pivot[0], h.pivot[1], 0, 0]),
+  ];
+}
+
+/**
+ * §4.2 step 5 (rev. 3, W3), the head plateau: every vertex of a cell that touches (closed intervals) one of the
+ * member's head regions, dilated by one cell. Every cell touching the head or a face layer then has its four corners in
+ * it, which is what makes the head's affine exact there (§5.6).
+ */
+export function plateauOf(m: CastLayers, plate: { readonly w: number; readonly h: number }, l: Lattice): ReadonlySet<number> {
+  const [cw, ch] = [plate.w / (l.cols - 1), plate.h / (l.rows - 1)];
+  const corners = new Set<number>();
+  for (const [bx, by, bw, bh] of headRegions(m)) {
+    for (let i = 0; i < l.cols - 1; i++) {
+      for (let j = 0; j < l.rows - 1; j++) {
+        if ((i + 1) * cw >= bx && i * cw <= bx + bw && (j + 1) * ch >= by && j * ch <= by + bh) {
+          for (const k of [j * l.cols + i, j * l.cols + i + 1, (j + 1) * l.cols + i, (j + 1) * l.cols + i + 1]) {
+            corners.add(k);
+          }
+        }
+      }
+    }
+  }
+  const out = new Set<number>();
+  for (const k of corners) {
+    const [i, j] = [k % l.cols, Math.floor(k / l.cols)];
+    for (let di = -1; di <= 1; di++) {
+      for (let dj = -1; dj <= 1; dj++) {
+        if (i + di >= 0 && i + di < l.cols && j + dj >= 0 && j + dj < l.rows) {
+          out.add((j + dj) * l.cols + i + di);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+function toBase64(bytes: Uint8Array): string {
+  let text = '';
+  for (const b of bytes) {
+    text += String.fromCharCode(b);
+  }
+  return btoa(text);
+}
+
+/** A vertex set as the rig writes it: bit k (MSB first in each byte) for vertex k, base64. */
+export function plateauBits(vertices: ReadonlySet<number>, l: Lattice): string {
+  const bytes = new Uint8Array(Math.ceil((l.cols * l.rows) / 8));
+  for (const k of vertices) {
+    bytes[k >> 3] = (bytes[k >> 3] ?? 0) | (0x80 >> (k & 7));
+  }
+  return toBase64(bytes);
+}
+
+/** §4.2 step 5: the head-motion falloff, `max(60, 0.25 × the head mask's bbox width)` px (60 without a head mask). */
+export function bandOf(m: CastLayers): number {
+  return Math.max(60, 0.25 * (m.masks.head?.[2] ?? 0));
+}
+
+/**
+ * §4.2 step 5, head groups: two members whose plateaus (the fine lattice) come within the larger of their bands are one
+ * group, transitively; groups are numbered in draw order by their first member.
+ */
+export function headGroups(layers: ShotLayers): number[] {
+  const plate = { w: layers.w, h: layers.h };
+  const points = layers.cast.map((m) =>
+    [...plateauOf(m, plate, FINE)].map((k) => [((k % FINE.cols) * layers.w) / (FINE.cols - 1), (Math.floor(k / FINE.cols) * layers.h) / (FINE.rows - 1)] as const),
+  );
+  const parent = layers.cast.map((_, i) => i);
+  const root = (i: number): number => (parent[i] === i ? i : root(parent[i] ?? i));
+  for (let a = 0; a < layers.cast.length; a++) {
+    for (let b = a + 1; b < layers.cast.length; b++) {
+      const [ma, mb] = [layers.cast[a], layers.cast[b]];
+      const reach = Math.max(ma === undefined ? 60 : bandOf(ma), mb === undefined ? 60 : bandOf(mb));
+      const near = (points[a] ?? []).some(([ax, ay]) => (points[b] ?? []).some(([bx, by]) => Math.hypot(ax - bx, ay - by) <= reach));
+      if (near) {
+        parent[root(b)] = root(a);
+      }
+    }
+  }
+  const index = new Map<number, number>();
+  return layers.cast.map((_, i) => {
+    const r = root(i);
+    const known = index.get(r) ?? index.size;
+    index.set(r, known);
+    return known;
+  });
+}
+
+/**
+ * §4.2 step 8 (rev. 4, m2), a placeholder's depth grid on the 13 × 24 lattice, rows top to bottom: a vertex at
+ * y = i / (rows − 1) × h reads n(y) = clamp((y/h − 0.35)/0.65, 0, 1) (vertex sampling: the top 35 % a far wall at 0, the
+ * last row 255), quantised to u8. It depends on y / h only, so one grid serves every plate.
+ */
+export function placeholderDepth(): Uint8Array {
+  const grid = new Uint8Array(COARSE.cols * COARSE.rows);
+  for (let i = 0; i < COARSE.rows; i++) {
+    grid.fill(Math.round(255 * Math.min(1, Math.max(0, (i / (COARSE.rows - 1) - 0.35) / 0.65))), i * COARSE.cols, (i + 1) * COARSE.cols);
+  }
+  return grid;
+}
+
+/** The depth grid as the rig writes it (§4.5 `depth`: base64 of 13 × 24 u8). */
+export function depthBase64(grid: Uint8Array): string {
+  return toBase64(grid);
+}
