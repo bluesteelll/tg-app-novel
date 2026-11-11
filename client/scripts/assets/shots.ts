@@ -214,8 +214,8 @@ export function placeholderLayers(shot: Shot, faces: ShotFaces, catalog: AssetCa
 // ---------------------------------------------------------------------------------------------------------------
 // Files (§2.6) and packing (§4.2 step 7)
 
-/** One packed state: its key (`<char>/<what>`), its frame in its file, its box on the plate, its fill. */
-export type PackedItem<F = string> = { readonly key: string; readonly frame: Box; readonly at: Box; readonly fill: F };
+/** One packed state: its key (`<char>/<what>`), its frame in its file, its box on the plate, its fill (`masked`: m7). */
+export type PackedItem<F = string> = { readonly key: string; readonly frame: Box; readonly at: Box; readonly fill: F; readonly masked?: true };
 /** One shot file: its even size (at most 2048 per side) and its states. */
 export type PackedFile<F = string> = { readonly id: AssetId; readonly w: number; readonly h: number; readonly items: readonly PackedItem<F>[] };
 
@@ -239,6 +239,10 @@ function fileItems<F>(layers: ShotLayers<F>): Map<AssetId, Item<F>[]> {
       add(sheet, `${m.char}/${m.rest}/blink.half`, rest.blink.half);
       add(sheet, `${m.char}/${m.rest}/blink.closed`, rest.blink.closed);
       add(sheet, `${m.char}/${m.rest}/accent`, rest.accent);
+      if (rest.joint !== undefined) {
+        add(sheet, `${m.char}/${m.rest}/joint.half`, rest.joint.half);
+        add(sheet, `${m.char}/${m.rest}/joint.closed`, rest.joint.closed);
+      }
     }
   }
   for (const m of layers.cast) {
@@ -249,6 +253,10 @@ function fileItems<F>(layers: ShotLayers<F>): Map<AssetId, Item<F>[]> {
         add(face, `${m.char}/${x}/blink.half`, e.blink.half);
         add(face, `${m.char}/${x}/blink.closed`, e.blink.closed);
         add(face, `${m.char}/${x}/accent`, e.accent);
+        if (e.joint !== undefined) {
+          add(face, `${m.char}/${x}/joint.half`, e.joint.half);
+          add(face, `${m.char}/${x}/joint.closed`, e.joint.closed);
+        }
       }
       if (e.speaks) {
         if (e.mouths === null) {
@@ -292,7 +300,18 @@ function packFile<F>(id: AssetId, items: readonly Item<F>[]): PackedFile<F> {
   if (w > MAX_SIDE || h > MAX_SIDE) {
     throw new Error(`invariant: ${id} packs into ${MAX_SIDE} × ${MAX_SIDE} (${w} × ${h})`);
   }
-  return { id, w, h, items: items.map(({ key, layer }) => ({ key, frame: frames.get(key) ?? [0, 0, 0, 0], at: layer.box, fill: layer.fill })) };
+  return {
+    id,
+    w,
+    h,
+    items: items.map(({ key, layer }) => ({
+      key,
+      frame: frames.get(key) ?? [0, 0, 0, 0],
+      at: layer.box,
+      fill: layer.fill,
+      ...(layer.masked === true ? { masked: true as const } : {}),
+    })),
+  };
 }
 
 /** Every file of a shot's layer set, packed: the sheet (a shot with a cast), its face and talk files. */
@@ -322,7 +341,7 @@ export function packShot<F>(layers: ShotLayers<F>): ShotPack<F> {
   const members = new Map<string, Member>();
   for (const file of files.values()) {
     for (const item of file.items) {
-      members.set(item.key, { file: file.id, frame: item.frame, at: item.at });
+      members.set(item.key, { file: file.id, frame: item.frame, at: item.at, ...(item.masked === true ? { masked: true as const } : {}) });
     }
   }
   const get = (key: string): Member => {
@@ -339,6 +358,7 @@ export function packShot<F>(layers: ShotLayers<F>): ShotPack<F> {
         blink: { half: get(`${key}/blink.half`), closed: get(`${key}/blink.closed`) },
         talk: e.speaks && e.mouths !== null ? e.mouths.map((_, i) => get(`${key}/talk/${i}`)) : [],
         accent: get(`${key}/accent`),
+        ...(e.joint === undefined ? {} : { joint: { half: get(`${key}/joint.half`), closed: get(`${key}/joint.closed`) } }),
       };
       return [x, { layer: x === m.rest ? null : get(`${key}/layer`), motion }] as const;
     });
@@ -370,6 +390,23 @@ export function loopAtlas(id: AssetId, hue: number, frames: number): PackedFile 
 /** The manifest's loop rig of an atlas (§4.5 `LoopRig`): its frames' boxes in frame order, and the fps. */
 export function loopRig(atlas: PackedFile<unknown>, fps: number): LoopRig {
   return { frames: atlas.items.map((it) => it.frame), fps };
+}
+
+/**
+ * A `src` shot's packed file as RGBA px: each state's px at its frame, transparent between them (the packer's gaps and
+ * the label floor), what the encoder gets (§4.2 step 7).
+ */
+export function shotFileRaster(file: PackedFile<Raster>): Raster {
+  const data = new Uint8Array(file.w * file.h * 4);
+  for (const { key, frame, fill } of file.items) {
+    if (fill.w !== frame[2] || fill.h !== frame[3]) {
+      throw new Error(`invariant: ${file.id} ${key}: a state's px are its frame's size (${fill.w} × ${fill.h} in ${frame.join(', ')})`);
+    }
+    for (let y = 0; y < fill.h; y++) {
+      data.set(fill.data.subarray(y * fill.w * 4, (y + 1) * fill.w * 4), ((frame[1] + y) * file.w + frame[0]) * 4);
+    }
+  }
+  return { data, w: file.w, h: file.h };
 }
 
 /** A packed file's placeholder SVG: its states as flat rects, then its id as its label. */

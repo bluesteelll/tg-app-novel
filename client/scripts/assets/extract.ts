@@ -335,6 +335,57 @@ function rectLayer(st: State): Layer<Raster> {
   return { box: st.box, fill: st.px };
 }
 
+/** A masked layer's alpha by Chebyshev distance to its own diff (§4.2 step 7b, cut D7): dilated 2 px, feathered 2 px. */
+const MASKED_ALPHA: readonly number[] = [255, 255, 255, 170, 85, 0];
+
+/**
+ * §4.2 step 7b (m7), a masked layer: the state's px with alpha 255 within 2 px (Chebyshev) of its own diff, 170 at 3,
+ * 85 at 4 and 0 beyond. Outside its diff a state equals its base, so the feathered edge composites exact px.
+ */
+function maskedLayer(st: State): Layer<Raster> {
+  const [w, h] = [st.box[2], st.box[3]];
+  const dist = new Uint8Array(w * h).fill(5);
+  st.diff.forEach((bit, i) => {
+    if (bit === 1) {
+      dist[i] = 0;
+    }
+  });
+  // Breadth first over the 8-neighbourhood: level k is Chebyshev distance k.
+  for (let k = 1; k <= 4; k++) {
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (dist[y * w + x] !== 5) {
+          continue;
+        }
+        let near = false;
+        for (let dy = -1; dy <= 1 && !near; dy++) {
+          for (let dx = -1; dx <= 1 && !near; dx++) {
+            const [nx, ny] = [x + dx, y + dy];
+            near = nx >= 0 && ny >= 0 && nx < w && ny < h && dist[ny * w + nx] === k - 1;
+          }
+        }
+        if (near) {
+          dist[y * w + x] = k;
+        }
+      }
+    }
+  }
+  const data = Uint8Array.from(st.px.data);
+  dist.forEach((d, i) => {
+    data[i * 4 + 3] = MASKED_ALPHA[d] ?? 0;
+  });
+  return { box: st.box, fill: { data, w, h }, masked: true };
+}
+
+/** `base` with a state's px over its box: the state's own variant, exactly, once R3 holds (its diff is inside its box). */
+function composite(base: Raster, st: State, crop: Box): Raster {
+  const data = Uint8Array.from(base.data);
+  for (let y = 0; y < st.box[3]; y++) {
+    data.set(st.px.data.subarray(y * st.box[2] * 4, (y + 1) * st.box[2] * 4), ((y + st.box[1] + crop[1]) * base.w + st.box[0] + crop[0]) * 4);
+  }
+  return { data, w: base.w, h: base.h };
+}
+
 /**
  * §4.2 step 4, a cut-out: the original's px with alpha = the mask's value, trimmed to the mask's px inside the crop and
  * evened; null when no px of the mask is inside the crop.
@@ -616,15 +667,15 @@ export async function extractShot(input: ExtractInput): Promise<Result<Extracted
       return v === null ? null : { file, v, d: changed(v, base) };
     };
     const settle = (cut: Cut, at: Box): State | null => (registers(cut.file, c, cut.d, head.near, at) ? stateOf(cut.file, cut.v, cut.d, at, crop) : null);
-    /** A pair of states (blink, talk) against `base`, in one box: the bbox of both diffs, dilated 4. */
-    const pair = async (files: readonly [string, string], base: Raster, who: string): Promise<readonly [State, State] | null> => {
-      const [a, b] = [await variant(files[0], base, who), await variant(files[1], base, who)];
-      if (a === null || b === null) {
-        return null;
-      }
+    /** Two states (blink, talk, joint) in one box: the bbox of both diffs, dilated 4. */
+    const settlePair = (a: Cut, b: Cut): readonly [State, State] | null => {
       const at = box(join(a.d.bounds, b.d.bounds));
       const [sa, sb] = [settle(a, at), settle(b, at)];
       return sa === null || sb === null ? null : [sa, sb];
+    };
+    const pair = async (files: readonly [string, string], base: Raster, who: string): Promise<readonly [State, State] | null> => {
+      const [a, b] = [await variant(files[0], base, who), await variant(files[1], base, who)];
+      return a === null || b === null ? null : settlePair(a, b);
     };
     const single = async (file: string, base: Raster, who: string): Promise<State | null> => {
       const a = await variant(file, base, who);
@@ -636,16 +687,69 @@ export async function extractShot(input: ExtractInput): Promise<Result<Extracted
       readonly accent: State;
       readonly mouths: readonly [State, State] | null;
       readonly speaks: boolean;
+      readonly joint?: readonly [State, State];
     };
     const plans = new Map<ExprId, Plan>();
+    /** The states some expression masks (O4: a reused rest state masked anywhere is masked everywhere: one `Layer`). */
+    const masked = new Set<State>();
+    /** Joint states by accent, then blink: a reused blink with a reused accent copies the rest's (null: asked for). */
+    const joints = new Map<State, Map<State, readonly [State, State] | null>>();
+    /**
+     * R2 and step 7b on one expression's motion layers (`base`: its own raster, the plate for the rest). Boxes that overlap
+     * make both layers masked; diffs that still touch: blink and accent need the joint states, cut against the accent
+     * state (`<c>[.<x>].accent.half|closed.png`); a talk pair has no joint form. Null when R2 refuses the expression.
+     */
+    const apart = async (x: ExprId, p: Plan, base: Raster): Promise<Plan | null> => {
+      let ok = true;
+      let joint: readonly [State, State] | null | undefined;
+      if (overlap(p.blink[0].box, p.accent.box)) {
+        for (const st of [...p.blink, p.accent]) {
+          masked.add(st);
+        }
+        if (touch(p.blink, [p.accent])) {
+          const known = joints.get(p.accent)?.get(p.blink[0]);
+          const restPair = plans.get(rest);
+          const tag = restPair !== undefined && p.blink === restPair.blink && p.accent === restPair.accent ? c : `${c}.${x}`;
+          const files = [`${tag}.accent.half.png`, `${tag}.accent.closed.png`] as const;
+          if (known !== undefined) {
+            joint = known;
+          } else {
+            const [a, b] = [sized(files[0], await input.load(files[0])), sized(files[1], await input.load(files[1]))];
+            if (a === null || b === null) {
+              problems.push(`${s}: ${c} in ${x}: the blink and accent diffs are within 4 px (R2: draw the joint states ${files[0]} and ${files[1]}; ${whoNeeds(c, x)})`);
+              joint = null;
+            } else {
+              const accentState = composite(base, p.accent, crop);
+              joint = settlePair({ file: files[0], v: a, d: changed(a, accentState) }, { file: files[1], v: b, d: changed(b, accentState) });
+            }
+            joints.set(p.accent, (joints.get(p.accent) ?? new Map<State, readonly [State, State] | null>()).set(p.blink[0], joint));
+          }
+          ok = joint !== null;
+        }
+      }
+      const talk = p.speaks ? p.mouths : null;
+      for (const [bn, b] of [['blink', p.blink], ['accent', [p.accent]]] as const) {
+        if (talk !== null && overlap(talk[0].box, b[0].box)) {
+          for (const st of [...talk, ...b]) {
+            masked.add(st);
+          }
+          if (touch(talk, b)) {
+            problems.push(`${s}: ${c} in ${x}: the talk and ${bn} diffs are within 4 px (R2: motion layers used together never touch; ${whoNeeds(c, x)})`);
+            ok = false;
+          }
+        }
+      }
+      return !ok ? null : joint === undefined || joint === null ? p : { ...p, joint };
+    };
     const restSpeaks = needed.get(rest) ?? false;
     // R4 (a), (d): the rest blink pair and accent of every face member, the rest mouths where the rest is spoken.
     const blink = await pair([`${c}.half.png`, `${c}.closed.png`], plate, whoNeeds(c, rest));
     const accent = await single(`${c}.accent.png`, plate, whoNeeds(c, rest));
     const mouths = restSpeaks ? await pair([`${c}.talk1.png`, `${c}.talk2.png`], plate, whoNeeds(c, rest, true)) : null;
     const restDone = blink !== null && accent !== null && (!restSpeaks || mouths !== null);
-    if (restDone) {
-      plans.set(rest, { layer: null, blink, accent, mouths, speaks: restSpeaks });
+    const restPlan = restDone ? await apart(rest, { layer: null, blink, accent, mouths, speaks: restSpeaks }, plate) : null;
+    if (restPlan !== null) {
+      plans.set(rest, restPlan);
     }
     for (const x of [...needed.keys()].filter((e) => e !== rest).sort()) {
       // R4 (b): the expression itself; without the rest's boxes only its presence can be told.
@@ -674,32 +778,15 @@ export async function extractShot(input: ExtractInput): Promise<Result<Extracted
         : mouths === null || own(mouths[0].box)
           ? await pair([`${c}.${x}.talk1.png`, `${c}.${x}.talk2.png`], cut.v, whoNeeds(c, x, true))
           : mouths;
-      if (xBlink !== null && xAccent !== null && (!speaks || xMouths !== null)) {
-        plans.set(x, { layer, blink: xBlink, accent: xAccent, mouths: xMouths, speaks });
+      const planned = xBlink === null || xAccent === null || (speaks && xMouths === null) ? null : await apart(x, { layer, blink: xBlink, accent: xAccent, mouths: xMouths, speaks }, cut.v);
+      if (planned !== null) {
+        plans.set(x, planned);
       }
     }
-    // R2: the motion layers each expression uses together, pairwise; boxes that overlap are tested by their diffs.
-    for (const [x, p] of plans) {
-      const talk = p.speaks ? p.mouths : null;
-      const pairs: (readonly [string, readonly State[], string, readonly State[]])[] = [
-        ['blink', p.blink, 'accent', [p.accent]],
-        ...(talk === null
-          ? []
-          : [
-              ['talk', talk, 'blink', p.blink] as const,
-              ['talk', talk, 'accent', [p.accent]] as const,
-            ]),
-      ];
-      for (const [an, a, bn, b] of pairs) {
-        if (overlap(a[0]?.box ?? [0, 0, 0, 0], b[0]?.box ?? [0, 0, 0, 0]) && touch(a, b)) {
-          problems.push(`${s}: ${c} in ${x}: the ${an} and ${bn} diffs are within 4 px (R2: motion layers used together never touch; ${whoNeeds(c, x)})`);
-        }
-      }
-    }
-    // Each state is cut once, so a reused rest state stays the rest's own `Layer` wherever it is used.
+    // Each state is cut once, after every expression's R2, so a reused rest state stays the rest's own `Layer`.
     const cutStates = new Map<State, Layer<Raster>>();
     const layerOf = (st: State): Layer<Raster> => {
-      const known = cutStates.get(st) ?? rectLayer(st);
+      const known = cutStates.get(st) ?? (masked.has(st) ? maskedLayer(st) : rectLayer(st));
       cutStates.set(st, known);
       return known;
     };
@@ -712,6 +799,7 @@ export async function extractShot(input: ExtractInput): Promise<Result<Extracted
           accent: layerOf(p.accent),
           mouths: p.mouths === null ? null : [layerOf(p.mouths[0]), layerOf(p.mouths[1])],
           speaks: p.speaks,
+          ...(p.joint === undefined ? {} : { joint: { half: layerOf(p.joint[0]), closed: layerOf(p.joint[1]) } }),
         },
       ]),
     );
