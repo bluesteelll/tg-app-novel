@@ -22,7 +22,7 @@ import type { VisualCommand } from '../scene/executor.ts';
 import type { StatEvent } from '../stats/reporter.ts';
 import { decodeChapterMeta } from '../story/catalog.ts';
 import type { AssetEntry, AssetManifest, LoadedChapter, Result } from '../story/catalog.ts';
-import type { AssetId, BgId, ChapterId, KnotName, PropId, PuzzleLocalId, Rect, SectionId, StagingSnapshot } from '../story/staging.ts';
+import type { AssetId, BgId, CgId, ChapterId, KnotName, PropId, PuzzleLocalId, Rect, SectionId, StagingSnapshot } from '../story/staging.ts';
 import { createExploreView } from '../ui/explore-view.svelte.ts';
 import type { ExploreLayerProps } from '../ui/explore-view.svelte.ts';
 import { createPuzzleView } from '../ui/puzzle-view.svelte.ts';
@@ -1410,6 +1410,20 @@ test("yields: a dispatch's state change shows before its knot job", async () => 
   // starts over the changed picture (B-001).
   expect(r.log.slice(mark).filter((l) => l.startsWith('apply:') || l.startsWith('enter:'))).toEqual(['apply:bg,props|', 'enter:after']);
   expect(r.stage().props).toContainEqual(placed('bulb_lit', BUST, 'hall.bulb'));
+  r.yields.dispose();
+});
+
+test('yields: a state change under a close-up applies no batch', async () => {
+  const r = rig({ world: edgeWorld() });
+  await inHall(r);
+  // No shipped path changes a room's picture under a close-up (a puzzle's end awaits the close-up's fade-out before it
+  // dispatches), so the stage is put there directly: the guard leaves the props to the room batch that shows the room.
+  await r.host.apply([{ kind: 'cg', cg: 'drawer_close' as CgId, t: 'cut', ms: 0 }], []);
+  const mark = r.batches.length;
+  r.yields.layer.ontap(key('hall.switch'));
+  await settle();
+  expect(r.yields.world().examined).toContain('hall.switch');
+  expect(r.batches.slice(mark)).toEqual([]);
   r.yields.dispose();
 });
 
