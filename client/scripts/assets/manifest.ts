@@ -23,6 +23,10 @@ import type {
 import type { AssetId, ChapterId } from '../../src/story/staging.ts';
 import { decodeWorldSource } from '../../src/world/decode.ts';
 import type { StoryUsage } from '../story/emit.ts';
+import type { ShotUsage } from '../story/shots/usage.ts';
+import { decodeLook, decodeShotRigs } from '../../src/story/shots.ts';
+import { decodeLoops } from '../../src/story/shots.ts';
+import type { LookIndex, LoopRig, ShotRig } from '../../src/story/shots.ts';
 import type { EncodedHalf, HalfAsk } from './encode.ts';
 import { imageKind } from './placeholder.ts';
 
@@ -69,19 +73,24 @@ export type RoomUsage = {
   closeups: readonly AssetId[];
   neighbours: readonly AssetId[];
 };
+/** What one chapter names: ink tags, its world, and (with a shot list) every shot file it needs (shots §2.6). */
+export type ChapterUsage = { ink: readonly AssetId[]; world: readonly AssetId[]; shots?: readonly AssetId[] };
 export type AssetUsage = {
-  chapters: Readonly<Record<ChapterId, { ink: readonly AssetId[]; world: readonly AssetId[] }>>;
+  chapters: Readonly<Record<ChapterId, ChapterUsage>>;
   rooms: Readonly<Record<RoomKey, RoomUsage>>;
 };
 
 /**
  * The asset usage of a decoded usage.json: a chapter's `worldAssets` and the top-level `rooms`, which the story tool
- * writes only for a chapter with a world (LW3, D4). A pre-LW3 usage.json has neither: no world art, no rooms.
+ * writes only for a chapter with a world (LW3, D4). A pre-LW3 usage.json has neither: no world art, no rooms. With a
+ * decoded build/shots.json (shots §2.5), each chapter also lists its shot files (`shots`); without one the value has
+ * no such field, so the one-argument view is the one it always was.
  */
-export function assetUsage(u: StoryUsage): AssetUsage {
-  const chapters: Record<string, { ink: readonly AssetId[]; world: readonly AssetId[] }> = {};
+export function assetUsage(u: StoryUsage, shots: ShotUsage | null = null): AssetUsage {
+  const chapters: Record<string, ChapterUsage> = {};
   for (const [ch, c] of Object.entries(u.chapters)) {
-    chapters[ch] = { ink: c.assets, world: c.worldAssets ?? [] };
+    const files = shots === null ? undefined : (Object.hasOwn(shots.chapters, ch) ? shots.chapters[ch as ChapterId]?.assets : undefined) ?? [];
+    chapters[ch] = { ink: c.assets, world: c.worldAssets ?? [], ...(files === undefined ? {} : { shots: files }) };
   }
   return { chapters: chapters as AssetUsage['chapters'], rooms: u.rooms ?? {} }; // keys are usage.json's chapter ids
 }
@@ -98,10 +107,15 @@ export function worldHasSections(raw: unknown): Result<boolean, string[]> {
   return { ok: true, value: Object.keys(world.value.sections).length > 0 };
 }
 
-/** Every asset a chapter names (ink ∪ world), sorted, once each. */
+/** Every asset a chapter names (ink ∪ world ∪ its shot files), sorted, once each. */
 export function chapterAssets(usage: AssetUsage, ch: ChapterId): AssetId[] {
   const c = usage.chapters[ch];
-  return c === undefined ? [] : [...new Set([...c.ink, ...c.world])].sort();
+  return c === undefined ? [] : [...new Set([...c.ink, ...c.world, ...(c.shots ?? [])])].sort();
+}
+
+/** A shot's packed file (`sheet/`, `face/`, `talk/`): made by this tool from build/shots.json, never a catalog entry. */
+export function isShotFile(id: AssetId): boolean {
+  return id.startsWith('sheet/') || id.startsWith('face/') || id.startsWith('talk/');
 }
 
 export type Tier = 'public' | 'paid' | 'unused';
@@ -137,6 +151,10 @@ export function halfAsk(id: AssetId, tier: Tier): HalfAsk {
     case 'bg':
     case 'cg':
     case 'prop':
+    case 'sheet':
+    case 'face':
+    case 'talk':
+      // A shot file's packer keeps every side even (shots §4.2 step 7), so its half is an exact halving.
       return 'any';
     case 'char':
       return { canvasH: CHAR_HALF_CANVAS_H };
@@ -176,16 +194,20 @@ function own<T>(record: Readonly<Record<string, T>>, key: string | undefined): T
   return key !== undefined && Object.hasOwn(record, key) ? record[key] : undefined;
 }
 
-/** The catalog entry of an image id (own properties only), or undefined. */
+/** The placeholder catalog entry of an image id (own properties only), or undefined (a bg `src` form too: SH3c's). */
 export function catalogImage(c: AssetCatalog, id: AssetId): CatalogImage | undefined {
   const [ns, a, b] = id.split('/');
   switch (ns) {
-    case 'bg':
-      return own(c.bg, a);
+    case 'bg': {
+      const bg = own(c.bg, a);
+      return bg !== undefined && 'placeholder' in bg ? bg : undefined;
+    }
     case 'cg':
       return own(c.cg, a);
-    case 'prop':
-      return own(c.prop, a);
+    case 'prop': {
+      const prop = own(c.prop, a);
+      return prop !== undefined && 'placeholder' in prop ? prop : undefined;
+    }
     case 'cover':
       return own(c.cover, a);
     case 'char': {
@@ -204,8 +226,9 @@ export function catalogAudio(c: AssetCatalog, id: AssetId): CatalogAudio | undef
 }
 
 /**
- * Every catalog id's tier. Errors: a listed chapter usage.json lacks (or the reverse: the story tool's output is stale)
- * and a used id the catalog does not define.
+ * Every catalog id's tier, and every shot file's a chapter lists (shots §2.5: each one asset, tiered by `tierOf`).
+ * Errors: a listed chapter usage.json lacks (or the reverse: the story tool's output is stale) and a used id the catalog
+ * does not define (a shot file aside).
  */
 export function tierAll(
   catalog: AssetCatalog,
@@ -220,7 +243,9 @@ export function tierAll(
   for (const ch of Object.keys(usage.chapters).filter((id) => !listed.has(id))) {
     issues.push(`server/content/build/usage.json names ${ch}, which story/chapters.json does not list (run the story tool)`);
   }
-  const known = new Set<string>(catalogIds(catalog));
+  const shotFiles = Object.values(usage.chapters).flatMap((c) => (c.shots ?? []).filter(isShotFile));
+  const ids = [...new Set([...catalogIds(catalog), ...shotFiles])].sort();
+  const known = new Set<string>(ids);
   for (const c of chapters) {
     for (const id of chapterAssets(usage, c.id).filter((a) => !known.has(a))) {
       issues.push(`${c.id} uses ${id}, which assets/catalog.json does not define`);
@@ -229,7 +254,7 @@ export function tierAll(
   if (issues.length > 0) {
     return { ok: false, error: issues };
   }
-  return { ok: true, value: new Map(catalogIds(catalog).map((id) => [id, tierOf(id, usage, chapters)])) };
+  return { ok: true, value: new Map(ids.map((id) => [id, tierOf(id, usage, chapters)])) };
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -311,6 +336,25 @@ function json(value: unknown): Uint8Array {
   return new TextEncoder().encode(`${JSON.stringify(value, null, 2)}\n`);
 }
 
+/** What a chapter manifest carries of its shots (shots §4.5), built by the asset tool from build/shots.json. */
+export type ChapterShotKeys = {
+  /** One rig per shot the chapter shows. */
+  readonly shots: Readonly<Record<string, ShotRig>>;
+  /** Its windows; null without one. */
+  readonly look: LookIndex | null;
+};
+
+/** Every member file a manifest's rigs name, in the manifest's own order. */
+function memberFiles(v: unknown): string[] {
+  if (Array.isArray(v)) {
+    return v.flatMap(memberFiles);
+  }
+  if (typeof v !== 'object' || v === null) {
+    return [];
+  }
+  return Object.entries(v).flatMap(([k, x]) => (k === 'file' && typeof x === 'string' ? [x] : memberFiles(x)));
+}
+
 function sortedRecord<T>(entries: Iterable<readonly [string, T]>): Record<string, T> {
   return Object.fromEntries([...entries].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
 }
@@ -318,13 +362,18 @@ function sortedRecord<T>(entries: Iterable<readonly [string, T]>): Record<string
 /**
  * The full output plan of the asset tool for tiers from `tierAll` and every non-unused asset encoded. Throws on a bug:
  * a paid file planned under client/, a free chapter's manifest holding an /api/ URL, a planned manifest its own
- * decoder refuses. Deterministic for the same inputs and bytes.
+ * decoder refuses, a rig member or look image that is not one of its chapter's entries. Deterministic for the same
+ * inputs and bytes. `shots`: per chapter, the rigs and look its manifest carries; `loops`: every loop prop's rig, by
+ * its atlas id, carried by each chapter that uses the prop (key order chapterId, assets, shots, look, loops; each
+ * present only when non-empty).
  */
 export function planAssets(input: {
   chapters: readonly ChapterListEntry[];
   usage: AssetUsage;
   tiers: ReadonlyMap<AssetId, Tier>;
   encoded: ReadonlyMap<AssetId, Encoded>;
+  shots?: ReadonlyMap<string, ChapterShotKeys>;
+  loops?: ReadonlyMap<AssetId, LoopRig>;
 }): AssetPlan {
   const files = new Map<string, Uint8Array>();
   const put = (path: string, bytes: Uint8Array): void => {
@@ -400,7 +449,28 @@ export function planAssets(input: {
         return [id, entry] as const;
       }),
     );
-    const manifest = { chapterId: ch.id, assets };
+    const keys = input.shots?.get(ch.id);
+    const shots = keys !== undefined && Object.keys(keys.shots).length > 0 ? keys.shots : undefined;
+    const look = keys?.look ?? undefined;
+    const loops = sortedRecord(
+      Object.keys(assets).flatMap((id) => {
+        const rig = input.loops?.get(id as AssetId); // a key of `assets`: an asset id
+        return rig === undefined ? [] : [[id.slice(id.indexOf('/') + 1), rig] as const];
+      }),
+    );
+    const manifest = {
+      chapterId: ch.id,
+      assets,
+      ...(shots === undefined ? {} : { shots }),
+      ...(look === undefined ? {} : { look }),
+      ...(Object.keys(loops).length === 0 ? {} : { loops }),
+    };
+    // A rig member or look image outside the chapter's own entries would make the runtime fetch a file the manifest
+    // does not describe (and, for a gated one, a free chapter name it): the story tool's `assets` and its windows agree.
+    const stray = [...memberFiles(shots), ...(look?.images ?? [])].find((id) => !Object.hasOwn(assets, id));
+    if (stray !== undefined) {
+      throw new Error(`invariant: every shot file and look image of ${ch.id}'s manifest is one of its assets entries; ${stray} is not`);
+    }
     const text = JSON.stringify(manifest);
     if (!ch.paid && text.includes(`"${GATED_URL}`)) {
       throw new Error(`invariant: free chapter ${ch.id}'s manifest holds no /api/ URL (principle 0)`);
@@ -408,6 +478,15 @@ export function planAssets(input: {
     const decoded = decodeAssetManifest(JSON.parse(text));
     if (!decoded.ok) {
       throw new Error(`invariant: the planned ${ch.id} manifest decodes: ${JSON.stringify(decoded.error)}`);
+    }
+    // The runtime's own decoders (src/story/shots.ts) take what the tool writes.
+    const rigs = shots === undefined ? null : decodeShotRigs(decoded.value.shots);
+    const windows = look === undefined ? null : decodeLook(decoded.value.look);
+    const loopRigs = Object.keys(loops).length === 0 ? null : decodeLoops(decoded.value.loops);
+    for (const d of [rigs, windows, loopRigs]) {
+      if (d !== null && !d.ok) {
+        throw new Error(`invariant: the planned ${ch.id} manifest's shot keys decode: ${d.error.join('; ')}`);
+      }
     }
     put(ch.paid ? `${ASSET_OUT.paidChapters}/${ch.id}/assets.json` : `${ASSET_OUT.free}/${ch.id}.assets.json`, json(manifest));
   }

@@ -1,12 +1,15 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
+import { main as assetTool } from './assets.ts';
+import type { Encoders } from './assets.ts';
+import { synthWav } from './assets/synth.ts';
 import { FIXED_SECTIONS, scanBuild, scanFiles } from './scan-dist.ts';
 import type { ScanFile, Section } from './scan-dist.ts';
 import { loadSections, main } from './scan-dist.ts';
@@ -110,7 +113,7 @@ describe('scan files', () => {
     });
   }
 
-  for (const needle of ['__TG_DEV_MOCK__', '__tgMock', '/dev/launch', '__novelDebug', '__novelChunks']) {
+  for (const needle of ['__TG_DEV_MOCK__', '__tgMock', '/dev/launch', '__novelDebug', '__novelChunks', 'data-cues-played', 'data-cue-orphans', 'data-cue-fallbacks']) {
     test(`scan: dev canary ${needle} fails`, () => {
       const js = text('assets/index-a.js', `console.info(${JSON.stringify(needle)});`);
       expect(scanFiles([INDEX, js], SECTIONS)).toContainEqual({
@@ -281,6 +284,8 @@ describe('scan build', () => {
 // add (L3b's paid sections can only add findings); the exit-0 proof is the real `npm run build`.
 
 const CLIENT_DIR = fileURLToPath(new URL('..', import.meta.url));
+/** A spawned node run under a loaded machine (another lane building) can outlast vitest's 5 s default. */
+const CLI_TIMEOUT_MS = 30_000;
 const SCRIPT = fileURLToPath(new URL('./scan-dist.ts', import.meta.url));
 
 function runCli(
@@ -309,12 +314,12 @@ describe('scan cli', () => {
     expect(r.status, r.stdout + r.stderr).toBe(1);
     expect(r.stdout).toMatch(/^scan: fingerprint dev-canary "__TG_DEV_MOCK__" in assets\/index-a\.js/m);
     expect(r.stdout).toMatch(/^scan: [1-9]\d* findings$/m);
-  });
+  }, CLI_TIMEOUT_MS);
 
   test('scan: cli exits 1 on a missing dist', () => {
     const r = runCli(join(tmp, 'no-such-dist'));
     expect(r.status, r.stdout + r.stderr).toBe(1);
-  });
+  }, CLI_TIMEOUT_MS);
 
   test('scan: cli runs through a linked path', () => {
     // Node runs the main module from its realpath while argv[1] keeps the caller's spelling (a junction, macOS's
@@ -328,7 +333,7 @@ describe('scan cli', () => {
     } finally {
       unlinkSync(link); // the link only: afterEach's recursive delete never meets a way into client/scripts
     }
-  });
+  }, CLI_TIMEOUT_MS);
 
   test('scan: cli runs through a linked path under preserve-symlinks-main', () => {
     // With the flag (also reachable through NODE_OPTIONS) Node keeps the link's spelling in import.meta.url while the
@@ -342,7 +347,7 @@ describe('scan cli', () => {
     } finally {
       unlinkSync(link); // the link only: afterEach's recursive delete never meets a way into client/scripts
     }
-  });
+  }, CLI_TIMEOUT_MS);
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -444,7 +449,7 @@ describe('scan fingerprints', () => {
   test('scan: paid line fingerprints are scanned in dist', () => {
     expect(setup()).toEqual([]);
     const { sections } = loadSections(join(repo, 'client'));
-    expect(sections.map((s) => `${s.name}(${s.needles.length})`)).toEqual(['compiler(2)', 'dev-canary(5)', 'paid-lines(2)', 'paid-texts(1)']);
+    expect(sections.map((s) => `${s.name}(${s.needles.length})`)).toEqual(['compiler(2)', 'dev-canary(8)', 'paid-lines(2)', 'paid-texts(1)']);
     const js = text('assets/index-a.js', `const a=${JSON.stringify(`ch2.archive.v5c1 ${TEXT}`)};export{a};`);
     const findings = scanFiles([INDEX, js], sections);
     expect(findings).toContainEqual({ kind: 'fingerprint', file: 'assets/index-a.js', section: 'paid-lines', needle: 'ch2.archive.v5c1', via: 'plain' });
@@ -558,7 +563,7 @@ describe('scan assets', () => {
     // Control: a dist with public art only passes, and every section is counted.
     const clean = scanDist('dist-e', { 'assets/bg-cafe-0a1b2c3d.avif': Uint8Array.from([1, 2, 3]) });
     expect(clean.code, clean.lines.join('\n')).toBe(0);
-    expect(clean.lines).toContainEqual(expect.stringMatching(/ sections compiler\(2\) dev-canary\(5\) paid-lines\(1\) paid-texts\(1\) paid-asset-files\(3\)$/));
+    expect(clean.lines).toContainEqual(expect.stringMatching(/ sections compiler\(2\) dev-canary\(8\) paid-lines\(1\) paid-texts\(1\) paid-asset-files\(3\)$/));
   });
 
   test('scan: an old-hash copy of a paid-only asset fails', () => {
@@ -643,6 +648,205 @@ describe('scan assets', () => {
     // A valid asset fingerprint file next to an empty line-ID section: each section is checked on its own.
     setup({ 'server/content/build/fingerprints.lines.json': JSON.stringify({ ...LINES, lineIds: [] }) });
     expect(reasons()).toEqual(['line-ids-empty', 'chapter-ids-missing']);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// SH3a: the shot files (shots §2.6, §4.5). With story/shots.json present, the paid-only set also holds build/shots.json's
+// files, derived here; and every dist file of a shot namespace must parse to an id some free chapter names.
+
+describe('scan shots', () => {
+  const CH1 = { id: 'ch1', entry: 'ch1/main.ink', paid: false, next: 'ch2' };
+  const CH2 = { id: 'ch2', entry: 'ch2/main.ink', paid: true, productId: 'chapter:ch2', next: null };
+  const LINES = { lineIds: ['ch2.cafe.a001'], texts: ['Архив пахнет старой бумагой и пылью.'] };
+  const CATALOG = {
+    bg: { cafe: { placeholder: { hue: 18 } }, archive: { placeholder: { hue: 45 } } },
+    chars: { ally: { exprs: { neutral: { placeholder: { hue: 200 } }, smile: { placeholder: { hue: 160 } } } } },
+    cg: {},
+    bgm: {},
+    sfx: {},
+    prop: {},
+    cover: {},
+  };
+  const LIST = { locs: [{ id: 'cafe', light: null }], shots: [{ id: 'cafe', loc: 'cafe', frame: 'close', cast: [{ char: 'ally', view: 'face', rest: 'neutral' }] }] };
+  const USAGE = { chapters: { ch1: { assets: ['bg/cafe'], knots: {} }, ch2: { assets: ['bg/archive', 'bg/cafe'], knots: {} } } };
+  /** `cafe` with ally in `faces` (`[expr, talk]`) as build/shots.json has it; `archive` implied and cast-less. */
+  const cafe = (ch: string, faces: ReadonlyArray<readonly [string, boolean]>): unknown => ({
+    cast: { ally: { view: 'face', rest: 'neutral', figure: false } },
+    faces: { ally: faces.map(([expr, talk], i) => ({ expr, talk, lines: [`${ch}.cafe.a00${i + 1}`] })) },
+    frame: 'close',
+    loc: 'cafe',
+    camTargets: [],
+    motions: [],
+    room: null,
+  });
+  const chapter = (shots: Record<string, unknown>, assets: string[]): unknown => ({ shots, assets, look: {}, entry: {}, sprites: false });
+  /**
+   * Free ch1 shows `cafe` with ally speaking at rest, paid ch2 with ally smiling and speaking, and ch2 alone `archive`
+   * (a paid-only file outside the shot family). Public: bg/cafe, sheet/cafe, talk/cafe/ally/neutral; paid-only:
+   * face/cafe/ally/smile, talk/cafe/ally/smile, bg/archive.
+   */
+  const SHOTS = {
+    chapters: {
+      ch1: chapter({ cafe: cafe('ch1', [['neutral', true]]) }, ['bg/cafe', 'sheet/cafe', 'talk/cafe/ally/neutral']),
+      ch2: chapter(
+        { archive: { cast: {}, faces: {}, frame: 'wide', loc: 'archive', camTargets: [], motions: [], room: null }, cafe: cafe('ch2', [['smile', true]]) },
+        ['bg/archive', 'bg/cafe', 'face/cafe/ally/smile', 'sheet/cafe', 'talk/cafe/ally/smile'],
+      ),
+    },
+  };
+  const ASSETS_FILE = 'server/content/build/fingerprints.assets.json';
+  /** Distinct bytes per SVG and the root's size, plus a half pair for every image (the planner's tier gate decides). */
+  const HALVING: Encoders = {
+    encodeImage: (svg) => {
+      const text = new TextDecoder().decode(svg);
+      const size = (attr: string): number => Number(new RegExp(String.raw`^<svg\b[^>]*\s${attr}="(\d+)"`).exec(text)?.[1]);
+      const tag = createHash('sha256').update(svg).digest('hex').slice(0, 16);
+      const [w, h] = [size('width'), size('height')];
+      return Promise.resolve({
+        avif: enc.encode(`avif ${tag}`),
+        webp: enc.encode(`webp ${tag}`),
+        w,
+        h,
+        half: { avif: enc.encode(`half avif ${tag}`), webp: enc.encode(`half webp ${tag}`), w: w / 2, h: h / 2 },
+      });
+    },
+    synthWav,
+  };
+  let repo = '';
+
+  function put(rel: string, content: string): void {
+    const abs = join(repo, ...rel.split('/'));
+    mkdirSync(dirname(abs), { recursive: true });
+    writeFileSync(abs, content);
+  }
+
+  /** The repository after `npm run story && npm run assets`: the story tool's outputs by hand, the asset tool run. */
+  async function build(): Promise<void> {
+    const inputs: Record<string, unknown> = {
+      'story/chapters.json': [CH1, CH2],
+      'story/shots.json': LIST,
+      'assets/catalog.json': CATALOG,
+      'server/content/build/usage.json': USAGE,
+      'server/content/build/shots.json': SHOTS,
+      'server/content/build/fingerprints.lines.json': LINES,
+      'server/content/chapters/ch2/story.json': { inkVersion: 21 },
+    };
+    for (const [rel, value] of Object.entries(inputs)) {
+      put(rel, JSON.stringify(value));
+    }
+    mkdirSync(join(repo, 'client'), { recursive: true });
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      expect(await assetTool([], repo, HALVING)).toBe(0);
+    } finally {
+      log.mockRestore();
+    }
+  }
+
+  /** A dist of index.html plus `files`; main() on it: the exit code and the printed lines. */
+  function scanDist(name: string, files: Readonly<Record<string, string | Uint8Array>>): { code: number; lines: string[] } {
+    const dist = join(repo, name);
+    mkdirSync(join(dist, 'assets'), { recursive: true });
+    writeFileSync(join(dist, 'index.html'), new TextDecoder().decode(INDEX.bytes));
+    for (const [rel, content] of Object.entries(files)) {
+      writeFileSync(join(dist, rel), content);
+    }
+    const lines: string[] = [];
+    const log = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => void lines.push(args.map(String).join(' ')));
+    try {
+      return { code: main(['--dist', dist], join(repo, 'client')), lines };
+    } finally {
+      log.mockRestore();
+    }
+  }
+
+  /** The asset tool's public files, as vite copies them into dist/assets/. */
+  function publicDist(name: string): { code: number; lines: string[]; names: string[] } {
+    const pub = join(repo, 'client', 'public', 'assets');
+    const names = readdirSync(pub).sort();
+    const files = Object.fromEntries(names.map((n) => [`assets/${n}`, readFileSync(join(pub, n))]));
+    return { ...scanDist(name, files), names };
+  }
+
+  const findingLines = (lines: readonly string[]): string[] => lines.filter((l) => !/^scan: \d+ (files|findings)/.test(l));
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'scan-shots-'));
+  });
+  afterEach(() => {
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  test('scan-dist: a paid-only face file without a fingerprint fails closed', async () => {
+    await build();
+    expect(loadSections(join(repo, 'client')).findings).toEqual([]);
+    // The face file's fingerprints dropped (written before it became paid-only): it is owed by build/shots.json.
+    const fpa = JSON.parse(readFileSync(join(repo, ...ASSETS_FILE.split('/')), 'utf8')) as { files: Array<{ asset: string }> };
+    expect(fpa.files.filter((f) => f.asset === 'face/cafe/ally/smile')).toHaveLength(4);
+    put(ASSETS_FILE, JSON.stringify({ files: fpa.files.filter((f) => f.asset !== 'face/cafe/ally/smile') }));
+    expect(loadSections(join(repo, 'client')).findings).toEqual([
+      expect.objectContaining({ kind: 'fingerprints', reason: 'asset-files-missing', detail: expect.stringMatching(/^face\/cafe\/ally\/smile has no \.avif, \.webp file /) as string }),
+    ]);
+    // Without build/shots.json's chapters the paid-only set cannot be derived: that is a finding, never a pass.
+    put('server/content/build/shots.json', JSON.stringify({ chapters: { ch1: (SHOTS.chapters as Record<string, unknown>)['ch1'] } }));
+    expect(loadSections(join(repo, 'client')).findings).toContainEqual(expect.objectContaining({ reason: 'shots-missing', detail: expect.stringContaining('ch2') as string }));
+    rmSync(join(repo, 'server', 'content', 'build', 'shots.json'));
+    expect(loadSections(join(repo, 'client')).findings).toContainEqual(expect.objectContaining({ reason: 'shots-missing' }));
+  });
+
+  test('scan-dist: a paid-only shot file in dist fails by the whitelist', async () => {
+    await build();
+    // Ids no free chapter names and no fingerprint lists (an expression of a later build, an odd segment count).
+    const other = Uint8Array.from([7, 7, 7]);
+    const r = scanDist('dist', {
+      'assets/face-cafe-ally-frown-0123abcd.avif': other,
+      'assets/talk-cafe-ally-frown-half-89abcdef.webp': other,
+      'assets/face-cafe-ally-0a1b2c3d.avif': other,
+    });
+    expect(r.code, r.lines.join('\n')).toBe(1);
+    expect(findingLines(r.lines).sort()).toEqual([
+      'scan: paid-asset face-cafe-ally-0a1b2c3d.avif in assets/face-cafe-ally-0a1b2c3d.avif (via whitelist)',
+      'scan: paid-asset face/cafe/ally/frown in assets/face-cafe-ally-frown-0123abcd.avif (via whitelist)',
+      'scan: paid-asset talk/cafe/ally/frown in assets/talk-cafe-ally-frown-half-89abcdef.webp (via whitelist)',
+    ]);
+    // Control: a public shot file's name passes.
+    expect(scanDist('dist-c', { 'assets/sheet-cafe-0123abcd.avif': other }).code).toBe(0);
+  });
+
+  test('scan-dist: a paid-only face file that the asset tool tiered public fails', async () => {
+    await build();
+    // The asset tool's public directory as the dist: green while its tiering and this scan agree on every file.
+    const r = publicDist('dist');
+    expect(findingLines(r.lines), r.lines.join('\n')).toEqual([]);
+    expect(r.code).toBe(0);
+  });
+
+  test('scan-dist: every public shot file passes the whitelist', async () => {
+    await build();
+    const r = publicDist('dist');
+    // Non-vacuity: the dist holds the public shot files, full and half, each format.
+    const shotFiles = r.names.filter((n) => /^(sheet|face|talk)-/.test(n));
+    expect(shotFiles.filter((n) => !n.includes('-half-'))).toHaveLength(4);
+    expect(shotFiles.filter((n) => n.includes('-half-'))).toHaveLength(4);
+    expect(shotFiles.map((n) => n.replace(/-[0-9a-f]{8}\.(avif|webp)$/, '.$1')).sort()).toEqual([
+      'sheet-cafe-half.avif',
+      'sheet-cafe-half.webp',
+      'sheet-cafe.avif',
+      'sheet-cafe.webp',
+      'talk-cafe-ally-neutral-half.avif',
+      'talk-cafe-ally-neutral-half.webp',
+      'talk-cafe-ally-neutral.avif',
+      'talk-cafe-ally-neutral.webp',
+    ]);
+    expect(r.lines.filter((l) => l.includes('(via whitelist)'))).toEqual([]);
+    expect(r.code, r.lines.join('\n')).toBe(0);
+    // The whitelist is armed on this repository: the same bytes under an id no free chapter names fail.
+    const talk = shotFiles.find((n) => n.startsWith('talk-cafe-ally-neutral-') && n.endsWith('.avif') && !n.includes('-half-'));
+    expect(talk).toBeDefined();
+    const renamed = (talk ?? '').replace('neutral', 'frown');
+    const copy = scanDist('dist-x', { [`assets/${renamed}`]: readFileSync(join(repo, 'client', 'public', 'assets', talk ?? '')) });
+    expect(copy.lines).toContainEqual(`scan: paid-asset talk/cafe/ally/frown in assets/${renamed} (via whitelist)`);
   });
 });
 
@@ -830,6 +1034,17 @@ describe('scan worlds', () => {
     const found = scanFiles([INDEX, text('assets/index-a.js', `const l=${leak};export{l};`)], sections).flatMap((f) => (f.kind === 'fingerprint' ? [`${f.section} ${f.needle}`] : []));
     expect(found).toEqual(expect.arrayContaining([`hint-texts ${HINT_RU}`, `hint-texts ${HINT_EN}`, `paid-world-texts ${PAID_TEXT}`, `paid-world-ids ${PAID_ID}`]));
   });
+
+  test("scan: a paid world text in a free chapter's ink comment keeps its needle", () => {
+    // An ink comment is never displayed or compiled (carry Q9): a paid text quoted in a free chapter's comment is not
+    // public, so its needle stays, line and block comments alike.
+    const ink = `// ${PAID_TEXT}\n${PUBLIC_INK}/* ${PAID_TEXT} */\n`;
+    const { sections, findings } = setup({ 'story/ch1/main.ink': ink, 'story/ch2/world.json': world('ch2', { id: PAID_ID, ru: PAID_TEXT }, []) });
+    expect(findings).toEqual([]);
+    expect(section(sections, 'paid-world-texts')).toEqual([PAID_TEXT]);
+    const found = scanFiles([INDEX, text('assets/index-a.js', `const p=${JSON.stringify(PAID_TEXT)};export{p};`)], sections);
+    expect(found).toContainEqual({ kind: 'fingerprint', file: 'assets/index-a.js', section: 'paid-world-texts', needle: PAID_TEXT, via: 'plain' });
+  });
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -921,7 +1136,7 @@ describe('scan meta', () => {
     expect(dirty.lines).toContainEqual(`scan: fingerprint meta-texts ${JSON.stringify(TITLE.ru)} in assets/index-a.js (via plain)`);
     const clean = scanDist('dist-clean', { 'assets/index-a.js': `const s=${JSON.stringify(SHORT.ru)};export{s};` });
     expect(clean.code, clean.lines.join('\n')).toBe(0);
-    expect(clean.lines).toContainEqual(expect.stringMatching(/ sections compiler\(2\) dev-canary\(5\) meta-texts\(4\)$/));
+    expect(clean.lines).toContainEqual(expect.stringMatching(/ sections compiler\(2\) dev-canary\(8\) meta-texts\(4\)$/));
   });
 
   test('scan: a meta text inside JSON.parse fails the scan', () => {
@@ -945,7 +1160,7 @@ describe('scan meta', () => {
     expect(dist.lines).toContainEqual(`scan: fingerprint meta-texts ${JSON.stringify(quoted.en)} in assets/index-a.js (via js-string)`);
     // One finding per text: the escapes the section holds as needles add none.
     expect(dist.lines).toContainEqual('scan: 2 findings');
-    expect(dist.lines).toContainEqual(expect.stringMatching(/ sections compiler\(2\) dev-canary\(5\) meta-texts\(6\)$/));
+    expect(dist.lines).toContainEqual(expect.stringMatching(/ sections compiler\(2\) dev-canary\(8\) meta-texts\(6\)$/));
   });
 
   test('scan: empty meta fingerprint set fails', () => {

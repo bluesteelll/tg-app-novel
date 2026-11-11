@@ -6,22 +6,33 @@ import { ASSET_ID_RE } from '../../src/story/catalog.ts';
 import type { CatalogImage } from '../../src/story/catalog.ts';
 import type { AssetId } from '../../src/story/staging.ts';
 
-/** The image namespaces; an asset id's first segment. */
-export type ImageKind = 'bg' | 'cg' | 'char' | 'prop' | 'cover';
+/** The image namespaces; an asset id's first segment. `sheet`, `face`, `talk`: a shot's packed files (shots §2.6). */
+export type ImageKind = 'bg' | 'cg' | 'char' | 'prop' | 'cover' | 'sheet' | 'face' | 'talk';
 
-/** PP "Budgets" (bg/cg exactly 1080×2048, sprites 768×1536), PUZZLES-PLAN X11 (props), STORIES-PLAN Y15 (covers). */
+const IMAGE_KINDS: readonly ImageKind[] = ['bg', 'cg', 'char', 'prop', 'cover', 'sheet', 'face', 'talk'];
+
+/** The packing bound of a shot file (principle 4: no side over 2048 px); the packer sizes each file inside it. */
+const PACKED = { w: 2048, h: 2048 } as const;
+
+/**
+ * PP "Budgets" (bg/cg exactly 1080×2048, sprites 768×1536), PUZZLES-PLAN X11 (props), STORIES-PLAN Y15 (covers), shots
+ * §4.4 (sheet, face and talk files: at most 2048 per side, budget.ts `DIMS`).
+ */
 export const CANONICAL_SIZE: Readonly<Record<ImageKind, { readonly w: number; readonly h: number }>> = {
   bg: { w: 1080, h: 2048 },
   cg: { w: 1080, h: 2048 },
   char: { w: 768, h: 1536 },
   prop: { w: 512, h: 512 },
   cover: { w: 360, h: 640 },
+  sheet: PACKED,
+  face: PACKED,
+  talk: PACKED,
 };
 
-/** The image namespace of an asset id, or null for audio (`bgm/`, `sfx/`). */
+/** The image namespace of an asset id, or null for audio (`bgm/`, `sfx/`): the one image-kind predicate. */
 export function imageKind(id: AssetId): ImageKind | null {
   const ns = id.slice(0, id.indexOf('/'));
-  return ns === 'bg' || ns === 'cg' || ns === 'char' || ns === 'prop' || ns === 'cover' ? ns : null;
+  return IMAGE_KINDS.find((k) => k === ns) ?? null;
 }
 
 function hsl(hue: number, saturation: number, lightness: number): string {
@@ -75,11 +86,47 @@ function shapes(kind: ImageKind, id: AssetId, hue: number, w: number, h: number)
         label(id, cx, cx + Math.round(font / 3), font, hsl(hue, 30, 95)),
       ];
     }
+    case 'sheet':
+    case 'face':
+    case 'talk':
+      // A packed shot file is drawn by renderPacked from its members; here only its label on a transparent canvas.
+      return [label(id, cx, Math.round(h / 2), font, hsl(hue, 30, 50))];
     default: {
       const unreachable: never = kind;
       return unreachable;
     }
   }
+}
+
+/** The smallest label font a packed file draws, px: big enough to render pixels, so two files never share bytes. */
+export const PACKED_LABEL_MIN_FONT = 6;
+/** The label's width per character, in ems (a sans-serif averages about 0.55). */
+const LABEL_EM_PER_CHAR = 0.6;
+
+/** The packed file's label font: as large as its canvas allows, never under the minimum (the packer sizes for it). */
+export function packedLabelFont(id: string, w: number, h: number): number {
+  return Math.max(PACKED_LABEL_MIN_FONT, Math.min(Math.floor(h / 2), Math.floor(w / (LABEL_EM_PER_CHAR * id.length)), 96));
+}
+
+/** The narrowest even canvas that holds `id`'s label at the minimum font (the packer's lower bound on a file's width). */
+export function packedLabelWidth(id: string): number {
+  return 2 * Math.ceil((LABEL_EM_PER_CHAR * PACKED_LABEL_MIN_FONT * id.length) / 2);
+}
+
+/**
+ * A packed shot file's placeholder SVG (shots §4.2 step 8): each member a flat rect in its fill at its frame, on a
+ * transparent canvas, then the file's own id as its label (L5 M3: two files of one geometry and hue differ in bytes).
+ */
+export function renderPacked(
+  id: AssetId,
+  w: number,
+  h: number,
+  members: readonly { readonly frame: readonly [number, number, number, number]; readonly fill: string }[],
+): string {
+  const rects = members.map(({ frame: [x, y, mw, mh], fill }) => `<rect x="${x}" y="${y}" width="${mw}" height="${mh}" fill="${fill}"/>`);
+  const font = packedLabelFont(id, w, h);
+  const body = [...rects, label(id, Math.round(w / 2), Math.round(h / 2 + font / 3), font, 'hsl(0 0% 96%)')].join('');
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${body}</svg>`;
 }
 
 /** The placeholder SVG of one catalog image, and its pixel size (the root's width/height, 72 dpi in sharp). */

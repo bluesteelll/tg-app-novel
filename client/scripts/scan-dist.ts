@@ -18,9 +18,12 @@ import { decodeAssetFingerprints } from './assets/manifest.ts';
 import type { AssetFingerprint } from './assets/manifest.ts';
 import { decodeChapterList, decodeLineFingerprints, decodeStoryUsage } from './story/emit.ts';
 import type { StoryUsage } from './story/emit.ts';
-import { unescapeInk } from './story/classify.ts';
+import { stripComments, unescapeInk } from './story/classify.ts';
 import { decodeEnTable } from './story/locales.ts';
 import { META_FILE } from './story/meta.ts';
+import { SHOTS_FILE } from './story/shots/list.ts';
+import { SHOT_USAGE_FILE, decodeShotUsage } from './story/shots/usage.ts';
+import type { ShotUsage } from './story/shots/usage.ts';
 import { STORIES_FILE } from './story/stories.ts';
 import { TEXT_NEEDLE_MIN_CODE_POINTS, WORLD_FILE, decodeWorldFile, textNeedles, worldFingerprints, worldLines } from './story/world.ts';
 
@@ -49,6 +52,11 @@ export type FingerprintReason =
   | 'paid-world-empty'
   /** story/meta.json or story/stories.json present and not JSON: the meta needles cannot be built. */
   | 'meta-unreadable'
+  /**
+   * story/shots.json present, and server/content/build/shots.json does not decode or lacks a listed chapter: the
+   * paid-only shot files and the public set of the dist whitelist cannot be derived (shots §4.5).
+   */
+  | 'shots-missing'
   /** A story of story/stories.json declares an ending, and no meta-text needle was derived from story/meta.json. */
   | 'meta-empty';
 export type Finding =
@@ -59,9 +67,11 @@ export type Finding =
   /**
    * A paid asset file in dist: under its own name, as the same bytes under another name, inlined as a data: URI, or
    * (`prefix`) under its asset's file-name shape, full or half, with another hash, an older build's copy; `name` is the
-   * paid file's name, except for `prefix`, where it is the asset id.
+   * paid file's name, except for `prefix`, where it is the asset id. With a shot list, (`whitelist`) a file of the
+   * `bg`, `sheet`, `face` or `talk` shape whose id no free chapter names (`name`: the id), or that names no id (`name`:
+   * the file's own name).
    */
-  | { kind: 'paid-asset'; file: string; name: string; via: 'name' | 'hash' | 'data-uri' | 'prefix' }
+  | { kind: 'paid-asset'; file: string; name: string; via: 'name' | 'hash' | 'data-uri' | 'prefix' | 'whitelist' }
   /**
    * Q60 R1: a file that makes the page preload: a JS chunk whose `__vite__mapDeps` list holds `count` files (0: a list
    * the scan cannot read), or index.html with `count` `<link rel=modulepreload>` tags.
@@ -76,8 +86,12 @@ export type Finding =
 export const FIXED_SECTIONS: readonly Section[] = [
   // inkjs/full only: the runtime never contains these (R4 §2.1, measured).
   { name: 'compiler', needles: ['Compilation failed', 'Recursive INCLUDE detected'] },
-  // The Telegram dev mock and debug hooks are compiled out of production builds.
-  { name: 'dev-canary', needles: ['__TG_DEV_MOCK__', '__tgMock', '/dev/launch', '__novelDebug', '__novelChunks'] },
+  // The Telegram dev mock and debug hooks are compiled out of production builds; so are the cue stage's debug
+  // attributes (written only under `__TG_MOCK__`, cues/stage).
+  {
+    name: 'dev-canary',
+    needles: ['__TG_DEV_MOCK__', '__tgMock', '/dev/launch', '__novelDebug', '__novelChunks', 'data-cues-played', 'data-cue-orphans', 'data-cue-fallbacks'],
+  },
 ];
 
 /** Nested data: URIs (a data-URI stylesheet holding a data-URI image) are decoded this deep. */
@@ -362,21 +376,92 @@ export function scanPaidFiles(files: readonly ScanFile[], paid: readonly AssetFi
   return findings;
 }
 
+/** A file name of a shot-family namespace as the asset tool writes it (manifest.ts `assetFileName`). */
+const SHOT_FAMILY_FILE = /^(bg|sheet|face|talk)-(.+)-[0-9a-f]{8}\.(?:avif|webp)$/;
+/** Segments of an id per shot-family namespace (catalog.ts `ASSET_ID_RE`): the fixed count that makes a name parse. */
+const SHOT_FAMILY_SEGMENTS: Readonly<Record<string, number>> = { bg: 1, sheet: 1, face: 3, talk: 3 };
+const ID_SEGMENT = /^[a-z][a-z0-9_]*$/;
+
+/**
+ * The asset id a shot-family file name holds, its own id's or its half's (one trailing `half` segment over the
+ * namespace's count); null for a name of that shape that parses to no id; undefined for any other name.
+ */
+function shotFamilyId(base: string): string | null | undefined {
+  const m = SHOT_FAMILY_FILE.exec(base);
+  if (m === null) {
+    return undefined;
+  }
+  const [, ns = '', rest = ''] = m;
+  const n = SHOT_FAMILY_SEGMENTS[ns] ?? 0;
+  const segs = rest.split('-');
+  const own = segs.length === n + 1 && segs[n] === 'half' ? segs.slice(0, n) : segs;
+  return own.length === n && own.every((x) => ID_SEGMENT.test(x)) ? `${ns}/${own.join('/')}` : null;
+}
+
+/**
+ * Shots §4.5, the dist whitelist: every file of a shot-family name in dist must parse, by its namespace's own segment
+ * count, to an id some free chapter names (`publicIds`, from the story tool's outputs, never from the asset tool's
+ * tiering); anything else is a paid or unaccounted file shipped public.
+ */
+export function scanShotFiles(files: readonly ScanFile[], publicIds: ReadonlySet<string>): Finding[] {
+  const findings: Finding[] = [];
+  for (const file of files) {
+    const base = file.path.slice(file.path.lastIndexOf('/') + 1);
+    const id = shotFamilyId(base);
+    if (id !== undefined && (id === null || !publicIds.has(id))) {
+      findings.push({ kind: 'paid-asset', file: file.path, name: id ?? base, via: 'whitelist' });
+    }
+  }
+  return findings;
+}
+
 const LINES_FILE = 'server/content/build/fingerprints.lines.json';
 const USAGE_FILE = 'server/content/build/usage.json';
 const ASSETS_FILE = 'server/content/build/fingerprints.assets.json';
 const AUDIO_ID = /^(?:bgm|sfx)\//;
 
 /**
- * Asset ids a paid chapter names and no free chapter names, from the story tool's usage.json and the chapter list:
- * computed here, never through the asset tool's own tiering or files, so a tiering fault there cannot also switch
- * this check off (PROTOTYPE-PLAN "Paid-content protection").
+ * Every asset id the free (`paid` false) or the paid chapters name: usage.json's ink and world assets, and with a shot
+ * list build/shots.json's shot files (shots §2.6).
  */
-function paidOnlyAssets(usage: StoryUsage, chapters: readonly ChapterListEntry[]): string[] {
-  const named = (paid: boolean): Set<string> =>
-    new Set(chapters.filter((c) => c.paid === paid).flatMap((c) => [...(usage.chapters[c.id]?.assets ?? []), ...(usage.chapters[c.id]?.worldAssets ?? [])]));
-  const free = named(false);
-  return [...named(true)].filter((id) => !free.has(id)).sort();
+function namedBy(usage: StoryUsage, shots: ShotUsage | null, chapters: readonly ChapterListEntry[], paid: boolean): Set<string> {
+  return new Set(
+    chapters
+      .filter((c) => c.paid === paid)
+      .flatMap((c) => [...(usage.chapters[c.id]?.assets ?? []), ...(usage.chapters[c.id]?.worldAssets ?? []), ...(shots?.chapters[c.id]?.assets ?? [])]),
+  );
+}
+
+/**
+ * Asset ids a paid chapter names and no free chapter names, from the story tool's usage.json (and build/shots.json)
+ * and the chapter list: computed here, never through the asset tool's own tiering or files, so a tiering fault there
+ * cannot also switch this check off (PROTOTYPE-PLAN "Paid-content protection").
+ */
+function paidOnlyAssets(usage: StoryUsage, shots: ShotUsage | null, chapters: readonly ChapterListEntry[]): string[] {
+  const free = namedBy(usage, shots, chapters, false);
+  return [...namedBy(usage, shots, chapters, true)].filter((id) => !free.has(id)).sort();
+}
+
+/**
+ * With story/shots.json present, build/shots.json decoded and holding every listed chapter; else `shots-missing`
+ * (fail closed) and null. Without a shot list, null and nothing to check.
+ */
+function shotUsageOf(repo: string, chapters: readonly ChapterListEntry[], fail: (reason: FingerprintReason, detail: string) => void): ShotUsage | null {
+  if (!existsSync(path.join(repo, ...SHOTS_FILE.split('/')))) {
+    return null;
+  }
+  const raw = readRepoJson(repo, SHOT_USAGE_FILE);
+  const decoded = raw.ok ? decodeShotUsage(raw.value) : { ok: false as const, error: [raw.why] };
+  if (!decoded.ok) {
+    fail('shots-missing', `${SHOTS_FILE} exists; ${SHOT_USAGE_FILE}: ${decoded.error.join('; ')}`);
+    return null;
+  }
+  const lacking = chapters.filter((c) => !Object.hasOwn(decoded.value.chapters, c.id)).map((c) => c.id);
+  if (lacking.length > 0) {
+    fail('shots-missing', `${SHOTS_FILE} exists; ${SHOT_USAGE_FILE} has no chapter ${lacking.join(', ')} (written before it was listed?)`);
+    return null;
+  }
+  return decoded.value;
 }
 
 /** A repo JSON file, parsed; else why not ('missing', 'not JSON: …'). */
@@ -532,8 +617,9 @@ function worldSections(repo: string, chapters: readonly ChapterListEntry[], fail
   const publicTexts: string[] = [];
   for (const dir of [...free, 'common']) {
     for (const rel of filesUnder(repo, `story/${dir}`, '.ink')) {
-      const ink = readRepoText(repo, rel) ?? '';
-      publicTexts.push(ink, unescapeInk(ink));
+      // Comments are never compiled or shown (carry Q9): a paid text quoted in one is not public.
+      const code = stripComments(readRepoText(repo, rel) ?? '');
+      publicTexts.push(code, unescapeInk(code));
     }
   }
   for (const ch of free) {
@@ -616,9 +702,17 @@ function worldSections(repo: string, chapters: readonly ChapterListEntry[], fail
  * Fail closed: every reason the paid sections could be empty or stale is a finding, never a silent pass (an
  * unreadable chapter list included). L5: while a paid-only asset exists (or the asset fingerprint file is present),
  * `fingerprints.assets.json` must decode, list files, and cover every paid-only asset's files (an image: its AVIF and
- * WebP); its names become the `paid-asset-files` section and its entries `paidFiles`, for `scanPaidFiles`.
+ * WebP); its names become the `paid-asset-files` section and its entries `paidFiles`, for `scanPaidFiles`. Shots
+ * §4.5: with story/shots.json present, build/shots.json must decode and hold every listed chapter; its shot files join
+ * the paid-only set, and `publicIds` (every id a free chapter names) arms `scanShotFiles`; null without a shot list,
+ * or when its inputs cannot be read (then a finding says so).
  */
-export function loadSections(clientRoot: string): { sections: Section[]; findings: Finding[]; paidFiles: AssetFingerprint[] } {
+export function loadSections(clientRoot: string): {
+  sections: Section[];
+  findings: Finding[];
+  paidFiles: AssetFingerprint[];
+  publicIds: ReadonlySet<string> | null;
+} {
   const repo = path.resolve(clientRoot, '..');
   const sections: Section[] = [...FIXED_SECTIONS];
   const findings: Finding[] = [];
@@ -629,20 +723,28 @@ export function loadSections(clientRoot: string): { sections: Section[]; finding
   const listed = readRepoJson(repo, 'story/chapters.json');
   if (!listed.ok) {
     fail('chapters-unreadable', `story/chapters.json: ${listed.why}`);
-    return { sections, findings, paidFiles };
+    return { sections, findings, paidFiles, publicIds: null };
   }
   const chapters = decodeChapterList(listed.value);
   if (!chapters.ok) {
     fail('chapters-unreadable', `story/chapters.json: ${chapters.error.map((i) => `${i.path}: ${i.detail}`).join('; ')}`);
-    return { sections, findings, paidFiles };
+    return { sections, findings, paidFiles, publicIds: null };
   }
   // The world sections first: a free-only story's hints are paid content too (X7, M21); so are its meta texts (M7).
   const worlds = worldSections(repo, chapters.value, fail);
   sections.push(...worlds.world);
   sections.push(...metaSections(repo, fail));
+  const shotMode = existsSync(path.join(repo, ...SHOTS_FILE.split('/')));
+  const shots = shotUsageOf(repo, chapters.value, fail);
+  const usage = readRepoJson(repo, USAGE_FILE);
+  const decodedUsage = usage.ok ? decodeStoryUsage(usage.value) : { ok: false as const, error: [usage.why] };
+  const publicIds = shots !== null && decodedUsage.ok ? namedBy(decodedUsage.value, shots, chapters.value, false) : null;
   const paid = chapters.value.filter((c) => c.paid);
   if (paid.length === 0) {
-    return { sections, findings, paidFiles };
+    if (shotMode && !decodedUsage.ok) {
+      fail('usage-missing', `${SHOTS_FILE} exists; ${USAGE_FILE}: ${decodedUsage.error.join('; ')}`);
+    }
+    return { sections, findings, paidFiles, publicIds };
   }
   const declared = `paid ${paid.map((c) => c.id).join(', ')} declared`;
   const lines = readRepoJson(repo, LINES_FILE);
@@ -662,8 +764,6 @@ export function loadSections(clientRoot: string): { sections: Section[]; finding
     }
   }
   sections.push(...worlds.paidEn);
-  const usage = readRepoJson(repo, USAGE_FILE);
-  const decodedUsage = usage.ok ? decodeStoryUsage(usage.value) : { ok: false as const, error: [usage.why] };
   if (!decodedUsage.ok) {
     fail('usage-missing', `${declared}; ${USAGE_FILE}: ${decodedUsage.error.join('; ')}`);
   }
@@ -674,7 +774,7 @@ export function loadSections(clientRoot: string): { sections: Section[]; finding
       fail('paid-story-missing', `${rel} is ${existsSync(abs) ? 'empty' : 'missing'}`);
     }
   }
-  const paidOnly = decodedUsage.ok ? paidOnlyAssets(decodedUsage.value, chapters.value) : [];
+  const paidOnly = decodedUsage.ok ? paidOnlyAssets(decodedUsage.value, shots, chapters.value) : [];
   const assets = readRepoJson(repo, ASSETS_FILE);
   // Read while it is needed, or whenever it is there: a present file that does not decode is never ignored.
   if (paidOnly.length > 0 || assets.ok || assets.why !== 'missing') {
@@ -700,7 +800,7 @@ export function loadSections(clientRoot: string): { sections: Section[]; finding
       }
     }
   }
-  return { sections, findings, paidFiles };
+  return { sections, findings, paidFiles, publicIds };
 }
 
 export function formatFinding(f: Finding): string {
@@ -767,9 +867,15 @@ export function main(argv: readonly string[], clientRoot: string): number {
     console.error(`scan: ${distDir} does not exist; run vite build first`);
     return 1;
   }
-  const { sections, findings: vacuity, paidFiles } = loadSections(clientRoot);
+  const { sections, findings: vacuity, paidFiles, publicIds } = loadSections(clientRoot);
   const files = walkFiles(distDir).map((rel): ScanFile => ({ path: rel, bytes: readFileSync(path.join(distDir, rel)) }));
-  const findings = [...vacuity, ...scanFiles(files, sections), ...scanPaidFiles(files, paidFiles), ...scanBuild(files)];
+  const findings = [
+    ...vacuity,
+    ...scanFiles(files, sections),
+    ...scanPaidFiles(files, paidFiles),
+    ...(publicIds === null ? [] : scanShotFiles(files, publicIds)),
+    ...scanBuild(files),
+  ];
   const summary = sections.map((s) => `${s.name}(${s.needles.length})`).join(' ');
   console.log(`scan: ${files.length} files; sections ${summary}`);
   for (const finding of findings) {
