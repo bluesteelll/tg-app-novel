@@ -1359,6 +1359,60 @@ test("yields: a dispatch's cues carry its visual diff", async () => {
   r.yields.dispose();
 });
 
+/**
+ * The state batch's edges (§6.4), on a world of their own so `visualWorld` and its `roomFor` expectations stay as they
+ * are: in the hall, a look at the bell lights the bulb and runs a knot, a look at the switch lights the lamp, and the
+ * door stands ajar once the den was visited. The den shares the hall's bg.
+ */
+function edgeWorld(): WorldPublic {
+  const raw = {
+    format: 1,
+    items: {},
+    docs: {},
+    puzzles: {},
+    sections: {
+      manor: {
+        start: 'hall',
+        bgm: null,
+        rooms: {
+          hall: {
+            bg: 'hall',
+            title: txt('Hall'),
+            onEnter: [],
+            hotspots: [
+              exit('to_den', 'den'),
+              look('switch'),
+              { id: 'bell', kind: 'look', rect: RECT, label: txt('bell'), look: txt('seen bell'), then: [{ story: 'after' }] },
+              object('lamp', 'lamp', LAMP, { states: { lit: { prop: 'lamp_lit' } }, is: onceSeen('hall.switch', 'lit') }),
+              object('bulb', 'bulb', BUST, { states: { lit: { prop: 'bulb_lit' } }, is: onceSeen('hall.bell', 'lit') }),
+              object('door', 'door', VASE, { states: { ajar: { prop: 'door_ajar' } }, is: [{ when: { visited: 'den' }, state: 'ajar' }] }),
+            ],
+          },
+          den: { bg: 'hall', title: txt('Den'), onEnter: [], hotspots: [exit('to_hall', 'hall'), object('mirror', 'mirror', MIRROR)] },
+        },
+      },
+    },
+  };
+  const r = decodeWorldSource(raw);
+  if (!r.ok) {
+    throw new Error(`invariant: the edge fixture world decodes: ${JSON.stringify(r.error)}`);
+  }
+  return { ...toPublic(r.value), mods: r.value.mods, version: '5555555555555555' };
+}
+
+test("yields: a dispatch's state change shows before its knot job", async () => {
+  const r = rig({ world: edgeWorld() });
+  await inHall(r);
+  const mark = r.log.length;
+  r.yields.layer.ontap(key('hall.bell'));
+  await settle();
+  // The look lit the bulb and queued its knot: the state batch runs ahead of the dispatch's own jobs, so the knot
+  // starts over the changed picture (B-001).
+  expect(r.log.slice(mark).filter((l) => l.startsWith('apply:') || l.startsWith('enter:'))).toEqual(['apply:bg,props|', 'enter:after']);
+  expect(r.stage().props).toContainEqual(placed('bulb_lit', BUST, 'hall.bulb'));
+  r.yields.dispose();
+});
+
 test("yields: a lock puzzle's end plays its fact cues at the lock", async () => {
   const r = rig({ world: cueWorld(), attempts: [{ ok: true, value: { correct: true, solved: true, attemptsLeft: null, spent: false } }] });
   await inHall(r);
