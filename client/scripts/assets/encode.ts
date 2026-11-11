@@ -9,7 +9,7 @@ import type { Sharp } from 'sharp';
 import type { Result, Trim } from '../../src/story/catalog.ts';
 import type { AssetId } from '../../src/story/staging.ts';
 import { ALPHA_TOLERANCE, alphaWorst } from './extract.ts';
-import type { AlphaWorst } from './extract.ts';
+import type { AlphaWorst, DepthSource } from './extract.ts';
 import type { Raster } from './shots.ts';
 
 /** Principle 4: the texture limit. */
@@ -235,6 +235,32 @@ export async function encodeAvif(px: Raster, q: number): Promise<Uint8Array> {
 /** One tier's WebP at q80 (alpha lossless: sharp's `alphaQuality` default 100). */
 export async function encodeWebp(px: Raster): Promise<Uint8Array> {
   return sameSize(await rawInput(px).webp(WEBP).toBuffer({ resolveWithObject: true }), px, 'WebP');
+}
+
+/** A source file's header facts (cut D5, D12): its format, size, sample depth (`uchar`, `ushort`, ...) and channels. */
+export type ImageFacts = { readonly format: string; readonly w: number; readonly h: number; readonly depth: string; readonly channels: number };
+
+/** `bytes`' header facts; null when sharp reads no image there (an input problem, never a throw). */
+export async function imageFacts(bytes: Uint8Array): Promise<ImageFacts | null> {
+  try {
+    const m = await sharp(bytes).metadata();
+    return { format: m.format, w: m.width, h: m.height, depth: m.depth, channels: m.channels };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * depth.png's samples (cut D12): an 8- or 16-bit greyscale PNG (any alpha dropped) read through sharp's `grey16`, so an
+ * 8-bit map arrives as v × 257 and both read against 65535 (`raw({ depth: 'ushort' })` alone keeps 8-bit values).
+ */
+export async function decodeDepth(bytes: Uint8Array): Promise<DepthSource> {
+  const { data, info } = await sharp(bytes).removeAlpha().toColourspace('grey16').raw({ depth: 'ushort' }).toBuffer({ resolveWithObject: true });
+  if (info.channels !== 1 || data.length !== info.width * info.height * 2) {
+    throw new Error(`invariant: grey16 gives one 16-bit channel, got ${info.channels} channels in ${data.length} bytes`);
+  }
+  // A copy: the buffer's offset need not be 2-aligned; the samples are in the platform's order, as libvips wrote them.
+  return { data: new Uint16Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.length)), w: info.width, h: info.height, max: 65535 };
 }
 
 /** Any image sharp reads (PNG, AVIF, WebP), as 8-bit RGBA. */

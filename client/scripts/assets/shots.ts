@@ -1,7 +1,8 @@
-// The asset tool's shot pipeline, pure side (docs/plans/shots §2.6, §4.2 steps 5-8, §4.5; lane SH3a): a shot's layer
-// set synthesized from the story tool's needs (placeholders: no `src` before SH3c), the files it packs into (§2.6: the
-// sheet, a face file per non-rest expression, a talk file per spoken one), their placeholder SVGs, and what a chapter
-// manifest carries of them (its rigs and its look). No node:*, no sharp: the encoders and IO stay in assets.ts.
+// The asset tool's shot pipeline, pure side (docs/plans/shots §2.6, §4.2 steps 5-8, §4.5; lanes SH3a, SH3c): a
+// placeholder shot's layer set synthesized from the story tool's needs (a `src` shot's is extract.ts's), the files either
+// kind packs into (§2.6: the sheet, a face file per non-rest expression, a talk file per spoken one), their placeholder
+// SVGs or raster px, and what a chapter manifest carries of them (its rigs and its look). No node:*, no sharp: the
+// encoders and IO stay in assets.ts.
 import type { AssetCatalog } from '../../src/story/catalog.ts';
 import type { Box, CastRig, FaceRig, Frame, LookIndex, LoopRig, Member, MotionSet, ShotRig, ShotWindow } from '../../src/story/shots.ts';
 import type { AssetId, BgId, ChapterId, CharId, ExprId } from '../../src/story/staging.ts';
@@ -221,7 +222,13 @@ export type PackedFile<F = string> = { readonly id: AssetId; readonly w: number;
 
 type Item<F> = { readonly key: string; readonly layer: Layer<F> };
 
-/** Which states each file holds (§2.6), in a fixed order: the sheet, then each member's face and talk files. */
+/** A plane's packed key: `plane/<index>`, never a member's (whose second segment is `hair`, `figure` or an id). */
+const planeKey = (i: number): string => `plane/${i}`;
+
+/**
+ * Which states each file holds (§2.6), in a fixed order: the sheet (each member's hair, figure and rest motion, then a
+ * `src` shot's planes), then each member's face and talk files.
+ */
 function fileItems<F>(layers: ShotLayers<F>): Map<AssetId, Item<F>[]> {
   const out = new Map<AssetId, Item<F>[]>();
   const add = (id: string, key: string, layer: Layer<F>): void => {
@@ -245,6 +252,7 @@ function fileItems<F>(layers: ShotLayers<F>): Map<AssetId, Item<F>[]> {
       }
     }
   }
+  (layers.planes ?? []).forEach((p, i) => add(sheet, planeKey(i), p.layer));
   for (const m of layers.cast) {
     for (const [x, e] of m.exprs) {
       const face = `face/${layers.shot}/${m.char}/${x}`;
@@ -275,12 +283,7 @@ function fileItems<F>(layers: ShotLayers<F>): Map<AssetId, Item<F>[]> {
  * shelf when the next would pass 2048 px. Every size is even, so every coordinate is, and the half tier halves every
  * frame exactly; the file is at least as wide as its label at the minimum font (placeholder.ts) and 12 px high.
  */
-function packFile<F>(id: AssetId, items: readonly Item<F>[]): PackedFile<F> {
-  for (const { key, layer } of items) {
-    if (layer.box[2] % 2 !== 0 || layer.box[3] % 2 !== 0 || layer.box[2] > MAX_SIDE || layer.box[3] > MAX_SIDE) {
-      throw new Error(`invariant: ${id} ${key}: a packed state is even-sized and at most ${MAX_SIDE} px (${layer.box.join(', ')})`);
-    }
-  }
+function shelves<F>(id: AssetId, items: readonly Item<F>[]): { readonly frames: ReadonlyMap<string, Box>; readonly w: number; readonly h: number } {
   const byHeight = items.map((it, i) => ({ it, i })).sort((a, b) => b.it.layer.box[3] - a.it.layer.box[3] || a.i - b.i);
   const frames = new Map<string, Box>();
   let [x, y, shelf, width] = [0, 0, 0, 0];
@@ -295,8 +298,17 @@ function packFile<F>(id: AssetId, items: readonly Item<F>[]): PackedFile<F> {
     shelf = Math.max(shelf, h);
     width = Math.max(width, x);
   }
-  const w = Math.max(width, packedLabelWidth(id));
-  const h = Math.max(y + shelf, MIN_FILE_H);
+  return { frames, w: Math.max(width, packedLabelWidth(id)), h: Math.max(y + shelf, MIN_FILE_H) };
+}
+
+/** One file, packed by `shelves`; a state off the even 2048 grid or a file past 2048 is a bug (R5, `packProblems`). */
+function packFile<F>(id: AssetId, items: readonly Item<F>[]): PackedFile<F> {
+  for (const { key, layer } of items) {
+    if (layer.box[2] % 2 !== 0 || layer.box[3] % 2 !== 0 || layer.box[2] > MAX_SIDE || layer.box[3] > MAX_SIDE) {
+      throw new Error(`invariant: ${id} ${key}: a packed state is even-sized and at most ${MAX_SIDE} px (${layer.box.join(', ')})`);
+    }
+  }
+  const { frames, w, h } = shelves(id, items);
   if (w > MAX_SIDE || h > MAX_SIDE) {
     throw new Error(`invariant: ${id} packs into ${MAX_SIDE} × ${MAX_SIDE} (${w} × ${h})`);
   }
@@ -319,6 +331,18 @@ export function shotFiles<F>(layers: ShotLayers<F>): ReadonlyMap<AssetId, Packed
   return new Map([...fileItems(layers)].map(([id, items]) => [id, packFile(id, items)]));
 }
 
+/**
+ * Critique O1: each file of a layer set that would not fit 2048 × 2048, by name with its layer sizes in file order, so
+ * real art too large for one file is an input problem before anything is encoded, never `packFile`'s invariant.
+ */
+export function packProblems<F>(layers: ShotLayers<F>): string[] {
+  return [...fileItems(layers)].flatMap(([id, items]) => {
+    const { w, h } = shelves(id, items);
+    const sizes = items.map(({ layer }) => `${layer.box[2]} × ${layer.box[3]}`).join(', ');
+    return w > MAX_SIDE || h > MAX_SIDE ? [`${id} does not fit ${MAX_SIDE} × ${MAX_SIDE} (layer sizes ${sizes})`] : [];
+  });
+}
+
 /** A cast member's states as members of the files they sit in (§4.5 `Member`). */
 export type MemberPack = {
   readonly char: CharId;
@@ -327,14 +351,21 @@ export type MemberPack = {
   /** A face member's expressions (the rest first): its layer (null at rest) and motion; a back view has none. */
   readonly exprs: ReadonlyMap<ExprId, { readonly layer: Member | null; readonly motion: MotionSet }>;
 };
-/** A shot's packed files and, per cast member (draw order), where each of its states sits. */
-export type ShotPack<F = string> = { readonly files: ReadonlyMap<AssetId, PackedFile<F>>; readonly cast: readonly MemberPack[] };
+/**
+ * A shot's packed files and, per cast member (draw order), where each of its states sits; a `src` shot's planes as the
+ * rig carries them (in the sheet), none for a placeholder.
+ */
+export type ShotPack<F = string> = {
+  readonly files: ReadonlyMap<AssetId, PackedFile<F>>;
+  readonly cast: readonly MemberPack[];
+  readonly planes: ShotRig['planes'];
+};
 
 /**
  * §4.2 step 7 (rev. 4, W4): one packing per file of §2.6, each within 2048 × 2048 with every coordinate and size even,
- * and each state as a `Member` of the file it sits in: the rest's blink and accent and every hair lock and figure plane
- * in the sheet, an expression's layer and motion states in its face file (a reused rest state as a copy), its mouths in
- * its talk file, never the sheet's.
+ * and each state as a `Member` of the file it sits in: the rest's blink and accent, every hair lock and figure plane and
+ * a `src` shot's planes in the sheet, an expression's layer and motion states in its face file (a reused rest state as a
+ * copy), its mouths in its talk file, never the sheet's.
  */
 export function packShot<F>(layers: ShotLayers<F>): ShotPack<F> {
   const files = shotFiles(layers);
@@ -369,7 +400,8 @@ export function packShot<F>(layers: ShotLayers<F>): ShotPack<F> {
       exprs: new Map(exprs),
     };
   });
-  return { files, cast };
+  const planes = (layers.planes ?? []).map((p, i) => ({ member: get(planeKey(i)), depth: p.depth, pivot: p.pivot, front: p.front }));
+  return { files, cast, planes };
 }
 
 /** A loop prop's frame side (shots §4.4: frames at most 512 × 512; a placeholder's fill the prop canvas). */
@@ -600,7 +632,7 @@ function castRig<F>(
     char: m.char,
     view: m.view,
     face,
-    body: { cx: fig.cx, cy: fig.cy, rx: fig.rx, ry: fig.ry, rot: fig.rot, feet: [fig.cx, Math.min(plate.h, fig.cy + fig.ry)] },
+    body: { cx: fig.cx, cy: fig.cy, rx: fig.rx, ry: fig.ry, rot: fig.rot, feet: m.masks.feet ?? [fig.cx, Math.min(plate.h, fig.cy + fig.ry)] },
     headDepth: Math.round(mean * 255) / 255,
     plateau: plateauBits(fine, FINE),
     plateauCoarse: plateauBits(plateauOf(m, plate, COARSE), COARSE),
@@ -612,10 +644,10 @@ function castRig<F>(
 }
 
 /**
- * §4.5, one chapter's rig of one shot it shows (CH D5): the plate's size, the chapter's frame for it, the focus at the
- * plate's centre, its cast back to front with only the expressions and talk the chapter needs (`need.faces`), no planes
- * and no ambient (placeholders, SH9), the depth grid. Every member names a file of the chapter's own when the story
- * tool's `assets` list agrees (the planner checks it).
+ * §4.5, one chapter's rig of one shot it shows (CH D5): the plate's size, the chapter's frame for it, the focus (a `src`
+ * shot's from shot.json, else the plate's centre), its cast back to front with only the expressions and talk the chapter
+ * needs (`need.faces`), its planes (a `src` shot's; none for a placeholder), no ambient (SH9), the depth grid. Every
+ * member names a file of the chapter's own when the story tool's `assets` list agrees (the planner checks it).
  */
 export function shotRig<F>(layers: ShotLayers<F>, pack: ShotPack<F>, need: ShotNeed, depth: Uint8Array): ShotRig {
   const plate = { w: layers.w, h: layers.h };
@@ -629,7 +661,8 @@ export function shotRig<F>(layers: ShotLayers<F>, pack: ShotPack<F>, need: ShotN
     return castRig(m, p, groups[i] ?? 0, shown, plate, depth);
   });
   const frame: Frame = need.frame;
-  return { w: layers.w, h: layers.h, frame, focus: [layers.w / 2, layers.h / 2], cast, planes: [], ambient: [], depth: depthBase64(depth) };
+  const focus = layers.focus ?? [layers.w / 2, layers.h / 2];
+  return { w: layers.w, h: layers.h, frame, focus, cast, planes: pack.planes, ambient: [], depth: depthBase64(depth) };
 }
 
 const unique = <T>(xs: readonly T[]): T[] => [...new Set(xs)];

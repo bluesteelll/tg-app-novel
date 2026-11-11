@@ -33,6 +33,8 @@ export type Knobs = {
   readonly figure: boolean;
   /** A plane layer (`plane_0`, `mask.plane.0.png`). */
   readonly plane: boolean;
+  /** O1: two plane layers each as wide as the plate and most of its height (`plane_a`, `plane_b`): an unpackable sheet. */
+  readonly largePlanes: boolean;
   /** Files left out of the directory. */
   readonly missing: readonly string[];
 };
@@ -50,6 +52,7 @@ export const DEFAULT_KNOBS: Knobs = {
   irregular: false,
   figure: false,
   plane: false,
+  largePlanes: false,
   missing: [],
 };
 
@@ -260,6 +263,15 @@ export function syntheticShot(over: Partial<Knobs> = {}): SyntheticShot {
   if (k.plane) {
     paintEllipse(original, g.plane, 3, PLANE);
   }
+  const large: readonly (readonly [string, Rect])[] = k.largePlanes
+    ? [
+        ['a', [0, Math.round(0.05 * k.h), k.w, Math.round(0.9 * k.h)]],
+        ['b', [0, Math.round(0.1 * k.h), k.w, Math.round(0.85 * k.h)]],
+      ]
+    : [];
+  for (const [, rect] of large) {
+    fillRect(original, rect, PLANE);
+  }
   const smile = v({ mouth: 'smile', cheeks: true });
   if (k.relight !== 0) {
     for (let i = 0; i < smile.data.length; i++) {
@@ -291,6 +303,14 @@ export function syntheticShot(over: Partial<Knobs> = {}): SyntheticShot {
   if (k.plane) {
     files.set('mask.plane.0.png', ellipseMask(k.w, k.h, g.plane, 3));
   }
+  for (const [n, rect] of large) {
+    const mask: Raster = { data: new Uint8Array(k.w * k.h * 4), w: k.w, h: k.h };
+    fillRect(mask, rect, [255, 255, 255]);
+    for (let i = 3; i < mask.data.length; i += 4) {
+      mask.data[i] = mask.data[i - 1] === 255 ? 255 : 0;
+    }
+    files.set(`mask.plane.${n}.png`, mask);
+  }
   for (const name of k.missing) {
     files.delete(name);
   }
@@ -308,6 +328,9 @@ export function syntheticShot(over: Partial<Knobs> = {}): SyntheticShot {
   }
   if (k.plane) {
     layers['plane_0'] = { kind: 'plane', char: null, mask: 'mask.plane.0.png', pivot: [g.plane.cx, g.plane.cy], depth: 0.9, front: true };
+  }
+  for (const [n, [x, y, w, h]] of large) {
+    layers[`plane_${n}`] = { kind: 'plane', char: null, mask: `mask.plane.${n}.png`, pivot: [x + w / 2, y + h], depth: 0.8 };
   }
   const json: Record<string, unknown> = {
     crop: [...(k.crop ?? [0, 0, k.w, k.h])],

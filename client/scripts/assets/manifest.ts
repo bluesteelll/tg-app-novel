@@ -37,6 +37,8 @@ export {
   decodeChapterMeta,
   decodeCoverManifest,
 } from '../../src/story/catalog.ts';
+/** The world decoder, for the asset tool's R8 (a room's prop rects over a `src` shot's figures, lane SH3c). */
+export { decodeWorldSource } from '../../src/world/decode.ts';
 /** The registry's preload cap: the knot-set and room-set rows' limit (MEMORY-PLAN M2). */
 export { STEADY_CAP_BYTES } from '../../src/scene/registry.ts';
 export { PIXI_ENV_SRCS, SKIP_PIXI_ENV } from '../../src/scene/pixi-env.ts';
@@ -314,8 +316,8 @@ export function sha256Hex(bytes: Uint8Array): string {
 
 /**
  * `<ns>-<id parts joined by ->[-half]-<hash8>.<ext>`, inside the server's name rule. Injective: ids never hold '-' and
- * each namespace has a fixed number of parts (char 3, every other 2), so a half name has one segment more than its full
- * name and its first segment still names its namespace.
+ * each namespace has a fixed number of parts (char 3, face and talk 4, every other 2), so a half name has one segment
+ * more than its full name and its first segment still names its namespace.
  */
 export function assetFileName(id: AssetId, bytes: Uint8Array, ext: 'avif' | 'webp' | 'wav', size: SizeTier): string {
   return `${id.replaceAll('/', '-')}${size === 'half' ? '-half' : ''}-${sha256Hex(bytes).slice(0, 8)}.${ext}`;

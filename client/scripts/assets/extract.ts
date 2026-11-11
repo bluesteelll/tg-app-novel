@@ -7,6 +7,7 @@
 import type { Result } from '../../src/story/catalog.ts';
 import type { Box } from '../../src/story/shots.ts';
 import type { BgId, CharId, ExprId } from '../../src/story/staging.ts';
+import type { HotspotKey, RoomId, WorldSource } from '../../src/world/types.ts';
 import type { Shot } from '../story/shots/list.ts';
 import { COARSE, castProblems, facesOf } from './shots.ts';
 import type { CastLayers, ChapterNeed, Ellipse, ExprLayers, Layer, PlaneLayer, Raster, ShotLayers } from './shots.ts';
@@ -526,6 +527,77 @@ export function depthGrid(d: DepthSource, crop: Box, original: { readonly w: num
 // ---------------------------------------------------------------------------------------------------------------
 // Extraction (§4.2 steps 1-6)
 
+/** A rect where a room draws a prop (R8), in room px: a room shot's plate px (R5: exactly 1080 × 2048). */
+export type RoomRect = { readonly room: string; readonly rect: Box };
+
+/**
+ * R8's rects (cut D6) of every room of `world` whose bg is shot `s`, in source order: a take or object hotspot's rect when
+ * it has a prop or states (any hotspot's when a state draws a prop there), each state's patch rect, and each decor's
+ * rect with its states' patch rects (mechanics/data/visual.ts).
+ */
+export function roomPropRects(world: WorldSource, s: BgId): RoomRect[] {
+  const out: RoomRect[] = [];
+  const { visual } = world.mods;
+  for (const section of Object.values(world.sections)) {
+    for (const [room, r] of Object.entries(section.rooms)) {
+      if (r.bg !== s) {
+        continue;
+      }
+      for (const h of r.hotspots) {
+        const states = Object.values(visual.hotspots[`${room}.${h.id}` as HotspotKey]?.states ?? {});
+        const kept = (h.kind === 'take' || h.kind === 'object') && (h.prop !== null || states.length > 0);
+        if (kept || states.some((a) => 'prop' in a && a.prop !== null)) {
+          out.push({ room, rect: h.rect });
+        }
+        out.push(...states.flatMap((a) => ('patch' in a ? [{ room, rect: a.rect }] : [])));
+      }
+      for (const d of visual.decor[room as RoomId] ?? []) {
+        out.push({ room, rect: d.rect }, ...Object.values(d.states).flatMap((a) => ('patch' in a ? [{ room, rect: a.rect }] : [])));
+      }
+    }
+  }
+  return out;
+}
+
+/** Whether `mask` (original geometry) has a px with a value above 0 inside room rect `rect` on the plate (crop `crop`). */
+function covers(mask: Raster, [rx, ry, rw, rh]: Box, crop: Box): boolean {
+  for (let y = Math.max(0, ry); y < Math.min(crop[3], ry + rh); y++) {
+    for (let x = Math.max(0, rx); x < Math.min(crop[2], rx + rw); x++) {
+      if (maskValue(mask, (y + crop[1]) * mask.w + x + crop[0]) > 0) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * D14 and R9's clauses on shot.json's declared layers against the shot list's cast: a layer of a non-member, a plane in
+ * a cast-less shot (its sheet is not listed yet), a `figure: true` member without a figure layer, a second figure layer.
+ * They need no pixel, so they are reported before any file is read.
+ */
+function declarationProblems(shot: Shot, source: ShotSource): string[] {
+  const s = shot.id;
+  const problems: string[] = [];
+  const cast = new Set<string>(shot.cast.map((m) => m.char));
+  for (const l of source.layers.filter((x) => x.char !== null && !cast.has(x.char))) {
+    problems.push(`${s}/shot.json: layers.${l.name}.char: ${String(l.char)} is not a cast member of ${s}`);
+  }
+  if (shot.cast.length === 0 && source.layers.some((l) => l.kind === 'plane')) {
+    problems.push(`${s}: a plane layer in a shot without a cast (a cast-less src shot's sheet is not listed yet)`);
+  }
+  for (const m of shot.cast) {
+    const figures = source.layers.filter((l) => l.kind === 'figure' && l.char === m.char);
+    if (m.figure && figures.length === 0) {
+      problems.push(`${s}: ${m.char} has figure: true but no figure layer (R9: a hop / bounce member is cut out)`);
+    }
+    for (const l of figures.slice(1)) {
+      problems.push(`${s}/shot.json: layers.${l.name}: a second figure layer of ${m.char}`);
+    }
+  }
+  return problems;
+}
+
 /** What `extractShot` reads: the shot list's declaration, its shot.json, every chapter's need of it, its files. */
 export type ExtractInput = {
   readonly shot: Shot;
@@ -535,9 +607,11 @@ export type ExtractInput = {
   readonly load: (file: string) => Promise<Raster | null>;
   /** depth.png's samples; null when absent. */
   readonly loadDepth: () => Promise<DepthSource | null>;
+  /** R8: the prop rects of the rooms that draw this shot (`roomPropRects`); none when absent. */
+  readonly rooms?: readonly RoomRect[];
 };
-/** A `src` shot's layer set on its plate (the crop) and its depth grid. */
-export type Extracted = { readonly layers: ShotLayers<Raster>; readonly depth: Uint8Array };
+/** A `src` shot's layer set on its plate (the crop), its depth grid and its R8 warnings. */
+export type Extracted = { readonly layers: ShotLayers<Raster>; readonly depth: Uint8Array; readonly warnings: readonly string[] };
 
 /**
  * Extracts a `src` shot (§4.2 steps 1-6): the rest motion boxes E / M / B, each needed expression's layer, its motion
@@ -547,6 +621,10 @@ export type Extracted = { readonly layers: ShotLayers<Raster>; readonly depth: U
 export async function extractShot(input: ExtractInput): Promise<Result<Extracted, string[]>> {
   const { shot, source } = input;
   const s = shot.id;
+  const declared = declarationProblems(shot, source);
+  if (declared.length > 0) {
+    return { ok: false, error: declared };
+  }
   const crop = source.crop;
   const problems: string[] = [];
   const original = await input.load('original.png');
@@ -595,24 +673,6 @@ export async function extractShot(input: ExtractInput): Promise<Result<Extracted
     return r;
   };
   const toPlate = (p: readonly [number, number]): readonly [number, number] => [p[0] - crop[0], p[1] - crop[1]];
-
-  // D14 and R9's clauses on the declared layers.
-  const cast = new Set<string>(shot.cast.map((m) => m.char));
-  for (const l of source.layers.filter((x) => x.char !== null && !cast.has(x.char))) {
-    problems.push(`${s}/shot.json: layers.${l.name}.char: ${String(l.char)} is not a cast member of ${s}`);
-  }
-  if (shot.cast.length === 0 && source.layers.some((l) => l.kind === 'plane')) {
-    problems.push(`${s}: a plane layer in a shot without a cast (a cast-less src shot's sheet is not listed yet)`);
-  }
-  for (const m of shot.cast) {
-    const figures = source.layers.filter((l) => l.kind === 'figure' && l.char === m.char);
-    if (m.figure && figures.length === 0) {
-      problems.push(`${s}: ${m.char} has figure: true but no figure layer (R9: a hop / bounce member is cut out)`);
-    }
-    for (const l of figures.slice(1)) {
-      problems.push(`${s}/shot.json: layers.${l.name}: a second figure layer of ${m.char}`);
-    }
-  }
 
   const cutLayer = async (l: SourceLayer): Promise<Layer<Raster> | null> => {
     const m = await need(l.mask);
@@ -836,9 +896,15 @@ export async function extractShot(input: ExtractInput): Promise<Result<Extracted
 
   const faces = facesOf(input.needs.map((n) => n.need));
   const members: CastLayers<Raster>[] = [];
+  const rooms = input.rooms ?? [];
+  const warnings: string[] = [];
   for (const m of shot.cast) {
     const fig = await mask(`mask.fig.${m.char}.png`);
     const moments = fig === null ? null : maskMoments(fig, crop);
+    // R8 (a warning, cut D6): a room's props draw above the shot's root, so one over a member's figure would hide it.
+    for (const { room, rect } of fig === null ? [] : rooms.filter((r) => covers(fig, r.rect, crop))) {
+      warnings.push(`${s}: ${room} prop rect [${rect.join(', ')}] covers ${m.char}'s figure (R8: props draw above the shot root)`);
+    }
     const head = m.view === 'face' ? await mask(`mask.head.${m.char}.png`) : null;
     const headPx = head === null ? null : inMask(head);
     const headIn = headPx?.bounds === null || headPx === null ? null : meet(headPx.bounds, cropB);
@@ -894,5 +960,5 @@ export async function extractShot(input: ExtractInput): Promise<Result<Extracted
   if (problems.length > 0 || depth === null) {
     return { ok: false, error: problems };
   }
-  return { ok: true, value: { layers, depth: depthGrid(depth, crop, { w: W, h: H }) } };
+  return { ok: true, value: { layers, depth: depthGrid(depth, crop, { w: W, h: H }), warnings } };
 }

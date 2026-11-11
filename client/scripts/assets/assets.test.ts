@@ -14,15 +14,17 @@ import type { FaceRig, ShotRig } from '../../src/story/shots.ts';
 import type { AssetId, BgId, ChapterId, CharId, ExprId, PropId } from '../../src/story/staging.ts';
 import { main } from '../assets.ts';
 import type { Encoders } from '../assets.ts';
+import { LIMITS } from '../budget.ts';
 import { decodeChapterList, decodeStoryUsage } from '../story/emit.ts';
 import { placeholderHue } from '../story/shots/list.ts';
 import type { Shot } from '../story/shots/list.ts';
 import { parseShotFileId } from '../story/shots/usage.ts';
 import type { ShotNeed } from '../story/shots/usage.ts';
-import { decodeRaster, encodeImage, encodeRaster, halfRgba } from './encode.ts';
-import type { Codec } from './encode.ts';
+import { SHARP_CODEC, decodeRaster, encodeAvif, encodeImage, encodeRaster, halfRgba } from './encode.ts';
+import type { Codec, EncodedRaster } from './encode.ts';
 import { alphaProblems, decodeShotSource, extractShot } from './extract.ts';
 import { syntheticShot } from './fixtures/shot/synthetic.ts';
+import type { Knobs } from './fixtures/shot/synthetic.ts';
 import { ASSET_FILE_RE, assetFileName, assetUsage, catalogImage, decodeAssetFingerprints, halfAsk, sha256Hex, tierOf } from './manifest.ts';
 import type { AssetUsage } from './manifest.ts';
 import { CANONICAL_SIZE, imageKind, renderPlaceholder } from './placeholder.ts';
@@ -1175,6 +1177,32 @@ function shotsUsage(chapters: Readonly<Record<string, ShotChapter>>): unknown {
 const SHOT_FILES: Readonly<Record<string, unknown>> = { 'assets/catalog.json': SHOT_CATALOG, 'story/shots.json': SHOT_LIST };
 const SHOT_REPO: Readonly<Record<string, unknown>> = { ...SHOT_FILES, 'server/content/build/shots.json': shotsUsage(SHOT_CHAPTERS) };
 
+/**
+ * Shots §4.1 (lane SH3c): `cafe` as a src shot (`bg.cafe = { src: 'shot/cafe' }`), ally with `surprised` too; free ch1
+ * shows ally at rest and smiling, both spoken, paid ch2 ally surprised. So `bg/cafe`, `sheet/cafe`,
+ * `face/cafe/ally/smile`, `talk/cafe/ally/neutral` and `talk/cafe/ally/smile` are public, `face/cafe/ally/surprised`
+ * paid. The source directory comes from `shotDir` (fixtures/shot/synthetic.ts).
+ */
+const SRC_CATALOG = {
+  ...SHOT_CATALOG,
+  bg: { ...SHOT_CATALOG.bg, cafe: { src: 'shot/cafe' } },
+  chars: { ally: { exprs: { ...SHOT_CATALOG.chars.ally.exprs, surprised: { placeholder: { hue: 280 } } } } },
+};
+const SRC_CHAPTERS: Readonly<Record<'ch1' | 'ch2', ShotChapter>> = {
+  ch1: {
+    shots: { cafe: cafeNeed([['neutral', true], ['smile', true]], 'ch1') },
+    assets: ['bg/cafe', 'face/cafe/ally/smile', 'sheet/cafe', 'talk/cafe/ally/neutral', 'talk/cafe/ally/smile'],
+  },
+  ch2: { shots: { cafe: cafeNeed([['surprised', false]], 'ch2') }, assets: ['bg/cafe', 'face/cafe/ally/surprised', 'sheet/cafe'] },
+};
+const SRC_REPO: Readonly<Record<string, unknown>> = {
+  'assets/catalog.json': SRC_CATALOG,
+  'story/shots.json': SHOT_LIST,
+  'server/content/build/shots.json': shotsUsage(SRC_CHAPTERS),
+};
+/** The src shot's six files. */
+const SRC_FILES = ['bg/cafe', 'face/cafe/ally/smile', 'face/cafe/ally/surprised', 'sheet/cafe', 'talk/cafe/ally/neutral', 'talk/cafe/ally/smile'];
+
 function writeRepo(root: string, files: Readonly<Record<string, unknown>> = {}): void {
   const all: Record<string, unknown> = {
     'story/chapters.json': [CH1, CH2],
@@ -1263,6 +1291,74 @@ function decodedChapters(): readonly ChapterListEntry[] {
     throw new Error('invariant: the fixture chapter list decodes');
   }
   return c.value;
+}
+
+/**
+ * Shots §4.1, a src shot's source directory as files: the synthetic shot's rasters as 8-bit RGBA PNGs, its depth map as
+ * a 16-bit greyscale PNG, its shot.json; built once per knob set.
+ */
+const shotDirs = new Map<string, Promise<ReadonlyMap<string, Uint8Array>>>();
+function shotDir(over: Partial<Knobs>): Promise<ReadonlyMap<string, Uint8Array>> {
+  const key = JSON.stringify(over);
+  const known = shotDirs.get(key);
+  if (known !== undefined) {
+    return known;
+  }
+  const made = (async () => {
+    const fx = syntheticShot(over);
+    const files = new Map<string, Uint8Array>();
+    for (const [name, r] of fx.files) {
+      files.set(name, await sharp(r.data, { raw: { width: r.w, height: r.h, channels: 4 } }).png().toBuffer());
+    }
+    const depth = sharp(fx.depth.data, { raw: { width: fx.depth.w, height: fx.depth.h, channels: 1 } });
+    files.set('depth.png', await depth.toColourspace('grey16').png().toBuffer());
+    files.set('shot.json', utf8.encode(JSON.stringify(fx.json)));
+    return files;
+  })();
+  shotDirs.set(key, made);
+  return made;
+}
+
+/** Plants `assets/src/shot/cafe/`: `files`, each of `over` replacing one (or, null, leaving it out). */
+function plantShot(root: string, files: ReadonlyMap<string, Uint8Array>, over: Readonly<Record<string, Uint8Array | null>> = {}): void {
+  const all = new Map(files);
+  for (const [name, bytes] of Object.entries(over)) {
+    if (bytes === null) {
+      all.delete(name);
+    } else {
+      all.set(name, bytes);
+    }
+  }
+  for (const [name, bytes] of all) {
+    plant(root, `assets/src/shot/cafe/${name}`, bytes);
+  }
+}
+
+/** A source directory's shot.json, as an object. */
+function shotJson(files: ReadonlyMap<string, Uint8Array>): Record<string, unknown> {
+  return JSON.parse(new TextDecoder().decode(files.get('shot.json'))) as Record<string, unknown>;
+}
+
+/** The tool wrote nothing: no story-gen, both asset directories empty. */
+function wroteNothing(root: string, what: string): void {
+  expect(existsSync(join(root, 'client', 'src', 'story-gen')), `${what}: story-gen`).toBe(false);
+  expect(listDir(root, 'client/public/assets'), `${what}: public assets`).toEqual([]);
+  expect(listDir(root, 'server/content/assets'), `${what}: gated assets`).toEqual([]);
+}
+
+/** `base`, recording every encode call in `calls`: an image by its placeholder's label, a raster by its id. */
+function recordingEncoders(base: Encoders, calls: string[]): Encoders {
+  return {
+    ...base,
+    encodeImage: (svg, o) => {
+      calls.push(/<text\b[^>]*>([^<]+)<\/text>/.exec(new TextDecoder().decode(svg))?.[1] ?? '(no label)');
+      return base.encodeImage(svg, o);
+    },
+    encodeRaster: (px, o, codec) => {
+      calls.push(o.id);
+      return (base.encodeRaster ?? encodeRaster)(px, o, codec);
+    },
+  };
 }
 
 describe('assets', () => {
@@ -1711,17 +1807,273 @@ describe('assets', () => {
     expect(listDir(repo, 'server/content/assets')).toEqual([]);
   });
 
-  test('assets: a src shot before extraction is refused by name', async () => {
-    // The catalog admits a bg's `src: "shot/<id>"` (shots §4.1); its extraction is SH3c's, so until then the tool names
-    // it and writes nothing rather than encoding something else in its place.
+  test('assets: a src shot without a shot list is refused by name', async () => {
+    // Shots §4.1 (cut D14): a src shot's cast and needs come from story/shots.json and build/shots.json, so a src bg
+    // without a shot list is named and nothing is encoded or written.
     writeRepo(repo, { 'assets/catalog.json': { ...REPO_CATALOG, bg: { ...REPO_CATALOG.bg, cafe: { src: 'shot/cafe' } } } });
-    const r = await runTool(repo);
+    const calls: string[] = [];
+    const r = await runTool(repo, recordingEncoders(FAKE_ENCODERS, calls));
     expect(r.code).toBe(1);
-    expect(r.err).toEqual(['assets: bg/cafe: src shot/cafe waits for extraction (SH3c)']);
-    expect(existsSync(join(repo, 'client', 'src', 'story-gen'))).toBe(false);
-    expect(listDir(repo, 'client/public/assets')).toEqual([]);
-    expect(listDir(repo, 'server/content/assets')).toEqual([]);
+    expect(r.err).toEqual(["assets: bg/cafe: src shot/cafe needs story/shots.json (a src shot's cast and needs come from the shot list)"]);
+    expect(calls).toEqual([]);
+    wroteNothing(repo, 'no shot list');
   });
+
+  test('assets: a shot source directory builds its plate, sheet, face and talk files', async () => {
+    // Shots §4.1-4.5 end to end (lane SH3c): the synthetic shot's directory (an 1100 × 2048 original cropped to its
+    // 1080 × 2048 plate at x 10, q 44) is extracted and packed through SH3a's packer, its plate encoded at q 44 and its
+    // alpha files searched from 44 (RULINGS 267), each tiered per file by `tierOf`.
+    const files = await shotDir({ w: 1100, h: 2048, u: 4, crop: [10, 0, 1080, 2048], q: 44 });
+    const json = shotJson(files);
+    writeRepo(repo, SRC_REPO);
+    plantShot(repo, files);
+    const seen = new Map<string, { q: number; search: boolean }>();
+    const chosen = new Map<string, EncodedRaster['q']>();
+    const recording: Encoders = {
+      encodeImage,
+      synthWav,
+      encodeRaster: async (px, o, codec) => {
+        seen.set(o.id, { q: o.q, search: o.search });
+        const e = await encodeRaster(px, o, codec);
+        if (e.ok) {
+          chosen.set(o.id, e.value.q);
+        }
+        return e;
+      },
+    };
+    const r = await runTool(repo, recording);
+    expect(r.code, r.err.join('\n')).toBe(0);
+    // W3: the shot's q reaches every file: the plate's quality, every alpha file's start.
+    expect([...seen.keys()].sort()).toEqual(SRC_FILES);
+    for (const id of SRC_FILES) {
+      expect(seen.get(id), id).toEqual({ q: 44, search: id !== 'bg/cafe' });
+    }
+    // The log names each alpha file whose chosen q differs from the start, per tier.
+    const logged = SRC_FILES.filter((id) => id !== 'bg/cafe').flatMap((id) => {
+      const q = chosen.get(id);
+      const tiers = [q?.full === 44 ? '' : `${q?.full} full`, q?.half === 44 ? '' : `${q?.half} half`].filter((t) => t !== '');
+      return tiers.length === 0 ? [] : [`assets: ${id}: AVIF q ${tiers.join(', ')} (R6 search from q 44)`];
+    });
+    expect(r.out.filter((l) => l.includes(': AVIF q '))).toEqual(logged);
+    // The other five are public; the paid chapter's face file is gated, full and half.
+    const pub = listDir(repo, 'client/public/assets');
+    const paid = listDir(repo, 'server/content/assets');
+    for (const id of SRC_FILES) {
+      const named = (dir: string[]): number => dir.filter((n) => n.startsWith(`${id.replaceAll('/', '-')}-`)).length;
+      expect([named(pub), named(paid)], id).toEqual(id === 'face/cafe/ally/surprised' ? [0, 4] : [4, 0]);
+    }
+    const ch1 = JSON.parse(readRel(repo, 'client/src/story-gen/free/ch1.assets.json')) as { assets: Record<string, RawEntry>; shots: unknown };
+    const ch2 = JSON.parse(readRel(repo, 'server/content/chapters/ch2/assets.json')) as { assets: Record<string, RawEntry>; shots: unknown };
+    expect([ch1.assets['bg/cafe']?.['w'], ch1.assets['bg/cafe']?.['h']]).toEqual([1080, 2048]);
+    // Each file's bytes per tier within SH3b's limits (budget.ts LIMITS; a plate's scaled with its width, `plateLimit`).
+    for (const id of SRC_FILES) {
+      const entry = ch1.assets[id] ?? ch2.assets[id];
+      const kind = id.slice(0, id.indexOf('/')) as 'bg' | 'sheet' | 'face' | 'talk';
+      const w = Number(entry?.['w']);
+      const limit = kind === 'bg' ? { avif: Math.floor((LIMITS.image.bg.avif * w) / 1080), webp: Math.floor((LIMITS.image.bg.webp * w) / 1080) } : LIMITS.image[kind];
+      const bytes = (e: RawEntry | undefined, f: 'avif' | 'webp'): number => Number((e?.[f] as { bytes?: unknown } | undefined)?.bytes);
+      const half = entry?.['half'] as RawEntry | undefined;
+      for (const [tier, e] of [['full', entry], ['half', half]] as const) {
+        expect(bytes(e, 'avif'), `${id} ${tier} AVIF`).toBeLessThanOrEqual(limit.avif);
+        expect(bytes(e, 'webp'), `${id} ${tier} WebP`).toBeLessThanOrEqual(limit.webp);
+      }
+    }
+    // The rigs: the crop-translated focus, the hair from the sheet, the rest blink copied into smile's face file,
+    // surprised's own blink, and every member in one of its chapter's own entries.
+    const rigs = (m: { shots: unknown }): ReadonlyMap<BgId, ShotRig> => {
+      const d = decodeShotRigs(m.shots);
+      expect(d.ok ? [] : d.error).toEqual([]);
+      return d.ok ? d.value : new Map();
+    };
+    const [rig1, rig2] = [rigs(ch1).get('cafe' as BgId), rigs(ch2).get('cafe' as BgId)];
+    const [focus, crop] = [json['focus'] as number[], json['crop'] as number[]];
+    expect(rig1?.focus).toEqual([(focus[0] ?? 0) - (crop[0] ?? 0), (focus[1] ?? 0) - (crop[1] ?? 0)]);
+    expect([rig1?.w, rig1?.h]).toEqual([1080, 2048]);
+    expect(rig1?.cast[0]?.hair.map((h) => h.member.file)).toEqual(['sheet/cafe']);
+    const face = (rig: ShotRig | undefined, x: string): FaceRig['exprs'][ExprId] | undefined => rig?.cast[0]?.face?.exprs[x as ExprId];
+    expect(face(rig1, 'neutral')?.motion.blink.half.file).toBe('sheet/cafe');
+    expect(face(rig1, 'smile')?.motion.blink.half).toMatchObject({ file: 'face/cafe/ally/smile', at: face(rig1, 'neutral')?.motion.blink.half.at });
+    expect(face(rig2, 'surprised')?.motion.blink.half.file).toBe('face/cafe/ally/surprised');
+    expect(face(rig2, 'surprised')?.motion.blink.half.at).not.toEqual(face(rig2, 'neutral')?.motion.blink.half.at);
+    const named = (v: unknown): string[] =>
+      Array.isArray(v)
+        ? v.flatMap(named)
+        : typeof v === 'object' && v !== null
+          ? Object.entries(v).flatMap(([k, x]) => (k === 'file' && typeof x === 'string' ? [x] : named(x)))
+          : [];
+    for (const m of [ch1, ch2]) {
+      expect(named(m.shots).filter((f) => !Object.hasOwn(m.assets, f))).toEqual([]);
+    }
+
+    // R6 is on the tool's path: an encodeRaster that clamps alpha before the real one ships nothing (the tool's own
+    // check against its source px), and a codec whose AVIF loses the feather reaches the search's ceiling. Each run
+    // exits 1 and writes nothing.
+    const again = mkdtempSync(join(tmpdir(), 'assets-'));
+    try {
+      writeRepo(again, SRC_REPO);
+      plantShot(again, files);
+      const clamping = await runTool(again, { encodeImage, synthWav, encodeRaster: (px, o, codec) => encodeRaster(clampAlpha(px), o, codec) });
+      expect(clamping.code).toBe(1);
+      expect(clamping.err.length).toBeGreaterThan(0);
+      expect(clamping.err.filter((l) => !/^assets: sheet\/cafe\b.*\(R6: /.test(l))).toEqual([]);
+      wroteNothing(again, 'clamped before the encoder');
+      const lossy: Codec = { ...SHARP_CODEC, avif: (px, q) => encodeAvif(clampAlpha(px), q) };
+      const ceiling = await runTool(again, { encodeImage, synthWav, encodeRaster: (px, o) => encodeRaster(px, o, lossy) });
+      expect(ceiling.code).toBe(1);
+      const line = /^assets: sheet\/cafe: (full|half): no AVIF q in 44\.\.90 keeps alpha within 8\/255 \(R6: the best, q \d+, is \d+\/255 off at \(\d+, \d+\)\)$/;
+      expect(ceiling.err.map((l) => line.exec(l)?.[1] ?? l)).toEqual(['full', 'half']);
+      wroteNothing(again, 'a codec that clamps alpha');
+    } finally {
+      rmSync(again, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  test('assets: a src plate with an odd width is refused before it is encoded', async () => {
+    // R5 (§4.3) runs on shot.json's crop before any source file is decoded (the odd-side carry, MD1 O1): a 1081-px crop
+    // is one input problem by name, with no encode call and nothing written. Its passing 1080 case is the end-to-end test.
+    writeRepo(repo, SRC_REPO);
+    plant(repo, 'assets/src/shot/cafe/shot.json', JSON.stringify({ crop: [0, 0, 1081, 2048], focus: [540, 614] }));
+    const calls: string[] = [];
+    const r = await runTool(repo, recordingEncoders(FAKE_ENCODERS, calls));
+    expect(r.code).toBe(1);
+    expect(r.err).toEqual(['assets: cafe: plate 1081 × 2048 (R5: 2048 high, an even width in 1080..1440)']);
+    expect(calls).toEqual([]);
+    wroteNothing(repo, 'odd crop');
+  });
+
+  test("assets: a room prop over a cast member's figure is a warning", async () => {
+    // R8 (§4.3, cut D6): a room's props draw above its shot's root, so a prop rect over a cast member's figure mask is
+    // warned about on stdout, and the run still succeeds; the same rect moved off the figure warns about nothing.
+    const files = await shotDir({ w: 1080, h: 2048, u: 4 });
+    const list = { ...SHOT_LIST, shots: SHOT_LIST.shots.map((s) => ({ ...s, frame: 'room' })) };
+    const need = { ...cafeNeed([['neutral', false]], 'ch1'), frame: 'room', room: 'hall' };
+    const world = (rect: readonly number[]): unknown => ({
+      format: 1,
+      items: {},
+      docs: {},
+      puzzles: {},
+      sections: {
+        house: {
+          start: 'hall',
+          bgm: null,
+          rooms: {
+            hall: {
+              bg: 'cafe',
+              title: { id: 'ch1.hall.t001', ru: 'Зал' },
+              onEnter: [],
+              hotspots: [{ id: 'vase', kind: 'object', rect, label: { id: 'ch1.vase.l001', ru: 'Ваза' }, lock: null, then: [], look: null, prop: 'vase' }],
+            },
+          },
+        },
+      },
+    });
+    const usage = shotsUsage({ ch1: { shots: { cafe: need }, assets: ['bg/cafe', 'sheet/cafe'] }, ch2: { shots: {}, assets: [] } });
+    const warnings = async (rect: readonly number[]): Promise<string[]> => {
+      writeRepo(repo, { ...SRC_REPO, 'story/shots.json': list, 'server/content/build/shots.json': usage, 'story/ch1/world.json': world(rect) });
+      plantShot(repo, files);
+      const r = await runTool(repo, FAKE_ENCODERS);
+      expect(r.code, r.err.join('\n')).toBe(0);
+      return r.out.filter((l) => l.startsWith('assets: warning: '));
+    };
+    // The figure mask is the ellipse centred at (540, 1270) with radii 192 and 737 (fixture geometry at u 4).
+    expect(await warnings([500, 1200, 80, 80])).toEqual(["assets: warning: cafe: hall prop rect [500, 1200, 80, 80] covers ally's figure (R8: props draw above the shot root)"]);
+    expect(await warnings([20, 20, 40, 40])).toEqual([]);
+  }, 120_000);
+
+  test('assets: a src shot the tool cannot extract is refused by name and writes nothing', async () => {
+    // Fail closed, one cause one message (cut D14, R9's clauses, critique W1 / O1): each case is refused by name before
+    // anything is encoded, and nothing is written.
+    const base = await shotDir({ w: 1080, h: 2048, u: 4 });
+    const json = shotJson(base);
+    const layers = json['layers'] as Record<string, unknown>;
+    const j = (v: unknown): Uint8Array => utf8.encode(JSON.stringify(v));
+    const castless = { ...SHOT_LIST, shots: SHOT_LIST.shots.map((s) => ({ ...s, cast: [] })) };
+    const castlessNeed = { ...impliedNeed('cafe'), frame: 'close' };
+    const figured = { ...SHOT_LIST, shots: SHOT_LIST.shots.map((s) => ({ ...s, cast: s.cast.map((m) => ({ ...m, figure: true })) })) };
+    const figuredNeed = (faces: ReadonlyArray<readonly [string, boolean]>, ch: string): Record<string, unknown> => ({
+      ...cafeNeed(faces, ch),
+      cast: { ally: { view: 'face', rest: 'neutral', figure: true } },
+    });
+    const transparent = await sharp({ create: { width: 1080, height: 2048, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } }).png().toBuffer();
+    const large = await shotDir({ w: 1080, h: 2048, u: 4, largePlanes: true });
+    const cases: ReadonlyArray<{ name: string; repo: Readonly<Record<string, unknown>>; src: Readonly<Record<string, Uint8Array | null>>; err: readonly (string | RegExp)[] }> = [
+      {
+        name: 'ambient',
+        repo: SRC_REPO,
+        src: { 'shot.json': j({ ...json, ambient: [{ kind: 'flicker', mask: 'mask.flicker.0.png' }] }) },
+        err: ["assets: cafe/shot.json: ambient: not supported yet (a src shot's ambient is SH9's; declare none)"],
+      },
+      {
+        name: 'planes without a cast',
+        repo: {
+          ...SRC_REPO,
+          'story/shots.json': castless,
+          'server/content/build/shots.json': shotsUsage({ ch1: { shots: { cafe: castlessNeed }, assets: ['bg/cafe'] }, ch2: { shots: { cafe: castlessNeed }, assets: ['bg/cafe'] } }),
+        },
+        src: { 'shot.json': j({ ...json, layers: { plane_0: { kind: 'plane', char: null, mask: 'mask.plane.0.png', pivot: [540, 1800], depth: 0.9 } } }) },
+        err: ["assets: cafe: a plane layer in a shot without a cast (a cast-less src shot's sheet is not listed yet)"],
+      },
+      {
+        name: 'figure without its layer',
+        repo: {
+          ...SRC_REPO,
+          'story/shots.json': figured,
+          'server/content/build/shots.json': shotsUsage({
+            ch1: { ...SRC_CHAPTERS.ch1, shots: { cafe: figuredNeed([['neutral', true], ['smile', true]], 'ch1') } },
+            ch2: { ...SRC_CHAPTERS.ch2, shots: { cafe: figuredNeed([['surprised', false]], 'ch2') } },
+          }),
+        },
+        src: {},
+        err: ['assets: cafe: ally has figure: true but no figure layer (R9: a hop / bounce member is cut out)'],
+      },
+      {
+        name: 'a layer of no cast member',
+        repo: SRC_REPO,
+        src: { 'shot.json': j({ ...json, layers: { ...layers, hair_bob_0: { kind: 'hair', char: 'bob', mask: 'mask.hair.bob.0.png', pivot: [540, 400], depth: 0.6 } } }) },
+        err: ['assets: cafe/shot.json: layers.hair_bob_0.char: bob is not a cast member of cafe'],
+      },
+      {
+        name: 'a sheet over 2048',
+        repo: SRC_REPO,
+        src: Object.fromEntries([...large].filter(([name]) => name === 'original.png' || name === 'shot.json' || name.startsWith('mask.plane.'))),
+        err: [/^assets: sheet\/cafe does not fit 2048 × 2048 \(layer sizes \d+ × \d+(, \d+ × \d+)*\)$/],
+      },
+      {
+        name: 'an empty mask',
+        repo: SRC_REPO,
+        src: { 'mask.hair.ally.0.png': transparent },
+        err: ['assets: cafe/mask.hair.ally.0.png: empty'],
+      },
+      {
+        name: 'a src bg no shot shows',
+        repo: { ...SRC_REPO, 'server/content/build/shots.json': shotsUsage({ ch1: { shots: {}, assets: [] }, ch2: { shots: {}, assets: [] } }) },
+        src: {},
+        err: ['assets: bg/cafe: src shot/cafe is used, but server/content/build/shots.json shows no shot of it (run the story tool)'],
+      },
+    ];
+    const errs = new Map<string, readonly string[]>();
+    for (const c of cases) {
+      const root = join(repo, c.name.replaceAll(' ', '-'));
+      writeRepo(root, c.repo);
+      plantShot(root, base, c.src);
+      const calls: string[] = [];
+      const r = await runTool(root, recordingEncoders(FAKE_ENCODERS, calls));
+      errs.set(c.name, r.err);
+      expect(r.code, `${c.name}: ${r.err.join('\n')}`).toBe(1);
+      expect(r.err.length, `${c.name}: ${r.err.join('\n')}`).toBe(c.err.length);
+      c.err.forEach((want, i) => {
+        if (typeof want === 'string') {
+          expect(r.err[i], c.name).toBe(want);
+        } else {
+          expect(r.err[i], c.name).toMatch(want);
+        }
+      });
+      expect(calls, c.name).toEqual([]);
+      wroteNothing(root, c.name);
+    }
+    // The unpackable sheet lists both planes' sizes, each as wide as the plate.
+    expect((errs.get('a sheet over 2048') ?? []).join('\n').match(/1080 × \d+/g)).toHaveLength(2);
+  }, 120_000);
 
   test('assets: a loop prop packs its frames into one atlas with the loop rig in the manifest', async () => {
     // Shots §2.4 (W10): a loop prop's frames are one atlas `prop/<id>`, a plain image entry; its frame boxes and fps
