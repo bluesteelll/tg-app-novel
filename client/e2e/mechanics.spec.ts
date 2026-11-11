@@ -10,10 +10,12 @@ import {
   atRest,
   catalogTitle,
   chunkFile,
+  debugStats,
   enterManor,
   expect,
   grantChapter,
   holdRequests,
+  hotspot,
   hotspotLabel,
   itemName,
   launch,
@@ -305,4 +307,136 @@ test('mechanics: a hint ladder that cannot load plays its failure cue', async ({
   await expect(frame.getByRole('alert'), "the ladder's failure line").toHaveText(t('ru', 'hint.failed'), { timeout: CUE_MS });
   await expect.poll(() => played(page), { timeout: CUE_MS, message: 'the failure played' }).toContain('puzzle:hint-failed');
   expect([await counter(page, 'data-cue-orphans'), await counter(page, 'data-cue-fallbacks')], 'orphans, fallbacks').toEqual([0, 0]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM3b (engine plan §6.4): the drawer's open state is a picture of its own, and a room's state pictures are preloaded
+// after its neighbours' backgrounds (RULINGS 246 W1). All three run at the default phone viewport, where one client
+// px is one layout px.
+
+/** helpers.ts's step bound. */
+const STEP_MS = 20_000;
+
+/** The props the stage draws now, by id, with their stage boxes (`__novelDebug.propRects`). */
+const propRects = (page: Page): Promise<ReadonlyArray<{ prop: string; x: number; y: number; w: number; h: number }>> =>
+  page.evaluate(() => (window as unknown as E2eWindow).__novelDebug?.propRects() ?? []);
+
+/** The last wait of the views (`panel: null`) the stage played: a room or state batch's load hold. */
+const lastWait = async (page: Page): Promise<string | undefined> =>
+  (await played(page)).filter((k) => k === 'ui-state:waiting' || k === 'ui-state:waited').at(-1);
+
+/**
+ * Counts every request matching `url` from now on and, with `hold`, keeps each until `release()`. Routing disables the
+ * HTTP cache (Playwright's `route`), so every fetch of the file is counted.
+ */
+async function counted(page: Page, url: string, hold = false): Promise<{ count(): number; release(): void }> {
+  let n = 0;
+  let open = (): void => undefined;
+  const opened = hold ? new Promise<void>((resolve) => (open = resolve)) : Promise.resolve();
+  await page.route(url, async (route) => {
+    n += 1;
+    await opened;
+    await route.fallback();
+  });
+  return { count: () => n, release: () => open() };
+}
+
+/** `atRest` with the `held` loads allowed: no other load and no transition, on two reads 100 ms apart. */
+async function settledWith(page: Page, held: () => number): Promise<void> {
+  const still = async (): Promise<boolean> => {
+    const s = (await debugStats(page)).scene;
+    return s.pendingLoads === held() && s.activeTimelines === 0;
+  };
+  await expect
+    .poll(async () => (await still()) && (await page.waitForTimeout(100).then(still)), {
+      timeout: STEP_MS,
+      message: 'the scene at rest but for the held loads',
+    })
+    .toBe(true);
+}
+
+/** helpers.ts's private `solveCode` (each dial stepped up to its digit, then Try): no wait on rest. */
+async function solveDrawer(page: Page): Promise<void> {
+  const frame = puzzleFrame(page, 'drawer');
+  await expect(frame).toBeVisible({ timeout: STEP_MS });
+  for (const [i, want] of worldSolutions().drawer.entries()) {
+    const dial = frame.locator('.dial').nth(i);
+    const digit = dial.locator('.digit');
+    await expect(digit).toBeVisible({ timeout: STEP_MS });
+    for (let n = 0; n < 10 && Number(await digit.textContent()) !== want; n++) {
+      const before = await digit.textContent();
+      await dial.getByRole('button', { name: t('ru', 'puzzle.dial_up') }).tap();
+      await expect(digit).not.toHaveText(before ?? '');
+    }
+    await expect(digit).toHaveText(String(want));
+  }
+  await frame.getByRole('button', { name: t('ru', 'puzzle.try') }).tap();
+  await expect(frame).toBeHidden({ timeout: STEP_MS });
+}
+
+/** The open drawer's picture, drawn on the drawer's anchor: centred on the drawer's button (one box, cover-mapped). */
+async function drawerOpenAtAnchor(page: Page): Promise<boolean> {
+  const r = (await propRects(page)).find((x) => x.prop === 'drawer_open');
+  const b = await hotspot(page, 'study', 'drawer').boundingBox();
+  return r !== undefined && b !== null && Math.abs(r.x + r.w / 2 - (b.x + b.width / 2)) <= 1 && Math.abs(r.y + r.h / 2 - (b.y + b.height / 2)) <= 1;
+}
+
+test('mechanics: opening the drawer changes its picture at once', async ({ page }) => {
+  test.setTimeout(180_000);
+  await launch(page, 9710);
+  await startManor(page);
+  await enterManor(page);
+  await walk(page, 'hall', 'to_study', 'study', 'to_hall');
+  await tapHotspot(page, 'study', 'drawer');
+  expect((await propRects(page)).map((r) => r.prop), 'the shut drawer draws nothing').not.toContain('drawer_open');
+  await solveDrawer(page);
+  await expect.poll(() => played(page), { timeout: CUE_MS, message: 'the drawer solved' }).toContain('puzzle:solved');
+  // The close-up out, then the state batch: the open drawer is drawn on the drawer's anchor with no room change.
+  await expect.poll(() => drawerOpenAtAnchor(page), { timeout: CUE_MS, message: 'drawer_open at the drawer' }).toBe(true);
+  expect(await counter(page, 'data-cue-fallbacks'), 'fallbacks').toBe(0);
+});
+
+test('mechanics: a state picture that loads holds a motion at its anchor', async ({ page }) => {
+  test.setTimeout(180_000);
+  // The open drawer's picture held from its first request (the study's `state:` preload) until 1.5 s after the solve.
+  const open = await counted(page, '**/assets/prop-drawer_open-*', true);
+  await launch(page, 9711);
+  await startManor(page);
+  await enterManor(page);
+  await walk(page, 'hall', 'to_study', 'study', 'to_hall');
+  // The study's batch is over and its preload holds the picture (cut addendum W1): a raw tap, so no wait on rest.
+  await settledWith(page, open.count);
+  await hotspot(page, 'study', 'drawer').tap();
+  await solveDrawer(page);
+  await expect.poll(() => played(page), { timeout: CUE_MS, message: 'the drawer solved' }).toContain('puzzle:solved');
+  await page.waitForTimeout(1000);
+  expect(await lastWait(page), 'the state batch holds while its picture loads').toBe('ui-state:waiting');
+  await page.waitForTimeout(500);
+  open.release();
+  await expect.poll(() => lastWait(page), { timeout: CUE_MS, message: 'the hold ends when the picture lands' }).toBe('ui-state:waited');
+  await expect.poll(async () => (await propRects(page)).map((r) => r.prop), { timeout: CUE_MS, message: 'drawer_open drawn' }).toContain('drawer_open');
+  expect(await counter(page, 'data-cue-fallbacks'), 'fallbacks').toBe(0);
+});
+
+test("mechanics: the cellar's background is preloaded in the hall after the study", async ({ page }) => {
+  test.setTimeout(180_000);
+  const cellar = await counted(page, '**/assets/bg-cellar-*');
+  await launch(page, 9712);
+  await startManor(page);
+  await enterManor(page);
+  await atRest(page);
+  const live = [(await debugStats(page)).scene.liveBytes];
+  await walk(page, 'hall', 'to_study', 'study', 'to_hall');
+  await atRest(page);
+  const inStudy = cellar.count();
+  // Back in the hall: its neighbours' bgs come before the study's kept pictures, so the cellar's is admitted again.
+  await walk(page, 'study', 'to_hall', 'hall', 'to_cellar');
+  await atRest(page);
+  live.push((await debugStats(page)).scene.liveBytes);
+  console.log(`live texture bytes in the hall before and after the study: ${live.join(', ')}`);
+  expect(cellar.count(), "the hall preloaded the cellar's background again").toBeGreaterThan(inStudy);
+  const inHall = cellar.count();
+  await tapHotspot(page, 'hall', 'to_cellar'); // the cellar's onEnter: the voice
+  await reachLine(page, 'ch1.manor_cellar_voice.v007');
+  expect(cellar.count(), 'the cellar joined the live record').toBe(inHall);
 });
