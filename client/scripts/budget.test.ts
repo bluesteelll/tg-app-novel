@@ -1023,6 +1023,8 @@ type ChapterSpec = {
   assets: Record<string, AssetEntry>;
   /** knot → its assets and next knots; the first knot is the first key. */
   knots: Record<string, { assets: string[]; next: string[]; carried?: string[] }>;
+  /** build/shots.json's legacy flag for the chapter (absent: true, it names sprites). */
+  sprites?: boolean;
 };
 
 /** One window as build/shots.json writes it (shots §3.4 `Lookahead`); an unset term is empty. */
@@ -1080,7 +1082,8 @@ function shotUsageOf(chapters: Readonly<Record<string, ShotChapterSpec>>): ShotU
 
 /**
  * The legacy build/shots.json of `specs` (the pin C1 moves, shots §3.6): one `k:<knot>` window per knot holding the
- * knot's images, its one entry alternative those images, `sprites: true`; one cast-less need per bg of the specs.
+ * knot's images, its one entry alternative those images, `sprites: true` unless the spec says otherwise; one cast-less
+ * need per bg of the specs.
  */
 function legacyShots(specs: readonly ChapterSpec[]): ShotUsage {
   return shotUsageOf(
@@ -1089,7 +1092,7 @@ function legacyShots(specs: readonly ChapterSpec[]): ShotUsage {
         const images = (ids: readonly string[]): string[] => ids.filter((id) => !id.startsWith('bgm/') && !id.startsWith('sfx/'));
         const look = Object.fromEntries(Object.entries(s.knots).map(([k, v]) => [`k:${k}`, { cur: images(v.assets) }]));
         const entry = Object.fromEntries(Object.entries(s.knots).map(([k, v]) => [`k:${k}`, [images(v.assets)]]));
-        return [s.id, { look, entry, sprites: true }];
+        return [s.id, { look, entry, sprites: s.sprites ?? true }];
       }),
     ),
   );
@@ -2022,5 +2025,46 @@ describe('budget shots', () => {
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
+  });
+
+  test('budget: a shot chapter has no knot-set rows', () => {
+    // Rev. 3 (W5): a restaged chapter (`sprites: false`) is gated by its step windows, not by knot-set: a cinematic knot
+    // of 10 shots at the WebP limit would read 88.7 MiB as a knot set.
+    const names = Array.from({ length: 10 }, (_, i) => `s${i}`);
+    const cinema = (sprites: boolean): ChapterSpec[] =>
+      specsWith('ch1', (s) => {
+        for (const n of names) {
+          s.assets[`bg/${n}`] = img(`bg-${n}-0a0a0a0a`, 1080, 2048, 300_000, 450_000);
+        }
+        s.knots = { cinema: { assets: names.map((n) => `bg/${n}`), next: [] } };
+        s.sprites = sprites;
+      });
+    const rows = assetRows(assetInputs(cinema(false)));
+    expect(rows.filter((r) => r.name.startsWith('knot-set ch1/')).map((r) => r.name)).toEqual([]);
+    // The legacy chapter beside it keeps its rows.
+    expect(rowOf(rows, 'knot-set ch2/archive').status).toBe('PASS');
+    // Control: the same knot in a legacy chapter is a knot-set row, at 88.7 MiB.
+    const legacy = rowOf(assetRows(assetInputs(cinema(true))), 'knot-set ch1/cinema');
+    expect(legacy).toMatchObject({ status: 'FAIL', valueBytes: 10 * (1080 * 2048 * 4 + 450_000) });
+    expect(((legacy.valueBytes ?? 0) / MIB).toFixed(1)).toBe('88.7');
+  });
+
+  test('budget: a legacy chapter keeps its knot-set rows', () => {
+    // Rev. 3 (W5): a chapter that still names sprites keeps today's knot-set rows until it is restaged: a bg and five
+    // sprites in one knot hold 33.0 MiB, over.
+    const crowd = Array.from({ length: 5 }, (_, i) => `char/c${i}/neutral`);
+    const specs = specsWith('ch1', (s) => {
+      crowd.forEach((id, i) => {
+        s.assets[id] = img(`char-c${i}-neutral-0c0c0c0c`, 768, 1536, 100_000, 400_000);
+      });
+      s.knots['street'] = { assets: ['bg/street', ...crowd], next: [] };
+    });
+    const held = 1080 * 2048 * 4 + 150_000 + 5 * (768 * 1536 * 4 + 400_000);
+    expect((held / MIB).toFixed(1)).toBe('33.0');
+    const a = assetInputs(specs);
+    expect(rowOf(assetRows(a), 'knot-set ch1/street')).toMatchObject({ status: 'FAIL', unit: 'MiB', valueBytes: held });
+    // The safe side: a chapter build/shots.json does not list, and a story with no shot list, keep their rows too.
+    expect(rowOf(assetRows({ ...a, shots: shotUsageOf({}) }), 'knot-set ch1/street')).toMatchObject({ status: 'FAIL', valueBytes: held });
+    expect(rowOf(assetRows({ ...a, shotList: false, shots: null }), 'knot-set ch1/street')).toMatchObject({ status: 'FAIL', valueBytes: held });
   });
 });

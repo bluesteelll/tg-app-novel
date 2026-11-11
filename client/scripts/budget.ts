@@ -968,12 +968,23 @@ function carriedBound(carried: ReadonlyMap<AssetId, number>): number {
   return [...slots.values()].reduce((s, b) => s + b, 0);
 }
 
+/**
+ * Shots rev. 3 (W5): a chapter is legacy, on today's knot preload and its `knot-set` rows, until build/shots.json says
+ * it names no sprite (`sprites: false`). Without a shot list, or for a chapter build/shots.json lacks, it is legacy: the
+ * safe side keeps the rows.
+ */
+function isLegacy(a: AssetInputs, ch: ChapterId): boolean {
+  const cs = a.shots !== null && Object.hasOwn(a.shots.chapters, ch) ? a.shots.chapters[ch] : undefined;
+  return cs === undefined || cs.sprites;
+}
+
 function knotRows(a: AssetInputs, limits: Limits): Row[] {
   const rows: Row[] = [];
   if (a.usage === null) {
     return rows;
   }
-  for (const c of a.chapters) {
+  // A restaged chapter's images are gated by its step windows (shots §3.4), not by the knot that names them.
+  for (const c of a.chapters.filter((ch) => isLegacy(a, ch.id))) {
     const knots = a.usage.chapters[c.id]?.knots;
     if (c.manifest === null || knots === undefined) {
       continue; // a missing manifest or usage chapter is an `asset inputs` problem
