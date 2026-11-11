@@ -338,6 +338,16 @@ function featheredNoise(w: number, h: number): Raster {
   return { data, w, h };
 }
 
+/** A src loop's frame `i` (cut rider R-b): `featheredNoise` with its red channel turned per frame, so frames differ. */
+function loopFrame(i: number, w: number, h: number): Raster {
+  const r = featheredNoise(w, h);
+  const data = Uint8Array.from(r.data);
+  for (let p = 0; p < data.length; p += 4) {
+    data[p] = ((data[p] ?? 0) + 41 * i) & 255;
+  }
+  return { data, w, h };
+}
+
 /**
  * A fake codec for the q search (RULINGS 267): each AVIF call answers `bytes(w, q)` zero bytes that decode to the tier's
  * px as given when `pass(w, q)`, else with their alpha clamped; `calls` records `<w>:<q>` per AVIF call in order, `out`
@@ -2133,12 +2143,91 @@ describe('assets', () => {
     expect(loops.ok ? [...loops.value.keys()] : loops.error).toEqual(['fire']);
     const ch1 = readRel(repo, 'client/src/story-gen/free/ch1.assets.json');
     expect(ch1).not.toContain('fire');
-    // The src form waits for extraction like a src bg.
-    writeRepo(repo, { 'assets/catalog.json': { ...catalog, prop: { ...catalog.prop, fire: { loop: { src: 'loop/fire', fps: 6 } } } }, 'server/content/build/usage.json': usage });
-    const src = await runTool(repo, HALVING_FAKES);
-    expect(src.code).toBe(1);
-    expect(src.err).toEqual(['assets: prop/fire: src loop/fire waits for extraction (SH3c)']);
   });
+
+  test('assets: a src loop prop packs its frames into one atlas', async () => {
+    // Shots §2.4 / §4.4 (cut rider R-b, RULINGS 267): `assets/src/loop/fire/0.png .. 5.png`, six 96 × 64 frames with a
+    // feathered alpha, are packed into one atlas `prop/fire` like a placeholder's, encoded from px with its AVIF q
+    // searched from 50, and the manifest's loop rig names each frame's box. R6 holds on the shipped bytes.
+    const catalog = { ...REPO_CATALOG, prop: { ...REPO_CATALOG.prop, fire: { loop: { src: 'loop/fire', fps: 8 } } } };
+    const usage = { chapters: { ...REPO_USAGE.chapters, ch1: { ...REPO_USAGE.chapters.ch1, worldAssets: ['prop/fire'] } } };
+    writeRepo(repo, { 'assets/catalog.json': catalog, 'server/content/build/usage.json': usage });
+    const frames = Array.from({ length: 6 }, (_, i) => loopFrame(i, 96, 64));
+    for (const [i, f] of frames.entries()) {
+      plant(repo, `assets/src/loop/fire/${i}.png`, await sharp(f.data, { raw: { width: f.w, height: f.h, channels: 4 } }).png().toBuffer());
+    }
+    const seen: { id: string; q: number; search: boolean }[] = [];
+    const recording: Encoders = {
+      ...FAKE_ENCODERS,
+      encodeRaster: (px, o, codec) => {
+        seen.push({ id: o.id, q: o.q, search: o.search });
+        return encodeRaster(px, o, codec);
+      },
+    };
+    const r = await runTool(repo, recording);
+    expect(r.code, r.err.join('\n')).toBe(0);
+    expect(seen).toEqual([{ id: 'prop/fire', q: 50, search: true }]);
+    const ch1 = JSON.parse(readRel(repo, 'client/src/story-gen/free/ch1.assets.json')) as { assets: Record<string, RawEntry>; loops: unknown };
+    const loops = decodeLoops(ch1.loops);
+    expect(loops.ok ? [] : loops.error).toEqual([]);
+    const fire = loops.ok ? loops.value.get('fire' as PropId) : undefined;
+    expect(fire?.fps).toBe(8);
+    expect(fire?.frames.map(([, , w, h]) => [w, h])).toEqual(Array.from({ length: 6 }, () => [96, 64]));
+    const entry = ch1.assets['prop/fire'];
+    const [w, h] = [Number(entry?.['w']), Number(entry?.['h'])];
+    expect([w % 2, h % 2, w <= 2048 && h <= 2048]).toEqual([0, 0, true]);
+    // The atlas the tool encoded, rebuilt from the frames at the rig's boxes: its shipped AVIF and WebP, full and half,
+    // keep alpha within 8/255 at every px.
+    const atlas = new Uint8Array(w * h * 4);
+    (fire?.frames ?? []).forEach(([x, y], i) => {
+      const f = frames[i];
+      for (let row = 0; f !== undefined && row < f.h; row++) {
+        atlas.set(f.data.subarray(row * f.w * 4, (row + 1) * f.w * 4), ((y + row) * w + x) * 4);
+      }
+    });
+    const source: Raster = { data: atlas, w, h };
+    const half = entry?.['half'] as RawEntry | undefined;
+    expect(half?.['w']).toBe(w / 2);
+    const shipped = (e: RawEntry | undefined, f: 'avif' | 'webp'): Uint8Array => {
+      const url = String((e?.[f] as { url?: unknown } | undefined)?.url);
+      return readFileSync(join(repo, 'client', 'public', 'assets', url.slice(url.lastIndexOf('/') + 1)));
+    };
+    for (const [tier, e, px] of [['full', entry, source], ['half', half, halfOf(source)]] as const) {
+      for (const f of ['avif', 'webp'] as const) {
+        expect(alphaProblems(`prop/fire ${tier} ${f}`, await decodeRaster(shipped(e, f)), px)).toEqual([]);
+      }
+    }
+  }, 60_000);
+
+  test('assets: a src loop frame over 512 x 512 is refused', async () => {
+    // Shots §4.4 (cut rider R-b, the loop-frame carry): a src loop's frames are 0.png .. <n-1>.png, 1..12 of them, one
+    // size, each side even and at most 512. Each case is one input problem by name: no encode, nothing written.
+    const catalog = { ...REPO_CATALOG, prop: { ...REPO_CATALOG.prop, fire: { loop: { src: 'loop/fire', fps: 8 } } } };
+    const usage = { chapters: { ...REPO_USAGE.chapters, ch1: { ...REPO_USAGE.chapters.ch1, worldAssets: ['prop/fire'] } } };
+    const png = (w: number, h: number): Promise<Buffer> => {
+      const f = loopFrame(0, w, h);
+      return sharp(f.data, { raw: { width: f.w, height: f.h, channels: 4 } }).png().toBuffer();
+    };
+    const cases: ReadonlyArray<{ name: string; sizes: ReadonlyArray<readonly [number, number]>; err: string }> = [
+      { name: 'over 512', sizes: [[514, 512], [514, 512]], err: 'assets: prop/fire: assets/src/loop/fire: frames of 514 × 512 (shots §4.4: each side even and at most 512)' },
+      { name: '13 frames', sizes: Array.from({ length: 13 }, () => [96, 64] as const), err: 'assets: prop/fire: assets/src/loop/fire has 13 frames (shots §4.4: 1..12)' },
+      { name: 'two sizes', sizes: [[96, 64], [98, 64]], err: 'assets: prop/fire: assets/src/loop/fire: frames of 96 × 64, 98 × 64 (shots §4.4: one size)' },
+      { name: 'an odd side', sizes: [[95, 64]], err: 'assets: prop/fire: assets/src/loop/fire: frames of 95 × 64 (shots §4.4: each side even and at most 512)' },
+    ];
+    for (const c of cases) {
+      const root = join(repo, c.name.replaceAll(' ', '-'));
+      writeRepo(root, { 'assets/catalog.json': catalog, 'server/content/build/usage.json': usage });
+      for (const [i, [w, h]] of c.sizes.entries()) {
+        plant(root, `assets/src/loop/fire/${i}.png`, await png(w, h));
+      }
+      const calls: string[] = [];
+      const r = await runTool(root, recordingEncoders(FAKE_ENCODERS, calls));
+      expect(r.code, c.name).toBe(1);
+      expect(r.err, c.name).toEqual([c.err]);
+      expect(calls, c.name).toEqual([]);
+      wroteNothing(root, c.name);
+    }
+  }, 60_000);
 
   test('assets: a chapter manifest carries only the rigs, members and files its chapter uses', async () => {
     // Shots §4.5 (CH D5): each chapter's manifest holds a rig per shot it shows, with only the expressions it shows and

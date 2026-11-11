@@ -419,6 +419,49 @@ export function loopAtlas(id: AssetId, hue: number, frames: number): PackedFile 
   return packFile(id, items);
 }
 
+/** A loop's frame count bound (shots §4.4; catalog.ts's `LOOP_FRAMES` for a placeholder's). */
+const LOOP_MAX_FRAMES = 12;
+
+/**
+ * Shots §4.4 (cut rider R-b), a `src` loop's frames as found in `assets/src/<src>/` (`<name>.png` → its size): exactly
+ * `0.png` .. `<n-1>.png`, 1..12 of them, one size, each side even and at most 512. One problem by name, the first that
+ * holds, so the half tier halves every frame exactly and the atlas fits 2048 × 2048.
+ */
+export function loopFrameProblems(id: AssetId, src: string, frames: ReadonlyMap<string, { readonly w: number; readonly h: number }>): string[] {
+  const dir = `assets/src/${src}`;
+  const n = frames.size;
+  if (n === 0) {
+    return [`${id}: ${dir} has no frame (shots §4.4: 0.png .. <n-1>.png, 1..12 frames)`];
+  }
+  if (n > LOOP_MAX_FRAMES) {
+    return [`${id}: ${dir} has ${n} frames (shots §4.4: 1..${LOOP_MAX_FRAMES})`];
+  }
+  const stray = [...frames.keys()].filter((name) => !/^(0|[1-9][0-9]*)\.png$/.test(name) || Number(name.slice(0, -4)) >= n).sort();
+  if (stray.length > 0) {
+    return [`${id}: ${dir}: ${stray.join(', ')} not in 0.png .. ${n - 1}.png (shots §4.4: frames numbered from 0, contiguous)`];
+  }
+  const sizes = [...new Set(Array.from({ length: n }, (_, i) => frames.get(`${i}.png`)).map((f) => `${f?.w ?? 0} × ${f?.h ?? 0}`))];
+  if (sizes.length > 1) {
+    return [`${id}: ${dir}: frames of ${sizes.join(', ')} (shots §4.4: one size)`];
+  }
+  const { w, h } = frames.get('0.png') ?? { w: 0, h: 0 };
+  return w % 2 === 0 && h % 2 === 0 && w <= LOOP_FRAME && h <= LOOP_FRAME
+    ? []
+    : [`${id}: ${dir}: frames of ${w} × ${h} (shots §4.4: each side even and at most ${LOOP_FRAME})`];
+}
+
+/**
+ * Shots §2.4 / §4.4, a `src` loop prop's atlas `prop/<id>`: its frames (`loopFrameProblems` holds), frame i at key
+ * `frame/<i>`, packed like a placeholder's; generic over the fill, so the tool packs from sizes and draws the px only
+ * when the atlas is encoded.
+ */
+export function srcLoopAtlas<F>(id: AssetId, frames: readonly { readonly w: number; readonly h: number; readonly fill: F }[]): PackedFile<F> {
+  return packFile(
+    id,
+    frames.map((f, i): Item<F> => ({ key: `frame/${i}`, layer: { box: [0, 0, f.w, f.h], fill: f.fill } })),
+  );
+}
+
 /** The manifest's loop rig of an atlas (§4.5 `LoopRig`): its frames' boxes in frame order, and the fps. */
 export function loopRig(atlas: PackedFile<unknown>, fps: number): LoopRig {
   return { frames: atlas.items.map((it) => it.frame), fps };

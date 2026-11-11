@@ -15,7 +15,7 @@ import type { AssetId, BgId, ChapterId } from '../src/story/staging.ts';
 import type { WorldSource } from '../src/world/types.ts';
 import { decodeDepth, decodeRaster, encodeImage, encodeRaster, halfRgba, imageFacts } from './assets/encode.ts';
 import type { EncodedImage, HalfAsk } from './assets/encode.ts';
-import { alphaProblems, cropRaster, decodeShotSource, extractShot, roomPropRects } from './assets/extract.ts';
+import { DEFAULT_Q, alphaProblems, cropRaster, decodeShotSource, extractShot, roomPropRects } from './assets/extract.ts';
 import type { RoomRect } from './assets/extract.ts';
 import {
   ASSET_OUT,
@@ -38,6 +38,7 @@ import {
   faceNeedProblems,
   facesOf,
   loopAtlas,
+  loopFrameProblems,
   loopRig,
   manifestLook,
   packProblems,
@@ -48,6 +49,7 @@ import {
   shotFileRaster,
   shotFileSvg,
   shotRig,
+  srcLoopAtlas,
 } from './assets/shots.ts';
 import type { ChapterNeed, PackedFile, Raster, ShotLayers, ShotPack } from './assets/shots.ts';
 import { synthWav } from './assets/synth.ts';
@@ -291,6 +293,44 @@ async function packShots(root: string, usage: ShotUsage, list: ShotList, catalog
 }
 
 /**
+ * A `src` loop prop's atlas (shots §4.4, cut rider R-b) from `assets/src/<src>/`: every PNG there an 8-bit PNG (D5) by
+ * its header, the frames checked (`loopFrameProblems`), then packed from their sizes; each frame's fill is its file,
+ * decoded only when the atlas is encoded (`loopRaster`). Every problem is returned by name, nothing thrown.
+ */
+async function srcLoop(root: string, atlas: AssetId, src: string): Promise<Result<PackedFile<string>, string[]>> {
+  const dir = path.join(root, 'assets', 'src', ...src.split('/'));
+  const names = existsSync(dir) ? readdirSync(dir).filter((n) => n.endsWith('.png')).sort() : [];
+  const sizes = new Map<string, { readonly w: number; readonly h: number }>();
+  const formats: string[] = [];
+  for (const name of names) {
+    const f = await imageFacts(readFileSync(path.join(dir, name)));
+    if (f === null || f.format !== 'png' || f.depth !== 'uchar') {
+      formats.push(`${atlas}: assets/src/${src}/${name}: ${f === null ? 'not an image' : `${f.format}, ${f.depth}`}, not an 8-bit PNG (D5)`);
+    } else {
+      sizes.set(name, { w: f.w, h: f.h });
+    }
+  }
+  const problems = formats.length > 0 ? formats : loopFrameProblems(atlas, src, sizes);
+  if (problems.length > 0) {
+    return { ok: false, error: problems };
+  }
+  const frames = Array.from({ length: sizes.size }, (_, i) => {
+    const size = sizes.get(`${i}.png`);
+    if (size === undefined) {
+      throw new Error(`invariant: ${atlas}'s frames are 0.png .. ${sizes.size - 1}.png (loopFrameProblems)`);
+    }
+    return { ...size, fill: path.join(dir, `${i}.png`) };
+  });
+  return { ok: true, value: srcLoopAtlas(atlas, frames) };
+}
+
+/** A `src` loop atlas as RGBA px: each frame's file decoded and drawn at its box (one atlas at a time). */
+async function loopRaster(file: PackedFile<string>): Promise<Raster> {
+  const items = await Promise.all(file.items.map(async (it) => ({ ...it, fill: await decodeRaster(readFileSync(it.fill)) })));
+  return shotFileRaster({ ...file, items });
+}
+
+/**
  * The shipped bytes of an alpha file against its source px, both tiers, AVIF and WebP (R6, D9): the tool's own check,
  * whatever the `Encoders` seam did between (RULINGS 267 keeps it beside the search).
  */
@@ -409,17 +449,29 @@ export async function main(argv: readonly string[], root: string, encoders: Enco
       problems.push(`bg/${id}: src ${bg.src} needs ${SHOTS_FILE} (a src shot's cast and needs come from the shot list)`);
     }
   }
-  // Shots §2.4 (W10): a loop prop's frames are one atlas `prop/<id>`; a placeholder's is synthesized here, a src one waits.
-  const loops = new Map<AssetId, { readonly atlas: PackedFile; readonly fps: number }>();
+  // Shots §2.4 (W10): a loop prop's frames are one atlas `prop/<id>`; a placeholder's is synthesized here, a src one
+  // packed from its frame files (§4.4, cut rider R-b) and encoded from px like a shot file, its q searched from 50.
+  const loops = new Map<AssetId, { readonly atlas: PackedFile<unknown>; readonly fps: number }>();
+  const loopSvgs = new Map<AssetId, PackedFile>();
+  const loopRasters = new Map<AssetId, RasterJob>();
   for (const [id, prop] of Object.entries(source?.prop ?? {})) {
     const atlas = `prop/${id}` as AssetId; // a catalog prop id
     if (!('loop' in prop)) {
       continue;
     }
     if ('src' in prop.loop) {
-      problems.push(`${atlas}: src ${prop.loop.src} waits for extraction (SH3c)`);
+      const r = await srcLoop(root, atlas, prop.loop.src);
+      if (r.ok) {
+        const file = r.value;
+        loops.set(atlas, { atlas: file, fps: prop.loop.fps });
+        loopRasters.set(atlas, { px: () => loopRaster(file), q: DEFAULT_Q, search: true });
+      } else {
+        problems.push(...r.error);
+      }
     } else {
-      loops.set(atlas, { atlas: loopAtlas(atlas, prop.loop.placeholder.hue, prop.loop.placeholder.frames), fps: prop.loop.fps });
+      const file = loopAtlas(atlas, prop.loop.placeholder.hue, prop.loop.placeholder.frames);
+      loops.set(atlas, { atlas: file, fps: prop.loop.fps });
+      loopSvgs.set(atlas, file);
     }
   }
   // Shots §2.4: with a shot list, the effective catalog (an implied placeholder bg per declared shot it lacks, SH2's
@@ -488,11 +540,11 @@ export async function main(argv: readonly string[], root: string, encoders: Enco
     }
     const image = catalogImage(catalog, id);
     const audio = catalogAudio(catalog, id);
-    const raster = packing.rasters.get(id);
-    const packed = packing.svgFiles.get(id) ?? loops.get(id)?.atlas;
+    const raster = packing.rasters.get(id) ?? loopRasters.get(id);
+    const packed = packing.svgFiles.get(id) ?? loopSvgs.get(id);
     if (raster !== undefined) {
-      // A `src` shot's plate (opaque: its q exactly) or packed file (RULINGS 267: its AVIF q searched against R6), then
-      // the tool's own R6 on the shipped bytes; never trimmed, its half pair like any bg (§4.4).
+      // A `src` shot's plate (opaque: its q exactly), its packed file or a `src` loop atlas (RULINGS 267: its AVIF q
+      // searched against R6), then the tool's own R6 on the shipped bytes; never trimmed, its half pair like any bg (§4.4).
       const px = await raster.px();
       const r = await toRaster(px, { id, half: halfAsk(id, tier), q: raster.q, search: raster.search });
       if (!r.ok) {
