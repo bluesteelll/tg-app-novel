@@ -3,11 +3,13 @@
 // shows, and every reducer effect leaves through `onEffect` to GameSession (app/yields.ts, L15). It reaches the world
 // only through `reduce` / `admitSection` / `admitEvent` (principle 7) and lives in the explore-ui chunk with the
 // components (X14), the one importer of the rules half (mechanics/rules/, the `rules-lazy` arch rule).
+import type { VisualDiff } from '../cues/types.ts';
 import { ROOM_SOURCE, cover, minTarget, toStage } from '../geom/cover.ts';
-import type { Size } from '../geom/cover.ts';
-import type { SectionAction } from '../mechanics/contract.ts';
+import type { Box, Size } from '../geom/cover.ts';
+import type { AnchorKey, PropView, SectionAction } from '../mechanics/contract.ts';
 import { reduce } from '../mechanics/rules/core.ts';
 import { admitEvent, admitSection } from '../mechanics/rules/search.ts';
+import { visualsOf } from '../mechanics/rules/visual.ts';
 import type { SceneController } from '../scene/controller.ts';
 import type { AssetManifest } from '../story/catalog.ts';
 import type { AssetId, BgId, SectionId } from '../story/staging.ts';
@@ -52,6 +54,18 @@ export interface ExploreController {
   reveal(): void;
   /** Recomputes every view text after a language change (principle 8); no action, no effect. */
   relabel(): void;
+  /** The room's picture in the current state (engine plan §6.4): every module's anchor views, back to front. */
+  visualsOf(room: RoomId): readonly PropView[];
+  /**
+   * The stage box of anchor `at` of the current room: the cover mapping with no minimum tap target. Null while the stage
+   * has no size, or when `at` is no anchor of the current room's picture.
+   */
+  anchorBox(at: AnchorKey): Box | null;
+  /**
+   * Where a state batch's load holds (§6.4 round 13): at the first anchor of `diff`, in draw order, whose new view draws
+   * an image; none draws one: `'no-load'`, the batch adds no image.
+   */
+  stateHold(diff: readonly VisualDiff[]): { readonly box: Box | null } | 'no-load';
   state(): WorldState;
   onEffect(fn: (e: ExploreEffect) => void): Unsubscribe;
   /** Idempotent: releases `room:*`, disconnects the observer, clears the reveal timer, drops the listeners, empties its views. */
@@ -128,6 +142,17 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
       });
     }
     return out;
+  };
+
+  /** The current room's anchor views (engine plan §6.4); none outside a section. */
+  const views = (): readonly PropView[] => {
+    const room = current.section === null ? null : current.room;
+    return room === null ? [] : visualsOf(world, current, room);
+  };
+
+  const anchorBox = (at: AnchorKey): Box | null => {
+    const v = views().find((x) => x.at === at);
+    return v === undefined || stage.w <= 0 || stage.h <= 0 ? null : toStage(v.rect, cover(stage, ROOM_SOURCE));
   };
 
   /** D9: the distinct rooms R's exits lead to, in hotspot order; locked exits included, story exits and R not. */
@@ -396,6 +421,18 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
         revealTimer = null;
         view.reveal = false;
       }, REVEAL_MS);
+    },
+    visualsOf: (room) => visualsOf(world, current, room),
+    anchorBox,
+    stateHold(diff) {
+      const now = views();
+      for (const d of diff) {
+        const v = now.find((x) => x.at === d.at); // an anchor that left the picture is absent: it draws nothing
+        if (v !== undefined && (v.prop !== null || v.patch !== null)) {
+          return { box: anchorBox(d.at) };
+        }
+      }
+      return 'no-load';
     },
     state: () => current,
     onEffect(fn) {

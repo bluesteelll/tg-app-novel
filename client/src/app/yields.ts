@@ -13,7 +13,7 @@ import type { Clock } from '../api/http.ts';
 import type { AudioCommand } from '../audio/manager.ts';
 import { createCueBus } from '../cues/bus.ts';
 import type { CueBus } from '../cues/bus.ts';
-import type { Cue, CueEvent, MoveHow, PuzzleCue } from '../cues/types.ts';
+import type { Cue, CueEvent, MoveHow, PuzzleCue, VisualDiff } from '../cues/types.ts';
 import type { ExploreController, createExploreController } from '../explore/controller.ts';
 import { project } from '../explore/project.ts';
 import { runReduce, worldIndex } from '../explore/reduce.ts';
@@ -23,7 +23,7 @@ import type { PuzzleOutcome, PuzzleRun, WorldState } from '../explore/state.ts';
 import type { Box } from '../geom/cover.ts';
 import { t } from '../i18n/index.ts';
 import { mechT } from '../i18n/mechanics.ts';
-import type { AnchorKey, Cause, CauseVerb, MechanicId, SectionAction } from '../mechanics/contract.ts';
+import type { AnchorKey, Cause, CauseVerb, MechanicId, PropView, SectionAction, StateName } from '../mechanics/contract.ts';
 import type { MECHANIC_RULES } from '../mechanics/rules/index.ts';
 import { loadPuzzleUi } from '../puzzles/registry.ts';
 import type { ChunkError } from '../puzzles/registry.ts';
@@ -34,18 +34,18 @@ import type { VisualCommand } from '../scene/executor.ts';
 import type { StatsReporter } from '../stats/reporter.ts';
 import type { LoadedChapter, Result } from '../story/catalog.ts';
 import type { RunnerError, StoryRunner } from '../story/runner.ts';
-import type { KnotName, PropPlacement, PuzzleLocalId, SectionId, StagingSnapshot, VarName, YieldCommand } from '../story/staging.ts';
+import type { BgId, KnotName, PropPlacement, PuzzleLocalId, SectionId, StagingSnapshot, VarName, YieldCommand } from '../story/staging.ts';
 import type { TelegramClient } from '../telegram/index.ts';
 import type { ExploreLayerActions, ExploreLayerProps, ExploreViewStore } from '../ui/explore-view.svelte.ts';
 import { backScreen, coversStage } from '../ui/puzzle-view.svelte.ts';
 import type { HintLadderUiView, PuzzleFrameView, PuzzleHostCallbacks, PuzzleHostProps, PuzzleView } from '../ui/puzzle-view.svelte.ts';
 import type { ScreenKind, Screens, ScreensView } from '../ui/screens.ts';
 import type { CueStageProps, CueStageSlot, ViewModel } from '../ui/state.svelte.ts';
-import type { Gift, HotspotKey, ItemId, Room, RoomId, WorldPublic, WorldText } from '../world/types.ts';
+import type { Gift, HotspotKey, ItemId, RoomId, WorldPublic, WorldText } from '../world/types.ts';
 
 /** X12: the door fade of a room batch. */
 export const ROOM_FADE_MS = 400;
-/** B-001 / X11: a take's prop fades out of the room on screen over this long; the bg already shown stays. */
+/** B-001 / X11 / §6.4: a state batch (a taken prop leaving included) crossfades the props over this long; the bg stays. */
 export const TAKE_FADE_MS = 300;
 /** The close-up's fade in and out (a puzzle with a `closeup`). */
 export const CLOSEUP_FADE_MS = 300;
@@ -160,6 +160,12 @@ export interface Yields {
   /** The world a save body carries now. */
   world(): WorldState;
   /**
+   * Engine plan §8.7: the state commands of the room of the current section that `bg` shows, built as its room batch
+   * builds them: the current room when its bg is `bg`, else the first such room in declaration order. Null when no room
+   * of the section has that bg, when no section is open, or before the explore chunk's controller exists (Q5).
+   */
+  roomFor(bg: BgId): readonly VisualCommand[] | null;
+  /**
    * A resume's world; a non-null `reset` is a section that restarted (X9: the area-reset toast). `at` is the yield
    * of the resumed step, if it is one. The rooms leave the screen with the step they belonged to: the layer, its
    * panels and the root-back. An explore yield re-enters them with this controller; any other step drops the
@@ -188,22 +194,29 @@ const runOf = (s: WorldState, p: PuzzleLocalId): PuzzleRun =>
   (Object.hasOwn(s.puzzles, p) ? s.puzzles[p] : undefined) ?? { outcome: null, attempts: 0, hintsOpened: 0 };
 
 /**
- * X11: the props a room shows, at their hotspot rects, each anchored at its hotspot key (engine plan §5.2, R-A4); a
- * taken `take` is gone from the picture.
+ * X11 and engine plan §6.4: a room's picture as the props command draws it, back to front, each placement keyed by its
+ * anchor (§5.2, R-A4): an anchor's base (no `part`), then its patch over it. A view that draws nothing places nothing.
  */
-function roomProps(room: RoomId, r: Room, s: WorldState): PropPlacement[] {
-  const out: PropPlacement[] = [];
-  for (const h of r.hotspots) {
-    if ((h.kind === 'take' || h.kind === 'object') && h.prop !== null) {
-      const key = `${room}.${h.id}`; // reduce.ts `hotspotKey`, the `<room>.<hotspot>` form of an AnchorKey
-      const taken = h.kind === 'take' && s.taken.includes(key as HotspotKey);
-      if (!taken) {
-        out.push({ prop: h.prop, rect: h.rect, at: key as AnchorKey });
-      }
-    }
-  }
-  return out;
-}
+const placementsOf = (views: readonly PropView[]): PropPlacement[] =>
+  views.flatMap((v) => [
+    ...(v.prop === null ? [] : [{ prop: v.prop, rect: v.rect, at: v.at }]),
+    ...(v.patch === null ? [] : [{ prop: v.patch.prop, rect: v.patch.rect, at: v.at, part: 'patch' as const }]),
+  ]);
+
+/**
+ * §6.4 "Per-dispatch diff": the anchors whose state a dispatch changed, in draw order; one that left the picture (a
+ * taken take) or joined it has null on that side.
+ */
+const diffOf = (before: readonly PropView[], after: readonly PropView[]): VisualDiff[] => {
+  const stateIn = (views: readonly PropView[], at: AnchorKey): StateName | null => views.find((v) => v.at === at)?.state ?? null;
+  return [...before, ...after.filter((v) => stateIn(before, v.at) === null)]
+    .sort((a, b) => a.z - b.z)
+    .flatMap((v) => {
+      const from = stateIn(before, v.at);
+      const to = stateIn(after, v.at);
+      return from === to ? [] : [{ at: v.at, from, to }];
+    });
+};
 
 /**
  * The stage already shows these placements: the same prop at the same rect on the same anchor, in order. An absent
@@ -396,10 +409,18 @@ export function createYields(h: YieldsHost): Yields {
   type RoomJob = { readonly room: RoomId; readonly sfx: Extract<ExploreEffect, { kind: 'room' }>['sfx']; readonly move: CueEvent; cues: readonly CueEvent[] };
   /**
    * One controller entry (D8): its cause, the box of the hotspot it acts on, how a move it makes enters its room, the
-   * cues it maps, and the first room job it pushes, which carries them to its batch's start (§8.1 round 5).
+   * cues it maps, the first room job it pushes, which carries them to its batch's start (§8.1 round 5), and the room's
+   * visual diff, which every cue it maps carries (§6.4).
    */
-  type Scope = { readonly cause: Cause; readonly box: Box | null; readonly how: MoveHow; readonly cues: CueEvent[] | null; job: RoomJob | null };
-  const AT_ONCE: Scope = { cause: cause('trigger'), box: null, how: 'walk', cues: null, job: null };
+  type Scope = {
+    readonly cause: Cause;
+    readonly box: Box | null;
+    readonly how: MoveHow;
+    readonly cues: CueEvent[] | null;
+    job: RoomJob | null;
+    diff: readonly VisualDiff[];
+  };
+  const AT_ONCE: Scope = { cause: cause('trigger'), box: null, how: 'walk', cues: null, job: null, diff: [] };
   let scope = AT_ONCE;
   /** The room the last batch showed: a move's `from`. */
   let shown: RoomId | null = null;
@@ -416,14 +437,15 @@ export function createYields(h: YieldsHost): Yields {
   };
   /** Runs one controller entry; the box is read before it, while the hotspot it acts on is still shown. */
   const scoped = <T>(cause: Cause, run: () => T, how: MoveHow = 'walk'): T => {
-    const s: Scope = { cause, box: explore.hotspots.find((v) => v.key === cause.at)?.css ?? null, how, cues: [], job: null };
+    const s: Scope = { cause, box: explore.hotspots.find((v) => v.key === cause.at)?.css ?? null, how, cues: [], job: null, diff: [] };
     scope = s;
     const out = run();
     scope = AT_ONCE;
+    const cues = (s.cues ?? []).map((e) => ({ ...e, diff: s.diff })); // the diff is known once the entry has run
     if (s.job !== null) {
-      s.job.cues = s.cues ?? [];
+      s.job.cues = cues;
     } else {
-      for (const e of s.cues ?? []) {
+      for (const e of cues) {
         bus.emit(e);
       }
     }
@@ -527,14 +549,12 @@ export function createYields(h: YieldsHost): Yields {
         vm.showToast({ kind: 'note', key: 'look', message: h.text(e.text), sticky: false }); // its cue is the writer's
         return;
       case 'got': {
-        // Its fact cue is the writer's (a `cue` effect), which carries K51's success haptic in its row (D6).
-        const g = e.gift;
-        const name = w === null ? null : giftName(g, w);
+        // Its fact cue is the writer's (a `cue` effect), which carries K51's success haptic in its row (D6). A taken
+        // prop leaves the stage by the dispatch's state batch (`act`).
+        const name = w === null ? null : giftName(e.gift, w);
         if (name !== null) {
           vm.showToast({ kind: 'note', key: 'got', message: name, sticky: false });
         }
-        const box = scope.box;
-        jobs.push(() => takeBatch(box)); // B-001: before a `then`'s room or knot job, so the prop goes first
         return;
       }
       case 'lock':
@@ -596,15 +616,24 @@ export function createYields(h: YieldsHost): Yields {
    * results reach the lock), else the kernel's `runReduce` here (a linear puzzle's run, which no section holds). Taps,
    * inserts and uses come only from the explore layer, which exists only with a controller, so nothing else is written
    * here. A selected item the action took out of the hands leaves the selection, with no cue of its own: the action's
-   * cues show where it went.
+   * cues show where it went. A dispatch that changes the picture of its room, the room staying current, queues one state
+   * batch (§6.4) ahead of its own jobs, so a `then`'s room or knot job runs after the change is on screen (B-001).
    */
   const act = (a: SectionAction): void => {
     scoped(causeOf(a, h.chapter()?.world ?? null), () => {
       const c = controller;
       if (c !== null && world.section !== null) {
+        const room = world.room;
+        const before = room === null ? [] : c.visualsOf(room);
+        const first = jobs.length;
         c.dispatch(a);
         world = c.state();
         followLock();
+        const diff = room === null || world.room !== room ? [] : diffOf(before, c.visualsOf(room));
+        if (diff.length > 0) {
+          scope.diff = diff;
+          jobs.splice(first, 0, () => stateBatch(diff));
+        }
         return;
       }
       const w = h.chapter()?.world ?? null;
@@ -638,6 +667,12 @@ export function createYields(h: YieldsHost): Yields {
   // -------------------------------------------------------------------------------------------------------------
   // Room batches (F7 step 1, X11, X12, D20)
 
+  /**
+   * The one builder of a room's props (engine plan §6.4; `roomBatch`, the state batch and `roomFor` read it): the
+   * controller's views of the room in the current state, as placements. Null without a controller (Q5).
+   */
+  const propsOf = (room: RoomId): PropPlacement[] | null => (controller === null ? null : placementsOf(controller.visualsOf(room)));
+
   const roomBatch = async (j: RoomJob): Promise<void> => {
     const { room, sfx } = j;
     // §8.1 round 5: the move cue, then the cues of the entry that moved, when the batch starts.
@@ -649,11 +684,11 @@ export function createYields(h: YieldsHost): Yields {
     const ch = h.chapter();
     const w = ch?.world ?? null;
     const entry = w === null ? undefined : indexOf(w).rooms.get(room);
-    if (w === null || entry === undefined) {
+    const props = propsOf(room); // a room job is pushed only by the controller's listener: never null in practice
+    if (w === null || entry === undefined || props === null) {
       atStart(); // no batch: nothing holds them back
       return;
     }
-    const props = roomProps(room, entry.room, world);
     const stage = h.scene.snapshot();
     const visual: VisualCommand[] =
       stage.bg === entry.room.bg && stage.cg === null && sameProps(stage.props, props)
@@ -679,27 +714,23 @@ export function createYields(h: YieldsHost): Yields {
   };
 
   /**
-   * B-001: a take removes its prop from the room on screen at once, not at the next room batch. It is a fade, not a
-   * cut (owner Q53: motion wherever the picture changes): a crossfade onto the bg already shown keeps the bg and fades
-   * only the props that changed. A `got` that changes no prop (a take without one, an effect's `give`, a room the stage
-   * does not show) applies nothing.
+   * B-001 and engine plan §6.4: a dispatch's state change shows in the room on screen at once, not at the next room
+   * batch (a take's prop leaving it included). It is a fade, not a cut (owner Q53: motion wherever the picture changes):
+   * a crossfade onto the bg already shown keeps the bg and fades only the props that changed. Its load holds at the
+   * first changed anchor that draws an image (`stateHold`; none: `'no-load'`). Another picture up (a close-up, a room
+   * the stage does not show) or the props already shown apply nothing.
    */
-  const takeBatch = async (box: Box | null): Promise<void> => {
+  const stateBatch = async (diff: readonly VisualDiff[]): Promise<void> => {
+    const c = controller;
     const room = world.section !== null ? world.room : null;
     const w = h.chapter()?.world ?? null;
     const entry = w === null || room === null ? undefined : indexOf(w).rooms.get(room);
-    if (room === null || entry === undefined) {
-      return;
-    }
+    const props = room === null ? null : propsOf(room);
     const stage = h.scene.snapshot();
-    if (stage.bg !== entry.room.bg || stage.cg !== null) {
-      return; // another picture is up: the room batch that shows the room again draws its props
+    if (c === null || entry === undefined || props === null || stage.bg !== entry.room.bg || stage.cg !== null || sameProps(stage.props, props)) {
+      return; // the room batch that shows the room again draws its props
     }
-    const props = roomProps(room, entry.room, world);
-    if (sameProps(stage.props, props)) {
-      return;
-    }
-    await held([{ kind: 'bg', bg: entry.room.bg, t: 'crossfade', ms: TAKE_FADE_MS }, { kind: 'props', props }], [], { box });
+    await held([{ kind: 'bg', bg: entry.room.bg, t: 'crossfade', ms: TAKE_FADE_MS }, { kind: 'props', props }], [], c.stateHold(diff));
   };
 
   // -------------------------------------------------------------------------------------------------------------
@@ -1316,6 +1347,13 @@ export function createYields(h: YieldsHost): Yields {
     },
     lineShown: prefetch,
     world: () => world,
+    roomFor(bg) {
+      const w = h.chapter()?.world ?? null;
+      const rooms = w === null || world.section === null ? [] : [...indexOf(w).rooms].filter(([, e]) => e.section === world.section && e.room.bg === bg).map(([id]) => id);
+      const room = rooms.find((id) => id === world.room) ?? rooms[0];
+      const props = room === undefined ? null : propsOf(room);
+      return props === null ? null : [{ kind: 'props', props }];
+    },
     restore(next, reset, at) {
       dropPuzzle('closed');
       jobs.length = 0;
