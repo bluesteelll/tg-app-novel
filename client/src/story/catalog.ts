@@ -45,6 +45,20 @@ export type AudioPlaceholder = { readonly hz: number };
 /** An image entry (bg, a character expression, cg, prop, cover); its canonical size is its namespace's. */
 export type CatalogImage = { readonly placeholder: ImagePlaceholder };
 /**
+ * A bg entry (shots §2.4, §4.1): its placeholder, or `src: "shot/<own id>"`, its shot's source directory
+ * (`assets/src/shot/<id>/`), which SH3c's extraction turns into the plate and its shot files.
+ */
+export type CatalogBg = CatalogImage | { readonly src: string };
+/**
+ * A loop prop's frames (shots §2.4, rev. 2 W10): a placeholder's hue and frame count, or `src: "loop/<own id>"`, its
+ * frames' source directory (SH3c); stepped at `fps`.
+ */
+export type CatalogLoop =
+  | { readonly placeholder: { readonly hue: number; readonly frames: number }; readonly fps: number }
+  | { readonly src: string; readonly fps: number };
+/** A prop entry: an image, or a loop whose frames one atlas `prop/<id>` holds (shots §2.4, W10). */
+export type CatalogProp = CatalogImage | { readonly loop: CatalogLoop };
+/**
  * An audio entry (bgm, sfx). The decoder accepts only the placeholder form: real audio is PP "Later". The `src` form
  * is typed so budget's K23 rule (WAV only for a placeholder) is reachable on a typed input and is seen failing before
  * that lane, which makes it decodable.
@@ -56,13 +70,13 @@ export type CatalogEntry = CatalogImage | CatalogAudio;
 export type CoverId = string & { readonly __brand: 'CoverId' };
 /** STAGING-DSL §8: one namespace per kind; a character's expressions are a map, one asset each. */
 export type AssetCatalog = {
-  bg: Readonly<Record<BgId, CatalogImage>>;
+  bg: Readonly<Record<BgId, CatalogBg>>;
   chars: Readonly<Record<CharId, { exprs: Readonly<Record<ExprId, CatalogImage>> }>>;
   cg: Readonly<Record<CgId, CatalogImage>>;
   bgm: Readonly<Record<TrackId, CatalogAudio>>;
   sfx: Readonly<Record<SfxId, CatalogAudio>>;
   /** PUZZLES-PLAN X11: named by world data, never by a tag; ≤ 512×512. */
-  prop: Readonly<Record<PropId, CatalogImage>>;
+  prop: Readonly<Record<PropId, CatalogProp>>;
   /** STORIES-PLAN Y15: always public, exactly 360×640. */
   cover: Readonly<Record<CoverId, CatalogImage>>;
 };
@@ -80,6 +94,8 @@ type Namespace = (typeof NAMESPACES)[number];
 /** Placeholder parameter ranges: a hue in degrees; a tone from A1 to A6, audible on a phone speaker. */
 const HUE = { min: 0, max: 359 } as const;
 const HZ = { min: 55, max: 1760 } as const;
+/** A loop prop's frame count (shots §4.4: at most 12 frames). */
+const LOOP_FRAMES = { min: 1, max: 12 } as const;
 
 type Raw = Readonly<Record<string, unknown>>;
 type Report = (path: string, detail: string) => void;
@@ -139,6 +155,91 @@ function placeholderParam(
 const imageEntry: EntryDecoder<CatalogImage> = (entry, path, report) => {
   const hue = placeholderParam(entry, path, 'hue', HUE, report);
   return hue === null ? null : { placeholder: { hue } };
+};
+
+/** A bg: exactly one of its placeholder and its own shot directory; a `src` beside a placeholder is one issue, there. */
+const bgEntry: EntryDecoder<CatalogBg> = (entry, path, report) => {
+  if (!Object.hasOwn(entry, 'src')) {
+    return imageEntry(entry, path, report);
+  }
+  if (Object.hasOwn(entry, 'placeholder')) {
+    report(`${path}.src`, "beside 'placeholder' (a bg holds one of 'placeholder' and 'src')");
+    return null;
+  }
+  for (const k of Object.keys(entry).filter((name) => name !== 'src')) {
+    report(`${path}.${k}`, "unknown key (a bg holds 'placeholder' or 'src')");
+  }
+  const id = path.slice(path.lastIndexOf('.') + 1); // `bg.<id>`: an id holds no '.'
+  const src = entry['src'];
+  if (src !== `shot/${id}`) {
+    report(`${path}.src`, `${JSON.stringify(src) ?? 'undefined'} is not 'shot/${id}' (a bg's source is its own shot directory)`);
+    return null;
+  }
+  return Object.keys(entry).length === 1 ? { src } : null;
+};
+
+/** A prop: an image's placeholder, or exactly one loop form with its fps; a `loop` beside a placeholder is one issue. */
+const propEntry: EntryDecoder<CatalogProp> = (entry, path, report) => {
+  if (!Object.hasOwn(entry, 'loop')) {
+    return imageEntry(entry, path, report);
+  }
+  const lp = `${path}.loop`;
+  if (Object.hasOwn(entry, 'placeholder')) {
+    report(lp, "beside 'placeholder' (a prop holds one of 'placeholder' and 'loop')");
+    return null;
+  }
+  let ok = true;
+  const bad = (at: string, detail: string): void => {
+    ok = false;
+    report(at, detail);
+  };
+  for (const k of Object.keys(entry).filter((name) => name !== 'loop')) {
+    bad(`${path}.${k}`, "unknown key (a prop holds 'placeholder' or 'loop')");
+  }
+  const loop = entry['loop'];
+  if (!isObject(loop)) {
+    report(lp, 'not an object');
+    return null;
+  }
+  for (const k of Object.keys(loop).filter((name) => !['placeholder', 'src', 'fps'].includes(name))) {
+    bad(`${lp}.${k}`, "unknown key (a loop holds 'placeholder' or 'src', and 'fps')");
+  }
+  const fps = loop['fps'];
+  if (typeof fps !== 'number' || !Number.isInteger(fps) || fps < 1) {
+    bad(`${lp}.fps`, Object.hasOwn(loop, 'fps') ? `${JSON.stringify(fps) ?? 'undefined'} is not a positive integer` : 'missing');
+  }
+  const [hasPlaceholder, hasSrc] = [Object.hasOwn(loop, 'placeholder'), Object.hasOwn(loop, 'src')];
+  if (hasPlaceholder === hasSrc) {
+    report(lp, hasSrc ? "both 'placeholder' and 'src' (a loop holds one)" : "neither 'placeholder' nor 'src'");
+    return null;
+  }
+  if (hasSrc) {
+    const id = path.slice(path.lastIndexOf('.') + 1); // `prop.<id>`: an id holds no '.'
+    const src = loop['src'];
+    if (src !== `loop/${id}`) {
+      bad(`${lp}.src`, `${JSON.stringify(src) ?? 'undefined'} is not 'loop/${id}' (a loop's source is its own directory)`);
+    }
+    return ok ? { loop: { src: src as string, fps: fps as number } } : null; // both checked above
+  }
+  const params = loop['placeholder'];
+  if (!isObject(params)) {
+    report(`${lp}.placeholder`, 'not an object');
+    return null;
+  }
+  for (const k of Object.keys(params).filter((name) => name !== 'hue' && name !== 'frames')) {
+    bad(`${lp}.placeholder.${k}`, 'unknown key (expected hue, frames)');
+  }
+  const param = (key: 'hue' | 'frames', range: { readonly min: number; readonly max: number }): number | null => {
+    const value = params[key];
+    if (typeof value === 'number' && Number.isInteger(value) && value >= range.min && value <= range.max) {
+      return value;
+    }
+    bad(`${lp}.placeholder.${key}`, Object.hasOwn(params, key) ? `${JSON.stringify(value) ?? 'undefined'} is not an integer ${range.min}..${range.max}` : 'missing');
+    return null;
+  };
+  const hue = param('hue', HUE);
+  const frames = param('frames', LOOP_FRAMES);
+  return ok && hue !== null && frames !== null ? { loop: { placeholder: { hue, frames }, fps: fps as number } } : null; // fps checked above
 };
 
 const audioEntry: EntryDecoder<CatalogAudio> = (entry, path, report) => {
@@ -244,12 +345,12 @@ export function decodeAssetCatalog(raw: unknown): Result<AssetCatalog, CatalogIs
     }
     return raw[ns];
   };
-  const bg = entries(field('bg'), 'bg', report, imageEntry);
+  const bg = entries(field('bg'), 'bg', report, bgEntry);
   const chars = characters(field('chars'), report);
   const cg = entries(field('cg'), 'cg', report, imageEntry);
   const bgm = entries(field('bgm'), 'bgm', report, audioEntry);
   const sfx = entries(field('sfx'), 'sfx', report, audioEntry);
-  const prop = entries(field('prop'), 'prop', report, imageEntry);
+  const prop = entries(field('prop'), 'prop', report, propEntry);
   const cover = entries(field('cover'), 'cover', report, imageEntry);
   distinctTones('bgm', bgm, report);
   distinctTones('sfx', sfx, report);
@@ -385,9 +486,11 @@ export const ENDING_NAME_RE = /^[a-z][a-z0-9_]{0,31}$/;
 const VAR_NAME_RE = /^[\p{L}_][\p{L}\p{N}_]*$/u;
 /**
  * STAGING-DSL §8: `bg/<bg>`, `char/<char>/<expr>`, `cg/<cg>`, `bgm/<track>`, `sfx/<sfx>`, `prop/<prop>` (PUZZLES-PLAN
- * X11), `cover/<cover>` (STORIES-PLAN Y15).
+ * X11), `cover/<cover>` (STORIES-PLAN Y15); a shot's files `sheet/<shot>`, `face/<shot>/<char>/<expr>` and
+ * `talk/<shot>/<char>/<expr>` (shots §2.4), named by the story tool, never by a tag.
  */
-export const ASSET_ID_RE = /^(?:(?:bg|cg|bgm|sfx|prop|cover)\/[a-z][a-z0-9_]*|char\/[a-z][a-z0-9_]*\/[a-z][a-z0-9_]*)$/;
+export const ASSET_ID_RE =
+  /^(?:(?:bg|cg|bgm|sfx|prop|cover|sheet)\/[a-z][a-z0-9_]*|char\/[a-z][a-z0-9_]*\/[a-z][a-z0-9_]*|(?:face|talk)(?:\/[a-z][a-z0-9_]*){3})$/;
 const STORY_VERSION_RE = /^[0-9a-f]{16}$/;
 
 /**
@@ -740,8 +843,11 @@ export type AssetEntry =
   | ({ kind: 'image' } & ImageFile & { trim?: Trim; half?: HalfFile })
   | { kind: 'audio'; role: 'bgm' | 'sfx'; durationMs: number; file: AssetRef; codec: 'm4a' | 'wav' };
 export type ImageEntry = Extract<AssetEntry, { kind: 'image' }>;
-/** `<ch>.assets.json`: every asset the chapter names, at the tier of its file. */
-export type AssetManifest = { chapterId: ChapterId; assets: Record<AssetId, AssetEntry> };
+/**
+ * `<ch>.assets.json`: every asset the chapter names, at the tier of its file. `shots`, `look` and `loops` (shots §4.5)
+ * are opaque here: only story/shots.ts decodes them, so the entry carries no decoder for them (CH D26).
+ */
+export type AssetManifest = { chapterId: ChapterId; assets: Record<AssetId, AssetEntry>; shots?: unknown; look?: unknown; loops?: unknown };
 /** client/src/story-gen/covers.json: every cover, always public (Home shows them before any purchase). */
 export type CoverManifest = { assets: Readonly<Record<AssetId, ImageEntry>> };
 /**
@@ -759,14 +865,16 @@ export type FetchAsset = (url: string, signal: AbortSignal) => Promise<Result<Bl
 const ASSET_FILE_RE = /^[a-z0-9][a-z0-9_-]*\.(?:avif|webp|m4a|wav)$/;
 const PUBLIC_PREFIX = '/assets/';
 const GATED_PREFIX = '/api/assets/';
-const IMAGE_NAMESPACES: readonly string[] = ['bg', 'cg', 'char', 'prop', 'cover'];
+/** Shots §2.6: a shot's packed files, image entries with a half tier like a bg. */
+const SHOT_FILE_NAMESPACES = ['sheet', 'face', 'talk'];
+const IMAGE_NAMESPACES: readonly string[] = ['bg', 'cg', 'char', 'prop', 'cover', ...SHOT_FILE_NAMESPACES];
 /**
  * MEMORY-PLAN 4.B: the transparent kinds, trimmed to their alpha box and stored with even sides. The one list the
  * decoder, the asset tool and the budget read; bg, cg and cover are opaque and never trimmed.
  */
 export const TRIMMED_NAMESPACES: readonly string[] = ['char', 'prop'];
 /** MEMORY-PLAN 4.C: the kinds a scene draws from the registry, so the ones with a half tier; a cover never has one. */
-const HALF_NAMESPACES: readonly string[] = ['bg', 'cg', 'char', 'prop'];
+const HALF_NAMESPACES: readonly string[] = ['bg', 'cg', 'char', 'prop', ...SHOT_FILE_NAMESPACES];
 
 function positiveInt(value: unknown, path: string, report: Report): number | null {
   if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
@@ -1000,12 +1108,15 @@ function manifestEntries(
   return out;
 }
 
+/** The manifest's optional top-level keys that the entry hands on verbatim (shots §4.5). */
+const OPAQUE_MANIFEST_KEYS = ['shots', 'look', 'loops'] as const;
+
 /**
  * Decodes a chapter's `assets.json` (free: story-gen/free/<ch>.assets.json; paid: server/content/chapters/<ch>/):
  * exact keys per kind, URLs `/assets/<file>` or `/api/assets/<file>` with the server's file-name rule and the slot's
  * extension (`avif`, `webp`, `file` = `.<codec>`), `decodedBytes = w × h × 4`, kinds and roles per namespace, even
  * sides and the optional `trim` on char and prop entries only (`trimOf`), the optional `half` (`halfOf`). A cover belongs
- * to no chapter (covers.json).
+ * to no chapter (covers.json). The optional `shots`, `look` and `loops` are returned as they are.
  * Every problem is reported.
  */
 export function decodeAssetManifest(raw: unknown): Result<AssetManifest, CatalogIssue[]> {
@@ -1015,7 +1126,7 @@ export function decodeAssetManifest(raw: unknown): Result<AssetManifest, Catalog
     report('', 'not a JSON object');
     return { ok: false, error: issues };
   }
-  exactKeys(raw, ['chapterId', 'assets'], '', report);
+  exactKeys(raw, ['chapterId', 'assets'], '', report, OPAQUE_MANIFEST_KEYS);
   const chapterId = Object.hasOwn(raw, 'chapterId') ? matching(raw['chapterId'], CHAPTER_ID_RE, 'chapterId', report) : null;
   const refuseCover = (id: string): string | null =>
     id.startsWith('cover/') ? 'a cover belongs to no chapter: it is in story-gen/covers.json' : null;
@@ -1024,7 +1135,11 @@ export function decodeAssetManifest(raw: unknown): Result<AssetManifest, Catalog
     return { ok: false, error: issues };
   }
   // The brands are earned above: the chapter id and every asset id matched their patterns.
-  return { ok: true, value: { chapterId: chapterId as ChapterId, assets: assets as Record<AssetId, AssetEntry> } };
+  const value: AssetManifest = { chapterId: chapterId as ChapterId, assets: assets as Record<AssetId, AssetEntry> };
+  for (const key of OPAQUE_MANIFEST_KEYS.filter((k) => Object.hasOwn(raw, k))) {
+    value[key] = raw[key];
+  }
+  return { ok: true, value };
 }
 
 /** Decodes client/src/story-gen/covers.json: `cover/<id>` images only, public URLs only. */

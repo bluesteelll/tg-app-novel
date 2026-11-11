@@ -9,17 +9,24 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { ASSET_ID_RE, decodeAssetCatalog, decodeAssetManifest, decodeCoverManifest } from '../../src/story/catalog.ts';
 import type { CatalogImage, CatalogIssue, ChapterListEntry, Trim } from '../../src/story/catalog.ts';
-import type { AssetId } from '../../src/story/staging.ts';
+import { decodeLook, decodeLoops, decodeShotRigs, stepWindow } from '../../src/story/shots.ts';
+import type { FaceRig, ShotRig } from '../../src/story/shots.ts';
+import type { AssetId, BgId, ExprId, PropId } from '../../src/story/staging.ts';
 import { main } from '../assets.ts';
 import type { Encoders } from '../assets.ts';
 import { decodeChapterList, decodeStoryUsage } from '../story/emit.ts';
+import { placeholderHue } from '../story/shots/list.ts';
+import { parseShotFileId } from '../story/shots/usage.ts';
 import { encodeImage, halfRgba } from './encode.ts';
 import { ASSET_FILE_RE, assetFileName, assetUsage, catalogImage, decodeAssetFingerprints, halfAsk, sha256Hex, tierOf } from './manifest.ts';
 import type { AssetUsage } from './manifest.ts';
-import { renderPlaceholder } from './placeholder.ts';
+import { CANONICAL_SIZE, imageKind, renderPlaceholder } from './placeholder.ts';
+import type { ImageKind } from './placeholder.ts';
 import { synthWav } from './synth.ts';
 
 const CLIENT_DIR = fileURLToPath(new URL('../..', import.meta.url));
+/** A spawned CLI run (node + sharp) on a loaded machine; the 5 s default fails it spuriously (carry, LP2's C0). */
+const CLI_TIMEOUT_MS = 30_000;
 const ASSETS_SCRIPT = fileURLToPath(new URL('../assets.ts', import.meta.url));
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -114,6 +121,73 @@ describe('catalog', () => {
     crossRole.sfx = { door: { placeholder: { hz: 220 } } };
     expect(issues(decodeAssetCatalog(crossRole))).toEqual([]);
   });
+
+  test('catalog: a bg src form decodes', () => {
+    // Shots §2.4, §4.1: a bg is its placeholder or its own extracted shot directory (`assets/src/shot/<id>/`, SH3c).
+    const raw = rawCatalog();
+    raw.bg = { cafe: { src: 'shot/cafe' }, hall: { placeholder: { hue: 30 } } };
+    const r = decodeAssetCatalog(raw);
+    expect(issues(r)).toEqual([]);
+    expect(r.ok && r.value.bg).toEqual({ cafe: { src: 'shot/cafe' }, hall: { placeholder: { hue: 30 } } });
+    // Another shot's directory, a file, a deeper path, a non-string: refused at the entry's src, and only there.
+    for (const src of ['shot/hall', 'cafe.png', 'shot/cafe/plate.png', 'loop/cafe', 7]) {
+      raw.bg = { cafe: { src } };
+      expect(issues(decodeAssetCatalog(raw)), String(src)).toEqual([at('bg.cafe.src')]);
+    }
+    // An unknown key beside src is reported; src is a bg's form only (another image namespace keeps its one form).
+    raw.bg = { cafe: { src: 'shot/cafe', hue: 30 } };
+    expect(issues(decodeAssetCatalog(raw))).toEqual([at('bg.cafe.hue')]);
+    const cg = rawCatalog();
+    cg.cg = { letter: { src: 'shot/letter' } };
+    expect(issues(decodeAssetCatalog(cg))).toEqual([at('cg.letter.src'), at('cg.letter.placeholder')]);
+  });
+
+  test('catalog: a loop prop decodes with its frames and fps', () => {
+    // Shots §2.4 (rev. 2, W10): a prop is an image or a loop, its frames from a placeholder (hue, 1..12 frames) or its
+    // own source directory (`loop/<id>`, SH3c), stepped at a positive integer fps.
+    const raw = rawCatalog();
+    raw.prop = {
+      note: { placeholder: { hue: 120 } },
+      fire: { loop: { placeholder: { hue: 20, frames: 6 }, fps: 8 } },
+      torch: { loop: { src: 'loop/torch', fps: 12 } },
+    };
+    const r = decodeAssetCatalog(raw);
+    expect(issues(r)).toEqual([]);
+    expect(r.ok && r.value.prop).toEqual({
+      note: { placeholder: { hue: 120 } },
+      fire: { loop: { placeholder: { hue: 20, frames: 6 }, fps: 8 } },
+      torch: { loop: { src: 'loop/torch', fps: 12 } },
+    });
+    const one = (fire: unknown): CatalogIssue[] => {
+      const c = rawCatalog();
+      c.prop = { fire };
+      return issues(decodeAssetCatalog(c));
+    };
+    const cases: ReadonlyArray<readonly [string, unknown, readonly string[]]> = [
+      ['no frame', { loop: { placeholder: { hue: 20, frames: 0 }, fps: 8 } }, ['prop.fire.loop.placeholder.frames']],
+      ['13 frames', { loop: { placeholder: { hue: 20, frames: 13 }, fps: 8 } }, ['prop.fire.loop.placeholder.frames']],
+      ['fractional frames', { loop: { placeholder: { hue: 20, frames: 1.5 }, fps: 8 } }, ['prop.fire.loop.placeholder.frames']],
+      ['hue over 359', { loop: { placeholder: { hue: 360, frames: 6 }, fps: 8 } }, ['prop.fire.loop.placeholder.hue']],
+      ['unknown placeholder key', { loop: { placeholder: { hue: 20, frames: 6, hz: 9 }, fps: 8 } }, ['prop.fire.loop.placeholder.hz']],
+      ['fps 0', { loop: { placeholder: { hue: 20, frames: 6 }, fps: 0 } }, ['prop.fire.loop.fps']],
+      ['fps as a string', { loop: { placeholder: { hue: 20, frames: 6 }, fps: '8' } }, ['prop.fire.loop.fps']],
+      ['no fps', { loop: { placeholder: { hue: 20, frames: 6 } } }, ['prop.fire.loop.fps']],
+      ["another loop's source", { loop: { src: 'loop/torch', fps: 8 } }, ['prop.fire.loop.src']],
+      ['a shot source', { loop: { src: 'shot/fire', fps: 8 } }, ['prop.fire.loop.src']],
+      ['both forms', { loop: { placeholder: { hue: 20, frames: 6 }, src: 'loop/fire', fps: 8 } }, ['prop.fire.loop']],
+      ['neither form', { loop: { fps: 8 } }, ['prop.fire.loop']],
+      ['unknown loop key', { loop: { src: 'loop/fire', fps: 8, speed: 2 } }, ['prop.fire.loop.speed']],
+      ['loop not an object', { loop: 8 }, ['prop.fire.loop']],
+      ['loop beside a placeholder', { placeholder: { hue: 20 }, loop: { src: 'loop/fire', fps: 8 } }, ['prop.fire.loop']],
+    ];
+    for (const [name, fire, paths] of cases) {
+      expect(one(fire), name).toEqual(paths.map(at));
+    }
+    // A loop is a prop's form only: on a bg it is an unknown key.
+    const bg = rawCatalog();
+    bg.bg = { cafe: { loop: { src: 'loop/cafe', fps: 8 } } };
+    expect(issues(decodeAssetCatalog(bg))).toEqual([at('bg.cafe.loop'), at('bg.cafe.placeholder')]);
+  });
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -165,6 +239,36 @@ describe('placeholder', () => {
     } finally {
       vi.useRealTimers();
       random.mockRestore();
+    }
+  });
+
+  test('assets: every image namespace has a canonical size and a placeholder shape', () => {
+    // Shots §4.4 (rev. 4, W5): imageKind is the one image-namespace predicate; a shot file (sheet, face, talk) is an
+    // image kind like the other five, so every Record keyed by it has the three and the planner reads one predicate.
+    const cases: ReadonlyArray<readonly [string, string, number, number]> = [
+      ['bg/cafe', 'bg', 1080, 2048],
+      ['cg/letter', 'cg', 1080, 2048],
+      ['char/ally/smile', 'char', 768, 1536],
+      ['prop/note', 'prop', 512, 512],
+      ['cover/manor', 'cover', 360, 640],
+      // The packing bound of a shot file (principle 4's 2048 px), not a fixed canvas: the packer sizes each file.
+      ['sheet/cafe', 'sheet', 2048, 2048],
+      ['face/cafe/ally/smile', 'face', 2048, 2048],
+      ['talk/cafe/ally/smile', 'talk', 2048, 2048],
+    ];
+    for (const [id, kind, w, h] of cases) {
+      expect(imageKind(id as AssetId), id).toBe(kind);
+      expect(CANONICAL_SIZE[kind as ImageKind], id).toEqual({ w, h });
+      const p = renderPlaceholder(id as AssetId, HUE30); // a literal asset id
+      expect(rootAttrs(p.svg), id).toEqual({ width: String(w), height: String(h), viewBox: `0 0 ${w} ${h}` });
+      expect(p.svg, id).toContain(`>${id}</text>`);
+    }
+    expect(Object.keys(CANONICAL_SIZE).sort()).toEqual(cases.map(([, kind]) => kind).sort());
+    for (const id of ['face/cafe/ally/smile', 'talk/cafe/ally/smile', 'sheet/cafe']) {
+      expect(renderPlaceholder(id as AssetId, HUE30).svg, id).not.toMatch(/<rect/); // a transparent canvas
+    }
+    for (const id of ['bgm/calm', 'sfx/door', 'face/cafe/ally', 'sheet/cafe/ally']) {
+      expect(imageKind(id as AssetId) === null || !ASSET_ID_RE.test(id), id).toBe(true);
     }
   });
 
@@ -514,6 +618,66 @@ describe('catalog manifests', () => {
     }
   });
 
+  test('catalog: sheet ids are image ids', () => {
+    // Shots §2.4: sheet/<s>, face/<s>/<c>/<x> and talk/<s>/<c>/<x> are image entries with a half tier, public or gated,
+    // each half under its own entry's prefix (M3s).
+    const half = (name: string, prefix: string): RawEntry => ({
+      w: 512,
+      h: 256,
+      decodedBytes: 512 * 256 * 4,
+      avif: { url: `${prefix}${name}-half-0a0a0a0a.avif`, bytes: 900 },
+      webp: { url: `${prefix}${name}-half-0a0a0a0a.webp`, bytes: 1_200 },
+    });
+    const packed = (name: string, prefix: string): RawEntry =>
+      image(name, {
+        w: 1024,
+        h: 512,
+        decodedBytes: 1024 * 512 * 4,
+        avif: { url: `${prefix}${name}-0b0b0b0b.avif`, bytes: 9_000 },
+        webp: { url: `${prefix}${name}-0b0b0b0b.webp`, bytes: 12_000 },
+        half: half(name, prefix),
+      });
+    const raw = {
+      chapterId: 'ch2',
+      assets: {
+        'sheet/cafe': packed('sheet-cafe', '/assets/'),
+        'face/cafe/ally/smile': packed('face-cafe-ally-smile', '/api/assets/'),
+        'talk/cafe/ally/smile': packed('talk-cafe-ally-smile', '/api/assets/'),
+      },
+    };
+    expect(decodeAssetManifest(raw)).toEqual({ ok: true, value: raw });
+    // An audio entry under a shot file's id is refused, as for every image namespace.
+    for (const id of Object.keys(raw.assets)) {
+      expect(manifestIssues({ chapterId: 'ch2', assets: { [id]: audio('sfx', 'x-0c0c0c0c') } }), id).toContainEqual({
+        file: 'assets.json',
+        path: `assets.${id}.kind`,
+        detail: expect.any(String) as string,
+      });
+    }
+  });
+
+  test('catalog: a manifest carries shots, look and loops as opaque keys', () => {
+    // Shots §4.5 (the CH D26 pattern): the entry's decoder admits the three keys and hands them on as they are; only
+    // story/shots.ts decodes them, so nothing here judges their content.
+    const raw = {
+      chapterId: 'ch1',
+      assets: { 'bg/cafe': image('bg-cafe-0a1b2c3d') },
+      shots: { cafe: { w: 1080, h: 2048, anything: ['opaque'] } },
+      look: { images: ['bg/cafe'], windows: { 'k:start': [[0], [], 0, []] } },
+      loops: { candle: { frames: [[0, 0, 2, 2]], fps: 8 } },
+    };
+    expect(decodeAssetManifest(raw)).toEqual({ ok: true, value: raw });
+    // Each key alone, and none: a manifest without them decodes as before, with no key added.
+    for (const key of ['shots', 'look', 'loops'] as const) {
+      const one = { chapterId: raw.chapterId, assets: raw.assets, [key]: raw[key] };
+      expect(decodeAssetManifest(one), key).toEqual({ ok: true, value: one });
+    }
+    const plain = decodeAssetManifest({ chapterId: 'ch1', assets: raw.assets });
+    expect(plain.ok && Object.keys(plain.value)).toEqual(['chapterId', 'assets']);
+    // A fourth unknown key is still refused.
+    expect(manifestIssues({ ...raw, rigs: {} })).toEqual([{ file: 'assets.json', path: 'rigs', detail: expect.any(String) as string }]);
+  });
+
   test('catalog: cover manifest decodes', () => {
     const cover = (over: RawEntry = {}): RawEntry =>
       image('x', {
@@ -738,6 +902,50 @@ const REPO_USAGE = {
     ch2: { assets: ['bg/archive', 'bg/cafe', 'bgm/mystery'], knots: {} },
   },
 };
+
+/**
+ * The shot pipeline's fixture (shots §2.5-2.6): `cafe` is a declared close-up of ally (rest neutral) that free ch1
+ * shows with ally speaking at rest and paid ch2 with ally smiling and speaking; `archive` an implied cast-less shot of
+ * ch2 alone. So `bg/cafe`, `sheet/cafe` and `talk/cafe/ally/neutral` are public, `face/cafe/ally/smile`,
+ * `talk/cafe/ally/smile` and `bg/archive` paid-only.
+ */
+const SHOT_CATALOG = { ...REPO_CATALOG, chars: { ally: { exprs: { neutral: { placeholder: { hue: 200 } }, smile: { placeholder: { hue: 160 } } } } } };
+const SHOT_LIST = { locs: [{ id: 'cafe', light: null }], shots: [{ id: 'cafe', loc: 'cafe', frame: 'close', cast: [{ char: 'ally', view: 'face', rest: 'neutral' }] }] };
+
+/** build/shots.json's need of `cafe` with ally in `faces` (`[expr, talk]`), and of an implied cast-less shot. */
+function cafeNeed(faces: ReadonlyArray<readonly [string, boolean]>, ch: string): Record<string, unknown> {
+  const lines = (i: number): string[] => [`${ch}.cafe.a00${i}`];
+  return {
+    cast: { ally: { view: 'face', rest: 'neutral', figure: false } },
+    faces: { ally: faces.map(([expr, talk], i) => ({ expr, talk, lines: lines(i) })) },
+    frame: 'close',
+    loc: 'cafe',
+    camTargets: [],
+    motions: [],
+    room: null,
+  };
+}
+function impliedNeed(shot: string): Record<string, unknown> {
+  return { cast: {}, faces: {}, frame: 'wide', loc: shot, camTargets: [], motions: [], room: null };
+}
+
+type ShotChapter = { shots: Record<string, unknown>; assets: string[]; look?: Record<string, unknown> };
+const SHOT_CHAPTERS: Readonly<Record<'ch1' | 'ch2', ShotChapter>> = {
+  ch1: { shots: { cafe: cafeNeed([['neutral', true]], 'ch1') }, assets: ['bg/cafe', 'sheet/cafe', 'talk/cafe/ally/neutral'] },
+  ch2: {
+    shots: { archive: impliedNeed('archive'), cafe: cafeNeed([['smile', true]], 'ch2') },
+    assets: ['bg/archive', 'bg/cafe', 'face/cafe/ally/smile', 'sheet/cafe', 'talk/cafe/ally/smile'],
+  },
+};
+
+/** A build/shots.json of these chapters (no entry alternatives, no legacy sprites). */
+function shotsUsage(chapters: Readonly<Record<string, ShotChapter>>): unknown {
+  return { chapters: Object.fromEntries(Object.entries(chapters).map(([id, c]) => [id, { shots: c.shots, assets: c.assets, look: c.look ?? {}, entry: {}, sprites: false }])) };
+}
+
+/** The inputs a shot repository adds: the catalog with ally's smile and the shot list; then its build/shots.json. */
+const SHOT_FILES: Readonly<Record<string, unknown>> = { 'assets/catalog.json': SHOT_CATALOG, 'story/shots.json': SHOT_LIST };
+const SHOT_REPO: Readonly<Record<string, unknown>> = { ...SHOT_FILES, 'server/content/build/shots.json': shotsUsage(SHOT_CHAPTERS) };
 
 function writeRepo(root: string, files: Readonly<Record<string, unknown>> = {}): void {
   const all: Record<string, unknown> = {
@@ -1122,6 +1330,17 @@ describe('assets', () => {
     expect(asked).toEqual({ 'bg/archive': 'any', 'bg/cafe': 'any', 'char/ally/neutral': { canvasH: 1536 }, 'cover/manor': 'none' });
   });
 
+  test('assets: sheets, face and talk files get half files', () => {
+    // Shots §4.2 step 7 (rev. 3, C1): every shot file gets a half like every bg, public or gated (M3s); the packer keeps
+    // every side even, so the ask is 'any'. A file no chapter uses gets none.
+    for (const id of ['sheet/cafe', 'face/cafe/ally/smile', 'talk/cafe/ally/neutral']) {
+      expect([halfAsk(id as AssetId, 'public'), halfAsk(id as AssetId, 'paid'), halfAsk(id as AssetId, 'unused')], id).toEqual(['any', 'any', 'none']);
+    }
+    // Controls: the existing kinds keep their asks.
+    expect(halfAsk('bg/cafe' as AssetId, 'paid')).toBe('any');
+    expect(halfAsk('cover/manor' as AssetId, 'public')).toBe('none');
+  });
+
   test("assets: a half file's name is distinct from every full file name", () => {
     // MEMORY-PLAN §5: every id of every namespace, the edge ids whose parts read "half" among them, for the same bytes.
     const ids = ['bg/cafe', 'bg/half', 'cg/letter', 'char/ally/neutral', 'char/half/half', 'char/ally/half', 'prop/half', 'cover/manor', 'bgm/half', 'sfx/door'];
@@ -1145,6 +1364,291 @@ describe('assets', () => {
       const size = rest.length === 0 ? 'full' : rest.join('-') === 'half' ? 'half' : `unparsed ${rest.join('-')}`;
       expect(`${segments.slice(0, parts).join('/')} ${size}`, name).toBe(made);
     }
+  });
+
+  test('assets: a face file only a paid chapter needs is gated', async () => {
+    // Shots §2.5 (rev. 4, W3): every shot file is one asset tiered by `tierOf` over build/shots.json's per-chapter
+    // `assets`: ally's smile in `cafe` is needed by paid ch2 only, so its face file is gated, full and half.
+    writeRepo(repo, SHOT_REPO);
+    const r = await runTool(repo, HALVING_FAKES);
+    expect(r.code, r.err.join('\n')).toBe(0);
+    const face = (dir: string): string[] => listDir(repo, dir).filter((n) => n.startsWith('face-cafe-ally-smile-'));
+    expect(face('server/content/assets').filter((n) => !n.includes('-half-'))).toHaveLength(2);
+    expect(face('server/content/assets').map((n) => n.replace(/-[0-9a-f]{8}\./, '-<hash8>.')).sort()).toEqual([
+      'face-cafe-ally-smile-<hash8>.avif',
+      'face-cafe-ally-smile-<hash8>.webp',
+      'face-cafe-ally-smile-half-<hash8>.avif',
+      'face-cafe-ally-smile-half-<hash8>.webp',
+    ]);
+    expect(face('client/public/assets'), 'no face/cafe/ally/smile file is public').toEqual([]);
+    const fp = decodeAssetFingerprints(JSON.parse(readRel(repo, 'server/content/build/fingerprints.assets.json')));
+    expect((fp.ok ? fp.value.files : []).filter((f) => f.asset === 'face/cafe/ally/smile').map((f) => f.name).sort()).toEqual(face('server/content/assets'));
+    const ch2 = JSON.parse(readRel(repo, 'server/content/chapters/ch2/assets.json')) as { assets: Record<string, RawEntry> };
+    expect(ch2.assets['face/cafe/ally/smile']?.['avif']).toEqual({ url: expect.stringMatching(/^\/api\/assets\/face-cafe-ally-smile-[0-9a-f]{8}\.avif$/) as string, bytes: expect.any(Number) as number });
+    // The free chapter's manifest names no file of it.
+    expect(readRel(repo, 'client/src/story-gen/free/ch1.assets.json')).not.toContain('face/cafe/ally/smile');
+  });
+
+  test('assets: a shot shown by a free chapter has a public plate and sheet', async () => {
+    writeRepo(repo, SHOT_REPO);
+    const r = await runTool(repo, HALVING_FAKES);
+    expect(r.code, r.err.join('\n')).toBe(0);
+    const pub = (prefix: string): string[] => listDir(repo, 'client/public/assets').filter((n) => n.startsWith(prefix));
+    expect(pub('sheet-cafe-').filter((n) => !n.includes('-half-'))).toHaveLength(2);
+    expect(pub('sheet-cafe-half-')).toHaveLength(2);
+    expect(pub('bg-cafe-')).toHaveLength(4);
+    expect(pub('talk-cafe-ally-neutral-')).toHaveLength(4); // ch1 speaks at rest
+    // One public entry, the same in the free and the paid manifest.
+    const ch1 = JSON.parse(readRel(repo, 'client/src/story-gen/free/ch1.assets.json')) as { assets: Record<string, RawEntry> };
+    const ch2 = JSON.parse(readRel(repo, 'server/content/chapters/ch2/assets.json')) as { assets: Record<string, RawEntry> };
+    expect(ch1.assets['sheet/cafe']?.['avif']).toEqual({ url: expect.stringMatching(/^\/assets\/sheet-cafe-[0-9a-f]{8}\.avif$/) as string, bytes: expect.any(Number) as number });
+    expect(ch2.assets['sheet/cafe']).toEqual(ch1.assets['sheet/cafe']);
+    expect(listDir(repo, 'server/content/assets').filter((n) => n.startsWith('sheet-'))).toEqual([]);
+    // The tool's shot files go to the encoder untrimmed with a half asked for, public or gated.
+    const asked: Record<string, unknown> = {};
+    const recording: Encoders = {
+      ...HALVING_FAKES,
+      encodeImage: (svg, o) => {
+        const id = /<text\b[^>]*>([^<]+)<\/text>/.exec(new TextDecoder().decode(svg))?.[1] ?? '(no label)';
+        asked[id] = o;
+        return HALVING_FAKES.encodeImage(svg, o);
+      },
+    };
+    expect((await runTool(repo, recording)).code).toBe(0);
+    for (const id of ['sheet/cafe', 'face/cafe/ally/smile', 'talk/cafe/ally/neutral', 'talk/cafe/ally/smile']) {
+      expect(asked[id], id).toEqual({ trim: false, half: 'any' });
+    }
+  });
+
+  test('assets: a declared shot without a catalog bg is encoded as its implied placeholder', async () => {
+    // SH2's cut Q7: `story` admits a declared shot the catalog lacks (an implied placeholder, hue = FNV-1a of its id mod
+    // 360, list.ts `effectiveCatalog`); the asset tool now encodes it the same way instead of refusing it.
+    const list = { locs: [{ id: 'attic', light: null }], shots: [{ id: 'attic', loc: 'attic', frame: 'wide', cast: [] }] };
+    const attic = { cast: {}, faces: {}, frame: 'wide', loc: 'attic', camTargets: [], motions: [], room: null };
+    const usage = { chapters: { ...REPO_USAGE.chapters, ch1: { assets: [...REPO_USAGE.chapters.ch1.assets, 'bg/attic'], knots: {} } } };
+    writeRepo(repo, {
+      'story/shots.json': list,
+      'server/content/build/usage.json': usage,
+      'server/content/build/shots.json': shotsUsage({ ch1: { shots: { attic }, assets: ['bg/attic'] }, ch2: { shots: {}, assets: [] } }),
+    });
+    const svgs: Record<string, string> = {};
+    const recording: Encoders = {
+      ...FAKE_ENCODERS,
+      encodeImage: (svg, o) => {
+        const text = new TextDecoder().decode(svg);
+        svgs[/<text\b[^>]*>([^<]+)<\/text>/.exec(text)?.[1] ?? '(no label)'] = text;
+        return FAKE_ENCODERS.encodeImage(svg, o);
+      },
+    };
+    const r = await runTool(repo, recording);
+    expect(r.code, r.err.join('\n')).toBe(0);
+    expect(svgs['bg/attic']).toContain(`hsl(${placeholderHue('attic')} `);
+    expect(listDir(repo, 'client/public/assets').filter((n) => n.startsWith('bg-attic-'))).toHaveLength(2);
+  });
+
+  test('assets: a shot list without its build/shots.json is refused', async () => {
+    // story/shots.json switches the tool to the shot pipeline; its build/shots.json is then required and must hold
+    // exactly the listed chapters. Every problem is reported; nothing is written.
+    writeRepo(repo, SHOT_FILES);
+    const missing = await runTool(repo);
+    expect(missing.code).toBe(1);
+    expect(missing.err).toEqual(['assets: server/content/build/shots.json: missing (story/shots.json exists: run the story tool)']);
+    expect(existsSync(join(repo, 'client', 'src', 'story-gen'))).toBe(false);
+    const stale = shotsUsage({ ch1: SHOT_CHAPTERS.ch1, ch3: SHOT_CHAPTERS.ch2 });
+    writeRepo(repo, { ...SHOT_REPO, 'server/content/build/shots.json': stale });
+    const wrong = await runTool(repo);
+    expect(wrong.code).toBe(1);
+    expect(wrong.err).toEqual([
+      'assets: server/content/build/shots.json has no chapter ch2 (run the story tool)',
+      'assets: server/content/build/shots.json names ch3, which story/chapters.json does not list (run the story tool)',
+    ]);
+    expect(listDir(repo, 'client/public/assets')).toEqual([]);
+    expect(existsSync(join(repo, 'client', 'src', 'story-gen'))).toBe(false);
+  });
+
+  test('assets: a src shot before extraction is refused by name', async () => {
+    // The catalog admits a bg's `src: "shot/<id>"` (shots §4.1); its extraction is SH3c's, so until then the tool names
+    // it and writes nothing rather than encoding something else in its place.
+    writeRepo(repo, { 'assets/catalog.json': { ...REPO_CATALOG, bg: { ...REPO_CATALOG.bg, cafe: { src: 'shot/cafe' } } } });
+    const r = await runTool(repo);
+    expect(r.code).toBe(1);
+    expect(r.err).toEqual(['assets: bg/cafe: src shot/cafe waits for extraction (SH3c)']);
+    expect(existsSync(join(repo, 'client', 'src', 'story-gen'))).toBe(false);
+    expect(listDir(repo, 'client/public/assets')).toEqual([]);
+    expect(listDir(repo, 'server/content/assets')).toEqual([]);
+  });
+
+  test('assets: a loop prop packs its frames into one atlas with the loop rig in the manifest', async () => {
+    // Shots §2.4 (W10): a loop prop's frames are one atlas `prop/<id>`, a plain image entry; its frame boxes and fps
+    // travel in the manifest's top-level `loops`, for the chapters that use the prop.
+    const catalog = { ...REPO_CATALOG, prop: { ...REPO_CATALOG.prop, fire: { loop: { placeholder: { hue: 20, frames: 6 }, fps: 8 } } } };
+    const usage = { chapters: { ...REPO_USAGE.chapters, ch1: { ...REPO_USAGE.chapters.ch1, worldAssets: ['prop/fire'] } } };
+    writeRepo(repo, { 'assets/catalog.json': catalog, 'server/content/build/usage.json': usage });
+    const asked: Record<string, unknown> = {};
+    const svgs: Record<string, string> = {};
+    const recording: Encoders = {
+      ...FAKE_ENCODERS,
+      encodeImage: (svg, o) => {
+        const text = new TextDecoder().decode(svg);
+        const id = /<text\b[^>]*>([^<]+)<\/text>/.exec(text)?.[1] ?? '(no label)';
+        [asked[id], svgs[id]] = [o, text];
+        return FAKE_ENCODERS.encodeImage(svg, o);
+      },
+    };
+    const r = await runTool(repo, recording);
+    expect(r.code, r.err.join('\n')).toBe(0);
+    expect(asked['prop/fire']).toEqual({ trim: false, half: 'any' }); // the frames are the rig's boxes: never trimmed
+    expect(svgs['prop/fire']?.match(/<rect\b/g)).toHaveLength(6);
+    expect(listDir(repo, 'client/public/assets').filter((n) => n.startsWith('prop-fire-'))).toHaveLength(2);
+    const ch1 = JSON.parse(readRel(repo, 'client/src/story-gen/free/ch1.assets.json')) as Record<string, unknown>;
+    expect(Object.keys(ch1)).toEqual(['chapterId', 'assets', 'loops']);
+    const entry = (ch1['assets'] as Record<string, { w: number; h: number }>)['prop/fire'];
+    const loops = decodeLoops(ch1['loops']);
+    expect(loops.ok ? [] : loops.error).toEqual([]);
+    const fire = loops.ok ? loops.value.get('fire' as PropId) : undefined;
+    expect(fire?.fps).toBe(8);
+    expect(fire?.frames).toHaveLength(6);
+    for (const [x, y, w, h] of fire?.frames ?? []) {
+      expect([w, h]).toEqual([512, 512]);
+      expect([x % 2, y % 2]).toEqual([0, 0]);
+      expect(x + w <= (entry?.w ?? 0) && y + h <= (entry?.h ?? 0)).toBe(true);
+    }
+    expect(new Set((fire?.frames ?? []).map((f) => f.join(','))).size).toBe(6);
+    expect([entry?.w, entry?.h]).toEqual([2048, 1024]);
+    // A chapter that does not use the prop carries no loop.
+    expect(Object.keys(JSON.parse(readRel(repo, 'server/content/chapters/ch2/assets.json')) as object)).toEqual(['chapterId', 'assets']);
+  });
+
+  test('assets: a loop prop used only by a paid chapter is gated', async () => {
+    const catalog = { ...REPO_CATALOG, prop: { ...REPO_CATALOG.prop, fire: { loop: { placeholder: { hue: 20, frames: 3 }, fps: 6 } } } };
+    const usage = { chapters: { ...REPO_USAGE.chapters, ch2: { ...REPO_USAGE.chapters.ch2, worldAssets: ['prop/fire'] } } };
+    writeRepo(repo, { 'assets/catalog.json': catalog, 'server/content/build/usage.json': usage });
+    const r = await runTool(repo, HALVING_FAKES);
+    expect(r.code, r.err.join('\n')).toBe(0);
+    const fire = (dir: string): string[] => listDir(repo, dir).filter((n) => n.startsWith('prop-fire-'));
+    expect(fire('server/content/assets')).toHaveLength(4); // full and half, both formats
+    expect(fire('client/public/assets')).toEqual([]);
+    const fp = decodeAssetFingerprints(JSON.parse(readRel(repo, 'server/content/build/fingerprints.assets.json')));
+    expect((fp.ok ? fp.value.files : []).filter((f) => f.asset === 'prop/fire').map((f) => f.name).sort()).toEqual(fire('server/content/assets'));
+    const ch2 = JSON.parse(readRel(repo, 'server/content/chapters/ch2/assets.json')) as { assets: Record<string, RawEntry>; loops?: unknown };
+    expect(ch2.assets['prop/fire']?.['avif']).toEqual({ url: expect.stringMatching(/^\/api\/assets\/prop-fire-[0-9a-f]{8}\.avif$/) as string, bytes: expect.any(Number) as number });
+    const loops = decodeLoops(ch2.loops);
+    expect(loops.ok ? [...loops.value.keys()] : loops.error).toEqual(['fire']);
+    const ch1 = readRel(repo, 'client/src/story-gen/free/ch1.assets.json');
+    expect(ch1).not.toContain('fire');
+    // The src form waits for extraction like a src bg.
+    writeRepo(repo, { 'assets/catalog.json': { ...catalog, prop: { ...catalog.prop, fire: { loop: { src: 'loop/fire', fps: 6 } } } }, 'server/content/build/usage.json': usage });
+    const src = await runTool(repo, HALVING_FAKES);
+    expect(src.code).toBe(1);
+    expect(src.err).toEqual(['assets: prop/fire: src loop/fire waits for extraction (SH3c)']);
+  });
+
+  test('assets: a chapter manifest carries only the rigs, members and files its chapter uses', async () => {
+    // Shots §4.5 (CH D5): each chapter's manifest holds a rig per shot it shows, with only the expressions it shows and
+    // talk members only where it speaks, every member in one of its own files; and its look, when it has windows.
+    const step = { cur: ['bg/cafe', 'sheet/cafe', 'talk/cafe/ally/neutral'], certain: [], certainDist: 0, possible: [], near: 0, d2: [], d3: [], labels: false };
+    writeRepo(repo, { ...SHOT_REPO, 'server/content/build/shots.json': shotsUsage({ ...SHOT_CHAPTERS, ch1: { ...SHOT_CHAPTERS.ch1, look: { 'ch1.cafe.a001': step } } }) });
+    const r = await runTool(repo, HALVING_FAKES);
+    expect(r.code, r.err.join('\n')).toBe(0);
+    const ch1 = JSON.parse(readRel(repo, 'client/src/story-gen/free/ch1.assets.json')) as Record<string, unknown>;
+    const ch2 = JSON.parse(readRel(repo, 'server/content/chapters/ch2/assets.json')) as Record<string, unknown>;
+    expect(Object.keys(ch1)).toEqual(['chapterId', 'assets', 'shots', 'look']);
+    expect(Object.keys(ch2)).toEqual(['chapterId', 'assets', 'shots']); // no window: no look
+    const rigs = (m: Record<string, unknown>): ReadonlyMap<BgId, ShotRig> => {
+      const d = decodeShotRigs(m['shots']);
+      expect(d.ok ? [] : d.error).toEqual([]);
+      return d.ok ? d.value : new Map();
+    };
+    const [r1, r2] = [rigs(ch1), rigs(ch2)];
+    expect([...r1.keys()]).toEqual(['cafe']);
+    expect([...r2.keys()]).toEqual(['archive', 'cafe']);
+    expect(r2.get('archive' as BgId)?.cast).toEqual([]);
+    const ally1 = r1.get('cafe' as BgId)?.cast[0];
+    const ally2 = r2.get('cafe' as BgId)?.cast[0];
+    const expr = (m: typeof ally1, x: string): FaceRig['exprs'][ExprId] | undefined => m?.face?.exprs[x as ExprId];
+    expect(Object.keys(ally1?.face?.exprs ?? {})).toEqual(['neutral']);
+    expect(expr(ally1, 'neutral')?.motion.talk.map((m) => m.file)).toEqual(['talk/cafe/ally/neutral', 'talk/cafe/ally/neutral']);
+    expect(Object.keys(ally2?.face?.exprs ?? {})).toEqual(['neutral', 'smile']);
+    expect(expr(ally2, 'neutral')?.motion.talk).toEqual([]); // ch2 never has ally speak at rest
+    expect(expr(ally2, 'smile')?.layer?.file).toBe('face/cafe/ally/smile');
+    expect(expr(ally2, 'smile')?.motion.talk.map((m) => m.file)).toEqual(['talk/cafe/ally/smile', 'talk/cafe/ally/smile']);
+    // Every member's file is one of its chapter's own entries; the free chapter's rigs name no gated file.
+    const files = (v: unknown): string[] =>
+      Array.isArray(v)
+        ? v.flatMap(files)
+        : typeof v === 'object' && v !== null
+          ? Object.entries(v).flatMap(([k, x]) => (k === 'file' && typeof x === 'string' ? [x] : files(x)))
+          : [];
+    for (const m of [ch1, ch2]) {
+      const named = files(m['shots']);
+      expect(named.length).toBeGreaterThan(0);
+      expect(named.filter((f) => !Object.hasOwn(m['assets'] as object, f))).toEqual([]);
+    }
+    expect(files(ch1['shots']).filter((f) => f.startsWith('face/') || f.endsWith('/smile'))).toEqual([]);
+    const look = decodeLook(ch1['look']);
+    expect(look.ok ? stepWindow(look.value, 'ch1.cafe.a001') : look.error).toEqual({ need: step.cur, warm: [], near: 0, hope: [] });
+  });
+
+  test('assets: every shot file id in build/shots.json is a manifest asset id', async () => {
+    // Rev. 5 (m8): the story tool's shot file ids and the asset tool's manifest keys are one grammar: each listed id
+    // passes ASSET_ID_RE, parses by its segment count, and names its chapter's entry and the rig member it draws.
+    writeRepo(repo, SHOT_REPO);
+    const r = await runTool(repo, HALVING_FAKES);
+    expect(r.code, r.err.join('\n')).toBe(0);
+    const manifests: Record<string, string> = { ch1: 'client/src/story-gen/free/ch1.assets.json', ch2: 'server/content/chapters/ch2/assets.json' };
+    let checked = 0;
+    for (const [ch, c] of Object.entries(SHOT_CHAPTERS)) {
+      const m = JSON.parse(readRel(repo, manifests[ch] ?? '')) as { assets: Record<string, unknown>; shots?: unknown };
+      const rigs = decodeShotRigs(m.shots);
+      expect(rigs.ok, `${ch}: ${rigs.ok ? '' : rigs.error.join('; ')}`).toBe(true);
+      for (const id of c.assets) {
+        expect(ASSET_ID_RE.test(id), id).toBe(true);
+        const p = parseShotFileId(id);
+        expect(p, id).not.toBeNull();
+        expect(Object.hasOwn(m.assets, id), `${ch} ${id}`).toBe(true);
+        const rig = p === null || !rigs.ok ? undefined : rigs.value.get(p.shot);
+        expect(rig, `${ch} ${id}`).toBeDefined();
+        if (p !== null && (p.ns === 'face' || p.ns === 'talk')) {
+          const exprs = rig?.cast.find((x) => x.char === p.char)?.face?.exprs ?? {};
+          expect(Object.hasOwn(exprs, p.expr), `${ch} ${id}`).toBe(true);
+        }
+        checked++;
+      }
+    }
+    expect(checked).toBe(8);
+  });
+
+  test('assets: a need whose file its chapter does not list is refused', async () => {
+    // Shots §4.5 (CH D5): build/shots.json's decoder admits a listed file only when a need makes it, never the converse,
+    // so the planner's own-entries invariant is what keeps a rig member out of a manifest without its entry: free ch1
+    // shows ally smiling silently yet lists no face file, which paid ch2 alone lists, so the file is gated.
+    const smiling = cafeNeed([['neutral', true], ['smile', false]], 'ch1');
+    writeRepo(repo, { ...SHOT_FILES, 'server/content/build/shots.json': shotsUsage({ ...SHOT_CHAPTERS, ch1: { ...SHOT_CHAPTERS.ch1, shots: { cafe: smiling } } }) });
+    await expect(runTool(repo, HALVING_FAKES)).rejects.toThrow(/ch1's manifest is one of its assets entries; face\/cafe\/ally\/smile is not$/);
+    expect(existsSync(join(repo, 'client', 'src', 'story-gen', 'free', 'ch1.assets.json')), 'no free manifest names it').toBe(false);
+    expect(listDir(repo, 'client/public/assets')).toEqual([]);
+    expect(listDir(repo, 'server/content/assets')).toEqual([]);
+    // A public file the need makes and no chapter lists: the same refusal, not a rig member with no entry at all.
+    writeRepo(repo, { ...SHOT_FILES, 'server/content/build/shots.json': shotsUsage({ ...SHOT_CHAPTERS, ch1: { ...SHOT_CHAPTERS.ch1, assets: ['bg/cafe', 'sheet/cafe'] } }) });
+    await expect(runTool(repo, HALVING_FAKES)).rejects.toThrow(/ch1's manifest is one of its assets entries; talk\/cafe\/ally\/neutral is not$/);
+    expect(existsSync(join(repo, 'client', 'src', 'story-gen'))).toBe(false);
+  });
+
+  test('assets: a look image its chapter does not list is refused', async () => {
+    // Shots §4.5 (CH D5): build/shots.json's decoder checks a window's non-shot image by the id grammar alone, never
+    // against its chapter's usage, so the planner's own-entries invariant is what keeps a look image out of a manifest
+    // without its entry: free ch1's window hopes for cg/letter, which paid ch2 alone lists, so the image is gated.
+    const step = { cur: [], certain: [], certainDist: 0, possible: ['cg/letter'], near: 1, d2: [], d3: [], labels: false };
+    const usage = { chapters: { ...REPO_USAGE.chapters, ch2: { ...REPO_USAGE.chapters.ch2, assets: [...REPO_USAGE.chapters.ch2.assets, 'cg/letter'] } } };
+    writeRepo(repo, {
+      ...SHOT_REPO,
+      'server/content/build/usage.json': usage,
+      'server/content/build/shots.json': shotsUsage({ ...SHOT_CHAPTERS, ch1: { ...SHOT_CHAPTERS.ch1, look: { 'ch1.cafe.a001': step } } }),
+    });
+    await expect(runTool(repo, HALVING_FAKES)).rejects.toThrow(/ch1's manifest is one of its assets entries; cg\/letter is not$/);
+    expect(existsSync(join(repo, 'client', 'src', 'story-gen')), 'no free manifest names it').toBe(false);
+    expect(listDir(repo, 'client/public/assets')).toEqual([]);
+    expect(listDir(repo, 'server/content/assets')).toEqual([]);
   });
 
   test('assets: cli runs through a linked path under preserve-symlinks-main', async () => {
@@ -1180,5 +1684,5 @@ describe('assets', () => {
     expect(half && [half.w, half.h, half.decodedBytes]).toEqual([540, 1024, 540 * 1024 * 4]);
     const halfName = half === undefined ? '' : half.avif.url.slice('/assets/'.length);
     expect(await dims(readFileSync(join(repo, 'client', 'public', 'assets', halfName)))).toEqual({ w: 540, h: 1024, format: 'heif' });
-  }, 30_000);
+  }, CLI_TIMEOUT_MS);
 });
