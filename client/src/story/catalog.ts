@@ -764,14 +764,16 @@ export type FetchAsset = (url: string, signal: AbortSignal) => Promise<Result<Bl
 const ASSET_FILE_RE = /^[a-z0-9][a-z0-9_-]*\.(?:avif|webp|m4a|wav)$/;
 const PUBLIC_PREFIX = '/assets/';
 const GATED_PREFIX = '/api/assets/';
-const IMAGE_NAMESPACES: readonly string[] = ['bg', 'cg', 'char', 'prop', 'cover'];
+/** Shots §2.6: a shot's packed files, image entries with a half tier like a bg. */
+const SHOT_FILE_NAMESPACES = ['sheet', 'face', 'talk'];
+const IMAGE_NAMESPACES: readonly string[] = ['bg', 'cg', 'char', 'prop', 'cover', ...SHOT_FILE_NAMESPACES];
 /**
  * MEMORY-PLAN 4.B: the transparent kinds, trimmed to their alpha box and stored with even sides. The one list the
  * decoder, the asset tool and the budget read; bg, cg and cover are opaque and never trimmed.
  */
 export const TRIMMED_NAMESPACES: readonly string[] = ['char', 'prop'];
 /** MEMORY-PLAN 4.C: the kinds a scene draws from the registry, so the ones with a half tier; a cover never has one. */
-const HALF_NAMESPACES: readonly string[] = ['bg', 'cg', 'char', 'prop'];
+const HALF_NAMESPACES: readonly string[] = ['bg', 'cg', 'char', 'prop', ...SHOT_FILE_NAMESPACES];
 
 function positiveInt(value: unknown, path: string, report: Report): number | null {
   if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {

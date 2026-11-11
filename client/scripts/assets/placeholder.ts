@@ -6,22 +6,33 @@ import { ASSET_ID_RE } from '../../src/story/catalog.ts';
 import type { CatalogImage } from '../../src/story/catalog.ts';
 import type { AssetId } from '../../src/story/staging.ts';
 
-/** The image namespaces; an asset id's first segment. */
-export type ImageKind = 'bg' | 'cg' | 'char' | 'prop' | 'cover';
+/** The image namespaces; an asset id's first segment. `sheet`, `face`, `talk`: a shot's packed files (shots §2.6). */
+export type ImageKind = 'bg' | 'cg' | 'char' | 'prop' | 'cover' | 'sheet' | 'face' | 'talk';
 
-/** PP "Budgets" (bg/cg exactly 1080×2048, sprites 768×1536), PUZZLES-PLAN X11 (props), STORIES-PLAN Y15 (covers). */
+const IMAGE_KINDS: readonly ImageKind[] = ['bg', 'cg', 'char', 'prop', 'cover', 'sheet', 'face', 'talk'];
+
+/** The packing bound of a shot file (principle 4: no side over 2048 px); the packer sizes each file inside it. */
+const PACKED = { w: 2048, h: 2048 } as const;
+
+/**
+ * PP "Budgets" (bg/cg exactly 1080×2048, sprites 768×1536), PUZZLES-PLAN X11 (props), STORIES-PLAN Y15 (covers), shots
+ * §4.4 (sheet, face and talk files: at most 2048 per side, budget.ts `DIMS`).
+ */
 export const CANONICAL_SIZE: Readonly<Record<ImageKind, { readonly w: number; readonly h: number }>> = {
   bg: { w: 1080, h: 2048 },
   cg: { w: 1080, h: 2048 },
   char: { w: 768, h: 1536 },
   prop: { w: 512, h: 512 },
   cover: { w: 360, h: 640 },
+  sheet: PACKED,
+  face: PACKED,
+  talk: PACKED,
 };
 
-/** The image namespace of an asset id, or null for audio (`bgm/`, `sfx/`). */
+/** The image namespace of an asset id, or null for audio (`bgm/`, `sfx/`): the one image-kind predicate. */
 export function imageKind(id: AssetId): ImageKind | null {
   const ns = id.slice(0, id.indexOf('/'));
-  return ns === 'bg' || ns === 'cg' || ns === 'char' || ns === 'prop' || ns === 'cover' ? ns : null;
+  return IMAGE_KINDS.find((k) => k === ns) ?? null;
 }
 
 function hsl(hue: number, saturation: number, lightness: number): string {
@@ -75,6 +86,11 @@ function shapes(kind: ImageKind, id: AssetId, hue: number, w: number, h: number)
         label(id, cx, cx + Math.round(font / 3), font, hsl(hue, 30, 95)),
       ];
     }
+    case 'sheet':
+    case 'face':
+    case 'talk':
+      // A packed shot file is drawn by renderPacked from its members; here only its label on a transparent canvas.
+      return [label(id, cx, Math.round(h / 2), font, hsl(hue, 30, 50))];
     default: {
       const unreachable: never = kind;
       return unreachable;

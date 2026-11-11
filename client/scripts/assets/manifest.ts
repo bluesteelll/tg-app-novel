@@ -137,6 +137,10 @@ export function halfAsk(id: AssetId, tier: Tier): HalfAsk {
     case 'bg':
     case 'cg':
     case 'prop':
+    case 'sheet':
+    case 'face':
+    case 'talk':
+      // A shot file's packer keeps every side even (shots §4.2 step 7), so its half is an exact halving.
       return 'any';
     case 'char':
       return { canvasH: CHAR_HALF_CANVAS_H };

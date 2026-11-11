@@ -160,7 +160,17 @@ export const LIMITS: Limits = {
   knotSet: STEADY_CAP_BYTES,
   roomSet: STEADY_CAP_BYTES,
   firstLoad: 800_000,
-  image: { bg: PHOTO, cg: PHOTO, char: PHOTO, prop: { avif: 60_000, webp: 90_000 }, cover: { avif: 24_000, webp: 36_000 } },
+  image: {
+    bg: PHOTO,
+    cg: PHOTO,
+    char: PHOTO,
+    prop: { avif: 60_000, webp: 90_000 },
+    cover: { avif: 24_000, webp: 36_000 },
+    // Shots §4.4: the outlier guards of a shot's packed files.
+    sheet: { avif: 200_000, webp: 300_000 },
+    face: { avif: 120_000, webp: 180_000 },
+    talk: { avif: 30_000, webp: 45_000 },
+  },
   bgmM4aBytes: 3_000_000,
   bgmMs: 240_000,
   bgmWavBytes: 400_000,
@@ -256,6 +266,10 @@ const DIMS: Readonly<Record<ImageKind, { w: number; h: number; exact: boolean }>
   char: { w: 768, h: 1536, exact: false },
   prop: { w: 512, h: 512, exact: false },
   cover: { w: 360, h: 640, exact: true },
+  // Shots §4.4: a packed shot file, at most 2048 per side.
+  sheet: { w: 2048, h: 2048, exact: false },
+  face: { w: 2048, h: 2048, exact: false },
+  talk: { w: 2048, h: 2048, exact: false },
 };
 
 const JS = /\.m?js$/;

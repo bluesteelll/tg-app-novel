@@ -16,10 +16,13 @@ import { decodeChapterList, decodeStoryUsage } from '../story/emit.ts';
 import { encodeImage, halfRgba } from './encode.ts';
 import { ASSET_FILE_RE, assetFileName, assetUsage, catalogImage, decodeAssetFingerprints, halfAsk, sha256Hex, tierOf } from './manifest.ts';
 import type { AssetUsage } from './manifest.ts';
-import { renderPlaceholder } from './placeholder.ts';
+import { CANONICAL_SIZE, imageKind, renderPlaceholder } from './placeholder.ts';
+import type { ImageKind } from './placeholder.ts';
 import { synthWav } from './synth.ts';
 
 const CLIENT_DIR = fileURLToPath(new URL('../..', import.meta.url));
+/** A spawned CLI run (node + sharp) on a loaded machine; the 5 s default fails it spuriously (carry, LP2's C0). */
+const CLI_TIMEOUT_MS = 30_000;
 const ASSETS_SCRIPT = fileURLToPath(new URL('../assets.ts', import.meta.url));
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -165,6 +168,36 @@ describe('placeholder', () => {
     } finally {
       vi.useRealTimers();
       random.mockRestore();
+    }
+  });
+
+  test('assets: every image namespace has a canonical size and a placeholder shape', () => {
+    // Shots §4.4 (rev. 4, W5): imageKind is the one image-namespace predicate; a shot file (sheet, face, talk) is an
+    // image kind like the other five, so every Record keyed by it has the three and the planner reads one predicate.
+    const cases: ReadonlyArray<readonly [string, string, number, number]> = [
+      ['bg/cafe', 'bg', 1080, 2048],
+      ['cg/letter', 'cg', 1080, 2048],
+      ['char/ally/smile', 'char', 768, 1536],
+      ['prop/note', 'prop', 512, 512],
+      ['cover/manor', 'cover', 360, 640],
+      // The packing bound of a shot file (principle 4's 2048 px), not a fixed canvas: the packer sizes each file.
+      ['sheet/cafe', 'sheet', 2048, 2048],
+      ['face/cafe/ally/smile', 'face', 2048, 2048],
+      ['talk/cafe/ally/smile', 'talk', 2048, 2048],
+    ];
+    for (const [id, kind, w, h] of cases) {
+      expect(imageKind(id as AssetId), id).toBe(kind);
+      expect(CANONICAL_SIZE[kind as ImageKind], id).toEqual({ w, h });
+      const p = renderPlaceholder(id as AssetId, HUE30); // a literal asset id
+      expect(rootAttrs(p.svg), id).toEqual({ width: String(w), height: String(h), viewBox: `0 0 ${w} ${h}` });
+      expect(p.svg, id).toContain(`>${id}</text>`);
+    }
+    expect(Object.keys(CANONICAL_SIZE).sort()).toEqual(cases.map(([, kind]) => kind).sort());
+    for (const id of ['face/cafe/ally/smile', 'talk/cafe/ally/smile', 'sheet/cafe']) {
+      expect(renderPlaceholder(id as AssetId, HUE30).svg, id).not.toMatch(/<rect/); // a transparent canvas
+    }
+    for (const id of ['bgm/calm', 'sfx/door', 'face/cafe/ally', 'sheet/cafe/ally']) {
+      expect(imageKind(id as AssetId) === null || !ASSET_ID_RE.test(id), id).toBe(true);
     }
   });
 
@@ -511,6 +544,44 @@ describe('catalog manifests', () => {
     }
     for (const raw of [null, [], 'manifest', { chapterId: 'ch2' }]) {
       expect(decodeAssetManifest(raw).ok, JSON.stringify(raw)).toBe(false);
+    }
+  });
+
+  test('catalog: sheet ids are image ids', () => {
+    // Shots §2.4: sheet/<s>, face/<s>/<c>/<x> and talk/<s>/<c>/<x> are image entries with a half tier, public or gated,
+    // each half under its own entry's prefix (M3s).
+    const half = (name: string, prefix: string): RawEntry => ({
+      w: 512,
+      h: 256,
+      decodedBytes: 512 * 256 * 4,
+      avif: { url: `${prefix}${name}-half-0a0a0a0a.avif`, bytes: 900 },
+      webp: { url: `${prefix}${name}-half-0a0a0a0a.webp`, bytes: 1_200 },
+    });
+    const packed = (name: string, prefix: string): RawEntry =>
+      image(name, {
+        w: 1024,
+        h: 512,
+        decodedBytes: 1024 * 512 * 4,
+        avif: { url: `${prefix}${name}-0b0b0b0b.avif`, bytes: 9_000 },
+        webp: { url: `${prefix}${name}-0b0b0b0b.webp`, bytes: 12_000 },
+        half: half(name, prefix),
+      });
+    const raw = {
+      chapterId: 'ch2',
+      assets: {
+        'sheet/cafe': packed('sheet-cafe', '/assets/'),
+        'face/cafe/ally/smile': packed('face-cafe-ally-smile', '/api/assets/'),
+        'talk/cafe/ally/smile': packed('talk-cafe-ally-smile', '/api/assets/'),
+      },
+    };
+    expect(decodeAssetManifest(raw)).toEqual({ ok: true, value: raw });
+    // An audio entry under a shot file's id is refused, as for every image namespace.
+    for (const id of Object.keys(raw.assets)) {
+      expect(manifestIssues({ chapterId: 'ch2', assets: { [id]: audio('sfx', 'x-0c0c0c0c') } }), id).toContainEqual({
+        file: 'assets.json',
+        path: `assets.${id}.kind`,
+        detail: expect.any(String) as string,
+      });
     }
   });
 
@@ -1144,6 +1215,17 @@ describe('assets', () => {
     expect(asked).toEqual({ 'bg/archive': 'any', 'bg/cafe': 'any', 'char/ally/neutral': { canvasH: 1536 }, 'cover/manor': 'none' });
   });
 
+  test('assets: sheets, face and talk files get half files', () => {
+    // Shots §4.2 step 7 (rev. 3, C1): every shot file gets a half like every bg, public or gated (M3s); the packer keeps
+    // every side even, so the ask is 'any'. A file no chapter uses gets none.
+    for (const id of ['sheet/cafe', 'face/cafe/ally/smile', 'talk/cafe/ally/neutral']) {
+      expect([halfAsk(id as AssetId, 'public'), halfAsk(id as AssetId, 'paid'), halfAsk(id as AssetId, 'unused')], id).toEqual(['any', 'any', 'none']);
+    }
+    // Controls: the existing kinds keep their asks.
+    expect(halfAsk('bg/cafe' as AssetId, 'paid')).toBe('any');
+    expect(halfAsk('cover/manor' as AssetId, 'public')).toBe('none');
+  });
+
   test("assets: a half file's name is distinct from every full file name", () => {
     // MEMORY-PLAN §5: every id of every namespace, the edge ids whose parts read "half" among them, for the same bytes.
     const ids = ['bg/cafe', 'bg/half', 'cg/letter', 'char/ally/neutral', 'char/half/half', 'char/ally/half', 'prop/half', 'cover/manor', 'bgm/half', 'sfx/door'];
@@ -1202,5 +1284,5 @@ describe('assets', () => {
     expect(half && [half.w, half.h, half.decodedBytes]).toEqual([540, 1024, 540 * 1024 * 4]);
     const halfName = half === undefined ? '' : half.avif.url.slice('/assets/'.length);
     expect(await dims(readFileSync(join(repo, 'client', 'public', 'assets', halfName)))).toEqual({ w: 540, h: 1024, format: 'heif' });
-  }, 30_000);
+  }, CLI_TIMEOUT_MS);
 });
