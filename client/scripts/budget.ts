@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { brotliCompressSync, constants } from 'node:zlib';
 
 import type { AssetCatalog, AssetEntry, AssetManifest, ChapterListEntry, ChapterMeta, CoverManifest, ImageEntry } from '../src/story/catalog.ts';
-import type { AssetId, ChapterId } from '../src/story/staging.ts';
+import type { AssetId, ChapterId, PropId } from '../src/story/staging.ts';
 import {
   PIXI_ENV_SRCS,
   SKIP_PIXI_ENV,
@@ -129,7 +129,10 @@ export type Limits = {
   /** Shots §5.11 `budget/entry-step`: a step's entry at the half tier plus the chapter files (`ENTRY_STEP_TTFL`). */
   entryStepImages: number;
   firstLoad: number;
+  /** Per kind; a `bg`'s scales with its plate's width (shots §4.4, m10: `plateLimit`). */
   image: Readonly<Record<ImageKind, { avif: number; webp: number }>>;
+  /** Shots §4.4 (W10): a loop prop's atlas, `prop/<id>` whose catalog entry is a `loop`, instead of a still prop's. */
+  loopAtlas: { avif: number; webp: number };
   bgmM4aBytes: number;
   bgmMs: number;
   /** K23: a WAV only for a catalog placeholder. */
@@ -182,6 +185,7 @@ export const LIMITS: Limits = {
     face: { avif: 120_000, webp: 180_000 },
     talk: { avif: 30_000, webp: 45_000 },
   },
+  loopAtlas: { avif: 200_000, webp: 300_000 },
   bgmM4aBytes: 3_000_000,
   bgmMs: 240_000,
   bgmWavBytes: 400_000,
@@ -270,7 +274,10 @@ function isLazySrc(src: string | undefined): boolean {
 export const TWA_BYTES = 16_200;
 /** Principle 4: no image side over 2048 px. */
 const MAX_SIDE = 2048;
-/** Image dimensions per kind: the canonical size exactly, or at most (PP "Budgets", PZ X11, SP Y15). */
+/**
+ * Image dimensions per kind: the canonical size exactly, or at most (PP "Budgets", PZ X11, SP Y15). A `bg`'s is the
+ * room plate's; any other plate follows `PLATE` (shots §4.4).
+ */
 const DIMS: Readonly<Record<ImageKind, { w: number; h: number; exact: boolean }>> = {
   bg: { w: 1080, h: 2048, exact: true },
   cg: { w: 1080, h: 2048, exact: true },
@@ -282,6 +289,21 @@ const DIMS: Readonly<Record<ImageKind, { w: number; h: number; exact: boolean }>
   face: { w: 2048, h: 2048, exact: false },
   talk: { w: 2048, h: 2048, exact: false },
 };
+/**
+ * Shots §4.4 (m10): a shot's plate is 2048 high and an even width from 1080 to 1440 (pan slack, S11); a room's plate is
+ * exactly `DIMS.bg` (the explore view lays its hotspots on that frame).
+ */
+const PLATE = { h: 2048, minW: 1080, maxW: 1440 } as const;
+
+function isPlate(w: number, h: number): boolean {
+  return h === PLATE.h && w % 2 === 0 && w >= PLATE.minW && w <= PLATE.maxW;
+}
+
+/** A plate's file limits scale with its width from the 1080 plate's (400,000 / 600,000 B at 1440); not a plate: as 1080. */
+function plateLimit(base: { avif: number; webp: number }, w: number, h: number): { avif: number; webp: number } {
+  const width = isPlate(w, h) ? w : DIMS.bg.w;
+  return { avif: Math.floor((base.avif * width) / DIMS.bg.w), webp: Math.floor((base.webp * width) / DIMS.bg.w) };
+}
 
 const JS = /\.m?js$/;
 
@@ -830,23 +852,52 @@ function fileProblems(a: AssetInputs, ref: { url: string; bytes: number }): stri
   return size === ref.bytes ? [] : [`${rel} is ${size} B on disk, the manifest says ${ref.bytes}`];
 }
 
+/** A `prop/<p>` whose catalog entry is a loop (its frames' atlas, shots §2.4 W10). */
+function isLoopProp(catalog: AssetCatalog | null, id: AssetId): boolean {
+  const p = id.slice('prop/'.length);
+  const entry = catalog !== null && Object.hasOwn(catalog.prop, p) ? catalog.prop[p as PropId] : undefined; // own key checked
+  return entry !== undefined && 'loop' in entry;
+}
+
+/** Shots §4.4 (m10): a bg is a plate (`PLATE`), and a room's bg (a usage room draws it) exactly `DIMS.bg`. */
+function plateProblems(a: AssetInputs, id: AssetId, canvas: { w: number; h: number }): string[] {
+  const v: string[] = [];
+  if (!isPlate(canvas.w, canvas.h)) {
+    v.push(`${canvas.w}×${canvas.h}, not a plate (h ${PLATE.h}, w even ${PLATE.minW}-${PLATE.maxW})`);
+  }
+  const rooms = Object.entries(a.rooms)
+    .filter(([, room]) => room.bg === id)
+    .map(([key]) => key)
+    .sort();
+  if (rooms.length > 0 && (canvas.w !== DIMS.bg.w || canvas.h !== DIMS.bg.h)) {
+    v.push(`${canvas.w}×${canvas.h}, not exactly ${DIMS.bg.w}×${DIMS.bg.h} (room plate ${rooms.join(', ')})`);
+  }
+  return v;
+}
+
 function imageRow(a: AssetInputs, id: AssetId, e: ImageEntry, conflict: string | undefined, limits: Limits): Row {
   const name = `image ${id}`;
   const kind = imageKind(id);
   if (kind === null) {
     return failed(name, null, 'not an image namespace');
   }
-  const limit = limits.image[kind];
-  const dims = DIMS[kind];
   const v: string[] = [];
   // The sizes hold on the canvas (MEMORY-PLAN §7): a trimmed file is laid out, and sized, as its full image.
   const t = e.trim;
   const canvas = t === undefined ? { w: e.w, h: e.h } : { w: t.canvasW, h: t.canvasH };
+  // Shots §4.4 (W10): a loop prop's frames are one atlas, held to MAX_SIDE and its own file limits.
+  const loop = kind === 'prop' && isLoopProp(a.catalog, id);
+  const limit = loop ? limits.loopAtlas : kind === 'bg' ? plateLimit(limits.image.bg, canvas.w, canvas.h) : limits.image[kind];
   if (canvas.w > MAX_SIDE || canvas.h > MAX_SIDE) {
     v.push(`${canvas.w}×${canvas.h} over ${MAX_SIDE} px`);
   }
-  if (dims.exact ? canvas.w !== dims.w || canvas.h !== dims.h : canvas.w > dims.w || canvas.h > dims.h) {
-    v.push(`${canvas.w}×${canvas.h}, ${dims.exact ? 'not exactly' : 'over'} ${dims.w}×${dims.h} (${kind})`);
+  if (kind === 'bg') {
+    v.push(...plateProblems(a, id, canvas));
+  } else if (!loop) {
+    const dims = DIMS[kind];
+    if (dims.exact ? canvas.w !== dims.w || canvas.h !== dims.h : canvas.w > dims.w || canvas.h > dims.h) {
+      v.push(`${canvas.w}×${canvas.h}, ${dims.exact ? 'not exactly' : 'over'} ${dims.w}×${dims.h} (${kind})`);
+    }
   }
   if (t !== undefined && !TRIMMED_NAMESPACES.includes(kind)) {
     v.push(`trim on a ${kind} (only char and prop are trimmed)`);
@@ -1011,7 +1062,17 @@ function knotRows(a: AssetInputs, limits: Limits): Row[] {
   return rows;
 }
 
-/** PUZZLES-PLAN `budget/room-set`: per room, bg + props + max(largest neighbour bg, largest close-up). */
+/**
+ * Per-player §6.5 (Reconcile P2, shots I-3): the images a room's or a neighbour's shot holds, `img(n) = bg(n) +
+ * sheet(n)`: the plate, and its sheet when the manifest lists one (as `shotImages`, `client/src/story/shots.ts`, which a
+ * main module may not import).
+ */
+export function imgIds(manifest: AssetManifest, bg: AssetId): AssetId[] {
+  const sheet = `sheet/${bg.slice('bg/'.length)}` as AssetId; // a bg id's shot, in the sheet namespace
+  return Object.hasOwn(manifest.assets, sheet) ? [bg, sheet] : [bg];
+}
+
+/** PUZZLES-PLAN `budget/room-set`: per room, img(bg) + props + max(largest neighbour img, largest close-up). */
 function roomRows(a: AssetInputs, limits: Limits): Row[] {
   const rows: Row[] = [];
   for (const [key, room] of Object.entries(a.rooms).sort(([x], [y]) => (x < y ? -1 : 1))) {
@@ -1025,8 +1086,11 @@ function roomRows(a: AssetInputs, limits: Limits): Row[] {
     const lacking: string[] = [];
     const sum = (ids: readonly AssetId[]): number => [...decodedOf(manifest.value, ids, lacking).values()].reduce((s, b) => s + b, 0);
     const max = (ids: readonly AssetId[]): number => Math.max(0, ...decodedOf(manifest.value, ids, lacking).values());
-    const total = sum([room.bg]) + sum(room.props) + Math.max(max(room.neighbours), max(room.closeups));
-    const note = `bg + ${room.props.length} props + max(neighbour bg, close-up)`;
+    const img = (bg: AssetId): AssetId[] => imgIds(manifest.value, bg);
+    const neighbour = Math.max(0, ...room.neighbours.map((n) => sum(img(n))));
+    const total = sum(img(room.bg)) + sum(room.props) + Math.max(neighbour, max(room.closeups));
+    const sheets = [room.bg, ...room.neighbours].some((bg) => img(bg).length > 1);
+    const note = `bg + ${room.props.length} props + max(neighbour bg, close-up)${sheets ? ' (+ sheets)' : ''}`;
     rows.push(
       lacking.length > 0
         ? failed(name, limits.roomSet, `not in ${ch}'s manifest: ${lacking.join(', ')}`, 'MiB')

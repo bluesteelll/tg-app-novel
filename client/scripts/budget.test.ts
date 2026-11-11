@@ -11,7 +11,7 @@ import { STEADY_CAP_BYTES } from '../src/scene/registry.ts';
 import type { AssetCatalog, AssetEntry, HalfFile, ImageEntry } from '../src/story/catalog.ts';
 import type { AssetId, ChapterId, TrackId } from '../src/story/staging.ts';
 import { decodeAssetCatalog, decodeAssetManifest, decodeChapterMeta, decodeCoverManifest, urlPath } from './assets/manifest.ts';
-import { ENGINE_SRC, ENTRY_STEP_TTFL, LABELS_BOUND, LIMITS, evaluate, evaluateAssets, firstLineFiles, formatRows, readAssetInputs, readInputs } from './budget.ts';
+import { ENGINE_SRC, ENTRY_STEP_TTFL, LABELS_BOUND, LIMITS, evaluate, evaluateAssets, firstLineFiles, formatRows, imgIds, readAssetInputs, readInputs } from './budget.ts';
 import type { AssetInputs, BudgetInputs, ChapterInputs, DistFile, ManifestChunk, Row } from './budget.ts';
 import { decodeChapterList, decodeStoryUsage } from './story/emit.ts';
 import { decodeShotUsage } from './story/shots/usage.ts';
@@ -1498,7 +1498,7 @@ describe('budget assets', () => {
       ['prop AVIF', entry('prop/note', img('prop-note-0d0d0d0d', 512, 512, 60_001, 30_000)), 'image prop/note', 'AVIF'],
       ['prop WebP', entry('prop/note', img('prop-note-0d0d0d0d', 512, 512, 20_000, 90_001)), 'image prop/note', 'WebP'],
       ['cover WebP', () => assetInputs(baseSpecs(), { 'cover/manor': img('cover-manor-0e0e0e0e', 360, 640, 10_000, 36_001) }), 'image cover/manor', 'WebP'],
-      ['bg not 1080×2048', entry('bg/cafe', img('bg-cafe-0a0a0a0a', 1080, 1920)), 'image bg/cafe', 'not exactly 1080×2048'],
+      ['bg not 2048 high', entry('bg/cafe', img('bg-cafe-0a0a0a0a', 1080, 1920)), 'image bg/cafe', 'not a plate (h 2048, w even 1080-1440)'],
       ['sprite over 768×1536', entry('char/ally/neutral', img('char-ally-neutral-0c0c0c0c', 800, 1536)), 'image char/ally/neutral', 'over 768×1536'],
       ['cover not 360×640', () => assetInputs(baseSpecs(), { 'cover/manor': img('cover-manor-0e0e0e0e', 360, 600, 10_000, 15_000) }), 'image cover/manor', 'not exactly 360×640'],
       // The decoder refuses this one; the row checks it too, on a value patched after decoding.
@@ -1625,6 +1625,128 @@ describe('budget assets', () => {
     const a = assetInputs();
     const noManifest = assetRows({ ...a, chapters: a.chapters.map((c) => (c.id === 'ch2' ? { ...c, manifest: null } : c)) });
     expect(rowOf(noManifest, 'transfer ch2 (half)')).toMatchObject({ status: 'FAIL', note: 'manifest missing' });
+  });
+
+  test('budget: a room plate that is not 1080 x 2048 fails', () => {
+    // Shots §4.4: a shot's plate may be up to 1440 wide (m10), a room's is exactly 1080 x 2048 (the explore view lays its
+    // hotspots on that frame). The same 1440 plate passes as a shot's and fails as a room's, naming the room.
+    const a = assetInputs(specsWith('ch1', (s) => (s.assets['bg/hall'] = img('bg-hall-0a0a0a0a', 1440, 2048, 300_000, 450_000))));
+    const shot = rowOf(assetRows(a), 'image bg/hall');
+    expect(shot.status, shot.note).toBe('PASS');
+    const inRoom = (x: AssetInputs): Row => {
+      const room = { bg: 'bg/hall', props: [], closeups: [], neighbours: [] };
+      return rowOf(assetRows({ ...x, rooms: { 'ch1/manor/hall': room } as unknown as AssetInputs['rooms'] }), 'image bg/hall'); // ids are fixture literals
+    };
+    const row = inRoom(a);
+    expect(row.status).toBe('FAIL');
+    expect(row.note).toBe('1440×2048, not exactly 1080×2048 (room plate ch1/manor/hall)');
+    // Control: a 1080 room plate passes.
+    expect(inRoom(assetInputs(specsWith('ch1', (s) => (s.assets['bg/hall'] = bg('hall'))))).status).toBe('PASS');
+  });
+
+  test("budget: a 1440 plate's file limit scales with its width", () => {
+    // Shots §4.4 (m10): a plate is 2048 high and an even width from 1080 to 1440, its files at most floor(300,000 x w /
+    // 1080) B AVIF and floor(450,000 x w / 1080) B WebP: 400,000 and 600,000 at 1440, a 1080 plate's limits unchanged.
+    const plate = (w: number, avif: number, webp: number, half?: number): Row => {
+      const e = img('bg-cafe-0a0a0a0a', w, 2048, avif, webp);
+      return rowOf(assetRows(assetInputs(specsWith('ch1', (s) => (s.assets['bg/cafe'] = half === undefined ? e : halved(e, half))))), 'image bg/cafe');
+    };
+    const at1440 = plate(1440, 400_000, 600_000);
+    expect(at1440.status, at1440.note).toBe('PASS');
+    expect(at1440.limitBytes).toBe(400_000);
+    expect(plate(1440, 400_001, 600_000)).toMatchObject({ status: 'FAIL', note: 'AVIF 400.0 KB over 400.0 KB' });
+    expect(plate(1440, 400_000, 600_001)).toMatchObject({ status: 'FAIL', note: 'WebP 600.0 KB over 600.0 KB' });
+    expect(plate(1260, 350_000, 525_000)).toMatchObject({ status: 'PASS', limitBytes: 350_000 });
+    expect(plate(1080, 300_001, 450_000)).toMatchObject({ status: 'FAIL', limitBytes: 300_000, note: 'AVIF 300.0 KB over 300.0 KB' });
+    // A half is held to its full file's scaled limit, as today.
+    expect(plate(1440, 300_000, 450_000, 400_001)).toMatchObject({ status: 'FAIL', note: 'half AVIF 400.0 KB over 400.0 KB' });
+    // The width bounds: an odd width, one over 1440 and one under 1080 are no plate.
+    for (const w of [1081, 1442, 1078]) {
+      const row = plate(w, 100_000, 150_000);
+      expect(row.status, `${w}`).toBe('FAIL');
+      expect(row.note).toBe(`${w}×2048, not a plate (h 2048, w even 1080-1440)`);
+    }
+  });
+
+  test("budget: room-set counts the room's sheet", () => {
+    // Per-player §6.5 (Reconcile P2): img(n) = bg(n) + sheet(n), so room-set counts img(room) + props + max(the largest
+    // neighbour's img, the largest close-up).
+    const sheeted = specsWith('ch1', (s) => {
+      Object.assign(s.assets, { 'bg/hall': bg('hall'), 'sheet/hall': cuSheetOf('hall'), 'bg/yard': bg('yard'), 'sheet/yard': cuSheetOf('yard'), 'cg/drawer': cg('drawer') });
+    });
+    const room = { bg: 'bg/hall', props: [], closeups: ['cg/drawer'], neighbours: ['bg/yard'] };
+    const roomRow = (a: AssetInputs): Row => rowOf(assetRows({ ...a, rooms: { 'ch1/manor/hall': room } as unknown as AssetInputs['rooms'] }), 'room-set ch1/manor/hall'); // ids are fixture literals
+    const a = assetInputs(sheeted);
+    const plate = 1080 * 2048 * 4 + 150_000;
+    const sheet = fullOf(cuSheetOf('hall'));
+    const row = roomRow(a);
+    expect(row.valueBytes).toBe(plate + sheet + (plate + sheet));
+    expect(row).toMatchObject({ status: 'PASS', note: 'bg + 0 props + max(neighbour bg, close-up) (+ sheets)' });
+    const manifest = chapterOf(a, 'ch1').manifest;
+    if (manifest === null) {
+      throw new Error('invariant: ch1 has a manifest');
+    }
+    expect(imgIds(manifest.value, 'bg/hall' as AssetId)).toEqual(['bg/hall', 'sheet/hall']);
+    expect(imgIds(manifest.value, 'bg/cafe' as AssetId)).toEqual(['bg/cafe']);
+    // Control: without sheets the room counts bg + max(neighbour bg, close-up), and its note is today's.
+    const bare = roomRow(assetInputs(specsWith('ch1', (s) => Object.assign(s.assets, { 'bg/hall': bg('hall'), 'bg/yard': bg('yard'), 'cg/drawer': cg('drawer') }))));
+    expect(bare).toMatchObject({ status: 'PASS', valueBytes: 2 * plate, note: 'bg + 0 props + max(neighbour bg, close-up)' });
+  });
+
+  test('budget: a loop prop atlas is held to its own limits', () => {
+    // Shots §4.4 (W10): a loop prop's frames are one atlas `prop/<id>`, at most 2048 per side and 200,000 / 300,000 B,
+    // not a still prop's 512 x 512 and 60,000 / 90,000 B; a still prop keeps its own.
+    const catalog = decodedOrThrow(
+      decodeAssetCatalog({ ...CATALOG_RAW, prop: { flame: { loop: { placeholder: { hue: 30, frames: 8 }, fps: 8 } }, note: { placeholder: { hue: 40 } } } }),
+      'catalog',
+    );
+    const atlas = (w: number, h: number, avif: number, webp: number, id = 'prop/flame'): Row => {
+      const a = assetInputs(specsWith('ch1', (s) => (s.assets[id] = img(`prop-${id.slice('prop/'.length)}-0d0d0d0d`, w, h, avif, webp))));
+      return rowOf(assetRows({ ...a, catalog }), `image ${id}`);
+    };
+    const fits = atlas(1024, 512, 150_000, 250_000);
+    expect(fits.status, fits.note).toBe('PASS');
+    expect(fits.limitBytes).toBe(200_000);
+    expect(atlas(2050, 512, 150_000, 250_000)).toMatchObject({ status: 'FAIL', note: '2050×512 over 2048 px' });
+    expect(atlas(1024, 512, 200_001, 250_000)).toMatchObject({ status: 'FAIL', note: 'AVIF 200.0 KB over 200.0 KB' });
+    expect(atlas(1024, 512, 150_000, 300_001)).toMatchObject({ status: 'FAIL', note: 'WebP 300.0 KB over 300.0 KB' });
+    // A still prop at 1024 px still fails its 512 x 512.
+    expect(atlas(1024, 512, 20_000, 30_000, 'prop/note')).toMatchObject({ status: 'FAIL', note: '1024×512, over 512×512 (prop)' });
+  });
+
+  test('budget: a sheet over 2048 px fails', () => {
+    // Shots §4.4: a shot's packed file is at most 2048 per side. The kind's own rule (DIMS.sheet) is pinned by its own
+    // message, beside the status: MAX_SIDE writes `… over 2048 px` for the same input, so a status alone would not
+    // notice the kind's rule gone.
+    const sheet = (w: number, h: number): Row => rowOf(assetRows(assetInputs(specsWith('ch1', (s) => (s.assets['sheet/cafe'] = img('sheet-cafe-5b5b5b5b', w, h, 100_000, 150_000))))), 'image sheet/cafe');
+    const row = sheet(4096, 1024);
+    expect(row.status).toBe('FAIL');
+    expect(row.note).toContain('4096×1024, over 2048×2048 (sheet)');
+    expect(row.note).toContain('4096×1024 over 2048 px');
+    expect(sheet(2048, 1024).status).toBe('PASS'); // control
+  });
+
+  test('budget: a sheet file over its limit fails', () => {
+    // Shots §4.4: a sheet's outlier guard, 200,000 B AVIF and 300,000 B WebP.
+    const sheet = (avif: number, webp: number): Row => rowOf(assetRows(assetInputs(specsWith('ch1', (s) => (s.assets['sheet/cafe'] = img('sheet-cafe-5b5b5b5b', 1026, 968, avif, webp))))), 'image sheet/cafe');
+    expect(sheet(200_000, 300_000)).toMatchObject({ status: 'PASS', limitBytes: 200_000 });
+    expect(sheet(200_001, 300_000)).toMatchObject({ status: 'FAIL', note: 'AVIF 200.0 KB over 200.0 KB' });
+    expect(sheet(200_000, 300_001)).toMatchObject({ status: 'FAIL', note: 'WebP 300.0 KB over 300.0 KB' });
+  });
+
+  test('budget: a face file and a talk file over their limits fail', () => {
+    // Shots §4.4 (rev. 4): a face file (one expression) 120,000 / 180,000 B; a talk file 30,000 / 45,000 B.
+    const file = (id: string, avif: number, webp: number): Row =>
+      rowOf(assetRows(assetInputs(specsWith('ch1', (s) => (s.assets[id] = img(`${id.split('/').join('-')}-5a5a5a5a`, 512, 512, avif, webp))))), `image ${id}`);
+    const cases = [
+      ['face/cafe/ally/smile', 120_000, 180_000],
+      ['talk/cafe/ally/smile', 30_000, 45_000],
+    ] as const;
+    for (const [id, avif, webp] of cases) {
+      expect(file(id, avif, webp), id).toMatchObject({ status: 'PASS', limitBytes: avif });
+      expect(file(id, avif + 1, webp), id).toMatchObject({ status: 'FAIL', note: `AVIF ${(avif / 1000).toFixed(1)} KB over ${(avif / 1000).toFixed(1)} KB` });
+      expect(file(id, avif, webp + 1), id).toMatchObject({ status: 'FAIL', note: `WebP ${(webp / 1000).toFixed(1)} KB over ${(webp / 1000).toFixed(1)} KB` });
+    }
   });
 
   test('budget: asset rows pending without their subject', () => {
