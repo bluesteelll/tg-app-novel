@@ -488,7 +488,12 @@ test('layout: phone windows keep every screen\'s control boxes', async ({ page, 
 
 /** A ghost the cue stage added, as read in the recorder's callback. */
 type Ghost = { seq: number; tag: string; classes: string[]; children: number; label: string | null; box: Rect; layer: Rect };
-type GhostWindow = Window & { __layoutGhosts?: Ghost[] };
+/**
+ * A click as the window received it (capture phase, before any root's listener): its client point, whether it hit the
+ * bare art, and how many animations its cue root ran at that moment (the root's entrance moves the point it emits).
+ */
+type Tap = { seq: number; x: number; y: number; bare: boolean; moving: number };
+type GhostWindow = Window & { __layoutGhosts?: Ghost[]; __layoutTaps?: Tap[] };
 
 /** A plain ghost: a childless `div` with no class but the stage's own (cues/stage/index.ts `ghostOf`). */
 const plain = (g: Ghost): boolean => g.tag === 'div' && g.children === 0 && g.classes.every((c) => c === 'cue-ghost' || c === 'cue-plain');
@@ -497,6 +502,9 @@ const ghostsSince = async (page: Page, mark: number): Promise<Ghost[]> =>
 const mark = (page: Page): Promise<number> => page.evaluate(() => ((window as GhostWindow).__layoutGhosts ?? []).length);
 const played = (page: Page): Promise<string[]> =>
   page.evaluate(() => (document.querySelector('[data-cue-stage]')?.getAttribute('data-cues-played') ?? '').split(' '));
+const tapMark = (page: Page): Promise<number> => page.evaluate(() => ((window as GhostWindow).__layoutTaps ?? []).length);
+const tapsSince = async (page: Page, from: number): Promise<Tap[]> =>
+  (await page.evaluate(() => (window as GhostWindow).__layoutTaps ?? [])).filter((t) => t.seq >= from);
 
 /** Waits (bounded) until `pick` finds a ghost since `from` and the cue `key` played; returns the picked ghosts. */
 async function awaitGhosts(page: Page, from: number, key: string, pick: (g: Ghost) => boolean): Promise<{ ghosts: Ghost[]; played: boolean }> {
@@ -531,6 +539,83 @@ async function rectsOf(page: Page, selector: string): Promise<{ el: Rect | null;
 /** `r` in the layer's px: (client rect - layer origin) / k. */
 const inLayer = (r: Rect, l: Rect, k: number): Rect => ({ x: (r.x - l.x) / k, y: (r.y - l.y) / k, w: r.w / k, h: r.h / k });
 
+/** The ripple's tolerance in layer px: the check and the stage read the same click and layer (see `bareArtRipple`). */
+const RIPPLE_TOL = 0.05;
+
+/**
+ * A tap on the hall's bare art at a whole client px; the ripple's centre must be the click's point as the window
+ * received it, in layer px. Want and got come from the same inputs by the same arithmetic (the click's point, the
+ * layer's rect, k); the ghost's inline style round-trips to about 5e-5 layer px, so the tolerance is `RIPPLE_TOL`,
+ * and a systematic sub-pixel error (a rounding in D5's division) fails. Returns the click, for the caller's motion guard.
+ */
+async function bareArtRipple(page: Page, step: string, k: number, failures: string[]): Promise<Tap | null> {
+  // A whole px: the touch then arrives as tapped (a fractional one arrives rounded to the client px grid).
+  const point = await page.evaluate(
+    ([fractions, minDist]) => {
+      const host = document.querySelector('canvas')?.parentElement;
+      const layer = document.querySelector('[data-cue-stage]');
+      if (host === null || host === undefined || layer === null) {
+        return null;
+      }
+      const h = host.getBoundingClientRect();
+      const l = layer.getBoundingClientRect();
+      const kk = l.width / parseFloat(getComputedStyle(layer).width);
+      for (const [fx, fy] of fractions) {
+        const x = Math.round(h.left + fx * h.width);
+        const y = Math.round(h.top + fy * h.height);
+        const bare = document.elementFromPoint(x, y)?.matches('[data-cue="bare-art"]') ?? false;
+        if (bare && Math.hypot(x - (l.left + l.width / 2), y - (l.top + l.height / 2)) / kk > minDist) {
+          return { x, y };
+        }
+      }
+      return null;
+    },
+    [
+      [
+        [0.2, 0.15],
+        [0.8, 0.15],
+        [0.2, 0.4],
+        [0.8, 0.4],
+      ],
+      POINT_PX,
+    ] as const,
+  );
+  if (point === null) {
+    failures.push(`${step} no bare-art point among the host fractions`);
+    return null;
+  }
+  const fromTap = await tapMark(page);
+  const from = await mark(page);
+  await page.touchscreen.tap(point.x, point.y);
+  const size = (g: Ghost): boolean => plain(g) && Math.abs(g.box.w - POINT_PX) <= 1 && Math.abs(g.box.h - POINT_PX) <= 1;
+  const r = await awaitGhosts(page, from, 'ui:bare-art', size);
+  if (!r.played) {
+    failures.push(`${step} guard: ui:bare-art not played`);
+  }
+  const taps = await tapsSince(page, fromTap);
+  const tap = taps[0];
+  if (taps.length !== 1 || tap === undefined) {
+    failures.push(`${step} guard: clicks since the tap: got ${taps.length}; want 1`);
+    return null;
+  }
+  if (Math.abs(tap.x - point.x) > 0.01 || Math.abs(tap.y - point.y) > 0.01) {
+    failures.push(`${step} guard: the tap arrived at ${tap.x},${tap.y}; tapped at ${point.x},${point.y}`);
+  }
+  if (!tap.bare) {
+    failures.push(`${step} guard: the click missed the bare art`);
+  }
+  const { layer } = await rectsOf(page, '.app');
+  const want = { x: (tap.x - layer.x) / k, y: (tap.y - layer.y) / k };
+  const centre = (g: Ghost): { x: number; y: number } => ({ x: g.box.x + g.box.w / 2, y: g.box.y + g.box.h / 2 });
+  const best = r.ghosts.sort((p, q) => Math.hypot(centre(p).x - want.x, centre(p).y - want.y) - Math.hypot(centre(q).x - want.x, centre(q).y - want.y))[0];
+  if (best === undefined) {
+    failures.push(`${step} ripple: no plain 72 x 72 ghost`);
+  } else if (Math.abs(centre(best).x - want.x) > RIPPLE_TOL || Math.abs(centre(best).y - want.y) > RIPPLE_TOL) {
+    failures.push(`${step} ripple: centre got ${r2(centre(best).x)},${r2(centre(best).y)}; want ${r2(want.x)},${r2(want.y)}`);
+  }
+  return tap;
+}
+
 test('layout: cue ghosts land on their targets in a scaled column', async ({ page }) => {
   test.setTimeout(300_000);
   const failures: string[] = [];
@@ -540,12 +625,28 @@ test('layout: cue ghosts land on their targets in a scaled column', async ({ pag
   await page.locator('[data-story="manor"]').getByRole('button', { name: ru('stories.start') }).tap();
   await reachLine(page, 'ch1.arrival.a001');
   await expect(page.locator('[data-cue-stage]'), 'the cue stage').toBeAttached({ timeout: LINE_MS });
-  // The recorder: every ghost the stage adds to its layer, read in the observer's callback.
+  // The recorder: every ghost the stage adds to its layer, read in the observer's callback; every click as it arrives.
   await page.evaluate(() => {
     const layer = document.querySelector('[data-cue-stage]');
     const w = window as GhostWindow;
     const out: Ghost[] = [];
     w.__layoutGhosts = out;
+    const taps: Tap[] = [];
+    w.__layoutTaps = taps;
+    window.addEventListener(
+      'click',
+      (ev) => {
+        const target = ev.target instanceof Element ? ev.target : null;
+        taps.push({
+          seq: taps.length,
+          x: ev.clientX,
+          y: ev.clientY,
+          bare: target?.matches('[data-cue="bare-art"]') ?? false,
+          moving: target?.closest('[data-cue-root]')?.getAnimations().length ?? 0,
+        });
+      },
+      true,
+    );
     if (layer === null) {
       return;
     }
@@ -578,57 +679,14 @@ test('layout: cue ghosts land on their targets in a scaled column', async ({ pag
     failures.push(`k at 1000x473: got ${k}; want 0.7390625 (the column scaled)`);
   }
 
-  // (a) The hall: a tap on the bare art plays the ripple at its point (D5's point division).
+  // (a) The hall at rest: a tap on the bare art plays the ripple at its point (D5's point division). Q69: the explore
+  // root enters for 300 ms after `enterManor` (`LAYER_MOTIONS.in`, a 0.98 scale about its centre), which moves the
+  // point its cue carries, so (a) waits for that entrance as (b), (c) and (f) wait for theirs.
   {
-    const point = await page.evaluate(
-      ([fractions, minDist]) => {
-        const host = document.querySelector('canvas')?.parentElement;
-        const layer = document.querySelector('[data-cue-stage]');
-        if (host === null || host === undefined || layer === null) {
-          return null;
-        }
-        const h = host.getBoundingClientRect();
-        const l = layer.getBoundingClientRect();
-        const kk = l.width / parseFloat(getComputedStyle(layer).width);
-        for (const [fx, fy] of fractions) {
-          const x = h.left + fx * h.width;
-          const y = h.top + fy * h.height;
-          const bare = document.elementFromPoint(x, y)?.matches('[data-cue="bare-art"]') ?? false;
-          if (bare && Math.hypot(x - (l.left + l.width / 2), y - (l.top + l.height / 2)) / kk > minDist) {
-            return { x, y };
-          }
-        }
-        return null;
-      },
-      [
-        [
-          [0.2, 0.15],
-          [0.8, 0.15],
-          [0.2, 0.4],
-          [0.8, 0.4],
-        ],
-        POINT_PX,
-      ] as const,
-    );
-    if (point === null) {
-      failures.push('(a) no bare-art point among the host fractions');
-    } else {
-      const { layer } = await rectsOf(page, '.app');
-      const want = { x: (point.x - layer.x) / k, y: (point.y - layer.y) / k };
-      const from = await mark(page);
-      await page.touchscreen.tap(point.x, point.y);
-      const size = (g: Ghost): boolean => plain(g) && Math.abs(g.box.w - POINT_PX) <= 1 && Math.abs(g.box.h - POINT_PX) <= 1;
-      const r = await awaitGhosts(page, from, 'ui:bare-art', size);
-      if (!r.played) {
-        failures.push('(a) guard: ui:bare-art not played');
-      }
-      const centre = (g: Ghost): { x: number; y: number } => ({ x: g.box.x + g.box.w / 2, y: g.box.y + g.box.h / 2 });
-      const best = r.ghosts.sort((p, q) => Math.hypot(centre(p).x - want.x, centre(p).y - want.y) - Math.hypot(centre(q).x - want.x, centre(q).y - want.y))[0];
-      if (best === undefined) {
-        failures.push('(a) ripple: no plain 72 x 72 ghost');
-      } else if (Math.abs(centre(best).x - want.x) > 1 || Math.abs(centre(best).y - want.y) > 1) {
-        failures.push(`(a) ripple: centre got ${r2(centre(best).x)},${r2(centre(best).y)}; want ${r2(want.x)},${r2(want.y)}`);
-      }
+    await motionsDone(page);
+    const tap = await bareArtRipple(page, '(a)', k, failures);
+    if (tap !== null && tap.moving !== 0) {
+      failures.push(`(a) guard: the explore root moved at the tap (${tap.moving} animations)`);
     }
   }
 
