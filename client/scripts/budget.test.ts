@@ -11,9 +11,11 @@ import { STEADY_CAP_BYTES } from '../src/scene/registry.ts';
 import type { AssetCatalog, AssetEntry, HalfFile, ImageEntry } from '../src/story/catalog.ts';
 import type { AssetId, ChapterId, TrackId } from '../src/story/staging.ts';
 import { decodeAssetCatalog, decodeAssetManifest, decodeChapterMeta, decodeCoverManifest, urlPath } from './assets/manifest.ts';
-import { ENGINE_SRC, LIMITS, evaluate, evaluateAssets, firstLineFiles, formatRows, readAssetInputs, readInputs } from './budget.ts';
+import { ENGINE_SRC, ENTRY_STEP_TTFL, LABELS_BOUND, LIMITS, evaluate, evaluateAssets, firstLineFiles, formatRows, imgIds, readAssetInputs, readInputs } from './budget.ts';
 import type { AssetInputs, BudgetInputs, ChapterInputs, DistFile, ManifestChunk, Row } from './budget.ts';
 import { decodeChapterList, decodeStoryUsage } from './story/emit.ts';
+import { decodeShotUsage } from './story/shots/usage.ts';
+import type { ShotUsage } from './story/shots/usage.ts';
 
 /** The lazy family rows (PUZZLES-PLAN X14, "Budgets"). */
 const LAZY_ROWS = ['puzzle-type chunk (br)', 'puzzle-host chunk (br)', 'explore-ui chunk (br)', 'cue-stage chunk (br)'];
@@ -23,6 +25,8 @@ const META_ROWS = ['meta-ui chunk (br)', 'meta controller chunk (br)'];
 const PURCHASE_ROW = 'purchase-flow chunk (br)';
 /** The in-play overlays' row (lever O5): app/game.ts is its importer. */
 const OVERLAYS_ROW = 'overlays chunk (br)';
+/** The scene's motion chunk's row (shots §10, W6; SH3b): scene/controller.ts is its importer. */
+const MOTION_ROW = 'scene-motion chunk (br)';
 
 const ROW_NAMES = [
   'manifest',
@@ -33,6 +37,7 @@ const ROW_NAMES = [
   ...META_ROWS,
   PURCHASE_ROW,
   OVERLAYS_ROW,
+  MOTION_ROW,
   'all JS (br)',
   'CSS total (br)',
   'index.html (br)',
@@ -69,6 +74,7 @@ function inputs(over: Partial<BudgetInputs> = {}): BudgetInputs {
     yieldsSourceExists: false,
     metaSourceExists: false,
     gameSourceExists: false,
+    sceneSourceExists: false,
     lazySources: new Set(),
     facades: new Set(),
     pixiEnvSkipped: false,
@@ -140,6 +146,7 @@ const CUE_STAGE = 'src/cues/stage/index.ts';
 const ALL_LAZY: ReadonlySet<string> = new Set([CODE_LOCK, ORDER, HOST, CONTROLLER, EXPLORE_VIEW, CUE_STAGE]);
 const META_UI = 'src/ui/meta/index.ts';
 const META_CTL = 'src/app/meta.ts';
+const MOTION = 'src/scene/motion/index.ts';
 
 /** One built lazy root: its JS chunk's brotli bytes, and its CSS file's if any. */
 type LazyChunk = { js: number; css?: number };
@@ -807,13 +814,55 @@ describe('budget evaluate', () => {
     expect(all(365_001).status).toBe('FAIL');
   });
 
+  test('budget: scene-motion chunk row is pending until its root exists', () => {
+    // Shots §10 (W6): the scene's motion chunk (its root src/scene/motion/index.ts, which the scene controller import()s
+    // after the first line, SH7) is its own lazy family against 8.0 KB of JS + CSS; PENDING while the controller or the
+    // root is absent, never a 0 KB PASS.
+    const row = (b: BudgetInputs): Row => rowOf(evaluate(b, LIMITS), MOTION_ROW);
+    expect(row(inputs())).toMatchObject({ status: 'PENDING', valueBytes: null, limitBytes: 8_000, note: 'src/scene/controller.ts absent' });
+    expect(row(inputs({ sceneSourceExists: true }))).toMatchObject({ status: 'PENDING', valueBytes: null, note: `no source of ${MOTION}` });
+    const built = (motion: LazyChunk): BudgetInputs => withLazy(withEngine(inputs(), 50_000, 100_000), { [MOTION]: motion }, { sceneSourceExists: true });
+    expect(row(built({ js: 8_000 }))).toMatchObject({ status: 'PASS', valueBytes: 8_000, note: `largest: ${MOTION}, 1 chunks` });
+    expect(row(built({ js: 8_001 }))).toMatchObject({ status: 'FAIL', valueBytes: 8_001 });
+    expect(row(built({ js: 7_500, css: 600 }))).toMatchObject({ status: 'FAIL', valueBytes: 8_100 });
+    expect(LIMITS.sceneMotionChunkBr).toBe(8_000);
+  });
+
+  test('budget: a scene-motion root inside the engine closure fails', () => {
+    // The scene controller is in the engine: its import() of the motion root, or of another chunk of src/scene/motion/,
+    // stops the engine walk, and the family's row counts the root's closure. A static import of the root puts it in
+    // the engine closure, before the first line: FAIL.
+    const base = withEngine(inputs({ sceneSourceExists: true, lazySources: new Set([MOTION]) }), 50_000, 100_000);
+    const engine = base.manifest?.[ENGINE_SRC];
+    if (base.manifest === null || engine === undefined) {
+      throw new Error('invariant: withEngine adds the engine chunk');
+    }
+    const WARP = 'src/scene/motion/warp.ts';
+    const manifest: Record<string, ManifestChunk> = {
+      ...base.manifest,
+      [ENGINE_SRC]: { ...engine, dynamicImports: [MOTION, WARP] },
+      [MOTION]: { file: 'assets/index-m.js', src: MOTION, isDynamicEntry: true, imports: ['_motion-n.js'] },
+      '_motion-n.js': { file: 'assets/motion-n.js' },
+      [WARP]: { file: 'assets/warp-w.js', src: WARP, isDynamicEntry: true },
+    };
+    const lazy = { ...base, manifest, files: [...base.files, file('assets/index-m.js', 5_000), file('assets/motion-n.js', 1_500), file('assets/warp-w.js', 1_000)] };
+    const rows = evaluate(lazy, LIMITS);
+    expect(rowOf(rows, MOTION_ROW)).toMatchObject({ status: 'PASS', valueBytes: 6_500 });
+    expect(rowOf(rows, 'engine closure JS (br)')).toMatchObject({ status: 'PASS', valueBytes: 150_000 });
+    const statically = { ...manifest, [ENGINE_SRC]: { ...engine, imports: [...(engine.imports ?? []), MOTION] } };
+    const row = rowOf(evaluate({ ...lazy, manifest: statically }, LIMITS), MOTION_ROW);
+    expect(row.status).toBe('FAIL');
+    expect(row.note).toContain(`${MOTION} is in the engine closure`);
+  });
+
   test('budget: every row is printed', () => {
     // A failing manifest does not stop later rows (no bail). PENDING: the engine row, the first-line row while the
-    // engine is absent, the four lazy rows while app/yields.ts is, the two meta rows while app/meta.ts is, and the
-    // purchase-flow and overlays rows while app/game.ts is; with no manifest the first-line row FAILs.
+    // engine is absent, the four lazy rows while app/yields.ts is, the two meta rows while app/meta.ts is, the
+    // purchase-flow and overlays rows while app/game.ts is, and the scene-motion row while scene/controller.ts is; with
+    // no manifest the first-line row FAILs.
     const cases: ReadonlyArray<readonly [BudgetInputs, number]> = [
-      [inputs(), 10],
-      [inputs({ manifest: null }), 9],
+      [inputs(), 11],
+      [inputs({ manifest: null }), 10],
     ];
     for (const [input, pendingRows] of cases) {
       const rows = evaluate(input, LIMITS);
@@ -932,6 +981,7 @@ describe('budget cli', () => {
     expect(r.stdout).toContain('meta controller chunk (br) | — | 6.0 KB | PENDING | src/app/meta.ts absent');
     expect(r.stdout).toContain('purchase-flow chunk (br) | — | 2.0 KB | PENDING | src/app/game.ts absent');
     expect(r.stdout).toContain('overlays chunk (br) | — | 3.0 KB | PENDING | src/app/game.ts absent');
+    expect(r.stdout).toContain('scene-motion chunk (br) | — | 8.0 KB | PENDING | src/scene/controller.ts absent');
     expect(r.stdout).toMatch(/^budget: \d+ rows, \d+ PASS, 0 FAIL, \d+ PENDING$/m);
   }, CLI_TIMEOUT_MS);
 
@@ -1021,7 +1071,80 @@ type ChapterSpec = {
   assets: Record<string, AssetEntry>;
   /** knot → its assets and next knots; the first knot is the first key. */
   knots: Record<string, { assets: string[]; next: string[]; carried?: string[] }>;
+  /** build/shots.json's legacy flag for the chapter (absent: true, it names sprites). */
+  sprites?: boolean;
 };
+
+/** One window as build/shots.json writes it (shots §3.4 `Lookahead`); an unset term is empty. */
+type WindowSpec = { cur?: string[]; certain?: string[]; certainDist?: number; possible?: string[]; labels?: boolean };
+/** One chapter of build/shots.json: its windows, its entry alternatives per window, its legacy flag (default false). */
+type ShotChapterSpec = { look: Record<string, WindowSpec>; entry?: Record<string, string[][]>; sprites?: boolean };
+
+/**
+ * build/shots.json for `chapters`, decoded through `decodeShotUsage`: one need per shot its windows and entries name, the
+ * face and talk files' characters as face members of that shot with those expressions, cast-less otherwise (as the
+ * real file has for a shot `story/shots.json` does not declare).
+ */
+function shotUsageOf(chapters: Readonly<Record<string, ShotChapterSpec>>): ShotUsage {
+  const chapter = (c: ShotChapterSpec): Record<string, unknown> => {
+    const files = [...Object.values(c.look).flatMap((w) => [...(w.cur ?? []), ...(w.certain ?? []), ...(w.possible ?? [])]), ...Object.values(c.entry ?? {}).flat(2)];
+    const shots = new Map<string, Map<string, Map<string, boolean>>>();
+    for (const f of files) {
+      const [ns, s, char, expr] = f.split('/');
+      if (s === undefined || !['bg', 'sheet', 'face', 'talk'].includes(ns ?? '')) {
+        continue;
+      }
+      const faces = shots.get(s) ?? new Map<string, Map<string, boolean>>();
+      shots.set(s, faces);
+      if (char !== undefined && expr !== undefined) {
+        const exprs = faces.get(char) ?? new Map<string, boolean>();
+        faces.set(char, exprs);
+        exprs.set(expr, (exprs.get(expr) ?? false) || ns === 'talk');
+      }
+    }
+    const need = (faces: Map<string, Map<string, boolean>>): Record<string, unknown> => ({
+      camTargets: [],
+      cast: Object.fromEntries([...faces.keys()].map((ch) => [ch, { figure: false, rest: 'rest', view: 'face' }])),
+      faces: Object.fromEntries([...faces].map(([ch, exprs]) => [ch, [...exprs].map(([expr, talk]) => ({ expr, lines: [], talk }))])),
+      frame: 'wide',
+      loc: 'here',
+      motions: [],
+      room: null,
+    });
+    const window = (w: WindowSpec): Record<string, unknown> => {
+      const certain = w.certain ?? [];
+      const possible = w.possible ?? [];
+      const certainDist = w.certainDist ?? (certain.length > 0 ? 1 : 0);
+      return { certain, certainDist, cur: w.cur ?? [], d2: [], d3: [], labels: w.labels ?? false, near: possible.length, possible };
+    };
+    return {
+      assets: [...new Set(files.filter((f) => /^(?:bg|sheet|face|talk)\//.test(f)))].sort(),
+      entry: c.entry ?? Object.fromEntries(Object.keys(c.look).map((k) => [k, []])),
+      look: Object.fromEntries(Object.entries(c.look).map(([k, w]) => [k, window(w)])),
+      shots: Object.fromEntries([...shots].map(([s, faces]) => [s, need(faces)])),
+      sprites: c.sprites ?? false,
+    };
+  };
+  return decodedOrThrow(decodeShotUsage({ chapters: Object.fromEntries(Object.entries(chapters).map(([id, c]) => [id, chapter(c)])) }), 'shots');
+}
+
+/**
+ * The legacy build/shots.json of `specs` (the pin C1 moves, shots §3.6): one `k:<knot>` window per knot holding the
+ * knot's images, its one entry alternative those images, `sprites: true` unless the spec says otherwise; one cast-less
+ * need per bg of the specs.
+ */
+function legacyShots(specs: readonly ChapterSpec[]): ShotUsage {
+  return shotUsageOf(
+    Object.fromEntries(
+      specs.map((s) => {
+        const images = (ids: readonly string[]): string[] => ids.filter((id) => !id.startsWith('bgm/') && !id.startsWith('sfx/'));
+        const look = Object.fromEntries(Object.entries(s.knots).map(([k, v]) => [`k:${k}`, { cur: images(v.assets) }]));
+        const entry = Object.fromEntries(Object.entries(s.knots).map(([k, v]) => [`k:${k}`, [images(v.assets)]]));
+        return [s.id, { look, entry, sprites: s.sprites ?? true }];
+      }),
+    ),
+  );
+}
 
 const CATALOG_RAW = {
   bg: { cafe: { placeholder: { hue: 18 } }, archive: { placeholder: { hue: 45 } }, street: { placeholder: { hue: 215 } } },
@@ -1108,6 +1231,8 @@ function assetInputs(specs: readonly ChapterSpec[] = baseSpecs(), covers: Record
     covers: { ...SMALL, value: coverManifest },
     chapterCatalog: SMALL,
     fileBytes,
+    shotList: true,
+    shots: legacyShots(specs),
   };
 }
 
@@ -1393,11 +1518,11 @@ describe('budget assets', () => {
       ['world json br', world({ rawBytes: 2_000, brBytes: 8_001 }), 'world json ch1'],
       ['world source without its public output', world(null), 'world json ch1', 'public world output missing'],
       [
-        'transfer over 6 MB',
+        'transfer over 12 MB',
         () =>
           assetInputs(
             specsWith('ch1', (s) => {
-              for (const n of ['a', 'b', 'c']) {
+              for (const n of ['a', 'b', 'c', 'd', 'e']) {
                 s.assets[`bgm/${n}`] = clip('bgm', `bgm-${n}-2a2a2a2a`, 2_500_000, 60_000, 'm4a');
               }
             }),
@@ -1421,7 +1546,7 @@ describe('budget assets', () => {
       ['prop AVIF', entry('prop/note', img('prop-note-0d0d0d0d', 512, 512, 60_001, 30_000)), 'image prop/note', 'AVIF'],
       ['prop WebP', entry('prop/note', img('prop-note-0d0d0d0d', 512, 512, 20_000, 90_001)), 'image prop/note', 'WebP'],
       ['cover WebP', () => assetInputs(baseSpecs(), { 'cover/manor': img('cover-manor-0e0e0e0e', 360, 640, 10_000, 36_001) }), 'image cover/manor', 'WebP'],
-      ['bg not 1080×2048', entry('bg/cafe', img('bg-cafe-0a0a0a0a', 1080, 1920)), 'image bg/cafe', 'not exactly 1080×2048'],
+      ['bg not 2048 high', entry('bg/cafe', img('bg-cafe-0a0a0a0a', 1080, 1920)), 'image bg/cafe', 'not a plate (h 2048, w even 1080-1440)'],
       ['sprite over 768×1536', entry('char/ally/neutral', img('char-ally-neutral-0c0c0c0c', 800, 1536)), 'image char/ally/neutral', 'over 768×1536'],
       ['cover not 360×640', () => assetInputs(baseSpecs(), { 'cover/manor': img('cover-manor-0e0e0e0e', 360, 600, 10_000, 15_000) }), 'image cover/manor', 'not exactly 360×640'],
       // The decoder refuses this one; the row checks it too, on a value patched after decoding.
@@ -1541,13 +1666,156 @@ describe('budget assets', () => {
     const half = rowOf(rows, 'transfer ch1 (half)');
     // bg/cafe's half AVIF replaces its full one; every other entry counts its full file.
     expect(half.valueBytes).toBe((full.valueBytes ?? 0) - 100_000 + 30_000);
-    expect(half).toMatchObject({ limitBytes: 6_000_000, status: 'PASS' });
+    expect(half).toMatchObject({ limitBytes: 12_000_000, status: 'PASS' });
     // A chapter with no half counts what its full row counts.
     expect(rowOf(rows, 'transfer ch2 (half)').valueBytes).toBe(rowOf(rows, 'transfer ch2').valueBytes);
     // A chapter without a manifest cannot be summed.
     const a = assetInputs();
     const noManifest = assetRows({ ...a, chapters: a.chapters.map((c) => (c.id === 'ch2' ? { ...c, manifest: null } : c)) });
     expect(rowOf(noManifest, 'transfer ch2 (half)')).toMatchObject({ status: 'FAIL', note: 'manifest missing' });
+  });
+
+  test('budget: transfer limit is 12 MB', () => {
+    // OQ5 (RULINGS 154): the owner's default, 12 MB per chapter (shots §5.11: a shot chapter's images and audio ~9.2 to
+    // ~10.6 MB), on the full and the half transfer rows alike.
+    expect(LIMITS.transfer).toBe(12_000_000);
+    // ch1's base assets are 652,844 B; four 2,836,789 B clips bring it to exactly 12,000,000.
+    const at = (extra: number): Row[] =>
+      assetRows(
+        assetInputs(
+          specsWith('ch1', (s) => {
+            for (const [i, n] of ['a', 'b', 'c', 'd'].entries()) {
+              s.assets[`bgm/${n}`] = clip('bgm', `bgm-${n}-2a2a2a2a`, 2_836_789 + (i === 0 ? extra : 0), 60_000, 'm4a');
+            }
+          }),
+        ),
+      );
+    for (const name of ['transfer ch1', 'transfer ch1 (half)']) {
+      expect(rowOf(at(0), name), name).toMatchObject({ status: 'PASS', valueBytes: 12_000_000, limitBytes: 12_000_000 });
+      expect(rowOf(at(1), name), name).toMatchObject({ status: 'FAIL', valueBytes: 12_000_001 });
+    }
+  });
+
+  test('budget: a room plate that is not 1080 x 2048 fails', () => {
+    // Shots §4.4: a shot's plate may be up to 1440 wide (m10), a room's is exactly 1080 x 2048 (the explore view lays its
+    // hotspots on that frame). The same 1440 plate passes as a shot's and fails as a room's, naming the room.
+    const a = assetInputs(specsWith('ch1', (s) => (s.assets['bg/hall'] = img('bg-hall-0a0a0a0a', 1440, 2048, 300_000, 450_000))));
+    const shot = rowOf(assetRows(a), 'image bg/hall');
+    expect(shot.status, shot.note).toBe('PASS');
+    const inRoom = (x: AssetInputs): Row => {
+      const room = { bg: 'bg/hall', props: [], closeups: [], neighbours: [] };
+      return rowOf(assetRows({ ...x, rooms: { 'ch1/manor/hall': room } as unknown as AssetInputs['rooms'] }), 'image bg/hall'); // ids are fixture literals
+    };
+    const row = inRoom(a);
+    expect(row.status).toBe('FAIL');
+    expect(row.note).toBe('1440×2048, not exactly 1080×2048 (room plate ch1/manor/hall)');
+    // Control: a 1080 room plate passes.
+    expect(inRoom(assetInputs(specsWith('ch1', (s) => (s.assets['bg/hall'] = bg('hall'))))).status).toBe('PASS');
+  });
+
+  test("budget: a 1440 plate's file limit scales with its width", () => {
+    // Shots §4.4 (m10): a plate is 2048 high and an even width from 1080 to 1440, its files at most floor(300,000 x w /
+    // 1080) B AVIF and floor(450,000 x w / 1080) B WebP: 400,000 and 600,000 at 1440, a 1080 plate's limits unchanged.
+    const plate = (w: number, avif: number, webp: number, half?: number): Row => {
+      const e = img('bg-cafe-0a0a0a0a', w, 2048, avif, webp);
+      return rowOf(assetRows(assetInputs(specsWith('ch1', (s) => (s.assets['bg/cafe'] = half === undefined ? e : halved(e, half))))), 'image bg/cafe');
+    };
+    const at1440 = plate(1440, 400_000, 600_000);
+    expect(at1440.status, at1440.note).toBe('PASS');
+    expect(at1440.limitBytes).toBe(400_000);
+    expect(plate(1440, 400_001, 600_000)).toMatchObject({ status: 'FAIL', note: 'AVIF 400.0 KB over 400.0 KB' });
+    expect(plate(1440, 400_000, 600_001)).toMatchObject({ status: 'FAIL', note: 'WebP 600.0 KB over 600.0 KB' });
+    expect(plate(1260, 350_000, 525_000)).toMatchObject({ status: 'PASS', limitBytes: 350_000 });
+    expect(plate(1080, 300_001, 450_000)).toMatchObject({ status: 'FAIL', limitBytes: 300_000, note: 'AVIF 300.0 KB over 300.0 KB' });
+    // A half is held to its full file's scaled limit, as today.
+    expect(plate(1440, 300_000, 450_000, 400_001)).toMatchObject({ status: 'FAIL', note: 'half AVIF 400.0 KB over 400.0 KB' });
+    // The width bounds: an odd width, one over 1440 and one under 1080 are no plate.
+    for (const w of [1081, 1442, 1078]) {
+      const row = plate(w, 100_000, 150_000);
+      expect(row.status, `${w}`).toBe('FAIL');
+      expect(row.note).toBe(`${w}×2048, not a plate (h 2048, w even 1080-1440)`);
+    }
+  });
+
+  test("budget: room-set counts the room's sheet", () => {
+    // Per-player §6.5 (Reconcile P2): img(n) = bg(n) + sheet(n), so room-set counts img(room) + props + max(the largest
+    // neighbour's img, the largest close-up).
+    const sheeted = specsWith('ch1', (s) => {
+      Object.assign(s.assets, { 'bg/hall': bg('hall'), 'sheet/hall': cuSheetOf('hall'), 'bg/yard': bg('yard'), 'sheet/yard': cuSheetOf('yard'), 'cg/drawer': cg('drawer') });
+    });
+    const room = { bg: 'bg/hall', props: [], closeups: ['cg/drawer'], neighbours: ['bg/yard'] };
+    const roomRow = (a: AssetInputs): Row => rowOf(assetRows({ ...a, rooms: { 'ch1/manor/hall': room } as unknown as AssetInputs['rooms'] }), 'room-set ch1/manor/hall'); // ids are fixture literals
+    const a = assetInputs(sheeted);
+    const plate = 1080 * 2048 * 4 + 150_000;
+    const sheet = fullOf(cuSheetOf('hall'));
+    const row = roomRow(a);
+    expect(row.valueBytes).toBe(plate + sheet + (plate + sheet));
+    expect(row).toMatchObject({ status: 'PASS', note: 'bg + 0 props + max(neighbour bg, close-up) (+ sheets)' });
+    const manifest = chapterOf(a, 'ch1').manifest;
+    if (manifest === null) {
+      throw new Error('invariant: ch1 has a manifest');
+    }
+    expect(imgIds(manifest.value, 'bg/hall' as AssetId)).toEqual(['bg/hall', 'sheet/hall']);
+    expect(imgIds(manifest.value, 'bg/cafe' as AssetId)).toEqual(['bg/cafe']);
+    // Control: without sheets the room counts bg + max(neighbour bg, close-up), and its note is today's.
+    const bare = roomRow(assetInputs(specsWith('ch1', (s) => Object.assign(s.assets, { 'bg/hall': bg('hall'), 'bg/yard': bg('yard'), 'cg/drawer': cg('drawer') }))));
+    expect(bare).toMatchObject({ status: 'PASS', valueBytes: 2 * plate, note: 'bg + 0 props + max(neighbour bg, close-up)' });
+  });
+
+  test('budget: a loop prop atlas is held to its own limits', () => {
+    // Shots §4.4 (W10): a loop prop's frames are one atlas `prop/<id>`, at most 2048 per side and 200,000 / 300,000 B,
+    // not a still prop's 512 x 512 and 60,000 / 90,000 B; a still prop keeps its own.
+    const catalog = decodedOrThrow(
+      decodeAssetCatalog({ ...CATALOG_RAW, prop: { flame: { loop: { placeholder: { hue: 30, frames: 8 }, fps: 8 } }, note: { placeholder: { hue: 40 } } } }),
+      'catalog',
+    );
+    const atlas = (w: number, h: number, avif: number, webp: number, id = 'prop/flame'): Row => {
+      const a = assetInputs(specsWith('ch1', (s) => (s.assets[id] = img(`prop-${id.slice('prop/'.length)}-0d0d0d0d`, w, h, avif, webp))));
+      return rowOf(assetRows({ ...a, catalog }), `image ${id}`);
+    };
+    const fits = atlas(1024, 512, 150_000, 250_000);
+    expect(fits.status, fits.note).toBe('PASS');
+    expect(fits.limitBytes).toBe(200_000);
+    expect(atlas(2050, 512, 150_000, 250_000)).toMatchObject({ status: 'FAIL', note: '2050×512 over 2048 px' });
+    expect(atlas(1024, 512, 200_001, 250_000)).toMatchObject({ status: 'FAIL', note: 'AVIF 200.0 KB over 200.0 KB' });
+    expect(atlas(1024, 512, 150_000, 300_001)).toMatchObject({ status: 'FAIL', note: 'WebP 300.0 KB over 300.0 KB' });
+    // A still prop at 1024 px still fails its 512 x 512.
+    expect(atlas(1024, 512, 20_000, 30_000, 'prop/note')).toMatchObject({ status: 'FAIL', note: '1024×512, over 512×512 (prop)' });
+  });
+
+  test('budget: a sheet over 2048 px fails', () => {
+    // Shots §4.4: a shot's packed file is at most 2048 per side. The kind's own rule (DIMS.sheet) is pinned by its own
+    // message, beside the status: MAX_SIDE writes `… over 2048 px` for the same input, so a status alone would not
+    // notice the kind's rule gone.
+    const sheet = (w: number, h: number): Row => rowOf(assetRows(assetInputs(specsWith('ch1', (s) => (s.assets['sheet/cafe'] = img('sheet-cafe-5b5b5b5b', w, h, 100_000, 150_000))))), 'image sheet/cafe');
+    const row = sheet(4096, 1024);
+    expect(row.status).toBe('FAIL');
+    expect(row.note).toContain('4096×1024, over 2048×2048 (sheet)');
+    expect(row.note).toContain('4096×1024 over 2048 px');
+    expect(sheet(2048, 1024).status).toBe('PASS'); // control
+  });
+
+  test('budget: a sheet file over its limit fails', () => {
+    // Shots §4.4: a sheet's outlier guard, 200,000 B AVIF and 300,000 B WebP.
+    const sheet = (avif: number, webp: number): Row => rowOf(assetRows(assetInputs(specsWith('ch1', (s) => (s.assets['sheet/cafe'] = img('sheet-cafe-5b5b5b5b', 1026, 968, avif, webp))))), 'image sheet/cafe');
+    expect(sheet(200_000, 300_000)).toMatchObject({ status: 'PASS', limitBytes: 200_000 });
+    expect(sheet(200_001, 300_000)).toMatchObject({ status: 'FAIL', note: 'AVIF 200.0 KB over 200.0 KB' });
+    expect(sheet(200_000, 300_001)).toMatchObject({ status: 'FAIL', note: 'WebP 300.0 KB over 300.0 KB' });
+  });
+
+  test('budget: a face file and a talk file over their limits fail', () => {
+    // Shots §4.4 (rev. 4): a face file (one expression) 120,000 / 180,000 B; a talk file 30,000 / 45,000 B.
+    const file = (id: string, avif: number, webp: number): Row =>
+      rowOf(assetRows(assetInputs(specsWith('ch1', (s) => (s.assets[id] = img(`${id.split('/').join('-')}-5a5a5a5a`, 512, 512, avif, webp))))), `image ${id}`);
+    const cases = [
+      ['face/cafe/ally/smile', 120_000, 180_000],
+      ['talk/cafe/ally/smile', 30_000, 45_000],
+    ] as const;
+    for (const [id, avif, webp] of cases) {
+      expect(file(id, avif, webp), id).toMatchObject({ status: 'PASS', limitBytes: avif });
+      expect(file(id, avif + 1, webp), id).toMatchObject({ status: 'FAIL', note: `AVIF ${(avif / 1000).toFixed(1)} KB over ${(avif / 1000).toFixed(1)} KB` });
+      expect(file(id, avif, webp + 1), id).toMatchObject({ status: 'FAIL', note: `WebP ${(webp / 1000).toFixed(1)} KB over ${(webp / 1000).toFixed(1)} KB` });
+    }
   });
 
   test('budget: asset rows pending without their subject', () => {
@@ -1602,7 +1870,7 @@ describe('budget assets', () => {
       const r = runCli(dist, SCRIPT, [], ['--root', repo]);
       expect(r.status, r.stdout + r.stderr).toBe(1);
       expect(r.stdout).toMatch(/^asset inputs \| — \| — \| FAIL \| client\/src\/story-gen\/free\/ch1\.assets\.json: missing/m);
-      expect(r.stdout).toMatch(/^transfer ch1 \| — \| 6000\.0 KB \| FAIL \| manifest missing$/m);
+      expect(r.stdout).toMatch(/^transfer ch1 \| — \| 12000\.0 KB \| FAIL \| manifest missing$/m);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -1620,7 +1888,7 @@ describe('budget assets', () => {
         /^asset inputs \| — \| — \| PASS \| 1 chapters$/m,
         /^story json ch1 \| .* \| 35\.0 KB \| PASS/m,
         /^en table ch1 \| .* \| 48\.0 KB \| PASS/m,
-        /^transfer ch1 \| .* \| 6000\.0 KB \| PASS/m,
+        /^transfer ch1 \| .* \| 12000\.0 KB \| PASS/m,
         /^first knot images ch1 \| .* \| 450\.0 KB \| PASS/m,
         /^world json \| — \| 8\.0 KB \| PENDING/m,
         /^image bg\/cafe \| .* \| 300\.0 KB \| PASS \| 1080×2048/m,
@@ -1629,12 +1897,16 @@ describe('budget assets', () => {
         /^knot-set ch1\/start \| 8\.4 MiB \| 32\.0 MiB \| PASS/m,
         /^room-set \| — \| 32\.0 MiB \| PENDING/m,
         /^first-load ch1 \| .* \| 800\.0 KB \| PENDING/m,
+        /^step-window \| — \| 32\.0 MiB \| PENDING \| no story\/shots\.json \(the shot pass is opt-in\)$/m,
+        /^entry step images \| — \| 279\.0 KB \| PENDING \| no story\/shots\.json \(the shot pass is opt-in\)$/m,
       ]) {
         expect(r.stdout).toMatch(row);
       }
       // No client/src/app/*.ts under --root: the engine, first-line, four yields, two meta, purchase-flow and overlays
-      // rows, and world json, room-set and first-load ch1 (lever P added the purchase-flow row, lever O5 the overlays').
-      expect(r.stdout).toMatch(/^budget: \d+ rows, \d+ PASS, 0 FAIL, 13 PENDING$/m);
+      // rows, and world json, room-set and first-load ch1 (lever P added the purchase-flow row, lever O5 the overlays');
+      // no client/src/scene/controller.ts: the scene-motion row; no story/shots.json: the step-window and entry step
+      // images rows (SH3b).
+      expect(r.stdout).toMatch(/^budget: \d+ rows, \d+ PASS, 0 FAIL, 16 PENDING$/m);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -1711,3 +1983,432 @@ function writeRepo(root: string, opts: { bgWidth?: number; override?: Readonly<R
     writeFileSync(abs, content);
   }
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// SH3b: the step model's rows (shots §3.4, §5.9, §5.11) on hand-built build/shots.json, decoded through
+// `decodeShotUsage`, over manifests at §5.9's records (A): a 1080 plate 8.762 MiB, a 1440 plate 11.682, a close-up (CU)
+// 12.703 on a 1080 plate and 15.623 on a 1440 one, a room shot with its props and label bound 16.562; kept bytes: a CU
+// 500,000 B (0.477 MiB), a wide 380,000 B (0.362).
+
+/** The gate's `full` (decoded + the larger kept file) and `kept` (the larger kept file alone) of an entry. */
+const fullOf = (e: AssetEntry): number => (e.kind === 'image' ? e.decodedBytes + Math.max(e.avif.bytes, e.webp.bytes) : 0);
+const keptOf = (e: AssetEntry): number => (e.kind === 'image' ? Math.max(e.avif.bytes, e.webp.bytes) : 0);
+const sumFull = (files: Readonly<Record<string, AssetEntry>>): number => Object.values(files).reduce((s, e) => s + fullOf(e), 0);
+const sumKept = (files: Readonly<Record<string, AssetEntry>>): number => Object.values(files).reduce((s, e) => s + keptOf(e), 0);
+const mibOf = (bytes: number | null): string => ((bytes ?? Number.NaN) / MIB).toFixed(3);
+const ids = (files: Readonly<Record<string, AssetEntry>>): string[] => Object.keys(files).sort();
+
+/** A shot's plate: 1080 x 2048 (WebP kept 340,000 B: 8.762 MiB) or 1440 x 2048 (453,000 B: 11.682 MiB). */
+function plateOf(s: string, w: 1080 | 1440 = 1080): ImageEntry {
+  return w === 1080 ? img(`bg-${s}-5a5a5a5a`, 1080, 2048, 225_000, 340_000) : img(`bg-${s}-5a5a5a5a`, 1440, 2048, 300_000, 453_000);
+}
+/** A CU's sheet, the 0.5 MiB ambient allowance held in its pixels: 3.941 MiB (kept 160,000 B). */
+const cuSheetOf = (s: string): ImageEntry => img(`sheet-${s}-5b5b5b5b`, 1026, 968, 103_445, 160_000);
+/** A room shot's sheet (a frame loop and the ambient allowance): 2.500 MiB. */
+const roomSheetOf = (s: string): ImageEntry => img(`sheet-${s}-5c5c5c5c`, 512, 1231, 70_000, 100_000);
+/** A wide shot's sheet: kept 40,000 B, so the wide's kept bytes are 380,000 B. */
+const wideSheetOf = (s: string): ImageEntry => img(`sheet-${s}-5d5d5d5d`, 2048, 175, 25_000, 40_000);
+
+/** A CU shot `s`: its plate and its sheet. */
+function cuShot(s: string, w: 1080 | 1440 = 1080): Record<string, AssetEntry> {
+  return { [`bg/${s}`]: plateOf(s, w), [`sheet/${s}`]: cuSheetOf(s) };
+}
+/** A wide shot `s`: its plate and its sheet. */
+function wideShot(s: string): Record<string, AssetEntry> {
+  return { [`bg/${s}`]: plateOf(s), [`sheet/${s}`]: wideSheetOf(s) };
+}
+/** A room's shot `r`: its plate, its sheet and its props (3.300 MiB: three of 512 x 512 and one of 96 x 96). */
+function roomShot(r: string): Record<string, AssetEntry> {
+  const p = (n: string, side: number, avif: number, webp: number): [string, AssetEntry] => [`prop/${r}_${n}`, img(`prop-${r}_${n}-5e5e5e5e`, side, side, avif, webp)];
+  const props = [p('a', 512, 60_000, 90_000), p('b', 512, 60_000, 90_000), p('c', 512, 60_000, 90_000), p('d', 96, 5_000, 8_000)];
+  return { [`bg/${r}`]: plateOf(r), [`sheet/${r}`]: roomSheetOf(r), ...Object.fromEntries(props) };
+}
+const propsOf = (files: Readonly<Record<string, AssetEntry>>): string[] => ids(files).filter((id) => id.startsWith('prop/'));
+
+/** One free chapter ch1 holding `assets`, its build/shots.json `c`, and the usage rooms `rooms` (`<ch>/<section>/<room>`). */
+function shotInputs(assets: Record<string, AssetEntry>, c: ShotChapterSpec, rooms: Readonly<Record<string, { bg: string; props: string[] }>> = {}): AssetInputs {
+  const a = assetInputs([{ id: 'ch1', paid: false, next: null, assets, knots: { scene: { assets: [], next: [] } } }]);
+  const usageRooms = Object.fromEntries(Object.entries(rooms).map(([k, r]) => [k, { ...r, closeups: [], neighbours: [] }]));
+  return { ...a, shots: shotUsageOf({ ch1: c }), rooms: usageRooms as unknown as AssetInputs['rooms'] }; // ids are fixture literals
+}
+
+/** `e` with its half-tier file (exactly half per side, MEMORY-PLAN 4.C) of `avif` and `webp` bytes, beside its own. */
+function halved(e: ImageEntry, avif: number, webp = avif): ImageEntry {
+  const url = (u: string): string => u.replace(/\.(avif|webp)$/, '-half.$1');
+  const w = e.w / 2;
+  const h = e.h / 2;
+  return { ...e, half: { w, h, decodedBytes: w * h * 4, avif: { url: url(e.avif.url), bytes: avif }, webp: { url: url(e.webp.url), bytes: webp } } };
+}
+/** `files` at the half tier: each half 0.375 x its full AVIF (§5.11's A: a quarter of the pixels at the same q). */
+function atHalf(files: Readonly<Record<string, AssetEntry>>): Record<string, AssetEntry> {
+  return Object.fromEntries(Object.entries(files).map(([id, e]) => [id, e.kind === 'image' ? halved(e, Math.round(e.avif.bytes * 0.375), Math.round(e.webp.bytes * 0.375)) : e]));
+}
+const halfAvif = (files: Readonly<Record<string, AssetEntry>>): number => Object.values(files).reduce((s, e) => s + (e.kind === 'image' ? (e.half ?? e).avif.bytes : 0), 0);
+/** The chapter files the first line awaits (br), set on chapter `id` of `a`; `world` null = a world source without its output. */
+function withChapterFiles(a: AssetInputs, id: string, files: { story: number; meta: number; manifest: number; en: number; world?: number | null }): AssetInputs {
+  const br = (brBytes: number): { rawBytes: number; brBytes: number } => ({ rawBytes: brBytes * 3, brBytes });
+  return {
+    ...a,
+    chapters: a.chapters.map((c) => {
+      if (c.id !== id || c.meta === null || c.manifest === null) {
+        return c;
+      }
+      const world = files.world === undefined ? null : { hasSections: false, public: files.world === null ? null : br(files.world) };
+      return { ...c, story: br(files.story), meta: { ...c.meta, ...br(files.meta) }, manifest: { ...c.manifest, ...br(files.manifest) }, en: br(files.en), world };
+    }),
+  };
+}
+/** §5.11's chapter files at their medians: story 35,000, meta 2,000, manifest 14,000, world 8,000, en 15,000 = 74,000 B. */
+const MEDIAN_FILES = { story: 35_000, meta: 2_000, manifest: 14_000, world: 8_000, en: 15_000 };
+
+const K1 = 'ch1.scene.a001';
+const K2 = 'ch1.scene.a002';
+const CU_A = cuShot('a');
+const CU_B = cuShot('b');
+const CU_C = cuShot('c');
+const CU_1440 = cuShot('c', 1440);
+const CU = sumFull(CU_A);
+const CU1440 = sumFull(CU_1440);
+
+describe('budget shots', () => {
+  test('budget: step window over 32 MiB fails', () => {
+    // CU A + CU B + a 1440 CU on stage at one step: 12.703 + 12.703 + 15.623 = 41.029 MiB.
+    const assets = { ...CU_A, ...CU_B, ...CU_1440 };
+    const row = rowOf(assetRows(shotInputs(assets, { look: { [K1]: { cur: ids(assets) } } })), 'step-window ch1');
+    expect(row).toMatchObject({ status: 'FAIL', unit: 'MiB', valueBytes: 2 * CU + CU1440, limitBytes: STEADY_CAP_BYTES });
+    expect(mibOf(row.valueBytes)).toBe('41.029');
+    // The limit is the registry's steady cap, one number with the knot-set and room-set rows (MEMORY-PLAN M2).
+    expect(LIMITS.stepWindow).toBe(STEADY_CAP_BYTES);
+    // Control: two CUs fit (25.406).
+    const two = { ...CU_A, ...CU_B };
+    expect(rowOf(assetRows(shotInputs(two, { look: { [K1]: { cur: ids(two) } } })), 'step-window ch1')).toMatchObject({ status: 'PASS', valueBytes: 2 * CU });
+    // A window file the chapter's manifest lacks cannot be summed: FAIL, not a smaller PASS.
+    const lacking = rowOf(assetRows(shotInputs(two, { look: { [K1]: { cur: [...ids(two), 'cg/ghost'] } } })), 'step-window ch1');
+    expect(lacking).toMatchObject({ status: 'FAIL', valueBytes: null });
+    expect(lacking.note).toContain("not in ch1's manifest: cg/ghost");
+  });
+
+  test('budget: step window counts the current shot once', () => {
+    // CU A on stage, CU A and CU B certain at the next line, CU A's plate and CU B's sheet also listed as possible: every
+    // file is counted once, at full: 12.703 + 12.703 = 25.406.
+    const assets = { ...CU_A, ...CU_B };
+    const look = { [K1]: { cur: ids(CU_A), certain: ids(assets), possible: ['bg/a', 'sheet/b'] } };
+    const row = rowOf(assetRows(shotInputs(assets, { look })), 'step-window ch1');
+    expect(row).toMatchObject({ status: 'PASS', valueBytes: 2 * CU });
+    expect(mibOf(row.valueBytes)).toBe('25.406');
+    expect(row.note).toBe(`${K1}: cur 12.70 + certain 12.70 (at 1) + possible 0.00 + labels 0.00 MiB`);
+  });
+
+  test("budget: step window counts a room's props and label bound in effect", () => {
+    // §5.9: a story step in a room's shot (its props, its label bound) whose next cut is a 1440 CU: 16.562 + 15.623 =
+    // 32.185, over. Without the room terms it would read 26.885 and pass.
+    const hall = roomShot('hall');
+    const assets = { ...hall, ...CU_1440 };
+    const row = rowOf(assetRows(shotInputs(assets, { look: { [K1]: { cur: ids(hall), labels: true, certain: ids(CU_1440) } } })), 'step-window ch1');
+    expect(row).toMatchObject({ status: 'FAIL', valueBytes: sumFull(hall) + LABELS_BOUND + CU1440 });
+    expect(mibOf(row.valueBytes)).toBe('32.185');
+    expect(mibOf(sumFull(hall) + LABELS_BOUND)).toBe('16.562');
+    expect(LABELS_BOUND).toBe(4 * 512 * 256 * 4);
+  });
+
+  test('budget: step window counts a possible opener at its kept bytes', () => {
+    // §5.9: a choice at CU A whose replies open on CU B and CU C: 12.703 + 2 x 0.477 = 13.657 (at full: 38.109, over).
+    const assets = { ...CU_A, ...CU_B, ...CU_C };
+    const row = rowOf(assetRows(shotInputs(assets, { look: { [K1]: { cur: ids(CU_A), possible: [...ids(CU_B), ...ids(CU_C)] } } })), 'step-window ch1');
+    expect(row).toMatchObject({ status: 'PASS', valueBytes: CU + 2 * 500_000 });
+    expect(sumKept(CU_B)).toBe(500_000);
+    expect(mibOf(row.valueBytes)).toBe('13.657');
+  });
+
+  test('budget: step window counts a certain image at the step before it appears', () => {
+    // §5.9: a line under a CG whose dismissal shares the next cut's batch holds CG + CU A + CU B = 34.168, over. Lever 1
+    // (dismiss the CG one line earlier) moves the cut's certain term to a step without the CG: 25.406; the CG's step
+    // then sees CU B at distance 2, not yet due.
+    const cg = img('cg-letter-5f5f5f5f', 1080, 2048, 225_000, 340_000);
+    const assets = { 'cg/letter': cg, ...CU_A, ...CU_B };
+    const underCg = ['cg/letter', ...ids(CU_A)];
+    const inCut = rowOf(assetRows(shotInputs(assets, { look: { [K1]: { cur: underCg, certain: ids(CU_B) } } })), 'step-window ch1');
+    expect(inCut).toMatchObject({ status: 'FAIL', valueBytes: fullOf(cg) + 2 * CU });
+    expect(mibOf(inCut.valueBytes)).toBe('34.168');
+    const earlier = { [K1]: { cur: underCg, certain: ids(CU_B), certainDist: 2 }, [K2]: { cur: ids(CU_A), certain: ids(CU_B) } };
+    const lever = rowOf(assetRows(shotInputs(assets, { look: earlier })), 'step-window ch1');
+    expect(lever).toMatchObject({ status: 'PASS', valueBytes: 2 * CU });
+    expect(mibOf(lever.valueBytes)).toBe('25.406');
+    expect(lever.note.startsWith(`${K2}: `)).toBe(true);
+  });
+
+  test('budget: step window per room counts the room and the openers one action away', () => {
+    // §5.9, the critic's fixture: a room whose three events open on distinct CUs and whose leave knot cuts to a wide:
+    // 16.562 + 3 x 0.477 + 0.362 = 18.355 (at full: 64.838, over).
+    const hall = roomShot('hall');
+    const openers = { ...CU_B, ...CU_C, ...cuShot('d'), ...wideShot('w') };
+    const look = { [K1]: { cur: ids(CU_B) }, 'r:hall': { cur: ids(hall), labels: true, possible: ids(openers) } };
+    const rows = assetRows(shotInputs({ ...hall, ...openers }, { look }));
+    const row = rowOf(rows, 'step-window ch1/r:hall');
+    expect(row).toMatchObject({ status: 'PASS', unit: 'MiB', valueBytes: sumFull(hall) + LABELS_BOUND + 3 * 500_000 + 380_000 });
+    expect(sumKept(wideShot('w'))).toBe(380_000);
+    expect(mibOf(row.valueBytes)).toBe('18.355');
+    expect(row.note).toBe('r:hall: cur 14.56 + certain 0.00 (at 1) + possible 1.79 + labels 2.00 MiB');
+    // The room window is its own row: the chapter's row takes the story windows only.
+    expect(rowOf(rows, 'step-window ch1')).toMatchObject({ status: 'PASS', valueBytes: CU });
+  });
+
+  test('budget: a failing step window prints its levers', () => {
+    // Seven steps over the cap and one under: the note starts with the code, gives the worst step's terms, names the
+    // failing steps worst first (five, then how many more), then §5.9's levers 1 and 2, in that order.
+    const extra = { ...cuShot('e'), ...cuShot('f') };
+    const assets = { ...CU_A, ...CU_B, ...CU_1440, ...extra };
+    const heavy = ids({ ...CU_A, ...CU_B, ...CU_1440 });
+    const look: Record<string, WindowSpec> = {
+      'ch1.scene.a001': { cur: heavy },
+      'ch1.scene.a002': { cur: heavy, possible: ids(cuShot('e')) },
+      'ch1.scene.a003': { cur: heavy, possible: ids(extra) },
+      'ch1.scene.a004': { cur: heavy, possible: ids(extra), labels: true },
+      'ch1.scene.a005': { cur: heavy, labels: true },
+      'ch1.scene.a006': { cur: heavy, possible: ids(cuShot('e')), labels: true },
+      'ch1.scene.a007': { cur: heavy, possible: [...ids(extra), 'bg/a'], labels: true },
+      'ch1.scene.a008': { cur: ids({ ...CU_A, ...CU_B }) },
+    };
+    const row = rowOf(assetRows(shotInputs(assets, { look })), 'step-window ch1');
+    expect(row.status).toBe('FAIL');
+    const head = 'budget/step-window: ch1.scene.a004: cur 41.03 + certain 0.00 (at 1) + possible 0.95 + labels 2.00 MiB; ';
+    expect(row.note.startsWith(head), row.note).toBe(true);
+    expect(row.note).toContain('failing: ch1.scene.a004 43.98, ch1.scene.a007 43.98, ch1.scene.a006 43.51, ch1.scene.a005 43.03, ch1.scene.a003 41.98 MiB and 2 more; ');
+    expect(row.note).not.toContain('a008');
+    const lever1 = row.note.indexOf('levers: 1. hold less at the step before the cut');
+    const lever2 = row.note.indexOf('2. draw the larger shot on a 1080 plate');
+    expect(lever1, row.note).toBeGreaterThan(row.note.indexOf('ch1.scene.a003 41.98'));
+    expect(lever2, row.note).toBeGreaterThan(lever1);
+    // A PASS carries the worst step's terms and no code.
+    const fits = rowOf(assetRows(shotInputs(assets, { look: { [K1]: { cur: ids({ ...CU_A, ...CU_B }) } } })), 'step-window ch1');
+    expect(fits.status).toBe('PASS');
+    expect(fits.note).not.toContain('budget/step-window');
+  });
+
+  test("budget: step window at an event's last step counts the return to its room", () => {
+    // §3.4 "An event's return": the event's last line on CU B, the return to the hall certain at distance 1. The window
+    // holds the hall's plate, sheet and props (build/shots.json's certain) and its label bound, from the usage rooms
+    // whose bg is certain and not in effect (build/shots.json's `labels` is the window's own room only): 12.703 + 16.562
+    // = 29.265.
+    const hall = roomShot('hall');
+    const rooms = { 'ch1/manor/hall': { bg: 'bg/hall', props: propsOf(hall) } };
+    const last = (cu: Record<string, AssetEntry>): Row => rowOf(assetRows(shotInputs({ ...hall, ...cu }, { look: { [K1]: { cur: ids(cu), certain: ids(hall) } } }, rooms)), 'step-window ch1');
+    const on1080 = last(CU_B);
+    expect(on1080).toMatchObject({ status: 'PASS', valueBytes: CU + sumFull(hall) + LABELS_BOUND });
+    expect(mibOf(on1080.valueBytes)).toBe('29.265');
+    // The last line on a 1440 CU: 15.623 + 16.562 = 32.185, over, with lever 2 printed.
+    const on1440 = last(CU_1440);
+    expect(on1440).toMatchObject({ status: 'FAIL', valueBytes: CU1440 + sumFull(hall) + LABELS_BOUND });
+    expect(mibOf(on1440.valueBytes)).toBe('32.185');
+    expect(on1440.note).toContain('2. draw the larger shot on a 1080 plate');
+    // A step in another room's shot (the study, its labels in effect) whose next cut goes into the hall holds both label
+    // bounds: the certain room's is charged whatever the window's own `labels` says: 16.562 + 16.562 = 33.123, over.
+    const study = roomShot('study');
+    const both = { ...rooms, 'ch1/manor/study': { bg: 'bg/study', props: propsOf(study) } };
+    const cross = rowOf(assetRows(shotInputs({ ...hall, ...study }, { look: { [K1]: { cur: ids(study), labels: true, certain: ids(hall) } } }, both)), 'step-window ch1');
+    expect(cross).toMatchObject({ status: 'FAIL', valueBytes: sumFull(study) + sumFull(hall) + 2 * LABELS_BOUND });
+    expect(mibOf(cross.valueBytes)).toBe('33.123');
+  });
+
+  test('budget: the reader takes build/shots.json when story/shots.json exists', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'budget-shots-'));
+    try {
+      const need = { camTargets: [], cast: {}, faces: {}, frame: 'wide', loc: 'cafe', motions: [], room: null };
+      const window = { certain: [], certainDist: 0, cur: ['bg/cafe'], d2: [], d3: [], labels: false, near: 0, possible: [] };
+      const shotsJson = JSON.stringify({ chapters: { ch1: { assets: ['bg/cafe'], entry: { 'k:start': [['bg/cafe']] }, look: { 'k:start': window }, shots: { cafe: need }, sprites: true } } });
+      // (a) Both files: the step rows are measured from build/shots.json.
+      const both = join(tmp, 'both');
+      writeRepo(both, { override: { 'story/shots.json': '{"locs": [], "shots": []}', 'server/content/build/shots.json': shotsJson } });
+      const a = readAssetInputs(both);
+      expect(a.problems).toEqual([]);
+      expect(rowOf(assetRows(a), 'step-window ch1')).toMatchObject({ status: 'PASS', valueBytes: 1080 * 2048 * 4 + 5_000 });
+      // (b) A shot list without build/shots.json, with one that lacks a listed chapter, or with one that does not
+      // decode: the `asset inputs` row FAILs naming it, as the asset tool refuses it.
+      const cases = [
+        ['missing', null, 'server/content/build/shots.json: missing'],
+        ['no chapter', '{"chapters": {}}', 'server/content/build/shots.json: no chapter ch1'],
+        ['undecodable', '{"chapters": 5}', 'server/content/build/shots.json: chapters: not an object'],
+      ] as const;
+      for (const [label, file, problem] of cases) {
+        const repo = join(tmp, label.replace(' ', '-'));
+        writeRepo(repo, { override: { 'story/shots.json': '{}', 'server/content/build/shots.json': file } });
+        const row = rowOf(assetRows(readAssetInputs(repo)), 'asset inputs');
+        expect(row.status, label).toBe('FAIL');
+        expect(row.note, label).toContain(problem);
+      }
+      // (c) No shot list (the shot pass is opt-in): a PENDING row, never a PASS; a stale build/shots.json is not read.
+      const off = join(tmp, 'off');
+      writeRepo(off, { override: { 'server/content/build/shots.json': shotsJson } });
+      const c = readAssetInputs(off);
+      expect(c).toMatchObject({ shotList: false, shots: null, problems: [] });
+      const rows = assetRows(c);
+      expect(rowOf(rows, 'step-window')).toMatchObject({ status: 'PENDING', valueBytes: null, note: 'no story/shots.json (the shot pass is opt-in)' });
+      expect(rowOf(rows, 'entry step images')).toMatchObject({ status: 'PENDING', valueBytes: null, note: 'no story/shots.json (the shot pass is opt-in)' });
+      expect(rows.filter((r) => r.name.startsWith('step-window ') || r.name.startsWith('entry step images ')).map((r) => r.name)).toEqual([]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('budget: a shot chapter has no knot-set rows', () => {
+    // Rev. 3 (W5): a restaged chapter (`sprites: false`) is gated by its step windows, not by knot-set: a cinematic knot
+    // of 10 shots at the WebP limit would read 88.7 MiB as a knot set.
+    const names = Array.from({ length: 10 }, (_, i) => `s${i}`);
+    const cinema = (sprites: boolean): ChapterSpec[] =>
+      specsWith('ch1', (s) => {
+        for (const n of names) {
+          s.assets[`bg/${n}`] = img(`bg-${n}-0a0a0a0a`, 1080, 2048, 300_000, 450_000);
+        }
+        s.knots = { cinema: { assets: names.map((n) => `bg/${n}`), next: [] } };
+        s.sprites = sprites;
+      });
+    const rows = assetRows(assetInputs(cinema(false)));
+    expect(rows.filter((r) => r.name.startsWith('knot-set ch1/')).map((r) => r.name)).toEqual([]);
+    // The legacy chapter beside it keeps its rows.
+    expect(rowOf(rows, 'knot-set ch2/archive').status).toBe('PASS');
+    // Control: the same knot in a legacy chapter is a knot-set row, at 88.7 MiB.
+    const legacy = rowOf(assetRows(assetInputs(cinema(true))), 'knot-set ch1/cinema');
+    expect(legacy).toMatchObject({ status: 'FAIL', valueBytes: 10 * (1080 * 2048 * 4 + 450_000) });
+    expect(((legacy.valueBytes ?? 0) / MIB).toFixed(1)).toBe('88.7');
+  });
+
+  test('budget: a legacy chapter keeps its knot-set rows', () => {
+    // Rev. 3 (W5): a chapter that still names sprites keeps today's knot-set rows until it is restaged: a bg and five
+    // sprites in one knot hold 33.0 MiB, over.
+    const crowd = Array.from({ length: 5 }, (_, i) => `char/c${i}/neutral`);
+    const specs = specsWith('ch1', (s) => {
+      crowd.forEach((id, i) => {
+        s.assets[id] = img(`char-c${i}-neutral-0c0c0c0c`, 768, 1536, 100_000, 400_000);
+      });
+      s.knots['street'] = { assets: ['bg/street', ...crowd], next: [] };
+    });
+    const held = 1080 * 2048 * 4 + 150_000 + 5 * (768 * 1536 * 4 + 400_000);
+    expect((held / MIB).toFixed(1)).toBe('33.0');
+    const a = assetInputs(specs);
+    expect(rowOf(assetRows(a), 'knot-set ch1/street')).toMatchObject({ status: 'FAIL', unit: 'MiB', valueBytes: held });
+    // The safe side: a chapter build/shots.json does not list, and a story with no shot list, keep their rows too.
+    expect(rowOf(assetRows({ ...a, shots: shotUsageOf({}) }), 'knot-set ch1/street')).toMatchObject({ status: 'FAIL', valueBytes: held });
+    expect(rowOf(assetRows({ ...a, shotList: false, shots: null }), 'knot-set ch1/street')).toMatchObject({ status: 'FAIL', valueBytes: held });
+  });
+
+  test('budget: entry step images over 279,000 B fails', () => {
+    // §5.11's resume fixture: a later step's one alternative is a 1440 shot at both file limits (400,000 + 200,000 B,
+    // 225,000 at the half tier), the chapter files at their medians (74,000): 299,000, over by 20,000. The first step
+    // (a CU) alone would pass: a resume may enter at any step.
+    const big = { 'bg/c': halved(img('bg-c-5a5a5a5a', 1440, 2048, 400_000, 600_000), 150_000, 225_000), 'sheet/c': halved(img('sheet-c-5b5b5b5b', 1026, 968, 200_000, 300_000), 75_000, 112_500) };
+    const cuA = atHalf(CU_A);
+    const c: ShotChapterSpec = { look: { 'k:scene': {}, [K1]: { cur: ids(cuA) }, 'ch1.scene.a005': { cur: ids(big) } }, entry: { 'k:scene': [], [K1]: [ids(cuA)], 'ch1.scene.a005': [ids(big)] } };
+    const a = withChapterFiles(shotInputs({ ...cuA, ...big }, c), 'ch1', MEDIAN_FILES);
+    const row = rowOf(assetRows(a), 'entry step images ch1');
+    expect(row).toMatchObject({ status: 'FAIL', unit: 'KB', valueBytes: 225_000 + 74_000, limitBytes: 279_000 });
+    expect(row.note.startsWith('budget/entry-step: ch1.scene.a005: images 225.0 KB (half) + chapter files 74.0 KB'), row.note).toBe(true);
+    expect(row.note).toContain("levers: shot.json q for that step's shots (both tiers); the chapter's own files");
+    // Control: without the 1440 step the first CU step is the largest, and it fits (123,167 + 74,000).
+    const small: ShotChapterSpec = { look: { 'k:scene': {}, [K1]: { cur: ids(cuA) } }, entry: { 'k:scene': [], [K1]: [ids(cuA)] } };
+    const fits = rowOf(assetRows(withChapterFiles(shotInputs(cuA, small), 'ch1', MEDIAN_FILES)), 'entry step images ch1');
+    expect(fits).toMatchObject({ status: 'PASS', valueBytes: 123_167 + 74_000 });
+    expect(fits.note).not.toContain('budget/entry-step');
+  });
+
+  test('budget: entry step images prices the half tier', () => {
+    // §5.11: the entry shows over the half-tier files: a CU of 225,000 + 103,445 B AVIF counts 84,375 + 38,792 =
+    // 123,167 (its full files would count 328,445), plus the chapter files (4 x 500 B here).
+    const cuA = atHalf(CU_A);
+    expect(halfAvif(cuA)).toBe(123_167);
+    const c: ShotChapterSpec = { look: { [K1]: { cur: ids(cuA) } }, entry: { [K1]: [ids(cuA)] } };
+    expect(rowOf(assetRows(shotInputs(cuA, c)), 'entry step images ch1')).toMatchObject({ status: 'PASS', valueBytes: 123_167 + 2_000 });
+    // A file with no half (a gated image, a char off its canvas) counts its own file: the CG's 300,000 B, over.
+    const cg = { 'cg/letter': img('cg-letter-5f5f5f5f', 1080, 2048, 300_000, 450_000) };
+    const onCg: ShotChapterSpec = { look: { [K1]: { cur: ids(cg) } }, entry: { [K1]: [ids(cg)] } };
+    expect(rowOf(assetRows(shotInputs(cg, onCg)), 'entry step images ch1')).toMatchObject({ status: 'FAIL', valueBytes: 300_000 + 2_000 });
+  });
+
+  test('budget: entry step images charges the chapter files', () => {
+    // §5.11: the first line awaits the chapter's story, meta, manifest, public world and en table (br,
+    // chapters.ts:210-216): a CU entry with the medians' files is 123,167 + 74,000 = 197,167, and a 12 KB manifest growth
+    // is charged.
+    const cuA = atHalf(CU_A);
+    const c: ShotChapterSpec = { look: { [K1]: { cur: ids(cuA) } }, entry: { [K1]: [ids(cuA)] } };
+    const entryOf = (files: Parameters<typeof withChapterFiles>[2]): Row => rowOf(assetRows(withChapterFiles(shotInputs(cuA, c), 'ch1', files)), 'entry step images ch1');
+    const median = entryOf(MEDIAN_FILES);
+    expect(median).toMatchObject({ status: 'PASS', valueBytes: 197_167 });
+    expect(median.note).toContain('chapter files 74.0 KB (story 35.0, meta 2.0, manifest 14.0, world 8.0, en 15.0)');
+    expect(entryOf({ ...MEDIAN_FILES, manifest: 26_000 })).toMatchObject({ status: 'PASS', valueBytes: 209_167 });
+    // A chapter without a world has no world term; a world source without its public output cannot be summed.
+    expect(entryOf({ story: 35_000, meta: 2_000, manifest: 14_000, en: 15_000 })).toMatchObject({ valueBytes: 189_167 });
+    const unbuilt = entryOf({ ...MEDIAN_FILES, world: null });
+    expect(unbuilt).toMatchObject({ status: 'FAIL', valueBytes: null });
+    expect(unbuilt.note).toContain('cannot sum: world missing');
+  });
+
+  test('budget: entry step images takes the largest alternative of a step', () => {
+    // A step whose may-set holds a CG or CU A has two alternatives: a resume shows one top image, so the row prices the
+    // larger alternative alone (CU A's 123,167, not the CG's 112,500 too).
+    const cuA = atHalf(CU_A);
+    const cg = atHalf({ 'cg/letter': img('cg-letter-5f5f5f5f', 1080, 2048, 300_000, 450_000) });
+    expect(halfAvif(cg)).toBe(112_500);
+    const c: ShotChapterSpec = { look: { [K1]: { cur: [...ids(cg), ...ids(cuA)] } }, entry: { [K1]: [ids(cg), ids(cuA)] } };
+    const row = rowOf(assetRows(shotInputs({ ...cuA, ...cg }, c)), 'entry step images ch1');
+    expect(row).toMatchObject({ status: 'PASS', valueBytes: 123_167 + 2_000 });
+    // A file the manifest lacks cannot be summed.
+    const lacking: ShotChapterSpec = { look: { [K1]: { cur: ids(cuA) } }, entry: { [K1]: [[...ids(cuA), 'cg/ghost']] } };
+    const missing = rowOf(assetRows(shotInputs(cuA, lacking)), 'entry step images ch1');
+    expect(missing).toMatchObject({ status: 'FAIL', valueBytes: null });
+    expect(missing.note).toContain("not in ch1's manifest: cg/ghost");
+  });
+
+  test('budget: the entry row prints its derivation', () => {
+    // §5.11: the limit is what the 6 s TTFL budget leaves for the entry's bytes on the e2e link, floored to 1,000 B; the
+    // row prints that derivation on every build, with the largest step and its parts.
+    const cuA = atHalf(CU_A);
+    const c: ShotChapterSpec = { look: { [K1]: { cur: ids(cuA) } }, entry: { [K1]: [ids(cuA)] } };
+    const row = rowOf(assetRows(shotInputs(cuA, c)), 'entry step images ch1');
+    expect(row.note).toBe(
+      `${K1}: images 123.2 KB (half) + chapter files 2.0 KB (story 0.5, meta 0.5, manifest 0.5, en 0.5); limit = (6,000 - 4,059 - 231 - 61 - 150 - 100) ms x 200 B/ms = 279,800, floored to 279,000`,
+    );
+    // The limit is that derivation, from the one term table the note prints.
+    const t = ENTRY_STEP_TTFL;
+    const left = t.budgetMs - t.ttflMs - t.twaMs - t.firstLineGrowthMs - t.resumeRttMs - t.decodeMs;
+    expect(left * t.linkBytesPerMs).toBe(279_800);
+    expect(LIMITS.entryStepImages).toBe(Math.floor((left * t.linkBytesPerMs) / 1_000) * 1_000);
+  });
+
+  test("budget: a legacy step's entry counts its sprites", () => {
+    // Rev. 3 (W5): in a legacy chapter a step's alternative also holds the sprites in effect (build/shots.json's entry
+    // lists them, as ch1.street.s016 does): the street's half plus three sprites' halves (37,500 B each).
+    const street = atHalf({ 'bg/street': plateOf('street') });
+    const sprites = atHalf({ 'char/ally/neutral': sprite('ally', 'neutral'), 'char/stranger/neutral': sprite('stranger', 'neutral'), 'char/stranger/smile': sprite('stranger', 'smile') });
+    const alt = [...ids(street), ...ids(sprites)];
+    const c: ShotChapterSpec = { look: { [K1]: { cur: alt } }, entry: { [K1]: [alt] }, sprites: true };
+    const row = rowOf(assetRows(shotInputs({ ...street, ...sprites }, c)), 'entry step images ch1');
+    expect(row).toMatchObject({ status: 'PASS', valueBytes: 84_375 + 3 * 37_500 + 2_000 });
+  });
+
+  test("budget: first-load counts the first step's half-tier images", () => {
+    // §5.11 (D6): a shot chapter's first line awaits its first step's files at the half tier: the window k:<first knot>
+    // holds nothing yet (the empty stage), its first batch shows CU A (certain at 1, talk file aside: motion, never
+    // awaited) and may show B's plate. Its first knot names three plates, which a legacy chapter's row counts at full.
+    const plates = atHalf({ 'bg/a': plateOf('a'), 'bg/b': plateOf('b'), 'bg/c': plateOf('c') });
+    const talk = { 'talk/a/ally/smile': img('talk-a-ally-smile-5a5a5a5a', 256, 128, 6_000, 9_000) };
+    const assets = { ...plates, ...atHalf({ 'sheet/a': cuSheetOf('a') }), ...talk };
+    const specs = (sprites: boolean): ChapterSpec[] => [{ id: 'ch1', paid: false, next: null, assets, knots: { arrival: { assets: ['bg/a', 'bg/b', 'bg/c'], next: [] } }, sprites }];
+    const look = { 'k:arrival': { certain: ['bg/a', 'sheet/a', 'talk/a/ally/smile'], possible: ['bg/b'] } };
+    const dist = withEngine(inputs(), 50_000, 150_000);
+    const firstLoad = (sprites: boolean, shots: ShotUsage | null): Row => {
+      const a = assetInputs(specs(sprites), {});
+      return rowOf(assetRows({ ...a, shotList: shots !== null, shots }, dist), 'first-load ch1');
+    };
+    const legacy = firstLoad(true, shotUsageOf({ ch1: { look, sprites: true } }));
+    const shot = firstLoad(false, shotUsageOf({ ch1: { look, sprites: false } }));
+    // Control: a legacy chapter keeps today's first-knot part (three full plates), the row as without a shot list.
+    expect(legacy).toEqual(firstLoad(true, null));
+    expect(legacy.note.endsWith('+ first knot')).toBe(true);
+    const rest = (legacy.valueBytes ?? 0) - 3 * 225_000;
+    expect((shot.valueBytes ?? 0) - rest).toBe(84_375 + 38_792 + 84_375);
+    expect(shot.note.endsWith('+ first step (half)')).toBe(true);
+    // A shot chapter without its first knot's window cannot be summed.
+    const none = firstLoad(false, shotUsageOf({ ch1: { look: { [K1]: {} }, sprites: false } }));
+    expect(none.status).toBe('FAIL');
+    expect(none.note).toContain('first step images (half) (no window k:arrival) missing');
+  });
+});

@@ -621,18 +621,70 @@ fixed:
   story continues in this chapter; the next `ending` knot requests them again. A paid chapter that is not owned is
   never preloaded: its manifest arrives only with the entitled chapter payload (principle 0). A knot that is a
   declared story ending (§9, the meta's `endings`) never preloads the next chapter: the story ends there.
-- **Budget** — for every knot K, the decoded size of the **carried stage** plus `assets(K) ∪ assets(next(K))` must
-  stay within the knot working-set budget (PROTOTYPE-PLAN.md "Budgets"); the build fails otherwise. The carried stage
-  is what an earlier knot may leave on screen (background, CG, characters) that K's opening tag lines do not clear and
-  that K and its successors do not name.
-  - **Opening tag lines.** These are the tag-only lines between `=== K ===` and K's first other line (§3.3). They are
-    the only clears the build credits. They run in K's first batch on every entry, because ink delivers them with the
-    first line, the runtime merges tag-only steps forward (§3.5), and every knot is entered at its top (§10).
-  - **What clears.** There, a `scene` tag clears it all, and `bg`, `cg`, `cg: off`, `show` and `hide` replace or clear
-    their own slot. Every other tag in a knot only adds, including a clear written at the end of the first line.
-  - **Writing for the budget.** Reuse a background rather than introducing a new one per knot. When a knot's
-    successors bring new art, open it with a `scene` tag line, or clear a CG (`cg: off`) and characters (`hide`) on
-    its opening tag lines.
+- **Budgets** (`npm --prefix client run build`, `client/scripts/budget.ts`). The build's budget gate prints one row
+  per budget and fails on any FAIL. Its image rows read the story tool's outputs: `usage.json`, each chapter's
+  manifest and, when `story/shots.json` exists, `server/content/build/shots.json` (§14.4): its windows (`look`), its
+  entry alternatives (`entry`) and its `sprites` flag. Without `story/shots.json` the shot pass does not run (it is
+  opt-in), so `step-window` and `entry step images` print one PENDING row each and every chapter is legacy.
+  - **`step-window <ch>` and `step-window <ch>/r:<room>`** (`budget/step-window`, §14.3). A window is what the
+    runtime holds at one step. The chapter's row is its largest story window (a line, a choice, a knot entry); each
+    room window of an explore section is its own row. A window counts each file once:
+    - the files in effect (`cur`) at full: decoded bytes plus the larger kept file;
+    - the next appearance's files (`certain`) at full, but only when they are certain at the next step. The runtime
+      keeps a certain file resident from the step before it appears and defers it until then, so the gate charges it
+      one step ahead, not at every step before;
+    - the other openers (`possible`: a choice's branches, a condition's arms, the events and leave knots of a room one
+      action away) at their kept bytes only. Exactly one branch is taken, and its opener decodes from the held file at
+      the tap;
+    - 2 MiB for the label layer of a room in effect, and 2 MiB for each room whose plate is certain at the next
+      step (an event's return to its room).
+
+    The cap is 32 MiB, the registry's steady cap. A failing row names its failing steps, worst first, and the
+    levers, in order:
+    1. Hold less at the step before the cut: dismiss a CG one line before the cut instead of in the cut's batch, or
+       reach the close-up from a non-room shot of the scene (the room's props and labels then leave a step earlier).
+    2. Draw the larger shot on a 1080 plate instead of a 1440 one (2.9 MiB less decoded; the frame, the angle and
+       every face state stay).
+    3. Openers rarely need a lever: at their kept bytes a room fails on its openers only past about 32 distinct
+       close-up openers, and a choice at a close-up past about 40.
+  - **`entry step images <ch>`** (`budget/entry-step`, §14.3). What a session waits for before its first line when it
+    enters at a step (a fresh start, a resume, a handover without its preload). It is the largest entry alternative
+    of any step or room (one per possible top image: a CG, or a shot's plate, sheet and face files in effect with the
+    room's props and, in a legacy chapter, the sprites; talk files are motion and never awaited), at the half-tier
+    AVIF bytes, plus the chapter files the first line awaits (story, meta, manifest, public world, en table;
+    brotli). The limit, 279,000 B, is what the 6 s TTFL budget leaves for those bytes on the e2e link:
+    `(6,000 - 4,059 - 231 - 61 - 150 - 100) ms x 200 B/ms = 279,800 B`, floored to 1,000 B; the row prints that
+    derivation. Levers: the shot's `q` in its `shot.json` (both tiers), and the chapter's own files.
+  - **`knot-set <ch>/<knot>` (legacy chapters only, until restaged).** A chapter that still names sprites (a `show:`
+    or `hide:`; build/shots.json `sprites: true`), and every chapter when there is no shot list, keeps the knot
+    budget: for every knot K, the decoded size of the **carried stage** plus `assets(K) ∪ assets(next(K))` must stay
+    within the knot working-set budget (PROTOTYPE-PLAN.md "Budgets"); the build fails otherwise. The carried stage is
+    what an earlier knot may leave on screen (background, CG, characters) that K's opening tag lines do not clear and
+    that K and its successors do not name. A restaged chapter (`sprites: false`) has no knot-set rows: its step
+    windows bound it.
+    - **Opening tag lines.** These are the tag-only lines between `=== K ===` and K's first other line (§3.3). They
+      are the only clears the build credits. They run in K's first batch on every entry, because ink delivers them
+      with the first line, the runtime merges tag-only steps forward (§3.5), and every knot is entered at its top
+      (§10).
+    - **What clears.** There, a `scene` tag clears it all, and `bg`, `cg`, `cg: off`, `show` and `hide` replace or
+      clear their own slot. Every other tag in a knot only adds, including a clear written at the end of the first
+      line.
+    - **Writing for the budget.** Reuse a background rather than introducing a new one per knot. When a knot's
+      successors bring new art, open it with a `scene` tag line, or clear a CG (`cg: off`) and characters (`hide`) on
+      its opening tag lines.
+  - **`room-set <ch>/<section>/<room>`.** Per room of an explore section: the room's plate and its sheet, its props,
+    and the larger of its largest neighbour's plate and sheet and its largest close-up, against the same 32 MiB.
+  - **`first-load <ch>`** (the head of each story). The download before the first line of a fresh start: the JS, CSS,
+    html and TWA script, the chapter catalog and the covers, the chapter's story, meta and manifest, and its first
+    images. A legacy chapter counts its first knot's images (full AVIF); a restaged chapter counts its first step's
+    files at the half tier (those in effect, certain at the next step or possible at its first knot's entry; talk files
+    aside). The limit is 800 KB.
+  - **`transfer <ch>` and `transfer <ch> (half)`.** Every asset file of a chapter (images as AVIF; the half row takes
+    each image's half), at most 12 MB per chapter.
+  - **Known limits** (SH2; no committed chapter reaches them). The step rows read the story tool's step flow, which does
+    not yet model two constructs, so on such content a row can count too little: (1) an `unlock` or `openAt` that
+    queues another effect list's knots (their opener may be missing from a room window's `possible`); (2) staging tags
+    between an event knot's last line and its `# explore:` (their files may be missing from the return's `certain`).
 
 ---
 
@@ -1015,6 +1067,8 @@ be in effect after its batch's cut.
 | `art/pending` | W | a needed face state (shot, character, expression) has no art: the shot's bg is a placeholder; the message names the lines that need it (E under `--strict`, as every W) |
 | `flow/edge-missing` | E | a seeded playthrough made a step transition the step flow lacks (only transitions some run makes fail) |
 | `flow/unsupported` | E | a construct the step flow does not model: a thread `<-`, a divert to no knot, stitch or label, a choice or a gather inside a conditional or sequence block |
+| `budget/step-window` | E | a window of `build/shots.json` holds more than 32 MiB (the registry's steady cap): its files in effect at full (decoded + the larger kept file), the next appearance's files at full when they are certain at the next step, the other openers at their kept bytes, and 2 MiB per room label bound (§8 "Budgets"); it needs the decoded sizes, so `npm --prefix client run build` enforces it (`budget.ts`, the `step-window` rows), not `story` |
+| `budget/entry-step` | E | a step's largest entry alternative at the half-tier AVIF bytes, plus the chapter files the first line awaits (story, meta, manifest, public world, en; br), is over 279,000 B: what the 6 s TTFL budget leaves for them on the e2e link (§8 "Budgets"); `npm --prefix client run build` enforces it (`budget.ts`, the `entry step images` rows), not `story` |
 
 ### 14.4 What the shot pass writes and reports
 

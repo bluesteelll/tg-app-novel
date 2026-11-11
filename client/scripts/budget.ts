@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { brotliCompressSync, constants } from 'node:zlib';
 
 import type { AssetCatalog, AssetEntry, AssetManifest, ChapterListEntry, ChapterMeta, CoverManifest, ImageEntry } from '../src/story/catalog.ts';
-import type { AssetId, ChapterId } from '../src/story/staging.ts';
+import type { AssetId, ChapterId, PropId } from '../src/story/staging.ts';
 import {
   PIXI_ENV_SRCS,
   SKIP_PIXI_ENV,
@@ -27,6 +27,10 @@ import { imageKind } from './assets/placeholder.ts';
 import type { ImageKind } from './assets/placeholder.ts';
 import { decodeChapterList, decodeStoryUsage } from './story/emit.ts';
 import type { StoryUsage } from './story/emit.ts';
+import type { ShotLintCode } from './story/shots/lint.ts';
+import { SHOTS_FILE } from './story/shots/list.ts';
+import { SHOT_USAGE_FILE, decodeShotUsage } from './story/shots/usage.ts';
+import type { ChapterShots, ShotUsage, WindowRefs } from './story/shots/usage.ts';
 
 export type Status = 'PASS' | 'FAIL' | 'PENDING';
 export type Row = {
@@ -62,6 +66,8 @@ export type BudgetInputs = {
   metaSourceExists: boolean;
   /** `src/app/game.ts` exists: the importer whose `import()` makes the purchase flow a dynamic entry (lever P). */
   gameSourceExists: boolean;
+  /** `src/scene/controller.ts` exists: the importer of the scene's motion chunk (shots §10, W6). */
+  sceneSourceExists: boolean;
   /** The LAZY_FAMILIES roots that exist under client/, by their manifest `src`. */
   lazySources: ReadonlySet<string>;
   /** Dist paths of the re-export-only JS files: Rolldown's facades, which hold no code of their own (RULINGS 92). */
@@ -107,6 +113,12 @@ export type Limits = {
    * trigger, not a split.
    */
   overlaysChunkBr: number;
+  /**
+   * Shots §10 (W6): JS + CSS of the scene's motion chunk, which scene/controller.ts import()s after the first line
+   * (SH7); the design's 8.0 KB. At the estimate policy's R its forecast is 6.0 x 2.027 = 12.2 KB (RULINGS 201): SH7's and
+   * SH8's cuts quote it against this LIMIT.
+   */
+  sceneMotionChunkBr: number;
   /** Ledger 3: every JS file of dist, set once on the all-JS Q3 (RULINGS 201 QS3). */
   allJsBr: number;
   cssBr: number;
@@ -120,8 +132,15 @@ export type Limits = {
   firstKnotImages: number;
   knotSet: number;
   roomSet: number;
+  /** Shots §3.4 `budget/step-window`: what one window of build/shots.json holds (the registry's steady cap). */
+  stepWindow: number;
+  /** Shots §5.11 `budget/entry-step`: a step's entry at the half tier plus the chapter files (`ENTRY_STEP_TTFL`). */
+  entryStepImages: number;
   firstLoad: number;
+  /** Per kind; a `bg`'s scales with its plate's width (shots §4.4, m10: `plateLimit`). */
   image: Readonly<Record<ImageKind, { avif: number; webp: number }>>;
+  /** Shots §4.4 (W10): a loop prop's atlas, `prop/<id>` whose catalog entry is a `loop`, instead of a still prop's. */
+  loopAtlas: { avif: number; webp: number };
   bgmM4aBytes: number;
   bgmMs: number;
   /** K23: a WAV only for a catalog placeholder. */
@@ -146,6 +165,7 @@ export const LIMITS: Limits = {
   cueStageChunkBr: 8_500,
   purchaseFlowChunkBr: 2_000,
   overlaysChunkBr: 3_000,
+  sceneMotionChunkBr: 8_000,
   allJsBr: 365_000,
   cssBr: 12_000,
   htmlBr: 2_000,
@@ -154,11 +174,15 @@ export const LIMITS: Limits = {
   enRaw: 48_000,
   worldRaw: 32_000,
   worldBr: 8_000,
-  transfer: 6_000_000,
+  // OQ5 (RULINGS 154): the owner's default per chapter, full and half rows alike (shots §5.11: a shot chapter ~9.2-10.6 MB).
+  transfer: 12_000_000,
   firstKnotImages: 450_000,
   // What the registry admits as preloads: decoded bytes and the kept file of every live record (MEMORY-PLAN M2).
   knotSet: STEADY_CAP_BYTES,
   roomSet: STEADY_CAP_BYTES,
+  stepWindow: STEADY_CAP_BYTES,
+  // Shots §5.11: floor((6,000 - 4,059 - 231 - 61 - 150 - 100) ms x 200 B/ms = 279,800 B) to 1,000 B (ENTRY_STEP_TTFL).
+  entryStepImages: 279_000,
   firstLoad: 800_000,
   image: {
     bg: PHOTO,
@@ -171,6 +195,7 @@ export const LIMITS: Limits = {
     face: { avif: 120_000, webp: 180_000 },
     talk: { avif: 30_000, webp: 45_000 },
   },
+  loopAtlas: { avif: 200_000, webp: 300_000 },
   bgmM4aBytes: 3_000_000,
   bgmMs: 240_000,
   bgmWavBytes: 400_000,
@@ -185,6 +210,8 @@ export const YIELDS_SRC = 'src/app/yields.ts';
 export const META_SRC = 'src/app/meta.ts';
 /** The game session (lever P): it import()s the purchase flow at the paywall and at Buy. */
 export const GAME_SRC = 'src/app/game.ts';
+/** The scene controller (shots §10, W6): it import()s the scene's motion chunk after the first line (SH7). */
+export const SCENE_SRC = 'src/scene/controller.ts';
 
 /**
  * One lazy chunk family: its roots (manifest `src`), its limit, whether the largest root or their union counts, and the
@@ -201,9 +228,10 @@ export type LazyFamily = {
     | 'metaUiChunkBr'
     | 'metaControllerChunkBr'
     | 'purchaseFlowChunkBr'
-    | 'overlaysChunkBr';
+    | 'overlaysChunkBr'
+    | 'sceneMotionChunkBr';
   measure: 'largest' | 'union';
-  importer: typeof YIELDS_SRC | typeof META_SRC | typeof GAME_SRC;
+  importer: typeof YIELDS_SRC | typeof META_SRC | typeof GAME_SRC | typeof SCENE_SRC;
 };
 /**
  * PUZZLES-PLAN X14, META-PLAN M27: every family is a dynamic chunk, never in the entry or the engine closure, and none
@@ -247,10 +275,19 @@ export const LAZY_FAMILIES: readonly LazyFamily[] = [
   },
   // Lever O5: game.ts import()s it after the first line's reveal and at a Menu or Backlog tap; PENDING keyed on game.ts.
   { name: 'overlays chunk (br)', roots: ['src/ui/overlays/index.ts'], limit: 'overlaysChunkBr', measure: 'largest', importer: GAME_SRC },
+  // Shots §10 (W6): the scene controller import()s its motion chunk after the first line (SH7); PENDING until the root
+  // exists. Outside the first-line rows as every family is: the engine walk stops at a lazy root.
+  {
+    name: 'scene-motion chunk (br)',
+    roots: ['src/scene/motion/index.ts'],
+    limit: 'sceneMotionChunkBr',
+    measure: 'largest',
+    importer: SCENE_SRC,
+  },
 ];
 const LAZY_ROOTS: ReadonlySet<string> = new Set(LAZY_FAMILIES.flatMap((f) => f.roots));
 /** The arch rule's lazy directories: a chunk from one of them loads after the first line, listed root or not. */
-const LAZY_DIRS = ['src/puzzles/ui/', 'src/ui/puzzles/', 'src/ui/explore/', 'src/cues/stage/'];
+const LAZY_DIRS = ['src/puzzles/ui/', 'src/ui/puzzles/', 'src/ui/explore/', 'src/cues/stage/', 'src/scene/motion/'];
 
 function isLazySrc(src: string | undefined): boolean {
   return src !== undefined && (LAZY_ROOTS.has(src) || LAZY_DIRS.some((dir) => src.startsWith(dir)));
@@ -259,7 +296,10 @@ function isLazySrc(src: string | undefined): boolean {
 export const TWA_BYTES = 16_200;
 /** Principle 4: no image side over 2048 px. */
 const MAX_SIDE = 2048;
-/** Image dimensions per kind: the canonical size exactly, or at most (PP "Budgets", PZ X11, SP Y15). */
+/**
+ * Image dimensions per kind: the canonical size exactly, or at most (PP "Budgets", PZ X11, SP Y15). A `bg`'s is the
+ * room plate's; any other plate follows `PLATE` (shots §4.4).
+ */
 const DIMS: Readonly<Record<ImageKind, { w: number; h: number; exact: boolean }>> = {
   bg: { w: 1080, h: 2048, exact: true },
   cg: { w: 1080, h: 2048, exact: true },
@@ -271,6 +311,21 @@ const DIMS: Readonly<Record<ImageKind, { w: number; h: number; exact: boolean }>
   face: { w: 2048, h: 2048, exact: false },
   talk: { w: 2048, h: 2048, exact: false },
 };
+/**
+ * Shots §4.4 (m10): a shot's plate is 2048 high and an even width from 1080 to 1440 (pan slack, S11); a room's plate is
+ * exactly `DIMS.bg` (the explore view lays its hotspots on that frame).
+ */
+const PLATE = { h: 2048, minW: 1080, maxW: 1440 } as const;
+
+function isPlate(w: number, h: number): boolean {
+  return h === PLATE.h && w % 2 === 0 && w >= PLATE.minW && w <= PLATE.maxW;
+}
+
+/** A plate's file limits scale with its width from the 1080 plate's (400,000 / 600,000 B at 1440); not a plate: as 1080. */
+function plateLimit(base: { avif: number; webp: number }, w: number, h: number): { avif: number; webp: number } {
+  const width = isPlate(w, h) ? w : DIMS.bg.w;
+  return { avif: Math.floor((base.avif * width) / DIMS.bg.w), webp: Math.floor((base.webp * width) / DIMS.bg.w) };
+}
 
 const JS = /\.m?js$/;
 
@@ -645,6 +700,7 @@ function lazyMeasure(inputs: BudgetInputs, family: LazyFamily, entryClosure: Clo
     [YIELDS_SRC]: inputs.yieldsSourceExists,
     [META_SRC]: inputs.metaSourceExists,
     [GAME_SRC]: inputs.gameSourceExists,
+    [SCENE_SRC]: inputs.sceneSourceExists,
   };
   if (!importers[family.importer]) {
     return { kind: 'pending', note: `${family.importer} absent` };
@@ -774,6 +830,10 @@ export type AssetInputs = {
   chapterCatalog: Sized | null;
   /** On-disk size of the file each manifest URL names (repo-relative path); absent = no such regular file. */
   fileBytes: ReadonlyMap<string, number>;
+  /** `story/shots.json` exists: the shot pass ran (opt-in, STAGING-DSL §14.4), so build/shots.json is required. */
+  shotList: boolean;
+  /** server/content/build/shots.json decoded; null without a shot list, or when it is missing or undecodable (a problem). */
+  shots: ShotUsage | null;
 };
 
 function mib(bytes: number): string {
@@ -815,23 +875,52 @@ function fileProblems(a: AssetInputs, ref: { url: string; bytes: number }): stri
   return size === ref.bytes ? [] : [`${rel} is ${size} B on disk, the manifest says ${ref.bytes}`];
 }
 
+/** A `prop/<p>` whose catalog entry is a loop (its frames' atlas, shots §2.4 W10). */
+function isLoopProp(catalog: AssetCatalog | null, id: AssetId): boolean {
+  const p = id.slice('prop/'.length);
+  const entry = catalog !== null && Object.hasOwn(catalog.prop, p) ? catalog.prop[p as PropId] : undefined; // own key checked
+  return entry !== undefined && 'loop' in entry;
+}
+
+/** Shots §4.4 (m10): a bg is a plate (`PLATE`), and a room's bg (a usage room draws it) exactly `DIMS.bg`. */
+function plateProblems(a: AssetInputs, id: AssetId, canvas: { w: number; h: number }): string[] {
+  const v: string[] = [];
+  if (!isPlate(canvas.w, canvas.h)) {
+    v.push(`${canvas.w}×${canvas.h}, not a plate (h ${PLATE.h}, w even ${PLATE.minW}-${PLATE.maxW})`);
+  }
+  const rooms = Object.entries(a.rooms)
+    .filter(([, room]) => room.bg === id)
+    .map(([key]) => key)
+    .sort();
+  if (rooms.length > 0 && (canvas.w !== DIMS.bg.w || canvas.h !== DIMS.bg.h)) {
+    v.push(`${canvas.w}×${canvas.h}, not exactly ${DIMS.bg.w}×${DIMS.bg.h} (room plate ${rooms.join(', ')})`);
+  }
+  return v;
+}
+
 function imageRow(a: AssetInputs, id: AssetId, e: ImageEntry, conflict: string | undefined, limits: Limits): Row {
   const name = `image ${id}`;
   const kind = imageKind(id);
   if (kind === null) {
     return failed(name, null, 'not an image namespace');
   }
-  const limit = limits.image[kind];
-  const dims = DIMS[kind];
   const v: string[] = [];
   // The sizes hold on the canvas (MEMORY-PLAN §7): a trimmed file is laid out, and sized, as its full image.
   const t = e.trim;
   const canvas = t === undefined ? { w: e.w, h: e.h } : { w: t.canvasW, h: t.canvasH };
+  // Shots §4.4 (W10): a loop prop's frames are one atlas, held to MAX_SIDE and its own file limits.
+  const loop = kind === 'prop' && isLoopProp(a.catalog, id);
+  const limit = loop ? limits.loopAtlas : kind === 'bg' ? plateLimit(limits.image.bg, canvas.w, canvas.h) : limits.image[kind];
   if (canvas.w > MAX_SIDE || canvas.h > MAX_SIDE) {
     v.push(`${canvas.w}×${canvas.h} over ${MAX_SIDE} px`);
   }
-  if (dims.exact ? canvas.w !== dims.w || canvas.h !== dims.h : canvas.w > dims.w || canvas.h > dims.h) {
-    v.push(`${canvas.w}×${canvas.h}, ${dims.exact ? 'not exactly' : 'over'} ${dims.w}×${dims.h} (${kind})`);
+  if (kind === 'bg') {
+    v.push(...plateProblems(a, id, canvas));
+  } else if (!loop) {
+    const dims = DIMS[kind];
+    if (dims.exact ? canvas.w !== dims.w || canvas.h !== dims.h : canvas.w > dims.w || canvas.h > dims.h) {
+      v.push(`${canvas.w}×${canvas.h}, ${dims.exact ? 'not exactly' : 'over'} ${dims.w}×${dims.h} (${kind})`);
+    }
   }
   if (t !== undefined && !TRIMMED_NAMESPACES.includes(kind)) {
     v.push(`trim on a ${kind} (only char and prop are trimmed)`);
@@ -957,12 +1046,23 @@ function carriedBound(carried: ReadonlyMap<AssetId, number>): number {
   return [...slots.values()].reduce((s, b) => s + b, 0);
 }
 
+/**
+ * Shots rev. 3 (W5): a chapter is legacy, on today's knot preload and its `knot-set` rows, until build/shots.json says
+ * it names no sprite (`sprites: false`). Without a shot list, or for a chapter build/shots.json lacks, it is legacy: the
+ * safe side keeps the rows.
+ */
+function isLegacy(a: AssetInputs, ch: ChapterId): boolean {
+  const cs = a.shots !== null && Object.hasOwn(a.shots.chapters, ch) ? a.shots.chapters[ch] : undefined;
+  return cs === undefined || cs.sprites;
+}
+
 function knotRows(a: AssetInputs, limits: Limits): Row[] {
   const rows: Row[] = [];
   if (a.usage === null) {
     return rows;
   }
-  for (const c of a.chapters) {
+  // A restaged chapter's images are gated by its step windows (shots §3.4), not by the knot that names them.
+  for (const c of a.chapters.filter((ch) => isLegacy(a, ch.id))) {
     const knots = a.usage.chapters[c.id]?.knots;
     if (c.manifest === null || knots === undefined) {
       continue; // a missing manifest or usage chapter is an `asset inputs` problem
@@ -985,7 +1085,17 @@ function knotRows(a: AssetInputs, limits: Limits): Row[] {
   return rows;
 }
 
-/** PUZZLES-PLAN `budget/room-set`: per room, bg + props + max(largest neighbour bg, largest close-up). */
+/**
+ * Per-player §6.5 (Reconcile P2, shots I-3): the images a room's or a neighbour's shot holds, `img(n) = bg(n) +
+ * sheet(n)`: the plate, and its sheet when the manifest lists one (as `shotImages`, `client/src/story/shots.ts`, which a
+ * main module may not import).
+ */
+export function imgIds(manifest: AssetManifest, bg: AssetId): AssetId[] {
+  const sheet = `sheet/${bg.slice('bg/'.length)}` as AssetId; // a bg id's shot, in the sheet namespace
+  return Object.hasOwn(manifest.assets, sheet) ? [bg, sheet] : [bg];
+}
+
+/** PUZZLES-PLAN `budget/room-set`: per room, img(bg) + props + max(largest neighbour img, largest close-up). */
 function roomRows(a: AssetInputs, limits: Limits): Row[] {
   const rows: Row[] = [];
   for (const [key, room] of Object.entries(a.rooms).sort(([x], [y]) => (x < y ? -1 : 1))) {
@@ -999,8 +1109,11 @@ function roomRows(a: AssetInputs, limits: Limits): Row[] {
     const lacking: string[] = [];
     const sum = (ids: readonly AssetId[]): number => [...decodedOf(manifest.value, ids, lacking).values()].reduce((s, b) => s + b, 0);
     const max = (ids: readonly AssetId[]): number => Math.max(0, ...decodedOf(manifest.value, ids, lacking).values());
-    const total = sum([room.bg]) + sum(room.props) + Math.max(max(room.neighbours), max(room.closeups));
-    const note = `bg + ${room.props.length} props + max(neighbour bg, close-up)`;
+    const img = (bg: AssetId): AssetId[] => imgIds(manifest.value, bg);
+    const neighbour = Math.max(0, ...room.neighbours.map((n) => sum(img(n))));
+    const total = sum(img(room.bg)) + sum(room.props) + Math.max(neighbour, max(room.closeups));
+    const sheets = [room.bg, ...room.neighbours].some((bg) => img(bg).length > 1);
+    const note = `bg + ${room.props.length} props + max(neighbour bg, close-up)${sheets ? ' (+ sheets)' : ''}`;
     rows.push(
       lacking.length > 0
         ? failed(name, limits.roomSet, `not in ${ch}'s manifest: ${lacking.join(', ')}`, 'MiB')
@@ -1092,7 +1205,11 @@ function firstLoadRows(dist: BudgetInputs, a: AssetInputs, limits: Limits): Row[
   return heads.map((head) => {
     const name = `first-load ${head.id}`;
     const c = a.chapters.find((x) => x.id === head.id);
-    const knot = c === undefined ? null : firstKnotAvif(c);
+    // A legacy chapter's first line awaits its first knot's images (today's runtime); a shot chapter's, its first
+    // step's files at the half tier (shots §5.11, D6).
+    const cs = c === undefined || isLegacy(a, c.id) || a.shots === null ? undefined : a.shots.chapters[c.id];
+    const first = c === undefined ? null : cs === undefined ? firstKnotAvif(c) : firstStepHalf(c, cs);
+    const label = cs === undefined ? 'first knot images' : 'first step images (half)';
     const parts: ReadonlyArray<readonly [string, number | null]> = [
       [js.ok ? 'JS' : `JS (${js.problem})`, js.ok ? js.bytes : null],
       ['index.html', html ?? null],
@@ -1101,15 +1218,269 @@ function firstLoadRows(dist: BudgetInputs, a: AssetInputs, limits: Limits): Row[
       [`${head.id} story`, c?.story?.brBytes ?? null],
       [`${head.id} meta`, c?.meta?.brBytes ?? null],
       [`${head.id} manifest`, c?.manifest?.brBytes ?? null],
-      [knot?.ok === false ? `first knot images (${knot.problem})` : 'first knot images', knot?.ok === true ? knot.bytes : null],
+      [first?.ok === false ? `${label} (${first.problem})` : label, first?.ok === true ? first.bytes : null],
     ];
     const missing = parts.filter(([, bytes]) => bytes === null).map(([part]) => part);
     if (missing.length > 0) {
       return failed(name, limits.firstLoad, `cannot sum: ${missing.join(', ')} missing`);
     }
     const bytes = parts.reduce((s, [, b]) => s + (b ?? 0), 0) + css + TWA_BYTES + coverAvifs;
-    return partialRow(name, bytes, limits.firstLoad, js.ok && js.partial, 'JS + CSS + html + TWA + catalog + covers + chapter + first knot');
+    const note = `JS + CSS + html + TWA + catalog + covers + chapter + ${cs === undefined ? 'first knot' : 'first step (half)'}`;
+    return partialRow(name, bytes, limits.firstLoad, js.ok && js.partial, note);
   });
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The step model's rows (shots §3.4, §5.9, §5.11; SH3b), from build/shots.json's windows and entry alternatives.
+
+/** Per-player §6.5: the label layer of a room in effect, 4 × 512 × 256 × 4 B (shots §3.4 "Window bytes"). */
+export const LABELS_BOUND = 4 * 512 * 256 * 4;
+/** The shot lint code a failing `step-window` row reports (STAGING-DSL §14.3); a renamed code fails `check`. */
+const STEP_WINDOW_CODE: ShotLintCode = 'budget/step-window';
+/** Why the step rows are PENDING: the shot pass, and so build/shots.json, is opt-in (STAGING-DSL §14.4). */
+const NO_SHOT_LIST = `no ${SHOTS_FILE} (the shot pass is opt-in)`;
+/** Shots §5.9's authoring levers 1 and 2, printed with a failing step, in order. */
+const STEP_WINDOW_LEVERS =
+  'levers: 1. hold less at the step before the cut (dismiss a CG one line earlier, or reach the close-up from a non-room shot); 2. draw the larger shot on a 1080 plate';
+/** How many failing windows a row names before it counts the rest. */
+const NAMED_FAILURES = 5;
+
+/** One window's terms (shots §3.4 "The gate step-window"), in bytes. */
+type WindowSum = { key: string; cur: number; certain: number; possible: number; labels: number; total: number };
+
+/**
+ * `cur` at full, + the certain files due at the next step (`certainDist` 1) at full, + the other openers at their kept
+ * bytes, each file counted once; + one label bound when a room is in effect and one per usage room whose plate is
+ * certain at the next step and not in effect (build/shots.json's `labels` is the window's own room only). An id that
+ * is not an image of `manifest` is added to `lacking`.
+ */
+function windowSum(key: string, w: WindowRefs, manifest: AssetManifest, roomsByBg: ReadonlyMap<AssetId, number>, lacking: Set<AssetId>): WindowSum {
+  const sum = (ids: ReadonlySet<AssetId>, bytes: (e: ImageEntry) => number): number => {
+    let total = 0;
+    for (const id of ids) {
+      const e = manifest.assets[id];
+      if (e?.kind === 'image') {
+        total += bytes(e);
+      } else {
+        lacking.add(id);
+      }
+    }
+    return total;
+  };
+  const cur = new Set(w.cur);
+  const certain = new Set(w.certainDist === 1 ? w.certain.filter((id) => !cur.has(id)) : []);
+  const possible = new Set(w.possible.filter((id) => !cur.has(id) && !certain.has(id)));
+  const rooms = [...certain].reduce((n, id) => n + (roomsByBg.get(id) ?? 0), 0);
+  const t = {
+    cur: sum(cur, (e) => e.decodedBytes + Math.max(e.avif.bytes, e.webp.bytes)),
+    certain: sum(certain, (e) => e.decodedBytes + Math.max(e.avif.bytes, e.webp.bytes)),
+    possible: sum(possible, (e) => Math.max(e.avif.bytes, e.webp.bytes)),
+    labels: ((w.labels ? 1 : 0) + rooms) * LABELS_BOUND,
+  };
+  return { key, ...t, total: t.cur + t.certain + t.possible + t.labels };
+}
+
+/** MiB to two decimals, the unit the window terms print in. */
+function mib2(bytes: number): string {
+  return (bytes / MIB).toFixed(2);
+}
+
+/** The largest window of `keys`; a FAIL names the code, the failing windows worst first, and the levers. */
+function stepWindowRow(name: string, ch: ChapterId, keys: readonly string[], cs: ChapterShots, manifest: AssetManifest, roomsByBg: ReadonlyMap<AssetId, number>, limit: number): Row {
+  const lacking = new Set<AssetId>();
+  const sums = keys
+    .flatMap((k) => {
+      const w = cs.look[k as keyof ChapterShots['look']]; // a key of this very record
+      return w === undefined ? [] : [windowSum(k, w, manifest, roomsByBg, lacking)];
+    })
+    .sort((x, y) => y.total - x.total || (x.key < y.key ? -1 : 1));
+  const worst = sums[0];
+  if (worst === undefined) {
+    return failed(name, limit, `${STEP_WINDOW_CODE}: no story window in ${SHOT_USAGE_FILE}`, 'MiB');
+  }
+  const terms = `${worst.key}: cur ${mib2(worst.cur)} + certain ${mib2(worst.certain)} (at 1) + possible ${mib2(worst.possible)} + labels ${mib2(worst.labels)} MiB`;
+  if (lacking.size > 0) {
+    return failed(name, limit, `${STEP_WINDOW_CODE}: ${terms}; not in ${ch}'s manifest: ${[...lacking].sort().join(', ')}`, 'MiB');
+  }
+  if (worst.total <= limit) {
+    return measured(name, worst.total, limit, terms, 'MiB');
+  }
+  const over = sums.filter((s) => s.total > limit);
+  const named = over.slice(0, NAMED_FAILURES).map((s) => `${s.key} ${mib2(s.total)}`);
+  const more = over.length > NAMED_FAILURES ? ` and ${over.length - NAMED_FAILURES} more` : '';
+  return measured(name, worst.total, limit, `${STEP_WINDOW_CODE}: ${terms}; failing: ${named.join(', ')} MiB${more}; ${STEP_WINDOW_LEVERS}`, 'MiB');
+}
+
+/**
+ * Shots §3.4 `budget/step-window`: per chapter of build/shots.json, the largest story window (`step-window <ch>`) and
+ * each room window of its explore sections (`step-window <ch>/r:<room>`), against the registry's steady cap. PENDING
+ * without a shot list; a listed chapter that build/shots.json lacks, or a build/shots.json that is missing or does not
+ * decode, is an `asset inputs` problem.
+ */
+function stepWindowRows(a: AssetInputs, limits: Limits): Row[] {
+  if (!a.shotList) {
+    return [pending('step-window', limits.stepWindow, NO_SHOT_LIST, 'MiB')];
+  }
+  const shots = a.shots;
+  if (shots === null) {
+    return [];
+  }
+  const rows: Row[] = [];
+  for (const c of a.chapters) {
+    const cs = Object.hasOwn(shots.chapters, c.id) ? shots.chapters[c.id] : undefined;
+    if (cs === undefined) {
+      continue;
+    }
+    const name = `step-window ${c.id}`;
+    if (c.manifest === null) {
+      rows.push(failed(name, limits.stepWindow, `${STEP_WINDOW_CODE}: manifest missing`, 'MiB'));
+      continue;
+    }
+    const roomsByBg = new Map<AssetId, number>();
+    for (const [key, room] of Object.entries(a.rooms)) {
+      if (key.startsWith(`${c.id}/`)) {
+        roomsByBg.set(room.bg, (roomsByBg.get(room.bg) ?? 0) + 1);
+      }
+    }
+    const keys = Object.keys(cs.look).sort();
+    const story = keys.filter((k) => !k.startsWith('r:'));
+    rows.push(stepWindowRow(name, c.id, story, cs, c.manifest.value, roomsByBg, limits.stepWindow));
+    for (const k of keys.filter((x) => x.startsWith('r:'))) {
+      rows.push(stepWindowRow(`${name}/${k}`, c.id, [k], cs, c.manifest.value, roomsByBg, limits.stepWindow));
+    }
+  }
+  return rows;
+}
+
+/**
+ * Shots §5.11, the TTFL terms the `entry step images` limit is derived from (ms; the e2e link's B per ms): the budget
+ * (perf.spec.ts:34), the measured fresh-start TTFL, the TWA fixture outside the throttle, the first-line JS growth to
+ * its row limit, a resume's extra sequential request, the half-tier entry's decode and upload. What is left, at the
+ * link's rate, is the entry's bytes; the limit floors it to 1,000 B (a test holds LIMITS.entryStepImages to it).
+ */
+export const ENTRY_STEP_TTFL = {
+  budgetMs: 6_000,
+  ttflMs: 4_059,
+  twaMs: 231,
+  firstLineGrowthMs: 61,
+  resumeRttMs: 150,
+  decodeMs: 100,
+  linkBytesPerMs: 200,
+} as const;
+/** The shot lint code a failing `entry step images` row reports (STAGING-DSL §14.3). */
+const ENTRY_STEP_CODE: ShotLintCode = 'budget/entry-step';
+/** Shots §5.11's levers for a failing entry; none removes a face state, a close-up or a framing. */
+const ENTRY_STEP_LEVERS = "levers: shot.json q for that step's shots (both tiers); the chapter's own files";
+
+/** 1234567 -> '1,234,567'. */
+function grouped(n: number): string {
+  return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+/** The derivation every `entry step images` row prints (shots §5.11). */
+function entryStepDerivation(): string {
+  const t = ENTRY_STEP_TTFL;
+  const bytes = (t.budgetMs - t.ttflMs - t.twaMs - t.firstLineGrowthMs - t.resumeRttMs - t.decodeMs) * t.linkBytesPerMs;
+  const terms = [t.budgetMs, t.ttflMs, t.twaMs, t.firstLineGrowthMs, t.resumeRttMs, t.decodeMs].map(grouped).join(' - ');
+  return `limit = (${terms}) ms x ${t.linkBytesPerMs} B/ms = ${grouped(bytes)}, floored to ${grouped(Math.floor(bytes / 1_000) * 1_000)}`;
+}
+
+/**
+ * Shots §5.11 `budget/entry-step`, per chapter of build/shots.json: the largest entry alternative of any window (a
+ * fresh start, a resume at any step or room) at the half-tier AVIF bytes (a file with no half: its own), plus the
+ * chapter files the first line awaits (story, meta, manifest, the public world when the chapter has one, en; br,
+ * `client/src/story/chapters.ts:210-216`). PENDING without a shot list, as the step-window rows.
+ */
+function entryStepRows(a: AssetInputs, limits: Limits): Row[] {
+  if (!a.shotList) {
+    return [pending('entry step images', limits.entryStepImages, NO_SHOT_LIST)];
+  }
+  const shots = a.shots;
+  if (shots === null) {
+    return [];
+  }
+  const limit = limits.entryStepImages;
+  const rows: Row[] = [];
+  for (const c of a.chapters) {
+    const cs = Object.hasOwn(shots.chapters, c.id) ? shots.chapters[c.id] : undefined;
+    if (cs === undefined) {
+      continue;
+    }
+    const name = `entry step images ${c.id}`;
+    const files: ReadonlyArray<readonly [string, number | null]> = [
+      ['story', c.story?.brBytes ?? null],
+      ['meta', c.meta?.brBytes ?? null],
+      ['manifest', c.manifest?.brBytes ?? null],
+      ...(c.world === null ? [] : [['world', c.world.public?.brBytes ?? null] as const]),
+      ['en', c.en?.brBytes ?? null],
+    ];
+    const missing = files.filter(([, b]) => b === null).map(([part]) => part);
+    if (c.manifest === null || missing.length > 0) {
+      rows.push(failed(name, limit, `${ENTRY_STEP_CODE}: cannot sum: ${missing.join(', ')} missing`));
+      continue;
+    }
+    const assets = c.manifest.value.assets;
+    const lacking = new Set<AssetId>();
+    let worst: { key: string; bytes: number } | null = null;
+    for (const [key, alts] of Object.entries(cs.entry).sort(([x], [y]) => (x < y ? -1 : 1))) {
+      for (const alt of alts) {
+        let bytes = 0;
+        for (const id of new Set(alt)) {
+          const e = assets[id];
+          if (e?.kind === 'image') {
+            bytes += (e.half ?? e).avif.bytes;
+          } else {
+            lacking.add(id);
+          }
+        }
+        if (worst === null || bytes > worst.bytes) {
+          worst = { key, bytes };
+        }
+      }
+    }
+    if (worst === null) {
+      rows.push(failed(name, limit, `${ENTRY_STEP_CODE}: no entry alternative in ${SHOT_USAGE_FILE}`));
+      continue;
+    }
+    const chapterBytes = files.reduce((s, [, b]) => s + (b ?? 0), 0);
+    const parts = files.map(([part, b]) => `${part} ${((b ?? 0) / 1000).toFixed(1)}`).join(', ');
+    const terms = `${worst.key}: images ${kbText(worst.bytes)} (half) + chapter files ${kbText(chapterBytes)} (${parts}); ${entryStepDerivation()}`;
+    if (lacking.size > 0) {
+      rows.push(failed(name, limit, `${ENTRY_STEP_CODE}: ${terms}; not in ${c.id}'s manifest: ${[...lacking].sort().join(', ')}`));
+      continue;
+    }
+    const total = worst.bytes + chapterBytes;
+    rows.push(measured(name, total, limit, total <= limit ? terms : `${ENTRY_STEP_CODE}: ${terms}; ${ENTRY_STEP_LEVERS}`));
+  }
+  return rows;
+}
+
+/**
+ * Shots §5.11 (D6): what a shot chapter's first line awaits of its images, the first step's files at the half tier:
+ * those of the window `k:<first knot>` in effect, certain at the next step, or possible, talk files aside (motion,
+ * never awaited).
+ */
+function firstStepHalf(c: ChapterInputs, cs: ChapterShots): { ok: true; bytes: number } | { ok: false; problem: string } {
+  if (c.meta === null || c.manifest === null) {
+    return { ok: false, problem: `${c.meta === null ? 'meta' : 'manifest'} missing` };
+  }
+  const key = `k:${c.meta.value.firstKnot}`;
+  const w = cs.look[key as keyof ChapterShots['look']]; // a knot's window key; absent when the shot pass has none
+  if (w === undefined) {
+    return { ok: false, problem: `no window ${key}` };
+  }
+  const ids = new Set([...w.cur, ...(w.certainDist === 1 ? w.certain : []), ...w.possible].filter((id) => imageKind(id) !== 'talk'));
+  let bytes = 0;
+  const lacking: AssetId[] = [];
+  for (const id of ids) {
+    const e = c.manifest.value.assets[id];
+    if (e?.kind === 'image') {
+      bytes += (e.half ?? e).avif.bytes;
+    } else {
+      lacking.push(id);
+    }
+  }
+  return lacking.length > 0 ? { ok: false, problem: `not in the manifest: ${lacking.sort().join(', ')}` } : { ok: true, bytes };
 }
 
 /** The asset rows; `dist` feeds the first-load rows' JS, CSS and html. */
@@ -1136,7 +1507,7 @@ export function evaluateAssets(dist: BudgetInputs, a: AssetInputs, limits: Limit
   for (const [id, e] of [...entries].sort(([x], [y]) => (x < y ? -1 : 1))) {
     rows.push(e.kind === 'image' ? imageRow(a, id, e, conflicts.get(id), limits) : audioRow(a, id, e, conflicts.get(id), limits));
   }
-  rows.push(...knotRows(a, limits), ...roomRows(a, limits), ...firstLoadRows(dist, a, limits));
+  rows.push(...knotRows(a, limits), ...roomRows(a, limits), ...firstLoadRows(dist, a, limits), ...stepWindowRows(a, limits), ...entryStepRows(a, limits));
   return rows;
 }
 
@@ -1265,6 +1636,7 @@ export function readInputs(distDir: string, clientRoot: string): { inputs: Budge
   const yieldsSourceExists = sourceExists(YIELDS_SRC);
   const metaSourceExists = sourceExists(META_SRC);
   const gameSourceExists = sourceExists(GAME_SRC);
+  const sceneSourceExists = sourceExists(SCENE_SRC);
   const lazySources = new Set([...LAZY_ROOTS].filter(sourceExists));
   return {
     inputs: {
@@ -1276,6 +1648,7 @@ export function readInputs(distDir: string, clientRoot: string): { inputs: Budge
       yieldsSourceExists,
       metaSourceExists,
       gameSourceExists,
+      sceneSourceExists,
       lazySources,
       facades,
       pixiEnvSkipped: SKIP_PIXI_ENV,
@@ -1355,6 +1728,15 @@ export function readAssetInputs(root: string): AssetInputs {
       problems.push(`server/content/build/usage.json: no chapter ${c.id}`);
     }
   }
+  // Shots §2.4, STAGING-DSL §14.4: with a shot list the story tool writes build/shots.json, which the step rows read;
+  // without one, every chapter is legacy and a stale build/shots.json is not read (as the asset tool, assets.ts).
+  const shotList = existsSync(abs(SHOTS_FILE));
+  const shots = shotList ? (decodedFile(SHOT_USAGE_FILE, decodeShotUsage)?.value ?? null) : null;
+  if (shots !== null) {
+    for (const c of list.filter((ch) => !Object.hasOwn(shots.chapters, ch.id))) {
+      problems.push(`${SHOT_USAGE_FILE}: no chapter ${c.id}`);
+    }
+  }
   const fileBytes = new Map<string, number>();
   const refs = [
     ...chapters.flatMap((c) => Object.values(c.manifest?.value.assets ?? {})),
@@ -1376,6 +1758,8 @@ export function readAssetInputs(root: string): AssetInputs {
     covers,
     chapterCatalog: catalogFile === null ? null : { rawBytes: catalogFile.rawBytes, brBytes: catalogFile.brBytes },
     fileBytes,
+    shotList,
+    shots,
   };
 }
 
