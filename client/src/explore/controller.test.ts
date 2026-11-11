@@ -492,7 +492,7 @@ test('controller: back walks the path, cycles truncate', () => {
   expect(h.c.state().pendingStory).toEqual([]);
   const shown = h.log.length;
   h.c.roomShown();
-  expect(h.log.slice(shown)).toEqual(['preload room:cellar bg/cellar', 'preload room:hall bg/hall']);
+  expect(h.log.slice(shown)).toEqual(['preload room:cellar bg/cellar', 'preload state:cellar prop/star', 'preload room:hall bg/hall']);
   // hall -> study -> hall truncated the cycle: the one way back from the cellar is the hall, and then nothing.
   const before = h.effects.length;
   expect(h.c.back()).toBe(true);
@@ -571,14 +571,18 @@ test('controller: neighbours preloaded in exit order', () => {
   h.c.dispatch(tap('hall.to_study'));
   expect(h.log.slice(move)).toEqual(['release room:cellar', 'effect room', 'effect dirty']);
   h.c.roomShown();
-  expect(sceneCalls(h, move)).toEqual(['release room:cellar', 'preload room:study bg/study', 'preload room:hall bg/hall']);
-  // Take the medal and walk back: every request is a background, never a prop (W2: X13 counts neighbours as bgs).
+  expect(sceneCalls(h, move)).toEqual(['release room:cellar', 'preload room:study bg/study', 'preload state:study prop/letter,prop/medal_sun', 'preload room:hall bg/hall']);
+  // Take the medal and walk back: a neighbour is still asked for as its bg only (W2: X13 counts neighbours as bgs); a
+  // room's own images go under `state:`, the study's set at the study, then again last at the hall (engine plan §6.4).
   h.c.dispatch(tap('study.medal'));
   h.c.dispatch(tap('study.to_hall'));
   h.c.roomShown();
   const preloads = h.log.filter((l) => l.startsWith('preload'));
-  expect(preloads).toHaveLength(8);
-  expect(preloads.filter((l) => !/^preload room:([a-z]+) bg\/\1$/.test(l))).toEqual([]);
+  expect(preloads).toHaveLength(10);
+  expect(preloads.filter((l) => !/^preload room:([a-z]+) bg\/\1$/.test(l))).toEqual([
+    'preload state:study prop/letter,prop/medal_sun',
+    'preload state:study prop/letter,prop/medal_sun',
+  ]);
   // The room walked into is never dropped (that would re-decode its 8.4 MiB bg).
   expect(h.log).not.toContain('release room:study');
   expect(h.log).not.toContain('release room:hall');
@@ -594,7 +598,7 @@ test('controller: puzzle open releases neighbour preloads', () => {
   expect(h.log.slice(open)).toEqual(['release room:', 'effect puzzle']);
   // Once the close-up is cleared, GameSession reports the room shown again and the holders come back.
   h.c.roomShown();
-  expect(sceneCalls(h, open)).toEqual(['release room:', 'preload room:study bg/study', 'preload room:hall bg/hall']);
+  expect(sceneCalls(h, open)).toEqual(['release room:', 'preload room:study bg/study', 'preload state:study prop/letter,prop/medal_sun', 'preload room:hall bg/hall']);
   // The gate's puzzle has no close-up: its last insert opens it with no release.
   const g = harness(manor());
   g.c.enter(sec('manor'), at('hall', 'manor', { held: MEDALS.map((m) => m as ItemId) }));
@@ -615,7 +619,7 @@ test('controller: dispose releases room holders', () => {
   h.c.onPath((walkable) => calls.push(walkable));
   const end = h.log.length;
   h.c.dispose();
-  expect(h.log.slice(end)).toEqual(['release room:']);
+  expect(h.log.slice(end)).toEqual(['release room:', 'release state:']);
   expect(h.ro.disconnects).toBe(1);
   expect(h.view.hotspots).toEqual([]);
   // Later calls touch nothing: no scene call, no effect, no path report; a second dispose adds nothing.
@@ -624,7 +628,7 @@ test('controller: dispose releases room holders', () => {
   h.c.roomShown();
   expect(h.c.back()).toBe(false);
   h.c.dispose();
-  expect(h.log.slice(end)).toEqual(['release room:']);
+  expect(h.log.slice(end)).toEqual(['release room:', 'release state:']);
   expect(h.ro.disconnects).toBe(1);
   expect(calls).toEqual([false]);
   expect(h.view.hotspots).toEqual([]);
@@ -643,7 +647,7 @@ test('controller: dispose releases room holders', () => {
   const move = d.log.length;
   d.c.dispatch(tap('hall.to_study'));
   expect(late).toEqual([]);
-  expect(d.log.slice(move)).toEqual(['effect room', 'release room:']);
+  expect(d.log.slice(move)).toEqual(['effect room', 'release room:', 'release state:']);
   // Dispose empties every view the controller writes, not only the hotspots: a held medal, a read letter and an open
   // lock panel are all gone (the components read this store after the controller is gone).
   const p = harness(manor());
@@ -668,11 +672,11 @@ test('controller: leave releases room holders', () => {
   // The open gate is a story exit: the holders go before the leave, so none rides into the knot's working set.
   const out = h.log.length;
   h.c.dispatch(tap('hall.gate'));
-  expect(h.log.slice(out)).toEqual(['release room:', 'effect leave', 'effect dirty']);
+  expect(h.log.slice(out)).toEqual(['release room:', 'release state:', 'effect leave', 'effect dirty']);
   expect(calls).toEqual([false, true, false]);
   // Outside the section a shown room requests nothing.
   h.c.roomShown();
-  expect(h.log.slice(out + 3)).toEqual([]);
+  expect(h.log.slice(out + 4)).toEqual([]);
 });
 
 // The X13 room: a 1080×2048 bg (8.4375 MiB decoded) and four 512×512 props (1 MiB each).
@@ -822,14 +826,195 @@ test('controller: neighbour preloads stay under the steady cap', async () => {
   expect(steps).toEqual([
     // + 1 B per live record: each keeps its 1 B fixture file (MEMORY-PLAN M2).
     { step: 'enter a', live: ['bg/a', 'bg/b'], bytes: room + BG_BYTES + 6 },
-    { step: 'a -> b', live: ['bg/a', 'bg/b', 'bg/c'], bytes: room + 2 * BG_BYTES + 7 },
-    { step: 'b -> c', live: ['bg/b', 'bg/c', 'bg/d'], bytes: room + 2 * BG_BYTES + 7 },
+    // A move releases the left room's `state:` set; it is asked for after the neighbours' bgs (W1), so every
+    // neighbour bg is admitted and two of the left room's four props fit after them.
+    { step: 'a -> b', live: ['bg/a', 'bg/b', 'bg/c'], bytes: room + 2 * BG_BYTES + 2 * PROP_BYTES + 9 },
+    { step: 'b -> c', live: ['bg/b', 'bg/c', 'bg/d'], bytes: room + 2 * BG_BYTES + 2 * PROP_BYTES + 9 },
     { step: 'close-up open', live: ['bg/c', 'cg/box'], bytes: room + BG_BYTES + 6 },
-    { step: 'c -> b', live: ['bg/a', 'bg/b', 'bg/c'], bytes: room + 2 * BG_BYTES + 7 },
+    { step: 'c -> b', live: ['bg/a', 'bg/b', 'bg/c'], bytes: room + 2 * BG_BYTES + 2 * PROP_BYTES + 9 },
   ]);
-  // X13: 29.3 MiB with two neighbours, 20.9 MiB with a close-up open; never above the steady cap.
+  // X13: 31.3 MiB with two neighbours and two of the left room's state images, 20.9 MiB with a close-up open; never
+  // above the steady cap.
   expect(Math.max(...steps.map((s) => s.bytes))).toBeLessThanOrEqual(STEADY_CAP_BYTES);
   expect(sc.errors).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM3b: the `state:<id>` holders (engine plan §6.4 rounds 12-14; RULINGS 246 W1): a room's own images after its bg,
+// a neighbour's bg before any kept room's images
+
+test('controller: a room preloads every image it can show before its neighbours', () => {
+  const h = harness(manor());
+  h.c.enter(sec('manor'), at('study', 'manor'));
+  h.c.roomShown();
+  // The study's bg, then every image it can show (its take and object props, sorted), then the hall's bg.
+  expect(sceneCalls(h)).toEqual(['preload room:study bg/study', 'preload state:study prop/letter,prop/medal_sun', 'preload room:hall bg/hall']);
+  // The move releases the study's set before the room effect goes out: the hall's neighbour bgs come first.
+  const move = h.log.length;
+  h.c.dispatch(tap('study.to_hall'));
+  expect(h.log.slice(move)).toEqual(['release state:study', 'effect room', 'effect dirty']);
+  // The hall has no image of its own: its bg, its neighbours' bgs, then the kept study's set last, live only if it fits.
+  const shown = h.log.length;
+  h.c.roomShown();
+  expect(h.log.slice(shown)).toEqual([
+    'preload room:hall bg/hall',
+    'preload room:study bg/study',
+    'preload room:cellar bg/cellar',
+    'preload state:study prop/letter,prop/medal_sun',
+  ]);
+});
+
+test("controller: a close-up keeps the room's state images and a move releases them", () => {
+  const h = harness(chain());
+  const set = (r: string): string => `preload state:${r} ${[1, 2, 3, 4].map((n) => `prop/${r}_p${n}`).join(',')}`;
+  const step = (fn: () => void): string[] => {
+    const from = h.log.length;
+    fn();
+    return sceneCalls(h, from);
+  };
+  expect(step(() => h.c.enter(sec('line'), EMPTY_WORLD_STATE))).toEqual([]);
+  expect(step(() => h.c.roomShown())).toEqual(['preload room:a bg/a', set('a'), 'preload room:b bg/b']);
+  expect(step(() => h.c.dispatch(tap('a.to_b')))).toEqual(['release state:a']);
+  expect(step(() => h.c.roomShown())).toEqual(['preload room:b bg/b', set('b'), 'preload room:c bg/c', 'preload room:a bg/a', set('a')]);
+  // a leaves the keep set: its bg and its set go, and the set stops being asked for; b's is released and kept.
+  expect(step(() => h.c.dispatch(tap('b.to_c')))).toEqual(['release room:a', 'release state:a', 'release state:b']);
+  expect(step(() => h.c.roomShown())).toEqual(['preload room:c bg/c', set('c'), 'preload room:d bg/d', 'preload room:b bg/b', set('b')]);
+  // The close-up: every room:* and every other room's set go before the puzzle effect; c's own images stay.
+  const open = h.log.length;
+  h.c.dispatch(tap('c.box'));
+  expect(h.log.slice(open)).toEqual(['release room:', 'release state:b', 'effect puzzle']);
+  // Cleared: GameSession reports the room shown again; b's set is no longer asked for.
+  expect(step(() => h.c.roomShown())).toEqual(['preload room:c bg/c', set('c'), 'preload room:d bg/d', 'preload room:b bg/b']);
+  // c -> b releases c's set (W1); b asks for it again after both neighbour bgs.
+  expect(step(() => h.c.dispatch(tap('c.to_b')))).toEqual(['release room:d', 'release state:c']);
+  expect(step(() => h.c.roomShown())).toEqual(['preload room:b bg/b', set('b'), 'preload room:c bg/c', 'preload room:a bg/a', set('c')]);
+  // b -> a: c leaves the keep set (its bg and its set, untracked); b's set is released and kept.
+  expect(step(() => h.c.dispatch(tap('b.to_a')))).toEqual(['release room:c', 'release state:c', 'release state:b']);
+  expect(step(() => h.c.roomShown())).toEqual(['preload room:a bg/a', set('a'), 'preload room:b bg/b', set('b')]);
+  // a -> b: b asks for a's set and never for c's, which left the keep set at b -> a.
+  expect(step(() => h.c.dispatch(tap('a.to_b')))).toEqual(['release state:a']);
+  expect(step(() => h.c.roomShown())).toEqual(['preload room:b bg/b', set('b'), 'preload room:c bg/c', 'preload room:a bg/a', set('a')]);
+});
+
+/** p shows two images (the chest's prop and its open state's); q leads back to p and holds a bell that runs a knot. */
+function pair(): WorldPublic {
+  return world({
+    sections: {
+      two: {
+        start: 'p',
+        rooms: {
+          p: room('p', [{ ...object('chest', null, [], 'x'), states: { open: { prop: 'y' } } }, exit('to_q', 'q')]),
+          q: room('q', [exit('to_p', 'p'), object('bell', null, [{ story: 'q_bell' }])]),
+        },
+      },
+    },
+  });
+}
+
+/**
+ * The registry's record lifetime over a holder set per asset id: an id is fetched when it gains its first holder and
+ * its record ends with its last (scene/registry.ts `drop`); a join is no fetch. A trailing `:` names a family
+ * (scene/preload.ts). `refuse(id)` scripts one over-cap refusal: that request leaves no holder (scene/preload.ts
+ * `report`); `evict()` drops every preload holder (registry `evictPreloads`).
+ */
+function countingScene() {
+  const holders = new Map<string, Set<string>>();
+  const fetched = new Map<string, number>();
+  const refused = new Set<string>();
+  const port: ExploreControllerDeps['scene'] = {
+    preload(tag: string, ids: readonly AssetId[]): void {
+      for (const id of ids) {
+        const live = holders.get(id);
+        if (live !== undefined) {
+          live.add(tag);
+        } else if (!refused.delete(id)) {
+          fetched.set(id, (fetched.get(id) ?? 0) + 1);
+          holders.set(id, new Set([tag]));
+        }
+      }
+    },
+    releasePreload(tag: string): void {
+      for (const [id, live] of [...holders]) {
+        for (const t of [...live]) {
+          if (tag.endsWith(':') ? t.startsWith(tag) : t === tag) {
+            live.delete(t);
+          }
+        }
+        if (live.size === 0) {
+          holders.delete(id);
+        }
+      }
+    },
+  };
+  return {
+    port,
+    fetches: (...ids: string[]): number[] => ids.map((id) => fetched.get(id) ?? 0),
+    refuse: (id: string): void => {
+      refused.add(id);
+    },
+    evict: (): void => holders.clear(),
+  };
+}
+
+test("controller: a round trip to a neighbour finds the room's state images live at the return", () => {
+  const sc = countingScene();
+  const h = harness(pair(), { scene: sc.port });
+  const steps: Array<[string, number[]]> = [];
+  const record = (name: string): void => {
+    steps.push([name, sc.fetches('prop/x', 'prop/y')]);
+  };
+  h.c.enter(sec('two'), EMPTY_WORLD_STATE);
+  h.c.roomShown();
+  record('p');
+  // p -> q releases p's set; q asks for it after its neighbour's bg, so each image is fetched a second time.
+  h.c.dispatch(tap('p.to_q'));
+  h.c.roomShown();
+  record('q');
+  // The bell's knot and its return (a `room` effect from q to q, no move) keep p's set live: nothing is fetched.
+  h.c.dispatch(tap('q.bell'));
+  expect(h.c.state().pendingStory).toEqual(['q_bell']);
+  h.c.enter(sec('two'), h.c.state());
+  expect(h.effects.at(-2)).toEqual({ kind: 'room', room: 'q', sfx: null, from: 'q', via: null, how: 'return' });
+  h.c.roomShown();
+  record('knot return');
+  // Back in p, both images join their live records.
+  h.c.dispatch(tap('q.to_p'));
+  h.c.roomShown();
+  record('back in p');
+  expect(steps).toEqual([
+    ['p', [1, 1]],
+    ['q', [2, 2]],
+    ['knot return', [2, 2]],
+    ['back in p', [2, 2]],
+  ]);
+});
+
+test("controller: a refused or evicted state image is requested again at the room's next entry", () => {
+  const sc = countingScene();
+  const h = harness(pair(), { scene: sc.port });
+  const steps: Array<[string, number[]]> = [];
+  const record = (name: string): void => {
+    steps.push([name, sc.fetches('prop/x', 'prop/y')]);
+  };
+  // x is refused over the steady cap at its first request: nothing holds it.
+  sc.refuse('prop/x');
+  h.c.enter(sec('two'), EMPTY_WORLD_STATE);
+  h.c.roomShown();
+  record('p');
+  // At q, p's set is asked for again: x is fetched now, y a second time (its record ended at the move).
+  h.c.dispatch(tap('p.to_q'));
+  h.c.roomShown();
+  record('q');
+  // A visible load over the hard cap evicts every preload holder; the return asks for the set and fetches both again.
+  sc.evict();
+  h.c.dispatch(tap('q.to_p'));
+  h.c.roomShown();
+  record('back in p');
+  expect(steps).toEqual([
+    ['p', [0, 1]],
+    ['q', [1, 2]],
+    ['back in p', [2, 3]],
+  ]);
 });
 
 // ---------------------------------------------------------------------------------------------------------------

@@ -5,14 +5,17 @@
 // core.ts and this module import each other: core's `reduce` runs the registry's hooks and dispatches through `APPLY`,
 // and the registry holds core's entry. So core's entry and its handlers are built here from core.ts's function
 // declarations, which ESM binds when the modules are instantiated, and core.ts reads MECHANIC_RULES and APPLY only
-// inside function bodies. A `const` of core.ts read at this module's top level would throw whenever core.ts loads first
-// (`mechanics: the rules registry loads from either module first`).
+// inside function bodies. A `const` of core.ts read at this module's top level before core.ts has run would throw in
+// Node (the `story` run, unbundled ESM) and read undefined silently in the bundle (it declares the registry with `var`)
+// and in vitest's module runner (`mechanics: the rules registry loads from either module first` compares every member).
 import type { ExploreAction } from '../../explore/reduce.ts';
 import type { KernelWorld, MechanicRules, SectionAction } from '../contract.ts';
 import { actions, applyCore, reads } from './core.ts';
 import type { CoreCue } from './core.ts';
 import { applyUse, useActions, useReads, useScope } from './use.ts';
 import type { UseAction, UseCue } from './use.ts';
+import { applyVisual, visualActions, visualReads, visuals } from './visual.ts';
+import type { VisualAction } from './visual.ts';
 import type { KernelWriter } from './writer.ts';
 
 const core = {
@@ -32,7 +35,16 @@ const use = {
   cues: ['refused', 'said'] as const,
 } satisfies MechanicRules<'use', UseAction, UseCue>;
 
-export const MECHANIC_RULES = [core, use] as const;
+const visual = {
+  id: 'visual',
+  actions: visualActions,
+  apply: applyVisual,
+  reads: visualReads,
+  cues: [] as const,
+  visuals,
+} satisfies MechanicRules<'visual', VisualAction, never>;
+
+export const MECHANIC_RULES = [core, use, visual] as const;
 
 /**
  * The dispatch (engine plan §3.2 "Exhaustiveness: dispatch is a typed map over the tuple"): one handler per action kind
