@@ -195,6 +195,13 @@ export async function main(argv: readonly string[], root: string, encoders: Enco
   const chapters = read('story/chapters.json', decodeChapterList);
   const source = read('assets/catalog.json', decodeAssetCatalog);
   const storyUsage = read(USAGE_FILE, decodeStoryUsage);
+  // Shots §4.1: a bg's `src` form names its shot's source directory; extracting it is SH3c's, so until then the tool
+  // names it and stops rather than encode anything in its place.
+  for (const [id, bg] of Object.entries(source?.bg ?? {})) {
+    if ('src' in bg) {
+      problems.push(`bg/${id}: src ${bg.src} waits for extraction (SH3c)`);
+    }
+  }
   // Shots §2.4: with a shot list, the effective catalog (an implied placeholder bg per declared shot it lacks, SH2's
   // cut Q7) and build/shots.json, which the story tool writes beside usage.json; without one, today's path exactly.
   const hasShotList = existsSync(path.join(root, ...SHOTS_FILE.split('/')));

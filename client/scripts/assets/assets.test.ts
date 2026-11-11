@@ -121,6 +121,26 @@ describe('catalog', () => {
     crossRole.sfx = { door: { placeholder: { hz: 220 } } };
     expect(issues(decodeAssetCatalog(crossRole))).toEqual([]);
   });
+
+  test('catalog: a bg src form decodes', () => {
+    // Shots §2.4, §4.1: a bg is its placeholder or its own extracted shot directory (`assets/src/shot/<id>/`, SH3c).
+    const raw = rawCatalog();
+    raw.bg = { cafe: { src: 'shot/cafe' }, hall: { placeholder: { hue: 30 } } };
+    const r = decodeAssetCatalog(raw);
+    expect(issues(r)).toEqual([]);
+    expect(r.ok && r.value.bg).toEqual({ cafe: { src: 'shot/cafe' }, hall: { placeholder: { hue: 30 } } });
+    // Another shot's directory, a file, a deeper path, a non-string: refused at the entry's src, and only there.
+    for (const src of ['shot/hall', 'cafe.png', 'shot/cafe/plate.png', 'loop/cafe', 7]) {
+      raw.bg = { cafe: { src } };
+      expect(issues(decodeAssetCatalog(raw)), String(src)).toEqual([at('bg.cafe.src')]);
+    }
+    // An unknown key beside src is reported; src is a bg's form only (another image namespace keeps its one form).
+    raw.bg = { cafe: { src: 'shot/cafe', hue: 30 } };
+    expect(issues(decodeAssetCatalog(raw))).toEqual([at('bg.cafe.hue')]);
+    const cg = rawCatalog();
+    cg.cg = { letter: { src: 'shot/letter' } };
+    expect(issues(decodeAssetCatalog(cg))).toEqual([at('cg.letter.src'), at('cg.letter.placeholder')]);
+  });
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1397,6 +1417,18 @@ describe('assets', () => {
     ]);
     expect(listDir(repo, 'client/public/assets')).toEqual([]);
     expect(existsSync(join(repo, 'client', 'src', 'story-gen'))).toBe(false);
+  });
+
+  test('assets: a src shot before extraction is refused by name', async () => {
+    // The catalog admits a bg's `src: "shot/<id>"` (shots §4.1); its extraction is SH3c's, so until then the tool names
+    // it and writes nothing rather than encoding something else in its place.
+    writeRepo(repo, { 'assets/catalog.json': { ...REPO_CATALOG, bg: { ...REPO_CATALOG.bg, cafe: { src: 'shot/cafe' } } } });
+    const r = await runTool(repo);
+    expect(r.code).toBe(1);
+    expect(r.err).toEqual(['assets: bg/cafe: src shot/cafe waits for extraction (SH3c)']);
+    expect(existsSync(join(repo, 'client', 'src', 'story-gen'))).toBe(false);
+    expect(listDir(repo, 'client/public/assets')).toEqual([]);
+    expect(listDir(repo, 'server/content/assets')).toEqual([]);
   });
 
   test('assets: a chapter manifest carries only the rigs, members and files its chapter uses', async () => {

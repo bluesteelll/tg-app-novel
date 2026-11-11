@@ -45,6 +45,11 @@ export type AudioPlaceholder = { readonly hz: number };
 /** An image entry (bg, a character expression, cg, prop, cover); its canonical size is its namespace's. */
 export type CatalogImage = { readonly placeholder: ImagePlaceholder };
 /**
+ * A bg entry (shots §2.4, §4.1): its placeholder, or `src: "shot/<own id>"`, its shot's source directory
+ * (`assets/src/shot/<id>/`), which SH3c's extraction turns into the plate and its shot files.
+ */
+export type CatalogBg = CatalogImage | { readonly src: string };
+/**
  * An audio entry (bgm, sfx). The decoder accepts only the placeholder form: real audio is PP "Later". The `src` form
  * is typed so budget's K23 rule (WAV only for a placeholder) is reachable on a typed input and is seen failing before
  * that lane, which makes it decodable.
@@ -56,7 +61,7 @@ export type CatalogEntry = CatalogImage | CatalogAudio;
 export type CoverId = string & { readonly __brand: 'CoverId' };
 /** STAGING-DSL §8: one namespace per kind; a character's expressions are a map, one asset each. */
 export type AssetCatalog = {
-  bg: Readonly<Record<BgId, CatalogImage>>;
+  bg: Readonly<Record<BgId, CatalogBg>>;
   chars: Readonly<Record<CharId, { exprs: Readonly<Record<ExprId, CatalogImage>> }>>;
   cg: Readonly<Record<CgId, CatalogImage>>;
   bgm: Readonly<Record<TrackId, CatalogAudio>>;
@@ -139,6 +144,27 @@ function placeholderParam(
 const imageEntry: EntryDecoder<CatalogImage> = (entry, path, report) => {
   const hue = placeholderParam(entry, path, 'hue', HUE, report);
   return hue === null ? null : { placeholder: { hue } };
+};
+
+/** A bg: exactly one of its placeholder and its own shot directory; a `src` beside a placeholder is one issue, there. */
+const bgEntry: EntryDecoder<CatalogBg> = (entry, path, report) => {
+  if (!Object.hasOwn(entry, 'src')) {
+    return imageEntry(entry, path, report);
+  }
+  if (Object.hasOwn(entry, 'placeholder')) {
+    report(`${path}.src`, "beside 'placeholder' (a bg holds one of 'placeholder' and 'src')");
+    return null;
+  }
+  for (const k of Object.keys(entry).filter((name) => name !== 'src')) {
+    report(`${path}.${k}`, "unknown key (a bg holds 'placeholder' or 'src')");
+  }
+  const id = path.slice(path.lastIndexOf('.') + 1); // `bg.<id>`: an id holds no '.'
+  const src = entry['src'];
+  if (src !== `shot/${id}`) {
+    report(`${path}.src`, `${JSON.stringify(src) ?? 'undefined'} is not 'shot/${id}' (a bg's source is its own shot directory)`);
+    return null;
+  }
+  return Object.keys(entry).length === 1 ? { src } : null;
 };
 
 const audioEntry: EntryDecoder<CatalogAudio> = (entry, path, report) => {
@@ -244,7 +270,7 @@ export function decodeAssetCatalog(raw: unknown): Result<AssetCatalog, CatalogIs
     }
     return raw[ns];
   };
-  const bg = entries(field('bg'), 'bg', report, imageEntry);
+  const bg = entries(field('bg'), 'bg', report, bgEntry);
   const chars = characters(field('chars'), report);
   const cg = entries(field('cg'), 'cg', report, imageEntry);
   const bgm = entries(field('bgm'), 'bgm', report, audioEntry);

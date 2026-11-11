@@ -193,12 +193,14 @@ function own<T>(record: Readonly<Record<string, T>>, key: string | undefined): T
   return key !== undefined && Object.hasOwn(record, key) ? record[key] : undefined;
 }
 
-/** The catalog entry of an image id (own properties only), or undefined. */
+/** The placeholder catalog entry of an image id (own properties only), or undefined (a bg `src` form too: SH3c's). */
 export function catalogImage(c: AssetCatalog, id: AssetId): CatalogImage | undefined {
   const [ns, a, b] = id.split('/');
   switch (ns) {
-    case 'bg':
-      return own(c.bg, a);
+    case 'bg': {
+      const bg = own(c.bg, a);
+      return bg !== undefined && 'placeholder' in bg ? bg : undefined;
+    }
     case 'cg':
       return own(c.cg, a);
     case 'prop':
