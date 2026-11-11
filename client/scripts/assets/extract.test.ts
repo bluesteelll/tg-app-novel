@@ -134,6 +134,70 @@ describe('extract', () => {
     expect(smile.speaks).toBe(true);
   });
 
+  test('assets: a relit expression fails registration', async () => {
+    // R1 (rev. 2, W4): a variant equals its declared base outside its character's head mask dilated 8 px. ally.smile.png
+    // relit by +12/255 everywhere (a whole-frame relight) changes every px there; the count is checked by brute force.
+    const needs = [needOf('ch1', [['neutral', false], ['smile', false]])];
+    expect(await extract(syntheticShot(), needs)).toMatchObject({ ok: true });
+    const fx = syntheticShot({ relight: 12 });
+    const head = fx.files.get('mask.head.ally.png');
+    const inHead = (x: number, y: number): boolean => (head?.data[(y * fx.w + x) * 4 + 3] ?? 0) > 0;
+    let outside = 0;
+    for (let y = 0; y < fx.h; y++) {
+      for (let x = 0; x < fx.w; x++) {
+        let near = false;
+        for (let dy = -8; dy <= 8 && !near; dy++) {
+          for (let dx = -8; dx <= 8 && !near; dx++) {
+            near = x + dx >= 0 && x + dx < fx.w && y + dy >= 0 && y + dy < fx.h && inHead(x + dx, y + dy);
+          }
+        }
+        outside += near ? 0 : 1;
+      }
+    }
+    expect(outside).toBeGreaterThan(0);
+    const r = await extract(fx, needs);
+    expect(r.ok ? [] : r.error).toEqual([
+      `cafe: ally.smile.png changes ${outside} px outside ally's head mask dilated 8 px, the first at (0, 0) (R1: a variant equals its base there)`,
+    ]);
+  });
+
+  test('assets: overlapping motion boxes fail', async () => {
+    // R2 (rev. 3, m7, cut D6): the motion layers used together on one expression (blink, accent, talk where spoken) whose
+    // boxes overlap are tested by their diffs: the rest talk mouths drawn 3 px under the left eye touch the rest blink.
+    const needs = [needOf('ch1', [['neutral', true]])];
+    expect(await extract(syntheticShot(), needs)).toMatchObject({ ok: true }); // disjoint boxes
+    const r = await extract(syntheticShot({ talkNearBlink: true }), needs);
+    expect(r.ok ? [] : r.error).toEqual([
+      'cafe: ally in neutral: the talk and blink diffs are within 4 px (R2: motion layers used together never touch; lines ch1.cafe.a000)',
+    ]);
+  });
+
+  test('assets: a diff clipped at the plate edge fails', async () => {
+    // R3 (rev. 2): a layer box is bbox(diff) dilated 4, clipped to the crop and to the head mask's bbox dilated 8; a
+    // changed px outside the clipped box would be lost. The crop [46, 0, 114, 320] cuts smile's left cheek (x 42..51).
+    const needs = [needOf('ch1', [['neutral', false], ['smile', false]])];
+    expect(await extract(syntheticShot(), needs)).toMatchObject({ ok: true }); // the same diff inside the crop
+    const r = await extract(syntheticShot({ crop: [46, 0, 114, 320] }), needs);
+    const g = geometry(160, 320, 1);
+    const [cx, cy, cw, chh] = g.cheeks[0] ?? [0, 0, 0, 0];
+    const lost = (46 - cx) * chh;
+    expect(cw).toBeGreaterThan(46 - cx);
+    expect(r.ok ? [] : r.error).toEqual([
+      `cafe: ally.smile.png changes ${lost} px outside its box on the plate, the first at (${cx}, ${cy}) (R3: a box clipped to the plate and the head loses no changed px)`,
+    ]);
+  });
+
+  test('assets: a cut-out not inpainted in the plate fails', async () => {
+    // R7: a cut-out's region is inpainted in the plate (the plate differs from the original inside the mask's core by a
+    // mean > 8/255); a hair lock painted into the plate too would reveal itself when the lock sways.
+    const needs = [needOf('ch1', [['neutral', false]])];
+    expect(await extract(syntheticShot(), needs)).toMatchObject({ ok: true }); // inpainted (the green half)
+    const r = await extract(syntheticShot({ inpainted: false }), needs);
+    expect(r.ok ? [] : r.error).toEqual([
+      'cafe: mask.hair.ally.0.png is not inpainted in plate.png (R7: its core differs from original.png by a mean of 0.0/255, not over 8)',
+    ]);
+  });
+
   test('assets: a depth map is sampled onto the grid through the crop, white near', () => {
     // §4.2 step 6 (cut D12, critique W4): a vertical ramp depth.png of 64 × 128 (white = near at the bottom) under the
     // crop [40, 96, 160, 320] of a 240 × 480 original. Vertex row j sits at plate y = j / 23 × 320, original y + 96, depth

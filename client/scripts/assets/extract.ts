@@ -236,6 +236,36 @@ function join(a: Bounds | null, b: Bounds | null): Bounds | null {
   return [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])];
 }
 
+/** `px` dilated by `r` px (Chebyshev: a square element), one byte per px over its raster of `h` rows. */
+function dilateBits(px: Px, h: number, r: number): Uint8Array {
+  const w = px.w;
+  const rows = new Uint8Array(w * h);
+  const run = new Int32Array(Math.max(w, h) + 1);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      run[x + 1] = (run[x] ?? 0) + (px.bits[y * w + x] ?? 0);
+    }
+    for (let x = 0; x < w; x++) {
+      rows[y * w + x] = (run[Math.min(w, x + r + 1)] ?? 0) - (run[Math.max(0, x - r)] ?? 0) > 0 ? 1 : 0;
+    }
+  }
+  const out = new Uint8Array(w * h);
+  for (let x = 0; x < w; x++) {
+    for (let y = 0; y < h; y++) {
+      run[y + 1] = (run[y] ?? 0) + (rows[y * w + x] ?? 0);
+    }
+    for (let y = 0; y < h; y++) {
+      out[y * w + x] = (run[Math.min(h, y + r + 1)] ?? 0) - (run[Math.max(0, y - r)] ?? 0) > 0 ? 1 : 0;
+    }
+  }
+  return out;
+}
+
+/** Whether two boxes share a px (half-open). */
+function overlap(a: Box, b: Box): boolean {
+  return a[0] < b[0] + b[2] && b[0] < a[0] + a[2] && a[1] < b[1] + b[3] && b[1] < a[1] + a[3];
+}
+
 /**
  * Original-px bounds on the plate (crop `crop`), evened outward and clamped to the plate (cut D5: the plate is even by
  * R5, so every packed size stays even); null bounds give an empty box.
@@ -263,11 +293,41 @@ function hits(d: Px, b: Box, crop: Box): boolean {
   return false;
 }
 
-/** One cut state (§4.2): its file, its box on the plate, its variant's px over the box. */
-type State = { readonly file: string; readonly box: Box; readonly px: Raster };
+/** One cut state (§4.2): its file, its box on the plate, its variant's px and its diff over the box (one byte per px). */
+type State = { readonly file: string; readonly box: Box; readonly px: Raster; readonly diff: Uint8Array };
 
-function stateOf(file: string, v: Raster, box: Box, crop: Box): State {
-  return { file, box, px: cropRaster(v, [box[0] + crop[0], box[1] + crop[1], box[2], box[3]]) };
+function stateOf(file: string, v: Raster, d: Px, box: Box, crop: Box): State {
+  const diff = new Uint8Array(box[2] * box[3]);
+  for (let y = 0; y < box[3]; y++) {
+    const from = (y + box[1] + crop[1]) * d.w + box[0] + crop[0];
+    diff.set(d.bits.subarray(from, from + box[2]), y * box[2]);
+  }
+  return { file, box, px: cropRaster(v, [box[0] + crop[0], box[1] + crop[1], box[2], box[3]]), diff };
+}
+
+/**
+ * R2's test (cut D6, m7): whether a changed px of a state of `a` lies within 4 px (Chebyshev) of a changed px of a state
+ * of `b`, i.e. inside the alpha support a masked `b` draws over it (plate px).
+ */
+function touch(a: readonly State[], b: readonly State[]): boolean {
+  const [x0, y0] = [Math.min(...a.map((s) => s.box[0])), Math.min(...a.map((s) => s.box[1]))];
+  const [x1, y1] = [Math.max(...a.map((s) => s.box[0] + s.box[2])), Math.max(...a.map((s) => s.box[1] + s.box[3]))];
+  const [rw, rh] = [x1 - x0, y1 - y0];
+  const near = new Uint8Array(Math.max(0, rw * rh));
+  for (const s of b) {
+    for (let y = 0; y < s.box[3]; y++) {
+      for (let x = 0; x < s.box[2]; x++) {
+        if (s.diff[y * s.box[2] + x] !== 1) {
+          continue;
+        }
+        const [px, py] = [s.box[0] + x - x0, s.box[1] + y - y0];
+        for (let qy = Math.max(0, py - 4); qy <= Math.min(rh - 1, py + 4); qy++) {
+          near.fill(1, qy * rw + Math.max(0, px - 4), qy * rw + Math.min(rw - 1, px + 4) + 1);
+        }
+      }
+    }
+  }
+  return a.some((s) => s.diff.some((bit, i) => bit === 1 && near[(s.box[1] + Math.floor(i / s.box[2]) - y0) * rw + s.box[0] + (i % s.box[2]) - x0] === 1));
 }
 
 /** A rectangle layer: the state's own px over its box, opaque as its variant is (cut D5). */
@@ -292,6 +352,24 @@ function cutOut(mask: Raster, original: Raster, crop: Box): Layer<Raster> | null
     }
   }
   return { box, fill };
+}
+
+/** R7's measure: the mean, over the mask's core (value >= 128) inside the crop, of the max-channel |plate − original|. */
+function inpaintMean(mask: Raster, plate: Raster, original: Raster, crop: Box): number {
+  let [sum, n] = [0, 0];
+  for (let y = crop[1]; y < crop[1] + crop[3]; y++) {
+    for (let x = crop[0]; x < crop[0] + crop[2]; x++) {
+      const i = y * mask.w + x;
+      if (maskValue(mask, i) >= 128) {
+        let d = 0;
+        for (let k = 0; k < 3; k++) {
+          d = Math.max(d, Math.abs((plate.data[i * 4 + k] ?? 0) - (original.data[i * 4 + k] ?? 0)));
+        }
+        [sum, n] = [sum + d, n + 1];
+      }
+    }
+  }
+  return n === 0 ? 0 : sum / n;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -465,66 +543,165 @@ export async function extractShot(input: ExtractInput): Promise<Result<Extracted
     if (layer === null) {
       problems.push(`${s}/${l.mask}: empty`);
       empty.add(l.mask);
+      return null;
+    }
+    const mean = inpaintMean(m, plate, original, crop);
+    if (mean <= 8) {
+      // The layer stays (the run fails on this line), so R9 adds no "no hair lock" for the same cause.
+      problems.push(`${s}: ${l.mask} is not inpainted in plate.png (R7: its core differs from original.png by a mean of ${mean.toFixed(1)}/255, not over 8)`);
     }
     return layer;
+  };
+
+  /** The line IDs that show `c` in `x` (sorted, once each), which R2's and R4's messages name. */
+  const linesOf = (c: CharId, x: ExprId): string => {
+    const lines = input.needs.flatMap(({ need }) => (need.faces[c] ?? []).filter((f) => f.expr === x).flatMap((f) => f.lines));
+    return [...new Set(lines)].sort().join(', ');
+  };
+
+  /**
+   * R1 and R3 for one variant against its base (rev. 2): no changed px outside `c`'s head mask dilated 8 px (`near`), and
+   * none outside its box on the plate, which bbox(diff) dilated 4 becomes once clipped to the crop and the head's bbox
+   * dilated 8. True when it registers; else its one problem is reported (an unregistered diff reaches no other check).
+   */
+  const registers = (file: string, c: CharId, d: Px, near: Uint8Array, at: Box): boolean => {
+    const report = (rule: (n: number, x: number, y: number) => string, outside: (i: number, x: number, y: number) => boolean): boolean => {
+      let [n, first] = [0, -1];
+      const [x0, y0, x1, y1] = d.bounds ?? [0, 0, -1, -1];
+      for (let y = y0; y <= y1; y++) {
+        for (let x = x0; x <= x1; x++) {
+          const i = y * d.w + x;
+          if (d.bits[i] === 1 && outside(i, x, y)) {
+            [n, first] = [n + 1, first < 0 ? i : first];
+          }
+        }
+      }
+      if (n > 0) {
+        problems.push(rule(n, first % d.w, Math.floor(first / d.w)));
+      }
+      return n === 0;
+    };
+    const [bx, by] = [at[0] + crop[0], at[1] + crop[1]];
+    return (
+      report(
+        (n, x, y) => `${s}: ${file} changes ${n} px outside ${c}'s head mask dilated 8 px, the first at (${x}, ${y}) (R1: a variant equals its base there)`,
+        (i) => near[i] !== 1,
+      ) &&
+      report(
+        (n, x, y) => `${s}: ${file} changes ${n} px outside its box on the plate, the first at (${x}, ${y}) (R3: a box clipped to the plate and the head loses no changed px)`,
+        (_, x, y) => x < bx || y < by || x >= bx + at[2] || y >= by + at[3],
+      )
+    );
   };
 
   /**
    * §4.2 steps 1-3 for one face member: the rest states against the plate (E, B, and M where the rest is spoken), each
    * needed expression's layer against the plate, and its motion states: its own against it where its diff meets that
-   * rest box, else the rest's own `Layer` (copied into its file by the packer, §2.6).
+   * rest box, else the rest's own `Layer` (copied into its file by the packer, §2.6). Every variant registers (R1, R3);
+   * R2 then tests the motion layers each expression uses together.
    */
-  const faceStates = async (c: CharId, rest: ExprId, needed: ReadonlyMap<ExprId, boolean>, clip: Bounds): Promise<Map<ExprId, ExprLayers<Raster>>> => {
-    const out = new Map<ExprId, ExprLayers<Raster>>();
-    const box = (b: Bounds | null): Box => onPlate(b === null ? null : meet(dilate(b, 4), clip), crop);
-    /** A pair of states (blink, talk) against `base`, in one box: bbox of both diffs, dilated 4. */
-    const pair = async (files: readonly [string, string], base: Raster): Promise<readonly [Layer<Raster>, Layer<Raster>] | null> => {
-      const [a, b] = [await need(files[0]), await need(files[1])];
+  const faceStates = async (
+    c: CharId,
+    rest: ExprId,
+    needed: ReadonlyMap<ExprId, boolean>,
+    head: { readonly clip: Bounds; readonly near: Uint8Array },
+  ): Promise<Map<ExprId, ExprLayers<Raster>>> => {
+    const box = (b: Bounds | null): Box => onPlate(b === null ? null : meet(dilate(b, 4), head.clip), crop);
+    type Cut = { readonly file: string; readonly v: Raster; readonly d: Px };
+    const variant = async (file: string, base: Raster): Promise<Cut | null> => {
+      const v = await need(file);
+      return v === null ? null : { file, v, d: changed(v, base) };
+    };
+    const settle = (cut: Cut, at: Box): State | null => (registers(cut.file, c, cut.d, head.near, at) ? stateOf(cut.file, cut.v, cut.d, at, crop) : null);
+    /** A pair of states (blink, talk) against `base`, in one box: the bbox of both diffs, dilated 4. */
+    const pair = async (files: readonly [string, string], base: Raster): Promise<readonly [State, State] | null> => {
+      const [a, b] = [await variant(files[0], base), await variant(files[1], base)];
       if (a === null || b === null) {
         return null;
       }
-      const at = box(join(changed(a, base).bounds, changed(b, base).bounds));
-      return [rectLayer(stateOf(files[0], a, at, crop)), rectLayer(stateOf(files[1], b, at, crop))];
+      const at = box(join(a.d.bounds, b.d.bounds));
+      const [sa, sb] = [settle(a, at), settle(b, at)];
+      return sa === null || sb === null ? null : [sa, sb];
     };
-    const single = async (file: string, base: Raster): Promise<Layer<Raster> | null> => {
-      const v = await need(file);
-      return v === null ? null : rectLayer(stateOf(file, v, box(changed(v, base).bounds), crop));
+    const single = async (file: string, base: Raster): Promise<State | null> => {
+      const a = await variant(file, base);
+      return a === null ? null : settle(a, box(a.d.bounds));
     };
+    type Plan = {
+      readonly layer: State | null;
+      readonly blink: readonly [State, State];
+      readonly accent: State;
+      readonly mouths: readonly [State, State] | null;
+      readonly speaks: boolean;
+    };
+    const plans = new Map<ExprId, Plan>();
     const restSpeaks = needed.get(rest) ?? false;
     const blink = await pair([`${c}.half.png`, `${c}.closed.png`], plate);
     const accent = await single(`${c}.accent.png`, plate);
     const mouths = restSpeaks ? await pair([`${c}.talk1.png`, `${c}.talk2.png`], plate) : null;
     if (blink === null || accent === null || (restSpeaks && mouths === null)) {
-      return out;
+      return new Map();
     }
-    out.set(rest, { layer: null, blink: { half: blink[0], closed: blink[1] }, accent, mouths, speaks: restSpeaks });
+    plans.set(rest, { layer: null, blink, accent, mouths, speaks: restSpeaks });
     for (const x of [...needed.keys()].filter((e) => e !== rest).sort()) {
-      const file = `${c}.${x}.png`;
-      const v = await need(file);
-      if (v === null) {
+      const cut = await variant(`${c}.${x}.png`, plate);
+      if (cut === null) {
         continue;
       }
-      const d = changed(v, plate);
-      if (d.count === 0) {
-        problems.push(`${s}: ${file} equals the plate (an expression changes the face)`);
+      if (cut.d.count === 0) {
+        problems.push(`${s}: ${cut.file} equals the plate (an expression changes the face)`);
+        continue;
+      }
+      const layer = settle(cut, box(cut.d.bounds));
+      if (layer === null) {
         continue;
       }
       const speaks = needed.get(x) ?? false;
-      const ownBlink = hits(d, blink[0].box, crop) ? await pair([`${c}.${x}.half.png`, `${c}.${x}.closed.png`], v) : blink;
-      const ownAccent = hits(d, accent.box, crop) ? await single(`${c}.${x}.accent.png`, v) : accent;
-      const talk = !speaks ? null : mouths === null || hits(d, mouths[0].box, crop) ? await pair([`${c}.${x}.talk1.png`, `${c}.${x}.talk2.png`], v) : mouths;
-      if (ownBlink === null || ownAccent === null || (speaks && talk === null)) {
-        continue;
+      const own = (rb: Box): boolean => hits(cut.d, rb, crop);
+      const xBlink = own(blink[0].box) ? await pair([`${c}.${x}.half.png`, `${c}.${x}.closed.png`], cut.v) : blink;
+      const xAccent = own(accent.box) ? await single(`${c}.${x}.accent.png`, cut.v) : accent;
+      const xMouths = !speaks ? null : mouths === null || own(mouths[0].box) ? await pair([`${c}.${x}.talk1.png`, `${c}.${x}.talk2.png`], cut.v) : mouths;
+      if (xBlink !== null && xAccent !== null && (!speaks || xMouths !== null)) {
+        plans.set(x, { layer, blink: xBlink, accent: xAccent, mouths: xMouths, speaks });
       }
-      out.set(x, {
-        layer: rectLayer(stateOf(file, v, box(d.bounds), crop)),
-        blink: { half: ownBlink[0], closed: ownBlink[1] },
-        accent: ownAccent,
-        mouths: talk,
-        speaks,
-      });
     }
-    return out;
+    // R2: the motion layers each expression uses together, pairwise; boxes that overlap are tested by their diffs.
+    for (const [x, p] of plans) {
+      const talk = p.speaks ? p.mouths : null;
+      const pairs: (readonly [string, readonly State[], string, readonly State[]])[] = [
+        ['blink', p.blink, 'accent', [p.accent]],
+        ...(talk === null
+          ? []
+          : [
+              ['talk', talk, 'blink', p.blink] as const,
+              ['talk', talk, 'accent', [p.accent]] as const,
+            ]),
+      ];
+      for (const [an, a, bn, b] of pairs) {
+        if (overlap(a[0]?.box ?? [0, 0, 0, 0], b[0]?.box ?? [0, 0, 0, 0]) && touch(a, b)) {
+          problems.push(`${s}: ${c} in ${x}: the ${an} and ${bn} diffs are within 4 px (R2: motion layers used together never touch; lines ${linesOf(c, x)})`);
+        }
+      }
+    }
+    // Each state is cut once, so a reused rest state stays the rest's own `Layer` wherever it is used.
+    const cutStates = new Map<State, Layer<Raster>>();
+    const layerOf = (st: State): Layer<Raster> => {
+      const known = cutStates.get(st) ?? rectLayer(st);
+      cutStates.set(st, known);
+      return known;
+    };
+    return new Map(
+      [...plans].map(([x, p]): [ExprId, ExprLayers<Raster>] => [
+        x,
+        {
+          layer: p.layer === null ? null : layerOf(p.layer),
+          blink: { half: layerOf(p.blink[0]), closed: layerOf(p.blink[1]) },
+          accent: layerOf(p.accent),
+          mouths: p.mouths === null ? null : [layerOf(p.mouths[0]), layerOf(p.mouths[1])],
+          speaks: p.speaks,
+        },
+      ]),
+    );
   };
 
   const faces = facesOf(input.needs.map((n) => n.need));
@@ -546,7 +723,10 @@ export async function extractShot(input: ExtractInput): Promise<Result<Extracted
     const figure = figureLayer === undefined ? null : await cutLayer(figureLayer);
     const exprs =
       m.view === 'face' && headPx !== null && headPx.bounds !== null
-        ? await faceStates(m.char, m.rest, faces.get(m.char) ?? new Map<ExprId, boolean>(), meet(dilate(headPx.bounds, 8), cropB) ?? cropB)
+        ? await faceStates(m.char, m.rest, faces.get(m.char) ?? new Map<ExprId, boolean>(), {
+            clip: meet(dilate(headPx.bounds, 8), cropB) ?? cropB,
+            near: dilateBits(headPx, H, 8),
+          })
         : new Map<ExprId, ExprLayers<Raster>>();
     members.push({
       char: m.char,
