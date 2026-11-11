@@ -1427,6 +1427,27 @@ test('yields: a state change under a close-up applies no batch', async () => {
   r.yields.dispose();
 });
 
+test('yields: a state change while another bg is up applies no batch', async () => {
+  const r = rig({ world: edgeWorld() });
+  await inHall(r);
+  // No shipped path changes a room's picture while another bg is up (taps come only from the explore layer, which a
+  // room batch shows over the room's own bg), so the stage is put there directly, on a bg no room of the world has:
+  // the guard leaves the props to the room batch that shows the room again.
+  await r.host.apply([{ kind: 'bg', bg: 'cellar' as BgId, t: 'cut', ms: 0 }], []);
+  const lamp = placed('lamp_lit', LAMP, 'hall.lamp');
+  const hallProps = () => (r.yields.roomFor('hall' as BgId) ?? []).flatMap((c) => (c.kind === 'props' ? c.props : []));
+  expect(hallProps()).not.toContainEqual(lamp);
+  const mark = r.batches.length;
+  r.yields.layer.ontap(key('hall.switch'));
+  await settle();
+  // The look changed the hall's picture (the lamp is lit), so the empty batch list is the guard, not an empty diff.
+  expect(r.yields.world().examined).toContain('hall.switch');
+  expect(hallProps()).toContainEqual(lamp);
+  expect(r.batches.slice(mark)).toEqual([]);
+  expect(r.stage().bg).toBe('cellar');
+  r.yields.dispose();
+});
+
 test("yields: a move that changes the left room's picture stays a room fade", async () => {
   const r = rig({ world: edgeWorld() });
   await inHall(r);
