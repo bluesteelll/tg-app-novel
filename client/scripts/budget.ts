@@ -66,6 +66,8 @@ export type BudgetInputs = {
   metaSourceExists: boolean;
   /** `src/app/game.ts` exists: the importer whose `import()` makes the purchase flow a dynamic entry (lever P). */
   gameSourceExists: boolean;
+  /** `src/scene/controller.ts` exists: the importer of the scene's motion chunk (shots §10, W6). */
+  sceneSourceExists: boolean;
   /** The LAZY_FAMILIES roots that exist under client/, by their manifest `src`. */
   lazySources: ReadonlySet<string>;
   /** Dist paths of the re-export-only JS files: Rolldown's facades, which hold no code of their own (RULINGS 92). */
@@ -111,6 +113,12 @@ export type Limits = {
    * trigger, not a split.
    */
   overlaysChunkBr: number;
+  /**
+   * Shots §10 (W6): JS + CSS of the scene's motion chunk, which scene/controller.ts import()s after the first line
+   * (SH7); the design's 8.0 KB. At the estimate policy's R its forecast is 6.0 x 2.027 = 12.2 KB (RULINGS 201): SH7's and
+   * SH8's cuts quote it against this LIMIT.
+   */
+  sceneMotionChunkBr: number;
   /** Ledger 3: every JS file of dist, set once on the all-JS Q3 (RULINGS 201 QS3). */
   allJsBr: number;
   cssBr: number;
@@ -157,6 +165,7 @@ export const LIMITS: Limits = {
   cueStageChunkBr: 8_500,
   purchaseFlowChunkBr: 2_000,
   overlaysChunkBr: 3_000,
+  sceneMotionChunkBr: 8_000,
   allJsBr: 365_000,
   cssBr: 12_000,
   htmlBr: 2_000,
@@ -200,6 +209,8 @@ export const YIELDS_SRC = 'src/app/yields.ts';
 export const META_SRC = 'src/app/meta.ts';
 /** The game session (lever P): it import()s the purchase flow at the paywall and at Buy. */
 export const GAME_SRC = 'src/app/game.ts';
+/** The scene controller (shots §10, W6): it import()s the scene's motion chunk after the first line (SH7). */
+export const SCENE_SRC = 'src/scene/controller.ts';
 
 /**
  * One lazy chunk family: its roots (manifest `src`), its limit, whether the largest root or their union counts, and the
@@ -216,9 +227,10 @@ export type LazyFamily = {
     | 'metaUiChunkBr'
     | 'metaControllerChunkBr'
     | 'purchaseFlowChunkBr'
-    | 'overlaysChunkBr';
+    | 'overlaysChunkBr'
+    | 'sceneMotionChunkBr';
   measure: 'largest' | 'union';
-  importer: typeof YIELDS_SRC | typeof META_SRC | typeof GAME_SRC;
+  importer: typeof YIELDS_SRC | typeof META_SRC | typeof GAME_SRC | typeof SCENE_SRC;
 };
 /**
  * PUZZLES-PLAN X14, META-PLAN M27: every family is a dynamic chunk, never in the entry or the engine closure, and none
@@ -262,10 +274,19 @@ export const LAZY_FAMILIES: readonly LazyFamily[] = [
   },
   // Lever O5: game.ts import()s it after the first line's reveal and at a Menu or Backlog tap; PENDING keyed on game.ts.
   { name: 'overlays chunk (br)', roots: ['src/ui/overlays/index.ts'], limit: 'overlaysChunkBr', measure: 'largest', importer: GAME_SRC },
+  // Shots §10 (W6): the scene controller import()s its motion chunk after the first line (SH7); PENDING until the root
+  // exists. Outside the first-line rows as every family is: the engine walk stops at a lazy root.
+  {
+    name: 'scene-motion chunk (br)',
+    roots: ['src/scene/motion/index.ts'],
+    limit: 'sceneMotionChunkBr',
+    measure: 'largest',
+    importer: SCENE_SRC,
+  },
 ];
 const LAZY_ROOTS: ReadonlySet<string> = new Set(LAZY_FAMILIES.flatMap((f) => f.roots));
 /** The arch rule's lazy directories: a chunk from one of them loads after the first line, listed root or not. */
-const LAZY_DIRS = ['src/puzzles/ui/', 'src/ui/puzzles/', 'src/ui/explore/', 'src/cues/stage/'];
+const LAZY_DIRS = ['src/puzzles/ui/', 'src/ui/puzzles/', 'src/ui/explore/', 'src/cues/stage/', 'src/scene/motion/'];
 
 function isLazySrc(src: string | undefined): boolean {
   return src !== undefined && (LAZY_ROOTS.has(src) || LAZY_DIRS.some((dir) => src.startsWith(dir)));
@@ -678,6 +699,7 @@ function lazyMeasure(inputs: BudgetInputs, family: LazyFamily, entryClosure: Clo
     [YIELDS_SRC]: inputs.yieldsSourceExists,
     [META_SRC]: inputs.metaSourceExists,
     [GAME_SRC]: inputs.gameSourceExists,
+    [SCENE_SRC]: inputs.sceneSourceExists,
   };
   if (!importers[family.importer]) {
     return { kind: 'pending', note: `${family.importer} absent` };
@@ -1613,6 +1635,7 @@ export function readInputs(distDir: string, clientRoot: string): { inputs: Budge
   const yieldsSourceExists = sourceExists(YIELDS_SRC);
   const metaSourceExists = sourceExists(META_SRC);
   const gameSourceExists = sourceExists(GAME_SRC);
+  const sceneSourceExists = sourceExists(SCENE_SRC);
   const lazySources = new Set([...LAZY_ROOTS].filter(sourceExists));
   return {
     inputs: {
@@ -1624,6 +1647,7 @@ export function readInputs(distDir: string, clientRoot: string): { inputs: Budge
       yieldsSourceExists,
       metaSourceExists,
       gameSourceExists,
+      sceneSourceExists,
       lazySources,
       facades,
       pixiEnvSkipped: SKIP_PIXI_ENV,

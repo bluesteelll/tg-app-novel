@@ -25,6 +25,8 @@ const META_ROWS = ['meta-ui chunk (br)', 'meta controller chunk (br)'];
 const PURCHASE_ROW = 'purchase-flow chunk (br)';
 /** The in-play overlays' row (lever O5): app/game.ts is its importer. */
 const OVERLAYS_ROW = 'overlays chunk (br)';
+/** The scene's motion chunk's row (shots §10, W6; SH3b): scene/controller.ts is its importer. */
+const MOTION_ROW = 'scene-motion chunk (br)';
 
 const ROW_NAMES = [
   'manifest',
@@ -35,6 +37,7 @@ const ROW_NAMES = [
   ...META_ROWS,
   PURCHASE_ROW,
   OVERLAYS_ROW,
+  MOTION_ROW,
   'all JS (br)',
   'CSS total (br)',
   'index.html (br)',
@@ -71,6 +74,7 @@ function inputs(over: Partial<BudgetInputs> = {}): BudgetInputs {
     yieldsSourceExists: false,
     metaSourceExists: false,
     gameSourceExists: false,
+    sceneSourceExists: false,
     lazySources: new Set(),
     facades: new Set(),
     pixiEnvSkipped: false,
@@ -142,6 +146,7 @@ const CUE_STAGE = 'src/cues/stage/index.ts';
 const ALL_LAZY: ReadonlySet<string> = new Set([CODE_LOCK, ORDER, HOST, CONTROLLER, EXPLORE_VIEW, CUE_STAGE]);
 const META_UI = 'src/ui/meta/index.ts';
 const META_CTL = 'src/app/meta.ts';
+const MOTION = 'src/scene/motion/index.ts';
 
 /** One built lazy root: its JS chunk's brotli bytes, and its CSS file's if any. */
 type LazyChunk = { js: number; css?: number };
@@ -809,13 +814,55 @@ describe('budget evaluate', () => {
     expect(all(365_001).status).toBe('FAIL');
   });
 
+  test('budget: scene-motion chunk row is pending until its root exists', () => {
+    // Shots §10 (W6): the scene's motion chunk (its root src/scene/motion/index.ts, which the scene controller import()s
+    // after the first line, SH7) is its own lazy family against 8.0 KB of JS + CSS; PENDING while the controller or the
+    // root is absent, never a 0 KB PASS.
+    const row = (b: BudgetInputs): Row => rowOf(evaluate(b, LIMITS), MOTION_ROW);
+    expect(row(inputs())).toMatchObject({ status: 'PENDING', valueBytes: null, limitBytes: 8_000, note: 'src/scene/controller.ts absent' });
+    expect(row(inputs({ sceneSourceExists: true }))).toMatchObject({ status: 'PENDING', valueBytes: null, note: `no source of ${MOTION}` });
+    const built = (motion: LazyChunk): BudgetInputs => withLazy(withEngine(inputs(), 50_000, 100_000), { [MOTION]: motion }, { sceneSourceExists: true });
+    expect(row(built({ js: 8_000 }))).toMatchObject({ status: 'PASS', valueBytes: 8_000, note: `largest: ${MOTION}, 1 chunks` });
+    expect(row(built({ js: 8_001 }))).toMatchObject({ status: 'FAIL', valueBytes: 8_001 });
+    expect(row(built({ js: 7_500, css: 600 }))).toMatchObject({ status: 'FAIL', valueBytes: 8_100 });
+    expect(LIMITS.sceneMotionChunkBr).toBe(8_000);
+  });
+
+  test('budget: a scene-motion root inside the engine closure fails', () => {
+    // The scene controller is in the engine: its import() of the motion root, or of another chunk of src/scene/motion/,
+    // stops the engine walk, and the family's row counts the root's closure. A static import of the root puts it in
+    // the engine closure, before the first line: FAIL.
+    const base = withEngine(inputs({ sceneSourceExists: true, lazySources: new Set([MOTION]) }), 50_000, 100_000);
+    const engine = base.manifest?.[ENGINE_SRC];
+    if (base.manifest === null || engine === undefined) {
+      throw new Error('invariant: withEngine adds the engine chunk');
+    }
+    const WARP = 'src/scene/motion/warp.ts';
+    const manifest: Record<string, ManifestChunk> = {
+      ...base.manifest,
+      [ENGINE_SRC]: { ...engine, dynamicImports: [MOTION, WARP] },
+      [MOTION]: { file: 'assets/index-m.js', src: MOTION, isDynamicEntry: true, imports: ['_motion-n.js'] },
+      '_motion-n.js': { file: 'assets/motion-n.js' },
+      [WARP]: { file: 'assets/warp-w.js', src: WARP, isDynamicEntry: true },
+    };
+    const lazy = { ...base, manifest, files: [...base.files, file('assets/index-m.js', 5_000), file('assets/motion-n.js', 1_500), file('assets/warp-w.js', 1_000)] };
+    const rows = evaluate(lazy, LIMITS);
+    expect(rowOf(rows, MOTION_ROW)).toMatchObject({ status: 'PASS', valueBytes: 6_500 });
+    expect(rowOf(rows, 'engine closure JS (br)')).toMatchObject({ status: 'PASS', valueBytes: 150_000 });
+    const statically = { ...manifest, [ENGINE_SRC]: { ...engine, imports: [...(engine.imports ?? []), MOTION] } };
+    const row = rowOf(evaluate({ ...lazy, manifest: statically }, LIMITS), MOTION_ROW);
+    expect(row.status).toBe('FAIL');
+    expect(row.note).toContain(`${MOTION} is in the engine closure`);
+  });
+
   test('budget: every row is printed', () => {
     // A failing manifest does not stop later rows (no bail). PENDING: the engine row, the first-line row while the
-    // engine is absent, the four lazy rows while app/yields.ts is, the two meta rows while app/meta.ts is, and the
-    // purchase-flow and overlays rows while app/game.ts is; with no manifest the first-line row FAILs.
+    // engine is absent, the four lazy rows while app/yields.ts is, the two meta rows while app/meta.ts is, the
+    // purchase-flow and overlays rows while app/game.ts is, and the scene-motion row while scene/controller.ts is; with
+    // no manifest the first-line row FAILs.
     const cases: ReadonlyArray<readonly [BudgetInputs, number]> = [
-      [inputs(), 10],
-      [inputs({ manifest: null }), 9],
+      [inputs(), 11],
+      [inputs({ manifest: null }), 10],
     ];
     for (const [input, pendingRows] of cases) {
       const rows = evaluate(input, LIMITS);
@@ -934,6 +981,7 @@ describe('budget cli', () => {
     expect(r.stdout).toContain('meta controller chunk (br) | — | 6.0 KB | PENDING | src/app/meta.ts absent');
     expect(r.stdout).toContain('purchase-flow chunk (br) | — | 2.0 KB | PENDING | src/app/game.ts absent');
     expect(r.stdout).toContain('overlays chunk (br) | — | 3.0 KB | PENDING | src/app/game.ts absent');
+    expect(r.stdout).toContain('scene-motion chunk (br) | — | 8.0 KB | PENDING | src/scene/controller.ts absent');
     expect(r.stdout).toMatch(/^budget: \d+ rows, \d+ PASS, 0 FAIL, \d+ PENDING$/m);
   }, CLI_TIMEOUT_MS);
 
@@ -1835,8 +1883,9 @@ describe('budget assets', () => {
       }
       // No client/src/app/*.ts under --root: the engine, first-line, four yields, two meta, purchase-flow and overlays
       // rows, and world json, room-set and first-load ch1 (lever P added the purchase-flow row, lever O5 the overlays');
-      // no story/shots.json: the step-window and entry step images rows (SH3b).
-      expect(r.stdout).toMatch(/^budget: \d+ rows, \d+ PASS, 0 FAIL, 15 PENDING$/m);
+      // no client/src/scene/controller.ts: the scene-motion row; no story/shots.json: the step-window and entry step
+      // images rows (SH3b).
+      expect(r.stdout).toMatch(/^budget: \d+ rows, \d+ PASS, 0 FAIL, 16 PENDING$/m);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
