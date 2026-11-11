@@ -352,9 +352,28 @@ export function createYields(h: YieldsHost): Yields {
   // -------------------------------------------------------------------------------------------------------------
   // The cue channel (engine plan §8.1): one bus per session; the stage's slot once its chunk is in
 
+  /**
+   * A family root's cue with its point moved from the root's px to the stage host's (D-P: the stage plays in the host's
+   * px). The two differ for a frame root (full-bleed under the viewport's top inset) and for any root while its
+   * entrance scales it (Q69: the explore root's 0.98 scale about its centre). A cue with no point, element, root or
+   * host passes as it came.
+   */
+  const inStageHost = (e: CueEvent): CueEvent => {
+    const root = e.el?.closest('[data-cue-root]') ?? null;
+    const host = h.stageHost();
+    if (e.point === null || root === null || host === null) {
+      return e;
+    }
+    const r = root.getBoundingClientRect();
+    const s = host.getBoundingClientRect();
+    return { ...e, point: { x: e.point.x + r.left - s.left, y: e.point.y + r.top - s.top } };
+  };
+
   const bus = createCueBus();
   h.sceneCues?.(bus.subscribe);
-  explore.oncue = bus.emit; // D1: the explore root's controls emit to this session's bus
+  /** The explore root's emit (D1): its controls' cues on this session's bus, in stage-host px; cleared at dispose. */
+  const exploreCue = (e: CueEvent): void => bus.emit(inStageHost(e));
+  explore.oncue = exploreCue;
   /** Plans the stage dropped at its unmount: orphans the bus cannot see. */
   let dropped = 0;
   let slot: CueStageSlot | null = null;
@@ -1143,22 +1162,6 @@ export function createYields(h: YieldsHost): Yields {
     return true;
   };
 
-  /**
-   * A frame root's cue with its point moved from the root's px to the stage host's (D-P: the stage plays in the host's
-   * px; the frame root is full-bleed under the viewport's top inset, so the two differ). A cue with no point, element,
-   * root or host passes as it came.
-   */
-  const inStageHost = (e: CueEvent): CueEvent => {
-    const root = e.el?.closest('[data-cue-root]') ?? null;
-    const host = h.stageHost();
-    if (e.point === null || root === null || host === null) {
-      return e;
-    }
-    const r = root.getBoundingClientRect();
-    const s = host.getBoundingClientRect();
-    return { ...e, point: { x: e.point.x + r.left - s.left, y: e.point.y + r.top - s.top } };
-  };
-
   const puzzleHost: PuzzleHostCallbacks = {
     item: (id) => {
       const w = h.chapter()?.world ?? null;
@@ -1442,7 +1445,7 @@ export function createYields(h: YieldsHost): Yields {
       if (slot !== null && vm.cueStage === slot) {
         vm.cueStage = null;
       }
-      if (explore.oncue === bus.emit) {
+      if (explore.oncue === exploreCue) {
         explore.oncue = undefined;
       }
       if (dirtyTimer !== null) {

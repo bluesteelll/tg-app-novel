@@ -3074,6 +3074,38 @@ test("yields: a frame control's point reaches the bus in stage-host px", async (
   r.yields.dispose();
 });
 
+test("yields: an explore root control's point reaches the bus in stage-host px", async () => {
+  // Q69: the explore root emits points in its own box (`cues/root.ts`), which its 300 ms entrance (a 0.98 scale about
+  // its centre) moves off the host's; the stage plays in the host's px, as for the frame family.
+  const r = rig({ world: cueWorld() });
+  await inHall(r);
+  // The root mid-entrance: 0.975 of the host's 360 x 640, centred.
+  const root = { getBoundingClientRect: () => ({ left: 10, top: 20, right: 361, bottom: 644, width: 351, height: 624, x: 10, y: 20 }) as DOMRect };
+  const el = { closest: (sel: string) => (sel === '[data-cue-root]' ? root : null) } as unknown as HTMLElement;
+  const tapAt = (point: { x: number; y: number } | null): CueEvent => ({
+    cue: { kind: 'ui', control: 'bare-art', item: null, index: null },
+    box: null,
+    point,
+    diff: [],
+    el,
+  });
+  const mark = r.cues.length;
+  r.explore.oncue?.(tapAt({ x: 30, y: 40 }));
+  r.explore.oncue?.(tapAt(null));
+  expect(r.cues.slice(mark).map((e) => [keyOf(e.cue), e.point])).toEqual([
+    ['ui:bare-art', { x: 40, y: 60 }],
+    ['ui:bare-art', null],
+  ]);
+  // A host off the page's origin: the offset is the two rects' difference.
+  r.host.stageHost = () =>
+    ({ getBoundingClientRect: () => ({ left: 2, top: 6, right: 362, bottom: 646, width: 360, height: 640, x: 2, y: 6 }) as DOMRect }) as unknown as HTMLElement;
+  const moved = r.cues.length;
+  r.explore.oncue?.(tapAt({ x: 30, y: 40 }));
+  expect(r.cues.slice(moved).map((e) => e.point)).toEqual([{ x: 38, y: 54 }]);
+  r.yields.dispose();
+  expect(r.explore.oncue).toBeUndefined();
+});
+
 // The class guard of §8.1 point 11: every wait of the views has exactly one hold from the block that starts it to every
 // block that ends it. A hold's edges as the stage keys them: `ui-state:waiting` / `waited` per panel (`room` for a
 // box-less or `via` hold), and the answer in flight, opened by `puzzle:checking` and ended by the same puzzle's next
