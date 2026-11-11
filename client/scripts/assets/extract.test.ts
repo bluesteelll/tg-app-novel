@@ -311,6 +311,49 @@ describe('extract', () => {
     expect([motion?.joint?.half.file, motion?.joint?.closed.file]).toEqual(['face/cafe/ally/angry', 'face/cafe/ally/angry']);
   });
 
+  test('assets: touching rest blink and accent diffs ask for the rest joint states', async () => {
+    // Cut D7 (triage r1 I1): the rest accent drawn as angry's touching brow, 3 px above the lids. The rest's joint states
+    // are ally.accent.half.png / ally.accent.closed.png (the blink drawn on ally.accent.png), asked for by those names
+    // with the lines that show the rest; supplied, they are cut against the accent state and packed in the sheet.
+    const touching = syntheticShot({ angryAccent: 'touching' });
+    const raster = (file: string): Raster => {
+      const r = touching.files.get(file);
+      if (r === undefined) {
+        throw new Error(`invariant: the fixture has ${file}`);
+      }
+      return r;
+    };
+    const restDrawn = (extra: ReadonlyArray<readonly [string, string]>): SyntheticShot => {
+      const files = new Map(touching.files).set('ally.accent.png', raster('ally.angry.accent.png'));
+      for (const [to, from] of extra) {
+        files.set(to, raster(from));
+      }
+      return { ...touching, files };
+    };
+    const needs = [needOf('ch1', [['neutral', false]])];
+    const asked: string[] = [];
+    const missing = await extract(restDrawn([]), needs, asked);
+    expect(missing.ok ? [] : missing.error).toEqual([
+      'cafe: ally in neutral: the blink and accent diffs are within 4 px (R2: draw the joint states ally.accent.half.png and ally.accent.closed.png; lines ch1.cafe.a000)',
+    ]);
+    expect(asked.filter((f) => /\.accent\.(half|closed)\.png$/.test(f))).toEqual(['ally.accent.half.png', 'ally.accent.closed.png']);
+    const fx = restDrawn([
+      ['ally.accent.half.png', 'ally.angry.accent.half.png'],
+      ['ally.accent.closed.png', 'ally.angry.accent.closed.png'],
+    ]);
+    const layers = layersOf(await extract(fx, needs));
+    const rest = exprOf(layers, 'neutral');
+    const g = geometry(160, 320, 1);
+    const [l, r] = [g.eyes[0] ?? [0, 0, 0, 0], g.eyes[1] ?? [0, 0, 0, 0]];
+    const joint: Box = [l[0] - 4, l[1] - 4, r[0] + r[2] + 4 - (l[0] - 4), l[3] + 8]; // the closed lids' bbox, dilated 4
+    expect([rest.joint?.half.box, rest.joint?.closed.box]).toEqual([joint, joint]);
+    expect([...(rest.joint?.closed.fill.data ?? [])]).toEqual(pxIn(fx.files.get('ally.accent.closed.png'), joint));
+    const pack = packShot(layers);
+    const motion = pack.cast[0]?.exprs.get('neutral' as ExprId)?.motion;
+    expect([motion?.joint?.half.file, motion?.joint?.closed.file]).toEqual(['sheet/cafe', 'sheet/cafe']);
+    expect((pack.files.get('sheet/cafe' as AssetId)?.items ?? []).map((i) => i.key).filter((k) => k.includes('joint'))).toEqual(['ally/neutral/joint.half', 'ally/neutral/joint.closed']);
+  });
+
   test('assets: a depth map is sampled onto the grid through the crop, white near', () => {
     // §4.2 step 6 (cut D12, critique W4): a vertical ramp depth.png of 64 × 128 (white = near at the bottom) under the
     // crop [40, 96, 160, 320] of a 240 × 480 original. Vertex row j sits at plate y = j / 23 × 320, original y + 96, depth

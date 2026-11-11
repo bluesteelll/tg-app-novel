@@ -797,8 +797,8 @@ export async function extractShot(input: ExtractInput): Promise<Result<Extracted
         }
         if (touch(p.blink, [p.accent])) {
           const known = joints.get(p.accent)?.get(p.blink[0]);
-          const restPair = plans.get(rest);
-          const tag = restPair !== undefined && p.blink === restPair.blink && p.accent === restPair.accent ? c : `${c}.${x}`;
+          // Cut D7: the rest's joint is drawn on `<c>.accent.png`; an x that reuses both rest states hits `known` instead.
+          const tag = x === rest ? c : `${c}.${x}`;
           const files = [`${tag}.accent.half.png`, `${tag}.accent.closed.png`] as const;
           if (known !== undefined) {
             joint = known;
