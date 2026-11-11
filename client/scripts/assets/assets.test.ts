@@ -9,11 +9,14 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { ASSET_ID_RE, decodeAssetCatalog, decodeAssetManifest, decodeCoverManifest } from '../../src/story/catalog.ts';
 import type { CatalogImage, CatalogIssue, ChapterListEntry, Trim } from '../../src/story/catalog.ts';
-import type { AssetId } from '../../src/story/staging.ts';
+import { decodeLook, decodeShotRigs, stepWindow } from '../../src/story/shots.ts';
+import type { FaceRig, ShotRig } from '../../src/story/shots.ts';
+import type { AssetId, BgId, ExprId } from '../../src/story/staging.ts';
 import { main } from '../assets.ts';
 import type { Encoders } from '../assets.ts';
 import { decodeChapterList, decodeStoryUsage } from '../story/emit.ts';
 import { placeholderHue } from '../story/shots/list.ts';
+import { parseShotFileId } from '../story/shots/usage.ts';
 import { encodeImage, halfRgba } from './encode.ts';
 import { ASSET_FILE_RE, assetFileName, assetUsage, catalogImage, decodeAssetFingerprints, halfAsk, sha256Hex, tierOf } from './manifest.ts';
 import type { AssetUsage } from './manifest.ts';
@@ -1394,6 +1397,81 @@ describe('assets', () => {
     ]);
     expect(listDir(repo, 'client/public/assets')).toEqual([]);
     expect(existsSync(join(repo, 'client', 'src', 'story-gen'))).toBe(false);
+  });
+
+  test('assets: a chapter manifest carries only the rigs, members and files its chapter uses', async () => {
+    // Shots §4.5 (CH D5): each chapter's manifest holds a rig per shot it shows, with only the expressions it shows and
+    // talk members only where it speaks, every member in one of its own files; and its look, when it has windows.
+    const step = { cur: ['bg/cafe', 'sheet/cafe', 'talk/cafe/ally/neutral'], certain: [], certainDist: 0, possible: [], near: 0, d2: [], d3: [], labels: false };
+    writeRepo(repo, { ...SHOT_REPO, 'server/content/build/shots.json': shotsUsage({ ...SHOT_CHAPTERS, ch1: { ...SHOT_CHAPTERS.ch1, look: { 'ch1.cafe.a001': step } } }) });
+    const r = await runTool(repo, HALVING_FAKES);
+    expect(r.code, r.err.join('\n')).toBe(0);
+    const ch1 = JSON.parse(readRel(repo, 'client/src/story-gen/free/ch1.assets.json')) as Record<string, unknown>;
+    const ch2 = JSON.parse(readRel(repo, 'server/content/chapters/ch2/assets.json')) as Record<string, unknown>;
+    expect(Object.keys(ch1)).toEqual(['chapterId', 'assets', 'shots', 'look']);
+    expect(Object.keys(ch2)).toEqual(['chapterId', 'assets', 'shots']); // no window: no look
+    const rigs = (m: Record<string, unknown>): ReadonlyMap<BgId, ShotRig> => {
+      const d = decodeShotRigs(m['shots']);
+      expect(d.ok ? [] : d.error).toEqual([]);
+      return d.ok ? d.value : new Map();
+    };
+    const [r1, r2] = [rigs(ch1), rigs(ch2)];
+    expect([...r1.keys()]).toEqual(['cafe']);
+    expect([...r2.keys()]).toEqual(['archive', 'cafe']);
+    expect(r2.get('archive' as BgId)?.cast).toEqual([]);
+    const ally1 = r1.get('cafe' as BgId)?.cast[0];
+    const ally2 = r2.get('cafe' as BgId)?.cast[0];
+    const expr = (m: typeof ally1, x: string): FaceRig['exprs'][ExprId] | undefined => m?.face?.exprs[x as ExprId];
+    expect(Object.keys(ally1?.face?.exprs ?? {})).toEqual(['neutral']);
+    expect(expr(ally1, 'neutral')?.motion.talk.map((m) => m.file)).toEqual(['talk/cafe/ally/neutral', 'talk/cafe/ally/neutral']);
+    expect(Object.keys(ally2?.face?.exprs ?? {})).toEqual(['neutral', 'smile']);
+    expect(expr(ally2, 'neutral')?.motion.talk).toEqual([]); // ch2 never has ally speak at rest
+    expect(expr(ally2, 'smile')?.layer?.file).toBe('face/cafe/ally/smile');
+    expect(expr(ally2, 'smile')?.motion.talk.map((m) => m.file)).toEqual(['talk/cafe/ally/smile', 'talk/cafe/ally/smile']);
+    // Every member's file is one of its chapter's own entries; the free chapter's rigs name no gated file.
+    const files = (v: unknown): string[] =>
+      Array.isArray(v)
+        ? v.flatMap(files)
+        : typeof v === 'object' && v !== null
+          ? Object.entries(v).flatMap(([k, x]) => (k === 'file' && typeof x === 'string' ? [x] : files(x)))
+          : [];
+    for (const m of [ch1, ch2]) {
+      const named = files(m['shots']);
+      expect(named.length).toBeGreaterThan(0);
+      expect(named.filter((f) => !Object.hasOwn(m['assets'] as object, f))).toEqual([]);
+    }
+    expect(files(ch1['shots']).filter((f) => f.startsWith('face/') || f.endsWith('/smile'))).toEqual([]);
+    const look = decodeLook(ch1['look']);
+    expect(look.ok ? stepWindow(look.value, 'ch1.cafe.a001') : look.error).toEqual({ need: step.cur, warm: [], near: 0, hope: [] });
+  });
+
+  test('assets: every shot file id in build/shots.json is a manifest asset id', async () => {
+    // Rev. 5 (m8): the story tool's shot file ids and the asset tool's manifest keys are one grammar: each listed id
+    // passes ASSET_ID_RE, parses by its segment count, and names its chapter's entry and the rig member it draws.
+    writeRepo(repo, SHOT_REPO);
+    const r = await runTool(repo, HALVING_FAKES);
+    expect(r.code, r.err.join('\n')).toBe(0);
+    const manifests: Record<string, string> = { ch1: 'client/src/story-gen/free/ch1.assets.json', ch2: 'server/content/chapters/ch2/assets.json' };
+    let checked = 0;
+    for (const [ch, c] of Object.entries(SHOT_CHAPTERS)) {
+      const m = JSON.parse(readRel(repo, manifests[ch] ?? '')) as { assets: Record<string, unknown>; shots?: unknown };
+      const rigs = decodeShotRigs(m.shots);
+      expect(rigs.ok, `${ch}: ${rigs.ok ? '' : rigs.error.join('; ')}`).toBe(true);
+      for (const id of c.assets) {
+        expect(ASSET_ID_RE.test(id), id).toBe(true);
+        const p = parseShotFileId(id);
+        expect(p, id).not.toBeNull();
+        expect(Object.hasOwn(m.assets, id), `${ch} ${id}`).toBe(true);
+        const rig = p === null || !rigs.ok ? undefined : rigs.value.get(p.shot);
+        expect(rig, `${ch} ${id}`).toBeDefined();
+        if (p !== null && (p.ns === 'face' || p.ns === 'talk')) {
+          const exprs = rig?.cast.find((x) => x.char === p.char)?.face?.exprs ?? {};
+          expect(Object.hasOwn(exprs, p.expr), `${ch} ${id}`).toBe(true);
+        }
+        checked++;
+      }
+    }
+    expect(checked).toBe(8);
   });
 
   test('assets: cli runs through a linked path under preserve-symlinks-main', async () => {

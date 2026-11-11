@@ -6,6 +6,8 @@ import type { AssetId, BgId, CharId, ExprId } from '../../src/story/staging.ts';
 import type { Shot } from '../story/shots/list.ts';
 import type { ShotNeed } from '../story/shots/usage.ts';
 import type { Box, Member } from '../../src/story/shots.ts';
+import { decodeLook, stepWindow } from '../../src/story/shots.ts';
+import type { Lookahead } from '../story/shots/flow.ts';
 import {
   COARSE,
   FINE,
@@ -14,6 +16,7 @@ import {
   depthBase64,
   facesOf,
   headGroups,
+  manifestLook,
   packShot,
   placeholderDepth,
   placeholderLayers,
@@ -482,5 +485,44 @@ describe('shots checks', () => {
     expect(at(1300)).toBeCloseTo(0.44, 2);
     expect(depthBase64(grid)).toHaveLength(416);
     expect([...Buffer.from(depthBase64(grid), 'base64')]).toEqual([...grid]);
+  });
+});
+
+describe('shots look', () => {
+  test('assets: the manifest look keeps need, warm and hope apart', () => {
+    // §4.5 (rev. 5, W1): the plan's fixture. A step shows close-up A; B is certain two lines on; C or D may follow, C's
+    // three files `near` (fetched before the tag preloads); the wide shot is two steps away. The build-only lists overlap
+    // the way the flow writes them: B's plate also among the possible ids, A's plate again at distance 3.
+    const ids = (...xs: string[]): AssetId[] => xs as AssetId[];
+    const window: Lookahead = {
+      cur: ids('bg/a', 'sheet/a'),
+      certain: ids('bg/b', 'sheet/b', 'face/b/ally/smile', 'bg/a'),
+      certainDist: 2,
+      possible: ids('bg/c', 'bg/b', 'sheet/c', 'talk/c/ally/neutral', 'bg/d', 'sheet/d'),
+      near: 4,
+      d2: ids('bg/wide', 'bg/c'),
+      d3: ids('bg/a', 'cg/letter', 'bg/wide'),
+      labels: true,
+    };
+    const empty: Lookahead = { cur: [], certain: [], certainDist: 0, possible: [], near: 0, d2: [], d3: [], labels: false };
+    const look = manifestLook({ 'r:hall': { ...empty, cur: ids('bg/hall') }, 'ch1.cafe.a001': window });
+    // The table: every image once, sorted; the windows by sorted key; distance and labels stay build-only.
+    expect(look?.images).toEqual([...new Set([...window.cur, ...window.certain, ...window.possible, ...window.d2, ...window.d3, 'bg/hall'])].sort());
+    expect(Object.keys(look?.windows ?? {})).toEqual(['ch1.cafe.a001', 'r:hall']);
+    expect(JSON.stringify(look)).not.toMatch(/certainDist|labels|possible/);
+    const decoded = decodeLook(JSON.parse(JSON.stringify(look)));
+    expect(decoded.ok ? [] : decoded.error).toEqual([]);
+    if (!decoded.ok) {
+      return;
+    }
+    expect(stepWindow(decoded.value, 'ch1.cafe.a001')).toEqual({
+      need: ['bg/a', 'sheet/a', 'bg/b', 'sheet/b', 'face/b/ally/smile'],
+      warm: ['bg/c', 'sheet/c', 'talk/c/ally/neutral', 'bg/d', 'sheet/d'],
+      near: 3,
+      hope: ['bg/wide', 'cg/letter'],
+    });
+    expect(stepWindow(decoded.value, 'r:hall')).toEqual({ need: ['bg/hall'], warm: [], near: 0, hope: [] });
+    // No window, no look: the manifest then carries no `look` key.
+    expect(manifestLook({})).toBeNull();
   });
 });

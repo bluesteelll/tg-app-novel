@@ -26,9 +26,19 @@ import {
   planAssets,
   tierAll,
 } from './assets/manifest.ts';
-import type { Encoded } from './assets/manifest.ts';
+import type { ChapterShotKeys, Encoded } from './assets/manifest.ts';
 import { CANONICAL_SIZE, renderPlaceholder } from './assets/placeholder.ts';
-import { castProblems, facesOf, packShot, placeholderLayers, plateProblems, shotFileSvg } from './assets/shots.ts';
+import {
+  castProblems,
+  facesOf,
+  manifestLook,
+  packShot,
+  placeholderDepth,
+  placeholderLayers,
+  plateProblems,
+  shotFileSvg,
+  shotRig,
+} from './assets/shots.ts';
 import type { ShotLayers, ShotPack } from './assets/shots.ts';
 import { synthWav } from './assets/synth.ts';
 import { decodeChapterList, decodeStoryUsage } from './story/emit.ts';
@@ -94,6 +104,28 @@ function packShots(usage: ShotUsage, list: ShotList, catalog: AssetCatalog): Map
       const layers = placeholderLayers(shot, facesOf(ns), catalog, CANONICAL_SIZE.bg);
       out.set(s, { shot, layers, pack: packShot(layers) });
     }
+  }
+  return out;
+}
+
+/**
+ * Per chapter of build/shots.json, what its manifest carries (shots §4.5, CH D5): a rig per shot it shows, cut to the
+ * expressions and talk it needs, on the placeholder depth grid (SH3c brings real ones), and its look.
+ */
+function chapterShotKeys(usage: ShotUsage, shots: ReadonlyMap<BgId, PackedShot>): Map<string, ChapterShotKeys> {
+  const depth = placeholderDepth();
+  const out = new Map<string, ChapterShotKeys>();
+  for (const [ch, c] of Object.entries(usage.chapters)) {
+    const rigs = (Object.entries(c.shots) as [BgId, ShotNeed][])
+      .sort(([a], [b]) => (a < b ? -1 : 1))
+      .map(([s, need]) => {
+        const packed = shots.get(s);
+        if (packed === undefined) {
+          throw new Error(`invariant: ${s}, shown by ${ch}, is packed`);
+        }
+        return [s, shotRig(packed.layers, packed.pack, need, depth)] as const;
+      });
+    out.set(ch, { shots: Object.fromEntries(rigs), look: manifestLook(c.look) });
   }
   return out;
 }
@@ -236,7 +268,7 @@ export async function main(argv: readonly string[], root: string, encoders: Enco
     return 1;
   }
   // 4. Plan, sweep, write.
-  const plan = planAssets({ chapters, usage, tiers: tiers.value, encoded });
+  const plan = planAssets({ chapters, usage, tiers: tiers.value, encoded, ...(shotUsage === null ? {} : { shots: chapterShotKeys(shotUsage, shots) }) });
   const swept = [...stale(root, ASSET_OUT.public, plan.files), ...stale(root, ASSET_OUT.paid, plan.files)];
   for (const rel of swept) {
     rmSync(path.join(root, ...rel.split('/')), { recursive: true, force: true });

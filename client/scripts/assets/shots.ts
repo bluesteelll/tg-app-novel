@@ -1,12 +1,12 @@
 // The asset tool's shot pipeline, pure side (docs/plans/shots §2.6, §4.2 steps 5-8, §4.5; lane SH3a): a shot's layer
 // set synthesized from the story tool's needs (placeholders: no `src` before SH3c), the files it packs into (§2.6: the
-// sheet, a face file per non-rest expression, a talk file per spoken one) and their placeholder SVGs. No node:*, no
-// sharp: the encoders and IO stay in assets.ts.
+// sheet, a face file per non-rest expression, a talk file per spoken one), their placeholder SVGs, and what a chapter
+// manifest carries of them (its rigs and its look). No node:*, no sharp: the encoders and IO stay in assets.ts.
 import type { AssetCatalog } from '../../src/story/catalog.ts';
-import type { Box, Frame, Member, MotionSet } from '../../src/story/shots.ts';
+import type { Box, CastRig, FaceRig, Frame, LookIndex, Member, MotionSet, ShotRig, ShotWindow } from '../../src/story/shots.ts';
 import type { AssetId, BgId, CharId, ExprId } from '../../src/story/staging.ts';
 import type { Shot } from '../story/shots/list.ts';
-import type { ShotNeed } from '../story/shots/usage.ts';
+import type { ShotNeed, WindowRefs } from '../story/shots/usage.ts';
 import { packedLabelWidth, renderPacked } from './placeholder.ts';
 
 /** One drawn state: its box on the plate and the flat fill a placeholder paints it in. */
@@ -450,4 +450,112 @@ export function placeholderDepth(): Uint8Array {
 /** The depth grid as the rig writes it (§4.5 `depth`: base64 of 13 × 24 u8). */
 export function depthBase64(grid: Uint8Array): string {
   return toBase64(grid);
+}
+
+/** The depth grid's bilinear read at plate point (x, y), as n in [0, 1] (§5.6 reads it the same way). */
+export function depthAt(grid: Uint8Array, plate: { readonly w: number; readonly h: number }, x: number, y: number): number {
+  const gx = Math.min(1, Math.max(0, x / plate.w)) * (COARSE.cols - 1);
+  const gy = Math.min(1, Math.max(0, y / plate.h)) * (COARSE.rows - 1);
+  const [i, j] = [Math.min(Math.floor(gx), COARSE.cols - 2), Math.min(Math.floor(gy), COARSE.rows - 2)];
+  const [fx, fy] = [gx - i, gy - j];
+  const v = (c: number, r: number): number => grid[r * COARSE.cols + c] ?? 0;
+  return ((1 - fx) * (1 - fy) * v(i, j) + fx * (1 - fy) * v(i + 1, j) + (1 - fx) * fy * v(i, j + 1) + fx * fy * v(i + 1, j + 1)) / 255;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// What a chapter manifest carries (§4.5): its rigs, restricted to the chapter (CH D5), and its look
+
+/** Vertex `k` of lattice `l` on the plate, in plate px. */
+function vertexAt(k: number, l: Lattice, plate: { readonly w: number; readonly h: number }): readonly [number, number] {
+  return [((k % l.cols) * plate.w) / (l.cols - 1), (Math.floor(k / l.cols) * plate.h) / (l.rows - 1)];
+}
+
+/** One chapter's rig of one cast member: the shot's packing, with only the expressions the chapter shows. */
+function castRig(
+  m: CastLayers,
+  p: MemberPack,
+  group: number,
+  shown: ReadonlyMap<ExprId, boolean>,
+  plate: { readonly w: number; readonly h: number },
+  depth: Uint8Array,
+): CastRig & { readonly char: CharId } {
+  const fig = m.masks.fig;
+  if (fig === null || p.char !== m.char) {
+    throw new Error(`invariant: ${m.char} has a figure mask (R9, checked before planning) and its own packing`);
+  }
+  const fine = plateauOf(m, plate, FINE);
+  const points = [...fine].map((k) => vertexAt(k, FINE, plate));
+  const mean = points.reduce((sum, [x, y]) => sum + depthAt(depth, plate, x, y), 0) / Math.max(1, points.length);
+  const xs = points.map(([x]) => x);
+  const ys = points.map(([, y]) => y);
+  const [x0, y0] = [Math.floor(Math.min(...xs)), Math.floor(Math.min(...ys))];
+  // The rest is always there (the plate shows it); every other expression only where this chapter shows it, and its
+  // talk mouths only where this chapter has the character speak in it.
+  const exprs = [...p.exprs].filter(([x]) => x === m.rest || shown.has(x)).map(([x, e]) => [x, { layer: e.layer, motion: shown.get(x) === true ? e.motion : { ...e.motion, talk: [] } }] as const);
+  const face: FaceRig | null =
+    m.view === 'back' ? null : { rest: m.rest, exprs: Object.fromEntries(exprs) as FaceRig['exprs'], head: [x0, y0, Math.ceil(Math.max(...xs)) - x0, Math.ceil(Math.max(...ys)) - y0] };
+  return {
+    char: m.char,
+    view: m.view,
+    face,
+    body: { cx: fig.cx, cy: fig.cy, rx: fig.rx, ry: fig.ry, rot: fig.rot, feet: [fig.cx, Math.min(plate.h, fig.cy + fig.ry)] },
+    headDepth: Math.round(mean * 255) / 255,
+    plateau: plateauBits(fine, FINE),
+    plateauCoarse: plateauBits(plateauOf(m, plate, COARSE), COARSE),
+    band: bandOf(m),
+    group,
+    figure: p.figure,
+    hair: p.hair,
+  };
+}
+
+/**
+ * §4.5, one chapter's rig of one shot it shows (CH D5): the plate's size, the chapter's frame for it, the focus at the
+ * plate's centre, its cast back to front with only the expressions and talk the chapter needs (`need.faces`), no planes
+ * and no ambient (placeholders, SH9), the depth grid. Every member names a file of the chapter's own when the story
+ * tool's `assets` list agrees (the planner checks it).
+ */
+export function shotRig(layers: ShotLayers, pack: ShotPack, need: ShotNeed, depth: Uint8Array): ShotRig {
+  const plate = { w: layers.w, h: layers.h };
+  const groups = headGroups(layers);
+  const cast = layers.cast.map((m, i) => {
+    const p = pack.cast[i];
+    if (p === undefined) {
+      throw new Error(`invariant: ${layers.shot}: ${m.char} is packed`);
+    }
+    const shown = new Map((need.faces[m.char] ?? []).map((f) => [f.expr, f.talk] as const));
+    return castRig(m, p, groups[i] ?? 0, shown, plate, depth);
+  });
+  const frame: Frame = need.frame;
+  return { w: layers.w, h: layers.h, frame, focus: [layers.w / 2, layers.h / 2], cast, planes: [], ambient: [], depth: depthBase64(depth) };
+}
+
+const unique = <T>(xs: readonly T[]): T[] => [...new Set(xs)];
+
+/**
+ * §4.5 (rev. 5, W1), a build window folded into what the runtime gets: `need` = cur then certain, `warm` = possible
+ * minus need in look order with `near` re-counted over the first `near` possible ids that survive, `hope` = d2 then d3
+ * minus need and warm; each list once per id. The distance and the certain / possible split stay build-only.
+ */
+export function foldWindow(w: WindowRefs): ShotWindow {
+  const need = unique([...w.cur, ...w.certain]);
+  const needed = new Set(need);
+  const warm = unique(w.possible.filter((id) => !needed.has(id)));
+  const near = new Set(w.possible.slice(0, w.near).filter((id) => !needed.has(id))).size;
+  const taken = new Set([...need, ...warm]);
+  return { need, warm, near, hope: unique([...w.d2, ...w.d3].filter((id) => !taken.has(id))) };
+}
+
+/** A chapter's `look`: its windows folded, one sorted image table, windows by sorted key; null without a window. */
+export function manifestLook(windows: Readonly<Record<string, WindowRefs>>): LookIndex | null {
+  const folded = Object.entries(windows)
+    .sort(([a], [b]) => order(a, b))
+    .map(([k, w]) => [k, foldWindow(w)] as const);
+  if (folded.length === 0) {
+    return null;
+  }
+  const images = unique(folded.flatMap(([, w]) => [...w.need, ...w.warm, ...w.hope])).sort(order);
+  const at = new Map(images.map((id, i) => [id, i]));
+  const index = (ids: readonly AssetId[]): number[] => ids.map((id) => at.get(id) ?? -1);
+  return { images, windows: Object.fromEntries(folded.map(([k, w]) => [k, [index(w.need), index(w.warm), w.near, index(w.hope)] as const])) };
 }

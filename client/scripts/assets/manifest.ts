@@ -24,6 +24,8 @@ import type { AssetId, ChapterId } from '../../src/story/staging.ts';
 import { decodeWorldSource } from '../../src/world/decode.ts';
 import type { StoryUsage } from '../story/emit.ts';
 import type { ShotUsage } from '../story/shots/usage.ts';
+import { decodeLook, decodeShotRigs } from '../../src/story/shots.ts';
+import type { LookIndex, ShotRig } from '../../src/story/shots.ts';
 import type { EncodedHalf, HalfAsk } from './encode.ts';
 import { imageKind } from './placeholder.ts';
 
@@ -329,6 +331,25 @@ function json(value: unknown): Uint8Array {
   return new TextEncoder().encode(`${JSON.stringify(value, null, 2)}\n`);
 }
 
+/** What a chapter manifest carries of its shots (shots §4.5), built by the asset tool from build/shots.json. */
+export type ChapterShotKeys = {
+  /** One rig per shot the chapter shows. */
+  readonly shots: Readonly<Record<string, ShotRig>>;
+  /** Its windows; null without one. */
+  readonly look: LookIndex | null;
+};
+
+/** Every member file a manifest's rigs name, in the manifest's own order. */
+function memberFiles(v: unknown): string[] {
+  if (Array.isArray(v)) {
+    return v.flatMap(memberFiles);
+  }
+  if (typeof v !== 'object' || v === null) {
+    return [];
+  }
+  return Object.entries(v).flatMap(([k, x]) => (k === 'file' && typeof x === 'string' ? [x] : memberFiles(x)));
+}
+
 function sortedRecord<T>(entries: Iterable<readonly [string, T]>): Record<string, T> {
   return Object.fromEntries([...entries].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
 }
@@ -336,13 +357,16 @@ function sortedRecord<T>(entries: Iterable<readonly [string, T]>): Record<string
 /**
  * The full output plan of the asset tool for tiers from `tierAll` and every non-unused asset encoded. Throws on a bug:
  * a paid file planned under client/, a free chapter's manifest holding an /api/ URL, a planned manifest its own
- * decoder refuses. Deterministic for the same inputs and bytes.
+ * decoder refuses, a rig member or look image that is not one of its chapter's entries. Deterministic for the same
+ * inputs and bytes. `shots`: per chapter, the rigs and look its manifest carries (key order chapterId, assets, shots,
+ * look; each present only when non-empty).
  */
 export function planAssets(input: {
   chapters: readonly ChapterListEntry[];
   usage: AssetUsage;
   tiers: ReadonlyMap<AssetId, Tier>;
   encoded: ReadonlyMap<AssetId, Encoded>;
+  shots?: ReadonlyMap<string, ChapterShotKeys>;
 }): AssetPlan {
   const files = new Map<string, Uint8Array>();
   const put = (path: string, bytes: Uint8Array): void => {
@@ -418,7 +442,16 @@ export function planAssets(input: {
         return [id, entry] as const;
       }),
     );
-    const manifest = { chapterId: ch.id, assets };
+    const keys = input.shots?.get(ch.id);
+    const shots = keys !== undefined && Object.keys(keys.shots).length > 0 ? keys.shots : undefined;
+    const look = keys?.look ?? undefined;
+    const manifest = { chapterId: ch.id, assets, ...(shots === undefined ? {} : { shots }), ...(look === undefined ? {} : { look }) };
+    // A rig member or look image outside the chapter's own entries would make the runtime fetch a file the manifest
+    // does not describe (and, for a gated one, a free chapter name it): the story tool's `assets` and its windows agree.
+    const stray = [...memberFiles(shots), ...(look?.images ?? [])].find((id) => !Object.hasOwn(assets, id));
+    if (stray !== undefined) {
+      throw new Error(`invariant: every shot file and look image of ${ch.id}'s manifest is one of its assets entries; ${stray} is not`);
+    }
     const text = JSON.stringify(manifest);
     if (!ch.paid && text.includes(`"${GATED_URL}`)) {
       throw new Error(`invariant: free chapter ${ch.id}'s manifest holds no /api/ URL (principle 0)`);
@@ -426,6 +459,14 @@ export function planAssets(input: {
     const decoded = decodeAssetManifest(JSON.parse(text));
     if (!decoded.ok) {
       throw new Error(`invariant: the planned ${ch.id} manifest decodes: ${JSON.stringify(decoded.error)}`);
+    }
+    // The runtime's own decoders (src/story/shots.ts) take what the tool writes.
+    const rigs = shots === undefined ? null : decodeShotRigs(decoded.value.shots);
+    const windows = look === undefined ? null : decodeLook(decoded.value.look);
+    for (const d of [rigs, windows]) {
+      if (d !== null && !d.ok) {
+        throw new Error(`invariant: the planned ${ch.id} manifest's shot keys decode: ${d.error.join('; ')}`);
+      }
     }
     put(ch.paid ? `${ASSET_OUT.paidChapters}/${ch.id}/assets.json` : `${ASSET_OUT.free}/${ch.id}.assets.json`, json(manifest));
   }
