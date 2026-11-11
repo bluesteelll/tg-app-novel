@@ -110,7 +110,7 @@ describe('scan files', () => {
     });
   }
 
-  for (const needle of ['__TG_DEV_MOCK__', '__tgMock', '/dev/launch', '__novelDebug', '__novelChunks']) {
+  for (const needle of ['__TG_DEV_MOCK__', '__tgMock', '/dev/launch', '__novelDebug', '__novelChunks', 'data-cues-played', 'data-cue-orphans', 'data-cue-fallbacks']) {
     test(`scan: dev canary ${needle} fails`, () => {
       const js = text('assets/index-a.js', `console.info(${JSON.stringify(needle)});`);
       expect(scanFiles([INDEX, js], SECTIONS)).toContainEqual({
@@ -444,7 +444,7 @@ describe('scan fingerprints', () => {
   test('scan: paid line fingerprints are scanned in dist', () => {
     expect(setup()).toEqual([]);
     const { sections } = loadSections(join(repo, 'client'));
-    expect(sections.map((s) => `${s.name}(${s.needles.length})`)).toEqual(['compiler(2)', 'dev-canary(5)', 'paid-lines(2)', 'paid-texts(1)']);
+    expect(sections.map((s) => `${s.name}(${s.needles.length})`)).toEqual(['compiler(2)', 'dev-canary(8)', 'paid-lines(2)', 'paid-texts(1)']);
     const js = text('assets/index-a.js', `const a=${JSON.stringify(`ch2.archive.v5c1 ${TEXT}`)};export{a};`);
     const findings = scanFiles([INDEX, js], sections);
     expect(findings).toContainEqual({ kind: 'fingerprint', file: 'assets/index-a.js', section: 'paid-lines', needle: 'ch2.archive.v5c1', via: 'plain' });
@@ -558,7 +558,7 @@ describe('scan assets', () => {
     // Control: a dist with public art only passes, and every section is counted.
     const clean = scanDist('dist-e', { 'assets/bg-cafe-0a1b2c3d.avif': Uint8Array.from([1, 2, 3]) });
     expect(clean.code, clean.lines.join('\n')).toBe(0);
-    expect(clean.lines).toContainEqual(expect.stringMatching(/ sections compiler\(2\) dev-canary\(5\) paid-lines\(1\) paid-texts\(1\) paid-asset-files\(3\)$/));
+    expect(clean.lines).toContainEqual(expect.stringMatching(/ sections compiler\(2\) dev-canary\(8\) paid-lines\(1\) paid-texts\(1\) paid-asset-files\(3\)$/));
   });
 
   test('scan: an old-hash copy of a paid-only asset fails', () => {
@@ -932,7 +932,7 @@ describe('scan meta', () => {
     expect(dirty.lines).toContainEqual(`scan: fingerprint meta-texts ${JSON.stringify(TITLE.ru)} in assets/index-a.js (via plain)`);
     const clean = scanDist('dist-clean', { 'assets/index-a.js': `const s=${JSON.stringify(SHORT.ru)};export{s};` });
     expect(clean.code, clean.lines.join('\n')).toBe(0);
-    expect(clean.lines).toContainEqual(expect.stringMatching(/ sections compiler\(2\) dev-canary\(5\) meta-texts\(4\)$/));
+    expect(clean.lines).toContainEqual(expect.stringMatching(/ sections compiler\(2\) dev-canary\(8\) meta-texts\(4\)$/));
   });
 
   test('scan: a meta text inside JSON.parse fails the scan', () => {
@@ -956,7 +956,7 @@ describe('scan meta', () => {
     expect(dist.lines).toContainEqual(`scan: fingerprint meta-texts ${JSON.stringify(quoted.en)} in assets/index-a.js (via js-string)`);
     // One finding per text: the escapes the section holds as needles add none.
     expect(dist.lines).toContainEqual('scan: 2 findings');
-    expect(dist.lines).toContainEqual(expect.stringMatching(/ sections compiler\(2\) dev-canary\(5\) meta-texts\(6\)$/));
+    expect(dist.lines).toContainEqual(expect.stringMatching(/ sections compiler\(2\) dev-canary\(8\) meta-texts\(6\)$/));
   });
 
   test('scan: empty meta fingerprint set fails', () => {

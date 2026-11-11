@@ -76,8 +76,12 @@ export type Finding =
 export const FIXED_SECTIONS: readonly Section[] = [
   // inkjs/full only: the runtime never contains these (R4 §2.1, measured).
   { name: 'compiler', needles: ['Compilation failed', 'Recursive INCLUDE detected'] },
-  // The Telegram dev mock and debug hooks are compiled out of production builds.
-  { name: 'dev-canary', needles: ['__TG_DEV_MOCK__', '__tgMock', '/dev/launch', '__novelDebug', '__novelChunks'] },
+  // The Telegram dev mock and debug hooks are compiled out of production builds; so are the cue stage's debug
+  // attributes (written only under `__TG_MOCK__`, cues/stage).
+  {
+    name: 'dev-canary',
+    needles: ['__TG_DEV_MOCK__', '__tgMock', '/dev/launch', '__novelDebug', '__novelChunks', 'data-cues-played', 'data-cue-orphans', 'data-cue-fallbacks'],
+  },
 ];
 
 /** Nested data: URIs (a data-URI stylesheet holding a data-URI image) are decoded this deep. */
