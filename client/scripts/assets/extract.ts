@@ -1,9 +1,9 @@
 // The asset tool's extraction of a `src` shot (docs/plans/shots §4.1-4.3, lane SH3c), pure side: shot.json's decoder
 // (the one reader of it, so SH12b's story-side plane reader can import it), the one transform (the crop), the diffs of
 // every variant against its declared base, the expression and motion layers with the reuse rule, the cut-outs, the
-// figure mask's moments and the depth grid. Its inputs arrive through injected loaders (assets.ts: the files decoded by
-// encode.ts; the tests: synthetic rasters), so it imports no sharp and no node:*; packing is shots.ts's, one packer for
-// placeholders and real art.
+// figure mask's moments, the depth grid and R6's alpha compare. Its inputs arrive through injected loaders (assets.ts:
+// the files decoded by encode.ts; the tests: synthetic rasters), so it imports no sharp and no node:*; packing is
+// shots.ts's, one packer for placeholders and real art.
 import type { Result } from '../../src/story/catalog.ts';
 import type { Box } from '../../src/story/shots.ts';
 import type { BgId, CharId, ExprId } from '../../src/story/staging.ts';
@@ -421,6 +421,35 @@ function inpaintMean(mask: Raster, plate: Raster, original: Raster, crop: Box): 
     }
   }
   return n === 0 ? 0 : sum / n;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// R6 (§4.3; cut D9, RULINGS 267): an encoded file's alpha against its source's
+
+/** R6's tolerance: an encoded file's alpha stays within this of its source's at every px (/255). */
+export const ALPHA_TOLERANCE = 8;
+/** The worst |α decoded − α source| over every px, and the first px (row-major) where it occurs. */
+export type AlphaWorst = { readonly err: number; readonly x: number; readonly y: number };
+
+/** The worst alpha error of `decoded` against `source` (same size: an encoder never resizes, else a bug). */
+export function alphaWorst(decoded: Raster, source: Raster): AlphaWorst {
+  if (decoded.w !== source.w || decoded.h !== source.h) {
+    throw new Error(`invariant: a decoded file is its source's size (${decoded.w} × ${decoded.h}, not ${source.w} × ${source.h})`);
+  }
+  let [err, at] = [0, 0];
+  for (let i = 0; i < source.w * source.h; i++) {
+    const d = Math.abs((decoded.data[i * 4 + 3] ?? 0) - (source.data[i * 4 + 3] ?? 0));
+    if (d > err) {
+      [err, at] = [d, i];
+    }
+  }
+  return { err, x: at % source.w, y: Math.floor(at / source.w) };
+}
+
+/** R6 for `what` (`<id> <tier> <format>`): one line when some px's decoded alpha is more than 8/255 off its source's. */
+export function alphaProblems(what: string, decoded: Raster, source: Raster): string[] {
+  const w = alphaWorst(decoded, source);
+  return w.err <= ALPHA_TOLERANCE ? [] : [`${what}: alpha ${w.err}/255 off at (${w.x}, ${w.y}) (R6: within ${ALPHA_TOLERANCE}/255 at every px)`];
 }
 
 // ---------------------------------------------------------------------------------------------------------------

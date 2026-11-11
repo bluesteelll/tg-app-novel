@@ -11,17 +11,24 @@ import { ASSET_ID_RE, decodeAssetCatalog, decodeAssetManifest, decodeCoverManife
 import type { CatalogImage, CatalogIssue, ChapterListEntry, Trim } from '../../src/story/catalog.ts';
 import { decodeLook, decodeLoops, decodeShotRigs, stepWindow } from '../../src/story/shots.ts';
 import type { FaceRig, ShotRig } from '../../src/story/shots.ts';
-import type { AssetId, BgId, ExprId, PropId } from '../../src/story/staging.ts';
+import type { AssetId, BgId, ChapterId, CharId, ExprId, PropId } from '../../src/story/staging.ts';
 import { main } from '../assets.ts';
 import type { Encoders } from '../assets.ts';
 import { decodeChapterList, decodeStoryUsage } from '../story/emit.ts';
 import { placeholderHue } from '../story/shots/list.ts';
+import type { Shot } from '../story/shots/list.ts';
 import { parseShotFileId } from '../story/shots/usage.ts';
-import { encodeImage, halfRgba } from './encode.ts';
+import type { ShotNeed } from '../story/shots/usage.ts';
+import { decodeRaster, encodeImage, encodeRaster, halfRgba } from './encode.ts';
+import type { Codec } from './encode.ts';
+import { alphaProblems, decodeShotSource, extractShot } from './extract.ts';
+import { syntheticShot } from './fixtures/shot/synthetic.ts';
 import { ASSET_FILE_RE, assetFileName, assetUsage, catalogImage, decodeAssetFingerprints, halfAsk, sha256Hex, tierOf } from './manifest.ts';
 import type { AssetUsage } from './manifest.ts';
 import { CANONICAL_SIZE, imageKind, renderPlaceholder } from './placeholder.ts';
 import type { ImageKind } from './placeholder.ts';
+import { packShot, shotFileRaster } from './shots.ts';
+import type { ChapterNeed, Raster } from './shots.ts';
 import { synthWav } from './synth.ts';
 
 const CLIENT_DIR = fileURLToPath(new URL('../..', import.meta.url));
@@ -302,6 +309,101 @@ async function dims(bytes: Uint8Array): Promise<{ w: number | undefined; h: numb
   return { w: m.width, h: m.height, format: m.format };
 }
 
+/** A raster's alpha clamped to 0 / 255: what a codec that loses the feather decodes to (M-SH3e's shape). */
+function clampAlpha(r: Raster): Raster {
+  const data = Uint8Array.from(r.data);
+  for (let i = 3; i < data.length; i += 4) {
+    data[i] = (data[i] ?? 0) < 128 ? 0 : 255;
+  }
+  return { data, w: r.w, h: r.h };
+}
+
+/** The half tier's source of a raster (MEMORY-PLAN 4.C). */
+function halfOf(r: Raster): Raster {
+  return { data: halfRgba(r.data, r.w, r.h), w: r.w / 2, h: r.h / 2 };
+}
+
+/** A w × h test raster: colour noise (a fixed hash) under an ellipse's alpha, 255 inside with a 3-px ramp at its edge. */
+function featheredNoise(w: number, h: number): Raster {
+  const data = new Uint8Array(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const v = Math.imul(Math.imul(x, 73856093) ^ Math.imul(y, 19349663), 2654435761) >>> 0;
+      const d = (Math.hypot((x + 0.5 - w / 2) / (0.4 * w), (y + 0.5 - h / 2) / (0.4 * h)) - 1) * 0.4 * Math.min(w, h);
+      data.set([v & 255, (v >>> 8) & 255, (v >>> 16) & 255, Math.round(255 * Math.min(1, Math.max(0, 0.5 - d / 3)))], (y * w + x) * 4);
+    }
+  }
+  return { data, w, h };
+}
+
+/**
+ * A fake codec for the q search (RULINGS 267): each AVIF call answers `bytes(w, q)` zero bytes that decode to the tier's
+ * px as given when `pass(w, q)`, else with their alpha clamped; `calls` records `<w>:<q>` per AVIF call in order, `out`
+ * each call's bytes. The search's R6 compare stays the real one.
+ */
+function fakeCodec(
+  pass: (w: number, q: number) => boolean,
+  bytes: (w: number, q: number) => number,
+): { codec: Codec; calls: string[]; out: Map<string, Uint8Array> } {
+  const decoded = new Map<Uint8Array, Raster>();
+  const calls: string[] = [];
+  const out = new Map<string, Uint8Array>();
+  const codec: Codec = {
+    avif: (px, q) => {
+      const b = new Uint8Array(bytes(px.w, q));
+      decoded.set(b, pass(px.w, q) ? px : clampAlpha(px));
+      calls.push(`${px.w}:${q}`);
+      out.set(`${px.w}:${q}`, b);
+      return Promise.resolve(b);
+    },
+    webp: (px) => {
+      const b = new Uint8Array(1);
+      decoded.set(b, px);
+      return Promise.resolve(b);
+    },
+    decode: (b) => {
+      const r = decoded.get(b);
+      return r === undefined ? Promise.reject(new Error('invariant: the fake decodes its own output')) : Promise.resolve(r);
+    },
+  };
+  return { codec, calls, out };
+}
+
+/** The synthetic `src` shot at 1080-plate scale (P0's inputs), extracted and packed: every packed file's px, built once. */
+let packedFixture: Promise<ReadonlyMap<AssetId, Raster>> | null = null;
+function fixtureFiles(): Promise<ReadonlyMap<AssetId, Raster>> {
+  packedFixture ??= (async () => {
+    const fx = syntheticShot({ w: 1080, h: 2048, u: 4 });
+    const source = decodeShotSource(fx.json, 'cafe' as BgId);
+    if (!source.ok) {
+      throw new Error(`invariant: the fixture's shot.json decodes: ${source.error.join('; ')}`);
+    }
+    const shot: Shot = { id: 'cafe' as BgId, loc: 'cafe' as Shot['loc'], frame: 'close', cast: [{ char: 'ally' as CharId, view: 'face', rest: 'neutral' as ExprId, figure: false }] };
+    const need = (ch: string, faces: ReadonlyArray<readonly [string, boolean]>): ChapterNeed => ({ ch: ch as ChapterId, need: cafeNeed(faces, ch) as unknown as ShotNeed });
+    const r = await extractShot({
+      shot,
+      source: source.value,
+      needs: [need('ch1', [['neutral', true], ['smile', true]]), need('ch2', [['surprised', false], ['angry', false]])],
+      load: (file) => Promise.resolve(fx.files.get(file) ?? null),
+      loadDepth: () => Promise.resolve(fx.depth),
+    });
+    if (!r.ok) {
+      throw new Error(`invariant: the fixture extracts: ${r.error.join('; ')}`);
+    }
+    return new Map([...packShot(r.value.layers).files].map(([id, f]) => [id, shotFileRaster(f)] as const));
+  })();
+  return packedFixture;
+}
+
+/** The fixture's packed file `id`. */
+function fileOf(files: ReadonlyMap<AssetId, Raster>, id: string): Raster {
+  const r = files.get(id as AssetId);
+  if (r === undefined) {
+    throw new Error(`invariant: the fixture packs ${id}`);
+  }
+  return r;
+}
+
 describe('encode', () => {
   test('encode: input over 2048 px is clamped', async () => {
     const e = await encodeImage(strip(4096, 64));
@@ -473,6 +575,132 @@ describe('encode', () => {
     expect({ w: unasked.w, h: unasked.h, trim: unasked.trim }).toEqual({ w: e.w, h: e.h, trim });
     expect(Buffer.compare(e.avif, unasked.avif)).toBe(0);
     expect(Buffer.compare(e.webp, unasked.webp)).toBe(0);
+  }, 60_000);
+
+  test('assets: an encoded sheet keeps its feathered alpha within 8/255', async () => {
+    // R6 (§4.3, cut D9) through RULINGS 267's search: the fixture's sheet (a feathered hair lock, the masked rest blink)
+    // and its three face files at 1080-plate scale, each searched per tier from q 50. The test decodes what ships, AVIF
+    // and WebP of both tiers, and compares every px's alpha with its source's (the half's: halfRgba of it).
+    const files = await fixtureFiles();
+    const ids = ['face/cafe/ally/angry', 'face/cafe/ally/smile', 'face/cafe/ally/surprised', 'sheet/cafe'];
+    expect([...files.keys()].filter((id) => !id.startsWith('talk/')).sort()).toEqual(ids);
+    for (const id of ids) {
+      const px = fileOf(files, id);
+      const r = await encodeRaster(px, { id: id as AssetId, half: 'any', q: 50, search: true });
+      expect(r.ok ? [] : r.error, id).toEqual([]);
+      const image = r.ok ? r.value.image : null;
+      expect(r.ok ? [r.value.q.full >= 50, (r.value.q.half ?? 0) >= 50] : [], `${id}: each chosen q is at least the start`).toEqual([true, true]);
+      expect([image?.w, image?.h, image?.half?.w, image?.half?.h]).toEqual([px.w, px.h, px.w / 2, px.h / 2]);
+      const half = halfOf(px);
+      const shipped: ReadonlyArray<readonly [string, Uint8Array | undefined, Raster]> = [
+        [`${id} full AVIF`, image?.avif, px],
+        [`${id} full WebP`, image?.webp, px],
+        [`${id} half AVIF`, image?.half?.avif, half],
+        [`${id} half WebP`, image?.half?.webp, half],
+      ];
+      for (const [what, bytes, source] of shipped) {
+        expect(bytes, what).toBeDefined();
+        expect(alphaProblems(what, await decodeRaster(bytes ?? new Uint8Array(0)), source)).toEqual([]);
+      }
+    }
+    // Not vacuous: the sheet's shipped AVIF with its decoded alpha clamped (the feather lost) fails the same check.
+    const sheet = fileOf(files, 'sheet/cafe');
+    const r = await encodeRaster(sheet, { id: 'sheet/cafe' as AssetId, half: 'none', q: 50, search: true });
+    const decoded = await decodeRaster(r.ok ? r.value.image.avif : new Uint8Array(0));
+    const clamped = alphaProblems('sheet/cafe full AVIF', clampAlpha(decoded), sheet);
+    expect(clamped).toHaveLength(1);
+    expect(clamped[0]).toMatch(/^sheet\/cafe full AVIF: alpha \d+\/255 off at \(\d+, \d+\) \(R6: within 8\/255 at every px\)$/);
+  }, 120_000);
+
+  test('assets: the q search fails loudly at the ceiling', async () => {
+    // RULINGS 267: when no candidate up to 90 keeps every px's alpha within 8/255, each failing tier is an error value
+    // naming the file, the tier, the best candidate's q and its worst px, after every coarse step was tried; nothing is
+    // returned to write (the tool exits 1 on it, C7).
+    const px = featheredNoise(64, 32);
+    const worst = (r: Raster): string => {
+      const c = clampAlpha(r);
+      let [err, at] = [0, 0];
+      for (let i = 0; i < r.w * r.h; i++) {
+        const d = Math.abs((c.data[i * 4 + 3] ?? 0) - (r.data[i * 4 + 3] ?? 0));
+        [err, at] = d > err ? [d, i] : [err, at];
+      }
+      return `${err}/255 off at (${at % r.w}, ${Math.floor(at / r.w)})`;
+    };
+    const { codec, calls } = fakeCodec(() => false, () => 100);
+    const r = await encodeRaster(px, { id: 'sheet/x' as AssetId, half: 'any', q: 50, search: true }, codec);
+    const steps = [50, 55, 60, 65, 70, 75, 80, 85, 90];
+    expect(calls).toEqual([...steps.map((q) => `64:${q}`), ...steps.map((q) => `32:${q}`)]);
+    expect(r).toEqual({
+      ok: false,
+      error: [
+        `sheet/x: full: no AVIF q in 50..90 keeps alpha within 8/255 (R6: the best, q 50, is ${worst(px)})`,
+        `sheet/x: half: no AVIF q in 50..90 keeps alpha within 8/255 (R6: the best, q 50, is ${worst(halfOf(px))})`,
+      ],
+    });
+    // From the shot's q 44 the step skips 90, which is still the last candidate.
+    const from44 = fakeCodec(() => false, () => 100);
+    const r44 = await encodeRaster(px, { id: 'sheet/x' as AssetId, half: 'none', q: 44, search: true }, from44.codec);
+    expect(from44.calls).toEqual([44, 49, 54, 59, 64, 69, 74, 79, 84, 89, 90].map((q) => `64:${q}`));
+    expect(r44.ok ? [] : r44.error).toEqual([`sheet/x: full: no AVIF q in 44..90 keeps alpha within 8/255 (R6: the best, q 44, is ${worst(px)})`]);
+  });
+
+  test('assets: the q search ships only a verified candidate, the fewest bytes', async () => {
+    // RULINGS 267, the probe's non-monotone half tier (passes at 62, fails at 63-67, passes from 68): the coarse walk from
+    // 50 stops at 70, the refine tries 66-69, and of the passing 68, 69 and 70 the fewest bytes (69) ships. The failing 66
+    // and 67 are smaller still, so a candidate shipped without its check would show. The full tier passes at once.
+    const px = featheredNoise(64, 32);
+    const halfBytes: Readonly<Record<number, number>> = { 66: 10, 67: 10, 68: 60, 69: 40, 70: 50 };
+    const { codec, calls, out } = fakeCodec(
+      (w, q) => (w === 64 ? q >= 50 : q === 62 || q >= 68),
+      (w, q) => (w === 64 ? 100 : (halfBytes[q] ?? 80)),
+    );
+    const r = await encodeRaster(px, { id: 'face/x/ally/smile' as AssetId, half: 'any', q: 50, search: true }, codec);
+    expect(calls).toEqual(['64:50', '32:50', '32:55', '32:60', '32:65', '32:70', '32:66', '32:67', '32:68', '32:69']);
+    expect(r.ok ? r.value.q : r.error).toEqual({ full: 50, half: 69 });
+    expect(r.ok && r.value.image.avif === out.get('64:50')).toBe(true);
+    expect(r.ok && r.value.image.half?.avif === out.get('32:69')).toBe(true);
+  });
+
+  test('assets: the q search is deterministic', async () => {
+    // RULINGS 267: two runs on the same px choose the same q per tier and write the same bytes.
+    const sheet = fileOf(await fixtureFiles(), 'sheet/cafe');
+    const o = { id: 'sheet/cafe' as AssetId, half: 'any', q: 50, search: true } as const;
+    const [a, b] = [await encodeRaster(sheet, o), await encodeRaster(sheet, o)];
+    expect([a.ok, b.ok]).toEqual([true, true]);
+    if (!a.ok || !b.ok) {
+      return;
+    }
+    expect(b.value.q).toEqual(a.value.q);
+    const files = (e: typeof a.value.image): Uint8Array[] => [e.avif, e.webp, e.half?.avif ?? new Uint8Array(0), e.half?.webp ?? new Uint8Array(0)];
+    expect(files(b.value.image).map((f, i) => Buffer.compare(f, files(a.value.image)[i] ?? new Uint8Array(0)))).toEqual([0, 0, 0, 0]);
+  }, 120_000);
+
+  test("assets: a shot's q lowers its AVIF bytes", async () => {
+    // §4.4 (RULINGS 267): a shot's q is its plate's AVIF quality exactly (no search), both tiers; WebP stays q80.
+    const px = featheredNoise(256, 128);
+    const at = async (q: number) => {
+      const r = await encodeRaster(px, { id: 'bg/noise' as AssetId, half: 'any', q, search: false });
+      if (!r.ok) {
+        throw new Error(`invariant: a fixed q never fails: ${r.error.join('; ')}`);
+      }
+      return r.value;
+    };
+    const [lo, hi] = [await at(40), await at(50)];
+    expect([lo.q, hi.q]).toEqual([
+      { full: 40, half: 40 },
+      { full: 50, half: 50 },
+    ]);
+    expect(lo.image.avif.length).toBeLessThan(hi.image.avif.length);
+    expect(lo.image.half?.avif.length ?? 0).toBeLessThan(hi.image.half?.avif.length ?? 0);
+    expect(Buffer.compare(lo.image.webp, hi.image.webp)).toBe(0);
+    expect(Buffer.compare(lo.image.half?.webp ?? new Uint8Array(0), hi.image.half?.webp ?? new Uint8Array(1))).toBe(0);
+    // shot.json's q (cut D3): absent reads 50; 40 (the floor) is accepted; 35 and 101 are refused by name.
+    const json = (q: unknown): ReturnType<typeof decodeShotSource> =>
+      decodeShotSource({ crop: [0, 0, 1080, 2048], focus: [540, 600], ...(q === undefined ? {} : { q }) }, 'cafe' as BgId);
+    expect(json(undefined)).toMatchObject({ ok: true, value: { q: 50 } });
+    expect(json(40)).toMatchObject({ ok: true, value: { q: 40 } });
+    expect(json(35)).toEqual({ ok: false, error: ['cafe/shot.json: q: 35 is not an integer in 40..100'] });
+    expect(json(101)).toEqual({ ok: false, error: ['cafe/shot.json: q: 101 is not an integer in 40..100'] });
   }, 60_000);
 });
 
