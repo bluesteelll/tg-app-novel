@@ -385,9 +385,11 @@ export const ENDING_NAME_RE = /^[a-z][a-z0-9_]{0,31}$/;
 const VAR_NAME_RE = /^[\p{L}_][\p{L}\p{N}_]*$/u;
 /**
  * STAGING-DSL §8: `bg/<bg>`, `char/<char>/<expr>`, `cg/<cg>`, `bgm/<track>`, `sfx/<sfx>`, `prop/<prop>` (PUZZLES-PLAN
- * X11), `cover/<cover>` (STORIES-PLAN Y15).
+ * X11), `cover/<cover>` (STORIES-PLAN Y15); a shot's files `sheet/<shot>`, `face/<shot>/<char>/<expr>` and
+ * `talk/<shot>/<char>/<expr>` (shots §2.4), named by the story tool, never by a tag.
  */
-export const ASSET_ID_RE = /^(?:(?:bg|cg|bgm|sfx|prop|cover)\/[a-z][a-z0-9_]*|char\/[a-z][a-z0-9_]*\/[a-z][a-z0-9_]*)$/;
+export const ASSET_ID_RE =
+  /^(?:(?:bg|cg|bgm|sfx|prop|cover|sheet)\/[a-z][a-z0-9_]*|char\/[a-z][a-z0-9_]*\/[a-z][a-z0-9_]*|(?:face|talk)(?:\/[a-z][a-z0-9_]*){3})$/;
 const STORY_VERSION_RE = /^[0-9a-f]{16}$/;
 
 /**
@@ -740,8 +742,11 @@ export type AssetEntry =
   | ({ kind: 'image' } & ImageFile & { trim?: Trim; half?: HalfFile })
   | { kind: 'audio'; role: 'bgm' | 'sfx'; durationMs: number; file: AssetRef; codec: 'm4a' | 'wav' };
 export type ImageEntry = Extract<AssetEntry, { kind: 'image' }>;
-/** `<ch>.assets.json`: every asset the chapter names, at the tier of its file. */
-export type AssetManifest = { chapterId: ChapterId; assets: Record<AssetId, AssetEntry> };
+/**
+ * `<ch>.assets.json`: every asset the chapter names, at the tier of its file. `shots`, `look` and `loops` (shots §4.5)
+ * are opaque here: only story/shots.ts decodes them, so the entry carries no decoder for them (CH D26).
+ */
+export type AssetManifest = { chapterId: ChapterId; assets: Record<AssetId, AssetEntry>; shots?: unknown; look?: unknown; loops?: unknown };
 /** client/src/story-gen/covers.json: every cover, always public (Home shows them before any purchase). */
 export type CoverManifest = { assets: Readonly<Record<AssetId, ImageEntry>> };
 /**
@@ -1000,12 +1005,15 @@ function manifestEntries(
   return out;
 }
 
+/** The manifest's optional top-level keys that the entry hands on verbatim (shots §4.5). */
+const OPAQUE_MANIFEST_KEYS = ['shots', 'look', 'loops'] as const;
+
 /**
  * Decodes a chapter's `assets.json` (free: story-gen/free/<ch>.assets.json; paid: server/content/chapters/<ch>/):
  * exact keys per kind, URLs `/assets/<file>` or `/api/assets/<file>` with the server's file-name rule and the slot's
  * extension (`avif`, `webp`, `file` = `.<codec>`), `decodedBytes = w × h × 4`, kinds and roles per namespace, even
  * sides and the optional `trim` on char and prop entries only (`trimOf`), the optional `half` (`halfOf`). A cover belongs
- * to no chapter (covers.json).
+ * to no chapter (covers.json). The optional `shots`, `look` and `loops` are returned as they are.
  * Every problem is reported.
  */
 export function decodeAssetManifest(raw: unknown): Result<AssetManifest, CatalogIssue[]> {
@@ -1015,7 +1023,7 @@ export function decodeAssetManifest(raw: unknown): Result<AssetManifest, Catalog
     report('', 'not a JSON object');
     return { ok: false, error: issues };
   }
-  exactKeys(raw, ['chapterId', 'assets'], '', report);
+  exactKeys(raw, ['chapterId', 'assets'], '', report, OPAQUE_MANIFEST_KEYS);
   const chapterId = Object.hasOwn(raw, 'chapterId') ? matching(raw['chapterId'], CHAPTER_ID_RE, 'chapterId', report) : null;
   const refuseCover = (id: string): string | null =>
     id.startsWith('cover/') ? 'a cover belongs to no chapter: it is in story-gen/covers.json' : null;
@@ -1024,7 +1032,11 @@ export function decodeAssetManifest(raw: unknown): Result<AssetManifest, Catalog
     return { ok: false, error: issues };
   }
   // The brands are earned above: the chapter id and every asset id matched their patterns.
-  return { ok: true, value: { chapterId: chapterId as ChapterId, assets: assets as Record<AssetId, AssetEntry> } };
+  const value: AssetManifest = { chapterId: chapterId as ChapterId, assets: assets as Record<AssetId, AssetEntry> };
+  for (const key of OPAQUE_MANIFEST_KEYS.filter((k) => Object.hasOwn(raw, k))) {
+    value[key] = raw[key];
+  }
+  return { ok: true, value };
 }
 
 /** Decodes client/src/story-gen/covers.json: `cover/<id>` images only, public URLs only. */

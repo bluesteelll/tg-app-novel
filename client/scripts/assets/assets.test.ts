@@ -514,6 +514,28 @@ describe('catalog manifests', () => {
     }
   });
 
+  test('catalog: a manifest carries shots, look and loops as opaque keys', () => {
+    // Shots §4.5 (the CH D26 pattern): the entry's decoder admits the three keys and hands them on as they are; only
+    // story/shots.ts decodes them, so nothing here judges their content.
+    const raw = {
+      chapterId: 'ch1',
+      assets: { 'bg/cafe': image('bg-cafe-0a1b2c3d') },
+      shots: { cafe: { w: 1080, h: 2048, anything: ['opaque'] } },
+      look: { images: ['bg/cafe'], windows: { 'k:start': [[0], [], 0, []] } },
+      loops: { candle: { frames: [[0, 0, 2, 2]], fps: 8 } },
+    };
+    expect(decodeAssetManifest(raw)).toEqual({ ok: true, value: raw });
+    // Each key alone, and none: a manifest without them decodes as before, with no key added.
+    for (const key of ['shots', 'look', 'loops'] as const) {
+      const one = { chapterId: raw.chapterId, assets: raw.assets, [key]: raw[key] };
+      expect(decodeAssetManifest(one), key).toEqual({ ok: true, value: one });
+    }
+    const plain = decodeAssetManifest({ chapterId: 'ch1', assets: raw.assets });
+    expect(plain.ok && Object.keys(plain.value)).toEqual(['chapterId', 'assets']);
+    // A fourth unknown key is still refused.
+    expect(manifestIssues({ ...raw, rigs: {} })).toEqual([{ file: 'assets.json', path: 'rigs', detail: expect.any(String) as string }]);
+  });
+
   test('catalog: cover manifest decodes', () => {
     const cover = (over: RawEntry = {}): RawEntry =>
       image('x', {
