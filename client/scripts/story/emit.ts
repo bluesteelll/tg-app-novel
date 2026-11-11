@@ -11,6 +11,8 @@
 import { createHash } from 'node:crypto';
 
 import { RULES_VERSION, lockOf } from '../../src/explore/reduce.ts';
+import type { KernelWorld } from '../../src/mechanics/contract.ts';
+import { roomImages } from '../../src/mechanics/rules/visual.ts';
 import { PUZZLE_TYPES } from '../../src/puzzles/rules/index.ts';
 import type { PuzzleTypes } from '../../src/puzzles/rules/index.ts';
 import { ASSET_ID_RE, CHAPTER_ID_RE, KNOT_NAME_RE } from '../../src/story/catalog.ts';
@@ -19,7 +21,7 @@ import type { AssetId, ChapterId, KnotName, LineId, ProductId, SpeakerId, StoryV
 import { LINE_ID_RE } from '../../src/story/tags.ts';
 import { toPublic, toServer } from '../../src/world/decode.ts';
 import type { HintRenderer } from '../../src/world/decode.ts';
-import type { ServerPuzzleContent, WorldPublic, WorldPublicBody, WorldSource } from '../../src/world/types.ts';
+import type { RoomId, ServerPuzzleContent, WorldPublic, WorldPublicBody, WorldSource } from '../../src/world/types.ts';
 import type { CompiledChapter } from './compile.ts';
 import type { ChapterGraph } from './graph.ts';
 import { LINT_CODES } from './lint.ts';
@@ -201,7 +203,16 @@ type EmitInput = {
    */
   puzzleTypes?: { readonly types: PuzzleTypes; readonly lints: Readonly<Record<string, PuzzleTypeLint<unknown>>> };
 };
-type Built = { ch: ChapterListEntry; compiled: CompiledChapter; graph: ChapterGraph; firstKnot: KnotName; world: WorldPublicBody | null };
+type Built = {
+  ch: ChapterListEntry;
+  compiled: CompiledChapter;
+  graph: ChapterGraph;
+  firstKnot: KnotName;
+  /** The emitted body (no `mods`); null without a world. */
+  world: WorldPublicBody | null;
+  /** The same body with its module data, which `roomImages` reads (the usage file); null without a world. */
+  kernel: KernelWorld | null;
+};
 
 function meta(b: Built, endings: ReadonlyMap<KnotName, EndingName> | undefined): ChapterMeta {
   const knots = Object.fromEntries([...b.graph.knots].map(([k, n]) => [k, { assets: n.assets, next: n.next, ending: n.ending }]));
@@ -306,19 +317,25 @@ function assetSet(ids: Iterable<string>): AssetId[] {
   return [...new Set(ids)].sort() as AssetId[];
 }
 
-/** Every asset a world names: room bgs and props, every puzzle's closeup, section bgms and exit sfx. */
-function worldAssets(w: WorldPublicBody): AssetId[] {
+/**
+ * Every image a room can show (`roomImages`: its take and object props, their states' props and patches, its decor's):
+ * the set the explore controller preloads under `state:<room>` (engine plan §6.4 "Memory").
+ */
+function roomProps(w: KernelWorld, room: string): string[] {
+  return roomImages(w, room as RoomId).map((p) => `prop/${p}`); // a room key of the decoded world
+}
+
+/** Every asset a world names: room bgs and images, every puzzle's closeup, section bgms and exit sfx. */
+function worldAssets(w: KernelWorld): AssetId[] {
   const ids: string[] = Object.values(w.puzzles).flatMap((p) => (p.closeup === null ? [] : [`cg/${p.closeup}`]));
   for (const s of Object.values(w.sections)) {
     if (s.bgm !== null) {
       ids.push(`bgm/${s.bgm}`);
     }
-    for (const room of Object.values(s.rooms)) {
-      ids.push(`bg/${room.bg}`);
+    for (const [rid, room] of Object.entries(s.rooms)) {
+      ids.push(`bg/${room.bg}`, ...roomProps(w, rid));
       for (const h of room.hotspots) {
-        if ((h.kind === 'take' || h.kind === 'object') && h.prop !== null) {
-          ids.push(`prop/${h.prop}`);
-        } else if (h.kind === 'exit' && h.sfx !== null) {
+        if (h.kind === 'exit' && h.sfx !== null) {
           ids.push(`sfx/${h.sfx}`);
         }
       }
@@ -327,11 +344,11 @@ function worldAssets(w: WorldPublicBody): AssetId[] {
   return assetSet(ids);
 }
 
-/** Per room `<ch>/<section>/<room>`: its bg, its take and object props, its locks' closeups, its neighbours' bgs. */
-function roomUsage(ch: ChapterId, w: WorldPublicBody): Array<[string, StoryRoomUsage]> {
+/** Per room `<ch>/<section>/<room>`: its bg, every image it can show, its locks' closeups, its neighbours' bgs. */
+function roomUsage(ch: ChapterId, w: KernelWorld): Array<[string, StoryRoomUsage]> {
   return Object.entries(w.sections).flatMap(([sid, s]) =>
     Object.entries(s.rooms).map(([rid, room]): [string, StoryRoomUsage] => {
-      const props = room.hotspots.flatMap((h) => ((h.kind === 'take' || h.kind === 'object') && h.prop !== null ? [`prop/${h.prop}`] : []));
+      const props = roomProps(w, rid);
       const closeups = room.hotspots.flatMap((h) => {
         const puzzle = lockOf(h)?.puzzle ?? null;
         const closeup = puzzle === null || !Object.hasOwn(w.puzzles, puzzle) ? null : (w.puzzles[puzzle]?.closeup ?? null);
@@ -350,15 +367,15 @@ function roomUsage(ch: ChapterId, w: WorldPublicBody): Array<[string, StoryRoomU
 
 function usage(built: readonly Built[]): StoryUsage {
   const chapters = Object.fromEntries(
-    built.map(({ ch, graph, world }) => {
+    built.map(({ ch, graph, kernel }) => {
       const knots = Object.fromEntries(
         [...graph.knots].map(([k, n]) => [k, { assets: n.assets, next: n.next, carried: graph.carried.get(k) ?? [] }]),
       );
       const assets = [...new Set([...graph.knots.values()].flatMap((n) => n.assets))].sort();
-      return [ch.id, world === null ? { assets, knots } : { assets, knots, worldAssets: worldAssets(world) }];
+      return [ch.id, kernel === null ? { assets, knots } : { assets, knots, worldAssets: worldAssets(kernel) }];
     }),
   );
-  const rooms = built.flatMap(({ ch, world }) => (world === null ? [] : roomUsage(ch.id, world)));
+  const rooms = built.flatMap(({ ch, kernel }) => (kernel === null ? [] : roomUsage(ch.id, kernel)));
   // keys are chapter ids and knot names; `rooms` only when some room exists, so a world-less usage.json is unchanged
   const typed = chapters as StoryUsage['chapters'];
   return rooms.length === 0 ? { chapters: typed } : { chapters: typed, rooms: Object.fromEntries(rooms) };
@@ -406,7 +423,8 @@ export function planEmit(input: EmitInput): ReadonlyMap<string, string> {
       throw new Error(`invariant: chapter ${ch.id} is compiled and has a first knot before emit`);
     }
     const source = input.worlds?.get(ch.id);
-    return { ch, compiled, graph, firstKnot, world: source === undefined ? null : toPublic(source) };
+    const world = source === undefined ? null : toPublic(source);
+    return { ch, compiled, graph, firstKnot, world, kernel: source === undefined || world === null ? null : { ...world, mods: source.mods } };
   });
   const out = new Map<string, string>();
   const put = (path: string, text: string): void => {
