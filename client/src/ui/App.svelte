@@ -299,7 +299,7 @@
       {/if}
     {/each}
 
-    <Toast toasts={vm.toasts} lang={vm.lang} ondismiss={(key) => vm.dismissToast(key)} />
+    <Toast toasts={vm.toasts} lang={vm.lang} reduced={vm.reducedMotion} ondismiss={(key) => vm.dismissToast(key)} />
   </div>
 </div>
 

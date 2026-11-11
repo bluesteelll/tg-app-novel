@@ -14,9 +14,10 @@
   import { t, type Lang } from '../i18n/index.ts';
   import { playToast, stackOf, type ToastMotion, type ToastSlot } from './toast-motion.ts';
 
-  type Props = { toasts: readonly ToastEntry[]; lang: Lang; ondismiss: (key: string) => void };
+  // `reduced` is the view model's `reducedMotion` (required, so App cannot drop the one source silently).
+  type Props = { toasts: readonly ToastEntry[]; lang: Lang; reduced: boolean; ondismiss: (key: string) => void };
 
-  let { toasts, lang, ondismiss }: Props = $props();
+  let { toasts, lang, reduced, ondismiss }: Props = $props();
 
   // The one dev gate: false in production, where a tag error is dropped and logged instead (F2).
   const shown = $derived(visibleToasts(toasts, __TG_MOCK__));
@@ -44,7 +45,7 @@
       return null;
     }
     running.get(target)?.cancel();
-    const anim = playToast(target, kind, false);
+    const anim = playToast(target, kind, reduced);
     if (anim) {
       running.set(target, anim);
     }

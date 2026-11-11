@@ -2,6 +2,8 @@
 // toasts, the tap screen and the stage host. Components render through @testing-library/svelte.
 import { cleanup, render } from '@testing-library/svelte';
 import { createRawSnippet, flushSync, tick } from 'svelte';
+import { parse } from 'svelte/compiler';
+import type { AST } from 'svelte/compiler';
 import { afterEach, expect, onTestFinished, test, vi } from 'vitest';
 
 import { en } from '../i18n/en.ts';
@@ -9,6 +11,7 @@ import { t, type UiKey } from '../i18n/index.ts';
 import { ru } from '../i18n/ru.ts';
 import type { StoryId } from '../story/catalog.ts';
 import type { Unsubscribe } from '../telegram/index.ts';
+import appSource from './App.svelte?raw';
 import { createScreens, type BackButtonPort, type RootView, type Screen, type ScreensView } from './screens.ts';
 import Stage from './Stage.svelte';
 import { createViewModel, TOAST_MAX, TOAST_MS, type Timers, type ToastEntry } from './state.svelte.ts';
@@ -386,7 +389,7 @@ test('toast: actions and the chip run inside the click', () => {
   ];
   const { getByRole, getByText } = render(Toast, {
     target,
-    props: { toasts: entries, lang: 'ru', ondismiss: (key: string) => log.push(`dismiss:${key}`) },
+    props: { toasts: entries, lang: 'ru', reduced: false, ondismiss: (key: string) => log.push(`dismiss:${key}`) },
   });
 
   // Each spy is read right after click(), with no await between: the handler ran inside the gesture.
@@ -412,7 +415,7 @@ test('toast: dev variant renders only with the mock', () => {
   expect(visibleToasts([dev, plain], true)).toEqual([dev, plain]);
 
   // Under vitest the mode is not production, so __TG_MOCK__ is true and the banner renders.
-  const { container } = render(Toast, { toasts: [dev, plain], lang: 'en', ondismiss: () => {} });
+  const { container } = render(Toast, { toasts: [dev, plain], lang: 'en', reduced: false, ondismiss: () => {} });
   expect([...container.querySelectorAll('[data-variant]')].map((el) => el.getAttribute('data-variant'))).toEqual([
     'dev',
     'note',
@@ -509,10 +512,20 @@ function toastEl(container: HTMLElement, text: string): Element {
 
 const noDismiss = (): void => {};
 
+/** Toast's props for a motion test: English, full motion, no dismiss handler. */
+const motionProps = (
+  toasts: readonly ToastEntry[],
+): { toasts: readonly ToastEntry[]; lang: 'en'; reduced: boolean; ondismiss: () => void } => ({
+  toasts,
+  lang: 'en',
+  reduced: false,
+  ondismiss: noDismiss,
+});
+
 test('toast: a new toast animates in, a dismissed one out', async () => {
   const { played, log } = recordAnimate();
   const [a, b] = [note('a'), note('b')];
-  const { container, rerender } = render(Toast, { toasts: [a], lang: 'en', ondismiss: noDismiss });
+  const { container, rerender } = render(Toast, motionProps([a]));
   expect(played.map(kindOf)).toEqual(['in']);
   const elA = toastEl(container, 'note a');
   expect(played[0]?.el).toBe(elA);
@@ -534,9 +547,14 @@ test('toast: a new toast animates in, a dismissed one out', async () => {
 
 test('toast: a dismissed toast stays as a leaving ghost until its out motion finishes', async () => {
   const { played } = recordAnimate();
-  const prompt: ToastEntry = { kind: 'prompt', key: 'p', message: 'prompt p', actions: [{ label: 'act', run: () => {} }] };
+  const prompt: ToastEntry = {
+    kind: 'prompt',
+    key: 'p',
+    message: 'prompt p',
+    actions: [{ label: 'act', run: () => {} }],
+  };
   const stay = note('stay', true);
-  const { container, rerender } = render(Toast, { toasts: [prompt, stay], lang: 'en', ondismiss: noDismiss });
+  const { container, rerender } = render(Toast, motionProps([prompt, stay]));
 
   await rerender({ toasts: [stay] });
   const ghost = container.querySelector('[data-variant="prompt"]');
@@ -561,7 +579,7 @@ test('toast: a dismissed toast stays as a leaving ghost until its out motion fin
 test('toast: a same-key replace swaps its text with motion', async () => {
   const { played, log } = recordAnimate();
   const say = (message: string): ToastEntry => ({ kind: 'note', key: 'a', message, sticky: false });
-  const { container, rerender } = render(Toast, { toasts: [say('one')], lang: 'en', ondismiss: noDismiss });
+  const { container, rerender } = render(Toast, motionProps([say('one')]));
   const el = toastEl(container, 'one');
 
   await rerender({ toasts: [say('two')] });
@@ -590,6 +608,7 @@ test('toast: a key that left, returned and leaves again plays out again', () => 
       return list;
     },
     lang: 'en',
+    reduced: false,
     ondismiss: noDismiss,
   });
   const el = toastEl(container, 'note look');
@@ -624,7 +643,7 @@ test('toast: a key that left, returned and leaves again plays out again', () => 
 
 test('toast: a toast without animate leaves at once', async () => {
   stubAnimate(undefined);
-  const { container, rerender } = render(Toast, { toasts: [note('a')], lang: 'en', ondismiss: noDismiss });
+  const { container, rerender } = render(Toast, motionProps([note('a')]));
   const el = toastEl(container, 'note a');
   await rerender({ toasts: [] });
   expect(el.isConnected).toBe(false);
@@ -633,7 +652,7 @@ test('toast: a toast without animate leaves at once', async () => {
 
 test('toast: an unmounted stack leaves no running animation', async () => {
   const { played } = recordAnimate();
-  const { rerender, unmount } = render(Toast, { toasts: [note('a'), note('b')], lang: 'en', ondismiss: noDismiss });
+  const { rerender, unmount } = render(Toast, motionProps([note('a'), note('b')]));
   // A's out and B's in are running.
   await rerender({ toasts: [note('b')] });
   expect(played.length).toBeGreaterThanOrEqual(2);
@@ -651,7 +670,7 @@ test('toast: the stack is built from the dev-filtered entries', () => {
 test("toast: a dropped ghost's finished out is released, not cancelled at unmount", async () => {
   const { played } = recordAnimate();
   const [a, b] = [note('a'), note('b')];
-  const { container, rerender, unmount } = render(Toast, { toasts: [a, b], lang: 'en', ondismiss: noDismiss });
+  const { container, rerender, unmount } = render(Toast, motionProps([a, b]));
   const [elA, elB] = [toastEl(container, 'note a'), toastEl(container, 'note b')];
   await rerender({ toasts: [b] });
   const out = played.find((p) => p.el === elA && kindOf(p) === 'out');
@@ -675,6 +694,7 @@ test('toast: a key returning after its out finished cancels that out before its 
       return list;
     },
     lang: 'en',
+    reduced: false,
     ondismiss: noDismiss,
   });
   const el = toastEl(container, 'note a');
@@ -708,7 +728,7 @@ test('toast: every slot renders exactly one root element', async () => {
     note('transient'),
     { kind: 'dev', key: 'dev', message: 'dev banner' },
   ];
-  const { container, rerender } = render(Toast, { toasts: entries, lang: 'en', ondismiss: noDismiss });
+  const { container, rerender } = render(Toast, motionProps(entries));
   const root = stackRoot(container);
   const variants = (): (string | null)[] => [...root.children].map((c) => c.getAttribute('data-variant'));
   expect(variants()).toEqual(['prompt', 'chip', 'note', 'note', 'dev']);
@@ -718,6 +738,48 @@ test('toast: every slot renders exactly one root element', async () => {
   expect(root.children.length).toBe(5);
   expect(variants()).toEqual(['prompt', 'chip', 'note', 'note', 'dev']);
   expect([...root.children].map((c) => c.hasAttribute('inert'))).toEqual([false, false, false, true, false]);
+});
+
+test('toast: reduced motion plays the opacity-only motions', async () => {
+  const { played } = recordAnimate();
+  const say = (message: string): ToastEntry => ({ kind: 'note', key: 'a', message, sticky: false });
+  const { rerender } = render(Toast, { ...motionProps([say('one')]), reduced: true });
+  await rerender({ toasts: [say('two')] });
+  await rerender({ toasts: [] });
+  expect(played.map((p) => p.keyframes)).toEqual([
+    TOAST_MOTIONS.in.reduced.keyframes,
+    TOAST_MOTIONS.swap.reduced.keyframes,
+    TOAST_MOTIONS.out.reduced.keyframes,
+  ]);
+
+  // One flush that changes the setting and adds a toast: the toast enters, with the new setting.
+  const other = render(Toast, { ...motionProps([]), reduced: true });
+  await other.rerender({ toasts: [note('b')], reduced: false });
+  const enter = played[3];
+  expect(played.length).toBe(4);
+  expect(enter?.keyframes).toEqual(TOAST_MOTIONS.in.full.keyframes);
+  expect(enter?.el).toBe(toastEl(other.container, 'note b'));
+  expect(enter?.el.isConnected).toBe(true);
+});
+
+test("toast: App passes the view model's reduced motion to the stack", () => {
+  const ast = parse(appSource, { modern: true });
+  const toasts: AST.Component[] = [];
+  const walk = (n: unknown): void => {
+    if (typeof n !== 'object' || n === null) {
+      return;
+    }
+    if ((n as { type?: unknown }).type === 'Component' && (n as AST.Component).name === 'Toast') {
+      toasts.push(n as AST.Component);
+    }
+    for (const v of Object.values(n)) {
+      walk(v);
+    }
+  };
+  walk(ast.fragment);
+  expect(toasts).toHaveLength(1);
+  const attrs = (toasts[0]?.attributes ?? []).map((a) => appSource.slice(a.start, a.end));
+  expect(attrs).toEqual(expect.arrayContaining(['toasts={vm.toasts}', 'reduced={vm.reducedMotion}']));
 });
 
 // ---------------------------------------------------------------------------------------------------------------
