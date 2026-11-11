@@ -31,6 +31,8 @@ import { CANONICAL_SIZE, renderPlaceholder } from './assets/placeholder.ts';
 import {
   castProblems,
   facesOf,
+  loopAtlas,
+  loopRig,
   manifestLook,
   packShot,
   placeholderDepth,
@@ -39,7 +41,7 @@ import {
   shotFileSvg,
   shotRig,
 } from './assets/shots.ts';
-import type { ShotLayers, ShotPack } from './assets/shots.ts';
+import type { PackedFile, ShotLayers, ShotPack } from './assets/shots.ts';
 import { synthWav } from './assets/synth.ts';
 import { decodeChapterList, decodeStoryUsage } from './story/emit.ts';
 import { SHOTS_FILE, decodeShotList, effectiveCatalog } from './story/shots/list.ts';
@@ -202,6 +204,19 @@ export async function main(argv: readonly string[], root: string, encoders: Enco
       problems.push(`bg/${id}: src ${bg.src} waits for extraction (SH3c)`);
     }
   }
+  // Shots §2.4 (W10): a loop prop's frames are one atlas `prop/<id>`; a placeholder's is synthesized here, a src one waits.
+  const loops = new Map<AssetId, { readonly atlas: PackedFile; readonly fps: number }>();
+  for (const [id, prop] of Object.entries(source?.prop ?? {})) {
+    const atlas = `prop/${id}` as AssetId; // a catalog prop id
+    if (!('loop' in prop)) {
+      continue;
+    }
+    if ('src' in prop.loop) {
+      problems.push(`${atlas}: src ${prop.loop.src} waits for extraction (SH3c)`);
+    } else {
+      loops.set(atlas, { atlas: loopAtlas(atlas, prop.loop.placeholder.hue, prop.loop.placeholder.frames), fps: prop.loop.fps });
+    }
+  }
   // Shots §2.4: with a shot list, the effective catalog (an implied placeholder bg per declared shot it lacks, SH2's
   // cut Q7) and build/shots.json, which the story tool writes beside usage.json; without one, today's path exactly.
   const hasShotList = existsSync(path.join(root, ...SHOTS_FILE.split('/')));
@@ -243,9 +258,9 @@ export async function main(argv: readonly string[], root: string, encoders: Enco
     }
     const image = catalogImage(catalog, id);
     const audio = catalogAudio(catalog, id);
-    const packed = packedFiles.get(id);
+    const packed = packedFiles.get(id) ?? loops.get(id)?.atlas;
     if (packed !== undefined) {
-      // A shot file: never trimmed (its frames are its rig's), with its half pair like any bg (shots §4.2 step 7).
+      // A shot file or a loop atlas: never trimmed (its frames are its rig's), with its half pair like any bg (§4.2 step 7).
       const svg = new TextEncoder().encode(shotFileSvg(packed));
       encoded.set(id, { kind: 'image', ...(await encoders.encodeImage(svg, { trim: false, half: halfAsk(id, tier) })) });
     } else if (image !== undefined) {
@@ -275,7 +290,14 @@ export async function main(argv: readonly string[], root: string, encoders: Enco
     return 1;
   }
   // 4. Plan, sweep, write.
-  const plan = planAssets({ chapters, usage, tiers: tiers.value, encoded, ...(shotUsage === null ? {} : { shots: chapterShotKeys(shotUsage, shots) }) });
+  const plan = planAssets({
+    chapters,
+    usage,
+    tiers: tiers.value,
+    encoded,
+    ...(shotUsage === null ? {} : { shots: chapterShotKeys(shotUsage, shots) }),
+    loops: new Map([...loops].map(([id, l]) => [id, loopRig(l.atlas, l.fps)])),
+  });
   const swept = [...stale(root, ASSET_OUT.public, plan.files), ...stale(root, ASSET_OUT.paid, plan.files)];
   for (const rel of swept) {
     rmSync(path.join(root, ...rel.split('/')), { recursive: true, force: true });

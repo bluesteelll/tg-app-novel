@@ -3,7 +3,7 @@
 // sheet, a face file per non-rest expression, a talk file per spoken one), their placeholder SVGs, and what a chapter
 // manifest carries of them (its rigs and its look). No node:*, no sharp: the encoders and IO stay in assets.ts.
 import type { AssetCatalog } from '../../src/story/catalog.ts';
-import type { Box, CastRig, FaceRig, Frame, LookIndex, Member, MotionSet, ShotRig, ShotWindow } from '../../src/story/shots.ts';
+import type { Box, CastRig, FaceRig, Frame, LookIndex, LoopRig, Member, MotionSet, ShotRig, ShotWindow } from '../../src/story/shots.ts';
 import type { AssetId, BgId, CharId, ExprId } from '../../src/story/staging.ts';
 import type { Shot } from '../story/shots/list.ts';
 import type { ShotNeed, WindowRefs } from '../story/shots/usage.ts';
@@ -305,6 +305,26 @@ export function packShot(layers: ShotLayers): ShotPack {
     };
   });
   return { files, cast };
+}
+
+/** A loop prop's frame side (shots §4.4: frames at most 512 × 512; a placeholder's fill the prop canvas). */
+const LOOP_FRAME = 512;
+
+/**
+ * Shots §2.4 (rev. 2, W10), a placeholder loop prop's atlas `prop/<id>`: `frames` frames of 512 × 512, each a flat rect
+ * one step lighter, packed like a shot file (even, within 2048 × 2048) so the half tier halves every frame exactly.
+ */
+export function loopAtlas(id: AssetId, hue: number, frames: number): PackedFile {
+  const items = Array.from({ length: frames }, (_, i): Item => ({
+    key: `frame/${i}`,
+    layer: { box: [0, 0, LOOP_FRAME, LOOP_FRAME], fill: hsl(hue, 55, 30 + Math.round((40 * i) / Math.max(1, frames - 1))) },
+  }));
+  return packFile(id, items);
+}
+
+/** The manifest's loop rig of an atlas (§4.5 `LoopRig`): its frames' boxes in frame order, and the fps. */
+export function loopRig(atlas: PackedFile, fps: number): LoopRig {
+  return { frames: atlas.items.map((it) => it.frame), fps };
 }
 
 /** A packed file's placeholder SVG: its states as flat rects, then its id as its label. */

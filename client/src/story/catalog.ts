@@ -50,6 +50,15 @@ export type CatalogImage = { readonly placeholder: ImagePlaceholder };
  */
 export type CatalogBg = CatalogImage | { readonly src: string };
 /**
+ * A loop prop's frames (shots §2.4, rev. 2 W10): a placeholder's hue and frame count, or `src: "loop/<own id>"`, its
+ * frames' source directory (SH3c); stepped at `fps`.
+ */
+export type CatalogLoop =
+  | { readonly placeholder: { readonly hue: number; readonly frames: number }; readonly fps: number }
+  | { readonly src: string; readonly fps: number };
+/** A prop entry: an image, or a loop whose frames one atlas `prop/<id>` holds (shots §2.4, W10). */
+export type CatalogProp = CatalogImage | { readonly loop: CatalogLoop };
+/**
  * An audio entry (bgm, sfx). The decoder accepts only the placeholder form: real audio is PP "Later". The `src` form
  * is typed so budget's K23 rule (WAV only for a placeholder) is reachable on a typed input and is seen failing before
  * that lane, which makes it decodable.
@@ -67,7 +76,7 @@ export type AssetCatalog = {
   bgm: Readonly<Record<TrackId, CatalogAudio>>;
   sfx: Readonly<Record<SfxId, CatalogAudio>>;
   /** PUZZLES-PLAN X11: named by world data, never by a tag; ≤ 512×512. */
-  prop: Readonly<Record<PropId, CatalogImage>>;
+  prop: Readonly<Record<PropId, CatalogProp>>;
   /** STORIES-PLAN Y15: always public, exactly 360×640. */
   cover: Readonly<Record<CoverId, CatalogImage>>;
 };
@@ -85,6 +94,8 @@ type Namespace = (typeof NAMESPACES)[number];
 /** Placeholder parameter ranges: a hue in degrees; a tone from A1 to A6, audible on a phone speaker. */
 const HUE = { min: 0, max: 359 } as const;
 const HZ = { min: 55, max: 1760 } as const;
+/** A loop prop's frame count (shots §4.4: at most 12 frames). */
+const LOOP_FRAMES = { min: 1, max: 12 } as const;
 
 type Raw = Readonly<Record<string, unknown>>;
 type Report = (path: string, detail: string) => void;
@@ -165,6 +176,70 @@ const bgEntry: EntryDecoder<CatalogBg> = (entry, path, report) => {
     return null;
   }
   return Object.keys(entry).length === 1 ? { src } : null;
+};
+
+/** A prop: an image's placeholder, or exactly one loop form with its fps; a `loop` beside a placeholder is one issue. */
+const propEntry: EntryDecoder<CatalogProp> = (entry, path, report) => {
+  if (!Object.hasOwn(entry, 'loop')) {
+    return imageEntry(entry, path, report);
+  }
+  const lp = `${path}.loop`;
+  if (Object.hasOwn(entry, 'placeholder')) {
+    report(lp, "beside 'placeholder' (a prop holds one of 'placeholder' and 'loop')");
+    return null;
+  }
+  let ok = true;
+  const bad = (at: string, detail: string): void => {
+    ok = false;
+    report(at, detail);
+  };
+  for (const k of Object.keys(entry).filter((name) => name !== 'loop')) {
+    bad(`${path}.${k}`, "unknown key (a prop holds 'placeholder' or 'loop')");
+  }
+  const loop = entry['loop'];
+  if (!isObject(loop)) {
+    report(lp, 'not an object');
+    return null;
+  }
+  for (const k of Object.keys(loop).filter((name) => !['placeholder', 'src', 'fps'].includes(name))) {
+    bad(`${lp}.${k}`, "unknown key (a loop holds 'placeholder' or 'src', and 'fps')");
+  }
+  const fps = loop['fps'];
+  if (typeof fps !== 'number' || !Number.isInteger(fps) || fps < 1) {
+    bad(`${lp}.fps`, Object.hasOwn(loop, 'fps') ? `${JSON.stringify(fps) ?? 'undefined'} is not a positive integer` : 'missing');
+  }
+  const [hasPlaceholder, hasSrc] = [Object.hasOwn(loop, 'placeholder'), Object.hasOwn(loop, 'src')];
+  if (hasPlaceholder === hasSrc) {
+    report(lp, hasSrc ? "both 'placeholder' and 'src' (a loop holds one)" : "neither 'placeholder' nor 'src'");
+    return null;
+  }
+  if (hasSrc) {
+    const id = path.slice(path.lastIndexOf('.') + 1); // `prop.<id>`: an id holds no '.'
+    const src = loop['src'];
+    if (src !== `loop/${id}`) {
+      bad(`${lp}.src`, `${JSON.stringify(src) ?? 'undefined'} is not 'loop/${id}' (a loop's source is its own directory)`);
+    }
+    return ok ? { loop: { src: src as string, fps: fps as number } } : null; // both checked above
+  }
+  const params = loop['placeholder'];
+  if (!isObject(params)) {
+    report(`${lp}.placeholder`, 'not an object');
+    return null;
+  }
+  for (const k of Object.keys(params).filter((name) => name !== 'hue' && name !== 'frames')) {
+    bad(`${lp}.placeholder.${k}`, 'unknown key (expected hue, frames)');
+  }
+  const param = (key: 'hue' | 'frames', range: { readonly min: number; readonly max: number }): number | null => {
+    const value = params[key];
+    if (typeof value === 'number' && Number.isInteger(value) && value >= range.min && value <= range.max) {
+      return value;
+    }
+    bad(`${lp}.placeholder.${key}`, Object.hasOwn(params, key) ? `${JSON.stringify(value) ?? 'undefined'} is not an integer ${range.min}..${range.max}` : 'missing');
+    return null;
+  };
+  const hue = param('hue', HUE);
+  const frames = param('frames', LOOP_FRAMES);
+  return ok && hue !== null && frames !== null ? { loop: { placeholder: { hue, frames }, fps: fps as number } } : null; // fps checked above
 };
 
 const audioEntry: EntryDecoder<CatalogAudio> = (entry, path, report) => {
@@ -275,7 +350,7 @@ export function decodeAssetCatalog(raw: unknown): Result<AssetCatalog, CatalogIs
   const cg = entries(field('cg'), 'cg', report, imageEntry);
   const bgm = entries(field('bgm'), 'bgm', report, audioEntry);
   const sfx = entries(field('sfx'), 'sfx', report, audioEntry);
-  const prop = entries(field('prop'), 'prop', report, imageEntry);
+  const prop = entries(field('prop'), 'prop', report, propEntry);
   const cover = entries(field('cover'), 'cover', report, imageEntry);
   distinctTones('bgm', bgm, report);
   distinctTones('sfx', sfx, report);

@@ -25,7 +25,8 @@ import { decodeWorldSource } from '../../src/world/decode.ts';
 import type { StoryUsage } from '../story/emit.ts';
 import type { ShotUsage } from '../story/shots/usage.ts';
 import { decodeLook, decodeShotRigs } from '../../src/story/shots.ts';
-import type { LookIndex, ShotRig } from '../../src/story/shots.ts';
+import { decodeLoops } from '../../src/story/shots.ts';
+import type { LookIndex, LoopRig, ShotRig } from '../../src/story/shots.ts';
 import type { EncodedHalf, HalfAsk } from './encode.ts';
 import { imageKind } from './placeholder.ts';
 
@@ -203,8 +204,10 @@ export function catalogImage(c: AssetCatalog, id: AssetId): CatalogImage | undef
     }
     case 'cg':
       return own(c.cg, a);
-    case 'prop':
-      return own(c.prop, a);
+    case 'prop': {
+      const prop = own(c.prop, a);
+      return prop !== undefined && 'placeholder' in prop ? prop : undefined;
+    }
     case 'cover':
       return own(c.cover, a);
     case 'char': {
@@ -360,8 +363,9 @@ function sortedRecord<T>(entries: Iterable<readonly [string, T]>): Record<string
  * The full output plan of the asset tool for tiers from `tierAll` and every non-unused asset encoded. Throws on a bug:
  * a paid file planned under client/, a free chapter's manifest holding an /api/ URL, a planned manifest its own
  * decoder refuses, a rig member or look image that is not one of its chapter's entries. Deterministic for the same
- * inputs and bytes. `shots`: per chapter, the rigs and look its manifest carries (key order chapterId, assets, shots,
- * look; each present only when non-empty).
+ * inputs and bytes. `shots`: per chapter, the rigs and look its manifest carries; `loops`: every loop prop's rig, by
+ * its atlas id, carried by each chapter that uses the prop (key order chapterId, assets, shots, look, loops; each
+ * present only when non-empty).
  */
 export function planAssets(input: {
   chapters: readonly ChapterListEntry[];
@@ -369,6 +373,7 @@ export function planAssets(input: {
   tiers: ReadonlyMap<AssetId, Tier>;
   encoded: ReadonlyMap<AssetId, Encoded>;
   shots?: ReadonlyMap<string, ChapterShotKeys>;
+  loops?: ReadonlyMap<AssetId, LoopRig>;
 }): AssetPlan {
   const files = new Map<string, Uint8Array>();
   const put = (path: string, bytes: Uint8Array): void => {
@@ -447,7 +452,19 @@ export function planAssets(input: {
     const keys = input.shots?.get(ch.id);
     const shots = keys !== undefined && Object.keys(keys.shots).length > 0 ? keys.shots : undefined;
     const look = keys?.look ?? undefined;
-    const manifest = { chapterId: ch.id, assets, ...(shots === undefined ? {} : { shots }), ...(look === undefined ? {} : { look }) };
+    const loops = sortedRecord(
+      Object.keys(assets).flatMap((id) => {
+        const rig = input.loops?.get(id as AssetId); // a key of `assets`: an asset id
+        return rig === undefined ? [] : [[id.slice(id.indexOf('/') + 1), rig] as const];
+      }),
+    );
+    const manifest = {
+      chapterId: ch.id,
+      assets,
+      ...(shots === undefined ? {} : { shots }),
+      ...(look === undefined ? {} : { look }),
+      ...(Object.keys(loops).length === 0 ? {} : { loops }),
+    };
     // A rig member or look image outside the chapter's own entries would make the runtime fetch a file the manifest
     // does not describe (and, for a gated one, a free chapter name it): the story tool's `assets` and its windows agree.
     const stray = [...memberFiles(shots), ...(look?.images ?? [])].find((id) => !Object.hasOwn(assets, id));
@@ -465,7 +482,8 @@ export function planAssets(input: {
     // The runtime's own decoders (src/story/shots.ts) take what the tool writes.
     const rigs = shots === undefined ? null : decodeShotRigs(decoded.value.shots);
     const windows = look === undefined ? null : decodeLook(decoded.value.look);
-    for (const d of [rigs, windows]) {
+    const loopRigs = Object.keys(loops).length === 0 ? null : decodeLoops(decoded.value.loops);
+    for (const d of [rigs, windows, loopRigs]) {
       if (d !== null && !d.ok) {
         throw new Error(`invariant: the planned ${ch.id} manifest's shot keys decode: ${d.error.join('; ')}`);
       }

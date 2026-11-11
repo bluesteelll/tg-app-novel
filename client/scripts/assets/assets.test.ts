@@ -9,9 +9,9 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { ASSET_ID_RE, decodeAssetCatalog, decodeAssetManifest, decodeCoverManifest } from '../../src/story/catalog.ts';
 import type { CatalogImage, CatalogIssue, ChapterListEntry, Trim } from '../../src/story/catalog.ts';
-import { decodeLook, decodeShotRigs, stepWindow } from '../../src/story/shots.ts';
+import { decodeLook, decodeLoops, decodeShotRigs, stepWindow } from '../../src/story/shots.ts';
 import type { FaceRig, ShotRig } from '../../src/story/shots.ts';
-import type { AssetId, BgId, ExprId } from '../../src/story/staging.ts';
+import type { AssetId, BgId, ExprId, PropId } from '../../src/story/staging.ts';
 import { main } from '../assets.ts';
 import type { Encoders } from '../assets.ts';
 import { decodeChapterList, decodeStoryUsage } from '../story/emit.ts';
@@ -140,6 +140,53 @@ describe('catalog', () => {
     const cg = rawCatalog();
     cg.cg = { letter: { src: 'shot/letter' } };
     expect(issues(decodeAssetCatalog(cg))).toEqual([at('cg.letter.src'), at('cg.letter.placeholder')]);
+  });
+
+  test('catalog: a loop prop decodes with its frames and fps', () => {
+    // Shots §2.4 (rev. 2, W10): a prop is an image or a loop, its frames from a placeholder (hue, 1..12 frames) or its
+    // own source directory (`loop/<id>`, SH3c), stepped at a positive integer fps.
+    const raw = rawCatalog();
+    raw.prop = {
+      note: { placeholder: { hue: 120 } },
+      fire: { loop: { placeholder: { hue: 20, frames: 6 }, fps: 8 } },
+      torch: { loop: { src: 'loop/torch', fps: 12 } },
+    };
+    const r = decodeAssetCatalog(raw);
+    expect(issues(r)).toEqual([]);
+    expect(r.ok && r.value.prop).toEqual({
+      note: { placeholder: { hue: 120 } },
+      fire: { loop: { placeholder: { hue: 20, frames: 6 }, fps: 8 } },
+      torch: { loop: { src: 'loop/torch', fps: 12 } },
+    });
+    const one = (fire: unknown): CatalogIssue[] => {
+      const c = rawCatalog();
+      c.prop = { fire };
+      return issues(decodeAssetCatalog(c));
+    };
+    const cases: ReadonlyArray<readonly [string, unknown, readonly string[]]> = [
+      ['no frame', { loop: { placeholder: { hue: 20, frames: 0 }, fps: 8 } }, ['prop.fire.loop.placeholder.frames']],
+      ['13 frames', { loop: { placeholder: { hue: 20, frames: 13 }, fps: 8 } }, ['prop.fire.loop.placeholder.frames']],
+      ['fractional frames', { loop: { placeholder: { hue: 20, frames: 1.5 }, fps: 8 } }, ['prop.fire.loop.placeholder.frames']],
+      ['hue over 359', { loop: { placeholder: { hue: 360, frames: 6 }, fps: 8 } }, ['prop.fire.loop.placeholder.hue']],
+      ['unknown placeholder key', { loop: { placeholder: { hue: 20, frames: 6, hz: 9 }, fps: 8 } }, ['prop.fire.loop.placeholder.hz']],
+      ['fps 0', { loop: { placeholder: { hue: 20, frames: 6 }, fps: 0 } }, ['prop.fire.loop.fps']],
+      ['fps as a string', { loop: { placeholder: { hue: 20, frames: 6 }, fps: '8' } }, ['prop.fire.loop.fps']],
+      ['no fps', { loop: { placeholder: { hue: 20, frames: 6 } } }, ['prop.fire.loop.fps']],
+      ["another loop's source", { loop: { src: 'loop/torch', fps: 8 } }, ['prop.fire.loop.src']],
+      ['a shot source', { loop: { src: 'shot/fire', fps: 8 } }, ['prop.fire.loop.src']],
+      ['both forms', { loop: { placeholder: { hue: 20, frames: 6 }, src: 'loop/fire', fps: 8 } }, ['prop.fire.loop']],
+      ['neither form', { loop: { fps: 8 } }, ['prop.fire.loop']],
+      ['unknown loop key', { loop: { src: 'loop/fire', fps: 8, speed: 2 } }, ['prop.fire.loop.speed']],
+      ['loop not an object', { loop: 8 }, ['prop.fire.loop']],
+      ['loop beside a placeholder', { placeholder: { hue: 20 }, loop: { src: 'loop/fire', fps: 8 } }, ['prop.fire.loop']],
+    ];
+    for (const [name, fire, paths] of cases) {
+      expect(one(fire), name).toEqual(paths.map(at));
+    }
+    // A loop is a prop's form only: on a bg it is an unknown key.
+    const bg = rawCatalog();
+    bg.bg = { cafe: { loop: { src: 'loop/cafe', fps: 8 } } };
+    expect(issues(decodeAssetCatalog(bg))).toEqual([at('bg.cafe.loop'), at('bg.cafe.placeholder')]);
   });
 });
 
@@ -1429,6 +1476,71 @@ describe('assets', () => {
     expect(existsSync(join(repo, 'client', 'src', 'story-gen'))).toBe(false);
     expect(listDir(repo, 'client/public/assets')).toEqual([]);
     expect(listDir(repo, 'server/content/assets')).toEqual([]);
+  });
+
+  test('assets: a loop prop packs its frames into one atlas with the loop rig in the manifest', async () => {
+    // Shots §2.4 (W10): a loop prop's frames are one atlas `prop/<id>`, a plain image entry; its frame boxes and fps
+    // travel in the manifest's top-level `loops`, for the chapters that use the prop.
+    const catalog = { ...REPO_CATALOG, prop: { ...REPO_CATALOG.prop, fire: { loop: { placeholder: { hue: 20, frames: 6 }, fps: 8 } } } };
+    const usage = { chapters: { ...REPO_USAGE.chapters, ch1: { ...REPO_USAGE.chapters.ch1, worldAssets: ['prop/fire'] } } };
+    writeRepo(repo, { 'assets/catalog.json': catalog, 'server/content/build/usage.json': usage });
+    const asked: Record<string, unknown> = {};
+    const svgs: Record<string, string> = {};
+    const recording: Encoders = {
+      ...FAKE_ENCODERS,
+      encodeImage: (svg, o) => {
+        const text = new TextDecoder().decode(svg);
+        const id = /<text\b[^>]*>([^<]+)<\/text>/.exec(text)?.[1] ?? '(no label)';
+        [asked[id], svgs[id]] = [o, text];
+        return FAKE_ENCODERS.encodeImage(svg, o);
+      },
+    };
+    const r = await runTool(repo, recording);
+    expect(r.code, r.err.join('\n')).toBe(0);
+    expect(asked['prop/fire']).toEqual({ trim: false, half: 'any' }); // the frames are the rig's boxes: never trimmed
+    expect(svgs['prop/fire']?.match(/<rect\b/g)).toHaveLength(6);
+    expect(listDir(repo, 'client/public/assets').filter((n) => n.startsWith('prop-fire-'))).toHaveLength(2);
+    const ch1 = JSON.parse(readRel(repo, 'client/src/story-gen/free/ch1.assets.json')) as Record<string, unknown>;
+    expect(Object.keys(ch1)).toEqual(['chapterId', 'assets', 'loops']);
+    const entry = (ch1['assets'] as Record<string, { w: number; h: number }>)['prop/fire'];
+    const loops = decodeLoops(ch1['loops']);
+    expect(loops.ok ? [] : loops.error).toEqual([]);
+    const fire = loops.ok ? loops.value.get('fire' as PropId) : undefined;
+    expect(fire?.fps).toBe(8);
+    expect(fire?.frames).toHaveLength(6);
+    for (const [x, y, w, h] of fire?.frames ?? []) {
+      expect([w, h]).toEqual([512, 512]);
+      expect([x % 2, y % 2]).toEqual([0, 0]);
+      expect(x + w <= (entry?.w ?? 0) && y + h <= (entry?.h ?? 0)).toBe(true);
+    }
+    expect(new Set((fire?.frames ?? []).map((f) => f.join(','))).size).toBe(6);
+    expect([entry?.w, entry?.h]).toEqual([2048, 1024]);
+    // A chapter that does not use the prop carries no loop.
+    expect(Object.keys(JSON.parse(readRel(repo, 'server/content/chapters/ch2/assets.json')) as object)).toEqual(['chapterId', 'assets']);
+  });
+
+  test('assets: a loop prop used only by a paid chapter is gated', async () => {
+    const catalog = { ...REPO_CATALOG, prop: { ...REPO_CATALOG.prop, fire: { loop: { placeholder: { hue: 20, frames: 3 }, fps: 6 } } } };
+    const usage = { chapters: { ...REPO_USAGE.chapters, ch2: { ...REPO_USAGE.chapters.ch2, worldAssets: ['prop/fire'] } } };
+    writeRepo(repo, { 'assets/catalog.json': catalog, 'server/content/build/usage.json': usage });
+    const r = await runTool(repo, HALVING_FAKES);
+    expect(r.code, r.err.join('\n')).toBe(0);
+    const fire = (dir: string): string[] => listDir(repo, dir).filter((n) => n.startsWith('prop-fire-'));
+    expect(fire('server/content/assets')).toHaveLength(4); // full and half, both formats
+    expect(fire('client/public/assets')).toEqual([]);
+    const fp = decodeAssetFingerprints(JSON.parse(readRel(repo, 'server/content/build/fingerprints.assets.json')));
+    expect((fp.ok ? fp.value.files : []).filter((f) => f.asset === 'prop/fire').map((f) => f.name).sort()).toEqual(fire('server/content/assets'));
+    const ch2 = JSON.parse(readRel(repo, 'server/content/chapters/ch2/assets.json')) as { assets: Record<string, RawEntry>; loops?: unknown };
+    expect(ch2.assets['prop/fire']?.['avif']).toEqual({ url: expect.stringMatching(/^\/api\/assets\/prop-fire-[0-9a-f]{8}\.avif$/) as string, bytes: expect.any(Number) as number });
+    const loops = decodeLoops(ch2.loops);
+    expect(loops.ok ? [...loops.value.keys()] : loops.error).toEqual(['fire']);
+    const ch1 = readRel(repo, 'client/src/story-gen/free/ch1.assets.json');
+    expect(ch1).not.toContain('fire');
+    // The src form waits for extraction like a src bg.
+    writeRepo(repo, { 'assets/catalog.json': { ...catalog, prop: { ...catalog.prop, fire: { loop: { src: 'loop/fire', fps: 6 } } } }, 'server/content/build/usage.json': usage });
+    const src = await runTool(repo, HALVING_FAKES);
+    expect(src.code).toBe(1);
+    expect(src.err).toEqual(['assets: prop/fire: src loop/fire waits for extraction (SH3c)']);
   });
 
   test('assets: a chapter manifest carries only the rigs, members and files its chapter uses', async () => {
