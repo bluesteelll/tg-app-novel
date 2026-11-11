@@ -18,7 +18,7 @@ import { decodeAssetFingerprints } from './assets/manifest.ts';
 import type { AssetFingerprint } from './assets/manifest.ts';
 import { decodeChapterList, decodeLineFingerprints, decodeStoryUsage } from './story/emit.ts';
 import type { StoryUsage } from './story/emit.ts';
-import { unescapeInk } from './story/classify.ts';
+import { stripComments, unescapeInk } from './story/classify.ts';
 import { decodeEnTable } from './story/locales.ts';
 import { META_FILE } from './story/meta.ts';
 import { STORIES_FILE } from './story/stories.ts';
@@ -532,8 +532,9 @@ function worldSections(repo: string, chapters: readonly ChapterListEntry[], fail
   const publicTexts: string[] = [];
   for (const dir of [...free, 'common']) {
     for (const rel of filesUnder(repo, `story/${dir}`, '.ink')) {
-      const ink = readRepoText(repo, rel) ?? '';
-      publicTexts.push(ink, unescapeInk(ink));
+      // Comments are never compiled or shown (carry Q9): a paid text quoted in one is not public.
+      const code = stripComments(readRepoText(repo, rel) ?? '');
+      publicTexts.push(code, unescapeInk(code));
     }
   }
   for (const ch of free) {

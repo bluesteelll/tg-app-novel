@@ -830,6 +830,17 @@ describe('scan worlds', () => {
     const found = scanFiles([INDEX, text('assets/index-a.js', `const l=${leak};export{l};`)], sections).flatMap((f) => (f.kind === 'fingerprint' ? [`${f.section} ${f.needle}`] : []));
     expect(found).toEqual(expect.arrayContaining([`hint-texts ${HINT_RU}`, `hint-texts ${HINT_EN}`, `paid-world-texts ${PAID_TEXT}`, `paid-world-ids ${PAID_ID}`]));
   });
+
+  test("scan: a paid world text in a free chapter's ink comment keeps its needle", () => {
+    // An ink comment is never displayed or compiled (carry Q9): a paid text quoted in a free chapter's comment is not
+    // public, so its needle stays, line and block comments alike.
+    const ink = `// ${PAID_TEXT}\n${PUBLIC_INK}/* ${PAID_TEXT} */\n`;
+    const { sections, findings } = setup({ 'story/ch1/main.ink': ink, 'story/ch2/world.json': world('ch2', { id: PAID_ID, ru: PAID_TEXT }, []) });
+    expect(findings).toEqual([]);
+    expect(section(sections, 'paid-world-texts')).toEqual([PAID_TEXT]);
+    const found = scanFiles([INDEX, text('assets/index-a.js', `const p=${JSON.stringify(PAID_TEXT)};export{p};`)], sections);
+    expect(found).toContainEqual({ kind: 'fingerprint', file: 'assets/index-a.js', section: 'paid-world-texts', needle: PAID_TEXT, via: 'plain' });
+  });
 });
 
 // ---------------------------------------------------------------------------------------------------------------
