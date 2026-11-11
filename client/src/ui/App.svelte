@@ -8,12 +8,15 @@
   // The Stage mounts with the engine and stays for the page's life (one Pixi Application; the scene itself mounts at
   // the first start), under the opaque Home and notice layers. The cue layer (engine plan §8.1) sits above the frame
   // layer and below Home, the overlays and the toasts, once the session has loaded the cue stage's chunk; it takes no
-  // tap. Every layer is full-bleed: each
-  // component pads itself past the safe area, and the hotspot layer lives inside the Stage host, the box the canvas
-  // and the hotspot rects share. Below the top overlay every layer is inert. Player-facing words come from the UI
-  // tables only (principle 8).
+  // tap. Q67: the root is one phone-shaped column and every layer fills its one design box: a window at most 480 CSS px
+  // wide is a phone, its column the whole window; a wider one gets a centred 9:16 column (the stage's own shape). A
+  // column narrower than the design width lays the design box out at that width and draws it scaled down as one unit
+  // (`fitColumn` keeps the scale). Each component pads itself past the safe area, and the hotspot layer lives inside
+  // the Stage host, the box the canvas and the hotspot rects share. Below the top overlay every layer is inert.
+  // Player-facing words come from the UI tables only (principle 8).
   import type { AppHandle } from '../app/boot.ts';
   import { t } from '../i18n/index.ts';
+  import { fitColumn } from '../telegram/viewport.ts';
   import ChapterSelect from './ChapterSelect.svelte';
   import Notice from './Notice.svelte';
   import type { ScreenKind } from './screens.ts';
@@ -61,241 +64,248 @@
     el.addEventListener('click', capture, { capture: true });
     return () => el.removeEventListener('click', capture, { capture: true });
   });
+
+  // Q67: the column's scale follows its size (Telegram's height, the window); the observer ends with the root.
+  $effect(() => (rootEl === undefined ? undefined : fitColumn(rootEl)));
 </script>
 
 <div class="app" bind:this={rootEl}>
-  {#if ui !== null && game !== null}
-    <div class="layer" inert={root !== 'game' || covered || ui.puzzle.covers}>
-      <ui.Stage onhost={(el) => game?.attachStage(el)}>
-        {#if root === 'game' && ui.explore.layer !== null}
-          {@const Layer = ui.explore.layer}
-          <Layer lang={vm.lang} view={ui.explore} actions={game.exploreActions} puzzle={ui.puzzle} puzzleActions={game.puzzleActions} />
-        {/if}
-      </ui.Stage>
-      {#if root === 'game'}
-        {#if ui.explore.layer === null}
-          <ui.DialogueBox
-            line={vm.line}
-            speed={vm.speed}
-            reducedMotion={vm.reducedMotion}
-            paused={vm.paused}
-            lang={vm.lang}
-            stageTap={vm.stageTap}
-            onadvance={() => void game?.advance()}
-            ondone={() => game?.lineShown()}
-          />
-        {/if}
-        <ui.Choices set={vm.choices} lang={vm.lang} onchoose={(i) => void game?.choose(i)} />
-        <ui.QuickBar
-          mode={vm.mode}
-          lang={vm.lang}
-          onmode={(m) => game?.setMode(m)}
-          onbacklog={() => game?.openBacklog()}
-          onmenu={() => game?.openMenu()}
-        />
-      {/if}
-    </div>
-    {#if root === 'game' && frame !== null && ui.puzzle.covers}
-      <div class="layer frame-layer" inert={covered}>
-        {#if puzzleHost !== null}
-          {@const Host = puzzleHost}
-          <Host lang={vm.lang} {frame} ladder={ui.puzzle.ladder} {...game.puzzleActions} />
-        {:else if hostFailed}
-          <section class="host-failed" role="alert" data-cue-notice data-cue-panel="puzzle">
-            <p>{t(vm.lang, 'puzzle.load_failed')}</p>
-            <button type="button" data-cue="puzzle-retry" disabled={frame.retrying} onclick={() => game?.puzzleActions.onretry()}>
-              {t(vm.lang, 'puzzle.retry')}
-            </button>
-          </section>
-        {/if}
-      </div>
-    {/if}
-  {/if}
-
-  {#if vm.cueStage !== null}
-    {@const cue = vm.cueStage}
-    <div class="layer cue-layer">
-      <cue.component
-        subscribe={cue.subscribe}
-        orphans={cue.orphans}
-        dropped={cue.dropped}
-        host={cue.host}
-        haptic={cue.haptic}
-        reduced={vm.reducedMotion}
-      />
-    </div>
-  {/if}
-
-  {#if root === 'home'}
-    <div class="layer" inert={covered}>
-      {#if vm.cards.length === 0}
-        <div class="wait"><span aria-hidden="true">▶</span></div>
-      {:else}
-        <TapToStart lang={vm.lang} continueLabel={vm.continueLabel} oncontinue={() => app.home.continue()}>
-          <div class="cards">
-            <StoryPicker
-              cards={vm.cards}
+  <div class="design">
+    {#if ui !== null && game !== null}
+      <div class="layer" inert={root !== 'game' || covered || ui.puzzle.covers}>
+        <ui.Stage onhost={(el) => game?.attachStage(el)}>
+          {#if root === 'game' && ui.explore.layer !== null}
+            {@const Layer = ui.explore.layer}
+            <Layer lang={vm.lang} view={ui.explore} actions={game.exploreActions} puzzle={ui.puzzle} puzzleActions={game.puzzleActions} />
+          {/if}
+        </ui.Stage>
+        {#if root === 'game'}
+          {#if ui.explore.layer === null}
+            <ui.DialogueBox
+              line={vm.line}
+              speed={vm.speed}
+              reducedMotion={vm.reducedMotion}
+              paused={vm.paused}
               lang={vm.lang}
-              onstart={(id) => app.home.start(id)}
-              oncontinue={(id) => app.home.resume(id)}
-              onchapters={(id) => app.home.chapters(id)}
-              oncard={(id) => app.metaTaps.card(id)}
-              onfriends={() => app.metaTaps.friends()}
-              onwallet={() => app.metaTaps.wallet()}
-            />
-          </div>
-        </TapToStart>
-      {/if}
-    </div>
-  {:else if root === 'notice' && vm.notice !== null}
-    <div class="layer" inert={covered}>
-      <Notice notice={vm.notice} lang={vm.lang} />
-    </div>
-  {/if}
-
-  {#each overlays as o, i (o.kind)}
-    {#if OWN.has(o.kind)}
-      <div class="layer" inert={i < overlays.length - 1}>
-        {#if o.kind === 'chapters'}
-          {@const story = o.story}
-          {#if vm.chapters !== null}
-            <ChapterSelect
-              story={vm.chapters.story}
-              chapters={vm.chapters.rows}
-              lang={vm.lang}
-              onchapter={(id) => app.home.chapter(story, id)}
+              stageTap={vm.stageTap}
+              onadvance={() => void game?.advance()}
+              ondone={() => game?.lineShown()}
             />
           {/if}
-        {:else if ui !== null && game !== null}
-          {@const k = vm.overlayUi}
-          {#if o.kind === 'paywall'}
-            {#if vm.paywall !== null}
-              <ui.Paywall
-                chapter={vm.paywall.chapter}
-                priceStars={vm.paywall.priceStars}
-                state={vm.paywall.state}
+          <ui.Choices set={vm.choices} lang={vm.lang} onchoose={(i) => void game?.choose(i)} />
+          <ui.QuickBar
+            mode={vm.mode}
+            lang={vm.lang}
+            onmode={(m) => game?.setMode(m)}
+            onbacklog={() => game?.openBacklog()}
+            onmenu={() => game?.openMenu()}
+          />
+        {/if}
+      </div>
+      {#if root === 'game' && frame !== null && ui.puzzle.covers}
+        <div class="layer frame-layer" inert={covered}>
+          {#if puzzleHost !== null}
+            {@const Host = puzzleHost}
+            <Host lang={vm.lang} {frame} ladder={ui.puzzle.ladder} {...game.puzzleActions} />
+          {:else if hostFailed}
+            <section class="host-failed" role="alert" data-cue-notice data-cue-panel="puzzle">
+              <p>{t(vm.lang, 'puzzle.load_failed')}</p>
+              <button type="button" data-cue="puzzle-retry" disabled={frame.retrying} onclick={() => game?.puzzleActions.onretry()}>
+                {t(vm.lang, 'puzzle.retry')}
+              </button>
+            </section>
+          {/if}
+        </div>
+      {/if}
+    {/if}
+
+    {#if vm.cueStage !== null}
+      {@const cue = vm.cueStage}
+      <div class="layer cue-layer">
+        <cue.component
+          subscribe={cue.subscribe}
+          orphans={cue.orphans}
+          dropped={cue.dropped}
+          host={cue.host}
+          haptic={cue.haptic}
+          reduced={vm.reducedMotion}
+        />
+      </div>
+    {/if}
+
+    {#if root === 'home'}
+      <div class="layer" inert={covered}>
+        {#if vm.cards.length === 0}
+          <div class="wait"><span aria-hidden="true">▶</span></div>
+        {:else}
+          <TapToStart lang={vm.lang} continueLabel={vm.continueLabel} oncontinue={() => app.home.continue()}>
+            <div class="cards">
+              <StoryPicker
+                cards={vm.cards}
                 lang={vm.lang}
-                onbuy={() => game?.buy()}
-                oncheckagain={() => game?.checkAgain()}
-                onterms={() => game?.openTerms()}
-                onretry={() => void game?.retryPrice()}
-              />
-            {/if}
-          {:else if o.kind === 'terms'}
-            <ui.Terms lang={vm.lang} onpolicy={() => app.metaTaps.policy()} />
-          {:else if k !== null}
-            {#if o.kind === 'menu'}
-              <k.Menu
-                lang={vm.lang}
-                onsaves={() => void game?.openSaves()}
-                onsettings={() => game?.openSettings()}
-                onstories={() => void game?.exitToStories()}
+                onstart={(id) => app.home.start(id)}
+                oncontinue={(id) => app.home.resume(id)}
+                onchapters={(id) => app.home.chapters(id)}
+                oncard={(id) => app.metaTaps.card(id)}
                 onfriends={() => app.metaTaps.friends()}
                 onwallet={() => app.metaTaps.wallet()}
               />
-            {:else if o.kind === 'backlog'}
-              <k.Backlog lines={vm.backlog} lang={vm.lang} />
-            {:else if o.kind === 'settings'}
-              <k.Settings settings={vm.settings} lang={vm.lang} onchange={(next) => game?.setSettings(next)} />
-            {:else if o.kind === 'saves'}
-              <k.SaveLoad
-                slots={vm.saves.slots}
-                lang={vm.lang}
-                saving={vm.saves.saving}
-                conflict={vm.saves.conflict}
-                failed={vm.saves.failed}
-                onsave={(slot) => void game?.save(slot)}
-                onoverwrite={(slot) => void game?.overwrite(slot)}
-                oncancel={() => game?.cancelOverwrite()}
-                onload={(slot) => void game?.load(slot)}
-              />
-            {/if}
-          {/if}
+            </div>
+          </TapToStart>
         {/if}
       </div>
-    {:else if META.has(o.kind) && meta !== null && mui !== null}
-      <div class="layer" inert={i < overlays.length - 1}>
-        {#if o.kind === 'card'}
-          {#if meta.card !== null}
-            {@const story = meta.card.story}
-            <mui.CompletionCard card={meta.card.data} storyTitle={meta.card.storyTitle} lang={vm.lang} onshare={() => void ctl?.share(story)} />
-          {/if}
-        {:else if o.kind === 'friends'}
-          {#if meta.social !== null}
-            <mui.Friends
-              social={meta.social}
-              lang={vm.lang}
-              busy={meta.busy.social}
-              onaccept={(h) => ctl?.accept(h)}
-              ondecline={(h) => ctl?.remove(h)}
-              onopen={(h) => ctl?.openProfile(h)}
-              oninvite={() => void ctl?.share(null)}
-              onconsent={() => ctl?.openConsent()}
-              onpolicy={() => ctl?.openPolicy()}
-              onrotate={() => ctl?.rotate()}
-            />
-          {/if}
-        {:else if o.kind === 'friend'}
-          {#if meta.profile !== null}
-            <mui.FriendProfile
-              profile={meta.profile}
-              lang={vm.lang}
-              busy={meta.busy.social}
-              ongift={(h) => ctl?.openGift(h)}
-              onremove={(h) => ctl?.remove(h)}
-            />
-          {/if}
-        {:else if o.kind === 'wallet'}
-          {#if meta.wallet !== null}
-            <mui.Wallet
-              wallet={meta.wallet}
-              lang={vm.lang}
-              busy={meta.busy.wallet}
-              onbuy={(p) => ctl?.buyPack(p)}
-              onterms={() => ctl?.openTerms()}
-            />
-          {/if}
-        {:else if o.kind === 'gift'}
-          {#if meta.gift !== null}
-            {@const g = meta.gift}
-            <mui.GiftDialog
-              friend={g.friend}
-              kind={g.kind}
-              balance={g.balance}
-              maxAmount={g.maxAmount}
-              error={g.error}
-              lang={vm.lang}
-              busy={g.busy}
-              onsend={(n) => void ctl?.gift(g.friend.handle, g.kind, n)}
-              oncancel={() => ctl?.cancelGift()}
-            />
-          {/if}
-        {:else if o.kind === 'consent'}
-          {#if meta.social !== null}
-            <mui.ConsentDialog
-              granted={meta.social.profileVisible}
-              lang={vm.lang}
-              busy={meta.busy.consent}
-              onchange={(on, version) => ctl?.setVisible(on, version)}
-              onpolicy={() => ctl?.openPolicy()}
-            />
-          {/if}
-        {:else if o.kind === 'invite'}
-          <mui.InvitePrompt
-            lang={vm.lang}
-            busy={meta.busy.invite}
-            onsend={() => ctl?.sendInvite()}
-            onlater={() => ctl?.dismissInvite()}
-          />
-        {/if}
+    {:else if root === 'notice' && vm.notice !== null}
+      <div class="layer" inert={covered}>
+        <Notice notice={vm.notice} lang={vm.lang} />
       </div>
     {/if}
-  {/each}
 
-  <Toast toasts={vm.toasts} lang={vm.lang} ondismiss={(key) => vm.dismissToast(key)} />
+    {#each overlays as o, i (o.kind)}
+      {#if OWN.has(o.kind)}
+        <div class="layer" inert={i < overlays.length - 1}>
+          {#if o.kind === 'chapters'}
+            {@const story = o.story}
+            {#if vm.chapters !== null}
+              <ChapterSelect
+                story={vm.chapters.story}
+                chapters={vm.chapters.rows}
+                lang={vm.lang}
+                onchapter={(id) => app.home.chapter(story, id)}
+              />
+            {/if}
+          {:else if ui !== null && game !== null}
+            {@const k = vm.overlayUi}
+            {#if o.kind === 'paywall'}
+              {#if vm.paywall !== null}
+                <ui.Paywall
+                  chapter={vm.paywall.chapter}
+                  priceStars={vm.paywall.priceStars}
+                  state={vm.paywall.state}
+                  lang={vm.lang}
+                  onbuy={() => game?.buy()}
+                  oncheckagain={() => game?.checkAgain()}
+                  onterms={() => game?.openTerms()}
+                  onretry={() => void game?.retryPrice()}
+                />
+              {/if}
+            {:else if o.kind === 'terms'}
+              <ui.Terms lang={vm.lang} onpolicy={() => app.metaTaps.policy()} />
+            {:else if k !== null}
+              {#if o.kind === 'menu'}
+                <k.Menu
+                  lang={vm.lang}
+                  onsaves={() => void game?.openSaves()}
+                  onsettings={() => game?.openSettings()}
+                  onstories={() => void game?.exitToStories()}
+                  onfriends={() => app.metaTaps.friends()}
+                  onwallet={() => app.metaTaps.wallet()}
+                />
+              {:else if o.kind === 'backlog'}
+                <k.Backlog lines={vm.backlog} lang={vm.lang} />
+              {:else if o.kind === 'settings'}
+                <k.Settings settings={vm.settings} lang={vm.lang} onchange={(next) => game?.setSettings(next)} />
+              {:else if o.kind === 'saves'}
+                <k.SaveLoad
+                  slots={vm.saves.slots}
+                  lang={vm.lang}
+                  saving={vm.saves.saving}
+                  conflict={vm.saves.conflict}
+                  failed={vm.saves.failed}
+                  onsave={(slot) => void game?.save(slot)}
+                  onoverwrite={(slot) => void game?.overwrite(slot)}
+                  oncancel={() => game?.cancelOverwrite()}
+                  onload={(slot) => void game?.load(slot)}
+                />
+              {/if}
+            {/if}
+          {/if}
+        </div>
+      {:else if META.has(o.kind) && meta !== null && mui !== null}
+        <div class="layer" inert={i < overlays.length - 1}>
+          {#if o.kind === 'card'}
+            {#if meta.card !== null}
+              {@const story = meta.card.story}
+              <mui.CompletionCard card={meta.card.data} storyTitle={meta.card.storyTitle} lang={vm.lang} onshare={() => void ctl?.share(story)} />
+            {/if}
+          {:else if o.kind === 'friends'}
+            {#if meta.social !== null}
+              <mui.Friends
+                social={meta.social}
+                lang={vm.lang}
+                busy={meta.busy.social}
+                onaccept={(h) => ctl?.accept(h)}
+                ondecline={(h) => ctl?.remove(h)}
+                onopen={(h) => ctl?.openProfile(h)}
+                oninvite={() => void ctl?.share(null)}
+                onconsent={() => ctl?.openConsent()}
+                onpolicy={() => ctl?.openPolicy()}
+                onrotate={() => ctl?.rotate()}
+              />
+            {/if}
+          {:else if o.kind === 'friend'}
+            {#if meta.profile !== null}
+              <mui.FriendProfile
+                profile={meta.profile}
+                lang={vm.lang}
+                busy={meta.busy.social}
+                ongift={(h) => ctl?.openGift(h)}
+                onremove={(h) => ctl?.remove(h)}
+              />
+            {/if}
+          {:else if o.kind === 'wallet'}
+            {#if meta.wallet !== null}
+              <mui.Wallet
+                wallet={meta.wallet}
+                lang={vm.lang}
+                busy={meta.busy.wallet}
+                onbuy={(p) => ctl?.buyPack(p)}
+                onterms={() => ctl?.openTerms()}
+              />
+            {/if}
+          {:else if o.kind === 'gift'}
+            {#if meta.gift !== null}
+              {@const g = meta.gift}
+              <mui.GiftDialog
+                friend={g.friend}
+                kind={g.kind}
+                balance={g.balance}
+                maxAmount={g.maxAmount}
+                error={g.error}
+                lang={vm.lang}
+                busy={g.busy}
+                onsend={(n) => void ctl?.gift(g.friend.handle, g.kind, n)}
+                oncancel={() => ctl?.cancelGift()}
+              />
+            {/if}
+          {:else if o.kind === 'consent'}
+            {#if meta.social !== null}
+              <mui.ConsentDialog
+                granted={meta.social.profileVisible}
+                lang={vm.lang}
+                busy={meta.busy.consent}
+                onchange={(on, version) => ctl?.setVisible(on, version)}
+                onpolicy={() => ctl?.openPolicy()}
+              />
+            {/if}
+          {:else if o.kind === 'invite'}
+            <mui.InvitePrompt
+              lang={vm.lang}
+              busy={meta.busy.invite}
+              onsend={() => ctl?.sendInvite()}
+              onlater={() => ctl?.dismissInvite()}
+            />
+          {/if}
+        </div>
+      {/if}
+    {/each}
+
+    <Toast toasts={vm.toasts} lang={vm.lang} ondismiss={(key) => vm.dismissToast(key)} />
+  </div>
 </div>
 
 <style>
+  /* The column (Q67). As a phone it is the whole window; the side insets reach the components through the design box
+     like the vertical ones. `overflow: hidden` keeps a motion that flies out of the column (an `edge` landing) in it. */
   .app {
     position: relative;
     width: 100%;
@@ -303,6 +313,47 @@
     overflow: hidden;
     background: #000;
     color: #fff;
+    --win-inset-top: var(--app-inset-top);
+    --win-inset-bottom: var(--app-inset-bottom);
+    --win-inset-left: var(--app-inset-left);
+    --win-inset-right: var(--app-inset-right);
+  }
+
+  /* Every layer's box: the column's, or the design width's when `fitColumn` sets `--col-scale` (a column narrower
+     than it), drawn scaled from the top left. Without the number the three declarations that read it bare are
+     invalid at computed-value time, i.e. `unset` (`auto`, `auto`, `none`; css-variables-1 §3.1): the box fills the
+     column untransformed. An inset is client px, so inside a scaled box it is divided by the scale: the components'
+     padding then draws exactly the window's inset. */
+  .design {
+    position: absolute;
+    inset: 0;
+    transform-origin: 0 0;
+    width: calc(100% / var(--col-scale));
+    height: calc(100% / var(--col-scale));
+    transform: scale(var(--col-scale));
+    --app-inset-top: calc(var(--win-inset-top) / var(--col-scale, 1));
+    --app-inset-bottom: calc(var(--win-inset-bottom) / var(--col-scale, 1));
+    --app-inset-left: calc(var(--win-inset-left) / var(--col-scale, 1));
+    --app-inset-right: calc(var(--win-inset-right) / var(--col-scale, 1));
+  }
+
+  /* Q67 (W1): wider than a phone, by the window's width only, so Telegram's height changes never toggle it (`480.02px`:
+     a fractional width falls in exactly one branch; classic syntax, which every WebView parses). index.html's `#app`
+     side padding uses the same line: a media query cannot read a custom property. The column is min(width,
+     height x 9/16), centred inside the window's horizontal safe area by that padding, so nothing in it is
+     horizontally unsafe: the side insets are `initial` inside it, and every reader's `, 0px` fallback applies. After
+     `.design`, so its `initial` wins by order. */
+  @media (min-width: 480.02px) {
+    .app {
+      width: auto;
+      max-width: 100%;
+      aspect-ratio: 9 / 16;
+    }
+
+    .design {
+      --app-inset-left: initial;
+      --app-inset-right: initial;
+    }
   }
 
   .layer {

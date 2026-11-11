@@ -14,10 +14,19 @@
         overflow: hidden;
         touch-action: manipulation;
       }
+      /* Q67: centres App's column, which is the whole window at most 480 CSS px wide. */
       #app {
         position: fixed;
         inset: 0 0 auto 0;
         height: var(--tg-viewport-stable-height, 100%);
+        display: flex;
+        justify-content: center;
+      }
+      /* Wider than a phone (App.svelte's column query is the same line): the column sits in the horizontal safe area. */
+      @media (min-width: 480.02px) {
+        #app {
+          padding: 0 var(--app-inset-right, 0px) 0 var(--app-inset-left, 0px);
+        }
       }
     </style>
   </head>
