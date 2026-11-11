@@ -352,6 +352,16 @@ describe('extract', () => {
     const motion = pack.cast[0]?.exprs.get('neutral' as ExprId)?.motion;
     expect([motion?.joint?.half.file, motion?.joint?.closed.file]).toEqual(['sheet/cafe', 'sheet/cafe']);
     expect((pack.files.get('sheet/cafe' as AssetId)?.items ?? []).map((i) => i.key).filter((k) => k.includes('joint'))).toEqual(['ally/neutral/joint.half', 'ally/neutral/joint.closed']);
+    // Cut D7's copy (triage r2 F1): smile's diff meets neither rest box, so it reuses the rest blink and accent, and with
+    // them the rest's own joint: no smile joint file is asked for (D7 never has them drawn), and nothing is re-cut
+    // against smile's raster (that cut takes smile's diff into the joint box).
+    const loaded: string[] = [];
+    const both = layersOf(await extract(fx, [needOf('ch1', [['neutral', false], ['smile', false]])], loaded));
+    expect(loaded.filter((f) => /^ally\.smile\.(accent|half|closed)/.test(f))).toEqual([]);
+    const [restBoth, smile] = [exprOf(both, 'neutral'), exprOf(both, 'smile')];
+    expect([restBoth.joint?.half.box, restBoth.joint?.closed.box]).toEqual([joint, joint]);
+    expect(smile.joint?.half).toBe(restBoth.joint?.half);
+    expect(smile.joint?.closed).toBe(restBoth.joint?.closed);
   });
 
   test('assets: an expression named like a face state is refused by name', async () => {
