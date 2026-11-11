@@ -14,6 +14,8 @@ import type { MechanicData, OwnedRaw } from '../contract.ts';
 import { core } from './core.ts';
 import { decodeUse, encodeUse, normalizeUse } from './use.ts';
 import type { UseData } from './use.ts';
+import { decodeVisual, encodeVisual, normalizeVisual } from './visual.ts';
+import type { VisualData } from './visual.ts';
 
 const use = {
   id: 'use',
@@ -27,7 +29,16 @@ const use = {
   normalize: normalizeUse,
 } satisfies MechanicData<'use', UseData>;
 
-export const MECHANIC_DATA = [core, use] as const;
+const visual = {
+  id: 'visual',
+  rules: 'chunk',
+  owns: { hotspot: ['states', 'is'], room: ['decor'], facts: [] },
+  decode: decodeVisual,
+  encode: encodeVisual as (d: unknown) => OwnedRaw,
+  normalize: normalizeVisual,
+} satisfies MechanicData<'visual', VisualData>;
+
+export const MECHANIC_DATA = [core, use, visual] as const;
 
 /** A data registry as a decode takes it: `MECHANIC_DATA`, or a test's fixture modules beside it. */
 export type DataRegistry = readonly MechanicData<string, unknown, unknown>[];
