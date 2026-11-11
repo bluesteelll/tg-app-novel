@@ -1015,6 +1015,7 @@ be in effect after its batch's cut.
 | `art/pending` | W | a needed face state (shot, character, expression) has no art: the shot's bg is a placeholder; the message names the lines that need it (E under `--strict`, as every W) |
 | `flow/edge-missing` | E | a seeded playthrough made a step transition the step flow lacks (only transitions some run makes fail) |
 | `flow/unsupported` | E | a construct the step flow does not model: a thread `<-`, a divert to no knot, stitch or label, a choice or a gather inside a conditional or sequence block |
+| `budget/step-window` | E | a window of `build/shots.json` holds more than 32 MiB (the registry's steady cap): its files in effect at full (decoded + the larger kept file), the next appearance's files at full when they are certain at the next step, the other openers at their kept bytes, and 2 MiB per room label bound (§8 "Budgets"); it needs the decoded sizes, so `npm --prefix client run build` enforces it (`budget.ts`, the `step-window` rows), not `story` |
 
 ### 14.4 What the shot pass writes and reports
 

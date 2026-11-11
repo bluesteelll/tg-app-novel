@@ -27,6 +27,10 @@ import { imageKind } from './assets/placeholder.ts';
 import type { ImageKind } from './assets/placeholder.ts';
 import { decodeChapterList, decodeStoryUsage } from './story/emit.ts';
 import type { StoryUsage } from './story/emit.ts';
+import type { ShotLintCode } from './story/shots/lint.ts';
+import { SHOTS_FILE } from './story/shots/list.ts';
+import { SHOT_USAGE_FILE, decodeShotUsage } from './story/shots/usage.ts';
+import type { ChapterShots, ShotUsage, WindowRefs } from './story/shots/usage.ts';
 
 export type Status = 'PASS' | 'FAIL' | 'PENDING';
 export type Row = {
@@ -120,6 +124,8 @@ export type Limits = {
   firstKnotImages: number;
   knotSet: number;
   roomSet: number;
+  /** Shots §3.4 `budget/step-window`: what one window of build/shots.json holds (the registry's steady cap). */
+  stepWindow: number;
   firstLoad: number;
   image: Readonly<Record<ImageKind, { avif: number; webp: number }>>;
   bgmM4aBytes: number;
@@ -159,6 +165,7 @@ export const LIMITS: Limits = {
   // What the registry admits as preloads: decoded bytes and the kept file of every live record (MEMORY-PLAN M2).
   knotSet: STEADY_CAP_BYTES,
   roomSet: STEADY_CAP_BYTES,
+  stepWindow: STEADY_CAP_BYTES,
   firstLoad: 800_000,
   image: {
     bg: PHOTO,
@@ -774,6 +781,10 @@ export type AssetInputs = {
   chapterCatalog: Sized | null;
   /** On-disk size of the file each manifest URL names (repo-relative path); absent = no such regular file. */
   fileBytes: ReadonlyMap<string, number>;
+  /** `story/shots.json` exists: the shot pass ran (opt-in, STAGING-DSL §14.4), so build/shots.json is required. */
+  shotList: boolean;
+  /** server/content/build/shots.json decoded; null without a shot list, or when it is missing or undecodable (a problem). */
+  shots: ShotUsage | null;
 };
 
 function mib(bytes: number): string {
@@ -1112,6 +1123,128 @@ function firstLoadRows(dist: BudgetInputs, a: AssetInputs, limits: Limits): Row[
   });
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// The step model's rows (shots §3.4, §5.9, §5.11; SH3b), from build/shots.json's windows and entry alternatives.
+
+/** Per-player §6.5: the label layer of a room in effect, 4 × 512 × 256 × 4 B (shots §3.4 "Window bytes"). */
+export const LABELS_BOUND = 4 * 512 * 256 * 4;
+/** The shot lint code a failing `step-window` row reports (STAGING-DSL §14.3); a renamed code fails `check`. */
+const STEP_WINDOW_CODE: ShotLintCode = 'budget/step-window';
+/** Why the step rows are PENDING: the shot pass, and so build/shots.json, is opt-in (STAGING-DSL §14.4). */
+const NO_SHOT_LIST = `no ${SHOTS_FILE} (the shot pass is opt-in)`;
+/** Shots §5.9's authoring levers 1 and 2, printed with a failing step, in order. */
+const STEP_WINDOW_LEVERS =
+  'levers: 1. hold less at the step before the cut (dismiss a CG one line earlier, or reach the close-up from a non-room shot); 2. draw the larger shot on a 1080 plate';
+/** How many failing windows a row names before it counts the rest. */
+const NAMED_FAILURES = 5;
+
+/** One window's terms (shots §3.4 "The gate step-window"), in bytes. */
+type WindowSum = { key: string; cur: number; certain: number; possible: number; labels: number; total: number };
+
+/**
+ * `cur` at full, + the certain files due at the next step (`certainDist` 1) at full, + the other openers at their kept
+ * bytes, each file counted once; + one label bound when a room is in effect and one per usage room whose plate is
+ * certain at the next step and not in effect (build/shots.json's `labels` is the window's own room only). An id that
+ * is not an image of `manifest` is added to `lacking`.
+ */
+function windowSum(key: string, w: WindowRefs, manifest: AssetManifest, roomsByBg: ReadonlyMap<AssetId, number>, lacking: Set<AssetId>): WindowSum {
+  const sum = (ids: ReadonlySet<AssetId>, bytes: (e: ImageEntry) => number): number => {
+    let total = 0;
+    for (const id of ids) {
+      const e = manifest.assets[id];
+      if (e?.kind === 'image') {
+        total += bytes(e);
+      } else {
+        lacking.add(id);
+      }
+    }
+    return total;
+  };
+  const cur = new Set(w.cur);
+  const certain = new Set(w.certainDist === 1 ? w.certain.filter((id) => !cur.has(id)) : []);
+  const possible = new Set(w.possible.filter((id) => !cur.has(id) && !certain.has(id)));
+  const rooms = [...certain].reduce((n, id) => n + (roomsByBg.get(id) ?? 0), 0);
+  const t = {
+    cur: sum(cur, (e) => e.decodedBytes + Math.max(e.avif.bytes, e.webp.bytes)),
+    certain: sum(certain, (e) => e.decodedBytes + Math.max(e.avif.bytes, e.webp.bytes)),
+    possible: sum(possible, (e) => Math.max(e.avif.bytes, e.webp.bytes)),
+    labels: ((w.labels ? 1 : 0) + rooms) * LABELS_BOUND,
+  };
+  return { key, ...t, total: t.cur + t.certain + t.possible + t.labels };
+}
+
+/** MiB to two decimals, the unit the window terms print in. */
+function mib2(bytes: number): string {
+  return (bytes / MIB).toFixed(2);
+}
+
+/** The largest window of `keys`; a FAIL names the code, the failing windows worst first, and the levers. */
+function stepWindowRow(name: string, ch: ChapterId, keys: readonly string[], cs: ChapterShots, manifest: AssetManifest, roomsByBg: ReadonlyMap<AssetId, number>, limit: number): Row {
+  const lacking = new Set<AssetId>();
+  const sums = keys
+    .flatMap((k) => {
+      const w = cs.look[k as keyof ChapterShots['look']]; // a key of this very record
+      return w === undefined ? [] : [windowSum(k, w, manifest, roomsByBg, lacking)];
+    })
+    .sort((x, y) => y.total - x.total || (x.key < y.key ? -1 : 1));
+  const worst = sums[0];
+  if (worst === undefined) {
+    return failed(name, limit, `${STEP_WINDOW_CODE}: no story window in ${SHOT_USAGE_FILE}`, 'MiB');
+  }
+  const terms = `${worst.key}: cur ${mib2(worst.cur)} + certain ${mib2(worst.certain)} (at 1) + possible ${mib2(worst.possible)} + labels ${mib2(worst.labels)} MiB`;
+  if (lacking.size > 0) {
+    return failed(name, limit, `${STEP_WINDOW_CODE}: ${terms}; not in ${ch}'s manifest: ${[...lacking].sort().join(', ')}`, 'MiB');
+  }
+  if (worst.total <= limit) {
+    return measured(name, worst.total, limit, terms, 'MiB');
+  }
+  const over = sums.filter((s) => s.total > limit);
+  const named = over.slice(0, NAMED_FAILURES).map((s) => `${s.key} ${mib2(s.total)}`);
+  const more = over.length > NAMED_FAILURES ? ` and ${over.length - NAMED_FAILURES} more` : '';
+  return measured(name, worst.total, limit, `${STEP_WINDOW_CODE}: ${terms}; failing: ${named.join(', ')} MiB${more}; ${STEP_WINDOW_LEVERS}`, 'MiB');
+}
+
+/**
+ * Shots §3.4 `budget/step-window`: per chapter of build/shots.json, the largest story window (`step-window <ch>`) and
+ * each room window of its explore sections (`step-window <ch>/r:<room>`), against the registry's steady cap. PENDING
+ * without a shot list; a listed chapter that build/shots.json lacks, or a build/shots.json that is missing or does not
+ * decode, is an `asset inputs` problem.
+ */
+function stepWindowRows(a: AssetInputs, limits: Limits): Row[] {
+  if (!a.shotList) {
+    return [pending('step-window', limits.stepWindow, NO_SHOT_LIST, 'MiB')];
+  }
+  const shots = a.shots;
+  if (shots === null) {
+    return [];
+  }
+  const rows: Row[] = [];
+  for (const c of a.chapters) {
+    const cs = Object.hasOwn(shots.chapters, c.id) ? shots.chapters[c.id] : undefined;
+    if (cs === undefined) {
+      continue;
+    }
+    const name = `step-window ${c.id}`;
+    if (c.manifest === null) {
+      rows.push(failed(name, limits.stepWindow, `${STEP_WINDOW_CODE}: manifest missing`, 'MiB'));
+      continue;
+    }
+    const roomsByBg = new Map<AssetId, number>();
+    for (const [key, room] of Object.entries(a.rooms)) {
+      if (key.startsWith(`${c.id}/`)) {
+        roomsByBg.set(room.bg, (roomsByBg.get(room.bg) ?? 0) + 1);
+      }
+    }
+    const keys = Object.keys(cs.look).sort();
+    const story = keys.filter((k) => !k.startsWith('r:'));
+    rows.push(stepWindowRow(name, c.id, story, cs, c.manifest.value, roomsByBg, limits.stepWindow));
+    for (const k of keys.filter((x) => x.startsWith('r:'))) {
+      rows.push(stepWindowRow(`${name}/${k}`, c.id, [k], cs, c.manifest.value, roomsByBg, limits.stepWindow));
+    }
+  }
+  return rows;
+}
+
 /** The asset rows; `dist` feeds the first-load rows' JS, CSS and html. */
 export function evaluateAssets(dist: BudgetInputs, a: AssetInputs, limits: Limits): Row[] {
   const rows: Row[] = [];
@@ -1136,7 +1269,7 @@ export function evaluateAssets(dist: BudgetInputs, a: AssetInputs, limits: Limit
   for (const [id, e] of [...entries].sort(([x], [y]) => (x < y ? -1 : 1))) {
     rows.push(e.kind === 'image' ? imageRow(a, id, e, conflicts.get(id), limits) : audioRow(a, id, e, conflicts.get(id), limits));
   }
-  rows.push(...knotRows(a, limits), ...roomRows(a, limits), ...firstLoadRows(dist, a, limits));
+  rows.push(...knotRows(a, limits), ...roomRows(a, limits), ...firstLoadRows(dist, a, limits), ...stepWindowRows(a, limits));
   return rows;
 }
 
@@ -1355,6 +1488,15 @@ export function readAssetInputs(root: string): AssetInputs {
       problems.push(`server/content/build/usage.json: no chapter ${c.id}`);
     }
   }
+  // Shots §2.4, STAGING-DSL §14.4: with a shot list the story tool writes build/shots.json, which the step rows read;
+  // without one, every chapter is legacy and a stale build/shots.json is not read (as the asset tool, assets.ts).
+  const shotList = existsSync(abs(SHOTS_FILE));
+  const shots = shotList ? (decodedFile(SHOT_USAGE_FILE, decodeShotUsage)?.value ?? null) : null;
+  if (shots !== null) {
+    for (const c of list.filter((ch) => !Object.hasOwn(shots.chapters, ch.id))) {
+      problems.push(`${SHOT_USAGE_FILE}: no chapter ${c.id}`);
+    }
+  }
   const fileBytes = new Map<string, number>();
   const refs = [
     ...chapters.flatMap((c) => Object.values(c.manifest?.value.assets ?? {})),
@@ -1376,6 +1518,8 @@ export function readAssetInputs(root: string): AssetInputs {
     covers,
     chapterCatalog: catalogFile === null ? null : { rawBytes: catalogFile.rawBytes, brBytes: catalogFile.brBytes },
     fileBytes,
+    shotList,
+    shots,
   };
 }
 

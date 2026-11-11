@@ -11,9 +11,11 @@ import { STEADY_CAP_BYTES } from '../src/scene/registry.ts';
 import type { AssetCatalog, AssetEntry, HalfFile, ImageEntry } from '../src/story/catalog.ts';
 import type { AssetId, ChapterId, TrackId } from '../src/story/staging.ts';
 import { decodeAssetCatalog, decodeAssetManifest, decodeChapterMeta, decodeCoverManifest, urlPath } from './assets/manifest.ts';
-import { ENGINE_SRC, LIMITS, evaluate, evaluateAssets, firstLineFiles, formatRows, readAssetInputs, readInputs } from './budget.ts';
+import { ENGINE_SRC, LABELS_BOUND, LIMITS, evaluate, evaluateAssets, firstLineFiles, formatRows, readAssetInputs, readInputs } from './budget.ts';
 import type { AssetInputs, BudgetInputs, ChapterInputs, DistFile, ManifestChunk, Row } from './budget.ts';
 import { decodeChapterList, decodeStoryUsage } from './story/emit.ts';
+import { decodeShotUsage } from './story/shots/usage.ts';
+import type { ShotUsage } from './story/shots/usage.ts';
 
 /** The lazy family rows (PUZZLES-PLAN X14, "Budgets"). */
 const LAZY_ROWS = ['puzzle-type chunk (br)', 'puzzle-host chunk (br)', 'explore-ui chunk (br)', 'cue-stage chunk (br)'];
@@ -1023,6 +1025,76 @@ type ChapterSpec = {
   knots: Record<string, { assets: string[]; next: string[]; carried?: string[] }>;
 };
 
+/** One window as build/shots.json writes it (shots §3.4 `Lookahead`); an unset term is empty. */
+type WindowSpec = { cur?: string[]; certain?: string[]; certainDist?: number; possible?: string[]; labels?: boolean };
+/** One chapter of build/shots.json: its windows, its entry alternatives per window, its legacy flag (default false). */
+type ShotChapterSpec = { look: Record<string, WindowSpec>; entry?: Record<string, string[][]>; sprites?: boolean };
+
+/**
+ * build/shots.json for `chapters`, decoded through `decodeShotUsage`: one need per shot its windows and entries name, the
+ * face and talk files' characters as face members of that shot with those expressions, cast-less otherwise (as the
+ * real file has for a shot `story/shots.json` does not declare).
+ */
+function shotUsageOf(chapters: Readonly<Record<string, ShotChapterSpec>>): ShotUsage {
+  const chapter = (c: ShotChapterSpec): Record<string, unknown> => {
+    const files = [...Object.values(c.look).flatMap((w) => [...(w.cur ?? []), ...(w.certain ?? []), ...(w.possible ?? [])]), ...Object.values(c.entry ?? {}).flat(2)];
+    const shots = new Map<string, Map<string, Map<string, boolean>>>();
+    for (const f of files) {
+      const [ns, s, char, expr] = f.split('/');
+      if (s === undefined || !['bg', 'sheet', 'face', 'talk'].includes(ns ?? '')) {
+        continue;
+      }
+      const faces = shots.get(s) ?? new Map<string, Map<string, boolean>>();
+      shots.set(s, faces);
+      if (char !== undefined && expr !== undefined) {
+        const exprs = faces.get(char) ?? new Map<string, boolean>();
+        faces.set(char, exprs);
+        exprs.set(expr, (exprs.get(expr) ?? false) || ns === 'talk');
+      }
+    }
+    const need = (faces: Map<string, Map<string, boolean>>): Record<string, unknown> => ({
+      camTargets: [],
+      cast: Object.fromEntries([...faces.keys()].map((ch) => [ch, { figure: false, rest: 'rest', view: 'face' }])),
+      faces: Object.fromEntries([...faces].map(([ch, exprs]) => [ch, [...exprs].map(([expr, talk]) => ({ expr, lines: [], talk }))])),
+      frame: 'wide',
+      loc: 'here',
+      motions: [],
+      room: null,
+    });
+    const window = (w: WindowSpec): Record<string, unknown> => {
+      const certain = w.certain ?? [];
+      const possible = w.possible ?? [];
+      const certainDist = w.certainDist ?? (certain.length > 0 ? 1 : 0);
+      return { certain, certainDist, cur: w.cur ?? [], d2: [], d3: [], labels: w.labels ?? false, near: possible.length, possible };
+    };
+    return {
+      assets: [...new Set(files.filter((f) => /^(?:bg|sheet|face|talk)\//.test(f)))].sort(),
+      entry: c.entry ?? Object.fromEntries(Object.keys(c.look).map((k) => [k, []])),
+      look: Object.fromEntries(Object.entries(c.look).map(([k, w]) => [k, window(w)])),
+      shots: Object.fromEntries([...shots].map(([s, faces]) => [s, need(faces)])),
+      sprites: c.sprites ?? false,
+    };
+  };
+  return decodedOrThrow(decodeShotUsage({ chapters: Object.fromEntries(Object.entries(chapters).map(([id, c]) => [id, chapter(c)])) }), 'shots');
+}
+
+/**
+ * The legacy build/shots.json of `specs` (the pin C1 moves, shots §3.6): one `k:<knot>` window per knot holding the
+ * knot's images, its one entry alternative those images, `sprites: true`; one cast-less need per bg of the specs.
+ */
+function legacyShots(specs: readonly ChapterSpec[]): ShotUsage {
+  return shotUsageOf(
+    Object.fromEntries(
+      specs.map((s) => {
+        const images = (ids: readonly string[]): string[] => ids.filter((id) => !id.startsWith('bgm/') && !id.startsWith('sfx/'));
+        const look = Object.fromEntries(Object.entries(s.knots).map(([k, v]) => [`k:${k}`, { cur: images(v.assets) }]));
+        const entry = Object.fromEntries(Object.entries(s.knots).map(([k, v]) => [`k:${k}`, [images(v.assets)]]));
+        return [s.id, { look, entry, sprites: true }];
+      }),
+    ),
+  );
+}
+
 const CATALOG_RAW = {
   bg: { cafe: { placeholder: { hue: 18 } }, archive: { placeholder: { hue: 45 } }, street: { placeholder: { hue: 215 } } },
   chars: { ally: { exprs: { neutral: { placeholder: { hue: 200 } } } } },
@@ -1108,6 +1180,8 @@ function assetInputs(specs: readonly ChapterSpec[] = baseSpecs(), covers: Record
     covers: { ...SMALL, value: coverManifest },
     chapterCatalog: SMALL,
     fileBytes,
+    shotList: true,
+    shots: legacyShots(specs),
   };
 }
 
@@ -1629,12 +1703,14 @@ describe('budget assets', () => {
         /^knot-set ch1\/start \| 8\.4 MiB \| 32\.0 MiB \| PASS/m,
         /^room-set \| — \| 32\.0 MiB \| PENDING/m,
         /^first-load ch1 \| .* \| 800\.0 KB \| PENDING/m,
+        /^step-window \| — \| 32\.0 MiB \| PENDING \| no story\/shots\.json \(the shot pass is opt-in\)$/m,
       ]) {
         expect(r.stdout).toMatch(row);
       }
       // No client/src/app/*.ts under --root: the engine, first-line, four yields, two meta, purchase-flow and overlays
-      // rows, and world json, room-set and first-load ch1 (lever P added the purchase-flow row, lever O5 the overlays').
-      expect(r.stdout).toMatch(/^budget: \d+ rows, \d+ PASS, 0 FAIL, 13 PENDING$/m);
+      // rows, and world json, room-set and first-load ch1 (lever P added the purchase-flow row, lever O5 the overlays');
+      // no story/shots.json: the step-window row (SH3b).
+      expect(r.stdout).toMatch(/^budget: \d+ rows, \d+ PASS, 0 FAIL, 14 PENDING$/m);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -1711,3 +1787,240 @@ function writeRepo(root: string, opts: { bgWidth?: number; override?: Readonly<R
     writeFileSync(abs, content);
   }
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// SH3b: the step model's rows (shots §3.4, §5.9, §5.11) on hand-built build/shots.json, decoded through
+// `decodeShotUsage`, over manifests at §5.9's records (A): a 1080 plate 8.762 MiB, a 1440 plate 11.682, a close-up (CU)
+// 12.703 on a 1080 plate and 15.623 on a 1440 one, a room shot with its props and label bound 16.562; kept bytes: a CU
+// 500,000 B (0.477 MiB), a wide 380,000 B (0.362).
+
+/** The gate's `full` (decoded + the larger kept file) and `kept` (the larger kept file alone) of an entry. */
+const fullOf = (e: AssetEntry): number => (e.kind === 'image' ? e.decodedBytes + Math.max(e.avif.bytes, e.webp.bytes) : 0);
+const keptOf = (e: AssetEntry): number => (e.kind === 'image' ? Math.max(e.avif.bytes, e.webp.bytes) : 0);
+const sumFull = (files: Readonly<Record<string, AssetEntry>>): number => Object.values(files).reduce((s, e) => s + fullOf(e), 0);
+const sumKept = (files: Readonly<Record<string, AssetEntry>>): number => Object.values(files).reduce((s, e) => s + keptOf(e), 0);
+const mibOf = (bytes: number | null): string => ((bytes ?? Number.NaN) / MIB).toFixed(3);
+const ids = (files: Readonly<Record<string, AssetEntry>>): string[] => Object.keys(files).sort();
+
+/** A shot's plate: 1080 x 2048 (WebP kept 340,000 B: 8.762 MiB) or 1440 x 2048 (453,000 B: 11.682 MiB). */
+function plateOf(s: string, w: 1080 | 1440 = 1080): ImageEntry {
+  return w === 1080 ? img(`bg-${s}-5a5a5a5a`, 1080, 2048, 225_000, 340_000) : img(`bg-${s}-5a5a5a5a`, 1440, 2048, 300_000, 453_000);
+}
+/** A CU's sheet, the 0.5 MiB ambient allowance held in its pixels: 3.941 MiB (kept 160,000 B). */
+const cuSheetOf = (s: string): ImageEntry => img(`sheet-${s}-5b5b5b5b`, 1026, 968, 103_445, 160_000);
+/** A room shot's sheet (a frame loop and the ambient allowance): 2.500 MiB. */
+const roomSheetOf = (s: string): ImageEntry => img(`sheet-${s}-5c5c5c5c`, 512, 1231, 70_000, 100_000);
+/** A wide shot's sheet: kept 40,000 B, so the wide's kept bytes are 380,000 B. */
+const wideSheetOf = (s: string): ImageEntry => img(`sheet-${s}-5d5d5d5d`, 2048, 175, 25_000, 40_000);
+
+/** A CU shot `s`: its plate and its sheet. */
+function cuShot(s: string, w: 1080 | 1440 = 1080): Record<string, AssetEntry> {
+  return { [`bg/${s}`]: plateOf(s, w), [`sheet/${s}`]: cuSheetOf(s) };
+}
+/** A wide shot `s`: its plate and its sheet. */
+function wideShot(s: string): Record<string, AssetEntry> {
+  return { [`bg/${s}`]: plateOf(s), [`sheet/${s}`]: wideSheetOf(s) };
+}
+/** A room's shot `r`: its plate, its sheet and its props (3.300 MiB: three of 512 x 512 and one of 96 x 96). */
+function roomShot(r: string): Record<string, AssetEntry> {
+  const p = (n: string, side: number, avif: number, webp: number): [string, AssetEntry] => [`prop/${r}_${n}`, img(`prop-${r}_${n}-5e5e5e5e`, side, side, avif, webp)];
+  const props = [p('a', 512, 60_000, 90_000), p('b', 512, 60_000, 90_000), p('c', 512, 60_000, 90_000), p('d', 96, 5_000, 8_000)];
+  return { [`bg/${r}`]: plateOf(r), [`sheet/${r}`]: roomSheetOf(r), ...Object.fromEntries(props) };
+}
+const propsOf = (files: Readonly<Record<string, AssetEntry>>): string[] => ids(files).filter((id) => id.startsWith('prop/'));
+
+/** One free chapter ch1 holding `assets`, its build/shots.json `c`, and the usage rooms `rooms` (`<ch>/<section>/<room>`). */
+function shotInputs(assets: Record<string, AssetEntry>, c: ShotChapterSpec, rooms: Readonly<Record<string, { bg: string; props: string[] }>> = {}): AssetInputs {
+  const a = assetInputs([{ id: 'ch1', paid: false, next: null, assets, knots: { scene: { assets: [], next: [] } } }]);
+  const usageRooms = Object.fromEntries(Object.entries(rooms).map(([k, r]) => [k, { ...r, closeups: [], neighbours: [] }]));
+  return { ...a, shots: shotUsageOf({ ch1: c }), rooms: usageRooms as unknown as AssetInputs['rooms'] }; // ids are fixture literals
+}
+
+const K1 = 'ch1.scene.a001';
+const K2 = 'ch1.scene.a002';
+const CU_A = cuShot('a');
+const CU_B = cuShot('b');
+const CU_C = cuShot('c');
+const CU_1440 = cuShot('c', 1440);
+const CU = sumFull(CU_A);
+const CU1440 = sumFull(CU_1440);
+
+describe('budget shots', () => {
+  test('budget: step window over 32 MiB fails', () => {
+    // CU A + CU B + a 1440 CU on stage at one step: 12.703 + 12.703 + 15.623 = 41.029 MiB.
+    const assets = { ...CU_A, ...CU_B, ...CU_1440 };
+    const row = rowOf(assetRows(shotInputs(assets, { look: { [K1]: { cur: ids(assets) } } })), 'step-window ch1');
+    expect(row).toMatchObject({ status: 'FAIL', unit: 'MiB', valueBytes: 2 * CU + CU1440, limitBytes: STEADY_CAP_BYTES });
+    expect(mibOf(row.valueBytes)).toBe('41.029');
+    // The limit is the registry's steady cap, one number with the knot-set and room-set rows (MEMORY-PLAN M2).
+    expect(LIMITS.stepWindow).toBe(STEADY_CAP_BYTES);
+    // Control: two CUs fit (25.406).
+    const two = { ...CU_A, ...CU_B };
+    expect(rowOf(assetRows(shotInputs(two, { look: { [K1]: { cur: ids(two) } } })), 'step-window ch1')).toMatchObject({ status: 'PASS', valueBytes: 2 * CU });
+    // A window file the chapter's manifest lacks cannot be summed: FAIL, not a smaller PASS.
+    const lacking = rowOf(assetRows(shotInputs(two, { look: { [K1]: { cur: [...ids(two), 'cg/ghost'] } } })), 'step-window ch1');
+    expect(lacking).toMatchObject({ status: 'FAIL', valueBytes: null });
+    expect(lacking.note).toContain("not in ch1's manifest: cg/ghost");
+  });
+
+  test('budget: step window counts the current shot once', () => {
+    // CU A on stage, CU A and CU B certain at the next line, CU A's plate and CU B's sheet also listed as possible: every
+    // file is counted once, at full: 12.703 + 12.703 = 25.406.
+    const assets = { ...CU_A, ...CU_B };
+    const look = { [K1]: { cur: ids(CU_A), certain: ids(assets), possible: ['bg/a', 'sheet/b'] } };
+    const row = rowOf(assetRows(shotInputs(assets, { look })), 'step-window ch1');
+    expect(row).toMatchObject({ status: 'PASS', valueBytes: 2 * CU });
+    expect(mibOf(row.valueBytes)).toBe('25.406');
+    expect(row.note).toBe(`${K1}: cur 12.70 + certain 12.70 (at 1) + possible 0.00 + labels 0.00 MiB`);
+  });
+
+  test("budget: step window counts a room's props and label bound in effect", () => {
+    // §5.9: a story step in a room's shot (its props, its label bound) whose next cut is a 1440 CU: 16.562 + 15.623 =
+    // 32.185, over. Without the room terms it would read 26.885 and pass.
+    const hall = roomShot('hall');
+    const assets = { ...hall, ...CU_1440 };
+    const row = rowOf(assetRows(shotInputs(assets, { look: { [K1]: { cur: ids(hall), labels: true, certain: ids(CU_1440) } } })), 'step-window ch1');
+    expect(row).toMatchObject({ status: 'FAIL', valueBytes: sumFull(hall) + LABELS_BOUND + CU1440 });
+    expect(mibOf(row.valueBytes)).toBe('32.185');
+    expect(mibOf(sumFull(hall) + LABELS_BOUND)).toBe('16.562');
+    expect(LABELS_BOUND).toBe(4 * 512 * 256 * 4);
+  });
+
+  test('budget: step window counts a possible opener at its kept bytes', () => {
+    // §5.9: a choice at CU A whose replies open on CU B and CU C: 12.703 + 2 x 0.477 = 13.657 (at full: 38.109, over).
+    const assets = { ...CU_A, ...CU_B, ...CU_C };
+    const row = rowOf(assetRows(shotInputs(assets, { look: { [K1]: { cur: ids(CU_A), possible: [...ids(CU_B), ...ids(CU_C)] } } })), 'step-window ch1');
+    expect(row).toMatchObject({ status: 'PASS', valueBytes: CU + 2 * 500_000 });
+    expect(sumKept(CU_B)).toBe(500_000);
+    expect(mibOf(row.valueBytes)).toBe('13.657');
+  });
+
+  test('budget: step window counts a certain image at the step before it appears', () => {
+    // §5.9: a line under a CG whose dismissal shares the next cut's batch holds CG + CU A + CU B = 34.168, over. Lever 1
+    // (dismiss the CG one line earlier) moves the cut's certain term to a step without the CG: 25.406; the CG's step
+    // then sees CU B at distance 2, not yet due.
+    const cg = img('cg-letter-5f5f5f5f', 1080, 2048, 225_000, 340_000);
+    const assets = { 'cg/letter': cg, ...CU_A, ...CU_B };
+    const underCg = ['cg/letter', ...ids(CU_A)];
+    const inCut = rowOf(assetRows(shotInputs(assets, { look: { [K1]: { cur: underCg, certain: ids(CU_B) } } })), 'step-window ch1');
+    expect(inCut).toMatchObject({ status: 'FAIL', valueBytes: fullOf(cg) + 2 * CU });
+    expect(mibOf(inCut.valueBytes)).toBe('34.168');
+    const earlier = { [K1]: { cur: underCg, certain: ids(CU_B), certainDist: 2 }, [K2]: { cur: ids(CU_A), certain: ids(CU_B) } };
+    const lever = rowOf(assetRows(shotInputs(assets, { look: earlier })), 'step-window ch1');
+    expect(lever).toMatchObject({ status: 'PASS', valueBytes: 2 * CU });
+    expect(mibOf(lever.valueBytes)).toBe('25.406');
+    expect(lever.note.startsWith(`${K2}: `)).toBe(true);
+  });
+
+  test('budget: step window per room counts the room and the openers one action away', () => {
+    // §5.9, the critic's fixture: a room whose three events open on distinct CUs and whose leave knot cuts to a wide:
+    // 16.562 + 3 x 0.477 + 0.362 = 18.355 (at full: 64.838, over).
+    const hall = roomShot('hall');
+    const openers = { ...CU_B, ...CU_C, ...cuShot('d'), ...wideShot('w') };
+    const look = { [K1]: { cur: ids(CU_B) }, 'r:hall': { cur: ids(hall), labels: true, possible: ids(openers) } };
+    const rows = assetRows(shotInputs({ ...hall, ...openers }, { look }));
+    const row = rowOf(rows, 'step-window ch1/r:hall');
+    expect(row).toMatchObject({ status: 'PASS', unit: 'MiB', valueBytes: sumFull(hall) + LABELS_BOUND + 3 * 500_000 + 380_000 });
+    expect(sumKept(wideShot('w'))).toBe(380_000);
+    expect(mibOf(row.valueBytes)).toBe('18.355');
+    expect(row.note).toBe('r:hall: cur 14.56 + certain 0.00 (at 1) + possible 1.79 + labels 2.00 MiB');
+    // The room window is its own row: the chapter's row takes the story windows only.
+    expect(rowOf(rows, 'step-window ch1')).toMatchObject({ status: 'PASS', valueBytes: CU });
+  });
+
+  test('budget: a failing step window prints its levers', () => {
+    // Seven steps over the cap and one under: the note starts with the code, gives the worst step's terms, names the
+    // failing steps worst first (five, then how many more), then §5.9's levers 1 and 2, in that order.
+    const extra = { ...cuShot('e'), ...cuShot('f') };
+    const assets = { ...CU_A, ...CU_B, ...CU_1440, ...extra };
+    const heavy = ids({ ...CU_A, ...CU_B, ...CU_1440 });
+    const look: Record<string, WindowSpec> = {
+      'ch1.scene.a001': { cur: heavy },
+      'ch1.scene.a002': { cur: heavy, possible: ids(cuShot('e')) },
+      'ch1.scene.a003': { cur: heavy, possible: ids(extra) },
+      'ch1.scene.a004': { cur: heavy, possible: ids(extra), labels: true },
+      'ch1.scene.a005': { cur: heavy, labels: true },
+      'ch1.scene.a006': { cur: heavy, possible: ids(cuShot('e')), labels: true },
+      'ch1.scene.a007': { cur: heavy, possible: [...ids(extra), 'bg/a'], labels: true },
+      'ch1.scene.a008': { cur: ids({ ...CU_A, ...CU_B }) },
+    };
+    const row = rowOf(assetRows(shotInputs(assets, { look })), 'step-window ch1');
+    expect(row.status).toBe('FAIL');
+    const head = 'budget/step-window: ch1.scene.a004: cur 41.03 + certain 0.00 (at 1) + possible 0.95 + labels 2.00 MiB; ';
+    expect(row.note.startsWith(head), row.note).toBe(true);
+    expect(row.note).toContain('failing: ch1.scene.a004 43.98, ch1.scene.a007 43.98, ch1.scene.a006 43.51, ch1.scene.a005 43.03, ch1.scene.a003 41.98 MiB and 2 more; ');
+    expect(row.note).not.toContain('a008');
+    const lever1 = row.note.indexOf('levers: 1. hold less at the step before the cut');
+    const lever2 = row.note.indexOf('2. draw the larger shot on a 1080 plate');
+    expect(lever1, row.note).toBeGreaterThan(row.note.indexOf('ch1.scene.a003 41.98'));
+    expect(lever2, row.note).toBeGreaterThan(lever1);
+    // A PASS carries the worst step's terms and no code.
+    const fits = rowOf(assetRows(shotInputs(assets, { look: { [K1]: { cur: ids({ ...CU_A, ...CU_B }) } } })), 'step-window ch1');
+    expect(fits.status).toBe('PASS');
+    expect(fits.note).not.toContain('budget/step-window');
+  });
+
+  test("budget: step window at an event's last step counts the return to its room", () => {
+    // §3.4 "An event's return": the event's last line on CU B, the return to the hall certain at distance 1. The window
+    // holds the hall's plate, sheet and props (build/shots.json's certain) and its label bound, from the usage rooms
+    // whose bg is certain and not in effect (build/shots.json's `labels` is the window's own room only): 12.703 + 16.562
+    // = 29.265.
+    const hall = roomShot('hall');
+    const rooms = { 'ch1/manor/hall': { bg: 'bg/hall', props: propsOf(hall) } };
+    const last = (cu: Record<string, AssetEntry>): Row => rowOf(assetRows(shotInputs({ ...hall, ...cu }, { look: { [K1]: { cur: ids(cu), certain: ids(hall) } } }, rooms)), 'step-window ch1');
+    const on1080 = last(CU_B);
+    expect(on1080).toMatchObject({ status: 'PASS', valueBytes: CU + sumFull(hall) + LABELS_BOUND });
+    expect(mibOf(on1080.valueBytes)).toBe('29.265');
+    // The last line on a 1440 CU: 15.623 + 16.562 = 32.185, over, with lever 2 printed.
+    const on1440 = last(CU_1440);
+    expect(on1440).toMatchObject({ status: 'FAIL', valueBytes: CU1440 + sumFull(hall) + LABELS_BOUND });
+    expect(mibOf(on1440.valueBytes)).toBe('32.185');
+    expect(on1440.note).toContain('2. draw the larger shot on a 1080 plate');
+    // A step in another room's shot (the study, its labels in effect) whose next cut goes into the hall holds both label
+    // bounds: the certain room's is charged whatever the window's own `labels` says: 16.562 + 16.562 = 33.123, over.
+    const study = roomShot('study');
+    const both = { ...rooms, 'ch1/manor/study': { bg: 'bg/study', props: propsOf(study) } };
+    const cross = rowOf(assetRows(shotInputs({ ...hall, ...study }, { look: { [K1]: { cur: ids(study), labels: true, certain: ids(hall) } } }, both)), 'step-window ch1');
+    expect(cross).toMatchObject({ status: 'FAIL', valueBytes: sumFull(study) + sumFull(hall) + 2 * LABELS_BOUND });
+    expect(mibOf(cross.valueBytes)).toBe('33.123');
+  });
+
+  test('budget: the reader takes build/shots.json when story/shots.json exists', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'budget-shots-'));
+    try {
+      const need = { camTargets: [], cast: {}, faces: {}, frame: 'wide', loc: 'cafe', motions: [], room: null };
+      const window = { certain: [], certainDist: 0, cur: ['bg/cafe'], d2: [], d3: [], labels: false, near: 0, possible: [] };
+      const shotsJson = JSON.stringify({ chapters: { ch1: { assets: ['bg/cafe'], entry: { 'k:start': [['bg/cafe']] }, look: { 'k:start': window }, shots: { cafe: need }, sprites: true } } });
+      // (a) Both files: the step rows are measured from build/shots.json.
+      const both = join(tmp, 'both');
+      writeRepo(both, { override: { 'story/shots.json': '{"locs": [], "shots": []}', 'server/content/build/shots.json': shotsJson } });
+      const a = readAssetInputs(both);
+      expect(a.problems).toEqual([]);
+      expect(rowOf(assetRows(a), 'step-window ch1')).toMatchObject({ status: 'PASS', valueBytes: 1080 * 2048 * 4 + 5_000 });
+      // (b) A shot list without build/shots.json, with one that lacks a listed chapter, or with one that does not
+      // decode: the `asset inputs` row FAILs naming it, as the asset tool refuses it.
+      const cases = [
+        ['missing', null, 'server/content/build/shots.json: missing'],
+        ['no chapter', '{"chapters": {}}', 'server/content/build/shots.json: no chapter ch1'],
+        ['undecodable', '{"chapters": 5}', 'server/content/build/shots.json: chapters: not an object'],
+      ] as const;
+      for (const [label, file, problem] of cases) {
+        const repo = join(tmp, label.replace(' ', '-'));
+        writeRepo(repo, { override: { 'story/shots.json': '{}', 'server/content/build/shots.json': file } });
+        const row = rowOf(assetRows(readAssetInputs(repo)), 'asset inputs');
+        expect(row.status, label).toBe('FAIL');
+        expect(row.note, label).toContain(problem);
+      }
+      // (c) No shot list (the shot pass is opt-in): a PENDING row, never a PASS; a stale build/shots.json is not read.
+      const off = join(tmp, 'off');
+      writeRepo(off, { override: { 'server/content/build/shots.json': shotsJson } });
+      const c = readAssetInputs(off);
+      expect(c).toMatchObject({ shotList: false, shots: null, problems: [] });
+      const rows = assetRows(c);
+      expect(rowOf(rows, 'step-window')).toMatchObject({ status: 'PENDING', valueBytes: null, note: 'no story/shots.json (the shot pass is opt-in)' });
+      expect(rows.filter((r) => r.name.startsWith('step-window ')).map((r) => r.name)).toEqual([]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
