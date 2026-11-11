@@ -1618,6 +1618,22 @@ describe('assets', () => {
     expect(checked).toBe(8);
   });
 
+  test('assets: a need whose file its chapter does not list is refused', async () => {
+    // Shots §4.5 (CH D5): build/shots.json's decoder admits a listed file only when a need makes it, never the converse,
+    // so the planner's own-entries invariant is what keeps a rig member out of a manifest without its entry: free ch1
+    // shows ally smiling silently yet lists no face file, which paid ch2 alone lists, so the file is gated.
+    const smiling = cafeNeed([['neutral', true], ['smile', false]], 'ch1');
+    writeRepo(repo, { ...SHOT_FILES, 'server/content/build/shots.json': shotsUsage({ ...SHOT_CHAPTERS, ch1: { ...SHOT_CHAPTERS.ch1, shots: { cafe: smiling } } }) });
+    await expect(runTool(repo, HALVING_FAKES)).rejects.toThrow(/ch1's manifest is one of its assets entries; face\/cafe\/ally\/smile is not$/);
+    expect(existsSync(join(repo, 'client', 'src', 'story-gen', 'free', 'ch1.assets.json')), 'no free manifest names it').toBe(false);
+    expect(listDir(repo, 'client/public/assets')).toEqual([]);
+    expect(listDir(repo, 'server/content/assets')).toEqual([]);
+    // A public file the need makes and no chapter lists: the same refusal, not a rig member with no entry at all.
+    writeRepo(repo, { ...SHOT_FILES, 'server/content/build/shots.json': shotsUsage({ ...SHOT_CHAPTERS, ch1: { ...SHOT_CHAPTERS.ch1, assets: ['bg/cafe', 'sheet/cafe'] } }) });
+    await expect(runTool(repo, HALVING_FAKES)).rejects.toThrow(/ch1's manifest is one of its assets entries; talk\/cafe\/ally\/neutral is not$/);
+    expect(existsSync(join(repo, 'client', 'src', 'story-gen'))).toBe(false);
+  });
+
   test('assets: cli runs through a linked path under preserve-symlinks-main', async () => {
     // Node keeps the link's spelling for the main module under the flag; the guard canonicalises both sides, and the
     // main module's relative imports stay under scripts/, so the run happens. The real encoders (sharp) run here.
