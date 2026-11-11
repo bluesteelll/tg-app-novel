@@ -5,7 +5,7 @@ import type { AssetCatalog } from '../../src/story/catalog.ts';
 import type { AssetId, BgId, CharId, ExprId } from '../../src/story/staging.ts';
 import type { Shot } from '../story/shots/list.ts';
 import type { ShotNeed } from '../story/shots/usage.ts';
-import type { Box } from '../../src/story/shots.ts';
+import type { Box, Member } from '../../src/story/shots.ts';
 import {
   COARSE,
   FINE,
@@ -14,6 +14,7 @@ import {
   depthBase64,
   facesOf,
   headGroups,
+  packShot,
   placeholderDepth,
   placeholderLayers,
   plateProblems,
@@ -22,7 +23,7 @@ import {
   shotFiles,
   shotFileSvg,
 } from './shots.ts';
-import type { CastLayers, Lattice, PackedFile, ShotLayers } from './shots.ts';
+import type { CastLayers, Lattice, PackedFile, ShotLayers, ShotPack } from './shots.ts';
 
 const PLATE = { w: 1080, h: 2048 } as const;
 
@@ -157,6 +158,131 @@ describe('shots placeholders', () => {
     expect([...shotFiles(speaking).keys()].sort()).toEqual(['sheet/cafe_cu', 'talk/cafe_cu/ally/neutral']);
     // A cast-less shot has no file at all.
     expect([...shotFiles(placeholderLayers(shot('hall', 'room', []), new Map(), CATALOG, PLATE)).keys()]).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// §4.2 step 7 and §2.6: one packing per file, even frames within 2048 px, the half tier, copies of reused rest states.
+
+/** Every member of a packed shot: hair, figure, and every expression's layer and motion states. */
+function membersOf(pack: ShotPack): Member[] {
+  return pack.cast.flatMap((m) => [
+    ...m.hair.map((h) => h.member),
+    ...(m.figure === null ? [] : [m.figure]),
+    ...[...m.exprs.values()].flatMap((x) => [
+      ...(x.layer === null ? [] : [x.layer]),
+      x.motion.blink.half,
+      x.motion.blink.closed,
+      x.motion.accent,
+      ...x.motion.talk,
+    ]),
+  ]);
+}
+
+/** A two-shot of three members with figure planes and four expressions each: the sheet needs more than one shelf. */
+function crowd(): ShotLayers {
+  const s: Shot = {
+    id: 'cafe_two' as BgId,
+    loc: 'cafe' as Shot['loc'],
+    frame: 'two',
+    cast: ['ally', 'bob', 'ally2'].map((c) => ({ char: c as CharId, view: 'face' as const, rest: 'neutral' as ExprId, figure: true })),
+  };
+  const catalog = { ...CATALOG, chars: { ...CATALOG.chars, bob: CATALOG.chars['ally' as CharId], ally2: CATALOG.chars['ally' as CharId] } } as AssetCatalog;
+  const xs: ReadonlyArray<readonly [string, boolean]> = [['neutral', true], ['smile', true], ['angry', false]];
+  return placeholderLayers(s, facesOf([need(s, { ally: xs, bob: xs, ally2: xs })]), catalog, PLATE);
+}
+
+describe('shots packing', () => {
+  test('assets: a sheet packs every member within 2048 px with even frames', () => {
+    const pack = packShot(crowd());
+    const sheet = pack.files.get('sheet/cafe_two' as AssetId);
+    expect(sheet?.items.length).toBe(3 * (1 + 1 + 3)); // per member: a hair lock, a figure plane, the rest blink pair and accent
+    expect(new Set(sheet?.items.map((i) => i.frame[1])).size, 'more than one shelf').toBeGreaterThan(1);
+    for (const file of pack.files.values()) {
+      expect(file.w <= 2048 && file.h <= 2048 && file.w % 2 === 0 && file.h % 2 === 0, `${file.id} ${file.w} × ${file.h}`).toBe(true);
+      for (const [i, { frame, key }] of file.items.entries()) {
+        const [x, y, w, h] = frame;
+        expect(frame.every((n) => n % 2 === 0) && x + w <= file.w && y + h <= file.h, `${file.id} ${key} ${frame.join(',')}`).toBe(true);
+        for (const other of file.items.slice(i + 1)) {
+          const [ox, oy, ow, oh] = other.frame;
+          expect(x + w <= ox || ox + ow <= x || y + h <= oy || oy + oh <= y, `${file.id}: ${key} overlaps ${other.key}`).toBe(true);
+        }
+      }
+    }
+    // Every member names the file it sits in, at a frame that file holds, the size of its plate box.
+    for (const m of membersOf(pack)) {
+      const file = pack.files.get(m.file);
+      expect(file?.items.some((i) => i.frame.join() === m.frame.join() && i.at.join() === m.at.join()), `${m.file} ${m.frame.join()}`).toBe(true);
+      expect([m.frame[2], m.frame[3]]).toEqual([m.at[2], m.at[3]]);
+    }
+  });
+
+  test("assets: a sheet's half halves every frame exactly", () => {
+    // The half tier is an exact halving (M3c's rule, §4.2 step 7): even sides and even coordinates everywhere, so each
+    // frame halves to integers that still tile the half file.
+    for (const file of packShot(crowd()).files.values()) {
+      expect([file.w % 2, file.h % 2], file.id).toEqual([0, 0]);
+      for (const { frame, key } of file.items) {
+        const [x, y, w, h] = frame.map((n) => n / 2) as [number, number, number, number]; // a box: four numbers
+        expect([x, y, w, h].every(Number.isInteger), `${file.id} ${key} ${frame.join(',')}`).toBe(true);
+        expect(x + w <= file.w / 2 && y + h <= file.h / 2, `${file.id} ${key}`).toBe(true);
+      }
+    }
+  });
+
+  test('assets: a placeholder shot has one face file per needed expression and one talk file per spoken one', () => {
+    const cu = shot('cafe_cu', 'close', [['ally', 'face']]);
+    const catalog = { ...CATALOG, chars: { ...CATALOG.chars, ally: { exprs: { ...CATALOG.chars['ally' as CharId]?.exprs, sad: { placeholder: { hue: 240 } } } } } } as AssetCatalog;
+    const faces = facesOf([need(cu, { ally: [['neutral', true], ['smile', true], ['angry', false], ['sad', true]] })]);
+    const pack = packShot(placeholderLayers(cu, faces, catalog, PLATE));
+    expect([...pack.files.keys()].sort()).toEqual([
+      'face/cafe_cu/ally/angry',
+      'face/cafe_cu/ally/sad',
+      'face/cafe_cu/ally/smile',
+      'sheet/cafe_cu',
+      'talk/cafe_cu/ally/neutral',
+      'talk/cafe_cu/ally/sad',
+      'talk/cafe_cu/ally/smile',
+    ]);
+    const ally = pack.cast[0];
+    const files = (x: string): string[] => {
+      const e = ally?.exprs.get(x as ExprId);
+      return e === undefined ? [] : [e.layer?.file ?? 'none', e.motion.blink.half.file, e.motion.blink.closed.file, e.motion.accent.file, ...e.motion.talk.map((t) => t.file)];
+    };
+    expect(files('neutral')).toEqual(['none', 'sheet/cafe_cu', 'sheet/cafe_cu', 'sheet/cafe_cu', 'talk/cafe_cu/ally/neutral', 'talk/cafe_cu/ally/neutral']);
+    expect(files('angry')).toEqual(['face/cafe_cu/ally/angry', 'face/cafe_cu/ally/angry', 'face/cafe_cu/ally/angry', 'face/cafe_cu/ally/angry']);
+    expect(files('sad')).toEqual([...Array<string>(4).fill('face/cafe_cu/ally/sad'), 'talk/cafe_cu/ally/sad', 'talk/cafe_cu/ally/sad']);
+  });
+
+  test('assets: a face file that reuses the rest blink carries a copy of it', () => {
+    // §2.6: a reused rest state is copied into the face or talk file that uses it, so the member names that file,
+    // never the sheet (a hand-made layer set: placeholders never reuse, extraction is SH3c's).
+    const cu = shot('cafe_cu', 'close', [['ally', 'face']]);
+    const base = placeholderLayers(cu, facesOf([need(cu, { ally: [['neutral', true], ['smile', true]] })]), CATALOG, PLATE);
+    const ally = base.cast[0];
+    const smile = ally?.exprs.get('smile' as ExprId);
+    const rest = ally?.exprs.get('neutral' as ExprId);
+    if (ally === undefined || smile === undefined || rest === undefined || rest.mouths === null) {
+      throw new Error('invariant: the fixture has ally at rest and in smile, both spoken');
+    }
+    // smile declares the reuse: its blink pair and mouths are the rest's own layers.
+    const reusing: ShotLayers = { ...base, cast: [{ ...ally, exprs: new Map([...ally.exprs, ['smile' as ExprId, { ...smile, blink: rest.blink, mouths: rest.mouths }]]) }] };
+    const pack = packShot(reusing);
+    const m = pack.cast[0]?.exprs.get('smile' as ExprId)?.motion;
+    expect([m?.blink.half.file, m?.blink.closed.file]).toEqual(['face/cafe_cu/ally/smile', 'face/cafe_cu/ally/smile']);
+    expect(m?.talk.map((t) => t.file)).toEqual(['talk/cafe_cu/ally/smile', 'talk/cafe_cu/ally/smile']);
+    // The copies are the rest's pixels at the rest's plate boxes, packed into the smile files.
+    const face = pack.files.get('face/cafe_cu/ally/smile' as AssetId);
+    const copied = face?.items.filter((i) => i.key.startsWith('ally/smile/blink.')).map((i) => [i.at.join(), i.fill]);
+    expect(copied).toEqual([
+      [rest.blink.half.box.join(), rest.blink.half.fill],
+      [rest.blink.closed.box.join(), rest.blink.closed.fill],
+    ]);
+    const talk = pack.files.get('talk/cafe_cu/ally/smile' as AssetId);
+    expect(talk?.items.map((i) => i.fill)).toEqual(rest.mouths.map((l) => l.fill));
+    // The rest's own states stay in the sheet and in its own talk file.
+    const restMotion = pack.cast[0]?.exprs.get('neutral' as ExprId)?.motion;
+    expect([restMotion?.blink.half.file, restMotion?.talk[0]?.file]).toEqual(['sheet/cafe_cu', 'talk/cafe_cu/ally/neutral']);
   });
 });
 

@@ -3,7 +3,7 @@
 // sheet, a face file per non-rest expression, a talk file per spoken one) and their placeholder SVGs. No node:*, no
 // sharp: the encoders and IO stay in assets.ts.
 import type { AssetCatalog } from '../../src/story/catalog.ts';
-import type { Box, Frame } from '../../src/story/shots.ts';
+import type { Box, Frame, Member, MotionSet } from '../../src/story/shots.ts';
 import type { AssetId, BgId, CharId, ExprId } from '../../src/story/staging.ts';
 import type { Shot } from '../story/shots/list.ts';
 import type { ShotNeed } from '../story/shots/usage.ts';
@@ -12,7 +12,11 @@ import { packedLabelWidth, renderPacked } from './placeholder.ts';
 /** One drawn state: its box on the plate and the flat fill a placeholder paints it in. */
 export type Layer = { readonly box: Box; readonly fill: string };
 export type Pair = { readonly half: Layer; readonly closed: Layer };
-/** One expression of a face member: its layer (null: the rest, which the plate shows) and its motion states. */
+/**
+ * One expression of a face member: its layer (null: the rest, which the plate shows) and its motion states. A state
+ * that reuses the rest's (§4.2 step 3: the expression leaves that box as the plate shows it) holds the rest's own
+ * `Layer`; every state of an expression is packed into that expression's file, so a reused one is copied there (§2.6).
+ */
 export type ExprLayers = {
   readonly layer: Layer | null;
   readonly blink: Pair;
@@ -201,7 +205,10 @@ function fileItems(layers: ShotLayers): Map<AssetId, Item[]> {
         add(face, `${m.char}/${x}/blink.closed`, e.blink.closed);
         add(face, `${m.char}/${x}/accent`, e.accent);
       }
-      if (e.speaks && e.mouths !== null) {
+      if (e.speaks) {
+        if (e.mouths === null) {
+          throw new Error(`invariant: ${layers.shot}: ${m.char} speaks in ${x}, so it has mouths (its own or the rest's)`);
+        }
         const talk = `talk/${layers.shot}/${m.char}/${x}`;
         e.mouths.forEach((l, i) => add(talk, `${m.char}/${x}/talk/${i}`, l));
       }
@@ -246,6 +253,58 @@ function packFile(id: AssetId, items: readonly Item[]): PackedFile {
 /** Every file of a shot's layer set, packed: the sheet (a shot with a cast), its face and talk files. */
 export function shotFiles(layers: ShotLayers): ReadonlyMap<AssetId, PackedFile> {
   return new Map([...fileItems(layers)].map(([id, items]) => [id, packFile(id, items)]));
+}
+
+/** A cast member's states as members of the files they sit in (§4.5 `Member`). */
+export type MemberPack = {
+  readonly char: CharId;
+  readonly hair: readonly { readonly member: Member; readonly pivot: readonly [number, number] }[];
+  readonly figure: Member | null;
+  /** A face member's expressions (the rest first): its layer (null at rest) and motion; a back view has none. */
+  readonly exprs: ReadonlyMap<ExprId, { readonly layer: Member | null; readonly motion: MotionSet }>;
+};
+/** A shot's packed files and, per cast member (draw order), where each of its states sits. */
+export type ShotPack = { readonly files: ReadonlyMap<AssetId, PackedFile>; readonly cast: readonly MemberPack[] };
+
+/**
+ * §4.2 step 7 (rev. 4, W4): one packing per file of §2.6, each within 2048 × 2048 with every coordinate and size even,
+ * and each state as a `Member` of the file it sits in: the rest's blink and accent and every hair lock and figure plane
+ * in the sheet, an expression's layer and motion states in its face file (a reused rest state as a copy), its mouths in
+ * its talk file, never the sheet's.
+ */
+export function packShot(layers: ShotLayers): ShotPack {
+  const files = shotFiles(layers);
+  const members = new Map<string, Member>();
+  for (const file of files.values()) {
+    for (const item of file.items) {
+      members.set(item.key, { file: file.id, frame: item.frame, at: item.at });
+    }
+  }
+  const get = (key: string): Member => {
+    const m = members.get(key);
+    if (m === undefined) {
+      throw new Error(`invariant: ${layers.shot}: ${key} is packed in one of its files`);
+    }
+    return m;
+  };
+  const cast = layers.cast.map((m): MemberPack => {
+    const exprs = [...m.exprs].map(([x, e]) => {
+      const key = `${m.char}/${x}`;
+      const motion: MotionSet = {
+        blink: { half: get(`${key}/blink.half`), closed: get(`${key}/blink.closed`) },
+        talk: e.speaks && e.mouths !== null ? e.mouths.map((_, i) => get(`${key}/talk/${i}`)) : [],
+        accent: get(`${key}/accent`),
+      };
+      return [x, { layer: x === m.rest ? null : get(`${key}/layer`), motion }] as const;
+    });
+    return {
+      char: m.char,
+      hair: m.hair.map((h, i) => ({ member: get(`${m.char}/hair/${i}`), pivot: h.pivot })),
+      figure: m.figure === null ? null : get(`${m.char}/figure`),
+      exprs: new Map(exprs),
+    };
+  });
+  return { files, cast };
 }
 
 /** A packed file's placeholder SVG: its states as flat rects, then its id as its label. */
