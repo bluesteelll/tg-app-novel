@@ -654,6 +654,15 @@ describe('encode', () => {
     const r44 = await encodeRaster(px, { id: 'sheet/x' as AssetId, half: 'none', q: 44, search: true }, from44.codec);
     expect(from44.calls).toEqual([44, 49, 54, 59, 64, 69, 74, 79, 84, 89, 90].map((q) => `64:${q}`));
     expect(r44.ok ? [] : r44.error).toEqual([`sheet/x: full: no AVIF q in 44..90 keeps alpha within 8/255 (R6: the best, q 44, is ${worst(px)})`]);
+    // Both tiers start at the shot's q (W3, triage r1 F1): from 44 the half tier walks 44 .. 90 as the full tier does.
+    const both = fakeCodec(() => false, () => 100);
+    const rBoth = await encodeRaster(px, { id: 'sheet/x' as AssetId, half: 'any', q: 44, search: true }, both.codec);
+    const steps44 = [44, 49, 54, 59, 64, 69, 74, 79, 84, 89, 90];
+    expect(both.calls).toEqual([...steps44.map((q) => `64:${q}`), ...steps44.map((q) => `32:${q}`)]);
+    expect(rBoth.ok ? [] : rBoth.error).toEqual([
+      `sheet/x: full: no AVIF q in 44..90 keeps alpha within 8/255 (R6: the best, q 44, is ${worst(px)})`,
+      `sheet/x: half: no AVIF q in 44..90 keeps alpha within 8/255 (R6: the best, q 44, is ${worst(halfOf(px))})`,
+    ]);
   });
 
   test('assets: the q search ships only a verified candidate, the fewest bytes', async () => {
@@ -2006,6 +2015,12 @@ describe('assets', () => {
     });
     const transparent = await sharp({ create: { width: 1080, height: 2048, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } }).png().toBuffer();
     const large = await shotDir({ w: 1080, h: 2048, u: 4, largePlanes: true });
+    // D5 / D12 (triage r1 F2): read by its header before anything is decoded, so a tiny file stands for the whole one.
+    const rgba16 = await sharp({ create: { width: 8, height: 8, channels: 4, background: { r: 10, g: 20, b: 30, alpha: 1 } } }).toColourspace('rgb16').png().toBuffer();
+    const colourDepth = await sharp({ create: { width: 8, height: 8, channels: 3, background: { r: 10, g: 20, b: 30 } } }).png().toBuffer();
+    // R8's world read (triage r1 F3): a room src shot whose chapter world does not decode.
+    const roomList = { ...SHOT_LIST, shots: SHOT_LIST.shots.map((s) => ({ ...s, frame: 'room' })) };
+    const roomNeed = { ...cafeNeed([['neutral', false]], 'ch1'), frame: 'room', room: 'hall' };
     const cases: ReadonlyArray<{ name: string; repo: Readonly<Record<string, unknown>>; src: Readonly<Record<string, Uint8Array | null>>; err: readonly (string | RegExp)[] }> = [
       {
         name: 'ambient',
@@ -2059,6 +2074,29 @@ describe('assets', () => {
         repo: { ...SRC_REPO, 'server/content/build/shots.json': shotsUsage({ ch1: { shots: {}, assets: [] }, ch2: { shots: {}, assets: [] } }) },
         src: {},
         err: ['assets: bg/cafe: src shot/cafe is used, but server/content/build/shots.json shows no shot of it (run the story tool)'],
+      },
+      {
+        name: 'a 16-bit source file',
+        repo: SRC_REPO,
+        src: { 'original.png': rgba16 },
+        err: ['assets: cafe/original.png: png, ushort, 4 channels, not an 8-bit PNG (D5)'],
+      },
+      {
+        name: 'a colour depth map',
+        repo: SRC_REPO,
+        src: { 'depth.png': colourDepth },
+        err: ['assets: cafe/depth.png: png, uchar, 3 channels, not an 8- or 16-bit greyscale PNG (D12)'],
+      },
+      {
+        name: 'a world that does not decode',
+        repo: {
+          ...SRC_REPO,
+          'story/shots.json': roomList,
+          'server/content/build/shots.json': shotsUsage({ ch1: { shots: { cafe: roomNeed }, assets: ['bg/cafe', 'sheet/cafe'] }, ch2: { shots: {}, assets: [] } }),
+          'story/ch1/world.json': { format: 2, items: {}, docs: {}, puzzles: {}, sections: {} },
+        },
+        src: {},
+        err: ['assets: story/ch1/world.json: format: 2: the world format is 1'],
       },
     ];
     const errs = new Map<string, readonly string[]>();
@@ -2208,17 +2246,26 @@ describe('assets', () => {
       const f = loopFrame(0, w, h);
       return sharp(f.data, { raw: { width: f.w, height: f.h, channels: 4 } }).png().toBuffer();
     };
-    const cases: ReadonlyArray<{ name: string; sizes: ReadonlyArray<readonly [number, number]>; err: string }> = [
+    // `names`: the frames' file names when they are not 0.png .. <n-1>.png (triage r1 F4, F5: no frame, a stray name).
+    const cases: ReadonlyArray<{ name: string; sizes: ReadonlyArray<readonly [number, number]>; names?: readonly string[]; err: string }> = [
       { name: 'over 512', sizes: [[514, 512], [514, 512]], err: 'assets: prop/fire: assets/src/loop/fire: frames of 514 × 512 (shots §4.4: each side even and at most 512)' },
       { name: '13 frames', sizes: Array.from({ length: 13 }, () => [96, 64] as const), err: 'assets: prop/fire: assets/src/loop/fire has 13 frames (shots §4.4: 1..12)' },
       { name: 'two sizes', sizes: [[96, 64], [98, 64]], err: 'assets: prop/fire: assets/src/loop/fire: frames of 96 × 64, 98 × 64 (shots §4.4: one size)' },
       { name: 'an odd side', sizes: [[95, 64]], err: 'assets: prop/fire: assets/src/loop/fire: frames of 95 × 64 (shots §4.4: each side even and at most 512)' },
+      { name: 'no frame', sizes: [], err: 'assets: prop/fire: assets/src/loop/fire has no frame (shots §4.4: 0.png .. <n-1>.png, 1..12 frames)' },
+      {
+        name: 'a gap',
+        sizes: [[96, 64], [96, 64]],
+        names: ['0.png', '2.png'],
+        err: 'assets: prop/fire: assets/src/loop/fire: 2.png not in 0.png .. 1.png (shots §4.4: frames numbered from 0, contiguous)',
+      },
+      { name: 'no 0.png', sizes: [[96, 64]], names: ['1.png'], err: 'assets: prop/fire: assets/src/loop/fire: 1.png not in 0.png .. 0.png (shots §4.4: frames numbered from 0, contiguous)' },
     ];
     for (const c of cases) {
       const root = join(repo, c.name.replaceAll(' ', '-'));
       writeRepo(root, { 'assets/catalog.json': catalog, 'server/content/build/usage.json': usage });
       for (const [i, [w, h]] of c.sizes.entries()) {
-        plant(root, `assets/src/loop/fire/${i}.png`, await png(w, h));
+        plant(root, `assets/src/loop/fire/${c.names?.[i] ?? `${i}.png`}`, await png(w, h));
       }
       const calls: string[] = [];
       const r = await runTool(root, recordingEncoders(FAKE_ENCODERS, calls));
