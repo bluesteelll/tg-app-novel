@@ -252,25 +252,43 @@ test('explore: hotspot buttons align with props under safe area and landscape', 
   );
   await page.setViewportSize({ width: 812, height: 375 });
   await page.evaluate(() => (window as unknown as E2eWindow).__tgMock.setViewport(375));
-  // The stage keeps its portrait frame inside the landscape viewport; it follows the new height.
-  await expect.poll(() => page.locator('canvas').evaluate((el) => el.clientHeight), { message: 'the stage at the landscape height' }).toBe(375);
+  // The stage keeps its portrait frame inside the landscape viewport; it follows the new height in client px. Its
+  // layout height is the design box's (Q67: a column narrower than the design width is drawn scaled as one unit).
+  await expect
+    .poll(() => page.locator('canvas').evaluate((el) => Math.round(el.getBoundingClientRect().height)), {
+      message: 'the stage at the landscape height',
+    })
+    .toBe(375);
   await atRest(page);
 
+  // Sizes in layout (design) px, where the controller applies its minimum; positions in client px.
   const fits = (button: number, prop: number): boolean =>
     prop >= MIN_TARGET_PX ? Math.abs(button - prop) <= 1 : Math.abs(button - MIN_TARGET_PX) <= 1;
   const misses = async (): Promise<string[]> => {
-    const rects = await page.evaluate(() => (window as unknown as E2eWindow).__novelDebug?.propRects() ?? []);
+    // One read, so no resize falls between the rects and the scale: k = client px per layout px, measured on the canvas.
+    const { rects, x0, y0, k } = await page.evaluate(() => {
+      const canvas = document.querySelector('canvas');
+      const box = canvas?.getBoundingClientRect();
+      return {
+        rects: (window as unknown as E2eWindow).__novelDebug?.propRects() ?? [],
+        x0: (box?.left ?? 0) + window.scrollX,
+        y0: (box?.top ?? 0) + window.scrollY,
+        k: canvas === null || box === undefined ? 1 : box.height / canvas.clientHeight,
+      };
+    });
     const out: string[] = [];
     for (const [id, prop] of STUDY_PROPS) {
       const r = rects.find((x) => x.prop === prop);
       const b = await hotspot(page, 'study', id).boundingBox();
       if (r === undefined || b === null) {
-        out.push(`${id}: ${r === undefined ? 'no prop rect' : 'no button box'}`);
+        out.push(`${id}: ${r === undefined ? 'no prop rect' : 'no button box'} at k=${k}`);
         continue;
       }
-      const centred = Math.abs(b.x + b.width / 2 - (r.x + r.w / 2)) <= 1 && Math.abs(b.y + b.height / 2 - (r.y + r.h / 2)) <= 1;
-      if (!centred || !fits(b.width, r.w) || !fits(b.height, r.h)) {
-        out.push(`${id}: button ${b.x},${b.y} ${b.width}x${b.height}, prop ${r.x},${r.y} ${r.w}x${r.h}`);
+      // debugPropRects is the canvas origin + stage layout px: the offset from the origin scales by k on screen.
+      const c = { x: x0 + (r.x - x0) * k, y: y0 + (r.y - y0) * k, w: r.w * k, h: r.h * k };
+      const centred = Math.abs(b.x + b.width / 2 - (c.x + c.w / 2)) <= 1 && Math.abs(b.y + b.height / 2 - (c.y + c.h / 2)) <= 1;
+      if (!centred || !fits(b.width / k, r.w) || !fits(b.height / k, r.h)) {
+        out.push(`${id}: button ${b.x},${b.y} ${b.width}x${b.height}, prop ${c.x},${c.y} ${c.w}x${c.h} at k=${k}`);
       }
     }
     return out;
