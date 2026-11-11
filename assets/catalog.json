@@ -54,6 +54,7 @@
     "steps": { "placeholder": { "hz": 330 } }
   },
   "prop": {
+    "drawer_open": { "placeholder": { "hue": 70 } },
     "medal_sun": { "placeholder": { "hue": 50 } },
     "medal_star": { "placeholder": { "hue": 220 } },
     "note": { "placeholder": { "hue": 85 } }

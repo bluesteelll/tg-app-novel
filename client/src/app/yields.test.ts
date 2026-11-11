@@ -14,6 +14,7 @@ import type { ExploreController } from '../explore/controller.ts';
 import type { ExploreEffect } from '../explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { WorldState } from '../explore/state.ts';
+import { ROOM_SOURCE, cover, toStage } from '../geom/cover.ts';
 import type { ChunkError, PuzzleUiProps } from '../puzzles/registry.ts';
 import type { HintPort, HintPortError } from '../puzzles/session.ts';
 import type { SceneStats } from '../scene/controller.ts';
@@ -21,7 +22,7 @@ import type { VisualCommand } from '../scene/executor.ts';
 import type { StatEvent } from '../stats/reporter.ts';
 import { decodeChapterMeta } from '../story/catalog.ts';
 import type { AssetEntry, AssetManifest, LoadedChapter, Result } from '../story/catalog.ts';
-import type { AssetId, ChapterId, KnotName, PropId, PuzzleLocalId, SectionId, StagingSnapshot } from '../story/staging.ts';
+import type { AssetId, BgId, CgId, ChapterId, KnotName, PropId, PuzzleLocalId, Rect, SectionId, StagingSnapshot } from '../story/staging.ts';
 import { createExploreView } from '../ui/explore-view.svelte.ts';
 import type { ExploreLayerProps } from '../ui/explore-view.svelte.ts';
 import { createPuzzleView } from '../ui/puzzle-view.svelte.ts';
@@ -32,7 +33,7 @@ import type { CueStageProps } from '../ui/state.svelte.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { DocId, HotspotKey, ItemId, WorldPublic } from '../world/types.ts';
 import type { WaitRow } from '../requests.test.ts';
-import { TAKE_FADE_MS, coreCue, createYields, heldBy } from './yields.ts';
+import { ROOM_FADE_MS, TAKE_FADE_MS, coreCue, createYields, heldBy } from './yields.ts';
 import type { ExploreChunk, LazyChunks, Yields, YieldsHost } from './yields.ts';
 import yieldsSource from './yields.ts?raw';
 
@@ -980,16 +981,15 @@ async function inLateHall(r: Rig): Promise<void> {
 test('yields: a batch that waits on a load emits waiting, then waited', async () => {
   const r = rig({ world: cueWorld(), late: true });
   await inLateHall(r);
-  // The take batch: the hold opens at the taken hotspot's box and closes when the batch starts.
-  const medal = boxOf(r, 'hall.medal');
+  // The take's state batch: the medal's anchor draws nothing after it, so the batch adds no image and holds nothing
+  // (engine plan §6.4 round 13, `'no-load'`); a state batch that does hold has its own tests.
   let mark = r.cues.length;
   r.yields.layer.ontap(key('hall.medal'));
   await settle();
-  expect(keysOf(r, mark)).toEqual(['fact:held:added', 'fact:taken:added', 'ui-state:waiting']);
-  expect(r.cues.at(-1)?.box).toEqual(medal);
+  expect(keysOf(r, mark)).toEqual(['fact:held:added', 'fact:taken:added']);
   r.release();
   await settle();
-  expect(keysOf(r, mark)).toEqual(['fact:held:added', 'fact:taken:added', 'ui-state:waiting', 'ui-state:waited']);
+  expect(keysOf(r, mark)).toEqual(['fact:held:added', 'fact:taken:added']);
   // The room batch: at the exit's box (the move cues have their own tests).
   const door = boxOf(r, 'hall.to_cellar');
   mark = r.cues.length;
@@ -1111,6 +1111,386 @@ test('yields: a take emits exactly one held cue', async () => {
   r.yields.layer.ontap(key('hall.medal'));
   await settle();
   expect(keysOf(r, mark).filter((k) => k.startsWith('fact:'))).toEqual(['fact:held:added', 'fact:taken:added']);
+  r.yields.dispose();
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// State visuals (engine plan §6.4, GM3b): the state batch and its hold, the placements, `roomFor`, the diff on the bus
+
+const LAMP: Rect = [100, 300, 200, 200];
+const VASE: Rect = [300, 300, 200, 200];
+const DRAWER_AT: Rect = [500, 300, 200, 200];
+const BUST: Rect = [700, 300, 200, 200];
+const URN_L: Rect = [100, 600, 200, 200];
+const URN_R: Rect = [300, 600, 200, 200];
+const RUG: Rect = [0, 1500, 1080, 400];
+const SHADE: Rect = [400, 100, 300, 200];
+const MIRROR: Rect = [200, 400, 400, 600];
+const CRACK: Rect = [250, 500, 100, 100];
+const object = (id: string, prop: string | null, rect: Rect, visual: Json = {}): Json => ({ id, kind: 'object', rect, label: txt(id), lock: null, then: [], look: null, prop, ...visual });
+/** A visual rule: `state` once hotspot `k` was examined. */
+const onceSeen = (k: string, state: string): Json[] => [{ when: { examined: k }, state }];
+
+/**
+ * The visual fixture: in the hall, a look at the switch lights the lamp, a look at the desk takes the vase's picture away
+ * and opens the drawer (drawn after the vase), a look at the shelf takes the bust's away, two urns share one image, and
+ * decor sits behind the hotspots (the rug, z -1) and in front (the shade, z 2, declared first). The den shares the
+ * hall's bg; its mirror shows a crack patch once the hall's desk is examined. The attic has a bg of its own and an exit
+ * out of the section.
+ */
+function visualWorld(): WorldPublic {
+  const raw = {
+    format: 1,
+    items: {},
+    docs: {},
+    puzzles: {},
+    sections: {
+      manor: {
+        start: 'hall',
+        bgm: null,
+        rooms: {
+          hall: {
+            bg: 'hall',
+            title: txt('Hall'),
+            onEnter: [],
+            hotspots: [
+              exit('to_den', 'den'),
+              exit('to_attic', 'attic'),
+              look('switch'),
+              look('desk'),
+              look('shelf'),
+              object('lamp', 'lamp', LAMP, { states: { lit: { prop: 'lamp_lit' } }, is: onceSeen('hall.switch', 'lit') }),
+              object('vase', 'vase', VASE, { states: { gone: { prop: null } }, is: onceSeen('hall.desk', 'gone') }),
+              object('drawer', null, DRAWER_AT, { states: { open: { prop: 'drawer_open' } }, is: onceSeen('hall.desk', 'open') }),
+              object('bust', 'bust', BUST, { states: { gone: { prop: null } }, is: onceSeen('hall.shelf', 'gone') }),
+              object('urn_l', 'urn', URN_L),
+              object('urn_r', 'urn', URN_R),
+            ],
+            decor: [
+              { id: 'shade', prop: 'shade', rect: SHADE, z: 2 },
+              { id: 'rug', prop: 'rug', rect: RUG, z: -1 },
+            ],
+          },
+          den: {
+            bg: 'hall',
+            title: txt('Den'),
+            onEnter: [],
+            hotspots: [exit('to_hall', 'hall'), object('mirror', 'mirror', MIRROR, { states: { cracked: { patch: 'crack', rect: CRACK } }, is: onceSeen('hall.desk', 'cracked') })],
+          },
+          attic: {
+            bg: 'attic',
+            title: txt('Attic'),
+            onEnter: [],
+            hotspots: [exit('to_hall', 'hall'), { id: 'out', kind: 'exit', rect: RECT, label: txt('out'), to: { story: 'after' }, lock: null, sfx: null }],
+          },
+        },
+      },
+    },
+  };
+  const r = decodeWorldSource(raw);
+  if (!r.ok) {
+    throw new Error(`invariant: the visual fixture world decodes: ${JSON.stringify(r.error)}`);
+  }
+  return { ...toPublic(r.value), mods: r.value.mods, version: '4444444444444444' };
+}
+
+/** A placement as the props command carries it: a base has no `part`, a patch has `part: 'patch'`. */
+const placed = (prop: string, rect: Rect, at: string, part?: 'patch'): Json => ({ prop, rect, at, ...(part === undefined ? {} : { part }) });
+/** The hall's props at its entry, back to front: the rug, the hotspots in their order (the drawer draws nothing yet), the shade. */
+const HALL_PROPS = [
+  placed('rug', RUG, 'hall~rug'),
+  placed('lamp', LAMP, 'hall.lamp'),
+  placed('vase', VASE, 'hall.vase'),
+  placed('bust', BUST, 'hall.bust'),
+  placed('urn', URN_L, 'hall.urn_l'),
+  placed('urn', URN_R, 'hall.urn_r'),
+  placed('shade', SHADE, 'hall~shade'),
+];
+const CROSSFADE = { kind: 'bg', bg: 'hall', t: 'crossfade', ms: TAKE_FADE_MS };
+/** An anchor's box on the rig's 360×640 stage host: the cover mapping, with no minimum tap target. */
+const anchorAt = (rect: Rect): CueEvent['box'] => toStage(rect, cover({ w: 360, h: 640 }, ROOM_SOURCE));
+const propsCommands = (batches: readonly VisualCommand[][]): VisualCommand[] => batches.flat().filter((c) => c.kind === 'props');
+const waitsOf = (r: Rig, from: number): Array<Pick<CueEvent, 'cue' | 'box'>> =>
+  r.cues
+    .slice(from)
+    .filter((e) => e.cue.kind === 'ui-state' && (e.cue.name === 'waiting' || e.cue.name === 'waited'))
+    .map((e) => ({ cue: e.cue, box: e.box }));
+const waitAt = (name: 'waiting' | 'waited', box: CueEvent['box']): Pick<CueEvent, 'cue' | 'box'> => ({ cue: { kind: 'ui-state', name, panel: null, item: null }, box });
+
+test('yields: a state change crossfades the props on screen', async () => {
+  const r = rig({ world: visualWorld() });
+  await inHall(r);
+  const mark = r.batches.length;
+  r.yields.layer.ontap(key('hall.switch'));
+  await settle();
+  // The look lit the lamp: the room on screen crossfades to its new picture over the bg already shown (owner Q53).
+  const lit = HALL_PROPS.map((p) => (p['at'] === 'hall.lamp' ? placed('lamp_lit', LAMP, 'hall.lamp') : p));
+  expect(r.batches.slice(mark)).toEqual([[CROSSFADE, { kind: 'props', props: lit }]]);
+  expect(r.stage().props).toEqual(lit);
+  // A second look changes no state: no batch.
+  r.yields.layer.ontap(key('hall.switch'));
+  await settle();
+  expect(r.batches.length - mark).toBe(1);
+  r.yields.dispose();
+});
+
+test('yields: two placements of one image keep two anchors', async () => {
+  const r = rig({ world: visualWorld() });
+  await inHall(r);
+  // Engine plan §6.4 W7: one image at two anchors is two placements, each keyed by its own anchor.
+  const urns = propsCommands(r.batches).flatMap((c) => (c.kind === 'props' ? c.props.filter((p) => p.prop === 'urn') : []));
+  expect(urns).toEqual([placed('urn', URN_L, 'hall.urn_l'), placed('urn', URN_R, 'hall.urn_r')]);
+  r.yields.dispose();
+});
+
+test('yields: the props command lists placements back to front', async () => {
+  const r = rig({ world: visualWorld() });
+  await inHall(r);
+  // The draw order: decor by `z` around the hotspots' 0, the hotspots in world order (§6.4 "Anchors and order").
+  expect(propsCommands(r.batches)).toEqual([{ kind: 'props', props: HALL_PROPS }]);
+  r.yields.dispose();
+});
+
+test('yields: a state change that waits on its picture holds a motion at its anchor', async () => {
+  const r = rig({ world: visualWorld(), late: true });
+  await inLateHall(r);
+  const mark = r.cues.length;
+  r.yields.layer.ontap(key('hall.switch'));
+  await settle();
+  // The lit lamp's picture loads: the batch holds at the lamp's anchor until it starts.
+  expect(waitsOf(r, mark)).toEqual([waitAt('waiting', anchorAt(LAMP))]);
+  r.release();
+  await settle();
+  expect(waitsOf(r, mark)).toEqual([waitAt('waiting', anchorAt(LAMP)), waitAt('waited', anchorAt(LAMP))]);
+  expect(r.stage().props).toContainEqual(placed('lamp_lit', LAMP, 'hall.lamp'));
+  r.yields.dispose();
+});
+
+test('yields: a state change holds at the first changed anchor that draws an image', async () => {
+  const r = rig({ world: visualWorld(), late: true });
+  await inLateHall(r);
+  const mark = r.cues.length;
+  r.yields.layer.ontap(key('hall.desk'));
+  await settle();
+  // The vase, drawn first, turns to a state with no picture; the drawer turns to one: the hold is the drawer's.
+  expect(waitsOf(r, mark)).toEqual([waitAt('waiting', anchorAt(DRAWER_AT))]);
+  r.release();
+  await settle();
+  expect(waitsOf(r, mark)).toEqual([waitAt('waiting', anchorAt(DRAWER_AT)), waitAt('waited', anchorAt(DRAWER_AT))]);
+  r.yields.dispose();
+});
+
+test('yields: a state change that draws no image opens no hold', async () => {
+  const r = rig({ world: visualWorld(), late: true });
+  await inLateHall(r);
+  const mark = r.cues.length;
+  const at = r.batches.length;
+  r.yields.layer.ontap(key('hall.shelf'));
+  await settle();
+  // The bust's picture goes and nothing new is drawn: the batch adds no image, so it holds nothing (`'no-load'`).
+  expect(r.batches.slice(at)).toEqual([[CROSSFADE, { kind: 'props', props: HALL_PROPS.filter((p) => p['at'] !== 'hall.bust') }]]);
+  r.release();
+  await settle();
+  expect(waitsOf(r, mark)).toEqual([]);
+  r.yields.dispose();
+});
+
+test("yields: roomFor gives a room's state commands by its bg", async () => {
+  const r = rig({ world: visualWorld() });
+  const bg = (b: string): BgId => b as BgId;
+  // No section open (and no controller yet): null.
+  expect(r.yields.roomFor(bg('hall'))).toBeNull();
+  await inHall(r);
+  expect(r.yields.roomFor(bg('hall'))).toEqual([{ kind: 'props', props: HALL_PROPS }]);
+  r.yields.layer.ontap(key('hall.to_den'));
+  await settle();
+  // Two rooms on the hall's bg: the current one first.
+  expect(r.yields.roomFor(bg('hall'))).toEqual([{ kind: 'props', props: [placed('mirror', MIRROR, 'den.mirror')] }]);
+  r.yields.layer.ontap(key('den.to_hall'));
+  await settle();
+  r.yields.layer.ontap(key('hall.to_attic'));
+  await settle();
+  // From the attic: the first room on that bg in declaration order; its own bg gives its own (empty) picture.
+  expect(r.yields.roomFor(bg('hall'))).toEqual([{ kind: 'props', props: HALL_PROPS }]);
+  expect(r.yields.roomFor(bg('attic'))).toEqual([{ kind: 'props', props: [] }]);
+  // No room of the section on that bg: null, not an empty command.
+  expect(r.yields.roomFor(bg('cellar'))).toBeNull();
+  r.yields.layer.ontap(key('attic.out'));
+  await settle();
+  // Out of the section: null.
+  expect(r.yields.roomFor(bg('hall'))).toBeNull();
+  r.yields.dispose();
+});
+
+test("yields: roomFor equals the room batch's state commands", async () => {
+  const r = rig({ world: visualWorld() });
+  await inHall(r);
+  r.yields.layer.ontap(key('hall.desk'));
+  await settle();
+  const mark = r.batches.length;
+  r.yields.layer.ontap(key('hall.to_den'));
+  await settle();
+  // The den is entered with its mirror cracked: the base, then its patch over it.
+  const batch = propsCommands(r.batches.slice(mark));
+  expect(batch).toEqual([{ kind: 'props', props: [placed('mirror', MIRROR, 'den.mirror'), placed('crack', CRACK, 'den.mirror', 'patch')] }]);
+  expect(r.yields.roomFor('hall' as BgId)).toEqual(batch);
+  r.yields.dispose();
+});
+
+test("yields: a dispatch's cues carry its visual diff", async () => {
+  const r = rig({ world: cueWorld() });
+  await inHall(r);
+  let mark = r.cues.length;
+  r.yields.layer.ontap(key('hall.medal'));
+  await settle();
+  // A take: the medal's anchor leaves the room's picture, and each cue of the dispatch carries that diff (§6.4, 08c).
+  const taken = [{ at: 'hall.medal', from: 'default', to: null }];
+  expect(r.cues.slice(mark).map((e) => [keyOf(e.cue), e.diff])).toEqual([
+    ['fact:held:added', taken],
+    ['fact:taken:added', taken],
+  ]);
+  // A move changes the room: no diff, on its move cue and on the cues of its arrival.
+  mark = r.cues.length;
+  r.yields.layer.ontap(key('hall.to_cellar'));
+  await settle();
+  const moved = r.cues.slice(mark);
+  expect(moved.map((e) => keyOf(e.cue))).toContain('move:walk');
+  expect(moved.filter((e) => e.diff.length > 0)).toEqual([]);
+  r.yields.dispose();
+});
+
+/**
+ * The state batch's edges (§6.4), on a world of their own so `visualWorld` and its `roomFor` expectations stay as they
+ * are: in the hall, a look at the bell lights the bulb and runs a knot, a look at the switch lights the lamp, and the
+ * door stands ajar once the den was visited. The den shares the hall's bg.
+ */
+function edgeWorld(): WorldPublic {
+  const raw = {
+    format: 1,
+    items: {},
+    docs: {},
+    puzzles: {},
+    sections: {
+      manor: {
+        start: 'hall',
+        bgm: null,
+        rooms: {
+          hall: {
+            bg: 'hall',
+            title: txt('Hall'),
+            onEnter: [],
+            hotspots: [
+              exit('to_den', 'den'),
+              look('switch'),
+              { id: 'bell', kind: 'look', rect: RECT, label: txt('bell'), look: txt('seen bell'), then: [{ story: 'after' }] },
+              object('lamp', 'lamp', LAMP, { states: { lit: { prop: 'lamp_lit' } }, is: onceSeen('hall.switch', 'lit') }),
+              object('bulb', 'bulb', BUST, { states: { lit: { prop: 'bulb_lit' } }, is: onceSeen('hall.bell', 'lit') }),
+              object('door', 'door', VASE, { states: { ajar: { prop: 'door_ajar' } }, is: [{ when: { visited: 'den' }, state: 'ajar' }] }),
+            ],
+          },
+          den: { bg: 'hall', title: txt('Den'), onEnter: [], hotspots: [exit('to_hall', 'hall'), object('mirror', 'mirror', MIRROR)] },
+        },
+      },
+    },
+  };
+  const r = decodeWorldSource(raw);
+  if (!r.ok) {
+    throw new Error(`invariant: the edge fixture world decodes: ${JSON.stringify(r.error)}`);
+  }
+  return { ...toPublic(r.value), mods: r.value.mods, version: '5555555555555555' };
+}
+
+test("yields: a dispatch's state change shows before its knot job", async () => {
+  const r = rig({ world: edgeWorld() });
+  await inHall(r);
+  const mark = r.log.length;
+  r.yields.layer.ontap(key('hall.bell'));
+  await settle();
+  // The look lit the bulb and queued its knot: the state batch runs ahead of the dispatch's own jobs, so the knot
+  // starts over the changed picture (B-001).
+  expect(r.log.slice(mark).filter((l) => l.startsWith('apply:') || l.startsWith('enter:'))).toEqual(['apply:bg,props|', 'enter:after']);
+  expect(r.stage().props).toContainEqual(placed('bulb_lit', BUST, 'hall.bulb'));
+  r.yields.dispose();
+});
+
+test('yields: a state change under a close-up applies no batch', async () => {
+  const r = rig({ world: edgeWorld() });
+  await inHall(r);
+  // No shipped path changes a room's picture under a close-up (a puzzle's end awaits the close-up's fade-out before it
+  // dispatches), so the stage is put there directly: the guard leaves the props to the room batch that shows the room.
+  await r.host.apply([{ kind: 'cg', cg: 'drawer_close' as CgId, t: 'cut', ms: 0 }], []);
+  const mark = r.batches.length;
+  r.yields.layer.ontap(key('hall.switch'));
+  await settle();
+  expect(r.yields.world().examined).toContain('hall.switch');
+  expect(r.batches.slice(mark)).toEqual([]);
+  r.yields.dispose();
+});
+
+test('yields: a state change while another bg is up applies no batch', async () => {
+  const r = rig({ world: edgeWorld() });
+  await inHall(r);
+  // No shipped path changes a room's picture while another bg is up (taps come only from the explore layer, which a
+  // room batch shows over the room's own bg), so the stage is put there directly, on a bg no room of the world has:
+  // the guard leaves the props to the room batch that shows the room again.
+  await r.host.apply([{ kind: 'bg', bg: 'cellar' as BgId, t: 'cut', ms: 0 }], []);
+  const lamp = placed('lamp_lit', LAMP, 'hall.lamp');
+  const hallProps = () => (r.yields.roomFor('hall' as BgId) ?? []).flatMap((c) => (c.kind === 'props' ? c.props : []));
+  expect(hallProps()).not.toContainEqual(lamp);
+  const mark = r.batches.length;
+  r.yields.layer.ontap(key('hall.switch'));
+  await settle();
+  // The look changed the hall's picture (the lamp is lit), so the empty batch list is the guard, not an empty diff.
+  expect(r.yields.world().examined).toContain('hall.switch');
+  expect(hallProps()).toContainEqual(lamp);
+  expect(r.batches.slice(mark)).toEqual([]);
+  expect(r.stage().bg).toBe('cellar');
+  r.yields.dispose();
+});
+
+test('yields: a state change the stage already shows applies no batch', async () => {
+  const r = rig({ world: edgeWorld() });
+  await inHall(r);
+  // No shipped state change keeps a room's placements (ch1's one `is`, the drawer, changes its prop), so the stage is
+  // put there directly: the hall's props with the lamp already lit, the picture the look below leads to. The guard
+  // leaves a picture the stage already shows alone: no crossfade onto the same props, no hold at the anchor.
+  const lamp = placed('lamp_lit', LAMP, 'hall.lamp');
+  const lit = r.stage().props.map((p) => (p.at === 'hall.lamp' ? { ...p, prop: 'lamp_lit' as PropId } : p));
+  await r.host.apply([{ kind: 'props', props: lit }], []);
+  expect(r.stage().props).toContainEqual(lamp);
+  const hallProps = () => (r.yields.roomFor('hall' as BgId) ?? []).flatMap((c) => (c.kind === 'props' ? c.props : []));
+  expect(hallProps()).not.toContainEqual(lamp);
+  const mark = r.batches.length;
+  const cm = r.cues.length;
+  r.yields.layer.ontap(key('hall.switch'));
+  await settle();
+  // The look changed the lamp's state (its cue carries the diff) to the picture already up, so the empty batch list is
+  // the guard, not an empty diff.
+  expect(r.yields.world().examined).toContain('hall.switch');
+  expect(r.cues.slice(cm).map((e) => e.diff)).toContainEqual([{ at: 'hall.lamp', from: 'default', to: 'lit' }]);
+  expect(r.stage().props).toEqual(hallProps());
+  expect(r.batches.slice(mark)).toEqual([]);
+  r.yields.dispose();
+});
+
+test("yields: a move that changes the left room's picture stays a room fade", async () => {
+  const r = rig({ world: edgeWorld() });
+  await inHall(r);
+  const mark = r.cues.length;
+  const at = r.batches.length;
+  r.yields.layer.ontap(key('hall.to_den'));
+  await settle();
+  // The arrival marks the den visited, which sets the hall's door ajar: a change to the room left, not to the one on
+  // screen. No cue of the move carries it, and no state batch runs ahead of the move: the den fades in on the same bg.
+  expect(roomOf(r)).toBe('den');
+  const moved = r.cues.slice(mark);
+  expect(moved.map((e) => keyOf(e.cue))).toContain('move:walk');
+  expect(moved.filter((e) => e.diff.length > 0)).toEqual([]);
+  expect(r.batches.slice(at)).toEqual([[{ kind: 'bg', bg: 'hall', t: 'fade', ms: ROOM_FADE_MS }, { kind: 'props', props: [placed('mirror', MIRROR, 'den.mirror')] }]]);
+  // Back in the hall, the door stands ajar: the move did change the picture of the room it left.
+  r.yields.layer.ontap(key('den.to_hall'));
+  await settle();
+  expect(r.stage().props).toContainEqual(placed('door_ajar', VASE, 'hall.door'));
   r.yields.dispose();
 });
 
@@ -2074,6 +2454,26 @@ test('yields: two Hint taps that share one failed status play its failure once',
   f.yields.dispose();
 });
 
+test('yields: a Hint tap while the ladder is busy only shows the ladder', async () => {
+  // Q68: a Hint tap while a hint use is in flight starts no status request: the use's answer is the ladder's, with its
+  // one cue (GM3p's I1 rule), and the tap only shows the sheet.
+  const w = ladderPort(5);
+  const r = rig({ status: LADDER_STATUS, hints: w.port });
+  await r.yields.onYield({ kind: 'puzzle', puzzle: DRAWER, then: AFTER });
+  r.yields.host.onhint();
+  await settle();
+  const asked = r.calls.status;
+  const use = deferred<void>();
+  await ladderSteps(r, [
+    ['a use of tier 2 starts', () => ((w.state.gate = use.promise), r.yields.host.onusehint(2)), { busy: true, failed: false }, ['ui-state:waiting@hints']],
+    ['Hint while the use runs', () => (r.yields.host.onhint(), settle()), { busy: true, failed: false }, []],
+    ['the use answered', () => (use.resolve(), settle()), { busy: false, failed: false }, ['ui-state:waited@hints', 'puzzle:hint-shown@2', 'puzzle:ladder']],
+  ]);
+  expect(r.calls.status, 'no status request while the use runs').toBe(asked);
+  expect(r.vm.screens.overlays.filter((s) => s.kind === 'hints'), 'the sheet shows once').toHaveLength(1);
+  r.yields.dispose();
+});
+
 test('yields: the ladder has one writer', () => {
   // Engine plan §8.1: every write of `puzzle.ladder` goes through `setLadder`, which emits its hold's edges.
   const writes = [...yieldsSource.matchAll(/\bpuzzle\.ladder = /g)].map((m) => m.index);
@@ -2750,14 +3150,22 @@ const WAIT_CASES: { readonly [R in WaitRow]: WaitCase } = {
       ['its start', () => r.release(), ['-room']],
       ['the way back', () => r.yields.layer.ontap(key('cellar.to_hall')), ['+room']],
       ['its start', () => r.release(), ['-room']],
-      ['a take', () => r.yields.layer.ontap(key('hall.medal')), ['+room']],
-      ['its start', () => r.release(), ['-room']],
+      ['a take', () => r.yields.layer.ontap(key('hall.medal')), []], // its picture leaves, no image loads: no hold
+      ['its start', () => r.release(), []],
       ['the close-up in', () => r.yields.layer.ontap(key('hall.chest')), ['+room']],
       ['its start, the frame write and the chunk write', () => r.release(), ['-room', '+puzzle', '-puzzle']],
       ['the close-up out at an X8 Back', () => r.screens.back(), ['+room']],
       ['its start', () => r.release(), ['-room']],
     ]);
     r.yields.dispose();
+    // A state change whose new picture loads (engine plan §6.4): its batch holds at the anchor.
+    const v = rig({ world: visualWorld(), late: true });
+    await inLateHall(v);
+    await script(row, v, [
+      ['a state change', () => v.yields.layer.ontap(key('hall.switch')), ['+room']],
+      ['its start', () => v.release(), ['-room']],
+    ]);
+    v.yields.dispose();
     // The close-up out at a run's end (`ended`).
     const p = rig({ late: true, attempts: [RIGHT] });
     await script(row, p, [

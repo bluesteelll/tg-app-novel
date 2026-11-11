@@ -11,18 +11,19 @@ import { fileURLToPath } from 'node:url';
 import { expect, test } from 'vitest';
 
 import { RULES_VERSION } from '../../src/explore/reduce.ts';
+import { roomImages } from '../../src/mechanics/rules/visual.ts';
 import { PUZZLE_TYPES } from '../../src/puzzles/rules/index.ts';
 import type { PuzzleTypeData } from '../../src/puzzles/rules/index.ts';
 import { assetIndex, decodeAssetCatalog, decodeCast, decodeChapterCatalog, decodeChapterMeta, storyOf } from '../../src/story/catalog.ts';
 import type { Cast, ChapterListEntry, StoryId } from '../../src/story/catalog.ts';
 import type { AssetId, AssetIndex, ChapterId, KnotName, LineId, ProductId } from '../../src/story/staging.ts';
 import { decodeWorldPublic, decodeWorldSource, toPublic } from '../../src/world/decode.ts';
-import type { WorldSource } from '../../src/world/types.ts';
+import type { RoomId, WorldSource } from '../../src/world/types.ts';
 import { assetUsage } from '../assets/manifest.ts';
 import { compileChapter, resolveInclude } from './compile.ts';
 import type { CompiledChapter, ReadInk } from './compile.ts';
 import { decodeLineFingerprints, decodeStoryUsage, paidLeak, planEmit, worldVersion } from './emit.ts';
-import type { LineFingerprints, ServerMeta, ServerStoryIndex, StoryNames, WorldNeedles } from './emit.ts';
+import type { LineFingerprints, ServerMeta, ServerStoryIndex, StoryNames, StoryUsage, WorldNeedles } from './emit.ts';
 import { buildGraph, writeOnly } from './graph.ts';
 import type { ChapterGraph, GraphFacts } from './graph.ts';
 import { GLOBALS_PATH, lintSources } from './lint.ts';
@@ -1362,6 +1363,96 @@ test('emit: usage holds world assets and rooms', () => {
     const d = decodeStoryUsage({ ...raw, rooms: bad });
     expect(d.ok ? [] : d.error.join('; '), path).toContain(path);
   }
+});
+
+const USAGE = 'server/content/build/usage.json';
+const PATCH_RECT = [140, 340, 60, 60];
+
+/** The study's drawer with a state picture (shown once it is open) and a patch over its note (shown while a lamp is held). */
+function stateDrawer(w: WorldJson): WorldJson {
+  Object.assign(objectAt(w, 'sections.manor.rooms.study.hotspots.0'), {
+    states: { open: { prop: 'drawer_open' }, scratched: { patch: 'scratch', rect: PATCH_RECT } },
+    is: [
+      { when: { open: 'study.drawer' }, state: 'open' },
+      { when: { held: 'lamp' }, state: 'scratched' },
+    ],
+  });
+  return w;
+}
+
+function plannedUsage(plan: ReadonlyMap<string, string>): StoryUsage {
+  const usage = decodeStoryUsage(JSON.parse(planned(plan, USAGE)));
+  if (!usage.ok) {
+    throw new Error(`invariant: the planned usage decodes: ${usage.error.join('; ')}`);
+  }
+  return usage.value;
+}
+
+test('emit: usage props list every state image', () => {
+  // Engine plan §6.4 "Memory": a state's picture is an image the room can show, so the room's usage props (the
+  // `room-set` row) and the chapter's world assets (its manifest) list it, a patch too, whether or not it shows now.
+  const { plan } = emitFixture(LIST, [MANOR], new Map([[CH1_ENTRY.id, decodedWorld(stateDrawer(worldSource('ch1', 'cafe')))]]));
+  const usage = plannedUsage(plan);
+  expect(usage.rooms?.['ch1/manor/study']?.props).toEqual(['prop/drawer_open', 'prop/note', 'prop/scratch']);
+  expect(usage.rooms?.['ch1/manor/hall']?.props).toEqual(['prop/medal_sun']);
+  expect(usage.chapters[CH1_ENTRY.id]?.worldAssets).toEqual([
+    'bg/hall',
+    'bg/study',
+    'bgm/tension',
+    'cg/cabinet',
+    'cg/drawer',
+    'prop/drawer_open',
+    'prop/medal_sun',
+    'prop/note',
+    'prop/scratch',
+    'sfx/door',
+    'sfx/steps',
+  ]);
+});
+
+test("build: a room's preload list equals its room-set props", () => {
+  // What the controller preloads under `state:<room>` (`roomImages` over the world as the client decodes it) is what
+  // the `room-set` row counts (the usage props `emit.ts` writes from the source world), for every room of every built
+  // world: state pictures, a decor and its states included. A room with no image lists none (the controller skips it).
+  const ch1 = stateDrawer(worldSource('ch1', 'cafe'));
+  objectAt(ch1, 'sections.manor.rooms.hall')['decor'] = [
+    { id: 'vase', prop: 'vase', rect: [100, 600, 200, 200], z: 1, states: { chipped: { patch: 'chip', rect: PATCH_RECT } }, is: [{ when: { held: 'key' }, state: 'chipped' }] },
+  ];
+  const ch2 = worldSource('ch2', 'archive');
+  objectAt(ch2, 'sections.manor.rooms.hall.hotspots.0')['prop'] = null;
+  const { plan } = emitFixture(
+    LIST,
+    [MANOR],
+    new Map([
+      [CH1_ENTRY.id, decodedWorld(ch1)],
+      [CH2_ENTRY.id, decodedWorld(ch2)],
+    ]),
+  );
+  const rooms = plannedUsage(plan).rooms ?? {};
+  const seen: string[] = [];
+  for (const [ch, path] of [
+    [CH1_ENTRY.id, CH1_WORLD],
+    [CH2_ENTRY.id, CH2_WORLD],
+  ] as const) {
+    const w = decodeWorldPublic(JSON.parse(planned(plan, path)));
+    if (!w.ok) {
+      throw new Error(`invariant: the planned world decodes: ${JSON.stringify(w.error)}`);
+    }
+    for (const [sid, s] of Object.entries(w.value.sections)) {
+      for (const rid of Object.keys(s.rooms)) {
+        const key = `${ch}/${sid}/${rid}`;
+        seen.push(key);
+        expect(roomImages(w.value, rid as RoomId).map((p) => `prop/${p}`), key).toEqual(rooms[key]?.props); // a key of the decoded rooms
+      }
+    }
+  }
+  expect(seen.sort()).toEqual(Object.keys(rooms).sort());
+  // The fixture reaches what the check is for: a decor with a state patch, a state picture, a room with no image.
+  expect([rooms['ch1/manor/hall']?.props, rooms['ch1/manor/study']?.props, rooms['ch2/manor/hall']?.props]).toEqual([
+    ['prop/chip', 'prop/medal_sun', 'prop/vase'],
+    ['prop/drawer_open', 'prop/note', 'prop/scratch'],
+    [],
+  ]);
 });
 
 test('emit: a paid world is routed to the server only', () => {

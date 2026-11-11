@@ -112,7 +112,9 @@
               "lock": { "slots": [], "puzzle": "drawer",
                         "locked": { "id": "ch1.manor.k002", "ru": "Ящик заперт на кодовый замок: четыре диска." },
                         "onFail": [] },
-              "then": [ { "give": "medal_moon" } ] },
+              "then": [ { "give": "medal_moon" } ],
+              "states": { "open": { "prop": "drawer_open" } },
+              "is": [ { "when": { "open": "study.drawer" }, "state": "open" } ] },
             { "id": "letter", "kind": "take", "rect": [150, 600, 250, 250],
               "label": { "id": "ch1.manor.l008", "ru": "Конверт на столе" },
               "gives": { "doc": "letter" }, "prop": "note" }
