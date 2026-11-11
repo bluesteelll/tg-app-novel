@@ -1634,6 +1634,23 @@ describe('assets', () => {
     expect(existsSync(join(repo, 'client', 'src', 'story-gen'))).toBe(false);
   });
 
+  test('assets: a look image its chapter does not list is refused', async () => {
+    // Shots §4.5 (CH D5): build/shots.json's decoder checks a window's non-shot image by the id grammar alone, never
+    // against its chapter's usage, so the planner's own-entries invariant is what keeps a look image out of a manifest
+    // without its entry: free ch1's window hopes for cg/letter, which paid ch2 alone lists, so the image is gated.
+    const step = { cur: [], certain: [], certainDist: 0, possible: ['cg/letter'], near: 1, d2: [], d3: [], labels: false };
+    const usage = { chapters: { ...REPO_USAGE.chapters, ch2: { ...REPO_USAGE.chapters.ch2, assets: [...REPO_USAGE.chapters.ch2.assets, 'cg/letter'] } } };
+    writeRepo(repo, {
+      ...SHOT_REPO,
+      'server/content/build/usage.json': usage,
+      'server/content/build/shots.json': shotsUsage({ ...SHOT_CHAPTERS, ch1: { ...SHOT_CHAPTERS.ch1, look: { 'ch1.cafe.a001': step } } }),
+    });
+    await expect(runTool(repo, HALVING_FAKES)).rejects.toThrow(/ch1's manifest is one of its assets entries; cg\/letter is not$/);
+    expect(existsSync(join(repo, 'client', 'src', 'story-gen')), 'no free manifest names it').toBe(false);
+    expect(listDir(repo, 'client/public/assets')).toEqual([]);
+    expect(listDir(repo, 'server/content/assets')).toEqual([]);
+  });
+
   test('assets: cli runs through a linked path under preserve-symlinks-main', async () => {
     // Node keeps the link's spelling for the main module under the flag; the guard canonicalises both sides, and the
     // main module's relative imports stay under scripts/, so the run happens. The real encoders (sharp) run here.
