@@ -1448,6 +1448,31 @@ test('yields: a state change while another bg is up applies no batch', async () 
   r.yields.dispose();
 });
 
+test('yields: a state change the stage already shows applies no batch', async () => {
+  const r = rig({ world: edgeWorld() });
+  await inHall(r);
+  // No shipped state change keeps a room's placements (ch1's one `is`, the drawer, changes its prop), so the stage is
+  // put there directly: the hall's props with the lamp already lit, the picture the look below leads to. The guard
+  // leaves a picture the stage already shows alone: no crossfade onto the same props, no hold at the anchor.
+  const lamp = placed('lamp_lit', LAMP, 'hall.lamp');
+  const lit = r.stage().props.map((p) => (p.at === 'hall.lamp' ? { ...p, prop: 'lamp_lit' as PropId } : p));
+  await r.host.apply([{ kind: 'props', props: lit }], []);
+  expect(r.stage().props).toContainEqual(lamp);
+  const hallProps = () => (r.yields.roomFor('hall' as BgId) ?? []).flatMap((c) => (c.kind === 'props' ? c.props : []));
+  expect(hallProps()).not.toContainEqual(lamp);
+  const mark = r.batches.length;
+  const cm = r.cues.length;
+  r.yields.layer.ontap(key('hall.switch'));
+  await settle();
+  // The look changed the lamp's state (its cue carries the diff) to the picture already up, so the empty batch list is
+  // the guard, not an empty diff.
+  expect(r.yields.world().examined).toContain('hall.switch');
+  expect(r.cues.slice(cm).map((e) => e.diff)).toContainEqual([{ at: 'hall.lamp', from: 'default', to: 'lit' }]);
+  expect(r.stage().props).toEqual(hallProps());
+  expect(r.batches.slice(mark)).toEqual([]);
+  r.yields.dispose();
+});
+
 test("yields: a move that changes the left room's picture stays a room fade", async () => {
   const r = rig({ world: edgeWorld() });
   await inHall(r);
