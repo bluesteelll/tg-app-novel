@@ -126,6 +126,8 @@ export type Limits = {
   roomSet: number;
   /** Shots §3.4 `budget/step-window`: what one window of build/shots.json holds (the registry's steady cap). */
   stepWindow: number;
+  /** Shots §5.11 `budget/entry-step`: a step's entry at the half tier plus the chapter files (`ENTRY_STEP_TTFL`). */
+  entryStepImages: number;
   firstLoad: number;
   image: Readonly<Record<ImageKind, { avif: number; webp: number }>>;
   bgmM4aBytes: number;
@@ -166,6 +168,8 @@ export const LIMITS: Limits = {
   knotSet: STEADY_CAP_BYTES,
   roomSet: STEADY_CAP_BYTES,
   stepWindow: STEADY_CAP_BYTES,
+  // Shots §5.11: floor((6,000 - 4,059 - 231 - 61 - 150 - 100) ms x 200 B/ms = 279,800 B) to 1,000 B (ENTRY_STEP_TTFL).
+  entryStepImages: 279_000,
   firstLoad: 800_000,
   image: {
     bg: PHOTO,
@@ -1114,7 +1118,11 @@ function firstLoadRows(dist: BudgetInputs, a: AssetInputs, limits: Limits): Row[
   return heads.map((head) => {
     const name = `first-load ${head.id}`;
     const c = a.chapters.find((x) => x.id === head.id);
-    const knot = c === undefined ? null : firstKnotAvif(c);
+    // A legacy chapter's first line awaits its first knot's images (today's runtime); a shot chapter's, its first
+    // step's files at the half tier (shots §5.11, D6).
+    const cs = c === undefined || isLegacy(a, c.id) || a.shots === null ? undefined : a.shots.chapters[c.id];
+    const first = c === undefined ? null : cs === undefined ? firstKnotAvif(c) : firstStepHalf(c, cs);
+    const label = cs === undefined ? 'first knot images' : 'first step images (half)';
     const parts: ReadonlyArray<readonly [string, number | null]> = [
       [js.ok ? 'JS' : `JS (${js.problem})`, js.ok ? js.bytes : null],
       ['index.html', html ?? null],
@@ -1123,14 +1131,15 @@ function firstLoadRows(dist: BudgetInputs, a: AssetInputs, limits: Limits): Row[
       [`${head.id} story`, c?.story?.brBytes ?? null],
       [`${head.id} meta`, c?.meta?.brBytes ?? null],
       [`${head.id} manifest`, c?.manifest?.brBytes ?? null],
-      [knot?.ok === false ? `first knot images (${knot.problem})` : 'first knot images', knot?.ok === true ? knot.bytes : null],
+      [first?.ok === false ? `${label} (${first.problem})` : label, first?.ok === true ? first.bytes : null],
     ];
     const missing = parts.filter(([, bytes]) => bytes === null).map(([part]) => part);
     if (missing.length > 0) {
       return failed(name, limits.firstLoad, `cannot sum: ${missing.join(', ')} missing`);
     }
     const bytes = parts.reduce((s, [, b]) => s + (b ?? 0), 0) + css + TWA_BYTES + coverAvifs;
-    return partialRow(name, bytes, limits.firstLoad, js.ok && js.partial, 'JS + CSS + html + TWA + catalog + covers + chapter + first knot');
+    const note = `JS + CSS + html + TWA + catalog + covers + chapter + ${cs === undefined ? 'first knot' : 'first step (half)'}`;
+    return partialRow(name, bytes, limits.firstLoad, js.ok && js.partial, note);
   });
 }
 
@@ -1256,6 +1265,137 @@ function stepWindowRows(a: AssetInputs, limits: Limits): Row[] {
   return rows;
 }
 
+/**
+ * Shots §5.11, the TTFL terms the `entry step images` limit is derived from (ms; the e2e link's B per ms): the budget
+ * (perf.spec.ts:34), the measured fresh-start TTFL, the TWA fixture outside the throttle, the first-line JS growth to
+ * its row limit, a resume's extra sequential request, the half-tier entry's decode and upload. What is left, at the
+ * link's rate, is the entry's bytes; the limit floors it to 1,000 B (a test holds LIMITS.entryStepImages to it).
+ */
+export const ENTRY_STEP_TTFL = {
+  budgetMs: 6_000,
+  ttflMs: 4_059,
+  twaMs: 231,
+  firstLineGrowthMs: 61,
+  resumeRttMs: 150,
+  decodeMs: 100,
+  linkBytesPerMs: 200,
+} as const;
+/** The shot lint code a failing `entry step images` row reports (STAGING-DSL §14.3). */
+const ENTRY_STEP_CODE: ShotLintCode = 'budget/entry-step';
+/** Shots §5.11's levers for a failing entry; none removes a face state, a close-up or a framing. */
+const ENTRY_STEP_LEVERS = "levers: shot.json q for that step's shots (both tiers); the chapter's own files";
+
+/** 1234567 -> '1,234,567'. */
+function grouped(n: number): string {
+  return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+/** The derivation every `entry step images` row prints (shots §5.11). */
+function entryStepDerivation(): string {
+  const t = ENTRY_STEP_TTFL;
+  const bytes = (t.budgetMs - t.ttflMs - t.twaMs - t.firstLineGrowthMs - t.resumeRttMs - t.decodeMs) * t.linkBytesPerMs;
+  const terms = [t.budgetMs, t.ttflMs, t.twaMs, t.firstLineGrowthMs, t.resumeRttMs, t.decodeMs].map(grouped).join(' - ');
+  return `limit = (${terms}) ms x ${t.linkBytesPerMs} B/ms = ${grouped(bytes)}, floored to ${grouped(Math.floor(bytes / 1_000) * 1_000)}`;
+}
+
+/**
+ * Shots §5.11 `budget/entry-step`, per chapter of build/shots.json: the largest entry alternative of any window (a
+ * fresh start, a resume at any step or room) at the half-tier AVIF bytes (a file with no half: its own), plus the
+ * chapter files the first line awaits (story, meta, manifest, the public world when the chapter has one, en; br,
+ * `client/src/story/chapters.ts:210-216`). PENDING without a shot list, as the step-window rows.
+ */
+function entryStepRows(a: AssetInputs, limits: Limits): Row[] {
+  if (!a.shotList) {
+    return [pending('entry step images', limits.entryStepImages, NO_SHOT_LIST)];
+  }
+  const shots = a.shots;
+  if (shots === null) {
+    return [];
+  }
+  const limit = limits.entryStepImages;
+  const rows: Row[] = [];
+  for (const c of a.chapters) {
+    const cs = Object.hasOwn(shots.chapters, c.id) ? shots.chapters[c.id] : undefined;
+    if (cs === undefined) {
+      continue;
+    }
+    const name = `entry step images ${c.id}`;
+    const files: ReadonlyArray<readonly [string, number | null]> = [
+      ['story', c.story?.brBytes ?? null],
+      ['meta', c.meta?.brBytes ?? null],
+      ['manifest', c.manifest?.brBytes ?? null],
+      ...(c.world === null ? [] : [['world', c.world.public?.brBytes ?? null] as const]),
+      ['en', c.en?.brBytes ?? null],
+    ];
+    const missing = files.filter(([, b]) => b === null).map(([part]) => part);
+    if (c.manifest === null || missing.length > 0) {
+      rows.push(failed(name, limit, `${ENTRY_STEP_CODE}: cannot sum: ${missing.join(', ')} missing`));
+      continue;
+    }
+    const assets = c.manifest.value.assets;
+    const lacking = new Set<AssetId>();
+    let worst: { key: string; bytes: number } | null = null;
+    for (const [key, alts] of Object.entries(cs.entry).sort(([x], [y]) => (x < y ? -1 : 1))) {
+      for (const alt of alts) {
+        let bytes = 0;
+        for (const id of new Set(alt)) {
+          const e = assets[id];
+          if (e?.kind === 'image') {
+            bytes += (e.half ?? e).avif.bytes;
+          } else {
+            lacking.add(id);
+          }
+        }
+        if (worst === null || bytes > worst.bytes) {
+          worst = { key, bytes };
+        }
+      }
+    }
+    if (worst === null) {
+      rows.push(failed(name, limit, `${ENTRY_STEP_CODE}: no entry alternative in ${SHOT_USAGE_FILE}`));
+      continue;
+    }
+    const chapterBytes = files.reduce((s, [, b]) => s + (b ?? 0), 0);
+    const parts = files.map(([part, b]) => `${part} ${((b ?? 0) / 1000).toFixed(1)}`).join(', ');
+    const terms = `${worst.key}: images ${kbText(worst.bytes)} (half) + chapter files ${kbText(chapterBytes)} (${parts}); ${entryStepDerivation()}`;
+    if (lacking.size > 0) {
+      rows.push(failed(name, limit, `${ENTRY_STEP_CODE}: ${terms}; not in ${c.id}'s manifest: ${[...lacking].sort().join(', ')}`));
+      continue;
+    }
+    const total = worst.bytes + chapterBytes;
+    rows.push(measured(name, total, limit, total <= limit ? terms : `${ENTRY_STEP_CODE}: ${terms}; ${ENTRY_STEP_LEVERS}`));
+  }
+  return rows;
+}
+
+/**
+ * Shots §5.11 (D6): what a shot chapter's first line awaits of its images, the first step's files at the half tier:
+ * those of the window `k:<first knot>` in effect, certain at the next step, or possible, talk files aside (motion,
+ * never awaited).
+ */
+function firstStepHalf(c: ChapterInputs, cs: ChapterShots): { ok: true; bytes: number } | { ok: false; problem: string } {
+  if (c.meta === null || c.manifest === null) {
+    return { ok: false, problem: `${c.meta === null ? 'meta' : 'manifest'} missing` };
+  }
+  const key = `k:${c.meta.value.firstKnot}`;
+  const w = cs.look[key as keyof ChapterShots['look']]; // a knot's window key; absent when the shot pass has none
+  if (w === undefined) {
+    return { ok: false, problem: `no window ${key}` };
+  }
+  const ids = new Set([...w.cur, ...(w.certainDist === 1 ? w.certain : []), ...w.possible].filter((id) => imageKind(id) !== 'talk'));
+  let bytes = 0;
+  const lacking: AssetId[] = [];
+  for (const id of ids) {
+    const e = c.manifest.value.assets[id];
+    if (e?.kind === 'image') {
+      bytes += (e.half ?? e).avif.bytes;
+    } else {
+      lacking.push(id);
+    }
+  }
+  return lacking.length > 0 ? { ok: false, problem: `not in the manifest: ${lacking.sort().join(', ')}` } : { ok: true, bytes };
+}
+
 /** The asset rows; `dist` feeds the first-load rows' JS, CSS and html. */
 export function evaluateAssets(dist: BudgetInputs, a: AssetInputs, limits: Limits): Row[] {
   const rows: Row[] = [];
@@ -1280,7 +1420,7 @@ export function evaluateAssets(dist: BudgetInputs, a: AssetInputs, limits: Limit
   for (const [id, e] of [...entries].sort(([x], [y]) => (x < y ? -1 : 1))) {
     rows.push(e.kind === 'image' ? imageRow(a, id, e, conflicts.get(id), limits) : audioRow(a, id, e, conflicts.get(id), limits));
   }
-  rows.push(...knotRows(a, limits), ...roomRows(a, limits), ...firstLoadRows(dist, a, limits), ...stepWindowRows(a, limits));
+  rows.push(...knotRows(a, limits), ...roomRows(a, limits), ...firstLoadRows(dist, a, limits), ...stepWindowRows(a, limits), ...entryStepRows(a, limits));
   return rows;
 }
 

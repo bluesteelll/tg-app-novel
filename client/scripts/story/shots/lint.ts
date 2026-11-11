@@ -27,6 +27,7 @@ export const SHOT_LINT_CODES = {
   'flow/unsupported': 'E',
   // Enforced by the build's budget gate (budget.ts), which has the decoded sizes; `story` never reports them.
   'budget/step-window': 'E',
+  'budget/entry-step': 'E',
 } as const satisfies Readonly<Record<string, Severity>>;
 export type ShotLintCode = keyof typeof SHOT_LINT_CODES;
 
