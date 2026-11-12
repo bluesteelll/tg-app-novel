@@ -86,7 +86,8 @@
     extension (b): a fired key per recipe, its key cost measured then.
   - **Texts:** `COMBINE_TEXTS` (`client/scripts/story/mechanics/combine.ts:29`) walks every recipe's `say` (role
     `toast`, reach []), registered in `MECHANIC_TEXTS` (`client/scripts/story/mechanics/index.ts:66`); a paid recipe's
-    say is a paid needle. `MECHANIC_STORIES.combine` is null (no recipe enters a knot).
+    say is a paid needle. `MECHANIC_STORIES.combine` is null (no recipe enters a knot). The texts test and the
+    `--fix-ids` pin live in `client/scripts/story/world.test.ts` (`:2035`, `:2047`; RULINGS 306 Q4).
   - **Open (carried to the next holder of `yields.ts`' selection, with `use`):** the hand empties after a refused
     `combine`, as after a refused `use` (`yields.ts:1382-1395`: `onuse` and `oncombine` deselect before the dispatch). Whether the item stays in
     hand after a refusal is one question for both ([08b §8.2](08b-interactions-mechanism-presenters.md#82-i5-every-ui-interaction-and-its-mechanism),

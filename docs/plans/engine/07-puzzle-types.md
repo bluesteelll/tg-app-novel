@@ -595,7 +595,7 @@ export interface PuzzleTypeLint<P> {
 
   `views-real` equals P2-a's emulated `views` on every seed (x2.76-2.89 of base; a leave is core's `arrive` to the
   parent and `viewReads` is []), so no STOP (RULINGS 306 Q2). One real recipe (two takes and a product) costs x4.0-5.0
-  of base (P2-a's emulation x8.1-9.0). Views at 2 per room **and** one real recipe reach the cap on every seed (by
+  of base (P2-a's emulation x7.0-9.0: emulated recipes over base, seed by seed, `gm5-mech-combine/p2b.md:14`, `:18`). Views at 2 per room **and** one real recipe reach the cap on every seed (by
   independence ~5,400-6,500). The real CLI with one recipe in ch1 reads 540 -> 1,284 states (GM5 merge lens, paid).
   No committed chapter has a recipe, so no gate fails today (`gm5-mech-combine/p2b.md`).
 - **Ruled: RULINGS 309** — P2-b ruled: **GM5q `mech-place-quotient` runs** (response (1)), next in lane A after GM5's

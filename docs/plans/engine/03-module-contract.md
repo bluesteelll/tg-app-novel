@@ -295,7 +295,8 @@ export const HOTSPOT_MIN_SOURCE_PX = 150;
     per-player's labels), and it reports a **world-place** text (`combine`'s top-level `recipes.<i>.say`) in `skipped`
     with "the text is under no item, doc, puzzle or section, so the ID would have no knot part" (`fix.ts:241-244`): the
     author writes that ID by hand (`<chapter>.<knot part>.<suffix>`, valid by `docs/STAGING-DSL.md:172`), and
-    `id/missing` reports it until then. Pinned in GM5 (`combine: --fix-ids skips a recipe's say and names why`). No
+    `id/missing` reports it until then. Pinned in GM5 (`combine: --fix-ids skips a recipe's say and names why`; **Ruled: RULINGS 306** (Q4): in
+    `client/scripts/story/world.test.ts:2047`). No
     owner rule is added to `fix.ts`: a per-module rule there is an edit of the story tool per mechanic (§2's goal), and
     a hand-written ID costs the author one line.
   - **The modules of this design:** `use` (GM3: hotspot `uses.<i>.say`, item and room `refuse`, all `toast`, reach

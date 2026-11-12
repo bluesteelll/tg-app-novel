@@ -341,8 +341,9 @@ Addendum (RULINGS 302)). Where this section and the points below differ, the poi
   the next `game.ts` holder).
 - **Steps 1-6 and step 6's eviction order** (`want` `preload.ts:458`, `retry` `:497`, `evictFor` `:256`, `shedFor`
   `:289`, `readmit` `:225`): a refused `need` item or `warm` fetch evicts (a) the window's resident `hope`, then its
-  warm decodes, shed back to their held files; (b) EN's `room:*` holders outside the window (none in `hope` first,
-  the most recently requested first); (c) the `next:*` holders; (d) the event's room, last. `need ∪ warm` is spared.
+  warm decodes, shed back to their held files; (b) EN's `room:` and `state:` holders (`EN_TAG`, `preload.ts:83`;
+  RULINGS 297 D4) with no id in need, warm or the event's room (none in `hope` first, the most recently requested
+  first); (c) the `next:*` holders; (d) the event's room, last. `need ∪ warm` is spared.
   A visible ask never evicts its own warm holder, a refused warm fetch runs step 6, and no step outside a section has
   an `eventRoom` (the three rules fix4 pinned, RULINGS 311).
 - **The warm form** (`client/src/scene/registry.ts`, priority `'warm'` `:82`, state `'held'` `:110`, `state(id)`

@@ -115,7 +115,9 @@
   `fixWorldIds` from `client/scripts/story/fix.ts` over a fixture world whose `recipes.0.say` has no `id`: it is in
   `skipped` with "the text is under no item, doc, puzzle or section", absent from `added`, and the world lint reports
   `id/missing` at it; a pin of `fix.ts:208`, `:241-244` as built, green on the parent; a red means the tool's owner
-  rule changed and §3.2's statement is stale).
+  rule changed and §3.2's statement is stale). **Ruled: RULINGS 306** (Q4) — both tests live in
+  `client/scripts/story/world.test.ts` (`:2035`, `:2047` as merged), not in `combine.test.ts`: the app test program
+  must not reach `world.ts` / `fix.ts`.
 - **Gates:** check, test, story, build, e2e full.
 - **Ruled since: RULINGS 305, 306, 307, 308, 309, 310, 312** — launched from `aac7a97` in lane A. **Ruled: RULINGS
   306** — **lock 22:** the 15 above, plus `client/src/ui/explore/ExploreView.svelte`, `client/src/cues/stage/motions.test.ts`

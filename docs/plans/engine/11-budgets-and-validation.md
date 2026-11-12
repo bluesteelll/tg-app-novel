@@ -588,7 +588,8 @@ Q2), GM5's 2.90 and SH5a's net 1.27 (RULINGS 302 Q9: the STOP judged on the net 
 (n 18). After SH5a: **Ledger 4 219.811 / 230.0** (10.189 left), **Ledger 2 39.163 / 40.0** (0.837 left), **Ledger 1
 258.974 / 270.0** (11.026 left), with 5.961 KB of engine terms and no entry term left. **The trigger does not hold**;
 the GM3b candidate waits for a ledger within 2.0 KB (RULINGS 253); L2 stays shelved. The entry row moved only by
-hash text, judged by module identity (RULINGS 269, 309). The orchestrator's **pre-merge lens check** (RULINGS 289)
+hash text, judged by module identity (RULINGS 269, 309; GM4's -12 B by its tester's module-identity check,
+`gm4-mech-views/test_r2.md:57`). The orchestrator's **pre-merge lens check** (RULINGS 289)
 ran at every one of the four merges: it found test gaps in GM5 (G-LAYER, an unpinned ruled clause) and in SH5a (G22,
 G58, G15, three unpinned new rules), each closed by a fix round before the merge (RULINGS 310, 311; fix2, fix4).
 Per-merge rows: the `48489b7` bullet above.

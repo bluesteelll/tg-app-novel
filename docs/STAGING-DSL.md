@@ -419,7 +419,7 @@ The archive was colder than I remembered. #id:ch2.archive.c0ld
   character that is not on stage changes nothing. On a shot chapter (§14.1; as built, SH4) a `face` changes that cast
   member's drawn face in the shot in effect: the new expression's layers fade in over the old ones over `ms`, which
   retire whole at the fade's end; a face back at its rest fades out to the plate, which shows the rest
-  (`client/src/scene/executor.ts:525-557`). The batch first ensures the shot's face file (its talk file is taken, never
+  (`client/src/scene/executor.ts:566-598`). The batch first ensures the shot's face file (its talk file is taken, never
   awaited), and a face whose sheet or face file could not be had draws the rest face and logs a skip. On a shot chapter the build
   names no asset for a `face` (§8): its drawn files are the shot pass's (§14.4).
 - **Validation:** `tag/unknown-asset` (character or expression); with a shot list, `shot/char-absent` (the character
@@ -566,7 +566,7 @@ fixed:
    waits for the longest one. A `face` applies after the batch's `hide` and `show`: the expression change of a
    character on stage (a `show` without `at`); a `show` of the same character in the batch governs its timing (a
    `t=cut` show makes it instant, else the show's `ms`), while the state still follows this order, so the `face`'s
-   expression is the one that stays (`client/src/scene/executor.ts:955-961`). A `cam` sets the framing after the
+   expression is the one that stays (`client/src/scene/executor.ts:1011-1017`). A `cam` sets the framing after the
    batch's `scene` or `bg` returned it to rest; it is held in the stage state, not drawn yet (the shots plan's SH6). `anim` and `fx` reach the scene and
    are not drawn yet (SH8); `think` stays with GameSession (SH7). The shots plan's drawn order is
    [shots §3.1](plans/shots/03-story-dsl.md#3-the-story-dsl): `scene`, `bg`, `face`, `cam`, `cg`, props,

@@ -600,7 +600,7 @@ The example's front door is a one-slot lock without a puzzle:
             "onFail": [] } }
 ```
 
-The lint's lock rules ([world.ts:571-641](../client/scripts/story/world.ts#L571); their rows of
+The lint's lock rules ([world.ts:633-703](../client/scripts/story/world.ts#L633); their rows of
 [STAGING-DSL §11](STAGING-DSL.md#11-what-the-story-lint-enforces), second table):
 - a puzzle belongs to at most one lock (`world/puzzle-multi-lock`), and a lock's puzzle is never also yielded by a
   `puzzle` tag (`puzzle/in-section`);
@@ -807,7 +807,7 @@ A wrong type fails: `VAR dc_note = 0` prints
 `world/var-type VAR dc_note is declared int: the projection writes a bool (X2)`. The seeded playthroughs write the
 same projection ([playthrough.ts:414-422](../client/scripts/story/playthrough.ts#L414)), which is how
 `pz_box 1,3` reaches the `play:` line. In the game the yield router writes them through `StoryRunner.enter`
-([yields.ts:403](../client/src/app/yields.ts#L403); L13 story-runtime, L15a).
+([yields.ts:814](../client/src/app/yields.ts#L814); L13 story-runtime, L15a).
 
 ### World lint codes and soft-lock counterexamples
 
@@ -816,7 +816,7 @@ The full list of `world/*`, `puzzle/*` and `explore/*` codes is the second table
 `world/softlock`.
 
 For each section the gate explores every state a player can reach and proves that each one can still reach a leave
-([softlock.ts:58-110](../client/scripts/story/softlock.ts#L58)). The `world:` line reports
+([softlock.ts:60-117](../client/scripts/story/softlock.ts#L60)). The `world:` line reports
 `softlock OK (<n> states)`, or `softlock FAIL (<k> of <n> sections)`. A failure prints the shortest action path to
 the first stuck state.
 
@@ -1127,7 +1127,7 @@ points or more; the example's `Open the box on the stairs without a hint.` is on
 ### Choices are statistics
 
 A choice's line ID is also its statistics identity: the game records which option a player picked by that ID
-(LS3 server-stats, LS4 stats-client, L15a; [game.ts:1667](../client/src/app/game.ts#L1667); [STAGING-DSL §9 "Story meta"](STAGING-DSL.md#story-meta), META-PLAN
+(LS3 server-stats, LS4 stats-client, L15a; [game.ts:2020](../client/src/app/game.ts#L2020); [STAGING-DSL §9 "Story meta"](STAGING-DSL.md#story-meta), META-PLAN
 M1). So:
 - **keep the ID when you edit the option's text**;
 - **retire the ID when you remove the option** ([Removing a line](#removing-a-line-retired-ids)), never reuse it.
