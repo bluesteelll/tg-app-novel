@@ -8,7 +8,8 @@ import { EMPTY_WORLD_STATE } from '../../src/explore/state.ts';
 import type { WorldState } from '../../src/explore/state.ts';
 import type { KernelWorld } from '../../src/mechanics/contract.ts';
 import { actions, reduce } from '../../src/mechanics/rules/core.ts';
-import { searchSection, sectionEntry } from '../../src/mechanics/rules/search.ts';
+import { RESUME_WORK_PER_STATE, searchSection, sectionEntry } from '../../src/mechanics/rules/search.ts';
+import type { SearchStats } from '../../src/mechanics/rules/search.ts';
 import type { PuzzleLocalId, SectionId } from '../../src/story/staging.ts';
 import { LINT_CODES } from './lint.ts';
 import type { Finding, LintCode } from './lint.ts';
@@ -68,6 +69,8 @@ export function checkSection(w: KernelWorld, section: SectionId, file: string): 
   const parent: Array<{ from: number; step: Step } | undefined> = [undefined];
   const into: number[][] = [[]];
   const leaving = new Set<number>();
+  // An object, not a `let`: TS narrows a `let` to its initializer, and the callback's write is invisible to it.
+  const spent: { bound: SearchStats['bound'] } = { bound: null };
   const r = searchSection(w, start, section, RESUME_STATE_CAP, {
     onEdge: (from, succ, to, isNew) => {
       if (to === null) {
@@ -81,9 +84,15 @@ export function checkSection(w: KernelWorld, section: SectionId, file: string): 
       }
       into[to]?.push(from);
     },
+    onStats: (stats) => {
+      spent.bound = stats.bound;
+    },
   });
   if (r.result === 'cap') {
-    const message = `section ${section}: more than ${RESUME_STATE_CAP} states (RESUME_STATE_CAP), too large to prove at resume (X9); split it into sections`;
+    const message =
+      spent.bound === 'work'
+        ? `section ${section}: more than ${RESUME_STATE_CAP * RESUME_WORK_PER_STATE} successor evaluations (${RESUME_WORK_PER_STATE} per state of RESUME_STATE_CAP), too large to prove at resume (X9); split it into sections`
+        : `section ${section}: more than ${RESUME_STATE_CAP} states (RESUME_STATE_CAP), too large to prove at resume (X9); split it into sections`;
     return { section, states: null, findings: [finding('world/state-cap', file, message)] };
   }
   // Backwards from every state with a leave edge: whatever this does not reach is stuck.

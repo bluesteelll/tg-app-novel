@@ -9,6 +9,7 @@ import { expect, test } from 'vitest';
 import type { WorldLintInput } from '../../scripts/story/mechanics/index.ts';
 import { VIEW_LINT } from '../../scripts/story/mechanics/view.ts';
 import { checkWorld } from '../../scripts/story/softlock.ts';
+import { RESUME_STATE_CAP } from '../explore/reduce.ts';
 import type { ExploreEffect } from '../explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { WorldState } from '../explore/state.ts';
@@ -20,7 +21,8 @@ import type { HotspotKey, RoomId, WorldSource } from '../world/types.ts';
 import type { KernelWorld, SectionAction } from './contract.ts';
 import { MECHANIC_DATA } from './data/index.ts';
 import { reduce } from './rules/core.ts';
-import { successors } from './rules/search.ts';
+import { RESUME_WORK_PER_STATE, inSectionReach, searchSection, sectionEntry, successors } from './rules/search.ts';
+import type { SearchStats } from './rules/search.ts';
 import { nearRooms, viewActions } from './rules/view.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -266,6 +268,64 @@ test("view: a room's neighbour rooms are its exits' rooms in hotspot order, a vi
   expect(nearRooms(w, rm('drawer'))).toEqual(['desk']);
   expect(nearRooms(w, rm('cellar'))).toEqual([]);
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// The section search's budget (X9; docs/PUZZLES-PLAN.md "The cost"): at most `cap` states and at most
+// cap x RESUME_WORK_PER_STATE successor evaluations, one budget for the build and the resume.
+
+/** `n` ids `<prefix>0` .. `<prefix>n-1`. */
+const ids = (prefix: string, n: number): string[] => Array.from({ length: n }, (_, i) => `${prefix}${i}`);
+
+test('search: a section past the work bound answers cap whatever its places', () => {
+  // One room: nine lockless objects (a tap writes nothing the key reads, so each is a known edge) and a way out. Every
+  // search expands the start alone and evaluates its 10 successors, against a work bound of cap x 8.
+  const w = kernel(source(rawWorld({ s: ['hall', { hall: room([...ids('o', 9).map((id) => object(id)), exit('out', { story: 'end' })]) }] })));
+  const start = sectionEntry(w, EMPTY_WORLD_STATE, S);
+  // Cap 1: one state fits the place bound, 10 evaluations pass the work bound 8.
+  expect(searchSection(w, start, S, 1)).toEqual({ result: 'cap', states: 1 });
+  const spent: SearchStats[] = [];
+  const onStats = (stats: SearchStats): void => {
+    spent.push(stats);
+  };
+  expect(searchSection(w, start, S, 1, { onStats })).toEqual({ result: 'cap', states: 1 });
+  // Cap 2: the work bound is 16, so the search ends.
+  expect(searchSection(w, start, S, 2, { onStats })).toEqual({ result: 'exhausted', states: 1 });
+  expect(spent).toEqual([
+    { expansions: 1, work: 10, bound: 'work' },
+    { expansions: 1, work: 10, bound: null },
+  ]);
+  // The runtime's entry shares the bound: a save in a room no state has is searched for from the section's start.
+  const nowhere: WorldState = { ...EMPTY_WORLD_STATE, section: S, room: rm('nowhere') };
+  expect(inSectionReach(w, nowhere, S, 1)).toBe('cap');
+  expect(inSectionReach(w, nowhere, S, 2)).toBe('no');
+  // The product's bound, derived from the one cap.
+  expect(RESUME_STATE_CAP * RESUME_WORK_PER_STATE).toBe(40_000);
+});
+
+test('softlock: world/state-cap names the bound the section passed', () => {
+  const world = (hotspots: readonly Json[], items: readonly string[]): KernelWorld =>
+    kernel(source(rawWorld({ s: ['hall', { hall: room([...hotspots, exit('out', { story: 'end' })]) }] }, items)));
+  const verdict = (w: KernelWorld): [Array<[string, string]>, Array<number | null>] => {
+    const checks = checkWorld(w, 'story/ch1/world.json');
+    return [checks.flatMap((c) => c.findings.map((f): [string, string] => [f.code, f.message])), checks.map((c) => c.states)];
+  };
+  const items13 = ids('i', 13);
+  const items10 = ids('i', 10);
+  // The count: 13 takes, 2^13 = 8,192 states. The 5,001st is discovered within 36,726 evaluations (levels 0-5 of the
+  // BFS cost 22,998, the 1,716 level-6 states 8 each), so the place bound comes first, with today's text.
+  const [countFindings, countStates] = verdict(world(items13.map((id, i) => take(`t${i}`, id)), items13));
+  expect(countFindings).toEqual([
+    ['world/state-cap', 'section s: more than 5000 states (RESUME_STATE_CAP), too large to prove at resume (X9); split it into sections'],
+  ]);
+  expect(countStates).toEqual([null]);
+  // The work: 10 takes and 40 lockless objects, 1,024 states; exhausting them costs 1,024 x 41 + 10 x 512 = 47,104
+  // evaluations, so the work bound 40,000 comes first.
+  const [workFindings, workStates] = verdict(world([...items10.map((id, i) => take(`t${i}`, id)), ...ids('o', 40).map((id) => object(id))], items10));
+  expect(workFindings).toEqual([
+    ['world/state-cap', 'section s: more than 40000 successor evaluations (8 per state of RESUME_STATE_CAP), too large to prove at resume (X9); split it into sections'],
+  ]);
+  expect(workStates).toEqual([null]);
+}, 60_000);
 
 // ---------------------------------------------------------------------------------------------------------------
 // The story gate

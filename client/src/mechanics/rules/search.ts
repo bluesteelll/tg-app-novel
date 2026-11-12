@@ -1,8 +1,9 @@
 // The searches (engine plan §3.2 "search", §3.3; docs/PUZZLES-PLAN.md X4, X9): the successor relation, the section
 // key, the one section search of the build's soft-lock checker and the resume, and the guarded section entries that
-// prove an unproved section at its first entry. The rules half of the mechanics engine: explore-ui chunk code that
-// only the explore controller imports (the `rules-lazy` arch rule); the story tool runs the same functions. Never
-// throws on save data. Pure.
+// prove an unproved section at its first entry. The search's one budget (X9) has two bounds, shared by the build and
+// the resume: at most RESUME_STATE_CAP distinct states, and at most RESUME_WORK_PER_STATE successor evaluations per
+// state of that cap. The rules half of the mechanics engine: explore-ui chunk code that only the explore controller
+// imports (the `rules-lazy` arch rule); the story tool runs the same functions. Never throws on save data. Pure.
 import { RESUME_STATE_CAP, lockOf, own, runOf, sectionScope, worldIndex } from '../../explore/reduce.ts';
 import type { ExploreAction, ExploreEffect, SectionScope, Step, Successor } from '../../explore/reduce.ts';
 import type { PuzzleOutcome, PuzzleRun, WorldState } from '../../explore/state.ts';
@@ -347,28 +348,55 @@ export type SearchOptions = {
    * Absent: every step. No runtime caller passes it.
    */
   readonly exclude?: (step: Step) => boolean;
+  /** What the search spent, reported once just before it returns (the story tool words its cap message by `bound`). */
+  readonly onStats?: (stats: SearchStats) => void;
 };
 export type SearchResult = { readonly result: 'found' | 'exhausted' | 'cap'; readonly states: number };
+/**
+ * What one search spent: the states it expanded, its successor evaluations (one concrete `reduce` each, an excluded
+ * successor included), and the bound it stopped at (null unless the result is 'cap').
+ */
+export type SearchStats = { readonly expansions: number; readonly work: number; readonly bound: 'places' | 'work' | null };
+
+/**
+ * The work bound per state of the cap (docs/PUZZLES-PLAN.md "The cost": the cap's time budget models about 8 successor
+ * evaluations per state). A search may evaluate at most `cap` times this many successors, so a section whose states
+ * fit the cap but whose work does not answers 'cap' too: 40,000 evaluations at RESUME_STATE_CAP, build and resume alike.
+ */
+export const RESUME_WORK_PER_STATE = 8;
 
 /**
  * THE section search of the soft-lock checker and the resume (X9 "one cap"): a BFS over `successors` from `start`
- * (but the steps `opts.exclude` accepts), deduplicated by `sectionKey(S)`. Discovering a (cap+1)-th distinct state
- * stops with 'cap', so the runtime never searches past a count the build accepted.
+ * (but the steps `opts.exclude` accepts), deduplicated by `sectionKey(S)`. Discovering a (cap+1)-th distinct state,
+ * or passing cap x RESUME_WORK_PER_STATE successor evaluations, stops with 'cap', so the runtime never searches past
+ * a budget the build accepted. The work is checked after each state's successors are evaluated, before its edges.
  */
 export function searchSection(w: KernelWorld, start: WorldState, section: SectionId, cap: number, opts: SearchOptions = {}): SearchResult {
   const seen = new Map<string, number>();
   const queue: WorldState[] = [start];
+  let expansions = 0;
+  let work = 0;
+  const done = (result: SearchResult['result'], bound: SearchStats['bound']): SearchResult => {
+    opts.onStats?.({ expansions, work, bound });
+    return { result, states: seen.size };
+  };
   const startKey = sectionKey(w, start, section, opts.rules);
   seen.set(startKey, 0);
   if (startKey === opts.target) {
-    return { result: 'found', states: 1 };
+    return done('found', null);
   }
   for (let from = 0; from < queue.length; from++) {
     const state = queue[from];
     if (state === undefined) {
       break;
     }
-    for (const succ of successors(w, state, opts.rules)) {
+    expansions++;
+    const succs = successors(w, state, opts.rules);
+    work += succs.length;
+    if (work > cap * RESUME_WORK_PER_STATE) {
+      return done('cap', 'work');
+    }
+    for (const succ of succs) {
       if (opts.exclude?.(succ.step) === true) {
         continue;
       }
@@ -383,18 +411,18 @@ export function searchSection(w: KernelWorld, start: WorldState, section: Sectio
         continue;
       }
       if (seen.size + 1 > cap) {
-        return { result: 'cap', states: seen.size };
+        return done('cap', 'places');
       }
       const to = seen.size;
       seen.set(key, to);
       queue.push(succ.state);
       opts.onEdge?.(from, succ, to, true);
       if (key === opts.target) {
-        return { result: 'found', states: seen.size };
+        return done('found', null);
       }
     }
   }
-  return { result: 'exhausted', states: seen.size };
+  return done('exhausted', null);
 }
 
 /** Whether the current world can produce `s` from S's entry: 'yes' when the search meets `sectionKey(s)`. */
