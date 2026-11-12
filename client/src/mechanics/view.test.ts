@@ -21,7 +21,7 @@ import type { KernelWorld, SectionAction } from './contract.ts';
 import { MECHANIC_DATA } from './data/index.ts';
 import { reduce } from './rules/core.ts';
 import { successors } from './rules/search.ts';
-import { viewActions } from './rules/view.ts';
+import { nearRooms, viewActions } from './rules/view.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
 // Fixture worlds, in the source format
@@ -230,6 +230,41 @@ test('view: a soft-lock path names its leave-view step', () => {
   expect(checkWorld(kernel(src), 'story/ch1/world.json').flatMap((c) => c.findings.map((f) => f.message))).toEqual([
     'section s: a reachable state cannot reach a leave (stuck in hall): tap hall.to_desk → tap desk.key → leave view desk → insert hall.well key',
   ]);
+});
+
+test("view: a room's neighbour rooms are its exits' rooms in hotspot order, a view's parent first", () => {
+  // An oracle written out by hand: a duplicate exit lists its room once, a locked exit counts, a story exit, an exit to
+  // the room itself and one to another section's room do not; a view lists its parent first, then its own exits' rooms.
+  const w = kernel(
+    source(
+      rawWorld({
+        s: [
+          'hall',
+          {
+            hall: room([
+              exit('to_study', 'study'),
+              exit('to_desk', 'desk'),
+              exit('again', 'study'),
+              exit('self', 'hall'),
+              exit('to_attic', 'attic', lock(['key'])),
+              exit('out', { story: 'end' }),
+            ]),
+            study: room([exit('to_yard', 'yard'), exit('to_hall', 'hall')]),
+            attic: room([exit('to_hall', 'hall')]),
+            desk: view('hall', [exit('to_drawer', 'drawer'), exit('back', 'hall')]),
+            drawer: view('desk', []),
+          },
+        ],
+        t: ['yard', { yard: room([exit('out', { story: 'end' })]) }],
+      }, ['key']),
+    ),
+  );
+  expect(nearRooms(w, rm('hall'))).toEqual(['study', 'desk', 'attic']);
+  expect(nearRooms(w, rm('study'))).toEqual(['hall']);
+  expect(nearRooms(w, rm('attic'))).toEqual(['hall']);
+  expect(nearRooms(w, rm('desk'))).toEqual(['hall', 'drawer']);
+  expect(nearRooms(w, rm('drawer'))).toEqual(['desk']);
+  expect(nearRooms(w, rm('cellar'))).toEqual([]);
 });
 
 // ---------------------------------------------------------------------------------------------------------------

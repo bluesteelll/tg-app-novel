@@ -9,7 +9,7 @@ import type { Box, Size } from '../geom/cover.ts';
 import type { AnchorKey, PropView, SectionAction } from '../mechanics/contract.ts';
 import { reduce } from '../mechanics/rules/core.ts';
 import { admitEvent, admitSection } from '../mechanics/rules/search.ts';
-import { viewParent } from '../mechanics/rules/view.ts';
+import { nearRooms, viewParent } from '../mechanics/rules/view.ts';
 import { roomImages, visualsOf } from '../mechanics/rules/visual.ts';
 import type { SceneController } from '../scene/controller.ts';
 import type { AssetManifest } from '../story/catalog.ts';
@@ -176,15 +176,15 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
     return v === undefined || stage.w <= 0 || stage.h <= 0 ? null : toStage(v.rect, cover(stage, ROOM_SOURCE));
   };
 
-  /** D9: the distinct rooms R's exits lead to, in hotspot order; locked exits included, story exits and R not. */
+  /**
+   * D9 in engine plan §6.3's preload order (m2): Back's target first (a view's parent; else, for the current room, the
+   * path's last room), then `nearRooms` (the rule emit writes as the usage neighbours: a view's parent, then the rooms
+   * R's exits lead to in hotspot order, locked exits included, story exits and R not), distinct.
+   */
   const neighbours = (room: RoomId): RoomId[] => {
-    const out: RoomId[] = [];
-    for (const h of ix.rooms.get(room)?.room.hotspots ?? []) {
-      if (h.kind === 'exit' && 'room' in h.to && h.to.room !== room && !out.includes(h.to.room)) {
-        out.push(h.to.room);
-      }
-    }
-    return out;
+    const near = nearRooms(world, room);
+    const back = viewParent(world, room) ?? (room === current.room ? (path.at(-1) ?? null) : null);
+    return back === null ? near : [back, ...near.filter((r) => r !== back)];
   };
 
   /** Both families, unconditionally (RULINGS 245 Q7): a `leave` and `dispose`. */
@@ -201,12 +201,16 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
    * these free. A room's `state:*` set (§6.4 round 13, RULINGS 246 W1): a move releases every set but the new room's
    * and stops tracking a room that left the keep set; a kept room's set is asked for again only after the neighbours'
    * bgs (`roomShown`), so a neighbour's bg outranks it. An event's return or a resume (`from === room`) moves nowhere,
-   * and the close-up keeps the room's own set.
+   * and the close-up keeps the room's own set. A zoom-in to a view whose only neighbour is its parent keeps the
+   * parent's set (§6.3, RULINGS 286 Q3): the one neighbour bg it asks for is the parent's, which `room:<of>` already
+   * holds, so the set can displace no neighbour bg; walks and every other zoom release it as above.
    */
   const releaseHolders = (effects: readonly ExploreEffect[]): void => {
     for (const e of effects) {
       if (e.kind === 'room') {
-        const keep = new Set([e.room, ...neighbours(e.room)]);
+        const near = neighbours(e.room);
+        const keep = new Set([e.room, ...near]);
+        const keepsParentSet = e.how === 'zoom-in' && near.every((n) => n === e.from);
         for (const m of [...tracked]) {
           if (!keep.has(m)) {
             tracked.delete(m);
@@ -217,7 +221,7 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
           if (!keep.has(m)) {
             trackedState.delete(m);
             scene.releasePreload(stateTag(m));
-          } else if (m !== e.room && e.from !== e.room) {
+          } else if (m !== e.room && e.from !== e.room && !(m === e.from && keepsParentSet)) {
             scene.releasePreload(stateTag(m));
           }
         }

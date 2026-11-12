@@ -1396,6 +1396,21 @@ test('emit: usage neighbour rooms follow the exits in hotspot order', () => {
   expect(usageOf(w)?.neighbourRooms).toEqual(expected);
 });
 
+test("emit: a view's usage neighbour rooms list its parent first", () => {
+  // `nearRooms`, the rule the explore controller preloads by: a view's parent leads its neighbour rooms (engine plan
+  // §6.3), here its only one (the desk has no exit back: `leave-view` returns), and its bg joins `neighbours`.
+  const text = (n: number, ru: string): { id: string; ru: string } => ({ id: `ch1.manor.vx${n.toString().padStart(2, '0')}`, ru });
+  const w = worldSource('ch1', 'cafe');
+  Object.assign(objectAt(w, 'sections.manor.rooms'), { desk: { bg: 'desk', title: text(1, 'Стол'), onEnter: [], hotspots: [], view: { of: 'hall' } } });
+  const hall = objectAt(w, 'sections.manor.rooms.hall');
+  const [key, toStudy, out] = hall['hotspots'] as unknown[]; // the fixture's three hall hotspots
+  hall['hotspots'] = [key, toStudy, { id: 'to_desk', kind: 'exit', rect: [400, 600, 200, 200], label: text(2, 'Стол'), to: { room: 'desk' }, lock: null, sfx: null }, out];
+  const { plan } = emitFixture(LIST, [MANOR], new Map([[CH1_ENTRY.id, decodedWorld(w)]]));
+  const rooms = plannedUsage(plan).rooms ?? {};
+  expect(rooms['ch1/manor/desk']).toEqual({ bg: 'bg/desk', props: [], closeups: [], neighbours: ['bg/hall'], neighbourRooms: ['ch1/manor/hall'] });
+  expect(rooms['ch1/manor/hall']?.neighbourRooms).toEqual(['ch1/manor/study', 'ch1/manor/desk']);
+});
+
 const USAGE = 'server/content/build/usage.json';
 const PATCH_RECT = [140, 340, 60, 60];
 

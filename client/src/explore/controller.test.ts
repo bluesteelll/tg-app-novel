@@ -979,25 +979,25 @@ test("controller: a close-up keeps the room's state images and a move releases t
   expect(step(() => h.c.enter(sec('line'), EMPTY_WORLD_STATE))).toEqual([]);
   expect(step(() => h.c.roomShown())).toEqual(['preload room:a bg/a', set('a'), 'preload room:b bg/b']);
   expect(step(() => h.c.dispatch(tap('a.to_b')))).toEqual(['release state:a']);
-  expect(step(() => h.c.roomShown())).toEqual(['preload room:b bg/b', set('b'), 'preload room:c bg/c', 'preload room:a bg/a', set('a')]);
+  expect(step(() => h.c.roomShown())).toEqual(['preload room:b bg/b', set('b'), 'preload room:a bg/a', 'preload room:c bg/c', set('a')]);
   // a leaves the keep set: its bg and its set go, and the set stops being asked for; b's is released and kept.
   expect(step(() => h.c.dispatch(tap('b.to_c')))).toEqual(['release room:a', 'release state:a', 'release state:b']);
-  expect(step(() => h.c.roomShown())).toEqual(['preload room:c bg/c', set('c'), 'preload room:d bg/d', 'preload room:b bg/b', set('b')]);
+  expect(step(() => h.c.roomShown())).toEqual(['preload room:c bg/c', set('c'), 'preload room:b bg/b', 'preload room:d bg/d', set('b')]);
   // The close-up: every room:* and every other room's set go before the puzzle effect; c's own images stay.
   const open = h.log.length;
   h.c.dispatch(tap('c.box'));
   expect(h.log.slice(open)).toEqual(['release room:', 'release state:b', 'effect puzzle']);
   // Cleared: GameSession reports the room shown again; b's set is no longer asked for.
-  expect(step(() => h.c.roomShown())).toEqual(['preload room:c bg/c', set('c'), 'preload room:d bg/d', 'preload room:b bg/b']);
+  expect(step(() => h.c.roomShown())).toEqual(['preload room:c bg/c', set('c'), 'preload room:b bg/b', 'preload room:d bg/d']);
   // c -> b releases c's set (W1); b asks for it again after both neighbour bgs.
   expect(step(() => h.c.dispatch(tap('c.to_b')))).toEqual(['release room:d', 'release state:c']);
-  expect(step(() => h.c.roomShown())).toEqual(['preload room:b bg/b', set('b'), 'preload room:c bg/c', 'preload room:a bg/a', set('c')]);
+  expect(step(() => h.c.roomShown())).toEqual(['preload room:b bg/b', set('b'), 'preload room:a bg/a', 'preload room:c bg/c', set('c')]);
   // b -> a: c leaves the keep set (its bg and its set, untracked); b's set is released and kept.
   expect(step(() => h.c.dispatch(tap('b.to_a')))).toEqual(['release room:c', 'release state:c', 'release state:b']);
   expect(step(() => h.c.roomShown())).toEqual(['preload room:a bg/a', set('a'), 'preload room:b bg/b', set('b')]);
   // a -> b: b asks for a's set and never for c's, which left the keep set at b -> a.
   expect(step(() => h.c.dispatch(tap('a.to_b')))).toEqual(['release state:a']);
-  expect(step(() => h.c.roomShown())).toEqual(['preload room:b bg/b', set('b'), 'preload room:c bg/c', 'preload room:a bg/a', set('a')]);
+  expect(step(() => h.c.roomShown())).toEqual(['preload room:b bg/b', set('b'), 'preload room:a bg/a', 'preload room:c bg/c', set('a')]);
 });
 
 /** p shows two images (the chest's prop and its open state's); q leads back to p and holds a bell that runs a knot. */
@@ -1119,6 +1119,183 @@ test("controller: a refused or evicted state image is requested again at the roo
     ['q', [1, 2]],
     ['back in p', [2, 3]],
   ]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM4: the preload order and the zoom keep (engine plan §6.3 "Preload (m2)", RULINGS 286 Q3): Back's target first; a
+// zoom-in to a leaf view keeps its parent's set, any other zoom-in releases it as a walk does
+
+/** c -> r: r's exits lead to a, b, c and its view v; v's exits lead into its own view w, then back to r. */
+function fan(): WorldPublic {
+  return world({
+    sections: {
+      fan: {
+        start: 'c',
+        rooms: {
+          r: room('r', [exit('to_a', 'a'), exit('to_b', 'b'), exit('to_c', 'c'), exit('to_v', 'v')]),
+          a: room('a', [exit('to_r', 'r')]),
+          b: room('b', [exit('to_r', 'r')]),
+          c: room('c', [exit('to_r', 'r')]),
+          v: viewRoom('v', 'r', [exit('to_w', 'w'), exit('back', 'r')]),
+          w: viewRoom('w', 'v', []),
+        },
+      },
+    },
+  });
+}
+
+test("controller: a room preloads Back's target first, then its hotspot order", () => {
+  const h = harness(fan());
+  h.c.enter(sec('fan'), EMPTY_WORLD_STATE);
+  h.c.roomShown();
+  // Arrived from c with its way back open: c is Back's target, so its bg comes before r's exits in hotspot order.
+  h.c.dispatch(tap('c.to_r'));
+  const shown = h.log.length;
+  h.c.roomShown();
+  expect(sceneCalls(h, shown)).toEqual(['preload room:r bg/r', 'preload room:c bg/c', 'preload room:a bg/a', 'preload room:b bg/b', 'preload room:v bg/v']);
+  // In a view, Back's target is its parent, ahead of the view's own exits.
+  h.c.dispatch(tap('r.to_v'));
+  const zoomed = h.log.length;
+  h.c.roomShown();
+  expect(sceneCalls(h, zoomed)).toEqual(['preload room:v bg/v', 'preload room:r bg/r', 'preload room:w bg/w']);
+});
+
+/**
+ * p (the chest: prop x, its open state's prop y) leads into its view v and to a, whose only exit leads back; with
+ * `child`, v leads into its own view w (both leaves have no exit back: `leave-view` is the way out).
+ */
+function zoomRooms(child: boolean): WorldPublic {
+  return world({
+    sections: {
+      zm: {
+        start: 'p',
+        rooms: {
+          p: room('p', [{ ...object('chest', null, [], 'x'), states: { open: { prop: 'y' } } }, exit('to_v', 'v'), exit('to_a', 'a')]),
+          a: room('a', [exit('to_p', 'p')]),
+          v: viewRoom('v', 'p', child ? [exit('to_w', 'w')] : []),
+          ...(child ? { w: viewRoom('w', 'v', []) } : {}),
+        },
+      },
+    },
+  });
+}
+
+test("controller: a zoom round trip P -> V -> P fetches each of P's state images once", () => {
+  // §1.3a's bytes (X13 sizes): live at p = bg p + x + y + bg v + bg a = 3 BG + 2 PROP = 28,639,232 B; at v under the
+  // keep = bg v + bg p + x + y = 19,791,872 B; both <= STEADY_CAP_BYTES, so the fake scripts no refusal.
+  const sc = countingScene();
+  const h = harness(zoomRooms(false), { scene: sc.port });
+  const steps: Array<[string, number[]]> = [];
+  const record = (name: string): void => {
+    steps.push([name, sc.fetches('bg/p', 'bg/a', 'prop/x', 'prop/y')]);
+  };
+  h.c.enter(sec('zm'), EMPTY_WORLD_STATE);
+  h.c.roomShown();
+  record('p');
+  // The zoom-in keeps p's set: v's one neighbour is p, whose bg `room:p` already holds. a left the keep set.
+  h.c.dispatch(tap('p.to_v'));
+  h.c.roomShown();
+  record('v');
+  // Back leaves the view: p's images join their live records; a's bg is fetched again (Q9, carried).
+  expect(h.c.back()).toBe(true);
+  h.c.roomShown();
+  record('back in p');
+  expect(steps).toEqual([
+    ['p', [1, 1, 1, 1]],
+    ['v', [1, 1, 1, 1]],
+    ['back in p', [1, 2, 1, 1]],
+  ]);
+});
+
+test("controller: a zoom round trip into a view with another neighbour asks for P's state images again at V", () => {
+  // v leads into w as well: a neighbour bg p's set could displace, so the zoom-in releases it as a walk does and v asks
+  // for it after its neighbours' bgs (RULINGS 246 W1). Live at v = bg v + bg p + bg w + x + y = 28,639,232 B.
+  const sc = countingScene();
+  const h = harness(zoomRooms(true), { scene: sc.port });
+  const steps: Array<[string, number[]]> = [];
+  const record = (name: string): void => {
+    steps.push([name, sc.fetches('bg/p', 'prop/x', 'prop/y', 'bg/w')]);
+  };
+  h.c.enter(sec('zm'), EMPTY_WORLD_STATE);
+  h.c.roomShown();
+  record('p');
+  h.c.dispatch(tap('p.to_v'));
+  h.c.roomShown();
+  record('v');
+  expect(h.c.back()).toBe(true);
+  h.c.roomShown();
+  record('back in p');
+  // A second trip: x does not fit after v's neighbour bgs, so the return asks for it again.
+  h.c.dispatch(tap('p.to_v'));
+  sc.refuse('prop/x');
+  h.c.roomShown();
+  record('v again');
+  expect(h.c.back()).toBe(true);
+  h.c.roomShown();
+  record('back in p again');
+  expect(steps).toEqual([
+    ['p', [1, 1, 1, 0]],
+    ['v', [1, 2, 2, 1]],
+    ['back in p', [1, 2, 2, 1]],
+    ['v again', [1, 2, 3, 2]],
+    ['back in p again', [1, 3, 3, 2]],
+  ]);
+});
+
+/** a -> b -> c: b is a view of a (four props, an exit into c), c a leaf view of b (four props). */
+function zoomLine(): WorldPublic {
+  return world({
+    sections: {
+      line: {
+        start: 'a',
+        rooms: {
+          a: room('a', [...props('a'), exit('to_b', 'b')]),
+          b: viewRoom('b', 'a', [...props('b'), exit('to_c', 'c')]),
+          c: viewRoom('c', 'b', props('c')),
+        },
+      },
+    },
+  });
+}
+
+test('controller: zoom preloads stay under the steady cap and admit every neighbour bg', async () => {
+  const m = chainManifest();
+  const sc = realScene(m);
+  const h = harness(zoomLine(), { scene: sc.scheduler, manifest: m });
+  const steps: Array<{ step: string; live: string[]; bytes: number }> = [];
+  const record = async (step: string): Promise<void> => {
+    await drain();
+    steps.push({ step, live: [...sc.live].filter((id) => !id.startsWith('prop/')).sort(), bytes: sc.bytes() });
+  };
+  const shown = async (r: string): Promise<void> => {
+    await sc.show(r);
+    h.c.roomShown();
+  };
+  h.c.enter(sec('line'), EMPTY_WORLD_STATE);
+  await shown('a');
+  await record('enter a');
+  h.c.dispatch(tap('a.to_b'));
+  await shown('b');
+  await record('a -> b');
+  h.c.dispatch(tap('b.to_c'));
+  await shown('c');
+  await record('b -> c');
+  expect(h.c.back()).toBe(true);
+  await shown('b');
+  await record('c -> b');
+  const room = BG_BYTES + 4 * PROP_BYTES;
+  expect(steps).toEqual([
+    // + 1 B per live record (each keeps its 1 B fixture file).
+    { step: 'enter a', live: ['bg/a', 'bg/b'], bytes: room + BG_BYTES + 6 },
+    // b has a child view: a's set is released, c's bg is admitted before it, and two of a's props fit after.
+    { step: 'a -> b', live: ['bg/a', 'bg/b', 'bg/c'], bytes: room + 2 * BG_BYTES + 2 * PROP_BYTES + 9 },
+    // c is a leaf: b's set is kept, the pair term (GM4g's room-set of c); a left the keep set.
+    { step: 'b -> c', live: ['bg/b', 'bg/c'], bytes: 2 * room + 10 },
+    // a's bg is fetched again (Q9) and two of c's props fit after the bgs.
+    { step: 'c -> b', live: ['bg/a', 'bg/b', 'bg/c'], bytes: room + 2 * BG_BYTES + 2 * PROP_BYTES + 9 },
+  ]);
+  expect(Math.max(...steps.map((s) => s.bytes))).toBeLessThanOrEqual(STEADY_CAP_BYTES);
+  expect(sc.errors).toEqual([]);
 });
 
 // ---------------------------------------------------------------------------------------------------------------
