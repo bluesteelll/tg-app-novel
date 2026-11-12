@@ -2103,6 +2103,45 @@ test('executor: a cut whose plate fails draws no file of the new shot on the kep
   expect(g.registry.stats().live).toBe(0);
 });
 
+test('executor: a kept root draws no figure plane of another shot', async () => {
+  // Triage r2 F1: a figure plane is cut from the `sheet` slot too. The root's own sheet failed, so its figure plane is
+  // missing and every later draw retries it; the next shot's plate fails while that shot's sheet loads, so the kept
+  // root's `sheet` slot holds another shot's sheet, which is not this root's figure: no plane is drawn from it.
+  const at: Box4 = [100, 700, 400, 392];
+  const figured = (shot: string, c: string, head: Box4): CastRig & { char: CharId } => ({ ...castMember(shot, c, head), figure: mem(`sheet/${shot}`, [0, 120, 400, 392], at) });
+  const rigs: ReadonlyMap<BgId, ShotRig> = new Map([
+    ['lamp' as BgId, shotRig([figured('lamp', 'ally', ALLY_AT)])],
+    ['lamp_cu' as BgId, shotRig([figured('lamp_cu', 'ally', [400, 600, 300, 380])])],
+  ]);
+  const figureHarness = (): ReturnType<typeof harness> => harness(S390, quietLoop(), { rigs: () => rigs, half: () => false });
+  // The control: the same rig draws its own figure plane when its sheet loads, so the case below cannot pass because
+  // no figure plane is ever drawn.
+  const c = figureHarness();
+  await c.ex.apply([scene('lamp', 'cut')], NOW);
+  expect(c.live('bg').map((x) => x.tex?.url)).toEqual(['/assets/bg_lamp.avif', '/assets/sheet_lamp.avif#0,120,400,392']);
+  expect(partNodes(c)).toEqual(['figure:ally']);
+  c.ex.destroy();
+  expect(c.liveNodes()).toEqual([]);
+  expect(c.registry.stats().live).toBe(0);
+  const h = figureHarness();
+  h.failLoad('sheet/lamp');
+  await h.ex.apply([scene('lamp', 'cut')], NOW);
+  expect(h.live('bg').map((x) => x.tex?.url)).toEqual(['/assets/bg_lamp.avif']);
+  h.failLoad('bg/lamp_cu');
+  h.log.length = 0;
+  const b = track(h.ex.apply([bg('lamp_cu', 'cut')], NOW));
+  await flush();
+  expect(b.done).toBe(true);
+  expect(h.anchors('bg').map((x) => x.key)).toEqual(['bg/lamp']);
+  expect(h.live('bg').map((x) => x.tex?.url)).toEqual(['/assets/bg_lamp.avif']);
+  expect(partNodes(h)).toEqual([]);
+  expect(drawLog(h)).toEqual([]);
+  expect(h.skipped.map((e) => `${e.kind}:${e.id}`)).toEqual(['decode:sheet/lamp', 'decode:bg/lamp_cu']);
+  h.ex.destroy();
+  expect(h.liveNodes()).toEqual([]);
+  expect(h.registry.stats().live).toBe(0);
+});
+
 test('executor: a face change releases the previous face and talk files after the transition', async () => {
   const h = shotHarness();
   await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
