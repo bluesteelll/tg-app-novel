@@ -789,6 +789,28 @@ test('preload: a held-only warm file and a hoped file kept across a swap are fet
   expect([h.fetchesOf('bg/cu_c'), h.fetchesOf('prop/s1')]).toEqual([1, 1]);
 });
 
+// A queued item has no holder yet, so step 1's drop never sees it: only the queue filter takes a leaver out.
+test('preload: a window item still queued when the window swaps is never fetched', async () => {
+  const h = harness('deferred', { hold: true });
+  h.s.setChapter(wm);
+  // PRELOAD_IN_FLIGHT = 2: s1 and s2 are in flight, s3 and h queued.
+  h.s.want(stage({ need: ['prop/s1', 'prop/s2', 'prop/s3', 'prop/h'] }));
+  expect(h.fetchesOf('prop/s3')).toBe(0);
+  expect(h.fetchesOf('prop/h')).toBe(0);
+  h.s.want(stage({ need: ['prop/x6'] }));
+  await h.settle();
+  expect(h.fetchesOf('prop/s3')).toBe(0);
+  expect(h.fetchesOf('prop/h')).toBe(0);
+});
+
+test('preload: the new need takes the slots ahead of the old window still queued', () => {
+  const h = harness('deferred', { hold: true });
+  h.s.setChapter(wm);
+  h.s.want(stage({ need: ['prop/s1', 'prop/s2', 'prop/s3', 'prop/h'] }));
+  h.s.want(stage({ need: ['prop/x6'] }));
+  expect([h.fetchesOf('prop/x6'), h.fetchesOf('prop/s3'), h.fetchesOf('prop/h')]).toEqual([1, 0, 0]);
+});
+
 test('preload: a released in-flight fetch is aborted', () => {
   const h = harness('deferred', { hold: true });
   h.s.setChapter(wm);
