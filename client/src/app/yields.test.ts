@@ -1157,6 +1157,98 @@ test('yields: a zoom move crossfades the bg', async () => {
   r.yields.dispose();
 });
 
+// ---------------------------------------------------------------------------------------------------------------
+// GM4u: the view bar (engine plan §6.3; the leave control, `inView`, the box of a zoom-out by no exit)
+
+const DESK_RECT: Rect = [500, 900, 300, 300];
+const SHELF_RECT: Rect = [150, 1300, 250, 250];
+const NOOK_RECT: Rect = [600, 400, 200, 200];
+const BACK_RECT: Rect = [400, 1500, 300, 200];
+const exitAt = (id: string, to: string, rect: Rect): Json => ({ ...exit(id, to), rect });
+
+/**
+ * hall <-> study; the study zooms into `desk` (bg cellar) by two exits, and the desk has no exit back (the demo's
+ * shape: `leave-view` is its way out); the hall zooms into `nook`, which has an exit back and an onEnter event. Every
+ * rect but the plain walk's differs, so each hotspot's drawn box differs. Without `entry` no hall exit enters the
+ * nook: a synthetic world for the null box. At runtime a save standing in such a view restarts its section on load
+ * (`reconcile` -> `unproved` -> `admitSection` from the start room); the rig's `restore` takes the state directly.
+ */
+function viewWorld(entry = true): WorldPublic {
+  const raw = {
+    format: 1,
+    items: {},
+    docs: {},
+    puzzles: {},
+    sections: {
+      manor: {
+        start: 'hall',
+        bgm: null,
+        rooms: {
+          hall: { bg: 'hall', title: txt('Hall'), onEnter: [], hotspots: [exit('to_study', 'study'), ...(entry ? [exitAt('to_nook', 'nook', NOOK_RECT)] : [])] },
+          study: {
+            bg: 'study',
+            title: txt('Study'),
+            onEnter: [],
+            hotspots: [exit('to_hall', 'hall'), exitAt('to_desk', 'desk', DESK_RECT), exitAt('to_desk_too', 'desk', SHELF_RECT)],
+          },
+          desk: { bg: 'cellar', title: txt('Desk'), onEnter: [], hotspots: [], view: { of: 'study' } },
+          nook: { bg: 'cellar', title: txt('Nook'), onEnter: [{ story: 'study_event' }], hotspots: [exitAt('to_hall', 'hall', BACK_RECT)], view: { of: 'hall' } },
+        },
+      },
+    },
+  };
+  const r = decodeWorldSource(raw);
+  if (!r.ok) {
+    throw new Error(`invariant: the view fixture world decodes: ${JSON.stringify(r.error)}`);
+  }
+  return { ...toPublic(r.value), mods: r.value.mods, version: '7777777777777777' };
+}
+
+test('yields: the explore view is in a view exactly while the room is one', async () => {
+  const r = rig({ world: viewWorld() });
+  await inHall(r);
+  expect(r.explore.inView).toBe(false);
+  r.yields.layer.ontap(key('hall.to_study'));
+  await settle();
+  // A walked plain room has a Back target, and is no view.
+  expect([roomOf(r), r.vm.screens.backVisible, r.explore.inView]).toEqual(['study', true, false]);
+  r.yields.layer.ontap(key('study.to_desk'));
+  await settle();
+  expect([roomOf(r), r.explore.inView]).toEqual(['desk', true]);
+  const inDesk = r.yields.world();
+  r.screens.back(); // a zoom-out by `leave-view`
+  await settle();
+  expect([roomOf(r), r.explore.inView]).toEqual(['study', false]);
+  r.yields.layer.ontap(key('study.to_desk'));
+  await settle();
+  expect(r.explore.inView).toBe(true);
+  r.yields.dispose();
+  expect(r.explore.inView).toBe(false);
+  // A resume inside the view: the room effect is a resume, and the flag is written with its batch.
+  const x = rig({ world: viewWorld() });
+  x.yields.restore(inDesk, null, { kind: 'explore', section: MANOR });
+  expect(x.explore.inView).toBe(false);
+  await x.yields.onYield({ kind: 'explore', section: MANOR });
+  expect([roomOf(x), x.explore.inView, x.vm.screens.backVisible]).toEqual(['desk', true, true]);
+  x.yields.dispose();
+  // An event return into a view, in a fresh session (a reload inside the nook's knot): in one session the zoom-in's
+  // batch has already written the flag, so a return there could not tell a rewrite from a stale value.
+  const y = rig({ world: viewWorld() });
+  await inHall(y);
+  y.yields.layer.ontap(key('hall.to_nook'));
+  await settle();
+  expect([roomOf(y), y.explore.layer, y.vm.screens.backVisible]).toEqual(['nook', null, false]);
+  const mid = y.yields.world();
+  expect(mid.pendingStory).toEqual(['study_event']);
+  y.yields.dispose();
+  const e = rig({ world: viewWorld() });
+  e.yields.restore(mid, null, null);
+  expect(e.explore.inView).toBe(false);
+  await e.yields.onYield({ kind: 'explore', section: MANOR }); // the knot's own yield: an event return
+  expect([roomOf(e), e.explore.inView, e.vm.screens.backVisible]).toEqual(['nook', true, true]);
+  e.yields.dispose();
+});
+
 test('yields: a take emits exactly one held cue', async () => {
   // The writer's `held` alone: the `got` effect keeps its toast and batch, and no cue of its own.
   const r = rig({ world: cueWorld() });

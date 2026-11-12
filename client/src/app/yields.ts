@@ -16,7 +16,7 @@ import type { CueBus } from '../cues/bus.ts';
 import type { Cue, CueEvent, MoveHow, PuzzleCue, VisualDiff } from '../cues/types.ts';
 import type { ExploreController, createExploreController } from '../explore/controller.ts';
 import { project } from '../explore/project.ts';
-import { runReduce, worldIndex } from '../explore/reduce.ts';
+import { own, runReduce, worldIndex } from '../explore/reduce.ts';
 import type { ExploreEffect } from '../explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { PuzzleOutcome, PuzzleRun, WorldState } from '../explore/state.ts';
@@ -736,6 +736,9 @@ export function createYields(h: YieldsHost): Yields {
       audio.push({ kind: 'sfx', sfx, vol: 1 });
     }
     shown = room;
+    // §6.3 (GM4u): the bar's leave control shows in a view, by the controller's own rule over its state (`inView`), in
+    // the same flush as the layer and the room's hotspots, so it never shows over a room the layer is not showing.
+    explore.inView = world.section !== null && world.room !== null && own(w.mods.view.of, world.room) !== undefined;
     explore.layer = inEvent() ? null : layerComponent; // an onEnter event hides the rooms it moved into
     await held(visual, audio, { box: j.move.box, atStart });
     if (dead) {
@@ -1347,6 +1350,7 @@ export function createYields(h: YieldsHost): Yields {
     explore.layer = null;
     explore.panel = null;
     explore.selected = null;
+    explore.inView = false;
   };
 
   return {
