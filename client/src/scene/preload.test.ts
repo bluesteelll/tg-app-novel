@@ -527,3 +527,32 @@ test('preload: two joins of different tags on one carried fetch cost one slot', 
   h.s.preload('preload:n', [asId('prop/a'), asId('prop/b'), asId('prop/c')]);
   expect(h.calls.map((c) => c.url)).toEqual([urlOf(ch1, 'prop/a'), urlOf(ch1, 'prop/b')]);
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// Pins for two arms no test held (LHJ triage_r4 F2 / Q7, test_r5 survivor R4).
+
+test('preload: a repeated preload of an id in flight adds nothing, so one failure is one report', async () => {
+  const h = harness('deferred');
+  h.s.setChapter(ch1);
+  h.s.preload('room:r1', [asId('prop/a')]);
+  h.s.preload('room:r1', [asId('prop/a')]);
+  const a = h.calls[0];
+  if (a === undefined) {
+    throw new Error('invariant: the fixture started a load');
+  }
+  a.done = true;
+  a.resolve({ ok: false, error: { kind: 'fetch', error: { kind: 'http', status: 500 } } });
+  await flush();
+  expect(h.errors.length).toBe(1);
+});
+
+test('preload: a release pumps the next queued preload in the same turn', () => {
+  const h = harness('deferred');
+  h.s.setChapter(ch1);
+  h.s.preload('preload:x', ['prop/a', 'prop/b'].map(asId));
+  h.s.preload('preload:y', [asId('prop/c')]);
+  expect(h.calls.map((c) => c.url)).toEqual([urlOf(ch1, 'prop/a'), urlOf(ch1, 'prop/b')]);
+  // The released flights' acquires settle a microtask later; the release itself frees the slots for c at once.
+  h.s.releasePreload('preload:x');
+  expect(h.calls.map((c) => c.url)).toEqual([urlOf(ch1, 'prop/a'), urlOf(ch1, 'prop/b'), urlOf(ch1, 'prop/c')]);
+});
