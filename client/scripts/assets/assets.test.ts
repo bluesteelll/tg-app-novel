@@ -11,17 +11,27 @@ import { ASSET_ID_RE, decodeAssetCatalog, decodeAssetManifest, decodeCoverManife
 import type { CatalogImage, CatalogIssue, ChapterListEntry, Trim } from '../../src/story/catalog.ts';
 import { decodeLook, decodeLoops, decodeShotRigs, stepWindow } from '../../src/story/shots.ts';
 import type { FaceRig, ShotRig } from '../../src/story/shots.ts';
-import type { AssetId, BgId, ExprId, PropId } from '../../src/story/staging.ts';
+import type { AssetId, BgId, ChapterId, CharId, ExprId, PropId } from '../../src/story/staging.ts';
 import { main } from '../assets.ts';
 import type { Encoders } from '../assets.ts';
+import { LIMITS } from '../budget.ts';
+import { scanPaidFiles } from '../scan-dist.ts';
 import { decodeChapterList, decodeStoryUsage } from '../story/emit.ts';
 import { placeholderHue } from '../story/shots/list.ts';
+import type { Shot } from '../story/shots/list.ts';
 import { parseShotFileId } from '../story/shots/usage.ts';
-import { encodeImage, halfRgba } from './encode.ts';
-import { ASSET_FILE_RE, assetFileName, assetUsage, catalogImage, decodeAssetFingerprints, halfAsk, sha256Hex, tierOf } from './manifest.ts';
+import type { ShotNeed } from '../story/shots/usage.ts';
+import { SHARP_CODEC, decodeRaster, encodeAvif, encodeImage, encodeRaster, halfRgba } from './encode.ts';
+import type { Codec, EncodedRaster } from './encode.ts';
+import { alphaProblems, decodeShotSource, extractShot } from './extract.ts';
+import { syntheticShot } from './fixtures/shot/synthetic.ts';
+import type { Knobs } from './fixtures/shot/synthetic.ts';
+import { ASSET_FILE_RE, ASSET_OUT, assetFileName, assetUsage, catalogImage, decodeAssetFingerprints, gatedCopies, halfAsk, sha256Hex, tierOf, urlPath } from './manifest.ts';
 import type { AssetUsage } from './manifest.ts';
 import { CANONICAL_SIZE, imageKind, renderPlaceholder } from './placeholder.ts';
 import type { ImageKind } from './placeholder.ts';
+import { packShot, shotFileRaster } from './shots.ts';
+import type { ChapterNeed, Raster } from './shots.ts';
 import { synthWav } from './synth.ts';
 
 const CLIENT_DIR = fileURLToPath(new URL('../..', import.meta.url));
@@ -302,6 +312,111 @@ async function dims(bytes: Uint8Array): Promise<{ w: number | undefined; h: numb
   return { w: m.width, h: m.height, format: m.format };
 }
 
+/** A raster's alpha clamped to 0 / 255: what a codec that loses the feather decodes to (M-SH3e's shape). */
+function clampAlpha(r: Raster): Raster {
+  const data = Uint8Array.from(r.data);
+  for (let i = 3; i < data.length; i += 4) {
+    data[i] = (data[i] ?? 0) < 128 ? 0 : 255;
+  }
+  return { data, w: r.w, h: r.h };
+}
+
+/** The half tier's source of a raster (MEMORY-PLAN 4.C). */
+function halfOf(r: Raster): Raster {
+  return { data: halfRgba(r.data, r.w, r.h), w: r.w / 2, h: r.h / 2 };
+}
+
+/** A w × h test raster: colour noise (a fixed hash) under an ellipse's alpha, 255 inside with a 3-px ramp at its edge. */
+function featheredNoise(w: number, h: number): Raster {
+  const data = new Uint8Array(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const v = Math.imul(Math.imul(x, 73856093) ^ Math.imul(y, 19349663), 2654435761) >>> 0;
+      const d = (Math.hypot((x + 0.5 - w / 2) / (0.4 * w), (y + 0.5 - h / 2) / (0.4 * h)) - 1) * 0.4 * Math.min(w, h);
+      data.set([v & 255, (v >>> 8) & 255, (v >>> 16) & 255, Math.round(255 * Math.min(1, Math.max(0, 0.5 - d / 3)))], (y * w + x) * 4);
+    }
+  }
+  return { data, w, h };
+}
+
+/** A src loop's frame `i` (cut rider R-b): `featheredNoise` with its red channel turned per frame, so frames differ. */
+function loopFrame(i: number, w: number, h: number): Raster {
+  const r = featheredNoise(w, h);
+  const data = Uint8Array.from(r.data);
+  for (let p = 0; p < data.length; p += 4) {
+    data[p] = ((data[p] ?? 0) + 41 * i) & 255;
+  }
+  return { data, w, h };
+}
+
+/**
+ * A fake codec for the q search (RULINGS 267): each AVIF call answers `bytes(w, q)` zero bytes that decode to the tier's
+ * px as given when `pass(w, q)`, else with their alpha clamped; `calls` records `<w>:<q>` per AVIF call in order, `out`
+ * each call's bytes. The search's R6 compare stays the real one.
+ */
+function fakeCodec(
+  pass: (w: number, q: number) => boolean,
+  bytes: (w: number, q: number) => number,
+): { codec: Codec; calls: string[]; out: Map<string, Uint8Array> } {
+  const decoded = new Map<Uint8Array, Raster>();
+  const calls: string[] = [];
+  const out = new Map<string, Uint8Array>();
+  const codec: Codec = {
+    avif: (px, q) => {
+      const b = new Uint8Array(bytes(px.w, q));
+      decoded.set(b, pass(px.w, q) ? px : clampAlpha(px));
+      calls.push(`${px.w}:${q}`);
+      out.set(`${px.w}:${q}`, b);
+      return Promise.resolve(b);
+    },
+    webp: (px) => {
+      const b = new Uint8Array(1);
+      decoded.set(b, px);
+      return Promise.resolve(b);
+    },
+    decode: (b) => {
+      const r = decoded.get(b);
+      return r === undefined ? Promise.reject(new Error('invariant: the fake decodes its own output')) : Promise.resolve(r);
+    },
+  };
+  return { codec, calls, out };
+}
+
+/** The synthetic `src` shot at 1080-plate scale (P0's inputs), extracted and packed: every packed file's px, built once. */
+let packedFixture: Promise<ReadonlyMap<AssetId, Raster>> | null = null;
+function fixtureFiles(): Promise<ReadonlyMap<AssetId, Raster>> {
+  packedFixture ??= (async () => {
+    const fx = syntheticShot({ w: 1080, h: 2048, u: 4 });
+    const source = decodeShotSource(fx.json, 'cafe' as BgId);
+    if (!source.ok) {
+      throw new Error(`invariant: the fixture's shot.json decodes: ${source.error.join('; ')}`);
+    }
+    const shot: Shot = { id: 'cafe' as BgId, loc: 'cafe' as Shot['loc'], frame: 'close', cast: [{ char: 'ally' as CharId, view: 'face', rest: 'neutral' as ExprId, figure: false }] };
+    const need = (ch: string, faces: ReadonlyArray<readonly [string, boolean]>): ChapterNeed => ({ ch: ch as ChapterId, need: cafeNeed(faces, ch) as unknown as ShotNeed });
+    const r = await extractShot({
+      shot,
+      source: source.value,
+      needs: [need('ch1', [['neutral', true], ['smile', true]]), need('ch2', [['surprised', false], ['angry', false]])],
+      load: (file) => Promise.resolve(fx.files.get(file) ?? null),
+      loadDepth: () => Promise.resolve(fx.depth),
+    });
+    if (!r.ok) {
+      throw new Error(`invariant: the fixture extracts: ${r.error.join('; ')}`);
+    }
+    return new Map([...packShot(r.value.layers).files].map(([id, f]) => [id, shotFileRaster(f)] as const));
+  })();
+  return packedFixture;
+}
+
+/** The fixture's packed file `id`. */
+function fileOf(files: ReadonlyMap<AssetId, Raster>, id: string): Raster {
+  const r = files.get(id as AssetId);
+  if (r === undefined) {
+    throw new Error(`invariant: the fixture packs ${id}`);
+  }
+  return r;
+}
+
 describe('encode', () => {
   test('encode: input over 2048 px is clamped', async () => {
     const e = await encodeImage(strip(4096, 64));
@@ -473,6 +588,148 @@ describe('encode', () => {
     expect({ w: unasked.w, h: unasked.h, trim: unasked.trim }).toEqual({ w: e.w, h: e.h, trim });
     expect(Buffer.compare(e.avif, unasked.avif)).toBe(0);
     expect(Buffer.compare(e.webp, unasked.webp)).toBe(0);
+  }, 60_000);
+
+  test('assets: an encoded sheet keeps its feathered alpha within 8/255', async () => {
+    // R6 (§4.3, cut D9) through RULINGS 267's search: the fixture's sheet (a feathered hair lock) and its three face files
+    // (angry's with its masked blink and accent, fix3 M1) at 1080-plate scale, each searched per tier from q 50. The test
+    // decodes what ships, AVIF and WebP of both tiers, and compares every px's alpha with its source's (the half's:
+    // halfRgba of it).
+    const files = await fixtureFiles();
+    const ids = ['face/cafe/ally/angry', 'face/cafe/ally/smile', 'face/cafe/ally/surprised', 'sheet/cafe'];
+    expect([...files.keys()].filter((id) => !id.startsWith('talk/')).sort()).toEqual(ids);
+    for (const id of ids) {
+      const px = fileOf(files, id);
+      const r = await encodeRaster(px, { id: id as AssetId, half: 'any', q: 50, search: true });
+      expect(r.ok ? [] : r.error, id).toEqual([]);
+      const image = r.ok ? r.value.image : null;
+      expect(r.ok ? [r.value.q.full >= 50, (r.value.q.half ?? 0) >= 50] : [], `${id}: each chosen q is at least the start`).toEqual([true, true]);
+      expect([image?.w, image?.h, image?.half?.w, image?.half?.h]).toEqual([px.w, px.h, px.w / 2, px.h / 2]);
+      const half = halfOf(px);
+      const shipped: ReadonlyArray<readonly [string, Uint8Array | undefined, Raster]> = [
+        [`${id} full AVIF`, image?.avif, px],
+        [`${id} full WebP`, image?.webp, px],
+        [`${id} half AVIF`, image?.half?.avif, half],
+        [`${id} half WebP`, image?.half?.webp, half],
+      ];
+      for (const [what, bytes, source] of shipped) {
+        expect(bytes, what).toBeDefined();
+        expect(alphaProblems(what, await decodeRaster(bytes ?? new Uint8Array(0)), source)).toEqual([]);
+      }
+    }
+    // Not vacuous: the sheet's shipped AVIF with its decoded alpha clamped (the feather lost) fails the same check.
+    const sheet = fileOf(files, 'sheet/cafe');
+    const r = await encodeRaster(sheet, { id: 'sheet/cafe' as AssetId, half: 'none', q: 50, search: true });
+    const decoded = await decodeRaster(r.ok ? r.value.image.avif : new Uint8Array(0));
+    const clamped = alphaProblems('sheet/cafe full AVIF', clampAlpha(decoded), sheet);
+    expect(clamped).toHaveLength(1);
+    expect(clamped[0]).toMatch(/^sheet\/cafe full AVIF: alpha \d+\/255 off at \(\d+, \d+\) \(R6: within 8\/255 at every px\)$/);
+  }, 120_000);
+
+  test('assets: the q search fails loudly at the ceiling', async () => {
+    // RULINGS 267: when no candidate up to 90 keeps every px's alpha within 8/255, each failing tier is an error value
+    // naming the file, the tier, the best candidate's q and its worst px, after every coarse step was tried; nothing is
+    // returned to write (the tool exits 1 on it, C7).
+    const px = featheredNoise(64, 32);
+    const worst = (r: Raster): string => {
+      const c = clampAlpha(r);
+      let [err, at] = [0, 0];
+      for (let i = 0; i < r.w * r.h; i++) {
+        const d = Math.abs((c.data[i * 4 + 3] ?? 0) - (r.data[i * 4 + 3] ?? 0));
+        [err, at] = d > err ? [d, i] : [err, at];
+      }
+      return `${err}/255 off at (${at % r.w}, ${Math.floor(at / r.w)})`;
+    };
+    const { codec, calls } = fakeCodec(() => false, () => 100);
+    const r = await encodeRaster(px, { id: 'sheet/x' as AssetId, half: 'any', q: 50, search: true }, codec);
+    const steps = [50, 55, 60, 65, 70, 75, 80, 85, 90];
+    expect(calls).toEqual([...steps.map((q) => `64:${q}`), ...steps.map((q) => `32:${q}`)]);
+    expect(r).toEqual({
+      ok: false,
+      error: [
+        `sheet/x: full: no AVIF q in 50..90 keeps alpha within 8/255 (R6: the best, q 50, is ${worst(px)})`,
+        `sheet/x: half: no AVIF q in 50..90 keeps alpha within 8/255 (R6: the best, q 50, is ${worst(halfOf(px))})`,
+      ],
+    });
+    // From the shot's q 44 the step skips 90, which is still the last candidate.
+    const from44 = fakeCodec(() => false, () => 100);
+    const r44 = await encodeRaster(px, { id: 'sheet/x' as AssetId, half: 'none', q: 44, search: true }, from44.codec);
+    expect(from44.calls).toEqual([44, 49, 54, 59, 64, 69, 74, 79, 84, 89, 90].map((q) => `64:${q}`));
+    expect(r44.ok ? [] : r44.error).toEqual([`sheet/x: full: no AVIF q in 44..90 keeps alpha within 8/255 (R6: the best, q 44, is ${worst(px)})`]);
+    // Both tiers start at the shot's q (W3, triage r1 F1): from 44 the half tier walks 44 .. 90 as the full tier does.
+    const both = fakeCodec(() => false, () => 100);
+    const rBoth = await encodeRaster(px, { id: 'sheet/x' as AssetId, half: 'any', q: 44, search: true }, both.codec);
+    const steps44 = [44, 49, 54, 59, 64, 69, 74, 79, 84, 89, 90];
+    expect(both.calls).toEqual([...steps44.map((q) => `64:${q}`), ...steps44.map((q) => `32:${q}`)]);
+    expect(rBoth.ok ? [] : rBoth.error).toEqual([
+      `sheet/x: full: no AVIF q in 44..90 keeps alpha within 8/255 (R6: the best, q 44, is ${worst(px)})`,
+      `sheet/x: half: no AVIF q in 44..90 keeps alpha within 8/255 (R6: the best, q 44, is ${worst(halfOf(px))})`,
+    ]);
+  });
+
+  test('assets: the q search ships only a verified candidate, the fewest bytes', async () => {
+    // RULINGS 267, the probe's non-monotone half tier (passes at 62, fails at 63-67, passes from 68): the coarse walk from
+    // 50 stops at 70, the refine tries 66-69, and of the passing 68, 69 and 70 the fewest bytes (69) ships. The failing 66
+    // and 67 are smaller still, so a candidate shipped without its check would show. The full tier passes at once.
+    const px = featheredNoise(64, 32);
+    const halfBytes: Readonly<Record<number, number>> = { 66: 10, 67: 10, 68: 60, 69: 40, 70: 50 };
+    const { codec, calls, out } = fakeCodec(
+      (w, q) => (w === 64 ? q >= 50 : q === 62 || q >= 68),
+      (w, q) => (w === 64 ? 100 : (halfBytes[q] ?? 80)),
+    );
+    const r = await encodeRaster(px, { id: 'face/x/ally/smile' as AssetId, half: 'any', q: 50, search: true }, codec);
+    expect(calls).toEqual(['64:50', '32:50', '32:55', '32:60', '32:65', '32:70', '32:66', '32:67', '32:68', '32:69']);
+    expect(r.ok ? r.value.q : r.error).toEqual({ full: 50, half: 69 });
+    expect(r.ok && r.value.image.avif === out.get('64:50')).toBe(true);
+    expect(r.ok && r.value.image.half?.avif === out.get('32:69')).toBe(true);
+  });
+
+  test('assets: the q search is deterministic', async () => {
+    // RULINGS 267: two runs on the same px choose the same q per tier and write the same bytes.
+    const sheet = fileOf(await fixtureFiles(), 'sheet/cafe');
+    const o = { id: 'sheet/cafe' as AssetId, half: 'any', q: 50, search: true } as const;
+    const [a, b] = [await encodeRaster(sheet, o), await encodeRaster(sheet, o)];
+    expect([a.ok, b.ok]).toEqual([true, true]);
+    if (!a.ok || !b.ok) {
+      return;
+    }
+    expect(b.value.q).toEqual(a.value.q);
+    const files = (e: typeof a.value.image): Uint8Array[] => [e.avif, e.webp, e.half?.avif ?? new Uint8Array(0), e.half?.webp ?? new Uint8Array(0)];
+    expect(files(b.value.image).map((f, i) => Buffer.compare(f, files(a.value.image)[i] ?? new Uint8Array(0)))).toEqual([0, 0, 0, 0]);
+  }, 120_000);
+
+  test("assets: a shot's q lowers its AVIF bytes", async () => {
+    // §4.4 (RULINGS 267): a shot's q is its plate's AVIF quality exactly (no search), both tiers; WebP stays q80. A plate
+    // is opaque (fix3 F1): an unsearched raster with any alpha below 255 is a bug, since extractShot refuses that plate.
+    const feathered = featheredNoise(256, 128);
+    const px: Raster = { ...feathered, data: Uint8Array.from(feathered.data, (v, i) => (i % 4 === 3 ? 255 : v)) };
+    const at = async (q: number) => {
+      const r = await encodeRaster(px, { id: 'bg/noise' as AssetId, half: 'any', q, search: false });
+      if (!r.ok) {
+        throw new Error(`invariant: a fixed q never fails: ${r.error.join('; ')}`);
+      }
+      return r.value;
+    };
+    const [lo, hi] = [await at(40), await at(50)];
+    expect([lo.q, hi.q]).toEqual([
+      { full: 40, half: 40 },
+      { full: 50, half: 50 },
+    ]);
+    expect(lo.image.avif.length).toBeLessThan(hi.image.avif.length);
+    expect(lo.image.half?.avif.length ?? 0).toBeLessThan(hi.image.half?.avif.length ?? 0);
+    expect(Buffer.compare(lo.image.webp, hi.image.webp)).toBe(0);
+    expect(Buffer.compare(lo.image.half?.webp ?? new Uint8Array(0), hi.image.half?.webp ?? new Uint8Array(1))).toBe(0);
+    await expect(encodeRaster(feathered, { id: 'bg/noise' as AssetId, half: 'any', q: 50, search: false })).rejects.toThrow(/invariant: bg\/noise is opaque/);
+    // The bound is 255, not 0: unlike `feathered` (alpha-0 corners), this raster holds one px at alpha 254 and none at 0.
+    const nearly: Raster = { ...px, data: Uint8Array.from(px.data, (v, i) => (i === (5 * px.w + 7) * 4 + 3 ? 254 : v)) };
+    await expect(encodeRaster(nearly, { id: 'bg/noise' as AssetId, half: 'any', q: 50, search: false })).rejects.toThrow(/invariant: bg\/noise is opaque/);
+    // shot.json's q (cut D3): absent reads 50; 40 (the floor) is accepted; 35 and 101 are refused by name.
+    const json = (q: unknown): ReturnType<typeof decodeShotSource> =>
+      decodeShotSource({ crop: [0, 0, 1080, 2048], focus: [540, 600], ...(q === undefined ? {} : { q }) }, 'cafe' as BgId);
+    expect(json(undefined)).toMatchObject({ ok: true, value: { q: 50 } });
+    expect(json(40)).toMatchObject({ ok: true, value: { q: 40 } });
+    expect(json(35)).toEqual({ ok: false, error: ['cafe/shot.json: q: 35 is not an integer in 40..100'] });
+    expect(json(101)).toEqual({ ok: false, error: ['cafe/shot.json: q: 101 is not an integer in 40..100'] });
   }, 60_000);
 });
 
@@ -912,18 +1169,24 @@ const REPO_USAGE = {
 const SHOT_CATALOG = { ...REPO_CATALOG, chars: { ally: { exprs: { neutral: { placeholder: { hue: 200 } }, smile: { placeholder: { hue: 160 } } } } } };
 const SHOT_LIST = { locs: [{ id: 'cafe', light: null }], shots: [{ id: 'cafe', loc: 'cafe', frame: 'close', cast: [{ char: 'ally', view: 'face', rest: 'neutral' }] }] };
 
-/** build/shots.json's need of `cafe` with ally in `faces` (`[expr, talk]`), and of an implied cast-less shot. */
-function cafeNeed(faces: ReadonlyArray<readonly [string, boolean]>, ch: string): Record<string, unknown> {
-  const lines = (i: number): string[] => [`${ch}.cafe.a00${i}`];
+/**
+ * build/shots.json's need of the close-up `shot` (its loc of the same id) with ally in `faces` (`[expr, talk]`), line IDs
+ * `<ch>.<shot>.a00<i>`; `cafeNeed`, of `cafe`; and of an implied cast-less shot.
+ */
+function shotNeedOf(shot: string, faces: ReadonlyArray<readonly [string, boolean]>, ch: string): Record<string, unknown> {
+  const lines = (i: number): string[] => [`${ch}.${shot}.a00${i}`];
   return {
     cast: { ally: { view: 'face', rest: 'neutral', figure: false } },
     faces: { ally: faces.map(([expr, talk], i) => ({ expr, talk, lines: lines(i) })) },
     frame: 'close',
-    loc: 'cafe',
+    loc: shot,
     camTargets: [],
     motions: [],
     room: null,
   };
+}
+function cafeNeed(faces: ReadonlyArray<readonly [string, boolean]>, ch: string): Record<string, unknown> {
+  return shotNeedOf('cafe', faces, ch);
 }
 function impliedNeed(shot: string): Record<string, unknown> {
   return { cast: {}, faces: {}, frame: 'wide', loc: shot, camTargets: [], motions: [], room: null };
@@ -946,6 +1209,32 @@ function shotsUsage(chapters: Readonly<Record<string, ShotChapter>>): unknown {
 /** The inputs a shot repository adds: the catalog with ally's smile and the shot list; then its build/shots.json. */
 const SHOT_FILES: Readonly<Record<string, unknown>> = { 'assets/catalog.json': SHOT_CATALOG, 'story/shots.json': SHOT_LIST };
 const SHOT_REPO: Readonly<Record<string, unknown>> = { ...SHOT_FILES, 'server/content/build/shots.json': shotsUsage(SHOT_CHAPTERS) };
+
+/**
+ * Shots §4.1 (lane SH3c): `cafe` as a src shot (`bg.cafe = { src: 'shot/cafe' }`), ally with `surprised` too; free ch1
+ * shows ally at rest and smiling, both spoken, paid ch2 ally surprised. So `bg/cafe`, `sheet/cafe`,
+ * `face/cafe/ally/smile`, `talk/cafe/ally/neutral` and `talk/cafe/ally/smile` are public, `face/cafe/ally/surprised`
+ * paid. The source directory comes from `shotDir` (fixtures/shot/synthetic.ts).
+ */
+const SRC_CATALOG = {
+  ...SHOT_CATALOG,
+  bg: { ...SHOT_CATALOG.bg, cafe: { src: 'shot/cafe' } },
+  chars: { ally: { exprs: { ...SHOT_CATALOG.chars.ally.exprs, surprised: { placeholder: { hue: 280 } } } } },
+};
+const SRC_CHAPTERS: Readonly<Record<'ch1' | 'ch2', ShotChapter>> = {
+  ch1: {
+    shots: { cafe: cafeNeed([['neutral', true], ['smile', true]], 'ch1') },
+    assets: ['bg/cafe', 'face/cafe/ally/smile', 'sheet/cafe', 'talk/cafe/ally/neutral', 'talk/cafe/ally/smile'],
+  },
+  ch2: { shots: { cafe: cafeNeed([['surprised', false]], 'ch2') }, assets: ['bg/cafe', 'face/cafe/ally/surprised', 'sheet/cafe'] },
+};
+const SRC_REPO: Readonly<Record<string, unknown>> = {
+  'assets/catalog.json': SRC_CATALOG,
+  'story/shots.json': SHOT_LIST,
+  'server/content/build/shots.json': shotsUsage(SRC_CHAPTERS),
+};
+/** The src shot's six files. */
+const SRC_FILES = ['bg/cafe', 'face/cafe/ally/smile', 'face/cafe/ally/surprised', 'sheet/cafe', 'talk/cafe/ally/neutral', 'talk/cafe/ally/smile'];
 
 function writeRepo(root: string, files: Readonly<Record<string, unknown>> = {}): void {
   const all: Record<string, unknown> = {
@@ -1008,6 +1297,25 @@ const HALVING_FAKES: Encoders = {
   },
 };
 
+/**
+ * HALVING_FAKES whose bytes depend on the placeholder label's namespace alone, so every image of one namespace encodes
+ * to the same four files (I-0's twin, fix3 I1): `bg/archive` and `bg/cafe` among them.
+ */
+const NAMESPACE_FAKES: Encoders = {
+  ...HALVING_FAKES,
+  encodeImage: async (svg, o) => {
+    const e = await HALVING_FAKES.encodeImage(svg, o);
+    const label = /<text\b[^>]*>([^<]+)<\/text>/.exec(new TextDecoder().decode(svg))?.[1] ?? '(no label)';
+    const ns = label.slice(0, label.indexOf('/'));
+    return {
+      ...e,
+      avif: utf8.encode(`avif ${ns}`),
+      webp: utf8.encode(`webp ${ns}`),
+      half: { avif: utf8.encode(`half avif ${ns}`), webp: utf8.encode(`half webp ${ns}`), w: e.w / 2, h: e.h / 2 },
+    };
+  },
+};
+
 async function runTool(root: string, encoders = FAKE_ENCODERS): Promise<{ code: number; out: string[]; err: string[] }> {
   const out: string[] = [];
   const err: string[] = [];
@@ -1035,6 +1343,74 @@ function decodedChapters(): readonly ChapterListEntry[] {
     throw new Error('invariant: the fixture chapter list decodes');
   }
   return c.value;
+}
+
+/**
+ * Shots §4.1, a src shot's source directory as files: the synthetic shot's rasters as 8-bit RGBA PNGs, its depth map as
+ * a 16-bit greyscale PNG, its shot.json; built once per knob set.
+ */
+const shotDirs = new Map<string, Promise<ReadonlyMap<string, Uint8Array>>>();
+function shotDir(over: Partial<Knobs>): Promise<ReadonlyMap<string, Uint8Array>> {
+  const key = JSON.stringify(over);
+  const known = shotDirs.get(key);
+  if (known !== undefined) {
+    return known;
+  }
+  const made = (async () => {
+    const fx = syntheticShot(over);
+    const files = new Map<string, Uint8Array>();
+    for (const [name, r] of fx.files) {
+      files.set(name, await sharp(r.data, { raw: { width: r.w, height: r.h, channels: 4 } }).png().toBuffer());
+    }
+    const depth = sharp(fx.depth.data, { raw: { width: fx.depth.w, height: fx.depth.h, channels: 1 } });
+    files.set('depth.png', await depth.toColourspace('grey16').png().toBuffer());
+    files.set('shot.json', utf8.encode(JSON.stringify(fx.json)));
+    return files;
+  })();
+  shotDirs.set(key, made);
+  return made;
+}
+
+/** Plants `assets/src/shot/<shot>/`: `files`, each of `over` replacing one (or, null, leaving it out). */
+function plantShot(root: string, files: ReadonlyMap<string, Uint8Array>, over: Readonly<Record<string, Uint8Array | null>> = {}, shot = 'cafe'): void {
+  const all = new Map(files);
+  for (const [name, bytes] of Object.entries(over)) {
+    if (bytes === null) {
+      all.delete(name);
+    } else {
+      all.set(name, bytes);
+    }
+  }
+  for (const [name, bytes] of all) {
+    plant(root, `assets/src/shot/${shot}/${name}`, bytes);
+  }
+}
+
+/** A source directory's shot.json, as an object. */
+function shotJson(files: ReadonlyMap<string, Uint8Array>): Record<string, unknown> {
+  return JSON.parse(new TextDecoder().decode(files.get('shot.json'))) as Record<string, unknown>;
+}
+
+/** The tool wrote nothing: no story-gen, both asset directories empty. */
+function wroteNothing(root: string, what: string): void {
+  expect(existsSync(join(root, 'client', 'src', 'story-gen')), `${what}: story-gen`).toBe(false);
+  expect(listDir(root, 'client/public/assets'), `${what}: public assets`).toEqual([]);
+  expect(listDir(root, 'server/content/assets'), `${what}: gated assets`).toEqual([]);
+}
+
+/** `base`, recording every encode call in `calls`: an image by its placeholder's label, a raster by its id. */
+function recordingEncoders(base: Encoders, calls: string[]): Encoders {
+  return {
+    ...base,
+    encodeImage: (svg, o) => {
+      calls.push(/<text\b[^>]*>([^<]+)<\/text>/.exec(new TextDecoder().decode(svg))?.[1] ?? '(no label)');
+      return base.encodeImage(svg, o);
+    },
+    encodeRaster: (px, o, codec) => {
+      calls.push(o.id);
+      return (base.encodeRaster ?? encodeRaster)(px, o, codec);
+    },
+  };
 }
 
 describe('assets', () => {
@@ -1189,6 +1565,39 @@ describe('assets', () => {
     expect(missing.code).toBe(1);
     expect(missing.err).toContain('assets: assets/catalog.json: missing');
     expect(listDir(repo, 'client/public/assets')).toEqual(['bg-archive-deadbeef.avif']);
+  });
+
+  test("assets: a gated file with a public file's bytes is refused before anything is written", async () => {
+    // Principle 0 at the file level (fix3 I-0): no file planned under server/content/assets has the bytes of one planned
+    // under client/public/assets, or scan-dist's hash arm finds the gated file shipped. The fake encodes by namespace, so
+    // the gated bg/archive's four files equal the public bg/cafe's: each is one line naming its twin, and nothing is
+    // swept or written.
+    writeRepo(repo);
+    const r = await runTool(repo, NAMESPACE_FAKES);
+    const files: ReadonlyArray<readonly [string, 'avif' | 'webp', 'full' | 'half']> = [
+      ['avif bg', 'avif', 'full'],
+      ['webp bg', 'webp', 'full'],
+      ['half avif bg', 'avif', 'half'],
+      ['half webp bg', 'webp', 'half'],
+    ];
+    const twins = files.map(([text, ext, size]) => {
+      const bytes = utf8.encode(text);
+      const [paid, pub] = [assetFileName('bg/archive' as AssetId, bytes, ext, size), assetFileName('bg/cafe' as AssetId, bytes, ext, size)];
+      return `assets: server/content/assets/${paid} has the bytes of client/public/assets/${pub} (principle 0: a gated file is never a public file's copy)`;
+    });
+    expect(r.code, r.err.join('\n')).toBe(1);
+    expect(r.err).toEqual([...twins].sort());
+    wroteNothing(repo, 'a gated copy');
+    // With two public twins the line names the first by path; the later one is planned first, so the sort counts too.
+    const same = new Uint8Array([1, 2, 3, 4]);
+    const plan = new Map<string, Uint8Array>([
+      [`${ASSET_OUT.public}/b-twin.avif`, same],
+      [`${ASSET_OUT.public}/a-twin.avif`, same],
+      [`${ASSET_OUT.paid}/gated.avif`, same],
+    ]);
+    expect(gatedCopies(plan)).toEqual([
+      `${ASSET_OUT.paid}/gated.avif has the bytes of ${ASSET_OUT.public}/a-twin.avif (principle 0: a gated file is never a public file's copy)`,
+    ]);
   });
 
   test('assets: expressions of one character share a canvas', async () => {
@@ -1466,17 +1875,342 @@ describe('assets', () => {
     expect(existsSync(join(repo, 'client', 'src', 'story-gen'))).toBe(false);
   });
 
-  test('assets: a src shot before extraction is refused by name', async () => {
-    // The catalog admits a bg's `src: "shot/<id>"` (shots §4.1); its extraction is SH3c's, so until then the tool names
-    // it and writes nothing rather than encoding something else in its place.
-    writeRepo(repo, { 'assets/catalog.json': { ...REPO_CATALOG, bg: { ...REPO_CATALOG.bg, cafe: { src: 'shot/cafe' } } } });
-    const r = await runTool(repo);
+  test('assets: an expression the catalog dropped is reported, not thrown', async () => {
+    // SH3a review M1: a stale build/shots.json (free ch1 shows ally in frown, which the catalog no longer defines) is an
+    // input problem by name, reported before any layer is built. The shot is not packed, and no "(run the story tool)"
+    // line follows for the files its chapters list: one cause, one message (critique O2).
+    const frowning = { shots: { cafe: cafeNeed([['frown', false]], 'ch1') }, assets: ['bg/cafe', 'face/cafe/ally/frown', 'sheet/cafe'] };
+    writeRepo(repo, { ...SHOT_FILES, 'server/content/build/shots.json': shotsUsage({ ...SHOT_CHAPTERS, ch1: frowning }) });
+    const r = await runTool(repo, HALVING_FAKES);
     expect(r.code).toBe(1);
-    expect(r.err).toEqual(['assets: bg/cafe: src shot/cafe waits for extraction (SH3c)']);
+    expect(r.err).toEqual([
+      'assets: server/content/build/shots.json: ch1 shows ally in frown in cafe, which assets/catalog.json does not define (run the story tool)',
+    ]);
+    expect(r.err.filter((l) => l.includes('invariant'))).toEqual([]);
     expect(existsSync(join(repo, 'client', 'src', 'story-gen'))).toBe(false);
     expect(listDir(repo, 'client/public/assets')).toEqual([]);
     expect(listDir(repo, 'server/content/assets')).toEqual([]);
   });
+
+  test('assets: a src shot without a shot list is refused by name', async () => {
+    // Shots §4.1 (cut D14): a src shot's cast and needs come from story/shots.json and build/shots.json, so a src bg
+    // without a shot list is named and nothing is encoded or written.
+    writeRepo(repo, { 'assets/catalog.json': { ...REPO_CATALOG, bg: { ...REPO_CATALOG.bg, cafe: { src: 'shot/cafe' } } } });
+    const calls: string[] = [];
+    const r = await runTool(repo, recordingEncoders(FAKE_ENCODERS, calls));
+    expect(r.code).toBe(1);
+    expect(r.err).toEqual(["assets: bg/cafe: src shot/cafe needs story/shots.json (a src shot's cast and needs come from the shot list)"]);
+    expect(calls).toEqual([]);
+    wroteNothing(repo, 'no shot list');
+  });
+
+  test('assets: a shot source directory builds its plate, sheet, face and talk files', async () => {
+    // Shots §4.1-4.5 end to end (lane SH3c): the synthetic shot's directory (an 1100 × 2048 original cropped to its
+    // 1080 × 2048 plate at x 10, q 44) is extracted and packed through SH3a's packer, its plate encoded at q 44 and its
+    // alpha files searched from 44 (RULINGS 267), each tiered per file by `tierOf`.
+    const files = await shotDir({ w: 1100, h: 2048, u: 4, crop: [10, 0, 1080, 2048], q: 44 });
+    const json = shotJson(files);
+    writeRepo(repo, SRC_REPO);
+    plantShot(repo, files);
+    const seen = new Map<string, { q: number; search: boolean }>();
+    const chosen = new Map<string, EncodedRaster['q']>();
+    const recording: Encoders = {
+      encodeImage,
+      synthWav,
+      encodeRaster: async (px, o, codec) => {
+        seen.set(o.id, { q: o.q, search: o.search });
+        const e = await encodeRaster(px, o, codec);
+        if (e.ok) {
+          chosen.set(o.id, e.value.q);
+        }
+        return e;
+      },
+    };
+    const r = await runTool(repo, recording);
+    expect(r.code, r.err.join('\n')).toBe(0);
+    // W3: the shot's q reaches every file: the plate's quality, every alpha file's start.
+    expect([...seen.keys()].sort()).toEqual(SRC_FILES);
+    for (const id of SRC_FILES) {
+      expect(seen.get(id), id).toEqual({ q: 44, search: id !== 'bg/cafe' });
+    }
+    // The log names each alpha file whose chosen q differs from the start, per tier.
+    const logged = SRC_FILES.filter((id) => id !== 'bg/cafe').flatMap((id) => {
+      const q = chosen.get(id);
+      const tiers = [q?.full === 44 ? '' : `${q?.full} full`, q?.half === 44 ? '' : `${q?.half} half`].filter((t) => t !== '');
+      return tiers.length === 0 ? [] : [`assets: ${id}: AVIF q ${tiers.join(', ')} (R6 search from q 44)`];
+    });
+    expect(r.out.filter((l) => l.includes(': AVIF q '))).toEqual(logged);
+    // The other five are public; the paid chapter's face file is gated, full and half.
+    const pub = listDir(repo, 'client/public/assets');
+    const paid = listDir(repo, 'server/content/assets');
+    for (const id of SRC_FILES) {
+      const named = (dir: string[]): number => dir.filter((n) => n.startsWith(`${id.replaceAll('/', '-')}-`)).length;
+      expect([named(pub), named(paid)], id).toEqual(id === 'face/cafe/ally/surprised' ? [0, 4] : [4, 0]);
+    }
+    const ch1 = JSON.parse(readRel(repo, 'client/src/story-gen/free/ch1.assets.json')) as { assets: Record<string, RawEntry>; shots: unknown };
+    const ch2 = JSON.parse(readRel(repo, 'server/content/chapters/ch2/assets.json')) as { assets: Record<string, RawEntry>; shots: unknown };
+    expect([ch1.assets['bg/cafe']?.['w'], ch1.assets['bg/cafe']?.['h']]).toEqual([1080, 2048]);
+    // Each file's bytes per tier within SH3b's limits (budget.ts LIMITS; a plate's scaled with its width, `plateLimit`).
+    for (const id of SRC_FILES) {
+      const entry = ch1.assets[id] ?? ch2.assets[id];
+      const kind = id.slice(0, id.indexOf('/')) as 'bg' | 'sheet' | 'face' | 'talk';
+      const w = Number(entry?.['w']);
+      const limit = kind === 'bg' ? { avif: Math.floor((LIMITS.image.bg.avif * w) / 1080), webp: Math.floor((LIMITS.image.bg.webp * w) / 1080) } : LIMITS.image[kind];
+      const bytes = (e: RawEntry | undefined, f: 'avif' | 'webp'): number => Number((e?.[f] as { bytes?: unknown } | undefined)?.bytes);
+      const half = entry?.['half'] as RawEntry | undefined;
+      for (const [tier, e] of [['full', entry], ['half', half]] as const) {
+        expect(bytes(e, 'avif'), `${id} ${tier} AVIF`).toBeLessThanOrEqual(limit.avif);
+        expect(bytes(e, 'webp'), `${id} ${tier} WebP`).toBeLessThanOrEqual(limit.webp);
+      }
+    }
+    // F1 (fix3): the plate, opaque by check, ships no alpha band in any file; every alpha file's AVIF keeps its band.
+    const alphaBand = async (e: RawEntry | undefined, f: 'avif' | 'webp'): Promise<boolean> => {
+      const url = String((e?.[f] as { url?: unknown } | undefined)?.url);
+      return (await sharp(readFileSync(join(repo, ...(urlPath(url) ?? url).split('/')))).metadata()).hasAlpha;
+    };
+    const plate = ch1.assets['bg/cafe'];
+    const plateHalf = plate?.['half'] as RawEntry | undefined;
+    const plateBands = [await alphaBand(plate, 'avif'), await alphaBand(plate, 'webp'), await alphaBand(plateHalf, 'avif'), await alphaBand(plateHalf, 'webp')];
+    expect(plateBands, 'bg/cafe AVIF, WebP, half AVIF, half WebP').toEqual([false, false, false, false]);
+    for (const id of SRC_FILES.filter((x) => x !== 'bg/cafe')) {
+      expect(await alphaBand(ch1.assets[id] ?? ch2.assets[id], 'avif'), `${id}: its AVIF keeps its alpha band`).toBe(true);
+    }
+    // The rigs: the crop-translated focus, the hair from the sheet, the rest blink copied into smile's face file,
+    // surprised's own blink, and every member in one of its chapter's own entries.
+    const rigs = (m: { shots: unknown }): ReadonlyMap<BgId, ShotRig> => {
+      const d = decodeShotRigs(m.shots);
+      expect(d.ok ? [] : d.error).toEqual([]);
+      return d.ok ? d.value : new Map();
+    };
+    const [rig1, rig2] = [rigs(ch1).get('cafe' as BgId), rigs(ch2).get('cafe' as BgId)];
+    const [focus, crop] = [json['focus'] as number[], json['crop'] as number[]];
+    expect(rig1?.focus).toEqual([(focus[0] ?? 0) - (crop[0] ?? 0), (focus[1] ?? 0) - (crop[1] ?? 0)]);
+    expect([rig1?.w, rig1?.h]).toEqual([1080, 2048]);
+    expect(rig1?.cast[0]?.hair.map((h) => h.member.file)).toEqual(['sheet/cafe']);
+    const face = (rig: ShotRig | undefined, x: string): FaceRig['exprs'][ExprId] | undefined => rig?.cast[0]?.face?.exprs[x as ExprId];
+    expect(face(rig1, 'neutral')?.motion.blink.half.file).toBe('sheet/cafe');
+    expect(face(rig1, 'smile')?.motion.blink.half).toMatchObject({ file: 'face/cafe/ally/smile', at: face(rig1, 'neutral')?.motion.blink.half.at });
+    expect(face(rig2, 'surprised')?.motion.blink.half.file).toBe('face/cafe/ally/surprised');
+    expect(face(rig2, 'surprised')?.motion.blink.half.at).not.toEqual(face(rig2, 'neutral')?.motion.blink.half.at);
+    const named = (v: unknown): string[] =>
+      Array.isArray(v)
+        ? v.flatMap(named)
+        : typeof v === 'object' && v !== null
+          ? Object.entries(v).flatMap(([k, x]) => (k === 'file' && typeof x === 'string' ? [x] : named(x)))
+          : [];
+    for (const m of [ch1, ch2]) {
+      expect(named(m.shots).filter((f) => !Object.hasOwn(m.assets, f))).toEqual([]);
+    }
+
+    // R6 is on the tool's path: an encodeRaster that clamps alpha before the real one ships nothing (the tool's own
+    // check against its source px), and a codec whose AVIF loses the feather reaches the search's ceiling. Each run
+    // exits 1 and writes nothing.
+    const again = mkdtempSync(join(tmpdir(), 'assets-'));
+    try {
+      writeRepo(again, SRC_REPO);
+      plantShot(again, files);
+      const clamping = await runTool(again, { encodeImage, synthWav, encodeRaster: (px, o, codec) => encodeRaster(clampAlpha(px), o, codec) });
+      expect(clamping.code).toBe(1);
+      expect(clamping.err.length).toBeGreaterThan(0);
+      expect(clamping.err.filter((l) => !/^assets: sheet\/cafe\b.*\(R6: /.test(l))).toEqual([]);
+      wroteNothing(again, 'clamped before the encoder');
+      const lossy: Codec = { ...SHARP_CODEC, avif: (px, q) => encodeAvif(clampAlpha(px), q) };
+      const ceiling = await runTool(again, { encodeImage, synthWav, encodeRaster: (px, o) => encodeRaster(px, o, lossy) });
+      expect(ceiling.code).toBe(1);
+      const line = /^assets: sheet\/cafe: (full|half): no AVIF q in 44\.\.90 keeps alpha within 8\/255 \(R6: the best, q \d+, is \d+\/255 off at \(\d+, \d+\)\)$/;
+      expect(ceiling.err.map((l) => line.exec(l)?.[1] ?? l)).toEqual(['full', 'half']);
+      wroteNothing(again, 'a codec that clamps alpha');
+    } finally {
+      rmSync(again, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  test('assets: a src plate with an odd width is refused before it is encoded', async () => {
+    // R5 (§4.3) runs on shot.json's crop before any source file is decoded (the odd-side carry, MD1 O1): a 1081-px crop
+    // is one input problem by name, with no encode call and nothing written. Its passing 1080 case is the end-to-end test.
+    writeRepo(repo, SRC_REPO);
+    plant(repo, 'assets/src/shot/cafe/shot.json', JSON.stringify({ crop: [0, 0, 1081, 2048], focus: [540, 614] }));
+    const calls: string[] = [];
+    const r = await runTool(repo, recordingEncoders(FAKE_ENCODERS, calls));
+    expect(r.code).toBe(1);
+    expect(r.err).toEqual(['assets: cafe: plate 1081 × 2048 (R5: 2048 high, an even width in 1080..1440)']);
+    expect(calls).toEqual([]);
+    wroteNothing(repo, 'odd crop');
+  });
+
+  test("assets: a room prop over a cast member's figure is a warning", async () => {
+    // R8 (§4.3, cut D6): a room's props draw above its shot's root, so a prop rect over a cast member's figure mask is
+    // warned about on stdout, and the run still succeeds; the same rect moved off the figure warns about nothing.
+    const files = await shotDir({ w: 1080, h: 2048, u: 4 });
+    const list = { ...SHOT_LIST, shots: SHOT_LIST.shots.map((s) => ({ ...s, frame: 'room' })) };
+    const need = { ...cafeNeed([['neutral', false]], 'ch1'), frame: 'room', room: 'hall' };
+    const world = (rect: readonly number[]): unknown => ({
+      format: 1,
+      items: {},
+      docs: {},
+      puzzles: {},
+      sections: {
+        house: {
+          start: 'hall',
+          bgm: null,
+          rooms: {
+            hall: {
+              bg: 'cafe',
+              title: { id: 'ch1.hall.t001', ru: 'Зал' },
+              onEnter: [],
+              hotspots: [{ id: 'vase', kind: 'object', rect, label: { id: 'ch1.vase.l001', ru: 'Ваза' }, lock: null, then: [], look: null, prop: 'vase' }],
+            },
+          },
+        },
+      },
+    });
+    const usage = shotsUsage({ ch1: { shots: { cafe: need }, assets: ['bg/cafe', 'sheet/cafe'] }, ch2: { shots: {}, assets: [] } });
+    const warnings = async (rect: readonly number[]): Promise<string[]> => {
+      writeRepo(repo, { ...SRC_REPO, 'story/shots.json': list, 'server/content/build/shots.json': usage, 'story/ch1/world.json': world(rect) });
+      plantShot(repo, files);
+      const r = await runTool(repo, FAKE_ENCODERS);
+      expect(r.code, r.err.join('\n')).toBe(0);
+      return r.out.filter((l) => l.startsWith('assets: warning: '));
+    };
+    // The figure mask is the ellipse centred at (540, 1270) with radii 192 and 737 (fixture geometry at u 4).
+    expect(await warnings([500, 1200, 80, 80])).toEqual(["assets: warning: cafe: hall prop rect [500, 1200, 80, 80] covers ally's figure (R8: props draw above the shot root)"]);
+    expect(await warnings([20, 20, 40, 40])).toEqual([]);
+  }, 120_000);
+
+  test('assets: a src shot the tool cannot extract is refused by name and writes nothing', async () => {
+    // Fail closed, one cause one message (cut D14, R9's clauses, critique W1 / O1): each case is refused by name before
+    // anything is encoded, and nothing is written.
+    const base = await shotDir({ w: 1080, h: 2048, u: 4 });
+    const json = shotJson(base);
+    const layers = json['layers'] as Record<string, unknown>;
+    const j = (v: unknown): Uint8Array => utf8.encode(JSON.stringify(v));
+    const castless = { ...SHOT_LIST, shots: SHOT_LIST.shots.map((s) => ({ ...s, cast: [] })) };
+    const castlessNeed = { ...impliedNeed('cafe'), frame: 'close' };
+    const figured = { ...SHOT_LIST, shots: SHOT_LIST.shots.map((s) => ({ ...s, cast: s.cast.map((m) => ({ ...m, figure: true })) })) };
+    const figuredNeed = (faces: ReadonlyArray<readonly [string, boolean]>, ch: string): Record<string, unknown> => ({
+      ...cafeNeed(faces, ch),
+      cast: { ally: { view: 'face', rest: 'neutral', figure: true } },
+    });
+    const transparent = await sharp({ create: { width: 1080, height: 2048, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } }).png().toBuffer();
+    // F1 (fix3): alpha 254 at one px inside the crop is within R1's 2/255, so only the plate's own check refuses it.
+    const plate = syntheticShot({ w: 1080, h: 2048, u: 4 }).files.get('plate.png');
+    const seeThrough = Uint8Array.from(plate?.data ?? []);
+    seeThrough[(100 * 1080 + 540) * 4 + 3] = 254;
+    const translucent = await sharp(seeThrough, { raw: { width: 1080, height: 2048, channels: 4 } }).png().toBuffer();
+    const large = await shotDir({ w: 1080, h: 2048, u: 4, largePlanes: true });
+    // D5 / D12 (triage r1 F2): read by its header before anything is decoded, so a tiny file stands for the whole one.
+    const rgba16 = await sharp({ create: { width: 8, height: 8, channels: 4, background: { r: 10, g: 20, b: 30, alpha: 1 } } }).toColourspace('rgb16').png().toBuffer();
+    const colourDepth = await sharp({ create: { width: 8, height: 8, channels: 3, background: { r: 10, g: 20, b: 30 } } }).png().toBuffer();
+    // R8's world read (triage r1 F3): a room src shot whose chapter world does not decode.
+    const roomList = { ...SHOT_LIST, shots: SHOT_LIST.shots.map((s) => ({ ...s, frame: 'room' })) };
+    const roomNeed = { ...cafeNeed([['neutral', false]], 'ch1'), frame: 'room', room: 'hall' };
+    const cases: ReadonlyArray<{ name: string; repo: Readonly<Record<string, unknown>>; src: Readonly<Record<string, Uint8Array | null>>; err: readonly (string | RegExp)[] }> = [
+      {
+        name: 'ambient',
+        repo: SRC_REPO,
+        src: { 'shot.json': j({ ...json, ambient: [{ kind: 'flicker', mask: 'mask.flicker.0.png' }] }) },
+        err: ["assets: cafe/shot.json: ambient: not supported yet (a src shot's ambient is SH9's; declare none)"],
+      },
+      {
+        name: 'planes without a cast',
+        repo: {
+          ...SRC_REPO,
+          'story/shots.json': castless,
+          'server/content/build/shots.json': shotsUsage({ ch1: { shots: { cafe: castlessNeed }, assets: ['bg/cafe'] }, ch2: { shots: { cafe: castlessNeed }, assets: ['bg/cafe'] } }),
+        },
+        src: { 'shot.json': j({ ...json, layers: { plane_0: { kind: 'plane', char: null, mask: 'mask.plane.0.png', pivot: [540, 1800], depth: 0.9 } } }) },
+        err: ["assets: cafe: a plane layer in a shot without a cast (a cast-less src shot's sheet is not listed yet)"],
+      },
+      {
+        name: 'figure without its layer',
+        repo: {
+          ...SRC_REPO,
+          'story/shots.json': figured,
+          'server/content/build/shots.json': shotsUsage({
+            ch1: { ...SRC_CHAPTERS.ch1, shots: { cafe: figuredNeed([['neutral', true], ['smile', true]], 'ch1') } },
+            ch2: { ...SRC_CHAPTERS.ch2, shots: { cafe: figuredNeed([['surprised', false]], 'ch2') } },
+          }),
+        },
+        src: {},
+        err: ['assets: cafe: ally has figure: true but no figure layer (R9: a hop / bounce member is cut out)'],
+      },
+      {
+        name: 'a layer of no cast member',
+        repo: SRC_REPO,
+        src: { 'shot.json': j({ ...json, layers: { ...layers, hair_bob_0: { kind: 'hair', char: 'bob', mask: 'mask.hair.bob.0.png', pivot: [540, 400], depth: 0.6 } } }) },
+        err: ['assets: cafe/shot.json: layers.hair_bob_0.char: bob is not a cast member of cafe'],
+      },
+      {
+        name: 'a sheet over 2048',
+        repo: SRC_REPO,
+        src: Object.fromEntries([...large].filter(([name]) => name === 'original.png' || name === 'shot.json' || name.startsWith('mask.plane.'))),
+        err: [/^assets: sheet\/cafe does not fit 2048 × 2048 \(layer sizes \d+ × \d+(, \d+ × \d+)*\)$/],
+      },
+      {
+        name: 'an empty mask',
+        repo: SRC_REPO,
+        src: { 'mask.hair.ally.0.png': transparent },
+        err: ['assets: cafe/mask.hair.ally.0.png: empty'],
+      },
+      {
+        name: 'a plate that is not opaque',
+        repo: SRC_REPO,
+        src: { 'plate.png': translucent },
+        err: ['assets: cafe/plate.png: alpha below 255 at 1 px inside the crop, the first at (540, 100) with alpha 254 (a plate is opaque: the base under every face layer, §4.3)'],
+      },
+      {
+        name: 'a src bg no shot shows',
+        repo: { ...SRC_REPO, 'server/content/build/shots.json': shotsUsage({ ch1: { shots: {}, assets: [] }, ch2: { shots: {}, assets: [] } }) },
+        src: {},
+        err: ['assets: bg/cafe: src shot/cafe is used, but server/content/build/shots.json shows no shot of it (run the story tool)'],
+      },
+      {
+        name: 'a 16-bit source file',
+        repo: SRC_REPO,
+        src: { 'original.png': rgba16 },
+        err: ['assets: cafe/original.png: png, ushort, 4 channels, not an 8-bit PNG (D5)'],
+      },
+      {
+        name: 'a colour depth map',
+        repo: SRC_REPO,
+        src: { 'depth.png': colourDepth },
+        err: ['assets: cafe/depth.png: png, uchar, 3 channels, not an 8- or 16-bit greyscale PNG (D12)'],
+      },
+      {
+        name: 'a world that does not decode',
+        repo: {
+          ...SRC_REPO,
+          'story/shots.json': roomList,
+          'server/content/build/shots.json': shotsUsage({ ch1: { shots: { cafe: roomNeed }, assets: ['bg/cafe', 'sheet/cafe'] }, ch2: { shots: {}, assets: [] } }),
+          'story/ch1/world.json': { format: 2, items: {}, docs: {}, puzzles: {}, sections: {} },
+        },
+        src: {},
+        err: ['assets: story/ch1/world.json: format: 2: the world format is 1'],
+      },
+    ];
+    const errs = new Map<string, readonly string[]>();
+    for (const c of cases) {
+      const root = join(repo, c.name.replaceAll(' ', '-'));
+      writeRepo(root, c.repo);
+      plantShot(root, base, c.src);
+      const calls: string[] = [];
+      const r = await runTool(root, recordingEncoders(FAKE_ENCODERS, calls));
+      errs.set(c.name, r.err);
+      expect(r.code, `${c.name}: ${r.err.join('\n')}`).toBe(1);
+      expect(r.err.length, `${c.name}: ${r.err.join('\n')}`).toBe(c.err.length);
+      c.err.forEach((want, i) => {
+        if (typeof want === 'string') {
+          expect(r.err[i], c.name).toBe(want);
+        } else {
+          expect(r.err[i], c.name).toMatch(want);
+        }
+      });
+      expect(calls, c.name).toEqual([]);
+      wroteNothing(root, c.name);
+    }
+    // The unpackable sheet lists both planes' sizes, each as wide as the plate.
+    expect((errs.get('a sheet over 2048') ?? []).join('\n').match(/1080 × \d+/g)).toHaveLength(2);
+  }, 120_000);
 
   test('assets: a loop prop packs its frames into one atlas with the loop rig in the manifest', async () => {
     // Shots §2.4 (W10): a loop prop's frames are one atlas `prop/<id>`, a plain image entry; its frame boxes and fps
@@ -1536,12 +2270,221 @@ describe('assets', () => {
     expect(loops.ok ? [...loops.value.keys()] : loops.error).toEqual(['fire']);
     const ch1 = readRel(repo, 'client/src/story-gen/free/ch1.assets.json');
     expect(ch1).not.toContain('fire');
-    // The src form waits for extraction like a src bg.
-    writeRepo(repo, { 'assets/catalog.json': { ...catalog, prop: { ...catalog.prop, fire: { loop: { src: 'loop/fire', fps: 6 } } } }, 'server/content/build/usage.json': usage });
-    const src = await runTool(repo, HALVING_FAKES);
-    expect(src.code).toBe(1);
-    expect(src.err).toEqual(['assets: prop/fire: src loop/fire waits for extraction (SH3c)']);
   });
+
+  test('assets: a src loop prop packs its frames into one atlas', async () => {
+    // Shots §2.4 / §4.4 (cut rider R-b, RULINGS 267): `assets/src/loop/fire/0.png .. 5.png`, six 96 × 64 frames with a
+    // feathered alpha, are packed into one atlas `prop/fire` like a placeholder's, encoded from px with its AVIF q
+    // searched from 50, and the manifest's loop rig names each frame's box. R6 holds on the shipped bytes.
+    const catalog = { ...REPO_CATALOG, prop: { ...REPO_CATALOG.prop, fire: { loop: { src: 'loop/fire', fps: 8 } } } };
+    const usage = { chapters: { ...REPO_USAGE.chapters, ch1: { ...REPO_USAGE.chapters.ch1, worldAssets: ['prop/fire'] } } };
+    writeRepo(repo, { 'assets/catalog.json': catalog, 'server/content/build/usage.json': usage });
+    const frames = Array.from({ length: 6 }, (_, i) => loopFrame(i, 96, 64));
+    for (const [i, f] of frames.entries()) {
+      plant(repo, `assets/src/loop/fire/${i}.png`, await sharp(f.data, { raw: { width: f.w, height: f.h, channels: 4 } }).png().toBuffer());
+    }
+    const seen: { id: string; q: number; search: boolean }[] = [];
+    const recording: Encoders = {
+      ...FAKE_ENCODERS,
+      encodeRaster: (px, o, codec) => {
+        seen.push({ id: o.id, q: o.q, search: o.search });
+        return encodeRaster(px, o, codec);
+      },
+    };
+    const r = await runTool(repo, recording);
+    expect(r.code, r.err.join('\n')).toBe(0);
+    expect(seen).toEqual([{ id: 'prop/fire', q: 50, search: true }]);
+    const ch1 = JSON.parse(readRel(repo, 'client/src/story-gen/free/ch1.assets.json')) as { assets: Record<string, RawEntry>; loops: unknown };
+    const loops = decodeLoops(ch1.loops);
+    expect(loops.ok ? [] : loops.error).toEqual([]);
+    const fire = loops.ok ? loops.value.get('fire' as PropId) : undefined;
+    expect(fire?.fps).toBe(8);
+    expect(fire?.frames.map(([, , w, h]) => [w, h])).toEqual(Array.from({ length: 6 }, () => [96, 64]));
+    const entry = ch1.assets['prop/fire'];
+    const [w, h] = [Number(entry?.['w']), Number(entry?.['h'])];
+    expect([w % 2, h % 2, w <= 2048 && h <= 2048]).toEqual([0, 0, true]);
+    // The atlas the tool encoded, rebuilt from the frames at the rig's boxes: its shipped AVIF and WebP, full and half,
+    // keep alpha within 8/255 at every px.
+    const atlas = new Uint8Array(w * h * 4);
+    (fire?.frames ?? []).forEach(([x, y], i) => {
+      const f = frames[i];
+      for (let row = 0; f !== undefined && row < f.h; row++) {
+        atlas.set(f.data.subarray(row * f.w * 4, (row + 1) * f.w * 4), ((y + row) * w + x) * 4);
+      }
+    });
+    const source: Raster = { data: atlas, w, h };
+    const half = entry?.['half'] as RawEntry | undefined;
+    expect(half?.['w']).toBe(w / 2);
+    const shipped = (e: RawEntry | undefined, f: 'avif' | 'webp'): Uint8Array => {
+      const url = String((e?.[f] as { url?: unknown } | undefined)?.url);
+      return readFileSync(join(repo, 'client', 'public', 'assets', url.slice(url.lastIndexOf('/') + 1)));
+    };
+    for (const [tier, e, px] of [['full', entry, source], ['half', half, halfOf(source)]] as const) {
+      for (const f of ['avif', 'webp'] as const) {
+        expect(alphaProblems(`prop/fire ${tier} ${f}`, await decodeRaster(shipped(e, f)), px)).toEqual([]);
+      }
+    }
+  }, 60_000);
+
+  test('assets: a src loop frame over 512 x 512 is refused', async () => {
+    // Shots §4.4 (cut rider R-b, the loop-frame carry): a src loop's frames are 0.png .. <n-1>.png, 1..12 of them, one
+    // size, each side even and at most 512. Each case is one input problem by name: no encode, nothing written.
+    const catalog = { ...REPO_CATALOG, prop: { ...REPO_CATALOG.prop, fire: { loop: { src: 'loop/fire', fps: 8 } } } };
+    const usage = { chapters: { ...REPO_USAGE.chapters, ch1: { ...REPO_USAGE.chapters.ch1, worldAssets: ['prop/fire'] } } };
+    const png = (w: number, h: number): Promise<Buffer> => {
+      const f = loopFrame(0, w, h);
+      return sharp(f.data, { raw: { width: f.w, height: f.h, channels: 4 } }).png().toBuffer();
+    };
+    // `names`: the frames' file names when they are not 0.png .. <n-1>.png (triage r1 F4, F5: no frame, a stray name).
+    const cases: ReadonlyArray<{ name: string; sizes: ReadonlyArray<readonly [number, number]>; names?: readonly string[]; err: string }> = [
+      { name: 'over 512', sizes: [[514, 512], [514, 512]], err: 'assets: prop/fire: assets/src/loop/fire: frames of 514 × 512 (shots §4.4: each side even and at most 512)' },
+      { name: '13 frames', sizes: Array.from({ length: 13 }, () => [96, 64] as const), err: 'assets: prop/fire: assets/src/loop/fire has 13 frames (shots §4.4: 1..12)' },
+      { name: 'two sizes', sizes: [[96, 64], [98, 64]], err: 'assets: prop/fire: assets/src/loop/fire: frames of 96 × 64, 98 × 64 (shots §4.4: one size)' },
+      { name: 'an odd side', sizes: [[95, 64]], err: 'assets: prop/fire: assets/src/loop/fire: frames of 95 × 64 (shots §4.4: each side even and at most 512)' },
+      { name: 'no frame', sizes: [], err: 'assets: prop/fire: assets/src/loop/fire has no frame (shots §4.4: 0.png .. <n-1>.png, 1..12 frames)' },
+      {
+        name: 'a gap',
+        sizes: [[96, 64], [96, 64]],
+        names: ['0.png', '2.png'],
+        err: 'assets: prop/fire: assets/src/loop/fire: 2.png not in 0.png .. 1.png (shots §4.4: frames numbered from 0, contiguous)',
+      },
+      { name: 'no 0.png', sizes: [[96, 64]], names: ['1.png'], err: 'assets: prop/fire: assets/src/loop/fire: 1.png not in 0.png .. 0.png (shots §4.4: frames numbered from 0, contiguous)' },
+    ];
+    for (const c of cases) {
+      const root = join(repo, c.name.replaceAll(' ', '-'));
+      writeRepo(root, { 'assets/catalog.json': catalog, 'server/content/build/usage.json': usage });
+      for (const [i, [w, h]] of c.sizes.entries()) {
+        plant(root, `assets/src/loop/fire/${c.names?.[i] ?? `${i}.png`}`, await png(w, h));
+      }
+      const calls: string[] = [];
+      const r = await runTool(root, recordingEncoders(FAKE_ENCODERS, calls));
+      expect(r.code, c.name).toBe(1);
+      expect(r.err, c.name).toEqual([c.err]);
+      expect(calls, c.name).toEqual([]);
+      wroteNothing(root, c.name);
+    }
+  }, 60_000);
+
+  test("assets: a gated src file is never a public file's copy", async () => {
+    // Principle 0 for every gated src kind (fix3 I1, M2), with a paid chapter that speaks. `booth`'s source directory is
+    // a byte copy of `cafe`'s and `ember`'s frames of `fire`'s, so booth's plate, sheet, face and talk files and ember's
+    // atlas have the px of public files; so has `talk/cafe/ally/surprised`, whose diff misses the rest mouths (its talk
+    // file is the rest's mouths, §2.6). A gated src file carries its own id as EXIF ImageDescription and a public one
+    // none: no gated file is a public file's bytes, scan-dist's hash arm stays silent, every decoded px is its twin's.
+    const files = await shotDir({ w: 1100, h: 2048, u: 4, crop: [10, 0, 1080, 2048], q: 44 });
+    const catalog = {
+      ...SRC_CATALOG,
+      bg: { ...SRC_CATALOG.bg, booth: { src: 'shot/booth' } },
+      prop: { ...SRC_CATALOG.prop, fire: { loop: { src: 'loop/fire', fps: 8 } }, ember: { loop: { src: 'loop/ember', fps: 8 } } },
+    };
+    const list = {
+      locs: [...SHOT_LIST.locs, { id: 'booth', light: null }],
+      shots: [...SHOT_LIST.shots, { id: 'booth', loc: 'booth', frame: 'close', cast: [{ char: 'ally', view: 'face', rest: 'neutral' }] }],
+    };
+    const chapters = {
+      ch1: SRC_CHAPTERS.ch1,
+      ch2: {
+        shots: { booth: shotNeedOf('booth', [['neutral', true], ['smile', false]], 'ch2'), cafe: cafeNeed([['surprised', true]], 'ch2') },
+        assets: ['bg/booth', 'bg/cafe', 'face/booth/ally/smile', 'face/cafe/ally/surprised', 'sheet/booth', 'sheet/cafe', 'talk/booth/ally/neutral', 'talk/cafe/ally/surprised'],
+      },
+    };
+    const usage = { chapters: { ch1: { ...REPO_USAGE.chapters.ch1, worldAssets: ['prop/fire'] }, ch2: { ...REPO_USAGE.chapters.ch2, worldAssets: ['prop/ember'] } } };
+    writeRepo(repo, {
+      'assets/catalog.json': catalog,
+      'story/shots.json': list,
+      'server/content/build/shots.json': shotsUsage(chapters),
+      'server/content/build/usage.json': usage,
+    });
+    plantShot(repo, files);
+    plantShot(repo, files, {}, 'booth');
+    for (const prop of ['fire', 'ember']) {
+      for (let i = 0; i < 6; i++) {
+        const f = loopFrame(i, 96, 64);
+        plant(repo, `assets/src/loop/${prop}/${i}.png`, await sharp(f.data, { raw: { width: f.w, height: f.h, channels: 4 } }).png().toBuffer());
+      }
+    }
+    const seen: string[] = [];
+    const r = await runTool(repo, {
+      encodeImage,
+      synthWav,
+      encodeRaster: (px, o, codec) => {
+        seen.push(o.id);
+        return encodeRaster(px, o, codec);
+      },
+    });
+    expect(r.code, r.err.join('\n')).toBe(0);
+    const gated = ['bg/booth', 'face/booth/ally/smile', 'face/cafe/ally/surprised', 'prop/ember', 'sheet/booth', 'talk/booth/ally/neutral', 'talk/cafe/ally/surprised'];
+    const pub = ['bg/cafe', 'face/cafe/ally/smile', 'prop/fire', 'sheet/cafe', 'talk/cafe/ally/neutral', 'talk/cafe/ally/smile'];
+    expect([...seen].sort(), 'every src file is encoded from px').toEqual([...gated, ...pub].sort());
+    // M2, the split: each gated id's four files gated, fingerprinted, named by the paid manifest alone; each public one's
+    // four files public.
+    const [pubDir, paidDir] = [listDir(repo, 'client/public/assets'), listDir(repo, 'server/content/assets')];
+    const of = (dir: readonly string[], id: string): string[] => dir.filter((n) => n.startsWith(`${id.replaceAll('/', '-')}-`));
+    const fp = decodeAssetFingerprints(JSON.parse(readRel(repo, 'server/content/build/fingerprints.assets.json')));
+    const printed = fp.ok ? fp.value.files : [];
+    type Manifest = { assets: Record<string, RawEntry> };
+    const ch1 = JSON.parse(readRel(repo, 'client/src/story-gen/free/ch1.assets.json')) as Manifest;
+    const ch2 = JSON.parse(readRel(repo, 'server/content/chapters/ch2/assets.json')) as Manifest;
+    /** An entry's four URLs: AVIF, WebP, half AVIF, half WebP. */
+    const urls = (e: RawEntry | undefined): string[] => {
+      const half = e?.['half'] as RawEntry | undefined;
+      return [e?.['avif'], e?.['webp'], half?.['avif'], half?.['webp']].map((f) => String((f as { url?: unknown } | undefined)?.url));
+    };
+    const bytesAt = (url: string): Buffer => readFileSync(join(repo, ...(urlPath(url) ?? url).split('/')));
+    for (const id of gated) {
+      expect([of(paidDir, id).length, of(pubDir, id).length], `${id}: gated, never public`).toEqual([4, 0]);
+      expect(printed.filter((f) => f.asset === id).map((f) => f.name).sort(), `${id}: fingerprinted`).toEqual(of(paidDir, id));
+      expect(urls(ch2.assets[id]).filter((u) => !u.startsWith('/api/assets/')), `${id}: ch2 names it under /api/assets/`).toEqual([]);
+      expect(Object.hasOwn(ch1.assets, id), `${id}: absent from ch1's manifest`).toBe(false);
+    }
+    for (const id of pub) {
+      expect([of(pubDir, id).length, of(paidDir, id).length], `${id}: public, not gated`).toEqual([4, 0]);
+    }
+    // I-0: no gated file has a public file's bytes, so scan-dist's hash arm finds nothing.
+    const read = (dir: string, names: readonly string[]): { path: string; bytes: Buffer }[] =>
+      names.map((name) => ({ path: `${dir}/${name}`, bytes: readFileSync(join(repo, ...dir.split('/'), name)) }));
+    const [pubFiles, paidFiles] = [read('client/public/assets', pubDir), read('server/content/assets', paidDir)];
+    const pubBySha = new Map(pubFiles.map((f) => [sha256Hex(f.bytes), f.path]));
+    const twins = paidFiles.flatMap((f) => {
+      const twin = pubBySha.get(sha256Hex(f.bytes));
+      return twin === undefined ? [] : [`${f.path} has the bytes of ${twin}`];
+    });
+    expect(twins).toEqual([]);
+    expect(scanPaidFiles(pubFiles, printed)).toEqual([]);
+    // The mark: each gated src file carries its own id; no public src file carries EXIF.
+    for (const id of gated) {
+      for (const url of urls(ch2.assets[id])) {
+        const bytes = bytesAt(url);
+        expect((await sharp(bytes).metadata()).exif, `${url}: its mark`).toBeDefined();
+        expect(bytes.includes(id), `${url} holds ${id}`).toBe(true);
+      }
+    }
+    for (const id of pub) {
+      for (const url of urls(ch1.assets[id])) {
+        expect((await sharp(bytesAt(url)).metadata()).exif, `${url}: unmarked`).toBeUndefined();
+      }
+    }
+    // The pixels are untouched: each gated twin decodes to its public twin's px, AVIF and WebP, full and half.
+    const pairs = [
+      ['bg/booth', 'bg/cafe'],
+      ['sheet/booth', 'sheet/cafe'],
+      ['face/booth/ally/smile', 'face/cafe/ally/smile'],
+      ['talk/booth/ally/neutral', 'talk/cafe/ally/neutral'],
+      ['talk/cafe/ally/surprised', 'talk/cafe/ally/neutral'],
+      ['prop/ember', 'prop/fire'],
+    ] as const;
+    const differ: string[] = [];
+    for (const [g, p] of pairs) {
+      const [gu, pu] = [urls(ch2.assets[g]), urls(ch1.assets[p])];
+      for (const [i, url] of gu.entries()) {
+        const [a, b] = [await decodeRaster(bytesAt(url)), await decodeRaster(bytesAt(pu[i] ?? ''))];
+        if (a.w !== b.w || a.h !== b.h || Buffer.compare(a.data, b.data) !== 0) {
+          differ.push(`${url} against ${pu[i] ?? ''}`);
+        }
+      }
+    }
+    expect(differ).toEqual([]);
+  }, 120_000);
 
   test('assets: a chapter manifest carries only the rigs, members and files its chapter uses', async () => {
     // Shots §4.5 (CH D5): each chapter's manifest holds a rig per shot it shows, with only the expressions it shows and
@@ -1637,7 +2580,8 @@ describe('assets', () => {
   test('assets: a look image its chapter does not list is refused', async () => {
     // Shots §4.5 (CH D5): build/shots.json's decoder checks a window's non-shot image by the id grammar alone, never
     // against its chapter's usage, so the planner's own-entries invariant is what keeps a look image out of a manifest
-    // without its entry: free ch1's window hopes for cg/letter, which paid ch2 alone lists, so the image is gated.
+    // without its entry: free ch1's window may warm cg/letter (a `possible` id), which paid ch2 alone lists, so the
+    // image is gated.
     const step = { cur: [], certain: [], certainDist: 0, possible: ['cg/letter'], near: 1, d2: [], d3: [], labels: false };
     const usage = { chapters: { ...REPO_USAGE.chapters, ch2: { ...REPO_USAGE.chapters.ch2, assets: [...REPO_USAGE.chapters.ch2.assets, 'cg/letter'] } } };
     writeRepo(repo, {
