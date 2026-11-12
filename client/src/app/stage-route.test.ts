@@ -259,6 +259,13 @@ test('stage-route: a story step inside a room event passes its room as eventRoom
   expect(windowFor(m, 'ch1.arrival.a001', 'arrival', where('manor', 'attic')).eventRoom).toEqual([]);
 });
 
+test('stage-route: a story step after a leave (no section, the last room kept) gets no eventRoom', () => {
+  const m = looked(LOOK);
+  // A leave changes only the section: ch1's steps after the gate run at { section: null, room: 'hall' }.
+  expect(windowFor(m, 'ch1.arrival.a001', 'arrival', where('manor', 'hall')).eventRoom).toEqual(['prop/lamp']);
+  expect(windowFor(m, 'ch1.arrival.a001', 'arrival', where(null, 'hall'))).toEqual({ ...A001, eventRoom: [] });
+});
+
 test("stage-route: a cut to a room's shot appends its props from world state", () => {
   const props: VisualCommand = { kind: 'props', props: [{ prop: 'lamp' as PropId, rect: [500, 900, 100, 100] }] };
   const roomFor = (bg: BgId): readonly VisualCommand[] | null => (bg === 'hall' ? [props] : null);
