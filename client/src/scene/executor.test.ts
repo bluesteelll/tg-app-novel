@@ -1820,6 +1820,20 @@ test('executor: a restore re-keys a multi-view anchor without a new anchor', asy
   h.ex.destroy();
 });
 
+test('executor: a restore re-keys a multi-view anchor by its patch alone', async () => {
+  // Pre-merge V-I1 (TM13): the anchor's first view is its base, so only a target naming a later view (the patch) tells
+  // "every view" from "the first view only".
+  const h = harness();
+  await h.ex.apply([bg('room', 'cut'), props(['drawer', DRAWER, 'room.drawer'], ['glint', GLINT, 'room.drawer', 'patch'])], NOW);
+  const before = h.anchors('props');
+  h.log.length = 0;
+  await h.ex.restore({ bg: 'room' as BgId, cg: null, chars: [], props: [{ prop: 'glint' as PropId, rect: GLINT }] });
+  expect(h.anchors('props')).toEqual(before);
+  expect(h.log.filter((x) => /^(anchor|drop):/.test(x))).toEqual([]);
+  expect(h.log.filter((x) => /^(create|destroy):/.test(x))).toEqual(['destroy:props:drawer']);
+  h.ex.destroy();
+});
+
 test('executor: one prop at two anchors keeps both', async () => {
   // The logical stage keys a placement by its anchor (`at ?? prop`), so one prop id at two anchors is two placements.
   const h = harness();
