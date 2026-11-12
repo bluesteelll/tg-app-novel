@@ -541,6 +541,110 @@ test('controller: locked reverse exit clears the path', () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------
+// GM4: views (engine plan §6.3 W1): a zoom-in pushes the parent whatever the view's exits, a zoom-out truncates at
+// it, and a view always offers Back, which leaves one view level
+
+/** A room of `bg` that is a zoom view of `of`. */
+const viewRoom = (bg: string, of: string, hotspots: Json[]): Json => ({ ...room(bg, hotspots), view: { of } });
+
+/** a -> p -> v: v is a view of p with no exit back, only a story exit out of the section. */
+function zoom(): WorldPublic {
+  return world({
+    sections: {
+      zoom: {
+        start: 'a',
+        rooms: {
+          a: room('a', [exit('to_p', 'p')]),
+          p: room('p', [exit('to_v', 'v'), exit('to_a', 'a')]),
+          v: viewRoom('v', 'p', [exit('out', { story: 'v_out' })]),
+        },
+      },
+    },
+  });
+}
+
+test('controller: a view without an exit back offers Back', () => {
+  const h = harness(zoom());
+  h.c.enter(sec('zoom'), EMPTY_WORLD_STATE);
+  const calls: boolean[] = [];
+  h.c.onPath((walkable) => calls.push(walkable));
+  h.c.dispatch(tap('a.to_p'));
+  // The zoom-in pushes p although v has no way back to it: Back keeps its target.
+  h.c.dispatch(tap('p.to_v'));
+  expect(calls).toEqual([false, true]);
+  expect(h.c.back()).toBe(true);
+  expect(h.c.state().room).toBe('p');
+  expect(h.c.back()).toBe(true);
+  expect(h.c.state().room).toBe('a');
+  expect(calls).toEqual([false, true, false]);
+  // A story exit out of the view leaves the section in the view's room: no Back target, and Back does nothing.
+  h.c.dispatch(tap('a.to_p'));
+  h.c.dispatch(tap('p.to_v'));
+  h.c.dispatch(tap('v.out'));
+  expect([h.c.state().section, h.c.state().room]).toEqual([null, 'v']);
+  expect(calls).toEqual([false, true, false, true, false]);
+  const before = h.effects.length;
+  expect(h.c.back()).toBe(false);
+  expect(h.effects.length).toBe(before);
+});
+
+test('controller: Back from the parent after leaving a view walks the path, not into the view', () => {
+  const h = harness(zoom());
+  h.c.enter(sec('zoom'), EMPTY_WORLD_STATE);
+  h.c.dispatch(tap('a.to_p'));
+  h.c.dispatch(tap('p.to_v'));
+  // Left by its own action, not by an exit: the zoom-out never pushes the view, though p's exit into it is open.
+  h.c.dispatch({ kind: 'leave-view' });
+  expect(h.c.state().room).toBe('p');
+  expect(h.c.back()).toBe(true);
+  expect(h.c.state().room).toBe('a');
+  expect(h.c.back()).toBe(false);
+});
+
+test('controller: a resume inside a view offers Back', () => {
+  const h = harness(zoom());
+  // A resume admits the section with an empty path (X12: the path is not saved); the view still has a target.
+  h.c.enter(sec('zoom'), at('v', 'zoom'));
+  const calls: boolean[] = [];
+  h.c.onPath((walkable) => calls.push(walkable));
+  expect(calls).toEqual([true]);
+  expect(h.c.back()).toBe(true);
+  expect(h.c.state().room).toBe('p');
+  // In p, Back is no longer offered: the zoom-out did not push the view.
+  expect(calls).toEqual([true, false]);
+  expect(h.c.back()).toBe(false);
+});
+
+/** p -> v1 -> v2: v1 is a view of p, v2 a view of v1; neither has an exit back. */
+function zoomStack(): WorldPublic {
+  return world({
+    sections: {
+      stack: {
+        start: 'p',
+        rooms: {
+          p: room('p', [exit('to_v1', 'v1'), exit('out', { story: 'p_out' })]),
+          v1: viewRoom('v1', 'p', [exit('to_v2', 'v2')]),
+          v2: viewRoom('v2', 'v1', []),
+        },
+      },
+    },
+  });
+}
+
+test('controller: Back in a view of a view leaves one level', () => {
+  const h = harness(zoomStack());
+  h.c.enter(sec('stack'), EMPTY_WORLD_STATE);
+  h.c.dispatch(tap('p.to_v1'));
+  h.c.dispatch(tap('v1.to_v2'));
+  expect(h.c.back()).toBe(true);
+  expect(h.c.state().room).toBe('v1');
+  expect(h.c.back()).toBe(true);
+  expect(h.c.state().room).toBe('p');
+  expect(h.c.back()).toBe(false);
+  expect(h.c.state().room).toBe('p');
+});
+
+// ---------------------------------------------------------------------------------------------------------------
 // C3: the `room:<id>` holders (X13, the cut addendum): releases inside the call, requests once the room is shown
 
 /** A deep copy of the empty state in `room` of `section`, with `extra` on top: a resume point. */
