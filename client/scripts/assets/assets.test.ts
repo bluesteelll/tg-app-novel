@@ -720,6 +720,9 @@ describe('encode', () => {
     expect(Buffer.compare(lo.image.webp, hi.image.webp)).toBe(0);
     expect(Buffer.compare(lo.image.half?.webp ?? new Uint8Array(0), hi.image.half?.webp ?? new Uint8Array(1))).toBe(0);
     await expect(encodeRaster(feathered, { id: 'bg/noise' as AssetId, half: 'any', q: 50, search: false })).rejects.toThrow(/invariant: bg\/noise is opaque/);
+    // The bound is 255, not 0: unlike `feathered` (alpha-0 corners), this raster holds one px at alpha 254 and none at 0.
+    const nearly: Raster = { ...px, data: Uint8Array.from(px.data, (v, i) => (i === (5 * px.w + 7) * 4 + 3 ? 254 : v)) };
+    await expect(encodeRaster(nearly, { id: 'bg/noise' as AssetId, half: 'any', q: 50, search: false })).rejects.toThrow(/invariant: bg\/noise is opaque/);
     // shot.json's q (cut D3): absent reads 50; 40 (the floor) is accepted; 35 and 101 are refused by name.
     const json = (q: unknown): ReturnType<typeof decodeShotSource> =>
       decodeShotSource({ crop: [0, 0, 1080, 2048], focus: [540, 600], ...(q === undefined ? {} : { q }) }, 'cafe' as BgId);
