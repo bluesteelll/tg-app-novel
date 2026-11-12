@@ -254,6 +254,12 @@ round 3's moves did not yet fetch a sheet on tap; I-16.
   decor state, synthesized by SH3a's placeholder path; the world's decor state naming it is GM3b's form, added by the
   lane that holds `story/ch1/world.json` after GM3b, or by this lane if the orchestrator adds the file: QO8)
 - `client/e2e/animation.spec.ts`
+- Changed by RULINGS 254, 256 (as of `a064399`; docs lane `docs-errata-16`, group A): SH3a did not build the
+  placeholder ambient (its critique Q3, carried to this lane's cut). An ambient-only shot's sheet needs SH2's
+  sheet-existence rule widened (`client/scripts/story/shots/usage.ts:90-92`) or a "sheet tier = plate tier" rule in
+  both the asset tool and scan-dist, so this lane, or a small shot-assets lane before it, also holds
+  `client/src/story/catalog.ts`, `client/scripts/assets/shots.ts`, `client/scripts/assets/assets.test.ts` and
+  `client/scripts/story/shots/usage.ts` (the lock count above predates them; the cut states the lock).
 
 **Commits:**
 1. Sources:

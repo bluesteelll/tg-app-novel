@@ -323,6 +323,39 @@ export function roomImages(w: WorldPublic, room: RoomId): readonly PropId[];
   `ui-state:waiting` than `ui-state:waited` (the state batch's open `null` hold: the close-up's fade-out pair before it
   closes in a microtask), after the release the two counts are equal and the drawer shows `drawer_open`, and
   `data-cue-fallbacks` is 0; red on **M-R12a**: the counts are equal at 1.0 s).
+- **Ruled since: RULINGS 245, 246, 248, 258** — as merged (GM3b `ac9cab1`). Where this section and the points below
+  differ, the points hold.
+  - **Re-located** (GM3b cut §1, the citations above by content on `3785ac6`): in `client/src/app/yields.ts`,
+    `roomProps` `:158-169` -> `:194-206`, `act` `:330-347` -> `:601-623`, `takeBatch` `:395-417` -> `:687-703` (the
+    stage check `:409-411` -> `:695`, the crossfade `:416` -> `:702`), its `got` job `:296` -> the effect's `'got'`
+    case `:529-539`; in `client/src/explore/controller.ts`, the interface `:25-50` -> `:28-59`, `ROOM_HOLDERS`
+    `:69-70` -> `:74-76`, the cover mapping `:108-119` -> `hotspotViews` `:107-131` (`cover` at `:114`), `roomShown`
+    `:163-166` / `:172-177` -> `:173-185`, `releaseHolders` `:150-156` -> `:153-167`. GM3b then deleted `takeBatch`,
+    its `got` push and `roomProps`. On `a064399`: the one props builder `propsOf` (`yields.ts:693`, over
+    `placementsOf` `:200`), `act`'s diff and its spliced state job (`:641-655`), `roomBatch` (`:695`), `stateBatch`
+    (`:742`) and `roomFor` (`:1353`); in the controller, `STATE_HOLDERS` (`:96`), `trackedState` (`:127`),
+    `anchorBox` (`:167`), `releaseAll` (`:184`), `releaseHolders` (`:199-230`), `roomShown` (`:241-266`) and the
+    handle's `visualsOf` / `stateHold` (`:481-483`).
+  - **Round 13's keep rule, restated (RULINGS 246 W1):** a move releases every `state:<m>` except the new room's.
+    m stays tracked while it is in the keep set `{room, ...neighbours(room)}`, and `roomShown` asks for its set again
+    after the neighbours' bgs, so the set is live only where it still fits. A room that leaves the keep set is
+    released and untracked, as before. An event's return and a resume are no move (`e.from === e.room`), so a kept
+    set stays live there. `roomShown` asks in this order: `room:<R>`, `state:<R>`, each neighbour's `room:<n>` in exit
+    order, then `state:<n>` for each tracked neighbour (`controller.ts:241-266`). **A neighbour's background outranks a
+    kept room's state pictures.** The close-up branch keeps the current room's set and drops every other; `leave` and
+    `dispose` release both families (RULINGS 245 Q7).
+  - **Round 14's admission-order note, restated:** "a retained neighbour's set is live before `roomShown` requests
+    the current room's" now holds only at an event's return. A move releases the kept sets first, and a close-up drops
+    them. The outcome is unchanged: an image of the current room refused there loads under the state batch's hold at
+    its change.
+  - **What W1 gives up:** "a zoom round trip P -> V -> P re-downloads none of P's" now holds only when P's set fits
+    after V's neighbours. Otherwise P's set is requested again: at V in the background, one request per image whose
+    record ended, or at P's return when refused at V. A priority between preload holders would keep a fitting set with
+    no new request; that is the carried preload-priority lane (RULINGS 152 Q14 (b)), which W1 does not need.
+  - **The tests' mutations** as restated are [12c GM3b](12c-lanes-gm3.md#gm3b-mech-state-visuals)'s; MEASURED at the
+    merge (RULINGS 258): `drawer_open` 6,495 B AVIF / 10,034 B WebP, the study's room-set row 18.8 -> 19.7 MiB. The
+    chapter `transfer` row is 12,000,000 B since SH3b (`client/scripts/budget.ts:178`; RULINGS 154 OQ5, 262), not the
+    6,000,000 B quoted above.
 
 ### 6.5 `flags` (GM5f)
 

@@ -98,6 +98,13 @@ through `oncue` and never through the root listener (W5).
   arch rule `svelte-action` forbids `use:` (entry -219, first line -252 MEASURED). **E2:** `cues/root.ts` keeps its own
   trigger tuple `ROOT_TRIGGERS`, tied to `CUE_TRIGGERS` by a type equality and a runtime pin (`client/src/cues/root.ts:21`;
   explore-ui -190, cue-stage -109, one request fewer). GM3p's frame root attaches the same way.
+  **Ruled: RULINGS 260** — every family root's cue point reaches the bus in stage-host px: Changed by RULINGS 243,
+  265 (as of `a064399`; docs lane `docs-errata-16`, group A): a root's `point` is in its own box's px, so `yields.ts`
+  moves it to the stage host's frame in client px through `inStageHost` (`client/src/app/yields.ts:361-370`) before
+  `bus.emit`. The frame family's cues took it with GM3p (`d478384`; the frame's `oncue`, `:1273-1275`); the explore
+  root's took it with Q69's fix (`99be5c1`; `exploreCue`, `:375-376`). The two differ for a frame root (full-bleed
+  under the viewport's top inset) and for any root while its 300 ms entrance scales it (0.98 -> 1 about its centre):
+  before the fix a tap's ripple in that window could land up to 3.6 x 6.4 design px up-left of the finger.
 - **Gesture input (m13, principle 5).** ExploreView's buttons use `touch-action: manipulation`
   (`ExploreView.svelte:110`), which lets the WebView start a pan and fire `pointercancel` mid-stroke on Android and iOS;
   desktop Playwright and jsdom never show it. Every gesture surface therefore carries `style:touch-action="none"`,

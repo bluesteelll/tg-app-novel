@@ -793,6 +793,24 @@
   the study) while the answer is pending, so the late cue lands on the shown drawer and the test ends on
   `data-cue-fallbacks` 0 (red on the parent and on M-R9k); the product half, a late world cue in another room, is Q65
   ([§8.4 Fallback](08b-interactions-mechanism-presenters.md#84-the-presenter-table-every-cue---default-motion)).
+- **Ruled since: RULINGS 243** — merged `d478384` (C1-C9 with two trunk syncs and the fixes `b042ce6` / `f2d5ae2`; 41
+  vitest names and 4 e2e, tag GM3P). As merged, every puzzle control declares and emits its cue (`puzzles: every
+  control declares its cue`, `client/src/cues/controls.test.ts:141`), and the frame marks follow (`puzzles: every type
+  UI marks its parts`, `client/src/puzzles/ui/puzzle-types.svelte.test.ts:179`). Where this section or §8.1 says
+  otherwise, or says nothing:
+  - `HOST_WAITS` has **nine** rows (`client/src/requests.test.ts:64-74`): GM3s's optional `LazyChunks.cueStage`
+    `import()` is the ninth (RULINGS 233 Q1, §8.1 point 11 as restated).
+  - PuzzleHost and ExploreView share one lazy chunk that holds `client/src/cues/root.ts` alone (RULINGS 233 Q2;
+    explore-ui 9,721 -> 9,805 B br, the identity rule held). It costs one more serial request on a cold first linear
+    puzzle, inside the frame-chunks hold, and none in explore mode.
+  - `inStageHost` (`client/src/app/yields.ts:361-370`, on `a064399`) maps a frame root's cue `point` to the stage
+    host's frame in client px (the frame's `oncue`, `:1273-1275`). Since Q69's fix the explore root's cues go through
+    it too (RULINGS 260, 265).
+  - `requests.test.ts` walks every request start of `client/src` against its declared site (`requests: every request
+    start is a declared site`, 65 rows at the merge; program time about 6 s, under the 30 s STOP).
+  - The hint ladder has one writer, `setLadder` (`yields.ts:867`; `yields: the ladder has one writer`).
+  - The triage's open question became Q68 (a Hint tap while the ladder is busy), folded into GM3b and resolved
+    (`a54162e`).
 
 ### GM3b `mech-state-visuals`
 - **Goal:** §6.4.
@@ -855,3 +873,43 @@
 - **Gates:** check, test, story, build (room-set rows MEASURED; explore-ui vs +0.45, round 13: +0.02 for the keep set
   and `stateHold`; engine vs +0.23 with the one `held` line and `propsFor`, reconcile r1; reconcile r2: `roomFor`,
   +1 line under the rounding), e2e full.
+- **Ruled since: RULINGS 245** — cut r1 Q1: the lock gains `client/src/mechanics/registry.test.ts` (17), test-only:
+  its `MECHANIC_RULES` / `MECHANIC_DATA` literals must name `visual`. Q5: `Yields.roomFor` returns null while no
+  explore controller exists (carried to SH5a, its first caller); Q6: `drawer_open`'s placeholder hue 70; Q7: `leave`
+  and `dispose` release the `state:` family unconditionally; Q8: the executor carry goes forward. No new lint code
+  (Q2).
+- **Ruled since: RULINGS 246** — critique r2 W1: a neighbour's background outranks a kept room's state pictures. The
+  current room's pictures first, then the neighbours' backgrounds, then a kept room's state pictures only if they fit
+  ([§6.4](06-mechanics-as-modules.md#64-visual-state-derived-room-pictures-gm3b-replaces-lfu3s-b-001-fix) as
+  restated). The commit (3) mutations, restated as in GM3b cut §3 C4:
+  - **M-R13h** — old: release `state:<P>` on leaving P even when P is in the keep set (round 12's release, two
+    fetches of each). Under W1 that release is the design. New: `roomShown` asks for no kept room's set (step 4
+    deleted: round 12's release with no re-ask); red on `controller: a round trip to a neighbour finds the room's
+    state images live at the return`.
+  - **M-R13i** — old: the keep set ignored. New: the keep set is ignored for tracking, so a room that left it stays
+    tracked and a later `roomShown` that neighbours it asks for its set; red on `controller: a close-up keeps the
+    room's state images and a move releases them`'s last step. 06's round-13 form (the close-up branch releases
+    `room:*` only) stays covered by that test's close-up assertion.
+  - **M-W1** (new; "kept state first") — phase A releases `state:<m>` only when m leaves the keep set (r2's rule):
+    red on `controller: neighbour preloads stay under the steady cap`'s `a -> b` step (`bg/c` refused under the
+    steady cap) and on the e2e `mechanics: the cellar's background is preloaded in the hall after the study`.
+  - **M-W1b** (new) — a kept set asked for before the neighbours' bgs: red on the hall step of `controller: a room
+    preloads every image it can show before its neighbours` (cut §3 C4 test 3) and on the steady-cap test's `a -> b`
+    step.
+- **Ruled since: RULINGS 248** — critique r3 W1: the drawer e2e's second test waits for exactly the held loads
+  pending and no transition (a wait local to `mechanics.spec.ts`), since `atRest` can never pass while
+  `drawer_open`'s preload is held. O1: the "at the point" ledgers quote R' 2.666 beside 2.306.
+- **Ruled since: RULINGS 250** — implement Q9: the lock gains `client/scripts/story/world.test.ts` (18), test-only,
+  for one expected message: `lint: world/schema red on fixture` lists every module's owned room keys
+  (`client/src/world/decode.ts`), and `visual` owns room `decor`. Its `:950-966` stay byte-identical (RULINGS 245 Q2).
+- **Ruled since: RULINGS 253** — implement Q10: option (a), the measured engine cost of C2-C3 is accepted (+1,029 B br
+  on `2ffa31c` against the +1,030 STOP; `data/visual.ts` +841 in the chunk); the closing engine STOP became +1.25 KB.
+  The engine lever candidate goes to the shelf beside Y: `visual`'s strict decoder reuses `world/decode.ts`'s private
+  key / rect / id checks
+  ([§11.1](11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13)).
+- **Ruled since: RULINGS 258** — merged `ac9cab1` (C1 `4bcb36f` Q68's busy guard, C2-C5, trunk syncs `2ffa31c`,
+  `b813b6d`, `4039400`, five test-only fixes; the 18 lock files; 26 vitest names and 3 e2e, tag GM3B). Engine
+  196,405 B br (+808 against main `efd3811`; sample 3.513, engine R 2.666, n 14), explore-ui 10,448 (+644), entry
+  unchanged; `drawer_open` 6,495 B AVIF / 10,034 B WebP; the study's room-set row 19.7 MiB. Q68 is resolved
+  (`a54162e`). The as-merged API (`visualsOf`, `anchorBox`, `stateHold`, `state:<room>`, `roomFor`, the state batch
+  that replaced `takeBatch`) is §6.4's "Ruled since" bullet.

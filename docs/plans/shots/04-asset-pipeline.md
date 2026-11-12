@@ -108,6 +108,8 @@ VAE round trip, S2 [I1], so an exact pipeline has none outside its mask).
      a far wall at 0, the floor rises to 1 at the bottom edge. A placeholder room's far wall then stands still under
      the room drive (`g0 = 0`) and a prop low in the room moves, which SH8's e2e `animation: a near prop moves against
      the far wall in a room` samples; a flat grid would move nothing (n = 0) or everything (n = 1).
+     **Ruled: RULINGS 254** — the grid is sampled at the lattice's vertices, `y = i/(rows-1)·h` (SH3a; pinned in
+     `client/scripts/assets/shots.test.ts:468`).
 
 ### 4.3 Checks (gate errors unless marked; each seen red by its named mutation in SH3a, §9)
 
