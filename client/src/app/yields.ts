@@ -356,7 +356,7 @@ export function createYields(h: YieldsHost): Yields {
    * The room batch that moved the bar, while it runs (RULINGS 308): its synchronous run flipped `explore.inView` over a
    * shown layer (a zoom into a view, a zoom-out or a leave out of one), so the leave control came or went and the bar
    * re-centred under the finger. A bar tap then goes through `h.tap` and only completes that batch (`barTap`). Cleared
-   * at that batch's end (by its own job only) and on dispose.
+   * at that batch's end, a rejected one included (by its own job only), and on dispose.
    */
   let barShift: RoomJob | null = null;
 
@@ -763,9 +763,14 @@ export function createYields(h: YieldsHost): Yields {
     barShift = explore.layer !== null && explore.inView !== inView ? j : null;
     explore.inView = inView;
     explore.layer = inEvent() ? null : layerComponent; // an onEnter event hides the rooms it moved into
-    await held(visual, audio, { box: j.move.box, atStart });
-    if (barShift === j) {
-      barShift = null;
+    // The flag ends with this batch even when `held` rejects (a throw in the scene's apply), so no later intent
+    // swallows a bar tap.
+    try {
+      await held(visual, audio, { box: j.move.box, atStart });
+    } finally {
+      if (barShift === j) {
+        barShift = null;
+      }
     }
     if (dead) {
       return;

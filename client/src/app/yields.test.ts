@@ -2345,6 +2345,44 @@ test('yields: a bar tap during a resume out of a view opens at once', async () =
   r.yields.dispose();
 });
 
+test('yields: a room batch that throws leaves the bar tap at once', async () => {
+  const r = rig({ world: viewWorld(), late: true });
+  const completions = d7Tap(r);
+  const tap = r.host.tap;
+  const errors: string[] = [];
+  r.host.tap = (fn) =>
+    tap(fn).catch((e: unknown) => {
+      errors.push(String(e));
+    });
+  await inLateHall(r);
+  r.yields.layer.ontap(key('hall.to_study'));
+  await atRest(r);
+  // The zoom into the desk, whose apply throws once (a bug in the scene): the batch that moved the bar rejects.
+  const apply = r.host.apply;
+  let fail = true;
+  r.host.apply = async (visual, audio, started) => {
+    if (fail) {
+      fail = false;
+      throw new Error('apply threw');
+    }
+    return apply(visual, audio, started);
+  };
+  r.yields.layer.ontap(key('study.to_desk'));
+  await atRest(r);
+  expect([roomOf(r), r.explore.inView, errors, completions()]).toEqual(['desk', true, ['Error: apply threw'], 0]);
+  // Another intent in flight (a hint, a puzzle's open) and a bar tap meanwhile: no batch moves the bar now, so the tap
+  // opens at once.
+  let release: () => void = () => {};
+  void r.host.tap(() => new Promise<void>((resolve) => (release = resolve)));
+  await settle();
+  const mark = r.cues.length;
+  r.yields.layer.oninventory();
+  expect([...barState(r, mark), completions()]).toEqual(['desk', true, { kind: 'inventory' }, ['inventory'], ['panel-open:inventory'], 0]);
+  release();
+  await settle();
+  r.yields.dispose();
+});
+
 // ---------------------------------------------------------------------------------------------------------------
 // GM3p: the puzzle cues (engine plan §8.1 "The frame's flags and its ends", point 11; §8.6 `frameShown`)
 
