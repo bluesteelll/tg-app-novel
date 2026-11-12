@@ -26,7 +26,7 @@ import type { Codec, EncodedRaster } from './encode.ts';
 import { alphaProblems, decodeShotSource, extractShot } from './extract.ts';
 import { syntheticShot } from './fixtures/shot/synthetic.ts';
 import type { Knobs } from './fixtures/shot/synthetic.ts';
-import { ASSET_FILE_RE, assetFileName, assetUsage, catalogImage, decodeAssetFingerprints, halfAsk, sha256Hex, tierOf, urlPath } from './manifest.ts';
+import { ASSET_FILE_RE, ASSET_OUT, assetFileName, assetUsage, catalogImage, decodeAssetFingerprints, gatedCopies, halfAsk, sha256Hex, tierOf, urlPath } from './manifest.ts';
 import type { AssetUsage } from './manifest.ts';
 import { CANONICAL_SIZE, imageKind, renderPlaceholder } from './placeholder.ts';
 import type { ImageKind } from './placeholder.ts';
@@ -1588,6 +1588,16 @@ describe('assets', () => {
     expect(r.code, r.err.join('\n')).toBe(1);
     expect(r.err).toEqual([...twins].sort());
     wroteNothing(repo, 'a gated copy');
+    // With two public twins the line names the first by path; the later one is planned first, so the sort counts too.
+    const same = new Uint8Array([1, 2, 3, 4]);
+    const plan = new Map<string, Uint8Array>([
+      [`${ASSET_OUT.public}/b-twin.avif`, same],
+      [`${ASSET_OUT.public}/a-twin.avif`, same],
+      [`${ASSET_OUT.paid}/gated.avif`, same],
+    ]);
+    expect(gatedCopies(plan)).toEqual([
+      `${ASSET_OUT.paid}/gated.avif has the bytes of ${ASSET_OUT.public}/a-twin.avif (principle 0: a gated file is never a public file's copy)`,
+    ]);
   });
 
   test('assets: expressions of one character share a canvas', async () => {
