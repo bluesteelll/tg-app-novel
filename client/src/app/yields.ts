@@ -318,8 +318,8 @@ export const coreCue = (name: CoreCueName, at: HotspotKey | null, item: ItemId |
 const cause = (verb: CauseVerb, at: HotspotKey | null = null, item: ItemId | null = null): Cause => ({ verb, at, item, via: null });
 
 /**
- * The cause of a dispatched action's cues; a use acts at its target with its item (§6.1); a lock puzzle's run acts at its
- * lock, so its cues land on the lock's box.
+ * The cause of a dispatched action's cues; a use acts at its target with its item (§6.1); a combine acts at no hotspot
+ * with the selected item (§6.2); a lock puzzle's run acts at its lock, so its cues land on the lock's box.
  */
 const causeOf = (a: SectionAction, w: WorldPublic | null): Cause =>
   a.kind === 'tap'
@@ -328,7 +328,9 @@ const causeOf = (a: SectionAction, w: WorldPublic | null): Cause =>
       ? cause('insert', a.hotspot, a.item)
       : a.kind === 'use'
         ? cause('use', a.target, a.item)
-        : cause(
+        : a.kind === 'combine'
+          ? cause('combine', null, a.a)
+          : cause(
             a.kind === 'puzzle-ended' && a.outcome === 'solved' ? 'solve' : 'fail',
             'puzzle' in a && w !== null ? (worldIndex(w).puzzleLock.get(a.puzzle) ?? null) : null,
           );
@@ -350,6 +352,13 @@ export function createYields(h: YieldsHost): Yields {
   let panels: readonly PanelKind[] = [];
   /** The async steps the effects of one dispatch asked for, run in order by the intent that dispatched. */
   const jobs: Array<() => Promise<void>> = [];
+  /**
+   * The room batch that moved the bar, while it runs (RULINGS 308): its synchronous run flipped `explore.inView` over a
+   * shown layer (a zoom into a view, a zoom-out or a leave out of one), so the leave control came or went and the bar
+   * re-centred under the finger. A bar tap then goes through `h.tap` and only completes that batch (`barTap`). Cleared
+   * at that batch's end, a rejected one included (by its own job only), and on dispose.
+   */
+  let barShift: RoomJob | null = null;
 
   // -------------------------------------------------------------------------------------------------------------
   // The cue channel (engine plan §8.1): one bus per session; the stage's slot once its chunk is in
@@ -750,9 +759,19 @@ export function createYields(h: YieldsHost): Yields {
     shown = room;
     // §6.3 (GM4u): the bar's leave control shows in a view, by the controller's own rule over its state (`inView`), in
     // the same flush as the layer and the room's hotspots, so it never shows over a room the layer is not showing.
-    explore.inView = world.section !== null && world.room !== null && own(w.mods.view.of, world.room) !== undefined;
+    const inView = world.section !== null && world.room !== null && own(w.mods.view.of, world.room) !== undefined;
+    barShift = explore.layer !== null && explore.inView !== inView ? j : null;
+    explore.inView = inView;
     explore.layer = inEvent() ? null : layerComponent; // an onEnter event hides the rooms it moved into
-    await held(visual, audio, { box: j.move.box, atStart });
+    // The flag ends with this batch even when `held` rejects (a throw in the scene's apply), so no later intent
+    // swallows a bar tap.
+    try {
+      await held(visual, audio, { box: j.move.box, atStart });
+    } finally {
+      if (barShift === j) {
+        barShift = null;
+      }
+    }
     if (dead) {
       return;
     }
@@ -1307,6 +1326,19 @@ export function createYields(h: YieldsHost): Yields {
   // -------------------------------------------------------------------------------------------------------------
   // The explore layer (K48)
 
+  /**
+   * A tap on the bar's Inventory or Reveal (RULINGS 308): while a batch that moved the bar runs (`barShift`), a player
+   * intent (D7), so a tap on a control that slid under the finger completes that batch and opens nothing; otherwise at
+   * once, as every other batch and the rooms at rest have it (a slow room load never swallows the tap).
+   */
+  const barTap = (fn: () => void): void => {
+    if (barShift === null) {
+      fn();
+    } else {
+      void h.tap(async () => fn());
+    }
+  };
+
   const layer: ExploreLayerActions = {
     ontap: (key) => {
       void h.tap(() => dispatchNow({ kind: 'tap', hotspot: key })); // the outcome is on screen
@@ -1315,25 +1347,30 @@ export function createYields(h: YieldsHost): Yields {
       void h.tap(() => dispatchNow({ kind: 'insert', hotspot: key, item })); // the outcome is on screen
     },
     oninventory: () => {
-      explore.panel = { kind: 'inventory' };
-      screens.push({ kind: 'inventory' });
+      barTap(() => {
+        explore.panel = { kind: 'inventory' };
+        screens.push({ kind: 'inventory' });
+      });
     },
     onread: (doc) => {
       explore.panel = { kind: 'doc', doc };
       screens.push({ kind: 'document' });
     },
     onreveal: () => {
-      if (controller !== null) {
-        controller.reveal();
-        // The reveal's own cue (§8.1 point 10): no box, the stage plays it over the stage.
-        bus.emit(cueEvent({ kind: 'ui-state', name: 'reveal', panel: null, item: null }, null));
-      }
+      barTap(() => {
+        if (controller !== null) {
+          controller.reveal();
+          // The reveal's own cue (§8.1 point 10): no box, the stage plays it over the stage.
+          bus.emit(cueEvent({ kind: 'ui-state', name: 'reveal', panel: null, item: null }, null));
+        }
+      });
     },
     onclose: () => {
       screens.back(); // the overlay's own close is a Back press; screensChanged follows it
     },
     onselect: (item) => {
-      // Another item: the old one settles back first; the selected one again: off.
+      // The ribbon calls it with nothing selected (a tap on the selected item is `ondeselect`, on another one
+      // `oncombine`); the settle-back and the `again` check keep it total for any other caller.
       const again = explore.selected === item;
       deselect();
       if (!again) {
@@ -1347,6 +1384,13 @@ export function createYields(h: YieldsHost): Yields {
       void h.tap(async () => {
         deselect();
         await dispatchNow({ kind: 'use', item, target });
+      }); // the outcome is on screen
+    },
+    oncombine: (a, b) => {
+      // One block, as a use: the selection settles back, then the combine's writes and cues (§6.2 "Action").
+      void h.tap(async () => {
+        deselect();
+        await dispatchNow({ kind: 'combine', a, b });
       }); // the outcome is on screen
     },
     onleaveview: back, // the BackButton's own press (§6.3): one level up in a view, Back's walk elsewhere
@@ -1364,6 +1408,7 @@ export function createYields(h: YieldsHost): Yields {
     explore.panel = null;
     explore.selected = null;
     explore.inView = false;
+    barShift = null;
   };
 
   return {

@@ -1,7 +1,8 @@
 <script lang="ts">
-  // The item ribbon (engine plan §6.1 UI, §8.1 point 9; GM3u): one slot per held item, above the bar, while the rooms
-  // are shown. A tap on a slot selects its item, a tap on the selected slot deselects it; a hotspot tapped while an
-  // item is selected uses it there (ExploreView routes it). Presentational: the selection is GameSession's (yields
+  // The item ribbon (engine plan §6.1 UI, §6.2 UI, §8.1 point 9; GM3u, GM5): one slot per held item, above the bar,
+  // while the rooms are shown. A tap on a slot selects its item, a tap on the selected slot deselects it, and a tap on
+  // another slot while one is selected combines the two (the selected item onto the tapped one); a hotspot tapped while
+  // an item is selected uses it there (ExploreView routes it). Presentational: the selection is GameSession's (yields
   // writes it). Its root is the live ribbon the cue stage looks for (`data-cue-ribbon`), each slot its item's target
   // (`data-cue-item`, §8.5 "Cue targets"), keyed by item id, so a slot that leaves is never reused for a neighbour.
   import type { Lang } from '../../i18n/index.ts';
@@ -16,9 +17,10 @@
     selected: ItemId | null;
     onselect: (item: ItemId) => void;
     ondeselect: () => void;
+    oncombine: (selected: ItemId, item: ItemId) => void;
   };
 
-  let { lang, items, selected, onselect, ondeselect }: Props = $props();
+  let { lang, items, selected, onselect, ondeselect, oncombine }: Props = $props();
 </script>
 
 <div class="ribbon" role="group" aria-label={mechT(lang, 'mech.ribbon')} data-cue-ribbon>
@@ -30,7 +32,7 @@
       aria-pressed={selected === item.id}
       data-cue="ribbon-item"
       data-cue-item={item.id}
-      onclick={() => (selected === item.id ? ondeselect() : onselect(item.id))}
+      onclick={() => (selected === item.id ? ondeselect() : selected !== null ? oncombine(selected, item.id) : onselect(item.id))}
     >
       <svg class="glyph" viewBox={GLYPH_VIEWBOX} aria-hidden="true"><path d={GLYPH_PATHS[item.glyph]} /></svg>
     </button>

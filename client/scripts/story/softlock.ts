@@ -43,6 +43,8 @@ function describe(w: KernelWorld, from: WorldState, step: Step): string {
     }
     case 'leave-view':
       return `leave view ${from.room ?? '?'}`;
+    case 'combine':
+      return `combine ${step.a} + ${step.b}`;
     case 'enter-section':
     case 'attempt-failed':
     case 'hint-opened':

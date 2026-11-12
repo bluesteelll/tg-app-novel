@@ -1214,10 +1214,13 @@ test('yields: the explore view is in a view exactly while the room is one', asyn
   // A walked plain room has a Back target, and is no view.
   expect([roomOf(r), r.vm.screens.backVisible, r.explore.inView]).toEqual(['study', true, false]);
   r.yields.layer.ontap(key('study.to_desk'));
+  // The flag is written with the layer, in the batch's synchronous run, before the batch is held (G2).
+  expect([roomOf(r), r.explore.layer !== null, r.explore.inView]).toEqual(['desk', true, true]);
   await settle();
   expect([roomOf(r), r.explore.inView]).toEqual(['desk', true]);
   const inDesk = r.yields.world();
   r.screens.back(); // a zoom-out by `leave-view`
+  expect([roomOf(r), r.explore.layer !== null, r.explore.inView]).toEqual(['study', true, false]);
   await settle();
   expect([roomOf(r), r.explore.inView]).toEqual(['study', false]);
   r.yields.layer.ontap(key('study.to_desk'));
@@ -1960,6 +1963,85 @@ function useWorld(): WorldPublic {
   return { ...toPublic(r.value), mods: r.value.mods, version: '3333333333333333' };
 }
 
+/** The hall gives the shard, the glue and the coin; the shard and the glue make the vase, with a say. */
+function combineWorld(): WorldPublic {
+  const raw = {
+    format: 1,
+    items: {
+      shard: { name: txt('Осколок'), desc: txt('d'), glyph: 'key' },
+      glue: { name: txt('Клей'), desc: txt('d'), glyph: 'key' },
+      coin: { name: txt('Монета'), desc: txt('d'), glyph: 'coin' },
+      vase: { name: txt('Ваза'), desc: txt('d'), glyph: 'key' },
+    },
+    docs: {},
+    puzzles: {},
+    sections: {
+      manor: {
+        start: 'hall',
+        bgm: null,
+        rooms: { hall: { bg: 'hall', title: txt('Hall'), onEnter: [], hotspots: [take('shard', 'shard', null), take('glue', 'glue', null), take('coin', 'coin', null)] } },
+      },
+    },
+    recipes: [{ a: 'shard', b: 'glue', gives: 'vase', say: txt('Ваза склеена.') }],
+  };
+  const r = decodeWorldSource(raw);
+  if (!r.ok) {
+    throw new Error(`invariant: the combine fixture world decodes: ${JSON.stringify(r.error)}`);
+  }
+  return { ...toPublic(r.value), mods: r.value.mods, version: '4444444444444444' };
+}
+
+/** The hall of `combineWorld` with each of `takes` taken. */
+async function holding(r: Rig, ...takes: string[]): Promise<void> {
+  await inHall(r);
+  for (const t of takes) {
+    r.yields.layer.ontap(key(`hall.${t}`));
+    await settle();
+  }
+}
+
+/** The note toasts a look or a gift shows, as [key, message]. */
+const notes = (r: Rig): Array<[string, string]> => r.vm.toasts.flatMap((e): Array<[string, string]> => (e.kind === 'note' && (e.key === 'got' || e.key === 'look') ? [[e.key, e.message]] : []));
+
+test('yields: a ribbon item tapped onto another combines them', async () => {
+  const r = rig({ world: combineWorld() });
+  await holding(r, 'shard', 'glue');
+  const shard = 'shard' as ItemId;
+  r.yields.layer.onselect(shard);
+  const mark = r.cues.length;
+  r.yields.layer.oncombine(shard, 'glue' as ItemId);
+  await settle();
+  // The inputs leave the hands for the product, the selection with them.
+  expect([r.yields.world().held, r.yields.world().used, r.explore.selected]).toEqual([['vase'], ['shard', 'glue'], null]);
+  // Its toasts: the product's name, then the say.
+  expect(notes(r)).toEqual([
+    ['got', 'Ваза'],
+    ['look', 'Ваза склеена.'],
+  ]);
+  // One block: the selection settles, then the writes' fact cues (no module cue: a run has none, 08b).
+  expect(keysOf(r, mark)).toEqual(['ui-state:deselect', 'fact:held:removed', 'fact:held:removed', 'fact:used:added', 'fact:used:added', 'fact:held:added']);
+  r.yields.dispose();
+});
+
+test('yields: a refused combine shakes both items and writes nothing', async () => {
+  const r = rig({ world: combineWorld() });
+  await holding(r, 'shard', 'coin');
+  const before = r.yields.world();
+  const toasts = r.vm.toasts;
+  r.yields.layer.onselect('shard' as ItemId);
+  const mark = r.cues.length;
+  r.yields.layer.oncombine('shard' as ItemId, 'coin' as ItemId);
+  await settle();
+  // Nothing written, no toast; the selection settles, then the selected item shakes and the tapped one with it.
+  expect([r.yields.world(), r.explore.selected, r.vm.toasts]).toEqual([before, null, toasts]);
+  expect(r.cues.slice(mark).map((e) => [keyOf(e.cue), e.cue.kind === 'module' || e.cue.kind === 'ui-state' ? e.cue.item : null, e.box])).toEqual([
+    ['ui-state:deselect', 'shard', null],
+    ['module:combine:refused', 'shard', null],
+    ['module:combine:refused-with', 'coin', null],
+  ]);
+  r.yields.dispose();
+});
+
 /** The ribbon's selection cues the bus carried from the `from`-th cue on: [name, item]. */
 const selections = (r: Rig, from: number): Array<[string, string | null]> =>
   r.cues.slice(from).flatMap((e): Array<[string, string | null]> => (e.cue.kind === 'ui-state' && (e.cue.name === 'select' || e.cue.name === 'deselect') ? [[e.cue.name, e.cue.item]] : []));
@@ -2111,6 +2193,193 @@ test('yields: the screens diff emits panel-open and panel-close', async () => {
   expect(r.vm.screens.overlays).toEqual([]);
   // Every panel cue is the panel's own: no box (the stage finds the panel by its marker).
   expect(r.cues.filter(isPanelCue).map((e) => e.box)).toEqual(Array.from({ length: 9 }, () => null));
+  r.yields.dispose();
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The bar's taps during a batch (RULINGS 307, 308): through `h.tap` only while a batch moves the bar
+
+/**
+ * Game's `tap` as D7 has it (`game.ts`), installed on the rig's host: with an intent in flight a tap completes its
+ * batch (here: releases the held one) and returns it; otherwise it runs `fn` as the intent, from a microtask, until it
+ * settles. Counts the completions.
+ */
+function d7Tap(r: Rig): () => number {
+  let busy: Promise<void> | null = null;
+  let completions = 0;
+  r.host.tap = (fn) => {
+    if (busy !== null) {
+      completions += 1;
+      r.release();
+      return busy;
+    }
+    const p = Promise.resolve().then(fn);
+    const clear = (): void => {
+      if (busy === tracked) {
+        busy = null;
+      }
+    };
+    const tracked: Promise<void> = p.then(clear, clear);
+    busy = tracked;
+    return p;
+  };
+  return () => completions;
+}
+
+/** Releases every held batch, one at a time, until the scene is at rest. */
+async function atRest(r: Rig): Promise<void> {
+  for (let i = 0; i < 6; i += 1) {
+    r.release();
+    await settle();
+  }
+}
+
+/** What the bar's taps left: the room, the flag, the panel, the overlays, the panel and reveal cues since `mark`. */
+const barState = (r: Rig, mark: number): unknown[] => [
+  roomOf(r),
+  r.explore.inView,
+  r.explore.panel,
+  r.vm.screens.overlays.map((s) => s.kind),
+  r.cues.slice(mark).flatMap((e) => (e.cue.kind !== 'ui-state' ? [] : e.cue.name === 'reveal' ? ['ui-state:reveal'] : e.cue.name === 'panel-open' ? [`panel-open:${e.cue.panel}`] : [])),
+];
+
+test('yields: a bar tap during a view change completes it and opens nothing', async () => {
+  const r = rig({ world: viewWorld(), late: true });
+  const completions = d7Tap(r);
+  await inLateHall(r);
+  r.yields.layer.ontap(key('hall.to_study'));
+  await atRest(r);
+  expect([roomOf(r), r.explore.inView, completions()]).toEqual(['study', false, 0]);
+  // The zoom into the desk, held: the leave control has just come under the finger, so Inventory and Reveal only
+  // complete the zoom (D7).
+  let mark = r.cues.length;
+  r.yields.layer.ontap(key('study.to_desk'));
+  await settle();
+  r.yields.layer.oninventory();
+  r.yields.layer.onreveal();
+  await settle();
+  expect([...barState(r, mark), completions()]).toEqual(['desk', true, null, [], [], 2]);
+  // The zoom-out by Back, held: the control has just gone.
+  mark = r.cues.length;
+  r.screens.back();
+  await settle();
+  r.yields.layer.oninventory();
+  await settle();
+  expect([...barState(r, mark), completions()]).toEqual(['study', false, null, [], [], 3]);
+  // At rest the bar opens at once.
+  mark = r.cues.length;
+  r.yields.layer.oninventory();
+  expect([...barState(r, mark), completions()]).toEqual(['study', false, { kind: 'inventory' }, ['inventory'], ['panel-open:inventory'], 3]);
+  r.yields.dispose();
+});
+
+test('yields: a bar tap during an ordinary walk opens at once', async () => {
+  const r = rig({ world: viewWorld(), late: true });
+  const completions = d7Tap(r);
+  await inLateHall(r);
+  // The walk into the study, held on its load: the bar did not move, so a slow load never swallows the tap.
+  const mark = r.cues.length;
+  r.yields.layer.ontap(key('hall.to_study'));
+  await settle();
+  r.yields.layer.oninventory();
+  expect([...barState(r, mark), completions()]).toEqual(['study', false, { kind: 'inventory' }, ['inventory'], ['panel-open:inventory'], 0]);
+  // The batch was still running (waiting on its load, its move not yet played); released, it ends as usual.
+  expect(keysOf(r, mark).filter((k) => k === 'ui-state:waiting' || k === 'ui-state:waited' || k.startsWith('move:'))).toEqual(['ui-state:waiting']);
+  await atRest(r);
+  expect(keysOf(r, mark).filter((k) => k === 'ui-state:waited' || k.startsWith('move:'))).toEqual(['ui-state:waited', 'move:walk']);
+  r.yields.dispose();
+});
+
+// RULINGS 308's "while the layer was already shown": a batch that flips `inView` under a hidden layer had no bar on
+// screen, so nothing slid under the finger and its bar taps open at once, its load-wait included.
+
+test('yields: a bar tap during a resume into a view opens at once', async () => {
+  const r = rig({ world: viewWorld() });
+  await inHall(r);
+  r.yields.layer.ontap(key('hall.to_study'));
+  await settle();
+  r.yields.layer.ontap(key('study.to_desk'));
+  await settle();
+  const inDesk = r.yields.world();
+  r.yields.dispose();
+  // A fresh session resumes into the desk: its room batch flips `inView` to true with no layer shown before it.
+  const x = rig({ world: viewWorld(), late: true });
+  const completions = d7Tap(x);
+  x.yields.restore(inDesk, null, { kind: 'explore', section: MANOR });
+  let resumed = false;
+  const resuming = x.host.tap(() => x.yields.onYield({ kind: 'explore', section: MANOR })).then(() => {
+    resumed = true;
+  });
+  await settle();
+  const mark = x.cues.length;
+  x.yields.layer.oninventory();
+  expect([...barState(x, mark), completions(), resumed]).toEqual(['desk', true, { kind: 'inventory' }, ['inventory'], ['panel-open:inventory'], 0, false]);
+  await atRest(x);
+  await resuming;
+  x.yields.dispose();
+});
+
+test('yields: a bar tap during a resume out of a view opens at once', async () => {
+  const r = rig({ world: viewWorld(), late: true });
+  const completions = d7Tap(r);
+  await inLateHall(r);
+  r.yields.layer.ontap(key('hall.to_study'));
+  await atRest(r);
+  const inStudy = r.yields.world();
+  r.yields.layer.ontap(key('study.to_desk'));
+  await atRest(r);
+  expect([roomOf(r), r.explore.inView, completions()]).toEqual(['desk', true, 0]);
+  // A live-session resume (a return to a save) into the study: `restore` hides the layer and keeps `inView` true, so
+  // the resume's room batch flips it to false under a hidden layer.
+  r.yields.restore(inStudy, null, { kind: 'explore', section: MANOR });
+  let resumed = false;
+  const resuming = r.host.tap(() => r.yields.onYield({ kind: 'explore', section: MANOR })).then(() => {
+    resumed = true;
+  });
+  await settle();
+  const mark = r.cues.length;
+  r.yields.layer.oninventory();
+  expect([...barState(r, mark), completions(), resumed]).toEqual(['study', false, { kind: 'inventory' }, ['inventory'], ['panel-open:inventory'], 0, false]);
+  await atRest(r);
+  await resuming;
+  r.yields.dispose();
+});
+
+test('yields: a room batch that throws leaves the bar tap at once', async () => {
+  const r = rig({ world: viewWorld(), late: true });
+  const completions = d7Tap(r);
+  const tap = r.host.tap;
+  const errors: string[] = [];
+  r.host.tap = (fn) =>
+    tap(fn).catch((e: unknown) => {
+      errors.push(String(e));
+    });
+  await inLateHall(r);
+  r.yields.layer.ontap(key('hall.to_study'));
+  await atRest(r);
+  // The zoom into the desk, whose apply throws once (a bug in the scene): the batch that moved the bar rejects.
+  const apply = r.host.apply;
+  let fail = true;
+  r.host.apply = async (visual, audio, started) => {
+    if (fail) {
+      fail = false;
+      throw new Error('apply threw');
+    }
+    return apply(visual, audio, started);
+  };
+  r.yields.layer.ontap(key('study.to_desk'));
+  await atRest(r);
+  expect([roomOf(r), r.explore.inView, errors, completions()]).toEqual(['desk', true, ['Error: apply threw'], 0]);
+  // Another intent in flight (a hint, a puzzle's open) and a bar tap meanwhile: no batch moves the bar now, so the tap
+  // opens at once.
+  let release: () => void = () => {};
+  void r.host.tap(() => new Promise<void>((resolve) => (release = resolve)));
+  await settle();
+  const mark = r.cues.length;
+  r.yields.layer.oninventory();
+  expect([...barState(r, mark), completions()]).toEqual(['desk', true, { kind: 'inventory' }, ['inventory'], ['panel-open:inventory'], 0]);
+  release();
+  await settle();
   r.yields.dispose();
 });
 

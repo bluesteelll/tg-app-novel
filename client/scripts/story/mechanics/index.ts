@@ -14,6 +14,7 @@ import type { RoomId, WorldPublicBody, WorldSource } from '../../../src/world/ty
 import type { Finding, Severity, SourceChapter } from '../lint.ts';
 import { SHAPE_LINT } from '../puzzles/shape.ts';
 import { CLUES_LINT } from './clues.ts';
+import { COMBINE_LINT, COMBINE_TEXTS } from './combine.ts';
 import { CONDITIONS_LINT } from './conditions.ts';
 import { CORE_LINT } from './core.ts';
 import { TEXTS_LINT } from './texts.ts';
@@ -56,13 +57,13 @@ export type WorldLint<C extends string> = {
   | { readonly runsFrom: 'story' }
 );
 
-export const MECHANIC_LINTS = [CORE_LINT, CLUES_LINT, SHAPE_LINT, CONDITIONS_LINT, TEXTS_LINT, USE_LINT, VISUAL_LINT, VIEW_LINT] as const satisfies readonly WorldLint<string>[];
+export const MECHANIC_LINTS = [CORE_LINT, CLUES_LINT, SHAPE_LINT, CONDITIONS_LINT, TEXTS_LINT, USE_LINT, VISUAL_LINT, VIEW_LINT, COMBINE_LINT] as const satisfies readonly WorldLint<string>[];
 
 /**
  * Each data module's text walker (engine plan §3.2 "Module texts"), exhaustive over MECHANIC_DATA ids (an id without
  * an entry fails `check`); null: the module owns no text, and `world/text-unwalked` refuses one in its data.
  */
-export const MECHANIC_TEXTS: { readonly [M in (typeof MECHANIC_DATA)[number] as M['id']]: TextWalker<DataOf<M>> | null } = { core: null, use: USE_TEXTS, visual: null, view: null };
+export const MECHANIC_TEXTS: { readonly [M in (typeof MECHANIC_DATA)[number] as M['id']]: TextWalker<DataOf<M>> | null } = { core: null, use: USE_TEXTS, visual: null, view: null, combine: COMBINE_TEXTS };
 
 /** One list of effects a module's data fires in a section, with its room: the story knots it enters, in fire order. */
 export type StoryList = { readonly room: RoomId; readonly knots: readonly KnotName[] };
@@ -75,7 +76,7 @@ export type StoryWalker<D> = (w: WorldPublicBody, d: D, section: SectionId) => r
  * `check`); null: its data enters no knot. graph.ts names each knot an event of its room, so the knot graph, the stage
  * seeds and the shot flow see the knots a section's module data enters, as they see the kernel's `story` effects.
  */
-export const MECHANIC_STORIES: { readonly [M in (typeof MECHANIC_DATA)[number] as M['id']]: StoryWalker<DataOf<M>> | null } = { core: null, use: USE_STORIES, visual: null, view: null };
+export const MECHANIC_STORIES: { readonly [M in (typeof MECHANIC_DATA)[number] as M['id']]: StoryWalker<DataOf<M>> | null } = { core: null, use: USE_STORIES, visual: null, view: null, combine: null };
 
 type CodesOf<L> = L extends { readonly codes: infer C } ? keyof C & string : never;
 /** Every code of every MECHANIC_LINTS entry. */

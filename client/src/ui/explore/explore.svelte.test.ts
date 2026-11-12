@@ -18,7 +18,7 @@ import { LAYER_MOTIONS } from '../../cues/visible.ts';
 import type { Box } from '../../geom/cover.ts';
 import { t } from '../../i18n/index.ts';
 import type { Lang } from '../../i18n/index.ts';
-import type { Cause, FactKind } from '../../mechanics/contract.ts';
+import type { Cause, FactKind, MechanicId } from '../../mechanics/contract.ts';
 import type { DocId, HotspotKey, ItemId } from '../../world/types.ts';
 import { createExploreView, forwardLayer } from '../explore-view.svelte.ts';
 import type {
@@ -95,6 +95,7 @@ function layerProps(over: LayerOver = {}): ExploreLayerProps {
       onselect: over.onselect ?? (() => {}),
       ondeselect: over.ondeselect ?? (() => {}),
       onuse: over.onuse ?? (() => {}),
+      oncombine: over.oncombine ?? (() => {}),
       onleaveview: over.onleaveview ?? (() => {}),
     },
     puzzle: createPuzzleView(),
@@ -200,10 +201,21 @@ test("explore: the view bar's leave control leaves the view", async () => {
     await fireEvent.click(leave);
     expect([onleaveview.mock.calls.length, onreveal.mock.calls.length], lang).toEqual([1, 0]);
     inside.unmount();
-    // Under a sheet the rooms are inert, the leave control with them.
-    const covered = render(ExploreView, layerProps({ lang, inView: true, panel: { kind: 'inventory' } }));
-    expect(covered.container.querySelector('[data-cue="view-leave"]')?.closest('[inert]'), lang).not.toBeNull();
-    covered.unmount();
+    // Under each sheet the rooms are inert, the leave control with them: present (so the inert check is not vacuous on
+    // a missing element, G3), and inside an inert ancestor.
+    const sheets: readonly LayerOver[] = [
+      { panel: { kind: 'inventory' } },
+      { docs: [LETTER], panel: { kind: 'doc', doc: LETTER.id } },
+      { items: [SUN], lock: GATE, panel: { kind: 'lock' } },
+    ];
+    for (const sheet of sheets) {
+      const covered = render(ExploreView, layerProps({ lang, inView: true, ...sheet }));
+      const control = covered.container.querySelector('[data-cue="view-leave"]');
+      const where = `${lang} ${sheet.panel?.kind ?? ''}`;
+      expect(control, where).toBeInstanceOf(HTMLElement);
+      expect(control?.closest('[inert]'), where).not.toBeNull();
+      covered.unmount();
+    }
   }
   // Owner Q15f: a down arrow (the exit glyph turned a quarter, read from the source: happy-dom computes no cascade).
   expect(declarationsFor(exploreViewSource, 'leave-glyph').get('transform')).toBe('rotate(90deg)');
@@ -336,6 +348,9 @@ function recordingLayer(tag: string, calls: unknown[][]): ExploreLayerActions {
     onuse: (item, target) => {
       calls.push([tag, 'onuse', item, target]);
     },
+    oncombine: (a, b) => {
+      calls.push([tag, 'oncombine', a, b]);
+    },
     onleaveview: () => {
       calls.push([tag, 'onleaveview']);
     },
@@ -353,6 +368,7 @@ function callEveryAction(a: ExploreLayerActions): void {
   a.onselect('coin' as ItemId);
   a.ondeselect();
   a.onuse('coin' as ItemId, k('hall.gate'));
+  a.oncombine('coin' as ItemId, 'medal_sun' as ItemId);
   a.onleaveview();
 }
 
@@ -367,6 +383,7 @@ const everyActionOn = (tag: string): unknown[][] => [
   [tag, 'onselect', 'coin'],
   [tag, 'ondeselect'],
   [tag, 'onuse', 'coin', 'hall.gate'],
+  [tag, 'oncombine', 'coin', 'medal_sun'],
   [tag, 'onleaveview'],
 ];
 
@@ -375,7 +392,7 @@ test("explore-view: forwardLayer reaches the current session's layer and nothing
   let current: ExploreLayerActions | undefined = recordingLayer('a', calls);
   const forward = forwardLayer(() => current);
   // One forwarder per action, no more: a lane adding an action edits the forwarder and this list.
-  expect(Object.keys(forward).sort()).toEqual(['onclose', 'ondeselect', 'oninsert', 'oninventory', 'onleaveview', 'onread', 'onreveal', 'onselect', 'ontap', 'onuse']);
+  expect(Object.keys(forward).sort()).toEqual(['onclose', 'oncombine', 'ondeselect', 'oninsert', 'oninventory', 'onleaveview', 'onread', 'onreveal', 'onselect', 'ontap', 'onuse']);
   callEveryAction(forward);
   expect(calls).toEqual(everyActionOn('a'));
   // A later session: the same forwarders reach its layer only (the getter runs at each call, never at creation).
@@ -922,6 +939,25 @@ test('explore: selecting an item then tapping a target dispatches use', async ()
   expect(container.querySelector('[data-cue-ribbon]')).toBeNull();
 });
 
+test('explore: an item tapped onto another dispatches combine', async () => {
+  // §6.2 UI: with an item selected, a tap on another ribbon slot combines the two, the selected one onto the tapped.
+  const onselect = vi.fn<(item: ItemId) => void>();
+  const ondeselect = vi.fn();
+  const oncombine = vi.fn<(a: ItemId, b: ItemId) => void>();
+  const props = layerProps({ items: [COIN, SUN], selected: SUN.id, onselect, ondeselect, oncombine });
+  const { container } = render(ExploreView, props);
+  await fireEvent.click(slotOf(COIN) ?? container);
+  expect(oncombine.mock.calls).toEqual([['medal_sun', 'coin']]);
+  expect(onselect).not.toHaveBeenCalled();
+  // The selected slot again still deselects; with nothing selected a slot still selects.
+  await fireEvent.click(slotOf(SUN) ?? container);
+  expect([ondeselect.mock.calls.length, oncombine.mock.calls.length]).toEqual([1, 1]);
+  props.view.selected = null;
+  flushSync();
+  await fireEvent.click(slotOf(COIN) ?? container);
+  expect([onselect.mock.calls, oncombine.mock.calls.length]).toEqual([[['coin']], 1]);
+});
+
 test('explore: a take pulses the slot it creates and presses the hotspot it removes on its ghost', async () => {
   // 08c's take row: a real click on a take hotspot (the root emits `ui:hotspot`), then the take's writes (the item into
   // the ribbon, the hotspot out of the room) and its `fact:held:added`, (i) in the click's own block and (ii) in the
@@ -1230,6 +1266,9 @@ test('explore: every explore cue target resolves', async () => {
     [{ items: [SUN], panel: { kind: 'inventory' } }, { kind: 'ui-state', name: 'panel-open', panel: 'inventory', item: null }, 'panel', panel('inventory')],
     [{ docs: [LETTER], panel: { kind: 'doc', doc: LETTER.id } }, { kind: 'ui-state', name: 'panel-open', panel: 'document', item: null }, 'panel', panel('document')],
     [{ items: [SUN], lock: GATE, panel: { kind: 'lock' } }, { kind: 'ui-state', name: 'panel-open', panel: 'lock', item: null }, 'panel', panel('lock')],
+    // A refused combine (RULINGS 306): the selected item's slot and the tapped item's slot each shake.
+    [{ items: [COIN, SUN] }, { kind: 'module', module: 'combine' as MechanicId, name: 'refused', at: null, item: COIN.id }, 'ribbon', () => slotOf(COIN)],
+    [{ items: [COIN, SUN] }, { kind: 'module', module: 'combine' as MechanicId, name: 'refused-with', at: null, item: SUN.id }, 'ribbon', () => slotOf(SUN)],
     // Under a panel the ribbon is gone: a slot's cue lands at the designed `edge`, which counts nothing.
     [{ items: [SUN], panel: { kind: 'inventory' } }, { kind: 'ui-state', name: 'select', panel: null, item: SUN.id }, 'ribbon', () => landing(stage, 'edge')],
   ];

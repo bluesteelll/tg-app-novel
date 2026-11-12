@@ -50,8 +50,8 @@ export type ExploreEffect =
   /** GameSession builds the room batch from it. `from`: the room left (a resume, an event return: the room itself; a
    *  section's fresh entry: null); `via`: the exit a walk took, else null. */
   | { kind: 'room'; room: RoomId; sfx: SfxId | null; from: RoomId | null; via: HotspotKey | null; how: Exclude<MoveHow, 'leave'> }
-  /** `at`: the hotspot whose text it is. */
-  | { kind: 'look'; text: WorldText; at: HotspotKey }
+  /** `at`: the hotspot whose text it is (null: no hotspot's, a recipe's `say`). */
+  | { kind: 'look'; text: WorldText; at: HotspotKey | null }
   /** `at`: the take, or the hotspot of the trigger that gave it (null: a room's `onEnter`). */
   | { kind: 'got'; gift: Gift; at: HotspotKey | null }
   /** Open the lock panel. */

@@ -214,6 +214,10 @@ export const CUE_MOTIONS: { readonly [K in Exclude<CueKey, ControlKey>]: MotionS
   // any, is the `look` effect's toast).
   'module:use:refused': row('wobble', 360, 'box', { haptic: 'error', with: [{ preset: 'fly', ms: 480, target: 'ribbon', reduced: 'fade' }] }),
   'module:use:said': row('glint', 420, 'box'),
+  // `combine`'s refusal (08b): both ribbon items shake, one error haptic (RULINGS 306): the selected item's cue carries
+  // it, the tapped item's companion cue none.
+  'module:combine:refused': row('shake', 360, 'ribbon', { haptic: 'error' }),
+  'module:combine:refused-with': row('shake', 360, 'ribbon'),
 };
 
 /** Control keys: a default per trigger kind and overrides for the core controls; a type or module control takes its

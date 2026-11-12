@@ -446,10 +446,10 @@ test("mechanics: the cellar's background is preloaded in the hall after the stud
 
 // ---------------------------------------------------------------------------------------------------------------
 // GM4u (engine plan §6.3): ch1's study zooms into its desk, a view left by the BackButton or the bar's leave control.
-// On committed content the zoom-in loads bg/room on tap and the next Back loads bg/hall on tap (the study preloads 1 of
-// 2 neighbours while the legacy characters are on stage), so every move waits on two rendered signals before any
-// assertion or the next press: the target room's own control shown, then the move's cue played (its batch started, so
-// `ensure` of its images has resolved) and the scene at rest (its transition over).
+// On committed content the zoom-in loads bg/room on tap; bg/hall stays resident under the legacy knot hold
+// `preload:manor_arrive`, so the Back out of the desk loads nothing on tap (RULINGS 304). Every move waits on two
+// rendered signals before any assertion or the next press: the target room's own control shown, then the move's cue
+// played (its batch started, so `ensure` of its images has resolved) and the scene at rest (its transition over).
 
 /** The bar's leave control, shown only in a view. */
 const leave = (page: Page): Locator => page.getByRole('button', { name: t('ru', 'explore.room_back'), exact: true });
