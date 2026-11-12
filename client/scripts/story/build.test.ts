@@ -2205,6 +2205,48 @@ test(
 );
 
 test(
+  "story: a played world crosses its use edge with the world's mods",
+  () => {
+    // (b1) at the call site: the gate's seeded play gets the public world with the decoded `mods` (story.ts), as the
+    // explore controller does. The way out is a zero-slot lock only the statue's `use` rule opens (with the lamp, taken
+    // in the hall; the key stays the drawer's), so every run that reaches `manor_out` takes that edge; without the mods
+    // no run could.
+    const { files } = worldRepo((w) => {
+      objectAt(w, 'items')['lamp'] = { name: { id: 'ch1.lamp.wz02', ru: 'Лампа' }, desc: { id: 'ch1.lamp.wz03', ru: 'Старая масляная лампа.' }, glyph: 'coin' };
+      objectAt(w, 'sections.manor.rooms.hall.hotspots.2')['lock'] = {
+        slots: [],
+        puzzle: null,
+        locked: { id: 'ch1.manor.wz04', ru: 'Дверь на улицу не открывается.' },
+        onOpen: [],
+        onFail: [],
+      };
+      const hotspots = objectAt(w, 'sections.manor.rooms.hall')['hotspots'] as unknown[]; // the fixture's hall hotspots
+      hotspots.push(
+        { id: 'lamp', kind: 'take', rect: [400, 600, 200, 200], label: { id: 'ch1.manor.wz05', ru: 'Лампа' }, gives: { item: 'lamp' }, prop: null, then: [] },
+        {
+          id: 'statue',
+          kind: 'object',
+          rect: [100, 600, 200, 200],
+          label: { id: 'ch1.manor.wz06', ru: 'Статуя' },
+          lock: null,
+          then: [],
+          look: null,
+          prop: null,
+          uses: [{ item: 'lamp', do: [{ unlock: 'hall.out' }] }],
+        },
+      );
+    });
+    withRepo(files, (root) => {
+      const r = runStory(root);
+      expect(r.status, r.stdout + r.stderr).toBe(0);
+      expect(r.stdout).toMatch(/^story: 0 errors, 0 warnings$/m);
+      expect(r.stdout).toMatch(/^play: ch1: 200 runs, knots 3\/3, endings 1\/1 \(seeds 1-200, defaults; ended 200, yielded 0, failed 0; /m);
+    });
+  },
+  CLI_TIMEOUT_MS,
+);
+
+test(
   'story: --fix-ids and --sync-locales cover world texts',
   () => {
     // The hall's title without its ID, so it has no en entry either.
