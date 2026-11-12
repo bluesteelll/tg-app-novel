@@ -866,6 +866,36 @@ test('preload: a refused need evicts resident hope and is admitted', async () =>
   expect(h.registry.stats().bytes).toBe(2 * CU);
 });
 
+test('preload: a refused warm fetch evicts resident hope and is held', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  h.s.want(stage({ need: ['bg/cu_a'], hope: ['bg/wide'] }));
+  await h.settle();
+  await h.visible('bg/cu_b', 'scene:b');
+  // 35.575 MiB live: the street's file (0.477) is refused at STEADY; step 6 (a) evicts the hoped wide to make room.
+  h.s.want(stage({ need: ['bg/cu_a'], warm: ['bg/street'], near: 1, hope: ['bg/wide'] }));
+  await h.settle();
+  expect(['bg/street', 'bg/wide'].map(h.state)).toEqual(['held', 'none']);
+  expect(h.log).toContain('release preload:win:bg/wide');
+});
+
+test('preload: a warm fetch refused over the cap is held after a release', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  await h.visible('bg/cu_a', 'scene:a');
+  await h.visible('bg/cu_b', 'scene:b');
+  await h.visible('bg/wide', 'scene:w');
+  // 35.575 MiB on stage and nothing of step 6 to release: the street's file is deferred, not lost.
+  h.s.want(stage({ need: ['bg/cu_a'], warm: ['bg/street'], near: 1 }));
+  await h.settle();
+  expect(h.state('bg/street')).toBe('none');
+  h.registry.release(asId('bg/cu_b'), 'scene:b');
+  h.s.retry();
+  await h.settle();
+  expect(h.state('bg/street')).toBe('held');
+  expect(h.fetchesOf('bg/street')).toBe(1);
+});
+
 test('preload: a refused need evicts room holders outside the window at any step', async () => {
   const h = harness('auto', { hold: true });
   h.s.setChapter(wm);
