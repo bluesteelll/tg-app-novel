@@ -46,6 +46,12 @@ accent state (`<c>[.<x>].accent.half|closed.png`, `extract.ts:835-849`); an x re
 joint. An expression id is never a face state's name (`half`, `closed`, `accent`, `talk1`, `talk2`): such an
 expression is refused by name (`STATE_NAMES`, `extract.ts:359`, `:888-889`).
 
+**Ruled: RULINGS 264** — the SH3c cut's Q3 / Q4: a `src` shot's non-empty `ambient` is refused by name
+(`decodeShotSource`, `extract.ts:68`, `:109-113`), and so is a plane in a cast-less `src` shot
+(`declarationProblems`, `extract.ts:608-609`; `usage.ts:90-92` lists a sheet only for a cast). Both are D14's
+refusals, carried with SH3a's placeholder-ambient carry to SH9 or a small shot-assets lane before it (§9.10), which
+gains the `src` side: flicker masks, ambient loop frames <= 256 x 256 and <= 8 frames, particles, sway.
+
 **Ruled: RULINGS 267** — `q` is the plate's AVIF quality (both tiers, exactly) and the alpha files' **starting**
 quality: each alpha file's full and half tier (the sheet, each face and talk file, a `src` loop atlas) is searched from
 `q` up, coarse steps of 5 to the first candidate whose decoded alpha passes R6, then the four q below it; the passing

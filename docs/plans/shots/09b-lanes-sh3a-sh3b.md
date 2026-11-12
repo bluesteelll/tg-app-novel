@@ -209,7 +209,9 @@ an independent principle-0 verifier found I1 (a gated talk file byte-identical t
 alpha unmeasured) and M1 (a paid-only expression changing how public rest states are cut); the fix design fix3 ruled
 (a2) the id mark with the guard I-0, F1's refusal with no alpha band, and per-file masking (RULINGS 271, 273; §2.5,
 §4.2 7b, §4.3, §4.4). Merged `5d3013e`: 8 files, all in the lock; 32 new vitest names (tag SH3C; 1678), the refusal
-test the cut replaced retired; main's outputs byte-identical (no `src` entry in the catalog), so no row moved.
+test the cut replaced retired; main's outputs byte-identical (no `src` entry in the catalog), so no row moved. The
+`src` scope stops short of §4.1's ambient: RULINGS 264 accepted the cut's Q3 / Q4, so a `src` shot's ambient and a
+plane in a cast-less `src` shot are refused by name (D14) and carried to SH9 (§9.10).
 
 ### 9.4 SH3b `shot-budget` (client, budget)
 

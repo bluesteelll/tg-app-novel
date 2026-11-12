@@ -110,7 +110,10 @@
   neighbours it shares with R; a wider keep set is not modelled, and GM4's Back-first changes the request order, not
   the keep set. **Characters are out:** the usage carries no stage (on the base the hall keeps 901,432 B with two
   characters on stage, GM4g cut §4.3; the restage removes them, RULINGS 154). A kept `state:` set is asked for after
-  every neighbour bg and the registry never evicts a preload for a preload, so it cannot lower k.
+  every neighbour bg and the registry never evicts a preload for a preload, so on the base it cannot lower k. One path
+  remains (GM4g cut §4.3 (c)): at an event's return (no move, kept sets live) after the live set shrank, a bg refused
+  at the earlier `roomShown` is asked for again behind a kept image and may be refused where it would now fit; carried
+  to GM4 or the preload-priority lane (RULINGS 152 Q14 (b)).
 - **Transition:** a zoom move is a `bg` **crossfade** of `VIEW_FADE_MS` (new constant, 400 ms like `ROOM_FADE_MS`,
   `yields.ts:39`) on today's executor path (`executor.ts:569-578`); the overlay iris from the `via` box is the GM3m
   motion; the scene zoom (`bg-zoom` from the `via` rect) is MR1's (`ScenePending`, §8.5).

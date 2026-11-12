@@ -578,7 +578,7 @@ are resident while its batch loads), and notes how many neighbours preload, a re
 (`neighbourPreloads` :1126: the room arrived from and the neighbours it shares with R live first; no characters;
 a wider keep set is not modelled), from the usage rooms' `neighbourRooms` in exit order
 ([emit.ts:360](../client/scripts/story/emit.ts#L360)); `first-load <ch>` counts the head chapter's public world and
-its en table (RULINGS 172; `firstLoadRows` :1272; ch1 288,371 B, ch3 267,886 B), every JS row unchanged; SH4
+its en table (RULINGS 172; `firstLoadRows` [budget.ts:1272](../client/scripts/budget.ts#L1272); ch1 288,371 B, ch3 267,886 B), every JS row unchanged; SH4
 `768fc9d`, ch4 a shot chapter on the step model (its knot-set rows gone, its image rows the two shots' eight
 files), the engine closure 200,969 B (+4,428; R 2.306), the entry closure 39,164 B, the JS before the first line
 240,133 B, all JS 274,810 B, first-load ch1 292,787 B and ch3 272,302 B; 109 rows, 108 PASS, 1 PENDING.

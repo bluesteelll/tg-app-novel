@@ -699,7 +699,8 @@ fixed:
     `(on tap: <room>, …)` when k < n: how many neighbour rooms' plates and sheets the registry admits as preloads
     after the room's own set, in the worst order the runtime meets (a first entry in exit order, or an arrival, with
     the room arrived from and the neighbours it shares with this room first). It counts no characters on stage. The
-    note is a report, never a FAIL (`client/scripts/budget.ts:1169`, the note `:1126`).
+    note is a report, never a FAIL (`client/scripts/budget.ts:1169`; the note's text `preloadNote` `:1157`, its count
+    `neighbourPreloads` `:1126`).
   - **`first-load <ch>`** (the head of each story). The download before the first line of a fresh start: the JS, CSS,
     html and TWA script, the chapter catalog and the covers, the chapter's story, meta and manifest, its public world
     (a chapter with a world) and its en table (GM4g: the files the first line awaits for an en-UI player), and its first

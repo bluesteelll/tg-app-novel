@@ -65,6 +65,10 @@ This lane then joins `graph.ts`'s order (SH2 -> GM9p -> SH12a).
 - M-SH4f (rev. 5, m1): `sweep` skips the `face:` and `talk:` slots' holders, round 4's state with no named release
   point (red: `executor: a face change releases the previous face and talk files after the transition`).
 
+**Ruled: RULINGS 275** — Q2: the stage-route tests are M-SH4b's and M-SH4e's designated reds; the e2e under each is
+reported as observed, not a designated red (the executor awaits its own takes; SH4's cut predicts M-SH4e's e2e red
+and M-SH4b's green, the ensure hold being on the face file only).
+
 **Gates:** check, test, story, build (engine row MEASURED; E +1.9 KB br, rev. 4: + face files 0.1), e2e full
 (`memory.spec.ts` untouched: ch1 is still legacy).
 
@@ -91,7 +95,8 @@ Before the merge, three lens verifiers (paid content, lifetime, gate honesty) fo
 - 47 new vitest names (tag SH4; 1733) and the e2e `shots: the keeper's face changes in the lamp-room shot` and
   `shots: a reload restores the keeper's face` (104);
 - engine +4,428 B (the R sample 1.527), entry -15 B;
-- ch4's 49 gated files only in `server/content`, behind the entitled asset route;
+- ch4's 33 gated files (its two shots' 32 and `bgm/storm`; 49 gated files in all, ch2's 16 included) only in
+  `server/content`, behind the entitled asset route;
 - ch4's budget rows on the step model; budget 108 PASS, 0 FAIL, 1 PENDING.
 
 **Re-located on `768fc9d`** (SH4's cut §1a on `1b85605`, then this tree; docs lane `docs-errata-17`, group A):
