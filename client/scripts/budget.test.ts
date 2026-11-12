@@ -1843,6 +1843,8 @@ describe('budget assets', () => {
     expect(row).toMatchObject({ status: 'FAIL', unit: 'MiB', valueBytes: plate + (plate + 16 * one) });
     expect(row.valueBytes).toBe(35_251_936);
     expect(row.note).toContain('max(neighbour bg + props, close-up)');
+    // The pair is the largest neighbour, wherever it stands in the exits: the study first and the yard last fail alike.
+    expect(hall(16, ['ch1/manor/study', 'ch1/manor/yard'])).toMatchObject({ status: 'FAIL', unit: 'MiB', valueBytes: 35_251_936 });
     // Control: with 7 props on the study the pair fits.
     expect(hall(7)).toMatchObject({ status: 'PASS', valueBytes: 25_544_752 });
     // A neighbour room usage.json lacks cannot be summed: FAIL, not a smaller PASS.
