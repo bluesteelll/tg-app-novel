@@ -23,7 +23,7 @@ import { assetUsage } from '../assets/manifest.ts';
 import { compileChapter, resolveInclude } from './compile.ts';
 import type { CompiledChapter, ReadInk } from './compile.ts';
 import { decodeLineFingerprints, decodeStoryUsage, paidLeak, planEmit, worldVersion } from './emit.ts';
-import type { LineFingerprints, ServerMeta, ServerStoryIndex, StoryNames, StoryUsage, WorldNeedles } from './emit.ts';
+import type { LineFingerprints, ServerMeta, ServerStoryIndex, StoryNames, StoryRoomUsage, StoryUsage, WorldNeedles } from './emit.ts';
 import { buildGraph, writeOnly } from './graph.ts';
 import type { ChapterGraph, GraphFacts } from './graph.ts';
 import { GLOBALS_PATH, lintSources } from './lint.ts';
@@ -1337,8 +1337,8 @@ test('emit: usage holds world assets and rooms', () => {
   expect(usage.value.chapters[CH1_ENTRY.id]?.worldAssets).toEqual(world);
   expect(usage.value.chapters[CH2_ENTRY.id]).not.toHaveProperty('worldAssets');
   const rooms = {
-    'ch1/manor/hall': { bg: 'bg/hall', props: ['prop/medal_sun'], closeups: [], neighbours: ['bg/study'] },
-    'ch1/manor/study': { bg: 'bg/study', props: ['prop/note'], closeups: ['cg/drawer'], neighbours: ['bg/hall'] },
+    'ch1/manor/hall': { bg: 'bg/hall', props: ['prop/medal_sun'], closeups: [], neighbours: ['bg/study'], neighbourRooms: ['ch1/manor/study'] },
+    'ch1/manor/study': { bg: 'bg/study', props: ['prop/note'], closeups: ['cg/drawer'], neighbours: ['bg/hall'], neighbourRooms: ['ch1/manor/hall'] },
   };
   expect(usage.value.rooms).toEqual(rooms);
   expect(assetUsage(usage.value)).toEqual({
@@ -1351,18 +1351,49 @@ test('emit: usage holds world assets and rooms', () => {
   // A pre-LW3 usage.json still decodes (L5 O7): no world art, no rooms.
   const pre = decodeStoryUsage({ chapters: { ch1: { assets: ['bg/cafe'], knots: {} } } });
   expect(pre.ok && assetUsage(pre.value)).toEqual({ chapters: { ch1: { ink: ['bg/cafe'], world: [] } }, rooms: {} });
-  // A bad room key, a room of a chapter usage.json lacks, a value of the wrong namespace: each refused.
+  // A bad room key, a room of a chapter usage.json lacks, a value of the wrong namespace: each refused. So is a room
+  // without its neighbour rooms (a usage.json written before them: no silent smaller room-set), and a neighbour room
+  // of another chapter or of no room of the file.
   const hall = rooms['ch1/manor/hall'];
+  const lacksNeighbourRooms = Object.fromEntries(Object.entries(hall).filter(([k]) => k !== 'neighbourRooms'));
   const refused: Array<readonly [string, unknown]> = [
     ['rooms.ch1/hall', { 'ch1/hall': hall }],
     ['rooms.ch9/manor/hall', { 'ch9/manor/hall': hall }],
     ['rooms.ch1/manor/hall.props.0', { 'ch1/manor/hall': { ...hall, props: ['bg/hall'] } }],
     ['rooms.ch1/manor/hall.extra', { 'ch1/manor/hall': { ...hall, extra: [] } }],
+    ['rooms.ch1/manor/hall.neighbourRooms: missing', { 'ch1/manor/hall': lacksNeighbourRooms }],
+    ['rooms.ch1/manor/hall.neighbourRooms.0: "ch2/manor/hall" is not a room key of ch1', { 'ch1/manor/hall': { ...hall, neighbourRooms: ['ch2/manor/hall'] } }],
+    ['rooms.ch1/manor/hall.neighbourRooms.0: "ch1/manor/attic" is not a room of usage.json', { 'ch1/manor/hall': { ...hall, neighbourRooms: ['ch1/manor/attic'] } }],
   ];
   for (const [path, bad] of refused) {
     const d = decodeStoryUsage({ ...raw, rooms: bad });
     expect(d.ok ? [] : d.error.join('; '), path).toContain(path);
   }
+});
+
+test('emit: usage neighbour rooms follow the exits in hotspot order', () => {
+  // The rule of the explore controller's `neighbours()` (D9): the distinct rooms R's exits lead to, in hotspot order,
+  // a locked exit included, a story exit and R itself not. Two rooms on one plate stay two rooms (the `room-set` note
+  // admits them one by one), while `neighbours` keeps one bg per plate.
+  const text = (n: number, ru: string): { id: string; ru: string } => ({ id: `ch1.manor.wx${n.toString().padStart(2, '0')}`, ru });
+  const exit = (id: string, x: number, room: string, lock: unknown = null): Record<string, unknown> => ({ id, kind: 'exit', rect: [x, 900, 100, 100], label: text(x / 100, `Дверь ${id}`), to: { room }, lock, sfx: null });
+  const room = (bg: string, n: number): Record<string, unknown> => ({ bg, title: text(n, `Комната ${bg}`), onEnter: [], hotspots: [] });
+  const locked = { slots: [{ accepts: 'key' }], puzzle: null, locked: text(90, 'Чердак заперт.'), onOpen: [], onFail: [] };
+  const usageOf = (w: WorldJson): StoryRoomUsage | undefined => {
+    const { plan } = emitFixture(LIST, [MANOR], new Map([[CH1_ENTRY.id, decodedWorld(w)]]));
+    return plannedUsage(plan).rooms?.['ch1/manor/hall'];
+  };
+  const w = worldSource('ch1', 'cafe');
+  Object.assign(objectAt(w, 'sections.manor.rooms'), { vault: room('study', 80), attic: room('attic', 81) });
+  const hall = objectAt(w, 'sections.manor.rooms.hall');
+  const [key, toStudy, out] = hall['hotspots'] as unknown[]; // the fixture's three hall hotspots
+  hall['hotspots'] = [key, exit('to_vault', 100, 'vault'), toStudy, exit('to_study_again', 200, 'study'), exit('to_attic', 300, 'attic', locked), out];
+  const expected = ['ch1/manor/vault', 'ch1/manor/study', 'ch1/manor/attic'];
+  expect(usageOf(w)?.neighbourRooms).toEqual(expected);
+  expect(usageOf(w)?.neighbours).toEqual(['bg/attic', 'bg/study']);
+  // An exit back into the hall itself is no neighbour.
+  hall['hotspots'] = [key, exit('to_hall', 400, 'hall'), ...(hall['hotspots'] as unknown[]).slice(1)];
+  expect(usageOf(w)?.neighbourRooms).toEqual(expected);
 });
 
 const USAGE = 'server/content/build/usage.json';
