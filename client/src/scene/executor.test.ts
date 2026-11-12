@@ -2274,3 +2274,58 @@ test('executor: members draw back to front across members', async () => {
   expect(s.liveNodes()).toEqual([]);
   expect(s.registry.stats().live).toBe(0);
 });
+
+test('executor: a rebind re-creates a shot root and its drawn face from the cached frames', async () => {
+  // Cut §2.3, pre-merge V-L (RULINGS 289): after a rebuild the root comes back with its rig and its faces (not the
+  // legacy cover placement), every part on the same texture objects its records keep; no load, no release.
+  const h = shotHarness();
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  const files = ['bg/lamp', 'sheet/lamp', 'face/lamp/ally/smile'];
+  const before = h.live('bg');
+  const beforeTex = before.map((x) => x.tex);
+  const beforeBox = before.map(h.worldBox);
+  const loads = files.map(h.loadsOf);
+  const fresh = recordingStage(S390, h.freed);
+  h.ex.rebind(fresh.adapter);
+  const after = fresh.live('bg');
+  expect(after.map((x) => x.key)).toEqual(['lamp', 'face/lamp/ally/smile', 'sheet/lamp']);
+  // The very same texture objects: the plate's record texture and the two cached frames (no new cut, no load).
+  after.forEach((x, i) => expect(x.tex).toBe(beforeTex[i]));
+  expect(after.map(fresh.worldBox)).toEqual(beforeBox);
+  expect(after.map(fresh.worldAlpha)).toEqual([1, 1, 1]);
+  const f = restFraming(LAMP_RIG, S390, 2, false);
+  expect(one(fresh.anchors('bg')).p).toMatchObject({ x: f.x, y: f.y, scale: f.k, alpha: 1 });
+  expect(fresh.liveNodes().filter((x) => x.role === 'node').map((x) => [x.key, x.p.z])).toEqual([['face:ally', 2]]);
+  expect(files.map(h.loadsOf)).toEqual(loads);
+  expect(files.map(h.releasedOf)).toEqual([0, 0, 0]);
+  // From now on the new stage is driven: a face back to its rest drops the group there.
+  await h.ex.apply([face('ally', 'neutral')], { instant: true });
+  expect(fresh.liveNodes().filter((x) => x.role === 'node')).toEqual([]);
+  h.ex.destroy();
+  expect(fresh.liveNodes()).toEqual([]);
+  expect(h.registry.stats().live).toBe(0);
+});
+
+for (const id of ['face/lamp/ally/smile', 'sheet/lamp', 'bg/lamp']) {
+  test(`executor: a reacquire after a failed revive of ${id} redraws the shot's face on a new record`, async () => {
+    // Cut §2.3, pre-merge V-L (RULINGS 289): a part over an ended record leaves the root at once (no sprite over a
+    // freed texture) and is drawn again on the re-taken record; only the ended file loads again.
+    const files = ['face/lamp/ally/smile', 'sheet/lamp', 'bg/lamp'];
+    const h = shotHarness();
+    await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+    await failOnRevive(h, id);
+    h.ex.reacquire();
+    expect(h.live('bg').filter((x) => x.tex !== null && h.freed.has(x.tex)).map((x) => x.key)).toEqual([]);
+    await flush();
+    expect(h.live('bg').map((x) => x.key)).toEqual(['lamp', 'face/lamp/ally/smile', 'sheet/lamp']);
+    expect(h.live('bg').filter((x) => x.tex !== null && h.freed.has(x.tex)).map((x) => x.key)).toEqual([]);
+    expect(partNodes(h)).toEqual(['face:ally']);
+    expect(h.loadsOf(id)).toBe(2);
+    for (const other of files.filter((x) => x !== id)) {
+      expect(h.loadsOf(other), other).toBe(1);
+    }
+    h.ex.destroy();
+    expect(h.liveNodes()).toEqual([]);
+    expect(h.registry.stats().live).toBe(0);
+  });
+}
