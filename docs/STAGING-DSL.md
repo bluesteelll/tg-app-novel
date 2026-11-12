@@ -239,7 +239,7 @@ preload-visible).
 | `bgm` | `bgm:<track>\|stop [fade=N] [vol=N]` | audio | `bgm/<track>` | `bgm` |
 | `sfx` | `sfx:<sfx> [vol=N]` | audio | `sfx/<sfx>` | `sfx` |
 | `wait` | `wait:<ms>` | scene (batch timing) | — | `wait` |
-| `face` | `face:<char> <expr> [ms=N]` | scene | `char/<char>/<expr>` | `face` |
+| `face` | `face:<char> <expr> [ms=N]` | scene | `char/<char>/<expr>`; none on a shot chapter (§8) | `face` |
 | `cam` | `cam:push [to=<char>\|center] [z=N] [ms=N]`, `cam:pull [ms=N]`, `cam:pan to=<char>\|left\|right [ms=N]` | scene (held in the stage state) | — | `cam` |
 | `think` | `think` | GameSession | — | `think` |
 | `anim` | `anim:<char> <motion> [ms=N]` | scene | — | `anim` |
@@ -413,10 +413,15 @@ The archive was colder than I remembered. #id:ch2.archive.c0ld
 - **Syntax:** `face:<char> <expr> [ms=N]`
 - **Arguments:** `<char>` and `<expr>` as for `show`.
 - **Options:** `ms` default `200`, range 0–10000.
-- **Effect:** changes the expression of a character on stage; its slot and z-order stay. On today's sprite stage a
-  `face` is a `show` without `at`: the expression crossfade (new sprite over the old one). A `face` of a character
-  that is not on stage changes nothing. The build names the expression's sprite like a `show`'s (the chapter's
-  manifest and the knot's preload); the drawn faces of shots come with the shots plan (SH2–SH4).
+- **Effect:** changes the expression of a character on stage; its slot and z-order stay. On a legacy chapter's
+  sprite stage a `face` is a `show` without `at`: the expression crossfade (new sprite over the old one), and the
+  build names the expression's sprite like a `show`'s (the chapter's manifest and the knot's preload). A `face` of a
+  character that is not on stage changes nothing. On a shot chapter (§14.1; as built, SH4) a `face` changes that cast
+  member's drawn face in the shot in effect: the new expression's layers fade in over the old ones over `ms`, which
+  retire whole at the fade's end; a face back at its rest fades out to the plate, which shows the rest
+  (`client/src/scene/executor.ts:525-557`). The batch first ensures the shot's face file (its talk file is taken, never
+  awaited), and a face whose sheet or face file could not be had draws the rest face and logs a skip. On a shot chapter the build
+  names no asset for a `face` (§8): its drawn files are the shot pass's (§14.4).
 - **Validation:** `tag/unknown-asset` (character or expression); with a shot list, `shot/char-absent` (the character
   is not in the cast of a shot that may be in effect) and `shot/back-view` (§14).
 - **Typed:** `{ kind: 'face'; char: CharId; expr: ExprId; ms: number | null }` (`null` = the default)
@@ -559,8 +564,10 @@ fixed:
    background, and apply every `show` of the batch instantly; then fade from black (ms/2). With `t=cut`: all instant.
 3. **Visual commands** — `bg`, `show`, `hide`, `face`, `cg` start **together** (one GSAP timeline) and the batch
    waits for the longest one. A `face` applies after the batch's `hide` and `show`: the expression change of a
-   character on stage (a `show` without `at`). A `cam` sets the framing after the batch's `scene` or `bg` returned it
-   to rest; it is held in the stage state, not drawn yet (the shots plan's SH6). `anim` and `fx` reach the scene and
+   character on stage (a `show` without `at`); a `show` of the same character in the batch governs its timing (a
+   `t=cut` show makes it instant, else the show's `ms`), while the state still follows this order, so the `face`'s
+   expression is the one that stays (`client/src/scene/executor.ts:955-961`). A `cam` sets the framing after the
+   batch's `scene` or `bg` returned it to rest; it is held in the stage state, not drawn yet (the shots plan's SH6). `anim` and `fx` reach the scene and
    are not drawn yet (SH8); `think` stays with GameSession (SH7). The shots plan's drawn order is
    [shots §3.1](plans/shots/03-story-dsl.md#3-the-story-dsl): `scene`, `bg`, `face`, `cam`, `cg`, props,
    `anim` / `fx`, `wait`.
@@ -607,7 +614,9 @@ fixed:
   Each name is `[a-z][a-z0-9_]*`. A tag can only name an asset the catalog lists (`tag/unknown-asset`). Writers do
   not edit the catalog; a missing asset is an asset request in the narrative report.
 - **Knot index** — at build time the story tool records, per knot:
-  - every asset its literal tags name;
+  - every asset its literal tags name; on a shot chapter (§14.1) a `face` names none: its drawn files are the shot
+    pass's (`build/shots.json` `assets`, §14.4), which each batch ensures before its line
+    (`client/scripts/story/graph.ts:117-128`; their preload by the step windows is Planned, SH5a);
   - its successor knots: every `-> knot` written inside it. The DSL has no tunnels, and a divert into another knot's
     stitch or labelled gather is `graph/entry-below-top` (§10), so every knot is entered at its top. A `-> knot.stitch`
     inside the same knot is not a successor.
@@ -683,9 +692,18 @@ fixed:
       successors bring new art, open it with a `scene` tag line, or clear a CG (`cg: off`) and characters (`hide`) on
       its opening tag lines.
   - **`room-set <ch>/<section>/<room>`.** Per room of an explore section: the room's plate and its sheet, its props,
-    and the larger of its largest neighbour's plate and sheet and its largest close-up, against the same 32 MiB.
+    and the larger of the transition pair and its largest close-up, against the same 32 MiB. The pair (GM4g) is the
+    largest neighbour room's plate, sheet and props: a room move dips under black, and both rooms' sets are resident
+    while the move's batch loads. Every plate counts its sheet, and an image the room shares with a neighbour is
+    counted in both terms (an upper bound). The row's note ends `preloads <k> of <n> neighbours`, plus
+    `(on tap: <room>, …)` when k < n: how many neighbour rooms' plates and sheets the registry admits as preloads
+    after the room's own set, in the worst order the runtime meets (a first entry in exit order, or an arrival, with
+    the room arrived from and the neighbours it shares with this room first). It counts no characters on stage. The
+    note is a report, never a FAIL (`client/scripts/budget.ts:1169`; the note's text `preloadNote` `:1157`, its count
+    `neighbourPreloads` `:1126`).
   - **`first-load <ch>`** (the head of each story). The download before the first line of a fresh start: the JS, CSS,
-    html and TWA script, the chapter catalog and the covers, the chapter's story, meta and manifest, and its first
+    html and TWA script, the chapter catalog and the covers, the chapter's story, meta and manifest, its public world
+    (a chapter with a world) and its en table (GM4g: the files the first line awaits for an en-UI player), and its first
     images. A legacy chapter counts its first knot's images (full AVIF); a restaged chapter counts its first step's
     files at the half tier (those in effect, certain at the next step or possible at its first knot's entry; talk files
     aside). The limit is 800 KB.

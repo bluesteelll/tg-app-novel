@@ -877,7 +877,9 @@
   its `MECHANIC_RULES` / `MECHANIC_DATA` literals must name `visual`. Q5: `Yields.roomFor` returns null while no
   explore controller exists (carried to SH5a, its first caller); Q6: `drawer_open`'s placeholder hue 70; Q7: `leave`
   and `dispose` release the `state:` family unconditionally; Q8: the executor carry goes forward. No new lint code
-  (Q2).
+  (Q2). Changed by RULINGS 290 (as of `768fc9d`; docs lane `docs-errata-17`, group A): Q8's executor items are
+  built by SH4 (`768fc9d`, rider R3; [§6.4](06-mechanics-as-modules.md#64-visual-state-derived-room-pictures-gm3b-replaces-lfu3s-b-001-fix)); Q2's
+  shared-prop lint stays carried (`world.test.ts`).
 - **Ruled since: RULINGS 246** — critique r2 W1: a neighbour's background outranks a kept room's state pictures. The
   current room's pictures first, then the neighbours' backgrounds, then a kept room's state pictures only if they fit
   ([§6.4](06-mechanics-as-modules.md#64-visual-state-derived-room-pictures-gm3b-replaces-lfu3s-b-001-fix) as

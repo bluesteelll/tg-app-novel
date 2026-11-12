@@ -5,6 +5,10 @@
    Recommendation: add `<ch> world` (and the en table) to the row in **GM4g** (it holds `budget.ts`), red-first on a
    chapter whose world pushes the sum over.
    **Ruled: RULINGS 172** — accepted: GM4g adds `<ch> world` (and the en table) to the first-load row.
+   Changed by RULINGS 284 (as of `768fc9d`; docs lane `docs-errata-17`, group A): built by GM4g (`56cc302`): the
+   row's parts gain `<ch> world` (only when the chapter has a world source) and `<ch> en` (always), so its note reads
+   `... + chapter + [world + ]en + first knot` (`firstLoadRows`, `client/scripts/budget.ts:1266-1318`); ch1 +3,697 B,
+   ch3 +1,322 B (§11).
 2. **GM2a holds `app/game.ts`** for type references and four literals, no behaviour (§5.2). Recommendation: accept
    (RULINGS 120's one-hunk precedent, scaled to a mechanical rename) and launch GM2a before the first A(`game.ts`) lane's
    cut (round 4: rev. 3's MD2; whichever lane `design-shots` or an adopted animation design puts on `game.ts`,

@@ -32,6 +32,12 @@ GM6t (`a064399`; Ledger 2's last planned entry term, RULINGS 269) and two fix la
 and carries the critical path (engine GM4g waits for it, RULINGS 259); next, engine GM4g after SH3c in lane A and
 shots SH4 beside SH3c in lane C after the docs lane `docs-errata-16` (RULINGS 270), two lanes at most (RULINGS 255);
 the rest is planned, in the one order below.
+Changed by RULINGS 271-291 (as of `768fc9d`; docs lane `docs-errata-17`, group B): built since also shots SH3c
+(`5d3013e`) and SH4 (`768fc9d`; the first drawn shots; engine R 2.306, RULINGS 290) and engine GM4g (`56cc302`), each
+after a fix round the orchestrator's pre-merge verifiers asked for (RULINGS 271, 283, 289); the lever Y stays an
+approved design on the shelf (RULINGS 290); engine GM4 runs (lane A, RULINGS 285) and carries the critical path; next,
+engine GM4u after GM4 in lane A and shots SH5a in lane C after the docs lane `docs-errata-17` (RULINGS 291), two lanes
+at most (RULINGS 255, 276); the rest is planned, in the one order below.
 
 - [engine](engine/README.md) — the mechanics engine: module contract, world data, puzzle types, the cue union and bus, lanes GM1a-GM9r.
 - [per-player](per-player/README.md) — per-player codes and labels on the art: the server half, the values store, labels, lanes GM6a-GM6d2.
