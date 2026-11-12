@@ -789,7 +789,6 @@ test('preload: a held-only warm file and a hoped file kept across a swap are fet
   expect([h.fetchesOf('bg/cu_c'), h.fetchesOf('prop/s1')]).toEqual([1, 1]);
 });
 
-// A queued item has no holder yet, so step 1's drop never sees it: only the queue filter takes a leaver out.
 test('preload: a tag released while its items are still queued never fetches them', async () => {
   const h = harness('deferred', { hold: true });
   h.s.setChapter(wm);
@@ -801,6 +800,7 @@ test('preload: a tag released while its items are still queued never fetches the
   expect([h.fetchesOf('prop/s3'), h.fetchesOf('prop/h')]).toEqual([0, 0]);
 });
 
+// A queued item has no holder yet, so step 1's drop never sees it: only the queue filter takes a leaver out.
 test('preload: a window item still queued when the window swaps is never fetched', async () => {
   const h = harness('deferred', { hold: true });
   h.s.setChapter(wm);
@@ -1437,7 +1437,7 @@ test('preload: stats list no room tag whose preload was refused', async () => {
   h.s.setChapter(wm);
   await h.visible('bg/cu_a', 'scene:a');
   await h.visible('bg/cu_b', 'scene:b');
-  // 25.406 MiB: the lobby (16.562) is refused at STEADY; the study's prop (0.1) is held.
+  // 25.406 MiB: the lobby (16.562) is refused at STEADY; the study's prop (0.1) is admitted.
   h.s.preload('room:lobby', [asId('bg/lobby')]);
   h.s.preload('room:study', [asId('prop/s3')]);
   await h.settle();
