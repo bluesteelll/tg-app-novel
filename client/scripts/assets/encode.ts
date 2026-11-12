@@ -206,10 +206,11 @@ export async function encodeImage(input: Uint8Array, o: { trim: boolean; half?: 
 // Rasters (shots §4.4, lane SH3c): a `src` shot's plate and packed files, a `src` loop's atlas
 
 /**
- * What a raster's file carries besides its px (fix3 I1): `mark`, an id written as EXIF ImageDescription, so a gated
- * file's bytes are never a public file's whatever its px (I-0; the decoded px are the unmarked encode's).
+ * How a raster's file is written besides its px: `mark` (fix3 I1), an id written as EXIF ImageDescription, so a gated
+ * file's bytes are never a public file's whatever its px (I-0; the decoded px are the unmarked encode's); `opaque`
+ * (fix3 F1), no alpha band (a plate, opaque by check: its alpha is all 255, so nothing is lost).
  */
-export type CodecOptions = { readonly mark?: string };
+export type CodecOptions = { readonly mark?: string; readonly opaque?: true };
 
 /**
  * What a raster encode runs on: one tier's AVIF at quality q, its WebP, and a decode back to RGBA. Injectable, so the
@@ -223,7 +224,8 @@ export type Codec = {
 
 function rawInput(px: Raster, o: CodecOptions = {}): Sharp {
   const input = sharp(px.data, { raw: { width: px.w, height: px.h, channels: 4 } });
-  return o.mark === undefined ? input : input.withExif({ IFD0: { ImageDescription: o.mark } });
+  const banded = o.opaque === true ? input.removeAlpha() : input;
+  return o.mark === undefined ? banded : banded.withExif({ IFD0: { ImageDescription: o.mark } });
 }
 
 /** sharp's output, checked against the input's size: a raster is never resized. */
@@ -343,7 +345,8 @@ export type EncodedRaster = { readonly image: EncodedImage; readonly q: { readon
 
 /**
  * A raster as AVIF + WebP, never resized or trimmed, with its half pair when the ask is due (`halfRgba` of the px, as
- * `encodeImage`'s). `search: false` (a plate, opaque): AVIF at `q` exactly, both tiers. `search: true` (a file with
+ * `encodeImage`'s). `search: false` (a plate, opaque at every px, else a bug: `extractShot` refuses that plate, fix3
+ * F1): AVIF at `q` exactly, both tiers, and no file has an alpha band. `search: true` (a file with
  * alpha): each tier's AVIF q is `searchAvif`'s from `q`; a tier with no passing candidate up to the ceiling is an error
  * line naming the file, the tier, the best candidate's q and its worst px, and nothing is returned to write. WebP: q80.
  * `id` names the file in those lines. `mark` (fix3 I1): every AVIF candidate and both WebP of both tiers carry `id`
@@ -357,7 +360,14 @@ export async function encodeRaster(
   if (px.w % 2 !== 0 || px.h % 2 !== 0 || px.w > MAX_SIDE || px.h > MAX_SIDE || px.data.length !== px.w * px.h * 4) {
     throw new Error(`invariant: ${o.id} is an even-sided RGBA raster of at most ${MAX_SIDE} px (${px.w}x${px.h}, ${px.data.length} bytes)`);
   }
-  const opts: CodecOptions = o.mark === true ? { mark: o.id } : {};
+  if (!o.search) {
+    for (let i = 3; i < px.data.length; i += 4) {
+      if (px.data[i] !== 255) {
+        throw new Error(`invariant: ${o.id} is opaque at every px (an unsearched raster is a plate; extractShot refuses one that is not)`);
+      }
+    }
+  }
+  const opts: CodecOptions = { ...(o.mark === true ? { mark: o.id } : {}), ...(o.search ? {} : { opaque: true as const }) };
   const due = o.half === 'any' || (o.half !== 'none' && px.h === o.half.canvasH);
   const halfPx: Raster | null = due ? { data: halfRgba(px.data, px.w, px.h), w: px.w / 2, h: px.h / 2 } : null;
   const tier = async (t: Raster, name: 'full' | 'half'): Promise<Result<{ q: number; avif: Uint8Array }, string>> => {

@@ -180,6 +180,22 @@ export function cropRaster(r: Raster, [x, y, w, h]: Box): Raster {
   return { data, w, h };
 }
 
+/** The px of `r` inside `box` with alpha below 255: how many, and the first (row-major) in `r`'s px; null when none. */
+function translucentPx(r: Raster, [bx, by, bw, bh]: Box): { readonly n: number; readonly x: number; readonly y: number; readonly alpha: number } | null {
+  let first: { readonly x: number; readonly y: number; readonly alpha: number } | null = null;
+  let n = 0;
+  for (let y = by; y < by + bh; y++) {
+    for (let x = bx; x < bx + bw; x++) {
+      const alpha = r.data[(y * r.w + x) * 4 + 3] ?? 0;
+      if (alpha < 255) {
+        n++;
+        first ??= { x, y, alpha };
+      }
+    }
+  }
+  return first === null ? null : { n, ...first };
+}
+
 /** §4.2: the px of `v` that differ from `base` by more than 2/255 in any channel (cut D5). */
 function changed(v: Raster, base: Raster): Px {
   const bits = new Uint8Array(v.w * v.h);
@@ -620,7 +636,8 @@ export type ExtractInput = {
 export type Extracted = { readonly layers: ShotLayers<Raster>; readonly depth: Uint8Array; readonly warnings: readonly string[] };
 
 /**
- * Extracts a `src` shot (§4.2 steps 1-6): the rest motion boxes E / M / B, each needed expression's layer, its motion
+ * Extracts a `src` shot (§4.2 steps 1-6), its original and plate opaque inside the crop (§4.3, fix3 F1) before any
+ * other file is read: the rest motion boxes E / M / B, each needed expression's layer, its motion
  * states (its own where it changes that box, else the rest's own `Layer`: the reuse rule, step 3), the cut-out layers,
  * the figure moments, the head mask's box and the depth grid; every problem reported by name, nothing thrown.
  */
@@ -649,6 +666,20 @@ export async function extractShot(input: ExtractInput): Promise<Result<Extracted
   }
   if (crop[0] + crop[2] > W || crop[1] + crop[3] > H) {
     return { ok: false, error: [`${s}/shot.json: crop: ${JSON.stringify(crop)} is not inside original.png (${W} × ${H})`] };
+  }
+  // §4.3 (fix3 F1, critique O4): the plate is the opaque base under every face layer and every cut-out takes its colour
+  // from the original, so neither holds alpha below 255 inside the crop (only px inside it reach a file). One line per
+  // file, then stop: each variant's alpha would otherwise cascade into R1 / R3 lines (one cause, one message).
+  const opaque = [
+    ['original.png', original, 'an original is opaque: every cut-out takes its colour from it, §4.2 step 4'],
+    ['plate.png', plate, 'a plate is opaque: the base under every face layer, §4.3'],
+  ] as const;
+  const translucent = opaque.flatMap(([file, r, why]) => {
+    const t = translucentPx(r, crop);
+    return t === null ? [] : [`${s}/${file}: alpha below 255 at ${t.n} px inside the crop, the first at (${t.x}, ${t.y}) with alpha ${t.alpha} (${why})`];
+  });
+  if (translucent.length > 0) {
+    return { ok: false, error: translucent };
   }
   const cropB: Bounds = [crop[0], crop[1], crop[0] + crop[2] - 1, crop[1] + crop[3] - 1];
   const sized = (file: string, r: Raster | null): Raster | null => {

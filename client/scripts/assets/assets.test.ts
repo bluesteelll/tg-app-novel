@@ -698,8 +698,10 @@ describe('encode', () => {
   }, 120_000);
 
   test("assets: a shot's q lowers its AVIF bytes", async () => {
-    // §4.4 (RULINGS 267): a shot's q is its plate's AVIF quality exactly (no search), both tiers; WebP stays q80.
-    const px = featheredNoise(256, 128);
+    // §4.4 (RULINGS 267): a shot's q is its plate's AVIF quality exactly (no search), both tiers; WebP stays q80. A plate
+    // is opaque (fix3 F1): an unsearched raster with any alpha below 255 is a bug, since extractShot refuses that plate.
+    const feathered = featheredNoise(256, 128);
+    const px: Raster = { ...feathered, data: Uint8Array.from(feathered.data, (v, i) => (i % 4 === 3 ? 255 : v)) };
     const at = async (q: number) => {
       const r = await encodeRaster(px, { id: 'bg/noise' as AssetId, half: 'any', q, search: false });
       if (!r.ok) {
@@ -716,6 +718,7 @@ describe('encode', () => {
     expect(lo.image.half?.avif.length ?? 0).toBeLessThan(hi.image.half?.avif.length ?? 0);
     expect(Buffer.compare(lo.image.webp, hi.image.webp)).toBe(0);
     expect(Buffer.compare(lo.image.half?.webp ?? new Uint8Array(0), hi.image.half?.webp ?? new Uint8Array(1))).toBe(0);
+    await expect(encodeRaster(feathered, { id: 'bg/noise' as AssetId, half: 'any', q: 50, search: false })).rejects.toThrow(/invariant: bg\/noise is opaque/);
     // shot.json's q (cut D3): absent reads 50; 40 (the floor) is accepted; 35 and 101 are refused by name.
     const json = (q: unknown): ReturnType<typeof decodeShotSource> =>
       decodeShotSource({ crop: [0, 0, 1080, 2048], focus: [540, 600], ...(q === undefined ? {} : { q }) }, 'cafe' as BgId);
@@ -1946,6 +1949,18 @@ describe('assets', () => {
         expect(bytes(e, 'webp'), `${id} ${tier} WebP`).toBeLessThanOrEqual(limit.webp);
       }
     }
+    // F1 (fix3): the plate, opaque by check, ships no alpha band in any file; every alpha file's AVIF keeps its band.
+    const alphaBand = async (e: RawEntry | undefined, f: 'avif' | 'webp'): Promise<boolean> => {
+      const url = String((e?.[f] as { url?: unknown } | undefined)?.url);
+      return (await sharp(readFileSync(join(repo, ...(urlPath(url) ?? url).split('/')))).metadata()).hasAlpha;
+    };
+    const plate = ch1.assets['bg/cafe'];
+    const plateHalf = plate?.['half'] as RawEntry | undefined;
+    const plateBands = [await alphaBand(plate, 'avif'), await alphaBand(plate, 'webp'), await alphaBand(plateHalf, 'avif'), await alphaBand(plateHalf, 'webp')];
+    expect(plateBands, 'bg/cafe AVIF, WebP, half AVIF, half WebP').toEqual([false, false, false, false]);
+    for (const id of SRC_FILES.filter((x) => x !== 'bg/cafe')) {
+      expect(await alphaBand(ch1.assets[id] ?? ch2.assets[id], 'avif'), `${id}: its AVIF keeps its alpha band`).toBe(true);
+    }
     // The rigs: the crop-translated focus, the hair from the sheet, the rest blink copied into smile's face file,
     // surprised's own blink, and every member in one of its chapter's own entries.
     const rigs = (m: { shots: unknown }): ReadonlyMap<BgId, ShotRig> => {
@@ -2063,6 +2078,11 @@ describe('assets', () => {
       cast: { ally: { view: 'face', rest: 'neutral', figure: true } },
     });
     const transparent = await sharp({ create: { width: 1080, height: 2048, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } }).png().toBuffer();
+    // F1 (fix3): alpha 254 at one px inside the crop is within R1's 2/255, so only the plate's own check refuses it.
+    const plate = syntheticShot({ w: 1080, h: 2048, u: 4 }).files.get('plate.png');
+    const seeThrough = Uint8Array.from(plate?.data ?? []);
+    seeThrough[(100 * 1080 + 540) * 4 + 3] = 254;
+    const translucent = await sharp(seeThrough, { raw: { width: 1080, height: 2048, channels: 4 } }).png().toBuffer();
     const large = await shotDir({ w: 1080, h: 2048, u: 4, largePlanes: true });
     // D5 / D12 (triage r1 F2): read by its header before anything is decoded, so a tiny file stands for the whole one.
     const rgba16 = await sharp({ create: { width: 8, height: 8, channels: 4, background: { r: 10, g: 20, b: 30, alpha: 1 } } }).toColourspace('rgb16').png().toBuffer();
@@ -2117,6 +2137,12 @@ describe('assets', () => {
         repo: SRC_REPO,
         src: { 'mask.hair.ally.0.png': transparent },
         err: ['assets: cafe/mask.hair.ally.0.png: empty'],
+      },
+      {
+        name: 'a plate that is not opaque',
+        repo: SRC_REPO,
+        src: { 'plate.png': translucent },
+        err: ['assets: cafe/plate.png: alpha below 255 at 1 px inside the crop, the first at (540, 100) with alpha 254 (a plate is opaque: the base under every face layer, §4.3)'],
       },
       {
         name: 'a src bg no shot shows',

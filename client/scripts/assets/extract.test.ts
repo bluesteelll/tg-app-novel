@@ -187,6 +187,47 @@ describe('extract', () => {
     ]);
   });
 
+  test('assets: a plate that is not opaque inside its crop is refused', async () => {
+    // Shots §4.3 (fix3 F1, critique W1 and O4): the plate is the opaque base under every face layer, and every cut-out
+    // takes its colour from original.png, so a px of either with alpha below 255 inside the crop is refused by name, one
+    // line per file, before any other file is loaded. Each case's edits go to original.png, plate.png and every variant
+    // alike, never to a mask, so R1 sees no change and the input reaches this check; transparency outside the crop is
+    // legal when every source shares it. Case C (O4) is original.png alone, at the hair mask's centre.
+    const fx = syntheticShot({ w: 168, h: 320, crop: [4, 0, 160, 320] });
+    const needs = [needOf('ch1', [['neutral', false]])];
+    expect(await extract(fx, needs)).toMatchObject({ ok: true });
+    const edited = (at: ReadonlyArray<readonly [number, number, number]>, which: (file: string) => boolean): SyntheticShot => {
+      const files = new Map<string, Raster>();
+      for (const [name, r] of fx.files) {
+        const data = Uint8Array.from(r.data);
+        for (const [x, y, alpha] of which(name) ? at : []) {
+          data[(y * r.w + x) * 4 + 3] = alpha;
+        }
+        files.set(name, { data, w: r.w, h: r.h });
+      }
+      return { ...fx, files };
+    };
+    const sources = (file: string): boolean => !file.startsWith('mask.');
+    const original = (n: number, x: number, y: number, alpha: number): string =>
+      `cafe/original.png: alpha below 255 at ${n} px inside the crop, the first at (${x}, ${y}) with alpha ${alpha} (an original is opaque: every cut-out takes its colour from it, §4.2 step 4)`;
+    // A: alpha 0 at the crop's top-left, 254 at its last column and row.
+    const loadedA: string[] = [];
+    const a = await extract(edited([[4, 1, 0], [163, 319, 254]], sources), needs, loadedA);
+    expect(a.ok ? [] : a.error).toEqual([
+      original(2, 4, 1, 0),
+      'cafe/plate.png: alpha below 255 at 2 px inside the crop, the first at (4, 1) with alpha 0 (a plate is opaque: the base under every face layer, §4.3)',
+    ]);
+    expect(loadedA).toEqual(['original.png', 'plate.png']);
+    // B: alpha 0 outside the crop only, in every source alike.
+    expect(await extract(edited([[0, 0, 0], [3, 319, 0], [164, 0, 0]], sources), needs)).toMatchObject({ ok: true });
+    // C: original.png alone, inside the hair lock's mask (its cut-out would ship that px's stored colour).
+    expect(fx.files.get('mask.hair.ally.0.png')?.data[(52 * fx.w + 54) * 4 + 3]).toBe(255);
+    const loadedC: string[] = [];
+    const c = await extract(edited([[54, 52, 0]], (file) => file === 'original.png'), needs, loadedC);
+    expect(c.ok ? [] : c.error).toEqual([original(1, 54, 52, 0)]);
+    expect(loadedC).toEqual(['original.png', 'plate.png']);
+  });
+
   test('assets: a cut-out not inpainted in the plate fails', async () => {
     // R7: a cut-out's region is inpainted in the plate (the plate differs from the original inside the mask's core by a
     // mean > 8/255); a hair lock painted into the plate too would reveal itself when the lock sways.
